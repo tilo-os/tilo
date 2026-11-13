@@ -40,8 +40,10 @@ pub(crate) async fn carry_admitted(
         return;
     };
     // A body that does not decode is one the governor's follow reports.
-    let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
-        // ignored-failure: the workspace's own follow reports the body that does not decode.
+    let Ok(message) = tilo_failure::ignored!(
+        "the workspace's own follow reports the body that does not decode",
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+    ) else {
         return;
     };
     workspaces.carry_to_links(authority.workspace(), author, &message);
@@ -176,8 +178,10 @@ impl Workspaces {
         };
         let answered =
             super::session_carry::RelayHistory::of(retained.iter().filter_map(|retained| {
-                // ignored-failure: a retained body that does not decode is one recall reports, and holds no write the link could match
-                postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
+                tilo_failure::ignored!(
+                    "a retained body that does not decode is one recall reports, and holds no write",
+                    postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
+                )
             }));
         let mut cursors = Vec::new();
         let mut carried = 0_usize;

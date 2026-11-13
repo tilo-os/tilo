@@ -1,17 +1,4 @@
 //! Markdown typed as formatting.
-//!
-//! An editor that formats as the person types (the notes
-//! [`BlockEditor`](crate::widget::BlockEditor)) turns `**bold**` into bold
-//! text the moment the closing delimiter is typed. Whether a keystroke
-//! completes such a span is the same decision in every editor; only how the
-//! result is shown differs. This module makes that decision: it is pure,
-//! knows nothing of rendering or documents, and returns byte ranges with a
-//! neutral [`InlineKind`] that each editor maps onto its own formatting.
-//!
-//! [`detect_inline`] recognises `**b**`/`__b__` (bold), `*i*`/`_i_`
-//! (italic), `` `c` `` (code), `~~s~~` (strikethrough) and `[text](url)`
-//! (a link), fired by the keystroke that types the closing delimiter, and a
-//! web address followed by a space (an autolink).
 
 use std::ops::Range;
 
@@ -22,32 +9,19 @@ pub enum InlineKind {
     Italic,
     Code,
     Strikethrough,
-    /// A link to [`InlineMatch::target`]: `[text](url)`, or a typed address.
     Link,
 }
 
 /// A span completed by the last character of the text before the caret.
-///
-/// Every range is in bytes of the `&str` given to [`detect_inline`]. The
-/// editor deletes [`close`](Self::close) and [`open`](Self::open) and formats
-/// [`content`](Self::content), which sits between them: once `open` is gone
-/// the content starts at `open.start`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineMatch {
     pub kind: InlineKind,
-    /// The opening delimiter (the leading `**`), deleted.
     pub open: Range<usize>,
-    /// The text between the delimiters, kept and formatted.
     pub content: Range<usize>,
-    /// The closing delimiter, ending at the caret, deleted. What lies between
-    /// the content and it stays (the space after an autolinked address).
     pub close: Range<usize>,
-    /// Where a [`InlineKind::Link`] goes.
     pub target: Option<String>,
 }
 
-/// Whether `target` is an address a typed link may go to: the web, mail,
-/// or a resource of this desktop (`tilo://open#…`).
 fn linkable(target: &str) -> bool {
     let rest = ["https://", "http://", "mailto:", "tilo://open#"]
         .iter()
@@ -56,7 +30,6 @@ fn linkable(target: &str) -> bool {
         && !target.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-/// `[text](url)` ending at the caret.
 fn detect_link(before_caret: &str) -> Option<InlineMatch> {
     let caret = before_caret.len();
     let head = before_caret.strip_suffix(')')?;
@@ -80,8 +53,6 @@ fn detect_link(before_caret: &str) -> Option<InlineMatch> {
     })
 }
 
-/// A web address the space just typed ended: the address is linked, the
-/// space kept. Punctuation closing a sentence after it is not part of it.
 fn detect_autolink(before_caret: &str) -> Option<InlineMatch> {
     let caret = before_caret.len();
     let head = before_caret.strip_suffix(' ')?;
@@ -177,7 +148,6 @@ pub fn detect_inline(before_caret: &str) -> Option<InlineMatch> {
 mod tests {
     use super::*;
 
-    /// `(kind, content, text with the delimiters removed)`.
     fn applied(text: &str) -> Option<(InlineKind, String, String)> {
         let found = detect_inline(text)?;
         let stripped = format!(
@@ -228,7 +198,6 @@ mod tests {
             resource.and_then(|found| found.target),
             Some("tilo://open#/me/so.tilo.calendar/-/e:1".to_owned())
         );
-        // A typed address is linked by the space after it; the space and the full stop stay.
         let typed = detect_inline("read https://tilo.so/docs. ").expect("an autolink");
         assert_eq!(typed.target.as_deref(), Some("https://tilo.so/docs"));
         assert_eq!(

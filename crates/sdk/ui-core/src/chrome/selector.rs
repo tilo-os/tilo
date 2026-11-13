@@ -1,16 +1,5 @@
-//! One painter for everything you choose one of: the window group's tab
-//! strip, an in-app `TabBar`, the segments of a `ToggleGroup` and the top
-//! bar's selectors (`crates/sdk/ui-core/HIG.md` §9.3).
-//!
-//! A selector is a [`SelectionState`] resolved against the ground it stands
-//! on ([`selector_tier`]): idle paints nothing, hover is a translucent film
-//! of the active lift, and active is that lift opaque, with an edge and a
-//! lit rim. A docked strip of selectors stands on a body of its own
-//! ([`SelectorRole::Strip`]), made of the floating material, so tabs are
-//! never an unblurred translucent surface over the desktop. The theme's
-//! [`crate::tokens::SelectorFinish`] says what the strip is made of and how
-//! strong the rim and the hover film are; high contrast, forced colours and
-//! reduced transparency make all of it opaque.
+//! One painter for everything you choose one of: the window group's tab strip, an in-app `TabBar`, the
+//! segments of a `ToggleGroup` and the top bar's selectors (`crates/sdk/ui-core/HIG.md` §9.3).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -27,20 +16,16 @@ use crate::tokens::{Colors, SelectorFinish, StripMaterial};
 /// What of a selector is painted.
 #[derive(Clone, Copy, Debug)]
 pub enum SelectorRole<'a> {
-    /// The body a docked strip of selectors stands on: the floating
-    /// material over the desktop behind it (or the opaque panel ground),
-    /// edged like the panel it is made of. Carries the transform from the
-    /// desktop's coordinates into the scene's: the identity, or a strip's
-    /// pan when it is drawn in canvas coordinates
-    /// ([`crate::backdrop::desktop`]).
+    /// The body a docked strip of selectors sits on: the floating material over the desktop behind it
+    /// (or the opaque panel ground), edged like the panel it is made of.
     Strip(Affine),
     /// One selector, in the tier [`selector_tier`] resolved (or one a
     /// caller animating it faded).
     Item(&'a SelectionTier),
 }
 
-/// The finish this theme paints selectors with: the theme's own, or
-/// [`SelectorFinish::OPAQUE`] where nothing may be translucent.
+/// The finish this theme paints selectors with: the theme, or [`SelectorFinish::OPAQUE`] where nothing
+/// may be translucent.
 #[must_use]
 pub fn selector_finish(theme: &Theme) -> SelectorFinish {
     theme
@@ -49,10 +34,8 @@ pub fn selector_finish(theme: &Theme) -> SelectorFinish {
         .effective(theme.reduce_transparency || theme.forced_colors)
 }
 
-/// The ground a docked strip's items stand on: the panel ground its
-/// material is tinted with, which is also the whole of it where nothing is
-/// blurred. On a light palette it stays one surface step below white, so
-/// the active tab can rise a full step toward the light above it.
+/// The ground a docked strip's items stand on: the panel ground its material is tinted with, which is
+/// also the whole of it where nothing is blurred.
 #[must_use]
 pub fn strip_ground(theme: &Theme) -> Color {
     use crate::color::Oklch;
@@ -92,7 +75,7 @@ fn active_lift(theme: &Theme, ground: Color) -> Color {
     up.to_color()
 }
 
-/// The hover film's opacity: the finish's, or more where `lift` stands so
+/// The hover film's opacity: the finish's, or more where `lift` is so
 /// close to `ground` that the finish's film would not clear
 /// [`SELECTION_MIN_STEP`] (a light strip, where the lift is capped by
 /// white). Never opaque, so a hover stays short of the active tier.
@@ -140,8 +123,6 @@ pub fn selector_tier(theme: &Theme, state: SelectionState, ground: Color) -> Sel
     } else {
         Color::TRANSPARENT
     };
-    // The press's scale is the theme's response role: a theme may let a
-    // selector keep its size under the finger, or sink further.
     SelectionTier {
         fill,
         border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),
@@ -249,8 +230,8 @@ fn paint_item(
     );
 }
 
-/// The capsule a strip of selectors at `rect` is drawn as, concentric with
-/// items inset `inset` inside it at `item_radius`.
+/// The capsule a strip of selectors at `rect` is drawn as, concentric with items inset `inset` inside
+/// it at `item_radius`.
 #[must_use]
 pub fn strip_shape(rect: Rect, item_radius: f64, inset: f64) -> RoundedRect {
     RoundedRect::from_rect(rect, (item_radius + inset).min(rect.height() / 2.0))

@@ -1,12 +1,7 @@
-//! A file a host hands a component to open, as an explicit launch input.
-//!
-//! Apps have no ambient filesystem: a host that was asked to open a file (an
-//! OS file association, a page embedding the browser runtime) reads the bytes
-//! itself and lends them to the component through
+//! A file a host hands a component to open, as an explicit launch input. Apps have no ambient
+//! filesystem: a host that was asked to open a file (an OS file association, a page embedding the
+//! browser runtime) reads the bytes itself and lends them to the component through
 //! [`HostContext::provide_open_file`](super::HostContext::provide_open_file).
-//! The component declares what it opens in
-//! [`ApplicationDefinition::opens`](super::ApplicationDefinition::opens); a
-//! file of any other type never reaches its factory.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -21,8 +16,8 @@ pub struct OpenFile {
     opened: Rc<RefCell<Option<String>>>,
 }
 
-/// What the host keeps of an [`OpenFile`] it handed over: which resource the
-/// component opened it as, once the component says so.
+/// What the host keeps of an [`OpenFile`] it handed over: which resource the component opened it as,
+/// once the component says so.
 #[derive(Clone)]
 pub struct OpenFileReceipt(Rc<RefCell<Option<String>>>);
 
@@ -70,8 +65,8 @@ impl OpenFile {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
-    /// Tell the host which of the component's resources now holds the file
-    /// (the id its action surface lists), so the host can address it.
+    /// Tell the host which of the component's resources now has the file (the id its action surface
+    /// lists), so the host can address it.
     pub fn report_opened(&self, resource: impl Into<String>) {
         *self.opened.borrow_mut() = Some(resource.into());
     }

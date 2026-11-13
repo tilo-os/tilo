@@ -12,8 +12,8 @@ fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Every app in `apps/tl`: a package directory with an `app.tl`, so an app added there is
-/// checked without being named here.
+/// Every app in `apps/tl`: a package directory with an `app.tl`, so an app added there is checked
+/// without being named here.
 fn apps() -> std::io::Result<Vec<PathBuf>> {
     let root = manifest().join("../../../apps/tl");
     let mut dirs = Vec::new();
@@ -43,8 +43,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     for (kind, view) in [
         (Kind::Overflow, "overflowing"),
         (Kind::Overlap, "overlapping"),
-        // Two words drawn in one place are unreadable however their boxes stand: the view that
-        // lays one over the other breaks in both ways.
+        // Two words drawn in one place are unreadable however their boxes stand: the view that lays
+        // one over the other breaks in both ways.
         (Kind::TextOnText, "overlapping"),
         (Kind::ScrollsSideways, "sideways"),
     ] {
@@ -55,30 +55,23 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             layout_check::render(&report)
         );
     }
-    // Each broken view breaks in its own way only.
     for finding in &report.findings {
         let expected = match finding.kind {
             Kind::Overflow => "overflowing",
-            // Two words drawn in one place are unreadable however their boxes stand: the view
-            // that lays one over the other breaks in both ways.
+            // Two words drawn in one place are unreadable however their boxes stand: the view that
+            // lays one over the other breaks in both ways.
             Kind::Overlap | Kind::TextOnText => "overlapping",
-            // A word wider than its column breaks (`clipped` is laid out right), and the chip
-            // takes a finger's room on touch (`small_target` is laid out right). A view in
-            // this fixture has no scroll view given no room: `a_board_lane_draws_every_card_it_
-            // has_room_for` holds that one.
+            // A word wider than its column breaks (`clipped` is laid out right), and the chip takes
+            // a finger's room on touch (`small_target` is laid out right).
             Kind::ClippedText | Kind::SmallHitTarget | Kind::LostContent => "",
             Kind::ScrollsSideways => "sideways",
-            // Layout snaps every edge, broken or not; and a window gives a view that composes
-            // no shell its page, so no page anywhere is one bare row. The fixtures write no
-            // rows, no cards and no field names: the rules read off a window's own composition
-            // hold nothing to find in them.
+            // Layout snaps every edge, broken or not; and a window gives a view that composes no
+            // shell its page, so no page anywhere is one bare row.
             Kind::OffPixel
             | Kind::BareRow
-            // No page in this fixture stands inside another.
             | Kind::PageInPage
             | Kind::RaggedColumns
             | Kind::DoubleSelection
-            // The fixture's lists paint no selection of their own.
             | Kind::SelectionBleed
             | Kind::CrampedGutter
             | Kind::SeveralAdds
@@ -87,18 +80,15 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::NestedCard
             | Kind::LoneDoor
             | Kind::EmptyHeading
-            // No window in this fixture draws a count.
             | Kind::ZeroCount
             | Kind::RepeatedCount
-            // No window in this fixture floats a popover or a sheet, and none composes a
-            // shell whose title the row's actions squeeze.
+            // No window in this fixture floats a popover or a sheet, and none composes a shell
+            // whose title the row's actions squeeze.
             | Kind::PastWindow
             | Kind::TitleClippedWithRoom
-            // The fixture's windows ship one language: nothing reads from another catalogue.
             | Kind::MixedLanguage
-            // No window in this fixture opens an item under its row, and no page names itself
-            // in a bar beside a heading of its own. Its bars stand wide enough to keep the
-            // sidebar's toggle in its corner, clear of the way back.
+            // No window in this fixture opens an item under its row, and no page names itself in a
+            // bar beside a heading of its own.
             | Kind::OpenOutsideList
             | Kind::RepeatedPageTitle
             | Kind::DoubleNavigation
@@ -109,30 +99,25 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::DuplicateBarControl
             | Kind::IconOnlyBarAction
             // The fixture's windows compose no shell with a header row of its own under a bar.
-            // None declares the one main thing to do either.
             | Kind::StackedHeaderRows
             | Kind::UnmarkedBarPrimary
             // No window in this fixture lists items beside a pane that says nothing is chosen.
             | Kind::PlaceholderPane
-            // The fixture's windows compose no sidebar over a header naming a place.
             | Kind::UnchosenPlace
-            // The fixture's windows compose no page around a list, and open no item into its
-            // row.
+            // The fixture's windows compose no page around a list, and open no item into its row.
             | Kind::NestedScroller
             | Kind::RepeatedRowTitle
-            // No window in this fixture opens an item into its row, so no document stands
-            // beside the rows of the list it opened from.
+            // No window in this fixture opens an item into its row, so no document stands beside
+            // the rows of the list it opened from.
             | Kind::ItemShownTwice
             // The fixture's cards each hold what they are given, so none stands empty.
             | Kind::EmptySurface
-            // No window in this fixture docks a bar at the foot of a page column, and none
-            // lines its edges with a card or a notice, nor stands one against another.
+            // No window in this fixture docks a bar at the foot of a page column, and none lines
+            // its edges with a card or a notice, nor stands one against another.
             | Kind::DockedColumn
             | Kind::RoundedOnEdge
             | Kind::CrampedCard
-            // No window in this fixture docks a sidebar beside content it squeezes.
             | Kind::ContentBesideSidebar
-            // Its lists group no rows under headings of their own.
             | Kind::HeadingRoom
             // A list of this fixture groups nothing, so no group of it opens on a row.
             | Kind::OrphanedRow
@@ -141,10 +126,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::CrowdedHeading
             | Kind::DetailRowNotChosen
             // No window in this fixture declares a column header over a column that draws none or
-            // offers an action in its bar and its own row both, no field of it stands one band
-            // tall with its line off that band's middle (a field centres its own line), and no
-            // agent or peer is drawn in it, so no presence tag stands anywhere. No window in it
-            // holds writing either, so no section of a page stands under the writing it holds.
+            // offers an action in its bar and its own row both, no field of it stands one band tall
+            // with its line off that band's middle (a field centres its own line), and no agent or
+            // peer is drawn in it, so no presence tag stands anywhere.
             | Kind::HeaderOnReveal
             | Kind::OfferedTwice
             | Kind::LineOffCentre
@@ -152,13 +136,11 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::UnruledBody
             // No page of this fixture leads its heading with a control, and none stands on a
             // phone's screen.
-            // Its trees fold rows on the line those rows' words stand on.
             | Kind::ChevronOffLine
             | Kind::IndentedBody
             // Its lists group no rows under headings of their own, so none heads its rows.
             | Kind::RepeatedGroupTitle
             | Kind::HuggingRow
-            // The fixture's rows state no day of their own.
             | Kind::RepeatedDayFact => "(no view)",
         };
         assert_eq!(
@@ -171,11 +153,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     assert!(report.new_findings().next().is_some(), "the check fails");
 }
 
-/// A view whose body is one `layers` is the window's Layers: its row at the foot covers the
-/// content under it on purpose, which is no overlap. The column's pane the window reconciles
-/// the view in reads as what it holds, so the check sees the layers and not a box of its own;
-/// and two layers overlap only where the text of one lies over the other's, not wherever a
-/// box holding text covers another.
+/// A view whose body is one `layers` is the window's Layers: its row at the foot covers the content
+/// under it on purpose, which is no overlap.
 #[test]
 fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
     let report = layout_check::check(&Options {
@@ -190,9 +169,8 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
     );
 }
 
-/// The `languages` fixture copied to a scratch directory, with the German word for
-/// `w-a-word-only-the-source-language` taken out: an app whose German is short one message. The
-/// fixture in the tree is translated whole; the drift is made here, where the check is tested.
+/// The `languages` fixture copied to a scratch directory, with the German word for `w-a-word-only-
+/// the-source-language` taken out: an app whose German is short one message.
 fn short_of_one_german_word() -> std::io::Result<(tempfile::TempDir, PathBuf)> {
     let source = manifest().join("tests/layout_check/languages");
     let scratch = tempfile::tempdir()?;
@@ -228,10 +206,9 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A window reads in one language throughout: a word it shows from a catalogue in another
-/// language — here the app's source standing in for a translation it lacks — is a finding, and
-/// the same window read in the language the person speaks has none. The person's language is
-/// staged whatever locale this machine runs in, so the two runs differ by the person alone.
+/// A window reads in one language throughout: a word it shows from a catalogue in another language
+/// — here the app's source standing in for a translation it lacks — is a finding, and the same
+/// window read in the language the person speaks has none.
 #[test]
 fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
     let (_scratch, dir) = short_of_one_german_word()
@@ -276,10 +253,10 @@ fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
     );
 }
 
-/// A desk bounded by its window: a middle longer than the window scrolls between the bar and
-/// the dock (a filled share takes no more than its share, in a stack and in layers), and a dock
-/// holding more than the window is wide is as wide as the window, its items scrolling along it
-/// (a chrome body narrows to the room it has).
+/// A desk bounded by its window: a middle longer than the window scrolls between the bar and the
+/// dock (a filled share takes no more than its share, in a stack and in layers), and a dock holding
+/// more than the window is wide is as wide as the window, its items scrolling along it (a chrome
+/// body narrows to the room it has).
 #[test]
 fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     let report = layout_check::check(&Options {
@@ -294,10 +271,9 @@ fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
     );
 }
 
-/// A board's lanes are as tall as the page they are in: a lane holding as many cards as the
-/// pane shows draws every one of them under its heading, and a lane holding more keeps them
-/// all inside the view that scrolls them. A lane given no height loses its cards instead, which
-/// the check catches (a scroll view with no room for what it holds).
+/// A board's lanes are as tall as the page they are in: a lane holding as many cards as the pane
+/// shows draws every one of them under its heading, and a lane holding more keeps them all inside
+/// the view that scrolls them.
 #[test]
 fn a_board_lane_draws_every_card_it_has_room_for() {
     let report = layout_check::check(&Options {
@@ -318,10 +294,10 @@ fn a_board_lane_draws_every_card_it_has_room_for() {
     );
 }
 
-/// A view another app's page draws is laid out there, so it is reached for the package that
-/// defines it though none of that package's own windows shows it; a row view of a type inside a
-/// collection of a union is opened on an item of that type; and a view nothing calls is named as
-/// one to delete, apart from a view a view calls that no scenario reaches.
+/// A view another app's page draws is laid out there, so it is reached for the package that defines
+/// it though none of that package's own windows shows it; a row view of a type inside a collection
+/// of a union is opened on an item of that type; and a view nothing calls is named as one to
+/// delete, apart from a view a view calls that no scenario reaches.
 #[test]
 fn a_view_another_app_draws_and_a_union_items_row_view_are_reached_while_a_dead_view_is_named() {
     let dir = manifest().join("tests/layout_check/reach");
@@ -362,8 +338,8 @@ fn a_view_another_app_draws_and_a_union_items_row_view_are_reached_while_a_dead_
     );
 }
 
-/// A view whose body is a bare `if let` leaves no widget of its own: absent, it draws nothing,
-/// and present, what it draws is the view it calls. Each still ran, so each is reached.
+/// A view whose body is a bare `if let` leaves no widget of its own: absent, it draws nothing, and
+/// present, what it draws is the view it calls.
 #[test]
 fn a_view_that_is_one_branch_is_reached_whether_or_not_it_draws() {
     let report = layout_check::check(&Options {
@@ -430,9 +406,9 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
 
 #[test]
 fn a_state_the_run_stages_lays_the_window_out_there() {
-    // Which place a window stands on is the run's, not the app's: `--state place=Task.today`
-    // lays out the place a person has not picked, and a value the app declares no filter for
-    // is refused before anything is laid out.
+    // Which place a window stands on is the run's, not the app's: `--state place=Task.today` lays
+    // out the place a person has not picked, and a value the app declares no filter for is refused
+    // before anything is laid out.
     let tasks = manifest().join("../../../apps/tl/tasks");
     let report = layout_check::check(&Options {
         dirs: vec![tasks.clone()],
@@ -451,13 +427,16 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
         refused.contains("declares no filter `nonsense`"),
         "the run says what it could not stage: {refused}"
     );
+    // The units run at the same time, so a failure stops the sweep wherever it stands: the run
+    // names the unit that failed rather than the turn the stop left empty.
+    assert!(
+        refused.starts_with("tasks: the scenario `"),
+        "the run names the unit that failed: {refused}"
+    );
 }
 
-/// A window held in the hand shows its list; the row a person taps opens what it holds in
-/// front of the list. The run stages every such screen, named after what it shows — for an app
-/// whose rows open a page over the list (a board's cards) as for one whose window pushes it,
-/// and for one whose list stands over what it shows as a drawer its sidebar toggle brings
-/// forward.
+/// A window held in the hand shows its list; the row a person taps opens what it holds in front of
+/// the list.
 #[test]
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
@@ -495,9 +474,9 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
     }
 }
 
-/// A row's box is a control of its own, named for what it does to the item (`Mark Buy oat milk
-/// and eggs done`): a run presses it by those words, as a person or an agent does, and the row
-/// it belongs to stands where it stood, drawn checked, for the shot.
+/// A row's box is a control of its own, named for what it does to the item (`Mark Buy oat milk and
+/// eggs done`): a run presses it by those words, as a person or an agent does, and the row it
+/// belongs to stands where it stood, drawn checked, for the shot.
 #[test]
 fn a_run_presses_a_rows_box_by_its_own_words() {
     use tilo_test_env::SpawnUnderEnvLock as _;
@@ -554,9 +533,9 @@ fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
             source.push_str(&std::fs::read_to_string(&path).expect("the gallery reads"));
         }
     }
-    // Which components the gallery shows, and whether a component's declaration exempts it, is
-    // the toolkit's own check (`tilo_ui::component::gallery`), which a widget's author runs in
-    // the toolkit's tests; this app is laid out below as well.
+    // Which components the gallery shows, and whether a component's declaration exempts it, is the
+    // toolkit's own check (`tilo_ui::component::gallery`), which a widget's author runs in the
+    // toolkit's tests; this app is laid out below as well.
     let problems = ui::component::gallery::coverage(&source).problems();
     assert!(problems.is_empty(), "{}", problems.join("\n"));
     let report = layout_check::check(&Options {

@@ -1,23 +1,15 @@
-//! Repaint after a presented frame overflowed Vello's bump buffers.
-//!
-//! An overflowing render drops geometry, and Vello only learns that from a
-//! counter readback that completes after the frame was presented. It grows
-//! its reservation then, but the dropped pixels stay in the retained target:
-//! later frames repaint only their damage, and an idle window has no later
-//! frame at all. A host that keeps its target (the native render worker, the
-//! browser) therefore polls the counters without waiting for the GPU — after
-//! every frame and, while a readback is outstanding, again shortly after —
-//! and repaints the whole surface once an overflow has been collected, which
-//! is when the grown reservation takes effect.
+//! Repaint after a presented frame overflowed Vello's bump buffers. An overflowing render drops
+//! geometry, and Vello only learns that from a counter readback that completes after the frame was
+//! presented.
 use crate::time::Duration;
 use vello::{BumpBudgetError, BumpBudgetPoll};
 
 /// How often an otherwise idle host looks at an outstanding readback.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-/// Consecutive overflowing repaints before giving up. Vello may grow more
-/// than one stage in turn (each needs its own repaint); a reservation at its
-/// ceiling cannot grow and would otherwise repaint forever.
+/// Consecutive overflowing repaints before giving up. Vello may grow more than one stage in turn (each
+/// needs its own repaint); a reservation at its ceiling cannot grow and would otherwise repaint
+/// forever.
 pub const MAX_REPAINTS: u8 = 4;
 
 /// What a poll of the counters asks of the host.
@@ -31,8 +23,8 @@ pub enum BumpStep {
     Repaint,
 }
 
-/// One renderer's overflow recovery: whether a readback is out, and how
-/// many repaints in a row an overflow has asked for.
+/// One renderer's overflow recovery: whether a readback is out, and how many repaints in a row an
+/// overflow has asked for.
 #[derive(Debug, Default)]
 pub struct BumpRecovery {
     pending: bool,
@@ -90,9 +82,9 @@ impl BumpRecovery {
     }
 }
 
-/// The overflows collected from one renderer, for a host whose retained
-/// targets it draws ([`crate::retained_raster::RetainedFrames::note_scratch`]):
-/// each target repaints whole once after its scratch changes.
+/// The overflows collected from one renderer, for a host whose retained targets it draws
+/// ([`crate::retained_raster::RetainedFrames::note_scratch`]): each target repaints whole once after
+/// its scratch changes.
 #[derive(Debug, Default)]
 pub struct Overflows {
     recovery: BumpRecovery,
@@ -100,8 +92,8 @@ pub struct Overflows {
 }
 
 impl Overflows {
-    /// Poll `renderer`'s counters without blocking on the GPU; while a
-    /// readback is still out, how soon to poll again.
+    /// Poll `renderer`'s counters without blocking on the GPU; while a readback is still out, how soon
+    /// to poll again.
     pub fn poll(
         &mut self,
         renderer: &mut vello::Renderer,
@@ -134,10 +126,9 @@ impl Overflows {
         self.collected
     }
 
-    /// What `renderer` had for scratch now, and what has been collected of
-    /// its overflows: a reservation that changed between two frames is one
-    /// that was short of what a frame needed, and the frames it drew in
-    /// between may have lost geometry.
+    /// What `renderer` had for scratch now, and what has been collected of its overflows: a reservation
+    /// that changed between two frames is one that was short of what a frame needed, and the frames it
+    /// drew in between may have lost geometry.
     #[must_use]
     pub fn scratch(&self, renderer: &vello::Renderer) -> Scratch {
         Scratch {
@@ -160,11 +151,7 @@ pub struct Scratch {
 mod tests {
     use super::*;
 
-    /// A frame drawn while the renderer's bump buffers overflowed shows with
-    /// geometry missing; once the scratch it was drawn at changes (an
-    /// overflow collected, or the reservation grown for it), the next frame
-    /// repaints the whole target, even one that changed nowhere, and the
-    /// frame after that repaints only what changed again.
+    /// A frame drawn while the renderer's bump buffers overflowed shows with geometry missing.
     #[test]
     fn a_changed_scratch_repaints_the_whole_target_once() {
         use crate::retained_raster::{Repaint, RetainedFrames, TargetKey, Unknown};
@@ -192,9 +179,6 @@ mod tests {
         );
         assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
 
-        // The reservation grows for a frame that did not fit: what the target
-        // shows was drawn with too little scratch, even before anything is
-        // collected of it.
         let grown = Scratch {
             bump_bytes: 2 << 20,
             ..quiet

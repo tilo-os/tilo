@@ -23,7 +23,6 @@ const RECORD_KEYS: [&str; 9] = [
     "target_esp_partuuid",
 ];
 
-/// One recorded partition: its GUID and its first and last LBA.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extent {
     pub partuuid: String,
@@ -38,7 +37,6 @@ impl Extent {
     }
 }
 
-/// The installer's record of the staging partitions and the Tilo root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub disk_guid: String,
@@ -53,8 +51,8 @@ fn mismatch(message: impl Into<String>) -> Error {
     Error::Mismatch(message.into())
 }
 
-/// `GUID_RE.match(text)`: a lowercase GUID (`$` also matches before one
-/// trailing newline).
+/// `GUID_RE.match(text)`: a lowercase GUID, matched with `$` before one trailing
+/// newline.
 #[must_use]
 pub fn is_guid(text: &str) -> bool {
     let text = text.strip_suffix('\n').unwrap_or(text);

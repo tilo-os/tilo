@@ -10,8 +10,6 @@ use crate::widget::arriving_rows::RowReserve;
 use crate::widget::{Element, Showing};
 
 impl<M: ListModel> VirtualList<M> {
-    /// What row `index` (`key`) shows at `now`, its model's answer seen
-    /// through the row's placeholder timing.
     pub(super) fn observe_row(
         &mut self,
         index: usize,
@@ -42,8 +40,6 @@ impl<M: ListModel> VirtualList<M> {
         arriving_row(index, state, &self.retry_asked, height)
     }
 
-    /// Ask the model again for the failed row whose retry was pressed, if
-    /// one was: whether the list changed.
     pub(super) fn take_retry(&mut self) -> bool {
         let Some(index) = self.retry_asked.take() else {
             return false;
@@ -56,8 +52,6 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> VirtualList<M> {
-    /// When the list next changes on its own: a pending row's placeholder
-    /// steps on, or a mounted row asks.
     pub(super) fn arrivals_wake(&self) -> Option<Instant> {
         self.arrivals
             .next_wake_deadline(crate::time::now())

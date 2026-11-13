@@ -122,10 +122,9 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
 
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
-    // The shared navigation is a rail of four screens. Back exposes it as
-    // a list on a phone; once the content beside it keeps a column's width, it
-    // docks there as a labeled list. Every destination retains a full,
-    // independent pointer target.
+    // The navigation is a rail of four screens: a list on a phone, docked as a
+    // labeled list once the content keeps a column's width. Every destination
+    // keeps a full, independent pointer target.
     let phone_width = 360_u32;
     let metrics = Theme::light().tokens.metrics;
     let rem = ui::widget::arrange::rem_of(&Theme::light());
@@ -219,8 +218,6 @@ fn resource_selected_timer_pane_keeps_navigation_in_sync() {
     );
 }
 
-/// What the shell is shown of Clocks' live activity now; an ended one is
-/// shown as nothing.
 fn published() -> ui::live_activity::Published {
     ui::collaboration::channel_live_activity::shown()
         .and_then(|shown| serde_json::from_value(shown).ok())
@@ -247,8 +244,6 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     );
 }
 
-/// The clock the shell's floating window follows: its own thread's, which
-/// this test holds for the whole process it has to itself.
 fn a_live_window_at_the_clock_it_holds() {
     let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
     let mut app = TestApp::<ClocksShell>::new().unwrap();
@@ -663,8 +658,6 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
     .unwrap();
 }
 
-/// A running stopwatch counts up with no input: the window's own second
-/// tick shows the time that has passed, not the time it was started at.
 #[test]
 fn a_running_stopwatch_counts_up_with_no_input() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
@@ -768,9 +761,6 @@ fn the_window_search_narrows_the_cities_to_add() {
     );
 }
 
-/// The timer setup fills the page's width: the custom timer takes what the
-/// quick starts beside it leave, so its duration fields stand in one row
-/// and nothing past them is left empty.
 #[test]
 fn the_timer_setup_fills_the_width_of_the_page() {
     let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (1280, 800)).unwrap();
@@ -809,8 +799,6 @@ fn the_timer_setup_fills_the_width_of_the_page() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

@@ -112,7 +112,6 @@ impl Default for RadarStyle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The inspected value: a series at an axis.
 pub struct Hovered {
     series: usize,
     axis: usize,
@@ -126,7 +125,6 @@ pub struct RadarMarks {
     toggles: chart_legend::SeriesToggles,
 }
 
-/// Series as polygons over radial axes (a spider chart).
 pub type RadarChart = Plot<RadarMarks>;
 
 impl RadarChart {
@@ -181,6 +179,23 @@ impl RadarChart {
 }
 
 impl RadarMarks {
+    /// Where the legend's entries stand: above the chart's bottom edge, clear
+    /// of the labels around it. `None` while the chart shows no legend.
+    fn legend_area(&self) -> Option<Rect> {
+        if !self.style.legend.visible {
+            return None;
+        }
+        let left = self.frame.rect.x0 + 12.0;
+        let right = self.frame.rect.x1 - 12.0;
+        let rows = chart_legend::rows(
+            self.series.iter().map(|series| series.name.as_str()),
+            left,
+            right,
+        );
+        let top = self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT;
+        Some(Rect::new(left, top, right, top))
+    }
+
     fn geometry(&self) -> (Point, f64) {
         let top = if self.frame.title.is_empty() {
             10.0
@@ -348,6 +363,14 @@ impl PlotMarks for RadarMarks {
     fn series_of(&self, hovered: &Hovered) -> Option<&str> {
         Some(self.series.get(hovered.series)?.id.as_str())
     }
+    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {
+        self.toggles.place(
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str())),
+            self.legend_area(),
+        );
+    }
 
     #[allow(
         clippy::too_many_lines,
@@ -471,13 +494,6 @@ impl PlotMarks for RadarMarks {
             }
         }
         if self.style.legend.visible {
-            let rows = chart_legend::rows(
-                self.series.iter().map(|series| series.name.as_str()),
-                self.frame.rect.x0 + 12.0,
-                self.frame.rect.x1 - 12.0,
-            );
-            let top =
-                self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT;
             self.toggles.paint(
                 scene,
                 transform,
@@ -486,15 +502,7 @@ impl PlotMarks for RadarMarks {
                 self.series
                     .iter()
                     .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
-                Rect::new(
-                    self.frame.rect.x0 + 12.0,
-                    top,
-                    self.frame.rect.x1 - 12.0,
-                    top,
-                ),
             );
-        } else {
-            self.toggles.clear_hits();
         }
         if let Some(hovered) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(axis)) =

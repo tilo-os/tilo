@@ -18,15 +18,10 @@ pub enum ApplicationFocusRestore {
     Application,
 }
 
-/// The application-owned presentation of a widget below a component's root:
-/// which item is open, what is expanded, where the caret was. A root that
-/// hosts the widget (a framework app's root over its surface) saves and
-/// restores it as its own [`AppWidget`](crate::widget::AppWidget) view, so a
-/// reopened window shows what it showed.
+/// The application-owned presentation of a widget below a component's root: which item is open, what is
+/// expanded, where the caret was.
 pub trait ApplicationViewState {
     /// Capture the presentation to save with the window.
-    /// # Errors
-    /// Rejects an invalid contribution before anything is saved.
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError>;
 
     /// Prepare the saved presentation `local` against the latest record.
@@ -39,8 +34,6 @@ pub trait ApplicationViewState {
     ) -> Result<ApplicationFocusRestore, ThawError>;
 
     /// Finish after the ordinary view restored, before the first frame.
-    /// # Errors
-    /// Rejects a prepared plan without publishing a partial view.
     fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
         Ok(())
     }
@@ -195,8 +188,6 @@ impl InstanceViewStore {
         self
     }
 
-    /// The explicit profile namespace these views are bound to; equal to the
-    /// record owner's canonical namespace for the same profile.
     fn namespace(&self) -> String {
         match &self.portable {
             Some(cache) => crate::record::portable_namespace(cache),
@@ -235,9 +226,6 @@ impl InstanceViewStore {
         }
         Ok(())
     }
-    /// # Errors
-    /// Reports I/O, malformed/versioned envelopes, invalid geometry and foreign bindings.
-    /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
         if self.ephemeral {
             return Ok(None);
@@ -261,16 +249,12 @@ impl InstanceViewStore {
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
     }
-    /// # Errors
-    /// Refuses invalid/foreign envelopes before replacing the stored View,
-    /// and reports a replacement the store failed to commit. A store waiting
-    /// on its host to commit is not a failure.
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.save_landing(instance).map(drop)
     }
 
-    /// [`Self::save`], and the write a durable store is committing: `None`
-    /// where nothing waits on a commit (an ephemeral or portable View).
+    /// [`Self::save`], and the write a durable store is committing: `None` where nothing waits on a
+    /// commit (an ephemeral or portable View).
     pub(crate) fn save_landing(
         &self,
         instance: &SavedInstanceView,
@@ -293,7 +277,7 @@ impl InstanceViewStore {
             .store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
-        // Never waits on the frame loop: there the store commits on its own
+        // Never waits on the frame loop: there the store commits on its
         // thread, and a later read already sees the saved View.
         match self.store.flush_where_allowed(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => {
@@ -305,7 +289,7 @@ impl InstanceViewStore {
 }
 
 impl crate::launch::LaunchError {
-    /// Whether the launch stopped only because the store's own thread is
+    /// Whether the launch stopped only because the store thread is
     /// still opening a document for a thread that may not wait on the disk
     /// ([`crate::record::RecordOpenError::Opening`]): asked again once the
     /// store wakes the caller, it goes on. Not a failure to show.

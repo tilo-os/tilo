@@ -1,9 +1,6 @@
-//! Screen composition. Each `fn` here takes the immutable [`TubeModel`] (in a
-//! [`Ui`] context) and returns a widget subtree built from the toolkit's
-//! semantic widgets: media cards in media grids, sections, forms, buttons
-//! with roles. There is no per-screen state: navigation rebuilds the screen
-//! from the model, so these functions are pure views. The window shell (the
-//! navigation rail, the header row and its actions) lives in [`crate::app`].
+//! Screen composition. Each `fn` here takes the immutable [`TubeModel`] (in a [`Ui`] context) and
+//! returns a widget subtree built from the toolkit's semantic widgets: media cards in media grids,
+//! sections, forms, buttons with roles.
 
 use std::sync::{Arc, Mutex};
 
@@ -36,27 +33,17 @@ use ui::tilo_resource::{Binds, Edit, Invoke};
 /// title and actions still show below it.
 const PLAYER_VH_FRAC: f64 = 0.65;
 
-/// Everything a screen reads: the model, the theme it is built for, the
-/// action queue its controls write to, and the image store.
 #[derive(Clone, Copy)]
 pub struct Ui<'a> {
     pub model: &'a TubeModel,
     pub theme: &'a Theme,
     pub bus: &'a ActionBus,
-    /// What the controls are bound to: the library's published actions and
-    /// Tube's effects. `None` before the framework attaches, when the
-    /// controls are left unbound.
     pub actions: Option<&'a Actions<Library>>,
     pub imgs: Imgs<'a>,
-    /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
-    /// When the videos a screen waits for were first waited for.
     pub waiting: &'a Waiting,
 }
 
-/// When the videos the screens wait for were first waited for, kept across
-/// the rebuilds of the screens meanwhile: their placeholders step on from
-/// then, not from each rebuild.
 #[derive(Debug, Default)]
 pub struct Waiting {
     since: std::cell::Cell<Option<ui::time::Instant>>,
@@ -64,19 +51,16 @@ pub struct Waiting {
 }
 
 impl Waiting {
-    /// A build of the screen starts.
     pub fn begin_build(&self) {
         self.shown.set(false);
     }
 
-    /// The build finished: when it waited for nothing, the wait is over.
     pub fn end_build(&self) {
         if !self.shown.get() {
             self.since.set(None);
         }
     }
 
-    /// The build shows a placeholder: since when it has.
     fn since(&self) -> ui::time::Instant {
         self.shown.set(true);
         self.since.get().unwrap_or_else(|| {
@@ -94,8 +78,6 @@ impl Ui<'_> {
         move || action::push(&bus, action.clone())
     }
 
-    /// `control`, pressed as the published `effect`; before the framework
-    /// attaches, a press publishes its own effect and asks for it on the bus.
     fn effect<C: Press>(&self, control: C, effect: &TubeEffect) -> C {
         match self.actions {
             Some(actions) => actions.bind_effect_invocation(control, effect),
@@ -103,7 +85,6 @@ impl Ui<'_> {
         }
     }
 
-    /// `control`, committing its value through `effect`.
     fn bind_effect<I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -115,8 +96,6 @@ impl Ui<'_> {
         }
     }
 
-    /// `control`, pressed as the library edit `edit`; before the framework
-    /// attaches, a press publishes its own effect and asks for the edit.
     fn edit<C: Press>(&self, control: C, edit: &Edit<Library>) -> C {
         match (self.actions, Invoke::edit(edit)) {
             (Some(actions), Ok(invoke)) => actions.bind_invocation(control, invoke),
@@ -125,8 +104,6 @@ impl Ui<'_> {
     }
 }
 
-/// A control a screen presses: bound to what Tube publishes, or publishing
-/// its press as its own effect.
 trait Press: ActionControl<()> {
     fn own_effect(self, press: impl FnMut() + 'static) -> Self;
 }
@@ -155,20 +132,14 @@ impl Press for Chip {
     }
 }
 
-// ---------------------------------------------------------------------------
-// shared pieces
-// ---------------------------------------------------------------------------
-
 fn text(s: &str, role: TextRole) -> Text {
     Text::new(s).with_role(role)
 }
 
-/// A vertical stack as tall as its content, with no inset of its own.
 fn stack() -> Column {
     Column::new().with_no_padding().with_intrinsic_height()
 }
 
-/// `child` taking the room its row has left.
 fn grow(child: impl ui::widget::Widget + 'static) -> Container {
     Container::new()
         .with_no_padding()
@@ -176,7 +147,6 @@ fn grow(child: impl ui::widget::Widget + 'static) -> Container {
         .with_child(Box::new(child))
 }
 
-/// A vertical page: groups `rhythm.group` apart inside the page gutter.
 fn page(children: Vec<Element>) -> Scrollable {
     let mut col = Column::new()
         .with_intrinsic_height()
@@ -189,8 +159,6 @@ fn page(children: Vec<Element>) -> Scrollable {
         .with_child(Box::new(col))
 }
 
-/// Art for a card: the image from the store when there is one, the toolkit's
-/// generated placeholder otherwise (offline, `--shots`, no thumbnail).
 fn art(imgs: Imgs<'_>, url: &str) -> MediaSource {
     match imgs.store_handle() {
         Some(store) if !url.is_empty() => MediaSource::Url {
@@ -201,7 +169,6 @@ fn art(imgs: Imgs<'_>, url: &str) -> MediaSource {
     }
 }
 
-/// A creator's avatar: the picture from the store, initials until it lands.
 fn channel_avatar(ui: Ui<'_>, channel_id: &str, name: &str, size: AvatarSize) -> Avatar {
     let url = ui
         .model
@@ -215,7 +182,6 @@ fn channel_avatar(ui: Ui<'_>, channel_id: &str, name: &str, size: AvatarSize) ->
     }
 }
 
-/// "1.2M views, 3 days ago": the reach and age of a video as one phrase.
 fn views_and_age(views: u64, published: &str) -> String {
     let published = published.trim();
     match (views > 0, published.is_empty()) {
@@ -229,9 +195,6 @@ fn views_and_age(views: u64, published: &str) -> String {
     }
 }
 
-/// What a video row says about its audience: "1.2K watching" for a live
-/// stream, else its views and age. Listings name no viewer count for a live
-/// stream (it arrives as 0), so then it says nothing rather than "0 watching".
 fn reach(video: &Video) -> String {
     match (video.live, video.views) {
         (true, 0) => String::new(),
@@ -240,7 +203,6 @@ fn reach(video: &Video) -> String {
     }
 }
 
-/// "12K subscribers", or `None` when the count is unknown.
 fn subscribers(count: u64) -> Option<String> {
     (count > 0).then(|| {
         t_args(
@@ -250,15 +212,10 @@ fn subscribers(count: u64) -> Option<String> {
     })
 }
 
-/// One video as a media card: thumbnail, title, creator, reach and age.
 fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     video_card_for(ui, v, false)
 }
 
-/// [`video_card`], with the second line saying where the video was left
-/// instead of its reach: on the history page the question is "how much of
-/// this have I seen", not "how many people have seen it". A card shows two
-/// lines, so this is a choice rather than an addition.
 fn history_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     video_card_for(ui, v, true)
 }
@@ -286,9 +243,6 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
     {
         card = card.meta_mark(Icon::CircleCheck);
     }
-    // Where the person left this video, when the page is the history: a
-    // video left half way says so, so half-watched is never mistaken for
-    // watched.
     let resume = resume_line
         .then(|| ui.model.resume_at_ms(&v.id))
         .flatten()
@@ -321,9 +275,6 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
     )
 }
 
-/// The grid's columns at the page's width: how many cards fit, and how wide
-/// each is. Every grid of the app shares them, so a card is the same size on
-/// every page.
 fn grid_columns(ui: Ui<'_>) -> (usize, f64) {
     let theme = ui.theme;
     let gap = f64::from(theme.tokens.spacing.rhythm.section);
@@ -335,18 +286,11 @@ fn grid_columns(ui: Ui<'_>) -> (usize, f64) {
     (columns, card_column_width(width, columns, gap))
 }
 
-/// Videos as media cards. A grid shorter than one row keeps the card size of
-/// a full one instead of stretching its few cards across the page.
 fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> Element {
     let cards: Vec<MediaCard> = videos.into_iter().map(|v| video_card(ui, v)).collect();
-    // The shared grid chooses tracks from the full page width even when some
-    // are empty. Shrinking its parent would make it choose fewer, wider tracks.
     Box::new(MediaGrid::new(cards))
 }
 
-/// The videos on their way: two rows of the framework's placeholders in the
-/// grid's own columns, each as tall as a card with its two title lines and
-/// meta, so the arriving cards replace them without moving anything.
 fn skeleton_grid(ui: Ui<'_>) -> Column {
     let theme = ui.theme;
     let since = ui.waiting.since();
@@ -386,12 +330,6 @@ fn search_action() -> ui::tilo_actions::ActionBinding<()> {
     open_search_binding(&SearchRequest::this_app())
 }
 
-// ---------------------------------------------------------------------------
-// location
-// ---------------------------------------------------------------------------
-
-/// The window bar's location for `route`. Pages that title themselves (a
-/// video, a creator, a playlist) leave it empty.
 pub fn title(route: &Route) -> String {
     match route {
         Route::Home => t("tube-nav-home"),
@@ -404,10 +342,6 @@ pub fn title(route: &Route) -> String {
         Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => String::new(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// browse screens
-// ---------------------------------------------------------------------------
 
 pub fn home(ui: Ui<'_>) -> Scrollable {
     let model = ui.model;
@@ -437,8 +371,6 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
     page(vec![body])
 }
 
-/// Home when the device is online but no source answered: the cause in the
-/// person's words, and what a source answered behind "Details".
 fn sources_unreached_state(why: &crate::api::Unreached) -> EmptyState {
     use crate::api::Unreached;
     let state = EmptyState::new(t("tube-unreached-title")).with_icon(Icon::TriangleAlert);
@@ -455,11 +387,7 @@ pub fn trending(ui: Ui<'_>) -> Scrollable {
     let mut videos: Vec<&Video> = ui.model.videos.iter().collect();
     videos.sort_by_key(|v| std::cmp::Reverse(v.views));
     let body: Element = if videos.is_empty() {
-        Box::new(
-            EmptyState::new(t("tube-trending-empty-title"))
-                .with_icon(Icon::Flame)
-                .with_message(t("tube-trending-empty-message")),
-        )
+        Box::new(EmptyState::new(t("tube-trending-empty-title")).with_icon(Icon::Flame))
     } else {
         video_grid(ui, videos)
     };
@@ -475,8 +403,6 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
             continue;
         };
         any = true;
-        // A tile as wide as a hero avatar: the creator's picture over their
-        // name, both centred.
         creators = creators.push(Box::new(
             Container::new()
                 .with_width(AvatarSize::Hero.side(ui.theme) as f32)
@@ -507,11 +433,7 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
     }
     let feed = model.subscription_feed();
     let latest: Element = if feed.is_empty() {
-        Box::new(
-            EmptyState::new(t("tube-subscriptions-empty-title"))
-                .with_icon(Icon::Bell)
-                .with_message(t("tube-subscriptions-empty-message")),
-        )
+        Box::new(EmptyState::new(t("tube-subscriptions-empty-title")).with_icon(Icon::Bell))
     } else {
         Box::new(
             Section::new(vec![video_grid(ui, feed)])
@@ -537,9 +459,7 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
     let videos = model.history_videos();
     if videos.is_empty() {
         children.push(Box::new(
-            EmptyState::new(t("tube-history-empty-title"))
-                .with_icon(Icon::History)
-                .with_message(t("tube-history-empty-message")),
+            EmptyState::new(t("tube-history-empty-title")).with_icon(Icon::History),
         ));
     } else {
         children.push(Box::new(MediaGrid::new(
@@ -549,8 +469,6 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
     page(children)
 }
 
-/// The shared queue: membership syncs with collaborators, while each device
-/// keeps its own playback order.
 pub fn queue(ui: Ui<'_>) -> Scrollable {
     let model = ui.model;
     let videos: Vec<&Video> = model
@@ -603,7 +521,6 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
         .collect();
 
     let rhythm = &ui.theme.tokens.spacing.rhythm;
-    // The facts read as one block; the action stands a section step below.
     let mut info = stack().with_gap(rhythm.section).push(Box::new(
         stack()
             .with_gap(rhythm.tight)
@@ -636,8 +553,6 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
             ),
         ));
     }
-    // The cover shows once there is real art for it; a generated placeholder
-    // beside the title would only repeat it.
     let mut header = Row::new()
         .no_wrap()
         .align_start()
@@ -749,12 +664,6 @@ fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
     ui.edit(button, &edit)
 }
 
-// ---------------------------------------------------------------------------
-// watch page
-// ---------------------------------------------------------------------------
-
-/// The watch page: the player, then the video's details beside "Up next" on
-/// a wide window (stacked under them on a narrow one).
 pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlayer) -> Scrollable {
     let model = ui.model;
     let theme = ui.theme;
@@ -767,8 +676,6 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
 
     prepare_player(ui, v, &player);
 
-    // The player is sized by height (more picture, less letterbox), capped so
-    // the title still shows below it, and centred in the column.
     let player_w = (content_h * PLAYER_VH_FRAC * 16.0 / 9.0)
         .min(content_w)
         .max(1.0);
@@ -831,11 +738,8 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
         )
     };
 
-    // The player sits under the header row, whose Back returns to the page
-    // this one was opened from; the details below it stand in the gutter.
     let mut content = stack().with_gap(theme.tokens.spacing.s0);
     if v.plays_only_in_app() {
-        // Said where the picture would play, not left as a still poster.
         content = content.push(Box::new(Banner::info(t("tube-live-in-app"))));
     }
     if let Some(unplayable) = model.unplayable(&v.id) {
@@ -847,8 +751,6 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
     Scrollable::new_vertical().with_child(Box::new(content))
 }
 
-/// Why the open video is not playing, in plain words, with `YouTube`'s own
-/// reason when it gave one, and a way to ask again.
 fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banner {
     let message = match &unplayable.said {
         Some(said) => t_args(
@@ -866,8 +768,6 @@ fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banne
         )
 }
 
-/// Hand the shared player this video's `SponsorBlock` segments, the quality
-/// choice and, inside a segment the person skips by hand, the Skip command.
 fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     let model = ui.model;
     let duration = v.duration.max(1) as f32;
@@ -894,8 +794,6 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     set_skip_setting(model, v, &mut player);
 }
 
-/// The player's resolution menu: the qualities on offer, and what the stream
-/// actually is when that is not what was asked for.
 fn set_quality_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
     use ui::widget::video_player::PlayerSetting;
     let qualities: Vec<String> = crate::app::QUALITIES
@@ -909,8 +807,6 @@ fn set_quality_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) 
     player.set_setting(PlayerSetting::choice(
         "resolution",
         Icon::Monitor,
-        // What the stream actually is, when that is not what was asked for:
-        // a choice that silently serves something else is the defect.
         &if model.stream_quality.trim().is_empty() {
             t("tube-quality")
         } else {
@@ -925,7 +821,6 @@ fn set_quality_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) 
     ));
 }
 
-/// The player's playback-speed menu, set to the person's chosen speed.
 fn set_speed_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
     use ui::widget::video_player::PlayerSetting;
     let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
@@ -946,11 +841,8 @@ fn set_speed_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
     ));
 }
 
-/// The player's caption-track menu: what this video offers, plus Off.
 fn set_captions_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer) {
     use ui::widget::video_player::PlayerSetting;
-    // Captions: what this video offers, plus Off. The label says what the
-    // choice is doing: off, on, or why it cannot be on.
     let mut captions: Vec<String> = vec![t("tube-captions-off")];
     captions.extend(model.caption_tracks.iter().map(|track| {
         if track.automatic {
@@ -986,8 +878,6 @@ fn set_captions_setting(model: &TubeModel, player: &mut ui::widget::VideoPlayer)
     ));
 }
 
-/// The player's Skip command, present only inside a segment the person skips
-/// by hand.
 fn set_skip_setting(model: &TubeModel, v: &Video, player: &mut ui::widget::VideoPlayer) {
     use ui::widget::video_player::PlayerSetting;
     let manual = v
@@ -1017,9 +907,6 @@ pub const SPEED_SETTING: &str = "playback-speed";
 /// The player's caption-track menu.
 pub const CAPTIONS_SETTING: &str = "captions";
 
-/// A `SponsorBlock` category's colour on the timeline and in Settings: one
-/// series of the theme's presence palette per category, so every category
-/// stays distinct and every theme keeps them legible.
 pub fn category_colour(theme: &Theme, category: Category) -> vello::peniko::Color {
     let index = Category::ALL
         .iter()
@@ -1045,8 +932,6 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     if !v.published.trim().is_empty() {
         fact(v.published.clone());
     }
-    // Dislikes stand beside the like count on the Like button: with no like
-    // count to read them against, neither shows.
     if model.settings.return_dislike_enabled
         && v.likes > 0
         && let Some(dislikes) = model.dislikes_of(&v.id)
@@ -1083,9 +968,6 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     details.push(Box::new(comments(ui, v)))
 }
 
-/// Like (with the like count), queue and copy link, then playback settings
-/// at the trailing edge. Each is a control with a face, so the row's edges
-/// line up with the title above and with Subscribe below.
 fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
     let model = ui.model;
     let liked = model.is_liked(&v.id);
@@ -1152,7 +1034,6 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         .push(Box::new(settings))
 }
 
-/// The creator's avatar and name (opening the creator) and Subscribe.
 fn creator_row(ui: Ui<'_>, v: &Video) -> Row {
     let model = ui.model;
     let rhythm = &ui.theme.tokens.spacing.rhythm;
@@ -1165,7 +1046,6 @@ fn creator_row(ui: Ui<'_>, v: &Video) -> Row {
     {
         name = name.push(Box::new(text(&subs, TextRole::Caption).dimmed()));
     }
-    // No inset: the avatar stands on the page's leading edge, like the title.
     let creator = Container::new()
         .with_no_padding()
         .with_flex_grow()
@@ -1306,8 +1186,6 @@ fn up_next(ui: Ui<'_>, id: &str) -> Column {
         .push(Box::new(rows))
 }
 
-/// One compact "Up next" row: the thumbnail with its duration, and beside it
-/// the title, the creator and the reach. The whole row opens the video.
 fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
     let rhythm = &ui.theme.tokens.spacing.rhythm;
     let dearrow = ui.model.settings.dearrow_titles_on();
@@ -1358,18 +1236,10 @@ fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
 /// The share of the "Up next" column a row's thumbnail takes.
 const UP_NEXT_THUMB_SHARE: f64 = 0.45;
 
-// ---------------------------------------------------------------------------
-// settings
-// ---------------------------------------------------------------------------
-
-/// A settings row whose switch sits at the trailing edge. A section of
-/// switches holds only switches, so every switch of the page shares that
-/// edge with the choosers of the other sections.
 fn toggle_field(label: &str, toggle: Toggle) -> Field {
     Field::new(label, toggle).with_trailing_control()
 }
 
-/// A switch that sets the preference `flag` through its published effect.
 fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
     ui.bind_effect(
         Toggle::from_state(&ui::LocalState::new(on)).with_id(id),
@@ -1377,8 +1247,6 @@ fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
     )
 }
 
-/// A sentence under a group of settings that the person needs to read the
-/// values right, a related step below the last row.
 fn section_note(ui: Ui<'_>, note: &str) -> Element {
     Box::new(
         Column::new()
@@ -1389,10 +1257,6 @@ fn section_note(ui: Ui<'_>, note: &str) -> Element {
     )
 }
 
-/// The width a chooser takes in a settings row: the comfortable control
-/// measure a form gives a fluid control (sixteen body ems, as `Field`
-/// reserves it), so the choosers of every section share both edges. The
-/// theme has no token for it yet.
 fn chooser_width(theme: &Theme) -> f32 {
     theme.tokens.typography.size(TextRole::Body) * 16.0
 }
@@ -1401,9 +1265,6 @@ pub fn settings(ui: Ui<'_>) -> Scrollable {
     settings_impl(ui, None, None)
 }
 
-/// Settings with the process-local Grayjay device surface. The pairing input
-/// is explicitly external memory, so invite codes never enter Automerge or
-/// collaboration history.
 pub fn settings_with_sync(
     ui: Ui<'_>,
     sync: &crate::sync::SyncView,
@@ -1424,7 +1285,6 @@ fn settings_impl(
         .section(segment_settings(ui))
         .section(dearrow_settings(ui))
         .section(device_sync_settings(ui, sync, pairing_input));
-    // Forms keep to the readable width on the leading edge.
     let column = Column::new().with_intrinsic_height().push(Box::new(
         Container::new()
             .with_no_padding()
@@ -1473,8 +1333,6 @@ fn quality_settings(ui: Ui<'_>) -> FormSection {
         &ui::LocalState::new(quality_label(&s.preferred_quality)),
     )
     .with_id("preferred_quality");
-    // A label no quality shows is passed on as it is, which the effect's
-    // choices refuse.
     let quality = ui.bind_effect(
         quality,
         TubeEffect::SET_PREFERRED_QUALITY.map(|label: String| {
@@ -1489,7 +1347,6 @@ fn quality_settings(ui: Ui<'_>) -> FormSection {
         .field(Field::new(t("tube-preferred-quality"), quality).with_trailing_control())
 }
 
-/// "1080p" → "1080p"; "auto" → "Automatic".
 fn quality_label(q: &str) -> String {
     if q == "auto" {
         t("tube-quality-automatic")
@@ -1514,8 +1371,6 @@ fn sponsorblock_settings(ui: Ui<'_>) -> FormSection {
         .content(section_note(ui, &t("tube-sponsorblock-note")))
 }
 
-/// One row per kind of segment: its timeline colour and name, what it
-/// covers, and what Tube does with it.
 fn segment_settings(ui: Ui<'_>) -> FormSection {
     let s = &ui.model.settings;
     let theme = ui.theme;
@@ -1634,7 +1489,6 @@ fn device_sync_settings(
     let active: Vec<&crate::sync::PeerRecord> =
         state.peers.iter().filter(|peer| peer.is_active()).collect();
 
-    // Where sync stands, and Sync now once there is a device to sync with.
     let mut summary = Row::new()
         .no_wrap()
         .with_gap(rhythm.related)
@@ -1668,15 +1522,11 @@ fn device_sync_settings(
                     .with_enter_submits(true),
             ))
             .push(Box::new(
-                // Pairing reads the invite from the field above: the press
-                // hands it to the published pairing effect.
                 Button::new("grayjay_pair", &t("tube-pair-device"))
                     .on_own_device_effect(ui.push(Action::PairDevice)),
             )),
     ));
 
-    // A device that paired from its side waits until the person compares
-    // its fingerprint with the one Grayjay shows and approves it.
     let pending: Vec<&crate::sync::PeerRecord> = state
         .peers
         .iter()
@@ -1758,7 +1608,6 @@ fn device_sync_settings(
     section
 }
 
-/// The badge for a working device-sync status; `None` while it is unavailable.
 fn sync_status(status: crate::sync::SyncStatus) -> Option<(String, Tone)> {
     match status {
         crate::sync::SyncStatus::Unavailable => None,
@@ -1781,7 +1630,6 @@ fn relative_sync_time(time: i64) -> String {
     )
 }
 
-/// Backend results displayed as the same semantic media cards used by the catalogue.
 pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
     let filters = SearchType::ALL.into_iter().fold(Row::new(), |row, kind| {
         row.push(Box::new(

@@ -1,5 +1,5 @@
-//! Linux input-event codes (`linux/input-event-codes.h`), the key codes the
-//! peer protocol carries on every host.
+//! Linux input-event codes (`linux/input-event-codes.h`), the key codes the peer protocol has on every
+//! host.
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 

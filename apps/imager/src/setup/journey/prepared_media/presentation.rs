@@ -1,5 +1,5 @@
 //! Journey presentation over frontend-owned native preparation workers.
-//! Native preparation payloads have not yet been extracted into the backend.
+
 use super::native_ownership::{FrontendNativeActor as Actor, FrontendNativeCustody};
 use std::sync::Arc;
 
@@ -52,7 +52,6 @@ impl PreparedMedia {
             Err(imager_backend::journey_media::Unsupported.into())
         }
     }
-    /// Amend the authenticated generation using the retained source authority.
     pub(in crate::setup) fn prepare_staging_copy(
         self: &Arc<Self>,
         intent: &imager_backend::setup::migration_intent::MigrationIntent,
@@ -71,7 +70,6 @@ impl PreparedMedia {
         }
     }
 
-    /// Bind selected applications through the native preparation authority.
     pub(in crate::setup) fn prepare_computer_applications(
         self: &Arc<Self>,
         intent: &imager_backend::setup::migration_intent::MigrationIntent,
@@ -100,8 +98,6 @@ impl PreparedMedia {
     pub fn projection(&self) -> serde_json::Value {
         (self.api.projection)(self)
     }
-    /// The package is kept for a different computer and is not a same-computer
-    /// setup the live installer can authenticate during this installation.
     pub fn is_other_device(&self) -> bool {
         self.native_is_other_device()
     }
@@ -126,7 +122,6 @@ impl PreparedMedia {
     ) -> std::io::Result<()> {
         (self.api.validate_for_write)(self, cancel)
     }
-    /// Convert authenticated public preferences without exposing native custody types.
     pub fn install_profile_draft(
         &self,
     ) -> std::io::Result<Option<imager_backend::imager_model::InstallProfile>> {
@@ -134,8 +129,6 @@ impl PreparedMedia {
     }
 }
 
-/// Refresh under native custody before arming a write. Unsupported hosts must
-/// refuse rather than treating the existing artifact as a refreshed generation.
 pub(crate) fn refresh_for_write(
     prepared: &Arc<PreparedMedia>,
     cancel: &std::sync::atomic::AtomicBool,
@@ -151,8 +144,6 @@ pub(crate) fn refresh_for_write(
     }
 }
 
-/// Translate native source-review failures without exposing native error types
-/// to the wizard's portable write callback.
 pub(crate) fn source_review_reason(error: &std::io::Error) -> Option<ReturnReason> {
     #[cfg(target_os = "linux")]
     {
@@ -227,7 +218,6 @@ impl Default for Delivery {
     }
 }
 impl Delivery {
-    /// Continue only with the held native media review, never a reconstructed receipt.
     pub(crate) fn start_awaiting_offline_export_automatic(
         &mut self,
         review: Arc<offline::OfflineMediaReview>,
@@ -588,7 +578,6 @@ impl Delivery {
 pub(in crate::setup) fn observe_read_medium(key: String) {
     super::prepared_media_native::delivery_retirement::observe_read_medium(key);
 }
-/// Retirement is native custody, not a fact reconstructed from a receipt.
 pub(crate) fn pending_target(stable_id: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -605,8 +594,6 @@ pub(crate) fn finish_target(stable_id: &str) -> std::io::Result<()> {
     {
         super::prepared_media_native::finish_target(stable_id)
     }
-    // Without native preparation no target is pending (`pending_target`),
-    // so there is nothing to retire.
     #[cfg(not(target_os = "linux"))]
     {
         let _ = stable_id;
@@ -622,13 +609,10 @@ mod tests;
 pub(crate) use super::prepared_media_native::offline;
 #[cfg(not(target_os = "linux"))]
 pub(crate) mod offline {
-    /// Native media admission is unavailable here. No constructor can mint one.
     pub(crate) struct OfflineMediaReview {
         _private: (),
     }
 }
-/// Exactly the reviewed mail children the preparation seals. Each profile
-/// keeps its private pinned source handles; nothing here reaches public status.
 pub(in crate::setup) struct MailSelection {
     pub profiles: Vec<(
         imager_backend::account_sources::ReviewedThunderbird,
@@ -644,11 +628,7 @@ pub(in crate::setup) struct MediaSelections {
     pub browser: Option<super::browser::SelectedSources>,
     pub sessions: Option<super::service_sessions::SelectedSources>,
     pub mail: Option<MailSelection>,
-    /// This exact package is served to another computer after its first-boot
-    /// identity is approved. The public descriptor is written beside it.
     pub other_device: Option<imager_backend::setup::other_device::HandoffIdentity>,
-    /// Same-computer target whose signed boot policy may receive the
-    /// machine-generated package secret. `None` keeps the deferred journal.
     pub tpm_target: Option<imager_backend::setup::prepared_tpm::TargetAcquisition>,
 }
 pub(in crate::setup) struct PortableAppsSelection {

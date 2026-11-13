@@ -106,7 +106,7 @@ fn two_writers_edits_with_references_merge_in_a_workspace() {
         &meta,
         "Board",
         &root,
-        "say",
+        "say_text",
         json!({"text": "Plan for today"}),
     );
     ada.sync_with(&mut grace);

@@ -69,20 +69,24 @@ use crate::time::Instant;
 ///
 /// [`controls::control_action_bindings`]: crate::widget::controls::control_action_bindings
 pub trait Decorated: Widget {
-    /// The widget this one stands for.
     fn decorated(&self) -> &dyn Widget;
 }
 
-/// A widget as `&dyn Widget`, also one that already is a trait object: a
-/// decorator's inner widget may be either, and its layout walk hands the
-/// inner widget on ([`Widget::for_each_layout_child`]).
+/// A widget as `&dyn Widget`, also one that already is a trait object: a decorator's inner
+/// widget may be either, and its layout walk hands the inner widget on
+/// ([`Widget::for_each_layout_child`]).
 pub trait AsDynWidget {
-    /// This widget as a trait object.
     fn as_dyn_widget(&self) -> &dyn Widget;
+    /// This widget as a mutable trait object.
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget;
 }
 
 impl<T: Widget> AsDynWidget for T {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }
@@ -91,10 +95,18 @@ impl AsDynWidget for dyn Widget {
     fn as_dyn_widget(&self) -> &dyn Widget {
         self
     }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
+        self
+    }
 }
 
 impl AsDynWidget for dyn super::AppWidget {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }
@@ -112,9 +124,6 @@ pub fn register_node<W: Widget + 'static, S: std::hash::BuildHasher>(
     node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
 }
 
-/// Point `node` at `outer` when the inner widget whose address and type are
-/// `inner` registered itself for it: the decorator stands in for its inner
-/// widget.
 fn stand_in(
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
@@ -133,12 +142,6 @@ fn stand_in(
     }
 }
 
-/// Declares [`Decorator`] and its blanket [`Widget`] impl from one list of
-/// forwarded methods, so forwarding a method is one line here rather than
-/// two copies that can drift apart. Each method under `ref` or `mut` becomes
-/// a [`Decorator`] default that forwards to the inner widget and a
-/// [`Widget`] method that calls the decorator's own. Methods that do
-/// anything else are written out under `trait` and `impl`.
 macro_rules! decorator_trait {
     (
         $d:tt
@@ -172,8 +175,6 @@ macro_rules! decorator_trait {
             )*
         }
 
-        /// The widget a decorator stands for: what an inventory walking
-        /// widgets by their children asks it for its own bindings.
         impl<T: Decorator> Decorated for T {
             fn decorated(&self) -> &dyn Widget {
                 self.inner().as_dyn_widget()
@@ -228,10 +229,6 @@ macro_rules! decorator_trait {
             }
         }
 
-        /// [`Widget`] for `$ty`, a toolkit type that
-        /// implements [`concrete::Decorator`]: the blanket impl's methods, written for
-        /// the one type, so they are compiled here and every app links them
-        /// from the shared runtime instead of compiling its own copy.
         macro_rules! concrete_decorator_widget {
             ($d ty:ty) => {
                 const _: () = {
@@ -266,16 +263,11 @@ macro_rules! decorator_trait {
 
 decorator_trait! {
     $
-    /// A widget that extends another by overriding a few [`Widget`] methods and
-    /// forwarding the rest. See the [module docs](self).
     trait {
-        /// The widget this one extends.
         type Inner: Widget + AsDynWidget + ?Sized;
 
-        /// The extended widget.
         fn inner(&self) -> &Self::Inner;
 
-        /// The extended widget, mutably.
         fn inner_mut(&mut self) -> &mut Self::Inner;
 
         #[doc(hidden)]
@@ -283,10 +275,6 @@ decorator_trait! {
             std::any::type_name::<Self>()
         }
 
-        /// The inner widget itself: the decorator's layout node stands for
-        /// it, so a retained layout is checked through the inner widget and
-        /// what it lays out. A decorator that lays out more than its inner
-        /// widget (an overlay it mounts) lists that too.
         fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
             visitor(self.inner().as_dyn_widget());
             true
@@ -296,10 +284,6 @@ decorator_trait! {
         where
             Self: Decorated,
         {
-            // What an inventory walking widgets by their children asks for the
-            // widget this one stands for: its inner is no child of it. A
-            // decorator that keeps its inner out of the tree overrides this to
-            // answer nothing.
             if request.wants::<dyn Decorated>() {
                 request.provide::<dyn Decorated>(self);
                 return;
@@ -332,15 +316,10 @@ decorator_trait! {
             Some(self)
         }
 
-        /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
-        /// (which may add flags of its own), so by default it says
-        /// [`crate::widget::StructureChange::Rebuild`]; one that adds no flags forwards
-        /// its inner widget's change by overriding this.
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             crate::widget::StructureChange::of(Decorator::take_structure_dirty(self))
         }
 
-        /// A decorator composes from its allocation when anything it wraps does.
         fn composition_follows_allocation(&self) -> bool {
             crate::widget::layout::tree_composition_follows_allocation(self.inner())
         }
@@ -351,15 +330,10 @@ decorator_trait! {
             false
         }
 
-        /// Read from this decorator's own node: one that overrides
-        /// `accessibility` may hide (or reveal) what its inner widget reports.
         fn accessibility_hidden(&self) -> bool {
             Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
         }
 
-        /// Not forwarded: a decorator may change what its inner widget
-        /// reports through `accessibility`, so by default the tree reads
-        /// that. One that shares its children overrides both.
         fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
             None
         }
@@ -375,8 +349,6 @@ decorator_trait! {
             })
         }
 
-        /// Rest what this decorator's frame drew, in the children it lays
-        /// out; a decorator that adds mounted children overrides this.
         fn mark_children_drawn(&mut self) {
             crate::widget::defaults::mark_drawn(self.children_mut())
         }
@@ -479,8 +451,6 @@ decorator_trait! {
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
-        /// A decorator stands where its inner widget does, so the column its content is read in
-        /// is the inner widget's: a bar docked under a pane around a page still finds the page.
         fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
@@ -595,8 +565,6 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
-        // Not `expect`: whether clippy sees a call inside this macro's
-        // expansion depends on the features the crate is built with.
         #[allow(
             clippy::disallowed_methods,
             reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
@@ -664,8 +632,6 @@ decorator_trait! {
     }
 }
 
-// The toolkit's decorators that apps box themselves. A type here implements
-// `concrete::Decorator` instead of `Decorator`.
 concrete_decorator_widget!(super::nav_list::NavList);
 concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);

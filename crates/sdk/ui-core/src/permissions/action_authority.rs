@@ -36,14 +36,14 @@ impl ActionAuthoritySampler {
         &self,
         asker: &PermissionContext,
     ) -> Result<PermissionContext, String> {
-        if !asker.standing.bounds.is_empty() {
+        if asker.standing.acting.delegated() {
             return Err("host action authority is not a delegation's".into());
         }
         let person: &UserId = &asker.user;
         let current = (self.sample)()?;
         if current.user != *person
-            || current.standing.person != person.0
-            || !current.standing.bounds.is_empty()
+            || current.standing.person_id() != Some(person.0.as_str())
+            || current.standing.acting.delegated()
             || current.action_authority.is_some()
         {
             return Err("host action authority binding mismatch".into());
@@ -78,12 +78,12 @@ mod tests {
         let own = TreePath::root().app("so.tilo.store").action("buy");
         let authority = || PermissionContext::member_of("room-a", "person-a", Role::Owner);
         let agent = PermissionContext::member_of("room-a", "person-a", Role::Editor);
-        let bounded = agent.clone().with_standing(
-            agent
-                .standing()
-                .clone()
-                .bounded_by(policy::Subject::agent("agent-a"), Vec::new()),
-        );
+        let bounded = agent
+            .clone()
+            .with_standing(agent.standing().clone().acting_as(
+                policy::Actor::Member(policy::MemberId::agent("agent-a")),
+                Vec::new(),
+            ));
         for permissions in [
             bounded,
             PermissionContext::member_of("room-a", "person-b", Role::Editor),

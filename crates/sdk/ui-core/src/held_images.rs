@@ -1,11 +1,7 @@
-//! Pictures an app already holds as data: a contact's photo, artwork a
-//! media file embeds. They load like any other image (decoded off the UI
-//! thread by an [`ImageStore`], cached, a placeholder painted until then),
-//! but nothing is fetched: the store's fetcher reads the bytes the app
-//! registered with [`HeldImages::hold`], and an address no one holds fails.
-//!
-//! [`portrait`] turns any picture a person or a file supplies into the small
-//! square JPEG the toolkit keeps for avatars and covers.
+//! Pictures an app already holds as data: a contact's photo, artwork a media file embeds. They load
+//! like any other image (decoded off the UI thread by an [`ImageStore`], cached, a placeholder painted
+//! until then), but nothing is fetched: the store's fetcher reads the bytes the app registered with
+//! [`HeldImages::hold`], and an address no one holds fails.
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
@@ -15,12 +11,11 @@ use tilo_lock::RwLockRecover as _;
 
 use crate::image_store::{Fetcher, ImageStore};
 
-/// The side, in pixels, of a [`portrait`]: sharp at the largest avatar and
-/// cover sizes on a 2× display, small enough to carry in a record.
+/// The side, in pixels, of a [`portrait`]: sharp at the largest avatar and cover sizes on a 2× display,
+/// small enough to carry in a record.
 pub const PORTRAIT_SIDE: u32 = 192;
 
-/// Encoded pictures by address, shared with the fetcher of every store
-/// [`Self::store`] made.
+/// Encoded pictures by address, shared with the fetcher of every store [`Self::store`] made.
 #[derive(Clone, Default)]
 pub struct HeldImages {
     bytes: Arc<RwLock<HashMap<String, Held>>>,
@@ -40,10 +35,9 @@ impl std::fmt::Debug for HeldImages {
 }
 
 impl HeldImages {
-    /// Hold `encoded` (PNG, JPEG or WebP) and return the address an
-    /// [`ImageStore`] from [`Self::store`] loads it by. The same bytes always
-    /// get the same address, so a picture is decoded once however often it
-    /// is held.
+    /// Hold `encoded` (PNG, JPEG or WebP) and return the address an [`ImageStore`] from [`Self::store`]
+    /// loads it by. The same bytes always get the same address, so a picture is decoded once however
+    /// often it is held.
     pub fn hold(&self, encoded: &[u8]) -> String {
         let address = address("held", encoded);
         self.bytes
@@ -53,9 +47,8 @@ impl HeldImages {
         address
     }
 
-    /// Hold a picture kept as [`picture_text`] (a record field), decoding it
-    /// only when a store loads it, off the UI thread. Empty text holds
-    /// nothing and returns an empty address, which no store loads.
+    /// Hold a picture kept as [`picture_text`] (a record field), decoding it only when a store loads
+    /// it, off the UI thread.
     pub fn hold_text(&self, text: &str) -> String {
         if text.is_empty() {
             return String::new();
@@ -73,8 +66,7 @@ impl HeldImages {
         self.bytes.read_recover().contains_key(address)
     }
 
-    /// Keep only the pictures at `addresses`, so pictures no one shows any
-    /// more are not kept forever.
+    /// Keep only the pictures at `addresses`, so pictures no one shows any more are not kept forever.
     pub fn retain(&self, addresses: &std::collections::HashSet<String>) {
         self.bytes
             .write_recover()
@@ -101,8 +93,8 @@ impl HeldImages {
     }
 }
 
-/// `encoded` (any format the toolkit decodes) as a [`PORTRAIT_SIDE`] square
-/// JPEG, cropped to its centre, or `None` when it does not decode.
+/// `encoded` (any format the toolkit decodes) as a [`PORTRAIT_SIDE`] square JPEG, cropped to its
+/// centre, or `None` when it does not decode.
 #[must_use]
 pub fn portrait(encoded: &[u8]) -> Option<Vec<u8>> {
     let image = image::load_from_memory(encoded).ok()?;
@@ -124,9 +116,8 @@ pub fn portrait(encoded: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
-/// A 2×2 mosaic of up to four pictures, as a [`PORTRAIT_SIDE`] square JPEG:
-/// a playlist's cover from its tracks' artwork. One picture fills the whole
-/// square; two or three repeat to fill the quarters. `None` when none decode.
+/// A 2×2 mosaic of up to four pictures, as a [`PORTRAIT_SIDE`] square JPEG: a playlist's cover from its
+/// tracks' artwork.
 #[must_use]
 pub fn mosaic(pictures: &[&[u8]]) -> Option<Vec<u8>> {
     let half = PORTRAIT_SIDE / 2;
@@ -169,7 +160,6 @@ pub fn mosaic(pictures: &[&[u8]]) -> Option<Vec<u8>> {
     encode_jpeg(&canvas)
 }
 
-/// The address of `data` under `kind`: the same data, the same address.
 fn address(kind: &str, data: &[u8]) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     data.hash(&mut hasher);
@@ -183,8 +173,8 @@ pub fn picture_text(encoded: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(encoded)
 }
 
-/// The picture [`picture_text`] wrote (or any standard or MIME-wrapped
-/// base64, as vCards carry it), or `None` when it is not base64.
+/// The picture [`picture_text`] wrote (or any standard or MIME-wrapped base64, as vCards carry it), or
+/// `None` when it is not base64.
 #[must_use]
 pub fn picture_bytes(text: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
@@ -195,16 +185,9 @@ pub fn picture_bytes(text: &str) -> Option<Vec<u8>> {
         .filter(|bytes| !bytes.is_empty())
 }
 
-/// A cover already decoded (`crate::peniko::ImageData` from an image store or
-/// a media reading) as the small `data:` picture a card draws, or another
-/// process is handed: a `edge` square cut from its centre, JPEG-encoded so it
-/// costs a few kilobytes rather than a cover's own tens. Empty for a picture
-/// that is not straight 8-bit RGBA or that does not encode.
-///
-/// The picture keeps inside [`PICTURE_BUDGET`] even for a cover busy enough to
-/// fill the square with detail: it is cut smaller, and its quality lowered,
-/// until it does, because it rides beside the song a live activity publishes
-/// and that message is bounded.
+/// A cover already decoded (`crate::peniko::ImageData` from an image store or a media reading) as the
+/// small `data:` picture a card draws, or another process is handed: a `edge` square cut from its
+/// centre, JPEG-encoded so it costs a few kilobytes rather than a cover's own tens.
 #[must_use]
 pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
     /// Enough quality for a thumbnail.
@@ -256,20 +239,17 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
     String::new()
 }
 
-/// The most a cover's encoded bytes may cost: a live activity carries the
-/// picture beside the song under a wire bound, and a base64 `data:` picture
-/// takes four thirds of that room.
+/// The most a cover's encoded bytes may cost: a live activity carries the picture beside the song under
+/// a wire bound, and a base64 `data:` picture takes four thirds of that room.
 pub const PICTURE_BUDGET: usize = 6 * 1024;
 
-/// The most a hero picture's encoded bytes may cost: the card shows it at
-/// nine sixteenths of its width, so it is worth more bytes than a cover, and
-/// it goes to a session's own floating layer rather than a shared board.
+/// The most a hero picture's encoded bytes may cost: the card shows it at nine sixteenths of its width,
+/// so it is worth more bytes than a cover, and it goes to a session's own floating layer rather than a
+/// shared board.
 pub const HERO_BUDGET: usize = 96 * 1024;
 
-/// A whole picture as the `data:` picture a card heads itself with, `width`
-/// wide and as tall as the picture's own shape: no ground around it, so what
-/// it caught fills the card. Empty for a picture that does not encode or
-/// whose smallest encoding costs more than [`HERO_BUDGET`].
+/// A whole picture as the `data:` picture a card heads itself with, `width` wide and as tall as the
+/// picture's own shape: no ground around it, so what it caught fills the card.
 #[must_use]
 pub fn hero(picture: &image::RgbaImage, width: u32) -> String {
     if width == 0 || picture.width() == 0 || picture.height() == 0 {
@@ -314,10 +294,8 @@ pub fn hero(picture: &image::RgbaImage, width: u32) -> String {
     String::new()
 }
 
-/// [`mosaic`] for pictures already decoded (covers an image store loaded):
-/// a `side` square of up to four, sampled straight into place, so composing
-/// it costs one pass over its pixels. `None` without a picture in a format
-/// it reads (8-bit RGBA or BGRA).
+/// [`mosaic`] for pictures already decoded (covers an image store loaded): a `side` square of up to
+/// four, sampled straight into place, so composing it costs one pass over its pixels.
 #[must_use]
 pub fn mosaic_of(
     tiles: &[crate::peniko::ImageData],
@@ -348,7 +326,6 @@ pub fn mosaic_of(
             .copied()
             .unwrap_or(first);
         let pixels = tile.data.data();
-        // The tile's centred square, scaled to the quarter.
         let crop = tile.width.min(tile.height);
         let left = tile.width.saturating_sub(crop) / 2;
         let top = tile.height.saturating_sub(crop) / 2;
@@ -526,8 +503,8 @@ mod tests {
         assert_eq!(cover(&wide, 0), "", "a picture with no pixels");
     }
 
-    /// Noise is what costs a JPEG bytes: a cover that fills its square with
-    /// detail is cut down until it fits the budget the song's message has.
+    /// Noise is what costs a JPEG bytes: a cover that fills its square with detail is cut down until it
+    /// fits the budget the song's message has.
     #[test]
     fn a_busy_cover_keeps_inside_the_picture_budget() {
         let mut seed = 0x2545_f491_u32;

@@ -13,7 +13,6 @@ use crate::tokens::TextRole;
 /// composite controls can implement this trait to participate in
 /// [`labeled_field`] without changing their widget tree.
 pub trait FormControl: Widget + Sized {
-    /// Attach the same localization key rendered by the field's visible label.
     #[must_use]
     fn with_form_accessible_name(self, name: &str) -> Self;
 }

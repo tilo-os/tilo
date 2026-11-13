@@ -1,16 +1,7 @@
 //! The `Send + Sync` mailbox between the async power service (which owns the
 //! system-bus connection) and the synchronous compositor loop (which owns the
-//! session-lock state and the notification stack).
-//!
-//! Modelled on the compositor's `NotificationBridge`: cloneable (an `Arc`
-//! bump), lock-guarded vectors, drained each way.
-//!
-//! * **service → compositor** ([`PowerSignal`]): "lock the session", "post
-//!   this battery toast", "we just resumed — reset the idle timer".
-//! * **compositor → service** ([`PowerCommand`]): "suspend now" (the sync
-//!   loop cannot block on a D-Bus round-trip, so it hands the request to the
-//!   async service). Every command also wakes the service
-//!   ([`PowerBridge::command_wake`]), so it acts at once instead of on a tick.
+//! session-lock state and the notification stack): signals one way, commands the
+//! other, each drained per frame.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,8 +11,8 @@ use tokio::sync::Notify;
 use crate::policy::PowerPolicy;
 use tilo_lock::MutexRecover as _;
 
-/// How the battery is running out, for the session to put in the words it
-/// shows the person.
+/// How the battery is running out, for the session to put in the words it shows
+/// the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerNotification {
     /// Charge left, percent.
@@ -32,48 +23,43 @@ pub struct PowerNotification {
     pub suspending: bool,
 }
 
-/// An instruction from the power service to the compositor loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PowerSignal {
-    /// Lock the session (lid/power-key policy resolved to `Lock`).
     Lock,
-    /// logind is about to suspend. The compositor must enter its existing
-    /// lock state and draw that state before acknowledging the sleep delay
-    /// inhibitor; this is distinct from a policy-only lock request.
+    /// logind is about to suspend. The compositor must enter its lock state and
+    /// draw it before acknowledging the sleep delay inhibitor; this is distinct
+    /// from a policy-only lock request.
     PreparingForSleep,
-    /// A compositor-requested suspend could not be started. The compositor
-    /// must cancel any pre-sleep latch it was waiting to prepare; otherwise a
-    /// transient logind/polkit failure would strand the session behind its
-    /// lock screen even though the machine never slept.
+    /// A compositor-requested suspend could not be started, so the compositor must
+    /// cancel any pre-sleep latch it was holding; otherwise a transient logind or
+    /// polkit failure would strand the session behind its lock screen.
     SuspendFailed,
-    /// Post a battery notification.
     Notify(PowerNotification),
-    /// The machine just resumed from sleep — reset the idle timer so it does
-    /// not immediately re-blank/re-suspend on the stale pre-sleep timestamp.
+    /// The machine just resumed: reset the idle timer so it does not immediately
+    /// blank or suspend on the stale pre-sleep timestamp.
     ResumedFromSleep,
     /// power-profiles-daemon changed profile; apply the newly resolved idle
     /// timeout to the live session state machine.
     IdleSuspendChanged(Option<Duration>),
 }
 
-/// A request from the compositor loop to the power service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PowerCommand {
-    /// Suspend the machine via logind: a deliberate request (the session
-    /// menu, the palette) that proceeds whatever holds the machine awake.
+    /// Suspend the machine via logind: a deliberate request (the session menu, the
+    /// palette) that proceeds whatever holds the machine awake.
     Suspend,
-    /// The idle timer ran out and the compositor found no inhibitor. The
-    /// service re-reads other programs' logind locks first, because it only
-    /// polls them every 30 s, and answers [`PowerSignal::SuspendFailed`]
-    /// instead of suspending when one appeared in between.
+    /// The idle timer ran out and the compositor found no inhibitor. The service
+    /// re-reads other programs' logind locks first, because it only polls them
+    /// every 30 s, and answers [`PowerSignal::SuspendFailed`] instead of suspending
+    /// when one appeared in between.
     IdleSuspend,
-    /// The compositor has submitted a frame containing the lock screen. The
-    /// power service may now release its logind sleep delay inhibitor.
+    /// The compositor has submitted a frame containing the lock screen, so the
+    /// power service may release its logind sleep delay inhibitor.
     LockScreenDrawn,
-    /// Settings changed on disk; replace the service's threshold/lid policy.
+    /// Settings changed on disk; replace the service's threshold and lid policy.
     UpdatePolicy(PowerPolicy),
-    /// Switch to the power profile `0` names, one of those
-    /// [`PowerBridge::profiles`] offers.
+    /// Switch to the power profile `0` names, one of those [`PowerBridge::profiles`]
+    /// offers.
     SetProfile(String),
 }
 
@@ -85,24 +71,22 @@ struct BridgeInner {
     active_profile: Option<String>,
     /// The profiles power-profiles-daemon offers, in its order.
     profiles: Vec<String>,
-    /// Whether the machine runs on battery, as the service last saw it;
-    /// `None` before it first looked.
+    /// Whether the machine runs on battery, as the service last saw it; `None`
+    /// before it first looked.
     on_battery: Option<bool>,
 }
 
 /// How the compositor loop is woken when a signal arrives for it.
 pub type SignalWake = Arc<dyn Fn() + Send + Sync>;
 
-/// The shared power mailbox. Clone to hand a handle to each side.
 #[derive(Clone)]
 pub struct PowerBridge {
     inner: Arc<Mutex<BridgeInner>>,
     /// Woken on every command, so the service sleeps until there is one.
     command_wake: Arc<Notify>,
-    /// Wakes the compositor loop on every signal. The loop parks until its
-    /// next deadline or event: a locked, blanked session parks for up to a
-    /// minute, and a signal only queued waited for whatever woke it next (a
-    /// resume applied 16 s late, a sleep delay held to logind's timeout).
+    /// Wakes the compositor loop on every signal: a locked, blanked session parks
+    /// for up to a minute, so a signal that only queued waited for whatever woke it
+    /// next (a resume applied 16 s late, a sleep delay held to logind's timeout).
     signal_wake: Arc<Mutex<Option<SignalWake>>>,
 }
 
@@ -134,8 +118,6 @@ impl PowerBridge {
         *self.signal_wake.lock_recover() = Some(wake);
     }
 
-    // ---- service → compositor ---------------------------------------
-
     /// Push a signal for the compositor loop and wake it to apply it.
     pub fn push_signal(&self, signal: PowerSignal) {
         self.lock().signals.push(signal);
@@ -151,8 +133,8 @@ impl PowerBridge {
     }
 
     /// Record power-profiles-daemon's active profile, read over D-Bus by the
-    /// service, so the compositor resolves the profile's idle-suspend timeout
-    /// on a settings reload without asking the daemon from its frame thread.
+    /// service, so the compositor resolves the profile's idle-suspend timeout on a
+    /// settings reload without asking the daemon from its frame thread.
     pub fn note_active_profile(&self, profile: &str) {
         let mut inner = self.lock();
         if inner.active_profile.as_deref() != Some(profile) {
@@ -160,29 +142,24 @@ impl PowerBridge {
         }
     }
 
-    /// The active power profile the service last observed; `None` before it
-    /// has read one or where power-profiles-daemon is absent.
+    /// The active power profile the service last observed; `None` before it has read
+    /// one or where power-profiles-daemon is absent.
     pub fn active_profile(&self) -> Option<String> {
         self.lock().active_profile.clone()
     }
 
-    /// Record the power profiles power-profiles-daemon offers, in its order,
-    /// so a caller can say which it may switch to without asking the daemon.
+    /// Record the power profiles power-profiles-daemon offers, in its order.
     pub fn note_profiles(&self, profiles: Vec<String>) {
         self.lock().profiles = profiles;
     }
 
-    /// The power profiles the machine offers, in the daemon's order; empty
-    /// where it offers none.
     pub fn profiles(&self) -> Vec<String> {
         self.lock().profiles.clone()
     }
 
-    /// Record whether the machine runs on battery, as the service saw it, so
-    /// the compositor resolves the source's idle-suspend timer on a settings
-    /// reload. Returns whether it changed since the service last looked: the
-    /// first look only notes it (the session started on the timer of the
-    /// source it found).
+    /// Record whether the machine runs on battery and answer whether that changed
+    /// since the service last looked: the first look only notes it, since the
+    /// session started on the timer of the source it found.
     pub fn note_on_battery(&self, on_battery: bool) -> bool {
         let mut inner = self.lock();
         let changed = inner.on_battery.is_some_and(|before| before != on_battery);
@@ -190,13 +167,10 @@ impl PowerBridge {
         changed
     }
 
-    /// Whether the machine runs on battery, as the service last saw it;
-    /// `false` before it has looked.
+    /// Whether the machine runs on battery, as the service last saw it.
     pub fn on_battery(&self) -> bool {
         self.lock().on_battery.unwrap_or(false)
     }
-
-    // ---- compositor → service ---------------------------------------
 
     /// Ask the power service to suspend the machine.
     pub fn request_suspend(&self) {
@@ -224,8 +198,8 @@ impl PowerBridge {
 
     fn push_command(&self, command: PowerCommand) {
         self.lock().commands.push(command);
-        // `notify_one` keeps a permit when the service is busy elsewhere, so a
-        // command pushed between its drain and its next wait is not lost.
+        // `notify_one` keeps a permit when the service is busy elsewhere, so a command
+        // pushed between its drain and its next wait is not lost.
         self.command_wake.notify_one();
     }
 
@@ -240,7 +214,6 @@ impl PowerBridge {
         std::mem::take(&mut self.lock().commands)
     }
 
-    /// Number of pending signals (diagnostics/tests).
     pub fn pending_signals(&self) -> usize {
         self.lock().signals.len()
     }
@@ -352,8 +325,8 @@ mod tests {
             assert_eq!(tokio::time::Instant::now(), started, "no time passed");
             assert_eq!(bridge.drain_commands().len(), 1);
         }
-        // A command pushed while the service is not waiting is kept for its
-        // next wait rather than lost.
+        // A command pushed while the service is not waiting is kept for its next wait
+        // rather than lost.
         compositor.request_suspend();
         tokio::time::timeout(Duration::from_millis(1), wake.notified())
             .await

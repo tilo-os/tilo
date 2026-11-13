@@ -48,6 +48,17 @@ class SocketPaths(unittest.TestCase):
         )
         self.assertEqual(self.audit('fn f() { let s = "UnixStream::connect(p)"; }'), 0)
 
+    def test_a_marked_call_is_found_below_the_comments_above_it(self):
+        self.assertEqual(
+            self.audit(
+                "// A comment above the call, as most files have.\n"
+                "fn f(p: &Path) {\n"
+                "    UnixStream::connect(p); // allow-socket-path: fixed and short\n"
+                "}"
+            ),
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

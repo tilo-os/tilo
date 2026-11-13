@@ -1,9 +1,9 @@
 //! End-to-end tests of the sandboxed engine on real PDFs.
 //!
-//! The fixtures are Typst output (see `examples/gen_fixtures.rs`). Every
-//! test runs against the real helper binary; a host without a pdfium
-//! library skips them with a message rather than failing. The helper runs on
-//! Linux and macOS; `tests/portable.rs` covers the engine every target has.
+//! The fixtures are Typst output (see `examples/gen_fixtures.rs`). Every test
+//! runs against the real helper binary; a host without a pdfium library skips
+//! them rather than failing. `tests/portable.rs` covers the engine every target
+//! has.
 
 #![cfg(unix)]
 #![allow(
@@ -91,7 +91,6 @@ fn squash(s: &str) -> String {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn text_copies_selects_and_searches_in_every_script_and_layout() {
-    // Phase `latin_text_copies_exactly`.
     fn latin_text_copies_exactly() {
         let Some(engine) = engine() else { return };
         let text = page_text(&engine, "latin.pdf");
@@ -100,7 +99,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             "The quick brown fox jumps over the lazy dog. Second paragraph with numbers 1234 and punctuation!"
         );
     }
-    // Phase `ligatures_copy_as_letters_and_select_by_halves`.
     fn ligatures_copy_as_letters_and_select_by_halves() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("ligatures.pdf")).unwrap();
@@ -114,8 +112,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             !all.contains('\u{FB01}') && !all.contains('\u{FB03}'),
             "no presentation forms: {all:?}"
         );
-        // "office": the "ffi" glyph's three letters each get their own box, so a
-        // drag over the word selects exactly it.
         let hit = &layer.search("office", SearchOptions::default())[0];
         let sel = layer.select_range(hit.range.clone());
         assert_eq!(layer.text_for(&sel), "office");
@@ -126,13 +122,10 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             f1.rect.x0 >= o.rect.x0 && f2.rect.x0 > f1.rect.x0,
             "ligature parts advance: {f1:?} {f2:?}"
         );
-        // Dragging from the start of "o" to the middle of the ligature copies
-        // only the letters actually covered.
         let from = Point::new(o.rect.x0 + 0.1, o.rect.center().y);
         let to = Point::new(f2.rect.x1 - 0.1, f2.rect.center().y);
         assert_eq!(layer.text_for(&layer.select_between(from, to)), "off");
     }
-    // Phase `arabic_copies_in_logical_order`.
     fn arabic_copies_in_logical_order() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("arabic.pdf")).unwrap();
@@ -143,7 +136,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             layer.lines().iter().all(|l| l.rtl),
             "lines are right-to-left"
         );
-        // The first word in reading order is the rightmost on the first line.
         let hit = &layer.search("مرحبا", SearchOptions::default())[0];
         let word = hit.rects[0];
         let line = layer.lines()[0].rect;
@@ -152,7 +144,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             "first word sits at the right edge"
         );
     }
-    // Phase `cjk_copies_exactly_and_selects_per_character`.
     fn cjk_copies_exactly_and_selects_per_character() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("cjk.pdf")).unwrap();
@@ -166,7 +157,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
         assert_eq!(hit.range.len(), 2);
         assert_eq!(hit.rects.len(), 1);
     }
-    // Phase `two_columns_read_and_select_column_by_column`.
     fn two_columns_read_and_select_column_by_column() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("columns.pdf")).unwrap();
@@ -183,8 +173,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             "left column before right: {text}"
         );
         assert!(pos("Gamma") < pos("Delta"));
-        // A drag from "Alpha" down to "Beta" (left column) never includes the
-        // right column even though its lines sit between them vertically.
         let alpha = &layer.search("Alpha", SearchOptions::default())[0];
         let beta = &layer.search("column.", SearchOptions::default())[0];
         let a = alpha.rects[0];
@@ -197,7 +185,6 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
         assert!(copied.starts_with("Alpha"), "{copied}");
         assert!(!copied.contains("Gamma"), "{copied}");
     }
-    // Phase `search_finds_hits_across_pages_with_rects`.
     fn search_finds_hits_across_pages_with_rects() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("multipage.pdf")).unwrap();
@@ -214,23 +201,16 @@ fn text_copies_selects_and_searches_in_every_script_and_layout() {
             );
         }
     }
-    // Phase `latin_text_copies_exactly` (defined above).
     latin_text_copies_exactly();
-    // Phase `ligatures_copy_as_letters_and_select_by_halves` (defined above).
     ligatures_copy_as_letters_and_select_by_halves();
-    // Phase `arabic_copies_in_logical_order` (defined above).
     arabic_copies_in_logical_order();
-    // Phase `cjk_copies_exactly_and_selects_per_character` (defined above).
     cjk_copies_exactly_and_selects_per_character();
-    // Phase `two_columns_read_and_select_column_by_column` (defined above).
     two_columns_read_and_select_column_by_column();
-    // Phase `search_finds_hits_across_pages_with_rects` (defined above).
     search_finds_hits_across_pages_with_rects();
 }
 
 #[test]
 fn outlines_links_and_form_fields_are_read() {
-    // Phase `outline_and_links_resolve`.
     fn outline_and_links_resolve() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("multipage.pdf")).unwrap();
@@ -249,7 +229,6 @@ fn outlines_links_and_form_fields_are_read() {
             "{links:?}"
         );
     }
-    // Phase `internal_and_external_links_resolve_with_their_areas`.
     fn internal_and_external_links_resolve_with_their_areas() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("links.pdf")).unwrap();
@@ -264,7 +243,6 @@ fn outlines_links_and_form_fields_are_read() {
             })
             .expect("an internal link");
         assert_eq!(page, 2, "the appendix is on the third page");
-        // The heading sits part way down its page, in display space (y down).
         let at = at.expect("the destination names a point");
         assert!(at.y > 40.0 && at.y < size.height, "{at:?}");
         let external = links
@@ -275,13 +253,11 @@ fn outlines_links_and_form_fields_are_read() {
             let r = link.rect;
             assert!(r.x0 >= 0.0 && r.x1 <= size.width && r.x0 < r.x1, "{r:?}");
             assert!(r.y0 >= 0.0 && r.y1 <= size.height && r.y0 < r.y1, "{r:?}");
-            // First line of the page, in display space.
             assert!(r.y1 < 60.0, "{r:?}");
         }
         assert!(internal.rect.x1 <= external.rect.x0, "reading order");
         assert!(doc.links(1).unwrap().is_empty());
     }
-    // Phase `form_fields_are_read`.
     fn form_fields_are_read() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("form.pdf")).unwrap();
@@ -315,11 +291,8 @@ fn outlines_links_and_form_fields_are_read() {
             assert_eq!(other, field, "{}", field.name);
         }
     }
-    // Phase `outline_and_links_resolve` (defined above).
     outline_and_links_resolve();
-    // Phase `internal_and_external_links_resolve_with_their_areas` (defined above).
     internal_and_external_links_resolve_with_their_areas();
-    // Phase `form_fields_are_read` (defined above).
     form_fields_are_read();
 }
 
@@ -329,7 +302,6 @@ fn outlines_links_and_form_fields_are_read() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn rendering_is_consistent_across_regions_engines_markup_and_images() {
-    // Phase `render_region_matches_the_full_render`.
     fn render_region_matches_the_full_render() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
@@ -392,7 +364,6 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
             (full.height(), full.width())
         );
     }
-    // Phase `reader_markup_can_be_left_out_of_a_render`.
     fn reader_markup_can_be_left_out_of_a_render() {
         let Some(engine) = engine() else { return };
         let (bytes, _) = annotated_source(&engine);
@@ -419,12 +390,10 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
         };
         assert!(yellow(&with) > 50);
         assert_eq!(yellow(&without), 0, "highlight and notes hidden");
-        // Stamps are page content, not reader markup: still drawn.
         let stamp = Rect::from_xywh(160.0, 100.0, 120.0, 50.0);
         assert!(ink_in(&without, 2.0, stamp) > 200);
         assert_eq!(doc.render(PAGE, &options).unwrap().pixels(), with.pixels());
     }
-    // Phase `images_open_as_one_page_documents`.
     fn images_open_as_one_page_documents() {
         let Some(engine) = engine() else { return };
         let mut png = Vec::new();
@@ -442,7 +411,6 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
             &bitmap.pixels()[(bitmap.width() * 4 * (bitmap.height() / 2) + 200) as usize..][..4];
         assert!(px[0] > 150 && px[1] < 80, "image colour rendered: {px:?}");
     }
-    // Phase `in_process_and_sandboxed_engines_agree`.
     fn in_process_and_sandboxed_engines_agree() {
         let Some(engine) = engine() else { return };
         let local = Engine::in_process().unwrap();
@@ -458,19 +426,14 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
             );
         }
     }
-    // Phase `render_region_matches_the_full_render` (defined above).
     render_region_matches_the_full_render();
-    // Phase `reader_markup_can_be_left_out_of_a_render` (defined above).
     reader_markup_can_be_left_out_of_a_render();
-    // Phase `images_open_as_one_page_documents` (defined above).
     images_open_as_one_page_documents();
-    // Phase `in_process_and_sandboxed_engines_agree` (defined above).
     in_process_and_sandboxed_engines_agree();
 }
 
 #[test]
 fn the_helper_is_confined_and_recovers_from_crashes_and_garbage() {
-    // Phase `the_sandbox_refuses_files_sockets_and_exec`.
     fn the_sandbox_refuses_files_sockets_and_exec() {
         let Some(engine) = engine() else { return };
         assert!(engine.is_sandboxed());
@@ -489,11 +452,9 @@ fn the_helper_is_confined_and_recovers_from_crashes_and_garbage() {
         assert!(!report.inet_socket, "helper opened a network socket");
         assert!(!report.unix_socket, "helper opened a local socket");
         assert!(!report.exec, "helper ran another program");
-        // And it still renders afterwards: the probe did not break the helper.
         let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
         assert!(doc.render(0, &RenderOptions::default()).is_ok());
     }
-    // Phase `a_crashed_helper_is_an_error_and_restarts`.
     fn a_crashed_helper_is_an_error_and_restarts() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("multipage.pdf")).unwrap();
@@ -518,7 +479,6 @@ fn the_helper_is_confined_and_recovers_from_crashes_and_garbage() {
             1
         );
     }
-    // Phase `a_helper_killed_between_requests_is_replaced`.
     fn a_helper_killed_between_requests_is_replaced() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
@@ -534,7 +494,6 @@ fn the_helper_is_confined_and_recovers_from_crashes_and_garbage() {
         assert!(outcomes[1] && outcomes[2], "{outcomes:?}");
         assert_ne!(engine.helper_pid(), Some(pid));
     }
-    // Phase `garbage_is_a_format_error_not_a_crash`.
     fn garbage_is_a_format_error_not_a_crash() {
         let Some(engine) = engine() else { return };
         let err = engine
@@ -543,13 +502,9 @@ fn the_helper_is_confined_and_recovers_from_crashes_and_garbage() {
         assert!(matches!(err, Error::Format(_)), "{err:?}");
         assert!(engine.open_bytes(&fixture("latin.pdf")).is_ok());
     }
-    // Phase `the_sandbox_refuses_files_sockets_and_exec` (defined above).
     the_sandbox_refuses_files_sockets_and_exec();
-    // Phase `a_crashed_helper_is_an_error_and_restarts` (defined above).
     a_crashed_helper_is_an_error_and_restarts();
-    // Phase `a_helper_killed_between_requests_is_replaced` (defined above).
     a_helper_killed_between_requests_is_replaced();
-    // Phase `garbage_is_a_format_error_not_a_crash` (defined above).
     garbage_is_a_format_error_not_a_crash();
 }
 
@@ -569,7 +524,6 @@ fn user_quads(doc: &tilo_pdf::Document, page: usize, needle: &str) -> Vec<Rect> 
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn export_round_trips_edits_forms_and_imported_pages() {
-    // Phase `export_round_trips_annotations_forms_and_page_operations`.
     fn export_round_trips_annotations_forms_and_page_operations() {
         let Some(engine) = engine() else { return };
         let source = fixture("multipage.pdf");
@@ -696,7 +650,6 @@ fn export_round_trips_edits_forms_and_imported_pages() {
             "highlight visible after reload ({yellow} yellow pixels)"
         );
     }
-    // Phase `export_writes_real_form_values_deterministically_across_helpers`.
     fn export_writes_real_form_values_deterministically_across_helpers() {
         let Some(engine) = engine() else { return };
         let source = fixture("form.pdf");
@@ -739,7 +692,6 @@ fn export_round_trips_edits_forms_and_imported_pages() {
         assert!(get("agree").widgets[0].checked);
         assert_eq!(get("colour").value, "Blue");
     }
-    // Phase `export_imports_pages_from_other_documents`.
     fn export_imports_pages_from_other_documents() {
         let Some(engine) = engine() else { return };
         let base = engine.open_bytes(&fixture("latin.pdf")).unwrap();
@@ -759,11 +711,8 @@ fn export_round_trips_edits_forms_and_imported_pages() {
         assert!(squash(reloaded.text(2).unwrap().text()).starts_with("The quick"));
         assert_eq!(reloaded.page(2).unwrap().rotation, Rotation::Cw180);
     }
-    // Phase `export_round_trips_annotations_forms_and_page_operations` (defined above).
     export_round_trips_annotations_forms_and_page_operations();
-    // Phase `export_writes_real_form_values_deterministically_across_helpers` (defined above).
     export_writes_real_form_values_deterministically_across_helpers();
-    // Phase `export_imports_pages_from_other_documents` (defined above).
     export_imports_pages_from_other_documents();
 }
 
@@ -773,7 +722,6 @@ fn export_round_trips_edits_forms_and_imported_pages() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn annotations_draw_their_own_appearance_and_read_back_once() {
-    // Phase `stamps_carry_their_own_appearance`.
     fn stamps_carry_their_own_appearance() {
         let Some(engine) = engine() else { return };
         let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
@@ -826,7 +774,6 @@ fn annotations_draw_their_own_appearance_and_read_back_once() {
             "stamp strokes drawn after reload ({blue} blue pixels)"
         );
     }
-    // Phase `replies_link_to_their_parent_and_come_back_as_a_thread`.
     fn replies_link_to_their_parent_and_come_back_as_a_thread() {
         let Some(engine) = engine() else { return };
         let (bytes, _) = annotated_source(&engine);
@@ -840,7 +787,6 @@ fn annotations_draw_their_own_appearance_and_read_back_once() {
         let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("TiloRef"), "no private marker in the file");
     }
-    // Phase `free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts`.
     fn free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts() {
         let Some(engine) = engine() else { return };
         let (bytes, _) = annotated_source(&engine);
@@ -889,7 +835,6 @@ fn annotations_draw_their_own_appearance_and_read_back_once() {
             assert!(text.contains(family), "{family} embedded");
         }
     }
-    // Phase `adopted_annotations_are_replaced_not_duplicated`.
     fn adopted_annotations_are_replaced_not_duplicated() {
         let Some(engine) = engine() else { return };
         let (bytes, quads) = annotated_source(&engine);
@@ -974,7 +919,6 @@ fn annotations_draw_their_own_appearance_and_read_back_once() {
             markup.len()
         );
     }
-    // Phase `free_text_colour_and_size_read_back`.
     fn free_text_colour_and_size_read_back() {
         let Some(engine) = engine() else { return };
         let (bytes, _) = annotated_source(&engine);
@@ -986,15 +930,10 @@ fn annotations_draw_their_own_appearance_and_read_back_once() {
         assert_eq!(ft.text_color, Some(Rgba::new(200, 0, 0, 255)));
         assert_eq!(ft.contents, "你好，世界 — see page 2");
     }
-    // Phase `stamps_carry_their_own_appearance` (defined above).
     stamps_carry_their_own_appearance();
-    // Phase `replies_link_to_their_parent_and_come_back_as_a_thread` (defined above).
     replies_link_to_their_parent_and_come_back_as_a_thread();
-    // Phase `free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts` (defined above).
     free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts();
-    // Phase `adopted_annotations_are_replaced_not_duplicated` (defined above).
     adopted_annotations_are_replaced_not_duplicated();
-    // Phase `free_text_colour_and_size_read_back` (defined above).
     free_text_colour_and_size_read_back();
 }
 

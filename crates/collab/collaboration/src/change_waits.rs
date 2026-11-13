@@ -77,8 +77,10 @@ fn follow_changes(
                     return;
                 }
                 Err(error) => {
-                    // ignored-failure: a route that does not follow {what} changes nothing for it
-                    tracing::debug!(%error, "collab: this route does not follow {what}");
+                    tilo_failure::ignored!(
+                        "a route that does not follow this change is unchanged by it",
+                        tracing::debug!(%error, "collab: this route does not follow {what}")
+                    );
                     return;
                 }
             }

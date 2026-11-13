@@ -1,40 +1,35 @@
-//! The `Text` surface: how a text is counted, read, cut, cased and matched. One reading serves
-//! every place that answers a `Text` method: the runtime's host calls, the index's `.len()` of a
-//! text column and the identifier patterns search matches.
+//! The `Text` surface: how a text is counted, read, cut, cased and matched. One reading serves every place
+//! that answers a `Text` method: the runtime's host calls, the index's `.len()` of a text column and the
+//! identifier patterns search matches.
 //!
-//! A text is counted in graphemes — what a person sees as one character, so an emoji with its
-//! modifiers or a letter with its accents is one, and cutting a text never splits one in two.
-//! `len`, `find` and `slice` all count that way, so an index from one is an index for the others.
+//! A text is counted in graphemes — what a person sees as one character, so an emoji with its modifiers is
+//! one, and cutting a text never splits one in two. `len`, `find` and `slice` all count that way.
 //!
-//! Casing is Unicode's full mapping (`ß` uppercases to `SS`), not a locale's: the runtime holds
-//! no locale data, and a value is computed where the code runs rather than where it is drawn.
-//! A locale's tailoring (Turkish `ı`) is the platform's formatting to make.
+//! Casing is Unicode's full mapping (`ß` uppercases to `SS`), not a locale's: the runtime holds no locale
+//! data. A locale's tailoring (Turkish `ı`) is the platform's formatting to make.
 
 use unicode_segmentation::UnicodeSegmentation;
 
-/// How many graphemes a text has.
 #[must_use]
 pub fn len(text: &str) -> usize {
     text.graphemes(true).count()
 }
 
-/// How many words a text holds: its runs of non-whitespace, which is how a person counts the
-/// words of what they wrote (`a text of words` is four, and punctuation alone is a word of
-/// its own).
+/// How many words a text holds: its runs of non-whitespace, which is how a person counts the words of what
+/// they wrote (punctuation alone is a word of its own).
 #[must_use]
 pub fn words(text: &str) -> usize {
     text.split_whitespace().count()
 }
 
-/// Where `needle` first stands, counted in graphemes from the start.
 #[must_use]
 pub fn find(text: &str, needle: &str) -> Option<usize> {
     let at = text.find(needle)?;
     Some(text.get(..at).map_or(0, len))
 }
 
-/// The graphemes from `from` to before `to`, counted as [`len`] counts them; a bound past the
-/// end is the end, and `from` past `to` is empty.
+/// The graphemes from `from` to before `to`, counted as [`len`] counts them; a bound past the end is the
+/// end, and `from` past `to` is empty.
 #[must_use]
 pub fn slice(text: &str, from: i64, to: i64) -> String {
     let count = len(text);
@@ -46,19 +41,16 @@ pub fn slice(text: &str, from: i64, to: i64) -> String {
         .collect()
 }
 
-/// The text without the whitespace at either end.
 #[must_use]
 pub fn trim(text: &str) -> &str {
     text.trim()
 }
 
-/// The text in lowercase, by Unicode's full mapping.
 #[must_use]
 pub fn lower(text: &str) -> String {
     text.to_lowercase()
 }
 
-/// The text in uppercase, by Unicode's full mapping.
 #[must_use]
 pub fn upper(text: &str) -> String {
     text.to_uppercase()
@@ -79,8 +71,8 @@ pub fn contains(text: &str, needle: &str) -> bool {
     text.contains(needle)
 }
 
-/// Whether `text` matches `pattern`, in which each `*` stands for any text and every other
-/// character stands for itself. Case-sensitive: a caller that wants case folded folds it first
+/// Whether `text` matches `pattern`, in which each `*` stands for any text and every other character
+/// stands for itself. Case-sensitive: a caller that wants case folded folds it first
 /// ([`identifier::matches`](crate::identifier::matches) does).
 #[must_use]
 pub fn matches(pattern: &str, text: &str) -> bool {
@@ -104,9 +96,8 @@ pub fn matches(pattern: &str, text: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
-/// The text cut at each `sep`. A separator is text, not a pattern; an empty one cuts the text
-/// into its graphemes, there being nothing else to cut it at. A separator at either end leaves
-/// an empty piece (`"a,"` is `["a", ""]`), so no text is lost.
+/// The text cut at each `sep`. A separator is text, not a pattern; an empty one cuts the text into its
+/// graphemes. A separator at either end leaves an empty piece (`"a,"` is `["a", ""]`), so no text is lost.
 #[must_use]
 pub fn split(text: &str, sep: &str) -> Vec<String> {
     if sep.is_empty() {
@@ -115,7 +106,6 @@ pub fn split(text: &str, sep: &str) -> Vec<String> {
     text.split(sep).map(str::to_owned).collect()
 }
 
-/// The pieces as one text, each after the other with `sep` between them.
 #[must_use]
 pub fn join(pieces: &[&str], sep: &str) -> String {
     pieces.join(sep)

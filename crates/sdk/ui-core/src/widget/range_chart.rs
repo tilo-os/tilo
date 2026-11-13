@@ -17,7 +17,6 @@ use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
-/// One interval. Equal start/end values render as milestones.
 #[derive(Clone, Debug)]
 pub struct RangeBar {
     pub id: String,
@@ -105,8 +104,6 @@ pub struct RangeMarks {
     hits: Vec<(String, Rect)>,
 }
 
-/// Intervals on one value axis — a timeline or Gantt chart — with
-/// progress and milestones.
 pub type RangeChart = Plot<RangeMarks>;
 
 impl RangeChart {

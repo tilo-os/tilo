@@ -716,17 +716,19 @@ fn a_busy_broker_queues_the_read_and_never_ends_collaboration() {
     reader.captures.lock().unwrap().committed_busy = true;
     // The reader's wait ends (the read changed); its Open finds the budget held.
     reader.wake_waits();
-    let opens = reader.opens();
+    // The fixture's own record that it answered an Open `Busy` (`queued`, held
+    // until the turn comes) and that the reader's newest request is the `Await`
+    // it waits on: the wake above may produce the Busy Open before the test
+    // looks, and comparing against a count taken after it made this wait
+    // unsatisfiable, since a waiting reader asks nothing more.
     tilo_test_env::wait_until("the reader to wait for its turn", || {
         reader.pump();
         let captures = reader.captures.lock().unwrap();
-        open_count(&captures) > opens && waits(&captures) > 0 && {
-            let last = captures.committed_reads.last();
-            matches!(
-                last,
+        captures.committed_queued
+            && matches!(
+                captures.committed_reads.last(),
                 Some(runtime_collab::committed_document::Request::Await { .. })
             )
-        }
     });
     let busy_opens = reader.opens();
     // Nothing is asked while the turn has not come, however long.

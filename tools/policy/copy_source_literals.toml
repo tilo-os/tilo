@@ -44,16 +44,6 @@ text = "What this holds as typed data: the items of its parts, the newest part f
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
 
 [[allow]]
-file = "crates/session/desktop-surface/src/window.rs"
-text = "See a window this desktop does not run as it shows now: answers with the picture, \\\n         kept as content of the workspace the window stands in."
-reason = "What the window-picture tool answers an agent."
-
-[[allow]]
-file = "crates/session/desktop-surface/src/window.rs"
-text = "What a window this desktop does not run says of itself: its title and the app it \\\n         belongs to."
-reason = "What the window-description tool answers an agent."
-
-[[allow]]
 file = "apps/word-processor/src/semantic_read/action.rs"
 text = "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next"
 reason = "How the Markdown an agent reads is shaped; a description of a tool's answer."
@@ -181,16 +171,6 @@ text = "WireGuard"
 reason = "A protocol's name, spelled the same in every language."
 
 [[allow]]
-file = "crates/session/session/src/pairing.rs"
-text = "the device was not paired: {}"
-reason = "What the pairing door answers a caller, never a window's copy."
-
-[[allow]]
-file = "crates/session/session/src/sync/client/plane.rs"
-text = "the collaboration endpoint: {error}"
-reason = "What the sync client reports of a failed endpoint, never a window's copy."
-
-[[allow]]
 file = "apps/browser/src/service_sessions.rs"
 text = "Slack"
 reason = "A service's name, spelled the same in every language."
@@ -257,3 +237,28 @@ reason = "A sample banner's title in the capture fixtures, which no one reads."
 file = "crates/session/notification-banners/src/fixture.rs"
 text = "Upload {at} finished"
 reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "apps/code-editor/src/app.rs"
+text = "Reloaded main.rs from disk"
+reason = "A sample a capture stages for the window's status shot; no person's window shows it."
+
+[[allow]]
+file = "crates/sdk/tilo-resource/src/read.rs"
+text = "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource."
+reason = "What the read tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-resource/src/resource.rs"
+text = "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more."
+reason = "What the apply tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-resource/src/resource.rs"
+text = "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}]."
+reason = "What the group tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-resource/src/resource/field_edit.rs"
+text = "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \\\"upsert-item\\\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \\\"end\\\" | {after: id} | {before: id}."
+reason = "What the field-edit tool answers an agent, never shown in a window."

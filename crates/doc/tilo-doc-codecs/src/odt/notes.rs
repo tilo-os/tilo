@@ -16,7 +16,6 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> String {
     let kind = note_class(raw).map_or(NoteKind::Footnote, |c| NoteKind::from_str(&c));
     let note_id = doc.insert_note(kind);
 
-    // Each `text:p`/`text:h` in `text:note-body` becomes a paragraph block.
     plain_paragraphs::import(
         raw,
         Some(b"text:note-body"),
@@ -28,7 +27,6 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> String {
     note_id
 }
 
-/// Read the `text:note-class` attribute from a raw `<text:note …>` open tag.
 fn note_class(raw: &str) -> Option<String> {
     let mut reader = Reader::from_str(raw);
     loop {

@@ -1,13 +1,4 @@
-//! The capture button: the shutter, over a camera's picture or on the
-//! desktop's capture bar.
-//!
-//! A ring in media ink around a disc (a photo), a dot in danger red (a
-//! video), a square in danger red inside a red ring (recording), or the
-//! picture-in-picture glyph inside the ring (a live picture in picture).
-//! Over media it is inked from `colors.media`; on chrome
-//! ([`CaptureButtonFace::on_chrome`]) from the ink of the ground it stands
-//! on. It lifts under the pointer, takes your focus ring and names what
-//! pressing it does.
+//! The capture button: the shutter, over a camera's picture or on the desktop's capture bar.
 
 use vello::kurbo::{Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -16,21 +7,15 @@ use crate::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::theme::Theme;
 
-/// What pressing the capture button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CaptureKind {
-    /// Take a photo.
     Photo,
-    /// Start recording a video.
     Video,
-    /// Stop the recording in progress.
     Recording,
-    /// Float what is chosen as a live picture in picture.
     Pip,
 }
 
 impl CaptureKind {
-    /// What the button is called: what pressing it does.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -42,11 +27,9 @@ impl CaptureKind {
     }
 }
 
-/// Immediate-mode capture button.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureButtonFace {
     kind: CaptureKind,
-    /// The camera is live: the ring is full media ink, else dimmed.
     live: bool,
     hovered: bool,
     pressed: bool,
@@ -68,15 +51,12 @@ impl CaptureButtonFace {
         }
     }
 
-    /// The button stands on chrome (the capture bar), not on a picture: its
-    /// ring and disc take the primary ink of the theme it is painted with.
     #[must_use]
     pub fn on_chrome(mut self, on_chrome: bool) -> Self {
         self.on_chrome = on_chrome;
         self
     }
 
-    /// Whether the camera is live; a button over no picture is dimmed.
     #[must_use]
     pub fn live(mut self, live: bool) -> Self {
         self.live = live;
@@ -106,14 +86,12 @@ impl CaptureButtonFace {
         f64::from(theme.tokens.metrics.min_pointer_target) * 2.0
     }
 
-    /// Where the button is when centred on `center`: its hit rect.
     #[must_use]
     pub fn rect(center: Point, theme: &Theme) -> Rect {
         let side = Self::diameter(theme);
         Rect::from_center_size(center, (side, side))
     }
 
-    /// Paint the button centred on `center` and return its hit rect.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, center: Point) -> Rect {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
@@ -138,8 +116,6 @@ impl CaptureButtonFace {
             None,
             &Circle::new(center, radius - ring / 2.0),
         );
-        // The core gives under the pointer: smaller while pressed, a touch
-        // larger while hovered.
         let gap = f64::from(spacing.s1);
         let mut core = radius - ring - gap;
         if self.pressed {
@@ -197,7 +173,6 @@ impl CaptureButtonFace {
         rect
     }
 
-    /// The button's node for assistive technology at `rect`.
     pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Button)

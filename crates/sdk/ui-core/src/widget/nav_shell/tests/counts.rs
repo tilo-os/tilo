@@ -25,7 +25,6 @@ fn places_shell(count: u32) -> NavShell {
         .overview_count(usize::try_from(count).expect("a count that fits"))
 }
 
-/// What the overview's header draws as its count, as a reader hears it.
 fn header_count(h: &FrameHarness) -> Option<String> {
     header_part(h).and_then(|title| title.value)
 }
@@ -52,7 +51,6 @@ fn place_count(h: &FrameHarness, place: &str) -> Option<String> {
     find(&node, place)?.value.clone()
 }
 
-/// The width the overview's title takes, as the row measured it.
 fn header_width(h: &FrameHarness) -> f64 {
     h.root::<NavShell>()
         .part(Part::Title(Column::Overview))
@@ -61,19 +59,16 @@ fn header_width(h: &FrameHarness) -> f64 {
         .expect("the overview's title")
 }
 
-/// A place's count is shown once: the sidebar beside the content shows it, so
-/// the header leaves the number to the place. Put the sidebar away, or give it
-/// a window too narrow to stand beside the content, and the header keeps it.
+/// A place's count is shown once: the sidebar beside the content shows it, so the header leaves
+/// the number to the place.
 #[test]
 fn a_place_and_the_header_beside_it_show_its_count_once() {
-    // A docked, open sidebar shows the count, so the header does not.
     let mut h = harness(places_shell(6), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
     assert_eq!(place_count(&h, "Inbox").as_deref(), Some("6"));
     assert_eq!(header_count(&h), None, "the sidebar beside it says 6");
 
-    // Collapsed, the sidebar shows nothing: the header says how many.
     h.root_mut::<NavShell>().close_sidebar();
     settle(&mut h, 1280, 800);
     assert!(!h.root::<NavShell>().is_sidebar_open());
@@ -83,7 +78,6 @@ fn a_place_and_the_header_beside_it_show_its_count_once() {
         "with the sidebar put away the header is the only place left to say it"
     );
 
-    // Opened again, the place takes it back.
     h.root_mut::<NavShell>().open_sidebar();
     settle(&mut h, 1280, 800);
     assert_eq!(header_count(&h), None);
@@ -101,8 +95,6 @@ fn a_narrow_window_keeps_the_count_in_the_header() {
     assert_eq!(header_count(&h).as_deref(), Some("6"));
 }
 
-/// A rail draws a mark rather than the number, so the header beside it keeps
-/// the number.
 #[test]
 fn a_rail_leaves_the_number_to_the_header() {
     let places = NavList::new(vec![NavSection::untitled(

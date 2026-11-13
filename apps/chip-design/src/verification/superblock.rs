@@ -41,9 +41,8 @@ impl VerificationReceipt {
     }
 
     pub(super) fn validate_superblock(&self) -> Result<(), String> {
-        // This producer emits complete successful observations. Failed producer
-        // diagnostics are not yet a supported shared envelope: their free-form
-        // error may contain private paths and must not be silently discarded.
+        // Failed producer diagnostics are not yet a supported shared envelope: their
+        // free-form error may contain private paths and must not be silently discarded.
         if self.status != ReceiptStatus::Passed
             || self.declared_toolchain_image.is_none()
             || self.failure.is_some()
@@ -163,8 +162,6 @@ impl VerificationReceipt {
             .primary_source_sha256
             .as_ref()
             .ok_or("missing primary sources")?;
-        // Detached receipts declare source identities. Validate their consistency;
-        // accepting them does not authenticate a kernel implementation or run.
         for (name, hash) in primary {
             if self
                 .artifact_sha256

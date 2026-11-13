@@ -423,6 +423,12 @@ impl CertificationProtocol {
     /// workspace it serves: whose devices it queues, and whose root may answer
     /// for them.
     async fn admits(&self, user: [u8; 32]) -> bool {
+        if user == self.identity.user_public_key {
+            return true;
+        }
+        // One answer for who is a member here: each workspace's governance
+        // names its people by their roots, whatever devices of theirs it
+        // lists now, so a member whose browser forgot the site is still one.
         match &self.workspaces {
             Some(workspaces) => {
                 crate::workspace_access::admits_person(
@@ -432,7 +438,7 @@ impl CertificationProtocol {
                 )
                 .await
             }
-            None => user == self.identity.user_public_key,
+            None => false,
         }
     }
 
@@ -446,6 +452,13 @@ impl CertificationProtocol {
         let reply = if self.admits(approval.user_public_key).await {
             self.member_approve(approval, unix_now_ns())
         } else {
+            // Said here as well as to the page: a person who cannot approve
+            // their own device is stuck at the door, and what the page shows
+            // them names none of this.
+            tracing::warn!(
+                person = %hex::encode(approval.user_public_key),
+                "a device approval was refused: the person is in no workspace this host serves"
+            );
             ApproverReply::Refused {
                 reason: "only a member approves devices here".into(),
             }

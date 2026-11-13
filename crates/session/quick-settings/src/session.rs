@@ -52,17 +52,18 @@ pub(crate) const DEVICES: &str = "session:devices";
 pub(crate) const SCREEN: &str = "session:screen";
 /// The session's night light.
 pub(crate) const NIGHT_LIGHT: &str = "session:night-light";
-/// The desk: opening an app, its search.
-pub(crate) const DESK: &str = "desktop:desk";
-/// The desk's chrome: showing the app that plays what plays.
-pub(crate) const CHROME: &str = "desktop:chrome";
+/// The session's desk: the surface over the windows, which the panel opens
+/// the notification centre on and Settings through, and which app a link to
+/// what plays shows. Nothing of it is shown here, so none of its reading is
+/// followed.
+pub(crate) const DESK: &str = "session:desk";
 
 /// Every resource the panel shows or acts on, watched for its whole life.
-/// The desk is here for its search alone: Settings opens through it, and the
-/// app that plays a song opens through the chrome. A resource is opened
-/// before its actions are asked of it, so the screen and the night light are
-/// here even where the panel only presses them or only shows the switch.
-pub(crate) const WATCHED: [&str; 17] = [
+/// The desk is not here: the panel presses its actions and shows none of its
+/// reading, so nothing of it crosses the wire. A resource is opened before
+/// its actions are asked of it, so the screen and the night light are here
+/// even where the panel only presses them or only shows the switch.
+pub(crate) const WATCHED: [&str; 15] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -78,8 +79,6 @@ pub(crate) const WATCHED: [&str; 17] = [
     DEVICES,
     SCREEN,
     NIGHT_LIGHT,
-    DESK,
-    CHROME,
 ];
 
 /// The session's resources as the panel reads and changes them.
@@ -143,14 +142,20 @@ impl Watch {
     }
 
     /// Hand every reading published since the last pass to `land`, in
-    /// resource order. Whether one arrived.
-    pub(crate) fn drain(&self, land: &impl Fn(&'static str, &str)) -> bool {
+    /// resource order. Whether one the panel shows arrived.
+    pub(crate) fn drain(&self, land: &impl Fn(&'static str, &str) -> bool) -> bool {
         let mut arrived = false;
         for (resource, opened) in &self.opened {
             while let Some(reading) = opened.latest() {
-                arrived = true;
                 match reading {
-                    Ok(text) => land(resource, &text),
+                    Ok(text) => arrived |= land(resource, &text),
+                    // A resource no service of this device serves, as a machine
+                    // without a battery has none: the panel shows no part of it
+                    // and says nothing of it. Anything else is a reading that
+                    // should have arrived, and is worth finding in the log.
+                    Err(error) if absent(&error) => {
+                        tracing::debug!(%error, %resource, "this device serves no such resource");
+                    }
                     Err(error) => tracing::warn!(%error, %resource, "the session's reading"),
                 }
             }
@@ -163,17 +168,35 @@ impl Watch {
     ///
     /// # Errors
     ///
-    /// The resource is not published by the session, or the door refused the
-    /// action, with what it said.
+    /// Nothing on this device answers it, or the resource refused, in its own
+    /// words ([`Refusal`]).
     pub(crate) fn invoke(
-        &self,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<(), String> {
-        let Some((_, opened)) = self.opened.iter().find(|(open, _)| *open == resource) else {
-            return Err(format!("the session publishes no {resource}"));
-        };
-        opened.invoke(action, arguments)
+    ) -> Result<(), Refusal> {
+        // The resource is pressed without being followed: the panel shows
+        // nothing of the desk, so none of its reading is carried here.
+        match SessionResource::invoke_without_watching(resource, action, arguments) {
+            Ok(()) => Ok(()),
+            Err(error) if absent(&error) => Err(Refusal::Nothing),
+            Err(error) => Err(Refusal::Said(error)),
+        }
     }
+}
+
+/// Why a press did not reach the device.
+#[derive(Debug)]
+pub(crate) enum Refusal {
+    /// No service of this device serves what the press asked for: the panel
+    /// says so in its own words rather than in the wire's.
+    Nothing,
+    /// The resource answered, and this is what it said.
+    Said(String),
+}
+
+/// Whether `error` says the session serves nothing under the resource: either
+/// from the app's side of the wire, or with the door's own refusal.
+fn absent(error: &str) -> bool {
+    error.starts_with("this session publishes no ") || error.starts_with("No service publishes ")
 }

@@ -6,7 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{Left, Store as _, StoreError, Version, VersionKind};
+use tilolang_runtime::seen::{SeenMark, after_mark};
+use tilolang_runtime::store::{Left, SinceVersions, Store as _, StoreError, Version, VersionKind};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::chunk::ChunkNo;
@@ -43,12 +44,12 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
         let stamp = read
             .as_ref()
             .map(|(stamp, _, _)| stamp.clone())
-            .or_else(|| idx::reflect::step_stamp(&change));
+            .or_else(|| idx::reflect::written_stamp(&change));
         // A change a step took back is no version of what the record holds.
         let counts = !undone.contains(&change.hash().to_string());
         let placed: BTreeMap<String, Left> = read
             .as_ref()
-            .map(|(_, action, _)| idx::reflect::placed_of_action(action))
+            .map(|(_, action, _)| action.placed())
             .unwrap_or_default()
             .into_iter()
             .map(|(item, holder, field, ty)| (item, Left { holder, field, ty }))
@@ -299,6 +300,64 @@ pub(super) fn newest(store: &TiloStore, at: &ResourceRef) -> Result<Option<Versi
     }
     // No index answers yet: the log does.
     Ok(store.versions(at)?.pop())
+}
+
+/// The versions of `at`, oldest first (`Store::versions`), read from the log of the chunk that
+/// holds it: its whole history, which only what shows a record's every change asks for.
+pub(super) fn all(store: &TiloStore, at: &ResourceRef) -> Vec<Version> {
+    logged(store, at, None, usize::MAX).versions
+}
+
+/// The versions of `at` after the mark `mark`, the newest `page` of them, with how many there
+/// are (`Store::versions_since`): what a catch-up reads of a record someone changed, so what
+/// opening a window costs is a page of the record's history whatever its length.
+pub(super) fn since(
+    store: &TiloStore,
+    at: &ResourceRef,
+    mark: Option<&SeenMark>,
+    page: usize,
+) -> SinceVersions {
+    logged(store, at, mark, page)
+}
+
+/// [`since`] as the chunks hold it: the versions of `at` after `mark` in the chunk that routed
+/// it, else in whichever chunk's changes made its versions — a page of them, its count taken
+/// without copying the log.
+fn logged(
+    store: &TiloStore,
+    at: &ResourceRef,
+    mark: Option<&SeenMark>,
+    page: usize,
+) -> SinceVersions {
+    let id = at.id_string();
+    // The chunk a resource is read and written in holds its whole log: reading one page's
+    // history costs that chunk, not the workspace's every version. A resource no chunk that
+    // routed it holds — one the record no longer has — is in whichever chunk's changes made its
+    // versions.
+    let routed: Vec<ChunkNo> = store.held().versions_chunks(at);
+    let chunks: Vec<ChunkNo> = store.held().chunks.numbers().collect();
+    let since = routed
+        .iter()
+        .chain(&chunks)
+        .find_map(|chunk| page_in(store, *chunk, &id, mark, page))
+        .unwrap_or_default();
+    store.count_versions_read(since.versions.len());
+    since
+}
+
+/// A page of the versions of `id` after `mark`, from `chunk` when its log holds any version of
+/// it.
+fn page_in(
+    store: &TiloStore,
+    chunk: ChunkNo,
+    id: &str,
+    mark: Option<&SeenMark>,
+    page: usize,
+) -> Option<SinceVersions> {
+    let held = store.versions_in(chunk);
+    let versions = held.of(id)?;
+    let from = mark.map_or(0, |mark| after_mark(versions, mark));
+    Some(SinceVersions::page(versions, from, page))
 }
 
 /// The newest version of each resource of the document `doc` ([`Inner::newest_page`]), else the

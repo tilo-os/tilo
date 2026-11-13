@@ -584,6 +584,31 @@ fn read_in_full_moves_it_to_the_centre() {
     assert_eq!(rig.history(), ["New mail"]);
 }
 
+/// The centre the panel reads counts what the bar's bell counts: a fresh notification is one the
+/// person has not read, before it is kept, so the panel's row is never "None" while the bell shows
+/// one.
+#[test]
+fn the_centre_the_panel_reads_counts_what_the_bell_counts() {
+    let rig = rig();
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(rig.signals.unread(), 1, "the bell counts it unread");
+    assert_eq!(
+        rig.bridge.borrow().centre().count,
+        1,
+        "the row that opens the centre counts it too, while it is still a banner"
+    );
+
+    rig.desktop.mark_read();
+    rig.step();
+    assert_eq!(
+        rig.bridge.borrow().centre().count,
+        0,
+        "and reads nothing once the person has opened the centre"
+    );
+}
+
 /// Opening the centre is the person reading it: the bar's bell stops counting, and what the centre
 /// keeps stays kept.
 #[test]

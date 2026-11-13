@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::json;
+use tilo_actions::resource::INVALID_ARGUMENTS_TYPE as REFUSED_TYPE;
 use tilo_actions::{ActionKind, ActionRegistry};
 use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
+use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
 };
@@ -32,7 +34,10 @@ fn the_surface_names_a_kind_per_type_and_a_verb_per_action() {
     );
     let increment = &meta.actions[0];
     let counter = &surfaces[0];
+    // By the action's id, the one its changes' claims name: its name is what the door offers
+    // it by, not what a record keeps.
     assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
+    assert!(counter.verb(&increment.name).is_none());
     // The record parameter is the resource itself, so the verb takes none.
     assert!(
         counter
@@ -114,18 +119,213 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
         .iter()
         .find(|surface| surface.kind == action.kind)
         .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+    let verb = surface
+        .verbs
+        .iter()
+        .find(|verb| verb.id == action.action_id)
+        .unwrap_or_else(|| panic!("{} publishes no {}", action.kind, action.action_id));
+    assert_eq!(verb.kind, ActionKind::Undoable);
+    // The arguments the change names are the ones its verb declares: every argument the verb
+    // requires is there, and it names nothing the verb does not know. A text edit is what the
+    // person typed, so the change carries the text itself and its arguments name the field alone.
+    let args = action
+        .args
+        .as_object()
+        .unwrap_or_else(|| panic!("the change's arguments are named: {}", action.args));
     assert_eq!(
-        surface.verb(&action.action_id).map(|verb| verb.0),
-        Some(ActionKind::Undoable),
-        "{} publishes no {}",
-        action.kind,
-        action.action_id
+        args.get("field"),
+        Some(&json!(title)),
+        "the field it changed is the one it names"
     );
+    for param in verb.params.iter().filter(|param| param.required) {
+        assert!(
+            args.contains_key(&param.name),
+            "{} names the `{}` its verb requires: {}",
+            action.action_id,
+            param.name,
+            action.args
+        );
+    }
+    for name in args.keys() {
+        assert!(
+            verb.params.iter().any(|param| param.name == *name),
+            "{} names no argument its verb leaves undeclared: {}",
+            action.action_id,
+            action.args
+        );
+    }
+    // What was typed is the edit the change records, never the text it leaves: the change names
+    // the field, and its edit carries the words.
+    assert!(
+        !args.contains_key("value"),
+        "a keystroke's change names the field it edits: {}",
+        action.args
+    );
+}
+
+/// A package with a note's shape — a title, a body and a flag — the same fields the Notes app
+/// declares; it stands alone so it compiles without another app's records. What it compiles to,
+/// and the planner a surface that only builds its verbs is published with.
+fn note_package() -> (Meta, Arc<dyn Planner>) {
+    const NOTE: &str = r#"app so.tilo.lang.note "Note"
+
+type Note {
+  title: Text
+  body: RichText
+  pinned: Bool = false
+}
+
+root notebook: Note
+
+default view note for Note
+
+view note(n: Note) {
+  page {
+    input(bind: n.title, placeholder: "Title")
+  }
+}
+"#;
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTE, "")]);
+    let meta = packages[0].meta.clone();
+    replica.host.root_of(&meta.app).unwrap();
+    replica.commit();
+    (meta, Arc::new(NoPlanner))
+}
+
+/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
+/// `body`, never the internal ids a record stores them under — so an agent reads the field to
+/// set from the verb itself.
+#[test]
+fn an_edit_verb_names_its_fields_the_app_declares() {
+    let (meta, _) = note_package();
+    let surfaces = package_surfaces(&meta);
+    let note = surfaces
+        .iter()
+        .find(|surface| surface.kind == tilolang_tilo::meta::MetaExt::kind_of(&meta, "Note"))
+        .expect("the note type is a surface");
+    let text = note
+        .verbs
+        .iter()
+        .find(|verb| verb.id == "edit-text")
+        .expect("a note offers edit-text");
+    let field = text
+        .params
+        .iter()
+        .find(|param| param.name == "field")
+        .expect("edit-text takes a field");
+    let choices: Vec<&str> = field.schema["enum"]
+        .as_array()
+        .expect("the field parameter names its choices")
+        .iter()
+        .filter_map(|choice| choice.as_str())
+        .collect();
     assert_eq!(
-        action.args,
-        json!({"field": title, "value": "Groceries"}),
-        "the verb's arguments are the ones it publishes"
+        choices,
+        ["title", "body"],
+        "the fields an agent may set, by the names the app declares"
     );
+    assert!(
+        !choices.contains(&crate::fixtures::field_id(&meta, "Note", "body").as_str()),
+        "never the internal id a record stores the body under"
+    );
+    // The flag verb offers the flag field the same way.
+    let flag = note
+        .verbs
+        .iter()
+        .find(|verb| verb.id == "edit-flag")
+        .expect("a note offers edit-flag");
+    let flag_choices = flag.params[0].schema["enum"]
+        .as_array()
+        .expect("the flag names its choices");
+    assert_eq!(flag_choices, &[json!("pinned")]);
+}
+
+/// `edit-text` takes `body` and writes the note's body: a name the app declares, a control's own
+/// internal id, and a refusal with a sentence for a field the type lacks.
+#[test]
+fn an_edit_verb_takes_a_field_by_the_name_the_app_declares() {
+    let (meta, planner) = note_package();
+    // The verb's own binding takes the name, and the edit reaches the note's body.
+    let note_id = tilolang_tilo::publish::resource_id(APP_NOTE, "anote");
+    let bound = publish_record(
+        &ActionTypes::new(&meta, &planner, &SourceWords),
+        "Note",
+        "anote",
+        "Note",
+    );
+    let edit = bound
+        .actions
+        .iter()
+        .find(|spec| spec.id == "edit-text")
+        .expect("the note's resource offers edit-text");
+    // A field the type lacks is refused by the verb's own build, with a sentence that names
+    // the fields it offers rather than the internal ids.
+    let refused = edit
+        .build_json(
+            &json!({"field": "content", "value": "x"})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .expect("the build encodes a refusal rather than panicking");
+    assert_eq!(
+        refused.type_id, REFUSED_TYPE,
+        "a field the type lacks is refused"
+    );
+    let why = String::from_utf8_lossy(&refused.payload);
+    assert!(
+        why.contains("title") && why.contains("body"),
+        "the refusal names the fields that are offered: {why}"
+    );
+
+    // A bound control's `$edit` hands back the field's internal id: the same verb takes it,
+    // so the control's own edits keep binding. The value is the runtime's rich-text encoding
+    // as text, the single `Text` argument `edit-text` fixes.
+    let rich = json!({"rich": [{"id": "", "kind": "paragraph", "text": "by id",
+                                "marks": [], "attrs": {}, "children": []}]});
+    let by_id = edit
+        .build_json(
+            &json!({
+                "field": crate::fixtures::field_id(&meta, "Note", "body"),
+                "value": rich.to_string(),
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        )
+        .expect("the id binds too");
+    assert_eq!(
+        by_id.type_id, ACTION_TYPE,
+        "an edit by the field's internal id is accepted"
+    );
+
+    // `field: "body"` is accepted: it names a field the verb offers, and the edit is the
+    // note's body, not a field id.
+    let by_name = tilolang_tilo::publish::edit_action(
+        &meta,
+        "Note",
+        note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
+        "body",
+        &json!({"rich": [{"id": "", "kind": "paragraph", "text": "milk and eggs",
+                          "marks": [], "attrs": {}, "children": []}]}),
+    )
+    .expect("`body` names the note's body");
+    assert_eq!(
+        by_name.args["field"],
+        json!(crate::fixtures::field_id(&meta, "Note", "body")),
+        "the name is mapped to the id the record stores it under"
+    );
+}
+
+const APP_NOTE: &str = "so.tilo.lang.note";
+
+/// A planner that plans nothing, for a surface that only builds its verbs.
+struct NoPlanner;
+
+impl Planner for NoPlanner {
+    fn plan(&self, _request: &PlanRequest<'_>) -> Result<DynAction, String> {
+        Err("no plan".into())
+    }
 }
 
 #[test]
@@ -206,7 +406,7 @@ fn a_published_action_builds_the_planned_dyn_action() {
     let increment = resource
         .actions
         .iter()
-        .find(|spec| spec.id == meta.actions[0].id)
+        .find(|spec| spec.id == meta.actions[0].name)
         .unwrap();
     assert_eq!(increment.contract.kind, ActionKind::Undoable);
     let built = increment.build_json(&serde_json::Map::new()).unwrap();
@@ -263,7 +463,7 @@ action attach(b: Board, list: todo.TodoList) {
     let spec = resource
         .actions
         .iter()
-        .find(|spec| spec.id == attach.id)
+        .find(|spec| spec.id == attach.name)
         .unwrap();
     let list = spec
         .params()
@@ -391,7 +591,9 @@ fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
     replica.apply(&finished);
     let due = meta.actions.iter().find(|a| a.name == "due").unwrap();
     assert_eq!(
-        replica.host.availability(&first, &due.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &first), &due.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It is done already".to_owned(),
@@ -405,7 +607,9 @@ fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
     assert!(why.contains("It is done already"), "{why}");
     let open = items[1].clone();
     assert_eq!(
-        replica.host.availability(&open, &due.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &open), &due.name),
         Some(tilo_actions::Availability::Available)
     );
     plan(&mut replica, "due", Some(&open), json!({}))
@@ -489,7 +693,9 @@ fn a_requirement_over_an_unset_option_field_reads_the_field_as_none() {
         .item(&id, task_ty.id.clone())
         .id_string();
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It has no date".to_owned(),
@@ -505,7 +711,9 @@ fn a_requirement_over_an_unset_option_field_reads_the_field_as_none() {
     .unwrap();
     replica.apply(&day);
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Available),
         "a task due by a day has one to clear"
     );
@@ -582,7 +790,9 @@ fn the_tasks_app_says_a_task_with_no_day_has_none_to_clear() {
         .find(|action| action.name == "due_clear")
         .unwrap();
     assert_eq!(
-        replica.host.availability(&item, &clear.id),
+        replica
+            .host
+            .availability(&resource_id(&meta.app, &item), &clear.name),
         Some(tilo_actions::Availability::Unavailable {
             code: "unmet".to_owned(),
             reason: "It has no date".to_owned(),
@@ -641,4 +851,72 @@ fields = [{ name = "name", type = "text" }]
         .map(|field| (field.name.as_str(), field.ty.as_str()))
         .collect();
     assert_eq!(fields, [("file", "Text"), ("fields", "List<FormField>")]);
+}
+
+const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
+
+/// What a window plans is what the workspace must admit: every change an action of the app makes
+/// names a kind and a verb its surface publishes, or the workspace refuses the change and the app
+/// keeps none of it.
+#[test]
+fn the_workspace_admits_what_a_tasks_window_plans() {
+    let (mut replica, packages) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS_SOURCE, TASKS_IDS)],
+    );
+    let meta = packages
+        .iter()
+        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .expect("the tasks package compiles")
+        .meta
+        .clone();
+    let root = replica.host.root_of(&meta.app).unwrap().id_string();
+    replica.commit();
+    collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta]).unwrap());
+    let record = collab_types::Record {
+        room: "workspace",
+        app: &meta.app,
+        record: "r",
+    };
+    let refuse = |replica: &mut Replica, start: &[automerge::ChangeHash]| {
+        let change = replica.doc.save_after(start);
+        collaboration::app_surface::refusal(
+            &record,
+            &collab_types::DocumentMutation::Incremental(change),
+        )
+    };
+    let kinds = package_surfaces(&meta);
+    let new_task = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "new_task")
+        .expect("the tasks publish new_task");
+    let tasks_kind = meta.kind_of("Tasks");
+    assert!(
+        kinds
+            .iter()
+            .find(|surface| surface.kind == tasks_kind)
+            .is_some_and(|surface| surface.verb(&new_task.id).is_some()),
+        "the surface of {tasks_kind} publishes {}",
+        new_task.id
+    );
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: &meta.app,
+            kind: &tasks_kind,
+            action_id: &new_task.id,
+            resource: Some(&root),
+            args: &serde_json::Map::new(),
+            caller: None,
+            from: None,
+        })
+        .unwrap();
+    replica.commit();
+    let start = replica.doc.get_heads();
+    replica.apply(&planned);
+    assert_eq!(refuse(&mut replica, &start), None);
 }

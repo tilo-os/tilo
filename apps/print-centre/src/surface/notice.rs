@@ -1,14 +1,5 @@
-//! How an operation went, said to the system rather than to this window: an
-//! outcome that needs nobody (a printer added, a document sent, a page
-//! scanned or saved) is recorded in the ledger, and one that needs a person
-//! (a failure) waits in Needs you with **Try again**, which asks for the very
-//! work that failed once more: the same effect on the same printer or
-//! document, the same document on the same printer with the same settings,
-//! the same scanner, the same page.
-//!
-//! Nothing here shows a notice of its own: a window says what is running
-//! through [`ui::jobs`], and what happened through
-//! [`ui::attention::publish`].
+//! How an operation went when it is said to the system rather than to this window: a
+//! success is recorded in the ledger, and a failure waits in Needs you with Try again.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,13 +7,10 @@ use std::sync::Arc;
 use super::{PrintCentre, UiCommand, display_name};
 use crate::resource::PrintCentreEffect;
 
-/// The verb a failure's "Try again" carries.
 pub(super) const TRY_AGAIN_ACTION: &str = "print-centre.retry";
-/// The verb a failure that asking again would not change carries: open the
-/// page it happened on.
 pub(super) const SHOW_ACTION: &str = "print-centre.show";
-/// One test at a time: the waiting stack and the ledger are the process's,
-/// so two print-centre tests running at once would see each other's rows.
+/// One test at a time: the waiting stack and the ledger are the process's, so two
+/// print-centre tests running at once would see each other's rows.
 #[cfg(test)]
 pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     use ui::lock::MutexRecover as _;
@@ -30,7 +18,6 @@ pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock_recover()
 }
 
-/// The app, as the system names it when it asks for attention.
 pub(super) const OWNER_APP: &str = "so.tilo.print-centre";
 pub(super) const OWNER_NAME: &str = "Print centre";
 
@@ -44,7 +31,6 @@ pub(super) fn owner() -> ui::attention::Owner {
 pub(super) struct OperationNotice {
     pub(super) text: String,
     pub(super) success: bool,
-    /// The work that failed, for Try again.
     pub(super) retry: Option<Retry>,
 }
 
@@ -75,9 +61,8 @@ impl OperationNotice {
         }
     }
 
-    /// The notice this outcome is to the system: a record of what happened
-    /// when nobody needs to act, an item waiting for a person when somebody
-    /// does.
+    /// The notice this outcome is to the system: a record of what happened when nobody
+    /// needs to act, an item waiting for a person when somebody does.
     fn notice(&self) -> ui::attention::Notice {
         if self.success {
             return ui::attention::Notice::did(owner(), self.text.clone());
@@ -94,26 +79,28 @@ impl OperationNotice {
 /// Work that failed, as Try again asks for it again.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Retry {
-    /// The same effect, on the same printer or document: adding,
-    /// preferring, pausing or resuming a printer, cancelling or retrying a
-    /// document, choosing a document to print.
+    /// The same effect, on the same printer or document: adding, preferring, pausing or
+    /// resuming a printer, cancelling or retrying a document, choosing a document to print.
     Effect(PrintCentreEffect),
-    /// The same document on the same printer, with the same settings.
     Print {
         path: PathBuf,
         printer: String,
         settings: os_actions::printing::PrintSettings,
     },
-    /// A page from the same scanner.
-    Scan { scanner: String },
-    /// The text of the same page.
-    Recognize { page: Arc<[u8]> },
-    /// Saving the same page, or every scanned page as one document.
-    Save { document: bool, page: Arc<[u8]> },
+    Scan {
+        scanner: String,
+    },
+    Recognize {
+        page: Arc<[u8]>,
+    },
+    Save {
+        document: bool,
+        page: Arc<[u8]>,
+    },
 }
 
-/// The job a piece of CUPS work is: what is happening, in the person's
-/// words, and about what.
+/// The job a piece of CUPS work is: what is happening, in the person's words, and about
+/// what.
 pub(super) fn job_for(work: &Work) -> ui::jobs::Running {
     let (title, subject) = match work {
         Work::AddPrinter { name, .. } => ("Adding a printer", display_name(name)),
@@ -178,9 +165,8 @@ impl Work {
 }
 
 impl PrintCentre {
-    /// Tell the system how `notice` went: recorded when nobody needs to act,
-    /// waiting for the person when somebody does — and what that row's Try
-    /// again asks for.
+    /// Tell the system how `notice` went: recorded when nobody needs to act, waiting for
+    /// the person when somebody does — and what that row's Try again asks for.
     pub(super) fn tell(&mut self, notice: OperationNotice) {
         if let ui::attention::Published::Waiting(item) = ui::attention::publish(notice.notice())
             && let Some(retry) = notice.retry
@@ -189,9 +175,8 @@ impl PrintCentre {
         }
     }
 
-    /// Carry out what the person pressed in Needs you: Try again asks for
-    /// the work that failed once more, and anything else opens the queue.
-    /// Returns whether anything was asked of the printer.
+    /// Carry out what the person pressed in Needs you: Try again asks for the work that
+    /// failed once more, and anything else opens the queue.
     pub(super) fn take_attention(&mut self) -> bool {
         let mut asked = false;
         for press in self.needs.take() {
@@ -210,8 +195,7 @@ impl PrintCentre {
         asked
     }
 
-    /// Ask again for the work that failed as `retry` says. Returns whether
-    /// anything was asked.
+    /// Ask again for the work that failed as `retry` says.
     pub(super) fn retry(&mut self, retry: Retry) -> bool {
         let door = self.door();
         let command = match retry {
@@ -268,8 +252,7 @@ impl PrintCentre {
         true
     }
 
-    /// Put the scanned page `page` under review; whether it is still one of
-    /// the document's.
+    /// Put the scanned page `page` under review; whether it is still one of the document's.
     fn select_scan_page(&mut self, page: &Arc<[u8]>) -> bool {
         let Some(index) = self
             .scan
@@ -301,17 +284,15 @@ impl super::Door {
     }
 }
 
-/// Stand-in devices for tests: CUPS, SANE and text recognition answer from
-/// here instead of the machine the test runs on, while one is installed.
+/// Stand-in devices for tests: CUPS, SANE and text recognition answer from here instead of
+/// the machine the test runs on, while one is installed.
 #[cfg(test)]
 pub(super) mod stand_in {
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     pub(in crate::surface) struct Devices {
-        /// Whether what is asked fails.
         pub(in crate::surface) failing: bool,
-        /// What was asked, in order.
         pub(in crate::surface) asked: Vec<String>,
     }
 
@@ -322,8 +303,8 @@ pub(super) mod stand_in {
             const { std::cell::RefCell::new(None) };
     }
 
-    /// Answer every request from this thread's windows from fresh stand-in
-    /// devices, and hand them back.
+    /// Answer every request from this thread's windows from fresh stand-in devices, and
+    /// hand them back.
     pub(in crate::surface) fn install() -> Shared {
         let devices = Shared::default();
         INSTALLED.with(|installed| *installed.borrow_mut() = Some(devices.clone()));

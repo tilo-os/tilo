@@ -7,8 +7,7 @@ use super::*;
 use crate::widget::window_toolbar_row::MIN_LOCATION_PX;
 
 /// A window of one tab names itself in the bar's location slot, and the strip's own "+" stands
-/// beside that name. Neither paints over the other: the title used to start under the control,
-/// so the two strings were drawn on top of each other ("New tab" across "Notes").
+/// beside that name.
 #[test]
 fn a_windows_title_stands_clear_of_the_new_tab_control() {
     use crate::window_toolbar::{ToolbarLocation, WindowToolbar};
@@ -17,8 +16,6 @@ fn a_windows_title_stands_clear_of_the_new_tab_control() {
     for width in [1280.0, 390.0] {
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
-        // An app that declares a location of its own but names nothing yet: the bar fills the
-        // name in from the tab (`show_toolbar_row`), so this is where the window's title stands.
         b.set_toolbar(
             1,
             Some(WindowToolbar {
@@ -87,8 +84,7 @@ fn a_phone_bar_keeps_each_control_in_its_own_place() {
 
 /// A window of several tabs on a phone, as the desk lays one out (its search, the app's History
 /// and the strip's "+" in the same row): every tab stays a tab a person can read and press, the
-/// active one keeps its ×, and the window keeps its maximize and close. The tabs used to be
-/// squeezed to slivers a few pixels wide, their glyphs drawn over each other, with no × at all.
+/// active one keeps its ×, and the window keeps its maximize and close.
 #[test]
 fn a_phone_window_of_several_tabs_keeps_each_tab_and_its_close() {
     let _settled = crate::motion::testing::settled();

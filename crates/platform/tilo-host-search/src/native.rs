@@ -5,10 +5,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-/// The `native` request the runtime answers by opening an entry.
 pub const OPEN: &str = "open";
 
-/// How long the runtime may take to answer.
 const ANSWER: Duration = Duration::from_secs(5);
 
 /// Ask the runtime serving `native_socket` to open `entry`, and wait for its

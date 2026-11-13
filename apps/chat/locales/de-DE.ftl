@@ -6,10 +6,7 @@ chat-person-chat-private = Private Unterhaltung
 # Die Verfasserin oder der Mitglied einer Nachricht, dessen Profilkarte sich öffnet.
 chat-person-card = { $name }, Profil
 chat-person-chat-placeholder = Private Nachricht schreiben
-chat-person-chat-unavailable = Private Unterhaltung nicht möglich. Wähle jemanden in diesem Arbeitsbereich.
 chat-person-chat-empty = Schreib eine Nachricht, bevor du sie sendest.
-chat-person-chat-empty-conversation = Nachrichten hier sehen nur du und diese Person.
-chat-header-search = Suchen
 
 # Kennzeichnung in der `@`-Auswahl für Software statt einer Person, damit auf
 # einen Blick klar ist, wer angesprochen wird.
@@ -65,9 +62,6 @@ chat-call-open = Anrufunterhaltung öffnen
 chat-call-join = Stumm beitreten
 chat-call-leave-action = Anruf verlassen
 chat-call-status = Anrufstatus
-chat-call-select-input = Mikrofon wählen
-chat-call-input = Eingang
-chat-call-input-hint = Eingang aus dem Anrufstatus
 
 # Die Verbindungszeile unter dem Video des Anrufffensters.
 chat-call-connected = Verbunden
@@ -109,7 +103,6 @@ chat-agent-work-step-refused = Abgelehnt: { $target }
 chat-agent-work-step-refused-why = Abgelehnt: { $target }: { $why }
 chat-agent-work-show-details = Aktivität anzeigen
 chat-agent-work-hide-details = Aktivität ausblenden
-chat-agent-recovery = Prüfe die teilweise Antwort, bevor du es erneut versuchst oder um Fortsetzung bittest. Prüfe die Verbindung und die Einstellungen des Anbieters; wiederhole nie Schritte, die schon erledigt oder unbestätigt sind.
 chat-agent-provider-reasoning = Begründung des Anbieters
 chat-agent-show-reasoning = Begründung anzeigen
 chat-agent-hide-reasoning = Begründung ausblenden
@@ -124,7 +117,7 @@ chat-model-stop = Stoppen
 chat-model-retry = Erneut versuchen
 chat-model-continue = Fortsetzen
 chat-model-author = Assistent
-chat-model-attribution = { $model } (Modellausgabe, angefragt von { $person })
+chat-model-attribution = { $model }, angefragt von { $person }
 chat-bot-attribution = { $name } (Bot: { $bot })
 chat-via-attribution = { $name }, über { $service }
 chat-bridge-name = { $service }-Brücke
@@ -139,7 +132,7 @@ chat-thread-replies = { $count ->
     }
 
 chat-context-sharing = Teilt den Live-Kontext von Chat
-chat-context-following = Folgt dem Live-Kontext von Chat. Beenden über die Bedienelemente des Arbeitsbereichs
+chat-context-following = Folgt dem Live-Kontext von Chat
 chat-context-stop = Teilen beenden
 chat-header-call-open = Anruf öffnen
 
@@ -179,7 +172,7 @@ chat-share-loading = Live-Ansicht wird geöffnet …
 chat-share-open-to-see = Öffne es, um es live zu sehen
 chat-share-open = { $title } öffnen, geteilt von { $name }
 chat-share-pick = { $title } teilen
-chat-voice-unavailable = Anrufe können hier nicht starten: Kein Gerät trägt die Anrufe dieses Arbeitsbereichs
+chat-voice-unavailable = Anrufe können in diesem Arbeitsbereich noch nicht starten
 chat-call-not-joined = Tritt zuerst dem Anruf bei.
 
 # „Du“ gehört der lesenden Person; geteilte und alte Namen nennen ihre Person.
@@ -300,7 +293,7 @@ chat-feedback-replay-description = Die Aufzeichnung in { $app } öffnen und Schr
 
 ## Die eigenen Bedienelemente und Bezeichnungen der Unterhaltung
 chat-surface = Chat
-chat-surface-detail = Kanäle im aktuellen Tilo-Arbeitsbereich
+chat-surface-detail = Kanäle in diesem Arbeitsbereich
 chat-messages = Nachrichten
 chat-earlier-arriving = Frühere Nachrichten sind unterwegs
 chat-add-channel = Kanal hinzufügen
@@ -309,6 +302,7 @@ chat-composer = Nachrichtenfeld
 chat-send-message = Nachricht senden
 chat-undo = Rückgängig
 chat-retry = Erneut versuchen
+chat-failure-details = Einzelheiten
 chat-close = Schließen
 # Eine Nachricht, die den Arbeitsbereich nicht erreicht hat; $reason sagt, warum.
 chat-not-sent = Nicht gesendet: { $reason }
@@ -455,3 +449,49 @@ chat-effects-call-status = Anrufstatus
 chat-effects-start-call = Anruf starten
 chat-effects-start-video-call = Videoanruf starten
 chat-effects-select-input = Mikrofon wählen
+
+## What the app is called in a window and in the launcher
+chat-app-title = Chat
+## What the records are called, and the actions on them
+chat-drafts = Chat-Entwürfe
+chat-workspace = Chat
+chat-drafts-start-draft = Entwurf beginnen
+chat-messages-post = Nachricht senden
+chat-workspace-begin-chat = Chat beginnen
+chat-messages-post-file = Datei senden
+chat-messages-share-resource = Live teilen
+chat-messages-share-window = Fenster live teilen
+chat-messages-stop-sharing = Teilen beenden
+chat-messages-set-share-access = Ändern, was ein geteiltes Fenster erlaubt
+chat-messages-share-open = Geteiltes Fenster als offen oder geschlossen markieren
+chat-messages-deliver-message = Nachricht zustellen
+chat-messages-edit-message = Nachricht bearbeiten
+chat-messages-delete-message = Nachricht löschen
+chat-messages-remove-message = Nachricht entfernen
+chat-messages-pin = Nachricht anheften
+chat-messages-retry = Erneut nach einer Antwort fragen
+chat-messages-record-work = Arbeit des Agenten festhalten
+chat-messages-carry-counts = Zählstände der vorigen Teile übernehmen
+chat-messages-stream-output = Antwort beim Eintreffen festhalten
+chat-workspace-introduce = Stell dich vor
+chat-workspace-name-agent = Agenten benennen
+chat-workspace-create-category = Neue Kategorie
+chat-workspace-create-channel = Neuer Kanal
+chat-workspace-create-channel-with-id = Neuer Kanal mit einer ID
+chat-workspace-delete-category = Kategorie löschen
+chat-workspace-move-channel = Kanal verschieben
+chat-workspace-move-category = Kategorie verschieben
+chat-workspace-arrange-channels = Kanäle anordnen
+chat-workspace-set-channel-category = Kanal einordnen
+chat-workspace-rename-channel = Kanal umbenennen
+chat-workspace-set-channel-topic = Kanalthema festlegen
+chat-workspace-archive-channel = Kanal archivieren
+chat-workspace-rename-category = Kategorie umbenennen
+chat-workspace-delete-channel = Kanal löschen
+chat-workspace-report-message = Nachricht melden
+chat-workspace-report-person = Person melden
+chat-workspace-decide-reports = Über eine Meldung entscheiden
+chat-workspace-overturn-decision = Entscheidung aufheben
+chat-workspace-mark-read = Als gelesen markieren
+chat-workspace-submit-feedback = Feedback senden
+chat-workspace-triage = Feedback sichten

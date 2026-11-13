@@ -98,10 +98,6 @@ fn test_results_are_one_item_per_test() {
     assert_eq!(rerun_test("cargo test", "a; rm -rf /"), None);
 }
 
-/// One test runs again as its run ran: with the run's environment,
-/// toolchain and target, so the command is still cargo and only that
-/// target builds; the run's own filters and anything after them are not
-/// repeated.
 #[test]
 fn a_test_reruns_with_its_runs_environment_toolchain_and_target() {
     for (command, rerun) in [
@@ -196,9 +192,6 @@ fn every_run_gets_links_locations_and_errors_without_escapes() {
     assert_eq!(kinds(&found, ItemKind::Error).len(), 1);
 }
 
-/// `tput sgr0` prints `ESC ( B ESC [ m`: the charset designation goes with the
-/// rest of the escapes and leaves no stray `B`, as do the other designations
-/// and the string sequences.
 #[test]
 fn charset_designations_and_string_sequences_leave_no_residue() {
     let sgr0 = "\x1b(B\x1b[m";
@@ -220,8 +213,6 @@ fn charset_designations_and_string_sequences_leave_no_residue() {
     assert_eq!(errors, ["error: disk full"]);
 }
 
-/// "Open the second diagnostic" finds it among a run's items and opens its
-/// file at its line, relative to where the run ran; a link opens as a page.
 #[test]
 fn an_item_shows_its_file_at_its_line_or_its_page() {
     let output = format!(

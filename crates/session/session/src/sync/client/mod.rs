@@ -1515,6 +1515,18 @@ impl Client {
         });
     }
 
+    /// Have this session's live plane lent its own streams' media keys by `lender` in every
+    /// workspace whose keys it may hold none of ([`crate::live::Live::lend_media_keys`]): false when
+    /// it has no plane yet, and nothing was handed over.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_media_keys(&self, lender: Arc<dyn crate::live::MediaKeysLender>) -> bool {
+        let Some(live) = self.hosting.seat.live() else {
+            return false;
+        };
+        live.lend_media_keys(lender);
+        true
+    }
+
     /// Give this session's Nearby Send the fabric it runs on.
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
@@ -1879,9 +1891,12 @@ pub fn configured_hosts() -> Vec<EndpointAddr> {
 /// A configured host, as its JSON address or as a bare endpoint id.
 #[cfg(target_os = "linux")]
 fn host_addr(value: &str) -> Option<EndpointAddr> {
-    serde_json::from_str(value)
-        .ok() // ignored-failure: a host value that is not JSON names no endpoint address here
-        .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+    tilo_failure::ignored!(
+        "a host value that is not JSON names no endpoint address here",
+        serde_json::from_str(value)
+            .ok()
+            .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+    )
 }
 
 /// Who this device's certificate says its person is, and what the device calls itself: the id that

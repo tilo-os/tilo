@@ -1,12 +1,4 @@
 //! Windows Apps is Tilo' compatibility control plane.
-//!
-//! It is intentionally a *manager*, never a second launcher implementation:
-//! the compatibility service decides the actual Wine/UMU/VM invocation.  This
-//! crate renders that decision, exposes an auditable override, and publishes
-//! actions for the system palette.  [`provider::CompatibilityProvider`] is the
-//! only backend seam; its deterministic sample implementation is restricted to
-//! offline screenshots and contract tests. Normal launches use the inherited,
-//! compositor-authenticated compatibility service descriptor.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "app-local rendering geometry and Widget trait signatures"

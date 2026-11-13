@@ -577,7 +577,7 @@ pub struct ContextMenu {
     /// A menu that has settled says so, and the window it floats in stops
     /// asking for frames.
     dirty: bool,
-    /// The send-to box the menu's send row opens in its place, holding the
+    /// The send-to box the menu's send row opens beside it, holding the
     /// sentence typed into the menu and sending it ([`super::SendToBox`]).
     send_to: super::SendToBox,
     /// Where a box opened with no menu around it stands: beside this rect,
@@ -825,8 +825,7 @@ impl ContextMenu {
             self.dirty = true;
         }
         self.layout_at_position();
-        self.send_to
-            .place(self.alone.unwrap_or(self.rect), viewport);
+        self.send_to.place(self.send_to_anchor(), viewport);
     }
 
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
@@ -860,8 +859,7 @@ impl ContextMenu {
             self.dirty = true;
         }
         self.layout_at_position();
-        self.send_to
-            .place(self.alone.unwrap_or(self.rect), Some(viewport));
+        self.send_to.place(self.send_to_anchor(), Some(viewport));
     }
 
     fn has_leading_gutter(&self) -> bool {
@@ -935,11 +933,7 @@ impl ContextMenu {
         // all: a menu narrower than the hint cuts it mid-word, so the hint is
         // measured with the rows.
         if self.query.is_some() {
-            let hint = crate::i18n::I18nManager::lookup_plain(if self.can_ask() {
-                "menu-query-placeholder-ask"
-            } else {
-                "menu-query-placeholder"
-            });
+            let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder");
             let (w, _) = text.measure_style(&hint, None, &style);
             width = width.max(f64::from(w));
         }
@@ -982,7 +976,7 @@ impl ContextMenu {
         self.list.set_header(self.query_height());
         self.list.set_row_height(Some(self.row_height));
         self.list
-            .set_marked(self.submenu.as_ref().and_then(|(row, _)| self.slot(*row)));
+            .set_marked(self.marked_row().and_then(|row| self.slot(row)));
         self.list
             .set_highlight(self.hovered.and_then(|index| self.slot(index)));
         self.place_scroll();
@@ -1124,9 +1118,9 @@ impl ContextMenu {
         self.open
     }
 
-    /// Whether it still has anything to show: its rows, or the send-to box
-    /// that took their place. A host keeps it while this holds and drops it
-    /// after, so choosing the send row outlives the menu it closed.
+    /// Whether it still has anything to show: its rows, or a send-to box
+    /// opened with no menu around it ([`Self::open_send_to_alone`]). A host
+    /// that opens such a box keeps the menu while this holds.
     #[must_use]
     pub fn is_showing(&self) -> bool {
         self.open || self.send_to_alone_open()
@@ -1519,6 +1513,22 @@ impl ContextMenu {
         self.paint_query(scene, transform, text_renderer, theme, radius);
     }
 
+    /// The send-to box, over the menu: beside the menu that opened it, or on
+    /// its own; its arriving and leaving is its own.
+    fn paint_send_to(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.send_to.is_open() || self.send_to.is_drawn() {
+            self.send_to.drain_answer();
+            self.send_to.place(self.send_to_anchor(), self.viewport);
+            self.send_to.paint(scene, transform, text, theme);
+        }
+    }
+
     /// Where the menu comes from: the control, row or point it stands
     /// against.
     fn appear_anchor(&self) -> Point {
@@ -1667,20 +1677,13 @@ impl Widget for ContextMenu {
         {
             self.set_viewport(Some(window));
         }
-        // A box with no menu around it stands on its own: the menu's
-        // arriving and leaving is not its.
-        if self.send_to_alone_drawn() {
-            self.send_to.drain_answer();
-            let anchor = self.alone.unwrap_or(self.rect);
-            self.send_to.place(anchor, self.viewport);
-            self.send_to.paint(scene, transform, text_renderer, theme);
-        }
         // It comes from where it was opened and goes back
         // (`motion::Appear`); a closing menu is drawn until it has gone but
         // takes no input.
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
             self.drawn = crate::motion::Pose::REST;
+            self.paint_send_to(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -1708,6 +1711,7 @@ impl Widget for ContextMenu {
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        self.paint_send_to(scene, transform, text_renderer, theme);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1735,7 +1739,7 @@ impl Widget for ContextMenu {
             }
             return;
         }
-        if self.route_to_submenu(event, ctx) {
+        if self.route_to_send_to(event, ctx) || self.route_to_submenu(event, ctx) {
             return;
         }
         match event {
@@ -1982,7 +1986,12 @@ impl Widget for ContextMenu {
         if self.send_to_alone_open() {
             return Some(self.send_to.rect());
         }
-        self.open.then_some(self.rect)
+        let menu = self.open.then_some(self.rect)?;
+        Some(if self.send_to.is_open() {
+            menu.union(self.send_to.rect())
+        } else {
+            menu
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -1990,7 +1999,7 @@ impl Widget for ContextMenu {
     }
 
     fn accessibility_hidden(&self) -> bool {
-        // The box that took the menu's place is on screen with the menu gone.
+        // A box opened with no menu around it is on screen with no menu.
         !self.open && !self.send_to_alone_drawn()
     }
 

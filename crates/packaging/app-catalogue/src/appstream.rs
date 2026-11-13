@@ -1,10 +1,9 @@
 //! Flathub, from the `AppStream` metadata Flatpak caches for each remote.
 //!
-//! Flatpak keeps `appstream/<remote>/<arch>/active/appstream.xml.gz` in each
-//! installation, with the icons it caches under `active/icons/<size>/`, and
-//! refreshes it itself (`flatpak update --appstream`, which the hourly
-//! `tilo-app-update` run asks for). Reading it needs no network and no
-//! Flatpak process; it is a large file, so read it on a worker thread.
+//! Flatpak keeps `appstream/<remote>/<arch>/active/appstream.xml.gz` in each installation, with the
+//! icons it caches under `active/icons/<size>/`, and refreshes it itself (`flatpak update
+//! --appstream`, which the hourly `tilo-app-update` run asks for). Reading it needs no network and
+//! no Flatpak process; it is a large file, so read it on a worker thread.
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
@@ -38,8 +37,8 @@ pub fn user_installation() -> Option<PathBuf> {
     tilo_paths::data_dir().map(|dir| dir.join("flatpak"))
 }
 
-/// The Flathub `AppStream` files cached on this device: the person's
-/// installation first, so its copy wins when both have Flathub.
+/// The Flathub `AppStream` files cached on this device: the person's installation first, so its copy
+/// wins when both have Flathub.
 #[must_use]
 pub fn cached_sources() -> Vec<AppstreamSource> {
     let mut sources = Vec::new();
@@ -53,8 +52,8 @@ pub fn cached_sources() -> Vec<AppstreamSource> {
     sources
 }
 
-/// The Flathub `AppStream` file of the Flatpak installation at `root`, for
-/// this machine's architecture, when Flatpak has cached one.
+/// The Flathub `AppStream` file of the Flatpak installation at `root`, for this machine's
+/// architecture, when Flatpak has cached one.
 #[must_use]
 pub fn sources_in(root: &Path, installation: Installation) -> Vec<AppstreamSource> {
     let active = root
@@ -76,10 +75,9 @@ pub fn sources_in(root: &Path, installation: Installation) -> Vec<AppstreamSourc
         .collect()
 }
 
-/// The directories whose entries change when Flatpak replaces the cached
-/// Flathub `AppStream` of an installation: the one holding the `active`
-/// link it swaps, for the person's installation and the system's. A reader
-/// of [`load_cached`] that must follow Flatpak's refreshes watches these.
+/// The directories whose entries change when Flatpak replaces the cached Flathub `AppStream` of an
+/// installation: the one holding the `active` link it swaps, for the person's installation and the
+/// system's. A reader of [`load_cached`] that must follow Flatpak's refreshes watches these.
 #[must_use]
 pub fn cache_directories() -> Vec<PathBuf> {
     user_installation()
@@ -93,8 +91,8 @@ pub fn cache_directories() -> Vec<PathBuf> {
         .collect()
 }
 
-/// A value that changes whenever Flatpak replaces a cached `AppStream` file,
-/// so a reader knows to read it again. Only `stat`s.
+/// A value that changes whenever Flatpak replaces a cached `AppStream` file, so a reader knows to
+/// read it again. Only `stat`s.
 #[must_use]
 pub fn cache_stamp(sources: &[AppstreamSource]) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -111,16 +109,16 @@ pub fn cache_stamp(sources: &[AppstreamSource]) -> u64 {
     hasher.finish()
 }
 
-/// Every Flathub app cached on this device, with names and tag lines in
-/// `locale` (a BCP 47 tag such as `de-DE`) where the metadata has them. An
-/// app both installations list appears once, from the person's.
+/// Every Flathub app cached on this device, with names and tag lines in `locale` (a BCP 47 tag such
+/// as `de-DE`) where the metadata has them. An app both installations list appears once, from the
+/// person's.
 #[must_use]
 pub fn load_cached(locale: &str) -> Vec<CatalogueEntry> {
     load_all(&cached_sources(), locale)
 }
 
-/// [`load_cached`] over the given sources. A source that cannot be read is
-/// skipped: the others still answer.
+/// [`load_cached`] over the given sources; a source that cannot be read is skipped, and the others
+/// still answer.
 #[must_use]
 pub fn load_all(sources: &[AppstreamSource], locale: &str) -> Vec<CatalogueEntry> {
     let mut seen = HashSet::new();
@@ -179,13 +177,8 @@ struct Component {
 /// Whether text in `lang` is for a desktop speaking `locale`: the same tag,
 /// or the same language.
 fn speaks(lang: &str, locale: &str) -> bool {
-    let primary = |tag: &str| {
-        tag.split(['-', '_'])
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-    };
-    lang.replace('_', "-").eq_ignore_ascii_case(locale) || primary(lang) == primary(locale)
+    tilo_paths::locale_tag(lang).eq_ignore_ascii_case(&tilo_paths::locale_tag(locale))
+        || tilo_paths::language_of(lang) == tilo_paths::language_of(locale)
 }
 
 /// The text for `locale`, else the untranslated one.

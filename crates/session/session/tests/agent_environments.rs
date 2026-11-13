@@ -154,9 +154,10 @@ fn introduce(stream: &UnixStream, name: &str, workspace: Option<&str>) -> Vec<Va
             "params": {"name": "tilo_ls", "arguments": {}}
         }),
     ] {
-        if writer.write_all(format!("{ask}\n").as_bytes()).is_err() {
-            break;
-        }
+        // A door that refuses closes at once, and can close before this ask reaches it: the
+        // write then fails, and the reason it gave is already on the connection. What the door
+        // answered is read either way, so a refusal that came early is still the answer.
+        let asked = writer.write_all(format!("{ask}\n").as_bytes()).is_ok();
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => break,
@@ -164,7 +165,7 @@ fn introduce(stream: &UnixStream, name: &str, workspace: Option<&str>) -> Vec<Va
                 let answer: Value = serde_json::from_str(&line).unwrap();
                 let refused = answer.get("error").is_some();
                 read.push(answer);
-                if refused {
+                if refused || !asked {
                     break;
                 }
             }

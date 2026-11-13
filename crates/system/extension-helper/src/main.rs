@@ -1,5 +1,3 @@
-//! `/usr/libexec/tilo-extension`: see the library for the commands.
-
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

@@ -10,7 +10,7 @@ use tilolang_runtime::{
 };
 use tilolang_tilo::publish::Caller;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -64,13 +64,6 @@ fn agent(who: &str) -> Caller {
         actor: who.to_owned(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
-    }
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
     }
 }
 

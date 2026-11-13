@@ -1,12 +1,5 @@
 //! [`Press`] — what pressing a control that stands inside another widget does — a menu row, a
 //! swipe, a nav place, a tree node, a card's face.
-//!
-//! A view binds those presses as it binds a button's: the event is the action the view attached
-//! ([`crate::component::Event::Action`]). The widget that owns the parts holds one `Press` per
-//! part, so the press is carried out through the same door as its own controls: it is reported
-//! in the widget's inventory, handed over when the host drains the window, and refreshed with
-//! the rest when what the app publishes changes. A press the view keeps for itself
-//! ([`crate::component::Event::View`]) is reported to the view, which decides what it does.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -15,14 +8,11 @@ use std::rc::Rc;
 use crate::component::Event;
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
-/// What pressing a part does: run the action the view bound to it, or report the event to the
-/// view.
 #[derive(Clone, Default)]
 pub struct Press {
     /// The action, shared with the command the part runs (a menu row's command runs whenever
     /// it is chosen, and the menu is built anew each time it opens).
     action: Option<Rc<RefCell<ActionEmitter<()>>>>,
-    /// The view's own event, fired when the part is pressed.
     view: Option<crate::component::Intent>,
 }
 
@@ -53,13 +43,11 @@ impl Press {
         }
     }
 
-    /// Whether pressing the part does nothing.
     #[must_use]
     pub fn is_none(&self) -> bool {
         self.action.is_none() && self.view.is_none()
     }
 
-    /// Whether the part can be pressed now: its action is one the app offers here.
     #[must_use]
     pub fn is_available(&self) -> bool {
         match (&self.action, &self.view) {
@@ -78,7 +66,6 @@ impl Press {
             .map(|action| action.borrow().binding().address().clone())
     }
 
-    /// Press it: run the action, or report the event to the view.
     pub fn run(&self) {
         if let Some(action) = &self.action {
             if let Err(error) = action.borrow_mut().emit(()) {
@@ -91,7 +78,6 @@ impl Press {
         }
     }
 
-    /// The press as the command a part runs when it is chosen.
     #[must_use]
     pub fn runner(&self) -> Rc<dyn Fn()> {
         let press = self.clone();
@@ -108,7 +94,6 @@ impl Press {
         Some(Box::new(move || press.run()))
     }
 
-    /// Hand over the press the host has not collected yet.
     pub(crate) fn take(&self) -> Option<tilo_actions::ControlInvocation> {
         self.action
             .as_ref()
@@ -133,7 +118,6 @@ impl Press {
         }
     }
 
-    /// Returns whether the press became available or unavailable.
     pub(crate) fn refresh_availability(
         &self,
         allowed: &HashSet<tilo_actions::ActionAddress>,

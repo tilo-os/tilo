@@ -1216,7 +1216,6 @@ mod tests {
             )
             .expect("a launcher");
             let state = home.state().to_path_buf();
-            save_desk(&state);
             let mut environment = tilo_app_launch::SessionEnvironment::from_process();
             environment.wayland_socket = Some(home.runtime().join("wayland-7"));
             let apps = Rc::new(Apps::with_launcher(
@@ -1236,6 +1235,8 @@ mod tests {
                 &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
             )
             .expect("a session");
+            // The desk this device shows, as a session that came back to one puts it in front.
+            session.handle().replace_tree(two_workspaces());
             let (from, to, to_id) = session
                 .handle()
                 .read(|tree| {
@@ -1395,7 +1396,7 @@ mod tests {
     /// What the record `id` of `workspace` holds in the profile at `root` .
     fn stored_at(root: &Path, workspace: &str, id: &RecordId) -> Option<automerge::AutoCommit> {
         let store = app_state::FsStore::new(root.to_path_buf());
-        let key = StorageKey::record(PROBE, workspace, id.storage_key());
+        let key = StorageKey::document(PROBE, workspace, id.storage_key());
         let stored = store.read(&key).ok().flatten()?;
         let (doc, _) =
             app_state::decode_canonical(&stored.bytes, false, Path::new("a record")).ok()?;
@@ -1419,9 +1420,9 @@ mod tests {
         records.try_flush().expect("the record is written");
     }
 
-    /// The desk this device left: the workspace in front with a strip the app's window takes, and
+    /// The desk the person is at: the workspace in front, with a strip the app's window takes, and
     /// one behind it.
-    fn save_desk(state: &Path) {
+    fn two_workspaces() -> DesktopTree {
         let mut home = Workspace::new(WorkspaceSlot(1), "Home");
         home.strips = vec![Strip::new(StripId(1), "Main")];
         let mut tree = DesktopTree {
@@ -1434,9 +1435,7 @@ mod tests {
         let mut away = Workspace::new(WorkspaceSlot(2), "Away");
         away.strips = vec![Strip::new(StripId(3), "Later")];
         tree.workspaces.push(away);
-        let path = state.join("tilo").join("desk.json");
-        fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
-        fs::write(&path, serde_json::to_string(&tree).expect("a desk")).expect("the desk is saved");
+        tree
     }
 
     /// Install [`PROBE`] in the home's own app store: a package whose entrypoint is the launcher's

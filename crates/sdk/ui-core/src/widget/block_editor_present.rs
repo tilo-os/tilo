@@ -1,11 +1,4 @@
 //! Presenting blocks an external document model owns.
-//!
-//! A host that keeps the document elsewhere — a rich-text resource the
-//! framework reads, a record a collaborator edits — shows it here with
-//! [`BlockEditor::present_blocks`]. Blocks keep their widgets across
-//! presentations by id, so the caret, focus and selection of the person
-//! typing survive a collaborator's edit, an undo or the host's own
-//! read-back of an edit it just applied.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -16,18 +9,14 @@ use crate::widget::rich_text_line::RichTextLine;
 
 use super::{Block, BlockEditor, BlockKind, DocumentPosition, DocumentSelection};
 
-/// What one block shows, as the owning model says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockContent {
-    /// The block's stable id in the owning model.
     pub id: String,
     pub kind: BlockKind,
     pub text: String,
     /// Inline marks over byte ranges of `text`.
     pub marks: Vec<MarkSpan>,
-    /// Outline depth of a block that is not a list item.
     pub nesting: u8,
-    /// The fence a code line belongs to.
     pub code_group: Option<String>,
     /// Who wrote which run of `text`: byte ranges and the writer's id, shown
     /// as authorship; empty when nobody is attributed.
@@ -49,7 +38,6 @@ impl BlockContent {
     }
 }
 
-/// Whether `line` shows the authored runs `content` names.
 fn shows_authors(content: &BlockContent, line: &RichTextLine) -> bool {
     let shown = line.author_runs();
     shown.len() == content.authors.len()
@@ -71,7 +59,6 @@ fn shows(block: &Block, content: &BlockContent) -> bool {
         && shows_authors(content, &block.line)
 }
 
-/// The runs a line shows as authored, as `content` names them.
 fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
     content
         .authors
@@ -84,16 +71,13 @@ fn author_runs(content: &BlockContent) -> Vec<(usize, usize, String)> {
 /// [`BlockEditor::take_edit_scope`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditScope {
-    /// No block.
     Nothing,
     /// Only blocks at these indices.
     Blocks(Range<usize>),
-    /// Any block, and the block list itself.
     Anywhere,
 }
 
 impl EditScope {
-    /// Also cover what `other` covers.
     pub fn widen(&mut self, other: Self) {
         *self = match (std::mem::replace(self, Self::Nothing), other) {
             (Self::Anywhere, _) | (_, Self::Anywhere) => Self::Anywhere,
@@ -105,7 +89,6 @@ impl EditScope {
     }
 }
 
-/// Maps a block id to the presence key collaborators address it by.
 pub type PresenceKeyFn = Rc<dyn Fn(&str) -> PresenceKey>;
 
 /// Where `old` text's byte `at` lands in `new` text: after the common prefix
@@ -149,7 +132,6 @@ fn line_for(kind: &BlockKind, text: &str) -> RichTextLine {
 }
 
 impl Block {
-    /// A block showing `content`.
     #[must_use]
     pub fn from_content(content: BlockContent) -> Self {
         let text = if matches!(content.kind, BlockKind::Divider) {
@@ -171,8 +153,6 @@ impl Block {
         }
     }
 
-    /// Make this block a `kind` block, keeping its words, marks, authors,
-    /// caret and focus.
     pub(super) fn retype(&mut self, kind: &BlockKind) {
         let focused = self.line.is_focused();
         let caret = self.line.cursor_pos();
@@ -186,7 +166,6 @@ impl Block {
         self.kind = kind.clone();
     }
 
-    /// What this block shows, as [`BlockEditor::present_blocks`] takes it.
     #[must_use]
     pub fn content(&self) -> BlockContent {
         BlockContent {
@@ -205,9 +184,6 @@ impl Block {
         }
     }
 
-    /// Show `content` in this block's widget, keeping its caret where the
-    /// text around it went. Returns whether anything changed and whether
-    /// the change reshapes the block (kind, depth or fence).
     fn present(&mut self, content: &BlockContent) -> (bool, bool) {
         let kind_changed = self.kind != content.kind;
         if kind_changed {
@@ -241,16 +217,6 @@ impl Block {
 }
 
 impl BlockEditor {
-    /// Show `blocks` as the owning model has them now: after a
-    /// collaborator's edit, an undo, or the host's read-back of an edit it
-    /// applied. A block whose id stays keeps its widget, with the caret
-    /// carried past text inserted or removed before it; focus and a
-    /// selection follow their block's id. Returns whether anything changed.
-    ///
-    /// Edits the person makes still arrive as the editor's own blocks
-    /// ([`Self::blocks`]); a host that owns the document compares them with
-    /// what it presented, applies the difference to its model, and presents
-    /// the result.
     pub fn present_blocks(&mut self, blocks: &[BlockContent]) -> bool {
         let same_blocks = blocks.len() == self.blocks.len()
             && blocks
@@ -418,7 +384,6 @@ impl BlockEditor {
         if !touched {
             return false;
         }
-        // A focused table cell keeps the caret from its hidden source line.
         if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index))
             && matches!(block.kind, BlockKind::Table { visual: true })
             && self
@@ -456,9 +421,6 @@ impl BlockEditor {
         true
     }
 
-    /// Give block `from` the id `to`: the owning model named a block the
-    /// editor created (the paragraph an Enter split off) when it applied
-    /// the edit. Returns whether a block was renamed.
     pub fn rename_block(&mut self, from: &str, to: &str) -> bool {
         if from == to || self.blocks.iter().any(|block| block.id == to) {
             return false;
@@ -547,6 +509,54 @@ mod tests {
         assert!(!editor.present_blocks(&[authored]));
     }
 
+    fn painted_rows(content: BlockContent) -> Vec<Vec<u8>> {
+        let theme = crate::theme::Theme::dark();
+        let mut editor = BlockEditor::new().with_wrap_lines(true);
+        editor.set_local_author(Some("ada".into()));
+        editor.present_blocks(&[content]);
+        let frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            editor,
+            (220, 160),
+            theme.clone(),
+        );
+        let mut pixels = vec![0u8; 220 * 160 * 4];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, 220, 160, 220 * 4).unwrap();
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            frame.scene().encoding(),
+            &mut target,
+            None,
+            theme.tokens.colors.surfaces.content,
+        );
+        pixels.chunks(220 * 4).map(<[u8]>::to_vec).collect()
+    }
+
+    #[test]
+    fn another_authors_wrapped_run_is_tinted_on_each_line() {
+        let text = "The agent added this line for Friday, and it wraps here";
+        let by = |author: &str| BlockContent {
+            authors: vec![(0..text.len(), author.into())],
+            ..BlockContent::paragraph("a", text)
+        };
+        let plain = painted_rows(BlockContent::paragraph("a", text));
+        let tinted = painted_rows(by("agent:helper"));
+        let changed: Vec<usize> = (0..plain.len())
+            .filter(|&row| plain[row] != tinted[row])
+            .collect();
+        assert!(
+            changed
+                .last()
+                .zip(changed.first())
+                .is_some_and(|(last, first)| last - first > 24),
+            "the run is tinted over more than one line: rows {changed:?}"
+        );
+        assert_eq!(
+            painted_rows(by("ada")),
+            plain,
+            "one's own words are not tinted"
+        );
+    }
+
     #[test]
     fn a_new_kind_keeps_the_text_and_caret() {
         let mut editor = editor_with(vec![BlockContent::paragraph("a", "Title")]);
@@ -569,7 +579,6 @@ mod tests {
     #[test]
     fn carry_moves_with_the_text_after_the_edit() {
         assert_eq!(carry_byte("abcdef", "abXcdef", 4), 5);
-        // Text a collaborator inserts right at the caret lands after it.
         assert_eq!(carry_byte("abcdef", "abcdef!", 6), 6);
         assert_eq!(carry_byte("abcdef", "adef", 3), 1);
         assert_eq!(carry_byte("abcdef", "abcdef", 2), 2);
@@ -623,8 +632,6 @@ mod tests {
                 .render(&scene, vello::peniko::Color::BLACK)
         };
         let plain = render(&mut editor, None);
-        // Rows the caret's tag paints, in surface pixels: wider than the
-        // caret bar where they differ from the editor with no one in it.
         let tag_rows = |editor: &mut BlockEditor, block: &str| {
             render(editor, Some(block))
                 .chunks_exact(4 * 400)

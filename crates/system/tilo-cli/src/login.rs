@@ -1,24 +1,16 @@
-//! `tilo login <code>` and `tilo mcp`: this computer as one of the person's
-//! devices, for the agent that runs here.
+//! `tilo login <code>` and `tilo mcp`: this computer as one of the person's devices, for the agent
+//! that runs here.
 //!
-//! The code is the short one the person's browser tab shows (`K7Q-MX2P`),
-//! in the prompt it copies for their agent. `tilo login` resolves it at the
-//! site's home host (`tilo_relay_protocol::login_code`), and tells that tab
-//! each step as it does it:
+//! The code is the short one the person's browser tab shows (`K7Q-MX2P`), in the prompt it copies
+//! for their agent. `tilo login` resolves it at the site's home host
+//! (`tilo_relay_protocol::login_code`) and tells that tab each step as it does it: it makes a
+//! device key here, asks the workspace's host to have the person's root (which only the tab holds)
+//! certify it, keeps the key and certificate in this account's state directory, adds Tilo's tools
+//! to the agent and enters the workspace the link names as the person. A tab with no identity yet
+//! asks a computer that is already one of the person's devices to vouch for it.
 //!
-//! - **Setting up**: the code names the tab's pairing link. Logging in makes
-//!   a device key here, asks the workspace's host to have the person's root
-//!   (which only the tab holds) certify it, and keeps the key and its
-//!   certificate in this account's state directory. No root is ever here.
-//!   It adds Tilo's tools to the agent running it, and enters the workspace
-//!   the link names, as the person: the tab shows the agent present there.
-//! - **Signing in**: a tab with no identity yet asks a computer that is
-//!   already a device of the person to vouch for it. This device claims the
-//!   code for the person, and the person's stand-in on the host approves
-//!   that tab.
-//!
-//! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under
-//! the name `tilo`, acting as that device.
+//! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under the name `tilo`, acting
+//! as that device.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -58,7 +50,7 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
 /// The HTTPS client every request here goes through.
 static CLIENT: OnceLock<tilo_net::Client> = OnceLock::new();
 
-fn http() -> tilo_net::Client {
+pub(crate) fn http() -> tilo_net::Client {
     CLIENT.get_or_init(tilo_net::Client::new).clone()
 }
 
@@ -105,28 +97,18 @@ pub(crate) fn device_dir() -> Result<PathBuf> {
         .join("tilo/device"))
 }
 
-/// What a login keeps beside the device key: public material only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
-    /// The site whose tab copied the code (`https://tilo.sh/`).
     pub site: String,
-    /// The workspace's host (`https://eu1.tilo.sh`).
     pub host_origin: String,
-    /// The workspace the device entered.
     pub workspace: String,
-    /// Its name, when its host lists it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
-    /// The person, hex user root.
     pub user: String,
-    /// The agent that runs here.
     pub agent: String,
-    /// This device's label, as the person's devices list it.
     pub label: String,
-    /// This device's certificate, postcard as hex.
     pub cert: String,
-    /// The host's certificate, pinned, postcard as hex.
     pub host_cert: String,
 }
 
@@ -182,7 +164,6 @@ pub fn store(dir: &std::path::Path, key: &SigningKey, device: &Device) -> Result
     Ok(())
 }
 
-/// The device kept in `dir`, if this computer logged in.
 pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
     use std::os::unix::fs::PermissionsExt as _;
     let key_path = dir.join("key");
@@ -206,11 +187,8 @@ pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
 /// followed it, so the agent's own confirmation reaches that tab.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
-    /// The tab's report, as its host knows it.
     pub report: String,
-    /// The host that tab asks.
     pub host_origin: String,
-    /// Whether that tab was told Tilo's tools are added.
     #[serde(default)]
     pub tools_added: bool,
     /// Whether this computer entered the workspace, and the tab was not told
@@ -269,13 +247,11 @@ pub(crate) fn report_tools_added() {
     let _ = store_pending(&dir, &pending);
 }
 
-/// Whether this computer logged in (`tilo login`).
 pub fn logged_in() -> bool {
     device_dir().is_ok_and(|dir| dir.join("key").exists())
 }
 
-/// This computer's name, as a device label says it.
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
         .map(|name| name.trim().to_owned())
@@ -301,7 +277,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
-        device.host_origin.trim_start_matches("https://"),
+        host_of(&device.host_origin),
         device.workspace,
         device.user
     ))
@@ -336,8 +312,8 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
         .unwrap_or_else(|| DEFAULT_SITE.to_owned());
     let url = tilo_net::Url::parse(named.trim())
         .with_context(|| format!("{named} is not a site's address"))?;
-    if url.scheme() != "https" {
-        bail!("{named} is not an https:// site");
+    if !tilo_net::secure_origin(&url) {
+        bail!("{named} is not an https:// site (or an http:// one on this computer)");
     }
     Ok(url.origin().ascii_serialization())
 }
@@ -358,26 +334,51 @@ async fn home_host(site: &Origin) -> Result<String> {
         .and_then(Value::as_str)
         .with_context(unreachable)?;
     let url = tilo_net::Url::parse(origin).with_context(unreachable)?;
-    if url.scheme() != "https" {
+    if !tilo_net::secure_origin(&url) {
         bail!("{}: its host {origin} is not https", unreachable());
     }
     Ok(url.origin().ascii_serialization())
 }
 
 /// What the code names, spending it.
+///
+/// A code the host does not know is asked about again for a moment: the host
+/// keeps a code from the moment the tab showing it follows it, which the tab
+/// does as it copies the prompt (`web/first-run.mjs`), so a person who hands
+/// the prompt to their agent at once can beat the tab's own request. The host
+/// counts resolves that miss, so the asking is a few tries, not a wait.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
-    login_code::resolve(host, code)
-        .await
-        .map_err(|refusal| match refusal.code() {
-            "unknown" => anyhow!(
-                "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
-             Ask the person to copy the prompt from their Tilo tab again."
-            ),
-            "too-many" => {
-                anyhow!("too many wrong codes from here: wait a minute, then check the code")
+    let began = std::time::Instant::now();
+    loop {
+        match login_code::resolve(host, code).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(refusal) if refusal.code() == "unknown" && began.elapsed() < CODE_KEPT_WAIT => {
+                tokio::time::sleep(CODE_KEPT_RETRY).await;
             }
-            _ => anyhow!("the host refused the code: {refusal}"),
-        })
+            Err(refusal) => return Err(said_refusal(&refusal, code)),
+        }
+    }
+}
+
+/// How long a code the host does not know yet is asked about again, and how
+/// often: a few tries inside the host's budget of misses (ten a minute from
+/// one address), long enough for the tab of a machine that is drawing slowly
+/// to hand the code over.
+const CODE_KEPT_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+const CODE_KEPT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a refused code says to the person.
+fn said_refusal(refusal: &login_code::CodeRefusal, code: &str) -> anyhow::Error {
+    match refusal.code() {
+        "unknown" => anyhow!(
+            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
+             Ask the person to copy the prompt from their Tilo tab again."
+        ),
+        "too-many" => {
+            anyhow!("too many wrong codes from here: wait a minute, then check the code")
+        }
+        _ => anyhow!("the host refused the code: {refusal}"),
+    }
 }
 
 /// Tells the tab what this computer did with its code.
@@ -749,12 +750,19 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
             }
         }
         Err(error) => {
+            // Said to the person's tab and to the agent alike: what did not
+            // happen, the host's own reason, and what happens next.
             reporter
                 .failed(&format!(
-                    "Logged in, but entering the workspace failed: {error:#}"
+                    "Logged in, but this computer could not open the workspace yet: {error:#}. \
+                     Your agent tries again when it next uses Tilo."
                 ))
                 .await;
-            println!("Entering {place} failed for now ({error:#}); tilo mcp tries again.");
+            println!(
+                "Logged in, but this computer could not open {place} yet: {error:#}. \
+                 tilo mcp tries again each time it starts; if it keeps failing, run tilo login \
+                 with a new code from the person's tab."
+            );
         }
     }
     println!();
@@ -779,7 +787,12 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
 }
 
 pub(crate) fn host_of(origin: &str) -> &str {
-    origin.trim_start_matches("https://").trim_end_matches('/')
+    // A host on this computer is plain http, which a link names by its
+    // address alone, as it names an https host by its name.
+    origin
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
 }
 
 pub(crate) const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to open tilo.sh, choose \"Set up with your agent\" and paste you the prompt it copies; it has you run tilo login with their code, like: tilo login K7Q-MX2P";

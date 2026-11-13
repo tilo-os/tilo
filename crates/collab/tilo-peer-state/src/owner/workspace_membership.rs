@@ -155,11 +155,11 @@ mod tests {
         WorkspaceMembershipCommand::Grant {
             grant: tilo_action_policy::Grant::new(
                 "agent-member:scribe",
-                tilo_action_policy::Subject::agent("scribe"),
+                tilo_action_policy::Grantee::agent("scribe"),
                 tilo_action_policy::TreePath::workspace(crate::owner::testing::WORKSPACE),
                 tilo_action_policy::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Subject::person("owner"),
+                tilo_action_policy::Grantee::person("owner"),
             ),
         }
     }
@@ -181,7 +181,7 @@ mod tests {
                         .grants
                         .into_iter()
                         .filter(|grant| {
-                            grant.subject == tilo_action_policy::Subject::agent("scribe")
+                            grant.grantee == tilo_action_policy::Grantee::agent("scribe")
                         })
                         .collect())
                 },

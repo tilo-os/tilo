@@ -1,10 +1,4 @@
 //! Bounded, symlink-safe recursive directory measurement.
-//!
-//! A file counts what it takes on the disk, as `du` counts it: the blocks
-//! the filesystem gave it, once however many names it has. Its length alone
-//! would read a sparse disk image at its full size, a file hard-linked into
-//! three folders three times (an ostree or container store links most of
-//! its files), and `/proc/kcore` as a hundred terabytes.
 
 use std::collections::HashSet;
 use std::fs;
@@ -12,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Why a folder could not be listed, as the error view says it.
 pub const UNREADABLE_FOLDER: &str =
     "It was moved or removed, or you don’t have permission to open it.";
 
@@ -49,8 +42,8 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// A finished scan of a made-up home folder: what a screenshot shows in
-    /// place of scanning the machine it is taken on.
+    /// A finished scan of a made-up home folder: what a screenshot shows in place of
+    /// scanning the machine it is taken on.
     pub fn sample() -> Self {
         let path = PathBuf::from("/home/you");
         let entries: Vec<Entry> = [
@@ -89,8 +82,8 @@ impl ScanResult {
     }
 }
 
-/// The files with more than one name already counted in this scan, by
-/// device and inode, so a hard link adds nothing a second time.
+/// The files with more than one name already counted in this scan, by device and inode, so
+/// a hard link adds nothing a second time.
 #[derive(Default)]
 struct Linked(Mutex<HashSet<(u64, u64)>>);
 
@@ -108,12 +101,9 @@ impl Linked {
     }
 }
 
-/// What a scan has measured so far, as the job that shows it reads it:
-/// bytes and files. Called from the scanning threads.
+/// What a scan has measured so far, as the job that shows it reads it: bytes and files.
 pub type Report<'a> = &'a (dyn Fn(u64, u64) + Sync);
 
-/// How many files are measured between two reports: often enough that the
-/// count moves, rarely enough that locking the job costs nothing.
 const REPORT_EVERY: u64 = 256;
 
 /// What a scan has seen, shared by its threads.
@@ -284,7 +274,7 @@ mod tests {
     const MIB: u64 = 1_048_576;
     const GIB: u64 = 1_073_741_824;
 
-    /// A folder of its own under the system temp directory.
+    /// A fresh folder under the system temp directory.
     fn scratch(name: &str) -> PathBuf {
         let folder = std::env::temp_dir().join(format!(
             "disk-usage-scan-{name}-{}-{:?}",
@@ -300,8 +290,8 @@ mod tests {
         super::scan(path.to_owned(), &ScanCancellation::default(), &|_, _| {})
     }
 
-    /// A sparse disk image reads as the blocks it holds, not the length it
-    /// claims: an empty 1 GiB image takes next to nothing on the disk.
+    /// A sparse disk image reads as the blocks it holds, not the length it claims: an empty
+    /// 1 GiB image takes next to nothing on the disk.
     #[test]
     fn a_sparse_file_counts_the_blocks_it_takes_not_its_length() {
         let folder = scratch("sparse");
@@ -325,14 +315,13 @@ mod tests {
         assert_eq!(result.files, 1);
     }
 
-    /// A file hard-linked into two folders is on the disk once, so the
-    /// folder holding both counts it once.
+    /// A file hard-linked into two folders is on the disk once, so the folder holding both
+    /// counts it once.
     #[test]
     fn a_hard_linked_file_counts_once() {
         let folder = scratch("linked");
         fs::create_dir_all(folder.join("a")).unwrap();
         fs::create_dir_all(folder.join("b")).unwrap();
-        // Bytes no filesystem compresses away.
         let data: Vec<u8> = (0..262_144_u32)
             .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[3])
             .collect();

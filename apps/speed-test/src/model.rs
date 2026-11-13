@@ -1,6 +1,5 @@
-//! What the app knows about the running and finished tests, independent of
-//! how it is drawn: the phase, the readings measured so far, the recent
-//! results, and the dial's reading.
+//! What the app knows about the running and finished tests, independent of how it is drawn:
+//! the phase, the readings measured so far, the recent results, and the dial's reading.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -18,24 +17,20 @@ impl Phase {
     }
 }
 
-/// What the current test has measured so far. A field is `None` until its
-/// stage has finished.
+/// What the current test has measured so far.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Readings {
     pub ping: Option<f64>,
     pub jitter: Option<f64>,
     pub download: Option<f64>,
     pub upload: Option<f64>,
-    /// Bytes moved by the transfers so far.
     pub bytes: u64,
-    /// Where the test server answered from, when it said.
     pub location: Option<String>,
 }
 
 /// A finished test.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Finished {
-    /// Seconds since the Unix epoch.
     pub at: i64,
     pub ping: f64,
     pub jitter: f64,
@@ -102,8 +97,8 @@ pub(crate) struct DialReading {
     pub unit: &'static str,
 }
 
-/// The dial for `phase`: the number in its middle, from the stage's `live`
-/// reading or the finished run's `download`, with its arc at `frac`.
+/// The dial for `phase`: the number in its middle, from the stage's `live` reading or the
+/// finished run's `download`, with its arc at `frac`.
 pub(crate) fn dial(phase: Phase, live: f64, download: Option<f64>, frac: f64) -> DialReading {
     let (value, unit) = match phase {
         // Nothing measured: an empty dial, never a dash for a number.
@@ -118,8 +113,8 @@ pub(crate) fn dial(phase: Phase, live: f64, download: Option<f64>, frac: f64) ->
     DialReading { frac, value, unit }
 }
 
-/// How far the dial's arc runs for `phase` at the stage's `live` reading,
-/// or the finished run's `download`: bounded, and rising with the speed.
+/// How far the dial's arc runs for `phase` at the stage's `live` reading, or the finished
+/// run's `download`: bounded, and rising with the speed.
 pub(crate) fn dial_target(phase: Phase, live: f64, download: Option<f64>) -> f64 {
     match phase {
         Phase::Idle | Phase::Error => 0.0,
@@ -133,9 +128,7 @@ pub(crate) fn dial_target(phase: Phase, live: f64, download: Option<f64>) -> f64
 pub(crate) struct Model {
     pub phase: Phase,
     pub readings: Readings,
-    /// The reading of the stage in progress.
     live: f64,
-    /// Finished tests, newest first.
     pub history: Vec<Finished>,
     current: Option<Finished>,
     pub error: Option<String>,
@@ -164,7 +157,8 @@ fn finished(r: &crate::resource::Measurement) -> Finished {
 }
 
 impl Model {
-    /// Read-only projection of the canonical resource/runtime, never starts work or records a result.
+    /// Read-only projection of the canonical resource/runtime, never starts work or records
+    /// a result.
     pub(crate) fn present(&mut self, projection: Projection<'_>) {
         let Projection {
             phase,

@@ -800,7 +800,7 @@ fn a_typed_pairing_pin_is_masked() {
 
 /// What the portal publishes for the allowances it keeps, in memory.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "so.tilo.portal.consent")]
+#[effect(operation = "so.tilo.portal.consent", catalogue = "tests/locales")]
 enum Consent {
     /// Forget what the app was allowed
     #[effect(own_device, idempotent)]

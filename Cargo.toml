@@ -195,7 +195,6 @@ members = [
     "crates/sdk/ui-paint",
     "crates/sdk/theme-sdk",
     "crates/sdk/themes/bauhaus",
-    "crates/sdk/canvas",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
 
@@ -204,7 +203,6 @@ members = [
     "crates/collab/actions",
     "crates/collab/automation",
     "crates/collab/channel-crypto",
-    "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/collaboration",
     "crates/collab/fabric-core",
@@ -225,17 +223,16 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/fake-discord",
-    "crates/dev/frame-link",
     "crates/dev/nested-session-bus",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
     "crates/dev/test-app-registry",
-    "crates/dev/ai-bench",
     "crates/dev/test-http",
     "crates/dev/test-relay",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-device-admin",
+    "crates/dev/tilo-local",
     "crates/dev/tilo-vm",
     "crates/dev/tilo-vm-protocol",
     "crates/dev/tilo-vmd",
@@ -249,6 +246,7 @@ members = [
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/doc/tilo-document",
+    "crates/doc/tilo-docs",
     "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
@@ -258,7 +256,10 @@ members = [
 
     # Hosting
     "crates/hosting/tilo-delivery-protocol",
-    "crates/hosting/tilo-front-door",
+    "crates/hosting/tilo-api",
+    # The SDKs' native parts: the API in process, as a key the program holds.
+    "sdk/python/native",
+    "sdk/typescript/native",
     "crates/hosting/tilo-host-account",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
@@ -311,6 +312,7 @@ members = [
 
     # Platform
     "crates/platform/pc-keyboard-geometry",
+    "crates/platform/tilo-app-id",
     "crates/platform/tilo-appearance",
     "crates/platform/tilo-app-module",
     "crates/platform/tilo-capture",
@@ -323,6 +325,7 @@ members = [
     "crates/platform/tilolang-host",
     "crates/platform/tilolang-mail",
     "crates/platform/tilolang-youtube",
+    "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-settings-records",
     "crates/platform/tilo-sort",
@@ -451,7 +454,6 @@ members = [
     "crates/session/session-record",
     "crates/session/session-logging",
     "crates/session/sheets",
-    "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
     "crates/session/bluetooth-agent",
@@ -463,7 +465,6 @@ members = [
     "crates/session/device-fabric",
     "crates/session/nearby-service",
     "crates/session/speaker-service",
-    "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
     "crates/session/window-menu",
@@ -550,6 +551,7 @@ members = [
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
+    "crates/text/tilo-words",
 
     # Windows
     "crates/windows/compat-catalogue",
@@ -651,6 +653,7 @@ must_use_candidate = "allow"
 [workspace.dependencies]
 browser-continuity = { path = "crates/browser/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
+tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack

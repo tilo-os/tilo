@@ -50,9 +50,9 @@ pub fn adoption(
     let mut tags = HashSet::<TagId>::new();
     let mut images = HashSet::<String>::new();
     for (record, doc) in records {
-        // A window notebook written before Notes kept a notebook record is
-        // read as the record it migrates to; the window's own record stays
-        // as it was.
+        // A window notebook that does not read as a Notes record — one
+        // written before Notes kept one — is left out; it has no migration,
+        // and the window's own record stays as it was.
         let mut doc = doc.clone();
         if let Err(error) = ui::tilo_resource::evolution::migrate::<Notebook>(&mut doc) {
             tracing::warn!(%record, %error, "notes: not adopting an unreadable window notebook");

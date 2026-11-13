@@ -674,7 +674,6 @@ mod tests {
     /// Card controls win over the dismiss hit, close clears stale geometry, and the editor writes the comment as typed.
     #[test]
     fn comment_overlay_hit_testing_and_editing() {
-        // --- phase: card_controls_win_over_the_full_window_dismiss_hit ---
         {
             let group = Uuid::new_v4();
             let comment = annotation(AnnoKind::Note, group, "Useful thought");
@@ -706,7 +705,6 @@ mod tests {
             );
         }
 
-        // --- phase: close_clears_geometry_and_prevents_stale_hits ---
         {
             let group = Uuid::new_v4();
             let annotations = [annotation(AnnoKind::Highlight, group, "")];
@@ -733,7 +731,6 @@ mod tests {
             assert!(overlay.hit_test(Point::ZERO).is_none());
         }
 
-        // --- phase: comment_editor_writes_the_comment_as_typed_and_enter_finishes ---
         {
             let comment = annotation(AnnoKind::Note, Uuid::new_v4(), "");
             let id = comment.id;

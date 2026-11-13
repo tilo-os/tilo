@@ -1,7 +1,6 @@
-//! A host that keeps the frame it presented repaints only where the next
-//! frame changed (`retained_raster`): typing repaints the composer, and
-//! anything the parts cannot prove (a resize) repaints the whole frame. The
-//! retained target must always equal a full render of the same frame.
+//! A host that keeps the frame it presented repaints only where the next frame changed
+//! (`retained_raster`): typing repaints the composer, and anything the parts cannot prove (a resize)
+//! repaints the whole frame. The retained target must always equal a full render of the same frame.
 
 use super::*;
 use crate::retained_raster::{
@@ -16,7 +15,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vello::kurbo::{Affine, Rect};
 
-/// Where the chat's parts were last drawn, in window coordinates.
 #[derive(Clone, Copy, Default)]
 struct Places {
     messages: Rect,
@@ -24,7 +22,6 @@ struct Places {
     composer: Rect,
 }
 
-/// A chat window: messages that scroll, a menu and a composer.
 struct Chat {
     root: Column,
     places: Rc<RefCell<Places>>,
@@ -99,7 +96,6 @@ crate::testing::test_app_widget!(Chat, "Chat");
 
 const SIZE: (u32, u32) = (1200, 800);
 
-/// A desktop of two windows, the chat first, drawing its damage parts.
 fn desk_row(places: Rc<RefCell<Places>>) -> GroupRow {
     let chat = WindowGroup::new(
         100,
@@ -125,12 +121,9 @@ fn desk_row(places: Rc<RefCell<Places>>) -> GroupRow {
     GroupRow::new(vec![chat, notes])
 }
 
-/// `root` in a frame of [`SIZE`], parts tracked, laid out once as a frame
-/// does.
 fn desktop_of(root: impl Widget + 'static) -> FrameHarness {
     let mut harness = FrameHarness::for_root(crate::State::new(), root, SIZE, Theme::dark());
     harness.track_scene_parts(true);
-    // As the browser does: inputs are laid out and drawn once, by the frame.
     harness.set_coalesce_input_frames(true);
     harness.relayout();
     harness
@@ -152,8 +145,6 @@ fn key(harness: &FrameHarness, (width, height): (u32, u32), generation: u64) -> 
     }
 }
 
-/// Bring the frame up to date and say what of it a retained target repaints,
-/// as the browser host does.
 fn present(harness: &mut FrameHarness, frames: &mut RetainedFrames, key: TargetKey) -> Repaint {
     harness.poll_frame().unwrap();
     let scene = harness.frame_render_input().scene;
@@ -188,7 +179,6 @@ fn a_typed_character_repaints_only_the_composer() {
             panic!("typing {letter:?} repaints the whole frame");
         };
         assert!(!regions.is_empty(), "typing {letter:?} repaints nothing");
-        // The app's own damage reaches a little past its widgets.
         let reach = composer.inflate(20.0, 20.0);
         for region in &regions {
             assert_eq!(
@@ -211,8 +201,6 @@ fn a_resize_repaints_the_whole_frame() {
     let mut frames = RetainedFrames::default();
     let first = key(&harness, SIZE, 0);
     present(&mut harness, &mut frames, first);
-    // The same frame on another target, or the target after its pixels were
-    // lost, is not known to show the last frame.
     let same = harness.frame_render_input().scene;
     let parts = harness.scene_parts();
     assert_eq!(
@@ -236,10 +224,9 @@ fn a_resize_repaints_the_whole_frame() {
     );
 }
 
-/// A host's retained target on the shared GPU: each frame repaints only where
-/// it changed, what it repaints is culled to the parts that can reach the
-/// damage (as the hosts cull it), and every repaint is compared with a full
-/// render of the frame.
+/// A host's retained target on the shared GPU: each frame repaints only where it changed, what it
+/// repaints is culled to the parts that can reach the damage (as the hosts cull it), and every repaint
+/// is compared with a full render of the frame.
 struct Retained {
     device: vello::wgpu::Device,
     queue: vello::wgpu::Queue,
@@ -248,10 +235,9 @@ struct Retained {
     view: vello::wgpu::TextureView,
     raster: RetainedRaster,
     frames: RetainedFrames,
-    /// The renderer's collected overflows, as the hosts keep them: a frame
-    /// drawn while it collected one has geometry missing.
+    /// The renderer's collected overflows, as the hosts keep them: a frame drawn while it collected one
+    /// has geometry missing.
     overflows: crate::render_bump_recovery::Overflows,
-    /// How many frames it repainted in part.
     partial: usize,
     sparse: bool,
 }
@@ -307,11 +293,10 @@ impl Retained {
         }
     }
 
-    /// Repaint what this frame changed onto the target, then compare the
-    /// target with a full render of the frame.
+    /// Repaint what this frame changed onto the target, then compare the target with a full render of
+    /// the frame.
     fn step(&mut self, harness: &mut FrameHarness, key: TargetKey, what: &str) {
         let sparse = self.sparse;
-        // A frame repainted whole has nothing to compare: it is the render.
         let Some(readback) = self.step_report(harness, key) else {
             return;
         };
@@ -329,8 +314,6 @@ impl Retained {
         }
     }
 
-    /// [`Self::step`], with what the check said of the frame, or `None` when
-    /// the frame was repainted whole.
     fn step_report(&mut self, harness: &mut FrameHarness, key: TargetKey) -> Option<Readback> {
         self.frames
             .note_scratch(self.overflows.scratch(&self.renderer));
@@ -406,9 +389,8 @@ impl Retained {
     }
 }
 
-/// Every frame of a session repainted in part equals a full render of it,
-/// through Vello's sparse fine pass and through a window around the damage
-/// (the web build's only way).
+/// Every frame of a session repainted in part equals a full render of it, through Vello's sparse fine
+/// pass and through a window around the damage (the web build's only way).
 #[test]
 fn a_session_repainted_in_part_matches_full_renders() {
     session_matches_full_renders(true);
@@ -462,10 +444,8 @@ fn session_matches_full_renders(sparse: bool) {
     );
 }
 
-/// A renderer that dropped geometry from a render may have dropped it from
-/// the frame the target shows or from the check's render of it: a difference
-/// is then no proof of a stale frame. A difference with no lost geometry
-/// still is.
+/// A renderer that dropped geometry from a render may have dropped it from the frame the target shows
+/// or from the check's render of it: a difference is then no proof of a stale frame.
 #[test]
 fn a_difference_after_lost_geometry_proves_no_stale_frame() {
     const SIDE: (u32, u32) = (320, 240);
@@ -636,7 +616,6 @@ fn a_difference_after_lost_geometry_proves_no_stale_frame() {
     );
 }
 
-/// More line segments than a megabyte of scratch holds, over `SIDE`.
 fn busy_scene((width, height): (u32, u32)) -> vello::Scene {
     let mut scene = vello::Scene::new();
     let mut seed = 1u32;
@@ -659,8 +638,6 @@ fn busy_scene((width, height): (u32, u32)) -> vello::Scene {
     scene
 }
 
-/// A desk under an overlay's scrim, as search dims the frame behind its
-/// palette.
 struct Scrimmed {
     row: GroupRow,
     open: bool,
@@ -704,7 +681,6 @@ impl Widget for Scrimmed {
 
 crate::testing::test_app_widget!(Scrimmed, "Scrimmed desk");
 
-/// The desk of [`desktop`] under a scrim that opens and closes.
 fn scrimmed_desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
     let places = Rc::new(RefCell::new(Places::default()));
     let desk = Scrimmed {
@@ -714,9 +690,8 @@ fn scrimmed_desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
     (desktop_of(desk), places)
 }
 
-/// A scrim dims every pixel of the frame. Closing it must repaint every pixel
-/// it dimmed: no frame may keep the dim, not the one that closes it and not
-/// the unchanged frames after it.
+/// A scrim dims every pixel of the frame. Closing it must repaint every pixel it dimmed: no frame may
+/// keep the dim, not the one that closes it and not the unchanged frames after it.
 #[test]
 fn closing_a_scrim_repaints_the_frame_it_dimmed() {
     let (mut harness, places) = scrimmed_desktop();
@@ -728,8 +703,6 @@ fn closing_a_scrim_repaints_the_frame_it_dimmed() {
     harness.relayout();
     target.step(&mut harness, key, "opening the scrim");
 
-    // What a person does under the scrim: typing repaints its caret and line,
-    // and the dim stays as it was over everything else.
     let (x, y) = centre(places.borrow().composer);
     harness.click_at(x, y);
     target.step(&mut harness, key, "focusing the composer under the scrim");
@@ -742,8 +715,7 @@ fn closing_a_scrim_repaints_the_frame_it_dimmed() {
     target.step(&mut harness, key, "the frame after the scrim closed");
 }
 
-/// A note: a page that scrolls a block editor of many paragraphs, as a
-/// tile's app. The editor is as tall as its paragraphs.
+/// A note: a page that scrolls a block editor of many paragraphs, as a tile's app.
 struct Note {
     page: Scrollable,
 }
@@ -773,8 +745,8 @@ impl Widget for Note {
 
 crate::testing::test_app_widget!(Note, "Note");
 
-/// A note of eight paragraphs in a window, drawn once with its scene parts
-/// tracked, and where its editor is.
+/// A note of eight paragraphs in a window, drawn once with its scene parts tracked, and where its
+/// editor is.
 fn note_window() -> (FrameHarness, RetainedFrames, TargetKey, Rect) {
     let markdown = (0..8)
         .map(|i| format!("Paragraph number {i} of the note."))
@@ -830,9 +802,8 @@ fn assert_lines(what: &str, repaint: Repaint, editor: Rect) {
     }
 }
 
-/// A new paragraph at the end of a note grows its editor by a line: the
-/// tile repaints that line and the caret, not the whole editor, whose own
-/// damage says where its blocks were and are.
+/// A new paragraph at the end of a note grows its editor by a line: the tile repaints that line and the
+/// caret, not the whole editor, whose own damage says where its blocks were and are.
 #[test]
 fn a_new_paragraph_repaints_its_line_not_the_editor() {
     let (mut harness, mut frames, key, editor) = note_window();
@@ -850,9 +821,8 @@ fn a_new_paragraph_repaints_its_line_not_the_editor() {
     }
 }
 
-/// A selection dragged down a note, within a paragraph and then across
-/// paragraphs, repaints the rows whose selection changed with each move,
-/// not the editor.
+/// A selection dragged down a note, within a paragraph and then across paragraphs, repaints the rows
+/// whose selection changed with each move, not the editor.
 #[test]
 fn a_dragged_selection_repaints_the_rows_it_changed() {
     let (mut harness, mut frames, key, editor) = note_window();

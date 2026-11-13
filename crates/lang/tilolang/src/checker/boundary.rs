@@ -1,9 +1,8 @@
-//! Every row a boundary: the body of a UI `for` becomes a view of its own, called once per item
-//! with the item and the values the body uses from around the loop. The loop itself lowers to
-//! one node, `for:<app>:<view id>`, holding the list (`items`) and those values (`arg.<name>`);
-//! the host makes one boundary per item of it, keyed by the item, and renders a row only when
-//! it is shown (a row of a `list`) and again only when what that row read changed. Nobody has
-//! to factor a row out into a view to get there.
+//! Every row a boundary: the body of a UI `for` becomes a view of its own, called once per item with
+//! the item and the values the body uses from around the loop. The loop itself lowers to one node,
+//! `for:<app>:<view id>`, holding the list and those values; the host makes one boundary per item,
+//! keyed by it, and renders a row only when it is shown and again only when what that row read
+//! changed.
 
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -17,20 +16,18 @@ use crate::prims;
 use crate::resolve::{Callable, ParamInfo};
 use crate::types::Ty;
 
-/// The prefix of the kind of the node a UI loop lowers to.
 pub(crate) const FOR_EACH: &str = "for:";
-/// The last parameter of a row view: the host passes the row's key suffix, `/<item>` after
-/// the enclosing rows' (the loop node's `suffix`), the item a resource's id or else its place.
+/// The last parameter of a row view: the row's key suffix, `/<item>` after the enclosing rows' (the
+/// loop node's `suffix`), the item a resource's id or else its place.
 const ROW_KEY: &str = "$key";
-/// The item parameter of the rows of a list that names no item: the rows of its type's
-/// `row view`.
+/// The item parameter of the rows of a list that names no item: the rows of its type's `row view`.
 const ROW_ITEM: &str = "$item";
 
 impl Checker<'_> {
-    /// Lower `for var in list { body }` (in a view) to one node whose rows the host renders
-    /// as boundaries of their own. Returns `list` back when the loop must be lowered in place
-    /// instead: in a block, or when the body uses a value that cannot be passed to a view
-    /// (a `View` the caller built).
+    /// Lowers `for var in list { body }` (in a view) to one node whose rows the host renders as
+    /// boundaries of their own. Returns `list` back when the loop must be lowered in place instead: in
+    /// a block, or when the body uses a value that cannot be passed to a view (a `View` the caller
+    /// built).
     pub(super) fn rows_of(
         &mut self,
         var: &str,
@@ -39,8 +36,8 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> Option<Ex> {
-        // A loop in a named slot of a component makes parts of it (the commands of a menu, the
-        // actions of a header): it lowers in place.
+        // A loop in a named slot of a component makes parts of it (the commands of a menu, the actions
+        // of a header): it lowers in place.
         if self.st.ctx != Ctx::View || !passable(elem) || self.st.ui.parts {
             return Some(list);
         }
@@ -129,9 +126,9 @@ impl Checker<'_> {
         None
     }
 
-    /// Take on, in a row view made of a loop body, what the loop saw of the template being
-    /// expanded: its package's names, its type parameters, its keys, and its caller's lambdas
-    /// and blocks, which now read the row view's parameters.
+    /// Takes on, in a row view made of a loop body, what the loop saw of the template being expanded:
+    /// its package's names, its type parameters, its keys, and its caller's lambdas and blocks, which
+    /// now read the row view's parameters.
     fn inherit(&mut self, inherited: Inherited) {
         let Inherited {
             ns,
@@ -162,11 +159,10 @@ impl Checker<'_> {
         }
     }
 
-    /// The rows of a `list` (`list(xs) { x -> row(x.title) }`, or the type's `row view`): one
-    /// loop node under the list, whose rows each make the `item` node of one resource, holding
-    /// the item block's nodes or the row view's. Rows of a list render only when the host shows
-    /// them. Returns `list` back when the rows must be lowered in place instead: in a block, or
-    /// when the item block uses a value that cannot be passed to a view.
+    /// The rows of a `list` (`list(xs) { x -> row(x.title) }`, or the type's `row view`): one loop node
+    /// under the list, whose rows each make the `item` node of one resource. Rows of a list render only
+    /// when the host shows them. Returns `list` back when the rows must be lowered in place instead: in
+    /// a block, or when the item block uses a value that cannot be passed to a view.
     pub(super) fn list_rows(
         &mut self,
         list_node: LocalId,
@@ -242,8 +238,8 @@ impl Checker<'_> {
         None
     }
 
-    /// The values a row body uses from around its loop, by name; `None` when one of them
-    /// cannot be passed to a view.
+    /// The values a row body uses from around its loop, by name; `None` when one of them cannot be
+    /// passed to a view.
     fn captures(&self, names: BTreeSet<String>) -> Option<Vec<(String, LocalId, Ty)>> {
         let mut captures = Vec::new();
         for name in names {
@@ -257,8 +253,6 @@ impl Checker<'_> {
         Some(captures)
     }
 
-    /// The parameters of a row view (the item, the captures, the row's key) and the view state
-    /// among the captures.
     fn row_params(
         &self,
         var: &str,
@@ -270,6 +264,7 @@ impl Checker<'_> {
             ty: elem.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         }];
         params.extend(captures.iter().map(|(name, _, ty)| ParamInfo {
@@ -277,6 +272,7 @@ impl Checker<'_> {
             ty: ty.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         }));
         params.push(ParamInfo {
@@ -284,10 +280,11 @@ impl Checker<'_> {
             ty: Ty::Text,
             default: None,
             place: false,
+            label: None,
             entry: false,
         });
-        // View state the body uses is passed by value; `set(...)` and `bind:` still name the
-        // slot, which is the view's, not the row's.
+        // View state the body uses is passed by value; `set(...)` and `bind:` still name the slot, which
+        // is the view's, not the row's.
         let states = captures
             .iter()
             .filter_map(|(name, local, _)| {
@@ -298,8 +295,8 @@ impl Checker<'_> {
         (params, states)
     }
 
-    /// The node of a loop whose rows call the view `target` of this package: on each item, as
-    /// its parameter `item`, with the values `around` as the parameters of their names.
+    /// The node of a loop whose rows call the view `target` of this package: on each item, as its
+    /// parameter `item`, with the values `around` as the parameters of their names.
     fn loop_node(
         &mut self,
         target: &str,
@@ -316,8 +313,7 @@ impl Checker<'_> {
         let at = || Ex::local(node, Ty::View);
         self.arg_prop(at(), "items", list);
         self.arg_prop(at(), "each", Ex::str(item));
-        // The row stands where the body's node stood: it takes that node's sizing and
-        // placement, as the node a view call is wrapped in does.
+        // The row stands where the body's node stood: it takes that node's sizing and placement.
         for arg in hoisted {
             match &arg.name {
                 Some(name) => self.apply_arg(node, "", &name.name, &arg.value),
@@ -338,8 +334,8 @@ impl Checker<'_> {
         )));
     }
 
-    /// When the body is one call of a view of this package whose arguments are the item and
-    /// names from around the loop, the rows call that view: no view is made of the body.
+    /// When the body is one call of a view of this package whose arguments are the item and names from
+    /// around the loop, the rows call that view: no view is made of the body.
     fn direct_row(&mut self, var: &str, elem: &Ty, body: &[UiStmt]) -> Option<DirectRow> {
         let [only] = body else { return None };
         let UiKind::Call(call) = &only.kind else {
@@ -403,8 +399,8 @@ impl Checker<'_> {
         })
     }
 
-    /// Check the body `body` lowers as the view `row.id`, its parameters `row.params` (the
-    /// item first). Returns the index of its function.
+    /// Check the body `body` lowers as the view `row.id`, its parameters `row.params` (the item first).
+    /// Returns the index of its function.
     fn row_view(&mut self, row: RowView<'_>, body: impl FnOnce(&mut Self)) -> usize {
         let RowView {
             id,
@@ -415,8 +411,7 @@ impl Checker<'_> {
         let outer = std::mem::take(&mut self.st);
         self.begin(Ctx::View, params, Ty::View, id);
         self.st.owner_view = Some(owner.to_owned());
-        // The row's identity, the enclosing rows' included: what makes an anchored node's key
-        // name one node among the rows, as in a loop lowered in place.
+        // The row's identity, the enclosing rows' included: what names one node among the rows.
         if let Some((key, _)) = self.lookup(ROW_KEY) {
             self.st.keys.push(key);
         }
@@ -445,9 +440,8 @@ impl Checker<'_> {
                 // A row view's id is the declared view's, then `~row<n>` per loop around it.
                 owner: id.split('~').next().unwrap_or(id).to_owned(),
                 id: id.to_owned(),
-                // A row the checker makes is a part of the view it stands in, not a declaration
-                // of its own: it is named after that view, and the words it shows are its
-                // item's fields' own. Its binding is no part of a name a person hears.
+                // A row the checker makes is a part of the view it stands in: it is named after that view,
+                // and the words it shows are its item's fields' own.
                 name: owner.to_owned(),
                 params: params.to_vec(),
             },
@@ -455,8 +449,8 @@ impl Checker<'_> {
         func
     }
 
-    /// When the body is one UI call, its sizing and placement arguments that do not depend on
-    /// the item, taken out of it: they go on the row. Returns the body without them.
+    /// When the body is one UI call, its sizing and placement arguments that do not depend on the item,
+    /// taken out of it: they go on the row. Returns the body without them.
     fn hoist_layout(&self, body: &[UiStmt], var: &str) -> (Vec<UiStmt>, Vec<ast::Arg>) {
         let [only] = body else {
             return (body.to_vec(), Vec::new());
@@ -511,7 +505,6 @@ impl Checker<'_> {
         (vec![stmt], hoisted)
     }
 
-    /// The key of the `n`th loop of this view, with the identity of the enclosing items.
     fn loop_key(&self, n: usize) -> Ex {
         let base = format!("{}.for{n}", self.st.view_id);
         match self.st.keys.last() {
@@ -525,7 +518,6 @@ impl Checker<'_> {
     }
 }
 
-/// What a row view made inside a template's expansion takes on from it.
 struct Inherited {
     ns: Option<String>,
     types: HashMap<String, Ty>,
@@ -634,8 +626,8 @@ fn remap_scope(scope: &Scope, map: &HashMap<LocalId, LocalId>) -> Scope {
     }
 }
 
-/// A view made of a row body: its id, the declared view it was written in (by name), the
-/// item's name, its parameters and the view state among them.
+/// A view made of a row body: its id, the declared view it was written in (by name), the item's name,
+/// its parameters and the view state among them.
 #[derive(Clone, Copy)]
 struct RowView<'a> {
     id: &'a str,
@@ -644,7 +636,6 @@ struct RowView<'a> {
     states: &'a [(String, StateRef)],
 }
 
-/// A loop body that is one call of a view on the item: what the rows call.
 struct DirectRow {
     target: String,
     /// The parameter that takes the item.
@@ -652,8 +643,8 @@ struct DirectRow {
     around: Vec<(String, Ex)>,
 }
 
-/// The arguments of a primitive that size and place it among its siblings, which a row takes
-/// on when the primitive is all its body is.
+/// The arguments of a primitive that size and place it among its siblings, which a row takes on when the
+/// primitive is all its body is.
 const ROW_LAYOUT: &[&str] = &["fill", "min", "max", "aspect", "span", "at"];
 
 /// The name of a bare flag argument (`fill`, `fill(2)`).
@@ -668,14 +659,14 @@ fn flag_name(e: &ast::Expr) -> Option<&str> {
     }
 }
 
-/// Whether a value of this type can be an argument of a view: a node handle does not outlive
-/// the run that built it.
+/// Whether a value of this type can be an argument of a view: a node handle does not outlive the run that
+/// built it.
 fn passable(ty: &Ty) -> bool {
     !matches!(ty, Ty::View | Ty::Unit | Ty::Error)
 }
 
-/// Every name the UI statements use. A name a statement binds is collected too when it is
-/// used: such a name is passed in needlessly when the loop's scope also has it, never missed.
+/// Every name the UI statements use. A name a statement binds is collected too when it is used: such a
+/// name is passed in needlessly when the loop's scope also has it, never missed.
 fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
     for s in stmts {
         match &s.kind {

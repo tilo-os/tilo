@@ -1,17 +1,5 @@
-//! Breadcrumb widget — a horizontal path indicator with clickable ancestor
-//! segments and a chevron icon between them.
-//!
-//! The trail takes the width it is given. When its segments do not fit, it
-//! truncates the middle: keeps the first segment, puts the
-//! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
-//! last two, then fewer. What still does not fit ends the current
-//! segment's label in an ellipsis, and where the `…` leaves it no room the
-//! current segment stands alone. Nothing paints past the trail's width.
-//!
-//! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
-//! segment (a drive, Home). A trail that doubles as an editable path
-//! reports a click on its empty space through
-//! [`Breadcrumb::on_edit_requested`], so the host can swap in a field.
+//! Breadcrumb widget — a horizontal path indicator with clickable ancestor segments and a chevron icon
+//! between them.
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -43,14 +31,11 @@ const ELLIPSIS: &str = "...";
 /// `cached_visible` list (not the original `segments`) so the click
 /// hit-test matches what's on screen.
 pub struct Breadcrumb {
-    /// What the host placed this trail as: what its published action answers to.
     key: String,
     /// All segments, in path order. The rightmost is the active page.
     segments: Vec<String>,
     on_navigate: Option<Box<dyn FnMut(usize)>>,
-    /// Going to a segment, published as the trail's view action `select`.
     choice: Option<super::view_choice::ViewChoice>,
-    /// Per-visible-segment hit rects, populated in `apply_layout`.
     segment_rects: Vec<Rect>,
     /// Original-index mapping for each entry in `segment_rects`: `None` for
     /// the (non-clickable) ellipsis placeholder.
@@ -58,30 +43,18 @@ pub struct Breadcrumb {
     /// Cached visible-segment list as of the last `apply_layout`, so the
     /// draw pass and the click handler agree on labels without recomputing.
     cached_visible: Vec<String>,
-    /// Index (into `cached_visible`) the cursor is hovering. Ellipsis
-    /// entries don't latch hover.
     hover_idx: Option<usize>,
-    /// A glyph leading the first segment.
     root_icon: Option<Icon>,
     last_cursor: Option<Point>,
-    /// A click on the trail's empty space asks to edit the path.
     on_edit_requested: Option<Box<dyn FnMut()>>,
-    /// A click on the `…` hands the hidden segments and the `…`'s rect to
-    /// the host, to offer them in a menu.
     on_overflow: Option<Box<dyn FnMut(Vec<usize>, Rect)>>,
-    /// The labels' text role: a caption in a header, body text where the
-    /// trail is a window's location.
     role: TextRole,
     rect: Rect,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
 impl Breadcrumb {
-    /// The last segment is treated as the active (current) page and
-    /// rendered non-interactively; everything before it is clickable.
     pub fn new(segments: Vec<String>) -> Self {
         Self {
             dirty: true,
@@ -102,7 +75,6 @@ impl Breadcrumb {
         }
     }
 
-    /// Set the labels in `role` (a window's location reads as body text).
     #[must_use]
     pub(crate) fn with_role(mut self, role: TextRole) -> Self {
         self.role = role;
@@ -118,16 +90,12 @@ impl Breadcrumb {
         self
     }
 
-    /// Lead the first segment with `icon` (a drive, Home). It belongs to
-    /// the first segment: a click on it navigates there.
     #[must_use]
     pub fn root_icon(mut self, icon: Icon) -> Self {
         self.root_icon = Some(icon);
         self
     }
 
-    /// Called when the person clicks the trail's empty space, past its last
-    /// segment: the host swaps the trail for an editable path field.
     #[must_use]
     pub fn on_edit_requested<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_edit_requested = Some(Box::new(f));
@@ -147,15 +115,12 @@ impl Breadcrumb {
         self
     }
 
-    /// The toolkit's own trails (a file picker's) go to a segment in place.
     #[must_use]
     pub(crate) fn on_navigate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_navigate = Some(Box::new(f));
         self
     }
 
-    /// Go to segment `index`: through the published choice when there is
-    /// one, else at once.
     fn navigate(&mut self, index: usize) {
         if let Some(choice) = self.choice.as_mut() {
             choice.emit(index.to_string());
@@ -193,8 +158,6 @@ impl Breadcrumb {
         self.labels_of(&self.visible_origins(available_width, theme, tr))
     }
 
-    /// The segments shown at `available_width`, by original index; `None`
-    /// is the `...` standing in for the hidden ones.
     fn visible_origins(
         &self,
         available_width: f64,
@@ -221,9 +184,6 @@ impl Breadcrumb {
         {
             return fits.clone();
         }
-        // Nothing stands whole: the current segment is cut short beside the
-        // `…` while that leaves it room for a letter and its ellipsis, and
-        // stands alone, cut short, where it does not.
         let style = theme.text(self.role);
         let label = self.segments.get(last).map_or("", String::as_str);
         let first: String = crate::text_break::grapheme_indices(label)
@@ -257,8 +217,6 @@ impl Breadcrumb {
             .collect()
     }
 
-    /// One shown segment's width: its label, the `...` icon, and the root
-    /// icon before the first segment.
     fn segment_width(&self, origin: Option<usize>, theme: &Theme, tr: &mut TextRenderer) -> f64 {
         let style = theme.text(self.role);
         match origin {
@@ -275,12 +233,10 @@ impl Breadcrumb {
         }
     }
 
-    /// A chevron between two segments with the space either side of it.
     fn separator_block(&self, theme: &Theme) -> f64 {
         separator_width(theme) + f64::from(theme.tokens.spacing.s2) * 2.0
     }
 
-    /// The width the trail takes showing `origins`, chevrons included.
     fn width_of(&self, origins: &[Option<usize>], theme: &Theme, tr: &mut TextRenderer) -> f64 {
         let sep_block = self.separator_block(theme);
         let labels: f64 = origins
@@ -318,8 +274,6 @@ impl Breadcrumb {
             }
         }
         let mut labels = self.labels_of(&origin);
-        // Where even `...` and the current segment overrun the width, the
-        // current segment's label ends in an ellipsis inside it.
         if let (Some(rect), Some(label)) = (rects.last_mut(), labels.last_mut())
             && rect.x1 > self.rect.x1
         {
@@ -367,14 +321,12 @@ impl Breadcrumb {
         (shown, self.rect)
     }
 
-    /// The room the root icon takes before the first label, with its gap.
     fn root_width(&self, theme: &Theme) -> f64 {
         self.root_icon.map_or(0.0, |_| {
             f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.metrics.icon_label_gap)
         })
     }
 
-    /// The trail's empty space: past the last segment, inside the rect.
     fn in_empty_space(&self, point: Point) -> bool {
         let end = self
             .segment_rects
@@ -383,14 +335,10 @@ impl Breadcrumb {
         self.rect.contains(point) && point.x > end
     }
 
-    /// Place the trail in `rect`, for a host that draws it without a layout
-    /// pass (a window's bar). Its segments are laid out at the next draw.
     pub(crate) fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
     }
 
-    /// The segment a click at `point` goes to: an ancestor, as laid out at
-    /// the last draw; not the current segment, nor the `…`.
     pub(crate) fn ancestor_at(&self, point: Point) -> Option<usize> {
         let active = self.segments.len().saturating_sub(1);
         self.segment_rects
@@ -401,8 +349,6 @@ impl Breadcrumb {
             .filter(|index| *index != active)
     }
 
-    /// Light the segment under `point` (`None`: the pointer is off the
-    /// trail), as a hover does. Returns whether that changed.
     pub(crate) fn hover_at(&mut self, point: Option<Point>) -> bool {
         let active = self.segments.len().saturating_sub(1);
         let hover = point.and_then(|point| {
@@ -436,8 +382,6 @@ impl crate::widget::ResourceOperations for Breadcrumb {
         }
     }
 
-    /// Answer a `select` addressed to this trail: go to the segment,
-    /// whoever chose it.
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -527,10 +471,6 @@ impl Widget for Breadcrumb {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The trail takes the width its parent gives it (and truncates to
-        // it); the height is a line of `Caption` with room for a click.
-        // In a row it shrinks to what its neighbours leave and stretches to
-        // the row's height; in a column it spans the column.
         let line_h = theme.tokens.typography.size(self.role) * 1.5;
         let style = Style {
             size: Size {
@@ -643,7 +583,6 @@ impl Widget for Breadcrumb {
                     &style,
                 );
             }
-            // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
                 let edge = separator_width(theme);
                 let centre = Point::new(r.x1 + sep_pad + edge / 2.0, self.rect.center().y);
@@ -678,7 +617,6 @@ impl Widget for Breadcrumb {
                             new_hover = Some(i);
                             break;
                         }
-                        // The `…` is a control when the host offers a menu.
                         Some(None) if self.on_overflow.is_some() => {
                             new_hover = Some(i);
                             break;
@@ -884,9 +822,6 @@ mod tests {
             );
         }
 
-        /// However narrow, a deep trail paints inside its width: the middle
-        /// folds into the `…`, then the current segment is cut short beside
-        /// it, then stands alone, cut short.
         fn deep_trail_never_paints_past_its_width() {
             let levels = ["Home", "Documents", "Projects", "Tilo", "designs"];
             let mut bc = Breadcrumb::new(

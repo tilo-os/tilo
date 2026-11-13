@@ -1,10 +1,8 @@
-//! A scroll in a [`VirtualList`] moves its rows without rebuilding them,
-//! mounts the rows it brings near in a rebuild the frame's damage describes,
-//! and offers the host a copy of the rows that stay on screen: presented
-//! over the last frame (copies, then damage) as a window that copies
-//! presents it, every frame equals a full render, in dark, light and high
-//! contrast, at 100 % and 200 %, scrolling down and back up.
-
+//! A scroll in a [`VirtualList`] moves its rows without rebuilding them, mounts the rows it brings
+//! near in a rebuild the frame's damage describes, and offers the host a copy of the rows that stay
+//! on screen: presented over the last frame (copies, then damage) as a window that copies presents
+//! it, every frame equals a full render, in dark, light and high contrast, at 100 % and 200 %,
+//! scrolling down and back up.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -27,8 +25,6 @@ use winit::event::MouseScrollDelta;
 
 const ROW: f32 = 36.0;
 
-/// One message: a lift every third row and its text, which reports the
-/// damage it paints exactly (none once drawn).
 struct Message {
     label: String,
     rect: Rect,
@@ -163,7 +159,6 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
     let mut damage = SurfaceDamage::copying();
     let mut scene = Scene::new();
     for at in 0..6 {
-        // The pointer comes to rest over the laid-out list.
         if at == 3 {
             app.surface_input(
                 &window,
@@ -260,7 +255,6 @@ fn a_step_of_part_of_a_device_pixel_repaints_the_list_and_matches() {
     assert_eq!(runs[0].copied_frames, 0, "{runs:?}");
 }
 
-/// Two rows due today, the second on its way: it names its group once it arrives.
 struct Arriving {
     groups: Rc<RefCell<Vec<Option<RowGroup>>>>,
     changes: Rc<RefCell<Vec<ListModelChange<u64>>>>,
@@ -299,10 +293,6 @@ impl ListModel for Arriving {
     }
 }
 
-/// A row that arrives under a window titled for its one group takes the heading over the rows
-/// away, and the row it headed moves up into the band's room; one that arrives under a group of
-/// its own takes a row from the count of the heading it stood under: presented over the last
-/// frame, what the window shows equals a full render, with no heading or count left behind.
 #[test]
 fn a_heading_that_changes_as_a_row_arrives_leaves_nothing_behind() {
     arrives_and_matches("Today", None);
@@ -310,9 +300,6 @@ fn a_heading_that_changes_as_a_row_arrives_leaves_nothing_behind() {
     arrives_and_matches("Today", Some(1));
 }
 
-/// Two rows, the first under `first`, the second on its way and arriving under "Today", in a
-/// window titled "Today" counting two — or counting `counted` until the row arrives, and two
-/// once it has: each frame presented over the last equals a full render.
 fn arrives_and_matches(first: &str, counted: Option<usize>) {
     let theme = Theme::light();
     let window = Window { scale: 1.0 };
@@ -350,13 +337,11 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
         .expect("the frames are checked on the GPU the toolkit renders with");
     let mut full = OffscreenRenderer::new(size.width, size.height);
     let _ = presented.render(&scene, background);
-    // The row on its way arrives under the heading the title says.
     groups.borrow_mut()[1] = today();
     changes
         .borrow_mut()
         .push(ListModelChange::RowsChanged { keys: vec![1] });
     for frame in 0..8 {
-        // The title's count catches up a few frames later, as the window's header says it.
         if frame == 4 && counted.is_some() {
             app.root_widget_mut()
                 .as_any_mut()

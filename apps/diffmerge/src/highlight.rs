@@ -16,8 +16,6 @@ use ui::tokens::TextRole;
 use ui::widget::code_editor::{Span, SyntaxHighlighter};
 use vello::kurbo::Point;
 
-/// A panel label as the file it names and the revision it shows: the label
-/// `rate_limiter.rs (working tree)` is `("rate_limiter.rs", Some("working tree"))`.
 pub fn split_label(label: &str) -> (&str, Option<&str>) {
     let label = label.trim();
     match label.rsplit_once(" (") {
@@ -28,14 +26,10 @@ pub fn split_label(label: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The file a panel label names: the label without its revision.
 pub fn file_name(label: &str) -> &str {
     split_label(label).0
 }
 
-/// The grammar for a panel label such as `"rate_limiter.rs (working tree)"`
-/// or a path: its file extension, else its whole file name (`Dockerfile`),
-/// else plain text.
 pub fn grammar_for_label(label: &str) -> SyntaxHighlighter {
     let path = Path::new(file_name(label));
     path.extension()
@@ -93,9 +87,6 @@ pub fn shared_document<'a>(
         .collect()
 }
 
-/// A large source's continuous syntax pass, streamed through the host's
-/// background executor. Replacing a comparison drops the receiver and stops
-/// further chunks; no stale results can colour the replacement.
 pub struct BackgroundDocument {
     receiver: std::sync::mpsc::Receiver<SyntaxChunk>,
     background: ui::rt::background::Background,
@@ -165,8 +156,6 @@ impl BackgroundDocument {
         Some(receiver)
     }
 
-    /// Admit one completed chunk and queue the next. Nothing waits on the
-    /// UI thread; dropping the job prevents scheduling any further chunks.
     pub fn collect(&mut self, spans: &mut Vec<Arc<[Span]>>) -> bool {
         match self.receiver.try_recv() {
             Ok(mut chunk) => {
@@ -226,9 +215,6 @@ mod tests {
             .collect()
     }
 
-    /// Syntax highlighting: the grammar follows the file a label names, token kinds
-    /// cover a line, and a side is highlighted as one document. Each phase is a
-    /// former test with its own inputs.
     #[test]
     fn highlighting_picks_grammar_by_label_and_spans_whole_documents() {
         the_grammar_follows_the_file_a_label_names();

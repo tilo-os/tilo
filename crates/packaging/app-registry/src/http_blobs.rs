@@ -1,42 +1,22 @@
 //! Payload blobs from a registry server over HTTPS.
 //!
-//! A registry server keeps the payload blobs of the packages it reviewed
-//! and serves each at `<base>/blobs/<blake3 hex>`. A blob larger than one
-//! object is kept as chunks instead: `<base>/blobs/<blake3 hex>.chunks` is
-//! its chunk list and every chunk is again a `<base>/blobs/<chunk hex>`
-//! (see [`tilo_app_package::chunks`]). An installer holding a thin package
-//! fetches from there only the blobs its store lacks.
+//! Each blob is served at `<base>/blobs/<blake3 hex>`, or, when it is larger than one object, as
+//! chunks of it: `<base>/blobs/<blake3 hex>.chunks` is the chunk list and every chunk is again a
+//! `<base>/blobs/<chunk hex>` (see [`tilo_app_package::chunks`]). An installer holding a thin
+//! package fetches only the blobs its store lacks.
 //!
-//! The server is not trusted: every object is checked against its hash, a
-//! chunked blob's bytes reach the sink only chunk by verified chunk and its
-//! final chunk only once the whole blob verified, and a response is cut off
-//! past [`MAX_OBJECT_BYTES`] so a hostile server cannot make the client
-//! buffer without bound.
+//! The server is not trusted: every object is checked against its hash, a chunked blob's bytes reach
+//! the sink only chunk by verified chunk and its last chunk only once the whole blob verified, and a
+//! response is cut off past [`MAX_OBJECT_BYTES`]. Every object is asked for as its compressed twin
+//! `<url>.zst` first and taken raw when there is none (404); the twin is decompressed within the
+//! object's bound before any check, so compression changes how many bytes cross the network, never
+//! what is verified.
 //!
-//! Every object is asked for as its compressed twin first, `<url>.zst`
-//! ([`tilo_app_package::compressed`]), and taken raw when the registry has
-//! no twin (404). A twin is decompressed with the object's bound — the
-//! chunk's listed length, or [`MAX_OBJECT_BYTES`] for a whole blob — before
-//! any of the checks above, which see only decompressed bytes: compression
-//! changes how many bytes cross the network, never what is verified.
-//!
-//! A blob is located in one round trip: its twin and its chunk list are asked
-//! for together, since the registry keeps one or the other. Asked in turn
-//! (twin, raw, chunk list), a chunked blob cost three full round trips to a
-//! registry far away before its first chunk was requested.
-//!
-//! An installer's [`BlobFetcher`] keeps [`IN_FLIGHT`] blobs being located and
-//! [`IN_FLIGHT`] chunks being fetched while it hands the sink one object: a
-//! runtime is about thirty objects, and fetched one after another each costs
-//! a full round trip before its first byte. The chunks form one stream across
-//! blobs, so the next blob's first chunks are already on their way while the
-//! last chunks of this one arrive, instead of a round trip's pause between
-//! every two chunked blobs.
-//! Delivery stays in order. Memory is bounded by objects, not by the
-//! package: at most [`IN_FLIGHT`] blobs located ahead and as many more being
-//! located, [`IN_FLIGHT`] chunks ahead, and the object being delivered — each
-//! at most [`MAX_OBJECT_BYTES`], in practice at most
-//! [`tilo_app_package::chunks::CHUNK_BYTES`].
+//! A blob is located in one round trip: its twin and its chunk list are asked for together, since
+//! the registry keeps one or the other. [`IN_FLIGHT`] blobs are located and [`IN_FLIGHT`] chunks
+//! fetched ahead of the object being delivered, because a runtime is about thirty objects and each
+//! costs a round trip before its first byte otherwise. Delivery stays in order, and memory is
+//! bounded by objects, not by the package.
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -51,7 +31,7 @@ use tilo_app_package::chunks::{
 use tilo_app_package::compressed;
 use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageId};
 
-/// Requests an installer keeps going ahead of the object it is delivering.
+/// Requests kept going ahead of the object being delivered.
 pub const IN_FLIGHT: usize = 8;
 
 /// A registry server serving payload blobs at `<base>/blobs/<hash>`.
@@ -160,9 +140,9 @@ impl HttpBlobs {
         Ok(Some(Bytes::from(body)))
     }
 
-    /// The object at `url`, at most `limit` bytes: its compressed twin
-    /// decompressed within `limit`, or, when the registry keeps no twin, the
-    /// raw object. `None` when it has neither. The caller verifies the bytes.
+    /// The object at `url`, at most `limit` bytes: its compressed twin decompressed within `limit`,
+    /// or the raw object when the registry keeps no twin. `None` when it has neither; the caller
+    /// verifies the bytes.
     async fn get_object(client: &reqwest::Client, url: &str, limit: u64) -> Result<Option<Bytes>> {
         let twin_url = format!("{url}{}", compressed::SUFFIX);
         let Some(twin) =
@@ -173,8 +153,8 @@ impl HttpBlobs {
         Self::decompress(twin, limit, &twin_url).await.map(Some)
     }
 
-    /// The object a twin fetched from `twin_url` stands for, at most `limit`
-    /// bytes. The caller verifies them.
+    /// The object a twin fetched from `twin_url` stands for, at most `limit` bytes. The caller
+    /// verifies them.
     async fn decompress(twin: Bytes, limit: u64, twin_url: &str) -> Result<Bytes> {
         // Decompressing a large chunk is CPU work; keep it off the task that
         // drives the other requests in flight.
@@ -188,13 +168,11 @@ impl HttpBlobs {
         Ok(Bytes::from(bytes))
     }
 
-    /// The whole blob `hash`, or its chunk list when the registry keeps it
-    /// as chunks.
+    /// The whole blob `hash`, or its chunk list when the registry keeps it as chunks.
     ///
-    /// The registry keeps a blob whole, with a compressed twin beside it, or
-    /// as chunks with a chunk list, so the twin and the list are asked for at
-    /// once and one of them answers: one round trip either way. Only an
-    /// object stored before twins existed takes a second, for its raw bytes.
+    /// The twin and the chunk list are asked for at once and one of them answers, since the registry
+    /// keeps a blob one way or the other. Only an object stored before twins existed takes a second
+    /// round trip, for its raw bytes.
     async fn locate(&self, client: &reqwest::Client, hash: &BlobHash) -> Result<Stored> {
         let url = format!("{}/blobs/{hash}", self.base_url);
         let twin_url = format!("{url}{}", compressed::SUFFIX);
@@ -232,8 +210,7 @@ impl HttpBlobs {
         Ok(Stored::Whole(body))
     }
 
-    /// One chunk's bytes, at most its listed length. The caller verifies
-    /// them against the name.
+    /// One chunk's bytes, at most its listed length. The caller verifies them against the name.
     async fn fetch_chunk(&self, client: &reqwest::Client, chunk: &ChunkRef) -> Result<Bytes> {
         let url = format!("{}/blobs/{}", self.base_url, chunk.hash);
         Self::get_object(client, &url, chunk.len.min(MAX_OBJECT_BYTES))
@@ -241,9 +218,8 @@ impl HttpBlobs {
             .ok_or_else(|| anyhow!("registry {} lacks chunk {url}", self.base_url))
     }
 
-    /// Fetch every blob in `hashes`, in order, each checked against its hash.
-    /// Holds every blob in memory; installers stream through [`BlobFetcher`]
-    /// instead.
+    /// Fetch every blob in `hashes`, in order, each checked against its hash. Holds every blob in
+    /// memory; installers stream through [`BlobFetcher`] instead.
     pub async fn fetch_all(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
         let client = Self::client()?;
         let mut out = Vec::with_capacity(hashes.len());

@@ -1,16 +1,14 @@
-//! The hex editor's effects: work that reaches outside the buffer (open
-//! and save a file) and the views of the editor (search, go to offset).
-//! The byte edits themselves are the record's ([`HexEditor`](crate::HexEditor)).
+//! The editor's effects: work outside the buffer (open and save) and the window's
+//! views (search, go to offset). The byte edits are the record's.
 //!
-//! Presentation — the cursor, the selection, the scroll position, the
-//! insert-vs-overwrite mode, the hex-vs-ASCII focus — stays in the view.
+//! The cursor, selection, scroll position, insert mode and hex-or-ASCII focus stay
+//! in the view.
 
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
 use ui::tilo_resource::Effect;
 
-/// Parse hexadecimal bytes as a person writes them: `ff`, `0xFF`,
-/// `de ad be ef`, `DE-AD`. An empty text is no bytes.
+/// Hexadecimal bytes as a person writes them: `ff`, `0xFF`, `de ad be ef`, `DE-AD`.
 pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
     let text = text.trim();
     let text = text
@@ -24,11 +22,9 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("{text:?} is not hexadecimal bytes (e.g. `de ad be ef`)"))
 }
 
-/// Work outside the buffer: reading a file into it and writing it out.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
-    /// Open a file.
     #[effect(attended, job, cancellable, label = "hex-editor-open-file")]
     OpenFile {
         #[param("absolute path of the file to open; omit to use the system file picker")]
@@ -43,16 +39,12 @@ pub enum HexEffect {
         #[param("absolute path of the save destination")]
         path: tilo_resource::AbsolutePath,
     },
-    /// Find in the bytes, in the window's search.
     #[effect(view, idempotent)]
     Search,
-    /// Show the go-to-offset prompt.
     #[effect(view, idempotent)]
     GotoOffset,
 }
 
-/// A view of the editor a caller opens: the window's search, the go-to
-/// prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HexPanel {
     Search,
@@ -67,9 +59,8 @@ mod tests {
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::effect::EffectDecl;
 
-    /// The words of one of the window's actions and one of its effects, as a
-    /// palette or an agent publishes them: read from the app's catalogue in
-    /// the language this thread reads.
+    /// One of the window's actions' and one of its effects' words, as a palette or
+    /// an agent publishes them.
     fn published_words() -> (String, String) {
         let spec = ui::tilo_resource::publish::<crate::HexEditor>(
             "hex-editor.document",
@@ -95,8 +86,6 @@ mod tests {
 
     #[test]
     fn the_windows_words_read_in_the_readers_language() {
-        // A window start: its own catalogue loads in both languages, then the
-        // person's language decides.
         crate::resource::CATALOG.ensure();
         assert_eq!(
             published_words(),
@@ -136,7 +125,6 @@ mod tests {
         assert!(overwrite(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
         assert!(overwrite(4, &[0xab]).continues(&overwrite(5, &[0xc0])));
         assert!(!overwrite(4, &[0xab]).continues(&overwrite(9, &[0xc0])));
-        // Insert mode: a byte inserted, completed in place, the next inserted.
         assert!(insert(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
         assert!(overwrite(4, &[0xab]).continues(&insert(5, &[0xc0])));
         assert!(delete(4).continues(&delete(4)));

@@ -1,8 +1,3 @@
-//! Links on real pages: hovering shows a pointer, clicking an internal link
-//! goes to its destination (through the current page plan), clicking an
-//! external one hands the URL to the host's opener, and other schemes and
-//! files are refused.
-
 use ui::widget::Edits;
 use winit::dpi::PhysicalPosition;
 
@@ -14,9 +9,6 @@ fn links_fixture() -> std::path::PathBuf {
     std::path::Path::new(env!("OUT_DIR")).join("links.pdf")
 }
 
-/// The reader on the four-page links fixture, sized like a desktop window,
-/// with its markup record checked out. `None` (with a message) without an
-/// engine on this host.
 fn open_links() -> Option<(PdfApp, ui::State)> {
     let mut app = tests::open_settled(links_fixture())?;
     let mut state = crate::scenarios::record_state();
@@ -29,8 +21,6 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
     Some((app, state))
 }
 
-/// The screen point at the centre of the first link on `page` whose target
-/// matches `want`, after loading that page's links.
 fn link_centre(app: &mut PdfApp, page: usize, want: impl Fn(&LinkTarget) -> bool) -> Point {
     app.ensure_page_links(page);
     tests::drain_until(app, |app| app.raster_links.contains_key(&page));
@@ -45,7 +35,6 @@ fn link_centre(app: &mut PdfApp, page: usize, want: impl Fn(&LinkTarget) -> bool
     Point::new(origin.x + cx * app.zoom(), origin.y + cy * app.zoom())
 }
 
-/// Press and release at `p` through the widget's real event entry point.
 fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
     let mut at_root = ui::testing::Dispatch::new()
         .doc(&mut state.doc)
@@ -75,13 +64,10 @@ fn is_internal(t: &LinkTarget) -> bool {
     matches!(t, LinkTarget::Page { .. })
 }
 
-/// Without an engine on this host the first open skips (with a message)
-/// and no later case runs either, exactly as each case skipped on its own.
 #[test]
 #[serial_test::serial(pdfium)]
 fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
     use ui::Widget as _;
-    // Hovering shows a pointer only in the select tool.
     let Some((mut app, _state)) = open_links() else {
         return;
     };
@@ -103,14 +89,11 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         "markup tools draw over links rather than follow them"
     );
 
-    // Clicking an internal link goes to its destination.
     {
         let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
         let at = link_centre(&mut app, 1, is_internal);
         click(&mut app, &mut state, at);
         assert_eq!(app.current_page, 3, "the appendix is on page three");
-        // The heading sits part way down its page, and the view scrolls to it
-        // rather than to the top of the page.
         let page_top = 2.0 * app.stack_unit() * app.zoom();
         assert!(
             app.scroll_y() > page_top + 20.0 * app.zoom(),
@@ -119,11 +102,8 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         );
     }
 
-    // An internal link follows its page through reorder and deletion.
     {
         let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
-        // Move the appendix (source page 3) to the front: it is now page 1 and
-        // the link's own page is page 2.
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
             move_page_plan_action("source-3", None),
@@ -137,7 +117,6 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         click(&mut app, &mut state, at);
         assert_eq!(app.current_page, 1, "the destination moved to the front");
 
-        // Delete the appendix: the link says so instead of jumping anywhere.
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
             delete_page_plan_action("source-3"),
@@ -148,8 +127,6 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
         app.go_to_page(1);
         let at = link_centre(&mut app, 1, is_internal);
-        // A separate click much later, not the second half of a double-click
-        // on the same screen spot.
         app.drag_select = DragSelect::new();
         click(&mut app, &mut state, at);
         assert_eq!(app.current_page, 1);
@@ -162,7 +139,6 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         );
     }
 
-    // Markup over a link keeps its own click.
     {
         let (mut app, mut state) = open_links().expect("the engine opened the fixture above");
         let at = link_centre(&mut app, 1, is_internal);
@@ -183,7 +159,6 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
 #[test]
 #[serial_test::serial(pdfium)]
 fn external_links_hand_only_web_and_mail_urls_to_the_host() {
-    // Clicking an external link hands the URL to the host.
     let Some((mut app, mut state)) = open_links() else {
         return;
     };
@@ -193,7 +168,6 @@ fn external_links_hand_only_web_and_mail_urls_to_the_host() {
     assert_eq!(recorder.opened_uris(), ["https://example.org/docs"]);
     assert_eq!(app.current_page, 1, "an external link does not navigate");
 
-    // Only web and mail links are opened.
     {
         let (mut app, _state) = open_links().expect("the engine opened the fixture above");
         let (services, recorder) = ui::host::HostServices::recording();

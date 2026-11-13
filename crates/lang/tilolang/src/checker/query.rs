@@ -1,11 +1,9 @@
 //! `query(T, in: x, done: false, due: today..today + 7d, sort: .due_oldest)`, a list's
 //! `items.matching("is:done")` and `filters(T)` (search.md, "A query" and "Where search appears").
 //!
-//! A query's arguments are the type's filters, checked against what each compares. Each is
-//! lowered to the text a typed search writes for it (`done` and `false`, `due` and
-//! `today..today+7d`), so a query in code and the same query typed (`is:done due:-7d`) are
-//! one query: the runtime resolves both against the type's filters when it is answered, and the
-//! index answers it.
+//! A query's arguments are the type's filters, checked against what each compares. Each lowers to the
+//! text a typed search writes for it, so a query in code and the same query typed (`is:done due:-7d`)
+//! are one query: the runtime resolves both against the type's filters, and the index answers it.
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -17,7 +15,6 @@ use crate::resolve::TypeInfo;
 use crate::types::{Ty, TypeKey};
 
 impl Checker<'_> {
-    /// The record type a query's first argument names.
     fn queried(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<TypeKey> {
         let Some(first) = args.first().filter(|a| a.name.is_none()) else {
             self.err(
@@ -73,9 +70,9 @@ impl Checker<'_> {
         )
     }
 
-    /// The filter `name` of the type `key`, with the value `args` give it, when `key` declares
-    /// one by that name: `Task.today`, `Task.project(p)`, `Task.done(false)`. `None` when `key`
-    /// is a type that declares no filters at all, so the name is something else.
+    /// The filter `name` of the type `key`, with the value `args` give it, when `key` declares one by
+    /// that name: `Task.today`, `Task.project(p)`. `None` when `key` is a type that declares no filters
+    /// at all, so the name is something else.
     pub(super) fn filter_value(
         &mut self,
         key: &TypeKey,
@@ -156,8 +153,7 @@ impl Checker<'_> {
         ))
     }
 
-    /// What choosing the filter value `v` asks, as search writes it: `is:today`,
-    /// `project:<id>` (`host.Filter`'s `query`).
+    /// What choosing the filter value `v` asks, as search writes it: `is:today`, `project:<id>`.
     pub(super) fn filter_query(v: Ex) -> Ex {
         let at = crate::host::value_field("Filter", "query")
             .map_or(3, |at| i32::try_from(at).unwrap_or(3));
@@ -184,8 +180,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The order by the field `name` of `key`, as a `Sort<T>`: the menu entry's label comes
-    /// from the field, and the order from its kind (`sort:title`, `sort:-received`).
+    /// The order by the field `name` of `key`, as a `Sort<T>`: the menu entry's label from the field, and
+    /// the order from its kind (`sort:title`, `sort:-received`).
     fn sort_value(&mut self, key: &TypeKey, name: &ast::Ident, span: Span) -> Ex {
         let env = self.env;
         let Some(info) = env.type_info(key) else {
@@ -234,9 +230,8 @@ impl Checker<'_> {
         )
     }
 
-    /// The query text the filter values in `args` give, joined with spaces: a query asks all of
-    /// them. With `text_too`, an argument may also be the query as people type it in search
-    /// (`is:done`), which a list takes beside its filters.
+    /// The query text the filter values in `args` give, joined with spaces. With `text_too`, an argument
+    /// may also be the query as people type it in search (`is:done`).
     fn query_fragments(
         &mut self,
         what: &str,
@@ -292,14 +287,12 @@ impl Checker<'_> {
         })
     }
 
-    /// `query(T, in: x, filter: value, ..., sort: .field_order)`: the resources of `T` the
-    /// filters hold of, inside `x` (or anywhere in the workspace), as a lazy list the index
-    /// answers.
+    /// `query(T, in: x, filter: value, ..., sort: .field_order)`: the resources of `T` the filters hold
+    /// of, inside `x` (or anywhere in the workspace), as a lazy list the index answers.
     pub(super) fn builtin_query(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         self.query_named("query", args, span)
     }
 
-    /// `query(...)`, or a program's typed `find(...)`, which is the same query.
     pub(super) fn query_named(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Ex {
         let Some(key) = self.queried(what, args, span) else {
             for a in args.iter().skip(1) {
@@ -396,7 +389,6 @@ impl Checker<'_> {
                 ),
             );
         }
-        // No scope: an Option the host reads as none (a handle, so the call has its argument).
         let scope = scope
             .unwrap_or_else(|| Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Text))));
         let pairs = self.text_pairs(terms);
@@ -408,10 +400,9 @@ impl Checker<'_> {
         )
     }
 
-    /// `items.matching(q)`: the items of a list of resources that `q` holds of, each argument a
-    /// filter of their type (`Task.today`, `Task.project(p)`) or the query written as people
-    /// type it in search (`is:done due:-7d`), all of them asked together; all of them, as they
-    /// were, for none. A collection read in a view stays one, which the index answers.
+    /// `items.matching(q)`: the items of a list of resources that `q` holds of, each argument a filter of
+    /// their type (`Task.today`) or the query written as people type it in search, all of them asked
+    /// together. A collection read in a view stays one, which the index answers.
     pub(super) fn matching(&mut self, list: Ex, elem: &Ty, args: &[ast::Arg], span: Span) -> Ex {
         let Ty::Record(key) = elem else {
             let t = self.show(elem);
@@ -441,8 +432,6 @@ impl Checker<'_> {
         Ex::host(Imp::Query, vec![Ex::str(&id), list, pairs, text], list_ty)
     }
 
-    /// A list of `(key, value)` text pairs, as the runtime reads a query's terms and a
-    /// message's arguments.
     pub(super) fn text_pairs(&mut self, pairs: Vec<(String, Ex)>) -> Ex {
         let pair = Ty::Tuple(vec![Ty::Text, Ty::Text]);
         let list_ty = Ty::List(Box::new(pair.clone()));
@@ -484,8 +473,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `in: x`: the resource whose collection of `T` the query looks in (its one collection of
-    /// them), or such a collection.
+    /// `in: x`: the resource whose collection of `T` the query looks in (its one collection of them), or
+    /// such a collection.
     fn query_scope(&mut self, info: &TypeInfo, e: &ast::Expr) -> Option<Ex> {
         let item = Ty::Record(info.key.clone());
         let x = self.expr(e, None);
@@ -505,6 +494,7 @@ impl Checker<'_> {
                         let name = ast::Ident {
                             name: one.name.clone(),
                             span: e.span,
+                            from_template_of: None,
                         };
                         Some(self.field_read(x, &name))
                     }
@@ -610,7 +600,6 @@ impl Checker<'_> {
         }
     }
 
-    /// The value of the filter `f` a query sets, as a typed search writes it.
     fn query_value(&mut self, info: &TypeInfo, f: &FilterMeta, e: &ast::Expr) -> Option<Ex> {
         let field_ty = f
             .field
@@ -667,7 +656,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `none` or `any` (or `.none`) where a filter may hold no value.
     fn absence(&self, e: &ast::Expr) -> Option<&'static str> {
         match &e.kind {
             ExprKind::Ident(w) if self.lookup(w).is_none() && w == "none" => Some("none"),
@@ -677,8 +665,8 @@ impl Checker<'_> {
         }
     }
 
-    /// A Date or Time filter's value: a day or an instant, `today`, `now`, either plus or
-    /// minus a duration, a duration from now (`-7d`), or a range of them.
+    /// A Date or Time filter's value: a day or an instant, `today`, `now`, either plus or minus a
+    /// duration, a duration from now (`-7d`), or a range of them.
     fn dated_value(&mut self, one: &Ty, e: &ast::Expr) -> Option<Ex> {
         if let ExprKind::Range { lo, hi } = &e.kind {
             let lo = match lo {
@@ -720,8 +708,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `today`, `now`, `today + 7d`, `-7d`: a time relative to when the query is answered, as
-    /// a typed search writes it.
+    /// `today`, `now`, `today + 7d`, `-7d`: a time relative to when the query is answered, as a typed
+    /// search writes it.
     fn relative(&self, e: &ast::Expr) -> Option<String> {
         let anchor = |e: &ast::Expr| -> Option<&'static str> {
             match &e.kind {
@@ -856,8 +844,8 @@ impl Checker<'_> {
         }
     }
 
-    /// An identifier filter's value: an identifier, or a pattern of one (`*@x.com`), checked
-    /// here when it is written out.
+    /// An identifier filter's value: an identifier, or a pattern of one (`*@x.com`), checked here when it
+    /// is written out.
     fn identifier_value(&mut self, e: &ast::Expr) -> Option<Ex> {
         if let Some(text) = crate::resolve::plain_text(e) {
             return match crate::identifier::normalize_pattern(&text) {
@@ -884,7 +872,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `.scheme` and `.value` of a `std.Identifier`.
     pub(super) fn identifier_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         let part = match name.name.as_str() {
             "scheme" => 0,
@@ -907,8 +894,8 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    /// `.name`, `.media`, `.size` and `.url` of a `File`: what it is called, the media type it
-    /// holds, how many bytes it is, and where its bytes are (`.text()` reads them).
+    /// `.name`, `.media`, `.size` and `.url` of a `File`: what it is called, the media type it holds, how
+    /// many bytes it is, and where its bytes are (`.text()` reads them).
     pub(super) fn file_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         if name.name == "size" {
             return Ex::host(Imp::FileSize, vec![v], Ty::Int);
@@ -935,7 +922,6 @@ impl Checker<'_> {
         )
     }
 
-    /// `.excerpt`, `.text`, `.markdown`, `.references` and `.people` of a `RichText`.
     pub(super) fn rich_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         let (part, ty) = match name.name.as_str() {
             "excerpt" => (0, Ty::Text),
@@ -961,8 +947,8 @@ impl Checker<'_> {
     }
 }
 
-/// Whether a field of this type has an order, and so is one a window may sort by: a Date, a
-/// Time or a number, the latest or largest first, or a Text, A to Z.
+/// Whether a field of this type has an order, and so is one a window may sort by: a Date, a Time or a
+/// number, the latest or largest first, or a Text, A to Z.
 fn ordered(ty: &Ty) -> bool {
     match ty {
         Ty::Date | Ty::Time | Ty::Int | Ty::Float | Ty::Text | Ty::Identifier => true,
@@ -971,7 +957,6 @@ fn ordered(ty: &Ty) -> bool {
     }
 }
 
-/// The orders a query of `info` may ask for: `.field_order`, per field that has one.
 fn sorts(info: &TypeInfo) -> Vec<String> {
     let mut out = Vec::new();
     for f in &info.fields {
@@ -991,7 +976,6 @@ fn sorts(info: &TypeInfo) -> Vec<String> {
     out
 }
 
-/// Text pieces joined.
 fn concat(parts: Vec<Ex>) -> Ex {
     let mut parts = parts.into_iter();
     let first = parts.next().unwrap_or_else(|| Ex::str(""));
@@ -1000,10 +984,9 @@ fn concat(parts: Vec<Ex>) -> Ex {
     })
 }
 
-/// The type of the value a filter takes, when it takes one: its field's type without the
-/// `Option` or `Set` around it — `Task.project(p)` takes a `Project`, `Task.done(false)` a
-/// `Bool`, `Task.priority(.high)` a case of its enum. A named filter is on a field of its own
-/// and takes none.
+/// The type of the value a filter takes, when it takes one: its field's type without the `Option` or
+/// `Set` around it — `Task.project(p)` takes a `Project`. A named filter is on a field of its own and
+/// takes none.
 fn filter_value_ty(info: &TypeInfo, f: &FilterMeta) -> Option<Ty> {
     let id = f.field.as_ref()?;
     let field = info.fields.iter().find(|field| &field.id == id)?;

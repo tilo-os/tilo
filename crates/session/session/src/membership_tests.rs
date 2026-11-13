@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use ed25519_dalek::SigningKey;
 use pollster::FutureExt as _;
-use tilo_action_policy::{Change, Grant, Role, Subject, WorkspacePolicy};
+use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::HostIdentity;
@@ -501,7 +501,7 @@ fn the_app_the_person_opens_authors_its_records_through_the_workspace() {
             .grants
             .iter()
             .any(|grant| grant.id.as_str() == format!("app-author:{app}")
-                && matches!(grant.subject, Subject::App(_))),
+                && grant.grantee.app_id().is_some()),
         "the workspace's governance holds the authorship, so every device has it"
     );
     assert!(
@@ -1932,11 +1932,11 @@ fn a_grant_the_person_gives_an_app_is_in_force_once_the_desk_carries_it() {
     let today = "so.tilo.lang.today";
     let grant = Grant::new(
         "app-action:clear",
-        Subject::App(today.to_owned()),
+        Grantee::app(today.to_owned()),
         tilo_action_policy::TreePath::workspace(WORKSPACE.to_owned()),
         tilo_action_policy::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
-        Subject::person(&person),
+        Grantee::person(&person),
     );
     let request = tilo_action_broker::app_actions::AppActionConsentRequest {
         handle: "app-action:i1".into(),

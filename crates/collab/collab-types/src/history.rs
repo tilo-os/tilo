@@ -70,21 +70,25 @@ pub struct NamedApp {
 }
 
 impl NamedApp {
-    /// What the app is called in `locale` (BCP 47): its exact tag, else its
-    /// language, else the name its package gives itself.
+    /// What the app is called in `locale`: [`localized_name`], else the name its package gives
+    /// itself.
     #[must_use]
     pub fn name_in(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        [locale, language]
-            .into_iter()
-            .find_map(|wanted| {
-                self.names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-                    .map(|(_, name)| name.as_str())
-            })
-            .unwrap_or(self.name.as_str())
+        localized_name(&self.names, locale).unwrap_or(self.name.as_str())
     }
+}
+
+/// The name `names` (a package's `[package.names]`, by language tag) gives in `locale`: the
+/// name of its exact tag, else of its language, else of another region of its language — the
+/// one rule for which tag a reader gets ([`tilo_paths::matching`]), so a package named `de-DE`
+/// reads as `Aufgaben` on a German machine whatever its locale is spelled like.
+#[must_use]
+pub fn localized_name<'a>(
+    names: &'a std::collections::BTreeMap<String, String>,
+    locale: &str,
+) -> Option<&'a str> {
+    let position = tilo_paths::matching(locale, names.keys().map(String::as_str))?;
+    names.values().nth(position).map(String::as_str)
 }
 
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest

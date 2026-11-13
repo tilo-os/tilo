@@ -696,7 +696,11 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
-    assert_eq!(seen.as_deref(), Some("Home"));
+    assert_eq!(
+        seen.as_deref(),
+        Some(""),
+        "a workspace nobody named keeps no name of its own"
+    );
     WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
         panic!("no such workspace");
     });
@@ -876,7 +880,7 @@ fn consent(
 fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
-        tilo_action_policy::Subject::App("so.tilo.caller".into()),
+        tilo_action_policy::Grantee::app("so.tilo.caller"),
         tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
@@ -884,7 +888,7 @@ fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
             .action("open"),
         tilo_action_policy::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
+        tilo_action_policy::Grantee::person("owner"),
     )
 }
 
@@ -979,7 +983,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
             .policy
             .grants
             .iter()
-            .all(|grant| grant.subject != tilo_action_policy::Subject::App("so.tilo.caller".into())),
+            .all(|grant| grant.grantee != tilo_action_policy::Grantee::app("so.tilo.caller")),
         "nothing granted to the app"
     );
 }

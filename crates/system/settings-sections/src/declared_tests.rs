@@ -8,25 +8,19 @@ use ui::tilo_resource::{FieldShape, Shape};
 /// theme, a language, a picture), checked by the section's own invariant or
 /// by whoever reads it.
 const FREE_TEXT: &[(&str, &str)] = &[
-    // A preset id or `custom:<id>` of a theme Theme Studio wrote.
     ("settings.appearance", "dark_theme"),
     ("settings.appearance", "light_theme"),
     // `HH:MM`, checked by the section's invariant.
     ("settings.appearance", "sunrise"),
     ("settings.appearance", "sunset"),
-    // A BCP 47 tag among the languages installed.
     ("settings.appearance", "language"),
-    // Any family a theme's type role may name.
     ("settings.appearance", "ui_face"),
     // A name the presence palette gives a hue, checked by the section's
     // invariant.
     ("settings.appearance", "accent"),
     ("settings.text-assistance", "spelling_language"),
-    // A shipped wallpaper's id, checked against the ones installed.
     ("settings.appearance", "wallpaper"),
-    // A sound theme installed on the device.
     ("settings.audio", "system_sounds.theme"),
-    // What search keeps of the person's choices, in its own encoding.
     ("settings.search_history", "chosen"),
     ("settings.search_history", "chosen_for_text"),
 ];
@@ -47,7 +41,6 @@ fn is_text(ty: &str) -> bool {
     matches!(ty, "String" | "Option<String>")
 }
 
-/// The schema of the value itself, past an optional field's `null`.
 fn value_of(schema: &serde_json::Value) -> serde_json::Value {
     schema
         .get("oneOf")
@@ -61,7 +54,6 @@ fn value_of(schema: &serde_json::Value) -> serde_json::Value {
         .unwrap_or_else(|| schema.clone())
 }
 
-/// The largest value a type holds by itself, which a declared range narrows.
 fn type_maximum(ty: &str) -> Option<f64> {
     let ty = ty
         .strip_prefix("Option<")

@@ -1,14 +1,9 @@
-//! Operating on-screen controls the way a person does, without a window.
-//!
-//! [`FrameHarness::controls`] lists what the exported accessibility tree
-//! carries — every button, field, tab, toggle and slider, whether or not
-//! its app also declared an action for it, including the synthetic elements
-//! a canvas or a framework view exposes — and
-//! [`FrameHarness::operate_control`] presses, focuses, fills, types into or
-//! scrolls one through [`FrameHarness::perform_a11y_action`], the route a
-//! screen reader's request takes in the live `App`. Projected `ui:<node>`
-//! actions ([`FrameHarness::invoke_action`]) resolve here too, so an agent
-//! driving a headless mount reaches everything a person in a window can.
+//! Operating on-screen controls the way a person does, without a window. [`FrameHarness::controls`]
+//! lists what the exported accessibility tree carries — every button, field, tab, toggle and slider,
+//! whether or not its app also declared an action for it, including the synthetic elements a canvas or
+//! a framework view exposes — and [`FrameHarness::operate_control`] presses, focuses, fills, types into
+//! or scrolls one through [`FrameHarness::perform_a11y_action`], the route a screen reader's request
+//! takes in the live `App`.
 
 use super::{FrameHarness, Rect};
 use crate::a11y::Action;
@@ -22,9 +17,8 @@ use accesskit::{Action as AkAction, Role};
 /// Resource id prefix of a projected control (`ui:<percent-encoded node>`).
 pub const CONTROL_RESOURCE_PREFIX: &str = "ui:";
 
-/// How far following someone has brought a frame's view: the newest action
-/// of theirs it went to, whether it was shown, and whether its view had to be
-/// opened first. A follower starts a new one each time they follow.
+/// How far following someone has brought a frame's view: the newest action of theirs it went to,
+/// whether it was shown, and whether its view had to be opened first.
 #[derive(Debug, Default)]
 pub struct FollowedView {
     invocation: Option<tilo_actions::InvocationId>,
@@ -35,9 +29,7 @@ pub struct FollowedView {
 /// One control as the exported accessibility tree carries it now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
-    /// The exported node id, in decimal. Derived from the element's key, so
-    /// it survives relayouts and names the same element after siblings
-    /// come and go.
+    /// The exported node id, in decimal.
     pub id: String,
     /// Exported role.
     pub role: Role,
@@ -51,16 +43,14 @@ pub struct Control {
     pub focused: bool,
     /// Present but inoperable.
     pub disabled: bool,
-    /// The accessibility verbs it answers (`activate`, `focus`,
-    /// `set-value`, …).
+    /// The accessibility verbs it answers (`activate`, `focus`, `set-value`, …).
     pub verbs: Vec<String>,
 }
 
 /// What a person can do to a control.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlInput {
-    /// Click, tap or press Enter on it: its `activate` verb, or a click at
-    /// its centre when it has none.
+    /// Click, tap or press Enter on it: its `activate` verb, or a click at its centre when it has none.
     Press,
     /// Move keyboard focus to it.
     Focus,
@@ -69,12 +59,7 @@ pub enum ControlInput {
     /// Focus it, then type text at its caret through the input-method path.
     TypeText(String),
     /// Point at it and turn the wheel by line deltas.
-    Scroll {
-        /// Horizontal lines.
-        dx: f64,
-        /// Vertical lines.
-        dy: f64,
-    },
+    Scroll { dx: f64, dy: f64 },
     /// Check or uncheck it.
     Toggle,
     /// Step it up.
@@ -98,8 +83,8 @@ const VERBS: &[(AkAction, &str)] = &[
     (AkAction::ShowContextMenu, "show-context-menu"),
 ];
 
-/// An agent's invocation of `action` on resource `resource`, as the broker
-/// reports it while it applies: what [`FrameHarness::semantic_locus`] places.
+/// An agent's invocation of `action` on resource `resource`, as the broker reports it while it applies:
+/// what [`FrameHarness::semantic_locus`] places.
 #[must_use]
 pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInteraction {
     tilo_actions::SemanticInteraction {
@@ -116,6 +101,8 @@ pub fn agent_acting(resource: &str, action: &str) -> tilo_actions::SemanticInter
             id: action.into(),
             label: action.into(),
             app: None,
+            step: None,
+            creates: None,
         },
         resource: tilo_actions::ActionResource {
             id: resource.into(),
@@ -139,9 +126,9 @@ impl FrameHarness {
         self.semantic_tree_over(&resources)
     }
 
-    /// The semantic tree the live `App` builds: over the exported node map
-    /// and the bound components' resources, so widgets inside a hosted
-    /// component are reached the way assistive technology reaches them.
+    /// The semantic tree the live `App` builds: over the exported node map and the bound components'
+    /// resources, so widgets inside a hosted component are reached the way assistive technology reaches
+    /// them.
     pub(super) fn semantic_tree_over(
         &self,
         resources: &[tilo_actions::ResourceSpec],
@@ -164,10 +151,10 @@ impl FrameHarness {
         tree
     }
 
-    /// Resolve an exact action against the retained layout, without draining
-    /// wakes, laying out, scrolling, focusing, or executing an action. Hosts
-    /// must associate this metadata with the presentation that owns the layout;
-    /// it is not a portable semantic node identity or a capture receipt.
+    /// Resolve an exact action against the retained layout, without draining wakes, laying out,
+    /// scrolling, focusing, or executing an action. Hosts must associate this metadata with the
+    /// presentation that owns the layout; it is not a portable semantic node identity or a capture
+    /// receipt.
     pub fn action_ui_routes(
         &self,
         address: &tilo_actions::ActionAddress,
@@ -178,10 +165,7 @@ impl FrameHarness {
         crate::action_locus::action_ui_routes(&tree, &bindings, address)
     }
 
-    /// The exact retained control locus for a semantic action, if uniquely
-    /// available. Missing/ambiguous/domain-specific targets return no geometry.
-    /// An agent that has said where its caret or selection is in this frame's
-    /// text is there, whatever control its action is bound to.
+    /// The exact retained control locus for a semantic action, if uniquely available.
     pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
         if interaction.actor.kind.acts_for_someone()
             && let Some((_, rect)) = self.text_locus(&interaction.actor.id)
@@ -192,8 +176,8 @@ impl FrameHarness {
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
     }
 
-    /// Where this frame shows `actor`'s caret or selection in text: the widget
-    /// that draws it and its box, when a text widget here reports it.
+    /// Where this frame shows `actor`'s caret or selection in text: the widget that draws it and its
+    /// box, when a text widget here reports it.
     fn text_locus(&self, actor: &str) -> Option<(*const dyn Widget, Rect)> {
         let (key, range) = crate::presence::capability::actor_text_range(&self.presence, actor)?;
         crate::presence::capability::range_locus(self.root.as_ref(), &self.theme, key, range)
@@ -218,7 +202,6 @@ impl FrameHarness {
         else {
             return false;
         };
-        // There is an action to follow: what it left to show is read off the layout as it is now.
         self.invalidate_local();
         if followed.invocation != Some(interaction.invocation) {
             *followed = FollowedView {
@@ -253,8 +236,8 @@ impl FrameHarness {
         self.open_view_of(&interaction.resource.id)
     }
 
-    /// Scroll `rect` of `target` into every viewport that shows it, and lay
-    /// the frame out again when something moved. Answers whether it did.
+    /// Scroll `rect` of `target` into every viewport that shows it, and lay the frame out again when
+    /// something moved.
     fn reveal(&mut self, target: *const dyn Widget, rect: Rect) -> bool {
         let moved = self.root.reveal_descendant(target, rect);
         if moved {
@@ -263,8 +246,8 @@ impl FrameHarness {
         moved
     }
 
-    /// Open the view nearest `resource` that the published resources offer
-    /// (its own, else its closest parent's), as a person choosing it would.
+    /// Open the view nearest `resource` that the published resources offer (its own, else its closest
+    /// parent's), as a person choosing it would.
     fn open_view_of(&mut self, resource: &str) -> bool {
         fn nearest(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<(String, String)> {
             resources.iter().find_map(|spec| {
@@ -296,9 +279,8 @@ impl FrameHarness {
             .is_ok()
     }
 
-    /// Resolve only a currently mounted publication owner, exact app instance
-    /// and record. The alias is never decoded without its host/lifetime registry.
-    /// Reads the retained frame without input, wake draining or document edits.
+    /// Resolve only a currently mounted publication owner, exact app instance and record. The alias is
+    /// never decoded without its host/lifetime registry.
     pub fn published_action_locus(
         &self,
         instance: crate::application::InstanceId,
@@ -404,9 +386,6 @@ impl FrameHarness {
                 matches.push(bounds);
                 return;
             }
-            // Painting clips ordinary children, including ancestors outside
-            // the publication owner. Use the retained widget path, not just
-            // the semantic path (which omits non-accessible wrappers).
             let bounds = if let Some(clip) = widget.child_clip_rect() {
                 if ![clip.x0, clip.y0, clip.x1, clip.y1]
                     .into_iter()
@@ -449,8 +428,6 @@ impl FrameHarness {
         if !self.action_geometry_visible() {
             return None;
         }
-        // What the live window declares outside its components; theirs are
-        // the components' own nodes, as the live window's tree holds them.
         let mut resources = Vec::new();
         crate::bound_dispatch::collect_unbound_resources(
             self.root.as_ref(),
@@ -463,8 +440,7 @@ impl FrameHarness {
         ))
     }
 
-    /// Every operable control the exported accessibility tree carries now,
-    /// in tree order.
+    /// Every operable control the exported accessibility tree carries now, in tree order.
     pub fn controls(&self) -> Vec<Control> {
         self.a11y_nodes()
             .into_iter()
@@ -505,14 +481,6 @@ impl FrameHarness {
     }
 
     /// Operate the control `id` as a person would.
-    ///
-    /// A control bound to an app action runs it through the same door as a
-    /// click, so an action that needs confirmation is refused here, not run.
-    ///
-    /// # Errors
-    ///
-    /// Returns why: no such control in this frame, disabled, it does not
-    /// take this input, or the action it triggered was refused or failed.
     pub fn operate_control(&mut self, id: &str, input: &ControlInput) -> Result<(), String> {
         self.invalidate_local();
         let failures = self.control_failures.len();
@@ -625,18 +593,14 @@ impl FrameHarness {
         }
     }
 
-    /// Select everything in the focused field with the platform's
-    /// select-all shortcut.
     fn select_all_text(&mut self) {
         self.set_modifiers(&["command".to_owned()]);
         self.key("a");
         self.set_modifiers(&[]);
     }
 
-    /// Run a projected `ui:` action: the same verb dispatch as
-    /// [`Self::operate_control`], addressed the way the resource tree
-    /// publishes it. Availability, confirmation and argument binding were
-    /// already checked by the caller against the published spec.
+    /// Run a projected `ui:` action: the same verb dispatch as [`Self::operate_control`], addressed the
+    /// way the resource tree publishes it.
     pub(super) fn invoke_control_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -675,10 +639,9 @@ impl FrameHarness {
         ))
     }
 
-    /// Dispatch `verb` to the widget that owns `node`, exactly as the live
-    /// `App` routes an accessibility request: a synthetic child through its
-    /// owner's semantic target, a widget through the AccessKit path with the
-    /// focus and click fallbacks.
+    /// Dispatch `verb` to the widget that owns `node`, exactly as the live `App` routes an
+    /// accessibility request: a synthetic child through its owner's semantic target, a widget through
+    /// the AccessKit path with the focus and click fallbacks.
     fn perform_on_node(&mut self, node: &SemanticNode, verb: &Action) -> Result<(), String> {
         use crate::accesskit_bridge::A11yTarget;
         let taffy_raw = node
@@ -727,7 +690,6 @@ impl FrameHarness {
     }
 }
 
-/// Whether a person could click this even without an accessibility verb.
 fn is_pressable(role: Role) -> bool {
     matches!(
         role,
@@ -743,8 +705,7 @@ fn is_pressable(role: Role) -> bool {
     )
 }
 
-/// Whether `spec` is a projected control's action rather than one an app
-/// declared.
+/// Whether `spec` is a projected control's action rather than one an app declared.
 pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
     spec.operation_type.as_deref() == Some(SEMANTIC_OPERATION_TYPE)
 }
@@ -795,6 +756,8 @@ mod locus_tests {
                 id: "edit".into(),
                 label: "Edit".into(),
                 app: None,
+                step: None,
+                creates: None,
             },
             resource: tilo_actions::ActionResource {
                 id: resource.into(),
@@ -846,8 +809,6 @@ mod locus_tests {
                 "painting is not a pointer click or an action"
             );
 
-            // Observe already-settled host activity: no widget or input event
-            // is needed to keep its expiry deadline alive.
             let mut presence = crate::presence::PresenceCtx::empty();
             presence
                 .apply_interaction_at(
@@ -983,8 +944,8 @@ mod locus_tests {
         assert_eq!(calls.get(), 0);
     }
 
-    /// The capture a reviewer reads: an agent's item action marked on the row
-    /// that shows the item, beside the row it did not act on.
+    /// The capture a reviewer reads: an agent's item action marked on the row that shows the item,
+    /// beside the row it did not act on.
     #[test]
     fn agent_item_marker_render_evidence() {
         let root = Column::new()
@@ -1011,6 +972,7 @@ mod locus_tests {
         event.anchor = tilo_actions::InteractionAnchor::ListItems {
             ids: vec!["issue-b".into()],
         };
+        event.resource.label = "Second task".into();
         // A second in: the pointer has travelled to the check box, as the
         // capture shows it at rest on the control rather than mid-glide.
         let at = crate::time::now()
@@ -1027,7 +989,7 @@ mod locus_tests {
             label = presence.interaction_status_label(&event);
             applied
         });
-        assert_eq!(label, "Ada: checking off");
+        assert_eq!(label, "Ada: Editing Second task");
         assert!(frame.poll_frame().unwrap());
         frame.render_png(&out.join("tasks-agent-checks-second.png"));
         assert!(
@@ -1040,8 +1002,8 @@ mod locus_tests {
         frame.render_png(&out.join("tasks-agent-checks-second-light.png"));
     }
 
-    /// An agent acting on a task rests its pointer on the row's check box —
-    /// the control a person presses — and its whole mark stays inside the row.
+    /// An agent acting on a task rests its pointer on the row's check box — the control a person
+    /// presses — and its whole mark stays inside the row.
     #[test]
     fn an_agents_marker_rests_on_the_control_the_row_offers() {
         let root = Column::new()
@@ -1102,14 +1064,11 @@ mod locus_tests {
         let marker = markers.first().expect("the agent's mark is painted");
         let [x0, y0, x1, y1] = marker.marker;
         let mark = vello::kurbo::Rect::new(x0, y0, x1, y1);
-        // The agent's mark is centred on its tip, its nametag beside it.
         let tip = check.center();
         assert!(
             mark.contains(tip) && locus.contains(tip),
             "the pointer rests on the row's check box: {mark:?} vs {check:?} in {locus:?}"
         );
-        // One tag, saying who and what, standing where no word is: the row's title stays
-        // readable beside the control the mark rests on.
         let tags = presence.caret_tags();
         let [tag] = tags.as_slice() else {
             panic!("the agent wears one tag: {tags:?}");
@@ -1140,9 +1099,9 @@ mod locus_tests {
         );
     }
 
-    /// What an agent acts on is the item it names: the marker lands on the
-    /// row showing that item, whichever row the action happens to be bound
-    /// to, and an item no row shows has no place on screen.
+    /// What an agent acts on is the item it names: the marker lands on the row showing that item,
+    /// whichever row the action happens to be bound to, and an item no row shows has no place on
+    /// screen.
     #[test]
     fn an_item_anchor_lands_on_the_row_showing_that_item() {
         let root = Column::new()
@@ -1304,7 +1263,6 @@ mod locus_tests {
         assert!(frame.semantic_locus(&interaction("first")).is_none());
     }
 
-    /// An agent's action, shown as if it arrived a second ago.
     fn agent_acting(frame: &mut FrameHarness, resource: &str) -> tilo_actions::SemanticInteraction {
         let mut event = interaction(resource);
         event.actor.id = "scribe".into();
@@ -1316,9 +1274,8 @@ mod locus_tests {
         event
     }
 
-    /// Following an agent that edits far down a long document scrolls the
-    /// view to its edit, once per action; following someone else moves
-    /// nothing.
+    /// Following an agent that edits far down a long document scrolls the view to its edit, once per
+    /// action; following someone else moves nothing.
     #[test]
     fn following_an_agent_scrolls_to_its_edit_further_down() {
         let resource = resource_actions::resource("doc", "Long document", "edit", "Edit");
@@ -1358,8 +1315,6 @@ mod locus_tests {
         );
     }
 
-    /// An agent acting in a sheet no view here shows opens that sheet's own
-    /// view, once.
     #[test]
     fn following_an_agent_into_another_sheet_opens_it() {
         let mut resource = resource_actions::resource("sheet", "Sheet 2", "open", "Open");
@@ -1384,8 +1339,6 @@ mod locus_tests {
         assert_eq!(opened.get(), 1, "opened once");
     }
 
-    /// A note long enough to read down: forty paragraphs, the last ones far
-    /// below a short window.
     fn long_note() -> crate::widget::BlockEditor {
         let mut blocks = vec![BlockContent::paragraph("p-0", "A note about the move.")];
         for index in 1..40 {
@@ -1399,10 +1352,9 @@ mod locus_tests {
         editor
     }
 
-    /// An agent editing text further down a long note is there for every
-    /// viewer — its cursor rests on the words it wrote, not on whatever
-    /// control the action is bound to — and a follower's view scrolls to
-    /// them, once per action. A non-follower's view stays where they left it.
+    /// An agent editing text further down a long note is there for every viewer — its cursor rests on
+    /// the words it wrote, not on whatever control the action is bound to — and a follower's view
+    /// scrolls to them, once per action.
     #[test]
     fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
         let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
@@ -1410,7 +1362,6 @@ mod locus_tests {
         let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
         frame.relayout();
         let event = agent_acting(&mut frame, "notes.document:root");
-        // Where the agent says it is: the end of the paragraph it wrote.
         let written = 13;
         let block = crate::widget::block_editor::block_presence_key("p-33");
         frame.update_presence(|presence| {
@@ -1450,9 +1401,8 @@ mod locus_tests {
         );
     }
 
-    /// A follower whose view shows an agent's caret in text settles: frame
-    /// after frame of it goes to the words once, and says nothing of the
-    /// follower's own presence.
+    /// A follower whose view shows an agent's caret in text settles: frame after frame of it goes to
+    /// the words once, and says nothing of the follower's own presence.
     #[test]
     fn following_an_agents_caret_in_text_settles() {
         let root = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)

@@ -7,9 +7,8 @@ use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 pub(crate) use collaboration::state::{OwnedActionAttribution, OwnedActionReceipt, same_frontier};
 
-/// Private, synchronous admission staging. Only the History hosts' doors in
-/// this module construct one, after binding current authority and the exact
-/// owner/lifetime. A prepared content plan alone is never an authority grant.
+/// Private, synchronous admission staging. A prepared content plan alone is never an
+/// authority grant.
 pub(crate) struct ConfirmedRestore<'a> {
     _authority: &'a PermissionContext,
     author: UserId,
@@ -30,8 +29,8 @@ impl ConfirmedRestore<'_> {
     }
 }
 
-/// A restore the person reviewed in History: the source and scope it names,
-/// and the controller whose review token it carries.
+/// A restore the person reviewed in History: the source and scope it names, and the
+/// controller whose review token it carries.
 pub(crate) struct ReviewedRestore<'a> {
     pub(crate) source: &'a crate::history_mode::HistorySourceRegistration,
     pub(crate) scope: &'a crate::history_mode::HistoryScopeDefinition,
@@ -39,9 +38,7 @@ pub(crate) struct ReviewedRestore<'a> {
     pub(crate) review: &'a crate::history_mode::RestoreReview,
 }
 
-/// The framework History host's admission door. The current owner/context is
-/// borrowed through preparation, final authorization and the synchronous
-/// canonical write.
+/// The framework History host's admission door.
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
     restore: &ReviewedRestore<'_>,
@@ -83,9 +80,6 @@ pub(crate) fn restore_reviewed_history(
             }
             _ => "This review no longer matches the selected document version.".to_owned(),
         })?;
-    // Restoring just the selected changes takes back what they did, each on
-    // its own, and leaves everything written since: no schema is consulted,
-    // since nothing but those changes' own effects is touched.
     let changes = match extent {
         RestoreExtent::Whole | RestoreExtent::Name(_) => None,
         RestoreExtent::Changes(entries) => {
@@ -96,9 +90,9 @@ pub(crate) fn restore_reviewed_history(
             Some(changes)
         }
     };
-    // With a registered content schema only the declared content returns;
-    // without one the whole document returns to the selected version, the
-    // way `git revert` of every later change would.
+    // With a registered content schema only the declared content returns; without one the
+    // whole document returns to the selected version, the way `git revert` of every later
+    // change would.
     let prepared = schema
         .filter(|_| changes.is_none() && !matches!(extent, RestoreExtent::Name(_)))
         .map(|schema| {
@@ -202,9 +196,9 @@ enum RestoreRefusal {
     File,
 }
 
-/// Restoring writes: the author must be the actor `current` describes, and
-/// `current` must grant Write on the app and, for a file-backed record, on the
-/// file. `current` is already stamped at the caller's policy time.
+/// Restoring writes: the author must be the actor `current` describes, and `current` must
+/// grant Write on the app and, for a file-backed record, on the file. `current` is
+/// already stamped at the caller's policy time.
 fn check_restore_authority(
     current: &PermissionContext,
     author: &UserId,
@@ -212,8 +206,8 @@ fn check_restore_authority(
     record: Option<&crate::record::RecordId>,
 ) -> Result<(), RestoreRefusal> {
     use crate::permissions::{Access, ActionKind, Principal};
-    // The installed solo-workspace principal is the runner's existing
-    // local-author mapping. Other contexts must name the actual author.
+    // The installed solo-workspace principal is the runner's existing local-author
+    // mapping. Other contexts must name the actual author.
     let mapped = current.actor().principals.contains(&author.principal())
         || current
             .actor()
@@ -238,11 +232,9 @@ fn check_restore_authority(
     Ok(())
 }
 
-/// The History host's door for descriptions of its resource's changes: one
-/// forward change through the resource's owner, under the same authority a
-/// restore needs, written only while no edit is open. Like a name, it is
-/// neither a row nor an undo step. Only the native runner hears from the
-/// shell that describes changes.
+/// The History host's door for descriptions of its resource's changes: one forward change
+/// through the resource's owner, under the same authority a restore needs, written only
+/// while no edit is open.
 #[cfg(feature = "native")]
 pub(crate) fn describe_history(
     state: &mut State,
@@ -311,13 +303,12 @@ pub(crate) enum OwnedRestoreError {
     Engine(RestoreError),
     EngineContract,
     Bound(crate::bound_dispatch::BoundDispatchError),
-    /// The record's current authority does not grant this author Write.
     #[cfg(feature = "native")]
     Denied,
 }
-/// What a confirmed restore writes: the schema-declared content of a version,
-/// or, for a resource without a content schema, the whole document returned to
-/// the version's frontier as one forward change.
+/// What a confirmed restore writes: the schema-declared content of a version, or, for a
+/// resource without a content schema, the whole document returned to the version's
+/// frontier as one forward change.
 #[derive(Clone, Copy)]
 pub(crate) enum RestoreWrite<'a> {
     Content(&'a PreparedContentRestore),
@@ -325,20 +316,16 @@ pub(crate) enum RestoreWrite<'a> {
         current: &'a [ChangeHash],
         target: &'a [ChangeHash],
     },
-    /// Take back exactly these changes (each with the actor whose work it
-    /// is, newest first), each on its own, as one forward change: whatever
-    /// anyone wrote since stays.
+    /// Take back exactly these changes (each with the actor whose work it is, newest
+    /// first), each on its own, as one forward change: whatever anyone wrote since stays.
     Changes {
         current: &'a [ChangeHash],
         changes: &'a [(ChangeHash, String)],
     },
-    /// Name a run of changes, or remove its name: no content moves.
     Name {
         current: &'a [ChangeHash],
         request: &'a crate::GroupNameRequest,
     },
-    /// Write what changes did, as a model described them, for those the
-    /// document does not describe yet: no content moves.
     #[cfg(feature = "native")]
     Describe {
         current: &'a [ChangeHash],
@@ -361,17 +348,12 @@ impl RestoreWrite<'_> {
 /// How much of a selected version a reviewed restore brings back.
 #[derive(Clone, Copy)]
 pub(crate) enum RestoreExtent<'a> {
-    /// The whole version.
     Whole,
-    /// Only what these selected changes did, taken back on their own.
     Changes(&'a [crate::widget::HistoryEntryId]),
-    /// Nothing comes back: the selected run of changes is named.
     Name(&'a crate::GroupNameRequest),
 }
 
-/// Exclusive loan of the original document and its own undo log. Its only
-/// writers are the prepared content engine and the whole-document revert; no
-/// committing callback is accepted.
+/// Exclusive loan of the original document and its own undo log.
 pub(crate) struct OwnedContentAction<'a> {
     doc: &'a mut AutoCommit,
     history: &'a mut UndoLog,
@@ -387,7 +369,6 @@ impl<'a> OwnedContentAction<'a> {
         admitted: &ConfirmedRestore<'_>,
         instance_id: Option<InstanceId>,
     ) -> Result<Self, OwnedRestoreError> {
-        // Do not use get_heads, save, rebase or any auto-committing observation.
         if doc.pending_ops() != 0 {
             return Err(OwnedRestoreError::PendingEdits);
         }
@@ -486,8 +467,6 @@ impl<'a> OwnedContentAction<'a> {
 impl Drop for OwnedContentAction<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            // Entry refused others' pending work. Automerge rollback discards
-            // this transaction's patch log too; retain the existing diff cursor.
             self.doc.rollback();
         }
     }
@@ -531,8 +510,8 @@ impl State {
         let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
         if changed {
             self.undo.rebase(&mut self.doc);
-            // The owner that served this history holds it: the next primary
-            // delta must not echo it back as this replica's change.
+            // The owner that served this history holds it: the next primary delta must
+            // not echo it back as this replica's change.
             self.outbound.observe_changes_after(&mut self.doc, &before);
         }
         Ok(Some(changed))

@@ -33,7 +33,5 @@ pub fn load() -> Result<BrokerSigningIdentity, NotAvailable> {
     Err(NotAvailable::ServiceFdMissing)
 }
 
-/// Outside Unix no identity service is handed to an app and no record is
-/// kept on disk.
 #[cfg(not(unix))]
 pub use tilo_identity_client::{load_metadata, load_metadata_from_path, resolve_active_identity};

@@ -1,39 +1,27 @@
-//! What Logs does beyond its filter: the journal effects, and the entries
-//! it publishes as live rows.
-//!
-//! The filter is the [`crate::resource::Logs`] document. Refresh, live tail,
-//! export and showing an entry change no document, so they are effects
-//! answered by this device's viewer. Entries are this device's journal,
-//! published with stable ids and metadata only, never their payloads.
+//! What Logs does beyond its filter: the journal effects, and the entries it publishes as
+//! live rows. Entries are this device's journal, published with stable ids and metadata
+//! only, never their payloads.
 
 use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
 
 use crate::model::{Filter, LogEntry};
 
-/// The most entries published as live rows; the rest resolve by id.
 const ENTRY_LIMIT: usize = 200;
 
 /// The journal effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "logs.effects")]
 pub enum JournalEffect {
-    /// Refresh journal.
     #[effect(job, kind = "read")]
     Refresh,
-    /// Start live tail.
     #[effect(kind = "read")]
     SetLiveTail {
         #[param("Follow new entries; omit to toggle")]
         enabled: Option<bool>,
     },
-    /// Export filtered logs.
-    ///
-    /// Writes the entries the filter shows to a JSON Lines file the person
-    /// picks.
     #[effect(attended, job)]
     ExportFilteredJsonl,
-    /// Show entry details.
     #[effect(kind = "read")]
     SelectEntry {
         #[param("Stable logs.entry.* id")]
@@ -41,8 +29,7 @@ pub enum JournalEffect {
     },
 }
 
-/// Stable across ordering and cache refreshes. It uses journal fields rather
-/// than a display index, so every local cache can address the same record.
+/// Stable across ordering and cache refreshes.
 pub fn entry_resource_id(entry: &LogEntry) -> String {
     let mut hasher = blake3::Hasher::new();
     for part in [

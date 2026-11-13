@@ -67,7 +67,6 @@ pub mod content;
 pub mod crypto;
 pub mod endpoint;
 pub mod errors;
-mod formats;
 pub mod gate;
 pub mod group;
 pub mod peer;
@@ -77,7 +76,7 @@ pub mod welcome;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
-pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
+pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 pub use errors::{Error, Result, WelcomeRefusal};
 pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};

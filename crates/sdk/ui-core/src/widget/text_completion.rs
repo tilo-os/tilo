@@ -1,19 +1,5 @@
-//! Inline completion in a text field: `:shortcode` offers the catalogue's
-//! emoji and `@name` offers the workspace's people and agents, in the one list
-//! beside the caret.
-//!
-//! A field offers both by default; what it offers is a property of the field
-//! ([`TextCompletion`]), not of the app. A search field, a secret, a code
-//! editor or a URL is plain because `:` and `@` are syntax there, not
-//! because completion is unavailable.
-//!
-//! Both triggers share one keyboard-driven list: Up and Down move the armed
-//! row, Enter or Tab accepts it, Escape dismisses this token. Accepting
-//! replaces the token with the emoji character (a workspace emoji stays
-//! written `:name:`) or with the mention's name as it will resolve. A field
-//! with an input method composition open offers nothing, so completion never
-//! competes with the input method for the same keys.
-
+//! Inline completion in a text field: `:shortcode` offers the catalogue's emoji and `@name` offers
+//! the workspace's people and agents, in the one list beside the caret.
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::Key;
@@ -28,7 +14,6 @@ use crate::widget::completion::{
 };
 use crate::widget::completion_card;
 use crate::widget::mention_picker::{self, MentionCandidate};
-/// How much of a shortcode may be typed before it is no longer one.
 const MAX_SHORTCODE_LEN: usize = 32;
 
 /// Which parts of a text field's inline completion it offers.
@@ -46,12 +31,10 @@ pub struct TextCompletion {
 }
 
 impl TextCompletion {
-    /// Emoji and mentions: the default for prose.
     pub const ALL: Self = Self {
         emoji: true,
         mentions: true,
     };
-    /// UTF-8 only: neither, and no completion list.
     pub const PLAIN: Self = Self {
         emoji: false,
         mentions: false,
@@ -62,39 +45,32 @@ impl TextCompletion {
         emoji: true,
         mentions: false,
     };
-    /// A field where `@` names someone but `:` is punctuation (a code
-    /// comment, a log line).
     pub const MENTIONS: Self = Self {
         emoji: false,
         mentions: true,
     };
 
-    /// Whether `:shortcode` completion is offered.
     #[must_use]
     pub const fn emoji(self) -> bool {
         self.emoji
     }
 
-    /// Whether `@mention` completion is offered.
     #[must_use]
     pub const fn mentions(self) -> bool {
         self.mentions
     }
 
-    /// Whether the field offers neither, and therefore no list at all.
     #[must_use]
     pub const fn is_plain(self) -> bool {
         !self.emoji && !self.mentions
     }
 
-    /// This setting with emoji completion on or off.
     #[must_use]
     pub const fn with_emoji(mut self, on: bool) -> Self {
         self.emoji = on;
         self
     }
 
-    /// This setting with mention completion on or off.
     #[must_use]
     pub const fn with_mentions(mut self, on: bool) -> Self {
         self.mentions = on;
@@ -108,7 +84,6 @@ impl Default for TextCompletion {
     }
 }
 
-/// The `:shortcode` the caret sits in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmojiQuery {
     /// Byte offset of the opening `:`.
@@ -116,20 +91,16 @@ pub struct EmojiQuery {
     /// Where the token ends: one past its closing `:` where it already has
     /// one, otherwise the caret. What accepting replaces.
     pub end: usize,
-    /// What was typed between the `:` and the caret.
     pub query: String,
 }
 
-/// The token the caret sits in, and what accepting it replaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CompletionToken {
-    /// The character that opened it.
     pub(crate) trigger: char,
     /// Byte offset of the trigger.
     pub(crate) start: usize,
     /// One past the last byte a pick replaces.
     pub(crate) end: usize,
-    /// What was typed after the trigger, up to the caret.
     pub(crate) query: String,
 }
 
@@ -138,9 +109,6 @@ pub(crate) struct CompletionToken {
 /// open over a whole sentence.
 const MAX_QUERY_LEN: usize = 40;
 
-/// Whether `previous` lets a `:` or `@` open a token: the start of the text,
-/// whitespace, or punctuation that does not make the character part of a
-/// word (an email's local part, a shortcode's own colons, a URL).
 fn opens_token(previous: Option<char>) -> bool {
     previous.is_none_or(|character| {
         character.is_whitespace()
@@ -149,7 +117,6 @@ fn opens_token(previous: Option<char>) -> bool {
     })
 }
 
-/// Whether `character` may be typed in a `:shortcode`.
 fn is_shortcode_char(character: char) -> bool {
     character.is_alphanumeric() || matches!(character, '_' | '-' | '+')
 }
@@ -173,9 +140,6 @@ pub fn emoji_query_at_caret(text: &str, caret: usize) -> Option<EmojiQuery> {
     {
         return None;
     }
-    // A token that already has its closing `:` is complete; accepting it
-    // would leave stray text behind. Mid-token (the caret before a closing
-    // `:`) still offers, and replaces the whole token.
     let mut end = caret;
     for (offset, character) in text.get(caret..)?.char_indices() {
         if character == ':' {
@@ -197,7 +161,6 @@ pub fn emoji_query_at_caret(text: &str, caret: usize) -> Option<EmojiQuery> {
     })
 }
 
-/// The catalogue's emoji for what was typed after the `:`, as a source.
 fn emoji_source(query: &str) -> CompletionSource {
     let candidates = crate::emoji_catalogue::shortcode_matches(query, MAX_ROWS)
         .into_iter()
@@ -207,15 +170,12 @@ fn emoji_source(query: &str) -> CompletionSource {
             } else {
                 format!("{} {}", shortcode.emoji, shortcode.name)
             };
-            // The catalogue has matched already; the name carries the
-            // shortcode so the drawer's own matching keeps every row.
             Candidate::text(name, shortcode.emoji).with_handle(format!(":{}:", shortcode.name))
         })
         .collect();
     CompletionSource::new(':', vec![Tier::new(candidates)])
 }
 
-/// The roster as the `@` source of a field whose view gave none.
 fn roster_source(roster: &[MentionCandidate]) -> CompletionSource {
     CompletionSource::new(
         '@',
@@ -225,10 +185,6 @@ fn roster_source(roster: &[MentionCandidate]) -> CompletionSource {
     )
 }
 
-/// The token for `trigger` ending at `caret`: the trigger where it opens a
-/// token, then what was typed up to the caret, without a newline or a second
-/// trigger. A `:` takes shortcode characters only (`10:30` is a time), and a
-/// `/` runs a command only at the start of the field.
 fn token_for(text: &str, caret: usize, trigger: char) -> Option<CompletionToken> {
     let caret = text.floor_char_boundary(caret.min(text.len()));
     if trigger == ':' {
@@ -263,29 +219,19 @@ fn token_for(text: &str, caret: usize, trigger: char) -> Option<CompletionToken>
     })
 }
 
-/// What a key did to the open drawer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompletionKey {
-    /// Not the drawer's: the field handles it.
     Pass,
-    /// The drawer moved, closed or accepted nothing.
     Handled,
-    /// Accept this pick in place of the token.
     Accept(Pick),
 }
 
-/// The completion drawer of one field: the sources its view gave, the token
-/// at the caret, and the rows it shows for it.
 #[derive(Default)]
 pub(crate) struct CompletionList {
     list: SuggestionList,
-    /// The rows shown, as the list shows them.
     entries: Vec<Entry>,
     token: Option<CompletionToken>,
-    /// The token the person dismissed with Escape (or a space with nothing
-    /// matching): it stays closed while they type on after it.
     dismissed: Option<(usize, char)>,
-    /// What the view gave each trigger, folded once.
     sources: Vec<PreparedSource>,
     /// The person moved the selection off the first row: a row they chose keeps its place
     /// while they type on; untouched, the selection stays on the best match.
@@ -297,25 +243,19 @@ impl CompletionList {
         self.token.is_some() && !self.entries.is_empty()
     }
 
-    /// The token the open drawer answers.
     pub(crate) fn token(&self) -> Option<&CompletionToken> {
         self.token.as_ref().filter(|_| self.is_open())
     }
 
-    /// The rows in view, for tests.
     #[cfg(test)]
     pub(crate) fn rows(&self) -> &[Suggestion] {
         self.list.rows()
     }
 
-    /// The selected row, when one is.
     pub(crate) fn selected(&self) -> Option<&Entry> {
         self.list.highlight().and_then(|at| self.entries.get(at))
     }
 
-    /// Complete from `sources`, one per trigger, in place of the built-in
-    /// `:` and `@` for the triggers they name. Unchanged sources keep their
-    /// folding.
     pub(crate) fn set_sources(&mut self, sources: Vec<CompletionSource>) -> bool {
         let same = sources.len() == self.sources.len()
             && sources
@@ -336,8 +276,6 @@ impl CompletionList {
         self.list.clear();
     }
 
-    /// Close the drawer and keep this token closed while the person types on
-    /// after it: what accepting a row leaves behind is no longer a token.
     pub(crate) fn dismiss(&mut self) {
         self.dismissed = self
             .token
@@ -346,8 +284,6 @@ impl CompletionList {
         self.close();
     }
 
-    /// The triggers the field answers: the view's, then the built-in `:` and
-    /// `@` where the setting offers them and the view gave none.
     fn triggers(&self, setting: TextCompletion) -> Vec<char> {
         let mut triggers: Vec<char> = self.sources.iter().map(PreparedSource::trigger).collect();
         if setting.emoji() && !triggers.contains(&':') {
@@ -359,9 +295,6 @@ impl CompletionList {
         triggers
     }
 
-    /// Follow the caret: offer what `text` holds at `caret`, from the view's
-    /// sources, or under `setting` from the catalogue and `roster`. Returns
-    /// whether anything shown changed.
     pub(crate) fn follow(
         &mut self,
         text: &str,
@@ -374,7 +307,6 @@ impl CompletionList {
             .triggers(setting)
             .into_iter()
             .filter_map(|trigger| token_for(text, caret, trigger))
-            // The trigger nearest the caret is the token being typed.
             .max_by_key(|token| token.start)
             .filter(|token| self.dismissed != Some((token.start, token.trigger)));
         let Some(token) = token else {
@@ -396,7 +328,6 @@ impl CompletionList {
             };
         let rows = completion::rows(source, &token.query);
         let matched = rows.iter().any(|entry| matches!(entry, Entry::Item { .. }));
-        // A space after a token nothing matches was prose all along.
         if !matched && token.query.ends_with(char::is_whitespace) {
             self.token = Some(token);
             self.dismiss();
@@ -427,8 +358,6 @@ impl CompletionList {
         was != (self.token.clone(), self.entries.clone())
     }
 
-    /// A key while the drawer is open. The field passes every key here first;
-    /// [`CompletionKey::Pass`] means the drawer does not want it.
     pub(crate) fn handle_key(&mut self, key: &Key) -> CompletionKey {
         use winit::keyboard::NamedKey;
         if !self.is_open() {
@@ -457,8 +386,6 @@ impl CompletionList {
             }
             Key::Named(NamedKey::Enter | NamedKey::Tab) => match self.pick_selected() {
                 Some(pick) => CompletionKey::Accept(pick),
-                // Nothing to pick (only "No matches"): Enter goes on to the
-                // field, so a message still sends.
                 None => CompletionKey::Pass,
             },
             Key::Named(NamedKey::Escape) => {
@@ -469,7 +396,6 @@ impl CompletionList {
         }
     }
 
-    /// What picking the selected row does.
     fn pick_selected(&self) -> Option<Pick> {
         self.list
             .highlight()
@@ -491,7 +417,6 @@ impl CompletionList {
         }
     }
 
-    /// The pick under `point`, for a click or a tap.
     pub(crate) fn click_at(&self, point: Point) -> Option<Pick> {
         if !self.is_open() {
             return None;
@@ -502,22 +427,18 @@ impl CompletionList {
             .and_then(|entry| self.pick(entry))
     }
 
-    /// Hover arms nothing, it lifts the row under the pointer.
     pub(crate) fn hover_at(&mut self, point: Point) -> bool {
         self.is_open() && self.list.hover_at(point)
     }
 
-    /// Whether `point` is over the open drawer.
     pub(crate) fn contains(&self, point: Point) -> bool {
         self.is_open() && self.list.rect().is_some_and(|rect| rect.contains(point))
     }
 
-    /// The drawer's rect, while it is open.
     pub(crate) fn rect(&self) -> Option<Rect> {
         self.is_open().then(|| self.list.rect()).flatten()
     }
 
-    /// Whether the drawer still moves (its height, a source's progress).
     pub(crate) fn is_animating(&self) -> bool {
         self.is_open() && self.list.is_animating(crate::motion::frame_now())
     }
@@ -559,7 +480,6 @@ impl CompletionList {
         if breakpoint.is_some_and(crate::tokens::Breakpoint::is_wide)
             && let (Some(panel), Some(viewport), Some(Entry::Item { candidate, .. })) =
                 (self.list.rect(), viewport, self.selected())
-            // A card that would only repeat the row's name is left out.
             && (candidate.handle.is_some()
                 || candidate.aside.is_some()
                 || candidate.label.is_some()
@@ -569,8 +489,6 @@ impl CompletionList {
         }
     }
 
-    /// The drawer for assistive technology: a list naming how many results
-    /// it holds, its rows, the selected one marked.
     pub(crate) fn access(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
         let panel = self.rect()?;

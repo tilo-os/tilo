@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Change, Subject, TreePath, roles};
+use tilo_action_policy::{Change, Grantee, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -114,7 +114,7 @@ impl StatePeer {
                         &workspace,
                         who,
                         *until_ms,
-                        Subject::Person(by),
+                        Grantee::person(by),
                     )],
                     key,
                     now,
@@ -161,12 +161,11 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority();
         let cx = tilo_action_policy::Context::at_time(now);
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
-            (self.core.workspace_doc.as_deref(), &member.policy),
+            &member.policy,
             (&member.person, &device, &authority, &cx),
             share,
             node,
@@ -192,8 +191,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority();
         let cx = tilo_action_policy::Context::at_time(now);
         let ended = crate::workspace::share::ended_by(
             &member.policy,
@@ -217,8 +215,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority();
         let cx = tilo_action_policy::Context::at_time(now);
         let change = match command {
             WorkspaceMembershipCommand::Grant { grant } => Change::Grant(grant.clone()),
@@ -354,7 +351,7 @@ impl StatePeer {
         let member = self.membership(caller.device_public_key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
             let grant =
-                roles::app_authorship(&self.core.workspace, app, Subject::Person(member.person));
+                roles::app_authorship(&self.core.workspace, app, Grantee::person(member.person));
             if self
                 .require_governance_action(key, roles::governance::GRANT, now)
                 .is_ok()

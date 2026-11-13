@@ -319,15 +319,17 @@ impl StatePeer {
                         retained_replay,
                         strict_report,
                     ) {
-                        // ignored-failure: the write is held and decided again, not refused
-                        Err(_) => self.defer(
-                            source,
-                            message,
-                            Held {
-                                retained_replay,
-                                prerequisite: MissingPrerequisite::Governance,
-                                now,
-                            },
+                        Err(_) => tilo_failure::ignored!(
+                            "the write is held and decided again, not refused",
+                            self.defer(
+                                source,
+                                message,
+                                Held {
+                                    retained_replay,
+                                    prerequisite: MissingPrerequisite::Governance,
+                                    now,
+                                },
+                            )
                         ),
                         decided => decided,
                     };

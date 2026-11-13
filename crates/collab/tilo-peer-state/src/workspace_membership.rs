@@ -362,7 +362,7 @@ pub enum SettingsChange {
     /// `lifetime` ends.
     AssignPreset {
         preset: String,
-        subject: tilo_action_policy::Subject,
+        subject: tilo_action_policy::Grantee,
         lifetime: tilo_action_policy::Lifetime,
     },
     /// Let an app use one action of another app here.
@@ -378,6 +378,10 @@ pub enum SettingsChange {
     /// Save a shortcut of the workspace, or remove the one with this id, as its
     /// saver's own device signed it ([`tilo_automation::ShortcutChange`]).
     Shortcuts(tilo_automation::ShortcutChange),
+    /// Settle the workspace's door: whether a directory lists it, whether it
+    /// takes people by invitation only, and how many requests it keeps
+    /// ([`tilo_action_policy::DoorPolicy`]).
+    Door(tilo_action_policy::DoorPolicy),
 }
 
 /// The action an app-action grant is about: `action` on `target_app`'s
@@ -446,6 +450,20 @@ impl AppAction {
                 .action(self.action.as_str()),
         )
     }
+}
+
+/// The name a workspace is founded with, trimmed: none, which every reader
+/// shows in their own language, or a name [`valid_workspace_name`] takes.
+///
+/// # Errors
+///
+/// A name that is too long or holds control characters.
+pub fn valid_founding_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(name);
+    }
+    valid_workspace_name(name)
 }
 
 /// The workspace's name, trimmed, when it is 1 to 80 characters and no control
@@ -558,6 +576,11 @@ impl WorkspaceMembershipCommand {
                     &action.action,
                 )
                 .map(drop),
+                SettingsChange::Door(door) => door
+                    .clone()
+                    .checked()
+                    .map(drop)
+                    .map_err(|error| error.to_string()),
                 // Each is checked where it is written: a preset and a sandbox
                 // capability against the writer's own grants, and a shortcut
                 // against what the broker offers its saver, held to the proof

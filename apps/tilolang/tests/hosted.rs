@@ -41,6 +41,8 @@ use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
+use crate::settle::{self, Woken};
+
 #[path = "hosted/chunks.rs"]
 mod chunks;
 
@@ -64,65 +66,27 @@ mod offers;
 #[path = "hosted/typing.rs"]
 mod typing;
 
+#[path = "hosted/controls.rs"]
+mod controls;
+
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
 const TASKS: &str = "so.tilo.lang.tasks";
+/// The conversations the workspace has.
+const CHAT: &str = "so.tilo.lang.chat";
 /// The day at a glance, over Tasks', Notes' and Chat's own places.
 const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
-/// The turns in a row that change nothing before a window is taken to be at rest.
-const QUIET_TURNS: u32 = 20;
-/// The longest a settle waits for the host to be woken by the work it has off its frames.
+/// The longest a cost measurement waits for the host to be woken by the work it has off its
+/// frames.
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
-
-/// What wakes the host: work it does off its frames (an index built from the record, the whole
-/// search index read) is ready to be taken in. A session's settle waits on it instead of taking
-/// frames until the work happens to be done.
-#[derive(Default)]
-struct Woken {
-    woken: Mutex<bool>,
-    signal: std::sync::Condvar,
-}
-
-impl Woken {
-    /// The host's waker: what the background work calls when its result waits.
-    fn waker(self: &Arc<Self>) -> tilolang_tilo::background::Waker {
-        let woken = Arc::clone(self);
-        Arc::new(move || woken.mark())
-    }
-
-    fn mark(&self) {
-        *self
-            .woken
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.signal.notify_all();
-    }
-
-    /// Wait until the host is woken, at most `timeout`: the frames have nothing to take in
-    /// until then.
-    fn wait(&self, timeout: std::time::Duration) {
-        let (mut woken, _) = self
-            .signal
-            .wait_timeout_while(
-                self.woken
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                timeout,
-                |woken| !*woken,
-            )
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Taken in, and the next work's wake reads again.
-        *woken = false;
-    }
-}
 
 /// The broker's end of the instance's connection.
 struct Broker {
@@ -257,8 +221,9 @@ impl Window {
         Self::Live(Box::new(app))
     }
 
-    /// The live window's frames, as its surface runs them, until it is at rest.
-    fn live_frame(app: &mut ui::App) {
+    /// The live window's frames, as its surface runs them, until it is at rest; whether it owes
+    /// another.
+    fn live_frame(app: &mut ui::App) -> bool {
         // The wake's input is all handled, as the window's event loop says once it is.
         app.input_handled(INPUT.with(std::cell::Cell::get));
         for _ in 0..3 {
@@ -267,6 +232,7 @@ impl Window {
                 break;
             }
         }
+        app.unsettled()
     }
 
     /// `event` as the live window's surface delivers it. A quick hand's events (and
@@ -280,9 +246,10 @@ impl Window {
         app.surface_input(&Region, event, false);
     }
 
-    fn frame(&mut self) {
+    /// The window's frame, and whether it owes another.
+    fn frame(&mut self) -> bool {
         match self {
-            Self::Harness(window) => window.relayout(),
+            Self::Harness(window) => settle::framed(window),
             Self::Live(app) => Self::live_frame(app),
         }
     }
@@ -427,6 +394,8 @@ impl Window {
 
 /// A person at a window whose instance a tilolang host runs.
 struct Session {
+    /// The app whose window it is: what its actions' identities name before the operation.
+    app: String,
     host: TilolangHost,
     window: Window,
     /// The requests the instance's connection sent.
@@ -435,6 +404,16 @@ struct Session {
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
     broker: Box<dyn std::any::Any>,
+}
+
+/// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
+/// loading state. An index being built answers from its first step, so this is reached before
+/// the whole workspace is read.
+fn index_ready(host: &TilolangHost) -> bool {
+    host.instances()
+        .next()
+        .and_then(|hosted| hosted.instance().host())
+        .is_some_and(|host| host.index_answers())
 }
 
 impl Session {
@@ -611,10 +590,17 @@ impl Session {
             handle: Some(spec.person.clone()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::of(chunks, manager, route.clone(), spec.person.clone());
+        let record = InstanceRecord::of(
+            chunks,
+            manager,
+            route.clone(),
+            spec.person.clone(),
+            "tl.test",
+        );
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
+        let app = spec.app.clone();
         let kept = host.kept(&spec.app).unwrap();
         let bundle = package(package_of(&spec.app));
         let (ours, theirs) = Channel::pair().unwrap();
@@ -631,6 +617,7 @@ impl Session {
         );
         host.add(hosted, Some(watched));
         Self {
+            app,
             host,
             window: window(HostedWindow::over(theirs)),
             sent,
@@ -667,50 +654,52 @@ impl Session {
         published
     }
 
-    /// The host's frames and the window's, until neither has anything left to do. It reports
-    /// nothing: a turn here waits on work the instance does off the frame, and how many turns
-    /// that wait took is the machine's, not the window's. What a test counts of an interaction
-    /// is the work it did (`StoreStats`, `ReadStats`), and what it holds is the state it left —
+    /// The host's frames and the window's, until the host owes nothing: an instance opening, a
+    /// change being applied and a window with a frame coming all leave the window showing what
+    /// the workspace held before them. It reports nothing: how many turns the wait took is the
+    /// machine's, not the window's. What a test counts of an interaction is the work it did
+    /// (`StoreStats`, `ReadStats`), and what it holds is the state it left —
     /// `FrameHarness::frame_schedule` says whether the window came to rest.
     fn settle(&mut self) {
-        // An index built off the frame is what the window waits for: this is how long the wait
-        // is given before the frames are taken to be at rest.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut quiet = 0_u32;
-        while quiet < QUIET_TURNS {
-            let changed = self.host.turn();
-            self.window.frame();
-            // The window reads what the first step of a build holds while the rest of the
-            // workspace is derived off the frame: at rest only once the store has read all of it.
-            let waiting = (!self.index_whole() || self.search_index_pending())
-                && std::time::Instant::now() < deadline;
-            if changed || waiting {
-                quiet = 0;
-            } else {
-                quiet = quiet.saturating_add(1);
-            }
-            if !changed {
-                if waiting {
-                    // What the window waits for is read beside its frames, and the host is woken
-                    // when it is done: wait on that wake, as a session's loop waits, instead of
-                    // taking frames until the work happens to be finished.
-                    self.woken.wait(WAKE_WAIT);
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-        }
+        settle::settle(&mut self.host, &self.woken, || self.window.frame());
     }
 
-    /// Whether the window's instance reads the workspace's indexes: until then it shows the
-    /// platform's loading state. An index being built answers from its first step, so this is
-    /// reached before the whole workspace is read.
-    fn index_ready(&self) -> bool {
-        self.host
-            .instances()
-            .next()
-            .and_then(|hosted| hosted.instance().host())
-            .is_some_and(|host| host.index_answers())
+    /// The host's frames until it owes nothing, the window not drawn: what its instance answers
+    /// before the window's next frame.
+    fn settle_host(&mut self) {
+        settle::settle(&mut self.host, &self.woken, || false);
+    }
+
+    /// The window's frames until its instance reads the workspace's indexes: what its load
+    /// does before it opens the root, over the indexes it found.
+    fn wait_index(&mut self) {
+        settle::until(
+            &mut self.host,
+            &self.woken,
+            || self.window.frame(),
+            "the window reads the workspace's index",
+            |host| index_ready(host).then_some(()),
+        );
+    }
+
+    /// Close the window and let the host end its instance, as the session's loop does when a
+    /// person closes one: the index the window built reaches the disk, and the workspace's
+    /// index is there for the next window to open over.
+    fn close(self) {
+        let Self {
+            mut host,
+            window,
+            woken,
+            ..
+        } = self;
+        drop(window);
+        settle::until(
+            &mut host,
+            &woken,
+            || false,
+            "the window's instance ends",
+            |host| host.instances().next().is_none().then_some(()),
+        );
     }
 
     /// Whether the instance is still reading the whole of the workspace's search index off the
@@ -720,38 +709,6 @@ impl Session {
             .instances()
             .next()
             .is_some_and(Hosted::index_pending)
-    }
-
-    /// The window's frames until its instance reads the workspace's indexes: what its load
-    /// does before it opens the root, over the indexes it found.
-    fn wait_index(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while !self.index_ready() && std::time::Instant::now() < deadline {
-            let changed = self.host.turn();
-            self.window.frame();
-            if !changed {
-                self.woken.wait(std::time::Duration::from_millis(50));
-            }
-        }
-        assert!(self.index_ready(), "the window reads the workspace's index");
-    }
-
-    /// Close the window and let the host end its instance, as the session's loop does when a
-    /// person closes one: the index the window built reaches the disk, and the workspace's
-    /// index is there for the next window to open over.
-    fn close(self) {
-        let Self {
-            mut host, window, ..
-        } = self;
-        drop(window);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while host.instances().next().is_some() && std::time::Instant::now() < deadline {
-            host.turn();
-        }
-        assert!(
-            host.instances().next().is_none(),
-            "the window's instance ends with its window"
-        );
     }
 
     /// Whether the window's store has read the whole workspace: until it has, the lists it shows
@@ -823,69 +780,6 @@ impl Session {
             }
         }
         titles
-    }
-
-    /// The centre of the open note's body.
-    fn body(&mut self) -> (f64, f64) {
-        let body = self.field_key("Write something");
-        let rect = widget_by_id(self.window.root(), &body)
-            .expect("the open note's body is laid out")
-            .get_rect();
-        (rect.center().x, rect.center().y)
-    }
-
-    /// The key in the composed tree of the open note's field whose placeholder is
-    /// `placeholder`.
-    fn field_key(&mut self, placeholder: &str) -> String {
-        let view = self.hosted().view().expect("the window is connected");
-        let field = |tree: &tilo_ui_host::UiNode| {
-            find(tree, &|node| {
-                matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-            })
-            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-            .key
-            .clone()
-        };
-        // A window whose page is another's after it opens the page in the lane after its own;
-        // one whose page is its own (a tree beside what it shows) draws it in its content.
-        if let Some(detail) = view.detail_tree() {
-            return format!("{}{}", tilo_ui_host::shell::DETAIL, field(&detail));
-        }
-        let root = view.root_tree().expect("the window's view");
-        let mut page = Vec::new();
-        content_nodes(&root, &mut page);
-        page.iter()
-            .find_map(|node| {
-                find(node, &|node| {
-                    matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-                })
-            })
-            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-            .key
-            .clone()
-    }
-
-    /// The centre of the open note's field whose placeholder is `placeholder`.
-    fn field(&mut self, placeholder: &str) -> (f64, f64) {
-        let id = self.field_key(placeholder);
-        let rect = widget_by_id(self.window.root(), &id)
-            .unwrap_or_else(|| panic!("the field {id} is laid out"))
-            .get_rect();
-        (rect.center().x, rect.center().y)
-    }
-
-    /// What the open note's field whose placeholder is `placeholder` shows.
-    fn field_value(&mut self, placeholder: &str) -> Option<tilo_ui_host::Value> {
-        let id = self.field_key(placeholder);
-        self.hosted().view()?.bound_value(&id)
-    }
-
-    /// The centre of the header's New note button.
-    fn new_note_button(&mut self) -> (f64, f64) {
-        let mut found = Vec::new();
-        named(self.window.root(), "New note", &mut found);
-        let rect = *found.last().expect("the window offers New note");
-        (rect.center().x, rect.center().y)
     }
 }
 
@@ -1009,15 +903,15 @@ fn apart(one: &[[u8; 4]], other: &[[u8; 4]]) -> f64 {
 /// key typed before the host answered, three times over: each new note takes the keyboard in
 /// its title.
 fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
-    let title = session.field("Untitled");
+    let title = session.field("title");
     session.window.click_at(title.0, title.1);
     session.window.type_text("First ");
     session.settle();
     for _ in 0..3 {
-        let plus = session.new_note_button();
+        let plus = session.control(&session.doing("Notebook", "new_note"));
         session.window.click_at(plus.0, plus.1);
         session.window.type_text("Note title");
         session.settle();
@@ -1052,7 +946,7 @@ fn keys_typed_right_after_new_note_land_in_the_new_notes_title_in_the_live_windo
 fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut session: Session) {
     let names = ["Alpha", "Beta", "Gamma"];
     for name in names {
-        let plus = session.new_note_button();
+        let plus = session.control(&session.doing("Notebook", "new_note"));
         session.window.click_at(plus.0, plus.1);
         session.window.type_text(name);
     }
@@ -1082,13 +976,13 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     let busy = Arc::new(AtomicBool::new(false));
     let changes = Arc::default();
     let mut session = Session::crowded_notes(&busy, &changes);
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     // The connection's queue fills up while the person types fast into notes, open and new.
     busy.store(true, Ordering::SeqCst);
     let before = changes.lock().unwrap().len();
-    let title = session.field("Untitled");
+    let title = session.field("title");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
         session.window.type_text(key);
@@ -1098,7 +992,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     session.window.click_at(body.0, body.1);
     session.window.type_text("Body");
     session.settle();
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.window.type_text("WV");
     session.settle();
@@ -1139,7 +1033,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
 #[test]
 fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() {
     let mut session = Session::live_notes();
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     for round in 1..=2_u8 {
@@ -1150,7 +1044,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
         session.window.click_at(body.0 + shift, body.1);
         session.window.type_text("Body");
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0 + shift, title.1);
         session.window.type_text("XY");
         session.settle();
@@ -1160,7 +1054,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
             titles.len() == 1 && titles[0].contains(&wanted),
             "round {round}: the keys went to the title the person clicked: {titles:?}"
         );
-        let body = format!("{:?}", session.field_value("Write something"));
+        let body = format!("{:?}", session.field_value("body"));
         assert!(
             body.contains(&"Body".repeat(usize::from(round))) && !body.contains("XY"),
             "round {round}: and none on into the body: {body}"
@@ -1210,9 +1104,10 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     );
 }
 
-/// The person presses New note in the header row of the live window, which the desktop hosts.
+/// The person presses New note, where the window offers it now: the bar of a window that lists
+/// nothing yet, the columns' header row once it does. What it does is where it stands.
 fn press_new_note(session: &mut Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
 }
 
@@ -1268,7 +1163,7 @@ fn press_between_the_keys(session: &mut Session) {
 /// The texts of the open note's title and body, as the window shows them. The title is a plain
 /// field; the body is rich text, read a line per paragraph.
 fn open_note(session: &mut Session) -> (String, String) {
-    let title = match session.field_value("Untitled") {
+    let title = match session.field_value("title") {
         Some(tilo_ui_host::Value::Text(text)) => text,
         None => String::new(),
         Some(other) => panic!("a title: {other:?}"),
@@ -1319,14 +1214,11 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
         if round % 3 == 2 {
             session.settle();
         } else {
-            for _ in 0..20 {
-                session.host.turn();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            session.settle_host();
         }
         session.window.type_text("Note title");
         session.settle();
-        let title = match session.field_value("Untitled") {
+        let title = match session.field_value("title") {
             Some(tilo_ui_host::Value::Text(text)) => text,
             other => panic!("a title: {other:?}"),
         };
@@ -1344,7 +1236,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
 
 /// The text of the open note's body, a line per paragraph, whether it is plain or rich.
 fn body_text(session: &mut Session) -> String {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Text(text)) => text,
         Some(tilo_ui_host::Value::Rich(rich)) => rich
             .blocks
@@ -1360,7 +1252,7 @@ fn body_text(session: &mut Session) -> String {
 /// "+", the title, Enter, the body: Enter in the title, which submits nothing, moves the
 /// keyboard to the body, as native Notes does.
 fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text("Groceries");
@@ -1456,7 +1348,7 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
 /// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
 /// field keeps no history of its own beside it, and a burst of typing is one step of it.
 fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text("Groceries");
@@ -1470,7 +1362,7 @@ fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
         "Ctrl+Z takes back the typing, and the note stays, untitled"
     );
     assert_eq!(
-        session.field_value("Untitled"),
+        session.field_value("title"),
         Some(tilo_ui_host::Value::Text(String::new())),
         "the field shows it"
     );
@@ -1529,7 +1421,7 @@ fn note_row(session: &mut Session, title: &str) -> (f64, f64) {
 
 /// A new note named `title`, its body open for typing.
 fn new_note(session: &mut Session, title: &str) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text(title);
@@ -1564,7 +1456,7 @@ fn a_rich_body_is_a_document_and_markdown_typed_into_it_becomes_its_paragraphs()
     }
     session.window.type_text("**bold**");
     session.settle();
-    let blocks = match session.field_value("Write something") {
+    let blocks = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
@@ -1633,7 +1525,7 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     }
     session.window.type_text("fn main() {}");
     session.settle();
-    let blocks = match session.field_value("Write something") {
+    let blocks = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
@@ -1729,7 +1621,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
     let (title, body) = open_note(&mut session);
     assert_eq!(title, "Groceries");
     assert_eq!(body, "Plan\nmilk", "the document as it was written");
-    let kinds: Vec<String> = match session.field_value("Write something") {
+    let kinds: Vec<String> = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => {
             rich.blocks.iter().map(|block| block.kind.clone()).collect()
         }
@@ -1740,7 +1632,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
 
 /// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
 fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich
             .blocks
             .iter()
@@ -1752,7 +1644,7 @@ fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
 
 /// The level a block of the open note's body carries, when it is a heading.
 fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
             Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
             _ => None,
@@ -2115,26 +2007,12 @@ fn a_checked_row_box(session: &mut Session) -> bool {
 
 /// The accessible nodes of the window, each with the widget that draws it.
 fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
-    fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
-        out.push(node);
-        for child in &node.children {
-            nodes(child, out);
-        }
-    }
-    fn walk(session_node: &ui::headless::InspectionNode, out: &mut Vec<ui::a11y::AccessNode>) {
-        if let Some(access) = &session_node.semantics {
-            let mut found = Vec::new();
-            nodes(access, &mut found);
-            out.extend(found.into_iter().cloned());
-        }
-        for child in &session_node.children {
-            walk(child, out);
-        }
-    }
     let snapshot = session.window.harness().inspection();
-    let mut out = Vec::new();
-    walk(&snapshot.root, &mut out);
-    out
+    (snapshot.root.nodes().into_iter())
+        .filter_map(|node| node.semantics.as_ref())
+        .flat_map(ui::a11y::AccessNode::nodes)
+        .cloned()
+        .collect()
 }
 
 /// Where a person clicks to go to the sidebar's place `label`: the rail draws its rows itself, so
@@ -2787,7 +2665,7 @@ fn described(
 fn controls_of(app: &mut ui::App) -> Vec<String> {
     app.window_controls()
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|control| control.name)
         .collect()
 }
 

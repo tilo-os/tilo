@@ -2,6 +2,7 @@
 
 /// An emulated Imager must select media for the host, not for its own binary.
 /// Detection errors are propagated rather than falling back to the build target.
+
 #[cfg(target_os = "windows")]
 pub(crate) fn architecture() -> Result<Option<&'static str>, String> {
     use std::ffi::c_void;
@@ -53,7 +54,6 @@ pub(crate) fn architecture() -> Result<Option<&'static str>, String> {
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_catalog_architecture(native_machine: u16) -> Option<&'static str> {
-    // IMAGE_FILE_MACHINE_AMD64 and IMAGE_FILE_MACHINE_ARM64 from winnt.h.
     match native_machine {
         0x8664 => Some("x86_64"),
         0xaa64 => Some("aarch64"),
@@ -72,10 +72,7 @@ mod tests {
             assert_eq!(windows_catalog_architecture(0x8664), Some("x86_64"));
         }
 
-        // Phase `unsupported_windows_machines_never_fall_back_to_x86_64`.
         {
-            // Unknown, 32-bit x86, 32-bit ARM, and ARM64EC are not native targets
-            // in the release catalog. Do not guess which disk image can boot them.
             for native_machine in [0, 0x014c, 0x01c4, 0xa641, 0xffff] {
                 assert_eq!(windows_catalog_architecture(native_machine), None);
             }

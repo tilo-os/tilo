@@ -1,8 +1,5 @@
 use super::*;
 
-/// A card's lifetime counts only time on screen and unheld: off screen
-/// or under the pointer it keeps what it has left, and letting go of it
-/// leaves a moment before it starts to leave.
 #[test]
 fn a_dwell_runs_only_while_shown_and_unheld() {
     let lifetime = Duration::from_secs(5);
@@ -35,9 +32,6 @@ fn a_dwell_runs_only_while_shown_and_unheld() {
     assert!(dwell.is_over(lifetime, at(43_000)));
 }
 
-/// A notice's one button ("Undo") is reported to its owner once and
-/// takes the notice down; a press elsewhere on the card does not report
-/// it.
 #[test]
 fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     use crate::time::testing::with_monotonic_time;
@@ -82,7 +76,6 @@ fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     });
     assert_eq!(notice.deadline(), None, "nothing left to wake for");
 
-    // Showing a message again gives it its full time again.
     let mut status = Transient::new();
     with_monotonic_time(start, || status.show(String::from("Saved")));
     with_monotonic_time(after, || {
@@ -92,9 +85,6 @@ fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     });
 }
 
-/// Notices replace each other in the order they came, and none stacks: an
-/// older one leaving takes nothing newer down, and one gone with its owner
-/// leaves the bar.
 #[test]
 fn notices_replace_each_other_in_order_and_leave_with_their_owner() {
     use crate::window_toolbar::{ToolbarNotice, notice as bar_notice, notify};
@@ -130,9 +120,6 @@ fn notices_replace_each_other_in_order_and_leave_with_their_owner() {
     drop(failed);
 }
 
-/// Progress stays while its app reports the work running, however long
-/// that takes, and wakes the widget to be renewed; it leaves once the
-/// work stops, or once the app stops reporting it at all.
 #[test]
 fn a_progress_notice_stays_while_its_work_runs() {
     use crate::time::testing::with_monotonic_time;
@@ -159,7 +146,6 @@ fn a_progress_notice_stays_while_its_work_runs() {
     });
     assert_eq!(notice.deadline(), None);
 
-    // Progress nobody reports any more does not stay.
     let mut stale = Transient::showing_progress(());
     let started = stale.since().expect("up");
     with_monotonic_time(started + NOTICE_LIFETIME + Duration::from_millis(1), || {
@@ -167,15 +153,12 @@ fn a_progress_notice_stays_while_its_work_runs() {
         assert!(stale.expire());
     });
 
-    // Reporting work running keeps plain information to its own time.
     let mut plain = Transient::new();
     with_monotonic_time(start, || plain.show("Saved"));
     with_monotonic_time(at(3), || assert!(!plain.keep_while(true)));
     with_monotonic_time(at(5), || assert_eq!(plain.get(), None));
 }
 
-/// A card's one action sits beside its text while the text keeps room
-/// to read; large text in a narrow column puts it under the text.
 #[test]
 fn a_lone_action_moves_under_text_it_would_squeeze() {
     let mut tr = TextRenderer::new();
@@ -454,9 +437,6 @@ fn toast_card_paints_text_close_and_actions_inside_the_card() {
             );
         }
 
-        // The painter's text inputs are normalized before elision; this
-        // assertion protects the helper contract independently of glyph
-        // backend details.
         assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
         assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
     }
@@ -492,8 +472,6 @@ fn a_notifications_body_clamps_to_two_lines() {
     );
 }
 
-/// The attribution line carries the app and how long ago it arrived on
-/// one line, and takes its own height only once there is something to say.
 #[test]
 fn the_attribution_line_holds_the_app_and_the_time() {
     let mut tr = TextRenderer::new();
@@ -514,8 +492,6 @@ fn the_attribution_line_holds_the_app_and_the_time() {
     );
 }
 
-/// A card whose sender takes a reply offers a field under its text: its own
-/// row, below the body and inside the card, holding what the person typed.
 #[test]
 fn a_reply_is_a_field_under_the_text() {
     let mut tr = TextRenderer::new();
@@ -572,9 +548,6 @@ fn a_reply_is_a_field_under_the_text() {
     );
 }
 
-/// On a phone a notice's title is the whole news ("Claude Code finished: 8 changes in Workspace")
-/// and wraps to a second line rather than eliding: every letter of it is painted at a phone's
-/// banner width, and the card grows by the line it took.
 #[test]
 fn a_title_too_long_for_a_phone_wraps_to_a_second_line() {
     let mut tr = TextRenderer::new();
@@ -630,8 +603,6 @@ fn a_title_too_long_for_a_phone_wraps_to_a_second_line() {
     );
 }
 
-/// A card from an agent leads with the agent's own face, the square agent mark in its client's
-/// hue, as the bar, who is here and its card draw it; a person's card keeps their avatar.
 #[test]
 fn an_agents_card_leads_with_its_own_face() {
     let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
@@ -675,9 +646,6 @@ fn a_time_without_an_app_follows_the_body() {
     assert_eq!(attributed.body, "Launch notes");
 }
 
-/// A card's action stands off the card as a secondary button stands off the window: on the dark
-/// card's ground, the window's raised tier is all but the ground itself, so the face is stepped
-/// off the card's own ground instead.
 #[test]
 fn a_card_action_stands_off_the_card_in_dark() {
     use crate::a11y::relative_luminance;

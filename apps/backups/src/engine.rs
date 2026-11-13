@@ -1,10 +1,7 @@
-//! A small, dependency-light local backup repository.
-//!
-//! Each snapshot is written into a private staging directory, every regular
-//! file is hashed while it is copied, and the directory is renamed into place
-//! only after its manifest has reached disk. Interrupted jobs therefore never
-//! appear in [`list_snapshots`]. Restores default to a new or empty directory
-//! and verify every file before reporting success.
+//! A small, dependency-light local backup repository: each snapshot is written into a
+//! staging directory, every file hashed as it is copied, and the directory renamed into
+//! place once its manifest reached the disk, so an interrupted job never appears in
+//! [`list_snapshots`].
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,13 +26,12 @@ pub enum BackupError {
     InvalidSnapshot(String),
     Integrity(String),
     Json(serde_json::Error),
-    /// The person stopped the job. Whatever it was writing was removed, so
-    /// the repository holds exactly what it held before.
+    /// Whatever it was writing was removed, so the repository holds exactly what it held
+    /// before.
     Stopped,
 }
 
 impl BackupError {
-    /// Whether the person stopped the job, rather than it failing.
     #[must_use]
     pub const fn is_stopped(&self) -> bool {
         matches!(self, Self::Stopped)
@@ -74,9 +70,8 @@ pub type Result<T> = std::result::Result<T, BackupError>;
 
 /// Asked between units of work whether the person stopped the job.
 ///
-/// A stopped job removes whatever it was writing: a snapshot never appears in
-/// the repository half-copied, and a restore never publishes a partly filled
-/// folder. [`Stop::never`] is a job no one can stop.
+/// A stopped job removes whatever it was writing: a snapshot never appears half-copied, and
+/// a restore never publishes a partly filled folder.
 #[derive(Clone, Copy, Default)]
 pub struct Stop<'a>(Option<&'a dyn Fn() -> bool>);
 
@@ -93,7 +88,6 @@ impl<'a> Stop<'a> {
         Self(Some(asked))
     }
 
-    /// Whether the person stopped the job.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.0.is_some_and(|asked| asked())
@@ -123,8 +117,6 @@ pub struct BackupEntry {
     pub size: u64,
     pub sha256: Option<String>,
     pub link_target: Option<PathBuf>,
-    /// Unix permission bits; `null` on platforms without them. The key is
-    /// required in every manifest.
     #[serde(deserialize_with = "Option::deserialize")]
     pub mode: Option<u32>,
 }
@@ -145,9 +137,6 @@ pub struct Progress {
     pub files: u64,
     pub bytes: u64,
     pub current: PathBuf,
-    /// How many files the job has to do in all, where it knows the whole
-    /// extent: a verification reads a stored manifest, a backup only knows
-    /// what it has copied so far.
     pub of: Option<u64>,
 }
 
@@ -162,8 +151,6 @@ pub fn repository_path(destination: &Path) -> PathBuf {
 }
 
 /// Validate source and destination before creating anything in the repository.
-/// Nested paths are rejected in both directions to prevent recursive backups
-/// and a restore/backup accidentally modifying its own source.
 pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, PathBuf)> {
     let source = source.canonicalize().map_err(|e| {
         BackupError::InvalidSource(format!("Cannot open source {}: {e}", source.display()))
@@ -187,14 +174,14 @@ pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, Pat
 
 /// Create a checksummed snapshot and report progress after each copied file.
 ///
-/// `stop` is asked between files: a stopped job removes its staging directory,
-/// so the repository never holds a snapshot it could not finish.
+/// `stop` is asked between files: a stopped job removes its staging directory, so the
+/// repository never holds a snapshot it could not finish.
 ///
 /// # Errors
 ///
-/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise
-/// an error when the paths are unsafe, a source entry cannot be read or
-/// represented safely, or the snapshot data or manifest cannot be written.
+/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise an error when
+/// the paths are unsafe, a source entry cannot be read or represented safely, or the
+/// snapshot data or manifest cannot be written.
 pub fn create_snapshot(
     source: &Path,
     destination: &Path,
@@ -331,8 +318,8 @@ fn finish_snapshot(stage: &Path, final_path: &Path, manifest: &BackupManifest) -
 ///
 /// # Errors
 ///
-/// Returns an error when repository metadata cannot be read or a stored
-/// manifest is invalid.
+/// Returns an error when repository metadata cannot be read or a stored manifest is
+/// invalid.
 pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
     let repository = repository_path(destination);
     reject_symlink(&repository, "Backup repository")?;
@@ -355,10 +342,10 @@ pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
 /// The bucket of one retention class a snapshot time falls in.
 type Period = fn(u64) -> i64;
 
-/// The snapshots `policy` keeps, by id: for each of the last `hourly` hours,
-/// `daily` days, `weekly` weeks (Monday to Sunday) and `monthly` months that
-/// hold a snapshot, the newest one in it (UTC), and always the newest
-/// snapshot of all, so a policy of zeros never empties the repository.
+/// The snapshots `policy` keeps, by id: for each of the last `hourly` hours, `daily` days,
+/// `weekly` weeks (Monday to Sunday) and `monthly` months that hold a snapshot, the newest
+/// one in it (UTC), and always the newest snapshot of all, so a policy of zeros never
+/// empties the repository.
 pub fn retained(manifests: &[BackupManifest], policy: &RetentionPolicy) -> BTreeSet<String> {
     let stored: Vec<(String, u64)> = manifests
         .iter()
@@ -367,13 +354,11 @@ pub fn retained(manifests: &[BackupManifest], policy: &RetentionPolicy) -> BTree
     retained_of(&stored, policy)
 }
 
-/// The same answer for snapshots known only by id and the second they were
-/// taken, which is what the surface holds: the retention page can say which
-/// snapshots a policy would remove before a backup removes them.
+/// The same answer for snapshots known only by id and the second they were taken, which is
+/// what the surface holds: the retention page can say which snapshots a policy would remove
+/// before a backup removes them.
 pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeSet<String> {
     let mut newest_first: Vec<&(String, u64)> = stored.iter().collect();
-    // Two snapshots of one second are told apart by their id's suffix, the
-    // later one longer or greater.
     newest_first.sort_by_key(|(id, created)| std::cmp::Reverse((*created, id.len(), id.clone())));
     let mut keep = BTreeSet::new();
     if let Some((newest, _)) = newest_first.first() {
@@ -382,8 +367,7 @@ pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeS
     let periods: [(u32, Period); 4] = [
         (policy.hourly, |secs| (secs / 3_600) as i64),
         (policy.daily, |secs| (secs / 86_400) as i64),
-        // 1970-01-01 was a Thursday: shifting by three days starts each
-        // week on a Monday.
+        // 1970-01-01 was a Thursday: shifting by three days starts each week on a Monday.
         (policy.weekly, |secs| ((secs / 86_400 + 3) / 7) as i64),
         (policy.monthly, |secs| month_of(secs / 86_400)),
     ];
@@ -401,8 +385,7 @@ pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeS
     keep
 }
 
-/// The month (`year * 12 + month`) of a day counted from 1970-01-01, in the
-/// proleptic Gregorian calendar.
+/// The month (`year * 12 + month`) of a day counted from 1970-01-01.
 fn month_of(days: u64) -> i64 {
     let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);
@@ -420,14 +403,14 @@ fn month_of(days: u64) -> i64 {
     year * 12 + month
 }
 
-/// Delete the stored snapshots `policy` no longer keeps ([`retained`]) and
-/// answer their ids, oldest last. A snapshot leaves the listing before its
-/// data is removed, so an interrupted prune never shows a half-deleted one.
+/// Delete the stored snapshots `policy` no longer keeps ([`retained`]) and answer their
+/// ids, oldest last. A snapshot leaves the listing before its data is removed, so an
+/// interrupted prune never shows a half-deleted one.
 ///
 /// # Errors
 ///
-/// Returns an error when the repository cannot be listed or a snapshot
-/// cannot be removed; the ones removed before it stay removed.
+/// Returns an error when the repository cannot be listed or a snapshot cannot be removed;
+/// the ones removed before it stay removed.
 pub fn prune_snapshots(destination: &Path, policy: &RetentionPolicy) -> Result<Vec<String>> {
     let manifests = list_snapshots(destination)?;
     let keep = retained(&manifests, policy);
@@ -448,14 +431,14 @@ pub fn prune_snapshots(destination: &Path, policy: &RetentionPolicy) -> Result<V
     Ok(removed)
 }
 
-/// Verify the metadata, structure, sizes, and checksums of a stored snapshot,
-/// reporting how many of its files have been checked.
+/// Verify the metadata, structure, sizes, and checksums of a stored snapshot, reporting how
+/// many of its files have been checked.
 ///
 /// # Errors
 ///
-/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise
-/// an error when the snapshot identifier or manifest is invalid, its contents
-/// cannot be read, or any stored entry fails integrity validation.
+/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise an error when
+/// the snapshot identifier or manifest is invalid, its contents cannot be read, or any
+/// stored entry fails integrity validation.
 pub fn verify_snapshot(
     destination: &Path,
     id: &str,
@@ -541,8 +524,8 @@ pub fn restore_snapshot(
     }
 }
 
-/// Resolve a final restore target without creating it.  A failed verification
-/// must not leave even a partially populated recovery directory behind.
+/// Resolve a final restore target without creating it. A failed verification must not leave
+/// even a partially populated recovery directory behind.
 fn prepare_restore_target(restore_to: &Path, repo: &Path, overwrite: bool) -> Result<PathBuf> {
     let parent = restore_to.parent().ok_or_else(|| {
         BackupError::UnsafeDestination("Restore destination has no parent folder".into())
@@ -643,8 +626,6 @@ fn restore_into_stage(
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                // The entire tree is staged until verification succeeds. A
-                // per-file temporary name could collide with another entry.
                 let (size, digest) = copy_and_hash(&from, &to)?;
                 if size != entry.size || Some(digest) != entry.sha256 {
                     return integrity(&entry.path, "stored file failed verification");
@@ -691,11 +672,8 @@ fn publish_restored_snapshot(stage: &Path, target: &Path, overwrite: bool) -> Re
     }
 }
 
-/// Replace an existing target only after the staged recovery point is ready.
-/// If publishing the stage fails, put the original target back before
-/// returning the error.  This matters for explicit `overwrite` callers, but
-/// also makes the empty-folder UI promise robust against a full disk or a
-/// concurrent rename at exactly the wrong moment.
+/// Replace an existing target only once the staged recovery point is ready, so a full disk
+/// or a rename at the wrong moment cannot lose it.
 fn publish_restore_swap(
     stage: &Path,
     target: &Path,
@@ -712,9 +690,8 @@ fn publish_restore_swap(
             ))),
         };
     }
-    // The new tree is now published. A failed cleanup leaves a sibling the
-    // user can still recover from; it must not turn a completed restore into
-    // a misleading failure.
+    // A failed cleanup leaves a sibling the user can still recover from; it must not turn a
+    // completed restore into a misleading failure.
     let _ = if overwrite {
         fs::remove_dir_all(previous)
     } else {
@@ -947,8 +924,6 @@ mod tests {
         };
 
         assert_eq!(ids(none), ["now"]);
-        // Two hours: the newest of this hour and of the previous hour that
-        // holds one; the older snapshot within the same hour goes.
         assert_eq!(
             ids(RetentionPolicy { hourly: 2, ..none }),
             ["earlier-today", "now"]
@@ -957,13 +932,10 @@ mod tests {
             ids(RetentionPolicy { daily: 2, ..none }),
             ["now", "yesterday"]
         );
-        // This week (from Monday) and the week before.
         assert_eq!(
             ids(RetentionPolicy { weekly: 2, ..none }),
             ["last-week", "now"]
         );
-        // January, then December (both "last-week" and "last-month" fall in
-        // December; the newer one is kept), then June.
         assert_eq!(
             ids(RetentionPolicy { monthly: 3, ..none }),
             ["last-week", "last-year", "now"]
@@ -989,7 +961,6 @@ mod tests {
             weekly: 0,
             monthly: 0,
         };
-        // Both fall in the same hour: only the newer one stays.
         assert_eq!(prune_snapshots(&destination, &keep_one).unwrap(), ["100"]);
         let left: Vec<String> = list_snapshots(&destination)
             .unwrap()
@@ -1078,9 +1049,9 @@ mod tests {
         );
     }
 
-    /// Recursive destinations, corrupt snapshots, targets inside the repository,
-    /// non-empty folders and a failed stage publish are all refused without
-    /// clobbering data; each case uses its own temp dir.
+    /// Recursive destinations, corrupt snapshots, targets inside the repository, non-empty
+    /// folders and a failed stage publish are all refused without clobbering data; each
+    /// case uses its own temp dir.
     #[test]
     fn unsafe_or_corrupt_operations_are_refused_without_writing() {
         rejects_recursive_destinations();
@@ -1090,7 +1061,6 @@ mod tests {
         failed_stage_publish_restores_the_previous_target();
     }
 
-    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn rejects_recursive_destinations() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1101,7 +1071,6 @@ mod tests {
         ));
     }
 
-    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn corruption_is_reported_and_not_restored() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1137,7 +1106,6 @@ mod tests {
         );
     }
 
-    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_a_target_inside_the_repository_before_writing_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1164,7 +1132,6 @@ mod tests {
         );
     }
 
-    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_nonempty_folder_by_default() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1189,7 +1156,6 @@ mod tests {
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
     }
 
-    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn failed_stage_publish_restores_the_previous_target() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("restore");
@@ -1212,9 +1178,8 @@ mod tests {
         assert!(stage.join("restored").exists());
     }
 
-    /// Source symlinks are stored as links, a malicious restore ancestor link is
-    /// replaced, and a repository symlink is rejected; each case uses its own
-    /// temp dir.
+    /// Source symlinks are stored as links, a malicious restore ancestor link is replaced,
+    /// and a repository symlink is rejected; each case uses its own temp dir.
     #[test]
     #[cfg(unix)]
     fn symlinks_are_preserved_or_rejected_but_never_followed() {
@@ -1223,7 +1188,6 @@ mod tests {
         repository_symlink_is_rejected();
     }
 
-    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
     fn source_symlinks_are_preserved_without_following_them() {
         let temp = tempfile::tempdir().unwrap();
@@ -1258,7 +1222,6 @@ mod tests {
         );
     }
 
-    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
     fn overwrite_replaces_a_malicious_symlink_ancestor_without_following_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -1285,7 +1248,6 @@ mod tests {
         assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
 
-    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
     fn repository_symlink_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
@@ -1303,9 +1265,8 @@ mod tests {
         assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
     }
 
-    /// Stopping a backup leaves the repository exactly as it was: no
-    /// snapshot, and no staging directory either, so a stopped job can never
-    /// look like a finished one.
+    /// Stopping a backup leaves the repository exactly as it was: no snapshot, and no
+    /// staging directory either, so a stopped job can never look like a finished one.
     #[test]
     fn a_stopped_backup_leaves_no_snapshot_behind() {
         let temp = tempfile::tempdir().unwrap();
@@ -1332,8 +1293,8 @@ mod tests {
         );
     }
 
-    /// A verification knows how many files the snapshot holds, so it reports
-    /// how far through it is rather than a phase with no number.
+    /// A verification knows how many files the snapshot holds, so it reports how far
+    /// through it is rather than a phase with no number.
     #[test]
     fn verification_reports_every_file_it_checks() {
         let temp = tempfile::tempdir().unwrap();
@@ -1356,17 +1317,15 @@ mod tests {
         );
     }
 
-    /// The retention page's preview answers with the same rule the pruner
-    /// uses, so what it names is what a backup would remove.
+    /// The retention page's preview answers with the same rule the pruner uses, so what it
+    /// names is what a backup would remove.
     #[test]
     fn the_preview_keeps_what_pruning_keeps() {
         const HOUR: u64 = 3_600;
         const DAY: u64 = 24 * HOUR;
         let manifests = [
             manifest_at("newest", 2 * DAY + 10 * HOUR + 100),
-            // The same hour as `newest`: one hourly snapshot is kept.
             manifest_at("earlier", 2 * DAY + 10 * HOUR + 50),
-            // The day before: two dailies are kept, so this stays.
             manifest_at("yesterday", DAY + 9 * HOUR),
         ];
         let policy = RetentionPolicy {

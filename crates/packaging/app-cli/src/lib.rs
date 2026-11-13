@@ -1,27 +1,14 @@
-//! `app-cli` — what software this machine can open but has not
-//! installed yet, and how to get it.
+//! `app-cli` — what software this machine can open but has not installed yet, and how to get it.
 //!
-//! The desktop's applications list is "what is in the `tilo-install`
-//! registry" — already installed. This crate is the other half: what
-//! the machine's configured registries (the user's `registries.toml`, seeded
-//! from the pinned official source on first use) describe,
-//! minus what's already installed. No registries configured means an
-//! empty catalogue, correctly.
+//! The desktop's applications list is what `tilo-install` already has; this crate is the other half:
+//! what the configured registries describe, minus what is installed. `main` builds `app`, and the
+//! compositor runs it rather than linking this crate, since listing means HTTP and installing means
+//! HTTP plus verification plus extraction.
 //!
-//! [`main`](../src/main.rs) builds `app`, and the compositor
-//! shells out to it rather than linking this crate — listing means
-//! HTTP, installing means HTTP plus signature verification plus
-//! archive extraction, none of which belongs in the most privileged
-//! process (same precedent as the desktop execing `tilo-launcher`
-//! instead of building sandboxes itself).
-//!
-//! This crate never decides whether bytes are safe to extract:
-//! [`install::install`] downloads to a staging file and hands the
-//! path to `tilo-install`, which checks the publisher signature
-//! fail-closed before extracting anything; for a repository's package
-//! `--allow-self-signed` is never passed. Only a package file or link the
-//! person installs by hand (`app install <file>`) may come from an
-//! unverified publisher, and only once they have said yes to it.
+//! This crate never decides whether bytes are safe to extract: [`install::install`] downloads to a
+//! staging file and hands the path to `tilo-install`, which checks the publisher signature
+//! fail-closed first, and never passes `--allow-self-signed`. Only a package file a person installs
+//! by hand may come from an unverified publisher, and only after they said yes.
 
 #![cfg_attr(
     test,
@@ -32,7 +19,6 @@
     )
 )]
 
-/// Release selection shared by catalogue clients and the verified installer.
 pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions};
 
 pub mod bots;
@@ -46,9 +32,8 @@ pub use client::{BehindAccepted, SnapshotAnswer, TrustLevel, VerifiedEntry};
 pub use config::{RegistriesFile, RegistryConfig};
 pub use registry_types::catalogue::{CatalogueApp, CatalogueListing, UnreachableRegistry};
 
-/// Turn a verified registry entry into a catalogue row, or `None` if
-/// it can't be offered: its metadata signature didn't verify, or it
-/// advertises no version to download.
+/// Turn a verified registry entry into a catalogue row, or `None` when nothing it lists fits this
+/// machine.
 pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueApp> {
     if !v.trust.is_offerable() {
         return None;
@@ -87,7 +72,6 @@ pub fn installable_versions(
     installable_versions_on(entry, channel, os_interfaces())
 }
 
-/// The system interfaces this OS serves, read once per process.
 fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
     static PROVIDED: std::sync::OnceLock<Option<registry_types::ProvidedInterfaces>> =
         std::sync::OnceLock::new();
@@ -96,18 +80,13 @@ fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
         .as_ref()
 }
 
-/// [`installable_versions`] on an OS serving `provided`: a version that
-/// requires an interface version the OS does not serve is not offered, so
-/// an update never takes an app past what its system can run.
 fn installable_versions_on<'a>(
     entry: &'a registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
     provided: Option<&'a registry_types::ProvidedInterfaces>,
 ) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
-    // A runtime package is a runtime and a language pack binds none.
     let runtime_package = registry_types::is_runtime_package_id(&entry.package_id)
         || registry_types::is_language_pack_package_id(&entry.package_id);
-    // Only versions that bind a tapp: a bot entry's program is never an app.
     entry.versions.iter().filter(move |version| {
         version.tapp().is_some_and(|tapp| {
             !tapp.tapp_url.trim().is_empty()
@@ -130,8 +109,6 @@ pub fn awaiting_developer(
     awaiting_developer_on(entry, channel, os_interfaces())
 }
 
-/// [`awaiting_developer`] on an OS serving `provided`. A host that declares
-/// no interfaces (a development machine) judges nothing, so nothing waits.
 fn awaiting_developer_on(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
@@ -194,8 +171,6 @@ pub fn first_open_offer(newest: &CatalogueApp) -> CatalogueApp {
     if newest.runtime.as_deref().is_none_or(runtime_installed) {
         return newest.clone();
     }
-    // Without the version index the newest version is still a correct
-    // answer, only a slower one.
     version_offers(&newest.package_id, &newest.registry)
         .ok()
         .and_then(|offers| {
@@ -204,8 +179,6 @@ pub fn first_open_offer(newest: &CatalogueApp) -> CatalogueApp {
         .unwrap_or_else(|| newest.clone())
 }
 
-/// The newest of `offers`, no newer than `ceiling`, that needs no runtime or
-/// one `installed` reports present.
 pub fn prefer_installed_runtime<'a>(
     offers: impl IntoIterator<Item = &'a CatalogueApp>,
     ceiling: &str,
@@ -234,11 +207,7 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
         .map(|listed| listed.entry.package_id.clone())
         .filter(|id| registry_types::is_runtime_package_id(id))
         .collect();
-    // One verified snapshot answers for every runtime package; only the
-    // per-package version indexes differ, and those are independent requests.
     let verified: Vec<Result<VerifiedEntry, String>> = std::thread::scope(|scope| {
-        // Every request is started before the first is awaited: iterating the
-        // joins lazily would run them one after another.
         #[expect(
             clippy::needless_collect,
             reason = "collecting starts every worker before the first join"
@@ -293,41 +262,14 @@ pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>,
     last_error.map_or(Ok(None), Err)
 }
 
-/// A language pack the enabled repositories offer: its locale (`de-DE`) and
-/// the newest version this device can install.
 #[derive(Clone, Debug)]
 pub struct LanguagePackOffer {
-    /// The locale as a BCP 47 tag, the pack's id suffix in its usual case.
     pub locale: String,
-    /// The package to install.
     pub offer: CatalogueApp,
 }
 
-/// `lower` (`de-de`, `zh-hant-tw`) in the usual case of a BCP 47 tag
-/// (`de-DE`, `zh-Hant-TW`): the language lower, a script title-cased, a
-/// region upper.
-#[must_use]
-pub fn locale_tag(lower: &str) -> String {
-    lower
-        .split('-')
-        .enumerate()
-        .map(|(index, part)| match (index, part.len()) {
-            (0, _) => part.to_ascii_lowercase(),
-            (_, 2) => part.to_ascii_uppercase(),
-            (_, 4) => {
-                let mut chars = part.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
-                })
-            }
-            _ => part.to_ascii_lowercase(),
-        })
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-/// Every language pack the enabled repositories offer, by locale, the first
-/// repository that offers a locale answering for it.
+/// Every language pack the enabled repositories offer, by language, the
+/// first repository that offers a language answering for it.
 ///
 /// # Errors
 ///
@@ -353,10 +295,11 @@ pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
             .filter(|id| registry_types::is_language_pack_package_id(id))
             .collect();
         for package_id in packs {
-            let Some(lower) = tilo_app_package::language_pack_locale(&package_id) else {
+            let Some(locale) =
+                tilo_app_package::language_pack_locale(&package_id).map(tilo_paths::language_of)
+            else {
                 continue;
             };
-            let locale = locale_tag(lower);
             if offers.iter().any(|known| known.locale == locale) {
                 continue;
             }
@@ -378,24 +321,20 @@ pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
     Ok(offers)
 }
 
-/// The package id of `locale`'s language pack.
 #[must_use]
-pub fn language_pack_id(locale: &str) -> String {
+pub fn language_pack_id(tag: &str) -> String {
     format!(
         "{}{}",
         tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
-        locale.to_ascii_lowercase()
+        tilo_paths::language_of(tag)
     )
 }
 
-/// The version of the language pack installed for `locale`, if one is: the
-/// package store's record, as for any package.
 #[must_use]
-pub fn installed_language_pack(locale: &str) -> Option<String> {
-    installed_version(&language_pack_id(locale)).ok().flatten()
+pub fn installed_language_pack(tag: &str) -> Option<String> {
+    installed_version(&language_pack_id(tag)).ok().flatten()
 }
 
-/// The catalogue row offering exactly `version` of a verified entry.
 fn app_for_version(
     v: &VerifiedEntry,
     version: &registry_types::RegistryVersion,
@@ -437,7 +376,6 @@ fn app_for_version(
         publisher_pubkey_hex: v.entry.publisher_pubkey_hex.clone(),
         trust: match v.trust {
             TrustLevel::PublisherSigned => "publisher-signed".into(),
-            // Unreachable — filtered above. Kept total rather than panicking on a shape change.
             TrustLevel::Untrusted => "untrusted".into(),
         },
     })
@@ -464,7 +402,6 @@ pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<Catal
 
 fn target_supported(tapp: &registry_types::TappArtifact) -> bool {
     let target = &tapp.target;
-    // Data for every architecture: a language pack.
     if target.platform == registry_types::TILO_OS_PLATFORM && target.is_any_architecture() {
         return true;
     }
@@ -525,7 +462,6 @@ pub fn installed_ids() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// One installed app as `app list` shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledApp {
     pub package_id: String,
@@ -541,7 +477,6 @@ pub struct InstalledApp {
     /// a desktop-file id, not a name).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// A downloaded program whose file is gone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
 }
@@ -624,7 +559,6 @@ pub fn image_version_beneath(package_id: &str) -> Result<Option<String>, String>
     })
 }
 
-/// Version recorded by an installed app's manifest, when readable.
 pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
     let Some(entry) = package_store::find_installed(package_id)
         .map_err(|error| format!("could not read the installed app registry: {error}"))?
@@ -656,11 +590,9 @@ fn entry_current(entry: &package_store::InstalledPackage) -> bool {
         && (entry.runtime.is_empty() || runtime_installed(&entry.runtime))
 }
 
-/// One installed package as a bulk update compares it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledVersion {
     pub version: String,
-    /// [`installed_current`] — nothing but a newer version would change it.
     pub current: bool,
 }
 
@@ -720,15 +652,9 @@ pub fn dedupe_and_subtract(apps: Vec<CatalogueApp>, installed: &[String]) -> Vec
     out
 }
 
-/// One registry's answer to a listing.
 enum Fetched {
-    /// Its catalogue in force, ready to be offered.
     Offers(Vec<client::VerifiedEntry>),
-    /// It answered with a catalogue older than the last one this device
-    /// accepted, so the accepted one stays in force and the listing says why
-    /// this registry contributed nothing.
     BehindAccepted(client::BehindAccepted),
-    /// Its catalogue could not be read at all.
     Failed(String),
 }
 
@@ -909,14 +835,14 @@ mod tests {
 
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
-    /// A language pack's id names its locale in lower case; the picker shows
-    /// the tag in its usual case.
+    /// A language pack's id names its own language: the pack chosen in
+    /// Settings for `de-DE` is the `de` one, and a tag of its language in
+    /// any spelling names the same pack.
     #[test]
-    fn a_language_packs_locale_reads_as_a_tag() {
-        assert_eq!(locale_tag("de-de"), "de-DE");
-        assert_eq!(locale_tag("pt-br"), "pt-BR");
-        assert_eq!(locale_tag("zh-hant-tw"), "zh-Hant-TW");
-        assert_eq!(locale_tag("fr"), "fr");
+    fn a_language_names_the_same_pack_whatever_its_tag() {
+        assert_eq!(language_pack_id("de-DE"), "so.tilo.language-pack.de");
+        assert_eq!(language_pack_id("de_DE"), "so.tilo.language-pack.de");
+        assert_eq!(language_pack_id("pt-BR"), "so.tilo.language-pack.pt");
     }
 
     /// A listing's names and taglines read in the person's language, the same
@@ -935,7 +861,7 @@ mod tests {
         assert_eq!(preferred_locale(), "de-DE");
         assert_eq!(
             language_pack_id(&preferred_locale()),
-            "so.tilo.language-pack.de-de"
+            "so.tilo.language-pack.de"
         );
     }
 
@@ -1052,7 +978,6 @@ mod tests {
             "a build for an older version is not offered either"
         );
         assert!(offered(Some(&elsewhere)).is_empty());
-        // A host that declares no interfaces judges none.
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
     }
 
@@ -1106,7 +1031,6 @@ mod tests {
 
     #[test]
     fn only_valid_signed_downloadable_entries_become_rows() {
-        // Phase `a_signed_entry_becomes_a_row_carrying_the_publishers_own_metadata`.
         {
             let v = verified(entry("so.tilo.sheets", "Sheets", vec!["Office"]));
             let app = entry_to_app(&v, "main").expect("an offerable entry");
@@ -1121,9 +1045,6 @@ mod tests {
             );
             assert_eq!(app.trust, "publisher-signed");
         }
-        // Phase `a_tampered_entry_never_becomes_a_row`.
-        // An entry whose signature does not cover its own metadata must not
-        // become something a user can activate — the name and download URL would be unattributed.
         {
             let mut e = entry("so.tilo.sheets", "Sheets", vec![]);
             e.name = "Totally Legit Banking".into();
@@ -1131,7 +1052,6 @@ mod tests {
             assert_eq!(v.trust, TrustLevel::Untrusted);
             assert!(entry_to_app(&v, "main").is_none());
         }
-        // Phase `an_entry_with_no_downloadable_version_is_not_offered`.
         {
             let mut e = entry("so.tilo.ghost", "Ghost", vec![]);
             e.versions.clear();
@@ -1146,7 +1066,6 @@ mod tests {
             );
             assert!(entry_to_app(&verified(blank), "main").is_none());
         }
-        // Phase `a_nameless_entry_is_invalid_signed_metadata`.
         {
             let e = entry("so.tilo.hex-editor", "", vec![]);
             assert!(e.validate().is_err());
@@ -1186,7 +1105,6 @@ mod tests {
 
     #[test]
     fn the_catalogue_selects_per_channel_first_registry_and_uninstalled_offers() {
-        // Phase `catalogue_selects_latest_release_independent_of_registry_array_order`.
         {
             let mut e = entry("so.tilo.timeline", "Timeline", vec![]);
             let older = RegistryVersion {
@@ -1225,7 +1143,6 @@ mod tests {
             );
             assert_eq!(app.tapp_size_bytes, 20);
         }
-        // Phase `catalogue_channels_separate_stable_and_continuous_updates`.
         {
             use tilo_app_package::version::ReleaseChannel;
             let mut e = entry("so.tilo.channel-test", "Channel", vec![]);
@@ -1261,7 +1178,6 @@ mod tests {
                 );
             }
         }
-        // Phase `installed_packages_are_subtracted`.
         {
             let a = entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "main").unwrap();
             let b = entry_to_app(&verified(entry("so.tilo.b", "B", vec![])), "main").unwrap();
@@ -1269,7 +1185,6 @@ mod tests {
             assert_eq!(out.len(), 1, "the installed one is gone: {out:?}");
             assert_eq!(out[0].package_id, "so.tilo.b");
         }
-        // Phase `the_first_registry_offering_an_id_wins`.
         {
             let first =
                 entry_to_app(&verified(entry("so.tilo.a", "A", vec![])), "primary").unwrap();
@@ -1286,7 +1201,6 @@ mod tests {
 
     #[test]
     fn json_contract_installed_versions_and_names_resolve_exactly() {
-        // Phase `the_json_envelope_field_names_are_the_contract`.
         // The wire contract with the compositor, pinned by exact field name.
         // A rename here without a matching change there would silently
         // produce an empty catalogue rather than an error — both tests must be edited together.
@@ -1323,7 +1237,6 @@ mod tests {
                 r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","tagline":"Native Tilo OS app","images":[],"supported_languages":["en"],"category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.tapp","tapp_root_hash_hex":"abababababababababababababababababababababababababababababababab","tapp_size_bytes":10,"tapp_blake3_hex":"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","architecture":"x86_64","isa":"x86_64-v3","runtime":null,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
             );
         }
-        // Phase `installed_version_reads_the_canonical_package_table`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("manifest.toml");
@@ -1353,7 +1266,6 @@ mod tests {
             .unwrap();
             assert_eq!(installed_manifest_version(&path).as_deref(), Some("1.2.3"));
         }
-        // Phase `friendly_names_resolve_without_fuzzy_guessing`.
         {
             let browser = entry_to_app(
                 &verified(entry("so.tilo.browser", "Tilo Browser", vec![])),
@@ -1397,10 +1309,8 @@ mod tests {
         let chosen = prefer_installed_runtime(&offers, "0.1.3", installed).expect("a local fit");
         assert_eq!(chosen.version, "0.1.2");
         assert_eq!(chosen.runtime.as_deref(), Some(r1));
-        // Never newer than what was asked for.
         let chosen = prefer_installed_runtime(&offers, "0.1.1", installed).expect("a local fit");
         assert_eq!(chosen.version, "0.1.1");
-        // A version that needs no runtime runs anywhere.
         let fat = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.0", None)];
         let chosen = prefer_installed_runtime(&fat, "0.1.3", |_| false).expect("needs no runtime");
         assert_eq!(chosen.version, "0.1.0");
@@ -1412,7 +1322,6 @@ mod tests {
         let r1 = "tilo-runtime/2026.07+native.11111111111111111111111111111111";
         let offers = vec![offer_on("0.1.3", Some(r2)), offer_on("0.1.2", Some(r1))];
         assert!(prefer_installed_runtime(&offers, "0.1.3", |_| false).is_none());
-        // A version that needs no runtime is taken as is, without a lookup.
         let fat = offer_on("0.1.3", None);
         assert_eq!(first_open_offer(&fat), fat);
     }

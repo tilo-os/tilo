@@ -46,8 +46,8 @@ mod tests {
         }
     }
 
-    /// The status and error sentences an appliance reports are the
-    /// catalogue's too: nothing a person reads is a literal in the code.
+    /// The status and error sentences an appliance reports are the catalogue's too: nothing
+    /// a person reads is a literal in the code.
     #[test]
     fn the_appliances_own_sentences_resolve_from_the_bundle() {
         for key in [
@@ -115,9 +115,9 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

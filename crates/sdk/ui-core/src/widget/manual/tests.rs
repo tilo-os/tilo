@@ -34,7 +34,6 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         );
         let snapshot = harness.inspection();
         let button = find(&snapshot.root, "action");
-        // The fractional allocation, its edges rounded onto the display's pixels (1x).
         assert_eq!(button.rect, [10.0, 21.0, 121.0, 40.0]);
         assert!(button.focusable);
         let node_id = harness.a11y_node_named("A very long action title").unwrap();
@@ -76,7 +75,6 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
                     && wide.width == 600.0)
         );
         let snapshot = harness.inspection();
-        // Placed at 0.25, on the nearest whole pixel.
         assert_eq!(snapshot.root.children[0].rect[0], 0.0);
         assert!(find(&snapshot.root, "name").rect[1] > find(&snapshot.root, "email").rect[1]);
     }
@@ -166,7 +164,6 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         .child(Box::new(Button::new("float", "Float")));
         let harness = FrameHarness::new(crate::State::new(), Box::new(region), (500, 300));
         let snapshot = harness.inspection();
-        // Drawn on the nearest whole pixel at 1x; allocated as asked.
         assert_eq!(snapshot.root.rect[2], 201.0);
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
@@ -346,7 +343,6 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
         let harness = FrameHarness::new(crate::State::new(), Box::new(form), (800, 500));
         let snapshot = harness.inspection();
         let nested = find(&snapshot.root, "nested");
-        // 10.25 inside 10.25, on whole pixels.
         assert_eq!(nested.rect[0], 20.0);
         assert_eq!(nested.rect[2], 120.0);
         assert!(find(&snapshot.root, "auto-input").rect[2] > 300.0);
@@ -835,9 +831,6 @@ fn retained_resize_reallocates_a_filling_region_both_ways() {
     }
 }
 
-/// The rows a region places cost a solve each time they are measured, and a
-/// solve measures every row: a window that keeps its region is the difference
-/// between a frame that costs its rows and one that costs nothing.
 #[test]
 fn a_region_is_solved_again_only_when_what_it_read_changed() {
     use crate::profiling::layout_counts;
@@ -882,7 +875,6 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
             first.regions >= 1,
             "the first frame solves the region ({first:?})"
         );
-        // Nothing asks to be measured again: the frame lays nothing out.
         harness.relayout_at((400, 800)).unwrap();
         let still = layout_counts::take();
         assert_eq!(still.solves, 0, "a still frame solves no tree ({still:?})");
@@ -890,8 +882,6 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
             still.regions, 0,
             "a still frame runs no region's policy ({still:?})"
         );
-        // A taller window lays the tree out again without moving the region's
-        // allocation: its solve stands.
         harness.relayout_at((400, 900)).unwrap();
         let taller = layout_counts::take();
         assert!(
@@ -902,7 +892,6 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
             taller.regions, 0,
             "the region reads the allocation it solved for, so its answer stands ({taller:?})"
         );
-        // One row changed: its region is solved again, once.
         invalidation.invalidate();
         harness.relayout_at((400, 900)).unwrap();
         let changed = layout_counts::take();

@@ -22,20 +22,16 @@ use std::ptr::NonNull;
 
 use super::Widget;
 
-/// A shared-borrow request for one capability, answered by
-/// [`Widget::provide`].
 pub struct Request<'a, 'r> {
     slot: &'r mut dyn Any,
     widget: PhantomData<&'a mut ()>,
 }
 
 impl<'a> Request<'a, '_> {
-    /// Whether this request asks for `T`.
     pub fn wants<T: ?Sized + 'static>(&self) -> bool {
         self.slot.is::<Option<NonNull<T>>>()
     }
 
-    /// Answer the request with `value` if it asks for `T`.
     pub fn provide<T: ?Sized + 'static>(&mut self, value: &'a T) -> &mut Self {
         if let Some(slot) = self.slot.downcast_mut::<Option<NonNull<T>>>() {
             *slot = Some(NonNull::from(value));
@@ -44,20 +40,16 @@ impl<'a> Request<'a, '_> {
     }
 }
 
-/// An exclusive-borrow request for one capability, answered by
-/// [`Widget::provide_mut`].
 pub struct RequestMut<'a, 'r> {
     slot: &'r mut dyn Any,
     widget: PhantomData<&'a mut ()>,
 }
 
 impl<'a> RequestMut<'a, '_> {
-    /// Whether this request asks for `T`.
     pub fn wants<T: ?Sized + 'static>(&self) -> bool {
         self.slot.is::<Option<NonNull<T>>>()
     }
 
-    /// Answer the request with `value` if it asks for `T`.
     pub fn provide<T: ?Sized + 'static>(&mut self, value: &'a mut T) {
         if let Some(slot) = self.slot.downcast_mut::<Option<NonNull<T>>>() {
             *slot = Some(NonNull::from(value));
@@ -65,8 +57,6 @@ impl<'a> RequestMut<'a, '_> {
     }
 }
 
-/// `widget`'s implementation of capability `T` (a `dyn Trait`), if it
-/// provides one.
 pub fn capability<T: ?Sized + 'static>(widget: &(impl Widget + ?Sized)) -> Option<&T> {
     let mut slot: Option<NonNull<T>> = None;
     widget.provide(&mut Request {
@@ -79,7 +69,6 @@ pub fn capability<T: ?Sized + 'static>(widget: &(impl Widget + ?Sized)) -> Optio
     slot.map(|pointer| unsafe { pointer.as_ref() })
 }
 
-/// Mutable [`capability`].
 pub fn capability_mut<T: ?Sized + 'static>(widget: &mut (impl Widget + ?Sized)) -> Option<&mut T> {
     let mut slot: Option<NonNull<T>> = None;
     widget.provide_mut(&mut RequestMut {

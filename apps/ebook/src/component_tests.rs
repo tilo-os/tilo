@@ -197,7 +197,6 @@ fn child_labels(driver: &FrameHarness, book: &str) -> Vec<(String, String)> {
 #[test]
 fn a_native_new_library_starts_empty_on_the_shelf() {
     let fixture = Fixture::new("books-native-new");
-    // Nothing is handed to a native library, so there is no book to wait for.
     let (driver, checkout) =
         fixture.driver_with(crate::definition(), 1, LaunchTarget::New, "", |_| {});
     let shelf = fixture.records.read(&checkout.id, shelf).unwrap();
@@ -287,7 +286,6 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
         note.excerpt
     );
 
-    // The annotations read back as the open book's resources.
     let children = child_labels(&first, &book);
     assert!(
         children.contains(&("ebook.library.note".into(), "The keeper's debt".into())),
@@ -300,9 +298,6 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
         "{children:?}"
     );
 
-    // The second mount of the record shares the document: once its frame
-    // passes run again (the browser runtime re-syncs it when the first
-    // mount's record changes), it reads the first mount's annotations.
     second.relayout();
     assert!(
         child_labels(&second, &book)
@@ -367,8 +362,6 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
         "{highlights:?}"
     );
 
-    // The laptop mounts the phone's record with no file: the same content
-    // store gives it the same book, and the record the same highlight.
     let target = LaunchTarget::Record {
         checkout,
         reveal: None,
@@ -389,7 +382,6 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
     );
 
     // Revealing it moves the laptop to Book 20, which a passage selected
-    // without a chapter then lands in.
     let highlight = highlight.id.as_str().to_string();
     invoke(&mut laptop, &highlight, "open", serde_json::json!({})).expect("reveal");
     highlight_passage(&mut laptop, &book, serde_json::json!({"start_block": 5}));
@@ -435,7 +427,6 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
     assert!(actions(&phone).contains(&"go-to".to_string()));
     assert!(actions(&laptop).contains(&"go-to".to_string()));
 
-    // A selection on the phone is dropped by going somewhere.
     invoke(
         &mut phone,
         &book,
@@ -464,8 +455,6 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
     .expect("laptop goes to Book 5");
     assert!(!selection_actions(&laptop, &book).contains(&"highlight-selection".to_string()));
 
-    // Each mount is where it went: a passage selected without a chapter lands
-    // in that mount's chapter.
     highlight_passage(&mut phone, &book, serde_json::json!({"start_block": 4}));
     highlight_passage(&mut laptop, &book, serde_json::json!({"start_block": 5}));
     let highlights = book_highlights(&fixture, &checkout, &book_id);
@@ -484,7 +473,6 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
         "{highlights:?}"
     );
 
-    // A target the book does not have is refused, not clamped.
     for missing in [
         serde_json::json!({"chapter": 40}),
         serde_json::json!({"chapter": 4, "block": 60}),

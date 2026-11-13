@@ -1,19 +1,4 @@
-//! What the launcher asks of whoever answers its searches, and what they
-//! answer.
-//!
-//! The launcher draws, the source knows. A source answers a search with the
-//! rows to show (the toolkit's palette rows, each already wearing its
-//! picture, facts and the ways it can be opened), and carries out what the
-//! person chose: it opens the app, runs the action, asks for the action's
-//! arguments one step at a time. The shell lends the launcher its source
-//! over everything the desktop can find ([`LauncherService`]); a capture
-//! and the app's own window use a fixed set of rows
-//! ([`crate::fixture::FixtureSource`]).
-//!
-//! The two sides talk through a [`Link`]: the launcher puts its asks on
-//! it, and the source answers each in turn on its own schedule (the
-//! shell's on its next frame, where it holds what search reads), waking the
-//! launcher when the answer changed.
+//! What the launcher asks of whoever answers its searches, and what they answer.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -24,8 +9,8 @@ pub use ui::search::system::ResourceKind;
 pub use ui::search::{AppScope, Scope};
 pub use ui::{ArgumentSpec, CommandEntry};
 
-/// What the person searches for: the text typed and the kinds of result
-/// they narrowed it to (none: every kind).
+/// What the person searches for: the text typed and the kinds of result they narrowed it to
+/// (none: every kind).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Search {
     pub query: String,
@@ -35,77 +20,48 @@ pub struct Search {
 /// Something the launcher asks of its source.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ask {
-    /// The launcher opened in `scope` (the source may search a narrower or
-    /// wider one when that is all there is), showing `query`, or what the
-    /// source opens it on when `None`.
-    Open { scope: Scope, query: Option<String> },
-    /// The rows for `search`.
+    Open {
+        scope: Scope,
+        query: Option<String>,
+    },
     Search(Search),
-    /// The person chose row `row`, with `modifier` held: the source opens
-    /// it, runs it or asks what it needs first.
     Choose {
         row: String,
         modifier: Option<ActivationModifier>,
     },
-    /// The person selected row `row`: the source keeps it selected while
-    /// rows change under it, and runs it when the person chooses.
-    Select { row: String },
-    /// The person stepped the value row `row` shows by `delta` (←/→).
-    Adjust { row: String, delta: i8 },
-    /// The argument step on screen was answered with `text`.
+    Select {
+        row: String,
+    },
+    Adjust {
+        row: String,
+        delta: i8,
+    },
     Argument(String),
-    /// The person left the step on screen (Escape): back to the previous
-    /// one, or to the results.
     Back,
-    /// Search one scope wider than now.
     Widen,
-    /// The launcher closed without a choice.
     Dismissed,
 }
 
-/// The source's answer: everything the launcher shows that is not what
-/// the person typed.
 #[derive(Clone, Debug, Default)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each is one independent part of what the launcher shows"
 )]
 pub struct Answer {
-    /// The rows, in order: entries sharing a group sit under one header,
-    /// and a row's section heads its group.
     pub rows: Vec<CommandEntry>,
-    /// Whether typing narrows `rows` here rather than asking the source:
-    /// the values an argument step offers, a row's other actions.
     pub narrows: bool,
-    /// The kinds the results hold, most hits first, with their labels:
-    /// the filter chips. A kind the person chose is among them.
     pub kinds: Vec<(ResourceKind, String)>,
-    /// Whether the filter band shows.
     pub band: bool,
-    /// The scope searched now.
     pub scope: Scope,
-    /// The token at the start of the field naming a narrowed scope, and
-    /// the accessible name of what pressing it does (widen), if anything.
     pub scope_token: Option<String>,
     pub scope_token_action: Option<String>,
-    /// What the empty field says it searches.
     pub placeholder: String,
-    /// An argument step's field, by its id, in place of the query.
     pub field: Option<(String, ArgumentSpec)>,
-    /// The query the source puts in the field (opening on one, coming back
-    /// from a step); `None` leaves what the person typed.
     pub query: Option<String>,
-    /// The row to select, by id: the person's choice as the source keeps
-    /// it ([`Ask::Select`]), or its best row. `None` keeps the person's
-    /// choice, or the first row.
     pub select: Option<String>,
-    /// Why the selected row did not run: a title and a detail.
     pub status: Option<(String, String)>,
-    /// More rows are still coming.
     pub searching: bool,
-    /// The field alone while nothing is typed: no list and no band.
     pub field_only: bool,
-    /// The launcher's work is done (a row ran, the source closed it).
     pub closed: bool,
 }
 
@@ -118,14 +74,9 @@ pub trait LauncherSource {
 /// What the launcher's card makes of the room its host gives it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CardFit {
-    /// The card, in the launcher's own coordinates.
     pub card: ui::vello::kurbo::Rect,
-    /// The card's height less its list: the field, the band, the padding.
     pub chrome_height: f64,
-    /// How many rows a full list holds: what the source finds rows for.
     pub rows: usize,
-    /// Each row on screen, by id, and where it is in the launcher's own
-    /// coordinates: what a press or a menu on the card is about.
     pub shown: Vec<(String, ui::vello::kurbo::Rect)>,
 }
 
@@ -135,22 +86,18 @@ struct Shared {
     answer: Answer,
     generation: u64,
     open: bool,
-    /// The host asked the launcher to open, in this scope.
     open_request: Option<Scope>,
     room: Option<(f64, f64)>,
     fit: Option<CardFit>,
-    /// The modifier keys the host sees held.
     held: ui::winit::keyboard::ModifiersState,
     wake: Option<ui::WakeHandle>,
 }
 
-/// The launcher's side of the conversation and its source's, shared
-/// between the two in one process.
+/// The launcher's side of the conversation and its source's, shared between the two in one
+/// process.
 #[derive(Clone, Default)]
 pub struct Link {
     shared: Rc<RefCell<Shared>>,
-    /// Bumped with every ask, so a host can tell there is work without
-    /// borrowing.
     pending: Rc<Cell<u64>>,
 }
 
@@ -159,7 +106,6 @@ impl Link {
         Self::default()
     }
 
-    /// Put `ask` to the source.
     pub fn ask(&self, ask: Ask) {
         let mut shared = self.shared.borrow_mut();
         match &ask {
@@ -176,8 +122,8 @@ impl Link {
         !self.shared.borrow().asks.is_empty()
     }
 
-    /// Answer every ask waiting, in order, with `source`, and wake the
-    /// launcher when the answer changed.
+    /// Answer every ask waiting, in order, with `source`, and wake the launcher when the
+    /// answer changed.
     pub fn serve(&self, source: &mut dyn LauncherSource) {
         loop {
             let Some(ask) = self.shared.borrow_mut().asks.pop_front() else {
@@ -192,8 +138,8 @@ impl Link {
         }
     }
 
-    /// Show `answer`, as the source's own change (a provider's late rows,
-    /// a switch flipped somewhere else), and wake the launcher.
+    /// Show `answer`, as the source's own change (a provider's late rows, a switch flipped
+    /// somewhere else), and wake the launcher.
     pub fn publish(&self, answer: Answer) {
         let wake = {
             let mut shared = self.shared.borrow_mut();
@@ -220,16 +166,15 @@ impl Link {
         self.shared.borrow().generation
     }
 
-    /// Whether the launcher is open: opened and neither dismissed nor
-    /// closed by its source since.
+    /// Whether the launcher is open: opened and neither dismissed nor closed by its source
+    /// since.
     pub fn is_open(&self) -> bool {
         self.shared.borrow().open
     }
 
-    /// Ask the launcher to open in `scope`, as the host's own shortcut
-    /// does: the launcher opens before it handles anything else, so the
-    /// first key typed after the shortcut is never lost to a closed card.
-    /// Agents and scripts open it through its `open` action instead.
+    /// Ask the launcher to open in `scope`, as the host's own shortcut does: the launcher
+    /// opens before it handles anything else, so the first key typed after the shortcut is
+    /// never lost to a closed card.
     pub fn request_open(&self, scope: Scope) {
         let wake = {
             let mut shared = self.shared.borrow_mut();
@@ -246,8 +191,8 @@ impl Link {
         self.shared.borrow_mut().open_request.take()
     }
 
-    /// Give the launcher's card `width` and let its list grow to
-    /// `list_height`: the room the host shows it in.
+    /// Give the launcher's card `width` and let its list grow to `list_height`: the room
+    /// the host shows it in.
     pub fn set_room(&self, width: f64, list_height: f64) {
         let wake = {
             let mut shared = self.shared.borrow_mut();
@@ -275,9 +220,8 @@ impl Link {
         self.shared.borrow().fit.clone()
     }
 
-    /// The host sees `held` held, with no key for the launcher to read it
-    /// from: the selected row previews what choosing it with them does.
-    /// Whether that changed.
+    /// The host sees `held` held, with no key for the launcher to read it from: the
+    /// selected row previews what choosing it with them does.
     pub fn hold_modifiers(&self, held: ui::winit::keyboard::ModifiersState) -> bool {
         let wake = {
             let mut shared = self.shared.borrow_mut();
@@ -309,9 +253,8 @@ impl Link {
     }
 }
 
-/// The source a host lends the launcher it mounts
-/// ([`ui::application::HostContext::lend`]): the host keeps a clone of the
-/// link and answers its asks.
+/// The source a host lends the launcher it mounts ([`ui::application::HostContext::lend`]):
+/// the host keeps a clone of the link and answers its asks.
 #[derive(Clone)]
 pub struct LauncherService {
     pub link: Link,

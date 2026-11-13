@@ -6,9 +6,6 @@ use std::str::FromStr;
 use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 use tilo_actions::{ConfirmationPolicy, InputSpec, OperationKind};
 
-/// The id a host search holds for one resource. It names the app and the
-/// resource without spelling either out, and is all a host hands back on
-/// activation: an id this runtime no longer offers opens nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId(u64);
 
@@ -60,32 +57,24 @@ impl FromStr for EntryId {
     }
 }
 
-/// A resource a host search can find, and how to open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchEntry {
     pub id: EntryId,
     pub app_id: String,
-    /// The resource's own label, as the app words it.
     pub title: String,
-    /// The app's one-line detail about the resource, when it gives one.
     pub detail: Option<String>,
-    /// The opening action, on the publisher that offered it.
     pub target: RemoteActionTarget,
 }
 
 impl SearchEntry {
-    /// What a host search shows and matches: a change to anything else is
-    /// invisible to it.
     pub(crate) fn same_presentation(&self, other: &Self) -> bool {
         self.title == other.title && self.detail == other.detail
     }
 }
 
-/// How well a row's action opens its resource; `None` when it does not, or
-/// not without a person's input.
-///
-/// The resource's primary declared view is best, then any declared view,
-/// then the conventional `open` view operation.
+/// How well a row's action opens its resource, best first: the primary
+/// declared view, then any declared view, then the `open` view operation.
+/// `None` when none does it, or none without a person's input.
 pub(crate) fn opening(row: &CatalogueRow) -> Option<(u8, SearchEntry)> {
     let action = row.action.as_ref()?;
     let contract = &action.contract;
@@ -120,7 +109,6 @@ pub(crate) fn opening(row: &CatalogueRow) -> Option<(u8, SearchEntry)> {
     ))
 }
 
-/// The action id apps give the view operation that opens a resource.
 const OPEN_ACTION: &str = "open";
 
 #[cfg(test)]
@@ -132,7 +120,6 @@ mod tests {
         let id = EntryId::of("so.tilo.notes", "notes:page:1");
         assert_eq!(id.to_string().parse::<EntryId>().unwrap(), id);
         assert_ne!(id, EntryId::of("so.tilo.notes", "notes:page:2"));
-        // The app is part of the identity, and the parts cannot run together.
         assert_ne!(
             EntryId::of("a", "bc"),
             EntryId::of("ab", "c"),

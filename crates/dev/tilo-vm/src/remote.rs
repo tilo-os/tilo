@@ -92,7 +92,6 @@ pub fn known_hosts_path(key: &str) -> String {
     format!("{key}.known_hosts")
 }
 
-/// `ssh` arguments for a non-interactive, key-only connection.
 pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "-o",
@@ -125,10 +124,6 @@ pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) ->
     args
 }
 
-/// `TILO_VM_SSH` replaces the ssh program, e.g. with a wrapper that adds
-/// options or a local stand-in for testing.
-///
-/// The remote command always runs as root: see [`as_root`].
 pub fn ssh_command(
     endpoint: &SshEndpoint,
     key: Option<&str>,
@@ -140,8 +135,6 @@ pub fn ssh_command(
     command
 }
 
-/// `ssh` to the endpoint without a remote command: the transport other
-/// tools (rsync) put their own command after.
 pub fn ssh_transport(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> CommandLine {
     let program = std::env::var("TILO_VM_SSH").unwrap_or_else(|_| "ssh".into());
     let mut command = CommandLine::new(&program, &[]);
@@ -173,20 +166,16 @@ pub fn as_root(endpoint: &SshEndpoint, remote: &[String]) -> Vec<String> {
     ]
 }
 
-/// rsync's `--rsync-path` (a shell line rsync appends its server arguments
-/// to) as root, like [`as_root`].
 pub fn rsync_path_as_root(endpoint: &SshEndpoint, line: &str) -> String {
     if endpoint.user == "root" {
         return line.to_owned();
     }
-    // The appended arguments become "$@" of the rsync at the line's end.
     let line = line
         .strip_suffix("rsync")
         .map_or_else(|| line.to_owned(), |head| format!("{head}rsync \"$@\""));
     format!("sudo -n -- sh -c {} rsync", crate::vmbuild::sh_quote(&line))
 }
 
-/// Why sudo refused to run a command without a password, from its stderr.
 pub fn sudo_refusal(stderr: &str) -> Option<String> {
     stderr.lines().map(str::trim).find_map(|line| {
         let rest = line.strip_prefix("sudo: ")?;
@@ -198,7 +187,6 @@ pub fn sudo_refusal(stderr: &str) -> Option<String> {
     })
 }
 
-// Forward a typed call after inspecting its request, without a second serializer.
 struct Forward<T>(tilo_vm_protocol::Request, std::marker::PhantomData<T>);
 
 impl<T> From<Forward<T>> for tilo_vm_protocol::Request {
@@ -222,12 +210,6 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Renew the existing automatic sleep lease while a builder is running.
-    /// Explicit longer holds are preserved by the normal hello handshake.
-    ///
-    /// # Errors
-    /// Worker startup, handshake, lease and transport failures. The inner
-    /// result reports a renewal failure after the owned build has finished.
     pub(crate) fn keep_awake_while<T>(
         &mut self,
         build: impl FnOnce() -> T,
@@ -264,11 +246,6 @@ impl Remote {
         Ok(())
     }
 
-    /// Open `ssh <vm> tilo-vmd rpc` and complete the handshake.
-    ///
-    /// # Errors
-    /// Unreachable VMs, a missing daemon and protocol mismatches, each with
-    /// its own hint; `debug` lists the hypervisor's fallback commands.
     pub fn connect(
         vm: &str,
         endpoint: &SshEndpoint,
@@ -311,7 +288,6 @@ impl Remote {
             return Err(CliError::io("start ssh")(std::io::Error::other("no pipes")));
         };
         let mut client = Client::new(BufReader::new(stdout), stdin);
-        // SSH stdio is byte-transparent; the audited peer bridge stays JSON-line oriented.
         client.enable_binary_uploads();
         let handshake = client.hello(env!("CARGO_PKG_VERSION"));
         match handshake {
@@ -337,7 +313,6 @@ impl Remote {
                         detail,
                     });
                 }
-                // 127: the remote shell found no such command.
                 if status == Some(127)
                     || stderr.contains("command not found")
                     || stderr.contains("No such file")
@@ -367,8 +342,6 @@ impl Remote {
         }
     }
 
-    /// Hand off to a verified imported daemon before its normal swap/recovery.
-    /// No registered command or persistent access policy is changed.
     pub(crate) fn handoff(
         &self,
         vm: &str,
@@ -395,9 +368,6 @@ impl Remote {
         Ok(replacement)
     }
 
-    /// Open tilo-vmd's RPC over the peer network: `line` runs
-    /// `tilo-device-admin dial`, whose first line names the device and the
-    /// route before the request lines start.
     pub fn over_peer(vm: &str, line: &CommandLine) -> Result<(Self, PeerSession), CliError> {
         let mut child = Command::new(&line.program)
             .args(&line.args)
@@ -461,8 +431,6 @@ impl Remote {
             .map_err(CliError::from)
     }
 
-    /// # Errors
-    /// Read or transport failures.
     pub fn upload(&mut self, bytes: impl std::io::Read) -> Result<String, CliError> {
         let client = self
             .client
@@ -472,22 +440,16 @@ impl Remote {
     }
 }
 
-/// What a peer-network session said about itself before its first request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PeerSession {
-    /// The device id that proved itself, hex.
     pub device: String,
     pub label: String,
-    /// `relay` or `direct`.
     pub route: String,
-    /// The relay's URL or the device's address.
     pub via: String,
-    /// The session's number in the device's journal.
     pub session: u64,
 }
 
 impl PeerSession {
-    /// `relay <url>` or `direct <address>`.
     pub fn describe(&self) -> String {
         format!("{} {}", self.route, self.via).trim().to_owned()
     }
@@ -498,8 +460,6 @@ struct PeerPreamble {
     tilo_device_admin: PeerSession,
 }
 
-/// `TILO_DEVICE_ADMIN` names the dial helper; else `tilo-device-admin`
-/// beside this executable, else on PATH.
 pub fn peer_tool() -> String {
     if let Some(tool) = std::env::var_os("TILO_DEVICE_ADMIN").filter(|tool| !tool.is_empty()) {
         return tool.to_string_lossy().into_owned();
@@ -519,8 +479,6 @@ fn peer_tool_missing() -> CliError {
     }
 }
 
-/// The dial helper's arguments for `route`, as this machine's identity at
-/// `identity_root`.
 pub fn peer_dial(route: &crate::config::PeerRoute, identity_root: &std::path::Path) -> CommandLine {
     let mut line = CommandLine::new(&peer_tool(), &["dial", "--identity-root"]);
     line.args.push(identity_root.display().to_string());
@@ -536,7 +494,6 @@ pub fn peer_dial(route: &crate::config::PeerRoute, identity_root: &std::path::Pa
     line
 }
 
-/// Why the dial helper ended, from its exit status and what it said.
 fn peer_failure(vm: &str, child: &mut Child) -> CliError {
     let status = child.wait().ok().and_then(|status| status.code());
     let mut stderr = String::new();
@@ -560,8 +517,6 @@ fn peer_failure(vm: &str, child: &mut Child) -> CliError {
 /// The guest's VM lock, which VM-wide swaps, gc and upgrades take too.
 pub const VM_LOCK: &str = "/var/lib/tilo-vm/locks/vm.lock";
 
-/// The remote command that takes the VM lock, says so, and holds it until
-/// the connection ends (the VM shutting down ends it).
 pub fn vm_lock_command() -> Vec<String> {
     vec![format!(
         "mkdir -p /var/lib/tilo-vm/locks && flock --nonblock {VM_LOCK} sh -c 'echo locked; exec sleep 600'"
@@ -570,20 +525,15 @@ pub fn vm_lock_command() -> Vec<String> {
 
 pub enum LockOutcome {
     Held(VmLock),
-    /// Another command holds it.
     Busy,
-    /// The lock could not be asked for (VM down, no SSH).
     Unreachable(String),
 }
 
-/// Holds the guest's VM lock while alive.
 pub struct VmLock {
     child: Child,
 }
 
 impl VmLock {
-    /// Wait up to `timeout` for the connection to end, which means the VM
-    /// went down; `true` when it did.
     pub fn wait_for_shutdown(&mut self, timeout: std::time::Duration) -> bool {
         let started = std::time::Instant::now();
         while started.elapsed() < timeout {
@@ -603,7 +553,6 @@ impl Drop for VmLock {
     }
 }
 
-/// Take the guest's VM lock without waiting.
 pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
     let line = ssh_command(endpoint, key, &vm_lock_command(), false);
     let spawned = Command::new(&line.program)
@@ -629,7 +578,6 @@ pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
         let _ = pipe.read_to_string(&mut stderr);
     }
     match status {
-        // flock --nonblock exits 1 when the lock is taken.
         Some(1) => LockOutcome::Busy,
         _ => LockOutcome::Unreachable(if stderr.trim().is_empty() {
             "no answer".into()
@@ -641,11 +589,8 @@ pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
 
 impl Drop for Remote {
     fn drop(&mut self) {
-        // Closing stdin ends the daemon's loop; reap ssh so no zombie remains.
         drop(self.client.take());
         if self.peer {
-            // The dial helper closes its connection on its way out; killed,
-            // it would leave the device's session to time out.
             let started = std::time::Instant::now();
             while started.elapsed() < std::time::Duration::from_secs(3) {
                 if matches!(self.child.try_wait(), Ok(Some(_))) {
@@ -762,8 +707,6 @@ for line in sys.stdin:
             .handoff("fixture", &line, &endpoint, vec![])
             .unwrap();
         assert_eq!(imported.call(swap()).unwrap().generation, 1);
-        // The old process still reports its own code: replacing a path cannot
-        // fix an already-running RPC implementation.
         old_remote.client.as_mut().unwrap().hello("test").unwrap();
         assert_eq!(old_remote.hello.daemon_version, "old");
         assert_eq!(
@@ -802,10 +745,8 @@ for line in sys.stdin:
         );
     }
 
-    /// The SSH command is key-only and bounded, and the VM lock is the one the daemon takes.
     #[test]
     fn remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock() {
-        // Phase: ssh_command_is_key_only_and_bounded.
         {
             let endpoint = SshEndpoint {
                 user: "root".into(),
@@ -827,7 +768,6 @@ for line in sys.stdin:
             assert!(interactive.args.contains(&"-t".to_string()));
         }
 
-        // Phase: another_account_runs_everything_as_root_through_sudo.
         {
             let owner = SshEndpoint {
                 user: "me".into(),
@@ -847,7 +787,6 @@ for line in sys.stdin:
             assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
             let shell = ssh_command(&owner, None, &[], true);
             assert_eq!(&shell.args[shell.args.len() - 2..], ["sudo", "-i"]);
-            // rsync's server runs under sudo with the arguments rsync appends.
             assert_eq!(
                 rsync_path_as_root(&owner, "mkdir -p /x && flock --nonblock /l rsync"),
                 "sudo -n -- sh -c 'mkdir -p /x && flock --nonblock /l rsync \"$@\"' rsync"
@@ -865,7 +804,6 @@ for line in sys.stdin:
             assert_eq!(sudo_refusal("bash: tilo-vmd: command not found"), None);
         }
 
-        // Phase: vm_lock_is_the_one_the_daemon_takes.
         {
             let command = vm_lock_command().join(" ");
             assert!(

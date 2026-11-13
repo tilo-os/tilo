@@ -1,11 +1,5 @@
-//! [`ConversationList`] as a described component: the lines of a conversation as parts, each
-//! what it says, who said it and when, and how it is on its way.
-//!
-//! The list is static — it paints and it measures, takes no pointer, holds no selection and
-//! keeps no state of its own — so it reports no events: the day's dividers, the runs of one
-//! author's lines, the clock on each line and the delivery state under your own are the list's
-//! own reading of the lines it is given. The lines change in place: one that arrived or changed
-//! is taken through [`Described`]'s `set_props`, and the list measures only what it changed.
+//! [`ConversationList`] as a described component: the lines of a conversation as parts, each what it
+//! says, who said it and when, and how it is on its way.
 
 use crate::component::{Component, Described, Moment, ResourceId};
 use crate::widget::Widget;
@@ -31,21 +25,20 @@ crate::component::choice!(crate::widget::conversation::DeliveryState, "Delivery"
     presents = "item"
 )]
 pub struct ConversationEntryProps {
-    /// The message it stands for: its stable identity, what a caller anchors a scroll to, and
-    /// what changes follow.
+    /// The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes
+    /// follow.
     #[component(required, positional)]
     pub item: ResourceId,
-    /// Who said it, as the person reads names. Empty for one that knowingly continues the run
-    /// above it.
+    /// Who said it, as the person reads names.
     pub author: Option<String>,
-    /// When it was said: a divider marks the first line of each day, and the time shows beside
-    /// an author's name and under your own line.
+    /// When it was said: a divider marks the first line of each day, and the time shows beside an author's
+    /// name and under your own line.
     pub time: Option<Moment>,
     /// What it says.
     #[component(required, positional)]
     pub said: String,
-    /// Your own line (on the right, with its delivery state under it) rather than the other
-    /// person's (on the left, under their name).
+    /// Your own line (on the right, with its delivery state under it) rather than the other person's (on
+    /// the left, under their name).
     pub outgoing: bool,
     /// How far your own line is on its way.
     pub delivery: Option<DeliveryState>,
@@ -54,8 +47,8 @@ pub struct ConversationEntryProps {
 crate::component::part_slot!(ConversationEntryProps);
 
 /// A conversation, drawn as every conversation is drawn: each line on its own side, runs of one
-/// person's consecutive messages under their name once, a divider where the day changes, and the
-/// time and the delivery state under your own.
+/// person's consecutive messages under their name once, a divider where the day changes, and the time
+/// and the delivery state under your own.
 #[derive(Component, Default)]
 #[component(name = "ConversationList", role = "List", label = "name")]
 pub struct ConversationListProps {
@@ -66,7 +59,6 @@ pub struct ConversationListProps {
     pub lines: Vec<ConversationEntryProps>,
 }
 
-/// The line one entry makes, as the list draws it.
 fn line_of(entry: &ConversationEntryProps) -> ConversationLine {
     let at_ms = entry
         .time
@@ -92,7 +84,6 @@ fn line_of(entry: &ConversationEntryProps) -> ConversationLine {
     line
 }
 
-/// A described conversation: its list, and the lines it was made with.
 pub struct DescribedConversationList {
     list: ConversationList,
     lines: Vec<ConversationEntryProps>,
@@ -100,18 +91,15 @@ pub struct DescribedConversationList {
 }
 
 impl DescribedConversationList {
-    /// The list, for a test of what it draws.
     #[must_use]
     pub fn list(&self) -> &ConversationList {
         &self.list
     }
 
-    /// The list, to change.
     pub fn list_mut(&mut self) -> &mut ConversationList {
         &mut self.list
     }
 
-    /// The lines it was made with.
     #[must_use]
     pub fn entries(&self) -> &[ConversationEntryProps] {
         &self.lines
@@ -130,8 +118,7 @@ impl Described for DescribedConversationList {
         Self { list, lines, name }
     }
 
-    /// Changed lines are taken in place, and the list measures only what changed. A changed name
-    /// builds the list again, since the name is the list's for assistive technology.
+    /// Changed lines are taken in place, and the list measures only what changed.
     fn set_props(&mut self, props: ConversationListProps) -> bool {
         let ConversationListProps { name, lines } = props;
         if name != self.name {
@@ -146,7 +133,6 @@ impl Described for DescribedConversationList {
     }
 }
 
-/// A conversation is its list.
 impl crate::widget::Decorator for DescribedConversationList {
     type Inner = ConversationList;
 
@@ -162,7 +148,6 @@ impl crate::widget::Decorator for DescribedConversationList {
         "ConversationList"
     }
 
-    /// The list's change is the described conversation's: it adds no structure of its own.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         self.list.take_structure_change()
     }

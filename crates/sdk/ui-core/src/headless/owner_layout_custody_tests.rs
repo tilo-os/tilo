@@ -252,7 +252,6 @@ fn mapped_child_drop_retires_old_maps_before_failure_publish_or_next_original_id
         "old mapped control must genuinely drop"
     );
     let retired = frame.node_map.is_empty() && !frame.layout_built;
-    // RED exits safely before any raw focus/IME/undo inspection of freed memory.
     if !retired {
         close(&mut frame, 1);
         assert!(
@@ -407,10 +406,9 @@ fn unchanged_focused_editor_caret_and_ime_survive_fresh_input_readmission_withou
     assert_eq!(selection.focus, 6);
     assert_eq!(focus.value.as_deref(), Some("retained draft"));
 }
-/// A service that replaced nothing (a save landing) retires the maps while
-/// its callbacks run, and its readmission takes them back after checking
-/// them against the live tree: the frame lays out the tree it had, with the
-/// caret where it was, instead of building it again.
+/// A service that replaced nothing (a save landing) retires the maps while its callbacks run, and its
+/// readmission takes them back after checking them against the live tree: the frame lays out the tree
+/// it had, with the caret where it was, instead of building it again.
 #[test]
 fn unchanged_owner_service_readmits_its_tree_without_building_it_again() {
     let host = ProbeHost::new();
@@ -439,8 +437,8 @@ fn unchanged_owner_service_readmits_its_tree_without_building_it_again() {
     assert_eq!(after, (nodes, ime));
 }
 
-/// A replacement the owner does not report is found by the readmission's
-/// walk of the live tree: the tree it set aside is never called through.
+/// A replacement the owner does not report is found by the readmission's walk of the live tree: the
+/// tree it set aside is never called through.
 #[test]
 fn an_unreported_replacement_during_service_rebuilds_on_readmission() {
     let host = ProbeHost::new();
@@ -453,7 +451,6 @@ fn an_unreported_replacement_during_service_rebuilds_on_readmission() {
     seen.replace.set(true);
     seen.wake.borrow().as_ref().unwrap().wake();
     assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
-    // The owner said it replaced its editor; forget that it did.
     let _ = frame.root.take_structure_change();
     frame.composition_replaced = false;
     frame.try_relayout().unwrap();
@@ -501,7 +498,6 @@ fn readmission_second_sync_drop_then_panic_retires_the_newly_built_map_before_re
         "the service replaced the editor"
     );
     let drops = seen.drops.get();
-    // Do not execute readmission against a known dangling RED map.
     let retired = frame.node_map.is_empty();
     if !retired {
         close(&mut frame, 1);
@@ -550,7 +546,6 @@ fn failed_current_composition_refuses_undo_redo_named_a11y_and_root_input_withou
     frame
         .perform_named("owned-editor", &crate::a11y::Action::Focus)
         .unwrap();
-    // Establish a genuine outer undo action that a lost owner binding could wrongly select.
     frame.state.doc.put(ROOT, "outer-only", "before").unwrap();
     frame.state.doc.commit();
     frame.state.doc.put(ROOT, "outer-only", "after").unwrap();

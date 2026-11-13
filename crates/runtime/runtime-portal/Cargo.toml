@@ -18,6 +18,7 @@ name = "runtime_portal"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.

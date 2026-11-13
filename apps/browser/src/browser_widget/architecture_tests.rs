@@ -80,7 +80,6 @@ use ui::framework::HostDelivery as _;
 use ui::tilo_actions::OperationKind;
 use ui::widget::MenuButton;
 
-/// What the window does for the effect an encoded invocation names.
 fn effect_operation(payload: &[u8]) -> BrowserOperation {
     use ui::tilo_resource::Effect as _;
     crate::effects::BrowserEffect::from_payload(payload)
@@ -263,7 +262,6 @@ fn find_and_daily_shortcuts_route_focus_keys_and_dpi() {
     {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        // The window's density is what it draws at; input never sets it.
         super::tests::draw_at(&mut widget, 2.0);
         super::tests::layout_at(&mut widget, 800.0, 600.0);
         widget
@@ -482,7 +480,6 @@ fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output()
     assert_eq!(error.message, "ERR_CONNECTION_REFUSED");
 }
 
-/// Loading state: stop contract, animation scheduling, and when loading starts and ends.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -594,7 +591,6 @@ fn loading_state_starts_stops_and_animates_only_while_live() {
         widget.apply_engine_events();
         assert_eq!(widget.address.get(), failed_uri);
         assert_eq!(widget.current_uri, failed_uri);
-        // The person reads what happened; the engine's error is logged.
         assert_eq!(
             widget.load_error.as_deref(),
             Some(load_failure::page_failed_message("ERR_UNSAFE_PORT").as_str())
@@ -701,7 +697,6 @@ fn loading_state_starts_stops_and_animates_only_while_live() {
     }
 }
 
-/// Every hosted affordance is a canonical action; presentation stays peer-local.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -778,7 +773,6 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
             "browser.session",
             "toggle-pause",
         );
-        // The overflow menu's commands queue the same canonical actions.
         for (label, resource, action) in [
             ("Pause history", "browser.session", "toggle-pause"),
             ("Picture in Picture", "browser.page", "picture-in-picture"),
@@ -1149,7 +1143,6 @@ fn media_fullscreen_and_renderer_events_drive_tab_state() {
     }
 }
 
-/// Back/forward click, cancel, keyboard and accessible activation paths.
 #[test]
 #[allow(
     clippy::too_many_lines,

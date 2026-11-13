@@ -7,12 +7,12 @@ use serde_json::{Value, json};
 use std::sync::Mutex;
 use tilo_lock::MutexRecover as _;
 
-/// The most text one composition carries to the host: an input method
-/// composes a phrase, not a document.
+/// The most text one composition carries to the host: an input method composes a phrase,
+/// not a document.
 pub(super) const IME_COMPOSITION_LIMIT: usize = 4096;
 
-/// A box the host reports in physical view pixels: finite, inside the
-/// largest view the host draws, and not empty.
+/// A box the host reports in physical view pixels: finite, inside the largest view the
+/// host draws, and not empty.
 pub(super) fn wire_rect(value: &Value) -> Option<vello::kurbo::Rect> {
     let number = |key: &str| {
         value
@@ -25,9 +25,7 @@ pub(super) fn wire_rect(value: &Value) -> Option<vello::kurbo::Rect> {
     (width >= 0.0 && height > 0.0).then(|| vello::kurbo::Rect::new(x, y, x + width, y + height))
 }
 
-/// The focused field after a host's `text_field` or
-/// `ime_composition_bounds` event. Composition bounds belong to the field
-/// already focused and are dropped without one.
+/// The focused field after a host's `text_field` or `ime_composition_bounds` event.
 pub(super) fn text_field_event(
     event_name: &str,
     value: &Value,
@@ -54,15 +52,14 @@ pub(super) fn text_field_event(
         purpose,
         multiline: value.get("multiline").and_then(Value::as_bool) == Some(true),
         bounds: wire_rect(value),
-        // A composition outlives a report of where its field is; the host
-        // says when it ends, and the view reads it only while composing.
+        // A composition outlives a report of where its field is; the host says when it
+        // ends, and the view reads it only while composing.
         composition: known.and_then(|known| known.composition),
     })
 }
 
-/// Whether a host report of the focused field or its composition is well
-/// formed. A field without a box is one the host cannot place; a box, when
-/// given, is whole.
+/// Whether a host report of the focused field or its composition is well formed. A field
+/// without a box is one the host cannot place; a box, when given, is whole.
 pub(super) fn valid_event(event: &str, value: &Value) -> bool {
     let placed = value.get("x").is_none() || wire_rect(value).is_some();
     if event == "ime_composition_bounds" {
@@ -76,8 +73,8 @@ pub(super) fn valid_event(event: &str, value: &Value) -> bool {
         && placed
 }
 
-/// Takes a host report into the engine's focused field; the window places
-/// the input method from it on its next frame.
+/// Takes a host report into the engine's focused field; the window places the input
+/// method from it on its next frame.
 pub(super) fn update(field: &Mutex<Option<crate::webview::TextField>>, event: &str, value: &Value) {
     let mut field = field.lock_recover();
     *field = text_field_event(event, value, *field);
@@ -122,10 +119,9 @@ pub(super) fn input_command(command: WebViewCommand) -> Value {
     }
 }
 
-/// The `ime_composition` op for `text` with its caret at byte offsets
-/// `cursor`: the host counts in UTF-16 code units, as the page does.
+/// The `ime_composition` op for `text` with its caret at byte offsets `cursor`: the host
+/// counts in UTF-16 code units, as the page does.
 pub(super) fn composition_command(text: &str, cursor: Option<(usize, usize)>) -> Value {
-    // An offset inside a character counts from that character's start.
     let units = |byte: usize| -> usize {
         text.char_indices()
             .take_while(|&(at, c)| at + c.len_utf8() <= byte)

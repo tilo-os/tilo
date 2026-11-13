@@ -24,7 +24,6 @@ fn a_pages_popup_is_routed_from_the_moment_it_opens_until_it_closes() {
             height: 520,
         }]
     );
-    // Its first events reach it before the app adopts it.
     route_native_event(
         &json!({"event":"title","tab":popup,"title":"Sign in"}),
         &routes,
@@ -55,7 +54,6 @@ fn a_pages_popup_is_routed_from_the_moment_it_opens_until_it_closes() {
             .iter()
             .all(|event| !matches!(event, WebViewEvent::TitleChanged(title) if title == "Sign in"))
     );
-    // Closed before it was adopted, it no longer counts against the bound.
     route_native_event(
         &json!({"event":"closed","tab":popup}),
         &routes,
@@ -70,7 +68,6 @@ fn a_pages_popup_is_routed_from_the_moment_it_opens_until_it_closes() {
     }
     assert_eq!(opener.unadopted.lock().unwrap().len(), 8);
     assert!(!opener.unadopted.lock().unwrap().contains_key(&popup));
-    // A popup id among the app's own tabs is refused.
     let forged =
         json!({"event":"popup","tab":1,"popup":2,"url":"https://a.example/","width":0,"height":0});
     assert!(route_native_event(&forged, &routes, &downloads, &ready).is_err());

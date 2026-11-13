@@ -1,6 +1,5 @@
-//! Direct messaging: shared Contacts identities, explicit account/recipient
-//! choices and separate service histories. Transport state belongs to the
-//! privileged broker; it is never inferred from names or widget state.
+//! Direct messaging: shared Contacts identities, explicit account/recipient choices and
+//! separate service histories.
 
 pub mod conversations;
 mod drafts;
@@ -21,15 +20,14 @@ use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// The record holds only conversations put into it on purpose (delivered
-/// or queued, see [`conversations`]); private external histories remain the
-/// broker's account-owned data, reached through effects.
+/// The record holds only conversations put into it on purpose (delivered or queued, see
+/// [`conversations`]); private external histories remain the broker's account-owned data,
+/// reached through effects.
 pub use conversations::Messages;
 
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view")]
 pub enum MessagesEffect {
-    /// Inspect private service groups for one explicitly selected sender account.
     #[effect(
         job,
         sensitive,
@@ -39,7 +37,6 @@ pub enum MessagesEffect {
         label = "messages-list-groups"
     )]
     ListGroups { service: String, account: String },
-    /// Fetch current service membership; this does not authorize a group send.
     #[effect(
         job,
         sensitive,
@@ -53,7 +50,6 @@ pub enum MessagesEffect {
         account: String,
         group: String,
     },
-    /// Read private text only for this selected service group.
     #[effect(
         job,
         sensitive,
@@ -67,7 +63,6 @@ pub enum MessagesEffect {
         account: String,
         group: String,
     },
-    /// Send once using the reviewed membership and original sender account.
     #[effect(job, sensitive, returns, label = "messages-group-send")]
     SendGroupText {
         service: String,
@@ -78,7 +73,6 @@ pub enum MessagesEffect {
         #[param(secret)]
         text: String,
     },
-    /// Add one explicitly selected current Contacts association.
     #[effect(job, destructive, label = "messages-group-add")]
     AddGroupMember {
         service: String,
@@ -108,13 +102,10 @@ pub enum MessagesEffect {
     },
     #[effect(view, idempotent, label = "messages-close-groups")]
     CloseGroups,
-    /// Open private account setup without changing a conversation or account.
     #[effect(view, idempotent, label = "messages-setup-accounts")]
     OpenAccountSetup,
-    /// Select one exact configured service/account for private setup.
     #[effect(view, idempotent)]
     SelectSetupAccount { service: String, account: String },
-    /// Show the native host's short-lived private linking code.
     #[effect(
         attended,
         job,
@@ -124,14 +115,12 @@ pub enum MessagesEffect {
         label = "messages-start-link"
     )]
     BeginLink { service: String, account: String },
-    /// Confirm the displayed attempt on the explicitly selected account.
     #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteLink {
         service: String,
         account: String,
         attempt: String,
     },
-    /// Link a first account without manufacturing a configured account row.
     #[effect(
         attended,
         job,
@@ -141,7 +130,6 @@ pub enum MessagesEffect {
         label = "messages-first-account-prepare"
     )]
     BeginFirstEnrollment { service: String },
-    /// Open the host's private SIM chooser without granting modem access.
     #[effect(
         attended,
         job,
@@ -152,49 +140,37 @@ pub enum MessagesEffect {
         label = "messages-first-sms"
     )]
     ListSmsSims,
-    /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
     #[effect(job, sensitive, cancellable, returns, label = "messages-select-sim")]
     SelectSmsSim { selection: String },
-    /// Verify the exact unpublished pairing and review its self identity.
     #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteFirstEnrollment {
         service: String,
         account: String,
         attempt: String,
     },
-    /// Confirm self identity and propose access for protected Passwords review.
     #[effect(job, sensitive, cancellable, returns, label = "messages-first-confirm")]
     ReviewFirstEnrollment {
         service: String,
         account: String,
         display_name: String,
     },
-    /// Retire an interrupted unpublished attempt and return to service selection.
     #[effect(view, idempotent, label = "messages-first-reset")]
     ResetFirstEnrollment,
-    /// Interrupt only this account's private provisioning attempt.
     #[effect(view, idempotent, label = "messages-cancel-link")]
     CancelLink,
-    /// List your active Contacts identities.
     #[effect(view, returns, idempotent, label = "messages-list-people")]
     ListPeople,
-    /// Non-secret lifecycle for each exact service and sender account.
     #[effect(view, returns, idempotent, label = "messages-list-account-states")]
     ListAccountStates,
-    /// List the service and account choices for this person.
     #[effect(view, returns, idempotent, label = "messages-list-routes")]
     ListRoutes { person: String },
-    /// Open a person by stable Contacts identity.
     #[effect(view, idempotent)]
     OpenPerson { person: String },
-    /// Open a conversation this record holds, by its id or who it is with.
     #[effect(view, idempotent)]
     OpenConversation { conversation: String },
-    /// Select an exact service/account/recipient choice, as published by the
-    /// current Contacts and account records. Labels are never route keys.
+    /// Labels are never route keys.
     #[effect(view, idempotent)]
     SelectRoute { choice: String },
-    /// Refresh the selected conversation.
     #[effect(
         job,
         cancellable,
@@ -203,8 +179,6 @@ pub enum MessagesEffect {
         label = "messages-refresh-history"
     )]
     ReadHistory { choice: String },
-    /// Read the page before the conversation's oldest message: the history
-    /// older SMS waits in.
     #[effect(
         job,
         cancellable,
@@ -213,28 +187,17 @@ pub enum MessagesEffect {
         label = "messages-load-older"
     )]
     ReadOlderHistory { choice: String },
-    /// Return to the person overview.
     #[effect(view, idempotent)]
     Back,
-    /// Review this exact person, association, sender account, provider scope,
-    /// recipient and identity revision. This records an address-book decision;
-    /// the adapter must separately verify current provider identity before I/O.
+    /// This records an address-book decision; the adapter must separately verify current
+    /// provider identity before I/O.
     #[effect(destructive)]
     ConfirmAccount { person: String, choice: String },
-    /// Search messages
-    ///
-    /// The messages kept in this record (delivered into it or queued in
-    /// it) holding every word of the query in their sender, recipient,
-    /// conversation or text, newest first. Changes nothing.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     SearchMessages {
         #[param("The words to find, in any case")]
         query: String,
     },
-    /// Export conversations
-    ///
-    /// Keeps the transcript of one conversation, or of every one, as
-    /// content, and answers with its content address. Changes nothing.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ExportContent {
         #[param("md (the default) or json", choices = ["md", "json"])]
@@ -242,10 +205,6 @@ pub enum MessagesEffect {
         #[param("The conversation; every one when omitted")]
         conversation: Option<String>,
     },
-    /// Send through the currently authorized broker connection. It remains
-    /// unavailable until the host supplies that connection; no local append
-    /// or delivery state substitutes for a transport operation. Answers the
-    /// operation it reserved and how far the service took it.
     #[effect(job, sensitive, returns)]
     Send {
         choice: String,
@@ -267,14 +226,11 @@ impl std::fmt::Debug for MessagesEffect {
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The id of [`open_contacts_action`] on the app's resource.
 pub(crate) const OPEN_CONTACTS: &str = "open-contacts";
 
-/// Opening Contacts, where the people Messages lists are added: the
-/// workspace opens the app ([`ApplicationLaunch`]), so the empty state's
-/// button, search and agents all ask for the same thing.
-///
-/// [`ApplicationLaunch`]: ui::tilo_actions::remote::ApplicationLaunch
+/// Opening Contacts, where the people Messages lists are added: the workspace opens the app
+/// ([`ApplicationLaunch`]), so the empty state's button, search and agents all ask for the
+/// same thing.
 pub(crate) fn open_contacts_action() -> ui::tilo_actions::ActionSpec {
     ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.contacts").spec(
         OPEN_CONTACTS,
@@ -285,12 +241,6 @@ pub(crate) fn open_contacts_action() -> ui::tilo_actions::ActionSpec {
 
 pub struct MessagesShell;
 
-/// What the binary runs instead of opening a window.
-///
-/// `--probe-contact-directory-engine VALUE` (the value is ignored) runs the
-/// contact directory's self-check. It needs `runtime-engine`, the release
-/// build, where that code is in `libtilo_contact_directory_engine.so`; the
-/// check proves Messages loads that library and runs it.
 const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
     option: "--probe-contact-directory-engine",
     run: probe_contact_directory_engine,
@@ -312,11 +262,9 @@ impl ResourceApp for MessagesShell {
     type Resource = Messages;
     const ID: &'static str = "so.tilo.messages";
     const TITLE: &'static str = "Messages";
+    const TITLE_KEY: &'static str = "messages-app-title";
     const ICON: Option<&'static str> = Some("chat");
 
-    /// The person's accounts, kept by Settings, and the directory of their
-    /// identities, kept by Contacts: both theirs, read here for the service
-    /// accounts and the people they message.
     const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
         ui::framework::PersonKind::shared::<tilo_messaging::PersonAccounts>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
@@ -328,8 +276,6 @@ impl ResourceApp for MessagesShell {
         Some(&CATALOG)
     }
     fn view(cx: &mut ViewCx<Messages>) -> Element {
-        // The workspace's people are the Tilo lane's people: the view is
-        // built again as the roster names someone else.
         let people = cx.people();
         cx.switch(&people.revision(), move |cx, _| view::build(cx))
     }
@@ -365,9 +311,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 ui::reach_tests!(MessagesShell);
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source catalogue beside it.
 #[cfg(test)]
 mod german_window {
     #[test]

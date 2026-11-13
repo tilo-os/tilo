@@ -143,10 +143,6 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
     );
 }
 
-/// A Tilo OS package links the OS toolkit, whose media stack needs
-/// the development files of `GStreamer` where Cargo compiles. This machine lacking
-/// them does not stop the build, which `cargo` may run elsewhere; when the
-/// build fails, the error names the packages to install here.
 #[test]
 fn this_machines_libraries_are_named_only_when_the_build_fails() {
     let dir = tempfile::tempdir().unwrap();

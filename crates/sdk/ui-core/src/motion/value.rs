@@ -1,5 +1,5 @@
-//! [`MotionValue`] — a value that follows its target on a spring, and can be
-//! sent somewhere else at any moment without a jump.
+//! [`MotionValue`] — a value that follows its target on a spring, and can be sent somewhere else at any
+//! moment without a jump.
 
 use super::spring::SpringSpec;
 use crate::time::{Duration, Instant};
@@ -42,7 +42,6 @@ impl Animatable for f32 {
     }
 }
 
-/// Positions and extents in logical pixels arrive within a tenth of one.
 const PIXEL_TOLERANCE: f64 = 0.1;
 
 impl Animatable for Point {
@@ -123,19 +122,12 @@ impl Timing {
     }
 }
 
-/// A value following its target on a spring, in closed form.
-///
-/// - [`Self::set`] starts a new segment from the value *and velocity* the
-///   current one has at `now`, so a reversal or a new target mid-flight never
-///   jumps and never stalls; repeated changes are one motion, never a queue.
-/// - [`Self::get`] is exact at any `now`: the curve does not depend on how
-///   often, or whether, frames were drawn.
-/// - Once within tolerance the value *is* the target, and [`Self::is_moving`]
-///   is false: a settled value asks for no frames.
+/// A value following its target on a spring, in closed form. - [`Self::set`] starts a new segment from
+/// the value *and velocity* the current one has at `now`, so a reversal or a new target mid-flight
+/// never jumps and never stalls; repeated changes are one motion, never a queue.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionValue<T: Animatable> {
     target: T,
-    /// Displacement from the target and velocity when the segment started.
     from: Channels,
     velocity: Channels,
     started: Instant,
@@ -143,8 +135,8 @@ pub struct MotionValue<T: Animatable> {
     /// When the segment is within tolerance for good; `None` at rest.
     settles_at: Option<Instant>,
     tolerance: f64,
-    /// This motion's wish for frames on the motion clock, while it has one:
-    /// a landed motion takes it back ([`Self::snap`]).
+    /// This motion's wish for frames on the motion clock, while it has one: a landed motion takes it
+    /// back ([`Self::snap`]).
     wish: Option<u64>,
 }
 
@@ -164,8 +156,8 @@ impl<T: Animatable> MotionValue<T> {
         }
     }
 
-    /// The same value, arriving within `tolerance` per channel instead of the
-    /// type's default (a scalar carrying pixels rather than a fraction).
+    /// The same value, arriving within `tolerance` per channel instead of the type's default (a scalar
+    /// carrying pixels rather than a fraction).
     #[must_use]
     pub fn with_tolerance(mut self, tolerance: f64) -> Self {
         self.tolerance = tolerance.max(1e-9);
@@ -191,8 +183,6 @@ impl<T: Animatable> MotionValue<T> {
     /// Whether the value is still on its way at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
-        // The settled clock (captures and tests) reads every motion at its
-        // end.
         let moving =
             !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at);
         if moving {
@@ -201,14 +191,13 @@ impl<T: Animatable> MotionValue<T> {
         moving
     }
 
-    /// When the current motion arrives; `None` at rest. A host that sleeps
-    /// until then instead of drawing frames has nothing to draw anyway.
+    /// When the current motion arrives; `None` at rest.
     pub fn settles_at(&self) -> Option<Instant> {
         self.settles_at
     }
 
-    /// Hold the motion for `by`: time spent waiting (on a full presenter)
-    /// is not progress, so the curve resumes where it stood.
+    /// Hold the motion for `by`: time spent waiting (on a full presenter) is not progress, so the curve
+    /// resumes where it stood.
     #[track_caller]
     pub fn defer(&mut self, by: Duration) {
         if self.settles_at.is_none() {
@@ -221,10 +210,8 @@ impl<T: Animatable> MotionValue<T> {
         }
     }
 
-    /// Move the whole motion by `by`: where it is going and every point of
-    /// its way there, keeping its pace. For a value measured in a frame that
-    /// moved under it (a pan whose canvas lost a window before the view):
-    /// what it shows on screen goes on unchanged.
+    /// Move the whole motion by `by`: where it is going and every point of its way there, keeping its
+    /// pace.
     pub fn shift_by(&mut self, by: T) {
         let by = by.to_channels();
         let mut target = self.target.to_channels();
@@ -234,11 +221,10 @@ impl<T: Animatable> MotionValue<T> {
         self.target = T::from_channels(target);
     }
 
-    /// The value and its velocity `elapsed` into the current segment,
-    /// whatever the clock says: a capture posing a motion at a chosen point
-    /// of its run, since an offscreen frame costs more wall time than the
-    /// whole motion lasts. Never for a live frame, which reads [`Self::get`]
-    /// at its instant.
+    /// The value and its velocity `elapsed` into the current segment, whatever the clock says: a
+    /// capture posing a motion at a chosen point of its run, since an offscreen frame costs more wall
+    /// time than the whole motion lasts. Never for a live frame, which reads [`Self::get`] at its
+    /// instant.
     #[must_use]
     pub fn sampled_after(&self, elapsed: Duration) -> (T, T) {
         let goal = self.target.to_channels();
@@ -260,8 +246,7 @@ impl<T: Animatable> MotionValue<T> {
         (T::from_channels(position), T::from_channels(velocity))
     }
 
-    /// Jump to `value` and rest there. A motion that was on its way takes
-    /// back its wish for frames: whoever landed it draws the change.
+    /// Jump to `value` and rest there.
     pub fn snap(&mut self, value: T) {
         self.target = value;
         self.from = [0.0; 4];
@@ -272,18 +257,17 @@ impl<T: Animatable> MotionValue<T> {
         }
     }
 
-    /// Ask the motion clock for frames until `until`, as this motion: a
-    /// later ask replaces it, and landing takes it back.
+    /// Ask the motion clock for frames until `until`, as this motion: a later ask replaces it, and
+    /// landing takes it back.
     #[track_caller]
     fn ask_frames_until(&mut self, until: Instant) {
         let key = *self.wish.get_or_insert_with(super::clock::motion_key);
         super::clock::ask(key, until);
     }
 
-    /// Send the value to `target` with `timing`, starting at `now` from where
-    /// it is drawn and how fast it is moving there. Setting the target it is
-    /// already going to changes nothing (a repeated request never restarts
-    /// the curve).
+    /// Send the value to `target` with `timing`, starting at `now` from where it is drawn and how fast
+    /// it is moving there. Setting the target it is already going to changes nothing (a repeated
+    /// request never restarts the curve).
     #[track_caller]
     pub fn set(&mut self, target: T, timing: Timing, now: Instant) {
         let spring = match timing {
@@ -301,8 +285,8 @@ impl<T: Animatable> MotionValue<T> {
         self.start(target, position, velocity, spring, now);
     }
 
-    /// Send the value to `target` carrying `velocity` (a gesture's release,
-    /// a kick), whatever it was doing.
+    /// Send the value to `target` carrying `velocity` (a gesture's release, a kick), whatever it was
+    /// doing.
     #[track_caller]
     pub fn release(&mut self, target: T, velocity: T, timing: Timing, now: Instant) {
         let Timing::Spring(spring) = timing else {
@@ -344,8 +328,6 @@ impl<T: Animatable> MotionValue<T> {
             now.checked_add(Duration::from_secs_f64(settle))
         };
         match self.settles_at {
-            // Every motion asks the frame pump for its frames, wherever it
-            // was started and whoever draws it: a settled one asks nothing.
             Some(until) => self.ask_frames_until(until),
             None => self.snap(target),
         }

@@ -1,7 +1,6 @@
-//! Finite custody for live controls that were queued before History opened.
-//!
-//! Retained invocations are inert data.  A continuation token identifies one
-//! presentation of one item; it never carries authority or confirmation.
+//! Finite custody for live controls that were queued before History opened. Retained invocations are
+//! inert data. A continuation token identifies one presentation of one item; it never carries authority
+//! or confirmation.
 
 use crate::bound_dispatch::{BoundActionTarget, local_target::LocalResourceTarget};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
@@ -33,8 +32,7 @@ pub struct PendingControlReview {
     pub status: PendingControlStatus,
     pub confirmation: Result<tilo_actions::ConfirmationPolicy, String>,
     pub owner: String,
-    /// The action's name as its declaration gives it, when the control
-    /// still resolves to one.
+    /// The action's name as its declaration gives it, when the control still resolves to one.
     pub label: Option<String>,
 }
 
@@ -84,7 +82,6 @@ impl PendingControlOrigin {
 }
 
 /// Entry-time data for a binding queue whose mutable owner traversal failed.
-/// No live producer is consulted when this sealed subset is recovered.
 pub(crate) struct SealedComponentControl {
     pub(crate) target: BoundActionTarget,
     pub(crate) invocation: ControlInvocation,
@@ -100,7 +97,6 @@ struct PendingControl {
     status: PendingControlStatus,
     outstanding_nonce: Option<Uuid>,
     control_domain: Option<crate::control_custody::WeakControlDomain>,
-    /// The action's name as its declaration gives it, for people.
     label: Option<String>,
 }
 
@@ -211,10 +207,8 @@ impl SuspendedLocalControls {
             item.control_domain = Some(control.domain);
         }
     }
-    /// Read each newly held control's declaration: name it as declared,
-    /// and drop it when it is housekeeping. Only what a person asked for is
-    /// held for their review; housekeeping the app does on its own, and it
-    /// does it again once the person is back.
+    /// Read each newly held control's declaration: name it as declared, and drop it when it is
+    /// housekeeping.
     pub(crate) fn admit_declared(
         &mut self,
         mut declared: impl FnMut(

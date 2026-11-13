@@ -1,61 +1,18 @@
-//! `version`: the git-shaped verbs an agent already knows, over the history
-//! this filesystem already keeps.
+//! `version`: the git-shaped verbs an agent already knows, over the history this filesystem
+//! already keeps.
 //!
-//! Every file on a Tilo mount carries its own immutable history: each write
-//! appends a version, and the mounted file answers that history as
-//! bounded attributes (`fs_protocol::files::FileHistoryReadQueryV1` for the
-//! versions and their contents, `CHECKED_HISTORY_*` for a checked restore).
-//! The History view in the file manager reads exactly those, and
-//! `apps/file-explorer/src/framework_history.rs` is the same transport this
-//! module speaks. So `version log` and the History view cannot disagree about
-//! what a revision is: there is one list, one set of ids, and one restore.
+//! Every file on a Tilo mount carries its own immutable history: each write appends a
+//! version, and the mount answers it as bounded attributes. The file manager's History view
+//! reads exactly those, so `version log` and the History view cannot disagree about what a
+//! revision is — one list, one set of ids, one restore.
 //!
-//! # Why this exists
+//! The verbs are `status`, `log`, `show`, `diff` and `restore`. `commit` is absent because
+//! writing the file *is* the version; `branch` and `merge` because two people editing one
+//! document is the CRDT's own collaboration; `init` because the mount is the repository.
 //!
-//! An agent asked to change a document reaches for `git`, and `git` wants a
-//! repository: an initialised `.git`, a working tree it owns, an index to add
-//! to and a commit graph beside the thing it is versioning. None of that is
-//! true here. A Tilo file is already versioned, and the person it belongs to
-//! can see every version in the History view whether or not anybody committed
-//! anything. So the verbs are here, and the store is not:
-//!
-//! * `status` — whether a file is versioned, and the revision it is at.
-//! * `log` — the revisions of one file, oldest first, each with its id, its
-//!   parents, its author and its time.
-//! * `show` — one revision's bytes.
-//! * `diff` — what changed between two revisions, as `+`/`-` lines.
-//! * `restore` — put one revision's contents back as a new revision, through
-//!   the same checked-restore path the History view uses.
-//!
-//! Git verbs that are deliberately absent, and why:
-//!
-//! * `commit`. Writing the file *is* the version: the filesystem appends one on
-//!   every write, so a caller that had to `commit` afterwards would be able to
-//!   forget, and the person's History view would disagree with the log. A
-//!   commit that changed nothing would also have nowhere to put a message — a
-//!   [`FileVersionV1`] carries an actor and a time, not prose. Named
-//!   checkpoints with descriptions are a manifest over revisions, not a
-//!   version, and belong to that.
-//! * `branch` and `merge`. Two people editing one Tilo document at once is the
-//!   CRDT's own collaboration, which merges without a verb; a `branch` that
-//!   really copied a file would be two records, not two lines of one history.
-//! * `init`. The mount is the repository.
-//!
-//! Naming them here would promise behaviour this command does not have.
-//!
-//! # Machine-readable first
-//!
-//! Every verb takes `--json` and prints one JSON object. Errors are JSON too
-//! on `--json`, with a stable `error` code, so a caller reads a result rather
-//! than parsing prose. Exit status is 0 for success and 1 for any refusal,
-//! the same as the other file verbs.
-//!
-//! # What can fail, and what that means
-//!
-//! A file with no history (never versioned, or a host without the projection)
-//! is `no-history`, not an empty log, because "nothing yet" and "nothing ever"
-//! are different answers. A stale cursor is reported as `stale` so a caller
-//! re-reads instead of acting on a page the frontier has moved past.
+//! Every verb takes `--json` and prints one JSON object, errors included, with a stable
+//! `error` code. Exit status is 0 for success and 1 for any refusal. A file with no history
+//! is `no-history`, not an empty log, and a stale cursor is `stale` so a caller re-reads.
 
 use std::fs::File;
 use std::io;
@@ -84,9 +41,7 @@ pub enum ErrorCode {
     /// The file's history could not be read at all: no projection on this
     /// host, or a path that is not a file on a Tilo mount.
     NoHistory,
-    /// The versioned file changed under a cursor the caller was following.
     Stale,
-    /// No such revision in this file's history.
     NoSuchRevision,
     /// The revision exists but carries no content — a deletion, or a version
     /// whose bytes are not on this device and could not be fetched.
@@ -105,7 +60,6 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// The wording shown to a person for each refusal.
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
@@ -121,24 +75,27 @@ impl ErrorCode {
     }
 }
 
-/// One thing a `version` line asked for, before anything is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Whether each path is versioned, and the revision it is at.
-    Status { paths: Vec<PathBuf> },
-    /// Every revision of one file, oldest first.
-    Log { path: PathBuf },
-    /// One revision's bytes.
-    Show { path: PathBuf, revision: Revision },
-    /// What changed between two revisions.
+    Status {
+        paths: Vec<PathBuf>,
+    },
+    Log {
+        path: PathBuf,
+    },
+    Show {
+        path: PathBuf,
+        revision: Revision,
+    },
     Diff {
         path: PathBuf,
         from: Revision,
         to: Revision,
     },
-    /// Put one revision's contents back as a new revision.
-    /// Put one revision's contents back as a new revision.
-    Restore { path: PathBuf, revision: Revision },
+    Restore {
+        path: PathBuf,
+        revision: Revision,
+    },
 }
 
 /// Which revision a `show`, `diff` or `restore` names.
@@ -148,22 +105,17 @@ pub enum Command {
 /// screen is easy to truncate; it must name exactly one revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Revision {
-    /// An exact revision id.
     Id(FileVersionId),
-    /// A shortest-unique prefix of a revision id, as read off `version log`.
     Prefix(String),
-    /// The head the file is at now.
     Head,
 }
 
 impl Revision {
-    /// Read one revision name off a command line.
     #[must_use]
     pub fn parse(text: &str) -> Self {
         if text == "HEAD" || text == "head" {
             return Self::Head;
         }
-        // A full uuid is exact; anything else is a prefix to match.
         match uuid::Uuid::parse_str(text) {
             Ok(id) if !id.is_nil() => Self::Id(FileVersionId(id)),
             _ => Self::Prefix(text.to_ascii_lowercase()),
@@ -185,8 +137,6 @@ pub fn resolve(revision: &Revision, page: &[FileVersionV1]) -> Result<FileVersio
             .any(|version| version.id == *id)
             .then_some(*id)
             .ok_or(ErrorCode::NoSuchRevision),
-        // `HEAD` is the newest version the file has, which is the last one a
-        // page lists.
         Revision::Head => page
             .last()
             .map(|version| version.id)
@@ -209,8 +159,6 @@ pub fn resolve(revision: &Revision, page: &[FileVersionV1]) -> Result<FileVersio
     }
 }
 
-/// Every revision of one file, oldest first, with the agents the mount
-/// attributed to them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
     pub versions: Vec<FileVersionV1>,
@@ -218,7 +166,6 @@ pub struct History {
 }
 
 impl History {
-    /// The lines `log` prints for these revisions.
     #[must_use]
     pub fn lines(&self) -> Vec<RevisionLine> {
         self.versions
@@ -228,19 +175,16 @@ impl History {
     }
 }
 
-/// Read the history of one mounted file, the way
-/// `apps/file-explorer/src/framework_history.rs` does.
-///
-/// A descriptor is held for the whole command so that a later replacement of
-/// the path cannot retarget a queued restore: the history a caller reviewed
-/// and the file a restore writes are the same kernel object.
+/// Read the history of one mounted file, the way the file manager's History view does. The
+/// descriptor is held for the whole command, so a later replacement of the path cannot
+/// retarget a queued restore: the history a caller reviewed and the file a restore writes are
+/// the same kernel object.
 pub struct MountedFile {
     file: File,
     path: PathBuf,
 }
 
 impl MountedFile {
-    /// Open `path` for a history read or restore.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             file: File::open(path)?,
@@ -248,7 +192,6 @@ impl MountedFile {
         })
     }
 
-    /// The path this descriptor was opened on, for messages.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -301,12 +244,6 @@ impl MountedFile {
         }
     }
 
-    /// The page for one cursor. `None` is the first page, whose scope carries
-    /// the frontier a later read or restore is checked against.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::log`].
     pub fn page(
         &self,
         cursor: Option<([u8; 32], FileVersionId)>,
@@ -317,12 +254,6 @@ impl MountedFile {
         }
     }
 
-    /// The frontier the file is at now. A latest page carries it in its scope
-    /// without needing a version.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::log`].
     pub fn frontier(&self) -> Result<[u8; 32], ErrorCode> {
         match self.read(FileHistoryReadQueryV1::Page { cursor: None })? {
             FileHistoryReadValueV1::Page(page) => Ok(page.scope.frontier),
@@ -330,13 +261,6 @@ impl MountedFile {
         }
     }
 
-    /// The bytes of one revision, verified against its recorded hash by the
-    /// filesystem before it is returned.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::NoContent`] for a revision that carries none, and the
-    /// refusal the mount gave for the rest.
     pub fn content(&self, version: FileVersionId) -> Result<Vec<u8>, ErrorCode> {
         let bytes = self.get(&preview_query(self.frontier()?, version).xattr_name())?;
         let bytes = bytes.ok_or(ErrorCode::NoContent)?;
@@ -346,11 +270,6 @@ impl MountedFile {
         Ok(bytes)
     }
 
-    /// Read one query, turning the mount's answers into named refusals.
-    ///
-    /// # Errors
-    ///
-    /// The refusals [`ErrorCode`] names.
     pub fn read(&self, query: FileHistoryReadQueryV1) -> Result<FileHistoryReadValueV1, ErrorCode> {
         let bytes = self.get(&query.xattr_name())?.ok_or(ErrorCode::NoHistory)?;
         if bytes.len() > MAX_HISTORY_READ_BYTES {
@@ -526,20 +445,14 @@ fn write_until_hydrated(
     }
 }
 
-/// One `+`/`-`/` ` line of a diff between two revisions of a text file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiffLine {
-    /// `+`, `-` or a space for context.
     pub op: char,
-    /// The line, without its terminator.
     pub text: String,
-    /// The line's number in the old revision, when it is in it.
     pub old_line: Option<usize>,
-    /// The line's number in the new revision, when it is in it.
     pub new_line: Option<usize>,
 }
 
-/// A whole file's worth of change, with counts for a header line.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Diff {
     pub lines: Vec<DiffLine>,
@@ -611,7 +524,6 @@ pub fn is_text(bytes: &[u8]) -> bool {
     !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
 }
 
-/// What a `version` line asked for, and how it wants the answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
     pub command: Command,
@@ -619,8 +531,6 @@ pub struct Invocation {
     pub json: bool,
 }
 
-/// The help text, as `version --help` prints it and as `version` with no
-/// verb prints it.
 pub const USAGE: &str = "\
 version — the history Tilo already keeps, with the verbs you know.
 
@@ -681,8 +591,6 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, ErrorCode> {
             path: path(&mut words)?,
             revision: revision(&mut words)?,
         },
-        // Two revisions read as `from` then `to`; one reads as `from` to the
-        // file's head, which is the common question ("what have I changed").
         "diff" => {
             let path = path(&mut words)?;
             let from = revision(&mut words)?;
@@ -705,9 +613,6 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, ErrorCode> {
     Ok(Some(Invocation { command, json }))
 }
 
-/// Run `args` and return the process exit code: 0 for an answer, 1 for a
-/// refusal. The refusal is printed before this returns, in the caller's
-/// chosen shape.
 #[must_use]
 pub fn run(args: &[String]) -> i32 {
     let json = args.iter().any(|arg| arg == "--json");
@@ -741,17 +646,13 @@ fn refuse(error: ErrorCode, json: bool) {
     }
 }
 
-/// One version of one file, as `log` and `status` report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RevisionLine {
     pub id: String,
     pub parents: Vec<String>,
     pub time_ms: u64,
-    /// The change this revision records, in words a person reads.
     pub change: String,
-    /// The agent behind it, when an agent made it, as the person it acted for.
     pub agent: Option<String>,
-    /// The revision a restore took its content from, for a restore.
     pub restored_from: Option<String>,
 }
 
@@ -781,7 +682,6 @@ impl RevisionLine {
     }
 }
 
-/// What a version records, and for a restore, the revision it came from.
 fn change_of(provenance: &FileProvenance) -> (String, Option<String>) {
     match provenance {
         FileProvenance::Create => ("created".into(), None),
@@ -794,11 +694,6 @@ fn change_of(provenance: &FileProvenance) -> (String, Option<String>) {
     }
 }
 
-/// Carry out one invocation, printing the answer.
-///
-/// # Errors
-///
-/// Whatever the mount refused, named as an [`ErrorCode`].
 fn execute(invocation: &Invocation) -> Result<(), ErrorCode> {
     match &invocation.command {
         Command::Status { paths } => status(paths, invocation.json),
@@ -809,7 +704,6 @@ fn execute(invocation: &Invocation) -> Result<(), ErrorCode> {
     }
 }
 
-/// `version status`: for each path, whether it is versioned and where it is.
 fn status(paths: &[PathBuf], json: bool) -> Result<(), ErrorCode> {
     let paths: Vec<PathBuf> = if paths.is_empty() {
         vec![PathBuf::from(".")]
@@ -854,7 +748,6 @@ fn status(paths: &[PathBuf], json: bool) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-/// One line of `status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusRow {
     pub path: String,
@@ -876,7 +769,6 @@ impl StatusRow {
     }
 }
 
-/// `version log`: every revision of one file.
 fn log(path: &Path, json: bool) -> Result<(), ErrorCode> {
     let file = MountedFile::open(path).map_err(|_| ErrorCode::NoHistory)?;
     let history = file.log()?;
@@ -913,7 +805,6 @@ fn log(path: &Path, json: bool) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-/// `version show`: one revision's contents, byte for byte.
 fn show(path: &Path, revision: &Revision, json: bool) -> Result<(), ErrorCode> {
     let file = MountedFile::open(path).map_err(|_| ErrorCode::NoHistory)?;
     let history = file.log()?;
@@ -950,7 +841,6 @@ fn show(path: &Path, revision: &Revision, json: bool) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-/// `version diff`: what changed between two revisions.
 fn diff(path: &Path, from: &Revision, to: &Revision, json: bool) -> Result<(), ErrorCode> {
     let file = MountedFile::open(path).map_err(|_| ErrorCode::NoHistory)?;
     let history = file.log()?;
@@ -992,7 +882,6 @@ fn diff(path: &Path, from: &Revision, to: &Revision, json: bool) -> Result<(), E
     Ok(())
 }
 
-/// `version restore`: put one revision's contents back, as a new revision.
 fn restore(path: &Path, revision: &Revision, json: bool) -> Result<(), ErrorCode> {
     let file = MountedFile::open(path).map_err(|_| ErrorCode::NoHistory)?;
     let history = file.log()?;
@@ -1047,8 +936,6 @@ fn print_json<T: Serialize>(value: &T) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-/// The first eight characters of a revision id: enough to name one in a
-/// message, and the length a caller copies into the next command.
 fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }

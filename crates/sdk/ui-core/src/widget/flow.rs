@@ -1,7 +1,7 @@
-//! What [`Column`](super::Column) and [`Row`](super::Row) share apart from
-//! their axis: the child list and its retained Taffy nodes, the resolved
-//! geometry, the presence / permission bindings, the theme-resolved spacing,
-//! and the subtree scene cache that replays a stable subtree as one append.
+//! What [`Column`](super::Column) and [`Row`](super::Row) share apart from their axis: the
+//! child list and its retained Taffy nodes, the resolved geometry, the presence /
+//! permission bindings, the theme-resolved spacing, and the subtree scene cache that
+//! replays a stable subtree as one append.
 
 use crate::permissions::PermissionScope;
 use crate::presence::PathSegment;
@@ -23,37 +23,18 @@ pub(super) struct Flow {
     /// Retained Taffy identities for `children`. Rebuilt only with the layout
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     pub child_nodes: Vec<NodeId>,
-    /// Stable graph / test identity when the container was built from a
-    /// serialized UI node.
     pub id: Option<String>,
     pub rect: Rect,
     /// Overflow extent used for culling independently of an exact allocation.
     pub paint_rect: Rect,
     pub presence_path: Vec<PathSegment>,
     pub permission_scope: Option<PermissionScope>,
-    /// A pixel gap between children; replaced by a later `rhythm`.
     pub gap_override: Option<f32>,
     pub rhythm: Option<Rhythm>,
-    /// Horizontal, vertical inset by rhythm step.
     pub padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
-    /// Composition of every descendant's own cached scene, recorded once and
-    /// translated on subsequent frames as long as no descendant signals
-    /// dirty. Saves hundreds of `Scene::append` calls per frame when most of
-    /// the container's content is stable.
     subtree_cache: Scene,
-    /// Rect (at cache-emit time) the subtree was composed against. Size
-    /// mismatch → rebuild; pure translation → reuse with a
-    /// `translate(delta)` on the outer append.
     cache_rect: Rect,
-    /// What of the theme the cache was painted in: its colours, radii and
-    /// material. A theme change (dark to light, a preset, high contrast)
-    /// moves no child's size and dirties no child, yet every pixel of the
-    /// cache is in the old theme, so a differing theme redraws it.
     cache_theme: Option<Box<DrawnTheme>>,
-    /// The shared-permission generation the cache was painted under
-    /// ([`crate::presence::PresenceCtx::paint_permission_generation`]): a
-    /// permission change moves what a gated child paints with nothing in
-    /// the tree marking it, so a cache from another generation is stale.
     cache_permissions: u64,
     /// The input generation the cache was painted at
     /// ([`crate::input_generation`]), and whether that drawing read state
@@ -63,52 +44,22 @@ pub(super) struct Flow {
     /// input. One that read nothing outside keeps across it.
     cache_input: u64,
     cache_outside: bool,
-    /// The model generation the cache was painted at
-    /// ([`crate::input_generation::model`]): a sync hands the tree a changed
-    /// document without a widget flag of its own, so a cache from another
-    /// generation holds a drawing of what changed.
     cache_model: u64,
     cache_present: bool,
     descendant_caches_released: bool,
-    /// The cache holds floating surfaces over the blurred material. A reused
-    /// cache would show them opaque, so it is redrawn while it does.
     cache_carries_material: bool,
-    /// The scene parts the cache holds, recorded when it was drawn for a
-    /// tracked section, so replaying it keeps the section's parts.
     cache_parts: Option<crate::scene_parts::SectionParts>,
-    /// Whether the cached subtree shows a secret, replayed with the cache.
     cache_shows_secret: bool,
-    /// A setter changed the container's own layout style (its padding or
-    /// gap) after its node was built. The retained layout tree keeps the
-    /// built style, so the change reports a structure rebuild.
     pub style_dirty: bool,
-    /// The children stack vertically (a column): the widgets after a band
-    /// disclosing move with its edge ([`Widget::disclosing`]).
     pub vertical: bool,
-    /// The gap between children the layout was built with.
     pub laid_gap: f64,
-    /// The column takes its content's height: a band moving in it makes it
-    /// grow by transform ([`super::Disclosing::Grows`]) instead of being
-    /// clipped to its box.
     pub content_sized: bool,
-    /// The cache holds children drawn shifted: drawn again at rest.
     drawn_shifted: bool,
     /// Bands its view stopped building, drawn leaving (a column only).
     ghosts: super::Ghosts,
-    /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
-    /// A column whose children's boxes stand in order down it, as the last
-    /// layout placed them, each starting no higher than the one before
-    /// ends: the children near a clip are then found by bisection.
     stacked: bool,
-    /// How far past its box any child painted as the last layout placed
-    /// them ([`Widget::paint_bounds`]): the bisection reaches that far. A
-    /// child placed again since, or drawn, that paints further widens it.
     reach: f64,
-    /// Where each child stands down a stacked column, from the column's top,
-    /// as the last layout that solved them placed it: the bisection reads
-    /// these, so it holds while children far from the view are not placed
-    /// again ([`super::placing_again`]).
     extents: Vec<(f64, f64)>,
     /// The children placed where the column stands now, when the last
     /// placement placed only those near the view (`place_again`): those
@@ -119,14 +70,9 @@ pub(super) struct Flow {
     /// placement that only moves the column places once more, as they
     /// leave the view.
     near_placed: std::ops::Range<usize>,
-    /// Whether a child was disclosing (a band on its way) when the layout
-    /// last solved them: a band starts and comes to rest with a layout.
     disclosing_any: bool,
 }
 
-/// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
-/// layout: every colour token, the radii, and whether floating surfaces are
-/// see-through.
 #[derive(Debug, PartialEq)]
 struct DrawnTheme {
     colors: crate::tokens::Colors,
@@ -200,7 +146,6 @@ impl Flow {
         }
         let gap = self.laid_gap;
         let shifts = super::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
-        // A band leaving moves what followed it up with its edge.
         self.ghosts.shift(shifts, self.children.len())
     }
 
@@ -209,13 +154,12 @@ impl Flow {
         !self.ghosts.is_empty()
     }
 
-    /// Leave the bands still leaving for the column a rebuild makes.
     fn keep_ghosts(&mut self) {
         self.ghosts.keep();
     }
 
-    /// While a band moves in a content-sized column, how much taller the
-    /// column is drawn than laid out.
+    /// While a band moves in a content-sized column, how much taller the column is drawn
+    /// than laid out.
     pub fn disclosing(&self) -> Option<super::Disclosing> {
         if !self.content_sized {
             return None;
@@ -231,8 +175,8 @@ impl Flow {
         self.cache_present = false;
     }
 
-    /// The children changed where they stand: the next pass lays them out anew, and the frame
-    /// draws them rather than the scene it kept.
+    /// The children changed where they stand: the next pass lays them out anew, and the
+    /// frame draws them rather than the scene it kept.
     pub fn children_changed(&mut self) {
         self.child_nodes.clear();
         self.invalidate();
@@ -267,8 +211,8 @@ impl Flow {
             .collect();
     }
 
-    /// The gap between children: the pixel override, else the rhythm step,
-    /// else the theme's `gap_standard`.
+    /// The gap between children: the pixel override, else the rhythm step, else the theme's
+    /// `gap_standard`.
     pub fn gap(&self, theme: &Theme) -> f32 {
         self.gap_override
             .or_else(|| {
@@ -297,11 +241,9 @@ impl Flow {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
         if self.vertical {
-            // A band on its way stands out of the layout, in its slot.
             let gap = self.laid_gap;
             let content = super::content_box(taffy, node, self.rect);
             super::place_bands(&mut self.children, content, |_| gap);
-            // A band its view stopped building leaves where it stood.
             self.ghosts
                 .find("Column", &mut self.children, content, |_| gap, self.motion);
         }
@@ -352,8 +294,6 @@ impl Flow {
         let clip = super::layout_clip();
         let mut near = self.children_near(clip);
         let before = std::mem::replace(&mut self.near_placed, 0..0);
-        // A child far from the view that asks for a layout is placed too:
-        // what it paints now may reach the view.
         let asking: Vec<usize> = (0..self.children.len())
             .filter(|index| !near.contains(index) && !before.contains(index))
             .filter(|&index| {
@@ -373,8 +313,6 @@ impl Flow {
             for &index in &placed {
                 kept &= self.place_child(taffy, index, origin);
             }
-            // A child placed again that paints further than any did widens
-            // what is near the view: those it brings in are placed too.
             let wider = self.children_near(clip);
             let more: Vec<usize> = wider
                 .clone()
@@ -395,9 +333,6 @@ impl Flow {
         true
     }
 
-    /// Place the child at `index` again at `origin` from the unchanged
-    /// layout. Returns whether it stands where it stood in the column: one
-    /// that moved within it was laid out anew by itself.
     fn place_child(&mut self, taffy: &TaffyTree<()>, index: usize, origin: Point) -> bool {
         let (Some(child), Some(&node), Some(extent)) = (
             self.children.get_mut(index),
@@ -438,8 +373,8 @@ impl Flow {
         start..end.max(start)
     }
 
-    /// The children [`Self::children_near`] `clip` that stand where the
-    /// column stands now: those a pointer and the copy may meet.
+    /// The children [`Self::children_near`] `clip` that stand where the column stands now:
+    /// those a pointer and the copy may meet.
     pub fn children_placed_near(&self, clip: Option<Rect>) -> std::ops::Range<usize> {
         let near = self.children_near(clip);
         let Some(placed) = &self.placed else {
@@ -469,8 +404,7 @@ impl Flow {
         placed.start.min(all.end)..placed.end.min(all.end)
     }
 
-    /// Draw the children through the subtree cache. Returns `false` when the
-    /// container is culled, so the caller skips its own decorations too.
+    /// Draw the children through the subtree cache.
     pub fn draw_cached(
         &mut self,
         scene: &mut Scene,
@@ -524,11 +458,6 @@ impl Flow {
             || !self.ghosts.is_empty()
             || (tracked && self.cache_parts.is_none());
 
-        // Drawn into a frame that leaves out what it keeps on screen, a
-        // cache recorded now would hold every child the frame leaves out,
-        // and recording it would cost what the frame saves: the children
-        // draw themselves into the frame, and the cache is recorded again
-        // once a frame draws whole (`crate::draw_cull`).
         if needs_rebuild
             && self.ghosts.is_empty()
             && self.follower_shifts().is_none()
@@ -570,9 +499,6 @@ impl Flow {
             local.reset();
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
-            // While a band moves, what follows it is drawn shifted by
-            // transform, laid out once without the band, and clipped to a
-            // column of its own height; a content-sized one grows instead.
             self.ghosts.retain_drawn();
             let shifts = self.follower_shifts();
             self.drawn_shifted = shifts.is_some();
@@ -660,8 +586,6 @@ impl Flow {
                 crate::secret_paint::note_secret_painted();
             }
             if self.cache_outside {
-                // This drawing read outside the tree, so the frame that
-                // reuses it stands on the same readings.
                 crate::outside_paint::note();
             }
             if !self.descendant_caches_released {
@@ -703,14 +627,9 @@ impl Flow {
         if near.len() == self.children.len() {
             return false;
         }
-        // The cache no longer holds what is on screen, and the children
-        // keep their own.
         self.cache_present = false;
         self.descendant_caches_released = false;
         self.drawn_shifted = false;
-        // A changed document reaches the children through the sync pass, so
-        // each of them paints other pixels: none of what the frame keeps is
-        // still what it drew before.
         let model_moved = self.cache_model != crate::input_generation::model();
         let first = near.start;
         for (offset, child) in self
@@ -720,7 +639,6 @@ impl Flow {
             .iter_mut()
             .enumerate()
         {
-            // What the frame keeps on screen, unchanged, is not drawn again.
             if !model_moved
                 && !child.needs_redraw()
                 && !child.needs_animation_frame()
@@ -737,11 +655,8 @@ impl Flow {
                 theme,
                 presence,
             );
-            // What it paints now, should that have grown since its layout.
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
-        // The children this frame kept stand for a drawing of the model it
-        // read; the next frame rests on the same document.
         self.cache_model = crate::input_generation::model();
         true
     }
@@ -762,14 +677,11 @@ impl Flow {
 /// is added and taken away again, so only rounding separates the two.
 const SAME_PLACE: f64 = 1e-6;
 
-/// How far past its box `child` paints, up or down.
 fn paint_reach(child: &dyn Widget) -> f64 {
     let (rect, paints) = (child.get_rect(), child.paint_bounds());
     (rect.y0 - paints.y0).max(paints.y1 - rect.y1).max(0.0)
 }
 
-/// The builders every flow container offers, inside its inherent `impl`
-/// (apps call them without importing a trait). The type has a `flow: Flow`.
 macro_rules! flow_builders {
     () => {
         #[must_use]
@@ -778,8 +690,7 @@ macro_rules! flow_builders {
             self
         }
 
-        /// Address this container by a stable id in inspection and graph
-        /// reconcile.
+        /// Address this container by a stable id in inspection and graph reconcile.
         #[must_use]
         pub fn with_id(mut self, id: impl Into<String>) -> Self {
             self.flow.id = Some(id.into());
@@ -796,13 +707,10 @@ macro_rules! flow_builders {
             self.flow.set_children(children);
         }
 
-        /// Space the children (and a row's wrapped lines) by how they relate
-        /// (HIG §7b): `Rhythm::Tight` for a label and its caption, `Related`
-        /// for one cluster, `Sibling` for items of equal weight, `Section`
-        /// between sections, `Group` between groups of sections. Resolved
-        /// from the theme at layout time, so it follows density, `ui_scale`
-        /// and a custom spacing scale. Replaces [`Self::with_gap`] with a
-        /// pixel value.
+        /// Space the children (and a row's wrapped lines) by how they relate (HIG §7b):
+        /// `Rhythm::Tight` for a label and its caption, `Related` for one cluster,
+        /// `Sibling` for items of equal weight, `Section` between sections, `Group` between
+        /// groups of sections.
         #[must_use]
         pub fn with_rhythm(mut self, rhythm: $crate::tokens::Rhythm) -> Self {
             self.flow.rhythm = Some(rhythm);
@@ -810,9 +718,8 @@ macro_rules! flow_builders {
             self
         }
 
-        /// Inset the children by a rhythm step on each axis (`None` is no
-        /// inset on that axis), resolved from the theme like
-        /// [`Self::with_rhythm`].
+        /// Inset the children by a rhythm step on each axis (`None` is no inset on that
+        /// axis), resolved from the theme like [`Self::with_rhythm`].
         #[must_use]
         pub fn with_padding_rhythm(
             mut self,
@@ -843,15 +750,9 @@ macro_rules! flow_builders {
 }
 pub(super) use flow_builders;
 
-/// The [`Widget`] methods a flow container answers from its [`Flow`],
-/// inside its `impl Widget`. The container still names its own
-/// `build_layout`, `name` and anything else that differs by axis.
 macro_rules! flow_widget_methods {
     () => {
 
-        /// Forward the per-frame update pass; every child runs, and a
-        /// change in any of them is a change here. Not short-circuited —
-        /// a child that skipped its pass would miss a frame of state.
         fn update(
             &mut self,
             state: &$crate::widget::AppModel,
@@ -922,15 +823,10 @@ macro_rules! flow_widget_methods {
             self.flow.children.iter().any(|c| c.wants_pointer_capture())
         }
 
-        /// Direct-field recurse — the default impl allocates a
-        /// `Vec` via `children()`, which the subtree-cache check
-        /// hits per frame.
         fn needs_redraw(&self) -> bool {
             self.flow.has_ghosts() || self.flow.children.iter().any(|c| (c.needs_redraw() || c.needs_animation_frame()))
         }
 
-        /// Frames while a band its view stopped building leaves, and one
-        /// more to draw it gone.
         fn needs_animation_frame(&self) -> bool {
             self.flow.has_ghosts()
                 || $crate::widget::defaults::needs_animation_frame(&|visit| {
@@ -977,8 +873,6 @@ macro_rules! flow_widget_methods {
             }
         }
 
-        /// A flow adds no structure of its own: a change a child can
-        /// describe stays described.
         fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
             let mut change = if std::mem::take(&mut self.flow.style_dirty) {
                 $crate::widget::StructureChange::Rebuild
@@ -1003,9 +897,6 @@ macro_rules! flow_widget_methods {
             self.flow.id.as_deref()
         }
 
-        // `.any` would short-circuit and skip `take_structure_dirty()` on later
-        // children once one reports dirty, leaving their flags uncleared --
-        // the non-short-circuiting `.fold` below is required, not incidental.
         #[allow(
             clippy::unnecessary_fold,
             reason = "Every child must clear its structure-dirty flag; a short-circuiting any would leave later children dirty."
@@ -1026,7 +917,6 @@ macro_rules! flow_widget_methods {
 }
 pub(super) use flow_widget_methods;
 
-/// The presence and permission capabilities of a flow container.
 macro_rules! flow_capabilities {
     ($ty:ty) => {
         impl $crate::presence::capability::PublishesPresence for $ty {

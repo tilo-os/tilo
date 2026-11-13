@@ -14,15 +14,13 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use runtime_portal::tools::{
-    AppEntry, DocumentApp, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES,
-    MAX_WIRE_BYTES, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
-    WorkspaceSettingsRoute,
+    AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
+    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
 };
 use tilo_action_broker::services::{
     ApplicationChange, ApplicationServices, DriveChange, DriveServices,
 };
 use tilo_app_launch::Launch;
-use tilo_app_launch::routing;
 use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_model::app::AppKind as Builtin;
 use tilo_lock::MutexRecover as _;
@@ -33,7 +31,7 @@ use crate::drives::{Medium, files_on};
 
 /// The app the person's own app list is answered to. Every other app is told nothing of it.
 fn files() -> String {
-    Builtin::FileExplorer.app_id()
+    String::from(Builtin::FileExplorer.app_id())
 }
 
 /// The `tools` socket's name: the launcher hands an app its number as `TILO_SVC_TOOLS_FD` .
@@ -43,7 +41,8 @@ pub(crate) const SERVICE: &str = "tools";
 const ANSWER_WAIT: Duration = Duration::from_secs(2);
 
 /// A question the tools service leaves for the session's loop: only a pass of the loop can put a
-/// sheet up.
+/// sheet up, or read the defaults of the workspace an open belongs to. Each ask carries the
+/// channel its answer goes back on.
 pub(crate) enum Ask {
     /// Show workspace settings for `workspace` , on `route` 's tab.
     WorkspaceSettings {
@@ -56,16 +55,12 @@ pub(crate) enum Ask {
         app: String,
         reply: SyncSender<Result<(), String>>,
     },
-}
-
-impl Ask {
-    /// Tell the tools service how the ask went.
-    pub(crate) fn answer(self, result: Result<(), String>) {
-        let reply = match self {
-            Self::WorkspaceSettings { reply, .. } | Self::Uninstall { reply, .. } => reply,
-        };
-        let _ = reply.send(result);
-    }
+    /// The apps that open `path` in `workspace` , the workspace's own default first.
+    Openers {
+        path: std::path::PathBuf,
+        workspace: String,
+        reply: SyncSender<Vec<Launch>>,
+    },
 }
 
 /// What the session's loop and the broker reach of the service.
@@ -262,8 +257,10 @@ fn serve(handle: &Handle, stream: UnixStream) {
         match read_request(&mut reader) {
             Line::Done => return,
             Line::TooLarge => {
-                // ignored-failure: the connection ends whether or not it read the refusal
-                let _ = say(&mut writing, &refused("the tool request is too large"));
+                let _ = tilo_failure::ignored!(
+                    "the connection ends whether or not it read the refusal",
+                    say(&mut writing, &refused("the tool request is too large"))
+                );
                 return;
             }
             Line::Refused(message) => {
@@ -408,7 +405,7 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
                 ..ToolReply::default()
             }
         }
-        ToolIntent::DocumentApps { path } => document_apps(caller, path),
+        ToolIntent::DocumentApps { path } => document_apps(inner, caller, path),
         ToolIntent::OpenDocument { path, app } => {
             open_document(inner, caller, path, app.as_deref())
         }
@@ -498,60 +495,36 @@ fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
     }
 }
 
-/// The apps that open the document at `path` on this device, with the app lists they were read
-/// from.
-fn documents_of(
-    path: &Path,
-) -> (
-    Vec<Launch>,
-    Vec<app_catalogue::apps::InstalledApp>,
-    desktop_entry::Scan,
-) {
-    let (installed, entries) = crate::apps::routes();
-    let launches = routing::documents(path, &installed, &entries);
-    (launches, installed, entries)
-}
-
-/// The app a document launch names: a Tilo package's id, or the machine's desktop id.
-fn document_id(launch: &Launch) -> Option<&str> {
-    match launch {
-        Launch::Package { app, .. } => Some(app),
-        Launch::Host { desktop_id, .. } => Some(desktop_id),
-        _ => None,
+/// The apps that open the document at `path` in the caller's workspace, the one it opens with
+/// today first: what Files' "Open with" lists and what opening the document starts.
+fn openers(inner: &Inner, caller: &Caller, path: &Path) -> Result<Vec<Launch>, String> {
+    let (reply, answered) = std::sync::mpsc::sync_channel(1);
+    inner.asks.lock_recover().push(Ask::Openers {
+        path: path.to_path_buf(),
+        workspace: caller.workspace.clone(),
+        reply,
+    });
+    (inner.wake)();
+    match answered.recv_timeout(ANSWER_WAIT) {
+        Ok(openers) => Ok(openers),
+        Err(_) => Err("this session did not say which apps open the file".into()),
     }
 }
 
-/// The apps that open the document at `path` , the one this device opens it with today first: what
-/// Files' "Open with" lists.
-fn document_apps(caller: &Caller, path: &str) -> ToolReply {
+/// The apps that open the document at `path` , the one this workspace opens it with today first:
+/// what Files' "Open with" lists.
+fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
     if caller.app != files() {
         return refused("the apps that open a document are listed for Files alone");
     }
-    let (launches, installed, entries) = documents_of(Path::new(path));
-    let locales = crate::app_names::entry_locales();
-    let documents = launches
-        .iter()
+    let launches = match openers(inner, caller, Path::new(path)) {
+        Ok(launches) => launches,
+        Err(message) => return refused(&message),
+    };
+    let lists = crate::app_icons::app_lists().unwrap_or_default();
+    let documents = crate::documents::candidates(&launches, &lists)
+        .into_iter()
         .take(MAX_LISTED_APPS)
-        .enumerate()
-        .filter_map(|(index, launch)| {
-            let id = document_id(launch)?.to_owned();
-            let name = match launch {
-                Launch::Package { .. } => installed
-                    .iter()
-                    .find(|listed| listed.package_id == id)
-                    .map_or_else(|| id.clone(), |listed| listed.name_in(&locales).to_owned()),
-                _ => entries
-                    .entries
-                    .iter()
-                    .find(|entry| entry.id == id)
-                    .map_or_else(|| id.clone(), |entry| entry.name.clone()),
-            };
-            Some(DocumentApp {
-                id,
-                name,
-                is_default: index == 0,
-            })
-        })
         .collect();
     ToolReply {
         accepted: true,
@@ -562,16 +535,19 @@ fn document_apps(caller: &Caller, path: &str) -> ToolReply {
 }
 
 /// Open the document at `path` in `app`, one of the apps that open its type,
-/// or in the app this device opens the type with today.
+/// or in the app this workspace opens the type with today.
 fn open_document(inner: &Inner, caller: &Caller, path: &str, app: Option<&str>) -> ToolReply {
     if caller.app != files() {
         return refused("a document is opened from Files alone");
     }
-    let (launches, _, _) = documents_of(Path::new(path));
+    let launches = match openers(inner, caller, Path::new(path)) {
+        Ok(launches) => launches,
+        Err(message) => return refused(&message),
+    };
     let launch = match app {
         Some(app) => launches
             .into_iter()
-            .find(|launch| document_id(launch) == Some(app)),
+            .find(|launch| crate::documents::app_of(launch) == Some(app)),
         None => launches.into_iter().next(),
     };
     let Some(launch) = launch else {
@@ -727,11 +703,12 @@ mod tests {
 
     #[test]
     fn the_apps_that_open_a_document_are_answered_to_files_alone() {
+        let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
         let caller = Caller {
             app: "so.tilo.notes".into(),
             workspace: "ws".into(),
         };
-        let reply = document_apps(&caller, "/home/you/notes.pdf");
+        let reply = document_apps(&handle.inner, &caller, "/home/you/notes.pdf");
         assert!(!reply.accepted);
         assert!(reply.documents.is_empty());
     }

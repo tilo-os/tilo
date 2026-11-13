@@ -1,6 +1,5 @@
-//! The level a typed Markdown marker gives its block: a marker starts the
-//! block it makes at a level the person names, not at the depth of the line
-//! it happened to be typed on.
+//! The level a typed Markdown marker gives its block: a marker starts the block it makes at a level the
+//! person names, not at the depth of the line it happened to be typed on.
 
 use super::*;
 

@@ -1,10 +1,7 @@
-//! The database client's record and verbs: connection profiles and saved
-//! queries sync (passwords stay on the device), and the SQL buffer is shared
-//! text. Renaming a connection or a query and typing SQL are the built-in
-//! field edits of their paths (`Workspace::paths().sql.splice(..)`);
-//! adding and removing them are verbs. Connecting, running SQL and
-//! everything else done on a database server are [`DbEffect`]s; connecting
-//! and running a saved query are offered on the saved connection or query.
+//! The record's verbs: connection profiles and saved queries sync, and their passwords stay
+//! on the device. Typing SQL and renaming are field edits at their paths; adding and
+//! removing are verbs. Everything done on a server is a [`DbEffect`], offered on the saved
+//! connection or query it acts on.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -24,12 +21,8 @@ use crate::record::{SavedConnection, SavedQuery, id_of};
 pub use crate::record::Workspace;
 
 impl Workspace {
-    /// What the record holds: the connection profiles, the saved queries and the SQL buffer.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the connection profiles, the saved queries and the SQL
+    /// buffer.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -46,9 +39,6 @@ impl Workspace {
 )]
 impl Workspace {
     /// Add connection
-    ///
-    /// Save a connection profile; its password stays on each device. A
-    /// network engine connects on its default port until the port is edited.
     #[action]
     pub fn add_connection(
         &mut self,
@@ -90,9 +80,6 @@ impl Workspace {
     }
 
     /// Remove saved connection
-    ///
-    /// The window forgets the connection's password on this device too,
-    /// which Undo cannot bring back, so the removal is asked first.
     #[action(destructive, irreversible, item = connections)]
     pub fn remove_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
@@ -102,8 +89,6 @@ impl Workspace {
     }
 
     /// Save query
-    ///
-    /// Save SQL under a name: the SQL given, or the query being written.
     #[action]
     pub fn save_query(
         &mut self,
@@ -128,7 +113,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Remove saved query
     #[action(destructive, item = saved_queries)]
     pub fn remove_query(&mut self, query: &Id) -> Result<(), Refusal> {
         self.saved_queries
@@ -139,9 +123,8 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// What system search finds: connections by their name, engine and
-    /// host, saved queries by their name only (saved SQL can hold
-    /// credentials or tokens), each anchored at the item it opens.
+    /// What search finds: connections by name, engine and host, saved queries by name
+    /// only, each anchored at the item it opens.
     fn search(&self) -> Vec<SearchEntry> {
         let connections = self.connections.iter().map(|(id, saved)| {
             SearchEntry::new(
@@ -158,103 +141,72 @@ impl Workspace {
     }
 }
 
-/// The client's work on a database server and what it shows of one, which
-/// change no document. Running SQL, connecting and running a saved query are
-/// offered on the workspace, naming the connection or query by id; everything
-/// else rides the catalog entry, result or history entry it acts on, which it
-/// names by id and resolves again when invoked. None carries a password.
+/// What the client does on a server, which changes no document. Each effect names the
+/// catalog entry, result or history entry it acts on by id, and resolves it again when
+/// invoked. None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "db_client.effects")]
 pub enum DbEffect {
     /// Run SQL
-    ///
-    /// Runs a statement on the open connection; it may change the database.
     #[effect(job, cancellable, destructive)]
     Query {
         #[param("SQL query")]
         sql: String,
     },
     /// Connect
-    ///
-    /// Opens the saved connection on this device, with this device's
-    /// password.
     #[effect(row, job, idempotent, item = connections)]
     Connect {
         #[param("The saved connection")]
         connection: String,
     },
-    /// Run saved query
     #[effect(row, job, destructive, item = saved_queries)]
     Run {
         #[param("The saved query")]
         query: String,
     },
     /// New connection
-    ///
-    /// Opens the form for a connection to save.
     #[effect(view)]
     NewConnection,
-    /// Show database
     #[effect(view, row)]
     FocusDatabase { connection: Uuid },
-    /// Show schema
     #[effect(view, row)]
     FocusSchema { connection: Uuid, schema: String },
-    /// Browse rows
     #[effect(row, job, idempotent)]
     Browse {
         connection: Uuid,
         schema: String,
         table: String,
     },
-    /// Show query result
     #[effect(view, row)]
     ShowResult { connection: Uuid, generation: usize },
     /// Read query result
-    ///
-    /// What the statement answered: its columns and its first rows (each
-    /// cell a number, text, null or a binary value's size), how many rows it
-    /// returned or changed, and whether collection stopped short.
     #[effect(view, row, returns)]
     ReadResult { connection: Uuid, generation: usize },
-    /// Export CSV
     #[effect(attended, row, job)]
     ExportCsv { connection: Uuid, generation: usize },
-    /// Begin transaction
     #[effect(row, job)]
     Begin { connection: Uuid },
-    /// Commit transaction
     #[effect(row, job, destructive)]
     Commit { connection: Uuid },
-    /// Roll back transaction
     #[effect(row, job, destructive)]
     Rollback { connection: Uuid },
     /// Run historical query
-    ///
-    /// Runs again a query from this device's own history, which is never
-    /// shared.
     #[effect(row, job, destructive)]
     Rerun { connection: Uuid, generation: usize },
 }
 
-/// What a capture shows in place of a database server: the bundled sample
-/// catalog, opened for the connection with this id.
 #[cfg(feature = "samples")]
 pub(crate) struct SampleDatabase {
     pub(crate) connection: Uuid,
 }
 
-/// The connection a capture opens on the bundled sample catalog.
 #[cfg(feature = "samples")]
 const SAMPLE_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0001);
-/// Two example remotes, listed disconnected beside the sample.
 #[cfg(feature = "samples")]
 const ANALYTICS_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0002);
 #[cfg(feature = "samples")]
 const SHOP_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0003);
 
-/// The connections a populated capture lists: the bundled sample, then two
-/// remotes that are not reachable from a screenshot.
 #[cfg(feature = "samples")]
 fn sample_connections() -> Vec<ConnectionProfile> {
     let mut sample = ConnectionProfile::sqlite_sample();
@@ -272,13 +224,13 @@ fn sample_connections() -> Vec<ConnectionProfile> {
     vec![sample, analytics, shop]
 }
 
-/// Framework app: the database client widget over [`Workspace`].
 pub struct DbClientShell;
 
 impl ResourceApp for DbClientShell {
     type Resource = Workspace;
     const ID: &'static str = "so.tilo.db-client";
     const TITLE: &'static str = "Database Client";
+    const TITLE_KEY: &'static str = "db-client-app-title";
     const ICON: Option<&'static str> = Some("db-client");
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {

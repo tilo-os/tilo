@@ -13,7 +13,6 @@ use crate::theme::Theme;
 /// is what assistive technology reads and the tip of its glyph, in the desktop's language.
 const NEW_TAB_KEY: &str = "window-toolbar-new-tab";
 
-/// What the strip's new-tab door is called in the desktop's language.
 pub(crate) fn new_tab_name() -> String {
     crate::i18n::I18nManager::lookup_plain(NEW_TAB_KEY)
 }
@@ -28,8 +27,7 @@ pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
 }
 
 /// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
-/// with a tab, a lift of the ground under the pointer. A bar and the row of a window that holds
-/// its bar draw the door through here, so it looks the same in either.
+/// with a tab, a lift of the ground under the pointer.
 pub(crate) fn paint_new_tab(
     scene: &mut Scene,
     transform: Affine,

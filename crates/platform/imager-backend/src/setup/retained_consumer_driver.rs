@@ -1,5 +1,5 @@
-//! Fixed installed helper composition of the certified Shell, original source,
-//! target filesystem and ordinary consuming namespace. No GUI or sample state.
+//! Fixed installed helper composition of the certified Shell, original source, target filesystem and
+//! ordinary consuming namespace.
 pub mod original_copy;
 use crate::retained_source::consumer::{
     endpoint::{ConsumerEndpoint, EndpointRole},
@@ -41,8 +41,8 @@ const CONTEXT_DOMAIN: &[u8] = b"tilo-ordinary-retained-home-context-v1\0";
 const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(120);
 const _: () =
     assert!(EndpointRole::Retirement.tag() == runtime_collab::retained_retirement::ENDPOINT_TAG);
-/// Fixed internal owned-child mode. This entry carries no source paths or
-/// serialized grants; the child authenticates its actual parent and Shell.
+/// Fixed internal owned-child mode: no source paths or serialized grants, and the child
+/// authenticates its actual parent and Shell.
 pub(super) fn run_consuming_bootstrap(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     crate::retained_source::consumer::run(arguments)
 }
@@ -101,15 +101,13 @@ fn challenge(
     })
 }
 
-/// Invoked only by the fixed installed helper mode with one existing private
-/// request path. Source paths, native credentials, certificates and programs
-/// are never arguments to this entry point.
+/// Invoked only by the fixed helper mode with one existing private request path; source paths,
+/// credentials, certificates and programs are never arguments.
 pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let mut terminal = None;
     let result = run_current(arguments, &mut terminal);
-    // A source constructor can fail before a reviewed actor exists. Its
-    // terminal cleanup latch retains actual quarantined native mount custody;
-    // an empty actor slot cannot prove the fixed helper may exit.
+    // A source constructor can fail before a reviewed actor exists, so the terminal cleanup latch
+    // keeps quarantined custody and an empty actor slot cannot prove the helper may exit.
     while ReviewedInstalledRetainedLaunch::retirement_pending() {
         std::thread::park_timeout(Duration::from_millis(50));
     }
@@ -188,9 +186,8 @@ fn run_current(
         &fence,
         terminal,
     );
-    // The controller normally consumes this exact slot once Files and every
-    // unadopted worker have retired, before editor-only supervision. Early
-    // constructor failures still retain their actual actor here through stop.
+    // The controller consumes this slot once Files and every unadopted worker retired, before
+    // editor-only supervision; early constructor failures keep their actor here through stop.
     if let Some(actor) = reviewed.take() {
         if result.is_err() {
             cancel.store(true, Ordering::Release);
@@ -202,8 +199,8 @@ fn run_current(
             std::thread::park_timeout(Duration::from_millis(50));
         }
         if actor.retire().is_err() {
-            // Consuming retirement can retain uncertain mounted custody.
-            // No remaining DTO/Arc can retry it or prove process exit safe.
+            // A consuming retirement can retain uncertain custody, and no remaining DTO or Arc can
+            // retry it or prove process exit safe.
             cancel.store(true, Ordering::Release);
             loop {
                 std::thread::park_timeout(Duration::from_millis(50));
@@ -256,9 +253,8 @@ fn run_reviewed(
         .ok_or_else(refused)?;
     let input = Arc::new(reviewed.launch_input(cancel)?);
     let challenge = challenge(&context, input.binding(), input.person_public_key())?;
-    // Keep the authenticated original source/UDisks actor in this namespace.
-    // Only this separately owned fixed child isolates a private consuming
-    // namespace and spawns the target-credential ordinary launcher there.
+    // Keep the authenticated source actor in this namespace; only this separately owned child
+    // isolates a private consuming namespace and spawns the target-credential launcher there.
     let managed = Arc::new(Mutex::new(ManagedConsumingBootstrap::spawn(
         cancellation.clone(),
     )?));
@@ -294,9 +290,8 @@ fn run_reviewed(
     let lease = match pending.observe_consumer(selection) {
         Ok(lease) => lease,
         Err(mut pending) => {
-            // Failed receipt-only/pre-view transport retires normally. If the
-            // canonical sender may have delivered a view but its namespace
-            // witness was lost, the fixed helper remains the live owner.
+            // A failed receipt-only transport retires normally; if a view may have been delivered
+            // while its namespace witness was lost, the helper remains the live owner.
             pending.retain_failed_handoff(cancel);
             return Err(export.err().unwrap_or_else(refused));
         }
@@ -326,10 +321,8 @@ fn run_reviewed(
         outcome
     })();
     if result.is_err() {
-        // A forgotten Arc cannot outlive helper process exit. Keep this actual
-        // owner here until the held init pidfd and both workers prove stopped.
-        // Poisoning cannot prove stop or permit process exit. Retain the exact
-        // owner even after an unrelated lock holder panicked.
+        // A forgotten Arc cannot outlive helper exit, so keep the actual owner here until the held
+        // init pidfd and both workers prove stopped; a poisoned lock proves nothing.
         match lease.lock() {
             Ok(mut owner) => owner.retire_before_exit(cancel),
             Err(poisoned) => poisoned.into_inner().retire_before_exit(cancel),
@@ -337,9 +330,8 @@ fn run_reviewed(
     }
     result
 }
-/// The original private bootstrap is bounded before its first QPE operation.
-/// After real namespace admission it observes disconnect/cancellation for the
-/// whole app lifetime; fresh certified proof is refreshed by the joint owner.
+/// The bootstrap is bounded before its first QPE operation and observes disconnect and
+/// cancellation for the app's lifetime after admission; the joint owner refreshes certified proof.
 struct BootstrapFence {
     phase: Arc<Mutex<FencePhase>>,
     finished: Arc<AtomicBool>,
@@ -379,9 +371,8 @@ impl BootstrapFence {
                     let state = worker_phase.lock();
                     let refusal = match state {
                         Ok(phase) => {
-                            // Once admitted, only explicit global cancellation
-                            // belongs to this fence. The mux owns clean EOF at
-                            // complete request boundaries and rejects truncation.
+                            // Once admitted, only explicit global cancellation belongs to this fence;
+                            // the mux owns clean EOF at request boundaries and rejects truncation.
                             cancel.load(Ordering::Acquire)
                                 || phase
                                     .deadline
@@ -499,12 +490,10 @@ mod tests {
         assert!(challenge(&altered, &binding, [1; 32]).is_err());
         assert!(challenge(&vec![b'a'; 64 * 1024 + 1], &binding, [1; 32]).is_err());
     }
-    /// Start a fence and find its watching thread.
     fn fence_thread(start: impl FnOnce() -> BootstrapFence) -> (BootstrapFence, String) {
         tilo_test_env::idle::spawned_thread("retained-root-b", start)
     }
 
-    /// Wait until the fence's thread has woken to look `turns` more times.
     fn fence_turns(tid: &str, turns: u64) {
         let from = tilo_test_env::idle::context_switches(tid);
         tilo_test_env::wait_until("the fence to look at its transport again", || {
@@ -551,8 +540,7 @@ mod tests {
         });
         fence.observed_consumer().unwrap();
         peer.write_all(b"request").unwrap();
-        // Let the fence look at the admitted transport a few times with
-        // unread data still queued. POLLIN must not be interpreted as
+        // Let the fence look at the transport with unread data still queued; POLLIN is not a
         // disconnection.
         fence_turns(&tid, 3);
         assert!(!cancel.load(Ordering::Acquire));

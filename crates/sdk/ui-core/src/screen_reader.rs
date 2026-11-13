@@ -1,23 +1,5 @@
-//! Built-in screen reader.
-//!
-//! Narrates the semantic tree ([`crate::a11y::AccessNode`]) through an
-//! offline TTS stack. Focus changes interrupt the previous utterance;
-//! everything funnels through one [`SpeechQueue`], so a
-//! focus storm coalesces to the latest utterance instead of backing up.
-//!
-//! [`describe`] is the pure core (`AccessNode -> String`, no I/O) —
-//! exhaustively unit-tested below as a role x state truth table.
-//!
-//! A reading cursor can also walk the flattened accessible tree (DFS,
-//! presentational nodes collapsed) via [`ScreenReader::read_all`] /
-//! `read_next` / `read_prev`, synthetic children (a keyboard's keys)
-//! included. The `App` hands it the retained tree's order
-//! ([`ReadingItem`]) through the `_in` variants, and a finger explores it
-//! through [`ScreenReader::explore_in`] ([`crate::screen_reader_touch`]).
-//!
-//! Narration vocabulary resolves through [`widget_text`](crate::i18n::widget_text);
-//! with none loaded it falls back to English so headless builds narrate
-//! unchanged.
+//! Built-in screen reader. Narrates the semantic tree ([`crate::a11y::AccessNode`])
+//! through an offline TTS stack.
 
 use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance};
 
@@ -27,14 +9,12 @@ use crate::a11y::{AccessNode, Role};
 use crate::a11y_tree::SemanticId;
 use crate::widget::Widget;
 
-/// Centralized narration vocabulary: every word has a stable FTL key plus a
-/// clear English fallback.
 mod phrase {
     use crate::a11y::Role;
     use crate::i18n::widget_text;
 
-    /// `I18nManager::lookup` returns the key verbatim for an unknown
-    /// message — that's the "nothing loaded" signal to substitute English.
+    /// `I18nManager::lookup` returns the key verbatim for an unknown message — that's the
+    /// "nothing loaded" signal to substitute English.
     pub fn localized(key: &str, english: &str) -> String {
         let resolved = widget_text(key);
         if resolved == key {
@@ -44,8 +24,8 @@ mod phrase {
         }
     }
 
-    /// Returns `""` for roles that read better with no role word at all
-    /// (a screen reader saying "Hello, static text" is noise).
+    /// Returns `""` for roles that read better with no role word at all (a screen reader
+    /// saying "Hello, static text" is noise).
     pub fn role_word(role: Role) -> String {
         let (key, english) = match role {
             Role::Window => ("sr-role-window", "window"),
@@ -84,7 +64,6 @@ mod phrase {
             Role::Tooltip => ("sr-role-tooltip", "tooltip"),
 
             Role::Image => ("sr-role-image", "image"),
-            // Heading word is produced specially (carries a level); see `describe`.
             Role::Generic
             | Role::Label
             | Role::StaticText
@@ -127,8 +106,8 @@ mod phrase {
     pub fn collapsed() -> String {
         localized("sr-state-collapsed", "collapsed")
     }
-    /// The long-standing screen-reader word for disabled (Orca/VoiceOver
-    /// convention) — clearer than "disabled" when spoken.
+    /// The long-standing screen-reader word for disabled (Orca/VoiceOver convention) —
+    /// clearer than "disabled" when spoken.
     pub fn dimmed() -> String {
         localized("sr-state-dimmed", "dimmed")
     }
@@ -262,12 +241,8 @@ pub fn describe(node: &AccessNode) -> String {
     parts.join(", ")
 }
 
-/// Value + state, without name or role — confirms the result of
-/// activating or adjusting a control (e.g. "checked") without
-/// re-reading the whole label. The item the keyboard is on inside it (its
-/// [`active_descendant`](crate::a11y::AccessState::active_descendant),
-/// such as an open combo box's highlighted option) is read first, so
-/// moving through a list reads each item while focus stays put.
+/// Value + state, without name or role — confirms the result of activating or adjusting a
+/// control (e.g. "checked") without re-reading the whole label.
 pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(active) = active_descendant(node) {
@@ -284,7 +259,6 @@ pub fn describe_state(node: &AccessNode) -> String {
     parts.join(", ")
 }
 
-/// The first node below `node` marked as its active descendant.
 fn active_descendant(node: &AccessNode) -> Option<&AccessNode> {
     node.children.iter().find_map(|child| {
         if child.state.active_descendant {
@@ -295,9 +269,6 @@ fn active_descendant(node: &AccessNode) -> Option<&AccessNode> {
     })
 }
 
-/// Switches / toggle buttons read on/off; checkboxes / radios read
-/// checked / not checked. A `mixed` (indeterminate) checkbox reads
-/// "partially checked" regardless of the nominal `checked` flag.
 fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
     let s = &node.state;
     let switchy = matches!(node.role, Role::Switch | Role::ToggleButton);
@@ -334,8 +305,8 @@ fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
     if s.invalid {
         parts.push(phrase::invalid());
     }
-    // Read-only only matters for editable controls; a static label is
-    // trivially "read only" and saying so is noise.
+    // Read-only only matters for editable controls; a static label is trivially "read
+    // only" and saying so is noise.
     if s.read_only && is_editable_role(node.role) {
         parts.push(phrase::read_only());
     }
@@ -343,7 +314,6 @@ fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
         parts.push(phrase::busy());
     }
 
-    // Disabled ("dimmed") is spoken LAST — it qualifies everything before it.
     if s.disabled {
         parts.push(phrase::dimmed());
     }
@@ -356,18 +326,14 @@ fn is_editable_role(role: Role) -> bool {
     )
 }
 
-/// One stop of the reading cursor: an accessible node, and the id the
-/// retained tree ([`crate::a11y_tree::SemanticTree`]) gives it, when the
-/// order was read from that tree. The id keeps the cursor on its item while
-/// the order around it changes.
+/// One stop of the reading cursor: an accessible node, and the id the retained tree
+/// ([`crate::a11y_tree::SemanticTree`]) gives it, when the order was read from that tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadingItem {
     pub id: Option<SemanticId>,
     pub node: AccessNode,
 }
 
-/// Where the reading cursor is: an index into the order it was last placed
-/// in, and that item's id, which finds it again in a changed order.
 #[derive(Clone, Debug, PartialEq)]
 struct Cursor {
     index: usize,
@@ -377,7 +343,6 @@ struct Cursor {
 pub struct ScreenReader {
     speaker: Box<dyn Speaker>,
     queue: SpeechQueue,
-    /// `None` until the first reading command, and after focus moves.
     cursor: Option<Cursor>,
 }
 
@@ -388,9 +353,9 @@ impl Default for ScreenReader {
 }
 
 impl ScreenReader {
-    /// Speaks through the current host's [`crate::host::SpeechFactory`].
-    /// Never panics: with no speech available this is a
-    /// [`NullSpeaker`] and narration is silently dropped.
+    /// Speaks through the current host's [`crate::host::SpeechFactory`]. Never panics:
+    /// with no speech available this is a [`NullSpeaker`] and narration is silently
+    /// dropped.
     pub fn new() -> Self {
         Self::with_speaker(crate::host::current().speech.make())
     }
@@ -429,11 +394,6 @@ impl ScreenReader {
         }
     }
 
-    /// The single funnel every utterance goes through. An interrupting push
-    /// first stops in-flight speech, then drains the coalesced queue into
-    /// the speaker — immediately, which keeps the `NullSpeaker` test path
-    /// simple and is also correct for the daemon backend (it serializes
-    /// server-side).
     fn enqueue(&mut self, utterance: Utterance) {
         let interrupted = self.queue.push(utterance);
         if interrupted {
@@ -442,10 +402,9 @@ impl ScreenReader {
         self.queue.drive(self.speaker.as_mut());
     }
 
-    /// Speaks [`describe`] of the newly-focused node, interrupting any
-    /// previous narration — rapid arrow navigation speaks only the control
-    /// landed on, never a backlog (see `focus_storm` test). Resets the
-    /// reading cursor so the next `read_next/read_prev` re-anchors here.
+    /// Speaks [`describe`] of the newly-focused node, interrupting any previous narration
+    /// — rapid arrow navigation speaks only the control landed on, never a backlog (see
+    /// `focus_storm` test).
     pub fn announce_focus(&mut self, node: &AccessNode) {
         let text = describe(node);
         if text.is_empty() {
@@ -456,8 +415,8 @@ impl ScreenReader {
     }
 
     /// The live-region entry point: errors/permission prompts use
-    /// [`Priority::Important`](tts::Priority) (survives a focus interrupt);
-    /// polite toasts use [`Priority::Notification`](tts::Priority).
+    /// [`Priority::Important`](tts::Priority) (survives a focus interrupt); polite toasts
+    /// use [`Priority::Notification`](tts::Priority).
     pub fn announce(&mut self, text: impl Into<String>, priority: Priority, interrupt: bool) {
         let text = text.into();
         if text.is_empty() {
@@ -470,8 +429,8 @@ impl ScreenReader {
         );
     }
 
-    /// Interrupting — dragging a slider should track the latest value,
-    /// not queue every intermediate one.
+    /// Interrupting — dragging a slider should track the latest value, not queue every
+    /// intermediate one.
     pub fn announce_value_change(&mut self, value: impl Into<String>) {
         let value = value.into();
         if value.is_empty() {
@@ -480,10 +439,9 @@ impl ScreenReader {
         self.enqueue(Utterance::new(value));
     }
 
-    /// Spoken at [`Priority::Text`](tts::Priority), interrupting, so a
-    /// fast typist's echoes coalesce.
+    /// Spoken at [`Priority::Text`](tts::Priority), interrupting, so a fast typist's
+    /// echoes coalesce.
     pub fn echo_char(&mut self, ch: char) {
-        // A space is announced as the word so it isn't silence.
         let text = if ch == ' ' {
             "space".to_string()
         } else {
@@ -499,8 +457,7 @@ impl ScreenReader {
         self.enqueue(Utterance::new(word.to_string()).with_priority(Priority::Text));
     }
 
-    /// A single deleted character is spoken as "X deleted"; otherwise
-    /// just "deleted".
+    /// A single deleted character is spoken as "X deleted"; otherwise just "deleted".
     pub fn echo_deletion(&mut self, deleted: &str) {
         let text = match deleted.chars().count() {
             1 => format!("{deleted} {}", phrase::deleted()),
@@ -509,8 +466,7 @@ impl ScreenReader {
         self.enqueue(Utterance::new(text).with_priority(Priority::Text));
     }
 
-    /// The "silence key" (Orca convention): stop all speech and discard
-    /// anything pending.
+    /// The "silence key" (Orca convention): stop all speech and discard anything pending.
     pub fn stop(&mut self) {
         self.queue.clear();
         self.speaker.stop();
@@ -520,7 +476,6 @@ impl ScreenReader {
         self.speaker.is_speaking()
     }
 
-    /// Speak `node`, interrupting what is being said.
     fn speak_item(&mut self, node: &AccessNode) {
         let text = describe(node);
         if !text.is_empty() {
@@ -528,7 +483,6 @@ impl ScreenReader {
         }
     }
 
-    /// Put the cursor on `order[index]`, speak it and return it.
     fn land(&mut self, order: &[ReadingItem], index: usize) -> Option<AccessNode> {
         let item = order.get(index)?;
         self.cursor = Some(Cursor {
@@ -539,9 +493,6 @@ impl ScreenReader {
         Some(item.node.clone())
     }
 
-    /// Where the cursor is in `order`: on the item it was on, found by its
-    /// id when the order changed around it, else at the same place while
-    /// that is still in the order.
     fn anchor(&mut self, order: &[ReadingItem]) -> Option<usize> {
         let cursor = self.cursor.as_ref()?;
         let found = match &cursor.id {
@@ -571,8 +522,7 @@ impl ScreenReader {
     }
 
     /// A "say all": speaks every node's [`describe`] as bulk
-    /// [`Priority::Text`](tts::Priority) (so a later focus change
-    /// interrupts it). Seeds the reading cursor at the start.
+    /// [`Priority::Text`](tts::Priority) (so a later focus change interrupts it).
     pub fn read_all(&mut self, root: &dyn Widget) {
         self.read_all_in(&widget_reading_order(root));
     }
@@ -583,8 +533,6 @@ impl ScreenReader {
             index: 0,
             id: item.id.clone(),
         });
-        // First utterance interrupts (clears focus chatter); the rest are
-        // non-interrupting continuations so they don't cancel each other.
         let mut first = true;
         for p in order
             .iter()
@@ -646,11 +594,8 @@ impl ScreenReader {
         self.land(order, prev)
     }
 
-    /// Explore by touch: speak the item of `order` under `point` and put the
-    /// cursor on it, pressing nothing. Of nested items the innermost wins (a
-    /// key, not the keyboard around it). The item the cursor is already on is
-    /// not spoken again, so a finger dragged across one key says it once.
-    /// Returns the item when the cursor moved to it.
+    /// Explore by touch: speak the item of `order` under `point` and put the cursor on
+    /// it, pressing nothing.
     pub fn explore_in(&mut self, order: &[ReadingItem], point: Point) -> Option<AccessNode> {
         let under = order.iter().rposition(|item| {
             !item.node.state.hidden
@@ -669,8 +614,7 @@ impl ScreenReader {
         self.cursor.as_ref().map(|cursor| cursor.index)
     }
 
-    /// Speaks a short "no more" cue and returns `None` when nothing ahead
-    /// matches `pred`. Shared engine behind `read_next_heading/read_next_control`.
+    /// Speaks a short "no more" cue and returns `None` when nothing ahead matches `pred`.
     pub fn read_next_matching(
         &mut self,
         root: &dyn Widget,
@@ -722,8 +666,6 @@ impl ScreenReader {
             self.cursor = None;
             return None;
         }
-        // Search strictly before the cursor; from an unset cursor, scan from the
-        // end so the first jump lands on the last matching element.
         let end = self.anchor(order).unwrap_or(order.len());
         let found = order.iter().take(end).rposition(|item| pred(&item.node));
         if let Some(i) = found {
@@ -744,14 +686,13 @@ impl ScreenReader {
         self.read_prev_matching(root, is_heading)
     }
 
-    /// Jump to the next form field / interactive control and speak it
-    /// ("Insert + F").
+    /// Jump to the next form field / interactive control and speak it ("Insert + F").
     pub fn read_next_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
         self.read_next_matching(root, is_form_field)
     }
 
-    /// Jump to the previous form field / interactive control and speak it
-    /// ("Insert + Shift + F").
+    /// Jump to the previous form field / interactive control and speak it ("Insert +
+    /// Shift + F").
     pub fn read_prev_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
         self.read_prev_matching(root, is_form_field)
     }
@@ -761,9 +702,8 @@ pub fn is_heading(node: &AccessNode) -> bool {
     matches!(node.role, Role::Heading { .. })
 }
 
-/// Deliberately covers the editable + actionable controls (buttons,
-/// toggles, inputs, ranges, selectors) but not structural containers or
-/// static content.
+/// Deliberately covers the editable + actionable controls (buttons, toggles, inputs,
+/// ranges, selectors) but not structural containers or static content.
 pub fn is_form_field(node: &AccessNode) -> bool {
     matches!(
         node.role,
@@ -782,11 +722,8 @@ pub fn is_form_field(node: &AccessNode) -> bool {
     )
 }
 
-/// The accessibility walk ([`crate::a11y_tree::walk`]) the AccessKit bridge
-/// and the retained tree take, flattened. A widget's synthetic children (a
-/// table's rows, a keyboard's keys) follow its widget children, each placed
-/// where the widget draws it ([`crate::a11y::with_synthetic_bounds`]) and
-/// followed by the widgets it hosts.
+/// The accessibility walk ([`crate::a11y_tree::walk`]) the AccessKit bridge and the
+/// retained tree take, flattened.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
     use crate::a11y_tree::HostedByIndex;
     use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
@@ -807,8 +744,6 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
                 return Visit::Collapse;
             };
             let node = crate::a11y::with_synthetic_bounds(node, w);
-            // The node keeps its children for what reads them (the item the
-            // keyboard is on inside it); the order lists them after it.
             let children = node.children.clone();
             self.0.push(node);
             Visit::Node(children, ())
@@ -856,7 +791,6 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
     flatten.0
 }
 
-/// [`flatten_reading_order`] as the cursor walks it.
 fn widget_reading_order(root: &dyn Widget) -> Vec<ReadingItem> {
     flatten_reading_order(root)
         .into_iter()
@@ -1075,9 +1009,6 @@ mod tests {
         ScreenReader::with_speaker(Box::new(NullSpeaker::new()))
     }
 
-    /// `Speaker` isn't downcastable, so recorded utterances go through a
-    /// `NullSpeaker` shared via `Rc<RefCell<_>>`: a clone goes into the
-    /// reader, the original stays here to assert on.
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1142,8 +1073,6 @@ mod tests {
         }
 
         {
-            // Drains immediately, so every focus is recorded, but each
-            // interrupting push first issues a stop().
             let (mut r, rec) = recording_reader();
             for name in ["New", "Open", "Save", "Print", "Close"] {
                 r.announce_focus(&n(Role::Button).with_name(name));
@@ -1226,7 +1155,6 @@ mod tests {
         }
     }
 
-    // Configurable accessibility + children, no layout machinery.
     use crate::theme::Theme;
     use std::collections::HashMap;
     use taffy::TaffyTree;
@@ -1272,7 +1200,6 @@ mod tests {
         }
     }
 
-    /// root(None) -> [ heading(H1 "Title"), group(Group "Form") -> [ name(TextInput "Name"), ok(Button "OK") ], wrapper(None) -> [ link(Link "Help") ] ]
     fn sample_tree() -> TW {
         let heading = TW::new(Some(n(Role::Heading { level: 1 }).with_name("Title")));
         let name = TW::new(Some(n(Role::TextInput).with_name("Name")));
@@ -1294,7 +1221,6 @@ mod tests {
             let root = sample_tree();
             let order = flatten_reading_order(&root);
             let roles: Vec<Role> = order.iter().map(|n| n.role).collect();
-            // Presentational root + wrapper produce no node; everything else in DFS.
             assert_eq!(
                 roles,
                 vec![
@@ -1431,8 +1357,6 @@ mod tests {
         );
     }
 
-    /// root(None) -> [ H1 "Top", para "intro", H2 "Body", button "Go",
-    ///                 text "Name", H2 "Footer" ]
     fn quicknav_tree() -> TW {
         TW::new(None)
             .child(Box::new(TW::new(Some(
@@ -1461,7 +1385,6 @@ mod tests {
             let a = r.read_next_heading(&root).unwrap();
             assert_eq!(a.role, Role::Heading { level: 1 });
             assert_eq!(a.name.as_deref(), Some("Top"));
-            // Skips the paragraph and the controls, landing on the next H2.
             let b = r.read_next_heading(&root).unwrap();
             assert_eq!(b.role, Role::Heading { level: 2 });
             assert_eq!(b.name.as_deref(), Some("Body"));

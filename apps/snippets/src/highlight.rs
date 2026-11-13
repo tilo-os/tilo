@@ -1,11 +1,6 @@
-//! Snippet syntax highlighting: the toolkit's grammar-backed highlighter plus
-//! the one thing specific to snippets, `${placeholder}` variables, which are
-//! marked in every language so the expand-variables affordance reads the same
-//! everywhere.
-//!
-//! Colours come from the theme's shared syntax palette
-//! (`theme.tokens.syntax`) at draw time, so the preview tracks whatever
-//! palette the OS hands the app and matches every other code surface.
+//! Snippet syntax highlighting: the toolkit's grammar-backed highlighter plus the one thing
+//! specific to snippets, `${placeholder}` variables, which are marked in every language so
+//! the expand-variables affordance reads the same everywhere.
 
 use std::ops::Range;
 
@@ -15,8 +10,6 @@ use ui::widget::code_editor::{
 
 use crate::model::Language;
 
-/// Placeholders borrow the markup-heading role, which the syntax palette
-/// paints in the primary accent in both the editable body and the preview.
 pub const PLACEHOLDER: TokenKind = TokenKind::Heading;
 
 /// A contiguous run of preview text sharing one [`TokenKind`].
@@ -29,7 +22,6 @@ pub struct Span {
 fn grammar(lang: Language) -> SyntaxHighlighter {
     let token = match lang {
         Language::PlainText => return SyntaxHighlighter::plain_text(),
-        // Git snippets are shell command lines.
         Language::Shell | Language::Git => "sh",
         Language::Rust => "rs",
         Language::Sql => "sql",
@@ -63,8 +55,8 @@ impl Highlighter for EditorHighlighter {
     }
 }
 
-/// Highlight `text` line by line (split like [`str::lines`]), carrying the
-/// grammar state across lines so multi-line strings and comments hold.
+/// Highlight `text` line by line (split like [`str::lines`]), carrying the grammar state
+/// across lines so multi-line strings and comments hold.
 pub fn highlight_lines(text: &str, lang: Language) -> impl Iterator<Item = Vec<Span>> + '_ {
     let mut state = grammar(lang).start();
     text.lines().map(move |line| {
@@ -81,7 +73,6 @@ pub fn highlight_lines(text: &str, lang: Language) -> impl Iterator<Item = Vec<S
 }
 
 /// `${name}` ranges: `$` immediately followed by `{`, closed by the next `}`.
-/// An unclosed `${` is ordinary text.
 fn placeholders(line: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let mut from = 0;
@@ -97,8 +88,8 @@ fn placeholders(line: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-/// Replace whatever the grammar said about each placeholder's bytes with
-/// [`PLACEHOLDER`], splitting the spans it overlaps.
+/// Replace whatever the grammar said about each placeholder's bytes with [`PLACEHOLDER`],
+/// splitting the spans it overlaps.
 fn overlay_placeholders(line: &str, spans: Vec<KindSpan>) -> Vec<KindSpan> {
     let marks = placeholders(line);
     if marks.is_empty() {

@@ -88,6 +88,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         ))
     }
 
+    /// The undo step the invocations of the call being answered join.
+    pub(super) fn call_step() -> Option<tilo_actions::ActionId> {
+        STEP.try_with(|step| *step).ok()
+    }
+
     /// The run the call being answered is a step of: its undo step and the
     /// name it goes by, when the call names one (`_meta["so.tilo.mcp"]`
     /// `run`).

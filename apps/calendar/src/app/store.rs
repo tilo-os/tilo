@@ -1,11 +1,6 @@
 //! The calendar as a bound view: the [`Store`] the window shares with the
 //! view's effect handler and what the view publishes, and [`window`], which
 //! takes the window into the view.
-//!
-//! The effects answer here, from the calendar the document holds and what
-//! the window last showed of it; what they ask of the window itself (a
-//! view to show, an item to open, a toast) waits in [`Store::asks`] until
-//! the window next looks.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,76 +24,42 @@ use crate::model::{Calendar, Id, Palette, View};
 use crate::outbox::DeviceAccounts;
 use crate::resource::{CalendarEffect, SampleAccounts, ShotNow, t};
 
-/// How many attendees the calendar publishes as rows of their own.
 const ATTENDEE_ROWS: usize = 256;
 
-/// The files the calendar imports and exports.
 fn ics_filter() -> ui::portal::FileFilter {
     ui::portal::FileFilter::new("iCalendar files")
         .mimetype("text/calendar")
         .glob("*.ics")
 }
 
-/// What an effect asked of the window, done when it next looks.
 pub(crate) enum Ask {
-    /// Show what an `open` found.
     Open(Opened),
-    /// Show the item a resource id names: a search hit, a clicked reminder.
     OpenItem(String),
-    /// Show every calendar again.
     ShowAllCalendars,
-    /// Switch to a view of the calendar.
     ShowView(View),
-    /// Show the inbox of tasks.
     ShowTasks,
-    /// Start a new event, as the window's own New event does.
     StartEvent,
-    /// Start a new task, as the window's own New task does.
     StartTask,
-    /// Open the platform search on the contacts offered for an event.
     SearchContacts,
-    /// Say something in the window's bar.
     Say(String, ToastKind),
-    /// Stage a capture's scenario (`None` for a plain capture).
     Stage(Option<String>),
 }
 
-/// What the window and the view's effect handler share, and what the view
-/// publishes beside the calendar.
 pub(crate) struct Store {
-    /// The calendar as the document holds it; `None` for a window outside
-    /// the framework.
     pub(super) live: Option<Live<Calendar>>,
-    /// The accounts configured on this device.
     device_accounts: DeviceAccounts,
-    /// Where the person's display choices are kept, once followed.
     pub(super) display: Option<Setting<CalendarDisplay>>,
-    /// The calendars the window shows: the one on this device and those of
-    /// the accounts, as display choices apply to them.
     pub(super) calendars: Vec<CalendarCollectionResource>,
-    /// Whether there are accounts to sync, real or a capture's sample ones.
     pub(super) has_accounts: bool,
-    /// The day the window is on, which an exported file is named after.
     pub(super) anchor: NaiveDate,
-    /// True while a background sync is running, which keeps the event loop
-    /// ticking (`needs_animation_frame`) so the worker's result lands
-    /// promptly without waiting for the next unrelated input.
     pub(super) syncing: bool,
-    /// A sync effect asked for a pull, started on the next sync with the
-    /// document.
     pub(super) sync_requested: bool,
-    /// The caller of the sync effect, answered when its pull lands.
     pub(super) sync_reply: Option<EffectReply>,
-    /// The person's address book, read in a live window to offer its
-    /// people as attendees.
     pub(super) contact_directory: Option<PersonRecord<ContactDirectory>>,
-    /// The event the Contacts picker was last opened for.
     pub(super) contact_event: Option<Id>,
-    /// What effects asked of the window since it last looked.
     pub(super) asks: Vec<Ask>,
 }
 
-/// The [`Store`] as the window and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
@@ -119,18 +80,14 @@ impl Store {
         }
     }
 
-    /// The accounts configured on this device, as the window keeps them.
     pub(super) fn device_accounts(&self) -> DeviceAccounts {
         Rc::clone(&self.device_accounts)
     }
 
-    /// Ask `ask` of the window, done when it next looks.
     pub(crate) fn ask(&mut self, ask: Ask) {
         self.asks.push(ask);
     }
 
-    /// Answer one of the calendar's effects, invoked by a control, the
-    /// palette, an agent or a script.
     fn answer(
         &mut self,
         effect: CalendarEffect,
@@ -212,8 +169,6 @@ impl Store {
         Ok(Effected::done())
     }
 
-    /// Change the person's display choices for the configured calendar `id`
-    /// and keep them; the window shows them when it next looks.
     fn change_display(
         &self,
         id: &str,
@@ -238,7 +193,6 @@ impl Store {
             .map_err(|error| format!("Couldn't save the calendar display: {error}"))
     }
 
-    /// Save every event and task to an iCalendar file the person chooses.
     fn export_ics(&mut self, me: &Shared, cx: &mut EffectCx<Calendar>) -> EffectAnswer {
         let calendar = cx.live().get();
         if calendar.events.is_empty() && calendar.tasks.is_empty() {
@@ -275,7 +229,6 @@ impl Store {
         ))
     }
 
-    /// The effects that cannot run right now, and why.
     fn statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if self.syncing || self.sync_requested {
@@ -304,9 +257,6 @@ impl Store {
         statuses
     }
 
-    /// What the calendar `id` is, its row's read: its name, whether its
-    /// events are shown, its colour and how many of `model`'s events it
-    /// holds.
     fn read_calendar(&self, id: &str, model: &Calendar) -> Result<serde_json::Value, String> {
         let calendar = self
             .calendars
@@ -333,9 +283,6 @@ impl Store {
         }))
     }
 
-    /// The calendars of the accounts on this device, which can be opened,
-    /// shown and hidden, and each event's attendees, whose invitation Mail
-    /// prepares, and the people the Contacts picker offers.
     fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows: Vec<LiveRow> = self
             .calendars
@@ -347,8 +294,6 @@ impl Store {
         rows
     }
 
-    /// Each event's attendees as rows offering to prepare their invitation
-    /// in Mail, as many as [`ATTENDEE_ROWS`].
     fn attendee_rows(&self) -> Vec<LiveRow> {
         let Some(live) = &self.live else {
             return Vec::new();
@@ -375,9 +320,6 @@ impl Store {
     }
 }
 
-/// Import the events and tasks of an iCalendar file the person chooses
-/// through the real [`ics::parse`] path, as one action. Items already in
-/// the calendar are not added twice.
 fn import_ics(me: &Shared, cx: &mut EffectCx<Calendar>) -> Effected {
     let request = ui::portal::PickRequest::open("Import a calendar", "Import")
         .filter(ics_filter())
@@ -446,9 +388,6 @@ fn invitation(
     }))
 }
 
-/// The view of the calendar: `app` follows the document, its [`Store`]
-/// answers the effects, and the view publishes the calendars, attendees and
-/// Contacts choices beside it.
 pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     app.live = Some(cx.live().clone());
     app.state().live = Some(cx.live().clone());
@@ -503,10 +442,7 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
         Publishes::new()
             .live_rows(move || rows.borrow().live_rows())
             .live_row(move |id| row.borrow().contact_row(id))
-            // A Contacts choice adds its person to the event through
-            // `invite`.
             .row_edits(move |row| edits.borrow().contact_declarations(row))
-            // The people of the address book the Contacts picker offers.
             .search_entries(move || entries.borrow().contact_search_entries()),
         Box::new(app),
     )

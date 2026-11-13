@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use tilolang::ast::{self, UiKind, UiStmt};
 use tilolang::source::PackageSource;
 
-/// A place in a package's source.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Span {
     pub file: String,
@@ -23,34 +22,28 @@ impl std::fmt::Display for Span {
     }
 }
 
-/// A view of a package.
 struct View {
-    /// The package's app id.
     app: String,
     name: String,
     span: Span,
 }
 
-/// A UI call of a view.
 struct Call {
     /// What it calls, as written (`ui.ListRow`, `row`, `std.list`).
     what: String,
     span: Span,
 }
 
-/// One package's views and UI calls, by id and node.
 struct Package {
     calls: HashMap<ast::NodeId, Call>,
 }
 
-/// What a key of a window's tree resolves to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin {
-    /// The app whose source it is.
     pub app: String,
     pub view: String,
-    /// The UI call in that view's source, when the key names one: the outermost call of the
-    /// app's own source (a template's inner nodes are shown at the call of the template).
+    /// The UI call in that view's source, when the key names one: the outermost call of the app's
+    /// own source (a template's inner nodes are shown at the call of the template).
     pub node: Option<String>,
     pub span: Span,
 }
@@ -62,8 +55,8 @@ pub struct SourceMap {
     called: BTreeSet<(String, String)>,
 }
 
-/// A source's files laid out as the compiler lays them out (`package::placed`): in path order,
-/// each starting one past the previous one's end.
+/// A source's files laid out as the compiler lays them out (`package::placed`): in path order, each
+/// starting one past the previous one's end.
 struct Placed {
     files: Vec<(String, usize, String)>,
 }
@@ -125,16 +118,15 @@ impl Placed {
     }
 }
 
-/// The callee of a UI call as written, without its arguments.
 fn callee(text: &str) -> String {
     let end = text.find(['(', '{', '\n']).unwrap_or(text.len());
     text.get(..end).unwrap_or(text).trim().to_owned()
 }
 
-/// The view a UI call as written calls, as `(app, view name)`, when it names one: `chat.unread`
-/// is Chat's `unread`, through the alias the package imports Chat under, and `agent_chip` one of
-/// the package's own. A call of the toolkit's or the standard library's (`ui.NavItem`,
-/// `std.place`) names no view of an app.
+/// The view a UI call as written calls, as `(app, view name)`, when it
+/// names one: `chat.unread` is Chat's `unread`, through the alias the
+/// package imports Chat under, and `agent_chip` one of the package's
+/// own.
 fn callee_view(
     what: &str,
     app: &str,
@@ -150,9 +142,9 @@ fn callee_view(
     }
 }
 
-/// The identifiers the call `expr` names as arguments, into `out`: a view an argument names is
-/// one the app draws (`open(x, view: task_page)`), whether the call stands in the view's body or
-/// in what one of its events does.
+/// The identifiers the call `expr` names as arguments, into `out`: a view an argument names is one
+/// the app draws (`open(x, view: task_page)`), whether the call stands in the view's body or in
+/// what one of its events does.
 fn named_arguments(expr: &ast::Expr, out: &mut Vec<String>) {
     let args: &[ast::Arg] = match &expr.kind {
         ast::ExprKind::Call { args, .. } => args,
@@ -181,9 +173,9 @@ fn collect(
                         span: placed.span(stmt.span.start),
                     },
                 );
-                // A view an argument names (`open(x, view: task_page)`) is one the app draws,
-                // as surely as one the view calls where it stands: the window shows it over
-                // what it opened.
+                // A view an argument names (`open(x, view: task_page)`) is one the app draws, as
+                // surely as one the view calls where it stands: the window shows it over what it
+                // opened.
                 named_arguments(&call.call, argument_views);
                 if let Some(block) = &call.block {
                     collect(block, placed, calls, argument_views);
@@ -220,9 +212,9 @@ fn collect(
                     },
                 );
             }
-            // What an event does names views as surely as what stands in the body does: a row's
-            // menu row opens its page (`on choose: open(t, view: task_page)`), and that page is
-            // one the window shows.
+            // What an event does names views as surely as what stands in the body does: a row's menu row
+            // opens its page (`on choose: open(t, view: task_page)`), and that page is one the window
+            // shows.
             UiKind::On { action, .. } => named_arguments(action, argument_views),
             UiKind::Let { .. } | UiKind::State(_) => {}
         }
@@ -302,8 +294,8 @@ impl SourceMap {
         }
     }
 
-    /// Every view a package's source calls, as `(app, view name)`, over the packages read: what
-    /// no call of the app's own or of an app that uses it names is a view nothing shows.
+    /// Every view a package's source calls, as `(app, view name)`, over the packages read: what no
+    /// call of the app's own or of an app that uses it names is a view nothing shows.
     pub fn called(&self) -> impl Iterator<Item = (&str, &str)> {
         self.called
             .iter()
@@ -311,8 +303,6 @@ impl SourceMap {
     }
 
     /// Where the node keyed `key` in a window's tree comes from, when its key is the compiler's.
-    /// A key holds the keys of the items and row views it is in before its own, so the view
-    /// named last is the node's.
     pub fn origin(&self, key: &str) -> Option<Origin> {
         let (at, view_id) = self
             .views
@@ -326,9 +316,9 @@ impl SourceMap {
                     .then_some((at, id))
                 })
             })
-            // The view named last; where a view and a loop body in it (`<view>~row<n>`, a view
-            // of its own in the metadata) both match there, the view, whatever order the map
-            // holds them in, so a finding's id is the same on every run.
+            // The view named last; where a view and a loop body in it (`<view>~row<n>`, a view of
+            // its own in the metadata) both match there, the view, whatever order the map holds
+            // them in, so a finding's id is the same on every run.
             .max_by_key(|(at, id)| (*at, std::cmp::Reverse(id.len()), std::cmp::Reverse(*id)))?;
         let view = self.views.get(view_id)?;
         let rest = key
@@ -354,10 +344,8 @@ impl SourceMap {
         })
     }
 
-    /// Every view the node keyed `key` is shown inside, as `(app, view name)`: the view named
-    /// last, whose node it is, and each view named before it, whose call holds it. A view
-    /// whose body is only a branch (`if let`) or a call of another view adds no node of its own,
-    /// yet it ran wherever a key names it.
+    /// Every view the node keyed `key` is shown inside, as `(app, view name)`: the view named last,
+    /// whose node it is, and each view named before it, whose call holds it.
     pub fn views_in<'k>(&'k self, key: &'k str) -> impl Iterator<Item = (&'k str, &'k str)> + 'k {
         self.views.iter().filter_map(move |(id, view)| {
             key.match_indices(id.as_str())
@@ -373,9 +361,9 @@ impl SourceMap {
         })
     }
 
-    /// Where a widget comes from, by the keys of it and the widgets around it, innermost
-    /// first: the innermost that names a call in `app`'s own source, else the innermost in
-    /// one of its views, else the innermost that resolves at all.
+    /// Where a widget comes from, by the keys of it and the widgets around it, innermost first: the
+    /// innermost that names a call in `app`'s own source, else the innermost in one of its views,
+    /// else the innermost that resolves at all.
     pub fn origin_of(&self, app: &str, keys: &[String]) -> Option<Origin> {
         let origins: Vec<Origin> = keys.iter().filter_map(|key| self.origin(key)).collect();
         origins

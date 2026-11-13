@@ -122,7 +122,7 @@ calendar-sync-running = Syncing calendars…
 calendar-sync-running-short = Syncing…
 calendar-sync-synced = Synced { $calendars } calendars, { $events } events.
 calendar-sync-offline = Offline. Changes sync when you reconnect.
-calendar-sync-conflict = 1 change also changed on the server; your version is safe and still queued.
+calendar-sync-conflict = One change was also edited on the server. Your version is kept and will sync later.
 calendar-sync-failed = Sync failed
 calendar-sync-failed-hint = Sync failed. Check the account in Settings, then sync again.
 calendar-sync-error = Sync failed: { $reason }. Check the account in Settings, then sync again.
@@ -132,7 +132,7 @@ calendar-sync-no-accounts = No calendar accounts yet. Add one in Settings.
 calendar-account-gone = That calendar account is no longer configured
 calendar-invite-address-required = Enter a complete email address, such as name@example.com
 calendar-invite-already = { $email } is already invited
-calendar-invite-added = Added { $email }. Prepare the invitation in Mail to send it.
+calendar-invite-added = Added { $email }. Send the invitation in Mail.
 calendar-invite-prepared = Invitation prepared for Mail. Review it there before sending.
 calendar-export-empty = Nothing to export yet
 calendar-exported = Exported { $events } events and { $tasks } tasks
@@ -249,6 +249,47 @@ calendar-editor-alert = Alert
 calendar-editor-time-zone = Time zone
 calendar-editor-priority = Priority
 
+## The rows of the editor's dropdowns
+calendar-no-project = No project
+calendar-time-zone-floating = No time zone
+calendar-alert-none = No alert
+calendar-alert-at-start = When it starts
+calendar-alert-minutes-before = { $count ->
+    [one] 1 minute before
+   *[other] { $count } minutes before
+}
+calendar-alert-hours-before = { $count ->
+    [one] 1 hour before
+   *[other] { $count } hours before
+}
+calendar-alert-days-before = { $count ->
+    [one] 1 day before
+   *[other] { $count } days before
+}
+calendar-repeat-none = Does not repeat
+calendar-repeat-weekdays = Every weekday
+calendar-repeat-every-days = { $count ->
+    [one] Every day
+   *[other] Every { $count } days
+}
+calendar-repeat-every-weeks = { $count ->
+    [one] Every week
+   *[other] Every { $count } weeks
+}
+calendar-repeat-every-months = { $count ->
+    [one] Every month
+   *[other] Every { $count } months
+}
+calendar-repeat-every-years = { $count ->
+    [one] Every year
+   *[other] Every { $count } years
+}
+calendar-repeat-times = { $count ->
+    [one] { $recurrence }, once
+   *[other] { $recurrence }, { $count } times
+}
+calendar-repeat-until = { $recurrence } until { $day }
+
 ## The window bar's slots
 calendar-views = View
 calendar-previous-month = Previous month
@@ -301,3 +342,23 @@ calendar-calendar-drop-remote-item = Remove what the server removed
 calendar-calendar-server-applied = Record uploaded changes
 calendar-calendar-server-removed = Record a deletion on the server
 calendar-calendar-pulled = Record fetched changes
+
+## The event and task forms' row labels
+calendar-field-starts = Starts
+calendar-field-ends = Ends
+calendar-field-all-day = All day
+calendar-field-location = Location
+calendar-field-calendar = Calendar
+calendar-field-repeat = Repeat
+calendar-field-alert = Alert
+calendar-field-time-zone = Time zone
+calendar-field-colour = Colour
+calendar-field-guests = Guests
+calendar-field-due = Due
+calendar-field-priority = Priority
+calendar-field-project = Project
+calendar-field-subtasks = Subtasks
+calendar-field-no-due-date = Add a due date
+
+## What the app is called in a window and in the launcher
+calendar-app-title = Calendar

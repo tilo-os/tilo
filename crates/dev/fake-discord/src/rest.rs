@@ -17,16 +17,15 @@ mod oauth;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recorded {
     pub method: String,
-    /// The path after `/api/v10`, percent-decoded per segment, or the
-    /// `/cdn/...` path for CDN fetches.
+    /// The path after `/api/v10`, percent-decoded per segment, or the `/cdn/...` path for CDN
+    /// fetches.
     pub path: String,
     pub query: Vec<(String, String)>,
     /// Whether it carried `Authorization: Bot <the current token>`.
     pub bot_auth: bool,
     /// The OAuth 2 access token it carried (`Authorization: Bearer ...`).
     pub bearer: Option<String>,
-    /// The client credentials it carried (`Authorization: Basic ...`),
-    /// still encoded.
+    /// The client credentials it carried (`Authorization: Basic ...`), still encoded.
     pub basic: Option<String>,
     /// `X-Audit-Log-Reason`, decoded.
     pub audit_reason: Option<String>,
@@ -294,9 +293,8 @@ fn missing_permissions() -> Answer {
     Answer::error(403, 50_013, "Missing Permissions")
 }
 
-/// `POST /guilds/{id}/emojis`: an upload, with Discord's checks of the
-/// bot's permission, the guild's slots, the name and the picture (a data
-/// URI of at most 256 KiB).
+/// `POST /guilds/{id}/emojis`: an upload, with Discord's checks of the bot's permission, the guild's
+/// slots, the name and the picture (a data URI of at most 256 KiB).
 fn create_emoji(state: &mut State, body: &Value) -> Answer {
     use base64::Engine as _;
     if !state.expressions.create && !state.expressions.manage {
@@ -339,9 +337,8 @@ fn create_emoji(state: &mut State, body: &Value) -> Answer {
     Answer::json(201, &emoji)
 }
 
-/// `GET`, `PATCH` (rename) or `DELETE /guilds/{id}/emojis/{emoji}`. An
-/// emoji the bot uploaded takes Create Expressions to change, any other
-/// Manage Expressions.
+/// `GET`, `PATCH` (rename) or `DELETE /guilds/{id}/emojis/{emoji}`. An emoji the bot uploaded takes
+/// Create Expressions to change, any other Manage Expressions.
 fn change_emoji(state: &mut State, method: &str, emoji: &str, body: &Value) -> Answer {
     let Some(index) = state.emojis.iter().position(|e| e["id"] == emoji) else {
         return Answer::error(404, 10_014, "Unknown Emoji");

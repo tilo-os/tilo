@@ -1,9 +1,4 @@
 //! Agenda list component.
-//!
-//! This owns the agenda view's scroll state, geometry, input routing, drawing,
-//! and semantic row actions. `CalendarApp` supplies the model and translates
-//! those actions into its document mutations/navigation. Each day is a group
-//! under its heading; each event and task is a shared list row.
 
 use crate::input_context::InputContext;
 use std::collections::HashSet;
@@ -28,13 +23,10 @@ use crate::shown::{Shown, Viewer};
 
 const DAYS_SHOWN: i64 = 21;
 
-/// The last day the agenda lists when it starts on `anchor`.
 pub(crate) fn last_day(anchor: NaiveDate) -> NaiveDate {
     anchor + Duration::days(DAYS_SHOWN - 1)
 }
 
-/// The empty agenda: one sentence. Its action is the header's New event,
-/// which is already on screen.
 const EMPTY_TITLE: &str = "Nothing scheduled in the next three weeks";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,15 +36,12 @@ pub(crate) enum AgendaAction {
     ToggleTask(Id),
 }
 
-/// One row of the agenda, in list order.
 enum Item<'a> {
     Heading(NaiveDate),
     Event(Shown<'a>),
     Task(&'a Task),
 }
 
-/// The agenda's geometry in a theme: the list's insets and the gaps
-/// between its groups.
 struct Metrics {
     gutter: f64,
     heading_gap: f64,
@@ -82,7 +71,7 @@ impl AgendaView {
     }
 
     pub(crate) fn layout(&mut self, area: Rect, source: &AgendaSource<'_>, theme: &Theme) {
-        let height = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let height = ui::text_render::with_layout_renderer(theme, |text| {
             content_height(source, text, theme)
         });
         self.scroll.set_viewport_rect(area);
@@ -169,7 +158,8 @@ impl AgendaView {
                     y = row.y1;
                 }
                 Item::Task(task) => {
-                    let face = task_face(task, source, theme);
+                    let meta = task_meta(task);
+                    let face = task_face(task, source, theme, meta.as_deref());
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -207,9 +197,6 @@ impl AgendaView {
     }
 }
 
-/// Paint one task row in `row`, clipped to `area`, and push its targets:
-/// the row opens the task; the checkbox, pushed after it so it wins,
-/// completes it.
 fn paint_task_row(
     ctx: &mut PaintCtx<'_>,
     face: ListRowFace<'_>,
@@ -233,8 +220,6 @@ fn paint_task_row(
     }
 }
 
-/// An occurrence's time as its row's meta: its start on the viewer's
-/// clock, or "All day".
 fn event_time(shown: &Shown<'_>) -> String {
     if shown.event.all_day {
         "All day".into()
@@ -243,7 +228,6 @@ fn event_time(shown: &Shown<'_>) -> String {
     }
 }
 
-/// An event row: its calendar colour leads, its time is the meta.
 fn event_face<'a>(
     event: &'a Event,
     title: &'a str,
@@ -260,9 +244,22 @@ fn event_face<'a>(
     }
 }
 
-/// A task row: its checkbox leads and completes it; its project's colour
-/// follows the title as a swatch mark.
-fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> ListRowFace<'a> {
+fn task_meta(task: &Task) -> Option<String> {
+    if task.done {
+        Some(crate::resource::t("calendar-done"))
+    } else if task.priority == Priority::None {
+        None
+    } else {
+        Some(task.priority.display_label())
+    }
+}
+
+fn task_face<'a>(
+    task: &'a Task,
+    source: &AgendaSource<'_>,
+    theme: &Theme,
+    meta: Option<&'a str>,
+) -> ListRowFace<'a> {
     let mut face = ListRowFace::new(&task.title).leading(RowLeading::Checkbox {
         checked: task.done,
         icon: None,
@@ -270,17 +267,12 @@ fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> Li
     if let Some(project) = task.project.and_then(|id| source.model.project(id)) {
         face = face.swatch_mark(project.color.color(theme));
     }
-    if task.done {
-        face.meta("Done")
-    } else if task.priority == Priority::None {
-        face
-    } else {
-        face.meta(task.priority.label())
+    match meta {
+        Some(meta) => face.meta(meta),
+        None => face,
     }
 }
 
-/// A day heading: "Today", "Tomorrow" or "Yesterday" with the date beside
-/// it in quieter ink, or just the date further out.
 fn draw_heading(ctx: &mut PaintCtx<'_>, band: Rect, day: NaiveDate, today: NaiveDate) {
     let theme = ctx.theme;
     let long = date::fmt_day_long(day);
@@ -322,14 +314,11 @@ fn heading_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
     )
 }
 
-/// What the agenda lists: the model's events and top-level tasks from
-/// `anchor` onward, with hidden calendars and the calendar filter applied.
 pub(crate) struct AgendaSource<'a> {
     pub(crate) model: &'a Calendar,
     pub(crate) anchor: NaiveDate,
     pub(crate) hidden_calendars: &'a HashSet<String>,
     pub(crate) calendar_filter: Option<&'a str>,
-    /// The zone the times are shown in.
     pub(crate) viewer: Viewer,
 }
 
@@ -345,7 +334,6 @@ impl<'a> AgendaSource<'a> {
         tasks
     }
 
-    /// Every heading and row the agenda shows, in order.
     fn items(&self) -> Vec<Item<'a>> {
         let end = last_day(self.anchor);
         let shown = visible_between(
@@ -370,8 +358,6 @@ impl<'a> AgendaSource<'a> {
     }
 }
 
-/// The occurrences from `from` to `to` of the calendars shown: all-day
-/// ones first, then by start.
 fn visible_between<'a>(
     model: &'a Calendar,
     (from, to): (NaiveDate, NaiveDate),
@@ -402,7 +388,6 @@ fn visible_between<'a>(
     shown
 }
 
-/// The list's full height: what [`AgendaView::draw`] paints, top to bottom.
 fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Theme) -> f64 {
     let m = Metrics::of(theme);
     let items = source.items();
@@ -422,7 +407,10 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
                 let title = shown.event.display_title();
                 event_face(shown.event, &title, &time, theme).height(text, theme)
             }
-            Item::Task(task) => task_face(task, source, theme).height(text, theme),
+            Item::Task(task) => {
+                let meta = task_meta(task);
+                task_face(task, source, theme, meta.as_deref()).height(text, theme)
+            }
         };
     }
     height

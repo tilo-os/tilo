@@ -4,7 +4,6 @@ publisher-create-key = Schlüssel anlegen
 publisher-public-key-label = Öffentlicher Schlüssel
 publisher-proof-label = Nachweiszeile
 publisher-proof-help = Veröffentliche diese Zeile dort, wo nur du schreiben kannst, um einen Namensraum zu belegen.
-publisher-verbatim = { $text }
 publisher-copy-proof = Nachweiszeile kopieren
 publisher-copy-secret = Schlüssel für CI kopieren
 publisher-check-status = Antrag prüfen
@@ -60,3 +59,6 @@ so-tilo-publisher-key-export-key = Schlüssel exportieren
 so-tilo-publisher-key-apply-for-namespaces = Namensräume beantragen
 so-tilo-publisher-key-check-status = Status prüfen
 publisher-profile = App-Veröffentlichung
+
+## What the app is called in a window and in the launcher
+publisher-app-title = Apps veröffentlichen

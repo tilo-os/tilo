@@ -63,8 +63,9 @@ impl InstallAccounts {
         ))
     }
 
-    /// The caller must already have dropped real/effective IDs and supplementary
-    /// groups to the destination user. Authentication precedes all vault writes.
+    /// The caller must already have dropped real and effective IDs and
+    /// supplementary groups to the destination user; authentication precedes every
+    /// vault write.
     pub fn import_for_user(
         &self,
         root: &std::path::Path,

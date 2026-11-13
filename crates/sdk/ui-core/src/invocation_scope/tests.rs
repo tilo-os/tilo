@@ -312,7 +312,11 @@ fn causal_scope_observes_only_newly_applied_remote_range_without_laundering_loca
                 .unwrap();
         }
         assert_eq!(
-            fixture.owner.merge_remote(&incoming).unwrap().changed,
+            fixture
+                .owner
+                .merge_remote(&incoming, &mut automerge::AutoCommit::new())
+                .unwrap()
+                .changed,
             Some(true)
         );
         let result = fixture
@@ -369,8 +373,6 @@ fn scope_with_original_callback_gate(
                     .unwrap()
                     .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap();
-                // The original positive policy sample finishes after another
-                // owner/worker has retired this exact shared invocation.
                 return Ok(());
             }
             if callback_denied.load(Ordering::Acquire) {
@@ -506,8 +508,8 @@ fn invoker_scope_nests_and_gates_remote_view_operations() {
     assert_eq!(super::current_invoker(), None);
 }
 
-/// Reading a document changes nobody's view: an admitted agent may run the
-/// app's declared read, though not another View operation.
+/// Reading a document changes nobody's view: an admitted agent may run the app's declared read, though
+/// not another View operation.
 #[test]
 fn a_declared_document_read_is_no_view_move_for_a_remote_actor() {
     use tilo_actions::ActionContract;

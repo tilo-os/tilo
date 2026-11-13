@@ -1,15 +1,8 @@
-//! What a person sees of a job: one row each, in a band across the window's
-//! foot or in the Jobs surface, and the presses those rows report.
-//!
-//! A row says what is happening ([`Job::title`]), what the job is doing now
-//! and how far ([`Job::live_line`]), how it ended ([`Job::outcome_line`]) and
-//! offers the two things a person can do about it: **Stop** while it runs and
-//! can be stopped, **Show me** to go to the thing being worked on. A finished
-//! row is read with **Read** and then leaves.
-//!
-//! The rows carry no state of their own: they are built from the registry
-//! ([`super::rows`]) whenever a surface draws, so the same job looks the same
-//! in the band of one app and the pane of another.
+//! What a person sees of a job: one row each, in a band across the window's foot or in the Jobs
+//! surface, and the presses those rows report. A row says what is happening ([`Job::title`]), what the
+//! job is doing now and how far ([`Job::live_line`]), how it ended ([`Job::outcome_line`]) and offers
+//! the two things a person can do about it: **Stop** while it runs and can be stopped, **Show me** to
+//! go to the thing being worked on.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -35,16 +28,11 @@ pub enum Press {
     Read(JobId),
 }
 
-/// How many rows the band across a window's foot shows before it names the
-/// rest; the pane shows them all.
+/// How many rows the band across a window's foot shows before it names the rest; the pane shows them
+/// all.
 const BAND_ROWS: usize = 3;
 
-/// A jobs surface's state: the press sink its rows write to, and the
-/// registry revision it last drew.
-///
-/// An app keeps one beside the surface it draws, takes what was pressed
-/// ([`Self::take`]) in its update, and rebuilds when [`Self::changed`] says
-/// the rows moved.
+/// A jobs surface's state: the press sink its rows write to, and the registry revision it last drew.
 #[derive(Clone, Default)]
 pub struct Presses {
     pressed: Rc<RefCell<Vec<Press>>>,
@@ -66,8 +54,8 @@ impl Presses {
         Self::default()
     }
 
-    /// Whether the registry moved since the last surface was built with it:
-    /// the app lays out again then.
+    /// Whether the registry moved since the last surface was built with it: the app lays out again
+    /// then.
     #[must_use]
     pub fn changed(&self) -> bool {
         self.drawn.get() != Some(revision())
@@ -84,18 +72,14 @@ impl Presses {
         std::mem::take(&mut *self.pressed.borrow_mut())
     }
 
-    /// Record `press` as the person's: what a row's control does, and what a
-    /// host that stands for the row (a chord, a test) does.
+    /// Record `press` as the person's: what a row's control does, and what a host that stands for the
+    /// row (a chord, a test) does.
     pub fn pressed(&self, press: Press) {
         self.pressed.borrow_mut().push(press);
     }
 }
 
 /// A row per job that runs, and per job that ended and has not been read.
-///
-/// The band is for [`NavShell::bottom_band`](crate::widget::NavShell::bottom_band):
-/// it belongs to the window rather than to the page open, so a job stays
-/// visible and stoppable while the person works somewhere else.
 #[must_use]
 pub fn band(presses: &Presses) -> Column {
     presses.drawn();
@@ -118,8 +102,7 @@ pub fn band(presses: &Presses) -> Column {
     column
 }
 
-/// The Jobs surface: every row, under the two headings that say which is
-/// which.
+/// The Jobs surface: every row, under the two headings that say which is which.
 #[must_use]
 pub fn pane(presses: &Presses) -> Column {
     presses.drawn();
@@ -127,7 +110,6 @@ pub fn pane(presses: &Presses) -> Column {
     if all.is_empty() {
         return Column::new().with_no_padding().push(Box::new(
             EmptyState::new(crate::i18n::widget_format("jobs-none", &[]))
-                .with_message(crate::i18n::widget_format("jobs-none-message", &[]))
                 .with_icon(Icon::Timer)
                 .with_id("jobs-empty"),
         ));
@@ -164,8 +146,6 @@ pub fn pane(presses: &Presses) -> Column {
     ))
 }
 
-/// One job's row: what it is, what it is doing, and the two things that can
-/// be done about it.
 fn job_row(job: &Job, presses: &Presses) -> Element {
     let id = job.id();
     let subject = job.subject();
@@ -228,8 +208,8 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
     Box::new(row)
 }
 
-/// A job's progress under its row: determinate when the total is known, a
-/// bar with no claim when it is not.
+/// A job's progress under its row: determinate when the total is known, a bar with no claim when it is
+/// not.
 fn bar(job: &Job) -> Element {
     let bar = match job.progress() {
         Progress::Measured { done, total } if *total > 0 => {
@@ -258,8 +238,8 @@ fn bar(job: &Job) -> Element {
     Box::new(bar)
 }
 
-/// "…and 2 more", which opens the Jobs surface: a row that cannot act is not
-/// a row, so this one goes somewhere.
+/// "…and 2 more", which opens the Jobs surface: a row that cannot act is not a row, so this one goes
+/// somewhere.
 fn more_row(more: usize) -> Element {
     Box::new(
         ListRow::new(
@@ -274,11 +254,8 @@ fn more_row(more: usize) -> Element {
     )
 }
 
-/// What pressing one row's control asks of the registry: stop, dismiss, or
-/// the subject "Show me" goes to.
-///
-/// An app applies what it took: `stop` and `dismiss` act on the registry,
-/// and a [`Press::Show`] answer opens the app on that subject's target.
+/// What pressing one row's control asks of the registry: stop, dismiss, or the subject "Show me" goes
+/// to.
 pub fn apply(press: Press) -> Option<Subject> {
     match press {
         Press::Stop(id) => {
@@ -293,13 +270,8 @@ pub fn apply(press: Press) -> Option<Subject> {
     }
 }
 
-/// A jobs surface as a widget: it keeps its rows, rebuilds them when the
-/// registry moves, and reports what was pressed through its [`Presses`].
-///
-/// An app declares one in its window once — as the band across the foot
-/// ([`NavShell::bottom_band`](crate::widget::NavShell::bottom_band)) or as
-/// the Jobs page — and reads [`Band::presses`] in its update. The widget
-/// owns no state of its own beyond its rows: what it shows is the registry.
+/// A jobs surface as a widget: it keeps its rows, rebuilds them when the registry moves, and reports
+/// what was pressed through its [`Presses`].
 #[crate::component::not_a_component(system, "the band of long work the system shows (HIG 10)")]
 pub struct Band {
     inner: Column,
@@ -308,12 +280,9 @@ pub struct Band {
     restack: bool,
 }
 
-/// Which surface a [`Band`] draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
-    /// The band across the window's foot: the first rows, and how many more.
     Band,
-    /// The Jobs surface: every row, under both headings.
     Page,
 }
 
@@ -356,15 +325,14 @@ impl Band {
         }
     }
 
-    /// What was pressed, and whether the registry moved: the app answers
-    /// both in its update.
+    /// What was pressed, and whether the registry moved: the app answers both in its update.
     #[must_use]
     pub fn presses(&self) -> &Presses {
         &self.presses
     }
 
-    /// Whether there is anything at all to show: an app keeps the band out
-    /// of the window while nothing runs.
+    /// Whether there is anything at all to show: an app keeps the band out of the window while nothing
+    /// runs.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         super::rows().is_empty()
@@ -382,7 +350,6 @@ impl Default for Band {
     }
 }
 
-/// The rows `shape` shows, built into a column with no state of its own.
 fn bare(presses: Presses, shape: Shape) -> Column {
     match shape {
         Shape::Band => band(&presses),

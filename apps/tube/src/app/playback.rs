@@ -1,9 +1,4 @@
-//! The watch page's player: the shared `VideoPlayer` and the media engine
-//! beneath it. What a stream is opened from, where playback starts again, what
-//! each frame does with the playhead (mirror it, skip a segment set to skip,
-//! move on at the end), what seeking and skipping command of it, and what
-//! playback writes down afterwards: the position it keeps in the person's watch
-//! history, and the captions it shows while it plays.
+//! The watch page's player: the shared `VideoPlayer` and the media engine beneath it.
 
 use ui::widget::VideoPlayer;
 use ui::widget::Widget as _;
@@ -16,24 +11,15 @@ use crate::screens;
 
 use super::{PLAYBACK_SPEEDS, QUALITIES, Tube};
 
-/// How far the playhead moves between two writes of the watch history: a
-/// two-hour video is a few hundred small edits, not one per frame, and still
-/// resumes at the minute the person stopped at.
+/// How far the playhead moves between two writes of the watch history: a two-hour video is a few
+/// hundred small edits, not one per frame, and still resumes at the minute the person stopped at.
 const PROGRESS_STEP_MS: u64 = 5_000;
 
-/// Pull the frames the player's engine decoded into its surface, as the
-/// player's own `sync` does every frame; it reads no document.
 pub(super) fn pump_player(player: &mut VideoPlayer) {
     player.sync(&(), &());
 }
 
 impl Tube {
-    /// If the current route is a watch page we haven't started playing yet, ask
-    /// the worker to resolve + decode a real stream for it — exactly once per
-    /// watch-open. Online-only, so the offline `--shots`/test paths never spawn
-    /// the worker or reach the network. Opening a *different* video re-arms this
-    /// and drops the previous video's frame so the poster shows until the new
-    /// stream decodes.
     pub(super) fn ensure_playback(&mut self) {
         if !self.online {
             return;
@@ -44,11 +30,8 @@ impl Tube {
                     return;
                 }
                 self.playing_id = Some(id.clone());
-                // A fresh resolution is pending; drop the previously-loaded
-                // source so a new video starts clean once its URL lands.
                 self.player_video = None;
                 self.player.borrow_mut().pause();
-                // Nothing here plays it; the page says where it does.
                 if self
                     .model
                     .video(&id)
@@ -56,18 +39,12 @@ impl Tube {
                 {
                     return;
                 }
-                // The decoder starts up while the stream URL resolves.
                 media::MediaEngine::prepare_in_background();
-                // The quality the person chose is what the stream resolves to:
-                // the choice is not a preference that never reaches the wire.
                 let quality = self.model.settings.preferred_quality.clone();
                 self.request_live(Request::PlayVideo { id, quality });
             }
-            // Left the watch page: pause the engine so audio stops and it isn't
-            // still streaming a video the user is no longer watching.
             _ => {
                 if let Some(left) = self.playing_id.take() {
-                    // The minute they stopped at is the one to come back to.
                     self.remember_progress_of(&left, true);
                     self.player_video = None;
                     self.resume_at_ms = None;
@@ -77,13 +54,6 @@ impl Tube {
         }
     }
 
-    /// Per-frame playback bookkeeping: mirror the engine's playhead onto the
-    /// model (so `SponsorBlock` auto-skip + autoplay-next key off the real
-    /// position), auto-skip enabled segments by seeking the engine, and advance
-    /// to the next recommendation when the stream ends. Returns `true` only when
-    /// something *visible* changed (a skip notice or an autoplay navigation) so
-    /// it never dirties the tree merely because the playhead advanced. A no-op
-    /// off the watch route or before a stream has loaded.
     pub(super) fn tick_playback(&mut self) -> bool {
         let Route::Watch(id) = self.model.route.clone() else {
             return false;
@@ -95,44 +65,26 @@ impl Tube {
         if self.player_stopped(&events) {
             return true;
         }
-        // Until a source is open the engine has no playhead to follow: an
-        // auto-skip from the zero position would seek nowhere and fire again
-        // on every frame.
         if !self.player.borrow().has_media() {
             return false;
         }
-        // Short borrow: read the engine's position/duration/playing, then drop
-        // the borrow before any seek (auto-skip re-borrows).
         let (pos_ms, dur_ms, playing) = {
             let p = self.player.borrow();
             (p.position_ms(), p.duration_ms(), p.is_playing())
         };
         self.model.playhead = pos_ms as f64 / 1000.0;
         self.model.playing = playing;
-        // Where this video was left, kept for "continue watching" on this
-        // device and every other one; throttled, and forced when playback
-        // stops or the page closes.
         self.remember_progress(false);
 
-        // Auto-skip runs against the real playhead and seeks the engine.
         let mut changed = self.apply_auto_skip();
-        // On-video "Skip" overlay visibility: recompute which (if any) show-mode
-        // segment the playhead sits in. A transition (enter/leave) must rebuild
-        // the tree so the overlay appears/dismisses — the advancing playhead by
-        // itself never dirties it.
         let show_end = self.current_show_skip_end();
         if show_end != self.show_skip_end {
             self.show_skip_end = show_end;
             changed = true;
         }
-        // Reaching the end advances to the next "up next" when autoplay is on.
-        // `duration_ms` is the media duration once known; treat within 250ms of
-        // the end (or an explicitly non-playing engine at the end) as finished.
         let known_dur = dur_ms > 0;
         let at_end = known_dur && pos_ms + 250 >= dur_ms;
         if at_end {
-            // Watched to the end: there is no minute to come back to, and
-            // "continue watching" must not offer the credits.
             self.remember_progress_of(&id, true);
         }
         if at_end && self.maybe_autoplay_next() {
@@ -141,10 +93,6 @@ impl Tube {
         changed
     }
 
-    /// Whether the player's terminal `events` stopped playback in a way the
-    /// page says: a host that streamed all it allows for now (a page's
-    /// source through the host's fetch proxy) ends with a notice, never a
-    /// picture that silently stops.
     pub(super) fn player_stopped(&mut self, events: &[media::MediaEvent]) -> bool {
         if !events
             .iter()
@@ -157,10 +105,6 @@ impl Tube {
         true
     }
 
-    /// Apply one player-setting interaction drained from the shared player. The
-    /// resolution choice round-trips into the model's preferred quality; other
-    /// settings are ignored for now. This is the production drain path (called
-    /// from `sync`), factored out so it is directly testable.
     pub(super) fn apply_player_setting_event(
         &mut self,
         ev: ui::widget::video_player::PlayerSettingEvent,
@@ -190,8 +134,6 @@ impl Tube {
                 }
             }
             E::Chose { id, index } if id == screens::CAPTIONS_SETTING => {
-                // The first row is "Off"; the rest are the tracks the video
-                // offers, in the order the page listed them.
                 let language = match index {
                     0 => None,
                     index => self
@@ -218,12 +160,8 @@ impl Tube {
         }
     }
 
-    /// Resolve the open video again, for a choice that changes what is
-    /// fetched (a smaller quality), starting from where the playhead is now so
-    /// the change is not a jump back to the beginning.
     fn reload_stream_at_current_position(&mut self) {
         if !self.online {
-            // Nothing was fetched: the page plays what it was given.
             return;
         }
         let position = {
@@ -242,11 +180,6 @@ impl Tube {
         self.structure_dirty = true;
     }
 
-    /// Load a resolved, directly-playable stream URL into the shared player
-    /// engine and start it — the real path both the worker's
-    /// [`Update::StreamResolved`] and the transport tests take. A resolution for
-    /// a video that is no longer the open watch page is dropped (returns `false`)
-    /// so audio never bleeds across pages.
     pub(super) fn load_resolved_stream(
         &mut self,
         video: String,
@@ -257,8 +190,6 @@ impl Tube {
         if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
             return false;
         }
-        // Now-playing metadata for the desktop media widget (MPRIS): title,
-        // channel and the real thumbnail, built before we take the player borrow.
         let now_playing = self.model.video(&video).map(|v| {
             let dearrow = self.model.settings.dearrow_titles_on();
             ui::widget::video_player::NowPlaying {
@@ -268,9 +199,6 @@ impl Tube {
                 art_url: v.thumbnail_url.clone(),
             }
         });
-        // Continue where the person left off: the seek can only happen once
-        // the source exists, so it is taken here rather than when the page
-        // opened. Everything the player needs is read before it is borrowed.
         let duration_ms =
             u64::from(self.model.video(&video).map_or(0, |video| video.duration)) * 1000;
         let resume = self.resume_at_ms.take().map(|resume| {
@@ -299,8 +227,6 @@ impl Tube {
             self.model.playhead = resume as f64 / 1000.0;
         }
         self.model.stream_quality = quality.to_string();
-        // Bring up MPRIS once, in the live app, so media keys + the system media
-        // widget can drive this player and show its now-playing.
         if self.online && !self.mpris_started {
             self.player
                 .borrow_mut()
@@ -309,24 +235,16 @@ impl Tube {
         }
         self.player_video = Some(video);
         self.model.playing = true;
-        // No debug text under the player — the picture playing IS the feedback.
-        // Quality/audio provenance is a developer diagnostic, so it goes to the
-        // log, not an on-screen toast.
         tracing::debug!(%quality, has_audio, "stream loaded into player");
         true
     }
 
-    /// The shared player, with its media engine built if this is the first
-    /// thing it plays. Tube builds no engine with its window: the first one
-    /// starts `GStreamer`, which took 0.8 s of the window's first frame
-    /// whether or not anything was ever watched.
     pub(super) fn playing_player(&self) -> std::cell::RefMut<'_, VideoPlayer> {
         let mut player = self.player.borrow_mut();
         player.ensure_engine(media::MediaEngine::new);
         player
     }
 
-    /// Resolve the current watch video's duration, if any.
     pub(super) fn current_duration(&self) -> Option<f64> {
         match &self.model.route {
             Route::Watch(id) => self.model.video(id).map(|v| f64::from(v.duration)),
@@ -334,20 +252,12 @@ impl Tube {
         }
     }
 
-    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead is
-    /// currently inside, if any — what the on-video "Skip" overlay offers.
-    /// `None` off the watch route, when `SponsorBlock` is off, or when no show-mode
-    /// segment contains the playhead.
     pub(super) fn current_show_skip_end(&self) -> Option<f64> {
         self.model.show_skip_end()
     }
 
-    /// Move the open video to `at` seconds, within it: the model and the
-    /// engine, then what playback does there (skip a segment set to skip,
-    /// move on at the end).
     pub(super) fn seek_to(&mut self, at: f64) {
         self.model.playhead = at;
-        // Seek the real stream (no-op when no source is loaded yet).
         self.player
             .borrow_mut()
             .seek_to_ms((self.model.playhead * 1000.0) as u64);
@@ -355,8 +265,6 @@ impl Tube {
         self.maybe_autoplay_next();
     }
 
-    /// Skip a segment by hand: jump the model and engine playhead to `to` and
-    /// confirm with a toast.
     pub(super) fn skip_to(&mut self, to: f64) {
         if let Some(d) = self.current_duration() {
             let to = to.clamp(0.0, d);
@@ -369,10 +277,6 @@ impl Tube {
         }
     }
 
-    /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the
-    /// engine (and the model) to its end and log the skip. Returns `true` when a
-    /// skip actually happened. Runs both as the user scrubs and each frame from
-    /// [`Self::tick_playback`] against the real engine playhead.
     pub(super) fn apply_auto_skip(&mut self) -> bool {
         if !self.model.settings.sponsorblock_enabled {
             return false;
@@ -386,8 +290,6 @@ impl Tube {
             };
             let mut found = None;
             for s in &v.sponsor {
-                // Only Auto-skip-mode categories skip on their own; Show-mode
-                // segments wait for the manual skip button.
                 if self.model.settings.should_auto_skip(s.category)
                     && s.contains(self.model.playhead)
                 {
@@ -411,7 +313,6 @@ impl Tube {
             }
         };
         self.model.playhead = seg_end;
-        // Seek the real stream past the segment (no-op when no source is loaded).
         self.player
             .borrow_mut()
             .seek_to_ms((seg_end * 1000.0) as u64);
@@ -419,17 +320,10 @@ impl Tube {
         true
     }
 
-    /// Open a video's watch page: record history, route to it, reset the
-    /// playhead and start playing, and kick off metadata/branding fetches.
-    /// Shared by the card and search-result open paths and by autoplay-next so they stay
-    /// in lockstep.
     pub(super) fn open_video(&mut self, id: String) {
         let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
-        // Continue where the person left this video (here or on another
-        // device), rather than at 0:00 as though they had never seen it. The
-        // seek itself waits for the stream: `load_resolved_stream` takes it.
         let resume_at_ms = self.model.resume_at_ms(&id);
         self.model.playhead = resume_at_ms.map_or(0.0, |position| position as f64 / 1000.0);
         self.resume_at_ms = resume_at_ms;
@@ -441,23 +335,13 @@ impl Tube {
         self.model.captions_notice = None;
         self.model.playing = true;
         self.request_captions_for(&id);
-        // SponsorBlock, DeArrow and dislikes come from the network, so an
-        // offline window (a capture, a staged test) asks for none of them.
         self.request_live(Request::Branding(id.clone()));
-        // Fetch the uploader's real avatar + subscriber count when we only hold a
-        // name stub (feed/search items don't carry the channel's avatar or subs),
-        // so the watch-page channel row shows a real photo + count rather than an
-        // initials chip and "0 subscribers".
         if let Some(cid) = self.model.video(&id).map(|v| v.channel_id.clone()) {
             self.request_channel_if_stub(&cid);
         }
         self.request_live(Request::VideoMeta(id));
     }
 
-    /// Ask for the caption tracks the open video offers, and for the lines of
-    /// the track the person chose. Offline (a capture, a staged test) the
-    /// bundled sample video's captions are used instead, so the surface is
-    /// reviewable without the network.
     pub(super) fn request_captions_for(&mut self, id: &str) {
         if !self.online {
             #[cfg(feature = "samples")]
@@ -470,17 +354,12 @@ impl Tube {
             return;
         }
         let language = self.model.settings.caption_language.clone();
-        // Looking the tracks up is part of opening the page: the caption
-        // control lists what this video offers, on or off.
         self.request_live(Request::Captions {
             id: id.to_string(),
             language,
         });
     }
 
-    /// Take up the caption track the person chose, from the tracks the open
-    /// video offers, and say so when it is not there. Shared by a fresh page,
-    /// a track list that arrives from the worker, and a change of choice.
     pub(super) fn load_chosen_captions(&mut self) {
         let id = self.model.captions_of.clone();
         if id.is_empty() {
@@ -498,8 +377,6 @@ impl Tube {
             return;
         }
         if self.model.caption_tracks.is_empty() {
-            // The list has not arrived yet (or the video offers none): the
-            // page says nothing about captions until it knows.
             return;
         }
         if self.model.chosen_caption_track().is_none() {
@@ -516,10 +393,6 @@ impl Tube {
         }
     }
 
-    /// Write where the open video was left into the person's watch history,
-    /// at most a few seconds apart: pausing, closing the page and finishing
-    /// write at once, and a running playhead writes when it crosses another
-    /// [`PROGRESS_STEP_MS`].
     fn remember_progress(&mut self, force: bool) {
         let Route::Watch(id) = self.model.route.clone() else {
             return;
@@ -527,9 +400,6 @@ impl Tube {
         self.remember_progress_of(&id, force);
     }
 
-    /// [`Self::remember_progress`] for `id`: the page may have moved on (the
-    /// video just ended, the reveal left it), and the place it was left still
-    /// belongs to it.
     fn remember_progress_of(&mut self, id: &str, force: bool) {
         let id = id.to_string();
         if self.player_video.as_deref() != Some(id.as_str()) {
@@ -570,12 +440,6 @@ impl Tube {
         self.edit_history(&WatchHistory::PROGRESS.with((id, position, duration_ms)));
     }
 
-    /// If autoplay is on and the playhead has reached the end of the current
-    /// video, advance to the first "up next" recommendation — the real code
-    /// path that consumes the [`Settings::autoplay`] flag. Reaching the end
-    /// happens when the engine's stream runs out (mirrored each frame by
-    /// [`Self::tick_playback`]) or when a test seeks the playhead to the finish.
-    /// Returns `true` when it navigated to a new video.
     fn maybe_autoplay_next(&mut self) -> bool {
         if !self.model.settings.autoplay {
             return false;

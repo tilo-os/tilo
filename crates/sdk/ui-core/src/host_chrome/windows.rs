@@ -1,10 +1,7 @@
-//! Windows host chrome: the window's menu bar (Edit, View, History) and the
-//! taskbar Jump List, both built from the host command model.
-//!
-//! A chosen menu item hands its command's invocation back to the app through
-//! `dispatch`; a Jump List task starts the app with `--host-command`, and
-//! that process runs the invocation once its window exists. Either way it
-//! enters the same door as the palette.
+//! Windows host chrome: the window's menu bar (Edit, View, History) and the taskbar Jump List, both
+//! built from the host command model. A chosen menu item hands its command's invocation back to the app
+//! through `dispatch`; a Jump List task starts the app with `--host-command`, and that process runs the
+//! invocation once its window exists.
 
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -36,11 +33,8 @@ use super::windows_items::{JumpTask, jump_tasks, menu_text};
 use crate::i18n::I18nManager;
 use crate::platform::{Platform, PlatformConventions};
 
-/// Menu item ids start above the range Windows reserves for system commands
-/// a window might forward.
 const FIRST_ID: usize = 0x100;
 const SUBCLASS_ID: usize = 0x7110;
-/// `PKEY_Title`: the text a Jump List shows for a task.
 const PKEY_TITLE: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0xf29f85e0_4ff9_1068_ab91_08002b27b3d9),
     pid: 2,
@@ -72,8 +66,8 @@ pub(crate) struct WindowsChrome {
 }
 
 impl WindowsChrome {
-    /// Take over `hwnd`'s menu messages. `hwnd` must be a live window of
-    /// this thread, and this value must be dropped before it is destroyed.
+    /// Take over `hwnd`'s menu messages. `hwnd` must be a live window of this thread, and this value
+    /// must be dropped before it is destroyed.
     pub(crate) fn install(hwnd: HWND, dispatch: impl Fn(ControlInvocation) + 'static) -> Self {
         let state = Box::new(State {
             hwnd,
@@ -96,8 +90,8 @@ impl WindowsChrome {
         Self { state }
     }
 
-    /// Present `commands`: the menu bar is rebuilt only when an item's text
-    /// changed, the Jump List only when its tasks did.
+    /// Present `commands`: the menu bar is rebuilt only when an item's text changed, the Jump List only
+    /// when its tasks did.
     pub(crate) fn update(&self, commands: Vec<HostCommand>) {
         let conventions = PlatformConventions::new(Platform::Windows);
         let shape: Vec<_> = commands
@@ -174,8 +168,8 @@ impl Drop for WindowsChrome {
     }
 }
 
-/// Menu choices arrive as `WM_COMMAND`; opening a menu asks for fresh
-/// enabled states, as `validateMenuItem:` does on macOS.
+/// Menu choices arrive as `WM_COMMAND`; opening a menu asks for fresh enabled states, as
+/// `validateMenuItem:` does on macOS.
 unsafe extern "system" fn subclass(
     hwnd: HWND,
     message: u32,

@@ -24,7 +24,6 @@ pub struct ChatDrafts {
 
 #[ui::tilo_resource::resource(
     kind = "chat.drafts",
-    label = "Chat drafts",
     params = drafts,
     search = ChatDrafts::search,
     load = ChatDrafts::load_drafts,

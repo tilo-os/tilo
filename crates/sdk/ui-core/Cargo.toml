@@ -77,6 +77,11 @@ lazy-hyphenation = []
 # then images are left out. The browser desktop uses this to keep them out of
 # its start module.
 lazy-image-decode = []
+# The code that words a control's face for a page (`composition::HTML_CODE`:
+# its icon as SVG outlines, its words and ground) is not linked: the HTML
+# presenter hands it over when it arrives, as it alone composes. The browser
+# desktop uses this to keep it out of its start module.
+lazy-html-faces = []
 # A theme's surface shader (the WGSL front end and the interpreter that
 # draws it) is not linked: the program fetches its code the first time a
 # theme states a shader (`part_paint::SURFACE_SHADER`); until then such
@@ -148,6 +153,7 @@ mpris = ["native", "tilo-host/mpris"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
@@ -246,6 +252,8 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", opt
 runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+# The typed id of the app a record set belongs to.
+tilo-app-id.workspace = true
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true

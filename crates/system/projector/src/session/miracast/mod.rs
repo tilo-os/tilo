@@ -23,25 +23,19 @@ use super::context::SessionContext;
 use super::receiver_address;
 use crate::error::ProjectorError;
 
-/// The status line a playing session logs: the stream reached the receiver.
 pub(crate) const PLAYING: &str = "PLAY accepted; media stream started.";
 
 /// Most receivers connect to the source within a few seconds of the group
 /// forming; the rest wait to be connected to.
 const PASSIVE_GRACE: Duration = Duration::from_secs(4);
-/// How long the receiver may take to open the RTSP session at all.
 const RTSP_DEADLINE: Duration = Duration::from_secs(30);
 
 /// What a Miracast session talks to. Production uses the system and session
 /// buses and the standard RTSP port; tests substitute private ones.
 pub(crate) struct Environment {
-    /// Where `NetworkManager` is.
     pub(crate) system: zbus::Connection,
-    /// Where the `ScreenCast` portal is.
     pub(crate) session: zbus::Connection,
-    /// Where to listen for the receiver's RTSP connection.
     pub(crate) rtsp: SocketAddr,
-    /// What audio to capture.
     pub(crate) audio: AudioInput,
 }
 
@@ -74,7 +68,6 @@ pub(crate) fn run_miracast_session(
     run(device, options, context, &Environment::system_default()?)
 }
 
-/// The screen the portal granted. The cast lasts as long as the session.
 struct ScreenGrant {
     session: Session<Screencast>,
     remote: OwnedFd,
@@ -134,7 +127,6 @@ fn block_on<T>(future: impl Future<Output = T>) -> Result<T, ProjectorError> {
         .map_err(|error| ProjectorError::Unavailable(error.to_string()))
 }
 
-/// Forms the group, giving up when the session is stopped first.
 fn form_group(
     environment: &Environment,
     peer: &str,
@@ -170,7 +162,6 @@ fn run(
     environment: &Environment,
 ) -> Result<(), ProjectorError> {
     let peer = receiver_address(device)?.to_owned();
-    // The person chooses what to show before anything reaches the receiver.
     let grant = block_on(grant_screen(&environment.session))??;
     let result = stream(
         device,

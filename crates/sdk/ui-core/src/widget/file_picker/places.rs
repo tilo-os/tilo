@@ -6,10 +6,9 @@ use crate::icons::Icon;
 
 use super::Place;
 
-/// Recent (when there is something to show), Home, the usual folders under
-/// it that are `present` (read off the UI thread), then every other
-/// accessible root (the workspace folders), each only if the caller may
-/// enter it.
+/// Recent (when there is something to show), Home, the usual folders under it that are
+/// `present` (read off the UI thread), then every other accessible root (the workspace
+/// folders), each only if the caller may enter it.
 pub(super) fn default_places(
     roots: &[PathBuf],
     home: Option<&Path>,

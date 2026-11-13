@@ -1,22 +1,18 @@
-//! The app's log: warnings and errors on standard error, which the
-//! launcher carries into the session's journal, each line naming the app
-//! and its window.
+//! The app's log: warnings and errors on standard error, which the launcher carries into the session's
+//! journal, each line naming the app and its window.
 
-/// Send the app's warnings and errors to its standard error, which the
-/// launcher carries into the session's journal, each line naming the app and
-/// the window (tab) it comes from: `app=so.tilo.settings tab=… WARN …`.
-///
-/// The default filter of a bare `tracing_subscriber::fmt::try_init` with
-/// `env-filter` is errors only, and a sandbox clears `RUST_LOG`: a refused
-/// settings write, a person record that could not open, an action a control
-/// could not deliver, all logged as warnings, never reached the journal, and
-/// a lost write left no trace. `RUST_LOG` still widens or narrows it.
+/// Send the app's warnings and errors to its standard error, which the launcher carries into the
+/// session's journal, each line naming the app and the window (tab) it comes from:
+/// `app=so.tilo.settings tab=… WARN …`. The default filter of a bare
+/// `tracing_subscriber::fmt::try_init` with `env-filter` is errors only, and a sandbox clears
+/// `RUST_LOG`: a refused settings write, a person record that could not open, an action a control could
+/// not deliver, all logged as warnings, never reached the journal, and a lost write left no trace.
 pub(super) fn init_app_log() {
     let environment = crate::host::environment();
     let prefix = app_log_prefix(
         environment
             .identity
-            .package_id
+            .app_id
             .as_deref()
             .or(environment.identity.app_name.as_deref()),
         environment.identity.continuity_instance.as_deref(),
@@ -30,7 +26,6 @@ pub(super) fn init_app_log() {
         .try_init();
 }
 
-/// What starts every line the app logs: its id and its window's.
 fn app_log_prefix(app: Option<&str>, tab: Option<&str>) -> String {
     format!("app={} tab={} ", app.unwrap_or("-"), tab.unwrap_or("-"))
 }
@@ -51,7 +46,6 @@ impl<F> AppLog<F> {
     }
 }
 
-/// One event's writer: the prefix, then the formatted event.
 struct AppLogLine<W> {
     prefix: std::sync::Arc<str>,
     started: bool,

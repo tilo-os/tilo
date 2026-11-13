@@ -1,16 +1,4 @@
 //! The size limit an application package installs under on this machine.
-//!
-//! Every store holds an application to its distribution limit
-//! ([`tilo_app_package::app_size_limit`]): it is the registry's policy, and it
-//! bounds what an untrusted package can make the store write. A developer
-//! session builds its apps for build speed rather than size and installs them
-//! itself, signed with its own development key, and never publishes them. In
-//! a build that honours developer overrides ([`crate::dev_env`]), a package
-//! whose signature verifies under a key on the session's publisher list
-//! ([`DEVELOPER_PUBLISHERS_FILE_ENV`]) installs under the local-build ceiling
-//! ([`tilo_app_package::local_build_size_limit`]) instead. A shipped build
-//! reads no such list, so every package it installs keeps the distribution
-//! limit.
 
 use std::ffi::OsString;
 

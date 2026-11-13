@@ -113,20 +113,9 @@ toolbar-save = Zusammengeführtes Ergebnis speichern
 toolbar-save-short = Speichern
 toolbar-saved = Erneut speichern
 toolbar-saved-short = Speichern
-toolbar-save-as = Speichern unter…
 toolbar-folders = Ordnerliste
 toolbar-compare-folders = Ordner vergleichen…
 toolbar-compare-folders-short = Ordner
-
-## Verlauf
-history-title = Zusammengeführtes Ergebnis
-history-originals = Die ursprünglichen Eingaben fehlen: Basis, unsere und ihre Fassung wurden nicht aufgezeichnet. Aufgezeichnete Entscheidungen sind nur Beiwerk; die Identität der Änderung lässt sich nachträglich nicht prüfen.
-history-session = Bezeichnung der Sitzung: { $label }
-history-choice = Aufgezeichnete Änderung { $change }: { $choice }
-history-output = Zusammengeführtes Ergebnis
-history-none = In dieser Fassung wurde kein zusammengeführtes Ergebnis aufgezeichnet
-history-page-output = Zusammengeführtes Ergebnis
-history-page-originals = Ursprüngliche Eingaben fehlen und aufgezeichnete Entscheidungen
 
 ## Ausgerichtete Quellzeilen, die nur auf einer Seite vorkommen
 
@@ -197,3 +186,6 @@ diffmerge-session-take-ours = Unsere Seite übernehmen
 diffmerge-session-take-theirs = Ihre Seite übernehmen
 diffmerge-session-take-both = Beide Seiten übernehmen
 diffmerge-session-resolve = Mit eigenem Text auflösen
+
+## What the app is called in a window and in the launcher
+diffmerge-app-title = Vergleichen & Zusammenführen

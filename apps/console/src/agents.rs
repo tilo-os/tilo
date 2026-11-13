@@ -1,17 +1,5 @@
-//! Agents: every run of every agent across the person's workspaces, and the
-//! run chosen, as the timeline of its actions.
-//!
-//! The runs are the history's ([`wire::RUNS`], read across every workspace).
-//! A run is working now when its session through the agent door is open
-//! and it is that session's newest run; those come first. Choosing a run shows it in
-//! their place, as wide as the window lets a file's change read: what it was
-//! asked, Stop, Take over and Undo, then its actions oldest first. Choosing
-//! an action opens its view under it, and an action that can be undone on its
-//! own offers Undo on its row.
-//!
-//! Each run is a resource of its own too (`console.run:<run id>`), published
-//! with its page as an open view: that address is what a link to a run names,
-//! and opening it shows the page the run's row does.
+//! Agents: every run of every agent across the person's workspaces, and the run chosen, as
+//! the timeline of its actions.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -34,15 +22,11 @@ pub(crate) fn query() -> wire::RunsQuery {
     }
 }
 
-/// The kind a run is a resource of. A run's id spells it
-/// (`console.run:<run id>`), so a link to a run names it in one segment.
 pub(crate) const RUN_KIND: &str = "console.run";
 
-/// A run as the type its rows are items of: what a published run says it is,
-/// so search names it as it names a record's item ("runs of Console") instead
-/// of taking the app's word for it. A run lives in the agent door's answer,
-/// not in a document, so it declares its kind and name by hand, as Tube's
-/// fetched catalogue does.
+/// A run as the type its rows are items of: what a published run says it is, so search
+/// names it as it names a record's item ("runs of Console") instead of taking the app's
+/// word for it.
 pub(crate) struct Run;
 
 impl ui::tilo_resource::words::RowType for Run {
@@ -50,9 +34,8 @@ impl ui::tilo_resource::words::RowType for Run {
     const LABEL: &'static str = "Run";
 }
 
-/// How many of the runs read are published as resources of their own: a
-/// published tree stays bounded, and any other run's address is answered by
-/// [`live_run`] alone.
+/// How many of the runs read are published as resources of their own: a published tree
+/// stays bounded, and any other run's address is answered by [`live_run`] alone.
 pub(crate) const RUN_RESOURCE_LIMIT: usize = 16;
 
 /// The address of the run `id`: what a link to it names.
@@ -68,18 +51,15 @@ pub(crate) fn run_id(resource: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// The view a run opens in: its page in this window, opened by
-/// [`ConsoleEffect::ViewRun`]. Declaring it is what gives each run its link
-/// (`share-link`). A run is read from the workspace's history, which the
-/// desktop's session serves, so its link opens the desktop at this view.
+/// The view a run opens in: its page in this window, opened by [`ConsoleEffect::ViewRun`].
 fn run_view() -> ui::tilo_actions::ResourceViewSpec {
     ui::tilo_actions::ResourceViewSpec::new("run", "Run", ConsoleEffect::VIEW_RUN.id)
         .with_primary(true)
         .on_desktop()
 }
 
-/// The run `id` as the resource its address names, labelled by the run when
-/// `runs` lists it: its page in this window, and its link.
+/// The run `id` as the resource its address names, labelled by the run when `runs` lists
+/// it: its page in this window, and its link.
 pub(crate) fn live_run(runs: &[wire::AgentRun], id: &str) -> LiveRow {
     let label = runs
         .iter()
@@ -90,8 +70,7 @@ pub(crate) fn live_run(runs: &[wire::AgentRun], id: &str) -> LiveRow {
         .view(run_view())
 }
 
-/// The runs `runs` lists as resources of their own, up to the limit, first
-/// run first.
+/// The runs `runs` lists as resources of their own, up to the limit, first run first.
 pub(crate) fn live_runs(runs: &[wire::AgentRun]) -> Vec<LiveRow> {
     runs.iter()
         .take(RUN_RESOURCE_LIMIT)
@@ -99,9 +78,8 @@ pub(crate) fn live_runs(runs: &[wire::AgentRun]) -> Vec<LiveRow> {
         .collect()
 }
 
-/// The row the address `resource` names, when it names a run: a link opens
-/// it before the history has answered, so the run's page shows at once and
-/// the run arrives on it.
+/// The row the address `resource` names, when it names a run: a link opens it before the
+/// history has answered, so the run's page shows at once and the run arrives on it.
 pub(crate) fn live_run_at(runs: &[wire::AgentRun], resource: &str) -> Option<LiveRow> {
     Some(live_run(runs, run_id(resource)?))
 }
@@ -114,8 +92,8 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    /// The door's open run `run` is, with the grant it came in by: History
-    /// names a run as the door does ("Claude Code #2").
+    /// The door's open run `run` is, with the grant it came in by: History names a run as
+    /// the door does ("Claude Code #2").
     pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<door::RunRef> {
         self.door
             .run(&run.agent.name)
@@ -125,8 +103,8 @@ impl Seen {
             })
     }
 
-    /// Whether `run` is working now: its session through the door is open
-    /// and it is that session's newest run.
+    /// Whether `run` is working now: its session through the door is open and it is that
+    /// session's newest run.
     pub(crate) fn working(&self, run: &wire::AgentRun) -> bool {
         self.open(run).is_some()
             && self
@@ -148,8 +126,7 @@ impl Seen {
     }
 }
 
-/// The place's content: every run, or the run chosen, whose way back is the
-/// shell's.
+/// The place's content: every run, or the run chosen, whose way back is the shell's.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     let runs = &reads.runs;
     let door_state = reads.door.answer().state();
@@ -174,8 +151,8 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     })) as Element
 }
 
-/// The door as far as it answered: nothing connected until it does, and
-/// nothing where no door is served.
+/// The door as far as it answered: nothing connected until it does, and nothing where no
+/// door is served.
 pub(crate) fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
     match door {
         Arrival::Ready(door) => door.clone(),
@@ -183,9 +160,8 @@ pub(crate) fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
     }
 }
 
-/// A run's page whose run the history has not listed: still being read, or
-/// not here at all (a workspace this person is not in, a run long gone).
-/// The header keeps the way back to every run.
+/// A run's page whose run the history has not listed: still being read, or not here at all
+/// (a workspace this person is not in, a run long gone).
 pub(crate) fn unknown(seen: &Seen) -> Element {
     let state = if seen.runs.pending {
         EmptyState::new(tr("console-run-pending")).with_icon(Icon::Clock)
@@ -265,9 +241,8 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
     Box::new(row.on_view(move || chosen.open_run(&id)))
 }
 
-/// Who started a run, as its row says it: "Started by you" for the reader's own, the starter's
-/// name for someone else's. The row already shows the agent's face and what it was asked, so
-/// naming the agent again ("Claude Code for you") said nothing new.
+/// Who started a run, as its row says it: "Started by you" for the reader's own, the
+/// starter's name for someone else's.
 fn started_by(agent: &wire::Author) -> String {
     starter(agent).unwrap_or_else(|| agent.name.clone())
 }
@@ -289,9 +264,9 @@ fn starter(agent: &wire::Author) -> Option<String> {
         })
 }
 
-/// How much a run did, as its row says it: the changes it made, as its finished notice counts
-/// them ("4 changes" for four paragraphs written in one note), else the commands and pages it
-/// went through.
+/// How much a run did, as its row says it: the changes it made, as its finished notice
+/// counts them ("4 changes" for four paragraphs written in one note), else the commands and
+/// pages it went through.
 fn run_size(run: &wire::AgentRun) -> String {
     match run.changes() {
         0 => trf(
@@ -327,8 +302,8 @@ pub(crate) fn now_line(now: &wire::Now) -> String {
     }
 }
 
-/// A dropdown of `options` (value, label) bound to `field` of the record,
-/// each option under the heading its group carries in the open list.
+/// A dropdown of `options` (value, label) bound to `field` of the record, each option under
+/// the heading its group carries in the open list.
 fn picker(
     cx: &ViewCx<Console>,
     id: &'static str,
@@ -349,9 +324,8 @@ fn picker(
     ))
 }
 
-/// The agent picker's options: every agent, then each client with all of its
-/// runs under it, so a person narrows to one run or to the client behind
-/// every one of them.
+/// The agent picker's options: every agent, then each client with all of its runs under it,
+/// so a person narrows to one run or to the client behind every one of them.
 fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     let mut groups: Vec<(String, Vec<(String, String)>)> = vec![(
         String::new(),
@@ -359,8 +333,6 @@ fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     )];
     for run in &seen.runs.runs {
         let client = crate::client::of(&run.agent.name);
-        // Past the unheaded "every agent", so a client with no name of its
-        // own gets a group of its own rather than joining it.
         let known = groups
             .iter()
             .skip(1)
@@ -390,8 +362,8 @@ fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     groups
 }
 
-/// The workspace picker's options: every workspace, with no heading over
-/// them, and then each workspace by name.
+/// The workspace picker's options: every workspace, with no heading over them, and then
+/// each workspace by name.
 fn workspace_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     let mut workspaces: Vec<(String, String)> =
         vec![(String::new(), tr("console-every-workspace"))];
@@ -405,8 +377,8 @@ fn workspace_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     vec![(String::new(), workspaces)]
 }
 
-/// The row narrowing the runs by agent and workspace, with a way back to
-/// all of them while it narrows them, and only then.
+/// The row narrowing the runs by agent and workspace, with a way back to all of them while
+/// it narrows them, and only then.
 fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
     let paths = Console::paths();
     let mut row = Row::new()
@@ -434,8 +406,7 @@ fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
     Box::new(row)
 }
 
-/// The chosen run: what it was asked, what can be done with it, and its
-/// actions.
+/// The chosen run: what it was asked, what can be done with it, and its actions.
 pub(crate) fn inspect(
     cx: &ViewCx<Console>,
     nav: &Nav,
@@ -475,16 +446,12 @@ pub(crate) fn inspect(
     let nav = nav.clone();
     let shown = run.clone();
     parts.push(cx.switch(&nav.action.clone(), move |cx, open| {
-        // Showing a command's whole output rebuilds the timeline, so the
-        // rows under it move down with it.
         let (nav, shown, open) = (nav.clone(), shown.clone(), *open);
         cx.switch(&nav.full_output.clone(), move |cx, full| {
             let Some((index, run)) = full.and_then(|index| Some((index, more_of(&shown, index)?)))
             else {
                 return actions(cx, &nav, &shown, open, None);
             };
-            // The whole output is read only once asked for; the timeline is
-            // built again when it arrives.
             let read = Doors::of(cx).follow_history::<wire::RunOutput>(wire::RUN_OUTPUT, &run);
             let (nav, shown) = (nav.clone(), shown.clone());
             Box::new(cx.arriving(&read.answer(), move |cx, whole| {
@@ -526,8 +493,6 @@ pub(crate) fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Elem
                 undo_run(&undo, &undone);
             }),
     ));
-    // The run's link is the framework's: it names the run's own resource and
-    // opens this page.
     let link = doors.clone();
     let resource = run_resource_id(&run.id);
     row = row.push(Box::new(
@@ -538,8 +503,8 @@ pub(crate) fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Elem
     Box::new(row)
 }
 
-/// Where taking `run` over opens: the record of its last action, else its
-/// workspace in the full desktop.
+/// Where taking `run` over opens: the record of its last action, else its workspace in the
+/// full desktop.
 fn take_over_target(seen: &Seen, run: &wire::AgentRun) -> Option<Result<wire::Target, String>> {
     run.actions
         .last()
@@ -589,8 +554,7 @@ const fn kind_icon(view: &wire::ActionView) -> Icon {
     }
 }
 
-/// The run's actions, oldest first, the one `open` names with its view
-/// under it.
+/// The run's actions, oldest first, the one `open` names with its view under it.
 fn actions(
     cx: &ViewCx<Console>,
     nav: &Nav,
@@ -701,7 +665,6 @@ fn action_view(
                         .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
                 ));
             }
-            // What it printed beyond the last lines is one read away, and only read when asked.
             if run.is_some() && *more {
                 let output = Output {
                     index,
@@ -757,8 +720,8 @@ fn action_view(
     )
 }
 
-/// How a command ended, as a caption: still running, or its exit status and how long it took,
-/// a failure in the danger ink.
+/// How a command ended, as a caption: still running, or its exit status and how long it
+/// took, a failure in the danger ink.
 fn command_status(
     running: bool,
     exit: Option<i32>,
@@ -795,16 +758,16 @@ fn command_status(
     })
 }
 
-/// One command's output as its view shows it: the command's place in the run, its prompt line
-/// and the last lines it printed.
+/// One command's output as its view shows it: the command's place in the run, its prompt
+/// line and the last lines it printed.
 struct Output {
     index: usize,
     prompt: String,
     tail: Vec<String>,
 }
 
-/// A command's output: its last lines, or every line once the person asks, read from the run's
-/// record as the history serves it.
+/// A command's output: its last lines, or every line once the person asks, read from the
+/// run's record as the history serves it.
 fn output_part(
     shown: &LocalState<Option<usize>>,
     whole: Option<&wire::RunOutput>,
@@ -852,8 +815,8 @@ fn output_part(
     )
 }
 
-/// The run record of the command at `index` of `run`, when it printed more
-/// than its view shows.
+/// The run record of the command at `index` of `run`, when it printed more than its view
+/// shows.
 fn more_of(run: &wire::AgentRun, index: usize) -> Option<wire::CommandRun> {
     match &run.actions.get(index)?.view {
         wire::ActionView::Command {
@@ -865,9 +828,8 @@ fn more_of(run: &wire::AgentRun, index: usize) -> Option<wire::CommandRun> {
     }
 }
 
-/// What the action's changes did, as the history compares the workspace
-/// either side of them: each field before and after, or else each change in
-/// a line.
+/// What the action's changes did, as the history compares the workspace either side of
+/// them: each field before and after, or else each change in a line.
 fn compared(cx: &ViewCx<Console>, doors: &Doors, range: &wire::Range) -> Element {
     let read = doors.follow_history::<wire::Detail>(
         wire::DETAIL,
@@ -907,7 +869,6 @@ fn compared(cx: &ViewCx<Console>, doors: &Doors, range: &wire::Range) -> Element
 
 /// A line of code or output, in the code role unless `role` says otherwise.
 fn code_line(text: &str, role: Option<TextRole>) -> Element {
-    // A blank line of output keeps a line's height, as it did where it was printed.
     let text = if text.is_empty() { "\u{a0}" } else { text };
     Box::new(
         Text::new(text)
@@ -916,8 +877,8 @@ fn code_line(text: &str, role: Option<TextRole>) -> Element {
     )
 }
 
-/// A line of a file's change: what it removed in the danger ink, what it
-/// added in the success ink, the rest as it reads.
+/// A line of a file's change: what it removed in the danger ink, what it added in the
+/// success ink, the rest as it reads.
 fn diff_line(line: &wire::DiffLine) -> Element {
     let (mark, tone) = match line.side {
         wire::DiffSide::Both => ("  ", None),

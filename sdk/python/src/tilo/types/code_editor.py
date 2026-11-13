@@ -72,11 +72,14 @@ class Terminal(TypedDict):
     target: str | None
     relay_session: str | None
     pane: str | None
+    device: str | None
+    holder: str | None
     runs: list[Run]
     requests: Any
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
+    __surface__ = "so.tilo.code-editor@a337d60d96a31d9c"
     files: list[Entry]
     buffers: dict[str, Any]
     @property
@@ -243,13 +246,12 @@ class Project(Resource):
         started_ms: int,
         ended_ms: int,
         exit: int,
-        output_len: int,
         truncated: bool,
         tool: str,
         undoable: bool,
         items: list[Any],
         run: str,
-        output: str | None = None,
+        output: Any | None = None,
         request: str | None = None,
     ) -> Run | None:
         """Runs the app's action."""
@@ -261,7 +263,6 @@ class Project(Resource):
         args["exit"] = exit
         if output is not None:
             args["output"] = output
-        args["output_len"] = output_len
         args["truncated"] = truncated
         args["tool"] = tool
         args["undoable"] = undoable

@@ -1,61 +1,30 @@
-//! The public TPM sidecar for a prepared setup, and the release-catalog
-//! descriptor that selects the target boot policy it is sealed against.
-//!
-//! This is the shared wire format. The preparation side writes it and the
-//! installed boot reads it, so both sides agree on exactly these fields and
-//! neither accepts a field the other refuses. Nothing here touches a TPM, a
-//! file or a privileged caller: sealing, unsealing, reading a caller-owned
-//! package and verifying a signed target against the release authority stay
-//! with the platform backend that owns them.
-//!
-//! A prepared setup must not write another computer's identity, account tokens
-//! or file ciphertext into a package protected only by a login password chosen
-//! later. On the same computer the target boot artifact is already signed, so
-//! the package secret is bound to all of:
-//!
-//! * the exact signed target UKI (its `.cmdline`, `.linux`, `.initrd` and
-//!   every other measured section) through the release authority's signed
-//!   PCR11 prediction;
-//! * this actual TPM, through `TPM2_PolicyAuthorize` and the machine-local
-//!   platform PCRs (PCR 7), never a presence check on a TPM device node;
-//! * the endorsement key of the TPM that sealed it, recorded as its TPM Name
-//!   so a copied sidecar names the wrong receiver before any policy session.
-//!
-//! The only secret in the sidecar is a `TPM2B_PRIVATE` blob; the package
-//! itself stays exactly the canonical password-authenticated prepared setup,
-//! encrypted with a high-entropy machine-generated password. The person's
-//! first-boot login password is independent of it.
+//! The public TPM sidecar for a prepared setup, and the release-catalog descriptor that
+//! selects the target boot policy it is sealed against. The preparation side writes it and
+//! the installed boot reads it, so both sides agree on exactly these fields and neither
+//! accepts a field the other refuses. A prepared setup must not write another computer's
+//! identity, account tokens or file ciphertext into a package protected only by a login
+//! password chosen later.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Schema of the public sidecar. Version 2 binds the original caller, the
-/// receiving account's UID, a fresh seal nonce and a digest over every public
-/// field, so a version 1 sidecar is refused rather than silently accepted with
-/// weaker binding.
+/// Schema of the public sidecar.
 pub const SCHEMA: u32 = 2;
-/// The sidecar travels beside the canonical prepared package.
 pub const SIDECAR_FILE: &str = "tpm-handoff.json";
-/// The target UKI and its signed prediction sidecars inside a target bundle.
 pub const TARGET_UKI_FILE: &str = "tilo-target.efi";
 pub const PREDICTIONS_DIR: &str = "predictions";
-/// The largest sidecar any reader accepts. The setup handoff copies the
-/// sidecar beside the package under the same bound, so a sidecar a writer
-/// could produce but the handoff would drop is refused here instead.
+/// The setup handoff copies the sidecar beside the package under the same bound, so a
+/// sidecar a writer could produce but the handoff would drop is refused here instead.
 pub const MAX_SIDECAR: u64 = 64 * 1024;
-/// The same bound as a `usize`, for readers that accumulate bytes in memory.
 pub const MAX_SIDECAR_BYTES: usize = 64 * 1024;
-/// The largest target UKI a bundle may carry.
 pub const MAX_UKI: u64 = 512 * 1024 * 1024;
 /// The distinct, release-predictable systemd-stub PCRs a target policy names.
 pub const PCRS: [u32; 1] = [11];
-/// Machine-local PCRs applied after `PolicyAuthorize`.
 pub const PLATFORM_PCRS: [u32; 1] = [7];
 /// A signed prediction's signature is a small RSA signature.
 pub const MAX_SIGNATURE_BYTES: usize = 4 * 1024;
-/// The first installed account is UID 1000. The sidecar names it so first boot
-/// cannot hand the package secret to a different account.
+/// The first installed account is UID 1000.
 pub const RECEIVER_UID: u32 = 1000;
 
 const BINDING_DOMAIN: &[u8] = b"tilo-prepared-tpm-binding-v2\0";
@@ -72,8 +41,7 @@ pub fn b64(bytes: &[u8]) -> String {
 ///
 /// # Errors
 ///
-/// `value` is not standard base64, or it decodes to an empty value or one
-/// longer than `limit`.
+/// Why `value` is not base64, empty, or longer than `limit`.
 pub fn unb64(value: &str, what: &str, limit: usize) -> std::io::Result<Vec<u8>> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value)
@@ -88,9 +56,8 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// A target policy bundle published by the signed release catalog: the small
-/// download a preparation host reviews instead of mounting the live installer
-/// image.
+/// A target policy bundle published by the signed release catalog: the small download a
+/// preparation host reviews instead of mounting the live installer image.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetPolicyBundle {
@@ -127,14 +94,14 @@ impl SignedTarget {
         self.target_uki_sha256
     }
 
-    /// Check the policy shape and that its prediction fields decode. Signature
-    /// verification against the release authority belongs to the platform
-    /// backend, which owns the authority.
+    /// Check the policy shape and that its prediction fields decode. Signature verification
+    /// against the release authority belongs to the platform backend, which owns the
+    /// authority.
     ///
     /// # Errors
     ///
-    /// The schema, bank, PCR selection or digests are unsupported, or the
-    /// prediction fields are not bounded base64.
+    /// The schema, bank, PCR selection or digests are unsupported, or the prediction fields
+    /// are not bounded base64.
     pub fn validate(&self) -> std::io::Result<()> {
         if self.schema != SCHEMA
             || self.pcr_bank != "sha256"
@@ -166,8 +133,7 @@ struct BindingView<'a> {
     seal_nonce: &'a str,
 }
 
-/// The public sidecar: policy, receiver identity and the TPM's sealed private
-/// blob. No plaintext secret and no password are present.
+/// The public sidecar: policy, receiver identity and the TPM's sealed private blob.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedPreparation {
@@ -181,13 +147,8 @@ pub struct SealedPreparation {
     pub sealed_public: String,
     pub sealed_private: String,
     pub policy_digest: String,
-    /// A fresh random value from the privileged seal. It distinguishes two
-    /// seals of the same package even before any TPM operation, while the PCRs,
-    /// generation and package digest are what stop a replay onto another boot
-    /// state or package.
     pub seal_nonce: String,
-    /// Digest over every public field including `seal_nonce`. Tampering with a
-    /// copied sidecar is refused before the TPM is asked to unseal it.
+    /// Tampering with a copied sidecar is refused before the TPM is asked to unseal it.
     pub binding_sha256: String,
 }
 

@@ -1,11 +1,10 @@
-//! The path `apps/terminal` takes: ask the supervisor for a session on a
-//! target over the service socket, receive a pty master, and drive a shell
-//! through it.
+//! The path `apps/terminal` takes: ask the supervisor for a session on a target over the
+//! service socket, receive a pty master, and drive a shell through it.
 //!
-//! The guest is built from an environment record whose images are fixture
-//! trees: a materialized native shell/runtime closure and a tool that
-//! adds one command. The assertions are on bytes that came back from `bash`
-//! running inside it, and on what it left on the host.
+//! The guest is built from an environment record whose images are fixture trees: a
+//! materialized native shell and runtime closure, and a tool that adds one command. The
+//! assertions are on bytes that came back from `bash` running inside it, and on what it left
+//! on the host.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,9 +28,6 @@ use ush::records::Records;
 use ush::store::Store;
 use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 
-/// Whether this machine runs the helper from a native loader it may trust: a
-/// nested runner that maps the host's root-owned files to its caller owns them
-/// as root-equivalent, and the helper refuses every host loader there.
 macro_rules! require_trusted_loader {
     () => {
         tilo_test_env::require_capability!(
@@ -43,10 +39,6 @@ macro_rules! require_trusted_loader {
 }
 pub(crate) use require_trusted_loader;
 
-/// The prologue of a test that drives a guest: the environment lock its
-/// children inherit, the sandbox it runs in (a user namespace, the permission
-/// to enter it, and a native loader the helper may trust), and proof that this
-/// machine builds the guest.
 macro_rules! require_guest {
     () => {
         let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -69,7 +61,6 @@ macro_rules! require_guest {
     };
 }
 
-/// Tests that spawn a guest set process-wide variables the guest inherits.
 static GUEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub const RUNTIME: [u8; 32] = [0x11; 32];
@@ -90,7 +81,6 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     }
     let mut buf = [0u8; 4096];
     while Instant::now() < deadline {
-        // SAFETY: as above; `buf` is a live local buffer.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         if n > 0 {
             #[allow(clippy::cast_sign_loss, reason = "n > 0 was just checked above")]
@@ -108,7 +98,6 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
 
 #[test]
 fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs() {
-    // phase: the_host_target_is_refused_with_its_reason
     {
         let err = decide_serve(&ServeRequest::OpenSession {
             target: Target::Host,
@@ -148,7 +137,6 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             "a malformed request must be refused in words: {line:?}"
         );
     }
-    // phase: read_until_gives_up_rather_than_hanging
     {
         let (a, _b) = UnixStream::pair().unwrap();
         let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
@@ -158,10 +146,6 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
     }
 }
 
-/// A device with no `env-runtime` installed: the default environment cannot
-/// be made, so the supervisor says so instead of handing out a pty whose
-/// guest prints the reason and exits — and keeps the connection open for the
-/// app to ask for something else on it.
 #[test]
 fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usable() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -215,7 +199,6 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         "the reason names what is missing: {reason}"
     );
 
-    // The refusal spent nothing: the same connection is answered again.
     let (again, fd) = ask(&open);
     assert!(fd.is_none());
     assert!(
@@ -238,8 +221,6 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
 pub fn fixture_images(root: &Path) -> std::io::Result<()> {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc"))?;
-    // base64 and tr: the run marks encode a command line and its directory.
-    // stat: what a guest's own directories are.
     for program in ["bash", "id", "touch", "cat", "base64", "tr", "stat"] {
         let source = PathBuf::from("/usr/bin").join(program);
         fixture_file(&runtime, &source)?;
@@ -286,8 +267,6 @@ fn fixture_file(runtime: &Path, source: &Path) -> std::io::Result<()> {
     std::fs::copy(source, destination).map(drop)
 }
 
-/// Whether this process can prepare a guest's network namespace: make one
-/// and enter it, as the supervisor does before it starts any guest.
 pub fn namespace_entry() -> std::io::Result<()> {
     tilo_egress::Netns::create()?.open_inside().map(drop)
 }
@@ -352,20 +331,12 @@ fn which_bwrap() -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// The whole handoff against a real kernel: the supervisor serves, a client
-/// asks for the default environment, a descriptor arrives, and a shell in a
-/// guest built from the record answers on it — with the tool the record
-/// lists, at the real uid, writing into the directory the record grants.
-/// A machine that cannot build the actual guest must fail this check.
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     require_guest!();
     run_handoff();
 }
 
-/// A new session's shell is ush's own, on the Tilo side: `ls | wc -l` runs
-/// as two of Tilo's own commands over the granted files, and the run is
-/// marked with its line, directory and status.
 #[test]
 fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     require_guest!();
@@ -382,7 +353,6 @@ fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
 
     let line = format!("cd {} && ls | wc -l\r", granted.display());
-    // SAFETY: `fd` is a live pty master.
     let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
     assert!(written > 0, "could not write to the pty");
     let ended = format!("\x1b]133;D;0;k={key};t=1\x07");
@@ -396,8 +366,6 @@ fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     assert!(printed.contains('3'), "three files in the grant:\n{seen:?}");
 }
 
-/// The sessions' directories in which a guest was set up: a guest's root
-/// gets its generated `/etc` there when it starts.
 fn guests_started(store: &Store) -> usize {
     let sessions = store.session_dir("probe");
     let Some(sessions) = sessions.parent() else {
@@ -411,10 +379,6 @@ fn guests_started(store: &Store) -> usize {
     })
 }
 
-/// A new session's shell runs on the Tilo side: Tilo's own commands and a
-/// redirect into the grant need no guest, and the redirect is the
-/// environment's action. The first program starts the session's guest and
-/// runs in it, its output piped back; the next ones run in the same guest.
 #[test]
 fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     require_guest!();
@@ -429,7 +393,6 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
 
     let type_line = |line: &str| {
-        // SAFETY: `fd` is a live pty master.
         let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
         assert!(written > 0, "could not write to the pty");
     };
@@ -494,8 +457,6 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     );
 }
 
-/// The installed public spelling creates Default on first use and runs a
-/// command through the actual native guest, without a host-shell grant.
 #[test]
 fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     require_guest!();
@@ -551,7 +512,6 @@ fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     );
 }
 
-/// The record: the default environment, one tool, one granted directory.
 fn fixture_environment(store: &Store, granted: &Path) {
     let records = Records::at(store.records_root());
     records
@@ -583,19 +543,14 @@ fn fixture_environment(store: &Store, granted: &Path) {
         .unwrap();
 }
 
-/// Ask for the default environment running `bash` and receive its pty
-/// master: bash as an ordinary program in the session's guest, which is
-/// what these tests type at.
 fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
     open_session(socket, None, vec!["bash".into()])
 }
 
-/// The default environment in ush's shell, marking its runs with `runs`.
 fn open_marked_session(socket: &Path, runs: Option<&str>) -> (UnixStream, OwnedFd) {
     open_session(socket, runs, Vec::new())
 }
 
-/// The default environment running `command` (ush's shell when empty).
 fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
@@ -649,16 +604,11 @@ fn serve_in_background(socket: &Path, store: &Store) {
     assert!(socket.exists(), "the supervisor never bound its socket");
 }
 
-/// A supervisor serving the fixture environment from `dir`: the scoped
-/// variables its sessions inherit, its store, its socket, and the directory
-/// the record grants.
 fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
     let images = dir.join("images");
     fixture_images(&images).expect("the guest's fixture images");
 
     let mut env = tilo_test_env::ScopedEnv::new();
-    // The supervisor re-execs itself to start a session. Under `cargo test`
-    // `current_exe` is this test binary — point it at the real one.
     env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
     env.set("SHELL", "/usr/bin/bash");
@@ -685,11 +635,9 @@ fn run_handoff() {
     let fd = master.as_raw_fd();
 
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: `fd` is the pty master just received.
     assert_eq!(unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) }, 0);
     assert_eq!((ws.ws_col, ws.ws_row), (100, 30));
 
-    // The seeded prompt names the environment.
     let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
     assert!(
         prompt.contains("Fixture"),
@@ -703,7 +651,6 @@ fn run_handoff() {
          echo hi > {}/from-guest; printf 'UID_%s_ \\n' \"$(id -u)\"; printf 'NAME_%s_ \\n' \"$(id -un)\"; printf 'DO%s\\n' NE\r",
         granted.display()
     );
-    // SAFETY: `fd` is a live pty master.
     let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
@@ -753,8 +700,6 @@ fn run_handoff() {
 const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 const W2: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
-/// A supervisor over the fixture images whose device files are `<dir>/files`:
-/// its scoped variables, its store, its socket and the files folder.
 fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
     let images = dir.join("images");
     fixture_images(&images).expect("the guest's fixture images");
@@ -772,8 +717,6 @@ fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, Pa
     (env, store, socket, files)
 }
 
-/// A connection as `tilo-launcher` hands Terminal launched in `workspace`
-/// its `ush` service.
 fn launched_in(socket: &Path, workspace: Option<&str>) -> UnixStream {
     let stream = UnixStream::connect(socket).expect("connect");
     (&stream)
@@ -782,7 +725,6 @@ fn launched_in(socket: &Path, workspace: Option<&str>) -> UnixStream {
     stream
 }
 
-/// One request line on `stream`, answered in one line.
 fn ask_line(stream: &UnixStream, request: &serde_json::Value) -> ServeResponse {
     let mut line = serde_json::to_vec(request).unwrap();
     line.push(b'\n');
@@ -801,10 +743,6 @@ fn listed(response: &ServeResponse) -> Vec<String> {
     }
 }
 
-/// A Terminal opened in a workspace lists and makes that workspace's
-/// environments only, kept in its room; it cannot name another workspace,
-/// and the environments made before workspaces stay the primary
-/// workspace's, listed where no workspace is named.
 #[test]
 fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -837,7 +775,6 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
         listed(&ask_line(&launched_in(&socket, Some(W1)), &list)),
         vec!["Agent one"]
     );
-    // The shell's own process names the workspace on the request.
     let session = UnixStream::connect(&socket).unwrap();
     assert_eq!(
         listed(&ask_line(
@@ -852,7 +789,6 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
         "the primary workspace's, unmoved"
     );
 
-    // Terminal launched in W1 asks for W2's: refused, in words.
     let refused = ask_line(
         &launched_in(&socket, Some(W1)),
         &serde_json::json!({"op": "list-environments", "workspace": W2}),
@@ -867,7 +803,6 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
         "{refused:?}"
     );
 
-    // Each in its own room, naming its workspace.
     for (workspace, name) in [(W1, "Agent one"), (W2, "Agent two")] {
         let scoped =
             store.for_workspace(&ush::workspace::WorkspaceId::parse(Some(workspace)).unwrap());
@@ -883,7 +818,8 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
             records.record_dir(&keys[0]).unwrap().starts_with(
                 store
                     .records_root()
-                    .join("so.tilo.terminal/rooms")
+                    .join("so.tilo.terminal")
+                    .join(app_state::WORKSPACES_DIR)
                     .join(workspace)
             )
         );
@@ -891,8 +827,6 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
     assert_eq!(legacy.keys().unwrap(), vec!["env-from-before"]);
 }
 
-/// Open the default environment of `workspace`, as Terminal launched there,
-/// running `bash`.
 fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
     let stream = launched_in(socket, Some(workspace));
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
@@ -922,10 +856,6 @@ fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
     )
 }
 
-/// Two Terminals in two workspaces: two environments running side by side,
-/// each with its own workspace's files as `~`, told which workspace and
-/// environment it is, and unable to read the other's files or the device's
-/// files around them.
 #[test]
 fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
     require_guest!();
@@ -935,7 +865,6 @@ fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
     std::fs::create_dir_all(files.join("Documents")).unwrap();
     std::fs::write(files.join("Documents/private.txt"), "DEVICE_FILE\n").unwrap();
 
-    // Both open before either is used: they run at once.
     let (_one, w1) = open_in_workspace(&socket, W1);
     let (_two, w2) = open_in_workspace(&socket, W2);
     for (fd, own, other) in [(&w1, W1, W2), (&w2, W2, W1)] {
@@ -954,7 +883,6 @@ fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
             device = files.join("Documents/private.txt").display(),
         );
         let fd = fd.as_raw_fd();
-        // SAFETY: `fd` is a live pty master.
         let written =
             unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
         assert!(written > 0, "could not write to the pty");
@@ -995,16 +923,11 @@ fn terminals_in_two_workspaces_run_two_environments_each_with_its_own_files() {
     }
 }
 
-/// A session whose guest cannot be set up writes nothing on its terminal:
-/// the reason is the supervisor's to log, and the app reads on the
-/// session's lease that the guest was not set up, not that a shell exited.
 #[test]
 fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal() {
     require_guest!();
     let dir = tempfile::tempdir().expect("tempdir");
     let (mut env, store, socket, _granted) = serve_fixture(dir.path());
-    // A record that grants a host cannot start where the kernel refuses the
-    // packet filter: setup fails after the terminal was handed over.
     env.set("TILO_USH_EGRESS_REFUSE_NETFILTER", "1");
     Records::at(store.records_root())
         .apply(
@@ -1050,7 +973,6 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
     let lease = UnixStream::from(rights.pop().unwrap());
     let master = rights.pop().unwrap();
 
-    // The lease says how the session ended, then closes.
     lease
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
@@ -1068,7 +990,6 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         "the reason, for the log, names the cause: {report}"
     );
 
-    // The guest's terminal shows none of it.
     let seen = read_until(master.as_raw_fd(), "\u{0}", Duration::from_millis(500));
     assert!(
         seen.trim().is_empty(),
@@ -1076,13 +997,6 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
     );
 }
 
-/// A guest whose sandbox cannot be built says why in words under `bwrap`'s
-/// own one-line reason; one that can be built runs without that notice.
-/// Both halves assert: which one runs depends on the machine, as probed.
-///
-/// The command runs a program, not a built-in: the session's shell answers
-/// `printf` itself, on the Tilo side, and only a program starts the guest
-/// whose sandbox this test is about.
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -1134,11 +1048,6 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     }
 }
 
-/// `pkg install` end to end in a real guest: the broker asks the tool
-/// builder, which resolves and builds `tree` against a real env-runtime in
-/// its build sandbox; the record gains the tool; the next session's guest has
-/// its command on the PATH. Needs a materialised env-runtime tree
-/// (`TILO_ENV_RUNTIME_TREE`) and the network for the package download.
 #[test]
 fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     let Some(runtime_tree) = std::env::var_os("TILO_ENV_RUNTIME_TREE").map(PathBuf::from) else {
@@ -1151,7 +1060,6 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
-    // The build's overlay upper wants ordinary disk; the socket a short path.
     let build_state = tempfile::tempdir_in(
         std::env::var_os("TILO_ENV_TOOLS_SCRATCH").map_or_else(std::env::temp_dir, PathBuf::from),
     )
@@ -1194,7 +1102,6 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     let (stream, master) = open_default_session(&socket);
     let fd = master.as_raw_fd();
     let type_line = |line: &str| {
-        // SAFETY: `fd` is a live pty master.
         let n = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
         assert!(n > 0, "could not write to the pty");
     };
@@ -1205,7 +1112,6 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     );
 
     type_line("command -v tree || printf 'NO_%s\\n' TREE; pkg install tree\r");
-    // The next prompt: the install is done, one way or the other.
     let installed = read_until(fd, "]$ ", Duration::from_secs(600));
     assert!(
         installed.contains("NO_TREE"),
@@ -1217,13 +1123,11 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     );
     assert_tool_recorded(&store, &images);
 
-    // The next session's guest has the tool.
     drop(stream);
     drop(master);
     let (_stream, master) = open_default_session(&socket);
     let fd = master.as_raw_fd();
     let type_line = |line: &str| {
-        // SAFETY: `fd` is a live pty master.
         let n = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
         assert!(n > 0, "could not write to the pty");
     };
@@ -1236,7 +1140,6 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     );
 }
 
-/// The record names the built tool, and its image holds the command.
 fn assert_tool_recorded(store: &Store, images: &Path) {
     let record = Records::at(store.records_root())
         .resolve(Some(DEFAULT_RECORD), &ush::images::DirImages::at(images))
@@ -1346,7 +1249,6 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
     );
     let script =
         b"printf 'REEXEC_%s\\n' SAME_ELF; test ! -w /usr && printf 'USR_%s\\n' READ_ONLY; exit\r";
-    // SAFETY: the owned master is live and script is a bounded byte slice.
     assert_eq!(
         unsafe { libc::write(fd.as_raw_fd(), script.as_ptr().cast(), script.len()) },
         isize::try_from(script.len()).unwrap()
@@ -1371,12 +1273,6 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
     );
 }
 
-/// A guest reaches the desktop through its environment's own agent door: `ush` asks the session
-/// for it as the environment opens, binds the socket the session answered at
-/// `/run/tilo/agent.sock` and names it in `TILO_AGENT_SOCK`, and the guest's `tilo-runtime
-/// --connect` relays to it. The connection comes from a descendant of the process holding the
-/// door's lease, the host path is not in the guest, and the lease closes when the environment
-/// ends.
 #[test]
 fn a_guest_reaches_the_session_through_its_own_agent_door() {
     require_guest!();
@@ -1394,7 +1290,6 @@ fn a_guest_reaches_the_session_through_its_own_agent_door() {
     std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
     let store = Store::at(dir.path().join("store"));
 
-    // The session: its own door, which opens the environment's.
     let runtime = dir.path().join("rt");
     let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);
     std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)).unwrap();
@@ -1449,10 +1344,6 @@ fn a_guest_reaches_the_session_through_its_own_agent_door() {
     assert_eq!(said, "{\"hello\":1}\n");
 }
 
-/// A session's agent door at `door`, as the session serves it to one environment: it answers the
-/// environment's request with a door at `serving`, answers the one program that connects there,
-/// and waits for the lease to close. What the environment asked, whether the program descended
-/// from the lease's holder, and the line it sent.
 fn fake_session(
     door: &Path,
     serving: PathBuf,
@@ -1485,14 +1376,12 @@ fn fake_session(
             .unwrap();
         (&client).write_all(b"{\"answered\":1}\n").unwrap();
         drop(client);
-        // The lease stays open while the environment runs, and closes as it ends.
         let mut rest = Vec::new();
         let _ = (&lease).read_to_end(&mut rest);
         (asked, inside, said)
     })
 }
 
-/// The pid the kernel names for the other end of `stream`.
 fn peer_pid(stream: &UnixStream) -> u32 {
     let mut credentials = libc::ucred {
         pid: 0,
@@ -1500,7 +1389,6 @@ fn peer_pid(stream: &UnixStream) -> u32 {
         gid: 0,
     };
     let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).unwrap();
-    // SAFETY: `stream` owns the descriptor, and the kernel writes at most `length` bytes.
     let read = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -1514,7 +1402,6 @@ fn peer_pid(stream: &UnixStream) -> u32 {
     u32::try_from(credentials.pid).unwrap()
 }
 
-/// Whether `pid` descends from `ancestor`, by the parents `/proc` names.
 fn descends_from(pid: u32, ancestor: u32) -> bool {
     let mut current = pid;
     for _ in 0..128 {

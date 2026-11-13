@@ -39,7 +39,7 @@ chip-import-cancelled = Import des Berichts abgebrochen
 chip-import-too-large = Der Bericht überschreitet die Importgrenze von 1 MiB
 chip-empty-title = In diesem Projekt ist noch nichts
 chip-empty-open-graph = Den Operatorgraphen öffnen
-chip-empty-message = Chip Design legt dar, wie ein neuronales Netz auf Hardware abgebildet wird. Skizziere seine Operatoren im Operatorgraphen, oder importiere einen technischen Bericht (JSON), um die aufgezeichneten Nachweise zu lesen.
+chip-empty-message = Skizziere die Operatoren im Operatorgraphen oder importiere einen technischen Bericht (JSON), um die aufgezeichneten Nachweise zu lesen.
 chip-imported-evidence = Analytischer Speicherbericht importiert. Echtheit der Quelle und Qualität der Quantisierung sind ungeprüft.
 chip-remove = Bericht entfernen
 chip-show-all = Alle Berichte
@@ -201,7 +201,7 @@ chip-value-no = Nein
 chip-flow-disclaimer = Nur gemeldete Nachweise. Artefakte werden weder authentifiziert noch ausgeführt. Schätzungen der Bibliothek sind keine Siliziummessungen, Freigabe, Fertigungsgenehmigung oder Modellqualität.
 chip-flow-artifacts = Referenzen auf die Originalartefakte
 chip-flow-custody = Verwahrung
-chip-flow-unverified = Gemeldet, ungeprüft
+chip-flow-unverified = Ungeprüft
 chip-flow-receipt = Originalbeleg-Artefakt
 chip-flow-producer = Angegebener Hersteller SHA-256
 chip-flow-input = Angegebene Eingabeidentität SHA-256
@@ -285,3 +285,6 @@ chip-design-effect-select-output = Ausgang wählen
 chip-design-effect-inspect-evidence = Nachweis prüfen
 chip-design-effect-open-evidence-subflow = Nachweis-Teilschaltbild öffnen
 chip-design-effect-inspect = Bericht prüfen
+
+## What the app is called in a window and in the launcher
+chip-design-app-title = Chip-Design

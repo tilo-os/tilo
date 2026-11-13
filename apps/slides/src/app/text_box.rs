@@ -24,7 +24,6 @@ pub(super) struct TextBoxEditor {
     pub(super) slide_id: String,
     pub(super) element_id: String,
     pub(super) host: Embedded<RichTextSurface<RichTextField>>,
-    /// The person is editing the words: the editor has the keyboard.
     pub(super) focused: bool,
     /// How tall the words came to when last laid out, in slide units;
     /// `None` before the first layout.
@@ -59,7 +58,6 @@ impl TextBoxEditor {
         editor
     }
 
-    /// Edit through the deck's dispatcher.
     pub(super) fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
         let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
         self.host
@@ -71,8 +69,6 @@ impl TextBoxEditor {
             ));
     }
 
-    /// Give the words the keyboard, the caret after the last of them (a
-    /// press handed on next puts it where the person pressed).
     pub(super) fn focus(&mut self) {
         let surface = self.host.widget_mut();
         surface.set_focus(true);
@@ -82,7 +78,6 @@ impl TextBoxEditor {
         self.focused = true;
     }
 
-    /// Done with the words: the box stays selected.
     pub(super) fn blur(&mut self) {
         self.host.widget_mut().set_focus(false);
         self.focused = false;
@@ -90,8 +85,6 @@ impl TextBoxEditor {
 }
 
 impl SlidesApp {
-    /// Start editing the selected text box's words; `select_all` selects
-    /// them all once the editor opens.
     pub(super) fn begin_text_edit(&mut self, select_all: bool) {
         self.editing_text = true;
         self.editing_notes = false;
@@ -136,8 +129,6 @@ impl SlidesApp {
         }
     }
 
-    /// Stop editing the text box: the box stays selected, its editor
-    /// without the keyboard.
     pub(super) fn end_text_edit(&mut self) {
         self.editing_text = false;
         self.text_drag = false;
@@ -147,8 +138,6 @@ impl SlidesApp {
         }
     }
 
-    /// The selected text box and its slide, when one is selected in the
-    /// editor.
     pub(super) fn selected_text_box(&self) -> Option<(String, Element)> {
         if self.mode != Mode::Edit {
             return None;
@@ -158,7 +147,6 @@ impl SlidesApp {
         (element.kind == ElementKind::Text).then(|| (slide.id.clone(), element.clone()))
     }
 
-    /// The text box being edited and its slide, when there is one.
     pub(super) fn editing_text_box(&self) -> Option<(String, Element)> {
         if !self.editing_text {
             return None;
@@ -166,10 +154,6 @@ impl SlidesApp {
         self.selected_text_box()
     }
 
-    /// Open the editor of the selected text box (closing one of a box no
-    /// longer selected), give it the keyboard while the box is being edited
-    /// and take it back when editing ended, and bring it up to date with the
-    /// document.
     pub(super) fn ensure_text_editor(&mut self, doc: &AutoCommit) {
         let Some((slide_id, element)) = self.selected_text_box() else {
             self.text_editor = None;
@@ -205,10 +189,6 @@ impl SlidesApp {
         }
     }
 
-    /// Hand the press that opened the selected text box to its editor, so
-    /// the caret lands where the person pressed and a double-click selects
-    /// the word there, as in any text field. A box opened by the same press
-    /// that selected it has no layout yet: its caret stays after its words.
     pub(super) fn open_at_press(&mut self, routed: &mut RoutedEvent<'_, '_>) {
         let Some((at, presses)) = self.opening_press.take() else {
             return;
@@ -248,12 +228,9 @@ impl SlidesApp {
             );
         }
         editor.host.sync(routed.state.doc(), routed.path);
-        // The press is still held: a drag before its release selects words.
         self.text_drag = true;
     }
 
-    /// Give the text box being edited its keyboard and pointer events.
-    /// Returns whether the event was the box's.
     pub(super) fn route_text_edit(
         &mut self,
         routed: &mut RoutedEvent<'_, '_>,
@@ -266,7 +243,6 @@ impl SlidesApp {
             routed.event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         );
-        // The words' menu, while open, takes every pointer event.
         let menu_open = self.words_menu_open();
         let pointer = menu_open
             && matches!(
@@ -323,7 +299,6 @@ impl SlidesApp {
             _ => {}
         }
         if outcome.is_some() {
-            // Escape or Ctrl+Enter: done with the words, the box stays selected.
             debug_assert!(matches!(
                 outcome,
                 Some(FieldOutcome::Submit | FieldOutcome::Cancel)
@@ -339,8 +314,6 @@ impl SlidesApp {
         false
     }
 
-    /// Whether the words being edited have their menu open: then it is
-    /// modal, and takes every pointer and key event.
     pub(super) fn words_menu_open(&self) -> bool {
         self.editing_text_box().is_some()
             && self
@@ -349,10 +322,6 @@ impl SlidesApp {
                 .is_some_and(|editor| editor.host.modal_capture().is_some())
     }
 
-    /// Whether `event` is the words' to take ahead of the canvas's own
-    /// menus: a secondary press on the words being edited opens their
-    /// menu (cut, copy, paste, formatting) rather than the box's, and an
-    /// open words' menu takes every pointer event.
     pub(super) fn words_take_menu_event(&self, event: &WindowEvent) -> bool {
         let secondary_press = matches!(
             event,
@@ -367,8 +336,6 @@ impl SlidesApp {
                 || (secondary_press && self.text_edit_box.contains(self.last_mouse)))
     }
 
-    /// Paint what the words being edited float over everything (their
-    /// menu), above the canvas, at the reader's own scale.
     pub(super) fn draw_words_overlay(
         &mut self,
         scene: &mut ui::vello::Scene,
@@ -408,8 +375,6 @@ impl SlidesApp {
         else {
             return;
         };
-        // The words lay out against the deck's look, as the canvas draws
-        // them, the same while they are edited.
         let words_theme = render::words_theme(pal.look, theme);
         let theme = &*words_theme;
         let Some(editor) = self
@@ -438,7 +403,6 @@ impl SlidesApp {
         self.text_edit_box = self.element_frame(chrome.slide_dest, chrome.scale, &element);
     }
 
-    /// Paint the words of the text box being edited, through its editor.
     pub(super) fn draw_text_editor(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         let PaintCtx {
             scene,
@@ -464,10 +428,6 @@ impl SlidesApp {
         }
     }
 
-    /// Where element `el` stands on the canvas: its box, grown down to hold
-    /// the words of a text box that outgrew it. A text box grows with what
-    /// is written in it, as in any presentation editor; selecting, moving
-    /// and resizing take the box as it shows.
     pub(super) fn element_frame(&self, dest: Rect, s: f64, el: &Element) -> Rect {
         let mut frame = render::element_dest(dest, s, el);
         if el.kind == ElementKind::Text {
@@ -484,9 +444,6 @@ impl SlidesApp {
         frame
     }
 
-    /// The words of box `element` while they are edited, as the shared
-    /// editor describes them to assistive technology, in the canvas's space:
-    /// the box's node holds them, keyed [`WORDS_ACCESS_KEY`].
     pub(super) fn words_access_node(&self, element: &str) -> Option<ui::a11y::AccessNode> {
         let editor = self
             .text_editor
@@ -501,10 +458,6 @@ impl SlidesApp {
         )
     }
 
-    /// Whether a finger landing at `p` grabs something on the canvas: an
-    /// element, a handle of the selection, the words being edited. Nothing
-    /// modal is open over it. Its drag then moves, resizes or selects as
-    /// the mouse's does ([`ui::widget::Widget::touch_claim`]).
     pub(super) fn canvas_takes_finger(&self, p: Point) -> bool {
         if self.mode != Mode::Edit
             || self.help_overlay.is_visible()
@@ -535,8 +488,6 @@ impl SlidesApp {
         on_handle || self.element_at(&chrome, p).is_some()
     }
 
-    /// Whether a finger held at `p` picks up a slide in the list to move
-    /// it: the list is shown in the editor, and nothing modal is open.
     pub(super) fn rail_takes_held_finger(&self, p: Point) -> bool {
         if self.mode != Mode::Edit
             || self.help_overlay.is_visible()
@@ -550,7 +501,6 @@ impl SlidesApp {
     }
 }
 
-/// Whether `kind` is a bulleted list, or a numbered one when `ordered`.
 pub(super) fn listed(kind: &ui::widget::BlockKind, ordered: bool) -> bool {
     if ordered {
         matches!(kind, ui::widget::BlockKind::Numbered { .. })
@@ -559,7 +509,6 @@ pub(super) fn listed(kind: &ui::widget::BlockKind, ordered: bool) -> bool {
     }
 }
 
-/// Whether `mark` covers every word of `blocks` (and there are words).
 pub(super) fn mark_covers(
     blocks: &[ui::widget::BlockContent],
     mark: &ui::widget::marks::Mark,
@@ -574,9 +523,6 @@ pub(super) fn mark_covers(
         })
 }
 
-/// Where the person is in the words they edit (the shared editor's caret or
-/// selection), published to collaborators as Slides' own, so their canvas
-/// shows it in the same box.
 impl ui::presence::capability::PublishesPresence for SlidesApp {
     fn presence_payload(
         &self,
@@ -593,7 +539,6 @@ impl ui::presence::capability::PublishesPresence for SlidesApp {
 }
 
 impl SlidesApp {
-    /// The editor of the words being edited, read-only.
     fn editing_editor(&self) -> Option<&TextBoxEditor> {
         self.editing_text_box()?;
         self.text_editor.as_ref().filter(|editor| editor.focused)

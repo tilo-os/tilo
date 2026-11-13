@@ -1,11 +1,9 @@
 //! Run a command as an isolated job on a shared kernel.
 //!
-//! A job is born inside its own cgroup (`clone3` with `CLONE_INTO_CGROUP`)
-//! with new user, mount, PID, network, IPC, UTS and cgroup namespaces. Its
-//! root is read-only, with what it may write mounted on top; it holds no
-//! capability, and runs under `no_new_privs`, Landlock and the CI seccomp
-//! filter. `docs/job-sandbox.md` has the design, the threat model and every
-//! setting.
+//! A job is born inside its own cgroup (`clone3` with `CLONE_INTO_CGROUP`) with new user, mount,
+//! PID, network, IPC, UTS and cgroup namespaces. Its root is read-only, with what it may write
+//! mounted on top; it holds no capability, and runs under `no_new_privs`, Landlock and the CI
+//! seccomp filter. `docs/job-sandbox.md` has the design and the threat model.
 //!
 //! ```no_run
 //! # #[cfg(target_os = "linux")] fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,13 +17,9 @@
 //! # #[cfg(not(target_os = "linux"))] fn main() {}
 //! ```
 //!
-//! The job's init is the calling program again, run as `tilo-job-init`: a
-//! new, small process rather than a copy of the caller, whose memory may be
-//! large. A program that calls [`Launch::spawn`] runs that init before its
-//! `main` when started as one; nothing needs to be added for it.
-//!
-//! The module exists on Linux only. `JobSpec` is portable data, so a macOS
-//! backend (Seatbelt) can be added behind the same call.
+//! The job's init is the calling program again, run as `tilo-job-init`: a new, small process rather
+//! than a copy of the caller, whose memory may be large. A program that calls [`Launch::spawn`]
+//! runs that init before its `main` when started as one; nothing needs to be added for it.
 
 #[cfg(target_os = "linux")]
 pub mod cgroup;
@@ -48,19 +42,14 @@ pub use spec::{
 #[cfg(target_os = "linux")]
 pub use linux::runner::Job;
 
-/// Why a job could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
-    /// The spec itself is wrong (a relative path, a missing source).
     #[error("invalid job: {0}")]
     Invalid(String),
-    /// This machine can't run jobs this way.
     #[error("not supported here: {0}")]
     Unsupported(String),
-    /// A setup step failed, in words naming the step.
     #[error("could not set up the job: {0}")]
     Setup(String),
-    /// The program could not be executed inside the sandbox.
     #[error("could not run `{program}` in the job: {error}")]
     Exec {
         program: String,
@@ -68,7 +57,6 @@ pub enum SpawnError {
     },
 }
 
-/// How a job ended.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExitStatus {
     pub code: Option<i32>,
@@ -81,9 +69,9 @@ impl ExitStatus {
     }
 }
 
-/// A job whose namespaces exist but whose setup waits for the caller: its
-/// ids are mapped, `/proc/<pid>/ns/net` names its network namespace (for
-/// pasta and nftables), nothing of the job has run yet.
+/// A job whose namespaces exist but whose setup waits for the caller: its ids are mapped,
+/// `/proc/<pid>/ns/net` names its network namespace (for pasta and nftables), and nothing of the
+/// job has run yet.
 #[derive(Debug, Clone, Copy)]
 pub struct Started {
     pub pid: i32,
@@ -91,7 +79,6 @@ pub struct Started {
 
 type SetupHook<'a> = Box<dyn FnMut(&Started) -> Result<(), String> + 'a>;
 
-/// Starting one job.
 pub struct Launch<'a> {
     spec: &'a JobSpec,
     stdin: Option<OwnedFd>,
@@ -138,7 +125,6 @@ impl<'a> Launch<'a> {
         self
     }
 
-    /// Start the job inside this cgroup (its directory descriptor).
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn cgroup(mut self, cgroup: &'a cgroup::JobCgroup) -> Self {
@@ -146,53 +132,44 @@ impl<'a> Launch<'a> {
         self
     }
 
-    /// Start the job inside the cgroup whose directory `dir` is open.
     #[must_use]
     pub fn cgroup_fd(mut self, dir: BorrowedFd<'a>) -> Self {
         self.cgroup = Some(dir);
         self
     }
 
-    /// Join the network namespace `ns` instead of getting one of its own:
-    /// one made and connected by the caller (with pasta, say), so a job's
-    /// network is up before any of it runs and can be shared with the
-    /// caller's helpers. Its owner configures it, `lo` included.
+    /// Join the network namespace `ns` instead of getting one of its own: one made and connected by
+    /// the caller (with pasta, say), so a job's network is up before any of it runs and can be
+    /// shared with the caller's helpers. Its owner configures it, `lo` included.
     #[must_use]
     pub fn netns(mut self, ns: BorrowedFd<'a>) -> Self {
         self.netns = Some(ns);
         self
     }
 
-    /// Let the job outlive the thread and the process that start it. Its
-    /// init is born the caller's parent's child (`CLONE_PARENT`) with no
-    /// parent-death signal, and when the command ends it writes the raw
-    /// 4-byte wait status at offset 0 of `status` and syncs it; a job that
-    /// is killed writes nothing.
-    ///
-    /// The caller's parent reaps the init, so it must be a child subreaper
-    /// (`PR_SET_CHILD_SUBREAPER`) or the namespace's init. Nothing else
-    /// bounds the job's life but its cgroup (`cgroup.kill`) and the PID
-    /// namespace it runs in: keep its cgroup. [`Job::into_detached`] then
-    /// gives up the handle without killing the job.
+    /// Let the job outlive the thread and the process that start it. Its init is born the caller's
+    /// parent's child (`CLONE_PARENT`) with no parent-death signal, and when the command ends it
+    /// writes the raw 4-byte wait status at offset 0 of `status` and syncs it; a job that is killed
+    /// writes nothing. The caller's parent reaps the init, so it must be a child subreaper
+    /// (`PR_SET_CHILD_SUBREAPER`) or the namespace's init. Nothing else bounds the job's life but
+    /// its cgroup (`cgroup.kill`) and the PID namespace it runs in: keep its cgroup.
+    /// [`Job::into_detached`] then gives up the handle without killing the job.
     #[must_use]
     pub fn detached(mut self, status: OwnedFd) -> Self {
         self.status = Some(status);
         self
     }
 
-    /// Run `hook` after the job's namespaces exist and before any of it
-    /// runs: attach its network, for instance. An error stops the job.
+    /// Run `hook` after the job's namespaces exist and before any of it runs: attach its network,
+    /// for instance. An error stops the job.
     #[must_use]
     pub fn before_start(mut self, hook: impl FnMut(&Started) -> Result<(), String> + 'a) -> Self {
         self.setup = Some(Box::new(hook));
         self
     }
 
-    /// Start the job. Returns once the command runs (its `execve`
-    /// succeeded), or with the step that failed.
-    ///
-    /// # Errors
-    /// See [`SpawnError`].
+    /// Start the job. Returns once the command runs (its `execve` succeeded), or with the step that
+    /// failed. # Errors See [`SpawnError`].
     #[cfg(target_os = "linux")]
     pub fn spawn(mut self) -> Result<Job, SpawnError> {
         let mut plan = linux::plan::Plan::new(self.spec)?;
@@ -214,8 +191,7 @@ impl<'a> Launch<'a> {
         linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook, mode)
     }
 
-    /// # Errors
-    /// Always: only Linux runs jobs.
+    /// # Errors Always: only Linux runs jobs.
     #[cfg(not(target_os = "linux"))]
     pub fn spawn(self) -> Result<std::convert::Infallible, SpawnError> {
         let _ = (
@@ -236,9 +212,9 @@ impl<'a> Launch<'a> {
     }
 }
 
-/// Create the mount points `spec` needs in an image root, as the caller,
-/// before the job starts: the job itself can't write into its read-only
-/// root. Directories for directory sources, empty files for file sources.
+/// Create the mount points `spec` needs in an image root, as the caller, before the job starts: the
+/// job itself can't write into its read-only root. Directories for directory sources, empty files
+/// for file sources.
 pub fn prepare_mount_points(spec: &JobSpec) -> std::io::Result<()> {
     let Root::Image(root) = &spec.root else {
         return Ok(());

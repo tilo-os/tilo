@@ -156,6 +156,19 @@ impl Environment {
         }
     }
 
+    /// Whether this device may write `channel` — a record's channel, or `None`
+    /// for the workspace's own document. It writes its own record and nothing
+    /// else: the workspace's document, its layout and its governance, is read
+    /// to join and written for it by this host, which writes only what concerns
+    /// the device's own windows (its shares, asked of the host).
+    #[must_use]
+    pub fn writes(self, channel: Option<[u8; 32]>) -> bool {
+        match self {
+            Self::Placed(scope) => channel == Some(scope.channel),
+            Self::Stopped { .. } => false,
+        }
+    }
+
     /// The scope a placed environment reaches, and nothing for a stopped one.
     #[must_use]
     pub const fn placed(self) -> Option<EnvironmentScope> {

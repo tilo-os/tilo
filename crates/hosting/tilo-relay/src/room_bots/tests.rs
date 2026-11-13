@@ -1006,9 +1006,8 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = crate::workspaces::fixtures::governor_with(
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let (key, cert) =
+        crate::workspaces::fixtures::governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
@@ -1099,9 +1098,8 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
 async fn a_bot_pass_goes_on_past_a_record_it_holds_no_keys_of() {
     use crate::workspaces::sealed_fixtures::{SealingMember, member_device, plaintext_record};
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = crate::workspaces::fixtures::governor_with(
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let (key, cert) =
+        crate::workspaces::fixtures::governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;

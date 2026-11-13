@@ -23,6 +23,7 @@ use std::rc::Rc;
 use tilo_automerge::ApplyIncoming;
 
 use durable_store::{DurableStore, StorageKey};
+use tilo_app_id::AppId;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -99,7 +100,7 @@ pub fn init_scoped(
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
-    // Primary custody is the checked package/workspace namespace, never a fake
+    // Primary custody is the checked app/workspace namespace, never a fake
     // record stamp. Keep this serialized internal id stable across hosts.
     if id.is_package_primary() {
         return primary_document(doc);
@@ -114,7 +115,7 @@ pub fn init_scoped(
     if alone && stamped && doc.pending_ops() != 0 {
         commit_genesis(doc);
     } else if alone && stamped && stamp_surface(doc).is_some() {
-        // The app's package opens a record its surface did not name yet (a newer package, or a
+        // The app opens a record its surface did not name yet (a newer package, or a
         // record from before records named one): its surface decides the record's changes from here
         // on.
         doc.commit_with(
@@ -519,7 +520,7 @@ struct Parked {
 /// parking, not collaboration: routing a record's deltas is the toolkit's business, since a channel
 /// belongs to the connection.
 pub struct RecordSet {
-    package_id: String,
+    app_id: AppId,
     /// The workspace these records are opened in, which is the cluster its
     /// route names. Stamped as a record's home when it is first created here.
     home: String,
@@ -540,7 +541,7 @@ pub struct RecordSet {
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
     /// Where the launch-environment route keeps its documents: shared
-    /// writers on package-scoped keys. `None` for other sets.
+    /// writers on app-scoped keys. `None` for other sets.
     documents: Option<Rc<dyn DurableStore>>,
     /// The host's storage, for a set opened through [`RecordOwners`]. `None`
     /// for the launch-environment route and for [`RecordSet::in_memory`].
@@ -592,35 +593,37 @@ struct Reserved {
 }
 
 impl RecordSet {
-    /// The launch-environment set: per-record documents under this package's state directory. The
-    /// host's package id wins over `manifest_id`, as the workspace index does, or a package's
+    /// The launch-environment set: per-record documents under this app's state directory. The
+    /// host's app id wins over `manifest_id`, as the workspace index does, or an app's
     /// records would split from its index; the host's workspace id scopes them.
     pub fn open(manifest_id: impl Into<String>) -> Self {
         let environment = crate::host::environment();
         let identity = &environment.identity;
-        let package_id = identity
-            .package_id
-            .clone()
-            .unwrap_or_else(|| manifest_id.into());
+        let app_id = AppId::new(
+            identity
+                .app_id
+                .clone()
+                .unwrap_or_else(|| manifest_id.into()),
+        );
         let home = identity
             .workspace_id
             .clone()
             // A launcher-less process still gets an explicit, non-routable scope: it may not
-            // collaborate, but it must never fall back to the historical package-global file.
+            // collaborate, but it must never fall back to the historical app-global file.
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
-        Self::open_in(app_state::DocStore::native_store(), package_id, home)
+        Self::open_in(app_state::DocStore::native_store(), app_id, home)
     }
 
     /// The launch-environment set over an explicit store: each record is a shared-writer document
-    /// in workspace `home`, and pre-workspace package records are imported into exactly one
+    /// in workspace `home`, and pre-workspace records are imported into exactly one
     /// workspace on first open.
     pub fn open_in(
         store: Rc<dyn DurableStore>,
-        package_id: impl Into<String>,
+        app_id: impl Into<AppId>,
         home: impl Into<String>,
     ) -> Self {
         Self {
-            package_id: package_id.into(),
+            app_id: app_id.into(),
             home: home.into(),
             person: None,
             retired: None,
@@ -646,16 +649,16 @@ impl RecordSet {
         }
     }
 
-    /// The package these records are stored under.
-    pub fn package_id(&self) -> &str {
-        &self.package_id
+    /// The app these records are stored under.
+    pub fn app_id(&self) -> &AppId {
+        &self.app_id
     }
 
     /// A set that never touches the disk. For tests, for `--shots`, and for
     /// any run that must not leave state behind.
     pub fn in_memory() -> Self {
         Self {
-            package_id: String::new(),
+            app_id: AppId::default(),
             home: String::new(),
             person: None,
             retired: None,
@@ -799,9 +802,9 @@ impl RecordSet {
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
         let cluster = self.cluster()?;
         Ok(if id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(&self.package_id, cluster)
+            crate::collaboration::RouteSpec::app(self.app_id.as_str(), cluster)
         } else {
-            crate::collaboration::RouteSpec::record(&self.package_id, cluster, id.as_str())
+            crate::collaboration::RouteSpec::record(self.app_id.as_str(), cluster, id.as_str())
         })
     }
 
@@ -975,7 +978,7 @@ impl RecordSet {
         want: &RecordCheckout,
     ) -> bool {
         // Persistent records always have an explicit workspace: failing closed keeps a
-        // launcher-less process from recreating the old package-global namespace.
+        // launcher-less process from recreating the old app-global namespace.
         if self.persistent && self.home.is_empty() {
             tracing::error!(record = %want.id, "refusing to open a persistent record without a workspace scope");
             return false;
@@ -1017,7 +1020,7 @@ impl RecordSet {
             .as_ref()
             .map(|bridge| {
                 bridge
-                    .record(&self.package_id, &self.home, want)
+                    .record(&self.app_id, &self.home, want)
                     .inspect_err(|error| {
                         // A record on its way fails nothing.
                         if let crate::collaboration::native_initial::RecordReadError::Initialization(error) = error {
@@ -1069,7 +1072,7 @@ impl RecordSet {
     ) -> Result<app_state::DocStore, app_state::StoreError> {
         ::collaboration::record::save::record_document(
             self.documents()?,
-            &self.package_id,
+            &self.app_id,
             &self.home,
             record_key,
         )
@@ -1089,7 +1092,7 @@ impl RecordSet {
             &documents,
             want,
             &self.home,
-            |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
+            |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
             |key| app_state::DocStore::shared(Rc::clone(&documents), key.clone())?.load_complete(),
         )
     }
@@ -1262,17 +1265,17 @@ impl RecordSet {
         if want.id.is_package_primary() {
             // The package-primary document is the workspace's own document
             // (`<package>/rooms/<workspace>`), never a minted record beneath it.
-            app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
+            app_state::validate_document_identity(&self.app_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
-                StorageKey::workspace_index(&self.package_id, &self.home),
+                StorageKey::workspace_index(&self.app_id, &self.home),
             ));
         }
         let record = want.id.storage_key();
-        app_state::validate_record_identity(&self.package_id, &self.home, &record)?;
+        app_state::validate_document_identity(&self.app_id, &self.home, &record)?;
         Ok((
             Rc::clone(backend),
-            StorageKey::record(&self.package_id, &self.home, record),
+            StorageKey::document(&self.app_id, &self.home, record),
         ))
     }
 
@@ -1281,7 +1284,7 @@ impl RecordSet {
     /// writers. Any other record has one owner.
     fn shared_in_workspace(&self, id: &RecordId) -> bool {
         id.is_package_primary()
-            || collab_types::workspace_record(&self.package_id, id.as_str()).is_some()
+            || collab_types::workspace_record(&self.app_id, id.as_str()).is_some()
     }
 
     fn try_open_record(
@@ -1326,7 +1329,7 @@ impl RecordSet {
         if let Some(read) = self
             .native_initial
             .as_ref()
-            .map(|bridge| bridge.record(&self.package_id, &self.home, want))
+            .map(|bridge| bridge.record(&self.app_id, &self.home, want))
             .transpose()?
             .flatten()
         {
@@ -1390,7 +1393,7 @@ impl RecordSet {
                     &backend,
                     want,
                     &self.home,
-                    |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
+                    |former| StorageKey::document(&self.app_id, &self.home, former.storage_key()),
                     |key| {
                         Ok(
                             app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
@@ -1618,38 +1621,38 @@ impl RecordOwners {
         self.profile_lifetime = Some(lifetime);
     }
 
-    /// Get the unique live owner for this package and workspace. # Errors Rejects an invalid
-    /// package or workspace.
+    /// Get the unique live owner for this app and workspace. # Errors Rejects an invalid
+    /// app or workspace.
     pub fn open(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         workspace_id: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_with(package_id, workspace_id, true)
+        self.open_with(app_id, workspace_id, true)
     }
 
-    /// The owner of `package_id`'s records of the person, kept in `scope`: unlike [`Self::open`] it
+    /// The owner of `app_id`'s records of the person, kept in `scope`: unlike [`Self::open`] it
     /// never joins a native component's construction, since the person's records are not the
-    /// history that component was launched to read. # Errors Rejects an invalid package or scope.
+    /// history that component was launched to read. # Errors Rejects an invalid app or scope.
     pub fn open_person(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         scope: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_scoped(package_id, scope, false, None)
+        self.open_scoped(app_id, scope, false, None)
     }
 
-    /// The owner of `package_id`'s records of one person, kept in their own scope. Those carry one
+    /// The owner of `app_id`'s records of one person, kept in their own scope. Those carry one
     /// route per `(app, record)` in the person's cluster, so every device of theirs opens the same
     /// document, and their store carries it; one that derives no cluster keeps them on this device.
-    /// # Errors Rejects an invalid package or scope.
+    /// # Errors Rejects an invalid app or scope.
     pub fn open_personal(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         person: &str,
     ) -> Result<RecordStore, RecordOpenError> {
         self.open_scoped(
-            package_id,
+            app_id,
             person::PERSONAL_SCOPE,
             false,
             PersonScope::of(person),
@@ -1658,16 +1661,16 @@ impl RecordOwners {
 
     fn open_with(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         workspace_id: &str,
         joins_construction: bool,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_scoped(package_id, workspace_id, joins_construction, None)
+        self.open_scoped(app_id, workspace_id, joins_construction, None)
     }
 
     fn open_scoped(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         workspace_id: &str,
         joins_construction: bool,
         person: Option<PersonScope>,
@@ -1676,17 +1679,17 @@ impl RecordOwners {
         // workspace's records name the workspace.
         let person = person.filter(|_| workspace_id == person::PERSONAL_SCOPE);
         if self.portable.is_some() {
-            app_state::validate_record_namespace(package_id, workspace_id)?;
+            app_state::validate_document_namespace(app_id, workspace_id)?;
         } else {
-            app_state::validate_record_identity(package_id, workspace_id, "validation")?;
+            app_state::validate_document_identity(app_id, workspace_id, "validation")?;
         }
         if let Some(cache) = &self.portable
             && let Some(owner) =
-                cache.record_owner::<std::cell::RefCell<RecordSet>>(package_id, workspace_id)
+                cache.record_owner::<std::cell::RefCell<RecordSet>>(app_id, workspace_id)
         {
             return Ok(RecordStore(owner));
         }
-        let key = (package_id.to_owned(), workspace_id.to_owned());
+        let key = (app_id.to_owned(), workspace_id.to_owned());
         if let Some(owner) = self
             .owners
             .borrow()
@@ -1696,7 +1699,7 @@ impl RecordOwners {
             return Ok(RecordStore(owner));
         }
         let store = RecordStore::new(RecordSet {
-            package_id: package_id.to_owned(),
+            app_id: app_id.into(),
             home: workspace_id.to_owned(),
             person: person.as_ref().map(|person| person.cluster),
             retired: person.map(|person| person.retired),
@@ -1723,7 +1726,7 @@ impl RecordOwners {
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
-            cache.register_record_owner(package_id, workspace_id, &store.0);
+            cache.register_record_owner(app_id, workspace_id, &store.0);
         }
         let entry = Rc::downgrade(&store.0);
         if let Some(index) = Rc::get_mut(&mut self.owners) {
@@ -2297,13 +2300,13 @@ impl Drop for RecordReservation {
 /// bytes do not read as a record.
 fn read_record(
     store: &Rc<dyn DurableStore>,
-    package: &str,
+    app: &str,
     home: &str,
     id: &RecordId,
     kind: &RecordKind,
 ) -> Option<AutoCommit> {
     let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
-    match transfer::read(store, package, home, &origin) {
+    match transfer::read(store, app, home, &origin) {
         Ok(doc) => Some(doc),
         Err(error) => {
             tracing::warn!(record = %id, workspace = %home, %error, "a workspace record is not readable; left out");
@@ -2434,7 +2437,7 @@ impl RecordStore {
                     .filter(|saver| saver.is_enabled())
                     .map(|saver| saver.document_path().to_string_lossy().into_owned())
             });
-        Ok((storage, set.package_id.clone(), set.home.clone()))
+        Ok((storage, set.app_id.to_string(), set.home.clone()))
     }
     /// Whether the store can be read now: no caller holds it mutably.
     pub(crate) fn readable(&self) -> bool {
@@ -2447,9 +2450,9 @@ impl RecordStore {
         set.backend.clone().or_else(|| set.documents.clone())
     }
 
-    pub fn package_and_home(&self) -> (String, String) {
+    pub fn app_and_home(&self) -> (String, String) {
         let set = self.0.borrow();
-        (set.package_id.clone(), set.home.clone())
+        (set.app_id.to_string(), set.home.clone())
     }
 
     /// The numbers of the parts of the chain `base` this store holds, in order: those open here,
@@ -2478,10 +2481,10 @@ impl RecordStore {
                         &set.portable,
                         set.backend.as_ref().or(set.documents.as_ref()),
                     ) {
-                        (Some(cache), _) => cache.records(&set.package_id, workspace),
-                        (None, Some(store)) => store
-                            .records(&set.package_id, workspace)
-                            .unwrap_or_default(),
+                        (Some(cache), _) => cache.records(&set.app_id, workspace),
+                        (None, Some(store)) => {
+                            store.documents(&set.app_id, workspace).unwrap_or_default()
+                        }
                         (None, None) => Vec::new(),
                     }
                 })
@@ -2573,11 +2576,11 @@ impl RecordStore {
         let Some(store) = self.backend() else {
             return Vec::new();
         };
-        let (package, home) = self.package_and_home();
+        let (package, home) = self.app_and_home();
         if home.is_empty() {
             return Vec::new();
         }
-        let keys = match store.records(&package, &home) {
+        let keys = match store.documents(package.as_str(), &home) {
             Ok(keys) => keys,
             Err(error) => {
                 tracing::warn!(%package, workspace = %home, %error, "listing the workspace's records failed");
@@ -2612,7 +2615,7 @@ impl RecordStore {
         let Some(store) = self.backend() else {
             return Vec::new();
         };
-        let (package, home) = self.package_and_home();
+        let (package, home) = self.app_and_home();
         if home.is_empty() {
             return Vec::new();
         }
@@ -2658,11 +2661,11 @@ impl RecordStore {
     /// device last wrote it, read without taking a writer since an app of the workspace owns it.
     fn workspace_index(&self) -> Option<AutoCommit> {
         let store = self.backend()?;
-        let (package, home) = self.package_and_home();
+        let (package, home) = self.app_and_home();
         if home.is_empty() {
             return None;
         }
-        let stored = match store.read(&StorageKey::workspace_index(&package, &home)) {
+        let stored = match store.read(&StorageKey::workspace_index(package.as_str(), &home)) {
             Ok(stored) => stored?,
             Err(error) => {
                 tracing::warn!(%package, workspace = %home, %error, "a workspace's index is not read");
@@ -2695,7 +2698,7 @@ impl RecordStore {
                 (Some(cache), _) => portable_namespace(cache),
                 (None, backend) => backend.as_ref()?.namespace().to_owned(),
             },
-            set.package_id.clone(),
+            set.app_id.to_string(),
             set.home.clone(),
         ))
     }
@@ -2865,7 +2868,7 @@ impl RecordStore {
         if let Some(cache) = &set.portable {
             return Ok(portable::save_status(
                 cache,
-                &set.package_id,
+                &set.app_id,
                 &set.home,
                 id,
                 doc,
@@ -2890,7 +2893,7 @@ impl RecordStore {
             return;
         };
         if let Some(cache) = &set.portable {
-            cache.watch_durability(&portable::key(&set.package_id, &set.home, id), wake);
+            cache.watch_durability(&portable::key(&set.app_id, &set.home, id), wake);
             return;
         }
         if let Some(saver) = set.open.get(id).and_then(|slot| slot.autosave.as_ref()) {
@@ -3653,7 +3656,7 @@ impl RecordStore {
         let portable = set
             .portable
             .as_ref()
-            .map(|cache| (cache, portable::key(&set.package_id, &set.home, id)));
+            .map(|cache| (cache, portable::key(&set.app_id, &set.home, id)));
         let parked = set
             .open
             .get_mut(id)

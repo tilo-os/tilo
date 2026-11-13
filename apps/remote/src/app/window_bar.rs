@@ -86,7 +86,6 @@ impl RemoteApp {
     }
 
     /// A live session's actions: fitting and filling the window with a
-    /// remote desktop, and ending the session.
     fn session_actions(&self, framebuffer: bool) -> Vec<ToolbarAction> {
         let mut actions = Vec::new();
         if framebuffer {

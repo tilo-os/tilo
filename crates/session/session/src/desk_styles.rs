@@ -112,14 +112,21 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyleReading> {
     let mut broken = Vec::new();
     for app in &apps {
         match Bundle::read(&app.payload_root) {
-            // A Rust app's payload carries no tilolang module: no style.
-            Ok(bundle) => modules.push((app.package_id.clone(), bundle.meta)),
+            Ok(bundle) => modules.push((app.app_id.to_string(), bundle.meta)),
+            // A package's payload with no tilolang module — a Rust app's, whose payload is a
+            // binary and no `app.wasm`, or a wasm that carries no tilolang metadata — offers no
+            // style: it declares no view of the arrangement. The file simply not being there is
+            // the Rust app's case (`BundleError::Read` with `NotFound`), which is no more broken
+            // than a wasm with no metadata section: both are packages that write no styles, and
+            // neither is a blank row in the switch.
             Err(tilolang_tilo::bundle::BundleError::NotAModule(_)) => {}
-            // Something was meant as a package and does not read: the switch says so, named by
-            // the package, so the person who installed it sees why rather than nothing.
+            Err(tilolang_tilo::bundle::BundleError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound => {}
+            // Something was meant as a tilolang package and does not read: the switch says so,
+            // named by the package, so the person who installed it sees why rather than nothing.
             Err(error) => {
-                tracing::warn!(app = app.package_id, %error, "a package's styles do not read");
-                broken.push(unreadable(&app.package_id));
+                tracing::warn!(app = %app.app_id, %error, "a package's styles do not read");
+                broken.push(unreadable(&app.app_id));
             }
         }
     }
@@ -339,5 +346,32 @@ mod tests {
         let meta = meta(&serde_json::json!([]), &serde_json::json!([]));
         let modules = [("so.tilo.notes".to_owned(), meta.clone())];
         assert!(styles_of("so.tilo.notes", &meta, &modules).is_empty());
+    }
+
+    /// A package whose module does not read is listed by its package, never by nothing: the
+    /// switch names every style it lists (`style_label`: its doc line, its view's name, or its
+    /// package), so a style with no name is a blank row above the menu's first row that nothing
+    /// can be chosen from — the live run's empty band above "Strips".
+    #[test]
+    fn a_style_that_does_not_read_is_named_by_its_package() {
+        let reading = unreadable("atest.broken");
+        assert!(
+            !reading.package.is_empty(),
+            "the switch names the broken style by its package: {reading:?}"
+        );
+        assert!(!reading.loads, "and says it does not load: {reading:?}");
+        // The name the switch reads off it, as `style_label` reads it: the doc line, else the
+        // view's name, else the package — never empty.
+        let label = if !reading.line.is_empty() {
+            &reading.line
+        } else if !reading.name.is_empty() {
+            &reading.name
+        } else {
+            &reading.package
+        };
+        assert_eq!(
+            label, "atest.broken",
+            "the broken style reads as its package, never as nothing"
+        );
     }
 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The web page and the tilo.sh stack end to end, on one stack: the Lounge's
-# relay, the front door, the web entry and the programs this checkout built,
+# relay, the API server, the web entry and the programs this checkout built,
 # brought up once by tilo-sh/stack.sh as production's manifests bring them up
 # (their images' entrypoints, their environment, production's Caddy in front).
 # The site every flow meets is the web entry image's, not a server beside it,
-# and the door is the front door. They start once; then every flow runs at the
+# and the API is the API server. They start once; then every flow runs at the
 # same time against them, each as people of its own (a fresh browser profile
 # per person, so a fresh root, device and membership), never a stack of its
 # own. A flow that hangs is stopped at its own limit and named.
@@ -42,7 +42,7 @@
 #   setup-resume   a setup lands where it was through reloads, closed tabs,
 #                  history, a second tab, a code running out and the network
 #                  dropping
-#   visa           the visa run against the front door (check.sh's steps 2-6):
+#   visa           the visa run against the API server (check.sh's steps 2-6):
 #                  applicant workspaces, a one-workspace key and MCP, the agent
 #                  fills the form, a reviewer joins by invitation and takes the
 #                  run back, and the revoked keys are refused
@@ -54,14 +54,16 @@
 #                  list and confirms through the mail (a second Lounge, whose
 #                  door takes people by invitation: the one policy the stack
 #                  cannot have at once)
-#   onboarding     one stranger's whole way in, on a host of its own whose door
-#                  takes people by invitation: the wait list and its
-#                  confirmation mail, the invitation an operator sends from the
-#                  workspace's own wait list and the mail it carries, the
-#                  workspace of their own they land in, their passkey bringing
-#                  them back to it, a second workspace they make, and a visitor
-#                  with no invitation who still cannot get in
-#                  (integration/onboarding.mjs, test-onboarding.sh)
+#   onboarding     one stranger's whole way in, on a whole tilo.sh of its own
+#                  (test-onboarding.sh: the stack, whose door takes people by
+#                  invitation as production's does): the wait list and its
+#                  confirmation mail, the invitation the person who runs the
+#                  host sends from the workspace's own wait list and the mail it
+#                  carries, the workspace of their own they land in and the
+#                  agent set up there; the passkey that brings them back on a
+#                  browser that forgot the site; a second workspace they make;
+#                  and a visitor with no invitation, still refused
+#                  (integration/onboarding.mjs)
 #   restart        the Lounge's relay starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
 #                  writes in it
@@ -94,7 +96,7 @@ tilo_sh=$repo/os/containers/tilo-sh
 # hangs is stopped with everything it started.
 if [[ ${1:-} == --flow ]]; then
   flow=$2 out=$E2E_WORK/$2
-  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM roles=$E2E_ROLES
+  site_origin=$E2E_SITE relay_origin=$E2E_RELAY room=$E2E_ROOM owner_socket=$E2E_OWNER_SOCKET
   case $flow in
     directory)
       page=$(curl -ksS --max-time 5 -X POST "$relay_origin/peer/v1/directory") \
@@ -123,11 +125,11 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
     people-call|people-desk|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
-        "$relay_origin" "$out" "$roles" ;;
+        "$relay_origin" "$out" "$owner_socket" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
-      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$E2E_SITE_CA" "$out" ;;
+      exec node "$integration/$flow.mjs" "$site_origin" "$relay_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
       # A second Lounge, whose door takes people by invitation: the one
@@ -135,8 +137,9 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       # of its own (direct-lounge.sh, LOUNGE_PORT_BASE).
       exec bash "$lounge_dir/test-wait-list-door.sh" "$E2E_BUNDLE" "$out" ;;
     onboarding)
-      # A host of its own for the same reason, on addresses of its own.
-      LOUNGE_PORT_BASE=19810 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
+      # A whole tilo.sh of its own, on addresses of its own: the stack's door
+      # takes people by invitation, so it cannot be the one above.
+      ONBOARDING_PORT_BASE=25100 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
     restart)
       earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
         "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
@@ -147,21 +150,17 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
       [[ $(cat "$TILO_SH_STATE/relay/lounge/room-id") == "$room" ]] \
         || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
       echo "ok: the Lounge started again on its own volume ($room)"
-      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$roles" "$earlier" ;;
+      exec node "$integration/people.mjs" "$site_origin" "$relay_origin" "$relay_origin" "$out" "$owner_socket" "$earlier" ;;
   esac
   exit 2
 fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
+all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
-# in one browser, counting the reloads that crash or never come back; and a
-# stranger's whole onboarding, which stops at the operator's invitation: an
-# invitation the host issues after the workspace started again on its volume
-# is not answered to the page that asked for it, so the flow waits for a link
-# that the host has already made.
-named_only=(reloads onboarding)
+# in one browser, counting the reloads that crash or never come back.
+named_only=(reloads)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
@@ -213,20 +212,23 @@ export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
 # door open to anyone, not production's, which takes people by invitation.
-TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$tilo_sh/stack.sh" up --fresh
+# Exported, so the restart flow's `stack.sh restart relay` brings the relay
+# back with the same door (the wait-list and onboarding flows set their own).
+export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open}
+bash "$tilo_sh/stack.sh" up --fresh
 # Sourced after it is up, for its addresses and its helpers (find_tilo,
 # sdk_python): the site, the relay and the door every flow meets, and the one
 # tilo command they run.
 # shellcheck source=../tilo-sh/stack.sh
 . "$tilo_sh/stack.sh"
 room=$(cat "$state/relay/lounge/room-id")
-roles=$state/secrets/roles.json
+owner_socket=$state/relay/lounge/operator.sock
 log=$state/logs/relay.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_DOOR=$door_origin TILO_CLI_BIN=$tilo_bin
+  E2E_OWNER_SOCKET=$owner_socket E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check
@@ -270,17 +272,28 @@ run_flow() {
 # await_flow: the next flow to end, in the order they end, so each one's
 # seconds are its own; its result, and on failure what it said.
 failed=()
-# The machine as a flow ends: load against cores and the CPU pressure (the
-# share of the last ten seconds something runnable waited for a core) of the
-# machine and of this job, so a slow or timed-out flow on a starved node reads
-# differently from one where the product was slow on a machine with room.
+# The machine as a flow ends: load against cores, the CPU pressure (the share
+# of the last ten seconds something runnable waited for a core) of the machine
+# and of this job, and the memory this job has used of what it is given with
+# how many of its processes the kernel killed for it — a page whose renderer
+# died under a full run reads differently from one the product crashed on a
+# machine with room.
 machine_now() {
-  local load pressure job
+  local load pressure job used limit oom
   load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
   pressure=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /proc/pressure/cpu 2>/dev/null)
   job=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /sys/fs/cgroup/cpu.pressure 2>/dev/null)
-  printf 'load %s on %s cores, this job given %s threads, cpu pressure %s%% (machine) %s%% (this job)' \
-    "${load:-?}" "$(nproc --all)" "${OMP_NUM_THREADS:-?}" "${pressure:-?}" "${job:-?}"
+  used=$(sed -n 's/^anon \([0-9]*\).*/\1/p' /sys/fs/cgroup/memory.stat 2>/dev/null)
+  limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+  oom=$(sed -n 's/^oom_kill \([0-9]*\).*/\1/p' /sys/fs/cgroup/memory.events 2>/dev/null)
+  printf 'load %s on %s cores, this job given %s threads, cpu pressure %s%% (machine) %s%%, memory %s of %s used with %s killed (this job)' \
+    "${load:-?}" "$(nproc --all)" "${OMP_NUM_THREADS:-?}" "${pressure:-?}" "${job:-?}" \
+    "$(gib "${used:-0}")" "$(gib "${limit:-0}")" "${oom:-?}"
+}
+# BYTES as GiB, to one place; a limit of `max` is no limit at all.
+gib() {
+  [[ $1 == max || ! $1 =~ ^[0-9]+$ ]] && { printf 'no limit'; return; }
+  awk -v bytes="$1" 'BEGIN { printf "%.1f GiB", bytes / 1073741824 }'
 }
 await_flow() {
   local status=0 pid= left=() one
@@ -303,6 +316,10 @@ await_flow() {
     # and what it said last are said here.
     echo "--- $1's steps:"
     grep -E '^(TIMING|ok:)' "$work/$1.log" | sed "s/^/  [$1] /" || true
+    # Why, as the flow said it: a page's console after it can push the
+    # reason itself out of the last lines.
+    echo "--- $1 failed on:"
+    grep -E '^FAIL' "$work/$1.log" | sed "s/^/  [$1] /" || true
     echo "--- $1 said (its last 60 lines):"
     tail -60 "$work/$1.log" | sed "s/^/  [$1] /"
     failed+=("$1")

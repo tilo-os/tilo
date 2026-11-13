@@ -2,8 +2,6 @@
 
 use super::*;
 
-/// A button in a window bar is drawn at the bar's control height although a finger reaches
-/// it: the finger's target stands in its hit rect, beyond the shape it draws.
 #[test]
 fn a_bar_control_keeps_the_bars_height_and_reaches_a_finger_from_its_hit_rect() {
     use crate::interaction::InteractionEnvironment;
@@ -27,9 +25,6 @@ fn a_bar_control_keeps_the_bars_height_and_reaches_a_finger_from_its_hit_rect() 
     );
 }
 
-/// A button laid out for a mouse, told afterwards that a finger reaches it (a header's
-/// toggle made before the window told it), is the finger's target tall the next time it
-/// is laid out, with no node built anew.
 #[test]
 fn a_button_told_of_a_finger_after_its_node_was_built_grows_when_laid_out_again() {
     use crate::interaction::InteractionEnvironment;

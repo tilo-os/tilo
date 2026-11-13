@@ -9,8 +9,6 @@ use crate::resource::{TypstEditorShell, Workspace};
 
 pub(super) type Live = ui::framework::testing::TestApp<TypstEditorShell>;
 
-/// A document of `chapters` pages written as one loop, so the source stays
-/// short and a frame's cost is the preview's.
 pub(super) fn looped_source(chapters: usize) -> String {
     format!(
         r#"#set page(paper: "a4", numbering: "1")
@@ -39,8 +37,6 @@ pub(super) fn looped_source(chapters: usize) -> String {
     )
 }
 
-/// A document of `chapters` chapters, each a heading, justified text, a
-/// figure of shapes and an equation, starting on a fresh page.
 pub(super) fn long_source(chapters: usize) -> String {
     let mut source =
         String::from("#set page(paper: \"a4\", numbering: \"1\")\n#set par(justify: true)\n");
@@ -70,8 +66,6 @@ $ sum_(k=1)^n k^{i} = integral_0^1 f(x) dif x $
     source
 }
 
-/// Where to type into the chapter shown on the first page on screen: the
-/// start of its closing paragraph.
 pub(super) fn edit_point(app: &mut Live, source: &str) -> (usize, usize) {
     let chapter = preview(app, |p| {
         let first = p.pages_on_screen()[0];
@@ -83,7 +77,6 @@ pub(super) fn edit_point(app: &mut Live, source: &str) -> (usize, usize) {
     (chapter, at)
 }
 
-/// The editor at 1280×800 over an empty workspace file.
 pub(super) fn live() -> Live {
     let mut app = Live::new().unwrap();
     app.harness().resize((1280, 800)).unwrap();
@@ -119,8 +112,6 @@ pub(super) fn wheel(px: f64) -> WindowEvent {
     }
 }
 
-/// Run frames until the compile and every render the view waits on are
-/// done, as the window does when the worker wakes it.
 pub(super) fn settle(app: &mut Live) -> usize {
     let mut frames = 0;
     tilo_test_env::wait_until("the compile and its renders to finish", || {
@@ -132,7 +123,6 @@ pub(super) fn settle(app: &mut Live) -> usize {
     frames
 }
 
-/// The editor showing a `chapters`-chapter document, settled.
 fn opened(chapters: usize) -> Live {
     let mut app = live();
     put_source(&mut app, 0, &looped_source(chapters));
@@ -148,8 +138,6 @@ pub(super) struct ScrollFrame {
     pub(super) bitmap_bytes: usize,
 }
 
-/// Scroll the preview down `px` per frame for `frames` frames of a 60 Hz
-/// display, as a touchpad's pixel deltas arrive, one frame per step.
 pub(super) fn drive_scroll(app: &mut Live, frames: usize, px: f64) -> Vec<ScrollFrame> {
     cursor_over_preview(app);
     let period = Duration::from_micros(16_667);
@@ -184,7 +172,6 @@ pub(super) fn drive_scroll(app: &mut Live, frames: usize, px: f64) -> Vec<Scroll
     out
 }
 
-/// One frame's budget at 60 Hz, in milliseconds.
 const FRAME_BUDGET_MS: f64 = 16.667;
 
 #[test]
@@ -256,11 +243,6 @@ fn scrolling_never_waits_on_rendering() {
     );
 }
 
-/// Scroll the preview down `px` per frame for `frames` frames against a
-/// renderer that delivers every page within `lead` frames of being asked
-/// for it: before each frame, the frames run until nothing asked `lead` or
-/// more frames ago is still pending. A page that is then blank on screen was
-/// asked for too late, however loaded the machine is.
 fn drive_scroll_rendering_within(
     app: &mut Live,
     frames: usize,

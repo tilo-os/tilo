@@ -23,7 +23,6 @@ pub fn login_shell() -> String {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        // A page has no processes to start.
         "/bin/sh".into()
     }
 }
@@ -43,8 +42,6 @@ pub fn login_shell_with(
         .unwrap_or_else(|| "/bin/sh".into())
 }
 
-/// The login shell the passwd database records for the current real user
-/// (`pw_shell`); `None` when the entry is missing or names no shell.
 #[cfg(unix)]
 #[must_use]
 pub fn login_shell_from_passwd() -> Option<String> {
@@ -74,9 +71,6 @@ mod tests {
         move |shell| shells.contains(&shell)
     }
 
-    /// The order — `$SHELL`, then the shell the system records, then `/bin/sh`
-    /// — passing over any shell this account cannot run, and the lookups it
-    /// reads are the machine's own.
     #[test]
     fn the_shell_env_wins_then_the_passwd_shell_then_sh() {
         let fish = || Some("/usr/bin/fish".to_owned());
@@ -96,7 +90,6 @@ mod tests {
             login_shell_with(Some(String::new()), zsh(), has(&["/usr/bin/zsh"])),
             "/usr/bin/zsh"
         );
-        // The shell the person chose was uninstalled; the recorded one runs.
         assert_eq!(
             login_shell_with(fish(), bash(), has(&["/bin/bash"])),
             "/bin/bash"

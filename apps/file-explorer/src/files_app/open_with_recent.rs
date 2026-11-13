@@ -1,10 +1,4 @@
-//! "Open with" and the Recent place, on the Files widget.
-//!
-//! Both are thin: which applications open a type is the session's answer
-//! ([`crate::open_with`]), and the Recent list is
-//! [`RecentFiles`](crate::recent::RecentFiles). This module wires them into the
-//! context menu, the shared app-chooser palette, the resource catalogue and the
-//! listing.
+//! "Open with" and the Recent place on the Files window.
 
 use super::{FilesState, MenuChange, layout_menu_widget};
 use crate::command::FileCommand;
@@ -18,15 +12,10 @@ use ui::tilo_resource::{AbsolutePath, Effect as _, Invoke};
 use ui::widget::context_menu::MenuItem;
 use vello::kurbo::Point;
 
-/// Typed action id: `app` (one of the candidates).
 pub(super) const OPEN_WITH_ACTION: &str = "open-with";
-/// Per-application rows the app chooser lists for its target file.
 const OPEN_ONCE_PREFIX: &str = "open-with-app:";
-/// How many applications the submenu lists before "Other application…".
 pub(super) const SUBMENU_APPS: usize = 6;
 
-/// The cache key for a file's candidates: its MIME guess and extension, the
-/// two things the session resolves a type by.
 fn type_key(path: &Path) -> String {
     let mime = tilo_mime::from_path(path).unwrap_or_default().to_string();
     let ext = path
@@ -38,7 +27,6 @@ fn type_key(path: &Path) -> String {
 }
 
 impl FilesState {
-    /// Applications that open `path`, default first; empty when none does.
     pub(super) fn open_with_candidates(&self, path: &Path) -> Vec<DocumentApp> {
         let key = type_key(path);
         if let Some(cached) = self.open_with_cache.borrow().get(&key) {
@@ -47,8 +35,6 @@ impl FilesState {
         let apps = match (self.document_candidates)(path) {
             Ok(apps) => apps,
             Err(reason) => {
-                // A window no session started (a test, a standalone run) has
-                // no apps to list: "Open with" then says nothing claims it.
                 tracing::debug!(%reason, "the session did not list the apps that open this file");
                 Vec::new()
             }
@@ -57,18 +43,14 @@ impl FilesState {
         apps
     }
 
-    /// Forget cached candidates: an install, uninstall or new default can
-    /// change them, and every reload is a natural point to ask again.
     pub(super) fn invalidate_open_with(&self) {
         self.open_with_cache.borrow_mut().clear();
     }
 
-    /// Whether "Open with" applies: one regular file.
     pub(super) fn open_with_available(&self) -> bool {
         self.open_with_subject().is_some()
     }
 
-    /// The single selected regular file an "Open with" choice applies to.
     pub(super) fn open_with_subject(&self) -> Option<PathBuf> {
         if crate::archive::location(&self.current_path).is_some() || self.is_trash_view() {
             return None;
@@ -84,14 +66,11 @@ impl FilesState {
             .map(|entry| entry.path.clone())
     }
 
-    /// `FileCommand::OpenWith` — open `path` in exactly `app_id`.
     pub(super) fn apply_open_with(&mut self, path: &Path, app_id: &str) -> bool {
         self.ask_open(path, Some(app_id.to_owned()));
         true
     }
 
-    /// The "Open with" flyout: the default and other claiming apps, then
-    /// "Other application…" for the full, searchable list.
     pub(super) fn open_open_with_submenu(&mut self, at: Point) {
         let Some(path) = self.open_with_subject() else {
             self.menus.push(MenuChange::CloseSub);
@@ -110,7 +89,14 @@ impl FilesState {
             } else {
                 app.name.clone()
             };
-            menu.push(MenuItem::action(label, || {}));
+            let mut item = MenuItem::action(label, || {});
+            if let Some(icon) = app.icon.as_deref().and_then(ui::icons::Icon::from_name) {
+                item = item.with_icon(icon);
+            }
+            if let Some(source) = app.source {
+                item = item.with_detail(crate::applications::kind_label(source));
+            }
+            menu.push(item);
             commands.push(Some(FileCommand::OpenWith {
                 path: path.clone(),
                 app_id: app.id.clone(),
@@ -127,11 +113,6 @@ impl FilesState {
         self.menus.push(MenuChange::Sub(menu, commands));
     }
 
-    /// "Other application…": the app chooser on the file, listing every
-    /// application that claims its type. Its rows are this file's published
-    /// open-with actions, so choosing one goes through the same action door
-    /// automation uses. They are published for the file until the person moves
-    /// on.
     pub(super) fn open_app_chooser(&mut self) {
         let Some(path) = self.open_with_subject() else {
             return;
@@ -160,9 +141,6 @@ impl FilesState {
         self.app_chooser_target = None;
     }
 
-    /// What the open-with actions of `entry`'s row are made from
-    /// ([`append_open_with_actions`]); `None` when the row offers none: a
-    /// folder, an archive's or the Trash's entry, a type no app claims.
     pub(super) fn open_with_facts(&self, entry: &Entry) -> Option<OpenWithFacts> {
         if entry.is_dir
             || crate::archive::location(&self.current_path).is_some()
@@ -181,17 +159,12 @@ impl FilesState {
     }
 }
 
-/// What a row's open-with actions are made from: the apps that claim the
-/// file's type, and whether the app chooser is open on the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OpenWithFacts {
     candidates: Vec<DocumentApp>,
     chooser: bool,
 }
 
-/// Open-with actions for a file resource: the typed door (any claiming app)
-/// and, while the app chooser is open on this file, one row action per app for
-/// the chooser to list.
 pub(super) fn append_open_with_actions(
     facts: &OpenWithFacts,
     resource_id: &str,
@@ -223,11 +196,16 @@ pub(super) fn append_open_with_actions(
                 entry: resource_id.to_string(),
                 app: app.id.clone(),
             };
-            resource.actions.push(crate::effects::row_action(
+            let mut row = crate::effects::row_action(
                 &effect,
                 format!("{OPEN_ONCE_PREFIX}{}", app.id),
                 t_args("files-open-with-app", &[arg("app", name)]),
-            ));
+            );
+            row.type_mut().icon.clone_from(&app.icon);
+            if let Some(source) = app.source {
+                row.type_mut().description = Some(crate::applications::kind_label(source));
+            }
+            resource.actions.push(row);
         }
     }
 }
@@ -255,13 +233,10 @@ impl FilesState {
         Ok(())
     }
 
-    // --- Recent ----------------------------------------------------------
-
     pub(super) fn is_recent_view(&self) -> bool {
         crate::recent::is_location(&self.current_path)
     }
 
-    /// Record a use of `path` and persist the list (best-effort).
     pub(super) fn note_recent(&mut self, path: &Path, last_use: RecentUse) {
         if crate::archive::location(path).is_some() {
             return;
@@ -282,15 +257,10 @@ impl FilesState {
         );
     }
 
-    /// The Recent lists record, where every window sees this device's list,
-    /// and this device's id.
     fn recent_record(&self) -> Option<(&ui::framework::PersonRecord<RecentRecord>, &str)> {
         self.recent_record.as_ref().zip(self.device.as_deref())
     }
 
-    /// Change the Recent list: this device's in the record through
-    /// the action `edit` makes for the device, none for a relative path; a
-    /// window no framework hosts keeps its own and changes it with `change`.
     fn edit_recent(
         &mut self,
         edit: impl FnOnce(String) -> Option<Invoke<RecentRecord>>,
@@ -308,7 +278,6 @@ impl FilesState {
         }
     }
 
-    /// The Recent list as stored.
     pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
         self.recent_record().map_or_else(
             || self.recent.clone(),
@@ -316,8 +285,6 @@ impl FilesState {
         )
     }
 
-    /// The Recent listing: every remembered path that still exists, in
-    /// recency order.
     #[cfg(test)]
     pub(super) fn recent_entries(&self) -> Vec<Entry> {
         let paths: Vec<PathBuf> = self
@@ -329,7 +296,6 @@ impl FilesState {
         recent_entries_of(&paths)
     }
 
-    /// `FileCommand::RevealInFolder` — go to the item's folder with it selected.
     pub(super) fn apply_reveal_in_folder(&mut self, path: &Path) -> bool {
         let Some(parent) = path.parent() else {
             return false;
@@ -343,8 +309,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::ForgetRecent` — drop the item from Recent (the file is
-    /// untouched).
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
         let shown = AbsolutePath::new(path).ok();
         self.edit_recent(
@@ -359,8 +323,6 @@ impl FilesState {
         true
     }
 
-    /// Context menu for the Recent place: open, open with, find the file,
-    /// and forget it — never an edit, since the rows are from many folders.
     pub(super) fn recent_menu_spec(&self) -> Vec<(String, Option<FileCommand>)> {
         let mut spec = Vec::new();
         let Some(index) = self.selection.primary() else {
@@ -387,7 +349,6 @@ impl FilesState {
     }
 }
 
-/// The Recent listing of `paths`: every one that still exists, in their order.
 pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
     paths
         .iter()

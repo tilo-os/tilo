@@ -12,18 +12,12 @@ use crate::grid::{float, read, smoothstep, unit};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Texture {
-    /// No tooth: a flat board or screen.
     Smooth,
-    /// Hot-pressed paper: fine, even grain.
     #[default]
     Paper,
-    /// Cold-pressed watercolour paper: a soft, irregular tooth.
     ColdPress,
-    /// Rough watercolour paper: deep tooth that breaks dry strokes.
     Rough,
-    /// Primed linen: a woven canvas for oil.
     Linen,
-    /// A gessoed panel: a fine, irregular tooth with no weave to repeat.
     Panel,
 }
 
@@ -48,7 +42,6 @@ impl Texture {
         }
     }
 
-    /// Every texture's name, for messages that list the choices.
     pub fn names() -> String {
         Self::ALL.map(Self::name).join(", ")
     }
@@ -57,7 +50,6 @@ impl Texture {
         Self::ALL.into_iter().find(|texture| texture.name() == name)
     }
 
-    /// How strongly the texture is drawn as relief.
     fn relief(self) -> f32 {
         match self {
             Self::Smooth => 0.0,
@@ -70,28 +62,20 @@ impl Texture {
     }
 }
 
-/// A height per cell, `0..=1`, around a mean of one half.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Heightfield {
     pub width: usize,
     pub height: usize,
     pub texture: Texture,
     pub values: Vec<f32>,
-    /// Cells per artwork unit: slopes are measured per unit, so the tooth
-    /// stands as high however finely it is sampled.
     pub scale: f32,
 }
 
 impl Heightfield {
-    /// The ground's tooth for a `width` by `height` grid; `scale` is cells
-    /// per artwork unit, so the grain keeps its physical size.
     pub fn new(width: usize, height: usize, texture: Texture, scale: f32, seed: u64) -> Self {
         Self::window((0, 0), width, height, texture, scale, seed)
     }
 
-    /// The part of the ground [`Self::new`] would give at `scale` that
-    /// starts at cell `origin`, `width` by `height` cells: the same tooth,
-    /// cell for cell, without the cells outside it.
     pub fn window(
         origin: (usize, usize),
         width: usize,
@@ -122,8 +106,6 @@ impl Heightfield {
         read(&self.values, self.width, x, y, 0.5)
     }
 
-    /// How steeply the ground rises at a cell going along `(dx, dy)`, a
-    /// unit direction: positive on the faces a brush dragged that way meets.
     pub fn rise(&self, x: usize, y: usize, (dx, dy): (f32, f32)) -> f32 {
         let last_x = self.width.saturating_sub(1);
         let last_y = self.height.saturating_sub(1);
@@ -132,7 +114,6 @@ impl Heightfield {
         0.5 * (across * dx + down * dy) * self.scale
     }
 
-    /// The lit ground, as opaque straight-alpha sRGB RGBA8.
     pub fn shade(&self, colour: Rgb) -> Vec<u8> {
         let relief = self.texture.relief();
         let mut rgba = Vec::with_capacity(self.values.len().saturating_mul(4));
@@ -141,7 +122,6 @@ impl Heightfield {
                 let here = self.at(x, y);
                 let left = self.at(x.saturating_sub(1), y);
                 let up = self.at(x, y.saturating_sub(1));
-                // Light from the upper left: rising slopes toward it brighten.
                 let slope = ((here - left) + (here - up)) * self.scale;
                 let shade = 1.0 + relief * (0.22 * slope + 0.05 * (here - 0.5));
                 let lit = colour.scale(shade);
@@ -174,9 +154,6 @@ fn height_at(texture: Texture, x: f32, y: f32, seed: u64) -> f32 {
     }
 }
 
-/// Gesso brushed onto a board coat over coat and sanded: a fine tooth, the
-/// faint level ridges of the gesso brush and the odd pit where a bubble
-/// burst, so thin paint over it reads as grain rather than a grid.
 fn panel(x: f32, y: f32, seed: u64) -> f32 {
     let tooth = fbm(x / 1.4, y / 1.4, seed, 3);
     let ridges = value_noise(x / 70.0, y / 3.0, seed ^ 0x47) * 0.6
@@ -186,40 +163,28 @@ fn panel(x: f32, y: f32, seed: u64) -> f32 {
     (0.5 + (tooth - 0.5) * 0.9 + (ridges - 0.5) * 0.35 + sanded * 0.2 - pit * 0.35).clamp(0.0, 1.0)
 }
 
-/// An over-under weave of irregular threads under an uneven priming.
 fn linen(x: f32, y: f32, seed: u64) -> f32 {
     use std::f32::consts::PI;
     const PITCH: f32 = 3.4;
     let wobble_x = (value_noise(y / 9.0, x / 40.0, seed) - 0.5) * 0.9;
     let wobble_y = (value_noise(x / 9.0, y / 40.0, seed ^ 0x77) - 0.5) * 0.9;
-    // Threads are beaten in unevenly: their spacing crowds and opens over a
-    // few threads, so no stretch of the weave repeats the last.
     let crowd_x = (value_noise(x / 13.0, y / 60.0, seed ^ 0x91) - 0.5) * 1.5;
     let crowd_y = (value_noise(x / 60.0, y / 13.0, seed ^ 0x92) - 0.5) * 1.5;
     let u = (x + wobble_x) / PITCH + crowd_x;
     let v = (y + wobble_y) / PITCH + crowd_y;
     let warp = thread(u, seed ^ 0xa1);
     let weft = thread(v, seed ^ 0xa2);
-    // Which thread lies on top changes smoothly, as real threads bend
-    // over and under one another, rather than in hard cells.
     let over = 0.5 + 0.5 * (u * PI).sin() * (v * PI).sin();
     let thread = warp * (0.35 + 0.3 * over) + weft * (0.65 - 0.3 * over);
     let slub = value_noise(x / 14.0, y / 2.0, seed ^ 0x3c) * 0.2
         + value_noise(x / 2.0, y / 14.0, seed ^ 0x3d) * 0.15;
-    // Lattice noise on the thread grid puts a random value on every
-    // crossing: some gaps are pulled open, others closed by a fat thread.
     let gap = (value_noise(u, v, seed ^ 0x6b) - 0.5) * 0.4;
     let weave = thread * 0.75 + slub + gap - 0.45;
-    // The priming fills the weave unevenly and the stretched cloth
-    // undulates: in some patches the threads stand proud, in others they
-    // are half buried, so a dry brush catches in patches, not a grid.
     let lift = fbm(x / 28.0, y / 28.0, seed ^ 0x5e, 2) - 0.5;
     let depth = 0.6 + 0.6 * value_noise(x / 37.0, y / 37.0, seed ^ 0x5f);
     (0.5 + weave * depth + lift * 0.38).clamp(0.0, 1.0)
 }
 
-/// The height across one family of threads at `t` thread pitches: each
-/// thread is a little thicker or thinner and higher or lower than the next.
 fn thread(t: f32, seed: u64) -> f32 {
     let index = t.floor();
     let thick = lattice(index, 0.0, seed);
@@ -228,7 +193,6 @@ fn thread(t: f32, seed: u64) -> f32 {
     profile.powf(0.5 + thick) * (0.8 + 0.25 * high)
 }
 
-/// Fractal value noise in `0..=1`.
 pub(crate) fn fbm(x: f32, y: f32, seed: u64, octaves: u32) -> f32 {
     let mut sum = 0.0;
     let mut amplitude = 0.5;
@@ -243,7 +207,6 @@ pub(crate) fn fbm(x: f32, y: f32, seed: u64, octaves: u32) -> f32 {
     if total > 0.0 { sum / total } else { 0.5 }
 }
 
-/// Smoothly interpolated lattice noise in `0..=1`.
 pub(crate) fn value_noise(x: f32, y: f32, seed: u64) -> f32 {
     let x0 = x.floor();
     let y0 = y.floor();
@@ -265,7 +228,6 @@ fn lattice(x: f32, y: f32, seed: u64) -> f32 {
     unit(mix(seed ^ mix(xi.cast_unsigned() ^ mix(yi.cast_unsigned()))))
 }
 
-/// A 64-bit finaliser (`SplitMix64`): a well-distributed hash of `value`.
 pub(crate) fn mix(value: u64) -> u64 {
     let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -273,7 +235,6 @@ pub(crate) fn mix(value: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A unit float hashed from a seed and two indices.
 pub(crate) fn hash01(seed: u64, a: u64, b: u64) -> f32 {
     unit(mix(seed ^ mix(a ^ mix(b))))
 }

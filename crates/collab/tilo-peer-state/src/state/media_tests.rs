@@ -1,4 +1,5 @@
 use super::*;
+use crate::members::op::tests_support::set_member;
 use crate::workspace::media;
 use automerge::{ObjType, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -313,21 +314,15 @@ fn members() -> (
         &seed_workspace(WORKSPACE, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
-    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(
-        &mut workspace,
-        &caps,
-        members[0].1.user_public_key,
-        Role::Editor,
-    )
-    .unwrap();
-    put_member(
-        &mut workspace,
-        &caps,
-        members[1].1.user_public_key,
-        Role::Viewer,
-    )
-    .unwrap();
+    let governor = (key.clone(), original.owner_certificates()[0].clone());
+    for (member, role) in [(&members[0], Role::Editor), (&members[1], Role::Viewer)] {
+        set_member(
+            &mut workspace,
+            &governor,
+            &hex::encode(member.1.user_public_key),
+            role,
+        );
+    }
     let mut peer = StatePeer::new(
         WORKSPACE,
         original.owner_certificates()[0].clone(),
@@ -599,7 +594,7 @@ fn workspace_media_ended_call_allows_delete_but_cannot_restart_missing_object() 
 }
 #[test]
 fn workspace_media_security_basis_excludes_labels_and_reads_identity_rows_by_value() {
-    let (peer, _, _) = fixture();
+    let (peer, key, _) = fixture();
     let mut workspace = peer.admitted_workspace().unwrap().clone();
     let initial = media::security_basis(&workspace, &[]).unwrap();
     workspace.put(ROOT, "name", "renamed").unwrap();
@@ -627,8 +622,13 @@ fn workspace_media_security_basis_excludes_labels_and_reads_identity_rows_by_val
         )
         .unwrap();
     assert_eq!(initial, media::security_basis(&workspace, &[]).unwrap());
-    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(&mut workspace, &caps, [44; 32], Role::Viewer).unwrap();
+    let governor = (key, peer.owner_certificates()[0].clone());
+    set_member(
+        &mut workspace,
+        &governor,
+        &hex::encode([44; 32]),
+        Role::Viewer,
+    );
     assert_ne!(initial, media::security_basis(&workspace, &[]).unwrap());
 }
 #[test]
@@ -878,14 +878,13 @@ fn workspace_media_governed_security_change_without_revision_rejected_and_exhaus
     );
     assert_eq!(before, peer.durable().unwrap());
     let mut document = peer.admitted_workspace().unwrap().clone();
-    let caps = document.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(
+    let governor = (key.clone(), peer.owner_certificates()[0].clone());
+    set_member(
         &mut document,
-        &caps,
-        members[0].1.user_public_key,
+        &governor,
+        &hex::encode(members[0].1.user_public_key),
         Role::Viewer,
-    )
-    .unwrap();
+    );
     assert!(
         peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),

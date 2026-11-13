@@ -51,7 +51,6 @@ pub(crate) enum Command {
     Exit,
 }
 
-/// All app-local state for an active presentation.
 pub(crate) struct Presentation {
     started: Option<Instant>,
     paused_elapsed: Option<Duration>,
@@ -59,8 +58,6 @@ pub(crate) struct Presentation {
     transition: Option<(usize, Instant)>,
     blank: Blank,
     presenter_view: bool,
-    /// A real, host-owned audience toplevel is live. The app's original
-    /// window stays local and renders the dashboard in this state.
     external_audience: bool,
     show_notes: bool,
     /// Shaped settled audience slide. Presentation frames keep painting live
@@ -104,14 +101,12 @@ impl<'a> PresentationFrame<'a> {
     }
 }
 
-/// One shaped audience slide, retained across present-mode frames.
 struct PresentCache {
     slide: usize,
     revision: u64,
     palette: PaletteKind,
     /// Pixel-rounded destination so harmless subpixel jitter does not reshape.
     dest: (i64, i64, i64, i64),
-    /// Painted at `Affine::IDENTITY`; the live transform is applied on append.
     scene: Scene,
 }
 
@@ -174,8 +169,6 @@ impl Presentation {
         self.transition = None;
     }
 
-    /// Drop the shaped audience slide after an image decode changes pixels
-    /// without changing the deck revision/cache key.
     pub(crate) fn invalidate_cache(&mut self) {
         self.cache = None;
         self.audience_cache = None;
@@ -205,7 +198,6 @@ impl Presentation {
         if reduce_motion {
             return 1.0;
         }
-        // The next slide cross-fades in over the last (`ui::motion::CROSS_FADE`).
         match self.transition {
             Some((_, at)) => ui::motion::unit_opacity(ui::motion::CROSS_FADE.progress_after(
                 ui::motion::Direction::Enter,
@@ -366,8 +358,6 @@ impl Presentation {
         self.paused_total = Duration::ZERO;
     }
 
-    /// Draw a blanked audience surface. Returns true when it fully owns the
-    /// frame, allowing the caller to skip deck rendering.
     pub(crate) fn draw_blank(
         &self,
         scene: &mut Scene,
@@ -377,7 +367,6 @@ impl Presentation {
     ) -> bool {
         let background = match self.blank {
             Blank::None => return false,
-            // A white-out lights the room: the projector shows pure white.
             Blank::White => Color::WHITE,
             Blank::Black => theme.tokens.colors.media.letterbox,
         };
@@ -385,8 +374,6 @@ impl Presentation {
         true
     }
 
-    /// Where the slide sits on a stage of `area`: as large as it fits with
-    /// the content gutter round it, centred.
     fn stage_dest(area: Rect, theme: &Theme) -> Rect {
         let gutter = f64::from(theme.tokens.spacing.s6);
         let available_width = (area.width() - 2.0 * gutter).max(1.0);
@@ -413,7 +400,6 @@ impl Presentation {
             return;
         }
 
-        // The slide is media on a letterbox, the same in every theme.
         ui::paint::fill_rect(
             scene,
             transform,
@@ -452,8 +438,6 @@ impl Presentation {
         }
     }
 
-    /// The current slide (cross-fading from the previous one) at
-    /// `destination`, from the settled cache once the fade is over.
     fn draw_stage_slide(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -606,8 +590,6 @@ impl Presentation {
         );
     }
 
-    /// The speaker notes over the bottom of the stage while presenting
-    /// without the dashboard: chrome over media, on the floating material.
     fn draw_notes_panel(
         &self,
         scene: &mut Scene,
@@ -630,7 +612,6 @@ impl Presentation {
         let preview_x = inner.x1 - preview_width;
         let mut ctx = PaintCtx::new(scene, transform, text, &local);
 
-        // Leading column: the notes, with the elapsed time beside their label.
         let notes_x1 = preview_x - s6;
         ctx.text_role(
             &tr("slides-speaker-notes"),
@@ -663,7 +644,6 @@ impl Presentation {
             Some((notes_x1 - inner.x0).max(1.0) as f32),
         );
 
-        // Trailing column: the next slide.
         if let Some(next) = frame.deck.slides.get(frame.current + 1) {
             ctx.text_role(
                 &tr("slides-next"),
@@ -703,7 +683,6 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
         palette: &Palette,
     ) {
-        // The dashboard stands on the window ground the framework painted.
         let m = PresenterMetrics::of(theme);
         let body = Rect::new(
             frame.rect.x0 + m.s6,
@@ -734,7 +713,6 @@ impl Presentation {
         let (primary, dim) = (colors.text_primary, colors.text_dim);
         let top = frame.rect.y0 + m.s4;
         let right = frame.rect.x1 - m.s6;
-        // The elapsed time is the one hero number on the dashboard.
         let clock = self.clock();
         let clock_style = ctx.theme.text(TextRole::Display).numeric();
         let (clock_w, _) = ctx.text.measure_style(&clock, None, &clock_style);
@@ -782,16 +760,12 @@ impl Presentation {
     }
 }
 
-/// One presenter-dashboard frame: the deck view, its resolved palette and
-/// the measures every panel lays out against.
 struct PresenterView<'a> {
     frame: &'a PresentationFrame<'a>,
     palette: &'a Palette,
     m: PresenterMetrics,
 }
 
-/// The presenter dashboard's measures, from the theme: its spacing and the
-/// line boxes of the roles it sets.
 #[derive(Clone, Copy)]
 struct PresenterMetrics {
     lh_display: f64,
@@ -820,17 +794,14 @@ impl PresenterMetrics {
         }
     }
 
-    /// Advance from a section label's top to the content under it.
     fn label_adv(&self) -> f64 {
         self.lh_subheading + self.s2
     }
 
-    /// Header band: the clock over the slide position.
     fn header_h(&self) -> f64 {
         self.s4 + self.lh_display + self.lh_caption + self.s6
     }
 
-    /// Footer band holding the key hints and the deck's progress.
     fn footer_h(&self) -> f64 {
         self.lh_caption + 2.0 * self.s4
     }
@@ -902,7 +873,6 @@ fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: R
             radius,
         );
     } else {
-        // After the last slide: an empty well saying so.
         ui::surface::card(
             ctx.scene,
             ctx.transform,
@@ -924,7 +894,6 @@ fn draw_presenter_next(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area: R
     destination
 }
 
-/// The speaker-notes label and well filling `column`.
 fn draw_presenter_notes(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, column: Rect) {
     let PresenterView { frame, m, .. } = view;
     let theme = ctx.theme;
@@ -973,7 +942,6 @@ fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
         frame.rect.x1 - m.s6,
         frame.rect.y1,
     );
-    // The deck's progress along the bottom edge.
     let fraction = (frame.current + 1) as f32 / frame.deck.slides.len().max(1) as f32;
     let mut progress = ProgressBar::new(fraction);
     progress.apply_layout_external(Rect::new(
@@ -989,7 +957,6 @@ fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
         theme,
         &ui::presence::PresenceCtx::empty(),
     );
-    // The keys the dashboard answers to, elided to the window.
     let style = theme.text(TextRole::Caption);
     let hints = ctx.text.elide_to_width_style(
         &tr("slides-presenter-keys"),
@@ -1018,7 +985,6 @@ fn fit_slide_top(area: Rect) -> Rect {
 mod tests {
     use super::*;
 
-    /// Blank navigation, presenter clicks and the paused timer.
     #[test]
     fn presentation_navigation_and_timer_state() {
         {
@@ -1062,7 +1028,6 @@ mod tests {
         }
     }
 
-    /// The settled slide cache reuses unchanged renders and keys every input.
     #[test]
     fn settled_slide_cache_reuses_and_keys_every_input() {
         {

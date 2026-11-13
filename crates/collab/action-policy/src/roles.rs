@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Authority, Context, Grant, GrantId, KindSet, Level, Lifetime, Role, Subject, TreePath,
+    Answer, Authority, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, Role, TreePath,
     Verdict,
 };
 
@@ -221,10 +221,10 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 /// it; [`is_legacy_administrator_grant`] finds those so a member's governance
 /// operation rewrites them.
 #[must_use]
-pub fn administrator_grant(workspace: &str, person: &str, granted_by: Subject) -> Grant {
+pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: administrator_grant_id(person),
-        subject: Subject::Person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: governance_actions(workspace),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Allow,
@@ -245,10 +245,10 @@ pub fn administrator_moderation_grant_id(person: &str) -> GrantId {
 /// [`moderation`], where an Editor's own role denies, so it decides every
 /// moderation action whatever that role says.
 #[must_use]
-pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by: Subject) -> Grant {
+pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: administrator_moderation_grant_id(person),
-        subject: Subject::Person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: moderation(workspace).any(Level::Action),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Allow,
@@ -264,7 +264,7 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
 /// not one, so rewriting never widens it.
 #[must_use]
 pub fn is_legacy_administrator_grant(workspace: &str, grant: &Grant) -> bool {
-    matches!(&grant.subject, Subject::Person(person) if grant.id == administrator_grant_id(person))
+    matches!(&grant.grantee, Grantee::Member(crate::MemberId::Person(person)) if grant.id == administrator_grant_id(person))
         && grant.node == workspace_resource(workspace)
         && grant.answer == Answer::Allow
         && grant.lifetime == Lifetime::UntilRevoked
@@ -330,10 +330,10 @@ pub fn block_grant_id(person: &str) -> GrantId {
 /// The grant that keeps `person` out of `workspace`: every kind denied on the
 /// whole workspace, given by `granted_by`.
 #[must_use]
-pub fn block_grant(workspace: &str, person: &str, granted_by: Subject) -> Grant {
+pub fn block_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: block_grant_id(person),
-        subject: Subject::Person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: TreePath::workspace(workspace),
         kinds: KindSet::ALL,
         answer: Answer::Deny,
@@ -357,11 +357,11 @@ pub fn restriction_grant(
     workspace: &str,
     person: &str,
     until_ms: u64,
-    granted_by: Subject,
+    granted_by: Grantee,
 ) -> Grant {
     Grant {
         id: restriction_grant_id(person),
-        subject: Subject::Person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: TreePath::workspace(workspace),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Deny,
@@ -384,7 +384,7 @@ pub const MODERATOR_GOVERNANCE: [&str; 7] = [
     governance::RESUME_BOT,
 ];
 
-/// One rule of a preset: a grant without its subject.
+/// One rule of a preset: a grant without its grantee.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Rule {
     pub node: TreePath,
@@ -472,13 +472,13 @@ impl Preset {
         Ok(())
     }
 
-    /// The preset's grants for `subject`. Ids are `<prefix>:<index>`.
+    /// The preset's grants for `grantee`. Ids are `<prefix>:<index>`.
     #[must_use]
     pub fn assign(
         &self,
         prefix: &str,
-        subject: &Subject,
-        granted_by: &Subject,
+        grantee: &Grantee,
+        granted_by: &Grantee,
         lifetime: &Lifetime,
     ) -> Vec<Grant> {
         self.rules
@@ -486,7 +486,7 @@ impl Preset {
             .enumerate()
             .map(|(index, rule)| Grant {
                 id: GrantId(format!("{prefix}:{index}")),
-                subject: subject.clone(),
+                grantee: grantee.clone(),
                 node: rule.node.clone(),
                 kinds: rule.kinds,
                 answer: rule.answer,
@@ -577,13 +577,13 @@ pub fn role_preset(role: Role, workspace: &str) -> Preset {
 /// Every role's grants for a new workspace, given by its owner. Ids are
 /// `role:<role>:<index>`.
 #[must_use]
-pub fn workspace_role_grants(workspace: &str, granted_by: &Subject) -> Vec<Grant> {
+pub fn workspace_role_grants(workspace: &str, granted_by: &Grantee) -> Vec<Grant> {
     Role::ALL
         .into_iter()
         .flat_map(|role| {
             role_preset(role, workspace).assign(
                 &role_grant_prefix(role),
-                &Subject::Role(role),
+                &Grantee::role(role),
                 granted_by,
                 &Lifetime::UntilRevoked,
             )
@@ -607,7 +607,7 @@ fn role_grant_prefix(role: Role) -> String {
 /// ids and custom presets assign `preset:` ids, so neither is one.
 #[must_use]
 pub fn is_role_grant(grant: &Grant) -> bool {
-    let Subject::Role(role) = grant.subject else {
+    let Grantee::Role(role) = grant.grantee else {
         return false;
     };
     grant
@@ -644,7 +644,7 @@ pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
             out.push(Some(grant));
             continue;
         }
-        let Subject::Role(role) = grant.subject else {
+        let Grantee::Role(role) = grant.grantee else {
             continue;
         };
         if !held.iter().any(|entry| entry.role == role) {
@@ -654,7 +654,7 @@ pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
             };
             let current = role_preset(role, workspace).assign(
                 &role_grant_prefix(role),
-                &grant.subject,
+                &grant.grantee,
                 &grant.granted_by,
                 &Lifetime::UntilRevoked,
             );
@@ -777,30 +777,26 @@ pub mod agent_policy {
 /// hands it the person whose message caused the turn, and the bound it holds
 /// for the agent's record ([`crate::turn::authority`]).
 #[must_use]
-pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> crate::Bound {
-    let subject = Subject::Agent(agent.to_owned());
-    let granted_by = Subject::Person(person.to_owned());
+pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
+    let grantee = Grantee::agent(agent.to_owned());
+    let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
     let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
         &prefix,
-        &subject,
+        &grantee,
         &granted_by,
         &Lifetime::UntilRevoked,
     );
     grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
         id: GrantId(format!("{prefix}:bound:{index}")),
-        subject: subject.clone(),
+        grantee: grantee.clone(),
         node: rule.node.clone(),
         kinds: rule.kinds,
         answer: rule.answer,
         lifetime: Lifetime::UntilRevoked,
         granted_by: granted_by.clone(),
     }));
-    crate::Bound {
-        subject,
-        grants,
-        also: Vec::new(),
-    }
+    grants
 }
 
 /// The grant making application `app` an author of its own records in
@@ -809,10 +805,10 @@ pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) ->
 /// behind the workspace's own grants and the person's consent. Given when a
 /// person who may change the workspace opens the app.
 #[must_use]
-pub fn app_authorship(workspace: &str, app: &str, granted_by: Subject) -> Grant {
+pub fn app_authorship(workspace: &str, app: &str, granted_by: Grantee) -> Grant {
     Grant::new(
         format!("app-author:{app}"),
-        Subject::App(app.to_owned()),
+        Grantee::app(app.to_owned()),
         TreePath::workspace(workspace).app(app),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
@@ -832,7 +828,7 @@ pub const SESSION_APP_GRANT: &str = "session-app";
 #[must_use]
 pub fn is_session_app(grant: &Grant) -> bool {
     grant.id.as_str() == SESSION_APP_GRANT
-        && matches!(&grant.subject, Subject::App(app) if app == SESSION_APP)
+        && matches!(&grant.grantee, Grantee::App(app) if app == SESSION_APP)
 }
 
 /// The grant making the desktop session's own app, [`SESSION_APP`], one of
@@ -840,10 +836,10 @@ pub fn is_session_app(grant: &Grant) -> bool {
 /// do for them. It never reaches past the person it acts for, whose authority
 /// bounds every delegation.
 #[must_use]
-pub fn session_app(workspace: &str, granted_by: Subject) -> Grant {
+pub fn session_app(workspace: &str, granted_by: Grantee) -> Grant {
     Grant::new(
         SESSION_APP_GRANT,
-        Subject::App(SESSION_APP.to_owned()),
+        Grantee::app(SESSION_APP.to_owned()),
         TreePath::workspace(workspace),
         KindSet::ALL,
         Answer::Allow,
@@ -859,7 +855,7 @@ pub const DEVICE_PANEL_GRANT: &str = "device-panel";
 #[must_use]
 pub fn is_device_panel(grant: &Grant) -> bool {
     grant.id.as_str() == DEVICE_PANEL_GRANT
-        && matches!(&grant.subject, Subject::App(app) if app == DEVICE_PANEL)
+        && matches!(&grant.grantee, Grantee::App(app) if app == DEVICE_PANEL)
 }
 
 /// Whether `grant` is one the code defines and every read of a stored policy
@@ -891,7 +887,7 @@ pub const FILES_APP_GRANT: &str = "files-app";
 #[must_use]
 pub fn is_files_app(grant: &Grant) -> bool {
     grant.id.as_str() == FILES_APP_GRANT
-        && matches!(&grant.subject, Subject::App(app) if app == FILES_APP)
+        && matches!(&grant.grantee, Grantee::App(app) if app == FILES_APP)
 }
 
 /// The grant making [`FILES_APP`] an author of `workspace`'s files: every
@@ -900,10 +896,10 @@ pub fn is_files_app(grant: &Grant) -> bool {
 /// them to hold any starts the record. Whether a member may write stays
 /// their role's: a viewer still writes nothing.
 #[must_use]
-pub fn files_app(workspace: &str, granted_by: Subject) -> Grant {
+pub fn files_app(workspace: &str, granted_by: Grantee) -> Grant {
     Grant::new(
         FILES_APP_GRANT,
-        Subject::App(FILES_APP.to_owned()),
+        Grantee::app(FILES_APP.to_owned()),
         TreePath::workspace(workspace).app(FILES_APP),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
@@ -920,10 +916,10 @@ pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
 /// that are nobody else's to read, such as what the person copied. It reads
 /// them, and nothing about them: changing the device stays the person's.
 #[must_use]
-pub fn device_panel(workspace: &str, granted_by: Subject) -> Grant {
+pub fn device_panel(workspace: &str, granted_by: Grantee) -> Grant {
     Grant::new(
         DEVICE_PANEL_GRANT,
-        Subject::App(DEVICE_PANEL.to_owned()),
+        Grantee::app(DEVICE_PANEL.to_owned()),
         TreePath::workspace(workspace)
             .app(SESSION_APP)
             .kind(SESSION_KIND),
@@ -936,37 +932,3 @@ pub fn device_panel(workspace: &str, granted_by: Subject) -> Grant {
 /// The kind the session publishes its own resources under: the compositor's
 /// state, the clipboard, the lock.
 pub const SESSION_KIND: &str = "session";
-
-/// What a person may do from a device that is not theirs, in any workspace: read
-/// and change content, ask first before reaching outside it, never govern.
-#[must_use]
-pub fn foreign_device_bound() -> Vec<Grant> {
-    let issuer = Subject::ForeignDevice;
-    let mut grants = vec![
-        Grant::new(
-            "foreign-device:content",
-            Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            issuer.clone(),
-        ),
-        Grant::new(
-            "foreign-device:outside",
-            Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::OUTSIDE,
-            Answer::Ask,
-            issuer.clone(),
-        ),
-    ];
-    grants.push(Grant::new(
-        "foreign-device:governance",
-        Subject::ForeignDevice,
-        TreePath::root().any(Level::Workspace).kind(ROOM_KIND),
-        KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-        Answer::Deny,
-        issuer,
-    ));
-    grants
-}

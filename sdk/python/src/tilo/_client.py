@@ -1,19 +1,20 @@
-"""The client: the account's workspaces and keys, and the door it all goes to."""
+"""The client: the account's workspaces and keys, and the transport they go to."""
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 import uuid
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
-from ._errors import AskPending, ProtocolError, Refused
+from ._api import Api
 from ._endpoint import Endpoint
+from ._errors import AskPending, ProtocolError, Refused
 from ._models import Key, MintedKey, Usage, WorkspaceInfo, WorkspaceList
 from ._sync import LoopThread
-from ._wire import Transport
-
-ACCOUNT = "account"
+from ._transport import HttpTransport, Transport, native_transport
 
 
 class Workspaces:
@@ -23,12 +24,12 @@ class Workspaces:
         self.client = client
 
     def list(self) -> Any:
-        """Every workspace this key reaches, and the hosts to create one on."""
+        """Every workspace this key reaches, wherever it is hosted."""
         return self.client.handoff(self.client._workspace_list())
 
-    def create(self, name: str, host: str | None = None) -> Any:
-        """Create a workspace by name, on `host` (the default host without one)."""
-        return self.client.handoff(self.client._create_workspace(name, host))
+    def create(self, name: str) -> Any:
+        """Make a workspace of the person's own, named `name`."""
+        return self.client.handoff(self.client._create_workspace(name))
 
     def delete(self, workspace: Any) -> Any:
         """Delete a workspace of the person's own, and everything in it: final.
@@ -66,7 +67,7 @@ class AccountKeys:
         expires_in: int | None = None,
         browser_pages: bool = True,
     ) -> Any:
-        """Ask the person for a new key.
+        """Ask the person for a new key: their device approves it.
 
         A key reaching all their workspaces lasts until revoked unless
         `expires_in` (seconds) says when it expires; one reaching a single
@@ -74,8 +75,8 @@ class AccountKeys:
         no) lets the key operate web pages in its workspace's Browser —
         navigating, filling in, selecting and clicking — without asking the
         person each time; submitting a page still asks them. Raises
-        `AskPending` with the link they approve it at; `await ask.wait()`
-        answers the `Key` once they do.
+        `AskPending` with the link they approve it at; `await ask.wait()` is
+        the `Key` once they do.
         """
         return self.client.handoff(
             self.client._key_create(name, workspace, expires_in, browser_pages)
@@ -87,7 +88,11 @@ class AccountKeys:
         name: str | None = None,
         expires_in: int | None = None,
     ) -> Any:
-        """A key for one workspace, for an agent there; narrower than your own."""
+        """A key for one workspace, for an agent there; narrower than your own.
+
+        The person is not asked: the key is minted from this one, reaches
+        `workspace` alone and ends no later than this key does.
+        """
         return self.client.handoff(self.client._mint(workspace, name, expires_in))
 
     def revoke(self, grant: str) -> Any:
@@ -112,6 +117,11 @@ class SignIn:
         self.interval = interval
         self.expires_in = expires_in
 
+    @property
+    def approval(self) -> str:
+        """The last part of the link: the ask it names."""
+        return self.url.rstrip("/").rsplit("/", 1)[-1]
+
     def wait(self) -> Any:
         """Follow the approval until the person decides, then the `Key`."""
         return self.client.handoff(self._wait())
@@ -119,39 +129,23 @@ class SignIn:
     async def _wait(self) -> Key:
         deadline = time.monotonic() + self.expires_in
         while True:
-            response = await self.client.transport.request(
-                "POST", "/keys/poll", body={"poll": self.poll}
+            response = await self.client.api.call(
+                "POST", "/keys/poll", json={"poll": self.poll}, mutating=False
             )
-            body = _json_of(response)
-            if response.status_code == 200:
-                return Key.of(body)
-            if response.status_code == 202:
+            body = response.json()
+            if response.status == 200:
+                return Key.of(body if isinstance(body, Mapping) else {})
+            if response.status == 202:
                 if time.monotonic() >= deadline:
                     raise Refused("expired", "nothing approved the key in time")
                 await asyncio.sleep(self.interval)
                 continue
-            error = body.get("error")
-            if isinstance(error, Mapping):
-                raise Refused(
-                    str(error.get("code") or "failed"),
-                    str(error.get("message") or ""),
-                    [str(step) for step in error.get("next_steps") or []],
-                )
             raise ProtocolError(
-                f"the door answered the poll with {response.status_code}",
-                status=response.status_code,
+                f"the approval answered {response.status}", status=response.status
             )
 
     def __repr__(self) -> str:
         return f"SignIn({self.url!r})"
-
-
-def _json_of(response: Any) -> Mapping[str, Any]:
-    try:
-        body = response.json()
-    except ValueError:
-        return {}
-    return body if isinstance(body, Mapping) else {}
 
 
 def _looks_like_id(ref: str) -> bool:
@@ -170,31 +164,64 @@ class AsyncTilo:
     def __init__(
         self,
         key: str | None = None,
-        door: str | None = None,
+        url: str | None = None,
         *,
         http: Any = None,
         retry_deadline: float | None = None,
+        transport: Transport | None = None,
     ) -> None:
-        """`retry_deadline` is how long, in seconds, a call keeps asking again
-        while the host is busy with the person's changes (60 by default; 0
-        raises `RateLimited` at once)."""
-        self.transport = Transport(door, key, http, retry_deadline)
+        """`url` is the API server (`TILO_API_URL`, `https://api.tilo.sh`) and
+        `key` the `tilo_sk_…` it takes (`TILO_API_KEY`). `retry_deadline` is
+        how long, in seconds, a call keeps asking again while the host is busy
+        with the person's changes (60 by default; 0 raises `RateLimited` at
+        once). `transport` is where the calls go instead of HTTP, as
+        [`AsyncTilo.host`] makes one."""
+        self.transport = transport or HttpTransport(url, key, http=http)
+        self.api = Api(self.transport, retry_deadline)
         self.catalog: WorkspaceList | None = None
         self.workspaces = Workspaces(self)
         self.keys = AccountKeys(self)
+        # The run a group of the sync client's calls is a step of: it has no
+        # contextvars across threads, so it names the run here.
+        self.run_group: Any = None
+        self.loop: Any = None
+
+    @classmethod
+    def host(cls, key_file: Any) -> AsyncTilo:
+        """A client of the Tilo host `key_file` names, reached directly.
+
+        It is the same `/v1` an API server answers over HTTP, served in this
+        process by the Rust extension `tilo._native`, which dials the host as
+        a device of the person with the key the file holds (`tilo key export`
+        writes one). `key_file` is the file's path, or its contents.
+        """
+        return cls(transport=native_transport(key_file))
 
     # -- what the sync client and this one share -------------------------
 
     def handoff(self, value: Any) -> Any:
-        return self.transport.handoff(value)
+        """`value` as this client's caller takes it: awaited, or walked here."""
+        if not self.sync:
+            return value
+        if inspect.isawaitable(value):
+            return self.loop.run(value)
+        if hasattr(value, "__anext__"):
+            from ._sync import SyncIterator
+
+            return SyncIterator(value, self.loop)
+        return value
 
     async def aclose(self) -> None:
+        """Close what this client keeps open: the HTTP connections, say."""
         await self.transport.aclose()
 
     def close(self) -> Any:
+        """Close the client; with the sync client this stops its event loop too."""
         if self.sync:
-            self.transport.loop.run(self.transport.aclose())
-            self.transport.loop.stop()
+            if self.loop is not None:
+                self.loop.run(self.aclose())
+                self.loop.stop()
+                self.loop = None
             return None
         return self.aclose()
 
@@ -207,7 +234,7 @@ class AsyncTilo:
     # -- the account -----------------------------------------------------
 
     def _endpoint(self) -> Endpoint:
-        return Endpoint(self.transport, None)
+        return Endpoint(self)
 
     def workspace(self, id_or_name: str) -> Any:
         """One workspace, by its id or by its name."""
@@ -216,8 +243,9 @@ class AsyncTilo:
         return Workspace(self, id_or_name)
 
     async def _workspace_list(self) -> WorkspaceList:
-        result = await self._endpoint().outcome(f"{ACCOUNT}/workspaces#list", {})
-        self.catalog = WorkspaceList.of(result if isinstance(result, Mapping) else {})
+        endpoint = self._endpoint()
+        answer = await endpoint.json("GET", endpoint.path("workspaces"))
+        self.catalog = WorkspaceList.of(answer)
         return self.catalog
 
     async def _workspace_info(self, ref: str) -> WorkspaceInfo:
@@ -228,8 +256,8 @@ class AsyncTilo:
                 return WorkspaceInfo(id=ref, name="", host="")
             raise
         found = listing.named(ref)
-        # A workspace the door does not name still answers to its id, as the
-        # door decides.
+        # A workspace the listing does not name still answers to its id, as
+        # the API decides.
         if found is None and _looks_like_id(ref):
             return WorkspaceInfo(id=ref, name="", host="")
         if found is None:
@@ -240,16 +268,11 @@ class AsyncTilo:
             )
         return found
 
-    async def _create_workspace(self, name: str, host: str | None) -> WorkspaceInfo:
-        arguments: dict[str, Any] = {"name": name}
-        if host is not None:
-            arguments["host"] = host
-        result = await self._endpoint().outcome(f"{ACCOUNT}/workspaces#create", arguments)
+    async def _create_workspace(self, name: str) -> WorkspaceInfo:
+        endpoint = self._endpoint()
+        answer = await endpoint.json("POST", endpoint.path("workspaces"), json={"name": name})
         self.catalog = None
-        workspace = result.get("workspace") if isinstance(result, Mapping) else None
-        if not isinstance(workspace, Mapping):
-            raise ProtocolError("the door created a workspace without naming it")
-        return WorkspaceInfo.of(workspace)
+        return WorkspaceInfo.of(answer)
 
     async def _workspace_id(self, workspace: Any) -> str:
         """The id of a workspace named by it, by its name, or as a `Workspace`."""
@@ -260,14 +283,18 @@ class AsyncTilo:
         resolve = getattr(workspace, "_id", None)
         if resolve is not None:
             return await resolve()
-        raise ProtocolError(f"a workspace is named by an id, a name or a Workspace, not {workspace!r}")
+        raise ProtocolError(
+            f"a workspace is named by an id, a name or a Workspace, not {workspace!r}"
+        )
 
     async def _delete_workspace(self, workspace: Any) -> Any:
-        result = await self._endpoint().outcome(
-            f"{ACCOUNT}/workspaces#delete", {"workspace": await self._workspace_id(workspace)}
+        endpoint = self._endpoint()
+        answer = await endpoint.json(
+            "DELETE",
+            endpoint.path("workspaces", await self._workspace_id(workspace)),
         )
         self.catalog = None
-        return result
+        return answer
 
     def usage(self) -> Any:
         """The person's account on the host: per workspace, what it keeps and
@@ -275,32 +302,31 @@ class AsyncTilo:
         return self.handoff(self._usage())
 
     async def _usage(self) -> Usage:
-        answer = await self._endpoint().call("tilo_read", {"path": f"{ACCOUNT}/usage"})
-        fields = answer.get("fields")
-        return Usage.of(fields if isinstance(fields, Mapping) else {})
+        endpoint = self._endpoint()
+        return Usage.of(await endpoint.json("GET", endpoint.path("account")))
 
     # -- keys ------------------------------------------------------------
 
     async def _keys_list(self) -> list[Key]:
-        result = await self._endpoint().outcome(f"{ACCOUNT}/keys#list", {})
-        keys = result.get("keys") if isinstance(result, Mapping) else None
+        endpoint = self._endpoint()
+        answer = await endpoint.json("GET", endpoint.path("keys"))
+        keys = answer.get("keys")
         return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
 
     async def _mint(
         self, workspace: Any, name: str | None, expires_in: int | None
     ) -> MintedKey:
-        arguments: dict[str, Any] = {"workspace": await self._workspace_id(workspace)}
+        body: dict[str, Any] = {"workspace": await self._workspace_id(workspace)}
         if name is not None:
-            arguments["name"] = name
+            body["name"] = name
         if expires_in is not None:
-            arguments["expires_in"] = expires_in
-        result = await self._endpoint().outcome(f"{ACCOUNT}/keys#mint", arguments)
-        if not isinstance(result, Mapping):
-            raise ProtocolError("the door minted a key without naming it")
-        return MintedKey.of(result)
+            body["expires_in"] = expires_in
+        endpoint = self._endpoint()
+        return MintedKey.of(await endpoint.json("POST", endpoint.path("keys"), json=body))
 
     async def _revoke(self, grant: str) -> Any:
-        return await self._endpoint().outcome(f"{ACCOUNT}/keys#revoke", {"grant": grant})
+        endpoint = self._endpoint()
+        return await endpoint.json("DELETE", endpoint.path("keys", grant))
 
     async def _key_create(
         self,
@@ -309,22 +335,18 @@ class AsyncTilo:
         expires_in: int | None,
         browser_pages: bool = True,
     ) -> Key:
-        arguments: dict[str, Any] = {"name": name}
-        if workspace is not None:
-            arguments["workspace"] = await self._workspace_id(workspace)
-        if expires_in is not None:
-            arguments["expires_in"] = expires_in
-        if not browser_pages:
-            arguments["browser_pages"] = False
-        try:
-            await self._endpoint().call("tilo_do", {
-                "path": f"{ACCOUNT}/keys#create",
-                "args": arguments,
-            })
-        except AskPending as ask:
-            ask._then(lambda answer: Key.of(answer.get("result") or {}))
-            raise
-        raise ProtocolError("the door made a key without asking the person")
+        sign_in = await self._sign_in(
+            name,
+            None if workspace is None else await self._workspace_id(workspace),
+            expires_in,
+            browser_pages,
+        )
+        raise AskPending(
+            sign_in.url,
+            sign_in.approval,
+            question={"name": name},
+            follow=sign_in._wait,
+        )
 
     def sign_in(
         self,
@@ -356,19 +378,7 @@ class AsyncTilo:
             body["expires_in"] = expires_in
         if not browser_pages:
             body["browser_pages"] = False
-        response = await self.transport.request("POST", "/keys/new", body=body)
-        answer = _json_of(response)
-        if response.status_code >= 400:
-            error = answer.get("error")
-            if isinstance(error, Mapping):
-                raise Refused(
-                    str(error.get("code") or "failed"),
-                    str(error.get("message") or ""),
-                    [str(step) for step in error.get("next_steps") or []],
-                )
-            raise ProtocolError(
-                f"the door answered {response.status_code}", status=response.status_code
-            )
+        answer = await self.api.json("POST", "/keys/new", json=body, mutating=False)
         return SignIn(
             self,
             str(answer.get("approve_url") or ""),
@@ -386,14 +396,16 @@ class Tilo(AsyncTilo):
     def __init__(
         self,
         key: str | None = None,
-        door: str | None = None,
+        url: str | None = None,
         *,
         http: Any = None,
         retry_deadline: float | None = None,
+        transport: Transport | None = None,
     ) -> None:
-        super().__init__(key, door, http=http, retry_deadline=retry_deadline)
-        self.transport.sync = True
-        self.transport.loop = LoopThread()
+        super().__init__(
+            key, url, http=http, retry_deadline=retry_deadline, transport=transport
+        )
+        self.loop = LoopThread()
 
     def __enter__(self) -> Tilo:
         return self
@@ -402,7 +414,8 @@ class Tilo(AsyncTilo):
         self.close()
 
     def close(self) -> None:
-        if self.transport.loop is not None:
-            self.transport.loop.run(self.transport.aclose())
-            self.transport.loop.stop()
-            self.transport.loop = None
+        """Close what this client keeps open, and stop its event loop."""
+        if self.loop is not None:
+            self.loop.run(self.aclose())
+            self.loop.stop()
+            self.loop = None

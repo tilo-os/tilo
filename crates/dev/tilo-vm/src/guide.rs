@@ -85,15 +85,12 @@ pub fn topic(name: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// Every topic referenced by errors exists; the quickstart teaches the headful path and both
-    /// screenshots and names every command that takes a slot; guides use the current command shapes.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn guides_cover_every_error_topic_and_the_current_command_shapes() {
-        // Phase: every_topic_referenced_by_errors_exists.
         {
             for name in [
                 "quickstart",
@@ -123,7 +120,6 @@ mod tests {
             assert!(index().contains("swapping"));
         }
 
-        // Phase: quickstart_teaches_the_headful_path_and_both_screenshots.
         {
             let text = topic("quickstart").unwrap();
             for needle in [
@@ -154,7 +150,6 @@ mod tests {
             }
         }
 
-        // Phase: the_quickstart_rule_names_every_command_that_takes_a_slot.
         {
             use clap::CommandFactory as _;
             fn walk(command: &clap::Command, path: &str, out: &mut Vec<String>) {
@@ -190,7 +185,6 @@ mod tests {
             assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));
         }
 
-        // Phase: every_vm_upgrade_source_a_guide_shows_is_accepted.
         {
             let mut seen = 0;
             for (name, _, text) in TOPICS {
@@ -225,7 +219,6 @@ mod tests {
             assert!(images.contains("--from sha:<commit>"));
         }
 
-        // Phase: guides_use_the_current_command_shapes.
         {
             for (name, _, text) in TOPICS {
                 for stale in [
@@ -254,7 +247,6 @@ mod tests {
                 "TILO_VM_CARGO",
                 "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
                 "vm upgrade opi",
-                // A laptop: its owner's account through sudo, and its display through seat0.
                 "tilo-vm vm add yoga --ssh me@",
                 "--grant-sudo",
                 "/etc/sudoers.d/tilo-vm-<user>",

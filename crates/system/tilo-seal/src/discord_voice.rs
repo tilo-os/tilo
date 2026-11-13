@@ -1,17 +1,5 @@
 //! Discord voice's transport encryption, as its voice gateway fixes it: the
 //! `*_rtpsize` AEAD modes over RTP.
-//!
-//! - modes: `aead_aes256_gcm_rtpsize` (AES-256-GCM) and
-//!   `aead_xchacha20_poly1305_rtpsize` (XChaCha20-Poly1305), with the
-//!   32-byte key the voice gateway's Session Description hands out;
-//! - nonce: a 32-bit counter, big-endian, in the first four bytes and zeros
-//!   after; the sender appends the counter to each packet in the clear and
-//!   must never repeat it under one key;
-//! - associated data: the RTP header with its CSRCs and an extension's
-//!   four-byte preamble; the extension's body and the payload are sealed.
-//!
-//! Splitting a packet into those parts is RTP framing and stays with the
-//! caller; this module only seals and opens.
 
 // The two ciphers come from different RustCrypto generations (this
 // crate's AES-GCM is the one `web` shares), so each uses its own traits.
@@ -22,9 +10,7 @@ use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
 
 use crate::error::{Error, Result};
 
-/// The AES-256-GCM mode, which Discord prefers where hardware has AES.
 pub const AES_GCM: &str = "aead_aes256_gcm_rtpsize";
-/// The XChaCha20-Poly1305 mode, which every Discord voice server offers.
 pub const XCHACHA: &str = "aead_xchacha20_poly1305_rtpsize";
 
 /// The mode to select from the ones a voice server offers: AES-256-GCM when
@@ -43,11 +29,8 @@ pub fn choose_mode<'a>(offered: impl IntoIterator<Item = &'a str>) -> Option<&'s
     best
 }
 
-/// One call's transport key in its mode.
 pub enum TransportCipher {
-    /// `aead_aes256_gcm_rtpsize`.
     Aes(Box<Aes256Gcm>),
-    /// `aead_xchacha20_poly1305_rtpsize`.
     XChaCha(Box<XChaCha20Poly1305>),
 }
 

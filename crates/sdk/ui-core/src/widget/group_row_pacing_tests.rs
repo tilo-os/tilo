@@ -1,7 +1,7 @@
-//! How a strip moves frame by frame under a touchpad pan, a throw and a spun
-//! wheel, measured through the production frame path ([`FrameHarness`]) on a
-//! virtual clock: the display's frames and the input device's reports each
-//! keep their own rate, as on real hardware.
+//! How a strip moves frame by frame under a touchpad pan, a throw and a spun wheel,
+//! measured through the production frame path ([`FrameHarness`]) on a virtual clock: the
+//! display's frames and the input device's reports each keep their own rate, as on real
+//! hardware.
 
 use super::tests::make_group;
 use super::*;
@@ -10,7 +10,6 @@ use crate::time::testing::with_monotonic_time;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// What the input device did since the last frame, delivered on the next.
 enum Report {
     Begin,
     Travel(f64, Instant),
@@ -18,7 +17,6 @@ enum Report {
     Reveal(u64, Instant),
 }
 
-/// A row fed reports between frames, as the shell feeds a touchpad's.
 struct FedRow {
     row: GroupRow,
     reports: Rc<RefCell<Vec<Report>>>,
@@ -62,7 +60,6 @@ struct Strip {
     harness: FrameHarness,
     reports: Rc<RefCell<Vec<Report>>>,
     start: Instant,
-    /// Frames of motion that measured anything.
     measured: u32,
     frames: u32,
 }
@@ -85,8 +82,6 @@ impl Strip {
                 Theme::dark(),
             )
         });
-        // Let the windows finish opening (their widths grow in), so every
-        // frame measured afterwards is the strip's own motion.
         for frame in 0..90_u32 {
             let at = start + Duration::from_millis(u64::from(frame) * 11);
             with_monotonic_time(at, || harness.poll_frame()).unwrap();
@@ -162,7 +157,6 @@ fn swipe(report_hz: f64, frame_hz: f64, speed: f64, ms: f64) -> (Vec<f64>, Strip
         if frame_ms > ms {
             break;
         }
-        // Every report the touchpad made before this frame.
         loop {
             let report_ms = report_dt * f64::from(reports);
             if report_ms > frame_ms {
@@ -221,10 +215,6 @@ fn a_steady_swipe_moves_the_strip_the_same_distance_every_frame() {
     }
 }
 
-/// Lifting fingers that are still moving throws the strip: it carries on at
-/// their speed and slows to a stop over the gesture's coast time, rather
-/// than stopping dead under the fingers, which made crossing a long strip a
-/// matter of many short swipes.
 #[test]
 fn lifted_fingers_throw_the_strip_and_it_coasts_to_rest() {
     let speed = 1500.0;
@@ -319,7 +309,6 @@ fn a_spun_wheel_moves_the_strip_without_stalls_or_surges() {
     let mut ms = 0.0;
     for frame in 0..108_u32 {
         ms = frame_dt * f64::from(frame);
-        // Every notch the wheel clicked before this frame.
         loop {
             let notch_ms = notch_dt * f64::from(notches);
             if notches >= 8 || notch_ms > ms {
@@ -355,9 +344,6 @@ fn a_spun_wheel_moves_the_strip_without_stalls_or_surges() {
         "no notch makes the strip lurch forward: {spinning:?}"
     );
     assert!(!strip.animating(ms), "the reveal comes to rest");
-    // A notch brings a window into view, and an entering window measures
-    // once (its own content) while the spin measures nothing: a budget per
-    // notch, and a couple of frames for the strip's own settling.
     assert!(
         strip.measured <= notches + 3,
         "{} of {} frames measured for {notches} notches",

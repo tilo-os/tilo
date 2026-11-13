@@ -1213,8 +1213,13 @@ impl App {
                         );
                     }
                 }
-                FloatingSurfaceHostMessage::PressTarget { name, role, action } => {
-                    self.press_window_target(name, role, *action);
+                FloatingSurfaceHostMessage::PressTarget {
+                    name,
+                    role,
+                    identity,
+                    action,
+                } => {
+                    self.press_window_target(name, role, identity.as_deref(), *action);
                 }
                 FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
                     if self.input.window_focused && !self.activate_test_id(test_id) {
@@ -1488,7 +1493,7 @@ impl App {
             };
             let app = publishing_app(&subject, &published)
                 .map(str::to_owned)
-                .or_else(|| crate::host::environment().identity.package_id.clone());
+                .or_else(|| crate::host::environment().identity.app_id.clone());
             if let Some(sent) = subject.to_attached(app.as_deref(), None) {
                 attached.push(sent);
             }

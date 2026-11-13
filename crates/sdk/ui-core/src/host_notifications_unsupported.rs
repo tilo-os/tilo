@@ -1,9 +1,5 @@
-//! Native notification scheduling where this build has none.
-//!
-//! Windows builds with the `notifications` feature deliver and schedule
-//! toasts through the operating system. Everywhere else the same API exists so
-//! apps compile unchanged; [`SUPPORTED`] is `false` and every operation fails
-//! with [`Unsupported`], so callers skip native work up front.
+//! Native notification scheduling where this build has none. Windows builds with the `notifications`
+//! feature deliver and schedule toasts through the operating system.
 
 use crate::time::SystemTime;
 
@@ -35,26 +31,18 @@ pub struct ScheduledNotice {
 }
 
 impl HostNotifications {
-    /// # Errors
-    /// Always [`Unsupported`].
     pub fn new(_app_id: &str) -> Result<Self, Unsupported> {
         Err(Unsupported)
     }
 
-    /// # Errors
-    /// Unreachable: no host exists in this build.
     pub fn with_protocol_activation(self, _uri: &str) -> Result<Self, Unsupported> {
         match self.never {}
     }
 
-    /// # Errors
-    /// Unreachable: no host exists in this build.
     pub fn show(&self, _tag: &str, _title: &str, _body: &str) -> Result<(), Unsupported> {
         match self.never {}
     }
 
-    /// # Errors
-    /// Unreachable: no host exists in this build.
     pub fn schedule(
         &self,
         _id: &str,
@@ -65,14 +53,10 @@ impl HostNotifications {
         match self.never {}
     }
 
-    /// # Errors
-    /// Unreachable: no host exists in this build.
     pub fn scheduled(&self) -> Result<Vec<ScheduledNotice>, Unsupported> {
         match self.never {}
     }
 
-    /// # Errors
-    /// Unreachable: no host exists in this build.
     pub fn cancel_schedule(&self, _id: &str) -> Result<(), Unsupported> {
         match self.never {}
     }

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use tilo_app_id::InvalidAppId;
+
 /// A refused link. [`LinkError::code`] is stable and shared with the page
 /// and `tests/links.json`; the `Display` text is what a person reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +38,12 @@ pub enum LinkError {
     NonCanonical(&'static str),
     NotNative,
     BadProvider,
+}
+
+impl From<InvalidAppId> for LinkError {
+    fn from(_: InvalidAppId) -> Self {
+        Self::BadApp
+    }
 }
 
 impl LinkError {

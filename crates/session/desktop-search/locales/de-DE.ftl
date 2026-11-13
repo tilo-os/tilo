@@ -15,7 +15,7 @@ search-ask-copy = Antwort kopieren
 search-ask-failed = { $provider } konnte nicht antworten: { $reason }
 search-ask-setup = KI-Anbieter einrichten
 search-ask-setup-detail = Fragen hier stellen, ohne die Suche zu verlassen
-search-ask-no-gateway = Es läuft kein Modelldienst
+search-ask-no-gateway = Es läuft kein KI-Anbieter.
 search-answer-sum = { $expression } =
 search-answer-money-stale = { $amount } zu Kursen von { $age }
 search-answer-open-address = { $address } öffnen
@@ -67,7 +67,6 @@ search-job-reported-counts = { $phase } ({ $completed } von { $total })
 search-job-reported-completed = { $phase } ({ $completed } fertig)
 search-job-reported-total = { $phase } (von { $total })
 search-job-cancel = { $name } abbrechen
-search-job-cancel-detail = Bittet die App, aufzuhören
 search-scope-workspace = Arbeitsbereich
 search-launcher-widen = In allen Arbeitsbereichen suchen
 search-source-switches = Suchquellen
@@ -88,6 +87,9 @@ search-source-app-content = Was Apps enthalten
 search-source-recent = Zuletzt
 search-source-store = Store
 search-source-host-apps = Apps auf diesem Gerät
+# Where a machine's own app came from, said on its row.
+search-host-app-flatpak = Flatpak
+search-host-app-system = System
 search-source-files = Dateien
 search-source-records = Datensätze
 search-source-jobs = Laufende Aufgaben

@@ -249,10 +249,8 @@ pub(super) fn map_values<'a>(
     }
 }
 
-/// Snapshot protected values and their operation/object identities. `target`
-/// limits entity membership: intentionally deleted identities have no protected
-/// descendants in the result. Newly admitted entities must contain no unselected
-/// historical properties. Structural ancestors remain protected when they exist.
+/// Snapshot protected values and their operation/object identities. Newly admitted entities must
+/// contain no unselected historical properties.
 pub(super) fn protected(
     doc: &AutoCommit,
     schema: &HistoryRestoreSchema,

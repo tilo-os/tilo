@@ -160,7 +160,7 @@ impl Drives {
 /// they want to see, so it is opened by the app that shows folders rather than routed by its type.
 pub(crate) fn files_on(mount: &std::path::Path) -> Launch {
     Launch::Package {
-        app: tilo_desktop_model::app::AppKind::FileExplorer.app_id(),
+        app: String::from(tilo_desktop_model::app::AppKind::FileExplorer.app_id()),
         open: Some(Open::File(mount.to_path_buf())),
     }
 }

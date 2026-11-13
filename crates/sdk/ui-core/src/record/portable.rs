@@ -61,7 +61,7 @@ impl RecordSet {
             .portable
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
-        let target = key(&self.package_id, &self.home, &want.id);
+        let target = key(&self.app_id, &self.home, &want.id);
         if cache.get(&target).is_none() {
             self.take_from_retired_workspace_in_cache(cache, want)?;
         }
@@ -108,7 +108,7 @@ impl RecordSet {
         let Some(retired) = self.retired.as_deref() else {
             return Ok(());
         };
-        let Some(former) = cache.get(&key(&self.package_id, retired, &want.id)) else {
+        let Some(former) = cache.get(&key(&self.app_id, retired, &want.id)) else {
             return Ok(());
         };
         let mut doc = AutoCommit::load_with_options(
@@ -135,7 +135,7 @@ impl RecordSet {
         let actor = doc.get_actor().to_bytes().to_vec();
         cache
             .put_document(
-                key(&self.package_id, &self.home, &want.id),
+                key(&self.app_id, &self.home, &want.id),
                 &mut doc,
                 Some(actor),
             )
@@ -157,7 +157,7 @@ impl RecordSet {
             .ok_or_else(|| format!("{id}: record is busy"))?;
         slot.action_state.commit_for_save(doc);
         let actor = doc.get_actor().to_bytes().to_vec();
-        cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
+        cache.put_document(key(&self.app_id, &self.home, id), doc, Some(actor))
     }
 
     /// Hand the open records to the cache. With `accepted_is_written` the
@@ -184,7 +184,7 @@ impl RecordSet {
             };
             let edited = doc.pending_ops() != 0;
             slot.action_state.commit_for_save(doc);
-            let key = key(&self.package_id, &self.home, id);
+            let key = key(&self.app_id, &self.home, id);
             let actor = doc.get_actor().to_bytes().to_vec();
             match cache
                 .put_document(key.clone(), doc, Some(actor))
@@ -219,9 +219,7 @@ impl RecordStore {
             .ok_or(RecordOpenError::IdentityMismatch)?;
         if set.pending.contains_key(&want.id)
             || set.open.contains_key(&want.id)
-            || cache
-                .get(&key(&set.package_id, &set.home, &want.id))
-                .is_some()
+            || cache.get(&key(&set.app_id, &set.home, &want.id)).is_some()
         {
             return Err(RecordOpenError::Busy);
         }
@@ -293,7 +291,7 @@ impl RecordReservation {
             .ok_or(RecordOpenError::IdentityMismatch)?;
         cache
             .put(
-                key(&set.package_id, &set.home, &self.checkout.id),
+                key(&set.app_id, &set.home, &self.checkout.id),
                 doc.save(),
                 Some(doc.get_actor().to_bytes().to_vec()),
             )

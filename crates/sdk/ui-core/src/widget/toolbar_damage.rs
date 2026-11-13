@@ -11,10 +11,8 @@ use super::{Target, Toolbar, ToolbarItem};
 use crate::scroll_copy::{Piece, Showing, Since};
 use crate::theme::Theme;
 
-/// How one frame showed the row: each command's face as a piece.
 pub(super) type BarShown = Showing<BarLook>;
 
-/// What the whole row's paint depends on besides its commands' faces.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct BarLook {
     rect: Rect,
@@ -26,7 +24,6 @@ fn bits(rect: Rect) -> [u64; 4] {
 }
 
 impl Toolbar {
-    /// Note what this frame shows, once its draw is done.
     pub(super) fn note_shown(&self, transform: Affine, theme: &Theme) {
         let face = |target: Target, hasher: &mut rustc_hash::FxHasher| {
             (
@@ -105,8 +102,6 @@ impl Toolbar {
         });
     }
 
-    /// The row's damage since the frame on screen: the faces that changed
-    /// where they were and are, and what its hosted controls damaged.
     pub(super) fn collect_shown_damage(&self, regions: &mut Vec<Rect>) {
         if self.shown.damage(self, regions) == Since::Repaint {
             regions.push(self.rect);

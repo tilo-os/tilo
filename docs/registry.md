@@ -591,8 +591,8 @@ tilo-registry-server authorize-channel \
 A channel authorization lives at most 31 days, and only the offline root can
 issue the next one, so renewal is a deliberate operation that no schedule
 performs. Once it lapses the signers refuse to sign (`registry channel
-authorization is invalid`) and the 24-hour snapshot runs out within a day: on
-2026-10-21 generation 1 expired unnoticed and every device lost the catalogue.
+authorization is invalid`) and the 24-hour snapshot runs out within a day:
+every device loses the catalogue.
 
 Renew with the same owner, channel key, publisher and bounds, and the next
 generation, then sign once with the channel so the snapshot carries the new

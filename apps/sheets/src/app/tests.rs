@@ -8,14 +8,8 @@ use ui::lock::MutexRecover as _;
 use ui::portal::PortalOutcome;
 use ui::widget::DrawChild;
 
-/// Serializes tests that round-trip through the process-global system
-/// clipboard, so a parallel test's copy can't land between another's
-/// copy and paste (the app itself is single-instance, so this only
-/// matters under the parallel test harness).
 pub(crate) static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// An app whose edits go through a workbook dispatcher onto the document
-/// a test hands it.
 pub(crate) fn attached_app(doc: &AutoCommit) -> SheetsApp {
     let mut app = SheetsApp::new();
     app.attach_framework(
@@ -25,12 +19,10 @@ pub(crate) fn attached_app(doc: &AutoCommit) -> SheetsApp {
     app
 }
 
-/// A new workbook's document: one empty sheet.
 pub(crate) fn new_doc() -> AutoCommit {
     ui::tilo_resource::Replica::<Workbook>::new().doc().clone()
 }
 
-/// The sample workbook's document.
 pub(crate) fn sample_doc() -> AutoCommit {
     crate::sample::replica().doc().clone()
 }
@@ -40,7 +32,6 @@ pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
     Workbook::read(doc).unwrap()
 }
 
-/// Sheet `idx` of `doc` by position.
 pub(crate) fn doc_snapshot(
     doc: &AutoCommit,
     idx: usize,
@@ -54,7 +45,6 @@ pub(crate) fn doc_snapshot(
         .unwrap_or_default()
 }
 
-/// What the cell at `addr` of sheet `idx` of `doc` holds.
 pub(crate) fn doc_cell_raw(doc: &AutoCommit, idx: usize, addr: Addr) -> String {
     doc_snapshot(doc, idx, Currency::USD)
         .raw
@@ -83,8 +73,6 @@ pub(crate) fn doc_sheet_color(doc: &AutoCommit, idx: usize) -> Option<u32> {
         .and_then(|sheet| sheet.color)
 }
 
-/// Apply what the app asked the person to confirm (a destructive verb
-/// waits for them), as the door does once they agree, and follow it.
 pub(crate) fn confirm(app: &mut SheetsApp, doc: &mut AutoCommit) {
     let Some(dispatch) = app.dispatch.clone() else {
         return;
@@ -98,8 +86,6 @@ pub(crate) fn confirm(app: &mut SheetsApp, doc: &mut AutoCommit) {
     app.sync(doc, &automerge::ROOT);
 }
 
-/// An app over the sample workbook a screenshot shows, staged as a plain
-/// capture is and synced once, as every frame is before it draws.
 pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
     let mut doc = sample_doc();
     let mut app = attached_app(&doc);
@@ -109,10 +95,6 @@ pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
     (app, doc)
 }
 
-/// A seeded app laid out at `width × height` whose chrome metrics were
-/// resolved against a renderer at `text_scale`, exactly as the first draw
-/// of a frame does. Returns the renderer and the theme so a test can
-/// re-measure labels with the same instances.
 pub(super) fn measured_app(
     width: f64,
     height: f64,
@@ -122,8 +104,6 @@ pub(super) fn measured_app(
     (app, tr, theme)
 }
 
-/// [`measured_app`] with the document the app was seeded into, for a test
-/// that drives events against it.
 pub(super) fn measured_app_with_doc(
     width: f64,
     height: f64,
@@ -141,8 +121,6 @@ pub(super) fn measured_app_with_doc(
     (app, doc, tr, theme)
 }
 
-/// Paint one whole frame, then the top layer, as the host does, so the
-/// hit rects the app keeps between frames are the ones a pointer meets.
 pub(super) fn paint_frame(app: &mut SheetsApp, tr: &mut TextRenderer, theme: &Theme) {
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
@@ -150,7 +128,6 @@ pub(super) fn paint_frame(app: &mut SheetsApp, tr: &mut TextRenderer, theme: &Th
     app.draw_overlay(&mut scene, Affine::IDENTITY, tr, theme, &presence);
 }
 
-/// Final-pixel width of a tab name in the chosen tab's strong `Label`.
 fn tab_label_w(tr: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
     f64::from(
         tr.measure_style(label, None, &theme.text(TextRole::Label).strong())
@@ -158,19 +135,12 @@ fn tab_label_w(tr: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
     )
 }
 
-/// Chrome bands, tabs, settings sheet, tab menu and pointer targets follow measured text.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn chrome_density_follows_measured_text() {
-    // Case `chrome_metrics_keep_the_one_x_density`.
-    // At 1× the measured chrome is built from the toolkit's control
-    // heights and the spacing scale: a 40 px formula bar at the top (the
-    // commands are the window bar's), a 44 px tab strip, the small
-    // control height for the column header and the default row, and a
-    // 56 px row header.
     {
         let (app, _tr, _theme) = measured_app(1280.0, 720.0, 1.0);
         assert!(
@@ -192,11 +162,6 @@ fn chrome_density_follows_measured_text() {
         assert!((g.row_header_w() - 56.0).abs() < 0.01, "row header");
     }
 
-    // Case `chrome_bands_and_labels_follow_measured_text_at_two_x`.
-    // At 2× every chrome band, button and label slot follows the measured
-    // text: nothing is painted from the 1× geometry, and a role is scaled
-    // exactly once (a size fed to the renderer twice would need roughly
-    // twice the room again).
     {
         let (app, mut tr, theme) = measured_app(1280.0, 720.0, 2.0);
         let m = app.metrics.clone();
@@ -211,9 +176,6 @@ fn chrome_density_follows_measured_text() {
         assert!(app.grid.metrics().col_header_h() >= m.lh_caption);
         assert!(app.grid.metrics().default_row_h() >= m.lh_body);
 
-        // Formula bar: the fx label fits its own hit slot, which is
-        // exactly where it is painted; field and name box share one centre
-        // line.
         assert!(app.fx_rect.width() >= m.fx_w + 2.0 * m.s2 - 0.01);
         assert!((app.fx_rect.center().y - app.name_box_rect.center().y).abs() < 0.01);
         assert!((app.formula_field_rect.center().y - app.name_box_rect.center().y).abs() < 0.01);
@@ -236,10 +198,7 @@ fn chrome_density_follows_measured_text() {
         );
     }
 
-    // Case `sheet_tabs_keep_their_floor_and_ceiling_at_every_scale`.
-    // Sheet tabs stay between the (text-grown) floor and the long-name
-    // ceiling, so one long name never pushes the "+" button off the
-    // strip, and the face elides rather than overruns.
+    // Sheet tabs stay between their floor and ceiling, so a long name never pushes the "+" off.
     {
         for scale in [1.0_f32, 2.0] {
             let (mut app, mut tr, theme) = measured_app(1000.0, 700.0, scale);
@@ -260,7 +219,6 @@ fn chrome_density_follows_measured_text() {
                 "short name keeps the floor at {scale}x"
             );
             assert!(app.add_tab_rect.x1 <= app.rect.x1, "'+' stays on the strip");
-            // The face's elision fits the capped tab with `s3` each side.
             let style = theme.text(TextRole::Label).strong();
             let room = (wide.width() - 2.0 * app.metrics.s3) as f32;
             let elided = tr.elide_to_width_style(long, room, &style);
@@ -270,10 +228,6 @@ fn chrome_density_follows_measured_text() {
         }
     }
 
-    // Case `settings_sheet_options_fit_the_sheet_at_every_scale`.
-    // Settings sheet: every option fits its label inside the sheet's
-    // body, rows of chips do not overlap, and the sheet stays in the
-    // window.
     {
         for scale in [1.0_f32, 2.0] {
             let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
@@ -320,9 +274,6 @@ fn chrome_density_follows_measured_text() {
         }
     }
 
-    // Case `tab_menu_lists_its_rows_and_stays_in_the_window_at_two_x`.
-    // Sheet-tab menu: every row of the menu is a row the app answers,
-    // and the menu stays inside the window at 2×.
     {
         let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, 2.0);
         app.open_tab_menu(0);
@@ -348,10 +299,6 @@ fn chrome_density_follows_measured_text() {
         );
     }
 
-    // Case `chrome_targets_meet_the_pointer_minimum_and_scale_with_type`.
-    // Custom-painted controls have no toolkit button wrapper to enforce the
-    // interaction minimum. Keep their hit geometry aligned with the shared
-    // fine-pointer contract, and prove the same surfaces expand at 2× type.
     {
         let (app, _tr, _theme) = measured_app(560.0, 720.0, 1.0);
         let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
@@ -372,8 +319,6 @@ fn chrome_density_follows_measured_text() {
     }
 }
 
-/// Unchanged syncs and tab switches keep the tabs read, and reduced motion
-/// stops bubble frames.
 #[test]
 fn idle_frames_do_no_redundant_work() {
     {
@@ -391,9 +336,6 @@ fn idle_frames_do_no_redundant_work() {
     }
 }
 
-/// The on-screen affordances submit the workbook's own actions: the tab
-/// menu's Delete is the sheet's published `delete-sheet`, a cell edit
-/// is the field edit of that one cell.
 #[test]
 fn affordances_and_resource_operations_match_action_specs() {
     {
@@ -446,7 +388,6 @@ fn affordances_and_resource_operations_match_action_specs() {
     }
 }
 
-/// A workbook holding the sample's Budget and Sales sheets, run as the app.
 pub(super) fn sample_app() -> TestApp<crate::resource::SheetsShell> {
     let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
     for invoke in crate::sample::workbook() {
@@ -455,8 +396,6 @@ pub(super) fn sample_app() -> TestApp<crate::resource::SheetsShell> {
     app
 }
 
-/// The sheet the grid shows and its status, once it took up what effects
-/// asked of it.
 fn shown(app: &mut TestApp<crate::resource::SheetsShell>) -> (usize, String) {
     app.settle();
     app.with_surface::<SheetsApp, _>(|sheets| (sheets.active_sheet, sheets.status.clone()))
@@ -473,8 +412,6 @@ fn raw_at(app: &TestApp<crate::resource::SheetsShell>, sheet: usize, addr: Addr)
         .unwrap_or_default()
 }
 
-/// The workbook offers reading and writing every interchange format and
-/// its views as effects, and each sheet, chart and comment opens itself.
 #[test]
 fn the_workbook_publishes_its_effects_and_items_open_themselves() {
     let mut app = sample_app();
@@ -496,7 +433,6 @@ fn the_workbook_publishes_its_effects_and_items_open_themselves() {
             "{id} is published"
         );
     }
-    // Each import opens the file a launch names, for its own type only.
     for (id, extension) in [
         ("import-csv", "csv"),
         ("import-xlsx", "xlsx"),
@@ -559,10 +495,6 @@ fn the_workbook_publishes_its_effects_and_items_open_themselves() {
     assert_eq!(view, ((2, 2), true));
 }
 
-/// Every format exports to a path and imports back as new sheets (a CSV
-/// carries the active sheet, a workbook every sheet), in one undo step,
-/// showing the last sheet it added; opening the file again shows that
-/// sheet instead of importing a copy.
 #[test]
 fn every_format_exports_to_a_path_and_imports_back_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -630,9 +562,6 @@ fn every_format_exports_to_a_path_and_imports_back_once() {
     }
 }
 
-/// Without a path, the host's chooser picks where an export is saved and
-/// which file is imported; cancelling it changes nothing. The save dialog
-/// is the export's confirmation, so nothing asks before it.
 #[test]
 fn the_file_chooser_saves_exports_and_picks_imports() {
     let dir = tempfile::tempdir().unwrap();
@@ -678,8 +607,6 @@ fn the_file_chooser_saves_exports_and_picks_imports() {
     assert_eq!(raw_at(&app, before, (0, 0)), "Category");
     assert_eq!(recorder.pick_requests().len(), 3);
 
-    // The same file chosen again, or opened by its path, is shown
-    // rather than imported a second time.
     app.with_surface::<SheetsApp, _>(|sheets| sheets.active_sheet = 0);
     recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
     app.effect(&SheetsEffect::ImportCsv { path: None }).unwrap();
@@ -696,8 +623,6 @@ fn the_file_chooser_saves_exports_and_picks_imports() {
     assert_eq!(app.state().sheets.len(), before + 1, "by path either");
 }
 
-/// A file too large, or not a spreadsheet, fails its import with why,
-/// and the workbook is unchanged.
 #[test]
 fn a_file_that_cannot_be_read_fails_its_import() {
     let dir = tempfile::tempdir().unwrap();
@@ -733,12 +658,8 @@ fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         .and_then(|c| c.values.get(&addr).cloned())
 }
 
-/// Presence announces the active sheet; switching tabs flushes the pending edit first.
 #[test]
 fn presence_and_sheet_switching_follow_the_active_tab() {
-    // Case `presence_payload_announces_active_sheet`.
-    // Cell presence also identifies the active sheet for navigation.
-    // Switching sheets retargets the same durable cell scope.
     {
         let (mut app, _doc) = seeded_app();
         assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
@@ -758,9 +679,6 @@ fn presence_and_sheet_switching_follow_the_active_tab() {
         }
     }
 
-    // Case `switch_sheet_flushes_edit_then_changes_active`.
-    // Clicking a sheet tab flushes the pending in-cell edit onto the current
-    // sheet, then switches the active sheet — the real `switch_sheet` path.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 30)); // A31 on sheet 0
@@ -773,18 +691,15 @@ fn presence_and_sheet_switching_follow_the_active_tab() {
             0,
             "switching tabs is local presentation and must not write the shared workbook"
         );
-        // The pending edit landed on sheet 0, not sheet 1.
         assert_eq!(doc_cell_raw(&doc, 0, (0, 30)), "draft");
         assert_eq!(doc_cell_raw(&doc, 1, (0, 30)), "");
     }
 }
 
-/// Coloured formula bodies, name box/fx hit-rects, and fx on empty or filled cells.
 #[test]
 fn formula_bar_and_fx_start_formulas() {
     {
         let (app, _doc) = seeded_app();
-        // After seeding, E2 (a SUM formula) is the active cell and NOT editing.
         assert_eq!(app.grid.active(), (4, 1));
         assert!(!app.grid.is_editing());
         assert_eq!(app.grid.active_display_raw(), "=SUM(B2:D2)");
@@ -795,17 +710,12 @@ fn formula_bar_and_fx_start_formulas() {
         );
     }
 
-    // Case `name_box_and_fx_rects_are_hit_testable`.
-    // The Name box and "fx" affordance get real, ordered, non-overlapping
-    // hit-rects to the left of the formula field, so `handle_event`'s
-    // `contains(p)` routing lands on the right target.
     {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
         app.relayout();
         assert!(app.name_box_rect.width() > 0.0 && app.name_box_rect.height() > 0.0);
         assert!(app.fx_rect.width() > 0.0 && app.fx_rect.height() > 0.0);
-        // Ordered left→right, non-overlapping: name box, then fx, then field.
         assert!(
             app.name_box_rect.x1 <= app.fx_rect.x0 + 0.01,
             "name box overlaps fx"
@@ -818,9 +728,6 @@ fn formula_bar_and_fx_start_formulas() {
         assert!(app.formula_rect.contains(app.fx_rect.center()));
     }
 
-    // Case `fx_starts_a_formula_on_an_empty_cell`.
-    // The "fx" affordance opens a formula edit on an empty cell, seeded with
-    // `=` and the caret at the end.
     {
         let (mut app, _doc) = seeded_app();
         app.grid.select_only((0, 20)); // A21, empty
@@ -831,9 +738,6 @@ fn formula_bar_and_fx_start_formulas() {
         assert_eq!(app.grid.edit_caret(), Some(1));
     }
 
-    // Case `fx_prepends_equals_to_existing_content`.
-    // On a cell that already holds a value, "fx" prepends `=` so the value
-    // becomes the start of a formula, and it evaluates once committed.
     {
         let (mut app, mut doc) = seeded_app();
         app.apply_cmds(
@@ -849,7 +753,6 @@ fn formula_bar_and_fx_start_formulas() {
         app.grid.select_only((0, 21)); // A22 = 5
         app.start_formula_entry();
         assert_eq!(app.grid.active_display_raw(), "=5");
-        // Commit the edit through the real flush → apply_cmds path.
         let mut out = Vec::new();
         app.grid.flush_edit(&mut out);
         app.apply_cmds(&mut Edits::lend(&mut doc), out);
@@ -858,21 +761,15 @@ fn formula_bar_and_fx_start_formulas() {
     }
 }
 
-/// Seeded formulas compute, edits recalc dependents, `AutoSum` writes or refuses.
 #[test]
 fn recalculation_and_auto_sum_write_working_formulas() {
     {
         let (app, _doc) = seeded_app();
-        // Budget!E2 = SUM(B2:D2) = 1200 + 1200 + 1200 = 3600.
         assert_eq!(value_at(&app, (4, 1)), Some(CellValue::Number(3600.0)));
-        // The active cell (E2) is a propagated currency.
         assert!(matches!(app.format_of_active(), CellFormat::Currency(_)));
     }
 
     {
-        // This is the real path `handle_event` runs after `grid.key`: it hands
-        // the emitted commands to `apply_cmds`, which infers the entry, writes
-        // the CRDT, and recalculates.
         let (mut app, mut doc) = seeded_app();
         let b2 = (1, 1);
         let e2 = (4, 1);
@@ -899,15 +796,12 @@ fn recalculation_and_auto_sum_write_working_formulas() {
         app.auto_sum(&mut Edits::lend(&mut doc));
         let raw = doc_cell_raw(&doc, 0, (1, 6));
         assert_eq!(raw, "=SUM(B2:B6)", "auto-sum wrote {raw:?}");
-        // The computed value is finite and positive (a real sum, not an error).
         match value_at(&app, (1, 6)) {
             Some(CellValue::Number(n)) => assert!(n > 0.0),
             other => panic!("expected a numeric AutoSum result, got {other:?}"),
         }
     }
 
-    // Case `auto_sum_guard_nothing_above`.
-    // `AutoSum` on row 1 has nothing above it: it reports so and writes no formula.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0)); // A1, row 0
@@ -916,8 +810,6 @@ fn recalculation_and_auto_sum_write_working_formulas() {
         assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "Category"); // unchanged
     }
 
-    // Case `auto_sum_guard_no_numeric_run`.
-    // `AutoSum` directly under a non-numeric cell finds no run and writes nothing.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 1)); // A2, directly under A1 = "Category" (text)
@@ -929,7 +821,6 @@ fn recalculation_and_auto_sum_write_working_formulas() {
     }
 }
 
-/// Format application over single and multi-range selections, clearing and percent commands.
 #[test]
 fn formats_apply_and_clear_across_selections() {
     {
@@ -939,9 +830,6 @@ fn formats_apply_and_clear_across_selections() {
         assert_eq!(app.format_of_active(), CellFormat::Percent);
     }
 
-    // Case `format_applies_across_a_multi_range_selection`.
-    // Format applied over a discontiguous multi-range selection reaches every
-    // cell in *both* ranges — the real `apply_format` → `selected_cells` path.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_range_public((1, 1), (1, 2)); // B2:B3
@@ -955,16 +843,12 @@ fn formats_apply_and_clear_across_selections() {
                 "cell {a:?}"
             );
         }
-        // The gap column between the two ranges is untouched (still currency).
         assert!(matches!(
             snap.fmt.get(&(2, 1)),
             Some(CellFormat::Currency(_))
         ));
     }
 
-    // Case `clear_format_resets_applied_format`.
-    // Clear-format resets an applied format back to General — the real Format
-    // menu "Clear format" path.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 25)); // A26, empty
@@ -972,7 +856,6 @@ fn formats_apply_and_clear_across_selections() {
         assert_eq!(app.format_of_active(), CellFormat::Percent);
         app.clear_format(&mut Edits::lend(&mut doc));
         assert_eq!(app.format_of_active(), CellFormat::General);
-        // General is not persisted in the snapshot, so the explicit format is gone.
         let snap = doc_snapshot(&doc, 0, Currency::USD);
         assert_eq!(snap.fmt.get(&(0, 25)).copied(), None);
     }
@@ -981,22 +864,14 @@ fn formats_apply_and_clear_across_selections() {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((1, 1)); // B2
         app.dispatch_command(&mut Edits::lend(&mut doc), "format_percent", None);
-        // The stored format for B2 is now Percent.
         let cur = app.default_currency();
         let snap = doc_snapshot(&doc, 0, cur);
         assert_eq!(snap.fmt.get(&(1, 1)), Some(&CellFormat::Percent));
     }
 }
 
-/// The status summary aggregates real values across discontiguous ranges.
 #[test]
 fn selection_summary_aggregates_every_range() {
-    // Case `multi_range_selection_summary_aggregates_both_ranges`.
-    // The status-bar summary aggregates Sum/Avg/Count over a *discontiguous*
-    // multi-range selection — the real `selection_summary` → `selected_cells`
-    // path the status bar draws each frame. Column B (Jan) sums to 2040 and
-    // column D (Mar) to 2180 in the seed, so the two-range total is 4220 over
-    // 10 numeric cells.
     {
         let (mut app, _doc) = seeded_app();
         app.grid.select_range_public((1, 1), (1, 5)); // B2:B6
@@ -1019,9 +894,6 @@ fn selection_summary_aggregates_every_range() {
         );
     }
 
-    // Case `selection_summary_spans_multiple_ranges`.
-    // The status-bar summary counts numeric cells across *all* ranges of a
-    // discontiguous selection.
     {
         let (mut app, _doc) = seeded_app();
         app.grid.select_range_public((1, 1), (1, 2)); // B2:B3 = 1200, 420
@@ -1039,11 +911,9 @@ fn selection_summary_aggregates_every_range() {
 
     {
         let (mut app, _doc) = seeded_app();
-        // Select the Jan column body B2:B6 (five numeric cells).
         app.grid.set_selection((1, 1), (1, 5));
         let summary = app.selection_summary().expect("numeric selection");
         assert_eq!(summary.count, 5);
-        // 1200 + 420 + 180 + 90 + 150 = 2040.
         assert!((summary.sum - 2040.0).abs() < 1e-6, "sum={}", summary.sum);
         assert!((summary.avg - 408.0).abs() < 1e-6, "avg={}", summary.avg);
     }
@@ -1051,14 +921,8 @@ fn selection_summary_aggregates_every_range() {
 
 #[test]
 fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
-    // Case `xlsx_export_import_restores_live_formulas`.
-    // The real export → import path for a workbook of formulas: the active
-    // sheet is exported to a `.xlsx`, read back, and imported into a fresh
-    // document. Formula cells restore their formula *text* (not a frozen
-    // value) and recompute to the original results.
     {
         let (app, doc) = seeded_app();
-        // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
         let table =
             SheetsApp::table_from_snapshot(&doc_snapshot(&doc, app.active_sheet, Currency::USD));
         let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
@@ -1072,18 +936,13 @@ fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
             .import_tables(&mut Edits::lend(&mut doc2), tables)
             .unwrap();
 
-        // The formula came back as a formula, not its computed value.
         assert_eq!(doc_cell_raw(&doc2, 0, (4, 1)), "=SUM(B2:D2)");
-        // …and it recomputes to the original result.
         let snap = doc_snapshot(&doc2, 0, Currency::USD);
         let values = crate::calc::recalculate(&snap.raw);
         assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
         assert_eq!(doc_cell_raw(&doc2, 0, (1, 1)), "1200");
     }
 
-    // Case `a_file_imported_into_a_new_workbook_is_the_workbook`.
-    // A new workbook's empty Sheet1 gives way, so an export of the
-    // imported file doesn't open on a blank first tab.
     {
         let mut doc = new_doc();
         let mut app = attached_app(&doc);
@@ -1113,26 +972,18 @@ fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
 
 #[test]
 fn fill_commands_and_handle_extend_series_and_formulas() {
-    // Case `fill_down_copies_and_shifts_formulas`.
-    // Fill-down copies the top cell of the selection down, shifting relative
-    // formula references per row — the real Ctrl+D path.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_range_public((4, 1), (4, 3)); // E2:E4, E2 = =SUM(B2:D2)
         app.fill_down(&mut Edits::lend(&mut doc));
         assert_eq!(doc_cell_raw(&doc, 0, (4, 2)), "=SUM(B3:D3)");
         assert_eq!(doc_cell_raw(&doc, 0, (4, 3)), "=SUM(B4:D4)");
-        // E3 recomputes against row 3's operands: 460 + 510 + ... etc > 0.
         match value_at(&app, (4, 2)) {
             Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
             other => panic!("expected numeric fill result, got {other:?}"),
         }
     }
 
-    // Case `fill_handle_drag_extends_numeric_series`.
-    // The fill handle: dragging it from a two-number selection extends a
-    // linear series, driven through the production `pointer_up` →
-    // `run_pending_fill` path (no display).
     {
         let (mut app, mut doc) = seeded_app();
         app.apply_cmds(
@@ -1158,9 +1009,6 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
         assert_eq!(value_at(&app, (7, 5)), Some(CellValue::Number(5.0)));
     }
 
-    // Case `fill_handle_drag_shifts_formula_refs`.
-    // The fill handle on a formula cell fills down with the relative refs
-    // shifted per row — the same adjustment copy/paste applies.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
@@ -1175,9 +1023,6 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
         }
     }
 
-    // Case `fill_handle_drag_fills_right`.
-    // The fill handle also fills to the right, extending a series across
-    // columns per row.
     {
         let (mut app, mut doc) = seeded_app();
         app.apply_cmds(
@@ -1201,19 +1046,13 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
         assert_eq!(doc_cell_raw(&doc, 0, (10, 10)), "40");
     }
 
-    // Case `shift_refs_handles_anchors_functions_and_numbers`.
-    // The copy/paste + fill relativisation the app dispatches goes through the
-    // formula layer's `offset_refs`; prove the wiring on the shapes the paste
-    // path relies on (the full matrix lives in `formula`'s own tests).
     {
         assert_eq!(crate::refs::offset_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
         assert_eq!(
             crate::refs::offset_refs("=SUM(A1:A3)*2", 2, 0),
             "=SUM(C1:C3)*2"
         );
-        // Mixed anchors: `$A1` shifts row only, `A$1` shifts column only.
         assert_eq!(crate::refs::offset_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
-        // Scientific-notation literals are not references.
         assert_eq!(crate::refs::offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
         assert_eq!(
             crate::refs::offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
@@ -1222,9 +1061,6 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
         assert_eq!(crate::refs::offset_refs("1200", 3, 3), "1200");
     }
 
-    // Case `fill_right_copies_and_shifts_formulas`.
-    // Fill-right copies the left column of the selection rightward, shifting
-    // relative formula references per column — the real Ctrl+R path.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_range_public((4, 1), (6, 1)); // E2:G2, E2 = =SUM(B2:D2)
@@ -1238,9 +1074,6 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
     }
 }
 
-/// Copy/cut/paste of values, formats and formulas, range tiling and external TSV.
-/// A paste of many cells is one change: one history entry, one undo
-/// step.
 #[test]
 fn a_paste_is_one_change() {
     let _clipboard = CLIP_LOCK.lock_recover();
@@ -1265,8 +1098,6 @@ fn a_paste_is_one_change() {
 #[test]
 fn copy_cut_and_paste_relativise_formulas_correctly() {
     {
-        // Copy a currency cell into an empty one; the raw and the currency
-        // format both come across, and it recomputes to the same number.
         let _clip = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((1, 1)); // B2 = 1200, currency
@@ -1282,9 +1113,6 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
     }
 
     {
-        // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
-        // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
-        // AVERAGE, and the pasted formula recomputes against the new operands.
         let _clip = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
@@ -1292,7 +1120,6 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
         app.grid.select_only((5, 2)); // F3
         app.paste(&mut Edits::lend(&mut doc));
         assert_eq!(doc_cell_raw(&doc, 0, (5, 2)), "=SUM(C3:E3)");
-        // C3=460, D3=510, E3=SUM(B3:D3)=1390 → 2360.
         assert_eq!(value_at(&app, (5, 2)), Some(CellValue::Number(2360.0)));
     }
 
@@ -1307,9 +1134,6 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
         assert_eq!(doc_cell_raw(&doc, 0, (0, 20)), "Category");
     }
 
-    // Case `cut_paste_formula_does_not_relativize`.
-    // A **cut** moves a formula verbatim — its references follow the cells and
-    // are *not* re-relativised (unlike a copy). The real cut→paste path.
     {
         let _clip = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
@@ -1317,21 +1141,15 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
         app.copy_selection(true); // cut
         app.grid.select_only((6, 10)); // G11, empty, far away
         app.paste(&mut Edits::lend(&mut doc));
-        // The formula is unchanged: a move keeps references pointing at B2:D2.
         assert_eq!(doc_cell_raw(&doc, 0, (6, 10)), "=SUM(B2:D2)");
         assert_eq!(doc_cell_raw(&doc, 0, (4, 1)), "", "source cleared");
     }
 
-    // Case `paste_tiles_a_formula_across_a_range`.
-    // Pasting a copied formula into a **range** tiles the block, offsetting
-    // each destination cell's relative references by its own position — the
-    // real range-paste path.
     {
         let _clip = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         app.copy_selection(false);
-        // Target a 1×3 range F2:F4; the 1×1 block tiles down it.
         app.grid.select_range_public((5, 1), (5, 3));
         app.paste(&mut Edits::lend(&mut doc));
         assert_eq!(doc_cell_raw(&doc, 0, (5, 1)), "=SUM(C2:E2)");
@@ -1339,9 +1157,6 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
         assert_eq!(doc_cell_raw(&doc, 0, (5, 3)), "=SUM(C4:E4)");
     }
 
-    // Case `paste_tsv_parses_external_grid`.
-    // Pasting a tab/newline grid from another app parses and smart-types each
-    // field — the real system-clipboard branch of `paste` (`paste_tsv`).
     {
         let (mut app, mut doc) = seeded_app();
         let target = (0, 40); // A41, empty region
@@ -1356,13 +1171,8 @@ fn copy_cut_and_paste_relativise_formulas_correctly() {
     }
 }
 
-/// Resize reflow, annotation touch targets and narrow large-text toolbars.
 #[test]
 fn layout_reflows_and_keeps_controls_usable_at_large_text() {
-    // Case `layout_reflows_on_resize`.
-    // The layout is re-derived from the current rect on every pass, so a
-    // resize between widths reflows rather than freezing at the first size.
-    // Drives the production `relayout` on one instance at two widths.
     {
         let (mut app, _doc) = seeded_app();
 
@@ -1390,7 +1200,6 @@ fn layout_reflows_and_keeps_controls_usable_at_large_text() {
             "formula field reflowed"
         );
 
-        // And back to wide — proves it isn't a one-way latch.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.relayout();
         assert!(
@@ -1448,18 +1257,15 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
         let before = doc_sheet_count(&doc);
         app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Duplicate);
         assert_eq!(doc_sheet_count(&doc), before + 1);
-        // Inserted right after the source and named "<name> copy".
         assert_eq!(doc_sheet_names(&doc)[1], "Budget copy");
         assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
     }
 
     {
         let (mut app, mut doc) = seeded_app();
-        // Seed: Budget, Sales. Remove Sales.
         app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
         confirm(&mut app, &mut doc);
         assert_eq!(doc_sheet_names(&doc), vec!["Budget"]);
-        // The last remaining sheet cannot be deleted away.
         app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Delete);
         assert_eq!(doc_sheet_count(&doc), 1);
     }
@@ -1468,7 +1274,6 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
         let (mut app, mut doc) = seeded_app();
         app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::MoveRight);
         assert_eq!(doc_sheet_names(&doc), vec!["Sales", "Budget"]);
-        // The moved sheet keeps its data (Budget's E2 formula).
         assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
     }
 
@@ -1481,7 +1286,6 @@ fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
     }
 }
 
-/// Cache reuse and invalidation.
 #[test]
 fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
     {
@@ -1520,14 +1324,8 @@ fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
     }
 }
 
-// --- name box (Go-To) + fx formula entry -------------------------------
-
-/// Name box parsing, go-to cell/range, invalid and empty commits.
 #[test]
 fn name_box_parses_and_navigates_references() {
-    // Case `parse_ref_target_handles_cells_ranges_and_junk`.
-    // Parsing helper the Name box feeds: single refs and ranges, case- and
-    // absolute-marker-insensitive; junk is rejected.
     {
         assert_eq!(parse_ref_target("b7"), Some(((1, 6), (1, 6))));
         assert_eq!(parse_ref_target("$A$1"), Some(((0, 0), (0, 0))));
@@ -1537,9 +1335,6 @@ fn name_box_parses_and_navigates_references() {
         assert_eq!(parse_ref_target(""), None);
     }
 
-    // Case `name_box_goto_navigates_to_a_cell`.
-    // Clicking the Name box, typing a reference, and pressing Enter moves the
-    // selection there through the same shared-TextInput event path used live.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0));
@@ -1567,8 +1362,6 @@ fn name_box_parses_and_navigates_references() {
         assert!(app.status.contains("Went to"), "status={}", app.status);
     }
 
-    // Case `name_box_goto_selects_a_range`.
-    // A `ref:ref` Name box entry selects the whole range.
     {
         let (mut app, mut doc) = seeded_app();
         app.begin_name_box_edit();
@@ -1589,8 +1382,6 @@ fn name_box_parses_and_navigates_references() {
         assert_eq!(br, (3, 3));
     }
 
-    // Case `name_box_invalid_reference_keeps_selection`.
-    // An invalid Name box entry reports the error and leaves the selection put.
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
@@ -1611,8 +1402,6 @@ fn name_box_parses_and_navigates_references() {
         assert!(app.status.contains("Invalid"), "status={}", app.status);
     }
 
-    // Case `name_box_empty_commit_is_a_noop`.
-    // Committing an emptied Name box is a no-op that just closes the editor.
     {
         let (mut app, _doc) = seeded_app();
         app.grid.select_only((4, 1));
@@ -1626,20 +1415,12 @@ fn name_box_parses_and_navigates_references() {
     }
 }
 
-// --- external-clipboard (TSV) paste + auto-sum guards ------------------
-
-// -----------------------------------------------------------------------
-// Command palette (Ctrl+K) integration
-// -----------------------------------------------------------------------
-
-/// A `Modifiers` value with Control held.
 pub(super) fn ctrl_mods() -> Modifiers {
     let mut s = winit::keyboard::ModifiersState::empty();
     s.set(winit::keyboard::ModifiersState::CONTROL, true);
     Modifiers::from(s)
 }
 
-/// Synthesise a pressed `WindowEvent::KeyboardInput`.
 fn key_event(logical: winit::keyboard::Key) -> WindowEvent {
     ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
         logical,
@@ -1662,8 +1443,6 @@ pub(super) fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
     key_event(winit::keyboard::Key::Named(k))
 }
 
-/// Drive one event through the real `handle_event` path; returns whether the
-/// app consumed it.
 pub(super) fn feed(
     app: &mut SheetsApp,
     doc: &mut AutoCommit,
@@ -1677,8 +1456,6 @@ pub(super) fn feed(
         .handled
 }
 
-/// A cell edit takes an input-method composition: shown at the caret,
-/// typed into the cell only on commit; Backspace removes whole clusters.
 #[test]
 fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
     use winit::event::Ime;
@@ -1716,8 +1493,6 @@ fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
     assert!(ime(&mut app, &mut doc, Ime::Commit("日本".into())));
     assert_eq!(app.grid.active_display_raw(), "a日本");
 
-    // A combined letter, an emoji with a skin tone and a flag each go in
-    // as one character and come out with one Backspace.
     for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
         assert!(ime(&mut app, &mut doc, Ime::Commit(typed.into())));
     }
@@ -1735,9 +1510,6 @@ fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
     assert_eq!(app.grid.active_display_raw(), "ax");
 }
 
-/// While a cell composes, the formula bar draws the cell editor's display
-/// text: the composition at the caret, underlined, with the caret inside
-/// it; the committed text only changes on commit.
 #[test]
 fn formula_bar_shows_the_cells_composition() {
     use winit::event::Ime;
@@ -1790,8 +1562,6 @@ fn formula_bar_shows_the_cells_composition() {
     assert_eq!((bar.preedit, bar.caret), (None, Some(3)));
 }
 
-/// The commands open the host's search on the workbook, Ctrl+K's palette;
-/// its "Go to cell" moves the selection.
 #[test]
 fn commands_open_the_hosts_search_and_go_to_cells() {
     let (mut app, _doc) = seeded_app();
@@ -1825,14 +1595,12 @@ fn commands_open_the_hosts_search_and_go_to_cells() {
     assert!(app.status.contains("not a valid"), "status: {}", app.status);
 }
 
-/// The search the app asked the host to open.
 fn asked_search(app: &mut SheetsApp) -> ui::search::SearchRequest {
     let invocation = ui::widget::controls::take_control_invocation(app)
         .expect("the app asked the host to open search");
     ui::search::SearchRequest::from_arguments(&invocation.arguments)
 }
 
-/// `text` as the one argument the prompted action `spec` takes.
 fn prompt_arguments(
     spec: &tilo_actions::ActionSpec,
     text: &str,
@@ -1845,9 +1613,6 @@ fn prompt_arguments(
     arguments
 }
 
-/// Answer the action the app asked the host's palette for, which started
-/// from `prefill`, with `text`, run it against `doc` as the door does, and
-/// let the app follow.
 fn answer_asked(app: &mut SheetsApp, doc: &mut AutoCommit, prefill: Option<&str>, text: &str) {
     let request = asked_search(app);
     assert_eq!(request.query.as_deref(), prefill);
@@ -1865,9 +1630,6 @@ fn answer_asked(app: &mut SheetsApp, doc: &mut AutoCommit, prefill: Option<&str>
     app.sync(doc, &automerge::ROOT);
 }
 
-/// Editing a chart, replying to a comment and editing a comment ask in
-/// the host's palette for the argument of the action the chart or comment
-/// publishes, and invoke that action.
 #[test]
 fn annotation_edits_ask_for_the_published_actions() {
     let (mut app, mut doc) = seeded_app();
@@ -1939,9 +1701,6 @@ fn annotation_edits_ask_for_the_published_actions() {
     assert_eq!(replies, ["Done"]);
 }
 
-/// A chart's card picks its type and its cells: the type picker's
-/// buttons edit the chart's `kind` field, Cells asks in the palette for
-/// the chart's published `chart-cells` edit of its `area`.
 #[test]
 fn a_chart_card_changes_its_type_and_cells() {
     let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(1800.0, 1200.0, 1.0);
@@ -2114,10 +1873,8 @@ fn an_agent_edits_charts_and_comments_in_one_call_each() {
 fn commands_edit_rows_columns_views_and_sheets() {
     {
         let (mut app, mut doc) = seeded_app();
-        // Budget!B2:B6 — a column of numbers.
         app.grid.select_range_public((1, 1), (1, 5));
         app.dispatch_command(&mut Edits::lend(&mut doc), "sum_selection", None);
-        // A SUM total lands in B7 (the row directly below the selection).
         let raw = doc_cell_raw(&doc, 0, (1, 6));
         assert_eq!(raw, "=SUM(B2:B6)", "sum total written below the selection");
         assert!(matches!(value_at(&app, (1, 6)), Some(CellValue::Number(_))));
@@ -2125,13 +1882,10 @@ fn commands_edit_rows_columns_views_and_sheets() {
 
     {
         let (mut app, mut doc) = seeded_app();
-        // The Budget header "Category" sits at A1; its January value is at B2.
         let b2 = doc_cell_raw(&doc, 0, (1, 1));
         assert!(!b2.is_empty());
-        // Insert a row above row 1 (active is E2 → row index 1).
         app.grid.select_only((0, 0)); // A1 → insert above row 0
         app.dispatch_command(&mut Edits::lend(&mut doc), "insert_row", None);
-        // Everything shifted down one: the old A1 header is now at A2.
         assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "", "row 0 is now blank");
         assert_eq!(
             doc_cell_raw(&doc, 0, (0, 1)),
@@ -2139,7 +1893,6 @@ fn commands_edit_rows_columns_views_and_sheets() {
             "header shifted to A2"
         );
 
-        // Delete that blank top row again → header returns to A1.
         app.grid.select_only((0, 0));
         app.dispatch_command(&mut Edits::lend(&mut doc), "delete_row", None);
         confirm(&mut app, &mut doc);
@@ -2181,7 +1934,6 @@ fn commands_edit_rows_columns_views_and_sheets() {
     }
 }
 
-/// Active cell/sheet semantics, busy loading and shared toolbar/tab controls.
 #[test]
 fn accessibility_exposes_cells_busy_state_and_live_controls() {
     {
@@ -2273,8 +2025,6 @@ fn accessibility_exposes_cells_busy_state_and_live_controls() {
     }
 }
 
-/// A Notion export's databases arrive as sheets: every table it holds, in
-/// one action, so one undo takes the whole import back.
 #[test]
 fn a_notion_export_lands_as_every_table_in_one_undoable_step() {
     use std::io::Write as _;
@@ -2324,8 +2074,6 @@ fn a_notion_export_lands_as_every_table_in_one_undoable_step() {
     );
 }
 
-/// A Notion file that holds no table fails its import, and the workbook is
-/// unchanged.
 #[test]
 fn a_notion_export_with_no_table_fails_its_import() {
     use std::io::Write as _;

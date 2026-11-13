@@ -478,9 +478,8 @@ enum Error {
     VerificationFailed { failed: usize, checked: usize },
 }
 
-/// The package store `tilo-install` works on: `TILO_APPS_DATA_DIR` when set
-/// (image builds, tests), else `$XDG_DATA_HOME/tilo-apps` — the store the
-/// launcher, the shell and the app host share.
+/// The package store `tilo-install` works on: `TILO_APPS_DATA_DIR` when set (image builds, tests),
+/// else `$XDG_DATA_HOME/tilo-apps`, the store the launcher, the shell and the app host share.
 fn data_root() -> Result<PathBuf, Error> {
     package_store::layout::default_user_root().ok_or(Error::NoDataDir)
 }
@@ -489,9 +488,9 @@ fn store() -> Result<PackageStore, Error> {
     Ok(PackageStore::at(data_root()?))
 }
 
-/// The user's data home (parent of the `tilo-rooms/` state root), distinct
-/// from [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
-/// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
+/// The user's data home (parent of `tilo-workspaces/`), distinct from [`data_root`]: it follows
+/// `XDG_DATA_HOME` like the launcher, not `TILO_APPS_DATA_DIR`. The wrong one silently loses the
+/// app data `uninstall --purge` is asked to remove.
 fn data_home_root() -> Result<PathBuf, Error> {
     tilo_paths::env_dir("XDG_DATA_HOME")
         .or_else(tilo_paths::data_dir)
@@ -520,8 +519,6 @@ fn bin_root() -> Result<PathBuf, Error> {
     Ok(store()?.layout().bin())
 }
 
-/// The installed packages: the system image's apps and the user's store,
-/// one row per app for the copy that runs.
 fn catalog() -> Result<package_store::Catalog, Error> {
     Ok(package_store::Catalog::at(
         data_root()?,
@@ -541,7 +538,6 @@ fn layers(pkg_id: &str) -> Result<package_store::Layers, Error> {
         .map_err(|e| Error::RegistryRead(e.to_string()))
 }
 
-/// The copy of `pkg_id` that runs, whichever store holds it.
 fn find_installed(pkg_id: &str) -> Result<InstalledPackage, Error> {
     layers(pkg_id)?
         .running()
@@ -549,9 +545,8 @@ fn find_installed(pkg_id: &str) -> Result<InstalledPackage, Error> {
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))
 }
 
-/// Whether a user copy of `version` must be held in front of the image's
-/// copy of the same app: it is older, so only an explicit choice (a
-/// rollback, a forced install) put it there.
+/// Whether a user copy of `version` must be held in front of the image's copy: it is older, so only
+/// an explicit choice (a rollback, a forced install) put it there.
 fn held_below_image(layers: &package_store::Layers, version: &str) -> bool {
     layers.image.as_ref().is_some_and(|image| {
         tilo_app_package::version::compare(version, &image.version) == std::cmp::Ordering::Less
@@ -565,7 +560,8 @@ fn store_error(error: StoreError) -> Error {
     }
 }
 
-/// attestor policy. Returns the publisher key set for `verify_with_trust`.
+/// Hold the package to `--require-package-root` and `--require-publisher`; returns the publisher
+/// keys [`verify_with_trust`] must accept.
 fn validate_registry_constraints(
     pkg_id: PackageId,
     meta: &PackageMeta,
@@ -606,19 +602,16 @@ fn validate_registry_constraints(
     Ok(vec![required])
 }
 
-/// What [`verify_and_gate`] admitted.
 struct Gated {
     manifest: tilo_app_package::Manifest,
     publisher_key_hex: String,
     /// The trusted attestor that signed for the publisher; empty if none.
     attested_by: String,
-    /// A publisher this person trusts signed it, directly or through an
-    /// attestor; false for a valid self-signed or unknown publisher.
+    /// A publisher this device trusts signed it, directly or through an attestor; false for a valid
+    /// self-signed or unknown publisher.
     verified: bool,
 }
 
-/// Verify `pkg_id` against trust config under the caller's `TrustFlags`
-/// policy.
 fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
@@ -647,20 +640,18 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
             })
         }
         Verification::UntrustedPublisher { identity, manifest } => {
-            // --require-attestor set: refuse unless --allow-self-signed rescues it.
+            // `--require-attestor` set: refuse unless `--allow-self-signed` rescues it.
             if let Some(required) = &trust.require_attestor {
                 if !trust.allow_self_signed {
                     return Err(Error::RequireAttestorWithoutAttestation {
                         required: required.clone(),
                     });
                 }
-                // fallback: --allow-self-signed permits this
                 eprintln!(
                     "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
                     hex::encode(identity)
                 );
             } else if !trust.allow_self_signed {
-                // Default (current) behavior: warn and proceed.
                 eprintln!(
                     "tilo-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
                     hex::encode(identity)
@@ -682,8 +673,8 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
         }
         Verification::Trusted { manifest } => {
             if let Some(required) = &trust.require_attestor {
-                // Trusted-key path bypasses the attestor chain; --require-attestor is
-                // strict, so refuse here regardless.
+                // A trusted key bypasses the attestor chain, and `--require-attestor` is strict, so
+                // refuse here regardless.
                 return Err(Error::AttestorMismatch {
                     required: required.clone(),
                     found: "trusted-key".into(),
@@ -700,7 +691,6 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
     }
 }
 
-/// Where a candidate package's bytes are.
 enum Candidate {
     File(PathBuf),
     /// Downloaded from a registry into the store client's staging directory.
@@ -725,9 +715,8 @@ impl Candidate {
     }
 }
 
-/// Everything a verified `.tapp` yields, before anything is stored.
-/// Checking is kept separate from installing so `--dry-run` is truthful
-/// and `update` can decide before touching a working install.
+/// Everything a verified `.tapp` yields, before anything is stored. Checking is separate from
+/// installing so `--dry-run` tells the truth and `update` can decide before touching an install.
 struct Checked {
     meta: PackageMeta,
     manifest: tilo_app_package::Manifest,
@@ -758,10 +747,9 @@ impl Checked {
 
 /// Read, verify and gate a `.tapp`, storing nothing.
 ///
-/// Signature verification is not optional and no flag turns it off;
-/// `--allow-self-signed` decides *whose* signature is acceptable, never
-/// whether one is required. Every payload blob the archive carries is
-/// checked against the signed collection on the way.
+/// No flag turns signature verification off: `--allow-self-signed` decides whose signature is
+/// acceptable, never whether one is required. Every payload blob the archive carries is checked
+/// against the signed collection on the way.
 fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let tapp = tilo_app_package::tapp::read(candidate.reader()?, &mut DiscardBlobs)
         .map_err(|error| Error::Parse(error.to_string()))?;
@@ -782,8 +770,8 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let len = candidate.len()?;
     tilo_app_package::desktop::validate_native_host(&manifest)
         .map_err(|e| Error::Policy(e.to_string()))?;
-    // The store's limit for this package on this machine: a developer
-    // session's own builds install under the local-build ceiling.
+    // The store's limit for this package on this machine: a developer session's own builds install
+    // under the local-build ceiling.
     if let Some(limit) = package_store::size_limit::app_size_limit(&meta)
         && len > limit
     {
@@ -801,8 +789,8 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     })
 }
 
-/// Install a checked candidate into the package store. The store streams
-/// the archive again; its metadata must be the package that was checked.
+/// Install a checked candidate into the package store. The store streams the archive again; its
+/// metadata must be the package that was checked.
 fn install_checked(
     store: &PackageStore,
     candidate: &Candidate,
@@ -825,8 +813,8 @@ fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
     checked.runtime_ref().map(bundle_status).transpose()
 }
 
-/// The version `raw` (`<name>/<version>`) names, and whether its bundle is
-/// installed for this user or in the image.
+/// The version `raw` (`<name>/<version>`) names, and whether its bundle is installed for this user
+/// or in the image.
 fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
     let (_, version) = raw
         .split_once('/')
@@ -841,7 +829,6 @@ fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
     Ok((version.to_string(), present))
 }
 
-/// The required runtimes `checked` pins that are not installed.
 fn missing_required_runtimes(checked: &Checked) -> Result<Vec<String>, Error> {
     let mut missing = Vec::new();
     for raw in tilo_app_package::desktop::required_runtime_dependencies(&checked.manifest) {
@@ -885,9 +872,8 @@ fn print_cohort_selection(row: &InstalledPackage, preserved: bool) {
     println!("cohort-selection: {receipt}");
 }
 
-/// Refuse a package that requires a system interface version this OS does
-/// not serve: installed, it could not work, and it would sit in front of the
-/// image's copy that does.
+/// Refuse a package that requires a system interface version this OS does not serve: installed, it
+/// could not work, and it would sit in front of the image's copy that does.
 fn fits_os(checked: &Checked) -> Result<(), Error> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = package_store::interfaces::unmet(provided.as_ref(), &checked.manifest);
@@ -903,13 +889,11 @@ fn fits_os(checked: &Checked) -> Result<(), Error> {
 
 /// Make the declared runtime available, or refuse the install.
 ///
-/// The refusal is the point: catching a missing `tilo-runtime/<v>`
-/// bundle here (with a fix command) beats discovering
-/// `RuntimeBundleMissing` at first launch.
+/// The refusal is the point: catching a missing `tilo-runtime/<v>` bundle here, with a fix command,
+/// beats discovering `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error> {
-    // The further runtimes an app requires travel with it, whichever path
-    // installs it: an app replaced while its engine is absent would not
-    // start.
+    // The further runtimes an app requires travel with it, whichever path installs it: an app
+    // replaced while its engine is absent would not start.
     if !flags.ignore_missing_runtime
         && let Some(runtime) = missing_required_runtimes(checked)?.into_iter().next()
     {
@@ -938,8 +922,7 @@ fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error>
     })
 }
 
-/// Write the PATH shims a `cli` package publishes; returns the command
-/// names now on PATH for it.
+/// Write the PATH shims a `cli` package publishes; returns the command names now on PATH for it.
 fn write_cli_shims(
     manifest: &tilo_app_package::Manifest,
     id_field: &str,
@@ -984,7 +967,6 @@ fn write_cli_shims(
     Ok(cli_commands)
 }
 
-/// Replace the PATH shims of an installed package with the new version's.
 fn replace_cli_shims(
     previous: Option<&InstalledPackage>,
     manifest: &tilo_app_package::Manifest,
@@ -998,7 +980,6 @@ fn replace_cli_shims(
     write_cli_shims(manifest, id_field)
 }
 
-/// How `install` treats a package beyond trust and runtime policy.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Replacement {
     Refuse,
@@ -1028,8 +1009,8 @@ fn install(
     } = options;
     let force = replacement != Replacement::Refuse;
     let preserve_held = replacement == Replacement::PreserveHeld;
-    // 1. Read + verify, before the registry check, so a --dry-run plan
-    //    describes a package we've actually seen and checked.
+    // 1. Read and verify before the registry check, so a `--dry-run` plan describes a package that
+    //    was actually seen and checked.
     let candidate = Candidate::File(tapp.to_path_buf());
     let checked = check(&candidate, trust)?;
     if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
@@ -1071,13 +1052,12 @@ fn install(
         return Ok(());
     }
 
-    // 3. Dependencies, before anything is stored: a half-succeeded install
-    //    that then refuses is worse than one that refuses upfront.
+    // 3. Dependencies, before anything is stored: a half-succeeded install that then refuses is
+    //    worse than one that refuses upfront.
     fits_os(&checked)?;
     satisfy_runtime(&checked, runtime)?;
 
-    // 4. Into the content store, materialised once; the registry row is the
-    //    commit point.
+    // 4. Into the content store, materialised once; the registry row is the commit point.
     let payload = payload_from
         .as_ref()
         .map(|source| source as &dyn BlobFetcher);
@@ -1132,9 +1112,8 @@ fn install(
     Ok(())
 }
 
-/// Where the launcher reads the runtime publishers it accepts; the
-/// launcher's developer override names another list, and the installer
-/// follows it so both judge a bundle alike.
+/// Where the launcher reads the runtime publishers it accepts. The launcher's developer override
+/// names another list, and the installer follows it so both judge a bundle alike.
 fn trusted_runtime_publishers(
     bundle: &Path,
 ) -> Result<runtime_bundle::component_pins::BundleTrust, Error> {
@@ -1148,9 +1127,7 @@ fn trusted_runtime_publishers(
         .map_err(|error| Error::RuntimeBundle(error.to_string()))
 }
 
-/// Stores the blobs a runtime package carries, or a registry delivers, as
-/// files named by hash, streaming: a runtime's libraries are hundreds of
-/// megabytes.
+/// Payload blobs as files named by hash, streamed: a runtime's libraries are hundreds of megabytes.
 struct BlobDir(PathBuf);
 
 impl tilo_app_package::BlobSink for BlobDir {
@@ -1198,17 +1175,6 @@ impl BlobFetcher for BlobDir {
     }
 }
 
-/// Install a native runtime package: its payload is a signed runtime
-/// bundle, which lands where the launcher looks for the runtime it
-/// provides (`$XDG_DATA_HOME/tilo-runtime/<version>`). The bundle must
-/// verify as the build the package names, for this machine, signed by a
-/// publisher this device trusts — the same checks the launcher makes before
-/// mounting it — so an install never leaves a runtime the launcher refuses.
-///
-/// Each install (or finding it installed) leases the bundle, so collection
-/// keeps it through the app install that follows; `pinned` keeps it for
-/// good. A replaced bundle leaves the version's directory in one rename
-/// before it is deleted, and stays while a running app has it mounted.
 #[derive(Clone, Copy)]
 struct RuntimeInstallOptions {
     replacement: Replacement,
@@ -1216,6 +1182,15 @@ struct RuntimeInstallOptions {
     dry_run: bool,
 }
 
+/// Install a native runtime package: its payload is a signed runtime bundle, which lands where the
+/// launcher looks for the runtime it provides (`$XDG_DATA_HOME/tilo-runtime/<version>`). The bundle
+/// must verify as the build the package names, for this machine, signed by a publisher this device
+/// trusts — the same checks the launcher makes before mounting it — so an install never leaves a
+/// runtime the launcher refuses.
+///
+/// Each install (or finding it installed) leases the bundle, so collection keeps it through the app
+/// install that follows; `pinned` keeps it for good. A replaced bundle leaves the version's directory
+/// in one rename before it is deleted, and stays while a running app has it mounted.
 fn install_runtime_package(
     candidate: &Candidate,
     checked: &Checked,
@@ -1282,9 +1257,9 @@ fn install_runtime_package(
         {
             return Err(Error::AlreadyInstalled(checked.id().to_string()));
         }
-        // Publish the verified signed package through the same catalogue and
-        // integrity records AppHost reads. Reuse the already fetched blobs;
-        // a thin engine must not download its entire payload a second time.
+        // Publish the verified signed package through the catalogue and integrity records AppHost
+        // reads, reusing the blobs already fetched: a thin engine must not download its whole
+        // payload a second time.
         let blobs = BlobDir(staging.join("blobs"));
         let preserve_held = options.replacement == Replacement::PreserveHeld;
         if !record_package(
@@ -1319,8 +1294,8 @@ fn install_runtime_package(
     Ok(())
 }
 
-/// The normal package-store commit retains pins and can preserve an explicit
-/// version hold. No runtime directory is promoted if that hold wins.
+/// The store commit keeps pins and can preserve a version hold. No runtime directory is promoted if
+/// that hold wins.
 fn record_package(
     store: &PackageStore,
     candidate: &Candidate,
@@ -1372,9 +1347,8 @@ fn stage_runtime_bundle(
     let mut sink = BlobDir(blobs);
     let tapp = tilo_app_package::tapp::read(candidate.reader()?, &mut sink)
         .map_err(|error| Error::Parse(error.to_string()))?;
-    // Most of a runtime build's files are in the runtime already installed:
-    // copy those, each verified against the hash the signed package names,
-    // and fetch only the rest.
+    // Most of a runtime build's files are in the runtime already installed: copy those, each
+    // verified against the hash the signed package names, and fetch only the rest.
     let (missing, reused) = install::runtime_blobs::LocalRuntimeBlobs::installed()
         .copy_into(&tapp.missing(), &sink.0)?;
     if reused > 0 {
@@ -1398,18 +1372,17 @@ fn stage_runtime_bundle(
     Ok(tree)
 }
 
-/// Enable fs-verity on a fully verified bundle's files, so each launch
-/// trusts them by their kernel-measured, publisher-signed digests instead of
-/// hashing the whole runtime again. Best effort: where the filesystem has no
-/// fs-verity, or the bundle predates its digests, launches hash the payload
-/// as before, which is as safe and only slower.
+/// Enable fs-verity on a fully verified bundle's files, so each launch trusts them by their
+/// kernel-measured, publisher-signed digests instead of hashing the whole runtime again. Best
+/// effort: without fs-verity on the filesystem, or for a bundle that predates its digests, launches
+/// hash the payload as before, which is as safe and only slower.
 fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
     match runtime_bundle::enable_bundle_verity(tree, manifest) {
         Ok(0) => {}
         Ok(sealed) => {
             println!("  sealed   : {sealed} file(s) with fs-verity");
-            // What a launch will do: a file the kernel measures differently
-            // from its signed digest is hashed at every launch, so say so.
+            // Say what a launch will do: a file the kernel measures differently from its signed
+            // digest is hashed at every launch.
             let options = runtime_bundle::VerifyOptions::default();
             if let Ok((_, check)) = runtime_bundle::verify_bundle_verity_with(tree, &options)
                 && check.hashed > 0
@@ -1427,12 +1400,11 @@ fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
     }
 }
 
-/// The checks the launcher makes before it mounts a per-user bundle, which
-/// leave the bundle's verification record: the first launch of an app that
-/// installs a runtime reads that record instead of hashing what this just
-/// proved. Sealing the bundle afterwards moves the files' identities and the
-/// record with them, which costs nothing: a sealed bundle is proven by the
-/// kernel, and one the filesystem would not seal keeps the record.
+/// The checks the launcher makes before it mounts a per-user bundle, which leave the bundle's
+/// verification record: the first launch of an app that installs a runtime reads that record instead
+/// of hashing what this just proved. Sealing the bundle afterwards moves the files' identities and
+/// the record with them, which costs nothing: a sealed bundle is proven by the kernel, and one the
+/// filesystem would not seal keeps the record.
 fn check_runtime_bundle(
     tree: &Path,
     version: &str,
@@ -1461,8 +1433,8 @@ fn check_runtime_bundle(
     Ok(manifest)
 }
 
-/// Let GNOME Shell and `KRunner` search the resources the runtime beside this
-/// binary admits. Best effort: an app installs and runs without it.
+/// Let GNOME Shell and `KRunner` search the resources the runtime beside this binary admits. Best
+/// effort: an app installs and runs without it.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn register_search_providers() {
     let Some(runtime) = std::env::current_exe()
@@ -1487,7 +1459,6 @@ fn register_search_providers() {
     }
 }
 
-/// What an install would change, printed instead of doing it.
 fn print_install_plan(
     checked: &Checked,
     existing: Option<&InstalledPackage>,
@@ -1543,7 +1514,7 @@ fn describe_trust(checked: &Checked) -> String {
     }
 }
 
-/// Fetch a newer version and swap it in, keeping the user's state.
+/// Fetch a newer version and swap it in, keeping the user's per-workspace data.
 fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error> {
     let targets: Vec<InstalledPackage> = if let Some(id) = pkg_id {
         vec![find_installed(id)?]
@@ -1578,8 +1549,8 @@ fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error
     Ok(())
 }
 
-/// Remove the user's copies of apps the system image now ships a newer
-/// version of: nothing runs them any more.
+/// Remove the user's copies of apps the image now ships a newer version of: nothing runs them any
+/// more.
 fn drop_superseded() -> Result<(), Error> {
     let superseded = catalog()?
         .superseded()
@@ -1607,7 +1578,6 @@ enum UpdateOutcome {
     Planned,
 }
 
-/// The flags an update runs under.
 struct UpdateRequest<'a> {
     from: Option<&'a Path>,
     version_req: Option<&'a str>,
@@ -1619,7 +1589,7 @@ struct UpdateRequest<'a> {
     payload_from: Option<app_registry::HttpBlobs>,
 }
 
-/// Whether the candidate may replace the installed package, or why not.
+/// `None` when the candidate may replace the package; otherwise the outcome that ends the update.
 fn update_allowed(
     entry: &InstalledPackage,
     checked: &Checked,
@@ -1631,11 +1601,10 @@ fn update_allowed(
             found: checked.id().to_string(),
         });
     }
-    // A local file has no signed registry entry authorising a publisher-key
-    // rotation. Keep the identity recorded at install time unless the user
-    // explicitly pins the candidate key on this command line. A registry
-    // update takes its publisher from the entry the registry owner signed,
-    // so legitimate rotations remain possible there.
+    // A local file has no signed registry entry authorising a publisher-key rotation, so keep the
+    // identity recorded at install time unless the user pins the candidate key here. A registry
+    // update takes its publisher from the entry the registry owner signed, where rotations stay
+    // possible.
     if request.from.is_some()
         && !entry.publisher_key_hex.is_empty()
         && !entry
@@ -1654,13 +1623,12 @@ fn update_allowed(
         });
     }
 
-    // A package recorded at a format this build does not read was installed
-    // by another Tilo build: any build the store offers now replaces it.
+    // A package recorded at a format this build does not read was installed by another Tilo build:
+    // any build the store offers now replaces it.
     if !package_store::integrity::record_current(entry) {
         return Ok(None);
     }
-    // Is it actually newer? Non-semver versions are compared as strings
-    // for equality only — not evidence of an upgrade.
+    // Whether it is newer at all: non-semver versions compare as strings, for equality only.
     match compare_versions(&entry.version, checked.version()) {
         Some(std::cmp::Ordering::Equal) | None if entry.version == checked.version() => {
             if checked.manifest.package.kind == tilo_app_package::Kind::Runtime {
@@ -1678,9 +1646,9 @@ fn update_allowed(
     }
 }
 
-/// A version string and a retained directory cannot establish that an exact
-/// runtime package remains installed. Replay its signed package record and
-/// compare the mounted bundle's signed manifest with that package's payload.
+/// A version string and a retained directory cannot establish that an exact runtime package remains
+/// installed, so replay its signed package record and compare the mounted bundle's signed manifest
+/// with that package's payload.
 fn verify_current_runtime(entry: &InstalledPackage, checked: &Checked) -> Result<(), Error> {
     if entry.package_id_hex != checked.meta.id.to_hex() {
         return Err(Error::Policy(
@@ -1715,8 +1683,8 @@ fn verify_current_runtime(entry: &InstalledPackage, checked: &Checked) -> Result
     Ok(())
 }
 
-/// Update a package that is not an app: a language pack or a runtime, each
-/// put where its readers look. `None` for an app.
+/// Update a package that is not an app: a language pack or a runtime, each put where its readers
+/// look. `None` for an app.
 fn update_shared(
     entry: &InstalledPackage,
     candidate: &Candidate,
@@ -1756,10 +1724,9 @@ fn update_one(
     entry: &InstalledPackage,
     request: &UpdateRequest<'_>,
 ) -> Result<UpdateOutcome, Error> {
-    // 1. Get candidate bytes (local file or configured registries); either
-    //    way `check` verifies them before anything is stored.
-    // A registry serves thin packages; their payload comes from the node that
-    // served them, and only the blobs the store lacks are fetched.
+    // 1. Get candidate bytes (local file or configured registries); either way `check` verifies
+    //    them before anything is stored. A registry serves thin packages: their payload comes from
+    //    the node that served them, and only the blobs the store lacks are fetched.
     let (candidate, source, trust, provider) = if let Some(path) = request.from {
         (
             Candidate::File(path.to_path_buf()),
@@ -1826,9 +1793,9 @@ fn update_one(
     fits_os(&checked)?;
     satisfy_runtime(&checked, request.runtime)?;
 
-    // 2. The new version is materialised beside the old one and the registry
-    //    row replaced atomically: a failure before that point leaves the old
-    //    version installed and working, and the old tree goes only after.
+    // 2. The new version is materialised beside the old one and the registry row replaced
+    //    atomically: a failure before that point leaves the old version installed and working, and
+    //    the old tree goes only after.
     let store = store()?;
     let held = held_below_image(&layers(&entry.id)?, checked.version());
     let installed = install_checked(
@@ -1915,8 +1882,8 @@ fn list() -> Result<(), Error> {
         } else {
             &e.attested_by
         };
-        // A package whose runtime bundle has gone missing still lists, but
-        // flagged — installed-but-unlaunchable, which a bare list would hide.
+        // A package whose runtime bundle has gone missing still lists, flagged: a bare list would
+        // hide that it cannot launch.
         let runtime = match e.runtime.as_str() {
             "" => "-".to_string(),
             r => {
@@ -1942,8 +1909,8 @@ fn list() -> Result<(), Error> {
     Ok(())
 }
 
-/// Which store a listed package runs from: the system image's, or the
-/// user's (`held` when rolled back below the image's version).
+/// Which store a listed package runs from: the image's, or the user's (`held` when rolled back
+/// below the image's version).
 fn installed_from(entry: &InstalledPackage) -> &'static str {
     if entry.system {
         "image"
@@ -1956,9 +1923,9 @@ fn installed_from(entry: &InstalledPackage) -> &'static str {
 
 /// Uninstall a package, deciding about its user data separately.
 ///
-/// The payload is the publisher's (reproducible by reinstalling); the
-/// per-workspace state is the user's and does not come back — so the two
-/// are separate decisions, and deleting state is never done silently.
+/// The payload is the publisher's, reproducible by reinstalling; the per-workspace data is the
+/// user's and does not come back, so the two are separate decisions and data is never deleted
+/// silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
     // Only the user's copy can go; removing it puts the image's back.
     let layers = layers(pkg_id)?;
@@ -2010,7 +1977,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
     let delete_state = decide_state(&workspaces, purge, keep_state);
 
     let removed = store()?.remove(pkg_id, true).map_err(store_error)?;
-    // Undo PATH shims, best-effort — a missing bin_dir just means none were installed.
+    // Undo PATH shims, best effort: a missing `bin/` just means none were installed.
     if !entry.cli_commands.is_empty() {
         let bin_dir = bin_root()?;
         shim::remove_shims(&bin_dir, &entry.id, &entry.cli_commands)
@@ -2112,8 +2079,8 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Flip the pin: pinned packages are kept, ranked first, and exempt from
-/// size-pressure eviction.
+/// Flip the pin: pinned packages are kept, ranked first, and exempt from eviction under size
+/// pressure.
 fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     store()?.set_pinned(pkg_id, pinned).map_err(store_error)?;
     println!("{}: {pkg_id}", if pinned { "pinned" } else { "unpinned" });
@@ -2148,8 +2115,8 @@ fn run(
         }
     }
 
-    // Re-check trust policy at launch — revocation may postdate install;
-    // --require-attestor is honoured against the recorded attested-by field.
+    // Check trust policy again at launch: a revocation may postdate the install, and
+    // `--require-attestor` is held against the recorded `attested_by`.
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
     if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex)
@@ -2164,8 +2131,8 @@ fn run(
         });
     }
     if let Some(required) = &trust.require_attestor {
-        // The recorded attested_by is fixed at install time and can go stale
-        // if trusted-attestors.toml changed since; re-check it's still trusted.
+        // The recorded `attested_by` is fixed at install time and goes stale when
+        // `trusted-attestors.toml` changes, so check it is still trusted.
         let still_trusted = attestors.get(&entry.attested_by).is_some();
         if entry.attested_by != *required || !still_trusted {
             if !trust.allow_self_signed {
@@ -2188,7 +2155,7 @@ fn run(
         eprintln!("tilo-install: could not record the launch: {error}");
     }
 
-    // Find tilo-launcher on PATH; fall back to a sibling of this binary.
+    // `tilo-launcher` on PATH, else a sibling of this binary.
     let launcher = which_launcher();
     let mut cmd = Command::new(&launcher);
     cmd.arg("run")
@@ -2205,7 +2172,7 @@ fn run(
     if allow_missing_runtime {
         cmd.arg("--allow-missing-runtime");
     }
-    // exec()-replace so this process's exit code IS the launcher's.
+    // exec() replaces this process, so its exit code is the launcher's.
     let err = cmd.exec();
     Err(Error::Io(err))
 }
@@ -2280,8 +2247,8 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Compare two version strings as semver; `None` when either isn't
-/// valid semver (common for hand-written manifests).
+/// Compare two version strings as semver; `None` when either is not valid semver, which is common
+/// for hand-written manifests.
 fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Ordering> {
     let a = semver::Version::parse(installed).ok()?;
     let b = semver::Version::parse(candidate).ok()?;
@@ -2319,11 +2286,10 @@ fn print_state_summary(workspaces: &[install::state::WorkspaceState]) {
     }
 }
 
-/// Whether to delete the app's saved state.
+/// Whether to delete the app's saved data.
 ///
-/// Flags win; otherwise the user is asked, and with no terminal to ask
-/// on the answer defaults to *keep* — silent, unattended data deletion
-/// is the one failure mode that can't be undone.
+/// Flags win; otherwise the user is asked, and with no terminal to ask on the answer is keep:
+/// silent, unattended data deletion is the one failure that cannot be undone.
 fn decide_state(
     workspaces: &[install::state::WorkspaceState],
     purge: bool,
@@ -2468,8 +2434,6 @@ fn runtime_list() -> Result<(), Error> {
     Ok(())
 }
 
-/// The per-user runtime bundles, where `runtime_bundle::default_bundle_path`
-/// puts them.
 fn runtime_bundles() -> Result<runtime_bundle::gc::BundleRoot, Error> {
     runtime_bundle::gc::BundleRoot::from_env().map_err(|e| Error::RuntimeBundle(e.to_string()))
 }
@@ -2478,8 +2442,8 @@ fn runtime_remove(version: &str) -> Result<(), Error> {
     let bundles = runtime_bundles()?;
     let _collection_held_off = bundles.install_lock()?;
     bundles.unpin(version)?;
-    // Out of the version's directory in one rename first: a removal stopped
-    // halfway never leaves a bundle a launch would pick.
+    // Out of the version's directory in one rename first: a removal stopped halfway would otherwise
+    // leave a bundle a launch picks.
     let trashed = bundles
         .retire(version)?
         .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
@@ -2513,7 +2477,6 @@ fn runtime_pin(version: &str, pinned: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// What `gc` and every change run.
 fn gc_request(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> install::gc::Request {
     install::gc::Request {
         max_store_bytes,
@@ -2570,11 +2533,9 @@ fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error>
     Ok(())
 }
 
-/// After an install, update or uninstall that began at `started` (Unix
-/// seconds): reclaim what it left unneeded, keeping every app it wrote,
-/// which the person is about to open. Never fails the change it follows;
-/// says what it freed on stderr, so the change's own output stays as
-/// scripts read it.
+/// After an install, update or uninstall that began at `started` (Unix seconds): reclaim what it
+/// left unneeded, keeping every app it wrote, which is about to be opened. Never fails the change it
+/// follows, and reports on stderr so the change's own output stays as scripts read it.
 fn collect_after_change(started: u64) {
     let written = store()
         .map_err(|error| error.to_string())
@@ -2662,10 +2623,9 @@ fn main() {
             | Cmd::Update { dry_run: false, .. }
             | Cmd::Uninstall { dry_run: false, .. }
     );
-    // An install holds collection off while it runs, so the runtime it
-    // checked for cannot be collected under it. Without a bundle root there
-    // is nothing to collect, and an app with no runtime creates none; a
-    // runtime install takes the lock itself.
+    // An install holds collection off while it runs, so the runtime it checked for cannot be
+    // collected under it. Without a bundle root there is nothing to collect, an app with no runtime
+    // creates none, and a runtime install takes the lock itself.
     let collection_held_off = matches!(cli.cmd, Cmd::Install { .. } | Cmd::Update { .. })
         .then(|| {
             let bundles = runtime_bundles().ok()?;
@@ -2914,7 +2874,7 @@ fn age(installed_at: u64) -> String {
 }
 
 fn which_launcher() -> PathBuf {
-    // Prefer a sibling binary — matches how the demo installs both under target/release/.
+    // A sibling binary first: development builds put both in `target/release`.
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {

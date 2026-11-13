@@ -1,41 +1,32 @@
-//! Compatibility-shaped Bluetooth helpers over the shared `BlueZ` D-Bus client.
-//! New code should prefer [`crate::bluez`] and object paths directly.
+//! Bluetooth helpers over the shared `BlueZ` client; new code calls [`crate::bluez`]
+//! directly.
 
 use std::time::Duration;
 
 use tilo_bluez::DeviceInfo;
 
-/// One Bluetooth device entry returned by [`list_bt_devices`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtDeviceInfo {
     pub name: String,
-    /// The device's MAC address — the handle `bluetoothctl connect <mac>`
-    /// takes. Empty only for hand-built fixtures that don't need it.
+    /// The handle `bluetoothctl connect <mac>` takes; empty only in hand-built fixtures.
     pub mac: String,
-    /// Reported via `bluetoothctl info <mac>` (Battery Percentage), or
-    /// `0` if the device doesn't expose one.
+    /// From `bluetoothctl info <mac>`, `0` when the device reports none.
     pub battery: u8,
     pub connected: bool,
 }
 
-/// One Bluetooth device in reach, paired or not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearbyBtDevice {
     pub name: String,
     pub address: String,
-    /// Signal during discovery, in dBm; `None` for a device `BlueZ` knows but
-    /// has not seen now.
+    /// Signal during discovery, dBm; `None` for a device `BlueZ` knows but has not seen now.
     pub rssi: Option<i16>,
     pub paired: bool,
 }
 
-/// Local evidence available for a cross-device accessory handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BluetoothHandoffTarget {
-    /// This adapter already owns a bond and may connect without creating trust.
     Paired,
-    /// The exact address was discovered locally but still requires local user
-    /// authorization before pairing can create a bond.
     Pairable,
 }
 
@@ -63,12 +54,8 @@ fn valid_bluetooth_address(address: &str) -> bool {
             .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-/// Verify an accessory against this device's own `BlueZ` inventory, performing
-/// one bounded discovery when it is not already known.
-///
-/// A peer-provided name or object path is never accepted as evidence. Address
-/// ambiguity across adapters fails closed because `BlueZ` object paths, unlike
-/// Bluetooth addresses, are the locally authoritative operation handles.
+/// Checks an accessory against this device's own `BlueZ` inventory, discovering once if needed; a
+/// peer-provided name or object path is never evidence.
 pub fn inspect_bluetooth_handoff_target(
     address: &str,
     discovery_window: Duration,
@@ -92,11 +79,8 @@ pub fn inspect_bluetooth_handoff_target(
     })
 }
 
-/// Resolve an approved handoff address back to one local `BlueZ` object and
-/// pair, trust, then connect it using the compositor-owned pairing agent.
-///
-/// Callers must hold their own one-shot local authorization; this helper does
-/// not interpret a remote handoff request as consent.
+/// Pairs, trusts and connects one local object for an approved handoff address; callers hold their own
+/// one-shot local authorization.
 pub fn pair_bluetooth_handoff(address: &str) -> Result<(), String> {
     if !valid_bluetooth_address(address) {
         return Err("invalid Bluetooth address".into());
@@ -116,11 +100,6 @@ fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String
     }
 }
 
-/// Every device in reach, paired or not, strongest signal first: what a
-/// "find an accessory" list shows.
-///
-/// # Errors
-/// What `BlueZ` refused.
 pub fn nearby_bluetooth() -> Result<Vec<NearbyBtDevice>, String> {
     let mut devices: Vec<NearbyBtDevice> = crate::bluez::devices()?
         .into_iter()
@@ -135,7 +114,6 @@ pub fn nearby_bluetooth() -> Result<Vec<NearbyBtDevice>, String> {
     Ok(devices)
 }
 
-/// Look for devices, or stop looking.
 pub fn scan_bluetooth(on: bool) -> Result<(), String> {
     if on {
         crate::bluez::start_scan()
@@ -144,17 +122,11 @@ pub fn scan_bluetooth(on: bool) -> Result<(), String> {
     }
 }
 
-/// Whether this machine is looking for devices now.
 pub fn scanning_bluetooth() -> Result<bool, String> {
     crate::bluez::is_scanning()
 }
 
-/// Forget the device at `address`: its bond, its keys and its trust go, so it
-/// must be paired again from scratch.
-///
-/// # Errors
-/// A malformed or ambiguous address, one `BlueZ` does not know, or what it
-/// refused.
+/// Forgets the device at `address`: bond, keys and trust go, so it must be paired again.
 pub fn forget_bluetooth(address: &str) -> Result<(), String> {
     if !valid_bluetooth_address(address) {
         return Err("invalid Bluetooth address".into());
@@ -165,12 +137,10 @@ pub fn forget_bluetooth(address: &str) -> Result<(), String> {
     crate::bluez::forget(&device.path)
 }
 
-/// Toggle the Bluetooth controller via `bluetoothctl power on|off`.
 pub fn set_bluetooth(enabled: bool) -> Result<(), String> {
     crate::bluez::set_powered(enabled)
 }
 
-/// Connect a paired device by MAC via `bluetoothctl connect <mac>`.
 pub fn bt_connect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -179,7 +149,6 @@ pub fn bt_connect(mac: &str) -> Result<(), String> {
     crate::bluez::connect(&device.path)
 }
 
-/// Disconnect a device by MAC via `bluetoothctl disconnect <mac>`.
 pub fn bt_disconnect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -188,8 +157,6 @@ pub fn bt_disconnect(mac: &str) -> Result<(), String> {
     crate::bluez::disconnect(&device.path)
 }
 
-/// Read the Bluetooth controller state by grepping `bluetoothctl show`
-/// for `Powered:`.
 pub fn get_bluetooth() -> Result<bool, String> {
     crate::bluez::is_powered()
 }
@@ -205,10 +172,7 @@ fn parse_bluetoothctl_power(stdout: &str) -> Result<bool, String> {
     Err("bluetoothctl show: no Powered: line".to_string())
 }
 
-/// List paired Bluetooth devices and their connected state. Two-step
-/// shell-out: `bluetoothctl devices Paired` lists name + MAC, then for
-/// each MAC we call `bluetoothctl info <mac>` to extract `Connected:`
-/// and `Battery Percentage:`.
+/// Two shell-outs: `bluetoothctl devices Paired`, then `info` per MAC for its connected state.
 pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
     Ok(crate::bluez::paired_devices()?
         .into_iter()
@@ -221,8 +185,6 @@ pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
         .collect())
 }
 
-/// Parse `bluetoothctl devices Paired` output:
-/// `Device AA:BB:CC:DD:EE:FF Some Name`
 #[cfg(test)]
 fn parse_bluetoothctl_devices(stdout: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -243,9 +205,6 @@ fn parse_bluetoothctl_devices(stdout: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Parse the relevant lines of `bluetoothctl info <mac>`. Returns
-/// `(connected, battery)`; battery defaults to `0` when no
-/// `Battery Percentage:` line is present.
 #[cfg(test)]
 fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
     let mut connected = false;
@@ -255,8 +214,7 @@ fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
         if let Some(rest) = t.strip_prefix("Connected:") {
             connected = rest.trim() == "yes";
         } else if let Some(rest) = t.strip_prefix("Battery Percentage:") {
-            // Format: `Battery Percentage: 0x50 (80)` — the decimal in
-            // parens is what we want.
+            // Format: `Battery Percentage: 0x50 (80)`; the decimal in parens is the value.
             if let Some(open) = rest.find('(') {
                 let after = &rest[open.saturating_add(1)..];
                 if let Some(close) = after.find(')')

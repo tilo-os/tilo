@@ -1,42 +1,23 @@
-//! Display brightness, written straight to the kernel's backlight class.
-//!
-//! # Why not `brightnessctl`
-//!
-//! 1. **Not installed.** `os/Containerfile` doesn't pull it in, so on the shipped image
-//!    every brightness call would fail silently.
-//! 2. **A fork per keypress.** Brightness keys auto-repeat; shelling out at the typematic
-//!    rate means spawning, exec'ing and reaping a process tens of times a second from the
-//!    compositor, which must not stall.
-//! 3. **One more thing to keep in the image.** A bootc image is rebuilt and re-derived; a
-//!    package that exists only to `open()`/`write()`/`close()` a file we can open ourselves
-//!    is a dependency with no payload.
-//!
-//! Writing `/sys/class/backlight/<dev>/brightness` is what `brightnessctl` does anyway. The
-//! one thing it brings that a bare write doesn't is the udev rule granting the `video` group
-//! write access to that attribute — so Tilo ships that rule itself
-//! (`os/usr/lib/udev/rules.d/`), smaller and under our control.
-//!
-//! `brightnessctl` is still tried as a fallback when the sysfs write is refused, since a dev
-//! host may have it installed with its own rule, and it costs nothing when absent.
+//! Display brightness, written straight to `/sys/class/backlight/<dev>/brightness`,
+//! which is what `brightnessctl` does without a process per keypress and without a
+//! package on the image. Tilo ships the udev rule that lets the session user write the
+//! attribute, and falls back to `brightnessctl` when the write is refused.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::process::{run, run_capture, which};
 
-/// The kernel's backlight class. A parameter on the inner functions so the tests can point
-/// at a fixture tree.
+/// Passed to the inner functions so tests can point at a fixture tree.
 const BACKLIGHT: &str = "/sys/class/backlight";
 const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 
-/// Set the backlight brightness to `pct` percent, clamped to `[0, 100]`.
 pub fn set_brightness(pct: f32) -> Result<(), String> {
     let clamped = pct.clamp(0.0, 100.0);
     match set_brightness_in(Path::new(BACKLIGHT), clamped) {
         Ok(()) => Ok(()),
         Err(sysfs_err) => {
-            // Only worth a second attempt if the tool is actually there; otherwise report the real
-            // reason rather than "not installed", which would point at the wrong problem.
+            // Only worth a second attempt if the tool is there; otherwise the real reason is lost.
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
@@ -56,12 +37,6 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
     }
 }
 
-/// Read the current brightness as a `0.0..=1.0` fraction.
-///
-/// # Errors
-///
-/// Returns an error message if no backlight device is found and the `brightnessctl` fallback is
-/// either not installed, fails, or its output cannot be parsed.
 pub fn get_brightness() -> Result<f32, String> {
     match get_brightness_in(Path::new(BACKLIGHT)) {
         Ok(v) => Ok(v),
@@ -69,18 +44,17 @@ pub fn get_brightness() -> Result<f32, String> {
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
-            // Without a class, brightnessctl falls back to any device, which on a
-            // machine with no backlight is a keyboard LED.
+            // Without a class, brightnessctl falls back to any device, which on a machine with no
+            // backlight is a keyboard LED.
             let out = run_capture("brightnessctl", &["-m", "-c", "backlight"])?;
             parse_brightness_machine(&out)
         }
     }
 }
 
-/// The panel backlight as the kernel holds it, for the flight record:
-/// `device=<name> brightness=<n>/<max> actual=<n> bl_power=<n>`, or `None`
-/// when there is no backlight. A blank or wake logs it, so a screen that
-/// stays dark after a wake says whether its backlight came back.
+/// The panel backlight as the kernel holds it, `device=<name> brightness=<n>/<max> actual=<n>
+/// bl_power=<n>`; `None` when there is no backlight. A blank or wake logs it, so a panel that stays
+/// dark says whether its backlight came back.
 pub fn backlight_state() -> Option<String> {
     backlight_state_in(Path::new(BACKLIGHT))
 }
@@ -99,11 +73,8 @@ fn backlight_state_in(root: &Path) -> Option<String> {
     ))
 }
 
-/// Whether the panel backlight is powered, as the kernel holds it:
-/// `Some(true)` for `bl_power` 0 (`FB_BLANK_UNBLANK`), `Some(false)` for any
-/// blank level, `None` when there is no backlight or it says nothing. A wake
-/// that leaves the backlight blanked has not lit the panel, whatever the CRTC
-/// scans out.
+/// `Some(true)` for `bl_power` 0 (`FB_BLANK_UNBLANK`), `Some(false)` for any blank level, `None`
+/// without a backlight.
 pub fn backlight_powered() -> Option<bool> {
     backlight_powered_in(Path::new(BACKLIGHT))
 }
@@ -112,16 +83,13 @@ fn backlight_powered_in(root: &Path) -> Option<bool> {
     read_u32(&preferred_device(root)?, "bl_power").map(|power| power == 0)
 }
 
-/// Whether this machine has a controllable backlight at all. Desktops and most VMs do not,
-/// and the quick-settings panel uses this to leave the slider out rather than show a dead one.
+/// Desktops and most VMs have none; Quick Settings leaves the slider out.
 pub fn has_backlight() -> bool {
     preferred_device(Path::new(BACKLIGHT)).is_some()
 }
 
-/// Read ambient illuminance in lux from the kernel IIO ABI.  Drivers expose
-/// either a processed `in_illuminance_input`, or `raw × scale`; both are
-/// standard IIO forms.  No sensor means `None`, which Settings renders as an
-/// unavailable capability rather than a working-looking toggle.
+/// Ambient illuminance in lux from the kernel IIO ABI: a processed `in_illuminance_input`, or `raw ×
+/// scale`. `None` when there is no sensor.
 pub fn ambient_lux() -> Option<f32> {
     ambient_lux_from(Path::new(IIO_DEVICES))
 }
@@ -156,9 +124,8 @@ fn read_f32(path: &Path) -> Option<f32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// Stateful lux→brightness policy.  Logarithmic mapping matches human light
-/// perception; the EMA and deadband prevent a desk shadow from making the
-/// panel visibly pulse.  The controller emits only meaningful changes.
+/// Stateful lux→brightness policy: a logarithmic map, as perception is, with an EMA and a deadband so a
+/// desk shadow does not make the panel pulse. It emits only meaningful changes.
 #[derive(Clone, Debug, Default)]
 pub struct AmbientBrightnessController {
     filtered_lux: Option<f32>,
@@ -195,7 +162,6 @@ fn get_brightness_in(root: &Path) -> Result<f32, String> {
     get_backlight(&preferred_device(root).ok_or("no backlight device")?)
 }
 
-/// Read one backlight device as a `0.0..=1.0` fraction.
 pub(crate) fn get_backlight(dev: &Path) -> Result<f32, String> {
     let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
@@ -215,7 +181,6 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
     set_backlight(&preferred_device(root).ok_or("no backlight device")?, pct)
 }
 
-/// Write `pct` percent to one backlight device.
 pub(crate) fn set_backlight(dev: &Path, pct: f32) -> Result<(), String> {
     set_backlight_with(dev, pct, logind_set_brightness)
 }
@@ -237,8 +202,8 @@ fn set_backlight_with(
                   before the final cast, so no precision is lost and the value never goes negative"
     )]
     let raw = ((pct / 100.0) * max as f32).round().clamp(0.0, max as f32) as u32;
-    // Never write a hard 0 from a percentage above zero: some panels treat 0 as "backlight off"
-    // with no way for the user to see the screen well enough to bring it back.
+    // Never write a hard 0 from a percentage above zero: some panels treat 0 as "backlight off" with
+    // no way for the user to see the screen well enough to bring it back.
     let raw = if pct > 0.0 { raw.max(1) } else { raw };
     let path = dev.join("brightness");
     let Err(write_err) = fs::write(&path, raw.to_string()) else {
@@ -252,9 +217,8 @@ fn set_backlight_with(
         .map_err(|logind_err| format!("write {}: {write_err}; {logind_err}", path.display()))
 }
 
-/// A host session (Silverblue, Bazzite) has no udev rule handing the attribute to
-/// the user, and the user is usually not in `video`. logind's `SetBrightness`
-/// lets the seat's active session set it; it is how GNOME and KDE dim there.
+/// A host session (Silverblue, Bazzite) has no udev rule handing the attribute to the user, and the
+/// user is usually not in `video`; logind's `SetBrightness` lets the seat's active session set it.
 fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
     crate::block_on(async {
         crate::session::logind()
@@ -265,10 +229,9 @@ fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
     })
 }
 
-/// Pick which backlight to drive when the kernel exposes several. `acpi_video*` is the
-/// firmware's generic interface, usually a no-op or coarse duplicate of the native one, so
-/// the native device (`intel_backlight`, `amdgpu_bl0`, `nv_backlight`, …) is preferred. Ties
-/// break on name so the choice is stable rather than following readdir order.
+/// Picks which backlight to drive when the kernel exposes several: the native device over
+/// `acpi_video*`, whose firmware interface is a no-op or coarse duplicate. Ties break on name, so the
+/// choice does not follow readdir order.
 pub(crate) fn preferred_device(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
@@ -320,7 +283,6 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
 mod tests {
     use super::*;
 
-    /// Build a fixture backlight class tree: `(name, current, max)`.
     fn tree(devices: &[(&str, u32, u32)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         for (name, now, max) in devices {
@@ -332,8 +294,8 @@ mod tests {
         dir
     }
 
-    /// A blank or wake records what the kernel holds for the backlight, so
-    /// a panel that stays dark says whether its backlight came back.
+    /// A blank or wake records what the kernel holds for the backlight, so a panel that stays dark says
+    /// whether its backlight came back.
     #[test]
     fn the_backlight_state_reads_brightness_actual_and_power() {
         let dir = tree(&[("dp_aux_backlight", 0, 2047)]);
@@ -491,7 +453,8 @@ mod tests {
             assert!(parse_brightness_machine(s).unwrap().abs() < f32::EPSILON);
         }
         {
-            // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
+            // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0
+            // fraction.
             let s = "x,backlight,11,110%,10";
             assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
         }

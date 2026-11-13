@@ -1,9 +1,7 @@
 //! Device-local find and zoom state, retained with each browser tab.
 //!
-//! Find runs in the page's engine, which reports how many matches there are
-//! and which one it shows. While the desktop's window bar hosts the window,
-//! its search drives that find ([`DailyControls::search`]); outside a Tilo
-//! session the window's own find bar ([`DailyControls::bar`]) does.
+//! While the desktop's window bar hosts the window its search drives find;
+//! outside a Tilo session the window's own find bar does.
 use ui::{
     LocalState,
     icons::Icon,
@@ -13,27 +11,17 @@ use ui::{
 };
 
 pub(crate) const FIND_INPUT: &str = "browser.find.input";
-/// The zoom steps a page goes through, `1.2` times apart each: five out,
-/// nine in. The engine holds a page's level per site, so the level is what it
-/// is told; what a person reads and can reach — the percentage, the bounds,
-/// the "Actual size" label — is the toolkit's [`ui::content_zoom::ZoomModel`]
-/// over these same factors, so this window states its zoom the way every
-/// other window does (`1.2^5` smaller than its own size … `1.2^9` larger).
+/// Zoom steps, `1.2` apart each: five out, nine in.
 const ZOOM_STEPS: std::ops::RangeInclusive<i32> = -5..=9;
 
-/// The smallest zoom level, the page's level being the steps from its
-/// default size.
 fn zoom_min() -> f64 {
     f64::from(*ZOOM_STEPS.start())
 }
 
-/// The largest zoom level.
 fn zoom_max() -> f64 {
     f64::from(*ZOOM_STEPS.end())
 }
 
-/// The factors those steps stand for, ascending: one per level the page can
-/// take, so the model's bounds are the engine's bounds.
 fn zoom_levels() -> Vec<f32> {
     ZOOM_STEPS
         .map(|level| ui::num::f32_of_f64(1.2_f64.powf(f64::from(level))))
@@ -46,15 +34,11 @@ pub(crate) enum Action {
     Next(bool),
     Zoom(i32),
 }
-/// Where the window bar's search stands in the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum BarSearch {
-    /// Not finding.
     #[default]
     Off,
-    /// Finding; the bar has the engine's latest report.
     Finding,
-    /// Finding; the engine reported since the bar last asked.
     Reported,
 }
 
@@ -69,10 +53,9 @@ pub(crate) struct DailyControls {
     active: i32,
     zoom: f64,
     buffered: bool,
-    /// The window bar's search in the page.
     search: BarSearch,
-    /// Moves when a page finished loading under the bar's search, so the
-    /// bar finds again in it.
+    /// Moves when a page finished loading under the bar's search, so the bar
+    /// finds again in it.
     revision: u64,
 }
 impl Default for DailyControls {
@@ -143,8 +126,8 @@ impl DailyControls {
     }
     pub fn navigation_started(&mut self, engine: &SharedEngine) -> bool {
         if self.search != BarSearch::Off {
-            // The page the matches were in is going: none until the next
-            // one has loaded and the bar finds again.
+            // The page the matches were in is going: none until the next one
+            // has loaded.
             self.count = 0;
             self.active = 0;
             self.search = BarSearch::Reported;
@@ -212,8 +195,6 @@ impl DailyControls {
             _ => false,
         }
     }
-    /// Find `query` in the page for the window bar's search; an empty query
-    /// stops finding.
     pub fn search(&mut self, query: &str, engine: &SharedEngine) {
         let query: String = query.chars().take(1024).collect();
         if query.is_empty() {
@@ -233,8 +214,6 @@ impl DailyControls {
         });
     }
 
-    /// Show the next match (or the previous) of the bar's search; whether
-    /// the engine was asked to.
     pub fn search_step(&mut self, forward: bool, engine: &SharedEngine) -> bool {
         if self.search == BarSearch::Off || self.sent.is_empty() {
             return false;
@@ -243,7 +222,6 @@ impl DailyControls {
         true
     }
 
-    /// The bar's search closed: the page shows no matches.
     pub fn stop_search(&mut self, engine: &SharedEngine) {
         if self.search != BarSearch::Off {
             engine.send(WebViewCommand::StopFinding);
@@ -254,8 +232,8 @@ impl DailyControls {
         self.active = 0;
     }
 
-    /// The engine's latest report for the bar's search, once: how many
-    /// matches, and which one (0-based) it shows.
+    /// The engine's latest report for the bar's search, once: how many matches,
+    /// and which one (0-based) it shows.
     pub fn take_search_results(&mut self) -> Option<(usize, Option<usize>)> {
         if self.search != BarSearch::Reported {
             return None;
@@ -268,33 +246,27 @@ impl DailyControls {
         Some((total, current))
     }
 
-    /// A page finished loading: the bar's search finds again in it.
     pub fn page_loaded(&mut self) {
         if self.search != BarSearch::Off {
             self.revision = self.revision.wrapping_add(1);
         }
     }
 
-    /// Moves when the page under the bar's search changed.
     pub fn search_revision(&self) -> u64 {
         self.revision
     }
 
-    /// The closure a command's menu row or button runs: it queues `action`
-    /// for the next `sync`, the same hand-off every control here uses.
+    /// The closure a menu row or button runs: it queues `action` for the next
+    /// `sync`.
     pub fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.pending.clone();
-        // As tall as the address field and the find field these sit beside,
-        // so the toolbar row and the find bar each keep one top and one
-        // bottom edge. The 32px face left a step down on either side of them.
+        // As tall as the address and find fields beside it, so the row keeps one
+        // top and bottom edge.
         move || pending.set(Some(action))
     }
-    /// The page's zoom as a factor of its default size (`1.2` per level).
     pub fn zoom_factor(&self) -> f32 {
         ui::num::f32_of_f64(1.2_f64.powf(self.zoom))
     }
-    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
-    /// size (`0`), as the menu's zoom rows do.
     pub fn zoom_by(&mut self, step: i32, engine: &SharedEngine) -> Result<(), String> {
         if !self.can_zoom(step) {
             return Err(format!("The page is at {}% already", self.zoom_percent()));
@@ -302,8 +274,6 @@ impl DailyControls {
         self.act(Action::Zoom(step), engine);
         Ok(())
     }
-    /// The page's zoom actions, each offered while it would change the
-    /// page's size, as the menu's zoom rows are.
     pub fn zoom_actions(&self) -> Vec<ui::tilo_actions::ActionSpec> {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
@@ -323,33 +293,26 @@ impl DailyControls {
         })
         .collect()
     }
-    /// The page's size in percent of its own, rounded.
     pub fn zoom_percent(&self) -> f64 {
         self.zoom_model().percent()
     }
 
-    /// The toolkit's model over this page's level: the same bounds, steps
-    /// and percentage every other app states its zoom with.
     fn zoom_model(&self) -> ui::content_zoom::ZoomModel {
         let mut model = ui::content_zoom::ZoomModel::stepping(zoom_levels(), 1.0);
         model.adopt(self.zoom_factor());
         model
     }
-    /// Whether a zoom `step` would change the page's size: in (`1`) below
-    /// the largest, out (`-1`) above the smallest, back (`0`) while zoomed.
     pub fn can_zoom(&self, step: i32) -> bool {
         if !(zoom_min()..=zoom_max()).contains(&self.zoom) {
-            // The engine reported a level outside the steps this window offers
-            // (a site with its own remembered zoom): only going back to the
-            // page's own size is meaningful.
+            // A site's own remembered zoom can sit outside these steps: only
+            // going back to the page's own size is meaningful.
             return step.signum() == 0;
         }
         self.zoom_model()
             .can_step(crate::daily_controls::zoom_step(step))
     }
 
-    /// The zoom row's label: the page's zoom level is always stated while it
-    /// is not the default.
+    /// The zoom row's label: the page's size while it is not the default.
     pub fn zoom_label(&self) -> String {
         let catalog = &crate::resource::CATALOG;
         if self.zoom.abs() < f64::EPSILON {
@@ -366,9 +329,8 @@ impl DailyControls {
     pub fn bar(&self, theme: &ui::theme::Theme) -> Box<dyn Widget> {
         // Room for "12 of 345", so the count never wraps under the field.
         let counter_width = theme.tokens.spacing.s16 + theme.tokens.spacing.s4;
-        // `no_wrap` keeps the field, the match count and the commands on one
-        // centre line: a wrapping row let the full-width field claim the
-        // line and pushed the commands onto a second one.
+        // One line for the field, the count and the commands: a wrapping row
+        // pushed the commands onto a second one.
         let counter = if self.sent.is_empty() {
             String::new()
         } else {
@@ -381,14 +343,14 @@ impl DailyControls {
             .no_wrap()
             .with_id("browser.find")
             .with_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s1)
-            .push(Box::new(
-                // window-bar: fallback, the bar's search finds in the page while it hosts the window
+            .push(Box::new(ui::window_toolbar::exempt!(Fallback, {
+                // While the bar hosts the window, its search finds in the page.
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
                     .with_kind(ui::widget::TextInputKind::Search)
                     .with_accessible_name(crate::resource::CATALOG.t("browser-menu-find"))
-                    .with_placeholder(crate::resource::CATALOG.t("browser-menu-find")),
-            ))
+                    .with_placeholder(crate::resource::CATALOG.t("browser-menu-find"))
+            })))
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
@@ -422,8 +384,8 @@ impl DailyControls {
     }
 }
 
-/// The toolkit's step a menu step stands for: in (`1`), out (`-1`), or back to
-/// the page's own size (`0`).
+/// The toolkit step a menu step stands for: `1` in, `-1` out, `0` back to the
+/// page's own size.
 pub(crate) fn zoom_step(step: i32) -> ui::content_zoom::ZoomStep {
     match step.signum() {
         1 => ui::content_zoom::ZoomStep::In,
@@ -435,7 +397,6 @@ pub(crate) fn zoom_step(step: i32) -> ui::content_zoom::ZoomStep {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Find queries, buffered text and zoom bounds per tab.
     #[test]
     fn find_and_zoom_state_is_per_tab_race_free_and_bounded() {
         {

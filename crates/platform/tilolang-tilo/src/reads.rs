@@ -52,6 +52,27 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     })
 }
 
+/// Every `$items` map of the document `doc`, under every resource of every app it holds, under
+/// every copy of the levels above them a replica made.
+#[must_use]
+pub fn item_maps(doc: &Doc) -> Vec<ObjId> {
+    let mut out = Vec::new();
+    for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
+        for stored in doc.keys(&records) {
+            for app in crate::containers::maps(doc, &records, &stored) {
+                for id in doc.keys(&app) {
+                    if let Ok(Some((automerge::Value::Object(_), resource))) =
+                        doc.get(&app, id.as_str())
+                    {
+                        out.extend(crate::containers::maps(doc, &resource, ITEMS_KEY));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The ids of the resources the document `doc` holds: the keys below the levels above the
 /// records, under every copy of them a replica made. A chunk of a record's items holds the items
 /// of a few resources of the app, never all of them, so a step of a build reads the items of the
@@ -174,41 +195,6 @@ pub fn read_field(
         .map_err(backend)?
         .map(|(value, id)| (value.into_owned(), id));
     field_of_slot(doc, slot, field)
-}
-
-/// Whether `field` of the located resource holds anything: a value other than what a record
-/// that never wrote it reads. What a migration asks of the fields an earlier version wrote,
-/// one field at a time.
-#[must_use]
-pub fn holds_something(doc: &Doc, located: &Located, field: &FieldSchema) -> bool {
-    read_field(doc, located, field).is_ok_and(|value| value != default_value(field))
-}
-
-/// Whether the collection `field` of the record whose map is `root` holds an item: an item of a
-/// record written before items were flat, nested in the field's map, or one of the record's own
-/// items placed in it. Read from the placements, never from the items' values.
-#[must_use]
-pub fn collection_holds(doc: &Doc, root: &ObjId, field: &FieldSchema) -> bool {
-    if map_at(doc, root, &field.id).is_some_and(|coll| doc.length(&coll) > 0) {
-        return true;
-    }
-    crate::containers::maps(doc, root, tilolang_runtime::place::ITEMS_KEY)
-        .iter()
-        .any(|items| {
-            doc.keys(items).any(|id| {
-                let Some(obj) = map_at(doc, items, &id) else {
-                    return false;
-                };
-                tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| {
-                    match held.placement {
-                        tilolang_runtime::place::Placement::At { place, .. } => {
-                            place.parent.is_none() && place.field.as_str() == field.id
-                        }
-                        tilolang_runtime::place::Placement::Removed => false,
-                    }
-                })
-            })
-        })
 }
 
 /// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once

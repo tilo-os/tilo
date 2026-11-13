@@ -1,22 +1,13 @@
 //! Turning an `Exec=` value into an argv.
 //!
-//! Two steps the spec keeps separate, and so does this module:
-//!
-//! 1. **Split.** `Exec` is a command line with its own quoting rules — double quotes group,
-//!    and inside them `\` escapes `"`, `` ` ``, `$` and `\`. It is *not* shell syntax: no
-//!    globbing, no variable expansion, no pipes — treating it as shell syntax would hand a
-//!    `.desktop` file the ability to run anything.
-//! 2. **Expand.** `%f %F %u %U %i %c %k` are substituted with what the caller is actually
-//!    opening. The deprecated codes (`%d %D %n %N %v %m`) are dropped, per the spec's "must
-//!    be removed".
-//!
-//! Flatpak's `--file-forwarding` markers (`@@`, `@@u`) are understood too: they bracket the
-//! argument positions `flatpak run` rewrites into sandbox paths. With no documents to open
-//! they bracket nothing, and an empty pair is removed rather than passed on.
+//! [`split_exec`] applies the spec's own quoting rules, which are not shell
+//! syntax: no globbing, no variable expansion, no pipes. Treating them as shell
+//! syntax would hand a `.desktop` file the ability to run anything. [`expand`]
+//! then substitutes the field codes, dropping the deprecated ones, and removes
+//! the `flatpak --file-forwarding` pairs that ended up empty.
 
 use std::path::Path;
 
-/// Why an `Exec=` could not become an argv.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecError {
     #[error("Exec value has an unterminated quote")]
@@ -25,13 +16,8 @@ pub enum ExecError {
     Empty,
 }
 
-/// Split an `Exec=` value into tokens, honouring the spec's quoting. Field codes are left
-/// as-is — [`expand`] substitutes them, since only the caller knows what is being opened.
-///
-/// # Errors
-///
-/// Returns [`ExecError::UnterminatedQuote`] if a `"` is never closed, or
-/// [`ExecError::Empty`] if `raw` contains no tokens at all.
+/// Split an `Exec=` value into tokens, honouring the spec's quoting. Field
+/// codes are left as-is: only the caller knows what is being opened.
 pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -80,24 +66,20 @@ pub fn split_exec(raw: &str) -> Result<Vec<String>, ExecError> {
     Ok(out)
 }
 
-/// What a field code is substituted with.
 #[derive(Debug, Clone, Default)]
 pub struct ExpandContext<'a> {
-    /// Absolute paths the app is being asked to open. Feeds `%f`/`%F`, and `%u`/`%U` as
-    /// `file://` URLs when no explicit URL was given.
+    /// Absolute paths the app is being asked to open; `%u`/`%U` fall back to them
+    /// as `file://` URLs when no URL was given.
     pub files: &'a [String],
-    /// URLs the app is being asked to open. Feeds `%u`/`%U`; falls back to `files` when empty.
     pub urls: &'a [String],
     pub icon: Option<&'a str>,
-    /// The entry's locale-resolved `Name=`, for `%c`.
     pub name: Option<&'a str>,
     pub path: Option<&'a Path>,
 }
 
-/// Expand field codes in an already-split argv. Codes expand *within* a token, so
-/// `--file=%f` works; the list codes (`%F`, `%U`) and `%i` expand to zero or more tokens,
-/// only meaningful when the code is the whole token — a list code embedded in a larger token
-/// is dropped rather than concatenated into nonsense.
+/// Expand field codes in an already-split argv. Codes expand within a token,
+/// so `--file=%f` works; the list codes (`%F`, `%U`) and `%i` count only as a
+/// whole token and are dropped inside a larger one.
 pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(argv.len());
     let urls: Vec<String> = if ctx.urls.is_empty() {
@@ -126,9 +108,9 @@ pub fn expand(argv: &[String], ctx: &ExpandContext<'_>) -> Vec<String> {
     strip_empty_forwarding_markers(&out)
 }
 
-/// Substitute the single-value codes inside one token. `None` means the token expanded to
-/// nothing and must be dropped entirely — what a bare `%f` with no file to open has to do,
-/// since an empty string would look like a filename of `""`.
+/// Substitute the single-value codes inside one token. `None` means the token
+/// expanded to nothing and must be dropped, since an empty string would look
+/// like a filename of `""`.
 fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Option<String> {
     if !token.contains('%') {
         return Some(token.to_string());
@@ -161,28 +143,26 @@ fn expand_in_token(token: &str, ctx: &ExpandContext<'_>, urls: &[String]) -> Opt
                     out.push_str(&path.to_string_lossy());
                 }
             }
-            // The list codes are only valid as a whole token; reaching here means one was embedded in a
-            // larger argument, which the spec forbids. Drop the whole token rather than guess.
+            // The list codes are only valid as a whole token; one embedded in a larger
+            // argument is dropped rather than guessed at.
             Some('F' | 'U' | 'i') => return None,
-            // Everything else — the deprecated codes (`%d %D %n %N %v %m`, spec: "must be
-            // removed"), a trailing `%`, or any other unknown letter — keeps neither the `%`
-            // nor the letter: an unknown code is not a literal.
+            // The deprecated codes (`%d %D %n %N %v %m`, spec: "must be removed"), a
+            // trailing `%` and unknown letters keep neither the `%` nor the letter.
             Some(_) | None => {}
         }
     }
-    // Two ways a token disappears: a value code with no value (`--file=%f` must not become
-    // `--file=`, an empty filename) or a token that was nothing but codes that expanded away
-    // (a deprecated code). Both leave no argument behind rather than an empty one.
+    // A token disappears when a value code had no value (`--file=%f` must not
+    // become `--file=`) or when it was nothing but codes that expanded away; both
+    // leave no argument rather than an empty one.
     if dropped_value || out.is_empty() {
         return None;
     }
     Some(out)
 }
 
-/// Remove `@@ … @@` / `@@u … @@` pairs that ended up empty. `flatpak run --file-forwarding`
-/// uses these to mark arguments it should rewrite for the sandbox; when the launch opens
-/// nothing, the pair ends up bracketing empty space — `flatpak` tolerates that, but it's
-/// noise in every log and `ps` listing, so it goes.
+/// Remove the `@@ … @@` / `@@u … @@` pairs that ended up empty:
+/// `flatpak run --file-forwarding` tolerates them, but they are noise in every
+/// log and `ps` listing.
 fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(argv.len());
     let mut iter = argv.iter().peekable();
@@ -191,7 +171,7 @@ fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     while let Some(tok) = iter.next() {
         let is_open = tok == "@@" || tok == "@@u";
         if is_open && iter.peek().is_some_and(|next| next.as_str() == "@@") {
-            iter.next(); // consume the matching close marker too
+            iter.next();
             continue;
         }
         out.push(tok.clone());
@@ -199,8 +179,8 @@ fn strip_empty_forwarding_markers(argv: &[String]) -> Vec<String> {
     out
 }
 
-/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`, so `%u` gets a well-formed URL. A string
-/// that is already a URL, or a relative path, passes through unchanged.
+/// `/home/u/a b.txt` → `file:///home/u/a%20b.txt`. A string that is already a
+/// URL, or a relative path, passes through unchanged.
 pub fn path_to_url(path: &str) -> String {
     if path.contains("://") {
         return path.to_string();
@@ -265,9 +245,8 @@ mod tests {
                 "%U falls back to file:// URLs for the files"
             );
         }
-        // Phase `field_codes_with_nothing_to_open_leave_no_argument_behind`.
-        // A launch with nothing to open must not pass an empty argument — an app reading argv[1]
-        // would see a filename of `""`.
+        // A launch with nothing to open must not pass an empty argument: an app
+        // reading argv[1] would see a filename of `""`.
         {
             let ctx = ExpandContext::default();
             assert_eq!(expand(&split("app %f"), &ctx), vec!["app"]);

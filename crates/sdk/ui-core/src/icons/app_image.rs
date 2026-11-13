@@ -1,11 +1,5 @@
-//! Raster application icons: an app's own artwork, where a lucide glyph
-//! stands for a Tilo app.
-//!
-//! The toolkit does not know where artwork comes from — an icon theme, a
-//! Wayland client, a tray item. The host hands chrome an [`AppImage`], and
-//! chrome asks it for pixels at the device size it is about to paint, so a
-//! vector source is rasterised for the output's scale rather than blurred up
-//! from a fixed bitmap.
+//! Raster application icons: an app's own artwork, where a lucide glyph stands for a Tilo app. The
+//! toolkit does not know where artwork comes from — an icon theme, a Wayland client, a tray item.
 
 use std::sync::Arc;
 
@@ -18,13 +12,11 @@ pub const MAX_DEVICE_PX: u32 = 512;
 
 /// Where an [`AppImage`]'s pixels come from.
 pub trait AppImageSource: Send + Sync {
-    /// Identity of the artwork: two images with the same key paint the same
-    /// pixels, so chrome can skip replacing one with the other.
+    /// Identity of the artwork: two images with the same key paint the same pixels, so chrome can skip
+    /// replacing one with the other.
     fn key(&self) -> &str;
 
-    /// Pixels for an icon painted `device_px` square, or `None` when the
-    /// artwork cannot be decoded. Called every frame the icon is painted, so
-    /// a source caches its rasterisations.
+    /// Pixels for an icon painted `device_px` square, or `None` when the artwork cannot be decoded.
     fn pixels(&self, device_px: u32) -> Option<ImageData>;
 }
 
@@ -45,10 +37,9 @@ impl AppImage {
         self.0.pixels(device_px.clamp(1, MAX_DEVICE_PX))
     }
 
-    /// The image at `url` in `store`: a media row's thumbnail, a cover. The
-    /// store loads it off the UI thread the first time it is painted; until
-    /// then (or when it cannot be loaded) it has no pixels and the row paints
-    /// its glyph.
+    /// The image at `url` in `store`: a media row's thumbnail, a cover. The store loads it off the UI
+    /// thread the first time it is painted; until then (or when it cannot be loaded) it has no pixels
+    /// and the row paints its glyph.
     #[must_use]
     pub fn from_image_store(
         store: &crate::image_store::ImageStore,
@@ -61,7 +52,6 @@ impl AppImage {
     }
 }
 
-/// An [`AppImage`] read from an [`ImageStore`](crate::image_store::ImageStore).
 struct StoreImage {
     url: String,
     store: crate::image_store::ImageStore,
@@ -91,7 +81,6 @@ impl PartialEq for AppImage {
 
 impl Eq for AppImage {}
 
-/// Device pixels one logical pixel covers under `transform`.
 fn device_scale(transform: Affine) -> f64 {
     let [a, b, _, _, _, _] = transform.as_coeffs();
     let scale = a.hypot(b);
@@ -113,9 +102,8 @@ pub fn device_px(transform: Affine, rect: Rect) -> u32 {
     }
 }
 
-/// Paint `image` filling `rect`, rasterised for the device size `rect`
-/// covers. Returns `false`, painting nothing, when the source has no pixels,
-/// so the caller can fall back to a glyph.
+/// Paint `image` filling `rect`, rasterised for the device size `rect` covers. Returns `false`,
+/// painting nothing, when the source has no pixels, so the caller can fall back to a glyph.
 pub fn draw_app_image(scene: &mut Scene, transform: Affine, rect: Rect, image: &AppImage) -> bool {
     let Some(pixels) = image.pixels(device_px(transform, rect)) else {
         return false;
@@ -124,7 +112,6 @@ pub fn draw_app_image(scene: &mut Scene, transform: Affine, rect: Rect, image: &
         f64::from(pixels.width.max(1)),
         f64::from(pixels.height.max(1)),
     );
-    // Fit inside the square, centred, keeping the artwork's aspect.
     let fit = (rect.width() / width).min(rect.height() / height);
     let x0 = rect.x0 + (rect.width() - width * fit) / 2.0;
     let y0 = rect.y0 + (rect.height() - height * fit) / 2.0;

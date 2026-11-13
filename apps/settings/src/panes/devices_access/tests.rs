@@ -1,119 +1,72 @@
-//! What Devices and access lists, and which keys it lets the person act on.
+//! What Devices and access lists, and what the person does to it, through the
+//! host calls the page makes.
 
 use super::*;
 
+use ui::tilo_actions::remote::{Caller, InvokeRequest, identity_admin};
+
 fn en() {
     ui::i18n::I18nManager::init("en-US");
+}
+
+fn plain(text: &str) -> String {
+    text.replace(['\u{2068}', '\u{2069}'], "")
+}
+
+fn plain_all(lines: Vec<String>) -> Vec<String> {
+    lines.into_iter().map(|line| plain(&line)).collect()
 }
 
 fn sample() -> AccessSample {
     crate::scenarios::access_fixture(Some("devices_access")).expect("the access capture")
 }
 
-/// Agents are grouped by the app they came in through, and a script's key
-/// is grouped with the other script keys, whatever the person named it.
-#[test]
-fn agents_group_by_their_app_and_script_keys_together() {
-    en();
-    let door = sample().door;
-    let apps: Vec<String> = door.grants.iter().map(app_of).collect();
-    assert_eq!(apps, ["Claude Code", "ChatGPT", "Script keys"]);
-}
+const MINUTE: i64 = 60_000;
+const DAY: i64 = 86_400_000;
 
-/// A grant says where it runs, what it reaches, until when, whether it may
-/// operate web pages in Browser, when it last acted and the runs open now.
-#[test]
-fn a_grant_says_what_it_reaches_until_when_and_what_runs() {
-    en();
-    let door = sample().door;
-    let claude = &door.grants[0];
-    assert_eq!(
-        grant_lines(claude),
-        [
-            "On Framework 16",
-            "All your workspaces, until Jan 31, 2027",
-            "Operates web pages in Browser",
-            "Running now: Claude Code #2",
-        ]
-    );
-    assert_eq!(reach_line(claude), "All your workspaces");
-    assert!(claude.browser_pages);
-    assert_eq!(claude.runs.len(), 1);
-    let chatgpt = &door.grants[1];
-    assert_eq!(reach_line(chatgpt), "Only Launch plan");
-    assert!(!chatgpt.browser_pages);
-    let script = &door.grants[2];
-    assert_eq!(script.expires_ms, None);
-    assert!(script.last_ms.is_none());
-}
-
-/// Only a device of the person's whose access has not ended can be
-/// revoked; a key the list does not hold, or one already revoked, is not.
-#[test]
-fn only_a_listed_device_still_in_can_be_revoked() {
-    en();
-    let model = AccessModel::shown(sample());
-    assert_eq!(model.device(&hex::encode([2u8; 32])), Ok([2u8; 32]));
-    assert!(
-        model.device(&hex::encode([4u8; 32])).is_err(),
-        "the lost phone is out already"
-    );
-    assert!(
-        model.device(&hex::encode([9u8; 32])).is_err(),
-        "not the person's device"
-    );
-    assert!(model.grant(&"aa".repeat(32)).is_ok());
-    assert!(model.grant("unknown").is_err());
-}
-
-/// The rows the page publishes offer each device but this one and those
-/// already out, each agent, and each device asking in: one row each, with
-/// what can be done to it.
-#[test]
-fn the_published_rows_offer_what_can_be_done() {
-    en();
-    let sample = sample();
-    let devices: Vec<LiveRow> = sample
-        .devices
-        .iter()
-        .filter(|device| !device.current && !device.revoked)
-        .map(device_row)
-        .collect();
-    assert_eq!(devices.len(), 2);
-    let revoke = devices[0].clone().into_resource();
-    assert_eq!(
-        revoke.actions.len(),
-        REVOKE_REASONS.len(),
-        "a device is revoked as no longer used, lost or stolen"
-    );
-    let claude = grant_row(&sample.door.grants[0]).into_resource();
-    assert_eq!(claude.actions.len(), 2, "revoke, and stop its open run");
-    let idle = grant_row(&sample.door.grants[1]).into_resource();
-    assert_eq!(
-        idle.actions.len(),
-        1,
-        "an agent with no open run can only be revoked"
-    );
-    let asking = asking_row(&sample.asking[0]).into_resource();
-    assert_eq!(asking.actions.len(), 2, "approve or decline");
-}
-
-/// A host that answers the identity and pairing actions as a desktop's
-/// session does, and records what it was asked.
 #[derive(Default)]
 struct RecordingHost {
-    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
-    /// The devices it lists, when not this laptop and a phone.
-    listed: Option<serde_json::Value>,
+    asked: std::sync::Mutex<Vec<InvokeRequest>>,
+    listed: std::sync::Mutex<serde_json::Value>,
+    asking: std::sync::Mutex<serde_json::Value>,
 }
 
 const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const PHONE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+const LAPTOP_AGENT: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+const BROWSER: &str = "0123456789abcdef0123456789abcdef";
+
+impl RecordingHost {
+    fn new(listed: serde_json::Value) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            asked: std::sync::Mutex::default(),
+            listed: std::sync::Mutex::new(listed),
+            asking: std::sync::Mutex::new(serde_json::json!({"asking": []})),
+        })
+    }
+
+    fn asked(&self) -> Vec<InvokeRequest> {
+        self.asked.lock().unwrap().clone()
+    }
+
+    fn asked_at(
+        &self,
+        target: &ui::tilo_actions::remote::RemoteActionTarget,
+    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        self.asked()
+            .into_iter()
+            .filter(|request| &request.target == target)
+            .map(|request| match request.argument {
+                InvokeArgument::Json(argument) => argument,
+                _ => serde_json::Map::new(),
+            })
+            .collect()
+    }
+}
 
 impl ui::tilo_actions::remote::ActionHost for RecordingHost {
     fn query(
         &self,
-        _: &ui::tilo_actions::remote::Caller,
+        _: &Caller,
         _: ui::tilo_actions::remote::CatalogueQuery,
     ) -> ui::tilo_actions::remote::Pending<
         Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
@@ -125,29 +78,25 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
 
     fn invoke(
         &self,
-        _: &ui::tilo_actions::remote::Caller,
-        request: ui::tilo_actions::remote::InvokeRequest,
+        _: &Caller,
+        request: InvokeRequest,
     ) -> ui::tilo_actions::remote::Pending<
         Result<
             ui::tilo_actions::remote::InvocationReceipt,
             ui::tilo_actions::remote::ActionHostError,
         >,
     > {
-        use ui::tilo_actions::remote::identity_admin;
         let invocation = request.invocation;
-        let value = match request.target.address.action.as_str() {
-            identity_admin::DEVICES if self.listed.is_some() => self.listed.clone().unwrap(),
-            identity_admin::DEVICES => serde_json::json!([
-                {"label": "This laptop", "key_hex": THIS_DEVICE, "fingerprint": "11 11 11 11 11 11",
-                 "current": true, "revoked": false, "can_host": true},
-                {"label": "Phone", "key_hex": PHONE, "fingerprint": "22 22 22 22 22 22",
-                 "current": false, "revoked": false, "can_host": false},
-            ]),
-            device_pairing::ASKING => serde_json::json!({"asking": []}),
-            agent_door::DOOR => {
-                serde_json::json!({"endpoint": "https://mcp.tilo.sh", "grants": []})
-            }
-            _ => serde_json::json!({"device": PHONE, "revoked": true}),
+        let value = if request.target == identity_admin::target(identity_admin::DEVICES) {
+            self.listed.lock().unwrap().clone()
+        } else if request.target == device_pairing::target(device_pairing::ASKING) {
+            self.asking.lock().unwrap().clone()
+        } else if request.target == agent_door::target(agent_door::DOOR) {
+            return ui::tilo_actions::remote::Pending::ready(Err(
+                ui::tilo_actions::remote::ActionHostError::UnknownAction,
+            ));
+        } else {
+            serde_json::json!({})
         };
         self.asked.lock().unwrap().push(request);
         ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
@@ -163,7 +112,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
 
     fn observe(
         &self,
-        _: &ui::tilo_actions::remote::Caller,
+        _: &Caller,
         _: &ui::tilo_actions::InvocationId,
     ) -> Option<ui::tilo_actions::remote::InvocationState> {
         None
@@ -171,7 +120,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
 
     fn cancel(
         &self,
-        _: &ui::tilo_actions::remote::Caller,
+        _: &Caller,
         _: &ui::tilo_actions::InvocationId,
     ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
     {
@@ -179,232 +128,317 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
     }
 }
 
-/// The devices and the root key are the host's: the page lists the devices
-/// through the host's identity actions and revokes one there, as lost, with
-/// the person's confirmation, then reads the list again. This device is
-/// revoked from another one, never from itself.
-#[test]
-fn a_device_is_revoked_on_the_host_and_the_list_read_again() {
-    use ui::tilo_actions::remote::{Caller, identity_admin};
-    en();
-    let host = std::sync::Arc::new(RecordingHost::default());
+fn key(n: u8) -> String {
+    hex::encode([n; 32])
+}
+
+fn record(now: i64) -> serde_json::Value {
+    let tab = |n: u8| {
+        serde_json::json!({"label": "Chrome on Linux", "key_hex": key(n),
+            "fingerprint": format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
+            "current": false, "revoked": false, "can_host": false, "browser": BROWSER,
+            "issued_ms": now - 3 * DAY, "last_active_ms": now - 5 * MINUTE})
+    };
+    serde_json::json!([
+        {"label": "Framework 16", "key_hex": THIS_DEVICE, "fingerprint": "11 11 11 11 11 11",
+         "current": true, "revoked": false, "can_host": true},
+        {"label": "Claude Code on laptop", "key_hex": LAPTOP_AGENT,
+         "fingerprint": "55 55 55 55 55 55", "current": false, "revoked": false,
+         "can_host": false, "kind": "agent", "agent": "Claude Code",
+         "issued_ms": now - 2 * DAY, "expires_ms": now + 28 * DAY, "online": true},
+        tab(0x31), tab(0x32),
+    ])
+}
+
+fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteActions) {
     let remote = ui::RemoteActions::with_host(host.clone(), Caller::local_person("owner"));
     let mut model = AccessModel::asking(&remote);
     model.poll(&remote);
+    (model, remote)
+}
+
+#[test]
+fn an_agent_signed_in_as_the_person_is_listed_with_what_it_may_do() {
+    en();
+    let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
+    let host = RecordingHost::new(record(now));
+    let (model, _) = model_on(&host);
+    let agents = model.agents();
+    assert_eq!(agents.len(), 1, "the agent, and nothing else");
+    let agent = &agents[0];
+    assert_eq!(agent.label(), "Claude Code on laptop");
     assert_eq!(
-        model
-            .devices
-            .iter()
-            .map(|device| (device.label.as_str(), device.current))
-            .collect::<Vec<_>>(),
-        [("This laptop", true), ("Phone", false)]
+        plain_all(agent_lines(agent, model.now())),
+        ["In all your workspaces", "Active now"]
+    );
+    assert_eq!(
+        agent.expires(),
+        Some(now + 28 * DAY),
+        "its Details say when it ends"
     );
     assert!(
-        model
-            .act(
-                &remote,
-                &DevicesAccessEffect::RevokeDevice {
-                    device: PHONE.into(),
-                    reason: "misplaced".into(),
-                },
-                None,
-            )
-            .is_err(),
-        "a device's access ends for one of the reasons a revocation records"
+        model.entries().iter().all(|entry| match entry {
+            Entry::Device(device) => device.agent.is_none(),
+            Entry::Browser(_) => true,
+        }),
+        "an agent's key is not a computer"
     );
-    model
-        .act(
-            &remote,
-            &DevicesAccessEffect::RevokeDevice {
-                device: PHONE.into(),
-                reason: "lost".into(),
-            },
-            None,
-        )
-        .unwrap();
-    let before = host.asked.lock().unwrap().len();
-    model.poll(&remote);
-    let asked = host.asked.lock().unwrap().clone();
-    let revoke = asked
-        .iter()
-        .find(|request| request.target == identity_admin::target(identity_admin::REVOKE))
-        .expect("the revocation was asked of the host");
-    assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
+    assert_eq!(model.list_note(), None, "the lists read");
+}
+
+#[test]
+fn removing_an_agent_revokes_its_key_and_reads_the_list_again() {
+    en();
+    let host = RecordingHost::new(record(0));
+    let (mut model, remote) = model_on(&host);
+    let removal = model.agents()[0].removal();
     assert_eq!(
-        revoke.argument,
-        InvokeArgument::Json(
-            serde_json::json!({"device": PHONE, "reason": "lost", "confirm": true})
+        removal,
+        DevicesAccessEffect::RevokeDevice {
+            device: LAPTOP_AGENT.into(),
+            reason: "retired".into(),
+        }
+    );
+    model.act(&remote, &removal, None).unwrap();
+    let listed_before = host
+        .asked_at(&identity_admin::target(identity_admin::DEVICES))
+        .len();
+    model.poll(&remote);
+    let revoked = host.asked_at(&identity_admin::target(identity_admin::REVOKE));
+    assert_eq!(
+        revoked,
+        [
+            serde_json::json!({"device": LAPTOP_AGENT, "reason": "retired", "confirm": true})
                 .as_object()
                 .unwrap()
                 .clone()
-        )
+        ]
     );
-    assert!(
-        asked[before..]
-            .iter()
-            .any(|request| request.target == identity_admin::target(identity_admin::DEVICES)),
-        "the list is read again after the revocation"
-    );
-}
-
-/// A key acting for the person (an agent's grant, a script's key) is no
-/// device: Devices leaves it out, and where no door answers for the agents,
-/// Agents lists it from the person's record, unless its access ended.
-#[test]
-fn an_agents_key_is_listed_with_the_agents_not_the_devices() {
-    en();
-    let mut sample = sample();
-    let key = |n: u8, label: &str, revoked| DeviceView {
-        label: label.into(),
-        key: [n; 32],
-        fingerprint: String::new(),
-        current: false,
-        revoked,
-        can_host: false,
-        kind: KeyKind::Agent,
-        browser: None,
-    };
-    sample.devices.push(key(7, "Claude Code on job", false));
-    sample.devices.push(key(8, "Old export", true));
-    let model = AccessModel::shown(sample);
-    assert!(
-        model
-            .listed_devices()
-            .iter()
-            .all(|device| device.kind == KeyKind::Device),
-        "Devices lists no agent's key"
-    );
-    let keys: Vec<&str> = model.agent_keys().map(|key| key.label.as_str()).collect();
-    assert_eq!(keys, ["Claude Code on job"]);
-}
-
-const BROWSER: &str = "0123456789abcdef0123456789abcdef";
-
-/// One browser's tab device `n`, as the list names it.
-fn tab(n: u8, current: bool) -> DeviceView {
-    DeviceView {
-        label: "Firefox on Linux".into(),
-        key: [n; 32],
-        fingerprint: format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
-        current,
-        revoked: false,
-        can_host: false,
-        kind: KeyKind::Device,
-        browser: Some(BROWSER.into()),
-    }
-}
-
-/// A browser keeps a key per tab: its three tab devices are one entry,
-/// saying "3 tabs" and their keys. Opened in one of those tabs, it is
-/// "This browser", which can't revoke itself: no revoke, and no row.
-#[test]
-fn a_browsers_tab_devices_are_one_entry() {
-    en();
-    let mut sample = sample();
-    sample.devices.retain(|device| !device.current);
-    sample
-        .devices
-        .extend([tab(0x31, false), tab(0x32, true), tab(0x33, false)]);
-    let model = AccessModel::shown(sample.clone());
-    let entries = model.entries();
-    let browsers: Vec<&BrowserEntry<'_>> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Browser(browser) => Some(browser),
-            Entry::Device(_) => None,
-        })
-        .collect();
-    assert_eq!(browsers.len(), 1, "one entry for the browser");
-    let browser = browsers[0];
-    assert!(
-        matches!(entries[0], Entry::Browser(_)),
-        "this browser comes first"
-    );
-    assert_eq!(browser.label(), "This browser");
-    let lines: Vec<String> = browser_lines(browser)
+    let revoke = host
+        .asked()
         .into_iter()
-        .map(|line| line.replace(['\u{2068}', '\u{2069}'], ""))
-        .collect();
-    assert_eq!(lines, ["3 tabs", "Keys 31 31 31, 32 32 32, 33 33 33"]);
-    assert!(!browser.revocable(), "a tab can't revoke its own browser");
+        .find(|request| request.target == identity_admin::target(identity_admin::REVOKE))
+        .unwrap();
+    assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
     assert!(
-        model.browser_keys(BROWSER).is_err(),
-        "nor revoke it by its effect"
+        host.asked_at(&identity_admin::target(identity_admin::DEVICES))
+            .len()
+            > listed_before,
+        "the list is read again after the removal"
     );
-
-    // Seen from another device, it is named by its newest key and revoked.
-    for device in &mut sample.devices {
-        device.current = false;
-    }
-    sample.devices[0].current = true;
-    let model = AccessModel::shown(sample);
-    let entries = model.entries();
-    let Some(Entry::Browser(browser)) = entries
-        .iter()
-        .find(|entry| matches!(entry, Entry::Browser(_)))
-    else {
-        panic!("the browser is listed");
-    };
-    assert_eq!(browser.label(), "Firefox on Linux");
-    assert!(browser.revocable());
-    let row = browser_row(browser).into_resource();
-    assert_eq!(row.actions.len(), REVOKE_REASONS.len());
 }
 
-/// From another device, revoking the browser revokes every tab's key on the
-/// host, and the list is read again once all of them settled.
 #[test]
-fn revoking_a_browser_revokes_each_of_its_tabs() {
-    use ui::tilo_actions::remote::{Caller, identity_admin};
+fn a_browsers_tabs_are_one_entry_removed_together() {
     en();
-    let key = |n: u8| hex::encode([n; 32]);
-    let tab = |n: u8, revoked: bool| {
-        serde_json::json!({"label": "Firefox on Linux", "key_hex": key(n),
-            "fingerprint": "", "current": false, "revoked": revoked, "can_host": false,
-            "browser": BROWSER})
+    let now = i64::try_from(ui::time::unix_now_ms()).unwrap();
+    let host = RecordingHost::new(record(now));
+    let (mut model, remote) = model_on(&host);
+    let entries = model.entries();
+    assert_eq!(entries.len(), 2, "this computer, and the browser");
+    assert!(
+        matches!(&entries[0], Entry::Device(device) if device.current),
+        "this computer comes first"
+    );
+    let Entry::Browser(browser) = &entries[1] else {
+        panic!("the browser is one entry");
     };
-    let host = std::sync::Arc::new(RecordingHost {
-        listed: Some(serde_json::json!([
-            {"label": "This laptop", "key_hex": THIS_DEVICE, "fingerprint": "",
-             "current": true, "revoked": false, "can_host": true},
-            tab(0x31, false), tab(0x32, false), tab(0x33, false), tab(0x34, true),
-        ])),
-        ..RecordingHost::default()
-    });
-    let remote = ui::RemoteActions::with_host(host.clone(), Caller::local_person("owner"));
-    let mut model = AccessModel::asking(&remote);
-    model.poll(&remote);
-    assert_eq!(model.entries().len(), 2, "this laptop, and the browser");
+    assert_eq!(browser.label(), "Chrome on Linux");
+    assert_eq!(
+        plain_all(browser_lines(browser, model.now())),
+        ["2 tabs", "Last active 5 min ago"]
+    );
+    assert!(browser.revocable());
+    let Entry::Device(this) = &entries[0] else {
+        panic!("this computer comes first");
+    };
+    assert_eq!(
+        plain_all(device_lines(this, model.now())),
+        ["Framework 16", "Active now"]
+    );
+    drop(entries);
+
     model
         .act(
             &remote,
             &DevicesAccessEffect::RevokeBrowser {
                 browser: BROWSER.into(),
-                reason: "stolen".into(),
+                reason: "retired".into(),
             },
             None,
         )
         .unwrap();
-    let before = host.asked.lock().unwrap().len();
     model.poll(&remote);
-    let asked = host.asked.lock().unwrap().clone();
-    let revoked: Vec<serde_json::Value> = asked
-        .iter()
-        .filter(|request| request.target == identity_admin::target(identity_admin::REVOKE))
-        .map(|request| match &request.argument {
-            InvokeArgument::Json(argument) => argument["device"].clone(),
-            other => panic!("a revoke names its device: {other:?}"),
+    let revoked: Vec<serde_json::Value> = host
+        .asked_at(&identity_admin::target(identity_admin::REVOKE))
+        .into_iter()
+        .map(|argument| argument["device"].clone())
+        .collect();
+    assert_eq!(revoked, [key(0x31), key(0x32)], "every tab of it");
+}
+
+#[test]
+fn this_browser_comes_first_and_is_removed_from_elsewhere() {
+    en();
+    let mut listed = record(0);
+    let devices = listed.as_array_mut().unwrap();
+    devices[0]["current"] = false.into();
+    devices[3]["current"] = true.into();
+    let host = RecordingHost::new(listed);
+    let (model, remote) = model_on(&host);
+    let entries = model.entries();
+    let Entry::Browser(browser) = &entries[0] else {
+        panic!("this browser comes first");
+    };
+    assert_eq!(browser.label(), "This browser");
+    assert_eq!(
+        plain_all(browser_lines(browser, model.now())),
+        ["Chrome on Linux with 2 tabs", "Active now"]
+    );
+    assert!(!browser.revocable());
+    drop(entries);
+    let mut model = model;
+    assert!(
+        model
+            .act(
+                &remote,
+                &DevicesAccessEffect::RevokeBrowser {
+                    browser: BROWSER.into(),
+                    reason: "retired".into(),
+                },
+                None,
+            )
+            .is_err(),
+        "nor by its effect"
+    );
+}
+
+#[test]
+fn a_request_appears_and_is_approved() {
+    en();
+    let host = RecordingHost::new(record(0));
+    *host.asking.lock().unwrap() = serde_json::json!({"asking": [
+        {"ask": "dd", "label": "Safari on iPad", "code": "482 913", "via": "Pixel 9"},
+    ]});
+    let (mut model, remote) = model_on(&host);
+    assert_eq!(model.asking.len(), 1);
+    assert_eq!(
+        plain_all(asking_lines(&model.asking[0])),
+        ["Shows the code 482 913", "Asked on Pixel 9"]
+    );
+    model
+        .act(
+            &remote,
+            &DevicesAccessEffect::AnswerDevice {
+                ask: "dd".into(),
+                label: "Safari on iPad".into(),
+                approve: true,
+            },
+            None,
+        )
+        .unwrap();
+    *host.asking.lock().unwrap() = serde_json::json!({"asking": []});
+    model.poll(&remote);
+    let answered = host.asked_at(&device_pairing::target(device_pairing::ANSWER));
+    assert_eq!(
+        answered,
+        [
+            serde_json::json!({"ask": "dd", "label": "Safari on iPad", "approve": true,
+            "confirm": true})
+            .as_object()
+            .unwrap()
+            .clone()
+        ]
+    );
+    model.poll(&remote);
+    assert!(
+        model.asking.is_empty(),
+        "an answered request no longer waits"
+    );
+}
+
+#[test]
+fn connecting_asks_the_desk_for_its_setup() {
+    en();
+    let host = RecordingHost::new(record(0));
+    let (mut model, remote) = model_on(&host);
+    model
+        .act(&remote, &DevicesAccessEffect::ShowConnect, None)
+        .unwrap();
+    assert_eq!(
+        host.asked_at(&session_actions::target(session_actions::SHOW_CONNECT))
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn the_doors_grants_join_the_records_agents() {
+    en();
+    let mut sample = sample();
+    sample.door.grants.push(Grant {
+        id: hex::encode([5u8; 32]),
+        agent: "Claude Code".into(),
+        reach: Reach::Account,
+        granted_ms: 0,
+        last_ms: None,
+        runs: Vec::new(),
+        runs_on: "laptop".into(),
+        expires_ms: None,
+        browser_pages: true,
+        script_key: false,
+    });
+    let model = AccessModel::shown(sample);
+    let agents = model.agents();
+    let labels: Vec<String> = agents.iter().map(AgentEntry::label).collect();
+    assert_eq!(
+        labels,
+        ["Nightly export", "Claude Code on laptop", "ChatGPT"],
+        "active now first, the latest active first"
+    );
+    assert!(agents[1].grant.is_some(), "the door's grant joins its key");
+    assert_eq!(
+        agents[2].removal(),
+        DevicesAccessEffect::RevokeAgent {
+            grant: "bb".repeat(32)
+        }
+    );
+    assert_eq!(plain(&agent_may(&agents[2])), "Only in Launch plan");
+}
+
+#[test]
+fn the_published_rows_offer_what_can_be_done() {
+    en();
+    let model = AccessModel::shown(sample());
+    let devices: Vec<LiveRow> = model
+        .entries()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Device(device) if !device.current => Some(device_row(device)),
+            Entry::Browser(browser) if browser.revocable() => Some(browser_row(&browser)),
+            _ => None,
         })
         .collect();
     assert_eq!(
-        revoked,
-        [key(0x31), key(0x32), key(0x33)],
-        "every tab whose access has not ended"
+        devices.len(),
+        2,
+        "the phone and the browser; the removed phone is gone"
     );
-    assert!(
-        asked[before..]
-            .iter()
-            .any(|request| request.target == identity_admin::target(identity_admin::DEVICES)),
-        "the list is read again after the revocations"
+    assert_eq!(
+        devices[0].clone().into_resource().actions.len(),
+        REVOKE_REASONS.len()
     );
+    let agents: Vec<_> = model
+        .agents()
+        .iter()
+        .map(|agent| agent_row(agent).into_resource())
+        .collect();
+    assert_eq!(agents.len(), 3);
+    let nightly = agents
+        .iter()
+        .find(|row| row.id.as_str().ends_with(&"cc".repeat(32)))
+        .unwrap();
+    assert_eq!(nightly.actions.len(), 2, "remove, and stop its open run");
+    let asking = asking_row(&model.asking[0]).into_resource();
+    assert_eq!(asking.actions.len(), 2, "approve or decline");
 }

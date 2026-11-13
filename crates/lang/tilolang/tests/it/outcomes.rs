@@ -297,6 +297,7 @@ fn published() -> tilolang::PackageMeta {
         default: optional.then(DefaultMeta::none),
         place: false,
         entry: false,
+        label: None,
     };
     tilolang::PackageMeta {
         app: "so.tilo.session".to_owned(),
@@ -330,6 +331,7 @@ fn published() -> tilolang::PackageMeta {
             group: None,
             guard: false,
             invokes: false,
+            outside: Vec::new(),
         }],
         ..tilolang::PackageMeta::default()
     }

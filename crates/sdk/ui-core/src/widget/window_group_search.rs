@@ -7,10 +7,7 @@ use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 
 impl WindowGroup {
-    /// Carry the window's search to its tab's app ([`crate::widget::WindowSearch::drive`]).
     pub(super) fn drive_search(&mut self) {
-        // What the search's options cover is told to the app in its own
-        // coordinates, which start at its tile's corner.
         if let Some(frame) = self
             .search_tab
             .and_then(|tab| self.content_rect_for_tab(tab))
@@ -18,7 +15,6 @@ impl WindowGroup {
             self.search.set_frame_origin(frame.origin());
         }
         if self.search.is_remote() {
-            // An app in a process of its own is told, and drives itself.
             if let Some(tab) = self.search_tab {
                 let events = self.search.take_remote_events();
                 self.window_events
@@ -39,12 +35,10 @@ impl WindowGroup {
             .find(|(id, _)| *id == tab)
             .and_then(|(_, host)| host.visit_search_root(&mut |root| search.drive(root)));
         if driven.is_none() {
-            // The tab's app is gone: nothing is left to tell.
             self.search.detach();
         }
     }
 
-    /// Carry out what the person asked of the window's search.
     pub(super) fn service_search(&mut self) -> bool {
         let requests = self.search.take_requests();
         let acted = !requests.is_empty();
@@ -57,7 +51,6 @@ impl WindowGroup {
                     self.close_search(crate::motion::input_source());
                 }
                 crate::widget::WindowSearchRequest::Widen(reach) => {
-                    // The platform search takes the query on from here.
                     self.pending_search_open = Some(crate::widget::SearchHandoff {
                         tab: self.bar.active_id(),
                         reach,
@@ -71,8 +64,6 @@ impl WindowGroup {
         acted
     }
 
-    /// The search follows the window's active tab: switching tabs ends it on
-    /// the tab it was on.
     pub(super) fn follow_search_tab(&mut self) {
         if let Some(tab) = self.search_tab
             && tab != self.bar.active_id()
@@ -103,8 +94,6 @@ impl WindowGroup {
         let replace = opening == crate::window_toolbar::SearchOpening::Replace;
         if self.search.is_open() {
             if self.search.has_keyboard() {
-                // Find again widens, and the replace chord goes to the
-                // replacement: the search's own key handling.
                 return false;
             }
             if replace {
@@ -130,9 +119,6 @@ impl WindowGroup {
         true
     }
 
-    /// Place the search control where the window's bar shows it: after the tabs, or, while the
-    /// app's own row holds the bar, in that row before the window's controls, from where its open
-    /// search reaches back over the row.
     pub(super) fn place_search(&mut self) {
         if self.held_bar.is_some() {
             let furniture = self.held;
@@ -144,8 +130,6 @@ impl WindowGroup {
             }
             return;
         }
-        // A card's header names what the window is about and offers the card's controls: the
-        // window's search is the window's, in its strip.
         if !self.navigation_bar_visible() || self.is_floating() {
             self.search.place(Rect::ZERO, 0.0);
             return;
@@ -154,13 +138,9 @@ impl WindowGroup {
     }
 }
 
-/// Place `search` in `bar`'s row after its tabs, and let it reach up to the
-/// window's own controls: the rule every host lays a window's bar out by.
 pub(crate) fn place_search(bar: &crate::widget::TabBar, search: &mut crate::widget::WindowSearch) {
     let px = crate::widget::window_controls::CONTROL_PX;
     if let Some((row, reach)) = bar.toolbar_search_slot() {
-        // The app put its slots in the bar: the control ends their row, and
-        // the open search grows back over the location.
         let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
         let y0 = row.center().y - px / 2.0;
         search.place_trailing(

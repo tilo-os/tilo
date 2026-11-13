@@ -141,6 +141,20 @@ fn a_run_whose_model_fails_records_the_failure_on_its_reply() {
         "the reply says what happened, in the run's words: {last:?}"
     );
     assert!(
+        last["say"]
+            .as_str()
+            .is_some_and(|say| !say.contains("provider stream reset")),
+        "the reply never carries the transport's own error: {last:?}"
+    );
+    // The transport's error is the run's record, kept beside the reply's
+    // words for whoever debugs the failure, never the reply itself.
+    assert!(
+        last["work"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("provider stream reset")),
+        "the transport's error is the record: {last:?}"
+    );
+    assert!(
         matches!(
             terminal(&sent),
             runtime_collab::TaskRunUpdate::Failed { .. }

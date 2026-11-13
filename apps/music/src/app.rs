@@ -1,13 +1,5 @@
-//! The Music page: [`Music`], which the window ([`MusicApp`]) and the
-//! view's effect handler share.
-//!
-//! The whole UI is drawn directly into the Vello scene (nav rail, library
-//! grids, track lists, detail pages, search and the now-playing transport
-//! bar), so the app owns its layout math and hit-testing rather than
-//! composing stock taffy widgets. User-authored library state is the
-//! [`Library`] resource; `sync` refreshes that render
-//! snapshot each frame. Playback, downloads and other device effects stay
-//! local so one device can never start audio or consume another device's disk.
+//! The Music page: the whole UI drawn into the Vello scene, so the app owns its
+//! layout and hit-testing; playback and downloads stay on this device.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -51,15 +43,10 @@ use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 use crate::seed;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 
-/// A host-visible stream-start operation must eventually settle even when a
-/// resolver, staging download, or audio backend wedges. This bounds the
-/// non-cancellable lifecycle contract without turning a slow normal seek into
-/// a fabricated success.
+/// A host-visible stream start settles within this, even when a resolver or backend wedges.
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// What a failed offline download says in passing. The reason stays with the
-/// song: its row in Downloads offers Retry, and that button names the cause.
 const OFFLINE_FAILED: &str = "Couldn\u{2019}t download for offline listening";
 
 fn cover_request() -> PickRequest {
@@ -78,7 +65,6 @@ fn cover_request() -> PickRequest {
         .all_files()
 }
 
-/// Which screen is showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
     Home,
@@ -92,32 +78,21 @@ pub enum View {
     Browse,
     Queue,
     Lyrics,
-    /// The song playing, large: what the transport's cover opens.
     NowPlaying,
     Album(String),
     Artist(String),
     Playlist(String),
-    /// What the window bar's search field asks of the library and the
-    /// catalogue.
     Search,
-    /// A query view the person kept, by its id.
     Kept(String),
 }
 
-/// Whether this build can reach an online catalogue. The browser build has
-/// no live backend yet (it waits for a fetch path out of the page), so it
-/// must not offer online search or sources it cannot serve.
+/// Whether this build can reach an online catalogue; the browser build cannot.
 const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
 
-/// Catalogue messages for what Home says before the person has music or a
-/// source: it invites connecting one (a folder of their own files, Spotify,
-/// `YouTube` Music), and fetches nothing until they do.
 const HOME_EMPTY_TITLE: &str = "music-home-empty-title";
 const HOME_EMPTY_MESSAGE: &str = "music-home-empty-message";
 const HOME_EMPTY_ACTION: &str = "music-home-empty-action";
 
-/// The catalogue message for the first-run Home state, and whether searching
-/// is worth offering.
 fn first_run_copy(online: bool) -> (&'static str, bool) {
     if online {
         ("music-first-run-online", true)
@@ -126,17 +101,13 @@ fn first_run_copy(online: bool) -> (&'static str, bool) {
     }
 }
 
-/// What a failed Home fetch tells the user. Without an online catalogue the
-/// failure is expected and the first-run copy already says why, so the
-/// backend's own wording stays in the log.
+/// A failed Home fetch's note, only when an online catalogue was expected.
 fn home_failure_note(online: bool, error: String) -> Option<String> {
     online.then_some(error)
 }
 
 impl View {
-    /// A sidebar destination, a view the person kept included: reaching one
-    /// starts a fresh trail, so it never shows a back button that would walk
-    /// through unrelated sections.
+    /// A destination: reaching one starts a fresh trail, so there is no back button.
     fn is_section(&self) -> bool {
         matches!(
             self,
@@ -154,99 +125,72 @@ impl View {
     }
 }
 
-/// A click action captured during draw and dispatched on the next mouse
-/// press. Owned data only, since the hit list is rebuilt every frame.
+/// A press captured during draw, run on the next mouse press. Owned data only:
+/// the hit list is rebuilt every frame.
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Nav(View),
     Recommendation(ui::tilo_resource::Edit<crate::model::Library>),
     Back,
-    /// Play `queue[index]` after replacing the queue.
     Play {
         /// Shared across every visible row hit so drawing a long list does not
         /// clone the full queue once per row.
         queue: Arc<Vec<String>>,
         index: usize,
     },
-    /// Turn shuffle on and play the queue from a random entry.
     ShufflePlay(Arc<Vec<String>>),
-    /// Open the platform search for Music.
     OpenSearch,
     TogglePlay,
     Next,
     Prev,
     ToggleShuffle,
     CycleRepeat,
-    /// Repeat in this mode, or stop repeating when it already does.
     SetRepeat(RepeatMode),
-    /// Open the narrow transport's More menu, anchored at this button: the
-    /// playback controls the compact bar has no room for.
     OpenPlayerMenu(Rect),
     SeekFrac(f64),
     VolumeFrac(f64),
-    /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
     ToggleMute,
-    /// Open the native file portal to pick a cover image for this playlist.
     PickPlaylistCover(String),
-    /// Append a track to the end of the play queue.
     AddToQueue(String),
-    /// Insert a track right after the current track ("Play next").
     PlayNext(String),
-    /// Remove the queue entry at this absolute index.
     RemoveFromQueue(usize),
-    /// Move the queue entry at `from` to `to` (reorder).
     MoveQueueItem {
         from: usize,
         to: usize,
     },
-    /// Toggle a track's "Liked Songs" membership.
     ToggleLike(String),
-    /// Toggle an album's saved-to-library state.
     ToggleSaveAlbum(String),
     SetOffline {
         track: String,
         keep: bool,
     },
-    /// Toggle whether the user follows an artist.
     ToggleFollow(String),
-    /// Append a track to a named playlist (from the context menu).
     AddToPlaylist {
         playlist: String,
         track: String,
     },
-    /// Remove a track from a playlist (playlist detail row affordance).
     RemoveFromPlaylist {
         playlist: String,
         track: String,
     },
-    /// Reorder a track within a playlist.
     MovePlaylistItem {
         playlist: String,
         from: usize,
         to: usize,
     },
-    /// Create a new (empty) playlist with the pending name and open it.
     CreatePlaylist,
-    /// Begin editing a new-playlist name (opens the name input overlay).
     BeginNewPlaylist,
     BeginNewSpotifyPlaylist,
-    /// Begin a new playlist that the given track will be added to on create
-    /// (the "Add to playlist… → New playlist…" flow).
     BeginNewPlaylistFor(String),
-    /// Begin renaming the playlist with this id.
     BeginRenamePlaylist(String),
-    /// Commit the pending rename of the named playlist.
     CommitRename(String),
-    /// Delete a playlist by id.
     DeletePlaylist(String),
-    /// Open the track context menu at the cursor for this track, captured in
-    /// the named originating list (so "remove from playlist" can target it).
+    /// Open the track menu at the cursor, remembering which list the row came from.
     OpenTrackMenu {
         track: String,
         in_playlist: Option<String>,
         queue_index: Option<usize>,
     },
-    /// Open the "Add to playlist…" picker for the menu's target track.
     OpenAddToPlaylist(String),
     SpotifyLibrary {
         track: String,
@@ -255,31 +199,19 @@ enum Action {
     SpotifyEffect(crate::actions::MusicEffect),
     OpenPlaylistMenu(String),
     OpenSpotifyPlaylistMenu(String),
-    /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
-    /// Toggle the queue view from the now-playing bar: open it (remembering the
-    /// current view), or, when already on it, hide it and return to where the
-    /// user was before.
+    /// Toggle the queue view from the bar, returning to the view it was opened from.
     ToggleQueue,
-    /// Ask the query view this: a chip picked or taken away.
     SetQuery(ui::framework::views::QuerySpec),
-    /// Open the values of the query view's filter with this key.
     OpenFacet(String),
-    /// Keep the query view shown beside the designed views.
     KeepQuery,
-    /// Stop keeping the kept view with this id.
     ForgetKept(String),
-    /// Take the person to where the control running `action` lives, and
-    /// highlight it there.
     ShowControl {
         home: String,
         action: Box<Action>,
     },
-    /// Ask the remote source with this id again for the open query, after
-    /// it could not answer.
     RetryRemote(String),
-    /// A no-op hit used to swallow clicks inside a modal surface so they don't
-    /// fall through to the scrim behind it.
+    /// Swallows clicks on a modal surface so they do not reach the scrim.
     None,
 }
 
@@ -289,8 +221,6 @@ struct Hit {
     action: Action,
 }
 
-/// One track table of the page and what its rows stand for: the queue a
-/// press plays from, and the playlist or queue position the rows belong to.
 struct TrackTableSlot {
     table: track_table::TrackTableHost,
     queue: Arc<Vec<String>>,
@@ -298,20 +228,15 @@ struct TrackTableSlot {
     queue_offset: Option<usize>,
 }
 
-/// The widgets embedded in the page: its track tables, cover grids and
-/// other parts in the order the frame drew them, and the source buttons.
 #[derive(Default)]
 pub(crate) struct Page {
-    /// The track tables, each with what its rows play and belong to.
     track_tables: Vec<TrackTableSlot>,
     media_grids: Vec<media_grid::MediaGridHost>,
-    /// The other embedded parts (a detail page's actions, the genre cards).
     parts: Vec<page_part::PagePart>,
     source_buttons: Vec<ui::widget::Button>,
 }
 
-/// An Open audio file chooser in flight: a path where files have them,
-/// else the chosen file's contents.
+/// An audio-file chooser in flight: a path, or the chosen file's contents.
 enum LocalFilePick {
     Path(PortalChannel),
     Contents(ui::portal::ContentsChannel),
@@ -331,56 +256,33 @@ struct PendingMediaHandoff {
               large app-state struct; grouping them into a sub-struct would only rename the \
               ~50 call sites across app.rs and render.rs, not reduce them"
 )]
-/// What Music shows and plays on this device, and the page it draws of it:
-/// the library as the document holds it, playback, the catalogue, search
-/// and what effects started.
 pub(crate) struct Music {
     lib: Library,
-    /// Anchors a search hit or an agent's `open` named, shown on the next
-    /// sync as their rows' own effects.
     opened: Rc<std::cell::RefCell<Vec<String>>>,
-    /// The committed heads and pending operation count that produced `lib`.
-    /// Reuse the projection without committing a pending transaction to read it.
     library_heads: Option<(Vec<ChangeHash>, usize)>,
-    /// Shared, preindexed Ctrl+K catalog. Cloning the provider is O(1), so
-    /// host/provider retrieval never walks the whole music corpus.
-    /// Monotonic diagnostic used by tests to prove provider retrieval does not
-    /// trigger a catalog rebuild.
-    /// Terminal download/cache choices belong to this device.  They are
-    /// overlaid onto the shared library projection after every reload, never
-    /// serialized into Automerge or offered as document actions.
+    /// Downloads and cache for this device, overlaid on the shared library after each
+    /// reload: never in the document, never an action.
     device_cache: BTreeMap<String, CacheState>,
-    /// Content-addressed media objects + manifest, strictly device-local.
     media_cache: crate::storage::MediaCache,
     media_cache_root: PathBuf,
-    /// Tests and hermetic screenshot fixtures never read or write a person's
-    /// actual local profile. The live app enables it.
+    /// Tests and captures never read or write the person's profile; the live app does.
     persist_device_profile: bool,
     pb: Playback,
     view: View,
-    /// The window's views: Back returns to the one before as it was left.
     nav: ui::framework::views::ViewStack<View>,
-    /// The window bar's search and what it found.
     search: render::SearchView,
-    /// The query views the person kept, a personal setting that follows them
-    /// to their other devices. `None` before the surface is attached (a
-    /// test drives the app alone), when they are kept in `kept_here`.
+    /// The query views the person kept, a personal setting that follows their devices;
+    /// `None` before the surface is attached.
     kept: Option<ui::framework::Setting<ui::framework::views::KeptViews>>,
     kept_here: ui::framework::views::KeptViews,
-    /// Bumped whenever the library the document holds changes.
     library_revision: u64,
-    /// The songs to select in the view just returned to.
     restore_selection: Option<Vec<String>>,
-    /// The query the live catalogue is answering. Search belongs to the
-    /// platform: the app draws no field, it only runs the remote query the
-    /// platform's search provider asks for.
+    /// The remote query the platform's search provider asked for; the app draws no field.
     search_query: String,
-    /// The exchange with the platform search's live-catalogue provider.
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
     spotify_catalogue: bool,
-    /// Whether the person connected an online catalogue on this device; Home
-    /// fetches nothing until they have.
+    /// Whether this device connected an online catalogue; Home fetches nothing until it has.
     catalogue_connected: bool,
     source_invocation: Option<tilo_actions::InvocationId>,
     source_disconnect_pending: bool,
@@ -394,310 +296,171 @@ pub(crate) struct Music {
     spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
     control_domain: Option<ui::ControlDomain>,
     source_error: Option<String>,
-    /// Which of the source buttons the tree holds, as last reported.
     open_file_layout_visible: Option<u8>,
-    /// Back was pressed in the window's bar; the next settle goes back.
     back_requested: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Open an audio file, pressed in the window's bar: its invocation, for
-    /// the window's controls to run ([`Self::sync_window_toolbar`]).
     bar_controls: std::collections::VecDeque<tilo_actions::ControlInvocation>,
-    /// The window bar's entries, each carrying what it asks for.
     bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
-    /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
     audio: AudioEngine,
 
-    /// The non-blocking streaming worker (real YouTube-Music search + audio
-    /// resolution). Spawned lazily on the first Play / search — never during
-    /// `--shots` — so the screenshot path stays hermetic. `None` until then.
+    /// The streaming worker, spawned lazily on the first play or search and never
+    /// during `--shots`, so a capture opens no socket.
     worker: Option<StreamWorker>,
-    /// Which data source the worker bound to ("offline (bundled library)" or
-    /// "youtube-music (live)"), for the now-playing status line.
     backend_name: String,
-    /// Whether the bound backend can actually stream from `YouTube`.
     backend_live: bool,
-    /// Real search results merged in-memory (rendered by the Search view and
-    /// re-injected into the library snapshot each frame so they stay visible
-    /// across a `sync` that reloads the catalog from the document).
+    /// Search hits from the catalogue, re-applied each frame so a `sync` that reloads
+    /// the library keeps them.
     live_hits: Vec<CatalogueTrack>,
-    /// The library as the document holds it, last presented: what the live
-    /// hits add to it is searchable beside the library's own entries.
     stored_library: crate::model::Library,
-    /// A live search query awaiting results (drives animation frames + a
-    /// "searching…" affordance). `None` when idle.
+    /// A search awaiting the catalogue; `None` when idle.
     live_search_pending: Option<String>,
-    /// The most recent live search's `(query, ordered track ids)`, in the
-    /// catalogue's ranking order.
     live_results: Option<(String, Vec<String>)>,
-    /// The full multi-type search response for the current query: songs,
-    /// albums, artists and playlists. The platform search's live-catalogue
-    /// rows are made from it.
     live_bundle: Option<(String, SearchBundle)>,
-    /// Count of in-flight stream resolutions (keeps redraws flowing until the
-    /// resolved URL lands and can be handed to the audio engine).
+    /// In-flight stream resolutions: they keep redraws flowing until the URL lands.
     resolve_in_flight: usize,
-    /// Monotonic identity for worker-bound requests. Worker replies are allowed
-    /// to arrive after newer user intent; each response must prove it still
-    /// belongs to the latest request before it can change UI or audio state.
+    /// Monotonic request id: a reply that is not the latest one changes nothing.
     next_request_id: u64,
     active_resolve_request: Option<u64>,
-    /// The lifecycle invocation waiting for one exact stream-resolution id.
-    /// This never represents ordinary in-window playback actions.
+    /// The lifecycle invocation waiting for one stream-resolution id; never an in-window play.
     resource_stream_invocation: Option<(tilo_actions::InvocationId, u64, u64, Instant)>,
     resource_stream_resume: Option<String>,
-    /// Terminal updates are retained per invocation until the host consumes
-    /// them. A new operation must never overwrite an earlier terminal result
-    /// just because the host polls on a later frame.
+    /// Terminal updates stay per invocation until the host consumes them; a newer one
+    /// must not overwrite an unconsumed result.
     resource_stream_results: Vec<tilo_actions::InvocationUpdate>,
     active_search_request: Option<u64>,
-    /// `(query, reason)` for the current live-search failure. Kept separate
-    /// from a toast so it can be rendered with a retry control and announced
-    /// through the app's accessibility tree.
+    /// `(query, reason)` of the last search failure, shown with a retry control and announced.
     search_error: Option<(String, String)>,
-    /// Most recent user-visible source failure. Unlike a transient log note,
-    /// this is rendered and exposed through accessibility until another source
-    /// is requested or succeeds.
+    /// The last source failure the person can see, until another source succeeds.
     playback_error: Option<String>,
 
-    /// MPRIS media-control service (media keys + the desktop media controls).
-    /// A no-op stub until [`Self::enable_mpris`] brings it up on the live
-    /// binary; inert in `--shots`/tests and without the `audio` feature.
+    /// MPRIS media keys; an inert stub until `enable_mpris`, so nothing branches on it.
     mpris: MprisHandle,
-    /// The bus name [`Self::mpris`] serves under, which the playback handoff
-    /// record names as its controller.
     mpris_bus_name: String,
-    /// App-native playback identity advertised privately to the shell. Music
-    /// hands over a stable track resource, never its signed decoder URL.
+    /// Playback identity shown to the shell: a stable track resource, never the signed URL.
     handoff: media::handoff::AppPlaybackHandle,
     pending_media_handoff: Option<PendingMediaHandoff>,
     local_file: Option<crate::local_file::LocalFile>,
     local_file_pick: Option<(tilo_actions::InvocationId, LocalFilePick)>,
 
-    /// A playlist-cover file-portal pick in flight: the receiver the frame loop
-    /// drains, plus the playlist it targets. `None` when no picker is open.
-    /// The cover image being chosen, read by the host: a browser page has
-    /// no path to hand over, only the file's contents.
+    /// The cover being chosen: a browser page hands over the file's contents, not a path.
     cover_pick: Option<ui::portal::ContentsChannel>,
-    /// Which playlist an in-flight cover pick belongs to. The portal only ever
-    /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
-    /// The off-thread portable PNG conversion started after a portal selection.
-    /// Image decoding/resize/encoding never runs in the frame loop.
+    /// The off-thread PNG conversion after a portal pick: decoding never runs per frame.
     cover_embed: Option<Receiver<Result<String, String>>>,
     cover_embed_for: Option<String>,
 
-    /// Whether the initial local playback state has been initialized. Playback
-    /// is intentionally never adopted from, or written to, the shared doc.
+    /// Local playback starts from this device's state; it is never read from or written
+    /// to the document.
     playback_loaded: bool,
-    /// Track id the playhead is currently bound to (detects track changes
-    /// across a doc reload so the live playhead isn't reset spuriously).
     bound_track: Option<String>,
     playhead_ms: f64,
-    /// The track and position of the last reconnect of a stream cut short
-    /// ([`stream_cut::stream_cut_action`]).
     stream_recovery: Option<(String, u64)>,
     last_tick: Instant,
 
-    /// Shuffle playback order: a permutation of `pb.queue` indices consulted by
-    /// `advance`/`previous` while `pb.shuffle` is on (empty / stale ⇒ rebuilt
-    /// on demand). Kept in-memory only — the shuffle *flag* round-trips through
-    /// the CRDT, the concrete order is re-derived per session.
+    /// A permutation of `pb.queue` while shuffle is on, rebuilt on demand: the shuffle
+    /// flag is synced, the order is not.
     shuffle_order: Vec<usize>,
-    /// State for the small xorshift PRNG that builds the shuffle permutation.
-    /// Seeded from wall-clock at construction; tests set it for determinism.
+    /// The xorshift state that builds the shuffle order; tests set it for determinism.
     shuffle_rng: u64,
-    /// Volume level captured before muting, restored when unmuted.
     premute_volume: Option<u8>,
-    /// The track to drop into a brand-new playlist once its name is committed
-    /// (set by "Add to playlist… → New playlist…"); `None` for a plain create.
     new_playlist_track: Option<String>,
 
     rect: Rect,
     body_rect: Rect,
-    /// The body's scrolling: the toolkit's region, with its wheel, bar,
-    /// keys and assistive scrolling.
     body_scroll: ui::widget::ScrollRegion,
-    /// An offset asked for before this frame's content height is known
-    /// (a view change, a restored position); applied after the body is
-    /// laid out.
+    /// An offset asked for before the content height is known, applied after layout.
     scroll_target: Option<f64>,
-    /// The theme of the last painted frame, for the event path.
     frame_theme: Option<Theme>,
     content_height: f64,
 
-    /// The places the window's shell shows in its sidebar.
     places: NavFeed,
-    /// What plays, as the transport in the shell's band shows it.
     transport: TransportFeed,
-    /// The Now Playing page's song and its cover's flight from the band.
     now_playing: render::NowPlaying,
-    /// What the transport's actions read when they are invoked.
     playing_now: std::sync::Arc<shell::Playing>,
-    /// The shell's own buttons in the window's bar; none outside a shell.
     bar: Option<WindowBarLink>,
-    /// The shell's front screen in a narrow window.
     pane: Option<ui::LocalState<ui::widget::NavPane>>,
-    /// The view the shell was last told about.
     shown_view: Option<View>,
 
     mouse: Point,
     hits: Vec<Hit>,
-    /// How many of `hits` belong to the page body; the rest are the chrome
-    /// painted over it, which takes the pointer first.
+    /// How many hits are the body's; the chrome painted over it takes the pointer first.
     body_hits: usize,
-    /// The widgets embedded in the page. In a window they are the
-    /// window's children, lent here while it draws, lays out, syncs or
-    /// takes input through this ([`MusicApp`]).
     page: Page,
-    /// Where the Sources button was last drawn, which its menu opens from.
     sources_anchor: Option<Rect>,
-    /// How many of the page's track tables this frame has drawn so far.
     track_tables_drawn: usize,
     media_grids_drawn: usize,
     page_parts_drawn: usize,
-    /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
-    /// The view (+ scroll offset) to return to when the queue view is toggled
-    /// back off, so "Queue" restores exactly where the user was rather than
-    /// resetting. `None` when the queue view wasn't opened via the toggle.
+    /// Where the queue was toggled from, so closing it returns there.
     dirty: bool,
     toast: Notice,
 
-    /// Self-routing right-click context menu (the `ui` primitive, driven
-    /// imperatively: opened at the cursor, drawn last, polled via a sink).
+    /// The context menu: the `ui` primitive, opened at the cursor and drawn last.
     context: ContextMenu,
-    /// The scale from the most recently rendered system theme. Context menus
-    /// are rebuilt on demand, so retaining this lets their first pointer or
-    /// keyboard event use the same enlarged geometry the next frame paints.
+    /// The system theme's scale from the last frame, so a menu's first event uses the
+    /// same geometry the next frame paints.
     context_text_scale: f32,
-    /// The action each open menu row maps to. Parallel to `context.items()`;
-    /// drained when a selection lands so the host performs the CRDT mutation
-    /// the `Arc<Fn>` callback model can't express.
+    /// The action behind each open menu row, parallel to `context.items()`.
     menu_actions: Vec<Action>,
-    /// Shared sink the menu callbacks write the chosen row index into; the
-    /// host drains it after `click_item` and dispatches into the normal
-    /// `Action` pipeline. `-1` means "no pending selection". `Arc<AtomicI64>`
-    /// (not `Rc<Cell>`) because `ContextMenu`'s `MenuAction` callback is
-    /// `Send + Sync`.
+    /// The chosen row index the menu callbacks write (`-1` for none); `Send + Sync`,
+    /// which the menu's callback requires.
     pending: Arc<AtomicI64>,
 
-    /// The row a context menu was opened on: it stays lifted while the menu
-    /// is open.
     menu_anchor_row: Option<Rect>,
-    /// The track the open context menu targets (for go-to-album/artist etc.).
     ctx_track: Option<String>,
-    /// The playlist the context-menu target row belongs to, if it was opened
-    /// from a playlist detail (so "Remove from playlist" can target it).
+    /// The playlist the menu's row belongs to, so "Remove from playlist" can target it.
     ctx_in_playlist: Option<String>,
-    /// The absolute queue index of the context-menu target, if opened from the
-    /// queue view (so "Remove from queue" can target it).
+    /// The queue position of the menu's row, so "Remove from queue" can target it.
     ctx_queue_index: Option<usize>,
-    /// Membership selected from a Ctrl+K result. It is retained until the
-    /// playlist row is visible, so the view can scroll and highlight the exact
-    /// still-current row rather than merely opening the playlist at its top.
+    /// A membership picked from search, kept until its row is visible so the view can
+    /// scroll to it and highlight that row.
     revealed_membership: Option<(String, String)>,
 
-    /// A name-input overlay (create / rename playlist). When `Some`, a shared
-    /// [`ModalDialog`] hosting a real [`TextInput`] is up; `name_input` carries
-    /// the committed value into the `CreatePlaylist` / `CommitRename` handlers.
+    /// The name-input overlay up for a new or renamed playlist.
     name_prompt: Option<NamePrompt>,
     name_input: String,
-    /// The live name-prompt dialog, built lazily from `name_prompt` +
-    /// `name_input` and torn down when it resolves.
     name_dialog: Option<NameDlg>,
 
-    /// Cached lyrics for the current track + the id they were fetched for, so
-    /// the lyrics view doesn't re-resolve every frame.
     lyrics: Vec<LyricsLine>,
     lyrics_for: Option<String>,
-    /// Whether the current `lyrics` are synced (time-stamped).
     lyrics_synced: bool,
 
-    /// A deferred `--shots` staging action, applied once on the first `sync`
-    /// after the library has loaded (the catalog is empty at construction).
     shot_stage: Option<ShotStage>,
-    /// A staged track whose context menu opens over its row once the row is
-    /// laid out.
     staged_menu_track: Option<String>,
-    /// A row of the page's first track table a capture shows under the
-    /// pointer.
     staged_row_pointer: Option<usize>,
-    /// Open the narrow transport's More menu once the bar is laid out.
-    /// A capture opens this filter's values over its chip once the chips
-    /// are laid out.
     staged_facet: Option<String>,
 
-    // ---- real artwork + live content -------------------------------------
-    /// Async remote-image cache: real album/artist/playlist covers fetched off
-    /// the UI thread, decoded to GPU textures and painted. See [`ui::ImageStore`].
     images: ImageStore,
-    /// Entity id (album / artist / playlist / track) → best cover URL, folded
-    /// in from live search/home/artist results and re-applied each frame.
     art_urls: HashMap<String, String>,
-    /// The cover last cut down for the song's live activity, with the cover it
-    /// was cut from: the shell's card shows that picture, so it is made once
-    /// per song rather than on every frame.
+    /// The small cover made for the song's activity once per song, with the cover it
+    /// was cut from.
     activity_art: Option<(String, String)>,
-    /// Playlist covers composed from their tracks' artwork, by playlist id,
-    /// with the covers each was made of.
     playlist_mosaics: std::cell::RefCell<HashMap<String, (Vec<u64>, vello::peniko::ImageData)>>,
-    /// The real YouTube-Music Home page (charts / new releases / top artists),
-    /// once fetched. `None` offline / before it lands → the sample home shows.
     home: Option<HomeContent>,
-    /// When the Home fetch was asked: its placeholder steps on from then.
     home_asked: Option<Instant>,
-    /// Set once a Home fetch has come back empty-handed (offline build, network
-    /// error). Stops the loading skeleton — and the animation loop — so the
-    /// empty Home settles instead of shimmering forever.
+    /// A Home fetch that came back empty: the skeleton and the animation loop stop.
     home_failed: bool,
-    /// Detail pages (artist / album / playlist ids) whose live fetch failed, so
-    /// their skeleton stops and an honest "couldn't load" state shows instead.
     failed_pages: HashSet<String>,
-    /// When each live detail page was asked of the catalogue: its
-    /// placeholder steps on from then.
     pages_asked: HashMap<String, Instant>,
-    /// Real artist pages keyed by channel id, and the set already requested.
     artist_pages: HashMap<String, ArtistPage>,
     artist_requested: HashSet<String>,
-    /// Real album pages keyed by album id, and the set already requested.
     album_pages: HashMap<String, AlbumPage>,
     album_requested: HashSet<String>,
-    /// Real (live YouTube-Music) playlist pages keyed by playlist id, and the
-    /// set already requested.
     playlist_pages: HashMap<String, PlaylistPage>,
     playlist_requested: HashSet<String>,
-    /// Whether this instance may touch the network (spawn the worker, fetch
-    /// covers). False for the hermetic `--shots`/test path so a headless render
-    /// never opens a socket; the live-shots pre-warm flips it on.
+    /// Whether this instance may open a socket: false for captures and tests.
     allow_network: bool,
-    /// Test override for the metered-connection check (bypasses `NetworkManager`
-    /// so prefetch gating is deterministic in tests). `None` ⇒ query the real
-    /// connection via [`crate::net`].
+    /// Test override for the metered check; `None` asks the real connection.
     force_metered: Option<bool>,
 
-    // ---- lyrics fetch ----------------------------------------------------
-    /// Async lyrics worker (LRCLIB). Spawned lazily; results fold into `lyrics`.
     lyrics_worker: Option<LyricsWorker>,
-    /// The track id a lyrics fetch is in flight for (dedupes requests).
     lyrics_pending_for: Option<String>,
-    /// Resolved lyrics cached by track id (`lines`, `synced`), so revisiting a
-    /// track — or prefetching the next queued one on a stable connection — is
-    /// instant. Populated for every resolved track, not just the current one.
     lyrics_cache: HashMap<String, (Vec<LyricsLine>, bool)>,
-    /// The current track id we've already run a prefetch pass for (dedupe), so
-    /// prefetch fires once per track change, not every frame.
     prefetched_for: Option<String>,
 
-    // ---- search performance ----------------------------------------------
-    /// Wall-clock of the last search keystroke, for debouncing the live query.
     search_edit_at: Option<Instant>,
-    /// The last query actually dispatched to the live worker (dedupe debounce).
     live_query_sent: Option<String>,
 
-    // ---- offline downloads -----------------------------------------------
-    /// Reserved for a future byte-backed downloader. The current product does
-    /// not simulate downloads: a progress bar without durable playable bytes
-    /// would be a false offline-completion claim.
     downloads: HashMap<String, crate::audio::OfflineDownload>,
     offline_resolves: HashMap<u64, String>,
     offline_invocation: Option<(
@@ -705,58 +468,39 @@ pub(crate) struct Music {
         std::collections::BTreeSet<String>,
     )>,
     offline_results: Vec<tilo_actions::InvocationUpdate>,
-    /// Callers waiting for an effect's stream, download or picker to settle.
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     offline_errors: HashMap<String, String>,
 
-    /// Where library edits go: the framework's dispatcher, which applies
-    /// each as the participant's attributed, undoable action. `None` until
-    /// the surface is attached.
+    /// Where library edits go: the dispatcher applies each as the participant's
+    /// attributed, undoable action; `None` until the surface is attached.
     dispatcher: Option<ui::framework::Dispatcher<crate::model::Library>>,
-    /// The library's published actions and Music's effects, which the page's
-    /// controls are bound to. `None` until the framework attaches.
     actions: Option<ui::framework::Actions<Library>>,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
 }
 
-/// A deferred screenshot staging action (see [`Music::stage_scenario`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShotStage {
     TrackMenu,
     NewPlaylistPrompt,
-    /// The Home page in its shimmering skeleton loading state.
     Skeleton,
-    /// A bundled track playing, so the now-playing bar shows cover art + a live
-    /// equalizer on the current row.
     NowPlaying,
-    /// A deterministic, local-only download state for an offscreen capture.
     Downloading,
-    /// A deterministic durable-cache success state for an offscreen capture.
     OfflineCached,
-    /// A deterministic terminal download error that exposes the Retry affordance.
     OfflineError,
-    /// The synced-lyrics view with a highlighted current line at ~40s.
     Lyrics,
-    /// A Ctrl+K playlist-membership result activated through its canonical View
-    /// operation, leaving the precise row revealed/highlighted.
     MembershipOpen,
 }
 
-/// What the inline name-input overlay is collecting.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NamePrompt {
-    /// Creating a brand-new playlist.
     NewPlaylist,
     NewSpotifyPlaylist,
-    /// Renaming an existing playlist (by id).
     Rename(String),
 }
 
-/// The live name-prompt dialog: the shared [`ModalDialog`] hosting a real
-/// [`PromptBody`]/[`TextInput`] plus the submit / cancel cells its footer
-/// buttons flip (drained each event by the host).
+/// The name dialog built from `name_prompt`, torn down when it resolves.
 struct NameDlg {
     dialog: ModalDialog<PromptBody>,
     submit: Rc<Cell<bool>>,
@@ -795,9 +539,8 @@ impl Music {
         Self::with_bundled_covers(Self::new_with_device_profile(true))
     }
 
-    /// The app for a window nobody plays in — a past version in History, a
-    /// test: no network, and this device's playback profile is neither read
-    /// nor written.
+    /// The app for a window nobody plays in: no network, and this device's profile is
+    /// neither read nor written.
     pub(crate) fn offline() -> Self {
         let mut app = Self::with_bundled_covers(Self::new_with_device_profile(false));
         app.allow_network = false;
@@ -805,9 +548,7 @@ impl Music {
         app
     }
 
-    /// The sample library is catalog data with no artwork of its own: each
-    /// sample album carries a bundled cover, so what shows the library — its
-    /// grids and the shell's now-playing card — shows real cover art.
+    /// Sample covers, so the grids and the now-playing card show real artwork.
     fn with_bundled_covers(mut app: Self) -> Self {
         for album in crate::seed::sample_library().albums.keys() {
             app.record_cover(album, &crate::seed::sample_cover(album));
@@ -822,7 +563,6 @@ impl Music {
         Self::new_with_device_profile(false)
     }
 
-    /// Keep a test's app off the network and away from the playback profile.
     #[cfg(test)]
     pub(crate) fn disconnect(&mut self) {
         self.allow_network = false;
@@ -830,11 +570,9 @@ impl Music {
     }
 
     fn new_with_device_profile(load_device_profile: bool) -> Self {
-        // Optional initial-view override, used by `--shots` to capture
-        // screens other than Home (e.g. `TILO_MUSIC_VIEW=album:al_glasslight`).
+        // `TILO_MUSIC_VIEW` picks the captured view, e.g. `album:al_glasslight`.
         let query = String::new();
-        // A preset search query (`TILO_MUSIC_VIEW=search:…`) arms the debounce so
-        // the live-shot loop dispatches it after the usual idle beat.
+        // A preset search query arms the debounce, so the capture dispatches it after one beat.
         let preset_search_at = (!query.is_empty()).then(ui::time::now);
         let persist_device_profile =
             load_device_profile && !cfg!(test) && crate::storage::device_profile_has_a_place();
@@ -1028,8 +766,7 @@ impl Music {
             offline_results: Vec::new(),
             effect_replies: Vec::new(),
             offline_errors: HashMap::new(),
-            // A test drives the surface on a document it builds; its edits
-            // land there.
+            // A test drives the surface on a document it builds; its edits land there.
             #[cfg(test)]
             dispatcher: Some(ui::framework::testing::dispatcher(
                 <crate::MusicShell as ui::framework::ResourceApp>::ID,
@@ -1042,9 +779,8 @@ impl Music {
         }
     }
 
-    /// Convert a published top-level destination id back to its concrete view.
-    /// The resource layer only admits ids from `NAVIGATION_VIEWS`; this router
-    /// keeps the final local navigation step equally explicit.
+    /// A published destination id back to its view; the resource layer admits only
+    /// `NAVIGATION_VIEWS`.
     fn top_level_view(id: &str) -> Option<View> {
         match id {
             "home" => Some(View::Home),
@@ -1062,11 +798,8 @@ impl Music {
         }
     }
 
-    // ---- state plumbing ---------------------------------------------------
-
-    /// Refresh just the catalog/playlists/cache from the document. Runs
-    /// every `sync` so remote library edits (a playlist gaining a track on
-    /// another device) appear without disturbing local playback.
+    /// Refresh the catalogue, playlists and cache from the document every `sync`, so a
+    /// peer's edit appears without disturbing local playback.
     fn reload_library(&mut self, state: &AutoCommit) {
         let heads = (
             state.base_heads(),
@@ -1075,9 +808,7 @@ impl Music {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        // A library that does not read is not an empty one: the framework
-        // says why in place of the view, and the catalog, the playlists and
-        // what plays from them stay as they last read whole.
+        // A library that does not read is not an empty one: what last read whole stays.
         let next_library = match <crate::model::Library as ui::tilo_resource::Resource>::read(state)
         {
             Ok(library) => library,
@@ -1095,8 +826,7 @@ impl Music {
         self.sync_playlist_covers();
     }
 
-    /// Retire the old simulated-download seam. The render loop still invokes
-    /// this, but it can never manufacture a false "cached" completion state.
+    /// Kept for the render loop: it can never manufacture a cached completion.
     fn advance_downloads(&mut self, _state: &mut ui::widget::Edits<'_>) {
         let mut complete = Vec::new();
         let mut progress = Vec::new();
@@ -1143,9 +873,6 @@ impl Music {
         }
     }
 
-    /// Mirror each playlist's persisted cover URL into the image cache so a
-    /// cover set in a prior session (or by a peer) renders. Cheap: a handful of
-    /// playlists, and the image store dedups fetches by URL.
     fn sync_playlist_covers(&mut self) {
         for pl in self.lib.playlists() {
             if !pl.cover.is_empty() {
@@ -1154,8 +881,7 @@ impl Music {
         }
     }
 
-    /// Adopt the shared library snapshot. Playback intentionally starts from
-    /// this device's local state rather than a peer's transport settings.
+    /// Adopt the shared library; playback stays this device's.
     fn reload(&mut self, state: &AutoCommit) {
         self.reload_library(state);
         self.bound_track = self.pb.current.clone();
@@ -1163,9 +889,7 @@ impl Music {
     }
 
     fn persist_playback(&mut self, _state: &mut ui::widget::Edits<'_>) {
-        // Reducers such as a media-key play/pause can receive an already loaded
-        // track before a queue has been materialised. Canonicalise that local
-        // convenience state before it reaches the local audio boundary.
+        // A media key can name a track before a queue exists: settle that before audio.
         if let Some(current) = self.pb.current.clone() {
             if self.pb.queue.get(self.pb.queue_index) != Some(&current) {
                 if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
@@ -1226,8 +950,6 @@ impl Music {
             .collect()
     }
 
-    /// Show a transient message in the window's bar: a confirmation
-    /// (`Success`), something under way (`Info`) or a failure (`Error`).
     fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
         self.toast.show(text, kind);
         self.toast.publish();
@@ -1241,20 +963,12 @@ impl Music {
         }
     }
 
-    /// Whether this device holds `id`'s media: a download in flight or a
-    /// durable cached copy. Never shared with other devices.
     pub(crate) fn cache_state(&self, id: &str) -> CacheState {
         self.device_cache.get(id).copied().unwrap_or_default()
     }
 
-    // ---- action dispatch --------------------------------------------------
-
-    /// Submit one verb or field edit of the library through the framework's
-    /// dispatcher — the one door the Ctrl+K palette, agents and every
-    /// on-screen affordance share: checked against the participant's
-    /// permissions, attributed, undoable and replayed on peers. Callers
-    /// reload the in-memory library from the document afterward for
-    /// immediate feedback.
+    /// The one door for a library edit: checked against the participant's permissions,
+    /// attributed, undoable and replayed on peers. Callers reload afterwards.
     fn perform_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1268,8 +982,8 @@ impl Music {
         }
     }
 
-    /// Show the shared library, keeping this device's cache.
-    /// An empty projection does not wipe a library that has not been published yet.
+    /// Show the shared library, keeping this device's cache; an empty projection keeps
+    /// what is there.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
         self.stored_library.clone_from(state);
         self.library_revision = self.library_revision.wrapping_add(1);
@@ -1289,7 +1003,6 @@ impl Music {
         self.sync_playlist_covers();
     }
 
-    /// Send library edits through the framework's dispatcher.
     pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::model::Library>,
@@ -1297,15 +1010,11 @@ impl Music {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Bind the page's controls to what the library and Music publish.
     pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Library>) {
         self.actions = Some(actions);
     }
 
-    /// The rows this window shows beside the library's own: built from the
-    /// library, this device's playback, and the two facts about this device
-    /// the library does not hold — its offline copies and the artists it
-    /// follows — beside the file it has open, if any.
+    /// The rows this window shows besides the library's, from playback and this device.
     pub(crate) fn music_rows(&self) -> crate::actions::MusicRows<'_, Self> {
         crate::actions::MusicRows {
             lib: &self.lib,
@@ -1315,11 +1024,7 @@ impl Music {
         }
     }
 
-    /// The row `id` this surface shows — the player, the queue and its
-    /// entries, a song, artist, playlist or membership, the open file — or
-    /// the library's own row for a place or album — resolved against what it
-    /// shows now, so a stale address from an old palette snapshot finds
-    /// nothing.
+    /// The row `id` this surface shows now, or nothing when the address is stale.
     pub(crate) fn publish_resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
         self.music_rows()
             .row(id)
@@ -1327,8 +1032,7 @@ impl Music {
             .or_else(|| <Library as ui::tilo_resource::Resource>::child(&self.lib, id))
     }
 
-    /// The authoritative search result's metadata, for an admitted effect
-    /// importing a catalogue song into the shared library.
+    /// The catalogue result's metadata, for the effect that imports it.
     pub(crate) fn catalogue_import(
         &self,
         track: &str,
@@ -1341,8 +1045,7 @@ impl Music {
         Ok(crate::model::Library::IMPORT_TRACK.with(hit.clone()))
     }
 
-    /// The rows this device shows beside the library: its player, queue and
-    /// open file, and the tracks it keeps offline, which offer their removal.
+    /// This device's rows: the player, the queue, the open file and offline copies.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows = self.music_rows().all();
         rows.extend(
@@ -1353,9 +1056,8 @@ impl Music {
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
         rows.extend(self.spotify_remote_rows());
-        // Catalogue tracks have not entered the shared document. Publish the
-        // same admitted live row that resolves search hits, so albums and
-        // remote searches offer playback to agents and assistive technology.
+        // A catalogue track is not in the document: publish its admitted live row so it
+        // plays like a library one.
         let mut tracks: Vec<_> = self
             .live_hits
             .iter()
@@ -1389,8 +1091,6 @@ impl Music {
         rows
     }
 
-    /// The row `id` this device shows, beyond the published page: a queue
-    /// entry, the player, the open file, a track it keeps offline.
     pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id.starts_with("music.spotify-remote:") {
             return self
@@ -1424,8 +1124,7 @@ impl Music {
         if let Some(track) = id.strip_prefix("music.track:")
             && !self.stored_library.tracks.contains_key(track)
         {
-            // A catalogue song the library does not hold yet: its row's
-            // like imports the real song first.
+            // A song not in the library yet: liking it imports the song first.
             return self
                 .live_hits
                 .iter()
@@ -1436,9 +1135,8 @@ impl Music {
                 })
                 .flatten();
         }
-        // The player, the queue and its entries, the open file, and the
-        // library's songs, artists, playlists and memberships. Its places and
-        // albums the framework resolves from the library itself.
+        // The player, the queue, the open file and the library's rows; places and albums the
+        // framework resolves itself.
         self.publish_resource(id)
             .map(ui::framework::LiveRow::from_resource)
     }
@@ -1456,7 +1154,9 @@ impl Music {
                     .and_then(serde_json::Value::as_str)
                     .map_or_else(
                         || self.backend_name.clone(),
-                        |name| format!("{} {name}", crate::i18n::t("music-spotify-output")),
+                        |name| {
+                            crate::i18n::t_args("music-spotify-output", &[("device", name.into())])
+                        },
                     )
             })
         }
@@ -1482,7 +1182,6 @@ impl Music {
         .effect(&MusicEffect::BrowseYouTube)
     }
 
-    /// A track this device keeps offline, offering to remove its copy.
     fn offline_row(&self, track: &str) -> Option<ui::framework::LiveRow> {
         self.lib.track(track)?;
         Some(
@@ -1497,7 +1196,6 @@ impl Music {
         )
     }
 
-    /// A one-line "Title — Artist" label for a track id, for the palette.
     fn track_label(&self, track_id: &str) -> String {
         match self.playback_track(track_id) {
             Some(t) => {
@@ -1512,9 +1210,7 @@ impl Music {
         }
     }
 
-    /// Decoder teardown at local EOS releases the live position query. Retain
-    /// only the end position whose duration the decoder actually observed;
-    /// catalogue metadata and transport intent cannot establish completion.
+    /// Only the position the decoder saw at the end counts as played; metadata cannot.
     fn observed_position_ms(&self) -> Option<u64> {
         self.audio.position_ms().or_else(|| {
             self.local_file
@@ -1562,10 +1258,7 @@ impl Music {
             .map_or(0, super::model::Track::duration_ms)
     }
 
-    /// The best cover-art id for a track: the track's own recorded cover when
-    /// present, else its album's cover. Album-track hits frequently omit a
-    /// per-track thumbnail (only the album carries one), so the now-playing bar
-    /// must fall back to the album art rather than a procedural placeholder.
+    /// The track's own cover, else its album's: album hits often carry only album art.
     fn best_cover_id(&self, track_id: &str, album_id: &str) -> String {
         if self.art_urls.contains_key(track_id) {
             track_id.to_string()
@@ -1576,13 +1269,8 @@ impl Music {
         }
     }
 
-    // ---- MPRIS media control ---------------------------------------------
-
-    /// Bring up the MPRIS D-Bus service (media keys + the desktop media
-    /// controls). Called only from the live-binary entry (`app_root`). Safe
-    /// everywhere: on unsupported hosts, without `audio`, or without a session bus
-    /// it installs the
-    /// inert stub, so no code path branches on whether MPRIS is present.
+    /// Bring up MPRIS; where it is unsupported it installs the inert stub, so no code
+    /// path branches on whether it is there.
     pub fn enable_mpris(&mut self) {
         let snap = self.mpris_snapshot();
         let config = crate::mpris::config();
@@ -1590,7 +1278,6 @@ impl Music {
         self.mpris = MprisHandle::spawn(config, snap);
     }
 
-    /// Build the MPRIS snapshot from the current playback + library state.
     fn mpris_snapshot(&self) -> PlayerSnapshot {
         let status = match &self.pb.current {
             None => PlaybackStatus::Stopped,
@@ -1625,8 +1312,7 @@ impl Music {
         snap
     }
 
-    /// Push the latest player state to MPRIS. Deduped inside the handle, so this
-    /// is cheap to call every frame.
+    /// Push the player state to MPRIS; the handle dedupes, so this is cheap each frame.
     fn publish_mpris(&mut self) {
         if self.pb.current.is_some() {
             let snap = self.mpris_snapshot();
@@ -1676,9 +1362,7 @@ impl Music {
         });
     }
 
-    /// Show the song this device plays as the app's live activity: the bar's
-    /// pill names it and its floating card shows its cover, who it is by and
-    /// where the playhead stands. Nothing plays: the activity ends.
+    /// This device's playing song as the app's activity: the bar's pill and its card.
     fn publish_activity(&mut self) {
         let Some(track_id) = self.pb.current.clone() else {
             crate::activity::publish(None);
@@ -1706,9 +1390,7 @@ impl Music {
         crate::activity::publish(Some(&song));
     }
 
-    /// The cover the song's card shows, as a small `data:` picture: the cover
-    /// this window already decoded, cut down so it fits the activity's wire
-    /// budget. Empty while the cover is still loading.
+    /// The card's cover as a small `data:` picture, cut down from the decoded one.
     fn activity_artwork(&mut self, track_id: &str, album_id: &str) -> String {
         let cover = self.best_cover_id(track_id, album_id);
         let Some(url) = self.art_urls.get(&cover).cloned() else {
@@ -1726,8 +1408,6 @@ impl Music {
         art
     }
 
-    /// Take the controls pressed on the song's pill and card, through the same
-    /// actions a media key reaches.
     fn drain_activity(&mut self, state: &mut ui::widget::Edits<'_>) {
         for pressed in crate::activity::take_commands() {
             // A press names the song it was made on: once another plays, it is
@@ -1991,8 +1671,6 @@ impl Music {
         // above may advance; crossing the duration can still leave PCM queued.
     }
 
-    // ---- transport --------------------------------------------------------
-
     /// Auto-advance to the next track *and* start streaming it. Used by the
     /// transport tick when the current stream ends. Advancing without also
     /// resolving the next track would silently change the "now playing" track
@@ -2102,8 +1780,6 @@ impl Music {
         let prev = self.pb.queue_index - 1;
         self.play_index(prev);
     }
-
-    // ---- shuffle order ----------------------------------------------------
 
     /// One step of an xorshift64* PRNG (self-contained; no `rand` dependency).
     fn next_rand(&mut self) -> u64 {
@@ -2226,8 +1902,6 @@ impl Music {
             *index = moved_index(*index, from, to);
         }
     }
-
-    // --- name-prompt dialog (shared ModalDialog + real TextInput) --------
 
     /// Build the name-prompt dialog from `name_prompt` + the staged
     /// `name_input` (which seeds the field for a rename or a `--shots` frame).
@@ -4224,17 +3898,11 @@ impl Music {
         Some(mosaic)
     }
 
-    /// Whether any cover fetch/decode is still in flight (keeps frames flowing).
     fn images_pending(&self) -> bool {
         self.images.pending() > 0
     }
 
-    // ---- live content requests -------------------------------------------
-
-    /// Request the real Home page once, when networking is allowed.
-    /// Fetch Home from the connected catalogue, once. Without one nothing
-    /// is fetched: opening Music contacts no provider the person did not
-    /// choose.
+    /// Fetch Home from the connected catalogue, once; with none connected nothing is fetched.
     fn ensure_home(&mut self) {
         if self.home_asked.is_some() || !self.allow_network || !self.catalogue_connected {
             return;
@@ -4254,7 +3922,7 @@ impl Music {
         }
     }
 
-    /// Request a real artist page for a channel id (once each).
+    /// A real artist page, asked once.
     fn ensure_artist(&mut self, id: &str) {
         if !self.allow_network || !is_live_id(id) || self.artist_requested.contains(id) {
             return;
@@ -4264,7 +3932,7 @@ impl Music {
         }
     }
 
-    /// Request a real album page for an album id (once each).
+    /// A real album page, asked once.
     fn ensure_album(&mut self, id: &str) {
         if !self.allow_network || !is_live_album_id(id) || self.album_requested.contains(id) {
             return;
@@ -4274,7 +3942,7 @@ impl Music {
         }
     }
 
-    /// Request a real (live YouTube-Music) playlist page for an id (once each).
+    /// A real catalogue playlist page, asked once.
     fn ensure_playlist(&mut self, id: &str) {
         if !self.allow_network || !is_live_playlist_id(id) || self.playlist_requested.contains(id) {
             return;
@@ -4284,8 +3952,7 @@ impl Music {
         }
     }
 
-    /// Send the page `request` for `id` to the worker; whether it was sent.
-    /// A refused request marks the page failed and says so.
+    /// Send the page request to the worker; a refused request marks the page failed.
     fn request_page(&mut self, id: &str, request: StreamRequest, what: &str) -> bool {
         self.ensure_worker();
         let Some(w) = &self.worker else {
@@ -4307,13 +3974,11 @@ impl Music {
         }
     }
 
-    /// How far the body is scrolled.
     fn scroll_y(&self) -> f64 {
         self.scroll_target
             .unwrap_or_else(|| self.body_scroll.offset().y)
     }
 
-    /// Scroll the body to `y`; the next frame clamps it to its content.
     fn set_scroll_y(&mut self, y: f64) {
         self.scroll_target = Some(y.max(0.0));
     }
@@ -4324,10 +3989,8 @@ impl Music {
         hovered
     }
 
-    /// Take up what the launch named: a `music://` link plays the track
-    /// (continuing a handoff's position once the track is in the library)
-    /// or opens the album, artist or playlist; anything else is a local
-    /// audio file to play.
+    /// What the launch named: a `music://` track (continuing a handoff's position), an
+    /// album, artist or playlist, or a local audio file.
     pub(crate) fn open_launch(&mut self, launch: &ui::framework::LaunchInput<'_>) {
         let Some(source) = launch.argument() else {
             return;
@@ -4354,8 +4017,6 @@ impl Music {
         }
     }
 
-    /// Stage the view state of the screenshot scenario `scenario`, once its
-    /// library is in place.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "recommendations" | "recommendations-feedback" | "recommendations-empty" => {
@@ -4390,7 +4051,6 @@ impl Music {
             "spotify-home" | "spotify-devices" | "spotify-error" | "spotify-queue"
             | "spotify-create" => self.snap_spotify(scenario),
             "library" => {
-                // The library as a person left it: two songs selected.
                 self.view = View::Songs;
                 self.restore_selection = Some(vec!["tk_g2".into(), "tk_g3".into()]);
             }
@@ -4421,8 +4081,6 @@ impl Music {
         }
     }
 
-    /// Stage the shell's sidebar open or closed for a `--shots` frame, through
-    /// the window bar's toggle.
     pub fn snap_sidebar(&mut self, open: bool) {
         if let Some(bar) = &self.bar {
             bar.stage_sidebar(open);
@@ -4430,17 +4088,13 @@ impl Music {
         self.dirty = true;
     }
 
-    /// Stage a track context menu open for a `--shots` frame. Deferred to the
-    /// first `sync` (the catalog is empty at construction); see `apply_shot_stage`.
     pub fn snap_track_menu(&mut self) {
         self.shot_stage = Some(ShotStage::TrackMenu);
-        // Default the shot to the Songs library so the menu has rows behind it.
         if matches!(self.view, View::Home) {
             self.view = View::Songs;
         }
     }
 
-    /// Stage the inline create-playlist name prompt open for a `--shots` frame.
     pub fn snap_new_playlist_prompt(&mut self) {
         self.shot_stage = Some(ShotStage::NewPlaylistPrompt);
         if matches!(self.view, View::Home) {
@@ -4448,54 +4102,41 @@ impl Music {
         }
     }
 
-    /// Stage the Home skeleton loading state for a `--shots` frame.
     pub fn snap_skeleton(&mut self) {
         self.shot_stage = Some(ShotStage::Skeleton);
         self.view = View::Home;
     }
 
-    /// Stage a bundled track playing for a now-playing `--shots` frame (cover
-    /// art in the transport bar + a live equalizer on the current row).
     pub fn snap_nowplaying(&mut self) {
         self.shot_stage = Some(ShotStage::NowPlaying);
         self.view = View::Songs;
     }
 
-    /// Stage the Queue view with a real "Next up" list: a bundled track plays
-    /// (so the transport bar is live) and the full sample queue trails it.
     pub fn snap_queue(&mut self) {
         self.shot_stage = Some(ShotStage::NowPlaying);
         self.view = View::Queue;
     }
 
-    /// Stage the synced-lyrics view with a highlighted current line.
     pub fn snap_lyrics(&mut self) {
         self.shot_stage = Some(ShotStage::Lyrics);
         self.view = View::Lyrics;
     }
 
-    /// Stage a track list with in-flight offline downloads for a `--shots`
-    /// frame: a few rows show the animated download spinner at different
-    /// progress, alongside the idle download affordance on the rest.
     pub fn snap_downloading(&mut self) {
         self.shot_stage = Some(ShotStage::Downloading);
         self.view = View::Downloads;
     }
 
-    /// Stage a populated, durable cache without touching the real device cache.
     pub fn snap_offline_cached(&mut self) {
         self.shot_stage = Some(ShotStage::OfflineCached);
         self.view = View::Downloads;
     }
 
-    /// Stage a failed local download and its explicit retry control.
     pub fn snap_offline_error(&mut self) {
         self.shot_stage = Some(ShotStage::OfflineError);
         self.view = View::Downloads;
     }
 
-    /// Stage a full (live-style) artist page for a hermetic `--shots` frame:
-    /// header + popular tracks + sectioned discography + related artists + bio.
     pub fn snap_artist_page(&mut self) {
         let page = ArtistPage {
             id: "ar_aurora".into(),
@@ -4630,8 +4271,6 @@ impl Music {
         ]
     }
 
-    /// Stage a full (live-style) album page for a hermetic `--shots` frame:
-    /// cover + header (play/shuffle/save) + the ordered track list.
     pub fn snap_album_page(&mut self) {
         let page = AlbumPage {
             id: "al_glasslight".into(),
@@ -4693,23 +4332,17 @@ impl Music {
         self.view = View::Album("al_glasslight".into());
     }
 
-    /// Stage the failure state a real unavailable live artist detail uses. This
-    /// keeps screenshot/a11y review honest: an error must settle with a clear
-    /// recovery message rather than look like a loading frame forever.
     pub fn snap_error_page(&mut self) {
         let id = "UC_music_shot_unavailable".to_string();
         self.failed_pages.insert(id.clone());
         self.view = View::Artist(id);
     }
 
-    /// Stage a real canonical membership-open operation for `--shots`. The
-    /// post-activation frame shows the target row in its owning playlist.
     pub fn snap_membership_open(&mut self) {
         self.shot_stage = Some(ShotStage::MembershipOpen);
     }
 
-    /// Start a bundled track playing at `pos_ms` for a deterministic shot.
-    /// Prefers `tk_g1` (it carries bundled synced lyrics).
+    /// Start a bundled track at `pos_ms` for a capture; `tk_g1` carries lyrics.
     fn stage_play_bundled(&mut self, pos_ms: f64) {
         let ids: Vec<String> = self
             .lib
@@ -4729,16 +4362,12 @@ impl Music {
         self.bound_track = self.pb.current.clone();
     }
 
-    /// Apply a deferred `--shots` staging action now that the library is
-    /// loaded. Runs once; clears itself.
     fn apply_shot_stage(&mut self) {
         let Some(stage) = self.shot_stage.take() else {
             return;
         };
         match stage {
             ShotStage::TrackMenu => {
-                // Target the 3rd sorted track; the menu opens over its row once
-                // the row has been laid out (see `open_staged_track_menu`).
                 let tracks = self.lib.tracks_sorted();
                 self.staged_menu_track = tracks
                     .get(2)
@@ -4751,9 +4380,7 @@ impl Music {
                 self.name_dialog = None;
             }
             ShotStage::Skeleton => {
-                // Home asked of the catalogue a moment ago, past the ground
-                // its placeholder keeps at first: its skeleton shows,
-                // hermetically (no network fetch actually runs).
+                // Home was asked a moment ago, so its skeleton shows without a fetch.
                 self.home_asked = ui::time::now().checked_sub(Duration::from_millis(500));
                 self.home = None;
             }
@@ -4777,7 +4404,6 @@ impl Music {
                 );
             }
             ShotStage::Lyrics => {
-                // ~40s in lands mid-song so a synced line is highlighted.
                 self.stage_play_bundled(40_000.0);
             }
             ShotStage::MembershipOpen => {
@@ -4795,10 +4421,16 @@ impl Music {
         }
     }
 
-    // ---- context menu -----------------------------------------------------
-
-    /// Push an action row onto the open menu, recording its parallel `Action`.
     fn push_menu(&mut self, label: impl Into<String>, action: Action) {
+        self.push_menu_with_detail(label, None, action);
+    }
+
+    fn push_menu_with_detail(
+        &mut self,
+        label: impl Into<String>,
+        detail: Option<String>,
+        action: Action,
+    ) {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
         let select = move || pending.store(idx, Ordering::SeqCst);
@@ -4807,11 +4439,14 @@ impl Music {
         } else {
             MenuItem::action(label, select)
         };
+        let item = match detail {
+            Some(detail) => item.with_detail(detail),
+            None => item,
+        };
         self.context.push(item);
         self.menu_actions.push(action);
     }
 
-    /// Playlist management uses the shared keyboard-accessible popup.
     fn open_playlist_menu(&mut self, id: &str) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
@@ -4825,7 +4460,6 @@ impl Music {
         self.open_context_menu_at_pointer();
     }
 
-    /// Keep list editing and offline management available without row clutter.
     fn push_track_management(
         &mut self,
         track: &str,
@@ -4879,7 +4513,6 @@ impl Music {
         }
     }
 
-    /// Build + open the per-track context menu at the cursor.
     fn open_track_menu(
         &mut self,
         track: String,
@@ -4971,7 +4604,6 @@ impl Music {
         self.open_context_menu_at_pointer();
     }
 
-    /// A menu row that shows whether its setting is on.
     fn push_checked_menu(&mut self, label: impl Into<String>, checked: bool, action: Action) {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
@@ -4984,8 +4616,7 @@ impl Music {
         self.menu_actions.push(action);
     }
 
-    /// The narrow transport's More menu: shuffle, repeat, like, lyrics and
-    /// the queue, each showing whether it is on. Opens beside `anchor`.
+    /// The narrow transport's More menu: the controls the compact bar has no room for.
     fn open_player_menu(&mut self, anchor: Rect) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
@@ -5052,7 +4683,6 @@ impl Music {
         self.dirty = true;
     }
 
-    /// Build + open the "Add to playlist…" secondary picker.
     fn open_add_to_playlist_menu(&mut self, track: &str) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
@@ -5092,14 +4722,8 @@ impl Music {
         self.open_context_menu_at_pointer();
     }
 
-    /// Open the populated context menu at the pointer, bounded by the app rect.
-    ///
-    /// `ContextMenu::open_anchored` owns the geometry: it measures its rows with
-    /// the frame's renderer and theme when it paints, flips above the anchor
-    /// when there is no room below, and clamps to the viewport. The previous
-    /// hand-rolled nudge guessed `220 × (rows·28 + 24)` and laid the menu out
-    /// against `Theme::dark()` regardless of the live theme, so its hit rows
-    /// could disagree with the painted ones at any other density or scale.
+    /// Open the menu at the pointer; `ContextMenu::open_anchored` measures its rows and
+    /// keeps them inside the viewport.
     fn open_context_menu_at_pointer(&mut self) {
         let anchor = Rect::from_origin_size(self.mouse, (0.0, 0.0));
         if let Some(row) = self.menu_anchor_row {
@@ -5110,16 +4734,14 @@ impl Music {
         self.dirty = true;
     }
 
-    /// Keep the imperatively owned shared menu aligned with the current
-    /// system accessibility geometry even while it is closed.
+    /// Keep the menu's geometry in step with the system's accessibility scale.
     fn sync_context_menu_geometry(&mut self, theme: &Theme) {
         self.context_text_scale = theme.text_scale;
         self.context.set_text_scale(self.context_text_scale);
         self.context.set_viewport(Some(self.rect));
     }
 
-    /// Drain a context-menu selection (set by a row callback) and dispatch the
-    /// parallel [`Action`]. Returns whether something was handled.
+    /// Run the row the menu reported; whether there was one.
     fn drain_menu_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let idx = self.pending.swap(-1, Ordering::SeqCst);
         if idx >= 0 {
@@ -5131,13 +4753,8 @@ impl Music {
         false
     }
 
-    // ---- lyrics -----------------------------------------------------------
-
-    /// Resolve lyrics for the current track when the bound track changes, via
-    /// the synchronous bundled/gated resolver. Cached by track id so the
-    /// lyrics view doesn't re-resolve every frame. Live fetch runs on the
-    /// async worker (gated behind the `lyrics` feature); the bundled path is
-    /// always available for `--shots` + offline.
+    /// Resolve lyrics when the playing track changes, from the bundled library or the
+    /// async worker, cached by track id.
     fn ensure_lyrics(&mut self) {
         let cur = self.pb.current.clone();
         if cur == self.lyrics_for {
@@ -5148,7 +4765,6 @@ impl Music {
         self.lyrics_synced = false;
         self.lyrics_pending_for = None;
         let Some(id) = cur else { return };
-        // Already resolved (revisited track, or prefetched) — use the cache.
         if let Some((lines, synced)) = self.lyrics_cache.get(&id) {
             self.lyrics.clone_from(lines);
             self.lyrics_synced = *synced;
@@ -5157,7 +4773,6 @@ impl Music {
         let Some(track) = self.lib.track(&id).cloned() else {
             return;
         };
-        // Bundled sample lyrics (seed tracks) resolve instantly + offline.
         if let Some(l) = lyrics::bundled::for_track(&id) {
             self.lyrics_cache
                 .insert(id.clone(), (l.lines.clone(), l.synced));
@@ -5165,7 +4780,6 @@ impl Music {
             self.lyrics_synced = l.synced;
             return;
         }
-        // Otherwise fetch the real synced lyrics from LRCLIB off-thread.
         if !self.allow_network {
             return;
         }
@@ -5181,7 +4795,6 @@ impl Music {
         self.lyrics_pending_for = Some(id);
     }
 
-    /// Adopt any lyrics the async LRCLIB worker resolved for the current track.
     fn poll_lyrics(&mut self) {
         let mut got = Vec::new();
         if let Some(w) = &self.lyrics_worker {
@@ -5190,7 +4803,6 @@ impl Music {
             }
         }
         for (id, l) in got {
-            // Cache every resolved result (current OR prefetched next track).
             self.lyrics_cache
                 .insert(id.clone(), (l.lines.clone(), l.synced));
             if self.pb.current.as_deref() == Some(id.as_str()) {
@@ -5204,8 +4816,6 @@ impl Music {
         }
     }
 
-    /// The next track in the play order (respecting shuffle), if any — the
-    /// prefetch target.
     fn next_queued_track(&self) -> Option<String> {
         if self.pb.queue.is_empty() {
             return None;
@@ -5221,10 +4831,8 @@ impl Music {
         self.pb.queue.get(self.pb.queue_index + 1).cloned()
     }
 
-    /// Prefetch on a **stable (non-metered)** connection: warm the next queued
-    /// song's lyrics + its album metadata so the transition is instant. Runs at
-    /// most once per current-track change and never on a metered link (or with
-    /// networking disabled for a headless render). Returns whether it ran.
+    /// Warm the next queued song's lyrics and cover on a stable connection, once per
+    /// track change.
     fn maybe_prefetch(&mut self) -> bool {
         let stable = self
             .force_metered
@@ -5243,8 +4851,6 @@ impl Music {
         let Some(next) = self.next_queued_track() else {
             return false;
         };
-        // Prefetch lyrics for the next track (into the shared cache) unless we
-        // already have them.
         if !self.lyrics_cache.contains_key(&next)
             && self.lyrics_pending_for.as_deref() != Some(next.as_str())
             && let Some(track) = self.lib.track(&next).cloned()
@@ -5263,7 +4869,6 @@ impl Music {
                     .get_or_insert_with(LyricsWorker::new)
                     .request(meta);
             }
-            // Warm the next track's album metadata + cover.
             let album_id = track.album_id;
             self.ensure_album(&album_id);
         }
@@ -5277,15 +4882,8 @@ impl Default for Music {
     }
 }
 
-// ---- small drawing helpers ----------------------------------------------
-
-/// Truncate `text` to fit `max_w` px in `style`, appending an ellipsis.
-///
-/// Only appends the ellipsis when at least one real glyph fits before it. When
-/// the column is too narrow for even a single character, this renders **nothing**
-/// (an empty string) rather than a lone `\u{2026}`: a stray ellipsis with no
-/// preceding text conveys nothing and, in a too-narrow column, would spill past
-/// its bounds into the neighbouring UI.
+/// Fit `text` into `max_w`: an empty string when not even one glyph fits, so no
+/// lone ellipsis spills into the next column.
 fn elide(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> String {
     let out = tr.elide_to_width_style(text, ui::num::f32_of_f64(max_w.max(0.0)), style);
     if out != text && out.starts_with(ui::text_render::ELLIPSIS) {
@@ -5297,9 +4895,7 @@ fn elide(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> St
     }
 }
 
-/// Library-id prefix marking a track that came from a live YouTube-Music
-/// search (its `yt_id` is a real video id we can resolve a stream from). Sample
-/// tracks use `tk_…` ids and never match.
+/// The id prefix of a track from a catalogue search; sample tracks use `tk_…`.
 pub(crate) const LIVE_TRACK_PREFIX: &str = "yt:";
 
 pub(crate) fn live_track_id(source_key: &str) -> String {
@@ -5310,30 +4906,25 @@ pub(crate) fn live_track_id(source_key: &str) -> String {
     }
 }
 
-/// Whether a track id refers to a real (streamable) YouTube-Music track.
+/// Whether the id names a real streamable track.
 fn is_live_track(track_id: &str) -> bool {
     track_id.starts_with(LIVE_TRACK_PREFIX) || track_id.starts_with("spotify:track:")
 }
 
-/// Whether an id looks like a real `YouTube` channel id (artist page fetchable).
+/// Whether the id names a real artist channel.
 fn is_live_id(id: &str) -> bool {
     id.starts_with("UC") || id.starts_with("spotify:artist:")
 }
 
-/// Whether an id looks like a real YouTube-Music album/playlist browse id.
 fn is_live_album_id(id: &str) -> bool {
     id.starts_with("MPRE") || id.starts_with("OLAK") || id.starts_with("spotify:album:")
 }
 
-/// Whether a playlist id refers to a real (live YouTube-Music) playlist rather
-/// than one of the app's own playlists. Local playlists are minted with a `pl_`
-/// prefix (incl. the virtual `pl_liked`); everything else is a live YTM id
-/// (`PL…`, `RDCLAK…`, `VL…`).
+/// Whether the id is a catalogue playlist: the app's own are minted `pl_…`.
 fn is_live_playlist_id(id: &str) -> bool {
     !id.is_empty() && !id.starts_with("pl_")
 }
 
-/// Build a [`TrackHit`] for a hermetic shot from sample-library-shaped fields.
 fn sample_hit(
     video_id: &str,
     title: &str,
@@ -5355,8 +4946,6 @@ fn sample_hit(
     }
 }
 
-/// Convert a Home track tile into a [`TrackHit`] so it flows through the same
-/// live-track merge path as a search hit.
 fn home_item_to_hit(item: &HomeItem) -> TrackHit {
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
     TrackHit {
@@ -5371,14 +4960,12 @@ fn home_item_to_hit(item: &HomeItem) -> TrackHit {
     }
 }
 
-/// A wall-clock-derived seed for the shuffle PRNG, so each session's shuffle
-/// order differs. Never zero (the xorshift step guards against it anyway).
+/// A wall-clock seed, so each session shuffles differently; never zero.
 fn seed_rng() -> u64 {
     let nanos = ui::time::try_unix_now_ns().unwrap_or(0x1234_5678);
     nanos ^ 0x9E37_79B9_7F4A_7C15
 }
 
-/// Lowercase-alnum slug for synthesising a stable id when the source omits one.
 fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -5391,8 +4978,6 @@ fn slug(s: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// Convert a real search hit into a library-importable [`CatalogueTrack`],
-/// minting stable ids where `YouTube` didn't supply them.
 fn hit_to_live(hit: &TrackHit) -> CatalogueTrack {
     let artist_id = hit
         .artist_id
@@ -5431,19 +5016,14 @@ fn hit_to_live(hit: &TrackHit) -> CatalogueTrack {
     }
 }
 
-/// Keep source reads bounded before handing an image decoder potentially
-/// untrusted portal data. The resulting shared payload has the tighter action
-/// budget in [`crate::actions::MAX_PORTABLE_COVER_BYTES`].
+/// Bound what a decoder is handed from a portal; the shared payload has the tighter budget.
 const MAX_COVER_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Decode a portal-selected image and normalize it into a small PNG data URL.
-/// This pure helper lets tests exercise the same path without a real portal.
 fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
     if source.is_empty() || source.len() as u64 > MAX_COVER_SOURCE_BYTES {
         return Err("image is empty or larger than 8 MiB".to_string());
     }
-    // The shared preview decoder refuses a header declaring an oversized image
-    // before it allocates a pixel, and applies the EXIF orientation.
+    // The shared decoder refuses an oversized header before allocating, and applies EXIF.
     let cover = thumbnail::image_thumb(source, crate::actions::MAX_PORTABLE_COVER_EDGE)
         .ok_or_else(|| "image could not be decoded".to_string())?;
     let png =
@@ -5461,22 +5041,18 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
     Ok(value)
 }
 
-/// The most a cover is encoded to for the song's live activity, on a side: a
-/// card draws it at 56 points, and the picture shares the activity's 16 KiB
-/// wire budget with the song's own name and controls.
+/// The activity's cover edge: a card draws it at 56 points, within the activity's
+/// 16 KiB wire budget.
 const ACTIVITY_ART_EDGE: u32 = 112;
 
-/// `url`'s cover as the small `data:` picture the song's activity carries: the
-/// cover this window already decoded, cut down and encoded to keep the
-/// activity inside its wire budget. Empty while the cover is not decoded here.
+/// The activity's `data:` picture from a cover this window decoded; empty until then.
 fn cover_picture(url: &str, images: &ImageStore) -> String {
     images.get(url).map_or_else(String::new, |cover| {
         ui::held_images::cover(&cover, ACTIVITY_ART_EDGE)
     })
 }
 
-/// Decode, resize and encode the chosen cover image away from the UI
-/// thread, as background work every host runs (a browser page included).
+/// Encode the chosen cover off the UI thread, as background work every host runs.
 fn embed_cover_off_thread(source: Vec<u8>) -> Receiver<Result<String, String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     if let Err(error) =
@@ -5491,8 +5067,8 @@ fn embed_cover_off_thread(source: Vec<u8>) -> Receiver<Result<String, String>> {
     receiver
 }
 
-/// Decode only canonical embedded cover values. Document actions reject local
-/// paths and `file:` URLs, so the renderer never dereferences peer-local files.
+/// Only embedded PNG values: actions reject paths and `file:` URLs, so the renderer
+/// never opens a peer's file.
 fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
     if !crate::actions::portable_cover_value(url) {
         return None;
@@ -5503,10 +5079,8 @@ fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
-/// the `live` build: a shared `tilo_net` client on the app runtime, which the
-/// store's loader waits on from its own worker; embedded portable PNG values
-/// render in every build, and the hermetic `--shots` path never opens a socket.
+/// Cover bytes over the shared `tilo_net` client under `live`; embedded PNGs render
+/// everywhere and a capture opens no socket.
 #[cfg(feature = "live")]
 pub(crate) fn image_fetcher() -> ui::Fetcher {
     use std::sync::OnceLock;
@@ -5529,8 +5103,8 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
             })
             .clone()?;
         let url = url.to_owned();
-        // The body is read through a hard cap, so a lying or absent
-        // Content-Length cannot turn cover art into an unbounded allocation.
+        // The body is read through a hard cap, so a wrong Content-Length cannot allocate
+        // without bound.
         let bytes = ui::rt::app()
             .block_on(async move {
                 let resp = client.get(url).send().await.ok()?;
@@ -5546,11 +5120,9 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
 
 #[cfg(not(feature = "live"))]
 pub(crate) fn image_fetcher() -> ui::Fetcher {
-    // No HTTP stack, but a portal-picked portable PNG still renders offline.
     Arc::new(embedded_cover_bytes)
 }
 
-/// Where a queue position moves when the song at `from` moves to `to`.
 fn moved_index(index: usize, from: usize, to: usize) -> usize {
     if index == from {
         to
@@ -5563,9 +5135,7 @@ fn moved_index(index: usize, from: usize, to: usize) -> usize {
     }
 }
 
-/// A song joined the queue at `at`: the shuffled order keeps its songs, and
-/// the new one is heard after every song still to come. Nothing changes
-/// while no order is shuffled.
+/// A song joined at `at`: it is heard after every song still to come.
 fn shuffle_inserted(order: &mut Vec<usize>, at: usize) {
     if order.is_empty() {
         return;
@@ -5578,9 +5148,7 @@ fn shuffle_inserted(order: &mut Vec<usize>, at: usize) {
     order.push(at);
 }
 
-/// Under shuffle, play the queue's song at `index` right after the one at
-/// `current`: "Play next" means next in the order heard, not only in the
-/// queue's own order.
+/// "Play next" under shuffle: next in the order heard, not only in the queue's.
 fn shuffle_put_next(order: &mut Vec<usize>, index: usize, current: usize) {
     let Some(from) = order.iter().position(|&i| i == index) else {
         return;
@@ -5593,8 +5161,7 @@ fn shuffle_put_next(order: &mut Vec<usize>, index: usize, current: usize) {
     order.insert(after, index);
 }
 
-/// The song at `index` left the queue: the shuffled order drops it and
-/// keeps every other song in its place. Answers where in the order it was.
+/// The song at `index` left: where in the order it was.
 fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
     let slot = order.iter().position(|&i| i == index);
     if let Some(slot) = slot {
@@ -5641,16 +5208,12 @@ mod tests;
 
 #[cfg(test)]
 impl Music {
-    /// The page the window shows.
     pub(crate) fn view_for_test(&self) -> View {
         self.view.clone()
     }
 }
 
 impl Music {
-    /// What opens a row's anchor for [`ui::framework::ViewCx::on_open`]: a
-    /// song plays, an album, artist, playlist, membership or place is shown.
-    /// An anchor naming no row Music opens is refused.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
@@ -5666,7 +5229,6 @@ impl Music {
         }
     }
 
-    /// Open the anchors [`Self::opener`] took, as their rows' effects do.
     pub(crate) fn open_anchors(&mut self) {
         let anchors = std::mem::take(&mut *self.opened.borrow_mut());
         for anchor in anchors {
@@ -5681,11 +5243,6 @@ impl Music {
 }
 
 impl Music {
-    /// The library's field edits bound to the row `row`, as the document
-    /// holds it now: an album is saved or unsaved, an artist followed or
-    /// unfollowed (a Spotify artist through its provider effect), a song
-    /// taken out of a playlist or moved one place, a recommendation input
-    /// switched, a suggestion hidden or shown again, an artist preferred.
     pub(crate) fn row_edits(&self, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
         use ui::tilo_resource::ActionDecl;
         let lib = &self.stored_library;
@@ -5729,8 +5286,6 @@ impl Music {
     }
 }
 
-/// Setting `playlist`'s cover and adding a song of the library at its end,
-/// each asking for its value. Renaming is every labelled item's own.
 fn playlist_edits(lib: &Library, playlist: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
     use ui::tilo_resource::{ActionDecl, Id};
     let Some(list) = lib.playlist(playlist) else {
@@ -5764,8 +5319,6 @@ fn playlist_edits(lib: &Library, playlist: &str) -> Vec<ui::tilo_resource::Actio
     ]
 }
 
-/// Taking `track` out of `playlist` and moving it one place, while the
-/// playlist holds it.
 fn membership_edits(
     lib: &Library,
     playlist: &str,
@@ -5803,8 +5356,6 @@ fn membership_edits(
     edits
 }
 
-/// The recommendations' switch on an input row, hiding or showing again a
-/// suggestion, and preferring an artist.
 fn recommendation_edits(lib: &Library, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
     use ui::tilo_resource::ActionDecl;
     let recommendations = Library::paths().recommendations;
@@ -5869,8 +5420,6 @@ fn recommendation_edits(lib: &Library, row: &str) -> Vec<ui::tilo_resource::Acti
     Vec::new()
 }
 
-/// The covers a playlist's mosaic is made of: the artwork of its first tracks
-/// whose covers differ (`cover_of` a track id), at most four, in order.
 fn mosaic_covers<'a>(
     tracks: impl IntoIterator<Item = &'a String>,
     cover_of: impl Fn(&str) -> Option<vello::peniko::ImageData>,
@@ -5916,9 +5465,6 @@ mod mosaic_tests {
         }
     }
 
-    /// A playlist's cover is its tracks' real artwork: the first four
-    /// distinct covers, skipping tracks without one and repeats of an album;
-    /// none at all leaves the letter tile.
     #[test]
     fn a_playlist_cover_takes_the_first_four_distinct_track_covers() {
         let covers = [cover(10), cover(20), cover(30), cover(40), cover(50)];

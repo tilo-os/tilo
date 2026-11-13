@@ -1,7 +1,7 @@
 //! Write leases carried in the namespace document.
 //!
 //! A lease gives one device the right to modify a file in place (a
-//! database, a VM image) while other devices read it (`storage.md` §11.2).
+//! database, a VM image) while other devices read it.
 //! Leases travel with the namespace, so every peer that sees a file also
 //! sees who holds its lease, in causal order with the file's own changes.
 //! Each lease is one root-level scalar keyed by record id. A workspace's lease
@@ -33,7 +33,6 @@ const AUTHORITY_KEY: &str = "lease-authority";
 /// One file's write lease.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteLease {
-    /// Device key of the holder.
     pub holder: [u8; 32],
     /// Fencing epoch: raised by every change of holder, never by a renewal.
     pub epoch: u64,
@@ -86,9 +85,7 @@ impl WriteLease {
 /// The tenancy a version was written in, and what it installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionFence {
-    /// Device that wrote the version, holding the lease.
     pub holder: [u8; 32],
-    /// Lease epoch it was written in.
     pub epoch: u64,
 }
 
@@ -235,7 +232,6 @@ impl Namespace {
         let _ = self.doc.delete(&ROOT, key.as_str());
     }
 
-    /// Every pending lease request: record, device, request.
     pub fn lease_requests(&self) -> Vec<(FileRecordId, [u8; 32], LeaseRequest)> {
         self.doc
             .keys(&ROOT)

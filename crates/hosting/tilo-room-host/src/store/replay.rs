@@ -422,8 +422,10 @@ pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let Some((author, channel)) = lineage.split_once('-') else {
         return "3";
     };
-    // ignored-failure: only a sort rank; a lineage not named for an author ranks last
-    if let Ok(author) = hex::decode(author) {
+    if let Ok(author) = tilo_failure::ignored!(
+        "only a sort rank: a lineage not named for an author ranks last",
+        hex::decode(author)
+    ) {
         let mut route = b"identity-hello\0".to_vec();
         route.extend_from_slice(&author);
         if blake3::hash(&route).to_hex().as_str() == channel {

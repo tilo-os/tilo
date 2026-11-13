@@ -1,15 +1,10 @@
-//! Read-only FAT12/16/32 path lookup, just enough to find the byte ranges of
-//! the fixed-size placeholder files the exporter reserves in the staging ESP
-//! image (`/EFI/tilo-staging/handoff.json`, `/EFI/tilo-staging/record.json`).
+//! Read-only FAT12/16/32 path lookup, just enough to find the byte ranges of the fixed-size
+//! placeholder files the exporter reserves in the staging ESP image.
 //!
-//! The helper writes the handoff mount-free by overwriting those files'
-//! data clusters in place: JSON followed by ASCII-space padding to the
-//! file's unchanged size. No directory entry, FAT or allocation changes, so
-//! no filesystem driver, mount or drive letter is needed on either host, and
-//! the image stays verifiable: with the placeholder ranges masked back to
-//! spaces its digest equals the manifest digest.
+//! The helper writes the handoff mount-free by overwriting those files' data clusters in place, so no
+//! filesystem driver, mount or drive letter is needed on either host, and the image stays verifiable:
+//! with the placeholder ranges masked back to spaces its digest equals the manifest digest.
 
-/// A byte range `[offset, offset + len)` inside the filesystem image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub offset: u64,
@@ -32,10 +27,8 @@ struct Volume {
     fat_offset: u64,
     data_offset: u64,
     clusters: u32,
-    /// FAT12/16 fixed root directory.
     root_offset: u64,
     root_bytes: u64,
-    /// FAT32 root directory cluster.
     root_cluster: u32,
 }
 
@@ -156,7 +149,6 @@ impl Volume {
         }
     }
 
-    /// Clusters of a chain, bounded by the cluster count (no cycles).
     fn chain(&self, read: &mut ReadAt<'_>, first: u32) -> Result<Vec<u32>, String> {
         let mut out = vec![first];
         let mut at = first;
@@ -257,7 +249,6 @@ fn entries(dir: &[u8], fat32: bool) -> Vec<Entry> {
             String::from_utf16_lossy(&units)
         };
         long.clear();
-        // The high cluster word exists only on FAT32 (FAT12/16 reuse it).
         let hi = if fat32 {
             u16::from_le_bytes([raw[20], raw[21]])
         } else {
@@ -275,7 +266,6 @@ fn entries(dir: &[u8], fat32: bool) -> Vec<Entry> {
 }
 
 /// Byte ranges holding exactly the contents of the regular file at `path`
-/// (`/`-separated, matched case-insensitively against long or short names).
 pub fn file_ranges(
     read: &mut ReadAt<'_>,
     image_len: u64,
@@ -325,13 +315,12 @@ pub fn file_ranges(
     Ok(ranges)
 }
 
-/// Total bytes covered by `ranges`.
 pub fn ranges_len(ranges: &[Range]) -> u64 {
     ranges.iter().map(|r| r.len).sum()
 }
 
-/// Replace every byte of `chunk` (which starts at image offset `at`) that
-/// falls inside `ranges` with an ASCII space.
+/// Replaces every byte of `chunk`, which starts at image offset `at`, that falls inside `ranges` with
+/// an ASCII space.
 pub fn mask(chunk: &mut [u8], at: u64, ranges: &[Range]) {
     let end = at + chunk.len() as u64;
     for r in ranges {
@@ -348,9 +337,8 @@ pub mod tests {
     #[cfg(test)]
     use super::*;
 
-    /// A tiny FAT image builder for tests: 512-byte sectors (or `sector`
-    /// via [`Builder::with_sector`]), one sector per cluster, one FAT. `fat32` switches to a FAT32 layout with enough
-    /// clusters to be classified as FAT32.
+    /// A tiny FAT image builder for tests: 512-byte sectors, one sector per cluster and one FAT;
+    /// `fat32` switches to a FAT32 layout with enough clusters to be classified as FAT32.
     pub struct Builder {
         pub image: Vec<u8>,
         fat32: bool,
@@ -418,7 +406,6 @@ pub mod tests {
                 let at = self.fat_offset + n * 4;
                 self.image[at..at + 4].copy_from_slice(&value.to_le_bytes());
             } else {
-                // FAT12 (128 sectors → < 4085 clusters)
                 let at = self.fat_offset + n + n / 2;
                 let v = (value & 0x0fff) as u16;
                 let old = u16::from_le_bytes([self.image[at], self.image[at + 1]]);
@@ -435,8 +422,6 @@ pub mod tests {
             self.data_offset + (c as usize - 2) * self.sector
         }
 
-        /// Allocate `count` clusters as one chain, optionally leaving a hole
-        /// after the first to make it fragmented.
         fn alloc(&mut self, count: u32, fragment: bool) -> Vec<u32> {
             let mut out = Vec::new();
             for i in 0..count {
@@ -536,7 +521,6 @@ pub mod tests {
         }
     }
 
-    /// The layout the exporter must produce: `/EFI/tilo-staging/{handoff,record}.json`.
     pub fn staging_esp_image(fat32: bool, placeholder: usize) -> Vec<u8> {
         staging_esp_image_with_sector(fat32, placeholder, 512)
     }
@@ -622,10 +606,8 @@ pub mod tests {
         }
     }
 
-    /// FAT12/FAT32 placeholders, corrupt structures and masking.
     #[test]
     fn fat_placeholders_are_found_and_masked_precisely() {
-        // Phase `finds_fragmented_long_named_placeholders_on_fat12`.
         {
             let image = staging_esp_image(false, 1500);
             let ranges = file_ranges(
@@ -664,7 +646,6 @@ pub mod tests {
             assert_eq!(ranges_len(&loader), 700);
         }
 
-        // Phase `finds_placeholders_on_fat32`.
         {
             let image = staging_esp_image(true, 4096);
             let ranges = file_ranges(
@@ -676,7 +657,6 @@ pub mod tests {
             assert_eq!(ranges_len(&ranges), 4096);
         }
 
-        // Phase `missing_or_corrupt_structures_are_errors`.
         {
             let image = staging_esp_image(false, 1024);
             let len = image.len() as u64;
@@ -703,7 +683,6 @@ pub mod tests {
             assert!(file_ranges(&mut reader(&looped.image), l, "/LOOP.BIN").is_err());
         }
 
-        // Phase `masking_restores_spaces_only_inside_ranges`.
         {
             let ranges = [
                 Range { offset: 10, len: 5 },

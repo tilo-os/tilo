@@ -8,7 +8,7 @@ use super::*;
 #[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
-use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
 
 const NS: u64 = 1_000_000_000;
 
@@ -81,19 +81,19 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
     let workspace_id = workspace.id().to_string();
     let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());
-    let reads = |id: &str, subject: Subject, until: u64| {
+    let reads = |id: &str, subject: Grantee, until: u64| {
         Grant::new(
             id,
             subject,
             TreePath::workspace(&workspace_id),
             KindSet::READ,
             Answer::Allow,
-            Subject::person(owner.clone()),
+            Grantee::person(owner.clone()),
         )
         .with_lifetime(Lifetime::Until(until.saturating_mul(1000)))
     };
-    workspace.grant(reads("guest-reads", Subject::person("guest"), guest_until));
-    workspace.grant(reads("scribe-reads", Subject::agent("scribe"), agent_until));
+    workspace.grant(reads("guest-reads", Grantee::person("guest"), guest_until));
+    workspace.grant(reads("scribe-reads", Grantee::agent("scribe"), agent_until));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     (tree, workspace_id)

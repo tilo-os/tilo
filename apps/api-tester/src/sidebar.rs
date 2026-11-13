@@ -1,14 +1,7 @@
-//! The navigation column: saved requests by collection, and history.
-//!
-//! The requests are the toolkit's [`NavList`]: a section per collection,
-//! each request led by its method as a badge, so the names of a collection
-//! share one edge whatever the verb; history rows are led by their method
-//! too and carry the status as their meta and a status dot. The column holds
-//! no colour, size or padding of its own.
-//!
-//! The list lives as long as the window and is handed new sections as the
-//! workspace changes, so the person's place in it (keyboard focus, scroll)
-//! survives choosing a request.
+//! The navigation column: saved requests by collection, and history. The requests are the
+//! toolkit's [`NavList`], each led by its method as a badge; history rows carry the status
+//! as their meta. The list lives as long as the window, so the person's focus and scroll
+//! survive choosing a request.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,17 +18,14 @@ use crate::commands::{Cmd, FormMode, FormTarget, Sink};
 use crate::model::{Collection, HistoryEntry, Id, StatusClass};
 use crate::palette::{short_path, status_class};
 
-/// What the column shows.
 pub(crate) struct SidebarView<'a> {
     pub(crate) collections: &'a [Collection],
     pub(crate) history: &'a [HistoryEntry],
     pub(crate) selected: Option<(usize, usize)>,
 }
 
-/// The collection header's action.
 const RENAME: &str = "rename";
 
-/// The "New collection" action in the sidebar's header.
 pub(crate) fn new_collection(sink: &Sink) -> Element {
     let sink = sink.clone();
     Box::new(
@@ -55,8 +45,7 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
 }
 
 pub(crate) fn frame(environment: Element, lists: Element) -> Element {
-    // The list insets its own rows; the picker takes the sidebar's gutter,
-    // above it too, where the window bar ends.
+    // The list insets its own rows; the picker takes the sidebar's gutter.
     let gutter = Spacing::BASE.s3;
     Box::new(
         Column::new()
@@ -81,24 +70,19 @@ fn history_id(hi: usize) -> String {
     format!("history:{hi}")
 }
 
-/// A collection's section, by the collection's id: what the header's
-/// rename runs with.
 fn collection_section_id(collection: &Id) -> String {
     format!("collection:{collection}")
 }
 
-/// Parse `request:{ci}:{ri}`.
 pub(crate) fn parse_request(id: &str) -> Option<(usize, usize)> {
     let (ci, ri) = id.strip_prefix("request:")?.split_once(':')?;
     Some((ci.parse().ok()?, ri.parse().ok()?))
 }
 
-/// Parse `history:{hi}`.
 pub(crate) fn parse_history(id: &str) -> Option<usize> {
     id.strip_prefix("history:")?.parse().ok()
 }
 
-/// The sections the list shows.
 fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
     let mut sections: Vec<NavSection> = view
         .collections
@@ -151,18 +135,14 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
     sections
 }
 
-/// The sections and the chosen row the list takes at its next
-/// synchronization.
 type Pending = Rc<RefCell<Option<(Vec<NavSection>, Option<String>)>>>;
 
-/// What the app holds to update the list.
 #[derive(Clone)]
 pub(crate) struct NavHandle {
     pending: Pending,
 }
 
 impl NavHandle {
-    /// Show `view` at the list's next synchronization.
     pub(crate) fn set(&self, view: &SidebarView<'_>) {
         *self.pending.borrow_mut() = Some((
             sections(view),
@@ -171,13 +151,11 @@ impl NavHandle {
     }
 }
 
-/// The collections and the history in one navigation list.
 pub(crate) struct RequestsNav {
     list: NavList,
     pending: Pending,
 }
 
-/// The list, and the handle the app updates it through.
 pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHandle) {
     let select_sink = sink.clone();
     let menu_sink = sink.clone();
@@ -193,10 +171,9 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
             };
             select_sink.borrow_mut().push(cmd);
         })
-        // One More on every row, opening that row's own actions: a saved
-        // request is renamed or deleted, a sent one is replayed, kept as a
-        // request, or forgotten (`APP-api-tester-04`). The app decides what a
-        // row offers, so a history row is never offered a rename.
+        // One More on every row, opening that row's own actions: a saved request is
+        // renamed or deleted, a sent one is replayed, kept as a request, or forgotten. The
+        // app decides what a row offers, so a history row is never offered a rename.
         .item_menu(NavAction::new("more", Icon::MoreHorizontal, "More"))
         .on_context_menu(move |id, lift, at| {
             menu_sink.borrow_mut().push(Cmd::RowMenu {

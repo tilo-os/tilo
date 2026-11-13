@@ -1,11 +1,5 @@
-//! The cadence of looping indicators: a spinner, a tab's busy arc, a
-//! sweeping bar.
-//!
-//! An indicator only says "still working"; it does not need the display's
-//! full refresh to say it. It moves in steps of [`INDICATOR_STEP`] and
-//! repaints (damages its own bounds, presents) only when its step changes,
-//! so one busy mark on screen costs a few frames a second instead of every
-//! refresh. Under reduced motion it stands still (`EffectiveMotion::loops`).
+//! The cadence of looping indicators: a spinner, a tab's busy arc, a sweeping bar. An indicator only
+//! says "still working"; it does not need the display's full refresh to say it.
 use crate::time::{Duration, Instant};
 
 /// One step of a looping indicator: 30 a second.
@@ -18,15 +12,15 @@ pub fn indicator_step(epoch: Instant, now: Instant) -> u64 {
     u64::try_from(elapsed / INDICATOR_STEP.as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// Time since `epoch` at the start of the step `now` falls in: what an
-/// indicator draws, so its pose changes once per step.
+/// Time since `epoch` at the start of the step `now` falls in: what an indicator draws, so its pose
+/// changes once per step.
 #[must_use]
 pub fn indicator_elapsed(epoch: Instant, now: Instant) -> Duration {
     let step = u32::try_from(indicator_step(epoch, now)).unwrap_or(u32::MAX);
     INDICATOR_STEP.saturating_mul(step)
 }
 
-/// Where in a loop `period` long an indicator stands at `now`, `0..1`,
+/// Where in a loop `period` long an indicator is at `now`, `0..1`,
 /// taken at the start of the step `now` falls in.
 #[must_use]
 pub fn indicator_phase(epoch: Instant, now: Instant, period: Duration) -> f64 {

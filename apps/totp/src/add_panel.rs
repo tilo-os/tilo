@@ -1,22 +1,6 @@
-//! The "Add account" sheet — the app's second screen.
-//!
-//! The flow follows how people actually add a 2FA account, easiest path first:
-//!
-//!  1. **Scan a QR image** — decode the QR out of a screenshot or photo, offline,
-//!     via [`crate::qr`]. Choosing the file goes through the host file chooser
-//!     (the XDG portal), never an app-drawn picker.
-//!  2. **Paste a setup link** — an `otpauth://` link fills every field.
-//!
-//! Only when neither fits does the person type the details: issuer, account
-//! name and secret. The cryptographic parameters (algorithm, digits, period)
-//! sit behind **Advanced options**.
-//!
-//! The sheet is a [`ModalDialog`] around a form built from the toolkit's
-//! sections, fields, list rows and segmented controls. The form's values live
-//! in process-local state, so it can be rebuilt (a section opens, an error
-//! shows) without losing what was typed, and its controls report what they
-//! asked for through a queue the app drains with [`AddAccountPanel::pump`].
-//! The outcome surfaces as an [`AddPanelEvent`] the app takes.
+//! The add-account sheet: scan a QR image, paste an `otpauth://` link, or type
+//! the details, with the cryptographic parameters behind Advanced options. The
+//! form's values live in process-local state, so rebuilding a section keeps them.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -45,35 +29,26 @@ use ui::widget::{
 use crate::model::{self, Account, AccountId, Algorithm};
 use ui::widget::DrawChild;
 
-/// Outcome the app acts on.
 #[derive(Clone, Debug)]
 pub enum AddPanelEvent {
     Cancel,
     Save(Account),
-    /// Replace an existing account's local secret and shared metadata. The
-    /// stable id is retained, so search links, collaboration references and
-    /// history all continue to identify the same account.
+    /// Replace an account's local secret and shared metadata under the same id.
     Edit(Account),
-    /// Attach a newly-entered local secret to an already-shared account id.
-    /// This does not create a CRDT/action-history mutation.
+    /// Attach a local secret to an already-shared account; no document change.
     Provision(Account),
-    /// The user asked to import a QR code from an image file. The app routes
-    /// this to the **host** file chooser (the XDG Desktop Portal — the app
-    /// never draws its own picker), then runs the decode and calls
-    /// [`AddAccountPanel::apply_uri`] with the result.
+    /// Import a QR code from an image: the app runs the host's file chooser, then
+    /// `apply_uri`.
     PickImageForQr,
 }
 
-/// What the sheet is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
     Add,
     Edit,
-    /// Install the local key of an account that is already shared.
     Provision,
 }
 
-/// Which text field has, or should take, the caret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldId {
     Uri,
@@ -84,7 +59,6 @@ enum FieldId {
 }
 
 impl FieldId {
-    /// The field's stable identity in the window.
     fn test_id(self) -> &'static str {
         match self {
             Self::Uri => "totp-link",
@@ -96,7 +70,6 @@ impl FieldId {
     }
 }
 
-/// What one of the sheet's controls asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Msg {
     PickImage,
@@ -114,7 +87,6 @@ struct Problem {
     message: String,
 }
 
-/// The sheet's state, shared with the callbacks of the controls it builds.
 struct Sheet {
     flow: Flow,
     uri_expanded: bool,
@@ -140,8 +112,8 @@ impl Sheet {
 
 type Shared = Rc<RefCell<Sheet>>;
 
-/// The values the form edits. Process-local state: the form's inputs bind to
-/// it, so rebuilding the form keeps what was typed.
+/// Process-local state the form's inputs bind to, so rebuilding keeps what was
+/// typed.
 #[derive(Clone)]
 struct Values {
     uri: LocalState<String>,
@@ -150,21 +122,18 @@ struct Values {
     secret: LocalState<String>,
     period: LocalState<String>,
     algorithm: LocalState<usize>,
-    /// The code's digit count itself, not a segment index: an account or a
-    /// setup link may carry a count the form does not offer by default.
+    /// The digit count itself, not a segment index: a link may carry a count the
+    /// form does not offer.
     digits: LocalState<u8>,
-    /// The digit count of the account or link last put in the form, which
-    /// stays on offer after another count is chosen.
+    /// The count of the account or link last loaded; it stays on offer.
     loaded_digits: LocalState<u8>,
 }
 
 /// The digit counts the form offers, in selector order.
 const DIGITS: [u8; 2] = [6, 8];
 
-/// The digit counts the form offers: the usual ones, and in its place among
-/// them each of `extra` that is another count an authenticator can compute,
-/// so opening an account or reading a setup link never turns its 7-digit
-/// codes into 6-digit ones.
+/// The usual counts, each of `extra` in its place, so an account never turns its
+/// 7-digit codes into 6-digit ones.
 fn digit_choices(extra: &[u8]) -> Vec<u8> {
     let mut counts = DIGITS.to_vec();
     for count in extra {
@@ -175,7 +144,6 @@ fn digit_choices(extra: &[u8]) -> Vec<u8> {
     counts.sort_unstable();
     counts
 }
-/// The period a new account starts with, in seconds.
 const DEFAULT_PERIOD: &str = "30";
 
 impl Values {
@@ -203,7 +171,7 @@ impl Values {
         self.loaded_digits.set(DIGITS[0]);
     }
 
-    /// Clear the key from memory, not merely from the field.
+    /// Zero the key in memory, not just in the field.
     fn wipe_secret(&self) {
         self.secret.update(Zeroize::zeroize);
         self.uri.update(Zeroize::zeroize);
@@ -218,14 +186,9 @@ fn t(key: &str) -> String {
     crate::i18n::t(key)
 }
 
-/// The sheet's form: a section tree rebuilt from [`Sheet`] and [`Values`]
-/// whenever its shape changes, laid out and drawn by the toolkit.
-///
-/// A [`ModalDialog`] draws and lays its content out apart from the window's
-/// own tree, so the node a field reports when a click asks for the caret is not
-/// one the window knows. The form keeps the pointer's position and answers
-/// which field is under it ([`Self::field_under`]); the app turns that into the
-/// window's own node for the field ([`Self::host_field_nodes`]).
+/// The sheet's form, rebuilt from [`Sheet`] and [`Values`] when its shape changes.
+/// A [`ModalDialog`] lays its content out apart from the window, so a field's node
+/// is not one the window knows: the app answers focus requests for it.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent rebuild, relayout and scroll flags, not one state machine"
@@ -236,29 +199,19 @@ struct AddForm {
     tree: Scrollable,
     cursor: Point,
     rect: Rect,
-    /// The theme the form was last laid out under: what it is built from.
     theme: Option<Theme>,
-    /// What of that theme the form's building reads.
     theme_key: Option<(u32, u32, u32)>,
     /// The form is taller than the window allows, so it shows a scroll bar.
     overflows: bool,
-    /// Scroll to the end the next time the form is built: a section that just
-    /// opened is there.
+    /// Scroll to the end on the next build, where a section that just opened is.
     to_end: bool,
-    /// The scroll position, kept across rebuilds.
     offset: Rc<Cell<(f32, f32)>>,
-    /// The window's height, once the sheet has been drawn in it; it bounds how
-    /// tall the form may grow before it scrolls.
+    /// The window's height, once the sheet has been drawn in it.
     viewport_h: f32,
-    /// The tree must be built again the next time the window lays it out.
     stale: bool,
-    /// The window must lay the form out again.
     structure_dirty: bool,
-    /// The sheet must measure the form again.
     relayout: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -283,24 +236,19 @@ impl AddForm {
         }
     }
 
-    /// Build the tree again from the current state the next time the window
-    /// lays the form out.
     fn rebuild(&mut self) {
         self.stale = true;
         self.structure_dirty = true;
     }
 
-    /// Whether the sheet must measure the form again, once.
     fn take_relayout(&mut self) -> bool {
         std::mem::take(&mut self.relayout)
     }
 
-    /// Scroll to the end of the form, where a section that just opened is.
     fn scroll_to_end(&mut self) {
         self.to_end = true;
     }
 
-    /// Visit `widget` and every widget under it, depth first.
     fn visit(widget: &mut dyn Widget, f: &mut dyn FnMut(&mut dyn Widget)) {
         f(widget);
         for child in widget.children_mut() {
@@ -308,8 +256,8 @@ impl AddForm {
         }
     }
 
-    /// How many widgets `kind` selects, which one has focus, and the last one
-    /// whose rect contains `p`, all in tree order.
+    /// How many widgets `kind` selects, which one has focus, and the last one whose
+    /// rect contains `p`.
     fn survey(
         &mut self,
         kind: fn(&dyn Widget) -> bool,
@@ -335,8 +283,7 @@ impl AddForm {
         self.survey(is_text_field, p).2
     }
 
-    /// The window's own node of each text field, in tree order, read from the
-    /// node map the window just built the sheet into.
+    /// The window's own nodes for each text field, in tree order.
     fn host_field_nodes(&mut self, node_map: &HashMap<NodeId, *mut dyn Widget>) -> Vec<NodeId> {
         let mut fields: Vec<*const ()> = Vec::new();
         Self::visit(&mut self.tree, &mut |widget| {
@@ -355,7 +302,6 @@ impl AddForm {
             .collect()
     }
 
-    /// The layout node of the scroller, the one child of the form's own.
     fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> NodeId {
         taffy
             .children(node)
@@ -365,8 +311,8 @@ impl AddForm {
     }
 
     fn forward(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        // A focus request from a field names a node of the sheet's own layout,
-        // which the window does not know: the app answers it instead.
+        // A focus request names a node of the sheet's own layout, which the window
+        // does not know: the app answers it instead.
         let mut requested = None;
         let node = Self::child_node(ctx.taffy, ctx.node_id);
         let path = ctx.path;
@@ -381,15 +327,13 @@ impl AddForm {
 impl Widget for AddForm {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.dirty = true;
-        // The tree is replaced here, where the window expects a widget to
-        // change its structure (and then asks it whether it did), never while
-        // the window or the sheet is laying it out.
+        // The tree is replaced here, where the window expects a widget to change its
+        // structure, never while anything is laying it out.
         if self.stale
             && let Some(theme) = self.theme.clone()
         {
             self.stale = false;
-            // The window's height is known once the sheet has been drawn; only
-            // then is there an end to scroll to.
+            // The window's height is known only once the sheet has been drawn.
             if self.to_end && self.viewport_h > 0.0 {
                 self.offset.set((0.0, f32::MAX));
                 self.to_end = false;
@@ -417,8 +361,7 @@ impl Widget for AddForm {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The tree is built once the theme is known; until then (and whenever
-        // the theme changes) it waits for the next sync to be built.
+        // The tree is built once the theme is known.
         let key = (
             theme.tokens.spacing.rhythm.group.to_bits(),
             theme.text_scale.to_bits(),
@@ -429,8 +372,8 @@ impl Widget for AddForm {
             self.theme = Some(theme.clone());
             self.stale = true;
         }
-        // The form has a node of its own over the scroller's, so that the
-        // window's focus order pairs each widget with its node.
+        // The form has a node of its own over the scroller's, so the window's focus
+        // order pairs each widget with its node.
         let child = self.tree.build_layout(taffy, theme, node_map);
         let style = Style {
             display: taffy::Display::Flex,
@@ -449,8 +392,8 @@ impl Widget for AddForm {
         let at = self.rect.origin();
         let child = Self::child_node(taffy, node);
         self.tree.apply_layout(taffy, child, at);
-        // A scroll bar takes room from the fields, so it shows only when the
-        // form is taller than the window allows.
+        // The scroll bar takes room from the fields, so it shows only when the form
+        // is taller than the window allows.
         let overflows = self.tree.vertical_overflows();
         if overflows != self.overflows {
             self.overflows = overflows;
@@ -509,12 +452,10 @@ impl Widget for AddForm {
     }
 }
 
-/// Whether `widget` takes typed text (and so the caret).
 fn is_text_field(widget: &dyn Widget) -> bool {
     widget.ime_content().is_some()
 }
 
-/// One labelled text field bound to `state`.
 fn text_field(
     sheet: &Shared,
     id: FieldId,
@@ -524,14 +465,12 @@ fn text_field(
     placeholder: &str,
     on_change: Option<Msg>,
 ) -> Element {
-    // A stable id lets the window keep the caret in the field when the form is
-    // built again (a section opened, a problem shown).
+    // A stable id keeps the caret in the field when the form is built again.
     let mut input = TextInput::from_state(state)
         .with_id(id.test_id())
         .with_kind(kind)
         .with_placeholder(placeholder);
-    // The secret key grants every future code, and the desktop may be shared
-    // or watched: it stays masked until someone asks to see it.
+    // The key grants every future code, so it stays masked until asked for.
     if id == FieldId::Secret {
         input = input.with_secret(true);
     }
@@ -549,9 +488,6 @@ fn text_field(
     Box::new(field)
 }
 
-/// A labelled segmented choice, as the label and the control that follow it in
-/// a row: the control's id, the segments' labels, which one is chosen and what
-/// choosing one does to the form (published as the control's view action).
 fn choice(
     id: &str,
     label: &str,
@@ -566,13 +502,11 @@ fn choice(
     ]
 }
 
-/// What pressing a control of the sheet asks for: a callback that queues it.
 fn queued(sheet: &Shared, msg: Msg) -> impl FnMut() + 'static {
     let sheet = Rc::clone(sheet);
     move || sheet.borrow_mut().queue.push_back(msg)
 }
 
-/// The ways to import an account: scan an image, paste a link.
 fn import_section(sheet: &Shared, values: &Values, uri_expanded: bool) -> Vec<Element> {
     let mut items: Vec<Element> = vec![Box::new(Section::new(vec![
         Box::new(
@@ -643,7 +577,6 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
     }
 }
 
-/// The cryptographic parameters, behind a disclosure in the group's header.
 fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) -> Section {
     let mut toggle = queued(sheet, Msg::ToggleAdvanced);
     let mut items: Vec<Element> = Vec::new();
@@ -663,8 +596,7 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
             .position(|count| values.digits.with(|current| current == count))
             .unwrap_or(0);
         let digits = values.digits.clone();
-        // The two segmented choices share a line, so the form stays within a
-        // window of ordinary height with the section open.
+        // The two choices share a line, so the form stays within an ordinary window.
         let mut row = Row::new().with_gap(theme.tokens.spacing.s3);
         for part in choice(
             "totp-add-algorithm",
@@ -709,9 +641,8 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
     section.on_expand(move |_| toggle())
 }
 
-/// How tall the form may be in a window `viewport_h` tall before it scrolls:
-/// what is left of the window once the sheet's padding, its title and its
-/// footer are taken out. Unbounded until the window is known.
+/// What is left of the window once the sheet's padding, title and footer are out.
+/// Unbounded until the window is known.
 fn body_cap(theme: &Theme, viewport_h: f32) -> f32 {
     if viewport_h <= 0.0 {
         return f32::from(u16::MAX);
@@ -726,18 +657,13 @@ fn body_cap(theme: &Theme, viewport_h: f32) -> f32 {
     (viewport_h - chrome).max(footer)
 }
 
-/// How the form is framed in its window.
 struct Frame<'a> {
-    /// The tallest the form may be before it scrolls.
     cap: f32,
-    /// Whether the scroll bar shows.
     bar: bool,
     offset: &'a Rc<Cell<(f32, f32)>>,
     cursor: Point,
 }
 
-/// The form for the sheet's current state: its groups a group-gap apart, in a
-/// scroller that keeps the sheet inside the window.
 fn build(sheet: &Shared, values: &Values, theme: &Theme, frame: &Frame<'_>) -> Scrollable {
     crate::i18n::ensure();
     let (flow, uri_expanded, advanced_open) = {
@@ -773,7 +699,6 @@ fn build(sheet: &Shared, values: &Values, theme: &Theme, frame: &Frame<'_>) -> S
         .with_child(Box::new(groups))
 }
 
-/// Which of the sheet's fields a validation message is about.
 fn problem_field(message: &str) -> FieldId {
     if message.contains("secret key") || message.contains("base32") {
         FieldId::Secret
@@ -782,23 +707,18 @@ fn problem_field(message: &str) -> FieldId {
     }
 }
 
-/// The add / edit / set-up sheet and the account it produces.
 pub struct AddAccountPanel {
     sheet: Shared,
     values: Values,
-    /// Boxed so the sheet's widgets stay where the window's layout map found
-    /// them whatever the panel does with it: a map entry is a raw address.
+    /// Boxed so the window's layout map keeps valid addresses into it.
     dialog: Option<Box<ModalDialog<AddForm>>>,
-    /// Sheets that closed or were replaced: the window's layout map still
-    /// points at their widgets until it is built again, so they are dropped
-    /// the next time the app syncs ([`Self::reap`]), not while an event is
-    /// being handled.
+    /// Sheets that closed or were replaced, kept until [`Self::reap`]: the layout
+    /// map still points at their widgets.
     retired: Vec<Box<ModalDialog<AddForm>>>,
-    /// The stable account identity being edited, if this panel is an edit
-    /// rather than a new-account flow. The secret remains only in this local
-    /// form and the encrypted vault; it is never copied to the CRDT.
+    /// The account this panel edits; its secret stays in this form and this device's
+    /// vault.
     editing: Option<AccountId>,
-    /// Immutable identity guard for local setup of a shared account.
+    /// The shared account this panel sets a local secret up for.
     provisioning: Option<Account>,
     event: Option<AddPanelEvent>,
 }
@@ -826,7 +746,6 @@ impl AddAccountPanel {
         self.dialog.as_ref().is_some_and(|dialog| dialog.is_open())
     }
 
-    /// The open sheet, for the root to mount in its tree.
     pub fn widget(&self) -> Option<&dyn Widget> {
         self.dialog.as_deref().map(|dialog| dialog as &dyn Widget)
     }
@@ -837,20 +756,16 @@ impl AddAccountPanel {
             .map(|dialog| dialog as &mut dyn Widget)
     }
 
-    /// Which text field of the open sheet is under `p`, counting in tree order.
     pub fn field_under(&mut self, p: Point) -> Option<usize> {
         self.dialog.as_mut()?.content_mut().field_under(p)
     }
 
-    /// The window's own nodes for the open sheet's text fields, in tree order,
-    /// from the node map the window just built the sheet into.
     pub fn host_field_nodes(&mut self, node_map: &HashMap<NodeId, *mut dyn Widget>) -> Vec<NodeId> {
         self.dialog.as_mut().map_or_else(Vec::new, |dialog| {
             dialog.content_mut().host_field_nodes(node_map)
         })
     }
 
-    /// Whether the open sheet changed shape since the window last laid it out.
     pub fn take_structure_dirty(&mut self) -> bool {
         self.dialog
             .as_mut()
@@ -867,7 +782,6 @@ impl AddAccountPanel {
         }
     }
 
-    /// Show the sheet for the current flow and values.
     fn present(&mut self) {
         let flow = self.flow();
         {
@@ -898,8 +812,7 @@ impl AddAccountPanel {
         ));
     }
 
-    /// Open the sheet, resetting every field to defaults and collapsing the
-    /// disclosures so each visit starts from the calm default state.
+    /// Open the sheet with every field at its default.
     pub fn open(&mut self) {
         self.editing = None;
         self.provisioning = None;
@@ -919,7 +832,6 @@ impl AddAccountPanel {
         self.retire();
     }
 
-    /// Take the open sheet out of the tree, keeping it alive until [`Self::reap`].
     fn retire(&mut self) {
         if let Some(mut dialog) = self.dialog.take() {
             dialog.set_open(false);
@@ -927,23 +839,21 @@ impl AddAccountPanel {
         }
     }
 
-    /// Drop the sheets that left the tree. Returns whether any did, so the
-    /// window lays its tree out again.
+    /// Drop the sheets that left the tree; `true` when any did.
     pub fn reap(&mut self) -> bool {
         let reaped = !self.retired.is_empty();
         self.retired.clear();
         reaped
     }
 
-    /// Open with the Advanced-options section already expanded.
     pub fn open_with_advanced(&mut self) {
         self.open();
         self.sheet.borrow_mut().advanced_open = true;
         self.rebuild();
     }
 
-    /// Open the same calm form for an existing account. This is intentionally
-    /// local: only this device's encrypted vault supplies the secret field.
+    /// Open the form for an existing account; only this device's vault supplies the
+    /// secret.
     pub fn open_for_edit(&mut self, account: &Account) {
         self.open();
         self.editing = Some(account.id);
@@ -958,8 +868,7 @@ impl AddAccountPanel {
         self.present();
     }
 
-    /// Provision the secret for this exact existing resource. The form starts
-    /// with the shared identity, then accepts only local credential material.
+    /// Open the form to set a local secret up for an existing shared account.
     pub fn open_for_provision(&mut self, account: &Account) {
         self.open();
         self.editing = Some(account.id);
@@ -969,7 +878,6 @@ impl AddAccountPanel {
         self.present();
     }
 
-    /// Put `account`'s fields in the form.
     fn load(&self, account: &Account, with_secret: bool) {
         self.values.issuer.set(account.issuer.clone());
         self.values.label.set(account.label.clone());
@@ -986,25 +894,21 @@ impl AddAccountPanel {
         self.event.take()
     }
 
-    /// Build the form again after its shape or an error changed.
     fn rebuild(&mut self) {
         if let Some(dialog) = &mut self.dialog {
             dialog.content_mut().rebuild();
-            // The sheet's size follows its content: ask for a fresh layout.
             dialog.set_max_width(ui::widget::modal_dialog::MODAL_MAX_WIDTH);
         }
     }
 
-    /// Act on what the sheet's controls asked for since the last call. The
-    /// app calls this after every event it routes to the sheet and each frame.
+    /// Act on what the sheet's controls asked for; the app calls this after every
+    /// event and each frame.
     pub fn pump(&mut self) {
         loop {
             let msg = self.sheet.borrow_mut().queue.pop_front();
             let Some(msg) = msg else { break };
             self.apply(msg);
         }
-        // The form measured against a new window height: the sheet's size
-        // follows.
         if let Some(dialog) = &mut self.dialog
             && dialog.content_mut().take_relayout()
         {
@@ -1012,9 +916,7 @@ impl AddAccountPanel {
         }
     }
 
-    /// Scroll the form with the wheel: a modal dialog does not pass wheel
-    /// events to its content.
-    /// Budget the form against the window, before the modal installs its own body viewport.
+    /// Budget the form against a new window height.
     pub fn set_window_height(&mut self, height: f32) {
         if let Some(dialog) = &mut self.dialog {
             let form = dialog.content_mut();
@@ -1065,8 +967,6 @@ impl AddAccountPanel {
         }
     }
 
-    /// Fill the form from a setup link as soon as the field holds a complete
-    /// one; a link that does not parse says why.
     fn read_uri_field(&mut self) {
         let uri = Values::text(&self.values.uri);
         let trimmed = uri.trim();
@@ -1099,8 +999,8 @@ impl AddAccountPanel {
         }
     }
 
-    /// Build an account from the current field values, or the problem that
-    /// stops it being saved.
+    /// Build an account from the field values, or the problem that stops it being
+    /// saved.
     fn build_account(&self) -> Result<Account, Problem> {
         let problem = |field, message: &str| Problem {
             field,
@@ -1160,9 +1060,8 @@ impl AddAccountPanel {
         })
     }
 
-    /// Apply a decoded `otpauth://` URI (from paste or QR image import) into
-    /// the fields. On success the form shows the filled values so the person
-    /// can review them before saving; on failure the reason shows inline.
+    /// Fill the form from a decoded `otpauth://` URI, or show inline why it does not
+    /// parse.
     pub fn apply_uri(&mut self, uri: &str) {
         match model::parse_otpauth_uri(uri, Uuid::new_v4()) {
             Ok(acc) => {
@@ -1174,8 +1073,7 @@ impl AddAccountPanel {
                     sheet.uri_expanded = false;
                     sheet.problem = None;
                     sheet.focus = Some(FieldId::Issuer);
-                    // Surface non-default crypto params so a reviewing person
-                    // can see what the code carried.
+                    // Show non-default parameters so a person sees what the link carried.
                     if acc.algorithm != Algorithm::Sha1
                         || acc.digits != DIGITS[0]
                         || acc.period != 30
@@ -1223,7 +1121,6 @@ impl AddAccountPanel {
         }
     }
 
-    /// Test hook: current (issuer, label, secret) field values.
     #[cfg(test)]
     pub(crate) fn field_snapshot(&self) -> (String, String, String) {
         (
@@ -1233,8 +1130,6 @@ impl AddAccountPanel {
         )
     }
 
-    /// Test hook: how many text fields the form has and which one has the
-    /// caret.
     #[cfg(test)]
     pub(crate) fn caret(&mut self) -> Option<(usize, Option<usize>)> {
         let form = self.dialog.as_mut()?.content_mut();
@@ -1242,7 +1137,6 @@ impl AddAccountPanel {
         Some((count, focused))
     }
 
-    /// Test hook: the validation message under a field, if any.
     #[cfg(test)]
     pub(crate) fn problem(&self) -> Option<String> {
         self.sheet
@@ -1721,9 +1615,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// A setup link or an account may carry a digit count the form does not
-    /// offer by default. Reading it, choosing another and coming back, and
-    /// editing such an account all keep the count, so its codes stay right.
     #[test]
     fn a_digit_count_beyond_six_and_eight_survives_the_form() {
         let mut app = opened((1280, 900));

@@ -22,7 +22,7 @@ pub struct Channel {
     pub name: String,
 }
 
-#[resource(kind = "tube.channel", label = "Channel")]
+#[resource(kind = "tube.channel", catalogue = "tests/locales")]
 impl Channel {}
 
 /// A video of the same client.
@@ -33,7 +33,7 @@ pub struct Video {
     pub title: String,
 }
 
-#[resource(kind = "tube.video", label = "Video")]
+#[resource(kind = "tube.video", catalogue = "tests/locales")]
 impl Video {}
 
 /// The open a catalogue row offers, so search has a row that opens one.

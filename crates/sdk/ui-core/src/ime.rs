@@ -1,6 +1,6 @@
 //! Focused widget IME intent shared by native windows and browser input bridges.
-/// Keyed, ephemeral equality check for a field's text and selection. This is
-/// invalidation metadata, never a persisted text hash or insertion authority.
+/// Keyed, ephemeral equality check for a field's text and selection. This is invalidation metadata,
+/// never a persisted text hash or insertion authority.
 pub fn edit_fingerprint(text: &str, anchor: usize, focus: usize, key: &[u8; 32]) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_keyed(key);
     hash.update(&anchor.to_le_bytes());
@@ -18,8 +18,8 @@ pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8;
     *hash.finalize().as_bytes()
 }
 
-/// What a field holds, for an input method to pick its layout: an email
-/// field gets `@`, a phone field the dial pad, a PIN the digit pad.
+/// What a field holds, for an input method to pick its layout: an email field gets `@`, a phone field
+/// the dial pad, a PIN the digit pad.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum InputPurpose {
     /// Free text.
@@ -58,8 +58,7 @@ pub enum Capitalization {
     Words,
 }
 
-/// How an input method may help in a field. Each is a request on top of the
-/// input method's own default for the purpose; none set leaves that default.
+/// How an input method may help in a field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct InputHints {
     /// Suggest completions of the word being typed.
@@ -75,9 +74,8 @@ pub struct InputHints {
     pub hidden: bool,
     /// Learn nothing from what is typed and suggest nothing from it.
     pub sensitive: bool,
-    /// The field brings its own on-screen keys, such as a calculator's
-    /// keypad: a soft keyboard would only cover them, so none is raised.
-    /// Hardware keys and the input method still type into it.
+    /// The field brings its own on-screen keys, such as a calculator's keypad: a soft keyboard would
+    /// only cover them, so none is raised.
     pub own_keys: bool,
 }
 
@@ -88,8 +86,7 @@ pub struct InputContent {
     pub hints: InputHints,
 }
 
-/// Wire values of `zwp_text_input_v3`'s `content_purpose` and
-/// `content_hint`.
+/// Wire values of `zwp_text_input_v3`'s `content_purpose` and `content_hint`.
 mod wire {
     pub const NORMAL: u32 = 0;
     pub const DIGITS: u32 = 2;
@@ -138,8 +135,7 @@ impl InputContent {
         }
     }
 
-    /// The same content, hidden and sensitive: nothing typed is shown,
-    /// learned or suggested.
+    /// The same content, hidden and sensitive: nothing typed is shown, learned or suggested.
     #[must_use]
     pub const fn secret(mut self) -> Self {
         self.hints.hidden = true;
@@ -148,7 +144,6 @@ impl InputContent {
     }
 
     /// Whether the input method must neither show nor learn what is typed.
-    /// The same content, typed from the field's own on-screen keys.
     #[must_use]
     pub const fn own_keys(mut self) -> Self {
         self.hints.own_keys = true;
@@ -160,10 +155,7 @@ impl InputContent {
         self.hints.hidden || self.hints.sensitive || matches!(self.purpose, InputPurpose::Password)
     }
 
-    /// The `zwp_text_input_v3` content hint bits and purpose for this
-    /// content. The protocol has no search, decimal or one-time-code
-    /// purpose; those ask for the nearest layout (free text, number,
-    /// digits).
+    /// The `zwp_text_input_v3` content hint bits and purpose for this content.
     #[must_use]
     pub const fn wayland(self) -> (u32, u32) {
         let purpose = match self.purpose {
@@ -208,8 +200,7 @@ impl InputContent {
         (hint, purpose)
     }
 
-    /// The nearest of winit's own purposes, for a platform that takes no
-    /// more than that.
+    /// The nearest of winit's own purposes, for a platform that takes no more than that.
     #[must_use]
     pub const fn winit_purpose(self) -> winit::window::ImePurpose {
         if self.is_secret() {
@@ -222,9 +213,8 @@ impl InputContent {
     }
 }
 
-/// What a browser's text control is told about a field: the attributes a
-/// web runner sets on the editor it focuses for the field. An empty
-/// `enterkeyhint` leaves the browser's own.
+/// What a browser's text control is told about a field: the attributes a web runner sets on the editor
+/// it focuses for the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HtmlInputHints {
     pub inputmode: &'static str,
@@ -235,9 +225,9 @@ pub struct HtmlInputHints {
 }
 
 impl InputContent {
-    /// The browser attributes for this content. Free text keeps what a web
-    /// runner's editor always had: no capitalisation, autofill or
-    /// spellchecking of the browser's own, which the toolkit does itself.
+    /// The browser attributes for this content. Free text keeps what a web runner's editor always had:
+    /// no capitalisation, autofill or spellchecking of the browser's own, which the toolkit does
+    /// itself.
     #[must_use]
     pub const fn html(self) -> HtmlInputHints {
         let inputmode = match self.purpose {
@@ -289,8 +279,8 @@ impl InputContent {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImeWindowState {
-    /// What the field holds and how the input method may help in it,
-    /// including whether it takes line feeds.
+    /// What the field holds and how the input method may help in it, including whether it takes line
+    /// feeds.
     pub content: InputContent,
     pub x: u32,
     pub y: u32,
@@ -336,11 +326,8 @@ impl ImeWindowState {
     }
 }
 
-/// What an input method may read of the focused field: its text around the
-/// selection, for suggestions, autocorrection and word deletion.
-///
-/// Read from the field's accessibility node, so a field that hides its value
-/// from assistive technology (a password) hides it from the keyboard too.
+/// What an input method may read of the focused field: its text around the selection, for suggestions,
+/// autocorrection and word deletion.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImeSurroundingText {
     pub text: String,
@@ -362,8 +349,7 @@ impl ImeSurroundingText {
         Self::around(&node.value?, selection.anchor, selection.focus)
     }
 
-    /// The selection within `text`, with up to [`Self::CONTEXT`] bytes on
-    /// each side. `None` when an offset is not a character boundary.
+    /// The selection within `text`, with up to [`Self::CONTEXT`] bytes on each side.
     pub fn around(text: &str, anchor: usize, focus: usize) -> Option<Self> {
         if !text.is_char_boundary(anchor) || !text.is_char_boundary(focus) {
             return None;
@@ -483,7 +469,6 @@ mod tests {
             html(InputContent::PASSWORD),
             attrs("text", "", "off", "off", false)
         );
-        // A field with its own keys asks for no virtual keyboard.
         assert_eq!(
             html(of(InputPurpose::Decimal).own_keys()),
             attrs("none", "", "off", "off", false)

@@ -64,7 +64,6 @@ fn answered<T>(outcome: T) -> mpsc::Receiver<T> {
     rx
 }
 
-/// Settle `promise` into the channel it answers, waking the app's loop.
 fn settled<T: 'static>(
     promise: Promise,
     answer: impl FnOnce(Result<JsValue, String>) -> T + 'static,
@@ -102,7 +101,6 @@ fn write_target(key: u64, bytes: &[u8]) -> SaveChannel {
     }
 }
 
-/// A target's key, let go when its destination is dropped.
 struct HeldTarget(u64);
 
 impl Drop for HeldTarget {
@@ -111,7 +109,6 @@ impl Drop for HeldTarget {
     }
 }
 
-/// `[{name, type, bytes}]` from `pickFiles`; `null` when cancelled.
 fn contents(value: &JsValue) -> Result<Option<Vec<PickedContents>>, String> {
     if value.is_null() || value.is_undefined() {
         return Ok(None);

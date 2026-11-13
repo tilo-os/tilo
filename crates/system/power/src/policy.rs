@@ -1,19 +1,13 @@
-//! The pure power **policy** — the decision layer that maps events (a lid
-//! closing, the power key, a critical battery) onto the action the
-//! compositor must take. No I/O, no D-Bus, no clock: every decision is a
-//! total function of the policy configuration and the event, so the whole
-//! layer is exhaustively unit-testable without a bus or a battery.
-//!
-//! The [`super::service::PowerService`] pairs these decisions with the
-//! `systemd-logind` / `UPower` glue in [`super::logind`] / [`super::upower`];
-//! the compositor applies the resulting [`PowerAction`]s.
+//! The pure power policy: the decision layer that maps an event (a lid closing,
+//! the power key, a critical battery) onto the action the compositor takes. No
+//! I/O, no D-Bus, no clock, so the whole layer is testable without a bus or a
+//! battery.
 
 use std::time::Duration;
 
-/// What the compositor should do in response to a power event.
-///
-/// The same three outcomes cover the lid switch, the power key, and the
-/// critical-battery threshold — each configurable independently.
+/// What the compositor should do in response to a power event. The same three
+/// outcomes cover the lid switch, the power key and the critical-battery
+/// threshold, each configurable independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "service", serde(rename_all = "lowercase"))]
@@ -27,8 +21,8 @@ pub enum PowerAction {
 }
 
 impl PowerAction {
-    /// The stable on-disk / on-wire label. The Settings pane writes these
-    /// exact strings into `settings.json`; the compositor parses them back.
+    /// The stable on-disk label. The Settings pane writes these exact strings into
+    /// `settings.json`; the compositor parses them back.
     pub fn label(self) -> &'static str {
         match self {
             PowerAction::Suspend => "suspend",
@@ -37,9 +31,8 @@ impl PowerAction {
         }
     }
 
-    /// Parse a label written by the Settings pane. An unknown value yields
-    /// `None` so the caller can fall back to its own default rather than
-    /// silently picking a surprising action.
+    /// Parses a label written by the Settings pane; an unknown value yields `None`
+    /// so the caller falls back to its own default.
     pub fn from_label(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "suspend" => Some(PowerAction::Suspend),
@@ -50,41 +43,34 @@ impl PowerAction {
     }
 }
 
-/// The resolved power-management policy the compositor runs against.
-///
-/// Values originate in the Settings pane (persisted to `settings.json`) and
-/// are parsed by [`super::config`]. Every field has a sane default so a
-/// missing or corrupt config never leaves the machine unmanaged.
+/// The resolved power policy the compositor runs against: written by the
+/// Settings pane, parsed by [`super::config`], with a sane default for every
+/// field so a missing or corrupt config never leaves the machine unmanaged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerPolicy {
-    /// Idle duration before the display blanks. `None` means "Never". This
-    /// is intentionally independent from idle-suspend: a machine can save
-    /// display power without suspending an active background task.
+    /// Idle duration before the display blanks; `None` is "Never". Independent of
+    /// idle-suspend, so a machine can save display power without suspending a
+    /// background task.
     pub idle_blank: Option<Duration>,
-    /// Idle duration before the compositor locks the session. `None` is the
-    /// persisted "Never" choice; it does not disable explicit or pre-sleep
+    /// Idle duration before the compositor locks the session; `None` is the
+    /// persisted "Never" choice, which does not disable explicit or pre-sleep
     /// locking.
     pub idle_lock: Option<Duration>,
-    /// Idle duration before the session suspends. `None` disables
-    /// idle-suspend (the display can still blank/lock — that is the idle
-    /// state machine's separate concern).
+    /// Idle duration before the session suspends; `None` disables idle-suspend (the
+    /// display can still blank and lock).
     pub idle_suspend: Option<Duration>,
-    /// Whether entering sleep locks the session.
-    ///
-    /// `true` (the default) makes every suspend leave the session locked, so
-    /// waking asks for the password. `false` lets a machine that was unlocked
-    /// when it went to sleep wake to the work its owner left on screen; a
-    /// lock that was already there — from the idle timer, the lock command or
-    /// a suspend already in flight — is kept either way.
+    /// Whether entering sleep locks the session. `true`, the default, makes every
+    /// suspend leave it locked so waking asks for the password; `false` lets an
+    /// unlocked machine wake to the work its owner left on screen. A lock that was
+    /// already there is kept either way.
     pub lock_on_sleep: bool,
     pub lid_close_action: PowerAction,
     /// What to do when the power key is pressed.
     pub power_key_action: PowerAction,
-    /// Warn (a notification) at or below this battery percentage while
-    /// discharging.
+    /// Warn at or below this battery percentage while discharging.
     pub low_battery_percent: u8,
-    /// Take [`Self::critical_action`] at or below this battery percentage
-    /// while discharging. Must be `<= low_battery_percent` to be reachable.
+    /// Take [`Self::critical_action`] at or below this percentage while
+    /// discharging; must be `<= low_battery_percent` to be reachable.
     pub critical_battery_percent: u8,
     /// What to do when the battery reaches the critical threshold.
     pub critical_action: PowerAction,
@@ -93,15 +79,13 @@ pub struct PowerPolicy {
 impl Default for PowerPolicy {
     fn default() -> Self {
         Self {
-            // Match the Settings default. `config::default_policy` only
-            // changes the more disruptive idle-suspend behaviour.
+            // Match the Settings default. `config::default_policy` only changes the more
+            // disruptive idle-suspend behaviour.
             idle_blank: Some(Duration::from_secs(600)),
             idle_lock: Some(Duration::from_secs(300)),
-            // Idle-suspend is opt-in: suspending is more disruptive than
-            // blanking, so a fresh machine only suspends if the user (or the
-            // Settings default) asks. The Settings default *does* enable it
-            // (see `config`), this bare default is the "no config at all"
-            // floor.
+            // Idle-suspend is opt-in: suspending is more disruptive than blanking, so the
+            // bare default only suspends if the person asks. The Settings default does
+            // enable it (see `config`); this is the "no config at all" floor.
             idle_suspend: None,
             lock_on_sleep: true,
             lid_close_action: PowerAction::Suspend,
@@ -116,8 +100,8 @@ impl Default for PowerPolicy {
 /// What this computer owes the rest of the person's devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MachineDuty {
-    /// An always-on host, such as a board. Nobody is at it to wake it again,
-    /// so it never suspends on its own.
+    /// An always-on host, such as a board: nobody is at it to wake it again, so it
+    /// never suspends on its own.
     Host,
     /// An ordinary computer, following its power settings.
     Endpoint,
@@ -126,9 +110,8 @@ pub enum MachineDuty {
 /// Marker the board image ships to select the headless host session.
 pub const HOST_IMAGE_MARKER: &str = "/usr/share/tilo/board-headless-session";
 
-/// Classify this machine. The board image is the always-on host: its image
-/// carries [`HOST_IMAGE_MARKER`] and its session runs with
-/// `TILO_BOARD_SESSION=1`.
+/// Classify this machine: the board image is the always-on host, since its image
+/// carries [`HOST_IMAGE_MARKER`] and its session runs with `TILO_BOARD_SESSION=1`.
 #[must_use]
 pub fn this_machine_duty() -> MachineDuty {
     duty_from(
@@ -146,10 +129,10 @@ fn duty_from(board_session: bool, host_image: bool) -> MachineDuty {
 }
 
 impl PowerPolicy {
-    /// The policy this machine actually runs. A host drops every automatic
-    /// suspend — idle, lid, power key and critical battery — whatever the
-    /// settings ask for; the critical-battery warning still shows. Blanking
-    /// and locking are untouched, and an explicit suspend request still works.
+    /// The policy this machine actually runs. A host drops every automatic suspend
+    /// — idle, lid, power key and critical battery — whatever the settings ask for,
+    /// while the critical-battery warning still shows. Blanking, locking and an
+    /// explicit suspend request are untouched.
     #[must_use]
     pub fn for_duty(self, duty: MachineDuty) -> Self {
         if duty == MachineDuty::Endpoint {
@@ -168,8 +151,8 @@ impl PowerPolicy {
         }
     }
 
-    /// Resolve the lid-close action. `None` when the lid *opened* (no
-    /// action) or the configured action is [`PowerAction::Ignore`].
+    /// Resolve the lid-close action; `None` when the lid opened or the configured
+    /// action is [`PowerAction::Ignore`].
     pub fn on_lid(&self, closed: bool) -> Option<PowerAction> {
         if !closed {
             return None;
@@ -180,7 +163,7 @@ impl PowerPolicy {
         }
     }
 
-    /// Resolve the power-key action. `None` when configured to ignore.
+    /// Resolve the power-key action; `None` when configured to ignore.
     pub fn on_power_key(&self) -> Option<PowerAction> {
         match self.power_key_action {
             PowerAction::Ignore => None,

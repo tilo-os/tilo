@@ -1,24 +1,6 @@
-//! `PropertyList`: labelled values (a contact's details, a file's metadata,
-//! a certificate's fields), as a retained widget and as the
-//! [`PropertyListFace`] immediate painter with identical geometry.
-//!
-//! Labels sit in one column, measured from the longest label, in secondary
-//! ink; values sit in the column beside it in primary ink (or a status
-//! [`Tone`]). Prose wraps, at most a readable measure wide; identifiers,
-//! secrets and figures never break and are elided before the action column.
-//! When the value column would get too narrow the list stacks: each label
-//! above its value. A row may carry up to two trailing actions (copy, open,
-//! reveal). The list sits on its ground separated by space, never inside a
-//! card; dense inspectors may stripe alternate rows with a derived tint and
-//! take the compact density.
-//!
-//! **One content edge.** Labels start on the column's content edge, like a
-//! section's title and a list row's text; a stripe bleeds
-//! [`row_bleed`] past it on both sides. A face
-//! paints into the list's outer rect (the content edge grown by the bleed);
-//! the retained list grows its own layout box by it. Lists in one
-//! [`Section`](crate::widget::Section), and the groups of
-//! [`PropertyList::sections`], share one label column.
+//! `PropertyList`: labelled values (a contact's details, a file's metadata, a certificate's
+//! fields), as a retained widget and as the [`PropertyListFace`] immediate painter with
+//! identical geometry.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -42,10 +24,8 @@ use crate::tokens::TextRole;
 use crate::tokens::colors::{Colors, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::{TaffyTreeExt, Tone, Widget};
 
-/// The most actions one row carries.
 pub const MAX_PROPERTY_ACTIONS: usize = 2;
 
-/// One label and its value, as the face paints it.
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyRow<'a> {
     pub label: &'a str,
@@ -54,7 +34,6 @@ pub struct PropertyRow<'a> {
     /// dates, [`TextKind::Identifier`] for addresses and handles,
     /// [`TextKind::Secret`] for keys and hashes. Only prose wraps.
     pub kind: TextKind,
-    /// A status the value carries (an expired certificate, a failing check).
     pub tone: Tone,
     /// Up to two trailing actions for this value, in order.
     pub actions: [Option<(Icon, &'a str)>; MAX_PROPERTY_ACTIONS],
@@ -78,7 +57,6 @@ impl<'a> PropertyRow<'a> {
         self
     }
 
-    /// The value in a status tone, made legible on the list's ground.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = tone;
@@ -107,7 +85,6 @@ impl<'a> PropertyRow<'a> {
     }
 }
 
-/// How dense a property list is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Density {
     /// Rows a pointer target tall.
@@ -179,7 +156,6 @@ impl ListMetrics {
 /// measure. Identifiers and figures are not prose and use the full column.
 const READABLE_LINES: u8 = 32;
 
-/// The value column's minimum width before the list stacks, in line boxes.
 const MIN_VALUE_LINES: u8 = 8;
 
 /// The label column `rows` need: the longest label, at most `max_share` of
@@ -200,7 +176,6 @@ fn natural_label_column(text: &mut TextRenderer, m: &ListMetrics, rows: &[Proper
         .ceil()
 }
 
-/// The laid-out geometry of one row.
 #[derive(Clone, Debug, PartialEq)]
 struct RowLayout {
     rect: Rect,
@@ -210,21 +185,16 @@ struct RowLayout {
     /// The width the label wraps to, when it is wider than its column
     /// (beside the value) or than the row (stacked over it).
     label_wrap: Option<f64>,
-    /// The value elided to one line, for an unbreakable value that did not
-    /// fit.
     elided: Option<String>,
     actions: [Option<Rect>; MAX_PROPERTY_ACTIONS],
 }
 
-/// One group's title, laid out.
 #[derive(Clone, Debug, PartialEq)]
 struct GroupLayout {
     title_at: Point,
-    /// The index of the group's first row.
     first_row: usize,
 }
 
-/// The laid-out geometry of a whole list at one width.
 #[derive(Clone, Debug, PartialEq)]
 struct ListLayout {
     stacked: bool,
@@ -412,15 +382,12 @@ impl<'a> PropertyListFace<'a> {
         }
     }
 
-    /// Tint alternate rows: for long, dense inspectors where the eye has
-    /// to follow a row across.
     #[must_use]
     pub fn striped(mut self) -> Self {
         self.striped = true;
         self
     }
 
-    /// Rows a small control tall: an inspector beside a canvas.
     #[must_use]
     pub fn compact(mut self) -> Self {
         self.density = Density::Compact;
@@ -435,7 +402,6 @@ impl<'a> PropertyListFace<'a> {
         self
     }
 
-    /// The row whose first action the pointer is over.
     #[must_use]
     pub fn hovered_action(mut self, row: Option<usize>) -> Self {
         self.hovered_action = row.map(|row| (row, 0));
@@ -510,7 +476,6 @@ impl<'a> PropertyListFace<'a> {
         );
     }
 
-    /// One accessibility node per row: a labelled value.
     #[must_use]
     pub fn accessibility(&self) -> Vec<AccessNode> {
         self.rows.iter().map(|row| row_node(row, None)).collect()
@@ -639,7 +604,6 @@ fn paint_layout(
     }
 }
 
-/// Alternate-row tint: a derived hairline wash of the ground.
 const STRIPE_ALPHA: u8 = 10;
 
 /// One property of a retained [`PropertyList`].
@@ -707,14 +671,12 @@ impl Property {
         }
     }
 
-    /// See [`PropertyRow::kind`].
     #[must_use]
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
         self
     }
 
-    /// See [`PropertyRow::tone`].
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = tone;
@@ -729,7 +691,6 @@ impl Property {
         self
     }
 
-    /// A trailing "Copy" action that puts the value on the clipboard.
     #[must_use]
     pub fn copyable(mut self) -> Self {
         if self.actions.len() < MAX_PROPERTY_ACTIONS {
@@ -792,10 +753,8 @@ impl Property {
     }
 }
 
-/// A label column shared by several property lists, so their values line
-/// up (the lists of one [`Section`](crate::widget::Section) share one on
-/// their own). Clone the handle into each list with
-/// [`PropertyList::shared_column`].
+/// A label column shared by several property lists, so their values line up (the lists of one
+/// [`Section`](crate::widget::Section) share one on their own).
 #[derive(Clone, Debug, Default)]
 pub struct PropertyColumn(Rc<Cell<f64>>);
 
@@ -815,14 +774,12 @@ impl PropertyColumn {
     }
 }
 
-/// A retained property list. See the module docs.
 pub struct PropertyList {
     groups: Vec<(Option<String>, Vec<Property>)>,
     striped: bool,
     density: Density,
     id: Option<String>,
     column: Option<PropertyColumn>,
-    /// The shared column's width the last layout used.
     laid_column: f64,
     metrics: Option<ListMetrics>,
     layout: ListLayout,
@@ -864,14 +821,12 @@ impl PropertyList {
         }
     }
 
-    /// See [`PropertyListFace::striped`].
     #[must_use]
     pub fn striped(mut self) -> Self {
         self.striped = true;
         self
     }
 
-    /// See [`PropertyListFace::compact`].
     #[must_use]
     pub fn compact(mut self) -> Self {
         self.density = Density::Compact;
@@ -886,7 +841,6 @@ impl PropertyList {
         self
     }
 
-    /// Share a label column with other lists.
     #[must_use]
     pub fn shared_column(mut self, column: &PropertyColumn) -> Self {
         self.column = Some(column.clone());
@@ -930,7 +884,6 @@ impl PropertyList {
         )
     }
 
-    /// Whether the last layout stacked labels above values.
     pub fn is_stacked(&self) -> bool {
         self.layout.stacked
     }
@@ -1116,7 +1069,6 @@ impl Widget for PropertyList {
 
     crate::redraw_flag!();
 
-    /// Laid out again when a list sharing its label column widened it.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
             || self
@@ -1300,10 +1252,9 @@ impl crate::widget::controls::ActionControls for PropertyList {
     }
 }
 
-/// A read-only value as a control: the value a [`Field`](crate::widget::Field)
-/// shows where it cannot be edited (an account id, a generated key), in
-/// primary ink with its kind's text treatment and an optional trailing copy
-/// action. Unbreakable kinds are elided before the action.
+/// A read-only value as a control: the value a [`Field`](crate::widget::Field) shows where it
+/// cannot be edited (an account id, a generated key), in primary ink with its kind's text
+/// treatment and an optional trailing copy action.
 #[crate::component::not_a_component(part, "a value of `ui.PropertyList`, from its `ui.Property`")]
 pub struct PropertyValue {
     id: Option<String>,
@@ -1339,7 +1290,6 @@ impl PropertyValue {
         }
     }
 
-    /// A stable identity for resource publication and accessibility actions.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -1352,14 +1302,12 @@ impl PropertyValue {
         self
     }
 
-    /// A trailing copy action.
     #[must_use]
     pub fn copyable(mut self) -> Self {
         self.copyable = true;
         self
     }
 
-    /// The name the value is announced by (its field's label).
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
@@ -1524,8 +1472,6 @@ impl Widget for PropertyValue {
                 ..
             } => {
                 use crate::pointer_replay::{PressAt, Release};
-                // The field's name (or, unnamed, the value) names the copy
-                // action across a rebuild.
                 let key = format!(
                     "property-value:{}",
                     self.accessible_name.as_deref().unwrap_or(&self.value)

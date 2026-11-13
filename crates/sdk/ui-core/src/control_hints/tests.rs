@@ -1,4 +1,4 @@
-//! The schedule's rules, through the coach's own interface.
+//! The schedule's rules, through the coach interface.
 
 use super::coach::{CUE_FRESH, IGNORED_AFTER, MIN_GAP, RETURN_AFTER};
 use super::*;
@@ -138,11 +138,9 @@ fn at_most_one_hint_begins_a_minute() {
     run.tick(17);
     assert_eq!(run.showing(), Some("open"));
     run.see(18, Sig::Opened);
-    // The opened window is the move hint's moment, but the minute holds it.
     run.tick(21);
     run.tick(30);
     assert_eq!(run.showing(), None);
-    // Its moment went stale before the minute was up.
     let since = 17 + MIN_GAP.as_secs();
     run.tick(since);
     assert_eq!(run.showing(), None);
@@ -160,8 +158,6 @@ fn only_one_hint_at_a_time() {
     assert_eq!(run.showing(), Some("resize"));
     run.tick(8);
     assert_eq!(run.showing(), Some("resize"));
-    // Ignored, it went; the open hint's moment came meanwhile, and waits
-    // out the minute.
     run.tick(17);
     run.tick(18);
     assert_eq!(run.showing(), None, "the open hint waits");
@@ -184,7 +180,7 @@ fn never_while_typing_in_a_call_or_following() {
 
 /// A hint held back past its moment wakes nobody: a host that woke for a
 /// moment already reached would draw a frame on every frame (the whole time
-/// the person types) for a hint that cannot begin until what holds it back
+/// the person types) for a hint that cannot begin until what has it back
 /// changes.
 /// Hints turned off wake nobody at a hint's moment.
 #[test]

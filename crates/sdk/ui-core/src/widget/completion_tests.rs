@@ -19,7 +19,6 @@ fn names(rows: &[Entry]) -> Vec<String> {
         .collect()
 }
 
-/// This conversation's speakers, then the channel's members, then the workspace.
 fn people() -> PreparedSource {
     PreparedSource::new(CompletionSource::new(
         '@',
@@ -87,8 +86,6 @@ fn typing_orders_prefix_then_word_then_substring_then_fuzzy_without_headers() {
     let rows = rows(&people(), "mi");
     assert_eq!(
         names(&rows),
-        // Prefix: Mia (this conversation) before Milan (workspace). Substring: Camille
-        // (members), Amira (workspace). Emil holds "mi" inside a word too.
         [
             "Mia Chen",
             "Milan Novak",
@@ -224,7 +221,6 @@ fn a_slow_source_answers_under_its_own_header_below_and_never_reorders_the_local
 fn a_still_matching_selected_row_keeps_its_place() {
     let source = people();
     let shown = rows(&source, "m");
-    // The person moved the selection to Milan, the second row.
     let milan = shown
         .iter()
         .position(|e| e.key() == Some("person:milan"))
@@ -234,7 +230,6 @@ fn a_still_matching_selected_row_keeps_its_place() {
     let (next, selected) = keep_place(next, Some(("person:milan", milan)));
     assert_eq!(selected, Some(1));
     assert_eq!(next[1].key(), Some("person:milan"), "Milan stays second");
-    // A selection that no longer matches goes back to the first row.
     let (_, selected) = keep_place(rows(&source, "jo"), Some(("person:milan", 1)));
     assert_eq!(selected, Some(0));
 }

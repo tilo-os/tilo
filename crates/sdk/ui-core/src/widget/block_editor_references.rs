@@ -1,12 +1,6 @@
-//! References in the block editor's text, and the editor as the described component
-//! (`ui.BlockEditor`): rich text shown read-only (tilolang's `rich_text(value)`), and a
-//! document's body edited through the field a view binds it to (its [`body`](super::block_editor_body)).
-//!
-//! A reference is a run marked `mention` (`tilo_reference::embed`). The text a component is
-//! given says how each reference reads for the person reading ([`InlineView`]); the editor
-//! shows each as that inline view, painted as a chip, and reports activating one by its
-//! reference, for its host to open what it refers to under the reader's permissions. One the
-//! reader cannot read shows only that something is there.
+//! References in the block editor's text, and the editor as the described component (`ui.BlockEditor`):
+//! rich text shown read-only (tilolang's `rich_text(value)`), and a document's body edited through the
+//! field a view binds it to (its [`body`](super::block_editor_body)).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,9 +15,6 @@ use crate::theme::Theme;
 use crate::widget::block_editor_body::BodyBinding;
 use crate::widget::marks::{Mark, MentionColors, MentionPaint};
 
-/// The event a component fires when a reference in its text is activated, carrying the
-/// reference (the `mention` mark's value): what its host opens when the view gives the event
-/// nothing of its own.
 pub const OPEN_REFERENCE: &str = "open_reference";
 
 impl PropType for RichText {
@@ -39,12 +30,9 @@ impl PropType for RichText {
     }
 }
 
-/// A document: its paragraphs with their formatting, and each reference in it as the reader's
-/// own inline view of what it refers to (a person with their name, a channel, a task with its
-/// number), resolved under their permissions. Bound to a document's field it edits it, each
-/// edit written back as the value now reads and a change from elsewhere shown when the person
-/// is not typing there; given a value it shows that, read-only, and activating a reference
-/// opens it.
+/// A document: its paragraphs with their formatting, and each reference in it as the reader's own
+/// inline view of what it refers to (a person with their name, a channel, a task with its number),
+/// resolved under their permissions.
 #[derive(Component, Default)]
 #[component(name = "BlockEditor", role = "Document")]
 pub struct BlockEditorProps {
@@ -59,71 +47,55 @@ pub struct BlockEditorProps {
     pub value: Option<RichText>,
     /// What to type, shown while the editor is empty.
     pub placeholder: Option<String>,
-    /// A reference in the text was activated, carrying the reference. Without one, the
-    /// reference is opened.
+    /// A reference in the text was activated, carrying the reference.
     #[component(event(value = String))]
     pub open_reference: Event,
-    /// The records a `[[` link offers, each as it reads for the person now: choosing one writes
-    /// a reference to it in the text, which every reader reads as it reads now. A view names
-    /// them, `links: nb.notes`.
-    ///
-    /// A view whose records are a collection answers the picker's text with them (`links_query`)
-    /// rather than handing all of them: what it offers is then what the picker is open to show,
-    /// and offering none while the picker is closed costs it no read of the collection.
+    /// The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference
+    /// to it in the text, which every reader reads as it reads now.
     pub links: Vec<Link>,
-    /// The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer
-    /// records only while the picker shows them.
+    /// The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer records
+    /// only while the picker shows them.
     #[component(event(value = bool))]
     pub links_open: Event,
-    /// The text typed into the open `[[` link picker, each time it changes: a view whose records
-    /// are a collection asks the store for what it holds of it, and hands back `links` — a page
-    /// of them, read when the picker shows it rather than on every frame of the document.
+    /// The text typed into the open `[[` link picker, each time it changes: a view whose records are a
+    /// collection asks the store for what it holds of it, and hands back `links` — a page of them, read
+    /// when the picker shows it rather than on every frame of the document.
     #[component(event(value = String))]
     pub links_query: Event,
-    /// The commands the editor's slash menu offers besides the block kinds, by their labels:
-    /// choosing one reports it as `command`.
+    /// The commands the editor's slash menu offers besides the block kinds, by their labels: choosing one
+    /// reports it as `command`.
     pub commands: Vec<String>,
-    /// A command of `commands` was chosen, carrying its label: the view does what the label
-    /// says, as it would for a button it placed.
+    /// A command of `commands` was chosen, carrying its label: the view does what the label says, as it
+    /// would for a button it placed.
     #[component(event(value = String))]
     pub command: Event,
-    /// The document's headings, in the order they stand, each time they change. A view that
-    /// draws an outline of the document keeps them as its state.
+    /// The document's headings, in the order they stand, each time they change.
     #[component(event(value = Vec<String>))]
     pub headings: Event,
 }
 
-/// The editor's references: how each reads, where each was painted, and what activating one
-/// does.
+/// The editor's references: how each reads, where each was painted, and what activating one does.
 #[derive(Default)]
 pub(super) struct References {
     /// How each reference reads for the person reading, by the `mention` mark's value.
     views: Rc<HashMap<String, InlineView>>,
-    /// What each reference the text projects (an embed) shows of its own content, by the
-    /// reference: one level deep, as its reader reads it.
+    /// What each reference the text projects (an embed) shows of its own content, by the reference: one
+    /// level deep, as its reader reads it.
     previews: Rc<HashMap<String, Vec<Run>>>,
-    /// The theme the chips were last painted for.
     painted_for: Option<u64>,
-    /// How the owner paints people's mentions (their colours).
     owner_paint: Option<MentionPaint>,
-    /// The rich text last given to show, read again as its times move on.
     shown: Option<RichText>,
-    /// When the shown text's times next read differently.
     wake_at: Option<crate::time::Instant>,
     /// Where each reference was painted in the last draw.
     hits: Vec<(Rect, String)>,
-    /// What activating a reference does.
     pub(super) on_open: Option<Box<dyn FnMut(&str)>>,
-    /// What the view does with the document's headings.
     headings: Event,
     /// The headings last reported to it: it is told again only when they change.
     reported: Option<Vec<String>>,
-    /// What the view does with the `[[` picker's state: that it opened or closed, and the text
-    /// typed into it.
     links_open: Event,
     links_query: Event,
-    /// What the picker last told the view, which it hears again only when that changes: whether
-    /// it was open, and the text it held.
+    /// What the picker last told the view, which it hears again only when that changes: whether it was
+    /// open, and the text it held.
     picker: Option<(bool, String)>,
 }
 
@@ -138,8 +110,8 @@ impl BlockEditor {
         changed || changed_references
     }
 
-    /// How each reference in `rich` reads here, and what each the text projects shows: the
-    /// chips' titles and the cards' previews. `true` when either moved.
+    /// How each reference in `rich` reads here, and what each the text projects shows: the chips'
+    /// titles and the cards' previews.
     pub(crate) fn show_references(&mut self, rich: &RichText) -> bool {
         let views: HashMap<String, InlineView> = rich
             .embeds
@@ -156,7 +128,6 @@ impl BlockEditor {
             self.references.previews = Rc::new(previews);
             self.dirty = true;
             self.structure_dirty = true;
-            // A card shows what it projects as it reads now: it takes the room that reads.
             self.stack.width = None;
         }
         let changed_views = *self.references.views != views;
@@ -167,7 +138,6 @@ impl BlockEditor {
         changed_previews || changed_views
     }
 
-    /// Show the text last given again, as it reads now: its times move on.
     fn present_shown(&mut self) -> bool {
         let Some(rich) = self.references.shown.take() else {
             return false;
@@ -180,7 +150,6 @@ impl BlockEditor {
         changed
     }
 
-    /// When the shown text's times next read differently.
     pub(super) fn references_wake(&self) -> Option<crate::time::Instant> {
         self.references.wake_at
     }
@@ -196,7 +165,6 @@ impl BlockEditor {
         &self.references.hits
     }
 
-    /// The reference painted at `point`, when one is.
     #[must_use]
     pub fn reference_at(&self, point: Point) -> Option<&str> {
         self.references
@@ -206,22 +174,21 @@ impl BlockEditor {
             .map(|(_, reference)| reference.as_str())
     }
 
-    /// The links inside the cards painted in the last draw, with where each was painted: what a
-    /// click on one opens, and where to point to open it.
+    /// The links inside the cards painted in the last draw, with where each was painted: what a click
+    /// on one opens, and where to point to open it.
     #[must_use]
     pub fn card_link_hits(&self) -> &[(Rect, String)] {
         &self.card_links
     }
 
-    /// How the record `reference` reads now, as a card of it is titled: its title for the
-    /// person reading, `written` for one this reader has no reading of, and how a record they
-    /// cannot read reads.
+    /// How the record `reference` reads now, as a card of it is titled: its title for the person
+    /// reading, `written` for one this reader has no reading of, and how a record they cannot read
+    /// reads.
     pub(super) fn reference_title(&self, reference: &str, written: &str) -> String {
         match self.references.views.get(reference) {
             Some(InlineView::Resource { title, .. }) if !title.is_empty() => title.clone(),
             Some(InlineView::Person { name, .. }) if !name.is_empty() => name.clone(),
             Some(InlineView::Unreadable) => crate::widget::rich_doc::unreadable_phrase(),
-            // A record with no reading here, or one of another app's, reads as it was written.
             Some(
                 InlineView::Elsewhere | InlineView::Resource { .. } | InlineView::Person { .. },
             )
@@ -229,8 +196,8 @@ impl BlockEditor {
         }
     }
 
-    /// What the record `reference` shows of its own content where the text projects it, as its
-    /// reader reads it: one level deep, a link inside it never opened out.
+    /// What the record `reference` shows of its own content where the text projects it, as its reader
+    /// reads it: one level deep, a link inside it never opened out.
     pub(super) fn reference_preview(&self, reference: &str) -> Option<&[Run]> {
         self.references
             .previews
@@ -238,17 +205,15 @@ impl BlockEditor {
             .map(std::vec::Vec::as_slice)
     }
 
-    /// Paint people's mentions as the owner says (`paint`, their colours), and references to
-    /// anything else as chips.
     pub(super) fn set_owner_mention_paint(&mut self, paint: Option<MentionPaint>) {
         self.references.owner_paint = paint;
         self.references.painted_for = None;
         self.dirty = true;
     }
 
-    /// Paint the references in `theme`'s colours when the theme, how they read or the owner's
-    /// paint changed since: a resource as a chip, one the reader cannot read as a quiet chip,
-    /// a person in the owner's colours for them.
+    /// Paint the references in `theme`'s colours when the theme, how they read or the owner's paint
+    /// changed since: a resource as a chip, one the reader cannot read as a quiet chip, a person in the
+    /// owner's colours for them.
     pub(super) fn paint_references(&mut self, theme: &Theme) {
         if self
             .references
@@ -334,7 +299,6 @@ impl BlockEditor {
     }
 }
 
-/// What identifies a theme's colours, for repainting chips when it changes.
 fn theme_fingerprint(theme: &Theme) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -369,8 +333,6 @@ impl Described for BlockEditor {
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
-            // As native Notes edits a note: lines wrap at the column, paragraphs sit close, and
-            // the window's search finds in it and replaces what it finds.
             let mut editor = Self::new()
                 .with_id(key)
                 .with_wrap_lines(true)
@@ -378,7 +340,6 @@ impl Described for BlockEditor {
             editor.set_find_replace_enabled(true);
             editor
         } else {
-            // Rich text shown, not edited: painted as it reads, taking no input.
             Self::new()
                 .with_wrap_lines(true)
                 .with_compact_paragraph_spacing(true)
@@ -424,7 +385,6 @@ impl Described for BlockEditor {
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         if editing != self.body.is_some() {
-            // Editing and showing take different input and different layout: build it again.
             return false;
         }
         let showing = self.body.is_none();
@@ -450,9 +410,6 @@ impl Described for BlockEditor {
 }
 
 impl BlockEditor {
-    /// What the view gives the editor itself, beside the body it edits: the records its `[[`
-    /// link offers and what it answers the picker with, the commands its slash menu answers, the
-    /// headings it is told of, and what activating a reference does.
     fn offer(
         &mut self,
         links: Vec<Link>,
@@ -463,8 +420,6 @@ impl BlockEditor {
         headings: Event,
         open_reference: Option<Event>,
     ) {
-        // A view that answers the picker's text finds its records itself: what it hands is what
-        // the picker shows, and it offers records even while it hands none.
         let answering = !links_query.is_none();
         self.set_links(
             links
@@ -495,9 +450,6 @@ impl BlockEditor {
         self.references.headings = headings;
     }
 
-    /// Tell the view the `[[` picker's state once it is not the one it was told of: opened or
-    /// closed, and the text typed into it. A view offering a collection's records reads the ones
-    /// the picker is open to show, and none while it is closed.
     pub(super) fn publish_link_query(&mut self) {
         let open = self.link_popover.is_visible();
         let text = self.link_popover.filter().to_owned();
@@ -523,8 +475,6 @@ impl BlockEditor {
         }
     }
 
-    /// Tell the view the document's headings once they are not the ones it was told of: what it
-    /// draws an outline of this document from.
     pub(super) fn publish_headings(&mut self) {
         if self.references.headings.is_none() {
             return;
@@ -568,8 +518,8 @@ mod tests {
         }
     }
 
-    /// `Ask @ada about Fix it, not secret.` with a person, a task and a resource the reader
-    /// cannot read, read as `views` says.
+    /// `Ask @ada about Fix it, not secret.` with a person, a task and a resource the reader cannot
+    /// read, read as `views` says.
     fn text(views: Vec<(&str, InlineView)>) -> RichText {
         RichText {
             blocks: vec![Block {
@@ -617,9 +567,8 @@ mod tests {
                 height: taffy::AvailableSpace::MaxContent,
             },
             |known, available, node, _, _| {
-                nodes.get(&node).map_or(Size::ZERO, |widget| {
-                    // The pointers are the stable widget leaves registered by build_layout.
-                    unsafe { (**widget).measure(known, available, renderer) }
+                nodes.get(&node).map_or(Size::ZERO, |widget| unsafe {
+                    (**widget).measure(known, available, renderer)
                 })
             },
         )
@@ -712,7 +661,6 @@ mod tests {
         );
     }
 
-    /// Type `text` into `editor`, as the person does.
     fn type_keys(editor: &mut BlockEditor, text: &str) {
         for ch in text.chars() {
             let typed = ch.to_string();
@@ -748,7 +696,6 @@ mod tests {
             },
         );
         editor.focus_block(0, CursorPlacement::End);
-        // `[[` opens the picker over the records the view named, and the typed query narrows it.
         type_keys(&mut editor, "[[pl");
         assert!(editor.link_popover().is_visible());
         assert_eq!(
@@ -776,7 +723,6 @@ mod tests {
             "what is written names the record, so it reads as it reads now wherever it goes"
         );
 
-        // The last document the view is told of is the one the pick left behind.
         editor.take_body_edits();
         let edit = fired
             .take()
@@ -831,8 +777,6 @@ mod tests {
         };
         let props = |links: Vec<Link>| BlockEditorProps {
             rich: bound(&fired, body.clone()),
-            // The view answers the picker's text with the records it found: what it hands is
-            // what the picker shows.
             links_open: Event::View(Intent::new(&asked, "b", "links_open")),
             links_query: Event::View(Intent::new(&asked, "b", "links_query")),
             links,
@@ -861,7 +805,6 @@ mod tests {
             .collect();
         assert_eq!(texts, ["g", "gr"], "what was typed: {told:?}");
 
-        // What the view hands back shows as it is: the view already found it by that text.
         editor.set_props(props(vec![link("Groceries")]));
         assert_eq!(
             editor
@@ -892,8 +835,6 @@ mod tests {
         );
     }
 
-    /// `text` projecting the record `Groceries` as a card of its own, its start painted under
-    /// its title: plain words, a note it names, and a note that projects this one back.
     fn embedding(views: Vec<(&str, InlineView)>) -> RichText {
         RichText {
             blocks: vec![
@@ -1013,7 +954,6 @@ mod tests {
             "{links:?}"
         );
 
-        // A click on a link inside the card opens what it names.
         let plan = editor
             .card_link_hits()
             .iter()
@@ -1037,7 +977,6 @@ mod tests {
             }],
         );
 
-        // A click on the card itself opens the record it projects.
         let card = card.bounds.expect("where the card is").to_rect();
         let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
         assert!(
@@ -1126,7 +1065,6 @@ mod tests {
             "and shows the start of what it says, its references as links"
         );
 
-        // A click on the card opens the record, in the document being edited too.
         let card = card.bounds.expect("where the card is").to_rect();
         let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
         crate::testing::dispatch(
@@ -1146,7 +1084,6 @@ mod tests {
             }],
         );
 
-        // The note it shows says something else elsewhere: the editor shows it as it reads now.
         let mut moved = embedding(vec![
             (
                 GROCERIES,
@@ -1208,7 +1145,6 @@ mod tests {
         };
         let mut editor = editor_of();
         editor.focus_block(0, CursorPlacement::End);
-        // `![[` offers the same records `[[` does, and writes a projection of the one chosen.
         type_keys(&mut editor, "![[pl");
         assert!(editor.link_popover().is_visible());
         crate::testing::dispatch(
@@ -1225,8 +1161,6 @@ mod tests {
             editor.blocks()[0].line.marks()
         );
 
-        // The slash menu's own row does the same: choosing "Embed note" picks from the records
-        // the view offers, and the block becomes a projection of one.
         let mut editor = editor_of();
         editor.focus_block(0, CursorPlacement::End);
         type_keys(&mut editor, " /embed");
@@ -1299,7 +1233,6 @@ mod tests {
             "the view is told them, to draw an outline of the document"
         );
 
-        // The view's own `/` command, chosen by the label it named, runs it by that label.
         editor.focus_block(0, crate::widget::CursorPlacement::End);
         type_keys(&mut editor, " /link");
         let _ = fired.take();
@@ -1421,8 +1354,6 @@ mod tests {
         );
     }
 
-    /// `state` bound by a view, as the adapter hands it: the binding the view named carries
-    /// the edit it reports.
     fn bound<T: Default + 'static>(
         fired: &crate::Intents<Fired>,
         state: crate::LocalState<T>,
@@ -1488,7 +1419,6 @@ mod tests {
             ]
         );
 
-        // A document from elsewhere replaces what the editor shows.
         let mut changed = rich;
         changed.blocks[1].text = "shipped".into();
         value.set(changed);

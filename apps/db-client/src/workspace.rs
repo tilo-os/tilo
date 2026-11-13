@@ -1,11 +1,5 @@
 //! The window's content: the tabs of the open connection, the view each one
 //! shows, and the dialogs over them.
-//!
-//! The workspace is one toolkit [`Column`] whose children follow the model: the
-//! tab strip, a banner while an action has failed, the view the tab shows, and
-//! a dialog while one is open. The views that hold state (the tab strip and the
-//! three tabs) are kept while they are out of sight, so a tab comes back as it
-//! was left.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,7 +25,6 @@ use crate::session::{MainTab, RunStatus};
 use crate::structure::StructureView;
 
 /// A statement that a view has nothing to show yet, or, with an action, that
-/// the app has nothing at all. It takes the room its parent has left.
 struct Placeholder {
     empty: EmptyState,
 }
@@ -77,8 +70,6 @@ impl ui::widget::Decorator for Placeholder {
     ) -> NodeId {
         let node = Widget::build_layout(&mut self.empty, taffy, theme, node_map);
         fill_remaining_height(taffy, node);
-        // The placeholder is the thing the node stands for: it is what the
-        // action is addressed through.
         ui::widget::decorator::register_node(node_map, node, self);
         node
     }
@@ -236,7 +227,6 @@ fn data_header(link: &Link) -> Row {
 }
 
 /// What the Data tab shows: the header over the rows, or the statement that
-/// there are none.
 fn data_content(link: &Link, data: Option<Arc<QueryResult>>) -> Element {
     let has_rows = data.as_ref().is_some_and(|data| !data.columns.is_empty());
     if !has_rows {
@@ -321,7 +311,6 @@ enum Part {
 
 impl Part {
     /// A part that holds what a person did, and so waits out of sight rather
-    /// than being rebuilt.
     fn is_kept(&self) -> bool {
         matches!(self, Self::Query | Self::Data | Self::Structure)
     }
@@ -331,7 +320,6 @@ impl Part {
 pub struct Workspace {
     link: Link,
     /// The workspace's published actions, which the query tab's starter
-    /// menu picks through; `None` outside the framework.
     actions: Option<Actions<Record>>,
     column: Column,
     /// What `column` holds now.
@@ -474,7 +462,6 @@ mod tests {
         harness.root::<Workspace>().shown.clone()
     }
 
-    /// The column holds what the model asks for: the first run with no connections, then the tabs over the tab's view, a banner while an action has failed, and a dialog while one is open.
     #[test]
     fn the_workspace_holds_what_the_model_asks_for() {
         let link = Link::new();
@@ -485,27 +472,23 @@ mod tests {
             Theme::dark(),
         );
 
-        // --- phase: no_connections_is_the_first_run ---
         {
             harness.relayout();
             assert_eq!(shown(&harness), [Part::FirstRun]);
         }
 
-        // --- phase: a_connection_brings_the_query_view ---
         {
             link.publish(open_model(MainTab::Query));
             harness.relayout();
             assert_eq!(shown(&harness), [Part::Query]);
         }
 
-        // --- phase: a_tab_without_a_table_says_so ---
         {
             link.publish(open_model(MainTab::Data));
             harness.relayout();
             assert_eq!(shown(&harness), [Part::NoTable(MainTab::Data)]);
         }
 
-        // --- phase: a_failure_shows_a_banner_above_the_view ---
         {
             link.publish(ViewModel {
                 status: RunStatus::Error("Connection refused".into()),
@@ -518,7 +501,6 @@ mod tests {
             );
         }
 
-        // --- phase: a_dialog_comes_after_the_view_and_goes_when_closed ---
         {
             link.publish(ViewModel {
                 dialog: Some(Dialog::Connect),
@@ -535,7 +517,6 @@ mod tests {
         }
     }
 
-    /// A tab that is not showing keeps what a person did in it: the query view comes back as it was left.
     #[test]
     fn a_tab_comes_back_as_it_was_left() {
         let link = Link::new();

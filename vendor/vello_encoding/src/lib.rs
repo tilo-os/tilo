@@ -58,7 +58,7 @@ pub use draw::{
     DrawImage, DrawLinearGradient, DrawMonoid, DrawRadialGradient, DrawSweepGradient, DrawTag,
 };
 pub use encoding::{Encoding, Mark, MarkKind, Resources, StreamOffsets};
-pub use glyph::{FontEmbolden, Glyph, GlyphRun};
+pub use glyph::{FontEmbolden, Glyph, GlyphRun, draw_outline};
 pub use image_cache::ImageCacheStats;
 pub use image_delta::{ImageRect, image_delta, register_image_delta};
 pub use mask::{make_mask_lut, make_mask_lut_16};

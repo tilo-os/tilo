@@ -1,7 +1,6 @@
-//! The radial shapes the ring charts share: a point at an angle, an arc
-//! appended to a path, and the two annular sector outlines — exact arcs for
-//! the shapes that rely on them, and a stepped outline where the flat
-//! segments are what the chart has always painted.
+//! The radial shapes the ring charts share: a point at an angle, an arc appended to a path, and the two
+//! annular sector outlines — exact arcs for the shapes that rely on them, and a stepped outline where
+//! the flat segments are what the chart has always painted.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -10,11 +9,8 @@
 
 use vello::kurbo::{Arc, BezPath, Point};
 
-/// Steps around a half ring and back: enough that the flat segments read as
-/// a curve at chart sizes.
 const SECTOR_STEPS: u32 = 64;
 
-/// The point at `angle` on the circle of `radius` around `center`.
 pub(crate) fn polar(center: Point, radius: f64, angle: f64) -> Point {
     Point::new(
         angle.cos().mul_add(radius, center.x),
@@ -22,14 +18,11 @@ pub(crate) fn polar(center: Point, radius: f64, angle: f64) -> Point {
     )
 }
 
-/// Appends the arc from `start` sweeping `sweep` radians.
 pub(crate) fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep: f64) {
     Arc::new(center, (radius, radius), start, sweep, 0.0)
         .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
 }
 
-/// The sector between `inner` and `outer` from `start` to `end`, in cubic
-/// arcs.
 pub(crate) fn annulus(center: Point, inner: f64, outer: f64, start: f64, end: f64) -> BezPath {
     let mut path = BezPath::new();
     path.move_to(polar(center, outer, start));
@@ -40,8 +33,6 @@ pub(crate) fn annulus(center: Point, inner: f64, outer: f64, start: f64, end: f6
     path
 }
 
-/// The sector between `inner` and `outer` from `start` to `end`, as flat
-/// segments. `inner` at or below zero closes the sector at the centre.
 pub(crate) fn ring_sector(center: Point, inner: f64, outer: f64, start: f64, end: f64) -> BezPath {
     let mut path = BezPath::new();
     let sweep = end - start;

@@ -1,18 +1,6 @@
 //! Theme Studio: write theme documents and make one the system's.
-//!
-//! A theme is a `ui::theme::ThemeDocument` — palette, emphasis, presence
-//! tone, window radius, density, type, motion and the floating material —
-//! and nothing else, so a theme written here cannot restyle an app's
-//! internals. The studio previews every preset and every theme you write,
-//! measures each against the contrast floors as you edit, and refuses to
-//! apply or export one that misses a floor.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic; see the note above"
@@ -29,14 +17,10 @@ use ui::prelude::*;
 
 pub use studio::Studio;
 
-/// The application id.
 pub const APP_ID: &str = "so.tilo.themes";
-/// The window and launcher title.
 pub const APP_TITLE: &str = "Theme Studio";
 
-/// The `--shots` scenario that shows the preset gallery.
 pub const GALLERY_SCENARIO: &str = "gallery";
-/// The theme every other `--shots` scenario writes and opens.
 pub const SCENARIO_THEME: &str = "ember";
 
 /// The studio: the themes you write, over the presets Tilo ships.
@@ -46,6 +30,7 @@ impl ResourceApp for App {
     type Resource = Studio;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
+    const TITLE_KEY: &'static str = "themes-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -67,9 +52,9 @@ impl ResourceApp for App {
         ]
     }
 
-    /// `editor` opens a theme written from the warm graphite preset;
-    /// `tinted` gives it a tinted emphasis and a rounder, roomier shape;
-    /// `illegible` lifts its tertiary ink until it misses its floor.
+    /// `editor` opens a theme written from the warm graphite preset; `tinted` gives it a
+    /// tinted emphasis and a rounder, roomier shape; `illegible` lifts its tertiary ink
+    /// until it misses its floor.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Studio>> {
         let theme = Studio::paths().themes.item(&Id::from_raw(SCENARIO_THEME));
         let start = Studio::NEW_THEME.with((SCENARIO_THEME.to_owned(), "dark-graphite".to_owned()));
@@ -98,3 +83,24 @@ impl ResourceApp for App {
 ui::dev_reload_entry!(App);
 
 ui::reach_tests!(App);
+
+/// German is one of the languages the studio ships, and its window is named there too: the
+/// key the framework resolves the title through reads "Design-Studio".
+#[cfg(test)]
+mod window_name_tests {
+    #[test]
+    fn the_window_is_named_in_german() {
+        let catalog = &crate::locales::CATALOG;
+        catalog.set_locale("de-DE");
+        assert_eq!(
+            catalog.t(<super::App as ui::framework::ResourceApp>::TITLE_KEY),
+            "Design-Studio",
+            "a German window is titled in German"
+        );
+        catalog.set_locale("en-US");
+        assert_eq!(
+            catalog.t(<super::App as ui::framework::ResourceApp>::TITLE_KEY),
+            "Theme Studio"
+        );
+    }
+}

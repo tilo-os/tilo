@@ -1,26 +1,11 @@
 //! The narrowly scoped credential **handoff** from Settings to the storage
 //! daemon.
 //!
-//! Settings keeps custody of every long-lived secret in
-//! the [`crate::SecretVault`]: passwords, `OAuth` refresh tokens, `iCloud` trust
-//! tokens. The daemon that mounts a cloud account never opens that vault.
-//! It reads exactly one account's entry from this separate store, which only
-//! ever holds what a single request needs:
-//!
 //! - a short-lived `OAuth` access token with its expiry,
 //! - short-lived web session headers with their expiry, or
 //! - for plain `WebDAV` and Nextcloud, the Basic credential the server itself
 //!   requires (a Nextcloud app password minted for this device by Login Flow
 //!   v2, never the account password).
-//!
-//! Each account is its own sealed file (`accounts/handoff/<hex id>.enc`,
-//! XChaCha20-Poly1305 under this store's own key), so reading one account
-//! decrypts nothing of another's.
-//!
-//! When the entry is missing, expired, or the server rejected it,
-//! [`HandoffCredentialSource`] asks a [`CredentialRefresher`] to publish a
-//! fresh one. The production refresher runs Settings' credential helper as a
-//! separate process ([`CommandRefresher`]); refresh tokens stay inside it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,18 +20,15 @@ use crate::{AccountId, SecretCustody};
 
 const FORMAT: VaultFormat = VaultFormat {
     name: "account-handoff",
-    // Tilo Account HandOff.
     magic: b"QAHO",
     secret_service_label: "Tilo account credential handoff",
     secret_service_attributes: &[("application", "Tilo"), ("purpose", "account-handoff")],
     dpapi_entropy: b"Tilo account handoff key v1",
 };
 
-/// A credential for one account's requests, stored as it serializes.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HandoffCredential {
-    /// The server's own Basic credential (`WebDAV`, a Nextcloud app password).
     Basic {
         username: String,
         password: Zeroizing<String>,
@@ -91,7 +73,6 @@ impl std::fmt::Debug for HandoffCredential {
 }
 
 impl HandoffCredential {
-    /// When the credential stops working, `None` if it does not expire.
     pub fn expires_unix(&self) -> Option<u64> {
         match self {
             Self::Basic { .. } => None,
@@ -104,7 +85,6 @@ impl HandoffCredential {
             .is_some_and(|expires| now.saturating_add(skew) >= expires)
     }
 
-    /// The cloud source view of this credential.
     pub fn to_cloud(&self) -> cloud_source::Credential {
         let expires = |unix: Option<u64>| {
             unix.and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
@@ -132,7 +112,6 @@ impl HandoffCredential {
     }
 }
 
-/// The per-account handoff files.
 #[derive(Clone, Debug)]
 pub struct HandoffStore {
     dir: PathBuf,
@@ -140,7 +119,6 @@ pub struct HandoffStore {
     config_root: Option<PathBuf>,
 }
 
-/// The handoff directory under a config root (`root/accounts/handoff`).
 pub fn handoff_dir_in(config_root: &Path) -> PathBuf {
     crate::accounts_dir_in(config_root).join("handoff")
 }
@@ -178,7 +156,6 @@ impl HandoffStore {
         }
     }
 
-    /// The explicit config root this store was opened under, if any.
     pub fn config_root(&self) -> Option<&Path> {
         self.config_root.as_deref()
     }
@@ -187,7 +164,6 @@ impl HandoffStore {
         self.dir.join(format!("{}.enc", hex::encode(id.as_str())))
     }
 
-    /// Replace the account's handoff credential.
     pub fn publish(&self, id: &AccountId, credential: &HandoffCredential) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create the handoff directory: {error}"))?;
@@ -205,7 +181,6 @@ impl HandoffStore {
             .map_err(|error| format!("could not write the handoff credential: {error}"))
     }
 
-    /// The account's handoff credential, `None` when none is published.
     pub fn read(&self, id: &AccountId) -> Result<Option<HandoffCredential>, String> {
         let sealed = match std::fs::read(self.file(id)) {
             Ok(sealed) => sealed,
@@ -234,18 +209,13 @@ impl HandoffStore {
     }
 }
 
-/// Why a refresh did not publish a credential.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshError {
-    /// The account needs an interactive sign-in in Settings.
     NeedsAuthentication,
-    /// The provider could not be reached.
     Offline,
-    /// Anything else; details are in Settings' account health.
     Failed,
 }
 
-/// Publishes a fresh handoff credential for one account.
 pub trait CredentialRefresher: Send + Sync {
     /// Publish a credential that is valid now. `force` asks for a new one
     /// even if the stored one looks valid (the server rejected it).
@@ -255,7 +225,6 @@ pub trait CredentialRefresher: Send + Sync {
     fn refresh(&self, id: &AccountId, force: bool) -> Result<(), RefreshError>;
 }
 
-/// Exit codes of the credential helper (`tilo-account-credential refresh`).
 pub mod exit {
     pub const PUBLISHED: i32 = 0;
     pub const FAILED: i32 = 1;
@@ -329,7 +298,6 @@ pub struct HandoffCredentialSource {
     rejected: AtomicBool,
 }
 
-/// Refresh this long before the published expiry.
 const EXPIRY_SKEW_SECS: u64 = 60;
 
 impl HandoffCredentialSource {

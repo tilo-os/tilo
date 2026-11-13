@@ -46,10 +46,6 @@ fn row() -> ToolbarRow {
     row
 }
 
-/// A notice takes the location's place for as long as it is up, at any
-/// width, without moving a slot; its button stands right after its text,
-/// naming itself where the row has room, and runs as a bar action; a
-/// screen reader hears it without the focus moving.
 #[test]
 fn a_notice_stands_in_the_location_and_is_read_out_politely() {
     use crate::widget::toast::ToastKind;
@@ -196,7 +192,6 @@ fn a_click_on_the_location_edits_the_whole_address_and_esc_puts_it_back() {
     );
 }
 
-/// A terminal's slots: where its shell runs, one of a few places.
 fn terminal() -> WindowToolbar {
     use crate::window_toolbar::LocationChoice;
     let choice = |label: &str, value: &str, current: bool, separated: bool| LocationChoice {
@@ -308,9 +303,6 @@ fn an_edited_document_says_so_after_its_label_and_to_assistive_technology() {
     assert_eq!(node(false).description, None);
 }
 
-/// A window whose person may only look says so after its location, in
-/// place of "Edited", which no edit of theirs can follow; the framework
-/// sets it on whatever location the app declared.
 #[test]
 fn a_view_only_window_says_so_after_its_label() {
     let location = ToolbarLocation {
@@ -344,7 +336,6 @@ fn text(key: &str) -> String {
     crate::i18n::I18nManager::lookup_plain(key)
 }
 
-/// The node with `role` and `name` among `nodes` and their children.
 fn find_node<'a>(nodes: &'a [AccessNode], role: Role, name: &str) -> Option<&'a AccessNode> {
     nodes.iter().find_map(|node| {
         if node.role == role && node.name.as_deref() == Some(name) {
@@ -355,9 +346,6 @@ fn find_node<'a>(nodes: &'a [AccessNode], role: Role, name: &str) -> Option<&'a 
     })
 }
 
-/// An address book's slots: the sidebar, Back, its place as the
-/// location, and New contact, Import and Export, or Save and Cancel
-/// while a person is edited.
 fn address_book(editing: bool) -> WindowToolbar {
     let actions = if editing {
         vec![
@@ -434,8 +422,6 @@ fn every_slot_and_overflow_item_is_found_by_role_and_name_and_runs() {
     );
     assert_ne!(new.bounds, more.bounds);
 
-    // Narrow, New contact goes in the menu too; open, each item stands
-    // where its row is drawn.
     let mut narrow = address_book_row(false, 240.0);
     assert!(narrow.slots().actions.is_empty(), "no room for any action");
     assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
@@ -464,7 +450,6 @@ fn every_slot_and_overflow_item_is_found_by_role_and_name_and_runs() {
         )]
     );
 
-    // Editing a person: Save and Cancel, closed menu or not.
     let mut editing = address_book_row(true, 240.0);
     let nodes = editing.accessibility();
     let save = find_node(&nodes, Role::MenuItem, "Save").expect("Save is reachable");
@@ -513,9 +498,6 @@ fn another_tab_cross_fades_and_drops_what_was_typed_in_this_one() {
     assert!(row.needs_animation_frame(), "the old slots fade out");
 }
 
-/// A calendar's slots: the sidebar, previous, next and today, the
-/// period as the location, the view switcher, New event and an import
-/// for the menu.
 fn calendar() -> WindowToolbar {
     use crate::window_toolbar::{ToolbarView, ToolbarViews};
     let view = |id: &str, label: &str| ToolbarView {
@@ -548,7 +530,6 @@ fn calendar() -> WindowToolbar {
     .bounded()
 }
 
-/// Mon, Oct 19 to Sun, Oct 25, 2026.
 fn a_week() -> crate::format::Period {
     let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap_or_default();
     crate::format::Period::Days(day(19), day(25))
@@ -654,7 +635,7 @@ fn leading_actions_follow_the_navigation_and_views_stand_before_the_actions() {
 fn each_view_tab_is_as_wide_as_its_label() {
     let theme = Theme::dark();
     let row = calendar_row(1280.0);
-    let widths = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let widths = crate::text_render::with_layout_renderer(&theme, |text| {
         SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
     });
     let tabs = &row.slots().views;
@@ -688,7 +669,6 @@ fn a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room() {
         ]
     );
 
-    // Narrower than the sidebar's toggle and the views menu together.
     let mut narrow = calendar_row(120.0);
     assert!(
         narrow.slots().views.is_empty() && narrow.slots().views_menu == Rect::ZERO,
@@ -729,8 +709,6 @@ fn a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room() {
 /// slots beside its bar's own search, History and window controls.
 const COMPACT_CALENDAR_ROW: f64 = 233.0;
 
-/// The views a row's open menu lists, as assistive technology reaches
-/// each: its name, what it runs, and its check.
 fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
     row.menu_entries
         .iter()
@@ -747,7 +725,6 @@ fn the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole() {
         .find(|width| calendar_row(*width).slots().views_in_location())
         .expect("a row wide enough for the period's narrower form makes it the views' picker");
 
-    // Just narrower, the views are the overflow menu's.
     let mut below = calendar_row(at - 1.0);
     assert!(below.slots().views.is_empty() && below.slots().views_menu == Rect::ZERO);
     assert!(
@@ -757,7 +734,6 @@ fn the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole() {
     assert!(below.open_overflow());
     let in_overflow = listed_views(&below);
 
-    // At it, the location is the picker, and lists the same views.
     let mut picker = calendar_row(at);
     let slots = picker.slots().clone();
     assert_eq!(
@@ -1051,9 +1027,6 @@ fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
     );
 }
 
-/// The desktop's own items are a section of the window's More menu, after
-/// the app's declared commands: the bar shows one "…", and its menu says
-/// where the app's rows end and the desktop's begin.
 #[test]
 fn the_desktops_items_follow_the_apps_commands_in_one_menu() {
     let toolbar = WindowToolbar {
@@ -1202,9 +1175,6 @@ fn an_unavailable_sidebar_holds_its_place_and_cannot_act() {
     );
 }
 
-/// The bars of a sync that failed (Sync again, Open Settings), a held save
-/// failure (Try again) and an undoable deletion (Undo), each with its
-/// notice up, and the names of the notice's buttons.
 fn noticed() -> [(WindowToolbar, Vec<&'static str>); 3] {
     use crate::widget::toast::ToastKind;
     use crate::window_toolbar::ToolbarNotice;
@@ -1250,7 +1220,6 @@ fn noticed() -> [(WindowToolbar, Vec<&'static str>); 3] {
     ]
 }
 
-/// Every node named `name` in `nodes` and under them.
 fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
     for node in nodes {
         if node.name.as_deref() == Some(name) {
@@ -1260,13 +1229,6 @@ fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>)
     }
 }
 
-/// A notice's text stands whole before any action that yields to the
-/// location stands beside it, and is cut short only once they are all in
-/// the overflow menu. Its buttons stand in order right after the text at
-/// every width: each names itself where the row has room for that beside
-/// the whole text, from there on at every wider width, the last giving its
-/// label up first, and is its icon where not; none is ever in the
-/// overflow menu.
 #[test]
 fn a_notice_stands_whole_before_the_actions_and_its_buttons_stay_in_the_row() {
     for (toolbar, names) in noticed() {
@@ -1354,12 +1316,6 @@ fn a_notice_stands_whole_before_the_actions_and_its_buttons_stay_in_the_row() {
     }
 }
 
-/// In a compact window a notice says itself in a strip of its own under
-/// the row: its whole text, read out as it arrives, and its actions as
-/// buttons that name themselves, after the text where the whole text
-/// stands beside them and on a row of their own under it where not, each
-/// run by pointer and by its semantic action alike. The row stands as it
-/// does without a notice.
 #[test]
 fn a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semantics() {
     use crate::widget::toast::ToastKind;
@@ -1456,8 +1412,6 @@ fn a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semanti
     }
 }
 
-/// The browser's row once the app changed its slots to `toolbar` in the
-/// same tab, laid out and started as the next paint starts it.
 fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     let rect = row.row;
     row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
@@ -1465,7 +1419,6 @@ fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     row.start_slot_change(theme);
 }
 
-/// Long after any motion of the bar has settled.
 fn later(t0: crate::time::Instant) -> crate::time::Instant {
     t0.checked_add(crate::time::Duration::from_secs(2))
         .unwrap_or(t0)
@@ -1612,8 +1565,6 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
 #[path = "reactions_tests.rs"]
 mod reactions;
 
-/// The window's main action is painted as the primary button, where the row has room for its
-/// words; every other action stands on the bar's plain face.
 #[test]
 fn the_windows_main_action_is_painted_as_the_primary_button() {
     let primary = paint::labelled_face(crate::kurbo::Rect::ZERO, "New task", true);

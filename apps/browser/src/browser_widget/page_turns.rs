@@ -67,13 +67,9 @@ impl BrowserWidget {
         actor: Option<PageActor>,
         request: PageRequest,
     ) -> Result<(), String> {
-        // A settled operation's update waits here until the effect reply that
-        // asked for it reads it ([`Self::settle_replies`]). One whose reply is
-        // gone is spent: that caller was answered `accepted` and moved on, so
-        // nothing will ever read it here (`tilo_status` still answers it), and
-        // holding the tab for it would keep every later action waiting. An
-        // operation still in flight is never abandoned: it settles at its own
-        // deadline.
+        // A settled operation waits here for the effect reply that asked for
+        // it. One whose reply is gone is spent: holding the tab for it would
+        // keep every later action waiting.
         self.abandon_unwatched_page_result();
         // An action that is running holds the tab, and so does its answer
         // until its caller has read it: the action behind it runs on the page
@@ -276,15 +272,14 @@ impl BrowserWidget {
         actor: Option<PageActor>,
         request: PageRequest,
     ) {
-        // The page runs nothing while it waits on its question: an action
-        // sent now would only time out.
+        // The page runs nothing while it waits on its question.
         if let Some(dialog) = self.page_dialogs.current() {
             let refused = dialog::blocked_output(invocation, Some(dialog));
             self.page_operation_result = Some(refused);
             return;
         }
-        // A secret filled into the page is the person's credential: the page
-        // holds a sign-in from the moment it is sent.
+        // A secret filled into the page is the person's credential from the
+        // moment it is sent.
         if matches!(request, PageRequest::Fill { secret: true, .. }) {
             self.hold_sign_in();
         }
@@ -538,11 +533,9 @@ impl BrowserWidget {
                 return;
             }
             Ok(reply) => self.page_success(operation.invocation, &reply, &operation.acted, None),
-            // A page that refused the action because it was busy, or never
-            // answered, is reported as what it is.  Calling it retryable here
-            // would contradict the at-most-once contract this app publishes
-            // and the broker would refuse the answer, taking the whole
-            // session's page actions down with it.
+            // A busy page, or one that never answered, is reported as that:
+            // calling it retryable would contradict the at-most-once contract
+            // and the broker would drop every page action in the session.
             // What the tab's other actors did meanwhile is often why: it
             // travels with the refusal as it does with an answer.
             Err(failure) => action_failed(

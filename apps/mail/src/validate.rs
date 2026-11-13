@@ -2,9 +2,6 @@
 //! funnel their transport errors through [`classify_conn_failure`], so a
 //! "connection refused" reads the same wherever it came from.
 
-/// Classify a raw connection/transport error string into a specific,
-/// user-facing reason. Pure + dependency-free so it is compiled and tested in
-/// every build; the live IMAP/SMTP paths funnel their errors through it.
 pub fn classify_conn_failure(detail: &str) -> String {
     let d = detail.to_ascii_lowercase();
     // Auth first: a 535 / "authentication failed" is more specific than the
@@ -38,12 +35,9 @@ pub fn classify_conn_failure(detail: &str) -> String {
     if d.contains("unreachable") || d.contains("network is unreachable") {
         return "network unreachable — check your connection".into();
     }
-    // Preserve the underlying detail rather than swallowing it.
     format!("connection failed: {detail}")
 }
 
-/// Whether a server's or transport's error says the credentials were
-/// refused, rather than that the server could not be reached.
 pub fn is_auth_failure(detail: &str) -> bool {
     let d = detail.to_ascii_lowercase();
     d.contains("535")
@@ -70,7 +64,6 @@ mod tests {
     )]
     fn classify_maps_transport_errors_with_auth_first() {
         {
-            // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
             assert!(
                 classify_conn_failure("[AUTHENTICATIONFAILED] Invalid credentials")
                     .contains("authentication failed")
@@ -79,7 +72,6 @@ mod tests {
                 classify_conn_failure("535 5.7.8 Username and Password not accepted")
                     .contains("authentication failed")
             );
-            // Connection refused (nothing listening on the port).
             assert!(
                 classify_conn_failure("Connection refused (os error 111)")
                     .contains("connection refused")
@@ -94,9 +86,7 @@ mod tests {
                 classify_conn_failure("invalid peer certificate: UnknownIssuer")
                     .contains("TLS/certificate")
             );
-            // Timeout.
             assert!(classify_conn_failure("connection timed out").contains("timed out"));
-            // Unknown → the underlying detail is preserved, not swallowed.
             let unknown = classify_conn_failure("some novel failure mode");
             assert!(unknown.contains("some novel failure mode"), "{unknown}");
         }

@@ -17,8 +17,6 @@ fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<us
             let found = (*tag == vello_encoding::DrawTag::COLOR
                 && encoding.draw_data.get(data_offset) == Some(&expected))
             .then_some(position);
-            // The scene data a tag carries (the shader's `scene_offset`), which
-            // differs from its info size for images and blurred rects.
             data_offset += usize::try_from((tag.0 >> 2) & 0x07).expect("draw data size fits usize");
             found
         })
@@ -92,7 +90,6 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
     );
 }
 
-/// A later sibling that paints one fixture colour over its rect.
 struct Blocker {
     color: vello::peniko::Color,
     rect: Rect,
@@ -318,8 +315,7 @@ fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
     assert!(focused(&frame, "first"));
 }
 
-/// A retained modal with explicit native Widget focus/modal contracts. Its real
-/// controls keep stable semantic identities while the host rebuilds Taffy ids.
+/// A retained modal with explicit native Widget focus/modal contracts.
 struct Gate {
     content: Column,
     open: Rc<Cell<bool>>,
@@ -597,8 +593,6 @@ fn idle_frame_poll_does_not_materialize_accessibility_tree() {
 
 #[test]
 fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
-    // Two retained buttons; the column below them is empty space with no
-    // hover state.
     let mut frame = frame(Box::new(target_and_other()));
     let device_id = winit::event::DeviceId::dummy();
     let button = frame.targets()["target"];
@@ -740,7 +734,6 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
         "the editor's focused line owns keyboard focus"
     );
 
-    // The press edits the line; its release changes nothing measured.
     let x = keys::parse_key("x");
     frame.send_host_event(&crate::synthetic_input::key_input(
         &x,
@@ -813,9 +806,8 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     frame.verify_retained_geometry().unwrap();
 }
 
-/// A resize re-solves the retained tree against the new size; only a widget
-/// that composes from its allocation is composed again. Either way the result
-/// is what a fresh composition at that size gives.
+/// A resize re-solves the retained tree against the new size; only a widget that composes from its
+/// allocation is composed again.
 #[test]
 fn viewport_change_re_solves_and_matches_a_fresh_composition() {
     let mut frame = frame(Box::new(target_and_other()));
@@ -975,17 +967,15 @@ fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
     assert!(focused(&frame, "background"));
 }
 
-/// A layout that does not settle skips its frame and nothing else, as the
-/// browser host and the native one run it: the failure is reported once
-/// rather than on every frame that fails again, input still reaches the
-/// controls, and the next frame whose layout settles paints.
+/// A layout that does not settle skips its frame and nothing else, as the browser host and the native
+/// one run it: the failure is reported once rather than on every frame that fails again, input still
+/// reaches the controls, and the next frame whose layout settles paints.
 #[test]
 fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
     let looping = Rc::new(Cell::new(false));
     let policy = {
         let looping = looping.clone();
         move |ctx: &mut crate::widget::ManualContext<'_>| {
-            // While looping, a size that flips with the space offered.
             let short = looping.get() && ctx.available().height > 75.0;
             Ok(taffy::Size {
                 width: ctx.available().width,
@@ -1008,15 +998,12 @@ fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
         matches!(error, crate::widget::WidgetLayoutError::DidNotSettle { .. }),
         "{error}"
     );
-    // The next frame the harness runs itself, as input's, fails too: it is
-    // skipped, and its report kept for a host whose log is not `tracing`'s.
     frame.relayout();
     let report = frame
         .take_skip_report()
         .expect("the first failure is reported");
     assert!(report.contains("did not settle"), "{report}");
     assert_eq!(frame.take_skip_report(), None, "it is handed over once");
-    // The host skipping its own frame at once after is not reported again.
     assert_eq!(
         frame.skip_frame(&error),
         None,
@@ -1045,8 +1032,8 @@ fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
     assert!(focused(&frame, "target"));
 }
 
-/// The bounding box of the pixels two renders of one frame disagree on,
-/// inside `region` (x0, y0, x1, y1 in device pixels).
+/// The bounding box of the pixels two renders of one frame disagree on, inside `region` (x0, y0, x1, y1
+/// in device pixels).
 fn changed_pixels(
     before: &[u8],
     after: &[u8],
@@ -1075,7 +1062,6 @@ fn changed_pixels(
     bbox
 }
 
-/// An agent's write of the characters `start..end` of the note's one block.
 fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteraction {
     tilo_actions::SemanticInteraction {
         version: tilo_actions::INTERACTION_VERSION,
@@ -1091,6 +1077,8 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
             id: "insert".into(),
             label: "Write".into(),
             app: None,
+            step: None,
+            creates: None,
         },
         resource: tilo_actions::ActionResource {
             id: "so.tilo.notes/note".into(),
@@ -1109,13 +1097,10 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
     }
 }
 
-/// A note with one line, and the frame that draws it.
 fn note_frame(text: &str) -> FrameHarness {
     use crate::widget::{BlockContent, BlockEditor};
     let mut editor = BlockEditor::new();
     editor.present_blocks(&[BlockContent::paragraph("b1", text)]);
-    // Room above the line: the presence layer's own activity rail sits at the
-    // top of a frame, and this test measures the document's pixels.
     let mut frame = frame(Box::new(
         Container::new()
             .with_padding(100.0)
@@ -1125,9 +1110,8 @@ fn note_frame(text: &str) -> FrameHarness {
     frame
 }
 
-/// What an agent's action writes glows on exactly the characters it wrote —
-/// the same cells a person typing those characters lights up — and not on the
-/// rest of the block.
+/// What an agent's action writes glows on exactly the characters it wrote — the same cells a person
+/// typing those characters lights up — and not on the rest of the block.
 #[test]
 fn an_agents_written_text_glows_on_exactly_those_characters() {
     use crate::permissions::UserId;
@@ -1160,7 +1144,6 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
 
     let mut agent_frame = note_frame(text);
     let event = written_interaction(start, end);
-    // A second in: the pointer has travelled to the text it wrote.
     let at = crate::time::now()
         .checked_sub(crate::time::Duration::from_secs(1))
         .expect("the clock is later than a second ago");
@@ -1175,7 +1158,10 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         label = presence.interaction_status_label(&event);
         applied
     });
-    assert_eq!(label, "Ada: writing");
+    assert_eq!(
+        label, "Ada: Writing in Note",
+        "the line names the kind of work and the record it writes in"
+    );
     assert!(
         agent_frame.semantic_locus(&event).is_none(),
         "a text anchor is drawn in the document, not on a control"
@@ -1191,8 +1177,6 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         agent_frame.set_theme(crate::theme::Theme::light());
         agent_frame.render_png(&dir.join("note-agent-caret-and-glow-light.png"));
     }
-    // The note's own half of the window: the presence rail on the right is
-    // the same layer's, but it is not the text the agent wrote.
     let line = (0, typed.1, width / 2, typed.3);
     let glow = changed_pixels(&plain, &drawn, width, line).expect("the agent's write glows");
     assert!(
@@ -1205,9 +1189,9 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     );
 }
 
-/// An agent writing in a note has its live caret where its write ends, and its action caret
-/// there too: it wears one tag, the one saying who it is and what it is doing, never its name a
-/// second time over the same words.
+/// An agent writing in a note has its live caret where its write ends, and its action caret there too:
+/// it wears one tag, the one saying who it is and what it is doing, never its name a second time over
+/// the same words.
 #[test]
 fn an_agent_writing_wears_one_tag_at_its_caret() {
     use crate::permissions::UserId;
@@ -1242,8 +1226,8 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
     );
 }
 
-/// A leaf a test drives by hand: what it paints changed, an animation it
-/// owes, and a deadline it looks at.
+/// A leaf a test drives by hand: what it paints changed, an animation it owes, and a deadline it looks
+/// at.
 struct Changed {
     dirty: Rc<Cell<bool>>,
     animate: Rc<Cell<bool>>,
@@ -1270,8 +1254,6 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
     let dirty = Rc::new(Cell::new(false));
     let animate = Rc::new(Cell::new(false));
     let deadline = Rc::new(Cell::new(None));
-    // The list a described list is: content under a menu that stands closed,
-    // which every such list carries.
     let mut frame = frame(Box::new(ContextMenuArea::new(
         Box::new(Changed {
             dirty: Rc::clone(&dirty),

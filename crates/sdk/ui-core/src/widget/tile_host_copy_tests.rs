@@ -1,10 +1,8 @@
-//! A scroll in an app a window shows, drawn for a host that keeps what it
-//! presented and can move it (the web's canvas,
-//! [`crate::scroll_copy::HostCopies`]): the window hands over what moved,
-//! the host copies it ([`crate::retained_raster::RetainedFrames::repaint_copying`])
-//! and repaints the strip the scroll exposed, and every presented frame
-//! equals a full render of the scene, the desk under the window included.
-
+//! A scroll in an app a window shows, drawn for a host that keeps what it presented and can move it
+//! (the web's canvas, [`crate::scroll_copy::HostCopies`]): the window hands over what moved, the
+//! host copies it ([`crate::retained_raster::RetainedFrames::repaint_copying`]) and repaints the
+//! strip the scroll exposed, and every presented frame equals a full render of the scene, the desk
+//! under the window included.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -25,7 +23,6 @@ use taffy::prelude::TaffyMaxContent;
 
 /// The scene, in logical pixels.
 const SCENE: (f64, f64) = (720.0, 540.0);
-/// Where the window stands in it.
 const WINDOW: Rect = Rect::new(40.0, 24.0, 680.0, 504.0);
 
 /// An app that is one long list in a scroller, scrolled by `scroll` logical
@@ -76,7 +73,6 @@ impl Widget for List {
 
 crate::testing::test_app_widget!(List, "List");
 
-/// What a run of scroll frames did.
 #[derive(Debug, Default)]
 struct Run {
     frames: usize,
@@ -137,7 +133,6 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
         },
         &[tile],
     );
-    // Measured as a window measures its text, so every row has its height.
     let mut measure = TextRenderer::new();
     tree.compute_layout_with_measure(root, Size::MAX_CONTENT, |known, available, id, _, _| {
         nodes.get(&id).map_or(Size::ZERO, |&widget| {

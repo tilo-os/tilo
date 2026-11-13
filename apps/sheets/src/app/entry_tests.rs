@@ -1,8 +1,3 @@
-//! Entering data the way spreadsheet users expect: typing over a selected
-//! cell replaces it whichever way the text arrives, the arrow keys finish a
-//! typed entry and move on, `AutoSum` adds up only the numbers above, and an
-//! error cell says why it is one.
-
 use super::tests::{char_event, doc_cell_raw, feed, named_event, seeded_app};
 use super::*;
 use crate::grid::GridCmd;
@@ -64,14 +59,11 @@ fn text_committed_on_a_selected_cell_replaces_it() {
     assert_eq!(doc_cell_raw(&doc, 0, a21), "Item");
     assert_eq!(app.grid.active(), (0, 21), "Enter moved down");
 
-    // The next cell takes the next commit the same way, so a column of typed
-    // values all lands.
     let commit = WindowEvent::Ime(Ime::Commit("Cost".into()));
     assert!(feed(&mut app, &mut doc, &commit, Modifiers::default()));
     press(&mut app, &mut doc, NamedKey::Enter);
     assert_eq!(doc_cell_raw(&doc, 0, (0, 21)), "Cost");
 
-    // A composition on a selected cell starts the entry too.
     let preedit = WindowEvent::Ime(Ime::Preedit("にほ".into(), Some((3, 3))));
     assert!(feed(&mut app, &mut doc, &preedit, Modifiers::default()));
     assert!(app.grid.is_editing());
@@ -82,9 +74,6 @@ fn text_committed_on_a_selected_cell_replaces_it() {
     );
 }
 
-/// After typing over a cell, the arrow keys commit and move like Enter and
-/// Tab do; after F2 they move the caret within the text. Shift+Tab and
-/// Shift+Enter commit and move back.
 #[test]
 fn arrows_finish_a_typed_entry_but_move_the_caret_in_an_edit() {
     let (mut app, mut doc) = seeded_app();
@@ -107,8 +96,6 @@ fn arrows_finish_a_typed_entry_but_move_the_caret_in_an_edit() {
     }
     assert_eq!(doc_cell_raw(&doc, 0, (0, 21)), "7");
 
-    // F2 opens the cell ("Item", caret at its end) for caret editing:
-    // arrows stay inside the text.
     assert_eq!(app.grid.active_display_raw(), "Item");
     press(&mut app, &mut doc, NamedKey::F2);
     press(&mut app, &mut doc, NamedKey::ArrowLeft);
@@ -119,7 +106,6 @@ fn arrows_finish_a_typed_entry_but_move_the_caret_in_an_edit() {
     assert_eq!(app.grid.edit_caret(), Some(3));
     press(&mut app, &mut doc, NamedKey::Escape);
 
-    // A typed formula keeps the caret moving: it is composed piecewise.
     type_chars(&mut app, &mut doc, "=1");
     press(&mut app, &mut doc, NamedKey::ArrowLeft);
     assert!(app.grid.is_editing());
@@ -146,9 +132,6 @@ fn arrows_finish_a_typed_entry_but_move_the_caret_in_an_edit() {
     assert_eq!(app.grid.active(), (1, 21));
 }
 
-/// `AutoSum` under a column with a total and error cells sums only the values
-/// above the total: errors directly above are stepped over and the existing
-/// total ends the run instead of being counted again.
 #[test]
 fn auto_sum_skips_errors_and_stops_at_an_existing_total() {
     let (mut app, mut doc) = seeded_app();
@@ -164,14 +147,11 @@ fn auto_sum_skips_errors_and_stops_at_an_existing_total() {
             ((col, 24), "=FOO(1)"),
         ],
     );
-    // Under the errors: they are stepped over, the total stops the run, and
-    // nothing numeric is left to add.
     app.grid.select_only((col, 25));
     app.auto_sum(&mut Edits::lend(&mut doc));
     assert_eq!(doc_cell_raw(&doc, 0, (col, 25)), "");
     assert_eq!(app.status, "No numeric run above");
 
-    // Numbers between the total and the errors are summed without either.
     set_cells(
         &mut app,
         &mut doc,
@@ -181,7 +161,6 @@ fn auto_sum_skips_errors_and_stops_at_an_existing_total() {
     app.auto_sum(&mut Edits::lend(&mut doc));
     assert_eq!(doc_cell_raw(&doc, 0, (col, 25)), "=SUM(H24:H24)");
 
-    // A plain run with no total above sums it all.
     set_cells(
         &mut app,
         &mut doc,
@@ -192,8 +171,6 @@ fn auto_sum_skips_errors_and_stops_at_an_existing_total() {
     assert_eq!(doc_cell_raw(&doc, 0, (col + 1, 22)), "=SUM(I21:I22)");
 }
 
-/// A formula that can't be read says what is wrong when it is entered and
-/// whenever its cell is selected, instead of a bare `#ERROR!`.
 #[test]
 fn an_error_cell_explains_itself() {
     let (mut app, mut doc) = seeded_app();
@@ -222,13 +199,10 @@ fn an_error_cell_explains_itself() {
         assert!(bubble.contains(why), "{raw}: {bubble}");
     }
 
-    // A plain value says nothing of errors.
     set_cells(&mut app, &mut doc, &[((7, 22), "5")]);
     assert!(app.error_explanation((7, 22)).is_none());
 }
 
-/// A selected formula cell traces its references with a wash only; the
-/// outline (which reads as a second selected cell) is kept for editing.
 #[test]
 fn reference_outlines_only_while_editing() {
     let (mut app, mut doc) = seeded_app();
@@ -240,8 +214,6 @@ fn reference_outlines_only_while_editing() {
     assert!(app.grid.reference_outlines_visible());
 }
 
-/// The settings sheet's date strip gives "Language" the room it needs rather
-/// than cutting it to an equal share of a narrow sheet.
 #[test]
 fn settings_strip_labels_are_not_cut() {
     let theme = Theme::dark();
@@ -258,8 +230,6 @@ fn settings_strip_labels_are_not_cut() {
     assert!(lang.width() > us.width());
 }
 
-/// In the running app the sheet declares its slots, so its History is the
-/// window bar's too: no History band stands above the sheet.
 #[test]
 fn the_running_app_has_no_history_band_above_the_sheet() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SheetsShell>::new().unwrap();
@@ -278,10 +248,6 @@ fn the_running_app_has_no_history_band_above_the_sheet() {
     );
 }
 
-/// In the running app Tab belongs to the grid: typing then Tab commits the
-/// cell and moves right, rather than the host moving focus to the next
-/// control (the window's title, the shell). An open settings sheet hands
-/// Tab back to the focus order.
 #[test]
 fn tab_commits_and_moves_right_in_the_running_app() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SheetsShell>::new().unwrap();
@@ -316,16 +282,11 @@ fn tab_commits_and_moves_right_in_the_running_app() {
     assert_eq!(wants, (true, false));
 }
 
-/// Sheets paints its regions as parts, and reports as damage the regions
-/// whose drawing changed: a typed character repaints the editor and the
-/// formula bar, a committed cell its rows and marks, a resize the window.
 #[test]
 fn a_typed_character_damages_its_cell_and_formula_bar_and_a_resize_the_window() {
     let (w, h) = (1200.0, 800.0);
     let (mut app, mut doc, mut tr, theme) = super::tests::measured_app_with_doc(w, h, 1.0);
     let presence = PresenceCtx::default();
-    // One text renderer across frames, as a host keeps: its fonts are the
-    // same fonts from frame to frame.
     let mut frame = |app: &mut SheetsApp, w: f64, h: f64| {
         app.rect = Rect::new(0.0, 0.0, w, h);
         app.relayout();

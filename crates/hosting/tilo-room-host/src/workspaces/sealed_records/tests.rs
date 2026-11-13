@@ -114,7 +114,7 @@ pub(super) async fn lounge() -> Lounge {
 /// `capacity` frames it did not read yet; `0` keeps the link's own.
 async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     if capacity > 0 {
@@ -726,7 +726,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const CHAT: &str = "so.tilo.chat";
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -818,7 +818,7 @@ async fn retained_once(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -852,7 +852,7 @@ async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
 async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     const LEGACY: &str = "legacy";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -928,7 +928,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     use super::super::tests::{door_join, guest_device};
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
-    let (key, ada) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &ada).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1409,7 +1409,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -2262,7 +2262,7 @@ async fn readers_that_fell_behind_read_every_write_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     // The host after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
@@ -2368,7 +2368,7 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
@@ -2558,6 +2558,210 @@ async fn a_page_is_sent_a_desks_write_whose_copy_has_not_landed() {
         "the page is sent the desk's write from the link"
     );
     drop(page);
+    let Lounge {
+        workspaces, relay, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
+/// The member's page lets a change go, unsigned and unsent, and sends its next change, built on
+/// it, to the relay: the hole a page left in a record before its writes waited for the record.
+/// Answers the write it sent, once the relay retains it.
+async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::RelayClient) -> SignedOp {
+    lounge.member.lets_go(|doc| {
+        doc.put(ROOT, "early", "let go").unwrap();
+        doc.commit_edit("fixture", "early");
+    });
+    let ((), stuck) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "after", "built on it").unwrap();
+        doc.commit_edit("fixture", "after");
+    });
+    send_sealed(client, lounge.workspace_id, &lounge.member_key, &stuck);
+    let NeighbourMsg::AppDocument { envelope, .. } = stuck else {
+        panic!("a document write")
+    };
+    tilo_test_env::within("the relay retains the stuck write", async {
+        while !retained_writes(&lounge.relay, lounge.workspace_id, RECORD)
+            .await
+            .iter()
+            .any(|op| op.signature == envelope.signature)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    // As a reader is refused it: the record a newcomer is sent waits for a change no device
+    // will ever send.
+    let held = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+    assert!(
+        !newcomer_opens(&lounge.member, &held)
+            .get_missing_deps(&[])
+            .is_empty(),
+        "a newcomer is sent a record that waits for the change the page let go"
+    );
+    *envelope
+}
+
+/// Wait until what a newcomer is sent of [`RECORD`] holds neither `stuck` nor anything that waits
+/// for a change it lacks, and reads `title`: the record whole without the stuck write.
+async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted: &str) {
+    tilo_test_env::within("the relay folds the stuck write away", async {
+        loop {
+            let held = retained_writes(&lounge.relay, lounge.workspace_id, RECORD).await;
+            let mut read = automerge::AutoCommit::new();
+            let opens = held
+                .iter()
+                .all(|op| lounge.member.try_open_into(op, &mut read).is_ok());
+            if opens
+                && !held.iter().any(|op| op.signature == stuck.signature)
+                && read.get_missing_deps(&[]).is_empty()
+                && title(&read.save()).as_deref() == Some(wanted)
+            {
+                assert!(read.get(ROOT, "after").unwrap().is_none());
+                assert!(read.get(ROOT, "early").unwrap().is_none());
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+}
+
+/// A page that held a record's keys before the record itself wrote a change in that moment, let it
+/// go unsigned and unsent, and sent its next change, built on the first: the record holds a change
+/// whose base no device will ever send, and every reader was refused it as incomplete. The
+/// relay's fold left that write beside its snapshot, so a newcomer was sent it forever.
+///
+/// The governor, which every write of the record reaches, finds the write stuck behind a change
+/// its writer never sent: the writer's own sequence of changes shows the gap, and every write it
+/// signed before is held. The relay's next fold leaves it out of the record for good, keeps it in
+/// the store's archive, and a newcomer reads the rest of the record whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_built_on_a_change_its_writer_never_sent_is_folded_away() {
+    let (lounge, client) = lounge_with_client().await;
+    let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
+    let stuck = page_leaves_a_hole(&lounge, &client).await;
+
+    // The governor reads the record without it, and holds it whole so.
+    follows_field(workspaces, workspace, "title", "Welcome").await;
+    assert!(
+        workspaces
+            .whole_records(workspace, None)
+            .await
+            .unwrap()
+            .is_whole(),
+        "a write no device can complete leaves the record whole without it"
+    );
+
+    // The page reloads and writes on, past the point the record's channel folds.
+    let reloaded = lounge.member.reloads(workspaces, workspace).await;
+    for index in 0..40 {
+        seal_and_send_title(
+            &reloaded,
+            &client,
+            workspace,
+            lounge.workspace_id,
+            &lounge.member_key,
+            &format!("line {index}"),
+        );
+    }
+    follows(workspaces, workspace, "line 39").await;
+    newcomer_reads_whole_without(&lounge, &stuck, "line 39").await;
+    let root = state_root(workspaces, workspace, lounge.workspace_id).await;
+    assert!(
+        !archived_bodies(&root).is_empty(),
+        "the write the record left is kept in the store's archive"
+    );
+    drop(client);
+    let Lounge {
+        workspaces, relay, ..
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
+/// A relay's store already holds such a stuck write from a run before writes waited for their
+/// record, and nothing the record's writers do brings it a fold: the relay folds it away as it
+/// starts, and a newcomer reads the record whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    // The relay after the restart holds the channel keys the one before it took part with.
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let relay = crate::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &cert,
+        std::sync::Arc::clone(&keys),
+    )
+    .await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("Lounge").await.unwrap();
+    let (workspace, workspace_id) = (created.workspace, created.workspace_id);
+    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    workspaces
+        .author_room_record(&workspace, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let member =
+        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+    let client = Box::pin(subscribed_member(
+        &relay,
+        &member_key,
+        member_cert.clone(),
+        workspace_id,
+    ))
+    .await;
+    let lounge = Lounge {
+        _dir: dir,
+        relay,
+        workspaces,
+        workspace,
+        workspace_id,
+        governor: cert,
+        governor_key: key,
+        member_key,
+        member_cert,
+        member,
+    };
+    let stuck = page_leaves_a_hole(&lounge, &client).await;
+    drop(client);
+    let Lounge {
+        _dir: dir,
+        relay,
+        workspaces,
+        workspace,
+        workspace_id,
+        governor,
+        governor_key,
+        member_key,
+        member_cert,
+        member,
+    } = lounge;
+    drop(workspaces);
+    relay.shutdown().await;
+
+    let relay =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &governor_key, &governor, keys)
+            .await;
+    let workspaces = relay.workspaces().clone();
+    let lounge = Lounge {
+        _dir: dir,
+        relay,
+        workspaces,
+        workspace,
+        workspace_id,
+        governor,
+        governor_key,
+        member_key,
+        member_cert,
+        member,
+    };
+    newcomer_reads_whole_without(&lounge, &stuck, "Welcome").await;
     let Lounge {
         workspaces, relay, ..
     } = lounge;

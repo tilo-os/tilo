@@ -9,13 +9,10 @@ use crate::actions::{
     PdfEffect, PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id,
 };
 
-/// The group the document's hits are listed under: the app's own name.
 fn group() -> String {
     crate::t("pdf-title")
 }
 
-/// One hit: listed with the document's, opened by `effect` on the row
-/// `row`.
 fn entry(
     title: String,
     text: String,
@@ -29,10 +26,6 @@ fn entry(
         .subtitled(subtitle)
 }
 
-/// The search entries of the document `ctx` shows, each displayed page's
-/// text as the engine's text layer read it, in `page_text`.
-/// Every hit invokes the canonical action of the resource it names, the same
-/// address the published tree carries.
 pub fn surface_entries(ctx: &PdfResourceCtx, page_text: &[&str]) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     let document_id = <crate::PdfMarkup as ui::tilo_resource::Resource>::KIND.to_string();
@@ -54,7 +47,6 @@ pub fn surface_entries(ctx: &PdfResourceCtx, page_text: &[&str]) -> Vec<SearchEn
             .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
             .unwrap_or_default();
         let subtitle = text.chars().take(120).collect::<String>();
-        // A page opens as the page it is.
         entries.push(
             SearchEntry::new(
                 crate::t_args("pdf-a11y-page", &[("page", page.to_string().into())]),
@@ -65,10 +57,6 @@ pub fn surface_entries(ctx: &PdfResourceCtx, page_text: &[&str]) -> Vec<SearchEn
             .subtitled(subtitle),
         );
     }
-    // Imported PDF bookmarks / outline entries are first-class navigation
-    // resources too. Keep their search address identical to the resource
-    // tree, so a search result opens the intended section rather than merely
-    // matching the page text that happens to contain the same title.
     for (index, (title, page, level)) in ctx.outline.iter().enumerate() {
         let Some(resource) = outline_resource_id(ctx, index) else {
             continue;
@@ -84,10 +72,6 @@ pub fn surface_entries(ctx: &PdfResourceCtx, page_text: &[&str]) -> Vec<SearchEn
             &PdfEffect::GoTo { page: *page },
         ));
     }
-    // The current find query is local view state, but its results are
-    // canonical resources. Keep this bounded and use the same ids and actions
-    // as the published tree, so a hit cannot navigate to a later query's
-    // ordinal match.
     if !ctx.search_query.trim().is_empty() {
         for (index, page) in ctx
             .search_pages

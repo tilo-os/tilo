@@ -1,14 +1,4 @@
 //! Transient notices and the notification card.
-//!
-//! - [`Transient`] and [`Notice`] keep a window's transient message (a
-//!   confirmation, something under way, a failure) for its lifetime and
-//!   show it in the window's bar ([`crate::window_toolbar::notify`]); no
-//!   window paints a card for one.
-//! - [`ToastCard`] and [`paint_card`] paint the shell's notification card,
-//!   outside any window: the desktop's notification banners and the lock
-//!   screen's.
-//! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*`.
-
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::time::Duration;
@@ -33,8 +23,6 @@ fn single_line_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Severity / category of a toast. Maps to the semantic color ramp in
-/// [`crate::tokens::Colors`] for the left accent bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToastKind {
@@ -53,8 +41,6 @@ pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
     !crate::time::wall_frozen() && crate::time::now().saturating_duration_since(shown) > ttl
 }
 
-/// How long a notice stays up: a [`Notice`] or a [`Transient`] shown in the
-/// window's bar ([`crate::window_toolbar::notify`]).
 pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 
 /// A message an app shows over its content for a while. It is one of two
@@ -76,21 +62,15 @@ pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 #[derive(Debug)]
 pub struct Transient<T> {
     current: Option<Shown<T>>,
-    /// Counts the messages shown, so the bar hears each one once.
     shown: u64,
-    /// What [`Self::publish`] put in the window's bar, and which message it
-    /// said: taken down once the message goes.
     published: std::cell::RefCell<Option<(u64, crate::window_toolbar::ToolbarNotice)>>,
 }
 
-/// A [`Transient`]'s message and the time its lifetime counts from: when it
-/// went up, or, for progress, when the work was last reported running.
 #[derive(Clone, Debug)]
 struct Shown<T> {
     value: T,
     since: crate::time::Instant,
     progress: bool,
-    /// Which message this is ([`Transient::shown`]).
     number: u64,
 }
 
@@ -112,7 +92,6 @@ impl<T: Clone> Clone for Transient<T> {
     }
 }
 
-/// A message gone with its owner leaves the window's bar with it.
 impl<T> Drop for Transient<T> {
     fn drop(&mut self) {
         if let Some((_, notice)) = self.published.get_mut().take() {
@@ -131,10 +110,6 @@ impl<T> Transient<T> {
         }
     }
 
-    /// Show the message in the window's bar while it lasts, as `notice`
-    /// says it, and take it down once it has gone; call on every sync. A
-    /// notice shown since from elsewhere in the window stays: the newest
-    /// replaces the older.
     pub fn publish(&self, notice: impl FnOnce(&T) -> crate::window_toolbar::ToolbarNotice) {
         let want = self
             .current
@@ -145,8 +120,6 @@ impl<T> Transient<T> {
         if *published == want {
             return;
         }
-        // The same message said differently replaces itself; another
-        // message is news, and replaces whatever is up.
         if let Some((_, gone)) = published.take() {
             crate::window_toolbar::withdraw(&gone);
         }
@@ -156,7 +129,6 @@ impl<T> Transient<T> {
         }
     }
 
-    /// `value`, shown from now as plain information.
     #[must_use]
     pub fn showing(value: T) -> Self {
         let mut transient = Self::new();
@@ -164,7 +136,6 @@ impl<T> Transient<T> {
         transient
     }
 
-    /// `value`, shown from now as progress of work under way.
     #[must_use]
     pub fn showing_progress(value: T) -> Self {
         let mut transient = Self::new();
@@ -172,15 +143,10 @@ impl<T> Transient<T> {
         transient
     }
 
-    /// Show `value` as plain information, replacing anything already up,
-    /// for a full lifetime.
     pub fn show(&mut self, value: T) {
         self.put(value, false);
     }
 
-    /// Show `value` as progress of work under way, replacing anything
-    /// already up: it stays while [`Self::keep_while`] reports the work
-    /// running.
     pub fn show_progress(&mut self, value: T) {
         self.put(value, true);
     }
@@ -210,18 +176,15 @@ impl<T> Transient<T> {
         self.dismiss()
     }
 
-    /// Whether the message up is progress of work under way.
     #[must_use]
     pub fn is_progress(&self) -> bool {
         self.get().is_some() && self.current.as_ref().is_some_and(|shown| shown.progress)
     }
 
-    /// Take the message down; whether one was up.
     pub fn dismiss(&mut self) -> bool {
         self.current.take().is_some()
     }
 
-    /// The message, while its lifetime lasts.
     #[must_use]
     pub fn get(&self) -> Option<&T> {
         self.current
@@ -230,7 +193,6 @@ impl<T> Transient<T> {
             .map(|shown| &shown.value)
     }
 
-    /// The message borrowed through its `Deref` (a `String` as a `&str`).
     #[must_use]
     pub fn as_deref(&self) -> Option<&T::Target>
     where
@@ -244,15 +206,12 @@ impl<T> Transient<T> {
         self.get().is_some()
     }
 
-    /// When the message's time started, while it is up: when it went up,
-    /// or, for progress, when the work was last reported running.
     #[must_use]
     pub fn since(&self) -> Option<crate::time::Instant> {
         self.get()?;
         self.current.as_ref().map(|shown| shown.since)
     }
 
-    /// Drop the message once its lifetime is over; whether it did.
     pub fn expire(&mut self) -> bool {
         self.current.is_some() && self.get().is_none() && self.dismiss()
     }
@@ -288,29 +247,22 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// Show `text` as plain information, replacing any notice already up.
     pub fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
         self.current.show((text.into(), kind));
     }
 
-    /// Show `text` as progress of work under way, replacing any notice
-    /// already up; see [`Transient::show_progress`].
     pub fn show_progress(&mut self, text: impl Into<String>) {
         self.current.show_progress((text.into(), ToastKind::Info));
     }
 
-    /// Report whether the work a progress notice follows is still running;
-    /// see [`Transient::keep_while`]. Whether the notice went.
     pub fn keep_while(&mut self, busy: bool) -> bool {
         self.current.keep_while(busy)
     }
 
-    /// Take the notice down; whether one was up.
     pub fn dismiss(&mut self) -> bool {
         self.current.dismiss()
     }
 
-    /// The notice's text and kind, while it is up.
     pub fn get(&self) -> Option<(&str, ToastKind)> {
         self.current
             .get()
@@ -321,19 +273,14 @@ impl Notice {
         self.current.is_shown()
     }
 
-    /// Take the notice down once its lifetime is over; whether it did.
     pub fn expire(&mut self) -> bool {
         self.current.expire()
     }
 
-    /// When the notice expires, for a widget's `next_wake_deadline`. Under
-    /// the capture clock nothing expires.
     pub fn deadline(&self) -> Option<crate::time::Instant> {
         self.current.deadline()
     }
 
-    /// Show the notice in the window's bar while it is up; call on every
-    /// sync. See [`Transient::publish`].
     pub fn publish(&self) {
         self.current
             .publish(|(text, kind)| crate::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
@@ -347,16 +294,12 @@ impl Notice {
 /// the reader. The desktop's notification banners keep it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dwell {
-    /// Time on screen, unheld, before the current run.
     spent: Duration,
-    /// When the current run began; `None` while the clock is stopped.
     since: Option<crate::time::Instant>,
-    /// When the card first came on screen.
     first_shown: Option<crate::time::Instant>,
 }
 
 impl Dwell {
-    /// A card nobody has seen yet: nothing spent, the clock stopped.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -366,7 +309,6 @@ impl Dwell {
         }
     }
 
-    /// Time the card has been readable on screen at `now`.
     #[must_use]
     pub fn spent(&self, now: crate::time::Instant) -> Duration {
         self.since.map_or(self.spent, |since| {
@@ -380,14 +322,11 @@ impl Dwell {
         lifetime.saturating_sub(self.spent(now))
     }
 
-    /// Whether a `lifetime` has run out at `now`.
     #[must_use]
     pub fn is_over(&self, lifetime: Duration, now: crate::time::Instant) -> bool {
         self.left(lifetime, now).is_zero()
     }
 
-    /// Say whether the card is `on_screen` and whether someone `held` it
-    /// at `now`. The clock runs exactly while it is on screen and unheld.
     pub fn present(&mut self, now: crate::time::Instant, on_screen: bool, held: bool) {
         if on_screen {
             self.first_shown.get_or_insert(now);
@@ -402,8 +341,6 @@ impl Dwell {
         }
     }
 
-    /// Count `elapsed` against the card, for a host that advances by
-    /// frame deltas rather than reading a clock.
     pub fn spend(&mut self, elapsed: Duration) {
         self.spent = self.spent.saturating_add(elapsed);
     }
@@ -421,15 +358,12 @@ impl Dwell {
         }
     }
 
-    /// When a `lifetime` runs out while the clock keeps running; `None`
-    /// while it is stopped.
     #[must_use]
     pub fn ends_at(&self, lifetime: Duration) -> Option<crate::time::Instant> {
         let since = self.since?;
         since.checked_add(lifetime.saturating_sub(self.spent))
     }
 
-    /// When the card first came on screen; `None` before it has.
     #[must_use]
     pub fn first_shown(&self) -> Option<crate::time::Instant> {
         self.first_shown
@@ -450,7 +384,6 @@ pub fn card_radius(theme: &Theme) -> f64 {
     crate::widget::floating_surface::radius(theme)
 }
 
-/// The card's padding: `(x, y)`.
 fn card_pad(theme: &Theme) -> (f64, f64) {
     (
         f64::from(theme.tokens.spacing.s3),
@@ -458,7 +391,6 @@ fn card_pad(theme: &Theme) -> (f64, f64) {
     )
 }
 
-/// The severity icon, the same one a banner of that kind shows.
 pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
     match kind {
         ToastKind::Info => crate::widget::BannerKind::Info,
@@ -469,10 +401,6 @@ pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
     .default_icon()
 }
 
-/// Width of a card's leading column after its padding: the severity icon
-/// and the gap to the text.
-/// The side of the card's leading mark, if it has one: a person's avatar
-/// is the size of a list row's, a glyph an icon's.
 fn leading_side(theme: &Theme, card: &ToastCard<'_>) -> Option<f64> {
     if card.kind == ToastKind::Info && card.person.is_some() {
         return Some(crate::widget::AvatarSize::Regular.side(theme));
@@ -481,8 +409,6 @@ fn leading_side(theme: &Theme, card: &ToastCard<'_>) -> Option<f64> {
         .then(|| f64::from(theme.tokens.metrics.icon_md))
 }
 
-/// The width the leading mark takes before the text, gap included; none
-/// for a card without a mark.
 fn leading_column(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     leading_side(theme, card).map_or(0.0, |side| {
         side + f64::from(theme.tokens.metrics.icon_label_gap)
@@ -498,13 +424,8 @@ pub(crate) fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color
     }
 }
 
-/// The mark a notification leads with, on its banner and on its row in the
-/// notification centre: the sender's own artwork when one arrived with it,
-/// else the glyph standing for what sent it. Both surfaces paint this one
-/// value, so an app's row and its banner lead with the same picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SenderMark<'a> {
-    /// The sender's artwork, when one arrived with the notification.
     pub image: Option<&'a crate::icons::AppImage>,
     /// The glyph painted when there is no artwork, or it cannot be decoded.
     pub icon: Option<crate::icons::Icon>,
@@ -548,89 +469,44 @@ impl<'a> SenderMark<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared notification-card renderer
-// ---------------------------------------------------------------------------
-//
-// One immediate-mode painter for a notification card, for the shell's
-// notification stack (`tilo_desktop::notifications::NotificationStack`) and
-// the lock screen: outside any window.
-
-/// Immediate-mode content for one notification / toast card, painted by
-/// [`paint_card`]. Built fluently:
-/// `ToastCard::new("Slow network", ToastKind::Warning).body("retrying")`.
 #[derive(Clone, Copy)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent immediate-mode card affordances are supplied by the caller"
 )]
 pub struct ToastCard<'a> {
-    /// Primary line — the summary. Semibold, `text_primary`.
     pub title: &'a str,
-    /// Optional secondary line (dim). Empty = single-line card.
     pub body: &'a str,
-    /// Optional attribution caption above the title (e.g. the sending app's
-    /// name), a dim `Caption` in sentence case. Empty = no caption.
     pub caption: &'a str,
-    /// How long ago it arrived ("2 m ago"), on the attribution line at the
-    /// trailing edge, a dim `Caption` level with the caption. Empty = no
-    /// time.
     pub time: &'a str,
-    /// Offer an inline reply field under the text (the sender takes one,
-    /// `inline-reply`).
     pub reply: bool,
-    /// What the person typed so far in the reply field.
     pub reply_text: &'a str,
-    /// Whether the reply field has the keyboard.
     pub reply_focused: bool,
-    /// Hover state for the reply field.
     pub reply_hovered: bool,
-    /// Severity — drives the leading icon and its colour.
     pub kind: ToastKind,
     /// What plain information leads with instead of a severity glyph,
     /// which only warnings, errors and successes carry: a glyph naming
     /// what the card is about...
     pub icon: Option<crate::icons::Icon>,
-    /// The person the card is from, as `(name, identity)`: their avatar
-    /// leads the card, in their presence colour, ahead of any glyph. Plain
-    /// information with neither a person nor an icon leads with its text.
     pub person: Option<(&'a str, &'a str)>,
-    /// The card's `person` is an agent: its own square face in its client's tint
-    /// ([`crate::widget::AvatarFace::agent`]), as every other place shows it.
     pub person_agent: bool,
     /// The sending application's own artwork, where a glyph cannot name it.
     /// A person's avatar leads ahead of it; a severity glyph wins over it,
     /// so an alert never loses its state colour.
     pub app_image: Option<&'a crate::icons::AppImage>,
-    /// Enter/exit animation opacity in `[0, 1]`; `1.0` for a settled card.
     pub alpha: f32,
-    /// Draw a dismiss (`X`) button at the top-right and hand its rect back
-    /// via [`ToastCardHit`] so the caller keeps one hit-test on widget-owned
-    /// geometry.
     pub closable: bool,
-    /// Hover state for the dismiss button, when the caller tracks the cursor.
     pub close_hovered: bool,
-    /// Whether the shared pointer controller has armed this control.
     pub close_pressed: bool,
-    /// Draw an "actionable" chevron at the trailing edge (the card carries
-    /// activatable actions).
     pub actionable: bool,
-    /// Optional left/secondary and right/primary actions. These use the same
-    /// immediate-mode [`Button`] painter as ordinary retained controls, so a
-    /// notification can ask for a decision without inventing a second button
-    /// language. Empty labels omit the action row entirely.
     pub secondary_action: &'a str,
     pub secondary_action_icon: Option<crate::icons::Icon>,
     pub secondary_action_hovered: bool,
-    /// Whether the shared pointer controller has armed this control.
     pub secondary_action_pressed: bool,
     pub primary_action: &'a str,
     pub primary_action_icon: Option<crate::icons::Icon>,
     pub primary_action_hovered: bool,
-    /// Whether the shared pointer controller has armed this control.
     pub primary_action_pressed: bool,
-    /// How far the work the card follows is, `0..=1`: a determinate bar
-    /// under the text. `None` draws none.
     pub progress: Option<f32>,
 }
 
@@ -671,33 +547,28 @@ impl<'a> ToastCard<'a> {
         self.body = body;
         self
     }
-    /// Follow work `progress` (`0..=1`) done with a determinate bar.
     #[must_use]
     pub fn progress(mut self, progress: f32) -> Self {
         self.progress = Some(progress);
         self
     }
-    /// Lead plain information with `icon` (see [`Self::icon`]).
     #[must_use]
     pub fn icon(mut self, icon: Option<crate::icons::Icon>) -> Self {
         self.icon = icon;
         self
     }
-    /// Lead the card with the avatar of the person it is from.
     #[must_use]
     pub fn person(mut self, name: &'a str, identity: &'a str) -> Self {
         self.person = Some((name, identity));
         self.person_agent = false;
         self
     }
-    /// Lead the card with the face of the agent it is from (`identity` its publisher).
     #[must_use]
     pub fn agent(mut self, name: &'a str, identity: &'a str) -> Self {
         self.person = Some((name, identity));
         self.person_agent = true;
         self
     }
-    /// Lead plain information with the sending application's artwork.
     #[must_use]
     pub fn app_image(mut self, image: Option<&'a crate::icons::AppImage>) -> Self {
         self.app_image = image;
@@ -708,13 +579,11 @@ impl<'a> ToastCard<'a> {
         self.caption = caption;
         self
     }
-    /// How long ago it arrived, at the attribution line's trailing edge.
     #[must_use]
     pub fn time(mut self, time: &'a str) -> Self {
         self.time = time;
         self
     }
-    /// Offer an inline reply field under the text, holding `text` so far.
     #[must_use]
     pub fn reply(mut self, text: &'a str, focused: bool) -> Self {
         self.reply = true;
@@ -742,8 +611,6 @@ impl<'a> ToastCard<'a> {
         self.actionable = v;
         self
     }
-    /// One action, at the card's trailing edge beside its text ("Undo",
-    /// "Open").
     #[must_use]
     pub fn action(mut self, label: &'a str, hovered: bool) -> Self {
         self.secondary_action = "";
@@ -754,14 +621,10 @@ impl<'a> ToastCard<'a> {
         self
     }
 
-    /// Whether the card carries only one action, beside its text.
     fn single_action(&self) -> bool {
         self.secondary_action.is_empty() && !self.primary_action.is_empty()
     }
 
-    /// Add a standard two-choice action row. The secondary action is painted
-    /// neutral on the left; the primary action is painted with the theme's
-    /// primary face on the right.
     #[must_use]
     pub fn actions(
         mut self,
@@ -782,24 +645,15 @@ impl<'a> ToastCard<'a> {
     }
 }
 
-/// Geometry [`paint_card`] hands back so callers hit-test the card's
-/// interactive regions against widget-owned rects (no bespoke maths).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ToastCardHit {
-    /// The painted card rect. `Rect::ZERO` when the card was not painted.
     pub card_rect: Rect,
-    /// The dismiss (`X`) button rect. `Rect::ZERO` when `closable` was unset.
     pub close_rect: Rect,
-    /// Left/secondary action rect. `Rect::ZERO` when the card has no actions.
     pub secondary_action_rect: Rect,
-    /// Right/primary action rect. `Rect::ZERO` when the card has no actions.
     pub primary_action_rect: Rect,
-    /// The inline reply field. `Rect::ZERO` when the card offers no reply.
     pub reply_rect: Rect,
 }
 
-/// The room an inline reply field takes at the card's foot: the row's lead,
-/// the field, and the card's foot. Zero without a reply.
 fn reply_row_height(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     if !card.reply {
         return 0.0;
@@ -858,13 +712,6 @@ const BODY_LINES: usize = 2;
 /// must read whole, yet a title that ran on would bury the card's actions.
 const TITLE_LINES: usize = 2;
 
-/// A card's text, normalised to the single lines (or wrapped body lines)
-/// it paints. The attribution line is the app's name and how long ago it
-/// arrived, sharing one line. A card without an app's name has no
-/// attribution line: how long ago it arrived follows its body ("Launch
-/// notes · just now"), or is the body, rather than standing alone over the
-/// title at the text column's end, which beside an action is the card's
-/// middle.
 struct CardText {
     caption: String,
     time: String,
@@ -903,8 +750,6 @@ impl CardText {
     }
 }
 
-/// One line box's height in `style`, for stacking measured lines rather
-/// than deriving them from the font size.
 fn line_height(text_renderer: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(text_renderer.measure_style("Ag", None, style).1)
 }
@@ -929,8 +774,6 @@ pub fn card_height(
     let choices = !card.secondary_action.is_empty() && !card.primary_action.is_empty();
     let inline_action =
         card.single_action() && single_action_inline(text_renderer, theme, card, width);
-    // Everything at the card's trailing edge shrinks the text column: the
-    // dismiss button, and an action that sits beside the text.
     let trailing = if card.closable {
         f64::from(theme.tokens.spacing.s2) + control_height + f64::from(theme.tokens.spacing.s1)
     } else {
@@ -984,10 +827,6 @@ pub fn card_height(
     height.max(compact).ceil()
 }
 
-/// How an information card's words are laid out `width` wide: the glyphs it
-/// paints and the runs they fall in, one run a line of one field. A card
-/// elides what does not fit, so the same glyph count at a narrower and a
-/// roomier width says the words were shown whole.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn painted_words(
@@ -1016,16 +855,6 @@ pub fn painted_words(
     (glyphs, runs.len())
 }
 
-/// Paint a toast / notification card into `rect` and return the geometry a
-/// caller needs to route clicks. The card is width/height-agnostic (it lays
-/// out relative to `rect`), so a 48px single-line in-app toast and a 64px
-/// three-line OS notification share this one renderer.
-///
-/// Layout: soft drop shadow → the floating material + edge → leading
-/// severity icon → (optional) attribution caption / title / body text column →
-/// (optional) ghost dismiss button → (optional) actionable chevron. Every
-/// colour is modulated by `card.alpha` so the caller drives the enter/exit
-/// fade without a second painter.
 pub fn paint_card(
     scene: &mut Scene,
     transform: Affine,
@@ -1045,7 +874,6 @@ pub fn paint_card(
 
     let text_x0 = rect.x0 + leading_column(theme, card);
 
-    // Dismiss (X) button — a ghost `Button` face, top-right.
     let mut text_right = if let Some(close_rect) =
         paint_dismiss_button(scene, transform, text_renderer, theme, rect, card, a)
     {
@@ -1068,8 +896,6 @@ pub fn paint_card(
         hit.primary_action_rect = action;
         text_right = action.x0 - f64::from(theme.tokens.spacing.s3);
     }
-    // Above the row of choices, an offered reply is the card's last line:
-    // the person answers where the message is.
     let mut bottom = rect.y1;
     if card.reply {
         let height = FieldFace::height(ControlSize::Small, theme);
@@ -1088,8 +914,6 @@ pub fn paint_card(
         bottom = y0 - choice_lead(theme);
     }
     if card.single_action() && !single_action_inline(text_renderer, theme, card, rect.width()) {
-        // Beside the text it would squeeze the text to nothing: it ends
-        // the card instead, where a pair of choices would.
         let y1 = bottom - choice_foot(theme);
         let y0 = y1 - choice_height(theme);
         let x1 = if card.closable {
@@ -1109,8 +933,6 @@ pub fn paint_card(
         action_top = Some(y0 - choice_lead(theme));
     }
 
-    // Text column: optional attribution caption, then the title, then the
-    // optional body.
     let action_top = action_top.or(paint_card_actions(
         scene,
         transform,
@@ -1128,8 +950,6 @@ pub fn paint_card(
         card,
         a,
     );
-    // The work's progress: the standard determinate bar under the text,
-    // as wide as the text may be.
     if let Some(progress) = card.progress {
         let y0 = block.bottom + f64::from(theme.tokens.spacing.s2);
         let bar = Rect::new(
@@ -1165,10 +985,6 @@ pub fn paint_card(
         a,
     );
 
-    // Actionable chevron at the trailing-bottom edge, keyed to severity:
-    // only for a card the whole of which opens something. One that shows
-    // its choices as buttons says it already, and the chevron would sit on
-    // the last of them.
     if card.actionable && card.primary_action.is_empty() {
         let sz = f64::from(theme.tokens.metrics.icon_sm);
         let ix = rect.x1 - pad_x - sz;
@@ -1186,8 +1002,6 @@ pub fn paint_card(
     hit
 }
 
-/// The face a card from `name` leads with: an agent's own square face in its client's hue (the
-/// identity's for a client this build does not know), else the person's avatar.
 fn agent_or_person_face<'a>(
     card: &ToastCard<'_>,
     name: &'a str,
@@ -1203,8 +1017,6 @@ fn agent_or_person_face<'a>(
     }
 }
 
-/// The offered reply: the shared field face (its frame, its hover and
-/// focus edge, its placeholder), with the caret where the person is typing.
 fn paint_reply_field(
     scene: &mut Scene,
     transform: Affine,
@@ -1254,11 +1066,6 @@ fn paint_reply_field(
     }
 }
 
-/// The card's leading mark at `left`: a severity glyph for anything that
-/// needs attention; for plain information whom it is from (their avatar,
-/// level with the top of the text, as a message reads), else a glyph for
-/// what it is about, on the title's line. A generic "i" or an app's letter
-/// on every card would say nothing, so a card with neither leads with text.
 fn paint_leading(
     ctx: &mut PaintCtx<'_>,
     left: f64,
@@ -1300,8 +1107,6 @@ fn paint_leading(
         (side, side),
     );
     let (image, icon, color) = match card.kind {
-        // A sender's mark is foreground ink: a dim glyph all but vanishes
-        // on the light theme's pale card.
         ToastKind::Info => (card.app_image, card.icon, theme.tokens.colors.text_primary),
         kind => (None, Some(kind_icon(kind)), kind_color(kind, theme)),
     };
@@ -1324,8 +1129,6 @@ fn paint_leading(
     }
 }
 
-/// Where a card's text landed: the centre of the title's first line and
-/// the block's vertical extent, for the leading mark to line up with.
 #[derive(Clone, Copy, Debug)]
 struct TextBlock {
     title_centre: f64,
@@ -1407,24 +1210,18 @@ fn paint_card_actions(
     Some(y0 - choice_lead(theme))
 }
 
-/// The height of a card's choices: compact controls, so a card reads as
-/// its message first.
 pub fn choice_height(theme: &Theme) -> f64 {
     ButtonFace::height(crate::widget::ControlSize::Small, theme)
 }
 
-/// The step between a card's text and its choices: a full related step,
-/// so the choices read as the message's answer rather than part of it.
 pub fn choice_lead(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-/// The padding under a card's choices: the card's own vertical padding.
 pub fn choice_foot(theme: &Theme) -> f64 {
     card_pad(theme).1
 }
 
-/// The space between a card's two choices.
 pub fn choice_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.related)
 }
@@ -1465,12 +1262,6 @@ pub fn choice_rects(band: Rect, gap: f64, secondary: f64, primary: f64) -> (Rect
     }
 }
 
-/// The card's body: the one floating card
-/// ([`crate::widget::floating_surface::paint_card`]), fading with the card.
-///
-/// Anything that stands in a column of cards (a locked-screen stand-in for
-/// them, the card for the ones that did not fit) paints this same body, so
-/// the column is one material and one shape, and the palette's.
 pub fn paint_card_surface(
     scene: &mut Scene,
     transform: Affine,
@@ -1494,8 +1285,6 @@ pub fn paint_card_surface(
     }
 }
 
-/// A card's ground and its edge: the floating card's opaque panel ground
-/// and the panel edge.
 #[must_use]
 pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
     (
@@ -1541,8 +1330,6 @@ fn single_action_width(text_renderer: &mut TextRenderer, theme: &Theme, label: &
         .intrinsic_width(text_renderer, theme)
 }
 
-/// Paint a card's one action at the trailing edge of `row`, centred on the
-/// card, and return its rect.
 fn paint_single_action(
     scene: &mut Scene,
     transform: Affine,
@@ -1586,13 +1373,10 @@ fn paint_single_action(
     rect
 }
 
-/// The theme of the controls standing on a card: a secondary face steps off the card's own ground,
-/// as it does on any floating panel, rather than off the window's content it would sink into.
 fn on_card(theme: &Theme) -> Theme {
     theme.on_ground(crate::widget::floating_surface::card_ground(theme))
 }
 
-/// The height a card's progress bar and the gap above it take.
 fn progress_reserve(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     if card.progress.is_some() {
         f64::from(theme.tokens.spacing.s2) + crate::widget::ProgressBarFace::height(theme)
@@ -1601,11 +1385,8 @@ fn progress_reserve(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     }
 }
 
-/// How much smaller than a small icon the resting dismiss glyph is.
 const DISMISS_GLYPH_SCALE: f64 = 0.8;
 
-/// Where a card's dismiss control sits: a Small icon button inset one step
-/// from the top-trailing corner, centred on a single-line card.
 fn dismiss_rect(card: Rect, theme: &Theme) -> Rect {
     let side = ButtonFace::height(crate::widget::ControlSize::Small, theme);
     let inset = f64::from(theme.tokens.spacing.s2);
@@ -1656,9 +1437,6 @@ fn paint_dismiss_button(
                 .accessible_name(&crate::i18n::widget_format("widget-dismiss", &[])),
         );
     } else {
-        // At rest the close is a small glyph in the faintest ink, well
-        // under the title's weight: it is the way out, not the message.
-        // The pointer on it brings the full control back.
         let side = f64::from(theme.tokens.metrics.icon_sm) * DISMISS_GLYPH_SCALE;
         crate::icons::draw_icon(
             scene,
@@ -1675,11 +1453,6 @@ fn paint_dismiss_button(
     Some(close_rect)
 }
 
-/// Paints the text column — optional attribution caption, then the title,
-/// then the optional body — vertically centred in `column`, after its left
-/// pad. `column` runs from the card's top-left to the dismiss button's left
-/// edge (or the card's own right pad when there is none) and the top of the
-/// action row (or the card's bottom).
 fn paint_card_text(
     ctx: &mut PaintCtx<'_>,
     column: Rect,
@@ -1777,7 +1550,6 @@ fn paint_card_text(
         }
         ty += header_h;
     }
-    // The leading mark stands on the title's first line, where reading starts.
     let title_centre = ty + title_line_h / 2.0;
     for line in &title_lines {
         ctx.text(

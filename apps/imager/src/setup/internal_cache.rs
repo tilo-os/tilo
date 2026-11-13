@@ -1,5 +1,6 @@
-//! Private checkpoint protocol and native cache providers. No caller or support
-//! route is activated by this module.
+//! Private checkpoint protocol and native cache providers. No caller or support route
+//! is activated by this module.
+
 mod checkpoint;
 pub(super) use checkpoint::*;
 #[cfg(test)]
@@ -13,9 +14,6 @@ pub(super) mod windows;
 
 pub(super) mod coordinator;
 
-/// Path of verified final component `index` for the elevated staging helper,
-/// which opens and re-hashes it itself; the path grants no authority here. It
-/// names the verified bytes only while a consumer holds the verified readers.
 pub(in crate::setup) fn final_component_path(
     selected: &super::internal_download::SelectedManifest,
     index: usize,
@@ -43,12 +41,9 @@ pub(in crate::setup) fn final_component_path(
     }
 }
 
-/// Scoped consumer interface: no File, raw handle, clone or path authority.
 pub(in crate::setup) trait HeldReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> HeldReadSeek for T {}
 
-/// Compose already-executed held-reader boundaries. Callers must perform every
-/// guard and cursor restoration before passing the results here.
 fn finish_held_read<T>(
     result: Result<T, String>,
     restored: Result<u64, String>,
@@ -56,8 +51,6 @@ fn finish_held_read<T>(
     root: Result<(), String>,
     stopped: Result<(), String>,
 ) -> Result<T, String> {
-    // Cancellation determines the coordinator's terminal phase, not which
-    // already-observed verification or boundary failures are allowed to survive.
     let mut errors = Vec::new();
     for (stage, check) in [
         ("cursor restoration", restored.map(|_| ())),

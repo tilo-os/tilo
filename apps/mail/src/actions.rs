@@ -75,8 +75,6 @@ pub enum MailEffect {
     #[effect(view, idempotent)]
     AccountSettings,
     /// Prepare a draft from this exact address-book recipient and sender.
-    ///
-    /// Requires review; creates no identity link and sends nothing.
     #[effect(row, destructive, returns)]
     PrepareContactDraft {
         person: String,

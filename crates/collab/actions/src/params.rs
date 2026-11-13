@@ -122,8 +122,8 @@ pub const PICK_ANNOTATION: &str = "pick";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// Who: a person, an agent or an app of the workspace, as a
-    /// `tilo_action_policy::Subject`.
-    Subject,
+    /// `tilo_action_policy::Grantee`.
+    Grantee,
     /// Where: a node of the workspace's tree, as its path below the workspace.
     Node,
     /// One of the workspace's grants, by its id.
@@ -136,12 +136,12 @@ pub enum Pick {
 }
 
 impl Pick {
-    const TAGGED: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+    const TAGGED: [Self; 3] = [Self::Grantee, Self::Node, Self::Grant];
     const RESOURCE_TAG: &str = "resource";
 
     const fn tag(&self) -> &'static str {
         match self {
-            Self::Subject => "subject",
+            Self::Grantee => "subject",
             Self::Node => "node",
             Self::Grant => "grant",
             Self::Resource { .. } => Self::RESOURCE_TAG,
@@ -324,6 +324,19 @@ impl ActionParam {
         self
     }
 
+    /// Call this parameter `title` where people read it (a form's field, a
+    /// consent sheet's row): its schema's `title`, in the reader's language.
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        let mut schema = match self.schema.as_deref() {
+            Some(serde_json::Value::Object(schema)) => schema.clone(),
+            _ => serde_json::Map::new(),
+        };
+        schema.insert("title".to_owned(), serde_json::Value::String(title.into()));
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
     /// Retain an immutable schema already shared by the current type generation.
     /// Wire serialization and strict argument validation are unchanged.
     #[must_use]
@@ -411,6 +424,28 @@ impl ActionParam {
             return Some(Pick::Resource { kind: kind.into() });
         }
         Pick::TAGGED.into_iter().find(|pick| pick.tag() == tag)
+    }
+
+    /// Say how each of `labels` reads to a person, without restricting the
+    /// parameter to them ([`CHOICE_LABELS_ANNOTATION`] alone): a draft shows
+    /// the label a value reads as, while binding still takes any value the
+    /// action's own type allows (a nested field path, a word nothing lists).
+    #[must_use]
+    pub fn labelling_choices<V: Into<Str>, L: Into<String>>(
+        self,
+        labels: impl IntoIterator<Item = (V, L)>,
+    ) -> Self {
+        let mut by_value = serde_json::Map::new();
+        for (value, label) in labels {
+            by_value.insert(
+                value.into().to_string(),
+                serde_json::Value::String(label.into()),
+            );
+        }
+        self.annotate(
+            CHOICE_LABELS_ANNOTATION,
+            serde_json::Value::Object(by_value),
+        )
     }
 
     /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
@@ -1670,10 +1705,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
 ///
-/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are stated a second time
-/// by `tilo-ai-bench`, which has to check the shapes that app's quality cases
-/// declare without linking this crate; a test in each crate pins this list
-/// byte for byte so neither can grow a keyword the other refuses.
+/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are pinned, word for
+/// word, by a test here: a keyword cannot be added without a check behind it.
 pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
     let object = schema
         .as_object()
@@ -2056,8 +2089,8 @@ mod rich_schema_tests {
             ActionArgs::bind_json(&params, typed_id.as_object().unwrap()).is_err(),
             "a reference names its app and kind"
         );
-        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject);
-        assert_eq!(subject.pick(), Some(Pick::Subject));
+        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee);
+        assert_eq!(subject.pick(), Some(Pick::Grantee));
     }
 
     #[test]

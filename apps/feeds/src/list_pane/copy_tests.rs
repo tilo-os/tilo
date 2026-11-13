@@ -25,7 +25,6 @@ use ui::offscreen::OffscreenRenderer;
 use ui::widget::Column;
 use winit::event::{MouseScrollDelta, TouchPhase};
 
-/// Articles added to the sample library, so the list runs long.
 const EXTRA: i64 = 300;
 
 /// The window, in logical pixels: as tall as the overview column of a
@@ -51,7 +50,6 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
-/// The pixels of a `size` window that `rects` cover, each counted once.
 fn covered(rects: &[Rect], size: winit::dpi::PhysicalSize<u32>) -> f64 {
     let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let width = size.width as usize;

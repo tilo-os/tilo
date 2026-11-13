@@ -21,7 +21,6 @@ pub(crate) struct SaveDirectoryPicker {
 }
 
 impl SaveDirectoryPicker {
-    /// The unattended picker when `directory` is absolute, else `None`.
     pub(crate) fn new(directory: PathBuf, system: Arc<dyn FilePicker>) -> Option<Self> {
         directory
             .is_absolute()
@@ -58,7 +57,6 @@ impl FilePicker for SaveDirectoryPicker {
     }
 }
 
-/// `name`'s file name in `directory`, numbered before its extension if taken.
 fn unused_path(directory: &Path, name: &str) -> PathBuf {
     let name = Path::new(name)
         .file_name()

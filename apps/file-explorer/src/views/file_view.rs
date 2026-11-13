@@ -1,21 +1,5 @@
-//! `FileView` — the file explorer's main content pane, in either **list** or
-//! **grid** mode, behind one widget so the two modes share one selection,
-//! drag and zoom implementation.
-//!
-//! * **List** — the framework's `DataTable` (see [`super::file_list`]): it
-//!   paints the header, the rows, the selection lift and the sort indicator,
-//!   and scrolls itself. Files adds the name cell and the row geometry its
-//!   drag and context menu need.
-//! * **Grid** — a responsive grid of objects (a file icon or its preview with
-//!   the name under it), flowing left to right and wrapping to fill the
-//!   available width. Names wrap onto a second line rather than being cut.
-//!
-//! Single-click selects, double-click activates (the app owns the double-click
-//! timing and navigates into folders / opens files). Like the file explorer's
-//! other children it is rebuilt by a stateless host: seed the selection and
-//! zoom, react to the pushed [`FileCommand`]s. The list's table lives in a
-//! [`ListSlot`] the host keeps, so scrolling and column widths survive a
-//! rebuild; the grid recomputes its ephemeral state (hover) from the cursor.
+//! Files' content pane: the list or the grid of the folder shown, painting its
+//! rows and reading the pointer against them.
 
 #[cfg(test)]
 #[cfg(unix)]
@@ -57,49 +41,32 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{MediaArt, MediaCardFace, Widget};
 
-/// The file manager's handle onto the shared thumbnail system: the off-thread
-/// service (cache + workers) plus an app-lived memo that converts a decoded
-/// [`thumbnail::RgbaThumb`] into a `peniko` image exactly once (so a painted
-/// view never rebuilds the GPU-facing blob per frame). Cheap to clone; the
-/// view is handed a fresh copy each rebuild.
 #[derive(Clone)]
 pub struct ThumbCtx {
     pub service: Arc<ThumbnailService>,
     pub imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
-// --- base metrics -----------------------------------------------------------
-
-/// Extra cells painted around the clipped viewport to keep a partially
-/// visible boundary item alive through scroll settling.
+/// Cells painted beyond the viewport, so a partly visible boundary item still draws.
 const VISIBLE_RANGE_OVERDRAW_ROWS: usize = 1;
-/// How many lines a grid label wraps onto before it is cut.
 const GRID_LABEL_LINES: usize = 2;
 
-/// The list and grid metrics at zoom 1, read from the theme's tokens (the
-/// view multiplies them by the user's item zoom).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Geo {
     pub(super) row: f64,
     pub(super) icon: f64,
-    /// Space above the first row of the grid.
     pub(super) grid_top: f64,
     pub(super) icon_label_gap: f64,
     pub(super) icon_lead: f64,
     pub(super) size_col: f64,
     pub(super) modified_col: f64,
-    /// The modified column when it shows the date alone.
     pub(super) date_col: f64,
     pub(super) cell_w: f64,
-    /// One line of a grid label (a body line).
     pub(super) label_line: f64,
     pub(super) grid_icon: f64,
     pub(super) grid_gap: f64,
-    /// The room a scrollbar takes at a table's trailing edge.
     pub(super) scrollbar_gutter: f64,
-    /// Space inside a grid cell around its art and label.
     pub(super) cell_pad: f64,
-    /// Space between a grid cell's art and its label.
     pub(super) label_gap: f64,
     pub(super) item_radius: f64,
 }
@@ -132,22 +99,14 @@ impl Geo {
     }
 }
 
-/// A folder drop target the view publishes each layout: a directory row's
-/// absolute on-screen rect and path. The host owns the drag (it captures the
-/// pointer once a drag begins, so the view never sees the release), so it needs
-/// the view to tell it where each folder sits to resolve what a drop lands on.
 #[derive(Clone, Debug)]
 pub struct FolderDropTarget {
     pub path: PathBuf,
     pub rect: Rect,
 }
 
-/// Shared, host-owned sink the view republishes its folder rows into each
-/// layout (cleared + refilled), analogous to the rename-rect channel.
 pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
-/// Host-owned sink of every visible item's index and rect, republished with
-/// the drop targets, for a box selection drawn over the view.
 pub type ItemRects = Rc<RefCell<Vec<(usize, Rect)>>>;
 
 pub struct FileView {
@@ -155,73 +114,40 @@ pub struct FileView {
     selection: SelectionModel,
     mode: ViewMode,
     scale: f64,
-    /// Accessibility type scale is separate from the user's item zoom. It
-    /// widens/hides metadata columns without magnifying icons and labels a
-    /// second time (the theme already owns type enlargement).
+    /// Accessibility text scale, apart from item zoom: it widens or drops metadata columns.
     text_scale: f64,
-    /// Token-derived metrics at zoom 1; refreshed from the theme at layout.
     geo: Geo,
     sort_by: SortBy,
     sort_order: SortOrder,
     sink: CommandSink,
 
     rect: Rect,
-    /// Grid columns resolved at the last layout (always `>= 1`).
     columns: usize,
     hover: Option<usize>,
     last_cursor: Point,
     is_focused: bool,
-    /// When `Some(i)`, item `i` is being renamed in place: its label is omitted
-    /// and the label's on-screen rect is published into `rename_rect` so the
-    /// host can draw the shared rename editor exactly where the name was.
     renaming: Option<usize>,
     rename_rect: Option<Rc<Cell<Option<Rect>>>>,
-    /// The scroll viewport observed at the last `draw`, so the grid culls to
-    /// what shows. `None` before the first paint.
     last_vp: Option<Rect>,
-    /// A plain press on a row `(press point, its path, whether it is a folder)`,
-    /// held until the pointer either releases (a click) or travels past the drag
-    /// threshold (begins a drag — to move the row onto a folder, or to pin a
-    /// folder to the sidebar).
     pressed_row: Option<(Point, PathBuf, bool)>,
-    /// Host-owned sink for this view's folder rows, republished each layout so
-    /// the host can resolve which folder a drag is dropped onto.
     drop_targets: Option<DropTargets>,
     item_rects: Option<ItemRects>,
-    /// The shared thumbnail service + peniko memo. `None` disables previews (the
-    /// view falls back to type glyphs), which keeps the widget usable in
-    /// contexts without a thumbnail service.
     thumbs: Option<ThumbCtx>,
-    /// Item counts for folders, counted off the UI thread.
     folder_counts: Option<Arc<crate::folder_counts::FolderCounts>>,
-    /// Whether hidden entries are listed, so a folder's count matches.
     show_hidden: bool,
     workspace_roots: Rc<[PathBuf]>,
-    /// The list's table, kept by the host across rebuilds.
     list: ListSlot,
-    /// Room kept clear under the list for the floating status bubble.
     bottom_inset: f64,
-    /// What the view owes the next frame.
     due: Due,
-    /// What the view painted, this frame and last: what it paints follows
-    /// the pointer, the selection, focus, scrolling and previews landing,
-    /// and a frame that changed none of them (a hover in the sidebar beside
-    /// it) leaves it as it was.
     own: OwnPaint,
 }
 
-/// What the view owes the next frame: its columns laid out again, and its
-/// paint drawn again once.
 #[derive(Default)]
 struct Due {
-    /// A layout found the list's columns should change with its width.
     layout: bool,
-    /// Input or a new document value changed what the view paints.
     paint: bool,
 }
 
-/// Pointer travel (logical px) past which a held directory press becomes a
-/// drag rather than a click: one `s1` step, the toolkit's own drag threshold.
 #[must_use]
 pub fn drag_threshold() -> f64 {
     f64::from(ui::tokens::spacing::Spacing::BASE.s1)
@@ -264,33 +190,24 @@ impl FileView {
         }
     }
 
-    /// Bind the host's folder-drop-target sink; the view republishes its folder
-    /// rows into it each layout so the host can hit-test a drag's drop point.
     #[must_use]
     pub fn with_drop_targets(mut self, sink: DropTargets) -> Self {
         self.drop_targets = Some(sink);
         self
     }
 
-    /// Publish every visible item's rect into `sink` each layout, for a box
-    /// selection the host draws.
     #[must_use]
     pub fn with_item_rects(mut self, sink: ItemRects) -> Self {
         self.item_rects = Some(sink);
         self
     }
 
-    /// Bind the shared thumbnail service (+ the app's peniko memo) so file cells
-    /// paint real previews for images/PDF/ebook (and host-provided previews for
-    /// workspace files), falling back to a type glyph otherwise.
     #[must_use]
     pub fn with_thumbs(mut self, thumbs: Option<ThumbCtx>) -> Self {
         self.thumbs = thumbs;
         self
     }
 
-    /// Show each folder's item count from `counts`, counting hidden entries
-    /// only with `show_hidden`.
     #[must_use]
     pub fn with_folder_counts(
         mut self,
@@ -302,15 +219,12 @@ impl FileView {
         self
     }
 
-    /// Keep the list's table in `slot`, which the host owns, so its scroll
-    /// position and column widths survive this view being rebuilt.
     #[must_use]
     pub fn with_list(mut self, slot: ListSlot) -> Self {
         self.list = slot;
         self
     }
 
-    /// Keep `inset` clear under the list (the floating status bubble's lane).
     #[must_use]
     pub fn with_bottom_inset(mut self, inset: f64) -> Self {
         self.bottom_inset = inset.max(0.0);
@@ -323,9 +237,6 @@ impl FileView {
         self
     }
 
-    /// Render item `index` (if any) as an in-place rename: omit its label and
-    /// publish the label's on-screen rect into `sink` so the host can draw the
-    /// shared rename editor over it.
     #[must_use]
     pub fn with_rename(mut self, index: Option<usize>, sink: Rc<Cell<Option<Rect>>>) -> Self {
         self.renaming = index;
@@ -337,7 +248,6 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
-    /// Read the view's metrics from `theme`'s tokens (also done at layout).
     #[must_use]
     pub fn with_theme(mut self, theme: &Theme) -> Self {
         self.geo = Geo::of(theme);
@@ -345,12 +255,6 @@ impl FileView {
         self
     }
 
-    /// Seed the pointer position the host last saw. The host rebuilds this view
-    /// from scratch every frame, so without this a fresh view starts with the
-    /// cursor at the origin — and a press that arrives with no `CursorMoved`
-    /// since the rebuild (a *still* double-click's second press) would hit-test
-    /// against `(0, 0)` and miss the row, so the folder never opens. Seeding the
-    /// real position makes press hit-testing correct from the first event.
     #[must_use]
     pub fn with_cursor(mut self, cursor: Point) -> Self {
         self.last_cursor = cursor;
@@ -363,30 +267,18 @@ impl FileView {
         self
     }
 
-    // --- scaled metrics ---------------------------------------------------
-
     #[cfg(test)]
     fn row_h(&self) -> f64 {
         self.geo.row * self.scale
     }
-    /// Space above the grid's first row. The shell already keeps the content
-    /// gutter, so the first column's lift lines up with the toolbar's edge.
     fn grid_top(&self) -> f64 {
         self.geo.grid_top
     }
-    /// The grid cell for a pane `width` wide: `(width, height)`. A cell is as
-    /// wide as the zoom and type size ask, narrowing only when a phone-width
-    /// pane could otherwise not fit two of them, and tall enough for its art
-    /// and a label that wraps onto a second line.
     fn grid_cell_size_for_width(&self, width: f64) -> (f64, f64) {
         let desired_w = self.geo.cell_w * self.scale * self.text_scale;
         let gap = self.grid_gap();
         let inner = width.max(0.0);
         let compact_w = ((inner - gap) / 2.0).max(0.0);
-        // A two-column compact grid stays useful at phone width even when the
-        // user has increased item zoom: below one base tile of width per
-        // column, one roomy tile is the more honest accessible layout; at or
-        // above it, two 44px-plus targets beat a single centred item.
         let cell_w = if desired_w * 2.0 + gap > inner && compact_w >= self.geo.cell_w {
             compact_w
         } else {
@@ -398,7 +290,6 @@ impl FileView {
             + self.geo.label_line * GRID_LABEL_LINES as f64;
         (cell_w, height)
     }
-    /// The square a grid cell's art (an icon or a preview) sits in.
     fn grid_art_px(&self, cell_w: f64) -> f64 {
         (cell_w * 0.62).max(self.geo.grid_icon * self.scale)
     }
@@ -411,12 +302,10 @@ impl FileView {
     fn grid_gap(&self) -> f64 {
         self.geo.grid_gap * self.scale * self.text_scale.sqrt()
     }
-    /// Names and cells: `Body`.
     fn body_style(theme: &Theme) -> ui::text_render::TextStyle {
         theme.text(TextRole::Body)
     }
 
-    /// Grid columns that fit `width` (never zero).
     fn columns_for_width(&self, width: f64) -> usize {
         let inner = width.max(0.0);
         let stride = self.grid_cell_size_for_width(width).0 + self.grid_gap();
@@ -436,11 +325,6 @@ impl FileView {
         }
     }
 
-    /// Resolve a directional key in the visible icon grid.  The grid owns the
-    /// measured column count, so it is the only layer that can make Down mean
-    /// "the card below" after responsive reflow, text scaling, or item zoom.
-    /// The app applies the resulting selection command, retaining one shared
-    /// selection model for pointer, keyboard and assistive interactions.
     fn grid_key_target(&self, key: NamedKey) -> Option<usize> {
         let len = self.entries.len();
         if len == 0 {
@@ -465,7 +349,6 @@ impl FileView {
         self.grid_top() + rows as f64 * (cell_h + self.grid_gap())
     }
 
-    /// Top-left of grid cell `i` within `self.rect`.
     fn cell_rect(&self, i: usize) -> Rect {
         let cols = self.columns.max(1);
         let col = i % cols;
@@ -475,8 +358,6 @@ impl FileView {
         Rect::new(x, y, x + self.cell_w(), y + self.cell_h())
     }
 
-    /// The rectangle of item `i` in the current mode, when it is on screen
-    /// (always, for a grid cell; only the rows the list has laid out).
     fn item_rect(&self, i: usize) -> Option<Rect> {
         match self.mode {
             ViewMode::Grid => Some(self.cell_rect(i)),
@@ -488,13 +369,6 @@ impl FileView {
         }
     }
 
-    /// Return the small inclusive-overdraw slice of grid cells that can
-    /// intersect `vp`.
-    ///
-    /// `FileView` owns only a single, measured leaf in the scroll tree, so it
-    /// cannot use a recycling child list.  Calculating this range before the
-    /// paint loop gives us the same useful property: a 100k-entry directory
-    /// costs work proportional to the visible cells, not the directory size.
     fn visible_range(&self, vp: Option<Rect>) -> std::ops::Range<usize> {
         let Some(vp) = vp else {
             return 0..self.entries.len();
@@ -517,20 +391,11 @@ impl FileView {
                 .min(self.entries.len())
     }
 
-    /// A `Scrollable` can reserve a bottom lane for an app-level status or
-    /// footer affordance. Do not leave a partly clipped cell in that lane: it
-    /// looks broken and, more importantly, suggests an item is available
-    /// where pointer and keyboard input cannot reach it. The first partly
-    /// visible row at the top remains useful while scrolling, so only the
-    /// bottom edge is treated as a clean boundary.
+    /// The bottom lane is the host's; a row partly under it still counts as visible.
     fn fits_viewport_bottom(rect: Rect, vp: Option<Rect>) -> bool {
         vp.is_none_or(|viewport| rect.y1 <= viewport.y1)
     }
 
-    /// Republish the visible folders into the host's drop-target sink. A drag
-    /// cannot be released on an item outside the clipped viewport, so
-    /// retaining off-screen folders only turns a directory-sized list into
-    /// needless work and allocation on every layout/paint pass.
     fn publish_drop_targets(&self, vp: Option<Rect>) {
         let Some(sink) = &self.drop_targets else {
             return;
@@ -579,7 +444,6 @@ impl FileView {
         }
     }
 
-    /// The item under a logical point, or `None` (header band, gaps, empties).
     fn item_at(&self, pt: Point) -> Option<usize> {
         if pt.x < self.rect.x0 || pt.x > self.rect.x1 || pt.y < self.rect.y0 {
             return None;
@@ -610,7 +474,6 @@ impl FileView {
                 if col >= cols {
                     return None;
                 }
-                // Reject the inter-cell gaps.
                 if rel_x - col as f64 * sx > self.cell_w()
                     || rel_y - row as f64 * sy > self.cell_h()
                 {
@@ -622,8 +485,6 @@ impl FileView {
         }
     }
 
-    /// Paint a grid cell's "which one is chosen" state as the shared lift
-    /// (HIG §9.3): hover is the half lift, selected the full lift.
     fn paint_selection(
         scene: &mut Scene,
         transform: Affine,
@@ -642,12 +503,6 @@ impl FileView {
         );
     }
 
-    // --- thumbnails -------------------------------------------------------
-
-    /// The content-addressed cache key for `entry` at the service's target size.
-    /// Local files key on `(path, mtime, size)` — hashing the whole file on the
-    /// UI thread would be the jank the off-thread service exists to avoid, and
-    /// that tuple still changes whenever the content does.
     fn thumb_key(ctx: &ThumbCtx, entry: &Entry) -> ThumbKey {
         if let Some(hash) = entry.content_hash {
             return ThumbKey::of_hash(hash, ctx.service.edge());
@@ -658,11 +513,7 @@ impl FileView {
         ThumbKey::of_path_meta(&entry.path, mtime_ms, entry.size, ctx.service.edge())
     }
 
-    /// Request `entry`'s preview from the service. Workspace-mount files go
-    /// through the **host-provided** metadata channel (the `user.tilo.thumb`
-    /// xattr) — the file manager never re-decodes what the host already
-    /// previewed, and a projected file is never hydrated just to preview it.
-    /// Ordinary local files are generated by the shared service directly.
+    /// Ask for `entry`'s preview; a workspace file's goes through the host's preview, never this app's.
     fn request_thumb(
         ctx: &ThumbCtx,
         workspace_roots: &[PathBuf],
@@ -679,10 +530,6 @@ impl FileView {
         )
     }
 
-    /// The request body, with the workspace decision passed in — split out on
-    /// the same terms as [`crate::model::read_dir_sync`] so the routing is
-    /// testable without mutating the process environment. Production always
-    /// reaches it through [`Self::request_thumb`].
     fn request_thumb_in(
         ctx: &ThumbCtx,
         entry: &Entry,
@@ -701,15 +548,12 @@ impl FileView {
                     crate::model::read_thumb_xattr(&path)
                 })
         } else {
-            // Projected content may use a separately available host preview,
-            // but the fallback deliberately has no source-file branch.
+            // A projected file may use the host's preview; without one it keeps its badge rather than fetching its bytes.
             ctx.service
                 .request_encoded(key, category, move || crate::model::read_thumb_xattr(&path))
         }
     }
 
-    /// The `peniko` image for a ready thumbnail, converted once and memoised by
-    /// key so a scrolling view never rebuilds the blob per frame.
     fn thumb_peniko(ctx: &ThumbCtx, key: ThumbKey, rgba: &thumbnail::RgbaThumb) -> PenikoImage {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
@@ -745,9 +589,6 @@ impl FileView {
             let selected = self.selection.is_selected(i);
             let hovered = self.hover == Some(i) && !selected;
             Self::paint_selection(scene, transform, theme, cell, selected, hovered);
-            // The art: the file's preview filling its square, or its type
-            // glyph centred in the same square, so every label in a row sits
-            // on one baseline whether or not its file has a preview.
             let pad = self.geo.cell_pad * self.scale;
             let slot_px = self.grid_art_px(cell.width());
             let art_x = cell.x0 + (cell.width() - slot_px) / 2.0;
@@ -766,12 +607,8 @@ impl FileView {
             };
             let painted = paint_file_visual(scene, transform, tr, theme, &visual, slot, entry);
             paint_entry_emblem(scene, transform, painted, entry, self.scale, theme);
-            // The label under the art: centred, wrapped onto a second line
-            // rather than cut, and only then elided.
             let label_y = slot.y1 + self.geo.label_gap * self.scale;
             if self.renaming == Some(i) {
-                // Publish the label field's rect and omit the label; the host
-                // draws the in-place rename editor here.
                 if let Some(sink) = &self.rename_rect {
                     let inset = f64::from(tokens.spacing.s1);
                     sink.set(Some(Rect::new(
@@ -802,8 +639,6 @@ impl FileView {
         }
     }
 
-    /// The press, move and release handling the list and the grid share, once
-    /// `row_click` says which item a press landed on.
     fn press_item(
         &mut self,
         index: usize,
@@ -811,22 +646,14 @@ impl FileView {
         shift: bool,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Reflect the click locally so this frame paints selected, and let the
-        // app own the authoritative selection + the single/double-click
-        // distinction.
         self.selection.apply_click(index, ctrl, shift);
         *ctx.focus_target = Some(ctx.node_id);
         push(&self.sink, FileCommand::Click { index, ctrl, shift });
-        // A plain press on any row arms a potential drag (move onto a folder,
-        // or pin a folder to the sidebar). A modifier press is extending the
-        // selection, not starting a drag.
         if !ctrl
             && !shift
             && let Some(entry) = self.entries.get(index)
         {
             self.pressed_row = Some((self.last_cursor, entry.path.clone(), entry.is_dir));
-            // The app arms the same drag: this view may be rebuilt before the
-            // pointer moves.
             push(
                 &self.sink,
                 FileCommand::ArmDrag {
@@ -839,21 +666,14 @@ impl FileView {
     }
 }
 
-/// What a file's visual paints with: the preview service, the zoom, and the
-/// type glyph's size and ink for a file that has no preview.
 pub(super) struct VisualPaint<'a> {
     pub(super) thumbs: Option<&'a ThumbCtx>,
     pub(super) workspace_roots: &'a [PathBuf],
     pub(super) scale: f64,
-    /// The type glyph's side, centred in the painted rectangle.
     pub(super) glyph_px: f64,
     pub(super) glyph_color: Color,
 }
 
-/// Paint a file's visual into `rect` and return the rectangle that was
-/// painted: its preview filling `rect` when one is ready, otherwise its type
-/// glyph (`visual.glyph_px` square, centred in `rect`). Folders are always
-/// glyphs. A file with no preview is just its icon: there is no tile around it.
 pub(super) fn paint_file_visual(
     scene: &mut Scene,
     transform: Affine,
@@ -875,8 +695,6 @@ pub(super) fn paint_file_visual(
             FileView::request_thumb(ctx, visual.workspace_roots, entry, key, category)
         {
             let img = FileView::thumb_peniko(ctx, key, &rgba);
-            // The shared media card seats a photo on its ground with the
-            // theme's own edge and radius.
             MediaCardFace::new(MediaArt::Image(&img))
                 .paint(&mut PaintCtx::new(scene, transform, tr, theme), rect);
             return rect;
@@ -899,10 +717,6 @@ pub(super) fn paint_file_visual(
     glyph
 }
 
-/// Paint the artwork standing for `entry` (an app's icon), as large as fits
-/// `rect` and centred, once the preview service has read it off the UI
-/// thread. `None` while it has none, or none ready: the caller paints the
-/// glyph.
 fn paint_entry_artwork(
     scene: &mut Scene,
     transform: Affine,
@@ -926,9 +740,6 @@ fn paint_entry_artwork(
     Some(square)
 }
 
-/// Paint the sync-state emblem of a workspace file (cloud / downloading /
-/// local) over the corner of `icon_rect`, the rectangle its visual was painted
-/// in.
 pub(super) fn paint_entry_emblem(
     scene: &mut Scene,
     transform: Affine,
@@ -953,7 +764,6 @@ thread_local! {
 }
 
 impl FileView {
-    /// Paint the list or the grid, and the focus ring.
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -964,17 +774,12 @@ impl FileView {
     ) {
         match self.mode {
             ViewMode::List => {
-                // A folder with nothing in it has no columns to name: the
-                // window shows its empty state instead.
                 if !self.entries.is_empty() {
                     self.list.draw(scene, transform, tr, theme, presence);
                     self.publish_drop_targets(None);
                 }
             }
             ViewMode::Grid => {
-                // The enclosing `Scrollable` publishes its viewport rect here;
-                // cull cells outside it so a long directory only paints what's
-                // on screen. Remember it for the next event.
                 let vp = presence.viewport.get();
                 self.last_vp = vp;
                 self.publish_drop_targets(vp);
@@ -986,7 +791,6 @@ impl FileView {
             && let Some(item) = self.item_rect(i)
         {
             let ring = match self.mode {
-                // The lift reaches past the row by one step on each side.
                 ViewMode::List => item.inflate(f64::from(theme.tokens.spacing.s2), 0.0),
                 ViewMode::Grid => item,
             };
@@ -1005,11 +809,6 @@ impl Widget for FileView {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_layout_dirty(&self) -> bool {
-        // Entries, mode and zoom are construction inputs: the host replaces
-        // this view when they change. Pointer/selection/thumbnail updates do
-        // not change its intrinsic geometry. Parent constraints still force
-        // measurement on resize, and a theme rebuild updates text_scale. The
-        // list's table has geometry of its own (scrolling, a resized column).
         self.mode == ViewMode::List && self.list.is_layout_dirty()
     }
 
@@ -1044,22 +843,6 @@ impl Widget for FileView {
         if self.mode == ViewMode::List {
             return self.build_list_layout(taffy, theme, node_map);
         }
-        // Fill the parent width (so the grid's column count is derived from the
-        // real pane width, never collapsing to one column) and measure the
-        // content height.
-        //
-        // `align_self: Start` is load-bearing for scrolling: the enclosing
-        // `Scrollable` is a default flex container (row direction,
-        // `align-items: stretch`), which would otherwise stretch this leaf's
-        // cross axis (its height) to the viewport. Stretched to the viewport,
-        // the view reports a height equal to the visible area, so the
-        // Scrollable sees `content == viewport` and a long directory can't
-        // scroll at all. Opting out of the stretch lets the leaf take its
-        // *measured* content height (every grid row), so the Scrollable's
-        // content overflows the viewport and the wheel + scrollbar thumb move
-        // the grid.
-        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
-        // caller input; there is none to report here.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -1119,8 +902,6 @@ impl Widget for FileView {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Clear last frame's rename-field rect; the draw below republishes it
-        // only if the renaming row is actually on screen.
         if let Some(sink) = &self.rename_rect {
             sink.set(None);
         }
@@ -1144,11 +925,6 @@ impl Widget for FileView {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.due.paint = true;
         match event {
-            // A list's up/down movement is linear and remains app-level. An
-            // icon grid, however, must use its *live measured* columns or a
-            // responsive two-column phone grid would advance one whole row on
-            // every arrow press. Capture all four directions here only while
-            // this focusable collection owns focus.
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if self.is_focused
@@ -1179,9 +955,6 @@ impl Widget for FileView {
                         self.hover = new_hover;
                     }
                 }
-                // A held press that travels far enough starts a drag; the app
-                // carries the row(s) and, on release, moves them onto a folder
-                // (or pins a folder to the sidebar).
                 if let Some((start, path, is_dir)) = self.pressed_row.clone()
                     && pt.distance(start) > drag_threshold()
                 {
@@ -1195,11 +968,6 @@ impl Widget for FileView {
                 ..
             } => {
                 if self.mode == ViewMode::List {
-                    // A press on a row is the view's: it selects, and arms
-                    // the drag that carries the row (the table would take a
-                    // press-and-move on its body for a scroll). Everything
-                    // else (the header, a column's edge, the scrollbar) is
-                    // the table's own.
                     let row = self
                         .item_at(self.last_cursor)
                         .filter(|_| !self.list.in_scrollbar(self.last_cursor));
@@ -1213,7 +981,6 @@ impl Widget for FileView {
                     } else {
                         self.list.point_at(self.last_cursor, ctx);
                         let outcome = self.list.handle_event(event, ctx);
-                        // Header click → sort.
                         if let Some(column) = outcome.sort_key.and_then(sort_column) {
                             push(&self.sink, FileCommand::SortColumn(column));
                         }
@@ -1231,7 +998,6 @@ impl Widget for FileView {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A release without travel was just a click — disarm the drag.
                 self.pressed_row = None;
                 if self.mode == ViewMode::List {
                     self.list.handle_event(event, ctx);
@@ -1242,9 +1008,6 @@ impl Widget for FileView {
                 button: MouseButton::Right,
                 ..
             } => {
-                // Select the row under the cursor before the context menu opens
-                // (the app opens the menu after draining this) so the menu's
-                // actions target what was right-clicked, not a stale selection.
                 let target = self.item_at(self.last_cursor);
                 if let Some(i) = target {
                     if !self.selection.is_selected(i) {
@@ -1253,8 +1016,6 @@ impl Widget for FileView {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
                 push(&self.sink, FileCommand::ContextSelect(target));
-                // Not marked handled: the app still needs to see the right-press
-                // to open the menu.
             }
             WindowEvent::MouseWheel { .. } if self.mode == ViewMode::List => {
                 self.list.handle_event(event, ctx);
@@ -1273,8 +1034,6 @@ impl Widget for FileView {
     fn test_id(&self) -> Option<&str> {
         Some("file_view")
     }
-    /// Every item by name, so automation aims a drag at the row the
-    /// renderer laid out rather than at a guessed offset.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         self.entries
             .iter()
@@ -1295,10 +1054,6 @@ impl Widget for FileView {
         self.is_focused
     }
 
-    /// The rows a file's list names are the table's, and the actions an
-    /// assistive technology addresses to them are the table's too: the node
-    /// this view forwards stands for the table, so the target it carries is
-    /// answered here.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1320,8 +1075,6 @@ impl Widget for FileView {
         if self.mode == ViewMode::List
             && let Some(mut table) = self.list.accessibility()
         {
-            // The table names its cells by column; a file's row is named by
-            // the file and says what is known about it.
             for row in &mut table.children {
                 let Some(entry) = row
                     .pos_in_set
@@ -1354,8 +1107,6 @@ impl Widget for FileView {
             .collect();
         let mut node = AccessNode::new(Role::List)
             .with_name(t("files-a11y-list"))
-            // The list control occupies its scroll viewport; individual cells
-            // retain their content-space bounds and the ancestor's clipping.
             .with_bounds(
                 self.last_vp
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
@@ -1373,8 +1124,6 @@ impl Widget for FileView {
 }
 
 impl FileView {
-    /// The list's layout: a column holding the table, with the status lane
-    /// kept clear at the bottom.
     fn build_list_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1410,22 +1159,16 @@ impl FileView {
             },
             ..Default::default()
         };
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; the table's node was just built in this one.
         taffy.widget_node(style, &children, node_map, self)
     }
 }
 
 impl ui::widget::controls::ActionControls for FileView {
     fn has_action_control_bindings(&self) -> bool {
-        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
         false
     }
 }
 
-/// Concise row metadata for non-visual navigation. The badge glyphs communicate
-/// all of these facts visually; keeping the same state in the semantic row
-/// prevents a screen-reader user from having to open Properties for every file.
 fn accessible_entry_description(entry: &Entry) -> String {
     let mut facts = Vec::new();
     if entry.is_dir {
@@ -1486,17 +1229,11 @@ fn accessible_entry_description(entry: &Entry) -> String {
     facts.join(". ")
 }
 
-/// The badge glyph + colour for a workspace file's sync state. Follows the
-/// familiar cloud-storage emblem language: a tick for on-disk, a cloud for
-/// remote-only, a download arrow while hydrating.
 fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
     let colors = &theme.tokens.colors;
     match state {
-        // On disk: a quiet tick — nothing the user needs to act on.
         SyncState::Local => (Icon::Check, colors.text_dim),
-        // Remote-only: a cloud, so it reads as "not here yet".
         SyncState::Projected => (Icon::CloudDownload, colors.text_dim),
-        // Actively hydrating: in-flight state.
         SyncState::Downloading => (Icon::Download, colors.semantic.info),
     }
 }
@@ -1517,9 +1254,7 @@ fn availability_badge(state: &AvailabilityProjectionV1, theme: &Theme) -> (Icon,
     match state.residency {
         Residency::NotResident => (Icon::CloudDownload, colors.text_dim),
         Residency::Partial { .. } => (Icon::Download, colors.text_dim),
-        // The star means the keep-offline promise is actually satisfied. A
-        // desired pin that is still remote/partial is represented by its real
-        // transfer/residency state above, never as a completed outcome.
+        // The star says the keep-offline promise is kept: a pin still remote shows its plain state.
         Residency::Resident { .. } if state.policy == AvailabilityPolicy::Pinned => {
             (Icon::Star, colors.text_primary)
         }
@@ -1531,9 +1266,6 @@ fn availability_badge(state: &AvailabilityProjectionV1, theme: &Theme) -> (Icon,
     }
 }
 
-/// Paint the sync-state emblem over the bottom-right corner of a file's icon,
-/// on an opaque disc so it stays legible over a selected row's accent fill.
-/// `icon_rect` is the file icon's box; `scale` sizes the badge with the icon.
 fn draw_sync_badge(
     scene: &mut Scene,
     transform: Affine,
@@ -1555,13 +1287,9 @@ fn draw_badge(
     scale: f64,
     theme: &Theme,
 ) {
-    // The badge overlaps the icon's lower-right corner (the standard emblem
-    // position); size it relative to the icon so it scales with zoom, but
-    // never past one icon step, so it stays an emblem on a large preview.
     let bsz = (icon_rect.width() * 0.62).clamp(9.0, f64::from(theme.tokens.metrics.icon_md));
     let cx = icon_rect.x1;
     let cy = icon_rect.y1;
-    // Opaque backing disc so the emblem reads over any row highlight.
     scene.fill(
         Fill::NonZero,
         transform,
@@ -1597,11 +1325,6 @@ fn draw_availability_badge(
     draw_badge(scene, transform, icon_rect, icon, color, scale, theme);
 }
 
-/// Cull a grid cell whose vertical extent falls entirely outside the scroll
-/// viewport `vp` (the enclosing `Scrollable`'s clip rect, published via the
-/// presence context). A small margin keeps the row just off each edge alive so
-/// a partially-visible row at the boundary always paints. When no viewport is
-/// active (a plain, un-scrolled draw) nothing is culled.
 fn cull(vp: Option<Rect>, r: Rect) -> bool {
     match vp {
         Some(v) => {
@@ -1612,7 +1335,6 @@ fn cull(vp: Option<Rect>, r: Rect) -> bool {
     }
 }
 
-/// Trim `text` with an ellipsis until it fits `max_w`.
 pub(super) fn truncate(
     tr: &mut TextRenderer,
     text: &str,
@@ -1630,8 +1352,7 @@ pub(super) fn truncate(
     let mut keep = chars.len();
     while keep > 0 {
         keep -= 1;
-        // Preserve the extension and distinguishing filename suffix at narrow
-        // widths; leading-only elision makes numbered documents identical.
+        // Elide the middle, keeping the extension and the end of the name that tells files apart.
         let suffix = keep.saturating_mul(2).div_ceil(3);
         let prefix = keep.saturating_sub(suffix);
         let candidate = format!(
@@ -1720,9 +1441,6 @@ mod tests {
         v
     }
 
-    /// Scrolling reuses measurement, painting and drop-target publication visit
-    /// only what the viewport shows, and the reserved status lane stays clear —
-    /// each phase with its own view fixture.
     #[test]
     fn scroll_measurement_culling_and_drop_targets_bound_the_work() {
         scroll_layout_reuses_real_file_view_measurement();
@@ -1763,7 +1481,6 @@ mod tests {
                 0,
                 "scrolling an unchanged directory must not remeasure its rows"
             );
-            // Real pane resizing must still measure the width-dependent content.
             MEASURE_CALLS.with(|count| count.set(0));
             frame.layout_at(&mut scroll, (1200, 600)).unwrap();
             assert!(MEASURE_CALLS.with(Cell::get) > 0);
@@ -1771,7 +1488,6 @@ mod tests {
             if mode == ViewMode::Grid {
                 assert!(resized.height() < before.height());
             }
-            // Theme rebuilds invalidate the retained tree, including scaled rows.
             let scaled = Theme::dark().with_text_scale(2.0);
             let mut frame = ShotFrame::new((1200, 600), scaled.clone());
             MEASURE_CALLS.with(|count| count.set(0));
@@ -1790,7 +1506,6 @@ mod tests {
                 scaled_rect.width(),
                 expected.columns,
             );
-            // A new directory snapshot is remeasured even at identical pane size.
             let mut replaced = Scrollable::new_vertical().with_child(Box::new(
                 FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode),
             ));
@@ -1810,8 +1525,6 @@ mod tests {
         }
     }
 
-    /// List rows, header and columns adapt to pane width, item zoom and
-    /// accessibility text scale — each phase with its own view fixture.
     #[test]
     fn list_geometry_follows_width_zoom_and_text_scale() {
         nested_navigation_layout_preserves_large_text_file_row_geometry();
@@ -1920,20 +1633,16 @@ mod tests {
     }
 
     fn grid_flows_left_to_right_and_wraps_to_fill_width() {
-        // A wide pane must lay several columns per row, not one item per line.
         let v = grid(12, 900.0);
         assert!(
             v.columns >= 5,
             "wide grid uses many columns, got {}",
             v.columns
         );
-        // Item 0 and item 1 sit on the SAME row (item 1 is to the right of 0),
-        // proving row-major flow rather than a vertical stack.
         let c0 = v.cell_rect(0);
         let c1 = v.cell_rect(1);
         assert!((c0.y0 - c1.y0).abs() < 1e-6, "items 0 and 1 share a row");
         assert!(c1.x0 > c0.x0, "item 1 is to the right of item 0");
-        // The item after a full row wraps down to the next row at the left.
         let wrap = v.cell_rect(v.columns);
         assert!(
             wrap.y0 > c0.y0,
@@ -1955,9 +1664,6 @@ mod tests {
 
     fn grid_arrow_targets_follow_the_measured_visual_row() {
         let mut v = grid(8, 400.0);
-        // Keep the assertion about directional semantics independent of a
-        // particular theme metric: a responsive reflow has resolved three
-        // columns for this test frame.
         v.columns = 3;
         v.selection.select_only(1);
         assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(2));
@@ -1965,18 +1671,12 @@ mod tests {
         assert_eq!(v.grid_key_target(NamedKey::ArrowDown), Some(4));
         assert_eq!(v.grid_key_target(NamedKey::ArrowUp), Some(0));
 
-        // The final short row remains reachable without producing an invalid
-        // selection index when moving down or right from its edge.
         v.selection.select_only(7);
         assert_eq!(v.grid_key_target(NamedKey::ArrowDown), Some(7));
         assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(7));
     }
 
     fn phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom() {
-        // A 390px window leaves a 358px FileView after the content gutter.
-        // Both regular and 160% item zoom must retain a compact two-column
-        // grid; high zoom is allowed to reduce preview whitespace, never the
-        // actual row target below the platform's 44px minimum.
         for scale in [1.0, 1.6] {
             let sink = new_sink();
             let sel = SelectionModel::new();
@@ -2022,7 +1722,6 @@ mod tests {
         }
     }
 
-    /// Each preview source runs against its own temp dir and thumbnail service.
     #[test]
     fn thumbnails_use_the_shared_service_or_host_without_hydrating() {
         image_cells_request_previews_through_the_shared_service();
@@ -2079,7 +1778,6 @@ mod tests {
         let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
         let key = FileView::thumb_key(&ctx, &entry);
 
-        // First look schedules generation on the shared service.
         assert!(matches!(
             FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image),
             ThumbState::Loading
@@ -2128,11 +1826,6 @@ mod tests {
         );
     }
 
-    /// A small PNG on disk, as an `Entry` with no sync state (an ordinary
-    /// local file, or a workspace root the driver never annotated). Bigger
-    /// than the host-provided preview used in the tests below but still
-    /// small enough to survive the service's cap untouched — so the size of
-    /// whatever comes back names which source produced it.
     fn photo_on_disk(dir: &std::path::Path, name: &str, w: u32, h: u32) -> Entry {
         let path = dir.join(name);
         let mut buf = image::RgbaImage::new(w, h);
@@ -2205,10 +1898,6 @@ mod tests {
 
     #[cfg(unix)]
     fn a_host_preview_is_adopted_rather_than_the_file_re_decoded() {
-        // When the metadata channel does answer, that answer is what gets
-        // painted: the file manager never re-decodes what the host already
-        // previewed. The two sources are deliberately different sizes, so the
-        // preview that comes back says which one produced it.
         let dir = tempfile::tempdir().unwrap();
         let entry = photo_on_disk(dir.path(), "harbour.png", 80, 60);
         let mut host = image::RgbaImage::new(24, 16);
@@ -2290,18 +1979,11 @@ mod tests {
     }
 
     fn rows_outside_the_scroll_viewport_are_culled() {
-        // The paint path calls `cull(vp, row)` for every row/cell; a long
-        // directory must only pay to draw what the viewport actually shows.
         let vp = Some(Rect::new(0.0, 100.0, 600.0, 400.0));
-        // Well above the viewport → culled.
         assert!(cull(vp, Rect::new(0.0, 0.0, 600.0, 20.0)));
-        // Well below → culled.
         assert!(cull(vp, Rect::new(0.0, 500.0, 600.0, 520.0)));
-        // Squarely inside → drawn.
         assert!(!cull(vp, Rect::new(0.0, 200.0, 600.0, 220.0)));
-        // Straddling the top edge (within the keep-alive margin) → drawn.
         assert!(!cull(vp, Rect::new(0.0, 98.0, 600.0, 102.0)));
-        // No active viewport (a plain, un-scrolled draw) → never culled.
         assert!(!cull(None, Rect::new(0.0, 99_999.0, 600.0, 100_000.0)));
     }
 
@@ -2347,9 +2029,6 @@ mod tests {
     }
 
     fn grid_leaves_a_reserved_bottom_lane_clear() {
-        // Files reserves a bottom lane for its floating status pill. The
-        // drawing and folder-drop paths use this same predicate, so a partly
-        // clipped cell cannot look actionable behind that app-level chrome.
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut entries = items(20);
@@ -2387,7 +2066,6 @@ mod tests {
         );
     }
 
-    /// Each press scenario uses its own view and command sink.
     #[test]
     fn pointer_presses_emit_context_select_and_drag_commands() {
         right_press_selects_the_row_under_the_cursor_for_the_menu();
@@ -2414,7 +2092,6 @@ mod tests {
 
     fn right_press_on_empty_space_clears_the_selection_for_the_menu() {
         let mut laid = Laid::new(&items(3), (900, 600), |view| view);
-        // Right-press well below the 3 rows → empty space.
         let below = laid.view.item_rect(2).unwrap().y1 + 120.0;
         let x = laid.view.list.rect().x0 + 50.0;
         laid.move_to(Point::new(x, below));
@@ -2429,8 +2106,6 @@ mod tests {
 
     fn sync_badge_maps_each_state_to_a_distinct_emblem() {
         let theme = Theme::dark();
-        // Each hydration state gets its own recognisable glyph, and the
-        // downloading state is in-flight, which is the info status.
         assert_eq!(sync_badge(SyncState::Local, &theme).0, Icon::Check);
         assert_eq!(
             sync_badge(SyncState::Projected, &theme).0,
@@ -2567,7 +2242,6 @@ mod tests {
         let mut entries = items(5);
         entries[2] = ent("folder", true);
         let mut laid = Laid::new(&entries, (900, 600), |view| view);
-        // Press on the folder row (row 2), then travel past the threshold.
         let row = laid.row_center(2);
         laid.move_to(row);
         laid.press(MouseButton::Left);
@@ -2580,9 +2254,6 @@ mod tests {
     }
 
     fn a_file_row_press_begins_a_move_drag() {
-        // Files (not only folders) are draggable now — a row drag moves the
-        // file into a folder it is dropped onto. The host decides drop
-        // semantics; the view just reports the drag started on this row.
         let mut laid = Laid::new(&items(5), (900, 600), |view| view);
         let row = laid.row_center(0);
         laid.move_to(row);
@@ -2595,8 +2266,6 @@ mod tests {
         );
     }
 
-    /// The host resolves a drop against the folder rects the view publishes,
-    /// so only directories appear, at their laid-out positions.
     #[test]
     fn apply_layout_publishes_folder_rows_as_drop_targets() {
         let mut entries = items(5); // f0..f4 are files
@@ -2616,8 +2285,6 @@ mod tests {
         assert!(published[0].rect.y0 < published[1].rect.y0);
     }
 
-    /// Every row of the list resolves back to itself under the pointer; the
-    /// header band and the space below the last row resolve to nothing.
     #[test]
     fn list_item_at_maps_rows_below_the_header() {
         let laid = Laid::new(&items(4), (900, 600), |view| view);
@@ -2637,9 +2304,6 @@ mod tests {
         assert_eq!(laid.view.item_at(Point::new(table.x0 + 50.0, below)), None);
     }
 
-    /// Folder and file cells in one grid row share an art square and hence
-    /// one label baseline, and a label that wraps onto a second line still
-    /// fits inside its cell.
     fn grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2667,8 +2331,6 @@ mod tests {
         }
     }
 
-    /// A name that used to be cut in the middle (a plain document name in a
-    /// narrow cell) wraps onto a second line whole.
     fn grid_names_wrap_instead_of_being_cut() {
         let mut tr = TextRenderer::new();
         let style = Theme::dark().text(TextRole::Body);
@@ -2689,7 +2351,6 @@ mod tests {
         }
     }
 
-    /// HIG §7 "Nothing touches": two grid cells keep the grid gap.
     fn neighbouring_faces_keep_a_token_gap() {
         let sink = new_sink();
         let s1 = f64::from(Theme::dark().tokens.spacing.s1);
@@ -2725,8 +2386,6 @@ mod tests {
         assert!(zoomed.row_h() > base.row_h(), "zoom grows list row height");
     }
 
-    /// A folder and a pinned, replicated file with an open version conflict:
-    /// every fact the accessibility description carries.
     fn accessible_entries() -> Vec<Entry> {
         let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
         entries[1].size = 4_000;
@@ -2742,9 +2401,6 @@ mod tests {
         entries
     }
 
-    /// The record's history with one conflict still open: two versions that
-    /// are both heads, which is what the mount projects while nobody has
-    /// resolved them.
     fn conflicted_history() -> fs_protocol::HistoryProjectionV1 {
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
@@ -2804,8 +2460,6 @@ mod tests {
         }
     }
 
-    /// A view laid out for real in a frame, so a list's table has the geometry
-    /// it paints and hit-tests with.
     struct Laid {
         view: FileView,
         frame: ui::launch::ShotFrame,
@@ -2835,7 +2489,6 @@ mod tests {
             Self { view, frame, sink }
         }
 
-        /// Lay the view out and paint it again, as the next frame does.
         fn relayout(&mut self) {
             self.frame.layout(&mut self.view).unwrap();
             let _ = self.frame.draw(&mut self.view);
@@ -2863,7 +2516,6 @@ mod tests {
             ));
         }
 
-        /// The centre of list row `index`.
         fn row_center(&self, index: usize) -> Point {
             self.view
                 .item_rect(index)
@@ -2876,9 +2528,6 @@ mod tests {
         }
     }
 
-    /// The list is the framework's table: a name, a size and a modified
-    /// column, the sort indicator on the column the entries are ordered by,
-    /// and one row per entry named for its file.
     #[test]
     fn the_list_is_a_table_with_a_sorted_column_and_a_row_per_entry() {
         let laid = Laid::new(&items(4), (900, 600), |view| view);
@@ -2901,8 +2550,6 @@ mod tests {
         assert_eq!(node.children[2].pos_in_set, Some(3));
     }
 
-    /// Row height follows the item zoom, and the table's header band is the
-    /// one the view reserves for hit-testing.
     #[test]
     fn list_rows_follow_item_zoom_and_the_header_band_is_the_tables() {
         let base = Laid::new(&items(3), (900, 600), |view| view);
@@ -2936,8 +2583,6 @@ mod tests {
         );
     }
 
-    /// A directory with a hundred thousand entries mounts only the rows it
-    /// shows, and scrolling moves that window.
     #[test]
     fn a_large_directory_mounts_only_the_visible_rows() {
         let mut laid = Laid::new(&items(100_000), (900, 600), |view| view);
@@ -2951,8 +2596,6 @@ mod tests {
         assert!(later[0].0 > 900, "the window moved to row {}", later[0].0);
     }
 
-    /// The wheel scrolls the table, and its scroll position survives the host
-    /// rebuilding the view around the same slot.
     #[test]
     fn the_list_scrolls_by_wheel_and_keeps_its_place_across_rebuilds() {
         let mut laid = Laid::new(&items(300), (900, 600), |view| view);
@@ -2964,7 +2607,6 @@ mod tests {
         assert!(scrolled > 0.0, "a wheel-down scrolls the list");
         assert!(slot.max_scroll_y() >= scrolled);
 
-        // The host replaces the view (a selection changed): the table stays.
         let sink = new_sink();
         let mut rebuilt =
             FileView::new(&items(300), &SelectionModel::new(), &sink).with_list(slot.clone());
@@ -2976,13 +2618,10 @@ mod tests {
             "the scroll position survives a rebuild"
         );
 
-        // A new folder starts at the top.
         slot.reset_scroll();
         assert_eq!(slot.scroll_y(), 0.0);
     }
 
-    /// The columns follow the pane: all three when wide, the date alone when
-    /// medium, the name alone when narrow, sooner with larger type or zoom.
     #[test]
     fn narrow_panes_drop_detail_columns_and_ask_for_a_rebuild() {
         let mut wide = Laid::new(&items(4), (1000, 600), |view| view);
@@ -2991,7 +2630,6 @@ mod tests {
             "wide keeps every column"
         );
 
-        // A medium pane shows the size and the date, without the time.
         let mut laid = Laid::new(&items(4), (900, 600), |view| view);
         assert!(!Widget::take_structure_dirty(&mut laid.view));
         let mut medium = Laid::new(&items(4), (560, 600), |view| view);
@@ -3000,7 +2638,6 @@ mod tests {
             "a pane narrower than the columns it was built with asks for a rebuild"
         );
 
-        // The rebuilt view finds its columns already fitted.
         let slot = medium.view.list.clone();
         let sink = new_sink();
         let mut rebuilt = FileView::new(&items(4), &SelectionModel::new(), &sink).with_list(slot);
@@ -3020,8 +2657,6 @@ mod tests {
             "the date column stays at 560"
         );
 
-        // A phone-width pane keeps the name alone, and large item zoom gives
-        // up the detail columns sooner.
         let geo = Geo::of(&Theme::dark());
         assert_eq!(shape_columns(1000.0, &geo, 1.0, 1.0), (true, 2));
         assert_eq!(shape_columns(500.0, &geo, 1.0, 1.0), (true, 1));
@@ -3030,8 +2665,6 @@ mod tests {
         assert_eq!(shape_columns(900.0, &geo, 1.0, 2.0), (true, 1));
     }
 
-    /// Clicking a column's header sorts by it, and the click reaches the app
-    /// as the column's sort command; a press on a row is not a sort.
     #[test]
     fn header_clicks_sort_by_the_column() {
         let mut laid = Laid::new(&items(4), (900, 600), |view| view);
@@ -3063,7 +2696,6 @@ mod tests {
         );
     }
 
-    /// A press on a row selects it, and arms the drag that carries it.
     #[test]
     fn a_press_on_a_list_row_selects_it_and_arms_a_drag() {
         let mut laid = Laid::new(&items(5), (900, 600), |view| view);
@@ -3096,8 +2728,6 @@ mod tests {
         );
     }
 
-    /// A list with long rows and a bottom inset keeps its rows clear of the
-    /// status lane, and only folders the pointer can reach are drop targets.
     #[test]
     fn list_rows_and_drop_targets_stay_above_the_status_lane() {
         let mut entries = items(60);
@@ -3128,8 +2758,6 @@ mod tests {
         );
     }
 
-    /// The list says what it holds for assistive technology: one row per
-    /// file, named for it, with what is known about it, and which are chosen.
     #[test]
     fn the_list_exposes_each_file_selection_and_collaboration_state() {
         let mut selection = SelectionModel::new();

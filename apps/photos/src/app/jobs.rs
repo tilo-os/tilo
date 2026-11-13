@@ -1,7 +1,6 @@
-//! Work that runs off the frame: thumbnails, per-photo analysis, the
-//! library-wide analysis run and the batched People scan. Each worker answers
-//! over a channel; these methods queue its jobs and fold its results back into
-//! the library.
+//! Work that runs off the frame: thumbnails, per-photo analysis, the library-wide analysis and
+//! the batched People scan. Each worker answers over a channel; these methods queue its jobs and
+//! fold its results back into the library.
 
 use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 use crate::pixels;
@@ -15,19 +14,13 @@ use vello::peniko::ImageData;
 use super::{
     ANALYSIS_QUEUE_LIMIT, AnalysisJob, AnalysisJobKind, AnalysisOutcome, AnalysisResult,
     ImageAnalysisComponent, LibraryAnalysisHit, LiveContent, PendingPeopleScan, PeopleScanProgress,
-    Photos, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, decode_key, thumbnail_key,
-    to_peniko,
+    Photos, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, thumbnail_key, to_peniko,
 };
 
 impl PeopleScanProgress {
-    /// Plan a bounded contiguous slice without moving the durable cursor.
-    /// The caller commits `advance_after_success` only after the face worker
-    /// has returned and its opaque local clusters were accepted.
     pub(super) fn batch_range(&self, available: usize, limit: usize) -> Option<(usize, usize)> {
         (available > 0).then(|| {
             let start = self.next_offset % available;
-            // Do not wrap a final partial batch: every locally available
-            // photograph is covered once before the next pass begins.
             (start, limit.min(available.saturating_sub(start)))
         })
     }
@@ -49,8 +42,6 @@ impl PeopleScanProgress {
     }
 
     pub(super) fn record_failure(&mut self, error: String) {
-        // In particular, do not alter next_offset here: retry must send the
-        // same slice, not skip photographs whose private analysis failed.
         "error".clone_into(&mut self.status);
         self.last_error = Some(error);
     }
@@ -61,7 +52,6 @@ impl PeopleScanProgress {
             .unwrap_or_default()
     }
 
-    /// Keep the scan's progress on this device.
     pub(super) fn save(&self) -> Result<(), String> {
         let file = Self::file().ok_or_else(|| "no state location".to_owned())?;
         file.write_json(self)
@@ -107,7 +97,7 @@ fn analysis_worker(
             .send(AnalysisResult {
                 invocation: job.invocation,
                 photo_id: job.photo_id,
-                content: job.image.content.clone(),
+                content: job.image.hash(),
                 result: match job.kind {
                     AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Ocr,
@@ -129,8 +119,6 @@ fn analysis_worker(
     }
 }
 
-/// Wake the idle host whenever a preview settles, success or failure, so a
-/// finished thumbnail paints without waiting for user input.
 pub(super) fn with_thumbnail_wake(
     service: thumbnail::ThumbnailService,
 ) -> thumbnail::ThumbnailService {
@@ -139,41 +127,24 @@ pub(super) fn with_thumbnail_wake(
     service
 }
 
-/// The shared-pipeline request for one library photograph. Its content
-/// reference is the preview's content address and persists in the preview
-/// cache; a malformed address has no stable identity, so its preview is
-/// generated for this session only.
 pub(super) fn thumbnail_request(
     image: &OpenImage,
     content: &ContentStore,
 ) -> thumbnail::ThumbRequest {
-    let persistent = thumbnail::ThumbKey::of_address(&image.content, THUMBNAIL_SIZE);
-    let key = persistent.unwrap_or_else(|| {
-        thumbnail::ThumbKey::of_bytes(decode_key(image).as_bytes(), THUMBNAIL_SIZE)
-    });
+    let key = thumbnail::ThumbKey::of_hash(image.content.hash(), THUMBNAIL_SIZE);
     let (image, content) = (image.clone(), content.clone());
-    let request = thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
+    thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
         crate::model::bytes_of(&image, &content)
-    });
-    if persistent.is_some() {
-        request
-    } else {
-        request.transient()
-    }
+    })
 }
 
 impl Photos {
-    /// Keep the People scan's progress on this device; a failure waits for
-    /// [`Self::report_state_save_failure`].
     pub(super) fn save_people_scan_progress(&mut self) {
         if let Err(error) = self.people_scan_progress.save() {
             self.state_save_failure = Some(error);
         }
     }
 
-    /// Say in the window's bar when keeping this device's People state
-    /// failed. Runs after the frame's other work so its own notice cannot
-    /// hide the failure.
     pub(super) fn report_state_save_failure(&mut self) {
         let scan = self.state_save_failure.take();
         let people = self.people_controller.take_save_failure();
@@ -181,7 +152,6 @@ impl Photos {
             self.notice = Some(tr_with("photos-state-not-kept", "reason", &error));
         }
     }
-    /// What the notice says when an analysis run finishes.
     fn analysis_finished_notice(&self) -> String {
         tr_args(
             "photos-analysis-finished-notice",
@@ -229,7 +199,7 @@ impl Photos {
                 .values()
                 .filter(|photo| {
                     !photo.analysis().is_some_and(|analysis| {
-                        analysis.has_vision_component(&photo.image.content, &capability.revision)
+                        analysis.has_vision_component(&photo.image.hash(), &capability.revision)
                     })
                 })
                 .filter_map(|photo| {
@@ -306,7 +276,6 @@ impl Photos {
         true
     }
 
-    /// Settle a completed library analysis with its counts.
     fn finish_library_analysis(&mut self, invocation: tilo_actions::InvocationId) {
         self.active_analysis.remove(&invocation);
         self.settle(tilo_actions::InvocationUpdate::Succeeded {
@@ -383,7 +352,7 @@ impl Photos {
             .photo(&completed.photo_id)
             .cloned()
             .as_ref()
-            .is_none_or(|photo| photo.image.content != completed.content);
+            .is_none_or(|photo| photo.image.hash() != completed.content);
         let item_result = match completed.result {
             AnalysisOutcome::Image {
                 component: ImageAnalysisComponent::Vision,
@@ -487,7 +456,7 @@ impl Photos {
                     .photo(&completed.photo_id)
                     .cloned()
                     .as_ref()
-                    .is_none_or(|photo| photo.image.content != completed.content);
+                    .is_none_or(|photo| photo.image.hash() != completed.content);
             let update = if stale {
                 tilo_actions::InvocationUpdate::Failed {
                     invocation: completed.invocation,
@@ -586,8 +555,6 @@ impl Photos {
         }
     }
 
-    /// The local analysis worker's queue, starting the worker if it has not
-    /// run yet.
     pub(super) fn analysis_sender(&mut self) -> Option<SyncSender<AnalysisJob>> {
         if self.analysis_tx.is_none() {
             let (job_tx, job_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
@@ -628,7 +595,6 @@ impl Photos {
             self.pending.take();
             self.library_cards.clear();
             self.library_details_cards.clear();
-            // Edits to the pixels leave the details a draft describes alone.
             let filed = |library: &crate::model::PhotoLibrary, id: &str| {
                 library.photo(id).cloned().map(|mut photo| {
                     photo.edits = Edits::default();
@@ -647,12 +613,10 @@ impl Photos {
                     .album_editor_members
                     .iter()
                     .any(|id| current.library.photo(id).is_none());
-            // A photograph removed from the library closes in this window.
             let shown_removed = self.open_photo.as_ref().is_some_and(|id| {
                 old.library.photo(id).is_some() && current.library.photo(id).is_none()
             });
             if shown_removed {
-                // Back to the library rather than an empty "No photo open".
                 self.open_photo = None;
                 self.library_mode = true;
             }
@@ -673,12 +637,9 @@ impl Photos {
             }
         }
         self.observed_content = Some(current);
-        // Recreating the viewer on changed immutable identity/edits also drops
-        // an active drag before the next input can apply its stale viewport.
         self.refresh();
     }
 
-    /// Take completed thumbnail work without blocking the UI thread.
     pub(super) fn drain_thumbnail_results(&mut self) {
         let Some(generation) = self.thumbnail_generation else {
             return;
@@ -694,8 +655,6 @@ impl Photos {
         for (id, state) in settled {
             self.thumbnail_keys.remove(&id);
             match state {
-                // Dropped from the shared queue: forget it here too, so the
-                // next schedule asks again.
                 None => {
                     self.thumbnail_queued.remove(&id);
                 }
@@ -710,10 +669,6 @@ impl Photos {
         }
     }
 
-    /// Accept a worker result only when it still belongs to the materialised
-    /// library slice. This is the generation fence that makes scrolling,
-    /// filtering and collaboration safe while a decode is in flight.
-    /// The decoded preview of the photograph `photo_id`, once it arrived.
     pub(super) fn thumbnail_for(&self, photo_id: &str) -> Option<&ImageData> {
         self.thumbnail_resource_keys
             .get(photo_id)
@@ -735,9 +690,6 @@ impl Photos {
         }
     }
 
-    /// Fill the small bounded worker queue each synchronization. This keeps
-    /// decoding off the UI thread while avoiding a 24-frame wait for a single
-    /// visible shelf to become useful after a scroll or first library open.
     pub(super) fn schedule_library_thumbnail(
         &mut self,
         sources: Vec<LibraryPhoto>,
@@ -756,8 +708,6 @@ impl Photos {
                 .thumbnail_generation
                 .and_then(|generation| generation.checked_add(1))
             else {
-                // Never reuse a generation token. Any result still in the
-                // worker's queue is now untrusted, and no new work is sent.
                 self.withdraw_thumbnail_requests(&[]);
                 self.thumbnail_generation = None;
                 self.thumbnail_visible_ids = ids;
@@ -772,8 +722,6 @@ impl Photos {
             self.thumbnail_queued.clear();
             if document_changed {
                 self.library_thumbnails.clear();
-                // Bytes behind an unchanged address may have arrived: ask the
-                // pipeline afresh.
                 for photo in &sources {
                     self.thumbnail_service
                         .forget(&thumbnail_request(&photo.image, &self.content).key());
@@ -788,11 +736,6 @@ impl Photos {
             return;
         }
         for photo in sources {
-            // The shared queue is bounded, but its worker can take a job
-            // between two requests. Without this independent accounting fence
-            // a fast worker lets one sync enqueue an arbitrarily large visible
-            // slice while `thumbnail_queued` continues to grow. Keep the whole
-            // in-flight generation strictly bounded.
             if self.thumbnail_queued.len() >= THUMBNAIL_QUEUE_LIMIT {
                 break;
             }
@@ -814,8 +757,6 @@ impl Photos {
         }
     }
 
-    /// Withdraw queued previews that are no longer on screen. Work already
-    /// running settles into the shared cache; its result is simply not taken.
     fn withdraw_thumbnail_requests(&mut self, still_visible: &[String]) {
         let service = &self.thumbnail_service;
         self.thumbnail_keys.retain(|id, key| {
@@ -829,10 +770,6 @@ impl Photos {
 }
 
 impl Photos {
-    /// Admit one fresh contiguous People slice plus a bounded, device-local
-    /// anchor set from earlier local suggestions. Anchors use ordinary local
-    /// pixels only to let the signed runtime bridge disjoint batches; they do
-    /// not count toward cursor progress and never leave this device.
     pub(super) fn schedule_people_scan_batch(
         &mut self,
         invocation: tilo_actions::InvocationId,

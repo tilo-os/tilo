@@ -1,28 +1,10 @@
-//! The person's **desktop settings**: one store, one forgiving read.
+//! The person's desktop settings: one document of independent sections, and reads that never
+//! fail.
 //!
-//! # The shape
-//!
-//! One document of independent sections (`display`, `region`, `appearance`,
-//! `power`, …), each owned by whichever pane or app writes it. Nothing owns
-//! the document as a whole, so [`update_section`] merges rather than
-//! replaces: panes compile into different binaries shipping at different
-//! times, and a writer that stored its own view would drop sections it
-//! didn't know about.
-//!
-//! # Who holds the truth
-//!
-//! A profile's settings are two Automerge documents, the person's and this
-//! device's ([`Store`]). The process holding the profile (the session, for
-//! the person's) writes them; every other process opening it reads the same
-//! documents and follows the holder. A sandboxed app sees neither: it asks
-//! the shell, which answers with the part of the document [`app_scope`]
-//! gives that app.
-//!
-//! # Reading is always forgiving
-//!
-//! Missing settings, a section of the wrong type, or a value out of range
-//! must never take an app or session down — every read path returns the
-//! caller's default instead.
+//! A profile's settings are two Automerge documents, the person's and this device's ([`Store`]).
+//! The process holding the profile writes them; every other process reads the same documents and
+//! follows the holder. A read that finds a missing setting, a section of the wrong type or a value
+//! out of range returns the caller's default instead of failing.
 
 #![cfg_attr(
     test,
@@ -101,6 +83,7 @@ pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
 #[cfg(feature = "watch")]
 pub mod live;
+pub mod lockdown;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod paste_shortcut;
@@ -142,7 +125,6 @@ pub fn config_root() -> Option<PathBuf> {
     tilo_settings_records::profile_root()
 }
 
-/// Resolve one settings file under the config root.
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
 }
@@ -195,7 +177,6 @@ pub fn load() -> Map<String, Value> {
     source().map(|source| source.load()).unwrap_or_default()
 }
 
-/// Identifies one version of the settings document, for readers that cache it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SettingsStamp(pub u64);
 
@@ -211,13 +192,10 @@ pub fn document_changed(
     !seen || cached != current
 }
 
-/// The current [`SettingsStamp`]; `None` without settings.
 pub fn stamp() -> Option<SettingsStamp> {
     source().map(|source| SettingsStamp(source.revision()))
 }
 
-/// Parse a settings document body. Anything that is not a JSON object reads
-/// as "no settings".
 pub fn parse(text: &str) -> Map<String, Value> {
     match serde_json::from_str::<Value>(text) {
         Ok(Value::Object(m)) => m,
@@ -231,8 +209,6 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
     object_section(parse(text), name)
 }
 
-/// Read one top-level section as an object. A missing section, or one that is not an
-/// object, yields an empty map.
 pub fn load_section(name: &str) -> Map<String, Value> {
     object_section(load(), name)
 }
@@ -245,7 +221,6 @@ pub fn load_sections(names: &[&str]) -> Map<String, Value> {
     merged_sections(&load(), names)
 }
 
-/// Sections `names` of `document` read as one, as [`load_sections`] does.
 pub fn merged_sections(document: &Map<String, Value>, names: &[&str]) -> Map<String, Value> {
     let mut merged = Map::new();
     for name in names {
@@ -260,7 +235,6 @@ pub fn merged_sections(document: &Map<String, Value>, names: &[&str]) -> Map<Str
     merged
 }
 
-/// Section `name` of `source`'s document.
 pub fn load_section_in(source: &dyn SettingsSource, name: &str) -> Map<String, Value> {
     object_section(source.load(), name)
 }
@@ -293,11 +267,6 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
         .update_section(name, values)
 }
 
-/// [`update_section`], recording who and what made the change with every leaf it changes.
-///
-/// # Errors
-///
-/// As [`update_section`].
 pub fn update_section_by(
     name: &str,
     values: Map<String, Value>,
@@ -404,7 +373,6 @@ mod tests {
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    /// How often the thread blocked, and whether it is blocked now.
     #[cfg(all(target_os = "linux", feature = "watch"))]
     pub(crate) fn blocked(tid: &str) -> (u64, bool) {
         let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
@@ -422,9 +390,6 @@ mod tests {
         )
     }
 
-    /// Waits until the thread is blocked and returns how often it blocked.
-    /// A woken thread is runnable until it has run and blocked again, which
-    /// counts a switch, so the count returned is final for what came before.
     #[cfg(all(target_os = "linux", feature = "watch"))]
     pub(crate) fn blocked_count(tid: &str) -> u64 {
         tilo_test_env::wait_for(format_args!("thread {tid} to block"), || {

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::{
     Action, ActionError, ActionFacet, ActionKey, ActionRegistry, Described, Did, Doc,
-    EncodedAction, Scalar,
+    EncodedAction, ParamType, Scalar,
 };
 use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 
@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use crate::chunk::{ChunkNo, Chunks, FIRST};
 use crate::record::DynRecord;
+use tilolang_runtime::ids::AppId;
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 use tilolang_runtime::store::VersionKind;
 
@@ -45,6 +46,38 @@ pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 
 /// The action id of a bound checkbox changing its field.
 pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
+
+/// A bound control's edit of one field — a text input or a checkbox — as a resource offers it:
+/// the door gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
+/// change of the field names ([`crate::surface`]). One declaration, so the arguments a change is
+/// published with are the ones the surface's verb declares.
+pub struct DirectEdit {
+    /// The verb a change of the field names.
+    pub id: &'static str,
+    /// What the action reads as.
+    pub label: &'static str,
+    /// What the value it sets is.
+    pub value: ParamType,
+    /// Whether a change of the field names the value it set. A text edit's does not: what a
+    /// person typed is the change itself, so its arguments name the field alone.
+    pub names_value: bool,
+}
+
+/// The two direct edits every resource offers its fields.
+pub const DIRECT_EDITS: [DirectEdit; 2] = [
+    DirectEdit {
+        id: EDIT_TEXT_ACTION,
+        label: "Edit a text field",
+        value: ParamType::Text,
+        names_value: false,
+    },
+    DirectEdit {
+        id: EDIT_FLAG_ACTION,
+        label: "Set a flag field",
+        value: ParamType::Boolean,
+        names_value: true,
+    },
+];
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
 /// per-workspace root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
@@ -268,6 +301,23 @@ impl DynEdit {
         }
     }
 
+    /// The item this edit writes, when it writes one: the item of a path
+    /// ([`Self::Edit`]), or the item it inserts, places or removes.
+    #[must_use]
+    pub fn item(&self) -> Option<&str> {
+        match self {
+            Self::Edit { edit, .. } => edit.path().iter().find_map(|segment| match segment {
+                Segment::Item(item) => Some(item.as_str()),
+                Segment::Field(_) | Segment::Key(_) | Segment::Cell { .. } => None,
+            }),
+            Self::Insert { item, .. }
+            | Self::Place { item, .. }
+            | Self::RemoveItem { item, .. } => Some(item),
+            Self::Chunk { edit, .. } | Self::In { edit, .. } => edit.item(),
+            _ => None,
+        }
+    }
+
     /// This edit without the chunk it is addressed to, or the app it is of.
     #[must_use]
     pub fn bare(&self) -> &Self {
@@ -372,6 +422,36 @@ impl DynAction {
     /// Encode under [`ACTION_TYPE`], the framework's action encoding.
     pub fn encode(&self) -> Result<EncodedAction, ActionError> {
         EncodedAction::encode(ACTION_TYPE, self)
+    }
+
+    /// Apply this action to `doc` as the step it is, its change recording the action it made:
+    /// the same commit the workspace's own records take ([`crate::instance::record`]), so a
+    /// store reading `doc` reads back which edit the change holds and the write it shadowed
+    /// leaves the mirror. A record committed from an action applied without this carries no
+    /// action, and a store reading it cannot tell its own pending writes from the change's:
+    /// they stay, and answer every read over the record that holds them.
+    ///
+    /// The change is the invoker's, on the resource the action wrote first, as the runtime
+    /// commits an action of its own; its entry names the run the action was made in when it has
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the action's apply refuses, or encoding it does.
+    pub fn apply_as_step(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let encoded = self.encode()?;
+        let context = tilo_actions::ActionContext::for_resource(
+            self.resources().first().copied().unwrap_or("workspace"),
+            &self.kind,
+            &self.kind,
+        )
+        .with_invoker(tilo_actions::ActionInvoker::actor(
+            self.authorship.invoker.clone(),
+        ))
+        .with_source_invocation(self.authorship.invocation.as_deref().map(invocation_id));
+        let actor = self.authorship.invoker.as_bytes();
+        let _package = self.package_schemas();
+        tilo_actions::apply_local_with_context(doc, self, encoded, Some(actor), context).map(|_| ())
     }
 
     /// The resources this action changed, as the runtime writes them (`doc` or `doc/item`):
@@ -1411,7 +1491,7 @@ impl DynAction {
         let located = crate::reads::locate_ref(
             doc,
             None,
-            (&self.app, &root_ty),
+            (&AppId::from(self.app.as_str()), &root_ty),
             &at,
             &crate::items::Nested::default(),
         )

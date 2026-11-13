@@ -9,10 +9,6 @@ use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::time::Instant;
 
 impl<M: ListModel> VirtualList<M> {
-    /// Whether the list takes this press itself: a left press over the body of a mounted row
-    /// starts a drag of that row, and let go without one presses the row. A press on one of
-    /// the row's own controls, on the pill, or on a list that does not reorder stays the
-    /// rows'.
     pub(super) fn takes_row_press(&self, event: &winit::event::WindowEvent) -> bool {
         if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
             return false;
@@ -53,7 +49,6 @@ impl<M: ListModel> VirtualList<M> {
     /// a pointer resting on the seam above `before` and the drop line shows. Nothing moves
     /// unless a real release follows. Whether both rows stand placed, so it showed.
     pub fn stage_reorder(&mut self, source: &M::Key, before: &M::Key) -> bool {
-        // The rows stand where they are drawn only once the list is laid out.
         if self.rect.is_zero_area() {
             return false;
         }
@@ -62,7 +57,6 @@ impl<M: ListModel> VirtualList<M> {
         };
         let now = crate::time::now();
         self.reorder.begin(source.clone(), from.center());
-        // Inside the top tenth of `before`: the seam above it.
         let at = Point::new(to.center().x, to.y0 + to.height() * 0.1);
         self.last_cursor = Some(at);
         self.last_tick = Some(now);
@@ -82,8 +76,6 @@ impl<M: ListModel> VirtualList<M> {
             });
     }
 
-    /// The direction a reorder chord moves the focused row, up being
-    /// `true`, when this list reorders and `key` with `modifiers` is one.
     pub(super) fn reorder_chord(
         &self,
         key: &Key,
@@ -102,9 +94,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Move the focused row past its neighbour above or below, as a drop
-    /// there would, keeping it focused. Whether it moved: a move the list
-    /// refuses, or one past either end, moves nothing.
     pub(super) fn move_focused(&mut self, up: bool) -> bool {
         let Some(source) = self.focused_row_key() else {
             return false;
@@ -155,7 +144,6 @@ impl<M: ListModel> VirtualList<M> {
             .as_mut()
             .is_some_and(|commit| commit(&mut self.model, dropped));
         if changed {
-            // A move changes what stands under what: the tree is read again.
             self.forget_tree();
             self.reconcile_model(anchor.as_ref());
         }

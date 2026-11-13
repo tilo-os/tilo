@@ -1,25 +1,17 @@
 //! Runtime time-zone discovery for the installer's time-zone picker.
 //!
-//! Resolution order, most authoritative first:
-//!   1. `timedatectl list-timezones` — the canonical systemd list.
-//!   2. Walking `/usr/share/zoneinfo` — works on any glibc system even
-//!      without a running systemd (e.g. inside a minimal live medium).
-//!   3. A small curated fallback so the picker is never empty (tests,
-//!      odd containers).
-//!
-//! The returned list is sorted, de-duplicated, and always contains
-//! [`DEFAULT_TIMEZONE`] (`UTC`) so the seeded default is selectable.
+//! Resolution order: `timedatectl list-timezones`, then a walk of `/usr/share/zoneinfo`, then a small
+//! curated fallback so the picker is never empty. The list is sorted, de-duplicated and always
+//! contains [`DEFAULT_TIMEZONE`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
-/// The time zone seeded by default (kept in sync with the installer's
-/// `installer.timezone` CRDT seed).
+/// Kept in sync with the installer's `installer.timezone` seed.
 pub const DEFAULT_TIMEZONE: &str = "UTC";
 
-/// A minimal, always-valid set used when neither `timedatectl` nor
-/// `/usr/share/zoneinfo` is available.
+/// Used when neither `timedatectl` nor `/usr/share/zoneinfo` is available.
 const CURATED_FALLBACK: &[&str] = &[
     "UTC",
     "Europe/Amsterdam",
@@ -41,7 +33,6 @@ const CURATED_FALLBACK: &[&str] = &[
     "Pacific/Auckland",
 ];
 
-/// Discover the system's IANA time-zone list. Never returns empty.
 pub fn list_timezones() -> Vec<String> {
     if let Some(tz) = from_timedatectl()
         && !tz.is_empty()
@@ -61,7 +52,6 @@ pub fn list_timezones() -> Vec<String> {
     )
 }
 
-/// Sort, de-dup, and guarantee `UTC` is present.
 fn finalize(zones: Vec<String>) -> Vec<String> {
     let mut set: BTreeSet<String> = zones.into_iter().collect();
     set.insert(DEFAULT_TIMEZONE.to_string());
@@ -89,8 +79,7 @@ fn from_timedatectl() -> Option<Vec<String>> {
     Some(zones)
 }
 
-/// Walk `root` (`/usr/share/zoneinfo`) collecting zone names. A relative
-/// path is treated as a zone when it passes [`is_zone_path`].
+/// A relative path is treated as a zone when it passes [`is_zone_path`].
 fn from_zoneinfo(root: &Path) -> Option<Vec<String>> {
     if !root.is_dir() {
         return None;
@@ -119,21 +108,15 @@ fn from_zoneinfo(root: &Path) -> Option<Vec<String>> {
     Some(zones)
 }
 
-/// Heuristic for "is this zoneinfo-relative path an actual zone name?".
-/// Zones look like `Area/Location` (`Europe/Amsterdam`) or a bare
-/// top-level (`UTC`). The directory holds non-zone helpers too —
-/// `posix/`, `right/` (duplicate trees), `zone.tab`, `iso3166.tab`,
-/// `leapseconds`, `tzdata.zi` — which we exclude.
+/// Zones look like `Area/Location` (`Europe/Amsterdam`) or a bare top-level (`UTC`); the helper data
+/// files `posix/`, `right/`, `zone.tab`, `iso3166.tab`, `leapseconds` and `tzdata.zi` are excluded.
 fn is_zone_path(name: &str) -> bool {
     if name.starts_with("posix/") || name.starts_with("right/") {
         return false;
     }
-    // Helper data files carry an extension or are lowercase tables.
     if name.contains('.') {
         return false;
     }
-    // Real zone components start with an uppercase letter
-    // (`Etc/UTC`, `America/New_York`); the lowercase helpers don't.
     match name.split('/').next() {
         Some(first) => first.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
         None => false,

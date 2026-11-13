@@ -10,7 +10,7 @@ use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{ActionRef, InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
-use crate::fixtures::{Replica, field_id};
+use crate::fixtures::{Replica, field_id, target};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -54,13 +54,6 @@ fn call(
     {
         InvokeOutcome::Done(v) => v,
         other => panic!("{action_name}: {other:?}"),
-    }
-}
-
-fn target(value: &Value) -> ResourceRef {
-    match value {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
     }
 }
 

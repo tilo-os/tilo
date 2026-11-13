@@ -1,6 +1,6 @@
-//! Device-local action backend. The journey supplies its reviewed sources and
-//! chosen destination; this module never chooses a location or launches an app.
-//! Only identifiers, public consent URLs and credential-free receipts leave it.
+//! Device-local action backend: the journey supplies its reviewed sources and chosen destination,
+//! and this module never chooses a location or launches an app. Only identifiers, public consent
+//! URLs and credential-free receipts leave it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -55,7 +55,6 @@ impl ConnectionProvider {
     }
 }
 
-/// Private worker input; never serialized or formatted into receipts.
 pub struct DavConnection {
     pub nextcloud: bool,
     pub label: String,
@@ -133,7 +132,6 @@ impl WorkCancel {
     }
 }
 
-/// Immutable source-bound destination custody for async prepared handoff.
 #[derive(Clone)]
 pub struct DestinationGuard {
     boundary: Option<SourceBoundary>,
@@ -182,8 +180,7 @@ impl AccountActions {
         }
     }
 
-    /// Preserve the original pinned destination boundary for a retained
-    /// handoff, without copying pending authorization or worker state.
+    /// Preserves the original pinned destination boundary for a retained handoff.
     pub fn destination_snapshot(&self) -> DestinationGuard {
         DestinationGuard {
             boundary: self.boundary.clone(),
@@ -191,7 +188,6 @@ impl AccountActions {
         }
     }
 
-    /// Provider injection retains the real PKCE/custody path in fixture tests.
     #[must_use]
     pub fn with_custodian(mut self, custodian: Custodian) -> Self {
         self.custodian = Some(custodian);
@@ -205,7 +201,6 @@ impl AccountActions {
         self
     }
 
-    /// Create and retain owner-only staging before any credential work begins.
     pub fn create_staging(&mut self) -> std::io::Result<std::sync::Arc<tempfile::TempDir>> {
         let mut builder = tempfile::Builder::new();
         builder.prefix("tilo-prepared-accounts-");
@@ -219,7 +214,6 @@ impl AccountActions {
         Ok(stage)
     }
 
-    /// Retain a private prepared home until every worker using it exits.
     pub fn retain_staging(&mut self, stage: std::sync::Arc<tempfile::TempDir>) {
         self.staging_lease = Some(stage);
     }
@@ -260,7 +254,6 @@ impl AccountActions {
         }
     }
 
-    /// Validate a private installed/staged destination without writing there.
     pub fn validate_destination(&self, home: &Path) -> Result<PathBuf, ActionError> {
         let root = target_root(home)?;
         if self.sources.is_some() {
@@ -319,8 +312,8 @@ impl AccountActions {
         }
     }
 
-    /// Explicit action on one reviewed source ID. Invoke only after home data
-    /// transfer has settled, so this vault write cannot race the copy worker.
+    /// Explicit action on one reviewed source ID. Invoke only after home data transfer has settled,
+    /// so this vault write cannot race the copy worker.
     pub fn import_selected(
         &mut self,
         candidate_id: &str,
@@ -350,8 +343,8 @@ impl AccountActions {
         }))
     }
 
-    /// Explicit Nextcloud Login Flow v2. Blocking HTTP and private polling
-    /// tokens remain on the worker; only the consent URL can reach the opener.
+    /// Blocking HTTP and private polling tokens stay on the worker; only the consent URL reaches
+    /// the opener.
     pub fn connect_nextcloud_browser(
         &mut self,
         home: &Path,
@@ -385,8 +378,7 @@ impl AccountActions {
                     account_custody::nextcloud::FLOW_LIFETIME,
                 )
                 .map_err(|_| ConnectionError::SignInFailed)?;
-            // Always retain canonical custody of a returned new grant before
-            // compensating cancellation, including receiver/controller drop.
+            // Retain canonical custody of a returned grant before compensating cancellation.
             let grant_server = login.server.clone();
             let grant_login = login.login_name.clone();
             let grant_password = login.app_password.clone();
@@ -418,7 +410,6 @@ impl AccountActions {
         }
         Ok(job)
     }
-    /// Device-local consent URL, never a polling token or credential.
     pub fn take_nextcloud_url(&mut self, job: &str) -> Option<String> {
         let result = self.nextcloud_urls.get(job)?.try_recv();
         match result {
@@ -434,7 +425,6 @@ impl AccountActions {
         }
     }
 
-    /// Save a caller-consented DAV app password in private target custody.
     pub fn connect_dav(
         &mut self,
         home: &Path,
@@ -463,8 +453,7 @@ impl AccountActions {
         }))
     }
 
-    /// Explicit local-account selection; Connector verifies ownership and
-    /// availability, and preserves any unrelated target entry.
+    /// The Connector verifies ownership and availability and preserves any unrelated target entry.
     pub fn import_tilo(
         &mut self,
         account_id: &str,
@@ -496,9 +485,8 @@ impl AccountActions {
         Ok(self.spawn(move || connector.import_tilo_reviewed(&source, &selected)))
     }
 
-    /// Begins consent after a person's connect action. Public URL may be
-    /// opened through the existing host URI portal; no opener is called here.
-    /// Omitting a source is an intentional new connection, not auto-discovery.
+    /// Public URL only; no opener is called here. Omitting a source is an intentional new
+    /// connection, not discovery.
     pub fn begin(
         &mut self,
         provider: ConnectionProvider,
@@ -567,8 +555,7 @@ impl AccountActions {
         Ok(link)
     }
 
-    /// Starts the waiting/exchange worker; the verifier, authorization code
-    /// and resulting grant remain in private owned worker state.
+    /// The verifier, authorization code and grant stay in private owned worker state.
     pub fn complete(&mut self, connection_id: &str) -> Result<String, ActionError> {
         self.complete_inner(connection_id, None)
     }
@@ -655,15 +642,13 @@ impl AccountActions {
         Ok(job)
     }
 
-    /// Dropping an uncompleted connection releases its private listener and
-    /// verifier. Running credential writes are not represented as cancellable.
+    /// Dropping an uncompleted connection releases its private listener and verifier.
     pub fn cancel(&mut self, connection_id: &str) -> bool {
         self.pending.remove(connection_id).is_some()
     }
 
-    /// Stop a sign-in still waiting for its provider redirect. Once the
-    /// redirect is approved, the controller observes any completed receipt
-    /// and removes the staged grant if cancellation raced completion.
+    /// Once the redirect is approved, the controller observes a completed receipt and removes the
+    /// staged grant if cancellation raced completion.
     pub fn cancel_job(&mut self, job_id: &str) -> bool {
         let Some(work) = self.jobs.get_mut(job_id) else {
             return false;
@@ -675,8 +660,6 @@ impl AccountActions {
         true
     }
 
-    /// The controller has retained this successful staged grant as a selected
-    /// prepared account. Only then can drop stop compensating this receipt.
     pub fn acknowledge_prepared(&mut self, job_id: &str) {
         if let Some(work) = self.jobs.get_mut(job_id)
             && matches!(work.receipt.state, AccountJobState::Completed { .. })
@@ -685,8 +668,6 @@ impl AccountActions {
         }
     }
 
-    /// A cancellation removed the newly staged grant. Release all matching
-    /// cleanup receipts before a later connection can reuse a fixed slot.
     pub fn acknowledge_removed(&mut self, account_id: &str) {
         for work in self.jobs.values_mut() {
             if matches!(&work.receipt.state, AccountJobState::Completed { account_id: completed } if completed == account_id)
@@ -805,9 +786,8 @@ impl Drop for AccountActions {
     }
 }
 
-/// A copied .config symlink must never make account import modify the old
-/// system. Check every existing destination component, including vault paths,
-/// before invoking path-based canonical stores. Caller owns the reviewed home.
+/// A copied .config symlink must never make account import modify the old system, so check every
+/// existing destination component before invoking path-based canonical stores.
 pub(crate) fn target_root(home: &Path) -> Result<PathBuf, ActionError> {
     let metadata = std::fs::symlink_metadata(home).map_err(|_| ActionError::TargetUnavailable)?;
     if metadata.is_symlink() {

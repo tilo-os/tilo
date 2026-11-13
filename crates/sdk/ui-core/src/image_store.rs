@@ -1,14 +1,8 @@
-//! Async image loading, decode and cache — keyed by URL. Displaying remote
-//! thumbnails on the UI thread would jank every frame, so loads run off the
-//! UI thread — fetched through a caller-supplied [`Fetcher`] and decoded as
-//! [`crate::background::Background`] jobs, or fetched by the host through a
-//! [`HostImageLoader`] — and the decoded `peniko::ImageData` is cached and
-//! handed back on a later frame; until then the caller paints a placeholder.
-//!
-//! No networking here — the toolkit stays HTTP-free, and a no-op fetcher
-//! keeps tests and hermetic offline builds deterministic. Decoding uses the
-//! toolkit's decoders ([`crate::image_decoders`]); cloning a returned
-//! `ImageData` only bumps an `Arc`.
+//! Async image loading, decode and cache — keyed by URL. Displaying remote thumbnails on the UI thread
+//! would jank every frame, so loads run off the UI thread — fetched through a caller-supplied
+//! [`Fetcher`] and decoded as [`crate::background::Background`] jobs, or fetched by the host through a
+//! [`HostImageLoader`] — and the decoded `peniko::ImageData` is cached and handed back on a later
+//! frame; until then the caller paints a placeholder.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,24 +19,19 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
-/// Pixels a host decoded itself, for [`HostImageLoader::complete_decoded`]
-/// (the browser's own decoders, so the page's module carries none).
+/// Pixels a host decoded itself, for [`HostImageLoader::complete_decoded`] (the browser's own decoders,
+/// so the page's module carries none).
 pub use tilo_image_codec::DecodedImage;
 
-/// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
-/// background work, so it may block on I/O.
+/// Fetches the raw encoded bytes for a URL, or `None` on failure.
 pub type Fetcher = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
-/// Cache state for one URL.
 enum Slot {
-    /// A fetch/decode is in flight.
     Loading(Arc<RequestIdentity>),
-    /// Decoded and ready to paint.
     Ready(PenikoImage),
-    /// Fetch or decode failed; won't retry.
     Failed,
-    /// Fetched before the decoders were in (they are fetched on first use
-    /// where the program defers them): loaded again once they are.
+    /// Fetched before the decoders were in (they are fetched on first use where the program defers
+    /// them): loaded again once they are.
     Undecoded,
 }
 
@@ -136,19 +125,16 @@ fn insert_settled(cache: &mut CacheState, url: String, slot: Slot) {
     cache.slots.insert(url, SlotEntry { slot, last_used });
 }
 
-/// Loads in flight across every store in the process, so a capture can wait
-/// for the thumbnails a frame asked for before it is written
-/// ([`loads_in_flight`]).
+/// Loads in flight across every store in the process, so a capture can wait for the thumbnails a frame
+/// asked for before it is written ([`loads_in_flight`]).
 static LOADS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-/// Loads in flight (queued or decoding) across every [`ImageStore`] in the
-/// process. A screenshot capture waits, within a bound, until this is zero.
+/// Loads in flight (queued or decoding) across every [`ImageStore`] in the process.
 #[must_use]
 pub fn loads_in_flight() -> usize {
     LOADS_IN_FLIGHT.load(Ordering::SeqCst)
 }
 
-/// One store's in-flight count, mirrored into [`LOADS_IN_FLIGHT`].
 struct Pending(AtomicUsize);
 
 impl Pending {
@@ -172,8 +158,8 @@ struct RequestIdentity {
 
 struct Shared {
     slots: Mutex<CacheState>,
-    /// Count of in-flight (queued or decoding) loads, for `is_idle` /
-    /// `block_until_idle` and to know when to keep animation frames flowing.
+    /// Count of in-flight (queued or decoding) loads, for `is_idle` / `block_until_idle` and to know
+    /// when to keep animation frames flowing.
     pending: Pending,
     wake: WakeHandle,
 }
@@ -195,8 +181,6 @@ impl Shared {
         ) {
             return false;
         }
-        // Authorization belongs at this commit boundary, after fetch/decode and
-        // validation. Cleanup of a closed owner removes custody without publishing.
         let authorized = self.wake.authorize_publication();
         if authorized {
             insert_settled(&mut cache, url.to_owned(), slot);
@@ -212,27 +196,21 @@ impl Shared {
     }
 }
 
-/// A cheap-to-clone handle to a shared image cache whose loads run off the
-/// UI thread — on the toolkit's [`Background`] for [`ImageStore::new`], or
-/// in the host for [`ImageStore::host_driven`].
+/// A cheap-to-clone handle to a shared image cache whose loads run off the UI thread — on the toolkit's
+/// [`Background`] for [`ImageStore::new`], or in the host for [`ImageStore::host_driven`].
 #[derive(Clone)]
 pub struct ImageStore {
     shared: Arc<Shared>,
     tx: SyncSender<String>,
-    /// Starts background loads for newly queued requests; `None` when a
-    /// [`HostImageLoader`] owns loading.
     native: Option<Arc<NativeLoader>>,
     background: Background,
 }
 
-/// The loading half of a host-driven [`ImageStore`].
-///
-/// The host drains requested URLs with [`take_requests`](Self::take_requests),
-/// fetches them however it can (asynchronously, from its own cache, over its
-/// own transport) and hands the bytes back through
-/// [`complete`](Self::complete), which decodes them under the same size and
-/// cache limits as the native loader and wakes the component that owns the
-/// store. Dropping the loader settles every unfinished request as failed.
+/// The loading half of a host-driven [`ImageStore`]. The host drains requested URLs with
+/// [`take_requests`](Self::take_requests), fetches them however it can (asynchronously, from its own
+/// cache, over its own transport) and hands the bytes back through [`complete`](Self::complete), which
+/// decodes them under the same size and cache limits as the native loader and wakes the component that
+/// owns the store.
 pub struct HostImageLoader {
     shared: Arc<Shared>,
     requests: Option<Receiver<String>>,
@@ -241,10 +219,6 @@ pub struct HostImageLoader {
 }
 
 /// Opaque custody for one admitted asynchronous image decode.
-///
-/// A ticket identifies this loader's shared cache and this request generation;
-/// it grants no publication permission. It is deliberately not cloneable.
-/// Dropping it cancels unfinished work, including on a worker thread.
 pub struct ImageCompletionTicket {
     shared: Arc<Shared>,
     request: Arc<RequestIdentity>,
@@ -267,7 +241,6 @@ impl Drop for ImageCompletionTicket {
 
 impl HostImageLoader {
     /// Reserve a request already handed out by this loader for off-thread decode.
-    /// Unknown, settled, closed-owner or already reserved requests are rejected.
     pub fn reserve(&mut self, url: &str) -> Option<ImageCompletionTicket> {
         let request = self.in_flight.get(url)?.clone();
         let cache = self.shared.slots.lock_recover();
@@ -293,9 +266,6 @@ impl HostImageLoader {
     }
 
     /// Settle an exact reservation with decoded pixels, or `None` on failure.
-    /// Validation enforces this ticket's output bound and exact RGBA length.
-    /// Foreign, canceled, duplicate and old-generation replies are inert.
-    /// A borrowed ticket leaves foreign-loader attempts unable to cancel its owner.
     pub fn complete_decoded(
         &mut self,
         ticket: &ImageCompletionTicket,
@@ -311,7 +281,6 @@ impl HostImageLoader {
         )
     }
 
-    /// Settle an exact reservation with a slot the toolkit decoded itself.
     fn complete_slot(&mut self, ticket: &ImageCompletionTicket, slot: Slot) -> bool {
         if !Arc::ptr_eq(&self.shared, &ticket.shared) {
             return false;
@@ -320,7 +289,6 @@ impl HostImageLoader {
     }
 
     /// Cancel one exact reservation. A late result or later ticket drop is inert.
-    /// Closed-owner cleanup releases custody but returns `false` without publication.
     pub fn cancel(&mut self, ticket: &ImageCompletionTicket) -> bool {
         if !Arc::ptr_eq(&self.shared, &ticket.shared) {
             return false;
@@ -328,8 +296,8 @@ impl HostImageLoader {
         self.settle(&ticket.url, &ticket.request, Slot::Failed)
     }
 
-    /// Every URL requested since the last call. Each must eventually be
-    /// passed to [`complete`](Self::complete).
+    /// Every URL requested since the last call. Each must eventually be passed to
+    /// [`complete`](Self::complete).
     pub fn take_requests(&mut self) -> Vec<String> {
         std::iter::from_fn(|| self.next_request()).collect()
     }
@@ -355,9 +323,8 @@ impl HostImageLoader {
         }
     }
 
-    /// Settle a request taken from this loader with fetched bytes, or `None`
-    /// on failure. Decoding runs on the calling thread. Reserved asynchronous
-    /// requests must instead use [`complete_decoded`](Self::complete_decoded).
+    /// Settle a request taken from this loader with fetched bytes, or `None` on failure. Reserved
+    /// asynchronous requests must instead use [`complete_decoded`](Self::complete_decoded).
     pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
         let Some(request) = self.in_flight.get(url).cloned() else {
             return false;
@@ -438,8 +405,8 @@ impl Drop for HostImageLoader {
     }
 }
 
-/// Pairs a [`HostImageLoader`] with a [`Fetcher`] on a [`Background`]: at
-/// most `workers` loads run at once, one background job per URL.
+/// Pairs a [`HostImageLoader`] with a [`Fetcher`] on a [`Background`]: at most `workers` loads run at
+/// once, one background job per URL.
 struct NativeLoader {
     state: Mutex<NativeState>,
     fetch: Fetcher,
@@ -489,53 +456,46 @@ impl NativeLoader {
                 // This host runs no background work: settle instead of
                 // leaving the request loading forever.
                 let mut state = self.state();
-                // Rejected jobs drop their ticket, which settles exact custody.
                 state.running = state.running.saturating_sub(1);
             }
         }
     }
 }
 
-/// A window a host serves ([`ImageStore::serve_window`]), as the host's
-/// factory sees it: what the stores it builds draw for.
+/// A window a host serves ([`ImageStore::serve_window`]), as the host's factory sees it: what the
+/// stores it builds draw for.
 #[derive(Clone, Default)]
 pub struct ServedWindow {
     content: std::rc::Rc<std::cell::RefCell<Option<tilo_content::ContentStore>>>,
 }
 
 impl ServedWindow {
-    /// The content store the window reads its record's content from, once
-    /// the window is built: where its pictures' bytes are read and, when
-    /// they are not here yet, asked for, on the window's own content
-    /// requests. `None` before then, and for a window that reads none.
+    /// The content store the window reads its record's content from, once the window is built: where
+    /// its pictures' bytes are read and, when they are not here yet, asked for, on the window's own
+    /// content requests.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         self.content.borrow().clone()
     }
 }
 
-/// How a host builds one window's image stores: a store whose loading the
-/// host drives, for the decoded-image bound the store asked for, drawing for
-/// the window it is built in.
+/// How a host builds one window's image stores: a store whose loading the host drives, for the
+/// decoded-image bound the store asked for, drawing for the window it is built in.
 pub type HostImageFactory = std::rc::Rc<dyn Fn(u32, &ServedWindow) -> ImageStore>;
 
-/// A window's wake scope, the factory serving it and what it draws for.
 type Serving = (WakeHandle, HostImageFactory, ServedWindow);
 
 thread_local! {
-    /// The factories hosts keep for their windows, by each window's wake
-    /// scope ([`ImageStore::serve_window`]).
+    /// The factories hosts keep for their windows, by each window's wake scope
+    /// ([`ImageStore::serve_window`]).
     static HOST_FACTORIES: std::cell::RefCell<Vec<Serving>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The serving of the window whose code is running, if its host keeps one.
 fn host_factory() -> Option<(HostImageFactory, ServedWindow)> {
     serving_of(&WakeHandle::new())
 }
 
-/// The serving of `window`, if its host keeps one. Windows that closed
-/// since are let go.
 fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
     HOST_FACTORIES.with_borrow_mut(|kept| {
         kept.retain(|(kept, _, _)| kept.same_open_scope(kept));
@@ -545,8 +505,8 @@ fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
     })
 }
 
-/// `window` is built, reading its record's content from `content`: the
-/// pictures its host loads for it are read, and asked for, there.
+/// `window` is built, reading its record's content from `content`: the pictures its host loads for it
+/// are read, and asked for, there.
 pub(crate) fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
     if let Some((_, served)) = serving_of(window) {
         *served.content.borrow_mut() = content;
@@ -554,13 +514,11 @@ pub(crate) fn window_built(window: &WakeHandle, content: Option<tilo_content::Co
 }
 
 impl ImageStore {
-    /// Serve the image stores `window` builds through `factory` for as long
-    /// as its wake scope is open: every store built while that scope is
-    /// entered comes from the host, whether the window builds it as it is
-    /// constructed or later (a view part built once the window's workspace
-    /// arrived, a part built again). A store the window built on its own
-    /// would load through the toolkit's decoders on its background, which
-    /// a browser page leaves to the host: its pictures would never show.
+    /// Serve the image stores `window` builds through `factory` for as long as its wake scope is open:
+    /// every store built while that scope is entered comes from the host, whether the window builds it
+    /// as it is constructed or later (a view part built once the window's workspace arrived, a part
+    /// built again). A store the window built on its own would load through the toolkit's decoders on
+    /// its background, which a browser page leaves to the host: its pictures would never show.
     pub fn serve_window(window: &WakeHandle, factory: HostImageFactory) {
         HOST_FACTORIES.with_borrow_mut(|kept| {
             kept.retain(|(kept, _, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
@@ -568,12 +526,9 @@ impl ImageStore {
         });
     }
 
-    /// Serve `successor`, a window opened in `window`'s place (the window a
-    /// record opens in once it is had, another record opened here), the way
-    /// `window` is served: it shows in the same host, which never built it.
-    /// Its stores draw for it, not for `window`: their pictures are read and
-    /// asked for on its own content, also after `window` closed. Nothing
-    /// changes for a window no host serves.
+    /// Serve `successor`, a window opened in `window`'s place (the window a record opens in once it is
+    /// had, another record opened here), the way `window` is served: it shows in the same host, which
+    /// never built it.
     pub fn serve_successor(window: &WakeHandle, successor: &WakeHandle) {
         if let Some((factory, _)) = serving_of(window) {
             Self::serve_window(successor, factory);
@@ -585,9 +540,8 @@ impl ImageStore {
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
-    /// Build a store that runs at most `workers` fetch/decode jobs at once,
-    /// clamped to 1..=4 so one store cannot monopolise the background pool.
-    /// A window its host serves ([`Self::serve_window`]) gets the host's.
+    /// Build a store that runs at most `workers` fetch/decode jobs at once, clamped to 1..=4 so one
+    /// store cannot monopolise the background pool.
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
         if let Some((factory, window)) = host_factory() {
             return factory(THUMBNAIL_MAX_DIMENSION, &window);
@@ -596,9 +550,6 @@ impl ImageStore {
     }
 
     /// Build a store for document images instead of small thumbnails.
-    ///
-    /// Decoded dimensions are bounded to 1..=4096; the worker, queue and
-    /// total cache memory limits remain the same as for the thumbnail store.
     pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
         let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
         if let Some((factory, window)) = host_factory() {
@@ -607,14 +558,13 @@ impl ImageStore {
         Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
     }
 
-    /// A thumbnail store whose loading the host drives through the returned
-    /// [`HostImageLoader`]; no background work is spawned.
+    /// A thumbnail store whose loading the host drives through the returned [`HostImageLoader`]; no
+    /// background work is spawned.
     pub fn host_driven() -> (Self, HostImageLoader) {
         Self::host_driven_with_max_dimension(THUMBNAIL_MAX_DIMENSION)
     }
 
-    /// A host-driven store with a bounded document-image decode dimension
-    /// (clamped to 1..=4096).
+    /// A host-driven store with a bounded document-image decode dimension (clamped to 1..=4096).
     pub fn host_driven_with_max_dimension(max_dimension: u32) -> (Self, HostImageLoader) {
         let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
         let shared = Shared::new();
@@ -644,9 +594,9 @@ impl ImageStore {
         store
     }
 
-    /// Decoded image for `url`, kicking off an async load the first time a URL
-    /// is seen. Returns `None` while loading or after a failure — the caller
-    /// paints a placeholder until a later frame returns `Some`.
+    /// Decoded image for `url`, kicking off an async load the first time a URL is seen. Returns `None`
+    /// while loading or after a failure — the caller paints a placeholder until a later frame returns
+    /// `Some`.
     pub fn get(&self, url: &str) -> Option<PenikoImage> {
         if url.is_empty() || !self.shared.wake.authorize_publication() {
             return None;
@@ -662,7 +612,6 @@ impl ImageStore {
             entry.last_used = last_used;
             match &entry.slot {
                 Slot::Ready(img) => return Some(img.clone()),
-                // The decoders arrived since: load it again, below.
                 Slot::Undecoded if crate::image_decoders::IMAGE_DECODERS.is_in() => {
                     slots.slots.remove(url);
                 }
@@ -709,11 +658,9 @@ impl ImageStore {
         None
     }
 
-    /// Forget every load that failed, so the next [`get`](Self::get) of its
-    /// URL asks the fetcher again. A failure is cached (it would otherwise be
-    /// re-fetched every frame), which is wrong for a source whose bytes were
-    /// not available yet and now are: a caller that knows they changed calls
-    /// this. Returns whether any failure was forgotten.
+    /// Forget every load that failed, so the next [`get`](Self::get) of its URL asks the fetcher again.
+    /// A failure is cached (it would otherwise be re-fetched every frame), which is wrong for a source
+    /// whose bytes were not available yet and now are: a caller that knows they changed calls this.
     pub fn forget_failed(&self) -> bool {
         let Ok(mut slots) = self.shared.slots.lock() else {
             return false;
@@ -725,8 +672,7 @@ impl ImageStore {
         slots.slots.len() != before
     }
 
-    /// Whether the last load of `url` failed: its bytes are not here, or
-    /// do not decode.
+    /// Whether the last load of `url` failed: its bytes are not here, or do not decode.
     pub fn failed(&self, url: &str) -> bool {
         self.shared.slots.lock().is_ok_and(|slots| {
             slots
@@ -755,10 +701,8 @@ impl ImageStore {
         self.pending() == 0
     }
 
-    /// Block until all in-flight loads settle or `timeout` elapses on the
-    /// store's executor clock. For the synchronous `--shots` pre-warm and
-    /// tests only — never call this on a live app's UI thread. A host-driven
-    /// store settles only when its host completes requests.
+    /// Block until all in-flight loads settle or `timeout` elapses on the store's executor clock. For
+    /// the synchronous `--shots` pre-warm and tests only — never call this on a live app's UI thread.
     pub fn block_until_idle(&self, timeout: Duration) {
         let start = self.background.now();
         let deadline = start.checked_add(timeout).unwrap_or(start);
@@ -805,8 +749,7 @@ pub(crate) enum HeldPicture {
     Broken,
 }
 
-/// Decode a small picture held in memory (a workspace emoji) at most
-/// `max_dimension` wide and tall.
+/// Decode a small picture held in memory (a workspace emoji) at most `max_dimension` wide and tall.
 pub(crate) fn decode_held(encoded: &[u8], max_dimension: u32) -> HeldPicture {
     match decoded_slot(Some(encoded), max_dimension) {
         Slot::Ready(image) => HeldPicture::Ready(image),
@@ -825,8 +768,7 @@ pub(crate) enum SmallPicture {
     Broken,
 }
 
-/// `encoded` (PNG, JPEG or WebP) as a PNG at most `max_dimension` wide and
-/// tall, aspect kept.
+/// `encoded` (PNG, JPEG or WebP) as a PNG at most `max_dimension` wide and tall, aspect kept.
 pub(crate) fn small_png(encoded: &[u8], max_dimension: u32) -> SmallPicture {
     let Some(decoders) = crate::image_decoders::decoders() else {
         return SmallPicture::Pending;
@@ -844,9 +786,9 @@ fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
     validated_slot((decoders.bounded)(encoded, max_dimension), max_dimension)
 }
 
-/// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized sources are downscaled after native decoding to the store's output
-/// dimension limit; resizing does not bound source decoder allocations.
+/// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions. Oversized sources are
+/// downscaled after native decoding to the store's output dimension limit; resizing does not bound
+/// source decoder allocations.
 #[cfg(test)]
 fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
     let decoded = tilo_image_codec::DecodeImage {
@@ -858,9 +800,9 @@ fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> 
     Some((decoded.rgba, decoded.width, decoded.height))
 }
 
-/// Paint `img` into `rect` with a `contain` fit (the whole picture, aspect
-/// kept, centred; whatever it leaves shows what is under it), clipped to a
-/// rounded rectangle: a shared screen, of which nothing may be cut off.
+/// Paint `img` into `rect` with a `contain` fit (the whole picture, aspect kept, centred; whatever it
+/// leaves shows what is under it), clipped to a rounded rectangle: a shared screen, of which nothing
+/// may be cut off.
 pub fn paint_image_contain(
     scene: &mut Scene,
     transform: Affine,
@@ -871,9 +813,8 @@ pub fn paint_image_contain(
     paint_image_fitted(scene, transform, rect, img, radius, false);
 }
 
-/// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,
-/// crop the overflow) clipped to a rounded rectangle, matching the shape a
-/// procedural placeholder occupied.
+/// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect, crop the overflow)
+/// clipped to a rounded rectangle, matching the shape a procedural placeholder occupied.
 pub fn paint_image_cover(
     scene: &mut Scene,
     transform: Affine,
@@ -979,8 +920,8 @@ mod tests {
         crate::raster::rgba8(vec![0, 0, 0, 0], width, height)
     }
 
-    /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's
-    /// fetch+decode+cache path is exercised deterministically.
+    /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's fetch+decode+cache path is
+    /// exercised deterministically.
     fn png_bytes(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
         let pixels = w.saturating_mul(h);
         let mut rgba = Vec::with_capacity(pixels.saturating_mul(4) as usize);
@@ -1005,7 +946,6 @@ mod tests {
             });
             let store = ImageStore::new(&fetch);
 
-            // First look: not cached → placeholder (None) + a load is scheduled.
             assert!(store.get("http://example.test/cover.png").is_none());
 
             store.block_until_idle(tilo_test_env::hang_bound());
@@ -1038,7 +978,6 @@ mod tests {
             assert!(store.get("http://example.test/missing.jpg").is_none());
             store.block_until_idle(tilo_test_env::hang_bound());
             assert!(store.is_idle(), "a failed fetch still settles");
-            // Still None, and no repeated scheduling (already known/Failed).
             assert!(store.get("http://example.test/missing.jpg").is_none());
             assert!(store.is_known("http://example.test/missing.jpg"));
         }

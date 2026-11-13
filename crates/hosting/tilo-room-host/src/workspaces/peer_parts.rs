@@ -64,8 +64,12 @@ impl PeerParts {
                     let digest = entry
                         .file_name()
                         .to_str()
-                        // ignored-failure: a name not a digest is a temporary file (removed below)
-                        .and_then(|name| hex::decode(name).ok())
+                        .and_then(|name| {
+                            tilo_failure::ignored!(
+                                "a name that is not a digest is a temporary file, removed below",
+                                hex::decode(name).ok()
+                            )
+                        })
                         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
                     match digest {
                         Some(digest) => {

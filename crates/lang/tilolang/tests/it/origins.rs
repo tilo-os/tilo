@@ -97,3 +97,30 @@ fn a_named_filter_tests_a_set_holding_a_value() {
         .unwrap();
     assert!(inbox.pred.is_some(), "{inbox:?}");
 }
+
+/// The capability an action's `outside(...)` calls name is what its metadata carries, so the
+/// platform tags the action with it (`outside:youtube.search`) and a query naming a kind of an
+/// outside service finds the app's own action that asks its origin.
+#[test]
+fn an_actions_outside_capability_is_its_metadatas() {
+    let src = "type Video (origin: youtube.video) {\n    key: Text\n    title: Text\n}\n\
+        action search(v: Video, query: Text) {\n    outside(\"youtube.search\", query)\n}";
+    let compiled = compile_body(src);
+    let action = compiled
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "search")
+        .expect("the search action");
+    assert_eq!(action.outside, vec!["youtube.search".to_owned()]);
+    let plain = compile_body(
+        "type N {\n    title: Text\n}\naction rename(n: N) {\n    n.title = \"Mine\"\n}",
+    );
+    let rename = plain
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "rename")
+        .unwrap();
+    assert!(rename.outside.is_empty(), "{rename:?}");
+}

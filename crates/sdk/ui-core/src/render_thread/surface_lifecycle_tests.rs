@@ -1,6 +1,6 @@
-//! Drive the native acquisition path through real wgpu Surface/SurfaceTexture
-//! wrappers. The custom swapchain makes suboptimal/occluded results deterministic;
-//! the noop device needs neither a display nor a GPU.
+//! Drive the native acquisition path through real wgpu Surface/SurfaceTexture wrappers. The custom
+//! swapchain makes suboptimal/occluded results deterministic; the noop device needs neither a display
+//! nor a GPU.
 
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -202,7 +202,6 @@ fn lost_and_validation_acquisitions_still_stop_the_worker() {
         let backend = Backend::default();
         backend.0.lock().unwrap().statuses.push_back(status);
         let surface = surface(&backend);
-        // These statuses return before wgpu needs a configured texture descriptor.
         backend.0.lock().unwrap().configured = true;
         assert!(matches!(
             acquire_surface_texture(&surface, || panic!("lost surfaces need recreation")),

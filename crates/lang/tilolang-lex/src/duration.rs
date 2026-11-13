@@ -1,5 +1,4 @@
-//! Lengths of time, as a literal writes them (`7d`, `5m`): the units a number may be written in,
-//! which is what makes it a duration rather than an `Int`.
+//! Lengths of time, as a literal writes them (`7d`, `5m`).
 
 /// The units a duration is written in, and how many seconds each is.
 pub const UNITS: &[(&str, i64)] = &[

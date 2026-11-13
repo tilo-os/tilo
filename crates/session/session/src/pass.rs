@@ -94,8 +94,16 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn step(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
+        // This thread draws the desktop for the length of the pass: a search that would wait for a
+        // source here is caught where it is called in a development build, rather than freezing
+        // the desktop as it did on 2026-11-13 (`tilo_desktop_search::the_loop`).
+        tilo_desktop_search::the_loop(|| self.pass(timeout.into()))
+    }
+
+    /// One pass, with the loop's marker already set by [`Self::step`].
+    fn pass(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
         self.compositor.begin_tick();
-        let timeout = self.wait(timeout.into());
+        let timeout = self.wait(timeout);
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
         // A launch asked since the last pass starts before this one waits for its frame, and
@@ -168,6 +176,9 @@ impl Session {
         self.follow_text_inputs();
         self.follow_notifications();
         self.shared.open_notifications();
+        // What Super alone asked for: the search of a tap, and the keys a hold shows or takes
+        // away, before the pass that runs the chord ending them.
+        self.shared.follow_super_tap(self.compositor.locked());
         self.settle()?;
         self.follow_bars();
         self.follow_switcher();
@@ -218,6 +229,7 @@ impl Session {
             self.kept_at = Instant::now();
             self.shared.observe();
             self.follow_session_actions();
+            self.follow_settings_steps();
         }
         self.compositor.end_tick();
         Ok(())
@@ -237,18 +249,6 @@ impl Session {
             &self.shared.pages,
             Instant::now(),
         );
-        // A window open on another device says which: the desk is told what the devices this
-        // session heard in its workspaces call themselves, heard now or earlier.
-        if let Some(sync) = sync.as_deref() {
-            let names = self
-                .shared
-                .window_shares
-                .borrow_mut()
-                .device_names(&self.shared.handle, sync);
-            self.shared
-                .desktop
-                .with_policy(|policy| policy.name_devices(names));
-        }
     }
 
     /// What the desk's walk reached this pass, handed to the panel that shows it: whether the
@@ -397,6 +397,8 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            // A Super held alone turns into the keys at one instant, whatever else is due.
+            self.shared.super_tap_deadline(),
             // The caret the clipboard panel waits for stops being waited for on the compositor's
             // clock.
             self.shared
@@ -599,7 +601,7 @@ impl Session {
             let documents_served = self
                 .desktop
                 .as_ref()
-                .is_some_and(|desktop| desktop.documents_served());
+                .is_some_and(|desktop| desktop.documents().is_some());
             portal.serve(
                 &mut self.compositor,
                 &self.shared.handle,

@@ -1,22 +1,4 @@
 //! Session surfaces — the live area you see after connecting.
-//!
-//! There are two fundamentally different surfaces:
-//!
-//! * **Terminal** (SSH): a scrollback grid of styled cells rendered with
-//!   the toolkit's monospace text path and ANSI palette. The cell model
-//!   lives here ([`Cell`] / [`TermLine`]); the bytes that fill it come from
-//!   a remote PTY, parsed by [`crate::vt`].
-//!
-//! * **Framebuffer** (VNC): a rectangular pixel surface. The remote
-//!   framebuffer is decoded by [`crate::rfb`] and painted straight into the
-//!   scene — no synthetic desktop.
-//!
-//! The byte transport is real: [`crate::ssh`] speaks SSH over `russh`,
-//! [`crate::vnc`] speaks RFB. Those app-owned transports deliberately remain
-//! behind an explicit development capability: the packaged Remote sandbox has
-//! no arbitrary egress and SSH host-key trust still needs a per-profile policy.
-//! Tilo device control uses the production shell broker and is available without
-//! that opt-in.
 
 use crate::model::{Connection, ConnectionKind};
 
@@ -31,13 +13,10 @@ pub enum TransportReadiness {
     /// A production or explicitly opted-in transport can be opened now.
     Ready,
     /// The protocol implementation exists, but this process has not been
-    /// granted the deliberately explicit live-session capability.
     NeedsLiveSessionCapability,
     /// The persisted profile is retained for compatibility, but Tilo has no
-    /// implementation for this protocol.
     BackendUnavailable,
     /// The saved profile does not describe a target/authentication pair this
-    /// app can safely hand to a transport.
     InvalidProfile,
 }
 
@@ -67,7 +46,6 @@ impl TransportReadiness {
     }
 
     /// The catalogue message saying what this state means for the person,
-    /// without implying that a connection was tried.
     pub fn detail_message(self, kind: ConnectionKind) -> &'static str {
         match self {
             Self::Ready => "remote-state-ready",
@@ -83,15 +61,11 @@ impl TransportReadiness {
 }
 
 /// Whether app-owned SSH/VNC sessions are enabled. Off by default so those
-/// transports do not touch the network until a developer opts in. Tilo device
-/// control does not use this switch.
 pub fn live_sessions_enabled() -> bool {
     std::env::var("REMOTE_LIVE_SESSIONS").is_ok()
 }
 
 /// Resolve a protocol's current, truthful readiness. Keep this at the
-/// transport boundary rather than duplicating environment checks in widgets,
-/// resources, and keyboard handlers.
 pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
     match kind {
         ConnectionKind::Tilo => TransportReadiness::Ready,
@@ -122,10 +96,6 @@ pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     TransportReadiness::Ready
 }
 
-/// The state of a live transport, shared from the background I/O thread to
-/// the UI thread. The UI reads this every frame to choose what to draw:
-/// a spinner while connecting, the session surface once up, or the error text
-/// on failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionStatus {
     /// Handshake / auth in flight.
@@ -138,7 +108,6 @@ pub enum SessionStatus {
     /// This must never be presented as a network or authentication failure.
     Unavailable(String),
     /// The connection or auth failed. Carries the real, human-readable
-    /// reason (e.g. "Connection refused", "Authentication failed").
     Failed(String),
 }
 
@@ -225,7 +194,6 @@ mod tests {
 pub struct Cell {
     pub ch: char,
     /// Index into the toolkit's 16-colour ANSI palette, or `None` for the
-    /// default foreground.
     pub color: Option<usize>,
     pub bold: bool,
 }
@@ -240,7 +208,6 @@ impl Cell {
     }
 }
 
-/// A styled run of cells making up one on-screen row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TermLine {
     pub cells: Vec<Cell>,

@@ -699,7 +699,7 @@ impl PersonState {
         let records = self
             .records
             .as_ref()?
-            .of_package(owner)
+            .of_app(owner)
             .map_err(|error| {
                 tracing::warn!(owner, %error, "the person's records of another app are unavailable");
             })
@@ -858,6 +858,7 @@ fn open_record(
 fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
+    let reading = Rc::downgrade(shared);
     Held::new(
         resource_id(P::KIND),
         format!("Your {}", P::LABEL.to_lowercase()),
@@ -875,6 +876,11 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
             PersonRecord { shared }.apply_as(action, invoker)
         },
     )
+    .reading(move |read| {
+        if let Some(shared) = reading.upgrade() {
+            shared.record.read(|doc| read(doc));
+        }
+    })
 }
 
 impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {

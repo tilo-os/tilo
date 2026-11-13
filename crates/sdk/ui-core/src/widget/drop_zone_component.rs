@@ -7,9 +7,7 @@ use crate::icons::Icon;
 
 use super::{Button, DropZone};
 
-/// Where files go: drag them here, or press the button to choose them (an import, a picture to
-/// swap, a file to open). At rest it is a dashed edge around a glyph and a title; while a drag
-/// hovers it takes your colour.
+/// Where files go: dragged here, or chosen with the button.
 #[derive(Component, Default)]
 #[component(name = "DropZone", role = "Group", label = "title")]
 pub struct DropZoneProps {
@@ -22,7 +20,7 @@ pub struct DropZoneProps {
     pub icon: Option<Icon>,
     /// The label of a button offering the same route without dragging ("Choose files").
     pub action: Option<String>,
-    /// Files were dropped: carries their paths, as `List<Text>`.
+    /// Files were dropped: their paths, as `List<Text>`.
     #[component(event(value = Vec<String>))]
     pub drop: Event,
     /// The action's button was pressed: the view asks for the files its own way.
@@ -39,8 +37,6 @@ impl Described for DropZone {
         zone
     }
 
-    /// What the zone takes, the button it offers and what a drop does change where the zone
-    /// stands: a drag over it keeps its colour.
     fn set_props(&mut self, props: DropZoneProps) -> bool {
         self.set_content(props);
         true
@@ -48,7 +44,6 @@ impl Described for DropZone {
 }
 
 impl DropZone {
-    /// Take the zone's words, its glyph, its button and what receiving files does.
     fn set_content(&mut self, props: DropZoneProps) {
         let DropZoneProps {
             title,

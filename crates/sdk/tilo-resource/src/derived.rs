@@ -95,16 +95,21 @@ impl<R> Bound<R> {
 
 impl<R: Resource> Bound<R> {
     /// This verb, its bound arguments filled, as a declaration of its own
-    /// under `id`: what a surface offers bound to its view state ("split the
-    /// clip at the playhead"), built and checked as the verb is.
+    /// under `id`, named `label` (`word!("video-editor-split-here")`): what a
+    /// surface offers bound to its view state ("split the clip at the
+    /// playhead"), built and checked as the verb is.
     #[must_use]
-    pub fn declaration(&self, id: &'static str, label: impl Into<String>) -> Option<ActionDecl<R>> {
+    pub fn declaration(
+        &self,
+        id: &'static str,
+        label: crate::label::Word,
+    ) -> Option<ActionDecl<R>> {
         bound_declaration(
             crate::vocabulary::<R>(),
             self.verb.action,
             &self.verb.values,
             id,
-            label.into(),
+            label,
         )
         .map(ActionDecl::declared)
     }
@@ -117,7 +122,7 @@ fn bound_declaration(
     action: &str,
     values: &[(String, serde_json::Value)],
     id: &'static str,
-    label: String,
+    label: crate::label::Word,
 ) -> Option<Declaration> {
     let declarations = vocabulary.declarations();
     let verb = declarations.iter().find(|decl| decl.id == action)?;
@@ -151,7 +156,8 @@ fn bound_declaration(
             Err(error) => Err(error.to_string()),
         }
     });
-    let mut decl = Declaration::new(vocabulary, id, label, params, build);
+    let mut decl = Declaration::new(vocabulary, id, label.source.to_owned(), params, build);
+    decl.word = Some(label);
     // The same act with some of its arguments given: it wears the verb's
     // picture, and is found by the words people use for the verb.
     decl.icon.clone_from(&verb.icon);
@@ -161,6 +167,8 @@ fn bound_declaration(
     decl.field = verb.field;
     decl.description.clone_from(&verb.description);
     decl.destructive = verb.destructive;
+    decl.step = verb.step;
+    decl.creates = verb.creates;
     // Bound or not, the verb is undone the same way (or not at all), and
     // housekeeping stays housekeeping.
     decl.tags.extend(

@@ -1,26 +1,16 @@
-//! Per-participant views of one open artwork.
-//!
-//! A canvas window an agent (or another collaborator) is working in keeps
-//! a [`PeerViews`]: one view per remote participant, beside the person's own at
-//! this screen. A participant's tree is built from its view, and its presence
-//! is published under its own identity, so what one participant has selected
-//! never shapes another's view and never stands in for the person's own
-//! selection on this screen.
+//! Per-participant views of one open artwork: one per remote participant,
+//! beside this screen's own. A participant's presence is published under its
+//! own identity, so what one has selected never shapes another's view.
 //!
 //! Where a participant is, is said in the artwork's own terms: a range over
-//! its marks, in the order every collaborator holds them. A mark's index is
-//! the same number on every screen — it is a document fact, not a layout one —
-//! so a peer's selection resolves on the other machine without either side
-//! sending coordinates.
+//! its marks, in the order every collaborator holds them, so a peer's
+//! selection resolves on the other machine without coordinates.
 //!
 //! - **Keyed by [`ParticipantId`]**, which the host derives from the
 //!   authenticated invoker: the view routes, it is never authority.
 //! - **Bounded**: at most [`MAX_PEER_VIEWS`] views (least recently used
-//!   evicted first), dropped after [`PEER_VIEW_TTL`] idle, so a request for
-//!   a binding that has expired finds no view and refuses rather than
-//!   resurrecting a stale one.
-//! - **Never in the document**: a view is presentation state held by the
-//!   widget and survives only as long as it.
+//!   evicted first), dropped after [`PEER_VIEW_TTL`] idle.
+//! - **Never in the document**: presentation state the widget holds.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -30,11 +20,8 @@ use ui::time::{Duration, Instant};
 
 use crate::model::Artwork;
 
-/// Upper bound on concurrently held participant views per canvas.
 pub const MAX_PEER_VIEWS: usize = 64;
-/// Idle time after which a participant's view is dropped.
 pub const PEER_VIEW_TTL: Duration = Duration::from_secs(10 * 60);
-/// Upper bound on a participant's display label, in bytes.
 pub const MAX_PEER_LABEL_BYTES: usize = 128;
 /// The item a participant's place in an artwork is named by: the artwork
 /// itself. A [`Place`](ui::tilo_resource::Place) range over it counts marks.
@@ -44,7 +31,6 @@ pub const SELECTION_ITEM: &str = "selection";
 /// the artwork keeps them (bottom to top).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerView {
-    /// The marks it has selected.
     pub marks: Range<usize>,
 }
 
@@ -81,15 +67,13 @@ struct Entry {
     touched: Instant,
 }
 
-/// The participant views of one canvas. See the module docs for its
-/// guarantees.
+/// The participant views of one canvas.
 #[derive(Debug, Default)]
 pub struct PeerViews {
     entries: HashMap<ParticipantId, Entry>,
 }
 
 impl PeerViews {
-    /// Whether `participant` holds a view here.
     pub fn contains(&self, participant: &ParticipantId) -> bool {
         self.entries.contains_key(participant)
     }
@@ -111,12 +95,10 @@ impl PeerViews {
         true
     }
 
-    /// Drop `participant`'s view.
     pub fn leave(&mut self, participant: &ParticipantId) {
         self.entries.remove(participant);
     }
 
-    /// Name shown beside `participant`'s marks.
     pub fn set_label(&mut self, participant: &ParticipantId, label: &str) {
         let label = truncate(label);
         if let Some(entry) = self.entries.get_mut(participant) {
@@ -124,7 +106,6 @@ impl PeerViews {
         }
     }
 
-    /// `participant`'s view, if it holds one.
     pub fn view(&self, participant: &ParticipantId) -> Option<&PeerView> {
         self.entries.get(participant).map(|entry| &entry.view)
     }
@@ -160,7 +141,6 @@ impl PeerViews {
         }
     }
 
-    /// Every participant holding a view, with its view and label.
     pub fn iter(&self) -> impl Iterator<Item = (&ParticipantId, &PeerView, Option<&str>)> {
         self.entries
             .iter()

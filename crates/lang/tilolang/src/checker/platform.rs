@@ -1,6 +1,5 @@
-//! What code reads of the platform: the actions offered on a resource, who else is at it, what
-//! it is called, an enum's cases, and the platform's own phrases. Each is a value of the
-//! language, so a view composes headers, menus and presence from them as `std` does.
+//! What code reads of the platform: the actions offered on a resource, who else is at it, what it is
+//! called, an enum's cases, and the platform's own phrases.
 
 use super::{CKind, Checker, Ctx, Ex};
 use crate::abi::Imp;
@@ -18,7 +17,6 @@ pub(crate) fn host_ty(name: &str) -> Ty {
 }
 
 impl Checker<'_> {
-    /// The one positional argument of a built-in, checked as a resource.
     pub(super) fn resource_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
         let [a] = args else {
             self.err(
@@ -51,17 +49,10 @@ impl Checker<'_> {
         }
     }
 
-    /// `actions(r)`: the actions offered on `r` to the person looking, under the authority
-    /// that decides what they may do: `r`'s own, and those of the resource holding it that
-    /// take it (`delete(nb, n)` on a note). Each is a `host.Action`: label, icon, role,
-    /// whether it is the primary one, its parameters with their defaults, and `run`, the
-    /// action applied to `r`, which a control runs.
-    ///
-    /// `actions(r, above)` offers them where the view shows `r` under `above`: the item just
-    /// above it in its group, or `.none` for the first of its group. An action that reads a
-    /// place (`above: Option<T> (above)`) is offered with it, and one whose `applies` does not
-    /// hold there is left out. Only the host draws them: a view that read them back would be
-    /// reflecting over the declarations the host already places (E047).
+    /// `actions(r)`: the actions offered on `r` to the person looking, each a `host.Action` with its
+    /// label, icon, role, parameters and `run`. `actions(r, above)` offers them where the view shows
+    /// `r` under `above`. Only the host draws them: a view that read them back would be reflecting
+    /// over the declarations the host already places (E047).
     pub(super) fn builtin_actions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx == Ctx::View {
             self.err(
@@ -106,11 +97,9 @@ impl Checker<'_> {
         )
     }
 
-    /// `lenses(r)`: the lenses on `r` now, the person's own and everyone else's: the people
-    /// and agents whose windows show it. Presence on any component reads it.
-    /// `created(r)`, `updated(r)` and `history(r)`: the versions of `r` the log holds (who made
-    /// each, when, by which action), read-only. `created` is the first, `updated` the last;
-    /// both are `.none` while the log of `r` is not at hand.
+    /// `lenses(r)`: who has `r` open now, the person's own and everyone else's. `created(r)`,
+    /// `updated(r)` and `history(r)`: the versions the log holds (who, when, by which action);
+    /// `.none` while its log is not at hand.
     pub(super) fn builtin_versions(&mut self, which: &str, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg(which, args, span) else {
             return Ex::error();
@@ -130,11 +119,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `changed(r, .field)`: the version that last changed the field `field` of `r` (who made
-    /// it, when, by which action), the one that made `r` when none after it changed that
-    /// field. A store with an index keeps the last change of each field, so a list groups or
-    /// sorts by when a field last changed without reading the history of any row; `.none`
-    /// while the log of `r` is not at hand.
+    /// `changed(r, .field)`: the version that last changed the field of `r`, or the one that made
+    /// `r` when none after it did. A store with an index answers it without reading any history.
     pub(super) fn builtin_changed(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [r, f] = args else {
             self.err(
@@ -200,10 +186,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how it
-    /// links, a `host.LinkHow`: made from it (`.created_from`), naming it in a field
-    /// (`.field`), or mentioning it in its rich text (`.mention`). One definition for views,
-    /// search and agents; a store with an index answers it from a reverse list per resource.
+    /// `linked(r)`: the resources linked to `r`, each a `host.Link` with how it links: made from it,
+    /// naming it in a field, or mentioning it in its rich text.
     pub(super) fn builtin_links(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("linked", args, span) else {
             return Ex::error();
@@ -211,9 +195,8 @@ impl Checker<'_> {
         Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
     }
 
-    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text: what the
-    /// actions would do in words. Empty when nothing waits, so a row that carries it shows
-    /// nothing.
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text; empty when nothing
+    /// waits.
     pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("proposal_note", args, span) else {
             return Ex::error();
@@ -221,9 +204,9 @@ impl Checker<'_> {
         Ex::host(Imp::ProposalNote, vec![r], Ty::Text)
     }
 
-    /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
-    /// the same person, or by the same run, folded into one `host.Step`. Which versions
-    /// fold is the platform's rule, the same in every app's history, so no view writes it.
+    /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by one
+    /// person or one run folded into one `host.Step`, which says where it stands among the visits
+    /// history reads.
     pub(super) fn builtin_steps(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("steps", args, span) else {
             return Ex::error();
@@ -231,9 +214,8 @@ impl Checker<'_> {
         Ex::host(Imp::Steps, vec![r], Ty::List(Box::new(host_ty("Step"))))
     }
 
-    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those
-    /// someone else made after the person's seen mark of `r` and after their own last change
-    /// of it (task-legibility.md §2, §4). A view that reads it runs again when either moves.
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those someone
+    /// else made after their seen mark and their own last change.
     pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("unseen", args, span) else {
             return Ex::error();
@@ -241,7 +223,6 @@ impl Checker<'_> {
         Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
     }
 
-    /// `changes(of: run)`: every version the run made, of every resource, oldest first.
     pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [a] = args else {
             self.err("E022", span, "`changes` takes one run: `changes(of: run)`");
@@ -283,8 +264,7 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
-    /// The collection `c` holds and the type of its items, which a fact about a conversation
-    /// reads: a channel and its messages.
+    /// The collection `c` holds and the type of its items, which a fact about a conversation reads.
     fn conversation_of(&mut self, what: &str, c: &Ex, span: Span) -> Option<(String, TypeKey)> {
         let Ty::Record(key) = &c.ty else {
             return None;
@@ -313,11 +293,9 @@ impl Checker<'_> {
         Some((field.name, item))
     }
 
-    /// `first_unseen(c)`: the first item of `c`'s own collection that the person looking has
-    /// not seen, oldest first (a conversation's first unread message), or `.none` when nothing
-    /// of it is unseen. Read from `c`'s versions and the person's seen mark of it, so a
-    /// transcript draws its "new messages" divider where reading left off without counting
-    /// anything. A view that reads it runs again when `c` moves or its mark does.
+    /// `first_unseen(c)`: the first item of `c`'s collection the person looking has not seen, or
+    /// `.none`. Read from `c`'s versions and their seen mark, so a transcript draws its "new
+    /// messages" divider without counting anything.
     pub(super) fn builtin_first_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(c) = self.resource_arg("first_unseen", args, span) else {
             return Ex::error();
@@ -337,9 +315,7 @@ impl Checker<'_> {
         )
     }
 
-    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m` — who has read to that
-    /// line, the person looking aside. A conversation shows their faces there, once each, where
-    /// their read mark stands, without counting anything of its own.
+    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m`.
     pub(super) fn builtin_seen_by(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [c, item] = args else {
             self.err(
@@ -370,9 +346,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `mentions(c)`: how many of `c`'s items name the person looking, that they have not seen:
-    /// a channel's mention count beside its unread count (`unseen(c)`), from the same versions
-    /// and seen mark, so a caught-up channel counts none without reading a message.
+    /// `mentions(c)`: how many of `c`'s items name the person looking that they have not seen, from
+    /// the same versions and seen mark.
     pub(super) fn builtin_mentions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(c) = self.resource_arg("mentions", args, span) else {
             return Ex::error();
@@ -392,16 +367,9 @@ impl Checker<'_> {
         )
     }
 
-    /// `resource(id)`: the resource the store keeps under the id text, read as its own type
-    /// (`host.Resource`, any resource). A place names what it shows by the id alone, so its
-    /// shell reads that resource — its actions, its title — without knowing the type ahead.
-    /// `.none` for text that names no resource this store holds. A view that reads it runs
-    /// again when the resource changes.
-    ///
-    /// `resource(id, of: alias.T)`: the resource of another package's type `T` at that id, as a
-    /// `T` — what an id another app gave names, read as the type its app says it is (a window
-    /// of the session's, by its address). Its fields read from what that app publishes, and its
-    /// actions go to that app, which refuses an id it holds no such resource at.
+    /// `resource(id)`: the resource the store keeps under the id text, as `host.Resource`, whatever
+    /// its type. `resource(id, of: alias.T)`: the same, as that package's type, for an id another
+    /// app gave.
     pub(super) fn builtin_resource(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if let [a, of] = args
             && a.name.is_none()
@@ -433,7 +401,6 @@ impl Checker<'_> {
         )
     }
 
-    /// `resource(id, of: alias.T)` ([`Self::builtin_resource`]).
     fn resource_of(&mut self, a: &ast::Arg, of: &ast::Arg) -> Ex {
         let key = match self.type_named(&of.value) {
             Some(Ty::Record(key)) if key.app != self.env.app => key,
@@ -459,9 +426,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `delivery(r)`: how the outside effect `r`'s actions queued last stands (sending a mail),
-    /// `.none` when they queued none: waiting to go online, sending, sent, rejected with the
-    /// service's reason, or outcome unknown. A view that reads it runs again when it moves.
+    /// `delivery(r)`: how the outside effect `r`'s actions queued last stands, or `.none` when they
+    /// queued none.
     pub(super) fn builtin_delivery(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("delivery", args, span) else {
             return Ex::error();
@@ -473,9 +439,7 @@ impl Checker<'_> {
         )
     }
 
-    /// `members(r)`: the workspace's members who can read `r` now, as the platform's
-    /// membership and grants decide, each a `Principal` (`name()`, `kind()`, `role()`). A view
-    /// that reads it runs again when membership or grants change.
+    /// `members(r)`: the workspace's members who can read `r` now, as membership and grants decide.
     pub(super) fn builtin_members(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("members", args, span) else {
             return Ex::error();
@@ -483,11 +447,8 @@ impl Checker<'_> {
         Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Principal)))
     }
 
-    /// `workspace.members`: everyone in the workspace now, people and agents, read from the
-    /// platform's membership, never a copy the app keeps.
-    ///
-    /// `workspace.me`: the person the view is shown to, as the runtime knows them, read where
-    /// the view runs, so it names the viewer of each window and each embedded view alike.
+    /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
+    /// `workspace.me`: the person the view is shown to.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
         if name.name == "members" {
             return Ex::host(
@@ -523,10 +484,8 @@ impl Checker<'_> {
         Ex::error()
     }
 
-    /// `speakers(items)`: the people who spoke in the conversation of `items` — who made the
-    /// last of them — most recent first, each once, at most five (or `max`). What a composer's
-    /// `@` drawer offers under "In this conversation", read from the items themselves, so
-    /// nothing a conversation is about is read to say who is in it.
+    /// `speakers(items)`: the people who spoke in the conversation of `items`, most recent first,
+    /// each once, at most five (or `max`). A composer's `@` drawer offers them.
     pub(super) fn builtin_speakers(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let people = Ty::List(Box::new(Ty::Principal));
         let (items, max) = match args {
@@ -573,9 +532,8 @@ impl Checker<'_> {
         Ex::host(Imp::Speakers, vec![list, max], people)
     }
 
-    /// Who a rich input's `@` drawer offers after the conversation's own: the members who can
-    /// read what a mention in it names (`subject`, the resource the view shows), or the
-    /// workspace's members. The system gives them to every rich input that names none.
+    /// Who a rich input's `@` drawer offers after the conversation's own: the members who can read
+    /// what a mention names (`subject`), or the workspace's members.
     pub(super) fn drawer_people(subject: Option<Ex>) -> Ex {
         let people = Ty::List(Box::new(Ty::Principal));
         match subject {
@@ -584,9 +542,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `meta(r)` or `meta(T)`: what the platform shows of a resource or its type, a
-    /// `host.Meta`: its title, its type's name, the noun a sentence calls it by, its app's
-    /// icon, and whether it opens in a window of its own.
+    /// `meta(r)` or `meta(T)`: a `host.Meta`: its title, its type's name, the noun a sentence calls
+    /// it by, its app's icon, and whether it opens in a window of its own.
     pub(super) fn builtin_meta(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [a] = args else {
             self.err(
@@ -624,8 +581,7 @@ impl Checker<'_> {
         Ex::host(Imp::MetaOf, vec![r], host_ty("Meta"))
     }
 
-    /// `cases(E)`: every case of the enum `E`, in declaration order. Each case carries no
-    /// payload.
+    /// `cases(E)`: every case of the enum `E`, in declaration order.
     pub(super) fn builtin_cases(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(key) = self.cases_of(args, span) else {
             return Ex::error();
@@ -665,8 +621,6 @@ impl Checker<'_> {
         )
     }
 
-    /// The action and the text of `entry_parts(action, text)`: the action a call left its
-    /// one `Text` parameter of, and what is typed in the entry.
     fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
         let [action, text] = args else {
             self.err(
@@ -688,9 +642,8 @@ impl Checker<'_> {
         Some((action, text))
     }
 
-    /// `entry_parts(action, text)`: what the text typed in an entry will make of the action it
-    /// runs, as the words it takes out of the title and leaves to the action's parameters
-    /// (`crate::entry`): a `host.EntryPart` each, in the order they stand.
+    /// `entry_parts(action, text)`: what the text typed in an entry will make of the action it runs,
+    /// as the words it takes out of the title and leaves to the action (`crate::entry`).
     pub(super) fn builtin_entry_parts(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some((action, text)) = self.entry_args("entry_parts", args, span) else {
             return Ex::error();
@@ -702,8 +655,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the
-    /// platform's phrases, in the person's language, with its arguments.
+    /// `phrase("tilolang-empty")`: one of the platform's phrases, in the person's language, with its
+    /// arguments.
     pub(super) fn builtin_phrase(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some((first, rest)) = args.split_first() else {
             self.err(
@@ -735,9 +688,8 @@ impl Checker<'_> {
         Ex::host(Imp::Phrase, vec![id, args], Ty::Text)
     }
 
-    /// `v.is(edit)` of a `host.Version` or a `host.Action`: whether the action it names is the
-    /// declared action `edit`, named by the compiler, so a renamed or relabelled action is still
-    /// found and a misspelt one is an error.
+    /// `v.is(edit)` of a `host.Version` or a `host.Action`: whether it names the declared action
+    /// `edit`, named by the compiler, so a misspelt one is an error.
     pub(super) fn names_action(&mut self, r: Ex, ty: &str, args: &[ast::Arg], span: Span) -> Ex {
         let named = match args {
             [a] if a.name.is_none() => match &a.value.kind {
@@ -749,7 +701,11 @@ impl Checker<'_> {
                     super::expr::dotted(base).and_then(|path| {
                         let import = self.env.find_import(&path.join("."))?;
                         self.env
-                            .foreign_callable(&import.app, &name.name)
+                            .foreign_callable_marked(
+                                &import.app,
+                                &name.name,
+                                name.from_template_of.as_deref(),
+                            )
                             .filter(|c| matches!(c.kind, CKind::Action))
                             .map(|c| c.id.clone())
                     })
@@ -771,8 +727,7 @@ impl Checker<'_> {
         Ex::host(Imp::StrEq, vec![held, Ex::str(&id)], Ty::Bool)
     }
 
-    /// A field of a value of a host value type (`a.label` of a `host.Action`): read from the
-    /// tuple it is held as.
+    /// A field of a host value (`a.label` of a `host.Action`): read from the tuple it is held as.
     pub(super) fn value_field(&mut self, b: Ex, key: &TypeKey, name: &ast::Ident) -> Option<Ex> {
         if key.app != crate::host::HOST_APP {
             return None;
@@ -806,9 +761,8 @@ impl Checker<'_> {
         Some(super::conv(c, Ex::host(imp, vec![b, at], raw), ty))
     }
 
-    /// `c.before` or `c.after` of a `host.Change`: what the field held, shown as its type shows
-    /// it, a node of the view placed where the expression stands. Its key is the place in the
-    /// source with the identity of the enclosing items, as every node's is.
+    /// `c.before` or `c.after` of a `host.Change`: what the field held, shown as its type shows it,
+    /// as a node of the view placed where the expression stands.
     fn shown_value(&mut self, b: Ex, ty: &str, name: &ast::Ident) -> Ex {
         if self.st.ctx != super::Ctx::View {
             let who = self.st.ctx.word();
@@ -830,9 +784,8 @@ impl Checker<'_> {
         Ex::host(Imp::ChangeView, vec![b, side, key], Ty::View)
     }
 
-    /// `undo(v)` of a `host.Version`, or `undo(run)` of a `host.Run`: the action that takes
-    /// the step back, or every step of the run, through the platform's history (`undo`), as
-    /// the person who applies it. Applied from a view, on a control: `button(undo(v))`.
+    /// `undo(v)` of a `host.Version`, or `undo(run)` of a `host.Run`: the action that takes the step
+    /// back, or every step of the run, through the platform's history.
     pub(super) fn builtin_undo(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != super::Ctx::View {
             let who = self.st.ctx.word();
@@ -886,9 +839,8 @@ impl Checker<'_> {
         Ex::host(Imp::ActUndo, vec![what, of], Ty::Action)
     }
 
-    /// `e.label()`, `e.icon()`, `e.tone()` or `e.name()` of a value of a declared enum: what a
-    /// control shows for its case, the name of its icon, the tone it reads in and the case's
-    /// name.
+    /// `e.label()`, `e.icon()`, `e.tone()` or `e.name()` of a declared enum: what a control shows for
+    /// its case.
     pub(super) fn enum_method(&mut self, r: Ex, key: &TypeKey, m: &str) -> Option<Ex> {
         self.env.enum_info(key)?;
         match m {
@@ -901,8 +853,6 @@ impl Checker<'_> {
                     None => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
                 }))
             }
-            // The tone a case reads in, as the tone case name a component's `tone:` prop
-            // holds; a case that names none is neutral.
             "tone" => Some(self.per_variant(r, key, Ty::Text, |v| {
                 Ex::str(v.tone.as_deref().unwrap_or("neutral"))
             })),

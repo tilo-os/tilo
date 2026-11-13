@@ -1,7 +1,6 @@
-//! Software fine rasterization; wgpu only uploads and presents these pixels.
-//!
-//! Every host draws a software adapter's frames through this canvas, native
-//! or in a page, so both produce the same pixels from the same frame.
+//! Software fine rasterization; wgpu only uploads and presents these pixels. Every host draws a
+//! software adapter's frames through this canvas, native or in a page, so both produce the same pixels
+//! from the same frame.
 
 use tilo_cpu_raster::{CANVAS_THREADS, CpuRasterizer, Options, Region, Target};
 
@@ -14,16 +13,15 @@ pub(crate) struct CpuCanvas {
     size: (u32, u32),
     valid: bool,
     regions: Vec<Region>,
-    /// What the last frame changed and [`Self::upload`] sends: what it
-    /// rasterized, and where its scroll copies landed.
+    /// What the last frame changed and [`Self::upload`] sends: what it rasterized, and where its scroll
+    /// copies landed.
     uploads: Vec<Region>,
     /// The frames' scenes hold only what their damage needs: one that must
     /// be rasterized whole is refused.
     damage_only: bool,
 }
 
-/// A canvas to rasterize frames into when they are rasterized on the CPU
-/// (`on_cpu`), else none.
+/// A canvas to rasterize frames into when they are rasterized on the CPU (`on_cpu`), else none.
 pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
     on_cpu.then(CpuCanvas::new)
 }
@@ -88,8 +86,6 @@ impl CpuCanvas {
             frame.full_redraw || !self.valid || (!copied && !frame.scroll_copies.is_empty());
         let bounded = bounded_present_damage(frame.width, frame.height, frame.damage_regions);
         if self.damage_only && (whole || bounded.is_none()) {
-            // The copies may have moved the pixels: what is retained is no
-            // longer the last frame.
             self.valid = false;
             return Err(crate::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
         }

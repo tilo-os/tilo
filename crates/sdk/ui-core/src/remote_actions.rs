@@ -1,25 +1,6 @@
-//! An application's own client for the session's action door.
-//!
-//! [`RemoteActions`] lets an app read the action catalogue and invoke
-//! published actions through the session broker — the same door the
-//! palette, scripts and agents use. The broker decides every request for the
-//! application under its own identity: it reaches what it owns (its own
-//! surface, and actions published under its own package id) as the person
-//! using it; reading the catalogue needs the manifest's `[actions] query`,
-//! and invoking another app's action needs `[actions] invoke` plus a
-//! workspace grant to the app. Nothing here widens that: the client only
-//! carries requests and answers.
-//!
-//! Answers arrive as [`Arriving`] reads ([`crate::arriving`]), so a bound
-//! view updates, an idle window wakes when one lands, and
-//! [`Arriving::view`] shows them with the framework's placeholders. Each
-//! read says where its answer comes from: this device's broker. A root that
-//! owns a client returns it as its [`Collaborative`] capability (or forwards
-//! to it), which is how its requests reach the connection and the answers
-//! come back.
-//!
-//! [`RemoteActions::with_host`] serves the same client from an in-process
-//! [`ActionHost`] instead, for tests and embedded hosts.
+//! An application's own client for the session's action door. [`RemoteActions`] lets an app read the
+//! action catalogue and invoke published actions through the session broker — the same door the
+//! palette, scripts and agents use.
 
 use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
@@ -58,22 +39,19 @@ impl Drop for RemoteActionsGuard {
     }
 }
 
-/// How long an invocation's receipt may be held for its outcome, so a quick
-/// action answers in the one round trip that started it.
+/// How long an invocation's receipt may be held for its outcome, so a quick action answers in the one
+/// round trip that started it.
 const INVOKE_WAIT_MS: u32 = 2_000;
-/// How long one waiting observe may be held (the host caps it too). A host
-/// answers sooner the moment the invocation moves.
+/// How long one waiting observe may be held (the host caps it too).
 const OBSERVE_WAIT_MS: u32 = 10_000;
-/// How long a running invocation is left before it is observed again, for
-/// a host that answers a waiting observe at once: one that predates waits.
+/// How long a running invocation is left before it is observed again, for a host that answers a waiting
+/// observe at once: one that predates waits.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
-/// A remote publisher cannot keep an application walking an unbounded or
-/// cyclic catalogue. Sixty-four full pages still cover the largest normal
-/// application surfaces while giving every caller a deterministic refusal.
+/// A remote publisher cannot keep an application walking an unbounded or cyclic catalogue.
 const MAX_CATALOGUE_PAGES: usize = 64;
-/// How long one catalogue page may go unanswered. A connection that carries
-/// the request nowhere (no host in reach to answer it) must not leave the
-/// app waiting forever: past this, the read is refused as unavailable.
+/// How long one catalogue page may go unanswered. A connection that carries the request nowhere (no
+/// host in reach to answer it) must not leave the app waiting forever: past this, the read is refused
+/// as unavailable.
 pub const CATALOGUE_WAIT: Duration = Duration::from_secs(20);
 /// Why a catalogue read was refused when nothing answered it in time.
 pub const CATALOGUE_UNANSWERED: &str =
@@ -81,16 +59,13 @@ pub const CATALOGUE_UNANSWERED: &str =
 
 /// A catalogue read: every page of one query, gathered.
 pub type CatalogueCall = Arriving<CataloguePage, ActionHostError>;
-/// An invocation: its latest lifecycle update, or the host's refusal (then
-/// nothing ran).
+/// An invocation: its latest lifecycle update, or the host's refusal (then nothing ran).
 pub type InvocationCall = Arriving<InvocationUpdate, ActionHostError>;
-/// A request to cancel a running invocation: `Ready(())` is the host's
-/// acknowledgement. Acknowledgement is not a terminal invocation outcome;
-/// callers must keep observing the original [`InvocationCall`] until it
-/// reports `Cancelled` or another terminal state.
+/// A request to cancel a running invocation: `Ready(())` is the host's acknowledgement. Acknowledgement
+/// is not a terminal invocation outcome.
 pub type CancellationCall = Arriving<(), ActionHostError>;
-/// A record read: the readings as every reader is answered them
-/// (`{"revision", "records": [{"record", "value" | "absent" | "arriving"}]}`).
+/// A record read: the readings as every reader is answered them (`{"revision", "records": [{"record",
+/// "value" | "absent" | "arriving"}]}`).
 pub type RecordReadCall = Arriving<serde_json::Value, ActionHostError>;
 
 impl Arrival<InvocationUpdate, ActionHostError> {
@@ -105,8 +80,7 @@ impl Arrival<InvocationUpdate, ActionHostError> {
     }
 }
 
-/// A live result [`RemoteActions::follow`] follows. Dropping it stops
-/// following: the invocation is cancelled.
+/// A live result [`RemoteActions::follow`] follows.
 pub struct Followed {
     remote: RemoteActions,
     invocation: InvocationId,
@@ -144,7 +118,6 @@ impl std::fmt::Debug for Followed {
 }
 
 enum Transport {
-    /// Through the application's collaboration connection.
     Session,
     /// Through an in-process host, as `caller`.
     Host {
@@ -166,15 +139,10 @@ struct CatalogueWalk {
 
 struct Running {
     answer: ArrivalWriter<InvocationUpdate, ActionHostError>,
-    /// Told each update as it lands, before the call shows it: how a
-    /// follower reads each result once.
+    /// Told each update as it lands, before the call shows it: how a follower reads each result once.
     then: Option<Box<dyn FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send>>,
     cancellation: Option<CancellationCall>,
-    /// When to observe it next, while a host that does not wait is still
-    /// running it.
     observe_at: Option<Instant>,
-    /// The waiting observe in flight: when it was sent, and how far it had
-    /// seen the invocation get.
     waiting: Option<(Instant, UpdateMark)>,
 }
 
@@ -198,14 +166,13 @@ struct Inner {
     catalogue: HashMap<u64, CatalogueWalk>,
     invocations: HashMap<InvocationId, Running>,
     reads: HashMap<u64, ArrivalWriter<serde_json::Value, ActionHostError>>,
-    /// Whether the host holds a waiting observe until something changes;
-    /// cleared the first time it answers one at once with nothing new.
+    /// Whether the host holds a waiting observe until something changes; cleared the first time it
+    /// answers one at once with nothing new.
     host_waits: bool,
     wake: WakeHandle,
 }
 
-/// An application's client for the session's action door. Clones share one
-/// client.
+/// An application's client for the session's action door.
 #[derive(Clone)]
 pub struct RemoteActions {
     inner: Arc<Mutex<Inner>>,
@@ -224,9 +191,7 @@ impl std::fmt::Debug for RemoteActions {
 }
 
 impl RemoteActions {
-    /// A client that talks through the application's collaboration
-    /// connection. Until the root hands it to the host (see the module
-    /// docs), its requests wait.
+    /// A client that talks through the application's collaboration connection.
     #[must_use]
     pub fn session() -> Self {
         Self::new(Transport::Session)
@@ -238,8 +203,8 @@ impl RemoteActions {
         Self::new(Transport::Host { host, caller })
     }
 
-    /// The client this thread's app should use: one served by the host a
-    /// [`RemoteActions::enter`] guard installed, else [`session`](Self::session).
+    /// The client this thread's app should use: one served by the host a [`RemoteActions::enter`] guard
+    /// installed, else [`session`](Self::session).
     #[must_use]
     pub fn current() -> Self {
         SERVED
@@ -249,9 +214,8 @@ impl RemoteActions {
             })
     }
 
-    /// Serve every client [`current`](Self::current) makes on this thread
-    /// from `host`, as `caller`, until the guard drops — how a test or an
-    /// embedding host stands in for the session.
+    /// Serve every client [`current`](Self::current) makes on this thread from `host`, as `caller`,
+    /// until the guard drops — how a test or an embedding host stands in for the session.
     #[must_use = "the host serves clients only while the guard lives"]
     pub fn enter(host: Arc<dyn ActionHost + Send + Sync>, caller: Caller) -> RemoteActionsGuard {
         let previous = SERVED.with(|served| served.replace(Some((host, caller))));
@@ -286,12 +250,8 @@ impl RemoteActions {
         self.start_catalogue(query, true)
     }
 
-    /// Read exactly one bounded page of `query`.
-    ///
-    /// This is for clients that traverse a resource hierarchy and therefore
-    /// must own one global page/work budget across parents. The returned
-    /// cursor is opaque and may only be sent back with the same provider,
-    /// parent and revision.
+    /// Read exactly one bounded page of `query`. This is for clients that traverse a resource hierarchy
+    /// and therefore must own one global page/work budget across parents.
     #[must_use]
     pub fn catalogue_page(&self, query: CatalogueQuery) -> CatalogueCall {
         self.start_catalogue(query, false)
@@ -307,8 +267,6 @@ impl RemoteActions {
         answer
     }
 
-    /// Ask for `query`'s catalogue into `answer`: first, or again after a
-    /// failure.
     fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery, follow_pages: bool) {
         let writer = answer.writer();
         writer.pending(self.source());
@@ -344,16 +302,15 @@ impl RemoteActions {
         self.send(message);
     }
 
-    /// Where this client's answer comes from: this device, whose broker
-    /// answers every request — an app's own actions, the catalogue it is
-    /// offered, and a workspace's governance (its people and its own name),
-    /// which the workspace's person changes here and this device signs.
+    /// Where this client's answer comes from: this device, whose broker answers every request — an
+    /// app's own actions, the catalogue it is offered, and a workspace's governance (its people and its
+    /// own name), which the workspace's person changes here and this device signs.
     const fn source(&self) -> Source {
         Source::Local
     }
 
-    /// Invoke the action at `target` with `argument`, carrying the person's
-    /// explicit `confirmation` when its contract asks for one.
+    /// Invoke the action at `target` with `argument`, carrying the person's explicit `confirmation`
+    /// when its contract asks for one.
     #[must_use]
     pub fn invoke(
         &self,
@@ -365,10 +322,6 @@ impl RemoteActions {
     }
 
     /// Invoke an action with a caller-owned stable identity.
-    ///
-    /// Use this when the durable object that caused the request already has a
-    /// UUID. Reusing that UUID across reconnects lets the host deduplicate a
-    /// retry after an acknowledgement is lost; it does not grant any authority.
     #[must_use]
     pub fn invoke_with_id(
         &self,
@@ -380,9 +333,8 @@ impl RemoteActions {
         self.invoke_continuing(None, invocation, target, argument, confirmation)
     }
 
-    /// [`Self::invoke_with_id`] for a request made while running
-    /// `on_behalf_of`, an invocation the host delivered here: the host
-    /// decides it as that invocation's caller.
+    /// [`Self::invoke_with_id`] for a request made while running `on_behalf_of`, an invocation the host
+    /// delivered here: the host decides it as that invocation's caller.
     #[must_use]
     pub fn invoke_continuing(
         &self,
@@ -401,7 +353,6 @@ impl RemoteActions {
             context: None,
             confirmation,
             revision: None,
-            // A host that predates waits answers at admission, as before.
             wait_ms: Some(INVOKE_WAIT_MS),
             appearance: None,
         };
@@ -420,17 +371,15 @@ impl RemoteActions {
     }
 
     /// Follow the live result of the action at `target`
-    /// ([`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live)): the
-    /// call's latest update is each new result as an `Item`, for as long as
-    /// the returned handle lives; dropping it cancels the invocation. An
-    /// action that answers once settles as any invocation does.
+    /// ([`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live)): the call's latest update is each
+    /// new result as an `Item`, for as long as the returned handle lives; dropping it cancels the
+    /// invocation.
     #[must_use]
     pub fn follow(&self, target: RemoteActionTarget, argument: InvokeArgument) -> Followed {
         self.follow_with(target, argument, |_| {})
     }
 
-    /// [`Self::follow`], telling `then` each update as it lands, before
-    /// the call shows it.
+    /// [`Self::follow`], telling `then` each update as it lands, before the call shows it.
     #[must_use]
     pub fn follow_with(
         &self,
@@ -471,9 +420,9 @@ impl RemoteActions {
         }
     }
 
-    /// Read a record of the window's workspace through the record door, as
-    /// a request of its own or continuing `on_behalf_of`, an invocation the
-    /// host delivered here: the host decides it as that invocation's caller.
+    /// Read a record of the window's workspace through the record door, as a request of its own or
+    /// continuing `on_behalf_of`, an invocation the host delivered here: the host decides it as that
+    /// invocation's caller.
     #[must_use]
     pub fn read_record(
         &self,
@@ -504,9 +453,6 @@ impl RemoteActions {
     }
 
     /// Ask the host to cancel an invocation this client is still observing.
-    /// Repeated calls share one request and receipt. `Acknowledged` means only
-    /// that the host accepted the cancellation request; the invocation's own
-    /// call is the authority for whether it actually stopped.
     #[must_use]
     pub fn cancel(&self, invocation: InvocationId) -> Option<CancellationCall> {
         let source = self.source();
@@ -558,9 +504,7 @@ impl RemoteActions {
         });
     }
 
-    /// Ask after invocations a host that does not wait is still running,
-    /// once each is due. The host connection does this on every pump; call
-    /// it directly only for a client served [`with_host`](Self::with_host).
+    /// Ask after invocations a host that does not wait is still running, once each is due.
     pub fn poll(&self) {
         let now = crate::background::Background::current().now();
         let due: Vec<InvocationId> = {
@@ -589,7 +533,6 @@ impl RemoteActions {
         }
     }
 
-    /// Apply one answer from the session connection.
     fn receive(&self, message: &RemoteActionMessage) {
         let follow_up = apply(&mut self.lock(), message.clone());
         if let Some(next) = follow_up {
@@ -598,8 +541,6 @@ impl RemoteActions {
     }
 }
 
-/// Record `answer`, returning the request that continues it (the next
-/// catalogue page), if any.
 fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionMessage> {
     match answer {
         RemoteActionMessage::CatalogueResponse {
@@ -644,7 +585,6 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 return None;
             }
             if page.stale_cursor {
-                // The offer changed mid-walk; start again from the top.
                 walk.gathered = CataloguePage::default();
                 walk.query.cursor.clear();
                 walk.query.revision = None;
@@ -751,20 +691,22 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::Confirm { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
-        // Retired verbs: nothing sends them, and nothing answers. An
-        // offer a surface makes is its host's to read, not this client's.
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetRequest { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::SearchRequest { .. }
+        | RemoteActionMessage::SearchResponse { .. }
+        | RemoteActionMessage::ChangesRequest { .. }
+        | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }
 
-/// Publish `update` for `invocation`; keep following it while it runs,
-/// returning the waiting observe that does, if the host holds one.
+/// Publish `update` for `invocation`; keep following it while it runs, returning the waiting observe
+/// that does, if the host holds one.
 fn settle(
     inner: &mut Inner,
     invocation: InvocationId,

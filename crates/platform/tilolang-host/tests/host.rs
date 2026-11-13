@@ -34,6 +34,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::Value;
 
+/// What an action too large to record whole keeps as content, on its device and its peer's.
+#[path = "host/content.rs"]
+mod content;
 #[path = "host/indexes.rs"]
 mod indexes;
 /// Tasks in a hosted window, and Today reading it from Tasks' own record.
@@ -137,8 +140,6 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the lane beside the root: the item the window shows.
     detail: Option<patch::Node>,
-    /// The resource the detail lane shows.
-    detail_target: Option<patch::ResourceRef>,
     /// The item the window shows beside its list: what a press showed in place, as the
     /// window heard it from the instance.
     in_place: Option<patch::ResourceRef>,
@@ -163,7 +164,6 @@ impl Window {
             transport,
             root: None,
             detail: None,
-            detail_target: None,
             in_place: None,
             activated: false,
             bound: BTreeMap::new(),
@@ -195,12 +195,10 @@ impl Window {
                     }
                     ToUi::Open {
                         lane: Lane::Detail,
-                        target,
                         tree,
                         ..
                     } => {
                         self.detail = Some(tree);
-                        self.detail_target = Some(target);
                     }
                     ToUi::Patch {
                         lane: Lane::Detail,
@@ -261,13 +259,14 @@ fn value_of(hosted: &Hosted) -> i64 {
     }
 }
 
-/// A host with one counter instance on a broker the test plays, and its window.
+/// Written when a host's wake is: work off the frame has something for its loop.
 static WOKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn wake() -> tilolang_tilo::background::Waker {
     Arc::new(|| WOKEN.store(true, std::sync::atomic::Ordering::SeqCst))
 }
 
+/// A host with one counter instance on a broker the test plays, and its window.
 fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     running_app(person, APP, counter())
 }
@@ -335,6 +334,24 @@ fn instance_on(
     actions: Actions,
     doc: automerge::AutoCommit,
 ) -> (Window, Sent, Inbox) {
+    let content = tilo_content::ContentStore::memory();
+    instance_keeping(
+        host, attributes, bundle, route, directory, actions, doc, content,
+    )
+}
+
+/// [`instance_on`], the record's content kept in `content`, as the device's content store keeps
+/// it.
+fn instance_keeping(
+    host: &mut TilolangHost,
+    attributes: Spec,
+    bundle: Bundle,
+    route: &RouteSpec,
+    directory: Rc<RefCell<Directory>>,
+    actions: Actions,
+    doc: automerge::AutoCommit,
+    content: tilo_content::ContentStore,
+) -> (Window, Sent, Inbox) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
     let mut manager = CollaborationManager::with_peer_transport(Broker {
@@ -354,7 +371,8 @@ fn instance_on(
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person);
+    let record = InstanceRecord::new(doc, manager, route.clone(), &attributes.person)
+        .keeping_content_in(content);
     let kept = host.kept(&attributes.app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
@@ -373,22 +391,50 @@ fn instance_on(
     (window, sent, inbox)
 }
 
-/// Run the host as its loop does: a frame whenever something woke it, until nothing has for a
-/// while (work off the frame, the record's publication, wakes it when it is ready).
-fn settle(host: &mut TilolangHost, window: &mut Window) {
-    let mut quiet_since = std::time::Instant::now();
+/// How long a host may take to be done with what it owes before the test says so: a failure, not
+/// a wait — nothing is settled by it.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Run the host's loop without its wait: a frame whenever it owes one, until it owes nothing — no
+/// instance being opened, no change being applied, and no window with a frame coming. Every
+/// frame's patches are taken in `windows`, as a window that draws them does, and `carry` is what
+/// the test's broker does between frames.
+///
+/// Nothing is awaited by letting time pass: the host says whether it owes work, whether it is
+/// opening an instance, and what it reads off the frame wakes it when it is ready.
+fn settle_all(
+    host: &mut TilolangHost,
+    windows: &mut [&mut Window],
+    mut carry: impl FnMut(&mut TilolangHost) -> bool,
+) {
+    let began = std::time::Instant::now();
     loop {
+        let mut changed = host.turn();
+        for window in &mut *windows {
+            window.take();
+        }
+        changed |= carry(host);
         let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
-        let changed = host.turn();
-        window.take();
-        if changed || woken {
-            quiet_since = std::time::Instant::now();
-        } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
+        if !changed && !woken && !host.owes_work() {
             return;
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the host owes work after {}s: {} opening, {} running",
+            began.elapsed().as_secs(),
+            host.opening(),
+            host.instances().count()
+        );
+        if !changed {
+            // Nothing moved: what the host owes is work off its frame, which wakes it.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+}
+
+/// [`settle_all`] of one window, with no broker of its own.
+fn settle(host: &mut TilolangHost, window: &mut Window) {
+    settle_all(host, &mut [window], |_| false);
 }
 
 fn documents_sent(sent: &Sent) -> usize {
@@ -433,7 +479,7 @@ fn opened_from_own_copy_in(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = InstanceRecord::open_read(manager, None, documents, person).unwrap();
+    let record = InstanceRecord::open_read(manager, None, documents, person, "tl.test").unwrap();
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(APP).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -1334,6 +1380,65 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     }
 }
 
+/// The app's root record is listed at the directory's top level to an agent as to a person: its
+/// `open` changes only the caller's own window, so it discloses the record under the caller's
+/// policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
+/// the actions an agent takes there.
+#[test]
+fn an_agent_lists_the_apps_root_record_and_its_actions() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let top = page(&mut host, &mut window, &directory, query());
+    let prefix = format!("tl:{APP}:root-");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
+        .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+        .clone();
+    let visibility = root
+        .visibility
+        .as_ref()
+        .expect("a listed resource names its visibility");
+    assert!(
+        visibility.contract.discloses_resource(),
+        "the root record is disclosed only to its publisher through `{}`",
+        visibility.action
+    );
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: root.resource.clone(),
+            ..query()
+        },
+    );
+    // The broker refuses a page whose action row names another contract than its descriptor's.
+    for row in level.rows.iter().filter(|row| row.action.is_some()) {
+        let descriptor = row
+            .descriptor
+            .as_ref()
+            .expect("an action row carries its action");
+        let visibility = row
+            .visibility
+            .as_ref()
+            .expect("an action row names its visibility");
+        assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
+    }
+    for action in ["open", "increment", "decrement"] {
+        assert!(
+            level.rows.iter().any(|row| {
+                row.resource == root.resource && row.action.as_deref() == Some(action)
+            }),
+            "{action} is on the root's level: {:?}",
+            level.rows
+        );
+    }
+}
+
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// Where the shipped tilolang packages are.
@@ -1581,8 +1686,8 @@ fn press_new_note(window: &mut Window) {
 
 /// A notebook of `held` notes, the first of them open in the window as the person made it; what
 /// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
-/// runs them.
+/// is `field`, a key at a time, each followed by the host's frames until it owes none, as its
+/// loop runs them.
 fn typing(held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
     let (mut host, mut window, sent, inbox, _route) =
@@ -1988,18 +2093,24 @@ fn apply(
     let mut line = serde_json::to_vec(change).unwrap();
     line.push(b'\n');
     (&*connection).write_all(&line).unwrap();
-    for _ in 0..200 {
+    let began = std::time::Instant::now();
+    while !applier.answered() {
         applier.turn();
-        if applier.answered() {
-            let mut answer = String::new();
-            std::io::BufReader::new(connection)
-                .read_line(&mut answer)
-                .unwrap();
-            return serde_json::from_str(&answer).unwrap();
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the change was never answered"
+        );
+        if !applier.owes() {
+            // The change's line is on its way, or the workspace it writes to: it arrives on the
+            // connection it comes on, which the applier reads on its own frames.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("the change was never answered");
+    let mut answer = String::new();
+    std::io::BufReader::new(connection)
+        .read_line(&mut answer)
+        .unwrap();
+    serde_json::from_str(&answer).unwrap()
 }
 
 /// An agent task acting for ada, as the broker admitted it.
@@ -2137,13 +2248,12 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         Some(&shell),
         "not the root the shell opens with"
     );
-    let hide = &bundle
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "hide_app_menus")
-        .expect("the shell's top bar has its actions")
-        .id;
+    // As the door publishes it: by its name.
+    let hide = "hide_app_menus";
+    assert!(
+        bundle.meta.actions.iter().any(|action| action.name == hide),
+        "the shell's top bar has its actions"
+    );
     let (mut applier, connection, sent) =
         applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
     let answer = apply(
@@ -2151,7 +2261,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         &connection,
         &runtime_portal::tilolang_host::Change {
             resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
-            action: hide.clone(),
+            action: hide.to_owned(),
             arguments: serde_json::Map::new(),
             invoker: task_invoker(),
             context: None,
@@ -2169,40 +2279,49 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
 /// answered why: the record is never left holding, building on and keeping a change the workspace
 /// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
+///
+/// The surface a process decides an app's changes by is the process's, and this test names the
+/// counter's app a surface no other test may inherit: it runs in a process of its own.
 #[test]
 fn a_change_the_workspace_refuses_is_never_kept() {
-    let (address, doc) = increment();
-    collaboration::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
-    );
-    let before = doc.clone().get_heads();
-    let (mut applier, connection, sent) = applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_change_the_workspace_refuses_is_never_kept",
+        || {
+            let (address, doc) = increment();
+            collaboration::app_surface::register_package(
+                APP,
+                b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+            );
+            let before = doc.clone().get_heads();
+            let (mut applier, connection, sent) = applier("ada", doc);
+            let answer = apply(
+                &mut applier,
+                &connection,
+                &runtime_portal::tilolang_host::Change {
+                    resource: address.resource,
+                    action: address.action,
+                    arguments: serde_json::Map::new(),
+                    invoker: task_invoker(),
+                    context: None,
+                    preview: None,
+                },
+            );
+            let why = answer["failed"]
+                .as_str()
+                .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+            assert!(why.contains("publishes no"), "{why}");
+            assert_eq!(
+                applier.record().doc().clone().get_heads(),
+                before,
+                "the record holds nothing of the refused change"
+            );
+            assert_eq!(
+                documents_sent(&sent),
+                0,
+                "nothing was handed to the workspace"
+            );
         },
-    );
-    let why = answer["failed"]
-        .as_str()
-        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
-    assert!(why.contains("publishes no"), "{why}");
-    assert_eq!(
-        applier.record().doc().clone().get_heads(),
-        before,
-        "the record holds nothing of the refused change"
-    );
-    assert_eq!(
-        documents_sent(&sent),
-        0,
-        "nothing was handed to the workspace"
     );
 }
 
@@ -2626,41 +2745,48 @@ const TASKS: &str = "so.tilo.lang.tasks";
 
 /// A window a German person reads names another app's change by that app's own name: the names of
 /// the apps installed here arrive on the instance's connection with the workspace's people's
-/// names, and are what its history reads.
+/// names, and are what its history reads. The language the names are read in is the process's, so
+/// this test reads them in a process of its own.
 #[test]
 fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
-    use tilolang_tilo::names::Unnamed;
-    use tilolang_tilo::runtime::{NameHost as _, Principal};
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_hosted_window_names_another_app_as_the_names_it_was_sent",
+        || {
+            use tilolang_tilo::names::Unnamed;
+            use tilolang_tilo::runtime::{NameHost as _, Principal};
 
-    let today = Principal::new("app:so.tilo.lang.today".to_owned());
-    let (mut host, mut window, _sent, inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Today",
-        "the words its id makes, before the session named it"
-    );
-    collaboration::history_source::authors::set_names_language("de-DE");
-    inbox.borrow_mut().push_back(CollabEvent::Context {
-        collaborators: Vec::new(),
-        permissions: Vec::new(),
-        apps: vec![collab_types::history::NamedApp {
-            id: "so.tilo.lang.today".to_owned(),
-            name: "Today".to_owned(),
-            names: [("de-DE".to_owned(), "Heute".to_owned())]
-                .into_iter()
-                .collect(),
-        }],
-    });
-    settle(&mut host, &mut window);
-    assert_eq!(
-        Unnamed.name(&today),
-        "Heute",
-        "the app's own name in the window's language"
-    );
-    assert_eq!(
-        Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
-        "Editor",
-        "an app installed nowhere near this device reads as the words its id makes"
+            let today = Principal::new("app:so.tilo.lang.today".to_owned());
+            let (mut host, mut window, _sent, inbox, _route) = running("ada");
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Today",
+                "the words its id makes, before the session named it"
+            );
+            collaboration::history_source::authors::set_names_language("de-DE");
+            inbox.borrow_mut().push_back(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+                apps: vec![collab_types::history::NamedApp {
+                    id: "so.tilo.lang.today".to_owned(),
+                    name: "Today".to_owned(),
+                    names: [("de-DE".to_owned(), "Heute".to_owned())]
+                        .into_iter()
+                        .collect(),
+                }],
+            });
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Heute",
+                "the app's own name in the window's language"
+            );
+            assert_eq!(
+                Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+                "Editor",
+                "an app installed nowhere near this device reads as the words its id makes"
+            );
+        },
     );
 }

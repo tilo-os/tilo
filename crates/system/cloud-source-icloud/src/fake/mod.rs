@@ -1,7 +1,5 @@
 //! Apple's iCloud endpoints in memory, on the shared test responder.
 //!
-//! One loopback server answers all of them under path prefixes:
-//!
 //! - `/appleauth/…`: idmsa's SRP sign-in (a real SRP-6a verifier, so a
 //!   wrong password fails the proof), the trusted-device and SMS code steps
 //!   and `/2sv/trust`;
@@ -9,11 +7,6 @@
 //! - `/drivews/…`, `/docws/…`: listings, folder creation, rename, move,
 //!   trash, download tokens, upload slots and document commits;
 //! - `/content/…`: the content server (ranged downloads, multipart uploads).
-//!
-//! The shapes follow what rclone and pyicloud read from Apple. Faults can be
-//! injected into the next request, sessions expired, Advanced Data
-//! Protection switched on, and the server taken offline (connections are
-//! dropped unanswered).
 //!
 //! Test support only (feature `fake-server`).
 
@@ -43,25 +36,18 @@ use crate::http::Cookies;
 mod auth;
 mod drive;
 
-/// The Apple ID the fake knows.
 pub const APPLE_ID: &str = "ada@example.com";
 pub const PASSWORD: &str = "correct horse battery staple";
-/// The code "pushed" to trusted devices.
 pub const DEVICE_CODE: &str = "123456";
-/// The code "texted" to the trusted phone.
 pub const SMS_CODE: &str = "654321";
-/// The trusted phone's id.
 pub const PHONE_ID: u64 = 1;
 
-/// A fault for the next matching request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FakeFault {
     /// The next setup/drivews/docws request is answered 429 with
     /// `Retry-After: 1`.
     RateLimited,
-    /// The next setup/drivews/docws request is answered 503.
     ServerError,
-    /// The next content download declares its full length but sends half.
     TruncatedBody,
     /// The next content download sends half its body, declares no length
     /// and closes the connection.
@@ -71,7 +57,6 @@ pub enum FakeFault {
     ExpiredSession,
 }
 
-/// How the fake account behaves.
 #[allow(clippy::struct_excessive_bools, reason = "independent switches")]
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -85,7 +70,6 @@ pub struct Options {
     /// `update/documents` replaces an existing document in place. When
     /// false it refuses, as a server that only adds documents would.
     pub replace_in_place: bool,
-    /// The password protocol offered: `s2k` or `s2k_fo`.
     pub protocol: &'static str,
 }
 
@@ -101,7 +85,6 @@ impl Default for Options {
     }
 }
 
-/// Request counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub validates: usize,
@@ -109,9 +92,7 @@ pub struct Stats {
     pub full_downloads: usize,
     pub ranged_downloads: usize,
     pub uploads: usize,
-    /// Codes pushed to trusted devices.
     pub pushes: usize,
-    /// Codes sent by SMS.
     pub texts: usize,
 }
 
@@ -119,9 +100,7 @@ pub struct Stats {
 struct Node {
     folder: bool,
     zone: String,
-    /// The full name (`name.extension`).
     name: String,
-    /// The parent's docwsid; empty for the root.
     parent: String,
     etag: String,
     bytes: Vec<u8>,
@@ -131,11 +110,8 @@ struct Node {
 }
 
 struct SignInState {
-    /// The server half of this sign-in's SRP exchange.
     srp: ServerSession,
-    /// The client's `A`, as sent to `/signin/init`.
     a_pub: Option<Vec<u8>>,
-    /// The idmsa session token issued at `/signin/complete`.
     session_token: Option<String>,
     code_verified: bool,
     texted: Option<u64>,
@@ -148,22 +124,16 @@ struct State {
     faults: VecDeque<FakeFault>,
     seq: u64,
     stats: Stats,
-    // Sign-in.
     salt: Vec<u8>,
     iterations: u32,
     verifier: [u8; ELEMENT_LEN],
     sign_ins: HashMap<String, SignInState>,
-    /// idmsa session tokens → trusted.
     session_tokens: HashMap<String, bool>,
     trust_tokens: HashSet<String>,
     web_tokens: HashSet<String>,
-    // Drive.
     nodes: BTreeMap<String, Node>,
-    /// Reserved upload slots: document id → zone.
     slots: HashMap<String, String>,
-    /// Uploaded content by file checksum.
     uploads: HashMap<String, Vec<u8>>,
-    /// Download tokens → document id.
     downloads: HashMap<String, String>,
 }
 
@@ -174,7 +144,6 @@ impl State {
     }
 }
 
-/// A running fake. Dropping it stops the server.
 pub struct FakeICloud {
     responder: Responder,
     state: Arc<Mutex<State>>,
@@ -238,17 +207,14 @@ impl FakeICloud {
         self.state.lock().expect("fake state")
     }
 
-    /// `http://127.0.0.1:<port>/`.
     pub fn url(&self) -> Url {
         Url::parse(&format!("{}/", self.responder.url())).expect("fake url")
     }
 
-    /// Sign-in endpoints on this server.
     pub fn endpoints(&self) -> Endpoints {
         Endpoints::at(&self.url())
     }
 
-    /// A source configuration for the whole fake drive.
     pub fn config(&self) -> ICloudConfig {
         ICloudConfig::with_endpoints(&self.endpoints())
     }
@@ -329,7 +295,6 @@ impl FakeICloud {
         bytes
     }
 
-    /// Names of the live children of the folder at `path`.
     pub fn names(&self, path: &str) -> Vec<String> {
         let state = self.lock();
         let Some(doc) = drive::lookup(&state, path) else {
@@ -402,7 +367,6 @@ fn cookie(request: &Request, name: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// The `t=` token of an Apple `v=…:t=…` cookie value.
 fn cookie_token(value: &str) -> Option<String> {
     value
         .trim_matches('"')
@@ -411,7 +375,6 @@ fn cookie_token(value: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// The request carries a live web session cookie.
 fn has_web_session(state: &State, request: &Request) -> bool {
     cookie(request, "X-APPLE-WEBAUTH-TOKEN")
         .and_then(|value| cookie_token(&value))

@@ -150,3 +150,26 @@ themes-preview-shared = Shared with Ada and Bo
 themes-preview-edited = Edited 2 minutes ago
 themes-preview-field = Budget notes
 themes-preview-share = Share
+
+## The editor's dropdown rows
+themes-option-dark = Dark
+themes-option-light = Light
+themes-option-accent = Accent
+themes-option-monochrome = Monochrome
+themes-option-your-colour = Your colour
+themes-option-chosen-hue = Chosen hue
+themes-option-always = Always
+themes-option-with-the-typeface = With the typeface
+themes-option-frosted = Frosted
+themes-option-solid = Solid
+
+## More of the preview's own sample window
+themes-preview-conversations = 12 conversations
+themes-preview-drafts = Drafts
+themes-preview-shared-with-me = Shared
+themes-preview-copy-link = Copy link
+themes-preview-rename = Rename
+themes-preview-subject-review = The quarterly review
+themes-preview-subject-budget = Re: Budget notes
+themes-preview-subject-critique = Friday's critique
+themes-preview-subject-compiler = A compiler for everyone

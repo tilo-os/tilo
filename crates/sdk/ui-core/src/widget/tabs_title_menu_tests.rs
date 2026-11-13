@@ -8,10 +8,6 @@ use vello::kurbo::Rect;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};
 
-/// Slots that are a menu alone (the desktop's own items on the window of an
-/// app that declared no bar) add no row and move no title: the "More
-/// actions" button stands at the end of the tabs' row, before the window's
-/// controls, and its menu runs the item.
 #[test]
 fn a_menu_alone_is_a_button_in_the_title_row_that_keeps_the_title() {
     let _settled = crate::motion::testing::settled();

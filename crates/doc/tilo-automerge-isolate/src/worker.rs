@@ -24,13 +24,9 @@ use crate::{Applied, Dependencies, Rejected};
 /// The first argument of a worker. It is also the name of the test
 /// `test_worker!` defines, so libtest runs exactly that test.
 pub(crate) const ARG: &str = "tilo_automerge_isolate_worker";
-/// Set in the worker's environment to its [`Config`], as
-/// `documents,cache_bytes,idle_seconds`.
 pub(crate) const ENV: &str = "TILO_AUTOMERGE_WORKER";
-/// Request and reply descriptors in the worker.
 pub(crate) const REQUEST_FD: i32 = 3;
 pub(crate) const REPLY_FD: i32 = 4;
-/// How many recently consumed and shared states a worker remembers.
 const REMEMBERED_STATES: usize = 32;
 /// Most change hashes a load's reply carries: 8 MiB of them, well inside
 /// [`wire::MAX_REPLY_BYTES`].
@@ -90,8 +86,6 @@ pub(crate) fn serve(config: Config) -> i32 {
     }
     let mut cache = Cache::new(config);
     loop {
-        // An idle worker is ended by `SIGALRM`, whose default action is to
-        // terminate; the caller recognises it and starts a fresh one.
         idle_alarm(config.idle_seconds);
         let frame = wire::read_frame(&mut requests, u64::MAX);
         idle_alarm(0);
@@ -195,7 +189,6 @@ impl Cache {
         }
     }
 
-    /// The document at `key`, for a request that will move it forward.
     fn take(&mut self, key: &Key) -> Option<AutoCommit> {
         key.complete_heads()?;
         if key.is_blank() {
@@ -216,9 +209,6 @@ impl Cache {
         Some(self.entries.remove(index).doc)
     }
 
-    /// Keep a copy of a state the worker had to rebuild, or that other
-    /// documents share, as a base the next document at that state can start
-    /// from.
     fn keep_base(&mut self, key: &Key, doc: &AutoCommit, rebuilt: bool) {
         if key.complete_heads().is_none() {
             return;
@@ -292,7 +282,6 @@ impl Cache {
                     Ok(mut doc) => {
                         let mut hashes = engine::document_change_hashes(incoming, &mut doc);
                         if hashes.len() > MAX_LOADED_HASHES {
-                            // The caller computes them itself.
                             hashes = Vec::new();
                         }
                         self.keep(doc);
@@ -334,7 +323,6 @@ impl Cache {
                         self.keep(doc);
                         Reply::Applied(Applied::Changed(changed))
                     }
-                    // The copy now holds changes the caller will not take.
                     Ok(Applied::MissingDependencies) => {
                         Reply::Applied(Applied::MissingDependencies)
                     }
@@ -345,8 +333,6 @@ impl Cache {
     }
 }
 
-/// Reply `Applied` if the escape worked, `Invalid` with the error if the
-/// kernel refused it; a worker the sandbox kills does not reply at all.
 #[cfg(test)]
 fn try_escape(escape: wire::Escape) -> Reply {
     let fd = match escape {

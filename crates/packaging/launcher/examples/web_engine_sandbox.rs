@@ -1,14 +1,8 @@
-//! Runs a command the way the launcher runs the Browser's Chromium engine:
-//! with the environment a Browser launch hands on, under the two syscall
-//! filters its sandbox stacks (the `clone3` compatibility filter, then the
-//! baseline profile the image grants the Browser's manifest), the order
-//! `bwrap --add-seccomp-fd` installs them in. The engine builds its own
-//! renderer sandbox inside, as it does on a device.
-//!
-//! The `chromium-host` check loads real pages through it, so a launch setting
-//! that kills the engine (an environment variable its sandbox cannot live
-//! with, a syscall the profile refuses) fails there instead of on a device.
-//! Grants nothing: it only narrows the process it replaces.
+//! Runs a command the way the launcher runs the Browser's Chromium engine: with the
+//! environment a Browser launch hands on, under the two syscall filters its sandbox
+//! stacks (the `clone3` compatibility filter, then the baseline profile the image
+//! grants the Browser's manifest), the order `bwrap --add-seccomp-fd` installs them in.
+//! The engine builds its own renderer sandbox inside, as it does on a device.
 #[cfg(target_os = "linux")]
 use std::error::Error;
 
@@ -37,8 +31,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let profile = launcher::seccomp::resolve_profile(requested, package_id).applied;
 
     // The variables a Browser launch sets, from the launcher's own builders.
-    // The caller's environment stays underneath (the check's HOME and
-    // TMPDIR stand in for the sandbox's own).
     let mut launch = Vec::new();
     launcher::sandbox::push_clean_environment(&mut launch);
     launcher::sandbox::push_runtime_hardening(

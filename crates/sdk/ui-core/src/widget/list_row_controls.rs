@@ -1,5 +1,5 @@
-//! [`ListRow`] as a control an agent's actions land on: its own activation, the check box and
-//! every action its trailing control or its parts hold.
+//! [`ListRow`] as a control an agent's actions land on: its own activation, the check box
+//! and every action its trailing control or its parts hold.
 
 use crate::widget::controls::ActionControls;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, Widget};
@@ -64,8 +64,6 @@ impl ActionControls for ListRow {
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let id = self.activation.id();
-        // The box is the row's own control at `<row>/check`, where a reader, a script and
-        // assistive technology reach it: its action lands on the box, not on the row's middle.
         if let Some(verb) = &self.check_verb {
             bindings.push(verb.metadata(&format!("{id}/check")));
         }
@@ -77,8 +75,7 @@ impl ActionControls for ListRow {
                 ActionHandler::Bound(emitter) => {
                     bindings.push(emitter.metadata(format!("{id}/action/{index}")));
                 }
-                // A callback-only action reaches no door, so it is no
-                // binding: the inventory names what an agent can invoke.
+                // A callback-only action reaches no door: the inventory lists what an agent can invoke.
                 ActionHandler::Callback(_) => {}
             }
         }

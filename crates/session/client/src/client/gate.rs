@@ -36,12 +36,7 @@ impl Client {
         // Who the device is: the certificate it said here, or, for a member that announces none — a
         // browser of the workspace — the identity the workspace's governance admitted its device
         // as.
-        let person = known.or_else(|| {
-            self.host
-                .borrow()
-                .as_ref()
-                .and_then(|host| host.governed_person(&workspace, *peer))
-        });
+        let person = known.or_else(|| self.governed_person(&workspace, *peer));
         let Some(person) = person else {
             return Some("the device is not known here".to_owned());
         };

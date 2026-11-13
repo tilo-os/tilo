@@ -1,15 +1,12 @@
-//! The rows of a virtualized collection on their way after a structural
-//! change. Owners note only their shown rows: survivors move from where
-//! they stood, arrivals fade in, and (for an owner that paints them) the
-//! rows the change took away fade out where they stood. Once the change has
-//! run its course every row stands where it is laid out.
+//! The rows of a virtualized collection on their way after a structural change. Owners note only their
+//! shown rows: survivors move from where they stood, arrivals fade in, and (for an owner that paints
+//! them) the rows the change took away fade out where they stood.
 
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
-/// A row on its way after a change the person made (`motion::ListChange`):
-/// moving from where it stood to its new place, or fading in where it
-/// arrived. Rows the change did not move have none.
+/// A row on its way after a change the person made (`motion::ListChange`): moving from where it stood
+/// to its new place, or fading in where it arrived.
 #[derive(Clone, Copy, Debug)]
 pub struct RowMotion {
     /// How far below its laid-out place it is drawn (negative: above).
@@ -48,31 +45,26 @@ impl RowMotion {
     }
 }
 
-/// Where the shown rows stood just before a structural change the person
-/// made, by key, for the next frame to move them from.
+/// Where the shown rows stood just before a structural change the person made, by key, for the next
+/// frame to move them from.
 struct PendingRows<K> {
     before: Vec<(K, f64)>,
-    /// Rows that stood nowhere shown before fade in where they arrive.
     arrivals_fade: bool,
     source: MotionSource,
 }
 
-/// The rows of a virtualized list or table on their way after a change the
-/// person just made (`motion::ListChange`): the owner notes where its shown
-/// rows stand before the change ([`Self::capture`]), and the next frame
-/// moves the survivors from there to where they are laid out now and fades
-/// arrivals in ([`Self::start`]). Only rows shown after the change move;
-/// nothing outside the viewport animates. A change nobody just asked for (a
-/// sync), a shortcut's result and reduced motion land at once.
+/// The rows of a virtualized list or table on their way after a change the person just made
+/// (`motion::ListChange`): the owner notes where its shown rows stand before the change
+/// ([`Self::capture`]), and the next frame moves the survivors from there to where they are laid out
+/// now and fades arrivals in ([`Self::start`]).
 pub struct RowMotions<K> {
     rows: std::collections::HashMap<K, RowMotion>,
     pending: Option<PendingRows<K>>,
-    /// Rows the change took out of the shown ones, fading out where they
-    /// stood, for an owner that paints them ([`Self::fading_out_leavers`]).
+    /// Rows the change took out of the shown ones, fading out where they stood, for an owner that
+    /// paints them ([`Self::fading_out_leavers`]).
     leaving: Option<Vec<LeavingRow<K>>>,
 }
 
-/// A row a change took away, fading out where it stood.
 struct LeavingRow<K> {
     key: K,
     top: f64,
@@ -90,19 +82,16 @@ impl<K> Default for RowMotions<K> {
 }
 
 impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
-    /// Rows a change takes out of the shown ones fade out where they stood
-    /// ([`Self::leaving`]): an owner that keeps what they showed paints
-    /// them, as a tree does the rows a collapse folds away.
+    /// Rows a change takes out of the shown ones fade out where they stood ([`Self::leaving`]): an
+    /// owner that keeps what they showed paints them, as a tree does the rows a collapse folds away.
     #[must_use]
     pub fn fading_out_leavers(mut self) -> Self {
         self.leaving = Some(Vec::new());
         self
     }
 
-    /// The input a change happening at `now` moves for: the person's
-    /// pointer or finger, a few hundred milliseconds ago. `None` when nobody
-    /// just made it, when a key or an action did (its result lands), or
-    /// under reduced motion (a list is read, not watched).
+    /// The input a change happening at `now` moves for: the person's pointer or finger, a few hundred
+    /// milliseconds ago.
     #[must_use]
     pub fn caused_by_hand(now: Instant, reduce_motion: bool) -> Option<MotionSource> {
         if reduce_motion {
@@ -111,10 +100,7 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         crate::motion::recent_input(now).filter(|source| !source.lands_at_once())
     }
 
-    /// Before a structural change: note where the shown rows stand
-    /// (`before`, each row's top). With no `source` (see
-    /// [`Self::caused_by_hand`]) the change lands at once. Two changes
-    /// before a frame move the rows from where the first found them.
+    /// Before a structural change: note where the shown rows stand (`before`, each row's top).
     pub fn capture(
         &mut self,
         before: impl IntoIterator<Item = (K, f64)>,
@@ -136,7 +122,7 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         });
     }
 
-    /// Forget a change noted but not started: it lands at once.
+    /// Forget a change noted but not started: it takes effect at once.
     pub fn cancel(&mut self) {
         self.pending = None;
     }
@@ -219,8 +205,8 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         }
     }
 
-    /// The rows fading out where they stood at `now`: each one's key, its
-    /// top before the change and its opacity.
+    /// The rows fading out where they stood at `now`: each one's key, its top before the change and its
+    /// opacity.
     pub fn leaving(&self, now: Instant) -> impl Iterator<Item = (&K, f64, f32)> {
         self.leaving
             .iter()
@@ -305,7 +291,6 @@ mod tests {
         rows.settle(done);
         assert!(rows.is_empty(), "settled rows are gone");
 
-        // Under reduced motion nobody's hand moves the rows: they land.
         let mut reduced = RowMotions::default().fading_out_leavers();
         let source = RowMotions::<i32>::caused_by_hand(now, true);
         reduced.capture([(1, 0.0)], true, source);

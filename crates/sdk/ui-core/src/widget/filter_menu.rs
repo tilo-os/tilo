@@ -1,25 +1,8 @@
-//! `FilterMenu` — a compact picker anchored at the caret: a [`SuggestionList`] of rows narrowed by
-//! a query, ranked the way every list search ranks ([`crate::search::ranked_rows`]). The
-//! [`SlashMenu`](crate::widget::SlashMenu) (block kinds and commands) and the
-//! [`LinkPopover`](crate::widget::LinkPopover) (page links) are this menu over their own row
-//! values.
-//!
-//! The query is either the menu's own filter field, painted in the list's header band, or, for an
-//! *inline* menu ([`FilterMenu::set_inline`]), text the parent keeps in its document after the
-//! trigger and hands over with [`FilterMenu::set_filter`]: what a person types stays where they
-//! typed it.
-//!
-//! - **Arrow Up / Down** — move the highlighted row, wrapping at either end.
-//! - **Enter / Tab** — commit the highlighted row, queued for the parent's
-//!   [`FilterMenu::take_selection`]; with no row left, an inline menu closes and leaves the key to
-//!   the parent.
-//! - **Escape** — close without committing.
-//! - **Typing** — edits the filter field; an inline menu leaves typing to the parent.
-//! - **Backspace** on an empty filter field closes the menu and is left to the parent, which
-//!   deletes the trigger text.
-//!
-//! The menu has no layout node: the parent calls [`FilterMenu::draw_overlay`] after its main draw
-//! pass, as with [`ContextMenu`](crate::widget::context_menu::ContextMenu).
+//! `FilterMenu` — a compact picker anchored at the caret: a [`SuggestionList`] of rows
+//! narrowed by a query, ranked the way every list search ranks
+//! ([`crate::search::ranked_rows`]). The [`SlashMenu`](crate::widget::SlashMenu) (block
+//! kinds and commands) and the [`LinkPopover`](crate::widget::LinkPopover) (page links) are
+//! this menu over their own row values.
 
 use crate::i18n::widget_text;
 use std::collections::HashMap;
@@ -48,12 +31,9 @@ const FILTER_GAP: f64 = 4.0;
 
 /// What distinguishes one filter menu from another.
 pub(super) struct MenuSpec {
-    /// The narrowest the popover is.
     pub width: f64,
-    /// Rows painted at once; the rest scroll with the highlight.
     pub max_rows: usize,
     pub placeholder: &'static str,
-    /// Fluent key of the menu's accessible name.
     pub access_name: &'static str,
     pub widget_name: &'static str,
     pub test_id: &'static str,
@@ -82,7 +62,6 @@ impl<T> MenuEntry<T> {
         }
     }
 
-    /// The row as the list paints it; its value is its index in the menu.
     fn suggestion(&self, index: usize) -> Suggestion {
         let row = Suggestion::labelled(index.to_string(), self.label.clone());
         let row = match self.icon {
@@ -103,39 +82,21 @@ impl<T> MenuEntry<T> {
 pub struct FilterMenu<T> {
     spec: &'static MenuSpec,
     entries: Vec<MenuEntry<T>>,
-    /// Labels and keywords of `entries`, indexed while they stay the same.
     index: ListIndex,
-    /// Indices into `entries` that survive the current filter, in the
-    /// list's order.
     visible: Vec<usize>,
-    /// The rows: their placement at the caret, painting, scrolling and
-    /// highlight.
     list: SuggestionList,
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
     visible_flag: bool,
-    /// The query is the parent's text, not the menu's own field.
     inline: bool,
-    /// Whether its own filter text narrows its rows. A menu whose host answers the text with the
-    /// rows it finds shows the rows it is given: they are already what the text asked for.
     narrows_itself: bool,
-    /// The text scale its field and width grow with.
     scale: f64,
-    /// One-shot: the committed row's value, drained by the parent. Hiding
-    /// the menu leaves it, as the parent may hide it before draining.
     pending: Option<T>,
-    /// Its coming from the caret or point it opens at, and going back
-    /// (`motion::Appear`).
     appear: crate::motion::Appearing,
-    /// The pose it was last drawn in: rows are hit where they are drawn.
     drawn: crate::motion::Pose,
-    /// The filter it showed when it was hidden, so a leaving menu fades as
-    /// it was; its rows stay in the list until it opens again.
     leaving: Option<String>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -172,8 +133,7 @@ impl<T: Clone> FilterMenu<T> {
         self.rebuild_visible();
     }
 
-    /// Show / hide the menu. Hiding resets the filter and cursor so the
-    /// next open lands fresh.
+    /// Show / hide the menu.
     pub fn set_visible(&mut self, visible: bool) {
         self.dirty = true;
         if !visible && self.shows() {
@@ -213,10 +173,8 @@ impl<T: Clone> FilterMenu<T> {
         }
     }
 
-    /// Whether the query is text the parent keeps in its document (and
-    /// passes in with [`Self::set_filter`]) rather than the menu's own
-    /// field. An inline menu paints no field and leaves typing to the
-    /// parent.
+    /// Whether the query is text the parent keeps in its document (and passes in with
+    /// [`Self::set_filter`]) rather than the menu's own field.
     pub fn set_inline(&mut self, inline: bool) {
         self.dirty = true;
         self.inline = inline;
@@ -239,8 +197,8 @@ impl<T: Clone> FilterMenu<T> {
         self.rebuild_visible();
     }
 
-    /// Grow the field and width with the reader's text scale; the rows
-    /// grow with the theme's type.
+    /// Grow the field and width with the reader's text scale; the rows grow with the
+    /// theme's type.
     pub fn set_scale(&mut self, scale: f64) {
         self.scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -287,7 +245,6 @@ impl<T: Clone> FilterMenu<T> {
         self.spec.width * self.scale
     }
 
-    /// The filter field and the gap under it; an inline menu has none.
     fn field_height(&self) -> f64 {
         if self.inline {
             0.0
@@ -296,9 +253,6 @@ impl<T: Clone> FilterMenu<T> {
         }
     }
 
-    /// The header band and the "No matches" line follow whether the menu
-    /// has its own field: an inline menu with nothing to offer shows
-    /// nothing at all.
     fn sync_list_chrome(&mut self) {
         self.dirty = true;
         self.list.set_header(self.field_height());
@@ -311,8 +265,6 @@ impl<T: Clone> FilterMenu<T> {
         self.list.rect().map_or(0.0, |rect| rect.height())
     }
 
-    /// Whether the popover paints at all: an inline menu with nothing to
-    /// offer stays out of the way of the text being typed.
     fn shows(&self) -> bool {
         self.visible_flag && !(self.inline && self.visible.is_empty())
     }
@@ -328,24 +280,19 @@ impl<T: Clone> FilterMenu<T> {
             .and_then(|&i| self.entries.get(i))
     }
 
-    /// Painted rectangle for a visible row inside the scrolled window. Hosts
-    /// use this for pointer automation rather than duplicating the geometry.
+    /// Painted rectangle for a visible row inside the scrolled window.
     pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
         self.list.row_rect(visible_index)
     }
 
-    /// The visible row under a logical point, sharing the scrolled window
-    /// and bounds checks with keyboard selection.
     fn row_at(&self, point: Point) -> Option<usize> {
-        // Rows are hit where they are drawn while the menu arrives.
         if !self.shows() {
             return None;
         }
         self.list.row_at(self.drawn.to_local(point))
     }
 
-    /// Highlight the row under the pointer. Hovering the padding leaves the
-    /// last row lit. Returns whether the highlight moved.
+    /// Highlight the row under the pointer.
     pub fn hover_at(&mut self, point: Point) -> bool {
         match self.row_at(point) {
             Some(index) if Some(index) != self.list.highlight() => {
@@ -368,7 +315,6 @@ impl<T: Clone> FilterMenu<T> {
         Some(value)
     }
 
-    /// Rank the rows against the filter and start at the top one.
     fn rebuild_visible(&mut self) {
         self.visible = if self.narrows_itself {
             crate::search::ranked_rows(
@@ -397,7 +343,6 @@ impl<T: Clone> FilterMenu<T> {
         self.sync_list_chrome();
     }
 
-    /// Feed `event` to the filter field; an edit restarts at the top row.
     fn edit_filter(&mut self, event: &WindowEvent) -> QueryEventChange {
         let change = self.filter_composition.handle_event(
             event,
@@ -412,8 +357,7 @@ impl<T: Clone> FilterMenu<T> {
         change
     }
 
-    /// Handle a key or IME event while the menu is open. Returns whether it
-    /// was consumed; the parent routes keystrokes here while it is visible.
+    /// Handle a key or IME event while the menu is open.
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
         if !self.visible_flag {
             return false;
@@ -451,8 +395,6 @@ impl<T: Clone> FilterMenu<T> {
                 let committed = value.is_some();
                 self.pending = value;
                 self.set_visible(false);
-                // An inline menu with nothing to commit gives the key back:
-                // Enter still ends the line it was typed in.
                 committed || !self.inline
             }
             Key::Named(NamedKey::Escape) => {
@@ -463,8 +405,6 @@ impl<T: Clone> FilterMenu<T> {
             Key::Named(NamedKey::Backspace)
                 if self.filter_selection.is_collapsed() && self.filter_selection.cursor == 0 =>
             {
-                // Close, but leave the keystroke to the parent so it deletes
-                // the trigger text (`/`, `[[`).
                 self.set_visible(false);
                 false
             }
@@ -480,9 +420,6 @@ impl<T: Clone> FilterMenu<T> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // It comes from the caret or point it opened at and goes back
-        // (`motion::Appear`). A menu that empties as the person types has
-        // nothing to fade: it goes at once.
         let shows = self.shows();
         if shows {
             self.leaving = None;
@@ -515,8 +452,6 @@ impl<T: Clone> FilterMenu<T> {
         self.appear.is_moving()
     }
 
-    /// The filter field in the list's header band; a leaving menu shows the
-    /// filter it had.
     fn draw_filter(
         &mut self,
         scene: &mut Scene,
@@ -573,9 +508,6 @@ impl<T: Clone> FilterMenu<T> {
     }
 }
 
-// The popover lives in overlay space, so the layout and main draw passes
-// see a zero-size leaf; it is still addressable for focus, IME and
-// assistive technology.
 impl<T: Clone + 'static> Widget for FilterMenu<T> {
     fn build_layout(
         &mut self,
@@ -619,15 +551,12 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         Some(crate::ime::InputContent::TEXT)
     }
 
-    // A closed menu is hidden so it collapses out of the focus/reading order.
     fn accessibility_hidden(&self) -> bool {
         !self.visible_flag
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Rows are drawn, not child widgets, so each visible row is a
-        // synthetic `MenuItem` selected at the highlight cursor.
         if self.accessibility_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)

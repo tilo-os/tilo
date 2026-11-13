@@ -143,7 +143,6 @@ api-tester-waiting-response = Die Antwort des Servers steht noch aus.
 
 ## Actions
 
-api-tester-effects-import-legacy = Alten Arbeitsbereich importieren
 api-tester-effects-send = Anfrage senden
 api-tester-effects-send-saved = Gespeicherte Anfrage senden
 api-tester-effects-cancel-send = Anfrage abbrechen
@@ -155,7 +154,6 @@ api-tester-effects-rename-collection = Sammlung umbenennen…
 api-tester-effects-request-menu = Aktionen der Anfrage
 api-tester-effects-environment-menu = Aktionen der Umgebung
 api-tester-workspace = API-Arbeitsbereich
-api-tester-workspace-import-workspace = Altimport anwenden
 api-tester-workspace-new-request = Neue Anfrage
 api-tester-workspace-new-collection = Neue Sammlung
 api-tester-workspace-delete-collection = Sammlung löschen
@@ -171,3 +169,6 @@ api-tester-workspace-open-sent = Gesendete Anfrage erneut öffnen
 api-tester-workspace-save-sent = Gesendete Anfrage speichern
 api-tester-workspace-delete-sent = Gesendete Anfrage verwerfen
 api-tester-workspace-record-sent = Gesendete Anfrage erfassen
+
+## What the app is called in a window and in the launcher
+api-tester-app-title = API-Tester

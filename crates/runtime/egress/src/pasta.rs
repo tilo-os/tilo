@@ -1,23 +1,6 @@
-//! The namespace's route out: `pasta` (from the passt project), attached to
-//! it from outside.
-//!
-//! `pasta` runs unprivileged in the supervisor's own network namespace and
-//! gives the sandbox a tap device that mirrors the host's addresses and
-//! routes; every connection the sandbox makes is re-made by `pasta` from a
-//! host socket. It is what rootless podman uses. Nothing is forwarded
-//! inwards, and the host's loopback is not mapped in: a sandbox cannot reach
-//! services that listen only on the machine itself.
-//!
-//! # Lifetime
-//!
-//! `pasta` must not outlive the sandbox, however the supervisor ends —
-//! including `SIGKILL`, which is how a closed Terminal ends a served
-//! session. `PR_SET_PDEATHSIG` does not survive the `SELinux` domain
-//! transition into `pasta_t`, and `pasta`'s own namespace watch cannot read
-//! `/proc/<pid>/ns` under that policy. So `pasta` is started by a small
-//! reaper — a forked child of the supervisor that does not `exec` — which
-//! blocks on a pipe only the supervisor holds open. When that pipe closes,
-//! for any reason, the reaper stops `pasta` and exits.
+//! The namespace's route out: `pasta`, from the passt project, attached to it
+//! from outside. It runs unprivileged in the supervisor's namespace and is
+//! stopped when its session ends.
 
 use std::ffi::CString;
 use std::io::Read;
@@ -31,10 +14,8 @@ use std::time::{Duration, Instant};
 
 use crate::netns::{Netns, close_others, pipe};
 
-/// How long `pasta` may take to configure the namespace.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A running `pasta`, stopped when dropped (or when the supervisor dies).
 #[derive(Debug)]
 pub struct Pasta {
     reaper: libc::pid_t,
@@ -42,7 +23,6 @@ pub struct Pasta {
     pid_file: PathBuf,
 }
 
-/// The `pasta` command line for `netns`, without the binary.
 pub fn args(netns: &Netns, pid_file: &Path, map_host_loopback: Option<IpAddr>) -> Vec<String> {
     let pid = netns.pid();
     let mut args: Vec<String> = [
@@ -52,7 +32,6 @@ pub fn args(netns: &Netns, pid_file: &Path, map_host_loopback: Option<IpAddr>) -
         // The namespace is held by descriptors, not a path pasta could
         // watch; the reaper stops pasta.
         "--no-netns-quit",
-        // Nothing reaches into the sandbox from outside.
         "-t",
         "none",
         "-u",
@@ -76,9 +55,6 @@ pub fn args(netns: &Netns, pid_file: &Path, map_host_loopback: Option<IpAddr>) -
     args
 }
 
-/// Where `pasta` writes its pid once the namespace is configured: under
-/// `$XDG_RUNTIME_DIR`, the one place `SELinux` lets it write pid files and no
-/// other user can replace the pid this process later reads.
 fn pid_file() -> Result<PathBuf, String> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dir = tilo_paths::xdg::runtime_dir()
@@ -107,7 +83,6 @@ impl Pasta {
         }
         let pid_file = pid_file()?;
         let _ = std::fs::remove_file(&pid_file);
-        // Everything the children use is prepared before the fork.
         let program = cstring(binary.as_os_str().as_bytes())?;
         let pid_path = cstring(pid_file.as_os_str().as_bytes())?;
         let mut argv = vec![program.clone()];
@@ -200,7 +175,6 @@ impl Pasta {
 }
 
 impl Pasta {
-    /// `pasta`'s process id, as it wrote it once the network was up.
     pub fn pid(&self) -> Option<u32> {
         std::fs::read_to_string(&self.pid_file)
             .ok()
@@ -218,7 +192,6 @@ impl Drop for Pasta {
     }
 }
 
-/// Start `pasta`, then wait for `release` to close and stop it.
 unsafe fn reaper_child(
     release: RawFd,
     err: RawFd,
@@ -261,5 +234,4 @@ unsafe fn reaper_child(
     }
 }
 
-/// `pasta` on `PATH`, else where Fedora installs it.
 pub use crate::config::find_pasta as find;

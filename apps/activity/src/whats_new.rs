@@ -1,10 +1,4 @@
 //! What's new: what changed since this device last looked.
-//!
-//! The work sessions since then, newest first, each a row with who did it
-//! and when; where you left off; the on-device summary; the morning sources
-//! you chose. A work session opens selected in History. Leaving the place
-//! counts what it showed as seen (the session does that once the read
-//! ends); "Mark as viewed" does it at once.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -18,8 +12,6 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     let provider = Provider::of(cx);
     let summary = provider.follow::<wire::Summary>(wire::SUMMARY, None::<&()>);
     let answer = summary.answer();
-    // Disabled while there is nothing new to mark: no summary yet, or one
-    // with no work sessions in it.
     let mark = cx.switch(&answer.state(), move |_, answer| {
         let entries: Vec<_> = match answer {
             Arrival::Ready(summary) => summary
@@ -46,9 +38,8 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
         Box::new(mark)
     });
     let nav = nav.clone();
-    // Which work session is open, kept across the arrivals that rebuild
-    // the list under it: a sync landing a change must not shut a session
-    // the person just opened.
+    // Which work session is open, kept across the arrivals that rebuild the list under it:
+    // a sync landing a change must not shut a session the person just opened.
     let opened = cx.local(None::<String>);
     let content = cx.arriving(&answer, move |cx, summary| {
         page(parts(cx, &nav, &opened, summary))
@@ -77,8 +68,8 @@ fn parts(
     parts
 }
 
-/// The on-device summary: what the work adds up to, set as the page's
-/// lede under the heading that says where it came from.
+/// The on-device summary: what the work adds up to, set as the page's lede under the
+/// heading that says where it came from.
 fn narrative_section(narrative: &str) -> Element {
     Box::new(Section::titled(
         tr("activity-summary-on-device"),
@@ -93,9 +84,6 @@ fn narrative_section(narrative: &str) -> Element {
 fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
     let target = resume.target.clone();
     let open = provider.clone();
-    // The app the place is in and when the person was last there are two
-    // facts, each on a line of its own under the place's name: beside the
-    // name, the time squeezed it to "…" on a phone.
     let app = resume
         .app
         .clone()
@@ -123,7 +111,6 @@ fn briefs(nav: &Nav, opened: &LocalState<Option<String>>, summary: &wire::Summar
         "activity-sessions"
     });
     if summary.briefs.is_empty() {
-        // Nothing to list: no heading over nothing, and the way on from here.
         if summary.pending {
             return Box::new(
                 EmptyState::new(tr("activity-history-pending"))
@@ -157,11 +144,8 @@ fn range(brief: &wire::Brief) -> Option<wire::Range> {
     })
 }
 
-/// One work session as an outcome card: what came of it and when, a person
-/// who did it, and the changes it made behind a disclosure. Which card is
-/// open is the view's, so it survives the reads that rebuild the list; each
-/// card carries its own row state, so opening one leaves the others as they
-/// were.
+/// One work session as an outcome card: what came of it and when, a person who did it, and
+/// the changes it made behind a disclosure.
 fn brief_card(
     nav: &Nav,
     opened: &LocalState<Option<String>>,
@@ -189,9 +173,6 @@ fn brief_card(
         row = row.secondary(&brief.detail);
     }
     if !authors.is_empty() {
-        // Who and when sit at the far end of the title's own line, in the
-        // order a person reads them: the work first, the hand that did it
-        // and the time it landed second.
         row = row.secondary_side(format!("{} {}", ago(brief.last_ms), authors.join(", ")));
     }
     if let Some(range) = range(brief) {
@@ -207,8 +188,7 @@ fn brief_card(
     Box::new(row)
 }
 
-/// The changes a work session made, oldest to newest, each with who made it
-/// and when.
+/// The changes a work session made, oldest to newest, each with who made it and when.
 fn brief_body(index: usize, brief: &wire::Brief) -> Element {
     if brief.actions.is_empty() {
         return Box::new(

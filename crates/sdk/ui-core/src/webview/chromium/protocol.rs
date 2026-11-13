@@ -7,23 +7,19 @@ use crate::webview::Frame;
 
 pub(super) const MAX_PACKET: u32 = 64 * 1024 * 1024;
 
-/// A little-endian `u32` length counting the kind byte and body, then the
-/// kind byte, then the body.
+/// A little-endian `u32` length counting the kind byte and body, then the kind byte, then
+/// the body.
 const FRAMING: Framing = Framing::little_endian(MAX_PACKET as usize).reject_empty();
 
 pub(super) enum Packet {
     Json(serde_json::Value),
     Frame(WireFrame),
     TabFrame(u32, WireFrame),
-    /// What changed of a tab's frame (`super::damage`).
     TabDamage(u32, super::damage::WireDamage),
-    /// A frame the host put into the shared frame memory (`frame_memory`).
     SharedFrame(SharedFrame),
 }
 
 /// The host's notice that a tab's frame waits in a slot of the frame memory.
-/// Its dimensions are validated as a piped frame's are; its slot is the
-/// memory's to check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SharedFrame {
     pub(super) tab: u32,
@@ -42,9 +38,7 @@ impl SharedFrame {
 /// The frame notice's kind byte.
 const SHARED_FRAME: u8 = 5;
 
-/// A frame as the host sends it: BGRA, as it came off the wire. The owner of a
-/// shared host passes a client tab's frames on exactly so; only the process
-/// that draws one converts it, in place (`into_frame`).
+/// A frame as the host sends it: BGRA, as it came off the wire.
 pub(super) struct WireFrame {
     pub(super) width: u32,
     pub(super) height: u32,
@@ -90,8 +84,8 @@ pub(super) fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// Swaps each pixel's blue and red in place, two pixels to a 64-bit word:
-/// swapping the bytes of one pixel at a time took 2.4 times as long.
+/// Swaps each pixel's blue and red in place, two pixels to a 64-bit word: swapping the
+/// bytes of one pixel at a time took 2.4 times as long.
 pub(super) fn bgra_to_rgba(pixels: &mut [u8]) {
     const BLUE_AND_RED: u64 = 0x0000_00FF_0000_00FF;
     let mut pairs = pixels.chunks_exact_mut(8);
@@ -109,11 +103,10 @@ pub(super) fn bgra_to_rgba(pixels: &mut [u8]) {
     }
 }
 
-/// `bgra`'s pixels in RGBA, converted as they are copied: one pass over the
-/// pixels, where a copy and then an in-place swap took two.
+/// `bgra`'s pixels in RGBA, converted as they are copied: one pass over the pixels, where
+/// a copy and then an in-place swap took two.
 pub(super) fn rgba_from_bgra(bgra: &[u8]) -> Vec<u8> {
     const BLUE_AND_RED: u64 = 0x0000_00FF_0000_00FF;
-    // Zeroed by the allocator's fresh pages, not by a pass of its own.
     let mut rgba = vec![0; bgra.len()];
     let mut from = bgra.chunks_exact(8);
     let mut to = rgba.chunks_exact_mut(8);
@@ -149,8 +142,8 @@ pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> 
     writer.flush()
 }
 
-/// Writes `frame` as the host would: a routed frame packet carrying its BGRA
-/// pixels as they are.
+/// Writes `frame` as the host would: a routed frame packet carrying its BGRA pixels as
+/// they are.
 pub(super) fn write_tab_frame(
     writer: &mut impl Write,
     tab: u32,

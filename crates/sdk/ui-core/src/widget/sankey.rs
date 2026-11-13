@@ -48,7 +48,6 @@ impl Default for SankeyStyle {
     }
 }
 
-/// What a Sankey diagram inspects and reports on activation.
 pub type SankeySelection = crate::widget::chart_data::GraphSelection;
 
 #[derive(Clone, Copy, Debug)]
@@ -68,7 +67,6 @@ struct LinkBand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The inspected node or link, by index.
 pub enum Hit {
     Node(usize),
     Link(usize),
@@ -79,11 +77,9 @@ pub struct SankeyMarks {
     links: Vec<ChartLink>,
     style: SankeyStyle,
     frame: PlotFrame<Hit>,
-    /// Trailing room kept for the last column's labels, measured at paint.
     label_reserve: f64,
 }
 
-/// Flows between columns of nodes, each ribbon as thick as its value.
 pub type SankeyChart = Plot<SankeyMarks>;
 
 impl SankeyChart {
@@ -341,12 +337,10 @@ impl SankeyMarks {
         (boxes, bands)
     }
 
-    /// Where each node's label goes, laid out so no two collide at any size:
-    /// after its node, in the gap before the next column (the last column's
-    /// in the trailing room the chart reserves for them), elided to that
-    /// room, and dropped (the tooltip still names the node) where even a
-    /// short label does not fit or it would run into the label above it.
-    /// Returns `(node index, label, origin, show value)`.
+    /// Where each node's label goes, laid out so no two collide at any size: after its node, in
+    /// the gap before the next column (the last column's in the trailing room the chart
+    /// reserves for them), elided to that room, and dropped (the tooltip still names the node)
+    /// where even a short label does not fit or it would run into the label above it.
     fn label_layout(
         &self,
         nodes: &[NodeBox],
@@ -659,8 +653,6 @@ impl PlotMarks for SankeyMarks {
 mod tests {
     use super::*;
 
-    /// The funnel of a product: five nodes in four columns, as the chart
-    /// gallery shows it.
     fn product_flow() -> SankeyChart {
         SankeyChart::new(
             ["Visits", "Signup", "Trial", "Paid", "Churn"]

@@ -17,9 +17,6 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     actions
 }
 
-/// Every icon an action declares is one the toolkit draws, and the actions
-/// people reach for most each declare one: an app's search shows the
-/// action's own picture beside its label, not only the app's.
 #[test]
 fn actions_wear_icons_the_toolkit_draws() {
     let actions = actions();
@@ -58,10 +55,6 @@ fn actions_wear_icons_the_toolkit_draws() {
     }
 }
 
-/// Toggling a line comment acts where the caret is (its line, or the lines
-/// of a selection when there is one): its contract asks for a caret, not
-/// for a selection, so it is offered whenever a file is open and never
-/// promised as an action on a selection that may not exist.
 #[test]
 fn toggling_a_comment_asks_for_a_caret_not_a_selection() {
     let actions = actions();
@@ -80,9 +73,6 @@ fn toggling_a_comment_asks_for_a_caret_not_a_selection() {
     );
 }
 
-/// Code's editing primitives address text by offsets or replace a file's
-/// whole text: agents and scripts call them, a person edits in the editor.
-/// They are never offered in a person's search or menus.
 #[test]
 fn editing_primitives_are_for_agents() {
     let actions = actions();

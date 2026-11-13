@@ -57,7 +57,6 @@ pub(crate) fn serials_in_user_keyring() -> io::Result<Vec<i32>> {
     }
 }
 
-/// `(type, uid, description)` of a key this process may view.
 pub(crate) fn describe(serial: i32) -> Option<(String, u32, String)> {
     let mut buf = vec![0_u8; 512];
     let len = keyctl(
@@ -103,7 +102,6 @@ pub(crate) fn unlink_from(serial: i32, keyring: i32) {
     );
 }
 
-/// Our handoff keys in this uid's user keyring.
 pub(crate) fn ours(description: &str) -> io::Result<Vec<i32>> {
     let me = rustix::process::getuid().as_raw();
     Ok(serials_in_user_keyring()?
@@ -124,7 +122,6 @@ pub fn read_one(description: &str, max: usize) -> io::Result<Option<Zeroizing<Ve
     }
 }
 
-/// Unlink every `user` key described `description`.
 pub fn forget(description: &str) -> io::Result<()> {
     for serial in ours(description)? {
         unlink(serial);

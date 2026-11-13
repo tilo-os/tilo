@@ -1,20 +1,15 @@
-//! Peer-to-peer frame streams: an [`Endpoint`] other peers dial by its
-//! ticket, carrying length-prefixed frames one way over each connection.
+//! Peer-to-peer frame streams: an [`Endpoint`] other peers dial by its ticket,
+//! carrying length-prefixed frames one way over each connection.
 //!
-//! Every frame on the wire is a little-endian `u32` length and that many
-//! bytes; an empty frame carries nothing. Connections are told apart by an
-//! application protocol name (ALPN), which a protocol versions so that a
-//! change is a clean break rather than a silent mis-parse.
+//! Every frame is a little-endian `u32` length and that many bytes; an empty
+//! frame carries nothing. An application protocol name (ALPN) tells connections
+//! apart, versioned so a change is a clean break rather than a silent mis-parse.
 //!
 //! iroh QUIC on the desktop. A page cannot accept connections, so
-//! [`Endpoint::bind`] answers [`Unsupported`](tilo_net::Unsupported) there
-//! ([`Feature::PeerToPeer`]).
+//! [`Endpoint::bind`] answers [`Unsupported`](tilo_net::Unsupported).
 //!
-//! [`Feature::PeerToPeer`]: tilo_net::Feature::PeerToPeer
-//!
-//! A crate of its own rather than a feature of `tilo-net`: an app that turns
-//! a feature on in one Cargo graph turns it on for the shared app runtime's
-//! `tilo-net` too, and the peer transport is the OS's, never every app's.
+//! A crate of its own rather than a feature of `tilo-net`: a feature turned on
+//! for one app would turn it on in the shared app runtime too.
 
 use tilo_net::NetError;
 
@@ -23,21 +18,16 @@ use imp_native as imp;
 #[cfg(target_family = "wasm")]
 use imp_web as imp;
 
-/// A bound endpoint: its ticket, and the frames peers sent it.
-///
-/// Dropping it closes the endpoint, its connections and their tasks.
+/// A bound endpoint: its ticket, and the frames peers sent it. Dropping it
+/// closes the endpoint, its connections and their tasks.
 pub struct Endpoint<T>(imp::Endpoint<T>);
 
-/// The sending half of a connection [`Endpoint::connect`] opened.
 pub struct Peer(imp::Peer);
 
-/// What became of a frame handed to [`Peer::try_send`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sent {
     Queued,
-    /// The connection's queue is full; the frame was dropped.
     Full,
-    /// The connection has ended.
     Closed,
 }
 
@@ -58,15 +48,14 @@ impl<T: Send + 'static> Endpoint<T> {
     ///
     /// Each non-empty frame a peer sends, at most `max_frame` bytes, passes
     /// through `accept`; what it returns waits for [`try_recv`](Self::try_recv)
-    /// in a queue of `capacity`. A frame `accept` refuses is dropped, and so
-    /// is one that finds the queue full: a stale realtime frame is worse than
-    /// a lost one. Await it on the runtime that is to run the endpoint's
-    /// tasks.
+    /// in a queue of `capacity`. A refused frame and one that finds the queue
+    /// full are dropped: a stale realtime frame is worse than a lost one. Await
+    /// it on the runtime that is to run the endpoint's tasks.
     ///
     /// # Errors
     ///
-    /// [`NetError::Unsupported`] in a page, [`NetError::Connect`] when the
-    /// endpoint cannot bind (no usable network stack).
+    /// [`NetError::Unsupported`] in a page, [`NetError::Connect`] when there is
+    /// no usable network stack.
     pub async fn bind(
         alpn: &'static [u8],
         max_frame: usize,
@@ -86,7 +75,6 @@ impl<T> Endpoint<T> {
         self.0.ticket()
     }
 
-    /// The next accepted frame, if one has arrived.
     pub fn try_recv(&mut self) -> Option<T> {
         self.0.try_recv()
     }
@@ -104,7 +92,6 @@ impl<T> Endpoint<T> {
 }
 
 impl Peer {
-    /// Queue `frame` for the connection without waiting.
     pub fn try_send(&self, frame: Vec<u8>) -> Sent {
         self.0.try_send(frame)
     }
@@ -141,12 +128,10 @@ mod imp_native {
         framing: wire_frame::Framing,
         ticket: String,
         inbound: mpsc::Receiver<T>,
-        // The runtime `bind` ran on, which runs the writers and the shutdown.
+        // The runtime `bind` ran on: it runs the writers and the shutdown.
         runtime: tokio::runtime::Handle,
     }
 
-    /// Reads the frames of each accepted connection into the endpoint's
-    /// queue.
     struct Accept<T, F> {
         framing: wire_frame::Framing,
         decode: std::sync::Arc<F>,
@@ -194,7 +179,7 @@ mod imp_native {
                             Err(mpsc::error::TrySendError::Closed(_)) => break,
                         }
                     }
-                    // Clean end of stream or a torn one: the peer is done.
+                    // End of stream, or a torn one.
                     Ok(None) | Err(_) => break,
                 }
             }
@@ -280,7 +265,6 @@ mod imp_native {
         fn drop(&mut self) {
             let router = self.router.clone();
             drop(self.runtime.spawn(async move {
-                // Closes the accept loop, its handlers and the endpoint.
                 let _ = router.shutdown().await;
             }));
         }

@@ -13,40 +13,31 @@ use std::sync::{Arc, RwLock};
 use tilo_search::{Document, Page, SearchIndex};
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
-/// [`SearchProvider::search`] entry point. Interactive callers use
-/// `search_limited`; this ceiling keeps tests and secondary consumers from
-/// accidentally materialising an entire library.
+/// [`SearchProvider::search`] entry point. Interactive callers use `search_limited`; this
+/// ceiling keeps tests and secondary consumers from accidentally materialising an entire
+/// library.
 pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 256;
 
-/// Legacy snapshot-size constant.
-///
-/// This is retained for source compatibility only. A durable namespace must
-/// never use it to truncate discovery. Prefer [`SearchCatalog`], which keeps a
-/// complete incrementally-maintained index and bounds work per query page.
+/// Legacy snapshot-size constant. A durable namespace must never use it to truncate
+/// discovery.
 pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
-/// Default maximum number of hits an indexed provider materialises for one
-/// interactive query page. The index holds the complete corpus; this is a
-/// query-time latency budget, not a data-loss limit.
+/// Default maximum number of hits an indexed provider materialises for one interactive
+/// query page.
 pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
-/// Maximum Unicode scalar values accepted from one interactive query.
-///
-/// This is an input-work ceiling, independent of the page budgets. A pasted
-/// multi-megabyte string must not become one gram phrase per scalar on the
-/// UI thread. The limit is far above a meaningful palette query; callers
-/// receive an empty page for longer input and can refine it normally.
+/// Maximum Unicode scalar values accepted from one interactive query. A pasted
+/// multi-megabyte string must not become one gram phrase per scalar on the UI thread.
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 use std::borrow::Borrow;
 use tilo_actions::ActionAddress;
 use tilo_lock::RwLockRecover as _;
 
-/// Fold text the way every index does: case, compatibility forms and
-/// alphabetic diacritics (see [`tilo_search::fold()`]).
+/// Fold text the way every index does: case, compatibility forms and alphabetic
+/// diacritics (see [`tilo_search::fold()`]).
 #[must_use]
 pub fn normalize_search_text(text: &str) -> String {
     tilo_search::fold(text)
 }
 
-/// Whether an interactive query is short enough to search at all.
 fn query_is_bounded(query: &str) -> bool {
     query.chars().nth(MAX_SEARCH_QUERY_SCALARS).is_none()
 }
@@ -58,14 +49,13 @@ pub struct SearchCursor {
     after_browse_ordinal: Option<u64>,
     generation: u64,
     normalized_query: String,
-    /// Hits of the query already returned.
     offset: usize,
 }
 
 impl SearchCursor {
-    /// Construct an opaque cursor for a provider which keeps its own compact
-    /// index rather than a [`SearchCatalog`].  The payload is intentionally
-    /// only meaningful to that provider; hosts must pass it back unchanged.
+    /// Construct an opaque cursor for a provider which keeps its own compact index rather
+    /// than a [`SearchCatalog`]. The payload is intentionally only meaningful to that
+    /// provider; hosts must pass it back unchanged.
     #[must_use]
     pub fn opaque(
         generation: u64,
@@ -98,14 +88,8 @@ impl SearchCursor {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchPage {
     pub results: Vec<SearchResult>,
-    /// Pass this back to `search_page` to continue. `None` means exhausted.
     pub next: Option<SearchCursor>,
-    /// Hits materialised for this page.
     pub inspected: usize,
-    /// More results for this query are on their way from a slow source (a
-    /// mail server, a video service, a catalogue): the palette keeps a
-    /// loading row and asks [`SearchProvider::poll_page`] with this token
-    /// until they arrive, then appends them to the same list.
     pub pending: Option<PendingToken>,
 }
 
@@ -132,8 +116,8 @@ impl SearchPage {
         }
     }
 
-    /// A page whose results are still coming: show `results` now and poll
-    /// `token` for the rest.
+    /// A page whose results are still coming: show `results` now and poll `token` for the
+    /// rest.
     #[must_use]
     pub fn pending(results: Vec<SearchResult>, token: PendingToken) -> Self {
         Self {
@@ -145,8 +129,7 @@ impl SearchPage {
     }
 }
 
-/// A provider's handle on one outstanding request to a slow source. Opaque
-/// to the palette, which only hands it back to [`SearchProvider::poll_page`].
+/// A provider's handle on one outstanding request to a slow source.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PendingToken(u64);
 
@@ -165,14 +148,8 @@ impl PendingToken {
 /// The answer to [`SearchProvider::poll_page`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PagePoll {
-    /// Still waiting; ask again on a later frame.
     Pending,
-    /// The awaited page. It may carry its own `next` or another `pending`.
     Ready(SearchPage),
-    /// The whole query answered again, now that the source has what it
-    /// lacked (the app has taken the query in): it replaces every row the
-    /// provider gave for the query before, rather than adding to them, so a
-    /// hit for what was typed earlier does not stand beside it.
     Answered(SearchPage),
 }
 
@@ -180,7 +157,6 @@ pub enum PagePoll {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchCatalogStats {
     pub records: usize,
-    /// Records carrying a [`SearchBody`].
     pub body_records: usize,
     pub generation: u64,
 }
@@ -190,15 +166,10 @@ pub enum SearchCatalogError {
     EmptyResourceId,
     NonCanonicalResult,
     ResourceAddressMismatch,
-    /// A retained catalogue has consumed every generation value. Mutating it
-    /// again would make an old continuation cursor appear current.
     GenerationExhausted,
-    /// A retained catalogue has assigned every browse ordinal. Reusing one
-    /// would overwrite another resource in empty-query browsing.
     BrowseOrdinalExhausted,
     /// A bulk snapshot must contain one row per canonical resource.
     DuplicateResourceId,
-    /// An incremental mutation expected a retained resource that is absent.
     MissingResource,
 }
 
@@ -230,9 +201,9 @@ impl std::fmt::Display for SearchCatalogError {
 
 impl std::error::Error for SearchCatalogError {}
 
-/// One resource offered to a [`SearchCatalog`]: its canonical hit, the short
-/// weighted fields it is found and ranked by, and optionally a long
-/// [`SearchBody`] it is found by without the catalogue copying the prose.
+/// One resource offered to a [`SearchCatalog`]: its canonical hit, the short weighted
+/// fields it is found and ranked by, and optionally a long [`SearchBody`] it is found by
+/// without the catalogue copying the prose.
 #[derive(Clone, Debug)]
 pub struct SearchRecord {
     resource_id: String,
@@ -242,8 +213,8 @@ pub struct SearchRecord {
 }
 
 impl SearchRecord {
-    /// A record for `resource_id`, activated through `result`, whose
-    /// canonical action must address that same resource.
+    /// A record for `resource_id`, activated through `result`, whose canonical action
+    /// must address that same resource.
     #[must_use]
     pub fn new(resource_id: impl Into<String>, result: SearchResult) -> Self {
         Self {
@@ -254,16 +225,13 @@ impl SearchRecord {
         }
     }
 
-    /// Add a short searchable field. A page of hits is ordered by the best
-    /// weighted field match.
+    /// Add a short searchable field.
     #[must_use]
     pub fn field(mut self, text: impl Into<String>, weight: FieldWeight) -> Self {
         self.fields.push((text.into(), weight));
         self
     }
 
-    /// Attach a long body. A match inside it follows every field match of
-    /// the same query and reports the body source's location for the hit.
     #[must_use]
     pub fn body(mut self, body: SearchBody) -> Self {
         self.body = Some(body);
@@ -271,7 +239,6 @@ impl SearchRecord {
     }
 }
 
-/// What the catalogue keeps per resource besides its indexed fields.
 #[derive(Clone, Debug)]
 struct CatalogEntry {
     result: SearchResult,
@@ -280,8 +247,6 @@ struct CatalogEntry {
 
 #[derive(Debug, Default)]
 struct SearchCatalogInner {
-    /// Keyed by browse ordinal, so equally relevant hits and empty-query
-    /// browsing both follow insertion order.
     index: SearchIndex,
     entries: BTreeMap<u64, CatalogEntry>,
     ordinals: HashMap<Arc<str>, u64>,
@@ -338,9 +303,8 @@ impl SearchCatalogInner {
         }
     }
 
-    /// Make `records`, validated and unique, the whole catalogue in their
-    /// order, touching only what differs. Returns how many records it
-    /// indexed again or dropped.
+    /// Make `records`, validated and unique, the whole catalogue in their order, touching
+    /// only what differs.
     fn sync(&mut self, records: Vec<SearchRecord>) -> Result<usize, SearchCatalogError> {
         let held: Vec<Option<u64>> = records
             .iter()
@@ -357,7 +321,6 @@ impl SearchCatalogInner {
             .filter(|id| !wanted.contains(id.as_ref()))
             .cloned()
             .collect();
-        // Placed records (new, moved, or changed in place) by position.
         let placed: Vec<usize> = (0..records.len())
             .filter(|&at| {
                 let (Some(record), Some(ordinal)) = (records.get(at), planned.get(at)) else {
@@ -380,8 +343,6 @@ impl SearchCatalogInner {
             last.checked_add(1)
                 .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?,
         );
-        // Free every ordinal that changes hands before taking any: a placed
-        // record may take one a moved record held.
         for id in &removed {
             self.take(id);
         }
@@ -407,18 +368,6 @@ impl SearchCatalogInner {
 }
 
 /// A complete, incremental search catalogue keyed by canonical resource id.
-///
-/// Cloning a catalogue is O(1), so a widget can retain one instance and return
-/// a cheap provider handle whenever Ctrl+K opens. Mutations are recorded
-/// immediately and indexed in one batch before the next query. Queries are
-/// paged by both result count and work budget; result objects are cloned
-/// only for the hits in the requested page.
-///
-/// Fields are found by folded substring and ranked by the best weighted
-/// field match (see [`tilo_search`]). Bodies ([`SearchRecord::body`]) are
-/// found after every field hit, and a body source that names locations
-/// reports the segment a match is in. A unique item is found directly in a
-/// corpus of any size; broad queries continue through `SearchCursor` pages.
 #[derive(Clone, Debug)]
 pub struct SearchCatalog {
     name: Arc<str>,
@@ -432,8 +381,6 @@ fn validate(record: &SearchRecord) -> Result<(), SearchCatalogError> {
     let Some(address) = record.result.action_address() else {
         return Err(SearchCatalogError::NonCanonicalResult);
     };
-    // A record names its resource, or one action of it when a provider
-    // lists each action of a resource as its own row.
     if address.resource != record.resource_id && address.encode() != record.resource_id {
         return Err(SearchCatalogError::ResourceAddressMismatch);
     }
@@ -449,9 +396,7 @@ impl SearchCatalog {
         }
     }
 
-    /// An independent copy of this catalogue at its current generation. A
-    /// session can extend the copy without the published catalogue — or any
-    /// other session sharing it — observing the change.
+    /// An independent copy of this catalogue at its current generation.
     #[must_use]
     pub fn detached(&self) -> Self {
         let inner = self.inner.read_recover();
@@ -470,23 +415,15 @@ impl SearchCatalog {
         }
     }
 
-    /// Replace an immutable snapshot in one generation, for weighted records
-    /// with optional bodies. This is the bulk counterpart
-    /// to [`Self::upsert_record`]: the whole snapshot is indexed in one build,
-    /// while later incremental updates retain their existing semantics.
-    ///
-    /// # Errors
-    ///
-    /// [`SearchCatalogError::NonCanonicalResult`] or
-    /// [`SearchCatalogError::ResourceAddressMismatch`] for a record whose hit
-    /// does not address its own resource, and
-    /// [`SearchCatalogError::DuplicateResourceId`] when two records name the
-    /// same resource.
+    /// Replace an immutable snapshot in one generation, for weighted records with
+    /// optional bodies. [`SearchCatalogError::NonCanonicalResult`] or
+    /// [`SearchCatalogError::ResourceAddressMismatch`] for a record whose hit does not
+    /// address its own resource, and [`SearchCatalogError::DuplicateResourceId`] when two
+    /// records name the same resource.
     pub fn replace_all_records(
         &self,
         records: impl IntoIterator<Item = SearchRecord>,
     ) -> Result<(), SearchCatalogError> {
-        // A fresh index indexes everything in one bulk build on commit.
         let mut next = SearchCatalogInner {
             next_browse_ordinal: ordinals::GAP,
             ..SearchCatalogInner::default()
@@ -497,7 +434,6 @@ impl SearchCatalog {
             if next.ordinals.contains_key(&resource_id) {
                 return Err(SearchCatalogError::DuplicateResourceId);
             }
-            // A gap apart, so a later sync can place records between.
             let ordinal = next.next_browse_ordinal;
             next.next_browse_ordinal = ordinal
                 .checked_add(ordinals::GAP)
@@ -515,19 +451,9 @@ impl SearchCatalog {
     }
 
     /// Make `records`, in their order, the whole catalogue, as
-    /// [`Self::replace_all_records`] would, indexing only the records that
-    /// are new, changed or moved, and dropping those absent. Hits and
-    /// browsing come in the same order a bulk replacement gives. The
-    /// generation advances once if anything changed and not at all
-    /// otherwise, so an unchanged snapshot keeps every cursor current.
-    ///
-    /// The catalogue's write lock is held only to compare and stage the
-    /// records; indexing them waits for the next query or
-    /// [`Self::index_bytes`], incrementally when few changed.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::replace_all_records`]; the catalogue is then unchanged.
+    /// [`Self::replace_all_records`] would, indexing only the records that are new,
+    /// changed or moved, and dropping those absent. As [`Self::replace_all_records`]; the
+    /// catalogue is then unchanged.
     pub fn sync_records(
         &self,
         records: impl IntoIterator<Item = SearchRecord>,
@@ -553,16 +479,11 @@ impl SearchCatalog {
         self.inner.read_recover().ordinals.contains_key(resource_id)
     }
 
-    /// Insert or replace one durable resource. `result` is materialised only
-    /// when it is a hit on a requested page.
-    ///
-    /// # Errors
-    ///
-    /// [`SearchCatalogError::EmptyResourceId`] for a record naming no
-    /// resource, [`SearchCatalogError::NonCanonicalResult`] or
-    /// [`SearchCatalogError::ResourceAddressMismatch`] for a hit that does
-    /// not address the record's own resource, and the exhaustion errors when
-    /// the catalogue's generation or browse identity runs out.
+    /// Insert or replace one durable resource. [`SearchCatalogError::EmptyResourceId`]
+    /// for a record naming no resource, [`SearchCatalogError::NonCanonicalResult`] or
+    /// [`SearchCatalogError::ResourceAddressMismatch`] for a hit that does not address
+    /// the record's own resource, and the exhaustion errors when the catalogue's
+    /// generation or browse identity runs out.
     pub fn upsert_record(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
         validate(&record)?;
         let mut inner = self.inner.write_recover();
@@ -591,12 +512,10 @@ impl SearchCatalog {
         Ok(())
     }
 
-    /// Remove one resource. Returns whether it existed.
     pub fn remove(&self, resource_id: &str) -> bool {
         let mut inner = self.inner.write_recover();
-        // Returning `false` is the existing fail-closed contract for a remove
-        // that was not performed. Do not mutate at MAX: keeping the row is
-        // safer than making a previously-issued cursor current again.
+        // Returning `false` is the existing fail-closed contract for a remove that was
+        // not performed.
         if inner.generation == u64::MAX || inner.take(resource_id).is_none() {
             return false;
         }
@@ -624,9 +543,9 @@ impl SearchCatalog {
         self.inner.read_recover().index.index_bytes()
     }
 
-    /// Whether a prior cursor belongs to this exact retained-index
-    /// generation. The pull directory must turn a mismatch into a stale
-    /// cursor response, never reinterpret it as an exhausted result set.
+    /// Whether a prior cursor belongs to this exact retained-index generation. The pull
+    /// directory must turn a mismatch into a stale cursor response, never reinterpret it
+    /// as an exhausted result set.
     #[must_use]
     pub fn cursor_is_current(&self, cursor: &SearchCursor) -> bool {
         self.stats().generation == cursor.generation
@@ -639,8 +558,7 @@ impl SearchCatalog {
         }
     }
 
-    /// Query one deterministic page. Both budgets are hard ceilings. Continue
-    /// with the returned cursor when `next` is set.
+    /// Query one deterministic page.
     #[must_use]
     pub fn query_page(
         &self,
@@ -649,10 +567,8 @@ impl SearchCatalog {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        // Providers and remote callers may request a smaller page, but no
-        // caller can enlarge one turn beyond the interactive latency and
-        // materialisation ceilings. Complete discovery remains available
-        // through the returned cursor.
+        // Providers and remote callers may request a smaller page, but no caller can
+        // enlarge one turn beyond the interactive latency and materialisation ceilings.
         let limit = work_budget
             .min(DEFAULT_SEARCH_CANDIDATE_LIMIT)
             .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
@@ -663,8 +579,8 @@ impl SearchCatalog {
         self.commit_pending();
         let inner = self.inner.read_recover();
         let generation = inner.generation;
-        // A catalogue edit between pages invalidates the order. Restarting
-        // may repeat rows but can never skip a new or edited resource.
+        // A catalogue edit between pages invalidates the order. Restarting may repeat
+        // rows but can never skip a new or edited resource.
         let offset = cursor
             .filter(|cursor| {
                 cursor.generation == generation && cursor.normalized_query == normalized_query
@@ -699,57 +615,25 @@ impl SearchCatalog {
     }
 }
 
-/// Marks an `action_id` as a framework-owned canonical activation. The tag
-/// keeps arbitrary legacy ids from becoming actions merely because they happen
-/// to contain tilo-actions' wire separator.
+/// Marks an `action_id` as a framework-owned canonical activation.
 const ACTION_ADDRESS_PREFIX: &str = "\u{1}action\u{1f}";
 
 /// One typed hit produced by a [`SearchProvider`].
-///
-/// App-agnostic on purpose: an app fills the display fields (`title`,
-/// `subtitle`, `kind`, `icon`) and an activation target. New providers should
-/// use [`SearchResult::for_action`] or [`SearchResult::with_action_address`] to
-/// name an exported resource action. The palette resolves that address against
-/// the current resource tree and sends it through the same operation broker as
-/// every other affordance.
-///
-/// `action_id` remains public and opaque for compatibility with providers that
-/// predate the resource/action model. Those legacy values are still handed to
-/// the owning widget's navigation callback when they are activated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchResult {
-    /// Primary line — what the row reads as (e.g. a contact's display name).
     pub title: String,
-    /// Optional secondary line rendered dimmer under the title (e.g. an email
-    /// address, a file path, a command description).
     pub subtitle: Option<String>,
-    /// What the shared result surface shows of the selected or hovered row,
-    /// in the preview band under the list, without changing row geometry.
     pub preview: Option<super::SearchPreview>,
-    /// Grouping label, e.g. `"Contacts"`, `"Files"`, `"Commands"`. Rows sharing
-    /// a `kind` are bucketed together under this label in the results overlay,
-    /// so a mixed query reads as sectioned groups rather than one flat list.
     pub kind: String,
-    /// Activation token. Prefer the canonical encoded [`ActionAddress`] made
-    /// by [`for_action`](Self::for_action) or
-    /// [`with_action_address`](Self::with_action_address). Any value that is
-    /// not tagged as canonical is treated as a legacy opaque navigation id.
-    /// A tagged address that is not currently exported is omitted by the
-    /// palette rather than gaining authority through the legacy callback.
     pub action_id: String,
-    /// Optional leading glyph drawn at the start of the row.
     pub icon: Option<Icon>,
-    /// What the hit is (a message, a video, a match in a file) and that
-    /// row's slots. `None` draws the generic row.
     pub row: Option<SearchRow>,
-    /// Provider-supplied relevance bias — a nudge, not an override, since the
-    /// registry adds a query-match bonus on top. `0` ranks by query match
-    /// alone; raise it to float pinned/recent/favourite hits.
+    /// Provider-supplied relevance bias — a nudge, not an override, since the registry
+    /// adds a query-match bonus on top.
     pub score: i32,
-    /// Where the hit lies in the app's anchor path, for scope checks, when
-    /// that is not what its action addresses: a contact addressed by its flat
-    /// id `contact:42` that lies in `group:family`. `None` scopes the hit by
-    /// its action's resource (see [`anchor`](Self::anchor)).
+    /// Where the hit lies in the app's anchor path, for scope checks, when that is not
+    /// what its action addresses: a contact addressed by its flat id `contact:42` that
+    /// lies in `group:family`.
     pub scope_anchor: Option<String>,
 }
 
@@ -774,10 +658,6 @@ impl SearchResult {
     }
 
     /// A result that activates a canonical exported resource action.
-    ///
-    /// This is the preferred constructor for new providers. The address is
-    /// encoded into the existing `action_id` storage so adding canonical
-    /// activation does not break providers built against the legacy shape.
     pub fn for_action(
         kind: impl Into<String>,
         title: impl Into<String>,
@@ -790,8 +670,8 @@ impl SearchResult {
         )
     }
 
-    /// Replace this hit's legacy activation id with a canonical action
-    /// address while retaining its display metadata.
+    /// Replace this hit's legacy activation id with a canonical action address while
+    /// retaining its display metadata.
     #[must_use]
     pub fn with_action_address(mut self, address: impl Borrow<ActionAddress>) -> Self {
         self.action_id = format!("{ACTION_ADDRESS_PREFIX}{}", address.borrow().encode());
@@ -819,9 +699,8 @@ impl SearchResult {
     #[must_use]
     pub fn with_preview(mut self, preview: impl Into<super::SearchPreview>) -> Self {
         let preview = preview.into();
-        // A band that only repeats the row's own title says nothing: the row already shows
-        // it. The platform owns the preview, so it drops the echo here once, for every
-        // palette.
+        // A band that only repeats the row's own title says nothing: the row already
+        // shows it.
         self.preview = (!preview.is_empty() && !preview.restates(&self.title)).then_some(preview);
         self
     }
@@ -838,27 +717,25 @@ impl SearchResult {
         self
     }
 
-    /// Draw this hit as `row` (a message, a video, a file hit) instead of
-    /// the generic row.
+    /// Draw this hit as `row` (a message, a video, a file hit) instead of the generic
+    /// row.
     #[must_use]
     pub fn with_row(mut self, row: SearchRow) -> Self {
         self.row = Some(row);
         self
     }
 
-    /// Place the hit at `anchor` in the app's anchor path for scope checks,
-    /// whatever its action addresses: a hit addressed by a flat id
-    /// (`sheets.cell:B4`) lies in the scope its path names (`sheet:2`), so it
-    /// is narrowed without renaming the resource.
+    /// Place the hit at `anchor` in the app's anchor path for scope checks, whatever its
+    /// action addresses: a hit addressed by a flat id (`sheets.cell:B4`) lies in the
+    /// scope its path names (`sheet:2`), so it is narrowed without renaming the resource.
     #[must_use]
     pub fn within(mut self, anchor: impl Into<String>) -> Self {
         self.scope_anchor = Some(anchor.into());
         self
     }
 
-    /// The anchor the hit lies at, for scope checks: its
-    /// [`within`](Self::within) anchor, else the resource its action
-    /// addresses, or the opaque navigation id.
+    /// The anchor the hit lies at, for scope checks: its [`within`](Self::within) anchor,
+    /// else the resource its action addresses, or the opaque navigation id.
     #[must_use]
     pub fn anchor(&self) -> String {
         if let Some(anchor) = &self.scope_anchor {
@@ -870,22 +747,12 @@ impl SearchResult {
 }
 
 /// Automatic bounded search over the resources an app currently has open.
-///
-/// Apps still provide explicit [`SearchProvider`]s for large or closed
-/// collections (all mail, every file, every contact). This provider closes the
-/// baseline gap: a live resource published by any app is findable by its label,
-/// kind, or stable id even when the app has no bespoke content index. One canonical
-/// representative action activates the resource; the palette continues to
-/// list every action separately from the same fresh authority tree.
 #[derive(Clone)]
 pub struct OpenResourceSearch {
     catalog: SearchCatalog,
     resources: Arc<BTreeMap<String, tilo_actions::ResourceSpec>>,
 }
 
-/// How good a choice `resource` is for the one row its title gets: the one
-/// that presents it to people first, then the one offering more of the
-/// app's own actions.
 fn resource_rank(resource: &tilo_actions::ResourceSpec) -> (bool, usize) {
     (
         resource
@@ -914,11 +781,7 @@ impl OpenResourceSearch {
         for resource in resources {
             collect(resource, &mut indexed);
         }
-        // What a person is looking for: the app's own resources, by their
-        // title. A node with no title, a mirror of one of the window's
-        // controls, and a node left only with what agents act on are ways to
-        // address something, not things to list; two parts of the app naming
-        // one resource list it once, as the one offering the most to do.
+        // What a person is looking for: the app's own resources, by their title.
         let mut listed: BTreeMap<String, &tilo_actions::ResourceSpec> = BTreeMap::new();
         for resource in indexed
             .values()
@@ -937,9 +800,9 @@ impl OpenResourceSearch {
                 .open_action()
                 .or_else(|| resource.actions.first())?;
             let address = ActionAddress::new(resource.id.as_str(), &action.id);
-            // Named as the app names it, with the detail it gives (where
-            // it is, when it changed); never its kind tag, its id or the
-            // action that opens it, which say nothing to a person.
+            // Named as the app names it, with the detail it gives (where it is, when it
+            // changed); never its kind tag, its id or the action that opens it, which say
+            // nothing to a person.
             let mut hit = SearchResult::for_action("Resources", resource.label.clone(), address);
             if let Some(detail) = resource
                 .presentation
@@ -1032,80 +895,52 @@ impl SearchProvider for OpenResourceSearch {
     }
 }
 
-/// A source of search results — implemented by an app for each searchable
-/// *type* it exposes (its contacts, its open files, its commands, …).
-///
-/// A provider **filters** to plausible matches; the
-/// [`SearchRegistry`](crate::search::SearchRegistry) **ranks** across
-/// providers by relevance. Return everything you consider a match (a
-/// contact whose phone number matches even though the title is a name, say) —
-/// the registry floats the strongest title matches without discarding
-/// your field-aware hits.
+/// A source of search results — implemented by an app for each searchable *type* it
+/// exposes (its contacts, its open files, its commands, …).
 pub trait SearchProvider {
-    /// Toolkit provenance for a component-owned proxy. Applications cannot
-    /// construct a CallbackBinding; its payload remains owned by AppComponent.
+    /// Toolkit provenance for a component-owned proxy. Applications cannot construct a
+    /// CallbackBinding; its payload remains owned by AppComponent.
     #[doc(hidden)]
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
         None
     }
-    /// The kind label this provider produces, used for diagnostics and as the
-    /// default group header. Individual results may still carry a different
-    /// [`SearchResult::kind`].
+    /// The kind label this provider produces, used for diagnostics and as the default
+    /// group header.
     fn name(&self) -> &str;
 
-    /// Monotonic retained-index generation for the broker pull directory.
-    /// `None` means the provider has not proved that a continuation cursor is
-    /// safe across mutation, so remote directory discovery must omit it
-    /// rather than silently advertise mutable rows as revision-stable.
-    /// Providers backed by [`SearchCatalog`] should return
-    /// `Some(catalog.stats().generation)`.
+    /// Monotonic retained-index generation for the broker pull directory. `None` means
+    /// the provider has not proved that a continuation cursor is safe across mutation, so
+    /// remote directory discovery must omit it rather than silently advertise mutable
+    /// rows as revision-stable.
     fn action_directory_generation(&self) -> Option<u64> {
         None
     }
 
-    /// Versions this actual provider's complete lazy invocation domain, including
-    /// hidden targets and argument/handler semantics omitted from search rows.
+    /// Versions this actual provider's complete lazy invocation domain, including hidden
+    /// targets and argument/handler semantics omitted from search rows.
     fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
         crate::widget::ActionDirectoryInvocationDomain::Unsupported
     }
 
-    /// Validate a continuation token before it is used by a remote pull
-    /// directory. The conservative default refuses it: only providers that
-    /// expose a retained generation may claim continuation safety.
+    /// Validate a continuation token before it is used by a remote pull directory.
     fn action_directory_cursor_is_current(&self, _cursor: &SearchCursor) -> bool {
         false
     }
 
-    /// Return the matching results for `query`. An empty query conventionally
-    /// returns a provider's "browse" set (recents / favourites / all), or an
-    /// empty vec if browsing makes no sense for the source.
+    /// Return the matching results for `query`.
     fn search(&self, query: &str) -> Vec<SearchResult>;
 
-    /// Query with a materialisation budget. App providers must override this
-    /// and stop constructing hits once `limit` is reached. The fallback exists
-    /// only for tiny/test providers outside `apps/`; the repository contract
-    /// checker rejects app implementations that inherit it.
+    /// Query with a materialisation budget. App providers must override this and stop
+    /// constructing hits once `limit` is reached.
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let mut hits = self.search(query);
         hits.truncate(limit);
         hits
     }
 
-    /// Return one bounded continuation page for an interactive search.
-    ///
-    /// `query` carries the free text, the facet filters the platform parsed
-    /// out of it or the user picked as chips, and the resource scope the
-    /// search is narrowed to. A provider that cannot apply a filter or the
-    /// scope ignores it; the palette still drops hits outside the scope.
-    ///
-    /// Providers backed by a durable namespace should override this method so
-    /// callers can eventually reach every exact match without scanning the
-    /// whole corpus on the UI thread. Tiny providers remain a single page: a
-    /// non-empty cursor therefore means they are exhausted.
-    ///
-    /// A provider whose source answers slowly (a mail server, a web service)
-    /// returns what it has now with [`SearchPage::pending`] and answers the
-    /// rest from [`poll_page`](Self::poll_page). It never blocks here.
+    /// Return one bounded continuation page for an interactive search. A provider that
+    /// cannot apply a filter or the scope ignores it; the palette still drops hits
+    /// outside the scope.
     fn search_page(
         &self,
         query: &SearchQuery,
@@ -1120,30 +955,26 @@ pub trait SearchProvider {
         SearchPage::of(self.search_limited(query.text(), limit), None)
     }
 
-    /// The page a [`SearchPage::pending`] token stands for, once its source
-    /// has answered. Called on later frames, never in a loop; return
-    /// [`PagePoll::Pending`] until the answer is in. A token the provider no
-    /// longer knows (the query moved on) answers an empty ready page.
+    /// The page a [`SearchPage::pending`] token stands for, once its source has answered.
+    /// Called on later frames, never in a loop; return [`PagePoll::Pending`] until the
+    /// answer is in.
     fn poll_page(&self, _token: &PendingToken) -> PagePoll {
         PagePoll::Ready(SearchPage::empty())
     }
 
-    /// The dimensions this provider filters by. The palette offers their
-    /// values as chips and parses typed `key:value` tokens for them into
-    /// [`SearchQuery::filters`].
+    /// The dimensions this provider filters by.
     fn facets(&self) -> Vec<Facet> {
         Vec::new()
     }
 
     /// The parts of the app this provider's hits can be narrowed to (see
-    /// [`ScopeDecl`](super::ScopeDecl)). An unscoped palette offers each as a
-    /// "Search in" row that narrows the search to it.
+    /// [`ScopeDecl`](super::ScopeDecl)).
     fn search_scopes(&self) -> Vec<super::ScopeDecl> {
         Vec::new()
     }
 
-    /// Lazily resolve a canonical search address that is intentionally absent
-    /// from the small open-resource snapshot.
+    /// Lazily resolve a canonical search address that is intentionally absent from the
+    /// small open-resource snapshot.
     fn resolve_action_resource(
         &self,
         _address: &ActionAddress,
@@ -1151,53 +982,38 @@ pub trait SearchProvider {
         None
     }
 
-    /// The action that opens one of this provider's hits that names no
-    /// action of its own: invoked with the hit's anchor (its `action_id`) as
-    /// its one argument, it shows the hit in the app, as picking it in the
-    /// app's own search does and as an agent's `open` does. A host that
-    /// searches the app from outside it (a desktop's search over the app's
-    /// window) opens such hits through it; `None` where hits are opened only
-    /// inside the app.
+    /// The action that opens one of this provider's hits that names no action of its own:
+    /// invoked with the hit's anchor (its `action_id`) as its one argument, it shows the
+    /// hit in the app, as picking it in the app's own search does and as an agent's
+    /// `open` does.
     fn open_action(&self) -> Option<ActionAddress> {
         None
     }
 }
 
 /// A [`SearchProvider`] answered entirely from one retained [`SearchCatalog`].
-///
-/// Implementing this instead of [`SearchProvider`] gets the whole budgeted
-/// query surface from one blanket implementation: the action-directory
-/// generation and cursor checks read the catalogue's generation, `search` and
-/// `search_limited` stop at the caller's result limit, and `search_page`
-/// continues through [`SearchCatalog::query_page`] under both hard budgets.
-/// Nothing here scans or materialises past a caller's budget, which is the
-/// invariant every app provider owes the shell's search service.
+/// Implementing this instead of [`SearchProvider`] gets the whole budgeted query surface
+/// from one blanket implementation: the action-directory generation and cursor checks
+/// read the catalogue's generation, `search` and `search_limited` stop at the caller's
+/// result limit, and `search_page` continues through [`SearchCatalog::query_page`] under
+/// both hard budgets.
 pub trait CatalogSearchProvider {
-    /// The largest page `search` and `search_limited` return. Providers whose
-    /// palette section shows fewer rows lower it.
     const RESULT_LIMIT: usize = DEFAULT_SEARCH_RESULT_LIMIT;
 
     /// Group label and diagnostic name, as [`SearchProvider::name`].
     fn provider_name(&self) -> &str;
 
-    /// The catalogue answering queries, or `None` while none is published (a
-    /// provider with no catalogue reports no generation and empty pages).
-    ///
-    /// Cloning a [`SearchCatalog`] is O(1), so providers that keep theirs
-    /// behind a lock return a clone taken under it.
+    /// The catalogue answering queries, or `None` while none is published (a provider
+    /// with no catalogue reports no generation and empty pages).
     fn catalog(&self) -> Option<SearchCatalog>;
 
-    /// Candidate-inspection budget for a one-shot `search_limited(limit)`
-    /// call. The default inspects up to [`DEFAULT_SEARCH_CANDIDATE_LIMIT`]
-    /// candidates to fill `limit` results; a provider may instead spend no
-    /// more inspections than results it asked for. `query_page` caps either
-    /// at the shared ceiling.
+    /// Candidate-inspection budget for a one-shot `search_limited(limit)` call.
     fn limited_work_budget(&self, _limit: usize) -> usize {
         DEFAULT_SEARCH_CANDIDATE_LIMIT
     }
 
-    /// Rewrite the caller's query into the form the catalogue was indexed
-    /// with, for providers that fold their own text before indexing.
+    /// Rewrite the caller's query into the form the catalogue was indexed with, for
+    /// providers that fold their own text before indexing.
     fn catalog_query<'q>(&self, query: &'q str) -> std::borrow::Cow<'q, str> {
         std::borrow::Cow::Borrowed(query)
     }
@@ -1215,15 +1031,13 @@ pub trait CatalogSearchProvider {
         Vec::new()
     }
 
-    /// As [`SearchProvider::search_scopes`]: the parts of the app this
-    /// catalogue's hits can be narrowed to.
+    /// As [`SearchProvider::search_scopes`]: the parts of the app this catalogue's hits
+    /// can be narrowed to.
     fn search_scopes(&self) -> Vec<super::ScopeDecl> {
         Vec::new()
     }
 
-    /// Whether `hit` passes `query`'s facet filters. The catalogue matches
-    /// text only; a provider with facets checks the hit's values here
-    /// (`query.admits("language", &[..])`). The default admits every hit.
+    /// Whether `hit` passes `query`'s facet filters.
     fn admits(&self, _hit: &SearchResult, _query: &SearchQuery) -> bool {
         true
     }
@@ -1309,8 +1123,6 @@ mod tests {
     use super::*;
     use crate::search::{FieldWeight, SearchBody, SearchBodySource};
 
-    /// A record found by one unranked block of text, as a provider that has
-    /// no field weights names its rows.
     fn text_record(
         resource_id: impl Into<String>,
         text: impl Into<String>,
@@ -1324,8 +1136,8 @@ mod tests {
         catalog
             .replace_all_records((0..count).map(|index| {
                 let id = format!("row:{index}");
-                // Odd rows hold every 4-gram of `abcde` but not the word itself,
-                // so they are candidates for it that fail verification.
+                // Odd rows hold every 4-gram of `abcde` but not the word itself, so they
+                // are candidates for it that fail verification.
                 let text = if index % 2 == 0 {
                     "xabcdex row"
                 } else {
@@ -1383,8 +1195,8 @@ mod tests {
                 Some(catalog.stats().generation)
             );
 
-            // `search` stops at the provider's result limit, and the query is
-            // folded before it reaches the catalogue.
+            // `search` stops at the provider's result limit, and the query is folded
+            // before it reaches the catalogue.
             assert_eq!(provider.search("ROW").len(), 5);
             assert_eq!(provider.search_limited("row", 100).len(), 5);
             assert_eq!(provider.search_limited("row", 3).len(), 3);
@@ -1407,9 +1219,6 @@ mod tests {
                 catalog: Some(catalog),
                 results_as_work: true,
             };
-            // Every hit is an exact match, so a page is as large as the
-            // smaller budget: the frugal provider materialises no more hits
-            // than it returns.
             assert_eq!(generous.search_limited("abcde", 2).len(), 2);
             assert_eq!(frugal.search_limited("abcde", 2).len(), 2);
             assert_eq!(frugal.search_page(&"row".into(), None, 2, 5).inspected, 2);
@@ -1478,7 +1287,6 @@ mod tests {
             );
             assert_eq!(provider.action_directory_generation(), None);
 
-            // A resource's own detail is its secondary line.
             let report =
                 tilo_actions::ResourceSpec::new("file:report", "files.entry", "Report.pdf")
                     .with_presentation(tilo_actions::ResourcePresentation {
@@ -1563,17 +1371,13 @@ mod tests {
                     .with_action(open()),
             );
         let resources = vec![
-            // The host's operations: published to be addressed, never found
-            // by a person looking for something to open.
+            // The host's operations: published to be addressed, never found by a person
+            // looking for something to open.
             tilo_actions::ResourceSpec::new("tl:host", "tl.host", "tilolang").with_action(open()),
-            // A control the window already draws.
             tilo_actions::ResourceSpec::new("ui:submit", "tilo.control", "Submit")
                 .with_action(open()),
-            // What holds the tasks, and the package root naming itself the
-            // same: one row, the one offering the person more.
             tasks,
             tilo_actions::ResourceSpec::new("tasks", "tasks", "Tasks").with_action(open()),
-            // An untitled node.
             tilo_actions::ResourceSpec::new("tasks:internal", "tasks.Task", "  ")
                 .with_action(open()),
         ];
@@ -1664,8 +1468,8 @@ mod tests {
         }
         // phase: oversized_query_stops_before_index_work_or_materialisation
         {
-            // Every record contains the whole query, so any index work would
-            // find them; `inspected == 0` proves the rejection came first.
+            // Every record contains the whole query, so any index work would find them;
+            // `inspected == 0` proves the rejection came first.
             let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
             let catalog = SearchCatalog::new("Documents");
             for index in 0..32 {
@@ -1980,7 +1784,6 @@ mod tests {
         assert_eq!(catalog.query_page("地図", None, 8, 8).results.len(), 2);
     }
 
-    /// A body source that names the paragraph a match ends in.
     struct Paragraphs {
         resource: String,
         paragraphs: Vec<String>,
@@ -2053,8 +1856,6 @@ mod tests {
             .unwrap();
         let (hits, _) = drain(&catalog, "harbour lights", 1);
         let titles: Vec<_> = hits.iter().map(|hit| hit.title.as_str()).collect();
-        // The plain body of the title hit does not report it twice; the
-        // located body reports its paragraph.
         assert_eq!(titles, ["Harbour lights", "Paragraph 0"]);
     }
 
@@ -2100,7 +1901,6 @@ mod tests {
             .upsert_record(record("document:new", "Other"))
             .unwrap();
         assert!(!catalog.cursor_is_current(&cursor));
-        // A stale continuation restarts rather than skipping anything.
         let (hits, _) = drain(&catalog, "shared", 3);
         assert_eq!(hits.len(), 8);
     }
@@ -2119,7 +1919,6 @@ mod tests {
                 record("document:b", "B"),
             ])
             .unwrap();
-        // The first record browses first, whatever its ordinal.
         let reused = rebuilt
             .inner
             .read()
@@ -2133,7 +1932,6 @@ mod tests {
             .unwrap();
         assert!(reused.shares_source_with(&body));
         assert_eq!(drain(&rebuilt, "unchanged", 8).0.len(), 1);
-        // An identical upsert is not a mutation.
         let generation = rebuilt.stats().generation;
         rebuilt
             .upsert_record(record("document:a", "A").body(body))
@@ -2241,7 +2039,6 @@ mod tests {
     #[test]
     fn syncing_a_snapshot_answers_as_a_bulk_replacement() {
         let mut steps = Steps(0x5ea2_c4ed);
-        // (id, version) in snapshot order.
         let mut snapshot: Vec<(usize, usize)> = (0..200).map(|id| (id, 0)).collect();
         let catalog = SearchCatalog::new("Documents");
         catalog
@@ -2254,8 +2051,6 @@ mod tests {
         let mut next_id = 200;
         for step in 1..150 {
             match steps.next(5) {
-                // New records at one place, and at the same place again and
-                // again later, until its gap is crowded.
                 0 => {
                     let at = if step % 3 == 0 {
                         50

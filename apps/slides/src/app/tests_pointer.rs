@@ -11,8 +11,6 @@ use super::bench::{Bench, cursor_ev, left_press_ev};
 use super::*;
 use ui::portal::PortalOutcome;
 
-/// The editor over one slide whose single text box is selected, and the
-/// box's id.
 fn selected_text() -> (Bench, Id) {
     let mut s = Slide::new(Layout::TitleContent);
     let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 100.0, 40.0));
@@ -22,21 +20,18 @@ fn selected_text() -> (Bench, Id) {
     (bench, id)
 }
 
-/// Where the selected element is drawn.
 fn sel_center(app: &SlidesApp) -> Point {
     let chrome = app.compute_chrome();
     let el = app.selected_element().unwrap().clone();
     crate::render::element_dest(chrome.slide_dest, chrome.scale, &el).center()
 }
 
-/// Where element `id` of the current slide is drawn.
 fn element_center(app: &SlidesApp, id: &str) -> Point {
     let chrome = app.compute_chrome();
     let el = app.slide().unwrap().element(id).unwrap().clone();
     crate::render::element_dest(chrome.slide_dest, chrome.scale, &el).center()
 }
 
-/// Move the pointer to `p` through the editor's own event path.
 fn hover(app: &mut SlidesApp, p: Point) -> bool {
     let mut handled = false;
     app.dispatch_unmodal_event(&cursor_ev(p), 1.0, Modifiers::default(), &mut handled);
@@ -64,7 +59,6 @@ fn order(bench: &Bench) -> Vec<Id> {
     bench.deck().slides.iter().map(|s| s.id.clone()).collect()
 }
 
-/// The sample deck at a window tall enough that the whole rail fits.
 fn reorder_bench() -> Bench {
     Bench::open(&crate::model::seed_deck(), (1280, 900))
 }
@@ -159,7 +153,6 @@ fn the_fill_colour_picker_writes_a_hex_fill() {
     let centre = bench.with(|app| {
         let chrome = app.compute_chrome();
         app.position_inspector_widgets(&chrome);
-        // A hex typed into the picker; the next event over it flushes it.
         app.fill_picker.set_hex_text_for_test("#FF8800");
         app.fill_picker.get_rect().center()
     });
@@ -187,7 +180,6 @@ fn every_inspector_property_edit_lands_in_the_deck() {
         "a freshly stroked element gets a default width"
     );
 
-    // The font-size field commits through `set_sel_f64`.
     bench.with(|app| app.set_sel_f64("font_size", el0.font_size + 6.0));
     assert!((element(&bench, &id).font_size - (el0.font_size + 6.0)).abs() < 0.001);
 
@@ -201,7 +193,6 @@ fn every_inspector_property_edit_lands_in_the_deck() {
     bench.with(|app| app.apply_hit(Hit::SetAlign(TextAlign::Justify)));
     assert_eq!(element(&bench, &id).align, TextAlign::Justify);
 
-    // Stacking is relative: another element shares the slide.
     let slide = bench.deck().slides[0].id.clone();
     let other = Element::shape(ElementKind::Rect, 700.0, 400.0, 100.0, 100.0);
     bench
@@ -244,7 +235,6 @@ fn every_inspector_property_edit_lands_in_the_deck() {
     assert_eq!(bench.deck().slides[0].elements.len(), n + 1);
 }
 
-/// Selection handles, first-grab drags, edit-entry clicks, moves, resizes and caret placement.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -270,7 +260,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
             let el = app.selected_element().expect("a selected element").clone();
             let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
             for (h, hr) in app.handles_of(chrome.slide_dest, chrome.scale, &el) {
-                // The painted pip is the grab rect inset by 4 (see `draw_editor`).
                 let vis = hr.inflate(-4.0, -4.0);
                 let overlaps = vis.x0 < er.x1 && vis.x1 > er.x0 && vis.y0 < er.y1 && vis.y1 > er.y0;
                 assert!(
@@ -281,9 +270,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         });
     }
 
-    // Case `selected_element_drags_on_first_grab`.
-    // An already-selected element arms a move on the very first press (not
-    // text edit), and dragging moves it.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
@@ -308,14 +294,12 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         assert!(x > 100.5, "the element moved right on first grab (x = {x})");
     }
 
-    // Case `double_click_text_box_enters_edit`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
         Bench::one_slide(s).with(|app| {
             app.sel = Some(id);
             let p = sel_center(app);
-            // First click + release: selects, arms then releases a zero-length move.
             press(app, p);
             release(app);
             assert!(!app.editing_text, "one click selects, does not edit");
@@ -329,7 +313,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         });
     }
 
-    // Case `second_click_on_a_selected_text_box_enters_edit_mode`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 120.0, 40.0));
@@ -350,7 +333,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         });
     }
 
-    // Case `dragging_an_element_moves_it_in_the_deck`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 160.0, 90.0));
@@ -362,7 +344,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
                 matches!(app.drag, Drag::Move { .. }),
                 "pressing an element starts a move drag"
             );
-            // Far enough that no guide snaps it back to the origin.
             app.drag_move(Point::new(start.x - 130.0, start.y + 70.0));
             release(app);
             assert!(!app.drag.active(), "release ends the drag");
@@ -380,7 +361,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         assert_eq!((back.x, back.y), (300.0, 300.0));
     }
 
-    // Case `resizing_via_a_selection_handle_resizes_it_in_the_deck`.
     {
         let mut s = Slide::new(Layout::Blank);
         let id = s.add(Element::shape(
@@ -430,7 +410,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
         );
     }
 
-    // Case `clicking_inside_the_editing_text_arms_caret_placement_not_a_box_move`.
     {
         let (mut bench, _id) = selected_text();
         bench.with(|app| app.begin_text_edit(false));
@@ -460,8 +439,6 @@ fn element_pointer_gestures_select_move_resize_and_edit() {
     }
 }
 
-/// A collaborator's edit that arrives during a drag leaves the drag alone
-/// and shows once it is dropped.
 #[test]
 fn an_edit_arriving_mid_drag_shows_after_the_drop() {
     let mut s = Slide::new(Layout::Blank);
@@ -499,7 +476,6 @@ fn an_edit_arriving_mid_drag_shows_after_the_drop() {
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn thumbnail_drag_reorders_selects_and_deletes() {
-    // Case `dragging_a_thumbnail_reorders_the_deck`.
     {
         let mut bench = reorder_bench();
         let first_id = bench.deck().slides[0].id.clone();
@@ -537,7 +513,6 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
         );
     }
 
-    // Case `a_plain_thumbnail_click_selects_without_reordering`.
     {
         let mut bench = reorder_bench();
         let order0 = order(&bench);
@@ -559,7 +534,6 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
         );
     }
 
-    // Case `a_live_thumbnail_drag_lifts_a_ghost_and_opens_a_reflow_gap`.
     {
         let mut bench = reorder_bench();
         let order0 = order(&bench);
@@ -578,7 +552,6 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
                 Some(2),
                 "the reflow gap opens at the drop row"
             );
-            // Escape aborts without touching the deck.
             let mut handled = false;
             app.on_key(
                 &Key::Named(NamedKey::Escape),
@@ -599,7 +572,6 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
         );
     }
 
-    // Case `dropping_a_slide_on_the_delete_zone_deletes_it_with_undo`.
     {
         let mut bench = reorder_bench();
         let before = bench.deck().slides.len();
@@ -625,7 +597,6 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
         assert_eq!(bench.deck().slides.len(), before);
     }
 
-    // Case `delete_zone_is_inert_when_not_dragging`.
     reorder_bench().with(|app| {
         let zone = app.slide_delete_zone(app.rail_rect());
         app.last_mouse = zone.center();
@@ -636,10 +607,8 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
     });
 }
 
-/// Right-click menus for canvas elements and slide thumbnails.
 #[test]
 fn context_menus_act_on_elements_and_slides() {
-    // Case `right_click_element_opens_menu_and_actions_apply`.
     {
         let mut slide = Slide::new(Layout::Blank);
         let a = slide.add(Element::shape(
@@ -668,7 +637,6 @@ fn context_menus_act_on_elements_and_slides() {
                 Some(a.as_str()),
                 "the element is selected"
             );
-            // Row 0 = Bring to front.
             app.ctx_menu.click_item(0);
             if let Some(idx) = app.ctx_menu.take_selection()
                 && let Some(Some(hit)) = app.ctx_hits.get(idx).cloned()
@@ -682,7 +650,6 @@ fn context_menus_act_on_elements_and_slides() {
         assert!(za > zb, "Bring to front raised the element ({za} vs {zb})");
     }
 
-    // Case `right_click_thumbnail_opens_slide_menu`.
     {
         let mut bench = Bench::sample();
         let idx = bench.with(|app| {
@@ -701,7 +668,6 @@ fn context_menus_act_on_elements_and_slides() {
             );
             idx
         });
-        // The menu's Duplicate adds a copy after it.
         let before = bench.deck().slides.len();
         bench.with(|app| app.apply_rail_event(PageSidebarEvent::Duplicate(idx)));
         assert_eq!(
@@ -712,11 +678,9 @@ fn context_menus_act_on_elements_and_slides() {
     }
 }
 
-/// The image store decodes PNGs; the image tool uses the host portal and a cancel inserts nothing.
 #[test]
 fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
     let directory = tempfile::tempdir().unwrap();
-    // Case `image_store_decodes_a_real_png_and_fails_gracefully`.
     {
         use crate::assets::{ImageState, ImageStore};
         let path = write_png(directory.path(), "decode.png", 8, 6);
@@ -742,15 +706,12 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         );
     }
 
-    // Case `image_tool_asks_the_host_chooser_then_a_pick_inserts_a_real_image`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
         let path = write_png(directory.path(), "insert.png", 12, 8);
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        // The Image tool asks the host's chooser for a file, without
-        // fabricating an element and without drawing an in-app picker.
         ui::host::scoped(&services, || {
             bench.app.harness().with_widget_mut::<SlidesApp, _>(|app| {
                 app.apply_hit(Hit::Insert(ElementKind::Image));
@@ -761,8 +722,6 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
             1,
             "exactly one host chooser request"
         );
-        // The chooser's file is read on a background worker; the first frame
-        // after it delivers takes it up and lands a real image in the deck.
         tilo_test_env::wait_until("the chosen picture to land on the slide", || {
             bench.frame();
             bench.deck().slides[0].elements.len() > before
@@ -792,7 +751,6 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         );
     }
 
-    // Case `a_cancelled_pick_inserts_nothing`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
@@ -818,13 +776,9 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
     }
 }
 
-// A finger held on a slide in the list picks it up and a drag then
-// moves it; a swipe still scrolls the list, and a hold put down in place
-// opens the slide's menu.
 #[test]
 fn a_finger_held_on_a_slide_moves_it_in_the_list() {
     use winit::event::TouchPhase;
-    // Case `a_hold_then_a_drag_moves_the_slide`.
     {
         let mut bench = reorder_bench();
         bench.frame();
@@ -855,7 +809,6 @@ fn a_finger_held_on_a_slide_moves_it_in_the_list() {
         assert_eq!(bench.read(|app| app.cur_slide), 3, "and stays current");
         assert!(!bench.read(|app| app.page_sidebar.menu_open()), "no menu");
     }
-    // Case `a_swipe_scrolls_the_list_and_moves_nothing`.
     {
         let mut bench = Bench::open(&crate::model::seed_deck(), (1280, 420));
         bench.frame();
@@ -876,7 +829,6 @@ fn a_finger_held_on_a_slide_moves_it_in_the_list() {
             "a swipe scrolls the list"
         );
     }
-    // Case `a_hold_put_down_in_place_opens_the_slides_menu`.
     {
         let mut bench = reorder_bench();
         bench.frame();

@@ -1,18 +1,5 @@
 //! The window — orchestrates the diff and merge modes, the top toolbar
 //! (mode switch, change navigation, open), and the host-portal file open.
-//!
-//! Data flow:
-//! * The document holds what is open — the comparison, the merge and its
-//!   merged result — and the window follows it (`DiffMergeApp::present_state`);
-//!   the two views ([`DiffView`], [`MergeView`]) draw from that.
-//! * The view's effect handler answers the app's effects ([`effects`]) and
-//!   asks the window for what they change in it on its next frame.
-//! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
-//! * Opening files is the [`DiffmergeEffect::OpenFiles`] effect, whatever
-//!   asks for it: it goes through the **host** file chooser (the XDG Desktop
-//!   Portal, [`ui::portal`]) — the app never draws its own picker (HIG §5) —
-//!   or reads the two paths it was given, and opens what it read as a
-//!   comparison through an action.
 
 mod effects;
 mod folders;
@@ -52,7 +39,6 @@ use ui::chrome::status_bar;
 use ui::icons::Icon;
 use ui::widget::DrawChild;
 
-/// The error the `error` screenshot scenario shows.
 const SHOT_LOAD_ERROR: &str = "Couldn’t read the selected files. Check permissions and try again.";
 
 /// One chooser for both files where a page can't open a second chooser
@@ -118,7 +104,6 @@ impl From<Command> for Action {
     }
 }
 
-/// Pending paint and layout work for the retained views.
 struct ViewInvalidation {
     paint: bool,
     structure: bool,
@@ -139,54 +124,29 @@ pub struct DiffMergeApp {
     /// drained once per frame in [`Widget::sync`]. `None` when no picker is
     /// in flight — the app never draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
-    /// A chooser delivering contents, where files have no path (the web).
     portal_contents_rx: Option<ContentsChannel>,
-    /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
-    /// A human-readable reason the last open failed, surfaced in the status
-    /// bubble. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
-    /// The failure shown in place of the comparison, and the reason it says.
     error_state: Option<(String, EmptyState)>,
-    /// Paint changes and one-shot layout rebuilds when the active view changes.
     invalidation: ViewInvalidation,
-    /// Where edits and effects go; `None` until the framework attaches the
-    /// window, when every edit is dropped.
     dispatcher: Option<Dispatcher<Session>>,
-    /// What the window shares with the view's effect handler.
     store: effects::Shared,
     /// Whether this participant may only view, as it follows role changes;
     /// `None` until the framework attaches the window.
     read_only: Option<ui::LocalState<bool>>,
-    /// The document as last followed (see [`Live::changed_since`]).
     followed: Option<(u64, u64)>,
-    /// What was open when the app was last presented the document, so a
-    /// newly opened comparison or merge is shown in its mode.
     presented: Option<(Option<Comparison>, Option<MergeInputs>)>,
-    /// Capture requests a visible comparison status.
     shots_status: bool,
-    /// The merged text while a merge is open, as last presented.
     merged: Option<String>,
-    /// A folder comparison that was opened: its two roots and what differs.
-    /// A listing is a way into comparisons, like the file chooser, so it is
-    /// view state; every comparison it opens is in the document.
     folders: Option<crate::folder::FolderComparison>,
-    /// Whether the folder listing is what the content column shows.
     showing_folders: bool,
     folder_selection: usize,
     folder_scroll: f64,
-    /// The listing's rows as last painted, with the entry each shows.
     folder_rows: Vec<(usize, Rect)>,
-    /// The listing's scrollable band and content height, from the last paint.
     folder_viewport: Rect,
     folder_content_height: f64,
-    /// One line about the last save or folder read, shown in the status bar
-    /// until the next action.
     notice: Option<String>,
-    /// Where the pointer last was, for the folder listing's rows.
     pointer: Option<Point>,
-    /// This platform's chord conventions: what Cmd is, so Save and Open are
-    /// the chords the person already knows.
     conventions: ui::platform::PlatformConventions,
 }
 
@@ -203,7 +163,6 @@ impl DiffMergeApp {
         EmptyState::paint(ctx, rect, &content, Point::new(-1.0, -1.0));
     }
 
-    /// Keep the failure surface on the last load error, in the content area.
     fn sync_error_state(&mut self) {
         match &self.load_error {
             None => self.error_state = None,
@@ -325,7 +284,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Whether the merged result holds nothing that is not written yet.
     fn saved(&self) -> bool {
         self.merged
             .as_deref()
@@ -337,8 +295,6 @@ impl DiffMergeApp {
         self.chrome = Some(chrome);
     }
 
-    /// The app before it is presented the document: empty panes and the
-    /// "Open files" / "Load sample" toolbar actions.
     pub fn new() -> Self {
         Self {
             mode: Mode::Diff,
@@ -379,9 +335,7 @@ impl DiffMergeApp {
         }
     }
 
-    /// Show the document's state. A comparison or merge opened since the
-    /// last state is shown in its mode; the first state opens on the
-    /// comparison unless only a merge is open.
+    /// Show the document's state, in the mode of what was opened since the last one.
     pub(crate) fn present_state(&mut self, state: &Session) {
         let comparison_changed = self
             .presented
@@ -419,8 +373,6 @@ impl DiffMergeApp {
         }
         self.merged = state.merge.is_some().then(|| state.merged.clone());
         if merge_changed {
-            // A different merge has its own result, and no place of its own
-            // yet: saving asks where, rather than writing over the last one.
             let mut store = self.store.borrow_mut();
             store.saved_text = None;
             store.saved_place = None;
@@ -429,17 +381,13 @@ impl DiffMergeApp {
             }
         }
         if comparison_changed && state.comparison.is_some() {
-            // A comparison opened from the folder listing is what the
-            // person asked to see.
             self.showing_folders = false;
         }
         self.presented = Some((state.comparison.clone(), state.merge.clone()));
         self.invalidation.paint = true;
     }
 
-    /// Follow the document `live` holds, submitting edits and effects
-    /// through `dispatcher`, waking with `wake`, and taking sides only while
-    /// `read_only` says this participant may.
+    /// Follow the document, editing and taking sides only while `read_only` allows it.
     pub(crate) fn attach(
         &mut self,
         live: Live<Session>,
@@ -459,13 +407,10 @@ impl DiffMergeApp {
         self.follow_document();
     }
 
-    /// What the window shares with the view's effect handler.
     pub(crate) fn shared(&self) -> effects::Shared {
         std::rc::Rc::clone(&self.store)
     }
 
-    /// Show the document when it changed since it was last shown, and
-    /// whether sides can be taken.
     fn follow_document(&mut self) {
         if let Some(read_only) = &self.read_only {
             self.merge.set_read_only(read_only.get());
@@ -482,15 +427,11 @@ impl DiffMergeApp {
         }
     }
 
-    /// Do what effects asked of the window since its last frame.
     fn do_asked(&mut self) {
         let asked = self.store.borrow_mut().take_asked();
         for asked in asked {
             match asked {
-                // The effect was answered when it was asked, against the
-                // comparison the document holds, which this window shows.
                 effects::Asked::View(effect) => drop(self.answer_view(effect)),
-                // A chooser already open answers the effect waiting on one.
                 effects::Asked::Choose => {
                     if self.portal_rx.is_none() && self.portal_contents_rx.is_none() {
                         self.request_open_via_portal();
@@ -513,7 +454,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Stage a screenshot scenario's view state.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("diff" | "empty") => self.show(Mode::Diff),
@@ -546,15 +486,12 @@ impl DiffMergeApp {
         self.publish_header();
     }
 
-    /// Whether a file chooser is open.
     fn choosing(&self) -> bool {
         self.portal_rx.is_some()
             || self.portal_contents_rx.is_some()
             || self.store.borrow().open_reply.is_some()
     }
 
-    /// `--shots`: force the floating status bubble fully visible so a single
-    /// headless frame captures it (no live pointer hovers the reveal zone).
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
     }
@@ -568,9 +505,8 @@ impl DiffMergeApp {
         )
     }
 
-    /// Give both views the content rect. Called from `apply_layout` and again
-    /// from `draw` when the measured toolbar height changed, so the views are
-    /// never painted a frame behind the band above them.
+    /// Give both views the content rect, from the layout and again when the toolbar's height
+    /// changed.
     fn place_views(&mut self) {
         let content = self.content_rect();
         self.diff.place(content);
@@ -613,10 +549,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Take the side `choice` for the change under review: the keyboard path
-    /// to what a chip does, and then on to the next change so a merge with
-    /// forty conflicts is forty keystrokes rather than forty mouse round
-    /// trips.
     fn accept(&mut self, choice: HunkChoice) {
         if self.mode != Mode::Merge {
             return;
@@ -633,7 +565,6 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
-    /// Run one of the app's effects through the same door the palette uses.
     fn effect(&mut self, effect: &DiffmergeEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -641,8 +572,6 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
-    /// Submit the resolution a chip, a key or an accessibility action just
-    /// queued on the merge panel — the same action the palette's row builds.
     fn submit_resolution(&mut self) {
         if let Some(invoke) = self.merge.take_pending_action()
             && let Some(dispatcher) = &self.dispatcher
@@ -656,12 +585,8 @@ impl DiffMergeApp {
         self.show(mode);
     }
 
-    /// Ask the host desktop's file chooser to open a file to compare. Per HIG
-    /// §5 the app never draws its own picker: the portal round-trip runs on a
-    /// worker thread ([`ui::portal::PickRequest`]) and the chosen path
-    /// comes back over a channel drained each frame in [`Self::drain_portal`].
-    /// A diff needs two files, so the drain re-fires this once for the right
-    /// file after the left is picked.
+    /// Ask the host's file chooser to open a file; a diff needs two, so the drain asks again
+    /// for the right file after the left is picked.
     fn request_open_via_portal(&mut self) {
         self.load_error = None;
         if tilo_files::available(tilo_files::Feature::NativePaths) {
@@ -674,11 +599,8 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
-    /// Drain a completed portal request, if any. Called once per frame from
-    /// [`Widget::sync`]. Loads the chosen file (stashing the first of the pair
-    /// and re-opening the chooser for the second), records a failure for the
-    /// status bubble, and clears the in-flight channel. Never blocks — a
-    /// still pending picker leaves the channel installed for the next frame.
+    /// Drain a completed portal request: load the chosen file, record a failure, clear the
+    /// channel. Never blocks; a pending picker stays installed.
     fn drain_portal(&mut self) {
         let cancelled = self
             .store
@@ -724,7 +646,6 @@ impl DiffMergeApp {
                 };
                 self.apply_pick(outcome);
             }
-            // Still waiting on the host dialog.
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
@@ -733,10 +654,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Apply the files a contents chooser delivered. Both files chosen at
-    /// once open the comparison. A page opens no second chooser without
-    /// another click, so one file is kept as the left one and the status
-    /// says to open the right one next.
     fn apply_picked_contents(&mut self, files: Vec<ui::portal::PickedContents>) {
         let mut texts = files.into_iter().take(2).map(|file| {
             String::from_utf8(file.bytes)
@@ -770,7 +687,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Answer the open-files effect a chooser was answering.
     fn finish_open(&self, result: Result<(), String>) {
         let reply = self.store.borrow_mut().open_reply.take();
         if let Some(reply) = reply {
@@ -778,12 +694,9 @@ impl DiffMergeApp {
         }
     }
 
-    /// Apply one chooser answer to the two-file selection.
     fn apply_pick(&mut self, outcome: Pick) {
         match outcome {
             Pick::Opened(Ok((label, text))) => {
-                // A `true` return means the left file just landed and the
-                // right one is still needed — ask for it.
                 if self.consume_text(label, text) {
                     self.request_open_via_portal();
                 } else {
@@ -795,7 +708,6 @@ impl DiffMergeApp {
                 self.load_error = Some(reason.clone());
                 self.finish_open(Err(reason));
             }
-            // A cancel abandons an in-progress two-file selection.
             Pick::Cancelled => {
                 self.pending_left = None;
                 self.finish_open(Err("file selection cancelled".into()));
@@ -809,10 +721,6 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
-    /// Consume one chosen file. The first file of a pair is stashed and
-    /// `true` is returned so the caller re-opens the chooser for the second;
-    /// the second file opens the comparison and switches to Diff mode,
-    /// returning `false`.
     fn consume_text(&mut self, label: String, content: String) -> bool {
         match self.pending_left.take() {
             None => {
@@ -834,9 +742,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// The one-line summary the status bubble shows: a host-portal load error
-    /// takes over until the next successful open clears it, otherwise the
-    /// diff-mode change counts or the merge-mode hunk/conflict counts.
     fn status_text(&self) -> String {
         if let Some(err) = &self.load_error {
             return err.clone();
@@ -886,8 +791,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
-    /// Returns `true` if the event was consumed.
     fn handle_keyboard_shortcut(
         &mut self,
         event: &WindowEvent,
@@ -909,12 +812,8 @@ impl DiffMergeApp {
         let command = self.conventions.command_modifier_down(modifiers);
         match logical_key {
             Key::Character(ch) if command => match ch.as_str() {
-                // The system's save chord writes the merged result; with
-                // Shift it asks for a new place.
                 "s" | "S" => {
                     if modifiers.shift_key() {
-                        // Save as… is the same effect with a forced chooser:
-                        // the palette lists it too.
                         self.effect(&DiffmergeEffect::SaveMergedAs);
                     } else {
                         self.act(Action::Save);
@@ -944,8 +843,7 @@ impl DiffMergeApp {
                     self.act(Action::ModeMerge);
                     true
                 }
-                // Taking a side is the merge's real work: a key for each
-                // side, in the order the chips read.
+                // Taking a side is the merge's real work.
                 "o" | "O" => {
                     self.accept(HunkChoice::Ours);
                     true
@@ -989,8 +887,6 @@ impl DiffMergeApp {
             _ => false,
         }
     }
-
-    // Header controls are owned by the shared NavShell.
 }
 
 impl Default for DiffMergeApp {
@@ -1026,15 +922,13 @@ impl Widget for DiffMergeApp {
         self.diff_node = Some(diff_node);
         self.merge_node = Some(merge_node);
 
-        // Only the active view participates in the flex content area; the other
-        // is laid out off-band (we drive its rect manually in apply_layout).
+        // Only the active view joins the flex area; the other is laid out off-band.
         let content_child = match self.mode {
             Mode::Diff => diff_node,
             Mode::Merge => merge_node,
         };
 
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; `content_child` and `content` were just built in this one.
+        // `new_with_children` only fails for a child of another tree.
         #[allow(
             clippy::unwrap_used,
             reason = "content_child was just created in this same tree"
@@ -1064,10 +958,6 @@ impl Widget for DiffMergeApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        // Drive both views to the content rect directly so mode switches
-        // don't require a taffy rebuild to position correctly, and so the
-        // views end at the window bottom rather than a toolbar's height below
-        // it (the taffy content node is the full root height).
         self.place_views();
         self.sync_error_state();
     }
@@ -1080,10 +970,6 @@ impl Widget for DiffMergeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The window ground is the framework's; reserve the status bar first
-        // so the views are placed above the band this frame will paint.
-        // An error replaces the comparison and its status; no empty band is
-        // left behind.
         let status_h = if self.load_error.is_some() {
             0.0
         } else {
@@ -1151,8 +1037,6 @@ impl Widget for DiffMergeApp {
                 ));
             }
             WindowEvent::CursorLeft { .. } => self.pointer = None,
-            // The listing scrolls on its own; the comparison views under it
-            // are not what the person is looking at.
             WindowEvent::MouseWheel { delta, .. } if self.showing_folders => {
                 let dy = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => {
@@ -1219,10 +1103,9 @@ impl Widget for DiffMergeApp {
         Some("diffmerge.app")
     }
 
-    // The shared shell owns header chrome, while the active comparison view
-    // owns its own semantic controls. Exposing that live child is what lets the
-    // compact source switcher reach the actual Tilo accessibility tree rather
-    // than only being available to pointer users.
+    // The shell owns the header chrome; the active view owns its semantic controls, and
+    // exposing that live child is what puts the compact source switcher in the
+    // accessibility tree.
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some((_, state)) = &self.error_state {
             return vec![state];
@@ -1233,7 +1116,6 @@ impl Widget for DiffMergeApp {
         }
     }
 
-    /// Both views are laid out; the one not shown stands off-band.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.diff);
         visitor(&self.merge);
@@ -1271,9 +1153,6 @@ impl Widget for DiffMergeApp {
                         t("diff-a11y-choose-file")
                     }),
             );
-            // The rows that were painted, so the listing is the same list to
-            // a screen reader as to the eye, and a bound on a folder with
-            // thousands of differences.
             for (index, rect) in self.folder_rows.iter().take(500) {
                 let Some(entry) = comparison.entries.get(*index) else {
                     continue;
@@ -1295,9 +1174,6 @@ impl Widget for DiffMergeApp {
                 );
             }
         }
-        // The active view is one of this widget's children and publishes
-        // itself; its controls are published here, where their actions are
-        // handled.
         children.extend(match self.mode {
             Mode::Diff => self.diff.access_controls(),
             Mode::Merge => self.merge.access_controls(),
@@ -1413,8 +1289,6 @@ impl Widget for DiffMergeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Mode switches swap which child is in the flex content, so signal a
-        // rebuild when the mode flips. We detect this by tracking a one-shot.
         std::mem::take(&mut self.invalidation.structure)
     }
 
@@ -1449,8 +1323,6 @@ impl Widget for DiffMergeApp {
 }
 
 impl DiffMergeApp {
-    /// Answer a view operation: move around what is open.
-    /// Move around what is open, as a view effect asks.
     pub(crate) fn answer_view(&mut self, effect: DiffmergeEffect) -> Result<(), String> {
         self.act(match effect {
             DiffmergeEffect::ShowDiff => Action::ModeDiff,
@@ -1483,16 +1355,12 @@ impl DiffMergeApp {
     }
 }
 
-/// What the chooser answered.
 enum Pick {
-    /// A file's label and text, or why it could not be read.
     Opened(Result<(String, String), String>),
     Cancelled,
     Failed(String),
 }
 
-/// A comparison of one file against nothing, the file on the `side` it was
-/// opened as.
 fn one_sided(side: &str, label: String, text: String) -> session::OpenComparison {
     let absent = t("source-absent");
     if side == "left" {
@@ -1545,19 +1413,16 @@ mod tests {
     use ui::headless::Framed;
     use ui::tilo_resource::{Replica, Resource as _};
 
-    /// The record `replica` holds, as a document a frame host edits.
     fn document_of(mut replica: Replica<Session>) -> ui::State {
         let mut state = ui::State::new();
         state.doc = automerge::AutoCommit::load(&replica.save()).unwrap();
         state
     }
 
-    /// A document as a new workspace starts.
     fn new_document() -> ui::State {
         document_of(Replica::<Session>::new())
     }
 
-    /// The bundled samples, opened in a document through their verbs.
     fn sample_document() -> ui::State {
         let mut replica = Replica::<Session>::new();
         for invoke in crate::resource::sample_invocations() {
@@ -1566,8 +1431,6 @@ mod tests {
         document_of(replica)
     }
 
-    /// The app presented `state` and staged for `scenario`, as a capture
-    /// shows it.
     fn presented(state: ui::State, scenario: Option<&str>) -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
         app.present_state(&Session::read(&state.doc).unwrap());
@@ -1575,12 +1438,10 @@ mod tests {
         (app, state)
     }
 
-    /// The samples open on the three-way merge.
     fn demo() -> (DiffMergeApp, ui::State) {
         presented(sample_document(), None)
     }
 
-    /// A screenshot scenario's document and view state.
     fn staged(scenario: Option<&str>) -> (DiffMergeApp, ui::State) {
         let state = if scenario == Some("empty") {
             new_document()
@@ -1646,7 +1507,6 @@ mod tests {
             .expect("the sample merge has a conflict")
     }
 
-    /// The bounds of the drawn semantic node whose action target is `target`.
     fn target_bounds(app: &mut TestApp<DiffmergeShell>, target: &str) -> Option<Rect> {
         fn in_access(node: &ui::a11y::AccessNode, target: &str) -> Option<Rect> {
             if node.action_target.as_deref() == Some(target) {
@@ -1669,8 +1529,6 @@ mod tests {
         in_node(&app.harness().inspection().root, target)
     }
 
-    /// With nothing open there is no change to go to: both arrows are
-    /// unavailable in either mode until a comparison with changes loads.
     #[test]
     fn change_arrows_wait_for_changes_to_navigate() {
         let mut app = TestApp::<DiffmergeShell>::new().unwrap();
@@ -1690,10 +1548,6 @@ mod tests {
         assert!(!controls[2].disabled && !controls[3].disabled);
     }
 
-    /// A guest's own Sample loads the bundled sample at once, and their own
-    /// Open files goes straight to their chooser: both are the person's own
-    /// decision on their own device, so the workspace asks nothing first,
-    /// neither for the header button nor for the effect it relays.
     #[test]
     fn a_guests_sample_and_open_files_ask_no_workspace_consent() {
         let mut app = TestApp::<DiffmergeShell>::new().unwrap();
@@ -1729,10 +1583,6 @@ mod tests {
         );
     }
 
-    /// A page opens no second chooser without another click, so its one
-    /// chooser takes both files: two chosen at once open the comparison,
-    /// and one chosen alone is kept as the left file while the status says
-    /// to open the right one, which the next Open files completes.
     #[test]
     fn a_page_chooses_both_files_at_once_or_one_after_the_other() {
         let file = |name: &str, text: &str| ui::portal::PickedContents {
@@ -1779,8 +1629,6 @@ mod tests {
         );
     }
 
-    /// The status read to assistive technology counts in words, from the
-    /// catalogue: whole plurals, no "(s)", one sentence per fact group.
     #[test]
     fn the_status_counts_changes_and_conflicts_in_words() {
         let mut app = TestApp::<DiffmergeShell>::new().unwrap();
@@ -1814,8 +1662,6 @@ mod tests {
         assert_eq!(status(&mut app), "1 change, 1 resolved, 0 conflicts left");
     }
 
-    /// The empty merge asks for what a merge is made of, not the
-    /// comparison's "two files".
     #[test]
     fn the_empty_merge_says_what_a_merge_needs() {
         let title = crate::i18n::t("merge-empty-title");
@@ -1825,8 +1671,6 @@ mod tests {
         assert!(message.contains("sample"), "{message}");
     }
 
-    /// A relative path is refused for every effect taking a path, before
-    /// anything is read or written.
     #[test]
     fn a_relative_path_is_refused_for_every_path_action() {
         use ui::tilo_resource::Effect as _;
@@ -1852,9 +1696,6 @@ mod tests {
         }
     }
 
-    /// Opening files is one effect, whoever asks: two paths are read and
-    /// opened as a comparison; without paths the host's chooser is asked
-    /// twice, and a cancelled or failed chooser opens nothing and says why.
     #[test]
     fn open_files_reads_paths_or_asks_the_host_chooser() {
         let mut app = TestApp::<DiffmergeShell>::new().unwrap();
@@ -1929,11 +1770,6 @@ mod tests {
         }
     }
 
-    /// Taking a side is one action whichever way it is asked for: the
-    /// palette's conflict row or a click on the drawn chip. Each is one undo
-    /// step, and typing in the merged
-    /// result afterwards is an edit of the document's text that stops sides
-    /// from being taken.
     #[test]
     fn hunk_resolution_is_one_action_from_palette_pointer_and_a11y() {
         let mut app = sample_app();
@@ -1942,7 +1778,6 @@ mod tests {
         let hunk = first_conflict(&state);
         let before = state.merged;
 
-        // The palette: the conflict's row.
         let surface = app.agent_surface();
         let conflict = surface
             .as_array()
@@ -1999,8 +1834,6 @@ mod tests {
         );
     }
 
-    /// Taking a side is one keystroke, and the review moves on to the next
-    /// change: forty conflicts are forty keys, not forty mouse round trips.
     #[test]
     fn a_side_is_taken_from_the_keyboard_and_the_review_moves_on() {
         let mut app = sample_app();
@@ -2034,8 +1867,6 @@ mod tests {
         assert_eq!(app.state().merged, before, "undo took back the key's work");
     }
 
-    /// A folder listing is a way into comparisons: the chosen row opens the
-    /// two files it names as an ordinary comparison, which is the document.
     #[test]
     fn the_folder_listing_opens_the_pair_under_review() {
         let base =
@@ -2056,7 +1887,6 @@ mod tests {
         });
         app.settle();
         app.harness().key("Enter");
-        // The pair is read on a worker, so it opens in a later frame.
         tilo_test_env::wait_until("the pair to open as a comparison", || {
             app.settle();
             app.state().comparison.is_some()
@@ -2073,8 +1903,6 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    /// Each screenshot scenario stages through the framework: the samples
-    /// through their actions, the mode, error and status through the view.
     #[test]
     fn scenarios_stage_through_actions_and_view_state() {
         let empty = TestApp::<DiffmergeShell>::capture(Some("empty")).unwrap();
@@ -2096,9 +1924,6 @@ mod tests {
         }
     }
 
-    /// Mount `app` over the case's `state` in the production frame host and run
-    /// one frame, which lays out and draws the merge panel (populating the
-    /// resolution-chip hit rects).
     fn merge_frame(
         app: DiffMergeApp,
         state: ui::State,
@@ -2107,8 +1932,6 @@ mod tests {
         frame_scaled(app, state, viewport, 1.0)
     }
 
-    /// [`merge_frame`] at `text_scale`, the way the launcher's `--text-scale`
-    /// does: the theme's type tokens and the renderer's scale move together.
     fn frame_scaled(
         app: DiffMergeApp,
         state: ui::State,
@@ -2123,7 +1946,6 @@ mod tests {
         )
     }
 
-    /// Rebuild and run the next frame of a mounted app at a new size.
     fn rerender_merge_frame(app: &mut Framed<DiffMergeApp>, viewport: (f32, f32)) {
         Framed::harness_mut(app)
             .relayout_themed(ui::headless::viewport(viewport), Theme::dark())
@@ -2131,9 +1953,6 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        // `KeyEvent` has an opaque platform payload. The public fields below
-        // are exactly the ones the widget reads; this mirrors the toolkit's
-        // own headless keyboard helpers.
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         ui::synthetic_input::keyboard_input(event)
     }
@@ -2147,9 +1966,6 @@ mod tests {
             .expect("one compact source is selected")
     }
 
-    /// Phone-width layout: the three-way merge and the two-way diff present a
-    /// one-source switcher, the toolbar stays on screen without overlap, and a long
-    /// error bubble stays inside the viewport. Fresh app per phase.
     #[test]
     fn phone_width_keeps_controls_onscreen_with_one_source_switchers() {
         phone_merge_uses_a_full_width_source_switcher();
@@ -2158,10 +1974,6 @@ mod tests {
         narrow_status_bubble_stays_within_the_viewport_for_long_errors();
     }
 
-    /// At phone width, a three-way merge intentionally presents one full-width
-    /// source pane plus an explicit Base/Ours/Theirs switcher. This guards
-    /// against a future layout change quietly restoring three unreadable
-    /// columns at 390px.
     fn phone_merge_uses_a_full_width_source_switcher() {
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (390.0, 760.0));
@@ -2225,9 +2037,6 @@ mod tests {
         );
     }
 
-    /// Modes and change navigation remain readable touch targets. The shared
-    /// More menu keeps the file commands reachable without squeezing those
-    /// labels to ellipses on a phone.
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (390, 760)).unwrap();
         let controls = header_controls(&mut app);
@@ -2276,8 +2085,6 @@ mod tests {
         assert!(audit.is_certified(), "{audit:#?}");
     }
 
-    /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge
-    /// rows and the diff gutter all follow the renderer. Fresh apps per phase.
     #[test]
     fn layout_metrics_follow_the_measured_text_at_every_scale() {
         toolbar_controls_fit_their_measured_labels_at_every_text_scale();
@@ -2286,9 +2093,6 @@ mod tests {
         diff_rows_and_gutter_follow_the_scaled_line_height();
     }
 
-    /// Every toolbar control is sized from its measured label and centred on
-    /// the measured bar, at 1× and at 200% text; the content starts below the
-    /// bar that was actually painted.
     fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
         let mut unscaled = None;
         for scale in [1.0f32, 2.0] {
@@ -2307,9 +2111,6 @@ mod tests {
                 .unwrap();
             for rect in &rects {
                 assert!(rect.x0 >= 0.0 && rect.x1 <= 800.0, "{scale}x: {rect:?}");
-                // Every edge the tree solves rounds onto the display's device
-                // pixel, so a control centred in the row's own fractional
-                // height stands within half a pixel of its centre.
                 assert!(
                     (rect.center().y - header / 2.0).abs() < 0.5,
                     "{scale}x: {rect:?} header {header}"
@@ -2404,8 +2205,6 @@ mod tests {
         }
     }
 
-    /// Row pitch, header band and chip band follow the renderer's measured
-    /// line height, so 200% text does not overprint 19px rows.
     fn merge_rows_follow_the_scaled_line_height() {
         let (one, state) = demo();
         let one = frame_scaled(one, state, (1200.0, 800.0), 1.0);
@@ -2428,8 +2227,6 @@ mod tests {
         assert!(content_2 > content_1 * 1.5, "spans grow with the rows");
     }
 
-    /// The two-way diff shares the same contract: rows, header and the
-    /// line-number gutter grow with the measured text.
     fn diff_rows_and_gutter_follow_the_scaled_line_height() {
         let (mut one, state) = demo();
         one.act(Action::ModeDiff);
@@ -2464,9 +2261,6 @@ mod tests {
         root_accessibility_explains_empty_and_error_content();
     }
 
-    /// Pointer, keyboard, and assistive activation all select the same compact
-    /// source state. The test drives the real event/semantic routes rather
-    /// than calling the selection helper directly.
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (390.0, 760.0));
@@ -2540,9 +2334,6 @@ mod tests {
                 .any(|control| control.id == canvas.id && control.focused)
         );
         assert_eq!(controls.len(), 9, "both modes and every header action");
-        // Every control is a real target; one that does not apply now (the
-        // folder list, with no folder comparison open) says so by being
-        // disabled rather than by answering nothing.
         assert!(
             controls.iter().all(|control| {
                 control.bounds.is_some()

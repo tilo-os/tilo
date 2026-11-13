@@ -20,33 +20,25 @@ use proc_macro2::TokenStream;
 use syn::spanned::Spanned as _;
 use syn::visit_mut::VisitMut;
 
-/// The check's name, as printed in diagnostics.
 pub const CHECK: &str = "app contract";
 
-/// How much a finding matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// Fails the check.
     Error,
-    /// Reported; the check still passes.
     Warning,
 }
 
-/// One broken promise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractFinding {
-    /// Path relative to the app directory.
     pub path: PathBuf,
     /// One-based line, `0` for a whole file.
     pub line: usize,
     pub level: Level,
     /// The rule, for example `verb-determinism`.
     pub rule: &'static str,
-    /// What was found and how to fix it.
     pub message: String,
 }
 
-/// The findings for one app.
 #[derive(Debug, Default)]
 pub struct ContractReport {
     pub findings: Vec<ContractFinding>,
@@ -59,7 +51,6 @@ impl ContractReport {
         !self.findings.iter().any(|f| f.level == Level::Error)
     }
 
-    /// One line per finding, or a pass line.
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::new();
@@ -83,7 +74,6 @@ impl ContractReport {
         out
     }
 
-    /// The findings as JSON.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(
@@ -149,7 +139,6 @@ fn message_ids(source: &str) -> Result<BTreeSet<String>> {
     )
 }
 
-/// Every shipped translation carries every message of the source catalog.
 fn check_translations(app_dir: &Path, source: &BTreeSet<String>) -> Result<Vec<ContractFinding>> {
     let mut findings = Vec::new();
     let Ok(entries) = std::fs::read_dir(app_dir.join("locales")) else {
@@ -187,7 +176,6 @@ fn check_translations(app_dir: &Path, source: &BTreeSet<String>) -> Result<Vec<C
     Ok(findings)
 }
 
-/// The findings of one shipped source file.
 pub fn check_source(
     path: &Path,
     tokens: TokenStream,
@@ -611,8 +599,6 @@ mod tests {
         assert!(found[0].message.starts_with("missing c-d"));
     }
 
-    /// Fluent keeps the last of two entries with one id, so a catalogue that
-    /// defines a message twice cannot say which text a person reads.
     #[test]
     fn a_catalogue_that_defines_a_message_twice_fails() {
         let temp = tempfile::tempdir().unwrap();

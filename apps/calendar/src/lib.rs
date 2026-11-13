@@ -1,14 +1,6 @@
-//! Calendar — Tilo native app (CRDT-native, built on the `ui` toolkit).
-//!
-//! A calendar that is also a task manager, inspired by GNOME Planify:
-//! month / week / day / agenda views, a Planify-style sidebar of smart
-//! lists + projects, events with recurrence + reminders, checkable tasks
-//! with priorities and subtasks, and rich-text **notes** on any event or
-//! task using the SDK rich-text editor.
-//!
-//! The calendar is the [`Calendar`] record (`model`, its verbs in
-//! `resource`), interop is via iCalendar (`ics`), and [`CalendarShell`] is
-//! the app every host runs.
+//! Calendar, a native Tilo app on the `ui` toolkit: a calendar that is also a task manager,
+//! with events and tasks in the views a person arranges, synced through the servers of their
+//! accounts.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -65,7 +57,6 @@ pub use model::{
 };
 pub use resource::CalendarShell;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(CalendarShell)
 }

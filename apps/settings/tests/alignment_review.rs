@@ -1,10 +1,4 @@
 //! Geometry regressions from the 2026-09-16 UI alignment review (unit A3).
-//!
-//! Every assertion reads the production widget tree after a real layout pass
-//! — the same `sync → build_layout → compute_layout → apply_layout` cycle the
-//! app runs — and compares rectangles against the theme's spacing scale, so a
-//! spacer or padding regression shows up as a number, not as a screenshot
-//! someone has to squint at.
 
 #![allow(
     clippy::panic,
@@ -44,7 +38,6 @@ fn walk(w: &dyn Widget, f: &mut dyn FnMut(&dyn Widget)) {
     }
 }
 
-/// Rects of every widget whose accessible name is exactly `label`.
 fn named(root: &dyn Widget, label: &str) -> Vec<Rect> {
     let mut out = Vec::new();
     walk(root, &mut |w| {
@@ -61,9 +54,6 @@ fn first_named(root: &dyn Widget, label: &str) -> Rect {
         .unwrap_or_else(|| panic!("no widget named {label:?}"))
 }
 
-/// The settings row that holds the control `id`: its box, and whether its
-/// control sits under its text (the row is too narrow for both side by
-/// side). A row paints its label itself, from the box's leading edge.
 fn row_of_control(root: &dyn Widget, id: &str) -> (Rect, bool) {
     let mut out = None;
     walk(root, &mut |widget| {
@@ -124,11 +114,8 @@ fn same_centre_line(a: f64, b: f64, what: &str) {
     );
 }
 
-/// The sidebar lists every destination as one selectable row at the toolkit's
-/// row height, sharing one leading edge, and grows with large text.
 #[test]
 fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
-    // Case `rows_share_one_leading_edge_and_one_height_at_1x`.
     let metrics = ui::tokens::Metrics::default();
     let mut app = crate::support::window_on(Category::Appearance, WIDE);
     let rows: Vec<_> = crate::support::nav_rows(app.harness().root_widget())
@@ -152,7 +139,6 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
     assert_eq!(selected.len(), 1, "exactly one category is selected");
     assert_eq!(selected[0].label, Category::Appearance.label());
 
-    // Case `rows_grow_with_large_text`.
     // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
     let mut large = window_scaled(Category::About, (1800.0, 900.0), 2.0);
     let rows: Vec<_> = crate::support::nav_rows(large.harness().root_widget())
@@ -173,10 +159,8 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
     );
 }
 
-/// Row captions hug their label and the hero title sits beside its icon.
 #[test]
 fn row_captions_and_hero_follow_the_spacing_steps() {
-    // Case `described_row_keeps_its_explanation_and_centres_its_control`.
     {
         let mut app = crate::support::window_on(Category::Accessibility, WIDE);
         let root = app.harness().root_widget();
@@ -226,7 +210,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
         );
     }
 
-    // Case `hero_places_title_beside_its_icon`.
     {
         let hero = FrameHarness::new(
             ui::State::new(),
@@ -249,7 +232,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
 
 #[test]
 fn region_form_and_large_text_breakpoint_stay_fluid() {
-    // Case `region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow`.
     {
         let mut app = crate::support::window_on(Category::RegionFormats, WIDE);
         let root = app.harness().root_widget();
@@ -294,7 +276,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         );
     }
 
-    // Case `region_choice_rows_switch_layout_as_one_card`.
     // The Formats card lays all six choice rows out the same way, decided at
     // layout from the width it really gets: beneath their labels where the
     // widest label and chooser do not fit side by side (a phone at large
@@ -325,8 +306,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             );
         }
 
-        // A page wide enough for the chooser and a label (beside the docked
-        // category list): every row sits inline.
         let medium = (900.0, 820.0);
         let mut app = crate::support::window_on(Category::RegionFormats, medium);
         let root = app.harness().root_widget();
@@ -345,7 +324,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         }
     }
 
-    // Case `large_text_scales_the_shell_breakpoint_with_the_type`.
     // Large text needs the room a narrow window does: a 900 px window docks
     // the sidebar at 1× and collapses to the single content screen at 200 %,
     // where the breakpoint and the sidebar width have grown with the type.
@@ -368,10 +346,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     }
 }
 
-/// One rhythm per pane (HIG §7b): every section sits exactly one `s6`, the
-/// "before the next group" step the toolkit's section gap names, below the
-/// section above it, on every pane and in both layout classes, and no two
-/// sections ever touch.
 #[test]
 fn pane_sections_stack_on_the_s6_step_and_never_touch() {
     let sp = spacing();

@@ -1,14 +1,5 @@
-//! Inline permission prompt — the bar that pops in at the top of the
-//! active strip when a sandboxed app requests a capability.
-//!
-//! App icon + capability description + four-action button cluster: Allow
-//! (this request only), This session (until shell restart), Always allow
-//! (persists; owner-only), Deny (subsequent requests prompt again).
-//!
-//! Render-only relative to the CRDT — its content is fed by a parent. The
-//! user's choice is exposed via [`PermissionPrompt::pending_choice`] as a
-//! one-shot output; the parent drains it each frame and applies the
-//! resulting `Capability` grant.
+//! Inline permission prompt — the bar that pops in at the top of the active strip when a
+//! sandboxed app requests a capability.
 
 use crate::i18n::{widget_format, widget_text};
 use crate::widget::ModelPath;
@@ -31,15 +22,11 @@ use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
 pub const PROMPT_HEIGHT: f64 = 80.0;
 const PADDING_X: f64 = 16.0;
 const BUTTON_GAP: f64 = 8.0;
-/// Four buttons of equal width keeps the layout legible regardless of
-/// label length.
 const BUTTON_WIDTH: f64 = 110.0;
 const BUTTON_HEIGHT: f64 = 36.0;
 const ICON_SIZE: f64 = 36.0;
 
-/// Stable synthetic-node keys for the four choices. They deliberately do not
-/// depend on the translated label or visual order, so assistive technology can
-/// keep pointing at the same decision when the prompt redraws.
+/// Stable synthetic-node keys for the four choices.
 const ALLOW_KEY: u64 = 1;
 const SESSION_KEY: u64 = 2;
 const ALWAYS_KEY: u64 = 3;
@@ -51,10 +38,8 @@ const CHOICES: [PromptChoice; 4] = [
     PromptChoice::Deny,
 ];
 
-/// Mirrors the variants of the shell's consumer-facing
-/// `quick_shell::shell::state::GrantScope` plus an explicit
-/// [`PromptChoice::Deny`] for the negative path. Held one-shot on
-/// [`PermissionPrompt::pending_choice`] until the host drains it.
+/// Mirrors the variants of the shell's consumer-facing `quick_shell::shell::state::GrantScope`
+/// plus an explicit [`PromptChoice::Deny`] for the negative path.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PromptChoice {
     /// Don't persist on the workspace.
@@ -68,12 +53,6 @@ pub enum PromptChoice {
 }
 
 /// Inline permission prompt widget.
-///
-/// Render contract: a horizontal bar of [`PROMPT_HEIGHT`] pixels with
-/// the requesting app's icon + label on the left, the requested
-/// capability description in the middle, and the four action buttons
-/// on the right. The `Always` button is dimmed and ignores clicks
-/// when [`PermissionPrompt::is_owner`] is `false`.
 #[derive(Clone, Debug)]
 #[crate::component::not_a_component(
     system,
@@ -114,7 +93,6 @@ pub struct PermissionPrompt {
     dirty: bool,
 }
 
-/// A request's own subset of the four choices and what each is called.
 #[derive(Clone, Debug)]
 struct OwnChoices {
     visible: Vec<PromptChoice>,
@@ -152,10 +130,9 @@ impl PermissionPrompt {
         }
     }
 
-    /// Offer only `choices`, in that order, under their own labels — for a
-    /// request whose answers are not "once / this session / always", such as
-    /// "this tab / always in this workspace / don't allow". `Always` stays
-    /// the owner's alone.
+    /// Offer only `choices`, in that order, under their own labels — for a request whose
+    /// answers are not "once / this session / always", such as "this tab / always in this
+    /// workspace / don't allow".
     #[must_use]
     pub fn with_choices(mut self, choices: Vec<(PromptChoice, String)>) -> Self {
         let (visible, labels) = choices.into_iter().unzip();
@@ -164,11 +141,8 @@ impl PermissionPrompt {
         self
     }
 
-    /// Two one-shot choices for a trusted local input surface. The translated
-    /// label keys name the affirmative/negative controls. Session and persistent
-    /// grants are absent from paint, hit testing and the accessibility door.
-    /// Pointer activation preserves the original editable field's keyboard owner.
-    /// Identical labels collapse to a single negative control for loading/error status.
+    /// Two one-shot choices for a trusted local input surface. The translated label keys name
+    /// the affirmative/negative controls.
     pub fn for_local_input(
         app_label: String,
         capability_label: String,
@@ -180,7 +154,6 @@ impl PermissionPrompt {
         prompt
     }
 
-    /// Use a shared system symbol for a trusted local surface.
     #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
@@ -271,13 +244,9 @@ impl PermissionPrompt {
         }
     }
 
-    /// Exposed so tests can drive layout without a full taffy pass.
     pub fn apply_layout_helper(&mut self) {
         let by = self.rect.y0 + (self.rect.height() - BUTTON_HEIGHT) / 2.0;
         let by1 = by + BUTTON_HEIGHT;
-        // Computed from the right edge inward (Deny, Always, Session, Allow)
-        // so a narrower bar keeps the buttons inside; on-screen this reads
-        // left-to-right as [Allow, Session, Always, Deny].
         let right_edge = self.rect.x1 - PADDING_X;
         let deny_x1 = right_edge;
         let deny_x0 = deny_x1 - BUTTON_WIDTH;
@@ -336,7 +305,6 @@ impl PermissionPrompt {
     pub fn session_rect(&self) -> Rect {
         self.session_rect
     }
-    /// Non-zero even when disabled — hosts hit-test it for "owner-only" affordances.
     pub fn always_rect(&self) -> Rect {
         self.always_rect
     }
@@ -389,7 +357,6 @@ impl PermissionPrompt {
         let current = self
             .focused_choice
             .and_then(|c| CHOICES.iter().position(|candidate| *candidate == c))
-            // Deny is the conservative default when no choice is focused.
             .unwrap_or(CHOICES.len().saturating_sub(1));
         for offset in 1..=CHOICES.len() {
             let idx = if forward {
@@ -408,7 +375,6 @@ impl PermissionPrompt {
     }
 }
 
-/// Shared localized label for pointer and semantic permission decisions.
 pub fn button_label(choice: PromptChoice) -> String {
     widget_text(match choice {
         PromptChoice::Allow => "permission-prompt-allow",
@@ -454,12 +420,7 @@ impl Widget for PermissionPrompt {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // A permission prompt is a security surface: the app id and the
-        // capability are read letter by letter.
         text_renderer.security_surface(|text_renderer| {
-            // The prompt is a floating Panel: the panel ground is a darker
-            // tint than `raised`, so it reads as a layer above the strip's
-            // content, not another tile, and its edge is the panel's.
             let radius = f64::from(theme.tokens.radii.control);
             let body = RoundedRect::from_rect(self.rect, radius);
             scene.fill(
@@ -495,10 +456,9 @@ impl Widget for PermissionPrompt {
                 );
             }
 
-            // Button geometry first: the label block ends `spacing.s3` before the
-            // leftmost button and is elided to that width, so the two never
-            // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
-            // draw without a preceding `apply_layout` hit-testing correctly.
+            // Button geometry first: the label block ends `spacing.s3` before the leftmost
+            // button and is elided to that width, so the two never overlap on a narrow strip
+            // (HIG §7 "Nothing touches").
             self.apply_layout_helper();
             let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
             let label_max_w = self.label_width(theme);
@@ -512,8 +472,6 @@ impl Widget for PermissionPrompt {
             } else {
                 text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style)
             };
-            // Centre the two-line block on its measured line boxes, not on the
-            // font sizes, so both lines sit where the band says they are.
             let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
             let (_, cap_h) = text_renderer.measure_style(&capability, wrap_width, &cap_style);
             let label_y = centered_text_top(
@@ -586,7 +544,6 @@ impl Widget for PermissionPrompt {
                 } else if self.session_rect.contains(p) {
                     Some(1)
                 } else if self.always_rect.contains(p) {
-                    // Non-owners get no hover affordance on the disabled button.
                     if self.is_owner { Some(2) } else { None }
                 } else if self.deny_rect.contains(p) {
                     Some(3)
@@ -627,7 +584,6 @@ impl Widget for PermissionPrompt {
                         }
                         *ctx.handled = true;
                     }
-                    // Dropped for a non-owner: `pending_choice` stays untouched.
                 } else if self.deny_rect.contains(p) {
                     self.focused_choice = Some(PromptChoice::Deny);
                     self.choose(PromptChoice::Deny);
@@ -740,9 +696,6 @@ impl Widget for PermissionPrompt {
     }
 
     /// The host maps Enter/Space on a focused retained control to `Activate`.
-    /// Keep that route identical to the raw-key handler and the synthetic AT
-    /// child, rather than falling back to a coordinate click in the middle of
-    /// the dialog.
 
     fn traps_focus(&self) -> bool {
         self.local_input.as_ref().is_none_or(|local| local.modal)
@@ -976,16 +929,12 @@ mod tests {
         }
 
         {
-            // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
-            // the strip's content shifts down by the right amount.
             let mut p = prompt_at(false);
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let theme = Theme::dark();
             let node = p.build_layout(&mut taffy, &theme, &mut node_map);
             let style = taffy.style(node).unwrap();
-            // `Dimension` is opaque, so this compares against the canonical
-            // constructor rather than pattern-matching a private representation.
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "PROMPT_HEIGHT is the compile-time constant 80.0, exact in f32"
@@ -1095,8 +1044,6 @@ mod tests {
         }
 
         {
-            // Click on the icon (left edge of the bar), far from any
-            // button rect.
             let mut p = prompt_at(true);
             dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
             dispatch(&mut p, &mouse_press());

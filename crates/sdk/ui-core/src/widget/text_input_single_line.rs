@@ -26,9 +26,6 @@ impl TextInput {
         self
     }
 
-    /// What the field asks a browser or password manager to fill in: what
-    /// its owner said, or what its kind implies. A multiline field asks for
-    /// nothing.
     #[must_use]
     pub fn autofill(&self) -> Option<crate::a11y::Autofill> {
         use crate::a11y::Autofill;
@@ -47,10 +44,6 @@ impl TextInput {
         }
     }
 
-    /// Hand the field's line to a host that shows the field itself (a
-    /// page's `<input>`, [`crate::scene_parts::native_field`]): then the
-    /// host sets its text, caret and selection where they would have been
-    /// drawn, and this frame draws none of them.
     pub(super) fn hand_line_to_host(
         &mut self,
         text_renderer: &mut TextRenderer,
@@ -85,8 +78,6 @@ impl TextInput {
         );
     }
 
-    /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
-    /// for the current single-line text and returns the total shaped width.
     pub(super) fn build_single_line_metrics(
         &mut self,
         text_renderer: &mut TextRenderer,
@@ -123,9 +114,6 @@ impl TextInput {
             style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
             let attributes = self.valid_single_attributes();
-            // The attributes were hashed once, when they were set: an
-            // unchanged line hashes its spans no further, it only mixes the
-            // signature it kept with this line's own.
             let signature = match (&attributes, self.single_attributes_signature) {
                 (Some(_), Some(attributes)) => base ^ attributes,
                 _ => base,
@@ -226,10 +214,6 @@ impl TextInput {
         }
     }
 
-    /// The width the field's own text shows in: its box less the padding before the text, the
-    /// room its trailing text and an accessory take, and the caret at either end — which a
-    /// padding-free code line needs, or its caret's left edge stands on the clip boundary and
-    /// hides it entirely.
     pub(super) fn text_room(&self, padding_x: f64, caret_width: f64) -> f64 {
         (self.rect.width()
             - padding_x
@@ -283,8 +267,6 @@ impl TextInput {
         }
     }
 
-    /// Code chips precede selection and glyphs; accent link rules follow
-    /// glyphs. All bounds come from the exact layout used for interaction.
     pub(super) fn draw_single_line_decorations(
         &self,
         scene: &mut Scene,
@@ -366,14 +348,10 @@ impl TextInput {
         self.prompt_fit = None;
         if self.shows_placeholder() {
             let placeholder = widget_text(&self.placeholder);
-            // The placeholder sets in the field's own style, in the tertiary
-            // ink: a prompt, clearly weaker than any value.
             let style = self.placeholder_style(text_size);
             let room = self.text_room(padding_x, theme.caret_width);
             let shown = text_renderer.elide_to_width_style(&placeholder, room as f32, &style);
             let (width, _) = text_renderer.measure_style(&shown, None, &style);
-            // `Affine * Affine` composes two geometric transforms over f64
-            // coordinates; it has no integer overflow/wrap semantics.
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
@@ -400,7 +378,6 @@ impl TextInput {
         let text_origin =
             transform * Affine::translate((self.single_origin.x - self.scroll_x, text_y));
         if self.host_shows_text {
-            // The host sets the value itself.
         } else if !self.masked() {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);

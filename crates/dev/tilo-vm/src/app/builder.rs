@@ -86,7 +86,6 @@ fn deliver_layer(
     if !packed.reused {
         return remote.upload(stream).map(Delivery::Uploaded);
     }
-    // Require the normal checksum footer, with no unexpected archive DATA.
     if stream
         .read(&mut [0u8; 1])
         .map_err(CliError::io("verify reused layer stream"))?
@@ -100,20 +99,10 @@ fn deliver_layer(
     if verified_layer(remote, hash, component, Some(claim)) {
         Ok(Delivery::Reused(hash.to_owned()))
     } else {
-        // Cache damage, GC after the offer, or an older build claim than this
-        // tree's causes one plain-stream retry.
         Ok(Delivery::Invalidated)
     }
 }
 
-/// The daemon has the layer, and — with `claim` — records it as built for the
-/// same system interfaces as the tree delivering it.
-///
-/// A layer is offered to the builder for its compile cache by content alone
-/// (`None`); delivery is skipped only when the recorded claim matches too. An
-/// identical rebuild from a tree that moved the interface declaration on must
-/// reach the daemon, which records the newer claim, or the cohort it joins is
-/// refused for the older one (`crate::interfaces` on the daemon side).
 fn verified_layer(
     remote: &mut Remote,
     hash: &str,
@@ -202,8 +191,6 @@ fn builder_succeeded(
 }
 
 impl App {
-    /// Build `component` with the remote builder whose command line is
-    /// `builder`, and import the layer it streams.
     pub(super) fn build_layer_remote(
         &mut self,
         remote: &mut Remote,
@@ -235,10 +222,6 @@ impl App {
         self.build_layer_remote_cached(remote, vm, component, builder, inputs, &extra, true)
     }
 
-    /// The same assembly run by this host's own cargo (`--builder host` for
-    /// `apps+runtime` on a machine of the device's architecture): the layer
-    /// still comes out of `layer-pack`, so it is byte-for-byte what a remote
-    /// builder sends, but its provenance says `host`.
     pub(super) fn build_layer_local_pack(
         &mut self,
         remote: &mut Remote,
@@ -268,7 +251,6 @@ impl App {
         let mut provenance = inputs.provenance.clone();
         provenance.component.clone_from(&component.name);
         inputs.unchanged(&worktree.root)?;
-        // An empty builder command is this host's own cargo (`--builder host`).
         let label = if builder.is_empty() { "host" } else { "remote" };
         provenance.builder = Some(label.to_owned());
         let inventory = inputs
@@ -314,8 +296,6 @@ impl App {
         let packed = match header {
             Ok(packed) => packed,
             Err(error) => {
-                // The owned builder may still be writing its framed layer.
-                // Close the reader and reap it before returning an error.
                 drop(stream);
                 return Err(builder_header_error(&mut child, &line, &error));
             }
@@ -327,7 +307,6 @@ impl App {
             &remote.hello.arch,
             &cached,
         )?;
-        // The build can outlast an idle connection: a fresh one for delivery.
         *remote = self.connect_with_wake(vm, false)?;
         let delivered = self.receipt.phase("transfer", || {
             deliver_layer(remote, &mut stream, &packed, &component.name, &provenance)
@@ -369,8 +348,6 @@ impl App {
         ))
     }
 
-    /// Build a native app on the configured architecture's builder, then use
-    /// the existing slot-user installer; runtime and publisher checks remain there.
     pub(super) fn install_app_from_remote(
         &mut self,
         remote: &mut Remote,
@@ -432,7 +409,6 @@ impl App {
         })
     }
 
-    /// No remote builder serves `arch`: the line that adds one.
     pub(super) fn no_remote_builder(&self, arch: &str) -> CliError {
         CliError::Config {
             path: self.registry_path.display().to_string(),

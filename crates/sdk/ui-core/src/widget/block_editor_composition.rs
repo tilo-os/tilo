@@ -1,11 +1,22 @@
-//! The block editor's document as what it is, for a host that renders the
-//! window's composition with elements of its own ([`crate::composition`]):
-//! each block's kind, text and inline marks, and the caret while one is
-//! edited.
+//! The block editor's document as what it is, for a host that renders the window's composition with
+//! elements of its own ([`crate::composition`]): each block's kind, text and inline marks, and the
+//! caret while one is edited.
 
-use super::{BlockEditor, BlockKind, Mark, numbered_ordinals};
+use super::{
+    BlockEditor, BlockKind, LIST_INDENT_STEP_PX, Mark, numbered_ordinals, prefix_gutter_for,
+};
 
 impl BlockEditor {
+    pub(super) fn composed_edges(&self, theme: &crate::Theme) -> crate::composition::DocEdges {
+        let scale = self.text_scale;
+        crate::composition::DocEdges {
+            text: self.text_inset(theme),
+            list: prefix_gutter_for(&BlockKind::Bullet { indent: 0 }) * scale,
+            indent: f64::from(LIST_INDENT_STEP_PX) * scale,
+            quote: prefix_gutter_for(&BlockKind::Quote) * scale,
+        }
+    }
+
     pub(super) fn composed_blocks(&self) -> Vec<crate::composition::DocBlock> {
         use crate::composition::{DocBlock, InlineMark};
         let ordinals = numbered_ordinals(&self.blocks);
@@ -27,6 +38,7 @@ impl BlockEditor {
                         ("callout", 0, false, Some(callout.name().to_owned()))
                     }
                 };
+                let style = crate::tokens::typography::stock().style(block.kind.text_role());
                 let marks = block
                     .line
                     .marks()
@@ -73,6 +85,18 @@ impl BlockEditor {
                         )
                     }),
                     editable: block.kind.is_editable(),
+                    gap: self
+                        .stack_boxes
+                        .get(index)
+                        .map_or(0.0, |stack| stack.margin_top),
+                    size: block.kind.font_size() * self.font_scale,
+                    line_height: style.line_height,
+                    weight: match style.weight {
+                        crate::text_render::TextWeight::Regular => 400,
+                        crate::text_render::TextWeight::Medium => 500,
+                        crate::text_render::TextWeight::Semibold => 600,
+                        crate::text_render::TextWeight::Bold => 700,
+                    },
                 }
             })
             .collect()

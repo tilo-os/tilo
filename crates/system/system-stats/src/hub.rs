@@ -1,12 +1,4 @@
 //! Subscriptions, and the one thread that reads for all of them.
-//!
-//! The thread exists only while someone subscribes: the first subscription
-//! starts it, and it returns once the last one is dropped. It sleeps until
-//! the earliest subscription is due, takes one reading for every
-//! subscription due then (with processes only if one of them asked for
-//! them, and command lines only if one of them may see them), and hands each
-//! its cut of that reading. Nobody subscribed costs nothing: no thread, no
-//! timer, no read.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -27,26 +19,21 @@ pub type Sink = Box<dyn FnMut(Snapshot) + Send>;
 /// block.
 pub type StorageAnswer = Box<dyn FnOnce(Result<Storage, Refusal>) + Send>;
 
-/// The thread that reads the machine's storage.
 pub const STORAGE_THREAD: &str = "tilo-system-stats-storage";
 
-/// Who waits for a storage reading, and whether one is being taken.
 #[derive(Default)]
 struct StorageQueue {
     waiting: Vec<StorageAnswer>,
     reading: bool,
 }
 
-/// What a subscription asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Spec {
     pub interval: Duration,
-    /// The app list and process list too.
     pub processes: bool,
 }
 
 impl Spec {
-    /// `interval_ms`, held to the bounds the service serves.
     #[must_use]
     pub fn every(interval_ms: u32, processes: bool) -> Self {
         Self {
@@ -76,9 +63,7 @@ struct State {
     /// Subscriptions dropped while the thread was serving them: their
     /// entries are out of `entries` then, and must not come back.
     dropped: Vec<u64>,
-    /// Grants changed while the thread was serving the subscription.
     regranted: Vec<(u64, Grants)>,
-    /// The reading thread, while it runs.
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -91,26 +76,22 @@ struct Inner {
     storage_queue: Mutex<StorageQueue>,
 }
 
-/// The session's one source of system readings.
 #[derive(Clone)]
 pub struct Hub {
     inner: Arc<Inner>,
 }
 
-/// A live subscription; dropping it unsubscribes.
 pub struct Subscription {
     hub: Hub,
     id: u64,
 }
 
 impl Subscription {
-    /// Change what this subscription may see (a grant was given).
     pub fn set_grants(&self, grants: Grants) {
         let mut state = self.hub.lock();
         if let Some(entry) = state.entries.iter_mut().find(|e| e.id == self.id) {
             entry.grants = grants;
         } else {
-            // Out being served: take effect from the next reading.
             state.regranted.push((self.id, grants));
         }
     }
@@ -160,7 +141,6 @@ impl Hub {
         Self::with_storage(probe, policy, signaller, Box::new(MachineStorage))
     }
 
-    /// [`Self::new`], with storage described by `storage`.
     #[must_use]
     pub fn with_storage(
         probe: Box<dyn Probe>,
@@ -291,7 +271,6 @@ impl Hub {
         }
     }
 
-    /// Whether the reading thread is running: there are subscribers.
     #[must_use]
     pub fn is_reading(&self) -> bool {
         self.lock().running
@@ -313,7 +292,6 @@ impl Hub {
         }
     }
 
-    /// End the process `pid` of the lifetime `started_at`.
     pub fn end_process(&self, pid: u32, started_at: u64, force: bool) -> Result<(), Refusal> {
         let mut collector = self.collector();
         let policy = collector.policy().clone();
@@ -326,7 +304,6 @@ impl Hub {
         )
     }
 
-    /// End every process of `app` the person may end.
     pub fn end_app(&self, app: &str, force: bool) -> Result<u32, Refusal> {
         let mut collector = self.collector();
         let policy = collector.policy().clone();

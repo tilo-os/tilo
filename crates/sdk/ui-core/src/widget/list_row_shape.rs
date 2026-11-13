@@ -1,14 +1,5 @@
-//! The geometry of a kind of list row, apart from what it says: what a row
-//! on its way reserves and what its skeleton draws.
-//!
-//! A row's height comes from its kind: how many lines its title takes,
-//! whether it has a subtitle, how many secondary lines it shows, what leads
-//! it. [`RowShape`] is that kind. A real row reports its own
-//! ([`ListRowFace::shape`], [`ListRow::shape`]); a row on its way reserves the
-//! height of the same kind ([`RowShape::height`]) and paints its skeleton
-//! where that row's leading mark and lines stand
-//! ([`ListRowFace::paint_skeleton`]), from the same geometry the row paints
-//! with. So the skeleton and the row it stands for cannot differ in size.
+//! The geometry of a kind of list row, apart from what it says: what a row on its way
+//! reserves and what its skeleton draws.
 
 use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -24,20 +15,14 @@ use crate::widget::{AvatarFace, MediaArt, MediaAspect};
 /// What leads a kind of row.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum RowLeadingShape {
-    /// Nothing: the title starts at the row's edge.
     #[default]
     None,
-    /// A mark of icon size: an icon, a face, a checkbox, a swatch, a badge.
     Mark,
-    /// A person's disc.
     Avatar,
-    /// A square tile: an account's avatar, a thumbnail.
     Tile,
-    /// Media art at its aspect.
     Media(MediaAspect),
 }
 
-// What leads a kind of row as a component's prop; media art takes its aspect from the art.
 crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
     None => "none",
     Mark => "mark",
@@ -45,16 +30,13 @@ crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
     Tile => "tile",
 });
 
-/// The geometry of a kind of list row. See the module docs.
+/// The geometry of a kind of list row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowShape {
     pub leading: RowLeadingShape,
-    /// How many lines the title takes (one or two).
     pub title_lines: u8,
     pub subtitle: bool,
-    /// How many secondary lines the row shows; none without secondary text.
     pub secondary_lines: u8,
-    /// Whether the row's trailing value is set at title size.
     pub title_value: bool,
 }
 
@@ -65,7 +47,6 @@ impl Default for RowShape {
 }
 
 impl RowShape {
-    /// A row of one title line and nothing else.
     pub const TITLE: Self = Self {
         leading: RowLeadingShape::None,
         title_lines: 1,
@@ -138,8 +119,7 @@ impl RowShape {
 }
 
 impl ListRowFace<'_> {
-    /// The kind of row this face paints: its geometry, apart from what it
-    /// says.
+    /// The kind of row this is: what a row of it on its way reserves.
     #[must_use]
     pub fn shape(&self) -> RowShape {
         RowShape {
@@ -214,7 +194,6 @@ impl ListRowFace<'_> {
                 &RoundedRect::from_rect(mark, round),
             );
         }
-        // Each line: its height and how far its bar runs.
         let title = RowMetrics::line(ctx.text, &self.title_style(&m));
         let mut lines: Vec<(f64, f64)> = Vec::new();
         for _ in 0..self.title_lines {

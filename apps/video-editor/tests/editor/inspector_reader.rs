@@ -117,7 +117,16 @@ fn the_controls_drawn_above_the_first_section_are_stops_before_it() {
         "Fade in".into(),
         "Fade out".into(),
     ];
-    top.extend(["cut", "dissolve", "fade", "dip", "wipe"].map(|t| format!("Transition {t}")));
+    top.extend(
+        [
+            "Transition Cut",
+            "Transition Dissolve",
+            "Transition Fade",
+            "Transition Dip",
+            "Transition Wipe",
+        ]
+        .map(ToString::to_string),
+    );
     top.extend((1..=7).map(|n| format!("Label colour {n}")));
     for name in top {
         assert!(

@@ -82,8 +82,8 @@ fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
     assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
 }
 
-/// A resize re-solves the retained tree against the new window size and
-/// composes nothing again, unless a widget composes from its allocation.
+/// A resize re-solves the retained tree against the new window size and composes nothing again, unless
+/// a widget composes from its allocation.
 #[test]
 fn a_resize_recomposes_only_for_widgets_that_compose_from_their_allocation() {
     let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());

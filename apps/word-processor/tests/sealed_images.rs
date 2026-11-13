@@ -1,18 +1,9 @@
-//! A file's pictures are sealed where the file is opened: the document
-//! names each by a reference that carries its key, the store holds
-//! ciphertext alone, and every member reading the document opens them, a
-//! member who joins later too. The import is read once, where it is
-//! invoked; no replica reads the file again. A document an earlier version
-//! imported, naming its pictures by plain address, still opens.
-
 use tilo_automerge::ApplyIncoming as _;
 use tilo_document::action::{ImportFormat, RichTextAction};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 use word_processor::framework::{Document, WordProcessorApp};
 
-/// Bytes that do not repeat, so ciphertext cannot contain a run of them by
-/// chance.
 fn picture() -> Vec<u8> {
     (0_u32..3000)
         .map(|n| (n.wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0])
@@ -38,7 +29,6 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// A page with `picture` in it, as a file to open.
 fn page(picture: &[u8]) -> Vec<u8> {
     format!(
         r#"<h1>Trip</h1><p><img src="data:image/png;base64,{}" alt="the view"></p>"#,
@@ -56,7 +46,6 @@ fn app() -> TestApp<WordProcessorApp> {
     TestApp::<WordProcessorApp>::new().unwrap()
 }
 
-/// The document `writer` keeps, as its record reaches another member.
 fn record(writer: &mut TestApp<WordProcessorApp>) -> automerge::AutoCommit {
     writer.flush().unwrap();
     automerge::AutoCommit::load(&writer.record_document(&writer.record().clone()).unwrap()).unwrap()
@@ -67,13 +56,11 @@ fn apply(app: &mut TestApp<WordProcessorApp>, action: &RichTextAction) {
         .unwrap();
 }
 
-/// The blocks of `doc`, as a reader sees them.
 fn blocks(doc: &automerge::AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
     let c = word_processor::model::open(doc).unwrap();
     tilo_doc::model::materialize(doc, &c).blocks
 }
 
-/// The references the document's pictures are named by.
 fn pictures(doc: &automerge::AutoCommit) -> Vec<String> {
     blocks(doc)
         .into_iter()
@@ -99,10 +86,8 @@ fn a_files_pictures_are_ciphertext_in_the_store_and_every_member_opens_them() {
             markdown: "Draft".into(),
         },
     );
-    // Bob, a member, has the document open.
     let mut bob = record(&mut alice);
     let bobs_store = tilo_content::ContentStore::memory();
-    // The store a window keeps its record's content in seals.
     let window = alice.content().sealing();
 
     let action =
@@ -122,12 +107,9 @@ fn a_files_pictures_are_ciphertext_in_the_store_and_every_member_opens_them() {
     let address = tilo_content::content_address(reference).unwrap();
     let ciphertext = alice.content().read(&address).unwrap();
     assert!(!holds(&ciphertext, &picture), "the store holds ciphertext");
-    // What every replica applies is what was read here, not the file.
     let recorded = serde_json::to_value(&action).unwrap();
     assert!(recorded.get("ReplaceFormatted").is_none(), "{recorded}");
 
-    // Alice's change reaches Bob, and the picture opens once its
-    // ciphertext does.
     bob.merge_incoming(&mut alices).unwrap();
     assert_eq!(texts(&bob), texts(&alices));
     assert_eq!(&pictures(&bob), std::slice::from_ref(reference));
@@ -139,7 +121,6 @@ fn a_files_pictures_are_ciphertext_in_the_store_and_every_member_opens_them() {
     bobs_store.put_public(&ciphertext).unwrap();
     assert_eq!(bobs_store.read(reference), Some(picture.clone()));
 
-    // Carol joins later, from the document's history.
     let carol = record(&mut alice);
     assert_eq!(&pictures(&carol), std::slice::from_ref(reference));
     let carols_store = tilo_content::ContentStore::memory();
@@ -147,8 +128,6 @@ fn a_files_pictures_are_ciphertext_in_the_store_and_every_member_opens_them() {
     assert_eq!(carols_store.read(reference), Some(picture));
 }
 
-/// A document an earlier version imported recorded the file itself, read
-/// again wherever it applies, its pictures named by plain address.
 #[test]
 fn a_document_imported_before_pictures_were_sealed_still_opens() {
     let picture = picture();

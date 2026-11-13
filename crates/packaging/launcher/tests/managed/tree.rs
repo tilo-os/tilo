@@ -1,5 +1,5 @@
-//! Actual Linux process-tree qualification. Missing kernel/sandbox facilities
-//! are failures. This fixture proves custody barriers, not model/agent readiness.
+//! Actual Linux process-tree qualification. Missing kernel/sandbox facilities are
+//! failures.
 use launcher::{
     managed::{
         InstalledManagedPackage, ManagedBinding, ManagedLaunchAuthority, ManagedLaunchEvent,
@@ -29,9 +29,7 @@ use std::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-// This test authority consumes exactly one claim and validates the immutable
-// binding. The process proof still comes only from actual launcher/kernel
-// admission; no persisted labels are converted into live witnesses.
+// This test authority consumes exactly one claim and validates the immutable binding.
 struct Authority {
     binding: ManagedBinding,
     claimed: AtomicBool,
@@ -285,9 +283,7 @@ fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
     }
 }
 
-// Read exactly one private marker and its kernel credentials. This never trusts
-// a PID serialized by the fixture. Every received rights FD is RAII-owned even
-// when unexpected control data makes the test fail.
+// Read exactly one private marker and its kernel credentials.
 fn marker(socket: &UnixStream) -> (u8, u32) {
     let mut byte = 0u8;
     let mut iov = libc::iovec {
@@ -412,8 +408,8 @@ fn qualify_tree(owned_stop: bool) {
         model_child,
     )
     .unwrap();
-    // Consume the genuine launcher-to-gateway handoff on the host endpoint;
-    // the fixture's model descriptor carries only our later private exit byte.
+    // Consume the genuine launcher-to-gateway handoff on the host endpoint; the fixture's model
+    // descriptor carries only our later private exit byte.
     let mut length = [0; 4];
     model_peer.read_exact(&mut length).unwrap();
     let length = u32::from_le_bytes(length) as usize;
@@ -496,11 +492,8 @@ fn qualify_tree(owned_stop: bool) {
         orphan.0.identity,
         unrelated_pidfd.identity
     );
-    // This observation is mandatory in both cases: the orphan demonstrably
-    // survives its immediate parent and remains blocked before the effect.
-    // No test command, EOF or voluntary fixture path can release that orphan,
-    // so the tree is held live here; a Finished arriving later still meets
-    // the orphan check below.
+    // This observation is mandatory in both cases: the orphan demonstrably survives its immediate
+    // parent and remains blocked before the effect.
     agent_pidfd.assert_live();
     orphan.0.assert_live();
     unrelated_pidfd.assert_live();
@@ -527,8 +520,8 @@ fn qualify_tree(owned_stop: bool) {
                     exit,
                     ..
                 } => {
-                    // No wait/grace period after observing Finished: its barrier
-                    // must already cover the exact retained original descendant.
+                    // No wait/grace period after observing Finished: its barrier must already cover
+                    // the exact retained original descendant.
                     assert!(
                         orphan.0.exited(),
                         "Finished exposed while original orphan remains live"

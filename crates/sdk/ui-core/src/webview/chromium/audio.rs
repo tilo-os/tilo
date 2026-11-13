@@ -1,24 +1,9 @@
-//! Page audio: the engine's PCM, played through the governed output service.
-//!
-//! A sandboxed app is given no `PipeWire`/`Pulse` socket and no `/dev/snd`; it
-//! plays sound by handing PCM to the host's output service
-//! (`media::audio_output`, one output per application). The engine host runs
-//! Chromium's audio in the embedder-handler mode, so each tab's decoded stream
-//! arrives here as `audio_start` / `audio` / `audio_stop` events instead of
-//! being opened on a device Chromium cannot reach:
-//!
-//! - `audio_start {rate, channels}` — a page began producing sound;
-//! - `audio {pcm}` — base64 of interleaved little-endian `i16` frames;
-//! - `audio_stop` — the page stopped (paused, muted by the page, navigated, or
-//!   the tab closed).
-//!
-//! The service keeps **one** output per application and a second `open`
-//! replaces the first, so tabs cannot each hold an output. All of a process's
-//! tabs feed one [`Mixer`]: each tab's PCM is converted to the service's
-//! 48 kHz stereo, buffered at most [`MAX_BUFFERED_FRAMES`] (the oldest PCM is
-//! dropped so a stalled device never adds delay), and summed with the others
-//! into the service's packets by a single worker. The output is opened with
-//! the first sound and closed after [`IDLE_CLOSE`] without any.
+//! Page audio: the engine's PCM, played through the governed output service. A sandboxed
+//! app is given no `PipeWire`/`Pulse` socket and no `/dev/snd`; it plays sound by handing
+//! PCM to the host's output service (`media::audio_output`, one output per application).
+//! The engine host runs Chromium's audio in the embedder-handler mode, so each tab's
+//! decoded stream arrives here as `audio_start` / `audio` / `audio_stop` events instead
+//! of being opened on a device Chromium cannot reach.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -31,9 +16,7 @@ use tilo_lock::MutexRecover as _;
 
 /// At most this much PCM waits per tab (100 ms): the latency ceiling.
 const MAX_BUFFERED_FRAMES: usize = RATE as usize / 10;
-/// How long the output stays open once every tab is silent.
 const IDLE_CLOSE: Duration = Duration::from_secs(2);
-/// Wait before retrying an output the service refused or lost.
 const REOPEN_BACKOFF: Duration = Duration::from_secs(1);
 /// One engine packet: far above Chromium's 10 ms, bounded for a hostile host.
 const MAX_PACKET_FRAMES: usize = RATE as usize;
@@ -43,13 +26,13 @@ const CHANNELS_USIZE: usize = CHANNELS as usize;
 
 type Open = Arc<dyn Fn() -> Result<Box<dyn Output>, String> + Send + Sync>;
 
-/// Converts one tab's PCM to 48 kHz stereo, keeping resampler state between
-/// packets so a stream's seams do not click.
+/// Converts one tab's PCM to 48 kHz stereo, keeping resampler state between packets so a
+/// stream's seams do not click.
 struct Converter {
     rate: u32,
     channels: usize,
-    /// Position of the next output frame after `previous`, in 1/48000ths of
-    /// an input frame.
+    /// Position of the next output frame after `previous`, in 1/48000ths of an input
+    /// frame.
     phase: u64,
     previous: (f32, f32),
 }
@@ -64,8 +47,8 @@ impl Converter {
         }
     }
 
-    /// Append `input` (interleaved, `self.channels` wide) to `out` as
-    /// interleaved stereo at 48 kHz.
+    /// Append `input` (interleaved, `self.channels` wide) to `out` as interleaved stereo
+    /// at 48 kHz.
     fn convert(&mut self, input: &[i16], out: &mut VecDeque<i16>) {
         let frames = input.chunks_exact(self.channels).map(|frame| {
             let left = f32::from(frame[0]);
@@ -83,8 +66,8 @@ impl Converter {
             }
             return;
         }
-        // The read position in input frames, counted in 1/RATE steps so it
-        // advances by exactly `rate` per output frame and never drifts.
+        // The read position in input frames, counted in 1/RATE steps so it advances by
+        // exactly `rate` per output frame and never drifts.
         let unit = u64::from(RATE);
         let mut line = Vec::with_capacity(input.len() / self.channels + 1);
         line.push(self.previous);
@@ -118,7 +101,6 @@ struct Stream {
     converter: Converter,
     /// Interleaved 48 kHz stereo, oldest first.
     pcm: VecDeque<i16>,
-    /// The tab stopped: leave once the buffered PCM has played.
     ended: bool,
 }
 
@@ -130,9 +112,8 @@ struct State {
 }
 
 impl State {
-    /// The next packet: every stream's oldest PCM, summed (saturating), at
-    /// most one service packet long. `None` while all are empty. Streams
-    /// that ended and drained are dropped.
+    /// The next packet: every stream's oldest PCM, summed (saturating), at most one
+    /// service packet long.
     fn take_mix(&mut self) -> Option<Vec<i16>> {
         let frames = self
             .streams
@@ -301,7 +282,6 @@ fn close(output: &mut Option<Box<dyn Output>>) {
     }
 }
 
-/// The process-wide mixer, playing through the governed output service.
 fn global() -> &'static Arc<Mixer> {
     static MIXER: OnceLock<Arc<Mixer>> = OnceLock::new();
     MIXER.get_or_init(|| Mixer::new(Arc::new(media::audio_output::open), IDLE_CLOSE))
@@ -314,8 +294,7 @@ pub(super) struct PageAudio {
 }
 
 impl PageAudio {
-    /// Apply an `audio_start`, `audio` or `audio_stop` event to the process
-    /// mixer.
+    /// Apply an `audio_start`, `audio` or `audio_stop` event to the process mixer.
     pub(super) fn event(&self, name: &str, value: &Value) {
         self.event_on(global, name, value);
     }
@@ -373,7 +352,6 @@ fn channels(value: &Value) -> Option<u16> {
         .then_some(channels)
 }
 
-/// The interleaved samples of an `audio` event, whole frames of `channels`.
 fn pcm(value: &Value, channels: usize) -> Option<Vec<i16>> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value["pcm"].as_str()?)
@@ -390,8 +368,8 @@ fn pcm(value: &Value, channels: usize) -> Option<Vec<i16>> {
     )
 }
 
-/// Whether `value` is a well-formed audio event, for the transport's
-/// validation (a malformed one is dropped, never a reason to fail the host).
+/// Whether `value` is a well-formed audio event, for the transport's validation (a
+/// malformed one is dropped, never a reason to fail the host).
 pub(super) fn valid_event(name: &str, value: &Value) -> bool {
     match name {
         "audio_start" => rate(value).is_some() && channels(value).is_some(),
@@ -477,7 +455,6 @@ mod tests {
             assert_eq!(written(&sink), [1, 1, 2, 2, 3, 3]);
             mixer.shutdown();
         }
-        // Phase `a_24k_stream_is_resampled_to_twice_the_frames`.
         {
             let (mixer, sink) = mixer(IDLE_CLOSE);
             let id = mixer.attach(24_000, 2);
@@ -489,7 +466,6 @@ mod tests {
             let samples = written(&sink);
             let frames = samples.len() / 2;
             assert!((4790..=4802).contains(&frames), "{frames} frames");
-            // Linear interpolation: the ramp stays monotonic and in tune.
             assert!(samples.chunks(2).all(|f| f[0] == -f[1]));
             assert!(samples.chunks(2).map(|f| f[0]).is_sorted());
             mixer.shutdown();
@@ -546,8 +522,6 @@ mod tests {
                 IDLE_CLOSE,
             );
             let id = mixer.attach(48_000, 2);
-            // The worker takes one packet and stalls opening the device; the
-            // flood behind it is bounded, newest kept.
             for round in 0..50_i16 {
                 mixer.push(id, &vec![round; 4800 * 2]);
             }
@@ -603,8 +577,6 @@ mod tests {
         send("audio", json!({"pcm": ""}));
         send("audio_stop", json!({}));
         send("audio", json!({"pcm": encode(&[4, 4])}));
-        // The next stream's packet plays after whatever the stopped one let
-        // through.
         send("audio_start", json!({"rate": 48000, "channels": 2}));
         send("audio", json!({"pcm": encode(&[7, 7])}));
         tilo_test_env::wait_until("the next stream's packet plays", || {

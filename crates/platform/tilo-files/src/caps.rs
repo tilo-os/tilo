@@ -2,36 +2,26 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
 /// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Reading, crash-safe replacement, no-clobber creation, removal,
-    /// directories and listings inside a [`Dir`](crate::Dir).
+    /// Reading, crash-safe replacement, no-clobber creation, removal, directories and listings inside a
+    /// [`Dir`](crate::Dir).
     Files,
-    /// [`Dir::rename_noreplace`](crate::Dir::rename_noreplace). The web
-    /// emulates it under a Web Lock held by every `tilo-files` writer that
-    /// creates names.
+    /// The web emulates it under a Web Lock held by every `tilo-files` writer that creates names.
     RenameNoReplace,
-    /// [`Dir::lock`](crate::Dir::lock): `flock` natively, Web Locks (per
-    /// origin, across tabs) on the web.
+    /// [`Dir::lock`](crate::Dir::lock): `flock` natively, Web Locks (per origin, across tabs) on the
+    /// web.
     Locks,
-    /// The synchronous [`blocking`](crate::blocking) operations.
     Blocking,
-    /// [`Dir::native_path`](crate::Dir::native_path).
     NativePaths,
-    /// Permission bits and symbolic links in [`Meta`](crate::Meta).
     ModesAndLinks,
-    /// Change notifications for a directory.
     Watch,
-    /// Moving entries to the user's trash: [`Dir::trash`](crate::Dir::trash).
     Trash,
-    /// Owner-only directories with owner and access checks.
     Private,
-    /// Extended attributes.
     Attributes,
 }
 
@@ -53,11 +43,10 @@ pub(crate) const WEB_MODES: &str = "Browser storage has no permission bits or li
 pub(crate) const NOT_YET: &str = "Tilo cannot do this yet.";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux, macOS and the web, in that
-    /// order. A [`Dir`](crate::Dir) kept in memory provides less than its
-    /// target's column: no native paths, modes or links. On the web, blocking
-    /// calls work on the app locations the host mirrored
-    /// (`web::mirror`), except for locks.
+    /// The feature's availability on Linux, macOS and the web, in that order. A [`Dir`](crate::Dir)
+    /// kept in memory provides less than its target's column: no native paths, modes or links. On the
+    /// web, blocking calls work on the app locations the host mirrored (`web::mirror`), except for
+    /// locks.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {

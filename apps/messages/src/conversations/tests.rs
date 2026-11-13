@@ -63,7 +63,6 @@ fn a_delivered_message_lands_in_the_senders_conversation_under_a_derived_id() {
     let message = answer["message"].as_str().expect("the message's id");
     assert!(message.starts_with('m'), "{answer}");
 
-    // The same delivery again changes nothing and names no new message.
     let again = deliver(
         &mut app,
         json!({"from": "+1 555 0100", "body": "Running late, start without me",
@@ -313,8 +312,8 @@ fn the_agent_operations_are_offered_to_agents_as_reads_and_verbs() {
     }
 }
 
-/// What the record holds is what the window shows, live and in a past
-/// version, where the person's contacts and accounts are not read.
+/// What the record holds is what the window shows, live and in a past version, where the
+/// person's contacts and accounts are not read.
 #[test]
 fn a_past_version_reads_and_shows_its_messages() {
     ui::i18n::I18nManager::init("en-US");
@@ -344,7 +343,7 @@ fn a_past_version_reads_and_shows_its_messages() {
     assert!(shown.contains("Ada"), "{shown}");
     assert!(shown.contains("Marker kumquat parade"), "{shown}");
     assert!(shown.contains("Grace"), "{shown}");
-    assert!(!shown.contains("Your people, together"), "{shown}");
+    assert!(!shown.contains("No conversations yet"), "{shown}");
 
     app.effect(&MessagesEffect::OpenConversation {
         conversation: "Ada".into(),
@@ -358,5 +357,5 @@ fn a_past_version_reads_and_shows_its_messages() {
     assert!(then.contains("Ada"), "{then}");
     assert!(then.contains("Marker kumquat parade"), "{then}");
     assert!(!then.contains("Grace"), "{then}");
-    assert!(!then.contains("Your people, together"), "{then}");
+    assert!(!then.contains("No conversations yet"), "{then}");
 }

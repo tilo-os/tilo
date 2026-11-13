@@ -224,12 +224,10 @@ impl TopBarChrome {
                     .map(|participant| (workspace, participant))
             }) {
                 let is_agent = workspace.policy.grants.iter().any(|grant| {
-                    matches!(
-                        &grant.subject,
-                        tilo_action_policy::Subject::Agent(id)
-                            if id.eq_ignore_ascii_case(&participant.id)
-                                || id.eq_ignore_ascii_case(&participant.name)
-                    )
+                    grant.grantee.agent_id().is_some_and(|id| {
+                        id.eq_ignore_ascii_case(&participant.id)
+                            || id.eq_ignore_ascii_case(&participant.name)
+                    })
                 });
                 viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
             } else {
@@ -351,69 +349,75 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// The person's own avatar, ending at `right_x` : their face as everyone here sees it, drawn by
-    /// the one face painter the others' faces use ([`ui::presence::FaceStack::BAR`]), so it has
-    /// the same size, the same ring in their colour and the same initials. It opens their own
-    /// menu. Returns where the controls before it end.
-    pub(super) fn draw_own_avatar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> f64 {
-        let Some(own) = self.own_chip() else {
+    /// The person's own face as everyone here sees it, drawn by the one face painter the others'
+    /// faces use ([`ui::presence::FaceStack::BAR`]), so it has the same size, the same ring in
+    /// their colour and the same initials.
+    fn own_face(&self) -> Option<(String, String, Color)> {
+        let own = self.own_chip()?;
+        let (r, g, b) = own.rgb;
+        Some((own.name, own.identity, Color::from_rgb8(r, g, b)))
+    }
+
+    /// Where the person's own avatar stands, ending at `right_x`. It opens their own menu.
+    /// Returns where the controls before it end.
+    pub(super) fn place_own_avatar(&mut self, theme: &Theme, center_y: f64, right_x: f64) -> f64 {
+        self.placed.own_face = None;
+        let Some((name, identity, colour)) = self.own_face() else {
             self.own_avatar_rect = Rect::ZERO;
             return right_x;
         };
-        let (r, g, b) = own.rgb;
-        let face = ui::presence::Face::new(&own.name, &own.identity, Color::from_rgb8(r, g, b));
+        let face = ui::presence::Face::new(&name, &identity, colour);
         let stack = ui::presence::FaceStack::BAR;
-        let (rects, _) = stack.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (right_x, center_y),
-            (&[face], 0),
-            theme.tokens.colors.surfaces.base,
-        );
+        let (rects, _) = stack.layout((right_x, center_y), (&[face], 0));
         self.own_avatar_rect = Self::faces_drawn(rects)
             .first()
             .copied()
             .unwrap_or(Rect::ZERO);
+        self.placed.own_face = Some(right_x);
         right_x - stack.width_of(1, 0) - f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Paint an explicit, persistent disclosure beside the roster. An eye plus a count is retained
-    /// even for view-only shares; control changes the colour and adds a pointer count instead of
-    /// replacing visibility.
-    pub(super) fn draw_sharing_indicator(
-        &mut self,
+    /// Paint the person's own avatar where [`Self::place_own_avatar`] stood it.
+    pub(super) fn paint_own_avatar(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> f64 {
-        let (_, controllers, _) = self.sharing_summary();
-        // A sharing label exists exactly when someone is viewing.
-        let Some(label) = self.sharing_label() else {
-            self.sharing_indicator_rect = Rect::ZERO;
-            return right_x;
+    ) {
+        let (Some(right_x), Some((name, identity, colour))) =
+            (self.placed.own_face, self.own_face())
+        else {
+            return;
         };
-        // Sharing is one bar chip: the eye, the words, and the state's tone washed into the chip's
-        // body — warning where someone controls the windows, the accent while they only view.
+        let face = ui::presence::Face::new(&name, &identity, colour);
+        let _ = ui::presence::FaceStack::BAR.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (right_x, self.placed.center_y),
+            (&[face], 0),
+            theme.tokens.colors.surfaces.base,
+        );
+    }
+
+    /// The sharing disclosure's chip showing `label` in `available` room: the eye, the words, and
+    /// the state's tone washed into the chip's body — warning where someone controls the
+    /// windows, the accent while they only view.
+    pub(super) fn sharing_chip<'a>(
+        &self,
+        theme: &Theme,
+        label: &'a str,
+        available: f64,
+    ) -> ui::widget::BarChipFace<'a> {
+        let (_, controllers, _) = self.sharing_summary();
         let tokens = &theme.tokens;
         let color = if controllers > 0 {
             tokens.colors.semantic.warning
         } else {
             tokens.colors.intent.accent_ink
         };
-        let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
-        let chip = ui::widget::BarChipFace::new(&label, &[])
+        ui::widget::BarChipFace::new(label, &[])
             .icons(SHARE_GLYPH)
-            .label(&label)
+            .label(label)
             .label_width(available)
             .tone(color)
             .at_height(BAR_CONTROL_PX)
@@ -421,34 +425,68 @@ impl TopBarChrome {
             .focused(
                 self.focus_ring_visible()
                     && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
-            );
-        let width = chip.width(text_renderer, theme);
-        self.sharing_indicator_rect =
-            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            self.sharing_indicator_rect,
-            tokens.colors.surfaces.base,
-        );
-        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s2)
+            )
     }
 
-    /// A quiet offer to continue the tab another of this person's devices just moved to, left of
-    /// the roster, with its own dismiss chip. It yields to the centre band: with no room for a
-    /// readable label it is not drawn at all (the palette still offers it).
-    pub(super) fn draw_continuity_chip(
+    /// Where the explicit, persistent disclosure beside the roster stands. An eye plus a count is
+    /// retained even for view-only shares; control changes the colour and adds a pointer count
+    /// instead of replacing visibility.
+    pub(super) fn place_sharing_indicator(
         &mut self,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> f64 {
+        self.placed.sharing = None;
+        // A sharing label exists exactly when someone is viewing.
+        let Some(label) = self.sharing_label() else {
+            self.sharing_indicator_rect = Rect::ZERO;
+            return right_x;
+        };
+        let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
+        let width = self
+            .sharing_chip(theme, &label, available)
+            .width(text_renderer, theme);
+        self.sharing_indicator_rect =
+            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
+        self.placed.sharing = Some((label, available));
+        self.sharing_indicator_rect.x0 - f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// Paint the disclosure where [`Self::place_sharing_indicator`] stood it.
+    pub(super) fn paint_sharing_indicator(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
+    ) {
+        let Some((label, available)) = self.placed.sharing.as_ref() else {
+            return;
+        };
+        let _ = self.sharing_chip(theme, label, *available).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            self.sharing_indicator_rect,
+            theme.tokens.colors.surfaces.base,
+        );
+    }
+
+    /// Where a quiet offer to continue the tab another of this person's devices just moved to
+    /// stands, left of the roster, with its own dismiss chip. It yields to the centre band: with
+    /// no room for a readable label it does not stand at all (the palette still offers it).
+    pub(super) fn place_continuity_chip(
+        &mut self,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
         center_y: f64,
-        label: Option<&str>,
+        label: Option<String>,
     ) {
         use ui::widget::{ChipFace, ChipLead};
 
         self.continuity_rect = Rect::ZERO;
         self.continuity_dismiss_rect = Rect::ZERO;
+        self.placed.continuity = None;
         let Some(label) = label else {
             return;
         };
@@ -458,7 +496,7 @@ impl TopBarChrome {
         let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
-        let natural = ChipFace::intrinsic_width(label, lead, false, text_renderer, theme);
+        let natural = ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
         let room = right - dismiss_w - gap - left_limit;
         // Below this the label elides to a word or two and stops saying what it offers.
         if room < 96.0 {
@@ -469,12 +507,24 @@ impl TopBarChrome {
         self.continuity_dismiss_rect = Rect::new(right - dismiss_w, top, right, top + height);
         let chip_right = self.continuity_dismiss_rect.x0 - gap;
         self.continuity_rect = Rect::new(chip_right - width, top, chip_right, top + height);
-        ChipFace::new(self.continuity_rect, label).lead(lead).paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-        );
+        self.placed.continuity = Some(label);
+    }
+
+    /// Paint the continuity offer where [`Self::place_continuity_chip`] stood it.
+    pub(super) fn paint_continuity_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        use ui::widget::{ChipFace, ChipLead};
+        let Some(label) = self.placed.continuity.as_ref() else {
+            return;
+        };
+        ChipFace::new(self.continuity_rect, label)
+            .lead(ChipLead::Glyph(ui::icons::Icon::Monitor))
+            .paint(scene, transform, text_renderer, theme);
         ChipFace::new(self.continuity_dismiss_rect, "")
             .lead(ChipLead::Glyph(ui::icons::Icon::X))
             .paint(scene, transform, text_renderer, theme);

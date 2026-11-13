@@ -2,10 +2,6 @@
 //! plain file and a stand-in for the old password database: moving people
 //! off their old password, the admin's system keyslot, changing secrets,
 //! recovery, the TPM lockout authorisation and the boot sign-in.
-//!
-//! Needs `swtpm`, `tpm2-tools` and `cryptsetup` (`TILO_REQUIRE_SWTPM=1` makes
-//! their absence a failure). The boot sign-in test also needs the kernel
-//! keyring.
 
 #![allow(
     clippy::unwrap_used,
@@ -54,7 +50,6 @@ const FAST: PasswordParams = PasswordParams {
     p_cost: 1,
 };
 
-/// The old password database: a password per name, and who has been locked.
 #[derive(Clone, Default)]
 struct OldPasswords {
     passwords: Arc<Mutex<HashMap<String, String>>>,
@@ -95,7 +90,6 @@ impl Legacy for OldPasswords {
 }
 
 struct Machine {
-    /// `None` is a machine without a usable TPM.
     tpm: Option<Swtpm>,
     dir: tempfile::TempDir,
     device: PathBuf,
@@ -158,7 +152,6 @@ impl Machine {
         }
     }
 
-    /// What bootc does to a deployment that leaves the rollback set.
     fn prune(&self, name: &str) {
         std::fs::remove_dir_all(self.path("sysroot/ostree/deploy/default/deploy").join(name))
             .unwrap();
@@ -445,7 +438,6 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
     assert_eq!(m.old.locked(), ["ada"]);
     assert_eq!(record.secret, Some(SecretKind::Pin));
 
-    // The old slots stay; one new slot opens with the derived passphrase.
     let slot = record.system_keyslot.expect("a system keyslot");
     assert_eq!(m.slots(), ["0", "1", &slot.to_string()]);
     assert!(m.opens(DISK_PASSPHRASE));
@@ -461,14 +453,12 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
     assert!(m.path("lockout.json").exists());
     assert!(m.path("lockout-auth").exists());
 
-    // From now on the record answers, not the old password.
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     let wrong = verify(&daemon, ADA, "ada", "000000");
     assert_eq!(wrong.error, Some(Refusal::Wrong));
     assert_eq!(wrong.tries_left, Some(4));
     assert_eq!(m.tries_used(), 1);
 
-    // The same wrong entry again is not another try.
     let again = verify(&daemon, ADA, "ada", "000000");
     assert_eq!(again.error, Some(Refusal::Wrong));
     assert_eq!(m.tries_used(), 1);
@@ -478,7 +468,6 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
     );
     assert_eq!(m.tries_used(), 2);
 
-    // A later sign-in neither adds a slot nor rewrites the token.
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert_eq!(m.slots().len(), 3);
     assert_eq!(luks::tokens(&runner, &m.device).unwrap(), tokens);
@@ -607,7 +596,6 @@ fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
         |peer: Peer, user: &str| reply(daemon.handle(peer, Request::KeyHeld { user: user.into() }));
     assert_eq!(held(ROOT, "ada").key_held, Some(false));
 
-    // Signed in at the login screen: held, but no session of hers runs yet.
     assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
     assert_eq!(held(GREETER, "ada").key_held, Some(false));
 
@@ -623,7 +611,6 @@ fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
     m.session(ADA.uid, true);
     assert_eq!(held(ROOT, "ada").key_held, Some(false));
 
-    // A wrong entry holds nothing.
     assert_eq!(
         verify(&daemon, ADA, "ada", "000000").error,
         Some(Refusal::Wrong)
@@ -641,7 +628,6 @@ fn the_login_screen_learns_whether_a_secret_is_a_pin() {
     let kind = |peer: Peer, user: &str| {
         reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
     };
-    // Not enrolled yet: the record does not say.
     assert_eq!(kind(GREETER, "ada"), Reply::success());
 
     assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
@@ -719,7 +705,6 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
     );
     assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
 
-    // The user key, and with it the keyslot, stays the same.
     let record = m.record(ADA.uid).unwrap();
     assert_eq!(record.system_keyslot, Some(slot));
     assert!(m.opens(&m.user_key(ADA.uid, "2468").system_volume_passphrase()));
@@ -729,7 +714,6 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
         luks::SigninToken::mirror(&record, slot)
     );
 
-    // Recovery: root only, and only once a recovery wrapper exists.
     let recovery = m.recovery.formatted();
     assert_eq!(
         change(ADA, None, Some(&recovery), "1357"),
@@ -788,7 +772,6 @@ fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
         ))
     };
 
-    // Knowing the current secret gives the greeter nothing.
     assert_eq!(
         change(Some("123456"), None, "2468"),
         refused(Refusal::NotPermitted)
@@ -893,7 +876,6 @@ fn the_lockout_authorisation_moves_under_the_keys_and_recovery_ends_a_lockout() 
 mod keyring {
     use super::*;
 
-    /// Where a skipped test runs after all.
     const COVERED: &str = "the tilo-auth-keyring check runs it in a micro-VM";
 
     fn keyring_usable() -> Result<(), String> {
@@ -997,7 +979,6 @@ mod keyring {
             ..m.config()
         };
 
-        // A handoff whose key opens no keyslot is dropped.
         handoff::add(
             &Handoff {
                 uid: ADA.uid,
@@ -1022,7 +1003,6 @@ mod keyring {
         assert_eq!(claim("bob"), refused(Refusal::NoBootSignIn));
         assert_eq!(claim("ada"), Reply::success());
         assert_eq!(claim("ada"), refused(Refusal::NoBootSignIn));
-        // The session the boot sign-in started holds her key.
         m.session(ADA.uid, true);
         assert_eq!(
             reply(daemon.handle(ROOT, Request::KeyHeld { user: "ada".into() })).key_held,
@@ -1037,7 +1017,6 @@ fn the_socket_answers_with_the_peers_own_rights() {
     let me = rustix::process::getuid().as_raw();
     let m = machine!(false, &[("ada", "correct horse battery staple")], me);
     let daemon = Arc::new(m.daemon_with(Config {
-        // Not root: the socket's peer is this test's own uid.
         privileged_uid: u32::MAX,
         ..m.config()
     }));
@@ -1079,7 +1058,6 @@ fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
     m.deployment("bbbb.0", true);
     let daemon = m.daemon();
 
-    // ada moves onto her user key; the image she came from keeps her hash.
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert!(m.record(ADA.uid).unwrap().enrolled());
     assert!(
@@ -1110,7 +1088,6 @@ fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
     );
     assert!(m.old.locked().is_empty());
 
-    // The old image leaves the rollback set: the next start locks it, once.
     m.prune("aaaa.0");
     m.daemon().settle_old_passwords();
     assert_eq!(m.old.locked(), ["ada"]);
@@ -1137,7 +1114,6 @@ fn the_old_password_hash_stays_until_the_booted_update_is_confirmed() {
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert!(m.old.locked().is_empty(), "generation 8 is not confirmed");
 
-    // Confirmed: the next sign-in locks it.
     tilo_rollback::confirm::save_state(&rollback_state, &state(8)).unwrap();
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert_eq!(m.old.locked(), ["ada"]);
@@ -1151,7 +1127,6 @@ fn a_hash_back_after_rolling_back_and_forward_locks_again() {
     assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
     assert_eq!(m.old.locked(), ["ada"]);
 
-    // An older image's /etc, carried forward, brings the hash back.
     m.old
         .passwords
         .lock()
@@ -1199,7 +1174,6 @@ fn the_sign_in_comforts_reach_the_header_only_when_they_change() {
     let (runner, ws) = m.runner();
     assert_eq!(comforts(&daemon, BOB), None);
 
-    // Bob has no record here; the greeter and root may always change them.
     let reader = serde_json::json!({"screen_reader": true, "screen_reader_rate": 900});
     assert_eq!(
         set_comforts(&daemon, BOB, reader.clone()),
@@ -1230,7 +1204,6 @@ fn the_sign_in_comforts_reach_the_header_only_when_they_change() {
     assert_eq!(set_comforts(&daemon, ROOT, reader), Reply::success());
     assert_eq!(luks::comforts(&runner, &m.device).unwrap(), Some(stranger));
 
-    // A person with a record changes them, and the token is rewritten.
     assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery staple"),
         Reply::success()

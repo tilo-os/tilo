@@ -1,9 +1,7 @@
-//! Device-neutral action bindings and the legends shown beside controls.
-//!
-//! Applications bind an action id to semantic keyboard modifiers, controller
-//! *positions*, or touch gestures. The host supplies platform and controller
-//! conventions when painting, so an app never hard-codes `Ctrl`, Xbox `A`, or
-//! a textual gesture description into its UI.
+//! Device-neutral action bindings and the legends shown beside controls. Applications bind an action id
+//! to semantic keyboard modifiers, controller *positions*, or touch gestures. The host supplies
+//! platform and controller conventions when painting, so an app never hard-codes `Ctrl`, Xbox `A`, or a
+//! textual gesture description into its UI.
 
 use std::collections::BTreeMap;
 use tilo_sort::CompactSort as _;
@@ -88,8 +86,8 @@ impl KeyLegend {
         self.label_for(platform, family)
     }
 
-    /// The legend of this key on a keyboard of `family` typing with the
-    /// active layout ([`crate::keycaps::active`]).
+    /// The legend of this key on a keyboard of `family` typing with the active layout
+    /// ([`crate::keycaps::active`]).
     pub fn label_for(&self, _platform: PlatformConventions, family: KeyboardFamily) -> String {
         let keycaps = crate::keycaps::active().on_family(family);
         match self {
@@ -99,7 +97,6 @@ impl KeyLegend {
         }
     }
 
-    /// The canonical name of a named key.
     fn name(&self) -> &'static str {
         match self {
             Self::Character(_) | Self::Function(_) => "",
@@ -138,9 +135,8 @@ impl KeyboardBinding {
         Self { modifiers, key }
     }
 
-    /// The chord of `keys` as a person names them ("Ctrl", "Shift", "S"):
-    /// each modifier by any spelling the chord parsers accept, the last other
-    /// key the chord's key.
+    /// The chord of `keys` as a person names them ("Ctrl", "Shift", "S"): each modifier by any spelling
+    /// the chord parsers accept, the last other key the chord's key.
     pub fn from_keys<'a>(keys: impl IntoIterator<Item = &'a str>) -> Self {
         let mut modifiers = Vec::new();
         let mut key = KeyLegend::Character(String::new());
@@ -167,9 +163,8 @@ impl KeyboardBinding {
         )
     }
 
-    /// One label per physical-looking cap; callers should not join these
-    /// into prose because [`widget::InputHint`](crate::widget::InputHint)
-    /// paints each separately.
+    /// One label per physical-looking cap; callers should not join these into prose because
+    /// [`widget::InputHint`](crate::widget::InputHint) paints each separately.
     pub fn keycap_labels(&self, platform: PlatformConventions) -> Vec<String> {
         let family = if platform.platform() == Platform::MacOs {
             KeyboardFamily::Apple
@@ -198,8 +193,8 @@ impl KeyboardBinding {
     }
 }
 
-/// What `modifier` is called: the platform's own convention where the host
-/// is macOS or Windows, otherwise the legend the active layout prints on it.
+/// What `modifier` is called: the platform's own convention where the host is macOS or Windows,
+/// otherwise the legend the active layout prints on it.
 fn modifier_label(
     modifier: KeyboardModifier,
     platform: PlatformConventions,
@@ -383,8 +378,7 @@ pub struct ActionBindings {
     pub bindings: Vec<InputBinding>,
 }
 
-/// Rebindable, app-owned actions. This intentionally stores stable action ids
-/// instead of callbacks so apps can persist the map in their ordinary state.
+/// Rebindable, app-owned actions.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingSet {
     actions: BTreeMap<String, ActionBindings>,
@@ -415,9 +409,8 @@ impl BindingSet {
         &self.actions
     }
 
-    /// Replace one binding after checking the whole application for a
-    /// collision. Passing `allow_conflict` is an explicit UX choice; silent
-    /// shadowing is never the default.
+    /// Replace one binding after checking the whole application for a collision. Passing
+    /// `allow_conflict` is an explicit UX choice; silent shadowing is never the default.
     pub fn rebind(
         &mut self,
         action_id: &str,

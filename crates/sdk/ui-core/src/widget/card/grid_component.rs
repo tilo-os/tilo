@@ -1,11 +1,5 @@
-//! [`CardGrid`] as a described component: cards as parts in a slot, each a card of a resource
-//! with what it shows, and pressing one reported with the resource it stands for.
-//!
-//! The cards are [`CardGridCardProps`], read by the grid: it builds each as a [`Card`], so a
-//! card's title, count, selection and activation come from its part, and its body's views are
-//! its own. The grid changes in place: a card that came in is inserted where it goes, one gone
-//! is removed, one that changed is replaced where it stands, and the rest stay mounted where
-//! they are, so a press under the pointer and a card's own state survive.
+//! [`CardGrid`] as a described component: cards as parts in a slot, each a card of a resource with what
+//! it shows, and pressing one reported with the resource it stands for.
 
 use crate::component::{Component, Described, Event, ResourceId};
 use crate::widget::Widget;
@@ -41,15 +35,14 @@ pub struct CardGridCardProps {
 
 crate::component::part_slot!(CardGridCardProps);
 
-/// Cards in equal, aligned columns: the apps of a store, the devices of a network, the
-/// paragraphs of a review. Each card is a resource, and pressing one opens it.
+/// Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a
+/// review.
 #[derive(Component, Default)]
 #[component(name = "CardGrid", role = "List", label = "name")]
 pub struct CardGridProps {
     /// What the grid is, for assistive technology.
     pub name: Option<String>,
-    /// How wide a card is at least before the grid drops a column: small, regular or wide
-    /// objects.
+    /// How wide a card is at least before the grid drops a column: small, regular or wide objects.
     pub card_width: Option<CardWidth>,
     /// The cards, in order.
     #[component(slot(default))]
@@ -62,8 +55,6 @@ crate::component::choice!(CardWidth, "CardWidth", {
     Wide => "wide",
 });
 
-/// One card of the grid as the grid builds it: its key (the resource it stands for), its widget,
-/// and what pressing it does.
 fn card_of(props: CardGridCardProps) -> (String, Element) {
     let CardGridCardProps {
         item,
@@ -101,8 +92,6 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
     (key, Box::new(card))
 }
 
-/// What a card says around its body — whether it is selected, and its title and count — taken
-/// where the card stands: its body, its place and what a press on it does stay.
 fn say(props: CardGridCardProps, card: &mut crate::widget::Card) {
     card.set_selected(props.selected);
     let title = props.title.filter(|title| !title.is_empty());
@@ -124,11 +113,9 @@ pub struct DescribedCardGrid {
     grid: CardGrid,
     /// The key each card shown stands for, in order: the grid is changed by them.
     shown: Vec<String>,
-    /// What the grid was made with, the cards aside.
     face: Face,
 }
 
-/// What decides the grid, its cards aside: the same again is taken in place.
 #[derive(Clone, Debug, PartialEq)]
 struct Face {
     name: Option<String>,
@@ -136,13 +123,11 @@ struct Face {
 }
 
 impl DescribedCardGrid {
-    /// The grid, for a test of what it shows and keeps.
     #[must_use]
     pub fn grid(&self) -> &CardGrid {
         &self.grid
     }
 
-    /// The grid, to change.
     pub fn grid_mut(&mut self) -> &mut CardGrid {
         &mut self.grid
     }
@@ -176,12 +161,6 @@ impl Described for DescribedCardGrid {
         }
     }
 
-    /// The cards change by key where they stand: one that came in is inserted, one that moved
-    /// is moved, one gone is removed, and what a card says around its body changes on the card
-    /// itself. The body each card shows stays where it stands.
-    ///
-    /// Props given in place name the cards and carry none of their bodies, so a card's body is
-    /// never rebuilt from them: rebuilding would show every card empty.
     fn set_props(&mut self, props: CardGridProps) -> bool {
         let CardGridProps {
             name,
@@ -210,8 +189,6 @@ impl Described for DescribedCardGrid {
                     let key = self.shown.remove(had);
                     self.shown.insert(at, key);
                 }
-                // What the card says around its body changes on the card where it stands: its
-                // body is the card's own and stays.
                 if let Some(held) = self.grid.card_mut(at).and_then(|card| {
                     card.as_any_mut()
                         .and_then(|any| any.downcast_mut::<crate::widget::Card>())
@@ -228,7 +205,6 @@ impl Described for DescribedCardGrid {
     }
 }
 
-/// A card grid is its grid.
 impl crate::widget::Decorator for DescribedCardGrid {
     type Inner = dyn crate::widget::Widget;
 

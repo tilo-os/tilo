@@ -1,12 +1,8 @@
-//! A live window opens on its pane without reading every other area of
-//! Settings first, and loses nothing for it: the pane shown
-//! accepts what it accepted, a row of an area not yet read is still
-//! reached, and a few frames after the first the window publishes exactly
-//! what reading every area up front published.
-//!
-//! Each case compares a window that puts its reads off, as one reaching
-//! the device does, with one that reads every area before its first frame,
-//! as a screenshot or a test does, both over the same stand-ins.
+//! A live window opens on its pane without reading every other area of Settings
+//! first, and loses nothing for it: the pane shown accepts what it accepted, a
+//! row of an area not yet read is still reached, and a few frames after the
+//! first the window publishes exactly what reading every area up front
+//! published.
 
 use std::collections::BTreeSet;
 
@@ -16,12 +12,10 @@ use crate::effects::{defer_area_reads_in_tests, pane_row_id};
 
 use ui::framework::testing::TestApp;
 
-/// A window that reads every area before its first frame.
 fn reading_first() -> TestApp<SettingsShell> {
     TestApp::<SettingsShell>::new().expect("settings opens headlessly")
 }
 
-/// A window that reads its areas as one reaching the device does.
 fn reading_after() -> TestApp<SettingsShell> {
     defer_area_reads_in_tests(true);
     let app = TestApp::<SettingsShell>::new();
@@ -29,7 +23,6 @@ fn reading_after() -> TestApp<SettingsShell> {
     app.expect("settings opens headlessly")
 }
 
-/// The areas that have read, by profiling name.
 fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
     app.with_widget::<crate::window::Inspected, _>(|settings| {
         crate::area::registry()
@@ -42,8 +35,6 @@ fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
     .expect("the settings surface is mounted")
 }
 
-/// `resource` as inert data, children included: what agents, the palette
-/// and accessibility read.
 fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     let mut own = resource.clone();
     own.children.clear();
@@ -58,14 +49,11 @@ fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     })
 }
 
-/// What the window publishes: its resource tree and every action on it.
 fn published(app: &mut TestApp<SettingsShell>) -> (serde_json::Value, serde_json::Value) {
     let resources = app.harness().resources().iter().map(outline).collect();
     (resources, app.agent_surface())
 }
 
-/// Print leaf differences before the full assertion, whose large resource
-/// forest can exceed the CI log's per-line limit.
 fn report_resource_difference(deferred_tree: &serde_json::Value, eager_tree: &serde_json::Value) {
     fn flatten(
         value: &serde_json::Value,
@@ -132,8 +120,6 @@ fn report_resource_difference(deferred_tree: &serde_json::Value, eager_tree: &se
     }
 }
 
-/// Every node a screen reader is told about: its role, its name and
-/// whether it accepts input.
 fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bool)> {
     app.harness()
         .a11y_nodes()
@@ -148,8 +134,6 @@ fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bo
         .collect()
 }
 
-/// Every resource id the live window publishes before its first frame:
-/// what its first control-availability refresh built.
 fn before_the_first_frame(deferred: bool) -> BTreeSet<String> {
     fn collect(resources: &[tilo_actions::ResourceSpec], ids: &mut BTreeSet<String>) {
         for resource in resources {
@@ -188,7 +172,6 @@ fn the_first_refresh_reads_only_the_pane_shown() {
         put_off.contains(&&"settings.display-output:eDP-1".to_owned()),
         "an area the pane shown does not read is put off: {put_off:?}"
     );
-    // The first pane is Network: every row it shows is published at once.
     assert!(
         put_off.iter().all(|id| ![
             "settings.network",
@@ -251,9 +234,6 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     }
     window.settle();
     let settled = published(&mut window);
-    // Compare with a window that reads first now, beside the one that has
-    // just read: the device's account file both take in is shared with
-    // the tests running beside this one.
     let mut first = reading_first();
     first.settle();
     let whole = published(&mut first);
@@ -270,9 +250,6 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
     );
 }
 
-/// The host asks for a pending host intent on every turn of its event
-/// loop, the first before the first frame. Asking reads no
-/// display: a display move is only pending in a model an effect has read.
 #[test]
 fn asking_for_a_host_intent_reads_no_display() {
     let mut window = reading_after();

@@ -12,12 +12,9 @@ use ui::tilo_resource::Atom;
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presence};
 
 /// The time, in milliseconds since the Unix epoch, the sample roster's
-/// "last used" reads against.
 const SAMPLE_NOW_MS: i64 = 1_790_000_000_000;
 
 /// What a screenshot shows that the document does not hold: the time "last
-/// used" reads against, which machines answered, and the Tilo devices
-/// nearby.
 pub(crate) struct Sample {
     pub(crate) now_ms: i64,
     pub(crate) presence: HashMap<ConnectionId, Presence>,
@@ -44,7 +41,6 @@ impl Sample {
 }
 
 /// Readable fixture input for a sample connection. Named fields keep adjacent
-/// strings, enums, and booleans from being silently transposed.
 struct ConnectionSeed<'a> {
     name: &'a str,
     host: &'a str,
@@ -61,7 +57,6 @@ struct ConnectionSeed<'a> {
 }
 
 /// The stable id of the `index`th sample machine, so a scenario's frame is
-/// identical on every run.
 pub(super) fn sample_id(index: u128) -> ConnectionId {
     Uuid::from_u128(0x7e40_7e00_0000_0000_0000_0000_0000_0000 | index)
 }
@@ -85,7 +80,6 @@ impl ConnectionSeed<'_> {
     }
 }
 
-/// Hand `read` the lived-in list of saved machines, each with its index.
 #[allow(
     clippy::too_many_lines,
     reason = "fixture data: one named record per sample machine"
@@ -195,7 +189,6 @@ fn with_sample_seeds<T>(read: impl FnOnce(Vec<(u128, ConnectionSeed<'_>)>) -> T)
 }
 
 /// A lived-in list of saved machines, with fixed ids so every screenshot is
-/// the same document.
 pub(crate) fn sample_connections() -> Vec<Connection> {
     with_sample_seeds(|seeds| {
         seeds
@@ -225,7 +218,6 @@ fn legacy_rdp_seed() -> (u128, ConnectionSeed<'static>) {
 }
 
 /// A remote desktop profile saved before Remote dropped RDP: kept so its
-/// owner can switch it to a protocol Remote opens.
 pub(crate) fn sample_legacy_rdp() -> Connection {
     let (index, seed) = legacy_rdp_seed();
     seed.build(index)

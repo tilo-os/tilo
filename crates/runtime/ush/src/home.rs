@@ -13,7 +13,6 @@ use crate::store::Store;
 use crate::supervisor::{Resolved, Session};
 
 impl Session {
-    /// The record this session names ([`Records::resolve`]), with its home.
     pub fn resolve_record(&self) -> anyhow::Result<(String, Environment)> {
         let records = self.records();
         let (key, environment) =
@@ -46,8 +45,6 @@ pub fn with_home(
     if !workspace.is_dir()
         && let Err(error) = std::fs::create_dir_all(workspace)
     {
-        // Without its files the environment keeps a home of its own in the
-        // store, as on a device without them, and gets this one next time.
         tracing::warn!(
             home = %workspace.display(),
             %error,
@@ -69,9 +66,6 @@ pub fn with_home(
     Ok(environment)
 }
 
-/// Where `~` is for `environment`'s shell, on the Tilo side and in its
-/// guest alike: its home, the workspace's folder; else, where this device
-/// has no workspace, the home its guest binds at `/home/<user>`.
 #[must_use]
 pub fn home_of(environment: &Environment, user: &GuestUser) -> PathBuf {
     match environment.home {
@@ -82,10 +76,6 @@ pub fn home_of(environment: &Environment, user: &GuestUser) -> PathBuf {
     }
 }
 
-/// Where `~` is in `resolved`'s guest, the directory on this device that
-/// is, and whether the guest reaches it through its grants (the workspace's
-/// folder) rather than a bind of its own at `/home/<user>` (no workspace
-/// here, or an ephemeral home).
 #[must_use]
 pub fn guest_home(
     resolved: &Resolved,

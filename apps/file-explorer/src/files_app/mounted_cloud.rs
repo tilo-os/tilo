@@ -1,4 +1,4 @@
-//! Lazy, credential-free descriptions of mounted cloud entries.
+//! Lazy, credential-free descriptions of mounted cloud folders.
 #[cfg(test)]
 #[path = "mounted_cloud_tests.rs"]
 mod tests;
@@ -81,7 +81,6 @@ impl FilesState {
         }
         self.mounted_cloud.snapshot = snapshot;
         self.mounted_cloud.descriptions.clear();
-        // A reply for a previous listing cannot label a replacement item.
         self.mounted_cloud.pending = None;
         true
     }

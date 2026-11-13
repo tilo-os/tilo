@@ -1,6 +1,5 @@
-//! Dropbox metadata (`FileMetadata`, `FolderMetadata`, `DeletedMetadata`)
-//! and the id/path bookkeeping that turns path-addressed entries into
-//! id-addressed items.
+//! Dropbox metadata (`FileMetadata`, `FolderMetadata`, `DeletedMetadata`) and the
+//! id/path bookkeeping that turns path-addressed entries into id-addressed items.
 
 use std::collections::{HashMap, HashSet};
 
@@ -54,8 +53,6 @@ impl Entry {
     }
 }
 
-/// The parent path of a lowercased Dropbox path (`"/a/b"` → `"/a"`,
-/// `"/a"` → `""`).
 pub fn parent_path(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
@@ -87,7 +84,6 @@ impl Paths {
         self.by_path.get(path)
     }
 
-    /// Record that `id` lives at `path`.
     pub fn insert(&mut self, id: &ItemId, path: &str) {
         if let Some(old) = self.by_id.get(id).cloned()
             && old != path
@@ -106,11 +102,8 @@ impl Paths {
         self.by_id.insert(id.clone(), path.to_owned());
     }
 
-    /// Forget `path` and everything below it, returning their ids with
-    /// `path`'s own first.
     pub fn remove_tree(&mut self, path: &str) -> Vec<ItemId> {
         if path.is_empty() {
-            // The account root is never deleted.
             return Vec::new();
         }
         let mut doomed: Vec<(String, ItemId)> = self
@@ -127,7 +120,6 @@ impl Paths {
         doomed.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// A folder moved from `from` to `to`: rewrite the paths below it.
     pub fn rebase(&mut self, from: &str, to: &str) {
         if from == to || from.is_empty() {
             return;
@@ -147,7 +139,6 @@ impl Paths {
         }
     }
 
-    /// Consume a vacated mark for `path`.
     pub fn take_vacated(&mut self, path: &str) -> bool {
         self.vacated.remove(path)
     }

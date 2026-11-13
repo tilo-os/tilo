@@ -1,17 +1,12 @@
 //! `tilo-vm swap kernel` and the kernel half of `tilo-vm rollback --slot vm`.
 //!
-//! The kernel is the one boot component a dev VM can swap. Its manifest entry
-//! names the script that builds it (`dev_build`, os/kernel/dev-build.sh: the
-//! release build's source tree, fragments, patches and signing path, kept
-//! incremental under `~/.cache/tilo-kernel/`). Then either
+//! The kernel is the one boot component a dev VM can swap; its manifest entry names the script that
+//! builds it (`dev_build`, kept incremental under `~/.cache/tilo-kernel/`). Either
 //!
-//! * install: the staged `usr/lib/modules/<release>/` goes to the VM as a
-//!   layer in the `vm` slot (so generations and rollback work as for any
-//!   VM-wide component), tilo-vmd merges it, builds the initramfs with the
-//!   image's dracut and makes it the next boot entry; tilo-vm reboots the VM
-//!   and confirms the new kernel came up, which makes the entry the default;
-//! * or `--direct`: the hypervisor boots the host-built vmlinuz and a generic
-//!   initramfs itself (libvirt direct kernel boot), for pure boot testing.
+//! * install: the staged `usr/lib/modules/<release>/` goes to the VM as a layer in the `vm` slot, so
+//!   generations and rollback work as for any VM-wide component, and the VM reboots onto it;
+//! * or `--direct`: the hypervisor boots the host-built vmlinuz and a generic initramfs itself, for
+//!   pure boot testing.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -35,21 +30,16 @@ use crate::remote::{self, Remote};
 use crate::sshkey;
 use crate::vmbuild;
 
-/// How long a rebooted VM gets to answer SSH on its new kernel.
 const REBOOT_TIMEOUT: Duration = Duration::from_secs(240);
 
-/// What os/kernel/dev-build.sh writes to `--result`.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Built {
     pub kver: String,
-    /// `uname -v` of the built kernel.
     pub uts_version: String,
-    /// The staged `lib/modules/<kver>/` (vmlinuz, signed modules, modules.*).
     pub modules: PathBuf,
     pub vmlinuz: PathBuf,
     #[serde(default)]
     pub initrd: Option<PathBuf>,
-    /// `~/.cache/tilo-kernel/<linux version>/`.
     pub cache: PathBuf,
     pub builder_image: String,
     pub jobs: u32,
@@ -58,7 +48,6 @@ pub struct Built {
     pub log: String,
 }
 
-/// `bash <script> --result <file> [--jobs N] [--direct-initrd]`.
 pub fn build_command(script: &str, result: &Path, jobs: Option<u32>, direct: bool) -> CommandLine {
     let mut command =
         CommandLine::new("bash", &[script, "--result"]).arg(result.display().to_string());
@@ -81,13 +70,10 @@ pub fn direct_cmdline(cmdline: &str) -> String {
         .join(" ")
 }
 
-/// Where a kernel layer is synced in the VM before import: `<dir>/usr/lib/modules/`.
 pub fn vm_staging_dir(worktree_id: &str) -> String {
     format!("/var/lib/tilo-vm/kernel/{worktree_id}")
 }
 
-/// rsync the staged module tree into `<staging>/usr/lib/modules/`, sending
-/// only what changed since the last swap from this worktree.
 pub fn rsync_modules(
     built: &Built,
     endpoint: &SshEndpoint,
@@ -113,7 +99,6 @@ pub fn rsync_modules(
     .arg(format!("{}@{}:{dest}/", endpoint.user, endpoint.host)))
 }
 
-/// Pack the staged module tree as a layer: `usr/lib/modules/<kver>/`.
 pub fn pack(built: &Built, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
@@ -128,11 +113,8 @@ pub fn pack(built: &Built, out: &Path) -> Result<(), CliError> {
         .map_err(CliError::io("finish kernel layer"))
 }
 
-/// What identifies a kernel layer: the worktree's commit and dirty state,
-/// the architecture, and (as `features`) the release and builder image.
 pub fn provenance(worktree: &Worktree, built: &Built, arch: &str) -> Provenance {
     let mut provenance = build::source_provenance(worktree, "kernel", "host");
-    // Not a cargo build: the image's Cargo.lock says nothing about it.
     provenance.cargo_lock_hash = None;
     provenance.target = Some(format!("{arch}-unknown-linux-gnu"));
     provenance.features = vec![
@@ -153,7 +135,6 @@ fn seconds(since: Instant) -> f64 {
 }
 
 impl App {
-    /// `tilo-vm swap kernel`.
     pub(super) fn swap_kernel(
         &mut self,
         slot: Option<&str>,
@@ -217,7 +198,6 @@ impl App {
                     alternative: "install the kernel in the VM instead: tilo-vm swap kernel".into(),
                 });
             }
-            // The command line comes from the running VM, before anything is built.
             let cmdline = match cmdline {
                 Some(cmdline) => cmdline,
                 None => self.vm_kernel_facts(&vm)?.0,
@@ -225,7 +205,6 @@ impl App {
             let built = self.build_kernel(&worktree, component, jobs, true)?;
             return self.boot_direct(&vm, &built, &cmdline, started);
         }
-        // Connect first: an unreachable VM should fail before a long build.
         let mut remote = self.connect(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
         drop(remote);
@@ -235,7 +214,6 @@ impl App {
         self.install_kernel_layer(&vm, &mut remote, component, &layer, Some(&built), started)
     }
 
-    /// Run the manifest's `dev_build` script; its output streams here.
     fn build_kernel(
         &mut self,
         worktree: &Worktree,
@@ -279,7 +257,6 @@ impl App {
         Ok(built)
     }
 
-    /// Get the staged modules into the VM and import them as a layer.
     fn upload_kernel(
         &mut self,
         vm: &Resolved,
@@ -337,7 +314,6 @@ impl App {
         Ok(imported.hash)
     }
 
-    /// Swap `layer` into the vm slot, reboot onto it and confirm.
     fn install_kernel_layer(
         &mut self,
         vm: &Resolved,
@@ -383,7 +359,6 @@ impl App {
         ))
     }
 
-    /// Reboot the VM, wait for SSH on a new boot, and confirm the kernel.
     fn reboot_and_confirm(
         &mut self,
         vm: &Resolved,
@@ -466,7 +441,6 @@ impl App {
         Ok((confirm, reboot_seconds))
     }
 
-    /// Poll until SSH answers with a boot id other than `old`.
     fn wait_for_new_boot(
         &mut self,
         endpoint: &SshEndpoint,
@@ -474,7 +448,6 @@ impl App {
         old: Option<&str>,
     ) -> bool {
         let started = Instant::now();
-        // Give the old boot time to go down before polling it.
         std::thread::sleep(Duration::from_secs(3));
         while started.elapsed() < REBOOT_TIMEOUT {
             if let Some(id) = self.remote_text(endpoint, key, "cat /proc/sys/kernel/random/boot_id")
@@ -487,7 +460,6 @@ impl App {
         false
     }
 
-    /// One command's trimmed stdout over SSH, when it succeeds.
     fn remote_text(
         &mut self,
         endpoint: &SshEndpoint,
@@ -499,7 +471,6 @@ impl App {
         output.success.then(|| output.stdout.trim().to_owned())
     }
 
-    /// The VM's kernel command line and running release, over SSH.
     fn vm_kernel_facts(&mut self, vm: &Resolved) -> Result<(String, String), CliError> {
         let adapter = Self::adapter(vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
@@ -518,7 +489,6 @@ impl App {
         Ok((direct_cmdline(&cmdline), release))
     }
 
-    /// Point the VM at the host-built kernel and restart it.
     fn boot_direct(
         &mut self,
         vm: &Resolved,
@@ -529,8 +499,6 @@ impl App {
         let initrd = built.initrd.clone().ok_or_else(|| CliError::KernelBuild {
             log: built.log.clone(),
         })?;
-        // Stable copies per VM: the next build rewrites the cache while this
-        // VM may still be running from them.
         let dir = built
             .cache
             .parent()
@@ -577,8 +545,6 @@ impl App {
         .next(&["tilo-vm vm ssh -- uname -a", "tilo-vm vm serial", "tilo-vm rollback --slot vm"]))
     }
 
-    /// Store `direct` in the registry, redefine the VM from it and restart
-    /// it; returns the running release and version once SSH answers.
     fn redefine_and_restart(
         &mut self,
         vm: &Resolved,
@@ -608,10 +574,8 @@ impl App {
         let adapter = Self::adapter(&updated)?;
         let define = adapter.redefine(&updated.vm(), &root_key, &mut self.runner)?;
         run_all(&mut self.runner, &define)?;
-        // Recorded once the hypervisor holds the new definition.
         registry.save(&self.registry_path)?;
         if let Some(off) = adapter.power_off(&updated.vm()) {
-            // Fails when the VM is already off, which is fine.
             let _ = self.runner.output(&off);
         }
         run_all(&mut self.runner, &adapter.start(&updated.vm()))?;
@@ -708,8 +672,6 @@ impl App {
         ])
     }
 
-    /// `tilo-vm rollback --slot vm`: off a direct boot, or the vm slot's
-    /// previous generation, rebooting when that changes the kernel.
     pub(super) fn rollback_vm(&mut self, to: Option<u64>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
         let started = Instant::now();
@@ -776,15 +738,12 @@ mod tests {
         }
     }
 
-    /// The build runs the manifest script, the result file parses, modules sync into the layer shape, a
-    /// packed layer holds one release under /usr, and direct boots take the running command line.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn kernel_builds_run_the_manifest_and_pack_one_release_layer() {
-        // Phase: the_build_runs_the_manifest_script.
         {
             let command = build_command(
                 "os/kernel/dev-build.sh",
@@ -808,7 +767,6 @@ mod tests {
             );
         }
 
-        // Phase: the_result_file_parses.
         {
             let json = serde_json::to_string(&built()).unwrap();
             let back: Built = serde_json::from_str(&json).unwrap();
@@ -822,7 +780,6 @@ mod tests {
             assert!(minimal.initrd.is_none());
         }
 
-        // Phase: modules_sync_into_the_layer_shape.
         {
             let endpoint = SshEndpoint {
                 user: "root".into(),
@@ -856,7 +813,6 @@ mod tests {
             assert!(text.contains("-p 2223"), "{text}");
         }
 
-        // Phase: a_packed_layer_holds_one_release_under_usr.
         {
             let dir = tempfile::tempdir().unwrap();
             let modules = dir.path().join("lib/modules/7.2+dev");
@@ -892,7 +848,6 @@ mod tests {
             );
         }
 
-        // Phase: direct_boots_take_the_running_command_line.
         {
             assert_eq!(
                 direct_cmdline(

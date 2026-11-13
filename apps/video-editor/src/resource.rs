@@ -1,12 +1,9 @@
-//! The project's verbs, and the editor as the app's window.
+//! The project's verbs and the editor as the app's window.
 //!
-//! Fields change through the field edits every path offers
-//! (`Project::paths().clips.item(&id).opacity.set(0.5)`); the editor's own
-//! gestures edit its local copy of the project and submit the edits between
-//! that copy and where it started ([`ui::tilo_resource::Path::edits`]). The
-//! methods below are the operations that are more than setting a field —
-//! splitting, trimming, rippling, linking, re-timing — and run the same
-//! editing math the editor does, so an agent and a person make the same cut.
+//! Fields change through field edits; the verbs here are the operations that are
+//! more than setting a field — splitting, trimming, rippling, linking, re-timing
+//! — and run the same editing math the editor's own gestures do, so an agent and
+//! a person make the same cut.
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -24,14 +21,12 @@ use crate::model::{
 };
 use crate::param::Param;
 
-/// The clip, track, source or marker an id names.
 fn uuid(id: &Id) -> Result<Uuid, Refusal> {
     id.as_str()
         .parse()
         .map_err(|_| Refusal::new(format!("`{id}` names nothing in this project")))
 }
 
-/// A time on the timeline an edit can happen at.
 fn instant(at: f64) -> Result<f64, Refusal> {
     if at.is_finite() && at >= 0.0 {
         Ok(at)
@@ -116,7 +111,15 @@ impl Project {
         #[param("left, center or right; center when omitted")] align: Option<String>,
     ) -> Result<(), Refusal> {
         let words = text.trim();
-        let content = if words.is_empty() { "Title" } else { words };
+        let content = if words.is_empty() {
+            crate::resource::CATALOG.t("video-editor-kind-title")
+        } else {
+            words.to_owned()
+        };
+        let name = content.lines().next().map_or_else(
+            || crate::resource::CATALOG.t("video-editor-kind-title"),
+            str::to_owned,
+        );
         let mut source = TextSource::new(content);
         crate::agent_timeline::TitleStyle {
             text: None,
@@ -128,7 +131,7 @@ impl Project {
         let palette = u8::try_from(self.media.len() % 7).unwrap_or(0);
         self.media.push(MediaItem {
             id: tilo_resource::fresh_uuid(),
-            name: content.lines().next().unwrap_or("Title").to_owned(),
+            name,
             kind: MediaKind::Text,
             // Long enough to be trimmed down rather than stretched.
             duration: 5.0,
@@ -254,15 +257,18 @@ impl Project {
     ) -> Result<(), Refusal> {
         let at = instant(at)?;
         let name = name.trim();
-        self.add_marker(at, if name.is_empty() { "Marker" } else { name }, 1);
+        let name = if name.is_empty() {
+            crate::resource::CATALOG.t("video-editor-marker")
+        } else {
+            name.to_owned()
+        };
+        self.add_marker(at, &name, 1);
         Ok(())
     }
 
     /// Place every clip covering `at` on the two sides of the frame: the
-    /// bottom-most visible video track on the left, the next one on the
-    /// right. Two angles of one moment then play together instead of one
-    /// covering the other, and nothing is tagged or named to make it work:
-    /// the track order is the arrangement.
+    /// bottom-most visible video track on the left, the next one on the right.
+    /// Two angles then play together, and the track order is the arrangement.
     #[action(id = "place-two-angles")]
     pub fn place_side_by_side(
         &mut self,
@@ -287,9 +293,8 @@ impl Project {
         Ok(())
     }
 
-    /// Give each clip back the picture it had before it was placed side by
-    /// side. A clip the person has since placed somewhere else is left as
-    /// they put it.
+    /// Give each clip back the picture it had before. One the person has since
+    /// placed elsewhere is left as they put it.
     #[action(id = "unplace-two-angles")]
     pub fn unplace_side_by_side(
         &mut self,
@@ -696,8 +701,6 @@ impl Project {
 }
 
 impl Project {
-    /// The clip `clip` names ([`Project::clip_named`]), when it may be
-    /// edited.
     fn editable(&self, clip: &Id) -> Result<ClipId, Refusal> {
         let id = self.clip_named(clip.as_str())?;
         if !self.clip_editable(id) {
@@ -706,8 +709,8 @@ impl Project {
         Ok(id)
     }
 
-    /// Linked edits must not bypass a partner's track lock or leave the
-    /// picture and sound out of sync by editing only the unlocked half.
+    /// A linked edit must not bypass a partner's track lock or leave the picture
+    /// and sound out of sync.
     fn editable_link_group(&self, clip: &Id) -> Result<ClipId, Refusal> {
         let id = self.editable(clip)?;
         if self
@@ -720,7 +723,6 @@ impl Project {
         Ok(id)
     }
 
-    /// The clip `id`, when it covers `at`.
     fn covering(&self, id: ClipId, at: f64) -> Result<&crate::model::Clip, Refusal> {
         self.clip(id)
             .filter(|clip| clip.covers(at))
@@ -728,8 +730,6 @@ impl Project {
     }
 }
 
-/// A track's level stays between off and four times unity, its pan inside
-/// the stereo field.
 impl Track {
     pub(crate) fn valid(&self) -> Result<(), Refusal> {
         if !(MIN_GAIN_DB..=MAX_GAIN_DB).contains(&self.gain_db) {
@@ -744,14 +744,14 @@ impl Track {
     }
 }
 
-/// The edits that replace the whole project with `project`: what opening a
-/// project file or staging a capture does.
+/// The edits that replace the whole project with `project`, as opening a project
+/// file or staging a capture does.
 #[must_use]
 pub fn load_project(project: &Project) -> ui::tilo_resource::Edit<Project> {
     Path::<Project, Project>::root().set(project.clone())
 }
 
-/// A new record's document holding `project`, as its first content.
+/// A new record's document, holding `project` as its first content.
 #[must_use]
 pub fn document_of(project: &Project) -> ui::tilo_resource::Doc {
     use ui::tilo_resource::Fields as _;
@@ -761,10 +761,9 @@ pub fn document_of(project: &Project) -> ui::tilo_resource::Doc {
     doc
 }
 
-/// The effect that reveals what `item` names in `project` — a marker,
-/// track, clip or source, or an effect or marker on a clip
-/// (`<clip>/effects/<effect>`, `<clip>/markers/<marker>`, see
-/// [`crate::search`]) — refusing one that no longer exists.
+/// The effect that reveals what `item` names: a marker, track, clip or source, or
+/// an effect or marker on a clip (`<clip>/effects/<effect>`, see
+/// [`crate::search`]). Refuses one that no longer exists.
 pub fn reveal_effect(
     project: &Project,
     item: &Id,
@@ -821,9 +820,8 @@ pub fn reveal_effect(
     }
 }
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
-/// The editor as a framework app: one window, the whole editor.
 pub struct VideoEditor;
 
 impl ResourceApp for VideoEditor {
@@ -832,10 +830,10 @@ impl ResourceApp for VideoEditor {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Video Editor";
+    const TITLE_KEY: &'static str = "video-editor-app-title";
     const ICON: Option<&'static str> = Some("video-editor");
-    /// A media file the editor is launched on (`video-editor CLIP`) is
-    /// imported into the project and placed on the timeline, as a pick from
-    /// the import chooser is (see `VideoEditorApp::hosted`).
+    /// A media file the editor is launched on (`video-editor CLIP`) is imported
+    /// and placed, as a pick from the import chooser is.
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Project>) -> Element {
@@ -881,8 +879,7 @@ impl ResourceApp for VideoEditor {
         SCENARIOS.as_slice()
     }
 
-    /// The narrow capture is below the bin's collapse breakpoint, so it
-    /// shows the overlay-flap layout.
+    /// The narrow capture is below the bin's collapse breakpoint.
     #[cfg(feature = "samples")]
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some(NARROW_CAPTURE) {
@@ -892,18 +889,16 @@ impl ResourceApp for VideoEditor {
         }
     }
 
-    /// The demo project's sources resolve to the stand-ins bundled with the
-    /// crate, so a capture reads local bytes without a workspace mount.
+    /// The demo project's sources resolve to the bundled stand-ins, with no
+    /// workspace mount.
     #[cfg(feature = "samples")]
     fn fixture(_fixture: &mut ui::framework::Fixture<Project>) {
         let bundled = crate::media::bundled_sample_media();
         crate::media::serve_sample_media(bundled.exists().then_some(bundled));
     }
 
-    /// Every capture but the blank one opens a project through the same
-    /// edit opening a project file makes: the bundled demo project, or the
-    /// composed one; the editor stages the rest (see
-    /// `VideoEditorApp::stage_capture`).
+    /// Every capture but the blank one opens a project through the edit that
+    /// opening a project file makes; the editor stages the rest.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Project>> {
         let project = match name {
@@ -922,7 +917,7 @@ impl ResourceApp for VideoEditor {
 
     fn label(project: &Project) -> String {
         if project.name.is_empty() {
-            "Project".to_owned()
+            crate::resource::CATALOG.t("video-editor-project")
         } else {
             project.name.clone()
         }
@@ -937,14 +932,12 @@ mod reach_tests {
     use ui::framework::ResourceApp as _;
     use ui::framework::testing::{TestApp, unreachable_actions};
 
-    /// The walk's slices: a drive of one scenario walks dozens of actions,
-    /// so each slice is its own test and they run side by side.
+    /// A drive of one scenario walks dozens of actions, so each slice is its own
+    /// test and they run side by side.
     const SLICES: usize = 4;
 
-    /// Every action the app publishes is reachable by address in a drive of
-    /// every `SLICES`th scenario from `slice`: none is advertised yet
-    /// handled only by a click. The scenarios stage fixtures; the app
-    /// someone opens acts on this machine, so it is not walked.
+    /// Every published action must be reachable by address: none advertised yet
+    /// handled only by a click.
     fn walk(slice: usize) {
         for scenario in super::VideoEditor::scenarios()
             .iter()
@@ -982,9 +975,7 @@ mod reach_tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// A device set to German reads German, from `locales/de-DE.ftl`.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

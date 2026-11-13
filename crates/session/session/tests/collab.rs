@@ -198,6 +198,7 @@ fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64,
     let mut chats = ui::presence::CursorChats::default();
     let pointers = tilo_session_core::presence::pointers(
         &sync.members(WORKSPACE),
+        &std::collections::HashMap::new(),
         tiles,
         &mut chats,
         &ui::presence::PresenceCtx::empty(),
@@ -698,8 +699,8 @@ fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
     session
         .controls()
         .into_iter()
-        .find(|(name, _)| names.iter().any(|wanted| name == wanted))
-        .map(|(_, rect)| rect)
+        .find(|control| names.iter().any(|wanted| control.name == *wanted))
+        .map(|control| control.rect)
 }
 
 /// A press at the centre of `rect` , through the compositor's own input.
@@ -978,9 +979,9 @@ fn your_own_avatar_opens_your_card() {
         let found = session
             .controls()
             .into_iter()
-            .find(|(name, _)| name.ends_with("(you): your profile"));
-        named = found.as_ref().map(|(name, _)| name.clone());
-        avatar = found.map(|(_, rect)| rect);
+            .find(|control| control.name.ends_with("(you): your profile"));
+        named = found.as_ref().map(|control| control.name.clone());
+        avatar = found.map(|control| control.rect);
         avatar.is_some()
     });
     // The bar's face and the card's are one: the name they gave, not the account they happen to log

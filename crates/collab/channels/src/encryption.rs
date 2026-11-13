@@ -401,14 +401,13 @@ pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn held(&self) -> Vec<(WorkspaceId, Vec<ChannelId>)> {
         Vec::new()
     }
-    /// Prepare the vault this store seals, and say whether one was already kept
-    /// here: a vault whose master key is gone refuses a new one, since that key
-    /// opens none of the state sealed under the old. A store that keeps no
-    /// marker of its own answers `false`.
+    /// Whether this store already keeps channel state: a vault whose master
+    /// key is gone opens none of it, so it is never replaced by a new one. A
+    /// store whose state lives elsewhere answers `false`.
     ///
     /// # Errors
-    /// The store cannot be prepared for a vault.
-    fn open_vault(&self) -> Result<bool, String> {
+    /// The store cannot be read.
+    fn holds_channel_state(&self) -> Result<bool, String> {
         Ok(false)
     }
     /// Forget everything kept of `workspace`'s channels: it was deleted. A
@@ -422,17 +421,13 @@ pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     }
 }
 
-/// A desktop's channels directory, with the layout every earlier build wrote: a
-/// directory per workspace under the state root, one `.peer` and one `.route`
-/// file per channel in it.
+/// A desktop's channels directory: a directory per workspace under the state
+/// root, one `.peer` and one `.route` file per channel in it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct ChannelsDir {
     /// Where the state of every workspace's channels lives.
     state: PathBuf,
-    /// Where this device's vault lives, when this directory seals it: the
-    /// marker and the files of a retired lifecycle authority beside it.
-    vault: Option<PathBuf>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -440,18 +435,7 @@ impl ChannelsDir {
     /// The state kept under `root`, one directory per workspace.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            state: root.into(),
-            vault: None,
-        }
-    }
-
-    /// This directory also seals the vault at `root`: its marker, and what
-    /// earlier builds left beside it.
-    #[must_use]
-    pub fn with_vault(mut self, root: impl Into<PathBuf>) -> Self {
-        self.vault = Some(root.into());
-        self
+        Self { state: root.into() }
     }
 
     /// The directory of `workspace`'s channels.
@@ -536,81 +520,16 @@ impl ChannelState for ChannelsDir {
             .collect()
     }
 
-    fn open_vault(&self) -> Result<bool, String> {
-        let Some(root) = &self.vault else {
-            return Ok(false);
-        };
-        // `registry.postcard` in the layout earlier builds wrote marks a vault whose master key
-        // must already be in the secret store. It stays as the marker; its entries named the group,
-        // key-package and snapshot-receipt records of a retired lifecycle authority, which nothing
-        // reads.
-        let registry = root.join(REGISTRY);
-        let existed = registry.exists();
-        if existed && std::fs::read(&registry).is_ok_and(|bytes| bytes != EMPTY_REGISTRY) {
-            let cleared =
-                tilo_files::native::atomic::write_with_mode(&registry, &EMPTY_REGISTRY, 0o600)
-                    .map_err(|error| error.to_string());
-            if let Err(error) = cleared {
-                tracing::warn!(%error, "retired MLS registry records could not be cleared");
-            }
-        }
-        remove_retired_files(root);
-        Ok(existed)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// `registry.postcard` at a vault's root: the marker that the vault's master key must already be
-/// in the secret store.
-const REGISTRY: &str = "registry.postcard";
-
-/// An empty registry: four empty maps, the bytes of the marker with its retired records gone.
-#[cfg(not(target_arch = "wasm32"))]
-const EMPTY_REGISTRY: [u8; 4] = [0; 4];
-
-/// Remove what the retired MLS lifecycle authority and its snapshot receipts left in `root` : the
-/// authority's ledger directory, every compaction envelope copied to `snapshot-*.op` , and the
-/// `group-*.mls` and `key-package-*.mls` files its registry named. Nothing reads them; the sealed
-/// channel state lives under `channels/` and is untouched. Best-effort.
-#[cfg(not(target_arch = "wasm32"))]
-fn remove_retired_files(root: &std::path::Path) {
-    let authority = root.join("authority");
-    if std::fs::symlink_metadata(&authority).is_ok()
-        && let Err(error) = std::fs::remove_dir_all(&authority)
-    {
-        tracing::warn!(%error, "retired MLS authority ledger could not be removed");
-    }
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if is_retired_file(&path)
-            && entry.file_type().is_ok_and(|kind| kind.is_file())
-            && let Err(error) = std::fs::remove_file(&path)
-        {
-            tracing::warn!(%error, "retired MLS vault file could not be removed");
+    fn holds_channel_state(&self) -> Result<bool, String> {
+        match std::fs::read_dir(&self.state) {
+            Ok(mut entries) => Ok(entries.next().is_some()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("{}: {error}", self.state.display())),
         }
     }
 }
 
-/// A top-level file only the retired authority wrote: `snapshot-*.op`, `group-*.mls` or
-/// `key-package-*.mls`.
 #[cfg(not(target_arch = "wasm32"))]
-fn is_retired_file(path: &std::path::Path) -> bool {
-    let (Some(stem), Some(extension)) = (
-        path.file_stem().and_then(|stem| stem.to_str()),
-        path.extension().and_then(|extension| extension.to_str()),
-    ) else {
-        return false;
-    };
-    match extension {
-        "op" => stem.starts_with("snapshot-"),
-        "mls" => stem.starts_with("group-") || stem.starts_with("key-package-"),
-        _ => false,
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 impl ChannelsDir {
     /// Channel ids of the `*.peer` files of `workspace`. A file whose name is no
@@ -2270,10 +2189,10 @@ impl ChannelEncryption {
                 store.state.peers(workspace).forget(channel)?;
                 return Ok(false);
             }
-            // State in a format no upgrade reaches (state an earlier build
-            // saved is upgraded as it loads): authentic and this device's own,
-            // but unreadable. Dropped, so the device can ask to join again;
-            // what only this device held is gone, which is why it is an error.
+            // State in a format this build does not write: authentic and this
+            // device's own, but unreadable. Dropped, so the device can ask to
+            // join again; what only this device held is gone, which is why it
+            // is an error.
             Err(channel_crypto::Error::OtherFormat) => {
                 tracing::error!(
                     %workspace,
@@ -2289,14 +2208,6 @@ impl ChannelEncryption {
         let Some(peer) = opened else {
             return Ok(false);
         };
-        if let Some(from) = peer.upgraded_from() {
-            tracing::info!(
-                %workspace,
-                channel = %channel.0,
-                from,
-                "channel state an earlier build saved was upgraded and kept in the current format"
-            );
-        }
         self.insert_peer(workspace, channel, peer, now);
         Ok(true)
     }

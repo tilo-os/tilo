@@ -1,7 +1,6 @@
-//! Page actions, as an agent reaches them: published on `browser.page`,
-//! admitted through the resource operation lane, answered by the engine and
-//! reported through the invocation's terminal update. Each phase is its own
-//! test over a fresh page, so the requests it makes stand on their own.
+//! Page actions as an agent reaches them: published on `browser.page`, admitted
+//! through the resource operation lane, answered by the engine and reported through the
+//! invocation's terminal update.
 
 use std::sync::Arc;
 
@@ -14,8 +13,6 @@ use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
 use super::tests::{effect_operation, synced};
 use super::*;
 
-/// A page that says something only in pixels: a small PNG, as the engine
-/// paints a scanned letter. Its bytes are what a capture answers with.
 const SCANNED_LETTER_PNG: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 12, 0, 0, 0, 6, 8, 2, 0,
     0, 0, 120, 140, 232, 214, 0, 0, 0, 50, 73, 68, 65, 84, 120, 156, 99, 96, 16, 209, 176, 9, 72,
@@ -24,7 +21,6 @@ const SCANNED_LETTER_PNG: &[u8] = &[
     196, 223, 57, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
-/// A page the window has synced, with the document its actions admit into.
 fn page_on(url: &str) -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
     let engine = TestEngine::new();
     engine.send(WebViewCommand::Navigate(url.into()));
@@ -170,7 +166,6 @@ fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
         .collect()
 }
 
-// Phase `page_actions_publish_programmatic_write_contracts`.
 #[test]
 fn page_actions_publish_programmatic_write_contracts() {
     let (_, widget, _, _) = page_on("https://shop.test/");
@@ -228,7 +223,6 @@ fn page_actions_publish_programmatic_write_contracts() {
     );
 }
 
-// Phase `a_wait_takes_words_to_wait_for_and_answers_whether_they_came`.
 #[test]
 fn a_wait_takes_words_to_wait_for_and_answers_whether_they_came() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -348,7 +342,6 @@ fn a_wait_takes_words_to_wait_for_and_answers_whether_they_came() {
     assert_eq!(page_requests(&engine).len(), asked);
 }
 
-// Phase `read_returns_the_engine_outline_in_the_declared_shape`.
 #[test]
 fn read_returns_the_engine_outline_in_the_declared_shape() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -381,7 +374,6 @@ fn read_returns_the_engine_outline_in_the_declared_shape() {
     );
 }
 
-// Phase `reader_view_toggles_through_the_page_and_ends_with_its_document`.
 #[test]
 fn reader_view_toggles_through_the_page_and_ends_with_its_document() {
     let (engine, mut widget, mut doc, root) = page_on("https://news.test/story");
@@ -426,7 +418,6 @@ fn reader_view_toggles_through_the_page_and_ends_with_its_document() {
     );
 }
 
-// Phase `a_read_on_a_loading_page_waits_for_it_to_settle`.
 #[test]
 fn a_read_on_a_loading_page_waits_for_it_to_settle() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -461,7 +452,6 @@ fn a_read_on_a_loading_page_waits_for_it_to_settle() {
     ));
 }
 
-// Phase `typed_arguments_reach_the_engine_and_bad_refs_never_do`.
 #[test]
 fn typed_arguments_reach_the_engine_and_bad_refs_never_do() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -531,7 +521,6 @@ fn typed_arguments_reach_the_engine_and_bad_refs_never_do() {
     );
 }
 
-// Phase `a_page_file_is_a_checked_absolute_regular_file`.
 #[test]
 fn a_page_file_is_a_checked_absolute_regular_file() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/claim");
@@ -587,7 +576,6 @@ fn a_page_file_is_a_checked_absolute_regular_file() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
-// Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
 #[test]
 fn agent_reads_and_consented_writes_reach_the_engine_typed() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -693,8 +681,6 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
                 secret: false,
                 frame: Some(FrameId::parse("1.2").unwrap()),
             },
-            // A description reaches the engine as it was asked, and the
-            // ref it answers is output another step can bind.
             PageRequest::Find {
                 role: Some("button".into()),
                 name: Some("Remove".into()),
@@ -705,8 +691,6 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
         ],
         "a form leaves for another site only when the caller says so"
     );
-    // A frame id the outline could not have printed is refused by the
-    // action's own text, before it reaches the widget or the page.
     let refused = start(
         &mut widget,
         &mut doc,
@@ -727,8 +711,6 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
     assert_eq!(answers[3]["data"]["settled"], true);
     assert_eq!(answers[5]["data"]["entries"], serde_json::json!([]));
     assert_eq!(answers[6]["data"]["next"], 0);
-    // A find answers the ref of what it named, at the top of the answer
-    // where a later step binds it, and the line it matched inside it.
     assert_eq!(
         (
             answers[11]["element"].as_str(),
@@ -739,9 +721,6 @@ fn agent_reads_and_consented_writes_reach_the_engine_typed() {
     assert_eq!(answers[11]["data"]["element"], "d1e1");
 }
 
-// Phase `a_page_picture_is_the_actions_own_content`: what a page shows
-// only as pixels reaches the reader who can see it, and nothing else
-// carries it.
 #[test]
 fn a_page_picture_is_the_actions_own_content() {
     let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
@@ -749,8 +728,6 @@ fn a_page_picture_is_the_actions_own_content() {
     widget.attach_content(content.clone());
     engine.set_page_capture(SCANNED_LETTER_PNG);
 
-    // The picture is the whole of a viewport capture: no ref, no width,
-    // so the engine decides both.
     let invocation = start(
         &mut widget,
         &mut doc,
@@ -774,8 +751,6 @@ fn a_page_picture_is_the_actions_own_content() {
         }],
         "the page is asked for a picture of itself, nothing else"
     );
-    // The picture travels as content, never as a finding: a reader that
-    // cannot see still reads the page's words, one that can sees this.
     assert_eq!(output.resources.len(), 1);
     let hash = ui::tilo_actions::content_hash(&output.resources[0])
         .expect("a picture is content the answer names");
@@ -788,7 +763,6 @@ fn a_page_picture_is_the_actions_own_content() {
         "the pixels are the answer's content, not a base64 finding beside it"
     );
 
-    // An element's own box, at the width the caller asked for.
     let invocation = start(
         &mut widget,
         &mut doc,
@@ -812,8 +786,6 @@ fn a_page_picture_is_the_actions_own_content() {
         })
     );
 
-    // A ref the outline never printed is refused by the action's own
-    // text, before the page is asked to paint anything.
     let before = page_requests(&engine).len();
     let refused = start(
         &mut widget,
@@ -826,8 +798,6 @@ fn a_page_picture_is_the_actions_own_content() {
     assert!(refused.contains("element"), "{refused}");
     assert_eq!(page_requests(&engine).len(), before);
 
-    // A width wider than any engine paints is refused rather than
-    // silently cut: the caller asked for something that cannot exist.
     let refused = start(
         &mut widget,
         &mut doc,
@@ -842,8 +812,6 @@ fn a_page_picture_is_the_actions_own_content() {
     );
     assert_eq!(page_requests(&engine).len(), before);
 
-    // A window with nowhere to keep a picture says so instead of
-    // answering as if the page had none.
     let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
     engine.set_page_capture(SCANNED_LETTER_PNG);
     let invocation = start(
@@ -864,7 +832,6 @@ fn a_page_picture_is_the_actions_own_content() {
     assert!(output.value.unwrap()["picture"].is_string());
 }
 
-// Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
 #[test]
 fn an_action_that_navigates_completes_on_the_page_it_opened() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
@@ -942,7 +909,6 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
     );
 }
 
-// Phase `engine_refusals_become_typed_invocation_failures`.
 #[test]
 fn engine_refusals_become_typed_invocation_failures() {
     let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -978,14 +944,8 @@ fn engine_refusals_become_typed_invocation_failures() {
     );
 }
 
-// Phase `a_page_action_answers_at_most_once_so_its_failure_asks_for_none`.
 #[test]
 fn a_page_action_answers_at_most_once_so_its_failure_asks_for_none() {
-    // Every page action runs once at the page: the wheel it turned, the
-    // click it pressed or the text it typed cannot be undone by running it
-    // again. A failure that invited a retry would break that promise, so
-    // even the refusals a later try could get past are finals: the caller
-    // asks again itself, with the page it read by then.
     let scroll = page_action_contract("scroll-page");
     assert_eq!(
         scroll.retry,
@@ -1035,7 +995,6 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
             },
         )
         .unwrap();
-    // Its page answered after the caller was answered `accepted`.
     widget.page_operation = None;
     widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
         invocation: abandoned,
@@ -1046,7 +1005,6 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
         "nothing waits on the abandoned invocation"
     );
 
-    // The next action in this tab runs rather than being refused.
     let next = ui::tilo_actions::InvocationId::new();
     widget
         .start_page_operation(
@@ -1066,8 +1024,6 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
         "the next action took the slot"
     );
 
-    // The decision is the reply set, never the age of the result: a settled
-    // result whose invocation a reply still waits on stays for that reply.
     assert!(!widget.reply_outstanding(next));
     widget.page_operation = None;
     widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
@@ -1080,8 +1036,6 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
         "a settled result no reply waits on is let go"
     );
 
-    // An operation still running is left alone: it settles at its own
-    // deadline, and the next action waits its turn behind it.
     let running = ui::tilo_actions::InvocationId::new();
     widget
         .start_page_operation(
@@ -1124,9 +1078,6 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
 
 #[test]
 fn a_page_action_either_finishes_or_says_what_became_of_it() {
-    // Giving up on a page action frees the tab's slot and says that what the
-    // page did is unknown, whether the caller stopped waiting for it or the
-    // action ran out of time: neither claims the page acted or did not.
     let mut widget = BrowserWidget::new_headless();
     widget.current_uri = "https://site.test/form".into();
     let cancelled = ui::tilo_actions::InvocationId::new();
@@ -1150,7 +1101,6 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     assert!(error.message.contains("unknown"), "{}", error.message);
     assert!(widget.page_operation.is_none(), "the slot is freed");
 
-    // An invocation that runs nothing here is not answered twice.
     assert!(
         widget
             .answer_a_cancelled_page_operation(cancelled, true)
@@ -1158,7 +1108,6 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
         "nothing is left to stop"
     );
 
-    // Running out of time says the same about what the page did.
     let slow = ui::tilo_actions::InvocationId::new();
     widget
         .start_page_operation(
@@ -1180,8 +1129,6 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     assert!(error.message.contains("unknown"), "{}", error.message);
 }
 
-/// What an agent's run answers a page action with before anyone chose, as
-/// the window publishes it: allowed, or asks first.
 fn agent_default(widget: &BrowserWidget, id: &str) -> ui::permissions::policy::Answer {
     let action = widget
         .published()
@@ -1196,7 +1143,6 @@ fn agent_default(widget: &BrowserWidget, id: &str) -> ui::permissions::policy::A
     )
 }
 
-/// The page of a window in `mode`, at `url`.
 fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
     let engine = TestEngine::new();
     engine.send(WebViewCommand::Navigate(url.into()));
@@ -1205,12 +1151,6 @@ fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
     widget
 }
 
-/// Reading a page takes what the window holds. A window opened for an agent
-/// holds none of the person's sign-ins: what only looks at its page takes
-/// no more than any visitor has, and the agent reads it without asking,
-/// while what acts on the page reaches the web and asks first. The person's
-/// own window holds their sign-ins: reading its page takes the authority to
-/// operate it, so every page action asks first, as it always has.
 #[test]
 fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
     use ui::permissions::policy::Answer::{Allow, Ask};
@@ -1264,10 +1204,6 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
     }
 }
 
-/// A secret filled into a visitor's page is the person's credential: from
-/// then on the page holds a sign-in. Its reads ask first like every other
-/// page action, the bar no longer says it is not signed in, and nothing
-/// the window does later takes that back.
 #[test]
 fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
     use ui::permissions::policy::Answer::{Allow, Ask};
@@ -1303,8 +1239,6 @@ fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
         "the bar no longer says it is not signed in"
     );
 
-    // Whatever comes next, the page stays signed in: another page, a
-    // reload, a key that is no password.
     visitor
         .engine
         .send(WebViewCommand::Navigate("https://example.org/".into()));
@@ -1312,8 +1246,6 @@ fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
     assert_eq!(agent_default(&visitor, "read-page"), Ask);
 }
 
-/// Run the published page action `id` with `args` on `widget` as an agent's
-/// invocation does, and let the engine's answer settle it.
 fn run_page_action(widget: &mut BrowserWidget, id: &str, args: &serde_json::Value) {
     let action = widget
         .published()
@@ -1337,10 +1269,6 @@ fn run_page_action(widget: &mut BrowserWidget, id: &str, args: &serde_json::Valu
     assert!(widget.page_operation.is_none(), "{id} settled");
 }
 
-/// What makes a credential is the field it goes into, not the action that
-/// put it there: an agent's fill or keys into a password field sign the
-/// visitor's page in as a secret does, and the same into any other field
-/// does not.
 #[test]
 fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
     use ui::permissions::policy::Answer::{Allow, Ask};

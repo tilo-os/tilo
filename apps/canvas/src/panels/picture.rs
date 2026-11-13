@@ -14,7 +14,6 @@ use super::inspector::{grow, labelled, section, tight};
 use crate::model::{Adjust, Artwork, Shape};
 use crate::tools::{Live, Tools};
 
-/// One adjustment a slider sets: its name, range and how it reads.
 struct Step {
     /// The Fluent id of its name, and its control's id.
     id: &'static str,
@@ -22,7 +21,6 @@ struct Step {
     high: f64,
     read: fn(&Adjust) -> Option<f64>,
     write: fn(&mut Adjust, f64),
-    /// Decimals the value is kept to.
     places: i32,
 }
 
@@ -132,14 +130,12 @@ static EFFECTS: [Step; 3] = [
 ];
 
 impl Step {
-    /// The value at `travel` (0-1) along the slider.
     fn at(&self, travel: f64) -> f64 {
         let value = self.low + travel.clamp(0.0, 1.0) * (self.high - self.low);
         let scale = 10_f64.powi(self.places);
         (value * scale).round() / scale
     }
 
-    /// Where `value` sits along the slider.
     fn travel(&self, value: f64) -> f64 {
         ((value - self.low) / (self.high - self.low)).clamp(0.0, 1.0)
     }
@@ -154,7 +150,6 @@ impl Step {
     }
 }
 
-/// What an adjustment control changes: the marks selected, or a layer.
 #[derive(Clone)]
 pub enum Target {
     Marks(Vec<String>),
@@ -162,7 +157,6 @@ pub enum Target {
 }
 
 impl Target {
-    /// `edit` of the target's adjustments, as one invocation.
     fn invoke(&self, edit: Adjust) -> Invoke<Artwork> {
         match self {
             Self::Marks(ids) => Artwork::SET_ADJUST.with((ids.clone(), edit)),
@@ -307,7 +301,6 @@ pub fn adjustments(cx: &ViewCx<Artwork>, target: &Target, tools: &Tools) -> Elem
     section(parts)
 }
 
-/// Crop on the canvas, fit the artwork to the picture, flip it.
 fn framing(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     let first = ids.first().cloned().unwrap_or_default();
     let crop = {
@@ -422,7 +415,6 @@ fn straighten(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     ])
 }
 
-/// A slider for one adjustment of `target`, following the artwork.
 fn slider(cx: &ViewCx<Artwork>, target: &Target, step: &'static Step, tools: &Tools) -> Element {
     let travel_in = {
         let target = target.clone();

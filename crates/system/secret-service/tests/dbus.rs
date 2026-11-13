@@ -2,10 +2,6 @@
 //! libsecret drives it: open a `dh-ietf1024-sha256-aes128-cbc-pkcs7` (or
 //! `plain`) session, then create, search, read and delete through the
 //! collection `default` alias.
-//!
-//! Each client is one peer-to-peer connection to its own server end, with a
-//! fixed caller identity in place of the bus daemon's process credentials;
-//! all of them share one store, as separate applications do.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,7 +19,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use tilo_seal::SymmetricKey;
 use tilo_seal::secret_service::{DH_ALGORITHM, Handshake, TransportKey};
-use tilo_secret_service::app::{AppId, UnknownCaller};
+use tilo_secret_service::app::{CallerId, UnknownCaller};
 use tilo_secret_service::service::{
     BUS_NAME, CallerResolver, Core, MANAGEMENT_PATH, Managers, ROOT, WireSecret, publish,
 };
@@ -37,18 +33,18 @@ const COLLECTION: &str = "org.freedesktop.Secret.Collection";
 const ITEM: &str = "org.freedesktop.Secret.Item";
 const DEFAULT: &str = "/org/freedesktop/secrets/aliases/default";
 
-struct Identity(AppId);
+struct Identity(CallerId);
 
 impl CallerResolver for Identity {
     fn identify<'a>(
         &'a self,
         _sender: Option<&'a str>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<AppId, UnknownCaller>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<CallerId, UnknownCaller>> + Send + 'a>>
+    {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
 
-/// An identity that can be present or missing, like the device key.
 #[derive(Clone)]
 struct DeviceKey(Arc<AtomicU8>);
 
@@ -110,8 +106,8 @@ impl World {
     }
 }
 
-fn app(id: &str) -> AppId {
-    AppId::parse(id).unwrap()
+fn app(id: &str) -> CallerId {
+    CallerId::parse(id).unwrap()
 }
 
 /// Uncached: a test reads a property twice to watch it change, which a
@@ -134,7 +130,6 @@ async fn proxy<'a>(
         .unwrap()
 }
 
-/// libsecret's session: negotiate DH and keep the key.
 async fn dh_session(connection: &Connection) -> (OwnedObjectPath, TransportKey) {
     let handshake = Handshake::new().unwrap();
     let public = handshake.public().to_vec();
@@ -268,7 +263,6 @@ async fn a_libsecret_client_can_store_find_read_and_delete_over_an_encrypted_ses
         b"hunter2"
     );
 
-    // GetSecrets, the call secret_password_lookup uses.
     let service = proxy(&client, ROOT, SERVICE).await;
     let secrets: HashMap<OwnedObjectPath, WireSecret> = service
         .call("GetSecrets", &(vec![item.clone()], &session))
@@ -305,7 +299,6 @@ async fn a_libsecret_client_can_store_find_read_and_delete_over_an_encrypted_ses
         vec![item.clone()]
     );
 
-    // secret_password_store again with the same attributes replaces.
     let again = store_password(
         &client,
         &session,
@@ -324,7 +317,6 @@ async fn a_libsecret_client_can_store_find_read_and_delete_over_an_encrypted_ses
         b"hunter3"
     );
 
-    // SetSecret, then Delete.
     let new = encrypted(&session, &key, b"hunter4");
     item_proxy
         .call::<_, _, ()>("SetSecret", &(new,))
@@ -411,13 +403,11 @@ async fn before_the_identity_exists_the_store_is_locked_and_never_prompts_then_o
     let (session, key) = dh_session(&client).await;
     let service = proxy(&client, ROOT, SERVICE).await;
 
-    // The aliases libsecret asks for still answer.
     let alias: OwnedObjectPath = service.call("ReadAlias", &("default",)).await.unwrap();
     assert_eq!(alias.as_str(), DEFAULT);
     let collection = proxy(&client, DEFAULT, COLLECTION).await;
     assert!(collection.get_property::<bool>("Locked").await.unwrap());
 
-    // Everything else reports IsLocked.
     let error = lookup(&client, &[("a", "b")]).await.unwrap_err();
     assert_eq!(error_name(&error), "org.freedesktop.Secret.Error.IsLocked");
     let properties: HashMap<&str, Value<'_>> = HashMap::from([
@@ -439,7 +429,6 @@ async fn before_the_identity_exists_the_store_is_locked_and_never_prompts_then_o
         "org.freedesktop.Secret.Error.IsLocked"
     );
 
-    // Unlock reports nothing unlocked and offers no prompt to loop on.
     let (unlocked, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = service
         .call("Unlock", &(vec![alias.clone()],))
         .await
@@ -544,7 +533,6 @@ async fn applications_are_attributed_isolated_and_revocable() {
     let own = proxy(&other, theirs.as_str(), ITEM).await;
     assert_eq!(own.get_property::<String>("Label").await.unwrap(), "o");
 
-    // An application nobody installed is recorded as such.
     let (tool_session, tool_key) = dh_session(&tool).await;
     store_password(&tool, &tool_session, &tool_key, "t", &[("app", "t")], b"t").await;
 
@@ -580,7 +568,6 @@ async fn applications_are_attributed_isolated_and_revocable() {
             .is_err()
     );
 
-    // Revoking Chromium denies it everything and leaves the others alone.
     management
         .call::<_, _, ()>("SetAppAccess", &("binary:/usr/bin/chromium", false))
         .await
@@ -639,7 +626,6 @@ async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
         .await
         .unwrap();
     assert_eq!(adopted, vec![7_u8; 32]);
-    // Only the portal host may ask; Settings and strangers may not.
     for refused in [&settings, &intruder] {
         let management = proxy(refused, MANAGEMENT_PATH, "so.tilo.Secrets1").await;
         assert!(
@@ -669,7 +655,6 @@ async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
             .await
             .is_err()
     );
-    // Forgetting it discards its secret: the next one is new.
     management
         .call::<_, _, ()>("ForgetApp", &("sandbox:so.tilo.notes",))
         .await
@@ -688,7 +673,6 @@ async fn items_survive_a_restart_of_the_service() {
     let (session, key) = dh_session(&first).await;
     store_password(&first, &session, &key, "c", &[("k", "v")], b"kept").await;
 
-    // A new service process over the same files.
     let store = Arc::new(Store::new(
         world.dir.path().join("vault"),
         Box::new(world.device.clone()),

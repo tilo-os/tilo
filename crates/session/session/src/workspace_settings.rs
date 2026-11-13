@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 
 use collab_types::caps::{Effect, Expiry};
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Refusal, Role, Subject};
+use tilo_action_policy::{Answer, Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
@@ -830,8 +830,8 @@ fn settings(
     sheet::Settings {
         title: t("workspace-settings-title"),
         name: workspace.map_or_else(
-            || t("workspace-settings-workspace-fallback"),
-            |ws| ws.name.clone(),
+            || tilo_desktop_surface::names::workspace(""),
+            |ws| tilo_desktop_surface::names::workspace(&ws.name),
         ),
         role: workspace
             .and_then(|ws| ws.role_of(person))
@@ -892,7 +892,7 @@ fn general(
             .policy
             .grants
             .iter()
-            .filter(|grant| !matches!(grant.subject, Subject::Role(_)));
+            .filter(|grant| grant.grantee.role_of().is_none());
         (
             workspace.roster().len(),
             sandbox.count().saturating_add(given.count()),
@@ -985,12 +985,12 @@ fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
         )
     });
     let leavable = tree.workspaces.len() > 1 && !sole_member;
-    let name = workspace.map(|workspace| workspace.name.clone());
+    let name = workspace.map_or_else(
+        || tilo_desktop_surface::names::workspace(""),
+        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+    );
     let decision = sheet::Decision {
-        title: tilo_sheets::words(
-            "workspace-delete-title",
-            &[("name", name.as_deref().unwrap_or_default())],
-        ),
+        title: tilo_sheets::words("workspace-delete-title", &[("name", name.as_str())]),
         description: tilo_sheets::word("workspace-delete-body"),
         keep: tilo_sheets::word("workspace-delete-keep"),
         review: String::new(),

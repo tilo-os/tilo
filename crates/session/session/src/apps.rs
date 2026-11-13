@@ -19,7 +19,6 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
-use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
     Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
@@ -126,6 +125,9 @@ struct State {
     hosts: Option<Arc<tilo_app_launch::tilolang_hosts::Hosts>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
+    /// The files apps are handed, while the session serves them where a launcher binds each app's
+    /// view of them: what a document a package opens reaches its sandbox through.
+    documents: Option<tilo_documents::Documents>,
 }
 
 /// A window an app asked its session for: the launch that starts it, and the item it shows when it
@@ -149,6 +151,9 @@ struct AgentProcess {
 enum Beginning {
     /// The window the app has, or the place one is on its way to, came forward: nothing starts.
     Raised,
+    /// The desk holds a tab for another window of the app, beside the one it has, and asks this
+    /// session back for the window in it: nothing starts yet.
+    Asked,
     /// The app starts, with a window of its own when `new_window` .
     Start { new_window: bool },
     /// The app starts into the tab `tab` , a saved window's that nothing was asking for: the window
@@ -203,6 +208,7 @@ impl Apps {
                 agents: BTreeMap::new(),
                 hosts: None,
                 connectors: None,
+                documents: None,
             }),
         }
     }
@@ -504,7 +510,7 @@ impl Apps {
         };
         let planned = Planned::of(
             &Launch::Package {
-                app: installed.package_id,
+                app: installed.app_id.to_string(),
                 open: None,
             },
             &context,
@@ -518,6 +524,12 @@ impl Apps {
     /// before the launch is planned, so the process starts as an author.
     pub fn lend_authorship(&self, authorship: Authorship) {
         self.state.borrow_mut().authorship = Some(authorship);
+    }
+
+    /// The files apps are handed, as the session serves them: a package opening one of the
+    /// person's files is granted it there and opens it at the path its sandbox holds it at.
+    pub fn hand_documents(&self, documents: tilo_documents::Documents) {
+        self.state.borrow_mut().documents = Some(documents);
     }
 
     /// The desktop the person works on, which the launches come from.
@@ -874,7 +886,7 @@ impl Apps {
         place: Option<&LaunchPlace>,
     ) -> Result<bool, DoorError> {
         match self.starting(launch, workspace, instance, place) {
-            Beginning::Raised => Ok(false),
+            Beginning::Raised | Beginning::Asked => Ok(false),
             Beginning::Start { new_window } => {
                 self.start_window(launch, workspace, new_window, instance, None)
             }
@@ -1013,6 +1025,15 @@ impl Apps {
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
         let answer = app.answer(launch, &shown);
+        // A file or a link opened with an app that runs opens in another window of its process, in
+        // a tab the desk holds beside the app's own: that tab is the window's instance.
+        if instance.is_none()
+            && matches!(launch, Launch::Package { open: Some(_), .. })
+            && answer == (Answer::Start { new_window: true })
+            && self.ask_window(launch, shown.of(&app), false, false, None)
+        {
+            return Beginning::Asked;
+        }
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -1364,10 +1385,15 @@ impl Apps {
             return Ok(true);
         }
         let timed = tilo_startup_metrics::launch_requested(app);
-        let opens = window_opens(launch, reveal, hosted).map_err(|error| {
+        let failed = |error: String| {
             tilo_startup_metrics::launch_failed(timed);
             DoorError::Failed(error)
-        })?;
+        };
+        let documents = self.state.borrow().documents.clone();
+        let launch = handed(launch, workspace, documents.as_ref())
+            .map_err(|error| failed(error.to_string()))?;
+        let launch = launch.as_ref();
+        let opens = window_opens(launch, reveal, hosted).map_err(failed)?;
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no desk behind it: the tab is the window's instance, and it is the only
         // name the window has.
@@ -1399,10 +1425,10 @@ impl Apps {
                 .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
                 .map(|_| true);
         };
-        // The app's own window with nothing named to open is the one its running process opens
-        // itself, as it opens any later one; a hosted app's every window is.
-        let routable = planned.kind == Kind::Package
-            && (hosted || matches!(launch, Launch::Package { open: None, .. }));
+        // The app's own window, on nothing or on a file or a link, is one its running process
+        // opens itself, as it opens any later one; a hosted app's every window is.
+        let routable =
+            planned.kind == Kind::Package && (hosted || matches!(launch, Launch::Package { .. }));
         let alone: Box<dyn Fn() -> StartAlone> = if hosted {
             self.start_again(launch, workspace, instance, reveal)
         } else {
@@ -1779,6 +1805,17 @@ fn window_opens(
             _ => None,
         },
         reveal: reveal.map(str::to_owned),
+        open: match launch {
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::File(path)),
+                ..
+            } => Some(path.display().to_string()),
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::Uri(uri)),
+                ..
+            } => Some(uri.clone()),
+            _ => None,
+        },
     })
 }
 
@@ -1941,16 +1978,26 @@ impl AppActions for Apps {
         Err(no_action_host())
     }
 
-    /// Open `uri` in the app that takes it: a document's own app when it is a file on this machine,
-    /// else the app that claims its scheme.
+    /// Open `uri` in the app that takes it: the app this workspace's defaults, the person's own or
+    /// this machine's open a file with, or the app that claims the scheme of a link.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
-        let (installed, entries) = routes();
+        let person = self.state.borrow().person.clone();
+        let desk = self
+            .desktop
+            .borrow()
+            .clone()
+            .map(|desktop| desktop.with_policy(|policy| policy.handle().clone()));
         let launch = match uri.strip_prefix("file://") {
             // A file URI is percent-encoded; the path it names is not.
-            Some(path) => {
-                routing::document(Path::new(&ui::uri::decode(path)), &installed, &entries)
-            }
-            None => routing::link(uri, &installed, &entries),
+            Some(path) => crate::documents::openers(
+                desk.as_ref(),
+                workspace,
+                &person,
+                Path::new(&ui::uri::decode(path)),
+            )
+            .into_iter()
+            .next(),
+            None => crate::documents::opener(desk.as_ref(), workspace, &person, uri),
         }
         .ok_or_else(|| DoorError::Failed(format!("nothing on this device opens {uri}")))?;
         let workspace = self.workspace_named(workspace);
@@ -1968,14 +2015,6 @@ impl AppActions for Apps {
             &Workspace::under(&runtime_dir(), String::new()),
         )
     }
-}
-
-/// This device's apps as routing reads them: the installed Tilo packages and the machine's own
-/// desktop entries.
-pub(crate) fn routes() -> (Vec<app_catalogue::apps::InstalledApp>, desktop_entry::Scan) {
-    let installed = app_catalogue::apps::read_from_env().unwrap_or_default();
-    let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
-    (installed, entries)
 }
 
 /// `launch` as this machine can start it: a bare name is the app as a window
@@ -2018,7 +2057,7 @@ pub(crate) fn launch_of(app: &str) -> Option<Launch> {
 /// The package id `app` is installed under: the id itself, or the package whose short name it is.
 fn installed_package(app: &str) -> Option<String> {
     if let Ok(Some(installed)) = app_catalogue::apps::read_one_from_env(app) {
-        return Some(installed.package_id);
+        return Some(installed.app_id.to_string());
     }
     if app.contains('.') {
         return None;
@@ -2027,11 +2066,11 @@ fn installed_package(app: &str) -> Option<String> {
     installed
         .into_iter()
         .find(|package| {
-            tilo_app_launch::package_identities(&package.package_id)
+            tilo_app_launch::package_identities(&package.app_id)
                 .iter()
                 .any(|identity| identity.eq_ignore_ascii_case(app))
         })
-        .map(|package| package.package_id)
+        .map(|package| package.app_id.to_string())
 }
 
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
@@ -2055,6 +2094,46 @@ fn unix_seconds() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// `launch` as its package can open it: a file of the person's is granted to the app in
+/// `workspace`, and the app opens it at the path its own sandbox holds it at, which the session's
+/// documents filesystem serves. A package cannot reach the device's own paths, so a launch naming
+/// one would start an app that fails on its first read. A folder is Files' to show where it is.
+fn handed<'a>(
+    launch: &'a Launch,
+    workspace: &Workspace,
+    documents: Option<&tilo_documents::Documents>,
+) -> Result<std::borrow::Cow<'a, Launch>, tilo_app_launch::PlanError> {
+    let Launch::Package {
+        app,
+        open: Some(tilo_app_launch::Open::File(path)),
+    } = launch
+    else {
+        return Ok(std::borrow::Cow::Borrowed(launch));
+    };
+    if path.is_dir() {
+        return Ok(std::borrow::Cow::Borrowed(launch));
+    }
+    let refused = |reason: String| tilo_app_launch::PlanError::Grants {
+        app: app.clone(),
+        source: std::io::Error::other(reason),
+    };
+    let documents = documents
+        .ok_or_else(|| refused("this device does not serve the files its apps open".into()))?;
+    let key = tilo_documents::AppKey::new(&workspace.id, app)
+        .ok_or_else(|| refused("a file is opened in a workspace's app".into()))?;
+    if tilo_documents::host::resolve(documents, &key, path).is_some() {
+        // Already one of the app's documents: what its record or history names it by.
+        return Ok(std::borrow::Cow::Borrowed(launch));
+    }
+    let opened = documents
+        .grant(&key, path, tilo_documents::Kind::Save)
+        .map_err(|error| refused(error.to_string()))?;
+    Ok(std::borrow::Cow::Owned(Launch::Package {
+        app: app.clone(),
+        open: Some(tilo_app_launch::Open::File(opened)),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2074,6 +2153,71 @@ mod tests {
 
     fn apps() -> Apps {
         Apps::with_launcher(SessionEnvironment::default(), None, None)
+    }
+
+    /// A package opening a file of the person's is handed it where its sandbox reaches it: the
+    /// path it is given is in its own view of the documents served to it, and reading it there
+    /// gives the file's bytes. The device's own path never reaches it.
+    #[test]
+    fn a_package_opening_a_file_reads_its_bytes_where_its_sandbox_holds_it() {
+        use std::io::Read as _;
+        let home = tempfile::tempdir().unwrap();
+        let agenda = home.path().join("Agenda.docx");
+        std::fs::write(&agenda, b"PK agenda").unwrap();
+        let workspace = Workspace::new(WORKSPACE, home.path().join("capabilities"));
+        let documents = tilo_documents::Documents::new();
+        let launch = Launch::Package {
+            app: "so.tilo.word-processor".to_owned(),
+            open: Some(tilo_app_launch::Open::File(agenda.clone())),
+        };
+
+        let given = handed(&launch, &workspace, Some(&documents)).unwrap();
+        let Launch::Package {
+            open: Some(tilo_app_launch::Open::File(opened)),
+            ..
+        } = given.as_ref()
+        else {
+            panic!("the launch still opens a file: {given:?}");
+        };
+        assert!(
+            opened.starts_with(tilo_documents::SANDBOX_DIR),
+            "{}",
+            opened.display()
+        );
+        assert_eq!(opened.file_name(), agenda.file_name(), "named as it is");
+        let key = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.word-processor").unwrap();
+        let target = tilo_documents::host::resolve(&documents, &key, opened).unwrap();
+        let mut bytes = Vec::new();
+        std::fs::File::from(
+            target
+                .open(rustix::fs::OFlags::RDONLY, rustix::fs::Mode::empty())
+                .unwrap(),
+        )
+        .read_to_end(&mut bytes)
+        .unwrap();
+        assert_eq!(bytes, b"PK agenda");
+        let other = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.notes").unwrap();
+        assert!(
+            tilo_documents::host::resolve(&documents, &other, opened).is_none(),
+            "handed to the app that opens it alone"
+        );
+
+        assert_eq!(
+            handed(&given, &workspace, Some(&documents))
+                .unwrap()
+                .as_ref(),
+            given.as_ref(),
+            "reopening the app's own document, as its history names it, opens it again"
+        );
+        assert!(
+            handed(&launch, &workspace, None).is_err(),
+            "no app is started on a path its sandbox cannot read"
+        );
+        let folder = Launch::Package {
+            app: "so.tilo.file-explorer".to_owned(),
+            open: Some(tilo_app_launch::Open::File(home.path().to_path_buf())),
+        };
+        assert_eq!(handed(&folder, &workspace, None).unwrap().as_ref(), &folder);
     }
 
     /// A launch takes the compositor's render node once the compositor has one, though the session

@@ -458,10 +458,31 @@ impl SettingsRecords {
         earlier: &[String],
         declares: &[super::Declare],
     ) -> Self {
+        Self::of_person_named_in(
+            app_id,
+            app_title,
+            person,
+            earlier,
+            declares,
+            SettingsDocument::Session,
+        )
+    }
+
+    /// [`Self::of_person_named`], kept in `document`: a host's profile of its
+    /// own rather than the session's settings.
+    #[must_use]
+    pub fn of_person_named_in(
+        app_id: &'static str,
+        app_title: &'static str,
+        person: &str,
+        earlier: &[String],
+        declares: &[super::Declare],
+        document: SettingsDocument,
+    ) -> Self {
         Self::declared(
             super::record::Sections {
                 app_id,
-                document: SettingsDocument::Session,
+                document,
                 person: Some(Rc::new(super::person::PersonState::without_records(
                     person.to_owned(),
                     earlier.to_vec(),
@@ -571,17 +592,55 @@ impl SettingsRecords {
     }
 }
 
+impl SettingsRecords {
+    /// What answers these sections' actions where the host keeps them in its
+    /// own process, as `person`'s: the controls a window binds to them
+    /// ([`Records::kept_by`](super::Records::kept_by)) are invoked here, as a
+    /// session's broker invokes them where it keeps them. The person's own
+    /// settings: nobody else changes them.
+    #[must_use]
+    pub fn served_for(self, person: &str) -> ui_core::headless::ServedProvider {
+        let person = person.to_owned();
+        Box::new(move |invocation| {
+            if invocation.actor != person {
+                return Err(tilo_actions::DoorError::Unavailable {
+                    code: "permission_denied".into(),
+                    reason: "Only the person they belong to changes these settings".into(),
+                });
+            }
+            let arguments = match invocation.argument {
+                tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+                tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+                tilo_actions::remote::InvokeArgument::Text(_) => {
+                    return Err(tilo_actions::DoorError::InvalidArguments(
+                        "a settings change carries typed arguments".into(),
+                    ));
+                }
+            };
+            self.invoke(
+                invocation.address,
+                &arguments,
+                invocation.confirmed,
+                &ActionInvoker::actor(&person),
+                None,
+            )
+        })
+    }
+}
+
 /// The public id of the action whose encoded payload is `payload`.
 fn action_id(payload: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(payload)
-        // ignored-failure: a payload that does not read back is named by the generic label
-        .ok()
-        .and_then(|value| {
-            let operation = value.get("op").unwrap_or(&value);
-            operation
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "action".to_owned())
+    tilo_failure::ignored!(
+        "a payload that does not read back is named by the generic label",
+        serde_json::from_slice::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|value| {
+                let operation = value.get("op").unwrap_or(&value);
+                operation
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "action".to_owned())
+    )
 }

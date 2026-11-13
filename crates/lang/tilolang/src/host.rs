@@ -1,60 +1,47 @@
-//! The package the host itself provides: the types that exist in every module.
-//!
-//! `Invocation` records what happened to an action a block applied: the host creates and
-//! changes these resources, and code only reads them. Every module sees the package as `host`.
+//! The package the host itself provides: the types that exist in every module. `Invocation` records
+//! what happened to an action a block applied: the host creates and changes these resources, and code
+//! only reads them. Every module sees the package as `host`.
 
 use crate::meta::{EnumMeta, FieldMeta, PackageMeta, TypeMeta, VariantMeta};
 use crate::types::MergeKind;
 
-/// The app id of the host's package.
 pub const HOST_APP: &str = "tilo.host";
-/// The id of the `Invocation` type.
 pub const INVOCATION_TYPE: &str = "host-invocation";
-/// The id of the `Notice` type: what `notify` writes for the person it names.
 pub const NOTICE_TYPE: &str = "host-notice";
-/// Where a `Notice` holds the person it is addressed to.
 pub const NOTICE_TO: &str = "notice-to";
-/// Where a `Notice` holds what it shows above the line.
 pub const NOTICE_TITLE: &str = "notice-title";
-/// Where a `Notice` holds what it shows below it.
 pub const NOTICE_BODY: &str = "notice-body";
-/// Where a `Notice` holds the resource choosing it opens.
 pub const NOTICE_OPENS: &str = "notice-opens";
-/// Where a `Notice` holds whether the person has opened or dismissed it.
 pub const NOTICE_SEEN: &str = "notice-seen";
-/// The id of `LinkHow`, the enum a `host.Link`'s `how` holds.
 pub const LINK_HOW_TYPE: &str = "host-link-how";
 
-/// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload
-/// fields. `try act(args)` builds one from an invocation's outcome.
+/// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload fields. `try
+/// act(args)` builds one from an invocation's outcome.
 pub const RESULT_TYPE: &str = "result";
 pub const RESULT_OK: &str = "ok";
 pub const RESULT_ERR: &str = "err";
 pub const RESULT_VALUE: &str = "value";
 pub const RESULT_ERROR: &str = "error";
 
-/// A type of the host whose values are made by the host and read by code, field by field:
-/// what the platform says about a resource, an action or a lens. Such a value is not a resource
-/// and is never stored; it is held as a tuple of its fields, in this order.
+/// A type of the host whose values are made by the host and read by code, field by field: what the
+/// platform says about a resource, an action or a lens. Such a value is not a resource and is never
+/// stored; it is held as a tuple of its fields, in this order.
 pub struct ValueType {
     pub name: &'static str,
     pub id: &'static str,
     pub doc: &'static str,
-    /// Its fields: name, type as metadata writes it, doc.
     pub fields: &'static [(&'static str, &'static str, &'static str)],
 }
 
-/// A closed set of the host's surface: a type whose values code names by case, so that a case
-/// the host never answers is a compile error.
+/// A closed set of the host's surface: a type whose values code names by case, so that a case the host
+/// never answers is a compile error.
 pub struct HostEnum {
     pub name: &'static str,
     pub id: &'static str,
     pub doc: &'static str,
-    /// Its cases: name, which is also its id, what a control shows for it, and doc.
     pub variants: &'static [(&'static str, &'static str, &'static str)],
 }
 
-/// The enums of the host.
 pub const HOST_ENUMS: &[HostEnum] = &[HostEnum {
     name: "LinkHow",
     id: LINK_HOW_TYPE,
@@ -78,7 +65,6 @@ pub const HOST_ENUMS: &[HostEnum] = &[HostEnum {
     ],
 }];
 
-/// The value types of the host, each held as a tuple of its fields in their order.
 pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Action",
@@ -284,6 +270,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Int",
                 "How many changes it folds: one for one command, however many items it \
                  changed at once, and more for a step of several.",
+            ),
+            (
+                "opens",
+                "Bool",
+                "Whether it opens a visit: the newest step, or one whose hand, or the moment \
+                 it was made at, is not the step above it's. A history draws the face of the \
+                 step that opens a visit, and the steps below it that open none join it.",
+            ),
+            (
+                "latest",
+                "Bool",
+                "Whether it is the newest step: the change whose result the page shows.",
             ),
         ],
     },
@@ -520,24 +518,22 @@ pub const VALUE_TYPES: &[ValueType] = &[
     },
 ];
 
-/// The type that stands for any resource, of whatever app: what `find` and `grep` answer when
-/// they read across apps. `.of(T)` keeps those of one type.
+/// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read
+/// across apps. `.of(T)` keeps those of one type.
 pub const RESOURCE_TYPE_NAME: &str = "Resource";
 
-/// The value type `name` of the host.
 #[must_use]
 pub fn value_type(name: &str) -> Option<&'static ValueType> {
     VALUE_TYPES.iter().find(|t| t.name == name)
 }
 
-/// Whether the record type `key` is a value type of the host: held as a tuple, never a
-/// resource, so it has no id.
+/// Whether the record type `key` is a value type of the host: held as a tuple, never a resource, so it
+/// has no id.
 #[must_use]
 pub fn is_value(key: &crate::types::TypeKey) -> bool {
     key.app == HOST_APP && value_type(&key.name).is_some()
 }
 
-/// The place of the field `field` in the tuple of the value type `ty`.
 #[must_use]
 pub fn value_field(ty: &str, field: &str) -> Option<usize> {
     value_type(ty)?
@@ -546,12 +542,12 @@ pub fn value_field(ty: &str, field: &str) -> Option<usize> {
         .position(|(name, ..)| *name == field)
 }
 
-/// The value types that name an action, `Version` (the one that made it) and `Action` (the
-/// one offered), which `v.is(edit)` asks about by the action itself rather than its label.
+/// The value types that name an action, `Version` (the one that made it) and `Action` (the one offered),
+/// which `v.is(edit)` asks about by the action itself rather than its label.
 pub const NAMES_AN_ACTION: &[&str] = &["Version", "Action"];
 
-/// Where the tuple of the value type `ty` holds the id of the action it names: after its
-/// fields, which code reads by name, so the id is compared only through `.is(action)`.
+/// Where the tuple of the value type `ty` holds the id of the action it names: after its fields, which
+/// code reads by name, so the id is compared only through `.is(action)`.
 #[must_use]
 pub fn action_id_at(ty: &str) -> Option<usize> {
     NAMES_AN_ACTION
@@ -571,7 +567,6 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
     }
 }
 
-/// A field of the `Notice` type.
 fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> FieldMeta {
     FieldMeta {
         id: id.to_string(),
@@ -583,7 +578,6 @@ fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> 
     }
 }
 
-/// The metadata of the host's package.
 pub fn host_meta() -> PackageMeta {
     PackageMeta {
         app: HOST_APP.to_string(),

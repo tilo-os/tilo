@@ -1,5 +1,5 @@
-//! The overview column: the items of the chosen place in a [`VirtualList`],
-//! one [`ListRow`] each, or the empty state when there are none.
+//! The overview column: the items of the chosen place in a [`VirtualList`], one [`ListRow`]
+//! each, or the empty state when there are none.
 
 use std::rc::Rc;
 
@@ -12,13 +12,11 @@ use vello::kurbo::Point;
 use crate::CATALOG;
 use crate::vault::{Core, Request, Requests, Screen, Shared, VaultFilter, is_favorite, summary};
 
-/// What a row shows of an item, keyed by the item's id.
 struct Row {
     id: String,
     title: String,
     summary: String,
     favorite: bool,
-    /// The item's published row, which its controls are bound to.
     published: ui::tilo_actions::ResourceSpec,
 }
 
@@ -46,9 +44,7 @@ pub(crate) struct ListPane {
     core: Shared,
     requests: Requests,
     body: Body,
-    /// The list revision and place the body was built from.
     built: Option<(u64, VaultFilter)>,
-    /// The open item to scroll into view once the list has its height.
     reveal: Option<String>,
     structure_dirty: bool,
 }
@@ -77,9 +73,6 @@ impl ListPane {
                 .avatar(&row.title, id)
                 .square()
                 .secondary(&row.summary);
-            // The star is the item's published `favorite`, addressed by the
-            // item's opaque id: the vault window keeps item titles out of
-            // what it publishes.
             if let Some(favorite) = crate::actions::item_binding(&row.published, "favorite") {
                 let label = if row.favorite {
                     &CATALOG.t("passwords-remove-favorite")
@@ -97,8 +90,6 @@ impl ListPane {
         .with_id("passwords.items")
         .with_accessible_name(filter.label())
         .with_semantic_key(ToString::to_string)
-        // Choosing a row opens its item: the list publishes the choice by
-        // the items' opaque ids alone.
         .on_view("passwords.items", move |id| {
             open.borrow_mut().push(Request::Open(secret(&id)));
         })
@@ -129,8 +120,8 @@ impl ListPane {
         vault_empty_state(&self.requests)
     }
 
-    /// Rebuild what the core changed: the rows of a new revision, a fresh
-    /// list for a new place, the open item and whether to scroll to it.
+    /// Rebuild what the core changed: the rows of a new revision, a fresh list for a new
+    /// place, the open item and whether to scroll to it.
     fn refresh(&mut self) {
         let core = Rc::clone(&self.core);
         let mut core = core.borrow_mut();
@@ -156,7 +147,6 @@ impl ListPane {
             self.body = Body::List(Box::new(self.list(rows, core.filter)));
             self.structure_dirty = true;
         }
-        // A new item is not in the list yet: nothing there is the open item.
         let open = if core.screen == Screen::Editor && core.editing.is_none() {
             None
         } else {
@@ -225,9 +215,6 @@ impl ui::widget::Decorator for ListPane {
     }
 }
 
-/// What an empty vault shows, across the whole window
-/// ([`ui::widget::NavShell::nothing_listed`]) or in the list: what the vault
-/// keeps, and New item.
 pub(crate) fn vault_empty_state(requests: &Requests) -> EmptyState {
     let requests = Rc::clone(requests);
     EmptyState::new("Your vault is empty")

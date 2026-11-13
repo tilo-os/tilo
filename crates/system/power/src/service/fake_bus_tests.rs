@@ -1,6 +1,6 @@
-//! The production [`PowerService`] loop against a fake logind and `UPower` served over a socket
-//! pair: a real D-Bus wire, no bus daemon. "Stays asleep" is measured on the loop's own wakeup
-//! counter; the old loop ticked every 250 ms, so any idle window of a second tells them apart.
+//! The production [`PowerService`] loop against a fake logind and `UPower` served
+//! over a socket pair: a real D-Bus wire, no bus daemon. "Stays asleep" is
+//! measured on the loop's own wakeup counter.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -16,12 +16,13 @@ const LOGIND_PATH: &str = "/org/freedesktop/login1";
 const UPOWER_PATH: &str = "/org/freedesktop/UPower";
 const DISPLAY_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 
-/// What the fake daemons were asked, and the far ends of the inhibitor fds they handed out.
+/// What the fake daemons were asked, and the far ends of the inhibitor fds they
+/// handed out.
 #[derive(Default)]
 struct Calls {
     inhibits: Vec<LogindInhibitorRequest>,
-    /// The daemon's end of each inhibitor fd, in `inhibits` order: it reads EOF once the
-    /// service drops the lock.
+    /// The daemon's end of each inhibitor fd, in `inhibits` order: it reads EOF once
+    /// the service drops the lock.
     held: Vec<UnixStream>,
     list_inhibitors: usize,
     /// `UPower.EnumerateDevices`: one per battery-history sample.
@@ -88,7 +89,6 @@ impl FakeLogind {
     async fn prepare_for_sleep(emitter: &SignalEmitter<'_>, start: bool) -> zbus::Result<()>;
 }
 
-/// A laptop on battery with its lid open.
 struct FakeUPower {
     calls: Shared,
     lid_closed: bool,
@@ -122,7 +122,6 @@ impl FakeUPower {
     }
 }
 
-/// The composite battery: present and discharging.
 struct FakeDisplayDevice {
     kind: u32,
     present: bool,
@@ -168,8 +167,8 @@ struct Session {
     _state_home: tempfile::TempDir,
 }
 
-/// A policy with no idle timeout armed, the lid locking and a critical battery locking — so
-/// nothing here suspends unless a test asks.
+/// A policy with no idle timeout armed, the lid locking and a critical battery
+/// locking, so nothing here suspends unless a test asks.
 fn quiet_policy() -> PowerPolicy {
     PowerPolicy {
         idle_blank: None,
@@ -249,7 +248,6 @@ async fn start(policy: PowerPolicy, foreign: Vec<LogindInhibitorRow>) -> Session
     session
 }
 
-/// Longer than the old loop's 250 ms tick several times over.
 const IDLE_WINDOW: Duration = Duration::from_millis(1_500);
 
 /// Run until `done` holds.
@@ -267,10 +265,8 @@ impl Session {
         self.wakeups.load(Ordering::SeqCst)
     }
 
-    /// Wait until the service is running its loop and has gone quiet: its wakeup count is past
-    /// zero and holds still for 200 ms. Startup itself is not counted, but the lid stream yields
-    /// the value startup cached as soon as the loop runs, so a count past zero means startup —
-    /// including the first lid reading — is over.
+    /// Wait until the service is running its loop and has gone quiet: its wakeup
+    /// count is past zero and holds still for 200 ms.
     async fn settle(&self) {
         tilo_test_env::within("the service to settle", async {
             loop {
@@ -397,8 +393,8 @@ async fn suspend_request_is_handled_without_waiting_for_a_tick() {
         calls(&session.calls).suspends == 1
     })
     .await;
-    // That no tick was waited for is in the wakeup count below; how soon
-    // Suspend arrived is the machine's to report.
+    // That no tick was waited for is in the wakeup count below; how soon Suspend
+    // arrived is the machine's to report.
     let suspended = calls(&session.calls).suspended_at[0];
     eprintln!(
         "Suspend arrived {:?} after the request",

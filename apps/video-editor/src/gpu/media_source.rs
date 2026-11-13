@@ -1,31 +1,12 @@
-//! Decoded pictures for the compositor, straight from the media engine.
+//! Decoded pictures for the compositor, from the media engine: the [`FrameSource`]
+//! the preview canvas and the export both pull layers through.
 //!
-//! This is the [`FrameSource`] the real editor uses — the preview canvas and
-//! the export both pull layers through it, so both see the same picture for
-//! the same instant.
-//!
-//! ## Why planar is the path that matters
-//!
-//! A hardware decoder does not produce RGBA. `nvh264dec` emits NV12 in system
-//! memory, and converting that to RGBA on the CPU costs a full-frame pass over
-//! two million pixels and turns 3.1 MB of upload into 8.3 MB. So the planar
-//! payload goes to the GPU *as planes* ([`upload_planar`]) and the YUV
-//! arithmetic happens in a shader ([`YuvConverter`]). No colour conversion
-//! runs on the CPU at all.
-//!
-//! The other two payloads are real but secondary here:
-//!
-//!   * `Rgba` — the software fallback (`avdec_h264`), uploaded as-is.
-//!   * `Dmabuf` — a picture still in GPU memory. It cannot be imported on this
-//!     stack: wgpu-hal does not enable `VK_EXT_image_drm_format_modifier`, so
-//!     only a linear modifier could ever import and VA-API hands out tiled
-//!     buffers, while NVDEC exports CUDA memory rather than a dmabuf at all.
-//!     Rather than drop those frames, a source that yields one is moved to a
-//!     software session, which lands its pictures in system memory where they
-//!     can be painted.
-//!
-//! [`upload_planar`]: ui::gpu_video::upload_planar
-//! [`YuvConverter`]: ui::gpu_video::YuvConverter
+//! A hardware decoder emits NV12, so the planar payload goes to the GPU as planes
+//! and the YUV arithmetic happens in a shader; no colour conversion runs on the
+//! CPU. A software decode arrives as RGBA. A `Dmabuf` cannot be imported on this
+//! stack (wgpu-hal does not enable `VK_EXT_image_drm_format_modifier`, and VA-API
+//! hands out tiled buffers), so a source yielding one moves to a software session
+//! rather than dropping the frame.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -39,109 +20,73 @@ use crate::model::{MediaId, Project};
 
 use super::{FrameSource, SourceTexture, compositor::upload_rgba};
 
-/// How a caller wants frames fetched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fetch {
-    /// Block until the frame at the requested instant is decoded. What an
-    /// export wants: every frame must be the right one, and there is no
-    /// interactive deadline to miss.
+    /// Block until the frame at the requested instant is decoded: an export wants
+    /// every frame right and has no interactive deadline.
     Exact,
-    /// Never block. Serve the cached frame when there is one, otherwise ask
-    /// the pipeline to move and paint the last picture this source produced
-    /// until it arrives. What a preview wants: a scrub must not stall the UI
-    /// thread, and a frame or two of lag beats a frozen window.
+    /// Never block: serve the cached frame, else move the pipeline and paint the
+    /// last picture until it arrives. A scrub must not stall the UI thread.
     Responsive,
 }
 
-/// The picture most recently painted for a source, held so a `Responsive`
-/// fetch has something to show while the pipeline seeks.
 #[derive(Clone)]
 struct LastGood {
     pts_ms: u64,
     texture: SourceTexture,
-    /// The decoded picture the texture was painted from, kept in system
-    /// memory so a colour can be read out of exactly what the canvas shows.
     frame: Arc<Frame>,
 }
 
-/// A [`FrameSource`] backed by the shared media engine.
 pub struct MediaFrameSource {
     pool: SessionPool,
-    /// Sessions for sources whose frames cannot be painted GPU-resident.
     software: SessionPool,
     demoted: HashSet<MediaId>,
-    /// Decodable media in the project: where the bytes are, how fast the
-    /// source runs (so the frame cache buckets line up with real frames), and
-    /// the instant of its last frame in milliseconds when its length is known.
+    /// Decodable media: where the bytes are, how fast the source runs (the frame
+    /// cache buckets by real frames), and the instant of its last frame.
     sources: HashMap<MediaId, (media::Source, f64, Option<u64>)>,
-    /// One converter per layer slot. Every converter owns its output texture
-    /// and reuses it across frames, so two layers converting in the same
-    /// composite must not share one — otherwise the second would overwrite
-    /// the first and both layers would paint the same picture.
+    /// One per layer slot: each owns an output texture it reuses, so two layers in
+    /// one composite must not share one — the second would overwrite the first.
     converters: Vec<YuvConverter>,
     slot: usize,
     last: HashMap<MediaId, LastGood>,
-    /// The instant each source was last asked for, so a forward step can be
-    /// told from a jump.
     served: HashMap<MediaId, u64>,
-    /// Only accepted seeks may suppress a retry: a pipeline still opening
-    /// can refuse the first request before it has prerolled.
     accepted_seeks: HashMap<MediaId, u64>,
-    /// Did the composite currently being resolved put a decoded picture on at
-    /// least one layer? Reset by `begin_frame`, so it describes this frame and
-    /// not a frame from a minute ago.
+    /// Reset by `begin_frame`, so it describes this frame.
     served_real: bool,
-    /// Sources currently running forward under an `Exact` fetch.
     rolling: HashSet<MediaId>,
-    /// Consecutive frame requests a source has answered with nothing.
-    /// Cleared the moment it produces a picture, so a damaged region does
+    /// Cleared the moment a source produces a picture, so a damaged region does
     /// not accumulate against a file that otherwise plays.
     failures: HashMap<MediaId, u32>,
-    /// Responsive polling is not a failed seek: allow a whole decode window
-    /// before counting a miss, regardless of the display's repaint rate.
+    /// A missed responsive poll is not a failed seek: allow a whole decode window
+    /// before counting a miss, whatever the repaint rate.
     failure_started: HashMap<MediaId, ui::time::Instant>,
-    /// Sources written off as undecodable: asked for, repeatedly, and never
-    /// answered. Nothing is requested for these again.
     undecodable: HashSet<MediaId>,
-    /// How many times a pipeline was actually asked for a frame. Only a test
-    /// reads it — it is the difference between "gave up" and "still trying
-    /// but quietly", which no other observable distinguishes.
+    /// Only a test reads it: it is the difference between "gave up" and "still
+    /// trying but quietly".
     attempts: u64,
     fetch: Fetch,
     timeout: Duration,
-    /// Set for an export: a source is never written off and never stood in
-    /// for by an older picture, because the caller decides when to give up.
+    /// Set for an export: nothing is written off and nothing is stood in for by an
+    /// older picture, because the caller decides when to give up.
     strict: bool,
-    /// Indexed media the current composite asked for and got no picture of
-    /// at the requested instant, with the source time asked for. Reset by
-    /// `begin_frame`.
     missing: Vec<(MediaId, f64)>,
 }
 
-/// How far ahead of the last request an `Exact` fetch will roll the pipeline
-/// forward rather than seek. An export steps a frame at a time, so almost
-/// every request lands well inside this; a cut to a different part of the
-/// source does not, and takes a real seek.
+/// An export steps a frame at a time and lands inside this; a jump to another part
+/// of the source takes a real seek.
 const ROLL_AHEAD_MS: u64 = 2_000;
 
-/// The whole millisecond to ask a decoder for when the picture starting at
-/// `seconds` is wanted, rounded up rather than down.
-///
-/// Frames rarely start on a whole millisecond: at 30 fps the 62nd begins at
-/// 2066.67 ms, and 2066 still falls inside the picture before it. A seek
-/// there is answered, correctly, with that earlier picture, stamped with the
-/// segment start of 2066 because the decoder clips it to where the seek
-/// landed — so nothing downstream can tell it apart from the frame asked
-/// for, and an export repeats a frame and drops the next. Rounding up stays
-/// within the frame that starts at `seconds`, which lasts far longer than
-/// the millisecond added.
+/// Rounded up rather than down: at 30 fps the 62nd picture begins at 2066.67 ms,
+/// and a seek to 2066 is answered with the picture before it, stamped 2066 because
+/// the decoder clips it to where the seek landed — so a frame is repeated and the
+/// next dropped. Rounding up stays inside the picture that starts at `seconds`.
 fn source_ms(seconds: f64) -> u64 {
     (seconds.max(0.0) * 1000.0).ceil() as u64
 }
 
 impl MediaFrameSource {
-    /// Index `project`'s decodable media and open nothing yet — sessions are
-    /// created on first use and pruned when they go idle.
+    /// Index the decodable media and open nothing yet: sessions are created on first
+    /// use and pruned when idle.
     pub fn new(project: &Project, fetch: Fetch) -> Self {
         Self {
             sources: Self::index(project),
@@ -170,60 +115,40 @@ impl MediaFrameSource {
         }
     }
 
-    /// Whether this source has given up on `media`.
-    ///
-    /// A file the decoder never answers for is not a transient miss: the
-    /// media bin holds whatever the project says it holds, including a
-    /// document persisted before the import guard existed, or one replicated
-    /// from a peer — and neither is re-probed. Without a terminal state the
-    /// pipeline is rebuilt for it on every frame, each attempt paying the
-    /// full frame timeout, which is what made an editor holding one bad file
-    /// stall on a fixed cadence forever.
+    /// A file the decoder never answers for is not a transient miss: without a
+    /// terminal state the pipeline is rebuilt for it every frame, each attempt paying
+    /// the full timeout.
     pub fn is_undecodable(&self, media: MediaId) -> bool {
         self.undecodable.contains(&media)
     }
 
-    /// A non-blocking seek still needs polling, even while playback is paused.
     pub fn has_pending_frames(&self) -> bool {
         self.failure_started.keys().any(|id| self.may_serve(*id))
     }
 
-    /// Whether `media` may still be served a decoded picture: it has bytes
-    /// this source can decode, and it has not been written off.
     pub fn may_serve(&self, media: MediaId) -> bool {
         self.sources.contains_key(&media) && !self.undecodable.contains(&media)
     }
 
-    /// How many times a pipeline has been asked for a frame. For tests: it is
-    /// what tells "stopped asking" apart from "still asking and still
-    /// failing", which look identical from the outside.
     #[cfg(test)]
     pub fn decode_attempts(&self) -> u64 {
         self.attempts
     }
 
-    /// Which of `project`'s media this source can decode, and how fast each
-    /// runs — the frame cache buckets by real frames, so the rate matters.
     fn index(project: &Project) -> HashMap<MediaId, (media::Source, f64, Option<u64>)> {
         let mut sources = HashMap::new();
         for item in &project.media {
-            // A title's picture is generated, not decoded, so it never wants
-            // a pipeline.
+            // A title's picture is generated, so it never wants a pipeline.
             if !item.kind.is_visual() || item.kind.is_generated() {
                 continue;
             }
             let resolved = item.source();
             if !resolved.is_decodable() {
-                // A projected reference whose bytes have not hydrated. Its
-                // layers fall back to the representative fill.
                 continue;
             }
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
-            // A clip trimmed to run past its source's end holds the last
-            // frame there: that is the picture, so it is what is asked for.
-            // A still has one picture, at its start, however long its clip
-            // runs: asking a single-frame file for a later instant finds
-            // nothing, and the layer would draw its representative fill.
+            // A clip running past its source's end holds the last frame, and a still
+            // has one picture however long its clip runs.
             let last_frame_ms = if item.kind == crate::model::MediaKind::Image {
                 Some(0)
             } else {
@@ -241,13 +166,9 @@ impl MediaFrameSource {
         sources
     }
 
-    /// Re-index against `project` in place, keeping every open session.
-    ///
-    /// Rebuilding the whole source instead would tear down the pipelines and
-    /// the YUV converters on every import — the two most expensive things it
-    /// owns — so the editor holds one of these for its lifetime and calls
-    /// this when the media bin changes. Cached pictures for media that has
-    /// gone are dropped; everything still present keeps its session.
+    /// Rebuilding the source instead would tear down the pipelines and the YUV
+    /// converters on every import, so the editor holds one for its lifetime and
+    /// calls this when the media bin changes.
     pub fn set_project(&mut self, project: &Project) {
         self.sources = Self::index(project);
         self.last.retain(|id, _| self.sources.contains_key(id));
@@ -259,67 +180,49 @@ impl MediaFrameSource {
         self.failures.retain(|id, _| self.sources.contains_key(id));
         self.failure_started
             .retain(|id, _| self.sources.contains_key(id));
-        // A write-off is forgotten when the item leaves the bin, so
-        // re-importing the file asks the decoder again rather than
-        // inheriting a verdict about a project the user has since changed.
+        // A write-off is forgotten when the item leaves the bin, so re-importing
+        // asks the decoder again.
         self.undecodable.retain(|id| self.sources.contains_key(id));
     }
 
-    /// A cheap signature of what [`set_project`](Self::set_project) would
-    /// index, so a caller can skip the re-index when nothing has changed.
     pub fn project_signature(project: &Project) -> u64 {
         super::media_signature(project)
     }
 
-    /// How long an `Exact` fetch waits for a picture before giving up.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// For an export: a source that has not answered yet is never written
-    /// off and never shown as the last picture it produced. The caller reads
-    /// [`missing_pictures`](Self::missing_pictures) after each composite and
-    /// asks again, or gives up, itself.
+    /// The caller reads [`missing_pictures`](Self::missing_pictures) after each
+    /// composite and asks again, or gives up, itself.
     #[must_use]
     pub fn strict(mut self) -> Self {
         self.strict = true;
         self
     }
 
-    /// The media the last composite asked for and got no picture of at the
-    /// requested instant (with the source time), so its layers drew a
-    /// stand-in. Empty when every decoded layer is the real frame.
     pub fn missing_pictures(&self) -> &[(MediaId, f64)] {
         &self.missing
     }
 
-    /// Whether the last composite this source served actually resolved a
-    /// decoded picture, rather than leaving every layer to its representative
-    /// fill.
     pub fn served_real_picture(&self) -> bool {
         self.served_real
     }
 
-    /// Whether a decoded picture of `media` is on the canvas, so a colour can
-    /// be sampled from it.
     pub fn has_picture(&self, media: MediaId) -> bool {
         self.last.contains_key(&media)
     }
 
-    /// The colour of the picture last painted for `media` at normalised
-    /// coordinates `(u, v)`, or `None` when no decoded picture was painted.
     pub fn pixel(&self, media: MediaId, u: f64, v: f64) -> Option<[f64; 3]> {
         sample(&self.last.get(&media)?.frame, u, v)
     }
 
-    /// How many of the project's media this source can decode.
     pub fn decodable(&self) -> usize {
         self.sources.len()
     }
 
-    /// What the pipeline plugged for `media`, for a diagnostic overlay.
     pub fn hw_report(&mut self, media: MediaId) -> Option<media::HwReport> {
         let (source, _, _) = self.sources.get(&media)?.clone();
         let session = self.pool_for(media).session(&source);
@@ -335,14 +238,13 @@ impl MediaFrameSource {
         }
     }
 
-    /// Drop sessions nothing has touched lately. An open pipeline holds a
-    /// decoder and a slice of the GPU; a closed clip should not keep one.
+    /// An open pipeline holds a decoder and a slice of the GPU; a closed clip should
+    /// not keep one.
     pub fn prune(&mut self) {
         self.pool.prune();
         self.software.prune();
     }
 
-    /// Paint one decoded picture into a texture the compositor can sample.
     fn paint(
         &mut self,
         device: &wgpu::Device,
@@ -352,15 +254,12 @@ impl MediaFrameSource {
     ) -> Option<SourceTexture> {
         let slot = self.slot;
         let painted = match &frame.payload {
-            // The fast path on a hardware decoder: planes up, conversion in a
-            // shader, nothing converted on the CPU.
             FramePayload::Planar(img) => {
                 let planes = upload_planar(device, queue, img, frame.width, frame.height)?;
                 while self.converters.len() <= slot {
                     self.converters
                         .push(YuvConverter::new(device, wgpu::TextureFormat::Rgba8Unorm));
                 }
-                // The loop above guarantees a converter at `slot`.
                 let texture = self
                     .converters
                     .get_mut(slot)?
@@ -374,13 +273,11 @@ impl MediaFrameSource {
                     height: frame.height,
                 })
             }
-            // Software decode already landed in system memory.
             FramePayload::Rgba(bytes) => {
                 upload_rgba(device, queue, frame.width, frame.height, bytes)
             }
-            // GPU-resident and unimportable on this stack. Move the source to
-            // a software session so its next frame arrives paintable, and
-            // fall back for this one.
+            // GPU-resident and unimportable here: move the source to a software
+            // session and stand in for this frame.
             FramePayload::Dmabuf(image) => {
                 if self.demoted.insert(media) {
                     self.accepted_seeks.remove(&media);
@@ -405,7 +302,6 @@ impl MediaFrameSource {
     }
 }
 
-/// The colour of `frame` at normalised coordinates `(across, down)`.
 fn sample(frame: &Frame, across: f64, down: f64) -> Option<[f64; 3]> {
     if frame.width == 0 || frame.height == 0 {
         return None;
@@ -421,10 +317,8 @@ fn sample(frame: &Frame, across: f64, down: f64) -> Option<[f64; 3]> {
 }
 
 impl MediaFrameSource {
-    /// The picture at `target_ms` if it has landed, never waiting. One seek
-    /// is issued per target: reissuing it on every repaint flushes an
-    /// in-flight decode before its preroll can land, leaving a paused
-    /// preview blank.
+    /// One seek per target: reissuing it on every repaint flushes an in-flight
+    /// decode before its preroll lands, leaving a paused preview blank.
     fn responsive_frame(
         &mut self,
         s: &mut media::session::EngineSession,
@@ -441,11 +335,9 @@ impl MediaFrameSource {
         }
         s.poll_into_cache();
         s.cached_frame_at(target_ms).or_else(|| {
-            // An accurate seek returns the picture covering the target, not
-            // necessarily one whose own PTS falls in the request's rounded
-            // cache bucket. The blocking session path aliases this picture
-            // to the request too; use the accepted generation here rather
-            // than waiting forever for an exact PTS.
+            // An accurate seek returns the picture covering the target, whose own PTS
+            // may fall in another cache bucket, so use the accepted generation rather
+            // than waiting for an exact PTS.
             (self.accepted_seeks.get(&media) == Some(&target_ms) && s.engine().frame_is_current())
                 .then(|| s.engine().latest().cloned().map(Arc::new))
                 .flatten()
@@ -467,9 +359,6 @@ impl FrameSource for MediaFrameSource {
         media: MediaId,
         source_time: f64,
     ) -> Option<SourceTexture> {
-        // Written off: never open a pipeline for it again. The compositor
-        // falls back to the representative fill, exactly as it does for a
-        // reference whose bytes have not hydrated.
         let (source, fps, last_frame_ms) = self.sources.get(&media).cloned()?;
         if self.undecodable.contains(&media) {
             self.missing.push((media, source_time));
@@ -480,8 +369,6 @@ impl FrameSource for MediaFrameSource {
         self.attempts += 1;
         let fetch = self.fetch;
         let timeout = self.timeout;
-        // Read where this source was last asked for *before* recording the
-        // new request, or every step would look like a step of zero.
         let previously_served = self.served.insert(media, target_ms);
 
         let session = self.pool_for(media).session(&source);
@@ -491,12 +378,8 @@ impl FrameSource for MediaFrameSource {
             };
             s.set_fps(fps);
             match fetch {
-                // An export walks the timeline forward, so a clip's source
-                // time walks forward too and the next frame is simply the
-                // next one out of the decoder. Seeking for each of them
-                // would pay a full accurate-seek per frame — correct, and
-                // roughly a second each. Roll the pipeline instead, and
-                // keep the seek for a genuine jump.
+                // Seeking per frame would pay a full accurate seek each time, so roll
+                // the pipeline forward and keep the seek for a genuine jump.
                 Fetch::Exact => {
                     let step_ahead = matches!(
                         previously_served,
@@ -522,13 +405,9 @@ impl FrameSource for MediaFrameSource {
                     if frame.is_some() {
                         frame
                     } else {
-                        // Either a jump, or the roll did not reach the
-                        // target in time — fall back to the exact seek,
-                        // which lands on the right picture. Stop the roll
-                        // first: a running pipeline keeps delivering frames
-                        // decoded for where it was, and the seek wants the
-                        // one picture a paused pipeline prerolls. The next
-                        // step ahead starts it again.
+                        // A jump, or the roll did not reach the target: fall back to
+                        // the exact seek. Stop the roll first, since a running pipeline
+                        // keeps delivering frames for where it was.
                         if self.rolling.remove(&media) {
                             s.engine().pause();
                         }
@@ -540,11 +419,8 @@ impl FrameSource for MediaFrameSource {
         };
 
         if let Some(f) = frame {
-            // It answered, so whatever it missed before was transient.
             self.failures.remove(&media);
             self.failure_started.remove(&media);
-            // Already painted this exact picture for this source? Reuse
-            // the texture rather than uploading it again.
             if let Some(last) = self.last.get(&media)
                 && last.pts_ms == f.pts_ms
             {
@@ -569,14 +445,10 @@ impl FrameSource for MediaFrameSource {
             if self.strict {
                 return None;
             }
-            // Nothing decoded yet. Hold the last picture this source produced
-            // so a scrub does not flash the representative fill between
-            // seeks; with nothing at all, the compositor falls back.
-            // Count it, and stop asking once a source has answered
-            // nothing this many times running. One miss is an ordinary
-            // seek landing near a damaged GOP; a file that answers
-            // nowhere is not media this editor can play, and retrying it
-            // costs a full frame timeout every frame forever.
+            // Hold the last picture so a scrub does not flash the representative
+            // fill between seeks. Stop asking once a source has answered nothing this
+            // many times running: a file that answers nowhere is not media this editor
+            // can play, and retrying costs a full timeout every frame forever.
             let now = ui::time::now();
             let since = self.failure_started.entry(media).or_insert(now);
             if fetch == Fetch::Exact || now.duration_since(*since) >= timeout {
@@ -653,7 +525,6 @@ mod tests {
 
     #[test]
     fn a_sample_reads_the_pixel_under_the_coordinates() {
-        // Left half red, right half blue, two rows.
         let mut rgba = Vec::new();
         for _ in 0..2 {
             rgba.extend_from_slice(&[255, 0, 0, 255, 255, 0, 0, 255]);

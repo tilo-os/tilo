@@ -1,10 +1,6 @@
-//! Thin adapters over each host's native hypervisor tooling. Humans keep
-//! using the hypervisor's own UI; tilo-vm only needs create, start, stop,
-//! destroy and the SSH endpoint, plus optional debugging capabilities for
-//! when SSH is not reachable.
-//!
-//! Adapters only *build* command lines; [`Runner`] executes them, so the
-//! generated commands are unit-tested on every platform.
+//! Thin adapters over each host's native hypervisor tooling: create, start,
+//! stop, destroy, the SSH endpoint, and optional debugging for when SSH is not
+//! reachable. Adapters only build command lines; [`Runner`] executes them.
 
 use std::path::Path;
 
@@ -15,7 +11,6 @@ use crate::error::CliError;
 use crate::image;
 use crate::sshkey;
 
-/// One external command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommandLine {
     pub program: String,
@@ -80,11 +75,8 @@ pub struct Output {
     pub stderr: String,
 }
 
-/// Executes command lines; faked in tests.
 pub trait Runner {
-    /// Run to completion, capturing output.
     fn output(&mut self, command: &CommandLine) -> Result<Output, CliError>;
-    /// Run attached to the terminal.
     fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError>;
 }
 
@@ -95,8 +87,6 @@ pub struct SystemRunner {
 impl SystemRunner {
     fn command(&self, line: &CommandLine) -> std::process::Command {
         let mut command = std::process::Command::new(&line.program);
-        // os/dev/vm.sh starts QEMU through `tilo-vm qemu`: this binary, rather
-        // than one it would build.
         if std::env::var_os("TILO_VM_BIN").is_none()
             && let Ok(exe) = std::env::current_exe()
         {
@@ -150,7 +140,6 @@ impl Runner for SystemRunner {
     }
 }
 
-/// Run each command in order, stopping at the first failure.
 pub fn run_all(runner: &mut dyn Runner, commands: &[CommandLine]) -> Result<(), CliError> {
     for command in commands {
         let output = runner.output(command)?;
@@ -199,7 +188,6 @@ impl SshEndpoint {
     }
 }
 
-/// What an adapter can do beyond the required five operations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -213,15 +201,11 @@ pub struct Capabilities {
     /// creation. Without one, the key is installed once after the first boot
     /// (`tilo-vm guide platforms`).
     pub credentials: Option<&'static str>,
-    /// Native control channel passed through by `vm control`.
     pub control: Option<&'static str>,
-    /// Boots `VmEntry::direct_kernel` from the host (`swap kernel --direct`).
     pub direct_kernel: bool,
-    /// Attaches `VmEntry::boot_esp` read-only ahead of the VM's disk.
     pub boot_esp: bool,
 }
 
-/// A VM as the adapter sees it.
 pub struct Vm<'a> {
     pub name: &'a str,
     pub entry: &'a VmEntry,
@@ -245,9 +229,6 @@ impl Vm<'_> {
         })
     }
 
-    /// The memory the VM takes from the host while it runs, in MiB: what its
-    /// adapter gives it ([`UTM_MEMORY_MB`] for a UTM VM imported without
-    /// `--memory-mb`).
     #[must_use]
     pub fn memory_mb(&self) -> u32 {
         match (self.entry.memory_mb, self.entry.hypervisor.as_str()) {
@@ -267,9 +248,6 @@ impl Vm<'_> {
 
 pub trait Hypervisor {
     fn name(&self) -> &'static str;
-    /// Commands that create the VM from its image. `root_key` is the public
-    /// key line for root's `authorized_keys`, passed on where the adapter has
-    /// a credential channel ([`Capabilities::credentials`]).
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
@@ -278,17 +256,12 @@ pub trait Hypervisor {
     fn guest_shutdown_first(&self) -> bool {
         false
     }
-    /// Commands that unregister a VM that is off from the hypervisor. The
-    /// files it owns ([`vm_files`]) are removed by the caller.
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
-    /// Where SSH listens; may query the hypervisor.
     fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError>;
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
-    /// Is the VM running, as the hypervisor sees it? `None` when the adapter
-    /// cannot tell.
     fn running(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
         None
     }
@@ -304,9 +277,6 @@ pub trait Hypervisor {
     fn control(&self, _vm: &Vm<'_>, _args: &[String]) -> Option<CommandLine> {
         None
     }
-    /// Commands that rewrite an existing VM's definition from its registry
-    /// entry (for `direct_kernel`), where [`Capabilities::direct_kernel`].
-    /// `runner` may query the hypervisor for the VM's identity.
     fn redefine(
         &self,
         _vm: &Vm<'_>,
@@ -318,67 +288,42 @@ pub trait Hypervisor {
             alternative: "install the kernel in the VM instead: tilo-vm swap kernel".into(),
         })
     }
-    /// Power the VM off at once, so the next start takes a new definition.
     fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
-    /// Commands that wake the VM from a suspend (ACPI S3) it went into
-    /// itself; `None` when this adapter cannot (a device is woken with its
-    /// magic packet instead).
     fn wake(&self, _vm: &Vm<'_>) -> Option<Vec<CommandLine>> {
         None
     }
-    /// Is the VM suspended, as the hypervisor sees it? `None` when the
-    /// adapter cannot tell.
     fn suspended(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
         None
     }
-    /// Can tilo-vm power the machine on? A physical device it only reaches
-    /// over SSH stays off once off, so it is restarted with a reboot.
     fn powers_on(&self) -> bool {
         true
     }
-    /// Does a CI layer come out of an image this host pulls, rather than
-    /// one the guest pulls? A device's storage and network are a board's:
-    /// it gets only the layer, never the whole multi-gigabyte image.
     fn ci_layers_from_host(&self) -> bool {
         false
     }
-    /// How `vm branch` makes new VMs from a stopped one.
     fn branching(&self) -> Branching {
         Branching::Unsupported(format!(
             "the {} adapter cannot branch a VM; create each VM from the image instead: tilo-vm vm create <name>",
             self.name()
         ))
     }
-    /// Is the VM off, so nothing writes its disk? `None` when the adapter
-    /// cannot tell.
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
         self.running(vm, runner).map(|running| !running)
     }
-    /// Commands that give a VM `create` cloned the MAC in its entry
-    /// (`nic_mac`), where cloning keeps the source's.
     fn assign_identity(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
         Vec::new()
     }
-    /// The UUID the hypervisor gave the VM, asked of it; `None` where the
-    /// VM gets the entry's own `uuid`.
     fn query_uuid(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<String> {
         None
     }
 }
 
-/// How an adapter branches a stopped VM (`vm branch`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Branching {
-    /// tilo-vm freezes the VM's disk as a read-only base, and `create`
-    /// makes each VM's disk, the source's next one included, a qcow2 child
-    /// of it (the entry's `image`).
     Backing,
-    /// `create` clones the stopped VM named by the entry's `template`
-    /// copy-on-write itself (UTM: an APFS clone of the VM bundle).
     Clone,
-    /// Branching is refused; what to do instead.
     Unsupported(String),
 }
 
@@ -392,8 +337,6 @@ pub fn new_identity() -> (String, String) {
     )
 }
 
-/// # Errors
-/// Unknown hypervisor names.
 pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
     match name {
         "libvirt" => Ok(Box::new(Libvirt)),
@@ -422,8 +365,6 @@ fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoin
         })
 }
 
-/// A qcow2 child of the image (a qcow2 dev disk or a raw disk), so the image
-/// stays pristine. Runs the `qemu-img` resolved when the VM was created.
 pub fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     let disk = vm.disk()?;
     let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
@@ -436,9 +377,6 @@ pub fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     }))
 }
 
-/// Every file a VM created by `vm create` owns: its disk and what the
-/// adapters keep beside it (libvirt's domain XML; WHPX's UEFI variables,
-/// pid file and serial logs). Some exist only for some adapters.
 #[must_use]
 pub fn vm_files(disk: &str) -> Vec<String> {
     let mut files = vec![disk.to_owned(), domain_xml_path(disk)];
@@ -450,13 +388,8 @@ pub fn vm_files(disk: &str) -> Vec<String> {
     files
 }
 
-/// The adapter of a machine that already runs a Tilo dev image, such as a
-/// board installed from its board dev disk, registered with `vm add`.
 pub const DEVICE: &str = "device";
 
-/// No hypervisor: tilo-vm reaches the device only at its SSH address. It
-/// cannot create, power on or reset it; `vm stop` shuts it down over SSH
-/// and `vm restart` reboots it.
 pub struct Device;
 
 impl Hypervisor for Device {
@@ -522,7 +455,6 @@ impl Hypervisor for Device {
 pub struct Libvirt;
 
 impl Libvirt {
-    /// Write the domain XML beside the disk; the command that defines it.
     fn define(vm: &Vm<'_>, root_key: &str, uuid: Option<&str>) -> Result<CommandLine, CliError> {
         let xml_path = domain_xml_path(vm.disk()?);
         std::fs::write(&xml_path, domain_xml_with_uuid(vm, root_key, uuid)?)
@@ -542,7 +474,6 @@ impl Libvirt {
     }
 }
 
-/// Where `create` writes the libvirt domain definition: beside the VM disk.
 pub fn domain_xml_path(disk: &str) -> String {
     format!("{disk}.xml")
 }
@@ -577,8 +508,6 @@ pub fn domain_xml_with_uuid(
         ("kvm", "host-passthrough")
     };
     let e = quick_xml::escape::escape;
-    // The domain UUID is also the SMBIOS system UUID the guest reads: named
-    // in both places, so the guest sees exactly the UUID tilo-vm recorded.
     let uuid = uuid.or(vm.entry.uuid.as_deref());
     Ok(format!(
         "<domain type='{domain_type}'>
@@ -666,8 +595,6 @@ pub fn domain_xml_with_uuid(
     ))
 }
 
-/// libvirt's virtio-gpu: `heads` outputs, the first preferring `resolution`,
-/// with virgl when `gl`.
 fn video_model(entry: &VmEntry) -> String {
     let heads = entry
         .heads
@@ -721,7 +648,6 @@ impl Hypervisor for Libvirt {
         root_key: &str,
         runner: &mut dyn Runner,
     ) -> Result<Vec<CommandLine>, CliError> {
-        // A VM made before tilo-vm recorded a UUID keeps libvirt's.
         let uuid = vm.entry.uuid.clone().or_else(|| {
             runner
                 .output(&Self::virsh(vm, &["domuuid", vm.name]))
@@ -791,7 +717,6 @@ impl Hypervisor for Libvirt {
     }
 
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
-        // Running, paused and suspended (S3) domains all hold the disk open.
         let output = runner
             .output(&Self::virsh(vm, &["domstate", vm.name]).env("LC_ALL", "C"))
             .ok()
@@ -818,11 +743,6 @@ impl Hypervisor for Libvirt {
     }
 }
 
-/// The headless adapter for CI and scenario tests: it drives `os/dev/vm.sh`
-/// from the worktree root, with that script's own conventions, and the
-/// script starts QEMU through this binary's `tilo-vm qemu`. A VM made this
-/// way is invisible to virt-manager and Boxes, so it is never the default;
-/// people use libvirt.
 pub struct Qemu;
 
 impl Qemu {
@@ -839,7 +759,6 @@ impl Hypervisor for Qemu {
     }
 
     fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
-        // The boot script receives the registered public key at each start.
         Ok(overlay_disk(vm)?.into_iter().collect())
     }
 
@@ -878,13 +797,10 @@ impl Hypervisor for Qemu {
     }
 
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        // Let the CLI own shutdown waiting and escalation to authenticated
-        // guest poweroff, rather than vm.sh's legacy password-based gssh.
         vec![Self::script(vm, &["cmd", "system_powerdown"])]
     }
 
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
-        // os/dev/vm.sh keeps no registration beside the disk.
         Vec::new()
     }
 
@@ -962,12 +878,10 @@ impl Hypervisor for Qemu {
 
 pub struct Utm;
 
-/// A string inside an `AppleScript` string literal.
 fn utm_quote(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// `osascript` running `lines` inside `tell application "UTM"`.
 fn utm_script(lines: &[String]) -> CommandLine {
     let mut command = CommandLine::new("osascript", &["-e", "tell application \"UTM\""]);
     for line in lines {
@@ -976,15 +890,9 @@ fn utm_script(lines: &[String]) -> CommandLine {
     command.arg("-e").arg("end tell")
 }
 
-/// What a UTM VM gets unless `--memory-mb`/`--cpus` say otherwise: building
-/// the shell in the VM needs more than the other adapters' default (a
-/// release link of `tilo-relay` alone was killed at 6 GiB).
 pub const UTM_MEMORY_MB: u32 = 16384;
 pub const UTM_CPUS: u32 = 8;
 
-/// Import `disk` (qcow2) into UTM as the template VM `name`: an aarch64 guest
-/// on Apple's hypervisor with UEFI, `memory_mb` and `cpus`, and one virtio
-/// disk, on UTM's shared network. UTM copies the disk into the VM's bundle.
 pub fn utm_import_template(
     runner: &mut dyn Runner,
     (name, disk): (&str, &str),
@@ -1021,11 +929,7 @@ pub fn utm_import_template(
 /// the addresses it leased.
 const UTM_LEASES: &str = "/var/db/dhcpd_leases";
 
-/// The IPv4 address macOS leased the UTM VM `vm`, found by the MAC address of
-/// its first network interface (asked of UTM over `AppleScript`).
 fn utm_leased_address(vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
-    // A VM's configuration is a record: read it whole, then its first
-    // interface's address.
     let configuration = format!(
         "set c to configuration of virtual machine \"{}\"",
         vm.name.replace('\\', "\\\\").replace('"', "\\\"")
@@ -1050,9 +954,6 @@ fn utm_leased_address(vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
     leased_address(&leases, output.stdout.trim())
 }
 
-/// The `ip_address` of the newest lease in `leases` (`dhcpd_leases`' format)
-/// for hardware address `mac`. macOS drops leading zeros of each octet
-/// (`6a:1c:d:58:e4:14`), so octets compare as numbers.
 fn leased_address(leases: &str, mac: &str) -> Option<String> {
     let octets = |text: &str| -> Option<Vec<u8>> {
         text.split(':')
@@ -1076,7 +977,6 @@ fn leased_address(leases: &str, mac: &str) -> Option<String> {
         if hardware.and_then(octets).as_ref() == Some(&wanted)
             && let Some(address) = field("ip_address")
         {
-            // Entries run newest first.
             found.get_or_insert_with(|| address.to_owned());
         }
     }
@@ -1140,9 +1040,6 @@ impl Hypervisor for Utm {
             .find(|l| !l.is_empty() && !l.contains(':'))
             .filter(|_| output.success)
             .map(str::to_owned)
-            // `ip-address` needs the QEMU guest agent, which a Tilo image
-            // does not run: on UTM's shared network, macOS's DHCP server
-            // leased the VM its address, so find it there by the VM's MAC.
             .or_else(|| utm_leased_address(vm, runner));
         match host {
             Some(host) => Ok(SshEndpoint {
@@ -1194,7 +1091,6 @@ impl Hypervisor for Utm {
     }
 
     fn assign_identity(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        // UTM's clone keeps the source's MAC; its scripting sets a new one.
         let Some(mac) = vm.entry.nic_mac.as_deref() else {
             return Vec::new();
         };
@@ -1211,8 +1107,6 @@ impl Hypervisor for Utm {
     }
 
     fn query_uuid(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
-        // UTM's clone gives the VM a new UUID, which its QEMU backend passes
-        // to the guest as the SMBIOS system UUID.
         let script = utm_script(&[format!(
             "return id of virtual machine \"{}\"",
             utm_quote(vm.name)
@@ -1237,7 +1131,6 @@ fn whpx_file(disk: &str, suffix: &str) -> String {
     format!("{disk}.{suffix}")
 }
 
-/// Quote one argument for the Windows C runtime command-line parser.
 fn win_arg(text: &str) -> String {
     let mut result = String::from("\"");
     let mut slashes: usize = 0;
@@ -1277,8 +1170,6 @@ impl Whpx {
         20_000_u16.saturating_add(vm.ssh_port() % 40_000)
     }
 
-    /// QEMU's SMBIOS system UUID, the guest's `product_uuid`, when the VM
-    /// has its own.
     fn uuid_args(vm: &Vm<'_>) -> Vec<String> {
         vm.entry
             .uuid
@@ -1287,7 +1178,6 @@ impl Whpx {
             .collect()
     }
 
-    /// The network card, with the VM's own MAC when it has one.
     fn net_device(vm: &Vm<'_>) -> String {
         vm.entry.nic_mac.as_deref().map_or_else(
             || "virtio-net-pci,netdev=net0".into(),
@@ -1491,7 +1381,6 @@ impl Hypervisor for Whpx {
     }
 
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
-        // QEMU keeps no registration: the VM is its files.
         Vec::new()
     }
 
@@ -1587,7 +1476,6 @@ impl Hypervisor for Whpx {
 
 pub struct HyperV;
 
-/// A `PowerShell` single-quoted string literal.
 fn ps_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
@@ -1609,8 +1497,6 @@ impl Hypervisor for HyperV {
     }
 
     fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
-        // No credential channel: Hyper-V sets no SMBIOS OEM strings, and its
-        // KVP and file-copy services need guest daemons the image lacks.
         let name = ps_quote(vm.name);
         let disk = ps_quote(vm.disk()?);
         let mut commands = Vec::new();
@@ -1692,7 +1578,6 @@ impl Hypervisor for HyperV {
     }
 
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
-        // The COM1 named pipe set at creation; PuTTY's plink speaks it.
         Some(CommandLine::new(
             "plink.exe",
             &["-serial", &serial_pipe(vm.name)],
@@ -1975,15 +1860,12 @@ mod tests {
         assert_eq!(command.env, vec![("TILO_SSH_PORT".into(), "2223".into())]);
     }
 
-    /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an
-    /// explicit ESP binding.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn whpx_runs_a_fresh_accelerated_child_with_its_esp_binding() {
-        // Phase: whpx_uses_a_child_fresh_vars_and_hardware_acceleration.
         {
             let temp = tempfile::tempdir().unwrap();
             let key = temp.path().join("vm_key");
@@ -2044,7 +1926,6 @@ mod tests {
             assert_eq!(Whpx.ssh_endpoint(&vm, &mut fake("")).unwrap().port, 2223);
         }
 
-        // Phase: whpx_headless_direct_boot_preserves_explicit_esp_binding.
         {
             let entry = VmEntry {
                 disk: Some(r"C:\vms\dev.qcow2".into()),
@@ -2118,10 +1999,8 @@ mod tests {
         domain_xml(&Vm { name: "dev", entry }, KEY).unwrap()
     }
 
-    /// Domain XML for `x86_64`, for `aarch64` and when emulated with TCG, with every value escaped.
     #[test]
     fn libvirt_domain_xml_matches_the_architecture_and_escapes_values() {
-        // Phase: domain_xml_for_x86_64.
         {
             let entry = VmEntry {
                 arch: Some("x86_64".into()),
@@ -2161,7 +2040,6 @@ mod tests {
             assert!(!xml.contains("machine='virt'"), "{xml}");
         }
 
-        // Phase: domain_xml_for_aarch64.
         {
             let entry = VmEntry {
                 arch: Some("aarch64".into()),
@@ -2177,15 +2055,12 @@ mod tests {
             assert!(xml.contains("<features><acpi/></features>"), "{xml}");
             assert!(!xml.contains("<apic/>"), "{xml}");
             assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
-            // libvirt adds no USB controller to an aarch64 `virt` machine and then
-            // refuses the USB tablet and keyboard.
             assert!(
                 xml.contains("<controller type='usb' model='qemu-xhci'/>"),
                 "{xml}"
             );
         }
 
-        // Phase: domain_xml_when_emulated_uses_tcg.
         {
             let entry = VmEntry {
                 arch: Some("aarch64".into()),
@@ -2199,7 +2074,6 @@ mod tests {
             assert!(xml.contains("machine='virt'"), "{xml}");
         }
 
-        // Phase: domain_xml_escapes_every_value.
         {
             let entry = VmEntry {
                 arch: Some("x86_64".into()),
@@ -2222,16 +2096,12 @@ mod tests {
         }
     }
 
-    /// libvirt create writes the domain beside the disk and defines it; libvirt commands; a raw image
-    /// backs a qcow2 child; a boot ESP is attached read-only and boots first; removing a VM unregisters it
-    /// and names its files; libvirt boots a direct kernel from the registry entry.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn libvirt_defines_boots_and_removes_vms_beside_their_disks() {
-        // Phase: libvirt_create_writes_the_domain_beside_the_disk_and_defines_it.
         {
             let dir = tempfile::tempdir().unwrap();
             let disk = dir.path().join("dev.qcow2").display().to_string();
@@ -2257,7 +2127,6 @@ mod tests {
             assert!(displayed.iter().all(|c| !c.contains("virt-install")));
         }
 
-        // Phase: libvirt_commands.
         {
             let entry = entry();
             let vm = Vm {
@@ -2291,7 +2160,6 @@ mod tests {
             assert_eq!(Utm.running(&vm, &mut fake("")), None);
         }
 
-        // Phase: a_raw_image_is_the_backing_file_of_a_qcow2_child.
         {
             let dir = tempfile::tempdir().unwrap();
             let disk = dir.path().join("dev.qcow2").display().to_string();
@@ -2309,11 +2177,9 @@ mod tests {
                 Libvirt.create(&vm, KEY).unwrap()[0].display(),
                 format!("qemu-img create -f qcow2 -F raw -b /img/disk.raw {disk}")
             );
-            // The child is qcow2 whatever its backing file is.
             assert!(domain_xml(&vm, KEY).unwrap().contains("type='qcow2'"));
         }
 
-        // Phase: a_boot_esp_is_attached_read_only_and_boots_first.
         {
             let with_esp = VmEntry {
                 disk: Some(r"C:\vms\dev.qcow2".into()),
@@ -2369,7 +2235,6 @@ mod tests {
             }
         }
 
-        // Phase: removing_a_vm_unregisters_it_and_names_its_files.
         {
             let entry = entry();
             let vm = Vm {
@@ -2426,7 +2291,6 @@ mod tests {
             }
         }
 
-        // Phase: libvirt_boots_a_direct_kernel_from_the_registry_entry.
         {
             let dir = tempfile::tempdir().unwrap();
             let disk = dir.path().join("dev.qcow2").display().to_string();
@@ -2492,15 +2356,12 @@ mod tests {
         }
     }
 
-    /// QEMU wraps `vm.sh`; disks use the qemu-img resolved at creation; UTM commands; Hyper-V commands quote
-    /// for PowerShell; configured SSH wins; capabilities match the optional methods.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn other_hypervisors_quote_and_resolve_their_commands() {
-        // Phase: qemu_wraps_vm_sh.
         {
             let entry = entry();
             let vm = Vm {
@@ -2528,7 +2389,6 @@ mod tests {
             );
         }
 
-        // Phase: disks_are_made_with_the_qemu_img_resolved_at_creation.
         {
             let dir = tempfile::tempdir().unwrap();
             let entry = VmEntry {
@@ -2552,7 +2412,6 @@ mod tests {
             );
         }
 
-        // Phase: utm_commands.
         {
             let entry = VmEntry {
                 template: Some("Tilo Dev".into()),
@@ -2585,7 +2444,6 @@ mod tests {
             ));
         }
 
-        // Phase: hyperv_commands_quote_for_powershell.
         {
             let entry = VmEntry {
                 disk: Some(r"C:\VMs\it's.vhdx".into()),
@@ -2624,7 +2482,6 @@ mod tests {
             assert_eq!(endpoint.host, "172.20.1.9");
         }
 
-        // Phase: configured_ssh_wins.
         {
             let entry = VmEntry {
                 ssh: Some("tilo@10.0.0.2:2200".into()),
@@ -2652,7 +2509,6 @@ mod tests {
             assert!(SshEndpoint::parse("@x").is_none());
         }
 
-        // Phase: capabilities_match_the_optional_methods.
         {
             let dir = tempfile::tempdir().unwrap();
             let disk = dir.path().join("dev.qcow2").display().to_string();

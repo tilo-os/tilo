@@ -55,37 +55,6 @@ fn scroll_rows(session: &mut Session, (from, next): (usize, usize), rows: usize)
     session.window.scroll(0.0, -(below - top) * rows as f64);
 }
 
-/// The host's frames and the window's until both rest, the window's store owing no work: unlike
-/// [`Session::settle`], this does not wait for the store to hold the whole record, which it
-/// cannot while a chunk is away. Whether they came to rest before the wait ran out.
-fn rest(session: &mut Session) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    let mut quiet = 0_u32;
-    while quiet < QUIET_TURNS {
-        if std::time::Instant::now() > deadline {
-            return false;
-        }
-        let changed = session.host.turn();
-        session.window.frame();
-        let owed = session.search_index_pending()
-            || session
-                .host
-                .instances()
-                .next()
-                .and_then(|hosted| hosted.instance().host())
-                .is_some_and(|host| host.index_pending());
-        if changed || owed {
-            quiet = 0;
-            if !changed {
-                session.woken.wait(std::time::Duration::from_millis(50));
-            }
-        } else {
-            quiet = quiet.saturating_add(1);
-        }
-    }
-    true
-}
-
 /// The top of the list, the tasks on either side of the line between the two chunks, and its
 /// end, each read where a person scrolls to: the list is every task, in the order they were
 /// added, whichever chunk holds it.
@@ -157,10 +126,9 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again()
     here.insert(first, whole.mirror(first).expect("the first chunk").clone());
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_launched(&route, here, None);
-    assert!(
-        rest(&mut session),
-        "the window rests over the tasks it has while the chunk is away"
-    );
+    // The window rests over the tasks it has while the chunk is away: a chunk the source cannot
+    // give is not one the store owes.
+    session.settle();
     assert!(
         !session.index_whole(),
         "the store knows a chunk of the workspace is not here yet"

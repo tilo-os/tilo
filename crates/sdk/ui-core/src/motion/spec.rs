@@ -1,5 +1,5 @@
-//! How a named motion times itself: its pace in and out, what it does under
-//! reduced motion, and what a shortcut gets.
+//! How a named motion times itself: its pace in and out, what it does under reduced motion, and what a
+//! shortcut gets.
 
 use super::spring::SpringSpec;
 use super::value::Timing;
@@ -16,14 +16,12 @@ pub enum Pace {
     Slow,
     /// `springs.heavy`: a window's rect, which should feel like it has mass.
     Heavy,
-    /// `gesture.fling_projection_ms`: a released gesture coasting on. Its
-    /// velocity dies away exponentially at the rate the coast time gives
-    /// (a critically damped spring of natural frequency `1 / coast`), so a
-    /// coast aimed at where the release projects ([`super::Snap::rest_for`])
-    /// starts at the fingers' speed and never turns back.
+    /// `gesture.fling_projection_ms`: a released gesture coasting on. Its velocity dies away
+    /// exponentially at the rate the coast time gives (a critically damped spring of natural frequency
+    /// `1 / coast`), so a coast aimed at where the release projects ([`super::Snap::rest_for`]) starts
+    /// at the fingers' speed and never turns back.
     Coast,
-    /// No motion: the change shows on the next frame (something leaving
-    /// that has nothing to say).
+    /// No motion: the change shows on the next frame (something leaving that has nothing to say).
     Instant,
 }
 
@@ -32,8 +30,8 @@ pub enum Pace {
 pub enum Reduced {
     /// It lands at once (geometry: a height, a rect, a slide).
     Lands,
-    /// Its progress runs at `fast`, and its pose drops everything spatial, so
-    /// only opacity changes (a popover fading in place).
+    /// Its progress runs at `fast`, and its pose drops everything spatial, so only opacity changes (a
+    /// popover fading in place).
     Fades,
 }
 
@@ -51,7 +49,7 @@ pub enum Shortcut {
 pub struct MotionSpec {
     /// Toward the shown / opened / new state.
     pub enter: Pace,
-    /// Back toward the hidden / closed / old state. Exits are shorter.
+    /// Back toward the hidden / closed / old state.
     pub exit: Pace,
     pub reduced: Reduced,
     pub shortcut: Shortcut,
@@ -73,8 +71,7 @@ impl Direction {
 }
 
 impl MotionSpec {
-    /// How this motion moves in `direction`, for the motion the person allows
-    /// and what started it.
+    /// How this motion moves in `direction`, for the motion the person allows and what started it.
     #[must_use]
     pub fn timing(
         self,
@@ -85,10 +82,8 @@ impl MotionSpec {
         self.timing_over(direction, motion, source, 1.0)
     }
 
-    /// [`Self::timing`] for a travel `stretch` times the motion's reference
-    /// distance: longer travel takes longer, by the square root of the ratio,
-    /// never past `slow`. Material's rule: a short hop and a cross-screen move
-    /// at one speed read as one too slow or the other too fast.
+    /// [`Self::timing`] for a travel `stretch` times the motion's reference distance: longer travel
+    /// takes longer, by the square root of the ratio, never past `slow`.
     #[must_use]
     pub fn timing_over(
         self,
@@ -138,9 +133,9 @@ impl MotionSpec {
 }
 
 impl MotionSpec {
-    /// The progress (`0..=1`) of this motion run once from rest, `elapsed`
-    /// after it started: for a motion fixed to a known instant that keeps no
-    /// state of its own (a banner arriving from when it first showed).
+    /// The progress (`0..=1`) of this motion run once from rest, `elapsed` after it started: for a
+    /// motion fixed to a known instant that keeps no state of its own (a banner arriving from when it
+    /// first showed).
     #[must_use]
     pub fn progress_after(
         self,
@@ -149,8 +144,6 @@ impl MotionSpec {
         source: MotionSource,
         elapsed: crate::time::Duration,
     ) -> f64 {
-        // The settled clock (captures and tests) reads every motion at its
-        // end.
         if super::clock::testing::is_settled() {
             return 1.0;
         }
@@ -166,9 +159,9 @@ impl MotionSpec {
         }
     }
 
-    /// This motion's entrance curve at `fraction` (`0..=1`) of its run, for a
-    /// driver that keeps its own linear clock (the overview's, which credits
-    /// time a full presenter held it): the same shape a run from rest has.
+    /// This motion's entrance curve at `fraction` (`0..=1`) of its run, for a driver that keeps its own
+    /// linear clock (the overview's, which credits time a full presenter held it): the same shape a run
+    /// from rest has.
     #[must_use]
     pub fn eased(self, motion: EffectiveMotion, fraction: f64) -> f64 {
         let source = MotionSource::Pointer;
@@ -181,8 +174,7 @@ impl MotionSpec {
         )
     }
 
-    /// How long this motion run once from rest takes to settle; zero when it
-    /// lands at once.
+    /// How long this motion run once from rest takes to settle; zero when it lands at once.
     #[must_use]
     pub fn settle_time(
         self,
@@ -200,9 +192,8 @@ impl MotionSpec {
 /// A motion run once settles on a fraction's tolerance.
 const ONCE_TOLERANCE: f64 = 1e-3;
 
-/// When a run from rest on `spring` settles, to the millisecond: a token
-/// spring then settles after exactly its token (`fast` is 130 ms), so a
-/// lifecycle timed by the token and its motion agree.
+/// When a run from rest on `spring` settles, to the millisecond: a token spring then settles after
+/// exactly its token (`fast` is 130 ms), so a lifecycle timed by the token and its motion agree.
 fn settle_of(spring: SpringSpec) -> crate::time::Duration {
     let ms = (spring.settle_secs(1.0, 0.0, ONCE_TOLERANCE) * 1000.0).round();
     #[allow(

@@ -20,15 +20,11 @@ fn source_matches(candidate: &Provenance, source: &Provenance) -> bool {
 }
 
 impl Daemon {
-    /// The slot's record, after re-applying the generation an interrupted
-    /// transition left behind, with a note saying so.
-    ///
-    /// A transition marks its target pending before it activates and clears
-    /// the mark once that generation is current, so a mark outliving the
-    /// daemon that wrote it means an apply was cut short, with the live slot
-    /// holding part of a generation that never became current. Re-applying
-    /// the recorded one is the repair `slot restart` runs; doing it here makes
-    /// re-running the swap do what the slot's own issue says.
+    /// The slot's record, after re-applying the generation an interrupted transition left behind,
+    /// with a note saying so. A transition marks its target pending before it activates and clears
+    /// the mark once that generation is current, so a mark outliving the daemon that wrote it means
+    /// an apply was cut short, with the live slot holding part of a generation that never became
+    /// current. Re-applying the recorded one is the repair `slot restart` runs.
     fn repaired_admission(
         &mut self,
         slot: &str,
@@ -149,8 +145,8 @@ impl Daemon {
                 "userspace cohort cannot change boot or VM-wide components".into(),
             ));
         }
-        // Admission rechecks stored content even when the generation already
-        // names it. A no-op is not permission to trust an old import receipt.
+        // Admission rechecks stored content even when the generation already names it: a no-op is
+        // not permission to trust an old import receipt.
         let verified_layer = self.layers.verify(&member.layer)?;
         let path = self.layers.require(&member.layer)?;
         let historical = verified_layer.provenance;
@@ -239,8 +235,8 @@ impl Daemon {
             .userspace_preview(&admitted.record, &admitted.entries)?;
         self.check_interfaces(&admitted.record, &preview, None)?;
         let candidate_layers = self.system_layers(&admitted.record, self.layer_paths(&preview)?)?;
-        // All builds and imports finished. Read actual running selections before
-        // any sysext mutation, with the exact candidate catalog and old SDK view.
+        // All builds and imports finished. Read the actual running selections before any sysext
+        // mutation, with the exact candidate catalog and old SDK view.
         self.apply
             .prepare_cohort_selection(&session, &candidate_layers)?;
         let selected = self
@@ -427,8 +423,8 @@ impl Daemon {
             let current_view = self.apply.cohort_runtime_view(&session, &layers, false)?;
             super::runtime_retention::validate_current(&current_view, &current_selections)?;
         }
-        // Selection is individually durable. Reconcile even a partial failure;
-        // retained old SDK closure keeps held/intervening selections runnable.
+        // Selection is individually durable, so reconcile even a partial failure; the retained old
+        // SDK closure keeps held or intervening selections runnable.
         let start = Instant::now();
         let current = self.load_slot(&request.slot)?;
         if current.current != request.expected_generation
@@ -594,8 +590,8 @@ mod tests {
         request.expected_generation = 1;
         mirror.lock().unwrap().clear();
         if case == "interrupted" {
-            // The daemon stopped mid-apply: its mark outlives it, and the
-            // swap that follows must repair the slot instead of refusing.
+            // The daemon stopped mid-apply: its mark outlives it, and the swap that follows must
+            // repair the slot instead of refusing.
             daemon.slots.mark_pending(&request.slot, 2).unwrap();
             let admitted = daemon
                 .admit_userspace_against(&request, &root.join("base"))

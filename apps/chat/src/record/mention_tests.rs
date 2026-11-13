@@ -25,6 +25,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
             channel: id("c_chat"),
             text: message_text.into(),
             parent: None,
+            quoted: None,
             body: Some(body),
             attachments: Vec::new(),
             mentions: None,

@@ -149,6 +149,9 @@ pub(crate) struct Collaboration<'a> {
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions, offered to a turn's agent as the broker's steps.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// The person's settings, offered where Settings' window invokes them: the provider its
+    /// controls name, answered by the session's settings service.
+    pub settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
     /// This session's Nearby Send: the fabric it reaches the person's other devices on, and the
     /// spool a file leaves from.
     pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
@@ -277,6 +280,7 @@ pub(crate) fn start_action_plane(
         records,
         task_programs,
         session_actions,
+        settings_steps,
         nearby,
     } = collaboration;
     let Some(path) = action_plane_path(options)? else {
@@ -352,6 +356,7 @@ pub(crate) fn start_action_plane(
             tools,
             task_programs,
             session_actions,
+            settings_steps,
             nearby,
             // What a person copies or cuts in Files, pasted here, and what the loop puts on the
             // desktop's clipboard for another app.
@@ -371,7 +376,7 @@ pub(crate) fn start_action_plane(
                 tilo_rt::app().handle(),
                 endpoint,
                 channels,
-                fanout,
+                std::sync::Arc::clone(&fanout),
                 sync.sibling_dials(),
             )
         }),
@@ -379,8 +384,7 @@ pub(crate) fn start_action_plane(
     };
     // What arrives on this device's action plane is answered by the broker that now serves: another
     // of the person's devices runs nothing here the person in front of it could not.
-    let arriving = (actions, broker.app_action_broker());
-    if let (Some(actions), Some(host)) = arriving {
+    if let (Some(actions), Some(host)) = (actions, broker.app_action_broker()) {
         actions.install(host.device_host());
         attach_remote_use(&actions, options);
     }
@@ -391,6 +395,7 @@ pub(crate) fn start_action_plane(
         broker,
         calls,
         calls_service,
+        carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
         _personal: personal,
     }))

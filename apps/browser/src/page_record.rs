@@ -218,7 +218,6 @@ impl PageRecord {
 
 #[resource(
     kind = "browser.page-record",
-    label = "Page record",
     params = page_actions,
     read_content = PageRecord::read_document
 )]

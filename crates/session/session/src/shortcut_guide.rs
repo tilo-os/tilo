@@ -35,6 +35,11 @@ impl ShortcutGuide {
         self.seat.as_ref().map(tilo_sheets::Seat::presentation)
     }
 
+    /// Whether the guide is up.
+    pub(crate) fn up(&self) -> bool {
+        self.state.up()
+    }
+
     /// The person asked for the guide, or asked for it to go: put it up with the keys as they are,
     /// or take it down.
     pub(crate) fn toggle(&self) {
@@ -67,6 +72,14 @@ impl ShortcutGuide {
         if self.state.up() {
             seat.show(self.state.shaped());
         }
+    }
+
+    /// The chords a held Super reaches on `desk` , from the table the guide explains.
+    pub(crate) fn peek(
+        &self,
+        desk: tilo_sheets::shortcut_guide::PeekDesk,
+    ) -> Vec<tilo_desktop::super_peek::PeekGroup> {
+        tilo_sheets::shortcut_guide::peek(&self.state.table().borrow(), desk)
     }
 
     /// The keys that open search, as this keyboard spells the person's chord for it.

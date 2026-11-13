@@ -1,5 +1,5 @@
-//! The receipts: what became of a screenshot or a recording, at the top of
-//! the screen, with what can be done with it next.
+//! The receipts: what became of a screenshot or a recording, at the top of the screen, with what can be
+//! done with it next.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -39,17 +39,11 @@ const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReceiptAction {
-    /// Copy the saved screenshot, offered when copying it did not succeed.
     Copy,
-    /// Open it for markup.
     Edit,
-    /// Open it in the image viewer.
     Open,
-    /// Show it in Files.
     Reveal,
-    /// Send it to the workspace or another device.
     Send,
-    /// Play the saved recording.
     Play,
 }
 
@@ -103,11 +97,9 @@ impl ReceiptAction {
     }
 }
 
-/// Where everything in a receipt sits.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct ReceiptLayout {
     pub(super) pill: Rect,
-    /// The screenshot's thumbnail; empty on a recording's receipt.
     pub(super) preview: Rect,
     pub(super) actions: Vec<(ReceiptAction, Rect)>,
     pub(super) dismiss: Rect,
@@ -136,7 +128,6 @@ impl CaptureStudio {
         if let Some(progress) = receipt.progress_override {
             return progress;
         }
-        // A spatial handoff from selected pixels to shell chrome.
         studio_progress(
             crate::motion::Zoom::SPEC,
             crate::time::now().saturating_duration_since(receipt.shown_at),
@@ -171,8 +162,6 @@ impl CaptureStudio {
             })
     }
 
-    /// How strongly the word of the last recording is drawn: a saved one
-    /// fades out as it goes, one that could not be finished stays whole.
     pub(super) fn recording_receipt_alpha(&self, reduce_motion: bool) -> f32 {
         if reduce_motion || self.recording_failure.is_some() {
             return 1.0;
@@ -207,13 +196,9 @@ impl CaptureStudio {
             .map(|action| self.receipt_widths.actions[action.index()] + RECEIPT_BUTTON_GAP)
             .sum();
         let icon_width = ui_count(actions.len()) * (RECEIPT_BUTTON_W + RECEIPT_BUTTON_GAP);
-        // Labelled while they fit; on a narrow display, icons named for
-        // assistive technology and their tooltip.
         let labelled = fixed + labelled_width <= room;
         let final_width = (fixed + if labelled { labelled_width } else { icon_width }).min(room);
         let (start_width, start_height) = match preview {
-            // Begin as a recognizable thumbnail that gains room for its
-            // status and actions on the way.
             Some((w, h)) => {
                 let start = fit_preview(w, h, 144.0, 66.0);
                 (start.width + 12.0, start.height + 12.0)
@@ -281,7 +266,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Measure a receipt's status and action labels as they are painted.
     fn measure_receipt(&mut self, status: &str, tr: &mut TextRenderer, theme: &Theme) {
         let status_style = theme
             .text(TextRole::Caption)
@@ -301,8 +285,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Paint a receipt: its floating ground, the thumbnail, the status, the
-    /// actions and Dismiss, at `alpha`.
     fn paint_receipt(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -464,7 +446,6 @@ impl CaptureStudio {
         };
         let status = studio_text(receipt.kept.status_key());
         self.measure_receipt(&status, tr, theme);
-        // Choosing a Send target holds the receipt fully shown.
         let choosing = self.send_menu.is_some();
         let elapsed = if choosing {
             Duration::ZERO

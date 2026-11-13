@@ -7,11 +7,6 @@
 //! drives, are GPL — but they sit **behind the socket**, in a separate process,
 //! so their GPL imposes no licensing constraint on this crate. The only thing we
 //! *link* is the permissive `ssip-client`. See the crate-level license note.
-//!
-//! Why primary: speechd gives us one system-wide voice configuration,
-//! server-side queueing, per-priority interrupt/cancel, and the choice of
-//! espeak-ng (instant) or Piper (quality) as output modules — all without us
-//! re-implementing any of it.
 
 use ssip_client::Client;
 use ssip_client::{
@@ -29,7 +24,6 @@ use crate::speaker::{Speaker, Utterance, rate_to_ssip};
 const SSIP_USER: &str = "tilo";
 const SSIP_COMPONENT: &str = "screen-reader";
 
-/// A [`Speaker`] that speaks through speech-dispatcher over SSIP.
 pub struct SpeechDispatcherSpeaker {
     client: Client<UnixStream>,
     /// We track "did we send something the daemon may still be speaking" so
@@ -94,7 +88,6 @@ impl SpeechDispatcherSpeaker {
         }
     }
 
-    /// Set the language (BCP-47-ish, e.g. `"en"`, `"de"`), per SSIP `SET … LANGUAGE`.
     pub fn set_language(&mut self, lang: &str) {
         if let Err(e) = self
             .client
@@ -213,7 +206,6 @@ impl Speaker for SpeechDispatcherSpeaker {
 
 impl Drop for SpeechDispatcherSpeaker {
     fn drop(&mut self) {
-        // Politely close the SSIP session so the daemon frees the client slot.
         let _ = self.client.quit().and_then(|c| c.check_status(OK_BYE));
     }
 }

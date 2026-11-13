@@ -23,8 +23,6 @@ fn params(values: &[(&str, f32)]) -> BTreeMap<String, f32> {
         .collect()
 }
 
-/// A Romantic-era oil palette: earths, lead white and the blues of the
-/// period, as a landscape painter of 1820 would have had them.
 fn oil_palette() -> Vec<Pigment> {
     vec![
         pigment("lead-white", "#f2ede1", 0.0, 1.0),
@@ -45,8 +43,6 @@ fn oil_palette() -> Vec<Pigment> {
     ]
 }
 
-/// A modern artists' watercolour palette, with the granulating pigments
-/// marked so they settle into the paper.
 fn watercolour_palette() -> Vec<Pigment> {
     vec![
         pigment("hansa-yellow", "#f2c12e", 0.0, 1.0),
@@ -67,7 +63,6 @@ fn watercolour_palette() -> Vec<Pigment> {
     ]
 }
 
-/// The built-in presets, in the order a picker shows them.
 pub fn builtin() -> Vec<Preset> {
     vec![
         Preset {

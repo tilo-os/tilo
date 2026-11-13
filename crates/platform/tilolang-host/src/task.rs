@@ -1367,7 +1367,8 @@ mod tests {
             .iter()
             .find(|signature| signature["kind"] == "action" && signature["name"] == "comment")
             .unwrap_or_else(|| panic!("discussion lists no comment action: {catalogue:#}"));
-        let comment = comment["id"].as_str().unwrap_or_default().to_owned();
+        // The door takes it by the name it is published under.
+        let comment = comment["name"].as_str().unwrap_or_default().to_owned();
         // Its actions resolve, and invoking one runs: the call goes to the app through the door,
         // which answers the comment it made.
         let called = scripted(&door, |message| {

@@ -343,11 +343,9 @@ async fn fetched(client: &Client, port: u16) -> Result<StatusCode, NetError> {
 #[tokio::test]
 async fn extra_trust_takes_a_ca_or_an_exact_self_signed_certificate_and_nothing_else() {
     let loopback = || rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
-    // A self-signed server certificate, as a host's development listener has.
     let leaf_key = rcgen::KeyPair::generate().unwrap();
     let leaf = loopback().self_signed(&leaf_key).unwrap();
     let self_signed = https_server(vec![leaf.der().clone()], &leaf_key);
-    // A server certificate a test CA issued.
     let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = rcgen::KeyPair::generate().unwrap();
@@ -356,7 +354,6 @@ async fn extra_trust_takes_a_ca_or_an_exact_self_signed_certificate_and_nothing_
     let issued_key = rcgen::KeyPair::generate().unwrap();
     let issued = loopback().signed_by(&issued_key, &ca_issuer).unwrap();
     let chained = https_server(vec![issued.der().clone()], &issued_key);
-    // Another self-signed server, trusted by nobody.
     let other_key = rcgen::KeyPair::generate().unwrap();
     let other = loopback().self_signed(&other_key).unwrap();
     let stranger = https_server(vec![other.der().clone()], &other_key);

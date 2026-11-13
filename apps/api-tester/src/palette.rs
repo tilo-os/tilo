@@ -1,6 +1,3 @@
-//! Small presentation helpers shared by the views: which tone a status
-//! reads as, the JSON token inks, and the short label of a URL.
-
 use ui::theme::Theme;
 use ui::widget::Tone;
 use vello::peniko::Color;
@@ -8,7 +5,6 @@ use vello::peniko::Color;
 use crate::model::StatusClass;
 use crate::vars;
 
-/// What a response status means, as the toolkit's status tone.
 pub fn status_tone(class: StatusClass) -> Tone {
     match class {
         StatusClass::Success => Tone::Success,
@@ -19,8 +15,7 @@ pub fn status_tone(class: StatusClass) -> Tone {
     }
 }
 
-/// Colour for a highlighted JSON token, from the theme's shared syntax
-/// palette so response bodies read like every other code surface.
+/// Colour for a JSON token, from the theme's shared syntax palette.
 pub fn token_color(theme: &Theme, kind: vars::TokenKind) -> Color {
     let syntax = &theme.tokens.syntax;
     match kind {
@@ -42,7 +37,7 @@ pub fn status_class(status: u16) -> StatusClass {
     }
 }
 
-/// Strip the scheme/host, leaving the path tail for compact history labels.
+/// The path tail of `url`, for compact history labels.
 pub fn short_path(url: &str) -> String {
     let no_scheme = url.split("://").nth(1).unwrap_or(url);
     match no_scheme.find('/') {

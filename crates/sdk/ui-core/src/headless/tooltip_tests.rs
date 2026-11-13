@@ -1,11 +1,9 @@
-//! A host that runs a widget tree of its own — the desktop — sends its input
-//! through [`FrameHarness::send`], and what its controls name of themselves is
-//! revealed there on the same dwell a window of its own uses.
+//! A host that runs a widget tree of its own — the desktop — sends its input through
+//! [`FrameHarness::send`], and what its controls name of themselves is revealed there on the same dwell
+//! a window of its own uses.
 
 use super::*;
 
-/// A pane filling what it is given that names one thing wherever the pointer
-/// rests on it.
 struct Pane {
     rect: Rect,
 }
@@ -53,8 +51,6 @@ fn a_widget_trees_input_reveals_the_tip_under_a_resting_pointer() {
         frame.tooltips.visible().is_none(),
         "the pointer has just arrived: nothing is named yet"
     );
-    // The dwell runs out on its own frame; the chip then arrives over the
-    // next one, as it does in a window of its own.
     for millis in [700, 1100] {
         crate::time::testing::with_monotonic_time(
             settled + crate::time::Duration::from_millis(millis),

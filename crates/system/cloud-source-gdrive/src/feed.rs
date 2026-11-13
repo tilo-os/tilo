@@ -1,16 +1,10 @@
 //! The cursor change feed over `files.list` and `changes.list`.
 //!
-//! Drive's `changes.list` starts "now" (`changes.getStartPageToken`) and
-//! covers the whole account, so a [`FeedCursor`] is more than a page token:
-//!
 //! - `token`: the `changes.list` page token to continue from;
 //! - `queue`/`batch`/`page`: folders whose children still have to be
 //!   listed before the feed continues. A fresh cursor queues the root (a
 //!   full enumeration); a folder that moves into the subtree is queued too,
 //!   because Drive reports the folder but not its unchanged contents.
-//!
-//! Folders are listed several at a time (`'a' in parents or 'b' in
-//! parents …`), one `files.list` page per call.
 
 use std::time::{Duration, Instant};
 
@@ -25,7 +19,6 @@ use tilo_lock::MutexRecover as _;
 /// Folders per enumeration query; keeps the query string well under
 /// Drive's limit.
 const BATCH: usize = 20;
-/// How deep the ancestry walk goes before an item counts as outside.
 const MAX_DEPTH: usize = 128;
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,7 +75,6 @@ impl Inner {
 
     fn changes_page(&self, token: &str, page_size: &str, fields: &str) -> Result<ChangeList> {
         let mut params = self.scope();
-        // `changes.list` takes `driveId` but not `corpora`.
         params.retain(|(name, _)| *name != "corpora");
         params.extend([
             ("pageToken", token.to_owned()),
@@ -126,7 +118,6 @@ impl Inner {
         })
     }
 
-    /// One `files.list` page over the next batch of queued folders.
     fn enumerate(&self, state: &mut FeedCursor) -> Result<Vec<Change>> {
         if state.batch.is_empty() {
             let take = BATCH.min(state.queue.len());
@@ -158,7 +149,6 @@ impl Inner {
         Ok(changes)
     }
 
-    /// One `changes.list` page, filtered to the subtree.
     fn follow(&self, state: &mut FeedCursor) -> Result<(Vec<Change>, bool)> {
         let fields = format!(
             "nextPageToken,newStartPageToken,changes(changeType,removed,fileId,file({}))",
@@ -201,7 +191,6 @@ impl Inner {
                     }
                 }
                 _ => {
-                    // Trashed or gone; a folder no longer leads anywhere.
                     self.remember_folder(&id, Vec::new());
                     changes.push(Change::Remove(ItemId::new(id)));
                 }

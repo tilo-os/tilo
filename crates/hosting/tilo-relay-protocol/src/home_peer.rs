@@ -120,6 +120,97 @@ impl HomePeerRegistration {
     pub const CURRENT_SCHEMA: u16 = 3;
 }
 
+/// Largest home-peer registry document read.
+const HOME_PEER_FILE_LIMIT: usize = 1024 * 1024;
+/// Most peers one identity's registry holds.
+const HOME_PEER_LIMIT: usize = 128;
+
+/// The home-peer registry document at `path`, which
+/// [`home_peer_registry_path`] names: every entry checked against the schema
+/// this build writes. What admits a peer, renames it, re-addresses it or
+/// removes it reads and writes it here, so one set of bounds holds.
+///
+/// # Errors
+///
+/// The file is larger than 1 MiB, is not a list of at most [`HOME_PEER_LIMIT`]
+/// registrations this build writes, or an entry's certificate does not verify.
+pub fn read_home_peers(path: &Path) -> io::Result<Vec<HomePeerRegistration>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) if bytes.len() <= HOME_PEER_FILE_LIMIT => bytes,
+        Ok(_) => return Err(invalid("home-peer registry exceeds 1 MiB")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    checked_home_peers(&bytes)
+}
+
+/// `bytes` as a home-peer registry this build accepts: the check a staged
+/// document gets before it is published as the registry.
+///
+/// # Errors
+///
+/// As [`read_home_peers`], without the file.
+pub fn checked_home_peers(bytes: &[u8]) -> io::Result<Vec<HomePeerRegistration>> {
+    let peers: Vec<HomePeerRegistration> = serde_json::from_slice(bytes)
+        .map_err(|error| invalid(&format!("home-peer registry is not one: {error}")))?;
+    if peers.len() > HOME_PEER_LIMIT || peers.iter().any(|entry| !writable(entry)) {
+        return Err(invalid(
+            "home-peer registry is not the schema this build writes",
+        ));
+    }
+    Ok(peers)
+}
+
+/// Replace the registry document at `path` with `peers`, ordered by device key.
+///
+/// # Errors
+///
+/// More than [`HOME_PEER_LIMIT`] peers, an entry this build does not write, or
+/// the atomic replacement fails. Nothing is written then.
+pub fn write_home_peers(path: &Path, peers: &[HomePeerRegistration]) -> io::Result<()> {
+    if peers.len() > HOME_PEER_LIMIT || peers.iter().any(|entry| !writable(entry)) {
+        return Err(invalid(
+            "home-peer registry is not the schema this build writes",
+        ));
+    }
+    let mut peers = peers.to_vec();
+    peers.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
+    let encoded = serde_json::to_vec_pretty(&peers).map_err(|error| invalid(&error.to_string()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(path, &encoded, 0o644)
+}
+
+/// Whether `entry` is a registration this build writes: a schema this fits,
+/// hex keys, a label one line long, an address of its own service, and a
+/// certificate that verifies as this device's under this person.
+fn writable(entry: &HomePeerRegistration) -> bool {
+    let key = |text: &str| {
+        hex::decode(text)
+            .ok()
+            .is_some_and(|bytes| bytes.len() == 32)
+    };
+    entry.schema_version == HomePeerRegistration::CURRENT_SCHEMA
+        && entry.relay_workspace_ids.len() <= 4096
+        && valid_home_peer_label(&entry.label)
+        && key(&entry.device_node_id)
+        && key(&entry.relay_service_node_id)
+        && key(&entry.user_public_key)
+        && entry.relay_endpoint.as_ref().is_none_or(|endpoint| {
+            !endpoint.is_empty()
+                && hex::decode(&entry.relay_service_node_id)
+                    .ok()
+                    .is_some_and(|service| service.as_slice() == endpoint.id.as_bytes())
+        })
+        && entry.device_cert.as_ref().is_some_and(|cert| {
+            tilo_user_identity::verify_device_cert(cert).is_ok()
+                && hex::encode(cert.device_public_key) == entry.device_node_id
+                && hex::encode(cert.user_public_key) == entry.user_public_key
+        })
+}
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
+}
+
 /// Whether an operator-facing device label is safe to render as one line.
 pub fn valid_home_peer_label(label: &str) -> bool {
     let label = label.trim();

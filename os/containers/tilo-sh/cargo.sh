@@ -6,7 +6,19 @@
 # is this machine's cargo. It is also the CARGO the web bundle's build script
 # gets (crates/browser/tilo-browser-runtime/scripts/build.sh), which reads the
 # module where this leaves it.
+# `cargo.sh [--fetch PATH]... exec PROGRAM ARGS…` runs PROGRAM on the build
+# server and mirrors PATH of its target dir back (`$TILO_SH_CARGO exec`): what
+# that script runs there rather than here (wasm-bindgen, the splitter and
+# wasm-opt, gigabytes each). t builds and checks, never programs, so exec asks
+# TILO_SH_CARGO to name a cargo drop-in that runs them; without one it fails,
+# and the script runs the programs here.
 set -euo pipefail
+if [[ ${1:-} == exec || ${1:-} == --fetch ]]; then
+  case ${TILO_SH_CARGO:-} in
+    ''|t) echo 'cargo.sh exec: t runs no programs on its builder; name a cargo drop-in that does in TILO_SH_CARGO' >&2; exit 2 ;;
+    *) exec $TILO_SH_CARGO "$@" ;;
+  esac
+fi
 if [[ ${1:-} != build ]]; then
   exec cargo "$@"
 fi

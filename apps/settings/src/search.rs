@@ -1,12 +1,4 @@
 //! Settings panes as search entries.
-//!
-//! Every [`Category`] pane is findable from the unified Ctrl+K palette by its
-//! title, summary, or any of its built-in keyword synonyms ("vpn", "night
-//! light", "wallpaper", …). Each entry is anchored at its pane's row and
-//! opens that pane, as an agent's `open` of the row and the sidebar do.
-//!
-//! This indexes **panes** (navigation), not individual toggles — those are
-//! already exported to Ctrl+K as the app's effects.
 
 use ui::tilo_resource::SearchEntry;
 
@@ -14,9 +6,6 @@ use crate::categories::Category;
 
 pub const SETTINGS_KIND: &str = "Settings";
 
-/// Every Settings pane as a search entry: found by its name, its summary and
-/// the words people use for it ("night light" finds Displays), each opening
-/// its pane.
 #[must_use]
 pub fn pane_entries() -> Vec<SearchEntry> {
     Category::ALL
@@ -37,7 +26,6 @@ mod tests {
     use super::*;
     use ui::search::{SearchProvider, SearchRegistry};
 
-    /// The app's search source, as the framework builds it.
     fn source() -> impl SearchProvider {
         ui::framework::testing::search_source::<crate::resource::Settings>(pane_entries())
     }
@@ -57,7 +45,6 @@ mod tests {
 
         assert_eq!(provider.search("").len(), Category::ALL.len());
 
-        // Paging reaches the complete corpus with a hard per-page budget.
         let mut cursor = None;
         let mut titles = Vec::new();
         loop {
@@ -99,8 +86,6 @@ mod tests {
         );
     }
 
-    /// Every hit's anchor names a pane's row, which opens exactly that pane;
-    /// a removed pane names nothing.
     #[test]
     fn every_search_anchor_names_its_panes_row() {
         let profile = tempfile::tempdir().expect("a private profile");
@@ -124,8 +109,6 @@ mod tests {
         assert!(crate::effects::pane_of_row("settings.section:removed-pane").is_none());
     }
 
-    /// A hit opens its pane in the mounted `ResourceApp`, including the
-    /// narrow navigation stack, as picking it in search does.
     #[test]
     fn every_pane_search_hit_opens_its_mounted_live_surface() {
         let provider = source();

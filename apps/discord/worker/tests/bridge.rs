@@ -69,7 +69,7 @@ fn governor() -> (SigningKey, DeviceCert) {
 /// are the sealed channels a Lounge's are, and everything that reads or
 /// writes them — the bridge included — goes through their keys.
 fn governor_owning_workspaces() -> (SigningKey, DeviceCert) {
-    governor_with(tilo_user_identity::cloud_enrollment::host_capabilities())
+    governor_with(tilo_user_identity::DeviceCapabilities::host())
 }
 
 fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
@@ -990,6 +990,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     channel: Id::from_raw(&bridge.general),
                     text: "the notes".into(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),
@@ -1048,6 +1049,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
                     channel: Id::from_raw(&bridge.general),
                     text: "after".into(),
                     parent: None,
+                    quoted: None,
                     body: None,
                     attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),

@@ -1,7 +1,5 @@
-//! Root-authenticated retained Home admission for an ordinary signed GUI.
-//! Wire declarations select an already admitted operation. They are never
-//! person, source, workspace or package authority. The installed root actor
-//! independently verifies those before issuing its sealed view receipt.
+//! Root-authenticated retained Home admission for an ordinary signed GUI. Wire
+//! declarations select an already admitted operation.
 
 use crate::{
     ordinary_namespace::{ConnectedNamespace, Handoff, OrdinaryNamespaceOwner},
@@ -36,8 +34,6 @@ pub(crate) const ALIAS_VIEW_FD: RawFd = 58;
 pub(crate) const ALIAS_ARGS_FD: RawFd = 59;
 
 /// Original root's approved native Home spelling and held source identity.
-/// This is shape-only data; authority comes from the protected source record,
-/// encrypted setup binding and the authenticated root view receipt.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OriginalHomeAlias {
@@ -46,7 +42,6 @@ pub struct OriginalHomeAlias {
     source_ino: u64,
 }
 impl OriginalHomeAlias {
-    /// # Errors
     /// Refuses unreadable metadata, a non-directory source, or a noncanonical Home path.
     pub fn capture(path: &Path, source: &File) -> io::Result<Self> {
         let metadata = source.metadata()?;
@@ -61,7 +56,6 @@ impl OriginalHomeAlias {
         value.validate()?;
         Ok(value)
     }
-    /// # Errors
     /// Refuses missing source identity or a noncanonical, relative or NUL-containing path.
     pub fn validate(&self) -> io::Result<()> {
         if self.source_dev == 0
@@ -98,8 +92,7 @@ impl OriginalHomeAlias {
     fn args(&self, argv: &[String]) -> io::Result<File> {
         self.validate()?;
         let alias = self.path();
-        // A destination under an existing host-backed mount would expose or
-        // mutate its parents. An ancestor would hide already admitted state.
+        // A destination under an existing host-backed mount would expose or mutate its parents.
         for (index, flag) in argv.iter().enumerate() {
             if matches!(
                 flag.as_str(),
@@ -128,8 +121,8 @@ impl OriginalHomeAlias {
                 return Err(refused("original Home alias collides with admitted mount"));
             }
         }
-        // Never admit an alias at system/private roots, even if this particular
-        // package's mount list happens to omit one of them.
+        // Never admit an alias at system/private roots, even if this particular package's mount list
+        // happens to omit one of them.
         for reserved in [
             "/run", "/usr", "/etc", "/proc", "/sys", "/dev", "/bin", "/sbin", "/lib", "/lib64",
         ] {
@@ -220,9 +213,6 @@ impl Drop for QpeWorker {
 }
 
 /// Absolute cancellation/deadline fence for canonical blocking QPE routines.
-/// Their internal per-read timeouts may be reset; this owned socket clone still
-/// shuts down the exact connection and wakes every blocked read/write. The
-/// private closure is used only for the known QPE socket exchange below.
 pub(crate) fn qpe_exchange<T>(
     stream: &mut UnixStream,
     cancellation: &ServiceCancellation,
@@ -337,7 +327,6 @@ pub struct ConsumerCommand {
     pub env: Vec<(String, String)>,
 }
 impl ConsumerCommand {
-    /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn validate(&self) -> io::Result<()> {
         if !Path::new(&self.program).is_absolute()
@@ -386,8 +375,8 @@ impl ConsumerCommand {
     }
 }
 
-/// Exact ordinary launch declaration, compared against the root actor's
-/// independently admitted certified Shell selection and actual launcher peer.
+/// Exact ordinary launch declaration, compared against the root actor's independently admitted
+/// certified Shell selection and actual launcher peer.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumerLaunchBinding {
@@ -410,7 +399,6 @@ pub struct ConsumerLaunchBinding {
     pub gid: u32,
 }
 impl ConsumerLaunchBinding {
-    /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn validate(&self) -> io::Result<()> {
         if !uuid(&self.operation_id)
@@ -437,8 +425,8 @@ impl ConsumerLaunchBinding {
         self.command.validate()?;
         Ok(())
     }
-    /// Canonical existing Shell proof domain, reconstructed by root after it
-    /// independently replays signed GUI package, publisher and actual command.
+    /// Canonical existing Shell proof domain, reconstructed by root after it independently replays
+    /// signed GUI package, publisher and actual command.
     pub fn signed_shell_context_bytes(&self) -> io::Result<Vec<u8>> {
         self.validate()?;
         self.command.validate()?;
@@ -459,8 +447,7 @@ impl ConsumerLaunchBinding {
         );
         Ok(bytes)
     }
-    /// Reconstruct command bytes and compare the independently certified Shell
-    /// digest. Supplying a digest does not itself establish Shell authority.
+    /// Reconstruct command bytes and compare the independently certified Shell digest.
     pub fn verify_shell_context(&self, certified_digest: &str) -> io::Result<()> {
         if !digest(certified_digest)
             || self.shell_context_sha256 != certified_digest
@@ -470,14 +457,12 @@ impl ConsumerLaunchBinding {
         }
         Ok(())
     }
-    /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn context_sha256(&self) -> io::Result<String> {
         self.validate()?;
         Ok(sha(&serde_json::to_vec(self).map_err(io::Error::other)?))
     }
-    /// Declaration only. Root must compare its actual QPE peer and independently
-    /// replay signed package, certified person, personal cluster and current policy.
+    /// Declaration only.
     pub fn matches_peer(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.validate()?;
         if peer.pid() != self.launcher_pid
@@ -492,7 +477,6 @@ impl ConsumerLaunchBinding {
 }
 
 /// Observation sent exclusively by the pinned native Shell on its private gate.
-/// These serializable fields have no authority without that actual Shell peer.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootHelperExpectation {
@@ -502,8 +486,7 @@ pub struct RootHelperExpectation {
     pub helper_ino: u64,
 }
 
-/// Opaque admission minted only from actual pinned Shell execution and its
-/// privately held root child. No public label/path/descriptor constructor.
+/// Opaque admission minted only from actual pinned Shell execution and its privately held root child.
 pub struct RetainedLaunchGate {
     endpoint: UnixStream,
     shell: ExecutingPeer,
@@ -513,7 +496,6 @@ pub struct RetainedLaunchGate {
     expected: RootHelperExpectation,
 }
 impl RetainedLaunchGate {
-    /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn receive(
         mut gate: UnixStream,
@@ -646,8 +628,8 @@ impl RootRole {
         Ok(())
     }
 }
-/// Whether an entry on the way to a retained executable is protected: root's
-/// own, and not writable by group or other.
+/// Whether an entry on the way to a retained executable is protected: root's own, and not writable by
+/// group or other.
 const fn protected_owner(uid: u32, mode: u32) -> bool {
     uid == 0 && mode & 0o022 == 0
 }
@@ -718,8 +700,7 @@ struct ViewReceipt {
     original_home_alias: OriginalHomeAlias,
 }
 
-/// Inseparable root role, held view and live root lease. No public path/FD grant
-/// constructor exists; only the authenticated installed helper can issue it.
+/// Inseparable root role, held view and live root lease.
 pub struct RetainedViewAdmission {
     role: RootRole,
     view: File,
@@ -734,7 +715,6 @@ pub struct RetainedViewAdmission {
 }
 impl RetainedViewAdmission {
     /// Receive only on the private endpoint inherited through Shell opcode 2.
-    /// The normal signed GUI package is replayed before any root view is taken.
     pub fn receive(
         gate: RetainedLaunchGate,
         manifest_path: &Path,
@@ -885,7 +865,6 @@ impl RetainedViewAdmission {
         let connected = ConnectedNamespace::new(self.lease.try_clone()?);
         OrdinaryNamespaceOwner::with_retained(self.clone(), cancellation, connected, self.clone())
     }
-    /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn check(&self) -> io::Result<()> {
         self.role.check()?;
@@ -1082,9 +1061,7 @@ enum IssueProgress {
     PossibleView,
 }
 
-/// Failure evidence minted only by the canonical issue path. A receipt or
-/// other metadata exchange is never evidence that the view was exported.
-/// No public constructor or wire representation exists.
+/// Failure evidence minted only by the canonical issue path.
 #[derive(Debug)]
 pub struct FailedViewIssue {
     error: io::Error,
@@ -1123,8 +1100,6 @@ fn send_issue_fd(
     }
     io.retry(libc::POLLOUT, |stream| {
         // Record possible delivery immediately BEFORE the actual FD1 syscall.
-        // Receipt-only transport, cancellation and timeout before this point
-        // positively establish that this path never attempted a view transfer.
         if index == 1 {
             *progress = IssueProgress::PossibleView;
         }
@@ -1132,16 +1107,14 @@ fn send_issue_fd(
     })
 }
 
-/// Fixed helper's transport only. Root must bind the returned declaration to
-/// its independently admitted certified Shell/person/source before `issue()`.
-/// This type contains no person or source authority and grants no view itself.
+/// Fixed helper's transport only.
 pub struct RootConsumerChannel {
     stream: UnixStream,
     peer: Arc<ExecutingPeer>,
 }
 impl RootConsumerChannel {
-    /// Authenticate the actual non-root launcher, then prove this exact fixed
-    /// installed root helper back to it. Role and source admission remain distinct.
+    /// Authenticate the actual non-root launcher, then prove this exact fixed installed root helper
+    /// back to it.
     pub fn authenticate(
         mut stream: UnixStream,
         cancellation: &ServiceCancellation,
@@ -1179,8 +1152,7 @@ impl RootConsumerChannel {
             peer: Arc::new(peer),
         })
     }
-    /// Fixed helper checks before connecting its inherited rendezvous. This
-    /// observes current executable custody and constructs no authority token.
+    /// Fixed helper checks before connecting its inherited rendezvous.
     pub fn verify_current_helper() -> io::Result<()> {
         own_helper()
     }
@@ -1193,8 +1165,8 @@ impl RootConsumerChannel {
     pub fn retain_peer(&self) -> Arc<ExecutingPeer> {
         Arc::clone(&self.peer)
     }
-    /// Return a declaration for private installed actor admission; never issue a
-    /// view merely because it matches the executing task or this challenge.
+    /// Return a declaration for private installed actor admission; never issue a view merely because it
+    /// matches the executing task or this challenge.
     pub fn request(
         &mut self,
         challenge: &ConsumerChallenge,
@@ -1222,10 +1194,8 @@ impl RootConsumerChannel {
         }
         Ok(binding)
     }
-    /// Call ONLY after the private root actor has admitted the exact consumer,
-    /// current certified Shell/person, signed app, policy and source. The caller
-    /// retains its entire joint projection owner until the returned stream's
-    /// actual `NamespaceWitness` proves the consuming namespace stopped.
+    /// Call ONLY after the private root actor has admitted the exact consumer, current certified
+    /// Shell/person, signed app, policy and source.
     pub fn issue(
         mut self,
         grant: ReviewedViewIssue<'_>,
@@ -1355,9 +1325,7 @@ fn seal_receipt(receipt: &ViewReceipt) -> io::Result<File> {
     Ok(file)
 }
 
-/// Root actor's already reviewed projection observation. This is not an
-/// admission constructor: only `RootConsumerChannel` inside the exact protected
-/// installed helper can issue bytes, after its private actor's actual review.
+/// Root actor's already reviewed projection observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RetainedViewMode {
     Home,
@@ -1401,8 +1369,8 @@ fn normal_publisher(
     Ok(hex::encode(record.root.publisher_identity))
 }
 
-/// Continue the ordinary verified GUI launch with its inseparable root lease
-/// and canonical namespace owner. No service-mode policy is substituted.
+/// Continue the ordinary verified GUI launch with its inseparable root lease and canonical namespace
+/// owner.
 pub fn run_admitted_gui(
     admission: Arc<RetainedViewAdmission>,
     cancellation: ServiceCancellation,
@@ -1420,9 +1388,6 @@ pub fn run_admitted_gui(
 
 impl ConsumerLaunchBinding {
     /// Cryptographic target installation replay, not person/source admission.
-    /// Root must first bind these declared paths to the certified Shell's actual
-    /// ordinary selection and its canonical target installation. Never use a
-    /// root-ambient app catalog in place of that independent path admission.
     pub fn verify_signed_gui_package(&self) -> io::Result<[u8; 32]> {
         self.validate()?;
         let row: package_store::InstalledPackage = serde_json::from_value(serde_json::json!({
@@ -1536,8 +1501,8 @@ mod tests {
 
     #[test]
     fn canonical_pre_view_role_refusal_returns_the_actual_live_lease() {
-        // Genuine kernel task and actual socket; this unqualified test image
-        // must never gain installed root-helper authority or export any view.
+        // Genuine kernel task and actual socket; this unqualified test image must never gain installed
+        // root-helper authority or export any view.
         let peer = Arc::new(actual_current_peer());
         let (stream, mut remote) = UnixStream::pair().unwrap();
         let original = stream.as_raw_fd();
@@ -1666,8 +1631,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             trigger.cancel();
         });
-        // The peer stays silent and the deadline is the hang bound: only the
-        // cancel can end the exchange.
+        // The peer stays silent and the deadline is the hang bound: only the cancel can end the
+        // exchange.
         let error = qpe_exchange(
             &mut stream,
             &cancellation,
@@ -1715,9 +1680,8 @@ mod tests {
 
     #[test]
     fn actual_authenticated_task_cannot_claim_an_executable_it_is_not_running() {
-        // Identity decides, not the claimed path's protection: the image this
-        // task actually runs is the only one it may claim, so any other file
-        // is refused. (The protection rule itself has its own test above.)
+        // Identity decides, not the claimed path's protection: the image this task actually runs is
+        // the only one it may claim, so any other file is refused.
         let peer = actual_current_peer();
         let claimed = tilo_test_env::runtime_tempdir().unwrap();
         let path = claimed.path().join("claimed");
@@ -1739,8 +1703,7 @@ mod tests {
             let Some(mut child) = self.0.take() else {
                 return;
             };
-            // Child Drop does not stop an owned task. Cover observation errors
-            // and every unwind; never claim stopped after a failed wait.
+            // Child Drop does not stop an owned task.
             loop {
                 let _ = child.kill();
                 match child.wait() {
@@ -1757,8 +1720,8 @@ mod tests {
     fn run_context_fixture_as_original_user() {
         use std::os::unix::process::CommandExt;
         const EXEC_FD: i32 = 198;
-        // Hold the actual test image, including deleted-memfd qualification
-        // images; no checkout ancestor permissions or executable discovery.
+        // Hold the actual test image, including deleted-memfd qualification images; no checkout
+        // ancestor permissions or executable discovery.
         let image = File::open("/proc/self/exe").unwrap();
         let image_fd = image.as_raw_fd();
         let mut command = std::process::Command::new("/proc/self/fd/198");
@@ -1837,8 +1800,7 @@ mod tests {
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
         };
-        // Neither wire declaration is admitted. Exercise canonical production
-        // replay bytes with a genuine kernel peer, without inventing root rights.
+        // Neither wire declaration is admitted.
         let certified_digest = sha(&binding.signed_shell_context_bytes().unwrap());
         binding.shell_context_sha256 = certified_digest.clone();
         binding.verify_shell_context(&certified_digest).unwrap();
@@ -1921,15 +1883,13 @@ mod original_home_alias_tests {
         }
     }
 }
-/// Closed private launch registration. Existing plain and Home tags retain
-/// their meaning; edit uses its own admission and never upgrades Home.
+/// Closed private launch registration.
 pub enum OrdinaryLaunchGate {
     Home(RetainedLaunchGate),
 }
 impl RetainedLaunchGate {
-    /// # Errors
-    /// Refuses cancelled or unauthenticated channels, invalid handoff evidence,
-    /// and failed or timed-out socket transfers.
+    /// Refuses cancelled or unauthenticated channels, invalid handoff evidence, and failed or timed-out
+    /// socket transfers.
     pub fn receive_registration(
         mut gate: UnixStream,
         cancellation: &ServiceCancellation,

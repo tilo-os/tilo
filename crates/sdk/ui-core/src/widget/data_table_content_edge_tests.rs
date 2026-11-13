@@ -112,8 +112,6 @@ fn the_first_column_starts_on_the_content_edge_and_the_lift_bleeds_past_it() {
         "{band:?} {rect:?}"
     );
     assert!((band.x1 - (rect.x1 + bleed)).abs() < 1e-6);
-    // A cell pads its text by the bleed: the first column's text is on
-    // the table's own edge.
     let first = table.col_rects[0];
     assert!((first.x0 + bleed - rect.x0).abs() < 1e-6);
     let row = table.row_rect(0).unwrap();
@@ -139,8 +137,6 @@ fn rows_are_the_density_rows_thirty_six_and_twenty_eight_compact() {
         "a compact region"
     );
     assert!((DataTableFace::header_height(&theme) - regular.header_height()).abs() < 0.01);
-    // A two-line row holds a body line over a caption one; a table
-    // without its header starts its rows at the top.
     let rows: [&[&str]; 1] = [&[""]];
     let two = DataTableFace::new(&[], &rows).two_line().without_header();
     assert!(two.row_height(&theme) > face.row_height(&theme));
@@ -586,7 +582,6 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
     assert_eq!(table.selected_rows(), [1, 2, 3]);
     answer_row_actions(&mut table);
     assert!(clicks.borrow().is_empty(), "a drag is no click");
-    // A plain press that does not move is a click on its row.
     send(&mut table, &tree, node, &at(60.0, y), false);
     send(
         &mut table,

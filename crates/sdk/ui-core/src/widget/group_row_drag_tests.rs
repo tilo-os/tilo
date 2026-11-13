@@ -1,5 +1,5 @@
-//! A dragged window near the strip's edge pans the strip, and resting on a
-//! background tab brings it to the front.
+//! A dragged window near the strip's edge pans the strip, and resting on a background tab
+//! brings it to the front.
 
 use super::tests::{dispatch_at, group_grab_point, make_row_with_groups_with_taffy, press_at};
 use super::*;
@@ -69,7 +69,6 @@ fn a_drag_resting_on_a_background_tab_brings_it_to_the_front() {
         "the rested-on tab is in front"
     );
 
-    // Moving off before the delay springs nothing.
     let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1, 2], &[3]]);
     let background = row.groups[0].tab_rects()[1].center();
     row.set_external_content_drag_hover(Some(background));

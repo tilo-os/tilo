@@ -205,6 +205,7 @@ class Projected(TypedDict):
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
+    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
     projects: list[Project]
     events: list[Event]
     tasks: list[Task]
@@ -344,6 +345,7 @@ class Calendar(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
+    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
     accounts: list[PersonAccount]
     active: dict[str, str]
 
@@ -379,6 +381,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
+    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
     people: list[Person]
 
     def project_contact(self,

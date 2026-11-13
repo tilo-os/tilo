@@ -1,10 +1,5 @@
-//! Whether a paint put a secret on screen.
-//!
-//! A secret field that holds a value notes it while it draws, masked or
-//! shown. A host brackets its frame in a [`SecretPaint`] and learns whether
-//! the frame shows one, so it can withhold the window from screenshots,
-//! recordings and screen sharing while it does. Containers that replay a
-//! cached subtree instead of drawing it again replay the note with it.
+//! Whether a paint put a secret on screen. A secret field that holds a value notes it
+//! while it draws, masked or shown.
 
 use std::cell::Cell;
 
@@ -17,9 +12,7 @@ pub fn note_secret_painted() {
     PAINTED.with(|painted| painted.set(true));
 }
 
-/// Watches one paint (a frame, or a cached subtree) for secrets. Scopes
-/// nest: a secret seen inside an inner scope is also seen by every
-/// enclosing one.
+/// Watches one paint (a frame, or a cached subtree) for secrets.
 #[must_use = "the scope reports only through `finish`"]
 pub struct SecretPaint {
     outer: bool,
@@ -54,8 +47,6 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
-    /// A settled leaf that draws a secret: its container replays it from
-    /// cache instead of drawing it again.
     struct SettledSecret;
 
     impl Widget for SettledSecret {

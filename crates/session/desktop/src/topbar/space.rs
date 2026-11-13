@@ -107,6 +107,9 @@ impl Widget for BarSpace {
         self.rect
     }
 
+    /// Room and nothing in it: an empty element where the bar's room stands.
+    fn html(&self, _cx: &mut ui::composition::HtmlCx<'_>) {}
+
     fn draw(
         &mut self,
         _scene: &mut Scene,

@@ -1,20 +1,12 @@
-//! Pure data model for the Music app.
-//!
-//! The catalog (artists / albums / tracks) and user-authored playlists are
-//! the collaborative [`Library`] record: `#[derive(Model)]` is its whole
-//! storage contract.
-//! Cache/download and live playback values share these render types, but are
-//! authoritative only on the current device; widgets overlay them after a
-//! shared-library refresh rather than syncing them to peers.
+//! The Music library: the collaborative [`Library`] record, plus the cache and
+//! playback values that this device alone holds.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-/// Stable identifiers. We use short string ids (not UUIDs) for the seeded
-/// sample catalog so the document is readable and the ids are stable across
-/// runs; user-created playlists get UUID ids.
+/// Short readable ids keep the sample document readable; playlists get UUIDs.
 pub type ArtistId = String;
 pub type AlbumId = String;
 pub type TrackId = String;
@@ -44,10 +36,7 @@ pub struct Album {
     pub year: u32,
 }
 
-/// One track. The historical `yt_id` field holds a source key: a `YouTube`
-/// video id or a namespaced Spotify URI. `YouTube` keys resolve a
-/// streamable audio URL via the [`crate::backend`] worker; for the offline
-/// sample library it is a synthetic id.
+/// One track. The `yt_id` field is the source key: a `YouTube` video id or a namespaced Spotify URI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Track {
     pub id: TrackId,
@@ -97,16 +86,13 @@ pub struct Playlist {
     /// Description
     pub description: String,
     /// Tracks, in order, as items keyed by track id. Taking a song off a
-    /// playlist asks nothing: it stays in the library.
     #[model(remove = "quiet")]
     pub tracks: Collection<TrackId>,
     /// Cover: an HTTPS URL or a bounded embedded PNG data URL; empty for
-    /// the procedural placeholder.
     pub cover: String,
 }
 
 impl Playlist {
-    /// An empty playlist named `name`, stored as the item `id`.
     pub fn named(id: &str, name: &str) -> Self {
         Self {
             id: id.to_owned(),
@@ -117,34 +103,29 @@ impl Playlist {
         }
     }
 
-    /// The track ids, in order.
     pub fn track_ids(&self) -> Vec<TrackId> {
         self.tracks.values().cloned().collect()
     }
 
-    /// How many tracks it holds.
     pub fn len(&self) -> usize {
         self.tracks.len()
     }
 
-    /// Whether it holds no track.
     pub fn is_empty(&self) -> bool {
         self.tracks.is_empty()
     }
 
-    /// Whether it holds `track`.
     pub fn contains(&self, track: &str) -> bool {
         self.tracks.contains(&Id::from_raw(track))
     }
 
-    /// Append `track`, unless it holds it already.
     pub fn push(&mut self, track: &str) {
         if !self.contains(track) {
             self.tracks.push(Id::from_raw(track), track.to_owned());
         }
     }
 
-    /// A cover is one peers can show.
+    /// A cover is a URL or an embedded PNG that peers can show.
     fn valid(&self) -> Result<(), Refusal> {
         if !crate::actions::portable_cover_value(&self.cover) {
             return Err(Refusal::new(
@@ -156,25 +137,20 @@ impl Playlist {
 }
 
 /// Per-track cache state. `Cached` is reserved exclusively for a durable
-/// local media file which the audio engine can play without network access.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum CacheState {
-    /// Not cached — streamed live from the source.
     #[default]
     Streamed,
     /// Download in flight; `0.0..=1.0`.
     Downloading(f32),
-    /// Fully downloaded and available offline.
+    /// Downloaded and available offline.
     Cached,
 }
 
-/// Repeat mode for the play queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepeatMode {
     Off,
-    /// Repeat the whole queue.
     All,
-    /// Repeat the current track.
     One,
 }
 
@@ -200,14 +176,10 @@ impl RepeatMode {
 /// and volume never cross the CRDT boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playback {
-    /// Currently-loaded track, if any.
     pub current: Option<TrackId>,
-    /// The play queue (ordered list of track ids). `current` is normally
-    /// `queue[queue_index]`.
+    /// The play queue; `current` is normally `queue[queue_index]`.
     pub queue: Vec<TrackId>,
-    /// Index of `current` within `queue`.
     pub queue_index: usize,
-    /// Whether transport is playing (vs paused).
     pub playing: bool,
     /// Last persisted playhead position, in milliseconds.
     pub position_ms: u64,
@@ -234,8 +206,6 @@ impl Default for Playback {
 
 /// The music library: the catalog the person brought in, their playlists,
 /// likes, saved albums, followed artists and recommendation feedback.
-/// Playback, downloaded bytes and credentials are this device's and never
-/// enter it.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 #[model(check = Library::valid)]
 pub struct Library {
@@ -281,7 +251,6 @@ impl Library {
             .map_or("Unknown Album", |a| a.title.as_str())
     }
 
-    /// Tracks of an album, ordered by track number.
     pub fn album_tracks(&self, album: &str) -> Vec<&Track> {
         let mut v: Vec<&Track> = self
             .tracks
@@ -292,7 +261,6 @@ impl Library {
         v
     }
 
-    /// Albums of an artist, newest first.
     pub fn artist_albums(&self, artist: &str) -> Vec<&Album> {
         let mut v: Vec<&Album> = self
             .albums
@@ -303,7 +271,6 @@ impl Library {
         v
     }
 
-    /// All albums, sorted by artist then year.
     pub fn albums_sorted(&self) -> Vec<&Album> {
         let mut v: Vec<&Album> = self.albums.values().collect();
         v.sort_by(|a, b| {
@@ -314,14 +281,12 @@ impl Library {
         v
     }
 
-    /// All artists, alphabetical.
     pub fn artists_sorted(&self) -> Vec<&Artist> {
         let mut v: Vec<&Artist> = self.artists.values().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
 
-    /// All tracks, sorted by artist / album / track number.
     pub fn tracks_sorted(&self) -> Vec<&Track> {
         let mut v: Vec<&Track> = self.tracks.values().collect();
         v.sort_by(|a, b| {
@@ -336,21 +301,19 @@ impl Library {
         v
     }
 
-    /// Most-played tracks, descending.
     pub fn top_tracks(&self, n: usize) -> Vec<&Track> {
         let mut v: Vec<&Track> = self.tracks.values().collect();
         v.sort_by_key(|t| std::cmp::Reverse(t.plays));
         v.into_iter().take(n).collect()
     }
 
-    /// Case-insensitive substring search across tracks, albums and artists.
+    /// Case-insensitive substring search over tracks, albums and artists.
     pub fn search(&self, q: &str) -> SearchResults {
         let needle = q.trim().to_lowercase();
         if needle.is_empty() {
             return SearchResults::default();
         }
-        // Genre matches too, so the "Browse all" category chips surface a
-        // genre's artists/albums/songs (and a plain genre-name query works).
+        // Genre matches too: a Browse all chip is a genre name.
         let artist_genre = |id: &str| {
             self.artists
                 .get(id)
@@ -399,7 +362,6 @@ impl Library {
         self.playlists.get(&Id::from_raw(id))
     }
 
-    /// Every playlist, in the order they were made.
     pub fn playlists(&self) -> impl Iterator<Item = &Playlist> {
         self.playlists.values()
     }
@@ -459,23 +421,18 @@ impl Library {
         self.tracks.len()
     }
 
-    /// Whether a track is in "Liked Songs".
     pub fn is_liked(&self, id: &str) -> bool {
         self.liked.contains(&id.to_owned())
     }
 
-    /// Whether an album is saved to the library.
     pub fn is_album_saved(&self, id: &str) -> bool {
         self.saved_albums.contains(&id.to_owned())
     }
 
-    /// Whether the user follows an artist.
     pub fn is_artist_followed(&self, id: &str) -> bool {
         self.followed_artists.contains(&id.to_owned())
     }
 
-    /// Liked tracks ordered by artist / album / track number (a virtual
-    /// "Liked Songs" playlist surfaced in the UI).
     pub fn liked_tracks(&self) -> Vec<&Track> {
         let mut v: Vec<&Track> = self
             .liked
@@ -494,7 +451,6 @@ impl Library {
         v
     }
 
-    /// Track ids of the "Liked Songs" virtual playlist, in display order.
     pub fn liked_ids(&self) -> Vec<TrackId> {
         self.liked_tracks()
             .into_iter()
@@ -503,7 +459,6 @@ impl Library {
     }
 }
 
-/// Result buckets for a library search.
 #[derive(Clone, Debug, Default)]
 pub struct SearchResults {
     pub tracks: Vec<TrackId>,
@@ -544,7 +499,6 @@ mod tests {
 
         {
             let lib = seed::sample_library();
-            // Every track title should be findable by its own title.
             let some = lib.tracks.values().next().unwrap().clone();
             let res = lib.search(&some.title);
             assert!(res.tracks.contains(&some.id));

@@ -14,9 +14,7 @@ use crate::deck::Deck;
 #[cfg(feature = "samples")]
 use crate::model::seed_deck;
 
-/// The media type of an ODF presentation (`.odp`).
 pub const ODP_MEDIA_TYPE: &str = "application/vnd.oasis.opendocument.presentation";
-/// The media type of an Office Open XML presentation (`.pptx`).
 pub const PPTX_MEDIA_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
@@ -24,7 +22,6 @@ pub const PPTX_MEDIA_TYPE: &str =
 /// rail and the inspector are flaps over the canvas.
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
-/// Framework app: the slides editor is the view of the [`Deck`].
 pub struct SlidesShell;
 
 impl ResourceApp for SlidesShell {
@@ -33,13 +30,12 @@ impl ResourceApp for SlidesShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Slides";
+    const TITLE_KEY: &'static str = "slides-app-title";
     const ICON: Option<&'static str> = Some("slides");
     const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Deck>) -> Element {
-        // In a container, the editor is a widget of the view's tree that
-        // tests and staging reach by its type.
         let editor = crate::app::window(cx, SlidesApp::new(cx));
         Box::new(ui::widget::Stack::new().push(editor))
     }
@@ -57,8 +53,6 @@ impl ResourceApp for SlidesShell {
         }
     }
 
-    /// A presentation file opens as a deck of its own, derived from the
-    /// file, so opening it again returns to that deck.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         input
             .argument()
@@ -71,7 +65,6 @@ impl ResourceApp for SlidesShell {
         let Some(file) = input.file().filter(|_| created) else {
             return Vec::new();
         };
-        // The host's store carries the pictures to the deck's other readers.
         let content = input
             .content()
             .cloned()
@@ -93,7 +86,6 @@ impl ResourceApp for SlidesShell {
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
-            // The sample deck in the editor, as it opens.
             "editor",
             "overview",
             "present",
@@ -136,7 +128,6 @@ impl ResourceApp for SlidesShell {
         }
     }
 
-    /// The `image` scenario's picture is in the capture's content store.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Deck>) {
         if fixture.scenario() == Some("image") {
@@ -144,8 +135,6 @@ impl ResourceApp for SlidesShell {
         }
     }
 
-    /// Every scenario but `empty` opens the sample deck; the long and
-    /// picture scenarios a variant of it.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Deck>> {
         let deck = match name {
@@ -155,7 +144,6 @@ impl ResourceApp for SlidesShell {
                 Some(src) => crate::sample::picture_deck("Site photo", &src),
                 None => seed_deck(),
             },
-            // The sample deck in its dark look.
             Some("dark_deck") => crate::model::Deck {
                 look: crate::model::DeckLook::Dark,
                 ..seed_deck()
@@ -291,9 +279,6 @@ mod tests {
         );
     }
 
-    /// The editor's effects — showing, presenting, files, reading — are
-    /// published on the deck beside its actions, and each slide offers to
-    /// open itself.
     #[test]
     fn the_editors_effects_are_published_on_the_deck() {
         let mut app = TestApp::<SlidesShell>::new().unwrap();

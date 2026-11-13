@@ -1,17 +1,16 @@
 //! Source spans and diagnostics.
 //!
-//! Every error carries a span, a stable code (`E0xx`) and a message written for an agent to act
-//! on. The checker reports every error it can find, not only the first.
+//! Every error carries a span, a stable code (`E0xx`) and a message written for an agent to act on. The
+//! checker reports every error it can find, not only the first.
 //!
-//! The spans and the diagnostics themselves come from `tilolang-lex`, beside the lexer that
-//! reports the first of them; this module finds what a name most likely meant and places every
-//! diagnostic in its file.
+//! The spans and the diagnostics themselves come from `tilolang-lex`, beside the lexer that reports the
+//! first of them; this module finds what a name most likely meant and places every diagnostic in its file.
 
 pub use tilolang_lex::diag::{Diagnostic, Span};
 
-/// The candidate a mistyped `name` most likely meant: the closest by edit distance when it is
-/// close enough to be a slip (a third of the name at most, and one edit at least), or else the
-/// first one whose declaration says `name` about it (`deadline` finds `due`, declared "due by").
+/// The candidate a mistyped `name` most likely meant: the closest by edit distance when it is close enough
+/// to be a slip (a third of the name at most), or else the first one whose declaration says `name` about it
+/// (`deadline` finds `due`, declared "due by").
 #[must_use]
 pub fn did_you_mean_about<'a>(
     name: &str,
@@ -40,13 +39,11 @@ fn says(words: &str, name: &str) -> bool {
     name.chars().count() > 2 && words.split(|c: char| !c.is_alphanumeric()).any(said)
 }
 
-/// `"; did you mean `x`?"` for a mistyped `name`, or nothing when no candidate is close.
 #[must_use]
 pub fn suggestion<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> String {
     suggestion_about(name, candidates.into_iter().map(|c| (c, "")))
 }
 
-/// [`suggestion`] over names and the words their declarations say about them.
 #[must_use]
 pub fn suggestion_about<'a>(
     name: &str,
@@ -56,8 +53,8 @@ pub fn suggestion_about<'a>(
         .map_or_else(String::new, |c| format!("; did you mean `{c}`?"))
 }
 
-/// Edits between `a` and `b`: insertions, deletions, substitutions and swaps of two neighbours
-/// (`titel` is one edit from `title`).
+/// Edits between `a` and `b`: insertions, deletions, substitutions and swaps of two neighbours (`titel` is
+/// one edit from `title`).
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -87,7 +84,6 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev.last().copied().unwrap_or(0)
 }
 
-/// Locates every diagnostic and orders them by position.
 pub(crate) fn finish(mut diags: Vec<Diagnostic>, src: &str) -> Vec<Diagnostic> {
     for d in &mut diags {
         d.locate(src);
@@ -104,8 +100,8 @@ pub(crate) struct Placed<'a> {
     pub base: usize,
 }
 
-/// Moves every diagnostic into the file its span points into, locates it there, and orders
-/// them by file and position.
+/// Moves every diagnostic into the file its span points into, locates it there, and orders them by file and
+/// position.
 pub(crate) fn finish_files(mut diags: Vec<Diagnostic>, files: &[Placed<'_>]) -> Vec<Diagnostic> {
     for d in &mut diags {
         let Some(file) = files
@@ -131,7 +127,6 @@ pub(crate) fn finish_files(mut diags: Vec<Diagnostic>, files: &[Placed<'_>]) -> 
     diags
 }
 
-/// All diagnostics as one JSON array.
 pub fn diagnostics_json(diags: &[Diagnostic]) -> String {
     let items: Vec<serde_json::Value> = diags.iter().map(Diagnostic::to_json).collect();
     serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())

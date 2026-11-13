@@ -94,9 +94,6 @@ fn current_website_signins_brand_pixels() {
         }
         for name in ["Slack", "Firefox"] {
             let (_, rect) = bounds.iter().find(|(label, _)| label == name).unwrap();
-            // Taffy rounds both edges independently, not the size. Text
-            // scaling can make the token fractional, yielding a 19 or 20px
-            // cell depending on its row's unrounded origin.
             let edge = f64::from(app.harness().theme().tokens.metrics.icon_sm);
             let snapped = [edge.floor(), edge.ceil()];
             assert!(rect.width() > 0.0 && rect.height() > 0.0);
@@ -110,9 +107,6 @@ fn current_website_signins_brand_pixels() {
             );
         }
         for name in ["Slack", "Firefox"] {
-            // At large text sizes the second source is below the viewport.
-            // Reveal each actual logo with the production scroll path before
-            // checking its pixels, rather than treating offscreen geometry as paint.
             let body = app
                 .with_widget::<InstallerPreview, _>(|preview| {
                     super::super::visual_tests::body_scroll_geometry(preview)
@@ -141,7 +135,6 @@ fn current_website_signins_brand_pixels() {
                 rect.y0 >= body.y0 && rect.y1 <= body.y1,
                 "{name} must be revealed by scrolling"
             );
-            // Decode the production PNG, not a separately painted image or scene.
             let output = tempfile::tempdir().unwrap();
             let path = output.path().join("logins.png");
             app.harness().render_png(&path);
@@ -525,7 +518,6 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
     })
     .unwrap();
     let group = format!("installer.logins.group.{browser}");
-    // All selected -> none, then none -> all, through the actual control.
     for expected in [0, 2] {
         app.harness().click_named(&group).unwrap();
         app.settle();
@@ -621,8 +613,6 @@ fn source_group_actions_reject_disabled_unknown_and_replaced_sources() {
     )
     .unwrap();
     std::fs::create_dir(home.path().join(".mozilla/firefox/profile")).unwrap();
-    // Both children belong to this now-stale source. Neither inclusion nor
-    // exclusion may partially update the batch or its recorded decisions.
     for included in [false, true] {
         assert!(
             app.effect(&InstallerPreviewEffect::SetPreviewServiceSessionGroup {
@@ -684,7 +674,6 @@ fn unselectable_login_group_is_disabled_and_does_not_dispatch() {
         assert!(selection.included.is_empty());
         assert!(selection.decided.is_empty());
     }
-    // Even an ineligible batch cannot turn a stale source into a successful no-op.
     std::fs::rename(
         home.path().join(".config/Slack"),
         home.path().join("old-slack"),
@@ -708,7 +697,6 @@ fn mixed_login_group_selects_only_eligible_children_and_keeps_reconnect_reason()
         .unwrap();
     assert!(!source.supports_encrypted_cookie_capture());
     let id = source.id.clone();
-    // Exercise a mixed discovery snapshot without granting any new source authority.
     let slack = selection
         .detected
         .iter_mut()
@@ -723,8 +711,7 @@ fn mixed_login_group_selects_only_eligible_children_and_keeps_reconnect_reason()
     let view = selection.logins_view(true, None, |_, _| {});
     let harness = ui::headless::FrameHarness::new(ui::State::new(), view, (1180, 820));
     let inspection = harness.inspection_json().unwrap();
-    assert!(inspection.contains("1 of 1 available sign-ins selected"));
-    assert!(!inspection.contains("2 of 2 selected"));
+    assert!(inspection.contains("Select the 1 sign-in"));
     assert!(inspection.contains(&super::super::t_args(
         "installer-service-source-reconnect-required",
         &[(

@@ -1,10 +1,9 @@
 //! The strip's scroll units and the motion it settles with.
 //!
-//! A wheel reports fractions of a detent and a touchpad reports pixels; both
-//! must become the same discrete step. Once the strip is sent somewhere it
-//! eases onto a group edge on the shared snap curve. These are the two halves
-//! of one conversation between input and a resting pan, kept beside the row
-//! rather than inside its gesture and layout code.
+//! A wheel reports fractions of a detent and a touchpad reports pixels; both must become
+//! the same discrete step. Once the strip is sent somewhere it eases onto a group edge on
+//! the shared snap curve. These are the two halves of one conversation between input and a
+//! resting pan, kept beside the row rather than inside its gesture and layout code.
 
 use super::MOVE_SETTLED_PX;
 use crate::time::{Duration, Instant};
@@ -15,10 +14,7 @@ use winit::event::MouseScrollDelta;
 /// scale for hi-res wheel notches reported as pixel deltas.
 pub const JUMP_PX_PER_DETENT: f64 = crate::tokens::Layout::BASE.jump_px_per_detent as f64;
 
-/// Turns fractional-detent scroll deltas into whole steps. No quiet-time
-/// decay: it would stop slow scrolling from ever accumulating a whole
-/// detent, and a stale sub-detent balance is harmless since it clears the
-/// next time the user reverses direction.
+/// Turns fractional-detent scroll deltas into whole steps.
 #[derive(Default)]
 pub struct WheelJumpAccum {
     accum: f64,
@@ -72,8 +68,8 @@ pub(super) fn snap_motion(from: f64, to: f64) -> crate::motion::MotionValue<f64>
         .with_tolerance(MOVE_SETTLED_PX.max((to - from).abs() * 1e-3))
 }
 
-/// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its
-/// spring, and how long a run from rest takes (zero when it lands).
+/// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its spring, and how
+/// long a run from rest takes (zero when it lands).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SnapTiming {
     pub(super) timing: crate::motion::Timing,

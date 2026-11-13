@@ -1,9 +1,5 @@
 //! What a drive says it is: its serial or WWN, its partition's GUID and the
 //! NTFS volume serial.
-//!
-//! All of it can be forged. Remembered consent uses it only to notice that a
-//! different drive now sits where a remembered one was; the location checks
-//! in [`crate::topology`] carry the security.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,11 +11,9 @@ use serde::{Deserialize, Serialize};
 /// The identifiers a remembered drive must still show.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
-    /// The drive's WWN, or its serial number when it reports no WWN.
     pub drive: Option<String>,
     /// The partition's GUID (or its MBR disk signature and number).
     pub partition: Option<String>,
-    /// The NTFS volume serial number from the boot sector.
     pub volume: Option<u64>,
 }
 
@@ -38,7 +32,6 @@ impl Identity {
     }
 }
 
-/// The properties udev recorded for a block device (`/run/udev/data/bM:m`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UdevProperties(BTreeMap<String, String>);
 
@@ -54,7 +47,6 @@ impl UdevProperties {
         )
     }
 
-    /// Read the record for device `major:minor` under `udev_data`.
     pub fn read(udev_data: &Path, major_minor: &str) -> io::Result<Self> {
         fs::read_to_string(udev_data.join(format!("b{major_minor}"))).map(|text| Self::parse(&text))
     }
@@ -66,7 +58,6 @@ impl UdevProperties {
             .filter(|value| !value.is_empty())
     }
 
-    /// The file system type blkid found (`ntfs`, `BitLocker`).
     pub fn fs_type(&self) -> Option<&str> {
         self.get("ID_FS_TYPE")
     }
@@ -79,7 +70,6 @@ impl UdevProperties {
         self.get("ID_PART_ENTRY_UUID").map(str::to_ascii_lowercase)
     }
 
-    /// The drive's WWN, or its serial number, from udev.
     pub fn drive(&self) -> Option<String> {
         self.get("ID_WWN_WITH_EXTENSION")
             .or_else(|| self.get("ID_WWN"))

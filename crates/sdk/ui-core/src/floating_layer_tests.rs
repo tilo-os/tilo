@@ -1,6 +1,6 @@
-//! The floating layer's placement as invariants: what a frame draws is
-//! checked against the keep-clear rules for every shape of screen, banner,
-//! readout and set of activities, and the pill's order is the documented one.
+//! The floating layer's placement as invariants: what a frame draws is checked against the keep-clear
+//! rules for every shape of screen, banner, readout and set of activities, and the pill's order is the
+//! documented one.
 
 use super::*;
 use crate::live_activity::{Control, ControlKind, Kind, Tone};
@@ -46,8 +46,6 @@ fn intersects(a: Rect, b: Rect) -> bool {
     overlap.width() > 0.5 && overlap.height() > 0.5
 }
 
-/// Whether `card` is one the person left loose: the layout only carries the
-/// place it settled at, and the card it came from says it was dragged.
 fn was_loose(card: &Placed, held: &[Card]) -> bool {
     held.iter().any(|source| {
         source.app == card.app
@@ -57,7 +55,6 @@ fn was_loose(card: &Placed, held: &[Card]) -> bool {
     })
 }
 
-/// Every rule the layer promises, over one staging of the screen.
 fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &Layer) {
     let work = placement.work;
     for (at, card) in layer.cards.iter().enumerate() {
@@ -118,7 +115,6 @@ fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &La
             );
         }
     }
-    // Nothing is lost: every activity is on screen or waiting in the pill.
     assert_eq!(
         layer.cards.len() + layer.folded.len(),
         held.len(),
@@ -133,8 +129,6 @@ const CORNERS: [Corner; 4] = [
     Corner::BottomRight,
 ];
 
-/// Screens people use, phone-width to wide, with and without the corners a
-/// banner, the readout or a large text setting takes.
 fn placements() -> Vec<Placement> {
     let mut screens = Vec::new();
     for (width, height) in [
@@ -165,15 +159,12 @@ fn placements() -> Vec<Placement> {
             readout: Some(readout),
             ..plain
         });
-        // A person typing at the bottom of a window, as in a conversation's composer, and at the
-        // top, as in a list's filter.
         for y in [work.y1 - 60.0, work.y0 + 70.0] {
             screens.push(Placement {
                 caret: Some(Rect::new(work.x1 - 200.0, y, work.x1 - 199.0, y + 18.0)),
                 ..plain
             });
         }
-        // A banner and the readout at the top, with the work area under it.
         screens.push(Placement {
             banners: Some(banner),
             readout: Some(Rect::new(work.x0, work.y0, work.x1, work.y0 + 120.0)),
@@ -183,8 +174,6 @@ fn placements() -> Vec<Placement> {
     screens
 }
 
-/// Activity sets people run at once: one timer, a call beside a timer, a
-/// full house, and more than the layer expands.
 fn sets() -> Vec<Vec<Summary>> {
     vec![
         vec![],
@@ -209,7 +198,6 @@ fn sets() -> Vec<Vec<Summary>> {
     ]
 }
 
-/// The layer's answer holds every keep-clear rule on every staged screen.
 #[test]
 fn docked_cards_keep_clear_of_each_other_the_bar_banners_and_the_readout() {
     for placement in placements() {
@@ -225,8 +213,6 @@ fn docked_cards_keep_clear_of_each_other_the_bar_banners_and_the_readout() {
     }
 }
 
-/// The same screen and the same activities always draw the same layer, in
-/// whatever order the board was read in.
 #[test]
 fn the_layout_is_deterministic_and_order_independent() {
     for placement in placements() {
@@ -274,15 +260,12 @@ fn docked_cards_stand_in_the_chosen_corner_column() {
         (tea.rect.y1 - (call.rect.y0 - CARD_GAP)).abs() < 0.5,
         "the next card stands 8 px above it"
     );
-    // The chosen corner moves the column with it.
     let top_left = place(&placement, Corner::TopLeft, &held, false);
     let call = &top_left.cards[0];
     assert!((call.rect.x0 - (placement.work.x0 + EDGE_INSET)).abs() < 0.5);
     assert!((call.rect.y0 - (placement.work.y0 + EDGE_INSET)).abs() < 0.5);
 }
 
-/// A banner takes the top of the corner column: the cards below it stand
-/// under it, and whatever no longer fits waits in the pill.
 #[test]
 fn a_banner_pushes_the_docked_cards_out_of_its_column() {
     let mut placement = screen(1280.0, 800.0);
@@ -371,9 +354,6 @@ fn a_phone_keeps_its_cards_in_the_pill_until_the_person_expands_one() {
     assert_eq!(expanded.folded.len(), 1, "the rest wait in the pill");
 }
 
-/// A phone stands the card its app presents before that card's window is up:
-/// the place the layer gives it is what brings the window up, so waiting for
-/// the window first would leave the activity in the pill forever.
 #[test]
 fn a_phone_stands_the_card_its_app_presents_before_its_window_is_up() {
     let placement = screen(420.0, 800.0);
@@ -412,7 +392,6 @@ fn a_card_dragged_loose_stays_where_it_is_left_but_reachable() {
             card.rect
         );
     }
-    // A card dragged nowhere near an edge lands exactly where it was put.
     let size = card_size(placement.work, &loose.summary);
     loose.loose = Some(Rect::from_origin_size((500.0, 300.0), (300.0, 120.0)));
     let layer = place(&placement, Corner::BottomRight, &[loose], false);
@@ -422,9 +401,6 @@ fn a_card_dragged_loose_stays_where_it_is_left_but_reachable() {
     );
 }
 
-/// A card its app draws stands in the layer's column: as wide as every other
-/// card there and on the same edge, whatever width its app asked for, and as
-/// tall as its app asked.
 #[test]
 fn a_card_its_app_draws_is_as_wide_as_the_column_and_stands_on_its_edge() {
     let placement = screen(1280.0, 800.0);
@@ -469,9 +445,6 @@ fn a_card_its_app_draws_is_as_wide_as_the_column_and_stands_on_its_edge() {
     );
 }
 
-/// The pill says the most urgent activity and counts the rest: a call before
-/// directions, directions before a timer due within a minute, that timer
-/// before another timer, timers before music, music before anything else.
 #[test]
 fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest() {
     let song = activity(Kind::Music, "song");
@@ -524,8 +497,6 @@ fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest
     assert!(pill(&[]).is_empty());
 }
 
-/// An activity with controls sorts its close last and draws three actions
-/// beside it.
 #[test]
 fn a_summary_draws_three_actions_and_its_close_beside_them() {
     let mut summary = activity(Kind::Call, "call");
@@ -558,9 +529,6 @@ fn a_summary_draws_three_actions_and_its_close_beside_them() {
     assert!(matches!(summary.tone, Tone::Neutral));
 }
 
-/// Whatever an activity says, its parts stand inside the card the layer
-/// sizes for it: the header with its glyph and two controls, then its hero,
-/// its subtitle, its progress and the controls it offers.
 #[test]
 fn a_cards_parts_fit_the_height_card_size_reserves() {
     for summary in sets().into_iter().flatten() {
@@ -631,9 +599,6 @@ fn a_line_under_the_reading_stands_above_the_controls() {
     }
 }
 
-/// A song whose player sends no cover leads with its own lines: its subtitle
-/// stands under its hero rather than beside artwork, and the card is as tall
-/// as the rows it draws.
 #[test]
 fn a_card_without_a_cover_holds_the_lines_it_draws() {
     let summary = Summary::new(Kind::Music, "Glasslight", "3:34")
@@ -656,8 +621,6 @@ fn a_card_without_a_cover_holds_the_lines_it_draws() {
     );
 }
 
-/// A window dragged smaller than a card is no reason to crash the session:
-/// the card is placed as far inside as the work area reaches.
 #[test]
 fn a_work_area_shorter_than_a_card_still_places_it() {
     for (width, height) in [(1280.0, 800.0), (320.0, 90.0), (200.0, 60.0), (40.0, 30.0)] {
@@ -678,9 +641,6 @@ fn a_work_area_shorter_than_a_card_still_places_it() {
     }
 }
 
-/// A screenshot heads its card with the shot itself, at the shape a
-/// screenshot has: nine sixteenths of the card's width, with the title under
-/// it on a heading's line rather than a reading's.
 #[test]
 fn a_shot_heads_its_card_with_the_picture_itself() {
     let tile = Summary::new(Kind::Other, "Screenshot", "")
@@ -714,9 +674,6 @@ fn a_shot_heads_its_card_with_the_picture_itself() {
     );
 }
 
-/// Each control of a screenshot's card says what it does in its own slot: a
-/// glyph alone leaves the person guessing which one shows the file and which
-/// one copies it.
 #[test]
 fn a_screenshots_controls_are_labelled_in_their_slots() {
     use crate::text_render::TextRenderer;

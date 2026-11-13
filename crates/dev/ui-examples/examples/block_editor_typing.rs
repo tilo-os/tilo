@@ -1,22 +1,4 @@
 //! What one keystroke costs in [`BlockEditor`] as the document grows.
-//!
-//! Two hosts type the same text into documents of 200, 2000 and 10000
-//! paragraphs:
-//!
-//! - **harness**: the headless [`FrameHarness`], which rebuilds its layout
-//!   tree every frame (what `TestApp` and the SDK latency example measure);
-//! - **retained**: the live host's lifecycle, which keeps one layout tree
-//!   between keystrokes and rebuilds it only on a structural change.
-//!
-//! Each row is the mean per keystroke of event handling, layout (build,
-//! solve and apply) and draw, plus the p50 and p95 of their sum.
-//!
-//! ```text
-//! cargo run -p tilo-ui --release --example block-editor-typing
-//! cargo run -p tilo-ui --release --example block-editor-typing -- --chars 120 --sizes 200,2000
-//! ```
-//!
-//! Release only: a debug build makes every reading meaningless.
 
 use std::collections::HashMap;
 use tilo_ui::time::Instant;

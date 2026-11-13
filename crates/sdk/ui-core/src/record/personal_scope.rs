@@ -66,9 +66,9 @@ impl RecordSet {
         // The same key [`RecordSet::canonical_key`] would have named in that
         // workspace then: the workspace's own document, or one of its records.
         let retired_key = if want.id.is_package_primary() {
-            StorageKey::workspace_index(&self.package_id, retired)
+            StorageKey::workspace_index(&self.app_id, retired)
         } else {
-            StorageKey::record(&self.package_id, retired, want.id.storage_key())
+            StorageKey::document(&self.app_id, retired, want.id.storage_key())
         };
         if backend
             .read(&retired_key)?
@@ -133,9 +133,7 @@ impl RecordSet {
         let Some(retired) = self.retired.as_deref() else {
             return Vec::new();
         };
-        backend
-            .records(&self.package_id, retired)
-            .unwrap_or_default()
+        backend.documents(&self.app_id, retired).unwrap_or_default()
     }
 
     /// The [window default records](RecordId::window_default) of `kind` the
@@ -161,7 +159,7 @@ impl RecordSet {
             if kept.contains(&id) {
                 continue;
             }
-            let stored = backend.read(&StorageKey::record(&self.package_id, retired, &key));
+            let stored = backend.read(&StorageKey::document(&self.app_id, retired, &key));
             let loaded = match stored {
                 Ok(Some(stored)) if !stored.bytes.is_empty() => stored,
                 _ => continue,
@@ -220,7 +218,7 @@ mod tests {
         doc.put(automerge::ROOT, "chapter", chapter).unwrap();
         store
             .write(
-                &StorageKey::record(PACKAGE, workspace, id.storage_key()),
+                &StorageKey::document(PACKAGE, workspace, id.storage_key()),
                 WriteOp::Replace(doc.save()),
                 None,
             )
@@ -264,7 +262,11 @@ mod tests {
         // Listing them changes nothing: they are read where they are.
         assert!(
             store
-                .read(&StorageKey::record(PACKAGE, &retired, window.storage_key()))
+                .read(&StorageKey::document(
+                    PACKAGE,
+                    &retired,
+                    window.storage_key()
+                ))
                 .unwrap()
                 .is_some_and(|stored| !stored.bytes.is_empty())
         );
@@ -281,7 +283,7 @@ mod tests {
         assert_eq!(records.held_parts(&chain), vec![0, 1]);
         assert!(
             store
-                .read(&StorageKey::record(
+                .read(&StorageKey::document(
                     PACKAGE,
                     crate::record::person::PERSONAL_SCOPE,
                     window.storage_key()

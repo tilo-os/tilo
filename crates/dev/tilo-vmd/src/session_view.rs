@@ -1,7 +1,7 @@
-//! One readonly overlay per stand-in session, independent of the host sysext.
-//! A nonrecursive bind of the boot root retains its underlying /usr rather
-//! than the overmount installed by systemd-sysext. Slot services bind the
-//! combined view; they never stack a third overlay over the host's /usr.
+//! One readonly overlay per stand-in session, independent of the host sysext. A
+//! nonrecursive bind of the boot root retains its underlying `/usr` rather than the
+//! overmount `systemd-sysext` installs, so slot services bind the combined view and
+//! never stack a third overlay over the host's `/usr`.
 
 use std::ffi::CString;
 use std::fs;
@@ -121,9 +121,8 @@ fn isolate_base(base: &Path) -> Result<(), DaemonError> {
         };
         let path = Path::new(path);
         if path != base && path.starts_with(base) {
-            // Kernel mountinfo escapes whitespace and backslashes. An
-            // unexpected escaped descendant is refused, never interpreted
-            // as a different mountpoint or handed to a shell.
+            // Kernel mountinfo escapes whitespace and backslashes; an unexpected escaped descendant
+            // is refused, never interpreted as a different mountpoint or handed to a shell.
             if path.as_os_str().as_bytes().contains(&b'\\') || children.len() >= 512 {
                 return Err(DaemonError::InvalidParams(
                     "unexpected retained-base mount hierarchy".into(),
@@ -132,10 +131,9 @@ fn isolate_base(base: &Path) -> Result<(), DaemonError> {
             children.push(path.to_path_buf());
         }
     }
-    // A bind of a shared boot root inherits its propagation group. Disconnect
-    // every retained child BEFORE unmounting it: otherwise repair would also
-    // unmount the host's live /usr. Fresh bases must never receive later
-    // systemd-sysext refresh mounts.
+    // A bind of a shared boot root inherits its propagation group, so every retained child is
+    // disconnected before it is unmounted: otherwise repair would also unmount the host's live
+    // `/usr`.
     mount(None, base, None, libc::MS_PRIVATE | libc::MS_REC, None)?;
     children.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     for child in children {
@@ -171,8 +169,8 @@ fn base(root: &Path, source: &Path) -> Result<PathBuf, DaemonError> {
         ));
     }
     isolate_base(&base)?;
-    // A separate /usr filesystem not present in the boot-root backing tree
-    // cannot be silently replaced by an empty directory.
+    // A separate `/usr` filesystem missing from the boot-root backing tree cannot be silently
+    // replaced by an empty directory.
     if !base.join("usr/lib/os-release").is_file() {
         return Err(DaemonError::InvalidParams(
             "the immutable boot root does not contain the base /usr".into(),
@@ -183,9 +181,9 @@ fn base(root: &Path, source: &Path) -> Result<PathBuf, DaemonError> {
 
 fn hierarchy(base: &Path, view: &Path, layers: &[PathBuf], name: &str) -> Result<(), DaemonError> {
     let target = view.join(name);
-    // The mounted root presents imported permissions, not the protected
-    // backing directory. Release that old view before validating the backing
-    // mountpoint; running session bind mounts retain their old view.
+    // The mounted root presents imported permissions, not the protected backing directory, so that
+    // old view is released before the backing mountpoint is validated; running sessions keep their
+    // bind mounts.
     unmount(&target)?;
     directory(&target)?;
     let mut lowers = Vec::new();
@@ -249,8 +247,8 @@ fn hierarchy(base: &Path, view: &Path, layers: &[PathBuf], name: &str) -> Result
     )
 }
 
-/// Build the slot's fixed mount points. Existing service namespaces keep
-/// their old bind mounts until the ordinary session restart closes them.
+/// Build the slot's fixed mount points; existing service namespaces keep their old bind mounts
+/// until the ordinary session restart closes them.
 pub(crate) fn prepare(root: &Path, slot: &str, layers: &[PathBuf]) -> Result<PathBuf, DaemonError> {
     let manager = fs::metadata("/proc/1/ns/mnt").map_err(io)?;
     let own = fs::metadata("/proc/self/ns/mnt").map_err(io)?;

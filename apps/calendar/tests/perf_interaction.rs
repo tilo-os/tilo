@@ -17,8 +17,6 @@ fn interaction_costs() {
         .expect("calendar opens its capture");
 }
 
-/// What opening calendar costs on the UI thread, warm (its record already on the
-/// profile): from the host preparing the launch to the first frame drawn.
 #[test]
 fn start_cost() {
     ui::framework::testing::perf::start::<calendar::CalendarShell>(8)
@@ -26,10 +24,6 @@ fn start_cost() {
         .print();
 }
 
-/// Moving the pointer down the sidebar and back: each motion moves the
-/// hover from one row to the next, which repaints those two rows and
-/// nothing else, asks for no layout, and costs no more than any other
-/// pointer motion.
 #[test]
 fn sidebar_hover() {
     ui::framework::testing::perf::sidebar_sweep::<calendar::CalendarShell>(2)

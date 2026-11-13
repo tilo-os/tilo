@@ -1,44 +1,5 @@
-//! The one way Tilo shows dates, times, numbers, sizes and durations.
-//!
-//! Every app and the shell format what a person reads through this module. It follows the person's
-//! Region & Formats settings (date style, 12/24-hour clock, number style, first day of the week;
-//! [`region`]) and the desktop's language (month and weekday names, word order, plurals), and it
-//! follows them live: a change re-renders every view without a restart ([`region::refresh`]). A
-//! policy check (`tools/policy/check_formats.py`) keeps hand-built formatting (`strftime` patterns,
-//! `{:02}:{:02}` clocks, ad-hoc size units) out of everything else.
-//!
-//! The named styles:
-//!
-//! | Style | Function | English | German |
-//! |---|---|---|---|
-//! | list | [`list_date`] | `16:02`, `Yesterday`, `Sun`, `Jun 30`, `Jun 30, 2025` | `16:02`, `Gestern`, `So.`, `30. Juni`, `30. Juni 2025` |
-//! | day fact | [`day_fact`], [`Formats::day_fact`] | `Overdue`, `Today`, `Tomorrow`, `Thursday`, `Jun 29`; `Today 09:00`, `Thu 14:30` | `Überfällig`, `Heute`, `Morgen`, `Donnerstag`, `29. Juni`; `Heute 09:00`, `Do. 14:30` |
-//! | moment fact | [`moment_fact`], [`Formats::moment_fact`] | `15:00`, `Sat 09:00`, `Jun 29 09:00` | `15:00`, `Sa. 09:00`, `29. Juni 09:00` |
-//! | timestamp | [`timestamp`] | `Jun 30, 2026, 13:42` (or ISO `2026-06-30 13:42`, …) | `30.06.2026, 13:42` |
-//! | date | [`date`] | `Jun 30, 2026` (or ISO, US, EU, `30 Jun 2026`) | `30.06.2026` (or `30. Juni 2026`, Long) |
-//! | time | [`time`] | `13:42` or `1:42 PM` | `13:42` |
-//! | day heading | [`day_heading`] | `Tuesday, June 30` | `Dienstag, 30. Juni` |
-//! | month heading | [`month_heading`] | `June 2026` | `Juni 2026` |
-//! | relative | [`relative`] | `3 min ago` | `vor 3 Min.` |
-//! | duration | [`duration`] | `1 hr 5 min` | `1 Std. 5 Min.` |
-//! | timecode | [`timecode`] | `1:01:01` | `1:01:01` |
-//! | size | [`size`] | `1.5 MB` | `1,5 MB` |
-//! | memory | [`memory`] | `1.5 GiB` | `1,5 GiB` |
-//! | rate | [`rate`] | `6.7 MB/s` | `6,7 MB/s` |
-//! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
-//! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
-//! | decimal | [`decimal`] | `3.14` | `3,14` |
-//! | value list | [`list`] | `Home folders, encrypted, 134 GB free` | `Home-Ordner, verschlüsselt, 134 GB frei` |
-//!
-//! [`size`] uses SI decimal units and [`memory`] IEC binary ones, the platform's rule shared with
-//! Files, Disks and the Storage pane: anything stored or transferred (files, downloads, caches,
-//! packages, drives, partitions) is a [`size`] and memory a [`memory`], while a flow whose
-//! requirements are themselves stated in binary units (the installer's GiB partition minimums)
-//! stays binary throughout so its numbers compare.
-//!
-//! The free functions use the person's current formats ([`Formats::current`]); the same styles on
-//! [`Formats`] take explicit formats and an explicit `now`, for tests and for callers formatting
-//! many values at once.
+//! The one way Tilo shows dates, times, numbers, sizes and durations. Every app and the shell format
+//! what a person reads through this module.
 
 pub mod region;
 
@@ -46,11 +7,14 @@ use chrono::Timelike;
 
 pub use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
+/// Text for a machine rather than a person: [`machine!`] names why it is not written in the person's
+/// formats (see its docs).
+pub use tilo_formats::machine;
 
 use crate::i18n::{ArgValue, widget_format};
 
-/// The words dates and clocks are said in, as `tilo-formats` asks for them: the locale
-/// catalogues, in the language this thread speaks.
+/// The words dates and clocks are said in, as `tilo-formats` asks for them: the locale catalogues, in
+/// the language this thread speaks.
 pub struct I18nWords;
 
 impl tilo_formats::Words for I18nWords {
@@ -77,8 +41,7 @@ pub fn words() -> &'static dyn tilo_formats::Words {
     &WORDS
 }
 
-/// One set of formats: the person's [`RegionFormats`]. Words (month names,
-/// "Yesterday", plurals) come from the language active on the calling thread.
+/// One set of formats: the person's [`RegionFormats`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Formats {
     pub region: RegionFormats,
@@ -253,8 +216,8 @@ impl Formats {
 }
 
 impl Formats {
-    /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card
-    /// reads it, by how far `day` is from `today`. See `tilo_formats::day_fact`.
+    /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card reads it,
+    /// by how far `day` is from `today`.
     #[must_use]
     pub fn day_fact(&self, day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
         let (text, overdue) = tilo_formats::day_fact(self.region, day, time, today, words());
@@ -268,14 +231,14 @@ impl Formats {
         }
     }
 
-    /// The **moment fact** style: a moment told beside words that already name its day, as a
-    /// choice's trailing fact reads it. See `tilo_formats::moment_fact`.
+    /// The **moment fact** style: a moment told beside words that already name its day, as a choice's
+    /// trailing fact reads it.
     #[must_use]
     pub fn moment_fact(&self, at: NaiveDateTime, today: NaiveDate) -> String {
         tilo_formats::moment_fact(self.region, at, today, words())
     }
 
-    /// The **day it happened** style. See `tilo_formats::day_done`.
+    /// The **day it happened** style.
     #[must_use]
     pub fn day_done(&self, day: NaiveDate, today: NaiveDate) -> String {
         tilo_formats::day_done(day, today, words())
@@ -299,7 +262,7 @@ impl Formats {
         tilo_formats::date(self.region, day, words())
     }
 
-    /// A calendar day in the language's own convention. See `tilo_formats::language_date`.
+    /// A calendar day in the language convention.
     #[must_use]
     pub fn language_date(&self, day: NaiveDate) -> String {
         tilo_formats::language_date(day, words())
@@ -396,7 +359,6 @@ fn tenths(value: f64) -> usize {
     usize::from(!format!("{value:.1}").ends_with(".0"))
 }
 
-/// The group separator and decimal mark a language writes numbers with.
 fn language_separators(locale: &str) -> (&'static str, char) {
     let language = locale
         .split(['-', '_'])
@@ -412,7 +374,6 @@ fn language_separators(locale: &str) -> (&'static str, char) {
     }
 }
 
-/// `digits` (ASCII digits only) with `separator` between each group of three.
 fn group_digits(digits: &str, separator: &str) -> String {
     let len = digits.len();
     let mut out =
@@ -426,11 +387,10 @@ fn group_digits(digits: &str, separator: &str) -> String {
     out
 }
 
-/// A moment the formatters can show: a `chrono` date and time in any zone,
-/// a local [`NaiveDateTime`] or [`UnixSecs`].
+/// A moment the formatters can show: a `chrono` date and time in any zone, a local [`NaiveDateTime`] or
+/// [`UnixSecs`].
 pub trait Moment {
-    /// The moment on the local wall clock, or `None` outside the calendar's
-    /// range.
+    /// The moment on the local wall clock, or `None` outside the calendar's range.
     fn local(&self) -> Option<NaiveDateTime>;
 }
 
@@ -440,7 +400,6 @@ impl<Tz: chrono::TimeZone> Moment for chrono::DateTime<Tz> {
     }
 }
 
-/// Already on the local wall clock.
 impl Moment for NaiveDateTime {
     fn local(&self) -> Option<NaiveDateTime> {
         Some(*self)
@@ -530,7 +489,7 @@ pub fn range(start: &str, end: &str) -> String {
 
 /// Already-formatted values as this language writes a list: `Home folders,
 /// encrypted, 134 GB free`. The separator is the catalogue's, so a language
-/// that writes its lists another way gets its own; a single value is itself.
+/// that writes its lists another way gets its; a single value is itself.
 #[must_use]
 pub fn list(values: &[String]) -> String {
     let mut joined = String::new();
@@ -547,11 +506,9 @@ pub fn list(values: &[String]) -> String {
     joined
 }
 
-/// A span of the calendar a view shows: one day, a run of days, or a
-/// month.
+/// A span of the calendar a view shows: one day, a run of days, or a month.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Period {
-    /// One day.
     Day(NaiveDate),
     /// From the first day to the last, both shown.
     Days(NaiveDate, NaiveDate),
@@ -563,7 +520,7 @@ impl Period {
     /// How the period reads, widest first, each naming the same span:
     /// `Mon, Jun 29 – Sun, Jul 5` then `Jun 29 – Jul 5`; `Mon, Jun 29`
     /// then `Jun 29`; `June 2026` then `Jun 2026`. Where room is short a
-    /// narrower form stands instead of a cut-off wider one.
+    /// narrower form is instead of a cut-off wider one.
     #[must_use]
     pub fn forms(self) -> Vec<String> {
         match self {
@@ -801,7 +758,7 @@ const YEAR: i64 = 365 * DAY;
 /// the host's language: `just now`, `3 min ago`, `2 hr ago`, `yesterday`,
 /// `4 days ago`, `2 weeks ago`, `3 months ago`, `1 year ago`. Zero and
 /// negative deltas (clock skew) read `just now`. Counts go through Fluent
-/// plurals, so each language words its own singular and plural forms.
+/// plurals, so each language words its singular and plural forms.
 ///
 /// ```
 /// use tilo_ui::format::relative;
@@ -944,22 +901,21 @@ pub struct DayFact {
     pub tone: crate::widget::Tone,
 }
 
-/// The day fact [`day_fact_today`] holds, against `today`: the person's formats, the language's
-/// words.
+/// The day fact [`day_fact_today`] has, against `today`: the person's formats, the language's words.
 #[must_use]
 pub fn day_fact(day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
     Formats::current().day_fact(day, time, today)
 }
 
-/// [`day_fact`] against the person's own today ([`crate::clock::today`]): the one call a surface
-/// makes when it shows a date fact.
+/// [`day_fact`] against the person today ([`crate::clock::today`]): the one call a surface makes when
+/// it shows a date fact.
 #[must_use]
 pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
     day_fact(day, time, crate::clock::today())
 }
 
-/// The **moment fact** style for a moment: a time of day, with the short weekday before it when
-/// it is not today. See [`Formats::moment_fact`].
+/// The **moment fact** style for a moment: a time of day, with the short weekday before it when it is
+/// not today.
 #[must_use]
 pub fn moment_fact(at: &impl Moment) -> String {
     at.local().map_or_else(String::new, |at| {
@@ -967,14 +923,14 @@ pub fn moment_fact(at: &impl Moment) -> String {
     })
 }
 
-/// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the
-/// person's formats and the desktop's language.
+/// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the person's
+/// formats and the desktop's language.
 #[must_use]
 pub fn day_done(day: NaiveDate, today: NaiveDate) -> String {
     Formats::current().day_done(day, today)
 }
 
-/// [`day_done`] against the person's own today ([`crate::clock::today`]).
+/// [`day_done`] against the person today ([`crate::clock::today`]).
 #[must_use]
 pub fn day_done_today(day: NaiveDate) -> String {
     day_done(day, crate::clock::today())
@@ -1026,9 +982,8 @@ pub fn capitalize_first(value: &str) -> String {
     })
 }
 
-/// The arithmetic operator a typed symbol stands for: a keypad shows the
-/// multiplication and division signs where the expression grammar uses `*`
-/// and `/`.
+/// The arithmetic operator a typed symbol is: a keypad shows the multiplication and division signs
+/// where the expression grammar uses `*` and `/`.
 #[must_use]
 pub fn arithmetic_operator(symbol: char) -> Option<char> {
     match symbol {

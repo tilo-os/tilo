@@ -1,10 +1,4 @@
 //! The note's window: the bar's slots, declared where the window is.
-//!
-//! A toolkit decorator around the view: it says what the window's bar shows —
-//! where the window is (the note's opening line, [`crate::opening`]) — and
-//! forwards everything else. The bar draws it, so the window draws no header
-//! row and carries no title of its own; outside a session the runner draws
-//! the same slot, and the search and History controls beside it.
 
 use ui::LocalState;
 use ui::prelude::*;
@@ -12,7 +6,6 @@ use ui::widget::{AppModel, ModelPath};
 
 pub(crate) struct NoteWindow {
     content: Element,
-    /// The note's opening line, as the bar's location names it.
     location: LocalState<String>,
 }
 

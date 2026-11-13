@@ -1,31 +1,11 @@
-//! The account engine — the worker seam that connects Mail to real IMAP and
-//! SMTP servers, kept off the synchronous `ui` event loop.
+//! The account engine: the worker seam that connects Mail to real IMAP and SMTP servers, off
+//! the synchronous `ui` event loop.
 //!
-//! ## Why a worker
-//! The `ui` event loop is synchronous and must never block on the network. So
-//! every server round-trip (IMAP `FETCH`, SMTP submit) runs on a background
-//! worker thread; the UI posts [`EngineRequest`]s and drains [`EngineEvent`]s
-//! through a channel, exactly mirroring the `Saver` pattern the notes app uses.
-//! The app stays responsive and `--shots` (which never starts the worker) stays
-//! offline and deterministic.
-//!
-//! ## The two backends
-//! * **Normal application build: real IMAP/SMTP.** The default feature set
-//!   enables the `live` backend. The worker uses [`async_imap`] for
-//!   fetch/flag/move and [`lettre`] for submission over rustls.
-//! * **Hermetic/offline build: sample backend.** With default features disabled,
-//!   and in the explicit screenshot/test constructors, the worker parses the
-//!   bundled sample corpus and validates sends by building real MIME with
-//!   `mail-builder` (see `transport::build_mime`) without opening a socket.
-//! * **`live` feature implementation.** Behind `--features live`, the worker
-//!   uses `async-imap` for fetch/flag/move and [`lettre`] for submission,
-//!   over rustls. Screenshot/test construction remains network-free at runtime;
-//!   the data types
-//!   ([`AccountConfig`], [`Draft`], [`Message`]) are already the exact shapes
-//!   those libraries consume and produce, so enabling the feature is a drop-in.
-//!
-//! Both backends speak the same [`MailEngine`] trait, so the app code is
-//! identical regardless of which is compiled in.
+//! Every round trip runs on a worker thread; the UI posts [`EngineRequest`]s and drains
+//! [`EngineEvent`]s. With the `live` feature the worker uses `async-imap` and `lettre`;
+//! without it, and in the screenshot and test constructors, it answers from the bundled sample
+//! corpus and checks sends by building real MIME, never opening a socket. Both speak the same
+//! [`MailEngine`] trait.
 
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -35,9 +15,6 @@ use crate::model::{AccountConfig, Draft, Folder, Message};
 use crate::oauth::OAuthProvider;
 use crate::transport::build_mime;
 
-/// Identity assigned when a request is authored. It follows every worker event
-/// back to the UI, so concurrent connect/fetch/write/send results cannot
-/// settle one another by accident.
 pub type EngineRequestId = uuid::Uuid;
 
 fn next_request_id() -> EngineRequestId {
@@ -47,72 +24,53 @@ fn next_request_id() -> EngineRequestId {
     uuid::Uuid::new_v4()
 }
 
-/// A request from the UI to the engine worker.
 #[derive(Clone, Debug)]
 pub enum EngineRequest {
-    /// Connect and list the folders for an account.
     Connect {
         request_id: EngineRequestId,
         account: AccountConfig,
     },
-    /// Bring a folder up to date: what is new and the flags of what is
-    /// held, or the page before the oldest message held (`want`).
     Fetch {
         request_id: EngineRequestId,
         account: AccountConfig,
         folder: Folder,
         want: crate::sync::Want,
     },
-    /// Persist a flag change to the server (`UID STORE \Seen`/`\Flagged`).
     StoreFlag {
         request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
     },
-    /// Move a message to another folder (`UID MOVE`). Carries the full message
-    /// so the live backend can locate it on the server by its `Message-ID`.
     Move {
         request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
         to: Folder,
     },
-    /// Permanently delete one message from its current server mailbox. The live
-    /// backend uses UID STORE + UID EXPUNGE so unrelated `\\Deleted` messages
-    /// are never swept up by a broad mailbox expunge.
     Purge {
         request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
     },
-    /// Keep a draft in the account's Drafts folder (`APPEND`), under the
-    /// `Message-ID` its wire ids name.
     SaveDraft {
         request_id: EngineRequestId,
         account: AccountConfig,
         draft: Box<Draft>,
     },
-    /// Submit a draft via SMTP.
     Send {
         request_id: EngineRequestId,
         account: AccountConfig,
         draft: Box<Draft>,
     },
-    /// Search an account's mail on its server for `text`, in the folders
-    /// that hold more than this device keeps (the inbox and the archive).
     Search {
         request_id: EngineRequestId,
         account: AccountConfig,
         text: String,
     },
-    /// Watch an account's inbox and say when it changes (IMAP IDLE), until
-    /// the account is watched again or the engine stops.
     Watch {
         request_id: EngineRequestId,
         account: AccountConfig,
     },
-    /// Run the OAuth authorization-code + PKCE browser flow for an account and
-    /// seal the resulting tokens in the vault under `account_id`.
     OAuthAuthorize {
         request_id: EngineRequestId,
         account_id: String,
@@ -128,8 +86,6 @@ impl EngineRequest {
             account,
         }
     }
-    /// What is new in `folder`; the app fills in what it holds of it when
-    /// it posts the request.
     pub fn fetch(account: AccountConfig, folder: Folder) -> Self {
         Self::fetch_wanting(account, folder, crate::sync::Want::Latest { known: None })
     }
@@ -218,7 +174,6 @@ impl EngineRequest {
             | Self::OAuthAuthorize { request_id, .. } => *request_id,
         }
     }
-    /// The account the request acts for, by its address.
     pub fn account(&self) -> &str {
         match self {
             Self::Connect { account, .. }
@@ -233,11 +188,6 @@ impl EngineRequest {
             Self::OAuthAuthorize { account_id, .. } => account_id,
         }
     }
-    /// A small, non-sensitive description used to settle UI request accounting
-    /// after the worker has handled this request.  The UI must not infer
-    /// completion from a successful data event: flag and move writes have no
-    /// payload to display, and a connection can legitimately emit more than
-    /// one event.
     pub const fn kind(&self) -> EngineRequestKind {
         match self {
             Self::Connect { .. } => EngineRequestKind::Connect,
@@ -254,9 +204,6 @@ impl EngineRequest {
     }
 }
 
-/// The operation class of a completed engine request.  Kept deliberately
-/// compact so no credentials, mail bodies, or attachment paths cross the
-/// worker boundary merely to settle a spinner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineRequestKind {
     Connect,
@@ -271,65 +218,49 @@ pub enum EngineRequestKind {
     OAuthAuthorize,
 }
 
-/// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached:
-/// the message never got there, so it may be sent again once the network is back.
+/// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached.
 pub const SMTP_UNREACHED: &str = "smtp.unreached";
 
-/// An event from the engine worker back to the UI.
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
-    /// Connection + authentication established.
     Connected {
         request_id: EngineRequestId,
         account_id: String,
     },
-    /// The mailbox folders the server advertised (`LIST`).
     Folders {
         request_id: EngineRequestId,
         account_id: String,
         folders: Vec<String>,
     },
-    /// A folder brought up to date.
     Fetched {
         request_id: EngineRequestId,
         account_id: String,
         folder: Folder,
         synced: crate::sync::Synced,
     },
-    /// Mail a server search found: messages to show beside what this device
-    /// keeps, with where they are on the server left out (they stand
-    /// outside the folder windows the device syncs).
     Found {
         request_id: EngineRequestId,
         account_id: String,
         messages: Vec<Message>,
     },
-    /// A watched inbox changed on its server: new mail, or another client
-    /// read, starred or removed some. Carries the `Watch` that saw it.
     Arrived {
         request_id: EngineRequestId,
         account_id: String,
     },
-    /// A send completed; carries the wire byte count.
     Sent {
         request_id: EngineRequestId,
         wire_bytes: usize,
     },
-    /// An OAuth sign-in completed and the tokens were sealed in the vault.
     Authorized {
         request_id: EngineRequestId,
         account_id: String,
     },
-    /// Any operation failed; carries a human-readable reason.
     Error {
         request_id: EngineRequestId,
         kind: EngineRequestKind,
         context: String,
         message: String,
     },
-    /// The worker has finished handling exactly one queued request. This is
-    /// emitted after that request's result/error events, including successful
-    /// writes which otherwise have no UI payload of their own.
     Completed {
         request_id: EngineRequestId,
         kind: EngineRequestKind,
@@ -337,8 +268,6 @@ pub enum EngineEvent {
 }
 
 impl EngineEvent {
-    /// The request that produced this event. Every event, including a terminal
-    /// completion and a failure, is tagged at the worker boundary.
     pub const fn request_id(&self) -> EngineRequestId {
         match self {
             Self::Connected { request_id, .. }
@@ -354,10 +283,7 @@ impl EngineEvent {
     }
 }
 
-/// The backend abstraction. The stub and the live IMAP/SMTP backend both
-/// implement it, so the app's calling code never branches on which is active.
 pub trait MailEngine: Send {
-    /// Handle one request, emitting zero or more events onto `out`.
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>);
 }
 
@@ -378,11 +304,7 @@ fn report_engine_error(
     }
 }
 
-/// The offline backend. It validates outgoing MIME locally, but never claims a
-/// connection, sync, or delivery that did not happen. Live IMAP/SMTP is the
-/// `live`-feature backend below.
 pub struct StubEngine {
-    /// Where draft attachment bytes are read from when validating MIME.
     content: ContentStore,
 }
 
@@ -408,22 +330,14 @@ impl MailEngine for StubEngine {
                     ),
                 });
             }
-            EngineRequest::Fetch {
-                account, folder, ..
-            } => {
+            EngineRequest::Fetch { account, .. } => {
                 let _ = out.send(EngineEvent::Error {
                     request_id,
                     kind,
                     context: "offline".into(),
-                    message: crate::i18n::t_args(
-                        "mail-refresh-offline",
-                        &[
-                            (
-                                "folder",
-                                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
-                            ),
-                            ("account", ui::i18n::ArgValue::Text(account.email)),
-                        ],
+                    message: format!(
+                        "IMAP is unavailable for {}; rebuild with the live mail backend to fetch",
+                        account.email
                     ),
                 });
             }
@@ -482,14 +396,6 @@ impl MailEngine for StubEngine {
     }
 }
 
-/// Spawn the engine worker thread and return the request sender + event
-/// receiver. The live app calls this once at startup; `--shots` never does, so
-/// it stays offline. Under `--features live` the real IMAP/SMTP backend is
-/// used; otherwise the offline [`StubEngine`]. Either reads draft attachment
-/// bytes from `content` when it builds outgoing MIME.
-///
-/// `wake` runs on the worker after each request has answered, so the window
-/// draws the answer at once instead of polling for it.
 pub fn spawn(content: ContentStore, wake: Wake) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     #[cfg(feature = "live")]
     {
@@ -507,7 +413,6 @@ pub fn spawn(content: ContentStore, wake: Wake) -> (Sender<EngineRequest>, Recei
     }
 }
 
-/// What the worker calls once a request has answered.
 pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// Spawn the worker with a specific backend (used by tests and the `live`
@@ -555,8 +460,6 @@ pub fn spawn_waking(
     (req_tx, evt_rx)
 }
 
-/// Live IMAP/SMTP backend. Compiled only under `--features live` so the default
-/// build doesn't pull the TLS/async stack.
 #[cfg(feature = "live")]
 pub mod live {
     use std::sync::Arc;
@@ -575,48 +478,23 @@ pub mod live {
     use crate::transport::parse_fetched;
     use crate::validate::classify_conn_failure;
 
-    /// Real IMAP fetch/flag/move + SMTP submit + OAuth sign-in. The engine
-    /// worker waits on each request with the shared app runtime's
-    /// `block_on`: the protocol futures are polled on the worker while the
-    /// runtime thread drives their sockets and timers. This module is the
-    /// only place the app opens a socket.
     pub struct LiveEngine {
         rt: &'static ui::rt::AppRuntime,
-        /// The system's trust, read when the engine first connects: an
-        /// engine that never reaches a server (one confined with no files to
-        /// read) does without it.
         tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
-        /// Whether SMTP takes a test server's own certificate too (`trusting`).
         trusts_test_servers: bool,
-        /// Where draft attachment bytes are read from when building MIME.
         content: tilo_content::ContentStore,
-        /// Holds OAuth grants: seals sign-ins, hands out current access
-        /// tokens.
         custodian: Custodian,
-        /// One signed-in IMAP connection per account (by address), kept
-        /// between requests, with when it last answered: a refresh or a
-        /// flag change costs one round trip, not a TLS handshake and a login.
         sessions: std::collections::HashMap<String, (ImapSession, std::time::Instant)>,
-        /// Where each account's server keeps its folders, by address, from
-        /// its folder list.
         places: std::collections::HashMap<String, crate::sync::Places>,
-        /// Each watched account's inbox watch, by address.
         watches: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
-        /// Wakes the window when a watch hears of new mail.
         wake: super::Wake,
     }
 
-    /// A kept connection idle longer than this answers a NOOP before it is
-    /// used: the server or the network (a suspended laptop) may have
-    /// dropped it meanwhile.
     const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
-    /// How long that NOOP may take before the connection counts as gone.
     const NOOP_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
 
     type SessionFuture<'s, T> = futures_util::future::LocalBoxFuture<'s, Result<T, String>>;
 
-    /// The credentials to present to a server, resolved from the account +
-    /// vault (a password, or a fresh OAuth access token).
     enum AuthCreds {
         Password { user: String, pass: String },
         XOAuth2 { user: String, token: String },
@@ -642,8 +520,6 @@ pub mod live {
             })
         }
 
-        /// The engine trusting `tls` instead of the system's roots: a test
-        /// server's own certificate.
         #[cfg(any(test, feature = "fake-servers"))]
         pub fn trusting(
             content: tilo_content::ContentStore,
@@ -656,7 +532,6 @@ pub mod live {
             Ok(engine)
         }
 
-        /// The client config servers are verified with, built on first use.
         fn tls(&self) -> Result<Arc<rustls::ClientConfig>, String> {
             if let Some(tls) = self.tls.get() {
                 return Ok(Arc::clone(tls));
@@ -665,8 +540,6 @@ pub mod live {
             Ok(Arc::clone(self.tls.get_or_init(|| built)))
         }
 
-        /// Watch `account`'s inbox from now on, in place of any earlier
-        /// watch of it.
         fn start_watch(
             &mut self,
             request_id: EngineRequestId,
@@ -698,9 +571,6 @@ pub mod live {
             self.watches.insert(key, task);
         }
 
-        /// Run `op` on `account`'s kept connection, opening one when there
-        /// is none (or the kept one no longer answers). A connection an
-        /// operation failed on is closed; the next request opens a new one.
         fn run<T>(
             &mut self,
             account: &AccountConfig,
@@ -745,7 +615,6 @@ pub mod live {
             }
         }
 
-        /// Wait on one protocol future from the engine worker thread.
         fn block_on<T>(
             &self,
             future: impl std::future::Future<Output = Result<T, String>>,
@@ -753,7 +622,6 @@ pub mod live {
             self.rt.block_on(future).map_err(|e| e.to_string())?
         }
 
-        /// Where `account`'s server keeps its folders, listed once.
         fn places_of(&mut self, account: &AccountConfig) -> Result<crate::sync::Places, String> {
             if let Some(places) = self.places.get(&account.email) {
                 return Ok(places.clone());
@@ -824,8 +692,6 @@ pub mod live {
             })
         }
 
-        /// Carry out a write a server is told: a flag, a move, a deletion or
-        /// a draft kept; what it was, for an error to name.
         fn handle_write(&mut self, write: EngineRequest) -> (&'static str, Result<(), String>) {
             match write {
                 EngineRequest::StoreFlag {
@@ -847,8 +713,6 @@ pub mod live {
             }
         }
 
-        /// `APPEND` `draft` to the account's Drafts folder, marked a draft
-        /// and read.
         fn handle_save_draft(
             &mut self,
             account: &AccountConfig,
@@ -891,7 +755,6 @@ pub mod live {
             let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
             let bytes = build_mime(&self.content, &from, draft).map_err(SmtpFailure::Failed)?;
-            // A test server's own certificate, when the engine was made to trust it.
             let tls = if self.trusts_test_servers {
                 Some(
                     lettre::transport::smtp::client::TlsParameters::builder(
@@ -1082,14 +945,12 @@ pub mod live {
         }
     }
 
-    /// Build the shared rustls client config against the system trust bundle.
     fn build_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
         tilo_net::client_config()
             .map(Arc::new)
             .map_err(|error| format!("the system's trusted certificates are unreadable: {error}"))
     }
 
-    /// The login user for an account (the explicit username, or the email).
     fn login_user(account: &AccountConfig) -> String {
         if account.username.trim().is_empty() {
             account.email.clone()
@@ -1098,9 +959,6 @@ pub mod live {
         }
     }
 
-    /// Resolve the credentials to present: a password from the account, or a
-    /// current OAuth access token from custody (which refreshes the grant
-    /// when it is due).
     fn resolve_auth(custodian: &Custodian, account: &AccountConfig) -> Result<AuthCreds, String> {
         let user = login_user(account);
         if account.import_pending {
@@ -1126,10 +984,8 @@ pub mod live {
         }
     }
 
-    /// A connected + authenticated IMAP session over rustls.
     type ImapSession = async_imap::Session<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 
-    /// Open a TLS connection and authenticate (password `LOGIN` or `XOAUTH2`).
     async fn connect_session(
         account: &AccountConfig,
         creds: &AuthCreds,
@@ -1171,19 +1027,10 @@ pub mod live {
         }
     }
 
-    /// How long one IDLE lasts before it is renewed: under the 30 minutes
-    /// after which RFC 2177 lets a server drop an idle client.
     const IDLE_RENEW: std::time::Duration = std::time::Duration::from_secs(25 * 60);
-    /// The first wait before a watch that failed connects again; each
-    /// further failure doubles it, up to [`WATCH_RETRY_MAX`].
     const WATCH_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
     const WATCH_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-    /// Watch `account`'s inbox on a connection of its own, held in IMAP IDLE:
-    /// whenever the server says the inbox changed, `arrived` hears of it, so
-    /// new mail shows within seconds instead of at the next refresh. A watch
-    /// whose connection fails connects again after a growing pause; one the
-    /// server does not offer IDLE to ends (the periodic refresh covers it).
     async fn watch_inbox(
         account: AccountConfig,
         tls: Arc<rustls::ClientConfig>,
@@ -1214,8 +1061,6 @@ pub mod live {
         }
     }
 
-    /// One watching connection, until it fails (`Err`) or the server turns
-    /// out not to offer IDLE (`Ok`).
     async fn idle_until_failure(
         account: &AccountConfig,
         creds: &AuthCreds,
@@ -1248,8 +1093,6 @@ pub mod live {
         }
     }
 
-    /// LIST every mailbox the server advertises, with the special uses it
-    /// marks each with (`"Sent"`, `"All"`, …).
     async fn list_folders(session: &mut ImapSession) -> Result<Vec<(String, Vec<String>)>, String> {
         use async_imap::types::NameAttribute;
         let stream = session
@@ -1279,7 +1122,6 @@ pub mod live {
             .map_err(|e| e.to_string())
     }
 
-    /// Bring `folder` up to date as `want` asks, on an open session.
     async fn sync_folder(
         session: &mut ImapSession,
         account: &AccountConfig,
@@ -1341,8 +1183,7 @@ pub mod live {
                 synced.window = Some((known.oldest, known.newest));
             }
             Want::Latest { .. } => {
-                // Nothing held, the folder renumbered, or too much missed:
-                // start from the newest page.
+                // Nothing held, the folder renumbered, or too much missed: start over.
                 synced.reset = true;
                 let first = exists.saturating_sub(PAGE - 1).max(1);
                 synced.receive(
@@ -1438,7 +1279,6 @@ pub mod live {
         fetch_set(session, account, folder, validity, &set, now_min).await
     }
 
-    /// `(uid, seen, flagged)` of the messages from `oldest` to `newest`.
     async fn fetch_flags(
         session: &mut ImapSession,
         oldest: u32,
@@ -1468,11 +1308,8 @@ pub mod live {
             .collect())
     }
 
-    /// How many matches a server search brings from each folder, newest
-    /// first.
     const SEARCH_PAGE: usize = 25;
 
-    /// Search the inbox and the archive (Gmail's All Mail) for `text`.
     async fn search_server(
         session: &mut ImapSession,
         account: &AccountConfig,
@@ -1498,7 +1335,6 @@ pub mod live {
                 .collect();
             uids.sort_unstable();
             let newest: Vec<u32> = uids.into_iter().rev().take(SEARCH_PAGE).collect();
-            // A search hit is shown, not kept: its bytes go no further.
             let mut messages: Vec<Message> =
                 fetch_uids(session, account, folder, validity, &newest, now_min)
                     .await?
@@ -1515,10 +1351,8 @@ pub mod live {
         Ok(found)
     }
 
-    /// What a fetch asks for: the whole message, without marking it read.
     const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
 
-    /// Each fetched message, read, beside the bytes its server sent.
     fn parse_all(
         fetches: &[async_imap::types::Fetch],
         account: &AccountConfig,
@@ -1549,8 +1383,6 @@ pub mod live {
             .collect()
     }
 
-    /// Find a message's server UID in the currently-selected mailbox by its
-    /// RFC 5322 `Message-ID`.
     async fn find_uid(session: &mut ImapSession, message: &Message) -> Result<u32, String> {
         let rfc_id = message
             .rfc_message_id
@@ -1565,9 +1397,6 @@ pub mod live {
             .ok_or_else(|| "message not found on the server".into())
     }
 
-    /// Select the folder its server holds `message` in and find its UID
-    /// there: the one the server reported, while the folder keeps that
-    /// numbering, otherwise by its `Message-ID`.
     async fn locate(
         session: &mut ImapSession,
         message: &Message,
@@ -1584,7 +1413,6 @@ pub mod live {
         find_uid(session, message).await
     }
 
-    /// STORE `\Seen`/`\Flagged` to match the local message's flag state.
     async fn store_flags(
         session: &mut ImapSession,
         message: &Message,
@@ -1611,7 +1439,6 @@ pub mod live {
         Ok(())
     }
 
-    /// UID MOVE a message to another folder.
     async fn move_message(
         session: &mut ImapSession,
         message: &Message,
@@ -1625,9 +1452,6 @@ pub mod live {
             .map_err(|e| e.to_string())
     }
 
-    /// Permanently delete exactly one UID. UID EXPUNGE deliberately avoids the
-    /// dangerous plain EXPUNGE fallback, which could remove messages another
-    /// client marked `\\Deleted` concurrently.
     async fn purge_message(
         session: &mut ImapSession,
         message: &Message,
@@ -1647,21 +1471,9 @@ pub mod live {
         Ok(())
     }
 
-    /// Submit a pre-built MIME message over SMTP (STARTTLS on 587, implicit TLS
-    /// on 465), authenticating with a password or `XOAUTH2`.
-    ///
-    /// The submission path, with the TLS parameters injectable. Production passes
-    /// `None`, which resolves to the same implicit-TLS (465) / STARTTLS (else)
-    /// setup `lettre`'s `relay`/`starttls_relay` build with the Tilo system
-    /// roots. A caller may pass explicit parameters (e.g. a test pinned to a
-    /// local server's certificate) so the real submission code is exercised over
-    /// a socket without reaching a public server.
-    /// Why a message was not submitted.
     #[derive(Debug)]
     pub(crate) enum SmtpFailure {
-        /// The server could not be reached: it never got the message.
         Unreached(String),
-        /// It failed, or the server refused it.
         Failed(String),
     }
 
@@ -1754,8 +1566,6 @@ pub mod live {
         }
     }
 
-    /// Construct the SMTP envelope (return-path + recipients) from the account
-    /// and draft. Recipients that don't parse as addresses are skipped.
     fn build_envelope(
         account: &AccountConfig,
         draft: &Draft,
@@ -1804,17 +1614,12 @@ pub mod live {
 
         use crate::fake_servers::{accepting_client_config, serve_smtp, server_tls_config};
 
-        /// Bind a loopback listener on an ephemeral port; returns it plus the port.
         async fn bind_local() -> (TcpListener, u16) {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             (listener, port)
         }
 
-        /// A scripted IMAP server serving exactly one message. It echoes each
-        /// command's tag, so it matches whatever tag async-imap generates, and
-        /// answers the LOGIN → LIST → SELECT → UID SEARCH → UID FETCH → LOGOUT
-        /// sequence the engine issues.
         async fn serve_imap(tls: Arc<rustls::ServerConfig>, tcp: TcpStream, eml: Vec<u8>) {
             let acceptor = tokio_rustls::TlsAcceptor::from(tls);
             let Ok(stream) = acceptor.accept(tcp).await else {
@@ -1882,7 +1687,6 @@ pub mod live {
             }
         }
 
-        /// A message as a server holds it.
         fn mail(id: &str, subject: &str, body: &str) -> String {
             format!(
                 "From: Ada <ada@analytical.example>\nTo: me@example.com\nSubject: {subject}\n\
@@ -1890,11 +1694,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
             )
         }
 
-        /// The engine driving one account against a server laid out like
-        /// Gmail or Outlook, as its worker does: the newest page, push of
-        /// new mail, an incremental refresh with another client's flags, an
-        /// archive into the provider's archive folder, and a server search
-        /// for mail older than the device keeps.
         #[test]
         #[allow(
             clippy::too_many_lines,
@@ -2049,7 +1848,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 );
                 assert_eq!(server.messages("INBOX").len(), 3);
 
-                // A server search finds what the device never fetched.
                 requests
                     .send(super::EngineRequest::search(
                         account.clone(),

@@ -86,8 +86,6 @@ impl InstallerPreview {
         if !matches!(j.page, Page::Profile | Page::Password | Page::Devices)
             && self.rect.width() < self.profile_breakpoint
         {
-            // Give a compact page title breathing room before the scrolling
-            // edge. The form and explanatory copy keep their full measure.
             title =
                 title.with_horizontal_padding(0.0, theme.tokens.spacing.rhythm.get(Rhythm::Group));
         }
@@ -153,7 +151,6 @@ impl InstallerPreview {
                     ));
             }
             Page::Profile => {
-                // Bind the current name before constructing its retained avatar.
                 let name = self.field("name", &j.name, TextInputKind::Name);
                 let picture = page::related()
                     .push(Box::new(
@@ -862,8 +859,6 @@ impl InstallerPreview {
                         }),
                     ));
                 if destination == Destination::Another {
-                    // The compatibility decision is part of the reviewed plan,
-                    // not a note at the bottom of it.
                     setup = setup.push(Box::new(
                         self.review_selection_row(
                             "target",
@@ -1029,8 +1024,6 @@ impl InstallerPreview {
                     )));
                 if j.migrate == Some(true) {
                     for (index, key) in CATEGORIES.iter().enumerate() {
-                        // Accounts also controls website data. Category consent
-                        // alone does not mean any cloud connection was prepared.
                         if j.categories[index]
                             && (index >= 2 || j.destination != Some(Destination::Desktop))
                             && (index != 2 || self.accounts.has_prepared_connections())
@@ -1378,9 +1371,6 @@ impl InstallerPreview {
                 ui::widget::Banner::error(t(error)).with_id("installer.error"),
             ));
         }
-        // Keep navigation at one position while a page's body, errors and
-        // accessible text scroll independently. Personal forms retain their
-        // bounded measure inside the same readable-width page frame.
         if matches!(
             self.journey.page,
             Page::Profile | Page::Password | Page::Devices
@@ -1408,7 +1398,8 @@ impl InstallerPreview {
             let mut notice = page::related();
             if self.demo {
                 notice = notice.push(Box::new(
-                    ui::widget::Banner::info(t("installer-demo-notice"))
+                    ui::widget::Banner::info(t("installer-demo-notice-title"))
+                        .with_message(t("installer-demo-notice-body"))
                         .with_id("installer.demo-notice"),
                 ));
             }

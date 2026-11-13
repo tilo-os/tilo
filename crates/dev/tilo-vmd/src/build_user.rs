@@ -1,20 +1,11 @@
-//! Who in-VM builds run as.
-//!
-//! The daemon runs as root (it manages users, units and the sysext), but a
-//! build is ordinary unprivileged work: it compiles into the synced tree's
-//! `target/` and talks to the compiler cache. On a VM the build root
-//! (`<root>/src`) is root's own directory and nothing else ever touches it.
-//! On a laptop that runs a dev image, the build root is a directory of the
-//! laptop's owner bind-mounted into place, and the compiler cache is the
-//! one that owner's own builds use. A build run as root there leaves
-//! root-owned files in `target/` that the owner's next `cargo` cannot
-//! overwrite, and starts a root sccache server that the owner's builds
-//! then talk to.
-//!
-//! So a build runs as whoever owns the build root: root on a VM, the
-//! owner on a laptop. Only the steps that install into the daemon's own
-//! state (laying a component out into staging, importing a layer,
-//! installing an app) keep the daemon's privilege.
+//! Who in-VM builds run as. The daemon runs as root, but a build is ordinary
+//! unprivileged work: it compiles into the synced tree's `target/` and talks to the
+//! compiler cache. On a VM the build root is root's own directory, but on a laptop
+//! the build root is a directory of the owner's bind-mounted into place and the
+//! compiler cache is the one the owner's builds use, so a build run as root would
+//! leave root-owned files in `target/` and start a root cache server the owner then
+//! talks to. So a build runs as whoever owns the build root, and only the steps
+//! that install into the daemon's own state keep its privilege.
 
 use std::ffi::{CStr, OsString};
 use std::os::unix::ffi::OsStringExt;
@@ -35,8 +26,8 @@ pub struct BuildUser {
 }
 
 impl BuildUser {
-    /// The owner of `build_root` when the daemon is root and the owner is
-    /// not; `None` when builds run as the daemon itself.
+    /// The owner of `build_root` when the daemon is root and the owner is not; `None` when builds
+    /// run as the daemon itself.
     pub fn for_build_root(build_root: &Path) -> Result<Option<Self>, DaemonError> {
         let euid = rustix::process::geteuid().as_raw();
         let Ok(meta) = std::fs::metadata(build_root) else {
@@ -78,8 +69,8 @@ impl BuildUser {
             .env("HOME", &self.home)
             .env("USER", &self.name)
             .env("LOGNAME", &self.name)
-            // Root's cargo home (registry, git checkouts) is not writable
-            // for the build user; cargo falls back to `$HOME/.cargo`.
+            // Root's cargo home (registry, git checkouts) is not writable for the build user, so
+            // cargo falls back to `$HOME/.cargo`.
             .env_remove("CARGO_HOME")
             .env_remove("SUDO_USER")
             .env_remove("SUDO_UID")
@@ -167,8 +158,8 @@ pub fn root_listens_on(port: u16) -> bool {
 
 /// Whether one `/proc/net/tcp*` table lists a root-owned listener on `port`.
 fn table_has_root_listener(table: &str, port: u16) -> bool {
-    // Columns: sl local_address rem_address st tx:rx tr:when retrnsmt uid ...
-    // `st` 0A is LISTEN; the local address ends in `:<port in hex>`.
+    // Columns: `sl local_address rem_address st tx:rx tr:when retrnsmt uid ...`; `st` 0A is LISTEN,
+    // and the local address ends in `:<port in hex>`.
     table.lines().skip(1).any(|line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let (Some(local), Some(state), Some(uid)) = (fields.get(1), fields.get(3), fields.get(7))

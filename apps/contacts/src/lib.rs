@@ -1,10 +1,7 @@
-//! Contacts — a CRDT-native address book for Tilo, built on the `ui`
-//! toolkit.
+//! Contacts — a CRDT-native address book for Tilo, built on the `ui` toolkit.
 //!
-//! The app is [`ContactsShell`], a framework app over the [`Contacts`]
-//! address book: every host mounts it through [`definition`]. The data
-//! model, vCard interop and the master/detail widget live in the modules
-//! below so each layer is testable in isolation.
+//! The app is [`ContactsShell`], a framework app over the [`Contacts`] address
+//! book: every host mounts it through [`definition`].
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -35,7 +32,6 @@ mod view;
 pub use app::ContactsApp;
 pub use resource::{Contacts, ContactsShell};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(ContactsShell)
 }

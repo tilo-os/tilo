@@ -1,15 +1,9 @@
-//! The editor's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): the media bin's toggle as the sidebar, the
-//! project as the location with Open project file and Export project file
-//! in its picker, and Split, Export, the inspector's toggle and Import as
-//! actions. A running render's progress is in the export dialog, which
-//! Export opens.
-//! The bar's History control is the window's; the editor draws no header
-//! row.
+//! The editor's controls as slots in the window's bar ([`ui::window_toolbar`]): the
+//! bin's toggle, the project with Open and Export in its picker, and Split, Export,
+//! the inspector's toggle and Import as actions.
 //!
-//! Every slot runs the handler of the editor's published action for it
-//! ([`crate::actions::VideoEditorEffect`]), so a press in the bar, an
-//! assistive technology and an agent take one path.
+//! Every slot runs the handler of the editor's published action, so a press in the
+//! bar, an assistive technology and an agent take one path.
 
 use ui::window_toolbar::{
     LocationChoice, ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar,
@@ -30,9 +24,8 @@ pub(crate) enum BarCommand {
     /// Two angles in one frame: the project's own edit, submitted the way
     /// an agent or the palette submits it; the bar is the gesture.
     PlaceSideBySide,
-    /// Undo and redo are the editor's own (the host is asked), so they have
-    /// no published action to run; the bar's menu carries them while the
-    /// transport strip is too narrow to.
+    /// The editor's own, asked of the host, so they have no published action; the bar's
+    /// menu carries them while the transport strip is too narrow to.
     History(ui::UndoRequest),
 }
 
@@ -54,9 +47,8 @@ impl VideoEditorApp {
                 ..ToolbarLocation::default()
             }),
             actions: {
-                // The bar's own row: what the editor does, in the order the
-                // published actions sit in. Undo and Redo join it only while
-                // the transport strip is too narrow to draw its own pair.
+                // In the order the published actions sit in; Undo and Redo join it only
+                // while the strip has no room for its own pair.
                 let mut actions = vec![
                     bar.entry(
                         "scissors",
@@ -95,13 +87,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Undo and Redo while the transport strip has no room to draw them.
-    ///
-    /// A narrow strip gives the buttons up before the playhead time, which
-    /// nothing else on the strip carries — but no capability is lost to a
-    /// width: off the strip they stand in the bar's overflow menu, named, and
-    /// disabled exactly when the strip's pair would have been. They are
-    /// menu-only, so the row of the bar is unchanged by a resize.
+    /// No capability is lost to a width: off the strip they stand in the bar's overflow
+    /// menu, named, and disabled exactly when the strip's pair would have been. They are
+    /// menu-only, so a resize does not change the row.
     fn history_off_the_strip(&self) -> Vec<ToolbarAction> {
         if !self.history_buttons(&self.regions()).is_empty() {
             return Vec::new();
@@ -128,9 +116,8 @@ impl VideoEditorApp {
         .collect()
     }
 
-    /// Export: it opens the export settings, where the destination, a
-    /// running render's progress and Cancel, and the whole reason a render
-    /// failed are. It reads as on while a render runs.
+    /// The destination, a running render's progress and Cancel, and why a render failed. It
+    /// reads as on while a render runs.
     fn export_action(&self) -> ToolbarAction {
         let export = BarCommand::Run(VideoEditorEffect::ShowExport);
         self.bar_entries
@@ -174,9 +161,8 @@ impl VideoEditorApp {
         })
     }
 
-    /// Whether there is a cut to make at the playhead: two pictures meeting
-    /// there, on tracks that may be edited, neither already beside the
-    /// other.
+    /// Two pictures meeting at the playhead, on tracks that may be edited, neither already
+    /// beside the other.
     fn can_place_side_by_side(&self) -> bool {
         self.project.side_by_side_available(self.playhead)
     }
@@ -190,10 +176,8 @@ impl VideoEditorApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run one thing the person did in the window's bar, through the
-    /// handler of the published action for it. Anything but the media
-    /// toggle first closes the bin's overlay, so nothing changes behind its
-    /// scrim.
+    /// Anything but the media toggle first closes the bin's overlay, so nothing changes
+    /// behind its scrim.
     pub(crate) fn run_window_bar_event(&mut self, event: &ToolbarEvent) {
         let ours = matches!(
             event,

@@ -69,10 +69,8 @@ fn the_place_of_the_resource_a_window_shows_stands_chosen() {
         .unwrap();
     assert!(list.select_naming("doc/design"));
     assert_eq!(list.selected_id().as_deref(), Some("Team/design"));
-    // A place names a resource by its key too, as every list did before.
     assert!(list.select_naming("/general"));
     assert_eq!(list.selected_id().as_deref(), Some("/general"));
-    // Nothing of the list shows a resource no place offers.
     assert!(!list.select_naming("doc/weekend"));
     assert_eq!(list.selected_id().as_deref(), Some("/general"));
 }
@@ -95,7 +93,6 @@ fn focus(h: &mut FrameHarness) {
     h.relayout_at((280, 360)).expect("layout");
 }
 
-/// The labels of the rows the list shows, headers and captions included.
 fn shown_labels(list: &NavList) -> Vec<String> {
     let model = list.list().model();
     (0..model.len())
@@ -103,7 +100,6 @@ fn shown_labels(list: &NavList) -> Vec<String> {
         .collect()
 }
 
-/// What item `id`'s row is made of.
 fn spec_of(list: &NavList, id: &str) -> super::model::NavItemSpec {
     match list
         .list()
@@ -125,8 +121,6 @@ fn spec_face<'a>(
     super::NavPaint::default().item_face(spec, row, label)
 }
 
-/// Whether anything in the list still moves: a row arriving or leaving, a
-/// check easing in.
 fn still_moving(list: &NavList) -> bool {
     crate::widget::Widget::needs_animation_frame(list)
 }
@@ -174,7 +168,6 @@ fn the_keyboard_moves_the_selection_and_skips_headers() {
     assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("work"));
     assert_eq!(chosen.borrow().as_slice(), ["work"]);
-    // Left on a parent collapses it; the child row goes away.
     assert!(key(&mut h, Key::Named(NamedKey::ArrowLeft)));
     h.relayout_at((280, 360)).expect("layout");
     assert!(h.root::<NavList>().row_rect("design").is_none());
@@ -303,7 +296,6 @@ fn a_followed_list_shows_the_state_it_follows() {
 fn new_sections_keep_the_selection_and_what_was_folded() {
     let mut h = harness(NavList::new(mailboxes()).selected("travel"), Theme::dark());
     focus(&mut h);
-    // Fold Work.
     h.root_mut::<NavList>().set_selected(Some("work"));
     h.relayout_at((280, 360)).expect("layout");
     key(&mut h, Key::Named(NamedKey::ArrowLeft));
@@ -454,7 +446,6 @@ fn row_actions_and_section_actions_report_their_ids() {
             button: winit::event::MouseButton::Left,
         });
     };
-    // The action shows at the trailing edge of the hovered row.
     let s2 = f64::from(Theme::dark().tokens.spacing.s2);
     click(&mut h, work.x1 - s2 - 10.0, work.center().y);
     assert_eq!(
@@ -527,7 +518,6 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
         target.width() + 0.5 >= finger && target.height() + 0.5 >= finger,
         "a finger's target: {target:?}"
     );
-    // The semantic button offers the same target the press lands in.
     fn button(node: &crate::a11y::AccessNode) -> Option<&crate::a11y::AccessNode> {
         if node
             .action_target
@@ -548,7 +538,6 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
         bounds.width() + 0.5 >= finger && bounds.height() + 0.5 >= finger,
         "the button says where it is pressed: {bounds:?}"
     );
-    // A press in the margin the target adds beside the square runs it.
     click_at(&mut h, target.x0 + 2.0, target.center().y);
     assert_eq!(
         seen.borrow().as_slice(),
@@ -583,7 +572,6 @@ fn click_at(h: &mut FrameHarness, x: f64, y: f64) {
     press(h, winit::event::MouseButton::Left);
 }
 
-/// The action a view binds to a place's selection, as the component layer reads it.
 fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
     let mut spec = tilo_actions::ResourceSpec::new(resource, "test.nav", "Places");
     spec = spec.with_action(
@@ -599,7 +587,6 @@ fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
     tilo_actions::ActionBinding::unit_for(&spec, action).expect("the places publish it")
 }
 
-/// The places of a list the component layer built, with what choosing one runs.
 fn places(
     select: crate::component::Event,
     add: Option<crate::component::OfferedAction>,
@@ -645,7 +632,6 @@ fn a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
     let bound = published("res-inbox", "open");
     let address = bound.address().clone();
     let mut list = places(crate::component::Event::Action(bound), None);
-    // The press the inner list reports when a person chooses the row.
     list.shared.borrow_mut().choose("item:inbox");
     let taken = crate::widget::controls::take_control_invocation(&mut list);
     assert_eq!(
@@ -659,8 +645,6 @@ fn a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
     );
 }
 
-/// Pressing a section's add the view bound to an action runs it once, through the list's
-/// control door.
 #[test]
 fn a_sections_add_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
     let bound = published("res-project", "new_project");
@@ -678,7 +662,6 @@ fn a_sections_add_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
         .filter_map(|index| model.key_at(index))
         .find(|key| key.starts_with("section:"))
         .expect("a section row");
-    // The press a person makes on the heading's add.
     assert!(
         list.shared.borrow_mut().run_section_action(&section),
         "the add answers a press"
@@ -778,8 +761,6 @@ fn a_destination_says_it_is_a_tree_item_and_a_finger_s_target_is_its_height() {
             "a finger's destination is {height} tall where the input's target is {target}"
         );
     }
-    // A destination is a row of the tree the list is, and says whether it is the one chosen: a
-    // walk that reads the rows without the list (the layout check's) reads the same thing.
     let snapshot = h.inspection();
     let mut rows: Vec<(String, crate::a11y::Role, bool)> = Vec::new();
     fn walk(
@@ -832,14 +813,12 @@ fn trailing_parts_line_up_and_give_way_to_actions() {
     let label = layout.status_label.expect("status label");
     assert_eq!(layout.presence.len(), 2);
     let marks = layout.presence[1];
-    // Trailing to leading: status, count, meta, status label, people.
     assert!(count.x1 <= status.x0);
     assert!(meta.x1 <= count.x0);
     assert!(label.x1 <= meta.x0);
     assert!(marks.x1 <= label.x0);
     assert!(layout.presence[0].x0 < marks.x0, "marks overlap in order");
     assert!(layout.label_x1 <= layout.presence[0].x0);
-    // Hover or focus swaps them for the row's actions.
     let actions = [Icon::MoreHorizontal];
     let hovered =
         crate::chrome::nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
@@ -847,7 +826,6 @@ fn trailing_parts_line_up_and_give_way_to_actions() {
     assert!(hovered.status_label.is_none() && hovered.count.is_none());
     assert!(hovered.presence.is_empty());
     assert_eq!(hovered.actions.len(), 1);
-    // The parts are announced.
     let spoken = crate::chrome::nav_row_description(&face).expect("description");
     assert!(
         spoken.contains("Active") && spoken.contains("Needs attention"),
@@ -914,11 +892,9 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
     .on_check_action(bound());
     let mut h = uncustodied(list);
     let work = list_of(&h).row_rect("work").expect("work");
-    // The label, not only the box, is the target.
     click_at(&mut h, work.center().x, work.center().y);
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
     assert_eq!(list_of(&h).selected_id(), None);
-    // Space on the focused row toggles it back.
     crate::widget::Widget::set_focus(
         &mut *h.root_mut::<crate::widget::Uncustodied<NavList>>().0.list,
         true,
@@ -1026,7 +1002,6 @@ fn expansion_is_set_reported_and_ensured() {
         reported.borrow().is_empty(),
         "the app's own change is not reported"
     );
-    // The person opens it: reported, so the app can keep it.
     h.root_mut::<NavList>().set_selected(Some("work"));
     focus(&mut h);
     key(&mut h, Key::Named(NamedKey::ArrowRight));
@@ -1034,7 +1009,6 @@ fn expansion_is_set_reported_and_ensured() {
     key(&mut h, Key::Named(NamedKey::ArrowLeft));
     h.relayout_at((280, 360)).expect("layout");
     assert!(h.root::<NavList>().row_rect("design").is_none());
-    // Folded by the person, then ensured by the app: the app wins.
     let mut next = mailboxes();
     next[1].items[0] = next[1].items[0].clone().ensure_expanded().count(13);
     h.root_mut::<NavList>().set_sections(next);
@@ -1056,7 +1030,6 @@ fn a_row_menu_is_asked_for_with_its_lift() {
     let travel = h.root::<NavList>().row_rect("travel").expect("travel");
     let lift = h.root::<NavList>().row_lift_rect("travel").expect("lift");
     assert!(travel.contains(lift.center()) && lift.width() < travel.width());
-    // A right click (and a long press, which arrives as one).
     point(&mut h, travel.center().x, travel.center().y);
     press(&mut h, winit::event::MouseButton::Right);
     assert_eq!(asked.borrow().len(), 1);
@@ -1068,11 +1041,9 @@ fn a_row_menu_is_asked_for_with_its_lift() {
         Some("travel"),
         "asking for a menu does not navigate"
     );
-    // The Menu key on the focused row.
     focus(&mut h);
     key(&mut h, Key::Named(NamedKey::ContextMenu));
     assert_eq!(asked.borrow().len(), 2);
-    // The More action, anchored under itself.
     let more = h
         .root::<NavList>()
         .item_action_rect("travel", "more")
@@ -1127,7 +1098,6 @@ fn delete_and_semantic_keys_address_items() {
 #[test]
 fn a_staged_drag_lifts_the_row_over_its_drop_line() {
     let mut list = NavList::new(mailboxes()).on_move(|_, _| {});
-    // Staged before the first layout, it waits for the rows.
     list.stage_drag("travel", "work");
     let h = harness(list, Theme::dark());
     let list = h.root::<NavList>();
@@ -1140,10 +1110,8 @@ fn a_staged_drag_lifts_the_row_over_its_drop_line() {
     );
 }
 
-// From the coordinator (2026-10-19): shared rails never hyphenate a
-// single word ("Connec-tions"); a caption wraps only at spaces. The rail
-// grows with the text, up to a cap, to fit its longest single word, and only
-// past that cap does a word elide; at stock text the cap is the stock width.
+// From the coordinator (2026-10-19): shared rails never hyphenate a single word
+// ("Connec-tions"); a caption wraps only at spaces.
 #[test]
 fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     let list = NavList::new(vec![NavSection::untitled(
@@ -1186,8 +1154,6 @@ fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
     assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
 
-    // At double text the list asks for a rail wide enough for its longest
-    // word, so "Channels" shows whole rather than as a fragment.
     use super::RailExtent as _;
     let big = Theme::dark().with_text_scale(2.0);
     let list = NavList::new(vec![NavSection::untitled(
@@ -1211,7 +1177,6 @@ fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
         crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
         ["Channels"]
     );
-    // A list that is no rail asks for nothing.
     let plain = NavList::new(vec![NavSection::untitled(
         "p",
         vec![NavItem::new("a", "A")],
@@ -1268,8 +1233,6 @@ fn the_arrow_keys_pass_over_an_empty_sections_caption() {
     .selected("overview");
     let mut h = harness(list, Theme::dark());
     focus(&mut h);
-    // Overview, the Drafts header, (its caption passed over), the Saved
-    // header, the note.
     for _ in 0..3 {
         key(&mut h, Key::Named(NamedKey::ArrowDown));
     }
@@ -1615,11 +1578,9 @@ fn a_row_is_found_by_its_search_terms_and_says_which() {
     assert!(super::model::narrow(&items, "zzz").is_empty());
 }
 
-/// The two widths a navigation sidebar needs follow its places: the
-/// rail's holds the longest word of a caption, the list's every label whole
-/// beside its icon, and a list is wider than its rail. The form is the
-/// shell's call, from the width it gives the sidebar; switching it keeps
-/// what is chosen.
+/// The two widths a navigation sidebar needs follow its places: the rail's holds the longest
+/// word of a caption, the list's every label whole beside its icon, and a list is wider than
+/// its rail.
 #[test]
 fn a_place_sets_the_widths_its_rail_and_its_list_need() {
     use super::AdaptiveNav as _;
@@ -1645,7 +1606,6 @@ fn a_place_sets_the_widths_its_rail_and_its_list_need() {
         "a longer label needs a wider list"
     );
 
-    // A list is wider than its rail, and the switch keeps what is chosen.
     let mut list = flat(six).selected("queue");
     assert!(list.list_fit(&theme) > list.rail_fit(&theme));
     assert!(!list.is_rail());
@@ -1813,31 +1773,26 @@ fn destinations(count: usize) -> Vec<NavSection> {
 
 const TALL: (u32, u32) = (280, 2800);
 
-/// The list laid out tall enough to show every row.
 fn tall(list: NavList) -> FrameHarness {
     let mut h = FrameHarness::for_root(State::new(), list, TALL, Theme::dark());
     h.relayout_at(TALL).expect("layout");
     h
 }
 
-/// The list as a walk that kept no row would publish it now.
 fn published_afresh(list: &NavList) -> Option<crate::a11y::AccessNode> {
     list.list
         .walk_keeping_nothing(|| Widget::accessibility(list))
 }
 
-/// The rows of `list`'s published tree.
 fn rows_of(list: &NavList) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
     Widget::accessibility_shared(list)
         .expect("the list's node")
         .children
 }
 
-/// A walk that finds the list as it was (a keystroke in the pane beside
-/// it) builds none of its rows and hands each over as the very node of the
-/// last walk, however many destinations it lists, and publishes what a
-/// walk keeping nothing publishes. Its root and whether it is hidden are
-/// read without building a row.
+/// A walk that finds the list as it was (a keystroke in the pane beside it) builds none of its
+/// rows and hands each over as the very node of the last walk, however many destinations it
+/// lists, and publishes what a walk keeping nothing publishes.
 #[test]
 fn an_unchanged_list_builds_no_row_and_hands_each_over_as_it_was() {
     for count in [3_usize, 60] {
@@ -1921,7 +1876,6 @@ fn a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk() {
     assert_eq!(work.state.checked, Some(true), "the toggled check");
     assert_eq!(Some(published), published_afresh(list));
 
-    // Sections handed over again with a destination renamed.
     let mut renamed = destinations(12);
     renamed[0].items[1].label = "Renamed".to_owned();
     h.root_mut::<NavList>().set_sections(renamed);
@@ -1937,7 +1891,6 @@ fn a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk() {
     );
     assert_eq!(Some(published), published_afresh(list));
 
-    // Another theme lays the section's action out anew.
     h.relayout_themed(TALL, Theme::light()).expect("layout");
     let list = h.root::<NavList>();
     assert_eq!(Widget::accessibility(list), published_afresh(list));
@@ -2012,7 +1965,6 @@ fn whether_a_list_binds_actions_is_answered_without_building_rows() {
     let lists = [
         NavList::new(destinations(8)),
         NavList::new(destinations(8)).selection_actions([("item-2".to_owned(), binding.clone())]),
-        // A destination that is not in the list binds nothing.
         NavList::new(destinations(8)).selection_actions([("elsewhere".to_owned(), binding)]),
     ];
     for (index, list) in lists.into_iter().enumerate() {
@@ -2038,7 +1990,6 @@ fn whether_a_list_binds_actions_is_answered_without_building_rows() {
     }
 }
 
-/// The app's region of a host's scene.
 #[cfg(feature = "native")]
 struct Region;
 
@@ -2246,7 +2197,6 @@ fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element)
         let rects = rects.unwrap_or_else(|| panic!("a hover repainted the window: {why:?}"));
         let (top, bottom) = (pair[0].y0.min(pair[1].y0), pair[0].y1.max(pair[1].y1));
         assert!(!rects.is_empty(), "the hover shows");
-        // An empty rect covers no pixel.
         for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
             assert!(
                 rect.y0 >= top - 2.0 && rect.y1 <= bottom + 2.0 && rect.x1 <= sidebar_right + 16.0,
@@ -2275,6 +2225,13 @@ fn an_agent_chooses_a_destination_through_the_published_view_action() {
         .iter()
         .find(|resource| resource.id.0 == "tilo.control:mail.places")
         .expect("the list publishes its selection");
+    // The resource a sheet names reads as the place the person is at
+    // ("Inbox"), never as the control's id: an agent's confirmation of a
+    // step reads a person's words, never an address.
+    assert_eq!(
+        control.label, "Inbox",
+        "the published choice is named by the place shown, not its id"
+    );
     let select = control
         .actions
         .iter()
@@ -2311,7 +2268,6 @@ fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
         icon: Some(Icon::Hash),
         ..NavItemProps::default()
     };
-    // A section's add runs when a person presses it, and a place's count is what it holds.
     let queue = crate::Intents::default();
     let add = crate::component::OfferedAction {
         label: "New channel".into(),
@@ -2440,7 +2396,6 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     assert_eq!(take(&mut h), Some(serde_json::json!("folders")));
     assert_eq!(take(&mut h), None);
 
-    // An action the person may not run shows disabled and runs nothing.
     crate::widget::controls::refresh_control_action_availability(
         &mut h.root_mut::<crate::widget::Uncustodied<NavList>>().0,
         &HashSet::new(),
@@ -2506,7 +2461,6 @@ fn bound_check_rename_and_delete_run_their_actions() {
         true,
     );
     h.relayout_at((280, 360)).expect("layout");
-    // Delete reports the focused row: the one just toggled.
     assert!(key(&mut h, Key::Named(NamedKey::Delete)));
     assert_eq!(take(&mut h), Some(serde_json::json!("work")));
     let bindings = crate::widget::controls::control_action_bindings(list_of(&h));

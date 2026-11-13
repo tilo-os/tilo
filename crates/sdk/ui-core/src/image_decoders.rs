@@ -1,13 +1,6 @@
-//! The toolkit's image decoders (the `image` crate: PNG, JPEG, WebP), for a
-//! web page's images (`webview::paint`) and the pictures an
-//! [`crate::ImageStore`] loads.
-//!
-//! Without `lazy-image-decode` they are linked and always there. With it,
-//! nothing in the toolkit names them: the program fetches their code the
-//! first time something decodes and installs it ([`IMAGE_DECODERS`]). Until then page images are left out and an
-//! image store holds the pictures it fetched as undecoded, loading them again
-//! once the decoders are in. The browser desktop uses this to keep the
-//! decoders out of its start module.
+//! The toolkit's image decoders (the `image` crate: PNG, JPEG, WebP), for a web page's images
+//! (`webview::paint`) and the pictures an [`crate::ImageStore`] loads. Without `lazy-image-decode` they
+//! are linked and always there.
 
 use vello::peniko::ImageData;
 
@@ -18,12 +11,10 @@ use crate::image_store::DecodedImage;
 pub struct ImageDecoders {
     /// A page image's encoded bytes to RGBA, at the size it was encoded.
     pub page: fn(&[u8]) -> Option<ImageData>,
-    /// Encoded bytes to RGBA no wider or taller than the given dimension,
-    /// for an image store.
+    /// Encoded bytes to RGBA no wider or taller than the given dimension, for an image store.
     pub bounded: fn(&[u8], u32) -> Option<DecodedImage>,
-    /// Encoded bytes made a PNG no wider or taller than the given
-    /// dimension (a picture a workspace emoji keeps): the encoder rides
-    /// with the decoders, out of a browser's start module.
+    /// Encoded bytes made a PNG no wider or taller than the given dimension (a picture a workspace
+    /// emoji keeps): the encoder rides with the decoders, out of a browser's start module.
     pub small_png: fn(&[u8], u32) -> Option<Vec<u8>>,
 }
 
@@ -64,8 +55,8 @@ pub(crate) fn decoders() -> Option<ImageDecoders> {
     IMAGE_DECODERS.get()
 }
 
-/// Wake `window` once the decoders are in (or their fetch failed): work it
-/// does once a frame that found them missing then runs again.
+/// Wake `window` once the decoders are in (or their fetch failed): work it does once a frame that found
+/// them missing then runs again.
 pub(crate) fn wake_when_in(window: crate::wake::WakeHandle) {
     struct Window(crate::wake::WakeHandle);
     impl std::task::Wake for Window {

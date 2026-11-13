@@ -1,7 +1,6 @@
-//! RTP on the fake voice server's UDP socket, in Discord's `*_rtpsize`
-//! AEAD modes: the header (and an extension's preamble) is associated
-//! data, the payload is sealed, and a 32-bit counter appended in the clear
-//! is the nonce's first four bytes.
+//! RTP on the fake voice server's UDP socket, in Discord's `*_rtpsize` AEAD modes: the header (and
+//! an extension's preamble) is associated data, the payload is sealed, and a 32-bit counter
+//! appended in the clear is the nonce's first four bytes.
 
 pub use tilo_seal::discord_voice::{AES_GCM, TransportCipher as Cipher, XCHACHA};
 
@@ -28,8 +27,8 @@ impl Stream {
         self.ssrc
     }
 
-    /// The next packet carrying `frame`. It carries a one-word header
-    /// extension, as Discord's clients send, so a receiver must strip it.
+    /// The next packet carrying `frame`, with a one-word header extension as Discord's clients send,
+    /// so a receiver must strip it.
     pub fn packet(&mut self, cipher: &Cipher, frame: &[u8]) -> Option<Vec<u8>> {
         let mut packet = vec![0x90, 0x78];
         packet.extend_from_slice(&self.sequence.to_be_bytes());

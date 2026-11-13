@@ -1,7 +1,5 @@
-//! The record of long work, and the registry it lives in.
-//!
-//! One registry per process: the work outlives the window that started it,
-//! so a job is found again by whoever looks next, and its progress is read
+//! The record of long work, and the registry it lives in. One registry per process: the work outlives
+//! the window that started it, so a job is found again by whoever looks next, and its progress is read
 //! without asking the app that started it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,9 +10,8 @@ use crate::lock::MutexRecover as _;
 use crate::time::{Instant, now};
 use crate::wake::WakeHandle;
 
-/// How many rows the registry keeps: running jobs always, and the finished
-/// ones nobody has read yet, oldest dropped first. A row leaves when it is
-/// read, never on a timer.
+/// How many rows the registry keeps: running jobs always, and the finished ones nobody has read yet,
+/// oldest dropped first. A row leaves when it is read, never on a timer.
 const MAX_ROWS: usize = 64;
 
 /// A job's identity, unique for the life of the process.
@@ -62,7 +59,6 @@ impl Unit {
     }
 }
 
-/// `value` as a `one`/`other` message pair.
 fn counted(value: u64, one: &str, other: &str) -> String {
     let key = if value == 1 { one } else { other };
     crate::i18n::widget_format(
@@ -110,8 +106,7 @@ pub enum Outcome {
     Stopped,
 }
 
-/// What a job is about: the app that owns it, the thing it works on, and
-/// where pressing the row goes.
+/// What a job is about: the app that owns it, the thing it works on, and where pressing the row goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Subject {
     /// The app that started it, by its identity.
@@ -164,8 +159,7 @@ impl std::fmt::Debug for Spec {
 }
 
 impl Spec {
-    /// A job whose title says what is happening, in the person's words
-    /// ("Installing LibreOffice").
+    /// A job whose title says what is happening, in the person's words ("Installing LibreOffice").
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -198,9 +192,8 @@ impl Spec {
         self
     }
 
-    /// It can be stopped, by running `stop`: the worker's own way out (abort
-    /// a task, close a connection). A job without one shows no **Stop**,
-    /// because a job whose stopping would not be honoured is a lie.
+    /// It can be stopped, by running `stop`: the worker's own way out (abort a task, close a
+    /// connection).
     #[must_use]
     pub fn stoppable(mut self, stop: impl Fn() + Send + Sync + 'static) -> Self {
         self.stoppable = Some(Arc::new(stop));
@@ -313,8 +306,8 @@ impl Job {
         ))
     }
 
-    /// What it is doing and how far, as its row's secondary line reads it:
-    /// "Downloading 312 MB of 480 MB", "Reading 12,480 files", "Starting".
+    /// What it is doing and how far, as its row's secondary line reads it: "Downloading 312 MB of 480
+    /// MB", "Reading 12,480 files", "Starting".
     #[must_use]
     pub fn live_line(&self) -> String {
         let phase = self.phase.trim();
@@ -355,8 +348,7 @@ impl Job {
         }
     }
 
-    /// What the row's end says about the job: its progress while it runs, or
-    /// how it ended.
+    /// What the row's end says about the job: its progress while it runs, or how it ended.
     #[must_use]
     pub fn end_line(&self) -> String {
         self.outcome_line().unwrap_or_else(|| self.live_line())
@@ -382,8 +374,7 @@ impl Summary {
     }
 }
 
-/// The handle a worker keeps: what it reports through, and how it hears that
-/// the person stopped it. Clones report on the same job.
+/// The handle a worker keeps: what it reports through, and how it hears that the person stopped it.
 #[derive(Clone)]
 pub struct Running {
     id: JobId,
@@ -406,8 +397,8 @@ impl Running {
         self.id
     }
 
-    /// Whether the person stopped it: a worker checks this between units of
-    /// work and ends the job with [`Self::stopped`].
+    /// Whether the person stopped it: a worker checks this between units of work and ends the job with
+    /// [`Self::stopped`].
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
@@ -448,7 +439,6 @@ impl Running {
     }
 }
 
-/// An entry in the registry.
 struct Entry {
     job: Job,
     stop: Arc<AtomicBool>,
@@ -473,7 +463,6 @@ impl Registry {
         self.watchers.iter().map(|(_, wake)| wake.clone()).collect()
     }
 
-    /// Drop the oldest finished rows past the cap.
     fn trim(&mut self) {
         while self.entries.len() > MAX_ROWS {
             let Some(index) = self
@@ -522,7 +511,6 @@ fn update(id: JobId, change: impl FnOnce(&mut Job)) {
     }
 }
 
-/// End `id` with `outcome`, once; a job already ended keeps its outcome.
 fn finish(id: JobId, outcome: Outcome) {
     let wakes = {
         let mut registry = registry();
@@ -567,10 +555,9 @@ fn finish(id: JobId, outcome: Outcome) {
     }
 }
 
-/// Start a job described by `spec`; the returned handle is the worker's.
-///
-/// Starting is cheap and never blocks: the caller's own worker does the
-/// work, this only puts the job where the whole system can see it.
+/// Start a job described by `spec`; the returned handle is the worker's. Starting is cheap and never
+/// blocks: the caller's own worker does the work, this only puts the job where the whole system can see
+/// it.
 pub fn start(spec: Spec) -> Running {
     let stop = Arc::new(AtomicBool::new(false));
     let (id, wakes) = {
@@ -611,9 +598,8 @@ pub fn start(spec: Spec) -> Running {
     Running { id, stopped: stop }
 }
 
-/// Ask the job `id` to stop. It ends as [`Outcome::Stopped`] when its worker
-/// notices; a job that cannot be stopped is left alone. Whether anything was
-/// asked of it.
+/// Ask the job `id` to stop. It ends as [`Outcome::Stopped`] when its worker notices; a job that cannot
+/// be stopped is left alone.
 pub fn stop(id: JobId) -> bool {
     let (canceller, wakes) = {
         let mut registry = registry();
@@ -703,8 +689,7 @@ pub fn show(id: JobId) -> Option<Subject> {
     registry().job(id).map(|entry| entry.job.subject.clone())
 }
 
-/// Read a finished job's row: it leaves the surface, and so does the
-/// attention item a failure raised. Running jobs are not dismissed.
+/// Read a finished job's row: it leaves the surface, and so does the attention item a failure raised.
 pub fn dismiss(id: JobId) {
     let wakes = {
         let mut registry = registry();
@@ -725,8 +710,7 @@ pub fn dismiss(id: JobId) {
     }
 }
 
-/// Bumped by every change, so a surface can skip rebuilding rows that did
-/// not change.
+/// Bumped by every change, so a surface can skip rebuilding rows that did not change.
 #[must_use]
 pub fn revision() -> u64 {
     registry().revision
@@ -745,8 +729,7 @@ pub(crate) fn unwatch(id: u64) {
     registry.watchers.retain(|(watcher, _)| *watcher != id);
 }
 
-/// Take every job and attention item away: a test's clean slate, and what a
-/// session reset does.
+/// Take every job and attention item away: a test's clean slate, and what a session reset does.
 pub fn clear() {
     let mut registry = registry();
     registry.entries.clear();

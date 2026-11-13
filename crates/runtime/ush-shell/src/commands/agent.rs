@@ -126,7 +126,6 @@ pub fn header(dir: &str) -> String {
 struct Group {
     dir: Option<String>,
     names: Vec<String>,
-    /// Names of it left out.
     more: u64,
 }
 
@@ -151,7 +150,6 @@ impl Names {
         }
     }
 
-    /// The index of `dir`'s group, made if it is new.
     fn group(&mut self, dir: Option<&str>) -> usize {
         let key = dir.map(String::from);
         if let Some(&at) = self.index.get(&key) {
@@ -167,12 +165,10 @@ impl Names {
         at
     }
 
-    /// A directory that was listed, so it shows even with nothing in it.
     pub fn open(&mut self, dir: Option<&str>) {
         let _ = self.group(dir);
     }
 
-    /// `name` (already marked, `sub/`) in `dir`.
     pub fn add(&mut self, dir: Option<&str>, name: &str, marker: &str) {
         let show = self.shown < self.limit;
         if show {
@@ -190,7 +186,6 @@ impl Names {
         }
     }
 
-    /// A path as printed (`./src/main.rs`), grouped by the directory part.
     pub fn add_path(&mut self, shown: &str, marker: &str) {
         match shown.rsplit_once('/') {
             Some((dir, name)) if !name.is_empty() => {
@@ -201,12 +196,10 @@ impl Names {
         }
     }
 
-    /// Whether anything was added or opened.
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty()
     }
 
-    /// Every group, one line each, and the line saying what was left out.
     pub fn render(&self, what: &str) -> String {
         let mut out = String::new();
         let mut counted = 0_usize;
@@ -258,9 +251,7 @@ pub struct Lines<'c, 'a> {
     shown: usize,
     left: u64,
     groups_cut: u64,
-    /// The header of the group lines now go to, until its first is shown.
     pending: Option<String>,
-    /// Whether the current group has lost a line already.
     cut_here: bool,
 }
 
@@ -277,14 +268,12 @@ impl<'c, 'a> Lines<'c, 'a> {
         }
     }
 
-    /// Start a group: its header, if it has one, goes out with its first
     /// line.
     pub fn group(&mut self, head: Option<String>) {
         self.pending = head;
         self.cut_here = false;
     }
 
-    /// One line of the current group.
     pub fn line(&mut self, text: &str) -> Result<(), Stop> {
         if self.shown >= self.limit {
             self.left = self.left.saturating_add(1);

@@ -12,18 +12,14 @@ use crate::num::f64_of_usize;
 use crate::tokens::Breakpoint;
 use crate::widget::flap::SplitLayout;
 
-/// The shell's geometry for one size, in coordinates local to the shell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavGeometry {
     pub sidebar: SidebarPlacement,
     pub inspector: InspectorPlacement,
     pub overview: OverviewPlacement,
-    /// The overview and content stand side by side.
     pub side_by_side: bool,
-    /// The push stack's screens, first to last, when it has more than one.
     pub stack: Vec<NavPane>,
     pub header_height: f64,
-    /// Width at or above which the sidebar docks.
     pub breakpoint: f64,
     /// The class the rect this geometry was solved in asks for (`Breakpoint`, hysteresis held
     /// across passes); read it instead of comparing a width to a number.
@@ -36,40 +32,30 @@ pub struct NavGeometry {
     pub overview_column: Rect,
     pub content_column: Rect,
     pub inspector_column: Rect,
-    /// The overview's rail, where the overview collapsed into it.
     pub rail: Rect,
     pub(super) bodies: [Rect; 4],
     pub(super) headers: [Rect; 4],
     pub filter: Rect,
-    /// The band of the controls under the overview's header.
     pub controls: Rect,
     pub toggle: Rect,
     pub back: Rect,
     pub inspector_toggle: Rect,
-    /// The window's History control, at the trailing edge of the row.
     pub history: Rect,
     /// Where the window's controls stand at the trailing end of the row,
     /// while the host merged the window's bar into it; else zero.
     pub window_controls: Rect,
-    /// The window-wide row the window's bar covers (also while a header in
-    /// the bar hides), or zero.
     pub window_row: Rect,
-    /// The band across the window's foot, or zero.
     pub band: Rect,
-    /// The column whose header holds the sidebar toggle and the Back button.
     pub(super) toggle_column: Option<Column>,
     pub(super) back_column: Option<Column>,
     pub(super) inspector_toggle_column: Option<Column>,
     pub(super) history_column: Option<Column>,
     pub resize_handle: Rect,
-    /// What the inspector's sheet stands in, and how much of the foot it
-    /// keeps the content clear of.
     pub sheet: crate::widget::SheetFrame,
     pub sheet_covered: f64,
     /// The content edges of a centred page column (its leading and trailing
     /// text edge), where the content is one ([`NavShell::with_page_column`]).
     pub(super) page_edges: Option<(f64, f64)>,
-    /// The sidebar stands narrow enough to read as a rail of icons, which draws no header row.
     pub(super) sidebar_rail: bool,
 }
 
@@ -97,19 +83,16 @@ impl NavGeometry {
             .unwrap_or(Rect::ZERO)
     }
 
-    /// The sidebar's header, or `Rect::ZERO` where it has none.
     #[must_use]
     pub fn sidebar_header(&self) -> Rect {
         self.header(Column::Sidebar)
     }
 
-    /// The content's header, or `Rect::ZERO` where it holds nothing.
     #[must_use]
     pub fn content_header(&self) -> Rect {
         self.header(Column::Content)
     }
 
-    /// Where the content's own view stands, under its header if it has one.
     #[must_use]
     pub fn content_body(&self) -> Rect {
         self.body(Column::Content)
@@ -351,16 +334,11 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let band = m.hysteresis;
     let content_min = inputs.content_min();
     let content_need = ow + content_min;
-    // The sidebar stands beside content of the window's own: a pane narrower than a column is a
-    // phone's screen, so the sidebar folds behind the bar's toggle there instead.
     let beside_need = ow + inputs.content_beside_sidebar_min();
     let rail_sidebar = inputs.mode == NavMode::Docked;
 
     g.size = Vec2::new(w, h);
 
-    // The sidebar docks while it fits beside a column of content, shrinking toward its own
-    // minimum first; below that the window shows one column at a time, or floats the sidebar over
-    // a content-primary app.
     let preferred = inputs.sidebar_width().min(w);
     let narrowest = if rail_sidebar {
         preferred
@@ -373,8 +351,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
     let docks = rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band);
-    // A card floating over the desk shows its point alone: no drawer or screen of the sidebar
-    // stands over what it was floated to show.
     g.sidebar = if !inputs.has_sidebar || (inputs.floats && !docks) {
         SidebarPlacement::None
     } else if docks {
@@ -403,10 +379,8 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // 2. The inspector docks while the pane it leaves keeps the content's width; narrower, it is
-    //    a sheet up from the window's foot. Beside a sidebar that pane keeps a column, as the
-    //    sidebar does; an inspector alone stands beside the content's own minimum, which a
-    //    surface drawn on or a grid of tiles works below (`ContentKind`).
+    // 2. The inspector docks while the pane it leaves keeps the content's width; narrower, it
+    // is a sheet up from the window's foot.
     let between = if g.sidebar == SidebarPlacement::Docked {
         beside_need
     } else {
@@ -433,8 +407,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // Overview and content side by side while both fit; where the list does not but its rail does,
-    // the overview collapses into the rail.
     let region_target = w - docked_target - inspector_target;
     let beside_sidebar = g.sidebar == SidebarPlacement::Docked && !rail_sidebar;
     let list_fits = if beside_sidebar {
@@ -464,7 +436,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if inputs.has_content {
         stack.push(NavPane::Content);
     } else if inputs.has_overview && g.side_by_side {
-        // Nothing stands beside the list: it is the screen after the sidebar's.
         stack.push(NavPane::Overview);
     }
     let front = stack_index(&stack, inputs.pane);
@@ -476,25 +447,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
-    // A shell that declares its own buttons as the bar's slots has no toggle in a row of its own,
-    // and the places its toggle reaches are no screen the push stack drills through. Back walks
-    // toward the screen the window opened on ([`back_home`]): a screen deeper than it goes one
-    // step back, and the sidebar's own screen, which stands in front of it, goes forward to it —
-    // the screen the toggle covered — so a phone is never left on the places with no way back to
-    // where the person was. A window on its opening screen is a place, left by the toggle, with no
-    // way back to nothing.
+    // A shell that declares its own buttons as the bar's slots has no toggle in a row of its
+    // own, and the places its toggle reaches are no screen the push stack drills through.
     let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
-    // The header row holds a column's header only where the column stands at the window's top: a
-    // floating drawer carries its own, and a column the row holds nothing for starts at the top.
     let in_row = |column: Column| match column {
         Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
         Column::Inspector => g.inspector != InspectorPlacement::Sheet,
         Column::Overview | Column::Content => true,
     };
-    // The shell's own buttons (and a window's controls merged into the row) stand over any column,
-    // so they keep the row across them all; a column whose header holds nothing then has none.
     let shell_row = (inputs.has_sidebar && !inputs.toggle_in_bar)
         || inputs.has_inspector
         || inputs.history.is_some()
@@ -505,11 +467,9 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             || Column::ALL
                 .iter()
                 .any(|c| in_row(*c) && inputs.header_wanted(*c)));
-    // Each column's header is the app's own — its title and the buttons that act on what it shows
-    // — never the window's: it stands at the top of its column at every time, and the window's
-    // controls come into the room the row keeps for them. The sidebar's stands even where the
-    // app declares its toolbar in the window's bar. A rail of icons says what it holds by its
-    // icons, so it has none.
+    // Each column's header is the app's own — its title and the buttons that act on what it
+    // shows — never the window's: it stands at the top of its column at every time, and the
+    // window's controls come into the room the row keeps for them.
     let sidebar_reads_as_rail = match g.sidebar {
         SidebarPlacement::Docked => inputs.sidebar_reads_as_rail(sw),
         SidebarPlacement::Screen => inputs.sidebar_reads_as_rail(w),
@@ -526,13 +486,10 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         _ => shell_row || inputs.header_wanted(column),
     };
     g.sidebar_rail = inputs.has_sidebar && sidebar_reads_as_rail;
-    // A drawer's own header, as tall as the row.
     let drawer_hh = m.header.min(h);
     let row_h = if needs_header { m.header.min(h) } else { 0.0 };
     g.header_height = row_h;
     let hh = row_h;
-    // A column's header row, and the top its body starts at: every column's row is as tall as
-    // the others and stands at the window's top, so the titles read on one line.
     let row_of = |column: Column| match column {
         _ if !rows(column) => 0.0,
         Column::Sidebar => sidebar_hh,
@@ -546,13 +503,9 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             Rect::ZERO
         }
     };
-    // A floating drawer stands under the header row, `s2` in.
     let drawer_top = if hh > 0.0 { hh + m.gap } else { m.gap };
     let drawer_bottom = (h - m.gap).max(drawer_top);
 
-    // While a docked sidebar or inspector slides, the columns beside it keep the width they have
-    // with it shut and slide with its edge, so they reflow once at the wide end
-    // (`motion::PanelSlide`).
     let sidebar_moving = g.sidebar == SidebarPlacement::Docked
         && !rail_sidebar
         && inputs.sidebar.is_animating(sidebar_layout);
@@ -573,7 +526,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         let i = stack_index(&stack, pane);
         (f64_of_usize(i) - pos) * w
     };
-    // Sidebar.
     let mut sidebar_body = Rect::ZERO;
     let mut sidebar_header = Rect::ZERO;
     match g.sidebar {
@@ -589,8 +541,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         SidebarPlacement::Drawer => {
             if sidebar_reveal > 0.001 {
-                // Keep a pointer-sized strip of the content exposed so the
-                // drawer can be dismissed even when enlarged text fills it.
                 let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
@@ -604,24 +554,18 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         SidebarPlacement::Screen => {
             let x = screen_x(NavPane::Sidebar);
             if x > -w && x < w {
-                // A list standing as the window's screen is the screen: the whole window, its
-                // rows keeping their own insets inside it. Set in from the edges, the page it
-                // covers would show at the sides.
                 g.sidebar_column = Rect::new(x, 0.0, x + w, h);
                 sidebar_body = Rect::new(x, row_of(Column::Sidebar), x + w, h);
                 sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
     }
-    // The overview follows what it lists up to its cap: the room the detail has past its reading
-    // measure is the list's, so a long title fits and the page still reads as a page.
     let reading = m.reading_measure + m.scroll_gutter;
     let roomy = ow + (region_w - reading - ow).max(0.0);
     let widest_list = roomy.min(m.overview_max);
     if g.side_by_side {
         let x = region.x0 + screen_x(NavPane::Content);
         let lead = match g.overview {
-            // Nothing stands beside the list: it lists for the window.
             OverviewPlacement::List if !inputs.has_content => region_w,
             OverviewPlacement::List => widest_list.min((region_w - content_min).max(0.0)),
             OverviewPlacement::Rail => m.rail.min(region_w),
@@ -645,7 +589,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             g.content_column = Rect::new(cx, 0.0, cx + region_w, h);
         }
     }
-    // Inspector.
     let mut inspector_body = Rect::ZERO;
     let mut inspector_header = Rect::ZERO;
     match g.inspector {
@@ -711,9 +654,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         .page_lines
         .and_then(|lines| page_edges(g.content_column, lines, &m));
 
-    // The filter field and the overview's controls sit under their column's header, one control
-    // band each, a gap clear of the header's hairline; in a page column the band spans the content
-    // edges.
     let take_band = |g: &mut NavGeometry, column: Column| -> Rect {
         let body = g.body(column);
         if g.column(column).width() <= 0.0 || body.height() <= 0.0 {
@@ -764,13 +704,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         None
     };
-    // A screen that went somewhere deeper has one way back, at the leading edge: while the
-    // sidebar is not showing, its toggle stands aside for it, and comes back with the first
-    // screen. An open drawer keeps its way to close, and a docked sidebar that shows keeps its
-    // toggle in its own row, apart from the way back.
     let back_leads = back_column.is_some() && !sidebar_open;
-    // The toggle reaches the sidebar wherever it stands beside the window or over it; the
-    // sidebar's own screen shows the screen under it instead and keeps no toggle.
     let toggle_leads = match g.sidebar {
         SidebarPlacement::Docked | SidebarPlacement::Drawer => true,
         SidebarPlacement::Screen => front_pane != NavPane::Sidebar,
@@ -797,13 +731,10 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if let Some(column) = back_column
         && inputs.toolbar_in_bar
     {
-        // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
     {
-        // The bar declares none of the shell's slots, so Back is a chevron the shell draws, beside
-        // the toggle if the bar carries it.
         let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
         // The page moves; navigation belongs to the window. Back must stay
         // operable even before the incoming screen enters the viewport.
@@ -812,23 +743,17 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         } else {
             g.header(column)
         };
-        // An open drawer over the screen keeps its one way out, its toggle: Back comes back
-        // with the screen once the drawer is put away.
         let drawer_open = g.sidebar == SidebarPlacement::Drawer && sidebar_open;
         g.back = if drawer_open {
             Rect::ZERO
         } else if slot == 0 {
             m.row.leading_chip(row, 0)
         } else {
-            // After the toggle, which is pinned to the window's corner.
             let x = g.toggle.x1 + m.gap;
             Rect::new(x, g.toggle.y0, x + m.chip, g.toggle.y1)
         };
         g.back_column = Some(column);
     }
-    // The window's controls take the row's trailing end while the host merged the window's bar into
-    // it: the app's header and the window's controls side by side, the shell's buttons and actions
-    // before them.
     if let Some(width) = inputs.window_controls
         && row_h > 0.0
     {
@@ -836,8 +761,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         let x1 = (w - m.inset).max(0.0);
         g.window_controls = Rect::new((x1 - width).max(0.0), 0.0, x1, row_h);
     }
-    // Where a column's trailing shell buttons count from: its header's end,
-    // or before the window's controls in the header that reaches them.
     let trailing_row = |g: &NavGeometry, header: Rect| -> Rect {
         if g.window_controls.width() > 0.0 && header.x1 >= g.window_controls.x1 {
             Rect::new(
@@ -850,8 +773,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             header
         }
     };
-    // How far into `row` its trailing shell buttons stand: the gutter the column's title
-    // starts at where the row reaches the window's edge, one inset beside another control.
     let trailing_edge = |column: Column, row: Rect| -> f64 {
         if column == Column::Sidebar || row.x1 < w - 0.5 {
             m.inset
@@ -901,7 +822,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                     .trailing_chip_from(chip_row, slot, trailing_edge(column, chip_row));
         }
     }
-    // Content is fully hidden by a pushed screen: no buttons on it.
     if g.toggle_column.is_some_and(|c| g.column(c).width() <= 0.0) {
         g.toggle = Rect::ZERO;
         g.toggle_column = None;
@@ -924,7 +844,6 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     g
 }
 
-/// A floating drawer's header (when its column has one) and body.
 pub(super) fn drawer_split(col: Rect, hh: f64, header: bool) -> (Rect, Rect) {
     if col.width() <= 0.0 {
         return (Rect::ZERO, Rect::ZERO);
@@ -947,9 +866,8 @@ pub(super) fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
     }
 }
 
-/// The first list of items the stack shows: the overview where there is one, the content where the
-/// content is itself a list or a whole-window empty state stands in it. `None` where the window
-/// has no such list and its first screen is a column of its own (a page beside its places).
+/// The first list of items the stack shows: the overview where there is one, the content where
+/// the content is itself a list or a whole-window empty state stands in it.
 fn list_pane(inputs: &Inputs, stack: &[NavPane]) -> Option<usize> {
     if let Some(overview) = stack.iter().position(|pane| *pane == NavPane::Overview) {
         Some(overview)
@@ -968,12 +886,10 @@ pub(super) fn opening_pane(inputs: &Inputs, stack: &[NavPane]) -> usize {
     back_home(inputs, stack)
 }
 
-/// The screen a narrow window's Back walks toward: the window's first list of items — the screen it
-/// opens on — else the first screen of the stack once the sidebar is no longer one of them, because
-/// a window whose sidebar the bar's toggle reaches opens on the screen after the places. A screen
-/// deeper than this one goes one step back; the sidebar's own screen, which stands before it, goes
-/// forward to it, so the places are never a dead end; and a screen at this one has nothing to go
-/// back to.
+/// The screen a narrow window's Back walks toward: the window's first list of items — the
+/// screen it opens on — else the first screen of the stack once the sidebar is no longer one of
+/// them, because a window whose sidebar the bar's toggle reaches opens on the screen after the
+/// places.
 pub(super) fn back_home(inputs: &Inputs, stack: &[NavPane]) -> usize {
     list_pane(inputs, stack).unwrap_or_else(|| {
         let past_places =
@@ -987,7 +903,6 @@ pub(super) fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
         .iter()
         .position(|p| *p == pane)
         .or_else(|| {
-            // An overview standing beside the content is the content screen.
             (pane == NavPane::Overview)
                 .then(|| stack.iter().position(|p| *p == NavPane::Content))
                 .flatten()

@@ -20,7 +20,6 @@ use std::rc::Rc;
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
-    peer_salt_of,
 };
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
@@ -149,12 +148,6 @@ type Titles = Rc<RefCell<BTreeMap<String, String>>>;
 /// carries ([`tilo_desktop_search::names::app_name`]).
 type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 
-/// What each other device of the workspaces is called, by the salt it mints
-/// its ids under: a window open on one of them says which. The session's,
-/// from the devices it hears there ([`DesktopPolicy::name_devices`]); a
-/// device it heard no name of is not here.
-type DeviceNames = Rc<RefCell<BTreeMap<u16, String>>>;
-
 /// A tab held for a window of an app that is on its way: the tab it takes
 /// when it maps (`None` until the desktop makes it), and whether it takes
 /// focus there.
@@ -190,39 +183,6 @@ struct Beside {
     background: bool,
 }
 
-/// What the tab of a window open on another device says: which device, when the session heard
-/// what `device` is called, and what brings the window's picture here.
-fn open_elsewhere(device: Option<&str>) -> String {
-    match device.map(shown_name).filter(|name| !name.is_empty()) {
-        Some(name) => {
-            tilo_desktop_surface::i18n::t_args("peer-window-on-device", &[("device", name.into())])
-        }
-        None => tilo_desktop_surface::i18n::t("peer-window-elsewhere"),
-    }
-}
-
-/// A device's name as a sentence holds it. The name is a person's text and is shown as the text
-/// it is, on the sentence's line and in the sentence's direction: a line break, a control
-/// character or a direction mark in it changes nothing of the words around it.
-fn shown_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| !directs_text(*c))
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Whether `c` is one of Unicode's direction marks, embeddings, overrides or isolates: each
-/// draws nothing and turns the text that follows it.
-const fn directs_text(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
 /// The tile source behind the policy's surface: a window's tab is opened from the
 /// window waiting under its launch id, and its tile is the arriving placeholder the
 /// window's own buffer covers. Every other launch is the session's to start, so it
@@ -245,8 +205,6 @@ struct Windows {
     carried: Carried,
     /// What each window shows, as its app reports it.
     notes: Notes,
-    /// What the workspaces' other devices are called.
-    devices: DeviceNames,
 }
 
 impl TileSource for Windows {
@@ -264,21 +222,6 @@ impl TileSource for Windows {
             });
         }
         let Some(app) = self.crashed.borrow().get(&tab.id).cloned() else {
-            // A window that runs on another device of the workspace has no
-            // surface here and none is on its way: its tab says where the
-            // window is and what brings its picture here, rather than
-            // standing empty for good. A share from its device takes the
-            // tab over with that picture. The tab's id is of the device
-            // that opened the window, so the device is named when the
-            // session heard what it is called.
-            if matches!(tab.tile, TileContent::PeerWindow { .. }) {
-                let devices = self.devices.borrow();
-                let device = devices.get(&peer_salt_of(tab.id));
-                return TileHost::new(ui::widget::TileContent::Notice {
-                    title: tab.title.clone(),
-                    detail: open_elsewhere(device.map(String::as_str)),
-                });
-            }
             return TileHost::new(ui::widget::TileContent::Arriving);
         };
         // The app is gone but its tab stays until the person decides what to
@@ -468,8 +411,6 @@ pub struct DesktopPolicy {
     carried: Carried,
     /// What each window shows, as its app reports it.
     notes: Notes,
-    /// What the workspaces' other devices are called.
-    devices: DeviceNames,
     /// The places the apps asked for, oldest first, by the app that asked:
     /// its next window lands at the one its open asked for.
     places: BTreeMap<String, Vec<Beside>>,
@@ -493,11 +434,12 @@ pub struct DesktopPolicy {
 
 impl DesktopPolicy {
     /// A policy over a desktop of one workspace with one empty strip, and
-    /// the surface the compositor hosts under its windows.
+    /// the surface the compositor hosts under its windows. Nothing of it is named: the desk names
+    /// what nobody named when it shows it, in the language of whoever reads it.
     #[must_use]
     pub fn new(salt: u16) -> (Self, DesktopSurface) {
         let mut minter = IdMinter::new(salt);
-        Self::with_tree(seed_tree(&mut minter, "Desk", Vec::new()), salt)
+        Self::with_tree(seed_tree(&mut minter, "", Vec::new()), salt)
     }
 
     /// A policy over `tree`, the desktop as last kept, minting under `salt`:
@@ -516,7 +458,6 @@ impl DesktopPolicy {
         let held = Held::default();
         let carried = Carried::default();
         let notes = Notes::default();
-        let devices = DeviceNames::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
@@ -530,7 +471,6 @@ impl DesktopPolicy {
                 held: Rc::clone(&held),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
-                devices: Rc::clone(&devices),
             }),
         );
         let policy = Self {
@@ -544,7 +484,6 @@ impl DesktopPolicy {
             held,
             carried,
             notes,
-            devices,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
@@ -576,44 +515,6 @@ impl DesktopPolicy {
     /// A tab opens with the name of its app, never with the app's id.
     pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
         *self.names.borrow_mut() = Some(names);
-    }
-
-    /// Call the workspaces' other devices by `names`, the session's: what each device it hears
-    /// there goes by, under the salt that device mints its ids under. A window open on one of
-    /// them says which in its tab, and says it again when the device is called something else;
-    /// a window of a device with no name here says it is open on another device.
-    pub fn name_devices(&mut self, names: BTreeMap<u16, String>) {
-        let renamed: BTreeSet<u16> = {
-            let known = self.devices.borrow();
-            known
-                .keys()
-                .chain(names.keys())
-                .copied()
-                .filter(|salt| known.get(salt) != names.get(salt))
-                .collect()
-        };
-        if renamed.is_empty() {
-            return;
-        }
-        *self.devices.borrow_mut() = names;
-        // Each of those windows' notices stood from the frame its tab was shown in: what it
-        // says now takes its place on the desk's next pass.
-        let elsewhere: Vec<TabId> = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .filter(|tab| {
-                    matches!(tab.tile, TileContent::PeerWindow { .. })
-                        && renamed.contains(&peer_salt_of(tab.id))
-                })
-                .map(|tab| tab.id)
-                .collect()
-        });
-        for tab in elsewhere {
-            self.handle.rebuild(tab);
-        }
     }
 
     /// Tell which workspace a window's process was launched into with `workspaces`, the
@@ -802,7 +703,9 @@ impl DesktopPolicy {
             tabs(tree)
                 .filter(|tab| foreign(tab).is_some_and(|window| shown.contains(&window)))
                 .filter_map(|tab| match &tab.tile {
-                    TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+                    TileContent::Foreign { app_id, .. } => {
+                        Some(tilo_desktop_model::AppId::new(app_id))
+                    }
                     _ => tilo_desktop_model::apps::canonical_app_id(&tab.tile),
                 })
                 .any(|shown| app_ids_match(&shown, app))
@@ -893,9 +796,10 @@ impl DesktopPolicy {
                 self.to_carry.push((window, slot));
                 continue;
             };
-            // ignored-failure: a workspace removed since the launch leaves the window where it
-            // opened, in front, rather than nowhere
-            let _ = self.carry(tab, slot);
+            let _ = tilo_failure::ignored!(
+                "a workspace removed since the launch leaves the window where it opened, in front",
+                self.carry(tab, slot)
+            );
         }
     }
 
@@ -1464,7 +1368,7 @@ impl DesktopPolicy {
                 .filter(|tab| comes(tab, &held))
                 .filter_map(|tab| {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-                    Some((tab.id, app))
+                    Some((tab.id, String::from(app)))
                 })
                 .collect()
         })
@@ -1501,9 +1405,9 @@ impl DesktopPolicy {
     /// False when the tab is gone or holds no saved window.
     pub fn adopt_tab(&mut self, tab: TabId, background: bool) -> bool {
         let Some(app) = self.handle.read(|tree| {
-            tabs(tree)
-                .find(|found| found.id == tab)
-                .and_then(|found| tilo_desktop_model::apps::canonical_app_id(&found.tile))
+            tabs(tree).find(|found| found.id == tab).and_then(|found| {
+                tilo_desktop_model::apps::canonical_app_id(&found.tile).map(String::from)
+            })
         }) else {
             return false;
         };

@@ -23,6 +23,28 @@ pub use dates::{
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 pub use shown::shown;
 
+/// `body` is text for a machine -- a file name, a protocol field, a stored
+/// value a program reads back -- and stands as it is, `reason` (a string
+/// literal) naming why it is not written in the person's formats.
+///
+/// `tools/policy/check_formats.py` keeps hand-built dates, clocks, sizes and
+/// name tables out of everything a person reads. Text no person reads says so
+/// with this call, whose reason the check reads and the compiler keeps, so
+/// tidying the comments around it never takes the reason away.
+///
+/// ```
+/// use tilo_formats::machine;
+///
+/// let name = machine!("a record's file name", format!("{:04}.json", 7));
+/// assert_eq!(name, "0007.json");
+/// ```
+#[macro_export]
+macro_rules! machine {
+    ($reason:literal, $body:expr) => {
+        $body
+    };
+}
+
 /// A phrase argument: a number selects a plural form, text reads as it is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Word {

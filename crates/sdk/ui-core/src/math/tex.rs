@@ -1,9 +1,6 @@
-//! Best-effort TeX math parser.
-//!
-//! This deliberately parses the mathematical language, not TeX's macro and
-//! page-building language. Unknown commands are preserved as upright names and
-//! reported, so a note never loses source merely because its preview cannot
-//! implement a package-specific macro.
+//! Best-effort TeX math parser. This deliberately parses the mathematical language, not TeX's macro and
+//! page-building language. Unknown commands are preserved as upright names and reported, so a note
+//! never loses source merely because its preview cannot implement a package-specific macro.
 
 use super::model::{MathExpr, Node, Row};
 
@@ -29,9 +26,8 @@ pub fn parse_tex(source: &str) -> ParseOutput {
     }
 }
 
-/// Canonical TeX emitted after a user edits the parsed tree visually.
-/// Source-mode formulas retain their original bytes; this serializer is only
-/// used once the structured editor has made a semantic change.
+/// Canonical TeX emitted after a user edits the parsed tree visually. Source-mode formulas retain their
+/// original bytes; this serializer is only used once the structured editor has made a semantic change.
 pub fn serialize_tex(expr: &MathExpr) -> String {
     let mut out = String::new();
     serialize_row(&expr.root, &mut out);
@@ -348,8 +344,8 @@ impl TexParser {
         self.parse_operator_or_symbol_command(name, command_start)
     }
 
-    /// Commands that build a structural node: fractions, roots, delimited
-    /// groups, text and alphabet-styling commands.
+    /// Commands that build a structural node: fractions, roots, delimited groups, text and
+    /// alphabet-styling commands.
     fn parse_structural_command(&mut self, name: &str) -> Option<Row> {
         Some(match name {
             "frac" | "dfrac" | "tfrac" => vec![Node::Frac {
@@ -391,8 +387,8 @@ impl TexParser {
         })
     }
 
-    /// Accent commands, over/under decorations, environments and the
-    /// limit-mode toggles that change how a following script attaches.
+    /// Accent commands, over/under decorations, environments and the limit-mode toggles that change how
+    /// a following script attaches.
     fn parse_accent_or_layout_command(&mut self, name: &str) -> Option<Row> {
         Some(match name {
             "overline" | "bar" => self.accent('¯', true),
@@ -452,9 +448,8 @@ impl TexParser {
         })
     }
 
-    /// Big operators, named functions, spacing/punctuation commands and the
-    /// final fallback: a known TeX symbol, or an unsupported command
-    /// preserved verbatim with a diagnostic.
+    /// Big operators, named functions, spacing/punctuation commands and the final fallback: a known TeX
+    /// symbol, or an unsupported command preserved verbatim with a diagnostic.
     fn parse_operator_or_symbol_command(&mut self, name: String, command_start: usize) -> Row {
         match name.as_str() {
             "sum" | "prod" | "coprod" | "bigcup" | "bigcap" | "bigvee" | "bigwedge" | "lim"

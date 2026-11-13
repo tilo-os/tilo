@@ -1,10 +1,4 @@
 //! Answering Diff & Merge's effects.
-//!
-//! The view's effect handler shares a [`Store`] with the window: what this
-//! device keeps about saving the merged result, the open-files effect a
-//! chooser answers, and what an effect asks of the window, which it does on
-//! its next frame ([`Asked`]). What an effect opens goes into the document
-//! through its dispatcher; the window follows the document.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,46 +11,25 @@ use crate::actions::{DiffmergeEffect, diff_block_fingerprint};
 use crate::doc::Session;
 use crate::resource::session;
 
-/// What an effect asked of the window, which it does on its next frame.
 pub(crate) enum Asked {
-    /// Show a view of what is open: a mode, the next or previous change, or
-    /// one change block.
     View(DiffmergeEffect),
-    /// Open the host's file chooser for the open-files effect waiting on it.
     Choose,
-    /// The samples were opened.
     Sample,
-    /// An effect opened a comparison, or says why it could not.
     Opened(Result<(), String>),
-    /// One line about a save or a folder read, for the status bar.
     Notice(String),
-    /// Two folders were compared: their listing.
     Folders(crate::folder::FolderComparison),
-    /// A capture's scenario, by name (`None` for a plain capture).
     Stage(Option<String>),
 }
 
-/// What the window and the view's effect handler share.
 pub(crate) struct Store {
-    /// The session as the document holds it; `None` for a window outside
-    /// the framework.
     pub(super) live: Option<Live<Session>>,
-    /// Where the merged result was last written, so Save writes there again
-    /// without asking. Kept on this device: a place is a fact about here,
-    /// not about the document.
     pub(super) saved_place: Option<SaveDestination>,
-    /// The merged text as it was when it was last written: equal to the
-    /// document's text means nothing is waiting to be saved.
     pub(super) saved_text: Option<String>,
-    /// The caller of the open-files effect a chooser is answering.
     pub(super) open_reply: Option<EffectReply>,
-    /// What effects asked of the window since its last frame.
     asked: Vec<Asked>,
-    /// Wakes the window to do what was asked.
     pub(super) wake: Option<ui::WakeHandle>,
 }
 
-/// The store as the window and the view's effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
@@ -71,7 +44,6 @@ impl Store {
         }))
     }
 
-    /// Ask the window for `asked` on its next frame.
     pub(crate) fn ask(&mut self, asked: Asked) {
         self.asked.push(asked);
         if let Some(wake) = &self.wake {
@@ -79,12 +51,10 @@ impl Store {
         }
     }
 
-    /// What effects asked of the window since it last looked.
     pub(super) fn take_asked(&mut self) -> Vec<Asked> {
         std::mem::take(&mut self.asked)
     }
 
-    /// The merged result while a merge is open, as the document holds it.
     pub(super) fn merged(&self) -> Option<String> {
         let state = self.live.as_ref()?.get();
         state.merge.is_some().then(|| state.merged.clone())
@@ -103,8 +73,6 @@ impl Store {
     }
 }
 
-/// Answer one of the app's effects, from a toolbar button, the palette, an
-/// agent or a script.
 pub(crate) fn answer(
     store: &Shared,
     effect: DiffmergeEffect,
@@ -193,7 +161,6 @@ pub(crate) fn answer(
     }
 }
 
-/// Open a comparison whose files were read, or say why they could not be.
 fn show_opened(
     store: &Shared,
     opened: Result<session::OpenComparison, String>,

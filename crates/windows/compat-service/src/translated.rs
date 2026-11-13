@@ -17,7 +17,6 @@ pub(crate) const ROOTFS: &str = "/opt/tilo/x86";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Run a guest command while retaining a ready, monitored FEX server.
 pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
     let Some((mode, arguments)) = arguments.split_first() else {
         return Err(io::Error::new(
@@ -195,9 +194,6 @@ impl PreparationChildren {
     }
 
     fn acquire() -> io::Result<Self> {
-        // SIG_IGN and SA_NOCLDWAIT would auto-reap children without an explicit
-        // waiter, invalidating our PID ownership between enumeration and open.
-        // Custom handlers could do the same; require the helper's default.
         let mut disposition = unsafe { std::mem::zeroed::<libc::sigaction>() };
         // SAFETY: read-only query into a valid sigaction, no process mutation.
         if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &raw mut disposition) } == -1 {
@@ -219,8 +215,6 @@ impl PreparationChildren {
         if unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &raw mut previous_subreaper) } == -1 {
             return Err(io::Error::last_os_error());
         }
-        // Check pidfd availability and signal permissions before any Wine
-        // process starts. The descriptor targets us; signal zero changes nothing.
         let self_pidfd = owned_pidfd(std::process::id().cast_signed())?;
         signal_pidfd(&self_pidfd, 0)?;
         // Also establish that waitid(P_PIDFD) is supported/permitted before
@@ -282,8 +276,6 @@ impl PreparationChildren {
                     }
                 }
             }
-            // Orphans are synchronously adopted when their parent exits.
-            // Repeat for detached grandchildren, including setsid() children.
         }
     }
 }
@@ -614,7 +606,6 @@ fn wait_for_ready(pipe: &OwnedFd, server: &mut Child, timeout: Duration) -> io::
     }
 }
 
-/// Ensure every failure path reaps the exact process this invocation spawned.
 struct ManagedChild {
     child: Child,
     process_group: bool,

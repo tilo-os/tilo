@@ -1,6 +1,6 @@
-//! The capture studio through the exported accessibility tree, as a
-//! screen-reader user or an agent meets it: the studio is modal while
-//! choosing, so a control missing from the tree is one they cannot use.
+//! The capture studio through the exported accessibility tree, as a screen-reader user or an agent
+//! meets it: the studio is modal while choosing, so a control missing from the tree is one they cannot
+//! use.
 
 use crate::a11y::Action;
 use crate::headless::FrameHarness;
@@ -66,7 +66,6 @@ fn the_capture_bar_is_named_and_operable_through_accessibility() {
     activate(&mut h, "Screen");
     assert_eq!(studio(&h).source_mode(), SourceMode::Display);
 
-    // The options open from the tree, and a choice in them applies.
     let pointer_before = studio(&h).include_pointer;
     activate(&mut h, "Options");
     activate(&mut h, "Show pointer");

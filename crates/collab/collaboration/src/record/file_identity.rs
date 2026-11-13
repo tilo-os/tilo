@@ -14,8 +14,10 @@ pub(super) fn read_or_mint(path: &Path) -> Option<uuid::Uuid> {
     match tilo_files::native::identity::read_or_mint(path, ATTRIBUTE, fresh) {
         Ok(id) => id.map(uuid::Uuid::from_bytes),
         Err(error) => {
-            // ignored-failure: the file is identified by its path instead
-            tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path");
+            tilo_failure::ignored!(
+                "the file is identified by its path instead",
+                tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path")
+            );
             None
         }
     }

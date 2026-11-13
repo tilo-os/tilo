@@ -57,15 +57,17 @@ fn record(
 
 fn status_kib(field: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix(field))?
-        .trim()
-        .strip_suffix("kB")?
-        .trim()
-        // ignored-failure: a benchmark probe of /proc: a kernel without the field measures nothing
-        .parse()
-        .ok()
+    tilo_failure::ignored!(
+        "a benchmark probe of /proc: a kernel without the field measures nothing",
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(field))?
+            .trim()
+            .strip_suffix("kB")?
+            .trim()
+            .parse()
+            .ok()
+    )
 }
 
 /// What a compile child compiles, with which engine, and how it reports.
@@ -107,8 +109,12 @@ fn compile_peak(config: &BenchConfig, modules: &[&[u8]]) -> Result<Option<f64>, 
     stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix(COMPILE_LINE))
-        // ignored-failure: a line that is not the measurement is reported below as nothing measured
-        .and_then(|v| v.parse::<f64>().ok())
+        .and_then(|v| {
+            tilo_failure::ignored!(
+                "a line that is not the measurement is reported below as nothing measured",
+                v.parse::<f64>().ok()
+            )
+        })
         .map(Some)
         .ok_or_else(|| {
             format!(

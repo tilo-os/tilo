@@ -36,6 +36,41 @@ pub fn is_shared_desktop(app: &str, record: &str) -> bool {
     app == DESKTOP_APP && record == DESKTOP_RECORD
 }
 
+/// Whether `(app, record)` is a record of the desktop app: the workspace's layout, or one person's
+/// view of it.
+#[must_use]
+pub fn is_desktop(app: &str, record: &str) -> bool {
+    app == DESKTOP_APP
+        && (record == DESKTOP_RECORD || crate::person_view::person_of(record).is_some())
+}
+
+/// Who may write `(app, record)`: every member writes the workspace's layout, and a person's view
+/// of it is that person's alone, so the others' devices and their pages show where they are looking
+/// and never move it.
+///
+/// # Errors
+/// Why `person` may not write it.
+pub fn may_write(app: &str, record: &str, person: &str) -> Result<(), NotTheirView> {
+    let owner = crate::person_view::person_of(record).filter(|_| app == DESKTOP_APP);
+    match owner {
+        Some(owner) if owner != person => Err(NotTheirView {
+            writer: person.to_owned(),
+            owner: owner.to_owned(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Why a write of a person's view of the layout was refused.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{writer} may not write {owner}'s view of the layout: a view is its person's")]
+pub struct NotTheirView {
+    /// The writer's person id.
+    pub writer: String,
+    /// The person whose view it is.
+    pub owner: String,
+}
+
 /// A workspace's shared desktop as a door that decides its writes follows it.
 pub struct DesktopGuard {
     doc: AutoCommit,
@@ -60,6 +95,11 @@ pub enum DesktopRefusal {
         "{writer} may not bind window {window} to another record: it shows its record for good"
     )]
     Rebound { writer: String, window: TabId },
+    /// It places a person's own window ([`crate::personal`]) on the workspace's desktop.
+    #[error(
+        "{writer} may not place window {window} on the shared desktop: it is a person's own and stays on their desk"
+    )]
+    Personal { writer: String, window: TabId },
     /// It is not a desktop, or not one that can be read.
     #[error("not a shared desktop: {0}")]
     Unreadable(String),
@@ -87,8 +127,23 @@ pub fn judge(
     writer: &Writer<'_>,
 ) -> Result<(), DesktopRefusal> {
     for change in doc.committed_document().get_changes(before) {
-        let seen = super::read(doc, Some(change.deps())).unwrap_or_default();
-        let left = super::read(doc, Some(&[change.hash()])).unwrap_or_default();
+        let seen_kept = super::read_as_kept(doc, Some(change.deps())).unwrap_or_default();
+        let left_kept = super::read_as_kept(doc, Some(&[change.hash()])).unwrap_or_default();
+        // One that was there before (an older build's) is no new placement: the write may be
+        // the one taking it out, or about something else.
+        let was_personal = crate::personal::personal_tabs(&seen_kept.tree);
+        if let Some(window) = crate::personal::personal_tabs(&left_kept.tree)
+            .into_iter()
+            .find(|window| !was_personal.contains(window))
+        {
+            return Err(DesktopRefusal::Personal {
+                writer: writer.person.to_owned(),
+                window,
+            });
+        }
+        let (mut seen, mut left) = (seen_kept, left_kept);
+        crate::personal::leave_out(&mut seen);
+        crate::personal::leave_out(&mut left);
         if let Some(window) = rebound_windows(&seen, &left).first() {
             return Err(DesktopRefusal::Rebound {
                 writer: writer.person.to_owned(),

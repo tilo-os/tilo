@@ -25,10 +25,7 @@ pub struct Composed {
     rect: Rect,
     element: Option<Element>,
     invalidated: bool,
-    /// The owner asked for a fresh composition since the last was built.
-    /// Unlike `invalidated`, reading the structure flag leaves it set.
     stale: bool,
-    /// The language the composition was built in ([`I18nManager::revision`]).
     language: u64,
     /// The host's input capabilities, as last told: each composition built
     /// afresh starts with them, not with a mouse's defaults.
@@ -55,11 +52,6 @@ impl Composed {
         element.build_layout(taffy, theme, node_map)
     }
 
-    /// Lay out the composition kept from the last layout, or what `build`
-    /// makes where there is none, the owner invalidated it or the language
-    /// changed since. A relayout (a resize, a theme, a parent's reflow) then
-    /// keeps the controls, and the hover, press and focus they hold; the
-    /// owner invalidates when what it builds the composition from changes.
     pub fn build_layout_kept(
         &mut self,
         build: impl FnOnce() -> Element,
@@ -74,7 +66,6 @@ impl Composed {
         self.build_layout(element, taffy, theme, node_map)
     }
 
-    /// Swap in `element` without laying it out.
     pub fn replace(&mut self, element: Element) -> &mut (dyn Widget + 'static) {
         self.invalidated = false;
         self.stale = false;
@@ -96,14 +87,10 @@ impl Composed {
         }
     }
 
-    /// Take the composition out, for an owner that keeps it across layouts
-    /// and lays it out again with [`Self::build_layout`].
     pub fn take(&mut self) -> Option<Element> {
         self.element.take()
     }
 
-    /// Rebuild the composition at the next layout: the owner's state that it
-    /// is built from changed. A fresh composition settles it.
     pub fn invalidate(&mut self) {
         self.invalidated = true;
         self.stale = true;
@@ -114,7 +101,6 @@ impl Composed {
         self.element = None;
     }
 
-    /// Store the owner's box and place the composition inside it.
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = layout_rect(taffy, node, origin);
         if let Some(element) = &mut self.element
@@ -124,25 +110,20 @@ impl Composed {
         }
     }
 
-    /// The owner's laid-out box.
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
     }
 
-    /// The current composition, once built.
     #[must_use]
     pub fn element(&self) -> Option<&(dyn Widget + 'static)> {
         self.element.as_deref()
     }
 
-    /// The current composition, once built.
     pub fn element_mut(&mut self) -> Option<&mut (dyn Widget + 'static)> {
         self.element.as_deref_mut()
     }
 
-    /// Sync the composition; one built in another language is rebuilt at
-    /// the next layout.
     pub fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.element.is_some() && self.language != I18nManager::revision() {
             self.invalidate();
@@ -190,8 +171,6 @@ impl Composed {
             .collect()
     }
 
-    /// Whether the owner invalidated the composition or the composition
-    /// asked to be rebuilt. Reading clears both.
     pub fn take_structure_dirty(&mut self) -> bool {
         let invalidated = std::mem::take(&mut self.invalidated);
         let child = self
@@ -342,7 +321,6 @@ mod tests {
         );
     }
 
-    /// Records the input capabilities it is told.
     struct Probe(std::rc::Rc<std::cell::Cell<Option<InteractionEnvironment>>>);
 
     impl Widget for Probe {

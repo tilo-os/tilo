@@ -62,9 +62,10 @@ class Install(unittest.TestCase):
         (self.release / "SHA256SUMS").write_text(sums or f"{digest}  {self.archive.name}\n")
         run("openssl", "dgst", "-sha256", "-sign", self.key, "-out", self.release / "SHA256SUMS.sig", self.release / "SHA256SUMS")
 
-    def install(self, **env):
+    def install(self, *args, **env):
         return subprocess.run(
-            ["sh", SCRIPT],
+            ["sh", "-s", *args],
+            input=SCRIPT.read_text(),
             capture_output=True,
             text=True,
             env={
@@ -88,6 +89,58 @@ class Install(unittest.TestCase):
         self.assertIn("Add", done.stderr, "says how to reach it when its directory is not on PATH")
         self.assertIn("tilo login", done.stderr, "says what comes next")
         self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilo"], "no leftovers")
+
+    def test_plain_http_only_from_this_computer(self):
+        import functools
+        import http.server
+        import threading
+
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(self.release.parent))
+        handler.log_message = lambda *args: None
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        done = self.install(TILO_RELEASES=f"http://127.0.0.1:{port}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(run(self.installed).stdout, b"tilo 0.0.0\n")
+        self.installed.unlink()
+        # A name that only starts like this computer's leaves it: refused
+        # before anything is asked of it.
+        done = self.install(TILO_RELEASES=f"http://127.0.0.1.example:{port}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(self.installed.exists())
+
+    def test_arguments_run_the_installed_command_by_its_path_where_path_does_not_name_it(self):
+        # `curl … | sh -s login CODE` on a fresh machine: ~/.local/bin is not on PATH, and the
+        # agent's shell never rereads the profile that would add it.
+        self.publish(b'#!/bin/sh\necho "ran tilo $*"; read -r line && echo "read $line"\nexit 3\n')
+        done = self.install("login", "K7Q-MX2P", "--site", "https://tilo.example")
+        self.assertEqual(done.returncode, 3, "the command's own status is the install's")
+        self.assertEqual(done.stdout, "ran tilo login K7Q-MX2P --site https://tilo.example\n",
+                         "its input is not the rest of the script")
+        self.assertNotIn(str(self.installed.parent), os.environ["PATH"].split(":"))
+        self.assertNotIn("Next:", done.stderr, "what comes next is the command it ran")
+
+    def test_a_site_serving_it_with_its_own_key_in_place_needs_nothing_else(self):
+        # A copy of tilo.sh (os/containers/tilo-sh/stack.sh) serves this script with the key it
+        # signs its releases with in place of Tilo's, so its setup command works as pasted, in a
+        # shell that set nothing, and runs the tilo it installed, not an older one on PATH.
+        old = pathlib.Path(self.scratch.name) / "old"
+        old.mkdir()
+        (old / "tilo").write_text("#!/bin/sh\necho old tilo\n")
+        (old / "tilo").chmod(0o755)
+        self.publish(b'#!/bin/sh\necho "ran tilo $*"\n')
+        script = SCRIPT.read_text().replace((REPO / "keys/cosign.pub").read_text().strip(), self.pub.read_text().strip())
+        done = subprocess.run(
+            ["sh", "-s", "login", "K7Q-MX2P"],
+            input=script,
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{old}:{os.environ['PATH']}", "HOME": str(self.home), "TILO_RELEASES": f"file://{self.release.parent}"},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "ran tilo login K7Q-MX2P\n")
 
     def test_another_directory_and_an_update_in_place(self):
         target = self.home / "bin"

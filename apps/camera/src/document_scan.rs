@@ -62,8 +62,6 @@ pub struct Page {
     pub crop: Crop,
     pub rotation: Rotation,
     pub ocr: Option<Document>,
-    /// The automatic correction used for the retained OCR result. Kept next
-    /// to it so status/preview UX can be honest and edits invalidate both.
     pub ocr_deskew_degrees: Option<f64>,
 }
 
@@ -136,7 +134,6 @@ impl Page {
         )
     }
 
-    /// Applies shared crop-editor coordinates to this page.
     pub fn set_normalized_crop(&mut self, selection: CropSelection) -> Result<(), &'static str> {
         let width = self.original.width;
         let height = self.original.height;
@@ -238,9 +235,6 @@ impl ScanSession {
 mod tests {
     use super::*;
 
-    /// A scanner's page is decoded by the toolkit's codec, whatever the
-    /// scanner wrote: a PNG and a JPEG of the same size both come back as
-    /// the page's pixels, and bytes that are no image are refused.
     #[test]
     fn a_scanned_page_is_decoded_by_the_toolkits_codec() {
         let pixels = [30_u8, 60, 90, 255].repeat(12 * 8);

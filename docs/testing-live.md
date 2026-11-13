@@ -1,13 +1,13 @@
 # Live-render testing
 
-Hermetic tests prove **layout**, not that a backend works. Two blind spots let
-the maps "tiles never load" bug ship green:
+Hermetic tests prove **layout**, not that a backend works. Two blind spots leave
+a broken backend green:
 
-- **Unit tests hit a mock.** They fetch from a local/closed HTTP endpoint, so the
-  real `network → PNG decode → draw` path was never run.
-- **`--shots` renders offline SAMPLE data.** The `--shots` screenshot uses the
-  offline app (no worker, no network, stylised vector basemap), so it looks fully
-  populated even when live imagery is completely broken.
+- **Unit tests hit a mock.** They fetch from a local or closed HTTP endpoint, so the
+  real `network → PNG decode → draw` path never runs.
+- **`--shots` renders offline sample data.** It uses the offline app (no worker, no
+  network, a stylised vector basemap), so it looks fully populated while live
+  imagery is broken.
 
 ## The rule
 
@@ -23,13 +23,11 @@ its unit tests, both of:
    placeholder and not a uniform fill, and that it *changed* vs. the pre-load
    frame.
 
-Pixel variety alone cannot tell imagery from a refusal. A provider that stops
-serving can still answer every request with a valid, colourful PNG: CARTO's
-"API KEY REQUIRED" tile arrived with HTTP 200 and `image/png`, and the maps lane
-stayed green while it was on screen. Assert on what the backend actually
-returned as well. The maps lane requires the tiles the worker cached for
-distinct city-centre coordinates to be distinct images, and the tile layer
-records error statuses and non-PNG answers as rejected failures, not as imagery.
+Pixel variety alone cannot tell imagery from a refusal: a provider that stops
+serving can answer with a valid, colourful PNG at HTTP 200. Assert on what the
+backend returned as well. The maps lane requires the tiles cached for distinct
+city-centre coordinates to be distinct images, and the tile layer records error
+statuses and non-PNG answers as rejected failures, not as imagery.
 
 Both must remain runnable through a named, documented opt-in lane. Network tests
 must use `#[ignore]` rather than returning early: ordinary CI should report that
@@ -42,8 +40,8 @@ ignored tests so missing infrastructure fails closed.
 
 ## The reusable harness
 
-`maps/src/livetest.rs` (`maps::livetest`) is the template. It is generic over
-`ui::widget::Widget`, so any app can reuse the pattern:
+[`apps/maps/tests/livetest.rs`](../apps/maps/tests/livetest.rs) is the template. It
+is generic over `ui::widget::Widget`, so any app can reuse the pattern:
 
 - `Harness::new((w, h))` — one render context (theme, text cache, CRDT doc).
 - `Harness::pump_frame(widget, &mut scene)` — one real frame, exactly like
@@ -63,7 +61,7 @@ ignored tests so missing infrastructure fails closed.
 # Full plumbing + live-render pixel inspection (needs real network + a GPU).
 # Writes maps-live-{before,after}.png to $MAPS_LIVE_OUT (default apps/maps/live-out/).
 MAPS_LIVE_OUT=apps/maps/live-out \
-  tilo-build test -p maps --test live_maps -- \
+  cargo test -p maps --test live_maps -- \
   --ignored --nocapture --test-threads 1
 ```
 
@@ -71,7 +69,7 @@ The lane loads about one viewport of OpenStreetMap Standard tiles per case,
 the interactive scale the OSMF tile policy permits. Do not widen it into
 area sweeps.
 
-Ordinary `tilo-build test -p maps` compiles these cases but reports them as
+Ordinary `cargo test -p maps` compiles these cases but reports them as
 ignored. The lane drives the whole app rather than duplicating a weaker raw
 `load_tile` network smoke test.
 

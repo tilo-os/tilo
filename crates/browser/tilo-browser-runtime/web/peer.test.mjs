@@ -4,6 +4,8 @@ import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, 
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
 import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
+import {failureCause} from './failure-screen.mjs';
+import {hostUnreachable} from './session-refusal.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -111,7 +113,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
           refreshes: 0,
           snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1},
             ...(peer.transport ? {transport: {phase: peer.transport}} : {})},
-            ...(peer.entry ? {entry: peer.entry} : {})}),
+            ...(peer.entry ? {entry: peer.entry} : {}),
+            ...(peer.error ? {error: peer.error, errorCode: peer.errorCode} : {})}),
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
           joinWorkspace: workspace => { peer.workspace = workspace; },
@@ -387,6 +390,64 @@ test('a session that cannot reach the host its site names as it is goes on tryin
   runtime.peer.emit('ready');
   assert.ok(!states.includes('failed'), states.join());
   assert.equal(peer.getSnapshot().phase, 'ready');
+});
+
+test('a host that refuses the connection is said at once, not after a timeout, and a session that gets through after is in', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const began = Date.now();
+  const ready = peer.whenReady({timeoutMs: HANG_BOUND_MS, capMs: HANG_BOUND_MS});
+  runtime.peer.transport = 'offline';
+  Object.assign(runtime.peer, {error: 'websocket: connection refused', errorCode: 'transport-ended'});
+  runtime.peer.emit('incomplete');
+  const error = await ready.then(() => assert.fail('let in'), failed => failed);
+  assert.ok(Date.now() - began < 1000, 'known in well under the wait');
+  assert.equal(failureCause(error), 'unreachable', error.message);
+  assert.match(error.message, /https:\/\/host\.example:8443/);
+  assert.match(error.message, /websocket: connection refused/);
+  assert.ok(hostUnreachable(error), 'nothing the host refused: a kept membership stays');
+  // The session goes on trying; once it gets through, it is a session like any other.
+  runtime.peer.transport = 'connected';
+  delete runtime.peer.error;
+  runtime.peer.emit('ready');
+  assert.equal(peer.getSnapshot().phase, 'ready');
+  runtime.peer.transport = 'offline';
+  runtime.peer.emit('incomplete');
+  assert.equal(peer.getSnapshot().phase, 'incomplete', 'a dropped connection of a session that was in is no unreachable host');
+  await peer.dispose();
+});
+
+test('a door the page cannot reach is said at once, after its site\'s host is asked who it is', async t => {
+  t.after(forgetSiteHosts);
+  nameSiteHost(home());
+  const runtime = fakeRuntime();
+  runtime.calls.entry = {outcome: 'waiting'};
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; throw new TypeError('Failed to fetch'); };
+  const began = Date.now();
+  const entering = joinWorkspace(doorOptions(runtime));
+  await until(() => runtime.peer, 'the session');
+  runtime.peer.transport = 'offline';
+  runtime.peer.emit('incomplete');
+  await assert.rejects(entering, failed => failed.code === 'unanswered' || failed.code === 'unavailable');
+  assert.ok(Date.now() - began < 1000, 'known in well under the wait');
+  assert.equal(asked, 1);
+  assert.ok(runtime.peer.disposed, 'the session is let go');
+});
+
+test('a host that answers the page that it does not let it in is said at once', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  runtime.peer.transport = 'connected';
+  const ready = peer.whenReady({timeoutMs: HANG_BOUND_MS, capMs: HANG_BOUND_MS});
+  await settle();
+  Object.assign(runtime.peer, {error: 'device not in workspace membership', errorCode: 'permission-required'});
+  runtime.peer.emit('admitting');
+  const error = await ready.then(() => assert.fail('let in'), failed => failed);
+  assert.equal(error.code, 'not-let-in');
+  assert.equal(failureCause(error), 'host-refused');
+  assert.equal(error.sessionError, 'device not in workspace membership');
+  await peer.dispose();
 });
 
 test('a site naming its host in a form the page cannot read stops the page', () => {
@@ -922,7 +983,8 @@ test('a host still replaying the workspace is waited for; one that says nothing 
   const peer = await connect(options(runtime, memoryStore()));
   // Each record arrives inside the wait, though the replay as a whole takes
   // several times as long: the page waits for it, and is in once it is ready.
-  const replaying = peer.whenReady({timeoutMs: 80, capMs: 5000});
+  const heard = [];
+  const replaying = peer.whenReady({timeoutMs: 80, capMs: 5000, onProgress: records => heard.push(records)});
   for (let record = 0; record < 6; record += 1) {
     await new Promise(resolve => setTimeout(resolve, 40));
     runtime.peer.records.push({app: 'so.tilo.notes', record: `note-${record}`});
@@ -930,6 +992,7 @@ test('a host still replaying the workspace is waited for; one that says nothing 
   }
   runtime.peer.emit('ready');
   assert.equal((await replaying).phase, 'ready');
+  assert.deepEqual(heard, [1, 2, 3, 4, 5, 6], 'the page hears the workspace arrive');
   await peer.dispose();
 
   const quiet = fakeRuntime({phase: 'admitting'});

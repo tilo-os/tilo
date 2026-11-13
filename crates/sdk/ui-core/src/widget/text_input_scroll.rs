@@ -8,14 +8,10 @@ impl TextInput {
         self.scroll_y
     }
 
-    /// The scroll the text is drawn at: where it is scrolled, and past an
-    /// end by the give fingers pull it there with
-    /// ([`crate::motion::RubberBand`]).
     pub(crate) fn shown_scroll_y(&self) -> f64 {
         self.scroll_y + self.wheel_glide.give(crate::motion::frame_now())
     }
 
-    /// No-op for a single-line field.
     pub fn scroll_by(&mut self, dy: f64) {
         if !self.multiline {
             return;
@@ -74,7 +70,6 @@ impl TextInput {
         }
     }
 
-    /// A glide after the fingers lifted moves the text on, frame by frame.
     pub(super) fn advance_wheel_glide(&mut self) {
         if !self.wheel_glide.is_active() {
             return;

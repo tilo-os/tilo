@@ -44,25 +44,22 @@ pub struct HeaderRowMetrics {
     pub inset: f64,
     /// Gap between neighbours in the row (`s2`).
     pub gap: f64,
-    /// Inset of a title with no leading button: the content gutter
-    /// (`rhythm.group`), so the title lines up with the content under it.
+    /// Inset of a title with no leading button: the content gutter (`rhythm.group`), so the title lines
+    /// up with the content under it.
     pub gutter: f64,
 }
 
 impl HeaderRowMetrics {
-    /// The row for a fine pointer. A window that knows its input resolves
-    /// it with [`Self::resolve_for`].
+    /// The row for a fine pointer. A window that knows its input resolves it with
+    /// [`Self::resolve_for`].
     #[must_use]
     pub fn resolve(theme: &Theme) -> Self {
         Self::resolve_for(theme, crate::interaction::InteractionEnvironment::POINTER)
     }
 
-    /// The row for a person using `input`: a shell button is a square of
-    /// the minimum target `input` needs, as an app's buttons are (a coarse
-    /// pointer grows the face to it; a fine one keeps `min_pointer_target`
-    /// and reaches the target through its hit rect). The row keeps its
-    /// height while the grown square fits it with `s1` above and below, so
-    /// touch moves nothing under the row.
+    /// The row for a person using `input`: a shell button is a square of the minimum target `input`
+    /// needs, as an app's buttons are (a coarse pointer grows the face to it; a fine one keeps
+    /// `min_pointer_target` and reaches the target through its hit rect).
     #[must_use]
     pub fn resolve_for(theme: &Theme, input: crate::interaction::InteractionEnvironment) -> Self {
         let pointer = f64::from(crate::tokens::Metrics::BASE.min_pointer_target);
@@ -104,9 +101,8 @@ impl HeaderRowMetrics {
         self.trailing_chip_from(row, index, self.inset)
     }
 
-    /// [`Self::trailing_chip`] measured `edge` in from the row's trailing end: the
-    /// content gutter where the row's controls keep the gutter its title starts at,
-    /// the inset beside a sidebar.
+    /// [`Self::trailing_chip`] measured `edge` in from the row's trailing end: the content gutter where
+    /// the row's controls keep the gutter its title starts at, the inset beside a sidebar.
     #[must_use]
     pub fn trailing_chip_from(&self, row: Rect, index: usize, edge: f64) -> Rect {
         let y = row.y0 + (row.height() - self.chip) / 2.0;
@@ -121,7 +117,7 @@ impl Default for HeaderRowMetrics {
     }
 }
 
-/// The geometry of one header row. See the module docs.
+/// The geometry of one header row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeaderRowFace {
     /// The whole row.
@@ -130,19 +126,16 @@ pub struct HeaderRowFace {
     pub toggle: Rect,
     /// The Back button, or `Rect::ZERO`.
     pub back: Rect,
-    /// Where the title may stand: from the title's start to the trailing
-    /// buttons. The title takes its measured width from the leading end.
+    /// Where the title may stand: from the title's start to the trailing buttons.
     pub title: Rect,
     /// Where the column's actions may stand, trailing-aligned: the same run
     /// as the title until [`Self::split`] gives the title its width.
     pub actions: Rect,
     /// The window's History control, or `Rect::ZERO`.
     pub history: Rect,
-    /// A trailing shell button before History (the inspector toggle), or
-    /// `Rect::ZERO`.
+    /// A trailing shell button before History (the inspector toggle), or `Rect::ZERO`.
     pub trailing: Rect,
-    /// The hairline under the row, or `Rect::ZERO` for a row without one (a
-    /// sidebar, a drawer).
+    /// The hairline under the row, or `Rect::ZERO` for a row without one (a sidebar, a drawer).
     pub rule: Rect,
     metrics: HeaderRowMetrics,
     leading: usize,
@@ -151,8 +144,7 @@ pub struct HeaderRowFace {
 }
 
 impl HeaderRowFace {
-    /// The header row across the top of `area`, with a rule under it and no
-    /// shell buttons yet.
+    /// The header row across the top of `area`, with a rule under it and no shell buttons yet.
     #[must_use]
     pub fn new(area: Rect, theme: &Theme) -> Self {
         let metrics = HeaderRowMetrics::resolve(theme);
@@ -211,8 +203,8 @@ impl HeaderRowFace {
         self
     }
 
-    /// Put the window's History control in the row's trailing corner (a
-    /// trailing chip placed before it moves one place in).
+    /// Put the window's History control in the row's trailing corner (a trailing chip placed before it
+    /// moves one place in).
     #[must_use]
     pub fn with_history(mut self) -> Self {
         if self.trailing.width() > 0.0 {
@@ -230,8 +222,8 @@ impl HeaderRowFace {
         self
     }
 
-    /// [`Self::with_history`] where the host offered the window's History
-    /// control (`shown`: [`crate::widget::HistoryOpener::is_shown`]).
+    /// [`Self::with_history`] where the host offered the window's History control (`shown`:
+    /// [`crate::widget::HistoryOpener::is_shown`]).
     #[must_use]
     pub fn with_history_if(self, shown: bool) -> Self {
         if shown { self.with_history() } else { self }
@@ -244,8 +236,8 @@ impl HeaderRowFace {
         self
     }
 
-    /// Start the title at the shell buttons' inset instead of the content
-    /// gutter (a sidebar's title lines up with its rows, not with content).
+    /// Start the title at the shell buttons' inset instead of the content gutter (a sidebar's title
+    /// lines up with its rows, not with content).
     #[must_use]
     pub fn with_inset_title(mut self) -> Self {
         self.gutter_title = false;
@@ -260,8 +252,6 @@ impl HeaderRowFace {
         rect
     }
 
-    /// The edge the row's trailing shell buttons keep from its end: the gutter its
-    /// title starts at where it does, the buttons' inset beside a sidebar.
     fn trailing_inset(&self) -> f64 {
         if self.gutter_title {
             self.metrics.gutter
@@ -294,8 +284,6 @@ impl HeaderRowFace {
                 - f64_of_usize(self.trailing_count) * (m.chip + m.gap)
                 + m.gap
         } else if self.gutter_title {
-            // The actions end at the gutter the title starts at: the bar's leading and
-            // trailing controls keep the same edge.
             self.row.x1 - m.gutter
         } else {
             self.row.x1 - m.inset
@@ -311,15 +299,15 @@ impl HeaderRowFace {
         Rect::new(area.x0, self.row.y1.min(area.y1), area.x1, area.y1)
     }
 
-    /// The History control's rect: where a painted app paints
-    /// [`paint_history_control`] and routes its presses.
+    /// The History control's rect: where a painted app paints [`paint_history_control`] and routes its
+    /// presses.
     #[must_use]
     pub fn history_rect(&self) -> Rect {
         self.history
     }
 
-    /// Give the title `width` (its measured width) and the actions what is
-    /// left after it: `(title, actions)`.
+    /// Give the title `width` (its measured width) and the actions what is left after it: `(title,
+    /// actions)`.
     #[must_use]
     pub fn split(&self, width: f64) -> (Rect, Rect) {
         let band = self.title;
@@ -349,9 +337,8 @@ impl HeaderRowFace {
         );
     }
 
-    /// Paint `title` (and a quiet `count` after it) in the title band,
-    /// elided to fit before `actions_x0`, the leading edge of what the
-    /// actions took (`None`: the whole band).
+    /// Paint `title` (and a quiet `count` after it) in the title band, elided to fit before
+    /// `actions_x0`, the leading edge of what the actions took (`None`: the whole band).
     pub fn paint_title(
         &self,
         scene: &mut Scene,
@@ -405,9 +392,8 @@ fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64
     (f64::from(w) + 2.0 * pad, f64::from(h) + pad / 2.0)
 }
 
-/// Paint a header title in `band`: `Heading`, primary ink, vertically
-/// centred and elided to the band; the count follows as a quiet pill in
-/// `Caption` tabular figures (the `SectionHeader::count` look).
+/// Paint a header title in `band`: `Heading`, primary ink, vertically centred and elided to the band;
+/// the count follows as a quiet pill in `Caption` tabular figures (the `SectionHeader::count` look).
 pub(crate) fn paint_title_in(
     scene: &mut Scene,
     transform: Affine,
@@ -472,10 +458,8 @@ pub(crate) fn paint_title_in(
     );
 }
 
-/// Paint the window's History control in `rect`: the History glyph as a
-/// Plain icon button, on (the selection lift) while History shows. The same
-/// face `NavShell` and the window's own bar draw; a painted app routes its
-/// presses through a [`crate::widget::HistoryOpener`].
+/// Paint the window's History control in `rect`: the History glyph as a Plain icon button, on (the
+/// selection lift) while History shows.
 pub fn paint_history_control(
     scene: &mut Scene,
     transform: Affine,

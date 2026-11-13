@@ -17,19 +17,11 @@ use crate::date;
 use crate::draw_util::{hairline, line_height, text_centered};
 use crate::model::{Id, Palette};
 
-/// Month-grid geometry for the current theme, solved once per frame and
-/// shared by the weekday header, the day cells, their chips and the hit
-/// rects pushed alongside them.
 struct MonthMetrics {
-    /// Weekday header row height.
     header_h: f64,
-    /// Inset of the day number and the chips from the cell's edges.
     inset: f64,
-    /// Radius of the today disc; every day number is centred on its axis.
     pill_r: f64,
-    /// Top of the first event chip inside a cell (also the `OpenDay` strip).
     chips_top: f64,
-    /// Event chip height and stacking pitch.
     chip_h: f64,
     chip_pitch: f64,
     weekday: TextStyle,
@@ -63,7 +55,6 @@ impl MonthMetrics {
     }
 }
 
-/// One visible event in a month cell, as the chip painter needs it.
 struct CellEvent {
     id: Id,
     title: String,
@@ -86,7 +77,6 @@ impl CellEvent {
 
 impl CalendarApp {
     pub(super) fn draw_month(&self, ctx: &mut PaintCtx<'_>, area: Rect) -> Vec<(Rect, Action)> {
-        // The day an event's chip is being dragged over, while one is.
         let dropped_on = self
             .chip_drag
             .as_ref()
@@ -102,7 +92,6 @@ impl CalendarApp {
         let grid_top = area.y0 + m.header_h;
         let cell_h = (area.height() - m.header_h) / f64::from(rows);
 
-        // Weekday heads share the day numbers' leading inset.
         for (i, weekday) in ui::format::week().into_iter().enumerate() {
             let label = ui::format::weekday_short(weekday);
             let x = area.x0 + cell_w * i as f64;
@@ -133,8 +122,6 @@ impl CalendarApp {
             self.draw_month_cell(ctx, &m, cell, (day, events), dropped_on, &mut hits);
         }
 
-        // Grid rules once, over the cell grounds, derived from the window
-        // ground they stand on.
         for col in 0..=cols {
             let x = if col == cols {
                 area.x1 - 1.0
@@ -166,8 +153,6 @@ impl CalendarApp {
         hits
     }
 
-    /// One day cell: hit targets, the chosen-day lift, the day number (on
-    /// the inverted disc for today) and the cell's chips.
     fn draw_month_cell(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -180,9 +165,6 @@ impl CalendarApp {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
 
-        // Cell-level click targets go FIRST so the chips drawn below win the
-        // reverse (topmost-last) hit scan; the date-number strip in turn
-        // wins over the empty cell body and ends where the first chip starts.
         hits.push((cell, Action::PickDate(day)));
         hits.push((
             Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + m.chips_top),
@@ -194,9 +176,6 @@ impl CalendarApp {
         let is_anchor = day == self.anchor;
         let weekend = day.weekday().num_days_from_monday() >= 5;
 
-        // The chosen day is the selection lift of the window ground, and the
-        // day an event being dragged would land on shows the same lift, so the
-        // drop reads as the place the event will be.
         let cell_ground = if is_anchor || dropped_on == Some(day) {
             ctx.fill_rect(cell, c.intent.selection);
             c.intent.selection
@@ -230,9 +209,6 @@ impl CalendarApp {
         Self::draw_month_cell_chips(ctx, m, (cell, cell_ground), (day, &events), hits);
     }
 
-    /// The event chips inside one day cell, clipped to it. Both kinds are a
-    /// wash of the calendar colour over the cell's ground: an all-day chip a
-    /// deeper one spanning the day, a timed chip a light one with a dot.
     fn draw_month_cell_chips(
         ctx: &mut PaintCtx<'_>,
         m: &MonthMetrics,
@@ -250,9 +226,6 @@ impl CalendarApp {
             ctx.transform,
             &cell,
         );
-        // Slots that fit below the day number, at most three. When the day
-        // has more events than slots, the last slot carries the "+N more"
-        // line instead of a chip, but at least one chip is always drawn.
         let cell_h = cell.height();
         let slots = (((cell_h - m.chips_top) / m.chip_pitch).floor().max(0.0) as usize).clamp(1, 3);
         let max_chips = if events.len() > slots {
@@ -305,8 +278,6 @@ impl CalendarApp {
             } else {
                 let tinted = c.tinted_chip_on(cell_ground, color, 0.18, SMALL_TEXT_MIN_CONTRAST);
                 card(ctx.scene, ctx.transform, chip, radius, tinted.fill);
-                // A narrow cell gives the marker's room to the title: the
-                // chip's tint already carries the calendar's colour.
                 let text_x = if density.chip_marker() {
                     let dot = Point::new(chip.x0 + pad + dot_r, chip.center().y);
                     crate::draw_util::disc(ctx, dot, dot_r, color);
@@ -314,8 +285,6 @@ impl CalendarApp {
                 } else {
                     chip.x0 + pad
                 };
-                // The start time leads when the chip has room for it; a
-                // narrow cell keeps the title, which says more.
                 let timed = format!("{} {}", date::fmt_time(&event.start), event.title);
                 let room = chip.x1 - pad - text_x;
                 let label = if density.chip_marker()

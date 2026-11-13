@@ -202,8 +202,10 @@ impl super::InvocationEnvelope {}
 /// connection carrying it is, as its app says.
 fn continuation_tab(route: &CrdtRoute) -> Option<u64> {
     let tab = route.record_id.strip_prefix("continuation:")?;
-    // ignored-failure: a route that says `continuation:` and then something that is not a tab number names no window this session holds
-    tab.parse().ok()
+    tilo_failure::ignored!(
+        "a route that says `continuation:` names no window unless a tab number follows",
+        tab.parse().ok()
+    )
 }
 
 #[cfg(test)]

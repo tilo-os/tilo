@@ -141,8 +141,10 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Landing for Arriving<T, ReadFa
     }
 
     fn begin(&self, from: Source) {
-        // ignored-failure: the restart's completion is the query's own; its lander publishes the answer
-        let _ = Arriving::begin(self, from);
+        let _ = tilo_failure::ignored!(
+            "the restart's completion is the query's own, and its lander publishes the answer",
+            Arriving::begin(self, from)
+        );
     }
 }
 

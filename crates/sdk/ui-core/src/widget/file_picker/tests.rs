@@ -10,7 +10,6 @@ fn cursor_at(p: Point) -> WindowEvent {
 
 use crate::synthetic_input::mouse_press;
 
-/// Exercises the real `std::fs::read_dir` path rather than a mock.
 fn temp_tree() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
@@ -36,15 +35,12 @@ fn picker_opens_as_modal_and_resolves_open_or_cancel() {
     fn new_picker_reads_initial_dir_entries() {
         let (_g, root) = temp_tree();
         let picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
-        // nested (dir), alpha.txt, beta.txt — directories sort first.
         assert_eq!(picker.entries().len(), 3);
         assert!(picker.entries()[0].is_dir);
         assert_eq!(picker.entries()[0].name, "nested");
     }
 
     fn cancel_returns_none() {
-        // Cancelled is what the host translates to `oneshot::send(None)`
-        // for the FileChooser response.
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
         picker.click_cancel();
@@ -56,7 +52,6 @@ fn picker_opens_as_modal_and_resolves_open_or_cancel() {
     fn open_returns_selected_paths() {
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
-        // Pick `alpha.txt` (after directories, so index 1).
         let target = root.join("alpha.txt");
         assert!(picker.select_by_path(&target));
         picker.click_open();
@@ -367,7 +362,6 @@ fn directory_mode_pointer_and_keyboard_confirmation() {
             .with_mode(FilePickerMode::Directory)
             .settled();
 
-        // An empty folder starts on search; Cancel and the choice follow.
         assert_eq!(picker.focus, Some(PickerFocus::Search));
         dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
         settle(&mut picker);
@@ -546,7 +540,6 @@ fn pointer_rows_and_footer_buttons_navigate_select_and_resolve() {
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
         picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        // Row 0 is the `nested` directory (dirs sort first).
         let center = picker.entry_rect(0).expect("row 0").center();
         dispatch(&mut picker, &cursor_at(center));
         settle(&mut picker);
@@ -600,7 +593,6 @@ fn pointer_rows_and_footer_buttons_navigate_select_and_resolve() {
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
         picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        // entries: [nested(dir), alpha.txt(1), beta.txt(2)]. Select both files.
         let r1 = picker.entry_rect(1).unwrap().center();
         dispatch(&mut picker, &cursor_at(r1));
         settle(&mut picker);
@@ -681,8 +673,6 @@ fn save_mode_filename_resolves_and_rejects_escapes() {
             settle(&mut picker);
         }
         assert_eq!(picker.filename(), "new.txt");
-        // Backspace takes back one character as a person sees it, and an
-        // input method's commit lands at the caret.
         dispatch(
             &mut picker,
             &key_named(winit::keyboard::NamedKey::Backspace),
@@ -749,8 +739,6 @@ fn save_mode_filename_resolves_and_rejects_escapes() {
         Widget::set_focus(&mut picker, true);
         assert!(crate::ime::ImeWindowState::from_widget(&picker).is_some());
         let original = picker.ime_edit_fingerprint(&[7; 32]).unwrap();
-        // Save starts on Filename. Tab leaves it for the next modal control;
-        // Shift+Tab returns to the exact editable target.
         dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
         settle(&mut picker);
         assert_eq!(picker.focus, Some(PickerFocus::Cancel));
@@ -831,7 +819,6 @@ fn save_mode_filename_resolves_and_rejects_escapes() {
             );
             assert_eq!(picker.current_dir(), folder.as_path(), "{typed:?}");
         }
-        // A trailing slash names a folder: open it, keep the dialog up.
         let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
             .with_mode(FilePickerMode::Save)
             .with_filename("nested/")
@@ -841,7 +828,6 @@ fn save_mode_filename_resolves_and_rejects_escapes() {
         assert_eq!(picker.take_outcome(), None);
         assert_eq!(picker.current_dir(), root.join("nested").as_path());
         assert_eq!(picker.filename(), "");
-        // Fixing the name takes the reason away.
         let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
             .with_mode(FilePickerMode::Save)
             .with_filename("missing/a.txt")
@@ -948,7 +934,6 @@ fn saving_over_an_existing_file_asks_first() {
             vec![("Cancel".to_owned(), true), ("Replace".to_owned(), false)],
             "Cancel holds focus, so Enter alone never replaces"
         );
-        // Typing does not reach the name behind the prompt.
         dispatch(&mut picker, &key_char("x"));
         settle(&mut picker);
         assert_eq!(picker.filename(), "alpha.txt");
@@ -1140,7 +1125,6 @@ fn the_name_field_selects_all_like_every_text_field() {
         "Ctrl+A selects the name, typing replaces it"
     );
 
-    // Away from the field, then three clicks on it select its line.
     dispatch(&mut picker, &key_named(NamedKey::Tab));
     settle(&mut picker);
     let field = picker.filename_rect().center();
@@ -1189,8 +1173,6 @@ fn shift() -> winit::event::Modifiers {
     winit::event::Modifiers::from(state)
 }
 
-/// `n` numbered files so the list overflows a short dialog and
-/// exercises scrolling.
 fn temp_many(n: usize) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
@@ -1233,7 +1215,6 @@ fn listing_filters_and_scroll_window_rows() {
                 FileFilter::all(),
             ])
             .settled();
-        // Directory + the png survive; the txt is filtered out.
         let names: Vec<_> = picker.entries().iter().map(|e| e.name.clone()).collect();
         assert!(names.contains(&"sub".to_string()));
         assert!(names.contains(&"a.png".to_string()));
@@ -1428,7 +1409,6 @@ fn keyboard_focus_cycles_selects_and_types_ahead() {
         let (_g, root) = temp_tree();
         let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
         picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        // ArrowDown selects entry 0 (the `nested` directory); Enter navigates.
         dispatch(
             &mut picker,
             &key_named(winit::keyboard::NamedKey::ArrowDown),
@@ -1597,9 +1577,6 @@ fn paint(picker: &mut FilePicker) {
     );
 }
 
-/// Wait for everything the picker asked its worker (a listing, a check
-/// before confirming, the usual folders) to come back, and take it, as the
-/// host does when the worker wakes it.
 fn settle(picker: &mut FilePicker) {
     tilo_test_env::wait_until("the chooser's worker to answer", || {
         picker.poll_lookups();
@@ -1607,7 +1584,6 @@ fn settle(picker: &mut FilePicker) {
     });
 }
 
-/// A picker once its first listing is in.
 trait Settled {
     fn settled(self) -> Self;
 }
@@ -1619,7 +1595,6 @@ impl Settled for FilePicker {
     }
 }
 
-/// Counts how often the picker wakes its host.
 struct CountingWake(std::sync::atomic::AtomicUsize);
 
 impl std::task::Wake for CountingWake {

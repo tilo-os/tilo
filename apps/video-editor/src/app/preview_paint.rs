@@ -5,16 +5,10 @@
 use super::*;
 
 impl VideoEditorApp {
-    /// The colour of the decoded picture the preview shows for the clip
-    /// under the playhead, at normalised source coordinates `(u, v)`, or
-    /// `None` when the canvas is not showing a decoded picture of it.
-    ///
-    /// `None` is the honest answer on a build with no decoder, on an
-    /// un-hydrated reference, and before the pipeline has prerolled — in
-    /// every one of those cases the canvas is showing the representative
-    /// fill, and handing back *its* colour as "the colour of your footage"
-    /// would be a fabrication. The caller shows the control as unavailable
-    /// instead.
+    /// At normalised source coordinates `(u, v)`, or `None` when the canvas is not showing
+    /// a decoded picture of it: on a build with no decoder, on an un-hydrated reference, and
+    /// before the pipeline has prerolled the canvas shows the representative fill, and its
+    /// colour as "the colour of your footage" would be a fabrication.
     pub fn preview_pixel(&self, normalized_x: f64, normalized_y: f64) -> Option<[f64; 3]> {
         #[cfg(feature = "decode")]
         {
@@ -30,7 +24,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Whether [`Self::preview_pixel`] has a decoded picture to sample.
     pub fn has_preview_pixel(&self) -> bool {
         #[cfg(feature = "decode")]
         {
@@ -57,9 +50,8 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let canvas = r.canvas;
-        // A short window crushes the letterboxed canvas to a few pixels. There
-        // is nothing to show at that size, and the HUD and safe-area guide
-        // drawn at fixed offsets would land outside it; say so instead.
+        // A short window crushes the canvas to a few pixels, and the HUD and safe-area guide
+        // drawn at fixed offsets would land outside it.
         if canvas.width() < MIN_CANVAS || canvas.height() < MIN_CANVAS {
             let msg = &crate::resource::CATALOG.t("video-editor-preview-too-small");
             let style = theme.text(TextRole::Caption);
@@ -70,8 +62,7 @@ impl VideoEditorApp {
             }
             return;
         }
-        // Everything below is clipped to the preview pane, so an overlay drawn
-        // at a fixed offset from the canvas can never bleed into the bin, the
+        // Clipped to the pane, so an overlay at a fixed offset never bleeds into the bin, the
         // inspector or the transport.
         scene.push_layer(
             Fill::NonZero,
@@ -82,10 +73,9 @@ impl VideoEditorApp {
         );
         // The frame's own ground: the media letterbox, the same in every theme.
         fill_rect(scene, tf, canvas, c.media.letterbox);
-        // One picture, produced by the GPU compositor in `crate::gpu` — the
-        // *same* renderer the export runs, so the preview is byte-for-byte
-        // what the export writes. It resolves every layer, grade, fade,
-        // transition and effect itself; nothing here re-implements any of it.
+        // The *same* renderer the export runs, so the preview is what the export writes. It
+        // resolves every layer, grade, fade, transition and effect; nothing here
+        // re-implements any of it.
         let showed_real = match &self.composited {
             Some((w, h, rgba)) if *w > 0 && *h > 0 => {
                 let frame = ::media::VideoFrame {
@@ -103,34 +93,24 @@ impl VideoEditorApp {
         // letterbox, so it says so, as it does when nothing was.
         let between_clips = !self.project.clips.is_empty()
             && self.project.top_video_clip_at(self.playhead).is_none();
-        if !showed_real || between_clips {
-            // Nothing was composited, so there is no picture. Say why in
-            // words on the letterbox, in the media inks — text only, never an
-            // invented picture or a glyph that looks like a control.
-            let (title, hint) = if self.project.clips.is_empty() {
-                // An empty project: the timeline below already says what to
-                // do, so the picture only says why it is blank.
-                ("Nothing to preview yet", "")
-            } else if self.project.top_video_clip_at(self.playhead).is_none() {
-                (PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
+        // An empty project says nothing here: the timeline below already shows what to do
+        // with it.
+        if !self.project.clips.is_empty() && (!showed_real || between_clips) {
+            // Say why in words on the letterbox, in the media inks: text only, never an
+            // invented picture.
+            let title = if self.project.top_video_clip_at(self.playhead).is_none() {
+                crate::resource::CATALOG.t(super::PREVIEW_EMPTY_TITLE)
             } else {
                 // Not an empty state — a capability the box does not have.
-                // Same treatment, different words, and it must not suggest
-                // there is anything to do about it here.
-                preview_unavailable_words()
+                crate::resource::CATALOG.t(super::PREVIEW_UNAVAILABLE)
             };
             let title_style = theme.text(TextRole::Body).strong();
-            let hint_style = theme.text(TextRole::Caption);
             let th = line_height(tr, &title_style);
-            // The hint asks for a step, so it carries the button for it.
-            let offer = title == PREVIEW_EMPTY_TITLE && self.preview_offers_go_to_clip();
-            let (top, go_to_clip) =
-                Self::preview_hint_stack(canvas, tr, theme, !hint.is_empty(), offer);
+            let offer = self.preview_offers_go_to_clip();
+            let (top, go_to_clip) = Self::preview_hint_stack(canvas, tr, theme, th, offer);
             let room = (canvas.width() - S6) as f32;
-            let title = elide_at(title, room, &title_style, tr);
-            let hint = elide_at(hint, room, &hint_style, tr);
+            let title = elide_at(&title, room, &title_style, tr);
             let tw = text_width(tr, &title, &title_style);
-            let hw = text_width(tr, &hint, &hint_style);
             text(
                 scene,
                 tr,
@@ -141,16 +121,6 @@ impl VideoEditorApp {
                 canvas.center().x - tw / 2.0,
                 top,
             );
-            text(
-                scene,
-                tr,
-                tf,
-                &hint,
-                &hint_style,
-                c.media.ink_dim,
-                canvas.center().x - hw / 2.0,
-                top + th + S1,
-            );
             if let Some(button) = go_to_clip {
                 let label = crate::resource::CATALOG.t(super::go_to_clip::GO_TO_CLIP_LABEL);
                 let face = ButtonFace::new(button, &label)
@@ -159,14 +129,13 @@ impl VideoEditorApp {
                 Button::paint(scene, tf, tr, theme, &face);
             }
         }
-        // The clip under the playhead has no bytes on this device: say so on the
-        // canvas, because the picture behind this line is a stand-in generated
-        // from metadata, not the user's footage.
+        // The picture behind this line is a stand-in generated from metadata, not the
+        // user's footage.
         if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
             let unusable = if self.media_is_unreadable(clip.media) {
-                Some(MEDIA_UNREADABLE)
+                Some(crate::resource::CATALOG.t(MEDIA_UNREADABLE))
             } else if self.media_is_projected(clip.media) {
-                Some(MEDIA_NOT_LOCAL)
+                Some(crate::resource::CATALOG.t(MEDIA_NOT_LOCAL))
             } else {
                 None
             };
@@ -175,7 +144,7 @@ impl VideoEditorApp {
                 // a bright frame as well as a dark one.
                 let hud = theme.on_ground(ui::chrome::panel_ground(theme));
                 let style = theme.text(TextRole::Label);
-                let mw = text_width(tr, msg, &style);
+                let mw = text_width(tr, &msg, &style);
                 let mh = line_height(tr, &style);
                 let chip = Rect::new(
                     canvas.x0 + S2,
@@ -189,7 +158,7 @@ impl VideoEditorApp {
                     scene,
                     tr,
                     tf,
-                    msg,
+                    &msg,
                     &style,
                     hud.text_primary,
                     chip.x0 + S2,
@@ -197,11 +166,9 @@ impl VideoEditorApp {
                 );
             }
         }
-        // Safe-area guide: a faint line in the media ink, as every monitor
-        // draws it, over the footage and the letterbox alike. Shown while
-        // something is being placed in the frame — a title, or a clip moved
-        // off full frame — which is what the guide is for; over a plain
-        // full-frame shot it would only be a line across the picture.
+        // A faint line in the media ink, as every monitor draws it. Shown while something is
+        // being placed in the frame: over a plain full-frame shot it would only be a line
+        // across the picture.
         let placing = self
             .selection
             .primary()
@@ -252,7 +219,8 @@ impl VideoEditorApp {
         let cursor = self.shows_focus_cursor(Pane::Transport);
         for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
             let hovered = rect.contains(self.last_mouse);
-            let (icon, name) = self.transport_icon(action);
+            let (icon, message) = self.transport_icon(action);
+            let name = crate::resource::CATALOG.t(message);
             // Play is the one main action of the strip; the rest are plain
             // glyph buttons beside it.
             let role = if action == TransportAction::PlayPause {
@@ -260,11 +228,8 @@ impl VideoEditorApp {
             } else {
                 ButtonRole::Plain
             };
-            // The keyboard cursor is the face's own focus ring.
-            // `focus.transport` indexes `TRANSPORT_NAMES`, which is this
-            // array's order, so the ring lands on the button a reader is told
-            // it is on.
-            let face = ButtonFace::icon_only(rect, icon, name)
+            // `focus.transport` indexes `TRANSPORT_NAMES`, which is this array's order.
+            let face = ButtonFace::icon_only(rect, icon, &name)
                 .role(role)
                 .hovered(hovered)
                 .focused(cursor && self.focus.transport == i);
@@ -278,20 +243,16 @@ impl VideoEditorApp {
                 ui::UndoRequest::Undo => Icon::Undo2,
                 ui::UndoRequest::Redo => Icon::Redo2,
             };
-            let face = ButtonFace::icon_only(rect, icon, which.title())
-                // A control that cannot act must not light up under the
-                // pointer — a hover state on a dead button reads as one
-                // that is about to work.
+            let (name, _) = self.history_words(which);
+            let face = ButtonFace::icon_only(rect, icon, &name)
+                // A hover state on a dead button reads as one about to work.
                 .hovered(rect.contains(self.last_mouse) && can)
                 .disabled(!can);
             Button::paint(scene, tf, tr, theme, &face);
         }
-        // Timecode readout. Each part is drawn only when it fits *whole*
-        // inside the transport: a number the pane edge cuts mid-digit does not
-        // read as a clipped number, it reads as a shorter one — "00:42:00"
-        // arriving as "00:4" states a project length that is simply false.
-        // Dropping the part is the honest narrow-window answer, and the parts
-        // go in order of what the user cannot get elsewhere.
+        // Each part is drawn only when it fits *whole*: "00:42:00" arriving as "00:4" states
+        // a project length that is false. Parts go in order of what the user cannot get
+        // elsewhere.
         let big = timecode(self.playhead, self.project.fps);
         // An empty timeline is no time long, whatever floor the scrubber's
         // arithmetic keeps under its length.
@@ -353,9 +314,6 @@ impl VideoEditorApp {
         if let Some(x) = fit.total_x {
             text(scene, tr, tf, &total, &total_style, c.text_dim, x, total_y);
         }
-        // Something is happening: the playhead running, forwards or at a
-        // shuttle rate. A shuttle running at 16× used to report itself
-        // nowhere at all.
         if let (Some(x), Some(words)) = (fit.motion_x, motion.as_deref()) {
             text(
                 scene,
@@ -391,29 +349,18 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
-    /// The icon a transport button wears and the name a reader hears for it.
-    /// Step-by-frame is a chevron with no bar; jump-to-end is the skip glyph
-    /// against a bar, so the two never read as the same button twice.
+    /// Step-by-frame is a chevron with no bar; jump-to-end is the skip glyph against a bar, so
+    /// the two never read as the same button twice.
     pub(super) fn transport_icon(&self, action: TransportAction) -> (Icon, &'static str) {
         match action {
-            // Pause whenever the playhead is running, shuttle included: a play
-            // triangle over a moving playhead offers to start something that
-            // is already going.
-            TransportAction::PlayPause if self.is_moving() => (Icon::Pause, "Pause"),
-            TransportAction::PlayPause => (Icon::Play, "Play"),
-            TransportAction::StepBack => (Icon::ChevronLeft, "Step back one frame"),
-            TransportAction::StepFwd => (Icon::ChevronRight, "Step forward one frame"),
-            TransportAction::ToStart => (Icon::SkipBack, "Jump to start"),
-            TransportAction::ToEnd => (Icon::SkipForward, "Jump to end"),
+            // A play triangle over a moving playhead offers to start something already
+            // going.
+            TransportAction::PlayPause if self.is_moving() => (Icon::Pause, "video-editor-pause"),
+            TransportAction::PlayPause => (Icon::Play, "video-editor-transport-play"),
+            TransportAction::StepBack => (Icon::ChevronLeft, "video-editor-transport-step-back"),
+            TransportAction::StepFwd => (Icon::ChevronRight, "video-editor-transport-step-forward"),
+            TransportAction::ToStart => (Icon::SkipBack, "video-editor-transport-jump-start"),
+            TransportAction::ToEnd => (Icon::SkipForward, "video-editor-transport-jump-end"),
         }
     }
-}
-
-/// What the picture says when this device cannot composite a preview: where
-/// the person is and what still works, never the graphics stack's terms.
-pub(crate) fn preview_unavailable_words() -> (&'static str, &'static str) {
-    (
-        "Preview isn't available here yet",
-        "Editing the timeline still works",
-    )
 }

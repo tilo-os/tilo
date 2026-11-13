@@ -10,7 +10,6 @@ fn owner(domain: &RetirementDomain) -> RetirementOwner {
     domain.marker().unwrap()
 }
 
-// Fixed private synchronization probe, not a document/owner/positive sink API.
 pub(crate) fn probe(handle: &RetirementHandle) -> Result<MutexGuard<'_, ()>, RetirementError> {
     let guard = match handle.value.domain.gate.try_lock() {
         Ok(guard) => guard,
@@ -93,8 +92,8 @@ fn retirement_waits_for_entered_probe_before_finishing() {
     tilo_test_env::wait_until("the retirement request", || {
         observer.value.marker.requested.load(Ordering::Acquire)
     });
-    // Past its request, the thread blocks only on the gate, or offering a
-    // finish that came too early.
+    // Past its request, the thread blocks only on the gate, or offering a finish that
+    // came too early.
     #[cfg(target_os = "linux")]
     wait_until_blocked(thread.expect("the retiring thread's id"));
     #[cfg(not(target_os = "linux"))]
@@ -115,7 +114,6 @@ fn retirement_poison_is_permanent_and_cleanup_does_not_panic() {
     let domain = domain();
     let owner = owner(&domain);
     let handle = owner.handle();
-    // Only the fixed mutex probe runs here; no callback runs.
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _held = probe(&handle).unwrap();
         panic!("intentional private fixed-probe poison");

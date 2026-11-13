@@ -386,7 +386,8 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
     .ok()
 }
 
-/// The document `app` keeps for `record` in `workspace`, as its app last committed it.
+/// The document `app` keeps for `record` in `workspace`, as its app last committed it. The empty
+/// route is the app's own record, the workspace document that also keeps its index.
 #[must_use]
 pub fn document(
     store: &dyn DurableStore,
@@ -394,7 +395,10 @@ pub fn document(
     workspace: &str,
     record: &str,
 ) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::record(app, workspace, record)) {
+    if record.is_empty() {
+        return index_document(store, app, workspace);
+    }
+    let stored = match store.read(&StorageKey::document(app, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
             tracing::warn!(%error, %app, %record, "a record is not read");
@@ -486,7 +490,7 @@ fn changed_at(path: &Path, root: &Path) -> Option<(String, String, String)> {
         return None;
     }
     let record = match rest {
-        [records, record, ..] if *records == app_state::RECORDS_DIR => (*record).to_owned(),
+        [records, record, ..] if *records == app_state::DOCUMENTS_DIR => (*record).to_owned(),
         _ => String::new(),
     };
     Some(((*workspace).to_owned(), (*app).to_owned(), record))
@@ -501,14 +505,14 @@ struct Noted {
 impl Noted {
     fn wrote(&self, key: &StorageKey) {
         match key {
-            StorageKey::Record {
-                package,
+            StorageKey::Document {
+                app,
                 workspace,
-                record,
-            } => self.changes.note(workspace, package, record, false),
+                document,
+            } => self.changes.note(workspace, app, document, false),
             // The workspace's list of an app's records moved: a record appeared in it or left.
-            StorageKey::WorkspaceIndex { package, workspace } => {
-                self.changes.note(workspace, package, "", false);
+            StorageKey::WorkspaceIndex { app, workspace } => {
+                self.changes.note(workspace, app, "", false);
             }
             _ => {}
         }
@@ -575,8 +579,8 @@ impl DurableStore for Noted {
         self.store.as_ref().claim(key, claimant)
     }
 
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
-        self.store.as_ref().records(package, workspace)
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        self.store.as_ref().documents(app, workspace)
     }
 
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {

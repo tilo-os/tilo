@@ -1,6 +1,6 @@
-//! The window's History door and control: the one resource every History
-//! control, shortcut, menu and palette row goes through to open History,
-//! open it at a change, or hide it, and the button that presents it.
+//! The window's History door and control: the one resource every History control, shortcut, menu and
+//! palette row goes through to open History, open it at a change, or hide it, and the button that
+//! presents it.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
@@ -29,10 +29,8 @@ pub(crate) enum HistoryCommand {
     Hide,
 }
 
-/// The look of the window's History control: the History glyph as a Plain
-/// icon button, announced and tooltipped as "History" with its shortcut,
-/// reading as on while History shows. Every History host draws this one
-/// control, wherever it stands.
+/// The look of the window's History control: the History glyph as a Plain icon button, announced and
+/// tooltipped as "History" with its shortcut, reading as on while History shows.
 pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
     let platform = crate::platform::PlatformConventions::default();
     let shortcut = crate::platform::HostShortcut::History
@@ -46,20 +44,15 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
         .toggled(control.is_open())
 }
 
-/// The window's History control, bound to the History door: closed it
-/// opens History, open it closes it, exactly as the History shortcut and
-/// the palette do.
+/// The window's History control, bound to the History door: closed it opens History, open it closes it,
+/// exactly as the History shortcut and the palette do.
 #[must_use]
 pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
     history_control_face(id, control).on_action(history_control_binding(control))
 }
 
-/// The History door a press of the window's History control goes through:
-/// Open while History is closed, Hide while it shows.
-///
-/// # Panics
-///
-/// Never: Open and Hide are fixed unit operations whose bindings always
+/// The History door a press of the window's History control goes through: Open while History is closed,
+/// Hide while it shows. # Panics Never: Open and Hide are fixed unit operations whose bindings always
 /// serialize.
 #[must_use]
 #[expect(
@@ -74,9 +67,8 @@ pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<
     .expect("unit history action")
 }
 
-/// The edge under a bar of window chrome: the bar stands on the content
-/// ground and is told from the app by one hairline at its bottom, never by
-/// a raised fill.
+/// The edge under a bar of window chrome: the bar stands on the content ground and is told from the app
+/// by one hairline at its bottom, never by a raised fill.
 pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
     let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
     if rule <= 0.0 || bar.height() <= 0.0 {
@@ -128,8 +120,8 @@ fn open_resource() -> ResourceSpec {
     .with_action(open_at_operation())
 }
 
-/// The stable History door, whichever History serves it: Open while there
-/// is a document to show, and Hide while History is showing.
+/// The stable History door, whichever History serves it: Open while there is a document to show, and
+/// Hide while History is showing.
 pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
     let mut resource = open_resource();
     if !can_open {
@@ -148,8 +140,7 @@ pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
     resource
 }
 
-/// Open at one change: what a recent change in a History menu does. Rows
-/// are the palette's own History view, so it is offered to callers only.
+/// Open at one change: what a recent change in a History menu does.
 #[expect(
     clippy::expect_used,
     reason = "typed History command payload contains only a validated JSON string"

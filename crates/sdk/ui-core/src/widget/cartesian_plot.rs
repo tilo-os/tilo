@@ -1,9 +1,4 @@
 //! Highly configurable interactive Cartesian plots.
-//!
-//! [`CartesianPlot`] deliberately separates data, presentation and axes. A
-//! series can change between line, smooth line, step, area, scatter, bubble,
-//! bar and lollipop without changing its data model. Multiple kinds may be
-//! mixed in one plot and share scales, hover inspection and accessibility.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -46,7 +41,6 @@ pub struct AxisTick {
     pub label: String,
 }
 
-/// Built-in axis label formats for common presentation needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AxisLabelFormat {
     #[default]
@@ -59,7 +53,6 @@ pub enum AxisLabelFormat {
     /// [`crate::format::size`] reads in (`500 MB`, `1.5 GB`).
     Size,
     Scientific(u8),
-    /// Adaptive seconds, milliseconds, minutes, hours, or days.
     Duration(u8),
     Currency {
         symbol: char,
@@ -76,8 +69,6 @@ impl AxisTick {
     }
 }
 
-/// Axis configuration. Explicit ticks are useful for dates and categories;
-/// when empty, the plot produces `tick_count` compact numeric labels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlotAxis {
     pub range: AxisRange,
@@ -88,7 +79,6 @@ pub struct PlotAxis {
     pub grid: bool,
     pub include_zero: bool,
     pub label_format: AxisLabelFormat,
-    /// Minimum logical-pixel distance between generated ticks.
     pub min_tick_spacing: f64,
 }
 
@@ -153,7 +143,6 @@ pub struct PlotDatum {
     pub id: String,
     pub x: f64,
     pub y: f64,
-    /// Bubble radius in logical pixels. Ignored by non-bubble series.
     pub radius: f64,
     pub label: String,
     pub detail: String,
@@ -221,7 +210,6 @@ pub struct PlotSeries {
     pub data: Vec<PlotDatum>,
     pub stroke_width: f64,
     pub marker_radius: f64,
-    /// Dash/gap lengths in logical pixels. Empty means a solid stroke.
     pub line_dash: Vec<f64>,
     pub fill_alpha: u8,
     pub marker_shape: MarkerShape,
@@ -230,7 +218,6 @@ pub struct PlotSeries {
     /// finite, ascending X values and should keep that invariant on updates.
     pub x_sorted: bool,
     pub connect_gaps: bool,
-    /// Override the plot-wide line-marker preference for this series.
     pub show_markers: Option<bool>,
 }
 
@@ -304,8 +291,6 @@ impl PlotSeries {
         self
     }
 
-    /// Declare that datum X values are finite and ascending. This preserves
-    /// exact hover results while avoiding a full scan on every pointer move.
     #[must_use]
     pub fn sorted_by_x(mut self) -> Self {
         self.x_sorted = true;
@@ -325,8 +310,6 @@ impl PlotSeries {
     }
 }
 
-/// A reference line, highlighted interval, or labelled point rendered in the
-/// plot's data coordinate system.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CartesianAnnotationKind {
     XLine(f64),
@@ -467,12 +450,10 @@ pub struct CartesianBrushSelection {
 pub struct CartesianTooltipStyle {
     pub enabled: bool,
     pub anchor: CartesianTooltipAnchor,
-    /// Fixed tooltip width. `None` sizes to content within the chart bounds.
     pub width: Option<f64>,
     pub min_width: f64,
     pub offset: f64,
     pub padding: f64,
-    /// Append formatted x/y coordinates even when a datum has custom detail.
     pub show_coordinates: bool,
 }
 
@@ -497,7 +478,6 @@ pub struct CartesianRenderingStyle {
     /// Reduce dense connected series to a spike-preserving pixel budget.
     /// Scatter, bubble, bar, and lollipop series are never sampled.
     pub adaptive_sampling: bool,
-    /// Approximate connected-series point budget per logical plot pixel.
     pub max_points_per_pixel: f64,
 }
 
@@ -520,7 +500,6 @@ pub struct CartesianGesturePolicy {
     /// Require Alt while beginning a pointer pan so charts in scrollable
     /// layouts do not steal ordinary drags.
     pub pan_modifier_required: bool,
-    /// Require Shift while beginning a pointer brush.
     pub brush_modifier_required: bool,
 }
 
@@ -536,8 +515,6 @@ impl Default for CartesianGesturePolicy {
 
 #[derive(Clone, Debug)]
 pub struct CartesianAnimationStyle {
-    /// Move matching stable datum ids to their new values after
-    /// `set_series`, on the standard list change (`motion::ListChange`).
     pub enabled: bool,
 }
 
@@ -561,7 +538,6 @@ pub struct CartesianStyle {
     pub gestures: CartesianGesturePolicy,
     /// Smallest visible fraction of the original data domain.
     pub min_zoom_fraction: f64,
-    /// Let pointer and accessibility activation toggle series from the legend.
     pub interactive_legend: bool,
     pub brush: CartesianBrush,
     pub animation: CartesianAnimationStyle,
@@ -650,20 +626,15 @@ impl Domain {
     }
 }
 
-/// What a pointer or the keyboard inspects on a plot: a series' data point,
-/// or one of the plot's interactive annotations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CartesianHover {
     Datum { series: usize, datum: usize },
     Annotation(usize),
 }
 
-/// What activating a mark reports, once.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CartesianActivation {
-    /// The ids of the activated series and datum.
     Datum { series: String, datum: String },
-    /// The id of the activated annotation.
     Annotation(String),
 }
 
@@ -684,39 +655,23 @@ pub struct CartesianMarks {
     transition_started: Instant,
     reduce_motion: bool,
     domain_cache: RefCell<Option<DomainCache>>,
-    /// The bands around the plot, measured from the theme and the labels
-    /// at the last draw.
     bands: Bands,
 }
 
 /// The space around a plot: tick labels, axis titles, the chart's title and
-/// its legend, each from the theme's type and spacing and measured text.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// its legend, each from the theme's type and spacing and measured text. The
+/// layout places them; all zero until it has.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Bands {
     left: f64,
     top: f64,
     right: f64,
     bottom: f64,
-    /// Where the legend's first row starts.
     legend_top: f64,
     gap: f64,
     tick_line: f64,
 }
 
-impl Bands {
-    /// Before the first draw: the stock theme's caption metrics.
-    const STOCK: Self = Self {
-        left: 56.0,
-        top: 30.0,
-        right: 12.0,
-        bottom: 34.0,
-        legend_top: 12.0,
-        gap: 8.0,
-        tick_line: 16.0,
-    };
-}
-
-/// A Cartesian plot: see the [module docs](self).
 pub type CartesianPlot = Plot<CartesianMarks>;
 
 impl CartesianPlot {
@@ -738,7 +693,7 @@ impl CartesianPlot {
             transition_started: crate::time::now(),
             reduce_motion: false,
             domain_cache: RefCell::new(None),
-            bands: Bands::STOCK,
+            bands: Bands::default(),
         })
     }
 
@@ -780,8 +735,6 @@ impl CartesianPlot {
         marks.frame.inspection.clear();
         marks.invalidate_domains();
     }
-    /// Replace data without motion, useful for initial hydration, restored
-    /// sessions, and deterministic capture.
     pub fn set_series_immediate(&mut self, series: Vec<PlotSeries>) {
         self.mark_dirty();
         let marks = &mut self.marks;
@@ -825,7 +778,6 @@ impl CartesianPlot {
             .position(|annotation| annotation.id == id && annotation.interactive);
         self.inspect_item(index.map(CartesianHover::Annotation))
     }
-    /// The annotation a person activated, once.
     pub fn take_annotation_activated(&mut self) -> Option<String> {
         match self.activation() {
             Some(CartesianActivation::Annotation(id)) => {
@@ -836,25 +788,18 @@ impl CartesianPlot {
             _ => None,
         }
     }
-    /// The domain-space region a finished brush selected, once. Independent of
-    /// the chart's pixel size: ready for filtering, aggregation or
-    /// [`Self::zoom_to_selection`].
     pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
         self.marks.brushed.take()
     }
-    /// Whether zooming, panning or a reset changed the viewport since the last
-    /// call.
     pub fn take_view_changed(&mut self) -> bool {
         std::mem::take(&mut self.marks.view_changed)
     }
-    /// Restore automatic/fixed axis domains after interactive zooming.
     pub fn reset_view(&mut self) {
         self.marks.x_view = None;
         self.marks.y_view = None;
         self.marks.view_changed = true;
         self.marks.frame.inspection.clear();
     }
-    /// Current interactive viewport, if zoom has changed it.
     pub fn viewport(&self) -> (Option<AxisRange>, Option<AxisRange>) {
         let range = |domain: Option<Domain>| {
             domain.map(|domain| AxisRange::Fixed {
@@ -864,9 +809,6 @@ impl CartesianPlot {
         };
         (range(self.marks.x_view), range(self.marks.y_view))
     }
-    /// Set a viewport in data coordinates. `None` or `AxisRange::Auto` restores
-    /// that axis to its configured domain. Invalid or empty fixed ranges are
-    /// rejected without changing the current view.
     pub fn set_viewport(&mut self, x: Option<AxisRange>, y: Option<AxisRange>) -> bool {
         self.mark_dirty();
         let marks = &mut self.marks;
@@ -897,8 +839,6 @@ impl CartesianPlot {
         marks.frame.inspection.clear();
         true
     }
-    /// Pan by fractions of the visible width and height. This is convenient
-    /// for responsive buttons, trackpads, and synchronized overview charts.
     pub fn pan_view_fraction(&mut self, x_fraction: f64, y_fraction: f64) -> bool {
         let (Some(x), Some(y)) = (
             self.marks.panned(x_fraction, true),
@@ -917,15 +857,12 @@ impl CartesianPlot {
             }),
         )
     }
-    /// Promote a brush result to the active viewport, enabling concise
-    /// brush-to-zoom and linked-detail workflows.
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
 }
 
 impl CartesianMarks {
-    /// Pans the view by `dx`/`dy` logical pixels of `plot`; whether it moved.
     fn pan_view_pixels(&mut self, dx: f64, dy: f64, plot: Rect) -> bool {
         if !dx.is_finite()
             || !dy.is_finite()
@@ -979,8 +916,6 @@ impl CartesianMarks {
         true
     }
 
-    /// The domain `fraction` of its own span along the axis `x_axis` moves
-    /// to, out of the current view.
     fn panned(&self, fraction: f64, x_axis: bool) -> Option<Domain> {
         let (view, axis) = if x_axis {
             (self.x_view, &self.style.x_axis)
@@ -1000,14 +935,12 @@ impl CartesianMarks {
         })
     }
 
-    /// The inspected data point, when that is what is inspected.
     fn hovered_datum(&self) -> Option<(usize, usize)> {
         match self.frame.inspection.hovered? {
             CartesianHover::Datum { series, datum } => Some((series, datum)),
             CartesianHover::Annotation(_) => None,
         }
     }
-    /// The inspected annotation, when that is what is inspected.
     fn hovered_annotation(&self) -> Option<usize> {
         match self.frame.inspection.hovered? {
             CartesianHover::Annotation(index) => Some(index),
@@ -1053,8 +986,6 @@ impl CartesianMarks {
         } else {
             tick_line + tight
         };
-        // The y labels start on the plot's leading edge, the content edge
-        // the text around it stands on.
         let left = (y_title + widest_tick + gap).ceil();
         let right = self.style.plot_padding.max(gap);
         let legend_rows = if self.style.legend == LegendPosition::Hidden {
@@ -1077,8 +1008,6 @@ impl CartesianMarks {
             title_line + gap
         };
         let legend_top = gap + title;
-        // The top tick label is centred on the top gridline: half a line of
-        // it sits above the plot, clear of the legend by a step.
         let top = legend_top
             + if self.style.legend == LegendPosition::Top {
                 legend
@@ -1521,8 +1450,6 @@ impl CartesianMarks {
             .collect()
     }
 
-    /// The mark under `pointer`: the nearest data point within the hit
-    /// radius, else an interactive annotation under it.
     fn hit(&self, pointer: Point) -> Option<CartesianHover> {
         let plot = self.plot_rect();
         if !plot
@@ -2394,18 +2321,10 @@ impl CartesianMarks {
         );
     }
 
-    fn draw_legend(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.toggles.clear_hits();
+    fn legend_area(&self) -> Option<Rect> {
         if self.style.legend == LegendPosition::Hidden {
-            return;
+            return None;
         }
-        // The key stands on the content edge, like the labels beside it.
         let left = self.frame.rect.x0;
         let right = self.frame.rect.x1 - self.bands.right;
         let y = if self.style.legend == LegendPosition::Top {
@@ -2418,6 +2337,25 @@ impl CartesianMarks {
             );
             self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
+        Some(Rect::new(left, y, right, y))
+    }
+
+    fn place_legend(&mut self) {
+        self.toggles.place(
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str())),
+            self.legend_area(),
+        );
+    }
+
+    fn draw_legend(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.toggles.paint(
             scene,
             transform,
@@ -2426,13 +2364,9 @@ impl CartesianMarks {
             self.series
                 .iter()
                 .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
-            Rect::new(left, y, right, y),
         );
     }
 
-    /// The hover card of the inspected mark — its title and detail beside the
-    /// mark, outlined in the mark's colour — and, for a data point, the
-    /// crosshair through it.
     fn draw_inspector(
         &self,
         scene: &mut Scene,
@@ -2604,8 +2538,6 @@ impl CartesianMarks {
         true
     }
 
-    /// Ends a pan or brush; whether one was in flight. A click with no
-    /// gesture stays the shell's to inspect and activate.
     fn finish_pointer_gesture(&mut self) -> bool {
         if self.pan_last.take().is_some() {
             return true;
@@ -2617,7 +2549,6 @@ impl CartesianMarks {
         false
     }
 
-    /// Moves the pointer of a pan or brush in flight; whether one was.
     fn drag_to(&mut self, point: Point) -> bool {
         self.frame.inspection.pointer = point;
         if let Some(previous) = self.pan_last.replace(point) {
@@ -2936,6 +2867,13 @@ impl PlotMarks for CartesianMarks {
         }
         *ctx.handled
     }
+    /// Measure the bands around the plot in `theme`, then place the legend in
+    /// what they leave: the layout runs this, so a hover on a mark or a press
+    /// on the legend lands where the chart draws them before it has painted.
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.bands = self.measure_bands(tr, theme);
+        self.place_legend();
+    }
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -2945,7 +2883,6 @@ impl PlotMarks for CartesianMarks {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
-        self.bands = self.measure_bands(tr, theme);
         self.follow_keyboard_anchor();
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
@@ -3001,7 +2938,132 @@ impl PlotMarks for CartesianMarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Widget as _;
+    use crate::presence::PresenceCtx;
+    use crate::widget::Widget;
+    use crate::widget::chart_navigation::InteractiveChart as _;
+
+    fn band_plot() -> CartesianPlot {
+        let series = [
+            "Storage over time",
+            "Second long series",
+            "Third long series",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            PlotSeries::new(
+                format!("series-{index}"),
+                *name,
+                Color::WHITE,
+                vec![PlotDatum::new("a", 1.0, 2.0), PlotDatum::new("b", 9.0, 6.0)],
+            )
+        })
+        .collect();
+        CartesianPlot::new(series)
+            .titled("Capacity")
+            .with_height(300.0)
+            .with_annotations([CartesianAnnotation::x_band(
+                "middle",
+                4.0,
+                6.0,
+                Color::WHITE,
+            )])
+    }
+
+    fn draw_once(plot: &mut CartesianPlot, theme: &Theme) {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        plot.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::default(),
+        );
+    }
+
+    #[test]
+    fn a_plot_draws_where_the_layout_placed_it() {
+        let theme = Theme::dark();
+        let (mut laid_out, mut painted) = (band_plot(), band_plot());
+        for chart in [&mut laid_out, &mut painted] {
+            crate::testing::lay_out_in(chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        }
+        draw_once(&mut painted, &theme);
+        assert_eq!(
+            laid_out.marks.plot_rect(),
+            painted.marks.plot_rect(),
+            "painting adds no places"
+        );
+
+        let plot = painted.marks.plot_rect();
+        let middle = Point::new(plot.center().x, plot.center().y);
+        assert_eq!(
+            laid_out.marks.hit(middle),
+            Some(CartesianHover::Annotation(0)),
+            "the band drawn across the middle is what a hover there names"
+        );
+        assert_eq!(laid_out.marks.hit(middle), painted.marks.hit(middle));
+
+        let legend = laid_out.marks.frame.rect.y0 + laid_out.marks.bands.legend_top + 4.0;
+        assert_eq!(
+            laid_out.marks.hit(Point::new(middle.x, legend)),
+            None,
+            "the legend's rows hold no mark"
+        );
+    }
+
+    #[test]
+    fn a_legend_entry_takes_a_press_before_anything_paints() {
+        let theme = Theme::dark();
+        let mut chart = band_plot();
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        let ids: Vec<String> = chart.marks.series.iter().map(|s| s.id.clone()).collect();
+        for id in ids {
+            let entry = chart
+                .marks
+                .toggles
+                .entry(&id)
+                .unwrap_or_else(|| panic!("the layout placed {id}'s legend entry"));
+            assert!(
+                chart.toggle_legend_at(entry.center()),
+                "a press on {id}'s entry toggles it"
+            );
+            assert!(!chart.is_series_visible(&id));
+        }
+    }
+
+    #[test]
+    fn a_series_change_places_the_legend_again() {
+        let theme = Theme::dark();
+        let mut chart = band_plot();
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        Widget::layout_measured(&mut chart);
+        assert!(!Widget::is_layout_dirty(&chart));
+        let before = chart.marks.toggles.entry("series-0").expect("placed");
+
+        chart.set_series_immediate(
+            [(
+                "series-0",
+                "Storage over time, every device and every backup",
+            )]
+            .into_iter()
+            .map(|(id, name)| {
+                PlotSeries::new(id, name, Color::WHITE, vec![PlotDatum::new("a", 1.0, 2.0)])
+            })
+            .collect(),
+        );
+        assert!(
+            Widget::is_layout_dirty(&chart),
+            "new data re-places the legend"
+        );
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        let after = chart.marks.toggles.entry("series-0").expect("placed again");
+        assert!(
+            after.width() >= before.width(),
+            "the longer name takes at least the room the short one did: {before:?} then {after:?}"
+        );
+    }
 
     #[test]
     fn auto_domains_and_ticks_expand_preserve_and_thin() {

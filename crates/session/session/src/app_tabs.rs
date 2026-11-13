@@ -1163,13 +1163,18 @@ impl Answers<'_> {
         let presses = self
             .desktop
             .with_policy(|policy| policy.handle().take_target_presses());
-        for (connection, name, role, action) in presses {
-            let Some(link) = self.links.get(&connection) else {
+        for press in presses {
+            let Some(link) = self.links.get(&press.connection) else {
                 continue;
             };
             tell(
                 &link.writer,
-                &FloatingSurfaceHostMessage::PressTarget { name, role, action },
+                &FloatingSurfaceHostMessage::PressTarget {
+                    name: press.name,
+                    role: press.role,
+                    identity: press.identity,
+                    action: press.action,
+                },
                 &link.app,
             );
         }
@@ -1429,11 +1434,13 @@ struct Hello {
 
 /// The shell-ui version `frame` says, when it is a hello.
 fn hello_version(frame: &[u8]) -> Option<u16> {
-    serde_json::from_slice::<Hello>(frame)
-        // ignored-failure: a frame that does not read back is not a hello
-        .ok()
-        .filter(|hello| hello.kind == "hello")
-        .and_then(|hello| hello.version)
+    tilo_failure::ignored!(
+        "a frame that does not read back is not a hello",
+        serde_json::from_slice::<Hello>(frame)
+            .ok()
+            .filter(|hello| hello.kind == "hello")
+            .and_then(|hello| hello.version)
+    )
 }
 
 // The channel handles are deliberately owned by the per-connection worker,
@@ -1463,8 +1470,10 @@ fn serve_connection(
         return;
     };
     // A client that does not speak this protocol is dropped.
-    // ignored-failure: a handshake that does not read back is not one of ours
-    let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
+    let Ok(handshake) = tilo_failure::ignored!(
+        "a handshake that does not read back is not one of ours",
+        serde_json::from_slice::<LauncherHandshake>(&handshake_frame)
+    ) else {
         return;
     };
     if handshake.protocol != SHELL_UI_LAUNCH_PROTOCOL

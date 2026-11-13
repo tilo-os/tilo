@@ -24,12 +24,6 @@ use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
 
-// These integration tests mount a real FUSE filesystem, which needs
-// `/dev/fuse` (+ fusermount3). Minimal CI containers don't have it, so
-// `spawn_mount` fails with NotFound — skip cleanly there rather than
-// panicking; this gates on capability, it does not weaken any assertion.
-// The FUSE lane sets TILO_REQUIRE_FUSE=1, turning a missing device into a
-// failure instead of a silently skipped contract.
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
 }
@@ -43,10 +37,6 @@ macro_rules! require_fuse {
     };
 }
 
-/// Wait until the FUSE session answers at `mount`: the directory then reports
-/// the mounted filesystem's device instead of its parent's, which needs the
-/// session to have served a `getattr`. Replaces a fixed pause that was either
-/// wasted time or, on a loaded machine, too short.
 async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
     let mount = mount.as_ref().to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -66,11 +56,6 @@ async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
     .expect("mount readiness check");
 }
 
-/// Finish every background owner before the per-test Tokio runtime exits.
-///
-/// `BackgroundSession::drop` only requests unmounting, while an unclosed Iroh
-/// endpoint aborts its task set from `Drop`.  Awaiting these owners in order
-/// prevents either teardown path from leaking into the next serialized test.
 async fn shutdown_fuse_fixture(
     session: fuser::BackgroundSession,
     mount: &std::path::Path,
@@ -86,9 +71,6 @@ async fn shutdown_fuse_fixture(
         .expect("shut down blob store");
 }
 
-/// Negotiates `FUSE_ABORT_ERROR`, so an aborted connection fails the
-/// session's device read with `ECONNABORTED` on every abort rather than only
-/// when the read races an unmount's abort.
 struct AbortErrorFs;
 
 impl fuser::Filesystem for AbortErrorFs {
@@ -103,9 +85,6 @@ impl fuser::Filesystem for AbortErrorFs {
     }
 }
 
-/// The `fusectl` abort switch of the connection mounted at `mount`: its
-/// directory is named by the kernel's own device number, `major << 20 |
-/// minor` of the mount's device in `/proc/self/mountinfo`.
 fn fusectl_abort(mount: &std::path::Path) -> Option<std::path::PathBuf> {
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
     let device = mountinfo.lines().rev().find_map(|line| {
@@ -122,13 +101,6 @@ fn fusectl_abort(mount: &std::path::Path) -> Option<std::path::PathBuf> {
     abort.exists().then_some(abort)
 }
 
-/// Unmounting aborts the kernel connection, and the session's blocked read
-/// can lose the race with that abort: it then fails with `ECONNABORTED`, not
-/// the usual `ENODEV`, and fuser hands that back as the session's error. The
-/// race is in the kernel and cannot be scheduled from here, so the abort
-/// error is negotiated and the connection aborted outright: the session
-/// thread then always ends on `ECONNABORTED`, which teardown must read as
-/// the end of the session.
 #[test]
 fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     require_fuse!();
@@ -145,8 +117,6 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
         std::fs::write(abort, b"1").expect("abort the FUSE connection");
     }
     let ended = fs::fuse_session::unmount_and_join(session, &mount);
-    // An aborted connection still holds its mount point; detach it so the
-    // temporary directory can go.
     let _ = std::process::Command::new("fusermount3")
         .args(["-u", "-q", "-z", "--"])
         .arg(&mount)
@@ -159,12 +129,10 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     ended.expect("an aborted connection ends the session cleanly");
 }
 
-/// A filesystem that answers nothing beyond the protocol's defaults.
 struct IdleFs;
 
 impl fuser::Filesystem for IdleFs {}
 
-/// Whether `mount` is in this process's mount table.
 fn mounted(mount: &std::path::Path) -> bool {
     std::fs::read_to_string("/proc/self/mountinfo")
         .expect("read mountinfo")
@@ -172,19 +140,10 @@ fn mounted(mount: &std::path::Path) -> bool {
         .any(|line| line.split(' ').nth(4).map(std::path::Path::new) == Some(mount))
 }
 
-/// A mount `fs.service` makes (`AutoUnmount`, so `fusermount3` cleans up
-/// after a crash) that something still holds, as a shell's working
-/// directory or an open file does, is stopped. fuser only closes its
-/// socket to `fusermount3`, which leaves a live daemon's mount in place,
-/// and a held mount cannot be unmounted outright: either way the session
-/// served on and the join never returned, until systemd killed the daemon.
-/// The stop ends the connection, so the join returns and the mount is gone.
 #[test]
 fn stopping_a_held_auto_unmount_session_ends_it() {
     use std::os::unix::fs::OpenOptionsExt as _;
     require_fuse!();
-    // `fusermount3` serves `AutoUnmount` mounts for every user, which only
-    // root may make (the FUSE lane is root in a user namespace).
     tilo_test_env::require_capability!(
         Fuse,
         rustix::process::getuid().is_root(),
@@ -203,7 +162,6 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
     config.acl = fuser::SessionACL::All;
     let session = fuser::spawn_mount(IdleFs, &mount, &config).expect("spawn FUSE session");
     assert!(mounted(&mount));
-    // Pins the mount without a request to the filesystem.
     let holder = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH)
@@ -222,8 +180,6 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
             assert!(!mounted(&mount), "the stopped session is still mounted");
             drop(holder);
         }
-        // Ending a connection takes privilege over the whole machine; root
-        // in a user namespace (the FUSE lane) is refused it, promptly.
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
             let identity = std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|map| {
                 map.split_whitespace().collect::<Vec<_>>() == ["0", "0", "4294967295"]
@@ -254,27 +210,13 @@ async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) 
 const ALICE: [u8; 32] = [0xA1; 32];
 const BOB: [u8; 32] = [0xB0; 32];
 
-// Capability enforcement: the capability model in `collab_types` is the
-// system's one permission vocabulary. `WorkspaceAcl::from_capabilities`
-// binds a capability list to a mount identity; these tests prove the
-// binding *denies* through `QuickFS::check_access` — the exact function
-// `open`, `read` and `write` route every access through.
-
-/// A workspace tree with a granted subtree, a sibling subtree, and a
-/// path that shares a *string* prefix with the granted one but is not
-/// beneath it. Returns the inode of each interesting path.
 struct CapFixture {
     fs: QuickFS,
     endpoint: Endpoint,
     store: Arc<ContentStore>,
-    /// `/w/docs` — the granted subtree itself.
     docs: u64,
-    /// `/w/docs/report.md` — beneath the granted subtree.
     docs_child: u64,
-    /// `/w/other/private.md` — a sibling subtree, never granted.
     other_child: u64,
-    /// `/w/docsSECRET/leak.md` — shares the string prefix `/w/docs`, but is
-    /// a different directory.
     look_alike_child: u64,
 }
 
@@ -299,9 +241,6 @@ async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>)
     .await
 }
 
-/// [`cap_fixture`] over an ACL handle someone else owns — a
-/// [`fs::CapabilityFile`], for tests that swap the policy while the same
-/// `QuickFS` stays live.
 async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
     let endpoint = Endpoint::bind(presets::Minimal)
         .await
@@ -347,7 +286,6 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
     }
 }
 
-/// A read grant for `who` on `path`.
 fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
     CapOverride::new(
         Subject::User(Ed25519PublicKey(who)),
@@ -390,10 +328,6 @@ async fn normal_permissions_scope_enforces_native_namespace_paths() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
-    // Phase `a_capability_on_one_subtree_denies_a_sibling_subtree`.
-    // A capability names a subtree. Everything outside is denied — a
-    // grant is not a foot in the door — and the denial is an absence:
-    // `ENOENT`, the same answer a name that was never there gets.
     {
         let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
 
@@ -414,10 +348,6 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `a_capability_stops_at_the_path_component_boundary`.
-    // The prefix is a *path* prefix, not a string prefix. `/w/docsSECRET`
-    // merely starts with the same characters; treating it as covered
-    // would leak a whole tree.
     {
         let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
 
@@ -433,9 +363,6 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `a_read_capability_is_denied_a_write`.
-    // `CapAccess::Read` does not imply `CapAccess::Write`. A share that says "read"
-    // must not become a write when it reaches the filesystem.
     {
         let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
 
@@ -451,14 +378,9 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `an_expired_capability_authorises_nothing`.
-    // An expired capability is gone, not merely stale — evaluated past
-    // its deadline it authorises nothing.
     {
         let expired = read_cap(ALICE, "/w/docs").with_expiry(1_000);
 
-        // Before the deadline the same capability allows the read, so the
-        // denial below is expiry biting, not an unrelated failure.
         let live = cap_fixture(ALICE, std::slice::from_ref(&expired), Some(999)).await;
         assert_eq!(
             live.fs.check_access(live.docs_child, Access::Read),
@@ -480,11 +402,7 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         live.shutdown().await;
         lapsed.shutdown().await;
     }
-    // Phase `an_identity_with_no_capability_is_denied_everything`.
-    // The fail-closed floor: an identity holding nothing gets nothing —
-    // including the mount root, and for capabilities naming somebody else.
     {
-        // Bob's mount, evaluated against a list that grants only Alice.
         let f = cap_fixture(BOB, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
 
         for (ino, what) in [
@@ -504,9 +422,6 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
                 "nor may it write to {what}"
             );
         }
-        // The mount root is the one exception, deliberately: it must exist
-        // or the mount looks broken. Bob gets an ordinary empty read-only
-        // directory — no content, no error hinting he's missing anything.
         assert_eq!(
             f.fs.check_access(ROOT_INO, Access::Read),
             Err(libc::ENOENT),
@@ -519,10 +434,6 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         );
         f.shutdown().await;
     }
-    // Phase `a_grant_to_another_workspace_does_not_authorise_a_path`.
-    // A workspace is not a key to the filesystem unless the mount proves it
-    // is in that workspace: a grant to a workspace's members doesn't cover a
-    // mount actor that presents no such workspace.
     {
         let workspace_cap = CapOverride::new(
             Subject::workspace("another-workspace"),
@@ -547,11 +458,6 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn the_live_fuse_access_path_enforces_current_identity_grants() {
-    // Phase `fuse_mount_enforces_identity_acl_end_to_end`.
-    // Full kernel path: mount two real FUSE sessions over the same
-    // namespace but bound to different identities, and prove the read is
-    // served for the one holding the cap and denied for the one that
-    // doesn't. Requires /dev/fuse.
     async fn fuse_mount_enforces_identity_acl_end_to_end() {
         require_fuse!();
         tilo_test_env::within("the identity-ACL FUSE mounts", async {
@@ -574,11 +480,9 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             let hydrator = Arc::new(Hydrator::new(endpoint, store));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
 
-            // ACL: only Bob may read /secret.txt. Alice holds nothing.
             let mut acl = WorkspaceAcl::new();
             acl.grant_read(BOB, "/secret.txt");
 
-            // Alice's mount: read must be denied through the real kernel path.
             let alice_dir = tempdir().unwrap();
             let alice_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
                 .with_acl(acl.clone(), ALICE);
@@ -593,7 +497,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
                 matches!(&alice_read, Err(e) if e.kind() == std::io::ErrorKind::NotFound),
                 "Alice (no cap) must see no such file through the kernel, got {alice_read:?}"
             );
-            // …and it is absent from her listing, not present-and-refused.
             let alice_entries: Vec<String> = std::fs::read_dir(alice_dir.path())
                 .expect("Alice can list her (empty) view")
                 .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -603,7 +506,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
                 "Alice's view of the workspace must be an empty directory, got {alice_entries:?}"
             );
 
-            // Bob's mount: read must succeed and return the real bytes.
             let bob_dir = tempdir().unwrap();
             let bob_fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_acl(acl, BOB);
             let mut cfg_b = Config::default();
@@ -625,13 +527,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         })
         .await;
     }
-    // Phase `identity_acl_gates_the_real_fs_access_path`.
-    // The per-identity ACL decision, exercised on the REAL fs access
-    // method (`QuickFS::check_access`) — no FUSE mount needed, drives
-    // the production path directly, so it runs everywhere.
     {
-        // Helper: build a fresh QuickFS over the shared namespace bound to an
-        // identity (each needs its own endpoint/hydrator).
         async fn mount_as(
             namespace: Arc<Mutex<Namespace>>,
             acl: Option<(WorkspaceAcl, [u8; 32])>,
@@ -656,7 +552,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         let body = b"top secret";
         let hash = store.write_content(body).await.unwrap().unwrap();
 
-        // A shared file, a secret subdir, and a file inside it.
         let namespace = Arc::new(Mutex::new(Namespace::new("acl-peer").unwrap()));
         let (shared_ino, secret_dir_ino, secret_child_ino) = {
             let mut ns = namespace.lock().unwrap();
@@ -671,16 +566,12 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             (shared, secret_dir, secret_child)
         };
 
-        // The ACL: Alice may read /shared.txt only. Bob may read+write /secret/**.
         let mut acl = WorkspaceAcl::new();
         acl.grant_read(ALICE, "/shared.txt");
         acl.grant_read_write(BOB, "/secret");
 
-        // Mount view A — bound to Alice's identity.
         let (alice_fs, alice_endpoint, alice_store) =
             mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
-        // Alice: read on the shared file → allowed; read on the secret dir
-        // AND the secret child → denied (EACCES).
         assert_eq!(
             alice_fs.check_access(shared_ino, Access::Read),
             Ok(()),
@@ -696,14 +587,12 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             Err(libc::ENOENT),
             "Alice denied read on /secret/leak.txt too"
         );
-        // Alice cannot write the file she may only read.
         assert_eq!(
             alice_fs.check_access(shared_ino, Access::Write),
             Err(libc::EROFS),
             "Alice's grant is read-only, so the file is on a read-only mount"
         );
 
-        // Mount view B — same namespace + ACL, bound to Bob's identity.
         let (bob_fs, bob_endpoint, bob_store) = mount_as(namespace.clone(), Some((acl, BOB))).await;
         assert_eq!(
             bob_fs.check_access(secret_child_ino, Access::Read),
@@ -721,8 +610,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             "Bob has NO cap on /shared.txt → absent from his view"
         );
 
-        // A mount with NO ACL attached keeps the compatibility veneer: every
-        // access is allowed (the Unix layer alone governs).
         let (open_fs, open_endpoint, open_store) = mount_as(namespace, None).await;
         assert_eq!(
             open_fs.check_access(shared_ino, Access::Write),
@@ -735,9 +622,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         shutdown_runtime_fixture(open_endpoint, open_store).await;
         store.store().shutdown().await.unwrap();
     }
-    // Phase `fuse_mount_enforces_identity_acl_end_to_end` (defined above).
     fuse_mount_enforces_identity_acl_end_to_end().await;
-    // Phase `a_grant_made_after_the_mount_reaches_the_live_access_check`.
     {
         use fs::CapabilityFile;
 
@@ -748,7 +633,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         let file = CapabilityFile::load(&caps_path, ALICE, Vec::new()).expect("loads");
         let f = cap_fixture_with(ALICE, file.handle()).await;
 
-        // Reproduces the bug's precondition: the sibling subtree is denied.
         assert_eq!(
             f.fs.check_access(f.other_child, Access::Read),
             Err(libc::ENOENT),
@@ -756,7 +640,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         );
         assert_eq!(f.fs.check_access(f.docs_child, Access::Read), Ok(()));
 
-        // The user grants it, an hour into the session. No remount.
         put_caps(
             &caps_path,
             &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
@@ -770,7 +653,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         );
         f.shutdown().await;
     }
-    // Phase `a_revocation_after_the_mount_reaches_the_live_access_check`.
     {
         use fs::CapabilityFile;
 
@@ -785,9 +667,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         let f = cap_fixture_with(ALICE, file.handle()).await;
         assert_eq!(f.fs.check_access(f.other_child, Access::Read), Ok(()));
 
-        // The user revokes it — the direction that matters most: a
-        // revocation the filesystem ignores is a permission the user
-        // believes they took away.
         put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
         assert_eq!(file.refresh(), fs::Refresh::Reloaded(1));
 
@@ -811,9 +690,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn fuse_projects_reads_writes_and_reports_sync_state() {
-    // Phase `fuse_projects_tree_and_reads_real_content`.
-    // Multi-thread runtime: the FUSE read path uses `block_in_place`,
-    // which panics on a current-thread runtime.
     {
         require_fuse!();
         tilo_test_env::within("the projected FUSE tree reads", async {
@@ -859,7 +735,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let session = fuser::spawn_mount(fs, &mount_path, &config).expect("spawn FUSE session");
             wait_for_mount(&mount_path).await;
 
-            // Projection: the tree is visible.
             let entries = std::fs::read_dir(&mount_path)
                 .expect("read_dir")
                 .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -873,16 +748,12 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 .collect::<Vec<_>>();
             assert!(nested.contains(&"nested.txt".to_string()));
 
-            // Hydration: reading the file returns the real ingested bytes.
             let read_back = std::fs::read(mount_path.join("test_file.txt")).expect("read file");
             assert_eq!(read_back, body, "FUSE read must return the real content");
             shutdown_fuse_fixture(session, &mount_path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
-    // Phase `fuse_write_create_overwrite_rename_unlink`.
-    // Full read-write round-trip through the kernel: create, write,
-    // overwrite, mkdir, rename, unlink.
     {
         require_fuse!();
         tilo_test_env::within(
@@ -907,11 +778,9 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
                 wait_for_mount(&path).await;
 
-                // create + write
                 std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
                 assert_eq!(std::fs::read(path.join("hello.txt")).unwrap(), b"first");
 
-                // overwrite (truncate + rewrite) with a longer body
                 std::fs::write(path.join("hello.txt"), b"second longer content")
                     .expect("overwrite");
                 assert_eq!(
@@ -919,12 +788,10 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                     b"second longer content"
                 );
 
-                // mkdir + nested file
                 std::fs::create_dir(path.join("d")).expect("mkdir");
                 std::fs::write(path.join("d/n.txt"), b"nested").expect("write nested");
                 assert_eq!(std::fs::read(path.join("d/n.txt")).unwrap(), b"nested");
 
-                // rename
                 std::fs::rename(path.join("hello.txt"), path.join("renamed.txt")).expect("rename");
                 assert!(!path.join("hello.txt").exists(), "old name gone");
                 assert_eq!(
@@ -932,7 +799,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                     b"second longer content"
                 );
 
-                // unlink
                 std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
                 assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
                 shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
@@ -940,7 +806,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
         )
         .await;
     }
-    // Phase `fuse_non_utf8_name_survives_rename_and_namespace_restart`.
     {
         require_fuse!();
         tilo_test_env::within("the non-UTF8 real-FUSE restart test", async {
@@ -993,9 +858,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
         })
         .await;
     }
-    // Phase `rmdir_rejects_nonempty_and_unlink_rejects_dir`.
-    // rmdir must refuse a non-empty directory (no silent rm -rf), and
-    // unlink must refuse a directory.
     {
         require_fuse!();
         tilo_test_env::within("the FUSE rmdir and unlink checks", async {
@@ -1021,7 +883,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             std::fs::create_dir(path.join("dir")).expect("mkdir");
             std::fs::write(path.join("dir/inner.txt"), b"keepme").expect("write inner");
 
-            // rmdir on a non-empty directory must fail and preserve contents.
             assert!(
                 std::fs::remove_dir(path.join("dir")).is_err(),
                 "rmdir of a non-empty dir must fail"
@@ -1032,7 +893,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "contents must survive a failed rmdir"
             );
 
-            // unlink on a directory must fail.
             assert!(
                 std::fs::remove_file(path.join("dir")).is_err(),
                 "unlink of a directory must fail"
@@ -1045,11 +905,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
         })
         .await;
     }
-    // Phase `fuse_document_roundtrip_and_opaque_still_works`.
-    // A recognized document format is stored as a CRDT and round-trips
-    // through the mount byte for byte; unknown formats stay opaque bytes; a
-    // file's mode is its own, so a script made executable runs, and setuid
-    // never sticks.
     {
         require_fuse!();
         tilo_test_env::within("the FUSE document round trip", async {
@@ -1072,7 +927,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
             wait_for_mount(&path).await;
 
-            // A markdown document: recognized, stored as a CRDT, round-trips.
             std::fs::write(path.join("note.md"), b"# Title\n\nHello world\n").expect("write md");
             let back = std::fs::read_to_string(path.join("note.md")).expect("read md");
             assert!(
@@ -1080,8 +934,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "document round-trip lost content: {back:?}"
             );
 
-            // What a program writes to a document reads back as written, though
-            // Markdown would join the paragraph's two lines.
             let question = b"Question X\nfirst line of thought\n";
             std::fs::write(path.join("question.md"), question).expect("write question");
             assert_eq!(
@@ -1090,14 +942,12 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "a document's file is the bytes written"
             );
 
-            // An unknown format stays opaque bytes (exact round-trip).
             std::fs::write(path.join("data.bin"), b"\x00\x01raw-bytes\xff").expect("write bin");
             assert_eq!(
                 std::fs::read(path.join("data.bin")).unwrap(),
                 b"\x00\x01raw-bytes\xff"
             );
 
-            // A script given an executable mode keeps it and runs.
             {
                 use std::os::unix::fs::PermissionsExt as _;
                 let tool = path.join("tool");
@@ -1121,10 +971,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
         })
         .await;
     }
-    // Phase `getxattr_reports_projected_vs_local_sync_state`.
-    // The sync-state interface end-to-end: a projected file reports
-    // `projected` via getxattr, a hydrated file reports `local`,
-    // directories are `local` — the path the file manager reads for sync badges.
     {
         require_fuse!();
         tilo_test_env::within("the FUSE sync-state xattrs", async {
@@ -1136,12 +982,9 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 .expect("bind endpoint");
             let store = Arc::new(ContentStore::memory());
 
-            // A file whose content IS ingested locally → hydrated → `local`.
             let body = b"content that is already here";
             let local_hash = store.write_content(body).await.unwrap().unwrap();
 
-            // A file whose namespace entry carries a content hash the store
-            // does NOT have — exactly what a freshly-joined peer projects before hydration.
             let projected_hash = iroh_blobs::Hash::from([3u8; 32]);
 
             let namespace = Arc::new(Mutex::new(Namespace::new("xattr-peer").unwrap()));
@@ -1199,10 +1042,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
-    // Phase `fuse_replacement_rename_preserves_the_replaced_open_handle`.
-    // POSIX replacement rename has two audiences: new path lookups must resolve
-    // to the source inode, while a process that already holds the replaced inode
-    // must keep reading that original object until its handle closes.
     {
         require_fuse!();
         tilo_test_env::within("the real-FUSE replacement test", async {
@@ -1259,10 +1098,6 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
         })
         .await;
     }
-    // Phase `fuse_unlink_and_recreate_keeps_the_old_open_inode_private`.
-    // An unlinked inode belongs to its existing handles until the last close. A
-    // new file may reuse the old pathname, but must never alias the old handle's
-    // private buffer or inode identity.
     {
         require_fuse!();
         tilo_test_env::within("the real-FUSE unlink/recreate test", async {
@@ -1316,9 +1151,6 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
         })
         .await;
     }
-    // Phase `fuse_two_writable_handles_preserve_disjoint_writes`.
-    // Writable handles share one live inode buffer. Closing or flushing either
-    // handle must not commit a stale per-handle snapshot over the other writer.
     {
         require_fuse!();
         tilo_test_env::within("the real-FUSE two-writer test", async {
@@ -1369,8 +1201,6 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
     }
 }
 
-/// Read the `user.tilo.sync` extended attribute of `path` through the
-/// kernel (the exact `getxattr` a file manager issues), or `None`.
 fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -1390,48 +1220,15 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf[..n]).into_owned())
 }
 
-// A grant made after the mount is up. The capability list was read
-// once, at mount time, and copied into the filesystem by value.
-// `/var/workspace` stays mounted for the whole session, so "a later
-// grant needs a remount" meant the compositor could show a
-// capability the filesystem wasn't honouring, in either direction.
-// These drive `QuickFS::check_access` on one `QuickFS` never rebuilt.
-//
-// A denied path answers `ENOENT`, not `EACCES` — indistinguishable
-// from absent. What these tests turn on is that the answer *changes*
-// when the list is re-read.
-
-/// Write `caps` to `path` as the file authority the mount reads.
 fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
     std::fs::write(
         path,
         serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
     )
     .unwrap();
-    // Make the ordering of two writes unambiguous regardless of the
-    // filesystem's mtime resolution.
     std::thread::sleep(Duration::from_millis(10));
 }
 
-// Denial is an absence: the property under test is not "the read
-// fails" (proven above) but that a sandboxed app **cannot tell the
-// difference** between an ungranted path and a nonexistent one.
-// Everything below drives a real FUSE mount through the kernel, so
-// what's asserted is what an ordinary program (`ls`, `open`, `stat`)
-// actually observes.
-
-/// A mounted, ACL-filtered workspace, deliberately lopsided: one granted
-/// subtree, two hidden top-level directories, and a hidden sibling
-/// sharing a string prefix with the granted one.
-///
-/// ```text
-/// /w/docs/report.md        granted (read)
-/// /w/docs/sub/deep.md      granted (read)
-/// /w/other/private.md      never granted
-/// /w/docsSECRET/leak.md    never granted, string-prefix look-alike
-/// /vault/keys.txt          never granted
-/// /archive/old.txt         never granted
-/// ```
 struct ViewFixture {
     session: fuser::BackgroundSession,
     endpoint: Endpoint,
@@ -1445,9 +1242,6 @@ impl ViewFixture {
         self.dir.path()
     }
 
-    /// The CRDT heads of the shared namespace — a fingerprint of the whole
-    /// document. Equal heads before and after prove the operation changed
-    /// nothing, not merely that it reported an error.
     fn heads(&self) -> Vec<automerge::ChangeHash> {
         self.namespace.lock().unwrap().heads()
     }
@@ -1457,8 +1251,6 @@ impl ViewFixture {
     }
 }
 
-/// Populate the tree above and mount it as `identity` under `acl`.
-/// `acl: None` mounts unfiltered, for side-by-side comparisons.
 async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> ViewFixture {
     let endpoint = Endpoint::bind(presets::Minimal)
         .await
@@ -1513,7 +1305,6 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     }
 }
 
-/// An ACL granting `ALICE` read on `/w/docs` and nothing else.
 fn docs_read_only() -> (WorkspaceAcl, [u8; 32]) {
     (
         WorkspaceAcl::from_capabilities(ALICE, &[read_cap(ALICE, "/w/docs")], &[], None),
@@ -1521,7 +1312,6 @@ fn docs_read_only() -> (WorkspaceAcl, [u8; 32]) {
     )
 }
 
-/// Sorted names in a directory, or the errno if it could not be listed.
 fn list(dir: &std::path::Path) -> Result<Vec<String>, i32> {
     match std::fs::read_dir(dir) {
         Ok(rd) => {
@@ -1535,7 +1325,6 @@ fn list(dir: &std::path::Path) -> Result<Vec<String>, i32> {
     }
 }
 
-/// The raw errno of a `stat`, or `None` if it succeeded.
 fn stat_errno(path: &std::path::Path) -> Option<i32> {
     std::fs::symlink_metadata(path)
         .err()
@@ -1548,9 +1337,6 @@ fn stat_errno(path: &std::path::Path) -> Option<i32> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
-    // Phase `a_denied_subtree_is_absent_from_the_listing`.
-    // A path the identity was not granted does not appear in the listing
-    // — not an entry that errors on access, it's not in the directory.
     {
         require_fuse!();
         let f = view_fixture(Some(docs_read_only()), "quickfs_view_listing").await;
@@ -1577,8 +1363,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             "and so is everything beneath it"
         );
 
-        // The same tree, unfiltered, does contain all of it — so the
-        // omissions above are the filter, not an empty fixture.
         let open = view_fixture(None, "quickfs_view_listing_open").await;
         assert_eq!(
             list(open.path()),
@@ -1599,18 +1383,11 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         f.shutdown().await;
         open.shutdown().await;
     }
-    // Phase `a_hidden_path_answers_exactly_as_an_absent_one`.
-    // The headline property: a hidden path and a path that was never
-    // created must produce the *same* errno from every operation an app
-    // can reach them with — otherwise the filesystem is an oracle for
-    // what the user is hiding.
     {
         require_fuse!();
         let f = view_fixture(Some(docs_read_only()), "quickfs_view_oracle").await;
         let p = f.path();
 
-        // Left column: exists in the tree, outside the view. Right column:
-        // never existed. Same parent directory in each pair.
         let pairs = [
             ("w/other", "w/never-existed"),
             ("w/other/private.md", "w/never-existed/nope.md"),
@@ -1686,10 +1463,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         );
         f.shutdown().await;
     }
-    // Phase `directory_link_counts_match_the_filtered_listing`.
-    // A directory's link count is `2 + subdirectories`, taken from the
-    // filtered listing rather than the real tree — else it would
-    // announce how many subdirectories are hidden.
     {
         use std::os::unix::fs::MetadataExt;
 
@@ -1698,8 +1471,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         let f = view_fixture(Some(docs_read_only()), "quickfs_view_nlink").await;
         let open = view_fixture(None, "quickfs_view_nlink_open").await;
 
-        // Filtered: root has one visible subdirectory (`w`); `w` has one
-        // (`docs`); `docs` has one (`sub`).
         for (rel, expect) in [("", 3u64), ("w", 3), ("w/docs", 3), ("w/docs/sub", 2)] {
             let md = std::fs::metadata(f.path().join(rel)).expect("stat in the filtered view");
             assert_eq!(
@@ -1710,8 +1481,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             assert_eq!(md.len(), 0, "a directory's size never encodes its contents");
         }
 
-        // Unfiltered, the same directories report more — what makes the
-        // numbers above meaningful rather than a constant.
         let root = std::fs::metadata(open.path()).expect("stat unfiltered root");
         assert_eq!(
             root.nlink(),
@@ -1723,10 +1492,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         f.shutdown().await;
         open.shutdown().await;
     }
-    // Phase `a_read_grant_presents_a_read_only_filesystem`.
-    // A read grant is a read-only mount, not a mount that refuses. Every
-    // mutation answers EROFS, and the document is byte-for-byte
-    // unchanged afterwards.
     {
         require_fuse!();
         let f = view_fixture(Some(docs_read_only()), "quickfs_view_rofs").await;
@@ -1792,17 +1557,9 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         );
         f.shutdown().await;
     }
-    // Phase `a_write_without_read_entry_refuses_rather_than_clobbering`.
-    // The one residual: an entry that's writable but not readable. The
-    // capability model can't express it (every verb implies Read), so
-    // this is reachable only through a direct ACL entry. Pinned here so
-    // if it ever becomes reachable it's a deliberate change: the name is
-    // refused, never created over, never confirmed.
     {
         require_fuse!();
         let mut acl = WorkspaceAcl::new();
-        // Write on /w, but read only on /w/docs: /w/other and /w/docsSECRET
-        // are writable and invisible at once, which no capability can produce.
         acl.grant(ALICE, "/w", false, true);
         acl.grant_read(ALICE, "/w/docs");
         let f = view_fixture(Some((acl, ALICE)), "quickfs_view_residual").await;
@@ -1814,7 +1571,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             Ok(vec!["docs".to_string()]),
             "the writable-but-unreadable siblings are still absent from the listing"
         );
-        // Creating over the hidden name is refused — the hidden entry survives.
         assert_eq!(
             std::fs::create_dir(p.join("w/other"))
                 .err()
@@ -1829,17 +1585,12 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         );
         f.shutdown().await;
     }
-    // Phase `a_read_participant_reads_a_shared_document_and_cannot_author_it`.
-    // A read participant reads the shared document and cannot author
-    // it. The CRDT is byte-identical afterwards — not "the change was
-    // rejected" but "no change was ever made".
     {
         require_fuse!();
         let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap(ALICE, "/shared")], &[], None);
         let fixture = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
         let doc = fixture.dir.path().join("shared/notes.md");
 
-        // Participation: the document is there and it reads.
         let before = std::fs::read(&doc).expect("a read participant reads the shared document");
         assert!(
             String::from_utf8_lossy(&before).contains("Shared paragraph"),
@@ -1849,7 +1600,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         let heads_before = fixture.namespace.lock().unwrap().heads();
         let nodes_before = fixture.namespace.lock().unwrap().live_node_ids();
 
-        // Authorship: every route by which bytes could become a change.
         for (what, outcome) in [
             (
                 "rewrite the document",
@@ -1898,8 +1648,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             );
         }
 
-        // Nothing was authored. Not "the change was refused" — the change
-        // graph did not move.
         assert_eq!(
             fixture.namespace.lock().unwrap().heads(),
             heads_before,
@@ -1916,8 +1664,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             "the document reads exactly as it did before"
         );
 
-        // The negative case is not vacuous: same document, same writes,
-        // with a write grant instead of a read grant.
         let rw = WorkspaceAcl::from_capabilities(
             BOB,
             &[CapOverride::new(
@@ -1947,18 +1693,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
     }
 }
 
-// Read participation without authorship: a shared document is a
-// CRDT, and a change is *authored* by somebody. Read participation
-// means the app sees the document and cannot originate a change —
-// not "rejected", which would still need something downstream to reject it.
-//
-// In the filesystem this is structural: the only route from an app's
-// bytes into the CRDT is a write buffer, only ever created by
-// `write`, `create` or a truncating `setattr`, and all three are
-// refused for a path the identity may not write.
-
-/// A mounted workspace holding one CRDT-backed document under a granted
-/// subtree, plus the ACL the mount enforces.
 struct DocumentFixture {
     session: fuser::BackgroundSession,
     endpoint: Endpoint,
@@ -2012,7 +1746,6 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
     }
 }
 
-/// A mount holding an empty `/docs`, with a change signal not yet started.
 struct SignalledMount {
     session: fuser::BackgroundSession,
     endpoint: Endpoint,
@@ -2064,7 +1797,6 @@ async fn signalled_mount() -> SignalledMount {
     }
 }
 
-/// Start `signal` on `mount`, as the daemon does once the session runs.
 async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignalTask {
     let (signal, namespace, availability, path, notifier) = (
         mount.signal.clone(),
@@ -2084,7 +1816,6 @@ async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignal
 
 type WatchEvents = std::sync::mpsc::Receiver<Vec<tilo_files::native::WatchEvent>>;
 
-/// Watch the entries of `dir`, as a folder's watcher does.
 fn watch_folder(dir: &std::path::Path) -> (tilo_files::native::ChangeWatch, WatchEvents) {
     let (events_tx, events) = std::sync::mpsc::channel();
     let watch = tilo_files::native::Watcher::entries(dir)
@@ -2095,7 +1826,6 @@ fn watch_folder(dir: &std::path::Path) -> (tilo_files::native::ChangeWatch, Watc
     (watch, events)
 }
 
-/// The next changes `events` reports, waiting no longer than a hang.
 fn next_change(
     events: &WatchEvents,
 ) -> Result<Vec<tilo_files::native::WatchEvent>, std::sync::mpsc::RecvTimeoutError> {
@@ -2103,10 +1833,6 @@ fn next_change(
     events.recv_timeout(left)
 }
 
-/// A change the kernel did not make, here a peer's edit merged into the
-/// namespace, still reaches inotify on the directory it changed, and the
-/// mount says it does, so a folder's watcher need not poll for it. Nobody
-/// but the daemon can raise the signal, and an idle mount raises none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_merged_change_reaches_inotify_on_its_directory() {
     use tilo_files::native::CHANGE_SIGNAL_XATTR;
@@ -2142,7 +1868,6 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
         "nobody else raises the signal"
     );
 
-    // The watcher lists the folder, then watches it, as Files does.
     assert!(list(&docs).unwrap().is_empty());
     let (watcher, events) = watch_folder(&docs);
 
@@ -2167,7 +1892,6 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
     );
     assert_eq!(list(&docs), Ok(vec!["from-peer.md".to_string()]));
 
-    // Reading the folder changes nothing, so nothing is signalled again.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let late: Vec<_> = events.try_iter().collect();
     assert!(late.is_empty(), "an idle mount raises no signal: {late:?}");
@@ -2184,10 +1908,6 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
     shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
 
-/// A file's availability is no change to the namespace, yet Files shows
-/// it: when a read no peer answered marks the file unavailable, its folder's
-/// watcher hears of it like of any change, and reads the file as
-/// unavailable without polling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
     use fs::availability::{RecordAvailability, RecordKind, TransferError};
@@ -2217,7 +1937,6 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     assert!(!availability().unavailable());
     let (watcher, events) = watch_folder(&docs);
 
-    // What a read that waited its bound for a quiet peer writes.
     let mut unavailable = RecordAvailability::new(record, RecordKind::File);
     unavailable.transfer.last_error = Some(TransferError {
         message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
@@ -2250,17 +1969,12 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
 
-/// A file read whole through the mount is stored here: the read that
-/// brings its last bytes says so on its record, as a pin's download does,
-/// and its folder's watcher hears of it without polling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     use fs_protocol::Residency;
 
     require_fuse!();
     let mount = signalled_mount().await;
-    // A device that keeps the file: larger than one read, so several reads
-    // fetch it and only the last one completes it.
     let data: Vec<u8> = (0..3 * 1024 * 1024_u32)
         .map(|i| u8::try_from(i.wrapping_mul(2_654_435_761) >> 24).unwrap())
         .collect();
@@ -2301,12 +2015,10 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
             .expect("the mount projects the file's availability");
         fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
     };
-    // Files lists the folder it shows, and the mount signals listed folders.
     assert_eq!(list(&docs), Ok(vec!["film.mkv".to_string()]));
     assert_eq!(availability(&film).residency, Residency::NotResident);
     let (watcher, events) = watch_folder(&docs);
 
-    // Read the whole file, as a player or a copy does.
     let read = {
         let film = film.clone();
         tokio::task::spawn_blocking(move || std::fs::read(film))
@@ -2316,7 +2028,6 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     };
     assert!(read == data, "the file's bytes");
 
-    // Written a moment after the read, with any other file found whole.
     let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
         .unwrap();
@@ -2353,8 +2064,6 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
 
-/// A workspace whose root holds `.config`, mounted as `owner`'s
-/// ([`QuickFS::with_owner`]), or each caller's when `None`.
 async fn mount_owned_by(
     owner: Option<(u32, u32)>,
     allow_other: bool,
@@ -2364,9 +2073,6 @@ async fn mount_owned_by(
     Endpoint,
     Arc<ContentStore>,
 ) {
-    // A session that admits other callers is mounted where every account
-    // reaches it: the shared temporary directory is traversable, while the
-    // test environment's own root is private to its account.
     let dir = if allow_other {
         let mut builder = tempfile::Builder::new();
         builder.prefix("tilo-fs-callers-");
@@ -2399,13 +2105,6 @@ async fn mount_owned_by(
     (dir, session, endpoint, store)
 }
 
-/// The workspace is the person's, whoever's daemon serves it: its files are
-/// presented as owned by the local person when the daemon knows them, else
-/// by whoever looks, and never by the daemon's own account (root, on a
-/// device). An environment's guest, which maps only its user's id, sees its
-/// home and what is in it as its user's: `stat -c %U ~ ~/.config` names the
-/// guest's user, so programs that check who owns their config (podman, ssh)
-/// accept it. Nothing is chowned; ownership is only presented.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
     require_fuse!();
@@ -2417,13 +2116,9 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
         };
         let root = uid == 0;
 
-        // No person named: each caller sees the files as their own.
         let (dir, session, endpoint, store) = mount_owned_by(None, root).await;
         let home = dir.path();
         if root {
-            // Only root can mount for other accounts. Callers in turn, each
-            // right after the one before: every one sees the files as its
-            // own, never as the daemon's or the previous caller's.
             if std::path::Path::new("/usr/bin/setpriv").is_file() {
                 let stat_as = |id: u32| {
                     let out = std::process::Command::new("/usr/bin/setpriv")
@@ -2449,8 +2144,6 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
                 }
             }
         } else {
-            // A guest as ush builds one: a user namespace mapping only the
-            // user's own id, the workspace at its home.
             if let Some(bwrap) = ["/usr/bin/bwrap", "/bin/bwrap"]
                 .into_iter()
                 .find(|p| std::path::Path::new(p).is_file())
@@ -2489,7 +2182,6 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
         }
         shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 
-        // The local person named: everyone sees the files as theirs.
         let (dir, session, endpoint, store) = mount_owned_by(Some((4242, 4343)), false).await;
         for path in [dir.path().to_path_buf(), dir.path().join(".config")] {
             let meta = std::fs::metadata(&path).unwrap();

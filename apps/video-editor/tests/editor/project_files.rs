@@ -194,11 +194,7 @@ fn opening_over_a_timeline_asks_nothing_and_undo_brings_it_back() {
     recorder.respond_to_pick(PortalOutcome::Opened(other));
     keys(&mut app, &["ctrl"], "o");
     assert_eq!(app.state().name, "Other", "it just opened");
-    assert!(
-        notice_text().ends_with("Undo to go back"),
-        "{}",
-        notice_text()
-    );
+    assert!(notice_text() == "Opened Other", "{}", notice_text());
     assert!(app.undo());
     assert_eq!(app.state().clips.len(), before);
 }
@@ -287,5 +283,5 @@ fn footage_beside_the_file_comes_in_with_it() {
         dir.path().join("take.mp4").as_path(),
         "the project holds where the footage is, not where the file was"
     );
-    assert_eq!(notice_text(), "Opened Beside. Undo to go back");
+    assert_eq!(notice_text(), "Opened Beside");
 }

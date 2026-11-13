@@ -85,7 +85,7 @@ pub enum OpenEffect {
     /// Open.
     ///
     /// Show this resource in the window: its app, with it selected.
-    #[effect(view, row)]
+    #[effect(view, row, participant)]
     Open {
         #[param("The resource's id")]
         anchor: String,
@@ -95,7 +95,7 @@ pub enum OpenEffect {
     /// Show this resource in the window through one of the views that show it (`open(r, with:
     /// v)`). Each published view other than the type's default opens through its own binding
     /// of it, so a view and the action that opens it name each other.
-    #[effect(view, row)]
+    #[effect(view, row, participant)]
     OpenWith {
         #[param("The resource's id")]
         anchor: String,
@@ -103,6 +103,10 @@ pub enum OpenEffect {
         view: String,
     },
 }
+
+/// The operation type every [`OpenEffect`] travels under: what a host that answers openings
+/// recognises an invocation by (`crate::records_service::RecordService`).
+pub const OPEN_OPERATION: &str = "tilolang.open";
 
 impl OpenEffect {
     /// The resource this opens.
@@ -295,7 +299,7 @@ impl Host {
                 .type_of(&probe)
                 .map_err(|error| error.to_string())?;
             return Ok(OpenPlan {
-                app: package.meta.app,
+                app: package.meta.app.clone(),
                 target: Some(ResourceRef { ty, ..probe }),
                 view: Some(view.to_owned()),
             });
@@ -322,7 +326,7 @@ impl Host {
             }
         }
         Ok(OpenPlan {
-            app: package.meta.app,
+            app: package.meta.app.clone(),
             target,
             view: None,
         })
@@ -350,9 +354,12 @@ impl Host {
                     })
                 })
                 .collect::<Vec<_>>();
-            // The kind is the one records on disk carry ([`crate::RECORD_KIND`]), spelled the
-            // same so a reader of the answer knows it.
-            return Ok(json!({ "kind": "tilolang.room", "records": records }));
+            let kind = self
+                .packages()
+                .first()
+                .map(|package| package.meta.record_kind())
+                .unwrap_or_default();
+            return Ok(json!({ "kind": kind, "records": records }));
         };
         let unknown = || format!("no resource `{item}`; read the app for the records it holds");
         let (app, path) = item

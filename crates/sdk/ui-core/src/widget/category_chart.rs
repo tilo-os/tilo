@@ -65,8 +65,6 @@ pub struct CategorySeries {
     pub id: String,
     pub name: String,
     pub color: Color,
-    /// The theme's categorical chart colour at this index, in place of
-    /// `color`: it follows the theme as it changes.
     pub palette: Option<usize>,
     pub values: Vec<CategoryValue>,
 }
@@ -100,8 +98,6 @@ impl CategorySeries {
             values,
         }
     }
-    /// A series in the theme's categorical chart colour `index`
-    /// ([`crate::chart_palette::ChartPalette::categorical`]).
     pub fn from_palette(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -140,12 +136,9 @@ pub struct CategoryChartStyle {
     pub corner_radius: f64,
     pub show_grid: bool,
     pub show_legend: bool,
-    /// Let pointer and assistive activation toggle series from the legend.
     pub interactive_legend: bool,
     pub show_values: bool,
     pub tooltip: bool,
-    /// How values read on the value axis, on bars and in the tooltip of a
-    /// value without its own detail.
     pub value_format: AxisLabelFormat,
 }
 
@@ -182,7 +175,6 @@ pub struct CategoryMarks {
     toggles: chart_legend::SeriesToggles,
 }
 
-/// Values per category as grouped, stacked, percent or waterfall bars.
 pub type CategoryChart = Plot<CategoryMarks>;
 
 impl CategoryChart {
@@ -499,6 +491,24 @@ fn label_stride(needed: f64, room: f64) -> usize {
 }
 
 impl CategoryMarks {
+    fn legend_area(&self) -> Option<Rect> {
+        if !self.style.show_legend || self.style.layout == CategoryLayout::Waterfall {
+            return None;
+        }
+        let y = self.frame.rect.y0
+            + if self.frame.title.is_empty() {
+                10.0
+            } else {
+                38.0
+            };
+        Some(Rect::new(
+            self.frame.rect.x0 + 58.0,
+            y,
+            self.frame.rect.x1 - 12.0,
+            y,
+        ))
+    }
+
     /// The corners of `bar`: a stack is one bar, rounded only at its ends.
     fn radii(&self, bars: &[Bar], bar: Bar) -> RoundedRectRadii {
         let radius = self.style.corner_radius.min(bar.rect.width() / 3.0);
@@ -648,6 +658,14 @@ impl PlotMarks for CategoryMarks {
     fn series_of(&self, &(_, series): &(usize, usize)) -> Option<&str> {
         Some(self.series.get(series)?.id.as_str())
     }
+    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {
+        self.toggles.place(
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str())),
+            self.legend_area(),
+        );
+    }
 
     #[allow(
         clippy::too_many_lines,
@@ -739,8 +757,6 @@ impl PlotMarks for CategoryMarks {
         }
         let group_width = plot.width()
             / f64::from(u32::try_from(self.categories.len().max(1)).unwrap_or(u32::MAX));
-        // Labels wider than their category are thinned to every n-th, counted
-        // back from the last: the latest category always keeps its label.
         let widest = self
             .categories
             .iter()
@@ -772,12 +788,6 @@ impl PlotMarks for CategoryMarks {
             );
         }
         if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-            let y = self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    10.0
-                } else {
-                    38.0
-                };
             self.toggles.paint(
                 scene,
                 transform,
@@ -790,10 +800,7 @@ impl PlotMarks for CategoryMarks {
                         series.color_in(theme),
                     )
                 }),
-                Rect::new(self.frame.rect.x0 + 58.0, y, self.frame.rect.x1 - 12.0, y),
             );
-        } else {
-            self.toggles.clear_hits();
         }
         if let Some((category_index, series_index)) =
             self.frame.inspection.hovered.filter(|_| self.style.tooltip)

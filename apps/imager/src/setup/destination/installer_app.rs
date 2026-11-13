@@ -1,44 +1,9 @@
-//! [`InstallerApp`] — the root installer widget + wizard state machine.
+//! The installer window: the wizard's steps, what each one validates, and the
+//! install they start.
 //!
-//! Structured like the greeter: a root widget owning a single composed child (a
-//! `Card`) and delegating the five `Widget` passes into it.
-//!
-//! Focus handling: the App discovers focusable widgets by walking the
-//! widget tree (`Widget::children`) in lock-step with the taffy tree.
-//! Any intermediate taffy node MUST have a matching widget in
-//! `children()`, or the recursion derails and inputs never enter
-//! `focusable_order` — breaking Tab / arrow navigation. The card is a
-//! `Card` widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
-//! taffy tree exactly.
-//!
-//! Keyboard-focus continuity across the per-step rebuild is handled by
-//! the App's opt-in `autofocus_on_structure_change`: on a step change the
-//! installer raises [`Widget::take_focus_reset`] so the new step's first
-//! field is focused; on an incidental rebuild (a status line appearing)
-//! focus is preserved by ordinal so the caret never vanishes mid-edit.
-//!
-//! The installer keeps nothing in its document. It runs once, on one
-//! machine, as a privileged process whose secrets must never reach CRDT
-//! history, and nothing else reads or syncs its state. Every choice of the
-//! install (disk, method, filesystem, security key, codecs, recovery
-//! promises) is wizard state written only by [`InstallerApp::apply`], the
-//! typed operation every door ends in. The typed and picked fields
-//! (username, full name, hostname, locale, time zone, keyboard layout, the
-//! destructive confirmation) are view state: each `TextInput` or `Dropdown`
-//! edits a [`ui::LocalState`] the wizard reads when it validates and
-//! installs, and the same operations set them for every other caller.
-//!
-//! A control does not act by itself either: it names the effect the
-//! installer publishes for it (see the `surface` module) and queues one
-//! [`crate::setup::destination::control::Press`]; the wizard runs it through
-//! the same rules the console and the host apply, so a control can never do
-//! something its published effect would refuse.
-//!
-//! The install runs on a **worker thread**: on `begin` the app spawns
-//! [`imager_backend::destination::install::run_install`] and hands each output
-//! line back through its [`Mailbox`], folded into the status log on the next
-//! sync — so the UI stays live and the log animates. Without a mailbox
-//! (tests, an unattended run) it runs synchronously.
+//! Every taffy node needs a widget in `children()` that mirrors it, or focus order
+//! breaks. Nothing of the install enters a document: its secrets must never reach
+//! history.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -98,29 +63,18 @@ mod surface_tests;
 
 pub use console::{CONSOLE_WAKE, redact_recovery_material};
 
-/// Messages naming the security-key choice, in display order. Index 0 (off)
-/// is the default; index 1 enrolls a hardware security key as an extra
-/// unlock factor. Only shown when encryption is on.
 const FIDO2_KEYS: [&str; 2] = [
     "installer-security-key-off",
     "installer-security-key-enroll",
 ];
 
-/// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
-/// Default time zone seeded into the CRDT.
 const DEFAULT_TIMEZONE: &str = "UTC";
-/// Default keyboard-layout display name seeded into the CRDT.
 const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
-/// The filesystem this installer suggests: index into [`FILESYSTEMS`], the
-/// one that gives snapshots and rollback.
 const RECOMMENDED_FS: usize = 0;
 
-/// Messages naming the two ways to install, in the segmented choice's order.
 const INSTALL_METHOD_KEYS: [&str; 2] = ["installer-method-erase", "installer-method-alongside"];
-/// The message naming the step's forward action: the one the published
-/// `next` gate carries, so the button and the action read alike.
 const NEXT_KEY: &str = "imager-installer-next";
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "installer-storage-windows-preparation";
 const LINUX_ALONGSIDE_READY: &str = "installer-storage-linux-ready";
@@ -135,8 +89,6 @@ fn connect_power_message(percent: u8) -> String {
     )
 }
 
-/// What installing alongside `dev` changes, and the firmware caveat that
-/// stands whatever the plan: the review's description reads it.
 fn alongside_install_impact(guided: bool, dev: &str) -> String {
     let change = crate::setup::strings::t_args(
         if guided {
@@ -166,8 +118,6 @@ enum InstallMethod {
     Alongside,
 }
 
-/// Bind intent as strictly as a destructive target: a reused device path or a
-/// replaced partition table must not inherit a previous disk's erase choice.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DiskMethodIdentity {
     major_minor: String,
@@ -189,10 +139,6 @@ impl DiskMethodIdentity {
     }
 }
 
-/// Which non-secret choices were independently validated from the medium.
-/// This deliberately records fields rather than treating a profile as one
-/// all-or-nothing shortcut: an invalid value can be repaired without asking
-/// for the sound choices again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum FieldCompletion {
     #[default]
@@ -240,9 +186,6 @@ impl ProfileCompletion {
     }
 }
 
-/// One-line explanation for each filesystem, shown under the chooser. It says
-/// what the filesystem gives; the recommendation is its own line below, so a
-/// case is never one sentence carrying two facts.
 fn fs_description(i: usize) -> &'static str {
     match i {
         0 => "installer-fs-btrfs",
@@ -252,10 +195,6 @@ fn fs_description(i: usize) -> &'static str {
     }
 }
 
-/// The destination-protection facts this installer sampled. `tpm2` comes from
-/// a real `tilo-rollback tpm-status` probe, and `target_verified_boot` from the
-/// canonical installed-target preflight; neither is inferred from a model name
-/// or a device node alone.
 #[cfg(test)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -269,8 +208,6 @@ pub(crate) struct Protection {
     pub target_verified_boot: bool,
 }
 
-/// Explanation shown under the encryption chooser, reflecting the choice and
-/// what this machine's hardware can actually do.
 #[derive(Clone, Copy)]
 enum VerifiedBootState {
     NoTpm,
@@ -291,20 +228,15 @@ fn encrypt_description(state: VerifiedBootState) -> String {
     CATALOG.t(message)
 }
 
-/// Control sentinels sent over the `External` channel by the install
-/// worker thread to mark terminal outcomes (anything else is a log line).
 const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
 const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
 const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
 const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
 
-/// The log line a finished install from a medium ends with.
 const INSTALLED_REMOVE_MEDIUM: &str = "Installed. Remove the installer medium, then reboot.";
-/// The log line a finished staged install ends with: there is no medium.
 const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";
 
-/// The wizard steps, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Keyboard,
@@ -313,22 +245,15 @@ pub enum Step {
     Disk,
     Account,
     Options,
-    /// The optional media formats: one Install button, nothing chosen in
-    /// advance.
     Media,
     Review,
     Install,
 }
 
-/// Machine names for the steps, index-aligned with [`step_index`]: what the
-/// headless console reports, so automation keeps the same names in every
-/// language.
 pub const STEP_LABELS: [&str; 9] = [
     "Keyboard", "Network", "Accounts", "Disk", "Account", "Options", "Media", "Review", "Install",
 ];
 
-/// The messages naming the steps, index-aligned with [`step_index`]: what the
-/// breadcrumb shows, in the window's language.
 const STEP_KEYS: [&str; 9] = [
     "installer-step-keyboard",
     "installer-step-network",
@@ -341,21 +266,16 @@ const STEP_KEYS: [&str; 9] = [
     "installer-step-install",
 ];
 
-/// What the breadcrumb calls each step.
 fn step_captions() -> Vec<String> {
     captions(&STEP_KEYS)
 }
 
-/// What `keys` say, in the window's language: a choice's segments and a
-/// short list of labels read as words, never as the catalogue's keys.
 fn captions(keys: &[&str]) -> Vec<String> {
     keys.iter()
         .map(|key| crate::setup::strings::t(key))
         .collect()
 }
 
-/// What the network step says of the connection it has, in the person's
-/// language.
 fn network_summary(network: &InstallerNetwork) -> String {
     match network.connection() {
         Connection::Via(ssid) => {
@@ -372,7 +292,6 @@ fn network_summary(network: &InstallerNetwork) -> String {
     }
 }
 
-/// The catalogue message naming a connectivity state as a person reads it.
 fn connectivity_message(state: ConnectivityState) -> &'static str {
     match state {
         ConnectivityState::Full => "installer-connectivity-full",
@@ -383,8 +302,6 @@ fn connectivity_message(state: ConnectivityState) -> &'static str {
     }
 }
 
-/// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
-/// layout is chosen BEFORE the user types anything (username/password).
 pub fn step_index(step: Step) -> usize {
     match step {
         Step::Keyboard => 0,
@@ -399,7 +316,6 @@ pub fn step_index(step: Step) -> usize {
     }
 }
 
-/// Lifecycle of the install backend call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallState {
     Idle,
@@ -408,10 +324,6 @@ pub enum InstallState {
     Failed,
 }
 
-/// The step reached by pressing Next from `step`, if any. `Review` →
-/// `Install` is intentionally gated behind the explicit Begin button, so
-/// callers must not auto-advance into `Install` via Next (see
-/// `InstallerApp::go_next`).
 pub fn next_step(step: Step) -> Option<Step> {
     match step {
         Step::Keyboard => Some(Step::Network),
@@ -426,7 +338,6 @@ pub fn next_step(step: Step) -> Option<Step> {
     }
 }
 
-/// The step reached by pressing Back from `step`, if any.
 pub fn prev_step(step: Step) -> Option<Step> {
     match step {
         Step::Network => Some(Step::Keyboard),
@@ -436,14 +347,10 @@ pub fn prev_step(step: Step) -> Option<Step> {
         Step::Options => Some(Step::Account),
         Step::Media => Some(Step::Options),
         Step::Review => Some(Step::Media),
-        // Keyboard is the first step; Back out of Install is handled
-        // specially (only on failure) by the app — see `go_back`.
         Step::Keyboard | Step::Install => None,
     }
 }
 
-/// Guard for advancing out of `step`. `Ok(())` means it's valid to move
-/// forward; `Err(msg)` is a user-facing reason it isn't yet.
 pub fn validate_step(
     step: Step,
     selected_disk: Option<usize>,
@@ -477,9 +384,6 @@ pub fn validate_step(
                 Err("Enter a valid hostname (letters, digits, hyphens)".to_string())
             }
         }
-        // A layout is always selected (seeded to the default), the media
-        // formats are optional, and Review/Install have nothing left to
-        // validate, so these steps never block forward progress.
         Step::Network
         | Step::Accounts
         | Step::Keyboard
@@ -489,9 +393,6 @@ pub fn validate_step(
     }
 }
 
-/// Validate the two account password fields. Keeping this separate from
-/// [`validate_step`] avoids ever passing either secret through generic wizard
-/// summaries or status formatting.
 pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), String> {
     if password.trim().is_empty() {
         Err("Enter an account password".to_string())
@@ -502,9 +403,6 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
     }
 }
 
-/// Validate either the measured-boot TPM PIN or the independent strong LUKS
-/// passphrase selected when the target cannot prove that policy: the one
-/// startup-secret rule the unlock path and the host's preparation also apply.
 pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
     imager_backend::startup_password::validate_on_destination(secret, tpm_pin)
 }
@@ -514,16 +412,8 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
     validate_startup_secret_for(secret, false)
 }
 
-// ===================================================================
-// InstallerApp
-// ===================================================================
-
-/// The wake-up a network worker posts once its result is queued.
 const NETWORK_WAKE: &str = "\u{1}network";
 
-/// Work finished off the UI thread — install output, a preflight verdict, a
-/// network result, a console request — handed back to the wizard, which
-/// folds it in on its next sync.
 #[derive(Clone)]
 pub struct Mailbox {
     queue: Arc<Mutex<std::collections::VecDeque<String>>>,
@@ -531,7 +421,6 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// A mailbox that calls `wake` after each post.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             queue: Arc::default(),
@@ -539,7 +428,6 @@ impl Mailbox {
         }
     }
 
-    /// Hand `payload` to the wizard and wake it.
     pub fn post(&self, payload: String) {
         if let Ok(mut queue) = self.queue.lock() {
             queue.push_back(payload);
@@ -568,94 +456,42 @@ pub struct InstallerApp {
     windows_hints: crate::setup::destination::accounts_hints::WindowsReview,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
-    /// Explicit choice when a disk has multiple safe unallocated extents.
-    /// A sole candidate is selected implicitly; ambiguity never is.
     selected_guided_extent: Option<usize>,
-    /// Bound to the exact hardware inventory and free extent, never an index alone.
     alongside_capacity: Option<(Disk, GuidedAlongsidePlan, u64)>,
-    /// The capacity field's value, and the value it had when last built or
-    /// noticed: a difference is the person's edit.
     capacity_gib: ui::LocalState<f64>,
     capacity_seen: Cell<f64>,
     install_method: InstallMethod,
-    /// Manual method choices are session-local and bound to discovered hardware,
-    /// never a global preference that can carry Erase onto another disk.
     disk_method_choices: HashMap<DiskMethodIdentity, InstallMethod>,
-    /// UUIDs reviewed for the partitions the guided free-space path will add.
-    /// Generated once per installer run; changing disks clears confirmation but
-    /// retaining these stable IDs keeps Review and the backend handoff identical.
     guided_efi_partuuid: String,
     guided_boot_partuuid: String,
     guided_root_partuuid: String,
-    /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
-    /// Image initramfs policy; false means its root driver is omitted.
     supported_filesystems: [bool; FILESYSTEMS.len()],
     filesystem_policy_error: Option<String>,
-    /// Enroll a FIDO2 security key as an extra unlock factor (only with
-    /// encryption). Default `false`.
     fido2: bool,
-    /// Owner opted in to the third-party media codecs pack, installed by the
-    /// new system once it is online. Default `false`.
     codecs: bool,
-    /// User has acknowledged they will save the install-time recovery key.
-    /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
-    /// Set by the unattended recipe: the account credential held in `password`
-    /// is already a canonical SHA-512 crypt hash, not a typed password.
     password_is_hash: bool,
-    /// Set by the unattended recipe when it explicitly chose an independent
-    /// strong LUKS passphrase instead of the measured-boot TPM2 policy.
     force_startup_passphrase: bool,
-    /// This process was started from an explicit unattended recipe. It gates
-    /// the recipe-only credential action; the ordinary wizard never enables it.
     unattended_mode: bool,
-    /// The unattended run's precise, secret-free reason it stopped before or
-    /// after installation. Console callers read it from `state_dump`.
     unattended_error: Option<String>,
-    /// Whether this machine has a TPM2 device, sampled once at construction.
-    /// Together with the verified-target preflight, this selects either the
-    /// measured-boot PIN policy or the strong passphrase policy.
     tpm2: bool,
-    /// Diagnostic state used to explain the measured-boot boundary.
     secure_boot: bool,
-    /// Secure Boot must have propagated into the kernel's runtime restrictions;
-    /// the EFI variable alone is not sufficient evidence for TPM unlock.
     kernel_lockdown: bool,
-    /// The component-by-component compatibility report, read once from this
-    /// computer before anything is written. It never decides the install and
-    /// grants nothing; Review shows it so a person reads what the running
-    /// system observed, and what it could not, beside the plan itself.
     hardware: crate::setup::destination::hardware_report::HardwareReport,
-    /// A dedicated preflight must also prove the installed target, not merely
-    /// the running live medium, retains the complete verified-boot boundary.
     target_verified_boot: bool,
     step: Step,
     install_state: InstallState,
-    /// Streamed install output (also the success/failure summary).
     status_lines: Vec<String>,
-    /// One-time LUKS recovery key, kept visible until the machine restarts.
     recovery_key: Option<String>,
-    /// Whether the visible key has been copied during this installer session.
-    /// This is presentation state only; a newly emitted key resets it.
     recovery_key_copied: bool,
-    /// The recovery key's copy, whose outcome can arrive after it was
-    /// shown as copied.
     recovery_key_copy: ui::CopyWatch,
-    /// Explicit confirmation made after the concrete recovery key was shown.
-    /// Copying to the live clipboard alone is not evidence of an off-device copy.
     recovery_key_saved: bool,
-    /// Typed account/system fields, edited in place by their `TextInput`s
-    /// and read for validation, the Review display and the backend argv.
     username: ui::LocalState<String>,
     full_name: ui::LocalState<String>,
-    // Secrets deliberately bypass Automerge: deleting CRDT text leaves the
-    // old characters in document history. These buffers are local to the
-    // privileged installer process and are zeroized when consumed.
+    /// Secrets never enter the document: deleting CRDT text leaves the old bytes behind.
     password: Arc<Mutex<String>>,
     password_confirmation: Arc<Mutex<String>>,
-    /// Optional action-supplied disk secret. Empty means the account password
-    /// is also the startup secret, preserving the graphical wizard behavior.
     disk_password: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
     hostname: ui::LocalState<String>,
@@ -665,67 +501,29 @@ pub struct InstallerApp {
     tpm_handoff: Option<String>,
     locale: ui::LocalState<String>,
     timezone: ui::LocalState<String>,
-    /// Selected keyboard-layout *display name*. Resolved to xkb
-    /// layout/variant via [`imager_backend::destination::layouts`] when building the install
-    /// command.
     keymap: ui::LocalState<String>,
-    /// Typed confirmation for the exact object that will be formatted: the
-    /// whole disk for Erase, or the prepared root partition for Alongside.
     erase_confirmation: ui::LocalState<String>,
-    /// The confirmation as of the last sync, so a user edit is told apart
-    /// from the wizard's own resets.
     erase_confirmation_seen: String,
-    /// Time-zone choices shown by the Options-step [`Dropdown`], sourced
-    /// from the system at runtime (see [`imager_backend::destination::timezones::list_timezones`]).
     timezones: Vec<String>,
-    /// Headless-shot only: build the Options-step time-zone dropdown in
-    /// its open state so `--shots --scenario options-open` captures the popup.
     tz_open_for_shot: bool,
-    /// Transient validation / error line under the controls.
     status: String,
-    /// Presses the composed controls queued, run by [`Self::run_presses`].
     presses: Presses,
     dirty_structure: bool,
-    /// One-shot: raised on a step transition so the App re-focuses the new
-    /// step's first field. Drained via [`Widget::take_focus_reset`].
     focus_reset: bool,
     rect: Rect,
     composed: ui::widget::Composed,
-    /// Set once the install worker thread has been spawned, so a stray
-    /// extra `begin` can't launch a second install.
     install_launched: bool,
-    /// Read-only prepared-partition probe launched before leaving Disk. The
-    /// request UUID prevents a late result from a previously selected disk
-    /// from affecting the current choice; the backend independently binds the
-    /// probe to disk/root/ESP identities.
     storage_preflight_request: Option<String>,
     storage_preflight_passed: bool,
-    /// Independently validated choices supplied by Tilo Imager. `None` is the
-    /// ordinary manual flow; incomplete fields route to their repair screen.
     profile_completion: Option<ProfileCompletion>,
-    /// A verified staged (USB-free) installation, when the installer booted
-    /// from the staging ESP Tilo Imager prepared. It is a hint: the backend
-    /// re-derives every fact before it writes anything.
     internal_handoff: Option<imager_backend::destination::internal_handoff::Handoff>,
-    /// Wired by `main` so the worker thread can pump progress back.
     mailbox: Option<Mailbox>,
-    /// Live power probe. Tests and deterministic screenshots use a no-op;
-    /// [`Self::new`] replaces it with the shared sysfs-backed Tilo reader.
     power_probe: fn() -> Option<u8>,
-    /// Scroll position survives incidental composition rebuilds (network
-    /// status, validation, progress). Deliberate step changes reset it.
     viewport_offset: Rc<Cell<(f32, f32)>>,
-    /// Disk discovery, install, preflight and power. The live medium runs
-    /// the real helpers; host tests substitute a recording fake.
     backend: Arc<dyn InstallBackend>,
-    /// Queued `tilo-control` requests from the console endpoints, answered
-    /// on the UI thread (see [`console`]).
     console: Option<imager_backend::destination::console::ConsoleServer>,
-    /// What the window shares with the view it stands in.
     published: Rc<std::cell::RefCell<crate::window_view::Published>>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -736,8 +534,6 @@ impl Default for InstallerApp {
 }
 
 impl InstallerApp {
-    /// Construct an installer reading the live disk list from `lsblk` and
-    /// the live time-zone list from the system.
     pub fn new() -> Self {
         let mut s = Self::with_disks(SystemBackend.read_disks());
         s.power_probe = current_insufficient_battery_percent;
@@ -762,16 +558,10 @@ impl InstallerApp {
             Err(message) => s.status = message,
         }
         s.set_filesystem_support(probes::filesystem_support());
-        // Hand the keyboard to the first field at startup, so the wizard is
-        // usable without a click.
         s.focus_reset = true;
         s
     }
 
-    /// Adopt a staged installation: bind it to the one disk it describes,
-    /// preselect guided alongside in its prepared extent, and prefill the
-    /// Imager's setup choices. Nothing is confirmed; Review still shows every
-    /// choice and requires the typed confirmation.
     fn apply_internal_handoff(
         &mut self,
         handoff: imager_backend::destination::internal_handoff::Handoff,
@@ -800,8 +590,6 @@ impl InstallerApp {
         }
     }
 
-    /// Re-bind the staged plan after (re)discovery. Returns whether exactly
-    /// one disk accepted it; that disk is then selected for guided alongside.
     fn bind_internal_handoff(&mut self) -> bool {
         let Some(handoff) = self.internal_handoff.clone() else {
             return false;
@@ -824,7 +612,6 @@ impl InstallerApp {
         }
     }
 
-    /// The retained OS on the staged disk, when this is a staged install.
     fn internal_host(&self) -> Option<imager_backend::destination::internal_handoff::HostOs> {
         self.internal_handoff
             .as_ref()
@@ -837,10 +624,6 @@ impl InstallerApp {
             .is_some_and(Disk::hosts_staged_installer)
     }
 
-    /// Construct with an explicit disk list (tests / headless rendering).
-    /// Uses a small deterministic time-zone list so tests don't shell out and
-    /// reads no hardware report; [`Self::new`] swaps in the full system list
-    /// and this computer's report.
     pub fn with_disks(disks: Vec<Disk>) -> Self {
         Self {
             dirty: true,
@@ -920,8 +703,6 @@ impl InstallerApp {
         }
     }
 
-    /// Replace the disk, install and power helpers. The disk list is read
-    /// from the new backend immediately.
     #[must_use]
     pub fn with_backend(mut self, backend: Arc<dyn InstallBackend>) -> Self {
         self.disks = backend.read_disks();
@@ -929,16 +710,10 @@ impl InstallerApp {
         self
     }
 
-    /// The current step.
     pub fn step(&self) -> Step {
         self.step
     }
 
-    /// Construct for an explicit unattended recipe. The recipe is authority
-    /// for every choice it carries, so a public media profile or staged
-    /// handoff is not allowed to pre-complete a screen behind its back. Live
-    /// hardware, time zones, filesystem support and protection facts are the
-    /// same probes the interactive installer uses.
     pub(crate) fn for_unattended() -> Self {
         let mut app = Self::with_disks(SystemBackend.read_disks());
         app.power_probe = current_insufficient_battery_percent;
@@ -948,43 +723,29 @@ impl InstallerApp {
         app
     }
 
-    /// Enter the explicit unattended path. Only [`crate::setup::destination::unattended`] calls
-    /// this; it publishes the recipe-only credential action and makes the
-    /// restart state machine visible through the console.
     pub(crate) fn enable_unattended_mode(&mut self) {
         self.unattended_mode = true;
         self.unattended_error = None;
     }
 
-    /// Record a secret-free reason the unattended run stopped, so a console
-    /// caller sees the same error the operator saw instead of a silent hang.
     pub(crate) fn note_unattended_error(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.set_status(&message);
         self.unattended_error = Some(message);
     }
 
-    /// Re-read the backing inventory immediately before the destructive
-    /// action. The unattended recipe is checked against this probe, not only
-    /// against the inventory sampled when the wizard started.
     pub(crate) fn probe_disks(&self) -> Vec<Disk> {
         self.backend.read_disks()
     }
 
-    /// The inventory the wizard currently holds. The unattended driver
-    /// revalidates the reviewed recipe against this after `refresh-disks`.
     pub(crate) fn available_disks(&self) -> &[Disk] {
         &self.disks
     }
 
-    /// The one-time recovery key currently held by the process, if any. Only
-    /// the unattended delivery sink reads it; it never enters console state.
     pub(crate) fn recovery_key(&self) -> Option<&str> {
         self.recovery_key.as_deref()
     }
 
-    /// Replace the sampled protection facts. Production never calls this;
-    /// host-side recipe tests use it so they exercise decisions, not hardware.
     #[cfg(test)]
     pub(crate) fn with_protection_for_test(mut self, protection: Protection) -> Self {
         self.tpm2 = protection.tpm2;
@@ -994,8 +755,6 @@ impl InstallerApp {
         self
     }
 
-    /// Replace the hardware report. Production never calls this; tests use
-    /// it to hand Review a report of their own instead of this host's.
     #[cfg(test)]
     pub(crate) fn with_hardware_for_test(
         mut self,
@@ -1006,7 +765,6 @@ impl InstallerApp {
         self
     }
 
-    /// The install backend's lifecycle.
     pub fn install_state(&self) -> InstallState {
         self.install_state
     }
@@ -1122,16 +880,12 @@ impl InstallerApp {
         )
     }
 
-    /// Hand work finished off the UI thread back through `mailbox`.
     #[must_use]
     pub fn with_mailbox(mut self, mailbox: Mailbox) -> Self {
         self.mailbox = Some(mailbox);
         self
     }
 
-    /// The wizard as screenshot scenario `name` (without its
-    /// `destination-` prefix) shows it: a sample computer at one step or
-    /// terminal state. `None` for a name that is not one.
     pub fn for_scenario(name: &str) -> Option<Self> {
         let staged = |step: Step, stage: fn(&mut Self)| {
             let mut app = Self::for_shot(step);
@@ -1143,8 +897,6 @@ impl InstallerApp {
             "review-alongside" => staged(Step::Review, Self::shot_alongside_review),
             "options-open" => staged(Step::Options, Self::shot_open_timezone),
             "profile-locale-repair" => staged(Step::Options, Self::shot_locale_repair),
-            // A non-default (German) layout, so the preview shows the
-            // remapped keys (y/z swap and ü ö ä).
             "keyboard" => staged(Step::Keyboard, |app| app.shot_keymap("German (QWERTZ)")),
             "media-chosen" => staged(Step::Media, Self::shot_codecs_chosen),
             "finish" => staged(Step::Install, Self::shot_finished),
@@ -1166,11 +918,6 @@ impl InstallerApp {
         })
     }
 
-    /// Build a pre-seeded app for a headless `--shots` render of `step`.
-    /// Live runs never use this; it just stages enough state that each
-    /// screen renders something representative. The `Install` step renders
-    /// the live "installing…" look; see [`Self::shot_finished`] /
-    /// [`Self::shot_failed`] for the terminal variants.
     pub fn for_shot(step: Step) -> Self {
         let mut app = Self::with_disks(Disk::samples());
         app.step = step;
@@ -1196,17 +943,11 @@ impl InstallerApp {
         app
     }
 
-    /// Mutate a `for_shot(Step::Options)` app so its time-zone dropdown
-    /// renders open — used by `--shots --scenario options-open` to capture the
-    /// overlay popup state.
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
         self.tz_open_for_shot = true;
     }
 
-    /// Pose the exact shortened Options screen shown when every transported
-    /// choice except locale was valid. This keeps the repair UX available to
-    /// visual regression checks instead of testing it only as widget state.
     pub fn shot_locale_repair(&mut self) {
         self.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
             purpose: install_profile_model::default_purpose(),
@@ -1227,35 +968,28 @@ impl InstallerApp {
         self.step = Step::Options;
     }
 
-    /// Pose the Media step after its Install button was pressed.
     pub fn shot_codecs_chosen(&mut self) {
         self.step = Step::Media;
         self.codecs = true;
     }
 
-    /// Pose the Disk screen with the preserving dual-boot choice selected.
     pub fn shot_alongside(&mut self) {
         self.step = Step::Disk;
         self.install_method = InstallMethod::Alongside;
         self.selected_disk = Some(0);
     }
 
-    /// Pose the final review for the preserving dual-boot path.
     pub fn shot_alongside_review(&mut self) {
         self.install_method = InstallMethod::Alongside;
         self.selected_disk = Some(0);
         self.step = Step::Review;
     }
 
-    /// Seed a non-default keyboard layout (by display name) for a
-    /// `--shots --scenario keyboard` render, so the visual preview clearly
-    /// shows remapped keys.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
         self.keymap.set(display_name.to_string());
     }
 
-    /// Mutate a `for_shot(Install)` app into the success/Finish screen.
     pub fn shot_finished(&mut self) {
         self.step = Step::Install;
         self.install_state = InstallState::Done;
@@ -1263,9 +997,6 @@ impl InstallerApp {
         self.status_lines.push(INSTALLED_REMOVE_MEDIUM.to_string());
     }
 
-    /// Pose the finish card after the real recovery-key marker has arrived.
-    /// The representative value uses the real eight-group shape closely enough
-    /// to exercise wrapping without ever being a usable secret.
     pub fn shot_finished_with_recovery(&mut self) {
         self.shot_finished();
         self.recovery_key = Some(
@@ -1273,14 +1004,12 @@ impl InstallerApp {
         );
     }
 
-    /// Pose the post-copy/post-save state, including the enabled power actions.
     pub fn shot_finished_with_saved_recovery(&mut self) {
         self.shot_finished_with_recovery();
         self.recovery_key_copied = true;
         self.recovery_key_saved = true;
     }
 
-    /// Mutate a `for_shot(Install)` app into the failure screen.
     pub fn shot_failed(&mut self) {
         self.step = Step::Install;
         self.install_state = InstallState::Failed;
@@ -1289,8 +1018,6 @@ impl InstallerApp {
             .push("error: bootc install to-disk exited non-zero".to_string());
     }
 
-    /// Pose the failure card after encryption generated a recovery key, proving
-    /// the rescue action remains available even though installation stopped.
     pub fn shot_failed_with_recovery(&mut self) {
         self.shot_failed();
         self.recovery_key = Some(
@@ -1298,7 +1025,6 @@ impl InstallerApp {
         );
     }
 
-    /// Recompute the safe default, or restore this disk's explicit choice.
     fn reset_disk_method(&mut self) {
         self.install_method = if self.selected_disk_hosts_installer() {
             InstallMethod::Alongside
@@ -1319,7 +1045,6 @@ impl InstallerApp {
         self.selected_disk.and_then(|i| self.disks.get(i))
     }
 
-    /// The selected disk's device path, if any.
     fn selected_dev(&self) -> Option<String> {
         self.selected_disk_ref().map(|d| d.name.clone())
     }
@@ -1375,7 +1100,6 @@ impl InstallerApp {
         })
     }
 
-    /// The chosen filesystem name (e.g. `btrfs`).
     fn filesystem(&self) -> &str {
         FILESYSTEMS
             .get(self.selected_fs)
@@ -1383,23 +1107,18 @@ impl InstallerApp {
             .unwrap_or("btrfs")
     }
 
-    /// Resolve the selected layout's display name to its dataset entry,
-    /// falling back to the default (English / US) if it doesn't match.
     fn layout(&self) -> &'static layouts::Layout {
         layouts::by_display_name(self.keymap().trim()).unwrap_or_else(layouts::default_layout)
     }
 
-    /// The chosen keyboard layout's display name.
     fn keymap(&self) -> String {
         local_text(&self.keymap)
     }
 
-    /// The chosen locale.
     fn locale(&self) -> String {
         local_text(&self.locale)
     }
 
-    /// The chosen time zone.
     fn timezone(&self) -> String {
         local_text(&self.timezone)
     }
@@ -1418,9 +1137,6 @@ impl InstallerApp {
         }
     }
 
-    /// The startup secret is validated as a short TPM PIN only when the
-    /// measured-boot boundary holds and the operator did not explicitly ask
-    /// for an independent passphrase.
     fn startup_secret_is_pin(&self) -> bool {
         !self.force_startup_passphrase && self.tpm_pin_policy()
     }
@@ -1434,9 +1150,6 @@ impl InstallerApp {
         }
     }
 
-    /// May the install start, as far as encryption is concerned? Native Tilo
-    /// always requires both a reproducible recovery factor and a startup
-    /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
         self.recovery_ack
             && validate_startup_secret_for(&self.startup_secret(), self.startup_secret_is_pin())
@@ -1459,10 +1172,6 @@ impl InstallerApp {
             .is_some_and(|device| self.erase_confirmation.with(|typed| typed.trim() == device))
     }
 
-    /// The factors that unlock the new disk encryption, as the Review step
-    /// lists them. Recovery is always present; the primary startup factor
-    /// reflects the same verified-target decision used by validation and the
-    /// backend.
     fn encryption_factors(&self) -> Vec<String> {
         let mut factors = vec!["recovery key".to_string()];
         if !self.startup_secret().trim().is_empty() {
@@ -1574,8 +1283,6 @@ impl InstallerApp {
         self.viewport_offset.set((0.0, 0.0));
     }
 
-    /// Reset the typed confirmation. A reset is the wizard's own change,
-    /// not a user edit, so the next sync leaves the status line alone.
     fn clear_erase_confirmation(&mut self) {
         self.set_erase_confirmation(String::new());
     }
@@ -1625,9 +1332,6 @@ impl InstallerApp {
         Ok(())
     }
 
-    /// Create custody only on entry, below the owned 0700 runtime directory.
-    /// `live` validates the directory and refuses both real and effective root
-    /// before creating its private session child or launching any OAuth flow.
     fn enter_accounts(&mut self) {
         if self.step != Step::Accounts || self.accounts_initialized {
             return;
@@ -1645,8 +1349,6 @@ impl InstallerApp {
         if self.step != Step::Accounts {
             return;
         }
-        // Discard pending starts before cancelling the actor; its generation is
-        // invalidated even when a successful result has not yet been polled.
         self.accounts_form.drain_commands();
         self.windows_hints.cancel(&self.accounts_form);
         if let Some(controller) = self.accounts_controller.as_mut() {
@@ -1726,17 +1428,12 @@ impl InstallerApp {
     }
 
     fn next_setup_step(&self) -> Option<Step> {
-        // Storage revalidation must not repeat a completed account. A public
-        // prepared-setup binding alone is not a credential: reuse only secrets
-        // supplied in this session, checked against the current boot policy.
         let account_ready = self.step == Step::Disk
             && self
                 .profile_completion
                 .is_some_and(ProfileCompletion::identity_complete)
             && valid_username(&local_text(&self.username))
             && self.validate_account_details().is_ok();
-        // Never skip media consent or Review. Unsupported filesystems still
-        // need repair, even if the original profile was complete.
         if self.step == Step::Account || account_ready {
             if self
                 .profile_completion
@@ -1752,7 +1449,6 @@ impl InstallerApp {
         }
     }
 
-    /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
         if self.step == Step::Account
             && self
@@ -1832,8 +1528,6 @@ impl InstallerApp {
                     }
                 }
                 if let Some(n) = self.next_setup_step() {
-                    // Never auto-advance into Install via Next; the Begin
-                    // button (begin flag) is the only entry into install.
                     if n != Step::Install {
                         self.leave_accounts();
                         self.step = n;
@@ -1891,10 +1585,6 @@ impl InstallerApp {
         });
     }
 
-    /// Step backward. A failed launch may already have formatted the selected
-    /// root. On-disk metadata is not authenticated ownership proof, so never
-    /// steer a failure directly into a destructive retry. Return to storage,
-    /// clear the selection and require a fresh probe/review instead.
     fn go_back(&mut self) {
         if self.step == Step::Install {
             if self.install_state == InstallState::Failed {
@@ -1918,9 +1608,6 @@ impl InstallerApp {
             }
             return;
         }
-        // Back always follows the visible breadcrumb. A shortened forward path
-        // must not trap the owner between Account and Review: Options (including
-        // FIDO2) and Network remain available for deliberate changes.
         let destination = prev_step(self.step);
         if let Some(p) = destination {
             self.leave_accounts();
@@ -1933,9 +1620,6 @@ impl InstallerApp {
         }
     }
 
-    /// Enter the Install step and kick off the backend. Prefers a worker
-    /// thread (live streaming through the mailbox); falls back to a blocking
-    /// run without one (tests, an unattended run).
     #[expect(
         clippy::too_many_lines,
         reason = "installer preflight and worker launch are one ordered operation"
@@ -1948,9 +1632,6 @@ impl InstallerApp {
             self.set_status(&self.filesystem_policy_message());
             return;
         }
-        // Review says a part the desktop cannot start without is unsupported,
-        // so installing here would leave a computer that does not run. Refuse
-        // before consuming secrets or writing anything.
         if self.hardware_blocks_install() {
             self.set_status(&crate::setup::strings::t(
                 "installer-hardware-blocks-install",
@@ -1961,10 +1642,6 @@ impl InstallerApp {
             self.set_status("Select a disk to continue");
             return;
         };
-        // Check immediately before consuming secrets or starting the worker.
-        // The Review warning is advisory because plugging in does not rebuild
-        // this static wizard page; pressing Begin probes again and proceeds as
-        // soon as the machine is safely powered.
         if let Some(percent) = (self.power_probe)() {
             self.set_status(&connect_power_message(percent));
             return;
@@ -2005,9 +1682,6 @@ impl InstallerApp {
             return;
         }
 
-        // The worker owns the only remaining password buffer. Remove both UI
-        // fields before launch so a failed install cannot leave account
-        // secrets sitting in the live session's editable document.
         clear_secret_buffer(&self.password);
         clear_secret_buffer(&self.password_confirmation);
         clear_secret_buffer(&self.disk_password);
@@ -2033,7 +1707,6 @@ impl InstallerApp {
 
         let backend = Arc::clone(&self.backend);
         if let Some(mailbox) = self.mailbox.clone() {
-            // Worker thread: stream each line back through the mailbox.
             std::thread::spawn(move || {
                 let result = backend.run_install(&disk, &user, &password, &opts, &mut |line| {
                     mailbox.post(line);
@@ -2049,11 +1722,6 @@ impl InstallerApp {
                 mailbox.post(terminal);
             });
         } else {
-            // Synchronous fallback (blocks the caller). Lines take the same
-            // route as streamed ones, so the recovery-key marker becomes the
-            // recovery card here too and never a log line. An unattended run
-            // has no event loop, so report redacted progress on stderr instead
-            // of leaving a long install silent.
             let unattended_progress = self.unattended_mode;
             let mut lines = Vec::new();
             let result = backend.run_install(&disk, &user, &password, &opts, &mut |line| {
@@ -2085,9 +1753,6 @@ impl InstallerApp {
             }
             .to_string(),
         );
-        // Completion replaces an unfocusable progress surface with recovery
-        // and power controls. Put keyboard users on the first recovery action
-        // deterministically instead of retaining a stale node from Review.
         self.focus_reset = true;
         self.dirty_structure = true;
     }
@@ -2098,16 +1763,10 @@ impl InstallerApp {
         }
         self.install_state = InstallState::Failed;
         self.reset_viewport();
-        // Running progress has no focusable controls. Failure replaces it
-        // with recovery-key actions and Review storage, so keyboard and
-        // assistive-technology users need a fresh focus target just as they
-        // do on successful completion.
         self.focus_reset = true;
         self.dirty_structure = true;
     }
 
-    /// Run a terminal power action (Reboot / Power off). On success the
-    /// machine goes down before this returns; a failure surfaces a status.
     fn run_power(&mut self, action: PowerAction) -> bool {
         // Do not deliberately leave a disk-unlock factor in the live
         // session's clipboard after handing off to the installed system. If
@@ -2144,17 +1803,10 @@ impl InstallerApp {
         self.control(DestinationEffect::Back)
     }
 
-    /// A navigation row for `step`: `Back` at the leading edge, shown only
-    /// when the step has a predecessor so the first step has no dangling
-    /// Back, and the forward action (`forward_key`, the catalogue message
-    /// naming it, primary, running `forward`, optionally disabled) at the
-    /// trailing one. A real `ui::Row` so its buttons stay in the focusable
-    /// order.
     fn nav_row(
         &self,
         step: Step,
-        forward: Control,
-        forward_key: &str,
+        forward: Option<(Control, &str)>,
         forward_disabled: bool,
     ) -> Box<dyn Widget> {
         let mut row = Row::new().no_wrap();
@@ -2166,18 +1818,19 @@ impl InstallerApp {
                     .large(),
             ));
         }
-        row = row.push(Box::new(Spacer::new())).push(Box::new(
-            ActionButton::new(forward_key, forward)
-                .with_test_id("installer.next")
-                .primary()
-                .large()
-                .disabled(forward_disabled),
-        ));
+        row = row.push(Box::new(Spacer::new()));
+        if let Some((forward, forward_key)) = forward {
+            row = row.push(Box::new(
+                ActionButton::new(forward_key, forward)
+                    .with_test_id("installer.next")
+                    .primary()
+                    .large()
+                    .disabled(forward_disabled),
+            ));
+        }
         Box::new(row)
     }
 
-    /// The Finish-screen action row: Power off, then Reboot (primary) at the
-    /// trailing edge.
     fn finish_row(&self, disabled: bool) -> Box<dyn Widget> {
         Box::new(
             Row::new()
@@ -2203,9 +1856,6 @@ impl InstallerApp {
         )
     }
 
-    /// Build the page for the current step: the stepper, the step's content
-    /// in the scrolling body, and its actions pinned below, in the one page
-    /// frame every imager surface stands in.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut children: Vec<Box<dyn Widget>> = Vec::new();
         let mut actions: Vec<Box<dyn Widget>> = Vec::new();
@@ -2213,7 +1863,11 @@ impl InstallerApp {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
             Step::Accounts => {
                 children.push(self.accounts_form.view());
-                actions.push(self.nav_row(Step::Accounts, self.next_control(), NEXT_KEY, false));
+                actions.push(self.nav_row(
+                    Step::Accounts,
+                    Some((self.next_control(), NEXT_KEY)),
+                    false,
+                ));
             }
             Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
             Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
@@ -2224,8 +1878,6 @@ impl InstallerApp {
             Step::Install => self.compose_install_step(theme, &mut children, &mut actions),
         }
 
-        // A staged install has no medium to pull: offer the way back to the
-        // retained OS on every screen except while installing or once done.
         if let Some(host) = self.internal_host()
             && !matches!(
                 self.install_state,
@@ -2242,7 +1894,6 @@ impl InstallerApp {
             ));
         }
 
-        // Validation stays alongside the actions, outside the content viewport.
         if !self.status.is_empty() {
             actions.push(Box::new(
                 Text::new(&self.status)
@@ -2388,10 +2039,13 @@ impl InstallerApp {
         } else {
             "imager-installer-continue-offline"
         };
-        actions.push(self.nav_row(Step::Network, self.next_control(), continue_key, false));
+        actions.push(self.nav_row(
+            Step::Network,
+            Some((self.next_control(), continue_key)),
+            false,
+        ));
     }
 
-    /// Add the Wi-Fi error or the currently visible network choices.
     fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
 
@@ -2533,14 +2187,11 @@ impl InstallerApp {
         }
         actions.push(self.nav_row(
             Step::Disk,
-            self.next_control(),
-            NEXT_KEY,
+            Some((self.next_control(), NEXT_KEY)),
             self.selected_disk.is_none() || unavailable,
         ));
     }
 
-    /// The Erase/Alongside choice, or — on the disk that holds a staged
-    /// installer — the one plan that disk allows and what it leaves untouched.
     fn compose_install_method(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
@@ -2728,8 +2379,6 @@ impl InstallerApp {
                 .with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
-            // The installer states its partition sizes in binary units
-            // throughout, so they compare with its GiB minimums.
             let start = ui::format::memory(plan.free_start_bytes);
             let size = ui::format::memory(plan.free_size_bytes);
             let key = if self.selected_guided_extent == Some(index) {
@@ -2858,7 +2507,7 @@ impl InstallerApp {
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
-        actions.push(self.nav_row(Step::Account, self.next_control(), NEXT_KEY, false));
+        actions.push(self.nav_row(Step::Account, Some((self.next_control(), NEXT_KEY)), false));
     }
 
     fn compose_keyboard_step(
@@ -2892,7 +2541,7 @@ impl InstallerApp {
                 .with_placeholder(&crate::setup::strings::t("installer-keyboard-layout")),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
-        actions.push(self.nav_row(Step::Keyboard, self.next_control(), NEXT_KEY, false));
+        actions.push(self.nav_row(Step::Keyboard, Some((self.next_control(), NEXT_KEY)), false));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-recovery-tools"))
                 .with_role(TextRole::Caption)
@@ -3009,16 +2658,11 @@ impl InstallerApp {
 
         actions.push(self.nav_row(
             Step::Options,
-            self.next_control(),
-            NEXT_KEY,
+            Some((self.next_control(), NEXT_KEY)),
             !self.filesystem_policy_ready(),
         ));
     }
 
-    /// The Media step: a centred title and one line over a single large
-    /// Install button, with a quiet way past it. Nothing is chosen until
-    /// Install is pressed; afterwards the step says so and offers Undo until
-    /// the install begins.
     fn compose_media_step(
         &self,
         theme: &Theme,
@@ -3043,7 +2687,6 @@ impl InstallerApp {
                 .with_color(dim)
                 .with_align(ui::ParagraphAlign::Center),
         ));
-        // Media selection and its return/continue routes share the pinned region.
         let children = actions;
         if self.codecs {
             children.push(centered_media_control(Box::new(
@@ -3071,7 +2714,7 @@ impl InstallerApp {
                 .with_test_id("codecs_undo"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-            children.push(self.nav_row(Step::Media, self.next_control(), NEXT_KEY, false));
+            children.push(self.nav_row(Step::Media, Some((self.next_control(), NEXT_KEY)), false));
         } else {
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
@@ -3088,16 +2731,7 @@ impl InstallerApp {
                     .with_test_id("codecs_skip"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-            children.push(Box::new(
-                Row::new()
-                    .with_padding(0.0, 0.0)
-                    .push(Box::new(
-                        ActionButton::new("installer-preview-back", self.back_control())
-                            .with_icon(ui::icons::Icon::ChevronLeft)
-                            .with_test_id("installer.back"),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+            children.push(self.nav_row(Step::Media, None, false));
         }
     }
 
@@ -3150,12 +2784,6 @@ impl InstallerApp {
         }
     }
 
-    /// The compatibility report, drawn as one row per component class with
-    /// the reason the probe found and what the person can do about a
-    /// limitation. It is a reading, not a choice: nothing here is gated on it.
-    /// Whether the report found a component the installed desktop cannot
-    /// start without. The same question the Begin button, Enter and the
-    /// backend handoff ask, so no door starts an install the report refused.
     fn hardware_blocks_install(&self) -> bool {
         self.hardware
             .report()
@@ -3382,9 +3010,6 @@ impl InstallerApp {
             ));
         }
 
-        // What this computer's own components can and cannot do, read before
-        // anything is written. The probe grants nothing and decides nothing;
-        // it answers "will the desktop run here" before the person commits.
         self.compose_hardware_report(children);
 
         if self
@@ -3417,10 +3042,6 @@ impl InstallerApp {
         ));
         self.compose_destructive_confirmation(theme, children, &dev);
 
-        // Encryption generates a recovery key shown ONCE during the
-        // install. Make the user explicitly acknowledge they'll save
-        // it before they can proceed — otherwise a lost TPM = lost
-        // data with no warning.
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-recovery-key-note"))
                 .with_role(TextRole::Caption)
@@ -3437,16 +3058,13 @@ impl InstallerApp {
             .checkbox(self.recovery_ack),
         ));
 
-        // Begin is gated on the recovery-key acknowledgement when
-        // encrypting (otherwise always enabled).
         let begin_disabled = !self.encryption_ready()
             || !self.destructive_confirmation_ready()
             || !self.filesystem_policy_ready()
             || self.hardware_blocks_install();
         actions.push(self.nav_row(
             Step::Review,
-            self.control(self.begin_effect()),
-            "installer-action-begin",
+            Some((self.control(self.begin_effect()), "installer-action-begin")),
             begin_disabled,
         ));
     }
@@ -3638,9 +3256,6 @@ fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
     )
 }
 
-/// A small, deterministic time-zone list used by [`InstallerApp::with_disks`]
-/// (tests + headless shots). [`InstallerApp::new`] replaces it with the full
-/// system list. Long enough that the open dropdown scrolls in `--shots`.
 fn default_timezones() -> Vec<String> {
     [
         "UTC",
@@ -3666,8 +3281,6 @@ fn default_timezones() -> Vec<String> {
     .collect()
 }
 
-/// Representative streamed backend output for `--shots`. Includes long
-/// lines that wrap so the status log's wrap-aware tailing is exercised.
 fn sample_install_log() -> Vec<String> {
     vec![
         "Starting install to /dev/sda for user ada (btrfs).".to_string(),
@@ -3680,9 +3293,6 @@ fn sample_install_log() -> Vec<String> {
     ]
 }
 
-/// Turn noisy container/partitioning output into the small set of milestones a
-/// person needs while the install is running. The complete transcript is still
-/// retained in `status_lines` and is shown unchanged on failure.
 fn friendly_install_status(lines: &[String]) -> Vec<String> {
     let mut stages: Vec<String> = Vec::new();
     let mut add = |stage: &str| {
@@ -3707,10 +3317,6 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         {
             add("Installing the signed Tilo system…");
         } else if lower.contains("fido2") && (lower.contains("touch") || lower.contains("enroll")) {
-            // This is not background progress: systemd-cryptenroll is blocked
-            // until the person touches their selected hardware token. Keep it
-            // as an explicit stage so the visible log and its assertive live
-            // region both ask for the required action.
             add("Touch your security key to continue…");
         } else if lower.contains("enrolling disk-encryption")
             || lower.contains("recovery key verified")
@@ -3744,9 +3350,6 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
 }
 
 impl InstallerApp {
-    /// React to an edit of the typed confirmation.
-    /// A capacity typed or stepped in since the last sync runs `set-size`,
-    /// bound to the extent it divides, as the console's would.
     fn notice_capacity_edit(&mut self) {
         let gib = self.capacity_gib.with(|gib| *gib);
         if (gib - self.capacity_seen.get()).abs() < f64::EPSILON {
@@ -3774,16 +3377,11 @@ impl InstallerApp {
             let had_status = !self.status.is_empty();
             self.erase_confirmation_seen = confirmation;
             self.status.clear();
-            // TextInput already owns the edited text. Rebuilding its widget
-            // on every keystroke discards the live caret/focus state; only
-            // rebuild when the Begin button's enabled state or the status
-            // line actually changes.
             self.dirty_structure |=
                 had_status || was_ready != self.destructive_confirmation_ready();
         }
     }
 
-    /// What wakes the wizard once a network worker queued its result.
     fn network_wake(&self) -> Option<imager_backend::destination::network::Wake> {
         let mailbox = self.mailbox.clone()?;
         Some(Arc::new(move || mailbox.post(NETWORK_WAKE.to_owned())))
@@ -3809,8 +3407,6 @@ impl InstallerApp {
         self.storage_preflight_request = None;
         self.storage_preflight_passed = false;
         if self.internal_handoff.is_some() && !self.bind_internal_handoff() {
-            // Discovery no longer matches the staged plan: fall back to the
-            // ordinary rules, which keep the running-system disk unavailable.
             self.internal_handoff = None;
         }
         self.status = CATALOG.t(if self.disks.is_empty() {
@@ -3824,9 +3420,6 @@ impl InstallerApp {
         self.focus_reset = true;
     }
 
-    /// One backend output line: a terminal sentinel, the recovery-key
-    /// marker (which becomes the recovery card and never a log line), or a
-    /// line of the install log.
     fn ingest_backend_line(&mut self, payload: &str) {
         if payload == CTRL_DONE {
             self.mark_install_done();
@@ -3846,17 +3439,12 @@ impl InstallerApp {
         }
     }
 
-    /// Run every press the controls queued, in order.
     fn run_presses(&mut self) {
         while let Some(press) = self.presses.take() {
             self.run_press(press);
         }
     }
 
-    /// Run one press through the wizard's door. The Review field's typed
-    /// text is the phrase a destructive effect asks for, and the Wi-Fi
-    /// password is taken from its secret buffer only now, so a queued press
-    /// never holds either.
     fn run_press(&mut self, press: Press) {
         let mut effect = press.effect;
         if let DestinationEffect::ConnectNetwork { password } = &mut effect {
@@ -3869,7 +3457,6 @@ impl InstallerApp {
         self.invoke_control(effect, Some(&phrase));
     }
 
-    /// Fold in everything finished off the UI thread since the last sync.
     fn take_mail(&mut self) {
         let Some(mailbox) = self.mailbox.clone() else {
             return;
@@ -3879,8 +3466,6 @@ impl InstallerApp {
         }
     }
 
-    /// One piece of work finished off the UI thread: a console request, a
-    /// network result, a preflight verdict or a line of install output.
     fn receive(&mut self, payload: &str) {
         if payload == CONSOLE_WAKE {
             self.serve_console();
@@ -3920,9 +3505,6 @@ impl InstallerApp {
 }
 
 impl Widget for InstallerApp {
-    /// Reads nothing from and writes nothing to the document: the presses an
-    /// assistive activation queued since the last event run here, then the
-    /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.dirty = true;
         let staged = self.published.borrow_mut().take_staged();
@@ -3973,9 +3555,6 @@ impl Widget for InstallerApp {
             .composed
             .build_layout(composition, taffy, theme, node_map);
 
-        // `new_with_children` only errors for a child `NodeId` from a
-        // different tree, which never happens here since `card_node` was
-        // just built in this same tree by the call above.
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -4005,7 +3584,6 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The framework paints the window ground; the page draws on it.
         if let Some(c) = self.composed.element_mut() {
             c.draw_child(scene, transform, text_renderer, theme, presence);
         }
@@ -4013,24 +3591,14 @@ impl Widget for InstallerApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty = true;
-        // Forward to the composed card FIRST so a focused field can
-        // consume the event before the wizard interprets it. This matters
-        // for the Options-step time-zone `Dropdown`: when it's open, Enter
-        // selects an option (and the Dropdown marks the event handled) —
-        // without forwarding first we'd also raise `NEXT` and skip the
-        // step out from under the user.
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, card_node));
         }
-        // A control the event used queued its press; run it now.
         self.run_presses();
 
-        // Enter advances only when no inner field consumed it: Begin on
-        // Review, Next on Disk/Account/Options — the same actions their
-        // buttons run.
         if !*ctx.handled
             && let WindowEvent::KeyboardInput {
                 event:
@@ -4044,9 +3612,6 @@ impl Widget for InstallerApp {
         {
             match self.step {
                 Step::Review => {
-                    // Enter must honour the same gate as the Begin button:
-                    // when encrypting, the recovery-key acknowledgement is
-                    // required before the install can start.
                     if self.encryption_ready()
                         && self.destructive_confirmation_ready()
                         && !self.hardware_blocks_install()
@@ -4069,14 +3634,10 @@ impl Widget for InstallerApp {
                     }
                     *ctx.handled = true;
                 }
-                // On Media a focused Install button takes Enter itself (the
-                // same deliberate press as a click); otherwise Enter moves on
-                // without choosing anything.
                 Step::Disk | Step::Account | Step::Keyboard | Step::Options | Step::Media => {
                     self.run_press(Press::new(DestinationEffect::Next));
                     *ctx.handled = true;
                 }
-                // Enter in a private account field must not skip sign-in.
                 Step::Accounts | Step::Install => {}
             }
         }
@@ -4134,8 +3695,6 @@ impl Widget for InstallerApp {
 }
 
 impl InstallerApp {
-    /// Live, work finished off the UI thread wakes the window, and the
-    /// console answers on the medium's private socket and virtio port.
     pub(crate) fn attach_live(&mut self, waker: ui::WakeHandle) {
         let mailbox = Mailbox::new(move || waker.wake());
         let console = imager_backend::destination::console::ConsoleServer::new();
@@ -4205,8 +3764,6 @@ mod tests {
             .find_map(|child| find_test_id_mut(child, id))
     }
 
-    /// Use the composed control with test id `id` the way assistive
-    /// technology does, then let the app sync. Nothing reaches the document.
     fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::a11y::Action) {
         let _ = build(app);
         let composed = app.composed.element_mut().expect("composed step");
@@ -4220,8 +3777,6 @@ mod tests {
             ),
             "{id} refused {action:?}"
         );
-        // The control published its press; the host that holds the tree answers it, as the
-        // window does after handling the event.
         let composed = app.composed.element_mut().expect("composed step");
         ui::widget::controls::start_pending_control_invocations(
             composed,
@@ -4240,8 +3795,6 @@ mod tests {
         perform(app, doc, id, &ui::a11y::Action::Activate);
     }
 
-    /// Run the press a control or the Enter key queues, then let the app
-    /// sync. Nothing reaches the document.
     fn run(app: &mut InstallerApp, doc: &AutoCommit, effect: DestinationEffect) {
         app.run_press(Press::new(effect));
         app.sync(doc, &automerge::ROOT);
@@ -4272,9 +3825,6 @@ mod tests {
         disk
     }
 
-    /// Recursively assert the widget tree mirrors the taffy tree at every
-    /// node — the structural invariant the App's focusable-order traversal
-    /// depends on.
     fn assert_tree_mirrors(widget: &dyn Widget, taffy: &TaffyTree<()>, node: NodeId) {
         let wc = widget.children();
         let tc = taffy.children(node).unwrap();
@@ -4301,8 +3851,6 @@ mod tests {
             .find_map(|child| find_named(child, name))
     }
 
-    /// The node that reads `text`: named by it, or, for a labelled value
-    /// (a review property), holding it as its value.
     fn reading(node: ui::a11y::AccessNode, text: &str) -> Option<ui::a11y::AccessNode> {
         if node.name.as_deref() == Some(text) || node.value.as_deref() == Some(text) {
             return Some(node);
@@ -4561,8 +4109,6 @@ mod tests {
     #[test]
     fn step_navigation_walks_forward_back_and_indexes_labels() {
         assert_eq!(STEP_LABELS.len(), 9);
-        // (step, next, prev, index): forward stops at Install, back stops at
-        // Keyboard (and Install has no way back), indices match the labels.
         let cases = [
             (Step::Keyboard, Some(Step::Network), None, 0),
             (Step::Network, Some(Step::Accounts), Some(Step::Keyboard), 1),
@@ -4584,7 +4130,6 @@ mod tests {
     #[test]
     fn online_accounts_skip_uses_semantic_door_without_sharing_form_fields() {
         let mut app = InstallerApp::with_disks(sample());
-        // No live browser or runtime directory is involved in this test.
         app.accounts_initialized = true;
         app.step = Step::Network;
         let doc = AutoCommit::new();
@@ -4615,7 +4160,6 @@ mod tests {
         app.go_back();
         assert_eq!(app.step, Step::Network);
         assert!(app.accounts_form.drain_commands().is_empty());
-        // Escape controls must remain usable even without live custody.
         app.step = Step::Accounts;
         app.accounts_form.cancel();
         assert!(matches!(
@@ -4626,14 +4170,10 @@ mod tests {
 
     #[test]
     fn step_and_field_validators_match_backend_contract() {
-        // validate_step: (step, disk, username, hostname, ok).
         let steps = [
-            // The keyboard step never blocks forward progress.
             (Step::Keyboard, Some(0), "ada", "tilo", true),
-            // Disk requires a selection.
             (Step::Disk, None, "", "tilo", false),
             (Step::Disk, Some(0), "", "tilo", true),
-            // Account requires a valid username.
             (Step::Account, Some(0), "", "tilo", false),
             (Step::Account, Some(0), "   ", "tilo", false),
             (Step::Account, Some(0), "ada", "tilo", true),
@@ -4641,7 +4181,6 @@ mod tests {
             (Step::Account, Some(0), "2bad", "tilo", false),
             (Step::Account, Some(0), "has space", "tilo", false),
             (Step::Account, Some(0), "bad:name", "tilo", false),
-            // Options requires a valid hostname.
             (Step::Options, Some(0), "q", "tilo", true),
             (Step::Options, Some(0), "q", "", false),
             (Step::Options, Some(0), "q", "-bad", false),
@@ -4697,7 +4236,6 @@ mod tests {
                 "valid_hostname case {hostname:?}"
             );
         }
-        // The locale validator accepts only the installed catalog.
         for (locale, ok) in [
             ("en_US.UTF-8", true),
             ("de_DE.UTF-8", true),
@@ -4706,7 +4244,6 @@ mod tests {
         ] {
             assert_eq!(valid_locale(locale), ok, "valid_locale case {locale:?}");
         }
-        // The startup-secret policy always requires a strong passphrase.
         for (secret, ok) in [
             ("correct horse battery", true),
             ("correct horse", false),
@@ -4752,12 +4289,10 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&doc, &root);
 
-            // Empty username → blocked.
             activate(&mut app, &mut doc, "installer.next");
             assert_eq!(app.step, Step::Account);
             assert_eq!(app.status, "Enter a username");
 
-            // Typed fields stay in view state; secrets use external buffers.
             app.username.set("ada".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
@@ -4789,7 +4324,6 @@ mod tests {
             app.sync(&doc, &root);
             assert_eq!(app.step, Step::Disk);
 
-            // The Next button is disabled; Enter runs the same action.
             next(&mut app, &doc);
             assert_eq!(app.step, Step::Disk, "must not advance without a disk");
             assert_eq!(app.status, "Select a disk to continue");
@@ -4822,8 +4356,6 @@ mod tests {
             );
         }
         {
-            // On the Disk step, `begin` must NOT trigger an install (would
-            // shell out to a missing backend): the action is unavailable.
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
             let doc = AutoCommit::new();
@@ -4862,7 +4394,6 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync(&doc, &root);
-            // Default is English (US) → xkb us, no variant.
             assert_eq!(app.keymap(), "English (US)");
             let opts = app.install_options();
             assert_eq!(opts.keymap, "us");
@@ -4898,7 +4429,6 @@ mod tests {
             assert_eq!(app.selected_fs, 2);
             assert_eq!(app.filesystem(), "xfs");
         }
-        // Phase `fido2_flag_threads_into_mandatory_encryption_options`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
@@ -5191,7 +4721,6 @@ mod tests {
             app.sync(&doc, &root);
             assert!(!app.recovery_ack);
 
-            // An unacknowledged recovery key must block every native install.
             let begin = app.begin_effect();
             run(&mut app, &doc, begin);
             assert_eq!(app.install_state, InstallState::Idle);
@@ -5209,13 +4738,10 @@ mod tests {
             );
             assert!(app.recovery_ack, "ack flips on");
 
-            // Toggle off again (it's a checkbox).
             activate(&mut app, &mut doc, "recovery_ack");
             assert!(!app.recovery_ack, "ack flips back off");
         }
         {
-            // Encrypting + un-acknowledged: the Begin button (nav row's primary,
-            // its last child) must be disabled (non-focusable).
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
             app.step = Step::Review;
@@ -5227,7 +4753,6 @@ mod tests {
             let begin_disabled = find_test_id(&app, "installer.next").map(|b| !b.is_focusable());
             assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
-            // Acknowledgement alone is insufficient because the passphrase is mandatory.
             let mut app2 = InstallerApp::with_disks(sample());
             app2.selected_disk = Some(0);
             app2.step = Step::Review;
@@ -5347,8 +4872,6 @@ mod tests {
     fn encryption_factors_name_every_enrolled_unlock() {
         {
             let mut app = InstallerApp::with_disks(sample());
-            // Pin the hardware so the Review copy must describe measured-boot PIN
-            // mode rather than the non-TPM passphrase fallback.
             app.tpm2 = true;
             app.secure_boot = true;
             app.kernel_lockdown = true;
@@ -5409,11 +4932,6 @@ mod tests {
     #[test]
     fn encryption_readiness_follows_the_verified_boot_policy() {
         {
-            // A machine with no TPM cannot unlock itself. Encryption still works —
-            // that is the point of building the volume around a recovery key — but
-            // with no passphrase enrolled, the recovery key is what gets typed at
-            // every boot. Requiring the secret is what keeps the degradation
-            // usable instead of merely correct.
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
             app.tpm2 = false;
@@ -5426,7 +4944,6 @@ mod tests {
             *app.password.lock().unwrap() = "correct horse battery".to_string();
             assert!(app.encryption_ready(), "a passphrase unblocks it");
 
-            // Whitespace is not a passphrase.
             *app.password.lock().unwrap() = "   ".to_string();
             assert!(
                 !app.encryption_ready(),
@@ -5472,7 +4989,6 @@ mod tests {
                     .contains("Secure Boot is not active")
             );
         }
-        // Phase `secure_boot_without_kernel_lockdown_uses_the_passphrase_policy`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.tpm2 = true;
@@ -5515,7 +5031,6 @@ mod tests {
     fn linux_guidance_matches_visible_space_state() {
         let mut disk = Disk::samples().remove(1);
         disk.partitions.clear();
-        // Keep a Linux partition and leave a large contiguous extent after it.
         let mut linux = Disk::samples().remove(0).partitions.remove(1);
         linux.filesystem = "ext4".into();
         linux.label = "Linux".into();
@@ -5819,8 +5334,6 @@ mod tests {
             assert!(app.guided_alongside_plan().is_some());
 
             app.refresh_disks_with(vec![disk]);
-            // Rediscovery may retain the same hardware, never its reviewed
-            // extent or authorization to format anything.
             assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.selected_guided_extent, None);
             assert!(!app.selected_disk_can_install_alongside());
@@ -5967,7 +5480,6 @@ mod tests {
             );
             assert!(opts.alongside_root.is_empty());
 
-            // The running-installer disk can never be switched to Erase.
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync(&doc, &root);
@@ -6064,7 +5576,6 @@ mod tests {
             activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Keyboard);
 
-            // The first step (Keyboard) offers no Back; the action is a no-op.
             assert!(!has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
                 "installer.back"
@@ -6180,8 +5691,6 @@ mod tests {
             }
             assert_eq!(app.install_state, InstallState::Done);
             assert_eq!(app.status_lines.last().map(String::as_str), Some(last_line));
-            // The finish screen's progress list and the console's stages
-            // must not end on a step that still sounds in progress.
             let state = app.console_state();
             let stages = state["install"]["stages"].as_array().unwrap();
             assert_eq!(
@@ -6274,8 +5783,6 @@ mod tests {
             ));
 
             app.install_state = InstallState::Done;
-            // Reboot stays disabled until the key is confirmed saved; the
-            // action refuses the same way.
             run(&mut app, &doc, DestinationEffect::Reboot);
             assert!(app.status.contains("Save the recovery key"));
 
@@ -6572,8 +6079,6 @@ mod tests {
         );
     }
 
-    /// Count focusable widgets anywhere in the subtree (the Account step's
-    /// nav buttons live nested inside a Row, not as direct card children).
     fn count_focusable(widget: &dyn Widget) -> usize {
         let mut n = usize::from(widget.is_focusable());
         for c in widget.children() {
@@ -6590,9 +6095,6 @@ mod tests {
             app.step = Step::Account;
             let (_taffy, _root) = build(&mut app);
 
-            // Username + optional full name + password + confirmation, + Back
-            // + Next. A password's show/hide control is an inline accessory,
-            // not a Tab stop.
             assert_eq!(
                 count_focusable(&app),
                 6,
@@ -6605,9 +6107,6 @@ mod tests {
             app.step = Step::Keyboard;
             let (_taffy, _root) = build(&mut app);
 
-            // Keyboard is the FIRST step, so there is no Back: Dropdown + Next =
-            // 2 focusable widgets (the KeyboardView preview is a non-focusable
-            // leaf and must not count).
             assert_eq!(
                 count_focusable(&app),
                 2,
@@ -6621,9 +6120,6 @@ mod tests {
             );
         }
         {
-            // Build without a selection: the nav row's primary ("Next", its last
-            // child after "Back") must be non-focusable (disabled). After
-            // selecting a disk it enables.
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
             let _ = build(&mut app);
@@ -6752,8 +6248,6 @@ mod tests {
             ),
         ] {
             let mut app = prepared_profile_app();
-            // A six-digit PIN worked on the verified target, but must not be
-            // reused after boot policy revalidation requires a passphrase.
             app.tpm2 = true;
             app.secure_boot = true;
             app.kernel_lockdown = true;

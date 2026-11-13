@@ -49,24 +49,17 @@ pub const FILE_ACTIONS: &[&str] = &[
     "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append",
 ];
 
-/// Everything a tier-1 command gets.
 pub struct Ctx<'a> {
     pub host: &'a dyn Host,
-    /// The directory relative paths are taken against.
     pub cwd: &'a Path,
     pub io: &'a Stdio,
-    /// The exported environment, for `env` and `printenv`.
     pub env: &'a [(String, String)],
-    /// The command's own name, for its messages.
     pub name: &'a str,
     /// How a command that runs other commands (`find -exec`, `xargs`,
     /// `env`, `timeout`) runs them: back through the shell's own
     /// resolution, never a fork or an exec.
     pub dispatch: &'a dyn Dispatch,
-    /// Who the output is for.
     pub render: Render,
-    /// The run the command is part of: what its file actions are stamped
-    /// with.
     pub run: Option<&'a crate::host::Run>,
 }
 
@@ -82,7 +75,6 @@ pub enum Render {
     Agent,
 }
 
-/// Running a command from inside a command.
 pub trait Dispatch: Sync {
     /// Run `argv` as the shell resolves a utility: one of Tilo's own
     /// commands, a file action, or a program; never a function or a
@@ -90,13 +82,10 @@ pub trait Dispatch: Sync {
     /// Answers its status: 127 when nothing answers to the name.
     fn run(&self, argv: &[String], cwd: &Path, io: &Stdio) -> i32;
 
-    /// [`Self::run`], in an environment changed as `env` changes it.
     fn run_with_env(&self, argv: &[String], cwd: &Path, io: &Stdio, env: &EnvChange) -> i32;
 
-    /// [`Self::run`], stopped when `millis` have passed: `None` then.
     fn run_for(&self, argv: &[String], cwd: &Path, io: &Stdio, millis: u64) -> Option<i32>;
 
-    /// Ask the person a yes-or-no question on the terminal (`find -ok`).
     fn confirm(&self, question: &str) -> bool;
 }
 
@@ -162,7 +151,6 @@ impl Ctx<'_> {
         })
     }
 
-    /// `path` made absolute against the working directory.
     pub fn resolve(&self, path: &str) -> PathBuf {
         crate::paths::join(self.cwd, path)
     }
@@ -178,7 +166,6 @@ impl Ctx<'_> {
         self.out(text.as_bytes())
     }
 
-    /// Say something went wrong, as `name: message`.
     pub fn error(&self, message: impl std::fmt::Display) {
         let _ = self
             .io
@@ -191,13 +178,11 @@ impl Ctx<'_> {
         self.error(format!("{operand}: {}", describe(error)));
     }
 
-    /// Refuse a flag this command does not implement, by its spelling.
     pub fn unsupported(&self, flag: &str) -> i32 {
         self.error(format!("{flag} is not supported"));
         2
     }
 
-    /// The bytes of `operand`: standard input for `-`, else the file.
     pub fn read_operand(&self, operand: &str) -> io::Result<Vec<u8>> {
         if operand == "-" {
             return self.io.stdin.read_all();
@@ -232,7 +217,6 @@ pub fn describe(error: &io::Error) -> String {
     }
 }
 
-/// A tier-1 command.
 pub type Command = fn(&Ctx<'_>, &[String]) -> i32;
 
 /// The tier-1 command `name`, if there is one. The file actions are not

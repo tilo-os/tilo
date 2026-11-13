@@ -396,7 +396,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "Show this window",
-      "description": "Ask the platform to reveal the existing window, keeping its document owner.",
+      "description": "Bring this app's window to the front.",
       "locus": "ClientLocal",
       "kind": "View",
       "contract": {

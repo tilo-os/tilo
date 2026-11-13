@@ -1,13 +1,13 @@
-//! The row's resolved metrics: every length and style a row lays its columns out by, read off
-//! one theme, so the retained row and the immediate face measure alike.
+//! The row's resolved metrics: every length and style a row lays its columns out by, read
+//! off one theme, so the retained row and the immediate face measure alike.
 
 use crate::chrome::row_bleed;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// The resolved geometry of every row in `theme`: what the face paints and
-/// the retained row measures, from one place.
+/// The resolved geometry of every row in `theme`: what the face paints and the retained row
+/// measures, from one place.
 #[derive(Clone, Debug)]
 pub(super) struct RowMetrics {
     pub(super) bleed: f64,
@@ -29,7 +29,6 @@ pub(super) struct RowMetrics {
     pub(super) dot: f64,
     pub(super) radius: f64,
     pub(super) tag_gap: f64,
-    /// One step of nesting: the gutter a disclosure chevron hangs in, left of its content.
     pub(super) nest: f64,
 }
 
@@ -39,8 +38,6 @@ impl RowMetrics {
         let metrics = &theme.tokens.metrics;
         Self {
             bleed: row_bleed(theme),
-            // The row's height comes from its kind (36 / 52 / 64, compact
-            // 28 / 44 / 52); the text keeps a tight inset inside it.
             pad_y: f64::from(spacing.rhythm.tight),
             min_height: f64::from(metrics.row_single),
             column_gap: f64::from(spacing.s3),
@@ -92,9 +89,8 @@ impl RowMetrics {
         f64::from(text.measure_style("Ag", None, style).1)
     }
 
-    /// The avatar's side: the inline size beside a one-line row, the list
-    /// size beside a row with more lines. Fixed per kind of row, so a list's
-    /// titles share one edge whatever each row's secondary text does.
+    /// The avatar's side: the inline size beside a one-line row, the list size beside a row
+    /// with more lines.
     pub(super) fn avatar(theme: &Theme, extra_lines: bool) -> f64 {
         let metrics = &theme.tokens.metrics;
         if extra_lines {

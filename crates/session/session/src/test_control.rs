@@ -1119,36 +1119,8 @@ fn asked_of_desk(
             json!({"ok": {"locked": false, "was_locked": was_locked}})
         }
         Op::ProvisionTestIdentity => provision_test_identity(),
-        Op::ListTargets => {
-            let targets: Vec<Json> = desk
-                .doors
-                .controls()
-                .into_iter()
-                .map(|(name, (x, y, w, h))| json!({"name": name, "rect": [x, y, w, h]}))
-                .collect();
-            json!({"targets": targets})
-        }
-        Op::ClickNamed => {
-            let Some(name) = request.get("name").and_then(Json::as_str) else {
-                return Some(refusal("parse_error", "`click_named` takes `name`"));
-            };
-            // The verb names the action to take on the control: a press (`activate`, the default)
-            // or the context menu it opens without a point aimed at where it is drawn.
-            let action = match request.get("verb").and_then(Json::as_str) {
-                None | Some("activate") => ui::window_targets::TargetAction::Activate,
-                Some("show-context-menu") => ui::window_targets::TargetAction::ShowContextMenu,
-                Some(other) => {
-                    return Some(refusal(
-                        "parse_error",
-                        &format!("`click_named` does not know the verb {other}"),
-                    ));
-                }
-            };
-            match desk.doors.press_action(name, action) {
-                Ok(()) => json!({"ok": {}}),
-                Err(error) => refusal("unknown_target", &error),
-            }
-        }
+        Op::ListTargets => json!({"targets": listed_targets(desk)}),
+        Op::ClickNamed => return Some(clicked_named(request, desk)),
         Op::SearchRows => {
             let (query, rows) = desk.handle.search_rows();
             let rows: Vec<Json> = rows
@@ -1730,6 +1702,58 @@ fn legacy_rows(
             row
         })
         .collect()
+}
+
+/// The controls the desk shows now, as the tools read them: each one's name, what it does where it
+/// does something the app publishes, and where it stands.
+fn listed_targets(desk: &Desk<'_>) -> Vec<Json> {
+    desk.doors
+        .controls()
+        .into_iter()
+        .map(|control| {
+            let (x, y, w, h) = control.rect;
+            match control.identity {
+                Some(identity) => json!({
+                    "name": control.name,
+                    "identity": identity,
+                    "rect": [x, y, w, h],
+                }),
+                None => json!({"name": control.name, "rect": [x, y, w, h]}),
+            }
+        })
+        .collect()
+}
+
+/// The answer to `click_named`: the control the caller names, by its name or by what it does, is
+/// pressed as assistive technology presses it — or the desk says it shows none.
+fn clicked_named(request: &Json, desk: &Desk<'_>) -> Json {
+    // What the control does, where the caller names it that way: the identity it keeps wherever
+    // the window's composition draws it, in whatever language.
+    let identity = request.get("identity").and_then(Json::as_str);
+    let Some(name) = request.get("name").and_then(Json::as_str).or(identity) else {
+        return refusal("parse_error", "`click_named` takes `name` or `identity`");
+    };
+    // The verb names the action to take on the control: a press (`activate`, the default) or the
+    // context menu it opens without a point aimed at where it is drawn.
+    let action = match request.get("verb").and_then(Json::as_str) {
+        None | Some("activate") => ui::window_targets::TargetAction::Activate,
+        Some("show-context-menu") => ui::window_targets::TargetAction::ShowContextMenu,
+        Some(other) => {
+            return refusal(
+                "parse_error",
+                &format!("`click_named` does not know the verb {other}"),
+            );
+        }
+    };
+    let pressed = if let Some(identity) = identity {
+        desk.doors.press_identity(identity, action)
+    } else {
+        desk.doors.press_action(name, action)
+    };
+    match pressed {
+        Ok(()) => json!({"ok": {}}),
+        Err(error) => refusal("unknown_target", &error),
+    }
 }
 
 /// One row in the tools' shape, or `None` for a row that only holds more rows.

@@ -515,7 +515,6 @@ mod tests {
     use crate::record::Record;
     use ui::tilo_actions::{OperationKind, ResourceSpec};
 
-    /// A record holding the sample recent capture.
     fn seeded() -> Record {
         let mut record = ui::tilo_resource::Replica::<Record>::new();
         record
@@ -524,7 +523,6 @@ mod tests {
         record.state().unwrap()
     }
 
-    /// The resource `state` publishes, with the live rows of `ctx` beside it.
     fn tree(ctx: &CameraResourceCtx, state: &Record) -> Vec<ResourceSpec> {
         let mut resources = vec![ui::tilo_resource::publish::<Record>(
             "camera", "Camera", state,
@@ -533,7 +531,6 @@ mod tests {
         resources
     }
 
-    /// The tree for `ctx` alone: its rows and recent capture.
     fn provide_resources(ctx: &CameraResourceCtx) -> Vec<ResourceSpec> {
         tree(ctx, &Record::default())
     }
@@ -548,7 +545,6 @@ mod tests {
             .find_map(|child| find_resource(child, id))
     }
 
-    /// What a sample Camera publishes once it shows `state`.
     fn published(state: &Record) -> Vec<ResourceSpec> {
         let mut app = CameraApp::sample();
         app.present_record(state);

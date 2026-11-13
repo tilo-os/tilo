@@ -1,8 +1,6 @@
-//! `pack` — walk a payload directory, hash each file into the
-//! [`Collection`], encode the manifest, and build + sign the signed-root.
-//! See [`crate::signed`] for the on-wire layout of the signed-root and what
-//! the publisher signs over. The payload bytes stay where they are; the
-//! result names them so a writer can stream them out later.
+//! `pack` — walk a payload directory, hash each file into the [`Collection`], encode the manifest and
+//! build and sign the signed root. The payload bytes stay where they are; [`crate::signed`] has the
+//! on-wire layout and what the publisher signs over.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,14 +20,6 @@ use crate::signed::SignedRoot;
 use crate::validate::{ManifestError, validate_manifest_with_payload};
 
 /// A signing identity that can sign the package's signed-root bytes.
-/// Wraps either a plain `ed25519_dalek::SigningKey` or a fully
-/// initialised [`ThresholdIdentity`].
-///
-/// The threshold path only supports 1-of-1 bootstrap mode (byte-
-/// equivalent to plain Ed25519); true `t-of-n` signing at pack-time
-/// needs the multi-device ceremony, which belongs to the publisher
-/// pipeline, not this crate — use `from_threshold_aggregated` for an
-/// already-aggregated signature from such a ceremony.
 #[allow(
     clippy::large_enum_variant,
     reason = "ThresholdIdentity is already boxed (see its own doc below); the remaining gap to \
@@ -38,22 +28,17 @@ use crate::validate::{ManifestError, validate_manifest_with_payload};
               per pack/sign call, never per-item in a hot loop"
 )]
 pub enum SigningIdentity {
-    /// Plain Ed25519 — simplest case; used by tests, CI signing, and `tilo-app-package sign --identity`.
     Ed25519(ed25519_dalek::SigningKey),
     /// A 1-of-1 threshold identity; goes through the same `sign_raw` path and produces a regular Ed25519 sig.
-    /// Boxed: `ThresholdIdentity` carries frost-core key-package material far
-    /// larger than the 32-byte `SigningKey` in the other variant.
     ThresholdSingleDevice(Box<ThresholdIdentity>),
 }
 
 impl SigningIdentity {
-    /// Generate a fresh random Ed25519 identity, for tests + ad-hoc `tilo-app-package sign` signing.
     pub fn generate() -> Self {
         let mut rng = UnwrapErr(SysRng);
         Self::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng))
     }
 
-    /// Wrap an existing `SigningKey`.
     pub fn from_signing_key(sk: ed25519_dalek::SigningKey) -> Self {
         Self::Ed25519(sk)
     }
@@ -72,7 +57,6 @@ impl SigningIdentity {
         }
     }
 
-    /// Return the public key in `collab_types` newtype form.
     pub fn public_key(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.public_key_bytes())
     }
@@ -123,7 +107,6 @@ impl SigningIdentity {
     }
 }
 
-/// Errors produced by [`pack`].
 #[derive(Debug, thiserror::Error)]
 pub enum PackError {
     #[error("manifest validation: {0}")]
@@ -158,7 +141,6 @@ pub enum PackError {
 pub struct Packed {
     pub meta: PackageMeta,
     files: BTreeMap<BlobHash, PathBuf>,
-    /// Payload files the packer generated rather than found on disk.
     inline: BTreeMap<BlobHash, Vec<u8>>,
 }
 
@@ -167,9 +149,6 @@ impl Packed {
         self.meta.id
     }
 
-    /// Payload files in `(hash, path)` order, one per distinct blob found
-    /// on disk. Files the packer generated (an image's
-    /// [`crate::image::TREE_FILE`]) are read through [`BlobSource`].
     pub fn files(&self) -> impl Iterator<Item = (&BlobHash, &Path)> {
         self.files.iter().map(|(hash, path)| (hash, path.as_path()))
     }
@@ -194,14 +173,10 @@ impl BlobSource for Packed {
     }
 }
 
-/// A walked payload directory.
 struct Walked {
     collection: Collection,
-    /// The source path of each distinct blob.
     files: BTreeMap<BlobHash, PathBuf>,
-    /// Generated files, by hash.
     inline: BTreeMap<BlobHash, Vec<u8>>,
-    /// Every payload path, for payload-aware manifest validation.
     paths: Vec<PathBuf>,
 }
 
@@ -342,8 +317,6 @@ pub fn pack(
     pack_with_files(payload_dir, manifest, identity, Vec::new())
 }
 
-/// [`pack`], with `extra` generated files added to the payload beside the
-/// walked ones.
 pub(crate) fn pack_with_files(
     payload_dir: &Path,
     manifest: &Manifest,

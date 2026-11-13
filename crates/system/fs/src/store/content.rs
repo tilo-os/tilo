@@ -201,7 +201,6 @@ impl ContentStore {
         Some(out)
     }
 
-    /// Whether every byte of `content` is local.
     pub async fn is_complete(&self, content: Hash, manifest: &Manifest) -> bool {
         if content::is_file_backed(manifest) {
             return self

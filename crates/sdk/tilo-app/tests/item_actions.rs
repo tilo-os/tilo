@@ -14,7 +14,7 @@ pub struct Todo {
     pub done: bool,
 }
 
-#[resource(kind = "test.todos", label = "Todos")]
+#[resource(kind = "test.todos", catalogue = "tests/locales")]
 impl Todos {
     /// Add a todo.
     #[action]

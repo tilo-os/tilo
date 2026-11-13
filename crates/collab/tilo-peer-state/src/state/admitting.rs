@@ -206,6 +206,17 @@ impl StatePeer {
             &envelope,
         )
         .map_err(err)?;
+        // A person's view of the workspace's layout is theirs: every member reads it, and only they
+        // write it. The workspace's own host commits the documents of its records, so its writes
+        // are the workspace's like any other.
+        if !self.signed_by_owner(&source) {
+            tilo_desktop_model::shared_record::guard::may_write(
+                &app_id,
+                &record_id,
+                &member.person,
+            )
+            .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+        }
         let route = Route {
             app: app_id.clone(),
             record: record_id,
@@ -238,8 +249,7 @@ impl StatePeer {
         let mut validated_channel = candidate.channel.clone();
         validated_channel.grants.clone_from(&member.policy.grants);
         validated_channel.surfaces.clone_from(&self.surfaces);
-        let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
-        let author = member.authority(&foreign_bound);
+        let author = member.authority();
         match collab_types::validate_admitted_inbound_op(
             &envelope,
             &author,
@@ -625,7 +635,7 @@ impl StatePeer {
             .core
             .workspace_doc
             .as_deref()
-            .and_then(tilo_desktop_model::projection::workspace_members);
+            .and_then(crate::members::people);
         let workspace = &self.core.workspace;
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(workspace, act), ActionKind::Undoable, now)

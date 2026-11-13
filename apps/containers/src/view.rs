@@ -1,10 +1,7 @@
-//! The window's content, built from the toolkit's widgets.
-//!
-//! The sections are a [`NavList`] in the shell's sidebar; each section's page
-//! is composed from tables, property lists, tabs and buttons. Nothing here
-//! paints, sizes or colours anything: every control says what it is and the
-//! theme decides how it looks. Interaction leaves as an [`Intent`] that the
-//! app applies to the window, the draft and the engine.
+//! The window's content, built from the toolkit's widgets: a section list in the
+//! sidebar, and each section's page composed from tables, property lists, tabs and
+//! buttons. Nothing here paints or sizes; interaction leaves as an [`Intent`] the app
+//! applies to the window, the draft and the engine.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -31,8 +28,7 @@ use crate::podman::Action;
 use crate::resource::CATALOG;
 use crate::resource::{Containers, ContainersEffect};
 
-/// What a control in the window asks for. The app applies each one to the
-/// window, the draft and the engine, the same way for a click, a key or an
+/// What a control asks for, applied the same way for a click, a key or an
 /// accessibility action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Intent {
@@ -45,7 +41,6 @@ pub(crate) enum Intent {
     },
     OpenShell(String),
     NewContainer,
-    /// Ask for the reference to pull.
     PullImage,
     NewVolume,
     SubmitCreate,
@@ -57,14 +52,12 @@ pub(crate) enum Intent {
     ClosePull,
     /// End the download: the engine's process is stopped, not just hidden.
     StopPull,
-    /// Ask the engine again whether it is there.
     Reconnect,
 }
 
-/// The queue controls write to and the app drains.
 pub(crate) type Intents = ui::Intents<Intent>;
 
-/// The containers of `engine` in list order: running ones first, then by name.
+/// The containers in list order: running first, then by name.
 pub(crate) fn listed_containers(engine: &Engine) -> Vec<&Container> {
     let mut list: Vec<&Container> = engine.containers.iter().collect();
     list.sort_by(|a, b| {
@@ -80,8 +73,8 @@ fn place_id(place: Place) -> &'static str {
     place.as_str()
 }
 
-/// The sections of the engine, with what each holds. An engine that did
-/// not answer holds nothing anyone counted, so its sections show no count.
+/// The sections of the engine and what each holds; an engine that did not answer
+/// holds no counts.
 pub(crate) fn section_list(
     engine: &Engine,
     selected: Place,
@@ -115,16 +108,13 @@ pub(crate) fn section_list(
         })
 }
 
-/// The sidebar: the sections, and at its foot whether the engine answers.
 pub(crate) fn sidebar(
     engine: &Engine,
     selected: Place,
     connected: bool,
     intents: &Intents,
 ) -> Element {
-    // Only an engine that answered is connected; the bundled sample says
-    // that it is one.
-    // The sample has no state to light: it says what it is, in words.
+    // Only an engine that answered is connected, and the sample says what it is.
     let status: Element = if connected && engine.live {
         Box::new(StatusLine::active("Connected"))
     } else if connected {
@@ -137,8 +127,7 @@ pub(crate) fn sidebar(
         Box::new(StatusLine::warning("Not connected"))
     };
     let mut footer = Column::new().with_intrinsic_height().push(status);
-    // Which Podman answered is worth a line; why none did is the page's
-    // to explain, with the error behind its "Details".
+    // Which Podman answered is worth a line; why none did is the page's to explain.
     if engine.live {
         footer = footer.push(Box::new(
             Text::new(&engine.connection)
@@ -155,7 +144,6 @@ pub(crate) fn sidebar(
     )
 }
 
-/// The one main action of a page: an inverted button with its icon.
 pub(crate) fn primary(
     id: &str,
     label: &str,
@@ -171,8 +159,8 @@ pub(crate) fn primary(
     )
 }
 
-/// How a container's state reads: running is good news, a dead container
-/// needs attention, a paused or restarting one is in between.
+/// A container's state as a tone: running is good, dead needs attention, paused or
+/// restarting is in between.
 fn status_tone(status: ContainerStatus) -> Tone {
     match status {
         ContainerStatus::Running => Tone::Success,
@@ -223,7 +211,6 @@ fn verb(action: Action) -> &'static str {
     }
 }
 
-/// A row's status dot for a container state.
 fn with_status(row: ListRow, status: ContainerStatus) -> ListRow {
     match status {
         ContainerStatus::Running => row.active(),
@@ -235,7 +222,6 @@ fn with_status(row: ListRow, status: ContainerStatus) -> ListRow {
     }
 }
 
-/// A row action that runs `effect`, when the app publishes it.
 fn row_action(
     row: ListRow,
     icon: Icon,
@@ -249,7 +235,6 @@ fn row_action(
     }
 }
 
-/// One container as the list shows it.
 #[derive(Clone)]
 struct ContainerRow {
     id: String,
@@ -258,8 +243,7 @@ struct ContainerRow {
     status: ContainerStatus,
 }
 
-/// Running containers first, then the ones paused or on their way, then
-/// the stopped ones.
+/// Running containers first, then paused or restarting, then stopped.
 fn status_rank(status: ContainerStatus) -> u8 {
     match status {
         ContainerStatus::Running => 0,
@@ -269,9 +253,8 @@ fn status_rank(status: ContainerStatus) -> u8 {
     }
 }
 
-/// The containers in a table: name, image and state, sortable from the
-/// headers in the order `sort` keeps. A row opens its container; its
-/// lifecycle verbs are the detail's.
+/// The containers in a table the headers sort; a row opens its container, and its
+/// verbs are the detail's.
 pub(crate) fn container_list(
     engine: &Engine,
     selected: Option<&str>,
@@ -287,8 +270,8 @@ pub(crate) fn container_list(
         .map(|c| ContainerRow {
             id: c.id.clone(),
             name: c.name.clone(),
-            // The image by its own name; its registry and path are in the
-            // detail, and would leave the narrow column only an ellipsis.
+            // The image by its own name; its registry and path would leave the narrow
+            // column only an ellipsis.
             image: c
                 .image
                 .rsplit_once('/')
@@ -333,9 +316,7 @@ pub(crate) fn container_list(
     list_column(Box::new(table))
 }
 
-/// A list in the list column: its rows' text on the column's content edge
-/// (the column gutter, where the column's title starts), their lift
-/// bleeding into the inset.
+/// A list on the column's content edge, where the column's title starts.
 fn list_column(list: Element) -> Element {
     Box::new(Stack::new(SpacingStep::S0, vec![list]).on_column_edge())
 }
@@ -354,8 +335,8 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
     }
 }
 
-/// Podman did not answer: say so, once, and offer to ask again. What the
-/// attempt failed with is behind "Details".
+/// Podman did not answer: say so once, offer to ask again, and keep the failure behind
+/// "Details".
 pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
     let mut state = EmptyState::new("Podman isn't available")
         .with_icon(Icon::Box)
@@ -370,7 +351,6 @@ pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
     Box::new(state)
 }
 
-/// The content beside the list while nothing is chosen.
 pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
@@ -379,14 +359,12 @@ pub(crate) fn nothing_selected() -> Element {
     )
 }
 
-/// A stack whose gap and insets are spacing steps, resolved from the theme
-/// at layout so they follow the spacing scale.
+/// A stack whose gap and insets are spacing steps, resolved from the theme at layout.
 struct Stack {
     column: Column,
     gap: SpacingStep,
     inset_x: SpacingStep,
     inset_y: SpacingStep,
-    /// Inset sideways by the column gutter instead of `inset_x`.
     column_edge: bool,
 }
 
@@ -405,20 +383,17 @@ impl Stack {
         }
     }
 
-    /// A title and the line that belongs to it, one `s1` step apart.
     fn tight(children: Vec<Element>) -> Self {
         Self::new(SpacingStep::S1, children)
     }
 
-    /// Inset the stack's content from its edges.
     fn inset(mut self, x: SpacingStep, y: SpacingStep) -> Self {
         self.inset_x = x;
         self.inset_y = y;
         self
     }
 
-    /// Stand the content on the column's content edge, where the shell
-    /// starts the column's title.
+    /// Stand the content on the column's content edge.
     fn on_column_edge(mut self) -> Self {
         self.column_edge = true;
         self
@@ -456,26 +431,22 @@ impl ui::widget::Decorator for Stack {
     }
 }
 
-/// Everything the detail of one container needs.
 pub(crate) struct DetailModel<'a> {
     pub container: &'a Container,
     pub tab: DetailTab,
     pub controls: bool,
-    /// A verb on this container is in flight: the engine has not answered
-    /// yet, so its controls wait rather than inviting a second click.
+    /// A verb is in flight: the engine has not answered, so the controls wait.
     pub busy: bool,
-    /// A live engine answers the container's published actions; the sample
-    /// answers through the app.
+    /// A live engine answers the container's published actions; the sample answers
+    /// through the app.
     pub live_engine: bool,
 }
 
-/// The chosen container: what it is, what can be done to it, and one tab
-/// of detail.
+/// The chosen container: what it is, what can be done to it, and one tab of detail.
 pub(crate) fn container_detail(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let c = model.container;
-    // The container's name is the window bar's location and its verbs are
-    // the bar's actions ([`detail_commands`]); the page starts at its image
-    // and state.
+    // The container's name is the window bar's location and its verbs are the bar's
+    // actions; the page starts at its image and state.
     let image = Text::new(&c.image)
         .with_role(TextRole::Caption)
         .with_kind(TextKind::Identifier)
@@ -501,10 +472,9 @@ pub(crate) fn container_detail(model: &DetailModel<'_>, intents: &Intents) -> El
     Box::new(page)
 }
 
-/// A button that runs `verb` on the container. A live container's verbs
-/// are its published actions, so the host checks permission and asks for
-/// confirmation exactly as it does for search and agents; the sample (and
-/// removing, which asks in the window first) goes through the app.
+/// A button that runs `verb` on the container. A live container's verbs are its
+/// published actions, so the host checks permission and asks for confirmation as it
+/// does for search and agents; removing asks in the window first.
 fn verb_button(
     model: &DetailModel<'_>,
     verb_id: &str,
@@ -526,7 +496,7 @@ fn verb_button(
     }
 }
 
-/// The chosen container's verbs, the lifecycle ones first and Remove last.
+/// The chosen container's verbs: the lifecycle ones first, Remove last.
 fn detail_verbs(model: &DetailModel<'_>, intents: &Intents) -> Vec<Button> {
     let c = model.container;
     let mut verbs = lifecycle(c.status);
@@ -576,14 +546,12 @@ fn tabs(selected: DetailTab, intents: &Intents) -> ui::widget::ViewTabs {
     })
 }
 
-/// One sentence where a tab has nothing to show yet.
 fn note(text: &str) -> Element {
     Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
 }
 
-/// How serious a log line is, read from the level word it carries
-/// (`WARN`, `[error]`, `level=warning`, `ERROR:`). Lines without one are
-/// plain output.
+/// How serious a log line is, from the level word it carries (`WARN`, `[error]`,
+/// `level=warning`); a line without one is plain output.
 pub(crate) fn line_severity(line: &str) -> Tone {
     let mut tone = Tone::Neutral;
     let words = line.split(|c: char| c.is_whitespace() || matches!(c, '=' | '[' | ']' | ':'));
@@ -599,8 +567,7 @@ pub(crate) fn line_severity(line: &str) -> Tone {
     tone
 }
 
-/// One line of output, in the ink of its severity: a warning or an error
-/// reads at a glance, as it does in a terminal.
+/// One line of output in the ink of its severity.
 fn log_line(line: &str) -> Element {
     let text = Text::new(line).with_role(TextRole::Code);
     Box::new(match line_severity(line) {
@@ -609,8 +576,7 @@ fn log_line(line: &str) -> Element {
     })
 }
 
-/// A reading's wall-clock instant from the millisecond stamp the model
-/// stores, so a view can age it without the model naming `SystemTime`.
+/// A reading's instant from the model's millisecond stamp.
 fn as_of(unix_ms: Option<u64>) -> Option<ui::time::SystemTime> {
     unix_ms.and_then(|ms| ui::time::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms)))
 }
@@ -652,9 +618,8 @@ fn logs(c: &Container) -> Element {
     )
 }
 
-/// Output as the process wrote it, in a well: one entry per line, a line
-/// wider than the column wrapping onto the next rather than scrolling
-/// sideways, so every line reads whole at any width.
+/// Output as the process wrote it: one entry per line, a long line wrapping rather
+/// than scrolling sideways.
 fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
     let lines: Vec<Element> = lines.map(log_line).collect();
     Box::new(
@@ -664,7 +629,6 @@ fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
     )
 }
 
-/// One measured share: its name, its reading and the bar.
 fn usage(label: &str, reading: &str, fraction: f32) -> Element {
     Box::new(Stack::tight(vec![
         line(label, reading),
@@ -672,7 +636,6 @@ fn usage(label: &str, reading: &str, fraction: f32) -> Element {
     ]))
 }
 
-/// A name and its reading on one line, the reading at the trailing edge.
 fn line(label: &str, reading: &str) -> Element {
     Box::new(
         Row::new()
@@ -688,7 +651,6 @@ fn line(label: &str, reading: &str) -> Element {
     )
 }
 
-/// A tile for an amount of data: the figure, and its unit beside it.
 fn bytes_tile(label: &str, bytes: u64) -> Element {
     let formatted = ui::format::memory(bytes);
     let tile = match formatted.rsplit_once(' ') {
@@ -767,7 +729,6 @@ fn stack(sections: Vec<Section>) -> Element {
     Box::new(column)
 }
 
-/// A list of facts whose values start where the other lists' do.
 fn facts(column: &PropertyColumn, rows: Vec<Property>) -> Element {
     Box::new(PropertyList::new(rows).shared_column(column))
 }
@@ -902,8 +863,8 @@ fn used_by(n: u32) -> String {
     )
 }
 
-/// One page of a section: a sentence about the whole, then its list, both
-/// on the column's content edge.
+/// One page of a section: a sentence about the whole, then its list, both on the
+/// column's content edge.
 fn page(summary: Option<String>, rows: Vec<Element>) -> Element {
     let mut children: Vec<Element> = Vec::new();
     if let Some(summary) = summary {
@@ -1083,8 +1044,8 @@ pub(crate) fn distrobox_page(
     page(None, rows)
 }
 
-/// What the pull sheet says it is fetching: the bytes Podman reported, or
-/// just the phase where it named none.
+/// What the pull says it is fetching: the bytes Podman reported, or only the phase
+/// where it named none.
 fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> String {
     match fetched {
         Some((done, Some(total))) => CATALOG.t_args(
@@ -1102,9 +1063,8 @@ fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> String {
     }
 }
 
-/// The body of the pull sheet: the state of the pull, what it has fetched, and
-/// its output — all of it, scrolling, so the reason a pull stalled (an auth
-/// prompt, a retrying layer) is still there to read.
+/// The pull sheet: its state, what it has fetched and all of its output, so the reason
+/// a pull stalled stays readable.
 pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> Column {
     let state: Element = match (&pull.failed, pull.stopped) {
         (Some(error), _) => Box::new(Text::new(error).with_role(TextRole::Body)),
@@ -1119,7 +1079,7 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
                 .dimmed(),
         ),
         // A pull reports layers, not a share of the whole: it spins instead of
-        // pretending to a fraction. The bytes below say how far it has got.
+        // pretending to a fraction.
         (None, false) => Box::new(
             Row::new()
                 .no_wrap()
@@ -1156,31 +1116,27 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
         ))
 }
 
-/// What the window shows, published by the app whenever the engine or the
-/// view changes. Each part of the window rebuilds only when the slice of
-/// this it shows changed.
+/// What the window shows, published by the app whenever the engine or the view
+/// changes; each part of the window rebuilds only when its slice changed.
 #[derive(Clone, Default)]
 pub(crate) struct Model {
     pub engine: Rc<Engine>,
     pub view: crate::app::ViewState,
     /// Lifecycle controls are live (a connected engine, or the sample).
     pub controls: bool,
-    /// The sidebar reports the engine as reachable.
     pub connected: bool,
-    /// Podman did not answer a live app: the pages say so instead of
-    /// showing empty lists.
+    /// Podman did not answer a live app: the pages say so instead of showing empty
+    /// lists.
     pub missing: bool,
-    /// The container a lifecycle verb is in flight on, if any: its controls
-    /// wait for the engine instead of inviting a second click.
+    /// The container a verb is in flight on, whose controls wait.
     pub busy: Option<String>,
-    /// Digests of what each column shows, taken once per publish so the
-    /// columns compare a hash instead of the engine on every frame.
+    /// Digests of what each column shows, so the columns compare a hash rather than the
+    /// engine every frame.
     pub list_digest: Digest,
     pub detail_digest: Digest,
     pub page_digest: Digest,
 }
 
-/// A digest of what one part of the window shows.
 pub(crate) type Digest = [u8; 32];
 
 fn digest(value: &impl serde::Serialize) -> Digest {
@@ -1209,30 +1165,27 @@ impl Model {
     }
 }
 
-/// The scroll positions the pages keep across rebuilds.
 #[derive(Clone, Default)]
 pub(crate) struct Offsets {
     pub list: Rc<Cell<(f32, f32)>>,
     pub detail: Rc<Cell<(f32, f32)>>,
 }
 
-/// Everything a part of the window is built from.
 #[derive(Clone)]
 pub(crate) struct Parts {
     pub model: ui::LocalState<Model>,
     pub pane: ui::LocalState<ui::widget::NavPane>,
     pub intents: Intents,
     pub offsets: Offsets,
-    /// The container table's order, which the table keeps here.
+    /// The container table's order.
     pub sort: ui::LocalState<Option<TableSort>>,
     /// The chosen container's name, the content's title.
     pub detail_title: ui::LocalState<String>,
-    /// The app's published actions, which the pages' rows run; `None`
-    /// before the window joins the framework.
+    /// The app's published actions, which the pages' rows run; `None` before the window
+    /// joins the framework.
     pub actions: Option<Actions<Containers>>,
 }
 
-/// The window: a shell per section, its columns rebuilt from the model.
 pub(crate) fn window(parts: &Parts) -> ModelView<(Place, bool, bool)> {
     let p = parts.clone();
     ModelView::from_state_by(
@@ -1259,8 +1212,8 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
     let mut actions: Vec<Element> = Vec::new();
     if section == Place::Containers {
         if m.controls {
-            // The list column is narrow; its one action is a glyph so the
-            // title keeps its room beside the sidebar toggle.
+            // The list column is narrow; its one action is a glyph so the title keeps
+            // its room.
             actions.push(Box::new(
                 Button::icon_only("containers-new", Icon::Plus, &CATALOG.t("containers-new"))
                     .role(ButtonRole::Primary)
@@ -1271,8 +1224,8 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             .overview(list_view(parts))
             .content(detail_view(parts))
             .overview_header(section.label(), actions)
-            // The chosen container names the content: the window bar's
-            // location while it is in front.
+            // The chosen container names the content: the bar's location while it is in
+            // front.
             .content_header_bound(&parts.detail_title, vec![detail_commands(parts)]);
     }
     let main = match section {
@@ -1295,10 +1248,9 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
         .content_header(section.label(), actions)
 }
 
-/// The chosen container's verbs and the detail's close control: the
-/// window bar's actions while a container is chosen, and nothing else.
-/// Closing shows the pane's glyph, as the bar's other pane toggles do; a
-/// cross beside the bar's search would read as closing it.
+/// The chosen container's verbs and the detail's close control. Closing shows the
+/// pane's glyph, as the bar's other pane toggles do; a cross beside the bar's search
+/// would read as closing it.
 fn detail_commands(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     Box::new(ModelView::from_state_by(
@@ -1357,8 +1309,8 @@ fn sidebar_view(parts: &Parts) -> Element {
     ))
 }
 
-/// A column that scrolls what `view` rebuilds. The viewport is the
-/// column's own, so it stays outside the rebuilt part.
+/// A column that scrolls what `view` rebuilds; the viewport stays outside the rebuilt
+/// part.
 fn scrolling(view: Element, offset: &Rc<Cell<(f32, f32)>>) -> Element {
     Box::new(
         Scrollable::new_vertical()
@@ -1474,8 +1426,8 @@ mod tests {
         assert!(empty.contains("hasn't written"), "{empty}");
     }
 
-    /// What the probe failed with is technical: the page says Podman isn't
-    /// available and what to do, and keeps the error behind "Details".
+    /// The page says Podman isn't available and keeps the probe's error behind
+    /// "Details".
     #[test]
     fn a_podman_that_did_not_answer_is_explained_with_its_error_behind_details() {
         let engine = Engine {

@@ -36,7 +36,6 @@ pub struct SimBinding {
 }
 
 impl SimBinding {
-    /// Capture one authorized SIM without discovery, fallback or normalization.
     pub fn new(
         daemon: String,
         modem: String,
@@ -88,7 +87,6 @@ impl DbusTransport {
         })
     }
 
-    /// Check the selected daemon and physical SIM before private initialization.
     pub async fn validate(&self) -> Result<(), Error> {
         self.check_binding().await
     }
@@ -241,7 +239,6 @@ impl DbusTransport {
         let sms = self.proxy(path, SMS).await?;
         let state: u32 = sms.get_property("State").await.map_err(unavailable)?;
         let pdu: u32 = sms.get_property("PduType").await.map_err(unavailable)?;
-        // CDMA teleservices and their timestamps need a separate admission policy.
         if pdu != 1
             || crate::sms::observe(state, pdu, 0, 0)? != crate::sms::Observation::IncomingComplete
         {

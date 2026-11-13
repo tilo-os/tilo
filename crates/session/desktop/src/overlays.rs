@@ -407,6 +407,9 @@ pub struct Standing {
     /// it edits hangs by its bottom there, so a page shorter than the room stands clear of the
     /// caret's line instead of at the top of the room.
     pub rests_at_bottom: bool,
+    /// Where it comes from and goes back to: the bar it hangs from, the caret it was opened at,
+    /// or the display's middle.
+    pub from: Point,
 }
 
 /// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
@@ -479,9 +482,17 @@ pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Stan
         // Over the thing it acts on: the view decides its own card.
         Anchor::At(_) => return None,
     };
+    let from = match anchor {
+        Anchor::TopTrailing(_) => Point::new(rect.x1, display.y0),
+        Anchor::TopLeading(_) => Point::new(rect.x0, display.y0),
+        Anchor::Beside { at, .. } if rests_at_bottom => Point::new(at.x0, at.y0),
+        Anchor::Beside { at, .. } => Point::new(at.x0, at.y1),
+        Anchor::Center | Anchor::Fill | Anchor::At(_) => rect.center(),
+    };
     Some(Standing {
         room: rect,
         rests_at_bottom,
+        from,
     })
 }
 

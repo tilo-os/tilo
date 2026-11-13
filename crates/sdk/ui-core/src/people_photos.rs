@@ -1,13 +1,6 @@
-//! The pictures people chose for themselves, as this process learnt them.
-//!
-//! A person's picture belongs to their profile, which the hosts of their
-//! workspaces keep signed by their root (their name and picture); the host
-//! process fetches it and puts it here, under the person's root key (hex).
-//! The places a person shows up know them by other ids too (the device
-//! their presence comes from), so the host also names whose each of those
-//! is ([`alias`]). Every avatar drawn for one of those ids then wears the
-//! picture ([`crate::widget::AvatarFace`]), with no call site of its own:
-//! the bar, the roster, the people overlay, a profile card.
+//! The pictures people chose for themselves, as this process learnt them. A person's picture belongs to
+//! their profile, which the hosts of their workspaces keep signed by their root (their name and
+//! picture); the host process fetches it and puts it here, under the person's root key (hex).
 
 use std::collections::BTreeMap;
 use std::sync::RwLock;
@@ -22,8 +15,8 @@ static PHOTOS: RwLock<BTreeMap<String, ImageData>> = RwLock::new(BTreeMap::new()
 static ALIASES: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// `person` (root key, hex) wears `image` from now on; `None` takes their
-/// picture away (they went back to their initials).
+/// `person` (root key, hex) wears `image` from now on; `None` takes their picture away (they went back
+/// to their initials).
 pub fn set(person: &str, image: Option<ImageData>) {
     let mut photos = PHOTOS.write_recover();
     match image {
@@ -52,8 +45,8 @@ pub fn alias(identity: &str, person: &str) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
-/// The picture of whoever `identity` names (their root key, or an id
-/// [`alias`]ed to it), if they chose one.
+/// The picture of whoever `identity` names (their root key, or an id [`alias`]ed to it), if they chose
+/// one.
 #[must_use]
 pub fn photo(identity: &str) -> Option<ImageData> {
     if identity.is_empty() {
@@ -70,8 +63,8 @@ pub fn photo(identity: &str) -> Option<ImageData> {
     photos.get(aliases.get(identity)?).cloned()
 }
 
-/// Changes whenever a picture or whose an id is changes: a host redraws
-/// what shows avatars when it moves.
+/// Changes whenever a picture or whose an id is changes: a host redraws what shows avatars when it
+/// moves.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }

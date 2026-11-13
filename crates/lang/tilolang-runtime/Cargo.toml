@@ -22,6 +22,8 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
 tilolang = { path = "../tilolang" }
+# What an app is called: the one id type every crate naming one shares.
+tilo-app-id.workspace = true
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
 tilo-doc = { path = "../../doc/tilo-doc" }
 # A document as the Markdown an editor shows and writes, and the bounded reader of the archives

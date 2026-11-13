@@ -5,9 +5,8 @@ use std::collections::HashSet;
 use crate::block::BlockList;
 use crate::entry::{CatalogueEntry, Source};
 
-/// The identities of the apps this device already has: Tilo package ids,
-/// Flatpak application ids and desktop-entry ids, matched in any case. An
-/// installed app is never offered again.
+/// The identities of the apps this device already has: Tilo package ids, Flatpak application ids
+/// and desktop-entry ids, matched in any case. An installed app is never offered again.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Installed {
     ids: HashSet<String>,
@@ -29,17 +28,16 @@ impl Installed {
         }
     }
 
-    /// Whether `id` is here. A desktop-entry id (`com.spotify.Client.desktop`)
-    /// is the app it launches.
+    /// Whether `id` is here. A desktop-entry id (`com.spotify.Client.desktop`) is the app it
+    /// launches.
     #[must_use]
     pub fn contains(&self, id: &str) -> bool {
         self.ids.contains(&canonical_id(id))
     }
 }
 
-/// An id as installed apps and catalogue entries are compared: lower case,
-/// without a desktop entry's `.desktop`. One app is one id, however a source
-/// spells it.
+/// An id as installed apps and catalogue entries are compared: lower case, without a desktop
+/// entry's `.desktop`. One app is one id, however a source spells it.
 #[must_use]
 pub fn canonical_id(id: &str) -> String {
     let id = id.trim();
@@ -48,16 +46,14 @@ pub fn canonical_id(id: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Every app a person can get, Tilo's and Flathub's, once each.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalogue {
     entries: Vec<CatalogueEntry>,
 }
 
 impl Catalogue {
-    /// Merge the sources. An id is listed once, the first time it appears;
-    /// and a Flathub app with the same name as a Tilo app is left out, as
-    /// the Store has always merged them: the Tilo app is the one offered.
+    /// Merge the sources: an id is listed once, the first time it appears, and a Flathub app with
+    /// the same name as a Tilo app is left out, the Tilo app being the one offered.
     #[must_use]
     pub fn from_sources(tilo: Vec<CatalogueEntry>, flathub: Vec<CatalogueEntry>) -> Self {
         let mut ids = HashSet::new();
@@ -77,8 +73,7 @@ impl Catalogue {
         Self { entries }
     }
 
-    /// Every entry, blocked and installed ones included: the Store's pages
-    /// need them to say so.
+    /// Every entry, blocked and installed ones included: the Store's pages need them to say so.
     #[must_use]
     pub fn entries(&self) -> &[CatalogueEntry] {
         &self.entries
@@ -90,8 +85,7 @@ impl Catalogue {
         self.entries.iter().find(|entry| entry.key() == wanted)
     }
 
-    /// What is offered here: every entry neither `installed` nor blocked.
-    /// This is the list search and the Store's lists show.
+    /// Every entry neither `installed` nor blocked: the list search and the Store's lists show.
     pub fn offered<'a>(
         &'a self,
         installed: &'a Installed,
@@ -102,14 +96,12 @@ impl Catalogue {
             .filter(move |entry| !installed.contains(&entry.id) && !blocks.is_blocked(&entry.id))
     }
 
-    /// The entries from Tilo registries.
     pub fn tilo(&self) -> impl Iterator<Item = &CatalogueEntry> {
         self.entries
             .iter()
             .filter(|entry| matches!(entry.source, Source::Tilo { .. }))
     }
 
-    /// The entries from Flathub.
     pub fn flathub(&self) -> impl Iterator<Item = &CatalogueEntry> {
         self.entries
             .iter()

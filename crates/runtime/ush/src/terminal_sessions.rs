@@ -1,48 +1,33 @@
 //! Which Terminal window each Host shell belongs to.
 //!
-//! A Host shell is this supervisor's child, not the Terminal's: the kernel's
-//! process tree leads from a program typed in a terminal tab up to
-//! `tilo-ush`, never to the Terminal window the person sees. The desktop
-//! needs that link to serve the tab with its Terminal's workspace scope
-//! (`tilo action`, `tilo open` through the agent door), so the supervisor
-//! writes one small record for each Host session:
-//! `$XDG_RUNTIME_DIR/tilo/terminal-sessions/<leader pid>`, naming the
-//! process that asked for the session (a Terminal launch, or the desktop
-//! itself for the Terminal tabs it shows in its own process), both
-//! processes' start times, and the session's id.
+//! A Host shell is the supervisor's child, so the process tree leads from a program typed
+//! in a tab up to `tilo-ush`, never to the Terminal window the person sees. The desktop
+//! needs that link to serve the tab with its Terminal's workspace scope, so the supervisor
+//! writes one small record for each Host session under
+//! `$XDG_RUNTIME_DIR/tilo/terminal-sessions/<leader pid>`.
 //!
-//! The records are read, never trusted on their own. A record only counts
-//! while its leader and requester are the very processes it names (pid and
-//! start time). The desktop then attributes the requester through its own
-//! record of what it launched, or — when the requester is the desktop
-//! itself — finds the tab by the session id that tab's Terminal reported. A Host shell runs as the person, so it
-//! could write a record itself; that buys it nothing it could not already do
-//! as the person, and a sandboxed app cannot reach this directory at all.
+//! Records are read, never trusted on their own: one counts only while its leader and
+//! requester are the very processes it names (pid and start time). A Host shell could write
+//! one itself, which buys it nothing it could not already do as the person, and a sandboxed
+//! app cannot reach the directory.
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The records' directory under `XDG_RUNTIME_DIR`.
 pub const DIR: &str = "tilo/terminal-sessions";
 
-/// How far up a process tree a record is looked for.
 const MAX_ANCESTORS: usize = 32;
 
-/// One Host session: its shell and the process that asked for it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub leader_pid: u32,
     pub leader_start: u64,
     pub requester_pid: u32,
     pub requester_start: u64,
-    /// The session's id, as the supervisor answered the requester: how a
-    /// Terminal the desktop shows in its own process names its tab's
-    /// session.
     pub session: String,
 }
 
-/// The records' directory, or `None` without an absolute runtime directory.
 #[must_use]
 pub fn dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     let runtime_dir = PathBuf::from(runtime_dir?);
@@ -124,7 +109,6 @@ fn read(dir: &Path, leader_pid: u32) -> Option<Session> {
     (session.leader_pid == leader_pid).then_some(session)
 }
 
-/// A process's parent and start time, from `/proc/<pid>/stat`.
 #[must_use]
 pub fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;

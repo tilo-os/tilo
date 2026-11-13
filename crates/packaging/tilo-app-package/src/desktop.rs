@@ -8,8 +8,6 @@ use crate::id::Kind;
 use crate::manifest::{Entrypoint, EntrypointType, IsaRequirements, Manifest, Target};
 use crate::validate::{ManifestError, validate_manifest};
 
-/// A desktop target links the named toolkit release into its executable;
-/// a Tilo OS app instead needs the declared shared runtime installed.
 #[must_use]
 pub fn runtime_dependency(manifest: &Manifest) -> Option<&str> {
     if manifest

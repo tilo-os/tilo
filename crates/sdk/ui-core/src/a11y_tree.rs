@@ -1,13 +1,6 @@
-//! The **retained accessibility tree**: a stable, frame-to-frame semantic model of the running
-//! UI.
-//!
-//! The toolkit re-derives a fresh tree each call, which is fine for pushing a whole tree at
-//! AccessKit but gives no stable identity or diff. A [`SemanticTree`] is the retained
-//! counterpart: it keys nodes by a stable [`SemanticId`] and, on each
-//! [`refresh`](SemanticTree::refresh), diffs the freshly-walked UI against the previous frame,
-//! returning a [`TreeDelta`] while preserving identity for every node that recurs. This is what
-//! an AT-SPI incremental push, a screen reader's change narration or an agent's introspection
-//! builds on.
+//! The **retained accessibility tree**: a stable, frame-to-frame semantic model of the running UI. The
+//! toolkit re-derives a fresh tree each call, which is fine for pushing a whole tree at AccessKit but
+//! gives no stable identity or diff.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,11 +44,11 @@ use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
 use walk::{A11yVisitor, Visit, walk, walk_synthetic, with_slot_words};
 
-/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it
-/// hangs off ([`Widget::accessibility_child_path`]), and whether that child *is* the widget's
-/// own node — the parent publishes the widget's semantics itself
-/// ([`Widget::accessibility_represents_child`]), so the walk attaches the widget's children to
-/// the synthetic node and exports no second node of the widget's own.
+/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it hangs off
+/// ([`Widget::accessibility_child_path`]), and whether that child *is* the widget node — the
+/// parent publishes the widget's semantics itself ([`Widget::accessibility_represents_child`]), so the
+/// walk attaches the widget's children to the synthetic node and exports no second node of the widget's
+/// own.
 pub(crate) struct HostedWidget<'a> {
     pub path: Vec<usize>,
     pub widget: &'a dyn Widget,
@@ -65,14 +58,13 @@ pub(crate) struct HostedWidget<'a> {
 /// Hosted widgets by the index of the synthetic child they hang off.
 pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
-/// How a widget's children enter the accessibility walk. The one rule both
-/// this tree and the AccessKit bridge export children by.
+/// How a widget's children enter the accessibility walk.
 pub(crate) struct ExportedChildren<'a> {
-    /// Walked as the widget's own children, in order, with their index.
+    /// Walked as the widget children, in order, with their index.
     pub direct: Vec<(usize, &'a dyn Widget)>,
     /// Walked under the synthetic child they hang off.
     pub hosted: HostedByIndex<'a>,
-    /// No node of their own: the widget represents them in its own synthetic tree.
+    /// No node of their own: the widget represents them in its synthetic tree.
     pub represented: Vec<&'a dyn Widget>,
 }
 
@@ -88,9 +80,6 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
             && !path.is_empty()
         {
             let parent_index = path.remove(0);
-            // A represented child's own node is the synthetic one it hangs off, so what it
-            // holds is walked under it; it still names the child that holds keyboard focus, as
-            // an unhosted one does.
             if represented {
                 children.represented.push(child);
             }
@@ -112,9 +101,8 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
     children
 }
 
-/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging
-/// off its own synthetic children. A synthetic child can hold both — the controls a widget
-/// describes in its own node, and the widgets whose tree it publishes as that node.
+/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging off its
+/// own synthetic children.
 pub(crate) struct HostedHere<'a> {
     pub direct: Vec<HostedWidget<'a>>,
     pub nested: HostedByIndex<'a>,
@@ -136,9 +124,6 @@ pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
     }
     here
 }
-/// Ids are paths, as long as the tree is deep, and every node is hashed a few
-/// times a refresh: a fast hash, not a DoS-resistant one, for keys no peer
-/// chooses.
 type NodeMap = HashMap<SemanticId, SemanticNode, rustc_hash::FxBuildHasher>;
 type RetainedMap = HashMap<SemanticId, RetainedSubtree, rustc_hash::FxBuildHasher>;
 
@@ -157,18 +142,14 @@ struct RetainedSubtree {
     access: Arc<AccessNode>,
     durable: bool,
     owner: Option<TaffyNodeId>,
-    /// Shared with the [`ReadingOrder`] of every refresh that keeps it.
     ids: Arc<[SemanticId]>,
-    /// Whether the refresh that holds it kept it rather than built it.
     kept: bool,
 }
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, ResourceSpec};
 
-/// Operation type used when the retained semantic tree projects an ordinary
-/// UI affordance into the resource/action catalogue. This makes the same
-/// control addressable from Ctrl+K, the automation socket, and agents without
-/// inventing an app-specific command bus.
+/// Operation type used when the retained semantic tree projects an ordinary UI affordance into the
+/// resource/action catalogue.
 pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -187,7 +168,7 @@ pub(crate) struct SemanticOperation {
 /// * `"w<taffy_id>"` — a laid-out widget, keyed by its `taffy::NodeId` (stable
 ///   between structural rebuilds, exactly the key the AccessKit bridge uses).
 /// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
-///   widget of its own, keyed by its position under its parent.
+///   widget of it, keyed by its position under its parent.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
 ///   already-stable [`ResourceId`](tilo_actions::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -199,9 +180,7 @@ impl std::borrow::Borrow<str> for SemanticId {
     }
 }
 
-/// What a keyed node's id carries before its key ([`SemanticId::keyed`]).
 const KEYED: &str = "~k:";
-/// What a repeated node's id carries before its number ([`SemanticId::repeat`]).
 const REPEATED: char = '#';
 
 impl SemanticId {
@@ -214,10 +193,6 @@ impl SemanticId {
     fn synthetic(parent: &SemanticId, index: usize) -> Self {
         SemanticId(format!("{}~{}", parent.0, index))
     }
-    /// The id of a synthetic control under `parent`: keyed by its semantic key, as a widget's
-    /// own node is, since that is the control id its binding names
-    /// ([`crate::a11y::AccessNode::with_action_target`]); a control without one keeps the key
-    /// it hashed, or else its place among its siblings.
     fn synthetic_of(parent: &SemanticId, index: usize, access: &crate::a11y::AccessNode) -> Self {
         if let Some(key) = &access.semantic_key {
             return SemanticId::keyed(parent, key);
@@ -230,13 +205,9 @@ impl SemanticId {
     fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
         SemanticId(format!("{}{KEYED}{}", parent.0, key))
     }
-    /// The `n`th node after the first that took `id` under the same parent
-    /// ([`Build::unrepeated`]).
     fn repeat(id: &SemanticId, n: usize) -> Self {
         SemanticId(format!("{}{REPEATED}{n}", id.0))
     }
-    /// The control key the node is keyed by, a repeat of a keyed node
-    /// included: what [`SemanticTree::control_paths`] finds it by.
     fn control_key(&self) -> Option<&str> {
         let (_, keyed) = self.0.rsplit_once(KEYED)?;
         Some(
@@ -258,23 +229,16 @@ impl SemanticId {
 /// How a [`SemanticAction`] is carried out when invoked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SemanticActionKind {
-    /// A generic accessibility verb ([`Action`]) — focus, activate,
-    /// increment/decrement, expand/collapse, set-value. Routed through
-    /// [`Widget::perform_action`] with the
-    /// `App`'s generic focus/click fallback, exactly like an AccessKit
-    /// `ActionRequest`.
+    /// A generic accessibility verb ([`Action`]) — focus, activate, increment/decrement,
+    /// expand/collapse, set-value.
     Verb(Action),
     /// An app action from the Tilo [action model](tilo_actions), ready to fire.
-    /// `encoded` is the byte-identical [`EncodedAction`] the on-screen affordance
-    /// and the Ctrl+K palette dispatch — invoking it replays the *same* action.
     App(EncodedAction),
     /// Inert address of a no-argument creation; only the current owner encodes it.
     AppDeferred {
         address: tilo_actions::ActionAddress,
     },
-    /// An app action that first needs one free-text argument (a rename, a "new
-    /// page named…"). The argument is supplied to
-    /// [`SemanticTree::build_prompted`] to produce the concrete [`EncodedAction`].
+    /// An app action that first needs one free-text argument (a rename, a "new page named…").
     AppPrompted {
         /// The prompt shown when collecting the argument.
         prompt: String,
@@ -288,13 +252,11 @@ pub enum SemanticActionKind {
     },
 }
 
-/// One thing an assistive client can do to a [`SemanticNode`], addressable by a
-/// stable [`name`](Self::name).
+/// One thing an assistive client can do to a [`SemanticNode`], addressable by a stable
+/// [`name`](Self::name).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticAction {
-    /// Stable, machine-addressable verb name (`"focus"`, `"activate"`,
-    /// `"delete"`, `"new-page"`). Unique within a node. This is the handle an
-    /// AT / CLI / agent invokes.
+    /// Stable, machine-addressable verb name (`"focus"`, `"activate"`, `"delete"`, `"new-page"`).
     pub name: String,
     /// Human, localisable label (`"Delete page"`).
     pub label: String,
@@ -304,16 +266,13 @@ pub struct SemanticAction {
 
 /// One node of the retained semantic tree.
 ///
-/// Not `Eq` because [`bounds`](Self::bounds) holds `f64`; content equality (used
+/// Not `Eq` because [`bounds`](Self::bounds) has `f64`; content equality (used
 /// by the diff) is a bit-exact [`PartialEq`], which is what we want — an
 /// unchanged widget re-reports identical bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticNode {
     pub id: SemanticId,
-    /// Whether this identity is safe to persist outside the current retained
-    /// frame. Layout ids and positional synthetic ids are deliberately not
-    /// durable: exposing them to agents would let a later invocation target a
-    /// different control after the UI is rebuilt.
+    /// Whether this identity is safe to persist outside the current retained frame.
     pub durable_identity: bool,
     pub role: Role,
     /// Already i18n-resolved.
@@ -323,14 +282,13 @@ pub struct SemanticNode {
     /// What is said after the name: a dialog's situation and keys.
     pub description: Option<String>,
     pub state: AccessState,
-    /// `None` for the root and resource nodes. Virtual rows and cells publish
-    /// their viewport geometry even though they have no retained widget.
+    /// `None` for the root and resource nodes.
     pub bounds: Option<Rect>,
     pub actions: Vec<SemanticAction>,
     /// In reading order.
     pub children: Vec<SemanticId>,
-    /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to
-    /// the retained widget that owns this node.
+    /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to the retained widget that owns
+    /// this node.
     pub widget_taffy_id: Option<u64>,
     /// Opaque widget-local target for a synthetic child action.
     pub semantic_target: Option<String>,
@@ -342,8 +300,8 @@ pub struct SemanticNode {
     pub item: Option<String>,
 }
 
-/// Where a node sits in its collection and how deep, from its
-/// [`AccessNode`]'s `pos_in_set`, `set_size` and `level`.
+/// Where a node sits in its collection and how deep, from its [`AccessNode`]'s `pos_in_set`, `set_size`
+/// and `level`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetPlace {
     pub pos_in_set: Option<usize>,
@@ -369,7 +327,7 @@ impl SemanticNode {
     fn same_exported_content(&self, other: &Self) -> bool {
         // `widget_taffy_id` is a frame-local routing address. A keyed widget can
         // be rebound to a new layout node without changing anything exposed to
-        // semantic-tree consumers; the freshly stored node still carries the
+        // semantic-tree consumers; the freshly stored node still has the
         // new address for action dispatch.
         self.id == other.id
             && self.durable_identity == other.durable_identity
@@ -396,8 +354,8 @@ pub struct TreeDelta {
     pub added: Vec<SemanticId>,
     /// Ids present last frame but not this frame.
     pub removed: Vec<SemanticId>,
-    /// Ids present in both frames whose content (role / name / value / state /
-    /// bounds / actions / children) differs.
+    /// Ids present in both frames whose content (role / name / value / state / bounds / actions /
+    /// children) differs.
     pub updated: Vec<SemanticId>,
 }
 
@@ -407,35 +365,25 @@ impl TreeDelta {
     }
 }
 
-/// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
-/// actions, keyed by `(node id, action name)`.
-/// The spec of each prompted action, which builds it from its text.
 type PromptedMap = HashMap<(SemanticId, String), ActionSpec>;
 
-/// The retained accessibility tree. Persists node identity across frames and
-/// diffs each [`refresh`](Self::refresh) against the previous.
+/// The retained accessibility tree.
 pub struct SemanticTree {
     nodes: NodeMap,
     /// DFS reading order, so consumers can iterate the tree deterministically.
     order: ReadingOrder,
     root: SemanticId,
-    /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
-    /// actions, keyed by `(node id, action name)`. Kept out of [`SemanticNode`]
-    /// (a closure is neither `PartialEq` nor `Clone`-comparable) so nodes stay
-    /// diffable; refreshed wholesale each frame.
+    /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted) actions, keyed by `(node id,
+    /// action name)`.
     prompted: PromptedMap,
     bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     duplicate_ids: Vec<SemanticId>,
-    /// Each bound component's resource nodes, in reading order after
-    /// `order`. Kept apart so a refresh handed the same component snapshot
-    /// reuses them rather than rebuilding and diffing a node per resource.
+    /// Each bound component's resource nodes, in reading order after `order`.
     components: Vec<ComponentNodes>,
-    /// What each widget's synthetic children built at the last refresh, by
-    /// the child's id: the next refresh moves over the nodes of those it is
-    /// handed again unchanged.
+    /// What each widget's synthetic children built at the last refresh, by the child's id: the next
+    /// refresh moves over the nodes of those it is handed again unchanged.
     retained: RetainedMap,
-    /// The nodes the last refresh built, rather than kept from the frame
-    /// before.
+    /// The nodes the last refresh built, rather than kept from the frame before.
     #[cfg(any(test, feature = "test-support"))]
     built: usize,
     /// The widgets' synthetic children the last refresh compared or built.
@@ -488,17 +436,16 @@ impl SemanticTree {
         }
     }
 
-    /// The widget, declared-resource and bound-resource nodes the last
-    /// refresh built, rather than kept from the frame before: what a refresh
-    /// costs.
+    /// The widget, declared-resource and bound-resource nodes the last refresh built, rather than kept
+    /// from the frame before: what a refresh costs.
     #[cfg(any(test, feature = "test-support"))]
     pub fn nodes_built_for_test(&self) -> usize {
         self.built
     }
 
-    /// The widgets' synthetic children the last refresh compared in full or
-    /// built: every one a widget handed over other than as the very node the
-    /// tree kept from it ([`Widget::accessibility_shared`]).
+    /// The widgets' synthetic children the last refresh compared in full or built: every one a widget
+    /// handed over other than as the very node the tree kept from it
+    /// ([`Widget::accessibility_shared`]).
     #[cfg(any(test, feature = "test-support"))]
     pub fn subtrees_compared_for_test(&self) -> usize {
         self.compared
@@ -542,9 +489,6 @@ impl SemanticTree {
         )
     }
     /// Build only the durable semantic subtree consumed by action publication.
-    /// Unkeyed ancestors make every descendant non-durable, so their entire
-    /// branch is absent from `action_resources`, irrespective of layout/focus.
-    /// The full accessibility refresh remains independent of this projection.
     pub(crate) fn refresh_action_projection(
         &mut self,
         root: &dyn Widget,
@@ -615,7 +559,6 @@ impl SemanticTree {
     ) -> TreeDelta {
         let ptr_to_taffy = WidgetNodeMap::new::<BOUND>(root, node_map, admitted);
 
-        // The action projection keeps nothing between refreshes.
         let retained = if actions_only {
             RetainedMap::default()
         } else {
@@ -635,7 +578,6 @@ impl SemanticTree {
         walk::<BOUND, _>(&mut builder, root, None, &mut top);
         let mut root_children = top.children;
 
-        // Resource affordances hang off the root as their own subtrees.
         for res in resources {
             let child = builder.visit_resource(res);
             root_children.push(child);
@@ -657,10 +599,6 @@ impl SemanticTree {
             );
         }
 
-        // A component handing over the tree its nodes were built from keeps
-        // them; one handing over a tree that shares all but some subtrees
-        // with it updates the nodes of those; any other is built
-        // afresh.
         let mut previous = std::mem::take(&mut self.components)
             .into_iter()
             .map(Some)
@@ -721,11 +659,7 @@ impl SemanticTree {
             },
         );
 
-        // Keys are not escaped in semantic IDs. A key containing the path
-        // separator can collide with a positional descendant in a pruned
-        // branch; retain the full walk's duplicate rejection in that case.
         if actions_only && builder.ambiguous_projection {
-            // The full walk below diffs against the last frame as it was.
             let mut restored = previous;
             restored.extend(
                 next_components
@@ -838,10 +772,7 @@ impl SemanticTree {
         })
     }
 
-    /// The last frame's widget and declared-resource nodes this refresh
-    /// neither kept nor built again. A frame that adds and removes no node
-    /// has none, which counting tells without visiting the kept nodes: every
-    /// last-frame node is kept, built again or stale.
+    /// The last frame's widget and declared-resource nodes this refresh neither kept nor built again.
     fn stale_nodes<const BOUND: bool>(&self, builder: &Build<'_, BOUND>) -> Vec<SemanticId> {
         let carried = builder.order.kept_len();
         let rebuilt = builder
@@ -879,8 +810,6 @@ impl SemanticTree {
         )
     }
 
-    /// Every node: the widget and declared-resource nodes, then each
-    /// component's.
     fn all_nodes(&self) -> impl Iterator<Item = &SemanticNode> {
         self.nodes.values().chain(
             self.components
@@ -901,8 +830,8 @@ impl SemanticTree {
         })
     }
 
-    /// The nodes showing the item `item` of its app's collection
-    /// ([`SemanticNode::item`]), in reading order.
+    /// The nodes showing the item `item` of its app's collection ([`SemanticNode::item`]), in reading
+    /// order.
     pub(crate) fn nodes_showing_item<'tree>(
         &'tree self,
         item: &'tree str,
@@ -921,7 +850,7 @@ impl SemanticTree {
             .fold(self.nodes.len(), usize::saturating_add)
     }
 
-    /// Whether the tree holds only the root.
+    /// Whether the tree has only the root.
     pub fn is_empty(&self) -> bool {
         self.len() <= 1
     }
@@ -944,9 +873,9 @@ impl SemanticTree {
         &self.duplicate_ids
     }
 
-    /// The first node whose accessible [`name`](SemanticNode::name) equals
-    /// `name`, in reading order — the ergonomic handle for a CLI / agent that
-    /// addresses elements by label ("focus the node called 'Volume'").
+    /// The first node whose accessible [`name`](SemanticNode::name) equals `name`, in reading order —
+    /// the ergonomic handle for a CLI / agent that addresses elements by label ("focus the node called
+    /// 'Volume'").
     pub fn find_by_name(&self, name: &str) -> Option<&SemanticNode> {
         self.iter().find(|n| n.name.as_deref() == Some(name))
     }
@@ -989,7 +918,7 @@ impl SemanticTree {
     /// `id`'s ancestors from the root down, `id` last, as `parents` (each
     /// node's parent by id) leads up to the root. An id two nodes share can
     /// make that lead round in a circle (a node listed among the children of
-    /// one of its own descendants): no path is longer than the tree has
+    /// one of it descendants): no path is longer than the tree has
     /// nodes, so a walk that would be is no path, never an endless one.
     fn path_from_root(
         &self,
@@ -1013,10 +942,8 @@ impl SemanticTree {
         self.node(id).and_then(|n| n.action(name))
     }
 
-    /// Project every currently operable accessibility node into the canonical
-    /// Tilo resource/action surface. Bespoke app actions remain preferable for
-    /// domain operations; this projection closes the driveability gap for
-    /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
+    /// Project every currently operable accessibility node into the canonical Tilo resource/action
+    /// surface.
     pub(crate) fn action_resources(&self) -> Vec<ResourceSpec> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
@@ -1047,11 +974,6 @@ impl SemanticTree {
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("{:?}", node.role));
-                // A semantic id may contain KEY_SEP when a control uses an
-                // encoded resource/action address as its stable key.  Keep
-                // the exact id in the operation payload for dispatch, but
-                // encode it before embedding it in a ResourceId: KEY_SEP is
-                // the action-address delimiter and is forbidden there.
                 let encoded_node_id = percent_encoding::utf8_percent_encode(
                     node.id.as_str(),
                     percent_encoding::NON_ALPHANUMERIC,
@@ -1112,7 +1034,7 @@ impl SemanticTree {
                     } else {
                         spec
                     };
-                    // A control's own verbs (focus it, press it, set it) are
+                    // A control verbs (focus it, press it, set it) are
                     // how agents and scripts drive what a person presses
                     // directly: never a row of their own in people's lists,
                     // where they would repeat the app's actions as
@@ -1140,9 +1062,6 @@ impl SemanticTree {
     }
 }
 
-/// Mirrors the implicit/role actions
-/// [`accesskit_bridge`](crate::accesskit_bridge) emits, so the retained
-/// tree and the AT-SPI export agree on what a widget can do.
 fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
     verbs(
         access.role,
@@ -1151,9 +1070,6 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
     )
 }
 
-/// [`verbs_for`] from the parts of a node it reads. `actionable`: the node
-/// carries a target an activation reaches, which is what makes a table row
-/// activatable however its role is spelled.
 fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
     let mut out = Vec::new();
     if s.focusable && !s.disabled {
@@ -1170,9 +1086,6 @@ fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::ShowContextMenu),
         });
     }
-    // A row of a table is activated like the item it stands for, whatever the
-    // role the table gives it; the same rules decide this and the AccessKit
-    // bridge's `Click`.
     if !s.disabled && (crate::a11y::activation_role(role) || (role == Role::Row && actionable)) {
         out.push(SemanticAction {
             name: "activate".into(),
@@ -1180,8 +1093,6 @@ fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Activate),
         });
     }
-    // A control that models whether it is expanded offers the verb the AccessKit bridge
-    // offers it: a disclosure, whatever its role, opens and closes.
     if let Some(expanded) = s.expanded.filter(|_| !s.disabled) {
         out.push(if expanded {
             SemanticAction {
@@ -1274,26 +1185,17 @@ struct Build<'a, const BOUND: bool> {
     ptr_to_taffy: &'a WidgetNodeMap<'a>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
-    /// The last refresh's retained subtrees, taken from as they recur.
     retained_before: RetainedMap,
     retained: RetainedMap,
-    /// A subtree built this refresh took the place of one it kept under the
-    /// same id: a repeated id the full walk has to report.
     kept_overwritten: bool,
-    /// The synthetic children compared in full or built.
     #[cfg(any(test, feature = "test-support"))]
     compared: usize,
-    /// The route of each retained widget with no layout node of its own,
-    /// set by its parent before it is visited: the nearest laid-out widget
-    /// and the child indices from it ([`crate::a11y_child_route`]).
     routes: crate::a11y_child_route::Routes,
-    /// The route of the widget whose synthetic children are being visited,
-    /// when it has no layout node: their targets are reached through it.
     synthetic_route: Option<crate::a11y_child_route::ChildRoute>,
 }
 
-/// A widget's synthetic child as the widget handed it over: built this
-/// frame, or shared with the frame that built it.
+/// A widget's synthetic child as the widget handed it over: built this frame, or shared with the frame
+/// that built it.
 enum Synthetic {
     Owned(AccessNode),
     Shared(Arc<AccessNode>),
@@ -1307,14 +1209,11 @@ impl Synthetic {
         }
     }
 
-    /// Whether this child is the very node `retained` was retained from.
     #[cfg(any(test, feature = "test-support"))]
     fn is_shared(&self, retained: &Arc<AccessNode>) -> bool {
         matches!(self, Self::Shared(node) if Arc::ptr_eq(node, retained))
     }
 
-    /// Whether this child is `retained`'s: the very node it was retained
-    /// from, or one equal to it in every part.
     fn is(&self, retained: &Arc<AccessNode>) -> bool {
         match self {
             Self::Owned(node) => **retained == *node,
@@ -1330,8 +1229,8 @@ impl Synthetic {
     }
 }
 
-/// One frame's nodes as the tree keeps them: the widget and declared-resource
-/// nodes, and each bound component's.
+/// One frame's nodes as the tree keeps them: the widget and declared-resource nodes, and each bound
+/// component's.
 struct Sections<'a> {
     nodes: &'a NodeMap,
     components: &'a [ComponentNodes],
@@ -1346,12 +1245,7 @@ impl Sections<'_> {
         })
     }
 
-    /// What changed from these (the last frame's) to `next`. `reused[i]`
-    /// marks `next.components[i]` as the very nodes of the last frame, moved
-    /// over unchanged, so they are neither compared nor listed; the last
-    /// frame's components here are only the ones that were not. Of the last
-    /// frame's widget and declared-resource nodes, only the `stale` ones (in
-    /// neither `next.nodes` nor the retained subtrees) may be gone.
+    /// What changed from these (the last frame's) to `next`.
     fn diff(&self, next: &Sections<'_>, reused: &[bool], stale: &[SemanticId]) -> TreeDelta {
         let mut delta = TreeDelta::default();
         let rebuilt = next
@@ -1391,8 +1285,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         retained_before: RetainedMap,
     ) -> Self {
         Self {
-            // As many as last time, most of them the same ones: room for
-            // them up front rather than rehashing as they recur.
             retained: RetainedMap::with_capacity_and_hasher(
                 retained_before.len(),
                 rustc_hash::FxBuildHasher,
@@ -1415,7 +1307,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         }
     }
 
-    /// `id`, or one of its own when an earlier sibling already took it
+    /// `id`, or one of it when an earlier sibling already took it
     /// (two controls under one parent keyed alike): each stays a node a
     /// reader names and focuses. The repeated id is reported, so neither
     /// is offered as an action target, and the copy is never durable.
@@ -1442,9 +1334,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         }
     }
 
-    /// A widget's synthetic child: its nodes moved over from the last frame
-    /// when it built them from the same parts ([`RetainedSubtree`]), else
-    /// [`walk_synthetic`] builds them and they are retained for the next.
     fn visit_synthetic_retained(
         &mut self,
         owner: &dyn Widget,
@@ -1453,9 +1342,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         hosted: Vec<HostedWidget<'_>>,
         parent: &mut Level,
     ) {
-        // A widget hosted in the child is walked afresh, and the projection
-        // for actions keeps nothing; nor does a routed widget's, whose
-        // targets carry its route.
         if !hosted.is_empty() || self.actions_only || self.synthetic_route.is_some() {
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -1499,7 +1385,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         let start = self.order.mark();
         let duplicates = self.duplicate_ids.len();
         walk_synthetic::<BOUND, Self>(self, owner, &mut vec![index], access.node(), hosted, parent);
-        // A subtree that repeated an id is left to the full walk.
         if parent.children.last() == Some(&id) && self.duplicate_ids.len() == duplicates {
             let ids = self.order.since(start).into();
             let replaced = self.retained.insert(
@@ -1515,7 +1400,6 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             self.kept_overwritten |= replaced.is_some_and(|subtree| subtree.kept);
         }
     }
-    /// A declared resource's node and its children's, beneath the root.
     fn visit_resource(&mut self, res: &ResourceSpec) -> SemanticId {
         let id = SemanticId::resource(res.id.as_str());
         let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
@@ -1531,20 +1415,14 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
     }
 }
 
-/// A widget's node between [`A11yVisitor::open`] and
-/// [`A11yVisitor::close`].
 struct PendingWidget {
     access: AccessNode,
-    /// Synthetic children shared with the frame that built them
-    /// ([`Widget::accessibility_shared`]).
+    /// Synthetic children shared with the frame that built them ([`Widget::accessibility_shared`]).
     shared: Vec<Arc<AccessNode>>,
     taffy_id: Option<TaffyNodeId>,
     route: Option<crate::a11y_child_route::ChildRoute>,
 }
 
-/// The node children attach under: its id, whether that id is durable (a
-/// keyed id is durable only under a durable parent), the laid-out widget
-/// whose synthetic tree it is in, and the children gathered so far.
 struct Level {
     id: SemanticId,
     durable: bool,
@@ -1552,8 +1430,6 @@ struct Level {
     children: Vec<SemanticId>,
 }
 
-/// A keyed id embeds its parent's, so it is durable only under a durable
-/// parent: a key under a layout id moves when the UI rebuilds.
 impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
     type Scope = Level;
     type Pending = PendingWidget;
@@ -1565,15 +1441,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         slot: Option<(&dyn Widget, usize)>,
         parent: &mut Level,
     ) -> Visit<PendingWidget, Level> {
-        // Under a parent without a durable identity nothing is durable, and
-        // the projection for actions keeps only durable nodes: it need not
-        // ask this widget or anything under it for its node.
         if self.actions_only && !parent.durable {
             return Visit::Skip;
         }
         let taffy_id = self.ptr_to_taffy.get(w);
-        // A retained widget the window's layout gave no node is reached
-        // through the nearest widget that has one.
         let route = self.routes.enter(w, taffy_id);
         let (access, shared) = match w.accessibility_shared() {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
@@ -1634,8 +1505,6 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         _represented: Vec<&'w dyn Widget>,
         parent: &mut Level,
     ) {
-        // Placed where the widget draws them, as the AccessKit bridge places
-        // them, so a point finds a synthetic child.
         if !access.children.is_empty() {
             access = crate::a11y::with_synthetic_bounds(access, w);
         }
@@ -1657,8 +1526,6 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             state.focused = true;
         }
 
-        // Disabled/read-only gate the verbs but focus does not, so compute
-        // against the focus-updated state.
         let actions = verbs(
             access.role,
             &state,
@@ -1683,7 +1550,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             },
             description: access.description.clone(),
             state,
-            // A widget that names where its node stands (the one control it paints inside a
+            // A widget that names where its node is (the one control it paints inside a
             // larger box) is taken at its word, as the AccessKit bridge takes it; otherwise its
             // box.
             bounds: Some(
@@ -1693,8 +1560,6 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             ),
             actions,
             children,
-            // A widget with no layout node is acted on through the nearest
-            // one that has.
             widget_taffy_id: taffy_id
                 .or(route.as_ref().map(|(owner, _)| *owner))
                 .map(u64::from),
@@ -1727,9 +1592,6 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         let id = SemanticId::synthetic_of(&parent.id, index, access);
         let level = Level {
             id,
-            // The same test `synthetic_of` gives a keyed id: a keyed control
-            // is the same one across a rebuild, so what it publishes stays
-            // reachable.
             durable: access.is_keyed() && parent.durable,
             owner: parent.owner,
             children: Vec::new(),
@@ -1798,8 +1660,6 @@ mod tests {
 
     include!("a11y_tree/action_projection_tests.rs");
 
-    /// Lays a widget tree out the way the App does, populating the
-    /// `node_map` the tree keys ids off.
     fn layout(root: &mut dyn Widget) -> HashMap<taffy::NodeId, *mut dyn Widget> {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -1923,8 +1783,6 @@ mod tests {
 
             let mut tree = SemanticTree::new();
             let first = tree.refresh(&col, &node_map, None, &[]);
-            // The root pre-exists from `new()`, so it registers as updated,
-            // not added, once it gains children.
             assert!(first.removed.is_empty());
             assert!(
                 first.added.len() >= 2,
@@ -2130,8 +1988,6 @@ mod tests {
         assert!(tree.control_paths("").is_empty());
     }
 
-    /// Two nodes under one id can list each other as children: the walk up
-    /// from either finds no path to the root rather than climbing for ever.
     #[test]
     fn parents_that_go_round_in_a_circle_lead_to_no_path() {
         let mut root = Column::new().push(Box::new(

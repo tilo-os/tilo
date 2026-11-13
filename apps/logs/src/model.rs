@@ -1,17 +1,12 @@
-//! Pure data model for the Logs viewer — syslog priorities, a single
-//! journal entry, and the filter predicate. No rendering, no IO.
-//!
-//! A [`LogEntry`] is a flattened view of one `journalctl -o json` record:
-//! the handful of fields the UI promotes to columns plus every remaining
-//! field kept verbatim in [`LogEntry::extra`] for the detail pane.
+//! Pure data model for the Logs viewer — syslog priorities, a single journal entry, and the
+//! filter predicate.
 
 use ui::prelude::{Model, tilo_resource};
 use ui::widget::Tone;
 
-/// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to
-/// least-severe (`Debug`, level 7). Level numbers match RFC 5424 and the
-/// integer in the journal's `PRIORITY` field. As a filter threshold, the
-/// default `Debug` shows everything.
+/// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to least-severe
+/// (`Debug`, level 7). Level numbers match RFC 5424 and the integer in the journal's
+/// `PRIORITY` field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, PartialOrd, Ord, serde::Serialize, Model)]
 pub enum Priority {
     Emerg,
@@ -26,8 +21,6 @@ pub enum Priority {
 }
 
 impl Priority {
-    /// Every priority, severe → verbose. Drives the severity threshold
-    /// chips and the per-row / detail severity colouring.
     pub const ALL: [Priority; 8] = [
         Priority::Emerg,
         Priority::Alert,
@@ -39,9 +32,9 @@ impl Priority {
         Priority::Debug,
     ];
 
-    /// Map a journal `PRIORITY` integer to a [`Priority`]. Anything out of
-    /// the 0..=7 range clamps to `Debug` (the most verbose bucket), which
-    /// is the safe default for an unknown record.
+    /// Map a journal `PRIORITY` integer to a [`Priority`]. Anything out of the 0..=7 range
+    /// clamps to `Debug` (the most verbose bucket), which is the safe default for an
+    /// unknown record.
     pub fn from_level(n: i64) -> Priority {
         match n {
             0 => Priority::Emerg,
@@ -83,9 +76,8 @@ impl Priority {
         }
     }
 
-    /// The status tone a severity is marked with: errors and worse are
-    /// danger, warnings are warnings, notices are information, and the
-    /// verbose tail carries no status.
+    /// The status tone a severity is marked with: errors and worse are danger, warnings are
+    /// warnings, notices are information, and the verbose tail carries no status.
     pub fn tone(self) -> Tone {
         match self {
             Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => Tone::Danger,
@@ -113,35 +105,30 @@ impl Priority {
 /// One flattened journal record.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LogEntry {
-    /// `__REALTIME_TIMESTAMP` — microseconds since the Unix epoch (UTC).
     pub realtime_us: u64,
-    /// `_SYSTEMD_UNIT`, falling back to the syslog identifier / comm.
     pub unit: String,
-    /// `SYSLOG_IDENTIFIER` — the program name.
     pub identifier: String,
     pub priority: Priority,
     pub message: String,
     pub pid: Option<u32>,
     pub hostname: String,
-    /// `_BOOT_ID` — groups entries by boot.
     pub boot_id: String,
-    /// `_TRANSPORT` — journald, kernel, stdout, syslog, …
     pub transport: String,
-    /// Every other field, kept for the detail pane in insertion order.
     pub extra: Vec<(String, String)>,
 }
 
 impl LogEntry {
-    /// The list-column time in local time: `HH:MM:SS.mmm` for today, the
-    /// toolkit's month and day before it for an earlier day
-    /// (`Jun 29 09:30:01.123`).
+    /// The list-column time in local time: `HH:MM:SS.mmm` for today, the toolkit's month
+    /// and day before it for an earlier day (`Jun 29 09:30:01.123`).
     pub fn list_time(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
         let now = ui::clock::local_now();
         let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
         let (ty, tmo, td, ..) = civil(local_us(now_us));
-        // format: machine (a journal time to the millisecond, as journalctl writes it)
-        let precise = format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}");
+        let precise = ui::format::machine!(
+            "a journal time to the millisecond, as journalctl writes it",
+            format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        );
         if (ty, tmo, td) == (y, mo, d) {
             return precise;
         }
@@ -157,43 +144,43 @@ impl LogEntry {
     /// `YYYY-MM-DD HH:MM:SS.mmm` in local time — the detail timestamp.
     pub fn timestamp_full(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
-        // format: machine (the journal's own precise timestamp)
-        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        ui::format::machine!(
+            "the journal's own precise timestamp, as it writes it",
+            format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        )
     }
 
     /// `HH:MM:SS` in local time, for compact contexts.
     pub fn time_hms(&self) -> String {
         let (_, _, _, hh, mm, ss, _) = civil(local_us(self.realtime_us));
-        // format: machine (a journal time to the second)
-        format!("{hh:02}:{mm:02}:{ss:02}")
+        ui::format::machine!(
+            "a journal time to the second, as it writes one",
+            format!("{hh:02}:{mm:02}:{ss:02}")
+        )
     }
 
-    /// The unit label shown in the list — strips a trailing `.service`
-    /// for density, leaves other suffixes (`.socket`, `.timer`) intact.
+    /// The unit label shown in the list — strips a trailing `.service` for density, leaves
+    /// other suffixes (`.socket`, `.timer`) intact.
     pub fn unit_short(&self) -> &str {
         self.unit.strip_suffix(".service").unwrap_or(&self.unit)
     }
 }
 
-/// `realtime_us` shifted into the local time zone, read through
-/// [`ui::clock`] so captures show the same wall clock on every run.
+/// `realtime_us` shifted into the local time zone, read through [`ui::clock`] so captures
+/// show the same wall clock on every run.
 fn local_us(realtime_us: u64) -> u64 {
     let offset_s = i64::from(ui::clock::local_now().offset().local_minus_utc());
     realtime_us.saturating_add_signed(offset_s.saturating_mul(1_000_000))
 }
 
-/// The process-local live filter applied to the entry list. Pure predicate
-/// logic lives in [`Filter::passes`].
+/// The process-local live filter applied to the entry list.
 #[derive(Clone, Debug)]
 pub struct Filter {
-    /// Show entries with `priority.level() <= min_priority`. 7 = show all,
-    /// 3 = errors-and-worse, etc.
+    /// Show entries with `priority.level() <= min_priority`. 7 = show all, 3 =
+    /// errors-and-worse, etc.
     pub min_priority: i64,
-    /// Exact unit match, or empty for "all units".
     pub unit: String,
-    /// Exact `_BOOT_ID` match, or empty for "all boots".
     pub boot: String,
-    /// Case-insensitive substring over message + unit + identifier.
     pub search: String,
 }
 
@@ -241,9 +228,9 @@ impl Filter {
     }
 }
 
-/// Convert epoch-microseconds to a civil `(year, month, day, hour, min,
-/// sec, milli)` tuple in UTC, through `ui::date` so the conversion needs no
-/// date crate and stays deterministic offline.
+/// Convert epoch-microseconds to a civil `(year, month, day, hour, min, sec, milli)` tuple
+/// in UTC, through `ui::date` so the conversion needs no date crate and stays deterministic
+/// offline.
 fn civil(realtime_us: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
     let secs = (realtime_us / 1_000_000) as i64;
     let milli = ((realtime_us / 1_000) % 1_000) as u32;
@@ -277,8 +264,7 @@ mod tests {
 
     #[test]
     fn civil_decodes_known_instants_with_subseconds() {
-        // 2021-06-30 14:23:01.123 UTC.
-        // days to 2021-06-30 = 18808; +51781 s; +123 ms.
+        // 2021-06-30 14:23:01.123 UTC. days to 2021-06-30 = 18808; +51781 s; +123 ms.
         let secs = 18_808i64 * 86_400 + 14 * 3_600 + 23 * 60 + 1;
         let cases = [
             // 2021-01-01 00:00:00.000 UTC = 1609459200 s.
@@ -323,7 +309,6 @@ mod tests {
             assert_eq!(f.passes(&e), passes, "case search {search:?}");
         }
 
-        // unit_short strips the .service suffix only.
         let mut e = sample();
         for (unit, short) in [
             ("quick-fs.service", "quick-fs"),
@@ -350,9 +335,9 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     #[test]

@@ -810,7 +810,6 @@ mod tests {
     /// The panel clamps between the rails, pill rows wrap greedily keeping empty sections, and the hit stack prefers controls.
     #[test]
     fn reading_settings_panel_layout_and_hit_stack() {
-        // --- phase: panel_hangs_from_its_button_inside_the_window ---
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
             let button = Rect::new(900.0, 12.0, 936.0, 44.0);
@@ -824,14 +823,12 @@ mod tests {
             );
         }
 
-        // --- phase: pill_rows_wrap_greedily_and_keep_empty_sections_visible ---
         {
             assert_eq!(wrap_row_count(&[], 100.0, 8.0), 1);
             assert_eq!(wrap_row_count(&[40.0, 40.0], 100.0, 8.0), 1);
             assert_eq!(wrap_row_count(&[40.0, 40.0, 40.0], 100.0, 8.0), 2);
         }
 
-        // --- phase: modal_hit_stack_prefers_controls_over_panel_and_outside_dismiss ---
         {
             let mut settings = ReadingSettings::default();
             let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);

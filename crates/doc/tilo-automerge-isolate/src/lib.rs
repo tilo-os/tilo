@@ -1,55 +1,28 @@
-//! Decode and apply untrusted Automerge bytes where a bad input can only cost
-//! a worker process.
+//! Decode and apply untrusted Automerge bytes where a bad input can only cost a
+//! worker process.
 //!
 //! Automerge is a CRDT library, not a parser hardened against hostile input:
-//! malformed storage can make it panic, loop forever or allocate without
-//! bound, and Tilo's release builds abort on panic. So bytes from peers never
-//! reach Automerge in the calling process first. They go through two steps:
+//! malformed storage can make it panic, loop forever or allocate without bound, and
+//! release builds abort on panic. So peer bytes pass [`precheck`] first, then the
+//! same call runs in a worker process with its heap capped ([`Limits::memory_bytes`])
+//! and a deadline per request ([`Limits::timeout`]), confined by Landlock and a
+//! seccomp allow-list; a crash, a refused syscall or an overrun rejects the input.
+//! Only then does the caller make the identical call on its own document, which is
+//! deterministic and so does what the worker's did.
 //!
-//! 1. [`precheck`]: the input's size and chunk framing, read in place without
-//!    decoding anything.
-//! 2. A worker process runs the same Automerge call on its own copy of the
-//!    document, with its heap capped ([`Limits::memory_bytes`]) and a deadline
-//!    per request ([`Limits::timeout`]). It can reach no file, socket or other
-//!    process: Landlock denies every path and TCP port, `openat` is refused,
-//!    and a seccomp allow-list kills it on any other syscall beyond its
-//!    pipes, memory, futexes, clocks and exit. A crash, an allocation failure, a refused syscall, an
-//!    overrun or an Automerge error rejects the input.
+//! Workers are long-lived and keep copies of the documents they have seen, keyed by
+//! state, each state routed to the worker that last saw it; what a worker keeps is
+//! bounded by bytes ([`Limits::cache_bytes`]) and an idle worker exits
+//! ([`Limits::idle`]). [`Isolate::load`] takes the change hashes its worker already
+//! computed instead of rebuilding them, and leaves the loaded document warm.
 //!
-//! Only then does the caller make the identical call on its own document.
-//! Automerge is deterministic, so that call does what the worker's did.
-//! [`Isolate::load`] skips the part of that call whose result the worker
-//! already has:
-//! the worker rebuilds and hashes every change of a document chunk and checks
-//! them against the heads the chunk stores, then hands the caller those
-//! hashes, so the caller's load of the same bytes takes them rather than
-//! rebuilding and hashing every change again (about half of loading a large
-//! document). It builds the same document.
-//!
-//! Workers are long-lived and keep copies of the documents they have seen,
-//! keyed by state, so an incoming change costs the change, not a reload of
-//! the document. Each document state is routed to the worker that last saw
-//! it. A document a worker has never seen costs one rebuild from a full save
-//! there; [`Isolate::load`] leaves the loaded document in its worker, so a
-//! document admitted that way starts warm. What a worker keeps is bounded by
-//! bytes ([`Limits::cache_bytes`]), and an idle worker exits
-//! ([`Limits::idle`]). A worker that dies is replaced on the next request and
-//! rebuilds its copies from the caller's documents.
-//!
-//! # Hosting workers
-//!
-//! A worker is the calling executable started again in worker mode, so every
-//! program that admits untrusted Automerge bytes calls [`dispatch_early`]
-//! first thing in `main`, before it starts threads or a runtime. A test crate
-//! adds [`test_worker!`] instead. Without either, admission fails with
-//! [`Rejected::Unavailable`] naming the missing line.
-//!
-//! # In the browser
-//!
-//! A wasm build has no processes. There [`Isolate`] only pre-checks and then
-//! applies in the page, to a copy that replaces the document on success. The
-//! browser's bound comes from where its bytes come from: publications are
-//! signed by the host, which admitted them through its workers first.
+//! A worker is the calling executable started again in worker mode, so a program
+//! that admits untrusted bytes calls [`dispatch_early`] first thing in `main` (a
+//! test crate adds [`test_worker!`]); without it admission fails with
+//! [`Rejected::Unavailable`]. A library loaded into a foreign executable ships
+//! `tilo-automerge-worker` beside itself and names it with [`serve_workers_from`].
+//! A wasm build has no processes: there [`Isolate`] pre-checks and applies in the
+//! page, to a copy that replaces the document on success.
 
 mod engine;
 #[cfg(target_os = "linux")]
@@ -66,31 +39,19 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 
-/// Ceilings for one untrusted input and for the workers that decode it.
 #[derive(Clone, Debug)]
 pub struct Limits {
-    /// Largest untrusted input, in bytes.
     pub max_input_bytes: usize,
-    /// Most chunks in one input.
     pub max_chunks: usize,
-    /// Heap ceiling of each worker process, including the documents it keeps.
     pub memory_bytes: u64,
-    /// Deadline for one request, before the time added for its size: see
-    /// [`Limits::timeout_per_mib`].
     pub timeout: Duration,
     /// Time added to [`Limits::timeout`] per MiB of untrusted input. Decoding
     /// grows with the input, and a long history must not be refused only for
     /// being long.
     pub timeout_per_mib: Duration,
-    /// Worker processes, each serving one request at a time.
     pub workers: usize,
-    /// Most documents each worker keeps between requests.
     pub max_documents: usize,
-    /// Heap a worker may hold before it drops the documents it keeps, least
-    /// recently used first (the one it last worked on stays).
     pub cache_bytes: u64,
-    /// A worker exits after this long without a request, returning its
-    /// memory; the next request starts a fresh one.
     pub idle: Duration,
 }
 
@@ -113,13 +74,10 @@ impl Default for Limits {
 /// Why an input was not applied. The caller's document is unchanged.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Rejected {
-    /// Larger than [`Limits::max_input_bytes`] or [`Limits::max_chunks`].
     #[error("automerge input exceeds its size limit")]
     TooLarge,
-    /// The chunk framing is not Automerge storage.
     #[error("malformed automerge input: {0}")]
     Malformed(&'static str),
-    /// Automerge refused the input.
     #[error("invalid automerge input: {0}")]
     Invalid(String),
     /// The worker died on the input: a panic, an allocation past its heap
@@ -129,28 +87,19 @@ pub enum Rejected {
     /// The worker did not finish within [`Limits::timeout`].
     #[error("automerge input timed out")]
     TimedOut,
-    /// No worker could be started.
     #[error("automerge worker unavailable: {0}")]
     Unavailable(String),
 }
 
-/// Whether changes may wait in the document's queue for dependencies that
-/// have not arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dependencies {
-    /// Refuse input that leaves any change waiting; nothing is applied.
     RequireComplete,
-    /// Apply what is ready and queue the rest, as `load_incremental` does.
     RetainOrphans,
 }
 
-/// The result of an accepted input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Applied {
-    /// Applied; whether the document's heads moved.
     Changed(bool),
-    /// Some change lacks a dependency ([`Dependencies::RequireComplete`]);
-    /// the document is unchanged.
     MissingDependencies,
 }
 
@@ -173,7 +122,6 @@ impl Isolate {
         }
     }
 
-    /// The process-wide instance with [`Limits::default`].
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Isolate> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| Self::new(Limits::default()))
@@ -187,13 +135,6 @@ impl Isolate {
         return &self.limits;
     }
 
-    /// Apply untrusted `incoming` (change chunks, a bundle or a saved
-    /// document) to `doc`, as [`tilo_automerge::ApplyIncoming::load_incoming`]
-    /// does. Input with a malformed chunk is refused whole.
-    ///
-    /// # Errors
-    ///
-    /// A [`Rejected`] reason; `doc` is then unchanged.
     pub fn apply(
         &self,
         doc: &mut AutoCommit,
@@ -221,11 +162,6 @@ impl Isolate {
     }
 }
 
-/// [`Isolate::apply`] on [`Isolate::shared`].
-///
-/// # Errors
-///
-/// A [`Rejected`] reason; `doc` is then unchanged.
 pub fn apply(
     doc: &mut AutoCommit,
     incoming: &[u8],
@@ -234,11 +170,6 @@ pub fn apply(
     Isolate::shared().apply(doc, incoming, dependencies)
 }
 
-/// [`Isolate::load`] on [`Isolate::shared`].
-///
-/// # Errors
-///
-/// A [`Rejected`] reason.
 pub fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     Isolate::shared().load(bytes)
 }
@@ -300,11 +231,15 @@ pub fn dispatch_early() -> Option<u8> {
     None
 }
 
-/// Serve workers from a test binary, whose `main` belongs to libtest: defines
-/// the test that libtest runs when the binary is started as a worker, which
-/// then does what [`dispatch_early`] does. Invoke once per test crate (for
-/// unit tests, in the library under `#[cfg(test)]`; for each integration test
-/// file, at its top level).
+static WORKER_PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn serve_workers_from(program: std::path::PathBuf) -> bool {
+    match WORKER_PROGRAM.set(program) {
+        Ok(()) => true,
+        Err(program) => WORKER_PROGRAM.get() == Some(&program),
+    }
+}
+
 #[macro_export]
 macro_rules! test_worker {
     () => {

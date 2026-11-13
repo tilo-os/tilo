@@ -41,8 +41,8 @@ fn text(e: &Expr) -> Option<&str> {
     }
 }
 
-/// The UI calls of a function in order, as `node <kind>`, `prop <name>`, `on <event>`,
-/// `bind`, `bind_state` and `child`, wherever they sit (loops, branches, sequences).
+/// The UI calls of a function in order, as `node <kind>`, `prop <name>`, `on <event>`, `bind`,
+/// `bind_state` and `child`, wherever they sit (loops, branches, sequences).
 fn ui_calls(f: &Func) -> Vec<String> {
     let mut out = Vec::new();
     for s in &f.body {
@@ -123,7 +123,6 @@ fn walk(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
-/// Calls `on` for every expression of a function, outer ones first.
 fn visit(f: &Func, on: &mut dyn FnMut(&Expr)) {
     fn expr(e: &Expr, on: &mut dyn FnMut(&Expr)) {
         on(e);
@@ -175,7 +174,6 @@ fn visit(f: &Func, on: &mut dyn FnMut(&Expr)) {
     }
 }
 
-/// Every string constant a function uses.
 fn strings(f: &Func) -> Vec<String> {
     let mut out = Vec::new();
     visit(f, &mut |e| {
@@ -261,8 +259,6 @@ view board(b: Board) {\n    list(b.tasks)\n}",
     );
     assert!(wrong.iter().any(|d| d.code == "E065"), "{wrong:#?}");
 
-    // A case that names an icon but no tone says nothing about importance: its glyph never
-    // reaches the row.
     let (m, _) = lower(
         "enum Priority {\n    low (icon: .pin)\n    high (icon: .flag, tone: .warning)\n}\n\
 type Task {\n    title: Text\n    priority: Priority = .low\n}\n\
@@ -277,9 +273,9 @@ view task_row(t: Task) {\n    row(t.title, mark: t.priority)\n}",
     );
 }
 
-/// A prop the checker sets on a described component that the component does not declare is the
-/// compiler's own defect: the window refuses a batch that sets one, so the compile that would
-/// have sent it has to fail first.
+/// A prop the checker sets on a described component that the component does not declare is the compiler's
+/// own defect: the window refuses a batch that sets one, so the compile that would have sent it has to fail
+/// first.
 #[test]
 fn a_prop_a_component_does_not_declare_fails_the_compile() {
     let module = |props: &[(&str, &str)]| {
@@ -332,9 +328,8 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
     assert!(diags[0].message.contains("meta:tmie"), "{diags:#?}");
 }
 
-/// An item's page opens on what the item is: its title is the document's own title, in place
-/// and in its large type, and it takes the width the done checkbox leaves so a long one wraps
-/// beside it — never a small field of a form.
+/// An item's page opens on what the item is: its title is the document's own title, in place and in its
+/// large type.
 
 #[test]
 fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
@@ -441,7 +436,6 @@ fn asked(f: &Func) -> Vec<String> {
     out
 }
 
-/// The predicate of a filter handed to the store with the values the code holds.
 fn asked_with(f: &Func) -> Vec<String> {
     let mut out = Vec::new();
     visit(f, &mut |e| {
@@ -512,14 +506,13 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
             .any(|s| format!("{s:?}").contains("ForList")),
         "the loop"
     );
-    // A lambda reading text by order is the loop's alone. How many members a set holds is the
-    // store's to count.
+    // A lambda reading text by order is the loop's alone. How many members a set holds is the store's to count.
     for loop_only in ["outer", "ordered"] {
         assert!(asked(func(&m, loop_only)).is_empty(), "{loop_only}");
     }
     assert_eq!(asked(func(&m, "tagged")).len(), 1);
-    // A list read of a collection is the collection's items still, whatever its type says: the
-    // count over it is answered where the items were read, not item by item.
+    // A list read of a collection is the collection's items still, whatever its type says: the count over it
+    // is answered where the items were read, not item by item.
     assert_eq!(
         asked(func(&m, "listed")).len(),
         2,
@@ -527,9 +520,8 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
     );
 }
 
-/// A template's parameters are names of the template: a caller's block is read where it was
-/// written, so a name there that a parameter shares is the caller's. Reading it in the
-/// template's place made the block call the parameter itself, expanding it forever.
+/// A template's parameters are names of the template: a caller's block is read where it was written, so a
+/// name there that a parameter shares is the caller's.
 #[test]
 fn a_callers_block_reads_its_names_in_the_callers_scope() {
     let got = diagnostics(
@@ -545,7 +537,6 @@ fn a_callers_block_reads_its_names_in_the_callers_scope() {
     );
 }
 
-/// The package `body` checked: its diagnostics.
 fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let src = format!("app t.x \"X\"\n{body}\n");
     let (module, diags) = crate::parser::parse_module(&src);
@@ -562,9 +553,8 @@ fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
 #[test]
 fn a_condition_reading_an_argument_inside_a_lambda_waits_for_it() {
     const TYPES: &str = "type Task {\n    title: Text\n    parent: Option<Task>\n}\ntype Tasks {\n    items: Collection<Task>\n}\n";
-    // The condition reads `t` in the lambda's body: the offer cannot answer it, since it knows
-    // the tasks alone. Before, the lambda hid `t`, the condition was compiled into the applies
-    // guard, and the guard failed to name it.
+    // The condition reads `t` in the lambda's body: the offer cannot answer it, since it knows the tasks
+    // alone.
     let (m, ids) = lower(&format!(
         "{TYPES}action duplicate(tasks: Tasks, t: Task) {{\n    applies tasks.items.filter(x -> x.parent == .some(t)).is_empty() \"It has tasks under it\"\n    t.title = \"copy\"\n}}"
     ));
@@ -575,8 +565,8 @@ fn a_condition_reading_an_argument_inside_a_lambda_waits_for_it() {
             .any(|f| f.export == crate::ir::applies_export(id)),
         "a condition reading an argument waits for it, rather than being offered"
     );
-    // A name the lambda binds itself is its own, not the caller's: the condition reads nothing
-    // beyond the tasks, so the offer decides it.
+    // A name the lambda binds itself is its own, not the caller's: the condition reads nothing beyond the
+    // tasks, so the offer decides it.
     let (m, ids) = lower(&format!(
         "{TYPES}action sweep(tasks: Tasks, t: Task) {{\n    applies tasks.items.any(t -> t.title == \"\") \"It has no title\"\n    t.title = \"x\"\n}}"
     ));
@@ -596,9 +586,8 @@ fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
     let query_field = crate::host::value_field("Filter", "query").expect("query");
-    // The values the view names are the filters the type declares, by its id and their keys:
-    // `Task.inbox`, `Task.project(p)`. The host turns each into what search says, so no query
-    // text is written here.
+    // The values the view names are the filters the type declares, by its id and their keys: the host turns
+    // each into what search says.
     let mut lits = Vec::new();
     let mut from_filters = 0;
     for g in m.funcs.iter().filter(|g| g.name.starts_with("board")) {
@@ -636,8 +625,7 @@ fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
             strings(g)
         );
     }
-    // A filter the type does not declare is a compile error, not a query the index answers
-    // with nothing.
+    // A filter the type does not declare is a compile error, not a query the index answers with nothing.
     for wrong in ["Task.todays", "Task.inbo"] {
         let found = diagnostics(&format!(
             "{FILTERS}view board(b: Board) {{\n    for t in b.tasks.matching({wrong}) {{\n        text(t.title)\n    }}\n}}"
@@ -735,7 +723,6 @@ fn lenses_and_meta_are_values_a_view_reads() {
     }
 }
 
-/// The host imports `f` calls.
 fn host_imports(f: &Func) -> Vec<Imp> {
     let mut imports = Vec::new();
     visit(f, &mut |e| {
@@ -841,8 +828,8 @@ fn an_action_applied_made_from_a_resource_is_invoked_from_it() {
     let (m, _) = lower(
         "type Note {\n    title: Text\n}\ntype Notes {\n    items: Collection<Note>\n}\nroot notes: Notes\ndefault view all for Notes\naction keep(all: Notes, title: Text) -> Note {\n    all.items.insert(Note(title: title))\n}\nview all(all: Notes) {\n    text(meta(all).title)\n}\nview note(n: Note) {\n    button(keep(notes, n.title).made_from(n))\n}",
     );
-    // What a view shows of an action is the action the host runs; made from a resource, it runs
-    // from that resource, so what it makes records what it was made from.
+    // What a view shows of an action is the action the host runs; made from a resource, it runs from that
+    // resource, so what it makes records what it was made from.
     let mut made_from = false;
     for f in &m.funcs {
         visit(f, &mut |e| {
@@ -956,9 +943,8 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     );
 }
 
-/// A `State<T>` parameter left out keeps the state the template declares as its default, so a
-/// view that lists declares none: a caller that wants the state passes its own, and the
-/// template then declares none of it.
+/// A `State<T>` parameter left out keeps the state the template declares as its default, so a view that lists
+/// declares none.
 #[test]
 fn a_state_parameter_left_out_is_the_state_the_template_declares() {
     let template = "enum Size {\n    small\n    large\n}\n\
@@ -982,7 +968,6 @@ fn a_state_parameter_left_out_is_the_state_the_template_declares() {
         "kept under the view's id and the template's: {:#?}",
         m.states
     );
-    // A caller's state of the same type takes its place, and the template declares none of it.
     let (m, _) = lower(&format!(
         "{template}view bag(b: Bag) {{\n    state mine: Size = .small\n    shown(b.items, size: mine)\n}}"
     ));
@@ -991,7 +976,6 @@ fn a_state_parameter_left_out_is_the_state_the_template_declares() {
         "nothing of the template's own is declared: {:#?}",
         m.states
     );
-    // A template that takes an optional state keeps its own when a caller passes on none of it.
     let (m, _) = lower(&format!(
         "{template}view middle(items: List<Text>, opening: Option<State<Size>> = .none) {{\n    shown(items, size: opening)\n}}\n\
          view bag(b: Bag) {{\n    middle(b.items)\n}}"
@@ -1002,8 +986,8 @@ fn a_state_parameter_left_out_is_the_state_the_template_declares() {
         "the template's own state, through the absent option: {:#?}",
         m.states
     );
-    // The default must name a state the template declares, and a parameter without one is still
-    // the caller's to give.
+    // The default must name a state the template declares, and a parameter without one is still the caller's
+    // to give.
     let undeclared = diagnostics(
         "type Bag {\n    n: Int\n}\nview shown(size: State<Int> = missing) {\n    text(\"x\")\n}\nview bag(b: Bag) {\n    shown()\n}",
     );
@@ -1020,8 +1004,7 @@ fn a_state_parameter_left_out_is_the_state_the_template_declares() {
     );
 }
 
-/// A package may name a view as the library names one: only the same package's view is the same
-/// view, so an app's own `composer` calling `std.composer` expands the library's, not itself.
+/// A package may name a view as the library names one: only the same package's view is the same view.
 #[test]
 fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
     let (m, _) = lower(
@@ -1044,8 +1027,8 @@ fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
     );
 }
 
-/// `ui.Time(at)` of a `Time` is the toolkit's relative time: a node whose `at` is the moment,
-/// marked as a time for the host to read it as one.
+/// `ui.Time(at)` of a `Time` is the toolkit's relative time: a node whose `at` is the moment, marked as a
+/// time for the host to read it as one.
 #[test]
 fn a_time_shows_as_the_toolkits_relative_time() {
     let (m, _) = lower(
@@ -1059,9 +1042,8 @@ fn a_time_shows_as_the_toolkits_relative_time() {
     assert!(has(&calls, "prop secondary"), "{calls:#?}");
 }
 
-/// A view that writes a list of filters as a type (`let side: List<Filter<Task>>`) holds
-/// filters: the written type resolves in a view as it does in an action, so the places a
-/// window draws are the ones the app names.
+/// A view that writes a list of filters as a type (`let side: List<Filter<Task>>`) holds filters: the written
+/// type resolves in a view as it does in an action.
 #[test]
 fn a_views_list_of_filters_is_a_list_of_filters() {
     let (m, _) = lower(
@@ -1124,7 +1106,6 @@ fn returned(f: &Func) -> &Expr {
         .unwrap_or_else(|| panic!("{} returns nothing", f.name))
 }
 
-/// Every host import a function uses, with its arguments.
 fn imports(f: &Func) -> Vec<crate::abi::Imp> {
     let mut out = Vec::new();
     for s in &f.body {
@@ -1186,7 +1167,6 @@ fn a_length_of_time_is_a_value_of_its_own() {
     ] {
         assert_eq!(returned(func(&m, name)).ty, ty, "{name}");
     }
-    // The length shows in the largest unit that divides it, which only the runtime knows.
     assert!(imports(func(&m, "shown")).contains(&Imp::DurationText));
     // A day and a moment move by one, and two of a kind are one apart.
     let (m, _) = lower(
@@ -1315,9 +1295,8 @@ fn only_an_action_reads_the_day_it_is() {
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
 }
 
-/// A file is a value: a field holds one, an action takes one as its parameter, its parts read
-/// on it, an action makes one of what it holds, and a view asks the person for one and runs an
-/// action with it.
+/// A file is a value: a field holds one, an action takes one as its parameter, its parts read on it, an
+/// action makes one of what it holds, and a view asks the person for one.
 #[test]
 fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
     let (m, _) = lower(
@@ -1344,4 +1323,91 @@ fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
     assert!(view.contains(&Imp::ActSave), "the save: {view:?}");
     // The parameter is the file itself: no form asks for it, the person's chooser fills it.
     assert!(!Ty::File.asked_by_form());
+}
+
+fn messages(m: &Module) -> Vec<String> {
+    m.words
+        .iter()
+        .map(|w| format!("{}.{} {}", w.view, w.key, w.text))
+        .collect()
+}
+
+fn says(m: &Module, view: &str, words: &str) -> bool {
+    messages(m)
+        .iter()
+        .any(|w| w.starts_with(&format!("{view}.")) && w.ends_with(words))
+}
+
+const WORDY: &str = "type Task {\n    title: Text\n    place: Text\n}\ntype Tasks {\n    items: Collection<Task>\n}\n\
+view chip(label: Text) {\n    text(label)\n}\n";
+
+/// A literal a `let` keeps is a message of the view where a prop of words shows it, as one written into the
+/// prop is.
+#[test]
+fn the_words_a_let_keeps_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let empty = \"No tasks yet\"\n    let tail = \"{{ts.items.len()}}\"\n    stack {{\n        text(empty)\n        text(tail)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    assert!(says(&m, todo, "No tasks yet"), "{:#?}", messages(&m));
+    assert!(
+        !says(&m, todo, "{ts.items.len()}"),
+        "a literal of no words is text: {:#?}",
+        messages(&m)
+    );
+}
+
+/// A literal a branch chose is the words the prop shows whatever branch the person's day takes: an `if`'s
+/// arms and the words a `??` falls back to are the same message as a literal written where the prop is, and
+/// each is registered once.
+#[test]
+fn the_words_a_branch_chose_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let heading = if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }}\n    let name = ts.items.find(t -> t.place == \"inbox\")?.title ?? \"Inbox\"\n    stack {{\n        ui.Chip(heading, tone: .neutral)\n        text(name)\n        text(if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }})\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    for want in ["Nothing to do", "Your day", "Inbox"] {
+        assert!(says(&m, todo, want), "{want} in {:#?}", messages(&m));
+    }
+    // One text is one message of the view, however many branches and sites write it.
+    let heading = messages(&m)
+        .into_iter()
+        .filter(|w| w.starts_with(&format!("{todo}.")) && w.ends_with("Nothing to do"))
+        .count();
+    assert_eq!(heading, 1, "{:#?}", messages(&m));
+}
+
+/// A component's `Text` parameter shows the words given to it, so the literal a caller keeps in a `let` and
+/// passes on is the caller's message too: a sentence is translated where it is written.
+#[test]
+fn the_words_a_component_parameter_shows_are_the_callers() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let label = \"All tasks\"\n    stack {{\n        chip(label)\n        ui.Chip(\"Chip says\", tone: .neutral)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    let chip = ids.get("chip").expect("the chip view's id");
+    assert!(says(&m, todo, "All tasks"), "{:#?}", messages(&m));
+    assert!(
+        !says(&m, chip, "All tasks"),
+        "the words are the caller's: {:#?}",
+        messages(&m)
+    );
+    assert!(says(&m, todo, "Chip says"), "{:#?}", messages(&m));
+}
+
+/// A literal that reaches no prop of words is data: a tag a piece of code compares, an address a link opens.
+#[test]
+fn a_literal_no_prop_of_words_shows_stays_data() {
+    let (m, _) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let place = \"inbox\"\n    let address = \"https://tilo.coffee\"\n    stack {{\n        ui.Link(address)\n        text(if ts.items.any(t -> t.place == place) {{ \"Here\" }} else {{ \"Nowhere\" }})\n    }}\n}}"
+    ));
+    let said = messages(&m);
+    assert!(
+        !said
+            .iter()
+            .any(|w| w.ends_with("inbox") || w.ends_with("tilo.coffee")),
+        "a tag and an address are data: {said:#?}"
+    );
+    // The words the view shows are still its messages.
+    assert!(said.iter().any(|w| w.ends_with("Nowhere")), "{said:#?}");
 }

@@ -15,7 +15,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::NamedKey;
-// The bar fades as all chrome does.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the chrome fade is a few hundred milliseconds"
@@ -101,7 +100,6 @@ impl Widget for EventSpy {
     }
 }
 
-/// Records the layout clip it is placed under.
 struct ClipSpy {
     rect: Rect,
     clip: Rc<Cell<Option<Rect>>>,
@@ -187,7 +185,6 @@ fn fingers_past_the_top_pull_the_content_through_the_band_and_it_springs_back() 
             "the content gives, less than the hand: {y}"
         );
         assert_eq!(s.offset_y, 0.0, "the scroll itself stays at the end");
-        // Moving back takes the give in before the content scrolls.
         assert!(s.pan(0.0, 30.0));
         let (_, back) = s.drawn_offset();
         assert!(back < 0.0 && back > y, "{y} then {back}");
@@ -243,8 +240,6 @@ fn a_long_column_scrolled_asks_only_the_rows_near_the_view_for_damage() {
     let mut regions = Vec::new();
     scroll.collect_damage(&mut regions);
     let visited = asked.get();
-    // Only the rows that meet the view are asked, and all of them: the
-    // first starts at its top, and none could fit below the last.
     let view = scroll.content_viewport_rect();
     let rows: Vec<Rect> = regions
         .iter()
@@ -268,7 +263,6 @@ fn a_long_column_scrolled_asks_only_the_rows_near_the_view_for_damage() {
             .all(|rect| rect.y1 > -30.0 && rect.y0 < 430.0)
     );
 
-    // The copy plan's walk of the tree visits the same few.
     let mut walked = 0;
     fn count(widget: &dyn Widget, walked: &mut usize) {
         *walked += 1;
@@ -1459,7 +1453,6 @@ fn a_transcript_opens_at_its_end_and_follows_it_until_scrolled_away() {
         (scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5,
         "it opens on the newest line"
     );
-    // A new line arrives: still at the end.
     let mut longer = Column::new().with_intrinsic_height();
     for i in 0..41 {
         longer = longer.push(Box::new(Text::new(&format!("row {i}"))));
@@ -1469,7 +1462,6 @@ fn a_transcript_opens_at_its_end_and_follows_it_until_scrolled_away() {
     }
     host_solve(&mut scroll, 400.0, 300.0);
     assert!((scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5);
-    // Scrolled up to read: a new line does not pull the person back down.
     scroll.set_offset_y(0.0);
     host_solve(&mut scroll, 400.0, 300.0);
     assert!(scroll.offset_y() < 0.5, "reading older lines stays put");
@@ -1753,7 +1745,6 @@ fn bars_keep_out_of_the_windows_rounded_corners_only() {
     );
     assert!(v.y1 <= v_square.y1 && h.x1 <= h_square.x1);
 
-    // Square again: the same window, edge to edge.
     theme.surface = Some(crate::theme::SurfaceShape::rounded(
         Rect::new(0.0, 0.0, 300.0, 300.0),
         0.0,
@@ -2139,8 +2130,6 @@ fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
 #[allow(clippy::float_cmp, reason = "a give at rest is exactly zero")]
 fn a_browsers_swipe_past_the_top_springs_back_once_it_pauses() {
     use crate::time::testing::with_monotonic_time;
-    // A browser's trackpad deltas carry no phase: winit hands each over as
-    // `Moved`, and only the pause after them ends the gesture.
     let mut s = vertical(1000.0);
     let mut wheel = crate::widget::PhaselessWheel::default();
     let start = crate::time::now();

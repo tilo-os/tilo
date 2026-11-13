@@ -1,12 +1,7 @@
-//! A bundled, realistic repository fixture.
-//!
-//! The screenshot scenarios and tests show it in place of an on-disk
-//! repository, so the screenshot shows a populated, believable
-
-//! state: a handful of staged / unstaged / untracked changes, several
-//! files with real diffs (including a rename and a new file), and a commit
-//! history with two side branches and a merge so the graph exercises
-//! multiple lanes. Everything here is static data; nothing touches disk.
+//! A bundled repository fixture the screenshot scenarios and tests show in place of
+//! an on-disk repository: staged, unstaged and untracked changes with real diffs,
+//! and a history with two side branches and a merge so the graph uses several
+//! lanes. Everything here is static data; nothing touches disk.
 
 use crate::diff::{language_for, parse_unified};
 use crate::graph;
@@ -26,8 +21,7 @@ fn fc(path: &str, area: ChangeArea, kind: ChangeKind, add: u32, del: u32) -> Fil
     }
 }
 
-/// Build the full sample model, with the graph lanes already assigned and a
-/// map of per-file diffs for the changed files.
+/// Build the sample model, with the graph lanes assigned and a per-file diff for each changed file.
 pub fn model() -> (RepoModel, DiffMap) {
     let diffs = sample_diffs();
     let counted = |mut changes: Vec<FileChange>| {
@@ -144,8 +138,8 @@ fn sample_untracked_changes() -> Vec<FileChange> {
     ]
 }
 
-/// Staged files carry a HEAD→index diff; unstaged / untracked files carry a
-/// worktree diff — key each on its side so selection resolves the right one.
+/// Staged files carry a HEAD→index diff and unstaged or untracked ones a worktree diff, each keyed
+/// on its side.
 fn sample_diffs() -> DiffMap {
     let mut diffs: DiffMap = DiffMap::new();
     diffs.insert(DiffKey::staged("src/render/scene.rs"), diff_scene());
@@ -310,9 +304,8 @@ fn touched(path: &str, kind: ChangeKind, add: u32, del: u32) -> FileChange {
     fc(path, ChangeArea::Staged, kind, add, del)
 }
 
-/// Newest first; `parents` reference ids, structured so the graph uses two
-/// lanes with a merge. Times are relative to the toolkit clock, so a capture
-/// (whose clock is pinned) shows the same ages on every run.
+/// Newest first; `parents` name ids, structured so the graph uses two lanes with a merge. Times are
+/// relative to the toolkit clock, so a capture shows the same ages on every run.
 fn commit_history() -> Vec<Commit> {
     let now = ui::clock::local_now().timestamp();
     commit_history_recent()
@@ -650,15 +643,12 @@ index 0000000..89abcde
     )
 }
 
-// --- A repository in the middle of a merge ------------------------------
-//
-// The changes screen's other half is the *decision*: a conflicted file is
-// the one change whose resolution alters the repository, so the shot that
-// shows it needs a conflict on disk. It is a scenario of its own
-// ([`model_with_conflict`]) so every other capture keeps the clean tree.
+// The changes screen's other half is the decision: a conflicted file is the one change whose
+// resolution alters the repository, so the shot that shows it needs a conflict on disk. It is a
+// scenario of its own so every other capture keeps the clean tree.
 
-/// The file the sample repository leaves conflicted: a merge of
-/// `wgpu-pipeline` into `main` where both sides rewrote the same lines.
+/// The file the sample repository leaves conflicted: a merge of `wgpu-pipeline` into `main` where
+/// both sides rewrote the same lines.
 pub const CONFLICTED: &str = "src/render/bindings.rs";
 
 /// The bundled repository with one file left conflicted by a merge, as the
@@ -679,10 +669,8 @@ pub fn model_with_conflict() -> (RepoModel, DiffMap) {
     (model, diffs)
 }
 
-/// What each side of the sample's conflicted file brings, as
-/// [`crate::repo::conflict_cost`] reads it from a real index: the lines only
-/// our side changed, and the lines only theirs did. They are the markers in
-/// `diff_conflicted` — ours writes two lines, theirs three.
+/// What each side of the sample's conflicted file brings, as [`crate::repo::conflict_cost`] reads
+/// it from a real index: the lines only our side changed and the lines only theirs did.
 pub fn conflict_cost(file: &str) -> Option<crate::repo::ConflictCost> {
     (file == CONFLICTED).then_some(crate::repo::ConflictCost { ours: 2, theirs: 3 })
 }

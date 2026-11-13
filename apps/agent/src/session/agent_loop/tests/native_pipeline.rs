@@ -458,6 +458,55 @@ fn native_task_benchmark() {
     }
 }
 
+/// A step that asks the person is held, not refused: the host answers the
+/// ask with its draft waiting, the agent takes the child and follows it,
+/// and the person's answer — arriving when the child may start — is what
+/// ends the wait. No deadline of the step's own cuts it short
+/// (`docs/designs/app-language/shell.md` §1, "Trust stays system-drawn").
+#[test]
+fn a_step_that_asks_the_person_is_held_until_they_answer() {
+    let mut f = fixture(
+        "Append the release line",
+        World {
+            awaiting: Some(("append-paragraph".into(), 2)),
+            settle_after: Some(Duration::from_millis(10)),
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[invoke(
+                    "append-paragraph",
+                    &serde_json::json!({"text": "Ship it"}),
+                )],
+                24,
+            ),
+            turn(&[finish("The line is appended.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    // The step waits on the person: the agent follows it with a held re-ask
+    // rather than refusing it.
+    assert!(
+        f.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+        )),
+        "the step waits on the person: {:?}",
+        f.sent.borrow()
+    );
+    assert_eq!(
+        f.world.borrow().steps.len(),
+        1,
+        "the step ran once, after the person's answer"
+    );
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "The line is appended.".into()
+        }
+    );
+}
+
 /// The descriptor of Writer's `append-paragraph`, as the agent reads it.
 fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
     let catalogue = f.session.task_catalogue();

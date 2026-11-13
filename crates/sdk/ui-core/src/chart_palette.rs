@@ -13,8 +13,7 @@ pub struct ChartPalette {
 }
 
 impl ChartPalette {
-    /// Build a non-empty custom palette. Requiring the primary colour makes an
-    /// empty palette unrepresentable and keeps indexed lookup total.
+    /// Build a non-empty custom palette.
     pub fn new(primary: Color, additional: impl IntoIterator<Item = Color>) -> Self {
         let mut categorical = vec![primary];
         categorical.extend(additional);
@@ -26,8 +25,8 @@ impl ChartPalette {
         }
     }
 
-    /// A palette derived from live design tokens, including semantic colours
-    /// selected by light, dark, and high-contrast themes.
+    /// A palette derived from live design tokens, including semantic colours selected by light, dark,
+    /// and high-contrast themes.
     pub fn from_theme(theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
         let series = &colors.presence;

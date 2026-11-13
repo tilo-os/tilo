@@ -1,23 +1,6 @@
-//! Lightweight instrumentation for the `WebView` pipeline. Off by default;
-//! enabled by setting `TILO_WEBVIEW_PROFILE` in the environment.
-//!
-//! What it measures, from the engine thread and the widget:
-//!  * **frame throughput** — inter-frame intervals → frames/sec,
-//!  * **input→next-frame interval** — time from an interactive command
-//!    being sent to the next observed engine frame. This is uncorrelated:
-//!    the frame may belong to another tab or unrelated animation, and
-//!    arrival does not prove that the window displayed it,
-//!  * **SHM swizzle cost** — the per-frame BGRA→RGBA copy time,
-//!  * **geometry** — each frame's pixel size and each draw's rect, so a
-//!    size/rect mismatch (a stretched or mispositioned frame) is visible.
-//!
-//! A summary prints to stderr every `SUMMARY_EVERY` frames and once
-//! more when the process exits. With `TILO_WEBVIEW_PROFILE=trace` the
-//! first `TRACE_FRAMES` frames and draws are logged individually — the
-//! fast path to diagnosing a visual glitch.
-//!
-//! All timing uses `crate::time::Instant`; the whole module is a no-op
-//! (one relaxed atomic load) when disabled.
+//! Lightweight instrumentation for the `WebView` pipeline. Off by default; enabled by
+//! setting `TILO_WEBVIEW_PROFILE` in the environment. What it measures, from the engine
+//! thread and the widget.
 
 use crate::time::{Duration, Instant};
 use std::sync::Mutex;
@@ -26,11 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
-/// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
-/// Individual frame/draw lines printed at the start in `trace` mode.
 const TRACE_FRAMES: u64 = 48;
-/// Ring-buffer capacity for the latency / interval samples.
 const SAMPLES: usize = 512;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -38,8 +18,7 @@ static TRACE: AtomicBool = AtomicBool::new(false);
 static RESIZE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
-/// Read the env once and latch the on/off + trace flags. Called from
-/// every hook; the first call resolves it, the rest are a relaxed load.
+/// Read the env once and latch the on/off + trace flags.
 #[inline]
 pub fn enabled() -> bool {
     static INIT: OnceLock<()> = OnceLock::new();
@@ -60,16 +39,11 @@ fn state() -> &'static Mutex<State> {
 }
 
 struct State {
-    /// Wall clock the profiler started (first frame).
     started: Option<Instant>,
-    /// Timestamp of the previous frame, for inter-frame intervals.
     last_frame: Option<Instant>,
-    /// An interactive command was sent at this time and no frame has
-    /// arrived since — the next frame closes the latency measurement.
     pending_input: Option<(Instant, &'static str)>,
     frame_count: u64,
     draw_count: u64,
-    /// Most recent frame dimensions, to detect alternation (flicker).
     last_dims: Option<(u32, u32)>,
     dims_changes: u64,
     intervals_ms: Ring,
@@ -94,9 +68,7 @@ impl State {
     }
 }
 
-/// `kind` is a short static label (`"scroll"`, `"mouse"`, `"key"`). Only
-/// the first input after a paint opens a latency window, so a burst
-/// reports the leading edge's latency to its first repaint.
+/// `kind` is a short static label (`"scroll"`, `"mouse"`, `"key"`).
 #[inline]
 pub fn record_input(kind: &'static str) {
     if !enabled() {
@@ -108,8 +80,8 @@ pub fn record_input(kind: &'static str) {
     }
 }
 
-/// Record a frame the engine just produced: its pixel dimensions and the
-/// time spent converting it (SHM BGRA → RGBA).
+/// Record a frame the engine just produced: its pixel dimensions and the time spent
+/// converting it (SHM BGRA → RGBA).
 pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     if !enabled() {
         return;
@@ -152,14 +124,11 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     }
 }
 
-/// `frame_dims` is `None` for a placeholder (no frame yet). A rect whose
-/// aspect ratio diverges from the frame's, or a placeholder appearing
-/// after real frames, points at a layout/caching glitch.
+/// `frame_dims` is `None` for a placeholder (no frame yet).
 pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     if !enabled() {
         return;
     }
-    // Scoped so the mutex guard is dropped before the (I/O) eprintln! below.
     let n = {
         let mut s = state().lock_recover();
         s.draw_count = s.draw_count.saturating_add(1);
@@ -177,8 +146,8 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     }
 }
 
-/// Record physical resize commands so startup traces can distinguish a stale
-/// frame from a missing or downgraded device-scale request.
+/// Record physical resize commands so startup traces can distinguish a stale frame from a
+/// missing or downgraded device-scale request.
 pub fn record_resize(width: u32, height: u32, scale_factor: f32) {
     if !enabled() || !TRACE.load(Ordering::Relaxed) {
         return;
@@ -245,9 +214,7 @@ impl State {
     }
 }
 
-/// Fixed-capacity sample buffer with percentile reporting. Overwrites
-/// oldest on overflow — the summary reflects a recent window, not the
-/// whole run, which is what matters for a live feel.
+/// Fixed-capacity sample buffer with percentile reporting.
 struct Ring {
     buf: Vec<f64>,
     next: usize,

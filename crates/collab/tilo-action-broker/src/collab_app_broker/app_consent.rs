@@ -13,7 +13,7 @@
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
 
 use super::action_host::{ConnectionActionHost, RowScope};
@@ -267,7 +267,7 @@ impl AppBrokerState {
         let (resource_kind, need) = &consent.target;
         let grant = Grant::new(
             format!("app-action:{}", uuid::Uuid::new_v4()),
-            Subject::App(request.app_id.clone()),
+            Grantee::app(request.app_id.clone()),
             tilo_actions::action_node(
                 &TreePath::workspace(request.workspace.clone()),
                 &request.target_app,
@@ -281,7 +281,7 @@ impl AppBrokerState {
                 .filter(|kind| *kind <= need.kind)
                 .fold(KindSet::NONE, KindSet::with),
             Answer::Allow,
-            Subject::Person(request.person.clone()),
+            Grantee::person(request.person.clone()),
         )
         .with_lifetime(lifetime);
         Some(grants.record(request, grant, answer))

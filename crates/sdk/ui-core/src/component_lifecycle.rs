@@ -1,10 +1,5 @@
-//! How a widget takes part in closing its window and components: unsaved
-//! work, persistence checkpoints, component close reports and deferred
-//! window close.
-//!
-//! A widget providing [`ComponentLifecycle`] answers for its subtree; the
-//! defaults do what an ordinary container did (reach the children), so an
-//! override names only what differs.
+//! How a widget takes part in closing its window and components: unsaved work, persistence checkpoints,
+//! component close reports and deferred window close.
 
 use crate::widget::capability::{capability, capability_mut};
 use crate::widget::{Widget, WindowCloseAdmission};
@@ -12,8 +7,7 @@ use automerge::AutoCommit;
 
 /// A widget owning components, documents or a window-close policy.
 pub trait ComponentLifecycle: Widget {
-    /// App-declared external document obligations. An in-memory record set
-    /// is not evidence that an editable file has been saved.
+    /// App-declared external document obligations.
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
         let mut out = Vec::new();
         self.for_each_child(&mut |child| out.extend(unsaved_documents(child, doc)));
@@ -29,8 +23,8 @@ pub trait ComponentLifecycle: Widget {
             .collect()
     }
 
-    /// Only the host may call this after every checkpoint succeeded, without
-    /// dispatching another document mutation in between.
+    /// Only the host may call this after every checkpoint succeeded, without dispatching another
+    /// document mutation in between.
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.children_mut()
             .into_iter()
@@ -67,19 +61,15 @@ pub trait ComponentLifecycle: Widget {
         false
     }
 
-    /// The component this root's own component asked to show in its place
-    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)),
-    /// for the host that mounted it. A component nested deeper answers to
-    /// the host that mounted it, so the default reaches no child.
+    /// The component this root component asked to show in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)), for
+    /// the host that mounted it.
     fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
 
-    /// One-shot: the durability of this root's own component's record changed
-    /// since this was last asked, and the root already synced with the new
-    /// state. A host that asks (an [`App`](crate::App)) presents it with a
-    /// frame of its own, not a rebuilt tree; one that does not ask sees it
-    /// through `take_structure_dirty`.
+    /// One-shot: the durability of this root component's record changed since this was last asked, and
+    /// the root already synced with the new state.
     fn take_save_status_presentation(&mut self) -> bool {
         false
     }
@@ -186,13 +176,10 @@ pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
         .is_some_and(WindowActivation::take_window_activation_intent)
 }
 
-/// A window whose content says what it shows: the page a note is open on, the place a list is at,
-/// the record a sheet edits. The window is named by that wherever a desktop names it — its tab,
-/// the switcher, assistive technology — so a person reads which window is which without opening
-/// one. It is the window's own title, not a caption: a window that says nothing goes by its app's
-/// name.
+/// A window whose content says what it shows: the page a note is open on, the place a list is at, the
+/// record a sheet edits.
 pub trait WindowTitle {
-    /// What the window shows now, as words a person reads: `None` where it names nothing.
+    /// What the window shows now, as words a person reads: `None` where it is empty.
     fn window_title(&self) -> Option<&str>;
 }
 
@@ -201,15 +188,15 @@ pub fn window_title(widget: &(impl Widget + ?Sized)) -> Option<&str> {
     capability::<dyn WindowTitle>(widget).and_then(WindowTitle::window_title)
 }
 
-/// A presentation whose app runs elsewhere (a tilolang host's instance) can ask the shell for
-/// what only it does, as an app's own surface asks ([`crate::widget::AppHostIntent`]): show a
-/// task run's log when a change mark is activated.
+/// A presentation whose app runs elsewhere (a tilolang host's instance) can ask the shell for what only
+/// it does, as an app surface asks ([`crate::widget::AppHostIntent`]): show a task run's log when a
+/// change mark is activated.
 pub trait HostIntents {
     /// Consume one request for the shell.
     fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent>;
 }
 
-/// Consume one request `widget` holds for the shell, through its capability door.
+/// Consume one request `widget` has for the shell, through its capability door.
 pub fn take_host_intent(
     widget: &mut (impl Widget + ?Sized),
 ) -> Option<crate::widget::AppHostIntent> {

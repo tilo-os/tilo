@@ -1,4 +1,5 @@
 //! App image review over backend-owned consumer-proof envelopes.
+
 pub use imager_backend::original_admission::{
     CapturePins, ConsumerCapability, ORIGINAL_SOURCE_PROTOCOL, PROOF_BOUND, RuntimeHelper, require,
 };
@@ -10,9 +11,6 @@ fn invalid() -> io::Error {
         "Original-source consumer proof syntax is invalid",
     )
 }
-/// Device-local producer review. This is never serialized into a helper request
-/// or constructed from an app action's JSON. The private declaration preserves
-/// the selected authenticated release proof until its exact image is held.
 #[derive(Clone, Debug)]
 pub(crate) struct ReviewedOriginalImage {
     #[cfg(all(target_os = "linux", feature = "installation"))]
@@ -81,7 +79,6 @@ impl ReviewedOriginalImage {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&self.source.path)?;
-        // Watched before the first byte is hashed, so no write after it goes unseen.
         let watch = imager_backend::inode_changes::InodeChanges::watch(&file)?;
         let before = file.metadata()?;
         if !before.is_file()
@@ -167,8 +164,6 @@ impl ImageStamp {
         }
     }
 }
-/// Retains the actual digest-checked inode and its immutable observation through
-/// source permission and pending setup preparation. A bare File is not proof.
 #[cfg(all(target_os = "linux", feature = "installation"))]
 pub(crate) struct VerifiedOriginalImage {
     file: std::fs::File,
@@ -272,8 +267,6 @@ mod tests {
             source.size
         );
         assert!(ReviewedOriginalImage::review(&source, &[release.clone(), release]).is_err());
-        // Same path, inode and length still pass identity-only review; the
-        // authenticated selected image digest must refuse changed bytes.
         std::fs::write(&path, b"tampered image bytes").unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), source.size);
         assert!(held.validate().is_err());

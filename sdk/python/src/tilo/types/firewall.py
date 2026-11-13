@@ -56,6 +56,7 @@ ZoneKind = Literal["drop", "block", "public", "external", "dmz", "work", "home",
 
 class Config(Resource):
     """Firewall — `firewall.config`."""
+    __surface__ = "so.tilo.firewall@8f6272b1c59a5183"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -102,6 +103,7 @@ class Config(Resource):
 
 class Applied(Resource):
     """Applied configuration — `firewall.applied`."""
+    __surface__ = "so.tilo.firewall@8f6272b1c59a5183"
     devices: dict[str, str]
 
     def applied(self,

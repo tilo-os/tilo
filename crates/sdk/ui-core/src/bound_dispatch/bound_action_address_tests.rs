@@ -1,8 +1,5 @@
 use super::*;
 
-/// The public parts constructor keeps the component instance and formats
-/// the domain address. The host still resolves that instance against its
-/// fresh resource tree; constructing an address grants nothing.
 #[test]
 fn a_bound_action_address_names_one_instance_and_round_trips_its_address() {
     let instance: crate::application::InstanceId = 42;

@@ -83,7 +83,7 @@ fn arrives(memory: &MemoryStore, store: &RecordStore, id: &RecordId, bytes: Vec<
     let key = if id.is_package_primary() {
         StorageKey::workspace_index(PACKAGE, WORKSPACE)
     } else {
-        StorageKey::record(PACKAGE, WORKSPACE, id.storage_key())
+        StorageKey::document(PACKAGE, WORKSPACE, id.storage_key())
     };
     memory.write(&key, WriteOp::Replace(bytes), None).unwrap();
     store.note_kept();
@@ -204,4 +204,59 @@ fn a_store_of_its_own_takes_a_missing_record_as_new() {
     };
     assert_eq!(id, want.id);
     assert!(store.wanted_records().is_empty());
+}
+
+/// A desk window saved on a record the workspace still sends (one a shared desk names) is
+/// loading, not a failure: preparing it says so, asks the workspace for it, and prepares once it
+/// is here. The person never reads the store's own words for it.
+#[test]
+fn a_window_on_a_record_still_on_its_way_waits_for_it() {
+    let definition = definition(false);
+    let (memory, store) = page(&definition);
+    let saved = RecordCheckout::new(
+        RecordId::derived("default", &RecordId::for_tab(INSTANCE + 1)),
+        definition.record_kind.clone(),
+    );
+    let prepare = |store: &RecordStore| {
+        let views = Rc::new(
+            ui::application_view::InstanceViewStore::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>,
+                "D",
+                WORKSPACE,
+            )
+            .unwrap(),
+        );
+        HostContext::prepare(
+            &definition,
+            ui::application::HostContextInputs {
+                records: store.clone(),
+                views,
+                device_id: "D".into(),
+                instance_id: INSTANCE,
+                permissions: ui::permissions::SharedPermissions::new(
+                    ui::permissions::PermissionContext::permissive(),
+                ),
+                author: ui::permissions::UserId("ada".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &LaunchTarget::Record {
+                checkout: saved.clone(),
+                reveal: None,
+            },
+        )
+        .map_err(Unbuilt::of)
+    };
+    assert!(matches!(prepare(&store), Err(Unbuilt::Arriving)));
+    assert_eq!(
+        store.wanted_records(),
+        std::slice::from_ref(&saved.id),
+        "asked of the workspace"
+    );
+    arrives(
+        &memory,
+        &store,
+        &saved.id,
+        written_elsewhere(&saved, "theirs"),
+    );
+    assert!(prepare(&store).is_ok(), "it opens once it is here");
 }

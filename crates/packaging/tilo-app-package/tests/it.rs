@@ -1,5 +1,3 @@
-// One test binary instead of one per file; #[path] keeps the files in place.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

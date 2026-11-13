@@ -1,16 +1,4 @@
 //! `ActivityTimeline` — the history pane, grouped.
-//!
-//! Renders history as scrolling **groups** ([`crate::widget::history_group`]) that expand to
-//! individual [`HistoryEntry`] rows, because typing coalesces on a one-second debounce and an
-//! afternoon of work would otherwise be hundreds of rows reading `+3 -0 chars`. A group of one
-//! unnamed change renders as a plain row, so the flat list is the degenerate case rather than a
-//! second code path.
-//!
-//! Naming is retroactive (click `[Name]`, or shift-click a run to name it). The widget has no
-//! document, so naming only fires [`NameGroupCallback`]; the host persists it through
-//! `tilo_ui::history_source::groups`. The filter chip strip's grouping is computed over the
-//! *unfiltered* history, so toggling a chip narrows the list without re-chunking it under the
-//! reader.
 
 use crate::i18n::{widget_format, widget_text};
 use crate::num::f64_of_usize;
@@ -44,7 +32,6 @@ use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 use crate::tokens::TextRole;
 use crate::widget::EntryKind;
 
-/// 40px: a 600px pane fits ~15 rows without scrolling.
 pub const ROW_HEIGHT: f64 = 40.0;
 pub const GROUP_ROW_HEIGHT: f64 = 52.0;
 pub const FILTER_STRIP_HEIGHT: f64 = 36.0;
@@ -65,11 +52,7 @@ const INDENT: f64 = 20.0;
 /// hit-testing reads is built from without a theme; pinned to `spacing.s3`
 /// by `gutter_constants_equal_the_spacing_tokens`.
 const TRAILING_INSET: f64 = 12.0;
-/// Budget of auto-expanded rows: a short history should read as a flat
-/// list, a long one has to read as collapsed bands. This is the line
-/// between the two, spent newest-first.
 const AUTO_EXPAND_BUDGET: usize = 14;
-/// Past this many top-level bands, nothing auto-expands regardless of budget.
 const DENSE_GROUP_COUNT: usize = 6;
 
 /// The pane paints on `surfaces.raised` (its own card, or the host's), where `Colors::lift` has
@@ -91,21 +74,17 @@ const CHIP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// one block (HIG §7 "nothing touches").
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
-/// One step of the pane's own ramp: `alpha` of white or black, whichever
-/// moves `surface` further.
 fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// How an author is shown: a person's face in their colour, or the agent
-/// mark for software acting for someone.
 fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
-    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short);
+    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short)
+        .presence(colour);
     if author.relation == crate::widget::history::AuthorRelation::Software {
-        face.hue(crate::tokens::colors::PresenceHue::of_agent(&author.name))
-            .agent()
+        face.agent()
     } else {
-        face.presence(colour)
+        face
     }
 }
 
@@ -176,8 +155,6 @@ impl ChipKind {
 /// keeps a usable share of the row.
 const NARROW_WIDTH: f64 = 340.0;
 
-/// Fired on `[Revert]`, or on a group's `[Restore]` (passing the group's
-/// **last** change — restoring to a boundary is the point of grouping).
 pub type RevertCallback = Box<dyn FnMut(&HistoryEntryId)>;
 
 /// Fired when a change row is activated with Enter, Space, or assistive
@@ -185,11 +162,8 @@ pub type RevertCallback = Box<dyn FnMut(&HistoryEntryId)>;
 /// detail view, move a scrubber, or otherwise inspect the selected moment.
 pub type EntryActivateCallback = Box<dyn FnMut(&HistoryEntryId)>;
 
-/// Fired on `[Clear filters]`, after the widget resets its own chip/query —
-/// the host should drop any filter it owns itself (e.g. a date range).
 pub type ClearFiltersCallback = Box<dyn FnMut()>;
 
-/// Callback fired when the user commits a name.
 pub type NameGroupCallback = Box<dyn FnMut(&GroupNameRequest)>;
 
 /// What `[Undo]` on a band asks for: the **range**, not a single id like
@@ -200,34 +174,25 @@ pub type NameGroupCallback = Box<dyn FnMut(&GroupNameRequest)>;
 pub struct BandUndoRequest {
     pub start: HistoryEntryId,
     pub end: HistoryEntryId,
-    /// What a confirmation should quote.
     pub label: Option<String>,
     /// First-seen order; what a host filters the revert by.
     pub authors: Vec<HistoryAuthor>,
 }
 
-/// Fired on `[Undo]`. Installing it is what makes the chip appear at all.
 pub type UndoBandCallback = Box<dyn FnMut(&BandUndoRequest)>;
 
-/// One line in the rendered list: a group header, or an individual change at a
-/// nesting depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VisualRow {
     Group(usize),
-    /// Index into `entries`, plus the depth it renders at.
     Entry(usize, usize),
 }
 
-/// Durable identity for keyboard/AT focus. Row indices are deliberately not
-/// retained: expanding a band or receiving an earlier change changes them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FocusedRow {
     Group(String),
     Entry(HistoryEntryId),
 }
 
-/// The icon and spoken name of an action work group's kind, for the kinds
-/// the system writes.
 fn work_icon(kind: &str) -> Option<(crate::icons::Icon, &'static str)> {
     match kind {
         "task" | "issue" => Some((crate::icons::Icon::ListChecks, "history-work-task")),
@@ -238,9 +203,6 @@ fn work_icon(kind: &str) -> Option<(crate::icons::Icon, &'static str)> {
 }
 
 impl RowGroup {
-    /// What the band's second line shows: where the work happened while
-    /// the band is collapsed (its members do not say), then its facts, the
-    /// first ones kept longest.
     fn meta_facts(&self) -> Vec<crate::widget::primitives::Fact> {
         let scope = self.scope_label.as_ref().filter(|_| !self.expanded);
         let count = self.facts.len();
@@ -266,7 +228,6 @@ impl RowGroup {
     }
 }
 
-/// A group, flattened and pre-measured for painting.
 #[derive(Clone, Debug)]
 struct RowGroup {
     key: String,
@@ -287,10 +248,7 @@ struct RowGroup {
     authors: Vec<HistoryAuthor>,
     expanded: bool,
     restorable: bool,
-    /// Calendar heading (Today / Yesterday / …), not a collapsible band.
     is_section: bool,
-    /// What kind of work the band is (a task, an agent's run, a shortcut),
-    /// drawn before its title.
     work: Option<(crate::icons::Icon, &'static str)>,
 }
 
@@ -299,7 +257,6 @@ struct GroupChips {
     name: Rect,
     /// `None` unless a host installed a band-undo callback.
     undo: Option<Rect>,
-    /// `None` when nothing in the band can be restored to.
     restore: Option<Rect>,
 }
 
@@ -314,12 +271,9 @@ impl GroupChips {
     }
 }
 
-/// The field the user is typing a name into.
 #[derive(Clone, Debug, PartialEq)]
 enum NameTarget {
-    /// Naming (or renaming) a band; index into `row_groups`.
     Group(usize),
-    /// Naming the current selection.
     Selection,
 }
 
@@ -329,7 +283,25 @@ struct NamingState {
     field: NameField,
 }
 
-/// Scrolling, filterable, groupable activity pane. See module-level docs.
+#[derive(Clone, Debug, Default)]
+struct NothingPlacement {
+    title: String,
+    title_at: Point,
+    detail: Option<(String, Point)>,
+    clear: Rect,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SelectionBarPlacement {
+    bar: Rect,
+    count: String,
+    count_at: Point,
+    clear: Rect,
+    name: Rect,
+    /// The name field; `Rect::ZERO` unless a name is being typed.
+    field: Rect,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag tracks an independent interaction, rendering, or invalidation state"
@@ -341,15 +313,10 @@ struct NamingState {
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,
-    /// What changes did, as members' devices described them; a change
-    /// without one reads as its own summary.
     descriptions: std::collections::HashMap<HistoryEntryId, String>,
-    /// The app's presentation of its changes ([`Self::set_entry_presenter`]).
     presenter: Option<std::rc::Rc<dyn HistoryEntryPresenter>>,
-    /// The faces it gave the listed changes, asked once per list.
     faces: HashMap<HistoryEntryId, EntryFace>,
     grouping: GroupingConfig,
-    /// The forest, over the **unfiltered** entry list.
     groups: Vec<HistoryGroup>,
     /// Display order of the top-level groups, by each band's newest change.
     group_order: Vec<usize>,
@@ -362,27 +329,21 @@ pub struct ActivityTimeline {
     rows: Vec<VisualRow>,
     row_tops: Vec<f64>,
     row_groups: Vec<RowGroup>,
-    /// Groups the user explicitly opened or closed. Anything in neither set
-    /// follows [`AUTO_EXPAND_BUDGET`].
     expanded: HashSet<String>,
     collapsed: HashSet<String>,
-    /// Selected run of changes, as inclusive indices into `entries`.
     selection: Option<(usize, usize)>,
     selection_anchor: Option<usize>,
     focused_row: Option<FocusedRow>,
     has_focus: bool,
     naming: Option<NamingState>,
     active_chip: ChipKind,
-    /// Free-text author typeahead. Lower-cased before matching.
     author_query: String,
     rect: Rect,
     scroll_y: f64,
-    /// Index into `rows`.
     hover_row: Option<usize>,
     last_cursor: Point,
     on_revert: Option<RevertCallback>,
     on_activate_entry: Option<EntryActivateCallback>,
-    /// Choosing a change whose face opens it in the app.
     on_open_entry: Option<EntryActivateCallback>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
@@ -390,43 +351,39 @@ pub struct ActivityTimeline {
     /// this so a snapshot stays stable.
     now_override: Option<SystemTime>,
     newest_first: bool,
-    /// Populated by `draw_filter_strip` each frame so click hit-testing
-    /// matches what was actually painted.
-    chip_rects: Vec<(ChipKind, Rect)>,
+    /// The strip's chips, placed by the layout: what a press on one filters
+    /// the pane by, and where it stands. Painting reads this and adds nothing
+    /// to it, so a press before a paint lands on the chip it means.
+    strip_chips: Vec<StripChip>,
+    author_pill_painted: Rect,
     author_pill_rect: Rect,
     /// The strip filters by who made the changes ([`Self::set_filters_people`]):
     /// Everyone, then each person and agent in the history.
     filters_people: bool,
-    /// The people chips as painted: the author each narrows to (`None` for
-    /// Everyone) and its hit rect.
-    people_chip_rects: Vec<(Option<String>, Rect)>,
-    /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
+    /// `metrics.min_pointer_target`, taken from the frame's theme so the
     /// theme-less hit-test accessors can grow a chip's target to it.
     min_pointer_target: f64,
-    /// The theme of the last `draw`, which an app's row faces measure
-    /// their height under ([`crate::widget::EntryBody::height`]): rows are
-    /// laid out by the theme-less accessors between frames.
     face_theme: Theme,
     /// The host's Activity view may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
-    /// Calendar Today/Yesterday/This week/Earlier headings above bands.
     show_day_headings: bool,
-    /// `Rect::ZERO` whenever the filtered-to-nothing empty state is not on
-    /// screen, so a stale click cannot trip `[Clear filters]`.
-    clear_chip_rect: Rect,
-    /// Last-drawn rects of the selection bar's two actions.
-    name_selection_rect: Rect,
-    clear_selection_rect: Rect,
+    /// The empty state's lines and its way back out, as the layout placed
+    /// them: `clear` is `Rect::ZERO` whenever that state is not on screen, so
+    /// a stale click cannot trip `[Clear filters]`.
+    nothing: NothingPlacement,
+    selection_bar: SelectionBarPlacement,
     time_range_label: Option<String>,
     on_clear_filters: Option<ClearFiltersCallback>,
-    /// `false` when the host has already painted a surface underneath.
     draws_own_surface: bool,
     preview_selection: bool,
-    /// The pane takes the height its parent gives it and scrolls inside; without it, it is as
-    /// tall as its strip and its rows, inside another scroll.
     fill: bool,
     dirty: bool,
+    /// Whether what the layout places may have moved since it last did: a
+    /// selection, a name being typed, a filter, a list that changed. Cleared
+    /// by the layout that places the strip's and the bar's controls, so a
+    /// frame read before it paints finds them where it would have drawn them.
+    layout_dirty: bool,
 }
 
 impl Default for ActivityTimeline {
@@ -436,7 +393,6 @@ impl Default for ActivityTimeline {
 }
 
 impl ActivityTimeline {
-    /// Use [`Self::with_entries`] / [`Self::set_entries`] to seed it.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -472,41 +428,38 @@ impl ActivityTimeline {
             on_name_group: None,
             now_override: None,
             newest_first: true,
-            chip_rects: Vec::new(),
+            strip_chips: Vec::new(),
+            author_pill_painted: Rect::ZERO,
             author_pill_rect: Rect::ZERO,
             filters_people: false,
-            people_chip_rects: Vec::new(),
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             face_theme: Theme::default(),
             show_author_pill: true,
             show_day_headings: false,
-            clear_chip_rect: Rect::ZERO,
-            name_selection_rect: Rect::ZERO,
-            clear_selection_rect: Rect::ZERO,
+            nothing: NothingPlacement::default(),
+            selection_bar: SelectionBarPlacement::default(),
             time_range_label: None,
             on_clear_filters: None,
             draws_own_surface: true,
             preview_selection: false,
             fill: true,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
-    /// Use selection/inspection without offering metadata or direct revert actions.
     #[must_use]
     pub fn with_preview_selection(mut self) -> Self {
         self.set_preview_selection(true);
         self
     }
 
-    /// Enable inspection without mutation affordances. Revocation cancels an
-    /// in-progress naming field before it can emit a metadata write intent.
     pub fn set_preview_selection(&mut self, preview: bool) {
         self.preview_selection = preview;
         if preview {
             self.naming = None;
         }
-        self.dirty = true;
+        self.invalidate();
     }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
@@ -545,7 +498,6 @@ impl ActivityTimeline {
         self.regroup();
     }
 
-    /// The descriptions the host read from the document, by change.
     pub fn set_descriptions(
         &mut self,
         descriptions: std::collections::HashMap<HistoryEntryId, String>,
@@ -589,7 +541,6 @@ impl ActivityTimeline {
         self.rebuild_rows();
     }
 
-    /// The face the app gave `entry`, if it gave one.
     pub fn face_of(&self, entry: &HistoryEntryId) -> Option<&EntryFace> {
         self.faces.get(entry)
     }
@@ -605,13 +556,10 @@ impl ActivityTimeline {
         };
     }
 
-    /// The face of the change on line `i`, when it has one.
     fn row_face(&self, i: usize) -> Option<&EntryFace> {
         self.faces.get(&self.row_entry(i)?.id)
     }
 
-    /// Put what the face of the change on line `i` copies on the
-    /// clipboard. Returns whether it had anything to copy.
     pub fn copy_row(&self, i: usize) -> bool {
         let Some(text) = self.row_face(i).and_then(|face| face.copy.as_deref()) else {
             return false;
@@ -620,8 +568,6 @@ impl ActivityTimeline {
         true
     }
 
-    /// The widget has no document; the host reads names
-    /// (`tilo_ui::history_source::groups`) and pushes them here.
     pub fn set_named_ranges(&mut self, named: Vec<NamedRange>) {
         if self.named != named {
             self.named = named;
@@ -633,7 +579,6 @@ impl ActivityTimeline {
         &self.named
     }
 
-    /// Idempotent.
     pub fn refresh(&mut self) {
         self.regroup();
     }
@@ -642,18 +587,30 @@ impl ActivityTimeline {
         &self.entries
     }
 
-    /// Over the unfiltered history.
     pub fn groups(&self) -> &[HistoryGroup] {
         &self.groups
     }
 
     /// For a host that reserves a rect out of its own layout rather than
-    /// putting the widget in a taffy tree.
+    /// putting the widget in a taffy tree: a host that places it by hand
+    /// places it with [`Self::place_in`], which also places the strip's and
+    /// the bar's controls the way the layout would.
     pub fn set_rect(&mut self, rect: Rect) {
         if self.rect != rect {
             self.rect = rect;
-            self.dirty = true;
+            self.invalidate();
         }
+    }
+
+    /// Take `rect` and place in it everything a layout pass would: the
+    /// strip's chips, its author pill, the way back out of a filter and the
+    /// selection bar's count and actions, measured in `theme`'s own type. A
+    /// host that reserves the pane's box out of its own layout calls this
+    /// before it draws, so a press or a screen reader finds those controls
+    /// where the pane draws them.
+    pub fn place_in(&mut self, rect: Rect, theme: &Theme) {
+        self.set_rect(rect);
+        self.place_controls(theme);
     }
 
     pub fn rect(&self) -> Rect {
@@ -669,7 +626,6 @@ impl ActivityTimeline {
         &self.filter
     }
 
-    /// Fires from a row's `[Revert]` chip and a group's `[Restore]` chip.
     #[must_use]
     pub fn on_revert<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_revert = Some(Box::new(f));
@@ -685,13 +641,10 @@ impl ActivityTimeline {
         self
     }
 
-    /// [`Self::on_open_entry`] for a timeline already built.
     pub fn set_on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(&mut self, f: F) {
         self.on_open_entry = Some(Box::new(f));
     }
 
-    /// Open the change on line `i` in the app, when its face opens it and
-    /// the host listens. Returns whether it did.
     fn open_row(&mut self, i: usize) -> bool {
         let Some(id) = self
             .row_face(i)
@@ -707,15 +660,12 @@ impl ActivityTimeline {
         true
     }
 
-    /// Observe explicit activation of an individual activity entry. Selection
-    /// is updated before this callback runs.
     #[must_use]
     pub fn on_activate_entry<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_activate_entry = Some(Box::new(f));
         self
     }
 
-    /// Also puts the `[Undo]` chip on band headers.
     #[must_use]
     pub fn on_undo_band<F: FnMut(&BandUndoRequest) + 'static>(mut self, f: F) -> Self {
         self.on_undo_band = Some(Box::new(f));
@@ -734,7 +684,6 @@ impl ActivityTimeline {
         self
     }
 
-    /// For a host that has already painted a surface behind it.
     pub fn set_draws_own_surface(&mut self, draws: bool) {
         if self.draws_own_surface != draws {
             self.draws_own_surface = draws;
@@ -742,9 +691,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// The pane is as tall as its strip and the rows it shows, inside another scroll
-    /// ([`Self::with_fill(false)`]). A view that places it among other content states this;
-    /// the History pane, which takes a window's height, leaves it filling.
     #[must_use]
     pub fn with_fill(mut self, fill: bool) -> Self {
         self.fill = fill;
@@ -757,7 +703,7 @@ impl ActivityTimeline {
     pub fn set_filters_people(&mut self, people: bool) {
         if self.filters_people != people {
             self.filters_people = people;
-            self.dirty = true;
+            self.invalidate();
         }
     }
 
@@ -806,11 +752,10 @@ impl ActivityTimeline {
         people
     }
 
-    /// In the words the host's own control uses.
     pub fn set_time_range_label(&mut self, label: Option<String>) {
         if self.time_range_label != label {
             self.time_range_label = label;
-            self.dirty = true;
+            self.invalidate();
         }
     }
 
@@ -831,7 +776,6 @@ impl ActivityTimeline {
             || self.filter.time_range.is_some()
     }
 
-    /// Empty string when nothing narrows.
     pub fn active_filter_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.active_chip != ChipKind::All {
@@ -887,14 +831,27 @@ impl ActivityTimeline {
         self.author_pill_rect
     }
 
+    pub fn chip_rect(&self, kind: ChipKind) -> Option<Rect> {
+        self.strip_chips.iter().find_map(|chip| match chip.target {
+            StripTarget::Class(placed) if placed == kind => Some(chip.hit),
+            _ => None,
+        })
+    }
+
+    pub fn people_chip_rect(&self, author: Option<&str>) -> Option<Rect> {
+        self.strip_chips.iter().find_map(|chip| match &chip.target {
+            StripTarget::Person(placed) if placed.as_deref() == author => Some(chip.hit),
+            _ => None,
+        })
+    }
+
     /// Show or hide the built-in author pill. The default is `true` for
     /// standalone use; hosts with an equivalent people control can turn it
     /// off without losing the operation-class filters.
     pub fn set_show_author_pill(&mut self, show: bool) {
         if self.show_author_pill != show {
             self.show_author_pill = show;
-            self.author_pill_rect = Rect::ZERO;
-            self.dirty = true;
+            self.invalidate();
         }
     }
 
@@ -902,7 +859,6 @@ impl ActivityTimeline {
         self.show_author_pill
     }
 
-    /// Insert Today / Yesterday / This week / Earlier headings above bands.
     pub fn set_show_day_headings(&mut self, show: bool) {
         if self.show_day_headings != show {
             self.show_day_headings = show;
@@ -947,12 +903,10 @@ impl ActivityTimeline {
         }
     }
 
-    /// 0 for a top-level band or a loose change.
     pub fn row_depth_at(&self, i: usize) -> Option<usize> {
         (i < self.rows.len()).then_some(self.row_depth(i))
     }
 
-    /// `None` when the line is a header.
     pub fn row_entry(&self, i: usize) -> Option<&HistoryEntry> {
         match self.rows.get(i)? {
             VisualRow::Entry(e, _) => self.entries.get(*e),
@@ -978,7 +932,6 @@ impl ActivityTimeline {
         self.rebuild_rows();
     }
 
-    /// `false` when that line is not a header.
     pub fn toggle_group_at_row(&mut self, i: usize) -> bool {
         let Some(VisualRow::Group(g)) = self.rows.get(i).copied() else {
             return false;
@@ -1016,7 +969,6 @@ impl ActivityTimeline {
         self.rebuild_rows();
     }
 
-    /// Inclusive indices into [`Self::entries`].
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.selection
     }
@@ -1049,8 +1001,6 @@ impl ActivityTimeline {
         self.row_rect_unclipped(row)
     }
 
-    /// Put keyboard/assistive-technology focus on a visible row and scroll it
-    /// into view. Returns `false` for an out-of-range row.
     pub fn focus_row(&mut self, row: usize) -> bool {
         let Some(identity) = self.row_identity(row) else {
             return false;
@@ -1063,16 +1013,12 @@ impl ActivityTimeline {
         true
     }
 
-    /// Clear the current row focus without changing an existing range
-    /// selection.
     pub fn clear_row_focus(&mut self) {
         if self.focused_row.take().is_some() {
             self.dirty = true;
         }
     }
 
-    /// Activate a visible row. Activating a band toggles it; activating a
-    /// change selects that one change and notifies the host callback.
     pub fn activate_row(&mut self, row: usize) -> bool {
         let Some(visual) = self.rows.get(row).copied() else {
             return false;
@@ -1118,7 +1064,7 @@ impl ActivityTimeline {
             target: NameTarget::Group(g),
             field: NameField::new(seed),
         });
-        self.dirty = true;
+        self.invalidate();
         true
     }
 
@@ -1131,7 +1077,7 @@ impl ActivityTimeline {
             target: NameTarget::Selection,
             field: NameField::new(""),
         });
-        self.dirty = true;
+        self.invalidate();
         true
     }
 
@@ -1147,17 +1093,15 @@ impl ActivityTimeline {
 
     pub fn cancel_naming(&mut self) {
         if self.naming.take().is_some() {
-            self.dirty = true;
+            self.invalidate();
         }
     }
 
-    /// An empty buffer over an **existing** name removes it (the callback
-    /// fires with an empty label); over a range with no name it is a no-op.
     pub fn commit_naming(&mut self) -> bool {
         let Some(state) = self.naming.take() else {
             return false;
         };
-        self.dirty = true;
+        self.invalidate();
         let label = state.field.text().trim().to_string();
         let req = match state.target {
             NameTarget::Group(g) => {
@@ -1197,23 +1141,18 @@ impl ActivityTimeline {
         true
     }
 
-    /// The author cluster's width: the face alone, whatever the pane.
     fn author_slot_w(&self) -> f64 {
         AUTHOR_SLOT_W
     }
 
-    /// The name an entry's author goes by in this History: an agent by its
-    /// own name where History filters by person, else the author's.
     fn author_label(&self, entry: &HistoryEntry) -> String {
         if self.filters_people {
-            // An agent's own name; its row's place in the History says for whom.
             entry.author.name.clone()
         } else {
             crate::history_source::sentence::author_line(&entry.author)
         }
     }
 
-    /// The bot chip a bot's change carries after its face, and its width.
     fn bot_chip(
         entry: &HistoryEntry,
         text_renderer: &mut TextRenderer,
@@ -1232,7 +1171,6 @@ impl ActivityTimeline {
         })
     }
 
-    /// The face of the author of line `i`, where it is drawn.
     fn avatar_rect(&self, i: usize) -> Option<Rect> {
         let entry = self.row_entry(i)?;
         if entry.is_genesis() {
@@ -1273,7 +1211,6 @@ impl ActivityTimeline {
         self.rect.y0 + PADDING + FILTER_STRIP_HEIGHT + PADDING
     }
 
-    /// Above the selection bar when one is showing.
     fn rows_bottom(&self) -> f64 {
         let mut y = self.rect.y1 - PADDING;
         if self.selection.is_some() {
@@ -1298,9 +1235,16 @@ impl ActivityTimeline {
         )
     }
 
-    /// `Rect::ZERO` when it is not on screen.
     pub fn name_selection_rect(&self) -> Rect {
-        self.name_selection_rect
+        self.selection_bar.name
+    }
+
+    pub fn clear_selection_rect(&self) -> Rect {
+        self.selection_bar.clear
+    }
+
+    pub fn clear_filters_rect(&self) -> Rect {
+        self.nothing.clear
     }
 
     fn row_height(&self, i: usize) -> f64 {
@@ -1397,7 +1341,6 @@ impl ActivityTimeline {
         first.min(n)..last.min(n)
     }
 
-    /// `None` past the end.
     fn row_at_offset(&self, y: f64) -> Option<usize> {
         if self.rows.is_empty() {
             return None;
@@ -1434,7 +1377,6 @@ impl ActivityTimeline {
         self.active_chip
     }
 
-    /// Empty = no author narrowing.
     pub fn set_author_query(&mut self, q: impl Into<String>) {
         self.author_query = q.into();
         self.rebuild();
@@ -1456,7 +1398,6 @@ impl ActivityTimeline {
         self.hover_row
     }
 
-    /// `None` when the line is outside the visible window.
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         let rect = self.row_rect_unclipped(i)?;
         let y0 = rect.y0;
@@ -1467,7 +1408,6 @@ impl ActivityTimeline {
         Some(rect)
     }
 
-    /// The trailing chip of an entry row: where Revert, or Copy, is drawn.
     fn trailing_chip_rect(row: Rect, width: f64) -> Rect {
         let chip_h = ROW_HEIGHT - 16.0;
         let cy = f64::midpoint(row.y0, row.y1);
@@ -1479,8 +1419,6 @@ impl ActivityTimeline {
         )
     }
 
-    /// Where the Copy chip is painted on `row`: the trailing chip, or just
-    /// before Revert when that is offered too.
     fn copy_chip_painted(&self, row: Rect, beside_revert: bool) -> Rect {
         let width = self.revert_chip_w();
         let chip = Self::trailing_chip_rect(row, width);
@@ -1491,8 +1429,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// The Copy chip of line `i`: shown while the pointer is over a change
-    /// whose face copies something.
     pub fn copy_chip_rect(&self, i: usize) -> Option<Rect> {
         if self.hover_row != Some(i) {
             return None;
@@ -1525,6 +1461,36 @@ impl ActivityTimeline {
         ))
     }
 
+    fn note_frame_theme(&mut self, theme: &Theme) {
+        if self.face_theme != *theme {
+            self.face_theme = theme.clone();
+        }
+        self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
+    }
+
+    fn invalidate(&mut self) {
+        self.dirty = true;
+        self.layout_dirty = true;
+    }
+
+    /// Put the strip's chips and the empty state's way back out and the
+    /// selection bar's actions where the pane's box puts them, measured in
+    /// the theme's own type. The layout runs this, so a frame that is read
+    /// before it is drawn — a test, assistive technology, a press — finds
+    /// those controls inside the pane rather than at the window's origin,
+    /// where a control nothing placed stands.
+    fn place_controls(&mut self, theme: &Theme) {
+        self.note_frame_theme(theme);
+        let theme = self.face_theme.clone();
+        crate::text_render::with_layout_renderer(&theme, |tr| {
+            self.place_author_pill(tr, &theme);
+            self.place_strip_chips(tr, &theme);
+            self.place_selection_bar(tr, &theme);
+            self.place_empty_state(tr, &theme);
+        });
+        self.layout_dirty = false;
+    }
+
     /// The pointer target for a chip painted as `painted` inside `within`: grown vertically to the
     /// minimum pointer target, centred on the paint and clamped to its container, while the paint
     /// stays the designed 20 / 28 px pill. Neighbouring chips differ only in x, so grown targets
@@ -1550,10 +1516,6 @@ impl ActivityTimeline {
         Rect::new(painted.x0, y0, painted.x1, y1.max(y0))
     }
 
-    /// `(name, restore)` pointer targets — see `Self::hit_rect_within`.
-    /// `restore` is `None` when nothing in the range can be restored to.
-    /// `(name, restore)`. `name` is zero-sized without a naming callback;
-    /// `restore` is `None` without a restore callback or restorable change.
     pub fn group_chip_rects(&self, i: usize) -> Option<(Rect, Option<Rect>)> {
         let VisualRow::Group(g) = *self.rows.get(i)? else {
             return None;
@@ -1573,9 +1535,6 @@ impl ActivityTimeline {
         ))
     }
 
-    /// `None` when the line is not a band header, is off-screen, holds
-    /// nothing revertible, or no host installed
-    /// [`ActivityTimeline::on_undo_band`].
     pub fn group_undo_chip_rect(&self, i: usize) -> Option<Rect> {
         let VisualRow::Group(g) = *self.rows.get(i)? else {
             return None;
@@ -1593,7 +1552,6 @@ impl ActivityTimeline {
             .map(|r| self.hit_rect_within(r, row))
     }
 
-    /// `None` on a line that is not a band header.
     pub fn band_undo_request(&self, i: usize) -> Option<BandUndoRequest> {
         let VisualRow::Group(g) = *self.rows.get(i)? else {
             return None;
@@ -1795,6 +1753,7 @@ impl ActivityTimeline {
             self.selection_anchor = None;
         }
         self.rebuild_rows();
+        self.layout_dirty = true;
     }
 
     fn rebuild_rows(&mut self) {
@@ -1845,20 +1804,16 @@ impl ActivityTimeline {
         if self.hover_row.is_some_and(|h| h >= self.rows.len()) {
             self.hover_row = None;
         }
-        // Collapsing a band can hide the entry that had focus. Do not leave a
-        // virtual focus target pointing at an unaddressable row.
         if self.focused_row.is_some() && self.focused_row_index().is_none() {
             self.focused_row = None;
         }
-        // A name being typed into a band that no longer exists has nowhere
-        // to land.
         if let Some(n) = &self.naming
             && let NameTarget::Group(g) = n.target
             && g >= self.row_groups.len()
         {
             self.naming = None;
         }
-        self.dirty = true;
+        self.invalidate();
     }
 
     fn emit_group(
@@ -1880,8 +1835,6 @@ impl ActivityTimeline {
         if visible_count == 0 {
             return;
         }
-        // One unnamed change is a row, not a band: a header over one change
-        // is chrome for nothing.
         if g.is_bare_change() {
             rows.push(VisualRow::Entry(g.start, g.depth));
             *budget = budget.saturating_sub(1);
@@ -2017,8 +1970,6 @@ impl ActivityTimeline {
             return None;
         }
         let i = self.row_at_offset(p.y - top + self.scroll_y)?;
-        // `row_rect` owns the clipping rules; going through it keeps hover
-        // and paint agreeing on which lines exist.
         self.row_rect(i).filter(|r| r.contains(p)).map(|_| i)
     }
 }
@@ -2062,8 +2013,6 @@ fn draw_chip(
     let size = theme.text(TextRole::Caption);
     let shown = fit_text(tr, label, &size, rect.width() - 8.0);
     let (lw, lh) = tr.measure_style(&shown, None, &size);
-    // Ink chosen against the face it sits on: `text_primary` is near-black
-    // on the light preset and vanished on its blue accent.
     let ink = if accent {
         colors.intent.on_accent
     } else {
@@ -2085,7 +2034,6 @@ fn draw_chip(
     );
 }
 
-/// A visual row's full-width band and its nesting depth.
 #[derive(Clone, Copy)]
 struct RowSlot {
     rect: Rect,
@@ -2093,7 +2041,6 @@ struct RowSlot {
 }
 
 impl RowSlot {
-    /// The band less its depth's indent: where the row's own content sits.
     fn indented(self) -> Rect {
         Rect::new(
             self.rect.x0 + f64_of_usize(self.depth) * INDENT,
@@ -2104,7 +2051,6 @@ impl RowSlot {
     }
 }
 
-/// A row's pointer, selection and keyboard-focus state this frame.
 #[derive(Clone, Copy)]
 struct RowEmphasis {
     hovered: bool,
@@ -2112,42 +2058,40 @@ struct RowEmphasis {
     focused: bool,
 }
 
-/// Where an entry row's columns paint, resolved once by `draw_row`.
 struct EntryRowLayout {
-    /// The indented row.
     row: Rect,
-    /// The row's centre line.
     cy: f64,
     text_style: TextStyle,
     author_slot_w: f64,
-    /// The pointer is over a revertible entry and a host handles reverts.
     offers_revert: bool,
-    /// The pointer is over a change whose face copies something.
     offers_copy: bool,
     /// Summary width given up to the revert or copy chip; zero unless one
     /// is offered.
     chip_reserve: f64,
 }
 
-/// A band header's group and the title column both of its lines share.
 struct BandHeader<'a> {
     rg: &'a RowGroup,
-    /// The inset header row.
     row: Rect,
     title_x: f64,
     title_style: TextStyle,
 }
 
-/// The filter strip's frame-wide paint inputs, shared by its chip row and
-/// its author pill.
-struct FilterStripPaint {
-    strip: Rect,
-    /// The chip height, never taller than the strip.
-    chip_h: f64,
+struct StripChip {
+    target: StripTarget,
+    label: String,
+    lead: crate::widget::ChipLead,
+    painted: Rect,
+    hit: Rect,
+    selected: bool,
 }
 
-/// When a row's change was made; empty for the genesis, which no one made
-/// at any time worth naming.
+#[derive(Clone, PartialEq, Debug)]
+enum StripTarget {
+    Class(ChipKind),
+    Person(Option<String>),
+}
+
 fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
     if entry.is_genesis() {
         String::new()
@@ -2274,7 +2218,6 @@ impl ActivityTimeline {
 
         let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        // A genesis row names no one: no avatar, no author, no time.
         let dot_x = if entry.is_genesis() {
             row.x0 + 8.0 + AVATAR_DIAM / 2.0
         } else {
@@ -2289,8 +2232,6 @@ impl ActivityTimeline {
                 .faces
                 .get(&entry.id)
                 .is_some_and(|face| face.copy.is_some());
-        // A bot's change carries its chip after the face, and the summary
-        // starts after the chip.
         let bot_w = if entry.is_genesis() {
             0.0
         } else {
@@ -2330,8 +2271,6 @@ impl ActivityTimeline {
         dot_x
     }
 
-    /// The depth rail plus the selection/hover backdrop, under everything
-    /// else in the row.
     fn draw_row_chrome(ctx: &mut PaintCtx<'_>, slot: RowSlot, emphasis: RowEmphasis) {
         let PaintCtx {
             scene,
@@ -2422,8 +2361,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// A bot's chip after its face. The author's name is not drawn: it is
-    /// the face's tooltip and the row's accessible name.
     fn draw_row_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2458,8 +2395,6 @@ impl ActivityTimeline {
         crate::widget::ChipFace::new(chip, &label).paint(scene, transform, text_renderer, theme);
     }
 
-    /// The op-class glyph and the summary column, including the redaction
-    /// strike-through when the change was redacted.
     fn draw_row_body(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2508,7 +2443,6 @@ impl ActivityTimeline {
             scene.pop_layer();
             return;
         }
-        // What kind of change it was, as an icon of the set.
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
         crate::icons::draw_icon(
             scene,
@@ -2596,7 +2530,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// The relative-time slot, and the `[Revert]` chip when it applies.
     fn draw_row_trailing(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2696,8 +2629,6 @@ impl ActivityTimeline {
 
         let mut title_x = row.x0 + 26.0;
         if let Some((icon, _)) = rg.work {
-            // The band's kind of work leads its title: the task or run is
-            // what the band is.
             let side = f64::from(ctx.theme.tokens.metrics.icon_sm);
             let top = row.y0 + 15.0 - side / 2.0;
             crate::icons::draw_icon(
@@ -2780,8 +2711,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// The band header's depth rail, backdrop, name spine and disclosure
-    /// triangle — everything drawn before any text.
     fn draw_group_row_chrome(
         ctx: &mut PaintCtx<'_>,
         full_row: Rect,
@@ -2854,8 +2783,6 @@ impl ActivityTimeline {
         if rg.is_section {
             return;
         }
-        // A named band gets an accent spine: the visual difference between
-        // "someone decided this is a thing" and an automatic chunk.
         if rg.name.is_some() {
             let spine = RoundedRect::from_rect(
                 Rect::new(row.x0, row.y0 + 4.0, row.x0 + 3.0, row.y1 - 4.0),
@@ -2870,7 +2797,6 @@ impl ActivityTimeline {
             );
         }
 
-        // Disclosure triangle: right when collapsed, down when open.
         let tri_center = Point::new(row.x0 + 14.0, row.y0 + 15.0);
         let mut tri = BezPath::new();
         if rg.expanded {
@@ -2892,8 +2818,6 @@ impl ActivityTimeline {
         );
     }
 
-    /// The band title, or the in-place rename field when `naming` is set;
-    /// plus the "still open" dot.
     fn draw_group_row_title(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2948,8 +2872,6 @@ impl ActivityTimeline {
                 title_style,
             );
             if rg.open {
-                // "Still open" has to read as live, not as a label — and sit
-                // on the title's measured centre line, not the font size's.
                 let (w, h) = tr.measure_style(&title, None, title_style);
                 let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
@@ -2965,8 +2887,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// Line two: subtitle, right-aligned relative time, and the packed
-    /// author dots between them.
     fn draw_group_row_meta(
         ctx: &mut PaintCtx<'_>,
         band: &BandHeader<'_>,
@@ -2986,10 +2906,7 @@ impl ActivityTimeline {
         let meta_style = theme.text(TextRole::Caption);
         let rel = format_relative_time(rg.last_time, now);
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
-        // The faces of who worked in the band sit between the subtitle and
-        // the timestamp; reserve them.
         let faces = rg.authors.len().min(3);
-        // A face is a row's avatar; neighbours overlap by the related gap.
         let face_d = AVATAR_DIAM;
         let overlap = f64::from(theme.tokens.spacing.s1);
         let dots_w = if faces > 0 {
@@ -2999,8 +2916,6 @@ impl ActivityTimeline {
         };
         let sub_budget =
             (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
-        // Who, how much moved, how many shown: separate facts, the
-        // least telling given up first when the row is narrow.
         let facts = rg.meta_facts();
         let facts_rect = Rect::new(
             title_x,
@@ -3098,99 +3013,149 @@ impl ActivityTimeline {
         (c.name, c.restore)
     }
 
+    /// Paint the strip: the chips the layout placed in it, then the author
+    /// pill. Where each stands is the layout's; painting adds nothing to
+    /// what a press can find.
     fn draw_filter_strip(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let strip = self.filter_strip_rect();
         // The filter chips are the shared chip: quiet at rest, a lift when
         // chosen (HIG §9.5).
-        let paint = FilterStripPaint {
-            strip,
-            chip_h: crate::widget::ChipFace::height(theme).min(strip.height()),
+        for chip in &self.strip_chips {
+            crate::widget::ChipFace::new(chip.painted, &chip.label)
+                .lead(chip.lead)
+                .selected(chip.selected)
+                .paint(scene, transform, text_renderer, theme);
+        }
+        let pill = self.author_pill_painted;
+        if pill.is_zero_area() {
+            return;
+        }
+        crate::widget::ChipFace::new(pill, &self.author_pill_label())
+            .selected(!self.author_query.is_empty())
+            .paint(scene, transform, text_renderer, theme);
+    }
+
+    fn author_pill_label(&self) -> String {
+        if self.author_query.is_empty() {
+            widget_text("history-author-anyone")
+        } else {
+            self.author_query.clone()
+        }
+    }
+
+    /// The room the author pill takes at the strip's right edge, which the
+    /// class chips leave it: its label, clamped under half the strip.
+    fn author_pill_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        if !self.show_author_pill {
+            return 0.0;
+        }
+        crate::widget::ChipFace::intrinsic_width(
+            &self.author_pill_label(),
+            crate::widget::ChipLead::None,
+            false,
+            tr,
+            theme,
+        )
+        .min(self.filter_strip_rect().width() * 0.45)
+    }
+
+    /// Where the author pill stands: anchored to the strip's right edge, in
+    /// the strip's height. Placed by the layout, so a frame read before it
+    /// paints — a test, assistive technology, a press — finds it in the strip
+    /// rather than at the window's origin.
+    fn place_author_pill(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let strip = self.filter_strip_rect();
+        let shown = !self.filters_people && self.show_author_pill;
+        let width = if shown {
+            self.author_pill_width(tr, theme)
+        } else {
+            0.0
         };
-        let chip_width = |tr: &mut TextRenderer, label: &str| {
-            crate::widget::ChipFace::intrinsic_width(
-                label,
+        self.author_pill_painted = if shown {
+            let h = crate::widget::ChipFace::height(theme).min(strip.height());
+            let cy = f64::midpoint(strip.y0, strip.y1);
+            Rect::new(strip.x1 - width, cy - h / 2.0, strip.x1, cy + h / 2.0)
+        } else {
+            Rect::ZERO
+        };
+        self.author_pill_rect = if self.author_pill_painted.is_zero_area() {
+            Rect::ZERO
+        } else {
+            self.hit_rect_within(self.author_pill_painted, strip)
+        };
+    }
+
+    /// Where the strip's chips stand, in the strip's height, measured in the
+    /// theme's type: the class chips left to right in the room the author
+    /// pill leaves them, or — when the strip filters by who — Everyone and
+    /// then a chip per person and agent. Chips that do not fit are left out
+    /// rather than squeezed, and a chip left out has no place to press.
+    fn place_strip_chips(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let strip = self.filter_strip_rect();
+        let chip_h = crate::widget::ChipFace::height(theme).min(strip.height());
+        let cy = f64::midpoint(strip.y0, strip.y1);
+        let mut chips: Vec<StripChip> = Vec::new();
+        let mut x = strip.x0;
+
+        if self.filters_people {
+            let chosen = self.filter.authors.first().cloned();
+            let mut offered: Vec<(Option<String>, String, crate::widget::ChipLead)> = vec![(
+                None,
+                widget_text("history-chip-all"),
+                crate::widget::ChipLead::None,
+            )];
+            for author in self.people() {
+                let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
+                    crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
+                } else {
+                    let (r, g, b) = author.rgb();
+                    crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
+                };
+                let label = author.name.clone();
+                offered.push((Some(author.name.clone()), label, lead));
+            }
+            for (author, label, lead) in offered {
+                let chip_w =
+                    crate::widget::ChipFace::intrinsic_width(&label, lead, false, tr, theme);
+                if x + chip_w > strip.x1 && !chips.is_empty() {
+                    break;
+                }
+                let painted = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+                chips.push(StripChip {
+                    selected: author == chosen,
+                    target: StripTarget::Person(author),
+                    label,
+                    lead,
+                    painted,
+                    hit: self.hit_rect_within(painted, strip),
+                });
+                x += chip_w + CHIP_GAP;
+            }
+            self.strip_chips = chips;
+            return;
+        }
+
+        let chips_budget = if self.show_author_pill {
+            (strip.width() - self.author_pill_painted.width() - 8.0).max(0.0)
+        } else {
+            strip.width()
+        };
+        let mut run = 0.0;
+        for chip in ChipKind::ALL {
+            run += crate::widget::ChipFace::intrinsic_width(
+                &chip.label(),
                 crate::widget::ChipLead::None,
                 false,
                 tr,
                 theme,
-            )
-        };
-
-        // Rebuild the chip-rect cache every frame so click hit-testing lines up
-        // with what was just painted.
-        self.chip_rects.clear();
-        self.people_chip_rects.clear();
-        if self.filters_people {
-            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-            self.draw_people_chips(&mut ctx, &paint);
-            self.author_pill_rect = Rect::ZERO;
-            return;
+            ) + CHIP_GAP;
         }
-
-        // The author pill is anchored right when this standalone widget owns
-        // people filtering. The host's Activity view can supply that control itself.
-        let author_label = if self.author_query.is_empty() {
-            widget_text("history-author-anyone")
-        } else {
-            self.author_query.clone()
-        };
-        let author_full_w = if self.show_author_pill {
-            chip_width(text_renderer, &author_label).min(strip.width() * 0.45)
-        } else {
-            0.0
-        };
-        let chips_budget = if self.show_author_pill {
-            (strip.width() - author_full_w - 8.0).max(0.0)
-        } else {
-            strip.width()
-        };
-
-        let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
-            let mut total = 0.0;
-            for chip in ChipKind::ALL {
-                let l = if short {
-                    chip.short_label()
-                } else {
-                    chip.label()
-                };
-                total += chip_width(tr, &l) + CHIP_GAP;
-            }
-            total
-        };
-        let use_short = measure_run(text_renderer, false) > chips_budget;
-
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        self.draw_filter_chips(&mut ctx, &paint, chips_budget, use_short);
-        if self.show_author_pill {
-            self.draw_author_pill(&mut ctx, &paint, &author_label, author_full_w);
-        } else {
-            self.author_pill_rect = Rect::ZERO;
-        }
-    }
-
-    /// The `[All] [Edits] [Comments] ...` chip row; populates
-    /// [`Self::chip_rects`] so hit-testing lines up with what was painted.
-    fn draw_filter_chips(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        paint: &FilterStripPaint,
-        chips_budget: f64,
-        use_short: bool,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
-        let mut x = strip.x0;
+        let use_short = run > chips_budget;
         for chip in ChipKind::ALL {
             let label = if use_short {
                 chip.short_label()
@@ -3201,116 +3166,114 @@ impl ActivityTimeline {
                 &label,
                 crate::widget::ChipLead::None,
                 false,
-                text_renderer,
+                tr,
                 theme,
             );
-            let cy = f64::midpoint(strip.y0, strip.y1);
-            // Stop rather than paint a chip half-under the author pill; an
-            // unpainted chip is not in `chip_rects`, so it cannot be clicked.
-            if x + chip_w > strip.x0 + chips_budget && !self.chip_rects.is_empty() {
+            // Stop rather than place a chip half-under the author pill; a
+            // chip nothing placed cannot be pressed.
+            if x + chip_w > strip.x0 + chips_budget && !chips.is_empty() {
                 break;
             }
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.chip_rects
-                .push((chip, self.hit_rect_within(chip_rect, strip)));
-            crate::widget::ChipFace::new(chip_rect, &label)
-                .selected(self.active_chip == chip)
-                .paint(scene, transform, text_renderer, theme);
+            let painted = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            chips.push(StripChip {
+                selected: self.active_chip == chip,
+                target: StripTarget::Class(chip),
+                label,
+                lead: crate::widget::ChipLead::None,
+                painted,
+                hit: self.hit_rect_within(painted, strip),
+            });
             x += chip_w + CHIP_GAP;
         }
+        self.strip_chips = chips;
     }
 
-    /// Everyone, then a chip per person and agent: a person's in their
-    /// colour, an agent's with the agent mark. Chips that do not fit are
-    /// left out rather than squeezed.
-    fn draw_people_chips(&mut self, ctx: &mut PaintCtx<'_>, paint: &FilterStripPaint) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
-        let cy = f64::midpoint(strip.y0, strip.y1);
-        let chosen = self.filter.authors.first().cloned();
-        let everyone = widget_text("history-chip-all");
-        let mut chips: Vec<(Option<String>, String, crate::widget::ChipLead)> =
-            vec![(None, everyone, crate::widget::ChipLead::None)];
-        for author in self.people() {
-            let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
-                crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
-            } else {
-                let (r, g, b) = author.rgb();
-                crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
-            };
-            // An agent's chip names the agent itself; its rows say for whom.
-            let label = author.name.clone();
-            chips.push((Some(author.name.clone()), label, lead));
+    /// Where the bar's count, its way out and its name action stand: decided
+    /// by the layout, so a frame read before it paints finds them in the bar.
+    fn selection_bar_placement(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> SelectionBarPlacement {
+        let mut out = SelectionBarPlacement::default();
+        if self.filters_people && self.preview_selection {
+            return out;
         }
-        let mut x = strip.x0;
-        for (author, label, lead) in chips {
-            let chip_w =
-                crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
-            if x + chip_w > strip.x1 && !self.people_chip_rects.is_empty() {
-                break;
+        let Some((a, b)) = self.selection else {
+            return out;
+        };
+        let bar = self.selection_bar_rect();
+        if bar.height() < 20.0 {
+            return out;
+        }
+        let style = theme.text(TextRole::Caption);
+        // `selection` is normalised so `b >= a` (see `set_selection`).
+        let n = b.saturating_sub(a).saturating_add(1);
+        let naming = matches!(
+            self.naming.as_ref().map(|s| &s.target),
+            Some(NameTarget::Selection)
+        );
+
+        let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
+            (f64::from(tr.measure_style(label, None, &style).0) + 20.0).max(min)
+        };
+        let clear_w = chip_w(tr, &widget_text("history-selection-clear"), 54.0);
+        let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
+            0.0
+        } else {
+            chip_w(tr, &widget_text("history-selection-name"), 96.0)
+        };
+        let clear = Rect::new(
+            bar.x1 - 8.0 - clear_w,
+            bar.center().y - 11.0,
+            bar.x1 - 8.0,
+            bar.center().y + 11.0,
+        );
+        let label = widget_format("history-selection-count", &[("count", n.into())]);
+        let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
+        out.count = fit_text(tr, &label, &style, label_budget);
+        out.count_at = Point::new(bar.x0 + 10.0, text_top(tr, &style, bar.center().y));
+        out.clear = clear;
+        if naming {
+            let field_x0 =
+                bar.x0 + 10.0 + f64::from(tr.measure_style(&out.count, None, &style).0) + 12.0;
+            out.field = Rect::new(
+                field_x0,
+                bar.center().y - 12.0,
+                clear.x0 - 8.0,
+                bar.center().y + 12.0,
+            );
+        } else if self.on_name_group.is_some() {
+            let action = Rect::new(
+                clear.x0 - 6.0 - action_w,
+                bar.center().y - 11.0,
+                clear.x0 - 6.0,
+                bar.center().y + 11.0,
+            );
+            if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
+                out.name = action;
             }
-            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.people_chip_rects
-                .push((author.clone(), self.hit_rect_within(chip_rect, strip)));
-            crate::widget::ChipFace::new(chip_rect, &label)
-                .lead(lead)
-                .selected(author == chosen)
-                .paint(scene, transform, text_renderer, theme);
-            x += chip_w + CHIP_GAP;
         }
+        out.bar = bar;
+        out
     }
 
-    /// The right-anchored `author:...` pill.
-    fn draw_author_pill(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        paint: &FilterStripPaint,
-        author_label: &str,
-        author_full_w: f64,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &FilterStripPaint { strip, chip_h } = paint;
-        let cy = f64::midpoint(strip.y0, strip.y1);
-        let arx1 = strip.x1;
-        let arx0 = arx1 - author_full_w;
-        let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
-        self.author_pill_rect = self.hit_rect_within(chip_rect, strip);
-        crate::widget::ChipFace::new(chip_rect, author_label)
-            .selected(!self.author_query.is_empty())
-            .paint(scene, transform, text_renderer, theme);
+    fn place_selection_bar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.selection_bar = self.selection_bar_placement(tr, theme);
     }
 
     fn draw_selection_bar(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.name_selection_rect = Rect::ZERO;
-        self.clear_selection_rect = Rect::ZERO;
-        // A document's History previews the selected change in place and
-        // says what it is, with its way back, in the panel's foot.
-        if self.filters_people && self.preview_selection {
+        let placed = &self.selection_bar;
+        if placed.bar.area() <= 0.0 {
             return;
         }
-        let Some((a, b)) = self.selection else {
-            return;
-        };
-        let bar = self.selection_bar_rect();
-        if bar.height() < 20.0 {
-            return;
-        }
+        let bar = placed.bar;
         let colors = &theme.tokens.colors;
         // Overlay bar under an edge derived from it: the bar announces a
         // selection through its copy and actions, not by wearing the focus
@@ -3324,77 +3287,40 @@ impl ActivityTimeline {
         );
 
         let style = theme.text(TextRole::Caption);
-        // `selection` is normalised so `b >= a` (see `set_selection`).
-        let n = b.saturating_sub(a).saturating_add(1);
-        let naming = matches!(
-            self.naming.as_ref().map(|s| &s.target),
-            Some(NameTarget::Selection)
-        );
-
-        let clear_label = widget_text("history-selection-clear");
-        let name_label = widget_text("history-selection-name");
-        let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
-            (f64::from(tr.measure_style(label, None, &style).0) + 20.0).max(min)
-        };
-        let clear_w = chip_w(tr, &clear_label, 54.0);
-        let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
-            0.0
-        } else {
-            chip_w(tr, &name_label, 96.0)
-        };
-        let clear = Rect::new(
-            bar.x1 - 8.0 - clear_w,
-            bar.center().y - 11.0,
-            bar.x1 - 8.0,
-            bar.center().y + 11.0,
-        );
-        self.clear_selection_rect = clear;
-        draw_chip(scene, transform, tr, theme, clear, &clear_label, false);
-
-        let label = widget_format("history-selection-count", &[("count", n.into())]);
-        let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
-        let shown = fit_text(tr, &label, &style, label_budget);
-        let label_top = text_top(tr, &style, bar.center().y);
         tr.draw_style(
             scene,
-            &shown,
+            &placed.count,
             colors.text_primary,
-            transform.pre_translate((bar.x0 + 10.0, label_top).into()),
+            transform.pre_translate(placed.count_at.to_vec2()),
             None,
             &style,
         );
 
-        if naming {
-            let field_x0 =
-                bar.x0 + 10.0 + f64::from(tr.measure_style(&shown, None, &style).0) + 12.0;
-            let field = Rect::new(
-                field_x0,
-                bar.center().y - 12.0,
-                clear.x0 - 8.0,
-                bar.center().y + 12.0,
-            );
-            if field.width() > 40.0
-                && let Some(state) = self.naming.as_ref()
-            {
-                state.field.draw(scene, transform, tr, theme, field, &style);
-            }
-        } else if self.on_name_group.is_some() {
-            let action = Rect::new(
-                clear.x0 - 6.0 - action_w,
-                bar.center().y - 11.0,
-                clear.x0 - 6.0,
-                bar.center().y + 11.0,
-            );
-            if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
-                self.name_selection_rect = action;
-                draw_chip(scene, transform, tr, theme, action, &name_label, true);
-            }
+        if placed.field.width() > 40.0
+            && let Some(state) = self.naming.as_ref()
+        {
+            state
+                .field
+                .draw(scene, transform, tr, theme, placed.field, &style);
+        }
+        let clear_label = widget_text("history-selection-clear");
+        draw_chip(
+            scene,
+            transform,
+            tr,
+            theme,
+            placed.clear,
+            &clear_label,
+            false,
+        );
+        if !placed.name.is_zero_area() {
+            let name_label = widget_text("history-selection-name");
+            draw_chip(scene, transform, tr, theme, placed.name, &name_label, true);
         }
     }
 }
 
 impl Widget for ActivityTimeline {
-    /// Over an author's face, their name.
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         if !self.rect.contains(point) {
             return None;
@@ -3408,9 +3334,10 @@ impl Widget for ActivityTimeline {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.note_frame_theme(theme);
         if !self.fill {
             // Its strip, its rows and its padding: the page scrolls it with the rest.
             let height = self.content_height() + FILTER_STRIP_HEIGHT + PADDING * 3.0;
@@ -3432,6 +3359,20 @@ impl Widget for ActivityTimeline {
         if prev != self.rect {
             self.dirty = true;
         }
+        let theme = self.face_theme.clone();
+        self.place_controls(&theme);
+    }
+
+    /// Dirty while what it places may have moved: a selection, a name being
+    /// typed, a filter, a list that changed. A leaf that always answered
+    /// "dirty" re-solved its box every frame for a strip and a bar nobody
+    /// moved.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn draw(
@@ -3442,10 +3383,7 @@ impl Widget for ActivityTimeline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
-        if self.face_theme != *theme {
-            self.face_theme = theme.clone();
-        }
+        self.note_frame_theme(theme);
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);
         }
@@ -3459,7 +3397,6 @@ impl Widget for ActivityTimeline {
             self.dirty = false;
             return;
         }
-        self.clear_chip_rect = Rect::ZERO;
 
         self.draw_rows(scene, transform, text_renderer, theme);
 
@@ -3488,8 +3425,6 @@ impl Widget for ActivityTimeline {
             {
                 self.handle_naming_key(event, *ctx.modifiers, ctx.handled);
             }
-            // Copy copies what the focused change's face copies (a
-            // calculation's result); with nothing to copy it is the host's.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -3530,7 +3465,6 @@ impl Widget for ActivityTimeline {
                     self.handle_author_typeahead_key(logical_key, ctx.handled);
                 }
             }
-            // An input method's text types into the author filter as keys do.
             WindowEvent::Ime(winit::event::Ime::Commit(text)) if self.naming.is_none() => {
                 let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
                 if !text.is_empty() {
@@ -3795,15 +3729,14 @@ impl ActivityTimeline {
         );
     }
 
-    /// The "nothing here" / "nothing matches the filter" centered message,
-    /// plus `[Clear filters]` when a filter is the reason the list is empty.
-    fn draw_empty_state(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    /// Where the empty state's lines and its way back out stand: centred in
+    /// what the pane has under the strip, decided by the layout so a frame
+    /// read before it paints finds the `[Clear filters]` chip there.
+    fn empty_placement(&self, tr: &mut TextRenderer, theme: &Theme) -> NothingPlacement {
+        let mut out = NothingPlacement::default();
+        if !self.rows.is_empty() {
+            return out;
+        }
         let (title, detail) = self.empty_state_lines();
         let style = theme.text(TextRole::Body);
         let small = theme.text(TextRole::Caption);
@@ -3812,54 +3745,80 @@ impl ActivityTimeline {
         let cy = (rows_top + self.rect.y1 - PADDING) / 2.0;
         let budget = (self.rect.width() - 2.0 * PADDING - 16.0).max(0.0);
 
-        let title = fit_text(text_renderer, &title, &style, budget);
-        let (w, h) = text_renderer.measure_style(&title, None, &style);
+        out.title = fit_text(tr, &title, &style, budget);
+        let (w, h) = tr.measure_style(&out.title, None, &style);
         let title_y = if detail.is_some() {
             cy - f64::from(h) - 14.0
         } else {
             cy - f64::from(h) / 2.0
         };
-        text_renderer.draw_style(
-            scene,
-            &title,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((cx - f64::from(w) / 2.0, title_y).into()),
-            None,
-            &style,
-        );
+        out.title_at = Point::new(cx - f64::from(w) / 2.0, title_y);
 
-        self.clear_chip_rect = Rect::ZERO;
         if let Some(detail) = detail {
-            let detail = fit_text(text_renderer, &detail, &small, budget);
-            let (dw, dh) = text_renderer.measure_style(&detail, None, &small);
+            let detail = fit_text(tr, &detail, &small, budget);
+            let (dw, dh) = tr.measure_style(&detail, None, &small);
             let detail_y = title_y + f64::from(h) + 8.0;
-            text_renderer.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform.pre_translate((cx - f64::from(dw) / 2.0, detail_y).into()),
-                None,
-                &small,
-            );
+            out.detail = Some((detail, Point::new(cx - f64::from(dw) / 2.0, detail_y)));
 
-            // `[Clear filters]` — the way back out. Without it the user has
-            // to remember which chip they pressed to get here.
             let label = widget_text("history-filters-clear");
-            let label = label.as_str();
-            let (lw, lh) = text_renderer.measure_style(label, None, &small);
+            let (lw, lh) = tr.measure_style(&label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
             let chip_h = f64::from(lh) + 10.0;
             let chip_y0 = detail_y + f64::from(dh) + 12.0;
             if chip_y0 + chip_h <= self.rect.y1 - PADDING {
-                let chip = Rect::new(
+                out.clear = Rect::new(
                     cx - chip_w / 2.0,
                     chip_y0,
                     cx + chip_w / 2.0,
                     chip_y0 + chip_h,
                 );
-                self.clear_chip_rect = chip;
-                draw_chip(scene, transform, text_renderer, theme, chip, label, false);
             }
+        }
+        out
+    }
+
+    fn place_empty_state(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.nothing = self.empty_placement(tr, theme);
+    }
+
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let placed = &self.nothing;
+        let style = theme.text(TextRole::Body);
+        let small = theme.text(TextRole::Caption);
+        text_renderer.draw_style(
+            scene,
+            &placed.title,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(placed.title_at.to_vec2()),
+            None,
+            &style,
+        );
+
+        if let Some((detail, at)) = &placed.detail {
+            text_renderer.draw_style(
+                scene,
+                detail,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate(at.to_vec2()),
+                None,
+                &small,
+            );
+            let label = widget_text("history-filters-clear");
+            draw_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                placed.clear,
+                &label,
+                false,
+            );
         }
     }
 
@@ -3875,8 +3834,6 @@ impl ActivityTimeline {
         let now = self.now();
         let selection = self.selection;
         let focused_row = self.focused_row();
-        // Clip to the row band: without it the line straddling the bottom
-        // edge paints over the selection bar and past the pane edge.
         let clip = Rect::new(
             self.rect.x0,
             self.rows_top(),
@@ -4129,26 +4086,25 @@ impl ActivityTimeline {
         node_id: NodeId,
         modifiers: winit::event::Modifiers,
     ) {
-        // `clear_chip_rect` is zeroed the moment the empty state is
-        // not painted, so this can never fire on a stale hit zone.
-        if self.clear_chip_rect.area() > 0.0 && self.clear_chip_rect.contains(self.last_cursor) {
+        // The way out is zeroed by the layout the moment the empty state
+        // leaves the pane, so this can never fire on a stale hit zone.
+        let clear_filters = self.nothing.clear;
+        if clear_filters.area() > 0.0 && clear_filters.contains(self.last_cursor) {
             self.clear_filters();
             self.dirty = true;
             *handled = true;
             return;
         }
 
-        // The selection bar sits over the rows; it takes the click.
-        let bar = self.selection_bar_rect();
+        let placed = &self.selection_bar;
+        let bar = placed.bar;
         if bar.area() > 0.0 && bar.contains(self.last_cursor) {
-            if self.clear_selection_rect.contains(self.last_cursor) {
+            if placed.clear.contains(self.last_cursor) {
                 self.naming = None;
                 self.selection = None;
                 self.selection_anchor = None;
                 self.rebuild_rows();
-            } else if self.name_selection_rect.area() > 0.0
-                && self.name_selection_rect.contains(self.last_cursor)
-            {
+            } else if placed.name.area() > 0.0 && placed.name.contains(self.last_cursor) {
                 self.begin_naming_selection();
                 *focus_target = Some(node_id);
             }
@@ -4156,7 +4112,6 @@ impl ActivityTimeline {
             return;
         }
 
-        // The chip strip steals the click before the row hit-test.
         let strip = self.filter_strip_rect();
         if strip.contains(self.last_cursor) {
             self.handle_click_in_filter_strip(handled);
@@ -4178,26 +4133,24 @@ impl ActivityTimeline {
     }
 
     fn handle_click_in_filter_strip(&mut self, handled: &mut bool) {
-        if let Some((author, _)) = self
-            .people_chip_rects
+        let target = self
+            .strip_chips
             .iter()
-            .find(|(_, rect)| rect.contains(self.last_cursor))
-            .cloned()
-        {
-            self.filter_by_author(author.as_deref());
+            .find(|chip| chip.hit.contains(self.last_cursor))
+            .map(|chip| chip.target.clone());
+        if let Some(target) = target {
+            match target {
+                StripTarget::Person(author) => self.filter_by_author(author.as_deref()),
+                StripTarget::Class(kind) => {
+                    if self.active_chip != kind {
+                        self.active_chip = kind;
+                        self.rebuild();
+                        self.dirty = true;
+                    }
+                }
+            }
             *handled = true;
             return;
-        }
-        for (kind, rect) in &self.chip_rects {
-            if rect.contains(self.last_cursor) {
-                if self.active_chip != *kind {
-                    self.active_chip = *kind;
-                    self.rebuild();
-                    self.dirty = true;
-                }
-                *handled = true;
-                return;
-            }
         }
         // The author pill clears the typeahead — the only way back
         // from a mistyped name without reaching for backspace.
@@ -4277,8 +4230,6 @@ impl ActivityTimeline {
             *handled = true;
             return;
         }
-        // A change the app takes up opens there; shift-click still extends
-        // a range over it.
         if !modifiers.state().shift_key() && self.open_row(i) {
             *handled = true;
             return;
@@ -4294,9 +4245,6 @@ impl ActivityTimeline {
             *handled = true;
             return;
         }
-        // Click selects; shift-click extends. This is the range
-        // gesture for naming a run the automatic boundaries did
-        // not draw.
         self.naming = None;
         if modifiers.state().shift_key()
             && let Some(anchor) = self.selection_anchor
@@ -4314,7 +4262,6 @@ impl ActivityTimeline {
     }
 }
 
-/// Whether `author` is an installed bot acting as itself.
 fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
     author
         .attribution
@@ -4323,2133 +4270,7 @@ fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::synthetic_input::{cursor_moved, mouse_press};
-    use crate::testing::dispatch;
-    use crate::time::Duration;
-    use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::ArtifactKind;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    #[test]
-    fn a_bots_change_is_marked_as_the_bots_and_an_agents_is_not() {
-        let acting = |kind| {
-            HistoryAuthor::new("Standup Bot", 120.0, "ab12")
-                .with_relation(crate::widget::history::AuthorRelation::Software)
-                .with_attribution(crate::widget::history::HistoryAttribution {
-                    actor: "bot:standup".into(),
-                    kind,
-                    on_behalf_of: Some("ada".into()),
-                    on_behalf_of_name: Some("Ada".into()),
-                })
-        };
-        assert!(is_bot_author(&acting(tilo_actions::ActorKind::Bot)));
-        assert!(!is_bot_author(&acting(tilo_actions::ActorKind::Agent)));
-        assert!(!is_bot_author(&HistoryAuthor::new("Ada", 10.0, "cd34")));
-    }
-
-    /// Relative luminance of the composited pixel at (`x`, `y`).
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "probe coordinates are non-negative pixel positions inside the test surface"
-    )]
-    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
-            rgba,
-            w,
-            x.floor() as u32,
-            y.floor() as u32,
-        );
-        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
-    }
-
-    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
-    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
-            .join(theme.name.to_lowercase());
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(name))
-    }
-
-    /// Eight changes by two authors — enough for a band and loose rows —
-    /// with two rows selected so the selection bar and its chips paint.
-    fn ux1x_fixture() -> ActivityTimeline {
-        let entries: Vec<HistoryEntry> = (0..8u8)
-            .map(|i| {
-                let who = if i < 5 { "Alice" } else { "Bob" };
-                entry(EntryKind::Text, who, 1_000 + u64::from(i) * 30, i)
-            })
-            .collect();
-        let mut t = ActivityTimeline::with_entries(entries);
-        t.set_now_for_test(
-            SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_secs(2_000))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-        );
-        t.set_all_expanded(true);
-        t.set_selection(Some((5, 6)));
-        t
-    }
-
-    #[test]
-    fn provenance_and_author_pill_presentation() {
-        /// The pane, its quiet chips, the band backdrops and the selected rows
-        /// keep a **visible derived edge** at 1× on both presets (HIG §9.5).
-        /// Before, the pane wore `border_standard` (three shades from the dark
-        /// raised surface), chips and bands literal white veneers, hover
-        /// `neutral[3]`, and the selection bar the focus ring.
-        ///
-        /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the harness
-        /// inspection when that variable is set; asserts regardless.
-        fn ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets() {
-            use crate::offscreen::OffscreenRenderer;
-            const EDGE_MIN: f64 = 0.008;
-            let margin = 16.0;
-            let (pw, ph) = (520.0, 520.0);
-            // Evidence first, for both presets, so a failing assertion on one
-            // preset still leaves the other's PNG and inspection on disk.
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                if let Some(png) = ux1x_out(&theme, "activity_timeline.png") {
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "a small test viewport"
-                    )]
-                    let harness = crate::headless::FrameHarness::new_with_theme(
-                        crate::State::new(),
-                        Box::new(ux1x_fixture()),
-                        (pw as u32, ph as u32),
-                        theme.clone(),
-                    );
-                    harness.render_png(&png);
-                    if let Ok(json) = harness.inspection_json() {
-                        std::fs::write(png.with_extension("inspection.json"), json)
-                            .expect("write inspection");
-                    }
-                }
-            }
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                let mut t = ux1x_fixture();
-                let pane = Rect::new(margin, margin, margin + pw, margin + ph);
-                t.set_rect(pane);
-                let (w, h) = (pane.x1 + margin, pane.y1 + margin);
-                let mut tr = TextRenderer::new();
-                let mut scene = Scene::new();
-                t.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a small test surface"
-                )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32)
-                    .render(&scene, theme.tokens.colors.surfaces.content);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a small test surface"
-                )]
-                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
-
-                // Pane edge against its own fill, on the pane's centre line (clear
-                // of the corner arcs; rows start one `PADDING` in, so the columns
-                // beside the edge are bare fill).
-                let y = pane.center().y;
-                let edge = lum(pane.x0, y);
-                let fill = lum(pane.x0 + 3.0, y);
-                assert!(
-                    (edge - fill).abs() >= EDGE_MIN,
-                    "{}: pane edge {edge:.4} vs fill {fill:.4} did not register",
-                    theme.name
-                );
-
-                // Quiet chip (the second filter chip, not the active first one):
-                // its top edge — the straight run of the capsule, where the 1 px
-                // stroke covers the whole pixel row — against its own fill just
-                // under it, above the label's line box. `chip_rects` holds the
-                // pointer target, so recover the painted capsule from the strip.
-                let (_, hit) = t.chip_rects.get(1).copied().expect("a second filter chip");
-                let strip = t.filter_strip_rect();
-                let chip_h = (strip.height() - 8.0).max(20.0);
-                let chip_top = strip.center().y - chip_h / 2.0;
-                let cx = hit.center().x;
-                let cedge = lum(cx, chip_top);
-                let cfill = lum(cx, chip_top + 3.0);
-                assert!(
-                    (cedge - cfill).abs() >= EDGE_MIN,
-                    "{}: chip edge {cedge:.4} vs fill {cfill:.4} did not register",
-                    theme.name
-                );
-
-                let band_row = (0..t.row_count())
-                    .find(|i| t.group_at_row(*i).is_some())
-                    .expect("two authors' runs produce a band");
-                let band = t.row_rect(band_row).expect("the band row is laid out");
-                let inner = Rect::new(band.x0, band.y0 + 2.0, band.x1, band.y1 - 2.0);
-                let bfill = lum(inner.x1 - 3.0, inner.center().y);
-                let pane_fill = lum(pane.x1 - PADDING / 2.0, inner.center().y);
-                assert!(
-                    (bfill - pane_fill).abs() >= EDGE_MIN,
-                    "{}: band {bfill:.4} vs pane {pane_fill:.4} did not register",
-                    theme.name
-                );
-            }
-        }
-
-        fn provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows() {
-            use tilo_actions::ActionContext;
-            let mut files = entry(EntryKind::Text, "Alice", 10, 1);
-            files.context = Some(
-                ActionContext::for_resource("files:brief", "files.entry", "brief.md")
-                    .with_app("org.tilo.Files", "Files")
-                    .with_group("workspace:a", "Alpha", "workspace"),
-            );
-            let mut notes = entry(EntryKind::Text, "Alice", 11, 2);
-            notes.context = Some(
-                ActionContext::for_resource("notes:plan", "notes.document", "plan")
-                    .with_app("org.tilo.Notes", "Notes")
-                    .with_group("workspace:a", "Beta", "workspace"),
-            );
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![files, notes]);
-            assert_eq!(
-                ActivityTimeline::entry_breadcrumb(&timeline.entries()[0]).as_deref(),
-                Some("Files / brief.md")
-            );
-            timeline.set_all_expanded(false);
-            let group = (0..timeline.row_count())
-                .find(|row| timeline.group_at_row(*row).is_some())
-                .expect("collapsed group");
-            let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
-            let description = semantics.children[group]
-                .description
-                .as_deref()
-                .unwrap_or_default();
-            assert!(description.contains("Alpha") && description.contains("Files"));
-            assert!(description.contains("Beta") && description.contains("Notes"));
-        }
-
-        fn host_can_suppress_duplicate_author_pill_without_hiding_op_filters() {
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![]);
-            assert!(timeline.shows_author_pill());
-            timeline.set_show_author_pill(false);
-            assert!(!timeline.shows_author_pill());
-            assert_eq!(timeline.author_pill_rect(), Rect::ZERO);
-        }
-
-        fn a_task_band_says_it_is_a_task_and_a_named_run_does_not() {
-            use tilo_actions::ActionContext;
-            let mut entries = vec![
-                entry(EntryKind::Text, "Alice", 10, 1),
-                entry(EntryKind::Text, "Bob", 11, 2),
-            ];
-            for entry in &mut entries {
-                entry.context =
-                    Some(ActionContext::default().with_group("task:7", "Prepare budget", "task"));
-            }
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
-            timeline.set_all_expanded(false);
-            let spoken = |timeline: &ActivityTimeline| {
-                let group = (0..timeline.row_count())
-                    .find(|row| timeline.group_at_row(*row).is_some())
-                    .expect("one band");
-                Widget::accessibility(timeline)
-                    .expect("timeline semantics")
-                    .children[group]
-                    .description
-                    .clone()
-                    .unwrap_or_default()
-            };
-            let task = crate::i18n::I18nManager::lookup_plain("history-work-task");
-            assert!(
-                spoken(&timeline).starts_with(&task),
-                "{}",
-                spoken(&timeline)
-            );
-
-            for entry in &mut timeline.entries {
-                entry.context = None;
-            }
-            timeline.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:01".into(),
-                label: "Budget".into(),
-                start: timeline.entries[0].id,
-                end: Some(timeline.entries[1].id),
-                named_by: None,
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            assert!(!spoken(&timeline).starts_with(&task));
-        }
-
-        fn a_described_change_reads_as_its_description_and_falls_back_to_its_summary() {
-            let entry = entry(EntryKind::Text, "Alice", 10, 1);
-            let id = entry.id;
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![entry]);
-            let spoken = |timeline: &ActivityTimeline| {
-                Widget::accessibility(timeline)
-                    .expect("timeline semantics")
-                    .children
-                    .iter()
-                    .filter_map(|node| node.name.clone())
-                    .collect::<Vec<_>>()
-                    .join("|")
-            };
-            let raw = timeline.entries()[0].summary.clone();
-            assert!(spoken(&timeline).contains(&raw));
-            timeline.set_descriptions(std::collections::HashMap::from([(
-                id,
-                "Noted that costs rose".to_owned(),
-            )]));
-            assert!(spoken(&timeline).contains("Noted that costs rose"));
-            assert_eq!(
-                timeline.summary_of(&timeline.entries()[0]),
-                "Noted that costs rose"
-            );
-            timeline.set_descriptions(std::collections::HashMap::new());
-            assert!(spoken(&timeline).contains(&raw));
-        }
-
-        ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets();
-        provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows();
-        a_described_change_reads_as_its_description_and_falls_back_to_its_summary();
-        a_task_band_says_it_is_a_task_and_a_named_run_does_not();
-        host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
-    }
-
-    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
-        let mut id_bytes = [0u8; 16];
-        id_bytes[0] = id;
-        HistoryEntry {
-            id: HistoryEntryId(id_bytes),
-            author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            entry_kind: op,
-            artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_secs(ts))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-            summary: format!("op {id} by {author}"),
-            text_delta: Some((1, 0)),
-            diff_payload: None,
-            redaction: None,
-            context: None,
-        }
-    }
-
-    fn timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
-        let mut t = ActivityTimeline::with_entries(entries);
-        t.rect = rect;
-        t.set_now_for_test(
-            SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_secs(2_000_000))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-        );
-        t.set_newest_first(false); // ascending order for clarity
-        t
-    }
-
-    // Geometry and naming-input tests explicitly install the capabilities they
-    // exercise; the ordinary fixture remains a read-only history viewer.
-    fn editable_timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
-        timeline_at(rect, entries)
-            .on_revert(|_| {})
-            .on_name_group(|_| {})
-    }
-
-    /// An app's presenter decides how its changes read: a face's words name
-    /// the row, its body sets the row's height, choosing a change it opens
-    /// hands it to the app instead of selecting it, and Copy copies what the
-    /// face copies. Changes without a face keep their sentence.
-    #[test]
-    fn a_presented_change_reads_opens_and_copies_as_the_app_says() {
-        struct Tall;
-        impl crate::widget::EntryBody for Tall {
-            fn height(&self, _: &Theme) -> f64 {
-                ROW_HEIGHT * 2.0
-            }
-            fn paint(&self, _: &mut PaintCtx<'_>, _: Rect) {}
-        }
-        struct Calculations;
-        impl HistoryEntryPresenter for Calculations {
-            fn face(&self, entry: &HistoryEntry) -> Option<EntryFace> {
-                (entry.id.0[0] == 1).then(|| {
-                    EntryFace::new("1+2 = 3")
-                        .with_body(Rc::new(Tall))
-                        .copying("3")
-                        .opening()
-                })
-            }
-        }
-        let _host = crate::host::enter(&crate::host::HostServices::null());
-        let opened = Rc::new(RefCell::new(Vec::new()));
-        let seen = Rc::clone(&opened);
-        let presented = entry(EntryKind::Details, "Alice", 10, 1);
-        let plain = entry(EntryKind::Details, "Alice", 20, 2);
-        let (presented_id, plain_summary) = (presented.id, plain.summary.clone());
-        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), vec![presented, plain])
-            .on_open_entry(move |id| seen.borrow_mut().push(*id));
-        timeline.set_entry_presenter(Some(Rc::new(Calculations)));
-        let row = (0..timeline.row_count())
-            .find(|row| {
-                timeline
-                    .row_entry(*row)
-                    .is_some_and(|entry| entry.id == presented_id)
-            })
-            .expect("the change is listed");
-        let names: Vec<String> = Widget::accessibility(&timeline)
-            .expect("timeline semantics")
-            .children
-            .iter()
-            .filter_map(|node| node.name.clone())
-            .collect();
-        assert!(
-            names.iter().any(|name| name.ends_with("1+2 = 3")),
-            "{names:?}"
-        );
-        assert!(
-            names.iter().any(|name| name.ends_with(&plain_summary)),
-            "{names:?}"
-        );
-        assert!((timeline.row_height(row) - ROW_HEIGHT * 2.0).abs() < 1e-9);
-
-        assert!(timeline.copy_row(row), "the face copies its result");
-        assert_eq!(
-            crate::text_selection::clipboard_paste().as_deref(),
-            Some("3")
-        );
-
-        assert!(timeline.activate_row(row));
-        assert_eq!(*opened.borrow(), vec![presented_id], "the app takes it up");
-        assert!(timeline.selection.is_none(), "opening is not selecting");
-    }
-
-    /// A band says what the app says it amounts to, in place of how many
-    /// characters moved.
-    #[test]
-    fn a_presenter_says_what_a_band_amounts_to() {
-        struct Counting;
-        impl HistoryEntryPresenter for Counting {
-            fn face(&self, _: &HistoryEntry) -> Option<EntryFace> {
-                None
-            }
-            fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
-                Some(format!("{} calculations", entries.len()))
-            }
-        }
-        let entries: Vec<HistoryEntry> = (1..=3)
-            .map(|id| entry(EntryKind::Text, "Alice", u64::from(id), id))
-            .collect();
-        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-        let band = |timeline: &ActivityTimeline| {
-            (0..timeline.row_count())
-                .find_map(|row| timeline.group_subtitle_at_row(row))
-                .expect("the changes form a band")
-        };
-        assert!(band(&timeline).contains("chars"), "{}", band(&timeline));
-        timeline.set_entry_presenter(Some(Rc::new(Counting)));
-        let said = band(&timeline);
-        assert!(said.contains("3 calculations"), "{said}");
-        assert!(!said.contains("chars"), "{said}");
-    }
-
-    #[test]
-    fn a_genesis_row_names_no_author_and_no_time() {
-        use crate::a11y::Role;
-        let mut genesis = entry(EntryKind::Details, "Unknown participant", 0, 1);
-        genesis.summary = "Created".into();
-        genesis.context = Some(tilo_actions::ActionContext {
-            facets: vec![crate::widget::history::genesis_facet()],
-            ..tilo_actions::ActionContext::default()
-        });
-        let entries = vec![genesis, entry(EntryKind::Text, "Alice", 10, 2)];
-        let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
-        let semantics = Widget::accessibility(&t).expect("timeline semantics");
-        let rows: Vec<_> = semantics
-            .children
-            .iter()
-            .filter(|node| node.role == Role::ListItem)
-            .map(|node| (node.name.clone(), node.description.clone()))
-            .collect();
-        assert_eq!(
-            rows[0],
-            (
-                Some("Created".to_owned()),
-                Some(EntryKind::Details.glyph().to_owned())
-            ),
-            "the version the document was created as, by no one at no time"
-        );
-        assert_eq!(rows[1].0.as_deref(), Some("Alice: op 2 by Alice"));
-        assert!(
-            rows[1]
-                .1
-                .as_deref()
-                .is_some_and(|text| text.contains(" · "))
-        );
-    }
-
-    #[test]
-    fn timeline_rows_are_accessible_keyboard_and_hover_targets() {
-        fn accessibility_reports_list_role_name_and_count() {
-            use crate::a11y::Role;
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 10, 1),
-                entry(EntryKind::Text, "Bob", 20, 2),
-            ];
-            let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
-            let node = Widget::accessibility(&t).expect("timeline is not presentational");
-            assert_eq!(node.role, Role::List);
-            assert_eq!(node.name.as_deref(), Some("History entries"));
-            assert_eq!(node.description.as_deref(), Some("2 entries"));
-        }
-
-        fn individual_entries_have_stable_accessible_targets_and_activate() {
-            use crate::a11y::{Action, Role};
-            let activated = Rc::new(RefCell::new(Vec::new()));
-            let received = activated.clone();
-            let entries = vec![entry(EntryKind::Text, "Alice", 10, 1)];
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries)
-                .on_activate_entry(move |id| received.borrow_mut().push(*id));
-            let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
-            let row = semantics
-                .children
-                .iter()
-                .find(|node| node.role == Role::ListItem)
-                .expect("individual entry semantic row");
-            assert!(row.bounds.is_some(), "custom-painted row has AT bounds");
-            assert!(row.state.focusable);
-            let target = row.action_target.clone().expect("stable entry target");
-            assert!(Widget::perform_semantic_action(
-                &mut timeline,
-                &target,
-                &Action::Focus,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(
-                timeline.focused_entry().map(|entry| entry.id),
-                Some(HistoryEntryId([
-                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-                ]))
-            );
-            assert!(Widget::perform_semantic_action(
-                &mut timeline,
-                &target,
-                &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(timeline.selection(), Some((0, 0)));
-            assert_eq!(
-                activated.borrow().as_slice(),
-                &[HistoryEntryId([
-                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-                ])]
-            );
-        }
-
-        fn keyboard_navigation_moves_focus_and_selects_individual_rows() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 10, 1),
-                entry(EntryKind::Text, "Alice", 11, 2),
-            ];
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
-            timeline.set_all_expanded(true);
-            assert!(timeline.focus_row(0));
-            dispatch(&mut timeline, &key_press(Key::Named(NamedKey::ArrowDown)));
-            let focused = timeline.focused_row().expect("moved focus");
-            assert!(focused > 0);
-            if let Some(entry) = timeline.row_entry_index(focused) {
-                assert_eq!(timeline.selection(), Some((entry, entry)));
-            }
-        }
-
-        fn hover_row_tracks_cursor_y() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Text, "Alice", 2, 2),
-                entry(EntryKind::Text, "Alice", 3, 3),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            let row1 = t.row_rect(1).unwrap();
-            dispatch(&mut t, &cursor_moved(row1.center().x, row1.center().y));
-            assert_eq!(t.hover_row(), Some(1));
-            let row2 = t.row_rect(2).unwrap();
-            dispatch(&mut t, &cursor_moved(row2.center().x, row2.center().y));
-            assert_eq!(t.hover_row(), Some(2));
-            // Cache the y bound first so the borrow checker doesn't see a live
-            // `&t` while we hand `&mut t` to `dispatch`.
-            let far_y = t.rect.y1 + 1000.0;
-            dispatch(&mut t, &cursor_moved(0.0, far_y));
-            assert_eq!(t.hover_row(), None);
-        }
-
-        accessibility_reports_list_role_name_and_count();
-        individual_entries_have_stable_accessible_targets_and_activate();
-        keyboard_navigation_moves_focus_and_selects_individual_rows();
-        hover_row_tracks_cursor_y();
-    }
-
-    /// Only the pub fields the widget reads are overwritten.
-    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            logical_key,
-            None,
-            ElementState::Pressed,
-        ))
-    }
-
-    #[test]
-    fn empty_and_filtered_timelines_explain_themselves() {
-        fn empty_timeline_paints_placeholder() {
-            // Pin the structural contract, not the literal string (i18n).
-            let t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
-            assert_eq!(t.visible_len(), 0);
-            let strip = t.filter_strip_rect();
-            assert!(strip.y0 >= t.rect.y0);
-            assert!(strip.y1 < t.rect.y1);
-            assert!(t.row_rect(0).is_none());
-        }
-
-        fn an_empty_history_and_a_filtered_one_explain_themselves_differently() {
-            let empty = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
-            let (title, detail) = empty.empty_state_lines();
-            assert_eq!(title, "No activity yet");
-            assert!(detail.is_none(), "nothing happened; nothing to explain");
-            assert!(!empty.is_filtered());
-
-            let mut t = timeline_at(
-                Rect::new(0.0, 0.0, 400.0, 300.0),
-                vec![
-                    entry(EntryKind::Text, "Alice", 1, 1),
-                    entry(EntryKind::Text, "Bob", 2, 2),
-                ],
-            );
-            t.set_active_chip(ChipKind::Comments);
-            assert_eq!(t.visible_len(), 0);
-            assert!(t.is_filtered());
-            let (title, detail) = t.empty_state_lines();
-            assert_eq!(title, "No activity matches these filters");
-            let detail = detail.expect("a filtered-empty list must say why");
-            assert!(
-                detail.contains('2') && detail.contains("hidden"),
-                "counts what it is hiding: {detail}"
-            );
-            assert!(detail.contains("Comments"), "names the filter: {detail}");
-        }
-
-        fn a_host_time_range_is_named_in_the_explanation() {
-            // The widget cannot put a `SystemTime` pair into the user's words,
-            // so the host labels it.
-            let mut t = timeline_at(
-                Rect::new(0.0, 0.0, 400.0, 300.0),
-                vec![entry(EntryKind::Text, "Alice", 1, 1)],
-            );
-            t.set_filter(HistoryFilter {
-                time_range: Some((
-                    SystemTime::UNIX_EPOCH
-                        .checked_add(Duration::from_secs(500))
-                        .unwrap_or(SystemTime::UNIX_EPOCH),
-                    SystemTime::UNIX_EPOCH
-                        .checked_add(Duration::from_secs(600))
-                        .unwrap_or(SystemTime::UNIX_EPOCH),
-                )),
-                ..Default::default()
-            });
-            assert_eq!(t.visible_len(), 0);
-            assert!(t.active_filter_summary().contains("a date range"));
-            t.set_time_range_label(Some("Last 7 days".to_string()));
-            assert!(
-                t.active_filter_summary().contains("Last 7 days"),
-                "got {:?}",
-                t.active_filter_summary()
-            );
-        }
-
-        empty_timeline_paints_placeholder();
-        an_empty_history_and_a_filtered_one_explain_themselves_differently();
-        a_host_time_range_is_named_in_the_explanation();
-    }
-
-    #[test]
-    fn filters_narrow_by_entry_kind_and_author_and_clear() {
-        fn filter_by_entry_kind_hides_other_rows() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Comment, "Bob", 2, 2),
-                entry(EntryKind::Move, "Carol", 3, 3),
-                entry(EntryKind::Comment, "Dave", 4, 4),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            assert_eq!(t.visible_len(), 4);
-            t.set_active_chip(ChipKind::Comments);
-            assert_eq!(t.visible_len(), 2);
-            for i in 0..t.visible_len() {
-                assert_eq!(t.visible_entry(i).unwrap().entry_kind, EntryKind::Comment);
-            }
-        }
-
-        fn chip_strip_active_state_round_trips() {
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 200.0), vec![]);
-            assert_eq!(t.active_chip(), ChipKind::All);
-            t.set_active_chip(ChipKind::Governance);
-            assert_eq!(t.active_chip(), ChipKind::Governance);
-            let entries = vec![
-                entry(EntryKind::Comment, "Alice", 1, 1),
-                entry(EntryKind::Access, "Bob", 2, 2),
-            ];
-            t.set_entries(entries);
-            assert_eq!(t.visible_len(), 1, "Governance chip narrows to govern row");
-            t.set_active_chip(ChipKind::All);
-            assert_eq!(t.visible_len(), 2);
-        }
-
-        fn chip_strip_click_toggles_active_chip() {
-            // No real paint pass, so seed chip_rects directly: five 60x24 chips
-            // packed horizontally, matching what draw_filter_strip would produce.
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Comment, "Bob", 2, 2),
-                entry(EntryKind::Access, "Carol", 3, 3),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-
-            // Synthesize chip rects (paint normally populates these).
-            let mut x = PADDING;
-            let cy = PADDING + FILTER_STRIP_HEIGHT / 2.0;
-            for chip in ChipKind::ALL {
-                let rect = Rect::new(x, cy - 12.0, x + 60.0, cy + 12.0);
-                t.chip_rects.push((chip, rect));
-                x += 66.0;
-            }
-
-            // ChipKind::ALL order: All, Edits, Comments, ... — click "Comments"
-            // (index 2, x range 132..192).
-            dispatch(&mut t, &cursor_moved(162.0, cy));
-            dispatch(&mut t, &mouse_press());
-            assert_eq!(
-                t.active_chip(),
-                ChipKind::Comments,
-                "clicking the Comments chip should activate it",
-            );
-            assert_eq!(t.visible_len(), 1, "narrowed to the one Comment row");
-
-            // "All" chip — index 0, x range 0..60.
-            dispatch(&mut t, &cursor_moved(30.0, cy));
-            dispatch(&mut t, &mouse_press());
-            assert_eq!(t.active_chip(), ChipKind::All);
-            assert_eq!(t.visible_len(), 3, "All restores every row");
-
-            // Click inside the strip but between chips (gap at x=62..66) —
-            // active_chip stays put.
-            dispatch(&mut t, &cursor_moved(63.0, cy));
-            dispatch(&mut t, &mouse_press());
-            assert_eq!(
-                t.active_chip(),
-                ChipKind::All,
-                "click in the gap between chips is a no-op",
-            );
-        }
-
-        fn clear_filters_resets_the_widget_and_tells_the_host() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Comment, "Bob", 2, 2),
-            ];
-            let cleared = Rc::new(RefCell::new(0usize));
-            let c = cleared.clone();
-            let mut t = ActivityTimeline::with_entries(entries).on_clear_filters(move || {
-                *c.borrow_mut() += 1;
-            });
-            t.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            t.set_active_chip(ChipKind::Governance);
-            t.set_author_query("zzz");
-            assert_eq!(t.visible_len(), 0);
-
-            t.clear_filters();
-            assert_eq!(t.active_chip(), ChipKind::All);
-            assert_eq!(t.author_query(), "");
-            assert_eq!(t.visible_len(), 2, "every row is back");
-            assert_eq!(
-                *cleared.borrow(),
-                1,
-                "the host is told so it can drop the filters it owns"
-            );
-        }
-
-        fn filter_by_author_typeahead_narrows_list() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Text, "Alicia", 2, 2),
-                entry(EntryKind::Text, "Bob", 3, 3),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            t.set_author_query("ali");
-            assert_eq!(t.visible_len(), 2);
-            t.set_author_query("");
-            assert_eq!(t.visible_len(), 3);
-        }
-
-        fn typing_narrows_by_author_and_escape_or_backspace_widens_again() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Text, "Bob", 2, 2),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), entries);
-            dispatch(
-                &mut t,
-                &key_press(winit::keyboard::Key::Character("b".into())),
-            );
-            assert_eq!(t.author_query(), "b");
-            assert_eq!(t.visible_len(), 1);
-            assert_eq!(t.visible_entry(0).unwrap().author.name, "Bob");
-            dispatch(
-                &mut t,
-                &key_press(winit::keyboard::Key::Named(NamedKey::Escape)),
-            );
-            assert_eq!(t.author_query(), "");
-            assert_eq!(t.visible_len(), 2);
-
-            dispatch(
-                &mut t,
-                &key_press(winit::keyboard::Key::Character("b".into())),
-            );
-            dispatch(
-                &mut t,
-                &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
-            );
-            assert_eq!(t.author_query(), "");
-            assert_eq!(t.visible_len(), 2);
-
-            // An input method's commit types too, and Backspace takes back a
-            // whole accented letter, not half of it.
-            dispatch(
-                &mut t,
-                &WindowEvent::Ime(winit::event::Ime::Commit("bo\u{301}".into())),
-            );
-            assert_eq!(t.author_query(), "bo\u{301}");
-            dispatch(
-                &mut t,
-                &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
-            );
-            assert_eq!(t.author_query(), "b");
-        }
-
-        filter_by_entry_kind_hides_other_rows();
-        chip_strip_active_state_round_trips();
-        chip_strip_click_toggles_active_chip();
-        clear_filters_resets_the_widget_and_tells_the_host();
-        filter_by_author_typeahead_narrows_list();
-        typing_narrows_by_author_and_escape_or_backspace_widens_again();
-    }
-
-    #[test]
-    fn revert_chip_fires_only_for_revertible_ops() {
-        fn revert_callback_fires_on_chip_click() {
-            let entries = vec![entry(EntryKind::Text, "Alice", 1, 42)];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 200.0), entries);
-            let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
-            let captured_clone = captured.clone();
-            t.on_revert = Some(Box::new(move |id| {
-                *captured_clone.borrow_mut() = Some(*id);
-            }));
-
-            let row = t.row_rect(0).expect("seeded row 0 must lay out");
-            dispatch(&mut t, &cursor_moved(row.center().x, row.center().y));
-            assert_eq!(t.hover_row(), Some(0));
-            let chip = t.revert_chip_rect(0).expect("splice row must have a chip");
-            dispatch(&mut t, &cursor_moved(chip.center().x, chip.center().y));
-            dispatch(&mut t, &mouse_press());
-
-            let mut id_bytes = [0u8; 16];
-            id_bytes[0] = 42;
-            assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
-        }
-
-        fn non_revertible_entry_kinds_hide_chip() {
-            let entries = vec![
-                entry(EntryKind::Comment, "Alice", 1, 1),
-                entry(EntryKind::Access, "Bob", 2, 2),
-                entry(EntryKind::Text, "Carol", 3, 3),
-            ];
-            let t = editable_timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            assert!(t.revert_chip_rect(0).is_none(), "Comment must hide chip");
-            assert!(t.revert_chip_rect(1).is_none(), "Govern must hide chip");
-            assert!(
-                t.revert_chip_rect(2).is_some(),
-                "Splice must expose chip for hit-test"
-            );
-        }
-
-        revert_callback_fires_on_chip_click();
-        non_revertible_entry_kinds_hide_chip();
-    }
-
-    #[test]
-    fn rows_order_newest_first_and_virtualize_within_narrow_panes() {
-        fn entries_sharing_a_timestamp_still_order_newest_first() {
-            // Automerge stamps in whole seconds, so a burst ties; newest-first
-            // must fall back to causal order, not input order.
-            let entries: Vec<HistoryEntry> = (0u8..5)
-                .map(|i| entry(EntryKind::Text, "Alice", 100, i))
-                .collect();
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            t.set_newest_first(true);
-            let ids: Vec<u8> = (0..t.visible_len())
-                .map(|i| t.visible_entry(i).unwrap().id.0[0])
-                .collect();
-            assert_eq!(
-                ids,
-                vec![4, 3, 2, 1, 0],
-                "the last change the producer emitted is the newest"
-            );
-
-            t.set_newest_first(false);
-            let ids: Vec<u8> = (0..t.visible_len())
-                .map(|i| t.visible_entry(i).unwrap().id.0[0])
-                .collect();
-            assert_eq!(ids, vec![0, 1, 2, 3, 4]);
-        }
-
-        fn newest_first_reverses_chronological_order() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 100, 1),
-                entry(EntryKind::Text, "Alice", 200, 2),
-                entry(EntryKind::Text, "Alice", 300, 3),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            t.set_newest_first(true);
-            assert_eq!(
-                t.visible_entry(0)
-                    .unwrap()
-                    .timestamp
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                300
-            );
-            assert_eq!(
-                t.visible_entry(2)
-                    .unwrap()
-                    .timestamp
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                100
-            );
-        }
-
-        fn only_the_visible_window_of_a_huge_list_is_touched_per_frame() {
-            // Paint and hit-test must look at the ~15 rows on screen, not all
-            // ten thousand, or a workspace-scale history drops frames.
-            let entries: Vec<HistoryEntry> = (0u32..10_000)
-                .map(|i| {
-                    entry(
-                        EntryKind::Text,
-                        "Alice",
-                        u64::from(i),
-                        u8::try_from(i % 251).unwrap_or(u8::MAX),
-                    )
-                })
-                .collect();
-            let t = timeline_at(Rect::new(0.0, 0.0, 600.0, 600.0), entries);
-            assert_eq!(t.visible_len(), 10_000, "every row passes the filter");
-
-            let range = t.visible_row_range();
-            let viewport_rows_bounded = (t.viewport_height() / ROW_HEIGHT)
-                .ceil()
-                .clamp(0.0, 1_000_000.0);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to 0..=1_000_000 above, so this cast cannot truncate or flip sign"
-            )]
-            let viewport_rows = viewport_rows_bounded as usize;
-            assert!(
-                range.len() <= viewport_rows.saturating_add(2),
-                "painted {} rows for a viewport that holds {}",
-                range.len(),
-                viewport_rows
-            );
-            assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
-
-            // Every row inside the window lays out; the first one past it does not.
-            for i in range.clone() {
-                assert!(t.row_rect(i).is_some(), "row {i} is on screen");
-            }
-            assert!(
-                t.row_rect(range.end.saturating_add(4)).is_none(),
-                "a row well past the window must not lay out"
-            );
-        }
-
-        fn row_at_agrees_with_row_rect_at_the_boundaries() {
-            // `row_at` binary-searches the cumulative row tops; must still agree
-            // with `row_rect` one pixel either side of a seam between two rows
-            // of *different* heights.
-            let entries: Vec<HistoryEntry> = (0u8..40)
-                .map(|i| entry(EntryKind::Text, "Alice", u64::from(i), i))
-                .collect();
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 500.0, 500.0), entries);
-            // Forty changes by one author in forty seconds is one band, and it
-            // collapses. Open it so the list has both kinds of line in it.
-            t.set_all_expanded(true);
-            assert!(
-                matches!(t.group_at_row(0), Some((_, true))),
-                "line 0 is the opened band header"
-            );
-            assert!(t.row_entry(1).is_some(), "line 1 is a change inside it");
-            assert!(
-                (t.row_rect(0).unwrap().height() - t.row_rect(1).unwrap().height()).abs() > 1.0,
-                "the two line kinds must be different heights for this test to mean anything"
-            );
-            for i in 0..8 {
-                let r = t.row_rect(i).unwrap();
-                assert_eq!(t.row_at(r.center()), Some(i));
-                assert_eq!(t.row_at(Point::new(r.center().x, r.y0 + 0.5)), Some(i));
-                assert_eq!(
-                    t.row_at(Point::new(r.center().x, r.y1 - 0.5)),
-                    Some(i),
-                    "the bottom edge of row {i} still belongs to it"
-                );
-            }
-            let r0 = t.row_rect(0).unwrap();
-            assert_eq!(t.row_at(Point::new(r0.x0 - 4.0, r0.center().y)), None);
-            assert_eq!(t.row_at(Point::new(250.0, 499.9)), None);
-        }
-
-        fn narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them() {
-            // On a narrow pane the revert chip must still sit inside the row and
-            // leave the summary somewhere to go.
-            let entries = vec![entry(EntryKind::Text, "Alice", 1, 1)];
-            let wide = editable_timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
-            let narrow = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
-
-            let wide_chip = wide.revert_chip_rect(0).unwrap();
-            let narrow_chip = narrow.revert_chip_rect(0).unwrap();
-            assert!(
-                narrow_chip.width() < wide_chip.width(),
-                "the chip gives width back on a narrow pane"
-            );
-            let narrow_row = narrow.row_rect(0).unwrap();
-            assert!(
-                narrow_chip.x0 > narrow_row.x0 + narrow.author_slot_w(),
-                "the chip must not overlap the author cluster"
-            );
-            assert!(
-                narrow_chip.x1 <= narrow_row.x1,
-                "and must stay inside the row"
-            );
-        }
-
-        entries_sharing_a_timestamp_still_order_newest_first();
-        newest_first_reverses_chronological_order();
-        only_the_visible_window_of_a_huge_list_is_touched_per_frame();
-        row_at_agrees_with_row_rect_at_the_boundaries();
-        narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them();
-    }
-}
+mod tests;
 
 #[cfg(test)]
-mod group_tests {
-    use super::*;
-    use crate::testing::{Dispatch, dispatch};
-    use crate::time::Duration;
-    use crate::widget::history::HistoryAuthor;
-    use crate::widget::history_group::NamedRange;
-    use collab_types::ArtifactKind;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use winit::event::Modifiers;
-
-    const NOW: u64 = 2_000_000;
-
-    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
-        let mut id_bytes = [0u8; 16];
-        id_bytes[0] = id;
-        HistoryEntry {
-            id: HistoryEntryId(id_bytes),
-            author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            entry_kind: op,
-            artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_secs(ts))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-            summary: format!("+{} -0 chars", usize::from(id).saturating_add(1)),
-            text_delta: Some((usize::from(id).saturating_add(1), 0)),
-            diff_payload: None,
-            redaction: None,
-            context: None,
-        }
-    }
-
-    fn timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
-        let mut t = ActivityTimeline::with_entries(entries);
-        t.set_rect(rect);
-        t.set_now_for_test(
-            SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_secs(NOW))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-        );
-        t
-    }
-
-    // Capability-dependent layout fixtures must declare the operations they offer.
-    fn editable_timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
-        timeline_at(rect, entries)
-            .on_revert(|_| {})
-            .on_name_group(|_| {})
-    }
-
-    #[test]
-    fn band_mutation_affordances_need_callbacks_and_restorable_changes() {
-        fn readonly_timeline_hides_mutations_but_keeps_selectable_semantics() {
-            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), typing_run(20));
-            let (name, restore) = timeline.group_chip_rects(0).expect("group row");
-            assert_eq!(name, Rect::ZERO);
-            assert!(restore.is_none());
-            assert!(!timeline.begin_naming_group_at_row(0));
-            timeline.set_all_expanded(true);
-            let row = (0..timeline.row_count())
-                .find(|row| timeline.row_entry(*row).is_some())
-                .expect("entry row");
-            assert!(timeline.revert_chip_rect(row).is_none());
-            assert!(timeline.activate_row(row));
-            assert!(!timeline.begin_naming_selection());
-            paint(&mut timeline);
-            assert_eq!(timeline.name_selection_rect(), Rect::ZERO);
-            assert!(
-                timeline.clear_selection_rect.area() > 0.0,
-                "selection can still be cleared"
-            );
-            let semantics = timeline.accessibility().expect("history semantics");
-            assert!(semantics.children.iter().any(
-                |node| node.role == crate::a11y::Role::ListItem && node.action_target.is_some()
-            ));
-            assert!(semantics.children.iter().all(|node| matches!(
-                node.role,
-                crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
-            )));
-        }
-
-        fn history_mutation_affordances_require_their_own_callback() {
-            let rect = Rect::new(0.0, 0.0, 620.0, 620.0);
-            let mut naming = timeline_at(rect, typing_run(20)).on_name_group(|_| {});
-            let (name, restore) = naming.group_chip_rects(0).expect("group row");
-            assert!(name.area() > 0.0);
-            assert!(restore.is_none());
-            assert!(naming.begin_naming_group_at_row(0));
-            let mut restoring = timeline_at(rect, typing_run(20)).on_revert(|_| {});
-            let (name, restore) = restoring.group_chip_rects(0).expect("group row");
-            assert_eq!(name, Rect::ZERO);
-            assert!(restore.is_some());
-            assert!(!restoring.begin_naming_group_at_row(0));
-            restoring.set_all_expanded(true);
-            let row = (0..restoring.row_count())
-                .find(|row| restoring.row_entry(*row).is_some())
-                .expect("entry row");
-            assert!(restoring.revert_chip_rect(row).is_some());
-        }
-
-        fn a_band_of_nothing_restorable_offers_no_restore_chip() {
-            // Governance is its own audit trail; an owner counters it rather than
-            // rewinding it. A band made only of those must not offer the chip.
-            let entries: Vec<HistoryEntry> = (0..6)
-                .map(|i| {
-                    entry(
-                        EntryKind::Access,
-                        "Alice",
-                        1_000_000u64.saturating_add(u64::from(i)),
-                        i,
-                    )
-                })
-                .collect();
-            let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
-            let (_, restore) = t.group_chip_rects(0).expect("still a band");
-            assert!(restore.is_none(), "no restore across governance");
-        }
-
-        fn restoring_from_a_band_passes_the_bands_last_change_not_its_first() {
-            // This is the whole point of grouping for restore: a boundary that means
-            // something, rather than keystroke 4,182.
-            let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
-            let c = captured.clone();
-            let mut t = ActivityTimeline::with_entries(typing_run(20))
-                .on_revert(move |id| *c.borrow_mut() = Some(*id));
-            t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
-
-            let (_, restore) = t.group_chip_rects(0).expect("a band header");
-            let restore = restore.expect("a band of splices can be restored to");
-            click(&mut t, restore.center());
-            let mut want = [0u8; 16];
-            want[0] = 19;
-            assert_eq!(*captured.borrow(), Some(HistoryEntryId(want)));
-        }
-
-        readonly_timeline_hides_mutations_but_keeps_selectable_semantics();
-        history_mutation_affordances_require_their_own_callback();
-        a_band_of_nothing_restorable_offers_no_restore_chip();
-        restoring_from_a_band_passes_the_bands_last_change_not_its_first();
-    }
-
-    /// Run a real paint so the rects the click handler reads from the last frame
-    /// (the selection bar's actions) are populated exactly as they are live.
-    fn paint(t: &mut ActivityTimeline) {
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-        t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
-    use crate::synthetic_input::cursor_moved;
-
-    use crate::synthetic_input::mouse_press;
-
-    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            logical_key,
-            None,
-            ElementState::Pressed,
-        ))
-    }
-
-    /// Shift held down, built the same way winit reports it.
-    fn shift() -> Modifiers {
-        let state = winit::keyboard::ModifiersState::SHIFT;
-        Modifiers::from(state)
-    }
-
-    /// Click whatever is at `p`: move there first so `hover_row` latches, the
-    /// way a real pointer does.
-    fn click(t: &mut ActivityTimeline, p: Point) {
-        dispatch(t, &cursor_moved(p.x, p.y));
-        dispatch(t, &mouse_press());
-    }
-
-    fn type_str(t: &mut ActivityTimeline, s: &str) {
-        for ch in s.chars() {
-            if ch == ' ' {
-                dispatch(t, &key_press(Key::Named(NamedKey::Space)));
-            } else {
-                dispatch(t, &key_press(Key::Character(ch.to_string().into())));
-            }
-        }
-    }
-
-    /// Twenty changes a second apart by one person: a debounced typing run.
-    fn typing_run(n: u8) -> Vec<HistoryEntry> {
-        (0..n)
-            .map(|i| {
-                entry(
-                    EntryKind::Text,
-                    "Alice",
-                    1_000_000u64.saturating_add(u64::from(i)),
-                    i,
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn typing_runs_collapse_into_expandable_bands() {
-        fn a_typing_run_collapses_to_one_band_and_the_header_opens_it() {
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
-            assert_eq!(t.visible_len(), 20, "every change still passes the filter");
-            assert_eq!(t.row_count(), 1, "twenty changes read as one band");
-            let (_, expanded) = t.group_at_row(0).expect("line 0 is a band");
-            assert!(!expanded, "a twenty-change band is past the expand budget");
-            assert_eq!(t.group_title_at_row(0), Some("20 edits"));
-
-            // Click the header (not the chips) — the production toggle path.
-            let row = t.row_rect(0).expect("the header lays out");
-            click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
-            assert!(t.group_at_row(0).unwrap().1, "the click opened it");
-            assert_eq!(t.row_count(), 21, "header plus twenty changes");
-            assert!(t.row_entry(1).is_some(), "line 1 is a change");
-            assert_eq!(
-                t.row_depth_at(1),
-                Some(1),
-                "and it is indented under the band"
-            );
-
-            click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
-            assert_eq!(t.row_count(), 1, "clicking again closes it");
-        }
-
-        fn a_short_history_reads_as_a_flat_list_with_no_bands_at_all() {
-            // The flat list is the degenerate case, not a second mode: four changes
-            // by four people are four groups of one, and a group of one is a row.
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1_000_000, 0),
-                entry(EntryKind::Text, "Bob", 1_000_001, 1),
-                entry(EntryKind::Text, "Carol", 1_000_002, 2),
-                entry(EntryKind::Text, "Dave", 1_000_003, 3),
-            ];
-            let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
-            assert_eq!(t.row_count(), 4);
-            for i in 0..4 {
-                assert!(t.row_entry(i).is_some(), "line {i} is a plain change row");
-                assert_eq!(t.row_depth_at(i), Some(0), "and it is not indented");
-            }
-        }
-
-        fn an_open_band_says_it_is_still_open_while_it_is_being_appended_to() {
-            let entries = typing_run(20);
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: "Working".into(),
-                start: entries[0].id,
-                end: None,
-                named_by: None,
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            let sub = t.group_subtitle_at_row(0).unwrap();
-            assert!(sub.starts_with("still open"), "got {sub:?}");
-            assert!(sub.contains("20 changes"), "got {sub:?}");
-
-            // A new change lands while the reader is looking at it. The band must
-            // absorb it and the count must move.
-            let mut grown = entries;
-            grown.push(entry(EntryKind::Text, "Alice", 1_000_400, 99));
-            t.set_entries(grown);
-            let sub = t.group_subtitle_at_row(0).unwrap();
-            assert!(sub.contains("21 changes"), "got {sub:?}");
-            assert!(
-                sub.starts_with("still open"),
-                "and it is still open: {sub:?}"
-            );
-        }
-
-        fn expansion_survives_a_refresh_that_appends_a_change() {
-            // The band key is derived from its first change, which does not move as
-            // the band grows — so an open band stays open when the document does.
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
-            let row = t.row_rect(0).unwrap();
-            click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
-            assert!(t.group_at_row(0).unwrap().1);
-            let key = t.group_at_row(0).unwrap().0.to_string();
-
-            let mut grown = typing_run(20);
-            grown.push(entry(EntryKind::Text, "Alice", 1_000_020, 99));
-            t.set_entries(grown);
-            assert_eq!(t.group_at_row(0).unwrap().0, key, "same band, same key");
-            assert!(
-                t.group_at_row(0).unwrap().1,
-                "it did not slam shut under the reader"
-            );
-        }
-
-        fn nesting_renders_the_child_inside_the_parent_and_no_deeper() {
-            let entries = typing_run(20);
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries.clone());
-            t.set_named_ranges(vec![
-                NamedRange {
-                    id: "tilo:group:outer".into(),
-                    label: "Q3 release".into(),
-                    start: entries[0].id,
-                    end: Some(entries[19].id),
-                    named_by: None,
-                    created: SystemTime::UNIX_EPOCH,
-                },
-                NamedRange {
-                    id: "tilo:group:inner".into(),
-                    label: "Intro rewrite".into(),
-                    start: entries[4].id,
-                    end: Some(entries[8].id),
-                    named_by: None,
-                    created: SystemTime::UNIX_EPOCH,
-                },
-            ]);
-            t.set_all_expanded(true);
-            let depths: Vec<usize> = (0..t.row_count())
-                .map(|i| t.row_depth_at(i).unwrap())
-                .collect();
-            assert_eq!(
-                *depths.iter().max().unwrap(),
-                2,
-                "rows inside a nested band"
-            );
-            assert_eq!(t.group_title_at_row(0), Some("Q3 release"));
-            let inner = (0..t.row_count())
-                .find(|i| t.group_title_at_row(*i) == Some("Intro rewrite"))
-                .expect("the child band renders");
-            assert_eq!(t.row_depth_at(inner), Some(1));
-            // Every line between the child header and the next depth<=1 line is a
-            // change of the child's.
-            let after = inner + 1;
-            assert_eq!(t.row_depth_at(after), Some(2));
-            assert!(t.row_entry(after).is_some());
-        }
-
-        a_typing_run_collapses_to_one_band_and_the_header_opens_it();
-        a_short_history_reads_as_a_flat_list_with_no_bands_at_all();
-        an_open_band_says_it_is_still_open_while_it_is_being_appended_to();
-        expansion_survives_a_refresh_that_appends_a_change();
-        nesting_renders_the_child_inside_the_parent_and_no_deeper();
-    }
-
-    #[test]
-    fn naming_a_band_writes_its_whole_range_or_nothing() {
-        fn naming_a_band_asks_the_host_to_write_the_bands_whole_range() {
-            let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
-            let c = captured.clone();
-            let mut t = ActivityTimeline::with_entries(typing_run(20))
-                .on_name_group(move |r| c.borrow_mut().push(r.clone()));
-            t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
-            t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
-
-            let (name_chip, _) = t
-                .group_chip_rects(0)
-                .expect("a band header has a name chip");
-            click(&mut t, name_chip.center());
-            assert_eq!(t.naming_buffer(), Some(""), "the field is up and empty");
-            assert!(t.wants_keyboard(), "the field owns the keyboard");
-
-            type_str(&mut t, "Intro rewrite");
-            assert_eq!(t.naming_buffer(), Some("Intro rewrite"));
-            dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
-
-            let reqs = captured.borrow();
-            assert_eq!(reqs.len(), 1, "one write, on commit");
-            let r = &reqs[0];
-            assert_eq!(r.label, "Intro rewrite");
-            assert_eq!(r.record_id, None, "nothing was named here before");
-            let mut first = [0u8; 16];
-            let mut last = [0u8; 16];
-            last[0] = 19;
-            assert_eq!(
-                r.start,
-                HistoryEntryId(first),
-                "the range starts at change 0"
-            );
-            assert_eq!(r.end, HistoryEntryId(last), "and ends at change 19");
-            let _ = &mut first;
-            assert!(!t.wants_keyboard(), "the field is gone");
-        }
-
-        fn escape_abandons_a_name_without_writing_anything() {
-            let captured: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-            let c = captured.clone();
-            let mut t = ActivityTimeline::with_entries(typing_run(20))
-                .on_name_group(move |_| *c.borrow_mut() += 1);
-            t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
-
-            let (name_chip, _) = t.group_chip_rects(0).unwrap();
-            click(&mut t, name_chip.center());
-            type_str(&mut t, "oops");
-            dispatch(&mut t, &key_press(Key::Named(NamedKey::Escape)));
-            assert!(!t.wants_keyboard());
-            assert_eq!(*captured.borrow(), 0, "nothing was written");
-        }
-
-        fn typing_a_name_does_not_leak_into_the_author_filter() {
-            // The pane's other keyboard consumer is the author typeahead. A version
-            // called "Bob's edits" must not silently filter the pane to Bob.
-            let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
-            let (name_chip, _) = t.group_chip_rects(0).unwrap();
-            click(&mut t, name_chip.center());
-            type_str(&mut t, "Bob");
-            assert_eq!(t.author_query(), "", "the typeahead was not touched");
-            assert_eq!(t.naming_buffer(), Some("Bob"));
-        }
-
-        fn a_named_band_renames_through_the_record_it_already_has() {
-            let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
-            let c = captured.clone();
-            let entries = typing_run(20);
-            let mut t = ActivityTimeline::with_entries(entries.clone())
-                .on_name_group(move |r| c.borrow_mut().push(r.clone()));
-            t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: "Intro rewrite".into(),
-                start: entries[0].id,
-                end: Some(entries[19].id),
-                named_by: Some(HistoryAuthor::new("Alice", 120.0, "deadbeef")),
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            assert_eq!(t.group_title_at_row(0), Some("Intro rewrite"));
-
-            let (name_chip, _) = t.group_chip_rects(0).unwrap();
-            click(&mut t, name_chip.center());
-            assert_eq!(
-                t.naming_buffer(),
-                Some("Intro rewrite"),
-                "renaming starts from the current name, not from blank"
-            );
-            // Clear it out entirely and commit: that is how a name comes back off.
-            for _ in 0.."Intro rewrite".len() {
-                dispatch(&mut t, &key_press(Key::Named(NamedKey::Backspace)));
-            }
-            dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
-            let reqs = captured.borrow();
-            assert_eq!(reqs.len(), 1);
-            assert_eq!(reqs[0].label, "", "an empty label is 'remove the name'");
-            assert_eq!(
-                reqs[0].record_id.as_deref(),
-                Some("tilo:group:rec"),
-                "and it addresses the record that already exists"
-            );
-        }
-
-        fn a_band_someone_else_named_says_who_named_it() {
-            let entries = typing_run(20);
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: "Ada's pass".into(),
-                start: entries[0].id,
-                end: Some(entries[19].id),
-                named_by: Some(HistoryAuthor::new("Ada Lovelace", 300.0, "cafebabe")),
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            let sub = t
-                .group_subtitle_at_row(0)
-                .expect("a band has a second line");
-            assert!(
-                sub.contains("named by Ada Lovelace"),
-                "a name written by someone else must say so: {sub:?}"
-            );
-            assert!(
-                sub.contains("Alice"),
-                "and still attribute the changes to whoever made them: {sub:?}"
-            );
-        }
-
-        naming_a_band_asks_the_host_to_write_the_bands_whole_range();
-        escape_abandons_a_name_without_writing_anything();
-        typing_a_name_does_not_leak_into_the_author_filter();
-        a_named_band_renames_through_the_record_it_already_has();
-        a_band_someone_else_named_says_who_named_it();
-    }
-
-    #[test]
-    fn band_undo_chip_targets_the_whole_band_only_when_supported() {
-        fn a_band_offers_no_undo_chip_until_a_host_can_perform_one() {
-            // Opt-in: a control that silently does nothing is worse than none.
-            let entries = typing_run(20);
-            let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
-            assert!(
-                t.group_undo_chip_rect(0).is_none(),
-                "no band-undo callback, no chip"
-            );
-
-            let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries).on_undo_band(|_| {});
-            assert!(
-                t.group_undo_chip_rect(0).is_some(),
-                "with one installed, the band offers it"
-            );
-            assert!(
-                t.group_undo_chip_rect(1).is_none(),
-                "and only band headers get it, never a plain change row"
-            );
-        }
-
-        fn the_undo_chip_asks_for_the_whole_band_not_one_change() {
-            // Must carry a range, not a single id — that's what distinguishes
-            // undo from restore.
-            let entries = typing_run(20);
-            let captured: Rc<RefCell<Vec<BandUndoRequest>>> = Rc::new(RefCell::new(Vec::new()));
-            let c = captured.clone();
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone())
-                .on_undo_band(move |r| c.borrow_mut().push(r.clone()));
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: "The agent's pass".into(),
-                start: entries[0].id,
-                end: Some(entries[19].id),
-                named_by: Some(HistoryAuthor::new("Alice", 120.0, "deadbeef")),
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-
-            let chip = t.group_undo_chip_rect(0).expect("a named band offers undo");
-            click(&mut t, chip.center());
-
-            let reqs = captured.borrow();
-            assert_eq!(reqs.len(), 1, "the chip fired once");
-            assert_eq!(reqs[0].start, entries[0].id, "the band's first change");
-            assert_eq!(reqs[0].end, entries[19].id, "and its last");
-            assert_ne!(
-                reqs[0].start, reqs[0].end,
-                "a range, not the single id a restore would carry"
-            );
-            assert_eq!(reqs[0].label.as_deref(), Some("The agent's pass"));
-            assert_eq!(
-                reqs[0]
-                    .authors
-                    .iter()
-                    .map(|a| a.name.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["Alice"],
-                "and who authored it, so the host can scope the revert"
-            );
-        }
-
-        fn clicking_undo_never_falls_through_to_restore() {
-            // Undo takes the band out; restore discards everything after it. A
-            // click on one must not reach the other.
-            let entries = typing_run(20);
-            let undone: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-            let restored: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
-            let (u, r) = (undone.clone(), restored.clone());
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries)
-                .on_undo_band(move |_| *u.borrow_mut() += 1)
-                .on_revert(move |_| *r.borrow_mut() += 1);
-
-            let undo_chip = t.group_undo_chip_rect(0).expect("undo chip");
-            let (_, restore) = t.group_chip_rects(0).expect("a band header");
-            let restore = restore.expect("restore chip");
-            assert!(
-                undo_chip.x1 <= restore.x0,
-                "undo sits left of restore and they do not overlap: {undo_chip:?} {restore:?}"
-            );
-
-            click(&mut t, undo_chip.center());
-            assert_eq!((*undone.borrow(), *restored.borrow()), (1, 0));
-
-            click(&mut t, restore.center());
-            assert_eq!((*undone.borrow(), *restored.borrow()), (1, 1));
-        }
-
-        a_band_offers_no_undo_chip_until_a_host_can_perform_one();
-        the_undo_chip_asks_for_the_whole_band_not_one_change();
-        clicking_undo_never_falls_through_to_restore();
-    }
-
-    #[test]
-    fn band_rows_keep_chips_names_and_text_inside_the_row() {
-        fn three_band_chips_still_fit_inside_the_row() {
-            for w in [360.0_f64, 620.0, 980.0] {
-                let entries = typing_run(20);
-                let t = editable_timeline_at(Rect::new(0.0, 0.0, w, 500.0), entries)
-                    .on_undo_band(|_| {});
-                let row = t.row_rect(0).expect("a band header");
-                let (name, restore) = t.group_chip_rects(0).unwrap();
-                let undo = t.group_undo_chip_rect(0).unwrap();
-                let restore = restore.unwrap();
-                assert!(restore.x1 <= row.x1, "restore inside the row at {w}");
-                assert!(undo.x1 <= restore.x0, "undo left of restore at {w}");
-                assert!(name.x1 <= undo.x0, "name left of undo at {w}");
-                assert!(
-                    name.x0 >= row.x0,
-                    "and the strip does not run off the left at {w}"
-                );
-            }
-        }
-
-        fn a_very_long_name_is_truncated_rather_than_pushed_over_the_actions() {
-            let entries = typing_run(20);
-            let long = "Rewrote the introduction, then the second section, then \
-                    reconsidered the whole framing and put most of it back"
-                .to_string();
-            let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries.clone());
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: long.clone(),
-                start: entries[0].id,
-                end: Some(entries[19].id),
-                named_by: None,
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            assert_eq!(t.group_title_at_row(0), Some(long.as_str()));
-
-            let row = t.row_rect(0).unwrap();
-            let (name, restore) = t.group_chip_rects(0).unwrap();
-            let restore = restore.unwrap();
-            assert!(name.x0 > row.x0, "the name chip stays inside the row");
-            assert!(restore.x1 <= row.x1, "so does the restore chip");
-            assert!(name.x1 <= restore.x0, "and they do not overlap");
-            // Painting must not panic and must fit the title into what is left.
-            paint(&mut t);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            let budget = name.x0 - (row.x0 + 26.0) - 8.0;
-            let shown = fit_text(&mut tr, &long, &theme.text(TextRole::Label), budget);
-            assert!(
-                shown.chars().count() < long.chars().count(),
-                "the header's own budget must actually truncate this name"
-            );
-            assert!(
-                shown.ends_with('\u{2026}'),
-                "and say that it did: {shown:?}"
-            );
-        }
-
-        fn a_narrow_pane_keeps_the_band_actions_inside_the_row() {
-            let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 500.0), typing_run(20));
-            let row = t.row_rect(0).unwrap();
-            let (name, restore) = t.group_chip_rects(0).unwrap();
-            let restore = restore.unwrap();
-            assert!(name.x0 >= row.x0, "the name chip starts inside the row");
-            assert!(restore.x1 <= row.x1);
-            assert!(name.x1 <= restore.x0);
-            paint(&mut t);
-
-            // Narrow, but tall enough to scroll the child band into view — an
-            // off-screen line correctly does not lay out at all.
-            let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 1200.0), typing_run(20));
-            let entries = typing_run(20);
-            t.set_named_ranges(vec![
-                NamedRange {
-                    id: "tilo:group:outer".into(),
-                    label: "Outer".into(),
-                    start: entries[0].id,
-                    end: Some(entries[19].id),
-                    named_by: None,
-                    created: SystemTime::UNIX_EPOCH,
-                },
-                NamedRange {
-                    id: "tilo:group:inner".into(),
-                    label: "Inner".into(),
-                    start: entries[5].id,
-                    end: Some(entries[9].id),
-                    named_by: None,
-                    created: SystemTime::UNIX_EPOCH,
-                },
-            ]);
-            t.set_all_expanded(true);
-            let nested = (0..t.row_count())
-                .find(|i| t.group_title_at_row(*i) == Some("Inner"))
-                .expect("the nested band renders");
-            assert_eq!(t.row_depth_at(nested), Some(1));
-            let (n2, _) = t.group_chip_rects(nested).unwrap();
-            let row2 = t.row_rect(nested).unwrap();
-            assert!(
-                n2.x0 > row2.x0 + INDENT,
-                "indented, and the chip still fits"
-            );
-            paint(&mut t);
-        }
-
-        /// Row text is centred on the renderer's measured line box, which keeps it on the avatar's
-        /// centre line when type is scaled. Every chip the timeline offers the pointer — the filter
-        /// strip's class chips, the author pill, a band header's Name/Restore — is at least the
-        /// minimum pointer target tall and no two claim the same pixels, while the strip's chips
-        /// stay inside their strip.
-        fn chip_targets_meet_the_minimum_pointer_target_and_never_overlap() {
-            let mut t = ActivityTimeline::with_entries(typing_run(20))
-                .on_revert(|_| {})
-                .on_name_group(|_| {});
-            t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
-            t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
-            let theme = Theme::dark();
-            let min = f64::from(theme.tokens.metrics.min_pointer_target);
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            t.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
-
-            let strip = t.filter_strip_rect();
-            let mut targets: Vec<(String, Rect)> = t
-                .chip_rects
-                .iter()
-                .map(|(k, r)| (format!("{k:?}"), *r))
-                .collect();
-            assert!(targets.len() >= 2, "the strip painted no chips");
-            for (k, r) in &targets {
-                assert!(
-                    r.y0 >= strip.y0 - 1e-6 && r.y1 <= strip.y1 + 1e-6,
-                    "{k} target {r:?} leaves the strip {strip:?}"
-                );
-            }
-            targets.push(("author".to_string(), t.author_pill_rect()));
-            let (name, restore) = t.group_chip_rects(0).expect("a band header has chips");
-            targets.push(("name".to_string(), name));
-            if let Some(r) = restore {
-                targets.push(("restore".to_string(), r));
-            }
-            for (k, r) in &targets {
-                assert!(
-                    r.height() >= min - 1e-6,
-                    "{k} target {r:?} is under the {min}px minimum pointer target"
-                );
-            }
-            for (i, (a_name, a)) in targets.iter().enumerate() {
-                for (b_name, b) in targets.iter().skip(i + 1) {
-                    assert!(
-                        a.intersect(*b).is_zero_area(),
-                        "{a_name} {a:?} and {b_name} {b:?} claim the same pixels"
-                    );
-                }
-            }
-        }
-
-        fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
-            let theme = Theme::dark();
-            let style = theme.text(TextRole::Caption);
-            for scale in [1.0_f32, 2.0] {
-                let mut tr = TextRenderer::new();
-                tr.set_text_scale(scale);
-                let cy = 40.0;
-                let top = text_top(&mut tr, &style, cy);
-                let (_, h) = tr.measure_style("Alice", None, &style);
-                assert!(
-                    (top + f64::from(h) / 2.0 - cy).abs() < 1e-6,
-                    "at {scale}x: top {top} + half of {h} misses the row centre {cy}"
-                );
-                assert!(
-                    f64::from(h) > f64::from(style.size),
-                    "the line box {h} is taller than the bare size {}; centring on \
-                 size/2 would sit the text low",
-                    style.size
-                );
-            }
-        }
-
-        /// The gutters are constants because hit-testing has no theme; they must
-        /// nevertheless be the tokens' values, so a token change surfaces here.
-        fn gutter_constants_equal_the_spacing_tokens() {
-            let spacing = crate::tokens::Spacing::default();
-            assert!(
-                (PADDING - f64::from(spacing.s2)).abs() < 1e-9,
-                "PADDING is s2"
-            );
-            assert!(
-                (TRAILING_INSET - f64::from(spacing.s3)).abs() < 1e-9,
-                "TRAILING_INSET is s3"
-            );
-        }
-
-        three_band_chips_still_fit_inside_the_row();
-        a_very_long_name_is_truncated_rather_than_pushed_over_the_actions();
-        a_narrow_pane_keeps_the_band_actions_inside_the_row();
-        chip_targets_meet_the_minimum_pointer_target_and_never_overlap();
-        row_text_centring_tracks_the_measured_line_box_at_every_text_scale();
-        gutter_constants_equal_the_spacing_tokens();
-    }
-
-    #[test]
-    fn band_selection_tracks_ids_and_filters() {
-        fn shift_clicking_two_rows_selects_the_run_between_them_and_names_it() {
-            let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
-            let c = captured.clone();
-            let mut t = ActivityTimeline::with_entries(typing_run(20))
-                .on_name_group(move |r| c.borrow_mut().push(r.clone()));
-            t.set_rect(Rect::new(0.0, 0.0, 620.0, 620.0));
-            t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
-            t.set_all_expanded(true);
-
-            // Newest-first, so line 1 is change 19 and line 4 is change 16.
-            let a = t.row_entry_index(1).expect("line 1 is a change");
-            let b = t.row_entry_index(4).expect("line 4 is a change");
-            assert_eq!((a, b), (19, 16));
-
-            let r1 = t.row_rect(1).unwrap();
-            click(&mut t, Point::new(r1.x0 + 40.0, r1.center().y));
-            assert_eq!(t.selection(), Some((19, 19)), "a plain click anchors");
-
-            let r4 = t.row_rect(4).unwrap();
-            dispatch(&mut t, &cursor_moved(r4.x0 + 40.0, r4.center().y));
-            Dispatch::new()
-                .modifiers(shift())
-                .send(&mut t, &mouse_press());
-            assert_eq!(t.selection(), Some((16, 19)), "shift-click extends the run");
-
-            // Paint so the bar's action rect is where the click handler will look.
-            paint(&mut t);
-            let action = t.name_selection_rect();
-            assert!(
-                action.area() > 0.0,
-                "the selection bar offers a name action"
-            );
-            click(&mut t, action.center());
-            type_str(&mut t, "Second pass");
-            dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
-
-            let reqs = captured.borrow();
-            assert_eq!(reqs.len(), 1);
-            let mut start = [0u8; 16];
-            start[0] = 16;
-            let mut end = [0u8; 16];
-            end[0] = 19;
-            assert_eq!(reqs[0].start, HistoryEntryId(start));
-            assert_eq!(reqs[0].end, HistoryEntryId(end));
-            assert_eq!(reqs[0].label, "Second pass");
-            assert_eq!(t.selection(), None, "committing clears the selection");
-        }
-
-        fn selection_tracks_stable_ids_across_feed_insertion() {
-            let mut timeline = timeline_at(
-                Rect::new(0.0, 0.0, 620.0, 600.0),
-                vec![
-                    entry(EntryKind::Text, "Ada", 1, 1),
-                    entry(EntryKind::Text, "Ada", 3, 3),
-                ],
-            );
-            let selected_id = timeline.entries()[1].id;
-            timeline.set_selection(Some((1, 1)));
-            timeline.set_entries(vec![
-                entry(EntryKind::Text, "Ada", 1, 1),
-                entry(EntryKind::Text, "Ada", 2, 2),
-                entry(EntryKind::Text, "Ada", 3, 3),
-            ]);
-            assert_eq!(timeline.selection(), Some((2, 2)));
-            assert_eq!(timeline.entries()[2].id, selected_id);
-        }
-
-        fn filtering_out_a_selection_clears_destructive_targeting() {
-            let mut timeline = timeline_at(
-                Rect::new(0.0, 0.0, 620.0, 600.0),
-                vec![
-                    entry(EntryKind::Text, "Ada", 1, 1),
-                    entry(EntryKind::Text, "Maren", 2, 2),
-                ],
-            );
-            timeline.set_selection(Some((0, 0)));
-            timeline.set_filter(HistoryFilter::default().with_author("Maren"));
-            assert_eq!(timeline.selection(), None);
-        }
-
-        fn a_filter_that_hides_part_of_a_band_says_how_much_it_is_showing() {
-            let mut entries = typing_run(10);
-            entries[3].entry_kind = EntryKind::Comment;
-            entries[4].entry_kind = EntryKind::Comment;
-            // Comments split the band automatically, so name the whole run to force
-            // one band that a filter can then cut into.
-            let ids = (entries[0].id, entries[9].id);
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries);
-            t.set_named_ranges(vec![NamedRange {
-                id: "tilo:group:rec".into(),
-                label: "Morning".into(),
-                start: ids.0,
-                end: Some(ids.1),
-                named_by: None,
-                created: SystemTime::UNIX_EPOCH,
-            }]);
-            assert!(
-                !t.group_subtitle_at_row(0).unwrap().contains(" of "),
-                "unfiltered, there is nothing to qualify: {:?}",
-                t.group_subtitle_at_row(0)
-            );
-
-            t.set_active_chip(ChipKind::Comments);
-            let sub = t.group_subtitle_at_row(0).expect("the band survives");
-            assert!(
-                sub.starts_with("2 of 10 shown"),
-                "a band cut by a filter must say so: {sub:?}"
-            );
-            assert_eq!(t.visible_len(), 2);
-        }
-
-        shift_clicking_two_rows_selects_the_run_between_them_and_names_it();
-        selection_tracks_stable_ids_across_feed_insertion();
-        filtering_out_a_selection_clears_destructive_targeting();
-        a_filter_that_hides_part_of_a_band_says_how_much_it_is_showing();
-    }
-
-    #[test]
-    fn bands_order_virtualize_and_describe_themselves() {
-        fn a_thousand_bands_only_lay_out_the_ones_on_screen() {
-            // A thousand distinct authors is a thousand bands. The paint window and
-            // the hit-test must both stay proportional to the viewport.
-            let entries: Vec<HistoryEntry> = (0u32..2000)
-                .map(|i| {
-                    entry(
-                        EntryKind::Text,
-                        &format!("Person {}", i / 2),
-                        1_000_000u64.saturating_add(u64::from(i)),
-                        u8::try_from(i % 251).unwrap_or(u8::MAX),
-                    )
-                })
-                .collect();
-            let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), entries);
-            assert_eq!(t.visible_len(), 2000);
-            assert!(
-                t.row_count() >= 1000,
-                "two changes each by a thousand people is a thousand bands, got {}",
-                t.row_count()
-            );
-
-            let range = t.visible_row_range();
-            let max_lines_bounded = (620.0_f64 / ROW_HEIGHT).ceil().clamp(0.0, 1_000_000.0);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to 0..=1_000_000 above, so this cast cannot truncate or flip sign"
-            )]
-            let max_lines = (max_lines_bounded as usize).saturating_add(2);
-            assert!(
-                range.len() <= max_lines,
-                "laid out {} lines for a viewport that holds at most {}",
-                range.len(),
-                max_lines
-            );
-            assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
-            for i in range.clone() {
-                assert!(t.row_rect(i).is_some(), "line {i} is on screen");
-            }
-            assert!(
-                t.row_rect(range.end + 8).is_none(),
-                "a line well past the window must not lay out"
-            );
-        }
-
-        fn the_selection_bar_takes_its_space_out_of_the_scrollable_list() {
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), typing_run(20));
-            t.set_all_expanded(true);
-            let before = t.row_rect(1).unwrap();
-            let reachable_before = (0..t.row_count())
-                .filter(|i| t.row_rect(*i).is_some())
-                .count();
-
-            t.set_selection(Some((16, 19)));
-            let bar = t.selection_bar_rect();
-            assert!(bar.area() > 0.0, "a selection puts the bar on screen");
-
-            // The rows above it do not move — the bar is not a layout reflow.
-            assert_eq!(t.row_rect(1).unwrap(), before);
-            // It takes its space out of the viewport, so strictly fewer lines fit.
-            let reachable_after = (0..t.row_count())
-                .filter(|i| t.row_rect(*i).is_some())
-                .count();
-            assert!(
-                reachable_after < reachable_before,
-                "{reachable_after} lines still fit where {reachable_before} did"
-            );
-            // Nothing inside the bar is a hit target for the list, so a click on
-            // [Name these] can never also select a row underneath it.
-            for x in [bar.x0 + 4.0, bar.center().x, bar.x1 - 4.0] {
-                for y in [bar.y0 + 2.0, bar.center().y, bar.y1 - 2.0] {
-                    assert_eq!(
-                        t.row_at(Point::new(x, y)),
-                        None,
-                        "({x}, {y}) is inside the bar and must not hit a row"
-                    );
-                }
-            }
-            // And everything stays reachable: the scroll extent grew by exactly the
-            // height the bar took.
-            let with_bar = t.max_scroll();
-            t.set_selection(None);
-            let without_bar = t.max_scroll();
-            assert!(
-                (with_bar - without_bar - SELECTION_BAR_H).abs() < 0.01,
-                "scroll extent moved by {} for a {SELECTION_BAR_H} px bar",
-                with_bar - without_bar
-            );
-        }
-
-        fn bands_are_ordered_by_their_clock_but_never_broken_apart() {
-            // A peer's session merges in last while carrying a clock from days
-            // ago; ordering rows by clock alone would interleave it with local
-            // work, so bands sort by their newest change and stay contiguous.
-            let day = 86_400u64;
-            let mut entries: Vec<HistoryEntry> = Vec::new();
-            for i in 0..4 {
-                entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
-            }
-            // Peer session, merged after but stamped days earlier.
-            for i in 0..3 {
-                entries.push(entry(
-                    EntryKind::Text,
-                    "Ada",
-                    NOW - 5 * day + u64::from(i),
-                    10 + i,
-                ));
-            }
-            let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries);
-            let mut tl = t;
-            tl.set_all_expanded(true);
-
-            let authors: Vec<&str> = (0..tl.row_count())
-                .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
-                .collect();
-            // Newest-first: Alice's whole band, then Ada's whole band. No interleaving.
-            assert_eq!(
-                authors,
-                vec!["Alice", "Alice", "Alice", "Alice", "Ada", "Ada", "Ada"],
-                "the recent band comes first and neither band is broken apart"
-            );
-            // And the band headers agree with that order.
-            let titles: Vec<&str> = (0..tl.row_count())
-                .filter_map(|i| tl.group_title_at_row(i))
-                .collect();
-            assert_eq!(titles.len(), 2, "two bands: {titles:?}");
-
-            // `visible` walks the same order, so a count and a position agree.
-            let visible_authors: Vec<&str> = (0..tl.visible_len())
-                .map(|i| tl.visible_entry(i).unwrap().author.name.as_str())
-                .collect();
-            assert_eq!(visible_authors, authors);
-
-            tl.set_newest_first(false);
-            let authors: Vec<&str> = (0..tl.row_count())
-                .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
-                .collect();
-            assert_eq!(
-                authors,
-                vec!["Ada", "Ada", "Ada", "Alice", "Alice", "Alice", "Alice"],
-                "oldest-first flips the bands, and still does not break them"
-            );
-        }
-
-        fn the_accessible_description_counts_bands_as_well_as_changes() {
-            let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
-            let node = Widget::accessibility(&t).unwrap();
-            assert_eq!(
-                node.description.as_deref(),
-                Some("20 entries in 1 groups"),
-                "a screen reader must not be told '20 items' over one collapsed band"
-            );
-        }
-
-        a_thousand_bands_only_lay_out_the_ones_on_screen();
-        the_selection_bar_takes_its_space_out_of_the_scrollable_list();
-        bands_are_ordered_by_their_clock_but_never_broken_apart();
-        the_accessible_description_counts_bands_as_well_as_changes();
-    }
-
-    #[test]
-    fn day_headings_bucket_changes_into_today_yesterday_this_week_and_earlier() {
-        // 1970-01-01 was Thursday. Day 8 is Friday 1970-01-09; that week's
-        // Monday is day 4. Today / yesterday / mid-week / previous week.
-        let now = SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_secs(8 * 86_400 + 12 * 3_600))
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let secs = |day: u64, hour: u64| day * 86_400 + hour * 3_600;
-        let entries = vec![
-            entry(EntryKind::Text, "Ada", secs(8, 10), 1),
-            entry(EntryKind::Text, "Maren", secs(7, 16), 2),
-            entry(EntryKind::Text, "Ada", secs(5, 9), 3),
-            entry(EntryKind::Text, "Bob", secs(2, 11), 4),
-        ];
-        let mut t = ActivityTimeline::with_entries(entries);
-        t.set_now_for_test(now);
-        t.set_newest_first(true);
-        t.set_all_expanded(true);
-        t.set_show_day_headings(true);
-        let headings: Vec<String> = (0..t.row_count())
-            .filter_map(|i| t.group_title_at_row(i).map(str::to_string))
-            .filter(|title| {
-                matches!(
-                    title.as_str(),
-                    "Today" | "Yesterday" | "This week" | "Earlier"
-                )
-            })
-            .collect();
-        assert_eq!(
-            headings,
-            vec!["Today", "Yesterday", "This week", "Earlier"],
-            "newest-first calendar headings, not work-band titles"
-        );
-        assert!(
-            (0..t.row_count()).any(|i| t.row_entry(i).is_some_and(|e| e.author.name == "Ada")),
-            "Today still lists today's change"
-        );
-    }
-}
+mod group_tests;

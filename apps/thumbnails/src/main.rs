@@ -1,6 +1,4 @@
-//! `thumbnail-batch`: the compute entrypoint of the thumbnails package. The
-//! compute worker launches it under the package sandbox with a staged
-//! request and an output directory; see [`thumbnail::batch`].
+//! `thumbnail-batch`: the compute entrypoint of the thumbnails package.
 
 use std::process::ExitCode;
 
@@ -10,15 +8,12 @@ extern crate runtime_dylib;
 fn main() -> ExitCode {
     match thumbnail::batch::run_from_args(std::env::args().skip(1)) {
         Ok(failed) => {
-            // Every other input still made its thumbnail, so the job
-            // succeeds; each failure names the content, not a position.
             for failure in failed {
                 eprintln!("thumbnail-batch: {failure}");
             }
             ExitCode::SUCCESS
         }
         Err(error) => {
-            // The worker returns the tail of stderr to the requester.
             eprintln!("thumbnail-batch: {error}");
             ExitCode::from(error.exit_code())
         }

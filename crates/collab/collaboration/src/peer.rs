@@ -197,8 +197,10 @@ impl super::CollabTransport for PeerTransportAdapter {
             // documents: the directory is an offer, not traffic it lost.
             TransportCommand::PublishActionDirectory { app_id } => {
                 return self.peer.publish_action_directory(app_id).map_err(|error| {
-                    // ignored-failure: the caller is told the peer serves no action directory
-                    tracing::debug!(%error, "collaboration peer serves no action directory");
+                    tilo_failure::ignored!(
+                        "the caller is told the peer serves no action directory",
+                        tracing::debug!(%error, "collaboration peer serves no action directory")
+                    );
                     super::TransportError::Unsupported
                 });
             }

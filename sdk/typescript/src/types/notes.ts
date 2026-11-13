@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.notes@8ce7fd71d646d813";
+
 export interface Page {
   title: string;
   parent: string | null;
@@ -110,6 +115,6 @@ export interface Notebook extends tilo.Resource {
 
 /** The `notes.notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {
-  return resourceProxy(ws, path) as unknown as Notebook;
+  return resourceProxy(ws, path, SURFACE) as unknown as Notebook;
 }
 

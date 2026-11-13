@@ -1,16 +1,11 @@
-//! Window-independent projection of a managed record's historical states.
-//!
-//! The controller reads a rolled-back clone of the live Automerge document.
-//! It therefore neither commits an app's open transaction nor gives a
-//! historical renderer access to a live record, persistence, or dispatch.
+//! Window-independent projection of a managed record's historical states. The controller reads a
+//! rolled-back clone of the live Automerge document.
 
 mod assets;
 
-/// Moves on whenever something reaches a History surface from outside a
-/// refresh of it: an asset or file reply another thread delivers, a request
-/// to open or close it, a command one of its controls queued, a width that
-/// changes its layout. A frame whose walk for History surfaces found none
-/// needing a refresh walks again only after news (or a change of the tree).
+/// Moves on whenever something reaches a History surface from outside a refresh of it: an asset or file
+/// reply another thread delivers, a request to open or close it, a command one of its controls queued,
+/// a width that changes its layout.
 static NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// [`NEWS`] as it stands.
@@ -58,9 +53,6 @@ use crate::history_source::{
 use crate::{HistoryEntry, HistoryEntryId, NamedRange, RecordId};
 
 /// Full authority namespace for one historical resource.
-///
-/// A record id alone is not globally unique: the same spelling in another
-/// profile, workspace, or app belongs to a different authority domain.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HistoryResource {
     pub profile_id: String,
@@ -94,9 +86,6 @@ pub enum PreviewSide {
 }
 
 /// Immutable Automerge bytes at one exact causal frontier.
-///
-/// This value intentionally carries no live document, record handle,
-/// permission, persistence, publication, invocation, or effect authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistorySnapshot {
     bytes: Arc<[u8]>,
@@ -123,9 +112,9 @@ impl HistorySnapshot {
     }
 }
 
-/// Opaque proof that a particular selected state was reviewed against a
-/// particular live frontier. Validation grants no authority and writes
-/// nothing; the host must separately recheck permissions before restoring.
+/// Opaque proof that a particular selected state was reviewed against a particular live frontier.
+/// Validation grants no authority and writes nothing; the host must separately recheck permissions
+/// before restoring.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoreReview {
     resource: HistoryResource,
@@ -201,9 +190,7 @@ pub struct HistoryController {
     resource: HistoryResource,
     source: HistorySource,
     entries: Vec<HistoryEntry>,
-    /// The named runs of changes the document carries, as the timeline bands them.
     named: Vec<NamedRange>,
-    /// What members' devices wrote that changes did, by change.
     descriptions: HashMap<HistoryEntryId, String>,
     projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
@@ -212,41 +199,31 @@ pub struct HistoryController {
     live_updates: bool,
     generation: u64,
     snapshots: HashMap<Vec<ChangeHash>, Arc<[u8]>>,
-    /// How many of the newest changes the projection describes.
     window: usize,
-    /// The projected history holds changes older than the window.
     has_earlier: bool,
-    /// For an app's own history, which of the session's lists of its workspaces'
-    /// verified agents ([`crate::history_source::set_workspace_agents`]) the
-    /// source names; a newer list is named on the next refresh.
+    /// For an app's own history, which of the session's lists of its workspaces' verified agents
+    /// ([`crate::history_source::set_workspace_agents`]) the source names; a newer list is named on the
+    /// next refresh.
     workspace_agents: Option<u64>,
-    /// The workspace's participants by id and name, as presence last named them:
-    /// the authors the source resolves besides registered identities.
+    /// The workspace's participants by id and name, as presence last named them: the authors the source
+    /// resolves besides registered identities.
     roster: Vec<(String, String)>,
 }
 
-/// How many of the newest changes a history view describes when it opens,
-/// and how many more each request for earlier ones adds. Describing a change
-/// costs a replay step, so a long history opens at its latest page instead
-/// of replaying everything.
+/// How many of the newest changes a history view describes when it opens, and how many more each
+/// request for earlier ones adds.
 pub const HISTORY_PAGE: usize = 200;
 
 impl HistoryController {
-    /// Build a controller with the default factual history source.
-    ///
-    /// # Errors
-    ///
-    /// Returns a projection error if the committed history cannot be read.
+    /// Build a controller with the default factual history source. # Errors Returns a projection error
+    /// if the committed history cannot be read.
     pub fn new(resource: HistoryResource, live: &AutoCommit) -> Result<Self, HistoryError> {
         Self::with_source(resource, HistorySource::new(), live)
     }
 
-    /// Build a controller with a caller-configured source, for example one
-    /// carrying the host's author directory and artifact kind.
-    ///
-    /// # Errors
-    ///
-    /// Returns a projection error if the committed history cannot be read.
+    /// Build a controller with a caller-configured source, for example one carrying the host's author
+    /// directory and artifact kind. # Errors Returns a projection error if the committed history cannot
+    /// be read.
     pub fn with_source(
         resource: HistoryResource,
         source: HistorySource,
@@ -257,13 +234,8 @@ impl HistoryController {
         Ok(controller)
     }
 
-    /// A controller that has observed the committed frontier `live_heads`
-    /// but projected nothing yet. Projecting replays the whole change log,
-    /// which only an open history view needs; the first [`Self::refresh`]
-    /// against a document does it.
+    /// A controller that has observed the committed frontier `live_heads` but projected nothing yet.
     pub(crate) fn unprojected(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
-        // An app's own history names the agents the session verified for
-        // its workspaces, as the workspace's Activity does.
         let revision = crate::history_source::workspace_agents_revision();
         let source = HistorySource::new()
             .with_authors(crate::history_source::AuthorDirectory::with_workspace_agents());
@@ -302,11 +274,8 @@ impl HistoryController {
         self.has_earlier
     }
 
-    /// List another page of older changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a projection error if the committed history cannot be read.
+    /// List another page of older changes. # Errors Returns a projection error if the committed history
+    /// cannot be read.
     pub fn show_earlier(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
         self.window = self.window.saturating_add(HISTORY_PAGE);
         self.source = std::mem::take(&mut self.source).with_max_entries(self.window);
@@ -330,8 +299,8 @@ impl HistoryController {
         &self.descriptions
     }
 
-    /// Committed activity at `live`'s frontier, in causal order, leaving
-    /// this controller's projection and selection where they are.
+    /// Committed activity at `live`'s frontier, in causal order, leaving this controller's projection
+    /// and selection where they are.
     #[cfg(any(feature = "native", test))]
     pub(crate) fn entries_at(&self, live: &AutoCommit) -> Vec<HistoryEntry> {
         let mut projection = committed_clone(live);
@@ -341,8 +310,8 @@ impl HistoryController {
         self.source.entries(&mut projection)
     }
 
-    /// Reproject factual activity from committed graph state. An existing
-    /// preview stays pinned to its exact bytes and heads.
+    /// Reproject factual activity from committed graph state. An existing preview stays pinned to its
+    /// exact bytes and heads.
     pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
         let mut roster: Vec<(String, String)> = presence
             .names
@@ -398,13 +367,8 @@ impl HistoryController {
         Ok(())
     }
 
-    /// Pin the exact before and after causal frontiers of one change or group.
-    /// Failed selection leaves the previous valid preview untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HistoryError::EmptySelection`] or
-    /// [`HistoryError::UnknownEntry`] for an invalid selection, and
+    /// Pin the exact before and after causal frontiers of one change or group. # Errors Returns
+    /// [`HistoryError::EmptySelection`] or [`HistoryError::UnknownEntry`] for an invalid selection, and
     /// [`HistoryError::Materialize`] when Automerge cannot build its states.
     pub fn select(
         &mut self,
@@ -467,10 +431,6 @@ impl HistoryController {
     }
 
     /// Switch between the selected comparison's exact states.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HistoryError::NoPreview`] when no history is selected.
     pub fn select_compare_side(&mut self, side: PreviewSide) -> Result<(), HistoryError> {
         if self.selected.is_none() {
             return Err(HistoryError::NoPreview);
@@ -486,8 +446,7 @@ impl HistoryController {
         })
     }
 
-    /// Whether the observed committed live frontier differs from the pinned
-    /// selected after-frontier.
+    /// Whether the observed committed live frontier differs from the pinned selected after-frontier.
     pub fn has_live_updates(&self) -> bool {
         self.live_updates
     }
@@ -500,11 +459,6 @@ impl HistoryController {
     }
 
     /// Bind the selected state to the latest observed committed live frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HistoryError::NoPreview`] when no history is selected and
-    /// [`HistoryError::EffectOnlySelection`] for an external effect receipt.
     pub fn review_restore(&self) -> Result<RestoreReview, HistoryError> {
         let selected = self.selected.as_ref().ok_or(HistoryError::NoPreview)?;
         if selected.effect_only {
@@ -519,8 +473,7 @@ impl HistoryController {
         })
     }
 
-    /// Validate a review token without changing the document. The host owns
-    /// the separate authority check and the eventual canonical restore write.
+    /// Validate a review token without changing the document.
     pub fn validate_restore(
         &self,
         review: &RestoreReview,
@@ -621,7 +574,6 @@ pub(crate) use host_tests::preview as test_preview;
 pub(crate) mod routes;
 
 /// Opaque retained framework surface used only by owning runner traversal.
-/// No construction, document, review or write authority is public on this type.
 #[doc(hidden)]
 /// A window's History as the windows that own one hand it to a visitor.
 pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;

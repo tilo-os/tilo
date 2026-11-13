@@ -60,7 +60,13 @@ impl Core {
     ) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();
         match &mut frames.top_mut()?.kind {
-            FrameKind::View(vs) => Ok(f(vs)?),
+            FrameKind::View(vs) => {
+                let kept = f(vs)?;
+                // What the node was told to show while the view's own state was borrowed for
+                // the build is the view's read too.
+                vs.person_reads |= self.person_shown.take();
+                Ok(kept)
+            }
             _ => trap("ui nodes can only be built inside a view"),
         }
     }
@@ -69,7 +75,12 @@ impl Core {
     /// it read is a dependency of a boundary only where a view reads it. Code outside a view (an
     /// action's, an agent's program) reads the host's answers without depending on them.
     pub(crate) fn in_view(&self, f: impl FnOnce(&mut ViewState)) {
-        let mut frames = self.frames.borrow_mut();
+        let Ok(mut frames) = self.frames.try_borrow_mut() else {
+            // The view is building one of its own nodes: what the node shows is taken onto the
+            // view when the build is done ([`Self::with_view`]).
+            self.person_shown.set(true);
+            return;
+        };
         if let Ok(top) = frames.top_mut()
             && let FrameKind::View(vs) = &mut top.kind
         {
@@ -442,7 +453,7 @@ impl Core {
         else {
             return trap("a change holds what it was before and after");
         };
-        let phrase = |id: &str| self.words.borrow().word(id, &[], id);
+        let phrase = |id: &str| self.word_args(id, &[], id);
         let root = self.with_view(|vs| {
             let root = push_tree(vs, shown_node(&key, &shown, &phrase));
             // What a field held before reads quieter than what it holds now. A rich text

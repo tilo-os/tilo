@@ -120,8 +120,6 @@ fn retained_idle_paragraphs_keep_both_caches_across_many_layout_owners() {
     for (text, old) in &mut owners {
         let shape_ptr = old.buffer.lines[0].shape_opt().unwrap().spans.as_ptr();
         let layout_ptr = old.buffer.lines[0].layout_opt().unwrap().as_ptr();
-        // Re-admission after an idle/hidden interval uses the same owner value;
-        // visibility scheduling itself belongs to the host, not this cache.
         let replacement = shape(&mut fs, text, 160.0, &style);
         let previous = std::mem::replace(old, replacement);
         RichTextLayout::reuse_unchanged_paragraphs(&mut old.buffer, previous.buffer);
@@ -304,9 +302,6 @@ fn changed_paragraph_default_attributes_match_cold_geometry() {
         vec![],
         Some(old),
     );
-    // cosmic-text can assign a previous span's defaults plus a full-line
-    // override when runs end at a paragraph boundary. Equivalent visible text
-    // is not an exact attribute witness: preserve the conservative fallback.
     assert_ne!(retained.buffer.lines[2].attrs_list(), &normal_attrs);
     let fresh = RichTextLayout::shape_styled(
         &mut fs,

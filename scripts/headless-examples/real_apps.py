@@ -42,10 +42,12 @@ import json
 import os
 import select
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,6 +64,31 @@ MCP_PROTOCOL = "2025-06-18"
 
 class Failed(Exception):
     """A step of the harness did not get what it waited for."""
+
+
+class Refused(Failed):
+    """The session refused a request: its own error code and message."""
+
+    def __init__(self, op: str, err: dict):
+        self.code = err.get("code", "unknown")
+        self.message = err.get("message", "")
+        super().__init__(f"{op} refused: {json.dumps(err)[:2000]}")
+
+
+def control_socket_from_argv(argv: list[str] | None = None) -> Path:
+    """The running session a script was pointed at: its first argument, else
+    `$TILO_TEST_CONTROL`, else the default `tilo-control` uses too."""
+    argv = sys.argv if argv is None else argv
+    if len(argv) > 1:
+        return Path(argv[1])
+    explicit = os.environ.get("TILO_TEST_CONTROL")
+    if explicit:
+        return Path(explicit)
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.path.isabs(runtime):
+        raise Failed("no control socket: pass one, or set TILO_TEST_CONTROL "
+                     "(XDG_RUNTIME_DIR is unset, so there is no private default)")
+    return Path(runtime) / "tilo-session/test-control.sock"
 
 
 def app_id(name: str) -> str:
@@ -91,9 +118,217 @@ def until(what: str, check, deadline: float = 60.0, step: float = 0.25):
     raise Failed(f"timed out waiting for {what}")
 
 
+def search_answer_shown(answer: dict, query: str, wanted=()) -> bool:
+    """Whether a `search_rows` answer is the one a capture waits for: the query
+    shown is the one typed, the palette is no longer filling in, and every name
+    in `wanted` is listed.
+
+    The palette publishes its rows a frame or two after the keys are typed, and
+    a source that answers on a worker can join a moment after the palette stops
+    saying it is filling in (`search_expecting`), so a capture taken on the keys
+    alone shows "Searching…" or a row short of what the query finds."""
+    if answer.get("query") != query or answer.get("searching"):
+        return False
+    titles = [row.get("title") or "" for row in answer.get("rows") or []]
+    return all(any(name in title for title in titles) for name in wanted)
+
+
 def control_binary() -> Path:
     """`tilo-control` of the build the session runs from."""
     return BUILD / "bin/tilo-control"
+
+
+def socket_length_refusal(path: Path | str) -> str:
+    """Why `path` cannot be a control socket, or "" when it can: Linux holds a
+    socket's path in 108 bytes including its terminating NUL."""
+    size = len(os.fsencode(str(path)))
+    if size > 107:
+        return (f"control socket path is {size} bytes; Linux Unix sockets allow at "
+                f"most 107. Choose a shorter path inside a private runtime directory.")
+    return ""
+
+
+def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 30.0) -> dict:
+    """One request on a session's test control socket and its reply.
+
+    The reply's one key names its shape (`ok`, `state`, `answer`, ...); an `err`
+    reply raises. `payload` is a dict or its JSON text. See
+    crates/session/session/src/test_control.rs for the ops. `wait_ms` holds the
+    reply until the invocation settles, and the socket timeout outlasts it."""
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    wait = payload.get("wait_ms", 0) / 1000.0
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout + wait)
+        s.connect(str(socket_path))
+        s.sendall(json.dumps(payload).encode() + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(1 << 20)
+            if not chunk:
+                raise Failed(f"the control socket closed mid-reply to {payload.get('op')}")
+            buf += chunk
+    reply = json.loads(buf.partition(b"\n")[0])
+    if "err" in reply:
+        raise Refused(payload.get("op"), reply["err"])
+    return reply
+
+
+def runtime_for(state: Path) -> Path:
+    """The private runtime directory a session on `state` uses.
+
+    `dist/dev/nested-session.sh` picks it (a login's XDG_RUNTIME_DIR, the
+    user's /run/user seat, or a short directory of its own) and prints it, so no
+    second copy of that rule can disagree with the launcher's."""
+    printed = run([str(SESSION), "--print-runtime", "--state", str(state)])
+    runtime = printed.strip()
+    if not runtime:
+        raise Failed("the session launcher named no runtime directory")
+    return Path(runtime)
+
+
+class ScriptedSession:
+    """A headless session of the build a harness must drive, and nothing around it.
+
+    `Session` starts the product session (`dist/dev/nested-session.sh`: the
+    tree's apps installed as signed packages, launched through the desktop's
+    own launcher). A harness whose subject is a build of its own — a release
+    session a performance lane compiled, an app's first frame, a control-socket
+    demo — starts *that* binary instead, and finds it here: on a scratch profile
+    under the caller's cache, with a private runtime directory from the one
+    place that picks it, `TILO_TEST_CONTROL` pointing at its socket, and nothing
+    of this login's session in its environment. `stop()` ends it and removes
+    what it made.
+
+    Without `profile`, the profile and runtime directory are removed on stop;
+    with one, the caller keeps them (a second pass over the same profile)."""
+
+    def __init__(self, binary: Path | str, *, profile: Path | str | None = None,
+                 socket: Path | str | None = None, timeout: float = 60.0,
+                 env: dict | None = None, log: Path | str | None = None):
+        self.binary = Path(binary).resolve()
+        self.extra_env = dict(env or {})
+        self.log = Path(log) if log else None
+        self._log_file = None
+        self.kept = profile is not None
+        if profile is None:
+            cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+            cache.mkdir(parents=True, exist_ok=True)
+            profile = Path(tempfile.mkdtemp(prefix="tilo-headless.", dir=cache))
+        self.profile = Path(profile).resolve()
+        for sub in ("config", "data", "state", "cache", "home", "identity",
+                    "system/run", "system/fs-cache", "system/peer-cache"):
+            (self.profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.profile.chmod(0o700)
+        real_home = Path(os.path.realpath(os.environ.get("HOME") or "/"))
+        if Path(os.path.realpath(self.profile / "home")) == real_home:
+            raise Failed(f"profiling home {self.profile / 'home'} is this login's HOME")
+        self.timeout = timeout
+        self.runtime_dir = runtime_for(self.profile / "state")
+        self.control_socket = Path(socket) if socket else self.runtime_dir / "tilo-session/test-control.sock"
+        refusal = socket_length_refusal(self.control_socket)
+        if refusal:
+            raise Failed(refusal)
+        self.proc: subprocess.Popen | None = None
+
+    def env(self) -> dict:
+        """The environment the session runs in: this login's toolchain and no
+        session of its own."""
+        env = {**os.environ}
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"):
+            env.pop(name, None)
+        env.update(
+            TILO_TEST_CONTROL=str(self.control_socket),
+            HOME=str(self.profile / "home"),
+            XDG_CONFIG_HOME=str(self.profile / "config"),
+            XDG_DATA_HOME=str(self.profile / "data"),
+            XDG_STATE_HOME=str(self.profile / "state"),
+            XDG_CACHE_HOME=str(self.profile / "cache"),
+            XDG_RUNTIME_DIR=str(self.runtime_dir),
+            TILO_IDENTITY_ROOT=str(self.profile / "identity"),
+            TILO_AUTHORITY_SOCKET_DIR=str(self.profile / "system/run"),
+            TILO_FS_CONTENT_PEER_CACHE_DIR=str(self.profile / "system/peer-cache"),
+            **self.extra_env,
+        )
+        return env
+
+    def start(self) -> "ScriptedSession":
+        if self.proc is not None:
+            raise Failed("the session is running already")
+        if not self.binary.exists():
+            raise Failed(f"compositor not built at {self.binary} "
+                         f"(cargo build -p tilo-session --bin tilo-session)")
+        self.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.control_socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.control_socket.exists():
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.settimeout(1.0)
+                try:
+                    probe.connect(str(self.control_socket))
+                except OSError:
+                    self.control_socket.unlink(missing_ok=True)
+                else:
+                    raise Failed(f"a live session answers on {self.control_socket}")
+        if self.log is not None:
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = self.log.open("ab")
+            print(f"==> starting {self.binary} headless (profile {self.profile})",
+                  file=self._log_file, flush=True)
+        else:
+            print(f"==> starting {self.binary} headless (profile {self.profile})",
+                  file=sys.stderr)
+        self.proc = subprocess.Popen(
+            [str(self.binary), "--backend", "headless"], env=self.env(),
+            stdout=self._log_file or subprocess.DEVNULL,
+            stderr=self._log_file or subprocess.DEVNULL, start_new_session=True)
+        try:
+            until("the session's control socket", self.control_socket.exists, self.timeout, 0.2)
+            until("the session to answer", self.answers, self.timeout, 0.2)
+        except BaseException:
+            self.stop()
+            raise
+        return self
+
+    def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
+        """One request on this session's control socket and its reply
+        (`control_call`), as `Session.control` is for the product session."""
+        return control_call(self.control_socket, payload, timeout)
+
+    def answers(self) -> bool:
+        """Whether the session answers a request on its control socket yet."""
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        try:
+            control_call(self.control_socket, {"op": "list_targets"}, timeout=5.0)
+        except (OSError, Failed):
+            return False
+        return True
+
+    def stop(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(30)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(10)
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
+        self.control_socket.unlink(missing_ok=True)
+        shutil.rmtree(self.runtime_dir, ignore_errors=True)
+        if not self.kept:
+            shutil.rmtree(self.profile, ignore_errors=True)
+
+    def __enter__(self) -> "ScriptedSession":
+        return self.start()
+
+    def __exit__(self, *_error) -> None:
+        self.stop()
 
 
 def build(*, apps: str = APPS, remote: str | None = None) -> None:
@@ -330,6 +565,19 @@ class Session:
         env.pop("TILO_APPS_SYSTEM_DIR", None)
         return env
 
+    @classmethod
+    def attach(cls, control: Path | str, runtime: Path | str | None = None) -> "Session":
+        """A session another tool started, driven on its control socket.
+
+        `control` is that socket (from `--start --keep`'s ready JSON, the
+        session's `session.json`, or `$TILO_TEST_CONTROL`); `runtime` is the
+        private runtime directory it made, when the caller has it. Nothing is
+        started and nothing is stopped: what a drive of it asks for, and what
+        it reads back, are the running session's own."""
+        state = Path(runtime) if runtime else Path(".")
+        return cls(state, ready={"control": str(control),
+                                 **({"runtime": str(runtime)} if runtime else {})})
+
     def control_socket(self) -> str:
         """The test control socket this session answers on, from its ready file."""
         if self.ready is None:
@@ -340,32 +588,16 @@ class Session:
         """The private runtime directory this session made, from its ready file."""
         if self.ready is None:
             raise Failed("the session is not running")
-        return self.ready["runtime"]
+        runtime = self.ready.get("runtime")
+        if not runtime:
+            raise Failed("this session was attached without its runtime directory")
+        return runtime
 
     def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
-        """One request on the test control socket and its reply, whose one key
-        names its shape (`ok`, `state`, `answer`, ...); an
-        `err` reply raises. `payload` is a dict or its JSON text. See
-        crates/session/session/src/test_control.rs for the ops."""
-        if isinstance(payload, str):
-            payload = json.loads(payload)
+        """One request on the test control socket and its reply (`control_call`)."""
         if self.ready is None:
             raise Failed("the session is not running")
-        wait = payload.get("wait_ms", 0) / 1000.0
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout + wait)
-            s.connect(self.control_socket())
-            s.sendall(json.dumps(payload).encode() + b"\n")
-            buf = b""
-            while b"\n" not in buf:
-                chunk = s.recv(1 << 20)
-                if not chunk:
-                    raise Failed(f"the control socket closed mid-reply to {payload.get('op')}")
-                buf += chunk
-        reply = json.loads(buf.partition(b"\n")[0])
-        if "err" in reply:
-            raise Failed(f"{payload.get('op')} refused: {json.dumps(reply['err'])[:2000]}")
-        return reply
+        return control_call(self.control_socket(), payload, timeout)
 
     def control_cmd(self, *args: str) -> str:
         """`tilo-control` of the build this session runs from, in the session's environment."""
@@ -402,6 +634,27 @@ class Session:
             cursor = answer.get("next_cursor")
             if not cursor:
                 return found
+
+    def search_rows(self) -> dict:
+        """The open search's query, the rows it shows and whether it is still
+        filling in, as of the last frame the desk drew (`search_rows`)."""
+        return self.control({"op": "search_rows"})["answer"]
+
+    def wait_search_rows(self, query: str, wanted=(), deadline: float = 30.0) -> dict:
+        """The search's rows once they are the answer to `query`: the palette is
+        no longer filling in and every row whose title holds a name in `wanted`
+        is listed (see [`search_answer_shown`]). Shoot what a person sees only
+        after this answers."""
+        def shown():
+            answer = self.search_rows()
+            return answer if search_answer_shown(answer, query, wanted) else None
+
+        return until(
+            f"the search for {query!r} to show {list(wanted) or 'its rows'}",
+            shown,
+            deadline,
+            step=0.01,
+        )
 
     def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
         """Invoke an action by its address and answer its settled receipt."""
@@ -479,6 +732,16 @@ class Session:
         self.control({"op": "pointer_move", "x": x, "y": y})
         self.control({"op": "pointer_button", "pressed": True, "button": "right"})
         self.control({"op": "pointer_button", "pressed": False, "button": "right"})
+
+    def click_doing(self, identity: str, verb: str = "activate") -> dict:
+        """Press the control that does `identity` (an app action's, as `tilolang-e2e`'s `doing`
+        writes it): wherever the window's composition draws it, in whatever language."""
+        return self.control({"op": "click_named", "identity": identity, "verb": verb})
+
+    def wait_doing(self, identity: str, deadline: float = 60.0) -> dict:
+        """The control that does `identity`, once the window draws it."""
+        return until(f"a control doing {identity!r}", lambda: next(
+            (t for t in self.targets() if t.get("identity") == identity), None), deadline)
 
     def click_named(self, name: str, verb: str = "activate") -> dict:
         """Press the control `name`; `verb` is `activate` or `show-context-menu`."""

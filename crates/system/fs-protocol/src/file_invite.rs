@@ -1,8 +1,4 @@
 //! Signed, record-scoped invitations for collaborative files.
-//!
-//! A bearer credential proves knowledge of a 256-bit secret; the signed token
-//! stores only its domain-separated hash. Redemption limits are enforced by an
-//! online authority, never by this self-contained token.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,9 +29,7 @@ impl FilePermission {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum FileInviteSubject {
-    /// A certified human root identity, not one of that person's device keys.
     Person(Ed25519PublicKey),
-    /// Anyone presenting the secret whose hash is committed here.
     Bearer { secret_hash: [u8; 32] },
 }
 
@@ -128,7 +122,6 @@ impl FileInviteV1 {
         Ok(())
     }
 
-    /// Verify an unrestricted bearer invite and its presented secret.
     pub fn verify_bearer_at(&self, secret: &[u8; 32], now_ms: u64) -> Result<(), FileInviteError> {
         self.verify_at(now_ms)?;
         let FileInviteSubject::Bearer { secret_hash } = self.subject else {
@@ -144,7 +137,6 @@ impl FileInviteV1 {
     }
 }
 
-/// Mint a signed invite for the supplied specification.
 pub fn mint_file_invite(
     spec: FileInviteSpec,
     issuer: &ed25519_dalek::SigningKey,
@@ -152,7 +144,6 @@ pub fn mint_file_invite(
     mint_file_invite_inner(spec, issuer)
 }
 
-/// Generate a fresh bearer secret and mint its signed invite.
 pub fn mint_bearer_file_invite(
     mut spec: FileInviteSpec,
     issuer: &ed25519_dalek::SigningKey,
@@ -253,8 +244,6 @@ mod tests {
         }
     }
 
-    /// A named invite is record-scoped, signed and expires; a bearer secret is required and never
-    /// stored in the token.
     #[test]
     fn a_named_invite_is_scoped_signed_and_expiring_and_a_bearer_secret_is_never_stored() {
         // Phase: named_invite_is_record_scoped_signed_and_expires.

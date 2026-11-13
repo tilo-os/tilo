@@ -2003,6 +2003,8 @@ pub trait ProfileCardApi: Widget {
     fn close(&mut self);
     fn is_open(&self) -> bool;
     fn take_choice(&mut self) -> Option<ProfileChoice>;
+    fn shows(&self, model: &ProfileModel) -> bool;
+    fn updated(&mut self, model: &ProfileModel) -> bool;
 }
 
 impl ProfileCardApi for ProfileCard {
@@ -2023,6 +2025,12 @@ impl ProfileCardApi for ProfileCard {
     }
     fn take_choice(&mut self) -> Option<ProfileChoice> {
         Self::take_choice(self)
+    }
+    fn shows(&self, model: &ProfileModel) -> bool {
+        Self::shows(self, model)
+    }
+    fn updated(&mut self, model: &ProfileModel) -> bool {
+        Self::updated(self, model)
     }
 }
 
@@ -2151,6 +2159,45 @@ impl LazyProfileCard {
         self.card.as_mut().and_then(|card| card.take_choice())
     }
 
+    /// As [`ProfileCard::shows`]. A card still waiting on its code shows the model it opens with.
+    #[must_use]
+    pub fn shows(&self, model: &ProfileModel) -> bool {
+        match (self.card.as_ref(), self.opening.as_ref()) {
+            (Some(card), _) => card.shows(model),
+            (None, Some((waiting, _, _))) => waiting.other.is_none() || waiting == model,
+            (None, None) => true,
+        }
+    }
+
+    /// As [`ProfileCard::updated`]. A card still waiting on its code opens with `model`.
+    pub fn updated(&mut self, model: &ProfileModel) -> bool {
+        if let Some(card) = self.card.as_mut() {
+            return card.updated(model);
+        }
+        match self.opening.as_mut() {
+            Some((waiting, _, _)) if waiting.other.is_some() && waiting != model => {
+                *waiting = model.clone();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The quiet panel standing under the anchor while the card's code is on its way: a host that
+    /// draws the card as an overlay draws this with it.
+    pub fn draw_waiting(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if let Some((_, anchor, viewport)) = self.opening {
+            let rect = Self::waiting_rect(anchor, viewport, theme);
+            ui::lazy_code::draw_loading(scene, transform, text, theme, rect, "lazy-loading");
+        }
+    }
+
     /// Where the quiet panel stands while the card's code is on its way: under the anchor, as wide
     /// as the card, inside the viewport.
     fn waiting_rect(anchor: Rect, viewport: Rect, theme: &Theme) -> Rect {
@@ -2214,9 +2261,8 @@ impl Widget for LazyProfileCard {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some((_, anchor, viewport)) = self.opening {
-            let rect = Self::waiting_rect(anchor, viewport, theme);
-            ui::lazy_code::draw_loading(scene, transform, text, theme, rect, "lazy-loading");
+        if self.opening.is_some() {
+            self.draw_waiting(scene, transform, text, theme);
             return;
         }
         if let Some(card) = self.card.as_mut() {
@@ -2244,6 +2290,12 @@ impl Widget for LazyProfileCard {
         self.card
             .as_mut()
             .is_some_and(|card| card.take_focus_reset())
+    }
+
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        self.card
+            .as_mut()
+            .is_none_or(|card| card.serve_deadline(now))
     }
 
     fn take_structure_dirty(&mut self) -> bool {

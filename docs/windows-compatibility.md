@@ -1,316 +1,268 @@
-# Windows compatibility: design target and status
+# Windows compatibility
 
-> **Status (2026-09): live implementation with explicit follow-up work.** The catalogue,
-> deterministic route resolver, capsule broker, authenticated compositor
-> session service, per-launch audio proxy, portal installer intake, and Windows
-> Apps lifecycle client are wired. Wine/UMU programs can be installed, listed,
-> launched, retried, unregistered, vendor-uninstalled, and deleted. The
-> singleton VM delegate, pinned HTTPS guest bridge, app-focused SPICE fallback,
-> and managed guest install/publish/uninstall lifecycle are composed by the
-> session when the owner has provisioned Windows.
-> Route-policy mutation, snapshots, migration/reset, and automatic
-> failure-triggered fallback ordering remain unavailable and are shown as such.
-
-Tilo is intended to present Windows programs as applications, not as prefixes,
-compatibility tools, or a second desktop. The target has three execution layers:
+Tilo presents Windows programs as applications, not as prefixes, compatibility
+tools, or a second desktop, in three execution layers:
 
 1. Wine for ordinary desktop programs.
 2. Proton through UMU for games whose catalogue record asks for it.
 3. One managed Windows appliance for programs with an explicit VM fallback.
 
-The selected layer is always visible in search, the window's system menu, and
-the Windows Apps manager.  Moving a program to another layer is an explicit
-operation because it changes the program's state and security boundary.
+Search, the window's system menu and the Windows Apps manager all show the layer
+a program runs on. Moving a program to another layer is an explicit operation
+because it changes the program's state and its security boundary.
 
-## Do not build another compatibility ecosystem
+## What Tilo owns
 
 Tilo owns the policy and presentation around existing engines:
 
 - Wine owns Win32 compatibility and prefixes.
-- UMU owns the supported non-Steam Proton invocation contract, Steam Runtime,
-  game identifiers, and protonfix integration.
+- UMU owns the non-Steam Proton invocation contract, the Steam Runtime, game
+  identifiers and protonfix integration.
 - Steam owns Proton selection for games installed through Steam.
-- Tilo-owned Proton capsule launches inherit a modest 12.5% scheduler
-  utilization floor, one-microsecond timer slack, and priority 2 in the
-  ordinary best-effort I/O class. This reduces frequency-ramp, wake-up, and
-  asset/shader-cache loading latency without realtime CPU or I/O priority and
-  without `CAP_SYS_NICE`; ordinary Wine
-  productivity applications do not receive the hint, and unsupported kernels
-  simply ignore it.
 - libvirt and QEMU/KVM own the appliance lifecycle.
-- FreeRDP RemoteApp is the normal appliance presentation path.
-- Tilo's existing workspace grants, portals, launcher, window chrome, actions,
-  and resources remain the user-visible security and automation surfaces.
+- FreeRDP RemoteApp is the appliance's normal presentation path.
+- Tilo's grants, portals, launcher, window chrome, actions and resources remain
+  the user-visible security and automation surfaces.
+
+A Tilo-owned Proton capsule launch gets a 12.5% scheduler utilization floor, one
+microsecond of timer slack and priority 2 in the ordinary best-effort I/O class.
+This lowers frequency-ramp, wake-up and asset-loading latency without realtime
+priority or `CAP_SYS_NICE`. Wine productivity applications do not get it, and a
+kernel that does not support the hint ignores it.
 
 The compatibility catalogue stores references to upstream identifiers and
-pinned runner constraints. It does not copy upstream launchers or invent a
-second dependency-script language.
+pinned runner constraints. It does not copy upstream launchers or add a second
+dependency-script language.
 
 ## Capsules
 
-A capsule is the user-facing unit corresponding to a Wine or Proton prefix. It
-records the exact runner, architecture, Windows version, component set,
-program entry points, catalogue provenance, launch overrides, and Tilo grants.
-One installed program gets one capsule by default. A suite may deliberately
-share a capsule, but unrelated installers are never placed together merely to
-save disk space.
+A capsule is the user-facing unit behind a Wine or Proton prefix. It records the
+runner, architecture, Windows version, components, program entry points,
+catalogue provenance, launch overrides and Tilo grants. One installed program
+gets one capsule. A suite may share a capsule; unrelated installers are never
+put together to save disk space.
 
-The capsule filesystem contains only Windows-owned state and a Tilo exchange
-directory. It is launched through the existing per-workspace confinement:
+The capsule filesystem holds only Windows-owned state and a Tilo exchange
+directory, and it launches through the per-workspace confinement:
 
 - `C:` is private to the capsule.
-- `Q:` maps to its exchange directory.
-- user-selected files are imported or published into that directory.
-- a linked directory is an ordinary Tilo filesystem grant and takes effect on
-  the next launch when a new mount bind is required.
-- network, devices, clipboard, and collaboration use existing Tilo grants.
+- `Q:` is its exchange directory; user-selected files are imported or published
+  into it.
+- a linked directory is an ordinary Tilo filesystem grant and takes effect at the
+  next launch.
+- network, devices, clipboard and collaboration use Tilo grants.
 
-Wine file pickers do not constitute authority to browse the host. Tilo grants
-the containing sandbox access; a Windows path alone never does.
+A Wine file picker is not authority to browse the host. A Tilo grant gives the
+containing sandbox access; a Windows path alone never does.
 
-### Audio (implemented)
+### Audio
 
-Each Wine/UMU launch receives its own short-lived PipeWire daemon and Pulse
-server. It is not a bind of the session's `pipewire-0`, `pulse/native`, or
-`/dev/snd`: the broker creates a virtual output sink which tunnels only
-playback to the Tilo session audio server. This makes ordinary Wine PulseAudio
-and native PipeWire clients work without making microphones visible.
+Each Wine or UMU launch gets its own short-lived PipeWire daemon and Pulse
+server. It does not bind the session's `pipewire-0`, `pulse/native` or
+`/dev/snd`: the broker creates a virtual output sink that tunnels playback only
+to the session's audio server, so ordinary PulseAudio and native PipeWire
+clients work and microphones stay invisible.
 
-When the ordinary Tilo `Device("microphone")` grant is present, the broker adds
-one virtual source tunnel to that same private graph. It otherwise creates no
-source and runs no WirePlumber/device-discovery process. The capsule still
-cannot see the host Pulse/PipeWire socket or the raw sound device. Revoking a
-launch kills both proxy processes, disconnecting any audio handles the Windows
-program still holds. The Windows Apps manager reports playback as available
-and microphone state through the standard Tilo grants list.
+With the `Device("microphone")` grant the broker adds one virtual source tunnel
+to that private graph. It otherwise creates no source and runs no device
+discovery. The capsule cannot see the host Pulse/PipeWire socket or the raw
+sound device. Revoking a launch kills both proxy processes, which disconnects
+any audio handles the program holds.
 
-### Installing and opening user software
+### Installing and opening software
 
-Windows Apps uses the shared Tilo/XDG file chooser for **Add Windows app…** and
-registers `.exe` and `.msi` open associations. The portal worker immediately
-opens the selected regular file without following its final path component,
-then carries that descriptor and a separate display name to the UI. The
-already-open descriptor crosses the authenticated compatibility socket with
-`SCM_RIGHTS`; no host path, runner, prefix, command string, or capability
-record enters the request.
+Windows Apps uses the shared file chooser for **Add Windows app…** and registers
+`.exe` and `.msi` open associations. The portal worker opens the selected file
+without following its final path component and carries that descriptor with a
+display name to the UI. The open descriptor crosses the authenticated
+compatibility socket with `SCM_RIGHTS`; no host path, runner, prefix, command or
+capability record enters the request.
 
-The service bounds the file at 16 GiB, verifies the PE or MSI signature, and
-hashes the exact descriptor bytes. It then presents the catalogue's recommended
-destination and lets the owner explicitly choose a private Wine/Proton capsule
-or the one Windows appliance. The confirmation is short-lived and bound to the
-same open descriptor, display name, size, digest, and installer kind; changing
-or replacing the source is rejected. The client cannot submit a runner,
-prefix, guest path, command, or operation ID.
+The service bounds the file at 16 GiB, verifies the PE or MSI signature and
+hashes the descriptor's bytes. It then offers the catalogue's recommended
+destination and lets the owner choose a private Wine/Proton capsule or the
+appliance. The confirmation is short-lived and bound to the same descriptor,
+name, size, digest and installer kind; a changed source is rejected. The client
+cannot submit a runner, prefix, guest path, command or operation ID.
 
 For a capsule, the service copies the installer into descriptor-anchored state
-while hashing again. Only that managed copy can run. EXE setup is a typed
-direct invocation; MSI setup is the fixed
-`msiexec.exe /i C:\tilo-installers\<digest>.msi` argv shape. Unknown desktop
-software is recommended a fresh Wine capsule, while Proton remains a
+while hashing again, and only that copy runs. EXE setup is a typed direct
+invocation; MSI setup is `msiexec.exe /i C:\tilo-installers\<digest>.msi`.
+Unknown desktop software is offered a fresh Wine capsule; Proton stays a
 catalogue-selected route.
 
 For the appliance, the service streams the same digest-pinned descriptor over
 the certificate-pinned, HMAC-authenticated host-only bridge. Guest staging is
-bounded, expiring, one-use, and private to the operation. Setup opens in the
-app-focused surface, and Windows Apps continues polling the server-owned
-operation if the viewer closes. Bounded Program Files discovery returns
-unpublished candidates; the owner chooses which become Tilo launchers. Removing
-a launcher keeps the guest install. Vendor uninstall is offered for either a
-typed MSI product code or a narrowly bound EXE record. MSI always executes the
-fixed `msiexec /x <product-code>` form. An EXE record is accepted only when all
-of these discovery and execution checks hold:
+bounded, expiring, one-use and private to the operation. Setup opens in the
+app-focused surface, and Windows Apps keeps polling the server-owned operation
+if the viewer closes. Bounded discovery returns unpublished candidates and the
+owner picks which become Tilo launchers; removing a launcher keeps the guest
+install. Vendor uninstall is offered for a typed MSI product code or a narrowly
+bound EXE record. MSI always runs the fixed `msiexec /x <product-code>` form. An
+EXE record is accepted only when all of these hold:
 
-- the record came from HKLM, has a non-empty product-specific
-  `InstallLocation` below Program Files or Program Files (x86), and both the
-  discovered application and uninstaller are below that same root;
-- the root, every intervening directory, and both files are non-reparse paths,
-  owned by SYSTEM, Administrators, or TrustedInstaller, with no write-capable
-  allow ACE for another principal;
-- native `CommandLineToArgvW` parsing yields one absolute `.exe` plus at most
-  32 arguments, each at most 4,096 characters and at most 16,384 characters in
-  aggregate, with no control characters; and
-- the exact executable path, root, application association, parsed argv, and
-  SHA-256 are persisted administrator-only and all revalidated immediately
-  before launch and again after UAC elevation when elevation is required.
+- it came from HKLM, has a non-empty product-specific `InstallLocation` below
+  Program Files or Program Files (x86), and both the application and the
+  uninstaller are below that root;
+- the root, every directory between, and both files are non-reparse paths owned
+  by SYSTEM, Administrators or TrustedInstaller, with no write-capable allow ACE
+  for another principal;
+- `CommandLineToArgvW` parsing yields one absolute `.exe` plus at most 32
+  arguments, each at most 4096 characters and 16384 in aggregate, with no
+  control characters;
+- the executable path, root, association, argv and SHA-256 are stored
+  administrator-only and revalidated immediately before launch and again after
+  UAC elevation.
 
-The raw `UninstallString` is neither stored nor run. Tilo quotes the persisted
-argv back into a direct `CreateProcessW` call without a shell. Missing
-`InstallLocation`, unquoted/ambiguous executable paths, system/temp/user roots,
-writable or reparse paths, digest changes, and out-of-bound argv all mean that
-no vendor-uninstall action is exposed.
+The raw `UninstallString` is neither stored nor run: Tilo quotes the stored argv
+into a direct `CreateProcessW` call without a shell. A missing `InstallLocation`,
+an unquoted or ambiguous path, a system, temp or user root, a writable or
+reparse path, a changed digest or an out-of-bound argv means no vendor-uninstall
+action appears.
 
-Setup remains interactive as an ordinary Tilo window while Windows Apps stays
-responsive and reports installing/failed/ready state. Discovery is bounded and
-keeps only application executables under Program Files or per-user Local
-AppData, excluding system, helper, updater, setup, and uninstall executables.
-An EXE with no installed launcher and no setup-like name is retained as a
-portable application. Failed or launcher-less setup remains visible with a
-retry action bound to the retained digest.
+Setup is an ordinary Tilo window while Windows Apps reports installing, failed
+or ready. Discovery is bounded and keeps only application executables under
+Program Files or per-user Local AppData, excluding system, helper, updater,
+setup and uninstall executables. An EXE with no installed launcher and no
+setup-like name is kept as a portable application. A failed or launcher-less
+setup stays visible with a retry action on the stored digest.
 
-## Current session boundary
+## Session boundary
 
-The compositor loads the immutable Tilo, pinned UMU, and metadata-only Bottles
+The compositor loads the immutable Tilo, pinned UMU and metadata-only Bottles
 catalogues and owns the compatibility service. The launcher writes an
-authenticated app/workspace preamble to a connected inherited descriptor. The
-service corroborates the launcher PID and kernel start time with a
-compositor-owned, single-use, short-lived registry record. Requests contain
-only bounded typed methods. Launch and remove-launcher use opaque server entry
-IDs. Installer inspection and either confirmed destination are the only
-methods allowed one descriptor. Retry, vendor uninstall, publication removal,
-and data deletion use opaque server-owned IDs already authorized for the
-session.
+authenticated app and workspace preamble to a connected descriptor; the service
+corroborates the launcher PID and kernel start time with a single-use,
+short-lived registry record the compositor owns. Requests carry only bounded
+typed methods. Launch and remove-launcher use opaque server entry IDs; installer
+inspection and either confirmed destination are the only methods allowed a
+descriptor; retry, vendor uninstall, publication removal and data deletion use
+opaque server-owned IDs the session already authorized.
 
-Workspace grants are re-read from the canonical compositor tree for every
-operation. Application query, executable, capsule path, environment, VM
-fallback intent, and grants never arrive from the client. Blocking service I/O
-runs on the Windows Apps worker thread; the render thread paints a bounded
-cache and clears it after an invalid or disconnected response.
+Workspace grants are re-read from the compositor's tree for every operation.
+Application query, executable, capsule path, environment, VM fallback intent and
+grants never come from the client. Blocking service I/O runs on the Windows Apps
+worker thread; the render thread paints a bounded cache and clears it after an
+invalid or disconnected response.
 
-The managed-entry registry has a monotonic compositor generation and is
-re-read from capsule state. A running manager starts with the exact entry
-snapshot authenticated at its launch. A VM installer transaction belongs to
-the authenticated workspace that imported its descriptor: reconnecting that
-workspace can resume and publish its candidates, while another workspace sees
-neither status nor candidates. Publishing returns the resulting opaque host
-entry only to that workspace's requesting session, so it can launch the app
-immediately without widening other live sessions. Launcher or capsule deletion
-removes authority immediately. Entries created by another manager still require
-a new authenticated launch snapshot, so an existing client cannot widen itself
-by guessing identifiers.
+The managed-entry registry carries a monotonic compositor generation and is
+re-read from capsule state. A running manager starts with the entry snapshot
+authenticated at its launch. A VM installer transaction belongs to the
+workspace that imported its descriptor: that workspace can resume and publish
+its candidates, and another workspace sees neither. Publishing returns the
+opaque host entry only to the requesting session, so an app launches without
+widening other sessions. Deleting a launcher or capsule removes authority at
+once, and an entry another manager created needs a new authenticated launch
+snapshot, so a live client cannot widen itself by guessing identifiers.
 
-## Explainable catalogue resolution (implemented core; fallback ordering is roadmap)
+## Catalogue resolution
 
-Resolution is deterministic and returns an explanation with the launch plan.
-Records match from strongest to weakest identity:
+Resolution is deterministic and returns an explanation with the launch plan. A
+record matches from strongest to weakest identity:
 
 1. exact installer or executable digest;
-2. exact store/product identifier, including an UMU identifier;
+2. exact store or product identifier, including an UMU identifier;
 3. signed publisher plus product metadata;
-4. normalized executable name as a low-confidence hint.
+4. normalized executable name, as a low-confidence hint.
 
-Local user overrides beat vendor and community catalogues but remain narrow:
-they may select an installed runner and safe runtime options, not arbitrary
-host paths, preload libraries, environment injection, or commands.
+Local overrides beat vendor and community catalogues but stay narrow: an
+installed runner and safe runtime options, never arbitrary host paths, preload
+libraries, environment injection or commands.
 
-Unknown desktop software defaults to a fresh Wine capsule. Unknown games do
-not silently use Proton, and no unknown program silently enters the appliance.
-An appliance fallback must be explicit in a trusted record or chosen by the
-user after a failed local launch. The resolver currently returns one
-deterministic launch plan. A broker-managed ordered fallback plan, with an
-explicit decision recorded before advancing, is a target behavior rather than
-an automatic live flow.
+Unknown desktop software defaults to a fresh Wine capsule. Unknown games do not
+silently use Proton, and no unknown program enters the appliance. An appliance
+fallback is explicit in a trusted record or chosen by the person after a failed
+local launch, and it returns one deterministic launch plan.
 
-## The Windows appliance
+## The appliance
 
-There is exactly one appliance on the Tilo system. It is a compatibility
-fallback, not an alternative session.
-
-Normal operation is headless:
+There is exactly one appliance, a compatibility fallback and not an alternative
+session. Normal operation is headless:
 
 - a guest service publishes an allowlisted inventory of installed programs;
-- Tilo creates program shortcuts from that inventory;
-- the current Wayland session uses a clearly labelled, app-focused SPICE
-  surface and suppresses Explorer while the requested program runs;
-- the typed FreeRDP RAIL path is used only when Tilo has a real RAIL-capable
-  local surface and the guest supports it;
-- the Windows desktop is not a normal application route.
+- Tilo makes program shortcuts from that inventory;
+- the session uses a labelled, app-focused SPICE surface and suppresses Explorer
+  while the requested program runs;
+- the FreeRDP RAIL path is used when Tilo has a RAIL-capable local surface and
+  the guest supports it;
+- the Windows desktop is not an application route.
 
-If RemoteApp publication or the guest service is unavailable, launch fails
-closed with repair and recovery actions. It does not reveal a desktop. A full
-console exists only as an explicit owner-only recovery action and is marked as
-unconfined guest administration in Tilo chrome.
+If publication or the guest service is unavailable, launch fails closed with
+repair and recovery actions. A full console exists only as an owner-only
+recovery action, marked in Tilo chrome as unconfined guest administration.
 
 The appliance uses UEFI Secure Boot, a software TPM 2.0, KVM acceleration,
-VirtIO storage and networking, memory ballooning, discard, and host CPU
-passthrough where safe. Its qcow2 disk and TPM state live in one protected
-state directory. Provisioning requires user-supplied Windows installation
-media and licensing; Tilo does not redistribute Windows.
+VirtIO storage and networking, memory ballooning, discard and host CPU
+passthrough where safe. Its disk and TPM state live in one protected directory.
+Provisioning needs the person's Windows installation media and licence; Tilo
+does not redistribute Windows.
 
 ## Appliance capabilities
 
-The VM boundary does not bypass workspace policy. Its default device model has
-no shared host filesystem, host clipboard, camera, microphone, USB forwarding,
-or unrestricted bridged network.
+The VM boundary does not bypass workspace policy. The default device model has
+no shared host filesystem, host clipboard, camera, microphone, USB forwarding or
+bridged network.
 
-Per-program launches receive short-lived capability leases from the Tilo
-broker. The presentation/file-transfer channel exposes only the resources in
-the lease, and all leases are revoked when the RemoteApp session ends.
-The shipped appliance network is host-only with forwarding disabled; it has no
-NAT or physical-network access by default. Native RAIL can materialize exact
-host-authorized `NetHost` requests as a short-lived, host-only CONNECT relay
-and a guest-local proxy inherited by the fixed RemoteApp wrapper's target
-process tree. The relay reuses Tilo's ordinary NetHost matcher and post-DNS
-device-local protection, and dropping its lease closes the listener rather
-than attaching an egress NIC. These are host-side lease controls, not
-per-process Windows isolation: all programs in the one persistent Windows
-user/session must be treated as the effective union of active redirects and
-host-authorized requests. Clipboard is off unless the workspace grant permits
-it and its enabled state is visible in window chrome.
+A per-program launch gets short-lived capability leases from the Tilo broker.
+The presentation and file-transfer channel exposes only the leased resources,
+and every lease is revoked when the RemoteApp session ends. The shipped network
+is host-only with forwarding off: no NAT and no physical network. Native RAIL
+can turn a host-authorized `NetHost` request into a short-lived host-only
+CONNECT relay and a guest-local proxy inherited by the RemoteApp wrapper's
+process tree. The relay reuses Tilo's NetHost matcher and its protection against
+rebinding after DNS, and dropping the lease closes the listener instead of
+attaching an egress NIC. These are host-side lease controls, not per-process
+isolation: every program in the one persistent Windows session sees the union of
+active redirects and authorized requests. Clipboard is off unless the workspace
+grant allows it, and its state shows in window chrome.
 
-Guest compromise remains possible, so the appliance is treated as one shared
-security domain: programs inside it can potentially influence each other. The
-UI says this plainly. Programs requiring mutually hostile isolation are not a
-fit for the singleton appliance.
+A guest compromise is possible, so the appliance is one shared security domain
+whose programs can influence each other. The UI says so; programs that need
+mutual isolation do not fit the appliance.
 
-## Management experience
+## Windows Apps
 
 Windows Apps lists programs and retained setup transactions, explains the
-selected route, shows capsule identity without exposing host paths, displays
-resolved access and disabled reasons, and launches opaque entries. **Add
-Windows app…** uses the standard portal and shows immediate progress while the
-service performs blocking setup. Failed discovery is not hidden: it appears as
+selected route, shows capsule identity without host paths, displays resolved
+access and disabled reasons, and launches opaque entries. **Add Windows app…**
+shows progress while the service runs setup. A failed discovery stays visible as
 a retained installation with Retry setup and Delete app & data.
 
-Lifecycle actions deliberately say what they remove:
+The lifecycle actions say what they remove:
 
 - **Remove launcher** unregisters one Tilo entry and keeps the Windows install
-  and all private data.
-- **Run uninstaller** executes only the typed MSI product code or the
-  digest-bound, Program Files-rooted EXE/argv contract discovered for that
-  application, then retains leftovers for inspection or deletion.
-- **Delete app & data** atomically retires and recursively deletes the whole
-  private capsule. It requires a second explicit click.
+  and its data.
+- **Run uninstaller** runs only the typed MSI product code or the digest-bound,
+  Program Files-rooted EXE argv contract of that application, then keeps the
+  leftovers for inspection or deletion.
+- **Delete app & data** retires and recursively deletes the private capsule,
+  after a second click.
+
+For each program Windows Apps shows the layer, capsule or appliance identity,
+catalogue explanation, runner and prefix or guest-storage identity, the
+effective host access, the shared-appliance boundary, and the publish,
+remove-launcher, vendor-uninstall and private-data actions.
 
 The fixture catalogue exists only in the headless screenshot path; a missing
-live service shows an unavailable/repair state. Implemented management
-information includes:
+service shows a repair state.
 
-- current layer, capsule/appliance identity, catalogue explanation, runner, and
-  prefix or guest-storage identity;
-- effective host access and the shared-appliance security boundary;
-- separate publish, remove-launcher, vendor-uninstall, and private-data actions.
+## Presence in the system
 
-Remaining management targets are snapshots, duplicate/export/reset, runner
-migration, explicit persistent route override/reset, active-process inspection,
-and richer links into the existing Tilo grant controls.
+Every operation is a Tilo action on a resource, so assistive technology,
+automation, collaborators and tests use the same surface as the window.
 
-Route-policy and remaining mutation controls stay disabled until they have a
-trusted action handoff. VM launch appears only when the provisioned singleton,
-owner-readable bridge authority, and authenticated guest are ready.
-Wine/Proton audio is available through the brokered,
-playback-only PipeWire/Pulse graph described above; microphone capture remains
-subject to the existing Tilo microphone grant.
-
-The eventual operations should exist as Tilo actions/resources. Accessibility tools,
-automation, collaborators, and tests therefore use the same semantic surface
-as the visual UI.
-
-## Updates and rollback (design target)
-
-The image ships one pinned Wine runner and one pinned UMU/Proton runtime so a
-fresh installation works offline after initial application acquisition.
-Additional runners are verified, content-addressed objects. Activation is
-atomic, and a capsule continues to reference its previous runner until a
-migration succeeds. Catalogue updates are versioned and authenticated; a bad
-update can be rolled back independently of program state.
-
-Capsule snapshots include prefix state and configuration. Appliance snapshots
-include its disk and TPM-consistent state, but never host exchange files.
+The image ships one pinned Wine runner and one pinned UMU/Proton runtime, so a
+fresh installation works offline after it acquires applications. Other runners
+are verified, content-addressed objects, activated atomically; a capsule keeps
+its previous runner until a migration succeeds. Catalogue updates are versioned
+and authenticated, and a bad update rolls back without touching program state. A
+capsule snapshot holds prefix state and configuration; an appliance snapshot
+holds its disk and TPM-consistent state, never host exchange files.
 
 ## Non-goals
 
-- Reimplementing Wine, Bottles, winetricks, protonfixes, libvirt, or FreeRDP.
-- Treating a filename as sufficient authority for a silent VM fallback.
+- Reimplementing Wine, Bottles, winetricks, protonfixes, libvirt or FreeRDP.
+- Treating a filename as authority for a silent VM fallback.
 - Showing a nested Windows desktop during ordinary use.
-- Claiming that a VM program is isolated from other programs in the same VM.
-- Giving a Windows process host access merely because it requested a drive.
+- Claiming a VM program is isolated from other programs in the same VM.
+- Giving a Windows process host access because it asked for a drive.

@@ -10,17 +10,16 @@ use std::process::{Command, Stdio};
 
 pub(crate) const SESSION_SCRIPT: &str = "dist/dev/nested-session.sh";
 pub(crate) const BUILD_DIR: &str = "target/nested-session";
-/// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a
-/// build shared read-only between sessions, as `nested-session.sh` honours it.
+/// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a build
+/// shared read-only between sessions, as `nested-session.sh` honours it.
 pub(crate) const BUILD_ENV: &str = "TILO_NESTED_SESSION_BUILD";
-/// The thin binary the session bakes into the tilolang runtime bundle.
 pub(crate) const RUNTIME_BINARY: &str = "thin-app/tilolang-app";
 /// The file nested-session.sh writes into a running session's runtime directory: its control
 /// socket, runtime directory and state directory, as JSON.
 pub(crate) const SESSION_FILE: &str = "session.json";
 
-/// The Tilo checkout: `explicit`, `$TILO_REPO`, or the first directory above `dir` or the
-/// current directory that has the nested session.
+/// The Tilo checkout: `explicit`, `$TILO_REPO`, or the first directory above `dir` or the current
+/// directory that has the nested session.
 pub(crate) fn repo_root(explicit: Option<&Path>, dir: &Path) -> Result<PathBuf, String> {
     if let Some(repo) = explicit
         .map(Path::to_path_buf)
@@ -50,8 +49,8 @@ pub(crate) fn repo_root(explicit: Option<&Path>, dir: &Path) -> Result<PathBuf, 
         })
 }
 
-/// The nested-session build the session's tools come from: `$TILO_NESTED_SESSION_BUILD` when
-/// set, as `nested-session.sh` reads it, else the checkout `repo`'s [`BUILD_DIR`].
+/// The nested-session build the session's tools come from: `$TILO_NESTED_SESSION_BUILD` when set,
+/// as `nested-session.sh` reads it, else the checkout `repo`'s [`BUILD_DIR`].
 pub(crate) fn build_dir(repo: &Path) -> PathBuf {
     build_dir_from(repo, std::env::var_os(BUILD_ENV))
 }
@@ -101,13 +100,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// How long a window may take to close when its app is asked to let it go.
 const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The interfaces a nested session serves: the checkout's own declaration, which
-/// nested-session.sh hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
+/// The interfaces a nested session serves: the checkout's own declaration, which nested-session.sh
+/// hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
 const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
 
-/// How long a session may take to offer an app it installed: the most the shell holds one
-/// listing (30 s). It answers as soon as the app is offered, so this bounds a session that
-/// never offers it, not a wait.
+/// How long a session may take to offer an app it
+/// installed: the most the shell holds one listing (30
+/// s).
 const OFFER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether a listing answer has `app`'s `applications` row.
@@ -121,11 +120,9 @@ fn offers(answer: &serde_json::Value, app: &str) -> bool {
         })
 }
 
-/// One session the tool drives.
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
     pub(crate) control: PathBuf,
-    /// The interfaces the session serves, which installing into it checks against.
     interfaces: PathBuf,
 }
 
@@ -184,8 +181,9 @@ impl Peer {
         })
     }
 
-    /// The environment `tilo-install` and `tilo-control` act on this session in: the one
-    /// nested-session.sh gives its shell.
+    /// The environment `tilo-install` and `tilo-control` act on
+    /// this session in: the one nested- session.sh gives its
+    /// shell.
     pub(crate) fn command(&self, program: &Path) -> Command {
         let mut command = Command::new(program);
         let state = &self.state;
@@ -211,7 +209,6 @@ impl Peer {
         command
     }
 
-    /// Where the session's runtime bundles are installed.
     pub(crate) fn runtimes(&self) -> PathBuf {
         self.state.join("runtimes")
     }
@@ -243,22 +240,16 @@ impl Peer {
         )
     }
 
-    /// Open `app` through the session's own action, or bring its window to the front when it
-    /// has one.
+    /// Open `app` through the session's own action, or
+    /// bring its window to the front when it has one.
     pub(crate) fn open(&self, bin: &Path, app: &str) -> Result<(), String> {
         self.invoke(bin, "applications", app)
     }
 
-    /// Wait until the session's catalogue offers `app` (its `applications` action): a session
-    /// just started indexes the apps it installed as it comes up, and an app it has not indexed
-    /// yet cannot be opened.
-    ///
-    /// Nothing here pauses. The first listing is answered as it stands: the app's row is
-    /// usually there already, while other parts of the listing (the store's offers, the apps'
-    /// own actions) are still being indexed after the install, which the app's opening does not
-    /// need. Only without the row does a request ask the shell to hold its answer until the
-    /// listing is complete and, once one was seen, until it differs from that one: the shell
-    /// answers when its catalogue moves, not on a clock.
+    /// Wait until the session's catalogue offers `app` (its
+    /// `applications` action): a session just started indexes the apps
+    /// it installed as it comes up, and an app it has not indexed yet
+    /// cannot be opened.
     pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<(), String> {
         let started = std::time::Instant::now();
         let mut seen: Option<String> = None;
@@ -300,8 +291,9 @@ impl Peer {
                 held = true;
                 continue;
             }
-            // Only a listing the shell held until it settled can be asked for the next one; a
-            // wait that ran out answers unsettled.
+            // Only a listing the shell held until it settled can be
+            // asked for the next one; a wait that ran out answers
+            // unsettled.
             let revision = answer
                 .get("settled")
                 .and_then(serde_json::Value::as_bool)

@@ -1,15 +1,5 @@
-//! The macOS backend: one fix from Core Location (`CLLocationManager`).
-//!
-//! macOS asks the user before an app learns its location, and it asks only
-//! for an app whose bundle explains why: `NSLocationWhenInUseUsageDescription`
-//! in its `Info.plist` (`tilo-app build --target macos` writes it from the
-//! manifest's `location` capability). An unbundled binary, or a bundle
-//! without the string, is answered [`LocationOutcome::Unavailable`] before
-//! Core Location is touched, since the system would refuse it silently.
-//!
-//! Core Location calls its delegate on the run loop of the thread that made
-//! the manager, so each request runs on its own thread with a run loop, for
-//! at most [`FIX_TIMEOUT`], and hands the outcome back over the channel.
+//! macOS device location through Core Location: one fix, after macOS asks the
+//! user, which it does only for a bundled app whose `Info.plist` says why.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -31,10 +21,8 @@ use crate::{LocationChannel, LocationOutcome};
 /// How long a request may take, prompt included, as on Linux and the web.
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long the request thread waits while its run loop has nothing to run.
 const IDLE: Duration = Duration::from_millis(50);
 
-/// The `Info.plist` key macOS requires before it prompts.
 const USAGE_KEY: &str = "NSLocationWhenInUseUsageDescription";
 
 pub(crate) const NO_USAGE_STRING: &str = "Location needs the app's bundle to explain why \
@@ -66,8 +54,6 @@ impl crate::LocationProvider for CoreLocation {
     }
 }
 
-/// Whether this process is a bundle whose `Info.plist` carries the usage
-/// string.
 pub(crate) fn bundle_explains_location() -> bool {
     let bundle = NSBundle::mainBundle();
     bundle.bundleIdentifier().is_some()
@@ -79,9 +65,7 @@ pub(crate) fn bundle_explains_location() -> bool {
 #[derive(Default)]
 struct Ivars {
     outcome: RefCell<Option<LocationOutcome>>,
-    /// The fix was requested; later authorization callbacks change nothing.
     requested: Cell<bool>,
-    /// The permission prompt was requested once.
     prompted: Cell<bool>,
 }
 
@@ -120,7 +104,6 @@ define_class!(
 
         #[unsafe(method(locationManager:didFailWithError:))]
         fn did_fail(&self, _manager: &CLLocationManager, error: &NSError) {
-            // kCLErrorLocationUnknown: CoreLocation keeps trying; wait on.
             if error.code() == 0 {
                 return;
             }
@@ -157,8 +140,6 @@ impl Delegate {
         self.ivars().outcome.borrow_mut().take()
     }
 
-    /// Prompt, request the fix, or report the refusal, from the manager's
-    /// authorization.
     fn advance(&self, manager: &CLLocationManager) {
         let ivars = self.ivars();
         if ivars.requested.get() {
@@ -189,8 +170,6 @@ impl Delegate {
     }
 }
 
-/// Make a manager on this thread, drive its run loop until an outcome or
-/// [`FIX_TIMEOUT`], and return the outcome.
 fn locate_on_this_thread() -> LocationOutcome {
     // SAFETY: a class method with no preconditions.
     if !unsafe { CLLocationManager::locationServicesEnabled_class() } {
@@ -240,7 +219,6 @@ mod tests {
 
     #[test]
     fn an_unbundled_process_is_refused_before_corelocation() {
-        // `cargo test` binaries are not bundles.
         assert!(!bundle_explains_location());
         let outcome = CoreLocation.locate().recv().unwrap();
         assert_eq!(

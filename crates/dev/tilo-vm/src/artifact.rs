@@ -1,6 +1,6 @@
-//! Downloaded artifacts are inputs, never authority. The caller pins the receipt
-//! from the authenticated same-run producer; all bytes are checked and retained
-//! in private files before the daemon sees an upload. No Cargo or builder path.
+//! Downloaded artifacts are inputs, never authority: the caller pins the
+//! receipt from the authenticated same-run producer, and every byte is checked
+//! and kept in a private file before the daemon sees an upload.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -244,8 +244,6 @@ fn prepare_layer(
     archive
         .rewind()
         .map_err(CliError::io("rewind layer archive"))?;
-    // Existing development layers remain local and non-promotable. A receipt
-    // does not grant a new attestor or a registry publication authority.
     provenance.authority = "local".into();
     provenance.builder = Some("ci".into());
     provenance.builder_image_digest = receipt

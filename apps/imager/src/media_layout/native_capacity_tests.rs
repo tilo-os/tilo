@@ -1,4 +1,5 @@
 //! Actual fixed-format capacity proof; explicit native qualification only.
+
 use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
@@ -18,7 +19,6 @@ const CHILD: &str = "TILO_NATIVE_MIGRATION_FORMAT_CHILD";
 const TEST: &str = "media_layout::native_capacity_tests::fixed_migration_ext4_floor_matches_actual_native_capacity";
 const LOOP_GET_STATUS64: libc::c_ulong = 0x4c05;
 const LOOP_CLR_FD: libc::c_ulong = 0x4c01;
-// Exact Linux UAPI loop_info64 from include/uapi/linux/loop.h.
 #[repr(C)]
 struct LoopInfo {
     device: u64,
@@ -145,8 +145,6 @@ impl Disposable {
         allocation
             .args(["--find", "--show", "--"])
             .arg(&fixture.image);
-        // A failed spawn/result cannot prove that allocation never occurred.
-        // Retain backing evidence from this point until exact detach is proven.
         fixture.allocation_started = true;
         fixture.receipt("allocation-unknown")?;
         let output = run(&mut allocation)?;
@@ -327,16 +325,12 @@ impl Drop for Disposable {
             return;
         }
         if !self.allocation_started {
-            // No allocation command was admitted, so removing our owned backing
-            // cannot strand an allocated loop. Preserve the constructor error.
             return;
         }
         if let Err(error) = self.close() {
             let _recorded = self.receipt("cleanup-unproven");
             let retained = self.root.take().map(tempfile::TempDir::keep);
             eprintln!("native fixture cleanup unproven; retained {retained:?}: {error}");
-            // Result-returning construction failures are not Rust unwinds.
-            // Do not replace their original error with a secondary Drop panic.
             if self.construction_finished && !std::thread::panicking() {
                 panic!("native fixture cleanup failed; owned backing retained");
             }

@@ -1,9 +1,7 @@
 //! Reading and answering a download.
 //!
-//! A page's offer and a kept file both ride the download row an agent already
-//! finds: answering keeps the file or discards it, and reading a kept file
-//! answers its text. The bytes are kept out of [`super`] so the widget's own
-//! file stays one subject.
+//! A page's offer and a kept file both ride the download row an agent already finds:
+//! answering keeps the file or discards it, and reading a kept file answers its text.
 
 use ui::webview::WebViewCommand;
 
@@ -14,9 +12,8 @@ use crate::downloads::DownloadStatus;
 const DOWNLOAD_READ_LIMIT: usize = 256 * 1024;
 
 impl BrowserWidget {
-    /// A completed download's file as bounded UTF-8 text, or a note of its
-    /// type and size when it holds anything else. The answer is untrusted
-    /// page content (the `read-download` effect).
+    /// A completed download's file as bounded UTF-8 text, or a note of its type and size when
+    /// it holds anything else. The answer is untrusted page content.
     pub(super) fn read_download(&self, id: &str) -> Result<String, String> {
         let path = self.completed_download_path(id)?;
         let entry = self
@@ -42,10 +39,9 @@ impl BrowserWidget {
         Ok(text)
     }
 
-    /// Answer the page's offer to download `id` as `invoker` (nobody: the
-    /// person at the window): save it when `allow`, else discard it. The
-    /// engine continues the transfer only when kept, and of a download it
-    /// held for the person its record says who answered.
+    /// Answer the page's offer to download `id` as `invoker` (nobody: the person at the window):
+    /// save it when `allow`, else discard it. The engine continues the transfer only when kept,
+    /// and of a download it held for the person its record says who answered.
     pub(super) fn answer_download(
         &mut self,
         id: &str,
@@ -71,14 +67,13 @@ impl BrowserWidget {
                 by,
             });
         } else if allow {
-            // A saved-list row with no live engine download has no file to
-            // save; the offer expired with its session.
+            // A saved-list row with no live engine download has no file to save; the offer
+            // expired with its session.
             return Err("the page is no longer offering this download".into());
         }
         self.structure_dirty = true;
         self.persist_downloads_now();
-        // Naming what the page offered and what became of it, not a running
-        // announcement of routine saving.
+        // Naming what the page offered and what became of it, not announcing routine saving.
         Ok(if allow {
             format!("{name} is kept.")
         } else {
@@ -87,8 +82,8 @@ impl BrowserWidget {
     }
 }
 
-/// `bytes` as UTF-8 text, at most `limit` bytes, or `None` when they are
-/// not text. A multi-byte character cut by the limit is dropped whole.
+/// `bytes` as UTF-8 text, at most `limit` bytes, or `None` when they are not text. A
+/// multi-byte character cut by the limit is dropped whole.
 fn decode_bounded_text(bytes: &[u8], limit: usize) -> Option<String> {
     let head = bytes.get(..bytes.len().min(limit))?;
     match std::str::from_utf8(head) {

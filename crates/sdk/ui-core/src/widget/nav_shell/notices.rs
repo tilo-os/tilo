@@ -6,15 +6,12 @@ use super::NavShell;
 use crate::widget::toast::ToastKind;
 use crate::window_toolbar::{ToolbarAction, ToolbarNotice};
 
-/// The bar action id of a notice's button.
 pub const WINDOW_NOTICE_ACTION: &str = "nav-shell-notice";
 
-/// What the window's notice says, and its button.
 #[derive(Clone, Debug)]
 pub(super) struct ShellNotice {
     text: String,
     kind: ToastKind,
-    /// The button's icon and name ("Undo").
     action: Option<(String, String)>,
 }
 
@@ -50,25 +47,20 @@ impl NavShell {
         self.publish_notice();
     }
 
-    /// The text of the notice whose button the person pressed since the
-    /// last call.
     pub fn take_toast_action(&mut self) -> Option<String> {
         self.notice_pressed.take()
     }
 
-    /// Take down the notice showing, when its news no longer holds.
     pub fn dismiss_toast(&mut self) {
         if self.notice.dismiss() {
             self.publish_notice();
         }
     }
 
-    /// The notice showing, if any.
     pub fn toast_text(&self) -> Option<&str> {
         self.notice.get().map(|notice| notice.text.as_str())
     }
 
-    /// Keep the window's bar showing the notice while it is up.
     pub(super) fn publish_notice(&self) {
         self.notice.publish(|notice| {
             let shown = ToolbarNotice::new(notice.text.clone(), notice.kind);

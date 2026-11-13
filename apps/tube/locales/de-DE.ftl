@@ -47,20 +47,17 @@ tube-home-error = Die Startseite konnte nicht neu laden
 tube-offline-title = Du bist offline
 tube-offline-message = Verbinde dich neu, um Videos zu laden. Deine Warteschlange und dein Verlauf bleiben hier.
 tube-unreached-title = Hier lassen sich keine Videos laden
-tube-sources-no-relay = Die Videoquellen lassen Webseiten nicht lesen, und diese Seite hat keinen Abruf-Proxy, der sie weiterleitet. Deine Warteschlange und dein Verlauf bleiben hier.
+tube-sources-no-relay = Videos lassen sich noch nicht in einer Webseite abspielen. Deine Warteschlange und dein Verlauf bleiben hier.
 tube-sources-failed = Keine Videoquelle hat geantwortet. Deine Warteschlange und dein Verlauf bleiben hier.
 tube-home-empty-title = Noch nichts zu zeigen
 tube-home-empty-message = Suche ein Video, um mit dem Ansehen zu beginnen.
 tube-search = Suchen
 tube-search-for = YouTube nach „{ $query }“ durchsuchen
 tube-trending-empty-title = Noch nichts im Trend
-tube-trending-empty-message = Beliebte Videos erscheinen hier, sobald der Katalog geladen ist.
 tube-subscriptions-empty-title = Noch keine Abos
-tube-subscriptions-empty-message = Abonniere Creator, dann erscheinen ihre neuen Videos hier.
 tube-latest-videos = Neueste Videos
 tube-history-not-saving = Der Ansehverlauf wird nicht gespeichert
 tube-history-empty-title = Noch nichts angesehen
-tube-history-empty-message = Angesehene Videos erscheinen hier.
 tube-queue-empty-title = Deine Warteschlange ist leer
 tube-queue-empty-message = Füge Videos von ihrer Ansehseite hinzu.
 tube-queue-waiting = { $count ->
@@ -123,21 +120,6 @@ tube-dearrow-titles = Titel ersetzen
 tube-dearrow-thumbnails = Vorschaubilder ersetzen
 
 ## Abschnittsarten und was Tube damit tut
-tube-segment-sponsor = Sponsor
-tube-segment-sponsor-about = Bezahlte Werbung, bezahlte Verweise und direkte Anzeigen.
-tube-segment-selfpromo = Eigenwerbung
-tube-segment-interaction = Erinnerung an Interaktion
-tube-segment-interaction-about = Erinnerungen zum Liken, Abonnieren oder Folgen, ohne weiteren Inhalt.
-tube-segment-intro = Intro und Pause
-tube-segment-intro-about = Eine Strecke ohne Inhalt: eine Pause, eine Animation oder ein Intro.
-tube-segment-outro = Endkarten und Abspann
-tube-segment-outro-about = Abspann und Endkarten, nachdem das Video vorbei ist.
-tube-segment-preview = Rückblick und Vorschau
-tube-segment-preview-about = Ein Rückblick auf frühere Folgen oder eine Vorschau auf das, was kommt.
-tube-segment-music-offtopic = Abschnitt ohne Musik
-tube-segment-music-offtopic-about = Die Teile eines Musikvideos, die keine Musik sind.
-tube-segment-filler = Füllstrecke
-tube-segment-filler-about = Abschweifungen, die nur eingefügt wurden, um das Video länger zu machen.
 
 ## Gerätesynchronisierung
 tube-device-sync = Gerätesynchronisierung
@@ -175,7 +157,7 @@ tube-unplayable-youtube-said = YouTube hat die Wiedergabe verweigert: „{ $reas
 tube-unplayable-no-source = Keine der Quellen von Tube hatte einen Datenstrom dafür.
 tube-try-again = Erneut versuchen
 tube-live-in-app = Livestreams laufen vorerst in der Tilo-App
-tube-notice-playback-limit = Das Wiedergabelimit dieses Hosts ist erreicht. Versuche es später erneut.
+tube-notice-playback-limit = Die Wiedergabe hat hier ihr Limit erreicht. Versuche es später erneut.
 tube-notice-no-downloads = Tube kann Videos nicht für das Ansehen ohne Verbindung speichern
 tube-notice-pairing-busy = Das Paaren von Geräten ist belegt oder nicht verfügbar
 tube-notice-sync-busy = Die Gerätesynchronisierung ist belegt oder nicht verfügbar
@@ -245,6 +227,7 @@ tube-skip-off = Aus
 tube-type-video = Video
 tube-type-playlist = Wiedergabeliste
 tube-type-creator = Kanal
+tube-sync-available-note = Verschlüsselte Grayjay-Synchronisation ist verfügbar, wenn der Geheimnisspeicher des Desktops entsperrt ist.
 
 ## Actions
 
@@ -270,3 +253,6 @@ tube-effect-revoke-device = Gerätezugriff entziehen
 tube-effect-set-preference = Wiedergabeeinstellung ändern
 tube-effect-set-preferred-quality = Bevorzugte Qualität festlegen
 tube-effect-set-segment-handling = Umgang mit Abschnitten festlegen
+
+## What the app is called in a window and in the launcher
+tube-app-title = Tube

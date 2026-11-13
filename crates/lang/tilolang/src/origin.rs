@@ -1,48 +1,38 @@
-//! Outside origins: the services whose resources a type can hold (convergence.md, "Origins"
-//! and "Outside services").
+//! Outside origins: the services whose resources a type can hold (convergence.md, "Origins" and
+//! "Outside services").
 //!
-//! A type names the kind of an outside service's resource it holds with
-//! `type Message (origin: imap.message) { ... }`. The system keeps such resources in step with
-//! the service: it gets and searches them through the service's capabilities, which the
-//! platform implements, and writes what the service says into the fields the kind defines.
-//! The type declares the fields of the kind it shows, with the kind's types, and may add
-//! fields of its own, which the service never touches.
+//! A type names the kind of an outside service's resource it holds with `type Message (origin:
+//! imap.message) { ... }`. The system keeps such resources in step with the service: it gets and
+//! searches them through the service's capabilities and writes what the service says into the fields
+//! the kind defines.
 //!
 //! A kind's fields are written by the service alone, except those people change (a message's
-//! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when
-//! the service accepts it. Code writing any other field of the kind is refused (E113), except
-//! in a scenario, whose seed data stands in for the service.
+//! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when the
+//! service accepts it. Code writing any other field of the kind is refused (E113), except in a
+//! scenario, whose seed data stands in for the service.
 //!
-//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here,
-//! the workspaces on the device. The origin makes them again from nothing at every start, so
-//! they are never put in a collaborative record: [their resources live in the store's unsaved
-//! layer](OriginKind::derived), where a change reaches the views at once and leaves no change
-//! behind to be committed, synced or replayed.
+//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here, the
+//! workspaces on the device. They live in the store's unsaved layer, so a change reaches the views at
+//! once and leaves no change behind to be committed, synced or replayed.
 
-/// A field of an origin's kind.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginField {
     pub name: &'static str,
-    /// Its type as the checker shows types: `Text`, `Bool`, `Int`, `Time`, `Set<Text>`, or
-    /// `Collection<kind>` for the resources of another kind of the same origin.
     pub ty: &'static str,
     /// Whether people change it (the service is told), or only the service writes it.
     pub people: bool,
     pub doc: &'static str,
 }
 
-/// A kind of resource an origin holds.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginKind {
     /// The dotted name a type declares: `imap.message`.
     pub name: &'static str,
     pub doc: &'static str,
     pub fields: &'static [OriginField],
-    /// The origin derives these resources from what it holds: it makes them again from
-    /// nothing each time it starts, so they are never saved to a collaborative record. They
-    /// live in the store's unsaved layer, where a change reaches the views without being
-    /// committed: written, remembered, and gone at the next start, when the origin writes them
-    /// again.
+    /// The origin derives these resources from what it holds: it makes them again from nothing each
+    /// time it starts, so they are never saved to a collaborative record. They live in the store's
+    /// unsaved layer, where a change reaches the views without being committed.
     pub derived: bool,
 }
 
@@ -64,9 +54,8 @@ const fn people(name: &'static str, ty: &'static str, doc: &'static str) -> Orig
     }
 }
 
-/// The capabilities an action may hand an outside effect to with `outside(capability, ...)`:
-/// `post`, the development log, and each origin's own. The session takes none: a shell calls
-/// its actions as an app's (`use so.tilo.session as session`).
+/// The capabilities an action may hand an outside effect to with `outside(capability, ...)`: `post`, the
+/// development log, and each origin's own.
 pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
@@ -105,7 +94,6 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every kind of every origin the platform has.
 pub const KINDS: &[OriginKind] = &[
     OriginKind {
         name: "session.desk",
@@ -245,6 +233,11 @@ pub const KINDS: &[OriginKind] = &[
                 "tray",
                 "Collection<session.tray_item>",
                 "The running applications' tray items, in the order they registered.",
+            ),
+            field(
+                "apps",
+                "Collection<session.application>",
+                "The applications installed on this device, each the launcher lists and opens.",
             ),
             field(
                 "styles",
@@ -528,6 +521,16 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.arrangement_place>",
                 "Every place, showing a resource through a view; each names the strip it is in.",
             ),
+            field(
+                "queries",
+                "Collection<session.arrangement_query>",
+                "The queries the canvas stands while an app answers them.",
+            ),
+            field(
+                "refs",
+                "Collection<session.arrangement_ref>",
+                "The resources those queries found, each naming the query it is of.",
+            ),
         ],
     },
     OriginKind {
@@ -623,6 +626,56 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
+        name: "session.arrangement_query",
+        doc: "A query typed on the canvas: what the person looked for, in which app, and what \
+              came of it (shell.md §8, \"Finding what to place\"). Placed like any resource, it \
+              shows the search as it runs, the rows it found and what a press on a row places, \
+              and why it found nothing or failed. Its `matches` name resources the same way a \
+              place's record does (`session.arrangement_ref`).",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("text", "Text", "What the person typed."),
+            field("in_app", "Text", "The app asked, by its canonical id."),
+            field(
+                "kind",
+                "Text",
+                "The kind of resource the query names, as its app publishes it.",
+            ),
+            field(
+                "state",
+                "Text",
+                "How the search stands: `searching`, `one`, `several`, `none` or `failed`.",
+            ),
+            field(
+                "reason",
+                "Text",
+                "Why it failed, in the app's own words; empty while it does better.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_ref",
+        doc: "A resource a query found: the same reference a place holds, so a row of matches \
+              names what a place shows by the same three words.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as `<query>/<number>`."),
+            field("query", "Text", "The query it is of, by its key."),
+            field(
+                "address",
+                "Text",
+                "The resource, by its id in its app, as the arrangement's `place` takes it.",
+            ),
+            field("title", "Text", "What it is called."),
+            field(
+                "kind",
+                "Text",
+                "Its kind, as its app publishes it (`tube.channel`).",
+            ),
+        ],
+    },
+    OriginKind {
         name: "session.workspace",
         doc: "A workspace on this device's desk.",
         derived: true,
@@ -657,6 +710,31 @@ pub const KINDS: &[OriginKind] = &[
                 "menu",
                 "Bool",
                 "Whether choosing it opens its menu rather than its window.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.application",
+        doc: "An application installed on this device, as the person's launcher lists it: its \
+              package id, its name in the person's language, the glyph it shows, and how it opens.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "The app, by its package id."),
+            field("name", "Text", "Its name in the person's language."),
+            field(
+                "icon",
+                "Text",
+                "The glyph it shows, by the platform icon's kebab-case name.",
+            ),
+            field(
+                "category",
+                "Text",
+                "Its category (`work`, `media`, `play`, `system`), empty when it named none.",
+            ),
+            field(
+                "description",
+                "Text",
+                "What it is for, in a few words; empty when it offers none.",
             ),
         ],
     },
@@ -906,19 +984,16 @@ pub const KINDS: &[OriginKind] = &[
     },
 ];
 
-/// The kind named `name`.
 #[must_use]
 pub fn kind(name: &str) -> Option<&'static OriginKind> {
     KINDS.iter().find(|k| k.name == name)
 }
 
-/// The names of every kind, for messages.
 #[must_use]
 pub fn kind_names() -> String {
     KINDS.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")
 }
 
-/// Whether `capability` is one an outside effect can be handed to.
 #[must_use]
 pub fn is_capability(capability: &str) -> bool {
     CAPABILITIES.iter().any(|(name, _)| *name == capability)
@@ -938,8 +1013,7 @@ impl OriginKind {
     }
 }
 
-/// Whether the kind named `name` is one its origin derives, and so never saved to a
-/// collaborative record ([`OriginKind::derived`]).
+/// Whether the kind named `name` is one its origin derives, and so never saved to a collaborative record.
 #[must_use]
 pub fn is_derived(name: &str) -> bool {
     kind(name).is_some_and(|kind| kind.derived)

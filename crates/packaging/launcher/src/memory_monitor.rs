@@ -1,14 +1,7 @@
 //! The memory watch: samples a [`Source`] of cgroups, runs the policy
-//! ([`crate::memory_pressure`]) and carries out what it decides through
-//! [`Effects`]. The session runs exactly one watch over the apps it started
-//! (`tilo_app_launch`'s memory module); it is the only memory watch there is.
-//!
-//! It sleeps while memory is calm. PSI triggers on `/proc/pressure/memory`
-//! and on the apps' own `memory.pressure` (150 ms of stall within 2 s, the
-//! finest window the kernel grants an unprivileged process) wake it; then it
-//! samples once a second until pressure has been calm for [`CALM_SAMPLES`]
-//! samples, and sleeps again. Where no trigger can be armed (an old kernel)
-//! it samples every [`FALLBACK_INTERVAL`] instead.
+//! ([`crate::memory_pressure`]) and carries out what it decides through [`Effects`].
+//! The session runs exactly one watch over the apps it started (`tilo_app_launch`'s
+//! memory module); it is the only memory watch there is.
 
 use std::io;
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
@@ -20,15 +13,10 @@ use crate::memory_pressure::{Action, Policy, Psi, Unit, parse_psi};
 /// The machine's memory pressure.
 pub const SYSTEM_PRESSURE: &str = "/proc/pressure/memory";
 
-/// The trigger armed on every pressure file: 150 ms of stall within a 2 s
-/// window. Unprivileged triggers need a window of whole 2 s.
+/// The trigger armed on every pressure file: 150 ms of stall within a 2 s window.
 pub const TRIGGER: &str = "some 150000 2000000";
 
-/// [`TRIGGER`] as written to a pressure file, NUL-terminated. The kernel's
-/// `/proc/pressure/*` writer overwrites the last byte written with a NUL, so
-/// an unterminated string loses its last digit: a 200 ms window, below the
-/// 500 ms minimum, refused with `EINVAL`. A cgroup's `memory.pressure` reads
-/// the string up to the NUL, so the same bytes arm both.
+/// [`TRIGGER`] as written to a pressure file, NUL-terminated.
 const TRIGGER_WRITTEN: &[u8] = b"some 150000 2000000\0";
 
 /// Samples a second while pressure is up.
@@ -46,8 +34,8 @@ pub trait Source: Send {
     fn system(&mut self) -> Option<Psi>;
     /// Every app cgroup watched.
     fn units(&mut self) -> Vec<Unit>;
-    /// The pressure files whose stall should wake the watch besides the
-    /// machine's own: those of the cgroups below what is watched.
+    /// The pressure files whose stall should wake the watch besides the machine's own: those of the
+    /// cgroups below what is watched.
     fn pressure_files(&self) -> Vec<PathBuf> {
         Vec::new()
     }
@@ -59,8 +47,7 @@ pub trait Effects: Send {
     fn end(&mut self, unit: &Unit, growth: u64);
 }
 
-/// One sample: read, decide, act. Returns the pressure read, `None` when
-/// there was none to read.
+/// One sample: read, decide, act.
 pub fn step(
     policy: &mut Policy,
     source: &mut dyn Source,
@@ -82,8 +69,7 @@ pub fn read_psi(path: &Path) -> Option<Psi> {
     parse_psi(&std::fs::read_to_string(path).ok()?)
 }
 
-/// Arm a PSI trigger on `path`: the descriptor becomes `POLLPRI` when it
-/// fires.
+/// Arm a PSI trigger on `path`: the descriptor becomes `POLLPRI` when it fires.
 fn arm(path: &Path) -> io::Result<OwnedFd> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -98,28 +84,26 @@ fn arm(path: &Path) -> io::Result<OwnedFd> {
 
 /// A watch running on a thread of its own.
 pub struct Watch {
-    /// Written to end the watch at once: the thread waits on it with the
-    /// pressure triggers.
+    /// Written to end the watch at once: the thread waits on it with the pressure triggers.
     stop: OwnedFd,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Watch {
-    /// Watch pressure through `source`, carrying out what the policy decides
-    /// with `effects`, on a thread named `name`.
+    /// Watch pressure through `source`, carrying out what the policy decides with `effects`, on a
+    /// thread named `name`.
     pub fn spawn(
         name: &str,
         source: Box<dyn Source>,
         effects: Box<dyn Effects>,
     ) -> io::Result<Self> {
-        // SAFETY: eventfd takes the flags it documents and returns a new
-        // descriptor this process owns alone.
+        // SAFETY: eventfd takes the flags it documents and returns a new descriptor this process owns
+        // alone.
         let stop = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if stop < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: the kernel just returned this descriptor, and nothing else
-        // owns it.
+        // SAFETY: the kernel just returned this descriptor, and nothing else owns it.
         let stop = unsafe {
             use std::os::fd::FromRawFd as _;
             std::os::fd::OwnedFd::from_raw_fd(stop)
@@ -213,7 +197,6 @@ enum Wake {
 }
 
 /// Sleep until a trigger fires, the watch is stopped, or `timeout` passes.
-/// Drops a trigger that broke (its cgroup went away).
 fn wait(triggers: &mut Vec<OwnedFd>, stop: RawFd, timeout: Option<Duration>) -> Wake {
     let mut fds: Vec<libc::pollfd> = triggers
         .iter()
@@ -264,8 +247,8 @@ fn wait(triggers: &mut Vec<OwnedFd>, stop: RawFd, timeout: Option<Duration>) -> 
 mod tests {
     use super::*;
 
-    /// The machine's pressure file keeps every byte written but the last,
-    /// which it replaces with a NUL; what it parses must be the trigger.
+    /// The machine's pressure file keeps every byte written but the last, which it replaces with a NUL;
+    /// what it parses must be the trigger.
     #[test]
     fn the_written_trigger_survives_the_kernel_dropping_its_last_byte() {
         let (last, kept) = TRIGGER_WRITTEN.split_last().expect("not empty");
@@ -273,9 +256,7 @@ mod tests {
         assert_eq!(kept, TRIGGER.as_bytes());
     }
 
-    /// Arming the machine-wide file never fails as malformed. A host may
-    /// refuse an unprivileged trigger outright or have no PSI, but a refused
-    /// trigger string (`EINVAL`) is this code's fault.
+    /// Arming the machine-wide file never fails as malformed.
     #[test]
     fn the_machine_wide_trigger_is_never_refused_as_malformed() {
         match arm(Path::new(SYSTEM_PRESSURE)) {

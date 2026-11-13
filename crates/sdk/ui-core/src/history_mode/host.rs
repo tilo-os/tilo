@@ -24,16 +24,14 @@ use vello::{
     kurbo::{Affine, Point, Rect},
 };
 use winit::event::WindowEvent;
-/// Below this width History takes the whole window, its preview a page of
-/// its own; at or above it, History is a panel beside the content.
+/// Below this width History takes the whole window, its preview a page of its own; at or above it,
+/// History is a panel beside the content.
 const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
 pub(crate) const SIDE_PANEL_WIDTH: f64 = 360.0;
 
 #[derive(Clone, Copy)]
 enum Command {
     Live,
-    /// Leave the selected change and show the live document again, History
-    /// still open beside it.
     Now,
     Earlier,
     Activity,
@@ -42,10 +40,9 @@ enum Command {
     PreviousPage,
     NextPage,
     Scope(usize),
-    /// A person chose a change the app takes up ([`crate::widget::EntryFace::opens`]):
-    /// return to the live app and hand it the change.
+    /// A person chose a change the app takes up ([`crate::widget::EntryFace::opens`]): return to the
+    /// live app and hand it the change.
     Open(crate::HistoryEntryId),
-    /// Open the foot's name field for the selected changes.
     Name,
     Review(review::ReviewCommand),
     FileParent(fs_protocol::FileVersionId),
@@ -86,8 +83,8 @@ pub(super) struct Composition {
 
 #[cfg(test)]
 thread_local! {
-    /// Walks of a History's owned layout subtrees on this thread, so tests
-    /// can hold a focus-order recomputation to one walk, not one per node.
+    /// Walks of a History's owned layout subtrees on this thread, so tests can hold a focus-order
+    /// recomputation to one walk, not one per node.
     pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -116,46 +113,42 @@ pub struct HistoryHost {
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
-    /// The side panel's foot while a change is selected: what it was, the
-    /// before/after switch, Restore and Restore just this change.
+    /// The side panel's foot while a change is selected: what it was, the before/after switch, Restore
+    /// and Restore just this change.
     footer: Column,
-    /// Over the preview while a change is selected: it is an earlier
-    /// version, read-only, with the way back to now.
+    /// Over the preview while a change is selected: it is an earlier version, read-only, with the way
+    /// back to now.
     banner: Row,
     timeline: ActivityTimeline,
     unavailable: crate::widget::EmptyState,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
-    /// The change to select once History next refreshes open.
     requested_entry: Option<crate::HistoryEntryId>,
-    /// A change a person chose to open in the app, handed to the live app
-    /// once History has returned to it ([`Self::deliver_opened_entry`]).
+    /// A change a person chose to open in the app, handed to the live app once History has returned to
+    /// it ([`Self::deliver_opened_entry`]).
     opened: Option<crate::widget::HistoryEntry>,
-    /// How the live window shows its record while History is open (a mode,
-    /// the open item): a past version opens as the window shows it.
+    /// How the live window shows its record while History is open (a mode, the open item): a past
+    /// version opens as the window shows it.
     live_presentation: Option<crate::application_view::ApplicationLocalView>,
     open: bool,
-    /// Whether the closed toolbar offers its own History button. Off where
-    /// the host's chrome (a menu bar, the Tilo shell) presents History.
+    /// Whether the closed toolbar offers its own History button.
     open_button: bool,
     /// Embedded hosts may provide a fallback; app windows use their existing header.
     fallback_bar: bool,
-    /// The live app draws the window's header row, which holds the History
-    /// control while History is closed, so this toolbar draws none then.
+    /// The live app draws the window's header row, which holds the History control while History is
+    /// closed, so this toolbar draws none then.
     app_presents_button: bool,
     /// The app's header row shows the sync status, so this bar does not.
     app_presents_status: bool,
-    /// The desktop window's tab row presents the History control, open and
-    /// closed: this History draws no toggle of its own, and closes from the
-    /// tab, or with Escape.
+    /// The desktop window's tab row presents the History control, open and closed: this History draws
+    /// no toggle of its own, and closes from the tab, or with Escape.
     window_presents: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
-    /// The foot's name for the selected changes, and the selection whose
-    /// naming is open: another selection closes it.
+    /// The foot's name for the selected changes, and the selection whose naming is open: another
+    /// selection closes it.
     name_draft: crate::LocalState<String>,
     name_draft_for: Option<Vec<crate::HistoryEntryId>>,
-    /// Descriptions of the changes, asked of the shell ([`describe`]).
     describing: describe::Describing,
     before: PreviewCanvas,
     after: PreviewCanvas,
@@ -172,9 +165,7 @@ pub struct HistoryHost {
     #[cfg(test)]
     pending_control_callbacks: HashMap<String, PendingControlCallback>,
     toolbar_dirty: bool,
-    /// Bumped whenever the retained toolbar is replaced.
     toolbar_generation: u64,
-    /// The composition the last layout build admitted, if any.
     built_composition: Option<Composition>,
     live_root_lifetime: uuid::Uuid,
     control_domain: Option<crate::ControlDomain>,
@@ -187,27 +178,26 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
-    /// The side panel and the content beside it, its foot and the banner
-    /// over the preview, while History shows as a side panel.
+    /// The side panel and the content beside it, its foot and the banner over the preview, while
+    /// History shows as a side panel.
     panel_node: Option<NodeId>,
     content_node: Option<NodeId>,
     footer_node: Option<NodeId>,
     banner_node: Option<NodeId>,
     panel_rect: Rect,
-    /// The side panel sliding in from the window's trailing edge as History
-    /// opens, and the motion settings the last frame drew with.
+    /// The side panel sliding in from the window's trailing edge as History opens, and the motion
+    /// settings the last frame drew with.
     panel_motion: crate::motion::Presence,
     motion: crate::tokens::EffectiveMotion,
-    /// What the frame being drawn painted ([`Self::draw_compared`]), and
-    /// what the last presented frame did ([`Self::paint_presented`]).
+    /// What the frame being drawn painted ([`Self::draw_compared`]), and what the last presented frame
+    /// did ([`Self::paint_presented`]).
     #[cfg(feature = "native")]
     painting: Option<Scene>,
     #[cfg(feature = "native")]
     painted: Option<Scene>,
 }
 impl HistoryHost {
-    /// Request the same read-only presentation as the History button. Restore
-    /// remains owned by the existing review/authority path.
+    /// Request the same read-only presentation as the History button.
     pub(crate) fn request_open(&self) -> bool {
         if self.invalid_owner {
             return false;
@@ -227,8 +217,7 @@ impl HistoryHost {
         }
     }
 
-    /// Open with `entry` selected, as choosing a recent change in a History
-    /// menu does. Selecting a change shows its before and after.
+    /// Open with `entry` selected, as choosing a recent change in a History menu does.
     pub(crate) fn request_open_at(&mut self, entry: crate::HistoryEntryId) -> bool {
         if !self.request_open() {
             return false;
@@ -242,15 +231,14 @@ impl HistoryHost {
         self.open
     }
 
-    /// The window's History door as this History serves it: Open, Open at
-    /// and Hide.
+    /// The window's History door as this History serves it: Open, Open at and Hide.
     pub(crate) fn door_resource(&self) -> tilo_actions::ResourceSpec {
         crate::history_mode::door::history_resource(!self.invalid_owner, self.is_open())
     }
 
-    /// Run one History door operation resolved against [`Self::door_resource`]
-    /// (a header History control, the History shortcut): it opens, opens at
-    /// a change, or closes exactly as this History's own button does.
+    /// Run one History door operation resolved against [`Self::door_resource`] (a header History
+    /// control, the History shortcut): it opens, opens at a change, or closes exactly as this History's
+    /// own button does.
     pub(crate) fn invoke_door(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
@@ -274,8 +262,7 @@ impl HistoryHost {
         }
     }
 
-    /// The changes the timeline would list now, in causal order, whether
-    /// or not History is open.
+    /// The changes the timeline would list now, in causal order, whether or not History is open.
     #[cfg(any(feature = "native", test))]
     pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
         let Some(controller) = self.controller.as_ref().filter(|_| !self.invalid_owner) else {
@@ -287,8 +274,8 @@ impl HistoryHost {
             .unwrap_or_default()
     }
 
-    /// The host presents History elsewhere, or the system surface omits
-    /// document chrome: retain History custody without its closed button.
+    /// The host presents History elsewhere, or the system surface omits document chrome: retain History
+    /// custody without its closed button.
     pub(crate) fn remove_fallback_bar(&mut self) {
         self.fallback_bar = false;
         self.rebuild_toolbar();
@@ -298,9 +285,7 @@ impl HistoryHost {
         self.set_open_button(false);
     }
 
-    /// Whether the app's header row is offered the History control while
-    /// History is closed. Off where the host's chrome presents it, such as
-    /// the desktop window's tab row.
+    /// Whether the app's header row is offered the History control while History is closed.
     pub(crate) fn set_open_button(&mut self, shown: bool) {
         if self.open_button != shown {
             self.open_button = shown;
@@ -308,8 +293,7 @@ impl HistoryHost {
         }
     }
 
-    /// The desktop window's tab row presents this History's control (see
-    /// `window_presents`).
+    /// The desktop window's tab row presents this History's control (see `window_presents`).
     pub(crate) fn set_window_presents(&mut self, presents: bool) {
         if self.window_presents != presents {
             self.window_presents = presents;
@@ -383,8 +367,6 @@ impl HistoryHost {
             unavailable,
             unavailable_node: None,
             timeline: {
-                // History is read by who did what: its strip filters by person
-                // and agent.
                 let opens = Rc::clone(&commands);
                 let mut timeline = ActivityTimeline::new()
                     .with_preview_selection()
@@ -457,10 +439,9 @@ impl HistoryHost {
         Ok(host)
     }
 
-    /// Draw into a scene of its own, append that to `scene`, and say whether
-    /// it differs from what the last presented frame painted: a window that
-    /// shows the live app under an unchanged History toolbar repaints only
-    /// what the app's widgets damage.
+    /// Draw into a scene of its own, append that to `scene`, and say whether it differs from what the
+    /// last presented frame painted: a window that shows the live app under an unchanged History
+    /// toolbar repaints only what the app's widgets damage.
     #[cfg(feature = "native")]
     pub(crate) fn draw_compared(
         &mut self,
@@ -481,8 +462,7 @@ impl HistoryHost {
         changed
     }
 
-    /// The frame drawn last was presented: what the next frame's paint is
-    /// compared with.
+    /// The frame drawn last was presented: what the next frame's paint is compared with.
     #[cfg(feature = "native")]
     pub(crate) fn paint_presented(&mut self) {
         if let Some(painting) = self.painting.take() {
@@ -499,12 +479,11 @@ impl HistoryHost {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
-    /// Take a new sync status where it already shows, without rebuilding:
-    /// closed, the status is quiet text in the live app's header row, which
-    /// repaints just that text when it changes, and this bar's own layout
-    /// does not depend on it. Returns `false`, changing nothing here, when
-    /// the status would move or appear in this bar instead; the caller then
-    /// refreshes it whole ([`Self::set_sync_status`]).
+    /// Take a new sync status where it already shows, without rebuilding: closed, the status is quiet
+    /// text in the live app's header row, which repaints just that text when it changes, and this bar's
+    /// own layout does not depend on it. Returns `false`, changing nothing here, when the status would
+    /// move or appear in this bar instead; the caller then refreshes it whole
+    /// ([`Self::set_sync_status`]).
     pub(crate) fn set_sync_status_in_place(
         &mut self,
         status: Option<&crate::widget::WindowStatus>,
@@ -534,8 +513,8 @@ impl HistoryHost {
     pub(crate) fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
         self.enclosing_owner.as_ref()
     }
-    /// The History door actions a control in the hosted app can run now:
-    /// Open while closed, Hide while open, none for an invalid owner.
+    /// The History door actions a control in the hosted app can run now: Open while closed, Hide while
+    /// open, none for an invalid owner.
     pub(crate) fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
         tilo_actions::door::survey(&[self.door_resource()])
             .into_iter()
@@ -584,8 +563,7 @@ impl HistoryHost {
         }
         false
     }
-    /// Forget handles owned by a discarded Taffy composition. Logical History
-    /// custody, selection, and saved semantic focus remain retained.
+    /// Forget handles owned by a discarded Taffy composition.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.rect = Rect::ZERO;
         self.cursor = Point::ORIGIN;
@@ -624,9 +602,9 @@ impl HistoryHost {
             .find(|source| source.scope() == key)
             .expect("validated scope")
     }
-    /// The checked-file scope whose content asked to show a file's history
-    /// while another scope is shown: opening a file's history from the app
-    /// (its History command on a selected file) moves to that file's scope.
+    /// The checked-file scope whose content asked to show a file's history while another scope is
+    /// shown: opening a file's history from the app (its History command on a selected file) moves to
+    /// that file's scope.
     fn file_scope_asking_to_open(&self) -> Option<usize> {
         if matches!(
             self.source(),
@@ -736,8 +714,6 @@ impl HistoryHost {
             }
             self.pending_control_recovery = waiting;
             self.name_pending_controls(live, doc);
-            // The failed entry traversal could not observe direct-take output.
-            // Its uncertainty remains visible even after sealed queues recover.
             self.toolbar_dirty = true;
             return true;
         }
@@ -852,9 +828,9 @@ impl HistoryHost {
         self.toolbar_dirty = true;
         true
     }
-    /// Admit the held controls by their declarations: each is named as its
-    /// action is declared, so the review row says what it would do instead
-    /// of showing internal addresses, and housekeeping is never held.
+    /// Admit the held controls by their declarations: each is named as its action is declared, so the
+    /// review row says what it would do instead of showing internal addresses, and housekeeping is
+    /// never held.
     fn name_pending_controls(&mut self, live: &dyn Widget, doc: &AutoCommit) {
         self.pending_controls.admit_declared(|origin, invocation| {
             crate::bound_dispatch::control_declaration(
@@ -913,10 +889,8 @@ impl HistoryHost {
         // emissions into these queues retain their ordinary dispatch semantics.
         self.suspended_control_queues.clear();
     }
-    /// Closed, with nothing in flight: no input captured or asked for, no
-    /// focus saved or being returned, no control return and no review
-    /// requested. Only input (or a refresh, which recomposes) moves a
-    /// surface out of rest, so a frame that had neither leaves it here.
+    /// Closed, with nothing in flight: no input captured or asked for, no focus saved or being
+    /// returned, no control return and no review requested.
     pub(crate) fn at_rest(&self) -> bool {
         !self.captures_input()
             && self.saved_focus.is_none()
@@ -930,8 +904,8 @@ impl HistoryHost {
     pub(crate) fn finish_control_return(&mut self) {
         self.control_lease = None;
     }
-    /// Runner-only structural flush after every admitted raw widget map has
-    /// been cleared for this composition pass.
+    /// Runner-only structural flush after every admitted raw widget map has been cleared for this
+    /// composition pass.
     pub(crate) fn flush_pending_toolbar(&mut self) {
         if std::mem::take(&mut self.toolbar_dirty) {
             self.rebuild_toolbar();
@@ -1003,9 +977,8 @@ impl HistoryHost {
     ) -> Vec<super::pending_controls::ContinuationCommand> {
         self.pending_controls.drain_commands()
     }
-    /// Answer presses of History's own controls that its retained chrome
-    /// queued: this surface hosts the controls it presents. Answers how many
-    /// ran.
+    /// Answer presses of History's own controls that its retained chrome queued: this surface hosts the
+    /// controls it presents.
     pub(crate) fn answer_own_controls(
         &mut self,
         doc: &mut crate::widget::Edits<'_>,
@@ -1142,7 +1115,6 @@ impl HistoryHost {
         self.returning_live
     }
 
-    /// Close History back to the live app, as its Done does.
     fn return_to_live(&mut self) {
         self.close_files_presentation();
         self.review = None;
@@ -1161,10 +1133,8 @@ impl HistoryHost {
     }
 
     /// Present the listed changes as the live app `live` says they look
-    /// ([`super::capability::PresentsHistoryEntries`]), and keep how the
-    /// window shows its record for the previews
-    /// ([`super::capability::live_presentation`]). Asked only while History
-    /// is open or opening: the walk costs nothing to a closed one.
+    /// ([`super::capability::PresentsHistoryEntries`]), and keep how the window shows its record for
+    /// the previews ([`super::capability::live_presentation`]).
     pub(crate) fn present_entries_of(&mut self, live: &dyn Widget) {
         if self.captures_input() {
             self.timeline
@@ -1173,11 +1143,7 @@ impl HistoryHost {
         }
     }
 
-    /// Hand the change a person chose to open to the live app `live`, once
-    /// History has returned to it. Runners call this after
-    /// [`Self::finish_return_to_live`], when the app's own controls run
-    /// again, so what the app does with it goes through its doors as any
-    /// gesture of the person does.
+    /// Hand the change a person chose to open to the live app `live`, once History has returned to it.
     pub(crate) fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
         if self.captures_input() {
             return false;
@@ -1215,9 +1181,8 @@ impl HistoryHost {
             pending.extend(tree.children(node).unwrap_or_default());
         }
     }
-    /// Every layout node this History owns, collected in one walk: the set
-    /// [`Self::owns_node`] answers for one node, for callers that ask it of
-    /// every node in a composition.
+    /// Every layout node this History owns, collected in one walk: the set [`Self::owns_node`] answers
+    /// for one node, for callers that ask it of every node in a composition.
     pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
         #[cfg(test)]
         OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
@@ -1272,9 +1237,8 @@ impl HistoryHost {
             &mut self.after
         }
     }
-    /// The earliest moment this surface asks for a refresh on its own (a
-    /// file history polling its activity), on the clock of the work that
-    /// polls.
+    /// The earliest moment this surface asks for a refresh on its own (a file history polling its
+    /// activity), on the clock of the work that polls.
     pub(crate) fn next_refresh(
         &self,
     ) -> Option<(crate::background::Background, crate::time::Instant)> {
@@ -1288,10 +1252,8 @@ impl HistoryHost {
         self.refresh_without_owners(width)
             .unwrap_or_else(|| self.heads_need_refresh(doc))
     }
-    /// [`Self::needs_refresh`] as far as it can be answered without reading
-    /// an owner's document: `None` leaves it to the committed frontier
-    /// ([`Self::heads_need_refresh`]). What other threads deliver (asset and
-    /// file results) and what is queued for the surface are read here.
+    /// [`Self::needs_refresh`] as far as it can be answered without reading an owner's document: `None`
+    /// leaves it to the committed frontier ([`Self::heads_need_refresh`]).
     pub(crate) fn refresh_without_owners(&self, width: f64) -> Option<bool> {
         if self.invalid_owner {
             return Some(false);
@@ -1336,8 +1298,8 @@ impl HistoryHost {
         )
         .then_some(false)
     }
-    /// Whether the shown source's committed frontier asks for a refresh: it
-    /// cannot be read, or an open History has not taken it up yet.
+    /// Whether the shown source's committed frontier asks for a refresh: it cannot be read, or an open
+    /// History has not taken it up yet.
     pub(crate) fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
         let _phase = tilo_resource::profiling::Phase::start("ui.history_heads");
         let Ok(heads) = self.source().committed_heads(doc) else {
@@ -1350,10 +1312,9 @@ impl HistoryHost {
                 super::sorted_heads(heads) != controller.observed_live_heads
             })
     }
-    /// Whether every document this surface answers for is a hosted
-    /// component's (or the host's own), whose standing a quiet frame's
-    /// witness follows: its record's frontier, and whether it can be read
-    /// at all. A record owner outside a component is not followed.
+    /// Whether every document this surface answers for is a hosted component's (or the host's own),
+    /// whose standing a quiet frame's witness follows: its record's frontier, and whether it can be
+    /// read at all.
     pub(crate) fn owners_followed_by_frame_witness(&self) -> bool {
         let followed =
             |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
@@ -1409,7 +1370,6 @@ impl HistoryHost {
         }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
-            // These callbacks were produced by the superseded presentation.
             if target_changed
                 && matches!(
                     command,
@@ -1593,7 +1553,6 @@ impl HistoryHost {
                 let _ = controller.select_compare_side(PreviewSide::After);
                 let after = controller.snapshot().cloned();
                 self.assets.cancel();
-                // Requests are issued below, after releasing the controller loan.
                 self.assets.snapshots = [before, after];
                 changed = true;
             }
@@ -1605,8 +1564,6 @@ impl HistoryHost {
                 &self.describing,
             ));
             if opening {
-                // One line per opening, for gates and logs that keep History
-                // fast on long histories.
                 crate::diag!(
                     "HISTORY-OPEN listed={} earlier={} ms={}",
                     controller.entries().len(),
@@ -1639,8 +1596,8 @@ impl HistoryHost {
             self.rebuild_toolbar();
         }
     }
-    /// The before/after comparison buttons, marking the side shown: as a
-    /// toolbar pair, or small and toggled in a panel footer.
+    /// The before/after comparison buttons, marking the side shown: as a toolbar pair, or small and
+    /// toggled in a panel footer.
     fn compare_row(&self, small: bool) -> Row {
         let mut compare = if small {
             Row::new().with_gap(4.0)
@@ -1741,9 +1698,6 @@ impl HistoryHost {
                 && ((self.fallback_bar && self.open_button && !self.app_presents_button)
                     || (self.open && !self.window_presents))
             {
-                // This bar already reserves the History control's height. Status
-                // belongs beside it, not in a new row that moves the live app
-                // when an ordinary input first discovers unsigned history.
                 let mut row = Row::new().with_justify(taffy::JustifyContent::FlexEnd);
                 if !self.app_presents_status
                     && let Some(status) = &self.sync_status
@@ -1948,9 +1902,6 @@ impl HistoryHost {
                 Text::new("history-mode-live-updates").with_live(crate::a11y::Politeness::Polite),
             ));
         }
-        // Which history to show is a choice inside History: while it is
-        // closed the live app owns the bar, and a scope switch there reads
-        // as the app's own control.
         if self.open && self.registration.definition.scopes.len() > 1 {
             let mut scopes = Row::new();
             for (index, scope) in self.registration.definition.scopes.iter().enumerate() {
@@ -1986,13 +1937,12 @@ impl HistoryHost {
         self.toolbar_dirty = false;
         self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
     }
-    /// History shows as a panel at the window's trailing side, the content
-    /// in place beside it: open in a window wide enough for both.
+    /// History shows as a panel at the window's trailing side, the content in place beside it: open in
+    /// a window wide enough for both.
     pub(super) fn side_panel(&self) -> bool {
         self.open && self.width >= SIDE_PANEL_MIN_WIDTH
     }
 
-    /// Whether the selected version can be restored in this scope.
     fn offers_restore(&self) -> bool {
         self.registration
             .definition
@@ -2013,8 +1963,8 @@ impl HistoryHost {
             })
     }
 
-    /// Whether the selected changes can be taken back on their own: a
-    /// document's own changes, not a file's versions or an outside effect.
+    /// Whether the selected changes can be taken back on their own: a document's own changes, not a
+    /// file's versions or an outside effect.
     fn offers_change_restore(&self) -> bool {
         matches!(
             self.source(),
@@ -2025,7 +1975,6 @@ impl HistoryHost {
             .any(crate::widget::HistoryEntry::is_revertible)
     }
 
-    /// Whether the selected changes can be named: a document's own changes.
     fn offers_naming(&self) -> bool {
         matches!(
             self.source(),
@@ -2050,7 +1999,6 @@ impl HistoryHost {
             .find(|named| named.start == start && named.end == Some(end))
     }
 
-    /// The selected changes as the timeline lists them.
     fn selected_entries(&self) -> impl Iterator<Item = &crate::widget::HistoryEntry> {
         self.timeline
             .entries()
@@ -2059,10 +2007,6 @@ impl HistoryHost {
     }
 
     /// The side panel's head: its name, and the control that closes it.
-    /// Where no window presents History's control and nothing is selected,
-    /// that is the History control itself, shown on; otherwise it is Back to
-    /// live (closing the panel returns to the live document, as that
-    /// control does), so either keeps its address.
     fn panel_header(&self) -> Row {
         let control: Option<Button> = if !self.selected.is_empty() {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
@@ -2081,7 +2025,6 @@ impl HistoryHost {
             // two controls for one thing.
             None
         } else {
-            // No window presents History's control: the panel holds it, on.
             let clicked = self.open_requested.clone();
             Some(
                 crate::history_mode::door::history_control_face(
@@ -2109,9 +2052,9 @@ impl HistoryHost {
         }
     }
 
-    /// The panel's foot and the preview's banner for the selected change:
-    /// who made it and when, Before and After, Restore and Restore just this
-    /// change; over the preview, that it is an earlier version, read-only.
+    /// The panel's foot and the preview's banner for the selected change: who made it and when, Before
+    /// and After, Restore and Restore just this change; over the preview, that it is an earlier
+    /// version, read-only.
     fn build_selection_panel(&mut self) {
         let mut footer = Column::new()
             .with_no_padding()
@@ -2224,8 +2167,8 @@ impl HistoryHost {
     pub(super) fn admit_composition(&mut self) {
         self.built_composition = Some(self.composition());
     }
-    /// Whether this host replaced or swapped a child since its layout was
-    /// built: every raw layout map into it is then stale.
+    /// Whether this host replaced or swapped a child since its layout was built: every raw layout map
+    /// into it is then stale.
     pub(super) fn composition_changed(&self) -> bool {
         self.built_composition
             .is_some_and(|built| built != self.composition())
@@ -2248,8 +2191,8 @@ impl HistoryHost {
 /// A window's History, as its window holds it.
 pub(crate) type HistoryChrome = Box<dyn HistoryChromeApi>;
 
-/// The window's History control `history` offers its window's bar: none while
-/// there is no History to open.
+/// The window's History control `history` offers its window's bar: none while there is no History to
+/// open.
 pub(crate) fn window_control(
     history: &dyn HistoryChromeApi,
 ) -> Option<crate::widget::HistoryControl> {
@@ -2258,8 +2201,7 @@ pub(crate) fn window_control(
         .then(|| crate::widget::HistoryControl::of(history.is_open()))
 }
 
-/// Run the window's History `control` on `history`, as the History shortcut
-/// does.
+/// Run the window's History `control` on `history`, as the History shortcut does.
 pub(crate) fn press_window_control(
     history: &mut dyn HistoryChromeApi,
     control: crate::widget::HistoryControl,
@@ -2270,22 +2212,19 @@ pub(crate) fn press_window_control(
     super::embedded::run_door_control(history, &intent).map_err(|error| error.to_string())
 }
 
-/// The History code, as a program that fetches it on first use hands it
-/// over (`install_history_code`).
+/// The History code, as a program that fetches it on first use hands it over (`install_history_code`).
 #[derive(Clone, Copy)]
 pub struct MakeHistory(
     fn(HistoryRegistration, &AutoCommit) -> Result<HistoryChrome, HistoryRegistrationError>,
 );
 
-/// The History code this build links: what the module a program fetches
-/// on first use hands over.
+/// The History code this build links: what the module a program fetches on first use hands over.
 #[must_use]
 pub fn builtin_history() -> MakeHistory {
     MakeHistory(|registration, doc| Ok(Box::new(HistoryHost::new(registration, doc)?)))
 }
 
-/// A window's History, or its registration back while the History code is
-/// still on its way.
+/// A window's History, or its registration back while the History code is still on its way.
 pub(crate) enum MadeHistory {
     Ready(HistoryChrome),
     Loading(HistoryRegistration),
@@ -2303,9 +2242,8 @@ pub(crate) fn make_history(
 }
 
 crate::lazy_code! {
-    /// History's code: linked, or with `lazy-history` fetched the first
-    /// time a window registers History. Until then a window keeps its
-    /// registration and shows without History.
+    /// History's code: linked, or with `lazy-history` fetched the first time a window registers
+    /// History.
     pub static HISTORY: MakeHistory = builtin_history, feature = "lazy-history";
 }
 
@@ -2314,10 +2252,9 @@ pub(crate) fn history_code_ready() -> bool {
     HISTORY.get().is_some()
 }
 
-/// What a window, a tile or a test harness asks of its History, as a trait
-/// object: the History code is reached only through [`make_history`], so a
-/// program that fetches it on first use (`lazy-history`) keeps it out of
-/// the code it starts with.
+/// What a window, a tile or a test harness asks of its History, as a trait object: the History code is
+/// reached only through [`make_history`], so a program that fetches it on first use (`lazy-history`)
+/// keeps it out of the code it starts with.
 pub(crate) trait HistoryChromeApi: Widget {
     #[cfg(test)]
     fn request_close(&self);
@@ -2913,9 +2850,8 @@ mod media;
 
 mod files;
 
-/// Why a scope has no History, where its timeline would stand: History is
-/// unavailable, and the reason (a message key or the owner's own text)
-/// says why.
+/// Why a scope has no History, where its timeline would stand: History is unavailable, and the reason
+/// (a message key or the owner's own text) says why.
 pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
     crate::widget::EmptyState::new(I18nManager::lookup_plain("history-mode-unavailable"))
         .with_icon(crate::icons::Icon::History)

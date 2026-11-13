@@ -32,7 +32,6 @@ pub use crate::controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
-pub use crate::desk_migration::shell::shell_state_path;
 pub use crate::devices::RESOURCE as DEVICES_RESOURCE;
 pub use crate::engine::Person;
 pub use crate::env::SessionEnvironment;
@@ -277,7 +276,6 @@ impl Session {
             });
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
-            options.old_desk.as_deref(),
             options.person.clone(),
             records_store.clone(),
             crate::platform::records::Changes::clone(&changes),
@@ -290,6 +288,9 @@ impl Session {
         // band, the chrome and the input that reaches for the bar read the one
         // model.
         let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
+        // Super alone, as the compositor reads it: a tap opens the search and a hold shows the
+        // keys, until a key or a click makes it a chord's modifier.
+        let super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>> = Rc::default();
         // The desk a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
@@ -340,15 +341,8 @@ impl Session {
         // windows a person may share from, and the sharing doors read it.
         let notes = options.launches.notes();
         // The person's arrangement: the desk this session holds, which the
-        // workspace shares as its own desk record. A device that kept its
-        // arrangement beside the desk before this build has what it holds
-        // opened on the desk, once.
-        let arrangement = crate::arrangement::open(
-            &options.person,
-            handle.clone(),
-            &activity,
-            options.state.as_deref(),
-        );
+        // workspace shares as its own desk record.
+        let arrangement = crate::arrangement::open(&options.person, handle.clone(), &activity);
         let arrangement = Rc::new(RefCell::new(arrangement));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -361,18 +355,92 @@ impl Session {
         // The search is made further down, from what the session mounts in
         // between; it is in place before the session runs any action.
         let session_search: Rc<std::cell::OnceCell<Rc<SessionSearch>>> = Rc::default();
+        // Text typed on the canvas is asked of the same search, off the pass that places it: the
+        // sources answer on their own threads, and what they found reaches `done` on a later pass,
+        // where the place stands. A source that never answers is cut off at the canvas's own
+        // deadline with what is in, so a wedged index costs the person a place, never a frame.
         let find: crate::arrangement::Find = {
             let search = Rc::clone(&session_search);
-            Rc::new(move |needle: &str| {
-                search
-                    .get()
-                    .map(|search| search.find(needle))
-                    .unwrap_or_default()
+            Rc::new(move |needle: &str, done: crate::arrangement::FindDone| {
+                let Some(search) = search.get() else {
+                    done(Vec::new());
+                    return;
+                };
+                // What the text finds is what the arrangement places, through its own catalogue:
+                // the hits reach the door's callback, which places what a place can show.
+                search.place_soon(needle, None, crate::arrangement::canvas_find_within(), done);
             })
         };
         // The conversations this session's agents answer in, and the agents each workspace keeps,
         // both read from Chat's records of them.
         let records = crate::engine_records::EngineRecords::new(options.wake.handle());
+        // What a text that names an app's type does when the text names nothing held: ask that
+        // app, through the search action its package tags `outside:<origin>.search` (shell.md §8,
+        // "Finding what to place"; search.md §7, "Who indexes"). The app's own action runs the
+        // text against its origin, and the session settles the query when the app's own search
+        // state leaves `searching` (`Arrangement::settle_queries`). The closure late-binds the
+        // session's search and the action host the way `find` does: both exist before any action
+        // runs.
+        // A cell the closure reads the session's services through, filled once they are mounted.
+        let origin_services: Rc<std::cell::OnceCell<Rc<RefCell<tilo_service::Services>>>> =
+            Rc::default();
+        let ask_origin: crate::arrangement::AskOrigin = {
+            let search = Rc::clone(&session_search);
+            let services = Rc::clone(&origin_services);
+            Rc::new(move |text: &str| {
+                let search = search.get()?;
+                let services = services.get()?;
+                let (app, kind, query) = search.origin_search(text)?;
+                // The app's own search action: the one its package tags `outside:<origin>.search`,
+                // on the resource it acts on. Running it asks the service for what the text names.
+                let (resource_id, action_id, held) = {
+                    let resources = services.borrow().resources();
+                    let found = resources
+                        .iter()
+                        .flat_map(leaves_of)
+                        .flat_map(|resource| {
+                            resource
+                                .actions
+                                .iter()
+                                .map(move |action| (resource, action))
+                        })
+                        .find(|(resource, action)| {
+                            app_of_resource(resource.id.as_str()).as_deref() == Some(app.as_str())
+                                && action
+                                    .contract
+                                    .outside_capabilities()
+                                    .any(|capability| capability.ends_with(".search"))
+                        })?;
+                    // What the app holds of the kind now, before it answers: what it holds
+                    // afterwards that it did not hold now is what the search found.
+                    let held: std::collections::BTreeSet<String> = resources
+                        .iter()
+                        .flat_map(leaves_of)
+                        .filter(|resource| resource.kind == kind)
+                        .map(|resource| resource.id.as_str().to_owned())
+                        .collect();
+                    (
+                        found.0.id.as_str().to_owned(),
+                        found.1.id.as_str().to_owned(),
+                        held,
+                    )
+                };
+                let arguments = serde_json::Map::from_iter([(
+                    "query".to_owned(),
+                    serde_json::Value::String(query),
+                )]);
+                // The invocation's own result: refused (`DoorError`) or failed (`DoorError::Failed`)
+                // is what the query stands `.failed` with; a run that was taken answers later into
+                // the app's records (shell.md §8).
+                let outcome = services
+                    .borrow_mut()
+                    .invoke(&resource_id, &action_id, &arguments)
+                    .unwrap_or(Ok(tilo_service::Started::Accepted))
+                    .map(|_started| ())
+                    .map_err(|error| error.to_string());
+                Some((app, kind, held, outcome))
+            })
+        };
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
             options.wake.handle(),
@@ -423,6 +491,7 @@ impl Session {
                 Rc::new(move || underway.get()),
                 find.clone(),
                 ask,
+                ask_origin,
             ),
         )));
         // What the person's settings say the desk shows: a device that kept
@@ -484,6 +553,9 @@ impl Session {
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
         compositor.set_hosted(!options.machine.is_owned());
+        // What Super alone means is read where every input arrives once, and answered on the
+        // session's own pass.
+        compositor.set_super_tap(Rc::clone(&super_tap));
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
         options.wake.bind(compositor.waker());
@@ -509,6 +581,8 @@ impl Session {
         // Alt+Tab's panel: the desk's walk says what it shows, the chrome draws it, and the
         // compositor pictures the windows its cards name.
         let switcher = tilo_desktop::window_switcher::Switcher::default();
+        // The keys a held Super reaches: the session says them, the chrome draws them.
+        let super_peek = tilo_desktop::super_peek::SuperPeek::default();
         // The surfaces the desk shows over its windows, and where each stands: the shell's own
         // views, or the quick settings' app where the device has one and the desk draws it. The
         // desk's door and the chrome's door open them through it.
@@ -517,6 +591,7 @@ impl Session {
             shell: options.shell,
             panel: overlays.clone(),
             overlays: Rc::clone(&desk_overlays),
+            notices: notices.clone(),
             overview: overview.open_flag(),
         };
         // The same handle, for the pass that keeps one surface up at a time.
@@ -764,6 +839,7 @@ impl Session {
                 },
                 engine: engine.clone(),
                 hints: hints.clone(),
+                peek: super_peek.clone(),
             },
             sync.clone(),
             &overview,
@@ -796,10 +872,21 @@ impl Session {
         // arrangement, its undo, the windows and the notices, which the REPL already calls.
         // Each is answered on the loop's pass, where the arrangement is. The desk's styles, read
         // from the store, share the desk's reading (shell.md §6).
-        let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> = session_doors.clone();
-        let session_actions =
-            std::sync::Arc::new(crate::session_actions::SessionActions::new(steps));
+        let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> =
+            std::sync::Arc::clone(&session_doors)
+                as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
+        let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
+            std::sync::Arc::clone(&steps),
+        ));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
+        // What a watch of a whole workspace reads: the changes in this device's replica.
+        if let Some(engine) = &engine {
+            session_doors.keep_records(std::sync::Arc::clone(engine));
+        }
+        // The person's settings, answered under the provider Settings' window names for each
+        // control it shows: the session keeps them in its settings service, and this is what the
+        // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
+        let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
         // The runs the broker reads: each agent the person admits at the door works in a run of its
         // own among them, beside the conversations' turns.
         session_doors.keep_runs(conversations.runs());
@@ -935,6 +1022,7 @@ impl Session {
             crate::sheets::mount::power_offers(&options),
             directory.is_some(),
             feedback.is_some(),
+            &options.lists,
         );
 
         // The one worker that encodes a recording and writes every capture's
@@ -1073,6 +1161,7 @@ impl Session {
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
+                settings_steps: Some(std::sync::Arc::clone(&settings_steps)),
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
@@ -1236,6 +1325,7 @@ impl Session {
         // The records the services keep themselves: the activity lists an agent's run in one and
         // undoes it through the record's own history, as it does an app's.
         activity.attach_services(Rc::clone(&services));
+        let _ = origin_services.set(Rc::clone(&services));
         // The session's own controls, served beside its services: an app
         // reads what they are now and invokes what changes them the way it
         // does every other resource of this device's.
@@ -1257,6 +1347,12 @@ impl Session {
         // The shell's own records reach the door as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_doors);
+        }
+        // So do the records the services keep of every app the session runs itself (a seeded
+        // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
+        // session's pass, as it reads the shell's, and starts no app to read one.
+        for record in services.borrow().records() {
+            session_doors.keep_records_of(&record.app);
         }
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
@@ -1394,6 +1490,8 @@ impl Session {
             earlier: seat.earlier,
             search,
             launch: options.launch,
+            #[cfg(target_os = "linux")]
+            lists: options.lists.clone(),
             apps: action_apps,
             restore: RefCell::new(restore),
             drives: options.drives,
@@ -1413,6 +1511,8 @@ impl Session {
             doors,
             invocations,
             triggered,
+            super_tap,
+            super_peek,
             commands,
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
@@ -1596,6 +1696,13 @@ impl Session {
         shared
             .doors
             .add(Rc::new(std::cell::RefCell::new(crate::diagnostics::Served)));
+        // The person's own desk styles as packages in their workspace: "make it mine", `check`
+        // and `install`, the same commands a person types at `tilolang`, so a shell view, the
+        // canvas chat's agent and the REPL make and change styles the same way
+        // (`shell.md` §6, "Agents make styles with the same commands a person types").
+        shared.doors.add(Rc::new(std::cell::RefCell::new(
+            crate::style_packages::Served::new(),
+        )));
         // The person's devices are what their other machines say of
         // themselves, which is nobody's personal content: their reading is
         // published for any app that may read the session's resources.
@@ -1689,6 +1796,7 @@ impl Session {
             quick_settings_run: crate::quick_settings::Run::Down,
             quick_settings_starts: 0,
             quick_settings_keyboard: crate::quick_settings::PanelKeys::Settled,
+            quick_settings_asked: None,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
@@ -1730,6 +1838,7 @@ impl Session {
             active_workspace: None,
             published_workspace: crate::published_workspace::Published::none(),
             published_steps: Some(std::sync::Arc::clone(&session_actions)),
+            settings_steps: Some(settings_steps),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
             magnifier: (
@@ -2535,6 +2644,20 @@ impl Session {
         }
     }
 
+    /// Hand the broker the settings the session publishes again when they moved: what Settings'
+    /// window's controls are decided against, read here on the loop that holds the service, so a
+    /// catalogue built on the broker's own thread never waits on it.
+    pub(crate) fn follow_settings_steps(&self) {
+        let Some(steps) = &self.settings_steps else {
+            return;
+        };
+        if steps.offer(&self.shared.services.borrow())
+            && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
+        {
+            broker.host_steps_changed();
+        }
+    }
+
     /// Keep the broker's copy of the desk level with the desk as the pass leaves it: the workspaces
     /// the pass opened, and whose each of them is, are decided here and a person's own action is
     /// decided against that copy.
@@ -2695,6 +2818,25 @@ impl LoopTurns for Turns {
 /// Say that the app `app` opening in `workspace` was not let author its records there.
 fn not_authored(workspace: &str, app: &str, error: &str) {
     tracing::warn!(%workspace, app, %error, "an opening app was not let author its workspace");
+}
+
+/// Every resource of `resource` and its children: what an app publishes is found among these,
+/// as the app own search action and the kinds it holds are read off its records.
+fn leaves_of(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
+    let mut out = vec![resource];
+    for child in &resource.children {
+        out.extend(leaves_of(child));
+    }
+    out
+}
+
+/// The app a resource belongs to, from its address in the app: `tl:so.tilo.lang.tube:...` gives
+/// `so.tilo.lang.tube`; `None` for a resource that is no app own.
+fn app_of_resource(resource: &str) -> Option<String> {
+    resource
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(0x3a as char))
+        .map(|(app, _)| app.to_owned())
 }
 
 #[cfg(test)]

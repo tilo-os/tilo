@@ -60,9 +60,6 @@ impl Parts {
     }
 }
 
-/// The retained-child lifecycle over the `Parts` at `self.parts`, or at the
-/// path given after `lifecycle:` (every method but identity, layout building
-/// and drawing) or `children:` (those, less `apply_layout`).
 macro_rules! retained_parts {
     ($name:literal) => {
         retained_parts!(lifecycle: parts);
@@ -152,7 +149,6 @@ macro_rules! retained_parts {
             }
             dirty
         }
-        // No structure of its own: what its parts describe stays described.
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             let mut change = crate::widget::StructureChange::None;
             for child in &mut self.$($path).+.children {

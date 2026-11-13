@@ -1,12 +1,16 @@
 //! The one decision every door, host and receiver makes.
 
-use crate::{ActionKind, Answer, Context, Grant, GrantId, Lifetime, Subject, TreePath};
+use tilo_app_id::AppId;
+
+use crate::{ActionKind, Answer, Context, Grant, GrantId, Grantee, Level, Lifetime, TreePath};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Basis<'g> {
     /// The most specific live grant covering the node and kind.
     Grant(&'g Grant),
+    /// The cap the code puts on the party, below what its grants allow.
+    Capped(Answer),
     /// The party owns the workspace the node is in.
     Owner,
     /// No live grant covers the node and kind.
@@ -30,16 +34,16 @@ impl<'g> Decision<'g> {
     }
 }
 
-/// Decides for one set of subjects over one set of grants:
+/// Decides for one set of grantees over one set of grants:
 ///
-/// 1. Take the live grants whose subject is one of `subjects`, whose node is
+/// 1. Take the live grants naming one of `grantees` ([`names`]), whose node is
 ///    `node` or an ancestor of it, and whose kinds include `kind`.
 /// 2. The most specific node wins.
 /// 3. At the same node, Deny beats Ask beats Allow.
 /// 4. No grant: Deny.
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
-    subjects: &[Subject],
+    grantees: &[Grantee],
     node: &TreePath,
     kind: ActionKind,
     cx: &Context<'_>,
@@ -47,7 +51,7 @@ pub fn decide<'g>(
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
-            || !cx.subject_matches(&grant.subject, subjects)
+            || !names(grant, grantees, cx)
             || !cx.covers(&grant.node, node)
             || !grant.is_live(cx)
         {
@@ -74,11 +78,30 @@ pub fn decide<'g>(
     )
 }
 
-/// One source of authority: the subjects someone is known by, the grants that
+/// Whether `grant` names one of `grantees`. A grant to a role names everyone
+/// holding that role and every higher one, except a built-in role's own grants:
+/// those are the role's rules ([`crate::roles::role_rules`]), each the whole
+/// answer for its role, and a higher role carries them already.
+#[must_use]
+pub fn names(grant: &Grant, grantees: &[Grantee], cx: &Context<'_>) -> bool {
+    if cx.grantee_matches(&grant.grantee, grantees) {
+        return true;
+    }
+    if crate::roles::is_role_grant(grant) {
+        return false;
+    }
+    grant.grantee.role_of().is_some_and(|wanted| {
+        grantees
+            .iter()
+            .any(|held| held.role_of().is_some_and(|held| held.includes(wanted)))
+    })
+}
+
+/// One source of authority: the grantees someone is known by, the grants that
 /// may name them, and the workspaces they own.
 #[derive(Clone, Debug, Default)]
 pub struct Party<'g> {
-    pub subjects: Vec<Subject>,
+    pub grantees: Vec<Grantee>,
     pub grants: Vec<&'g Grant>,
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
@@ -88,17 +111,63 @@ pub struct Party<'g> {
     /// workspace, a role's rule on comments) speaks for the role, not for a
     /// decision about them.
     pub held_off: Vec<&'g Grant>,
+    /// A cap the code puts on this party, below whatever its grants allow.
+    pub cap: Option<Cap>,
+}
+
+/// What a device or a piece of software may do at most, whatever its grants
+/// say: the code's rule about the thing acting, not a grant anyone gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cap {
+    /// What it may do to the workspace's content.
+    pub content: Answer,
+    /// What it may do outside the workspace.
+    pub outside: Answer,
+    /// What it may do to the workspace's own resource (its governance).
+    pub governance: Answer,
+}
+
+impl Cap {
+    /// A device that is not the person's: it reads and changes content, asks
+    /// before reaching outside, and never governs.
+    pub const FOREIGN_DEVICE: Self = Self {
+        content: Answer::Allow,
+        outside: Answer::Ask,
+        governance: Answer::Deny,
+    };
+
+    /// What this cap answers for `kind` at `node` in the workspace it governs.
+    fn answer(self, node: &TreePath, kind: ActionKind) -> Answer {
+        if node.id_at(Level::Kind) == Some(crate::roles::ROOM_KIND) {
+            return match kind {
+                ActionKind::Read => Answer::Allow,
+                ActionKind::Undoable | ActionKind::Outside => self.governance,
+            };
+        }
+        match kind {
+            ActionKind::Read | ActionKind::Undoable => self.content,
+            ActionKind::Outside => self.outside,
+        }
+    }
 }
 
 impl<'g> Party<'g> {
     #[must_use]
-    pub fn new(subjects: Vec<Subject>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
+    pub fn new(grantees: Vec<Grantee>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
         Self {
-            subjects,
+            grantees,
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
             held_off: Vec::new(),
+            cap: None,
         }
+    }
+
+    /// The same party, capped by `cap`.
+    #[must_use]
+    pub const fn capped(mut self, cap: Cap) -> Self {
+        self.cap = Some(cap);
+        self
     }
 
     #[must_use]
@@ -127,30 +196,55 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// The same party, known as `subject` too: an agent's run of an issue
+    /// The same party, known as `grantee` too: an agent's run of an issue
     /// is the agent and the issue, so grants naming either decide for it,
     /// the most specific first.
     #[must_use]
-    pub fn also_as(mut self, subject: Subject) -> Self {
-        self.subjects.push(subject);
+    pub fn also_as(mut self, grantee: Grantee) -> Self {
+        self.grantees.push(grantee);
+        self
+    }
+
+    /// [`Self::also_as`] for each of `grantees`.
+    #[must_use]
+    pub fn with_also(mut self, grantees: impl IntoIterator<Item = Grantee>) -> Self {
+        self.grantees.extend(grantees);
         self
     }
 
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
+        let held = self.decide_grants(node, kind, cx);
+        match self.cap {
+            Some(cap) => {
+                let answer = cap.answer(node, kind);
+                if answer < held.answer {
+                    Decision {
+                        answer,
+                        basis: Basis::Capped(answer),
+                    }
+                } else {
+                    held
+                }
+            }
+            None => held,
+        }
+    }
+
+    fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         // A member's own record is that person's alone, whatever the workspace's
         // grants or owner say ([`crate::member_record`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
         if let Some(member) = crate::member_record::owner_of(node)
             && self
-                .subjects
+                .grantees
                 .iter()
-                .any(|subject| matches!(subject, Subject::Person(_)))
+                .any(|grantee| grantee.person_id().is_some())
         {
             let theirs = self
-                .subjects
+                .grantees
                 .iter()
-                .any(|subject| matches!(subject, Subject::Person(person) if person == member));
+                .any(|grantee| grantee.person_id() == Some(member));
             let held_off = self.held_off.iter().copied().find(|grant| {
                 grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
             });
@@ -183,16 +277,24 @@ impl<'g> Party<'g> {
                 basis: Basis::Grant(deny),
             };
         }
-        decide(self.grants.iter().copied(), &self.subjects, node, kind, cx)
+        decide(self.grants.iter().copied(), &self.grantees, node, kind, cx)
     }
 }
 
 /// Who is acting: a person, and the delegations bounding them (an agent, a
-/// task, a Shortcut, an app, a foreign device).
+/// task, a Shortcut, a foreign device).
 #[derive(Clone, Debug, Default)]
 pub struct Authority<'g> {
     pub person: Party<'g>,
     pub bounds: Vec<Party<'g>>,
+    /// How many of `person` and `bounds`, in order, are people of the acting: a
+    /// privileged action needs each of them to allow it.
+    pub people: usize,
+    /// The app the change is made through.
+    pub app: Option<&'g AppId>,
+    /// The resource kinds the app declares: what it may reach in its own node.
+    /// `None` where the host deciding does not hold the app's manifest.
+    pub app_kinds: Option<&'g [String]>,
 }
 
 impl<'g> Authority<'g> {
@@ -201,7 +303,25 @@ impl<'g> Authority<'g> {
         Self {
             person,
             bounds: Vec::new(),
+            people: 1,
+            app: None,
+            app_kinds: None,
         }
+    }
+
+    /// The same authority, with `kinds` as what the app it acts through may
+    /// reach in its own node.
+    #[must_use]
+    pub fn in_app(mut self, kinds: &'g [String]) -> Self {
+        self.app_kinds = Some(kinds);
+        self
+    }
+
+    /// The same authority, bounded by `party` too.
+    #[must_use]
+    pub fn also_as(mut self, party: Party<'g>) -> Self {
+        self.bounds.push(party);
+        self
     }
 
     #[must_use]
@@ -217,16 +337,25 @@ impl<'g> Authority<'g> {
         let mut parts = Vec::with_capacity(self.bounds.len().saturating_add(1));
         parts.push(self.person.decide(node, kind, cx));
         parts.extend(self.bounds.iter().map(|bound| bound.decide(node, kind, cx)));
-        let answer = parts
+        let mut answer = parts
             .iter()
             .map(|part| part.answer)
             .min()
             .unwrap_or(Answer::Deny);
+        if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
+            && node.id_at(Level::App) == Some(app.as_str())
+            && !kinds
+                .iter()
+                .any(|kind| node.id_at(Level::Kind) == Some(kind.as_str()))
+        {
+            answer = Answer::Deny;
+        }
         Verdict {
             answer,
             node: node.clone(),
             kind,
             parts,
+            people: self.people,
         }
     }
 }
@@ -244,7 +373,16 @@ impl Authority<'_> {
         cx: &Context<'_>,
     ) -> Answer {
         let person = self.person.decide(node, kind, cx).answer;
-        if privileged && person == Answer::Ask {
+        if privileged && self.people <= 1 && person == Answer::Ask {
+            return Answer::Deny;
+        }
+        if privileged
+            && self
+                .bounds
+                .iter()
+                .take(self.people.saturating_sub(1))
+                .any(|bound| bound.decide(node, kind, cx).answer == Answer::Ask)
+        {
             return Answer::Deny;
         }
         self.bounds
@@ -262,19 +400,22 @@ pub struct Verdict<'g> {
     pub kind: ActionKind,
     /// The person's decision first, then each delegation's in order.
     pub parts: Vec<Decision<'g>>,
+    /// How many of `parts`, in order, are the acting's people.
+    pub people: usize,
 }
 
 impl<'g> Verdict<'g> {
     /// This verdict for a privileged action, one that exercises authority
-    /// over the workspace or others in it: the person's own grants must allow it.
-    /// Where they only ask, the person's confirmation is no authority they
+    /// over the workspace or others in it: every person's own grants must allow
+    /// it. Where one of them only asks, their confirmation is no authority they
     /// lack, so it is refused. A delegation's Ask still asks the person.
     #[must_use]
     pub fn privileged(mut self) -> Self {
         if self
             .parts
-            .first()
-            .is_some_and(|person| person.answer == Answer::Ask)
+            .iter()
+            .take(self.people.max(1))
+            .any(|person| person.answer == Answer::Ask)
         {
             self.answer = Answer::Deny;
         }
@@ -317,10 +458,10 @@ impl<'g> Verdict<'g> {
             Answer::Deny => "Not allowed",
         };
         let who = |index: usize| {
-            if index == 0 {
+            if index < self.people {
                 "the person's grants".to_owned()
             } else {
-                "the delegation's grants".to_owned()
+                "the grants of those acting for them".to_owned()
             }
         };
         let index = self
@@ -330,6 +471,11 @@ impl<'g> Verdict<'g> {
             .unwrap_or(0);
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
+            Some(Basis::Capped(answer)) => format!(
+                "{} may do at most \"{answer}\" with {} here",
+                who(index),
+                self.kind.phrase()
+            ),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),

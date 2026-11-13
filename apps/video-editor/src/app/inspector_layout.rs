@@ -7,8 +7,6 @@ use super::*;
 #[derive(Default)]
 pub(super) struct InspectorLayout {
     pub(super) valid: bool,
-    /// The selected clip's facts (position, duration, source in and out),
-    /// at the head of the body.
     pub(super) properties: Option<Rect>,
     pub(super) opacity: Option<Rect>,
     pub(super) volume: Option<Rect>,
@@ -27,33 +25,24 @@ pub(super) struct InspectorLayout {
     /// one thing or the other to offer — a control that is present and inert
     /// says nothing.
     pub(super) link: Option<Rect>,
-    /// Baseline of the caption above it.
     pub(super) link_label_y: f64,
     pub(super) colors: Vec<(u8, Rect)>,
-    /// y of the "EFFECTS" label; each row rect is a full-width effect row.
     pub(super) effects_label_y: f64,
     pub(super) effect_rows: Vec<Rect>,
     pub(super) add_effect: Rect,
     pub(super) split: Rect,
     pub(super) delete: Rect,
-    /// Section header rows, in draw order. Clicking one folds or unfolds it.
     pub(super) sections: Vec<(Section, Rect)>,
-    /// Every ranged control currently laid out, with the track to drag.
     pub(super) nums: Vec<(NumField, Rect)>,
-    /// Picture-in-picture presets: label, corner in `-1..1`, and the button.
     pub(super) pip: Vec<(&'static str, (f64, f64), Rect)>,
     /// The two halves of the frame, as the buttons that put a picture in
     /// one — the arrangement two camera angles of one moment need.
     pub(super) sides: Vec<(&'static str, Side, Rect)>,
     /// "Fill frame" — clears the transform back to the plain aspect-fit.
     pub(super) reset_transform: Option<Rect>,
-    /// Baseline y of the "Crop" caption above the two crop rows.
     pub(super) crop_label_y: f64,
-    /// Baseline y of the "Anchor" caption above the 3×3 grid.
     pub(super) anchor_label_y: f64,
-    /// The nine anchor presets: the point in source uv, and its cell.
     pub(super) anchor: Vec<((f64, f64), Rect)>,
-    /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
     pub(super) speed_presets: Vec<(f64, Rect)>,
     /// Baseline y of the line naming which lane these two knobs belong to.
     /// The panel is otherwise entirely about one clip, so a control that
@@ -66,45 +55,29 @@ pub(super) struct InspectorLayout {
     /// else, because a reset that resets nothing is a control that lies about
     /// having something to undo.
     pub(super) mix_reset: Option<Rect>,
-    /// The reverse toggle.
     pub(super) reverse: Option<Rect>,
     /// Switches the key on and off. The sliders below it only appear once it
     /// is on, so an unkeyed clip does not carry four dead controls.
     pub(super) key_enable: Option<Rect>,
-    /// Baseline y of the "Key colour" caption over the swatches.
     pub(super) key_color_y: f64,
-    /// Preset key colours, and the swatch each is picked from.
     pub(super) key_colors: Vec<([f64; 3], Rect)>,
-    /// Samples the key colour out of the frame under the playhead.
     pub(super) key_pick: Option<Rect>,
-    /// Shape choice, as a segmented row: Off / Rect / Ellipse.
     pub(super) mask_shapes: Vec<(crate::model::MaskShape, Rect)>,
-    /// Snaps the mask onto whatever the transform currently puts on screen.
     pub(super) mask_fit: Option<Rect>,
     /// Keep the outside rather than the inside.
     pub(super) mask_invert: Option<Rect>,
-    /// The words, edited inline through the shared editable label.
     pub(super) title_text: Option<Rect>,
     pub(super) title_align: Vec<(TextAlign, Rect)>,
-    /// The font-family chooser: a button that opens the shared dropdown.
     pub(super) title_font: Option<Rect>,
-    /// Preset colours for the title's own (authored, non-palette) colour.
     pub(super) title_colors: Vec<([f64; 4], Rect)>,
     pub(super) title_bold: Option<Rect>,
     pub(super) title_italic: Option<Rect>,
-    /// Which channel the editor is showing, as a segmented row.
     pub(super) curve_channels: Vec<(crate::curve::Channel, Rect)>,
-    /// The square the curve is drawn and dragged in.
     pub(super) curve_canvas: Option<Rect>,
-    /// Puts the shown channel back to the straight line.
     pub(super) curve_reset: Option<Rect>,
-    /// The key control at the head of each animatable row.
     pub(super) keys: Vec<(Param, Rect)>,
-    /// Baseline y of the readout that states the project's current format.
     pub(super) project_format_y: f64,
-    /// Frame-size presets as a segmented row: the dimensions each writes.
     pub(super) project_frames: Vec<((u32, u32), Rect)>,
-    /// Baseline y of the "Rate" caption over the rate row.
     pub(super) project_rate_y: f64,
     pub(super) project_rates: Vec<(f64, Rect)>,
     /// Takes the selected source's shape as the project's -- the button
@@ -112,9 +85,7 @@ pub(super) struct InspectorLayout {
     /// footage actually is.
     pub(super) project_match: Option<Rect>,
     pub(super) marker_rows: Vec<(MarkerRef, Rect)>,
-    /// Sub-rects of the row above: the name (click to rename) and the delete.
     pub(super) add_marker: Option<Rect>,
-    /// Total content extent (px) from the inspector top, for scroll clamping.
     pub(super) content_height: f64,
     /// Where the scrolled body may be cut: the top of every row and the foot
     /// of the last. The body shows whole rows only, so its edges land on
@@ -122,11 +93,8 @@ pub(super) struct InspectorLayout {
     pub(super) breaks: Vec<f64>,
 }
 impl VideoEditorApp {
-    /// Lay out the markers section — its header, one row per marked instant,
-    /// and the add button — advancing `y` past it.
-    ///
-    /// Shared by both inspector states: the list is the same whether a clip
-    /// is selected or not, because a marker belongs to the project.
+    /// Shared by both inspector states: a marker belongs to the project, so the list is
+    /// the same whether a clip is selected or not.
     pub(super) fn layout_markers(&self, l: &mut InspectorLayout, x0: f64, x1: f64, y: &mut f64) {
         l.sections
             .push((Section::Markers, Rect::new(x0, *y, x1, *y + SECTION_H)));
@@ -164,15 +132,9 @@ impl VideoEditorApp {
         l.breaks.push(*y);
     }
 
-    /// Lay out the project's format section — the readout of what the frame
-    /// currently is, the size presets, the rate presets, and the button that
-    /// takes the selected source's shape — advancing `y` past it.
-    ///
-    /// Project-level like the markers above it, so it is laid out in both
-    /// inspector states. The frame was hard-wired to 1920x1080 at 30: there
-    /// was exactly one place in the model that ever wrote those three numbers
-    /// and every other reference read them, so a vertical or 4K shoot had no
-    /// way to say so and came out letterboxed into 16:9.
+    /// Project-level like the markers, so it is laid out in both inspector states. The
+    /// frame was hard-wired to 1920x1080 at 30, so a vertical or 4K shoot had no way to
+    /// say so and came out letterboxed into 16:9.
     pub(super) fn layout_project(&self, l: &mut InspectorLayout, x0: f64, x1: f64, y: &mut f64) {
         l.sections
             .push((Section::Project, Rect::new(x0, *y, x1, *y + SECTION_H)));
@@ -181,12 +143,8 @@ impl VideoEditorApp {
         if self.collapsed.contains(&Section::Project) {
             return;
         }
-        // The readout's own line, then the two segmented rows under their
-        // captions -- the same 20px a caption takes everywhere else in this
-        // panel, so the three read as one convention.
-        // The readout is drawn from `y` downwards, like every caption in this
-        // panel, so it needs a caption's worth of room: at a 12px gap its
-        // descenders sat on the preset row's top border.
+        // The readout takes a caption's worth of room like every caption in this panel:
+        // at a 12px gap its descenders sat on the preset row's border.
         l.project_format_y = *y;
         *y += 24.0;
         l.breaks.push(*y);
@@ -223,13 +181,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// The source whose shape "Match media" would take: the bin selection
-    /// when it has a frame, else the media under the selected clip, else the
-    /// first source in the bin that has one.
-    ///
-    /// One resolver so the button, the press that runs it and the accessible
-    /// node all name the same source -- a button that copied a shape from
-    /// something other than the one it named would be worse than absent.
+    /// One resolver, so the button, the press that runs it and the accessible node name
+    /// the same source.
     pub(super) fn format_source(&self) -> Option<&MediaItem> {
         let has_frame = |m: &&MediaItem| m.width > 0 && m.height > 0;
         self.selected_media
@@ -244,15 +197,11 @@ impl VideoEditorApp {
             .or_else(|| self.project.media.iter().find(has_frame))
     }
 
-    /// Sub-rects of one effect row:
     /// `(key, reorder-up, reorder-down, slider, remove)`.
     ///
-    /// The key control leads the row, exactly as it leads every other
-    /// animatable row in the panel. An effect's intensity is as animatable as
-    /// a scale or a mask edge, and it was the one such control with no
-    /// diamond — so it was keyframable only from the command palette, which
-    /// is not somewhere a user looking at the slider would think to go. What
-    /// it costs is width off the effect's name, and the names are one word.
+    /// The key leads the row as it leads every other animatable row: an effect's
+    /// intensity is as animatable as a scale, and it was the one such control without a
+    /// diamond, so it was keyframable only from the palette.
     pub(super) fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let cy = row.center().y;
         let scale = (row.height() / 24.0).clamp(1.0, 2.0);
@@ -306,10 +255,8 @@ impl VideoEditorApp {
         })
     }
 
-    /// The part of the inspector's scroll body that is drawn: the viewport
-    /// pulled in to the nearest row boundaries, so a row the scroll would cut
-    /// through is left out until it is wholly in view, and nothing is ever
-    /// shown sliced at the header's foot or the panel's bottom edge.
+    /// The viewport pulled in to the nearest row boundaries, so nothing is shown sliced
+    /// at the header's foot or the panel's bottom edge.
     pub(super) fn inspector_shown_body(&self, r: &Regions, l: &InspectorLayout) -> Rect {
         let view = self.inspector_viewport(r);
         let top = l
@@ -345,10 +292,9 @@ impl VideoEditorApp {
         reason = "one geometry pass keeps every inspector section aligned to the same scroll coordinate system"
     )]
     pub(super) fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
-        // Layout is authored in logical inspector pixels, then projected into
-        // the physical column.  This keeps text, rows, hit targets and the
-        // accessibility focus bands in one coordinate system at every text
-        // scale instead of merely making the glyphs larger inside 1× rows.
+        // Authored in logical pixels, then projected into the physical column, so text,
+        // rows, hit targets and focus bands stay in one coordinate system at every text
+        // scale.
         let scale = self.inspector_ui_scale();
         let physical_body_origin = self.inspector_body_origin(r);
         let body_origin = r.inspector.y0 + (physical_body_origin - r.inspector.y0) / scale;
@@ -361,10 +307,8 @@ impl VideoEditorApp {
         );
         let r = &logical;
         let mut l = InspectorLayout::default();
-        // Markers belong to the project, not to any clip, so the list is laid
-        // out with nothing selected too. Without this the only way to see or
-        // remove a marker was to first pick a clip that had nothing to do
-        // with it.
+        // Markers belong to the project, so the list is laid out with nothing selected
+        // too; otherwise the only way to reach one was to pick an unrelated clip.
         let selected = self.selected().and_then(|id| self.project.clip(id));
         if selected.is_none() {
             let x0 = r.inspector.x0 + PAD;
@@ -385,11 +329,9 @@ impl VideoEditorApp {
         let is_title = media.is_some_and(|item| item.text.is_some());
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
-        // The fixed header (name, lane and the clip's facts) is measured by
-        // `inspector_header`; the editable controls start below it, and
-        // everything here scrolls together by `inspector_scroll` (the pane
-        // clips + is wheel-scrollable) so the effects stack can grow without
-        // clipping the actions.
+        // The fixed header is measured by `inspector_header`; the editable controls
+        // start below it, and everything here scrolls together so the effects stack can
+        // grow without clipping the actions.
         let top = body_origin - self.inspector_scroll / scale;
         let mut y = top + S3;
         l.breaks.push(y);
@@ -450,7 +392,7 @@ impl VideoEditorApp {
         l.transition_y = y + 25.0;
         let labels: Vec<String> = Transition::ALL
             .iter()
-            .map(|t| t.label().to_string())
+            .map(|t| crate::resource::CATALOG.t(t.message()))
             .collect();
         for (t, rect) in
             Transition::ALL
@@ -480,10 +422,9 @@ impl VideoEditorApp {
         }
         y += 56.0;
         l.breaks.push(y);
-        // The link control. It sits in the top block, with the clip's own
-        // identity rather than down among the picture sections, because it
-        // says what this clip *is* — half of a shot, or a clip on its own —
-        // and because an audio clip has to be able to reach it too.
+        // In the top block with the clip's identity rather than among the picture
+        // sections: it says what this clip is — half of a shot, or a clip of its own —
+        // and an audio clip has to reach it too.
         if self.link_affordance().is_some() {
             l.link_label_y = y + 15.0;
             l.link = Some(Rect::new(x0, y + 20.0, x1, y + 46.0));
@@ -503,6 +444,8 @@ impl VideoEditorApp {
         // Tone curves, video only — it is the same grade the three sliders
         // above start, so it sits directly under them.
         if is_video && header(&mut l, &mut y, Section::Curves) {
+            // The curve channels read "RGB", "R", "G" and "B" in every
+            // language, so they are their own labels.
             let labels: Vec<String> = crate::curve::Channel::ALL
                 .iter()
                 .map(|c| c.label().to_string())
@@ -515,14 +458,11 @@ impl VideoEditorApp {
             }
             y += 32.0;
             l.breaks.push(y);
-            // Square, so the diagonal that means "unchanged" really is a
-            // diagonal — on a squashed box a curve reads as steeper or
-            // flatter than it is.
+            // Square, so the diagonal that means "unchanged" really is one.
             let side = (x1 - x0).min(200.0);
             l.curve_canvas = Some(Rect::new(x0, y, x0 + side, y + side));
-            // Room for the gesture hint under the box *and* clear air before
-            // the amount row's own label: at the bare 12px gap the two shared
-            // a baseline and drew through each other.
+            // Room for the gesture hint and clear air before the amount row: at a 12px gap
+            // the two shared a baseline and drew through each other.
             y += side + 34.0;
             l.breaks.push(y);
             l.nums.push((NumField::CurveMix, track_at(y)));
@@ -549,9 +489,8 @@ impl VideoEditorApp {
                 y += row;
                 l.breaks.push(y);
             }
-            // Crop: two half-width pairs under their own caption. No key
-            // control — crop frames the shot rather than moving it, and the
-            // model does not animate it.
+            // No key control: crop frames the shot rather than moving it, and the model
+            // does not animate it.
             y += 12.0;
             l.breaks.push(y);
             l.crop_label_y = y;
@@ -569,19 +508,16 @@ impl VideoEditorApp {
                 y += row;
                 l.breaks.push(y);
             }
-            // Anchor: the point scale and rotation turn about. Nine presets
-            // as three segmented rows rather than a free pair of sliders —
-            // an anchor is chosen, not dialled, and every value anyone wants
-            // is a corner, an edge or the middle.
+            // Nine presets as three segmented rows: an anchor is chosen, not dialled, and
+            // every value anyone wants is a corner, an edge or the middle.
             y += 12.0;
             l.breaks.push(y);
             l.anchor_label_y = y;
             y += 20.0;
             l.breaks.push(y);
             let cell = (x1 - x0) / 3.0;
-            // Three segmented rows an `S1` apart: each row is one shared
-            // control whose segments abut (the face draws the separators),
-            // and the rows are neighbours that must not touch.
+            // An `S1` apart: each row's segments abut (the face draws the separators), and
+            // the rows are neighbours that must not touch.
             for ay in ANCHOR_STOPS {
                 for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
                     let cx = x0 + col as f64 * cell;
@@ -650,14 +586,11 @@ impl VideoEditorApp {
             y += 34.0;
             l.breaks.push(y);
         }
-        // The lane's own fader and pan. Present for a picture clip as well as
-        // an audio one: a shot on a video track carries its source's sound,
-        // so that lane has a level whether or not anyone has split it off.
+        // Present for a picture clip too: a shot on a video track carries its source's
+        // sound, so that lane has a level.
         //
-        // No key control on either row. A fader is a mix decision, not an
-        // animation — a level that has to move through a shot is what the
-        // clip's own volume curve is for, and two animatable levels stacked
-        // on one signal is two places to look for why it faded.
+        // No key control on either row: a fader is a mix decision, and a level that has
+        // to move through a shot is what the clip's own volume curve is for.
         if header(&mut l, &mut y, Section::Mix) {
             l.mix_track_y = y;
             y += 18.0;
@@ -681,9 +614,8 @@ impl VideoEditorApp {
             }
             l.breaks.push(y);
         }
-        // Colour key, video only — there is nothing to key out of audio.
-        // The four sliders appear only once the key is switched on, so an
-        // unkeyed clip does not carry a row of controls that do nothing.
+        // Video only: there is nothing to key out of audio, and the four sliders appear
+        // only once the key is on, so an unkeyed clip carries no row that does nothing.
         if is_video {
             let open = header(&mut l, &mut y, Section::Key);
             if open {
@@ -691,9 +623,6 @@ impl VideoEditorApp {
                 y += 34.0;
                 l.breaks.push(y);
                 if clip.key.enabled {
-                    // The caption's own line, then the swatches under it —
-                    // the same 20px the Crop caption takes, so the two read
-                    // as one convention rather than two.
                     l.key_color_y = y;
                     y += 20.0;
                     l.breaks.push(y);
@@ -705,9 +634,8 @@ impl VideoEditorApp {
                         }
                         l.key_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
                     }
-                    // Sampling the plate is how a key is really set; the
-                    // presets are only a starting point. It starts a sibling
-                    // step past the swatches.
+                    // Sampling the plate is how a key is really set; the presets are a
+                    // starting point.
                     let pick_x = x0 + 3.0 * (sw + S1) + S2;
                     if pick_x + 96.0 <= x1 {
                         l.key_pick = Some(Rect::new(pick_x, y, x1, y + sw));
@@ -738,7 +666,7 @@ impl VideoEditorApp {
             if open {
                 let labels: Vec<String> = crate::model::MaskShape::ALL
                     .iter()
-                    .map(|s| s.label().to_string())
+                    .map(|s| crate::resource::CATALOG.t(s.message()))
                     .collect();
                 for (shape, rect) in crate::model::MaskShape::ALL
                     .iter()
@@ -788,7 +716,7 @@ impl VideoEditorApp {
             l.breaks.push(y);
             let labels: Vec<String> = TextAlign::ALL
                 .iter()
-                .map(|a| a.label().to_string())
+                .map(|a| crate::resource::CATALOG.t(a.message()))
                 .collect();
             for (a, rect) in TextAlign::ALL
                 .iter()
@@ -832,9 +760,8 @@ impl VideoEditorApp {
                 for effect in &*clip.effects {
                     let row = Rect::new(x0, y, x1, y + 24.0);
                     l.effect_rows.push(row);
-                    // The row's key control joins the panel's one list of
-                    // them, so drawing, hit-testing and the keyframe menu all
-                    // reach it without a second code path.
+                    // In the panel's one list of key controls, so drawing, hit-testing and
+                    // the keyframe menu reach it without a second path.
                     l.keys.push((
                         Param::EffectAmount(effect.id),
                         Self::effect_row_parts(row).0,
@@ -866,8 +793,7 @@ impl VideoEditorApp {
 }
 
 impl InspectorLayout {
-    /// Project a logical inspector layout into physical pixels.  The layout
-    /// owns every interactive rectangle, so doing this once keeps painting,
+    /// The layout owns every interactive rectangle, so projecting once keeps painting,
     /// hit testing, the scrollbar's extent and AT focus rings identical.
     #[allow(
         clippy::too_many_lines,

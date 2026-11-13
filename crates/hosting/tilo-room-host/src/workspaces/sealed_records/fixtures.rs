@@ -207,28 +207,49 @@ impl SealingMember {
     /// Open `op`, any write of the record a newcomer is sent (sealed or in
     /// the clear, a snapshot or changes), into `document`.
     pub fn open_into(&self, op: &SignedOp, document: &mut automerge::AutoCommit) {
+        self.try_open_into(op, document).unwrap();
+    }
+
+    /// [`Self::open_into`], answering why `op` does not go into `document` (such as a change under
+    /// a sequence of its writer that `document` holds another change under).
+    ///
+    /// # Errors
+    /// `op` does not open, decode or merge.
+    pub fn try_open_into(
+        &self,
+        op: &SignedOp,
+        document: &mut automerge::AutoCommit,
+    ) -> Result<(), String> {
         let plaintext = match op.encryption {
             Some(metadata) => self
                 .keys
                 .open_content(
                     op.artifact,
                     &metadata,
-                    &collab_types::sealed_ciphertext(op).unwrap(),
+                    &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?,
                 )
-                .unwrap()
+                .map_err(|error| error.to_string())?
                 .to_vec(),
             None => op.payload.clone(),
         };
-        match collab_types::DocumentMutation::decode(&plaintext).unwrap() {
+        match collab_types::DocumentMutation::decode(&plaintext)
+            .map_err(|error| error.to_string())?
+        {
             collab_types::DocumentMutation::Snapshot(bytes) => {
                 document
-                    .merge_incoming(&mut automerge::AutoCommit::load(&bytes).unwrap())
-                    .unwrap();
+                    .merge_incoming(
+                        &mut automerge::AutoCommit::load(&bytes)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
             }
             collab_types::DocumentMutation::Incremental(changes) => {
-                document.load_incoming(&changes).unwrap();
+                document
+                    .load_incoming(&changes)
+                    .map_err(|error| error.to_string())?;
             }
         }
+        Ok(())
     }
 
     /// Open `op`, a sealed write of the record, and take in its changes.
@@ -336,6 +357,33 @@ impl SealingMember {
             .map_err(|error| error.to_string())
     }
 
+    /// The same page reloaded: the device and its place in the record's sequence kept, its
+    /// replica read afresh from the workspace, as a page that reloads opens the record again, and
+    /// its changes written under the same Automerge writer, as the shared desktop writes one per
+    /// device.
+    pub async fn reloads(&self, workspaces: &Workspaces, workspace: &str) -> Self {
+        let actor = self.document.lock().unwrap().get_actor().clone();
+        let page = Self {
+            key: self.key.clone(),
+            keys: self.keys.clone(),
+            route: self.route.clone(),
+            surface: self.surface,
+            seq: std::sync::atomic::AtomicU64::new(
+                self.seq.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            document: std::sync::Mutex::new(automerge::AutoCommit::new().with_actor(actor)),
+        };
+        page.catch_up(workspaces, workspace).await;
+        page
+    }
+
+    /// `change` made to the member's replica and let go, never signed or sent: what a page that
+    /// held a record's keys before the record itself did with a change it wrote in that moment,
+    /// before its writes waited for their record. Its next write builds on it.
+    pub fn lets_go<R>(&self, change: impl FnOnce(&mut automerge::AutoCommit) -> R) -> R {
+        change(&mut self.document.lock().unwrap())
+    }
+
     /// The member's next write of the record, `change` made to its replica,
     /// sealed and signed as its page publishes it.
     pub fn seal<R>(
@@ -422,8 +470,12 @@ pub async fn governor_published(
     published
         .iter()
         .rev()
-        // ignored-failure: test support (compiled only for tests); other publications are skipped
-        .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "test support: other publications are skipped",
+                postcard::from_bytes::<NeighbourMsg>(bytes).ok()
+            )
+        })
         .find_map(|message| match message {
             NeighbourMsg::AppDocument {
                 record_id,

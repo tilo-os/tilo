@@ -1,27 +1,11 @@
-//! Shortcuts on non-Latin keyboard sources.
-//!
-//! A person typing Russian, Greek, Hebrew or Arabic still copies with Ctrl+C:
-//! the chord names the key, not the letter the active source puts on it. The
-//! platform reports the letter (`с`, `ψ`, `ב`), so every handler that matches
-//! `Character("c")` would miss it. Under Ctrl, Super or Alt, a key whose
-//! source types a letter outside the Latin script is renamed here, once, to
-//! the Latin character a US keyboard prints at that position; the text it
-//! carries is left as typed. Latin letters with diacritics (German `ö`,
-//! French `é`) stay as they are: they are shortcuts of their own on the
-//! layouts that have them.
-//!
-//! This is the fallback. On Linux, Winit already names such a chord by the
-//! Latin character another configured source puts on the key, so a French
-//! or German arrangement keeps its own letters (the key labelled Z is undo,
-//! where a US keyboard prints W or Y); a chord reaches here still non-Latin
-//! only when no configured source is Latin, or on a platform that does not
-//! name it.
+//! Shortcuts on non-Latin keyboard sources. A person typing Russian, Greek, Hebrew or Arabic still
+//! copies with Ctrl+C: the chord names the key, not the letter the active source puts on it.
 
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};
 
-/// Rename a modifier chord typed on a non-Latin source to its Latin key.
-/// Returns `None` when `event` needs no renaming.
+/// Rename a modifier chord typed on a non-Latin source to its Latin key. Returns `None` when `event`
+/// needs no renaming.
 #[must_use]
 pub fn renamed(event: &WindowEvent, modifiers: ModifiersState) -> Option<WindowEvent> {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
@@ -52,15 +36,13 @@ pub fn renamed(event: &WindowEvent, modifiers: ModifiersState) -> Option<WindowE
     Some(event)
 }
 
-/// A letter outside the Latin script: Basic Latin through Latin Extended-B,
-/// IPA and Latin Extended Additional are Latin; every other alphabetic
-/// character is not.
+/// A letter outside the Latin script: Basic Latin through Latin Extended-B, IPA and Latin Extended
+/// Additional are Latin; every other alphabetic character is not.
 #[must_use]
 pub fn is_non_latin_letter(ch: char) -> bool {
     ch.is_alphabetic() && !matches!(ch, '\0'..='\u{2AF}' | '\u{1E00}'..='\u{1EFF}')
 }
 
-/// The unshifted character a US keyboard prints at `code`.
 fn us_character(code: KeyCode) -> Option<char> {
     Some(match code {
         KeyCode::KeyA => 'a',

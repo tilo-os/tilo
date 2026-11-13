@@ -1,11 +1,9 @@
 //! Pictures of sharing a window with its workspace.
 //!
-//! One desk with two windows: one this device maps, its menu open on the row that shares it with
-//! the workspace (and, once the session reads it as shared, the row that stops), and one open on
-//! another device, whose tab says which row brings its picture here. Captured in both themes and
-//! both locales, through the production frame path ([`ui::headless::FrameHarness`]) and the menu a
-//! host without a session mounts over its desk; a narrow capture shows the other device's window
-//! alone.
+//! One desk with a window this device maps, its menu open on the row that shares it with the
+//! workspace (and, once the session reads it as shared, the row that stops). Captured in both
+//! themes and both locales, through the production frame path ([`ui::headless::FrameHarness`]) and
+//! the menu a host without a session mounts over its desk.
 //!
 //! ```text
 //! cargo run -p tilo-desktop --example window_share_shots -- ~/.cache/window-share-shots
@@ -37,21 +35,11 @@ use ui::widget::{
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-/// The windows' own pictures: a note on this device, and what a window open on another device
-/// says in its tab, in the desktop's own words.
+/// The windows' own pictures: a note on this device.
 struct Windows;
 
 impl TileSource for Windows {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        if matches!(tab.tile, TileContent::PeerWindow { .. }) {
-            return TileHost::new(Shown::Notice {
-                title: tab.title.clone(),
-                detail: tilo_desktop_surface::i18n::t_args(
-                    "peer-window-on-device",
-                    &[("device", "Framework".into())],
-                ),
-            });
-        }
         TileHost::new(Shown::Notice {
             title: format!(
                 "{}\n\nShopping list\nmilk, bread, coffee beans, a new lamp for the hall",
@@ -170,23 +158,6 @@ fn mapped(minter: &mut IdMinter) -> Tab {
     }
 }
 
-/// A window of the workspace open on another device, in the tab that device minted.
-fn elsewhere() -> Tab {
-    Tab {
-        id: IdMinter::new(9).mint(),
-        title: "Quarterly plan".to_owned(),
-        tile: TileContent::PeerWindow {
-            app_id: "so.tilo.notes".to_owned(),
-            label: "Quarterly plan".to_owned(),
-            note: String::new(),
-            missing: None,
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
 /// A desk showing `tabs` , whose session reads every window it can share as `share` .
 fn desk(theme: Theme, viewport: (u32, u32), tabs: Vec<Tab>, share: WorkspaceShare) -> FrameHarness {
     let mut minter = IdMinter::new(7);
@@ -293,12 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     tilo_desktop_surface::i18n::t("window-menu-share-with-workspace")
                 };
-                let mut frame = desk(
-                    theme.clone(),
-                    (1280, 800),
-                    vec![mapped(&mut minter), elsewhere()],
-                    share,
-                );
+                let mut frame = desk(theme.clone(), (1280, 800), vec![mapped(&mut minter)], share);
                 if !open_menu(&mut frame, &row) {
                     return Err(format!("the window's menu does not offer “{row}”").into());
                 }
@@ -306,17 +272,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame.render_png(&path);
                 println!("{}", path.display());
             }
-            // The other device's window alone, as narrow as a phone shows it.
-            let mut frame = desk(
-                theme.clone(),
-                (420, 800),
-                vec![elsewhere()],
-                WorkspaceShare::default(),
-            );
-            settle(&mut frame);
-            let path = output.join(format!("{locale}-{theme_name}-elsewhere-compact.png"));
-            frame.render_png(&path);
-            println!("{}", path.display());
         }
     }
     ui::i18n::I18nManager::set_locale("en-US");

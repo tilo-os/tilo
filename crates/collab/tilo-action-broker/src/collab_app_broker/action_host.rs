@@ -49,7 +49,7 @@ mod readiness;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
-use app_admission::{invitation_request, own_view_lookup, reference_request};
+use app_admission::{connect_request, invitation_request, own_view_lookup, reference_request};
 use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -645,7 +645,8 @@ impl AppBrokerState {
     /// role and has only what the workspace grants it. Sharing what an app
     /// shows is the workspace's invitation, which only its person makes: the
     /// app asks the desk for it as that person
-    /// ([`app_admission::invitation_request`]), under their part in the workspace.
+    /// ([`app_admission::invitation_request`]), under their part in the workspace; so is showing
+    /// them how an agent or a computer connects as them ([`app_admission::connect_request`]).
     pub(crate) fn app_door(
         &self,
         person: &Caller,
@@ -654,7 +655,15 @@ impl AppBrokerState {
     ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
-        let mut as_app = Caller::local_app(app_id);
+        let owner = person
+            .acting_for_person()
+            .or_else(|| match person.principal() {
+                tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .to_owned();
+        let mut as_app = Caller::local_app(app_id).acting_for(owner);
         if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
@@ -686,6 +695,7 @@ impl AppBrokerState {
                 if self.app_owns(person, app_id, request)
                     || reference_request(request)
                     || invitation_request(request)
+                    || connect_request(request)
                 {
                     Some(person.clone())
                 } else {
@@ -726,7 +736,11 @@ impl AppBrokerState {
             // another device's over this door; nor does it read another
             // device's workspace content through it.
             | RemoteActionMessage::ContentPutRequest { .. }
-            | RemoteActionMessage::ContentGetRequest { .. } => None,
+            | RemoteActionMessage::ContentGetRequest { .. }
+            // Nor does it search or follow another device's workspace
+            // through it: those are an agent's and the person's.
+            | RemoteActionMessage::SearchRequest { .. }
+            | RemoteActionMessage::ChangesRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -740,6 +754,8 @@ impl AppBrokerState {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::SearchResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
@@ -1632,8 +1648,12 @@ impl AppBrokerState {
         if let Some(root) = query
             .provider
             .as_deref()
-            // ignored-failure: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
-            .and_then(|provider| provider.parse::<u64>().ok())
+            .and_then(|provider| {
+                tilo_failure::ignored!(
+                    "a provider that is not a peer number names a canonical, launchable or host one",
+                    provider.parse::<u64>().ok()
+                )
+            })
             .and_then(|peer_id| self.directory_root_for(caller, peer_id))
         {
             return self.query_directory(caller, &root, query);
@@ -2411,9 +2431,10 @@ impl AppBrokerState {
             // The connection's app may act under its own identity, by what
             // the workspace grants it.
             let own_app = match origin {
-                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => {
-                    actual.is_agent && actual.id == BrokerActor::app(&route.app_id).id
-                }
+                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => actual
+                    .app
+                    .as_ref()
+                    .is_some_and(|app| app.as_str() == route.app_id),
                 _ => false,
             };
             if !own_app && (expected.id != actual.id || expected.is_agent != actual.is_agent) {

@@ -1,29 +1,6 @@
-//! The blurred material floating chrome is made of.
-//!
-//! Floating chrome — the palette, menus, popovers, quick settings, sheets, notifications and
-//! chrome over media — is drawn over a blurred copy of what is behind it, tinted with the panel
-//! ground (`docs/design-language.md`, "Material and transparency"). The blur radius and the
-//! tint's opacity are theme roles (`surfaces.material_blur_px`, `surfaces.material_opacity`,
-//! set by the theme document's `material`); a surface asks for the material with
-//! [`crate::floating_surface::Material::Floating`], and nothing outside the theme and this
-//! module picks a blur radius or a tint.
-//!
-//! Vello cannot sample what it has already drawn, so the blur is a pass that runs before the
-//! frame:
-//!
-//! 1. While a host holds a [`BackdropRecording`], `fill` draws a surface's body as a placeholder
-//!    image under the tint and records what lies behind it: what the scene held so far, which of
-//!    the host's scenes that is ([`layer_scene`]), the surface's bounds and its blur radius.
-//! 2. The host turns those records into a [`BackdropFrame`] in its target's pixel space, each
-//!    region carrying the complete scene composed below the surface.
-//! 3. A renderer that composites materials calls [`BackdropBlur::prepare`]: each region's
-//!    backdrop is rendered at half resolution, halved until the blur fits a short kernel,
-//!    blurred separably and substituted for the placeholder; [`BackdropBlur::release`] drops the
-//!    substitutions.
-//!
-//! The placeholder's own pixels are the opaque panel ground, so any path that does not
-//! substitute it (no blur pass, a failed backdrop render, a capture of the scene) shows the
-//! opaque material — as do reduced transparency, forced colours and a theme without blur.
+//! The blurred material floating chrome is made of. Floating chrome — the palette, menus, popovers,
+//! quick settings, sheets, notifications and chrome over media — is drawn over a blurred copy of what
+//! is behind it, tinted with the panel ground (`docs/design-language.md`, "Material and transparency").
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "backdrop geometry is bounded floating-point pixel math"
@@ -41,29 +18,20 @@ pub use crate::part_paint::Sampling;
 use crate::theme::Theme;
 use crate::tokens::{Finish, SurfaceRole};
 
-/// What a backdrop brush asks of the pass: how blurred, through what lens,
-/// at what corner radius.
+/// What a backdrop brush asks of the pass: how blurred, through what lens, at what corner radius.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     /// Blur standard deviation, logical pixels; `0` shows what is below
     /// straight.
     pub blur: f32,
-    /// The lens: refraction at the rim, and whether the sample is shown as
-    /// cells.
+    /// The lens: refraction at the rim, and whether the sample is shown as cells.
     pub lens: Lens,
     /// The part's corner radius, whose outline the lens bends along.
     pub radius: f64,
 }
 
-/// How a region's backdrop is bent, in the pixels of the space it is
-/// recorded or drawn in: a convex lens along the rim of a rounded rect.
-/// Within `band` of the outline each pixel shows what lies below a point
-/// moved toward the inside along the outline's normal, by `strength` at
-/// the outline easing quadratically to none at the band's inner side; the
-/// rest shows what lies below straight. The backdrop pass evaluates it
-/// together with the blur ([`Self::displacement`] is the same arithmetic),
-/// so a bent surface costs no more to draw than a blurred one and a
-/// settled one draws nothing new.
+/// How a region's backdrop is bent, in the pixels of the space it is recorded or drawn in: a convex
+/// lens along the rim of a rounded rect.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Refraction {
     /// Displacement at the outline.
@@ -86,9 +54,7 @@ impl Refraction {
         dispersion: 0.0,
     };
 
-    /// The bend `lens` asks for over a body of `radius`, in its logical
-    /// pixels. A lens that states no band eases across two and a half
-    /// times its displacement.
+    /// The bend `lens` asks for over a body of `radius`, in its logical pixels.
     #[must_use]
     pub fn of(lens: Lens, radius: f64) -> Self {
         let strength = f64::from(lens.refraction);
@@ -120,7 +86,7 @@ impl Refraction {
         self.bends() || (self.band.is_finite() && self.band > 0.0)
     }
 
-    /// This bend in a space `scale` pixels per pixel of its own.
+    /// This bend in a space `scale` pixels per pixel of it.
     #[must_use]
     pub fn scaled(self, scale: f64) -> Self {
         Self {
@@ -173,7 +139,7 @@ impl Refraction {
 /// smaller, fixed power of itself), and each colour keeps its hue: dimmed,
 /// its channels scale with its luminance; lifted, it keeps how far its
 /// channels stand off its grey, so a near-grey stays near-grey. A bright
-/// photo shows dimmed but in its own colours and shapes, a dark page lifted
+/// photo shows dimmed but in its colours and shapes, a dark page lifted
 /// without a cast, never as one flat colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Legible {
@@ -196,8 +162,7 @@ impl Legible {
         light: 1.0,
     };
 
-    /// The range a surface of `ground` under `theme` holds what shows
-    /// through it in.
+    /// The range a surface of `ground` under `theme` has what shows through it in.
     #[must_use]
     pub fn of(theme: &Theme, ground: Color) -> Self {
         let (dark, light) = material_band(theme, ground);
@@ -261,16 +226,11 @@ impl Legible {
     }
 }
 
-/// Most surfaces one frame blurs behind. Later ones in the same frame are
-/// opaque: each region costs one extra render of everything below it.
+/// Most surfaces one frame blurs behind.
 pub const MAX_BACKDROP_REGIONS: usize = 4;
 
-/// Logical pixels per texel of the blurred image a surface is drawn with.
-/// The backdrop is a low-frequency signal; two pixels per texel is
-/// indistinguishable from full resolution once blurred.
 const PLACEHOLDER_TEXEL: f64 = 2.0;
 
-/// Longest edge of a placeholder, in texels.
 const MAX_PLACEHOLDER_EDGE: u32 = 2048;
 
 /// The blur runs on a copy halved until its standard deviation is at most
@@ -281,15 +241,11 @@ const MAX_SIGMA_TEXELS: f64 = 4.0;
 /// weights are below 1 %.
 const KERNEL_REACH: f64 = 3.0;
 
-/// Upper bound on the halvings of one backdrop.
 const MAX_HALVINGS: u32 = 6;
 
-/// Upper bound on kernel taps on each side of the centre.
 const MAX_KERNEL_RADIUS: i32 = 16;
 
-/// Whether `material` is drawn blurred under `theme`. Reduced transparency,
-/// forced colours and a theme that declares no blur (the high-contrast
-/// track) keep every surface opaque.
+/// Whether `material` is drawn blurred under `theme`.
 pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
     matches!(material, Material::Floating) && samples(theme.finish(SurfaceRole::Floating))
 }
@@ -302,11 +258,8 @@ fn samples(finish: &Finish) -> bool {
     finish.translucent() && finish.blur() > 0.0
 }
 
-/// Fill `shape` as a surface of `role` stands: its finish's painter set
-/// ([`Theme::painter`]) draws it over `ground`. A floating or bar surface
-/// under an active [`BackdropRecording`] can show what lies below it, held
-/// in the material's band, bent and lit as its set says; every other
-/// surface, and any without a backdrop pass, is drawn opaque.
+/// Fill `shape` as a surface of `role` is: its finish's painter set ([`Theme::painter`]) draws it over
+/// `ground`.
 pub fn fill_role(
     scene: &mut Scene,
     transform: Affine,
@@ -327,10 +280,8 @@ pub fn fill_role(
     );
 }
 
-/// [`fill_role`] for a surface whose `flush` sides stand on the display's
-/// own edge: it draws no edge, rim or hairline there, so no pixel of
-/// another colour shows between it and the screen's edge. Every other side
-/// keeps what its material gives it.
+/// [`fill_role`] for a surface whose `flush` sides stand on the display edge: it draws no edge,
+/// rim or hairline there, so no pixel of another colour shows between it and the screen's edge.
 pub fn fill_role_flush(
     scene: &mut Scene,
     transform: Affine,
@@ -352,13 +303,6 @@ pub fn fill_role_flush(
     );
 }
 
-/// Paint `shape` as the body of a surface of `role` in `finish` over
-/// `ground`, through the finish's painter set; a set that leaves the part
-/// to the toolkit has it drawn by the Default set.
-///
-/// A set draws a part as its rect at a radius. A rounded rect, a rect and a
-/// circle are that; any other shape is drawn as its bounding box clipped to
-/// the shape.
 fn paint_body(
     scene: &mut Scene,
     transform: Affine,
@@ -419,9 +363,6 @@ fn paint_body(
     }
 }
 
-/// `shape` as a painter set draws a part: its rect, its corner radius, and
-/// the shape to clip to where it is neither a rounded rect with one radius,
-/// a rect nor a circle.
 fn body_of(shape: &impl Shape) -> (Rect, f64, Option<vello::kurbo::BezPath>) {
     if let Some(body) = shape.as_rounded_rect()
         && let Some(radius) = body.radii().as_single_radius()
@@ -437,9 +378,8 @@ fn body_of(shape: &impl Shape) -> (Rect, f64, Option<vello::kurbo::BezPath>) {
     (shape.bounding_box(), 0.0, Some(shape.to_path(0.1)))
 }
 
-/// Whether a surface drawn into `scene` now would be recorded for the
-/// backdrop pass: a recording is active, `scene` is one of its layers and a
-/// region is left this frame.
+/// Whether a surface drawn into `scene` now would be recorded for the backdrop pass: a recording is
+/// active, `scene` is one of its layers and a region is left this frame.
 fn takes_backdrop(scene: &Scene) -> bool {
     let address = std::ptr::from_ref(scene) as usize;
     RECORDING.with(|slot| {
@@ -463,7 +403,7 @@ fn takes_backdrop(scene: &Scene) -> bool {
 ///
 /// The backdrop pass compresses what it samples into the material's band
 /// ([`Legible`]). Light a painter glazes over the sample, and a backdrop
-/// the host provided ready-made (not the pass's), the caller holds in the
+/// the host provided ready-made (not the pass's), the caller has in the
 /// band with [`hold_in_band`] after the glaze.
 pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
@@ -477,9 +417,6 @@ pub(crate) fn fill_backdrop_sample(
     if theme.reduce_transparency || theme.forced_colors {
         return Shown::Fallback;
     }
-    // Unblurred, a cell-sampled or a bent backdrop is still a backdrop:
-    // the Pixelated set shows what lies below without smoothing it, the
-    // Liquid set bends it and leaves it sharp.
     let refraction = Refraction::of(lens, radius);
     if lens.sampling == Sampling::Smooth && blur <= 0.0 && !refraction.shows_through() {
         return Shown::Fallback;
@@ -495,9 +432,6 @@ pub(crate) fn fill_backdrop_sample(
     let Some((image, brush_transform, provided)) = recorded else {
         return Shown::Fallback;
     };
-    // A cell-sampled backdrop is a few texels across, each one cell: drawn
-    // up at the cell grid, its texels are the cells, so it reads as pixels
-    // with no smoothing of its own.
     let quality = match lens.sampling {
         Sampling::Smooth => ImageQuality::Medium,
         Sampling::Blocky => ImageQuality::Low,
@@ -527,14 +461,14 @@ pub(crate) enum Shown {
     /// With the pass's sample, which the pass compresses into the band;
     /// a glaze over it is the caller's to hold.
     Compressed,
-    /// With a backdrop the host provided, which the caller holds in the
+    /// With a backdrop the host provided, which the caller has in the
     /// band ([`hold_in_band`]).
     Provided,
 }
 
-/// Hold what was drawn in `path` over a backdrop inside the material's band
-/// around `tint` ([`material_band`]): the last step of a backdrop brush,
-/// after the painter's glaze, so nothing a painter draws there escapes it.
+/// Hold what was drawn in `path` over a backdrop inside the material's band around `tint`
+/// ([`material_band`]): the last step of a backdrop brush, after the painter's glaze, so nothing a
+/// painter draws there escapes it.
 pub(crate) fn hold_in_band(
     scene: &mut Scene,
     transform: Affine,
@@ -567,7 +501,7 @@ pub(crate) fn fill(
 }
 
 /// [`fill`] with a ground of the caller's choosing: a surface that lifts
-/// itself off the desktop by its own tone (a notification card) tints the
+/// itself off the desktop by its tone (a notification card) tints the
 /// same blurred backdrop with that tone instead of the panel ground.
 pub(crate) fn fill_with_ground(
     scene: &mut Scene,
@@ -578,8 +512,6 @@ pub(crate) fn fill_with_ground(
     ground: Color,
 ) {
     if material == Material::SeeThrough {
-        // The blurred backdrop under half the ground, where there is a
-        // backdrop pass; half the ground straight over it where there is not.
         let tint = see_through_fill(theme, ground);
         if blurs(Material::Floating, theme)
             && tint.components[3] < 1.0
@@ -630,21 +562,12 @@ pub use crate::tokens::finish::MATERIAL_SPREAD;
 
 /// The darkest and the lightest colour the floating material shows over
 /// `ground`: the ground stepped toward each end of the theme's neutral ramp
-/// until it stands [`MATERIAL_SPREAD`] off it (or reaches the end).
+/// until it is [`MATERIAL_SPREAD`] off it (or reaches the end).
 #[must_use]
 pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
     crate::tokens::finish::material_band(&theme.tokens.colors, ground)
 }
 
-/// Hold the blurred backdrop just drawn in `shape` inside the material's
-/// band ([`material_band`]), channel by channel: no channel lighter than
-/// the band's light end, none darker than its dark end. Each channel of
-/// the ground lies between the two, so the tint drawn over it stays
-/// inside too, and a panel's text keeps its contrast over a white page, a
-/// black one or a busy one. What the backdrop pass sampled is already
-/// compressed into the band ([`Legible`]); this holds what it did not
-/// sample (a provided backdrop, the desktop picture) and light glazed over
-/// it.
 fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Theme, ground: Color) {
     use vello::peniko::{BlendMode, Compose, Mix};
     let (dark_end, light_end) = material_band(theme, ground);
@@ -673,8 +596,8 @@ pub(crate) fn see_through_fill(theme: &Theme, ground: Color) -> Color {
     ground.with_alpha(opacity)
 }
 
-/// One surface drawn in the blurred material while a recording was active,
-/// in the recording's coordinates.
+/// One surface drawn in the blurred material while a recording was active, in the recording's
+/// coordinates.
 #[derive(Clone)]
 pub struct RecordedBackdrop {
     /// The placeholder the scene draws for the blurred backdrop.
@@ -691,11 +614,10 @@ pub struct RecordedBackdrop {
     pub refraction: Refraction,
     /// The range what shows through is compressed into.
     pub legible: Legible,
-    /// The layer of the scene the surface was drawn into (see
-    /// [`layer_scene`]).
+    /// The layer of the scene the surface was drawn into (see [`layer_scene`]).
     pub layer: u32,
-    /// What that scene held before the surface, with the layers still open
-    /// there ended: a balanced scene of its own.
+    /// What that scene held before the surface, with the layers still open there ended: a balanced
+    /// scene of it.
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
@@ -743,39 +665,30 @@ impl RecordedBackdrop {
 struct Recording {
     /// How many recordings this one is nested in. Placeholders are keyed by
     /// it, so a surface recorded by an inner host (an app frame drawn while
-    /// the shell records its own) never shares an image with one of the
+    /// the shell records its) never shares an image with one of the
     /// outer host's, whose blur would otherwise be substituted into it.
     depth: usize,
-    /// The next region slot; each surface takes its own placeholder.
     next_slot: usize,
-    /// The host's scenes, by address, and their layers.
     layers: Vec<(usize, u32)>,
-    /// Scenes, by address, that a widget composes into another scene once
-    /// drawn (a subtree cache), see [`nest_scene`].
     nested: Vec<usize>,
     /// Surfaces drawn into a nested scene, waiting for [`append_nested`] to
-    /// say where that scene lands. Their `layer` is unset until then.
+    /// say where that scene is placed. Their `layer` is unset until then.
     pending: Vec<(usize, RecordedBackdrop)>,
     surfaces: Vec<RecordedBackdrop>,
 }
 
-/// A placeholder's slot: the recording depth and the region index in it.
 type PlaceholderKey = (usize, usize);
 
 thread_local! {
     static RECORDING: RefCell<Option<Recording>> = const { RefCell::new(None) };
-    /// One placeholder per region slot, reused while its size and ground
-    /// hold so an unchanged surface encodes identically frame to frame.
     static PLACEHOLDERS: RefCell<Vec<(PlaceholderKey, ImageData)>> =
         const { RefCell::new(Vec::new()) };
-    /// Blurred backdrops a host made outside the renderer, by region slot
-    /// of the outermost recording ([`provide_backdrops`]).
     static PROVIDED: RefCell<Vec<(usize, ImageData)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Hand the next frames the blurred backdrops of their surfaces, by region
 /// slot of the outermost recording: a host that cannot blur in its
-/// renderer (an app rasterized on the CPU inside a compositor, which holds
+/// renderer (an app rasterized on the CPU inside a compositor, which has
 /// what lies below) has them made where that is known and drawn in place of
 /// the placeholders, so the material's band and tint apply to them as to a
 /// substituted blur. An image is used only while its size is the slot's
@@ -804,7 +717,6 @@ pub fn backdrop_texels(bounds: Rect, sampling: Sampling, cell_px: f64) -> (u32, 
     }
 }
 
-/// The provided backdrop of `slot` when it measures `width` by `height`.
 fn provided(slot: PlaceholderKey, width: u32, height: u32) -> Option<ImageData> {
     if slot.0 != 0 {
         return None;
@@ -834,12 +746,8 @@ impl BackdropRecording {
         Self::continuing(Vec::new())
     }
 
-    /// Resume a recording whose [`Self::finish`] returned `surfaces`, for a
-    /// frame painted in more than one pass (a main pass, then a top layer
-    /// drawn later into the same scene). New surfaces take the region slots
-    /// after `surfaces`, so the frame's placeholders stay distinct and
-    /// [`MAX_BACKDROP_REGIONS`] counts the whole frame. Name the scenes
-    /// again with [`layer_scene`].
+    /// Resume a recording whose [`Self::finish`] returned `surfaces`, for a frame painted in more than
+    /// one pass (a main pass, then a top layer drawn later into the same scene).
     pub fn continuing(surfaces: Vec<RecordedBackdrop>) -> Self {
         let previous = RECORDING.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -919,8 +827,7 @@ pub fn nest_scene(child: &Scene) {
     });
 }
 
-/// Forget the floating surfaces drawn into `child` since [`nest_scene`]:
-/// it is about to be drawn again. A no-op outside a recording.
+/// Forget the floating surfaces drawn into `child` since [`nest_scene`]: it is about to be drawn again.
 pub fn forget_nested(child: &Scene) {
     let address = std::ptr::from_ref(child) as usize;
     RECORDING.with(|slot| {
@@ -931,7 +838,7 @@ pub fn forget_nested(child: &Scene) {
 }
 
 /// `scene.append(child, Some(transform))`, carrying the floating surfaces
-/// drawn into `child` since [`nest_scene`] onto `scene`: what `scene` holds
+/// drawn into `child` since [`nest_scene`] onto `scene`: what `scene` has
 /// so far lies below them. Returns how many surfaces `child` carried. A
 /// cache that carried any must be redrawn on every recorded frame: reused,
 /// its surfaces would show the opaque material.
@@ -977,8 +884,6 @@ pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usi
     carried
 }
 
-/// Register a surface with the active recording and return the placeholder
-/// to draw with its brush transform, or `None` when nothing records it.
 fn record(
     scene: &Scene,
     transform: Affine,
@@ -1011,15 +916,12 @@ fn record(
         recording.next_slot = slot_index.saturating_add(1);
         let device_scale = transform.determinant().abs().sqrt();
         let (width, height) = match lens.sampling {
-            // One texel per cell, at most the placeholder's own edge: the
+            // One texel per cell, at most the placeholder edge: the
             // image is the cells themselves.
             crate::part_paint::Sampling::Blocky => {
                 let cell = f64::from(lens.cell.max(1.0));
                 (cells(bounds.width(), cell), cells(bounds.height(), cell))
             }
-            // A sharp sample (blurred less than a texel, as a bent but
-            // unblurred lens is) at one texel per pixel, so what lies below
-            // shows as crisply through the glass as beside it.
             crate::part_paint::Sampling::Smooth
                 if f64::from(blur_px) * device_scale < PLACEHOLDER_TEXEL =>
             {
@@ -1029,16 +931,11 @@ fn record(
                 (texels(bounds.width()), texels(bounds.height()))
             }
         };
-        // A cell's side in recording pixels: the lens states it in logical
-        // pixels at the part's own coordinates.
         let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
         let given = provided(key, width, height);
         let ready_made = given.is_some();
         let image = given.unwrap_or_else(|| placeholder(key, width, height, ground));
-        // Brush space is the fill's space: undo `transform`, then map the
-        // image onto the surface's bounds in recording coordinates, so the
-        // backdrop stays put while the surface scales or slides in.
         let brush_transform = transform.inverse()
             * Affine::translate((bounds.x0, bounds.y0))
             * Affine::scale_non_uniform(
@@ -1048,8 +945,6 @@ fn record(
         let surface = RecordedBackdrop {
             image: image.clone(),
             bounds,
-            // The theme's radius is logical; a host drawing through a device
-            // scale records in device pixels.
             blur_px: f64::from(blur_px) * device_scale,
             sampling: lens.sampling,
             cell_px: cell_px * device_scale,
@@ -1073,10 +968,10 @@ fn record(
 }
 
 /// End the layers `below` leaves open, so a copy of a scene taken part way
-/// through drawing it is a scene of its own.
+/// through drawing it is a scene of it.
 ///
 /// A surface is often drawn inside layers its scene still has open: the clip
-/// of the list or window it floats over, the alpha layer of its own fade-in.
+/// of the list or window it floats over, the alpha layer of it fade-in.
 /// Those layers end after the surface, so what lies below it is everything
 /// drawn so far with them ended where the copy stops, exactly as a renderer
 /// ends a scene's open layers. The render service draws a backdrop's scene by
@@ -1098,8 +993,8 @@ fn texels(logical: f64) -> u32 {
         .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
 }
 
-/// Placeholder texels for a cell-sampled edge of `logical` pixels: one
-/// texel per cell of `cell`, so the image's texels are the cells.
+/// Placeholder texels for a cell-sampled edge of `logical` pixels: one texel per cell of `cell`, so the
+/// image's texels are the cells.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1111,7 +1006,6 @@ fn cells(logical: f64, cell: f64) -> u32 {
         .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
 }
 
-/// The opaque `ground`-coloured image a surface draws in `slot`.
 fn placeholder(slot: PlaceholderKey, width: u32, height: u32, ground: Color) -> ImageData {
     let rgba = ground.to_rgba8().to_u8_array();
     PLACEHOLDERS.with(|cache| {
@@ -1147,9 +1041,8 @@ pub struct BackdropRegion {
     pub rect: Rect,
     /// Blur standard deviation in target pixels.
     pub blur_px: f64,
-    /// How the sample is filtered after the blur: smoothly, or at one
-    /// colour per cell of `cell_px` target pixels (a surface shown as
-    /// pixels).
+    /// How the sample is filtered after the blur: smoothly, or at one colour per cell of `cell_px`
+    /// target pixels (a surface shown as pixels).
     pub sampling: Sampling,
     /// The cell's side in target pixels, for [`Sampling::Blocky`].
     pub cell_px: f64,
@@ -1159,8 +1052,8 @@ pub struct BackdropRegion {
     pub legible: Legible,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
-    /// The opaque panel ground: what the backdrop shows where nothing below
-    /// covers it and the target is cleared to transparency.
+    /// The opaque panel ground: what the backdrop shows where nothing below covers it and the target is
+    /// cleared to transparency.
     pub ground: Color,
 }
 
@@ -1171,9 +1064,8 @@ pub struct BackdropFrame {
 }
 
 impl BackdropFrame {
-    /// The backdrops of a frame drawn into one scene (named with
-    /// [`layer_scene`]), whose coordinates are already the target's: each
-    /// surface's backdrop is what was drawn before it.
+    /// The backdrops of a frame drawn into one scene (named with [`layer_scene`]), whose coordinates
+    /// are already the target's: each surface's backdrop is what was drawn before it.
     pub fn from_single_scene(surfaces: Vec<RecordedBackdrop>) -> Self {
         Self {
             regions: surfaces
@@ -1234,7 +1126,7 @@ fn source_uv(uv: vec2<f32>) -> vec2<f32> {
     return pass_.uv_offset + uv * pass_.uv_scale;
 }
 
-// Each target texel centre lands on the corner shared by four source
+// Each target texel centre falls on the corner shared by four source
 // texels, so one bilinear tap is their box average.
 @fragment
 fn fs_halve(in: VertexOut) -> @location(0) vec4<f32> {
@@ -1344,29 +1236,23 @@ pub struct BackdropStats {
     pub substituted: usize,
     /// Regions that stay opaque: off target, or their backdrop failed to render.
     pub skipped: usize,
-    /// Of the substituted, those shown from the sample they kept: nothing
-    /// below them changed since it was taken, so no pass ran.
+    /// Of the substituted, those shown from the sample they kept: nothing below them changed since it
+    /// was taken, so no pass ran.
     pub reused: usize,
-    /// CPU time spent encoding and submitting, in microseconds. The GPU
-    /// work runs ahead of the frame's own render on the same queue.
+    /// CPU time spent encoding and submitting, in microseconds.
     pub encode_us: u64,
 }
 
-/// One region's work, planned before anything is encoded.
 struct Plan {
     /// The region's index in its frame, which picks its output texture.
     slot: usize,
-    /// Index of the region's first `Pass` in the uniform buffer.
     first_pass: u64,
-    /// Target pixels rendered as the backdrop: the region plus the blur's
-    /// reach, clipped to the target and rounded out.
+    /// Target pixels rendered as the backdrop: the region plus the blur's reach, clipped to the target
+    /// and rounded out.
     source: Rect,
-    /// Texture sizes from the backdrop (rendered at `ground_texel`) down to
-    /// the level the blur runs on.
     levels: Vec<(u32, u32)>,
-    /// Target pixels per texel of the rendered backdrop: two, or one for a
-    /// sample blurred less than two pixels (a sharp lens), which would
-    /// show the half resolution as softness.
+    /// Target pixels per texel of the rendered backdrop: two, or one for a sample blurred less than two
+    /// pixels (a sharp lens), which would show the half resolution as softness.
     ground_texel: f64,
     /// Target pixels per texel of the last level.
     texel: f64,
@@ -1385,8 +1271,7 @@ impl Texture {
     }
 }
 
-/// The GPU half of the material: renders, blurs and substitutes each
-/// region's backdrop on one device. Built once per renderer.
+/// The GPU half of the material: renders, blurs and substitutes each region's backdrop on one device.
 pub struct BackdropBlur {
     layout: wgpu::BindGroupLayout,
     halve: wgpu::RenderPipeline,
@@ -1400,18 +1285,15 @@ pub struct BackdropBlur {
     levels: Vec<Option<Texture>>,
     /// The horizontal pass's result.
     across: Option<Texture>,
-    /// The blurred images vello reads in place of the placeholders, one per
-    /// region slot.
+    /// The blurred images vello reads in place of the placeholders, one per region slot.
     outputs: Vec<Option<Texture>>,
     /// Placeholders currently substituted on the renderer.
     substituted: Vec<ImageData>,
-    /// What each region slot's output was taken of, so a region whose
-    /// backdrop has not changed shows it again without a pass.
+    /// What each region slot's output was taken of, so a region whose backdrop has not changed shows it
+    /// again without a pass.
     taken: Vec<Option<Taken>>,
 }
 
-/// What a region's sample was taken of: everything the pass reads. Equal
-/// to a later frame's region, the sample is still what that region shows.
 struct Taken {
     below: Scene,
     rect: Rect,
@@ -1448,7 +1330,6 @@ impl Taken {
         }
     }
 
-    /// Whether `region` shows what this sample was taken of.
     fn holds(&self, other: &Self) -> bool {
         self.rect == other.rect
             && self.size == other.size
@@ -1459,8 +1340,8 @@ impl Taken {
     }
 }
 
-/// Whether `below` draws any of `images`: another region's sample, taken
-/// anew this frame, which it shows through itself.
+/// Whether `below` draws any of `images`: another region's sample, taken anew this frame, which it
+/// shows through itself.
 fn shows_any(below: &Scene, images: &[ImageData]) -> bool {
     !images.is_empty()
         && below.encoding().resources.patches.iter().any(|patch| {
@@ -1611,8 +1492,6 @@ impl BackdropBlur {
             return stats;
         }
         queue.write_buffer(&self.passes, 0, &self.strided(&pass_bytes));
-        // Samples taken anew this frame: a region that shows one through
-        // itself is taken anew too.
         let mut fresh: Vec<ImageData> = Vec::new();
         for (region, plan) in planned {
             let slot = plan.slot;
@@ -1648,7 +1527,6 @@ impl BackdropBlur {
         stats
     }
 
-    /// Show `slot`'s kept sample in place of `region`'s placeholder.
     fn show_kept(&mut self, renderer: &mut Renderer, region: &BackdropRegion, slot: usize) -> bool {
         let Some(Some(output)) = self.outputs.get(slot) else {
             return false;
@@ -1674,8 +1552,6 @@ impl BackdropBlur {
         }
     }
 
-    /// Lay the tightly packed pass parameters out at the device's uniform
-    /// offset alignment.
     fn strided(&self, packed: &[u8]) -> Vec<u8> {
         let stride = usize::try_from(self.pass_stride).unwrap_or(256);
         let mut out = Vec::new();
@@ -1775,8 +1651,6 @@ impl BackdropBlur {
         let Some(last) = last else {
             return false;
         };
-        // A sharp sample's horizontal pass is one tap, a copy: the last
-        // pass reads the level itself.
         let across = if plan.sigma > 0.0 {
             let across = ensure_texture(
                 device,
@@ -1884,7 +1758,7 @@ impl BackdropBlur {
     }
 }
 
-/// The blur `region` is drawn with, in target pixels: its own, and for a
+/// The blur `region` is drawn with, in target pixels: its, and for a
 /// cell-sampled backdrop at least half a cell, so each cell (one texel of
 /// the placeholder the last pass resamples onto) is the average of what
 /// lies below it rather than one point of it.
@@ -1895,12 +1769,8 @@ fn region_sigma(region: &BackdropRegion) -> f64 {
     }
 }
 
-/// Below this deviation (target pixels) a backdrop is rendered at full
-/// resolution: halving it would show as softness the blur does not hide.
 const SHARP_SIGMA: f64 = 2.0;
 
-/// Decide the source rectangle, the halvings and the kernel for `region`,
-/// or `None` when it has nothing to blur or bend.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1954,8 +1824,6 @@ fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
     })
 }
 
-/// Append the `Pass` parameters of `plan`: one per halving, the horizontal
-/// blur, then the vertical blur that resamples onto the placeholder.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "shader parameters are f32 by definition; the values are small texture coordinates"
@@ -2003,7 +1871,6 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
     }
     let (width, height) = plan.levels.last().copied().unwrap_or((1, 1));
     let (width, height) = (f64::from(width), f64::from(height));
-    // Unblurred (a sharp lens), each pass is one tap.
     let kernel = if plan.sigma > 0.0 {
         let radius = (plan.sigma * KERNEL_REACH)
             .ceil()
@@ -2024,8 +1891,6 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
         kernel,
         (Refraction::NONE, Legible::ANY),
     );
-    // The level's texel `j` covers target pixels `source.x0 + j * texel`
-    // onward, so the region's rectangle is this sub-rectangle of it.
     let offset = [
         (region.rect.x0 - plan.source.x0) / plan.texel / width,
         (region.rect.y0 - plan.source.y0) / plan.texel / height,
@@ -2034,8 +1899,6 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
         region.rect.width() / plan.texel / width,
         region.rect.height() / plan.texel / height,
     ];
-    // The last pass bends: it resamples onto the placeholder, whose texels
-    // are the region's, about the point the lens shows.
     push(
         offset,
         scale,
@@ -2045,8 +1908,6 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
     );
 }
 
-/// `slot`'s texture at exactly `size`, reallocated when it differs. A
-/// texture vello renders into is unbound from `renderer` first.
 fn ensure_texture<'a>(
     device: &wgpu::Device,
     slot: &'a mut Option<Texture>,
@@ -2057,8 +1918,6 @@ fn ensure_texture<'a>(
     if slot.as_ref().is_some_and(|texture| texture.size() != size)
         && let (Some(old), Some(renderer)) = (slot.take(), renderer)
     {
-        // Vello caches bind groups by view; a stale one would outlive the
-        // texture it names.
         renderer.invalidate_texture_bindings(&old.view);
     }
     if slot.as_ref().is_some_and(|texture| texture.size() != size) {

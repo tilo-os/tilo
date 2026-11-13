@@ -1884,6 +1884,12 @@ impl Compositor {
         self.data.state.input_observer = observer;
     }
 
+    /// Offer `tap` the person's every input as it arrives: Super alone is the desktop's, and what
+    /// its press, its hold and its release mean is read from there, before the keys are routed.
+    pub fn set_super_tap(&mut self, tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>) {
+        self.data.state.super_tap = Some(tap);
+    }
+
     /// The mapped windows an app may capture: its foreign-toplevel identifier, app id and title,
     /// bottom first.
     #[must_use]
@@ -2397,13 +2403,6 @@ impl Compositor {
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
         self.data.state.layer_shown(namespace)
-    }
-
-    /// Whether the app of the layer surface `namespace` has drawn it: a surface shows nothing
-    /// before its first buffer, so a motion about it starts with that frame.
-    #[must_use]
-    pub fn layer_drawn(&self, namespace: &str) -> bool {
-        self.data.state.layer_drawn(namespace)
     }
 
     /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout

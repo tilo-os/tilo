@@ -1,14 +1,10 @@
 //! The editor's root widget: media bin, preview, transport, timeline and
-//! inspector, all drawn into one Vello scene with hand-rolled hit-testing.
+//! inspector in one Vello scene with hand-rolled hit-testing.
 //!
-//! Why one big custom widget instead of composed toolkit widgets? A
-//! timeline is fundamentally a canvas: clips are positioned proportional
-//! to time, trim handles live on sub-pixel edges, the playhead crosses
-//! every lane. That density is far cleaner to express as direct drawing +
-//! geometric hit-tests than as a Taffy tree. The structural state still
-//! lives in the CRDT (see [`crate::model::Project`]) so the edit is collaborative and
-//! undoable; only ephemeral *view* state (playhead, zoom, selection) is
-//! held in widget fields, matching the toolkit's per-peer-view convention.
+//! A timeline is a canvas — clips positioned by time, trim handles on sub-pixel
+//! edges, a playhead across every lane — which is far cleaner as direct drawing
+//! and geometric hit-tests than as a layout tree. The edit itself lives in the
+//! record; only view state (playhead, zoom, selection) is held here.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -100,7 +96,6 @@ const GOTO_CARD_W: f64 = 260.0;
 /// opens: about a 360 px timeline in an ordinary window, more preview in a
 /// small one. The person drags the divider; the lanes scroll.
 const PREVIEW_SHARE: f32 = 0.52;
-/// The preview / timeline divider's action target.
 const TIMELINE_SPLIT_TARGET: &str = "video-editor.timeline-split";
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
@@ -112,54 +107,41 @@ const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = crate::layout::MIN_LANE_H;
 const TRIM_HIT: f64 = 8.0;
 const PAD: f64 = S3;
-/// Overlay-scrollbar geometry, matching [`ui::widget::DocumentViewport`] so
-/// the timeline's bar is the same object the rest of the fleet shows.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 const SCROLLBAR_INSET: f64 = 3.0;
 /// Below this (logical px, either axis) the letterboxed preview canvas has no
 /// room to show a frame and the pane says so instead.
 const MIN_CANVAS: f64 = 48.0;
-/// Below this the transport has no room for a scrubber and draws none.
-/// Where the history buttons sit, as an offset into the transport strip:
-/// just past the five transport circles, which end at +205.
+/// Where the history buttons sit, as an offset into the transport strip: just
+/// past the five transport circles, which end at +205.
 const HISTORY_X: f64 = 214.0;
 const HISTORY_W: f64 = 30.0;
-/// Where everything right of the history buttons begins.
 const TRANSPORT_RIGHT_X: f64 = HISTORY_X + HISTORY_W * 2.0 + 14.0;
 /// And where it begins when the strip is too narrow to hold them.
 const TRANSPORT_PLAIN_X: f64 = 220.0;
-/// The narrowest transport strip that can carry the history buttons *and*
-/// still leave the playhead timecode room to be drawn whole beside them.
-///
-/// Below this the buttons go rather than the time: the time is the reading
-/// the user cannot get anywhere else on the strip, and undo has a keyboard
-/// shortcut that a narrow window does not take away.
+/// Below this the transport buttons go rather than the time: the time is the
+/// reading the user cannot get elsewhere, and undo has a keyboard shortcut.
 const HISTORY_MIN_STRIP_W: f64 = TRANSPORT_RIGHT_X + 100.0;
 
+/// Below this the transport has no room for a scrubber and draws none.
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
-/// What the editor says, in plain words, when a source's bytes are not on this
-/// device — the reference replicated but the content has not been hydrated
-/// from the FUSE (or the file is gone). One string so the bin row, the clip
-/// and the preview never disagree about what they are disclosing.
+/// What the editor says when a source's bytes are not on this device — the
+/// reference replicated but the content not hydrated, or the file gone. One
+/// string, so the bin row, the clip and the preview never disagree.
 const MEDIA_NOT_LOCAL: &str = "Not on this device";
 /// The same claim for a pane too narrow to hold the full phrase (the media
 /// bin is a fixed 268px column). Shorter, never vaguer.
 const MEDIA_NOT_LOCAL_SHORT: &str = "Not on device";
 
-/// What the editor says when a source's bytes ARE here but are not media — a
-/// web page saved with a `.mp4` extension, a truncated download, a format
-/// nothing on this box can decode. Distinct from [`MEDIA_NOT_LOCAL`]: fetching
-/// it again will not help.
+/// What the editor says when the bytes are here but are not media. Distinct from
+/// [`MEDIA_NOT_LOCAL`]: fetching it again will not help.
 const MEDIA_UNREADABLE: &str = "Unreadable media";
-/// The compact form, for the media bin's fixed-width column.
 const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 
-/// Whether `m`'s bytes are missing on this device. A title is made from the
-/// document, so it has no file to miss; a clip this device imported by its
-/// contents (a browser page has no paths) has its bytes kept here, though no
-/// path resolves to them.
+/// A title has no file to miss, and a clip imported by its contents has its bytes
+/// kept here though no path resolves to them.
 fn media_missing_here(m: &MediaItem) -> bool {
     if m.text.is_some() || crate::files::kept_here(&m.path) {
         return false;
@@ -167,62 +149,46 @@ fn media_missing_here(m: &MediaItem) -> bool {
     !m.source().hydration.is_local()
 }
 
-/// Below this allocated width the media bin stops being a docked pane and
-/// collapses into an overlay flap summoned by the window bar's media toggle. Above it
-/// the bin is docked beside the editor (the wide desktop layout).
 /// Height of a collapsible inspector section header.
 const SECTION_H: f64 = 24.0;
-/// The inset a picture-in-picture preset places a clip at: a third of the
-/// frame, a small margin off the corner. Big enough to see, small enough to
-/// leave the frame underneath readable.
 const PIP_SCALE: f64 = 0.32;
 const PIP_INSET: f64 = 0.04;
-/// Width of the key control at the head of an animatable inspector row.
 const KEY_BOX: f64 = 20.0;
 
+/// Below this the media bin collapses into an overlay flap; above it the bin is
+/// docked beside the editor.
 const BIN_BREAKPOINT: f64 = 900.0;
 
-/// The preview's and the inspector's empty states, in one place each so the
-/// painted words and the spoken ones cannot drift apart. They did: the
-/// inspector said "No clip selected / Click a clip in the timeline" on screen
-/// and "Nothing selected. Select a clip on the timeline to edit it." to a
-/// reader, which is two descriptions of one state.
-const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
-const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
-/// The catalogue message naming the marker list's add button, shared by the
-/// paint and the accessibility tree so a reader is offered the control the
-/// screen actually shows.
+/// Catalogue messages, so a German window says them in German.
+const PREVIEW_EMPTY_TITLE: &str = "video-editor-preview-empty";
+const PREVIEW_UNAVAILABLE: &str = "video-editor-preview-unavailable";
 const ADD_MARKER_LABEL: &str = "video-editor-marker-add";
-/// The key the add button is addressed by, before hashing. A constant rather
-/// than a literal at each site so the node and the router cannot drift apart.
+/// The key the add button is addressed by, before hashing: a constant rather than a
+/// literal at each site, so the node and the router cannot drift apart.
 const ADD_MARKER_KEY: &str = "add marker";
 
 /// The three controls a marker row carries, in painted order (see
-/// [`marker_row_parts`]). They are painted only under the pointer but are
-/// hit-tested whether painted or not, so for a reader -- which has no pointer
-/// -- they are the only route to a marker's note, its name, or its removal.
-const MARKER_VERBS: [&str; 3] = ["Edit note on", "Rename", "Delete"];
+/// [`marker_row_parts`]): the message a reader hears them by, and the name the
+/// router addresses them by. They are painted only under the pointer but
+/// hit-tested whether painted or not, so for a reader they are the only route to
+/// a marker's note, name or removal.
+const MARKER_VERBS: [(&str, &str); 3] = [
+    ("video-editor-a11y-marker-edit-note", "marker-edit-note"),
+    ("video-editor-a11y-marker-rename", "marker-rename"),
+    ("video-editor-a11y-marker-delete", "marker-delete"),
+];
 
 /// The key the master mix node is addressed by, before hashing. A constant
 /// rather than a literal at each site so the node and the router cannot drift
 /// apart.
 const MIX_METER_KEY: &str = "mix meter";
 
-const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
-const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
+const INSPECTOR_EMPTY_TITLE: &str = "video-editor-inspector-empty";
 
-/// Below this window width the inspector collapses to an overlay flap from
-/// the right, exactly as the bin does from the left.
-///
-/// A fixed 300px panel is a third of a 900px window and nearly two thirds of
-/// a 500px one — at which point the preview, the transport buttons and the
-/// timecode are all squeezed out by a panel that edits a clip the user can no
-/// longer see. Below the breakpoint the inspector gets out of the way and is
-/// summoned by the window bar's inspector toggle.
-///
-/// Unlike the bin, an open inspector paints **no scrim**: its whole purpose
-/// is to change the picture, so dimming the picture while you drag a slider
-/// would hide the thing you are adjusting.
+/// Below this the inspector collapses to an overlay flap from the right. Unlike
+/// the bin it paints **no scrim**: its purpose is to change the picture, and
+/// dimming the picture while dragging a slider would hide what is being
+/// adjusted.
 const INSPECTOR_BREAKPOINT: f64 = 960.0;
 
 struct BinPaintCtx<'a> {
@@ -233,29 +199,21 @@ struct BinPaintCtx<'a> {
     scale: f64,
 }
 
-/// How a standing notice reads: an ordinary outcome, a partial one, or a
-/// failure.
+/// How a notice reads: an ordinary outcome, a partial one, or a failure.
 ///
-/// The severity travels with the message from the place that knows the truth.
-/// It used to be re-derived downstream by looking for `"could not"` /
-/// `"couldn't"` / `"is not"` in the prose, which had two consequences: a
-/// portal refusal (`"the file picker needs the real-desktop build"`) matched
-/// none of them and so painted in the *success* tint, and the colour of a
-/// message depended on the language it happened to be written in — which the
-/// fleet's translated strings cannot honour.
+/// It travels with the message from the place that knows the truth: re-deriving
+/// it downstream from the prose tied the tint to the language the message
+/// happened to be written in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NoticeLevel {
-    /// It happened, and there is nothing left over.
     Ok,
     /// It happened, but not wholly — neither a success nor a failure, and it
     /// must not be dressed as either.
     Warning,
-    /// It did not happen.
     Failed,
 }
 
 impl NoticeLevel {
-    /// The kind of bar notice this level is told in.
     fn toast_kind(self) -> ui::widget::toast::ToastKind {
         use ui::widget::toast::ToastKind;
         match self {
@@ -285,7 +243,6 @@ impl ImportReport {
     }
 }
 
-/// One line of standing feedback, carrying the severity it was created with.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Notice {
     level: NoticeLevel,
@@ -319,7 +276,6 @@ impl Notice {
         }
     }
 
-    /// The notice with `action` beside it in the bar.
     fn with_action(mut self, action: notices::NoticeAction) -> Self {
         self.action = Some(action);
         self
@@ -338,30 +294,33 @@ enum TransportAction {
 /// One of the editor's four keyboard/reader panes.
 ///
 /// The editor paints itself, so it has no child widgets for the host's focus
-/// walk to visit: without a pane cursor of its own the whole application is a
-/// single Tab stop, and a keyboard-only user can scrub the playhead and do
-/// nothing else. Tab moves between panes, arrows move within the focused one,
-/// and the element the cursor is on is exported as the accessibility tree's
-/// active descendant, so a screen reader lands on the clip rather than on "the
-/// video editor".
+/// walk: without a pane cursor the whole application is a single Tab stop. Tab
+/// moves between panes, arrows within one, and the cursor's element is the
+/// accessibility tree's active descendant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Pane {
-    /// The media bin's rows.
     Bin,
-    /// The five transport buttons.
     Transport,
-    /// Tracks and the clips on them.
     #[default]
     Timeline,
-    /// The inspector's section headers and controls.
     Inspector,
 }
 
 impl Pane {
-    /// Tab order, left to right and top to bottom as the panes are painted.
     const ORDER: [Pane; 4] = [Pane::Bin, Pane::Transport, Pane::Timeline, Pane::Inspector];
 
-    fn label(self) -> &'static str {
+    fn message(self) -> &'static str {
+        match self {
+            Pane::Bin => "video-editor-pane-bin",
+            Pane::Transport => "video-editor-pane-transport",
+            Pane::Timeline => "video-editor-pane-timeline",
+            Pane::Inspector => "video-editor-pane-inspector",
+        }
+    }
+
+    /// What routes to this pane, before hashing: never the spoken name, which
+    /// is in the window's language.
+    fn tag(self) -> &'static str {
         match self {
             Pane::Bin => "Media bin",
             Pane::Transport => "Transport",
@@ -373,7 +332,7 @@ impl Pane {
     /// The key an accessibility node uses for this pane's group. Stable across
     /// repaints because it is derived from the pane, not from its position.
     fn key(self) -> u64 {
-        ui::a11y::hash_key(&self.label())
+        ui::a11y::hash_key(&self.tag())
     }
 
     fn step(self, back: bool) -> Pane {
@@ -386,13 +345,8 @@ impl Pane {
     }
 }
 
-/// Where the keyboard is inside each pane.
-///
-/// One cursor per pane rather than one global index, so Tab away and back
-/// returns you where you were — the behaviour every pane-based editor has and
-/// the only one that makes Tab usable for navigation rather than a reset.
-/// The timeline's cursor is the clip selection itself (there is no second
-/// notion of "the current clip"), so it is not stored here.
+/// One cursor per pane rather than one global index, so Tab away and back returns
+/// you where you were. The timeline's cursor is the clip selection itself.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaneCursor {
     pane: Pane,
@@ -401,29 +355,19 @@ struct PaneCursor {
     inspector: usize,
 }
 
-/// A collapsible block of inspector controls.
-///
-/// Sections exist because the inspector grew past what a 300px column shows
-/// at once. Which are folded is **presentation** — it is a property of this
-/// reader's panel, not of the clip — so it lives in a widget field and never
-/// in the CRDT, and it persists across selections: a user who folds Transform
-/// away is telling the panel what they are working on, not this clip.
+/// A collapsible block of inspector controls. Which are folded is presentation —
+/// this reader's panel, not the clip — so it never reaches the record, and it
+/// persists across selections.
 ///
 /// A folded header still states what is inside it (see `section_summary`), so
-/// folding hides controls but never hides state.
+/// folding hides controls but never state.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Section {
     Curves,
     Transform,
     Speed,
-    /// The **lane** the selected clip sits on: its fader and its pan.
-    ///
-    /// Track-level rather than clip-level, and placed directly after Speed
-    /// because Speed is the other control that changes what a clip *sounds*
-    /// like (a varispeed pitches it), so the two read as one thought: how
-    /// fast it plays, then how loud it sits and where. Everything below is
-    /// picture detail, which is why the mixer is above it rather than at the
-    /// bottom of a panel nobody scrolls to.
+    /// The **lane** the selected clip sits on: its fader and its pan. Placed after
+    /// Speed, the other control that changes what a clip sounds like.
     Mix,
     Key,
     Mask,
@@ -437,7 +381,24 @@ enum Section {
 }
 
 impl Section {
-    fn label(self) -> &'static str {
+    fn message(self) -> &'static str {
+        match self {
+            Section::Curves => "video-editor-section-curves",
+            Section::Transform => "video-editor-section-transform",
+            Section::Speed => "video-editor-section-speed",
+            Section::Mix => "video-editor-section-mix",
+            Section::Key => "video-editor-section-key",
+            Section::Mask => "video-editor-section-mask",
+            Section::Title => "video-editor-section-title",
+            Section::Effects => "video-editor-section-effects",
+            Section::Markers => "video-editor-section-markers",
+            Section::Project => "video-editor-section-project",
+        }
+    }
+
+    /// What routes to this section, before hashing. Separate from
+    /// [`Section::message`] so a route survives the window's language.
+    fn tag(self) -> &'static str {
         match self {
             Section::Curves => "Curves",
             Section::Transform => "Transform",
@@ -453,19 +414,15 @@ impl Section {
     }
 }
 
-/// A numeric inspector control that is not one of the original `0..1`
-/// sliders: it has its own range, its own readout, and in two cases it edits
-/// the *media item* rather than the clip.
-///
-/// One enum rather than a `Drag` variant each keeps the press / drag / commit
-/// arms from growing a near-identical copy per knob.
+/// A numeric inspector control that is not one of the 0..1 sliders: its own
+/// range, its own readout, and in two cases it edits the media item rather than
+/// the clip. One enum rather than a variant each keeps the press, drag and commit
+/// arms from growing a copy per knob.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum NumField {
-    /// The clip's level and grade, and its two fades. These are the panel's
-    /// **first** controls — drawn above its first section header — and were
-    /// the ones no keyboard or assistive technology could reach: the row list
-    /// started at the first header, so the walk began below them and could
-    /// never climb back up.
+    /// The panel's **first** controls, drawn above its first section header: the
+    /// row list starts at the first header, so these were the ones no keyboard or
+    /// assistive technology could reach.
     Opacity,
     Volume,
     Brightness,
@@ -473,7 +430,6 @@ enum NumField {
     Saturation,
     FadeIn,
     FadeOut,
-    /// How long the incoming transition ramps for.
     TransitionLen,
     ScaleX,
     ScaleY,
@@ -496,71 +452,57 @@ enum NumField {
     Speed,
     TitleSize,
     TitleBackdrop,
-    /// How much of the clip's tone curve is mixed in.
     CurveMix,
-    /// The **track's** fader, in decibels, and where the lane sits across the
-    /// stereo field. The only two knobs in the panel that edit the lane the
-    /// selected clip is on rather than the clip itself — see
-    /// [`NumField::is_track`], which is what routes the write and the commit.
+    /// The track's fader in decibels and its place across the stereo field: the
+    /// only knobs that edit the lane rather than the clip — see
+    /// [`NumField::is_track`], which routes the write and the commit.
     TrackGain,
     TrackPan,
 }
 
 impl NumField {
-    #[expect(
-        clippy::match_same_arms,
-        reason = "one label per field, in declaration order; a shared word is not a shared field"
-    )]
-    fn label(self) -> &'static str {
+    fn message(self) -> &'static str {
         match self {
-            NumField::Opacity => "Opacity",
-            NumField::Volume => "Volume",
-            NumField::Brightness => "Brightness",
-            NumField::Contrast => "Contrast",
-            NumField::Saturation => "Saturation",
-            NumField::FadeIn => "Fade in",
-            NumField::FadeOut => "Fade out",
-            NumField::TransitionLen => "Transition length",
-            NumField::ScaleX => "Scale X",
-            NumField::ScaleY => "Scale Y",
-            NumField::PosX => "Position X",
-            NumField::PosY => "Position Y",
-            NumField::Rotation => "Rotation",
-            NumField::CropLeft => "Left",
-            NumField::CropRight => "Right",
-            NumField::CropTop => "Top",
-            NumField::CropBottom => "Bottom",
-            NumField::KeyTolerance => "Tolerance",
-            NumField::KeySoftness => "Softness",
-            NumField::KeySpill => "Spill removal",
-            NumField::MaskX => "Centre X",
-            NumField::MaskY => "Centre Y",
-            NumField::MaskW => "Width",
-            NumField::MaskH => "Height",
-            NumField::MaskRotation => "Rotation",
-            NumField::MaskFeather => "Feather",
-            NumField::Speed => "Rate",
-            NumField::TitleSize => "Size",
-            NumField::TitleBackdrop => "Backdrop",
-            NumField::CurveMix => "Amount",
-            NumField::TrackGain => "Gain",
-            NumField::TrackPan => "Pan",
+            NumField::Opacity => "video-editor-field-opacity",
+            NumField::Volume => "video-editor-field-volume",
+            NumField::Brightness => "video-editor-field-brightness",
+            NumField::Contrast => "video-editor-field-contrast",
+            NumField::Saturation => "video-editor-field-saturation",
+            NumField::FadeIn => "video-editor-field-fade-in",
+            NumField::FadeOut => "video-editor-field-fade-out",
+            NumField::TransitionLen => "video-editor-field-transition-length",
+            NumField::ScaleX => "video-editor-field-scale-x",
+            NumField::ScaleY => "video-editor-field-scale-y",
+            NumField::PosX => "video-editor-field-position-x",
+            NumField::PosY => "video-editor-field-position-y",
+            NumField::Rotation => "video-editor-field-rotation",
+            NumField::CropLeft => "video-editor-field-crop-left",
+            NumField::CropRight => "video-editor-field-crop-right",
+            NumField::CropTop => "video-editor-field-crop-top",
+            NumField::CropBottom => "video-editor-field-crop-bottom",
+            NumField::KeyTolerance => "video-editor-field-key-tolerance",
+            NumField::KeySoftness => "video-editor-field-key-softness",
+            NumField::KeySpill => "video-editor-field-key-spill",
+            NumField::MaskX => "video-editor-field-mask-x",
+            NumField::MaskY => "video-editor-field-mask-y",
+            NumField::MaskW => "video-editor-field-mask-width",
+            NumField::MaskH => "video-editor-field-mask-height",
+            NumField::MaskRotation => "video-editor-field-mask-rotation",
+            NumField::MaskFeather => "video-editor-field-mask-feather",
+            NumField::Speed => "video-editor-field-speed",
+            NumField::TitleSize => "video-editor-field-title-size",
+            NumField::TitleBackdrop => "video-editor-field-title-backdrop",
+            NumField::CurveMix => "video-editor-field-curve-amount",
+            NumField::TrackGain => "video-editor-field-track-gain",
+            NumField::TrackPan => "video-editor-field-track-pan",
         }
     }
 
-    /// A stable tag naming which control this is, which is what the accessible
-    /// key hashes.
-    ///
-    /// It cannot be the visible label. `Rotation` and `MaskRotation` both read
-    /// "Rotation" — correctly, each inside its own section — and the key was
-    /// `hash_key(&label())`, so the two hashed identically: an action routed at
-    /// the mask's tilt landed on whichever of the two rows the walk reached
-    /// first, which is the transform's. The tag is derived from the variant
-    /// instead, so two rows may share a word without sharing an identity, and a
-    /// key stays stable across a re-layout and a relabelling.
-    ///
-    /// Dotted and prefixed like [`PickField::tag`], for the same reason: the
-    /// two live in one namespace once they are hashed.
+    /// A stable tag naming which control this is, which the accessible key hashes.
+    /// It cannot be the visible label: `Rotation` and `MaskRotation` both read
+    /// "Rotation", and a key hashed from the label routed an action at one to the
+    /// other. Dotted and prefixed like [`PickField::tag`], which shares the
+    /// namespace.
     fn tag(self) -> &'static str {
         match self {
             NumField::Opacity => "clip.opacity",
@@ -603,10 +545,8 @@ impl NumField {
         ui::a11y::hash_key(&self.tag())
     }
 
-    /// The animatable parameter this control drives, if any. Crop and anchor
-    /// are deliberately not animatable in the model — they frame the shot
-    /// rather than move it — and neither title knob is a clip parameter at
-    /// all, so those have no key control.
+    /// The animatable parameter this control drives, if any. Crop and anchor frame
+    /// the shot rather than move it, and neither title knob is a clip parameter.
     fn param(self) -> Option<Param> {
         Some(match self {
             NumField::Opacity => Param::Opacity,
@@ -640,12 +580,10 @@ impl NumField {
         matches!(self, NumField::TitleSize | NumField::TitleBackdrop)
     }
 
-    /// Whether this knob writes the **track** the selected clip sits on.
-    ///
-    /// A third destination alongside the clip and its media, and it has to be
-    /// named rather than inferred: the write, the undo boundary and the
-    /// action a drag commits are all per-track, and a lane fader dispatched
-    /// as a clip write would replicate as an edit to the wrong thing.
+    /// Whether this knob writes the **track** the selected clip sits on. It must be
+    /// named rather than inferred: the write, the undo boundary and the committed
+    /// action are all per-track, and a lane fader dispatched as a clip write
+    /// replicates as an edit to the wrong thing.
     fn is_track(self) -> bool {
         matches!(self, NumField::TrackGain | NumField::TrackPan)
     }
@@ -664,11 +602,8 @@ impl NumField {
             | NumField::Brightness
             | NumField::Contrast
             | NumField::Saturation => (0.0, 1.0),
-            // A fade and a transition ramp are seconds measured against the
-            // clip they sit on, so their real span is the one
-            // `VideoEditorApp::field_span` reads off that clip. This pair is
-            // the widest any clip can make them, and is what a caller asking
-            // for a fraction without a clip in hand gets.
+            // A fade and a transition ramp are seconds against the clip they sit on;
+            // this pair is the widest any clip can make them.
             NumField::FadeIn | NumField::FadeOut | NumField::TransitionLen => (0.0, 3600.0),
             NumField::ScaleX | NumField::ScaleY => (0.05, 4.0),
             NumField::PosX | NumField::PosY => (-1.0, 1.0),
@@ -676,11 +611,9 @@ impl NumField {
             NumField::CropLeft | NumField::CropRight | NumField::CropTop | NumField::CropBottom => {
                 (0.0, 0.9)
             }
-            // Tolerance is measured in normalised chroma, where a clean
-            // plate keys somewhere under 0.3 and the far stop takes out
-            // everything sharing the key's half of the colour wheel. The
-            // near stop keys nothing, which is a legible state, not a dead
-            // end — it is what a key ramped on from zero starts at.
+            // Normalised chroma: a clean plate keys under 0.3, and the far stop takes
+            // out everything sharing the key's half of the colour wheel. The near
+            // stop keys nothing, which is where a key ramped on from zero starts.
             NumField::KeyTolerance | NumField::KeySoftness => (0.0, 1.0),
             NumField::KeySpill => (0.0, 1.0),
             NumField::MaskX | NumField::MaskY => (-1.0, 1.0),
@@ -693,20 +626,15 @@ impl NumField {
             NumField::TitleSize => (0.02, 0.4),
             NumField::TitleBackdrop => (0.0, 1.0),
             NumField::CurveMix => (0.0, 1.0),
-            // Decibels, not a fraction. The track runs from off to four
-            // times unity; 0 dB — where a lane starts and where most of them
-            // stay — sits five sixths of the way along, which is where a
-            // fader's unity mark belongs.
+            // Decibels: off to four times unity, with 0 dB — where a lane starts —
+            // five sixths of the way along, where a fader's unity mark belongs.
             NumField::TrackGain => (MIN_GAIN_DB, MAX_GAIN_DB),
             NumField::TrackPan => (-1.0, 1.0),
         }
     }
 
-    /// Rate is the one knob whose span is multiplicative: 0.05x to 20x is
-    /// eight octaves, and on a linear track normal speed would sit at 5% of
-    /// the way along with every useful slow-motion rate crushed against the
-    /// left stop. On a log track 1x lands dead centre and half speed and
-    /// double speed are the same distance from it, which is how a rate reads.
+    /// Multiplicative: 0.05× to 20× is eight octaves, so a log track puts 1× dead
+    /// centre with half and double speed the same distance from it.
     fn logarithmic(self) -> bool {
         matches!(self, NumField::Speed)
     }
@@ -766,7 +694,7 @@ impl NumField {
             NumField::TrackPan => {
                 let n = (v.abs() * 100.0).round();
                 if n < 0.5 {
-                    "Centre".into()
+                    crate::resource::CATALOG.t("video-editor-pan-centre")
                 } else if v < 0.0 {
                     format!("L{n:.0}")
                 } else {
@@ -783,9 +711,7 @@ impl NumField {
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct MarkerRef {
     id: Uuid,
-    /// `Some` for a marker pinned to a clip, `None` for a timeline one.
     clip: Option<ClipId>,
-    /// Absolute timeline seconds, already rebased for a clip marker.
     at: f64,
 }
 
@@ -793,11 +719,10 @@ struct MarkerRef {
 enum Drag {
     Playhead,
     Scrubber,
-    /// Moving the selection. `id` is the clip under the pointer (the one whose
-    /// left edge snaps); `grab_dt` is where inside it the grab landed; `track`
-    /// is the lane it should land on, re-resolved from the cursor on every
-    /// move so a vertical drag crosses tracks. Every other selected clip
-    /// follows by the same time delta.
+    /// `id` is the clip under the pointer (whose left edge snaps); `grab_dt` is
+    /// where inside it the grab landed; `track` is re-resolved from the cursor on
+    /// every move so a vertical drag crosses tracks. Every other selected clip
+    /// follows by the same delta.
     ClipMove {
         id: ClipId,
         grab_dt: f64,
@@ -816,8 +741,6 @@ enum Drag {
         origin: Point,
         additive: bool,
     },
-    /// Dragging a scrollbar thumb. The variant names which pane's bar, so
-    /// one drag arm serves the timeline, the inspector and the bin.
     Scrollbar(ScrollPane),
     Opacity,
     Volume,
@@ -826,19 +749,16 @@ enum Drag {
     Saturation,
     FadeIn,
     FadeOut,
-    /// Dragging the incoming transition's length.
     TransitionLen,
-    /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount {
         idx: usize,
         /// The durable effect target prevents an old drag from applying to the
         /// instance that later happened to occupy this row.
         effect: Uuid,
     },
-    /// Dragging control point `idx` of `channel`'s tone curve. Released
-    /// outside the editor's box, an interior point is removed — the standard
-    /// way to take a point off a curve, and the only one that does not need
-    /// a second control per point on a 300px column.
+    /// Released outside the editor's box, an interior point is removed: the
+    /// standard way to take a point off a curve, and the only one that needs no
+    /// control per point.
     CurvePoint {
         channel: crate::curve::Channel,
         idx: usize,
@@ -861,28 +781,18 @@ const BIN_DOUBLE_CLICK_MS: u128 = 400;
 /// this bound a bin item, once clicked, could never be dragged again.
 const BIN_RENAME_WINDOW_MS: u128 = 2_000;
 
-/// A scrollable pane of the editor. Each owns an offset, a shared
-/// [`ui::widget::Scrollbar`] interaction model and a track rect; naming them
-/// lets one press / drag / wheel arm serve all three.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ScrollPane {
-    /// The timeline's horizontal axis (seconds).
     Timeline,
-    /// The inspector body's vertical axis (px).
     Inspector,
-    /// The media bin's vertical axis (px).
     Bin,
-    /// The timeline's lanes, vertically (px).
     Lanes,
 }
 
-/// What this editor instance is built for, and its initial selection policy.
 #[derive(Default)]
 struct SeedState {
-    /// Built for a screenshot or a past version rather than a window someone
-    /// uses: it makes no sound, decodes none of the demo project's stand-in
-    /// media and runs no wall clock, so the frame it draws is the same on
-    /// every run.
+    /// Built for a screenshot or a past version rather than a window someone uses:
+    /// no sound, no decoding, no wall clock, so the frame is the same every run.
     hermetic: bool,
     /// Built for a screenshot, which renders once: an imported clip's
     /// decoded picture is waited for rather than painted over with the
@@ -891,14 +801,12 @@ struct SeedState {
     selection_initialised: bool,
 }
 
-/// Transport-owned presentation state, kept separate from durable project time.
 #[derive(Default)]
 struct PlaybackState {
     playing: bool,
     chase_playhead: bool,
 }
 
-/// Immediate UI overlays and host focus, all local to this participant.
 #[derive(Default)]
 struct PresentationState {
     export_open: bool,
@@ -914,7 +822,6 @@ struct NavigationState {
     flap_settled: bool,
 }
 
-/// Import and audio-monitor lifecycle, independent of the render pipeline.
 #[derive(Default)]
 struct MediaPipelineState {
     auto_place_imports: bool,
@@ -934,14 +841,12 @@ struct CompositeInputs {
     project: Project,
 }
 
-/// Preview-renderer lifecycle and deterministic capture warm-up policy.
 #[derive(Default)]
 struct RenderPipelineState {
     compositor_tried: bool,
     warm_waveforms_sync: bool,
 }
 
-/// Project work deferred until the next `sync`.
 #[derive(Default)]
 struct ProjectSyncState {
     /// A project the host presented during a drag still waits to replace
@@ -952,28 +857,17 @@ struct ProjectSyncState {
 
 pub struct VideoEditorApp {
     project: Project,
-    /// The project as the document stores it, last presented by the host,
-    /// with the tracks, sources, markers and new clips submitted since: what
-    /// the next edit of one of them is the difference from, and what the
-    /// optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
-    /// The document the view follows, and the revision of it last presented.
     live: Option<ui::framework::Live<Project>>,
     presented: Option<(u64, u64)>,
-    /// Work left for the window by the view's effect handler and stage.
     later: hosting::Later,
-    /// What the view publishes of the window, as it last showed it.
     published: std::rc::Rc<std::cell::RefCell<hosting::Published>>,
-    /// The inspector's switches, sliding as a click turns them.
     faces: ui::widget::FaceMotions,
-    /// The content store the host lent the window: where a render made for
-    /// a caller is kept.
     content: Option<ui::framework::content::ContentStore>,
-    /// The local state each existing clip had immediately before the current
-    /// UI edit began. Optimistic actions diff this baseline against the local
-    /// result, then check only those old values against the live CRDT. They
-    /// must never diff a stale local result against a newer remote projection:
-    /// doing so would turn unrelated remote edits into reverse patches.
+    /// Optimistic actions diff this against the local result, then check only those
+    /// old values against the live record. Diffing a stale local result against a
+    /// newer remote projection would turn unrelated remote edits into reverse
+    /// patches.
     clip_edit_bases: HashMap<ClipId, Clip>,
     /// The screenshot scenario staged on this editor, if any.
     #[cfg(feature = "samples")]
@@ -989,26 +883,18 @@ pub struct VideoEditorApp {
     /// so a large-text desktop promotes them to their existing overlay modes
     /// before they crush the preview or overlap inspector controls.
     text_scale: f64,
-    /// UI zoom is independent from the additional accessibility text scale.
     ui_scale: f64,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,   // pixels per second
     scroll: f64, // seconds at the left edge of the lane area
-    /// Shared scrollbar interaction models (thumb geometry, thumb drag, track
-    /// paging) — the same ones [`ui::widget::Scrollable`] and
-    /// [`ui::widget::DocumentViewport`] use, so every bar here behaves and
-    /// looks identical to every other scroll surface in the fleet. One per
-    /// scrollable axis: the timeline scrolls horizontally, the inspector and
-    /// the media bin vertically.
+    /// The same interaction models [`ui::widget::Scrollable`] uses, so every bar
+    /// here behaves and looks like every other scroll surface in the fleet.
     hbar: ui::widget::Scrollbar,
     inspector_bar: ui::widget::Scrollbar,
     bin_bar: ui::widget::Scrollbar,
     lanes_bar: ui::widget::Scrollbar,
-    /// Vertical scroll offset of the timeline's lanes (px): a project with
-    /// more tracks than the timeline holds scrolls them under the ruler.
     lane_scroll: f64,
-    /// The divider between the preview and the timeline.
     timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
@@ -1019,39 +905,29 @@ pub struct VideoEditorApp {
     // --- ui state ---
     export: ExportSettings,
     export_status: ExportStatus,
-    /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
     /// A contents chooser, where files have no path (a browser page).
     import_contents_rx: Option<ui::portal::ContentsChannel>,
-    /// What the last import did, said in the window's bar: how many clips
-    /// landed, which files were refused and why, or why the portal
-    /// round-trip failed. Never a fake success, and it carries its own
-    /// severity rather than leaving the tint to be guessed from its prose.
+    /// What the last import did: how many clips landed, which files were refused and
+    /// why, or why the portal round-trip failed. Never a fake success, and it
+    /// carries its own severity.
     import_notice: ui::widget::toast::Transient<Notice>,
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
     pending_imports: Vec<PathBuf>,
-    /// When set, a queued import is also dropped onto the timeline (creating a
-    /// track if the blank project has none) and the playhead parked inside it —
-    /// so a `--shots` capture / preload shows the clip in the preview, not just
-    /// the bin. Off for a plain portal import (which lands in the bin only).
-    /// The history the host owns, as much of it as a widget is allowed to
-    /// see: whether undo and redo are available right now, and a channel to
-    /// ask for one. The stacks stay with the host — this only carries the
-    /// answer, so a control drawn from it can never offer an undo that
-    /// Ctrl+Z would decline.
+    /// When set, a queued import also lands on the timeline and the playhead parks
+    /// inside it, so a capture shows the clip in the preview. Off for a portal
+    /// import, which lands in the bin only.
+    /// The history the host owns, as much as a widget may see: what undo and redo
+    /// would do now, and a channel to ask. The stacks stay with the host, so a
+    /// control drawn from this can never offer an undo Ctrl+Z would decline.
     undo: ui::UndoAccess,
-    /// The window bar's entries, each carrying what it runs.
     bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
-    /// The preview's frame source, held for the app's lifetime.
-    ///
     /// It owns the decode sessions and one YUV converter per layer slot, so
     /// rebuilding it per frame would re-open a pipeline every frame. It is
-    /// re-indexed (not rebuilt) when the media bin changes.
+    /// re-indexed, not rebuilt, when the media bin changes.
     frame_source: Option<crate::gpu::MediaFrameSource>,
-    /// Signature of the media the frame source was last indexed against.
     frame_source_sig: u64,
-    /// Frames since the frame source last dropped its idle sessions.
     prune_countdown: u32,
     /// Audio monitoring: the mixed timeline, played while the transport
     /// runs. `None` until the first frame builds it, and it holds a
@@ -1082,9 +958,6 @@ pub struct VideoEditorApp {
     /// change, and treating it as one would throw away a report staged before
     /// the project finished loading.
     mix_sig: Option<u64>,
-    /// The frame clock the meter's fall is driven from. Separate from
-    /// `last_tick`, which the playhead owns: a meter has to keep falling
-    /// while the transport is stopped.
     meter_tick: Instant,
     /// The GPU compositor that produces the preview picture — the *same*
     /// renderer the export runs, so what you see is byte-for-byte what you
@@ -1101,8 +974,6 @@ pub struct VideoEditorApp {
     /// inputs when the last one landed and nothing changed since.
     composite_later: Option<(Option<crate::gpu::PendingFrame>, CompositeInputs)>,
     drag: Option<Drag>,
-    /// Live rubber-band rect while a [`Drag::Marquee`] is past its threshold,
-    /// so `draw` can paint it. `None` until the press actually becomes a drag.
     marquee: Option<Rect>,
     /// Set whenever the playhead moves on its own (playback, shuttle, a
     /// transport button, a keyboard jump) so the next frame scrolls it back
@@ -1144,18 +1015,13 @@ pub struct VideoEditorApp {
     /// eased overlay flap behind a scrim on a narrow one. `open_when_docked`
     /// keeps the wide layout pixel-identical to before.
     bin_flap: FlapState,
-    /// The same kernel driving the inspector's docked-vs-overlay reveal from
-    /// the right edge. See [`INSPECTOR_BREAKPOINT`].
     inspector_flap: FlapState,
     // --- media-bin clip management ---
     /// Right-click context menu for a bin item (Add to timeline / Rename /
     /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
     /// `take_selection`) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
-    /// The segmented strips painted folded, and the one whose menu is open.
     strips: strip_menu::Strips,
-    /// What the open context menu (or a pending menu action) targets — a bin
-    /// media item or a timeline track header.
     menu_target: Option<MenuTarget>,
     /// Inspector sections the reader has folded away. Presentation, never in
     /// the document — see [`Section`]. Empty means everything is open.
@@ -1178,32 +1044,20 @@ pub struct VideoEditorApp {
     /// `collapsed`: the curve itself carries all four channels whatever is on
     /// screen, so this never reaches the document.
     curve_channel: crate::curve::Channel,
-    /// In-flight inline edit of the selected title's words, through the
-    /// shared [`ui::widget::TextInput`] in **multiline** mode.
-    ///
-    /// A title is two or three lines as often as it is one, and the single
-    /// line `EditableLabel` the bin rename uses could not carry a break: the
-    /// field rendered an embedded newline as a glyph, which was honest about
-    /// the content and useless for authoring it. The field owns its own
-    /// string (`TextInput::local`) rather than binding to the document,
-    /// because the words are committed through the media action like every
-    /// other title property.
+    /// In-flight inline edit of the selected title's words, through the shared
+    /// [`ui::widget::TextInput`] in **multiline** mode: a title is two or three
+    /// lines as often as one. The words are committed through the media action like
+    /// every other title property.
     title_edit: Option<(MediaId, ui::widget::TextInput)>,
-    /// In-flight inline edit of a marker in the inspector's list.
     marker_rename: Option<(MarkerRef, EditableLabel)>,
     /// Which of the marker's two texts that editor is on. A marker carries a
     /// name and a free-text note; one inline editor serves both, because the
     /// row has room for one field at a time and the gesture is the same.
     marker_field: MarkerField,
-    /// Open keyframe menu: which parameter it belongs to, so choosing an item
-    /// knows what to key. The menu itself is the shared `ContextMenu`.
     key_menu_param: Option<Param>,
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
     bin_rename: Option<(MediaId, EditableLabel)>,
-    /// A bin item being dragged toward the timeline. Armed on a bin press and
-    /// promoted to a live drag once the pointer passes the threshold; on release
-    /// over a lane it places a clip at the drop position.
     bin_drag: Option<BinDrag>,
     /// `true` while the OS is hovering a file over the window (an external
     /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
@@ -1214,35 +1068,24 @@ pub struct VideoEditorApp {
     /// more sources than fit the pane drew the rest outside it, unreachable by
     /// any means.
     bin_scroll: f64,
-    /// Representative (or, under decode, real) thumbnail frames per source.
-    /// Which pane the keyboard is in, and where inside each one. Drives both
-    /// arrow navigation and the accessibility tree's active descendant.
     focus: PaneCursor,
     /// The pane to return to after the narrow media-bin overlay closes. The
     /// overlay owns input while its scrim is visible, but closing it must not
     /// strand a keyboard user at an unrelated bin row.
     bin_focus_before_open: Option<Pane>,
-    /// Whether the host has given this widget keyboard focus. The exported
-    /// tree only nominates an active descendant while it has — an unfocused
-    /// widget must not move a screen reader's cursor.
-    /// Whether the keyboard-shortcut sheet is open. ~15 shortcuts exist and
-    /// none of them were written down anywhere in the product; a sheet is also
-    /// the only way a reader user learns the editor has shortcuts at all.
-    /// An in-progress timecode entry, or `None`. Typing a timecode and
-    /// pressing Enter jumps the playhead there.
+    /// Whether the host has given this widget keyboard focus: the exported tree
+    /// nominates an active descendant only while it has.
+    /// Whether the keyboard-shortcut sheet is open.
+    /// An in-progress timecode entry, or `None`.
     goto_entry: Option<ui::widget::TextInput>,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
-    /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
-    /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
-    /// captures them). The live app leaves this off and computes off-thread.
-    /// Sources whose bytes are **not** on this device — the media reference
-    /// replicated fine but [`Hydration::Projected`](crate::media::Hydration)
-    /// says the content has not been fetched from the FUSE (or the file is
-    /// gone). Refreshed in `sync` from the same `source()` resolution the
-    /// thumbnail and waveform passes already do, so the disclosure costs no
+    /// Compute waveforms synchronously, so a single-frame capture has them.
+    /// Sources whose bytes are **not** on this device: the reference replicated but
+    /// the content was never fetched (or the file is gone). Refreshed in `sync` from
+    /// the same resolution the thumbnail and waveform passes do, so it costs no
     /// extra stat and never runs in `draw`.
     projected_media: HashSet<MediaId>,
     /// The render in flight, if any. The worker encodes off the UI thread and
@@ -1252,9 +1095,6 @@ pub struct VideoEditorApp {
     /// Where a render run a step at a time will be saved, being chosen
     /// before it starts ([`crate::export::renders_by_steps`]).
     export_save_rx: Option<ui::portal::DestinationChannel>,
-    /// A destination-picker round-trip in flight, drained each frame exactly
-    /// like the import one. The user chooses where the file lands (and, under
-    /// a strict sandbox, that grant is what earns the write).
     export_dest_rx: Option<portal::ExportDestChannel>,
     /// A short, honest line about the export flow itself — choosing a
     /// destination, or why the round-trip failed. Distinct from
@@ -1265,8 +1105,6 @@ pub struct VideoEditorApp {
     /// opened with sources this device cannot read says which. Carries its
     /// own severity — see [`NoticeLevel`].
     project_notice: ui::widget::toast::Transient<Notice>,
-    /// The import or render job an effect started, answered through
-    /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
     /// The theme the chrome was last drawn with: the default theme until the
@@ -1275,27 +1113,20 @@ pub struct VideoEditorApp {
     chrome_theme: Theme,
     hit_text: std::cell::RefCell<Option<TextRenderer>>,
     help_scroll: f64,
-    /// The project's format, worded once for the inspector to paint.
-    ///
-    /// Cached against the numbers it was built from: `draw` runs for every
-    /// animation frame, and a project's frame size and rate change a handful
-    /// of times in a session.
+    /// Cached against the numbers it was built from: `draw` runs every frame, and a
+    /// project's frame size and rate change a handful of times in a session.
     project_format_shown: String,
     /// The `(width, height, fps-bits)` the string above was built from. The
     /// rate is carried as its bit pattern so the freshness test is an exact
     /// comparison rather than a float one.
     project_format_from: (u32, u32, u64),
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
-/// A drag that started on a media-bin item and is heading for the timeline.
 #[derive(Clone, Copy)]
 struct BinDrag {
     media: MediaId,
-    /// Pointer position where the press began, to measure the drag threshold.
     origin: Point,
     /// `true` once the pointer has moved past the threshold — only then does a
     /// ghost follow the cursor and a drop place a clip.
@@ -1306,20 +1137,13 @@ struct BinDrag {
 /// timeline, so a plain click never jitters into a placement.
 const BIN_DRAG_THRESHOLD: f64 = 6.0;
 
-/// What an open context menu acts on.
 #[derive(Clone, Copy, PartialEq)]
 enum MenuTarget {
-    /// A media-bin item: Add to timeline / Rename / Delete.
     Media(MediaId),
-    /// A timeline track header: mute / lock / add / delete track.
     Track(TrackId),
-    /// A timeline clip: cut / copy / duplicate / split / delete.
     Clip(ClipId),
-    /// The inspector's "Add effect" picker for the selected clip.
     AddEffect,
-    /// A key control's menu: what to do with `param`'s curve at the playhead.
     Keyframe(Param),
-    /// A folded segmented strip's menu of segments ([`strip_menu`]).
     Strip,
 }
 
@@ -1337,8 +1161,10 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             dirty: true,
-            project: Project::new("Untitled"),
-            stored: std::rc::Rc::new(Project::new("Untitled")),
+            project: Project::new(&crate::resource::CATALOG.t("video-editor-untitled")),
+            stored: std::rc::Rc::new(Project::new(
+                &crate::resource::CATALOG.t("video-editor-untitled"),
+            )),
             live: None,
             presented: None,
             later: hosting::Later::default(),
@@ -1416,13 +1242,8 @@ impl VideoEditorApp {
             bin_menu: ContextMenu::new(),
             strips: strip_menu::Strips::default(),
             menu_target: None,
-            // PROJECT starts folded — the one section that does. A folded
-            // header still states what is inside it, and what is inside this
-            // one is a single line ("1920 × 1080 · 30 fps"), so folding costs
-            // no information at all: it says the format at a glance and keeps
-            // its ten preset buttons out of both the column and the draw
-            // pass, which they were costing ~0.15ms of every frame to sit in.
-            // One press opens it, and the format is a decision taken once a
+            // PROJECT starts folded, being one line of format plus ten preset
+            // buttons. One press opens it, and the format is a decision taken once a
             // project rather than once an edit.
             collapsed: HashSet::from([Section::Project]),
             curve_channel: crate::curve::Channel::Master,
@@ -1452,32 +1273,22 @@ impl VideoEditorApp {
             chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
-            // Filled on the first `sync`, from whatever project the document
-            // actually holds -- a blank one included.
             project_format_shown: String::new(),
             project_format_from: (0, 0, 0),
         }
     }
 
-    /// Whether the canvas is currently showing real decoded footage rather
-    /// than the representative fill. The `--shots` decode path pumps `sync`
-    /// until this is true, so an asynchronously-prerolled frame is captured
-    /// instead of a stand-in.
-    ///
-    /// Answered by the compositor's frame source, which is what paints the
-    /// canvas.
+    /// The capture path pumps `sync` until this is true, so an asynchronously
+    /// prerolled frame is captured instead of a stand-in.
     pub fn has_preview_frame(&self) -> bool {
         self.frame_source
             .as_ref()
             .is_some_and(crate::gpu::MediaFrameSource::served_real_picture)
     }
 
-    /// Whether a decoded picture of the clip under the playhead may still
-    /// reach the canvas: the preview has not drawn yet, or its frame source
-    /// is still asking the decoder for that clip. A clip the source has
-    /// written off as undecodable, a clip with no decodable bytes, and a
-    /// preview with no compositor never will, so a capture stops waiting for
-    /// them and shows what the editor shows instead.
+    /// A clip the source has written off, a clip with no decodable bytes and a
+    /// preview with no compositor never will reach it, so a capture stops waiting
+    /// and shows what the editor shows.
     #[cfg(feature = "decode")]
     fn preview_awaits_frame(&self) -> bool {
         if self.has_preview_frame() {
@@ -1527,11 +1338,9 @@ impl VideoEditorApp {
         SplitLayout::from_width(self.rect.width() / self.text_scale, INSPECTOR_BREAKPOINT)
     }
 
-    /// Text in the inspector is rendered at the user-selected scale.  Unlike
-    /// the timeline, it is a dense form rather than a canvas, so its rows and
-    /// the column that contains them must grow by the same amount.  Capping
-    /// at 2× keeps the panel practical on a small display while still making
-    /// the platform's largest advertised text setting fully usable.
+    /// Unlike the timeline, the inspector is a dense form rather than a canvas, so
+    /// its rows and column grow together. Capped at 2× to stay practical on a small
+    /// display while making the largest text setting usable.
     fn inspector_ui_scale(&self) -> f64 {
         self.ui_scale * (self.text_scale / self.ui_scale).clamp(1.0, 2.0)
     }
@@ -1581,7 +1390,6 @@ impl VideoEditorApp {
         })
     }
 
-    /// The selected clip's four facts as the property list draws them.
     fn inspector_property_values(clip: &Clip, fps: f64) -> [String; 4] {
         [
             timecode(clip.start, fps),
@@ -1623,7 +1431,6 @@ impl VideoEditorApp {
         (below_header + extent).round()
     }
 
-    /// Hand the divider its room and the most the preview can use.
     fn place_timeline_split(&mut self) {
         let bounds = self.timeline_split_bounds();
         let most = self.preview_fill_height();
@@ -1631,7 +1438,6 @@ impl VideoEditorApp {
         self.timeline_split.set_rect(bounds, &self.chrome_theme);
     }
 
-    /// The room the divider moves in: the whole editor.
     fn timeline_split_bounds(&self) -> Rect {
         self.rect
     }
@@ -1704,8 +1510,6 @@ impl VideoEditorApp {
         base * self.chrome_scale()
     }
 
-    /// Whether the inspector is on screen right now: always when docked,
-    /// only while the flap is open when it is an overlay.
     fn inspector_is_visible(&self, r: &Regions) -> bool {
         r.inspector.width() > 1.0
             && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
@@ -1718,7 +1522,6 @@ impl VideoEditorApp {
         (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
     }
 
-    /// How many seconds fit across the lane area at the current zoom.
     fn visible_seconds(&self, r: &Regions) -> f64 {
         (r.lanes.width() / self.zoom.max(0.001)).max(0.0)
     }
@@ -1730,8 +1533,6 @@ impl VideoEditorApp {
         self.project.duration() + self.visible_seconds(r) * 0.5
     }
 
-    /// Furthest left-edge time reachable by scrolling. Zero when everything
-    /// already fits.
     fn max_scroll(&self, r: &Regions) -> f64 {
         (self.content_seconds(r) - self.visible_seconds(r)).max(0.0)
     }
@@ -1755,15 +1556,11 @@ impl VideoEditorApp {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(r));
     }
 
-    /// Pan by `dt` seconds (positive = later), clamped to the content.
     fn scroll_by(&mut self, dt: f64, r: &Regions) {
         self.scroll += dt;
         self.clamp_scroll(r);
     }
 
-    /// Pan the timeline by one readable page. Page Up/Down provide a
-    /// keyboard equivalent to the horizontal scrollbar and Shift-wheel path
-    /// without stealing Left/Right from frame stepping and clip nudging.
     fn scroll_timeline_page(&mut self, later: bool, r: &Regions) -> bool {
         let page = self.visible_seconds(r) * 0.9;
         if page <= 0.0 {
@@ -1785,21 +1582,14 @@ impl VideoEditorApp {
         if t < self.scroll + margin {
             self.scroll = t - margin;
         } else if t > self.scroll + visible - margin {
-            // Jump a page ahead rather than creeping, so playback scrolls in
-            // readable steps instead of smearing every frame.
             self.scroll = t - visible * 0.25;
         }
         self.clamp_scroll(r);
     }
 
-    /// Ask the thumbnail cache for the frames every **visible** video clip's
-    /// filmstrip will draw this frame, at the source times its cells sit on.
-    ///
-    /// Lives here rather than in `draw_clip` because requesting needs `&mut
-    /// self` and drawing does not. `ensure_strip` is idempotent, so calling it
-    /// every frame costs a lookup once the frames are in; off-screen clips are
-    /// skipped so a long scrolled timeline does not queue decodes nobody can
-    /// see.
+    /// Lives here rather than in `draw_clip` because requesting needs `&mut self`.
+    /// `ensure_strip` is idempotent, and off-screen clips are skipped so a scrolled
+    /// timeline does not queue decodes nobody can see.
     fn request_filmstrips(&mut self, r: &Regions) {
         let mut want: Vec<(MediaId, u8, crate::media::MediaSource, f64, f64, usize)> = Vec::new();
         for (tid, kind, lane) in self.lane_rects(r) {
@@ -1854,8 +1644,6 @@ impl VideoEditorApp {
         ))
     }
 
-    /// Set the scroll offset from a scrollbar interaction, which works in
-    /// pixels; convert back to the seconds `scroll` is measured in.
     fn set_scroll_px(&mut self, px: f64, r: &Regions) {
         self.scroll = px / self.zoom.max(0.001);
         self.clamp_scroll(r);
@@ -1894,20 +1682,14 @@ impl VideoEditorApp {
         )
     }
 
-    /// The master strip: the corner of the timeline left of the ruler, above
-    /// the column of track heads.
-    ///
-    /// The one piece of chrome that was genuinely empty, and the right place
-    /// for it: a master meter belongs at the head of the channel-strip column,
-    /// it is on screen the entire time the timeline is, and it does not have
-    /// to be squeezed into the transport, whose strip already drops its
-    /// readouts one by one as the window narrows. A warning that disappears at
-    /// 900px is not a warning.
+    /// A master meter belongs at the head of the channel-strip column, which is on
+    /// screen the whole time the timeline is; the transport strip drops its readouts
+    /// one by one as the window narrows, and a warning that disappears at 900px is
+    /// not a warning.
     fn master_strip_rect(r: &Regions) -> Rect {
         Rect::new(r.timeline.x0, r.timeline.y0, r.gutter.x1, r.ruler.y1)
     }
 
-    /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
         let m =
             chrome_layout::master_strip(VideoEditorApp::master_strip_rect(r), self.chrome_scale());
@@ -1980,15 +1762,9 @@ impl VideoEditorApp {
         ]
     }
 
-    /// The history buttons, immediately right of the transport cluster.
-    ///
-    /// Drawn as ghost squares rather than as the transport's filled circles,
-    /// because they are not transport: nothing here moves the playhead. They
-    /// share the row because that is where the strip's other one-press verbs
-    /// already are.
-    ///
-    /// Empty when the strip is too narrow to hold them without reaching into
-    /// the readout. The scrubber occupies the separate lower row.
+    /// Drawn as ghost squares rather than the transport's filled circles, because
+    /// nothing here moves the playhead. Empty when the strip is too narrow to hold
+    /// them.
     fn history_buttons(&self, r: &Regions) -> Vec<(ui::UndoRequest, Rect)> {
         let scale = self.chrome_scale();
         if r.transport.width() < HISTORY_MIN_STRIP_W * scale {
@@ -2010,12 +1786,8 @@ impl VideoEditorApp {
         ]
     }
 
-    /// Where everything right of the transport cluster starts: past the
-    /// history buttons when the strip is showing them, and where it always
-    /// used to be when it is not.
-    ///
-    /// The readout starts after the command cluster; the scrubber has its
-    /// own lower row, so it remains usable when that cluster fills the width.
+    /// Past the history buttons when they show, and where it always was when they do
+    /// not.
     fn transport_content_x(&self, r: &Regions) -> f64 {
         let scale = self.chrome_scale();
         if self.history_buttons(r).is_empty() {
@@ -2025,11 +1797,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// The transport scrubber's track. `Rect::ZERO` when the transport is too
-    /// narrow to hold one — below roughly a 500px window the old unclamped
-    /// arithmetic produced an *inverted* rect (x0 > x1) and drew the knob
-    /// outside its own track. Capped at [`MAX_SCRUBBER_W`] so a very wide
-    /// window does not stretch a 6px knob across three thousand pixels of bar.
+    /// `Rect::ZERO` when the transport is too narrow: below roughly a 500px window
+    /// the unclamped arithmetic produced an inverted rect and drew the knob outside
+    /// its track. Capped at [`MAX_SCRUBBER_W`].
     fn scrubber_rect(&self, r: &Regions) -> Rect {
         // The lower row spans the monitor, independent of the upper command
         // cluster. UI zoom must not remove scrubbing just to fit Undo beside Play.
@@ -2044,7 +1814,6 @@ impl VideoEditorApp {
         Rect::new(left, y0, left + w, y0 + 8.0 * scale)
     }
 
-    /// Whether the transport currently has room for a scrubber.
     fn has_scrubber(&self, r: &Regions) -> bool {
         self.scrubber_rect(r).width() > 1.0
     }
@@ -2055,14 +1824,9 @@ impl VideoEditorApp {
         self.projected_media.contains(&mid)
     }
 
-    /// Whether this source's bytes are present but are not usable media.
-    ///
-    /// Import refuses such a file now, but a document written before that
-    /// refusal existed still carries the entry, and it renders from whatever
-    /// was probed at the time — which for a web page saved as `.mp4` is
-    /// nothing at all. Derived from what the item actually carries (no
-    /// duration, no dimensions) or from a decode that has since been proven
-    /// impossible, so it cannot drift from what the rest of the app knows.
+    /// Import refuses such a file now, but a document written before that refusal
+    /// still carries the entry. Derived from what the item carries (no duration, no
+    /// dimensions) or from a decode proven impossible, so it cannot drift.
     fn media_is_unreadable(&self, mid: MediaId) -> bool {
         if self.media_is_projected(mid) {
             return false; // absent bytes are a different, recoverable state
@@ -2076,35 +1840,32 @@ impl VideoEditorApp {
         m.duration <= 0.0 && m.width == 0 && m.height == 0
     }
 
-    /// The bin row's metadata line. Unknown is written as unknown: a source
-    /// that carries no dimensions or no length must not be rendered as
-    /// "0p · 0:00", which reads as a probed fact and is not one.
-    /// What a bin source is: its picture size, or the kind of thing it is
-    /// when it has none.
+    /// Unknown is written as unknown: a source with no dimensions or no length must
+    /// not read as "0p · 0:00", which looks like a probed fact.
+    /// What a bin source is: its picture size, or the kind of thing it is when it has
+    /// none.
     fn bin_kind_words(m: &MediaItem) -> String {
         match m.kind {
-            MediaKind::Audio => "Audio".to_string(),
             // A title is drawn at whatever the project frame is, so it has
             // no size of its own. That is not the same as "we could not
             // read the size", which is what an unreadable file gets.
-            MediaKind::Text => "Title".to_string(),
-            _ if m.height == 0 => "Size unknown".to_string(),
-            _ => format!("{}p", m.height),
+            MediaKind::Audio | MediaKind::Text => crate::resource::CATALOG.t(m.kind.message()),
+            _ if m.height == 0 => crate::resource::CATALOG.t("video-editor-bin-size-unknown"),
+            _ => crate::resource::CATALOG.t_args(
+                "video-editor-bin-size",
+                &[("height", ui::i18n::ArgValue::Number(f64::from(m.height)))],
+            ),
         }
     }
 
-    /// How long a bin source runs.
     fn bin_length(m: &MediaItem) -> String {
         if m.duration > 0.0 {
             clock(m.duration)
         } else {
-            "Length unknown".to_string()
+            crate::resource::CATALOG.t("video-editor-bin-length-unknown")
         }
     }
 
-    /// Media for the bin in a stable, meaningful order: visual media
-    /// first, then audio, each alphabetised. (The CRDT key iteration order
-    /// is otherwise arbitrary.)
     fn bin_order(&self) -> Vec<MediaId> {
         let mut v: Vec<&crate::model::MediaItem> = self.project.media.iter().collect();
         v.sort_by(|a, b| {
@@ -2116,7 +1877,6 @@ impl VideoEditorApp {
         v.into_iter().map(|m| m.id).collect()
     }
 
-    /// Row pitch of the media bin list, and where the first row starts.
     const BIN_ROW_BODY: f64 = 56.0;
     const BIN_ROW_H: f64 = Self::BIN_ROW_BODY + S2;
     const BIN_LIST_TOP: f64 = 40.0;
@@ -2172,7 +1932,6 @@ impl VideoEditorApp {
         out
     }
 
-    /// Whether the media bin is on screen: docked, or an open overlay flap.
     fn bin_is_visible(&self, r: &Regions) -> bool {
         r.bin.width() > 1.0 && (!r.bin_overlay || self.bin_flap.is_open(self.bin_layout()))
     }
@@ -2187,7 +1946,6 @@ impl VideoEditorApp {
         )
     }
 
-    /// Total height the bin list wants, in px.
     fn bin_content_height(&self) -> f64 {
         self.project.media.len() as f64 * self.bin_row_height() + (self.bin_list_top() - 30.0) + 8.0
     }
@@ -2282,7 +2040,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Apply an absolute offset (in the bar's own px units) to `pane`.
     fn set_scroll_offset(&mut self, pane: ScrollPane, offset: f64, r: &Regions) {
         match pane {
             ScrollPane::Timeline => self.set_scroll_px(offset, r),
@@ -2301,7 +2058,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Every pane that currently shows a bar, for the hover / press sweeps.
     const SCROLL_PANES: [ScrollPane; 4] = [
         ScrollPane::Inspector,
         ScrollPane::Bin,
@@ -2309,18 +2065,13 @@ impl VideoEditorApp {
         ScrollPane::Lanes,
     ];
 
-    /// Keep the audio monitor in step with the transport.
+    /// One reconcile per frame rather than a call at every site that moves the
+    /// playhead: the transport is set from a dozen places, and a monitor that heard
+    /// about some of them would drift in exactly the cases the user notices.
     ///
-    /// One reconcile per frame rather than a call at every site that moves
-    /// the playhead: the transport is set from a dozen places (a key, a
-    /// scrub, a click on the ruler, reaching the end), and a monitor that
-    /// only heard about some of them would drift out of step with the
-    /// picture in exactly the cases the user notices.
-    ///
-    /// The monitor is *not* re-seeked for small differences while playing.
-    /// Its clock is the sample count and the playhead's is wall time, so
-    /// they wander apart by a few milliseconds; correcting that every frame
-    /// would restart the mix continuously. Only a real jump moves it.
+    /// While playing it is not re-seeked for small differences: the monitor's clock
+    /// is the sample count and the playhead's is wall time, so they wander apart by
+    /// a few milliseconds.
     #[cfg(any(feature = "gst", feature = "decode"))]
     fn pump_monitor(&mut self) {
         // A jump this big is a scrub or a cut, not clock wander.
@@ -2362,13 +2113,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Age the meters by one frame and take the copy `draw` reads.
-    ///
-    /// Three things happen here and nothing else does: the bars fall, a
-    /// report about a mix the user has since changed is thrown away, and the
-    /// shared state is snapshotted. No decode, no analysis, one lock — the
-    /// mixer already measured the block, and the whole point is to carry that
-    /// number rather than compute a second opinion on the paint path.
+    /// The bars fall, a report about a mix the user has since changed is thrown
+    /// away, and the shared state is snapshotted: no decode, no analysis, one lock.
+    /// The mixer already measured the block.
     fn pump_mix_meter(&mut self) {
         let now = ui::time::now();
         let dt = now.duration_since(self.meter_tick).as_secs_f64();
@@ -2381,17 +2128,9 @@ impl VideoEditorApp {
             self.mix_meters.clear();
         }
         self.mix_sig = Some(sig);
-        // The fall is a function of elapsed *wall* time, which a still
-        // capture does not have. Left running under `--shots` it made the
-        // mixer scenario irreproducible: three captures of one staged mix came
-        // out as three different images, because the bars landed wherever
-        // process startup and the frame loop happened to leave them — green in
-        // one and red in the next, off the same numbers. A visual baseline
-        // cannot be taken from that, and neither can a judgement.
-        //
-        // Same gate the monitor uses (`pump_monitor`) and for the same reason:
-        // a capture is hermetic, so it neither makes a sound nor watches a
-        // clock.
+        // The fall is wall time, which a still capture does not have: left running
+        // under `--shots` it made three captures of one staged mix three different
+        // images.
         if !self.seed.hermetic {
             self.mix_meters.decay(dt);
         }
@@ -2491,13 +2230,10 @@ impl VideoEditorApp {
         }
     }
 
-    /// Reconcile both side flaps with the current width and advance their
-    /// eased reveal using real elapsed time. Kept as the motion-on helper for
-    /// direct geometry tests; live drawing calls [`Self::advance_flap_with_motion`].
-    /// Advance both side flaps, respecting the host's reduced-motion setting.
-    /// A reduced-motion frame lands at its target immediately rather than
-    /// leaving a half-open panel behind after the host correctly suppresses
-    /// subsequent animation frames.
+    /// The motion-on helper for direct geometry tests; live drawing calls
+    /// [`Self::advance_flap_with_motion`].
+    /// A reduced-motion frame lands at its target immediately rather than leaving a
+    /// half-open panel behind after the host suppresses animation frames.
     fn advance_flap_with_motion(&mut self, reduce_motion: bool) {
         let layout = self.bin_layout();
         let insp = self.inspector_split();
@@ -2576,9 +2312,6 @@ impl VideoEditorApp {
         self.bin_layout() == SplitLayout::Overlay && self.bin_flap.is_open(SplitLayout::Overlay)
     }
 
-    /// Toggle the inspector flap (the window bar's toggle / `Tab`). On a wide
-    /// window the inspector is docked and this collapses it away, which is
-    /// the same affordance the bin's hamburger offers there.
     fn toggle_inspector(&mut self) {
         self.reconcile_flaps();
         self.inspector_flap.toggle(self.inspector_split());
@@ -2594,19 +2327,14 @@ impl VideoEditorApp {
         }
     }
 
-    /// Whether either flap is animating and the host should keep painting.
     fn flap_animating(&self) -> bool {
         self.bin_flap.is_animating(self.bin_layout())
             || self.inspector_flap.is_animating(self.inspector_split())
     }
 
-    /// Whether the playhead is running under its own steam: playing forwards at
-    /// 1×, or shuttling at some rate in either direction.
-    ///
-    /// One predicate, because the play button, the transport readout and the
-    /// name a reader hears for that button all have to agree about it. They did
-    /// not: every one of them was gated on `playing`, so a shuttle at 16× wore
-    /// a play triangle and reported itself nowhere.
+    /// One predicate, because the play button, the transport readout and the name a
+    /// reader hears for it must agree: gating them all on `playing` left a shuttle at
+    /// 16× wearing a play triangle and reporting itself nowhere.
     fn is_moving(&self) -> bool {
         self.playback.playing || self.shuttle != 0.0
     }
@@ -2631,12 +2359,10 @@ impl VideoEditorApp {
     }
 
     fn toggle_play(&mut self) {
-        // A running shuttle is what this button stops. Shuttle and playback are
-        // mutually exclusive — `shuttle_key` stops playback for the same reason
-        // — and the button wears the pause glyph while either is running, so
-        // pressing it has to stop whichever one it is. Starting playback on top
-        // of a shuttle instead left a non-zero rate behind the readout, which
-        // is a state with nothing on screen for it.
+        // Shuttle and playback are mutually exclusive, and the button wears the
+        // pause glyph while either runs, so pressing it stops whichever one it is.
+        // Starting playback on top of a shuttle left a non-zero rate behind the
+        // readout, with nothing on screen for it.
         if self.shuttle != 0.0 {
             self.shuttle = 0.0;
             self.last_tick = ui::time::now();
@@ -2659,9 +2385,6 @@ impl VideoEditorApp {
         self.playback.chase_playhead = true;
     }
 
-    /// J/K/L shuttle. Pressing in the *same* direction doubles the rate
-    /// (1→2→4…); pressing the opposite direction resets to ±1×; the rate is
-    /// advanced each frame in [`Self::advance_playback`].
     fn shuttle_key(&mut self, dir: f64) {
         // Same direction speeds up; reversal restarts at 1×.
         if self.shuttle.signum() == dir.signum() && self.shuttle != 0.0 {
@@ -2699,8 +2422,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Submit what the local project changed since `before`, field by field
-    /// and clip by clip.
     fn submit_changes(&self, before: &Project) {
         self.submit(
             ui::tilo_resource::Path::<Project, Project>::root().edits(before, &self.project),
@@ -2787,11 +2508,10 @@ impl VideoEditorApp {
         self.selection.primary()
     }
 
-    /// The selected clips that may actually be edited, in a deterministic
-    /// order (by start time, then id) so a multi-clip edit dispatches the same
-    /// sequence of actions on every peer. Clips on locked tracks are filtered
-    /// out here — that is the single choke point every timeline edit passes
-    /// through, so a lock cannot be routed around by a shortcut.
+    /// Sorted by start time then id, so a multi-clip edit dispatches the same
+    /// sequence on every peer. Locked tracks are filtered out here: this is the one
+    /// choke point every timeline edit passes through, so a lock cannot be routed
+    /// around by a shortcut.
     fn editable_selection(&self) -> Vec<ClipId> {
         let mut v: Vec<(f64, ClipId)> = self
             .selection
@@ -2808,15 +2528,11 @@ impl VideoEditorApp {
         v.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// The clips an edit actually acts on: the editable selection **plus**
-    /// every clip linked to one of them, in the same settled order.
-    ///
-    /// This is the one place the link is applied to a bulk edit. Move, nudge,
-    /// delete, ripple-delete and duplicate all read the selection through here
-    /// rather than growing a parallel "…and the linked one" branch each, which
-    /// is how the picture and the sound would end up following different
-    /// rules. Refuse the whole gesture if a selected group contains a locked
-    /// clip: filtering that member would separate the picture and sound.
+    /// The editable selection plus every clip linked to one of them, in the same
+    /// settled order: the one place the link is applied to a bulk edit, so the
+    /// picture and the sound cannot end up following different rules. A group
+    /// containing a locked clip is refused whole, since filtering that member would
+    /// separate them.
     fn edit_targets(&self) -> Vec<ClipId> {
         if self
             .selection
@@ -2855,7 +2571,6 @@ impl VideoEditorApp {
             .any(|id| !self.project.clip_editable(*id))
     }
 
-    /// Select every clip on the timeline (Ctrl+A), in display order.
     fn select_all(&mut self) {
         let ids: Vec<ClipId> = self
             .project
@@ -2883,18 +2598,13 @@ impl VideoEditorApp {
             }
         }
         self.submit_changes(&before);
-        // The right-hand halves become the selection, matching the
-        // single-clip behaviour (S leaves you on the tail).
         if !right_halves.is_empty() {
             self.selection.set(right_halves);
         }
     }
 
-    /// Put the two pictures that meet at the playhead beside each other, as
-    /// the editor's own gesture: the project's `place-two-angles` verb
-    /// submitted through the same dispatcher a palette press or an agent
-    /// goes through, so all three make one edit and one undo step. Offered
-    /// only where two pictures meet on tracks that may be edited.
+    /// Submitted through the same dispatcher a palette press or an agent goes
+    /// through, so all three make one edit and one undo step.
     fn place_side_by_side(&self) {
         if !self.project.side_by_side_available(self.playhead) {
             return;
@@ -2923,11 +2633,9 @@ impl VideoEditorApp {
         self.selection.clear();
     }
 
-    /// Delete the selected clips and close the gaps, shifting later clips on
-    /// the same track left. The whole selection's worth of ripples is one
-    /// gesture, so it lands as a single undo boundary and replays atomically
-    /// on a peer. Deleting right-to-left keeps each remaining clip's start
-    /// valid while the earlier ones are still there.
+    /// The whole selection's worth of ripples is one gesture, so it lands as a single
+    /// undo boundary and replays atomically on a peer. Deleting right to left keeps
+    /// each remaining clip's start valid while the earlier ones are still there.
     fn ripple_delete_selected(&mut self) {
         let mut ids = self.edit_targets();
         if ids.is_empty() {
@@ -2981,13 +2689,10 @@ impl VideoEditorApp {
         self.delete_selected();
     }
 
-    /// Paste the clipboard at the playhead. The earliest copied clip lands on
-    /// the playhead and the rest keep their relative offsets, so a copied
-    /// block pastes as a block. Each clip goes to a *sensible* track: the one
-    /// it came from when that still exists and is unlocked, otherwise the
-    /// selected clip's track, otherwise any unlocked track of the right kind
-    /// (created if the project has none). The pasted clips become the
-    /// selection.
+    /// The earliest copied clip lands on the playhead and the rest keep their
+    /// offsets. Each clip goes to the track it came from when that still exists and
+    /// is unlocked, else the selected clip's track, else any unlocked track of the
+    /// right kind; the pasted clips become the selection.
     fn paste_clip(&mut self) {
         let src = self.clipboard.clone();
         if src.is_empty() {
@@ -3067,12 +2772,10 @@ impl VideoEditorApp {
         self.selection.set(copies);
     }
 
-    /// The clips an edit acts on, gathered into link groups: one entry per
-    /// shot rather than one per clip, so an operation that has to treat a
-    /// linked pair as a unit (a split, whose two tails become a group of their
-    /// own) sees it as one.
-    ///
-    /// [`Self::edit_targets`] refuses groups containing a locked lane.
+    /// One entry per shot rather than one per clip, so an operation that treats a
+    /// linked pair as a unit (a split, whose two tails become a group of their own)
+    /// sees it as one. [`Self::edit_targets`] refuses groups containing a locked
+    /// lane.
     fn target_groups(&self) -> Vec<Vec<ClipId>> {
         let targets = self.edit_targets();
         let mut groups: Vec<Vec<ClipId>> = Vec::new();
@@ -3094,13 +2797,9 @@ impl VideoEditorApp {
         groups
     }
 
-    /// Re-link a freshly made block of copies the way the originals were
-    /// linked, and write every one of them.
-    ///
-    /// `from` is `(the source clip's link group, the copy's id)`. Each source
-    /// group becomes one **fresh** group among the copies: duplicating a shot
-    /// has to give back a shot whose picture and sound still move together,
-    /// without tying either of them to the shot they were copied from.
+    /// `from` is `(the source clip's link group, the copy's id)`. Each source group
+    /// becomes one **fresh** group among the copies, so a duplicated shot moves
+    /// together without being tied to the shot it was copied from.
     fn relink_copies(&mut self, from: &[(Option<Uuid>, ClipId)]) {
         let mut seen: Vec<Uuid> = Vec::new();
         for (link, _) in from {
@@ -3148,15 +2847,9 @@ impl VideoEditorApp {
         v
     }
 
-    /// Give `video_clip` its linked audio half, when the picture it places
-    /// carries sound and does not have one yet.
-    ///
-    /// This is what makes a placed video file into two clips: the picture on a
-    /// video lane and its sound on an audio lane (created if the project has
-    /// none, exactly as an audio import already does), sharing one link. Both
-    /// are written inside the caller's event, so the pair lands on one undo
-    /// boundary. Returns the audio clip's id, or `None` when there is nothing
-    /// to split off.
+    /// What makes a placed video file into two clips: the picture on a video lane
+    /// and its sound on an audio lane (created if there is none), sharing one link.
+    /// Both are written inside the caller's event, so the pair is one undo step.
     fn attach_linked_audio(&mut self, video_clip: ClipId) -> Option<ClipId> {
         let clip = self.project.clip(video_clip)?;
         let (media_id, track_id) = (clip.media, clip.track);
@@ -3246,12 +2939,9 @@ impl VideoEditorApp {
         self.dispatch_clip_linked(id);
     }
 
-    /// What the link control offers for the current selection, or `None` when
-    /// there is nothing to offer: one clip, unlinked, with nothing to link to.
-    ///
-    /// One door, so the inspector row, the context menu, the keyboard walk and
-    /// the accessibility tree cannot disagree about whether linking is
-    /// available or about which way round it is.
+    /// One door, so the inspector row, the context menu, the keyboard walk and the
+    /// accessibility tree cannot disagree about whether linking is available or
+    /// which way round it is.
     fn link_affordance(&self) -> Option<LinkAffordance> {
         let ids = self.editable_selection();
         if ids.iter().any(|id| self.project.is_linked(*id)) {
@@ -3260,11 +2950,9 @@ impl VideoEditorApp {
         if ids.len() > 1 {
             return Some(LinkAffordance::Link);
         }
-        // One picture clip whose sound is already on the timeline, unlinked.
-        // Offering the split here would make a second copy of a sound clip
-        // the user can see; offering to tie them back together is what is
-        // actually true, and it is the only way back without a manual
-        // multi-select.
+        // A picture clip whose sound already has its own clip, unlinked: offering
+        // the split would make a second copy the user can see, so offer to tie them
+        // together instead.
         if let Some(id) = ids.first()
             && self.project.detached_sound(*id).is_some()
         {
@@ -3279,7 +2967,6 @@ impl VideoEditorApp {
             .map(|_| LinkAffordance::SplitAudio)
     }
 
-    /// Do whichever of link / unlink the selection currently offers.
     fn toggle_link_selected(&mut self) {
         match self.link_affordance() {
             Some(LinkAffordance::Unlink) => self.unlink_selected(),
@@ -3355,11 +3042,10 @@ impl VideoEditorApp {
         self.dispatch_existing_clips(&ids);
     }
 
-    /// Apply `edit` to the selected clip and dispatch an optimistic narrow
-    /// patch. The single write-through path for a *discrete* per-clip field edit (a
-    /// transition / palette click, or a keyboard-driven grade) — each is one
-    /// undo step. Continuous slider drags use [`Self::preview_edit`] +
-    /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
+    /// The write-through path for a discrete per-clip field edit (a transition,
+    /// palette or keyboard-grade click), one undo step each. Continuous drags use
+    /// [`Self::preview_edit`] and [`Self::commit_drag`], so a drag is one action, not
+    /// one a frame.
     fn edit_selected(&mut self, edit: impl FnOnce(&mut Clip)) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
@@ -3420,12 +3106,6 @@ impl VideoEditorApp {
         self.selected_clip().map(|c| c.track)
     }
 
-    /// Apply `edit` to that lane **in memory only** — the live half of a
-    /// fader drag, committed once on release exactly as a clip drag is.
-    ///
-    /// A locked lane refuses, matching every other edit: the hatch across it
-    /// says nothing here will take, and a fader that moved anyway would make
-    /// that a lie.
     fn preview_track_edit(&mut self, edit: impl FnOnce(&mut crate::model::Track)) {
         let Some(tid) = self.selected_track_id() else {
             return;
@@ -3438,7 +3118,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Dispatch a whole-track write for the lane the selection sits on.
     fn dispatch_selected_track(&mut self) {
         if let Some(t) = self.selected_track().cloned() {
             self.submit_track(&t);
@@ -3497,7 +3176,6 @@ impl VideoEditorApp {
         self.dispatch_selected_track();
     }
 
-    /// Dispatch a whole-media write for the selected clip's source.
     fn dispatch_selected_media(&mut self) {
         if let Some(m) = self.selected_media_item().cloned() {
             self.submit_media(&m);
@@ -3531,15 +3209,11 @@ impl VideoEditorApp {
         self.dispatch_selected_media();
     }
 
-    /// What a ranged control currently shows. `None` when the control has
-    /// nothing behind it — a title knob with no title selected.
-    ///
-    /// Animatable channels read through [`Clip::param_at`], the same door the
-    /// compositor uses, so a keyframed slider tracks the playhead instead of
-    /// showing a constant the picture is ignoring.
-    /// The span a control has **on the current clip**, for the controls whose
-    /// range is not a constant. `None` for every other field, which reads its
-    /// span off [`NumField::range`].
+    /// `None` when the control has nothing behind it — a title knob with no title
+    /// selected. Animatable channels read through [`Clip::param_at`], the door the
+    /// compositor uses, so a keyframed slider tracks the playhead.
+    /// The span a control has **on the current clip**, for the controls whose range
+    /// is not a constant.
     fn field_span(&self, f: NumField) -> Option<(f64, f64)> {
         let clip = self.selected_clip()?;
         match f {
@@ -3579,20 +3253,14 @@ impl VideoEditorApp {
         })
     }
 
-    /// Write a ranged control's value in memory (the live drag preview).
+    /// An animated parameter is **keyed** at the playhead rather than having its dead
+    /// constant written: once a parameter has a curve the constant is never read, so
+    /// writing it would look like the slider had stopped working.
+    /// Write an animatable parameter in memory: a key at the playhead when it is
+    /// animated, its constant when it is not.
     ///
-    /// An animated parameter is **keyed** at the playhead rather than having
-    /// its dead constant written: once a parameter has a curve the constant
-    /// is never read again, so writing it would look like the slider had
-    /// stopped working. This is also what makes a second keyframe cost one
-    /// drag — key it, move the playhead, drag.
-    /// Write an animatable parameter in memory: a key at the playhead when it
-    /// is animated, its constant when it is not.
-    ///
-    /// Every parameter-backed slider goes through here, the original grade and
-    /// level rows included. They used to write their constant field directly,
-    /// which meant that once a parameter was keyed its slider silently stopped
-    /// having any effect — the curve overrides the constant everywhere.
+    /// Every parameter-backed slider goes through here, so a slider cannot stop
+    /// having an effect the moment its parameter is keyed.
     fn preview_param(&mut self, param: Param, v: f64) {
         let at = self.playhead;
         self.preview_edit(move |c| c.set_param_at(param, at, v));
@@ -3633,12 +3301,9 @@ impl VideoEditorApp {
             NumField::CropTop => self.preview_edit(move |c| c.transform.crop_top = v),
             NumField::CropBottom => self.preview_edit(move |c| c.transform.crop_bottom = v),
             NumField::Speed => {
-                // Rate is the one knob that follows the link, because it is
-                // the one whose halves drift *further* apart the longer the
-                // shot runs — a fault with no cause visible anywhere on
-                // screen. Everything else here (a level, a fade, a grade) is
-                // per-clip on purpose: sliding the sound and levelling it
-                // separately is what the audio clip is for.
+                // Rate follows the link, because it is the one whose halves drift
+                // further apart the longer the shot runs. Everything else is
+                // per-clip on purpose: that is what the audio clip is for.
                 let Some(id) = self.selected() else { return };
                 if !self.link_group_editable(id) {
                     return;
@@ -3664,8 +3329,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The three-state reading a key control shows for `param` on the
-    /// selection right now.
     fn key_state(&self, param: Param) -> KeyState {
         let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
             return KeyState::Off;
@@ -3706,33 +3369,47 @@ impl VideoEditorApp {
         let interp = clip.key_interp_at(param, self.playhead).unwrap_or_default();
         let mut menu = ContextMenu::new();
         if on_key {
-            menu.push(MenuItem::action("Remove key here", || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t("video-editor-key-remove"),
+                || {},
+            ));
             menu.push(MenuItem::separator());
             for i in Interp::ALL {
                 // The shape in force is ticked, so the menu reports the key's
                 // state as well as offering to change it.
                 let mark = if i == interp { "✓ " } else { "    " };
-                menu.push(MenuItem::action(format!("{mark}{}", i.label()), || {}));
+                let shape = crate::resource::CATALOG.t(i.message());
+                menu.push(MenuItem::action(format!("{mark}{shape}"), || {}));
             }
         } else {
-            menu.push(MenuItem::action("Add key here", || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t("video-editor-key-add"),
+                || {},
+            ));
         }
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Previous key", || {}));
-        menu.push(MenuItem::action("Next key", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-previous"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-next"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Remove all keys", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-key-remove-all"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.key_menu_param = Some(param);
         self.menu_target = Some(MenuTarget::Keyframe(param));
     }
 
-    /// Act on a keyframe-menu choice. The index scheme mirrors what
-    /// [`Self::open_key_menu`] built for this playhead position.
-    /// Indices count separators, because that is what `ContextMenu::item_at`
-    /// reports. The two shapes the menu takes are laid out here beside the
-    /// builder that produces them so they cannot drift apart.
+    /// The index scheme mirrors what [`Self::open_key_menu`] built, counted the way
+    /// `ContextMenu::item_at` reports. Both shapes are laid out here beside the
+    /// builder so they cannot drift apart.
     fn key_menu_choose(&mut self, param: Param, idx: usize) {
         self.key_menu_param = None;
         let at = self.playhead;
@@ -3791,8 +3468,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Move the playhead to the next / previous marked instant, across the
-    /// project's markers and every clip's alike.
     fn jump_to_marker(&mut self, forward: bool) {
         let to = if forward {
             self.project.next_marker_at(self.playhead)
@@ -3889,14 +3564,10 @@ impl VideoEditorApp {
         self.collapsed.remove(&Section::Mask);
     }
 
-    /// A blank project has no shape of its own, so the first clip to land on
-    /// its timeline gives it one.
-    ///
     /// Without this, shooting vertically meant a 1920×1080 project holding
-    /// 1080×1920 footage, and — because the export scales its preset height by
-    /// the *project's* aspect — an exported file letterboxed into 16:9 with no
-    /// exit. A format that was set deliberately is never overridden, and
-    /// neither is one whose timeline already has clips cut against it.
+    /// 1080×1920 footage, and an export letterboxed into 16:9 with no exit. A format
+    /// set deliberately, or whose timeline already has clips cut against it, is never
+    /// overridden.
     fn adopt_project_format(&mut self, media: MediaId) {
         if self.project.format_explicit || !self.project.clips.is_empty() {
             return;
@@ -3910,13 +3581,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// Mark **in** at the playhead — the start of what a render covers.
-    ///
-    /// The clip trim on plain I / O is untouched: that trims the *selected
-    /// clip*, which is a different thing from the span of the timeline that
-    /// gets rendered, and the export loop ran the whole timeline
-    /// unconditionally — so checking a ten-second fix meant re-rendering
-    /// everything.
+    /// The clip trim on plain I / O trims the *selected clip*, which is a different
+    /// thing from the span of the timeline a render covers.
     fn mark_in_here(&mut self) {
         self.project.set_mark_in(self.playhead);
         self.submit_marks();
@@ -3927,7 +3593,6 @@ impl VideoEditorApp {
         self.submit_marks();
     }
 
-    /// Drop both marks, putting the render back to the whole timeline.
     fn clear_marks(&mut self) {
         if !self.project.has_marks() {
             return;
@@ -3972,12 +3637,9 @@ impl VideoEditorApp {
     /// is a real answer and the one a box with no fonts installed can honour.
     const DEFAULT_FONT_LABEL: &'static str = "System sans";
 
-    /// Open the family chooser for the selected title.
-    ///
-    /// The list is whatever is installed, with the default at the head so
-    /// there is always a way back to it. It is empty only before the first
-    /// draw has filled the cache, and then the picker is not opened at all
-    /// rather than opened over nothing.
+    /// Whatever is installed, with the default at the head so there is always a way
+    /// back. It is empty only before the first draw has filled the cache, and then the
+    /// picker is not opened over nothing.
     fn open_font_picker(&mut self) {
         let Some(m) = self.selected_media_item() else {
             return;
@@ -4026,12 +3688,8 @@ impl VideoEditorApp {
         Some((mid, family))
     }
 
-    /// Where the marker row's inline editor is placed: over the name on the
-    /// first line, or over the note's line beneath it.
-    ///
-    /// A note edited in the name's box would look like a rename, and a row
-    /// with no note yet has no second line — so the box is opened there,
-    /// which is also where the note will be once it exists.
+    /// Over the name on the first line, or over the note's line beneath it: a note
+    /// edited in the name's box would look like a rename.
     fn marker_edit_rect(&self, row: Rect) -> Rect {
         let (name, _, _, _) = marker_row_parts(row);
         match self.marker_field {
@@ -4040,7 +3698,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Open the inline editor on one of a marker's two texts.
     fn begin_marker_edit(&mut self, m: MarkerRef, field: MarkerField) {
         let current = self
             .project
@@ -4060,26 +3717,17 @@ impl VideoEditorApp {
         self.marker_rename = Some((m, label));
     }
 
-    /// Commit a marker rename through whichever action owns that marker: a
-    /// project-meta write for a timeline marker, a clip-field patch for one
-    /// pinned to a clip.
-    /// Returns whether the write was accepted — an empty name is refused,
-    /// and the caller has to say so rather than silently restoring the old
-    /// one.
+    /// Returns whether the write was accepted, so the caller can say so rather than
+    /// silently restoring the old value.
     fn commit_marker_rename(&mut self, m: MarkerRef, text: &str) -> bool {
         let field = self.marker_field;
         self.commit_marker_text(m, field, text)
     }
 
-    /// Write one of a marker's texts through whichever action owns that
-    /// marker: a project-meta write for a timeline marker, a clip-field patch
-    /// for one pinned to a clip.
-    ///
-    /// An empty **name** is refused — a marker with no name is a dot nobody
-    /// can find in the list — while an empty **note** is accepted, because
-    /// clearing a note is the only way to take one back off.
-    /// Returns whether the document changed, so a caller that has to report
-    /// the outcome -- an assistive technology setting the text outright --
+    /// An empty **name** is refused — a marker with no name is a dot nobody can find
+    /// in the list — while an empty **note** is accepted, as clearing a note is the
+    /// only way to take one back off.
+    /// Returns whether the document changed, so a caller that must report the outcome
     /// can say "refused" rather than claim a write that never happened.
     fn commit_marker_text(&mut self, m: MarkerRef, field: MarkerField, text: &str) -> bool {
         let text = text.trim().to_string();
@@ -4140,15 +3788,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Park the playhead on an instant: stop whatever it was doing, clamp the
-    /// position into the timeline, and pull the view along after it.
-    ///
-    /// The one door for "go to this moment". Clicking a marker row, the
-    /// accessibility route onto that row and a chosen global-search hit all
-    /// arrive here, so none of them can drift into a slightly different move
-    /// — an earlier copy that only assigned `playhead` left a running
-    /// transport running, so the moment you had just asked for slid away
-    /// under you.
+    /// The one door for "go to this moment": a marker row, the accessibility route
+    /// onto it and a chosen search hit all arrive here, so none can drift into a
+    /// slightly different move.
     fn seek_to(&mut self, at: f64) {
         self.playhead = at.clamp(0.0, self.project.duration());
         self.playback.playing = false;
@@ -4189,13 +3831,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Create a title, place it at the playhead, select it and open its words
-    /// for typing.
-    ///
     /// A title is the one source with no bytes: nothing to import, nothing to
-    /// hydrate, and it renders on every peer immediately — so "add a title"
-    /// can go all the way to an editable clip on the timeline in one step
-    /// rather than leaving an unnamed item in the bin to be dragged out.
+    /// hydrate, and it renders on every peer at once — so adding one goes all the way
+    /// to an editable clip rather than leaving an unnamed bin item.
     fn add_title(&mut self) {
         let palette = (self.project.media.len() as u8) % 7;
         let item = MediaItem {
@@ -4345,11 +3983,13 @@ impl VideoEditorApp {
             up,
         ))]);
     }
-    /// Open the "Add effect" picker (the shared context menu) at `at`.
     fn open_effect_menu(&mut self, at: Point) {
         let mut menu = ContextMenu::new();
         for k in EffectKind::ALL {
-            menu.push(MenuItem::action(k.label(), || {}));
+            menu.push(MenuItem::action(
+                crate::resource::CATALOG.t(k.message()),
+                || {},
+            ));
         }
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
@@ -4359,11 +3999,9 @@ impl VideoEditorApp {
         self.edit_selected(move |c| c.palette = p);
     }
 
-    /// Return the lowest-index *unlocked* track of `kind`, creating one
-    /// (dispatched as an action, in the same undo boundary as the caller's
-    /// edit) when the project has none — so placing a clip from the bin works
-    /// even on a blank project, and a locked track never silently swallows a
-    /// drop.
+    /// Created and dispatched as an action, in the same undo boundary as the caller's
+    /// edit, when the project has none: placing from the bin works on a blank project
+    /// and a locked track never silently swallows a drop.
     fn ensure_track_of_kind(&mut self, kind: TrackKind) -> TrackId {
         if let Some(t) = self
             .project
@@ -4433,14 +4071,10 @@ impl VideoEditorApp {
     /// Place `media` on `track` at timeline time `start` (a drag-drop from the
     /// bin), creating and selecting the clip. Returns the new clip id.
     fn place_media_at(&mut self, media: MediaId, track: TrackId, start: f64) -> Option<ClipId> {
-        // A drag from the bin is just as much "the project's first clip" as
-        // an append is, so it adopts the same way.
         self.adopt_project_format(media);
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(id);
-        // Dropping a source on a lane is just as much a placement as
-        // appending one, so it splits the sound off the same way.
         self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
@@ -4482,9 +4116,6 @@ impl VideoEditorApp {
             .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
     }
 
-    /// The timeline time a drop at `x` means. Inside the lanes it is the time
-    /// under the pointer; over the gutter it clamps to the lane area's left
-    /// edge, i.e. the earliest visible time (0 on an unscrolled timeline).
     fn drop_time(&self, x: f64, r: &Regions) -> f64 {
         self.x_to_time(x.max(r.lanes.x0), &r.lanes)
     }
@@ -4552,13 +4183,21 @@ impl VideoEditorApp {
         Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
     }
 
-    /// Open the bin context menu for `mid` at logical point `at`.
     fn open_bin_menu(&mut self, mid: MediaId, at: Point) {
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Add to timeline", || {}));
-        menu.push(MenuItem::action("Rename", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-to-timeline"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-rename"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Media(mid));
@@ -4575,22 +4214,43 @@ impl VideoEditorApp {
         let solo = t.is_some_and(|t| t.solo);
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action(
-            if muted { "Unmute track" } else { "Mute track" },
+            crate::resource::CATALOG.t(if muted {
+                "video-editor-menu-unmute"
+            } else {
+                "video-editor-menu-mute"
+            }),
             || {},
         ));
         menu.push(MenuItem::action(
-            if solo { "Unsolo track" } else { "Solo track" },
+            crate::resource::CATALOG.t(if solo {
+                "video-editor-menu-unsolo"
+            } else {
+                "video-editor-menu-solo"
+            }),
             || {},
         ));
         menu.push(MenuItem::action(
-            if locked { "Unlock track" } else { "Lock track" },
+            crate::resource::CATALOG.t(if locked {
+                "video-editor-menu-unlock"
+            } else {
+                "video-editor-menu-lock"
+            }),
             || {},
         ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Add video track", || {}));
-        menu.push(MenuItem::action("Add audio track", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-video-track"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-add-audio-track"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete track", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete-track"),
+            || {},
+        ));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Track(tid));
@@ -4609,14 +4269,32 @@ impl VideoEditorApp {
             self.selection.select_only(cid);
         }
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Cut", || {}));
-        menu.push(MenuItem::action("Copy", || {}));
-        menu.push(MenuItem::action("Duplicate", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-cut"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-copy"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-duplicate"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Split at playhead", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-split"),
+            || {},
+        ));
         menu.push(MenuItem::separator());
-        menu.push(MenuItem::action("Delete", || {}));
-        menu.push(MenuItem::action("Ripple delete", || {}));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-delete"),
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            crate::resource::CATALOG.t("video-editor-menu-ripple-delete"),
+            || {},
+        ));
         // Link / unlink, last and behind its own rule: a person who wants the
         // sound three frames late has to be able to find out how, and the
         // clip's own right-click menu is where they will look. Appended only
@@ -4630,7 +4308,6 @@ impl VideoEditorApp {
         self.menu_target = Some(MenuTarget::Clip(cid));
     }
 
-    /// If the cursor is over a timeline clip, open its context menu there.
     fn open_clip_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         if !r.lanes.contains(p) {
@@ -4643,7 +4320,6 @@ impl VideoEditorApp {
         true
     }
 
-    /// If the cursor is over a visible bin item, open its context menu there.
     fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         let bin_visible = self.bin_is_visible(r);
@@ -4659,8 +4335,6 @@ impl VideoEditorApp {
         false
     }
 
-    /// If the cursor is over a timeline track header (the gutter), open its
-    /// track context menu there.
     fn open_track_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
         if !r.gutter.contains(p) {
@@ -4758,7 +4432,6 @@ impl VideoEditorApp {
         id
     }
 
-    /// Delete a track and every clip on it, as one action.
     fn delete_track(&mut self, tid: TrackId) {
         let clip_ids: Vec<ClipId> = self
             .project
@@ -4771,7 +4444,6 @@ impl VideoEditorApp {
         self.submit(vec![Project::DELETE_TRACK.with(key(tid))]);
     }
 
-    /// Toggle a track's mute flag (the header pill), dispatched as an action.
     fn toggle_track_mute(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
@@ -4786,9 +4458,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Toggle a track's solo, dispatched as an action. Wired exactly like
-    /// mute: the flag lives on the track, replicates, and undoes the same way.
-    /// [`Project::track_audible`] is where the two combine.
     fn toggle_track_solo(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
@@ -4835,7 +4504,6 @@ impl VideoEditorApp {
         self.selected_media = Some(mid);
     }
 
-    /// Commit an inline rename: dispatch a whole-media write with the new name.
     fn commit_rename(&self, mid: MediaId, name: &str) {
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -4851,7 +4519,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Delete a bin media and every clip that placed it, as one action.
     fn delete_media(&mut self, mid: MediaId) {
         let clip_ids: Vec<ClipId> = self
             .project
@@ -4863,11 +4530,9 @@ impl VideoEditorApp {
         // Keep the in-memory selection consistent before the reload.
         self.selection.remove_all(&clip_ids);
         self.submit(vec![Project::REMOVE_MEDIA.with(key(mid))]);
-        // Mirror the action in memory, the way the import path does. The
-        // document is the truth and `sync` will reload it, but the model
-        // must not disagree with it in between — a caller that deletes and
-        // then reads back its own project would otherwise still be handed
-        // the source it just removed.
+        // Mirror the action in memory the way the import path does: the document is
+        // the truth, but a caller that deletes and then reads back its own project
+        // must not be handed the source it just removed.
         self.project.media.retain(|m| m.id != mid);
         self.project.clips.retain(|c| c.media != mid);
         if self.selected_media == Some(mid) {
@@ -4878,9 +4543,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Open the host file picker to import media through the shared XDG portal
-    /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
-    /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice
             .show_progress(Notice::ok("Choose media to import…"));
@@ -4891,9 +4553,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Import the files a contents chooser delivered: probed from their
-    /// bytes, which are kept in the editor's cache location, and named in
-    /// the project by that copy.
     fn drain_import_contents(&mut self) {
         let Some(rx) = self.import_contents_rx.as_ref() else {
             return;
@@ -5153,8 +4812,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Answer the effect that started the running project file or render
-    /// job with `outcome`.
     fn settle_resource_job(&mut self, outcome: Result<(), String>) {
         self.resource_operation = None;
         if let Some(reply) = self.resource_reply.take() {
@@ -5226,15 +4883,11 @@ impl VideoEditorApp {
         report
     }
 
-    /// Import one file: probe **real** metadata from the container and add it to
-    /// the media bin as a real [`MediaItem`], replicated through the CRDT. The
-    /// stored path is workspace-relative for a file under the FUSE mount (so it
-    /// replicates to peers) or absolute for an imported local file.
+    /// The stored path is workspace-relative for a file under the mount, so it
+    /// replicates to peers, and absolute for an imported local file.
     ///
-    /// A refusal hands back the probe's own reason ("is not a media file - it
-    /// is HTML document") rather than writing a notice itself, so the batch
-    /// above can keep *every* refusal instead of whichever one happened to be
-    /// written last.
+    /// A refusal hands back the probe's own reason rather than writing a notice, so
+    /// the batch keeps every refusal instead of whichever was written last.
     fn try_import_one(&mut self, path: &Path) -> Result<(), String> {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
@@ -5278,8 +4931,6 @@ impl VideoEditorApp {
     /// Used by the `--shots`/preload placed-import path so the preview shows the
     /// clip; a normal portal import lands in the bin only.
     fn ensure_track_and_place(&mut self, media_id: MediaId) {
-        // `add_media_to_timeline` now creates a matching track when the project
-        // has none, so this just places and parks the playhead in the new clip.
         let Some(cid) = self.add_media_to_timeline(media_id) else {
             return;
         };
@@ -5310,16 +4961,10 @@ impl VideoEditorApp {
         Some(Rect::new(cx - w / 2.0, cy, cx + w / 2.0, cy + h))
     }
 
-    /// Composite the preview picture for the current playhead, into
-    /// `self.composited`.
-    ///
-    /// Runs the shared GPU compositor at the canvas's own pixel size (capped,
-    /// so a huge window does not read back a huge buffer every frame) and
-    /// keeps the RGBA for `draw_preview` to blit. Under `--features decode`
-    /// the compositor's layers are filled with really-decoded pictures; with
-    /// no decoder — the hermetic `--shots` path — it gets `NoSources` and each
-    /// layer draws its representative fill, which keeps a capture
-    /// deterministic and free of any media pipeline.
+    /// Runs the shared compositor at the canvas's own pixel size, capped so a huge
+    /// window does not read back a huge buffer every frame, and keeps the RGBA for
+    /// `draw_preview` to blit. With no decoder each layer draws its representative
+    /// fill, which keeps a capture deterministic.
     fn pump_compositor(&mut self, r: &Regions) {
         const MAX_W: f64 = 960.0;
         // A thread that may not wait for the GPU (a browser page's) gets the
@@ -5350,20 +4995,14 @@ impl VideoEditorApp {
         let w = (r.canvas.width() * scale).round().max(2.0) as u32;
         let h = (r.canvas.height() * scale).round().max(2.0) as u32;
 
-        // The preview resolves its layers straight off the decoder. With the
-        // GStreamer sessions those hand back a GPU-resident planar picture;
-        // without them (a browser page) a seeker per source holds the exact
-        // frame. Either way the fetch never blocks: it serves the cached
-        // frame if there is one and otherwise nudges the decoder and holds
-        // the last picture, so a scrub cannot stall the UI thread.
+        // With the GStreamer sessions the decoder hands back a GPU-resident planar
+        // picture; without them a seeker per source holds the exact frame. Either way
+        // the fetch never blocks.
         let sig = crate::gpu::MediaFrameSource::project_signature(&self.project);
         if self.frame_source.is_none() {
             self.frame_source =
-                // A capture has no interactive deadline to miss, and it
-                // renders exactly once — so it must block for the real
-                // picture rather than paint the representative fill and
-                // move on. The live editor must never block: a scrub that
-                // stalls the UI thread is worse than a frame of lag.
+                // A capture renders exactly once, so it must block for the real
+                // picture; the live editor must never block.
                 Some(crate::gpu::MediaFrameSource::new(
                     &self.project,
                     if self.seed.capture {
@@ -5460,17 +5099,12 @@ impl VideoEditorApp {
         self.clamp_scroll(r);
     }
 
-    /// The zoom-readout chip in the timeline's gutter footer — also the
-    /// fit-to-window button.
-    /// The zoom readout, at the **right end of the ruler** it scales.
+    /// The zoom readout, at the right end of the ruler it scales.
     ///
-    /// It used to sit in the corner over the track heads, which is the one
-    /// piece of chrome a master meter can have: that corner is the head of the
-    /// channel-strip column, it is the only place a mix warning is on screen
-    /// whatever the window does, and the zoom of the timeline has nothing to
-    /// do with the column of lane names underneath it. Anchored to the ruler's
-    /// far edge the chip is still in the ruler, still one click, and out of
-    /// the way of both.
+    /// It used to sit in the corner over the track heads, which is where the master
+    /// meter goes: the zoom has nothing to do with the column of lane names
+    /// underneath it.
+    /// The zoom-readout chip is also the fit-to-window button.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
         // As wide as the reading it carries, a Small control centred on the
         // ruler band; the ruler omits ticks behind it.
@@ -5524,8 +5158,6 @@ impl VideoEditorApp {
         );
         let line_sm = line_height(tr, &type_sizes.sm);
         let line_xs = line_height(tr, &type_sizes.xs);
-        // Every option is a pointer target: the theme's minimum, or taller
-        // when its label needs the room.
         let seg_target = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
         let has_mix = self.mix_words().is_some();
         // The status slot holds a progress bar over its line, or two lines
@@ -5539,8 +5171,6 @@ impl VideoEditorApp {
         // control under the pointer that had just pressed one.
         let notice_h = s1 + line_xs;
 
-        // The natural stack, top to bottom, in the renderer's pixels; the
-        // frame takes it unscaled and applies the text scale itself.
         let header_h = line_sm + mix_h + s4;
         let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
@@ -5554,13 +5184,11 @@ impl VideoEditorApp {
         let body = modal.body;
         let (x0, x1) = (body.x0, body.x1);
 
-        // What a window too short for the natural stack cannot hold, the
-        // stack gives up in this order: the gaps between the groups, the
-        // header's gap, the option rows' height down to their labels, the
-        // levels' verdict, the gap over the status slot. The footer — size
-        // line, status, notice — is anchored to the body's foot throughout,
-        // so a failure reason or a running render is never the part that
-        // falls off the card.
+        // What a window too short for the natural stack cannot hold, the stack gives
+        // up in this order: the gaps between groups, the header's gap, the option
+        // rows' height down to their labels, the levels' verdict, the gap over the
+        // status slot. The footer stays anchored to the body's foot, so a failure
+        // reason or a running render is never the part that falls off the card.
         let mut short = (body_h - body.height()).max(0.0);
         let mut group_gap = s3;
         let mut header_gap = s4;
@@ -5640,7 +5268,12 @@ impl VideoEditorApp {
             .collect();
         let fps_labels: Vec<String> = FrameRate::ALL
             .iter()
-            .map(|v| format!("{} fps", v.label()))
+            .map(|v| {
+                crate::resource::CATALOG.t_args(
+                    "video-editor-fps-shown",
+                    &[("rate", ui::i18n::ArgValue::Text(v.label().to_owned()))],
+                )
+            })
             .collect();
         let fps = FrameRate::ALL
             .iter()
@@ -5687,11 +5320,9 @@ impl VideoEditorApp {
         if let Some(id) = first {
             self.selection.select_only(id);
         }
-        // The bin points at the clip that was selected, so the two panes open
-        // agreeing with each other. It used to take `project.media.first()`,
-        // which is the document's map-key order — arbitrary, and re-rolled
-        // every run because the ids are fresh UUIDs, so the same project
-        // opened twice highlighted two different bin rows.
+        // The bin points at the selected clip, so the two panes open agreeing. It
+        // read `project.media.first()`, which is the document's map-key order — so the
+        // same project opened twice highlighted two different rows.
         self.selected_media = self.project.media.first().map(|m| m.id);
         self.seed.selection_initialised = true;
     }
@@ -5703,11 +5334,8 @@ impl VideoEditorApp {
     }
 }
 
-/// A clip's animatable geometry, sampled at one instant.
-///
-/// Named rather than a tuple because both summaries read all five and getting
-/// two of them the wrong way round is invisible in a `(f64, f64, f64, f64,
-/// f64)`.
+/// Named rather than a tuple, because both summaries read all five and getting two
+/// of them the wrong way round in a `(f64, f64, f64, f64, f64)` is invisible.
 #[derive(Clone, Copy, Debug)]
 struct GeometryNow {
     scale_x: f64,
@@ -5718,7 +5346,6 @@ struct GeometryNow {
 }
 
 impl GeometryNow {
-    /// Whether the picture is anywhere other than the plain aspect-fit.
     fn is_placed(self) -> bool {
         (self.scale_x - 1.0).abs() > 1e-6
             || (self.scale_y - 1.0).abs() > 1e-6
@@ -5738,7 +5365,6 @@ enum KeyState {
     OnKey,
 }
 
-/// Which of a marker's two texts an inline edit is on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum MarkerField {
     #[default]
@@ -5748,12 +5374,11 @@ enum MarkerField {
     Note,
 }
 
-/// Sub-rects of a marker row: `(name, note, rename, delete)`.
+/// `(name, note, rename, delete)`.
 ///
-/// Renaming gets its own target rather than living on the name text, because
-/// the row's main job is navigation: a marker exists to be jumped to, and
-/// that has to be what clicking it does. `name` is where the label is drawn
-/// and where the inline editor is placed, not a hit target.
+/// Renaming gets its own target rather than living on the name text: a marker exists
+/// to be jumped to, so that is what clicking it does. `name` is where the label is
+/// drawn and where the inline editor is placed.
 fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     // The icons sit on the row's first line, so a row grown to carry a note
     // keeps them beside the name rather than floating down beside the note.
@@ -5771,13 +5396,9 @@ fn marker_row_height(has_note: bool) -> f64 {
     if has_note { 44.0 } else { 26.0 }
 }
 
-/// The colours a title can be set to from the inspector.
-///
-/// A title's colour is authored content, not chrome: the user picked it and it
-/// must survive a theme change, so unlike a clip's label these are stored as
-/// real values rather than palette slots. The set is deliberately small and
-/// legible against video — whites and blacks for titling, then a few
-/// saturated hues — with a full picker left to Ctrl+K.
+/// A title's colour is authored content, so it is stored as a real value rather than
+/// a palette slot and survives a theme change. Small and legible against video, with
+/// a full picker left to Ctrl+K.
 const TITLE_COLORS: [[f64; 4]; 8] = [
     [1.0, 1.0, 1.0, 1.0],
     [0.08, 0.08, 0.09, 1.0],
@@ -5789,15 +5410,11 @@ const TITLE_COLORS: [[f64; 4]; 8] = [
     [0.60, 0.62, 0.66, 1.0],
 ];
 
-/// Rate presets offered as a segmented row beside the rate slider.
 const SPEED_PRESETS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
-/// Frame-size presets for the project, as `(label, width, height)`.
-///
-/// The set is the shapes people actually shoot, not a resolution ladder: two
-/// landscape sizes, 4K, vertical and square. Anything else is a number, and
-/// the `set-frame-size` action takes numbers — a picker is for the shapes
-/// worth one press, and until now there was no press at all.
+/// The shapes people actually shoot, not a resolution ladder: two landscape sizes,
+/// 4K, vertical and square. Anything else is a number, and the `set-frame-size`
+/// action takes numbers.
 const FRAME_PRESETS: [(&str, u32, u32); 5] = [
     ("720p", 1280, 720),
     ("1080p", 1920, 1080),
@@ -5811,25 +5428,37 @@ const FRAME_PRESETS: [(&str, u32, u32); 5] = [
 /// through it when a blank project adopts its first clip's shape.
 const RATE_PRESETS: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
 
-/// The project's format in words: "1920 x 1080 - 30 fps".
-///
-/// A free function so the draw path, the folded header's summary and the
-/// accessible node all read from one place; the drawn copy is cached against
-/// the numbers it was built from (see `VideoEditorApp::project_format_words`)
-/// rather than being formatted per frame.
+/// One free function, so the draw path, the folded header's summary and the
+/// accessible node read from one place; the drawn copy is cached against the numbers
+/// it was built from.
 fn format_words(width: u32, height: u32, fps: f64) -> String {
     // A blank project takes its shape from its first clip: until then there
     // is no size or rate to state, and "0×0, 0 fps" would state one.
     if width == 0 || height == 0 {
-        return "Set by the first clip".to_owned();
+        return crate::resource::CATALOG.t("video-editor-format-set-by-clip");
     }
+    let size = || {
+        crate::resource::CATALOG.t_args(
+            "video-editor-format-size",
+            &[
+                ("width", ui::i18n::ArgValue::Number(f64::from(width))),
+                ("height", ui::i18n::ArgValue::Number(f64::from(height))),
+            ],
+        )
+    };
     if fps <= 0.0 {
-        return format!("{width}\u{d7}{height}");
+        return size();
     }
-    format!("{width}\u{d7}{height}, {} fps", rate_words(fps))
+    crate::resource::CATALOG.t_args(
+        "video-editor-format-shown",
+        &[
+            ("width", ui::i18n::ArgValue::Number(f64::from(width))),
+            ("height", ui::i18n::ArgValue::Number(f64::from(height))),
+            ("fps", ui::i18n::ArgValue::Text(rate_words(fps))),
+        ],
+    )
 }
 
-/// A speed preset as its segment says it: "2×", "0.5×".
 fn speed_words(rate: f64) -> String {
     if (rate - rate.round()).abs() < 1e-6 {
         format!("{}\u{d7}", rate.round() as i64)
@@ -5853,24 +5482,16 @@ fn rate_words(fps: f64) -> String {
 
 #[derive(Clone, Debug, PartialEq)]
 struct DialogType {
-    /// `Body`: the sheets' lines and their segment labels.
     sm: TextStyle,
-    /// `Caption`: captions, status lines, hints.
     xs: TextStyle,
-    /// `Title`, in tabular figures: the go-to field's timecode.
     xl: TextStyle,
 }
 
-/// What the inspector's fixed header holds this frame; see
-/// [`VideoEditorApp::inspector_header`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct InspectorHeader {
-    /// From the panel's top edge to where the scrolling body starts.
     pub(super) height: f64,
 }
 
-/// The four facts the inspector states about the selected clip, at the top
-/// of its body.
 fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>; 4] {
     fn row<'a>(label: &'a str, value: &'a str) -> ui::widget::PropertyRow<'a> {
         ui::widget::PropertyRow::new(label, value).with_kind(ui::TextKind::Numeric)
@@ -5886,7 +5507,6 @@ fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>
 
 #[derive(Clone, Debug, PartialEq)]
 struct ExportLayout {
-    /// The shared frame: scrim, card, title band, close control, action row.
     modal: ModalLayout,
     type_sizes: DialogType,
     filename_top: f64,
@@ -5897,7 +5517,6 @@ struct ExportLayout {
     resolution: Vec<(Resolution, Rect)>,
     container: Vec<(Container, Rect)>,
     fps: Vec<(FrameRate, Rect)>,
-    /// Top of the size / frame / duration line.
     info_top: f64,
     /// The status slot: a progress bar over its line, a two-line failure,
     /// or a one-line outcome. Sized for the tallest of those so the slot
@@ -5906,9 +5525,7 @@ struct ExportLayout {
     /// Top of the flow's own notice line — under the status, never in it,
     /// and reserved whether or not a notice is showing.
     notice_top: f64,
-    /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
-    /// Export: the second action, absent (zero) while a render is running.
     confirm: Rect,
 }
 
@@ -5916,9 +5533,7 @@ struct ExportLayout {
 struct HelpLayout {
     modal: ModalLayout,
     type_sizes: DialogType,
-    /// Top of the "Esc or ? to close" line.
     hint_top: f64,
-    /// One entry per group, in [`shortcuts`] order.
     groups: Vec<HelpGroupLayout>,
     /// Where a row's description starts, measured from its column's left
     /// edge: the widest row of keycaps in the table plus one spacing step,
@@ -5934,9 +5549,7 @@ struct HelpLayout {
 
 #[derive(Clone, Debug, PartialEq)]
 struct HelpGroupLayout {
-    /// The group's heading band, spanning its column.
     heading: Rect,
-    /// One band per shortcut row, in table order.
     rows: Vec<Rect>,
 }
 
@@ -5945,16 +5558,13 @@ struct GotoLayout {
     card: Rect,
     type_sizes: DialogType,
     label_top: f64,
-    /// The text field the timecode is typed into.
     entry: Rect,
     hint_top: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HelpMetrics {
-    /// A group heading's line and the step down to its first row.
     header_h: f64,
-    /// One shortcut row: its line or its keycaps, and the step to the next.
     row_h: f64,
     /// The gap after a group's last row.
     group_gap: f64,
@@ -6075,8 +5685,6 @@ impl Widget for VideoEditorApp {
             self.project = Project::clone(&self.stored);
             self.clip_edit_bases.clear();
             self.project_sync.reload_pending = false;
-            // A timeline with nothing on it has no time to be part-way
-            // through: the playhead waits at the start.
             if self.project.clips.is_empty() {
                 self.playhead = 0.0;
             }
@@ -6115,11 +5723,9 @@ impl Widget for VideoEditorApp {
             self.bin_drag = None;
         }
         self.ensure_initial_selection();
-        // Resolve which sources actually have bytes here. The reference always
-        // replicates; the content is fetched lazily, so a project opened on a
-        // second peer legitimately holds media this device has never seen. The
-        // editor must say that in words rather than drawing a stand-in picture
-        // and leaving the user to guess.
+        // The reference always replicates and the content is fetched lazily, so a
+        // project opened on a second peer legitimately holds media this device has
+        // never seen. The editor says so rather than drawing a stand-in picture.
         self.projected_media = self
             .project
             .media
@@ -6148,8 +5754,6 @@ impl Widget for VideoEditorApp {
                 self.waveforms.request(id, &src);
             }
         }
-        // Thumbnails for visual sources: a representative frame now (cached),
-        // and a real one off-thread under the decode feature.
         self.thumbnails.drain();
         let visual: Vec<(MediaId, u8, crate::media::MediaSource, f64)> = self
             .project
@@ -6300,12 +5904,9 @@ impl Widget for VideoEditorApp {
             self.scroll_to_time(self.playhead, &r);
         }
         self.clamp_scroll(&r);
-        // The format readout's words, re-built only when the format has moved
-        // — three scalar comparisons a frame instead of a `format!`. It runs
-        // here rather than in `sync` because the inspector paints from it: a
-        // format changed after the last reload (a local press, or a capture
-        // scenario staged in this very pass) would otherwise paint the numbers
-        // the project had a frame ago.
+        // Three scalar comparisons a frame instead of a `format!`. It runs here rather
+        // than in `sync` because the inspector paints from it, so a format changed
+        // after the last reload still paints this frame's numbers.
         self.refresh_project_format_words();
         // Request the filmstrip frames the timeline is about to draw, now that
         // the scroll is settled and we know which clips are on screen.
@@ -6445,15 +6046,11 @@ impl Widget for VideoEditorApp {
                 return;
             }
         }
-        // The title's words, edited in place in the inspector through the
-        // shared multiline field. Committing writes the media item, so the
-        // title's picture, its bin row and every clip that placed it all
-        // update from one action.
+        // Committing writes the media item, so the title's picture, its bin row and
+        // every clip that placed it update from one action.
         //
-        // Enter is a line break here, so it cannot also be Accept. Ctrl+Enter
-        // accepts, Escape cancels, and a click anywhere else accepts what was
-        // typed — losing a title to a stray click would be the worse
-        // outcome, and the field says which keys do what under the box.
+        // Enter is a line break here, so Ctrl+Enter accepts, Escape cancels, and a
+        // click elsewhere accepts rather than losing a title to a stray click.
         if self.title_edit.is_some() {
             if let Some(done) = title_edit_verdict(event, *ctx.modifiers) {
                 let (mid, words) = {
@@ -7033,18 +6630,13 @@ impl Widget for VideoEditorApp {
         self.presentation.keyboard_focus
     }
 
-    /// Tab walks the editor's panes (`focus_pane`); without claiming it the
-    /// host would take Tab for its own focus moves and the panes would be
-    /// unreachable from the keyboard.
     fn wants_tab_input(&self) -> bool {
         true
     }
 
-    /// The export dialog traps the keyboard while it is open.
-    ///
-    /// Without this, Tab out of a modal walks the content behind it — the user
-    /// is editing a dialog they can no longer see, and a screen reader reads a
-    /// pane the dimming scrim says is unavailable.
+    /// Without this, Tab out of a modal walks the content behind it: the user edits a
+    /// dialog they can no longer see, and a reader reads a pane the scrim says is
+    /// unavailable.
     fn traps_focus(&self) -> bool {
         // Every surface that paints the full-window scrim, not just the
         // export dialog. A scrim is a promise that what is behind it is
@@ -7053,11 +6645,9 @@ impl Widget for VideoEditorApp {
         self.is_modal() || self.bin_overlay_is_open()
     }
 
-    /// The widgets this editor mounts inside itself. They paint and take
-    /// events already; exposing them here is what puts them in the
-    /// accessibility tree and the host's hit-testing, so an open context menu
-    /// or an in-flight rename is something a reader can find rather than an
-    /// invisible mode.
+    /// They paint and take events already; exposing them here puts them in the
+    /// accessibility tree and the host's hit-testing, so an open menu or an in-flight
+    /// rename is something a reader can find.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = Vec::new();
         if let Some(field) = &self.goto_entry {
@@ -7098,14 +6688,6 @@ impl Widget for VideoEditorApp {
         v
     }
 
-    /// The whole editor's semantics: an application region whose contents are
-    /// entirely synthetic, because the editor paints its own panes rather than
-    /// composing child widgets.
-    ///
-    /// Every pane, track, clip, control and toggle is described here. The
-    /// element the pane cursor is on carries `focused`, which the export layer
-    /// turns into the tree's active descendant — so a reader lands on the clip
-    /// the user is on rather than on "video editor, canvas".
     fn accessibility(&self) -> Option<AccessNode> {
         let mut kids = if self.bin_overlay_is_open() {
             // The scrim says the bin owns input, so the semantic tree must
@@ -7146,7 +6728,7 @@ impl Widget for VideoEditorApp {
                     // the first, which is the tidier and less true story.
                     self.project_label(),
                     crate::timecode::timecode(self.playhead, self.project.fps),
-                    self.focus.pane.label()
+                    crate::resource::CATALOG.t(self.focus.pane.message())
                 ))
                 .with_state(
                     AccessState::new()
@@ -7186,14 +6768,11 @@ impl Widget for VideoEditorApp {
         !key_path.is_empty() && self.perform_action(action, &key_path, state, path)
     }
 
-    /// Route an assistive technology's action to the element it named.
-    ///
-    /// `key_path` is the chain of keys from this widget down: `[pane]` for a
-    /// pane, `[pane, item]` for a bin row / transport button / track, and
-    /// `[timeline, track, clip]` for a clip. Keys are identity hashes, so a
-    /// path resolves to the same clip after it has been dragged somewhere else
-    /// — and a path naming something that no longer exists matches nothing and
-    /// is dropped rather than applied to whatever took its place.
+    /// `key_path` is the chain of keys from this widget down: `[pane]` for a pane,
+    /// `[pane, item]` for a bin row, button or track, and `[timeline, track, clip]`
+    /// for a clip. Keys are identity hashes, so a path resolves to the same clip after
+    /// a drag, and one naming something that no longer exists is dropped rather than
+    /// applied to whatever took its place.
     #[allow(
         clippy::indexing_slicing,
         reason = "a decoded accessibility action has its fixed argument shape validated before its command-specific fields are read"
@@ -7252,13 +6831,12 @@ impl Widget for VideoEditorApp {
         }
     }
 
-    /// The label an icon-only control shows on hover — the same words its
-    /// accessible name uses, so the tooltip and the reader never disagree.
-    ///
-    /// The editor is one widget, so the host asks it once and it answers for
-    /// whatever the pointer is actually over.
+    /// The same words its accessible name uses, so the tooltip and the reader never
+    /// disagree. The editor is one widget, so the host asks once and it answers for
+    /// whatever the pointer is over.
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
-        self.tooltip_at(self.last_mouse).map(Into::into)
+        self.tooltip_at(self.last_mouse)
+            .map(std::borrow::Cow::Owned)
     }
 
     fn get_rect(&self) -> Rect {
@@ -7267,21 +6845,12 @@ impl Widget for VideoEditorApp {
 }
 
 impl ui::presence::capability::PublishesPresence for VideoEditorApp {
-    /// This editor publishes about the timeline it holds.
     fn presence_key(&self) -> Option<PresenceKey> {
         Some(crate::presence::timeline_key())
     }
-    /// Where this participant is, for the workspace to draw.
-    ///
-    /// Two facts -- the playhead and the selected clip -- through a hook that
-    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
-    /// whichever has moved since it was last sent. Both survive on the
-    /// receiving side because the caret store and the selection store are
-    /// separate; see [`crate::presence`].
-    ///
-    /// None of this is an action and none of it reaches the document. A
-    /// playhead is view state: replaying someone else's is meaningless, and
-    /// putting it on an undo stack would be worse than meaningless.
+    /// Two facts — the playhead and the selected clip — through a hook that carries
+    /// one at a time, so [`crate::presence::LocalPresence`] hands over whichever has
+    /// moved. None of this is an action: a playhead is view state.
     fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
         let editing = self
             .title_edit
@@ -7370,13 +6939,11 @@ impl VideoEditorApp {
     }
 }
 
-/// One row of the shortcut sheet: the keys that run it and what it does.
 pub(crate) struct ShortcutRow {
     /// The key or chord templates that run it, spelled for this platform and
     /// the person's keyboard. Two or more are alternatives, which the sheet
     /// paints as separate keycaps — never as one string joined by a separator.
     pub keys: &'static [&'static str],
-    /// What pressing them does.
     pub what: String,
 }
 
@@ -7432,7 +6999,12 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
                     &["{shift:Delete}"],
                     t("video-editor-shortcut-ripple-delete"),
                 ),
-                row(&["Arrows"], t("video-editor-shortcut-nudge")),
+                // Four caps, each the label the keyboard prints on that key:
+                // no word for "arrows" reaches a window in any language.
+                row(
+                    &["left", "up", "down", "right"],
+                    t("video-editor-shortcut-nudge"),
+                ),
             ],
         ),
         (
@@ -7469,14 +7041,10 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
     ]
 }
 
-/// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     m.header_h + rows as f64 * m.row_h + m.group_gap
 }
 
-/// How wide one row's keys draw: its alternatives side by side, the shared
-/// sibling gap between them, the caps of one alternative touching as a chord
-/// does.
 fn shortcut_keys_width(keys: &[&str], tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
     let mut width = 0.0;
@@ -7489,12 +7057,8 @@ fn shortcut_keys_width(keys: &[&str], tr: &mut TextRenderer, theme: &Theme) -> f
     width
 }
 
-/// Which group starts the second column, and how tall the taller column is.
-///
-/// Both derived from the table. A hard-coded split with a hard-coded card
-/// height cuts rows off the bottom the moment a group is added — silently,
-/// because the row loop simply stops drawing — so the sheet claimed to be the
-/// list of shortcuts while omitting two of them.
+/// Both derived from the table: a hard-coded split with a hard-coded card height cuts
+/// rows off the bottom the moment a group is added, silently.
 #[allow(
     clippy::indexing_slicing,
     reason = "the shortcut label prefix is split only at the ASCII command separator emitted by this module"
@@ -7524,19 +7088,13 @@ fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
     (split, first.max(second))
 }
 
-/// An inspector control that is **chosen or switched** rather than dialled.
-///
-/// [`NumField`] covers the panel's ranged knobs; these are the rest of its
-/// stops. They are here because the keyboard walk and the accessibility tree
-/// are the same list, and that list held only headers and knobs — so every
-/// picker and switch in the panel was reachable with a pointer and no other
-/// way.
+/// [`NumField`] covers the panel's ranged knobs; these are the rest of its stops. The
+/// keyboard walk and the accessibility tree are the same list, so without these every
+/// picker and switch in the panel was reachable with a pointer and no other way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PickField {
     Frame(usize),
-    /// One project frame-rate preset, by index into [`RATE_PRESETS`].
     Rate(usize),
-    /// Take the frame of the source `format_source` names.
     MatchFormat,
     /// The chroma key's enable switch. The catch-22 control: the key's three
     /// sliders are only laid out once it is on, so a user who could not reach
@@ -7546,23 +7104,15 @@ enum PickField {
     /// One mask shape button. Same catch-22: the mask's geometry rows appear
     /// only once a shape is chosen.
     MaskShape(crate::model::MaskShape),
-    /// One transition at the clip's head cut.
     Transition(Transition),
-    /// One label colour, by palette slot.
     Label(u8),
     /// The link / unlink button. Which of the two it is depends on the
     /// selection — see [`LinkAffordance`] — so the row is one stop whichever
     /// way round it reads.
     LinkToggle,
-    /// Put the selected clip's lane back to unity and centre. Laid out under
-    /// the fader and the pan, and offered only when one of them has been
-    /// moved — the same condition the panel draws it on.
-    ///
-    /// It is a stop for the reason the key switch and the mask shapes are: the
-    /// two knobs above it were on the walk from the day they were added and
-    /// the button that undoes both of them was not, so a keyboard could set a
-    /// lane and then had no way back to unity that did not go through two
-    /// sliders.
+    /// Offered only when one of them has been moved, the same condition the panel
+    /// draws it on: a keyboard could set a lane and then had no way back to unity that
+    /// did not go through two sliders.
     MixReset,
 }
 
@@ -7607,9 +7157,7 @@ impl PickField {
 /// swap places.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LinkAffordance {
-    /// Break the link on the selection's clips.
     Unlink,
-    /// Tie the selected clips into one group.
     Link,
     /// Give a picture clip that carries sound its own audio clip. This is what
     /// a project saved before linked audio existed is offered, and what a shot
@@ -7629,7 +7177,6 @@ impl LinkAffordance {
         })
     }
 
-    /// What is true now, above the button.
     fn state(self) -> String {
         crate::resource::CATALOG.t(match self {
             LinkAffordance::Unlink => "video-editor-link-state-linked",
@@ -7642,8 +7189,6 @@ impl LinkAffordance {
     }
 }
 
-/// A focus stop in the inspector: a section header, or one control inside an
-/// open section.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum InspectorRow {
     Header(Section),
@@ -7654,7 +7199,6 @@ enum InspectorRow {
     /// its own stop: a reader that could only ever land on knobs could not
     /// reach a marker at all.
     Marker(MarkerRef),
-    /// The button that closes the marker list.
     AddMarker,
 }
 
@@ -7676,11 +7220,9 @@ impl VideoEditorApp {
         self.playback.chase_playhead = true;
     }
 
-    /// Track the live drag, updating **only the in-memory project** for a
-    /// smooth preview. Nothing is written to the CRDT here — the clip's final
-    /// position / trim / grade is dispatched as one action when the drag ends
-    /// (see [`Self::commit_drag`]), so a drag is one undo step, not sixty a
-    /// second of doc churn. The playhead / scrubber drags are pure presentation.
+    /// Only the in-memory project moves: the final position, trim or grade is
+    /// dispatched as one action when the drag ends ([`Self::commit_drag`]), so a drag
+    /// is one undo step, not sixty a second of document churn.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per drag kind, each the whole preview update for that drag"
@@ -7735,11 +7277,9 @@ impl VideoEditorApp {
                 let new_start = snap_to_frame(snapped, self.project.fps);
                 let old_start = self.project.clip(id).map_or(new_start, |c| c.start);
                 let dt = new_start - old_start;
-                // Resolve the lane under the cursor: a vertical drag moves the
-                // clip between tracks. Only a lane that will actually accept it
-                // (right kind, unlocked) becomes the target — over anything
-                // else the clip keeps the track it already had, so the drag
-                // degrades to a pure horizontal move instead of vanishing.
+                // A vertical drag moves the clip between tracks. Only a lane that will
+                // actually accept it becomes the target, so over anything else the drag
+                // degrades to a horizontal move instead of vanishing.
                 let target = self
                     .lane_rects(r)
                     .into_iter()
@@ -7962,12 +7502,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// The curve editor's box as the inspector has it laid out right now, or
-    /// `None` when the section is not on screen.
-    ///
-    /// `commit_drag` has no `Regions` to hand, and re-deriving them is what
-    /// keeps the drop test honest — a stale rect would decide "outside the
-    /// box" against a box that is no longer there.
+    /// `commit_drag` has no `Regions` to hand, and re-deriving them keeps the drop
+    /// test honest: a stale rect would decide "outside the box" against a box that is
+    /// no longer there.
     fn curve_canvas_now(&self) -> Option<Rect> {
         let r = self.regions();
         self.inspector_is_visible(&r)
@@ -8066,11 +7603,8 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    /// Invite an external file drop, over the whole window.
-    ///
-    /// `DroppedFile` is accepted anywhere in the window, so the invitation has
-    /// to cover the same ground the handler does: the window dims, and one
-    /// line on a floating panel at its centre says what a drop will do.
+    /// `DroppedFile` is accepted anywhere in the window, so the invitation covers the
+    /// same ground: the window dims, and one line says what a drop will do.
     fn draw_file_drop_invite(
         &self,
         scene: &mut Scene,
@@ -8108,12 +7642,9 @@ impl VideoEditorApp {
         );
     }
 
-    /// The shortcut sheet.
-    ///
-    /// Fifteen shortcuts existed and none of them were written down anywhere in
-    /// the product, so the only way to learn one was to be told. The sheet is
-    /// also how a reader user learns the editor has shortcuts at all, which is
-    /// why it is an accessibility affordance rather than a convenience.
+    /// The only place a shortcut is written down, and how a reader user learns the
+    /// editor has any, which is why it is an accessibility affordance rather than a
+    /// convenience.
     fn draw_help_sheet(
         &self,
         scene: &mut Scene,
@@ -8225,11 +7756,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// The go-to-timecode field: type a time, press Enter, land there.
-    ///
-    /// A floating panel over the transport holding the toolkit's text field.
-    /// A value that cannot be read keeps the field open and says so under it
-    /// in danger ink, rather than closing and silently going nowhere.
+    /// A value that cannot be read keeps the field open and says so under it in danger
+    /// ink, rather than closing and silently going nowhere.
     fn draw_goto(
         &mut self,
         scene: &mut Scene,
@@ -8262,12 +7790,17 @@ impl VideoEditorApp {
             field.apply_layout_external(l.entry);
             field.draw_child(scene, tf, tr, &panel, presence);
         }
+        // The field says only what is wrong with what was typed; the key that
+        // takes it is the key people already press in a text field.
         let (hint, hc) = if self.navigation.goto_notice {
-            ("Not a timecode, try 1:30", c.semantic.danger)
+            (
+                crate::resource::CATALOG.t("video-editor-not-a-timecode"),
+                c.semantic.danger,
+            )
         } else {
-            ("Enter to jump, Esc to cancel", panel.text_dim)
+            (String::new(), panel.text_dim)
         };
-        text(scene, tr, tf, hint, &ty.xs, hc, x, l.hint_top);
+        text(scene, tr, tf, &hint, &ty.xs, hc, x, l.hint_top);
     }
 
     #[allow(
@@ -8341,11 +7874,9 @@ impl VideoEditorApp {
                          top: f64,
                          items: &[(String, Rect, bool)]| {
             text(scene, tr, tf, caption, &ty.xs, dim, x0, top);
-            // The shared segmented face, as the inspector's transition and
-            // preset rows already use — so the dialog's option groups look
-            // like every other segmented control in the fleet instead of a
-            // local set of filled pills with their labels pinned to a
-            // font-size offset.
+            // The shared segmented face, as the inspector's transition and preset rows
+            // use, so the dialog looks like every other segmented control in the
+            // fleet.
             let rects: Vec<Rect> = items.iter().map(|(_, rect, _)| *rect).collect();
             let labels: Vec<&str> = items.iter().map(|(name, _, _)| name.as_str()).collect();
             let selected = items
@@ -8365,25 +7896,28 @@ impl VideoEditorApp {
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
             .collect();
-        seg_group(scene, tr, "Resolution", l.captions[0], &res);
+        let caption = crate::resource::CATALOG.t("video-editor-export-resolution");
+        seg_group(scene, tr, &caption, l.captions[0], &res);
         let con: Vec<_> = l
             .container
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
             .collect();
-        seg_group(scene, tr, "Format", l.captions[1], &con);
+        let caption = crate::resource::CATALOG.t("video-editor-export-format");
+        seg_group(scene, tr, &caption, l.captions[1], &con);
         let fps: Vec<_> = l
             .fps
             .iter()
             .map(|(v, r)| {
-                (
-                    format!("{} fps", v.label()),
-                    *r,
-                    *v == self.export.frame_rate,
-                )
+                let shown = crate::resource::CATALOG.t_args(
+                    "video-editor-fps-shown",
+                    &[("rate", ui::i18n::ArgValue::Text(v.label().to_owned()))],
+                );
+                (shown, *r, *v == self.export.frame_rate)
             })
             .collect();
-        seg_group(scene, tr, "Frame rate", l.captions[2], &fps);
+        let caption = crate::resource::CATALOG.t("video-editor-frame-rate");
+        seg_group(scene, tr, &caption, l.captions[2], &fps);
 
         // Estimate + status.
         // One source of truth for the size line: the export module knows which
@@ -8396,15 +7930,28 @@ impl VideoEditorApp {
         let (w, h) = crate::export::output_dims(&self.export, &self.project);
         // And how long it will run — the marked range when there is one,
         // which is the whole reason for marking one.
-        let info = format!(
-            "{w}×{h} for {}{}, {est}",
-            timecode(self.project.export_duration(), self.project.fps),
-            if self.project.has_marks() {
-                " (marked range)"
-            } else {
-                ""
-            }
-        );
+        let length = timecode(self.project.export_duration(), self.project.fps);
+        let info = if self.project.has_marks() {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-marked-range",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        } else {
+            crate::resource::CATALOG.t_args(
+                "video-editor-export-summary",
+                &[
+                    ("width", ui::i18n::ArgValue::Number(f64::from(w))),
+                    ("height", ui::i18n::ArgValue::Number(f64::from(h))),
+                    ("length", ui::i18n::ArgValue::Text(length)),
+                    ("size", ui::i18n::ArgValue::Text(est)),
+                ],
+            )
+        };
         let info = elide_at(&info, width, &ty.sm, tr);
         text(scene, tr, tf, &info, &ty.sm, dim, x0, l.info_top);
         let status = l.status;
@@ -8637,7 +8184,6 @@ impl VideoEditorApp {
     }
 }
 
-/// What the export dialog's buttons say, in the window's language.
 struct ExportLabels {
     title: String,
     cancel: String,

@@ -50,7 +50,7 @@ pub struct DesktopServices {
     /// The files people choose for apps, while they are served as a filesystem: the same table the
     /// portal grants through, which a launcher binds an app's view of and the app finds at its own
     /// documents directory. Dropping it unmounts.
-    chosen: Option<tilo_documents::mount::Mounted>,
+    chosen: Option<(tilo_documents::mount::Mounted, tilo_documents::Documents)>,
     notifications: tilo_notifications_service::Notifications,
     roaming: RoamingWifiSlot,
     /// The session bus connection the portal and the daemon serve on, and what keeps the daemon's
@@ -67,9 +67,9 @@ pub struct DesktopServices {
     /// The system bus the agents registered on, which everything else the session asks the machine
     /// goes through: one connection, not one per service.
     system: Option<zbus::Connection>,
-    /// The observer that keeps the person's lockdown policy applied while the session runs:
+    /// The watch that keeps the person's lockdown policy applied while the session runs:
     /// dropping it stops the policy reaching the services, so it is kept, never read.
-    _lockdown: Option<Arc<tilo_portal::lockdown::PolicyListener>>,
+    _lockdown: Option<tilo_portal::lockdown::PolicyWatch>,
 }
 
 impl DesktopServices {
@@ -107,7 +107,7 @@ impl DesktopServices {
         // One table of chosen files: what the portal grants through, and what the filesystem a
         // launcher binds an app's view of serves.
         let documents = tilo_portal::documents_store();
-        let chosen = serve_documents(documents.clone());
+        let chosen = serve_documents(documents.clone()).map(|mounted| (mounted, documents.clone()));
         let (portal, session) = runtime.block_on(on_session_bus(OnSessionBus {
             bus: &buses.session,
             questions: &questions,
@@ -201,13 +201,13 @@ impl DesktopServices {
         self.portal.as_ref()
     }
 
-    /// Whether the files people choose for apps are served as a filesystem at
+    /// The files people hand apps, while they are served as a filesystem at
     /// [`tilo_documents::mountpoint`], which a launcher binds an app's view of: only then is a
-    /// sandboxed app answered with a path its own sandbox holds the file at. Without it the chooser
+    /// sandboxed app handed a path its own sandbox holds the file at. Without it the chooser
     /// answers with the host path, which a sandbox cannot open.
     #[must_use]
-    pub const fn documents_served(&self) -> bool {
-        self.chosen.is_some()
+    pub fn documents(&self) -> Option<&tilo_documents::Documents> {
+        self.chosen.as_ref().map(|(_, documents)| documents)
     }
 
     /// An app exited: what it was granted while it ran is forgotten, and its processes no longer
@@ -322,7 +322,7 @@ impl DesktopServices {
 /// `None` where the policy cannot be followed: what the portal checks at each request still
 /// enforces what the person chose, and an app that was already capturing keeps its stream until it
 /// is stopped.
-fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown::PolicyListener>> {
+fn follow_lockdown(portal: Option<&Portal>) -> Option<tilo_portal::lockdown::PolicyWatch> {
     let captures = portal.map(|portal| portal.captures().clone());
     let listener: Arc<tilo_portal::lockdown::PolicyListener> = Arc::new(move |policy| {
         media::audio_output::set_disabled(policy.disable_sound_output);
@@ -333,7 +333,7 @@ fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown:
         captures.set_lockdown(CaptureKind::Microphone, policy.disable_microphone);
     });
     match tilo_portal::lockdown::LockdownBackend::for_session().watch(&listener) {
-        Ok(()) => Some(listener),
+        Ok(watch) => Some(watch),
         Err(error) => {
             tracing::warn!(%error, "the lockdown policy is not followed while the session runs");
             None

@@ -6,18 +6,16 @@ use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, EmptyState, ListRow, Text, Widget};
 
-/// How long a site's permission question stands before the engine withdraws
-/// it. The question says so, in the person's words: the number lives here
-/// once.
+/// How long a site's permission question stands before the engine withdraws it;
+/// the question states it in the person's words.
 const PERMISSION_SECONDS: u32 = 60;
 
-/// The window's row for a site's permission request, published as part of
-/// the page that waits on it.
+/// The window's row for a site's permission request, published as part of the page
+/// that waits on it.
 pub const RESOURCE: &str = "browser.page-permission";
 
-/// An extension's request for more access (`chrome.permissions.request`),
-/// as the person is asked it: its name and what it could then do, one line
-/// each.
+/// An extension's request for more access (`chrome.permissions.request`), as the
+/// person is asked it: its name and what it could then do, one line each.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtensionQuestion {
     pub request: u32,
@@ -25,8 +23,6 @@ pub struct ExtensionQuestion {
     pub lines: Vec<String>,
 }
 
-/// Extensions' questions, which their answer takes away; `version` moves
-/// with each change, so the window redraws.
 #[derive(Default)]
 struct ExtensionQuestions {
     open: BTreeMap<u32, ExtensionQuestion>,
@@ -34,7 +30,6 @@ struct ExtensionQuestions {
 }
 
 impl ExtensionQuestions {
-    /// Tell the engine the person's answer to `request`, which goes.
     fn answer(&mut self, engine: &SharedEngine, request: u32, allow: bool) {
         if self.open.remove(&request).is_some() {
             self.version = self.version.wrapping_add(1);
@@ -47,8 +42,6 @@ pub struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
     extension_questions: std::rc::Rc<std::cell::RefCell<ExtensionQuestions>>,
     observed_question_version: u64,
-    // Native events are drained on the UI thread. Tabs share this UI model;
-    // background download workers communicate through the engine protocol.
     downloads: std::rc::Rc<std::cell::RefCell<DownloadStore>>,
     observed_download_version: u64,
     notice: ui::LocalState<String>,
@@ -92,8 +85,8 @@ impl Default for DownloadStore {
     }
 }
 
-/// Ask the host to open a finished download, or reveal its folder. The host
-/// answers on the returned channel; the UI thread never waits for it.
+/// Ask the host to open a finished download, or reveal its folder. The host answers
+/// on the returned channel, so the UI thread never waits.
 fn open_download(
     path: &std::path::Path,
     reveal: bool,
@@ -109,8 +102,8 @@ fn open_download(
     Ok(request.thread_name("browser-open-download").send())
 }
 
-/// Open a finished download, or reveal its folder, and say in the downloads'
-/// notice why that did not work.
+/// Open a finished download, or reveal its folder, and say in the downloads' notice
+/// why that did not work.
 fn launch_download(path: &std::path::Path, reveal: bool, notice: &ui::LocalStateWriter<String>) {
     match open_download(path, reveal) {
         Err(message) => notice.set(message),
@@ -141,7 +134,6 @@ struct Download {
     error: String,
 }
 impl Capabilities {
-    /// Ask the person an extension's question, after those already asked.
     pub fn ask_for_extension(&self, question: ExtensionQuestion) {
         let mut questions = self.extension_questions.borrow_mut();
         if questions.open.len() < 32 {
@@ -149,24 +141,20 @@ impl Capabilities {
             questions.version = questions.version.wrapping_add(1);
         }
     }
-    /// Ask the person extensions' requests for more access, from their
-    /// popups or their pages in this window; whether the questions on offer
-    /// changed since last asked, by these or an answer.
+    /// Ask the person extensions' requests for more access; whether the questions on
+    /// offer changed since last asked, by these or an answer.
     pub fn ask(&mut self, questions: Vec<ExtensionQuestion>) -> bool {
         for question in questions {
             self.ask_for_extension(question);
         }
         self.extension_questions_changed()
     }
-    /// Whether an extension's question came or was answered since asked.
     pub fn extension_questions_changed(&mut self) -> bool {
         let version = self.extension_questions.borrow().version;
         let changed = version != self.observed_question_version;
         self.observed_question_version = version;
         changed
     }
-    /// Whether an extension's question waits for the person: the window asks
-    /// it over the extension's own popup, which waits for the answer.
     pub fn asks_for_extension(&self) -> bool {
         !self.extension_questions.borrow().open.is_empty()
     }
@@ -176,9 +164,8 @@ impl Capabilities {
         self.observed_download_version = version;
         changed
     }
-    /// Whether the Library shows this engine's downloads: those it has, or
-    /// what it says about them. An engine with neither leaves the section to
-    /// the saved list, with the downloads of earlier sessions.
+    /// Whether the Library shows this engine's downloads: those it has, or what it
+    /// says about them. An engine with neither leaves the section to the saved list.
     pub fn owns_download_presentation(&self) -> bool {
         let downloads = self.downloads.borrow();
         (downloads.runtime_known && !downloads.accepting)
@@ -265,8 +252,8 @@ impl Capabilities {
             WebViewEvent::PermissionClosed { id } => {
                 self.permissions.remove(&id);
             }
-            // The page that asked closed first: the extension was told no,
-            // so the question goes without an answer.
+            // The page that asked closed first: the extension was told no, so the
+            // question goes without an answer.
             WebViewEvent::ExtensionPermissionClosed { request } => {
                 let mut questions = self.extension_questions.borrow_mut();
                 if questions.open.remove(&request).is_some() {
@@ -456,8 +443,8 @@ impl Capabilities {
                 )),
         ))
     }
-    /// An extension's question: what it could then do, and the same two
-    /// answers a site's question has.
+    /// An extension's question: what it could then do, with the same two answers a
+    /// site's question has.
     fn extension_prompt(
         &self,
         question: &ExtensionQuestion,
@@ -500,22 +487,19 @@ impl Capabilities {
             ui::widget::Actions::new(decide(true)).secondary(decide(false)),
         )))
     }
-    /// Whether the question on offer is a permission request, a site's or an
-    /// extension's, rather than a file the page offers.
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty() || self.asks_for_extension()
     }
-    /// The site's request waiting for an answer, oldest first: its id, the
-    /// site that asks, and what it asks for.
+    /// The site's request waiting for an answer, oldest first: its id, the site that
+    /// asks, and what it asks for.
     pub fn pending(&self) -> Option<(u32, &str, &str)> {
         self.permissions
             .first_key_value()
             .map(|(&id, (origin, rights))| (id, origin.as_str(), rights.as_str()))
     }
-    /// The site's request, published as part of the page it belongs to: the
-    /// site, what it asks for, and the same two answers the person's prompt
-    /// offers. Refused here, the site's request is denied as its Block
-    /// button denies it.
+    /// The site's request, published as part of the page it belongs to, with the same
+    /// two answers the person's prompt offers. Refused here, the request is denied as
+    /// its Block button denies it.
     pub fn resource(&self) -> Option<ui::tilo_actions::ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let (request, origin, rights) = self.pending()?;
@@ -542,8 +526,7 @@ impl Capabilities {
         }
         Some(row)
     }
-    /// The answers to the site's waiting request, for the page whose own
-    /// outline names it: the page's Allow and Deny, about this request only.
+    /// The answers to the site's waiting request, for the page whose outline names it.
     #[must_use]
     pub fn permission_answers(&self) -> Vec<ui::tilo_actions::ActionSpec> {
         use ui::tilo_resource::Effect as _;
@@ -563,8 +546,8 @@ impl Capabilities {
         })
         .collect()
     }
-    /// Answer the site's request `request`: grant it when `allow`, else
-    /// refuse it. An answer for a request no longer waiting is ignored.
+    /// Answer the site's request `request`: grant it when `allow`, else refuse it. An
+    /// answer for a request no longer waiting is ignored.
     pub fn answer(&self, engine: &SharedEngine, request: u32, allow: bool) -> Result<(), String> {
         if !self.permissions.contains_key(&request) {
             return Err("the site's permission request is no longer waiting".into());
@@ -572,10 +555,9 @@ impl Capabilities {
         engine.send(WebViewCommand::PermissionDecision { id: request, allow });
         Ok(())
     }
-    /// An extension asked to open the engine's download `id`, or show it in
-    /// its folder (`chrome.downloads.open`, `show`), as the person's Open and
-    /// Show in Files do. The engine asks only for a complete one; the file
-    /// it was saved to must still be there. Whether it was opened.
+    /// An extension asked to open the engine's download `id`, or show it in its folder
+    /// (`chrome.downloads.open`, `show`), as Open and Show in Files do. Whether it was
+    /// opened.
     pub fn open_for_extension(&self, id: u32, reveal: bool) -> bool {
         let downloads = self.downloads.borrow();
         let Some(path) = downloads
@@ -591,15 +573,14 @@ impl Capabilities {
         launch_download(&path, reveal, &self.notice.writer());
         true
     }
-    /// Whether a download is still waiting for the person to say where it goes:
-    /// the engine reports bytes and progress for it, but nothing is kept. A row
-    /// keeps offering Save and Discard until this is answered.
+    /// Whether a download still waits for the person to say where it goes: the engine
+    /// reports bytes for it, but nothing is kept.
     pub fn offer_pending(&self, id: u32) -> bool {
         self.downloads.borrow().prompts.contains_key(&id)
     }
     /// The person dismissed the question on offer: a permission is set aside
-    /// unanswered, so the site may ask again; an extension's request and a
-    /// download are declined.
+    /// unanswered, so the site may ask again; an extension's request and a download
+    /// are declined.
     pub fn decline_prompt(&self, engine: &SharedEngine) {
         let extension = self
             .extension_questions
@@ -784,8 +765,8 @@ mod tests {
         assert!(capabilities.extension_questions_changed());
         assert!(!capabilities.extension_questions_changed());
         assert!(capabilities.asks_for_extension() && capabilities.prompt_is_permission());
-        // Its question comes before the site's, and an agent or a screen
-        // reader answers it as the person does.
+        // Its question comes before the site's, and an agent or a screen reader
+        // answers it as the person does.
         let mut prompt = capabilities.prompt(&engine).unwrap();
         assert!(contains(
             prompt.as_ref(),
@@ -809,7 +790,6 @@ mod tests {
             }]
         );
         assert!(capabilities.extension_questions_changed());
-        // Dismissed, the next is declined; then the site's is on offer.
         capabilities.decline_prompt(&engine);
         assert_eq!(
             capture.commands().last(),
@@ -821,7 +801,6 @@ mod tests {
         assert!(!capabilities.asks_for_extension());
         let prompt = capabilities.prompt(&engine).unwrap();
         assert!(contains(prompt.as_ref(), "browser.decision.true.1.true"));
-        // An answered question is answered once.
         capabilities
             .extension_questions
             .borrow_mut()
@@ -841,8 +820,6 @@ mod tests {
             });
         }
         assert!(capabilities.extension_questions_changed());
-        // Its popup closed itself before the person answered: the engine
-        // told the extension no, and its question is no longer on offer.
         capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
         assert!(capabilities.extension_questions_changed());
         let prompt = capabilities.prompt(&engine).unwrap();
@@ -854,13 +831,11 @@ mod tests {
             prompt.as_ref(),
             "browser.decision.extension.5.true"
         ));
-        // A question the window no longer holds changes nothing.
         capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
         assert!(!capabilities.extension_questions_changed());
         capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 5 });
         assert!(!capabilities.asks_for_extension());
         assert!(capabilities.prompt(&engine).is_none());
-        // Nothing was answered for the person.
         assert!(capture.commands().is_empty());
     }
     #[test]
@@ -1126,8 +1101,6 @@ mod tests {
             origin: "https://site.test".into(),
             permissions: "location".into(),
         });
-        // The window publishes the request as a row of its own, naming the
-        // site and what it asks for, with both answers bound to it.
         let row = capabilities.resource().unwrap();
         assert_eq!(row.id.as_str(), RESOURCE);
         assert!(row.label.contains("https://site.test"), "{}", row.label);
@@ -1137,8 +1110,6 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect();
         assert_eq!(names, ["answer-permission", "answer-permission"]);
-        // An agent's answer crosses the site's privacy boundary, so it is
-        // asked first, with the authority the person's own prompt has.
         for action in &row.actions {
             assert_ne!(
                 action.contract.risk,
@@ -1146,14 +1117,12 @@ mod tests {
                 "granting a site a capability asks first"
             );
         }
-        // The page itself lists them too, so reading the page finds the answer.
         let page_answers = capabilities.permission_answers();
         let names: Vec<&str> = page_answers
             .iter()
             .map(|action| action.id.as_str())
             .collect();
         assert_eq!(names, ["answer-permission", "answer-permission"]);
-        // A request the page no longer waits on is not answered twice.
         capabilities
             .answer(&engine, 7, true)
             .expect("the waiting request is answered");
@@ -1173,7 +1142,6 @@ mod tests {
         let update = |id, state: &str| WebViewEvent::DownloadUpdated {
             id,
             state: state.into(),
-            // Gone since: nothing is launched, the notice says so.
             path: "/nonexistent/tilo-extension-download".into(),
             name: "report.csv".into(),
             url: "https://downloads.test/report.csv".into(),

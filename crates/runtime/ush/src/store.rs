@@ -1,30 +1,23 @@
-//! `~/.local/share/ush/` — where the runtime keeps what is not the record.
+//! `~/.local/share/ush/`: where the runtime keeps what is not the record.
 //!
 //! ```text
 //! environments/<record>/home/   an environment's home
 //! environments/<record>/var/    its /var/lib and /var/cache
-//! workspaces/<id>/environments/ the same, for the environments of a
-//!                               workspace other than the primary one
+//! workspaces/<id>/environments/ the same, for a workspace other than the primary one
 //! sessions/<id>/                live session scratch: generated /etc entries,
 //!                               the broker socket, an ephemeral home
 //! audit/                        the broker's append-only log
 //! ```
 //!
-//! The environment records themselves are Terminal's (see [`crate::records`]);
-//! [`Store::records_root`] says where they are.
-//!
-//! **The store is never bound into a guest.** A guest sees its own home and
-//! `/var` state at their guest paths, never the store around them, so it
-//! cannot reach another environment's home or edit the record of what it
-//! asked for.
+//! The environment records themselves are Terminal's ([`crate::records`]);
+//! [`Store::records_root`] says where they are. **The store is never bound into a guest**:
+//! a guest sees its own home and `/var` at their guest paths, never the store around them,
+//! so it cannot reach another environment's home or edit the record of what it asked for.
 
 use std::path::{Path, PathBuf};
 
 use crate::workspace::{Confinement, WorkspaceId};
 
-/// Environment override for the store root; set by tests or to run two
-/// independent runtimes on one machine. With it set, the environment
-/// records live under the store too.
 pub const STORE_ENV: &str = "TILO_USH_HOME";
 
 /// Where the environment records are, when not where [`Store::discover`]
@@ -38,44 +31,24 @@ pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 /// member's own file area; unset, grants bind the machine's own paths.
 pub const GRANT_ROOT_ENV: &str = "TILO_USH_GRANT_ROOT";
 
-/// The folder an environment's `~` is: the device's files folder for the
-/// primary workspace, a workspace's own tree in it for any other
-/// ([`Store::for_workspace`]). The supervisor hands it to the sessions it
-/// starts. Unset, a store at its default place takes the files this device
-/// mounts ([`crate::images::synced_files`]), and a moved store (a test's)
-/// has none.
 pub const WORKSPACE_ENV: &str = "TILO_USH_WORKSPACE";
 
-/// The device's files folder, which holds every workspace's tree, handed to
-/// the sessions the supervisor starts with [`WORKSPACE_ENV`]. Unset, it is
-/// the [`WORKSPACE_ENV`] folder.
 pub const FILES_ENV: &str = "TILO_USH_FILES";
 
-/// The workspace a session's environment belongs to
-/// ([`crate::workspace::WorkspaceId`]), handed to the sessions the
-/// supervisor starts. Unset, the primary workspace.
 pub const WORKSPACE_ID_ENV: &str = "TILO_USH_WORKSPACE_ID";
 
-/// The runtime's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Store {
     root: PathBuf,
     records: PathBuf,
     grant_root: Option<PathBuf>,
-    /// What `~` is: [`WORKSPACE_ENV`].
     workspace: Option<PathBuf>,
-    /// The device's files folder: [`FILES_ENV`].
     files: Option<PathBuf>,
-    /// The workspace the records and environments are of.
     workspace_id: WorkspaceId,
-    /// The user's data home, when the records are where Terminal keeps its
-    /// own: then each workspace's are in a directory of its own there.
     data_home: Option<PathBuf>,
 }
 
 impl Store {
-    /// The store at its default location, or wherever [`STORE_ENV`] and
-    /// [`RECORDS_ENV`] point.
     pub fn discover() -> Self {
         let moved = std::env::var_os(STORE_ENV).is_some();
         let mut store = if let Some(raw) = std::env::var_os(STORE_ENV) {
@@ -120,7 +93,6 @@ impl Store {
         store
     }
 
-    /// The store rooted at an explicit path, with the records inside it.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         Self {
@@ -134,8 +106,6 @@ impl Store {
         }
     }
 
-    /// This store, with `workspace` as the device's files folder: the
-    /// primary workspace's `~`, and where every other workspace's tree is.
     #[must_use]
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
@@ -148,12 +118,6 @@ impl Store {
         self
     }
 
-    /// This store as the workspace `id` uses it: the records in that
-    /// workspace's room (where Terminal opened in it keeps its own), its
-    /// environments' homes and `/var` state in a directory of its own, and
-    /// its own tree of the device's files as `~`
-    /// ([`tilo_paths::workspace_tree`]). The sessions, the audit log and the
-    /// images are the device's, shared.
     #[must_use]
     pub fn for_workspace(&self, id: &WorkspaceId) -> Self {
         let mut store = self.clone();
@@ -171,19 +135,14 @@ impl Store {
         store
     }
 
-    /// The workspace this store's records and environments are of.
     pub fn workspace_id(&self) -> &WorkspaceId {
         &self.workspace_id
     }
 
-    /// The folder `~` is for this store's environments, when this device
-    /// has the files: the device's files folder for the primary workspace,
-    /// the workspace's own tree in it for any other.
     pub fn workspace(&self) -> Option<&Path> {
         self.workspace.as_deref()
     }
 
-    /// The device's files folder, which holds every workspace's tree.
     pub fn files(&self) -> Option<&Path> {
         self.files.as_deref()
     }
@@ -200,11 +159,12 @@ impl Store {
     }
 
     /// Where every workspace's records are, when they are where Terminal
-    /// keeps its own (`<data home>/tilo-rooms`): never seen in a guest, so
+    /// keeps its own (`<data home>/tilo-workspaces`): never seen in a guest, so
     /// no environment reaches another workspace's records.
-    pub fn rooms_dir(&self) -> Option<PathBuf> {
-        let rooms = self.records.ancestors().nth(4)?;
-        (rooms.file_name()? == crate::records::ROOMS_DIR).then(|| rooms.to_path_buf())
+    pub fn workspaces_dir(&self) -> Option<PathBuf> {
+        let workspaces = self.records.ancestors().nth(4)?;
+        (workspaces.file_name()? == crate::records::WORKSPACES_DIR)
+            .then(|| workspaces.to_path_buf())
     }
 
     /// Where granted directories' contents are, when not at their own paths.
@@ -216,7 +176,6 @@ impl Store {
         &self.root
     }
 
-    /// The data home the environment records are kept under.
     pub fn records_root(&self) -> &Path {
         &self.records
     }
@@ -225,9 +184,6 @@ impl Store {
         self.root.join("environments")
     }
 
-    /// Everything one environment owns outside its record. The primary
-    /// workspace's are where they always were; another workspace's are in a
-    /// directory of its own, since every workspace has a `default`.
     pub fn environment_dir(&self, record: &str) -> PathBuf {
         if self.workspace_id.is_primary() {
             self.environments_dir().join(record)
@@ -247,7 +203,6 @@ impl Store {
         self.environment_dir(record).join("home")
     }
 
-    /// An environment's `/var` state.
     pub fn environment_var(&self, record: &str) -> PathBuf {
         self.environment_dir(record).join("var")
     }
@@ -260,7 +215,6 @@ impl Store {
         self.root.join("audit")
     }
 
-    /// Per-session scratch: the generated `/etc` entries, the broker socket.
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
         self.sessions_dir().join(session_id)
     }
@@ -281,9 +235,6 @@ impl Store {
         ] {
             std::fs::create_dir_all(&dir)?;
         }
-        // The store carries every environment's home and the record of what
-        // asked for what; other users on the machine have no business reading
-        // either.
         restrict_to_owner(&self.root)?;
         Ok(())
     }
@@ -334,10 +285,6 @@ mod tests {
         store.ensure().unwrap();
     }
 
-    /// A workspace's store keeps its records in its own room, its
-    /// environments' state in a directory of its own, and its own tree of
-    /// the device's files as `~`; the primary workspace's is the store as
-    /// it always was.
     #[test]
     fn a_workspace_has_its_own_records_state_and_files() {
         let data = PathBuf::from("/home/you/.local/share");
@@ -354,7 +301,7 @@ mod tests {
         let store = base.for_workspace(&w1);
         assert_eq!(
             store.records_root(),
-            data.join("tilo-rooms/w1/so.tilo.terminal/.local/share")
+            data.join("tilo-workspaces/w1/so.tilo.terminal/.local/share")
         );
         assert_eq!(
             store.workspace(),
@@ -366,14 +313,14 @@ mod tests {
             data.join("ush/workspaces/w1/environments/default/var")
         );
         assert_eq!(store.sessions_dir(), base.sessions_dir());
-        assert_eq!(store.rooms_dir(), Some(data.join("tilo-rooms")));
+        assert_eq!(store.workspaces_dir(), Some(data.join("tilo-workspaces")));
         assert!(store.confinement().is_some());
 
         let primary = store.for_workspace(&WorkspaceId::primary());
         assert_eq!(primary, base);
         assert_eq!(
             primary.records_root(),
-            data.join("tilo-rooms/personal/so.tilo.terminal/.local/share")
+            data.join("tilo-workspaces/personal/so.tilo.terminal/.local/share")
         );
         assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
         assert_eq!(
@@ -382,11 +329,9 @@ mod tests {
         );
         assert!(primary.confinement().is_none());
 
-        // A moved store keeps every room's records under one root, apart
-        // by the room in each record's address.
         let moved = Store::at("/tmp/ush").for_workspace(&w1);
         assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
         assert_eq!(moved.workspace(), None, "no files, no home folder");
-        assert_eq!(moved.rooms_dir(), None);
+        assert_eq!(moved.workspaces_dir(), None);
     }
 }

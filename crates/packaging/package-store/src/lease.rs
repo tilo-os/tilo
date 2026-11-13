@@ -1,29 +1,4 @@
 //! Launch leases on payload trees.
-//!
-//! An update retires the payload tree it replaced, and a collection removes
-//! trees no row names. A launch that already chose a tree but whose sandbox
-//! has not mounted it yet is invisible to the mount table
-//! ([`crate::mounts`]), so it holds `<root>/leases/<package id>` shared
-//! ([`hold_payload`]) from before it checks the tree until its sandbox
-//! exits. `flock(2)` drops the hold with the launcher however it ends.
-//!
-//! Whoever removes a tree first takes its lease exclusively without
-//! waiting: a held tree stays, as an orphan the next collection after the
-//! launch finds free. Otherwise the remover keeps the lease across moving
-//! the tree out of `pkgs/` and deleting it, so a launch that arrives
-//! meanwhile waits and then finds the tree whole or gone, and removes the
-//! lease file with the tree.
-//!
-//! Leases live beside `pkgs/`, never inside a payload tree, whose files are
-//! the signed collection's.
-//!
-//! A lease file's modification time is also when a launch last used the
-//! tree: taking a lease creates the file, and the launcher records a use
-//! again when the app closes ([`record_close`]), on the tree the app's row
-//! names now too when an update replaced it while the app was open. An app kept open for weeks
-//! thus counts as used the day it closed, not the day it opened, and the
-//! size sweep ([`last_use`]) reads it without anyone rewriting the registry,
-//! which every app listing would otherwise re-read.
 
 use std::io;
 use std::path::Path;
@@ -48,11 +23,6 @@ pub fn hold_payload(payload_root: &Path) -> io::Result<Option<FileLock>> {
     }
 }
 
-/// [`hold_payload`] for the store at `layout`.
-///
-/// # Errors
-///
-/// As [`hold_payload`].
 pub fn hold_payload_in(layout: &Layout, payload_root: &Path) -> io::Result<Option<FileLock>> {
     let Some(id) = layout.materialised_id(payload_root) else {
         return Ok(None);
@@ -128,7 +98,6 @@ pub(crate) fn take(layout: &Layout, id: PackageId) -> io::Result<Option<FileLock
     }
 }
 
-/// Whether a launch holds `id`, creating nothing.
 #[cfg(feature = "store")]
 pub(crate) fn busy(layout: &Layout, id: PackageId) -> io::Result<bool> {
     let path = layout.lease(id);
@@ -189,8 +158,6 @@ fn lease_file(layout: &Layout, id: PackageId) -> io::Result<std::path::PathBuf> 
 mod tests {
     use super::*;
 
-    /// Launches of a fresh store take their first leases at once: every one
-    /// is held, none fails on the leases directory another just made.
     #[test]
     fn launches_taking_first_leases_at_once_all_hold() {
         const LAUNCHES: usize = 16;

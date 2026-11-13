@@ -14,9 +14,8 @@ pub(crate) fn resolve(root: &Path, path: &VPath) -> PathBuf {
         .fold(root.to_path_buf(), |path, component| path.join(component))
 }
 
-/// `path` below `root`, with its parent directories created. A file in the
-/// way of a parent is [`FsError::NotADirectory`], as on every backend, where
-/// `create_dir_all` reports the name as taken.
+/// `path` below `root`, with its parent directories created; a file in the way of a parent is
+/// [`FsError::NotADirectory`].
 fn prepare(root: &Path, path: &VPath) -> Result<PathBuf, FsError> {
     let target = resolve(root, path);
     if let Some(parent) = target.parent() {
@@ -35,7 +34,6 @@ pub(crate) fn read(root: &Path, path: &VPath) -> Result<Vec<u8>, FsError> {
     Ok(fs::read(resolve(root, path))?)
 }
 
-/// At most the first `max` bytes, without reading the rest.
 pub(crate) fn read_prefix(root: &Path, path: &VPath, max: usize) -> Result<Vec<u8>, FsError> {
     use std::io::Read as _;
     let file = fs::File::open(resolve(root, path))?;
@@ -45,7 +43,6 @@ pub(crate) fn read_prefix(root: &Path, path: &VPath, max: usize) -> Result<Vec<u
     Ok(bytes)
 }
 
-/// Add `bytes` at the end, creating the file (and its folders) when missing.
 pub(crate) fn append(root: &Path, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
     use std::io::Write as _;
     let mut file = fs::OpenOptions::new()
@@ -64,8 +61,8 @@ pub(crate) fn write_atomic(root: &Path, path: &VPath, bytes: &[u8]) -> Result<()
     Ok(atomic::write(&prepare(root, path)?, bytes)?)
 }
 
-/// A user's document: through an existing symbolic link, keeping the
-/// target's permission bits, into a folder that must exist.
+/// A user's document: through an existing symbolic link, keeping the target's permission bits, into a
+/// folder that must exist.
 pub(crate) fn save_document(root: &Path, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
     Ok(atomic::write_preserving_target(
         &resolve(root, path),
@@ -91,7 +88,7 @@ pub(crate) fn create_new(root: &Path, path: &VPath, bytes: &[u8]) -> Result<bool
 pub(crate) fn rename_noreplace(root: &Path, from: &VPath, to: &VPath) -> Result<(), FsError> {
     let source = resolve(root, from);
     fs::symlink_metadata(&source)?;
-    // `renameatx_np` treats a rename onto itself as done; the name is taken.
+    // `renameatx_np` treats a rename onto itself as done, but here the name is taken.
     if from == to {
         return Err(FsError::AlreadyExists);
     }
@@ -105,9 +102,8 @@ pub(crate) fn rename_noreplace(root: &Path, from: &VPath, to: &VPath) -> Result<
     }
 }
 
-/// `renameat2(RENAME_NOREPLACE)` on Linux and `renameatx_np(RENAME_EXCL)` on
-/// Apple systems. A file system that refuses the flag gets the portable
-/// fallback.
+/// `renameat2(RENAME_NOREPLACE)` on Linux and `renameatx_np(RENAME_EXCL)` on Apple systems; a file
+/// system without them falls back to [`link_then_unlink`].
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -127,8 +123,8 @@ fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
     link_then_unlink(from, to)
 }
 
-/// A hard link cannot replace a name, so linking then unlinking the source
-/// moves a file without clobbering. Directories cannot be hard-linked.
+/// A hard link cannot replace a name, so linking then unlinking the source moves a file without
+/// clobbering; directory entries cannot be linked.
 fn link_then_unlink(from: &Path, to: &Path) -> io::Result<()> {
     if fs::symlink_metadata(from)?.is_dir() {
         return Err(io::Error::new(

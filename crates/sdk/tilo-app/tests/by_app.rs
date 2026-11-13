@@ -11,7 +11,11 @@ pub struct Player {
     pub playing: String,
 }
 
-#[resource(kind = "test.jukebox", label = "Player", app = "so.tilo.test-jukebox")]
+#[resource(
+    kind = "test.jukebox",
+    app = "so.tilo.test-jukebox",
+    catalogue = "tests/locales"
+)]
 impl Player {
     /// Play a video.
     #[action]
@@ -30,8 +34,8 @@ pub struct Played {
 
 #[resource(
     kind = "test.jukebox-played",
-    label = "Played",
-    app = "so.tilo.test-jukebox"
+    app = "so.tilo.test-jukebox",
+    catalogue = "tests/locales"
 )]
 impl Played {
     /// Note that a video was played.

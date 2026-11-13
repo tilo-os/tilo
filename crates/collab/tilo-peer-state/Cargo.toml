@@ -20,6 +20,7 @@ ignored = ["serde_bytes"]
 # Validity, expiry and deadlines read one clock on every target, the page's included.
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-actions = { path = "../actions" }
 fnv.workspace = true
 automerge.workspace = true

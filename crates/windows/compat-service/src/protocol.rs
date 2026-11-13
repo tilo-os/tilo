@@ -36,20 +36,14 @@ pub enum ProtocolRequest {
         version: u16,
         entry_id: String,
     },
-    /// The portal-selected descriptor accompanies this frame via `SCM_RIGHTS`.
     Install {
         version: u16,
         source_name: String,
     },
-    /// A second explicit confirmation streams the same portal-selected file
-    /// to the catalogued singleton Windows appliance. No path, command, or
-    /// guest operation ID crosses the protocol.
     InstallInVm {
         version: u16,
         source_name: String,
     },
-    /// Runs the separately confirmed Wine/Proton installation using the same
-    /// portal descriptor and server-side digest binding.
     InstallInCapsule {
         version: u16,
         source_name: String,
@@ -60,8 +54,6 @@ pub enum ProtocolRequest {
         version: u16,
         entry_id: String,
     },
-    /// Explicitly polls the singleton installer owned by this authenticated
-    /// session. There is no client-provided guest operation handle.
     RefreshVmInstallation {
         version: u16,
     },
@@ -179,8 +171,6 @@ pub enum ProtocolResponse {
         /// Appliance readiness is global session state, not a property inferred
         /// from whichever application rows happen to be published.
         vm_availability: VmAvailability,
-        /// The singleton installer operation, when one was started through
-        /// the Tilo portal. Candidate IDs remain opaque.
         vm_installation: Option<VmInstallation>,
         vm_uninstallation: Option<VmUninstallation>,
     },

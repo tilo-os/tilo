@@ -70,7 +70,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   works in its workspace ([environments.md, "Coding agents"](../../app-model/environments.md#coding-agents)).
 - **Reads, per record.** The task host asks the door for each record it reads, once per
   program (`{"record": {app, record}}`; the person's own record for an app with
-  `records: .own`). The broker decides it at the record's node with that actor, the lesser of
+  `records: .own`). The door answers for every app whose package the session runs: a tilolang
+  app the session hosts keeps its record in the session's one record, so its committed content
+  is the door's own to hand over, and no app is started to read it. The broker decides the read
+  at the record's node with that actor, the lesser of
   the agent's and the person's grants (`RecordReads`, `record_read.rs`), and the workspace's
   document owner captures it under the person's device certificate, whose own check is the
   person's read. The capture decides the agent's read again before every chunk it hands out.
@@ -233,9 +236,13 @@ get parts of long requests wrong most often. `history task` lists the steps; `un
 
 ## 9. Evals
 
-Reusing what exists (`scripts/perf/agent_task.py` with its fake model, agent-participant's
-`campaign_bench` and `campaign_replay`, `crates/dev/ai-bench`, the `instruction_mode_eval`
-scorer): a seeded simulated workspace (chat, mail, notes, files, tasks), about 30 tasks with
-checkable outcomes, cheap and strong models, and four interfaces: today's `tilo_*` tools,
-tilolang chaining, tilolang with pipe sugar (`|` as the same chain), and TypeScript against the
-same API. Measured: first-try errors, tokens, calls, correctness. The syntax follows the results.
+One mechanism, the agent's own: `apps/agent/tests/data/instruction_mode_eval.jsonl` holds the
+cases, `apps/agent/tests/instruction_mode_eval.rs` scores the production transform against them
+in the test suite, and `apps/agent/examples/instruction_mode_eval.rs` records a real provider
+over the same set and prints accuracy and latency. Growing the evals is adding cases there.
+
+What this does not cover yet, and the shape that would: a seeded simulated workspace (chat,
+mail, notes, files, tasks), about 30 tasks with checkable outcomes, cheap and strong models,
+and four interfaces: today's `tilo_*` tools, tilolang chaining, tilolang with pipe sugar (`|`
+as the same chain), and TypeScript against the same API. Measured: first-try errors, tokens,
+calls, correctness. The syntax follows the results.

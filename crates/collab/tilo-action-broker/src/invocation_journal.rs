@@ -16,9 +16,9 @@
 //! it), turns every nonterminal into an uncertain observation and compacts.
 //! Recovery never returns a dispatch permit.
 //!
-//! A store without entries has exactly the snapshot format earlier writers
-//! produced, so their stores open unchanged. An earlier writer refuses a store
-//! that still carries entries rather than ignoring them.
+//! A store of a version this build does not write is refused, not read: what
+//! rows a format holds is what its checks allow, so reading one the checks do
+//! not cover would admit rows this build would not have written.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -291,6 +291,9 @@ fn request_digest(request: &serde_json::Value) -> guarded::Digest {
     guarded::Digest(*hasher.finalize().as_bytes())
 }
 
+/// The store version this build writes and the only one it reads.
+const VERSION: u32 = 7;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot {
@@ -375,7 +378,7 @@ impl Loaded {
     fn empty(host: uuid::Uuid) -> Self {
         Self {
             snapshot: Snapshot {
-                version: 1,
+                version: VERSION,
                 host,
                 records: Vec::new(),
             },
@@ -413,7 +416,7 @@ impl Loaded {
         guarded::preflight(&mut &*head)?;
         let snapshot: Snapshot = serde_json::from_slice(head)
             .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
-        if !matches!(snapshot.version, 1..=7) || snapshot.host.is_nil() {
+        if snapshot.version != VERSION || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut loaded = Self {
@@ -429,7 +432,7 @@ impl Loaded {
             len: bytes.len() as u64,
         };
         for record in snapshot.records {
-            check_record(&record, loaded.snapshot.version, loaded.snapshot.host)?;
+            check_record(&record, loaded.snapshot.host)?;
             loaded.index.insert(&mut loaded.snapshot.records, record)?;
         }
         if rest.iter().all(u8::is_ascii_whitespace) {
@@ -459,16 +462,10 @@ impl Loaded {
     }
 
     fn replay(&mut self, entry: Entry) -> Result<(), String> {
-        if !matches!(entry.version, 1..=7) {
+        if entry.version != VERSION {
             return Err("invocation journal entry version unsupported".into());
         }
-        // The floor only rises. Earlier writers stamped every entry after an
-        // effect preparation 5, even above a native task's floor of 6; such an
-        // entry is replayed under the raised floor, which every row must still
-        // satisfy, so a store they left behind reopens instead of refusing.
-        let floor = self.snapshot.version.max(entry.version);
-        check_record(&entry.record, floor, self.snapshot.host)?;
-        self.snapshot.version = floor;
+        check_record(&entry.record, self.snapshot.host)?;
         self.entries = self.entries.saturating_add(1);
         let Some(&at) = self.index.by_invocation.get(&entry.record.key.invocation) else {
             return self
@@ -493,7 +490,7 @@ impl Loaded {
     }
 }
 
-/// Every check one stored row must pass under the writer floor `version`.
+/// Every check one stored row must pass.
 pub(super) fn evidence_facts(
     key: &InvocationKey,
     intent: &serde_json::Value,
@@ -550,12 +547,9 @@ fn check_evidence(
     evidence.validate_retained(intent)
 }
 
-fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> Result<(), String> {
+fn check_record(record: &DurableInvocation, host: uuid::Uuid) -> Result<(), String> {
     record.key.owner.validate()?;
     if let Some(evidence) = &record.admission {
-        if version < 7 {
-            return Err("signed admission requires journal version 7".into());
-        }
         check_evidence(&record.key, &record.intent, evidence)?;
         evidence.validate_request_digest(
             record
@@ -577,23 +571,8 @@ fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> R
             return Err("terminal category differs from retained outcome".into());
         }
     }
-    if version < 6 && matches!(record.key.owner, InvocationOwner::NativeTask { .. }) {
-        return Err("native task replay ownership requires journal version 6".into());
-    }
     if let Some(prepared) = &record.prepared_effect {
-        if version < 5 {
-            return Err("prepared effect requires journal version 5".into());
-        }
         prepared.validate(record)?;
-    }
-    if record.guarded.is_some() && version < 3 {
-        return Err("guarded read requires journal version 3".into());
-    }
-    if version < 4 && matches!(record.key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
-        return Err("authenticated local ownership requires journal version 4".into());
-    }
-    if version == 1 && matches!(record.key.owner, InvocationOwner::Enrolled { .. }) {
-        return Err("private invocation ownership requires journal version 2".into());
     }
     if record.request_digest.is_some()
         && record
@@ -971,7 +950,6 @@ impl InvocationJournal {
             evidence
                 .opening_for_owner(&evidence.receipt.facts.actor)?
                 .verify(&evidence.receipt, &intent)?;
-            self.snapshot.version = self.snapshot.version.max(7);
         }
         key.owner.validate()?;
         if let Some(existing) = self.position(&key) {
@@ -997,15 +975,6 @@ impl InvocationJournal {
         let update = InvocationUpdate::Accepted {
             invocation: key.invocation,
         };
-        if matches!(key.owner, InvocationOwner::Enrolled { .. }) {
-            self.snapshot.version = self.snapshot.version.max(2);
-        }
-        if matches!(key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
-            self.snapshot.version = self.snapshot.version.max(4);
-        }
-        if matches!(key.owner, InvocationOwner::NativeTask { .. }) {
-            self.snapshot.version = self.snapshot.version.max(6);
-        }
         let (intent, request_digest) = retained_intent(intent);
         let at = self.index.insert(
             &mut self.snapshot.records,
@@ -1131,7 +1100,6 @@ impl InvocationJournal {
         }
         let started = record.clone();
         record.guarded = Some(guarded::State::selected(selection));
-        self.snapshot.version = self.snapshot.version.max(3);
         let write = self.commit(at, Injected::default())?;
         self.settle(at, &started, write)
     }
@@ -1511,8 +1479,7 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    const LEGACY_SNAPSHOT: &str = r#"{"version":1,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"legacy"}},"uncertain":false,"cancellation_requested":false}]}"#;
-    const ENROLLED_SNAPSHOT: &str = r#"{"version":2,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
+    const PRIVATE_RECORD: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
 
     /// A first open cut short after the directory and its lock exist, but
     /// before the first snapshot is written (the process was killed), left a
@@ -1549,95 +1516,55 @@ mod tests {
     }
 
     #[test]
-    fn enrolled_journal_literal_versions_retain_owner_and_writer_floor() {
-        for (literal, version) in [(LEGACY_SNAPSHOT, 1), (ENROLLED_SNAPSHOT, 2)] {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().join("journal");
-            drop(InvocationJournal::open(&root).unwrap());
-            std::fs::write(root.join("records.json"), literal).unwrap();
-            let mut journal = InvocationJournal::open(&root).expect("supported private ownership");
-            let before: serde_json::Value = serde_json::from_str(literal).unwrap();
-            assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
-            let mut local = key();
-            local.host = journal.host();
-            local.owner = InvocationOwner::Local {
+    fn a_private_store_reopens_with_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        drop(InvocationJournal::open(&root).unwrap());
+        std::fs::write(root.join("records.json"), PRIVATE_RECORD).unwrap();
+        let mut journal = InvocationJournal::open(&root).expect("private ownership reads");
+        let before: serde_json::Value = serde_json::from_str(PRIVATE_RECORD).unwrap();
+        assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
+        let mut local = key();
+        local.host = journal.host();
+        local.owner = InvocationOwner::Local {
+            actor: "person".into(),
+        };
+        journal.admit(local, serde_json::json!({}), 2).unwrap();
+        assert_eq!(
+            journal.snapshot.version, VERSION,
+            "the store keeps its version"
+        );
+        drop(journal);
+        let recovered = InvocationJournal::open(&root).unwrap();
+        assert_eq!(
+            serde_json::to_value(&recovered.snapshot.records[0]).unwrap(),
+            before["records"][0]
+        );
+        let mut foreign = recovered.snapshot.records[0].key.clone();
+        for owner in [
+            InvocationOwner::Local {
                 actor: "person".into(),
-            };
-            journal.admit(local, serde_json::json!({}), 2).unwrap();
-            assert_eq!(
-                journal.snapshot.version, version,
-                "legacy writes never downgrade a private store"
-            );
-            drop(journal);
-            let recovered = InvocationJournal::open(&root).unwrap();
-            assert_eq!(
-                serde_json::to_value(&recovered.snapshot.records[0]).unwrap(),
-                before["records"][0]
-            );
-            if version == 2 {
-                let mut foreign = recovered.snapshot.records[0].key.clone();
-                for owner in [
-                    InvocationOwner::Local {
-                        actor: "person".into(),
-                    },
-                    InvocationOwner::Certified {
-                        root: [1; 32],
-                        device: [2; 32],
-                    },
-                    InvocationOwner::Certified {
-                        root: [1; 32],
-                        device: [3; 32],
-                    },
-                ] {
-                    foreign.owner = owner;
-                    assert!(
-                        recovered.lookup(&foreign).unwrap().is_none(),
-                        "private recovered result cannot alias a public owner"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn enrolled_journal_old_owner_decoder_rejects_private_rows() {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        enum VersionOneOwner {
-            Local { actor: String },
-            Certified { root: [u8; 32], device: [u8; 32] },
-        }
-        let legacy: serde_json::Value = serde_json::from_str(LEGACY_SNAPSHOT).unwrap();
-        let old =
-            serde_json::from_value::<VersionOneOwner>(legacy["records"][0]["key"]["owner"].clone())
-                .unwrap();
-        assert!(matches!(old, VersionOneOwner::Local { actor } if actor == "person"));
-        let certified: VersionOneOwner = serde_json::from_value(
-            serde_json::to_value(InvocationOwner::Certified {
+            },
+            InvocationOwner::Certified {
                 root: [1; 32],
                 device: [2; 32],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            matches!(certified, VersionOneOwner::Certified { root, device } if root == [1;32] && device == [2;32])
-        );
-        let private: serde_json::Value = serde_json::from_str(ENROLLED_SNAPSHOT).unwrap();
-        assert_ne!(private["version"], 1, "old snapshot gate fails explicitly");
-        assert!(
-            serde_json::from_value::<VersionOneOwner>(
-                private["records"][0]["key"]["owner"].clone()
-            )
-            .is_err(),
-            "old enum never silently classifies private ownership as Local"
-        );
+            },
+            InvocationOwner::Certified {
+                root: [1; 32],
+                device: [3; 32],
+            },
+        ] {
+            foreign.owner = owner;
+            assert!(
+                recovered.lookup(&foreign).unwrap().is_none(),
+                "private recovered result cannot alias a public owner"
+            );
+        }
     }
 
     #[test]
     fn enrolled_journal_upgrade_barrier_never_returns_effect_permission_on_failure() {
-        let private: Snapshot =
-            serde_json::from_str(ENROLLED_SNAPSHOT).expect("private owner data");
+        let private: Snapshot = serde_json::from_str(PRIVATE_RECORD).expect("private owner data");
         for failure in [BarrierFailure::File, BarrierFailure::Directory] {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
@@ -1658,12 +1585,12 @@ mod tests {
             drop(journal);
             let reopened = InvocationJournal::open(&root).unwrap();
             if failure == BarrierFailure::Directory {
-                assert_eq!(reopened.snapshot.version, 2);
+                assert_eq!(reopened.snapshot.version, VERSION);
                 let retained = reopened.lookup(&key).unwrap().unwrap();
                 assert!(retained.uncertain);
                 assert_eq!(retained.key.owner, key.owner);
             } else {
-                assert_eq!(reopened.snapshot.version, 1);
+                assert_eq!(reopened.snapshot.version, VERSION);
                 assert!(reopened.lookup(&key).unwrap().is_none());
             }
         }
@@ -1672,16 +1599,16 @@ mod tests {
     #[test]
     fn enrolled_journal_rejects_private_downgrade_and_noncanonical_ownership() {
         for literal in [
-            ENROLLED_SNAPSHOT.replace("\"version\":2", "\"version\":1"),
-            ENROLLED_SNAPSHOT.replace(
+            PRIVATE_RECORD.replace("\"version\":7", "\"version\":6"),
+            PRIVATE_RECORD.replace(
                 "00000000-0000-0000-0000-000000000005",
                 "00000000000000000000000000000005",
             ),
-            ENROLLED_SNAPSHOT.replace(
+            PRIVATE_RECORD.replace(
                 "00000000-0000-0000-0000-000000000006",
                 "00000000-0000-0000-0000-000000000000",
             ),
-            ENROLLED_SNAPSHOT.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
+            PRIVATE_RECORD.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");

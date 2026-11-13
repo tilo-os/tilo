@@ -5,13 +5,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use unic_langid::LanguageIdentifier;
 
-/// An owned value to interpolate into a localized message. Owned (rather than a
-/// borrowed `FluentValue`) so callers — most importantly the retained-mode
-/// `Text` widget — can stash arguments alongside a translation key and re-format
-/// every frame without keeping the original references alive.
-///
-/// `From` is implemented for the common scalar types, so `5`, `1.5`, `"x"`, and
-/// `String` all coerce directly at the call site.
+/// An owned value to interpolate into a localized message.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArgValue {
     Number(f64),
@@ -48,12 +42,17 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
-/// The Fluent message a label, placeholder or button shows: looked up in
-/// the active locale when drawn, shown verbatim when no catalog has it.
-///
-/// A label is written as the message id of the app's source catalog
-/// (`"bookmarks-add"`), and `tilo-app check` fails on a label that
-/// `locales/en-US.ftl` does not have.
+impl From<&tilo_resource::label::Argument> for ArgValue {
+    fn from(argument: &tilo_resource::label::Argument) -> Self {
+        match argument {
+            tilo_resource::label::Argument::Text(text) => ArgValue::Text(text.clone()),
+            tilo_resource::label::Argument::Number(number) => ArgValue::Number(*number),
+        }
+    }
+}
+
+/// The Fluent message a label, placeholder or button shows: looked up in the active locale when drawn,
+/// shown verbatim when no catalog has it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelKey(std::borrow::Cow<'static, str>);
 
@@ -113,7 +112,6 @@ impl From<LabelKey> for String {
     }
 }
 
-/// Widening conversions into `f64` — exact for every value of `$t`.
 macro_rules! arg_from_number_lossless {
     ($($t:ty),*) => {$(
         impl From<$t> for ArgValue {
@@ -123,10 +121,9 @@ macro_rules! arg_from_number_lossless {
 }
 arg_from_number_lossless!(i8, i16, i32, u8, u16, u32, f32);
 
-/// Narrowing conversions into `f64`, for display/interpolation only: a
-/// fluent message shows a *formatted* number, not an exact one, so losing
-/// precision above 2^52 — a magnitude no UI counter or index realistically
-/// reaches — is a deliberate, harmless approximation.
+/// Narrowing conversions into `f64`, for display/interpolation only: a fluent message shows a
+/// *formatted* number, not an exact one, so losing precision above 2^52 — a magnitude no UI counter or
+/// index realistically reaches — is a deliberate, harmless approximation.
 macro_rules! arg_from_number_lossy {
     ($($t:ty),*) => {$(
         impl From<$t> for ArgValue {
@@ -146,43 +143,33 @@ impl From<f64> for ArgValue {
     }
 }
 
-/// A bundle of catalogues whose parsed resources are shared with every
-/// thread that loaded the same text ([`shared_resource`]).
+/// A bundle of catalogues whose parsed resources are shared with every thread that loaded the same text
+/// ([`shared_resource`]).
 type Bundle = FluentBundle<Arc<FluentResource>>;
 
 pub struct I18nManager {
-    /// Every catalogue added on this thread, by locale, the locales in the
-    /// order they were first added. Only the shown ones are parsed
-    /// ([`Self::parse_shown`]).
+    /// Every catalogue added on this thread, by locale, the locales in the order they were first added.
     catalogs: Vec<(LanguageIdentifier, Vec<CatalogText>)>,
     /// The parsed catalogues of the active language and the source locale.
-    /// Selecting another language parses its catalogues and drops the ones
-    /// no longer shown.
     bundles: HashMap<LanguageIdentifier, LoadedBundle>,
-    /// The languages a window catalogue added on this thread is in: the
-    /// languages this window speaks (see [`Self::speaking_locale`]).
+    /// The languages a window catalogue added on this thread is in: the languages this window speaks
+    /// (see [`Self::speaking_locale`]).
     spoken: Vec<LanguageIdentifier>,
     source_locale: LanguageIdentifier,
-    /// The source catalogue rebuilt under the active locale, keyed by the
-    /// revision, source count and locale it was built for.
+    /// The source catalogue rebuilt under the active locale, keyed by the revision, source count and
+    /// locale it was built for.
     localized_source: std::cell::RefCell<Option<LocalizedSource>>,
-    /// Distinguishes this manager from any installed before it on the thread.
     id: u64,
     pub current_locale: LanguageIdentifier,
     revision: u64,
 }
 
-/// Where one catalogue's Fluent text comes from. Text is parsed only while
-/// its language is shown, so a catalogue in a language nobody on the
-/// desktop reads costs its embedded bytes and nothing else.
+/// Where one catalogue's Fluent text comes from. Text is parsed only while its language is shown, so a
+/// catalogue in a language nobody on the desktop reads costs its embedded bytes and nothing else.
 #[derive(Clone)]
 enum CatalogText {
-    /// Embedded in the binary.
     Embedded(&'static str),
-    /// A language pack's catalogue, read from disk when its language is
-    /// shown.
     Pack(LanguagePack, &'static str),
-    /// Parsed when it was added.
     Parsed(Arc<FluentResource>),
 }
 
@@ -196,7 +183,6 @@ impl CatalogText {
         }
     }
 
-    /// Whether this is one of the toolkit's own widget label catalogues.
     fn is_widget_label(&self) -> bool {
         matches!(self, Self::Embedded(text) if WIDGET_CATALOG
             .catalogs
@@ -204,9 +190,8 @@ impl CatalogText {
             .any(|(_, source)| std::ptr::eq(*text, *source)))
     }
 
-    /// The parsed resource: `None` for text that does not parse (a
-    /// translator's typo degrades to "not loaded") or a pack no longer
-    /// installed.
+    /// The parsed resource: `None` for text that does not parse (a translator's typo degrades to "not
+    /// loaded") or a pack no longer installed.
     fn resource(&self) -> Option<Arc<FluentResource>> {
         match self {
             Self::Embedded(text) => shared_resource(std::borrow::Cow::Borrowed(text)).ok(),
@@ -218,22 +203,17 @@ impl CatalogText {
     }
 }
 
-/// What a catalogue's words say about the window that holds them
-/// ([`I18nManager::speaking_locale`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
-    /// The window's own words: a language they are written in is one the window speaks.
     Window,
     /// Words every window shows: they ride along in its language and never choose it.
     Shared,
 }
 
-/// One locale's parsed catalogues.
 struct LoadedBundle {
     bundle: Bundle,
     /// The resources added to `bundle`, in order.
     resources: Vec<Arc<FluentResource>>,
-    /// How many of the locale's catalogues have been read into it.
     read: usize,
 }
 
@@ -247,15 +227,10 @@ impl LoadedBundle {
     }
 }
 
-/// Every parsed catalogue in the process, by a hash of its text. Threads
-/// that load the same catalogue (the compositor's main thread and its
-/// broker threads, an embedded catalogue and the toolkit's own fallback)
-/// share one parse; it is freed when the last bundle holding it is.
+/// Every parsed catalogue in the process, by a hash of its text.
 static PARSED: std::sync::Mutex<Vec<(u64, std::sync::Weak<FluentResource>)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// `text` parsed, shared with every other bundle in the process that holds
-/// the same text.
 fn shared_resource(text: std::borrow::Cow<'_, str>) -> Result<Arc<FluentResource>, String> {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -281,9 +256,6 @@ fn shared_resource(text: std::borrow::Cow<'_, str>) -> Result<Arc<FluentResource
 }
 
 /// Layout-stress translation mode used by screenshots and acceptance tests.
-/// It deliberately preserves digits and punctuation while expanding letters,
-/// making clipped labels and fixed-width controls visible before translators
-/// have completed a catalog.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PseudoLocale {
     #[default]
@@ -307,11 +279,11 @@ thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
     static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
     static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
-    /// Messages resolved without variables, under the manager and revision
-    /// they were resolved at ([`I18nManager::lookup`]).
+    /// Messages resolved without variables, under the manager and revision they were resolved at
+    /// ([`I18nManager::lookup`]).
     static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
-    /// The words resolved from a catalogue in another language than the
-    /// window's, `(key, locale)`, each key once ([`I18nManager::foreign_words`]).
+    /// The words resolved from a catalogue in another language than the window's, `(key, locale)`, each
+    /// key once ([`I18nManager::foreign_words`]).
     static FOREIGN_WORDS: std::cell::RefCell<Vec<(String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     // Shared controls remain readable even when an app installs only its own
@@ -320,14 +292,11 @@ thread_local! {
         make_bundle(&parse_locale_or_default("en-US"), include_str!("../locales/en-US.ftl"));
 }
 
-/// What [`I18nManager::lookup`] resolved without variables since the
-/// catalogues, the locale, pseudo-localisation or the region formats last
-/// changed: the same key resolves to the same text until one of them does.
-/// A list publishing a hundred rows asked Fluent for the same dozen labels
-/// on each of them.
+/// What [`I18nManager::lookup`] resolved without variables since the catalogues, the locale,
+/// pseudo-localisation or the region formats last changed: the same key resolves to the same text until
+/// one of them does.
 #[derive(Default)]
 struct PlainLookups {
-    /// The manager and its [`I18nManager::revision`] they were resolved at.
     stamp: Option<(Option<u64>, u64)>,
     texts: HashMap<String, String>,
 }
@@ -344,8 +313,8 @@ struct LocalizedSource {
     bundle: Bundle,
 }
 
-/// The pseudo-locale language subtag (`qps-ploc`, `qps-plocm`): selecting it
-/// renders source copy through the [`PseudoLocale::Expanded`] transform.
+/// The pseudo-locale language subtag (`qps-ploc`, `qps-plocm`): selecting it renders source copy
+/// through the [`PseudoLocale::Expanded`] transform.
 const PSEUDO_LANGUAGE: &str = "qps";
 
 thread_local! {
@@ -360,14 +329,12 @@ fn next_manager_id() -> u64 {
     })
 }
 
-/// The identity of this thread's manager, if one is installed.
 fn manager_id() -> Option<u64> {
     MANAGER.with(|manager| manager.borrow().as_ref().map(|manager| manager.id))
 }
 
-/// The markers a pseudo-localised string is wrapped in. They are what makes
-/// the copy findable in a frame at a glance, so exactly one pair may surround
-/// any string.
+/// The markers a pseudo-localised string is wrapped in. They are what makes the copy findable in a
+/// frame at a glance, so exactly one pair may surround any string.
 const PSEUDO_OPEN: char = '⟦';
 const PSEUDO_CLOSE: char = '⟧';
 
@@ -408,9 +375,7 @@ fn pseudo_expand(value: &str) -> String {
     expanded
 }
 
-/// Expand `value` unless pseudo-localisation is off and the active locale is
-/// not a pseudo-locale. Interpolated string arguments are the app's data (a
-/// file name, a person), not copy, so they pass through unexpanded.
+/// Expand `value` unless pseudo-localisation is off and the active locale is not a pseudo-locale.
 fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language: bool) -> String {
     let mode = PSEUDO_LOCALE.with(Cell::get);
     if mode == PseudoLocale::Off && !pseudo_language {
@@ -455,11 +420,9 @@ fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language
     expanded
 }
 
-/// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value
-/// (e.g. a garbled system locale) rather than panicking the whole app over
-/// a string it didn't choose. `en-US` is a compile-time-known-valid literal,
-/// so the final `unwrap_or_default` (BCP-47 "und", undefined) is a belt and
-/// braces path that's never actually reached.
+/// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value (e.g. `en-US` is a
+/// compile-time-known-valid literal, so the final `unwrap_or_default` (BCP-47 "und", undefined) is a
+/// belt and braces path that's never actually reached.
 fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
     parse_locale(locale).unwrap_or_else(|_| "en-US".parse().unwrap_or_default())
 }
@@ -469,30 +432,22 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
-/// The language this desktop speaks, as a BCP 47 tag: the one the person
-/// chose in Settings, or else the locale the device runs in
-/// ([`settings_store::appearance::preferred_language`]). Every surface and
-/// app resolves its language, and the language of the dates it formats, from
-/// this one answer.
+/// The language this desktop speaks, as a BCP 47 tag: the one the person chose in Settings, or else the
+/// locale the device runs in ([`settings_store::appearance::preferred_language`]).
 #[must_use]
 pub fn preferred_language() -> Option<String> {
     settings_store::appearance::preferred_language()
 }
 
-/// [`preferred_language`] as the identifier the catalogue manager installs.
 fn preferred_locale() -> Option<LanguageIdentifier> {
     preferred_language().and_then(|language| parse_locale(&language).ok())
 }
 
-/// Select the language the person chose on this thread, when it is not the
-/// one selected: a choice made in Settings while the app runs relabels it
-/// (the [`I18nManager::revision`] moves). With no choice, the system
-/// locale; with neither, the source locale.
+/// Select the language the person chose on this thread, when it is not the one selected: a choice made
+/// in Settings while the app runs relabels it (the [`I18nManager::revision`] moves).
 pub fn follow_configured_language() {
     match preferred_locale() {
         Some(locale) => {
-            // A language chosen just after its pack was installed is in no
-            // catalogue the window speaks yet: read the packs again.
             let loaded = MANAGER.with(|manager| {
                 manager
                     .borrow()
@@ -508,23 +463,18 @@ pub fn follow_configured_language() {
     }
 }
 
-/// The language a window speaks, chosen once from the person's preference and the languages
-/// what the window shows ships (`shipped`, the locales of its catalogues): the language they
-/// prefer when it is among them, the same language in another region when that is, the source
-/// language when it ships that, else the first it ships. One window speaks one language, so an
-/// app that ships a translation leaves none of its chrome, its frames' words or its dates in
-/// another. See [`tilo_history::window_language`].
+/// The language a window speaks, chosen once from the person's preference and the languages what the
+/// window shows ships (`shipped`, the locales of its catalogues): the language they prefer when it is
+/// among them, the same language in another region when that is, the source language when it ships
+/// that, else the first it ships.
 #[must_use]
 pub fn window_language(shipped: &[&str]) -> String {
     let preference = preferred_locale().map(|locale| locale.to_string());
     tilo_history::window_language(preference.as_deref(), shipped)
 }
 
-/// Install a package's catalogues (`(locale, Fluent text)`) and make this window speak one
-/// language: the person's when the package ships it, the package's source language otherwise.
-/// The toolkit's own words and the platform's formats follow the same language, so a window of
-/// an app written in one language reads in that language throughout. A host that draws one
-/// window on a thread calls this when the package loads; its language stays as the window's.
+/// Install a package's catalogues (`(locale, Fluent text)`) and make this window speak one language:
+/// the person's when the package ships it, the package's source language otherwise.
 pub fn speak_window_language(catalogues: &[(String, String)]) -> String {
     // The toolkit's own labels first: on a thread with no catalogue yet they install it, in
     // the desktop's language, so the window's language is chosen over a catalogue that exists
@@ -564,9 +514,8 @@ fn make_bundle(locale: &LanguageIdentifier, source: &str) -> Result<Bundle, I18n
     Ok(bundle)
 }
 
-/// Log, once per message and thread, that `key` formatted only with errors
-/// in every catalogue: its caller left a variable out, or the message
-/// references one that does not exist. The person sees a `{ $… }`.
+/// Log, once per message and thread, that `key` formatted only with errors in every catalogue: its
+/// caller left a variable out, or the message references one that does not exist.
 fn report_unformatted(key: &str) {
     thread_local! {
         static REPORTED: std::cell::RefCell<std::collections::HashSet<String>> =
@@ -580,8 +529,8 @@ fn report_unformatted(key: &str) {
     }
 }
 
-/// Note that `key` showed in `locale`, when that is a language other than the window's
-/// (`speaking`): one window speaks one language, and every other is a word it should not say
+/// Note that `key` showed in `locale`, when that is a language other than the window's (`speaking`):
+/// one window speaks one language, and every other is a word it should not say
 /// ([`I18nManager::foreign_words`]).
 fn record_foreign(key: &str, locale: &LanguageIdentifier, speaking: &LanguageIdentifier) {
     if locale.language == speaking.language {
@@ -595,9 +544,7 @@ fn record_foreign(key: &str, locale: &LanguageIdentifier, speaking: &LanguageIde
     });
 }
 
-/// Formats a message through a chain of bundles. The first bundle that
-/// formats it cleanly wins; a bundle that formats it only with errors is
-/// remembered and returned if no later bundle does better.
+/// Formats a message through a chain of bundles.
 struct Resolution<'k, 'a> {
     key: &'k str,
     args: Option<&'a FluentArgs<'a>>,
@@ -616,9 +563,8 @@ impl Resolution<'_, '_> {
     }
 }
 
-/// The toolkit's own widget labels, in every language it ships, part of
-/// every manager from its start ([`I18nManager::replace`]). Every window shows
-/// them, so they ride along in its language instead of deciding it.
+/// The toolkit's own widget labels, in every language it ships, part of every manager from its start
+/// ([`I18nManager::replace`]).
 static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[
@@ -630,10 +576,6 @@ static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 .as_shared();
 
 /// Resolve a toolkit message in the host's locale.
-///
-/// A thread with a manager gets the toolkit's translations added to it once;
-/// a thread without one resolves the source copy, as every toolkit string
-/// does, and no manager is installed behind the host's back.
 pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
     if manager_id().is_some() {
         WIDGET_CATALOG.ensure();
@@ -642,13 +584,6 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
 }
 
 /// Resolve one of the toolkit's own messages in the host's locale.
-///
-/// The words are the toolkit's, so they resolve in the toolkit's catalogue:
-/// a framework crate (the app runner, the shell) names a toolkit message
-/// here, and an app's copy goes through the app's own
-/// [`EmbeddedCatalog`](crate::i18n::EmbeddedCatalog) instead. A thread with
-/// a manager gets the toolkit's translations added to it once; a thread
-/// without one resolves the source copy, as [`widget_format`] does.
 #[must_use]
 pub fn widget_text(key: &str) -> String {
     widget_text_with(key, None)
@@ -663,10 +598,8 @@ pub fn widget_text_with(key: &str, args: Option<&fluent::FluentArgs<'_>>) -> Str
     I18nManager::lookup(key, args)
 }
 
-/// The name a control is announced by: `name` taken as text when the caller
-/// resolved it (`resolved`, the row's caption an app localized itself), else
-/// as the message id [`widget_text`] resolves. `None` where there is no name
-/// to say, so the node falls back to what surrounds it.
+/// The name a control is announced by: `name` taken as text when the caller resolved it (`resolved`,
+/// the row's caption an app localized itself), else as the message id [`widget_text`] resolves.
 #[must_use]
 pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
     let said = if resolved {
@@ -677,25 +610,29 @@ pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
     (!said.is_empty()).then_some(said)
 }
 
-/// A resource's name in the language this thread reads: the catalogue entry
-/// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
-/// and nothing when none is, so the resource keeps the name it declares.
+/// A resource's name in the language this thread reads: the catalogue entry for its kind
+/// ([`tilo_resource::label::message_key`]) when one is loaded, and nothing when none is, so the
+/// resource keeps the name it declares.
 fn resource_label(
     catalogue: Option<&'static tilo_resource::label::Catalogue>,
     key: &str,
+    arguments: &[(&str, tilo_resource::label::Argument)],
 ) -> Option<String> {
     if let Some(catalogue) = catalogue {
         declared_catalogue(catalogue).ensure();
     }
     manager_id()?;
-    let said = I18nManager::lookup(key, None);
+    let arguments: Vec<(&str, ArgValue)> = arguments
+        .iter()
+        .map(|(name, value)| (*name, ArgValue::from(value)))
+        .collect();
+    let said = I18nManager::format(key, &arguments);
     (said != key).then_some(said)
 }
 
-/// The catalogue a declaration names its words in, loaded as any crate's
-/// embedded one: its words ride along in the window's language
-/// ([`EmbeddedCatalog::as_shared`]), its other languages read from the
-/// language packs. One per crate for the process's life.
+/// The catalogue a declaration names its words in, loaded as any crate's embedded one: its words ride
+/// along in the window's language ([`EmbeddedCatalog::as_shared`]), its other languages read from the
+/// language packs.
 fn declared_catalogue(
     catalogue: &'static tilo_resource::label::Catalogue,
 ) -> &'static EmbeddedCatalog {
@@ -723,20 +660,24 @@ fn declared_catalogue(
     held
 }
 
-/// [`resource_label`] of a kind's noun, formatted with the count `1` (one of
-/// it) or `2` (several): the catalogue's Fluent selector picks the singular
-/// or the plural in the reader's language.
+/// [`resource_label`] of a kind's noun, formatted with the count `1` (one of it) or `2` (several): the
+/// catalogue's Fluent selector picks the singular or the plural in the reader's language.
 fn resource_noun(key: &str, count: u32) -> Option<String> {
     manager_id()?;
     let said = I18nManager::format(key, &[("count", ArgValue::from(count))]);
     (said != key).then_some(said)
 }
 
+/// What one of the collection `key` names is, in this window's language, with its article ("an issue",
+/// "eine Aufgabe"): the noun the app's catalogue writes for it ([`tilo_resource::label::noun_key`]).
+#[must_use]
+pub fn noun(key: &str) -> Option<String> {
+    resource_noun(key, 1)
+}
+
 impl I18nManager {
-    /// Register shared widget labels in every bundled language without
-    /// replacing an application's catalogs or its selected language. A host
-    /// (the shell, an app) calls this once per thread so every toolkit widget
-    /// it draws follows the window's language; calling it again is free.
+    /// Register shared widget labels in every bundled language without replacing an application's
+    /// catalogs or its selected language.
     pub fn register_widget_messages() {
         WIDGET_CATALOG.ensure();
     }
@@ -751,11 +692,7 @@ impl I18nManager {
         );
     }
 
-    /// Install a manager with `catalogs`, selecting `active`, in place of
-    /// the thread's current one. It holds the toolkit's widget labels from
-    /// the start: joined later, on a widget's first label, they would move
-    /// [`Self::revision`] under a window already composed in this language
-    /// and recompose all of it.
+    /// Install a manager with `catalogs`, selecting `active`, in place of the thread's current one.
     fn replace(
         source_locale: LanguageIdentifier,
         active: LanguageIdentifier,
@@ -788,26 +725,24 @@ impl I18nManager {
         tilo_resource::label::install_noun(resource_noun);
     }
 
-    /// Whether the thread holds words of a window — a package's, or chrome a host draws around
-    /// it — rather than only the toolkit's own labels, which say nothing about its language.
+    /// Whether the thread holds words of a window — a package's, or chrome a host draws around it —
+    /// rather than only the toolkit's own labels, which say nothing about its language.
     fn has_window_words(&self) -> bool {
         self.catalogs
             .iter()
             .any(|(_, texts)| texts.iter().any(|text| !text.is_widget_label()))
     }
 
-    /// Whether this window speaks `locale`'s language: a catalogue of its own
-    /// is in it (see [`Self::speaking_locale`]).
+    /// Whether this window speaks `locale`'s language: a catalogue of its own is in it (see
+    /// [`Self::speaking_locale`]).
     fn speaks(&self, locale: &LanguageIdentifier) -> bool {
         self.spoken
             .iter()
             .any(|spoken| spoken.language == locale.language)
     }
 
-    /// Parse the catalogues of the locales shown that are not parsed yet,
-    /// and drop those of locales no longer shown. Shown are the active
-    /// language's (each of its regions is a fallback for the others) and the
-    /// source's.
+    /// Parse the catalogues of the locales shown that are not parsed yet, and drop those of locales no
+    /// longer shown.
     fn parse_shown(&mut self) {
         let Self {
             catalogs,
@@ -829,8 +764,6 @@ impl I18nManager {
                 .or_insert_with(|| LoadedBundle::new(locale));
             for text in texts.iter().skip(loaded.read) {
                 if let Some(resource) = text.resource() {
-                    // A message-id collision leaves the existing message in
-                    // place and still adds the resource's other messages.
                     let _ = loaded.bundle.add_resource(Arc::clone(&resource));
                     loaded.resources.push(resource);
                 }
@@ -839,16 +772,9 @@ impl I18nManager {
         }
     }
 
-    /// Add `text` to `locale`'s catalogues, parsing it if the locale is
-    /// shown. Text already added is not added again.
-    ///
-    /// The toolkit's widget labels stay last, so a message the host defines
-    /// under the same id wins over the toolkit's whenever it was added: a
-    /// catalogue added ahead of parsed widget labels parses the locale anew.
-    ///
-    /// A [`Role::Window`] catalogue makes `locale`'s language one this window
-    /// speaks ([`Self::speaking_locale`]); a [`Role::Shared`] one rides along
-    /// in it and never does.
+    /// Add `text` to `locale`'s catalogues, parsing it if the locale is shown. A [`Role::Window`]
+    /// catalogue makes `locale`'s language one this window speaks ([`Self::speaking_locale`]); a
+    /// [`Role::Shared`] one rides along in it and never does.
     fn add_catalog(&mut self, locale: LanguageIdentifier, text: CatalogText, role: Role) {
         if role == Role::Window
             && !self
@@ -884,12 +810,7 @@ impl I18nManager {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Atomically install every bundled Fluent catalog and select an explicit
-    /// active locale. Lookup falls back from the active language to
-    /// `source_locale`, then to the key itself.
-    ///
-    /// Every catalogue is parsed now, so a broken one is reported; text the
-    /// process has parsed before is shared rather than parsed again.
+    /// Atomically install every bundled Fluent catalog and select an explicit active locale.
     pub fn install(
         source_locale: &str,
         active_locale: &str,
@@ -923,28 +844,22 @@ impl I18nManager {
         Ok(())
     }
 
-    /// Install catalogs in the interface language ([`preferred_language`]: the
-    /// person's choice in Settings, else the system locale) with source-locale
-    /// fallback.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error documented by [`Self::install`].
+    /// Install catalogs in the interface language ([`preferred_language`]: the person's choice in
+    /// Settings, else the system locale) with source-locale fallback.
     pub fn install_system(source_locale: &str, catalogs: &[(&str, &str)]) -> Result<(), I18nError> {
         let active = preferred_locale()
             .map_or_else(|| source_locale.to_owned(), |locale| locale.to_string());
         Self::install(source_locale, &active, catalogs)
     }
 
-    /// The words of the window this process draws, in `locale`: a language it
-    /// is written in becomes one the window speaks.
+    /// The words of the window this process draws, in `locale`: a language it is written in becomes one
+    /// the window speaks.
     pub fn add_resource(locale: &str, ftl_source: String) {
         Self::add_resource_as(locale, ftl_source, Role::Window);
     }
 
-    /// The words of another window's package, one this process reads or runs
-    /// for someone else: they ride along like the toolkit's labels and say
-    /// nothing about the language this process draws in.
+    /// The words of another window's package, one this process reads or runs for someone else: they
+    /// ride along like the toolkit's labels and say nothing about the language this process draws in.
     pub fn add_shared_resource(locale: &str, ftl_source: String) {
         Self::add_resource_as(locale, ftl_source, Role::Shared);
     }
@@ -978,9 +893,8 @@ impl I18nManager {
         });
     }
 
-    /// Select `locale`, or the source locale when `locale` is `C`, `POSIX`
-    /// or does not parse — where [`Self::set_locale`] would keep the current
-    /// selection.
+    /// Select `locale`, or the source locale when `locale` is `C`, `POSIX` or does not parse — where
+    /// [`Self::set_locale`] would keep the current selection.
     pub fn set_locale_or_source(locale: &str) {
         if parse_locale(locale).is_ok() {
             Self::set_locale(locale);
@@ -997,9 +911,8 @@ impl I18nManager {
         }
     }
 
-    /// Whether a catalogue installed on this thread, in the active language
-    /// or the source, defines `key`. The shared toolkit fallback does not
-    /// count, and pseudo-localisation plays no part.
+    /// Whether a catalogue installed on this thread, in the active language or the source, defines
+    /// `key`.
     #[must_use]
     pub fn has_message(key: &str) -> bool {
         MANAGER.with(|manager| {
@@ -1017,9 +930,8 @@ impl I18nManager {
         })
     }
 
-    /// The locale the window selected: the person's choice when Settings or
-    /// the device named one, whatever the window's own catalogues carry. For
-    /// the language its words resolve in, see [`Self::window_locale`].
+    /// The locale the window selected: the person's choice when Settings or the device named one,
+    /// whatever the window's own catalogues carry.
     #[must_use]
     pub fn current_locale() -> String {
         MANAGER.with(|manager| {
@@ -1031,14 +943,8 @@ impl I18nManager {
     }
 
     /// The words this thread resolved from a catalogue in a language other than the window's
-    /// ([`Self::window_locale`]), `(message key, catalogue locale)` in the order they were
-    /// first shown, and each key once.
-    ///
-    /// A window speaks one language: a word it shows from another catalogue is either the
-    /// person's translation missing (the source language standing in) or the wrong catalogue
-    /// read. `tilolang layout-check` reports each as a `mixed-language` finding, and a test
-    /// reads them to hold a window to one language. A lookup the toolkit cached before
-    /// the record was cleared is not recorded again until the catalogues or the language move.
+    /// ([`Self::window_locale`]), `(message key, catalogue locale)` in the order they were first shown,
+    /// and each key once.
     #[must_use]
     pub fn foreign_words() -> Vec<(String, String)> {
         FOREIGN_WORDS.with(|seen| seen.borrow().clone())
@@ -1049,10 +955,9 @@ impl I18nManager {
         FOREIGN_WORDS.with(|seen| seen.borrow_mut().clear());
     }
 
-    /// The language this thread's window resolves in: the selected locale when
-    /// the window's own catalogues are in it, the source language otherwise
-    /// (the rule of [`I18nManager::speaking_locale`]). Dates, numbers and
-    /// history read in it, so a surface reads in one language throughout.
+    /// The language this thread's window resolves in: the selected locale when the window's own
+    /// catalogues are in it, the source language otherwise (the rule of
+    /// [`I18nManager::speaking_locale`]).
     #[must_use]
     pub fn window_locale() -> String {
         MANAGER.with(|manager| {
@@ -1080,9 +985,7 @@ impl I18nManager {
             .wrapping_add(crate::format::region::revision())
     }
 
-    /// Enable or disable pseudo-localized output. The retained-widget revision
-    /// changes on an effective transition so text is reshaped and layout can
-    /// be recomputed without restarting the application.
+    /// Enable or disable pseudo-localized output.
     pub fn set_pseudo_locale(mode: PseudoLocale) {
         PSEUDO_LOCALE.with(|current| {
             if current.replace(mode) != mode {
@@ -1098,20 +1001,8 @@ impl I18nManager {
         PSEUDO_LOCALE.with(Cell::get)
     }
 
-    /// Resolve `key` in the window's language ([`Self::speaking_locale`]: the
-    /// selected locale when its catalogues are in it, the source language
-    /// otherwise).
-    ///
-    /// Bundles are consulted in order: that language's own catalogue,
-    /// then a language-only catalogue of the same language, then other
-    /// regions of that language in registration order, then the source
-    /// catalogue — formatted under the window's language's plural rules, so
-    /// the copy and its count forms read in one language (a language without
-    /// CLDR rules formats with English ones) —
-    /// then the shared toolkit catalogue. The first bundle that formats the
-    /// message without errors wins; if every candidate reports errors the
-    /// first best-effort rendering is returned, and a key no bundle defines
-    /// resolves to itself.
+    /// Resolve `key` in the window's language ([`Self::speaking_locale`]: the selected locale when its
+    /// catalogues are in it, the source language otherwise).
     pub(crate) fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
         if args.is_some() {
             return Self::resolve_lookup(key, args);
@@ -1138,7 +1029,6 @@ impl I18nManager {
         text
     }
 
-    /// [`Self::lookup`], resolved by Fluent.
     fn resolve_lookup(key: &str, args: Option<&FluentArgs>) -> String {
         let mut resolution = Resolution {
             key,
@@ -1174,25 +1064,9 @@ impl I18nManager {
         apply_pseudo_locale(resolved, args, pseudo_language)
     }
 
-    /// The language this window speaks: the selected one when the window's own
-    /// words are in it, else the source.
-    ///
-    /// Only a window's own catalogues ([`Role::Window`]) say what language it
-    /// speaks. A catalogue shared with every window — the toolkit's widget
-    /// labels, which every binary carries, and the Settings index — rides
-    /// along in the selected language; being written in German does not make
-    /// an English app's window German. Without this rule a German machine
-    /// reads every toolkit word in German inside an otherwise English window,
-    /// whenever the window's own German is not installed (an app that ships
-    /// English only, a device whose language pack is missing).
-    ///
-    /// A process with no package to speak for it — a sheet of frames, a system
-    /// menu — reads the toolkit's labels in the language selected for it,
-    /// which is the person's; once it holds words a window is written in, they
-    /// read in their source language ([`Self::has_window_words`]).
+    /// The language this window speaks: the selected one when the window's own words are in it, else
+    /// the source.
     fn speaking_locale(&self) -> &LanguageIdentifier {
-        // No package speaks for this window: the toolkit's labels, written in every language it
-        // ships, read in the language selected for the process.
         if self.spoken.is_empty() && !self.has_window_words() {
             return &self.current_locale;
         }
@@ -1240,8 +1114,6 @@ impl I18nManager {
                     || c.locale != *current
             });
             if stale {
-                // The same parsed resources, under the window's
-                // language's plural rules.
                 let mut bundle = new_bundle(current);
                 for resource in &source.resources {
                     let _ = bundle.add_resource(Arc::clone(resource));
@@ -1268,30 +1140,43 @@ impl I18nManager {
         said
     }
 
-    /// Resolve a message without variables. This function-shaped form is
-    /// convenient in iterator adapters such as `Option::map`.
-    ///
-    /// Only the toolkit's own widgets call it: an app's copy resolves through
-    /// its [`EmbeddedCatalog`] (`CATALOG.t`), which loads the catalogue onto
-    /// the thread first. A lookup that skips that step reads a raw key
-    /// wherever the thread had not loaded the app's words yet.
+    /// Resolve a message without variables.
     #[must_use]
     pub(crate) fn lookup_plain(key: &str) -> String {
         Self::lookup(key, None)
     }
 
-    /// Resolve `key`, interpolating named variables into the message's
-    /// placeables (e.g. `counter = Count is { $count }` with `count=5` yields
-    /// `Count is 5`).
-    ///
-    /// Degrades gracefully: a key with no loaded resource falls back to the key
-    /// itself, and a placeable whose variable is missing is left as the
-    /// formatter's best-effort rendering rather than panicking. Passing an empty
-    /// slice is equivalent to a plain lookup.
-    ///
-    /// Only the toolkit's own widgets call it, for the reason
-    /// [`Self::lookup_plain`] gives: an app builds its sentences through
-    /// `CATALOG.t_args`.
+    /// Resolve `key`, interpolating named variables into the message's placeables (e.g.
+    #[must_use]
+    pub fn lookup_complete(key: &str, args: Option<&FluentArgs>) -> Option<String> {
+        let mut resolution = Resolution {
+            key,
+            args,
+            partial: None,
+        };
+        let (resolved, pseudo_language) = MANAGER.with(|m| {
+            let manager = m.borrow();
+            match manager.as_ref() {
+                Some(manager) => {
+                    let pseudo_language =
+                        manager.current_locale.language.as_str() == PSEUDO_LANGUAGE;
+                    (manager.resolve(&mut resolution), pseudo_language)
+                }
+                None => (None, false),
+            }
+        });
+        let resolved = resolved.or_else(|| {
+            TOOLKIT_SOURCE.with(|source| {
+                source
+                    .as_ref()
+                    .ok()
+                    .and_then(|bundle| resolution.attempt(bundle))
+            })
+        })?;
+        Some(apply_pseudo_locale(resolved, args, pseudo_language))
+    }
+
+    #[must_use]
     pub(crate) fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
         if args.is_empty() {
             return Self::lookup(key, None);
@@ -1304,12 +1189,9 @@ impl I18nManager {
     }
 }
 
-/// Which locale a thread's first catalogue selects when no manager exists yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FreshLocale {
-    /// The catalogue's source locale.
     Source,
-    /// The user's locale from the environment, as [`I18nManager::install_system`].
     System,
 }
 
@@ -1343,38 +1225,28 @@ pub struct EmbeddedCatalog {
     shared: bool,
 }
 
-/// Where a catalogue's other languages come from: the language packs.
-///
-/// An app's package carries only its source catalogue, the fallback every
-/// message resolves to. Each other language is a shared language pack,
-/// installed for the languages the person uses and the same bytes for
-/// everyone: `<root>/<locale>/<id>.ftl` for every catalogue that has that
-/// language, one directory per locale. The roots are [`language_pack_roots`],
-/// which the sandbox lets every app read, and, for a build run from its
-/// source tree (a developer's, a test's, a screenshot's), the crate's own
-/// `locales/` directory.
+/// Where a catalogue's other languages come from: the language packs. Each other language is a shared
+/// language pack, installed for the languages the person uses and the same bytes for everyone:
+/// `<root>/<locale>/<id>.ftl` for every catalogue that has that language, one directory per locale.
 #[derive(Debug, Clone, Copy)]
 pub struct LanguagePack {
     /// The catalogue's name in a pack: its crate's package name.
     pub id: &'static str,
     /// Every locale the catalogue is translated into, its source among them.
     pub locales: &'static [&'static str],
-    /// The crate's `locales/` directory where it was built, read when it
-    /// exists (`<dir>/<locale>.ftl`).
+    /// The crate's `locales/` directory where it was built, read when it exists (`<dir>/<locale>.ftl`).
     pub source_dir: &'static str,
 }
 
-/// Where a sandboxed app sees the person's language packs: the launcher
-/// binds them here, read-only.
+/// Where a sandboxed app sees the person's language packs: the launcher binds them here, read-only.
 pub const SANDBOX_LANGUAGE_PACKS: &str = "/var/lib/tilo/language-packs";
 
-/// Where the OS image's language packs are: the language it was installed
-/// in.
+/// Where the OS image's language packs are: the language it was installed in.
 pub const IMAGE_LANGUAGE_PACKS: &str = "/usr/share/tilo/language-packs";
 
-/// Where installed language packs are, in the order they are read: the ones
-/// the person installed ([`tilo_paths::language_packs_dir`], or where a
-/// sandbox sees them, [`SANDBOX_LANGUAGE_PACKS`]), then the image's.
+/// Where installed language packs are, in the order they are read: the ones the person installed
+/// ([`tilo_paths::language_packs_dir`], or where a sandbox sees them, [`SANDBOX_LANGUAGE_PACKS`]), then
+/// the image's.
 #[must_use]
 pub fn language_pack_roots() -> Vec<std::path::PathBuf> {
     tilo_paths::language_packs_dir()
@@ -1383,18 +1255,16 @@ pub fn language_pack_roots() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Moves when a language pack is installed while the process runs: every
-/// catalogue reads its languages again the next time it is used.
+/// Moves when a language pack is installed while the process runs: every catalogue reads its languages
+/// again the next time it is used.
 static PACKS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Read the installed language packs again: one installed since the
-/// catalogues loaded (the language a person just chose) is read the next
-/// time each catalogue is used.
+/// Read the installed language packs again: one installed since the catalogues loaded (the language a
+/// person just chose) is read the next time each catalogue is used.
 pub fn refresh_language_packs() {
     PACKS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// `locale` as a `'static` tag: every locale a pack names is kept once.
 fn interned(locale: &str) -> &'static str {
     static LOCALES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
     let mut locales = LOCALES
@@ -1420,8 +1290,7 @@ impl LanguagePack {
             ))
     }
 
-    /// The Fluent source of `locale`'s catalogue, from the first root that
-    /// has it.
+    /// The Fluent source of `locale`'s catalogue, from the first root that has it.
     #[must_use]
     pub fn read(&self, locale: &str) -> Option<String> {
         self.candidates(locale).find_map(|path| {
@@ -1431,16 +1300,14 @@ impl LanguagePack {
         })
     }
 
-    /// Whether `locale`'s catalogue is installed: in a pack, or beside the
-    /// crate where it was built.
+    /// Whether `locale`'s catalogue is installed: in a pack, or beside the crate where it was built.
     #[must_use]
     pub fn has(&self, locale: &str) -> bool {
         self.candidates(locale).any(|path| path.is_file())
     }
 
-    /// Every locale this catalogue has installed: the ones it was built
-    /// with and every pack installed since that carries it (a language the
-    /// registry offers later reads as any other).
+    /// Every locale this catalogue has installed: the ones it was built with and every pack installed
+    /// since that carries it (a language the registry offers later reads as any other).
     #[must_use]
     pub fn installed_locales(&self) -> Vec<&'static str> {
         let file = format!("{}.ftl", self.id);
@@ -1470,20 +1337,12 @@ impl LanguagePack {
     }
 }
 
-/// The language `tag` names, lower case: `de` of `de-DE`. One language
-/// pack serves a language, whatever region a tag adds.
-#[must_use]
-pub fn language_of(tag: &str) -> String {
-    tag.split(['-', '_'])
-        .next()
-        .unwrap_or(tag)
-        .to_ascii_lowercase()
-}
+/// The language `tag` names, as its language pack is named ([`tilo_paths::language_of`]): `de` of
+/// `de-DE`.
+pub use tilo_paths::language_of;
 
-/// `tag`'s language in its own words, as a language picker offers it: a
-/// person looking for their language reads it in that language, once,
-/// whatever region the tag adds. A language this build has no name for
-/// reads as the tag.
+/// `tag`'s language in its own words, as a language picker offers it: a person looking for their
+/// language reads it in that language, once, whatever region the tag adds.
 #[must_use]
 pub fn language_name(tag: &str) -> String {
     match language_of(tag).as_str() {
@@ -1493,21 +1352,17 @@ pub fn language_name(tag: &str) -> String {
     }
 }
 
-/// A language pack's catalogue larger than this is not one.
 const MAX_LANGUAGE_PACK_BYTES: u64 = 4 << 20;
 
 thread_local! {
-    /// The embedded catalogues this thread has loaded, by the address of
-    /// their sources, with the manager they were loaded into. A manager
-    /// installed since then starts without them, so they load again.
+    /// The embedded catalogues this thread has loaded, by the address of their sources, with the
+    /// manager they were loaded into.
     static EMBEDDED_LOADED: std::cell::RefCell<Vec<(usize, u64, u64)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl EmbeddedCatalog {
     /// Catalogues keyed by locale, one of which is `source_locale`.
-    ///
-    /// A thread with no manager gets one selecting `source_locale`.
     #[must_use]
     pub const fn new(
         source_locale: &'static str,
@@ -1523,27 +1378,25 @@ impl EmbeddedCatalog {
         }
     }
 
-    /// The words ride along in the window's language instead of deciding it: a catalogue every
-    /// window shows (the toolkit's widget labels, the Settings index) is written in languages
-    /// the window itself may not speak ([`I18nManager::speaking_locale`]).
+    /// The words ride along in the window's language instead of deciding it: a catalogue every window
+    /// shows (the toolkit's widget labels, the Settings index) is written in languages the window
+    /// itself may not speak ([`I18nManager::speaking_locale`]).
     #[must_use]
     pub const fn as_shared(mut self) -> Self {
         self.shared = true;
         self
     }
 
-    /// Read the catalogue's other languages from the language packs
-    /// ([`LanguagePack`]) when it loads.
+    /// Read the catalogue's other languages from the language packs ([`LanguagePack`]) when it loads.
     #[must_use]
     pub const fn with_language_pack(mut self, pack: LanguagePack) -> Self {
         self.pack = Some(pack);
         self
     }
 
-    /// Every language's Fluent source, by tag: the embedded ones and those
-    /// the installed language packs hold. For content that must be read in
-    /// every language at once, such as the words search matches whatever
-    /// language the desktop speaks.
+    /// Every language's Fluent source, by tag: the embedded ones and those the installed language packs
+    /// hold. For content that must be read in every language at once, such as the words search matches
+    /// whatever language the desktop speaks.
     #[must_use]
     pub fn every_source(&self) -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
         let mut sources: Vec<(&'static str, std::borrow::Cow<'static, str>)> = self
@@ -1553,7 +1406,11 @@ impl EmbeddedCatalog {
             .collect();
         if let Some(pack) = &self.pack {
             for locale in pack.installed_locales() {
-                if sources.iter().any(|(held, _)| *held == locale) {
+                let language = language_of(locale);
+                if sources
+                    .iter()
+                    .any(|(held, _)| language_of(held) == language)
+                {
                     continue;
                 }
                 if let Some(source) = pack.read(locale) {
@@ -1564,10 +1421,9 @@ impl EmbeddedCatalog {
         sources
     }
 
-    /// Every language's words for `key`, each once, in the order of
-    /// [`Self::every_source`]: what a stored name the app itself wrote can be
-    /// recognised by, whichever language wrote it (a built-in's name kept in
-    /// a record before the reader's language was known).
+    /// Every language's words for `key`, each once, in the order of [`Self::every_source`]: what a
+    /// stored name the app itself wrote can be recognised by, whichever language wrote it (a built-in's
+    /// name kept in a record before the reader's language was known).
     #[must_use]
     pub fn every_value(&self, key: &str) -> Vec<String> {
         // Keys are few and the answer never depends on the selected language,
@@ -1616,24 +1472,16 @@ impl EmbeddedCatalog {
         words
     }
 
-    /// The languages this catalogue can show, each once: the embedded ones
-    /// and those with an installed pack, in the order the catalogue names
-    /// them. A language installed under two tags (`de` and `de-DE`) is named
-    /// by the one without a region, the pack's.
+    /// The languages this catalogue can show, each tag once: the embedded ones and those with an
+    /// installed pack, in the order the catalogue names them.
     #[must_use]
     pub fn languages(&self) -> Vec<&'static str> {
         let mut languages: Vec<&'static str> =
             self.catalogs.iter().map(|(locale, _)| *locale).collect();
         if let Some(pack) = &self.pack {
             for locale in pack.installed_locales() {
-                let language = language_of(locale);
-                match languages
-                    .iter_mut()
-                    .find(|known| language_of(known) == language)
-                {
-                    Some(known) if locale.len() < known.len() => *known = locale,
-                    Some(_) => {}
-                    None => languages.push(locale),
+                if !languages.contains(&locale) {
+                    languages.push(locale);
                 }
             }
         }
@@ -1649,18 +1497,16 @@ impl EmbeddedCatalog {
             .map(|(_, source)| *source)
     }
 
-    /// A thread with no manager gets one selecting the interface language
-    /// from the person's settings, the system locale as its default (see
-    /// [`I18nManager::install_system`]).
+    /// A thread with no manager gets one selecting the interface language from the person's settings,
+    /// the system locale as its default (see [`I18nManager::install_system`]).
     #[must_use]
     pub const fn with_system_locale(mut self) -> Self {
         self.fresh_locale = FreshLocale::System;
         self
     }
 
-    /// Select `locale` when this catalogue first loads into a thread's manager, even over a
-    /// host's choice. For test builds that assert source copy on any
-    /// developer or CI machine.
+    /// Select `locale` when this catalogue first loads into a thread's manager, even over a host's
+    /// choice.
     #[must_use]
     pub const fn with_pinned_locale(mut self, locale: &'static str) -> Self {
         self.pinned_locale = Some(locale);
@@ -1668,10 +1514,6 @@ impl EmbeddedCatalog {
     }
 
     /// Load the catalogues on this thread if they are not loaded yet.
-    ///
-    /// A key with no catalogue resolves to the key itself rather than
-    /// panicking, so a missed call degrades to something legible — but it
-    /// looks wrong, which is why string sites go through [`Self::t`].
     pub fn ensure(&self) {
         let manager = manager_id();
         let key = self.catalogs.as_ptr().addr();
@@ -1722,8 +1564,8 @@ impl EmbeddedCatalog {
         }
     }
 
-    /// Every catalogue, unparsed: the embedded ones and those the installed
-    /// language packs hold, read when their language is shown.
+    /// Every catalogue, unparsed: the embedded ones and those the installed language packs hold, read
+    /// when their language is shown.
     fn catalog_texts(&self) -> Vec<(LanguageIdentifier, CatalogText)> {
         let mut texts: Vec<(&'static str, CatalogText)> = self
             .catalogs
@@ -1775,18 +1617,13 @@ impl EmbeddedCatalog {
     }
 
     /// Resolve `key`, interpolating named variables.
-    ///
-    /// The values are the app's own words — a label, a participant's name —
-    /// so the *sentence* around them stays in the catalogue and only the
-    /// nouns are substituted.
     #[must_use]
     pub fn t_args(&self, key: &str, args: &[(&str, ArgValue)]) -> String {
         self.ensure();
         I18nManager::format(key, args)
     }
 
-    /// Select `locale` (BCP-47 or POSIX, e.g. `de_DE.UTF-8`) on this thread.
-    /// An unparseable value, `C` or `POSIX` selects the source locale.
+    /// Select `locale` (BCP-47 or POSIX, e.g.
     pub fn set_locale(&self, locale: &str) {
         self.ensure();
         I18nManager::set_locale_or_source(locale);
@@ -1800,16 +1637,10 @@ impl EmbeddedCatalog {
     }
 }
 
-/// Define the calling crate's [`EmbeddedCatalog`]: `locales/en-US.ftl` in the
-/// crate embedded as the source, the crate's other `locales/<locale>.ftl`
-/// read from the language packs ([`LanguagePack`], named by the crate's
-/// package name), the user's locale when no host chose one, and source copy
-/// pinned in the crate's own tests.
-///
-/// `embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"])`
-/// defines just the static; `embedded_catalog!(pub fn, ["en-US"])`
-/// defines `CATALOG` and the `t` / `t_args` lookups the crate's copy
-/// goes through.
+/// Define the calling crate's [`EmbeddedCatalog`]: `locales/en-US.ftl` in the crate embedded as the
+/// source, the crate's other `locales/<locale>.ftl` read from the language packs ([`LanguagePack`],
+/// named by the crate's package name), the user's locale when no host chose one, and source copy pinned
+/// in the crate's own tests.
 #[macro_export]
 macro_rules! embedded_catalog {
     ($vis:vis static $name:ident, [$($locale:literal),+ $(,)?]) => {
@@ -1853,12 +1684,8 @@ macro_rules! embedded_catalog {
 mod tests {
     use super::*;
 
-    /// A catalogue embeds only its source; its other languages come from the
-    /// language packs, here the crate's own `locales/` directory.
-    /// The language the person picks in Settings is the one the interface
-    /// shows, on a machine whose system locale says otherwise; with no
-    /// choice the system locale decides (see
-    /// [`settings_store::appearance::preferred_language_from`]).
+    /// A catalogue embeds only its source; its other languages come from the language packs, here the
+    /// crate's own `locales/` directory.
     #[test]
     fn the_interface_language_is_the_one_the_settings_name() {
         let _restore = RestoreLookupState::capture();
@@ -1884,8 +1711,6 @@ mod tests {
             "the settings' language, not the machine's"
         );
         assert_eq!(I18nManager::lookup_plain("greeting"), "Hello");
-        // Dates read in that same language, not in the machine's: the lock
-        // screen's date and every other formatted day resolve here.
         let day = chrono::NaiveDate::from_ymd_opt(2025, 11, 5).unwrap();
         assert_eq!(
             crate::format::day_heading(day, false),
@@ -1898,8 +1723,8 @@ mod tests {
         );
     }
 
-    /// A window speaks one language: an app that ships English only leaves the toolkit's words
-    /// and the platform's formats English too, whatever the person's preference.
+    /// A window speaks one language: an app that ships English only leaves the toolkit's words and the
+    /// platform's formats English too, whatever the person's preference.
     #[test]
     fn an_english_only_app_leaves_the_window_english() {
         let _restore = RestoreLookupState::capture();
@@ -1943,10 +1768,9 @@ mod tests {
         );
     }
 
-    /// A window with no catalogue of its own — a system menu, a sheet of frames — has no
-    /// language of its own to hold: the toolkit's labels read in the language selected for it,
-    /// which is the person's. Once the thread holds words a window is written in (a host's
-    /// chrome), they read in their source language, whatever the desktop speaks.
+    /// A window with no catalogue of its own — a system menu, a sheet of frames — has no language of
+    /// its own to hold: the toolkit's labels read in the language selected for it, which is the
+    /// person's.
     #[test]
     fn a_window_with_no_catalogue_speaks_its_selected_language() {
         let _restore = RestoreLookupState::capture();
@@ -1965,10 +1789,9 @@ mod tests {
         assert_eq!(I18nManager::lookup_plain("date-field-add"), "Add date");
     }
 
-    /// A word a window shows from a catalogue in another language is recorded, so a check can
-    /// hold a window to one language: a translation the app lacks (its source language standing
-    /// in), or a catalogue of used package read in the wrong language. A word its own language
-    /// holds is not recorded.
+    /// A word a window shows from a catalogue in another language is recorded, so a check can hold a
+    /// window to one language: a translation the app lacks (its source language standing in), or a
+    /// catalogue of used package read in the wrong language.
     #[test]
     fn a_word_from_another_languages_catalogue_is_recorded() {
         let _restore = RestoreLookupState::capture();
@@ -2057,7 +1880,6 @@ mod tests {
         assert!(SPELLED.every_value("spelled-missing").is_empty());
     }
 
-    /// Lookup uses thread-local state; worker threads are reused across tests.
     struct RestoreLookupState {
         manager: Option<I18nManager>,
         pseudo: PseudoLocale,
@@ -2085,14 +1907,45 @@ mod tests {
     const EN: &str = "greeting = Hello\nonly-source = Source fallback";
     const DE: &str = "greeting = Guten Tag";
 
-    /// Installs `catalogs` with pseudo-localisation off.
     fn install_plain(source: &str, locale: &str, catalogs: &[(&str, &str)]) {
         I18nManager::install(source, locale, catalogs).unwrap();
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
     }
 
-    /// A plain lookup is resolved once per catalogue, locale and
-    /// pseudo-localisation, and resolved again as soon as any of them changes.
+    /// A message a value completes is said with it, and is not said at all where the caller has none:
+    /// the words a step title can stand on.
+    #[test]
+    fn a_message_only_a_value_completes_is_not_said_without_one() {
+        let _restore = RestoreLookupState::capture();
+        install_plain(
+            "en-US",
+            "en-US",
+            &[(
+                "en-US",
+                "sheets-workbook-title = Named the workbook { $new }\nbare = Post a message\n",
+            )],
+        );
+        assert_eq!(
+            I18nManager::lookup_complete("sheets-workbook-title", None),
+            None,
+            "a placeable left unfilled is no sentence"
+        );
+        let mut args = FluentArgs::new();
+        args.set("new", "Q3");
+        assert_eq!(
+            I18nManager::lookup_complete("sheets-workbook-title", Some(&args)).as_deref(),
+            Some("Named the workbook Q3")
+        );
+        assert_eq!(
+            I18nManager::lookup_complete("bare", None).as_deref(),
+            Some("Post a message"),
+            "a message that names no variable is said as it stands"
+        );
+        assert_eq!(I18nManager::lookup_complete("no-such-message", None), None);
+    }
+
+    /// A plain lookup is resolved once per catalogue, locale and pseudo-localisation, and resolved
+    /// again as soon as any of them changes.
     #[test]
     fn a_kept_plain_lookup_follows_catalogue_locale_and_pseudo_locale() {
         let _restore = RestoreLookupState::capture();
@@ -2114,7 +1967,6 @@ mod tests {
         assert_ne!(I18nManager::lookup_plain("kept-probe"), "Eins");
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         assert_eq!(I18nManager::lookup_plain("kept-probe"), "Eins");
-        // Another manager on the thread starts from its own catalogues.
         install_plain("en-US", "en-US", &[("en-US", "kept-probe = Other\n")]);
         assert_eq!(I18nManager::lookup_plain("kept-probe"), "Other");
     }
@@ -2205,8 +2057,6 @@ mod tests {
     #[test]
     fn locale_selection_parses_posix_values_and_revises_only_on_change() {
         let _restore = RestoreLookupState::capture();
-        // POSIX values parse like the environment; a `LANGUAGE` list's first
-        // entry wins.
         let parsed = |raw: &str| parse_locale(raw).ok().map(|locale| locale.to_string());
         for (raw, want) in [
             ("C", None),
@@ -2228,7 +2078,6 @@ mod tests {
         assert_ne!(I18nManager::revision(), initial);
         assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
 
-        // `set_locale_or_source` treats C and garbage as the source locale.
         I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
         for (raw, want) in [
             ("C", "en-US"),
@@ -2251,7 +2100,6 @@ mod tests {
     #[test]
     fn broken_resources_and_messages_degrade_to_one_that_works() {
         let _restore = RestoreLookupState::capture();
-        // An invalid install does not replace the live catalog.
         I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
         let revision = I18nManager::revision();
         let error = I18nManager::install("en-US", "de", &[("en-US", "broken = {"), ("de", DE)])
@@ -2272,10 +2120,8 @@ mod tests {
             I18nManager::format("share", &[("person", ArgValue::from("Zoë"))]),
             "Shared with Zoë"
         );
-        // With no clean rendering anywhere, the best effort still shows.
         assert_eq!(I18nManager::format("share", &[]), "Geteilt mit {$persn}");
 
-        // The source fallback follows the window's language's plural rules.
         const SOURCE: &str =
             "items = { $count ->\n    [one] { $count } item\n   *[other] { $count } items\n}";
         install_plain("en-US", "en-US", &[("en-US", SOURCE)]);
@@ -2289,8 +2135,6 @@ mod tests {
             &[("en-US", SOURCE), ("ru-RU", "greeting = Здравствуйте")],
         );
         assert_eq!(items(), "21 item");
-        // A language selection the window's catalogues are not in leaves the
-        // English window in English.
         I18nManager::set_locale("xx-ZZ");
         assert_eq!(items(), "21 items");
     }
@@ -2309,8 +2153,8 @@ mod tests {
         assert_eq!(pseudo_expand("⟦⟧"), "⟦⟧");
     }
 
-    /// Copy made of copy already localised keeps the one pair of marks it
-    /// has: a date heading reads `⟦Tue⟧, ⟦Jun⟧ 30`, never `⟦⟦Tue⟧, ⟦Jun⟧ 30⟧`.
+    /// Copy made of copy already localised keeps the one pair of marks it has: a date heading reads
+    /// `⟦Tue⟧, ⟦Jun⟧ 30`, never `⟦⟦Tue⟧, ⟦Jun⟧ 30⟧`.
     #[test]
     fn a_message_of_localised_fragments_is_not_marked_twice() {
         let _restore = RestoreLookupState::capture();
@@ -2326,8 +2170,8 @@ mod tests {
         );
     }
 
-    /// Nothing says nothing: an empty message is not two markers, which a
-    /// review would read as copy that is too long.
+    /// Nothing says nothing: an empty message is not two markers, which a review would read as copy
+    /// that is too long.
     #[test]
     fn an_empty_message_stays_empty_under_the_pseudo_locale() {
         let _restore = RestoreLookupState::capture();
@@ -2352,7 +2196,6 @@ mod tests {
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         assert_eq!(I18nManager::lookup("greeting", None), "Hello");
 
-        // Selecting the pseudo locale expands copy but not interpolated data.
         install_plain(
             "en-US",
             "en-US",
@@ -2389,7 +2232,6 @@ mod tests {
         )
         .with_pinned_locale("en-US");
 
-        // On a bare thread the embedded catalog installs its own manager.
         {
             let _restore = RestoreLookupState::capture();
             assert_eq!(manager_id(), None);
@@ -2424,10 +2266,7 @@ mod tests {
         }
     }
 
-    /// A window speaks the language of its own words. The toolkit's labels are
-    /// in every binary and ride along in the language the window selected;
-    /// their being German does not make an English window German, which is
-    /// what a German device read inside an app that ships English only.
+    /// A window speaks the language of its own words.
     #[test]
     fn the_window_speaks_its_own_language_not_the_toolkits() {
         static GERMAN_WINDOW: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -2445,12 +2284,10 @@ mod tests {
         assert_eq!(I18nManager::current_locale(), "de");
         assert_eq!(show_all(), "Show all 13");
 
-        // The same toolkit in a window whose own words are German.
         GERMAN_WINDOW.ensure();
         assert_eq!(show_all(), "Alle 13 zeigen");
     }
 
-    /// The locales whose catalogues the thread's manager has parsed.
     fn parsed_locales() -> Vec<String> {
         MANAGER.with(|manager| {
             let mut locales: Vec<String> = manager
@@ -2463,8 +2300,8 @@ mod tests {
         })
     }
 
-    /// Only the language shown and the source are parsed; choosing another
-    /// language parses it then, and lets go of the one it replaced.
+    /// Only the language shown and the source are parsed; choosing another language parses it then, and
+    /// lets go of the one it replaced.
     #[test]
     fn only_the_shown_language_and_the_source_are_parsed() {
         static SWITCHED: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -2497,7 +2334,6 @@ mod tests {
         assert_eq!(parsed_locales(), ["en-US"]);
     }
 
-    /// Threads that load the same catalogue share one parse of it.
     #[test]
     fn threads_share_one_parse_of_a_catalogue() {
         static SHARED: EmbeddedCatalog =
@@ -2526,7 +2362,6 @@ mod tests {
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let ago = |secs| format_relative_time(base, base + Duration::from_secs(secs));
 
-        // With no manager the toolkit's source copy is used and none is installed.
         {
             let _restore = RestoreLookupState::capture();
             assert_eq!(ago(10), "just now");
@@ -2558,9 +2393,8 @@ mod tests {
         }
     }
 
-    /// A toolkit key only English defines would show English on a German
-    /// desktop; every relative-time message is translated with the same
-    /// variables.
+    /// A toolkit key only English defines would show English on a German desktop; every relative-time
+    /// message is translated with the same variables.
     #[test]
     fn relative_time_messages_are_translated() {
         const EN_FTL: &str = include_str!("../locales/en-US.ftl");
@@ -2580,7 +2414,6 @@ mod tests {
             "participant-unknown-agent",
             "participant-shortcut",
             "participant-app",
-            "participant-acting-for",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));

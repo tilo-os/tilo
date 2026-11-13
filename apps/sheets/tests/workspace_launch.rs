@@ -56,9 +56,6 @@ fn record_dirs(root: &Path) -> Vec<String> {
     names
 }
 
-/// Launched into a workspace, Sheets opens the workspace's default record, the one
-/// every other device's first Sheets window (a browser's too) opens, so
-/// they edit one workbook. Nothing beside it holds a copy of the workbook.
 #[test]
 fn a_workspace_launch_opens_the_workspaces_default_record() {
     let temp = tempfile::tempdir().unwrap();

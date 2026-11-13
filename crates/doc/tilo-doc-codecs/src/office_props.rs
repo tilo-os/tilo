@@ -6,7 +6,6 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 
-/// The element local-name (after any `prefix:`).
 pub(crate) fn local_name(name: &[u8]) -> &[u8] {
     match name.iter().rposition(|&b| b == b':') {
         Some(i) => name.get(i.saturating_add(1)..).unwrap_or(name),
@@ -14,7 +13,6 @@ pub(crate) fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
-/// Collect the non-empty text content of every element matching `prop_of`, keyed by its property.
 pub(crate) fn element_props(
     xml: &[u8],
     prop_of: impl Fn(&[u8]) -> Option<&'static str>,
@@ -62,19 +60,15 @@ pub(crate) fn element_props(
     props
 }
 
-/// ODF `office:meta` children (`meta.xml`).
 #[cfg(any(feature = "odt", feature = "ods"))]
 pub(crate) mod odf {
     use crate::xml_escape::escape_text;
-    // `write!` into a `String` cannot fail; the discarded `Result` is the
-    // `fmt::Write` contract, not a swallowed error.
     use std::fmt::Write as _;
     use tilo_doc::schema::{
         DOC_PROP_KEYS, PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED,
         PROP_SUBJECT, PROP_TITLE,
     };
 
-    /// Map an ODF element local-name (within `office:meta`) onto a canonical document-property key.
     pub(crate) fn prop_for_element(local: &[u8]) -> Option<&'static str> {
         match local {
             b"title" => Some(PROP_TITLE),
@@ -88,7 +82,6 @@ pub(crate) mod odf {
         }
     }
 
-    /// The ODF element (with prefix) a canonical property maps onto inside `office:meta`.
     fn element_for_prop(prop: &str) -> Option<&'static str> {
         match prop {
             PROP_TITLE => Some("dc:title"),
@@ -117,7 +110,6 @@ pub(crate) mod odf {
         out
     }
 
-    /// The XML namespaces a freshly-generated `meta.xml` declares.
     pub(crate) const META_NS: &str = concat!(
         r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" "#,
         r#"xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" "#,
@@ -125,7 +117,6 @@ pub(crate) mod odf {
     );
 }
 
-/// OOXML `cp:coreProperties` children (`docProps/core.xml`).
 #[cfg(any(feature = "docx", feature = "xlsx"))]
 pub(crate) mod ooxml {
     use crate::xml_escape::escape_text;
@@ -133,7 +124,6 @@ pub(crate) mod ooxml {
         PROP_AUTHOR, PROP_CREATED, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
     };
 
-    /// Map a `core.xml` element local-name onto a canonical document-property key.
     pub(crate) fn core_prop_for_element(local: &[u8]) -> Option<&'static str> {
         match local {
             b"title" => Some(PROP_TITLE),

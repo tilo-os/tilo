@@ -160,7 +160,8 @@ fn on_desk(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
 }
 
 /// `tree` listing the window `tab` of another device in the workspace `workspace`, as the
-/// workspace's shared desk lists a window open elsewhere before anything of it is shared.
+/// workspace's shared desk lists a window another device opened, which this one opens its own
+/// view of, before anything of it is shared.
 fn listing(mut tree: DesktopTree, workspace: WorkspaceId, tab: u64) -> DesktopTree {
     if !tree.workspaces.iter().any(|held| held.id() == workspace) {
         tree.workspaces.push(Workspace::in_workspace(
@@ -180,11 +181,10 @@ fn listing(mut tree: DesktopTree, workspace: WorkspaceId, tab: u64) -> DesktopTr
         tabs: vec![Tab {
             id: TabId::from(tab),
             title: "Notes".to_owned(),
-            tile: TileContent::PeerWindow {
+            tile: TileContent::LocalApp {
                 app_id: APP.to_owned(),
                 label: "Notes".to_owned(),
                 note: String::new(),
-                missing: None,
             },
             app_title: None,
             view: String::new(),
@@ -369,7 +369,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     );
     assert!(
         hosted(&viewer.session, tab).is_none(),
-        "and shows the window as one open on another device"
+        "and lists the window as one it opens its own view of"
     );
 
     // The workspace's host admits what its person's second device wrote as it admits what that

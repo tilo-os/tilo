@@ -3,13 +3,10 @@
 
 use ui::framework::testing::HostedApp;
 
-use crate::change_marks::walk;
-
 /// What each moment of the window says, as `ui.Time` shows it (`2 min ago`), top to bottom.
 pub(crate) fn times(app: &mut HostedApp) -> Vec<String> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     // The history's own steps, newest first: the page's facts stand over its heading and say
     // when the note was made, and are no step of it.
     let heading = all

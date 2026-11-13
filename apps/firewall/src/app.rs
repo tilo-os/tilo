@@ -1,18 +1,5 @@
-//! Root of the firewall manager.
-//!
-//! [`FirewallWindow`] is a [`NavShell`] window: the zones are the sidebar and
-//! the selected zone is the content (see `crate::view`). The [`Store`] it
-//! shares with the view's effect handler owns what the shell cannot: the
-//! configuration and where it came from, the zone and rule the person is
-//! looking at, the add-rule draft, the delete confirmation, the last result,
-//! and the work that pushes the configuration to firewalld.
-//!
-//! The configuration lives in the shared Automerge document: every edit is a
-//! field edit or verb submitted through the framework dispatcher, and the
-//! window follows the stored configuration (see [`crate::resource`]), so two
-//! instances on one record edit the same ruleset. Which zone is open, the
-//! tab and the draft are this window's presentation and never enter the
-//! document.
+//! The window over the stored configuration: zones in the sidebar, the open zone's rules
+//! and services, and the apply job on this device.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -49,7 +36,6 @@ use crate::view::{
 };
 use ui::framework::Submit;
 
-/// The job that applies the stored configuration to this device.
 const APPLY_JOB: &str = "apply";
 
 /// How a reported result reads: it decides the toast's tone.
@@ -70,15 +56,13 @@ impl Tone {
     }
 }
 
-/// The last result the app reported: announced to assistive technology and
-/// shown once as a toast.
+/// The last result, announced to assistive technology and shown once as a toast.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Notice {
     pub text: String,
     pub tone: Tone,
 }
 
-/// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -107,8 +91,6 @@ struct ViewKey {
     unavailable_detail: Option<String>,
 }
 
-/// The configuration a window shows and the work running on it, shared by
-/// the window and the view's effect handler.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent flags: availability, host writes, the add-rule dialog, the drawer and a pending sync"
@@ -120,91 +102,61 @@ pub(crate) struct Store {
     panic_switch: LocalState<bool>,
 
     config: FirewallConfig,
-    /// Bumped whenever `config` is replaced.
     rev: u64,
     selected_zone: ZoneKind,
     selected_rule: Option<RuleId>,
-    /// The rules table's order, which the table keeps here.
     rule_sort: LocalState<Option<TableSort>>,
     tab: Tab,
     draft: Draft,
     notice: Option<Notice>,
-    /// What the window says in a toast next.
     toasts: Vec<Notice>,
 
-    /// Whether there is a configuration to show. `false` means no device
-    /// could read firewalld into the record yet, and we show an honest
-    /// unavailable state instead of any fabricated ruleset.
     available: bool,
-    /// Whether this window may write to the host's firewalld. False for a
-    /// capture, which stages a sample and must never touch the machine.
+    /// False for a capture, which stages a sample and must never touch the machine.
     host_writes: bool,
-    /// The rule the person asked to delete; the dialog confirms it.
     pending_delete: Option<RuleId>,
-    /// The add-rule dialog is open (adding or editing).
     adding: bool,
-    /// A global switch asked to change to a state that can cut this session;
-    /// the dialog confirms it first.
     pending_switch: Option<PendingSwitch>,
-    /// What this app can do on this device, resolved rather than inferred.
     capability: Door,
-    /// The last read of dropped traffic, or why it could not be read.
     blocked: Option<BlockedReport>,
     blocked_error: Option<String>,
     blocked_loading: bool,
     blocked_rev: u64,
 
-    /// Where every on-screen affordance submits its field edit or verb: one
-    /// undo step each, replayed byte-identically on peers — the same door
-    /// Ctrl+K takes. `None` only for a window no resource hosts.
     dispatcher: Option<Dispatcher<Firewall>>,
-    /// What this device last applied to its firewalld.
     applied: Option<crate::resource::AppliedOnDevice>,
-    /// Where this window applies the stored configuration to the device.
     jobs: Option<ui::framework::Jobs<Firewall>>,
-    /// The configuration being applied now, as its canonical text.
     applying: Option<String>,
 
-    /// The page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
-    /// A capture opens the zones as a drawer.
     open_drawer: bool,
-    /// A control changed what the window shows; `update` asks for a sync.
     changed: bool,
 }
 
-/// The [`Store`] as the window and the effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
-/// The window: the zones beside the open zone. Its controls are the window
-/// bar's slots ([`FirewallWindow::run_window_toolbar`]).
+/// The window: the zones beside the open zone.
 pub struct FirewallWindow {
     store: Shared,
-    /// The configuration as the document holds it, shown as it changes;
-    /// `None` for a window outside the framework.
     live: Option<Live<Firewall>>,
     presented: Option<(u64, u64)>,
     shell: NavShell,
-    /// What the window's bar names: the open zone, or Firewall.
     title: String,
-    /// The content column is wide enough for the services' descriptions:
-    /// at least `wide_from`, the width of a compact window.
     wide: bool,
     wide_from: f64,
     built: Option<ViewKey>,
-    /// The zone list's (config revision, selected zone) when it was built.
     listed: Option<(u64, ZoneKind)>,
 }
 
 impl Store {
-    /// The store before the document's configuration is shown: an honest
-    /// unavailable state, never a fabricated ruleset.
+    /// The store before the document's configuration is shown: an honest unavailable state,
+    /// never a fabricated ruleset.
     fn new() -> Self {
         Self::from_parts(FirewallConfig::empty(), false)
     }
 
-    /// The store showing the sample ruleset outside the framework, for
-    /// tests of the window's layout and input.
+    /// The store showing the sample ruleset outside the framework, for tests of the
+    /// window's layout and input.
     #[cfg(test)]
     fn demo() -> Self {
         Self::from_parts(crate::sample::sample_config(), true)
@@ -248,11 +200,8 @@ impl Store {
         }
     }
 
-    /// Take part in the resource: edits and effects go through its
-    /// dispatcher and `applied` remembers what this device's firewalld
-    /// holds. A live window applies the stored configuration to this device
-    /// after every change; a capture stages a sample and neither queues nor
-    /// runs that job.
+    /// Take part in the resource: edits and effects go through its dispatcher and `applied`
+    /// remembers what this device's firewalld holds.
     fn attach(&mut self, cx: &ViewCx<Firewall>) {
         self.dispatcher = Some(cx.dispatcher());
         self.applied = cx
@@ -264,9 +213,8 @@ impl Store {
         }
     }
 
-    /// Presentation-only screenshot states, staged once the scenario's
-    /// configuration is shown: empty, invalid, confirmation and changed
-    /// states for visual review.
+    /// Presentation-only screenshot states, staged once the scenario's configuration is
+    /// shown: empty, invalid, confirmation and changed states for visual review.
     fn pose_fixture(&mut self, name: &str) {
         match name {
             "empty" => self.selected_zone = ZoneKind::Drop,
@@ -293,7 +241,6 @@ impl Store {
                     "Permission to read firewalld was denied. Ask an administrator for access, then try again.",
                     Tone::Error,
                 );
-                // The empty state carries the reason; no toast repeats it.
                 self.toasts.clear();
             }
             "services" => self.tab = Tab::Services,
@@ -333,8 +280,8 @@ impl Store {
         self.sync_switches();
     }
 
-    /// Point the header switches at the configuration, so the only
-    /// difference between them is one the person makes.
+    /// Point the header switches at the configuration; only a turn the person makes differs
+    /// from it.
     fn sync_switches(&self) {
         if self.enabled_switch.with(|on| *on) != self.config.enabled {
             self.enabled_switch.set(self.config.enabled);
@@ -344,7 +291,6 @@ impl Store {
         }
     }
 
-    /// Record a result: announced to assistive technology and shown once.
     fn report(&mut self, text: impl Into<String>, tone: Tone) {
         let notice = Notice {
             text: text.into(),
@@ -355,34 +301,27 @@ impl Store {
         self.changed = true;
     }
 
-    /// Submit one field edit or verb of the stored configuration. The
-    /// framework applies it after the event and the window follows the
-    /// stored configuration, which the next frame shows.
+    /// Submit one field edit or verb of the stored configuration.
     ///
-    /// This is *only* the document edit. Pushing the ruleset to the kernel
-    /// (`firewall-cmd`/`nft`) follows from the stored configuration on each
-    /// device — never part of an action.
+    /// Pushing the ruleset to the kernel (`firewall-cmd`/`nft`) follows from the stored
+    /// configuration on each device — never part of an action.
     fn dispatch(&self, submit: impl Submit<Firewall>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(submit);
         }
     }
 
-    /// The paths of the selected zone's stored fields.
     fn zone_paths(&self) -> StoredZonePaths<Firewall> {
         Firewall::paths().zones.key(self.selected_zone.name())
     }
 
-    /// Invoke one of the firewall's effects through the same door as the
-    /// palette.
+    /// Invoke one of the firewall's effects through the same door as the palette.
     fn invoke(&self, effect: &FirewallEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
         }
     }
 
-    /// Show the stored configuration. An invalid one is not shown, so no
-    /// control acts on it.
     fn show_config(&mut self, state: &FirewallConfig) {
         if state.zones.is_empty() {
             self.set_config(state.clone());
@@ -418,11 +357,9 @@ impl Store {
         }
     }
 
-    /// Apply `config` to this device's firewalld unless it holds it already
-    /// or is being given it: a job of the window, the latest configuration
-    /// replacing one still being applied. A failure is reported and tried
-    /// again after the next change; a success stays quiet, so the person
-    /// keeps the confirmation of what they did.
+    /// Apply `config` to this device's firewalld unless it holds it already or is being
+    /// given it: a job of the window, the latest configuration replacing one still being
+    /// applied.
     fn apply_to_device(&mut self, me: &Shared, config: &FirewallConfig) {
         let (Some(jobs), Some((record, device))) = (&self.jobs, &self.applied) else {
             return;
@@ -464,9 +401,9 @@ impl Store {
                 },
             ))
         });
-        // Applying only while the job runs: where jobs do not run (a
-        // scenario's drive stages a fixture and starts nothing), the window
-        // never shows an apply that will not finish.
+        // Applying only while the job runs: where jobs do not run (a scenario's drive
+        // stages a fixture and starts nothing), the window never shows an apply that will
+        // not finish.
         self.applying = jobs.is_running(APPLY_JOB).then_some(canonical);
     }
 
@@ -493,8 +430,8 @@ impl Store {
         self.changed = true;
     }
 
-    /// Answer one of the firewall's effects: apply the stored configuration
-    /// now, read dropped traffic, or read firewalld again.
+    /// Answer one of the firewall's effects: apply the stored configuration now, read
+    /// dropped traffic, or read firewalld again.
     fn answer_effect(
         &mut self,
         effect: &FirewallEffect,
@@ -542,8 +479,8 @@ impl Store {
         }
     }
 
-    /// Which effects cannot run now: a retry once a configuration is
-    /// loaded, an apply while there is none.
+    /// Which effects cannot run now: a retry once a configuration is loaded, an apply while
+    /// there is none.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.available {
             vec![EffectStatus::unavailable(
@@ -560,7 +497,6 @@ impl Store {
         }
     }
 
-    /// Why firewalld could not be read, when a retry said so.
     fn unavailable_detail(&self) -> Option<&str> {
         if self.available {
             return None;
@@ -571,7 +507,6 @@ impl Store {
             .map(|notice| notice.text.as_str())
     }
 
-    /// Apply what the window's controls asked for.
     fn drain(&mut self) {
         let intents = self.intents.take();
         let flipped = self.switches.flipped();
@@ -587,10 +522,9 @@ impl Store {
                 SwitchKey::Service(id) => self.set_service(id, on),
             }
         }
-        // A header switch the person turned asks for the edit once; the
-        // switch follows the stored configuration again when it is
-        // shown back, so a refused edit is not asked for every frame.
-        // The two that can cut this session ask before they act.
+        // A header switch the person turned asks for the edit once; the switch follows the
+        // stored configuration again when it is shown back, so a refused edit is not asked
+        // for every frame.
         self.sync_switches();
     }
 
@@ -648,9 +582,9 @@ impl Store {
         }
     }
 
-    /// Show how reading firewalld ended, answering with the configuration to
-    /// import. Every retry route shares this fail-closed behaviour; a failed
-    /// read never changes the configuration.
+    /// Show how reading firewalld ended, answering with the configuration to import. Every
+    /// retry route shares this fail-closed behaviour; a failed read never changes the
+    /// configuration.
     fn finish_retry(
         &mut self,
         read: Result<FirewallConfig, String>,
@@ -659,7 +593,6 @@ impl Store {
             Ok(config) => {
                 self.selected_zone = config.default_zone;
                 self.pending_delete = None;
-                // What this device's firewalld reported it already holds.
                 if let Some(applied) = &self.applied
                     && self.config.zones.is_empty()
                 {
@@ -675,8 +608,7 @@ impl Store {
         }
     }
 
-    /// Check the draft. On success, the rule to add; otherwise each field
-    /// carries what is wrong with it.
+    /// The rule to add, or `None` with each field's error set.
     fn validated_draft(&mut self) -> Option<Rule> {
         let draft = &mut self.draft;
         let matcher = if draft.service {
@@ -698,8 +630,6 @@ impl Store {
         Some(Rule::new(matcher, draft.action, source))
     }
 
-    /// Open the add-rule dialog on an existing rule. Editing keeps the rule's
-    /// identity, so its position and enabled state survive a typo fix.
     fn open_edit_rule(&mut self, id: RuleId) {
         let Some(rule) = self
             .selected_zone_ref()
@@ -773,8 +703,8 @@ impl Store {
         self.changed = true;
     }
 
-    /// Read dropped traffic for the open window. A failure is shown as the
-    /// reason it happened, never as a quiet firewall.
+    /// Read dropped traffic for the open window. A failure is shown as the reason it
+    /// happened, never as a quiet firewall.
     fn read_blocked(&mut self) {
         if self.blocked_loading {
             return;
@@ -839,8 +769,8 @@ impl Store {
         );
     }
 
-    /// Show how an apply of `config` ended, and remember a successful one
-    /// as what this device's firewalld holds.
+    /// Show how an apply of `config` ended, and remember a successful one as what this
+    /// device's firewalld holds.
     fn finish_apply(&mut self, config: &FirewallConfig, result: &crate::resource::Applied) {
         let notice = crate::resource::applied_status(result);
         self.report(notice.text, notice.tone);
@@ -853,7 +783,6 @@ impl Store {
 }
 
 impl FirewallWindow {
-    /// A window over `store`, following `live` when the framework hosts it.
     fn new(store: Store, live: Option<Live<Firewall>>) -> Self {
         let mut window = Self {
             store: Rc::new(RefCell::new(store)),
@@ -879,8 +808,8 @@ impl FirewallWindow {
         Self::new(store, None)
     }
 
-    /// Show the configuration the document holds when it changed, and apply
-    /// it to this device.
+    /// Show the configuration the document holds when it changed, and apply it to this
+    /// device.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -894,8 +823,8 @@ impl FirewallWindow {
         store.apply_to_device(&self.store, &config);
     }
 
-    /// Bring the window in step with the store: what it asked to say and
-    /// the drawer a capture opens.
+    /// Bring the window in step with the store: what it asked to say and the drawer a
+    /// capture opens.
     fn show_store(&mut self) {
         let (toasts, open_drawer) = {
             let mut store = self.store.borrow_mut();
@@ -996,8 +925,8 @@ impl FirewallWindow {
         self.shell.set_content(page);
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// the firewall's switches, Apply, Add rule and the views.
+    /// Run what the person did in the window's bar: the shell's own slots, the firewall's
+    /// switches, Apply, Add rule and the views.
     fn run_window_toolbar(&mut self) {
         let shared = Rc::clone(&self.store);
         let mut store = shared.borrow_mut();
@@ -1040,9 +969,8 @@ impl FirewallWindow {
         }
     }
 
-    /// Declare the window bar's slots: the shell's own, the open zone as
-    /// the location, the firewall's switches and Apply, Add rule on the
-    /// rules, and the zone's two views.
+    /// Declare the window bar's slots: the shell's own, the open zone as the location, the
+    /// firewall's switches and Apply, Add rule on the rules, and the zone's two views.
     fn declare_window_toolbar(&self) {
         let store = self.store.borrow();
         let mut toolbar = self.shell.window_toolbar();
@@ -1053,8 +981,8 @@ impl FirewallWindow {
         if store.available {
             let enabled = store.enabled_switch.with(|on| *on);
             let panic = store.panic_switch.with(|on| *on);
-            // Every privileged control comes through the door: an
-            // unavailable capability draws no switch, Apply or panic item.
+            // Every privileged control comes through the door: an unavailable capability
+            // draws no switch, Apply or panic item.
             if let Some(actions) = store.capability.control(|| {
                 view::window_actions(enabled, panic, store.tab, store.applying.is_some())
             }) {
@@ -1066,8 +994,8 @@ impl FirewallWindow {
     }
 }
 
-/// The Firewall window over the document's configuration, answering the
-/// firewall's effects and staging the captures' view state.
+/// The Firewall window over the document's configuration, answering the firewall's effects
+/// and staging the captures' view state.
 pub(crate) fn window(cx: &ViewCx<Firewall>) -> Element {
     let mut store = Store::new();
     store.attach(cx);
@@ -1088,10 +1016,8 @@ pub(crate) fn window(cx: &ViewCx<Firewall>) -> Element {
     Box::new(window)
 }
 
-/// What this app may do on this device. The packaged app is granted the
-/// firewall capability; a device with no readable firewalld gets the
-/// unavailable face, with the sentence that says what would change it. The
-/// backend never infers this from `$PATH` or an environment variable.
+/// What this app may do on this device. The backend never infers this from `$PATH` or an
+/// environment variable.
 fn capability_for(readable: bool) -> Door {
     if readable {
         Door::granted(Capability::FIREWALL)
@@ -1178,7 +1104,6 @@ impl ui::widget::Decorator for FirewallWindow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A width that crossed the services' breakpoint rebuilds the page.
         let relayout = self.built.as_ref().is_some_and(|key| key.wide != self.wide);
         relayout || self.shell.needs_animation_frame()
     }

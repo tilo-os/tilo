@@ -17,7 +17,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let host = enrol(
         &owner,
         "encrypted-host",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let writer_device = enrol(&author, "remote-writer", DeviceCapabilities::member());
     let reader_device = enrol(&viewer, "remote-reader", DeviceCapabilities::member());

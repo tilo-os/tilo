@@ -698,7 +698,7 @@ impl Participant {
 }
 
 /// One message of a channel.
-#[derive(Model, Debug, Clone, PartialEq)]
+#[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Message {
     /// The channel it was posted in.
     #[model(readonly)]
@@ -724,6 +724,10 @@ pub struct Message {
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
+    /// The run of the answered message it quotes, when it answers a span rather than the whole
+    /// message: what the quote over it shows, and where pressing the quote reveals it.
+    #[model(readonly)]
+    pub quoted: Option<Quote>,
     /// Who reacted with which emoji: the framework's reactions, each the
     /// invoker's own, so this read-only message still takes them.
     #[model(readonly)]
@@ -747,6 +751,10 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
+    /// The agent or app that wrote it for a person, as its send pinned them: what names it
+    /// "Helper for Ada" after it left too. `None` for a person's own words.
+    #[model(readonly)]
+    pub acting: Option<ui::tilo_resource::Acting>,
     /// The window it shares live, when it was written by sharing one: the
     /// resource is the one its first resource attachment names.
     #[model(readonly)]
@@ -863,29 +871,6 @@ impl From<ShownAs> for tilo_actions::Appearance {
     }
 }
 
-impl Default for Message {
-    fn default() -> Self {
-        Self {
-            channel: Id::from_raw(""),
-            author: Atom::default(),
-            ts: 0,
-            text: String::new(),
-            body: Vec::new(),
-            edited: false,
-            history: Vec::new(),
-            parent: None,
-            reactions: ui::tilo_resource::Reactions::new(),
-            mentions: Vec::new(),
-            attachments: Vec::new(),
-            pinned: false,
-            work: None,
-            appearance: None,
-            share: None,
-            attempts: 0,
-        }
-    }
-}
-
 /// An earlier text of a message.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
@@ -919,6 +904,41 @@ impl Identified for Person {
     }
 }
 
+/// The run of a message a reply quotes, as the reply carries it: the words as they read when
+/// the reply was written, and where in the answered message they stand so the quote opens the
+/// very words it names ([`crate::effects::ChatEffect::RevealMessageRange`]).
+///
+/// A reply that answers a whole message carries none: its `parent` is the message it answers,
+/// and the quote over it shows the start of what that message says. A reply to a *span* of a
+/// message carries one, and the quote shows the span instead.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Quote {
+    /// The words as they read when the reply was written: what the quote shows, however the
+    /// answered message changes after.
+    #[model(label)]
+    pub text: String,
+    /// Where they stand in the answered message's text, in UTF-8 bytes of
+    /// [`Message::text`]: what pressing the quote reveals. A body edited after the quote was
+    /// taken may move the words; the span is kept as written, and the quote itself always
+    /// reads from `text`.
+    pub start: u64,
+    /// Where the run ends, in UTF-8 bytes, exclusive.
+    pub end: u64,
+}
+
+impl Quote {
+    /// Whether the span a reply quotes is one this record may keep: its words are some and
+    /// bounded, and its span is ordered and inside a message of at most
+    /// [`MAX_MESSAGE_TEXT_BYTES`].
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.text.trim().is_empty()
+            && self.text.len() <= MAX_MESSAGE_TEXT_BYTES
+            && self.start < self.end
+            && usize::try_from(self.end).is_ok_and(|end| end <= MAX_MESSAGE_TEXT_BYTES)
+    }
+}
+
 /// An agent's record of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
@@ -929,6 +949,10 @@ pub struct Work {
     pub state: Option<Transition>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Never the reply's words, and shown only behind a disclosure.
+    pub failure_detail: Option<String>,
 }
 
 /// Received provider output, stored as fields and CRDT text, not a JSON snapshot.
@@ -1033,6 +1057,10 @@ pub struct WorkUpdate {
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,
+    /// The run's working record of a failure, for whoever debugs it later;
+    /// never the reply's words. Absent when nothing failed.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// One dispatched operation, as an agent reports it.
@@ -1096,28 +1124,47 @@ pub(crate) fn prepare_file_post(
 
 /// Who an action is by; refused without one, since a report or a read mark
 /// is always someone's.
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
+pub(crate) fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .filter(|author| !author.is_empty() && author.len() <= 4096)
         .map(str::to_owned)
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
 }
 
-fn seconds(cx: &ActionCx) -> i64 {
+pub(crate) fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
 }
 
 /// A portable address, never copied content, a local path or an access grant.
+///
+/// Its kind may be empty when its id is a resource's published address
+/// (`tl:<app>:<id>`, as a tilolang app publishes one): the address names the
+/// resource and the catalogue its kind, exactly as [`tilo_reference::Embed`]
+/// reads one, so a reference to a resource no catalogue has loaded yet still
+/// attaches and resolves where it is read. Any other id names its kind.
 pub(crate) fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
     let field = |value: &str, max: usize| {
         !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
     };
-    field(&reference.kind, 128)
-        && reference
-            .kind
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && field(&reference.id, 2048)
+    let published = |id: &str| {
+        // `tl:<app>:<id>`: the app is dotted and never holds a `:`, so the address says its app
+        // and its published id, and its kind is whatever the catalogue resolves it to.
+        id.strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(app, id)| !app.is_empty() && !id.is_empty())
+    };
+    // A named kind is bounded like any other address; an empty one is only a resource's
+    // published address, the form the catalogue reads without a kind.
+    let kind = if reference.kind.is_empty() {
+        published(&reference.id)
+    } else {
+        field(&reference.kind, 128)
+            && reference
+                .kind
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    kind && field(&reference.id, 2048)
         && !reference.id.starts_with(['/', '\\'])
         && !reference.id.contains("://")
         && field(&reference.label, 512)
@@ -1245,6 +1292,8 @@ pub(crate) struct Posting {
     pub text: String,
     pub body: Vec<ClipBlock>,
     pub parent: Option<Id>,
+    /// The run of the message it answers that it quotes, when it answers a span.
+    pub quoted: Option<Quote>,
     /// What it carries besides its words.
     pub attachments: Vec<tilo_reference::Attached>,
     pub appearance: Option<tilo_actions::Appearance>,
@@ -1431,7 +1480,6 @@ impl Chat {
 
 #[ui::tilo_resource::resource(
     kind = "chat.workspace",
-    label = "Chat",
     params = chat,
     search = Chat::search,
     read_content = Chat::content,
@@ -1485,23 +1533,14 @@ impl Chat {
 
     /// Name an agent.
     ///
-    /// The name every member shows for an agent task, or for an agent by the
-    /// name the device that admitted it gave it: an agent names itself only
-    /// so.
+    /// The name every member shows for an agent task.
     #[action(audience = "agents")]
-    pub fn name_agent(
-        &mut self,
-        cx: &mut ActionCx,
-        participant: String,
-        name: NonBlank,
-    ) -> Result<(), Refusal> {
-        let own = cx.author() == Some(participant.as_str())
-            && cx.agent_name().as_deref() == Some(name.as_str());
-        if !(participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) || own)
+    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
+        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
             || name.len() > MAX_AGENT_NAME_BYTES
         {
             return Err(Refusal::new(
-                "only an agent task, or an agent by its own name, is named, with a short name",
+                "only an agent task is named, with a short name",
             ));
         }
         self.agent_names.insert(participant, name.into_string());

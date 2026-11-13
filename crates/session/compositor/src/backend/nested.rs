@@ -1,9 +1,11 @@
 //! The compositor in a window of the desktop it runs inside, for development.
 //! The window is winit's: a Wayland client where the desktop runs Wayland and an X11 window where
 //! it does not, so the session is a native window either way. The window is one output; resizing it
-//! changes its mode. Frames are composited with GLES on the GPU that draws the window and presented
-//! to the host with its damage. Pointer and keyboard input of the window becomes [`InputEvent`]s;
-//! the pointer is drawn as on a real screen, in place of the host's.
+//! changes its mode, and the output draws at the desktop's own scale (fractional included), which
+//! it follows as the window moves between the desktop's screens. Frames are composited with GLES on
+//! the GPU that draws the window and presented to the host with its damage. Pointer and keyboard
+//! input of the window becomes [`InputEvent`]s; the pointer is drawn as on a real screen, in place
+//! of the host's.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,14 +15,16 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offscreen as _};
+use smithay::backend::renderer::{
+    Bind as _, ExportMem as _, ImportDma as _, ImportMemWl as _, Offscreen as _,
+};
 use smithay::backend::winit::{
     WinitEvent, WinitEventLoop, WinitGraphicsBackend, init_from_attributes,
 };
-use smithay::output::{Mode, Output};
+use smithay::output::{Mode, Output, Scale};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
 use super::{Backend, BackendError, Screenshot, failed, refuse_disabling};
@@ -41,9 +45,15 @@ const REFRESH_MHZ: i32 = 60_000;
 /// How the window starts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NestedConfig {
-    /// The window's first size, in physical pixels.
+    /// The window's first size, in the host's logical pixels, or in physical pixels when
+    /// [`Self::logical`] is off.
     pub size: (u16, u16),
-    /// The scale clients render at.
+    /// Whether [`Self::size`] is in the host's logical pixels: the window then opens at the same
+    /// apparent size on a desktop at any scale, with the host turning it into the pixels it shows.
+    /// Off for a caller that means pixels (`tilo-compositor --size`).
+    pub logical: bool,
+    /// The scale to draw at when the host reports none (`tilo-compositor --scale`): a Wayland
+    /// desktop that says its preferred scale otherwise decides it, fractional included.
     pub scale: f64,
     /// The window's title.
     pub title: String,
@@ -53,6 +63,7 @@ impl Default for NestedConfig {
     fn default() -> Self {
         Self {
             size: (1280, 800),
+            logical: false,
             scale: 1.0,
             title: "Tilo".into(),
         }
@@ -60,20 +71,30 @@ impl Default for NestedConfig {
 }
 
 impl NestedConfig {
-    /// The scale outputs get: the configured one if it is usable, else 1.
-    fn output_scale(&self) -> f64 {
+    /// The scale the output draws at until the host says its own: the configured one if it is
+    /// usable, else 1.
+    fn configured_scale(&self) -> f64 {
         usable_scale(self.scale).unwrap_or(1.0)
     }
 
     fn attributes(&self) -> WindowAttributes {
-        WinitWindow::default_attributes()
-            .with_title(&self.title)
-            .with_inner_size(PhysicalSize::new(
-                u32::from(self.size.0),
-                u32::from(self.size.1),
-            ))
-            .with_visible(true)
+        let attributes = WinitWindow::default_attributes().with_title(&self.title);
+        let (width, height) = (u32::from(self.size.0), u32::from(self.size.1));
+        if self.logical {
+            attributes.with_inner_size(LogicalSize::new(width, height))
+        } else {
+            attributes.with_inner_size(PhysicalSize::new(width, height))
+        }
+        .with_visible(true)
     }
+}
+
+/// The scale the window's output draws at, from what the host reports: the desktop's own scale for
+/// the screen the window is on, fractional included (a Tilo desktop at 200% tells a client 2.0, and
+/// one at 175% 1.75 through `wp_fractional_scale_v1`). A host that reports no usable scale gets the
+/// configured one, so a nested session still draws at the density a caller named.
+fn host_scale(reported: f64, configured: f64) -> f64 {
+    usable_scale(reported).unwrap_or(configured)
 }
 
 /// The session's window on the desktop it runs inside, opened before the session builds anything
@@ -162,16 +183,20 @@ impl NestedBackend {
             .copied()
             .collect();
         state.enable_dmabuf(formats, node);
+        state.offer_shm_formats(window.renderer().shm_formats());
         if let Some(node) = node {
             state.enable_dmabuf_capture(node.dev_id(), render_formats);
         }
 
+        present_without_waiting(&mut window)?;
+
         let size = window.window_size();
-        let mut output_config = OutputConfig::new(OUTPUT_NAME, size.w.max(1), size.h.max(1))
-            .with_scale(
-                // The host's own scale is the window's: a desktop at 150% shows a 150% session.
-                config.output_scale(),
-            );
+        // The host's own scale is the output's: a desktop at 200% tells this window 2.0, and the
+        // session draws the pixels that desktop shows, so the shell is as crisp there as it is on
+        // the device itself. Configured only for a host that reports nothing usable.
+        let scale = host_scale(window.scale_factor(), config.configured_scale());
+        let mut output_config =
+            OutputConfig::new(OUTPUT_NAME, size.w.max(1), size.h.max(1)).with_scale(scale);
         output_config.refresh_mhz = REFRESH_MHZ;
         let output = output_config.create(&state.display, "nested", Point::from((0, 0)));
         state.add_output(&output, Point::from((0, 0)));
@@ -224,6 +249,49 @@ const fn flip(transform: Transform) -> Transform {
     }
 }
 
+/// Present the window's frames without waiting for the desktop to ask for the next one.
+///
+/// EGL's default swap interval is 1, and on Wayland that makes a swap wait for the desktop's frame
+/// callback for the frame before. A desktop sends none to a window it does not show (hidden,
+/// another workspace, not mapped yet), so the swap blocks the session's whole loop: its clients,
+/// its input, its agent door and its control socket all stop after the first frame. The session
+/// paces its own frames (`next_frame`, one refresh apart, and none while idle), so the swap only
+/// hands the frame over.
+fn present_without_waiting(window: &mut WinitGraphicsBackend<GlesRenderer>) -> Result<(), Error> {
+    let display = window
+        .renderer()
+        .egl_context()
+        .display()
+        .get_display_handle();
+    // The interval belongs to the surface current on the context: make the window's current
+    // (the renderer's own bind only makes it current as a frame is drawn).
+    // The surface and the renderer are separate fields of the window; `renderer` borrows the
+    // whole window mutably, so the surface is reached through a pointer taken first.
+    let surface: *const smithay::backend::egl::EGLSurface = window.egl_surface();
+    // SAFETY: the context and surface are the window's own, on the thread that draws it, and the
+    // surface outlives this call (the window holds it and is not moved or dropped here).
+    unsafe {
+        window
+            .renderer()
+            .egl_context()
+            .make_current_with_surface(&*surface)
+    }
+    .map_err(|error| failed("make the window current", error))?;
+    // SAFETY: the display is the window's own, alive for this call, with its context and surface
+    // current just above.
+    let set = unsafe { smithay::backend::egl::ffi::egl::SwapInterval(**display, 0) };
+    if set == smithay::backend::egl::ffi::egl::FALSE {
+        // SAFETY: asked right after the refused call, on the same thread.
+        let error = unsafe { smithay::backend::egl::ffi::egl::GetError() };
+        return Err(failed(
+            "present without waiting",
+            format!("eglSwapInterval(0): {error:#x}"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent) {
     match event {
         WinitEvent::Input(event) => {
@@ -235,14 +303,18 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
                 state.handle_input(event);
             }
         }
-        WinitEvent::Resized { size, .. } => {
+        WinitEvent::Resized { size, scale_factor } => {
             let mut inner = inner.borrow_mut();
             let Some(mode) = window_mode(size) else {
                 return;
             };
+            // The desktop's scale is the output's: as the window moves to a screen at another
+            // density (or the person changes it), the session draws the pixels that screen shows.
+            // A scale the host reports that is not usable leaves the output at the one it has.
+            let scale = usable_scale(scale_factor).map(Scale::Fractional);
             inner
                 .output
-                .change_current_state(Some(mode), None, None, None);
+                .change_current_state(Some(mode), None, scale, None);
             one_mode(&inner.output, mode);
             inner.output.set_preferred(mode);
             inner.damage = window_damage(&inner.output);
@@ -440,14 +512,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unusable_scales_fall_back_to_one() {
+    fn the_window_draws_at_the_scales_its_host_reports() {
+        // The desktop's own scale, fractional included, is the output's: a Tilo desktop at 175%
+        // (which it tells a client 1.75) draws the session at 1.75, not at 1.
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            assert!(
+                (host_scale(scale, 1.0) - scale).abs() < f64::EPSILON,
+                "a host at {scale} draws the window at {scale}"
+            );
+        }
+        // A host that reports no usable scale draws at the configured one (1 when none is given),
+        // so a window on an X11 screen or a host that says nothing still shows a sane size.
+        assert!((host_scale(f64::NAN, 1.5) - 1.5).abs() < f64::EPSILON);
+        assert!((host_scale(0.0, 1.5) - 1.5).abs() < f64::EPSILON);
+        assert!((host_scale(-1.0, 2.0) - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_configured_scale_covers_a_host_that_reports_none() {
         let config = |scale| NestedConfig {
             scale,
             ..NestedConfig::default()
         };
-        assert!((config(1.5).output_scale() - 1.5).abs() < f64::EPSILON);
+        assert!((config(1.5).configured_scale() - 1.5).abs() < f64::EPSILON);
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!((config(bad).output_scale() - 1.0).abs() < f64::EPSILON);
+            assert!((config(bad).configured_scale() - 1.0).abs() < f64::EPSILON);
         }
     }
 

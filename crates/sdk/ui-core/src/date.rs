@@ -1,13 +1,7 @@
-//! Proleptic-Gregorian day counts for apps that label dates, on `chrono`.
-//!
-//! Day `0` is 1970-01-01. Inputs often come straight from untrusted data (a
-//! message header, a file name, a spreadsheet cell), so nothing here panics or
-//! wraps: a date outside `chrono`'s range (about ±262,000 years) pins to the
-//! nearest end of it.
+//! Proleptic-Gregorian day counts for apps that label dates, on `chrono`. Day `0` is 1970-01-01.
 
 use chrono::{Datelike, Days, Months, NaiveDate};
 
-/// 1970-01-01, day `0`.
 const EPOCH: NaiveDate = NaiveDate::from_ymd_opt(1970, 1, 1).expect("the epoch is a valid date");
 
 fn days_since_epoch(date: NaiveDate) -> i64 {

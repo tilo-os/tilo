@@ -38,6 +38,9 @@ pub(crate) struct DeskKey {
     not_responding: u64,
     /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
     styles: u64,
+    /// The app lists' generation: an app installed or taken away moves the launcher's list of
+    /// them. The lists' own worker reads them, so this is its latest reading's identity.
+    apps: usize,
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -124,6 +127,10 @@ pub(crate) enum DeskEffect {
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
     },
+    /// Show how an agent or another computer connects as the person: the setup their own card's
+    /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
+    /// it this way.
+    ShowConnect,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
@@ -151,6 +158,20 @@ pub(crate) enum DeskEffect {
     CloseSurface {
         #[param("The surface")]
         surface: String,
+    },
+    /// Tell the person something, as an app's `notify` does.
+    /// It rises as a banner over the desk and waits in the centre until they dismiss it: the one
+    /// way a script, an agent or the REPL posts the same notice an app's `notify` does, so what
+    /// they say reaches the person the same way.
+    Notify {
+        #[param("What happened, in a short sentence")]
+        title: String,
+        #[param("What it says, under the title")]
+        body: Option<String>,
+        #[param("Who it is from: an app's name, or the agent's; empty for the session's own")]
+        from: Option<String>,
+        #[param("Its kind: `info`, `success`, `warning` or `error`")]
+        kind: Option<String>,
     },
     /// Clear the notification centre, which Undo puts back.
     ClearNotices,
@@ -187,6 +208,19 @@ pub(crate) enum DeskEffect {
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
+    /// Show the app `app` in its window of the strip in front, or a new
+    /// window: what following a link to what plays does.
+    ShowApp {
+        #[param("The app, by its id")]
+        app: String,
+    },
+    /// Open Settings at the page `link` names (`settings://network`), through
+    /// the desk's own search: what an app with no workspace of its own asks
+    /// to send the person there.
+    OpenSettings {
+        #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
+        link: String,
+    },
 }
 
 /// The surfaces the desk shows over its windows, and where each stands: the shell's own views,
@@ -206,6 +240,9 @@ pub(crate) struct Surfaces {
     pub(crate) panel: tilo_desktop::overlays::Overlays,
     /// The surface the shell's views show (`crate::overlays::Overlay`).
     pub(crate) overlays: Rc<crate::overlays::Overlays>,
+    /// The notifications the desk's own chrome counts and draws: where the one centre opens
+    /// when the desk draws it, as the bar's bell opens it.
+    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     /// Whether the overview is the surface up, as the desk's own widgets fold behind it and as
     /// whoever asks for the desk's state reads it. It turns with the surface itself, so a person's
     /// press answers at once rather than a frame later.
@@ -219,8 +256,22 @@ impl Surfaces {
         surface == crate::quick_settings::SURFACE && self.status_panel && !self.shell
     }
 
+    /// Whether the desk's own chrome draws the centre, rather than the shell's view of it: the
+    /// desk draws it whenever it draws the screen, and the bell counts the same one.
+    fn desk_centre(&self, surface: &str) -> bool {
+        surface == crate::overlays::Overlay::Centre.name() && !self.shell
+    }
+
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
+        if self.desk_centre(surface) {
+            // One centre: the desk's chrome draws the one the bar's bell counts, and it is asked
+            // to open or shut as the bell asks it.
+            self.notices.ask_centre(!self.notices.centre_open());
+            self.panel_closes();
+            self.settled();
+            return;
+        }
         // The quick settings are their own app, standing where the stack places its slot: a
         // press opens the slot, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
@@ -242,6 +293,12 @@ impl Surfaces {
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
+        if self.desk_centre(name) {
+            self.notices.ask_centre(true);
+            self.panel_closes();
+            self.settled();
+            return;
+        }
         if self.panel_shows(name) {
             self.clear_shell();
             self.panel
@@ -301,6 +358,10 @@ impl Surfaces {
 
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
+        if self.desk_centre(surface) {
+            self.notices.ask_centre(false);
+            return;
+        }
         if self.panel_shows(surface) {
             self.panel
                 .close(tilo_desktop::overlays::Slot::QuickSettings);
@@ -436,6 +497,12 @@ impl Desk {
                 self.surfaces.overlays.here(),
             ),
             styles: self.styles.borrow().revision,
+            // The app lists' generation: the worker reads them again when the store moves and
+            // hands out a new one, so an install or a removal moves this — and, the generation
+            // being a rising count, never a freed reading's reused address.
+            apps: crate::app_icons::app_lists_snapshot().map_or(0, |(generation, _)| {
+                usize::try_from(generation).unwrap_or(usize::MAX)
+            }),
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             // Which apps stopped answering is the compositor's, published through the handle beside
@@ -515,17 +582,16 @@ impl Desk {
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
             quiet: self.signals.quiet(),
-            workspace: tree
-                .active_workspace()
-                .map(|workspace| workspace.name.clone())
-                .unwrap_or_default(),
+            // A workspace is named the one way every reading of it names it: the name the person
+            // gave, or the desk's own word for one they have not named yet.
+            workspace: workspace_in_front(tree),
             strip: strip_in_front(tree),
             workspaces: tree
                 .workspaces
                 .iter()
                 .map(|workspace| shell::WorkspaceReading {
                     key: workspace.slot.0.to_string(),
-                    name: workspace.name.clone(),
+                    name: tilo_desktop_surface::names::workspace(&workspace.name),
                     current: workspace.slot == tree.active,
                 })
                 .collect(),
@@ -547,7 +613,7 @@ impl Desk {
                 .iter()
                 .map(|workspace| shell::RoomReading {
                     key: workspace.slot.0.to_string(),
-                    name: workspace.name.clone(),
+                    name: tilo_desktop_surface::names::workspace(&workspace.name),
                     current: workspace.slot == tree.active,
                     members: self.person.clone(),
                     present: 0,
@@ -557,6 +623,23 @@ impl Desk {
             notices: notices(&self.notices),
             notice_actions: notice_actions(&self.notices),
             badges: self.signals.badges(),
+            apps: crate::app_icons::app_lists_snapshot()
+                .map(|(_, lists)| {
+                    lists
+                        .applications
+                        .iter()
+                        .map(|app| shell::AppReading {
+                            key: app.id.clone(),
+                            name: app.title.clone(),
+                            icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                                .name()
+                                .to_owned(),
+                            category: app.category.clone().unwrap_or_default(),
+                            description: app.description.clone().unwrap_or_default(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             people,
             tray: self.tray_items(),
             styles: self.styles.borrow().list.clone(),
@@ -669,6 +752,14 @@ fn notice_actions(
                 })
         })
         .collect()
+}
+
+/// The name of the workspace in front, as every reading of a workspace names it.
+fn workspace_in_front(tree: &DesktopTree) -> String {
+    tree.active_workspace().map_or_else(
+        || tilo_desktop_surface::names::workspace(""),
+        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+    )
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar names
@@ -955,12 +1046,77 @@ impl Desk {
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+
+    /// What the desk carries out by handing it to what shows it: the surface over the windows,
+    /// showing an app, and opening Settings at the page a link names, which only the session's loop
+    /// can search for. Whether `effect` was one of these.
+    fn show(&self, effect: &DeskEffect) -> Result<bool, DoorError> {
+        match effect {
+            DeskEffect::ShowSurface { surface } => self.surfaces.toggle(surface),
+            DeskEffect::ShowApp { app } => {
+                self.handle
+                    .dispatch(ChromeEffect::ShowApp { app: app.clone() })
+                    .map_err(DoorError::Failed)?;
+            }
+            DeskEffect::OpenSettings { link } => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::OpenSettings(link.clone()));
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 /// The desk's resource, named `label`: what it publishes, and what the session's package describes
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
     offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
+}
+
+impl Desk {
+    /// The notification centre's effects: post a notice, clear the centre, run a notice's
+    /// action or dismiss one. `None` for any other effect.
+    fn notice_effect(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+        let id_of = |notice: &str| {
+            notice
+                .parse::<u64>()
+                .map_err(|_| DoorError::InvalidArguments(format!("`{notice}` is no notice's id")))
+        };
+        match effect {
+            DeskEffect::Notify {
+                title,
+                body,
+                from,
+                kind,
+            } => {
+                self.notices.post(notice(
+                    title,
+                    body.as_deref(),
+                    from.as_deref(),
+                    kind.as_deref(),
+                ));
+            }
+            DeskEffect::ClearNotices => {
+                self.notices.clear_all();
+            }
+            DeskEffect::ActOnNotice { notice, action } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.invoke_action(id, action);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            DeskEffect::DismissNotice { notice } => match id_of(notice) {
+                Ok(id) => {
+                    self.notices.dismiss_history(id);
+                }
+                Err(error) => return Some(Err(error)),
+            },
+            _ => return None,
+        }
+        Some(Ok(Started::Done(tilo_actions::ActionOutput::default())))
+    }
 }
 
 impl Service for Desk {
@@ -997,11 +1153,18 @@ impl Service for Desk {
         if let Some(answer) = self.invitation(&effect) {
             return answer;
         }
+        if let Some(answer) = self.notice_effect(&effect) {
+            return answer;
+        }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
         }
-        if let DeskEffect::ShowSurface { surface } = &effect {
-            self.surfaces.toggle(surface);
+        if matches!(effect, DeskEffect::ShowConnect) {
+            self.handle
+                .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if self.show(&effect)? {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::StopAgent { agent } = &effect {
@@ -1014,10 +1177,6 @@ impl Service for Desk {
         }
         if let DeskEffect::CloseSurface { surface } = &effect {
             self.surfaces.close(surface);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_all();
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
@@ -1035,20 +1194,6 @@ impl Service for Desk {
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
             crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::ActOnNotice { notice, action } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.invoke_action(id, action);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::DismissNotice { notice } = &effect {
-            let id = notice.parse::<u64>().map_err(|_| {
-                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
-            })?;
-            self.notices.dismiss_history(id);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         let DeskEffect::SwitchWorkspace { workspace } = effect else {
@@ -1074,6 +1219,28 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+/// The notice the desk's `notify` posts: its title and body, its kind as the centre's severity
+/// (`info` unless `warning` or `error`), and who it is from when that is named.
+fn notice(
+    title: &str,
+    body: Option<&str>,
+    from: Option<&str>,
+    kind: Option<&str>,
+) -> tilo_desktop_surface::notifications::Notification {
+    use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+    let severity = match kind {
+        Some("warning") => NotificationSeverity::Warning,
+        Some("error") => NotificationSeverity::Error,
+        _ => NotificationSeverity::Info,
+    };
+    let notification = Notification::new(title.to_owned(), body.unwrap_or_default().to_owned())
+        .with_severity(severity);
+    match from.filter(|from| !from.is_empty()) {
+        Some(from) => notification.with_app_name(from),
+        None => notification,
     }
 }
 
@@ -1130,6 +1297,7 @@ mod tests {
             shell,
             panel: tilo_desktop::overlays::Overlays::new(),
             overlays: Rc::new(crate::overlays::Overlays::new()),
+            notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
         }
     }
@@ -1155,6 +1323,16 @@ mod tests {
 
     #[test]
     fn a_surface_of_the_shells_own_closes_the_panel_that_asked_for_it() {
+        let surfaces = surfaces(true, true);
+        surfaces.open(crate::quick_settings::SURFACE);
+        surfaces.open(Overlay::Centre.name());
+        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+    }
+
+    /// The desk draws the one centre the bar's bell counts: a press on it asks the desk's own
+    /// chrome, as the bell asks it, and puts the panel that asked away.
+    #[test]
+    fn the_desks_own_centre_is_opened_where_the_desk_draws_it() {
         let surfaces = surfaces(true, false);
         surfaces.open(crate::quick_settings::SURFACE);
         assert!(
@@ -1162,14 +1340,34 @@ mod tests {
                 .panel
                 .is_open(tilo_desktop::overlays::Slot::QuickSettings)
         );
-        surfaces.open(Overlay::Centre.name());
-        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+        surfaces.toggle(Overlay::Centre.name());
+        assert_eq!(
+            surfaces.notices.take_centre_ask(),
+            Some(true),
+            "the desk's chrome is asked to open the centre"
+        );
+        assert_eq!(
+            surfaces.overlays.here(),
+            Overlay::Rest.name(),
+            "the shell draws no centre of its own over a desk that draws one"
+        );
         assert!(
             !surfaces
                 .panel
                 .is_open(tilo_desktop::overlays::Slot::QuickSettings),
             "one surface at a time: the centre is not opened behind the panel"
         );
+
+        // The centre is up: a second press closes it, as the bell's next press does.
+        surfaces.notices.set_centre_open(true);
+        surfaces.toggle(Overlay::Centre.name());
+        assert_eq!(surfaces.notices.take_centre_ask(), Some(false));
+
+        // The shell's own screen keeps its own view of the centre.
+        let screen = self::surfaces(true, true);
+        screen.toggle(Overlay::Centre.name());
+        assert_eq!(screen.overlays.here(), Overlay::Centre.name());
+        assert_eq!(screen.notices.take_centre_ask(), None);
     }
 
     #[test]

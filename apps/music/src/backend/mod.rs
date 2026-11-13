@@ -1,20 +1,6 @@
-//! Swappable YouTube-Music data-source backend.
-//!
-//! Music has two worlds behind one trait:
-//!
-//! * **offline** (the hermetic runtime mode): the bundled [`crate::seed`] sample
-//!   library. `--shots`, CI and every test run here — no network, fully
-//!   hermetic, deterministic screenshots. [`offline::OfflineBackend`] answers
-//!   metadata from the sample and reports "cannot stream".
-//! * **live** (included in shipping defaults): `YouTube` Music via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client —
-//!   `music_search_tracks` for search results and `player`
-//!   to resolve a **directly-playable audio-only stream URL** for a track.
-//!
-//! Both worlds implement the same [`MusicBackend`] trait: the cargo feature
-//! picks the implementation at build time, and [`crate::stream`]'s worker
-//! picks live-or-offline at *runtime*, falling back to offline if live init
-//! or the network fails.
+//! The catalogue backend: one trait with two implementations, the bundled offline sample
+//! and the live `YouTube` Music client. The worker picks one at runtime and falls
+//! back to offline.
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -44,22 +30,17 @@ pub(crate) fn trusted_googlevideo_url(raw: &str) -> bool {
         && (host == "googlevideo.com" || host.ends_with(".googlevideo.com"))
 }
 
-/// A track returned by a search (real from `YouTube` Music, or none offline).
-///
-/// Toolkit- and serde-free so it crosses the worker-thread boundary cheaply and
-/// never leaks a rustypipe type into the UI.
+/// A track from a search; toolkit- and serde-free so it crosses the worker boundary
+/// cheaply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackHit {
-    /// `YouTube` video id — the key [`MusicBackend::resolve_audio`] streams from.
     pub video_id: String,
     pub title: String,
-    /// Primary artist display name ("Various Artists" for VA compilations).
     pub artist: String,
-    /// Primary artist channel id, when known.
     pub artist_id: Option<String>,
     pub album: Option<String>,
     pub album_id: Option<String>,
-    /// Track length in whole seconds (0 when the source omits it).
+    /// The length in seconds, 0 when the source omits it.
     pub duration_s: u32,
     /// Real album-cover thumbnail URL (`YouTube` image CDN), best-size pick.
     /// Empty when the source omits it (offline sample) — the UI then falls
@@ -67,15 +48,14 @@ pub struct TrackHit {
     pub cover_url: String,
 }
 
-/// What kind of release an album is, so an artist's discography can be
-/// sectioned the way listeners expect (Albums vs. Singles & EPs).
+/// What kind of release an album is, so a discography can be sectioned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlbumKind {
     #[default]
     Album,
     Single,
     Ep,
-    /// Audiobook / show / anything else — grouped under a generic label.
+    /// Anything else: audiobooks, shows.
     Other,
 }
 
@@ -90,16 +70,15 @@ impl AlbumKind {
     }
 }
 
-/// An album returned by a search. Toolkit-free so it crosses the worker boundary.
+/// An album from a search, toolkit-free like the rest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlbumHit {
-    /// YouTube-Music album browse id (e.g. `MPREb_…`).
+    /// The album's catalogue id, `MPREb_…`.
     pub id: String,
     pub title: String,
-    /// Primary artist display name.
     pub artist: String,
     pub artist_id: Option<String>,
-    /// Release year (0 when omitted).
+    /// The release year, 0 when omitted.
     pub year: u32,
     pub kind: AlbumKind,
     pub cover_url: String,
@@ -107,29 +86,24 @@ pub struct AlbumHit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtistHit {
-    /// `YouTube` channel id (e.g. `UC…`) — the key [`MusicBackend::artist`] fetches.
+    /// The channel id, `UC…`.
     pub id: String,
     pub name: String,
-    /// Approximate subscriber count (0 when hidden/omitted).
     pub subscriber_count: u64,
-    /// Round avatar thumbnail URL.
     pub avatar_url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaylistHit {
-    /// YouTube-Music playlist browse id (e.g. `PL…` / `RDCLAK…`).
+    /// The playlist's catalogue id, `PL…` or `RDCLAK…`.
     pub id: String,
     pub title: String,
-    /// Channel / owner display name ("`YouTube` Music" for curated).
     pub subtitle: String,
-    /// Track count (0 when omitted).
     pub track_count: u64,
     pub cover_url: String,
 }
 
-/// The single best "top result" a main search surfaces (the hero card). Carries
-/// enough to render + route a click to the right destination.
+/// The best result a main search surfaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SearchTop {
     Track(TrackHit),
@@ -138,9 +112,7 @@ pub enum SearchTop {
     Playlist(PlaylistHit),
 }
 
-/// A full multi-type search response: the mixed "top result" plus per-type
-/// buckets, in YouTube-Music ranking order. The offline backend returns an
-/// empty bundle; the live backend fills every bucket from one `music_search`.
+/// A whole search answer: the top result and one bucket per type.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchBundle {
     pub top: Option<SearchTop>,
@@ -160,8 +132,7 @@ impl SearchBundle {
     }
 }
 
-/// What a [`HomeItem`] represents, so the UI can route a click and pick the
-/// right tile shape (artists render as circles).
+/// What a [`HomeItem`] is, so the UI routes a click and picks the tile shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HomeItemKind {
     Track,
@@ -170,18 +141,16 @@ pub enum HomeItemKind {
     Playlist,
 }
 
-/// One tile on the real Home page (a chart track, a new album, a top artist, a
-/// mood playlist). Toolkit-free so it crosses the worker boundary.
+/// One tile on the Home page.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeItem {
-    /// Entity id: album id / artist channel id / playlist id. For a track it's
-    /// the library id the app mints; [`Self::video_id`] carries the stream key.
+    /// The entity's id; for a track, the library id the app mints.
     pub id: String,
     pub title: String,
     pub subtitle: String,
     pub cover_url: String,
     pub kind: HomeItemKind,
-    // Track-only correlation so a chart track can be played + merged.
+    // The stream key, for a track tile.
     pub video_id: String,
     pub artist_id: String,
     pub artist_name: String,
@@ -190,14 +159,13 @@ pub struct HomeItem {
     pub duration_s: u32,
 }
 
-/// A titled row of tiles on the Home page.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeSection {
     pub title: String,
     pub items: Vec<HomeItem>,
 }
 
-/// Real YouTube-Music home/charts content: a handful of titled sections.
+/// Home content, as a few titled sections.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HomeContent {
     pub sections: Vec<HomeSection>,
@@ -218,27 +186,23 @@ pub struct ArtistAlbum {
     pub cover_url: String,
 }
 
-/// A real YouTube-Music artist page: top songs, discography, related artists,
-/// bio + subscriber count — everything a full artist page renders.
+/// A full artist page: top songs, discography, related artists, bio, subscribers.
 #[derive(Clone, Debug, Default)]
 pub struct ArtistPage {
     pub id: String,
     pub name: String,
     pub subscriber_count: u64,
     pub description: String,
-    /// Link to the artist's Wikipedia page, when `YouTube` exposes one.
     pub wikipedia_url: String,
     pub header_url: String,
     pub tracks: Vec<TrackHit>,
     pub albums: Vec<ArtistAlbum>,
-    /// Related / similar artists surfaced on the page.
     pub similar: Vec<ArtistHit>,
-    /// Provider-confirmed device-local follow status, independent of the CRDT.
+    /// Follow status as the provider reports it; the library's own is separate.
     pub provider_followed: Option<bool>,
 }
 
-/// A real YouTube-Music playlist: its ordered tracks + cover + owner. Backs the
-/// live playlist detail page a search-result playlist click opens.
+/// A catalogue playlist: its ordered tracks, cover and owner.
 #[derive(Clone, Debug, Default)]
 pub struct PlaylistPage {
     pub id: String,
@@ -249,7 +213,7 @@ pub struct PlaylistPage {
     pub tracks: Vec<TrackHit>,
 }
 
-/// A real YouTube-Music album (or single/EP): its ordered tracks + cover.
+/// A catalogue album: its ordered tracks and cover.
 #[derive(Clone, Debug, Default)]
 pub struct AlbumPage {
     pub id: String,
@@ -261,28 +225,23 @@ pub struct AlbumPage {
     pub tracks: Vec<TrackHit>,
 }
 
-/// A resolved, directly-playable audio stream — what actually gets handed to
-/// the audio engine. The `url` is a fetchable `https://…googlevideo.com/…`
-/// media URL; feeding it to `GStreamer` `playbin` produces sound.
+/// A playable stream, as the audio engine takes it: an HTTPS media URL.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedStream {
     pub video_id: String,
     pub url: String,
     /// Full MIME (e.g. `video/mp4; codecs="avc1.42001E, mp4a.40.2"`).
     pub mime: String,
-    /// Average bitrate in bits/second (higher = better).
+    /// Average bitrate in bits per second.
     pub bitrate: u32,
-    /// `YouTube` stream format id (itag) — e.g. 18 (360p H.264 + AAC).
+    /// The stream's format id, e.g. 18.
     pub itag: u32,
-    /// Content length in bytes as reported by the player response.
+    /// The stream's length in bytes, as the player reports it.
     pub size_bytes: u64,
-    /// Stream duration in milliseconds, when known.
     pub duration_ms: u64,
 }
 
-/// Error surfaced by a backend. Stringly-typed on purpose — the UI only shows
-/// it in a toast / the probe prints it; the offline backend never errors on
-/// search (it returns an empty result set and the app shows the local library).
+/// Why a backend could not answer; the UI shows it in a toast.
 #[derive(Clone, Debug)]
 pub struct BackendError(pub String);
 
@@ -369,9 +328,7 @@ pub struct SpotifyReply {
     pub state: serde_json::Value,
 }
 
-/// The data-source seam. One trait, two worlds (offline sample / live
-/// rustypipe). Implementations are `Send + Sync` because the live backend is
-/// driven from the [`crate::stream`] worker thread.
+/// The data source; implementations are `Send + Sync` because the worker drives them.
 pub trait MusicBackend: Send + Sync {
     /// Execute a Spotify API operation, reporting only confirmed provider state.
     fn spotify_operation(
@@ -380,11 +337,9 @@ pub trait MusicBackend: Send + Sync {
     ) -> Result<SpotifyReply, BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
-    /// Human name for the status log / toast ("offline (bundled library)",
-    /// "youtube-music (live)").
+    /// The backend's name, for the status log.
     fn name(&self) -> &str;
 
-    /// Select a catalogue or authorize it, on the background worker.
     fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
@@ -401,122 +356,95 @@ pub trait MusicBackend: Send + Sync {
         ))
     }
 
-    /// Forget Spotify authorization on this device.
     fn disconnect_spotify(&self) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 
-    /// Whether this backend can actually reach `YouTube` and stream audio. The UI
-    /// uses it to decide whether to surface live search / "streaming" state.
+    /// Whether this backend can reach the catalogue and stream audio.
     fn is_live(&self) -> bool {
         false
     }
 
-    /// Real full-text track search. Offline returns an empty list (the app
-    /// shows the bundled library instead); live hits `YouTube` Music.
+    /// Real track search; offline returns nothing, live asks `YouTube` Music.
     ///
     /// # Errors
     ///
-    /// Live: returns a [`BackendError`] on a network failure or an
-    /// unparseable `YouTube` Music response.
+    /// A [`BackendError`] on a network failure or an unparseable response, live.
     fn search_tracks(&self, query: &str) -> SearchOutcome;
 
-    /// A real multi-type search: the mixed "top result" plus songs, albums,
-    /// artists and playlists in one call (`YouTube` Music's main results page).
-    /// Offline returns an empty bundle; live fills every bucket.
+    /// A multi-type search: the top result plus songs, albums, artists and playlists.
     ///
     /// # Errors
     ///
-    /// Live: returns a [`BackendError`] on a network failure or an
-    /// unparseable `YouTube` Music response. The default (offline) body never
-    /// errors.
+    /// A [`BackendError`] on a network failure or an unparseable response, live.
     fn search_all(&self, _query: &str) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }
 
-    /// The catalogue's quick answer for a query being typed: the few songs,
-    /// albums, artists and playlists its suggestions name, in a fraction of
-    /// the time [`Self::search_all`] takes. The search shows them first and
-    /// the full answer after. Offline and by default there is none.
+    /// The catalogue's quick answer while a query is typed, a fraction of
+    /// [`Self::search_all`]'s time; offline there is none.
     fn search_quick(&self, _query: &str) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }
 
-    /// Open the connection to the catalogue before the first query: the
-    /// person focused the search field. Blocks; runs off the UI thread.
+    /// Open the connection before the first query; blocks, so it runs off the UI thread.
     fn warm(&self) {}
 
-    /// The catalogue's name, as its section of search results is headed.
     fn catalogue_label(&self) -> &'static str {
         "YouTube Music"
     }
 
-    /// Resolve a video id to a directly-playable audio stream. Offline errors;
-    /// live returns a real googlevideo media URL.
+    /// A playable stream URL for a video id; offline errors.
     ///
     /// # Errors
     ///
-    /// Offline: always errors (there is no stream to resolve). Live: returns
-    /// a [`BackendError`] if the video id is unknown/unplayable or the
-    /// resolution request fails.
+    /// Offline always; live when the id is unplayable or the request fails.
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome;
 
-    /// Fetch the real Home page: charts, trending, new releases, top artists —
-    /// with real cover art URLs. Offline returns an error (the app then shows
-    /// the bundled sample home).
+    /// The Home page: charts, new releases, top artists with cover art; offline errors.
     ///
     /// # Errors
     ///
-    /// The default (offline) body always errors. Live: returns a
-    /// [`BackendError`] on a network failure or an unparseable response.
+    /// The offline body always; live on a network failure or an unparseable response.
     fn home(&self) -> Result<HomeContent, BackendError> {
         Err(BackendError("home content needs the live backend".into()))
     }
 
-    /// Fetch a real artist page (top songs, albums, subscriber count). Offline
-    /// errors.
+    /// An artist page: top songs, albums, subscriber count; offline errors.
     ///
     /// # Errors
     ///
-    /// The default (offline) body always errors. Live: returns a
-    /// [`BackendError`] if the artist id is unknown or the request fails.
+    /// The offline body always; live when the id is unknown or the request fails.
     fn artist(&self, _artist_id: &str) -> Result<ArtistPage, BackendError> {
         Err(BackendError("artist pages need the live backend".into()))
     }
 
-    /// Fetch a real album's ordered track list + cover. Offline errors.
+    /// An album's ordered tracks and cover; offline errors.
     ///
     /// # Errors
     ///
-    /// The default (offline) body always errors. Live: returns a
-    /// [`BackendError`] if the album id is unknown or the request fails.
+    /// The offline body always; live when the id is unknown or the request fails.
     fn album(&self, _album_id: &str) -> Result<AlbumPage, BackendError> {
         Err(BackendError("album pages need the live backend".into()))
     }
 
-    /// Fetch a real playlist's ordered track list + cover. Offline errors.
+    /// A playlist's ordered tracks and cover; offline errors.
     ///
     /// # Errors
     ///
-    /// The default (offline) body always errors. Live: returns a
-    /// [`BackendError`] if the playlist id is unknown or the request fails.
+    /// The offline body always; live when the id is unknown or the request fails.
     fn playlist(&self, _playlist_id: &str) -> Result<PlaylistPage, BackendError> {
         Err(BackendError("playlist pages need the live backend".into()))
     }
 }
 
-/// The default backend for any build: the offline sample. The live backend is
-/// constructed explicitly by the worker under `--features live` and only when
-/// its network init succeeds — otherwise this is the graceful fallback.
+/// The offline sample: what a build without a working live client uses.
 pub fn default_backend() -> Box<dyn MusicBackend> {
     Box::new(offline::OfflineBackend::new())
 }
 
-/// Construct the best backend available in this build: the live rustypipe
-/// client if `--features live` is on and it initialises, otherwise the offline
-/// sample. Never panics — a failed live init degrades to offline, so the worker
-/// always has a working data source. The `note` closure receives a one-line
-/// status string for the UI/log.
+/// The live client when it initialises, else the offline sample; `note` carries a
+/// status line for the UI.
 pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
     #[cfg(feature = "live")]
     {
@@ -553,10 +481,7 @@ mod tests {
         {
             let b = default_backend();
             assert!(!b.is_live());
-            // Offline search never errors; it just yields nothing (local library
-            // is what the app renders offline).
             assert!(b.search_tracks("aurora").unwrap().is_empty());
-            // Resolution reports it cannot stream, rather than faking a URL.
             assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
         }
 
@@ -574,8 +499,6 @@ mod tests {
         }
 
         {
-            // A deliberately feature-minimal build remains honest and offline;
-            // the ordinary default build has `live` enabled.
             let mut msg = String::new();
             let b = preferred_backend(|m| msg = m);
             assert!(!msg.is_empty());

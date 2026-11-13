@@ -1,16 +1,14 @@
 //! Root widget for the Feeds reader — RSS, Atom and Gemini.
 //!
 //! The window is the shared [`NavShell`]: the sidebar lists the library's
-//! places (smart lists, folders with their feeds, tags) in a [`NavList`](ui::widget::NavList),
-//! the overview is the article list of the chosen place, and the content is
-//! the open article. The shell owns the header row, the sidebar toggle, the
-//! drawer at narrow widths and the push to the article at very narrow
-//! widths; this module owns the state they show.
+//! places, the overview is the article list of the chosen place, and the content
+//! is the open article. The shell owns the headers and the narrow-width drawer
+//! and push; this module owns the state they show.
 //!
-//! State that *converges* (subscriptions, read and star flags, cached
-//! articles, reading settings) lives in the Automerge document via
-//! [`crate::resource`]. State that is *local* to this peer (the chosen place, the
-//! open article, scroll offsets, open dialogs and menus) lives in `Core`.
+//! State that converges (subscriptions, read and star flags, cached articles,
+//! reading settings) is the document ([`crate::resource`]); state local to this
+//! peer (the chosen place, the open article, scroll offsets, dialogs, menus)
+//! lives in `Core`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -79,20 +77,14 @@ fn opml_export_request() -> PickRequest {
         .all_files()
 }
 
-/// Max CRDT writes persisted per frame. A big refresh queues its writes and
-/// they flush across several frames, so no single frame stalls persisting the
-/// whole batch. Kept small so even an unoptimised build with a large document
-/// stays well inside a frame; the backlog still drains within a second or two
-/// while the UI stays interactive.
+/// CRDT writes persisted per frame: a big refresh queues its writes and they
+/// flush over several frames, so no frame stalls persisting the whole batch.
 pub(crate) const FLUSH_BUDGET: usize = 3;
 
-/// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
 
-/// What the core asks of the window's notice.
 enum ToastChange {
     Show(String),
-    /// A change that ran at once, with Undo to take it back.
     Undo(String),
     Dismiss,
 }
@@ -101,32 +93,22 @@ enum ToastChange {
 /// settings) ask for. The root applies them with the document in hand.
 pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 
-/// A request from a retained control.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Request {
-    /// Show a place in the article list.
     Show(Filter),
     AddSubscription,
     NewFolder,
     Refresh,
     MarkAllRead,
-    /// Star or unstar the open article.
     StarOpen,
     OpenOriginal,
-    /// Show or hide the reading settings.
     ReaderSettings,
-    /// What a menu row or a menu entry of the window's bar does.
     Menu(MenuAction),
-    /// A feed's menu: the row it acts on (its lift), and the point it opens
-    /// at (the pointer, or under the row or its More button).
     FeedMenu(Id, Rect, Option<Point>),
-    /// The person folded (`true`) or unfolded a folder in the sidebar.
     SetFolderCollapsed(Id, bool),
-    /// The reading scale as a percentage.
     SetScale(f64),
 }
 
-/// What a menu row does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     MarkFeedRead(Id),
@@ -152,7 +134,6 @@ impl MenuAction {
     }
 }
 
-/// What a press of the reader's slot `id` in the window's bar asks for.
 fn window_request(id: &str) -> Option<Request> {
     Some(match id {
         "feeds.refresh" => Request::Refresh,
@@ -169,11 +150,9 @@ fn window_request(id: &str) -> Option<Request> {
     })
 }
 
-/// The reader's commands in the window's bar. With an article in front its
-/// own commands lead (star, open the original, reading settings, then its
-/// read state and tags in the menu) and the library's follow in the menu;
-/// otherwise the library's lead. A command with nothing to act on is
-/// disabled, and one whose meaning flips with state names what it does now.
+/// The reader's commands in the window's bar: the open article's lead when one
+/// is in front, the library's otherwise. A command with nothing to act on is
+/// disabled, and one that flips with state names what it does now.
 fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
     let action = |id: &str, icon: Icon, name: &str| ToolbarAction::new(id, icon.name(), name);
     let refresh = match core.refresh_unavailable() {
@@ -233,15 +212,13 @@ fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
     ]
 }
 
-/// The open menu and what each of its rows does.
 pub(crate) struct OpenMenu {
     pub(crate) menu: ContextMenu,
     pub(crate) actions: Vec<MenuAction>,
 }
 
-/// A live dialog: the shared [`ModalDialog`] plus the intent that says which
-/// mutation its primary action runs. The `submit` / `cancel` cells are set by
-/// the dialog's action callbacks and drained by the core.
+/// A live dialog: the shared [`ModalDialog`] plus the intent its primary action
+/// runs.
 pub(crate) struct FeedsModal {
     pub(crate) intent: ModalIntent,
     pub(crate) dialog: ModalDialog<ModalBody>,
@@ -339,17 +316,11 @@ impl FeedsModal {
 /// the article list.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RefreshState {
-    /// Feeds queued in this refresh batch.
     pub(crate) total: usize,
-    /// Feeds that have reported back (success or failure).
     pub(crate) done: usize,
-    /// Feeds that returned at least one new article.
     pub(crate) updated_feeds: usize,
-    /// Feeds that failed to fetch or parse.
     pub(crate) failed_feeds: usize,
-    /// New articles across the batch.
     pub(crate) new_items: usize,
-    /// Set once every feed reported back; drives the summary and its expiry.
     pub(crate) finished_at: Option<Instant>,
 }
 
@@ -366,8 +337,6 @@ impl RefreshState {
         self.total > 0 && self.finished_at.is_none()
     }
 
-    /// Whether the progress is still shown (in progress, or a summary that
-    /// has not aged out).
     pub(crate) fn visible(&self) -> bool {
         if self.in_progress() {
             return true;
@@ -376,7 +345,6 @@ impl RefreshState {
             .is_some_and(|t| ui::time::now().saturating_duration_since(t).as_secs_f32() < 6.0)
     }
 
-    /// One sentence for the progress line.
     pub(crate) fn status(&self) -> String {
         if self.in_progress() {
             return crate::i18n::t_args(
@@ -409,7 +377,6 @@ impl RefreshState {
     }
 }
 
-/// `1 feed`, `3 feeds`.
 pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
@@ -418,97 +385,59 @@ pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// What a refresh fetched for one subscription, still to land in the
-/// library. Draining happens while painting (no document in hand), so it
-/// queues here and lands on the next pass that holds the document.
+/// What a refresh fetched for one subscription, still to land: draining happens
+/// while painting, so it queues here until a pass holds the document.
 #[derive(Clone, Debug)]
 pub(crate) struct Landing {
     pub(crate) fetched: library::Refreshed,
 }
 
-/// A new item this window asked for, shown once the library holds it: the
-/// verb that makes it mints its id, so the window recognizes it by what it
-/// asked for.
+/// A new item this window asked for, shown once the library holds it: the verb
+/// mints its id, so the window recognises it by what it asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Awaited {
-    /// The subscription to this address: refresh it, and show it when
-    /// asked to.
     Feed(String, bool),
-    /// The folder of this name that was not there before: show it.
     Folder(String, Vec<Id>),
 }
 
-/// The state of the window.
 pub(crate) struct Core {
-    /// The library as the document holds it, followed as it changes; `None`
-    /// for a window outside the framework.
     live: Option<Live<Library>>,
     presented: Option<(u64, u64)>,
-    /// The library as it was presented last; the window changes it only
-    /// through the library's door.
     pub(crate) store: Rc<Library>,
     pub(crate) filter: Filter,
     pub(crate) selected: Option<Id>,
     pub(crate) settings: ReadSettings,
-    /// Epoch seconds the relative times are measured from.
     pub(crate) now: i64,
     pub(crate) list: ListState,
     pub(crate) reader: ReaderState,
-    /// A dialog to present; the root takes it and owns it while it is open.
     pending_modal: Option<FeedsModal>,
-    /// Whether the root presents a dialog.
     pub(crate) modal_open: bool,
     pub(crate) menu: Option<OpenMenu>,
-    /// A change to the window's notice, for the root to hand its shell.
     toast: Option<ToastChange>,
-    /// Whether the notice showing offers to undo the person's last step.
-    /// Any later change of theirs ends the offer: Undo would take back that
-    /// change instead.
     undo_offered: bool,
     pub(crate) refresh: RefreshState,
-    /// Subscriptions whose last refresh failed, and why, kept until that
-    /// subscription refreshes successfully: the batch summary counts them,
-    /// and each failing row names its own reason.
     pub(crate) feed_failures: HashMap<Id, RefreshFailure>,
     pub(crate) pending_landings: Vec<Landing>,
-    /// Articles opened from search or by an agent, to mark read on the next
-    /// pass that holds the document, as a click does.
     pending_reads: Vec<Id>,
-    /// New subscriptions and folders this window asked for, until the
-    /// library holds them.
     pub(crate) awaited: Vec<Awaited>,
-    /// The OPML file being chosen for import, read by the host: a browser
-    /// page has no path to hand over, only the file's contents.
     pub(crate) import_rx: Option<ContentsChannel>,
-    /// The OPML export being saved where the person chooses (a browser
-    /// page's Save dialog or a download).
     pub(crate) export_rx: Option<SaveChannel>,
     open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
     pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
-    /// The library's published actions, which the reading settings bind to.
     pub(crate) actions: Option<ui::framework::Actions<Library>>,
     read_settings: Option<ui::framework::Setting<ReadSettings>>,
     refresh_reply: Option<ui::framework::EffectReply>,
-    /// The document heads the mirrored store was last reconciled against.
 
-    /// The live app starts empty on the person's document; tests and the
-    /// screenshot scenarios hand it the sample library.
-    /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
-    /// The window, for dialogs and menus.
     pub(crate) window: Rect,
-    /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
-    /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
-    /// What the window's controls and effects asked of the window.
     pub(crate) requests: Requests,
 }
 
-/// Mark the article at `id` read or unread.
 fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
     Library::paths().articles.item(id).read.set(read)
 }
@@ -554,7 +483,6 @@ impl Core {
         }
     }
 
-    /// Open the richest unread article so a capture lands on a full body.
     pub(crate) fn select_featured(&mut self) {
         self.selected = self
             .store
@@ -579,8 +507,6 @@ impl Core {
         self.toast = Some(ToastChange::Show(msg.into()));
     }
 
-    /// Say what just changed, with Undo to take it back: the standard
-    /// notice of a change that runs at once rather than asking first.
     fn offer_undo(&mut self, msg: impl Into<String>) {
         self.toast = Some(ToastChange::Undo(msg.into()));
         self.undo_offered = true;
@@ -590,12 +516,10 @@ impl Core {
         self.worker.get_or_insert_with(FetchWorker::spawn)
     }
 
-    /// The open article, if it still exists.
     pub(crate) fn open_article(&self) -> Option<Row<'_, Article>> {
         self.selected.as_ref().and_then(|id| self.store.article(id))
     }
 
-    /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
         match &self.filter {
             Filter::All => crate::i18n::t("feeds-filter-all"),
@@ -618,7 +542,6 @@ impl Core {
         }
     }
 
-    /// The content's title: the feed the open article came from.
     pub(crate) fn article_title(&self) -> String {
         self.open_article()
             .and_then(|a| self.store.feed(&a.feed_id))
@@ -667,7 +590,6 @@ impl Core {
         };
         if let Some(id) = ids.get(next) {
             self.select_article(id, doc);
-            // Arrow keys step through the list without leaving it.
             self.show_pane = None;
         }
     }
@@ -704,9 +626,8 @@ impl Core {
         self.open_modal(modal);
     }
 
-    /// Mark everything the chosen place lists as read: the library's verbs
-    /// for everything and for one subscription, one step of field edits for
-    /// any other place.
+    /// Mark everything the chosen place lists as read: the library's verbs for
+    /// everything and for one subscription, field edits for any other place.
     pub(crate) fn mark_all_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let filter = self.filter.clone();
         let ids = self.store.unread_ids_for(&filter);
@@ -731,10 +652,9 @@ impl Core {
         ));
     }
 
-    /// Say `text` of a library change just submitted once it is kept: at
-    /// once in a library nobody else decides, once the workspace accepts it in
-    /// a shared one, and never when the workspace refuses it
-    /// ([`Self::announce_answers`]).
+    /// Say `text` of a change once it is kept: at once in a library nobody else
+    /// decides, once the workspace accepts it in a shared one, never when it is
+    /// refused ([`Self::announce_answers`]).
     pub(crate) fn say_when_kept(&mut self, text: impl Into<String>) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.say_when_kept(text),
@@ -1057,7 +977,6 @@ impl Core {
         added
     }
 
-    /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
     fn open_menu(&mut self, anchor: Rect, row: Option<Rect>, items: Vec<(MenuItem, MenuAction)>) {
         let mut menu = ContextMenu::new();
         let mut actions = Vec::new();
@@ -1085,7 +1004,6 @@ impl Core {
         self.open_feed_menu_on(feed_id, row, row);
     }
 
-    /// The menu of one feed, opened by a right click at `at` on its row.
     pub(crate) fn open_feed_menu_at(&mut self, feed_id: Id, row: Rect, at: Point) {
         self.open_feed_menu_on(feed_id, row, Rect::from_points(at, at));
     }
@@ -1162,7 +1080,6 @@ impl Core {
         }
     }
 
-    /// Route an event to the open menu; apply what it chose.
     fn route_menu_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::Focused(false)) {
             self.menu = None;
@@ -1176,7 +1093,7 @@ impl Core {
             .menu
             .take_selection()
             .and_then(|index| open.actions.get(index).cloned());
-        if !open.menu.is_showing() {
+        if !open.menu.is_open() {
             self.menu = None;
         }
         if let Some(action) = chosen {
@@ -1454,7 +1371,6 @@ impl Core {
         }
     }
 
-    /// Apply what a retained control asked for.
     fn apply(&mut self, request: Request, doc: &mut ui::widget::Edits<'_>) {
         match request {
             Request::Show(filter) => self.set_filter(filter),
@@ -1529,7 +1445,6 @@ impl Core {
         true
     }
 
-    /// The reader's single-key shortcuts. Returns whether the key was used.
     fn handle_key(&mut self, key: &Key, modified: bool, doc: &mut ui::widget::Edits<'_>) -> bool {
         match key {
             Key::Named(NamedKey::ArrowDown) => self.move_selection(1, doc),
@@ -1592,7 +1507,6 @@ impl Core {
     }
 }
 
-/// Layouts at one window size before a capture stages its scenario.
 const SETTLED_LAYOUTS: u32 = 3;
 
 /// The root's nodes while a dialog or the reading settings are mounted
@@ -1612,17 +1526,12 @@ pub struct FeedsApp {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The reading settings, open under the window bar's Reading settings.
     settings_panel: Option<Popover<Column>>,
     pub(crate) modal: Option<FeedsModal>,
-    /// The dialog opened or closed: the retained tree must be rebuilt.
     overlays_dirty: bool,
-    /// A screenshot scenario to stage once the shell has laid out.
     pending_scenario: Rc<RefCell<Option<String>>>,
-    /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
     mount: Option<OverlayMount>,
-    /// Items search hits and agents opened in the framework host.
     opened: Rc<RefCell<Vec<Id>>>,
 }
 
@@ -1639,7 +1548,6 @@ impl FeedsApp {
         Self::build(Library::new(), None)
     }
 
-    /// The sample library, on its richest unread article, for tests.
     #[cfg(feature = "samples")]
     pub fn new_demo() -> Self {
         let app = Self::build(sample::store(), None);
@@ -1761,7 +1669,6 @@ impl FeedsApp {
         self.shell.snap();
     }
 
-    /// Open the open article's tag editor.
     pub fn stage_tag_editor(&mut self) {
         self.core.borrow_mut().open_tag_editor();
     }
@@ -1783,23 +1690,19 @@ impl FeedsApp {
         };
     }
 
-    /// Edit through `dispatcher`, as the framework does.
     #[cfg(test)]
     pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
 
-    /// The open article.
     pub fn selected_article(&self) -> Option<Id> {
         self.core.borrow().selected.clone()
     }
 
-    /// The place the article list shows.
     pub fn active_filter(&self) -> Filter {
         self.core.borrow().filter.clone()
     }
 
-    /// The first-run prompt while there are no subscriptions.
     pub fn empty_onboarding_prompt(&self) -> Option<&'static str> {
         self.core
             .borrow()
@@ -1814,7 +1717,6 @@ impl FeedsApp {
         self.core.borrow()
     }
 
-    /// The notice the window shows, if any.
     #[cfg(test)]
     pub(crate) fn notice(&self) -> Option<String> {
         self.shell.toast_text().map(str::to_owned)
@@ -1825,7 +1727,6 @@ impl FeedsApp {
         self.core.borrow_mut()
     }
 
-    /// The window's state, shared as its panes share it.
     #[cfg(test)]
     pub(crate) fn core_shared(&self) -> Shared {
         Rc::clone(&self.core)
@@ -1846,7 +1747,6 @@ impl FeedsApp {
         self.settings_panel.as_ref().is_some_and(Popover::is_open)
     }
 
-    /// Present the dialog the core asked for.
     fn take_pending_modal(&mut self) {
         let pending = self.core.borrow_mut().pending_modal.take();
         if let Some(modal) = pending {
@@ -1953,7 +1853,6 @@ impl FeedsApp {
         self.overlays_dirty = true;
     }
 
-    /// Hand the core's latest notice to the shell, which shows and expires it.
     fn take_toast(&mut self) {
         self.core.borrow_mut().announce_answers();
         match self.core.borrow_mut().toast.take() {
@@ -2325,7 +2224,6 @@ impl ui::widget::Decorator for FeedsApp {
         }
     }
 
-    /// The shell, and the overlays it may mount over it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.shell);
         if let Some(modal) = &self.modal {
@@ -2626,7 +2524,6 @@ impl Core {
 }
 
 impl Core {
-    /// Show the library the document holds when it changed.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -2656,8 +2553,6 @@ impl Core {
         self.synced = true;
     }
 
-    /// Answer `effect`, invoked by a control, the palette, an agent or a
-    /// script.
     fn answer(&mut self, effect: FeedsEffect, cx: &mut EffectCx<Library>) -> EffectAnswer {
         self.follow_document();
         match effect {
@@ -2702,7 +2597,6 @@ impl Core {
         Ok(Effected::done())
     }
 
-    /// Refreshing is unavailable while it runs or with nothing to refresh.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         self.refresh_unavailable()
             .map(|(code, reason)| EffectStatus::unavailable(FeedsEffect::REFRESH_ALL, code, reason))
@@ -2712,7 +2606,6 @@ impl Core {
 }
 
 impl FeedsApp {
-    /// Show `store` as the document holding it would.
     #[cfg(test)]
     pub(crate) fn present_library(&self, store: Rc<Library>) {
         self.core.borrow_mut().present_library(store);
@@ -2723,9 +2616,6 @@ impl FeedsApp {
     }
 }
 
-/// The Feeds window over the document's library: it shows the item a search
-/// hit or an agent's `open` names, answers [`FeedsEffect`] and stages the
-/// captures.
 pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
     let app = FeedsApp::build(Library::new(), Some(&cx.actions()));
     {

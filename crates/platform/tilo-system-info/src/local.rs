@@ -1,12 +1,12 @@
-//! The system information service in this process, for a platform whose
-//! apps may read the machine themselves and where no Tilo session serves
-//! readings (macOS).
+//! The system information service in this process, for a platform whose apps
+//! may read the machine themselves and where no Tilo session serves readings
+//! (macOS).
 //!
-//! [`SysinfoProbe`] reads the platform's interfaces through `sysinfo` into
-//! the service's raw counters, so the service's own collector, grants and
-//! end policy apply unchanged; [`connection`] serves it over a socket pair
-//! to this process's client. Every process the person runs is theirs to end
-//! here: the platform has no app slice to confine that to.
+//! [`SysinfoProbe`] reads the platform's interfaces through `sysinfo` into the
+//! service's raw counters, so the service's collector, grants and end policy
+//! apply unchanged; [`connection`] serves it over a socket pair. Every process
+//! the person runs is theirs to end here: the platform has no app slice to
+//! confine that to.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -24,12 +24,10 @@ use tilo_system_stats::probe::{
 };
 use tilo_system_stats::protocol::{Grants, Handoff, MemoryStats, PROTOCOL, Refusal};
 
-/// The cgroup every process reads as here, and the app root the end policy
-/// allows: the platform does not group processes into apps.
+/// The cgroup every process reads as here: the platform does not group
+/// processes into apps.
 const ALL_PROCESSES: &str = "/";
 
-/// This process's connection to a service in this process, started on
-/// first use.
 pub fn connection(app_id: &str) -> Option<Client> {
     static LOCAL: OnceLock<Option<Client>> = OnceLock::new();
     LOCAL
@@ -46,7 +44,6 @@ pub fn connection(app_id: &str) -> Option<Client> {
         .filter(|client| !client.is_closed())
 }
 
-/// Start the service over the platform's interfaces and connect to it.
 fn serve(app_id: &str) -> std::io::Result<Client> {
     let hub = Hub::new(
         Box::new(SysinfoProbe::new()),
@@ -81,7 +78,6 @@ fn serve(app_id: &str) -> std::io::Result<Client> {
     Client::from_stream(app)
 }
 
-/// Ends a process with a signal once its identity was checked again.
 struct KillSignaller;
 
 impl Signaller for KillSignaller {
@@ -112,8 +108,8 @@ impl Signaller for KillSignaller {
 
 /// The machine as the platform reports it, as the service's raw counters.
 ///
-/// The platform reports processor use as a share since the last reading;
-/// the service computes shares from cumulative counters, so the probe keeps
+/// The platform reports processor use as a share since the last reading; the
+/// service computes shares from cumulative counters, so the probe keeps
 /// counters that advance by each share of the time between readings.
 pub struct SysinfoProbe {
     system: System,
@@ -121,11 +117,9 @@ pub struct SysinfoProbe {
     disks: Disks,
     users: Users,
     boot_time: u64,
-    /// When the processor counters last advanced.
     last: Option<std::time::Instant>,
     cpu_total: CpuTicks,
     cpu_cores: Vec<CpuTicks>,
-    /// Bytes every process read and wrote, summed over the readings.
     disk_io: (u64, u64),
 }
 
@@ -156,7 +150,6 @@ impl SysinfoProbe {
         }
     }
 
-    /// Advance the processor counters by the shares since the last reading.
     fn advance_cpu(&mut self) {
         self.system.refresh_cpu_usage();
         let now = std::time::Instant::now();
@@ -231,8 +224,8 @@ impl SysinfoProbe {
         }
     }
 
-    /// Each mounted disk's space, and the I/O every process did as one
-    /// device: the platform reports I/O per process.
+    /// Each mounted disk's space, and the I/O every process did as one device:
+    /// the platform reports I/O per process.
     fn raw_disks(&self) -> Vec<RawDisk> {
         let mut disks: Vec<RawDisk> = self
             .disks
@@ -322,13 +315,10 @@ impl SysinfoProbe {
     }
 }
 
-/// What is read of each process: everything but its environment, which is
-/// never read.
 fn process_detail() -> ProcessRefreshKind {
     ProcessRefreshKind::everything().without_environ()
 }
 
-/// The `/proc` state letter the service reads for `status`.
 fn state_code(status: ProcessStatus) -> char {
     match status {
         ProcessStatus::Run => 'R',

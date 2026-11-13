@@ -1,8 +1,6 @@
-//! tilo-app-host daemon entry point.
-//!
-//! Loads the on-disk registry, binds the control socket,
-//! and runs the accept loop. Best-effort systemd `READY=1` notify so a
-//! `Type=notify` user unit can serialise dependent units behind us.
+//! The `tilo-app-host` daemon: loads the on-disk registry, binds the control socket, runs the
+//! accept loop, and sends a best-effort systemd `READY=1` so a `Type=notify` unit can serialise
+//! dependent units behind it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,12 +72,11 @@ fn main() -> anyhow::Result<()> {
         } else {
             transport::bind(&socket)?
         };
-        // Best-effort sd_notify — silently no-op if NOTIFY_SOCKET
-        // isn't in env (e.g. when run by hand).
+        // Best-effort: a no-op when NOTIFY_SOCKET is unset (run by hand).
+
         let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
-        // A cold sweep must not delay the first socket-activated app. Store
-        // mutations are serialised by the store's lock, so accepting requests
-        // meanwhile is safe.
+        // A cold sweep must not delay the first socket-activated app; the store's lock serialises
+        // mutations, so serving while it runs is safe.
         let startup_store = Arc::clone(&store);
         let startup_catalog = Arc::clone(&catalog);
         let max_store_bytes = cli.max_store_bytes;
@@ -99,11 +96,10 @@ fn init_tracing() {
         .try_init();
 }
 
-/// Enforce the size cap and reclaim what the system store no longer needs:
-/// a new image or a swapped userspace changes which runtime builds the
-/// shipped apps pin (the Browser's engine among them) without any install
-/// running, so the builds an earlier one left are collected here. A failure
-/// is logged and retried on the next start.
+/// Enforce the size cap and reclaim what the system store no longer needs: a new image or a
+/// swapped userspace changes which runtime builds the shipped apps pin (the Browser's engine among
+/// them) without any install running, so the builds an earlier one left are collected here. A
+/// failure is logged and retried on the next start.
 fn startup(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
     app_host::service::collect_after_change(store, catalog, max_store_bytes, &[]);
 }

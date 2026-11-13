@@ -269,9 +269,6 @@ pub(crate) struct WindowShares {
     /// Whether this session exists to be seen: a hosted browser environment shares its windows with
     /// the workspace's members the moment they open, since nobody runs it for itself.
     share_by_default: bool,
-    /// What the workspaces' other devices called themselves while this session ran: what a window
-    /// open on one of them names it by, whether the device is heard now or not.
-    devices: HeardDevices,
     /// The devices each workspace's governance admits, as last read and when. It is read only
     /// while the workspace shares a window of a device this session has not heard there, and then
     /// no more often than a view is asked for again.
@@ -288,86 +285,16 @@ pub(crate) struct WindowShares {
     /// Whether a write into a governance landed since the last pass: what the resource says may
     /// have changed with it.
     landed: Rc<Cell<bool>>,
+    /// Who writes this session's shares into a workspace's governance when its device may write
+    /// none itself: a session in a workspace's VM asks its host ([`ShareGovernor`]).
+    governor: Option<Rc<dyn ShareGovernor>>,
 }
 
-/// What this session heard the workspaces' other devices call themselves: a cache of what was
-/// heard, kept while the session runs and written nowhere. A device heard once keeps its name
-/// for as long as the desk lists a window of its, heard now or not, so a window open on a device
-/// that went to sleep still says which device to wake.
-#[derive(Default)]
-struct HeardDevices {
-    /// The device each salt was heard from, and whether a second one was heard under it: a salt
-    /// two devices' keys fold to names neither from then on. One entry a salt at most, so never
-    /// more than there are salts.
-    owners: BTreeMap<u16, Owner>,
-    /// What each device the desk lists a window of last called itself, by its salt: never more
-    /// entries than the desk has windows of other devices.
-    names: BTreeMap<u16, String>,
-}
-
-/// Whose a salt is, as far as this session heard.
-enum Owner {
-    /// The one device heard minting under it.
-    One(EndpointId),
-    /// Two devices at least: their keys fold to the one salt, so a window under it is either's.
-    Several,
-}
-
-impl HeardDevices {
-    /// Take in `devices`, the ones heard now with what each calls itself, and answer what the
-    /// desk calls each device it lists a window of, by the salt the device mints its ids under
-    /// ([`tilo_desktop_policy::DesktopPolicy::name_devices`]). `salt` is this device's own, and
-    /// `listed` the salts of the other devices' windows on the desk.
-    ///
-    /// A device keeps the name it last gave while the desk lists a window of its, and gives it
-    /// up with the last of them: a workspace the person left, or one that lists the device's
-    /// windows no longer, leaves nothing to say of it. A salt names one device or none: this
-    /// device's names nothing, a device that never gave a name has none, and a salt two devices
-    /// were ever heard under is neither's, so the desk never names the wrong device.
-    fn named(
-        &mut self,
-        salt: u16,
-        devices: &[(EndpointId, String)],
-        listed: &BTreeSet<u16>,
-    ) -> BTreeMap<u16, String> {
-        let Self { owners, names } = self;
-        for (device, _) in devices {
-            owners
-                .entry(tilo_desktop_model::ids::device_salt_of_key(
-                    device.as_bytes(),
-                ))
-                .and_modify(|owner| {
-                    if !matches!(owner, Owner::One(known) if known == device) {
-                        *owner = Owner::Several;
-                    }
-                })
-                .or_insert(Owner::One(*device));
-        }
-        let its_own = |minted: &u16| {
-            *minted != salt
-                && listed.contains(minted)
-                && matches!(owners.get(minted), Some(Owner::One(_)))
-        };
-        // The same device may be heard in several of the workspaces: the first name it gives in
-        // a pass stands, and a workspace it gives none in leaves the name to the next.
-        let mut said = BTreeSet::new();
-        for (device, name) in devices {
-            let minted = tilo_desktop_model::ids::device_salt_of_key(device.as_bytes());
-            let name = name.trim();
-            if name.is_empty() || !its_own(&minted) || !said.insert(minted) {
-                continue;
-            }
-            match names.get_mut(&minted) {
-                Some(known) if known == name => {}
-                Some(known) => name.clone_into(known),
-                None => {
-                    names.insert(minted, name.to_owned());
-                }
-            }
-        }
-        names.retain(|minted, _| its_own(minted));
-        names.clone()
-    }
+/// Who writes the shares of a session whose device governs nothing of its workspace: the workspace's
+/// host, which checks each names a window this device minted before it writes it.
+pub(crate) trait ShareGovernor {
+    /// Share the window `tab` of `app_id` with `workspace`'s members, or end that share.
+    fn share(&self, workspace: &str, app_id: &str, tab: TabId, shared: bool);
 }
 
 /// A window another member shares, as this session shows it on the desk.
@@ -424,6 +351,11 @@ impl WindowShares {
     /// runs off the loop, and the desk reads the share on the pass after it landed.
     pub(crate) fn answer_through(&mut self, landings: Rc<Landings>) {
         self.landings = Some(landings);
+    }
+
+    /// Have `governor` write this session's shares from now on, never the session itself.
+    pub(crate) fn governed_by(&mut self, governor: Rc<dyn ShareGovernor>) {
+        self.governor = Some(governor);
     }
 
     /// What the bar says is being shared: each member viewing a window of this device, and whether
@@ -632,35 +564,6 @@ impl WindowShares {
         self.send_outgoing(desk, sync);
     }
 
-    /// What the desk calls the other devices it lists a window of, by the salt each mints its ids
-    /// under: what each called itself when this session heard it in the desk's workspaces, now or
-    /// earlier ([`HeardDevices`]).
-    pub(crate) fn device_names(
-        &mut self,
-        desk: &DesktopHandle,
-        sync: &Client,
-    ) -> BTreeMap<u16, String> {
-        let own = self.salt;
-        let (heard, listed) = desk.read(|tree| {
-            let heard: Vec<(EndpointId, String)> = tree
-                .workspaces
-                .iter()
-                .flat_map(|held| sync.workspace_device_names(&held.policy.workspace))
-                .collect();
-            let listed: BTreeSet<u16> = tree
-                .workspaces
-                .iter()
-                .flat_map(|held| &held.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| peer_salt_of(tab.id))
-                .filter(|minted| *minted != own)
-                .collect();
-            (heard, listed)
-        });
-        self.devices.named(own, &heard, &listed)
-    }
-
     /// When the shares next need a pass of their own: a viewer's ask for a window said again before
     /// its host stops hearing it, an ask that stops counting as this device still viewing what it
     /// asked for, or the next frame of a shared window that has someone to send it to.
@@ -847,6 +750,10 @@ impl WindowShares {
         app_id: &str,
         workspace: &str,
     ) {
+        if let Some(governor) = &self.governor {
+            governor.share(workspace, app_id, tab, true);
+            return;
+        }
         let share = window_share_id(tab);
         let node = window_node(workspace, app_id, tab);
         if let Some((engine, id)) = governing(engine, workspace) {
@@ -916,6 +823,23 @@ impl WindowShares {
         let shares = |policy: &tilo_action_policy::WorkspacePolicy| {
             policy.grants.iter().any(|grant| is_of_share(grant, &share))
         };
+        if let Some(governor) = &self.governor {
+            let sharing: Vec<String> = desk.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .filter(|workspace| shares(&workspace.policy))
+                    .map(|workspace| workspace.policy.workspace.clone())
+                    .collect()
+            });
+            if sharing.is_empty() {
+                return;
+            }
+            for workspace in sharing {
+                governor.share(&workspace, "", tab, false);
+            }
+            self.changed();
+            return;
+        }
         let mut ended = false;
         let workspaces: Vec<String> = desk.read(|tree| {
             tree.workspaces
@@ -1088,8 +1012,8 @@ impl WindowShares {
             };
             self.watching.remove(&(governed.workspace, tab));
             // Only a tile the governance put on the desk goes with the share. A tab the desk
-            // already listed for the window, as one open on another device, is the desk's own
-            // record of it and stays: the window is still open there, and its picture alone ends.
+            // already listed for the window is the desk's own, this device's view of it, and
+            // stays.
             if hosted_window(tree, tab).is_some() {
                 self.end_tab(desk, tab, TAB_GONE);
                 remove_governed_tile(tree, tab, governed.strip.then_some(StripId(tab)));
@@ -1624,8 +1548,10 @@ impl WindowShares {
         {
             return;
         }
-        // ignored-failure: the plane opened only what its relay validated as a picture
-        let Ok(object) = VideoObject::decode(body) else {
+        let Ok(object) = tilo_failure::ignored!(
+            "the plane opened only what its relay validated as a picture",
+            VideoObject::decode(body)
+        ) else {
             return;
         };
         let peer = neighbour_wire::peer_handle(from.as_bytes());
@@ -2247,8 +2173,10 @@ impl WindowShares {
                     }
                     // A locked or asleep screen sends nothing, and the share goes on when it wakes.
                     Err(error) => {
-                        // ignored-failure: each pass captures the windows it can
-                        tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass");
+                        tilo_failure::ignored!(
+                            "each pass captures the windows it can",
+                            tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass")
+                        );
                     }
                 }
             }
@@ -2257,8 +2185,10 @@ impl WindowShares {
                 if let Err(error) = send_picture(plane, tab, &hosted.share, frame) {
                     // The window's group is past what one carries, or the picture past what an
                     // object does: the next frame starts it over at a keyframe.
-                    // ignored-failure: the keyframe asked for here starts the viewers over
-                    tracing::debug!(%error, tab, "a shared window's picture did not go out");
+                    tilo_failure::ignored!(
+                        "the keyframe asked for here starts the viewers over",
+                        tracing::debug!(%error, tab, "a shared window's picture did not go out")
+                    );
                     hosted.share.request_keyframe(seq, now);
                 }
             }
@@ -2555,10 +2485,13 @@ fn window_shown(
 /// The device a window is hosted by, as the key that hosts it: what the desktop model names a
 /// hosted window's device by.
 fn device_key(host: &str) -> Option<EndpointId> {
-    hex::decode(host)
-        .ok() // ignored-failure: a host that is no device key hosts no window
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok()) // ignored-failure: 32 bytes that are no endpoint name no device to host a window with
+    tilo_failure::ignored!(
+        "a host that is no device key, or names no endpoint, hosts no window",
+        hex::decode(host)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .and_then(|bytes| EndpointId::from_bytes(&bytes).ok())
+    )
 }
 
 /// Whether the desk shows the tab `tab` anywhere.
@@ -2787,10 +2720,12 @@ fn workspace_argument() -> ActionParam {
 
 /// The tab an action names, by its decimal id.
 fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
-    args.text("tab")
-        // ignored-failure: text that is no tab id names no tab
-        .and_then(|tab| tab.trim().parse().ok())
-        .unwrap_or(0)
+    tilo_failure::ignored!(
+        "text that is no tab id names no tab",
+        args.text("tab")
+            .and_then(|tab| tab.trim().parse().ok())
+            .unwrap_or(0)
+    )
 }
 
 /// The text argument `name` , or nothing.

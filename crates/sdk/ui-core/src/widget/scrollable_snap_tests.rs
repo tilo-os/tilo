@@ -18,7 +18,6 @@ use automerge::AutoCommit;
 use winit::event::{MouseScrollDelta, TouchPhase};
 use winit::keyboard::NamedKey;
 
-/// A board of `count` lanes, each one card.
 fn lanes(count: usize) -> Board {
     let mut board = Board::new();
     for index in 0..count {
@@ -53,7 +52,6 @@ fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
     )
 }
 
-/// The gap a board keeps between its lanes, and before the first.
 fn lane_pitch() -> f32 {
     let theme = Theme::dark();
     Board::lane_width(&theme, 390.0) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
@@ -115,8 +113,6 @@ fn a_compact_board_offers_a_detent_per_lane() {
         (detents[1] - detents[0] - pitch).abs() < 0.5,
         "the second lane stands a lane and a gap on: {detents:?}"
     );
-    // The last lane's edge lies past the end of the content, so its detent is
-    // the end of the scroll, which shows that lane whole.
     assert!(
         detents[2] > detents[1] && detents[2] <= detents[1] + pitch + 0.5,
         "the last lane's detent comes after the second: {detents:?}"
@@ -228,9 +224,8 @@ fn under_reduced_motion_a_release_lands_on_the_lane_at_once() {
     );
 }
 
-/// A board wide enough to show its lanes side by side offers no detents: the
-/// content stays where the hand left it, and a fling coasts on from there,
-/// as a free scroll does. A lane edge pulls it nowhere.
+/// A board wide enough to show its lanes side by side offers no detents: the content stays
+/// where the hand left it, and a fling coasts on from there, as a free scroll does.
 #[test]
 fn a_board_wide_enough_for_its_lanes_scrolls_freely() {
     let mut view = board_on_a_pane(lanes(6), 1280);
@@ -241,7 +236,6 @@ fn a_board_wide_enough_for_its_lanes_scrolls_freely() {
     );
     assert!(!view.snaps(), "and so it does not snap");
     let at = crate::time::now();
-    // The fingers come to rest before they lift: nothing carries on.
     let released = drag(&mut view, at, 90.0, 4);
     let paused = released + Duration::from_millis(300);
     let_go(&mut view, paused);
@@ -257,7 +251,6 @@ fn a_board_wide_enough_for_its_lanes_scrolls_freely() {
             .all(|lanes| (f64::from(rest) - pitch * lanes).abs() > 2.0),
         "no lane edge pulled it: {rest}"
     );
-    // A fling coasts on past the hand instead of stopping on a lane edge.
     let released = drag(&mut view, paused + Duration::from_millis(500), 90.0, 4);
     let_go(&mut view, released);
     let flung = run_out(&mut view, released);

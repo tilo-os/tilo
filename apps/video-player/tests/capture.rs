@@ -1,5 +1,3 @@
-//! Explicit file captures must prove playback rather than save a placeholder.
-
 #![allow(
     clippy::expect_used,
     reason = "test prerequisites must fail explicitly"

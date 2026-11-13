@@ -8,7 +8,7 @@
 //! is an entry on the device's session ([`tilo_relay_protocol::entering`]).
 
 use crate::signer::DeviceSigner;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use crate::error::LinkError;
 
@@ -37,12 +37,9 @@ pub async fn guest_certificate(
         signature: [0; 64],
         issuer: None,
     };
-    let digest =
-        device_cert_signing_digest(&cert).map_err(|error| LinkError::Sign(error.to_string()))?;
-    cert.signature = root
-        .sign(digest.to_vec())
+    tilo_user_identity::sign_device_cert_async(&mut cert, root)
         .await
-        .map_err(|error| LinkError::Sign(error.0))?;
+        .map_err(|error| LinkError::Sign(error.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| LinkError::Sign(error.to_string()))?;
     Ok(cert)

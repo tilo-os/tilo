@@ -1,4 +1,4 @@
-//! See task-4-probe-report.md for the external controller contract.
+//! What the external controller of the directory probe supplies and reads.
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -131,8 +131,8 @@ fn evidence(text: &str) -> io::Result<AnchorEvidence> {
     })
 }
 fn under(path: &Path, root: &Path) -> bool {
-    // Windows names are case-insensitive in the admitted fixture profile. Prefix
-    // comparison remains component-based, so test-root-other is not test-root.
+    // Windows names are case-insensitive in the admitted fixture profile. Prefix comparison remains
+    // component-based, so test-root-other is not test-root.
     let p: Vec<_> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
@@ -147,8 +147,8 @@ fn external_report(path: &Path, root: &Path) -> io::Result<File> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid("report parent required"))?;
-    // Controller-owned output directory must already exist and contain no link
-    // components. create_new refuses an existing destination (including links).
+    // Controller-owned output directory must already exist and contain no link components. create_new
+    // refuses an existing destination (including links).
     for ancestor in parent.ancestors() {
         let meta = fs::symlink_metadata(ancestor)?;
         if meta.file_type().is_symlink() {

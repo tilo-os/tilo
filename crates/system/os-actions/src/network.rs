@@ -1,5 +1,5 @@
-//! Wi-Fi, radios, VPNs and saved networks, through `NetworkManager`'s D-Bus
-//! client [`tilo_nm`].
+//! Wi-Fi, radios, VPNs and saved networks, through `NetworkManager`'s D-Bus client
+//! [`tilo_nm`].
 
 use std::future::Future;
 use std::time::Duration;
@@ -12,16 +12,12 @@ use zeroize::Zeroizing;
 
 pub const HOTSPOT_PROFILE: &str = "Tilo Hotspot";
 
-/// How long joining a Wi-Fi network may take before it counts as failed:
-/// association, authentication and an address.
+/// Association, authentication and an address; beyond this a join counts as failed.
 const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a hotspot may take to come up.
 const HOTSPOT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A work or school network adds the 802.1X exchange to a join.
 const ENTERPRISE_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Run `work` against `NetworkManager` on the system bus, for a synchronous
-/// caller (see [`crate::block_on`]).
 pub(crate) fn with_nm<T, F>(work: impl FnOnce(NmClient) -> F) -> Result<T, String>
 where
     F: Future<Output = Result<T, NmError>>,
@@ -34,7 +30,6 @@ where
     })
 }
 
-/// The saved profile with name `id`.
 async fn profile_named(nm: &NmClient, id: &str) -> Result<Profile, NmError> {
     nm.profiles()
         .await?
@@ -43,7 +38,6 @@ async fn profile_named(nm: &NmClient, id: &str) -> Result<Profile, NmError> {
         .ok_or_else(|| NmError::NotFound(format!("no saved network is called {id}")))
 }
 
-/// The saved profile with name `id`, saving `new` as it when there is none.
 async fn profile_or_add(
     nm: &NmClient,
     id: &str,
@@ -56,7 +50,6 @@ async fn profile_or_add(
     nm.profile(&uuid).await
 }
 
-/// The active connection whose profile `matches`.
 async fn active_where(
     nm: &NmClient,
     matches: impl Fn(&ActiveConnection) -> bool,
@@ -68,7 +61,6 @@ async fn active_where(
         .ok_or_else(|| NmError::NotFound("that connection is not active".into()))
 }
 
-/// The first Wi-Fi device.
 async fn wifi_device(nm: &NmClient) -> Result<Device, NmError> {
     nm.devices()
         .await?
@@ -77,9 +69,8 @@ async fn wifi_device(nm: &NmClient) -> Result<Device, NmError> {
         .ok_or(NmError::NoWifiDevice)
 }
 
-// Six independently-meaningful named flags, not a bitset in disguise — each is read and
-// written by name across `shell` and `apps/settings`. Regrouping them (e.g. into a bitflags
-// type) would ripple through both crates for no behavioural gain.
+// Six independently meaningful flags, not a bitset in disguise: each is read and written by name
+// across the shell and Settings.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each field is an independent, individually named radio/availability flag read \
@@ -89,8 +80,8 @@ async fn wifi_device(nm: &NmClient) -> Result<Device, NmError> {
 pub struct RadioState {
     pub airplane_mode: bool,
     pub wifi_available: bool,
-    /// Whether the Wi-Fi radio is really on: `NetworkManager` has it enabled
-    /// *and* no kill switch blocks it. Not the last request.
+    /// Really on: `NetworkManager` has it enabled and no kill switch blocks it, which is not the last
+    /// request.
     pub wifi_enabled: bool,
     /// A physical switch holds Wi-Fi off; no program can turn it on.
     pub wifi_hardware_blocked: bool,
@@ -102,8 +93,7 @@ pub struct RadioState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnConnectionInfo {
     pub name: String,
-    /// `NetworkManager`'s stable connection UUID. Consumers must use this to
-    /// associate locally provisioned VPN material; names are mutable labels.
+    /// Consumers use this to associate locally provisioned VPN material; names are mutable labels.
     pub uuid: String,
     pub active: bool,
     pub kind: String,
@@ -113,13 +103,8 @@ pub fn get_radio_state() -> Result<RadioState, String> {
     SystemRadio.radio_state()
 }
 
-/// Whether this device runs a network service at all: `NetworkManager` is on
-/// the system bus.
-///
-/// A caller leaves out what only the service can answer — the networks, the
-/// radios, the VPNs — when there is none, the way it leaves out absent
-/// hardware, instead of showing those rows as unreadable. A bus name check,
-/// not a read, so it may be asked every time the state is read.
+/// Whether this device runs a network service at all: `NetworkManager` is on the system bus, and
+/// without it a caller leaves out what only it can answer.
 #[must_use]
 pub fn network_service_present() -> bool {
     crate::block_on(async {
@@ -140,9 +125,8 @@ fn nm_radio_state() -> Result<RadioState, String> {
     })
 }
 
-/// `NetworkManager`'s view of the radios, corrected by the kernel's kill
-/// switches: a radio a switch blocks is off whatever `NetworkManager`'s own
-/// flag says, and a hard block is named so the person learns why.
+/// Corrects `NetworkManager`'s view by the kernel's switches: a radio a switch blocks is off whatever
+/// its flag says.
 fn with_kill_switches(mut radios: RadioState, wlan: crate::rfkill::RfkillState) -> RadioState {
     if wlan.present {
         radios.wifi_enabled &= wlan.allows();
@@ -152,8 +136,8 @@ fn with_kill_switches(mut radios: RadioState, wlan: crate::rfkill::RfkillState) 
     radios
 }
 
-/// The radios as `NetworkManager` has them: its switches, the devices it
-/// manages and whether the hotspot is up.
+/// The radios as `NetworkManager` has them: its switches, the devices it manages and whether the
+/// hotspot is up.
 fn radio_state_of(radios: Radios, devices: &[Device], active: &[ActiveConnection]) -> RadioState {
     let has = |kind: DeviceKind| devices.iter().any(|device| device.kind == kind);
     let hotspot_active = active
@@ -171,29 +155,22 @@ fn radio_state_of(radios: Radios, devices: &[Device], active: &[ActiveConnection
     state
 }
 
-/// Airplane mode as `NetworkManager` has it: every radio there is, off.
 fn every_radio_off(radios: &RadioState) -> bool {
     (radios.wifi_available || radios.wwan_available)
         && (!radios.wifi_available || !radios.wifi_enabled)
         && (!radios.wwan_available || !radios.wwan_enabled)
 }
 
-/// Where the kernel lists its device classes.
 const SYS_CLASS: &str = "/sys/class";
 
-/// Whether this machine has a Wi-Fi radio, as the kernel lists it: a
-/// wireless PHY, or a network interface that is a WLAN. A few directory
-/// listings and no bus call, so a caller may ask often — Settings asks every
-/// few seconds to follow a dongle being plugged in.
+/// A wireless PHY or a WLAN interface, as the kernel lists them: a few directory listings answer it
+/// without asking `NetworkManager`.
 #[must_use]
 pub fn has_wifi_radio() -> bool {
     has_wifi_radio_in(std::path::Path::new(SYS_CLASS))
 }
 
-/// Whether this machine has a mobile broadband modem, as the kernel lists
-/// it: a WWAN device, or a network interface that is one. A modem that
-/// `ModemManager` drives over a serial port alone is not listed here;
-/// `get_radio_state` sees it.
+/// A WWAN device or a network interface that is one, as the kernel lists them.
 #[must_use]
 pub fn has_wwan_modem() -> bool {
     has_wwan_modem_in(std::path::Path::new(SYS_CLASS))
@@ -216,7 +193,6 @@ fn has_entries(directory: &std::path::Path) -> bool {
     std::fs::read_dir(directory).is_ok_and(|mut entries| entries.any(|entry| entry.is_ok()))
 }
 
-/// The network interfaces under `class`, each as its sysfs directory.
 fn interfaces(class: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
     std::fs::read_dir(class.join("net"))
         .into_iter()
@@ -225,7 +201,6 @@ fn interfaces(class: &std::path::Path) -> impl Iterator<Item = std::path::PathBu
         .map(|entry| entry.path())
 }
 
-/// The `DEVTYPE` an interface's `uevent` names, if any.
 fn device_type(interface: &std::path::Path) -> Option<String> {
     let uevent = std::fs::read_to_string(interface.join("uevent")).ok()?;
     uevent
@@ -241,25 +216,19 @@ pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
             nm.set_wwan_enabled(false).await
         })
     } else {
-        // Restore radios individually so Bluetooth remains owned by BlueZ and
-        // NetworkManager never changes an unrelated subsystem. Wi-Fi comes
-        // back through the one path that also lifts a kill switch.
+        // Restores radios one by one, so Bluetooth stays `BlueZ`'s and `NetworkManager` never changes
+        // an unrelated subsystem.
         set_wifi_radio(true)?;
         let _ = with_nm(|nm| async move { nm.set_wwan_enabled(true).await });
         Ok(())
     }
 }
 
-/// Mobile data on or off: the modem's radio and the profile that connects
-/// through it ([`crate::modem::set_mobile_data`]).
 pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
     crate::modem::set_mobile_data(enabled)
 }
 
-/// Turn the Tilo hotspot on or off. The first time, its profile is made with
-/// a random WPA passphrase that Tilo never shows or logs; Settings can give
-/// it a name and passphrase of the person's choosing
-/// ([`configure_hotspot`]).
+/// On first use its profile is made with a random WPA passphrase that Tilo never shows or logs.
 pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     with_nm(|nm| async move {
         if !enabled {
@@ -289,7 +258,6 @@ pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     })
 }
 
-/// A WPA passphrase of 12 letters and digits.
 fn random_passphrase() -> Result<Zeroizing<String>, String> {
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut bytes = Zeroizing::new([0_u8; 12]);
@@ -306,7 +274,6 @@ fn random_passphrase() -> Result<Zeroizing<String>, String> {
     ))
 }
 
-/// A hotspot's network name, band and WPA passphrase.
 fn hotspot_settings(settings: &mut Settings, ssid: &str, password: &str, band: HotspotBand) {
     settings.set("802-11-wireless", "ssid", ssid.as_bytes().to_vec());
     settings.set("802-11-wireless", "mode", "ap");
@@ -339,9 +306,8 @@ pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
     })
 }
 
-/// Bring a profile up or down. Up returns once `NetworkManager` has taken
-/// the request; the connection's progress is followed like any other
-/// change ([`follow_network_changes`]).
+/// Up returns once `NetworkManager` has taken the request; the connection's progress is followed like
+/// any other change.
 async fn switch_profile(nm: &NmClient, profile: &Profile, enabled: bool) -> Result<(), NmError> {
     if enabled {
         nm.activate(profile, None, None, None).await
@@ -361,9 +327,8 @@ pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
     })
 }
 
-/// Activate/deactivate one VPN profile by `NetworkManager`'s immutable UUID.
-/// This avoids binding a security-relevant local credential association to a
-/// mutable display name.
+/// By immutable UUID, so a security-relevant local credential stays bound to the profile and not to a
+/// name.
 pub fn set_vpn_connection_uuid(uuid: &str, enabled: bool) -> Result<(), String> {
     if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
         return Err("invalid VPN connection UUID".into());
@@ -374,18 +339,11 @@ pub fn set_vpn_connection_uuid(uuid: &str, enabled: bool) -> Result<(), String> 
     })
 }
 
-/// Set up the `kind` (`wireguard` or `openvpn`) configuration file at `path`
-/// as a profile; see [`crate::network_settings::import_path_finding_uuid`].
 pub fn import_vpn_config(kind: &str, path: &str) -> Result<(), String> {
     crate::network_settings::import_path_finding_uuid(kind, std::path::Path::new(path)).map(drop)
 }
 
-/// Remove one `NetworkManager` VPN profile by its exact connection name.
-///
-/// # Errors
-///
-/// Returns an error for an invalid name or when `NetworkManager` refuses the
-/// deletion.
+/// By its exact connection name; errors for an invalid name or when `NetworkManager` refuses.
 pub fn delete_vpn_connection(name: &str) -> Result<(), String> {
     if name.is_empty() || name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
         return Err("invalid VPN connection name".into());
@@ -396,7 +354,6 @@ pub fn delete_vpn_connection(name: &str) -> Result<(), String> {
     })
 }
 
-/// Remove one `NetworkManager` VPN profile by immutable UUID.
 pub fn delete_vpn_connection_uuid(uuid: &str) -> Result<(), String> {
     if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
         return Err("invalid VPN connection UUID".into());
@@ -407,10 +364,8 @@ pub fn delete_vpn_connection_uuid(uuid: &str) -> Result<(), String> {
     })
 }
 
-/// Authentication advertised by a Wi-Fi access point.
-///
-/// `Unknown` is fail-closed: callers must not treat an unfamiliar security
-/// suite as an ordinary password network.
+/// Authentication advertised by an access point. `Unknown` is fail-closed: callers must not treat an
+/// unfamiliar suite as an ordinary one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum WifiSecurity {
@@ -454,9 +409,8 @@ impl From<WifiSecurity> for String {
 }
 
 impl WifiSecurity {
-    /// What an access point advertises: its privacy flag and the key
-    /// management suites of its WPA and RSN elements. A network that offers
-    /// several is named by the strongest a person must use to join it.
+    /// What an access point advertises: its privacy flag and the key management suites of its WPA and
+    /// RSN elements.
     #[must_use]
     pub fn of_access_point(point: &AccessPoint) -> Self {
         use tilo_nm::model::{
@@ -481,7 +435,6 @@ impl WifiSecurity {
         } else if point.rsn_flags & AP_KEY_PSK != 0 {
             Self::Wpa2
         } else {
-            // WPA1 alone.
             Self::Unknown
         }
     }
@@ -491,9 +444,8 @@ impl WifiSecurity {
         !matches!(self, Self::Open)
     }
 
-    /// Only personal WPA profiles can be recreated from an SSID and a
-    /// passphrase. OWE has no secret; enterprise needs identity, EAP and CA
-    /// policy; unknown modes must be reviewed first.
+    /// Only personal WPA profiles can be recreated from a name and a passphrase: OWE has no secret,
+    /// enterprise needs identity, EAP and CA policy.
     #[must_use]
     pub fn supports_portable_passphrase(self) -> bool {
         matches!(self, Self::Wpa2 | Self::Wpa3)
@@ -513,60 +465,32 @@ impl WifiSecurity {
     }
 }
 
-/// One Wi-Fi network entry returned by [`list_wifi_networks`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetworkInfo {
     pub ssid: String,
-    /// Signal-strength bucket in `[0, 4]`. Mapped from the access point's strength via
-    /// `signal_pct_to_bucket`.
+    /// Bucket `0..=4`, from [`signal_pct_to_bucket`].
     pub signal: u8,
-    /// `true` when the network is not open.
     pub secure: bool,
-    /// Parsed authentication mode. Unlike `secure`, this is sufficient to
-    /// decide whether password continuity is valid for the network.
+    /// Unlike `secure`, this is enough to decide whether password continuity is valid for the network.
     pub security: WifiSecurity,
-    /// `true` when this machine is connected through it.
     pub connected: bool,
-    /// A saved profile for it exists: this machine has joined it before and
-    /// connects without asking for its password.
+    /// A saved profile exists: this machine has joined it before and connects without asking its
+    /// password.
     pub known: bool,
 }
 
-/// Turn the Wi-Fi radio on or off, and say how it really stands afterwards.
-///
-/// Wi-Fi is off while either of two layers holds it: `NetworkManager`'s
-/// "wireless enabled" flag, or a kill switch in the kernel. Setting only the
-/// flag is not enough to turn it on: a soft block left by another program,
-/// a platform key or a restored boot state keeps the radio off while
-/// `NetworkManager` reports success. Turning on therefore lifts the soft
-/// block as well; a hard block (a physical switch) cannot be lifted and is
-/// reported in the returned state.
-///
-/// The result is read back after the change: the radio's state, never the
-/// request. A caller compares it with what it asked for.
-///
-/// # Errors
-///
-/// Returns an error message when `NetworkManager` cannot be asked or
-/// refuses, or its state cannot be read back.
+/// Turns the Wi-Fi radio on or off and says how it really stands afterwards. Two layers hold it:
+/// `NetworkManager`'s flag and the kernel's soft block, which a hard block overrides.
 pub fn set_wifi_radio(enabled: bool) -> Result<RadioState, String> {
     set_wifi_radio_with(&SystemRadio, enabled)
 }
 
-/// Toggle the Wi-Fi radio; succeeds only when the radio really ended up in
-/// the requested state. See [`set_wifi_radio`].
-///
-/// # Errors
-///
-/// Returns why the radio did not change: `NetworkManager` refused, or a
-/// switch holds the radio off.
+/// Succeeds only when the radio really ended up in the requested state; see [`set_wifi_radio`].
 pub fn set_wifi(enabled: bool) -> Result<(), String> {
     let radios = set_wifi_radio(enabled)?;
     wifi_change_outcome(enabled, &radios)
 }
 
-/// Whether `radios`, read after asking for Wi-Fi `enabled`, shows that it
-/// happened; otherwise why not.
 pub fn wifi_change_outcome(enabled: bool, radios: &RadioState) -> Result<(), String> {
     if radios.wifi_enabled == enabled {
         Ok(())
@@ -579,22 +503,15 @@ pub fn wifi_change_outcome(enabled: bool, radios: &RadioState) -> Result<(), Str
     }
 }
 
-/// The two layers that hold Wi-Fi on or off, behind one seam so the
-/// sequence in [`set_wifi_radio_with`] is tested against a fake
-/// `NetworkManager` and kernel.
+/// The two layers that hold Wi-Fi, behind one seam so the sequence in [`set_wifi_radio_with`] is tested
+/// against a fake `NetworkManager`.
 trait WifiRadioHost {
-    /// The kernel's kill switches for Wi-Fi.
     fn kill_switches(&self) -> crate::rfkill::RfkillState;
-    /// Lift the soft blocks on Wi-Fi.
     fn lift_soft_block(&self) -> Result<(), String>;
-    /// Set `NetworkManager`'s "wireless enabled" flag.
     fn set_wireless_enabled(&self, enabled: bool) -> Result<(), String>;
-    /// The radios as they stand now.
     fn radio_state(&self) -> Result<RadioState, String>;
 }
 
-/// The machine: `NetworkManager` over D-Bus, sysfs and `/dev/rfkill` for the
-/// kernel.
 struct SystemRadio;
 
 impl WifiRadioHost for SystemRadio {
@@ -616,11 +533,8 @@ fn set_wifi_radio_with(host: &dyn WifiRadioHost, enabled: bool) -> Result<RadioS
     if enabled {
         let switches = host.kill_switches();
         if switches.soft_blocked {
-            // `NetworkManager` lifts a soft block itself when its flag goes
-            // from off to on, but not when the flag is already on and
-            // another program blocked the radio underneath it. Lifting it
-            // here covers both; if this session may not, `NetworkManager`
-            // still tries, and the read-back below tells the truth.
+            // `NetworkManager` lifts a soft block itself when its flag goes from off to on, but not
+            // when the flag is already on and another program blocked the radio.
             if let Err(error) = host.lift_soft_block() {
                 tracing::warn!(target: "tilo::os_actions", %error, "could not lift the Wi-Fi soft block");
             }
@@ -630,13 +544,11 @@ fn set_wifi_radio_with(host: &dyn WifiRadioHost, enabled: bool) -> Result<RadioS
     host.radio_state()
 }
 
-/// Whether the Wi-Fi radio is on.
 pub fn get_wifi() -> Result<bool, String> {
     wifi_from_radios(&get_radio_state()?)
 }
 
-/// Whether Wi-Fi is on, read from a radio snapshot already taken — so a
-/// caller holding one does not ask `NetworkManager` a second time for the same answer.
+/// Read from a snapshot already taken, so a caller holding one does not ask `NetworkManager` again.
 pub fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     if !radios.wifi_available {
         return Err("no Wi-Fi adapter on this machine".into());
@@ -644,17 +556,11 @@ pub fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     Ok(radios.wifi_enabled)
 }
 
-/// The Wi-Fi networks in range, as `NetworkManager` last saw them.
-///
-/// This is a read and never waits for the radio. `NetworkManager` keeps its access-point list
-/// current with its own periodic scans; waiting for a fresh scan first takes over 13 s on some
-/// adapters. The connected network and the status every caller derives from this list must
-/// not depend on that. A deliberate "look again" is [`scan_wifi`] first.
+/// The networks in range as `NetworkManager` last saw them: a read that never waits for the radio.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     with_nm(|nm| async move {
         let mut networks = networks_of(&nm.access_points().await?);
-        // Which ones this machine knows: a failed read leaves them unknown,
-        // which only means a password may be asked for.
+        // A failed read leaves them unknown, which only means a password may be asked for.
         if let Ok(profiles) = nm.profiles().await {
             mark_known(&mut networks, &profiles);
         }
@@ -662,8 +568,6 @@ pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     })
 }
 
-/// Mark the networks a saved Wi-Fi profile exists for: one for the same
-/// network name.
 fn mark_known(networks: &mut [WifiNetworkInfo], profiles: &[Profile]) {
     for network in networks {
         network.known = network.connected
@@ -673,29 +577,18 @@ fn mark_known(networks: &mut [WifiNetworkInfo], profiles: &[Profile]) {
     }
 }
 
-/// Whether `settings` is a Wi-Fi profile for the network called `ssid`.
 fn is_wifi_profile_for(settings: &Settings, ssid: &str) -> bool {
     settings.kind() == "802-11-wireless"
         && settings.bytes("802-11-wireless", "ssid") == ssid.as_bytes()
 }
 
-/// Scan for Wi-Fi networks: ask `NetworkManager` over D-Bus to scan with every Wi-Fi device
-/// and return once each scan has finished, so a [`list_wifi_networks`] that follows lists
-/// what the radio sees now. A scan takes as long as the hardware needs, so call this from a
-/// worker, and only for a person's explicit request to look again.
-///
-/// # Errors
-///
-/// Returns why the scan could not run: no Wi-Fi device, radio off, `NetworkManager`
-/// unreachable or refusing.
+/// Returns once every Wi-Fi device's scan finished, so the list read after it shows the new result.
 pub fn scan_wifi() -> Result<(), String> {
     crate::block_on(async { tilo_nm::scan_wifi().await.map_err(|e| e.to_string()) })
 }
 
-/// One entry per network name: several access points broadcasting the same
-/// name (a mesh, two bands) are one network, as strong as its strongest,
-/// connected when any is, secured as the one in use (else the strongest).
-/// Hidden networks have no name to list.
+/// One entry per network name: access points sharing a name are one network, as strong as its
+/// strongest.
 fn networks_of(points: &[AccessPoint]) -> Vec<WifiNetworkInfo> {
     let mut networks: Vec<WifiNetworkInfo> = Vec::new();
     for point in points {
@@ -729,7 +622,6 @@ fn networks_of(points: &[AccessPoint]) -> Vec<WifiNetworkInfo> {
     networks
 }
 
-/// Map an access point's strength percentage `0..=100` onto the popover's signal bucket `0..=4`.
 fn signal_pct_to_bucket(pct: u8) -> u8 {
     match pct {
         0..=20 => 1,
@@ -739,27 +631,20 @@ fn signal_pct_to_bucket(pct: u8) -> u8 {
     }
 }
 
-/// A connection's traffic as its interface counts it: the interface, the
-/// connection's profile on it now, and the bytes the interface moved since
-/// it appeared.
+/// A connection's traffic as its interface counts it: the interface, the profile on it now, and the
+/// bytes moved since it attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterfaceTraffic {
     /// The kernel interface (`wlp2s0`).
     pub interface: String,
-    /// The profile's id and name.
     pub uuid: String,
     pub name: String,
     pub wired: bool,
     pub traffic: crate::modem::Traffic,
 }
 
-/// The traffic of every Wi-Fi and wired connection up now, read from their
-/// interfaces' counters. The hotspot this device shares is left out: what
-/// it carries is counted on the connection it shares. Modems count their
-/// own ([`crate::read_mobile`]).
-///
-/// # Errors
-/// When `NetworkManager` cannot be asked.
+/// Every Wi-Fi and wired connection up now, from their interfaces' counters; the hotspot this device
+/// shares is left out, as that is other people's traffic.
 pub fn read_interface_traffic() -> Result<Vec<InterfaceTraffic>, String> {
     let (devices, active) =
         with_nm(|nm| async move { Ok((nm.devices().await?, nm.active_connections().await?)) })?;
@@ -803,23 +688,19 @@ fn interface_traffic(
         .collect()
 }
 
-/// What the machine's network connection currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
-    /// Nothing is connected.
     Offline,
     Wired,
     Wifi,
 }
 
-/// A one-glance summary of connectivity, for the top bar's indicator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkStatus {
     pub kind: LinkKind,
-    /// The connection's name — the SSID on Wi-Fi, the profile name on Ethernet. `None` when offline.
+    /// The SSID on Wi-Fi, the profile name on Ethernet; `None` when offline.
     pub name: Option<String>,
-    /// Signal-strength bucket `1..=4` on Wi-Fi; `0` on wired and offline. Same scale as
-    /// [`WifiNetworkInfo::signal`].
+    /// Bucket `1..=4` on Wi-Fi, `0` on wired and offline, on [`WifiNetworkInfo::signal`]'s scale.
     pub signal: u8,
 }
 
@@ -836,8 +717,6 @@ impl LinkStatus {
     }
 }
 
-/// Following `NetworkManager` for [`follow_network_changes`]; it stops when
-/// this is dropped.
 #[derive(Debug)]
 pub struct NetworkFollow {
     task: tilo_rt::JoinHandle<()>,
@@ -849,19 +728,11 @@ impl Drop for NetworkFollow {
     }
 }
 
-/// Call `on_change` on the app runtime each time `NetworkManager` reports a
-/// change network settings shows ([`tilo_nm::NmClient::watch_changes`]):
-/// a reader re-reads then, instead of on a timer. Nothing polls.
-///
-/// # Errors
-///
-/// When the app runtime cannot start. A system bus that cannot be reached
-/// is logged and followed no further.
+/// Calls `on_change` on the app runtime whenever `NetworkManager` reports a change that network
+/// settings shows.
 pub fn follow_network_changes(
     on_change: impl Fn() + Send + Sync + 'static,
 ) -> Result<NetworkFollow, String> {
-    // Not generic past here: the runtime holds the follower, its D-Bus
-    // connection and its tasks once, rather than every app calling it.
     follow_network_changes_boxed(Box::new(on_change))
 }
 
@@ -885,25 +756,14 @@ fn follow_network_changes_boxed(
     Ok(NetworkFollow { task })
 }
 
-/// Read the primary connection from `NetworkManager`'s state: one D-Bus read, never a scan.
-/// Long-lived readers follow [`tilo_nm::watch`] instead and map each reading with
-/// [`link_status_from_state`].
-///
-/// # Errors
-///
-/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is unreachable.
+/// One D-Bus read, never a scan; long-lived readers follow [`tilo_nm::watch`] instead.
 pub fn get_link_status() -> Result<LinkStatus, String> {
     let state = crate::block_on(async { tilo_nm::state().await.map_err(|e| e.to_string()) })?;
     Ok(link_status_from_state(&state, wireless_link_quality_pct()))
 }
 
-/// The top bar's link summary for one `NetworkManager` reading: the primary connection, the
-/// one the person's traffic leaves on. `wireless_quality_pct` refines the bars on Wi-Fi;
-/// pass [`wireless_link_quality_pct`].
-///
-/// The indicator draws a cable or a radio. A primary connection of another kind (mobile
-/// broadband, a Bluetooth tether) draws as the cable: it is connected, and must never read
-/// as offline.
+/// The top bar's summary for one reading: the primary connection, the one the person's traffic leaves
+/// on.
 pub fn link_status_from_state(
     state: &tilo_nm::NetworkState,
     wireless_quality_pct: Option<u8>,
@@ -916,8 +776,8 @@ pub fn link_status_from_state(
         tilo_nm::LinkKind::Wifi => LinkStatus {
             kind: LinkKind::Wifi,
             name,
-            // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws
-            // as "no signal".
+            // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws as "no
+            // signal".
             signal: wireless_quality_pct.map_or(4, signal_pct_to_bucket),
         },
         tilo_nm::LinkKind::Wired | tilo_nm::LinkKind::Mobile | tilo_nm::LinkKind::Other => {
@@ -930,13 +790,8 @@ pub fn link_status_from_state(
     }
 }
 
-/// Best link quality across every wireless interface, as a percentage. `/proc/net/wireless`
-/// reports quality on the driver's own scale (a trailing `.` on each value, most drivers
-/// 0..70); a value above that is taken as already-a-percentage rather than clamped, so an
-/// unusual driver degrades gracefully instead of pinning.
-///
-/// One file read the kernel keeps current, so the bars move as the person walks around
-/// with no `NetworkManager` involvement at all.
+/// Best link quality across every wireless interface, as a percentage; `/proc/net/wireless` reports on
+/// the driver's own scale.
 pub fn wireless_link_quality_pct() -> Option<u8> {
     let raw = std::fs::read_to_string("/proc/net/wireless").ok()?;
     parse_proc_net_wireless(&raw)
@@ -976,17 +831,13 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
     best
 }
 
-/// Connect to a Wi-Fi network by name. A password travels in the D-Bus call
-/// that saves it with the network's profile, never in argv.
+/// A password travels in the D-Bus call that saves it with the profile, never in argv.
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     join_wifi(ssid, password, false)
 }
 
-/// Join the network called `ssid`: through its saved profile when there is
-/// one (taking `password` as its new one), else through a new profile
-/// `NetworkManager` completes from the access point. A `hidden` network
-/// broadcasts no name, so no access point is looked for. Returns once
-/// connected, or with why not.
+/// Joins `ssid` through its saved profile when there is one, taking `password` as its new one, else
+/// through a new profile.
 pub(crate) fn join_wifi(ssid: &str, password: Option<&str>, hidden: bool) -> Result<(), String> {
     if let Some(password) = password
         && password.chars().any(|c| matches!(c, '\n' | '\r'))
@@ -1048,8 +899,8 @@ pub(crate) fn join_wifi(ssid: &str, password: Option<&str>, hidden: bool) -> Res
     })
 }
 
-/// Put `password` into a Wi-Fi profile as the key its network's `security`
-/// takes (`None`: a hidden network, which is taken to be WPA2/WPA3).
+/// Puts `password` into the profile as the key its network's `security` takes; `None` is a hidden
+/// network, taken to be WPA2/WPA3.
 fn wifi_secret(
     settings: &mut Settings,
     security: Option<WifiSecurity>,
@@ -1069,8 +920,8 @@ fn wifi_secret(
             return Err("this network's security is not supported".into());
         }
     };
-    // A saved profile that already names its key management keeps it: a
-    // transition network joined as WPA2 stays WPA2.
+    // A saved profile that already names its key management keeps it: a transition network joined as
+    // WPA2 stays WPA2.
     if settings.string(SECURITY, "key-mgmt").is_none() {
         settings.set(SECURITY, "key-mgmt", key_mgmt);
     }
@@ -1078,8 +929,7 @@ fn wifi_secret(
     Ok(())
 }
 
-/// Disconnect the exact `NetworkManager` connection used for a remote
-/// tethering grant. This does not forget the profile or affect other radios.
+/// Disconnects the `NetworkManager` connection; it does not forget the profile or affect other radios.
 pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
         return Err("Wi-Fi name is invalid".into());
@@ -1090,9 +940,7 @@ pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
     })
 }
 
-/// `NetworkManager`'s connectivity result, including the portal state used by
-/// captive-portal helpers. Values intentionally mirror the daemon rather than
-/// deriving "online" from a local address.
+/// Values mirror the daemon's own, portal state included, rather than being remapped.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ConnectivityState {
     #[default]
@@ -1127,12 +975,8 @@ impl From<tilo_nm::NmConnectivity> for ConnectivityState {
     }
 }
 
-/// `NetworkManager`'s last connectivity verdict. A read: it never makes the daemon probe the
-/// internet. [`check_connectivity_now`] is the deliberate recheck.
-///
-/// # Errors
-///
-/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is unreachable.
+/// A read: it never makes the daemon probe the internet; [`check_connectivity_now`] does that
+/// deliberately.
 pub fn get_connectivity() -> Result<ConnectivityState, String> {
     crate::block_on(async {
         tilo_nm::state()
@@ -1142,10 +986,7 @@ pub fn get_connectivity() -> Result<ConnectivityState, String> {
     })
 }
 
-/// Ask `NetworkManager` to recheck connectivity now (an HTTP probe of its configured URI), for
-/// an explicit "check again" in the installer or Settings. Falls back to the last verdict when
-/// this caller may not ask for a recheck (polkit refuses that to clients outside an active
-/// session, such as a sandboxed app behind a filtered bus).
+/// An HTTP probe of the daemon's configured URI, for an explicit "check again".
 pub fn check_connectivity_now() -> Result<ConnectivityState, String> {
     let check = crate::block_on(async {
         tilo_nm::check_connectivity_now()
@@ -1166,14 +1007,8 @@ fn connectivity_from(
     }
 }
 
-/// Return `NetworkManager`'s configured connectivity-check URI. Opening this
-/// URI is the standard captive-portal flow: an intercepting network redirects
-/// it to its login page. Tilo does not guess a gateway or hard-code a vendor URL.
-///
-/// # Errors
-///
-/// Returns an error message if the D-Bus runtime cannot start, `NetworkManager` is unreachable,
-/// it has no connectivity-check URI configured, or the configured URI is not `http(s)://`.
+/// `NetworkManager`'s configured connectivity-check URI. Opening it is the standard captive-portal
+/// flow.
 pub fn captive_portal_uri() -> Result<String, String> {
     crate::block_on(async {
         tilo_nm::captive_portal_uri()
@@ -1188,24 +1023,21 @@ pub struct SavedNetworkProfile {
     pub uuid: String,
     pub kind: String,
     pub autoconnect: bool,
-    /// When this device last connected with it, in seconds since the Unix
-    /// epoch; `None` when it never has.
+    /// When this device last connected with it, in seconds since the Unix epoch; `None` when it never
+    /// has.
     pub last_used: Option<u64>,
 }
 
-/// The only `NetworkManager` profile fields eligible for personal-device
-/// roaming. UUID is deliberately absent: it is a machine-local lookup
-/// capability, never portable state.
+/// The only profile fields eligible for personal-device roaming. The UUID is deliberately absent: it is
+/// a machine-local lookup capability.
 pub struct PortableWifiProfileSecret {
     pub ssid: String,
     pub security: WifiSecurity,
     pub password: Zeroizing<String>,
 }
 
-/// Resolve one explicit `NetworkManager` profile into portable Wi-Fi semantics.
-/// Only the network name, its key management and its passphrase are read:
-/// interface names, MAC addresses, routes, DNS, autoconnect state and every
-/// other machine-specific property stay behind.
+/// One profile as portable Wi-Fi: only the network name, its key management and its passphrase are
+/// read.
 pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSecret, String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move {
@@ -1227,8 +1059,6 @@ pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSec
     })
 }
 
-/// A profile of `kind` for `ssid` secured by `key_mgmt` with `password`, if
-/// it may travel to another device.
 fn portable_profile(
     kind: &str,
     ssid: &str,
@@ -1285,9 +1115,8 @@ pub enum MacPolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProxyConfiguration {
     pub automatic_url: Option<String>,
-    /// One proxy server for everything, `host:port`. `NetworkManager` keeps
-    /// proxies as auto-configuration only, so it is stored as the one-line
-    /// script that names it (`manual_proxy_script`).
+    /// `NetworkManager` keeps proxies as auto-configuration only, so it is stored as the one-line
+    /// script the daemon's PAC handler reads.
     pub manual: Option<String>,
     pub browser_only: bool,
 }
@@ -1299,9 +1128,7 @@ pub struct ConnectionPolicy {
     pub proxy: ProxyConfiguration,
 }
 
-/// Editable values read from a `NetworkManager` connection profile. `None`
-/// means `NetworkManager` returned a value this UI does not understand; callers
-/// must leave that property alone rather than replacing it with a default.
+/// `None` means `NetworkManager` returned a value this UI does not understand.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionProfileSettings {
     pub metered: Option<MeteredPolicy>,
@@ -1326,10 +1153,6 @@ pub struct ConnectionPolicyPatch {
     pub hidden: Option<bool>,
 }
 
-/// # Errors
-///
-/// Returns an error message if `uuid` fails validation, the patch's automatic proxy URL is
-/// not `http(s)://` or exceeds 2048 bytes, or `NetworkManager` refuses the change.
 pub fn configure_connection_policy_patch(
     uuid: &str,
     patch: &ConnectionPolicyPatch,
@@ -1360,7 +1183,6 @@ pub fn configure_connection_policy_patch(
     })
 }
 
-/// Write `patch` into a profile's settings.
 fn apply_policy(settings: &mut Settings, patch: &ConnectionPolicyPatch) {
     if let Some(priority) = patch.priority {
         settings.set(
@@ -1442,14 +1264,8 @@ pub struct ConnectionDiagnostics {
     pub recommendations: Vec<String>,
 }
 
-/// `NetworkManager`'s state and connectivity, and the addresses, gateway and
-/// name servers of the device the primary connection leaves on, all from
-/// its D-Bus API.
-///
-/// # Errors
-///
-/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is
-/// unreachable.
+/// The daemon's state and connectivity, and the addresses, gateway and name servers of the device the
+/// primary connection leaves on.
 pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
     with_nm(|nm| async move {
         let state = nm.state().await?;
@@ -1523,8 +1339,7 @@ pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String>
     })
 }
 
-/// A network profile as Settings lists it; `None` for a profile of another
-/// kind (VPN, bridge, loopback, …).
+/// `None` for a profile of another kind (VPN, bridge, loopback).
 fn saved_profile(settings: &Settings) -> Option<SavedNetworkProfile> {
     let kind = settings.kind();
     matches!(
@@ -1581,9 +1396,7 @@ pub(crate) fn valid_ip_token(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'/' | b'%'))
 }
 
-/// Apply one profile's IPv4 settings through `NetworkManager`. The UUID is the
-/// stable identity; user-facing names are never used as selectors. Empty DNS
-/// means "use DHCP-provided DNS".
+/// The UUID is the stable identity; user-facing names are never selectors.
 pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String> {
     validate_uuid(uuid)?;
     if config.addresses.len() > 16
@@ -1619,14 +1432,11 @@ pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String
     })
 }
 
-/// Read the properties Settings can safely edit from a profile.
 pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettings, String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move { Ok(profile_settings_of(&nm.profile(uuid).await?.settings)) })
 }
 
-/// The proxy a profile's `proxy` setting describes; `None` when it describes
-/// none this device reads.
 fn proxy_of(settings: &Settings) -> Option<ProxyConfiguration> {
     let browser_only = settings.boolean("proxy", "browser-only").unwrap_or(false);
     match settings.int("proxy", "method").unwrap_or(0) {
@@ -1659,8 +1469,7 @@ fn proxy_of(settings: &Settings) -> Option<ProxyConfiguration> {
     }
 }
 
-/// What Settings edits of a profile, `None` for each value it does not
-/// understand.
+/// `None` for each value this device does not understand.
 fn profile_settings_of(settings: &Settings) -> ConnectionProfileSettings {
     let metered = match settings.metered() {
         0 => Some(MeteredPolicy::Automatic),
@@ -1729,11 +1538,8 @@ pub struct HotspotConfiguration {
 }
 
 impl HotspotConfiguration {
-    /// # Errors
-    ///
-    /// Returns an error message if `ssid` is empty, longer than 32 bytes, or contains a
-    /// control character, or if `password` is outside 8–63 characters or contains a control
-    /// character.
+    /// Errors for an empty `ssid`, one over 32 bytes or with a control character, or a `password`
+    /// outside 8–63 characters.
     pub fn validate(&self) -> Result<(), String> {
         if self.ssid.is_empty() || self.ssid.len() > 32 || self.ssid.chars().any(char::is_control) {
             return Err("hotspot name must be 1–32 bytes".into());
@@ -1744,13 +1550,7 @@ impl HotspotConfiguration {
         Ok(())
     }
 
-    /// Standard Wi-Fi QR payload. Escaping follows the WIFI schema used by
-    /// Android and iOS scanners; the plaintext is returned only on explicit
-    /// request and is never logged or persisted by this crate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if [`Self::validate`] fails.
+    /// Escaping follows the WIFI schema Android and iOS scanners read.
     pub fn qr_payload(&self) -> Result<String, String> {
         self.validate()?;
         let escape = |value: &str| {
@@ -1768,19 +1568,14 @@ impl HotspotConfiguration {
     }
 }
 
-/// How the hotspot is set up, as far as it can be read back: its name and
-/// band, never its passphrase.
+/// As far as it can be read back: its name and band, never its passphrase.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotspotDetails {
     pub ssid: String,
     pub band: HotspotBand,
 }
 
-/// The hotspot's name and band; `None` until one has been configured.
-///
-/// # Errors
-///
-/// Returns an error message if `NetworkManager` cannot be reached.
+/// `None` until a hotspot has been configured.
 pub fn hotspot_details() -> Result<Option<HotspotDetails>, String> {
     with_nm(|nm| async move {
         let Ok(profile) = profile_named(&nm, HOTSPOT_PROFILE).await else {
@@ -1798,10 +1593,6 @@ pub fn hotspot_details() -> Result<Option<HotspotDetails>, String> {
     })
 }
 
-/// # Errors
-///
-/// Returns an error message if `config` fails [`HotspotConfiguration::validate`], or
-/// `NetworkManager` refuses to save or bring up the hotspot profile.
 pub fn configure_hotspot(config: &HotspotConfiguration) -> Result<(), String> {
     config.validate()?;
     let config = config.clone();
@@ -1899,10 +1690,6 @@ pub struct CertificateInfo {
     pub sha256_fingerprint: String,
 }
 
-/// # Errors
-///
-/// Returns an error message if `path` is not an existing absolute regular file, is larger than
-/// 1 MiB, cannot be parsed as one PEM/DER certificate, or the certificate has expired.
 pub fn inspect_certificate(path: &str) -> Result<CertificateInfo, String> {
     let p = std::path::Path::new(path);
     if !p.is_absolute() || !p.is_file() {
@@ -1971,17 +1758,7 @@ impl EnterpriseWifiConfiguration {
     }
 }
 
-/// Configure the broadly deployed PEAP/MSCHAPv2 enterprise profile using
-/// `NetworkManager`'s standard 802.1X setting. A CA certificate is mandatory;
-/// Tilo never offers the dangerously convenient "do not validate" mode.
-/// The password is marked not-saved and handed to `NetworkManager` only for
-/// this connection, by a secret agent that is gone once it is up.
-///
-/// # Errors
-///
-/// Returns an error message if `config` fails validation, its certificates cannot be
-/// inspected, `password` is empty or invalid for a non-TLS method, or `NetworkManager`
-/// refuses to save or bring up the profile.
+/// Configures a PEAP/MSCHAPv2 802.1X profile; a CA certificate is mandatory, so the server is verified.
 pub fn connect_enterprise_wifi(
     config: &EnterpriseWifiConfiguration,
     password: &str,
@@ -2068,22 +1845,16 @@ fn enterprise_settings(settings: &mut Settings, config: &EnterpriseWifiConfigura
     settings.set(EAP, "private-key-password-flags", 2_u32);
 }
 
-/// Wired (ethernet) connection snapshot for the Settings network panel.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WiredInfo {
-    /// `true` when a wired device is present and in the `connected` state.
     pub connected: bool,
-    /// The primary wired device name (e.g. `eth0`, `enp3s0`), if any.
     pub device: Option<String>,
-    /// Negotiated link speed (e.g. `1000 Mb/s`).
     pub speed: Option<String>,
-    /// The device's first IPv4 address (no CIDR suffix).
     pub ipv4: Option<String>,
 }
 
-/// Snapshot the primary wired (ethernet) device. Returns a default
-/// (`connected: false`) `WiredInfo` when no ethernet device is present, so the Settings
-/// panel renders an "unplugged" card without an error path.
+/// A default (`connected: false`) answer when no ethernet device is present, so Settings need not
+/// branch.
 pub fn get_wired() -> Result<WiredInfo, String> {
     with_nm(|nm| async move {
         let Some(device) = wired_device(&nm).await? else {
@@ -2105,7 +1876,6 @@ pub fn get_wired() -> Result<WiredInfo, String> {
     })
 }
 
-/// The first Ethernet device.
 async fn wired_device(nm: &NmClient) -> Result<Option<Device>, NmError> {
     Ok(nm
         .devices()
@@ -2114,8 +1884,7 @@ async fn wired_device(nm: &NmClient) -> Result<Option<Device>, NmError> {
         .find(|device| device.kind == DeviceKind::Ethernet))
 }
 
-/// Connect or disconnect the primary Ethernet interface. This is scoped to
-/// one device: it cannot disable Wi-Fi, a VPN or `NetworkManager` itself.
+/// Scoped to one device: it cannot disable Wi-Fi, a VPN or `NetworkManager` itself.
 pub fn set_wired(enabled: bool) -> Result<(), String> {
     with_nm(|nm| async move {
         let device = wired_device(&nm)
@@ -2472,8 +2241,7 @@ mod tests {
             automatic: false,
             ..Default::default()
         };
-        // A syntactically valid id fails on the missing address before any
-        // bus is touched.
+        // A syntactically valid id fails on the missing address before any bus is touched.
         let err = configure_ipv4("12345678-1234-1234-1234-123456789abc", &config).unwrap_err();
         assert!(err.contains("at least one address"));
         let policy = ConnectionPolicy {
@@ -2637,10 +2405,8 @@ mod radio_presence_tests {
         }
     }
 
-    /// `NetworkManager` reports its WWAN radio switch as enabled on a
-    /// machine with no modem at all (a laptop with only Wi-Fi). Only a
-    /// modem device `NetworkManager` lists makes mobile broadband
-    /// available, and airplane mode then counts Wi-Fi alone.
+    /// `NetworkManager` reports its WWAN switch as enabled on a machine with no modem at all, so only a
+    /// modem device it manages counts.
     #[test]
     fn an_enabled_wwan_switch_without_a_modem_device_is_no_modem() {
         let wifi_only = [device(DeviceKind::Wifi), device(DeviceKind::Other)];
@@ -2671,9 +2437,8 @@ mod radio_presence_tests {
         assert!(radio_state_of(switches(true, false), &wifi_only, &[hotspot]).hotspot_active);
     }
 
-    /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
-    /// interface is a modem; a wired interface and an empty class are
-    /// neither.
+    /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or interface is a modem; a
+    /// wired interface and an empty class are neither.
     #[test]
     fn radios_are_read_from_the_kernels_device_classes() {
         use std::fs;
@@ -2723,10 +2488,8 @@ mod wifi_radio_tests {
     use crate::rfkill::RfkillState;
     use std::cell::{Cell, RefCell};
 
-    /// `NetworkManager` and the kernel as far as Wi-Fi on/off goes. Like
-    /// `NetworkManager`, turning its flag off soft-blocks the radio, and
-    /// turning it from off to on lifts that block; a flag that is already on
-    /// is left alone, whatever blocks the radio underneath it.
+    /// `NetworkManager` and the kernel as far as Wi-Fi on and off goes: like the daemon, turning its
+    /// flag off soft-blocks the radio.
     struct FakeNm {
         flag: Cell<bool>,
         soft: Cell<bool>,
@@ -2799,9 +2562,8 @@ mod wifi_radio_tests {
 
     #[test]
     fn turning_on_lifts_a_block_another_program_left_under_an_enabled_flag() {
-        // `rfkill block wlan`, a platform key or a restored boot state:
-        // NetworkManager's flag is still on, so setting it again changes
-        // nothing, and the radio stayed off.
+        // `rfkill block wlan`, a platform key or a restored boot state: NetworkManager's flag is still
+        // on, so setting it again changes nothing, and the radio stayed off.
         let nm = FakeNm::on();
         nm.soft.set(true);
         assert!(!nm.radio_state().unwrap().wifi_enabled, "read as off");
@@ -2919,9 +2681,8 @@ mod interface_traffic_tests {
         }
     }
 
-    /// Each Wi-Fi and wired interface up counts toward the profile on it;
-    /// one connecting, the hotspot, a modem and an interface without
-    /// counters count nothing.
+    /// Each Wi-Fi and wired interface up counts toward the profile on it; one connecting, the hotspot,
+    /// a modem and an interface without counters count nothing.
     #[test]
     fn interfaces_count_toward_the_connection_up_on_them() {
         use tilo_nm::ActiveState::{Activated, Activating};

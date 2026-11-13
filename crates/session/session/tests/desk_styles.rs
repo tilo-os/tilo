@@ -511,3 +511,158 @@ view trapping(a: shell.Arrangement) {
     ui.Text("A working style, {a.places.count()} places")
 }
 "#;
+
+/// A style chosen by an assistive technology's named press — the route `Session::press_action`,
+/// `tilo-control click` and a screen reader's activation take — draws within a frame or two, not
+/// at whatever next wakes the shell.
+///
+/// This fails without the fix: the named press set no input on the shell's part, so the part took
+/// the change into its record but never ran its turn for it, and the desk kept drawing the style
+/// the person left until the clock's minute woke it (25 s to a minute of wall time in a live
+/// session). A press of the pointer sets the part's input and always drew at once, which is why
+/// only the named route was slow.
+#[test]
+fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
+    use ui::window_targets::TargetAction;
+    let _settled = ui::motion::testing::settled();
+    crate::common::app_store();
+    let mut session = session();
+    until(&mut session, |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Showing Strips")
+    });
+    // Let the desk rest, so the press is the only thing that may wake it.
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // Open the bar's style menu by name, as an assistive technology's user does.
+    session
+        .press_action("Showing Strips", TargetAction::Activate)
+        .expect("the style menu opens");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // Press the Frames row by name, and see what the next frames draw.
+    session
+        .press_action("Frames", TargetAction::Activate)
+        .expect("the Frames row is pressed");
+    let mut frames = 0;
+    for _ in 0..3 {
+        session.step(Duration::from_millis(16)).expect("step");
+        frames += 1;
+    }
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Showing Frames"),
+        "the desk shows the style a named press chose, within {frames} frames: {labels:?}"
+    );
+}
+
+/// Step 4 of shell.md §6, "Two ways to change a desk", without an agent: the desktop style's
+/// dock rides the foot, and the style's own action `dock_on` — the one its settings control
+/// runs — moves it to the leading edge, and the desk draws the dock there. The settings are the
+/// style's own plain tilolang state with defaults, changed by typed actions, and the change
+/// applies live.
+///
+/// This fails without the change: before it the desktop had no settings view of its own and no
+/// entry opened one from the desk, so a person could not change where the desktop's dock rides
+/// from the place they pick the style.
+#[test]
+fn the_desktops_dock_edge_setting_moves_the_dock() {
+    let _settled = ui::motion::testing::settled();
+    crate::common::app_store();
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
+    until(&mut session, |session| {
+        crate::common::preset_menu(session).is_some()
+    });
+    // The desktop, by the style switch's own action: `show_style` names the view the desk draws
+    // (`Viewing.style`), through the shell's door as the switch's row runs. The desktop's own
+    // bar drops the style menu, so a press on the bar cannot pick it back.
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
+    );
+    assert!(!failed, "the desk shows the desktop: {answer}");
+    until(&mut session, |session| {
+        crate::common::preset_menu(session).is_none()
+    });
+    // The dock rides the foot before the setting: its control stands across the bottom edge.
+    let before = crate::common::wait_for(&mut session, "the dock on the foot", |session| {
+        crate::common::on_screen(session, "Dock")
+    });
+    assert!(
+        before.1 > f64::from(HEIGHT) / 2.0,
+        "the dock rides the foot first: {before:?}"
+    );
+    // The style's own setting, the action its settings control runs: the dock to the leading
+    // edge, through the shell's record the desk reads.
+    session
+        .run_shell_setting("dock_on", vec![serde_json::json!("left")])
+        .unwrap_or_else(|why| panic!("the dock moves to the leading edge: {why}"));
+    let after = crate::common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = crate::common::on_screen(session, "Dock")?;
+        (held.0 < f64::from(WIDTH) / 4.0).then_some(held)
+    });
+    assert!(
+        after.0 < f64::from(WIDTH) / 4.0,
+        "the dock stands on the leading edge after the setting: {after:?}"
+    );
+}
+
+/// Step 4's third part (`shell.md` §6, "Agents make styles with the same commands a person
+/// types"): the settings and the switch are ordinary actions the REPL — the person typing what
+/// the agent would — calls by the same names, so it switches to the desktop and moves its dock
+/// to the leading edge with the calls a Settings control runs, and the desk draws it there.
+///
+/// This fails without the change: the settings were reached only through the shell's own
+/// `run_shell_setting` (a test's back door, not a broker action every caller has), so the REPL
+/// could switch the style but not change what the style shows.
+#[test]
+fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
+    let _settled = ui::motion::testing::settled();
+    crate::common::app_store();
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
+    until(&mut session, |session| {
+        crate::common::preset_menu(session).is_some()
+    });
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    // The desktop, through the REPL's own door: the style is a view of the arrangement and the
+    // switch is `show_style`, an action of the person's viewing record.
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
+    );
+    assert!(!failed, "the REPL shows the desktop: {answer}");
+    until(&mut session, |session| {
+        crate::common::preset_menu(session).is_none()
+    });
+    let before = crate::common::wait_for(&mut session, "the dock on the foot", |session| {
+        crate::common::on_screen(session, "Dock")
+    });
+    assert!(
+        before.1 > f64::from(HEIGHT) / 2.0,
+        "the dock rides the foot: {before:?}"
+    );
+    // The style's own setting, as the person types what the agent would: the dock to the
+    // leading edge.
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.dock_on(shell.shell, edge: shell.Edge.left)",
+    );
+    assert!(!failed, "the REPL moves the dock: {answer}");
+    let after = crate::common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = crate::common::on_screen(session, "Dock")?;
+        (held.0 < f64::from(WIDTH) / 4.0).then_some(held.0)
+    });
+    assert!(
+        after < f64::from(WIDTH) / 4.0,
+        "the dock stands on the leading edge after the REPL's call: {after}"
+    );
+}

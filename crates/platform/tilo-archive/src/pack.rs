@@ -8,18 +8,13 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use crate::{Observer, cancelled};
 
-/// The kind of archive [`create`] writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packing {
-    /// Zip with deflate: opens everywhere.
     Zip,
-    /// Tar compressed with zstd: keeps permissions and is smaller and
-    /// faster to make.
     TarZst,
 }
 
 impl Packing {
-    /// The extension an archive of this kind is given.
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
@@ -29,7 +24,6 @@ impl Packing {
     }
 }
 
-/// Reads a file being packed, counting its bytes and stopping when asked.
 struct Counted<'a> {
     file: File,
     observer: &'a dyn Observer,
@@ -46,19 +40,18 @@ impl Read for Counted<'_> {
     }
 }
 
-/// Pack `paths`, each under its own name with folders and everything in
-/// them, into `out`, a new empty file the caller made and names. Symbolic
-/// links are left out: a selected link is not what it points at, and the
-/// archive holds no way out.
+/// Pack `paths`, each under its own name with folders and everything in them,
+/// into `out`, a new empty file the caller made and names. Symbolic links are
+/// left out: a selected link is not what it points at, and the archive holds no
+/// way out.
 ///
-/// The bytes read from the packed files reach the observer, which can stop
-/// the packing ([`crate::is_cancelled`]); what was written to `out` is then
-/// the caller's to remove.
+/// The observer hears the bytes read and can stop the packing; what was written
+/// to `out` is then the caller's to remove.
 ///
 /// # Errors
 ///
-/// A path has no name or cannot be read, the observer cancelled, or
-/// writing `out` failed.
+/// A path has no name or cannot be read, the observer cancelled, or writing
+/// `out` failed.
 pub fn create(
     paths: &[PathBuf],
     out: File,
@@ -78,15 +71,12 @@ pub fn create(
     }
 }
 
-/// One file or folder to pack: where it is, and its name in the archive.
 struct Item {
     source: PathBuf,
     name: PathBuf,
     directory: bool,
 }
 
-/// `source` and, for a folder, everything below it, in order; links left
-/// out.
 fn collect(source: &Path, name: PathBuf, items: &mut Vec<Item>) -> io::Result<()> {
     let kind = fs::symlink_metadata(source)?.file_type();
     if kind.is_dir() {
@@ -110,7 +100,6 @@ fn collect(source: &Path, name: PathBuf, items: &mut Vec<Item>) -> io::Result<()
     Ok(())
 }
 
-/// An archive name with forward slashes on every host.
 fn archive_name(name: &Path) -> String {
     name.components()
         .map(|part| part.as_os_str().to_string_lossy())
@@ -185,12 +174,10 @@ fn zip(items: &[Item], out: File, observer: &dyn Observer) -> io::Result<File> {
     Ok(file)
 }
 
-/// Tar on this thread, zstd on another, joined by a pipe of chunks.
-///
-/// The zstd encoder (ruzstd) panics on a read or write error, so neither
-/// side of it ever fails: the pipe reads as ended once the tar side stops,
-/// and the file side keeps its first error and swallows the rest. Both
-/// errors are taken up after the encoder returns.
+/// Tar on this thread, zstd on another, joined by a pipe of chunks. The zstd
+/// encoder (ruzstd) panics on a read or write error, so neither side of it ever
+/// fails: the pipe reads as ended once the tar side stops, and the file side
+/// keeps its first error and swallows the rest.
 fn tar_zst(items: &[Item], out: File, observer: &dyn Observer) -> io::Result<File> {
     let stop = AtomicBool::new(false);
     let stop = &stop;
@@ -214,8 +201,6 @@ fn tar_zst(items: &[Item], out: File, observer: &dyn Observer) -> io::Result<Fil
             );
             sink
         });
-        // The builder and its pipe end here, error or not, which ends the
-        // encoder's input before it is waited for.
         let packed = {
             let mut builder = tar::Builder::new(Pipe {
                 sender,
@@ -273,7 +258,6 @@ fn append_all<W: Write>(
 
 const PIPE_CHUNK: usize = 1 << 20;
 
-/// The tar side of the pipe.
 struct Pipe<'a> {
     sender: SyncSender<Vec<u8>>,
     buffer: Vec<u8>,
@@ -303,7 +287,6 @@ impl Write for Pipe<'_> {
     }
 }
 
-/// The encoder's side of the pipe: ends when the tar side is done or gone.
 struct Drain {
     receiver: Receiver<Vec<u8>>,
     chunk: Vec<u8>,

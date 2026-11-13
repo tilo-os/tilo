@@ -523,6 +523,45 @@ mod tests {
         surface
     }
 
+    /// The folder entry `surface_with_an_entry` publishes as its own resource.
+    const ENTRY: &str = "7d2b";
+
+    /// A surface publishing one of the record's collection's entries as the
+    /// resource its own actions are offered on, beside the record's copy of
+    /// them addressed by the entry's id.
+    fn surface_with_an_entry(peer_id: u64, workspace: &str) -> PublishedSurface {
+        let name = || {
+            tilo_actions::ActionParam::required_owned(
+                "name",
+                tilo_actions::ParamType::Text,
+                "Its new name",
+            )
+        };
+        let mut rename = action("rename", tilo_actions::ConfirmationPolicy::None);
+        rename.params = vec![
+            tilo_actions::ActionParam::required_owned(
+                "entry",
+                tilo_actions::ParamType::Text,
+                "Which entry",
+            ),
+            name(),
+        ];
+        let entry = PublishedAction {
+            resource: format!("files.app/entries/{ENTRY}"),
+            resource_kind: "files.app.entries".into(),
+            resource_label: "Harbour plan".into(),
+            params: vec![name()],
+            ..rename.clone()
+        };
+        PublishedSurface {
+            peer_id,
+            app_id: APP.into(),
+            route: CrdtRoute::app(APP, workspace),
+            actions: vec![rename, entry],
+            live: true,
+        }
+    }
+
     fn retained_records(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
         let mut records = catalogue
             .surfaces()
@@ -738,6 +777,25 @@ mod tests {
         action: &str,
         confirmation: Option<Confirmation>,
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        invoke_with(
+            host,
+            caller,
+            provider,
+            &tilo_actions::ActionAddress::new("files.app", action),
+            InvokeArgument::None,
+            confirmation,
+        )
+    }
+
+    /// [`invoke`], on the `address` and with the `argument` the caller names.
+    fn invoke_with(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        address: &tilo_actions::ActionAddress,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         host.action_invoke(
             caller,
             None,
@@ -747,9 +805,9 @@ mod tests {
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: provider.to_string(),
-                    address: tilo_actions::ActionAddress::new("files.app", action),
+                    address: address.clone(),
                 },
-                argument: InvokeArgument::None,
+                argument,
                 context: None,
                 confirmation,
                 revision: None,
@@ -762,7 +820,7 @@ mod tests {
         .flatten()
         .unwrap_or_else(|| {
             Err(ActionHostError::Unavailable {
-                reason: format!("the admission of {action} never arrived"),
+                reason: format!("the admission of {address:?} never arrived"),
             })
         })
     }
@@ -796,12 +854,12 @@ mod tests {
     /// holds that, so neither loses their place.
     #[test]
     fn a_launched_view_opens_where_its_actor_is() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         const NOTES: &str = "so.tilo.notes";
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
         for app in [APP, NOTES] {
-            workspace.allow_app(Subject::agent("scribe"), app, KindSet::ALL);
+            workspace.allow_app(Grantee::agent("scribe"), app, KindSet::ALL);
         }
         let (state, workspace) = broker(&workspace);
         state.launchable.retain(&surface(7, &workspace));
@@ -850,10 +908,10 @@ mod tests {
 
     #[test]
     fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
         let (state, workspace) = broker(&workspace);
         state.launchable.retain(&surface(7, &workspace));
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
@@ -1036,12 +1094,12 @@ mod tests {
     /// does, for that one invocation.
     #[test]
     fn an_agent_asked_first_acts_only_on_the_persons_witnessed_confirmation() {
-        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        use crate::test_support::{Answer, Grantee, Grants as _, KindSet, TreePath};
         use tilo_actions::remote::CatalogueQuery;
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::READ);
         workspace.answer(
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             &TreePath::root().app(APP),
             KindSet::UNDOABLE,
             Answer::Ask,
@@ -1144,15 +1202,77 @@ mod tests {
         );
     }
 
+    /// An agent renaming one of a record's items says that item's name in the
+    /// view it acts in, by the label the app published for the item: the view
+    /// reads "Editing Harbour plan", never only the app it is in.
+    #[test]
+    fn an_agents_step_on_an_item_names_the_item() {
+        use crate::test_support::{Grantee, Grants as _, KindSet};
+        let mut workspace = workspace();
+        workspace.allow_agent("scribe", KindSet::UNDOABLE);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
+        let (state, workspace, fanout) = broker_with_fanout(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface_with_an_entry(5, &workspace));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_workspaces(
+            vec![workspace.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+
+        // The item is addressed by its id, on the record's own copy of the
+        // item's action, as an agent addresses it.
+        let agent = Caller::local_person("owner")
+            .in_workspace(&workspace)
+            .delegated_to("scribe");
+        invoke_with(
+            &state,
+            &agent,
+            "5",
+            &tilo_actions::ActionAddress::new("files.app", "rename"),
+            InvokeArgument::Json(
+                serde_json::json!({"entry": ENTRY, "name": "Harbour plan for Friday"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            None,
+        )
+        .expect("the agent acts");
+        assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+            payload: ui::collaboration::PresencePayload::Interaction(interaction),
+            ..
+        }) = heard.try_recv()
+        else {
+            panic!("the agent's step shows in its view");
+        };
+        assert_eq!(interaction.action.id, "rename");
+        assert_eq!(
+            interaction.resource.id, "files.app",
+            "the record it acts in"
+        );
+        assert_eq!(
+            interaction.resource.label, "Harbour plan",
+            "the item it acts on, by the label its app published"
+        );
+    }
+
     /// An agent's action shows in the view it runs in, named with the
     /// person it acts for; a person's own action on this device does not
     /// put a second marker on what their view already shows.
     #[test]
     fn an_agents_action_is_present_in_the_view_it_runs_in() {
-        use crate::test_support::{Grants as _, KindSet, Subject};
+        use crate::test_support::{Grantee, Grants as _, KindSet};
         let mut workspace = workspace();
         workspace.allow_agent("scribe", KindSet::UNDOABLE);
-        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
+        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::UNDOABLE);
         let (state, workspace, fanout) = broker_with_fanout(&workspace);
         state
             .surfaces

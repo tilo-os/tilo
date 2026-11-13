@@ -23,8 +23,8 @@ use winit::event::WindowEvent;
 fn resource() -> tilo_actions::ResourceSpec {
     resource_for("live", "fixture.export")
 }
-/// The continuation identity both fixture operations declare: this fixture's keys over the
-/// resource and the operation.
+/// The continuation identity both fixture operations declare: this fixture's keys over the resource and
+/// the operation.
 fn fixture_identity(
     target: String,
     handler: String,
@@ -94,7 +94,6 @@ struct MutableContinuationIdentity {
     handler: Cell<u64>,
     supported: Cell<bool>,
     duplicate_resource: Cell<bool>,
-    /// The action is declared housekeeping.
     housekeeping: Cell<bool>,
 }
 
@@ -647,9 +646,9 @@ fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity
     }
 }
 
-/// A person confirms each held action they asked for; housekeeping an app
-/// emits while History shows a past version is never held, announced or
-/// confirmed, and does not run then: the app does it again on its own.
+/// A person confirms each held action they asked for; housekeeping an app emits while History shows a
+/// past version is never held, announced or confirmed, and does not run then: the app does it again on
+/// its own.
 #[test]
 fn housekeeping_is_never_held_for_review() {
     let identity = Rc::new(MutableContinuationIdentity {

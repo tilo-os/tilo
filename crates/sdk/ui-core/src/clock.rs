@@ -1,18 +1,5 @@
-//! The clock as a person reads it: local date and time.
-//!
-//! [`local_now`] is the wall clock in the local time zone. Read it instead of
-//! `chrono::Local::now()`: a screenshot capture pins it
-//! ([`freeze_for_capture`]) so a frame shows the same date and time on every
-//! run, and an app that reads the system clock directly breaks that.
-//!
-//! [`time_of_day`] renders a time the way the person reads clocks, in the
-//! [`TimeStyle`](tilo_formats::TimeStyle) they chose in Settings. Every clock
-//! display goes through it rather than a fixed `%H:%M`.
-//!
-//! The styles and how they read are `tilo-formats`', so a host without the
-//! toolkit answers the same clock.
-//!
-//! Clock types and epoch readings are `ui::time`'s.
+//! The clock as a person reads it: local date and time. [`local_now`] is the wall clock in the local
+//! time zone.
 
 pub use tilo_formats::TimeStyle;
 
@@ -37,17 +24,16 @@ pub fn today() -> chrono::NaiveDate {
 /// for `--shots`; never call it in a live session.
 ///
 /// A capture draws every frame of the process from the thread that calls
-/// this, so it pins the process's clock and not only its own thread's. A
-/// test does not: it holds its own thread with [`crate::time::testing`].
+/// this, so it pins the process's clock and not only its thread's. A
+/// test does not: it has its thread with [`crate::time::testing`].
 pub fn freeze_for_capture() {
     if let Some(at) = capture_wall() {
         crate::time::pin_wall(at);
     }
 }
 
-/// The wall clock a capture shows, as a reading a test can hand its own
-/// thread with [`crate::time::testing::with_wall`]: what
-/// [`freeze_for_capture`] pins for the process.
+/// The wall clock a capture shows, as a reading a test can hand its thread with
+/// [`crate::time::testing::with_wall`]: what [`freeze_for_capture`] pins for the process.
 #[must_use]
 pub fn capture_wall() -> Option<crate::time::SystemTime> {
     use chrono::TimeZone;
@@ -99,8 +85,6 @@ mod tests {
 
     #[test]
     fn a_capture_shows_the_same_local_date_and_time() {
-        // Pinned on this thread only: a capture pins the whole process,
-        // which would stop the clock under every test beside this one.
         let at = capture_wall().expect("the capture time exists in the local zone");
         crate::time::testing::with_wall(at, || {
             let now = local_now();

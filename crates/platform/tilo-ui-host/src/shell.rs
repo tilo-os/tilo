@@ -1,18 +1,15 @@
-//! The window's one shell, composed from its windows' shells.
-//!
-//! Each view of the window builds its own shell (`ui.NavShell`, `std` builds one for every
-//! frame). The window shows them as the columns of one: the root's sidebar and overview, and the
-//! content, header and kind of the window after it (workspace-model.md).
-//! Composing them is the platform's, as is what holds for any shell of a window, whoever built
-//! it:
-//!
+//! The window's one shell, composed from its views' shells. Each view builds its own shell
+//! (`ui.NavShell`, `std` builds one for every frame). The window shows them as the columns of one:
+//! the root's sidebar and overview, and the content, header and kind of the window after it
+//! (workspace-model.md). Composing them is the platform's, as is what holds for any shell of a
+//! window, whoever built it:
 //! - a header never repeats what its column's content offers: an action the content shows as a
 //!   button, or toggles with a control bound to the state it toggles;
 //! - a header never repeats a title its content edits as its large title;
 //! - a window offers search once: beside an overview, the next column's header has none.
 //!
-//! The window after the root's keeps its own keys in the composed tree, each carrying
-//! [`DETAIL`], so what its controls report reaches its view.
+//! The window after the root's keeps its own keys in the composed tree, each carrying [`DETAIL`],
+//! so what its controls report reaches its view.
 
 use crate::adapter::{SLOT, kind};
 use crate::{Event, UiNode, Value};
@@ -23,17 +20,18 @@ pub const DETAIL: &str = "detail~";
 /// The event of the composed shell that goes back from the window after the root's.
 pub const BACK: &str = "back";
 
+/// The prop of a composed shell whose window has nothing at all to list, so it shows the app's one
+/// state where its columns are ([`nothing_listed`]).
+pub const NOTHING_LISTED: &str = "nothing_listed";
+
 fn shell_kind() -> String {
     kind("NavShell")
 }
 
-/// The kind of the node a list's rows are: the toolkit's virtual list, whose groups a title can
-/// say the whole of.
 fn list_kind() -> String {
     kind("VirtualList")
 }
 
-/// The shell a view's tree is: its root, or the first shell under the fragments around it.
 #[must_use]
 pub fn shell_of(tree: &UiNode) -> Option<&UiNode> {
     if tree.kind == shell_kind() {
@@ -45,8 +43,6 @@ pub fn shell_of(tree: &UiNode) -> Option<&UiNode> {
     None
 }
 
-/// A view's tree as a shell: its own, or one whose content it is (a view that composes no
-/// shell of its own, a row standing in a page).
 #[must_use]
 pub fn as_shell(tree: &UiNode) -> UiNode {
     if let Some(shell) = shell_of(tree) {
@@ -64,7 +60,6 @@ pub fn as_shell(tree: &UiNode) -> UiNode {
     shell
 }
 
-/// Whether `tree` is one row of a list: a row view's body, or a view of one item drawn as a row.
 fn row(tree: &UiNode) -> bool {
     [
         kind("ListRow"),
@@ -75,11 +70,9 @@ fn row(tree: &UiNode) -> bool {
     .contains(&tree.kind)
 }
 
-/// A row as a window's content: a page from its top, at the readable measure, scrolling under
-/// the header. A row is a line: a window that shows one — a result, a notice — shows it where a
-/// page holds it. Given the column itself instead, the row is stretched over the whole of it,
-/// and its line floats at the column's middle with no padding around it. A view that is not a
-/// row keeps the column: a body that fills (a `layers`, a canvas) fills it.
+/// A row as a window's content: a page from its top, at the readable measure, scrolling under the
+/// header. A view that is not a row keeps the column: a body that fills (a `layers`, a canvas)
+/// fills it.
 fn framed(tree: &UiNode, owner: &str) -> UiNode {
     let mut stack = UiNode::empty("stack", &format!("{owner}#stack"));
     stack
@@ -101,7 +94,6 @@ fn slot(name: &str, owner: &str, children: Vec<UiNode>) -> UiNode {
     node
 }
 
-/// The children of the named slot `name` of a shell node.
 pub(crate) fn slot_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
     shell
         .children
@@ -113,7 +105,6 @@ pub(crate) fn slot_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
         .map_or(&[], |child| child.children.as_slice())
 }
 
-/// The shell with the named slot `name` holding `children` (none dropped when empty).
 fn with_slot(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
     let owner = shell.key.clone();
     shell.children.retain(|child| {
@@ -126,22 +117,21 @@ fn with_slot(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
     shell
 }
 
-/// Whether a shell has an overview column.
 #[must_use]
 pub fn has_overview(shell: &UiNode) -> bool {
     !slot_children(shell, "overview").is_empty()
 }
 
-/// The prop naming the title of the view a list stands under, and the one naming how many
-/// things that title counts: what [`ui::widget::VirtualListProps`] reads, which the shell hands
-/// the lists of its content column (`view_title`, `view_count`).
+/// The prop naming the title of the view a list is under, and the one naming how many things that
+/// title counts: what [`ui::widget::VirtualListProps`] reads, which the shell hands the lists of
+/// its content column (`view_title`, `view_count`).
 const VIEW_TITLE: &str = "view_title";
 const VIEW_COUNT: &str = "view_count";
 
-/// What the window `shell` shows, as the shell's own headers name it: its content column's title
-/// — the page, the record, the place the window is at — else its overview's, else its sidebar's,
-/// and nothing where it names none of them. A window is named by what it shows, so a desktop
-/// names its tab, its switcher entry and its assistive-technology node by this.
+/// What the window `shell` shows, as its headers name it: its content column's title (the page, the
+/// record, the place the window is at), else its overview's, else its sidebar's, and nothing where
+/// none of them names one. A desktop names its tab, its switcher entry and its assistive-technology
+/// node by this.
 #[must_use]
 pub fn shown_title(shell: &UiNode) -> Option<&str> {
     ["title", "overview_title", "sidebar_title"]
@@ -155,25 +145,20 @@ pub fn shown_title(shell: &UiNode) -> Option<&str> {
         })
 }
 
-/// The tree with each titled view's title handed to the lists it holds: a list whose rows all
-/// stand in one group then heads no group of them when that heading says what the view's title
-/// already says — the same words, counting the same rows left to do — since the title over the
-/// list says it once.
-///
-/// A view's title is the one its shell's content header reads (`title:` and `count:`), and it
-/// reaches the lists of that column under whatever the app puts between them. A shell's other
-/// columns say their own things and hand nothing: an overview lists under its own title.
+/// The tree with each titled view's title handed to the lists it holds: a list whose rows all stand
+/// in one group then heads no group of them when that heading says what the view's title already
+/// says (the same words, counting the same rows left to do), so the title over the list says it
+/// once. A view's title is the one its content header reads (`title:` and `count:`), and it reaches
+/// the lists of that column under whatever the app puts between them. A shell's other columns say
+/// their own things and hand nothing: an overview lists under its own title.
 #[must_use]
 pub fn titled_lists(mut node: UiNode) -> UiNode {
     hand_title(&mut node, None);
     node
 }
 
-/// What a view's title says: the words its header reads, and how many things it counts beside
-/// them.
 type Title = (String, Option<i64>);
 
-/// The title the shell `node` reads over its content column.
 fn content_title(node: &UiNode) -> Option<Title> {
     let words = match node.props.get("title") {
         Some(Value::Text(title)) if !title.trim().is_empty() => title.clone(),
@@ -217,8 +202,6 @@ fn hand_title(node: &mut UiNode, title: Option<&Title>) {
     }
 }
 
-/// Whether `shell` offers the switch between the views the thing it shows declares: the tabs
-/// the host puts beside its title.
 #[must_use]
 pub fn offers_switch(shell: &UiNode) -> bool {
     ["actions", "overview_actions"].into_iter().any(|name| {
@@ -251,7 +234,6 @@ pub fn without_rows(node: &UiNode) -> UiNode {
     }
 }
 
-/// The props a column's header takes from the window shown in it.
 const HEADER_PROPS: &[&str] = &["title", "count", "content_kind"];
 
 /// Whether `nodes` only stand in for content not chosen yet: empty states, or nothing.
@@ -262,22 +244,17 @@ fn placeholder(nodes: &[UiNode]) -> bool {
 }
 
 /// The window's shell: the root's shell, with the window after it (its shell, keys carrying
-/// [`DETAIL`]) as its content column. Beside an overview the next column is the content; in
-/// place of the root's content it is pushed, with Back: a shell that can go back carries the
-/// event [`BACK`], which the window answers itself. Beside a sidebar, a root whose content only
-/// stands in for what the sidebar chooses (a chat's channels over "No channel open") has
-/// nothing to go back to: the sidebar is how one goes elsewhere.
-///
-/// A window with nothing at all to list shows the app's own state for it once, alone
-/// ([`nothing_listed`]).
+/// [`DETAIL`]) as its content column. Beside an overview the next column is the content; in place
+/// of the root's content it is pushed, with Back: a shell that can go back carries the event
+/// [`BACK`], which the window answers itself. Beside a sidebar, a root whose content only stands in
+/// for what the sidebar chooses (a chat's channels over "No channel open") has nothing to go back
+/// to: the sidebar is how one goes elsewhere. A window with nothing at all to list shows the app's
+/// own state for it once, alone ([`nothing_listed`]).
 #[must_use]
 pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     nothing_listed(at_window(root, detail))
 }
 
-/// Whether `node` is only layout around the states standing in for what is missing: a wrapper
-/// put there to arrange them, or a state itself. Any other node is something the column lists or
-/// shows.
 fn only_states(node: &UiNode) -> bool {
     let wrapper = node.kind == SLOT
         || [
@@ -296,8 +273,6 @@ fn only_states(node: &UiNode) -> bool {
     node.kind == kind("EmptyState") || (wrapper && node.children.iter().all(only_states))
 }
 
-/// The state that says what is missing, under `nodes`: the first one, the places saying what
-/// their list would hold and the content what would stand in it.
 fn first_state(nodes: &[UiNode]) -> Option<&UiNode> {
     fn state(node: &UiNode) -> Option<&UiNode> {
         if node.kind == kind("EmptyState") {
@@ -309,25 +284,23 @@ fn first_state(nodes: &[UiNode]) -> Option<&UiNode> {
 }
 
 /// The window with nothing at all to list: one empty state spanning it, where the overview, the
-/// content and the inspector stand, and no column drawing a second one beside it.
-///
-/// The app says what it has none of where that list would stand (a chat's places over "No
-/// channels yet"), and what stands where the thing it chooses would show ("No channel open").
-/// While neither holds a list nor a thing — no channel at all, a first run — the window shows
-/// the app's words once ([`ui::widget::NavShell::nothing_listed`]), on the screen a window opens
-/// on, so a narrow window fronts the same state whichever column stood in front before. The
-/// app's own words are all it adds: the state's title, its icon and the line under them are the
-/// ones it declared. Its bar keeps the actions its columns offered, so the one way to make the
-/// first thing stands at every width, and the columns come back with the first one.
+/// content and the inspector stand, and no column drawing a second one beside it. The app says what
+/// it has none of where that list would stand (a chat's places over "No channels yet"), and what is
+/// where the thing it chooses would show ("No channel open"). While neither holds a list nor a
+/// thing (no channel at all, a first run), the window shows the app's words once
+/// ([`ui::widget::NavShell::nothing_listed`]), on the screen a window opens on, so a narrow window
+/// fronts the same state whichever column stood in front before. The app's words are all it adds:
+/// the state's title, its icon and the line under them are the ones it declared. Its bar keeps the
+/// actions its columns offered, so the way to make the first thing is there at every width, and the
+/// columns come back with the first one.
 #[must_use]
 pub fn nothing_listed(mut shell: UiNode) -> UiNode {
-    // The state that says what is missing: the places' first, they say what the list would hold;
-    // the overview's, the list's own; else the content's, which says what would stand there.
+    // The places' state first, since it says what the list would hold; then the overview's, the
+    // list's own; then the content's, which says what would stand there.
     let mut state = None;
     for name in ["sidebar", "overview", "content"] {
         let children = slot_children(&shell, name);
         if !children.iter().all(only_states) {
-            // The column lists something, or shows it: the window lists it.
             return shell;
         }
         if state.is_none() {
@@ -337,8 +310,8 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     let Some(state) = state else {
         return shell;
     };
-    // The bar keeps what the columns offered: the way to make the first thing stands there,
-    // where the column that held it is gone.
+    // The bar keeps what the columns offered: the way to make the first thing is there, where the
+    // column that held it is gone.
     let offered_actions = slot_children(&shell, "actions");
     let bar = if offered_actions.is_empty() {
         slot_children(&shell, "overview_actions").to_vec()
@@ -351,13 +324,12 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     shell = with_slot(shell, "content", vec![state]);
     shell
         .props
-        .insert("nothing_listed".to_owned(), Value::Bool(true));
+        .insert(NOTHING_LISTED.to_owned(), Value::Bool(true));
     // The window opens on its one state: no column keeps a front for a column that is gone.
     shell.props.remove("pane");
     shell
 }
 
-/// The window of `root` and the window after it, before the rule over what it lists.
 fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();
@@ -373,11 +345,11 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let Some(detail) = detail else {
         return shell;
     };
-    // A window after the root's that shows one thing with views of its own — a list it draws,
-    // or the switch between the views its type declares — moves the window there: the window's
-    // shell is its, with the root's sidebar (the places to go back by), and the root's list and
-    // its controls step aside. The window is built anew where it moves to, so its bar is the one
-    // what it shows offers, never a merge of the two.
+    // A window after the root's that shows one thing with views of its own (a list it draws, or the
+    // switch between the views its type declares) moves the window there: the window's shell is
+    // its, with the root's sidebar (the places to go back by), and the root's list and its controls
+    // step aside. The window is built anew where it moves to, so its bar is the one what it shows
+    // offers, never a merge of the two.
     if has_overview(detail) || offers_switch(detail) {
         let mut moved = detail.clone();
         moved = with_slot(moved, "sidebar", slot_children(root, "sidebar").to_vec());
@@ -419,9 +391,9 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
 }
 
 /// Apply the header rules to the composed shell: its bar repeats no action its content or its
-/// sidebar offers (an empty sidebar's "New channel"), whichever slot the bar's controls stand in. A title the content shows as its own heading is
-/// the shell's business, not the host's: the shell leaves it to the heading and takes it back
-/// once that scrolls away.
+/// sidebar offers (an empty sidebar's "New channel"), whichever slot the bar's controls stand in. A
+/// title the content shows as its own heading is the shell's business, not the host's: the shell
+/// leaves it to the heading and takes it back once that scrolls away.
 #[must_use]
 pub fn header_rules(mut shell: UiNode) -> UiNode {
     let mut shown: Vec<String> = Vec::new();
@@ -451,9 +423,9 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
             let mut menu = node.clone();
             menu.children
                 .retain(|item| item.kind != kind("MenuItem") || !repeated(item, "choose"));
-            // The commands the menu holds, wherever the view's calls and loops put them
-            // (a loop of commands stands in a fragment), and those it is given as actions
-            // of the resource it offers.
+            // The commands the menu holds, wherever the view's calls and loops put them (a loop of
+            // commands stands in a fragment), and those it is given as actions of the resource it
+            // offers.
             let commands = crate::adapter::description_of(node).is_some_and(|description| {
                 crate::adapter::slot_parts(node, description, "items")
                     .iter()
@@ -498,7 +470,6 @@ fn offered(node: &UiNode, shown: &mut Vec<String>, bound: &mut Vec<(String, Stri
     }
 }
 
-/// `node` with each key carrying `prefix`: the window after the root's in the composed tree.
 #[must_use]
 pub fn prefixed(node: &UiNode, prefix: &str) -> UiNode {
     if prefix.is_empty() {
@@ -545,7 +516,6 @@ mod tests {
         shell
     }
 
-    /// The node keyed `key` in the tree under `node`.
     fn find(node: &UiNode, key: &str) -> Option<UiNode> {
         if node.key == key {
             return Some(node.clone());
@@ -553,7 +523,6 @@ mod tests {
         node.children.iter().find_map(|child| find(child, key))
     }
 
-    /// A node holding others, as an app's view does around its list.
     fn stack(key: &str, children: Vec<UiNode>) -> UiNode {
         let mut stack = UiNode::empty("stack", key);
         stack.children = children;
@@ -909,8 +878,6 @@ mod tests {
         assert_eq!(shown_title(&unnamed), None, "a blank heading names nothing");
     }
 
-    /// A chat with no channel and nobody else to talk to: its places say what it has none of,
-    /// and the place a conversation would open says nothing is open.
     fn empty_places() -> (UiNode, UiNode) {
         let empty = |key: &str, title: &str| {
             node(
@@ -1001,8 +968,8 @@ mod tests {
         assert!(!slot_children(&composed, "sidebar").is_empty());
         assert_eq!(slot_children(&composed, "content").len(), 1);
 
-        // Nothing to choose from and something chosen: a conversation open in a window whose
-        // places say they hold none keeps both.
+        // Nothing to choose from and something chosen: a conversation open in a window whose places
+        // say they hold none keeps both.
         let opened = shell(
             "channels",
             vec![

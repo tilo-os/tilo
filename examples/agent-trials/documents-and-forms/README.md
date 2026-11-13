@@ -93,7 +93,7 @@ Someone at the desktop does three things once.
    an app reaches the folder, scoped to the workspace). A grant takes effect
    the next time the app starts, so restart any of them already open.
    Without a grant, the only files the Browser can upload are the ones in its
-   own folder, `~/.local/share/tilo-rooms/<workspace or personal>/so.tilo.browser/`,
+   own folder, `~/.local/share/tilo-workspaces/<workspace or personal>/so.tilo.browser/`,
    which it sees as `/run/tilo/app/`; copying the upload files there and
    telling the agent those paths is the fallback.
 2. **Admit the agent.** When the participant's agent first connects, the

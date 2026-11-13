@@ -8,9 +8,9 @@
     clippy::unwrap_used,
     reason = "test fixture: a failed step fails the test"
 )]
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use test_http::{Reply, Responder};
 
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin as _};
 use agent_provider_config::protocol::{
@@ -22,62 +22,19 @@ use agent_provider_config::{
 };
 use tilo_model_gateway::page_service::{MemoryKeys, PageService};
 
-/// One request the fake provider received.
-struct Seen {
-    path: String,
-    authorization: Option<String>,
-    body: String,
-}
-
 /// A provider on loopback answering each request with the next of `answers`.
-fn fake_provider(answers: Vec<&'static str>) -> (String, Arc<Mutex<Vec<Seen>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let log = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for answer in answers {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let path = line
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_owned();
-            let (mut length, mut authorization) = (0, None);
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).unwrap();
-                let header = header.trim_end();
-                if header.is_empty() {
-                    break;
-                }
-                let (name, value) = header.split_once(':').unwrap();
-                match name.to_ascii_lowercase().as_str() {
-                    "content-length" => length = value.trim().parse().unwrap(),
-                    "authorization" => authorization = Some(value.trim().to_owned()),
-                    _ => {}
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            log.lock().unwrap().push(Seen {
-                path,
-                authorization,
-                body: String::from_utf8(body).unwrap(),
-            });
-            let mut stream = stream;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
-                answer.len()
-            )
-            .unwrap();
-        }
-    });
-    (endpoint, seen)
+fn fake_provider(answers: Vec<&str>) -> (String, Responder) {
+    let served = Responder::start(
+        answers
+            .into_iter()
+            .map(|answer| {
+                Reply::status(200)
+                    .header("content-type", "application/json")
+                    .body(answer)
+            })
+            .collect(),
+    );
+    (format!("{}/v1", served.url()), served)
 }
 
 fn ask(text: &str) -> ModelRequest {
@@ -107,7 +64,7 @@ fn a_window_asks_the_provider_the_person_set_up_with_its_key() {
     assert_eq!(error.kind, ErrorKind::NoProvider);
     assert_eq!(error.recovery(), Recovery::AddProvider);
 
-    let (endpoint, seen) = fake_provider(vec![
+    let (endpoint, served) = fake_provider(vec![
         r#"{"data":[{"id":"fake-model"}]}"#,
         r#"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Hello from the provider"}}],
             "usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}"#,
@@ -163,14 +120,14 @@ fn a_window_asks_the_provider_the_person_set_up_with_its_key() {
         }]
     );
     assert_eq!(answer.usage.total_tokens, 9);
-    let seen = std::mem::take(&mut *seen.lock().unwrap());
-    assert_eq!(seen[0].path, "/v1/models");
-    assert_eq!(seen[1].path, "/v1/chat/completions");
+    let seen = served.drain_requests();
+    assert_eq!(seen[0].target, "/v1/models");
+    assert_eq!(seen[1].target, "/v1/chat/completions");
     assert_eq!(
-        seen[1].authorization.as_deref(),
+        seen[1].header("authorization"),
         Some("Bearer placeholder-test-key")
     );
-    let body: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&seen[1].body_text()).unwrap();
     assert_eq!(body["model"], "fake-model");
     assert_eq!(
         body["messages"][0],

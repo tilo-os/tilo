@@ -1,5 +1,5 @@
-//! Explicit backend audit: no capture fixtures and no network/image pulls.
-//! Run on a host with a real rootless Podman engine. Failure is a failed audit.
+//! Explicit backend audit on a host with a real rootless Podman engine: no capture
+//! fixtures, no pulls. A failure is a failed audit.
 use containers::podman;
 
 struct OwnedVolume {
@@ -42,8 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !removed.live || removed.volumes.iter().any(|item| item.name == volume.name) {
         return Err("removed volume still appears in the actual live projection".into());
     }
-    // The successful removal is proved above; do not ask the cleanup guard
-    // to remove it a second time.
+    // The successful removal is proved above; the guard removes nothing again.
     volume.active = false;
     println!("live Podman list/create-volume/remove-volume projection: passed");
     Ok(())

@@ -1,20 +1,5 @@
-//! `PathBar` — the single, calm path affordance at the top of the file
-//! manager. It has two modes:
-//!
-//! * **Breadcrumb** (default): the shared [`ui::widget::Breadcrumb`] trail
-//!   (`Home > Projects > tilo`). Clicking an ancestor navigates to it.
-//! * **Editable** (Finder/Nautilus location bar): clicking the empty trail
-//!   area, or pressing Ctrl+L, turns the trail into a real editable text
-//!   field. As you type, **path completions appear in
-//!   a dropdown below the field**; Enter navigates, Esc reverts to the trail.
-//!
-//! The path is shown exactly **once** — this bar replaces both the old separate
-//! breadcrumb band *and* the footer's redundant path label.
-//!
-//! The dropdown is the shared [`ui::widget::Autocomplete`] with a filesystem
-//! suggestion source, so the "text field + completion popover" behaviour (arrow
-//! navigation, Tab-complete, click-to-accept, theming, selection/clipboard)
-//! is the toolkit's, not hand-rolled here.
+//! The path bar: the trail of the folder shown, and the editable location a
+//! click on its empty space turns it into.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -40,34 +25,21 @@ use crate::model::format_path;
 use ui::widget::DrawChild;
 
 pub struct PathBar {
-    /// The clickable trail (breadcrumb mode).
     crumbs: Breadcrumb,
-    /// Where each trail segment goes, in trail order.
     targets: Vec<PathBuf>,
-    /// The trail's node in the last layout, so events reach it at its rect.
     crumbs_node: Option<NodeId>,
-    /// The trail asked to be edited (a click on its empty space).
     edit_requested: Rc<Cell<bool>>,
-    /// The editable field + completion popover (edit mode).
     field: Autocomplete,
     editing: bool,
     current: PathBuf,
     home: Option<PathBuf>,
-    // Completion and submission share the location captured when editing began.
-    // Navigation may update the breadcrumb context without replacing typed text.
     edit_current: PathBuf,
     edit_home: Option<PathBuf>,
-    /// The workspace mounts, so the trail can name one instead of
-    /// spelling out where it happens to be mounted.
     workspace_roots: Vec<PathBuf>,
     sink: CommandSink,
     rect: Rect,
-    /// What the bar painted, this frame and last, so a frame that left the
-    /// trail or the field as they were repaints neither.
     own: ui::own_paint::OwnPaint,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -94,9 +66,6 @@ impl PathBar {
         }
     }
 
-    /// Update the trail to reflect the current directory. A no-op on the trail
-    /// while editing, so navigation the user hasn't committed doesn't stomp
-    /// their in-progress typing.
     pub fn set_path(
         &mut self,
         current: PathBuf,
@@ -111,8 +80,6 @@ impl PathBar {
         }
     }
 
-    /// Rebuild the trail for the current location. The trail is a stateless
-    /// widget, so it is replaced only when its segments change.
     fn refresh_crumbs(&mut self) {
         let components =
             breadcrumb_components(&self.current, self.home.as_deref(), &self.workspace_roots);
@@ -135,10 +102,7 @@ impl PathBar {
                     push(&sink, FileCommand::Navigate(target.clone()));
                 }
             })
-            // A click on the trail's empty space turns it into the editable
-            // location.
             .on_edit_requested(move || edit.set(true))
-            // The `…` of a long trail offers the folders it hides.
             .on_overflow({
                 let sink = self.sink.clone();
                 let hidden_labels = labels;
@@ -165,8 +129,6 @@ impl PathBar {
         self.targets = targets;
     }
 
-    /// Enter edit mode: seed the field with the current path, wire the
-    /// filesystem completion source, focus + select-all, and open the dropdown.
     pub fn begin_edit(&mut self) {
         self.editing = true;
         self.edit_current = self.current.clone();
@@ -180,8 +142,6 @@ impl PathBar {
         self.field.begin_edit();
     }
 
-    /// Where each painted trail segment leads, with its rect: the folders a
-    /// drag can drop onto. None while the location is being typed.
     pub fn crumb_targets(&self) -> Vec<(vello::kurbo::Rect, PathBuf)> {
         if self.is_editing() {
             return Vec::new();
@@ -206,13 +166,11 @@ impl PathBar {
 }
 
 impl Widget for PathBar {
-    /// The trail has a node of its own; the bar routes and paints it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.crumbs);
         true
     }
 
-    /// The trail, for what it publishes: going to a segment.
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.crumbs]
     }
@@ -227,12 +185,8 @@ impl Widget for PathBar {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The trail takes the bar's width and height, so it truncates against
-        // the real width.
         let crumbs = self.crumbs.build_layout(taffy, theme, node_map);
         let height = Dimension::length(theme.tokens.metrics.min_pointer_target);
-        // `new_with_children` only fails for a node of another tree; the
-        // trail's node was just built in this one.
         #[allow(
             clippy::unwrap_used,
             reason = "the trail's node was just created in this same tree"
@@ -242,9 +196,6 @@ impl Widget for PathBar {
                 .new_with_children(
                     Style {
                         display: Display::Flex,
-                        // The bar asks for more width than any window has: the
-                        // toolbar is offered a band to fill, and the bar shrinks
-                        // to whatever its neighbours leave.
                         size: Size {
                             width: Dimension::length(f32::from(u16::MAX)),
                             height,
@@ -291,7 +242,6 @@ impl Widget for PathBar {
             } else {
                 crumbs.draw_child(scene, transform, tr, theme, presence);
             }
-            // The field's focus ring reaches past the bar.
             let reach = f64::from(theme.tokens.spacing.s2);
             rect.inflate(reach, reach)
         });
@@ -332,7 +282,6 @@ impl Widget for PathBar {
                         resolve_location(&value, self.edit_home.as_deref(), &self.edit_current);
                     push(&self.sink, FileCommand::OpenPath(resolved));
                     self.end_edit();
-                    // Going there is what the key did.
                     *ctx.handled = true;
                 }
                 AutocompleteOutcome::Cancelled => self.end_edit(),
@@ -423,7 +372,6 @@ impl Widget for PathBar {
     }
 }
 
-/// Expand a leading `~` against `home` into an absolute path.
 fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
     if let Some(home) = home {
         if input == "~" {
@@ -439,8 +387,6 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
     PathBuf::from(input)
 }
 
-/// Resolve a location against the folder being browsed, without removing root
-/// separators (`/` and `C:/` are not equivalent to empty text and `C:`).
 pub(crate) fn resolve_location(input: &str, home: Option<&Path>, current: &Path) -> PathBuf {
     current.join(expand_tilde(input, home))
 }
@@ -458,9 +404,6 @@ pub(crate) fn path_completions_at(
     path_completions(&query, home)
 }
 
-/// The display form placed into the field for a completion: `~`-relative when
-/// under home, absolute otherwise, with a trailing `/` on directories so the
-/// next keystroke drills into it.
 fn to_display(path: &Path, home: Option<&Path>, is_dir: bool) -> String {
     let mut s = format_path(path, home);
     if is_dir && !s.ends_with(std::path::is_separator) {
@@ -469,19 +412,13 @@ fn to_display(path: &Path, home: Option<&Path>, is_dir: bool) -> String {
     s
 }
 
-/// Split the typed text into `(directory to list, name prefix to match)`.
-///
-/// The prefix comes from the raw typed string (the tail after the last `/`),
-/// **not** from `PathBuf::file_name` — which normalises a trailing `.` away, so
-/// typing `…/.` to reveal dotfiles would otherwise be lost.
 fn split_for_completion(input: &str, home: Option<&Path>) -> (PathBuf, String) {
     if input.is_empty() || input == "~" {
         return (expand_tilde(input, home), String::new());
     }
     match input.rfind(std::path::is_separator) {
         Some(slash) => {
-            // Retain the separator: `C:\` names the drive root, while `C:`
-            // names that drive's current working directory.
+            // Keep the separator: `C:\` names the drive root, while `C:` names that drive's current folder.
             let dir_part = input.get(..=slash).unwrap_or_default();
             let prefix = input.get(slash + 1..).unwrap_or_default().to_string();
             let dir = if dir_part.is_empty() {
@@ -491,15 +428,10 @@ fn split_for_completion(input: &str, home: Option<&Path>) -> (PathBuf, String) {
             };
             (dir, prefix)
         }
-        // No separator yet: nothing to anchor a directory listing on.
         None => (expand_tilde(input, home), String::new()),
     }
 }
 
-/// Real filesystem path completions for `input`: the entries of the directory
-/// it names whose names start with the typed prefix (directories first). This
-/// reads the directory directly — the same `read_dir` the listing uses — so the
-/// suggestions are the live filesystem, never a mock.
 pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
     let (dir, prefix) = split_for_completion(input, home);
     let Ok(rd) = std::fs::read_dir(&dir) else {
@@ -518,15 +450,12 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
                 return None;
             }
             let path = e.path();
-            // A link to a folder completes as the folder it opens (on Tilo's
-            // image `/home` is one); only a link costs the second stat.
             let is_dir = e
                 .file_type()
                 .is_ok_and(|t| t.is_dir() || (t.is_symlink() && path.is_dir()));
             Some((is_dir, name, path))
         })
         .collect();
-    // Directories first, then names in the order the listing shows them.
     entries.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| crate::model::name_cmp(&a.1, &b.1))
@@ -547,14 +476,12 @@ mod tests {
     use crate::command::new_sink;
     use automerge::AutoCommit;
 
-    /// Editing keeps completion and submission on one location, accepted locations preserve roots, and breadcrumb mode enters named text input.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn path_editing_keeps_location_and_input_consistent() {
-        // --- phase: navigation_during_edit_keeps_completion_and_submission_on_the_same_location ---
         {
             use ui::a11y::Action;
             use winit::event::{ElementState, KeyEvent, RawKeyEvent};
@@ -571,8 +498,6 @@ mod tests {
                 let mut bar = PathBar::new(sink.clone());
                 bar.set_path(before.clone(), Some(before.clone()), Vec::new());
                 bar.begin_edit();
-                // An asynchronous navigation updates the displayed folder while the
-                // location editor deliberately preserves the user's in-progress edit.
                 bar.set_path(after.clone(), Some(after.clone()), Vec::new());
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
@@ -613,7 +538,6 @@ mod tests {
             }
         }
 
-        // --- phase: accepted_locations_preserve_roots_and_use_the_browsed_folder ---
         {
             let root = tempfile::tempdir().unwrap();
             let current = root.path().join("current");
@@ -637,7 +561,6 @@ mod tests {
             );
         }
 
-        // --- phase: breadcrumb_mode_names_the_trail_and_activation_enters_named_text_input ---
         {
             use ui::a11y::{Action, Role};
 
@@ -665,8 +588,6 @@ mod tests {
         }
     }
 
-    /// The app supplies real navigation targets and root anchors to the
-    /// shared trail, whose measured rendering retains the current folder.
     #[test]
     fn shared_breadcrumb_preserves_roots_targets_and_narrow_current_folder() {
         use ui::icons::Icon;
@@ -728,10 +649,8 @@ mod tests {
         }
     }
 
-    /// Completion lists matching entries, whole directories on a trailing slash, expands tilde, reads the browsed folder and shows hidden entries only for dot prefixes.
     #[test]
     fn path_completion_lists_matching_entries() {
-        // --- phase: completions_list_directory_entries_matching_the_prefix ---
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir(dir.path().join("Documents")).unwrap();
@@ -740,7 +659,6 @@ mod tests {
             std::fs::write(dir.path().join("Do-not-list.txt"), b"x").unwrap();
             std::fs::write(dir.path().join(".hidden"), b"x").unwrap();
 
-            // "<dir>/Do" matches the two "Do…" directories + the "Do…" file.
             let input = dir.path().join("Do").display().to_string();
             let sugg = path_completions(&input, None);
             let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
@@ -748,15 +666,12 @@ mod tests {
             assert!(labels.contains(&"Downloads"), "labels: {labels:?}");
             assert!(labels.contains(&"Do-not-list.txt"), "files complete too");
             assert!(!labels.contains(&"Music"), "non-matching entry excluded");
-            // Directories are offered before files.
             let doc_pos = labels.iter().position(|l| *l == "Documents").unwrap();
             let file_pos = labels.iter().position(|l| *l == "Do-not-list.txt").unwrap();
             assert!(
                 doc_pos < file_pos,
                 "directories sort before files: {labels:?}"
             );
-            // A dir suggestion's inserted value carries a trailing slash so the next
-            // keystroke drills into it.
             let docs = sugg.iter().find(|s| s.label == "Documents").unwrap();
             assert_eq!(
                 docs.value,
@@ -768,7 +683,6 @@ mod tests {
             );
         }
 
-        // --- phase: trailing_slash_lists_the_whole_directory ---
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir(dir.path().join("alpha")).unwrap();
@@ -782,7 +696,6 @@ mod tests {
             );
         }
 
-        // --- phase: tilde_expands_to_home ---
         {
             let home = tempfile::tempdir().unwrap();
             std::fs::create_dir(home.path().join("Projects")).unwrap();
@@ -800,7 +713,6 @@ mod tests {
             );
         }
 
-        // --- phase: hidden_entries_appear_only_when_the_prefix_is_a_dot ---
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir(dir.path().join(".config")).unwrap();
@@ -817,7 +729,6 @@ mod tests {
             );
         }
 
-        // --- phase: relative_completions_read_the_browsed_folder ---
         {
             let root = tempfile::tempdir().unwrap();
             let current = root.path().join("current");
@@ -840,8 +751,6 @@ mod tests {
         }
     }
 
-    /// A link to a folder completes as the folder it opens, with the trailing
-    /// slash that drills into it, and names complete in the listing's order.
     #[cfg(unix)]
     #[test]
     fn a_linked_folder_completes_as_a_folder_in_listing_order() {

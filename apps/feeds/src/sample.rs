@@ -407,7 +407,6 @@ pub fn store() -> Library {
     s
 }
 
-/// A folder named `name`, under an id derived from it.
 fn folder(s: &mut Library, name: &str) -> Id {
     let id = Id::from_raw(format!("sample-folder-{}", name.to_lowercase()));
     s.folders.push(id.clone(), Folder::named(name));
@@ -519,7 +518,6 @@ mod tests {
 
     #[test]
     fn sample_store_covers_demo_surfaces_and_preserves_states() {
-        // --- phase: sample_store_covers_every_demo_surface ---
         {
             let s = store();
             assert_eq!(s.folders.len(), 3);
@@ -537,7 +535,6 @@ mod tests {
             assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
         }
 
-        // --- phase: sample_article_states_and_inferred_tags_are_preserved ---
         {
             let s = store();
             let article = |title: &str| {

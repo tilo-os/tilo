@@ -25,7 +25,6 @@ use crate::html::collapse_whitespace;
 /// be, so an older one is used.
 const ENGINE_ID: &str = "partner-pub-8993703457585266:4862972284";
 
-/// The element serves pages that embed it; it expects their referrer.
 const REFERER: &str = "https://cse.google.com/";
 
 /// Results asked for; the element answers at most 20.
@@ -46,8 +45,6 @@ pub(crate) fn token_request() -> Option<EngineRequest> {
     Some(request)
 }
 
-/// The token in `cse.js`, which ends by passing its options to a loader:
-/// `…({"cse_token": …, "cselibVersion": …, "exp": […], …});`.
 pub(crate) fn parse_token(script: &str) -> Option<Token> {
     #[derive(Deserialize)]
     struct Options {
@@ -94,7 +91,6 @@ pub(super) fn request(query: &str, safe: super::SafeMode) -> Option<EngineReques
     Some(request)
 }
 
-/// Add `token` to a query `url` from [`request`].
 pub(crate) fn authorize(url: &mut Url, token: &Token) {
     let mut pairs = url.query_pairs_mut();
     pairs
@@ -129,7 +125,6 @@ struct Item {
     content_no_formatting: String,
 }
 
-/// Read the element's JSONP answer, `/*O_o*/ _({…});`.
 pub(super) fn parse(body: &str) -> Result<Vec<EngineResult>, EngineError> {
     let json = body
         .find('{')

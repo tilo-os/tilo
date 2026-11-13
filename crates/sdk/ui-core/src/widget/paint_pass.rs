@@ -1,16 +1,6 @@
-//! Whether this thread is painting: the toolkit's own mark of a widget's
-//! `draw`, so a write made in the wrong pass says so instead of landing after
-//! the frame decided it was quiet and never being shown or synced.
-//!
-//! A frame reads the document in its `sync` pass and writes what it took up
-//! in its `settle` pass, both before it paints. A surface that dispatches an
-//! edit from `draw` writes after both: the frame has already decided what it
-//! reads, and a host with nothing else pending has no reason to run another
-//! one. The write then waits for an unrelated event, or is never shown.
-//!
-//! Debug builds stop on it (`Dispatcher::submit`, `submit_now` and
-//! `apply_now` assert in `tilo-app`). Release builds pay nothing: the mark
-//! exists only where it is checked.
+//! Whether this thread is painting: the toolkit's own mark of a widget's `draw`, so a write
+//! made in the wrong pass says so instead of landing after the frame decided it was quiet and
+//! never being shown or synced.
 
 use std::cell::Cell;
 
@@ -24,7 +14,6 @@ thread_local! {
 pub(crate) struct Painting(());
 
 impl Painting {
-    /// Mark the draw that is beginning.
     pub(crate) fn enter() -> Self {
         DRAW_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
         Self(())

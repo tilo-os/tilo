@@ -1,4 +1,4 @@
-//! What is selected: the declarations presence publishes for it, and the sentence the status bar reads off the selection.
+//! The selection: ranges, the active cell and what copy and paste take.
 
 use super::{
     CellFormat, CellValue, ChartKind, SelectionKey, SelectionSummary, SheetsApp, Workbook, actions,
@@ -6,18 +6,11 @@ use super::{
 };
 
 impl SheetsApp {
-    /// The edits bound to where the user is — the selection, the active cell
-    /// and its sheet — as the workbook's verbs with their arguments bound:
-    /// the palette, agents and scripts invoke them through the same door as
-    /// the rest of the workbook, and each acts on the selection as it is
-    /// when they are published.
     pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
         self.refresh_selection_declarations();
         self.store.borrow().selection_declarations()
     }
 
-    /// Build the edits bound to the selection again when what they are built
-    /// from changed.
     fn refresh_selection_declarations(&self) {
         let key = SelectionKey {
             revision: self.revision,
@@ -34,8 +27,6 @@ impl SheetsApp {
         self.store.borrow_mut().selection = Some((key, decls));
     }
 
-    /// Hand the view what the grid shows now: the active sheet, the
-    /// currency amounts are read in and the edits bound to the selection.
     pub(super) fn share_view(&self) {
         self.refresh_selection_declarations();
         let (active, currency) = (self.active_sheet_id(), self.default_currency());
@@ -58,23 +49,24 @@ impl SheetsApp {
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let (active_col, active_row) = self.grid.active();
         let selection = crate::resource::range_label((c0, r0), (c1, r1));
-        let write = |id: &'static str, label: &str, cells: Vec<CellWrite>| {
-            let p = verbs::WriteCells::paths();
-            Workbook::WRITE_CELLS
-                .bind(p.sheet, sheet.clone())
-                .and(p.cells, cells)
-                .declaration(id, label)
-        };
+        let write =
+            |id: &'static str, label: ui::tilo_resource::label::Word, cells: Vec<CellWrite>| {
+                let p = verbs::WriteCells::paths();
+                Workbook::WRITE_CELLS
+                    .bind(p.sheet, sheet.clone())
+                    .and(p.cells, cells)
+                    .declaration(id, label)
+            };
         let mut decls = Vec::new();
         for (id, label, kind) in [
             (
                 "insert-column-chart",
-                "Create column chart from selection",
+                ui::tilo_resource::word!("sheets-workbook-insert-column-chart"),
                 ChartKind::Column,
             ),
             (
                 "insert-line-chart",
-                "Create line chart from selection",
+                ui::tilo_resource::word!("sheets-workbook-insert-line-chart"),
                 ChartKind::Line,
             ),
         ] {
@@ -93,7 +85,10 @@ impl SheetsApp {
             Workbook::COMMENT
                 .bind(p.sheet, sheet.clone())
                 .and(p.range, selection)
-                .declaration("comment-selection", "Comment on selection"),
+                .declaration(
+                    "comment-selection",
+                    ui::tilo_resource::word!("sheets-workbook-comment-selection"),
+                ),
         );
         let target_r = r1.saturating_add(1);
         let sums = (c0..=c1)
@@ -106,20 +101,30 @@ impl SheetsApp {
                 CellWrite::at((c, target_r), formula, None)
             })
             .collect();
-        decls.extend(write("sum-selection", "Sum selection", sums));
+        decls.extend(write(
+            "sum-selection",
+            ui::tilo_resource::word!("sheets-workbook-sum-selection"),
+            sums,
+        ));
         let p = verbs::InsertRows::paths();
         decls.extend(
             Workbook::INSERT_ROWS
                 .bind(p.sheet, sheet.clone())
                 .and(p.at, active_row.saturating_add(1))
-                .declaration("insert-row-active", "Insert row above"),
+                .declaration(
+                    "insert-row-active",
+                    ui::tilo_resource::word!("sheets-workbook-insert-row-active"),
+                ),
         );
         let p = verbs::DeleteRows::paths();
         decls.extend(
             Workbook::DELETE_ROWS
                 .bind(p.sheet, sheet.clone())
                 .and(p.rows, vec![active_row.saturating_add(1)])
-                .declaration("delete-row-active", "Delete row"),
+                .declaration(
+                    "delete-row-active",
+                    ui::tilo_resource::word!("sheets-workbook-delete-row-active"),
+                ),
         );
         let letters = crate::model::col_to_letters(active_col);
         let p = verbs::InsertColumns::paths();
@@ -127,25 +132,39 @@ impl SheetsApp {
             Workbook::INSERT_COLUMNS
                 .bind(p.sheet, sheet.clone())
                 .and(p.at, letters.clone())
-                .declaration("insert-column-active", "Insert column left"),
+                .declaration(
+                    "insert-column-active",
+                    ui::tilo_resource::word!("sheets-workbook-insert-column-active"),
+                ),
         );
         let p = verbs::DeleteColumns::paths();
         decls.extend(
             Workbook::DELETE_COLUMNS
                 .bind(p.sheet, sheet.clone())
                 .and(p.columns, vec![letters])
-                .declaration("delete-column-active", "Delete column"),
+                .declaration(
+                    "delete-column-active",
+                    ui::tilo_resource::word!("sheets-workbook-delete-column-active"),
+                ),
         );
 
         let selected = self.grid.selected_cells();
         for (id, label, format) in [
             (
                 "format-currency",
-                "Format as currency",
+                ui::tilo_resource::word!("sheets-workbook-format-currency"),
                 CellFormat::Currency(self.default_currency()),
             ),
-            ("format-percent", "Format as percent", CellFormat::Percent),
-            ("clear-format", "Clear formatting", CellFormat::General),
+            (
+                "format-percent",
+                ui::tilo_resource::word!("sheets-workbook-format-percent"),
+                CellFormat::Percent,
+            ),
+            (
+                "clear-format",
+                ui::tilo_resource::word!("sheets-workbook-clear-format"),
+                CellFormat::General,
+            ),
         ] {
             let cells = selected
                 .iter()
@@ -171,7 +190,11 @@ impl SheetsApp {
                     ));
                 }
             }
-            decls.extend(write("fill-down", "Fill down", down));
+            decls.extend(write(
+                "fill-down",
+                ui::tilo_resource::word!("sheets-workbook-fill-down"),
+                down,
+            ));
         }
 
         let mut right = Vec::new();
@@ -187,7 +210,11 @@ impl SheetsApp {
                     ));
                 }
             }
-            decls.extend(write("fill-right", "Fill right", right));
+            decls.extend(write(
+                "fill-right",
+                ui::tilo_resource::word!("sheets-workbook-fill-right"),
+                right,
+            ));
         }
 
         let (c, r) = (active_col, active_row);
@@ -208,7 +235,7 @@ impl SheetsApp {
                 );
                 decls.extend(write(
                     "autosum-active",
-                    "AutoSum column",
+                    ui::tilo_resource::word!("sheets-workbook-autosum-active"),
                     vec![CellWrite::at((c, r), formula, None)],
                 ));
             }
@@ -216,9 +243,6 @@ impl SheetsApp {
         decls
     }
 
-    /// The workbook as the palette, agents and scripts see it from this
-    /// surface: the resource's publication with the edits bound to the
-    /// selection and its effects.
     pub(crate) fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
         use ui::tilo_resource::{Effect as _, Resource as _};
 
@@ -233,7 +257,6 @@ impl SheetsApp {
         vec![workbook]
     }
 
-    /// Select `from`..`to` as a drag over the grid would.
     #[cfg(test)]
     pub(crate) fn select_range_for_test(
         &mut self,

@@ -151,7 +151,8 @@ impl ChatApp {
         } else if message.author.starts_with("bot:") {
             self.bot_name(message)
         } else {
-            self.user_name(&message.author)
+            self.acting_name(&message.author, message.acting.as_ref())
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 
@@ -186,13 +187,18 @@ impl ChatApp {
             // A person a bridge speaks for, by their own name and where
             // they are: "Dana, from Discord".
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
-            let shown = self
-                .message_author(message, &name, "", None)
-                .label(&members);
-            crate::i18n::t_args(
-                "chat-via-attribution",
-                &[("name", shown.into()), ("service", service.into())],
-            )
+            let author = self.message_author(message, &name, "", None);
+            let shown = author.label(&members);
+            // A name that had to say its service to tell it from a member
+            // already names it once.
+            if shown == author.shown_name() {
+                crate::i18n::t_args(
+                    "chat-via-attribution",
+                    &[("name", shown.into()), ("service", service.into())],
+                )
+            } else {
+                shown
+            }
         } else if message.author.starts_with("bot:") {
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
             let shown = self
@@ -487,11 +493,13 @@ impl Attempt {
                 _ => AgentFinish::Failed,
             };
             self.sequence += 1;
+            // The end's readable line: the safe diagnostic, never the recovery
+            // instruction written for a model call's caller.
             let detail = self
                 .state
                 .error
                 .as_ref()
-                .map(|e| format!("{} {}", e.message, e.recovery().guidance()))
+                .map(|e| e.message.clone())
                 .unwrap_or_default();
             events.push(AgentStreamEvent {
                 run: self.reply.clone(),

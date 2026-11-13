@@ -39,10 +39,9 @@ impl OrdinaryConfirmation {
         })
     }
 
-    /// This request as the door's answer made it: the invocation needs the
-    /// person's go-ahead (the workspace's grants ask first) even where the action
-    /// declares no confirmation, so the person is asked, told who decides,
-    /// instead of the request waiting unseen for an answer nobody asks for.
+    /// This request as the door's answer made it: the invocation needs the person's go-ahead (the
+    /// workspace's grants ask first) even where the action declares no confirmation, so the person is
+    /// asked, told who decides, instead of the request waiting unseen for an answer nobody asks for.
     #[must_use]
     pub(crate) fn asking_first(mut self) -> Self {
         if matches!(
@@ -57,23 +56,21 @@ impl OrdinaryConfirmation {
         self
     }
 
-    /// This request as the app asked for it: the person's pick is asked
-    /// before it goes ahead though the action declares no confirmation
-    /// (Delete in a message's menu), in the action's own words.
+    /// This request as the app asked for it: the person's pick is asked before it goes ahead though the
+    /// action declares no confirmation (Delete in a message's menu), in the action words.
     #[must_use]
     pub(crate) fn confirming(mut self) -> Self {
         self.confirming = true;
         self
     }
 
-    /// Whether Undo takes the action back, by its contract: what lets Shift
-    /// skip its question ([`crate::widget::shift_skips_confirmation`]).
+    /// Whether Undo takes the action back, by its contract: what lets Shift skip its question
+    /// ([`crate::widget::shift_skips_confirmation`]).
     pub(crate) fn can_be_undone(&self) -> bool {
         self.snapshot.contract.can_be_undone()
     }
 
-    /// Why the person is asked, when the workspace's grants ask rather than the
-    /// action itself.
+    /// Why the person is asked, when the workspace's grants ask rather than the action itself.
     pub(crate) fn asked(&self) -> Option<&str> {
         self.asked.as_deref()
     }
@@ -85,9 +82,6 @@ impl OrdinaryConfirmation {
     ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
         let (resource, spec) = unique_control_spec(resources, address)?;
         let (argument, json) = arguments.as_door_arguments();
-        // A deferred spec retains a creation draft when its provider offers
-        // one; without one (a verb with no parameters) it is built like any
-        // other action, so a destructive one can still be confirmed.
         let retains_draft = matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. })
             && spec
                 .continuation_identity(tilo_actions::ContinuationQuery::Draft)
@@ -96,8 +90,6 @@ impl OrdinaryConfirmation {
             validate_deferred_arguments(spec, json, argument)?;
             PreparedActionIntent::Deferred(DeferredIntent::capture(spec)?)
         } else {
-            // An action carries the time it was built; the confirmation is
-            // of the same action whenever the person confirms it.
             PreparedActionIntent::Encoded(tilo_resource::with_origin_clock(built_at, || {
                 encode_resource_action(resources, address, json, argument)
             })?)
@@ -112,8 +104,6 @@ impl OrdinaryConfirmation {
             locus: spec.locus,
             kind: spec.kind,
             operation_type: spec.operation_type.clone(),
-            // What these arguments do decides the question (a field edit
-            // that removes an item asks; one that renames it does not).
             contract: tilo_actions::ActionContract {
                 confirmation: match json {
                     Some(json) => spec.confirmation_for_json(json),

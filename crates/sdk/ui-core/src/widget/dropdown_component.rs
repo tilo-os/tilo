@@ -6,8 +6,7 @@ use crate::widget::ControlSize;
 
 use super::Dropdown;
 
-/// One of a short list, chosen from a field that opens the list: a project, a sort order, a
-/// unit. The chosen one shows in the field; the list filters as it is typed into.
+/// One of a short list, chosen from a field that opens it: a project, a sort order, a unit.
 #[derive(Component)]
 #[component(name = "Dropdown", role = "ComboBox", label = "placeholder")]
 pub struct DropdownProps {
@@ -82,7 +81,6 @@ impl Described for Dropdown {
         dropdown
     }
 
-    /// What is chosen and what it offers change in place; another size or shape is built again.
     fn set_props(&mut self, props: DropdownProps) -> bool {
         if props.size != ControlSize::default() || props.fill {
             return false;

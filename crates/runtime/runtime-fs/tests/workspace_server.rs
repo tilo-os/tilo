@@ -12,7 +12,6 @@ use std::sync::Arc;
 use runtime_fs::workspace_server::{WorkspaceBackend, serve_workspace};
 use runtime_fs::{DirEntry, EntryKind, Metadata, OpenMode};
 
-/// Files by path; directories are the paths' prefixes.
 struct Files(BTreeMap<&'static str, &'static [u8]>);
 
 fn file(size: usize) -> Metadata {

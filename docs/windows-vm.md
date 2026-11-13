@@ -1,14 +1,11 @@
 # Windows fallback VM
 
-> **Status (2026-09): live, provisioned fallback.** The Tilo session composes the
-> singleton libvirt appliance, authenticated and certificate-pinned guest
-> bridge, managed installer catalogue, and app-focused SPICE presentation. An
-> unprovisioned or unhealthy guest remains unavailable without affecting
-> Wine/Proton applications.
-
-Tilo has one Windows appliance on the system. It is a last-resort compatibility
-domain, not a second Tilo session and not a way to place arbitrary programs in
-a less confined desktop.
+Tilo has one Windows appliance on the system. The session composes its libvirt
+domain, its authenticated and certificate-pinned guest bridge, its installer
+catalogue and its app-focused SPICE presentation. It is a last-resort
+compatibility domain, not a second Tilo session and not a way to place arbitrary
+programs in a less confined desktop; an unhealthy or unprovisioned appliance
+stays unavailable and Wine and Proton applications are unaffected.
 
 ## Provisioning
 

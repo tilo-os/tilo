@@ -319,8 +319,12 @@ impl Calls {
         live.iter()
             .filter(|call| call.channel == channel)
             .flat_map(|call| &call.people)
-            // ignored-failure: a caller id that is not an endpoint names no device to hear
-            .filter_map(|caller| caller.id.parse::<iroh::EndpointId>().ok())
+            .filter_map(|caller| {
+                tilo_failure::ignored!(
+                    "a caller id that is not an endpoint names no device to hear",
+                    caller.id.parse::<iroh::EndpointId>().ok()
+                )
+            })
             .map(|device| *device.as_bytes())
             .collect::<BTreeSet<_>>()
             .into_iter()

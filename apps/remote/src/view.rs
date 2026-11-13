@@ -1,9 +1,5 @@
 //! The window's retained views, built from the app's state: the navigation
 //! rail, the connection list, the connection form and the session states.
-//!
-//! Views hold no state of their own. Every control pushes an [`Action`] into
-//! the shared [`Requests`] queue; the app drains it after routing each event
-//! and rebuilds what changed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,10 +29,8 @@ fn queue(requests: &Requests, action: Action) -> impl FnMut() + 'static {
     move || requests.borrow_mut().push(action)
 }
 
-/// Where the rail points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum Destination {
-    /// Every saved connection.
     #[default]
     Connections,
     /// The connections pinned to the top of the list.
@@ -65,7 +59,6 @@ impl Destination {
 }
 
 /// The navigation rail: every connection, the pinned ones and, while one is
-/// open, the session.
 pub(crate) fn rail(
     requests: &Requests,
     selected: Destination,
@@ -93,14 +86,12 @@ pub(crate) fn rail(
         })
 }
 
-/// What one row of the connection list shows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct RowModel {
     pub id: ConnectionId,
     pub name: String,
     pub kind: ConnectionKind,
     /// Where the machine is: the address a network protocol dials, or that
-    /// it is a Tilo device (whose endpoint id means nothing to read).
     pub address: String,
     /// The last session, or why Remote can't open one here.
     pub meta: String,
@@ -110,7 +101,6 @@ pub(crate) struct RowModel {
 }
 
 /// The protocol a connection speaks, as one glyph: a row's leading mark,
-/// the session's rail item and its status page.
 pub(crate) fn kind_icon(kind: ConnectionKind) -> Icon {
     match kind {
         ConnectionKind::Ssh => Icon::SquareTerminal,
@@ -156,8 +146,6 @@ fn connection_row(
             );
         }
     }
-    // Every row carries a dot, so the meta column keeps one trailing edge:
-    // answered last time, or not (yet) seen answering.
     match row.presence {
         crate::model::Presence::Online => list_row.active(),
         crate::model::Presence::Offline | crate::model::Presence::Unknown => list_row.idle(),
@@ -174,7 +162,6 @@ fn page(children: Vec<Element>) -> Element {
 }
 
 /// The connection list for `destination`: the pinned connections first, as
-/// their own group, then the rest.
 pub(crate) fn connection_list(
     requests: &Requests,
     actions: Option<&ResourceActions<Remote>>,
@@ -225,7 +212,6 @@ pub(crate) fn connection_list(
     page(sections)
 }
 
-/// The text behind each form field, kept across rebuilds of the form.
 #[derive(Clone)]
 pub(crate) struct FormFields {
     pub name: LocalState<String>,
@@ -251,7 +237,6 @@ impl Default for FormFields {
     }
 }
 
-/// A discovered Tilo device as the form's picker shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceModel {
     pub name: String,
@@ -259,18 +244,15 @@ pub(crate) struct DeviceModel {
     pub picked: bool,
 }
 
-/// The problems Save found, by the field that repairs each.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct FormProblems {
     pub name: Option<String>,
     pub host: Option<String>,
     pub port: Option<String>,
     /// Problems no single field repairs (an authentication the protocol
-    /// does not offer).
     pub other: Vec<String>,
 }
 
-/// What the form shows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FormModel {
     pub editing: Option<ConnectionId>,
@@ -344,7 +326,6 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
 }
 
 /// Which machine, where it is, who signs in and how, and how it is filed.
-/// One section, so every label shares one column.
 fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) -> FormSection {
     let tilo = model.kind == ConnectionKind::Tilo;
     let mut section = FormSection::new("Machine").field(protocol_field(requests, model));
@@ -422,7 +403,6 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
 }
 
 /// Who signs in, how, and the password or passphrase this device keeps
-/// for it.
 fn sign_in_fields(
     requests: &Requests,
     fields: &FormFields,
@@ -473,8 +453,6 @@ fn sign_in_fields(
 }
 
 /// The add / edit form. Save and Back are the window bar's, so they stay in
-/// view however long the form grows, and the bar names the form; deleting a
-/// saved connection is the form's last, separate action.
 pub(crate) fn connection_form(
     requests: &Requests,
     fields: &FormFields,
@@ -495,7 +473,6 @@ pub(crate) fn connection_form(
 }
 
 /// A session that shows no remote surface: connecting, failed, unavailable
-/// or ended. One sentence says why; the one action is the way forward.
 pub(crate) struct StatusModel {
     pub icon: Icon,
     pub title: String,

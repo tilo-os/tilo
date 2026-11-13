@@ -1,5 +1,5 @@
-//! Read sources for controls backed by the app document. User edits are
-//! submitted by the control owner as resource actions.
+//! Read sources for controls backed by the app document. User edits are submitted by the control owner
+//! as resource actions.
 
 use std::marker::PhantomData;
 
@@ -53,7 +53,6 @@ impl Codec for Number {
     }
 }
 
-/// Collaborative text: an Automerge `Text` read from a document text object. A plain string scalar reads as well.
 struct Text;
 
 impl Codec for Text {

@@ -12,17 +12,13 @@ use ui::tilo_resource::{SearchEntry, SearchWeight};
 
 use crate::model::{Folder, Mailbox, Message};
 
-/// The result group messages are listed under.
 pub const MAIL_KIND: &str = "Mail";
-/// The result group folders are listed under.
 pub const FOLDER_KIND: &str = "Mail folders";
 
-/// Shown for a message whose subject is blank.
 fn no_subject() -> String {
     crate::i18n::no_subject()
 }
 
-/// The lucide name of a folder's icon ([`Folder::icon`]).
 fn folder_icon(folder: Folder) -> &'static str {
     match folder {
         Folder::Inbox => "inbox",
@@ -35,7 +31,6 @@ fn folder_icon(folder: Folder) -> &'static str {
     }
 }
 
-/// Every system folder, and the custom folders `custom` names (id, name).
 pub fn folder_entries(custom: &[(String, String)]) -> Vec<SearchEntry> {
     let system = Folder::ALL.into_iter().map(|folder| {
         SearchEntry::new(crate::i18n::t(folder.message()), "")
@@ -54,7 +49,6 @@ pub fn folder_entries(custom: &[(String, String)]) -> Vec<SearchEntry> {
     system.chain(custom).collect()
 }
 
-/// Every message of `mailbox` outside Trash.
 pub fn message_entries(mailbox: &Mailbox) -> Vec<SearchEntry> {
     mailbox
         .messages
@@ -64,22 +58,14 @@ pub fn message_entries(mailbox: &Mailbox) -> Vec<SearchEntry> {
         .collect()
 }
 
-/// How much of a body search reads: the part a person remembers a mail
-/// by. The search source is rebuilt from every kept message whenever
-/// someone searches, so a mailbox of thousands of long mails must not hand
-/// it whole bodies.
 const BODY_SEARCHED: usize = 4 * 1024;
 
-/// How much of a message's recipients search reads: enough for every name
-/// and address of an ordinary message, bounded for a mailing to hundreds.
 const RECIPIENTS_SEARCHED: usize = 1024;
 
-/// The start of `body`, at most [`BODY_SEARCHED`] bytes, cut on a character.
 fn searched_part(body: &str) -> &str {
     cut(body, BODY_SEARCHED)
 }
 
-/// The start of `text`, at most `most` bytes, cut on a character.
 fn cut(text: &str, most: usize) -> &str {
     if text.len() <= most {
         return text;
@@ -91,8 +77,6 @@ fn cut(text: &str, most: usize) -> &str {
     text.get(..end).unwrap_or_default()
 }
 
-/// Who a message went to, by name and address: what finds a sent message
-/// by the person it was sent to.
 fn recipients(message: &Message) -> String {
     let mut out = String::new();
     for addr in message.to.iter().chain(&message.cc) {
@@ -199,8 +183,6 @@ mod tests {
         }
     }
 
-    /// A sent message is found by the person it went to, by name or
-    /// address, though neither is in its subject, sender or body.
     #[test]
     fn a_sent_message_is_found_by_its_recipient() {
         let mut mailbox = sample();
@@ -292,9 +274,6 @@ mod tests {
     }
 }
 
-/// What an agent's `search-messages` asks for: every word of `query`
-/// anywhere, words of the sender and the subject, a folder, a span of dates
-/// and whether there are attachments.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MessageQuery {
     words: Vec<String>,
@@ -306,7 +285,6 @@ pub(crate) struct MessageQuery {
     has_attachment: Option<bool>,
 }
 
-/// The most messages one search answers, newest first.
 const MOST_FOUND: usize = 50;
 
 fn words_of(text: Option<&str>) -> Vec<String> {
@@ -316,7 +294,6 @@ fn words_of(text: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// `date` (RFC 3339, a day or a time) as minutes since the Unix epoch.
 fn minutes_at(date: &str) -> Result<i64, String> {
     let date = date.trim();
     let parsed = mail_parser::DateTime::parse_rfc3339(date)
@@ -327,7 +304,6 @@ fn minutes_at(date: &str) -> Result<i64, String> {
 }
 
 impl MessageQuery {
-    /// The query `effect` asks, or why it asks none.
     pub(crate) fn of(effect: &crate::actions::MailEffect) -> Result<Self, String> {
         let crate::actions::MailEffect::SearchMessages {
             query,
@@ -366,7 +342,6 @@ impl MessageQuery {
         Ok(query)
     }
 
-    /// Whether `message` is one this query finds.
     pub(crate) fn finds(&self, message: &Message) -> bool {
         let holds = |text: &str, words: &[String]| {
             let text = text.to_lowercase();
@@ -410,8 +385,6 @@ impl MessageQuery {
             && holds(&everything, &self.words)
     }
 
-    /// The messages of `messages` this query finds, newest first, at most
-    /// [`MOST_FOUND`], as a search answers them.
     pub(crate) fn answer<'a>(
         &self,
         messages: impl Iterator<Item = &'a Message>,
@@ -430,7 +403,6 @@ impl MessageQuery {
     }
 }
 
-/// One message as a search lists it.
 pub(crate) fn listed(message: &Message) -> serde_json::Value {
     serde_json::json!({
         "id": message.id.to_string(),

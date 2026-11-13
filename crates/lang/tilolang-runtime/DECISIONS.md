@@ -279,7 +279,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   `set_lazy_rows(false)` before its first poll and reads `tree()` after it.
 - **A card is a summary.** A `list` inside a `card` is the card's preview: the compiler gives it
   `preview` (`tilolang::prims::PREVIEW_ROWS`, 5) and the runtime builds only those rows, with
-  `len` holding how many the list has (`UiNode::items_total`). The card's `count:` says how many
+  its `len` property holding how many the list has. The card's `count:` says how many
   there are and pressing the card opens its resource for the rest. Before, a board's cards built
   and drew every row of three 10k lists.
 - **The native host** (`apps/tilolang`). The list column of a `list` frame is a `VirtualList`

@@ -25,9 +25,9 @@ cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$out/bin"
-cargo build --locked --profile lounge-gate -p tilo-front-door -p fake-discord \
-  --bin tilo-front-door --bin fake-discord
-for bin in tilo-front-door fake-discord; do cp "$target/lounge-gate/$bin" "$out/bin/"; done
+cargo build --locked --profile lounge-gate -p tilo-api -p fake-discord \
+  --bin tilo-api --bin fake-discord
+for bin in tilo-api fake-discord; do cp "$target/lounge-gate/$bin" "$out/bin/"; done
 bash tools/ci/publish/lounge-context.sh "$out/lounge" "$binaries" "$fonts"
 # Outside the image a Tilo program finds the font catalog in fonts/ beside itself,
 # and the stack reads this layout as it is (in a check, read-only).

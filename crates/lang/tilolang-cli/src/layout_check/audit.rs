@@ -23,29 +23,24 @@ use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
 use ui::widget::band_height;
 
-/// One problem in one frame, at the widget it is about.
 #[derive(Clone, Debug)]
 pub struct Problem {
     pub kind: Kind,
-    /// The keys of the widgets at and above it that a view's nodes made, innermost first.
     pub keys: Vec<String>,
-    /// The toolkit widget it is about.
     pub widget: String,
-    /// That widget's own test id, if it has one.
     pub id: Option<String>,
-    /// What is wrong, in logical pixels.
     pub detail: String,
 }
 
-/// Slack for rounding: layout places edges on fractions of a pixel.
 const EPSILON: f64 = 1.0;
 
 /// How far from a device pixel an edge may stand, in device pixels: what the toolkit's single
 /// precision coordinates carry, far under anything a person could see.
 const PIXEL_SLACK: f64 = 0.01;
 
-/// The tail of a page's "…" test id: the door the host gives a page's title the actions for its
-/// item behind.
+/// The tail of a page's "…" test id: the door the host
+/// gives a page's title the actions for its item
+/// behind.
 const DOOR: &str = "~more";
 
 /// A line's widget: its children side by side, where a door belongs at the trailing edge.
@@ -61,24 +56,22 @@ const GROUP: &str = "group:";
 /// A section's widget: the groups a page is made of, each under its heading.
 const SECTION: &str = "Section";
 
-/// The writing a page holds: the editable text a person writes, which the page's own sections
-/// stand after.
+/// The writing a page holds: the editable text a
+/// person writes, which the page's own sections stand
+/// after.
 const WRITING: &str = "BlockEditor";
 
 /// A rule's widget: the line that says one part of a page ends and the next begins.
 const RULE: &str = "Divider";
 
-/// A page's widget: the readable column a screen's content stands on.
 const PAGE: &str = "Page";
 
 /// The shell's way back, and its sidebar toggle: the two controls a bar navigates with.
 const BACK: &str = "nav-shell-back";
 const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
 
-/// The window shell, whose columns stand as its own children.
 const SHELL: &str = "NavShell";
 
-/// The pane a window keeps for what is not chosen yet.
 const CHOICE_PANE: &str = "EmptyState";
 
 /// The share of the window a pane takes to stand for a column rather than to say one notice: the
@@ -94,9 +87,6 @@ fn has_area(r: Rect) -> bool {
     r.width() > EPSILON && r.height() > EPSILON
 }
 
-/// Whether a block takes room a person reads. A rule says one part of a page ends and the next
-/// begins although it is a single device pixel tall, so it counts wherever a box of the page's
-/// own does.
 fn stands(widget: &str, r: Rect) -> bool {
     if widget == RULE {
         r.width() > EPSILON && r.height() > 0.0
@@ -114,7 +104,6 @@ fn has_words(node: &InspectionNode) -> bool {
         || node.children.iter().any(has_words)
 }
 
-/// What a width class is called in a report.
 fn class_name(class: ui::widget::arrange::WidthClass) -> &'static str {
     match class {
         ui::widget::arrange::WidthClass::Compact => "a phone's screen",
@@ -133,9 +122,8 @@ fn words(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Whether the row's fact `fact` says the day `heading` says: the day's own words, and the time
-/// of day it is due after them where it names one. Words no day reads as are no day heading,
-/// however they read: a card titled a thing says nothing of when anything is due.
+/// Whether the row's fact `fact` says the day `heading` says: the day's own words, and the time of
+/// day it is due after them where it names one.
 fn says_day(fact: &str, heading: &str, days: &[String]) -> bool {
     if !days.iter().any(|day| day.eq_ignore_ascii_case(heading)) {
         return false;
@@ -150,8 +138,8 @@ fn says_day(fact: &str, heading: &str, days: &[String]) -> bool {
                 .is_some_and(|rest| rest.starts_with(' ')))
 }
 
-/// The words each day around today reads as a heading (`Today`, `Saturday`, `Jun 29`,
-/// `Overdue since Jun 29`): what a day heading over rows says.
+/// The words each day around today reads as a heading (`Today`, `Saturday`, `Jun 29`, `Overdue
+/// since Jun 29`): what a day heading over rows says.
 fn day_words() -> Vec<String> {
     let today = ui::clock::today();
     (-400..=400)
@@ -160,8 +148,8 @@ fn day_words() -> Vec<String> {
         .collect()
 }
 
-/// The words a widget reads over what it holds: a card's or a section's title, or the group a
-/// list heads its rows by.
+/// The words a widget reads over what it holds: a card's or
+/// a section's title, or the group a list heads its rows by.
 fn heading_words(node: &InspectionNode) -> Option<String> {
     if matches!(node.widget.as_str(), "Card" | SECTION) {
         return node
@@ -202,17 +190,15 @@ fn words_of(node: &InspectionNode) -> String {
         .unwrap_or_default()
 }
 
-/// Which ways a box lets its content go on past it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Scrolls {
-    /// Content may go on past its bottom (a column's body, a list).
     down: bool,
     /// Content may go on past its sides (a board's lanes in `ui.Scroll(across: true)`).
     across: bool,
 }
 
-/// Which ways `node` scrolls its content: as a scroll view says of its axis, else down for a
-/// widget that scrolls by its kind (a long list).
+/// Which ways `node` scrolls its content: as a scroll view says of its axis, else down for a widget
+/// that scrolls by its kind (a long list).
 fn scrolls(node: &InspectionNode) -> Scrolls {
     use ui::widget::{LayoutInfo, ScrollDirection};
     if let Some(LayoutInfo::Scroll(scroll)) = &node.layout {
@@ -245,8 +231,8 @@ fn scrolls(node: &InspectionNode) -> Scrolls {
     }
 }
 
-/// Whether a node is one row of a list: what a list draws per item, which a surface of its own
-/// (a result, a notice) draws too.
+/// Whether a node is one row of a list: what a list draws per item, which a surface of its own (a
+/// result, a notice) draws too.
 fn is_row(node: &InspectionNode) -> bool {
     matches!(
         node.widget.as_str(),
@@ -257,9 +243,9 @@ fn is_row(node: &InspectionNode) -> bool {
         .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
 }
 
-/// The names of the rows every list and tree a box holds shows, at any depth: what a document
-/// lists. A reference standing on its own — one row naming what a page was made from — is no
-/// row of a list, and names nothing here.
+/// The names of the rows every list and tree a box
+/// holds shows, at any depth: what a document
+/// lists.
 fn held_rows(node: &InspectionNode, out: &mut Vec<String>) {
     let holds_rows = node.semantics.as_ref().is_some_and(|semantics| {
         matches!(semantics.role, ui::a11y::Role::List | ui::a11y::Role::Tree)
@@ -279,8 +265,7 @@ fn held_rows(node: &InspectionNode, out: &mut Vec<String>) {
     }
 }
 
-/// Whether a node is one row of a list of items: what a list draws per item. The rows of a tree
-/// are the branches it opens, not items a window lists beside its content.
+/// Whether a node is one row of a list of items: what a list draws per item.
 fn is_item_row(node: &InspectionNode) -> bool {
     is_row(node) && node.widget != "TreeViewRow"
 }
@@ -300,35 +285,32 @@ fn beside_rows(pane: Rect, node: &InspectionNode, window: Rect) -> bool {
         .any(|child| beside_rows(pane, child, window))
 }
 
-/// Whether a pane takes the room of a column: more of the window than a notice standing in what
-/// it says.
+/// Whether a pane takes the room of a column: more of
+/// the window than a notice standing in what it says.
 fn pane_sized(pane: Rect, window: Rect) -> bool {
     has_area(pane)
         && pane.width() >= window.width() * PANE_WIDTH
         && pane.height() >= window.height() * PANE_HEIGHT
 }
 
-/// Whether a widget hangs part of itself outside the column it is in by design: a document's
-/// block editor hangs its handle gutter in the margin, so its text lines up with the title
-/// above it.
+/// Whether a widget hangs part of itself outside the column it is in by design: a document's block
+/// editor hangs its handle gutter in the margin, so its text lines up with the title above it.
 fn hangs(widget: &str) -> bool {
     matches!(widget, "BlockEditor")
 }
 
-/// Whether a widget floats over the content it belongs to, shown only on hover or focus (a
-/// row's hover toolbar over its trailing top corner): neither overflow nor overlap.
+/// Whether a widget floats over the content it belongs to, shown only on hover or focus (a row's
+/// hover toolbar over its trailing top corner): neither overflow nor overlap.
 fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
 }
 
-/// Whether a widget the window's top layer paints: it stands against the window it floats in,
-/// not the box that opened it, so it neither widens what its owner holds nor reaches past it.
+/// Whether a widget the window's top layer paints: it stands against the window it floats in, not
+/// the box that opened it, so it neither widens what its owner holds nor reaches past it.
 fn floats_in_window(widget: &str) -> bool {
     matches!(widget, "ContextMenu" | "Tooltip" | "Popover")
 }
 
-/// The boxes a widget holds: what it shows inside itself. What the window's top layer paints
-/// over it (a menu its rows opened) is not one of them.
 fn held(node: &InspectionNode) -> Option<Rect> {
     node.children
         .iter()
@@ -338,8 +320,9 @@ fn held(node: &InspectionNode) -> Option<Rect> {
         .reduce(|a, b| a.union(b))
 }
 
-/// The first page a node holds, at any depth through what it lays out: a page given a column of
-/// its own inside another page.
+/// The first page a node holds, at any depth through what it
+/// lays out: a page given a column of its own inside another
+/// page.
 fn held_page(node: &InspectionNode) -> Option<&InspectionNode> {
     node.children
         .iter()
@@ -352,7 +335,6 @@ fn held_page(node: &InspectionNode) -> Option<&InspectionNode> {
         })
 }
 
-/// Whether a node is text itself.
 fn is_text(node: &InspectionNode) -> bool {
     use ui::a11y::Role;
     node.widget == "Text"
@@ -364,9 +346,9 @@ fn is_text(node: &InspectionNode) -> bool {
         })
 }
 
-/// The boxes of the text `node` shows, its own and its descendants', each as much of it as can
-/// be seen: what a scroller or a clip of theirs hides is not read, so it covers nothing, and
-/// what floats over everything (a menu, a tooltip) is no text of the box it opens from.
+/// The boxes of the text `node` shows, its own and its descendants', each as much of it as can be
+/// seen: what a scroller or a clip of theirs hides is not read, so it covers nothing, and what
+/// floats over everything (a menu, a tooltip) is no text of the box it opens from.
 fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     if floats(&node.widget) {
         return;
@@ -386,9 +368,9 @@ fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
-/// Whether some text of `a` and some text of `b` stand on each other, so neither can be read:
-/// two boxes laid over each other on purpose (a dock over the desk under the bar) whose text
-/// stands apart can both be read.
+/// Whether some text of `a` and some text of `b` stand on each other, so
+/// neither can be read: two boxes laid over each other on purpose (a dock
+/// over the desk under the bar) whose text stands apart can both be read.
 fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
     let (mut under, mut over) = (Vec::new(), Vec::new());
     text_boxes(a, clip, &mut under);
@@ -398,14 +380,13 @@ fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
         .any(|u| over.iter().any(|o| has_area(u.intersect(*o))))
 }
 
-/// Whether `node` is a window standing on a desktop, or holds only one: its surface is opaque
-/// and drawn over what it stands on, so what it covers is behind it by design, as on every
-/// desktop, and nothing of the two is read through the other.
+/// Whether `node` is a window standing on a desktop, or holds only one: its surface is opaque and
+/// drawn over what it stands on, so what it covers is behind it by design, as on every desktop, and
+/// nothing of the two is read through the other.
 fn stands_as_window(node: &InspectionNode) -> bool {
     node.widget == "WindowFrame" || matches!(&node.children[..], [only] if stands_as_window(only))
 }
 
-/// Whether a widget lays its children over each other on purpose.
 fn layers(widget: &str) -> bool {
     matches!(
         widget,
@@ -423,9 +404,7 @@ fn layers(widget: &str) -> bool {
 }
 
 /// Whether a widget paints a surface of its own: a ground or a card a person reads as a block,
-/// which shows what it holds. A block with nothing in it says there is something here when
-/// there is not. A well is no such block: it is the room another program's window draws in, so
-/// it holds what this tree cannot see.
+/// which shows what it holds.
 fn paints_surface(widget: &str) -> bool {
     matches!(
         widget,
@@ -456,8 +435,8 @@ const CARD_GAP: f64 = 12.0;
 /// (`rhythm.tight`), the least that tells a title from the block above it.
 const HEADING_LEAD: f64 = 4.0;
 
-/// Whether a node is one control a person presses: its own role says so, or it is a box (a
-/// header action's frame) around exactly one.
+/// Whether a node is one control a person presses: its own role says so, or it is a box (a header
+/// action's frame) around exactly one.
 fn is_control(node: &InspectionNode) -> bool {
     if node
         .semantics
@@ -472,7 +451,6 @@ fn is_control(node: &InspectionNode) -> bool {
     }
 }
 
-/// Roles a person presses, picks or types into.
 fn interactive(role: ui::a11y::Role) -> bool {
     use ui::a11y::Role;
     matches!(
@@ -497,36 +475,25 @@ fn interactive(role: ui::a11y::Role) -> bool {
 
 struct Walk<'a> {
     viewport: Rect,
-    /// Inside a box already found reaching past the window's sides.
     beyond: bool,
     /// Inside a view that scrolls sideways: its content reaches past the window by design.
     across: bool,
-    /// The smallest a target may be, where the face is the target (on touch).
     min_target: Option<f64>,
-    /// Device pixels per logical pixel.
     display_scale: f64,
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
-    /// The page the node stands in: the box that scrolls a window's content under its heading.
     page: Option<Rect>,
-    /// The column of the window's shell the node stands in: the box a shell gives one of its
-    /// parts, beside the others.
+    /// The column of the window's shell the node stands in:
+    /// the box a shell gives one of its parts, beside the
+    /// others.
     column: Option<Rect>,
-    /// The counts the window's column headers draw.
     header_counts: Vec<Count>,
-    /// The counts a window's places draw beside the place chosen in them.
     place_counts: Vec<Count>,
-    /// The titles the window's column headers draw.
     header_titles: Vec<Title>,
-    /// The titles the window's content shows as its own.
     page_titles: Vec<Title>,
-    /// The shell's own navigation controls, where the window shows them.
     navigations: Vec<Navigation>,
-    /// The one group heading a list draws over its rows.
     group_headings: Vec<GroupHeading>,
-    /// The words of the heading the node stands under: a card's, a section's, a list's group.
     heading: Option<String>,
-    /// What each day around today reads as a heading, as a row's day fact reads.
     days: Vec<String>,
     out: &'a mut Vec<Problem>,
 }
@@ -534,20 +501,16 @@ struct Walk<'a> {
 /// Words a window shows as a title: a column header's, or one its content shows as the page's.
 struct Title {
     words: String,
-    /// How many things the title counts beside it, where it counts any.
     count: Option<u32>,
     at: Rect,
-    /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
     widget: String,
     id: Option<String>,
 }
 
-/// One number a window draws: a column header's count, or a place's.
 struct Count {
     number: u32,
     at: Rect,
-    /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
     widget: String,
     id: Option<String>,
@@ -558,7 +521,6 @@ struct GroupHeading {
     words: String,
     count: u32,
     at: Rect,
-    /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
     widget: String,
     id: Option<String>,
@@ -566,20 +528,15 @@ struct GroupHeading {
 
 /// A navigation control the window's bar shows: the way back, or the sidebar's toggle.
 struct Navigation {
-    /// Whether it is the way back rather than the sidebar's toggle.
     back: bool,
     at: Rect,
-    /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
     widget: String,
     id: Option<String>,
 }
 
 /// Every problem of the frame `root`, laid out in `viewport`, where a target needs `min_target`
-/// logical pixels on each side. On a fine pointer the toolkit grows each control's hit area
-/// about its centre to the minimum, so targets are checked where the face itself must be the
-/// target: on touch, where faces grow to it. At `display_scale` device pixels per logical
-/// pixel, every edge must stand on a device pixel.
+/// logical pixels on each side.
 pub fn inspect(
     root: &InspectionNode,
     viewport: (u32, u32),
@@ -634,13 +591,7 @@ pub fn inspect(
 }
 
 /// The room every group heading takes over its first row: one heading band, grown only to a
-/// finger's target where the window is held in the hand, and nothing else. A heading names the
-/// rows under it, so no empty slot, padding or hidden row may stand between its band and the
-/// first of them, and a finger's taller band keeps the heading's line where the width does.
-/// The first band a list that heads its rows draws — the heading over its first run, or the first
-/// row where the list leaves that heading out — stands on the column's content gutter, where a
-/// page's first block stands: one closer to the box over the list hugs it, reading as that box's
-/// last line rather than as a band of the list's own.
+/// finger's target where the window is held in the hand, and nothing else.
 pub fn heading_rooms(
     root: &InspectionNode,
     theme: &ui::Theme,
@@ -691,7 +642,6 @@ fn heading_rooms_in(
         let Some(row) = at.checked_add(1).and_then(|next| headings.get(next)) else {
             continue;
         };
-        // A folded group heads no row: what follows is the next heading.
         let heads_another = row
             .action_target
             .as_deref()
@@ -712,10 +662,10 @@ fn heading_rooms_in(
             });
         }
     }
-    // A list that heads its rows starts its first band on the column's content gutter, where a
-    // page's first block stands: a heading drawn there, or the first row where the list leaves
-    // that heading out. One standing closer hugs the box over the list, reading as that block's
-    // last line rather than as a band of the list's own.
+    // A list that heads its rows starts its first band on the column's
+    // content gutter, where a page's first block stands: a heading
+    // drawn there, or the first row where the list leaves that heading
+    // out.
     if let Some(ui::widget::LayoutInfo::List(list)) = node.layout
         && list.heads_rows
     {
@@ -754,12 +704,10 @@ fn heading_rooms_in(
     }
 }
 
-/// The room a page's body keeps from the page's own gutter: the body of a page whose heading
-/// leads with a control stands one row lead in, under the text that control leads to — the
-/// control's cell and the gap after it. That width is only worth taking where the column it
-/// leaves is a column: a page on a phone's screen starts its body on the gutter, and only the
-/// heading keeps its control beside its title. A page's own sections are read to find it, since
-/// they are what the body stands of the page's own.
+/// The room a page's body keeps from the page's own gutter: the body of a
+/// page whose heading leads with a control stands one row lead in, under
+/// the text that control leads to — the control's cell and the gap after
+/// it.
 pub fn indented_bodies(
     root: &InspectionNode,
     theme: &ui::Theme,
@@ -794,8 +742,9 @@ fn indented_bodies_in(
 ) {
     let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
     let own = rect(node.rect);
-    // The gutter the page's content starts on: what its blocks stand at, the header that leads
-    // them included.
+    // The gutter the page's content starts on: what its
+    // blocks stand at, the header that leads them
+    // included.
     let gutter = if node.widget == PAGE {
         node.children
             .iter()
@@ -806,8 +755,8 @@ fn indented_bodies_in(
     } else {
         page
     };
-    // A block standing one lead in from the box that holds it, that box on the page's own
-    // gutter: what the page's body holds, not a cell a grid places far across the page.
+    // A block standing one lead in from the box that holds it, that box on the page's own gutter:
+    // what the page's body holds, not a cell a grid places far across the page.
     if let (Some(gutter), "Section") = (gutter, node.widget.as_str())
         && (own.x0 - above.x0 - lead).abs() <= 0.5
         && above.x0 <= gutter + 0.5
@@ -836,10 +785,7 @@ fn indented_bodies_in(
 }
 
 impl Walk<'_> {
-    /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
-    /// which ways the box above lets content go on past it. `content`: the box is a scroll view's, holding
-    /// what the view scrolls through rather than being a container of its own. `above`: the widget the node
-    /// stands in, which decides whether it stands on a line.
+    /// `parent`: the nearest box above with geometry.
     fn node(
         &mut self,
         node: &InspectionNode,
@@ -895,18 +841,19 @@ impl Walk<'_> {
         let geometric = has_area(own);
         let scrolls = scrolls(node);
         let scrolling = scrolls.down || scrolls.across;
-        // The box a scroll view holds its content in is that view, not a container of its own:
-        // what it holds goes on past the view as the view allows, and what that content holds in
-        // turn is checked against the content, not the view.
+        // The box a scroll view holds its content in is that view, not a container of its own: what
+        // it holds goes on past the view as the view allows, and what that content holds in turn is
+        // checked against the content, not the view.
         let content = content && geometric && !scrolling;
-        // What of the window is not shown at all needs no checking: a column pushed aside, a
-        // row scrolled out of view.
+        // What of the window is not shown at all needs no
+        // checking: a column pushed aside, a row scrolled out of
+        // view.
         if geometric && !has_area(own.intersect(clip)) {
             return;
         }
         let was_heading = self.heading_over(node);
-        // A page scrolls the window's content under its heading; a list inside it scrolls rows
-        // the page already scrolls.
+        // A page scrolls the window's content under its heading;
+        // a list inside it scrolls rows the page already scrolls.
         let under_page = self.page;
         if node.widget == "Page" {
             self.page = Some(own);
@@ -921,11 +868,6 @@ impl Walk<'_> {
                 self.target(node, keys, own, min);
             }
         }
-        // The box children are measured against, and which ways it scrolls them.
-        // A manual region in a view that pans both ways is the canvas's content placed by code
-        // (its places, put where its camera puts them): what it places pans as the canvas does.
-        // In a view that scrolls one way a region sizes itself, and its children are checked
-        // against it.
         let placed_content = matches!(node.layout, Some(ui::widget::LayoutInfo::Manual(_)))
             && scroller.down
             && scroller.across;
@@ -968,9 +910,9 @@ impl Walk<'_> {
             if floats(&child.widget) {
                 continue;
             }
-            // A menu the window's top layer paints stands against the window, not the box that
-            // opened it: it is measured from the window's edges, and its own edges and targets
-            // are still checked.
+            // A menu the window's top layer paints stands against the window, not the box that opened
+            // it: it is measured from the window's edges, and its own edges and targets are still
+            // checked.
             if floats_in_window(&child.widget) {
                 self.past_window(child, keys);
                 let (beyond, across, off_pixel) = (self.beyond, self.across, self.off_pixel);
@@ -987,10 +929,9 @@ impl Walk<'_> {
                 (self.beyond, self.across, self.off_pixel) = (beyond, across, off_pixel);
                 continue;
             }
-            // A scroll view holds its content in a box of its own, which is the view's own
-            // content rather than a frame around it.
-            // The box a shell gives one of its parts is a column: what stands in it keeps a
-            // gutter from its edges.
+            // A scroll view holds its content in a box of its own,
+            // which is the view's own content rather than a frame
+            // around it.
             let was_column = self.column;
             if node.widget == SHELL && has_area(rect(child.rect)) {
                 self.column = Some(rect(child.rect));
@@ -1023,8 +964,8 @@ impl Walk<'_> {
     }
 
     /// What the box `node` heads what it holds with, where it heads it — a card's or a section's
-    /// title, or the group a list heads its rows by — as the words its children then stand
-    /// under; the heading before it, to give back once they are read.
+    /// title, or the group a list heads its rows by — as the words its children then stand under;
+    /// the heading before it, to give back once they are read.
     fn heading_over(&mut self, node: &InspectionNode) -> Option<String> {
         let was = self.heading.clone();
         if let Some(said) = heading_words(node) {
@@ -1064,8 +1005,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A box with an edge between two device pixels: the outermost such box only, since what
-    /// it holds is placed from its edges.
+    /// A box with an edge between two device pixels: the outermost such box only, since what it
+    /// holds is placed from its edges.
     fn pixels(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         if self.off_pixel {
             return;
@@ -1093,12 +1034,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A row stretched over the column it stands in: the page drawn as one row, its line
-    /// floating at the column's middle where a page around it would hold it. A row is as tall
-    /// as its line wherever it stands — a list's row, a result in a page, a notice's — so a row
-    /// taking half the window's height with its line floating in it is the page itself. A row
-    /// its content fills to the same height holds what it draws (a message in a conversation,
-    /// whose body is long): that is the content's height, not the column's.
+    /// A row stretched over the column it stands in: the page drawn as one row, its line floating
+    /// at the column's middle where a page around it would hold it.
     fn bare_row(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         let window = self.viewport.height();
         if !is_row(node) || window <= 0.0 || own.height() < window * 0.5 {
@@ -1126,9 +1063,9 @@ impl Walk<'_> {
         );
     }
 
-    /// A bar docked at the foot of a column stands in the column the content over it is read
-    /// at, as wide as that column and its leading edge where the column's is: what adds to a
-    /// list is an entry of the list, not a band across the window beside it.
+    /// A bar docked at the foot of a column stands in the column the content over it is read at, as
+    /// wide as that column and its leading edge where the column's is: what adds to a list is an
+    /// entry of the list, not a band across the window beside it.
     fn docked_column(&mut self, node: &InspectionNode, keys: &[String]) {
         if node.widget != "Docked" {
             return;
@@ -1147,10 +1084,9 @@ impl Walk<'_> {
         let Some(column) = held(column_page) else {
             return;
         };
-        // The content stands in the room a scroller keeps for its bar, which the bar at the
-        // foot does not: a column the measure bounds centres in it, half that room to the other
-        // side, and a column as wide as the viewport keeps its whole width of it at the
-        // trailing edge.
+        // The content stands in the room a scroller keeps for its bar, which the bar at the foot
+        // does not: a column the measure bounds centres in it, half that room to the other side,
+        // and a column as wide as the viewport keeps its whole width of it at the trailing edge.
         let lane = (rect(content.rect).width() - rect(column_page.rect).width()).max(0.0);
         if (bar.width() - column.width()).abs() <= lane + 1.0
             && (bar.x0 - column.x0).abs() <= lane / 2.0 + 1.0
@@ -1171,10 +1107,9 @@ impl Walk<'_> {
         );
     }
 
-    /// A page standing inside a page: the readable column is one thing, its gutter counted
-    /// once, so a page given a column of its own inside one counts the gutter twice — what it
-    /// holds stands inset from the rows beside it and narrower than them, as if the column had
-    /// moved for that one row.
+    /// A page standing inside a page: the readable column is one thing, its gutter counted once, so a
+    /// page given a column of its own inside one counts the gutter twice — what it holds stands inset
+    /// from the rows beside it and narrower than them, as if the column had moved for that one row.
     fn page_in_page(&mut self, node: &InspectionNode, keys: &[String]) {
         if node.widget != PAGE {
             return;
@@ -1193,9 +1128,9 @@ impl Walk<'_> {
         );
     }
 
-    /// A page's "…" in a column: the door is the item's actions at the trailing edge of the
-    /// title's line, so one standing in a column takes a line of the document for its glyph
-    /// alone, under the title and out of reach of the page's own composition.
+    /// A page's "…" in a column: the door is the item's actions at the trailing edge of the title's
+    /// line, so one standing in a column takes a line of the document for its glyph alone, under
+    /// the title and out of reach of the page's own composition.
     fn lone_door(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
         let Some(id) = node.test_id.as_deref() else {
             return;
@@ -1211,9 +1146,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A heading with nothing in it: it takes the band a section goes by, and the content it
-    /// stands over starts below an empty strip. A heading is the words its section goes by;
-    /// where nothing heads the content, the content starts at the page's own distance.
+    /// A heading with nothing in it: it takes the band a section goes by, and the content it stands
+    /// over starts below an empty strip.
     fn empty_heading(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         if node.widget != HEADING || has_words(node) {
             return;
@@ -1227,9 +1161,7 @@ impl Walk<'_> {
     }
 
     /// A surface with nothing in it: the block takes the ground and the corners of a card or a
-    /// page, and no words stand in it and nothing of its own is laid out. What a person sees is a
-    /// filled rectangle where a thing should be: a surface is drawn for what it holds, so one
-    /// holding nothing is not drawn at all.
+    /// page, and no words stand in it and nothing of its own is laid out.
     fn empty_surface(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         if !paints_surface(&node.widget) || has_words(node) || held(node).is_some() {
             return;
@@ -1242,10 +1174,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A card or a notice standing closer to what stands over or under it than the gap siblings
-    /// keep: the two read as one block, and a list pressed against a notice says the notice is a
-    /// row of it. The gap is the layout's own — the column's rhythm, not a box a view puts between
-    /// them — so this reads the boxes only, whatever holds them.
+    /// A card or a notice standing closer to what stands over or under it than the gap siblings keep:
+    /// the two read as one block, and a list pressed against a notice says the notice is a row of it.
     fn cramped_card(&mut self, node: &InspectionNode, keys: &[String]) {
         let standing: Vec<&InspectionNode> = node
             .children
@@ -1301,11 +1231,8 @@ impl Walk<'_> {
         }
     }
 
-    /// One item shown twice: a row standing open into its item draws a list of what it holds,
-    /// and its own list shows those again as rows. A list folds the branch of the row standing
-    /// open, so an item stands in one place — as a row of the list, or in the document of the
-    /// row it is under, never both. A reference a page draws on its own names no list, and is
-    /// no second row.
+    /// One item shown twice: a row standing open into its item draws a list of what it holds, and
+    /// its own list shows those again as rows.
     fn shown_twice(&mut self, node: &InspectionNode, keys: &[String]) {
         let rows: Vec<&InspectionNode> =
             node.children.iter().filter(|child| is_row(child)).collect();
@@ -1320,8 +1247,8 @@ impl Walk<'_> {
         };
         let listed: Vec<String> = rows.iter().filter_map(|row| titled(row)).collect();
         for row in &rows {
-            // A row standing open is expanded and holds rows: what a folded branch's row says
-            // of itself says nothing of an item's document.
+            // A row standing open is expanded and holds rows: what a folded branch's row says of
+            // itself says nothing of an item's document.
             let open = row
                 .semantics
                 .as_ref()
@@ -1350,12 +1277,12 @@ impl Walk<'_> {
     }
 
     /// A section's heading standing no further from the block over it than from the content it
-    /// opens: a heading belongs to what follows it, so it keeps clearly more room under the
-    /// block it stands below than over its own content. The gaps are the layout's own, whatever
-    /// boxes hold them.
+    /// opens: a heading belongs to what follows it, so it keeps clearly more room under the block
+    /// it stands below than over its own content.
     fn heading_rhythm(&mut self, node: &InspectionNode, keys: &[String]) {
-        // A page's blocks read at the page's rhythm; a section inside a card or a panel is the
-        // box's to space.
+        // A page's blocks read at the page's rhythm; a
+        // section inside a card or a panel is the box's to
+        // space.
         if self.page.is_none() {
             return;
         }
@@ -1407,12 +1334,11 @@ impl Walk<'_> {
     }
 
     /// A page's own sections standing straight under the writing it holds: a section's heading is
-    /// set like the writing's headings and stands no further from the writing than they stand
-    /// from each other, so what the page says of itself reads as one more line of what was
-    /// written. A rule says where the writing ends.
+    /// set like the writing's headings and stands no further from the writing than they stand from
+    /// each other, so what the page says of itself reads as one more line of what was written.
     fn unruled_body(&mut self, node: &InspectionNode, keys: &[String]) {
-        // A page's writing and its own parts read at the page's rhythm; a section inside a card
-        // is the box's to space.
+        // A page's writing and its own parts read at the page's
+        // rhythm; a section inside a card is the box's to space.
         if self.page.is_none() {
             return;
         }
@@ -1428,8 +1354,8 @@ impl Walk<'_> {
             let Some(next) = index.checked_add(1).and_then(|after| standing.get(after)) else {
                 continue;
             };
-            // What a person reads straight after the writing: the box that follows it, or the
-            // first block in that box.
+            // What a person reads straight after the writing: the
+            // box that follows it, or the first block in that box.
             let opens = if next.widget == SECTION {
                 *next
             } else {
@@ -1464,19 +1390,14 @@ impl Walk<'_> {
         }
     }
 
-    /// A surface with rounded corners standing on the edge of the column it is in, or of the
-    /// window where no column holds it: the edge cuts its curve, and the surface reads as part
-    /// of the frame rather than as a card inside it. A rounded surface keeps a gutter on every
-    /// side — the list's own, where it stands over rows.
+    /// A surface with rounded corners standing on the edge of the column it is in, or of the window
+    /// where no column holds it: the edge cuts its curve, and the surface reads as part of the
+    /// frame rather than as a card inside it.
     fn rounded_on_edge(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         if !rounds_its_corners(&node.widget) {
             return;
         }
         let inside = self.column.unwrap_or(self.viewport);
-        // A card's sides are the layout's to keep clear of the column. Its top and bottom are
-        // where the scroll stands once the page scrolls them: a card the floor or ceiling cuts
-        // there is on its way past, not a card on the frame — and one whose last row happens to
-        // end a pixel from the floor is the same card, not one standing on the edge.
         let scrolls = self.page.is_some();
         let edges = [
             ("left", own.x0 - inside.x0, false),
@@ -1544,7 +1465,6 @@ impl Walk<'_> {
         }
     }
 
-    /// A box past its container's, or past the window's sides.
     fn reach(
         &mut self,
         node: &InspectionNode,
@@ -1595,7 +1515,6 @@ impl Walk<'_> {
         }
     }
 
-    /// A scroll view whose content is wider than it.
     fn sideways(&mut self, node: &InspectionNode, keys: &[String], clip: Rect) {
         let content = held(node);
         if let Some(content) = content
@@ -1614,8 +1533,8 @@ impl Walk<'_> {
         }
     }
 
-    /// A scroll view with no room on the way it scrolls, holding more than that: nothing under
-    /// it can be scrolled into view, so a card or a line the person was promised is gone.
+    /// A scroll view with no room on the way it scrolls, holding more than that: nothing under it
+    /// can be scrolled into view, so a card or a line the person was promised is gone.
     fn lost(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
         let content = held(node);
         let Some(content) = content else {
@@ -1666,7 +1585,6 @@ impl Walk<'_> {
         );
     }
 
-    /// Something to press smaller than the minimum.
     fn target(&mut self, node: &InspectionNode, keys: &[String], own: Rect, min: f64) {
         let Some(semantics) = &node.semantics else {
             return;
@@ -1704,9 +1622,7 @@ impl Walk<'_> {
         self.group_heading(node, keys);
     }
 
-    /// The numbers `node` draws: a column header's count, or the counts of the places a list
-    /// shows. Zero wants no attention, so it is no count at all and may not be drawn; the count
-    /// of the place chosen in a list, drawn beside a column's header, is the same number twice.
+    /// The numbers `node` draws: a column header's count, or the counts of the places a list shows.
     fn counts(&mut self, node: &InspectionNode, keys: &[String], own: Rect, clip: Rect) {
         let Some(access) = node.semantics.as_ref() else {
             return;
@@ -1787,10 +1703,10 @@ impl Walk<'_> {
         }
     }
 
-    /// A column's header row as the shell settled it: the row holds its title against its
-    /// actions by one rule at every width and in every language — the actions give way first,
-    /// a label for its icon and then a place in the row for the menu's door, and the row never
-    /// drops the app's primary action.
+    /// A column's header row as the shell settled it: the row holds its title against its actions by
+    /// one rule at every width and in every language — the actions give way first, a label for its icon
+    /// and then a place in the row for the menu's door, and the row never drops the app's primary
+    /// action.
     fn header_rows(&mut self, node: &InspectionNode, keys: &[String]) {
         let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
@@ -1829,8 +1745,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A column's header count that a place beside it, to its left, draws too: the same number
-    /// twice on one screen.
+    /// A column's header count that a place beside it, to its
+    /// left, draws too: the same number twice on one screen.
     fn repeated_counts(&mut self) {
         let (headers, places) = (
             std::mem::take(&mut self.header_counts),
@@ -1857,8 +1773,9 @@ impl Walk<'_> {
         }
     }
 
-    /// The words `node` shows as a title of its own: the page's own heading, as the toolkit
-    /// names it. What the person reads as the page's name, beside the bar's.
+    /// The words `node` shows as a title of its own:
+    /// the page's own heading, as the toolkit names
+    /// it.
     fn titles(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         let Some(shown) = node
             .page_title
@@ -1878,8 +1795,8 @@ impl Walk<'_> {
         });
     }
 
-    /// The one group heading `node` draws, where it draws exactly one: what it says, how many
-    /// rows it heads, and the list it stands in.
+    /// The one group heading `node` draws, where it draws exactly one: what it says, how many rows
+    /// it heads, and the list it stands in.
     fn group_heading(&mut self, node: &InspectionNode, keys: &[String]) {
         let Some(access) = node.semantics.as_ref() else {
             return;
@@ -1897,9 +1814,7 @@ impl Walk<'_> {
             .filter(|(_, child)| heads_group(child))
             .map(|(at, _)| at)
             .collect();
-        // Two groups tell the runs apart, and a heading says something the title does not. Where
-        // the list shows one band, it may head part of a longer list: the rows it stands over must
-        // be the rows the list shows, so the number it reads is the number of them left to do.
+        // Two groups tell the runs apart, and a heading says something the title does not.
         let [at] = headings[..] else {
             return;
         };
@@ -1967,8 +1882,8 @@ impl Walk<'_> {
         }
     }
 
-    /// A bar naming a page while the page shows those same words as its own title: the bar
-    /// keeps only the way back and the page's actions until the title scrolls out of the page.
+    /// A bar naming a page while the page shows those same words as its own title: the bar keeps
+    /// only the way back and the page's actions until the title scrolls out of the page.
     fn repeated_titles(&mut self) {
         let (headers, pages) = (
             std::mem::take(&mut self.header_titles),
@@ -1996,8 +1911,9 @@ impl Walk<'_> {
         }
     }
 
-    /// The shell's own navigation controls, where the window shows them: its way back, and its
-    /// sidebar toggle.
+    /// The shell's own navigation controls, where the
+    /// window shows them: its way back, and its sidebar
+    /// toggle.
     fn navigation(&mut self, node: &InspectionNode, keys: &[String], shown: Rect) {
         let Some(id) = node.test_id.as_deref() else {
             return;
@@ -2019,9 +1935,9 @@ impl Walk<'_> {
         });
     }
 
-    /// A back control standing beside the sidebar toggle, in the same bar row: the window's
-    /// leading corner offers two ways to navigate, where a screen that went somewhere deeper
-    /// has one, its way back at the leading edge.
+    /// A back control standing beside the sidebar toggle, in the same bar row: the window's leading
+    /// corner offers two ways to navigate, where a screen that went somewhere deeper has one, its
+    /// way back at the leading edge.
     fn double_navigation(&mut self) {
         let controls = std::mem::take(&mut self.navigations);
         for back in controls.iter().filter(|control| control.back) {
@@ -2047,11 +1963,8 @@ impl Walk<'_> {
         }
     }
 
-    /// A pane that only says nothing is chosen, standing beside the list the window chooses
-    /// from: the pane takes the room the list would list in, and there is nothing in it to read.
-    /// With nothing chosen the list lists for the whole window, and the pane appears when a row
-    /// is chosen. A window whose list is its sidebar (a chat's channels over the conversation's
-    /// place) keeps its pane: the rows of a sidebar's tree are no items to list beside it.
+    /// A pane that only says nothing is chosen, standing beside the list the window chooses from:
+    /// the pane takes the room the list would list in, and there is nothing in it to read.
     fn placeholder_panes(&mut self, node: &InspectionNode, keys: &mut Vec<String>) {
         if node.widget == SHELL {
             let mut chosen = None;
@@ -2112,11 +2025,7 @@ impl Walk<'_> {
         }
     }
 
-    /// Children of a box that lays them out side by side or in turn, covering each other. In a
-    /// box that layers them on purpose (a badge over an image), only text over text: neither
-    /// can be read. In a box that places its own parts over each other (a window shell: its
-    /// columns, and the buttons of its header row in the same plane), only one control over
-    /// another: a press lands on one of them, and their faces cover each other.
+    /// Children of a box that lays them out side by side or in turn, covering each other.
     fn overlaps(&mut self, node: &InspectionNode, keys: &[String], clip: Rect) {
         let layered = layers(&node.widget);
         let places = layered && node.widget != "Layers";

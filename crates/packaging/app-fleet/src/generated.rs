@@ -1100,7 +1100,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "lichtbilder",
             "fotobibliothek",
         ],
-        resource_types: &[],
+        resource_types: &[("photos.library", "Library")],
         actions: &[],
     },
     FleetApp {

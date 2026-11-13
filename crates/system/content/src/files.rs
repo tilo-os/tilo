@@ -44,7 +44,6 @@ impl FilesBackend {
         VPath::new(&hash.to_ascii_lowercase()).map_err(|_| ContentError::InvalidHash(hash.into()))
     }
 
-    /// Every stored address and its size.
     fn entries(&self, dir: &Dir) -> Result<Vec<(String, u64)>, ContentError> {
         let listed = match blocking::list(dir, &VPath::root()) {
             Ok(listed) => listed,
@@ -124,6 +123,10 @@ impl ContentBackend for FilesBackend {
         collected.hashes.sort();
         Ok(collected)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
 }
 
 #[cfg(test)]
@@ -182,7 +185,6 @@ mod tests {
         let page = ContentStore::new(FilesBackend::new(location(), limits));
         let upload = page.put(b"a photo an unsent draft names").unwrap();
 
-        // The page reloaded: the same app files, a new handle.
         let reopened = ContentStore::new(FilesBackend::new(location(), limits));
         assert_eq!(
             reopened.read(&upload).as_deref(),
@@ -190,7 +192,6 @@ mod tests {
             "the upload outlives the page that made it"
         );
 
-        // A record names it: it stays. Nothing names it any more: it may go.
         let named = reopened
             .collect_unreferenced(&BTreeSet::from([upload.clone()]))
             .expect("a files store collects");

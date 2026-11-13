@@ -1,18 +1,6 @@
-//! Thumbnailing a batch of images as a content transform: the same bytes in
-//! give the same PNGs out, whichever of a person's devices runs it.
-//!
-//! That property is what makes the batch offloadable. A device that would
-//! rather not decode a few hundred camera originals itself hands the batch to
-//! another of its person's devices, which runs [`ENTRYPOINT`] of the signed
-//! [`PACKAGE`] under its launcher sandbox ([`run_compute_request`], the
-//! package side of a compute job), and gets back exactly what
-//! [`thumbnail_batch`] would have produced locally.
-//!
-//! A batch is per input: an input that is not a decodable image makes no
-//! thumbnail of its own ([`Undecodable`]) while every other input still does,
-//! locally and on a worker alike. The failure names the picture by its
-//! content digest, never by a position in a deduplicated vector, so a caller
-//! can tell the person which picture to look at.
+//! Thumbnailing a batch of images as a content transform: the same bytes in give the
+//! same PNGs out, whichever of a person's devices runs it, which is what makes the batch
+//! offloadable.
 
 use std::fmt;
 use std::fs;
@@ -21,19 +9,13 @@ use std::path::Path;
 
 use crate::generate::{encode_png, image_thumb};
 
-/// The longest edge, in pixels, of every thumbnail in a batch.
 pub const BATCH_EDGE: u32 = 256;
-/// The signed package that carries [`ENTRYPOINT`].
 pub const PACKAGE: &str = "so.tilo.thumbnails";
-/// The package's catalogue command that thumbnails a batch.
 pub const ENTRYPOINT: &str = "thumbnail-batch";
-/// The exit status of [`ENTRYPOINT`] for a malformed or unreadable request.
 pub const EXIT_REQUEST: u8 = 2;
 
-/// Why a batch could not run at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchError {
-    /// The compute request could not be read or the outputs not written.
     Request(String),
 }
 
@@ -48,18 +30,14 @@ impl fmt::Display for BatchError {
 impl std::error::Error for BatchError {}
 
 impl BatchError {
-    /// The exit status [`ENTRYPOINT`] reports this failure with.
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         EXIT_REQUEST
     }
 }
 
-/// One input that made no thumbnail: the content's own digest, which is how
-/// the rest of Tilo names the picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Undecodable {
-    /// The BLAKE3 digest of the input bytes.
     pub digest: [u8; 32],
 }
 
@@ -125,8 +103,6 @@ pub fn thumbnail_batch(inputs: &[Vec<u8>]) -> Vec<Result<Vec<u8>, Undecodable>> 
         .collect()
 }
 
-/// The part of a staged compute request the entrypoint reads: its inputs,
-/// by hex digest, in the order the requester listed them.
 #[derive(serde::Deserialize)]
 struct StagedRequest {
     inputs: Vec<String>,
@@ -139,19 +115,6 @@ pub fn output_name(index: usize) -> String {
     format!("{index:05}.png")
 }
 
-/// Run one compute job's batch: read the staged request at `request` (its
-/// inputs are staged beside it, under `inputs/`, named by hex digest), and
-/// write the thumbnail of each distinct input, in the order the request
-/// lists them, into `outputs` as [`output_name`]. An input listed twice is
-/// one input, as the worker stages it once.
-///
-/// Returns the inputs that made no thumbnail, named by digest; the rest are
-/// written. The job succeeds with those outputs, as the local batch does.
-///
-/// # Errors
-///
-/// [`BatchError::Request`] when the request or an input cannot be read or an
-/// output cannot be written.
 pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<Vec<Undecodable>, BatchError> {
     let request_error = |error: io::Error| BatchError::Request(error.to_string());
     let staged: StagedRequest = serde_json::from_slice(&fs::read(request).map_err(request_error)?)
@@ -182,13 +145,6 @@ pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<Vec<Undecod
     Ok(failed)
 }
 
-/// [`ENTRYPOINT`]'s command line: `--tilo-compute-request <request.json>
-/// --tilo-compute-output <dir>`, as the compute worker launches it.
-///
-/// # Errors
-///
-/// [`BatchError::Request`] for any other command line, or what
-/// [`run_compute_request`] reports.
 pub fn run_from_args(
     args: impl IntoIterator<Item = String>,
 ) -> Result<Vec<Undecodable>, BatchError> {
@@ -280,7 +236,6 @@ mod tests {
         for (digest, bytes) in digests.iter().zip(&inputs) {
             fs::write(io_root.join("inputs").join(digest), bytes).unwrap();
         }
-        // Listed twice, staged once: one output.
         let listed = [digests[0].clone(), digests[1].clone(), digests[0].clone()];
         fs::write(
             io_root.join("request.json"),

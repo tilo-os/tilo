@@ -33,18 +33,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 
-/// What the window's History control shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryControl {
-    /// History is closed; the control opens it.
     Closed,
-    /// History is showing; the control reads as on and closes it.
     Open,
 }
 
-/// What the window says about its changes in the header row: quiet text
-/// ("Working offline…"), and the one thing the person can do about it when
-/// there is one (Retry), as a button beside it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowStatus {
     pub text: String,
@@ -52,7 +46,6 @@ pub struct WindowStatus {
 }
 
 impl WindowStatus {
-    /// A status that only says something.
     #[must_use]
     pub fn says(text: impl Into<String>) -> Self {
         Self {
@@ -61,7 +54,6 @@ impl WindowStatus {
         }
     }
 
-    /// The status, with a button beside it.
     #[must_use]
     pub fn with_action(mut self, action: StatusAction) -> Self {
         self.action = Some(action);
@@ -69,9 +61,6 @@ impl WindowStatus {
     }
 }
 
-/// The button beside a window's status: its label and the window's own
-/// action it runs, the same one the palette, menus and assistive technology
-/// reach.
 #[derive(Clone)]
 pub struct StatusAction {
     pub label: String,
@@ -79,7 +68,6 @@ pub struct StatusAction {
 }
 
 impl StatusAction {
-    /// The button, from the design system's components.
     #[must_use]
     pub fn button(&self) -> super::Button {
         super::Button::new(STATUS_ACTION_ID, &self.label)
@@ -88,7 +76,6 @@ impl StatusAction {
     }
 }
 
-/// The test id of the button beside a window's status.
 pub const STATUS_ACTION_ID: &str = "window-status-action";
 
 impl PartialEq for StatusAction {
@@ -118,49 +105,22 @@ impl HistoryControl {
     }
 }
 
-/// An app that runs a History of its own inside a desktop window (an app
-/// shown in a region of the host's scene). The window presents its History
-/// control in the tab row, as one more control of the window, so the app
-/// draws no History band of its own.
 pub trait WindowHistory {
-    /// The window's tab row shows (`true`) and presents the control, or is
-    /// hidden, so the app's header row may hold it instead.
     fn set_window_presents_history(&mut self, tab_presents: bool);
 
-    /// The control to show for this app's History, or `None` where it has
-    /// no History to open.
     fn window_history_control(&self) -> Option<HistoryControl>;
 
-    /// The window's History control was pressed: run it on this app's
-    /// History door, as the History shortcut does.
-    ///
-    /// # Errors
-    ///
-    /// The app has no History, or its door refused the operation.
     fn invoke_window_history_control(&mut self, control: HistoryControl) -> Result<(), String>;
 }
 
-/// A widget that draws the window's header row.
 pub trait WindowHeader {
-    /// Show the window's History control at the trailing edge of the row,
-    /// or none (`None`: the app has no History, or the host's own chrome
-    /// presents it).
     fn set_history_control(&mut self, control: Option<HistoryControl>);
 
-    /// The window's bar presents search for the window, in place
-    /// ([`crate::widget::WindowSearch`]), or stops (`false`). While it does,
-    /// the row drops its own button that opens the app's search
-    /// ([`crate::search::APP_SEARCH_BUTTON_ID`]): one search control per
-    /// window. Returns whether the row took it.
     fn set_window_presents_search(&mut self, presents: bool) -> bool {
         let _ = presents;
         false
     }
 
-    /// Show the window's sync status ("Working offline…") as quiet text in
-    /// the row, before its trailing controls, with its button (Retry) beside
-    /// it when it has one, or none. Returns whether the row shows it; a row
-    /// that does not leaves the host to present it.
     fn set_sync_status(&mut self, status: Option<&WindowStatus>) -> bool {
         let _ = status;
         false
@@ -177,45 +137,29 @@ pub trait WindowHeader {
         false
     }
 
-    /// Where the row stands and where the window's controls go, after
-    /// layout, while it holds the window's bar.
     fn window_bar_slot(&self) -> Option<WindowBarSlot> {
         None
     }
 
-    /// The height of the header row this widget draws at the window's top, while it draws one
-    /// of its own: `0.0` draws none. A window shows one bar, so a row under the window's bar is
-    /// a second one.
     fn header_row_height(&self) -> f64 {
         0.0
     }
 
-    /// Where each column the window shows stands and the header row it draws at that column's
-    /// top, after layout. A column's header — its title and the buttons that act on what it
-    /// shows — is the app's own and stands at every time, at the top of its column; the window's
-    /// bar holds only what is the window's.
     fn column_frames(&self) -> Vec<ColumnFrame> {
         Vec::new()
     }
 }
 
-/// Where one column of a window stands, and the header row it draws at that column's top.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColumnFrame {
-    /// Which column: `sidebar`, `overview`, `content` or `inspector`.
     pub key: &'static str,
-    /// The column: docked beside the others, a floating drawer's panel, or a pushed screen.
     pub column: Rect,
-    /// The header row at the column's top: zero where the column draws none.
     pub header: Rect,
-    /// The column reads as a rail of icons, which say what it holds without a row of words.
     pub rail: bool,
 }
 
-/// The window's bar, as the host offers it to a header row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowBar {
-    /// Room the window's controls take at the row's trailing end.
     pub controls_width: f64,
     /// The system already lists the window's actions where the person reaches
     /// them (the desktop bar's window menu, for the window in front): the row's
@@ -226,19 +170,12 @@ pub struct WindowBar {
     pub lists_actions: bool,
 }
 
-/// A header row holding the window's bar, after layout.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowBarSlot {
-    /// The bar: the header row across the window's top edge, where it stands
-    /// when shown (also while hidden, so the host knows where it will be).
     pub row: Rect,
-    /// Where the window's controls go: the trailing end of the row,
-    /// `controls_width` wide and the row's height.
     pub controls: Rect,
 }
 
-/// Offer the window's bar to the first header row in `root`'s tree. Returns
-/// whether a row took it.
 pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_window_bar(bar);
@@ -267,22 +204,12 @@ pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarSlot> {
         .filter(|slot| slot.row.height() > 0.0)
 }
 
-/// The window's own furniture where it stands in a header row that holds the bar: the window's
-/// close/restore controls at the row's trailing end, the window's search before them, and its
-/// new-tab door. A row keeps [`merged_row_width`] at its trailing end for them, and the window
-/// paints them over its app's drawing and takes their presses — a window shows the same functions
-/// whether its row stands as the bar's slots or holds the bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RowFurniture {
-    /// The row the app draws at the window's top.
     pub row: Rect,
-    /// The end of that row the app kept for the window ([`WindowBarSlot::controls`]).
     pub trailing: Rect,
-    /// The window's close/restore controls, in a pill of the window's own.
     pub controls: crate::widget::window_controls::WindowControls,
-    /// Where the window's search control stands, and where its open search reaches back to.
     pub search: Rect,
-    /// The new-tab door.
     pub new_tab: Rect,
 }
 
@@ -330,8 +257,6 @@ impl RowFurniture {
         }
     }
 
-    /// Place `search`, the window's search, where the furniture shows it at rest: its open search
-    /// then reaches back over the row the person's app draws.
     pub(crate) fn place_search(&self, search: &mut crate::widget::WindowSearch) {
         if self.search.area() > 0.0 {
             search.place_trailing(self.search, self.row.x0, self.row.x0);
@@ -340,7 +265,6 @@ impl RowFurniture {
         }
     }
 
-    /// Move the furniture `dx` across, as the window does while a retained strip draws it.
     pub(crate) fn shift(&mut self, dx: f64) {
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.row = self.row + shift;
@@ -353,9 +277,6 @@ impl RowFurniture {
         self.new_tab = self.new_tab + shift;
     }
 
-    /// Paint the furniture over the app's own drawing: the window's controls and its new-tab door
-    /// in `state`, and the window's search on the row's ground. The control the keyboard is on
-    /// wears the toolkit's focus ring, so the row says where typing would go.
     pub(crate) fn paint(
         &self,
         scene: &mut Scene,
@@ -382,8 +303,6 @@ impl RowFurniture {
         if let Some(control) = state.keyboard {
             let rect = control.rect(self);
             if rect.area() > 0.0 {
-                // The window's own controls stand on a pill, whose faces are round; the new-tab
-                // door is one control beside them, rounded as the toolkit rounds a control.
                 let radius = match control {
                     RowControl::NewTab => f64::from(theme.tokens.radii.control),
                     RowControl::Maximize | RowControl::Close => rect.height() / 2.0,
@@ -394,34 +313,24 @@ impl RowFurniture {
     }
 }
 
-/// What the pointer leaves of the window's furniture in a held row: which of its controls it is
-/// on or pressing, whether it rests on the new-tab door, and which control the keyboard is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RowFurnitureState {
     pub controls: crate::widget::window_controls::ControlsState,
     pub new_tab_hovered: bool,
-    /// The control of the furniture with the keyboard.
     pub keyboard: Option<RowControl>,
 }
 
-/// One control of the window's furniture in a header row that holds the bar: the window's new-tab
-/// door, its maximize (or restore) and its close, in the bar's order. Each is a widget of the
-/// window where the row draws it, so the keyboard reaches it in the window's Tab order after the
-/// row's own controls, and a screen reader reads it there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowControl {
-    /// The window's own door: the shell decides what a new place holds.
     NewTab,
     Maximize,
     Close,
 }
 
-/// The furniture in the order a person reaches it, as the bar's own controls.
 pub(crate) const ROW_CONTROLS: [RowControl; 3] =
     [RowControl::NewTab, RowControl::Maximize, RowControl::Close];
 
 impl RowControl {
-    /// Where the row draws this control, or nothing where it had no room for it.
     pub(crate) fn rect(self, furniture: &RowFurniture) -> Rect {
         match self {
             RowControl::NewTab => furniture.new_tab,
@@ -430,7 +339,6 @@ impl RowControl {
         }
     }
 
-    /// The target assistive technology and automation act on it by: the bar's own.
     pub(crate) fn target(self) -> &'static str {
         match self {
             RowControl::NewTab => crate::widget::tabs::NEW_TAB_TARGET,
@@ -439,8 +347,6 @@ impl RowControl {
         }
     }
 
-    /// What a person reads for it, named as the bar names the same function. `resize` says which
-    /// way the maximize control acts.
     pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
         use crate::widget::window_controls::WindowControl;
         match self {
@@ -496,20 +402,14 @@ pub fn merged_row_holds_search(width: f64) -> bool {
     width >= f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
 }
 
-/// A side wider than any window: the furniture is measured in one, so nothing it holds is cut.
 const WIDE_ENOUGH: f64 = 10_000.0;
 
-/// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
-/// its own content's header row as it draws.
 fn is_window_frame(widget: &dyn Widget) -> bool {
     widget
         .as_any()
         .is_some_and(|any| any.is::<crate::widget::WindowFrame>())
 }
 
-/// The header row the window draws of its own: the first one down the root's tree, stopping at a
-/// window frame, whose content offers the bar to a row of its own. `None` for a root that draws
-/// none (a desk of windows, a page).
 pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);
@@ -520,7 +420,6 @@ pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     root.children().into_iter().find_map(root_header_row)
 }
 
-/// Offer the window's bar to the row [`root_header_row`] names. Returns whether a row took it.
 pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
     if let Some(row) = super::capability::capability_mut::<dyn WindowHeader>(root) {
         return row.set_window_bar(bar);
@@ -533,7 +432,6 @@ pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar
         .any(|child| offer_root_header_bar(child, bar))
 }
 
-/// The slot of the first header row in `root`'s tree that holds the bar.
 pub(crate) fn window_bar_slot(root: &dyn Widget) -> Option<WindowBarSlot> {
     if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
         return header.window_bar_slot();
@@ -541,8 +439,6 @@ pub(crate) fn window_bar_slot(root: &dyn Widget) -> Option<WindowBarSlot> {
     root.children().into_iter().find_map(window_bar_slot)
 }
 
-/// Hand the window's sync status to the first header row in `root`'s tree.
-/// Returns whether a row shows it.
 pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_sync_status(status);
@@ -552,11 +448,6 @@ pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowSta
         .any(|child| offer_sync_status(child, status))
 }
 
-/// The window's sync status in a header row: quiet text, right-aligned
-/// against the row's trailing controls, announced politely when it changes.
-/// A header row keeps one, paints it into the room its own layout leaves
-/// ([`Self::paint`]) and lists it among its children for assistive
-/// technology.
 #[derive(Debug, Default)]
 #[crate::component::not_a_component(
     shell,
@@ -565,12 +456,10 @@ pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowSta
 pub struct HeaderStatus {
     text: Option<String>,
     rect: Rect,
-    /// Its paint changed since the last frame drew it.
     dirty: bool,
 }
 
 impl HeaderStatus {
-    /// Set what the status says. Returns whether it changed.
     pub fn set(&mut self, text: Option<&str>) -> bool {
         let text = text.map(str::trim).filter(|text| !text.is_empty());
         if self.text.as_deref() == text {
@@ -589,9 +478,6 @@ impl HeaderStatus {
         self.text.as_deref()
     }
 
-    /// Paint the status right-aligned in `x0..x1` of `row`, vertically
-    /// centred, elided to fit. Paints nothing when the span is too narrow
-    /// to say anything legible.
     pub fn paint(
         &mut self,
         scene: &mut Scene,
@@ -671,8 +557,6 @@ impl Widget for HeaderStatus {
     }
 }
 
-/// Hand `control` to the first header row in `root`'s tree. Returns whether
-/// the app has one; the host then draws no History control of its own.
 pub(crate) fn offer_history_control(
     root: &mut dyn Widget,
     control: Option<HistoryControl>,
@@ -686,9 +570,6 @@ pub(crate) fn offer_history_control(
         .any(|child| offer_history_control(child, control))
 }
 
-/// Tell the first header row in `root`'s tree whether the window's bar
-/// presents search ([`WindowHeader::set_window_presents_search`]). Returns
-/// whether a row took it.
 pub(crate) fn offer_window_search(root: &mut dyn Widget, presents: bool) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_window_presents_search(presents);
@@ -698,16 +579,6 @@ pub(crate) fn offer_window_search(root: &mut dyn Widget, presents: bool) -> bool
         .any(|child| offer_window_search(child, presents))
 }
 
-/// The window's History control in a painted header row: what the host
-/// offered, the pointer's hover over it, and a press waiting to go through
-/// the History door. Modelled on [`crate::search::SearchOpener`]: return
-/// [`Self::take`] from `ActionControls::take_control_invocation`.
-///
-/// A painted header row paints the control ([`Self::paint`]) and routes its
-/// pointer and its semantic node through the opener. A header row that
-/// hosts retained controls (a bar of library buttons) hosts
-/// [`Self::button_mut`] instead: the same History button `NavShell` shows,
-/// bound to the History door, at [`HISTORY_CONTROL_ID`].
 #[derive(Default)]
 pub struct HistoryOpener {
     control: Option<HistoryControl>,
@@ -716,8 +587,6 @@ pub struct HistoryOpener {
     pressed: bool,
     pointer: Option<Point>,
     button: Option<super::Button>,
-    /// Buttons replaced since the host last rebuilt its tree: kept alive
-    /// until then, since the tree may still point at them.
     retired: Vec<super::Button>,
     rebuilt: bool,
 }
@@ -732,11 +601,8 @@ impl std::fmt::Debug for HistoryOpener {
     }
 }
 
-/// The id of the window's History control in a painted header row: its
-/// test id, and the action target of its semantic node.
 pub const HISTORY_CONTROL_ID: &str = "window-history";
 
-/// The accessibility target of the control's node.
 const HISTORY_TARGET: &str = HISTORY_CONTROL_ID;
 
 impl HistoryOpener {
@@ -745,7 +611,6 @@ impl HistoryOpener {
         Self::default()
     }
 
-    /// What the host offered (call from [`WindowHeader::set_history_control`]).
     pub fn set_control(&mut self, control: Option<HistoryControl>) {
         if self.control != control {
             let next = control.map(|control| {
@@ -775,37 +640,30 @@ impl HistoryOpener {
         self.button.as_mut()
     }
 
-    /// Whether the button was replaced since the last call: the host
-    /// rebuilds its tree. Call [`Self::tree_rebuilt`] once it has.
     pub fn take_rebuilt(&mut self) -> bool {
         std::mem::take(&mut self.rebuilt)
     }
 
-    /// The host rebuilt its tree: replaced buttons may now be dropped.
     pub fn tree_rebuilt(&mut self) {
         self.retired.clear();
     }
 
-    /// The control to show, or `None` when the row has no History control.
     #[must_use]
     pub fn control(&self) -> Option<HistoryControl> {
         self.control
     }
 
-    /// Whether the row shows the control.
     #[must_use]
     pub fn is_shown(&self) -> bool {
         self.control.is_some()
     }
 
-    /// Press the control: open History, or close it while it shows.
     pub fn activate(&mut self) {
         if let Some(control) = self.control {
             self.pending = Some(control);
         }
     }
 
-    /// The press as an invocation of the History door, once.
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         let control = self.pending.take()?;
         crate::history_mode::door::history_control_binding(control)
@@ -823,11 +681,6 @@ impl HistoryOpener {
         self.hovered
     }
 
-    /// Route `event` to the control at `rect` (its
-    /// [`HeaderRowFace::history_rect`](crate::chrome::HeaderRowFace::history_rect)).
-    /// Returns whether the control took it (a press on it, and the release
-    /// that follows; pointer motion only updates the hover); a release over
-    /// the control after a press on it queues the press.
     pub fn handle_event(&mut self, event: &WindowEvent, rect: Rect, scale_factor: f64) -> bool {
         if self.control.is_none() || rect.width() <= 0.0 {
             self.hovered = false;
@@ -876,7 +729,6 @@ impl HistoryOpener {
         }
     }
 
-    /// Paint the control at `rect`.
     pub fn paint(
         &self,
         scene: &mut Scene,
@@ -898,9 +750,6 @@ impl HistoryOpener {
         }
     }
 
-    /// The control's node for the window's semantic tree: a toggle button
-    /// named "History", pressed while History shows. Route an `Activate` on
-    /// it back with [`Self::perform_action`].
     #[must_use]
     pub fn accessibility(&self, rect: Rect) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -918,8 +767,6 @@ impl HistoryOpener {
         })
     }
 
-    /// Whether `key_path` (from `Widget::perform_action`) addresses the
-    /// node [`Self::accessibility`] published.
     #[must_use]
     pub fn is_target(key_path: &[u64]) -> bool {
         key_path
@@ -927,8 +774,6 @@ impl HistoryOpener {
             .is_some_and(|key| *key == crate::a11y::hash_key(&HISTORY_TARGET))
     }
 
-    /// Activate the control from its node addressed by its action target
-    /// (`Widget::perform_semantic_action`); returns whether it did.
     pub fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
         if target == HISTORY_TARGET && matches!(action, crate::a11y::Action::Activate) {
             self.activate();
@@ -937,7 +782,6 @@ impl HistoryOpener {
         false
     }
 
-    /// Activate the control from its node; returns whether it did.
     pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
         if Self::is_target(key_path) && matches!(action, crate::a11y::Action::Activate) {
             self.activate();

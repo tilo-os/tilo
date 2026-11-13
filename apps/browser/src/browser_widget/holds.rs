@@ -1,70 +1,46 @@
 //! What this window holds before the page sends it.
 //!
-//! A window an agent operates holds every departure: a form submission
-//! however it was triggered, a navigation or request with a method of its
-//! own, and a download. The page stays as it was filled — nothing leaves —
-//! until the person allows that one request:
+//! A window an agent operates holds every departure: a form submission however it was
+//! triggered, a navigation or request with a method of its own, and a download. The
+//! page stays as it was filled until the person allows that one request.
 //!
-//! - The page action whose run reached the departure answers that it needs
-//!   the person, naming what is held ([`HeldRequest::describing`]). Their
-//!   allow runs the same invocation again, which releases the held request
-//!   instead of running the page action a second time; denied or unanswered,
-//!   the window drops it and the page stays.
-//! - A departure nothing called for (a page posting on its own) is a held
-//!   request the window publishes: it is on `browser.page` for anyone who may
-//!   ask the page, and answered there with `send-held-request` or
-//!   `keep-held-request`.
+//! A page action whose run reached the departure answers that it needs the person; their
+//! allow runs the same invocation again, which releases the hold instead of running the
+//! action twice. A departure nothing called for is published on `browser.page` and
+//! answered there. A hold nobody answers is dropped after [`HELD_WAIT`].
 //!
-//! A hold nobody answers is dropped after [`HELD_WAIT`]: the page is left as
-//! it was, and the window is never left waiting on a person who did not come.
+//! The window asks the person about [`MAX_HELD`] at once: one beyond them is turned away at
+//! once and the action whose run reached it is told why. Turning it away, and not making it
+//! wait its turn, keeps what is paused bounded for a page that posts in a loop and tells the
+//! caller the truth while it can still act on it. The engine ends a hold no app answers at a
+//! deadline of its own, a little after this window's.
 //!
-//! Every departure the engine reports is answered. The window asks the person
-//! about [`MAX_HELD`] at once and no more: one beyond them is turned away at
-//! once, the engine drops it, and the action whose run reached it is told why.
-//! Refusing it at once, and not making it wait its turn behind the others,
-//! keeps what is paused bounded for a page that posts in a loop, never has a
-//! request wait on questions the person has not even seen, and tells the
-//! caller the truth while it can still act on it. The engine ends a hold no
-//! app answers at a deadline of its own, a little after this window's.
+//! A hold also ends with nobody's answer: the engine drops it when the tab shows another
+//! page, and at a deadline. The action whose run reached a hold that ended without leaving
+//! is remembered: an allow that comes after all is told that nothing left ([`HOLD_ENDED`]),
+//! and the action is not run a second time on whatever page the tab shows by then.
 //!
-//! A hold also ends with nobody's answer: the engine drops it when the tab
-//! shows another page, since what was held has no page to leave from, and at
-//! a deadline. Whoever waited is answered. A published hold leaves the page.
-//! The action whose run reached a hold that ended without leaving, so or
-//! because somebody kept the page as it is, is remembered: an allow that
-//! comes after all is told that nothing left ([`HOLD_ENDED`]), and the
-//! action is not run a second time on whatever page the tab shows by then.
+//! What the page publishes is what waits: a hold somebody answered is offered for an answer
+//! no longer, though the window keeps it until the engine says the request is over.
 //!
-//! What the page publishes is what waits. A hold somebody answered, to let it
-//! leave or to keep the page as it is, is offered for an answer no longer from
-//! that moment, though the window keeps it until the engine says the request
-//! is over.
+//! The engine counts the requests it holds and the downloads its pages offer apart, so a
+//! request and a download may carry one number. A hold is named here by which of the two it
+//! is with that number ([`HeldKey`]), and what the page publishes for an answer is a number
+//! of this window's own, one per hold.
 //!
-//! The engine counts the requests it holds and the downloads its pages offer
-//! apart, so a request and a download may carry one number. A hold is named
-//! here by which of the two it is with that number ([`HeldKey`]), and what the
-//! page publishes for an answer is a number of this window's own, one per
-//! hold: an answer or an ending meant for one hold never reaches another.
+//! A published hold states what leaves beside its number ([`Held::facts`]) and the filled
+//! page as a picture kept in the workspace's content store ([`Held::picture`]). The picture
+//! is kept only for a hold that waits.
 //!
-//! A published hold states what leaves beside its number: the page it leaves
-//! from, what the page does, the method and where it goes ([`Held::facts`]),
-//! and the filled page as a picture kept in the workspace's content store
-//! ([`Held::picture`]), so the person a host asks sees what leaves and not
-//! only a name for it. The picture is kept only for a hold that waits: one
-//! turned away as one too many is asked about by nobody.
+//! The tab's record says all of it ([`crate::page_record`]). The engine sets down that a
+//! departure was held, under the actor whose action reached it, and how it ended. It cannot
+//! know who answered, so each answer the window sends says ([`AnsweredBy`]):
 //!
-//! The tab's record says all of it ([`crate::page_record`]). The engine sets
-//! down that a departure was held, under the actor whose action reached it,
-//! and how it ended: let leave, kept, or dropped unanswered. It cannot know
-//! who answered, so each answer the window sends says ([`AnsweredBy`]):
-//!
-//! - the person, when their allow ran again the invocation that reached the
-//!   hold. That invocation is its actor's, whom the held entry already names,
-//!   and the action door runs it a second time only on the person's own
-//!   answer, so the one who let it leave is the person;
-//! - whoever the action door admitted `send-held-request` or
-//!   `keep-held-request` for, by the name the tab keeps their page actions
-//!   under, and the person at the window when it names nobody;
+//! - the person, when their allow ran again the invocation that reached the hold: the action
+//!   door runs it a second time only on the person's own answer;
+//! - whoever the action door admitted `send-held-request` or `keep-held-request` for, by the
+//!   name the tab keeps their page actions under, and the person at the window when it
+//!   names nobody;
 //! - nobody, when the window dropped it at its own deadline.
 
 use ui::tilo_actions::{ActionInvoker, InvocationId};
@@ -72,11 +48,9 @@ use ui::webview::{AnsweredBy, HeldKind, HeldRequest, PageActor};
 
 use super::{BrowserWidget, WebViewCommand, action_failed};
 
-/// How long a held request waits for the person before the window drops it.
 pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
-/// The most held requests one window asks the person about at once: a page
-/// that posts in a loop meets the same bound as one that opens tabs. One
-/// more is turned away at once.
+/// The most held requests one window asks the person about at once; one more is turned
+/// away. A page that posts in a loop meets the same bound as one that opens tabs.
 const MAX_HELD: usize = 8;
 /// What a page action answers when what its run reached was turned away as
 /// one request too many.
@@ -84,12 +58,9 @@ pub(crate) const TOO_MANY: &str = "browser.page.too_many_held";
 /// What an invocation answers when the person allows it after the hold its
 /// run reached ended without leaving.
 pub(crate) const HOLD_ENDED: &str = "browser.page.hold_ended";
-/// The most of a download's file name the person's question shows.
 const MAX_SHOWN_FILE: usize = 120;
-/// What a page action answers when what its run reached waits for the person:
-/// the code [`DoorError::ConfirmationRequired`] carries, so the caller's
-/// invocation is refused for want of their answer and their allow runs it
-/// again.
+/// What a page action answers when its run reached something that waits for the person:
+/// the code [`DoorError::ConfirmationRequired`] carries, so their allow runs it again.
 ///
 /// [`DoorError::ConfirmationRequired`]: ui::tilo_actions::DoorError::ConfirmationRequired
 pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE;
@@ -129,7 +100,6 @@ impl HeldKey {
     }
 }
 
-/// One request the page is not allowed to send yet.
 #[derive(Clone)]
 pub(crate) struct Held {
     pub(crate) request: HeldRequest,
@@ -138,28 +108,20 @@ pub(crate) struct Held {
     /// What this window names it by: the number its published answers state.
     /// One number is one hold, whatever the engine calls it.
     number: u32,
-    /// The page it leaves from, by its origin: what the person is told they
-    /// are on, where the page itself is not the destination.
+    /// The page it leaves from, by its origin.
     page: String,
-    /// The filled page as a picture, by its content address, when this window
-    /// kept one: what the person is shown before they allow it.
+    /// The filled page as a picture, by its content address, when the window kept one.
     picture: Option<String>,
-    /// The file a download would save, when the engine named it: the person
-    /// is told which one they allow.
+    /// The file a download would save, when the engine named it.
     file: Option<String>,
-    /// The page action whose run reached it, if one was in flight: that same
-    /// invocation, run again with the person's answer, releases it.
+    /// The page action whose run reached it, so the person's allow runs it again.
     asked: Option<InvocationId>,
-    /// The invocation releasing it, answered once the engine says it is over.
     releasing: Option<InvocationId>,
-    /// When the window drops it if nobody answers.
     until: std::time::Instant,
-    /// Where it stands: waiting for an answer, or how it was answered.
     stand: Stand,
 }
 
 impl Held {
-    /// What a person is told is waiting: what leaves, where, and which file.
     pub(crate) fn describing(&self) -> String {
         match &self.file {
             Some(file) => format!("{} ({file})", self.request.describing()),
@@ -167,21 +129,14 @@ impl Held {
         }
     }
 
-    /// The number this window names it by, which its answers state.
     pub(crate) const fn number(&self) -> u32 {
         self.number
     }
 
-    /// The departure as the person's question carries it, by the names a
-    /// reader reads it by: the page it leaves from, what it does, the method
-    /// and where it goes, and — when this window kept one — the picture of the
-    /// filled page, by its content address.
     pub(crate) fn facts(&self) -> Vec<(&'static str, String)> {
         facts(&self.page, &self.request, self.picture.as_deref())
     }
 
-    /// Whether somebody answered it, to let it leave or to keep the page as
-    /// it is, rather than it waiting.
     pub(crate) const fn answered(&self) -> bool {
         !matches!(self.stand, Stand::Waiting)
     }
@@ -203,7 +158,6 @@ pub(crate) enum Taken {
     TooMany,
 }
 
-/// The requests this window holds, oldest first.
 #[derive(Default)]
 pub(crate) struct Holds {
     held: Vec<Held>,
@@ -220,11 +174,8 @@ pub(crate) struct Holds {
 }
 
 impl Holds {
-    /// Why the window would not hold `request`, when it would not: it holds
-    /// it already or it is no request the engine could have reported, or as
-    /// many as it asks the person about already wait. `None` for a request it
-    /// would take. Asked before anything is kept for a hold, so nothing is
-    /// kept for one that will never be asked about.
+    /// Why the window would not hold `request`; `None` for one it would take. Asked before
+    /// anything is kept for a hold, so nothing is kept for one that is never asked about.
     pub(crate) fn refuses(&self, request: &HeldRequest) -> Option<Taken> {
         let key = HeldKey::of(request);
         if !request.valid() || self.held.iter().any(|held| held.key == key) {
@@ -234,10 +185,8 @@ impl Holds {
         (waiting >= MAX_HELD).then_some(Taken::TooMany)
     }
 
-    /// Hold `request`, or say why not: the engine reports one request once,
-    /// and the window asks the person about [`MAX_HELD`] at once. `page` is
-    /// the origin the page it leaves from is on, and `picture` the filled
-    /// page kept as content, when the window kept one.
+    /// Hold `request`, or say why not: the engine reports one request once, and the window
+    /// asks the person about [`MAX_HELD`] at once.
     pub(crate) fn hold(
         &mut self,
         request: HeldRequest,
@@ -270,17 +219,14 @@ impl Holds {
         Taken::Held(number)
     }
 
-    /// The hold `invocation`'s run reached: its answer to its caller names it,
-    /// and its allow releases it.
     pub(crate) fn asked_by(&mut self, key: HeldKey, invocation: InvocationId) {
         if let Some(held) = self.held.iter_mut().find(|held| held.key == key) {
             held.asked = Some(invocation);
         }
     }
 
-    /// Take the hold `invocation`'s run reached, to release it: the same
-    /// invocation is run again because the person allowed it, and the page
-    /// action it named is not run a second time.
+    /// Take the hold `invocation`'s run reached, to release it; the page action it named
+    /// is not run a second time.
     pub(crate) fn release_for(&mut self, invocation: InvocationId) -> Option<HeldKey> {
         let held = self
             .held
@@ -294,11 +240,9 @@ impl Holds {
         Some(held.key)
     }
 
-    /// The hold the window numbers `number`, which somebody answered
-    /// themselves. `None` when it is not waiting.
-    /// It stays until the engine says it is over, so the answer names what
-    /// it was for; a download's outcome is the download's own, and nothing
-    /// closes it here.
+    /// The hold the window numbers `number`, which somebody answered themselves; `None` when
+    /// it is not waiting. It stays until the engine says it is over, so the answer names what
+    /// it was for.
     pub(crate) fn answered(&mut self, number: u32, allow: bool) -> Option<Held> {
         let found = self
             .held
@@ -334,7 +278,6 @@ impl Holds {
         Some(self.answers.remove(found))
     }
 
-    /// The engine says `key` is over: released, dropped, or its page went.
     pub(crate) fn closed(&mut self, key: HeldKey) -> Option<Held> {
         let found = self.held.iter().position(|held| held.key == key)?;
         let held = self.held.remove(found);
@@ -364,8 +307,7 @@ impl Holds {
         Some(self.ended.remove(found).1)
     }
 
-    /// Drop the holds nobody answered by `now`: what the window lets go at
-    /// its own deadline.
+    /// Drop the holds nobody answered by `now`, at their own deadline.
     pub(crate) fn expire(&mut self, now: std::time::Instant) -> Vec<Held> {
         let mut dropped = Vec::new();
         let mut kept = Vec::with_capacity(self.held.len());
@@ -383,11 +325,9 @@ impl Holds {
         dropped
     }
 
-    /// The requests nobody's page action reached, oldest first: the ones the
-    /// window publishes, and answers from there. A hold a page action's run
-    /// reached is not among them — its caller is told that it needs the
-    /// person, and their allow runs that same invocation again — so nobody is
-    /// asked about one departure twice.
+    /// The requests no page action's run reached, oldest first: the ones the window
+    /// publishes and answers from there. A hold a run reached is not among them, so
+    /// nobody is asked about one departure twice.
     pub(crate) fn waiting(&self) -> impl Iterator<Item = &Held> {
         self.held
             .iter()
@@ -396,10 +336,9 @@ impl Holds {
 }
 
 impl BrowserWidget {
-    /// What the person is asked about `request`, whose run reached it: the
-    /// action answers that it needs them — stating the departure it holds, so
-    /// the host holding their window asks them what leaves rather than a label
-    /// for it — and their allow releases it.
+    /// What the person is asked about `request`, whose run reached it: the answer states
+    /// the departure it holds, so the host asks them what leaves rather than a label for
+    /// it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
         let page = self.held_page();
         // The filled page is kept as content only for a hold that will wait
@@ -422,8 +361,8 @@ impl BrowserWidget {
         };
         self.structure_dirty = true;
         let Some(operation) = self.page_operation.take() else {
-            // Nothing called for it: the page posted on its own, and the
-            // window publishes the hold for whoever may ask it.
+            // Nothing called for it: the page posted on its own, and the window
+            // publishes the hold for whoever may ask it.
             return;
         };
         self.note_text_entered(&operation.acted);
@@ -519,16 +458,13 @@ impl BrowserWidget {
         AnsweredBy::admitted(actor)
     }
 
-    /// The page this window shows, by its origin: what a hold's question
-    /// names as the page it leaves from.
     pub(crate) fn held_page(&self) -> String {
         origin_of(&self.current_uri)
     }
 
-    /// Send one held request on its way (`allow`) or drop it, as `invoker`
-    /// (nobody: the person at the window), and answer the invocation that
-    /// waited for the release once the engine says it is over. `id` is the
-    /// number the window published the hold under.
+    /// Send one held request on its way (`allow`) or drop it, as `invoker` (nobody: the person
+    /// at the window), and answer the invocation that waited once the engine says it is over.
+    /// `id` is the number the window published the hold under.
     pub(crate) fn answer_hold(
         &mut self,
         id: &str,
@@ -552,20 +488,18 @@ impl BrowserWidget {
         }))
     }
 
-    /// Let `key` leave, or cancel it: the engine resumes it exactly once, or
-    /// drops it and leaves the page as it was. `by` is who answered, which
+    /// Let `key` leave, or drop it and leave the page as it was. `by` is who answered, which
     /// the engine sets down in the tab's record.
     pub(crate) fn release_held(&self, key: HeldKey, allow: bool, by: AnsweredBy) {
         self.engine.send(match key {
-            // A download the page offers is the engine's own question, and
-            // its answer is the one a person's click on the offer gives.
+            // A download the page offers is the engine's own question, answered as a
+            // click on the offer is.
             HeldKey::Download(id) => WebViewCommand::DownloadDecision { id, allow, by },
             HeldKey::Request(id) => WebViewCommand::AnswerHeldRequest { id, allow, by },
         });
     }
 
-    /// The engine says the request `id` is over: what the person allowed
-    /// leaves, and the invocation that waited for it is answered with what
+    /// The engine says the request `id` is over: the invocation that waited is answered with what
     /// left.
     pub(crate) fn held_closed(&mut self, id: u32) {
         let Some(held) = self.holds.closed(HeldKey::Request(id)) else {
@@ -614,17 +548,13 @@ impl BrowserWidget {
         }
     }
 
-    /// The picture `request` carries of the filled page, kept as this
-    /// window's content so the person's question can name it: `None` when the
-    /// engine painted none, or this window has nowhere to keep one.
     fn kept_hold_picture(&self, request: &HeldRequest) -> Option<String> {
         let picture = request.capture.as_deref()?;
         Self::kept_picture(picture, self.content.as_ref()?).ok()
     }
 
-    /// A download the page started in a window an agent operates waits for the
-    /// person like every other departure: the engine holds it, and its answer
-    /// is the download's own.
+    /// A download the page started in a window an agent operates waits for the person;
+    /// its answer is the download's own.
     pub(crate) fn hold_download(&mut self, id: u32, url: &str, name: &str) -> bool {
         let mut request = HeldRequest::new(id, HeldKind::Download);
         request.method = "GET".into();
@@ -647,8 +577,8 @@ impl BrowserWidget {
     }
 }
 
-/// The engine's name for what a download would save, as the question shows
-/// it: `None` when it named none, and cut to what the question can show.
+/// The engine's name for what a download would save as the question shows it: `None` when
+/// it named none, and cut to what the question can show.
 fn shown_file(name: &str) -> Option<String> {
     let name = name.trim();
     if name.is_empty() {
@@ -657,8 +587,7 @@ fn shown_file(name: &str) -> Option<String> {
     Some(name.chars().take(MAX_SHOWN_FILE).collect())
 }
 
-/// The origin of `url`, as a person reads it: its scheme and host, and the
-/// address itself when it is no web address.
+/// Its scheme and host, or the address itself when it is no web address.
 fn origin_of(url: &str) -> String {
     crate::site_controls::origin(url).unwrap_or_else(|| url.to_owned())
 }
@@ -670,9 +599,6 @@ fn origin_of(url: &str) -> String {
 pub(crate) const HELD_FACET: &str = "browser.held";
 
 /// The parts of `request`'s departure from `page`, by the names a person's
-/// question reads them by: the page it leaves from, what it does, the method
-/// and where it goes, and — when this window kept one — the picture of the
-/// filled page.
 fn facts(page: &str, request: &HeldRequest, picture: Option<&str>) -> Vec<(&'static str, String)> {
     let mut facts = vec![
         ("page", page.to_owned()),
@@ -686,9 +612,7 @@ fn facts(page: &str, request: &HeldRequest, picture: Option<&str>) -> Vec<(&'sta
     facts
 }
 
-/// [`facts`] as the departure facets they are stated under wherever a
-/// departure leaves this window: on the hold it publishes, and in the answer a
-/// page action's run gives when what it reached waits for the person.
+/// [`facts`] as the facets a departure is stated under wherever it leaves this window.
 fn departure_facets(facts: &[(&'static str, String)]) -> Vec<ui::tilo_actions::ActionFacet> {
     facts
         .iter()

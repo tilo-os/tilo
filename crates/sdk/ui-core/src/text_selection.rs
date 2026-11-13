@@ -1,32 +1,12 @@
-//! Shared text-selection primitives for `TextInput`, `NotesApp`, and any
-//! future text editor (terminal scrollback selector, code editor, ...).
-//!
-//! This module owns:
-//!
-//! * [`Selection`] — anchor+cursor pair with helpers for the visible range.
-//! * Boundary walkers — `prev_word_boundary` / `next_word_boundary` /
-//!   [`word_boundaries`] / [`line_boundaries`] / `prev_char_boundary` /
-//!   `next_char_boundary`. All return byte indices and stay on UTF-8
-//!   char boundaries by construction.
-//! * Clipboard helpers — [`clipboard_copy`] / [`clipboard_paste`] and the
-//!   primary-selection pair, resolved against the clipboard of the current
-//!   [`crate::host::HostServices`] (see [`crate::clipboard`]): the
-//!   compositor's mirror for in-process chrome, the desktop clipboard for a
-//!   native app, or an in-process buffer.
-//!
-//! Word operations follow Unicode Standard Annex #29, so apostrophes,
-//! combining marks, non-Latin scripts, and Unicode numeric forms behave as
-//! coherent words instead of being reduced to an ASCII-style predicate.
+//! Shared text-selection primitives for `TextInput`, `NotesApp` and any other text editor.
 
 use std::ops::Range;
 
 use crate::clipboard::{ClipboardCopy, ClipboardTarget, CopyContent, ReservedCopy};
 use crate::text_break::grapheme_indices;
 
-/// Which shaped run owns a caret at a shared logical byte boundary.
-///
-/// Most offsets have only one visual position, so callers rarely need to set
-/// this explicitly. Mixed-direction text and soft wraps can expose both.
+/// Which shaped run owns a caret at a shared logical byte boundary. Most offsets have
+/// only one visual position, so callers rarely need to set this explicitly.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextAffinity {
     #[default]
@@ -62,14 +42,9 @@ impl From<usize> for TextPosition {
     }
 }
 
-/// Anchor + cursor pair. `anchor == cursor` means "no live selection".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
-    /// Where the selection was anchored (typically: where the user
-    /// pressed the mouse, or the caret position when shift was first
-    /// held). Stays fixed while the cursor moves.
     pub anchor: usize,
-    /// Live caret position. Moves while extending the selection.
     pub cursor: usize,
 }
 
@@ -102,15 +77,14 @@ impl Selection {
         self.anchor = self.cursor;
     }
 
-    /// Move the cursor to `pos`, snapping the anchor as well so the
-    /// selection collapses. Use when the caller wants a pure move.
+    /// Move the cursor to `pos`, snapping the anchor as well so the selection collapses.
+    /// Use when the caller wants a pure move.
     pub fn move_to(&mut self, pos: usize) {
         self.anchor = pos;
         self.cursor = pos;
     }
 
-    /// Move the cursor to `pos`, keeping the anchor where it is so the
-    /// selection extends. Use this for shift+arrow / shift+click.
+    /// Move the cursor to `pos`, keeping the anchor where it is so the selection extends.
     pub fn extend_to(&mut self, pos: usize) {
         self.cursor = pos;
     }
@@ -118,9 +92,7 @@ impl Selection {
 
 use crate::text_break::unicode_word_ranges;
 
-/// Walk back to the previous UAX #29 word start. If the cursor is inside a
-/// word this returns that word's start; at its start it returns the preceding
-/// word's start. The result is always a UTF-8 boundary.
+/// Walk back to the previous UAX #29 word start.
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
     let byte = text.floor_char_boundary(byte_idx);
     unicode_word_ranges(text)
@@ -129,8 +101,8 @@ pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
         .map_or(0, |range| range.start)
 }
 
-/// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29
-/// word start, or the end of the string.
+/// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29 word start, or
+/// the end of the string.
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
     let byte = text.ceil_char_boundary(byte_idx);
     unicode_word_ranges(text)
@@ -138,13 +110,11 @@ pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
         .map_or(text.len(), |range| range.start)
 }
 
-/// Byte range `(start, end)` of the UAX #29 word containing `byte_idx`, or the
-/// word immediately on the left when the index lands in following punctuation
-/// or whitespace. Used by double-click word selection.
-///
-/// Words never cross a line feed (UAX #29 breaks on both sides of one), so
-/// only the index's own line is segmented; earlier lines are segmented, one
-/// at a time, only when this line has no word up to the index.
+/// Byte range `(start, end)` of the UAX #29 word containing `byte_idx`, or the word
+/// immediately on the left when the index lands in following punctuation or whitespace.
+/// Words never cross a line feed (UAX #29 breaks on both sides of one), so only the
+/// index's own line is segmented; earlier lines are segmented, one at a time, only when
+/// this line has no word up to the index.
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let byte = text.floor_char_boundary(byte_idx);
     let (line_start, line_end) = line_boundaries(text, byte);
@@ -163,7 +133,6 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     if let Some(range) = previous {
         return (range.start, range.end);
     }
-    // The last word of the nearest earlier line that has one.
     let mut end = line_start;
     while let Some(line_end) = end.checked_sub(1) {
         let line = text.get(..line_end).unwrap_or_default();
@@ -180,10 +149,8 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     (byte, byte)
 }
 
-/// Byte range `(start, end)` of the *line* containing `byte_idx`, where
-/// lines are linefeed-delimited (`\n`). The end is the index of the
-/// trailing `\n`, or `text.len()` for the final line. Triple-click line
-/// selection uses this.
+/// Byte range `(start, end)` of the *line* containing `byte_idx`, where lines are
+/// linefeed-delimited (`\n`).
 pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let byte_idx = byte_idx.min(text.len());
     let start = text
@@ -197,11 +164,8 @@ pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     (start, end)
 }
 
-/// Where grapheme segmentation may start for a position at or after
-/// `byte_idx`: just past the last LF before it. UAX #29 always breaks after
-/// LF (the LF of CRLF too), so a scan from there agrees with one from the
-/// start of the text, without walking every line above. Bytes are searched
-/// so an offset inside a UTF-8 scalar is safe; an LF is always a whole one.
+/// Where grapheme segmentation may start for a position at or after `byte_idx`: just past
+/// the last LF before it.
 fn grapheme_line_start(text: &str, byte_idx: usize) -> usize {
     text.as_bytes()
         .get(..byte_idx)
@@ -212,9 +176,6 @@ fn grapheme_line_start(text: &str, byte_idx: usize) -> usize {
 }
 
 /// The nearest extended-grapheme boundary at or before `byte_idx`.
-///
-/// This is the safe place to clamp carets after remote edits: a UTF-8 scalar
-/// boundary may still sit inside a combining sequence or emoji ZWJ cluster.
 pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
     if byte_idx >= text.len() {
         return text.len();
@@ -229,14 +190,9 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
         .saturating_add(start)
 }
 
-/// Step one user-perceived character to the left of `byte_idx`. Extended
-/// grapheme clusters keep combining marks, emoji modifiers, flags, and ZWJ
-/// sequences together. The legacy function name is retained for API
-/// compatibility.
+/// Step one user-perceived character to the left of `byte_idx`.
 pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    // From a line start, the character to the left is the previous line's
-    // LF (or CRLF), so the scan starts on that line.
     let start = grapheme_line_start(text, byte_idx.saturating_sub(1));
     let (_, line) = text.split_at(start);
     grapheme_indices(line)
@@ -247,8 +203,7 @@ pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
         .saturating_add(start)
 }
 
-/// Step one user-perceived character to the right of `byte_idx`. See
-/// [`prev_char_boundary`] for the compatibility note.
+/// Step one user-perceived character to the right of `byte_idx`.
 pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
     let start = grapheme_line_start(text, byte_idx);
@@ -259,13 +214,9 @@ pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-// --- char-indexed variants -------------------------------------------------
-//
-// The boundary walkers above index bytes; a reflowable reader works in *char*
-// offsets into a block's canonical text (a line-run carries `char_start` /
-// `char_len`, not byte spans). These thin wrappers convert char↔byte around the
-// byte-based walkers so the same word/char semantics drive keyboard selection
-// extension and double-click word selection in a char-indexed document.
+// --- char-indexed variants ------------------------------------------------- The
+// boundary walkers above index bytes; a reflowable reader works in *char* offsets into a
+// block's canonical text (a line-run carries `char_start` / `char_len`, not byte spans).
 
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
@@ -278,40 +229,29 @@ fn byte_to_char(text: &str, byte_idx: usize) -> usize {
         .map_or(0, |s| s.chars().count())
 }
 
-/// Char index of the previous word boundary at or before `char_idx` — the
-/// char-indexed mirror of [`prev_word_boundary`]. Used to extend a reader
-/// selection leftward by a whole word (Shift+Ctrl+Left).
+/// Char index of the previous word boundary at or before `char_idx` — the char-indexed
+/// mirror of [`prev_word_boundary`].
 pub fn prev_word_boundary_chars(text: &str, char_idx: usize) -> usize {
     byte_to_char(text, prev_word_boundary(text, char_to_byte(text, char_idx)))
 }
 
-/// Char index of the next word boundary at or after `char_idx` — the
-/// char-indexed mirror of [`next_word_boundary`]. Used to extend a reader
-/// selection rightward by a whole word (Shift+Ctrl+Right).
+/// Char index of the next word boundary at or after `char_idx` — the char-indexed mirror
+/// of [`next_word_boundary`].
 pub fn next_word_boundary_chars(text: &str, char_idx: usize) -> usize {
     byte_to_char(text, next_word_boundary(text, char_to_byte(text, char_idx)))
 }
 
-/// Char range `(start, end)` of the word containing `char_idx` — the
-/// char-indexed mirror of [`word_boundaries`]. Drives double-click word
-/// selection in a reflowable reader.
+/// Char range `(start, end)` of the word containing `char_idx` — the char-indexed mirror
+/// of [`word_boundaries`].
 pub fn word_boundaries_chars(text: &str, char_idx: usize) -> (usize, usize) {
     let (s, e) = word_boundaries(text, char_to_byte(text, char_idx));
     (byte_to_char(text, s), byte_to_char(text, e))
 }
 
-/// Word/line-granularity drag extension — the shared rule behind
-/// double-click-then-drag in `TextInput` and the reader.
-///
-/// After a double-/triple-click snaps the anchor to a whole unit
-/// `(anchor_lo, anchor_hi)` (`lo <= hi`), a continuing drag must keep that
-/// unit *inside* the selection and grow by whole units. Given the boundary
-/// span `(unit_lo, unit_hi)` the pointer now sits in and its own position
-/// `raw` (to decide which side of the anchor it's on), returns the
-/// `(anchor, cursor)` the selection should adopt.
-///
-/// `T` is whatever a selector indexes by — a byte offset (`TextInput`) or a
-/// `(block, char)` document position (the reader) — so both share one rule.
+/// Word/line-granularity drag extension — the shared rule behind double-click-then-drag
+/// in `TextInput` and the reader. After a double-/triple-click snaps the anchor to a
+/// whole unit `(anchor_lo, anchor_hi)` (`lo <= hi`), a continuing drag must keep that
+/// unit *inside* the selection and grow by whole units.
 pub fn extend_span_drag<T: Ord + Copy>(
     anchor_lo: T,
     anchor_hi: T,
@@ -337,29 +277,21 @@ pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<Stri
 }
 
 /// Push `text` onto the system clipboard — the Ctrl+C buffer.
-///
-/// Routes to the current host's clipboard; see [`crate::clipboard`]. Without
-/// a system clipboard the copy stays inside this process, and the native host
-/// says so in the log when it does. Never waits on the compositor.
 pub fn clipboard_copy(text: &str) {
     let _ = clipboard().copy(CopyContent::Text(text));
 }
 
-/// [`clipboard_copy`] that reports whether the host's clipboard took the
-/// text, including the in-process fallback (which pastes inside this
-/// process). Cut uses it so a failed copy never deletes the selection.
-///
-/// A copy still waiting on the compositor counts as taken: one the
-/// compositor refuses lands in the in-process buffer instead.
+/// [`clipboard_copy`] that reports whether the host's clipboard took the text, including
+/// the in-process fallback (which pastes inside this process). Cut uses it so a failed
+/// copy never deletes the selection.
 #[must_use]
 pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
     clipboard().copy(CopyContent::Text(text)).outcome() != Some(false)
 }
 
-/// Copy formatted text: `html` for the apps that read formatting, `plain`
-/// for every other. Reports whether the host's clipboard took it, as
-/// `clipboard_copy_accepted` does, so Cut never deletes words a refused
-/// copy did not keep.
+/// Copy formatted text: `html` for the apps that read formatting, `plain` for every
+/// other. Reports whether the host's clipboard took it, as `clipboard_copy_accepted`
+/// does, so Cut never deletes words a refused copy did not keep.
 #[must_use]
 pub fn clipboard_copy_rich_accepted(html: &str, plain: &str) -> bool {
     clipboard()
@@ -368,33 +300,22 @@ pub fn clipboard_copy_rich_accepted(html: &str, plain: &str) -> bool {
         != Some(false)
 }
 
-/// The formatted text on the clipboard, when what was copied has
-/// formatting: its HTML with its plain-text words. `None` when it holds
-/// plain text only, or nothing; read [`clipboard_paste`] then.
+/// The formatted text on the clipboard, when what was copied has formatting: its HTML
+/// with its plain-text words.
 pub fn clipboard_paste_rich() -> Option<crate::clipboard::RichTextOffer> {
     clipboard()
         .rich_text()
         .filter(crate::clipboard::RichTextOffer::is_valid)
 }
 
-/// Copy text only if a system clipboard backend accepts it, without waiting
-/// for it to.
-///
-/// Never retains the text in an in-process buffer. The outcome may settle
-/// after this returns (an app's own Wayland connection answers through the
-/// event loop); keep it in a [`CopyWatch`] to say so when it fails. Use this
-/// for success messages that require an actual clipboard write rather than an
-/// editor-local copy.
+/// Copy text only if a system clipboard backend accepts it, without waiting for it to.
 pub fn try_clipboard_copy(text: &str) -> ClipboardCopy {
     clipboard().copy(CopyContent::SharedText(text))
 }
 
-/// Claim the Ctrl+C clipboard for text that is not known yet, such as a link
-/// the person's click asks a host for, and copy it once it is handed over
-/// ([`ReservedCopy::fill`]), as [`try_clipboard_copy`] would. Call it inside
-/// the click: a browser copies only there, and lets a copy claimed there be
-/// filled later. Elsewhere the text is copied when it arrives. Dropping the
-/// reservation copies nothing.
+/// Claim the Ctrl+C clipboard for text that is not known yet, such as a link the person's
+/// click asks a host for, and copy it once it is handed over ([`ReservedCopy::fill`]), as
+/// [`try_clipboard_copy`] would.
 pub fn reserve_clipboard_copy() -> ReservedCopy {
     let clipboard = clipboard();
     clipboard.reserve_text().unwrap_or_else(|| {
@@ -405,31 +326,24 @@ pub fn reserve_clipboard_copy() -> ReservedCopy {
     })
 }
 
-/// Copy a secret — a password, a one-time code, a recovery key, an enrolment
-/// token — so it pastes anywhere as plain text while clipboard histories and
-/// device sync are told not to keep it
+/// Copy a secret — a password, a one-time code, a recovery key, an enrolment token — so
+/// it pastes anywhere as plain text while clipboard histories and device sync are told
+/// not to keep it
 /// ([`ClipboardBackend::set_secret_text`](crate::clipboard::ClipboardBackend::set_secret_text)).
-///
-/// After `clear_after` the clipboard is cleared if it still holds this
-/// secret; something copied since is left alone. A browser page has no
-/// thread to wait on, so there the clipboard is not cleared.
-///
-/// Fails when no shared clipboard takes the secret: it is never kept in a
-/// buffer private to this process. Like [`try_clipboard_copy`], it never
-/// waits, and its outcome may settle later.
+/// A browser page has no thread to wait on, so there the clipboard is not cleared.
 pub fn try_clipboard_copy_secret(text: &str, clear_after: std::time::Duration) -> ClipboardCopy {
     let clipboard = clipboard();
     let copy = clipboard.copy(CopyContent::SecretText(text));
     if copy.outcome() == Some(false) {
         return copy;
     }
-    // A copy that fails after all leaves nothing to clear: the clipboard
-    // will not hold this secret, so the clear finds nothing to do.
+    // A copy that fails after all leaves nothing to clear: the clipboard will not hold
+    // this secret, so the clear finds nothing to do.
     let lease = SecretLease {
         value: zeroize::Zeroizing::new(text.to_owned()),
     };
-    // The clear goes to the clipboard that took the copy, whichever host is
-    // current on that thread later.
+    // The clear goes to the clipboard that took the copy, whichever host is current on
+    // that thread later.
     let _ = crate::rt::spawn_thread("clipboard-secret-clear", move || {
         if crate::rt::sleep_thread(clear_after).is_ok() {
             lease.clear_if_unchanged(&*clipboard);
@@ -458,8 +372,7 @@ pub struct CopyWatch {
 }
 
 impl CopyWatch {
-    /// Watch `copy`, replacing an earlier one. `false` when it already
-    /// failed: say so instead of confirming it.
+    /// Watch `copy`, replacing an earlier one.
     pub fn watch(&mut self, copy: ClipboardCopy) -> bool {
         let failed = copy.outcome() == Some(false);
         self.copy = copy.outcome().is_none().then_some(copy);
@@ -467,8 +380,6 @@ impl CopyWatch {
     }
 
     /// `true` once, when the watched copy has failed since it was watched.
-    /// The settling copy wakes the app, so call this where the app handles a
-    /// wake.
     pub fn failed(&mut self) -> bool {
         match self.copy.as_ref().and_then(ClipboardCopy::outcome) {
             Some(copied) => {
@@ -492,25 +403,21 @@ struct SecretLease {
 }
 
 impl SecretLease {
-    /// Clear the clipboard if it still holds the secret, so a later copy is
-    /// never destroyed.
+    /// Clear the clipboard if it still holds the secret, so a later copy is never
+    /// destroyed.
     fn clear_if_unchanged(&self, clipboard: &dyn crate::clipboard::ClipboardBackend) {
         let current = clipboard
             .text(ClipboardTarget::Clipboard)
             .map(zeroize::Zeroizing::new);
         if current.is_some_and(|current| current.as_bytes() == self.value.as_bytes()) {
-            // An empty secret, so the clear itself stays out of history.
             let _ = clipboard.set_secret_text("");
         }
     }
 }
 
-/// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
-/// the system clipboard as image data, so it can be pasted into an image editor
-/// or chat. Returns `false` when the buffer size is wrong or no backend can
-/// carry an image. Used by the PDF reader to copy a selected page region.
-/// Like [`try_clipboard_copy`], it never waits, and its outcome may settle
-/// later.
+/// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto the
+/// system clipboard as image data, so it can be pasted into an image editor or chat. Like
+/// [`try_clipboard_copy`], it never waits, and its outcome may settle later.
 pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> ClipboardCopy {
     let Some(expected_len) = width
         .checked_mul(height)
@@ -528,31 +435,27 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> Clipboa
     })
 }
 
-/// Pull the current clipboard contents as a UTF-8 string. Returns
-/// `None` when the clipboard is empty / unavailable / non-text.
+/// Pull the current clipboard contents as a UTF-8 string.
 pub fn clipboard_paste() -> Option<String> {
     clipboard()
         .text(ClipboardTarget::Clipboard)
         .filter(|text| !text.is_empty())
 }
 
-/// The image on the clipboard, when another app copied one (a screenshot,
-/// an image from a viewer or a browser). `None` when it holds no image.
+/// The image on the clipboard, when another app copied one (a screenshot, an image from a
+/// viewer or a browser).
 pub fn clipboard_paste_image() -> Option<crate::clipboard::ClipboardImage> {
     clipboard().image()
 }
 
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
-/// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
-/// and editors set this whenever a range is selected so a middle-click paste
-/// in any app receives it. Goes through the same clipboard as
-/// [`clipboard_copy`].
+/// middle-click paste" buffer, distinct from the Ctrl+C clipboard.
 pub fn clipboard_copy_primary(text: &str) {
     clipboard().set_text(ClipboardTarget::Primary, text);
 }
 
-/// Read the **primary selection** as a UTF-8 string — what a middle-click
-/// paste should insert. `None` when empty or unavailable.
+/// Read the **primary selection** as a UTF-8 string — what a middle-click paste should
+/// insert.
 pub fn clipboard_paste_primary() -> Option<String> {
     clipboard().text(ClipboardTarget::Primary)
 }
@@ -561,8 +464,6 @@ pub fn clipboard_paste_primary() -> Option<String> {
 mod tests {
     use super::*;
 
-    /// `word_boundaries` over the whole text, as it was before it segmented
-    /// one line.
     fn whole_text_word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
         let byte = text.floor_char_boundary(byte_idx);
         let mut previous = None;
@@ -715,10 +616,9 @@ mod tests {
 
     #[test]
     fn clipboard_and_selection_helpers_move_extend_and_round_trip() {
-        // Case `clipboard_round_trips_in_process`:
-        // Copy → paste must round-trip within the process even with no system
-        // clipboard (the headless test env), and equally when a real clipboard
-        // is present.
+        // Case `clipboard_round_trips_in_process`: Copy → paste must round-trip within
+        // the process even with no system clipboard (the headless test env), and equally
+        // when a real clipboard is present.
         {
             let payload = "https://example.com/feed.xml";
             clipboard_copy(payload);
@@ -772,13 +672,12 @@ mod tests {
         {
             // A double-click snapped the anchor to the word "beta" at bytes 6..10.
             let (lo, hi) = (6usize, 10usize);
-            // Dragging right into "gamma" (11..16): anchor pins to the word's left
-            // edge, cursor walks to the right edge of the word under the pointer.
+            // Dragging right into "gamma" (11..16): anchor pins to the word's left edge,
+            // cursor walks to the right edge of the word under the pointer.
             assert_eq!(extend_span_drag(lo, hi, 13, 11, 16), (6, 16));
-            // Dragging back left of the original word, into "alpha" (0..5): anchor
-            // flips to the original word's right edge, cursor to the left word's start.
+            // Dragging back left of the original word, into "alpha" (0..5): anchor flips
+            // to the original word's right edge, cursor to the left word's start.
             assert_eq!(extend_span_drag(lo, hi, 2, 0, 5), (10, 0));
-            // Still inside the original word: the whole word stays selected.
             assert_eq!(extend_span_drag(lo, hi, 8, 6, 10), (6, 10));
         }
     }
@@ -807,15 +706,15 @@ mod tests {
             let s = "hello world";
             assert_eq!(word_boundaries(s, 2), (0, 5));
             assert_eq!(word_boundaries(s, 0), (0, 5));
-            // At the space (idx 5), the left edge is the start of the previous
-            // word body — anchor snaps left.
+            // At the space (idx 5), the left edge is the start of the previous word body
+            // — anchor snaps left.
             assert_eq!(word_boundaries(s, 5), (0, 5));
             assert_eq!(word_boundaries(s, 6), (6, 11));
             assert_eq!(word_boundaries(s, 11), (6, 11));
         }
 
-        // Case `word_boundaries_utf8_clean`:
-        // No slicing into the middle of a code point ("café" — é is 2 bytes).
+        // Case `word_boundaries_utf8_clean`: No slicing into the middle of a code point
+        // ("café" — é is 2 bytes).
         {
             let s = "café latte";
             // Bytes: c=0 a=1 f=2 é=3..5 (space=5) l=6 a=7 t=8 t=9 e=10. len=11.
@@ -862,8 +761,6 @@ mod tests {
             let s = "alpha beta gamma";
             // A char index inside "beta" (chars 6..10) snaps to the word's char span.
             assert_eq!(word_boundaries_chars(s, 7), (6, 10));
-            // Forward walker lands at the *start* of the next word (standard word-wise
-            // motion); back walker lands at the start of the current/previous word.
             assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
             assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
             assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
@@ -963,7 +860,6 @@ mod tests {
             assert_eq!(line_boundaries(s, 2), (2, 2));
         }
 
-        // Case `prev_next_char_boundary_utf8`.
         {
             let s = "aé€b"; // a=0, é=1..3, €=3..6, b=6..7. len=7.
             assert_eq!(s.len(), 7);
@@ -1006,7 +902,6 @@ mod tests {
             assert_eq!(next_word_boundary("", 0), 0);
         }
 
-        // Case `char_boundaries_are_utf8_clean`.
         {
             // Multibyte chars: indices returned are *char* indices, not bytes.
             let s = "café złto";

@@ -64,7 +64,7 @@ impl Layer for Handle {
         Vec::new()
     }
 
-    fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
         Vec::new()
     }
 

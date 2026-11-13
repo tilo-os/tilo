@@ -1,23 +1,14 @@
-//! The word processor's exported **actions** and the **resource tree** it
-//! publishes to Ctrl+K.
-//!
-//! Every document-mutating operation is a [`RichTextAction`] from tilo-doc's
-//! rich-text vocabulary (re-exported here with its builders). The same
-//! [`EncodedAction`](tilo_actions::EncodedAction) is what toolbar/panel/menu affordances dispatch and what
-//! Ctrl+K dispatches — one source of truth, one replay path. This module adds
-//! what is the word processor's own: its application operations (open, save,
-//! zoom, panels) and the resource tree it publishes.
+//! The word processor's exported actions and the resource tree it publishes to Ctrl+K.
+//! Every body edit is a [`RichTextAction`]; the app's own operations live here too.
 
-/// Edits bound to a view's caret and selection, as the document's typed
-/// declarations.
+/// Edits bound to a view's caret and selection, as the document's typed declarations.
 pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
 pub(crate) mod image_place;
 /// Per-participant view state and its pure resource-context projection.
 pub mod participant;
-/// Per-participant view operations (caret, selection, Find) and their
-/// published `word-processor.view-operation` specs.
+/// Per-participant view operations (caret, selection, Find) and their published specs.
 pub mod view_ops;
 
 use automerge::AutoCommit;
@@ -30,47 +21,30 @@ use crate::effects::WordProcessorEffect;
 
 pub use tilo_document::action::*;
 pub use tilo_document::block_edit::Placement;
-/// Register the word processor's action decoder for palette execution + remote
-/// replay.
+/// Register the word processor's action decoder for palette execution and replay.
 pub fn register(registry: &mut ActionRegistry) {
     <crate::model::Document as ui::tilo_resource::Resource>::register(registry);
 }
 
-// ===========================================================================
-// Resource tree
-// ===========================================================================
-
-/// The presentation context Ctrl+K needs to build the document's resource tree:
-/// the caret block/offset the structural inserts anchor on, and the block ids
-/// the block-level formatting targets (the selection, or the caret block).
-/// Everything here derives from state the app owns; the resource children
-/// (images / tables / sections) are enumerated from the shared document.
+/// What Ctrl+K needs to build the document's resource tree: the caret block and offset,
+/// the blocks a block-level action targets, the selection, Find results and content.
 #[derive(Debug, Clone)]
 pub struct WpResourceCtx {
     pub caret_block: String,
     pub caret_offset: usize,
-    /// The blocks a block-level action targets — the selection, or the caret
-    /// block when there is no selection.
+    /// The blocks a block-level action targets: the selection, or the caret block.
     pub target_blocks: Vec<String>,
-    /// Exact non-empty character spans selected at palette invocation time.
-    /// This keeps a prompted hyperlink action resource-addressed and replayable
-    /// instead of consulting mutable presentation state after the user enters
-    /// a target.
+    /// Character spans selected when the palette opened, so a prompted action stays
+    /// resource-addressed and replayable rather than reading presentation state later.
     pub format_spans: Vec<Span>,
-    /// The selection in document order when it is non-empty.  This semantic
-    /// context, rather than a caller-provided block id, binds the palette's
-    /// Replace selection operation to exactly what the user has selected.
     pub selection: Option<SelectionTarget>,
     pub region: RegionKind,
-    /// Current Find results, capped before they enter the global resource tree.
-    /// Each carries CRDT block identity + exact character range, never a
-    /// renderer index that would drift under a collaborator's edit.
+    /// The current Find results, bounded, each by block id and character range.
     pub search_hits: Vec<SearchTarget>,
     /// Where content another action produced (an image to place) is read from.
     pub content: tilo_content::ContentStore,
 }
 
-/// A bounded, precisely addressable Find result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchTarget {
     pub block: String,
@@ -78,13 +52,9 @@ pub struct SearchTarget {
     pub end: usize,
 }
 
-/// Resource enumeration is intentionally bounded: a giant document can still
-/// search completely, but Ctrl+K/global search gets the first useful page and
-/// never allocates one resource object per occurrence forever.
 pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
 pub const MAX_RESOURCE_REVISIONS: usize = 64;
 
-/// A short label for a structural block in the palette.
 fn short(text: &str, fallback: &str) -> String {
     let t: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let t = t.trim();
@@ -97,9 +67,7 @@ fn short(text: &str, fallback: &str) -> String {
     }
 }
 
-/// Human label for a stable document range without retaining a separate search
-/// text cache. The caller materializes once, then each bounded result borrows
-/// from that snapshot.
+/// A label for a document range, borrowed from the snapshot the caller read once.
 fn range_label(
     blocks: &[tilo_doc::snapshot::BlockView],
     block: &str,
@@ -117,10 +85,8 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-/// What the word processor's framework app publishes for a view at `ctx` on
-/// `doc`: the document, its verbs, field edits, effects and children, and
-/// the view's Find results. For a peer in a test that serves a Writer
-/// document without a window.
+/// What the framework app publishes for a view at `ctx` on `doc`, for a test peer
+/// that serves a Writer document without a window.
 #[cfg(any(test, feature = "test-support"))]
 pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
     use ui::tilo_resource::Resource as _;
@@ -147,8 +113,6 @@ pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<tilo_actions:
     published
 }
 
-/// The Find results of the view `ctx` describes, as live rows beneath the
-/// document: each goes to its range in the invoker's own view.
 pub(crate) fn search_rows(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<ui::framework::LiveRow> {
     if ctx.search_hits.is_empty() {
         return Vec::new();
@@ -210,17 +174,14 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
     use ui::tilo_resource::{Slot, write_key};
 
-    /// A body edit as the document's action on the wire.
     fn encode(op: &RichTextAction) -> EncodedAction {
         crate::model::encoded(op)
     }
 
-    /// The body edit an encoded document action carries.
     fn decode(encoded: &EncodedAction) -> RichTextAction {
         crate::model::decoded(encoded).expect("a body edit")
     }
 
-    /// Apply a body edit locally through the executor, returning its envelope.
     fn apply_local(
         doc: &mut AutoCommit,
         op: &RichTextAction,
@@ -229,7 +190,6 @@ mod tests {
         tilo_actions::apply_local(doc, &crate::model::action(op), encoded)
     }
 
-    /// Body edits applied straight to a document, as the door applies them.
     trait ApplyBody {
         fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError>;
     }
@@ -240,7 +200,6 @@ mod tests {
         }
     }
 
-    /// A four-byte stand-in image, described as an [`ImageInput`].
     fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
         ImageInput {
             content: tilo_content::hash_bytes(&[1, 2, 3, 4]),
@@ -256,16 +215,12 @@ mod tests {
         ActionRegistry::with(register)
     }
 
-    /// The view catalogue exposes zoom reset as a typed operation; the resource catalogue exposes the
-    /// structural document contract; file operations are typed background jobs; resource results and
-    /// revisions are bounded and precisely addressable.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
-        // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
         {
             let specs = crate::effects::specs();
             let spec = specs
@@ -280,9 +235,6 @@ mod tests {
             );
         }
 
-        // Phase: resource_catalogue_exposes_structural_document_contract.
-        // The catalogue publishes each structural document object as a stable,
-        // directly actionable resource.
         {
             let (mut state, ids) = seeded("# Section\n\nBody\n");
             let para = ids[1].clone();
@@ -335,7 +287,6 @@ mod tests {
                 published.iter().any(|child| child.id == image.id),
                 "the image is a child of the document resource"
             );
-            // Adding a row is bound to its table: invoked on the table, it adds one.
             invoke(
                 &mut state.doc,
                 &resources,
@@ -350,7 +301,6 @@ mod tests {
             assert_eq!(cells, 6, "a third row of two cells");
         }
 
-        // Phase: file_operations_are_typed_background_jobs.
         {
             let (state, ids) = seeded("Intro\n");
             let ctx = WpResourceCtx {
@@ -379,7 +329,6 @@ mod tests {
             }
         }
 
-        // Phase: resource_results_are_bounded_and_precisely_addressable.
         {
             let (mut state, ids) =
                 seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
@@ -432,7 +381,6 @@ mod tests {
         }
     }
 
-    /// The document's own resource id and kind.
     const DOCUMENT: &str = "word-processor.document";
 
     fn verb(
@@ -444,8 +392,6 @@ mod tests {
         }
     }
 
-    /// Apply `action` as `author` through the executor, returning its
-    /// envelope.
     fn apply_verb_by(
         doc: &mut AutoCommit,
         action: &<crate::model::Document as ui::tilo_resource::Resource>::Action,
@@ -457,14 +403,12 @@ mod tests {
         tilo_actions::apply_local_with_context(doc, action, encoded, None, context).unwrap()
     }
 
-    /// The document's comment threads, each with where its text is now.
     fn threads(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::CommentView> {
         <crate::model::Document as ui::tilo_resource::Resource>::read(doc)
             .unwrap()
             .comment_views(doc)
     }
 
-    /// The document's accept-change verb, as its action value.
     fn accept_change(
         change: &str,
     ) -> <crate::model::Document as ui::tilo_resource::Resource>::Action {
@@ -478,7 +422,6 @@ mod tests {
         }
     }
 
-    /// A collapsed caret at the start of `block`.
     fn caret_at(block: &str) -> WpResourceCtx {
         WpResourceCtx {
             caret_block: block.to_owned(),
@@ -492,8 +435,6 @@ mod tests {
         }
     }
 
-    /// The object of `kind` (`table`, `image`, `change`, `comment`) the
-    /// document publishes beneath it.
     fn derived<'a>(
         root: &'a tilo_actions::ResourceSpec,
         kind: &str,
@@ -504,7 +445,6 @@ mod tests {
             .find(|child| child.id.as_str().starts_with(&prefix))
     }
 
-    /// Invoke `action` on the published resource `resource` through the door.
     fn invoke(
         doc: &mut AutoCommit,
         resources: &[tilo_actions::ResourceSpec],
@@ -512,7 +452,6 @@ mod tests {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) {
-        // As a person who confirmed it: deleting asks first.
         tilo_actions::door::invoke_json_confirmed(
             doc,
             resources,
@@ -526,8 +465,6 @@ mod tests {
         .unwrap_or_else(|error| panic!("{resource}#{action}: {error:?}"));
     }
 
-    /// A tracked change is published with the document, and accepting it
-    /// there keeps it as text.
     #[test]
     fn review_is_a_child_of_the_document_resource() {
         let (mut state, ids) = seeded("Hello\n");
@@ -572,8 +509,6 @@ mod tests {
         assert_eq!(snap.blocks[0].text, "Hello there");
     }
 
-    /// A named style is changed by an edit of the body: one property at a
-    /// time, so collaborators' edits of different properties merge.
     #[test]
     fn a_named_style_is_edited_through_the_body() {
         let (mut state, ids) = seeded("Styled paragraph\n");
@@ -620,8 +555,6 @@ mod tests {
         );
     }
 
-    /// The page header is part of the body field: the document reads it,
-    /// and a header paragraph is aligned by an edit of the body.
     #[test]
     fn a_header_is_part_of_the_document() {
         let (mut state, _) = seeded("Body\n");
@@ -659,8 +592,6 @@ mod tests {
         );
     }
 
-    /// Resizing an image is an edit of the body any caller submits through
-    /// the document's field edit, not only a panel click.
     #[test]
     fn image_size_is_a_published_document_action() {
         let (mut state, ids) = seeded("Body\n");
@@ -699,8 +630,6 @@ mod tests {
         );
     }
 
-    /// Flipping an image is an edit of the body, and deleting it is a verb
-    /// on the image itself.
     #[test]
     fn image_flip_is_a_published_document_action() {
         let (mut state, ids) = seeded("Body\n");
@@ -746,8 +675,6 @@ mod tests {
         );
     }
 
-    /// The table of contents is a verb of the document built from the
-    /// headings it already holds.
     #[test]
     fn a_table_of_contents_is_a_published_document_action() {
         let (mut state, ids) = seeded("# Section\n\nBody\n");
@@ -775,8 +702,6 @@ mod tests {
         );
     }
 
-    /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
-    /// ordered body block ids.
     fn seeded(markdown: &str) -> (ui::State, Vec<String>) {
         let mut state = crate::initialized_state();
         replace_body_action(markdown).apply(&mut state.doc).unwrap();
@@ -795,24 +720,18 @@ mod tests {
         tilo_doc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
-    /// Dispatch an action through the Tilo executor with a discarding transport
-    /// (the local, single-peer path the affordances take).
     fn dispatch(doc: &mut AutoCommit, action: &RichTextAction) {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(doc, &crate::model::action(action), encoded, &mut tx).unwrap();
     }
 
-    /// Splice validation matches the snapshot without scanning regions; a stale multi-target action is an
-    /// atomic no-op; hostile table dimensions are rejected before any write; an unbound document is refused
-    /// without a write.
     #[expect(
         clippy::too_many_lines,
         reason = "end-to-end validation scenario that seeds every region shape and checks each against the snapshot in order"
     )]
     #[test]
     fn invalid_or_stale_actions_are_refused_before_any_write() {
-        // Phase: splice_validation_matches_snapshot_without_scanning_regions.
         {
             use automerge::{ObjType, ScalarValue};
             use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
@@ -956,7 +875,6 @@ mod tests {
             assert_eq!(state.save(), before, "invalid splice must make no writes");
         }
 
-        // Phase: stale_multi_target_action_is_an_atomic_noop.
         {
             let (mut state, ids) = seeded("first\nsecond\n");
             let before = state.doc.save();
@@ -975,7 +893,6 @@ mod tests {
             );
         }
 
-        // Phase: hostile_table_dimensions_are_rejected_before_any_write.
         {
             let (mut state, ids) = seeded("anchor\n");
             let before = state.doc.save();
@@ -985,7 +902,6 @@ mod tests {
             assert_eq!(state.doc.save(), before);
         }
 
-        // Phase: unbound_document_is_refused_without_a_write.
         {
             let mut doc = AutoCommit::new();
             let before = doc.save();
@@ -998,8 +914,6 @@ mod tests {
         }
     }
 
-    /// A heading, two paragraphs, a comment and a tracked insertion, built
-    /// through the markdown import and the document model's review writes.
     fn wp_seed() -> AutoCommit {
         let (mut state, ids) = seeded("# Title\n\nHello world\n\nonetwo\n");
         let c = crate::model::open(&state.doc).unwrap();
@@ -1023,7 +937,6 @@ mod tests {
         state.doc
     }
 
-    /// The `n`th body block's stable id.
     fn nth_block(doc: &AutoCommit, n: usize) -> String {
         let c = crate::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c)
@@ -1032,8 +945,6 @@ mod tests {
             .expect("seeded block")
     }
 
-    /// Edits at the caret and the selection are effects published on the
-    /// document itself, never a second document resource.
     #[test]
     fn edits_at_the_selection_are_published_on_the_document() {
         let doc = wp_seed();
@@ -1061,7 +972,6 @@ mod tests {
         }
     }
 
-    /// "Hello" selected in the second block, as the widget reports it.
     fn wp_ctx(doc: &AutoCommit) -> WpResourceCtx {
         let block = nth_block(doc, 1);
         WpResourceCtx {
@@ -1150,11 +1060,8 @@ mod tests {
         ],
     }
 
-    /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
-    /// schemes; validation is enforced by both resource and executor.
     #[test]
     fn hyperlinks_are_typed_safe_and_validated_on_both_sides() {
-        // Phase: selected_text_exposes_a_typed_hyperlink_action_that_replays.
         {
             let (mut state, ids) = seeded("Read this\n");
             let block = ids[0].clone();
@@ -1187,7 +1094,6 @@ mod tests {
             }));
         }
 
-        // Phase: hyperlink_targets_are_limited_to_safe_authored_schemes.
         {
             for target in [
                 "https://example.com/guide?q=writer#links",
@@ -1215,7 +1121,6 @@ mod tests {
             }
         }
 
-        // Phase: hyperlink_validation_is_enforced_by_both_resource_and_executor.
         {
             let (mut state, ids) = seeded("Read this\n");
             let block = ids[0].clone();
@@ -1252,19 +1157,12 @@ mod tests {
         }
     }
 
-    /// Place-image consumes a published content hash; image object actions are atomic, replayable and
-    /// refuse stale targets; review entities are resources whose decisions replay identically; comment
-    /// replies replay and resolve cleans the thread, whose tombstone wins over a divergent reply.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn image_and_review_actions_replay_atomically() {
-        // Phase: place_image_consumes_a_published_content_hash.
-        // Placing consumes bytes an earlier action actually put in the
-        // content store. The caller supplies neither image metadata nor the
-        // bytes; the app resolves both while building its own document edit.
         {
             let (mut state, ids) = seeded("Intro\n");
             let content = tilo_content::ContentStore::memory();
@@ -1294,7 +1192,6 @@ mod tests {
             }));
         }
 
-        // Phase: image_object_actions_are_atomic_replayable_and_refuse_stale_targets.
         {
             let (mut a, ids) = seeded("Object\n");
             let block = ids[0].clone();
@@ -1347,7 +1244,6 @@ mod tests {
             assert_eq!(a.save(), before, "refusal has no partial mutation");
         }
 
-        // Phase: review_entities_are_resources_and_decisions_replay_identically.
         {
             let (mut a, ids) = seeded("Review this sentence\n");
             let block = ids[0].clone();
@@ -1401,7 +1297,6 @@ mod tests {
             assert_eq!(threads(&a.doc).len(), 1, "unrelated comment remains");
         }
 
-        // Phase: durable_comment_reply_action_replays_and_resolve_cleans_the_thread.
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
@@ -1445,7 +1340,6 @@ mod tests {
             assert!(threads(&a.doc).is_empty());
         }
 
-        // Phase: resolved_comment_tombstone_wins_over_divergent_reply.
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
@@ -1485,16 +1379,12 @@ mod tests {
         }
     }
 
-    /// Cross-block selection replacement is one replayable action; an encoded split and concurrent splice
-    /// converge; style fields merge granularly with the tombstone winning; TOC fields, rich paste and table
-    /// edits replay identically; a table tombstone wins over a divergent cell edit.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn edits_encode_replay_and_converge_on_divergent_replicas() {
-        // Phase: cross_block_selection_replacement_is_one_replayable_action.
         {
             let (mut a, ids) = seeded("alpha\n\nbeta\n\ngamma\n");
             let bytes = a.save();
@@ -1510,7 +1400,6 @@ mod tests {
             assert_eq!(blocks[0].text, "alXma");
         }
 
-        // Phase: encoded_split_and_concurrent_splice_converge_on_divergent_replicas.
         {
             let (mut a, ids) = seeded("alpha beta\n");
             let bytes = a.save();
@@ -1541,7 +1430,6 @@ mod tests {
             );
         }
 
-        // Phase: style_fields_merge_granularly_and_style_tombstone_wins.
         {
             let (mut base, ids) = seeded("Styled paragraph\n");
             let create = set_style_property_action(
@@ -1610,7 +1498,6 @@ mod tests {
             assert!(!tilo_doc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
         }
 
-        // Phase: toc_field_rich_paste_and_table_edits_encode_and_replay_identically.
         {
             let (mut origin, ids) = seeded("# Heading\n\nBody\n");
             let bytes = origin.save();
@@ -1678,7 +1565,6 @@ mod tests {
             assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
         }
 
-        // Phase: table_tombstone_wins_over_a_divergent_cell_edit.
         {
             let (mut base, ids) = seeded("Anchor\n");
             dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
@@ -1713,8 +1599,6 @@ mod tests {
         }
     }
 
-    /// Typing, same-block replacement and formatting neither materialize nor
-    /// scan the block order when validated and applied.
     #[test]
     fn keystroke_actions_do_not_scan_block_order() {
         let (mut state, ids) = seeded("alpha\n\nbeta\n");
@@ -1745,7 +1629,6 @@ mod tests {
         assert_eq!(text_of(&state.doc, &ids[1]), "Bta");
     }
 
-    /// A selection in `block` plus more search hits than discovery may list.
     fn overflowing_resource_ctx(block: &str) -> WpResourceCtx {
         WpResourceCtx {
             caret_block: block.to_owned(),
@@ -1816,11 +1699,6 @@ mod tests {
         assert_eq!(state.doc.save(), before);
     }
 
-    /// A fresh document publishes a small catalogue of Document operations,
-    /// both paragraph operations among them: every operation is a tool an
-    /// agent must read and a grant a person must understand, so the count is a
-    /// design budget, kept down by folding near-duplicates into one
-    /// parameterised operation rather than by raising it.
     #[test]
     fn a_fresh_document_publishes_few_grantable_document_operations() {
         fn document_ops(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {

@@ -386,17 +386,20 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
 }
 
 fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
-    use ui::permissions::policy::{Answer, Grant, Standing, Subject, TreePath, WorkspacePolicy};
-    let bot = Subject::bot("b1");
+    use ui::permissions::policy::{
+        Actor, Answer, Grant, Grantee, MemberId, Standing, TreePath, WorkspacePolicy,
+    };
+    let bot = Grantee::bot("b1");
     let grant = Grant::new(
         "bot:b1",
-        bot.clone(),
+        bot,
         TreePath::workspace(WORKSPACE),
         kinds,
         Answer::Allow,
-        Subject::person("ada"),
+        Grantee::person("ada"),
     );
-    Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![grant])
+    Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+        .acting_as(Actor::Member(MemberId::bot("b1")), vec![grant])
 }
 
 /// Ada's new scratchpad, and the same record held by her bot `b1` granted
@@ -507,22 +510,23 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() 
             installer: "ada".into(),
             standing: {
                 use ui::permissions::policy::{
-                    Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
+                    Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
+                    WorkspacePolicy,
                 };
-                let bot = Subject::bot("b1");
+                let bot = Grantee::bot("b1");
                 let read = Grant::new(
                     "bot:b1:0",
-                    bot.clone(),
+                    bot,
                     TreePath::root()
                         .any(Level::Workspace)
                         .any(Level::App)
                         .kind("chat.workspace".to_owned()),
                     KindSet::READ,
                     Answer::Allow,
-                    Subject::person("ada"),
+                    Grantee::person("ada"),
                 );
                 Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
-                    .bounded_by(bot, vec![read])
+                    .acting_as(Actor::Member(MemberId::bot("b1")), vec![read])
             },
         },
         Seed::Existing {
@@ -604,12 +608,13 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     // What a program that posts derives: posting on the chat's messages.
     let standing = {
         use ui::permissions::policy::{
-            Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
+            Actor, Answer, Grant, Grantee, KindSet, Level, MemberId, Standing, TreePath,
+            WorkspacePolicy,
         };
-        let bot = Subject::bot("b1");
+        let bot = Grantee::bot("b1");
         let post = Grant::new(
             "bot:b1:0",
-            bot.clone(),
+            bot,
             TreePath::root()
                 .any(Level::Workspace)
                 .app("so.tilo.chat".to_owned())
@@ -619,9 +624,10 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
                 .action("post".to_owned()),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("ada"),
+            Grantee::person("ada"),
         );
-        Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![post])
+        Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+            .acting_as(Actor::Member(MemberId::bot("b1")), vec![post])
     };
     let mut bot = crate::common::open(
         page.app_id(),

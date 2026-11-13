@@ -23,16 +23,10 @@ pub const TARGET_BYTES: u64 = 40 * 1024 * MIB;
 const EFI_TYPE: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 const LINUX_TYPE: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 
-/// Runs one host tool. The scenario passes `os/dev/vm.sh tool`; tests pass
-/// a recorder.
 pub trait Tools {
-    /// # Errors
-    ///
-    /// The tool's own failure, as text.
     fn run(&mut self, program: &str, args: &[&str], stdin: Option<&str>) -> Result<(), String>;
 }
 
-/// One region of the target that must survive the install unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Preserved {
     pub name: String,
@@ -96,9 +90,6 @@ fn preserved_names(layout: Layout) -> &'static [&'static str] {
     }
 }
 
-/// Build the alongside target as a sparse raw image at `raw`, returning the
-/// extents to verify after the install. The caller creates a qcow2 child with
-/// this immutable raw image as its backing file.
 pub fn build(
     layout: Layout,
     raw: &Path,
@@ -150,8 +141,6 @@ pub fn build(
     Ok(preserved)
 }
 
-/// Re-hash every preserved extent of the installed raw image. Returns the
-/// names of the extents that changed.
 pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<String>> {
     let mut changed = Vec::new();
     for extent in preserved {
@@ -162,8 +151,6 @@ pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<Strin
     Ok(changed)
 }
 
-/// Re-hash only the preserved extents through the installed qcow2 chain.
-/// Reading those ranges avoids converting the entire target back to raw.
 pub fn changed_cow(
     qcow2: &Path,
     scratch: &Path,
@@ -251,7 +238,6 @@ fn hash_range(path: &Path, offset: u64, length: u64) -> std::io::Result<String> 
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Where the fixture's scratch images live, beside the target.
 pub fn scratch_dir(cycle: &Path) -> PathBuf {
     cycle.join("fixture")
 }
@@ -286,8 +272,6 @@ mod tests {
         assert!(prepared.contains("name=\"Tilo prepared root\""));
         let guided = sfdisk_script(Layout::GuidedAlongside);
         assert_eq!(guided.lines().count(), 3);
-        // The guided layout ends after 1025 MiB of a 40 GiB disk, well past
-        // the 34 GiB of unallocated space the installer requires.
         const { assert!(TARGET_BYTES - 1025 * MIB > 34 * 1024 * MIB) };
         assert_eq!(sfdisk_script(Layout::Erase), "label: gpt\n");
     }

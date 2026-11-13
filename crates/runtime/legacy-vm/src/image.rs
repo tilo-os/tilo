@@ -1,12 +1,6 @@
-//! The guest image: a signed, digest-pinned disk from the registry.
-//!
-//! CI builds the Linux guest (`tools/ci/publish/legacy-guest.sh`),
-//! wraps its qcow2 in an OCI image, signs it with the release key and pins
-//! the digest in `os/legacy-guest-snapshot.env`, which is compiled in here.
-//! `skopeo` fetches by that digest, and `/etc/containers/policy.json`
-//! requires the release signature for the repository. Every user's disk is
-//! a copy-on-write overlay of the fetched base, so the base stays pristine
-//! and is shared by all of the user's VMs of that guest OS.
+//! The guest image: a signed, digest-pinned disk from the registry, overlaid per
+//! user. CI builds it (`tools/ci/publish/legacy-guest.sh`) and pins the digest in
+//! `os/legacy-guest-snapshot.env`, which is compiled in here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,10 +43,8 @@ pub fn pinned_ref(snapshot: &str, arch: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// The one repository the guest image is published to. Its scope in
-/// `/etc/containers/policy.json` requires the release key's signature; a
-/// sibling under the same namespace (the rejected `tilo-dev`, `tilo-ci` and
-/// `tilo-vm`, or one with no scope at all) is not the guest.
+/// The one repository the guest image is published to: its scope in `/etc/containers/policy.json`
+/// requires the release key's signature, so a sibling under the same namespace is not the guest.
 const GUEST_REPOSITORY: &str = "registry.tilo.so/tilo/legacy-guest";
 
 /// `registry.tilo.so/tilo/legacy-guest@sha256:<64 hex>` and nothing looser.
@@ -68,20 +60,17 @@ pub fn valid_pinned_ref(reference: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The reference compiled into this build for the running architecture.
 #[must_use]
 pub fn current_ref() -> Option<String> {
     pinned_ref(SNAPSHOT, std::env::consts::ARCH)
 }
 
-/// Where a fetched base for `reference` is kept.
 #[must_use]
 pub fn base_path(images: &Path, reference: &str) -> PathBuf {
     let digest = reference.rsplit(':').next().unwrap_or(reference);
     images.join(format!("linux-{digest}.qcow2"))
 }
 
-/// `skopeo copy docker://<ref> dir:<dir>`.
 #[must_use]
 pub fn fetch_argv(reference: &str, dir: &Path) -> Vec<String> {
     vec![
@@ -93,7 +82,6 @@ pub fn fetch_argv(reference: &str, dir: &Path) -> Vec<String> {
     ]
 }
 
-/// `qemu-img create -f qcow2 -F qcow2 -b <base> <disk>`.
 #[must_use]
 pub fn overlay_argv(base: &Path, disk: &Path) -> Vec<String> {
     vec![
@@ -131,7 +119,6 @@ pub fn single_layer(dir: &Path) -> Result<PathBuf, ImageError> {
     Ok(dir.join(digest))
 }
 
-/// Run a command the fetch is made of, [`fetch_argv`] or another.
 pub(crate) fn run(argv: &[String]) -> Result<(), ImageError> {
     let (program, rest) = argv.split_first().ok_or(ImageError::Layout)?;
     let output = Command::new(program)
@@ -151,7 +138,6 @@ pub(crate) fn run(argv: &[String]) -> Result<(), ImageError> {
     }
 }
 
-/// Fetch the pinned base into `images` unless it is already there.
 pub fn ensure_base(images: &Path, reference: &str) -> Result<PathBuf, ImageError> {
     let base = base_path(images, reference);
     if base.is_file() {
@@ -184,7 +170,6 @@ pub fn ensure_base(images: &Path, reference: &str) -> Result<PathBuf, ImageError
     fetched
 }
 
-/// Create the user's disk as an overlay of `base`.
 pub fn create_disk(base: &Path, disk: &Path) -> Result<(), ImageError> {
     if let Some(parent) = disk.parent() {
         std::fs::create_dir_all(parent)?;
@@ -199,7 +184,6 @@ mod tests {
     #[test]
     fn the_guest_image_is_fetched_only_by_pinned_digest() {
         let digest = "ab".repeat(32);
-        // phase: only a digest pin of the signed guest repository is accepted
         {
             let snapshot = format!(
                 "# pinned by CI\nLEGACY_GUEST_X86_64_REF=registry.tilo.so/tilo/legacy-guest@sha256:{digest}\n"
@@ -218,17 +202,13 @@ mod tests {
                 "evil.example/legacy@sha256:{digest}"
             )));
             assert!(!valid_pinned_ref("registry.tilo.so/tilo/x@sha256:abc"));
-            // A sibling repository is not the signed guest scope, however
-            // well-formed its pin.
             for sibling in ["tilo-dev", "tilo-vm", "tilo", "legacy-guest-dev"] {
                 assert!(!valid_pinned_ref(&format!(
                     "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
                 )));
             }
-            // Whatever is compiled in must be well-formed or absent.
             assert!(current_ref().is_none_or(|reference| valid_pinned_ref(&reference)));
         }
-        // phase: fetch, layout and overlay commands are exact
         {
             let reference = format!("registry.tilo.so/tilo/legacy-guest@sha256:{digest}");
             assert_eq!(

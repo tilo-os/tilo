@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "browser.application"
 label = "Browser"
@@ -46,7 +48,7 @@ kind = "undoable"
 params = [
   { name = "origin", type = "text", required = true, schema = { type = "string" } },
   { name = "page", type = "text", required = true, schema = { type = "string" } },
-  { name = "forms", type = { list = { named = "RememberedForm" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { follows = { type = "string" }, grew_from = { type = "string" }, label = { type = "string" }, pages = { type = "array", items = { type = "string" } }, questions = { type = "array", items = { type = "object", additionalProperties = false, properties = { choices = { type = "array", items = { type = "string" } }, fallback = { type = "string" }, kind = { type = "string" }, name = { type = "string" }, required = { type = "boolean" } } } }, seen = { type = "integer", minimum = 0 }, signature = { type = "string" }, submit = { type = "array", items = { type = "string" } } } } } },
+  { name = "forms", type = { list = { named = "RememberedForm" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { follows = { type = "string" }, grew_from = { type = "string" }, label = { type = "string" }, pages = { type = "array", items = { type = "string" } }, questions = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, choices = { type = "array", items = { type = "string" } }, fallback = { type = "string" }, kind = { type = "string" }, required = { type = "boolean" } } } }, seen = { type = "integer", minimum = 0 }, signature = { type = "string" }, submit = { type = "array", items = { type = "string" } } } } } },
   { name = "whole", type = "bool", required = true, schema = { type = "boolean" } },
   { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]

@@ -1,9 +1,5 @@
-//! A test fixture for "no stale pointer is followed": a container whose
-//! child is replaced on demand, at sync, at settle or while it handles an
-//! event. The replaced child is kept alive in a graveyard (so a stale map
-//! entry still points at valid memory) and armed: anything that reaches it
-//! afterwards — through a layout map that was not rebuilt — panics, instead
-//! of reading freed memory as a real replacement would.
+//! A test fixture for "no stale pointer is followed": a container whose child is replaced on
+//! demand, at sync, at settle or while it handles an event.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -116,7 +112,6 @@ impl Widget for Tripwire {
     }
 }
 
-/// When the container replaces its child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReplaceAt {
     Sync,
@@ -133,9 +128,7 @@ pub(crate) struct Replacing {
     graveyard: Vec<Box<dyn Widget>>,
     at: ReplaceAt,
     armed: Rc<Cell<bool>>,
-    /// The structural flag this fixture is about: a replacement it reports.
     dirty: bool,
-    /// What the replacement changed on screen, whether or not it reported it.
     repaint: bool,
     /// Whether it reports the replacement, as every widget must; one that
     /// forgets may leave a stale layout, never a call into a replaced child.
@@ -144,7 +137,6 @@ pub(crate) struct Replacing {
 }
 
 impl Replacing {
-    /// The container with a focused child, and the switch that arms it.
     pub(crate) fn new(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
         let (child, child_replaced) = Tripwire::new(true);
         let armed = Rc::new(Cell::new(false));

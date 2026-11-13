@@ -120,16 +120,11 @@ pub struct ListItemProps {
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
-    /// The item's document, shown in the row's place while the row stands open into it: a row
-    /// with a document opens where it stands in the list when it is chosen, and the list's own
-    /// motion grows the row to hold it. The document opens with the item's own leading control
-    /// and title, in the row's column — the row becomes the item, its title written once — and
-    /// what the item holds follows under them. Without a document, choosing the row opens the
-    /// item elsewhere (`ui.VirtualList`'s `activate`).
-    ///
-    /// Only the row standing open carries it: the runtime builds a row's document when the row
-    /// opens and drops it when it closes, so a list of ten thousand rows on screen costs the one
-    /// document a person reads.
+    /// The item's document, shown in the row's place while the row stands open into it: a row with a
+    /// document opens where it stands in the list when it is chosen, and the list's own motion grows
+    /// the row to hold it. The document opens with the item's own leading control and title, in the
+    /// row's column — the row becomes the item, its title written once — and what the item holds
+    /// follows under them.
     #[component(slot(when_open))]
     pub detail: ItemRow,
     /// The row opens into a document of its own where it stands: what its view gives as `detail`
@@ -169,8 +164,6 @@ impl SlotType for ItemRow {
             *self = row.map_or(Self::None, |row| Self::Row(Box::new(row)));
             return Ok(());
         }
-        // A row's view: its call (one view, whatever it holds), or the views given one by one,
-        // stacked as a view's body is.
         let mut views = source.children(slot);
         *self = match views.len() {
             0 => Self::None,
@@ -223,10 +216,9 @@ pub struct VirtualListProps {
     /// ([`ListItemProps::parent`]), with a disclosure on the rows that have subtasks, folding
     /// them away. The list works the tree out of the items as it builds their rows.
     pub tree: bool,
-    /// The title over the group of rows whose item names no group: a list grouped by a thing
-    /// some items lack (a day, a place) heads those rows with it, never folding them under the
-    /// last group that names one. The rows keep the order their list gives. `None` leaves them
-    /// among the others.
+    /// The title over the group of rows whose item names no group: a list grouped by a thing some items
+    /// lack (a day, a place) heads those rows with it, never folding them under the last group that
+    /// names one. The rows keep the order their list gives.
     pub ungrouped_title: Option<String>,
     /// The title of the view this list stands under, as the view's header reads it, and how
     /// many things it counts beside it (`view_count`): a list whose rows all stand in one group
@@ -242,10 +234,9 @@ pub struct VirtualListProps {
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
     /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
-    /// [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that
-    /// shows it, and while that is above the view a pill at the foot offers the way back to it
-    /// ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it
-    /// builds, so a list keeps its rows and only the two the divider moved between build again.
+    /// [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows
+    /// it, and while that is above the view a pill at the foot offers the way back to it
+    /// ([`VirtualList::following_end`]). `None` draws neither.
     pub unseen_from: Option<ResourceId>,
     /// The items, in order.
     #[component(slot(default))]
@@ -622,9 +613,6 @@ impl ListModel for DescribedRows {
     fn group_at(&self, index: usize) -> Option<super::RowGroup> {
         let key = self.key_at(index)?;
         self.with_facts(&key, |item| {
-            // A row with something to report — a change nobody has seen, an item removed and
-            // not yet seen go — is not folded away with its group: its group's rows are out of
-            // the way, and what it says is for the person, wherever it would stand.
             if item.change || item.removed {
                 return None;
             }
@@ -670,7 +658,6 @@ impl ListModel for DescribedRows {
             super::TreeRow {
                 parent,
                 depth: None,
-                // A list says nothing of the row over a row: its rows stand in its own order.
                 above: None,
             }
         })
@@ -704,8 +691,6 @@ impl ListModel for DescribedRows {
         {
             return item.item.as_ref().map(|shown| shown.0.clone());
         }
-        // A row of a loop over a collection is keyed by the loop and the item's id
-        // (`<loop>/<id>`): the id is what the app names the row's item by.
         key.split_once('/').map(|(_, item)| item.to_owned())
     }
 }
@@ -803,11 +788,8 @@ impl DescribedList {
         }
     }
 
-    /// Select the row that shows the resource `id`, and only it: the item the next column
-    /// shows. `None` selects nothing. Whether the selection changed.
-    ///
-    /// A choice of more than one row is the person's own while it holds: what the column
-    /// beside the list shows, or none, says nothing about it.
+    /// Select the row that shows the resource `id`, and only it: the item the next column shows. `None`
+    /// selects nothing.
     pub fn select_presenting(&mut self, id: Option<&str>) -> bool {
         if self.chosen_rows() > 1 {
             return false;
@@ -851,11 +833,10 @@ fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
         .flatten()
 }
 
-/// The rows a host chose for its person ([`VirtualListProps::chosen`]), from the items it
-/// names: none when it names none, so a choice the list made itself stands. A choice of several
-/// rows is the host's while it holds: what the host kept of it gone, an action over the rows ran
-/// and put it away, the list puts its own away with it. A single row chosen by the keyboard is
-/// the list's own, kept while no record names it.
+/// The rows a host chose for its person ([`VirtualListProps::chosen`]), from the items it names:
+/// none when it names none, so a choice the list made itself stands. A choice of several rows is
+/// the host's while it holds: what the host kept of it gone, an action over the rows ran and put it
+/// away, the list puts its own away with it.
 fn picked_rows(
     chosen: Option<Vec<ResourceId>>,
     reading: &DescribedRows,
@@ -900,8 +881,6 @@ fn declared_shortcuts(
         {
             continue;
         }
-        // A command the view bound to a published action is that action, which the host runs
-        // from its own key; only the view's own events run from here.
         let press = crate::widget::Press::of(item.choose.clone());
         if press.address().is_none() && !press.is_none() {
             out.push((shortcut, press.runner()));
@@ -936,10 +915,6 @@ fn indent_view(
     chevron_column: f32,
     progress: Option<String>,
 ) -> Element {
-    // The line packs what it holds, so the view starts on the row's column and not one gap
-    // further: the chevron column the list keeps in front of its rows, the row's own depth and
-    // the step its chevron takes in front of it are the whole of the room before it, and a row
-    // with nothing to fold stands there all the same.
     let mut line = Row::row()
         .fill_width()
         .align(Align::Center)
@@ -952,7 +927,6 @@ fn indent_view(
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);
     if let Some(progress) = progress {
-        // The figure stands a related gap after the row, as the rest of the line does.
         line = line
             .push(Box::new(Spacer::token(crate::tokens::SpacingStep::S2)))
             .push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
@@ -974,9 +948,6 @@ fn bare_row(
         ..
     }: RowBuild,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
-    // What the row over it states, read before the row's own: a row that stands under its
-    // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
-    // is the parent's, read once above it.
     let parent_meta = nesting_parent(rows, key, tree).and_then(|parent| {
         rows.with_item(&parent, |item| match item.row {
             ItemRow::Row(row) => row.meta,
@@ -998,45 +969,34 @@ fn bare_row(
             progress,
             ..
         } = item;
-        // Where the row belongs, while the item it is under is no row of this list — or no row of
-        // its group, the list grouping what it holds: the row says it, rather than standing
-        // indented under nothing.
         let breadcrumb =
             parent_title.filter(|_| !tree.is_some_and(|marks| marks.is_nested(&key.to_owned())));
         let shortcuts = declared_shortcuts(&menu, &attached.menu);
-        // The mark the item's page takes where the row stands open into it: the row the page
-        // takes the place of is not drawn, and the change the person has not seen goes with the
-        // item, never away with it.
+        // // The mark the item's page takes where the row stands open into it: the row the page // takes
+        // the place of is not drawn, and the change the person has not seen goes with the // item, never
+        // away with it.
         let page_mark = expanded
             .then(|| change.as_ref().map(ChangeMarkProps::again))
             .flatten();
-        // What someone else changed and the person has not seen, at the row's own height: on a
-        // list row their face on its trailing edge and their colour under it; beside a row's
-        // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
-                // What the row is in comes before what it says of itself: a narrow row elides
-                // the fact its neighbours repeat, and keeps the one nothing above it says.
                 if let Some(title) = &breadcrumb {
                     props.secondary = Some(match props.secondary.take() {
                         Some(own) if !own.is_empty() => format!("in {title} · {own}"),
                         _ => format!("in {title}"),
                     });
                 }
-                // The list paces the rows it builds unless a row says its own, so one option on
-                // the list covers its content.
+                // // The list paces the rows it builds unless a row says its own, so one option on // the list
+                // covers its content.
                 props.motion = props.motion.or(Some(feel));
-                // The fact the parent's row already states is the parent's.
                 if let (Some(parent), Some(meta)) = (&parent_meta, &props.meta)
                     && parent == meta
                 {
                     props.meta = None;
                     props.meta_tone = crate::widget::Tone::Neutral;
                 }
-                // The list activates its rows itself, by key: a row of it is not a target of
-                // its own.
                 props.activate = Event::None;
-                // The row's own figure stands unless the tree's count takes that column.
+                // // The row's own figure stands unless the tree's count takes that column.
                 let value_free = props.value.is_none();
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
@@ -1049,12 +1009,7 @@ fn bare_row(
                     row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
-                // A tree indents the row's content one disclosure gutter per depth, its lift
-                // still filling the row; how far its branch got is its trailing figure.
                 if let Some(marks) = tree {
-                    // A tree's row stands one step per depth in from the column its list
-                    // leads, whether or not it has subtasks to fold: the chevron that folds it
-                    // hangs in the step in front of its content.
                     row = row
                         .depth(marks.depth(&key.to_owned()))
                         .chevron_column(f64::from(chevron_column));
@@ -1083,14 +1038,8 @@ fn bare_row(
             }
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
         };
-        // A row standing open into its item: the item's document takes the row's place in the
-        // very column the row stands in, so the leading control and the title it opens with are
-        // the row's own, written once, and what the item holds follows under them. A view takes
-        // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
             (true, ItemRow::View(document)) => {
-                // The face stands on the page's own line, where the row's line was, not down
-                // the middle of a page that runs far below it.
                 let document = with_mark(
                     document,
                     page_mark.and_then(|change| change.face(&format!("{key}~change"))),
@@ -1106,9 +1055,6 @@ fn bare_row(
                     ),
                     None => document,
                 };
-                // The row stands open into its item: the document takes its place, and the
-                // row keeps the name the document titles itself with, so the list shows one
-                // row where the person pressed and a reader hears which item it opened.
                 Box::new(super::open::RowOpen::new(document, tree.is_some())) as Element
             }
             (true, ItemRow::Row(props)) => {
@@ -1177,7 +1123,6 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
         ..
     } = attached;
     let trailing = swiped.trailing.or(swipe);
-    // The toolbar is over the row, so a swipe moves both.
     let row = if toolbar.is_empty() {
         row
     } else {
@@ -1190,15 +1135,10 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
     }
 }
 
-/// A message of a transcript: its item's row, under its author and the time when the item
-/// names them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one
-/// before it on the same day, shows the author's avatar and name once, over its first message;
-/// the others line up under it. The first message of a day has the day's divider over it, and
-/// where it is also the first message the reader has not seen, the day and the place reading
-/// starts again are one band, in the accent, saying both.
-///
-/// Each message is one row of the page's column: a run's next line stands a tight gap under
-/// the one before, a new run a section's gap under the last.
+/// A message of a transcript: its item's row, under its author and the time when the item names
+/// them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one before it on
+/// the same day, shows the author's avatar and name once, over its first message; the others line
+/// up under it.
 fn message_of(
     rows: &DescribedRows,
     key: &str,
@@ -1206,8 +1146,6 @@ fn message_of(
     feel: crate::motion::Feel,
     measure: Option<Length>,
 ) -> Element {
-    // The row that shows the item the reader has not seen, of the rows the host rendered. An
-    // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
     let first_unread = unread.is_some_and(|item| {
         rows.with_facts(key, |props| {
             props
@@ -1278,8 +1216,6 @@ fn message_of(
                 .push(said),
         )
     };
-    // Who has read to this line: their faces at its trailing end, once each, where their
-    // reading ends. The author's own face stands at the line's head already.
     let read_by: Vec<Person> = rows
         .with_facts(key, |item| item.read_by)
         .unwrap_or_default()
@@ -1292,13 +1228,11 @@ fn message_of(
     } else {
         message.push(read_faces(key, read_by))
     };
-    // The message swipes and shows its toolbar whole, its author with it; the day's divider
-    // stays.
     let message = attach(Box::new(message), swipe, attached);
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    // The band over this line: the day it opens, the place reading starts again, or — where the
-    // day turns over at the reader's first unseen line — one band in the accent saying both,
-    // never a day's divider stacked over the unread one.
+    // // The band over this line: the day it opens, the place reading starts again, or — where the //
+    // day turns over at the reader's first unseen line — one band in the accent saying both, // never
+    // a day's divider stacked over the unread one.
     let divider = match (day.filter(|_| new_day), first_unread) {
         (Some(day), true) => Some(SectionDivider::unread_day(&clock.day_label(day))),
         (Some(day), false) => Some(SectionDivider::new(clock.day_label(day))),
@@ -1458,11 +1392,8 @@ impl Described for DescribedList {
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
-        // The items the list's events read, kept as the list holds them.
         let reading = Rc::new(RefCell::new(rows.reader()));
         if page_column {
-            // The divider of the unseen part stands over the row that shows the item: a row says
-            // which item it shows, so the list finds it as the rows arrive.
             let unseen = Rc::new(RefCell::new(unseen_from.map(|item| item.0)));
             let marked = unseen.borrow().clone();
             let divider = Rc::clone(&unseen);
@@ -1476,8 +1407,6 @@ impl Described for DescribedList {
             .filling()
             .with_id(key)
             .with_feel(feel)
-            // A message is read, not chosen: a tap on one gives it the keyboard and leaves
-            // nothing tinted behind it.
             .reading();
             if follow_end {
                 list = list.following_end();
@@ -1485,7 +1414,6 @@ impl Described for DescribedList {
             let list = list
                 .unread_from(marked)
                 .with_menu_around(|rows, key| offers_menu(rows, key));
-            // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
             });
@@ -1496,8 +1424,6 @@ impl Described for DescribedList {
                 unseen: Some(unseen),
             };
         }
-        // What the rows of a tree are: the list fills it as it mounts them, and reads it as it
-        // builds each one.
         let marks = tree.then(|| Rc::new(TreeMarks::<String>::default()));
         let mut list = VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, {
             let marks = marks.clone();
@@ -1510,18 +1436,15 @@ impl Described for DescribedList {
             list = list.with_tail_title(title);
         }
         if let Some(title) = view_title {
-            // What the title counts, as the rows a heading counts: a number never negative.
+            // // What the title counts, as the rows a heading counts: a number never negative.
             let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
             list = list.in_view(title, count);
         }
-        // A column's one list takes the column's height and scrolls its rows; a list among a
-        // page's other content is as tall as its rows, and the page scrolls them with the rest.
         list = if in_column {
             list.filling().in_column()
         } else {
             list.fitting_rows()
         };
-        // Whatever its rows, a list read to its end opens at the last one and stays there.
         if follow_end {
             list = list.following_end();
         }
@@ -1546,11 +1469,9 @@ impl Described for DescribedList {
             }
             list = list.with_selection(chosen);
         }
-        // The items a host chose for its person: their rows are the selection.
         if let Some(picked) = picked_rows(chosen, &reading.borrow(), 0) {
             list = list.with_selection(picked);
         }
-        // Each event carries the item its row shows, read from the list's items.
         if !select.is_none() || !activate.is_none() {
             let (on_select, on_pick) = (select.clone(), activate.clone());
             let (selecting, picking) = (Rc::clone(&reading), Rc::clone(&reading));
@@ -1567,16 +1488,11 @@ impl Described for DescribedList {
                     }
                 })
                 .on_activate(move |key| {
-                    // A removed item's row opens nothing: its mark shows what removed it.
                     if !picking.borrow().is_removed(&key) {
                         activate.fire(item_of(&picking.borrow(), &key));
                     }
                 });
         }
-        // What is selected now, as the items it is of: a selection a host keeps, so the list
-        // it builds again shows it as the person left it. The list reports what a window keeps
-        // (a choice made by hand, a choice of more than one row, and the way back to one or
-        // none), so whatever arrives here is worth keeping.
         if !selected_changed.is_none() {
             let fired = selected_changed.clone();
             let selecting = Rc::clone(&reading);
@@ -1590,8 +1506,8 @@ impl Described for DescribedList {
                 fired.fire(Some(Value::List(items)));
             });
         }
-        // The item the host holds open stands open where its row stands, unless the item is no
-        // row of the list (a place that does not hold it).
+        // // The item the host holds open stands open where its row stands, unless the item is no // row
+        // of the list (a place that does not hold it).
         list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if !opened_changed.is_none() || !closed_changed.is_none() {
             let (opened, closed) = (opened_changed, closed_changed);
@@ -1617,10 +1533,9 @@ impl Described for DescribedList {
         }
     }
 
-    /// The same list over the same rows: what the props say around the items is taken where
-    /// the list stands, and items given whole are replaced where they stand. The person's
-    /// scroll, the row their keyboard holds and what they opened stay. Rows a host renders
-    /// change through the host; anything that makes the list another list builds it again.
+    /// The same list over the same rows: what the props say around the items is taken where the list
+    /// stands, and items given whole are replaced where they stand. The person's scroll, the row their
+    /// keyboard holds and what they opened stay.
     fn set_props(&mut self, props: VirtualListProps) -> bool {
         if Face::of(&props) != self.face {
             return false;
@@ -1653,7 +1568,6 @@ impl Described for DescribedList {
         if let Some(unseen) = &self.unseen {
             (*unseen.borrow_mut()).clone_from(&unseen_from);
         }
-        // The items given again, as the list's events read them.
         let reading = rows.reader();
         let picked = picked_rows(chosen, &reading, self.chosen_rows());
         *self.reading.borrow_mut() = reading;
@@ -1667,21 +1581,16 @@ impl Described for DescribedList {
         list.set_view_title(view_title, count);
         list.set_feel(feel);
         if replaced {
-            // The rows build anew where they stand: the list's scroll, its keyboard row and
-            // the menus its rows open are the list's own and stay.
             list.update_model(move |model| *model = rows);
         }
-        // The unseen row moved without the list's items changing: the list takes it, and the
-        // rows it left and arrived at build again.
         list.set_unread(unseen_from);
-        // The item the host holds open: its row grows into its document where it stands, and
-        // an item that left the list opens nothing. An item the rows cannot answer for yet
-        // leaves the row the person has open as it is, and opens as its row arrives.
+        // // The item the host holds open: its row grows into its document where it stands, and // an item
+        // that left the list opens nothing. An item the rows cannot answer for yet // leaves the row the
+        // person has open as it is, and opens as its row arrives.
         list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if let Some(picked) = picked {
             list.set_selection(picked);
         }
-        // Each event carries the item its row shows, read from the items the list holds now.
         let selecting = Rc::clone(&reading);
         let picking = Rc::clone(&reading);
         let (on_select, on_pick) = (select, activate.clone());
@@ -1697,7 +1606,6 @@ impl Described for DescribedList {
             }
         });
         list.set_on_activate(move |key| {
-            // A removed item's row opens nothing: its mark shows what removed it.
             if !picking.borrow().is_removed(&key) {
                 activate.fire(item_of(&picking.borrow(), &key));
             }
@@ -2039,8 +1947,6 @@ mod tests {
             rect_of(node, "ListRow", &format!("message {at}"))
                 .unwrap_or_else(|| panic!("the message {at} shows"))
         };
-        // The row the band stands over keeps the column and the size it has without it: the
-        // day the reader left off at says it in the day's own band, and adds no band over it.
         let unread = message(&marked, 2);
         let alone = message(&plain, 2);
         assert_eq!(
@@ -2048,15 +1954,11 @@ mod tests {
             "the message under the band has the box it has without it: {unread:?} against \
              {alone:?}"
         );
-        // The line the reader has not seen still shows where reading starts, so it says so
-        // with a band the line alone does not have.
         let opened = message(&marked, 3);
         assert!(
             opened[1] > unread[1],
             "the day the reader left off at stands over its line: {opened:?} against {unread:?}"
         );
-        // Every message of one run starts on one line: the one under the divider stands on the
-        // column of the messages around it, the one over it and the one under it alike.
         for at in [0, 1, 3] {
             let other = message(&marked, at);
             assert_eq!(
@@ -2065,9 +1967,6 @@ mod tests {
                 unread[0], other[0]
             );
         }
-        // The two dividers of one conversation are one component and rule the same column: the
-        // day's over the first message, and the one over the third, which opens a day at the
-        // first line the reader has not seen, so the two are one band saying both.
         let mut dividers = Vec::new();
         rects_of_widget(&marked, "SectionDivider", &mut dividers);
         assert_eq!(
@@ -2083,8 +1982,6 @@ mod tests {
                 "divider {edge} ends where the first does: {dividers:?}"
             );
         }
-        // The band over the third message says the day and that reading starts there: one
-        // divider, in the accent, saying what the two would have said apart.
         let mut said = Vec::new();
         find_widget(&marked, "SectionDivider", &mut said);
         let clock = ConversationClock::local();
@@ -2108,8 +2005,8 @@ mod tests {
             VirtualListProps {
                 page_column: true,
                 rows: transcript_messages(|index| match index {
-                    // Mia read to the second message; the second message's own author read it
-                    // too, and never shows beside their own words.
+                    // // Mia read to the second message; the second message's own author read it // too, and never
+                    // shows beside their own words.
                     1 => vec![
                         Person {
                             identity: "person-0".to_owned(),
@@ -2181,7 +2078,6 @@ mod tests {
             Some("row-1"),
             "the row the person pressed takes the keyboard"
         );
-        // The keyboard's way through the rows rings the row it is on, and chooses none.
         let (taffy, node) = lay_out_tree(list, 400.0);
         Widget::set_focus(list, true);
         let up = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
@@ -2199,7 +2095,7 @@ mod tests {
         );
         assert_eq!(list.selection_len(), 0, "no row was chosen on the way");
 
-        // A column's rows are chosen, as a list of things to open always was.
+        // // A column's rows are chosen, as a list of things to open always was.
         let mut column = DescribedList::from_props("column", column_of(given_rows(6)));
         press_row(&mut column, 1, left, 400.0);
         let list = column.list().expect("the list stands");
@@ -2299,8 +2195,6 @@ mod tests {
             "the list reports no choice of a row it opens where it stands"
         );
 
-        // A row of a list whose items carry no document opens elsewhere, and the menu over it
-        // chooses it, as a press on it would.
         let props = VirtualListProps {
             select: Event::View(Intent::new(&queue, "list", "select")),
             ..column_of(rows_offering(4, false))
@@ -2323,8 +2217,6 @@ mod tests {
         assert_eq!(fired.len(), 1, "the menu chooses the row: {fired:?}");
         assert_eq!(fired[0].event, "select");
 
-        // A window too narrow to hold the item under its row opens it in front of the list, so
-        // the menu over the row chooses it, as a press on it would.
         let select = Event::View(Intent::new(&queue, "list", "select"));
         let props = VirtualListProps {
             select,
@@ -2363,10 +2255,10 @@ mod tests {
             "the item the host holds open is the row standing open"
         );
         lay_out(inner, 400.0);
-        // The item's document stands in the row's place: the rows over it keep their slots,
-        // and the rows under it follow where the document ends, never standing one row above
-        // it. What the row writes there is the layout check's to read (`repeated_row_title`),
-        // which watches a title written in a row and again in the item it opened into.
+        // // The item's document stands in the row's place: the rows over it keep their slots, // and the
+        // rows under it follow where the document ends, never standing one row above // it. What the row
+        // writes there is the layout check's to read (`repeated_row_title`), // which watches a title
+        // written in a row and again in the item it opened into.
         let standing = inner.viewport.item_top(2).unwrap_or_default();
         let above = inner.viewport.item_top(1).unwrap_or_default()
             + inner.viewport.item_height(1).unwrap_or_default();
@@ -2385,7 +2277,6 @@ mod tests {
             Some(below),
             "the rows under the item follow where its document ends"
         );
-        // The same list given the item again keeps it open, and given none closes it.
         let same = VirtualListProps {
             open: Some(ResourceId("task-2".into())),
             ..column_of(rows_with_documents(4))
@@ -2512,7 +2403,6 @@ mod tests {
             removed: RemovedRows(Rc::new(removed)),
             ..VirtualListProps::default()
         };
-        // The list shows the one row its host renders.
         let mut list = DescribedList::from_props("list", props(Vec::new()));
         let inner = list.list_mut().expect("the list stands");
         lay_out(inner, 400.0);
@@ -2521,8 +2411,6 @@ mod tests {
             inner.model().row_state(0).ready().is_some(),
             "the row the host rendered is there"
         );
-        // An item someone else removed comes among the rows: the list builds it where it
-        // stands, after the row it holds, without the host having rendered it.
         let mut list = DescribedList::from_props(
             "list",
             props(vec![ListItemProps {
@@ -2606,8 +2494,6 @@ mod tests {
         let attached = vec![command("Reopen", "control+enter", &queue)];
         assert_eq!(declared_shortcuts(&menu, &attached).len(), 1);
     }
-
-    // --- an item opened where it stands ---------------------------------------------------------
 
     /// One item of a list a test renders row by row: its key, and the item it stands under.
     struct ViewItem {
@@ -2865,8 +2751,6 @@ mod tests {
     /// on, and only what the item holds grows.
     #[test]
     fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
-        // row-0 stands at the top with row-2 and row-3 under it, and row-1 beside it at the top:
-        // opening one row reads the column of the rows that stay closed at its depth.
         let list = |open: &str, theme: &crate::theme::Theme| {
             let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(
                 &[
@@ -2891,8 +2775,8 @@ mod tests {
                 },
             )
         };
-        // The step a tree indents by is the theme's, so the columns must line up wherever the
-        // type scale puts it.
+        // // The step a tree indents by is the theme's, so the columns must line up wherever the // type
+        // scale puts it.
         let themes = [
             crate::theme::Theme::dark(),
             crate::theme::Theme::dark().with_text_scale(1.5),

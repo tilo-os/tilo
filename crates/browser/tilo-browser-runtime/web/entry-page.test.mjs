@@ -25,8 +25,9 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = '', session = {}, member = null} = {}) {
-  const values = new Map();
+async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null} = {}) {
+  const values = new Map(Object.entries(local));
+  let assigned = null;
   const stored = new Map(Object.entries(session));
   const listeners = [];
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
@@ -36,10 +37,14 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     const index = listeners.findIndex(held => held.type === type && held.listener === listener);
     if (index >= 0) listeners.splice(index, 1);
   };
-  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
-  globalThis.history = {pushState: () => calls.push('history')};
+  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'),
+    assign: url => { calls.push('assign'); assigned = url; }};
+  globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
-    getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
+    getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas')
+      : id.startsWith('arrival-failure') ? (screen[id] ??= new Element(id)) : null};
+  // The failure screen's parts (index.html, `#arrival-failure`), by id.
+  const screen = {};
   const status = {textContent: 'Loading…'};
   const calls = [];
   const shown = [];
@@ -52,7 +57,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
-  const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
+  const page = {peer: own ? null : {...peer, ...member}, entry: entry ?? {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
     router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
@@ -99,9 +104,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     {origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
-    .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
+    .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchDesktop = () => {}, prefetchOfferedApplications = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
-    .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
+    .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
@@ -113,7 +118,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure, at: () => assigned, screen};
 }
 
 test('the GPU device opens as the page starts, while the host is asked, once', async () => {
@@ -141,6 +146,47 @@ test('a page the host refuses mounts nothing, so it compiles no renderer for the
   // The device alone: the renderer's pipelines compile as a mount draws.
   assert.equal(prepared.length, 1);
   assert.deepEqual(mounted, []);
+});
+
+test('a page that cannot open its workspace shows one failure screen: the cause, Try again, and the other workspaces in it', async () => {
+  const {failure, screen, calls} = await fixture({boot: async ({deps, onStep}) => {
+    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+      entry: {base: 'https://web.example/', home: null}});
+    onStep('join');
+    throw Object.assign(new Error('join: HTTP 500'), {name: 'HostAdmissionError', code: 'refused', status: 500});
+  }});
+  assert.equal(failure?.message, 'join: HTTP 500', 'the cause is thrown on, to the console');
+  const root = document.documentElement.dataset;
+  assert.equal(root.failure, 'host-error');
+  assert.equal(screen['arrival-failure-heading'].textContent, '127.0.0.1:24100 couldn’t open this workspace');
+  assert.match(screen['arrival-failure-body'].textContent, /answered with an error/);
+  assert.equal(screen['arrival-failure-retry'].hidden, false);
+  assert.match(screen['arrival-failure-text'].textContent, /Host: 127\.0\.0\.1:24100/);
+  assert.match(screen['arrival-failure-text'].textContent, /HTTP 500/);
+  // The other workspaces are part of the screen, never a card over it.
+  assert.equal(document.body.children.length, 0, 'no card over the screen');
+  assert.equal(screen['arrival-failure-elsewhere'].hidden, false);
+  const labels = screen['arrival-failure-others'].children.map(item => item.children[0].children[0].textContent);
+  assert.ok(labels.includes('Other'), labels.join());
+  const other = screen['arrival-failure-others'].children[labels.indexOf('Other')];
+  other.children[0].listeners.get('click')();
+  assert.ok(calls.includes('history') || calls.includes('assign'), 'it opens the other workspace');
+});
+
+test('a page whose host never answers names that host, not this site', async () => {
+  globalThis.fetch = async () => ({ok: true});
+  const {screen} = await fixture({boot: async ({deps}) => {
+    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+      entry: {base: 'https://web.example/', home: null}});
+    // Let in, then the host's connection goes.
+    deps.onAdmitted({workspaceName: 'Lounge'});
+    throw new TypeError('Failed to fetch');
+  }});
+  assert.equal(document.documentElement.dataset.failure, 'unreachable');
+  assert.equal(screen['arrival-failure-heading'].textContent, 'Can’t connect to 127.0.0.1:24100');
+  assert.match(screen['arrival-failure-body'].textContent, /doesn’t trust its certificate/);
+  assert.equal(screen['arrival-failure-host'].hidden, false);
+  assert.equal(screen['arrival-failure-host'].textContent, 'Open 127.0.0.1:24100');
 });
 
 test('the account choice says it is the account choice, and resolves to the account taken', async () => {
@@ -345,13 +391,16 @@ test('an embedded workspace offers no invite sheet it could not carry out', asyn
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
   const embedded = deps;
-  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER};
+  // The host's own key rides along: it is a member of the workspaces it
+  // holds, and no person a link is made for.
+  const hostKey = Array(32).fill(0x2a);
+  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER, host: {hostCert: {user_public_key: hostKey}}};
   assert.equal(embedded.invite({peer: joining, entry: {base: 'https://web.example/'}}), null);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   // Named no earlier than admission names the person; the sheet makes the
   // link either way, and says who made it once there is a name.
   assert.deepEqual(deps.invite({peer: joining, entry: {base: 'https://web.example/'}}),
-    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER});
+    {base: 'https://web.example/', origin: ORIGIN, workspace: 'current', name: '', user: USER, host: '2a'.repeat(32)});
 });
 
 const LOUNGE = {name: 'Lounge', host: {origin: 'https://home.example'}, admission: 'https://home.example/peer/v1/directory/lounge/'};
@@ -469,4 +518,30 @@ test('the bar follows the session after the mount, not the mount alone', async (
   session = sessionOf();
   statuses[0]();
   assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
+});
+
+test('a person let in by a link into the site’s own home is handed to the bare site, where the first screen is', async () => {
+  // A link that carries a secret never shows the first screen, so a person who
+  // has not been set up here and was let in by one would stay on the shared
+  // desktop: the site's home, which is where people meet, not where someone
+  // starts. The bare site offers the first screen, and its skip or their agent
+  // opens a workspace of their own.
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const entry = {base: 'https://web.example/', home};
+  const {calls, failure, at} = await fixture({entry});
+  assert.equal(failure, null);
+  // The site and the workspace share an address but for the fragment, so the
+  // page takes itself there and loads again: the bare entry, not the link.
+  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), ['reload'],
+    'the page loaded the site itself again, not the workspace the link named');
+  assert.equal(at(), 'https://web.example/');
+});
+
+test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  const {failure, at} = await fixture({entry: {base: 'https://web.example/', home},
+    local: {'tilo-setup': JSON.stringify({step: 'done'})}});
+  assert.equal(failure, null);
+  assert.notEqual(at(), 'https://web.example/',
+    'a person who has been set up is not sent to the first screen again');
 });

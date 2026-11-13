@@ -32,8 +32,12 @@ impl Builder {
             }
             // A length no tag can carry: the digest is marked unsupported, and
             // whoever compares it refuses.
-            // ignored-failure: the unsupported flag is this failure's report
-            Err(_) => self.supported = false,
+            Err(_) => {
+                tilo_failure::ignored!(
+                    "the unsupported flag is this failure's report",
+                    self.supported = false
+                );
+            }
         }
     }
     fn bytes(&mut self, value: &[u8]) {

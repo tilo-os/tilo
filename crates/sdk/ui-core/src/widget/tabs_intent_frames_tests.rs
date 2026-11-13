@@ -3,10 +3,8 @@
 use super::tests::{at_time, four_tab_bar, lay_out_at_width_with, layout_at, path, sample_at};
 use super::*;
 
-/// Before/after frames for review: the pointer resting on the ×, the
-/// pointer travelling from the × to a revealed chip, and the pointer
-/// leaving for the window. Each frame is the bar at 2× with the pointer
-/// marked; every scenario also lands as one stacked sheet.
+/// Before/after frames for review: the pointer resting on the ×, the pointer travelling from
+/// the × to a revealed chip, and the pointer leaving for the window.
 #[test]
 #[ignore = "a review tool: needs a GPU adapter; writes PNGs to TILO_UI_SCREENSHOT_DIR"]
 fn render_window_controls_intent_frames() {
@@ -69,8 +67,6 @@ fn render_window_controls_intent_frames() {
     {
         let mut b = four_tab_bar();
         lay_out_at_width_with(&mut b, 900.0, &theme);
-        // The first draw records the real title advances; lay out again
-        // so every position below is the one the reviewer sees.
         shoot(&mut b, Point::ZERO);
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let r = b.tab_rects()[0];
@@ -102,8 +98,6 @@ fn render_window_controls_intent_frames() {
     {
         let mut b = four_tab_bar();
         lay_out_at_width_with(&mut b, 900.0, &theme);
-        // The first draw records the real title advances; lay out again
-        // so every position below is the one the reviewer sees.
         shoot(&mut b, Point::ZERO);
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let r = b.tab_rects()[1];

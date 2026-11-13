@@ -1,6 +1,5 @@
-//! Options taken apart without a `match`: `if let`, `x?.field`, `x ?? fallback`, and key paths
-//! (`.field` where a lambda would only read that field). Each means the same in an action, a
-//! function and a view.
+//! Options taken apart without a `match`: `if let`, `x?.field`, `x ?? fallback`, and key paths (`.field`
+//! where a lambda would only read that field). Each means the same in an action, a function and a view.
 
 use std::collections::HashMap;
 
@@ -14,8 +13,8 @@ use crate::types::Ty;
 /// The name a key path's lambda binds its item to; no source can write it.
 const KEY_ITEM: &str = "$item";
 
-/// `.field` written where a lambda goes, as the lambda `x -> x.field`; `.a.b` as
-/// `x -> x.a.b`; a lambda as itself.
+/// `.field` written where a lambda goes, as the lambda `x -> x.field`; `.a.b` as `x -> x.a.b`; a lambda as
+/// itself.
 pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
     match &e.kind {
         ExprKind::Field { base, name } => {
@@ -39,6 +38,7 @@ pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
             let item = ast::Ident {
                 name: KEY_ITEM.to_owned(),
                 span: e.span,
+                from_template_of: None,
             };
             let body = ast::Expr {
                 kind: ExprKind::Field {
@@ -56,20 +56,20 @@ pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
     }
 }
 
-/// What an `if let` lowered to: statements that set `cond` (true when every Option had a
-/// value, binding each), and its two branches.
+/// What an `if let` lowered to: statements that set `cond` (true when every Option had a value, binding
+/// each), and its two branches.
 pub(super) struct IfLet<T> {
     pub prelude: Vec<Stmt>,
     pub cond: Ex,
-    /// `None` when an Option is known to be absent where the code is expanded: the branch is
-    /// never taken, and not checked.
+    /// `None` when an Option is known to be absent where the code is expanded: the branch is never taken, and
+    /// not checked.
     pub then: Option<T>,
     pub els: T,
 }
 
 impl Checker<'_> {
-    /// Checks `if let a = x, b = y`: each value an Option, each later one seeing the names before
-    /// it, then the branches. `then` runs with the names bound, `els` without them.
+    /// Checks `if let a = x, b = y`: each value an Option, each later one seeing the names before it, then the
+    /// branches. `then` runs with the names bound, `els` without them.
     pub(super) fn if_let<T>(
         &mut self,
         binds: &[LetBind],
@@ -149,7 +149,6 @@ impl Checker<'_> {
         }
     }
 
-    /// `if let` as a statement.
     pub(super) fn if_let_stmt(
         &mut self,
         binds: &[LetBind],
@@ -174,8 +173,8 @@ impl Checker<'_> {
         self.emit(Stmt::If(out.cond, out.then.unwrap_or_default(), out.els));
     }
 
-    /// `if let` whose value is used: both branches agree on a type, and one branch alone is the
-    /// Option of it (`or_none`).
+    /// `if let` whose value is used: both branches agree on a type, and one branch alone is the Option of it
+    /// (`or_none`).
     pub(super) fn if_let_value(
         &mut self,
         binds: &[LetBind],
@@ -192,8 +191,8 @@ impl Checker<'_> {
             );
             let value = match out.then {
                 Some(t) => Self::or_none(out.cond, t),
-                // The names are known to be absent here: the branch never runs, so the value is
-                // the nothing the reader asked for, of the type that asked for it.
+                // The names are known to be absent here: the branch never runs, so the value is the nothing the
+                // reader asked for, of the type that asked for it.
                 None => match hint {
                     Some(ty @ Ty::Option(_)) => Self::none_of(&ty),
                     _ => Ex::new(Ek::Unit, Ty::Unit),
@@ -233,10 +232,9 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(out.prelude, Box::new(value)), ty)
     }
 
-    /// An `if` or `if let` with no `else`, whose value is used: the branch's value when its
-    /// condition holds, and `.none` when it does not. A branch that is an Option itself is that
-    /// Option, which is what `else { .none }` gives it too: an absent branch stays absent, and
-    /// one Option never holds another.
+    /// An `if` or `if let` with no `else`, whose value is used: the branch's value when its condition holds,
+    /// and `.none` when it does not. A branch that is an Option itself is that Option, so an absent branch
+    /// stays absent and one Option never holds another.
     pub(super) fn or_none(cond: Ex, value: Ex) -> Ex {
         let (value, ty) = match value.ty.clone() {
             Ty::Error => return Ex::error(),
@@ -258,13 +256,12 @@ impl Checker<'_> {
         Ex::new(Ek::If(Box::new(cond), Box::new(value), Box::new(none)), ty)
     }
 
-    /// The `.none` of an Option type.
     pub(super) fn none_of(ty: &Ty) -> Ex {
         Ex::host(Imp::NoneV, Vec::new(), ty.clone())
     }
 
-    /// `x?.name` or `x?.name(args)`: the field or method of the value of the Option `x`, an
-    /// Option itself (not one inside another); `.none` when `x` has none.
+    /// `x?.name` or `x?.name(args)`: the field or method of the value of the Option `x`, an Option itself
+    /// (not one inside another); `.none` when `x` has none.
     pub(super) fn opt_chain(
         &mut self,
         base: &ast::Expr,
@@ -328,8 +325,8 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(vec![Stmt::Set(tmp, b)], Box::new(pick)), ty)
     }
 
-    /// `x ?? fallback`: the value of the Option `x`, or `fallback` when it has none. A fallback
-    /// that is an Option itself makes the whole an Option.
+    /// `x ?? fallback`: the value of the Option `x`, or `fallback` when it has none. A fallback that is an
+    /// Option itself makes the whole an Option.
     pub(super) fn coalesce(
         &mut self,
         lhs: &ast::Expr,

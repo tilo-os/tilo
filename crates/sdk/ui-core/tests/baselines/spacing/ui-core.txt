@@ -32,6 +32,7 @@ crates/sdk/ui-core/src/widget/number_input.rs pixel_const 2
 crates/sdk/ui-core/src/widget/page_sidebar.rs pixel_const 13
 crates/sdk/ui-core/src/widget/permission_prompt.rs pixel_const 6
 crates/sdk/ui-core/src/widget/progress_bar.rs pixel_const 1
+crates/sdk/ui-core/src/widget/primitives/status_cluster.rs pixel_const 1
 crates/sdk/ui-core/src/widget/resize_handle.rs pixel_const 3
 crates/sdk/ui-core/src/widget/screenshot_markup.rs pixel_const 6
 crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 4

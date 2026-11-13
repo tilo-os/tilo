@@ -15,14 +15,8 @@ use fs_protocol::{
     SYNC_XATTR, SyncState, THUMB_XATTR,
 };
 
-/// The Tilo collaborative FUSE mount. Per `fs.service` the daemon mounts
-/// at `/var/workspace` (the older `/workspace` was a bug in this app).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// Read the Tilo sync state of `path` from its [`fs_protocol::SYNC_XATTR`]
-/// extended attribute. `None` when the attribute is absent (an ordinary file,
-/// off any workspace mount) or unreadable. This is a single `getxattr` — the
-/// same call `getfattr -n user.tilo.sync <path>` makes.
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     match xattr::get(path, SYNC_XATTR) {
         Ok(Some(bytes)) => SyncState::from_xattr(&bytes),
@@ -30,9 +24,6 @@ pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     }
 }
 
-/// Read the daemon's non-committing classification for one open conflict.
-/// The daemon loads the exact immutable members and base, so this result is
-/// intentionally more authoritative than a filename or timestamp heuristic.
 pub fn read_merge_preflight(
     path: &Path,
     conflict_id: uuid::Uuid,
@@ -55,9 +46,7 @@ pub fn read_metadata(path: &Path) -> Option<MetadataProjectionV1> {
     MetadataProjectionV1::parse_xattr(&xattr::get(path, METADATA_XATTR).ok()??).ok()
 }
 
-/// Fluent key for the user-facing provenance label. Keeping the wire value
-/// out of presentation lets every history surface share one localized
-/// vocabulary without changing signed metadata.
+/// The catalogue key for a provenance: the wire value stays out of the UI.
 pub fn provenance_key(provenance: &fs_protocol::FileProvenance) -> &'static str {
     use fs_protocol::FileProvenance;
     match provenance {
@@ -95,9 +84,7 @@ pub struct WorkspaceRecordIndex {
     pub truncated: bool,
 }
 
-/// One bounded unit of work from a mounted collaborative record catalogue.
-/// `reset` means the authority generation changed while this pager was alive;
-/// consumers must discard previously indexed rows before accepting `records`.
+/// One bounded unit of the record catalogue; `reset` says the authority changed and paging starts again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRecordIndexPage {
     pub records: Vec<WorkspaceRecord>,
@@ -106,10 +93,6 @@ pub struct WorkspaceRecordIndexPage {
     pub truncated: bool,
 }
 
-/// Retained continuation state for the mount's record-index protocol. A call
-/// to [`Self::next_page`] reads at most one v2 page (or the bounded v1
-/// compatibility projection), so opening or typing in global search never
-/// synchronously materialises the complete workspace authority.
 #[derive(Debug)]
 pub struct WorkspaceRecordIndexPager {
     source_roots: Vec<PathBuf>,
@@ -123,8 +106,6 @@ pub struct WorkspaceRecordIndexPager {
     root_generations: std::collections::HashMap<PathBuf, String>,
     generation_root_cursor: usize,
     discovery_sources: std::collections::VecDeque<PathBuf>,
-    /// A generated authority source keeps the multi-page paging contract
-    /// covered without writing thousands of xattrs during the unit test.
     #[cfg(test)]
     test_v2: Option<TestV2Source>,
 }
@@ -243,8 +224,6 @@ fn read_record_index_page_v3(
     .then_some(value)
 }
 
-/// Resolve one known stable record through the mount authority. This is a
-/// single bounded xattr request, including for a record beyond page 100,000.
 pub fn resolve_workspace_record(
     roots: &[PathBuf],
     record_id: uuid::Uuid,
@@ -284,9 +263,7 @@ fn root_generation(root: &Path) -> String {
     let root_bytes = root.as_os_str().as_encoded_bytes();
     hasher.update((root_bytes.len() as u64).to_be_bytes());
     hasher.update(root_bytes);
-    // ACL mounts intentionally expose a stable opaque manifest. Do not hash
-    // directory mtime there: it would turn hidden record edits into a visible
-    // global-search reset signal.
+    // An ACL mount's manifest is stable and opaque: its own index, never a hash of the directory's mtime.
     if let Some(bytes) = xattr::get(root, RECORD_INDEX_V3_XATTR).ok().flatten() {
         hasher.update(b"opaque-v3\\0");
         hasher.update((bytes.len() as u64).to_be_bytes());
@@ -344,7 +321,6 @@ fn project_record_entries(
 }
 
 impl WorkspaceRecordIndexPager {
-    /// How many roots one [`Self::poll_generation`] reads.
     pub const GENERATION_ROOTS_PER_POLL: usize = 8;
 
     pub fn new(roots: &[PathBuf]) -> Self {
@@ -454,10 +430,7 @@ impl WorkspaceRecordIndexPager {
     }
 
     fn discover_step(&mut self) -> bool {
-        // Each configured workspace root is an authority mount. We do not
-        // infer child mounts by directory enumeration: doing so makes an exact
-        // record UUID impossible to reopen without a hidden tail scan. Shared
-        // mounts must therefore be listed directly in `TILO_WORKSPACE_ROOTS`.
+        // Each configured workspace root is an authority mount; child mounts are not inferred from the tree.
         while let Some(root) = self.discovery_sources.pop_front() {
             if has_record_index(&root) {
                 self.roots.push(root);
@@ -467,20 +440,14 @@ impl WorkspaceRecordIndexPager {
         true
     }
 
-    /// Whether idle work still has an authority continuation to consume.
     pub fn has_more(&self) -> bool {
         !self.discovered || self.root_index < self.roots.len()
     }
 
-    /// Whether there is any root whose generation [`Self::poll_generation`]
-    /// watches; without one, polling it is a no-op.
     pub fn has_roots(&self) -> bool {
         !self.source_roots.is_empty() || !self.roots.is_empty()
     }
 
-    /// The roots whose generation [`Self::poll_generation`] reads, in the
-    /// order it takes them. A mount moves a root's generation by changing
-    /// the root itself, so a watch on each root says when to read again.
     pub fn generation_roots(&self) -> Vec<PathBuf> {
         let mut roots = self.source_roots.clone();
         roots.extend(self.roots.iter().cloned());
@@ -489,11 +456,6 @@ impl WorkspaceRecordIndexPager {
         roots
     }
 
-    /// Cheap manifest/root-set check, when a root's watch reports a change
-    /// or, where none can, on a timer. It never reads record pages; a
-    /// changed or vanished authority withdraws the retained index before a
-    /// fresh bounded page is admitted on the next idle turn. It reads at
-    /// most [`Self::GENERATION_ROOTS_PER_POLL`] roots, taking them in turn.
     pub fn poll_generation(&mut self) -> bool {
         let roots = self.generation_roots();
         if roots.is_empty() {
@@ -503,8 +465,7 @@ impl WorkspaceRecordIndexPager {
         for _ in 0..Self::GENERATION_ROOTS_PER_POLL.min(roots.len()) {
             let index = self.generation_root_cursor % roots.len();
             self.generation_root_cursor = self.generation_root_cursor.wrapping_add(1);
-            // `index` is modulo `roots.len()` above; preserve that invariant
-            // without an unchecked slice access in this refresh path.
+            // `index` is already modulo the root count; read it without an unchecked slice access.
             let Some(root) = roots.get(index) else {
                 return false;
             };
@@ -529,16 +490,13 @@ impl WorkspaceRecordIndexPager {
         changed
     }
 
-    /// Fetch one authority page. A changed manifest generation restarts from
-    /// its first page and marks `reset`, preventing mixed old/new paths.
+    /// Fetch one catalogued page; a changed manifest generation starts again from its first.
     #[allow(
         clippy::too_many_lines,
         reason = "one bounded authority-page state machine keeps generation, cursor, and fail-closed validation together"
     )]
     pub fn next_page(&mut self) -> WorkspaceRecordIndexPage {
-        // Capture the current authority before admitting the first page. This
-        // prevents a mutation between startup and the first periodic poll from
-        // becoming a stale-row baseline.
+        // Capture the authority before admitting the first page, so a change between them restarts paging.
         if self.observed_generation.is_none() {
             let _ = self.poll_generation();
         }
@@ -622,8 +580,6 @@ impl WorkspaceRecordIndexPager {
                 };
             }
             let Some(manifest) = self.v2_manifest(&root) else {
-                // The mount no longer serves its index: nothing of this
-                // root is listed.
                 self.root_index += 1;
                 self.cursor = None;
                 return WorkspaceRecordIndexPage {
@@ -638,8 +594,6 @@ impl WorkspaceRecordIndexPager {
                     (cursor.offset, cursor.last_record_id)
                 }
                 Some(_) => {
-                    // The mount invalidated the cursor. Do not keep old
-                    // rows under the new authority generation.
                     self.root_index = 0;
                     self.cursor = None;
                     reset = true;
@@ -685,11 +639,6 @@ impl WorkspaceRecordIndexPager {
                 };
             }
             let last_record_id = page.records.last().map(|record| record.record_id);
-            // A page's continuation advances over the namespace-owned
-            // source window, not merely returned rows: an ACL can
-            // deny every row in a bounded window. Empty pages are
-            // therefore valid and never trigger an unbounded hunt for
-            // the next visible record.
             let terminal = next.is_none();
             let valid_next = terminal && offset < manifest.records
                 || matches!(next, Some(next) if next > offset && next <= manifest.records && next % manifest.page_entries == 0);
@@ -725,9 +674,6 @@ impl WorkspaceRecordIndexPager {
     }
 }
 
-/// Compatibility helper for callers that only need the first bounded unit.
-/// New retained search code owns a [`WorkspaceRecordIndexPager`] and keeps
-/// advancing it as the user refreshes or opens global search.
 pub fn read_workspace_record_index(roots: &[PathBuf]) -> WorkspaceRecordIndex {
     let mut pager = WorkspaceRecordIndexPager::new(roots);
     let page = pager.next_page();
@@ -737,12 +683,6 @@ pub fn read_workspace_record_index(roots: &[PathBuf]) -> WorkspaceRecordIndex {
     }
 }
 
-/// Read a host-provided thumbnail (raw PNG bytes) for `path` from the
-/// [`THUMB_XATTR`] extended attribute. `None` when the driver has no preview for
-/// it (a plain local file off any workspace mount, a non-previewable type, or
-/// content not yet local on the host). A single `getxattr`, exactly the metadata
-/// channel the FUSE driver exposes — the file manager never re-decodes a file
-/// the host already previewed.
 pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
     match xattr::get(path, THUMB_XATTR) {
         Ok(Some(bytes)) if !bytes.is_empty() => Some(bytes),
@@ -750,11 +690,6 @@ pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
-/// The Tilo workspace roots the FUSE driver mounts (first-class sidebar
-/// locations, and the dirs whose entries carry sync state). Normally just
-/// [`WORKSPACE_ROOT`]; `TILO_WORKSPACE_ROOTS` (a native path list) overrides it for
-/// tests and alternate mounts. This navigable list includes the user's Shared
-/// place even when received shares are separate authority mounts.
 pub fn workspace_roots() -> Vec<PathBuf> {
     if let Some(v) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&v);
@@ -770,9 +705,7 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Direct mounts permitted to publish record-index resources and satisfy exact
-/// record opens. Received-share discovery requires a dedicated subscription
-/// index and is intentionally not inferred by walking `~/Shared`.
+/// Only direct mounts publish record-index resources and answer exact record opens.
 pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
     if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&value);
@@ -781,10 +714,6 @@ pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
     root.exists().then_some(root).into_iter().collect()
 }
 
-/// Parse a `TILO_WORKSPACE_ROOTS` value (colon-separated on Unix, semicolon-
-/// separated on Windows) into the roots that
-/// currently exist. Split out so the parsing is unit-testable without touching
-/// the process environment.
 fn parse_workspace_roots(val: &std::ffi::OsStr) -> Vec<PathBuf> {
     std::env::split_paths(val)
         .filter(|path| !path.as_os_str().is_empty())
@@ -792,28 +721,17 @@ fn parse_workspace_roots(val: &std::ffi::OsStr) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `path` sits inside a Tilo workspace root (so its entries carry sync
-/// state and should be queried for the [`SYNC_XATTR`]).
 pub fn is_workspace_path(path: &Path) -> bool {
     #[cfg(test)]
     fixture_io_guard::ambient_io("model::is_workspace_path");
     path_under_any(path, &workspace_roots())
 }
 
-/// Whether `path` is one of `roots` or nested under one. Pure over an explicit
-/// root list so the containment logic is testable without the environment.
 pub(crate) fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 
-/// Which of `roots` contains `path`, if any - the longest match, so a
-/// workspace mounted inside another resolves to the inner one.
-///
-/// [`is_workspace_path`] answers whether a path is in a workspace at all,
-/// which is what a sync-state query needs. Naming the workspace needs the
-/// root itself, and that is a different question: `/var/workspace` *is*
-/// the workspace, while `/var/workspace/notes` is a folder in it. Pure
-/// over an explicit root list for the same reason `path_under_any` is.
+/// The longest matching root, so a workspace mounted inside another resolves to the inner one.
 pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
     roots
         .iter()
@@ -822,17 +740,7 @@ pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a P
         .map(std::path::PathBuf::as_path)
 }
 
-/// What to call a workspace root on screen.
-///
-/// The mount path is an implementation detail of where the driver put it,
-/// and a misleading one: the demo mounts under `/var/tmp`, and a trail
-/// that spells it out tells a reader they are looking at scratch space on
-/// somebody's laptop - the opposite of a folder that belongs to the workspace.
-/// The mount's own final component is the name the workspace was given.
-///
-/// One function because the places sidebar and the breadcrumb name the
-/// same location, and somebody who clicks the one to reach the other must
-/// not find it has been renamed on the way.
+/// The root's name on screen; where the mount sits is this app's business.
 pub fn workspace_label(root: &Path) -> String {
     root.file_name().map_or_else(
         || crate::i18n::t("files-place-workspace"),
@@ -848,44 +756,24 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<DateTime<Local>>,
     pub mime: String,
-    /// The Tilo FUSE sync state, when this entry is on a workspace mount.
     pub sync_state: Option<SyncState>,
-    /// Stable content identity supplied by the collaborative mount. Ordinary
-    /// local files have `None` and retain the path/mtime/size fallback key.
     pub content_hash: Option<[u8; 32]>,
-    /// Stable collaborative record identity; survives rename and move.
     pub record_id: Option<[u8; 16]>,
-    /// Rich, honest availability state. `None` falls back to legacy sync state.
     pub availability: Option<AvailabilityProjectionV1>,
-    /// Recent immutable versions and first-class conflicts.
     pub history: Option<HistoryProjectionV1>,
-    /// Useful media/document facts from signed metadata; no payload read.
     pub rich_metadata: Option<MetadataProjectionV1>,
-    /// Object observed by the listing, used only as a stale-view precondition.
     pub observed: Option<host_fs::ObservedObject>,
-    /// What an app in the Applications place is, beyond its name: its icon,
-    /// kind and size. `None` for every file and folder.
     pub app: Option<crate::applications::AppFacts>,
 }
 
 impl Entry {
-    /// First-class conflict state projected by stable record identity. A
-    /// filename never creates or clears this badge.
+    /// A conflict is the record's; a filename never creates or clears one.
     pub fn is_conflict(&self) -> bool {
         self.history
             .as_ref()
             .is_some_and(|history| history.open_conflicts().next().is_some())
     }
 
-    /// Whether this entry's **content** is already on this machine, so
-    /// reading it costs a read and nothing else.
-    ///
-    /// [`SyncState::Projected`] and [`SyncState::Downloading`] say the bytes
-    /// are not here: opening such a file hydrates it from a peer, which is
-    /// work nobody asked for. Everything else is local — a file the driver
-    /// reports as [`SyncState::Local`], and equally a file carrying no sync
-    /// attribute at all, which is what an ordinary path (or a workspace root
-    /// that is a plain directory rather than a live FUSE mount) looks like.
     pub fn content_is_local(&self) -> bool {
         if let Some(availability) = &self.availability {
             return matches!(availability.residency, Residency::Resident { .. });
@@ -897,10 +785,8 @@ impl Entry {
     }
 }
 
-/// Human-readable byte size (e.g. `4.0 kB`). Directories show "—".
 pub fn human_size(entry: &Entry) -> String {
     if let Some(app) = &entry.app {
-        // An app's size only where it is known; never a placeholder.
         return app.size.map(crate::i18n::format_bytes).unwrap_or_default();
     }
     if entry.is_dir {
@@ -910,7 +796,6 @@ pub fn human_size(entry: &Entry) -> String {
     }
 }
 
-/// Locale-sensitive short modified timestamp, or "—" when unknown.
 pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
     match modified {
         Some(t) => crate::i18n::format_datetime(t),
@@ -918,8 +803,6 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
     }
 }
 
-/// Locale-sensitive modified date without the time of day, for a narrow
-/// column; `None` when unknown.
 pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
     modified.map(crate::i18n::format_date)
 }
@@ -944,10 +827,6 @@ pub enum ViewMode {
     Grid,
 }
 
-/// Order names the way a person reads them: a run of digits compares by its
-/// value (`IMG_9` before `IMG_10`), letters compare without case, and the
-/// exact spelling breaks a remaining tie so the order is total. Allocates
-/// nothing, as it runs for every comparison of a folder's sort.
 pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let (mut left, mut right) = (a.chars().peekable(), b.chars().peekable());
@@ -971,8 +850,6 @@ pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// Compare the runs of ASCII digits both sides start with by their values,
-/// consuming them: leading zeros do not count, so `007` ties with `7`.
 fn number_cmp(
     left: &mut std::iter::Peekable<std::str::Chars<'_>>,
     right: &mut std::iter::Peekable<std::str::Chars<'_>>,
@@ -980,8 +857,6 @@ fn number_cmp(
     use std::cmp::Ordering;
     while left.next_if_eq(&'0').is_some() {}
     while right.next_if_eq(&'0').is_some() {}
-    // Of two runs of significant digits, the longer is the larger number;
-    // of two as long, the first digit that differs decides.
     let mut first_difference = Ordering::Equal;
     loop {
         match (
@@ -1028,18 +903,11 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
     });
 }
 
-/// # Errors
-///
-/// Returns an error if `path` cannot be read as a directory (it does not
-/// exist, is not a directory, or is not readable).
 pub fn read_dir_sync(path: &Path) -> Result<Vec<Entry>, String> {
-    // Only query the sync xattr when listing a workspace mount — an ordinary
-    // directory has no such attribute, so skipping the per-entry `getxattr`
-    // there keeps a plain home-folder listing at one syscall per file.
+    // Only a workspace mount has the sync attribute; an ordinary directory is not queried.
     read_dir_inner(path, is_workspace_path(path))
 }
 
-/// List real entries with classification derived solely from supplied roots.
 pub(crate) fn read_dir_with_workspace_roots(
     path: &Path,
     roots: &[PathBuf],
@@ -1047,10 +915,6 @@ pub(crate) fn read_dir_with_workspace_roots(
     read_dir_inner(path, path_under_any(path, roots))
 }
 
-/// The listing body, with the workspace-gating decision passed in (so tests can
-/// exercise the sync-state population path without mutating the global
-/// `TILO_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
-/// injected views supply workspace roots explicitly.
 fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
     ui::storage::waiting::refused("listing a folder");
     #[cfg(test)]
@@ -1058,13 +922,10 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
-        // The entry's own metadata: a link's, never its target's. It is the
-        // row's identity, so an operation on the row acts on the link.
+        // The entry's own metadata, not its target's: it is the row's identity.
         let meta = entry.metadata().ok();
         let path = entry.path();
-        // What the row opens: a link lists as its target (a folder, with a
-        // file's size and date), as activating it follows it. A link to
-        // nothing stays the link.
+        // What the row opens: a link opens as its target, as activating it does.
         let target = meta
             .as_ref()
             .filter(|meta| meta.file_type().is_symlink())
@@ -1072,8 +933,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         let shown = target.as_ref().or(meta.as_ref());
         let is_dir = shown.is_some_and(std::fs::Metadata::is_dir);
         let mime = tilo_mime::from_path_or_octet_stream(&path).to_string();
-        // Content hydration state only applies to files — a directory's structure
-        // is always fully projected — so we don't query (or badge) folders.
+        // A directory's structure is always local; only files have a hydration state.
         let sync_state = if in_workspace && !is_dir {
             read_sync_state(&path)
         } else {
@@ -1139,26 +999,9 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 pub fn initial_path() -> PathBuf {
-    // Prefer a configured collaborative workspace mount. An explicit empty
-    // override means there is no workspace: test/alternate environments often
-    // have an unrelated `/workspace` (for example, the CI checkout mount), and
-    // must be able to keep Files from mistaking it for user content.
-    //
-    // Only a configured mount: `~/Shared`, where what others share with this
-    // person arrives, is listed beside them in the sidebar but is not where a
-    // window opens. The session mounts it whether or not anything was ever
-    // shared, so opening on it greeted every fresh desktop with an empty
-    // folder instead of the person's home.
+    // A configured workspace mount comes first; an empty override means there is none.
     if let Some(root) = workspace_record_authority_roots().into_iter().next() {
         return root;
-    }
-    // `/workspace` predates `TILO_WORKSPACE_ROOTS`; retain it only when no
-    // override was supplied, so old installations keep their start location.
-    if std::env::var_os("TILO_WORKSPACE_ROOTS").is_none() {
-        let legacy = PathBuf::from("/workspace");
-        if legacy.exists() {
-            return legacy;
-        }
     }
     if let Some(home) = user_home() {
         return home;
@@ -1166,19 +1009,7 @@ pub fn initial_path() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
-/// The user's home, which under a sandbox is *not* this process's `HOME`
-/// — that is the app's own per-package directory, and opening a file
-/// manager on it shows a folder with none of the user's files in it.
-/// `TILO_USER_HOME` is present only when a grant actually bound the real
-/// home, so preferring it can never point at a directory this process
-/// cannot read.
-///
-/// Every surface that needs to know where home is resolves it here, so
-/// the directory the window opens on and the home the breadcrumb
-/// abbreviates against are the same answer. When they were two answers
-/// the trail rendered as an absolute path from the filesystem root: the
-/// window was on the real home and `format_path` was measuring against
-/// `/run/tilo/app`, which nothing is under.
+/// The person's home, which under a sandbox is not this process's `HOME`.
 pub fn user_home() -> Option<PathBuf> {
     ui::sysdirs::user_home_override().or_else(tilo_paths::home)
 }
@@ -1187,8 +1018,6 @@ pub fn user_home() -> Option<PathBuf> {
 pub(crate) mod sync_state_tests {
     use super::*;
 
-    /// Serve `records` at `root` as a mount without an ACL does: a v2
-    /// manifest and its one page.
     pub(crate) fn set_record_index(root: &Path, records: &[serde_json::Value]) {
         let revision = "c".repeat(64);
         xattr::set(
@@ -1218,7 +1047,6 @@ pub(crate) mod sync_state_tests {
         .unwrap();
     }
 
-    /// History provenance renders through the shared localized vocabulary.
     #[test]
     fn provenance_labels_are_localized() {
         assert_eq!(
@@ -1231,32 +1059,21 @@ pub(crate) mod sync_state_tests {
         assert_eq!(provenance_key(&restored), "files-history-action-restored");
     }
 
-    /// Real sync-state and thumbnail xattrs round-trip and hashes and record ids require their exact raw widths.
     #[test]
     #[cfg(unix)]
     fn real_xattrs_round_trip_with_exact_widths() {
-        // --- phase: read_sync_state_round_trips_a_real_xattr ---
         {
-            // A real getxattr against a real `user.tilo.sync` attribute — the exact
-            // syscall the app makes against the FUSE mount, exercised here on a
-            // tmpfile so it doesn't need a live driver.
             let d = tempfile::tempdir().unwrap();
             let f = d.path().join("projected.txt");
             std::fs::write(&f, b"x").unwrap();
-            // No attribute yet → None.
             assert_eq!(read_sync_state(&f), None, "absent attribute reads as None");
-            // Set it the way the driver would and read it back.
             xattr::set(&f, SYNC_XATTR, b"projected").unwrap();
             assert_eq!(read_sync_state(&f), Some(SyncState::Projected));
             xattr::set(&f, SYNC_XATTR, b"local").unwrap();
             assert_eq!(read_sync_state(&f), Some(SyncState::Local));
         }
 
-        // --- phase: read_thumb_xattr_round_trips_a_real_host_preview ---
         {
-            // The FS-metadata channel: a host writes a preview into `user.tilo.thumb`
-            // and the file manager reads the exact bytes back — the same `getxattr`
-            // the driver answers. Exercised on a tmpfile so it needs no live driver.
             let d = tempfile::tempdir().unwrap();
             let f = d.path().join("photo.png");
             std::fs::write(&f, b"content").unwrap();
@@ -1270,7 +1087,6 @@ pub(crate) mod sync_state_tests {
             );
         }
 
-        // --- phase: read_content_hash_requires_exactly_the_raw_blake3_width ---
         {
             let d = tempfile::tempdir().unwrap();
             let f = d.path().join("photo.png");
@@ -1289,7 +1105,6 @@ pub(crate) mod sync_state_tests {
             );
         }
 
-        // --- phase: read_record_id_requires_exactly_the_raw_uuid_width ---
         {
             let d = tempfile::tempdir().unwrap();
             let f = d.path().join("shared.txt");
@@ -1324,7 +1139,6 @@ pub(crate) mod sync_state_tests {
         .unwrap()
     }
 
-    /// Sync state appears only inside workspace roots, and the record index projects stable identities and rejects escapes.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -1332,12 +1146,7 @@ pub(crate) mod sync_state_tests {
     #[test]
     #[cfg(unix)]
     fn workspace_records_project_by_stable_identity() {
-        // --- phase: read_dir_populates_sync_state_only_inside_a_workspace_root ---
         {
-            // Tag two files with real sync xattrs, then confirm the real listing
-            // path surfaces them on `Entry` when (and only when) the directory is a
-            // workspace mount — driven through `read_dir_inner`, the exact function
-            // `read_dir_sync` delegates to.
             let ws = tempfile::tempdir().unwrap();
             let downloading = ws.path().join("a-downloading.bin");
             let projected = ws.path().join("b-projected.bin");
@@ -1354,14 +1163,12 @@ pub(crate) mod sync_state_tests {
             let projected_availability =
                 availability_json(&serde_json::json!({"state": "unknown"}));
             xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
-            // Not a workspace: sync_state is never queried → all None.
             let outside = read_dir_inner(ws.path(), false).unwrap();
             assert!(
                 outside.iter().all(|e| e.sync_state.is_none()),
                 "outside a workspace root, no entry carries sync state",
             );
 
-            // Declared a workspace: real xattrs are surfaced on the entries.
             let entries = read_dir_inner(ws.path(), true).unwrap();
             let by = |name: &str| entries.iter().find(|e| e.name == name).unwrap().sync_state;
             assert_eq!(by("a-downloading.bin"), Some(SyncState::Downloading));
@@ -1401,7 +1208,6 @@ pub(crate) mod sync_state_tests {
             );
         }
 
-        // --- phase: workspace_record_index_projects_nested_paths_by_stable_identity ---
         {
             let root = tempfile::tempdir().unwrap();
             let record_id = uuid::Uuid::from_u128(7);
@@ -1421,7 +1227,6 @@ pub(crate) mod sync_state_tests {
             assert_eq!(index.records[0].path, root.path().join("deep/report.pdf"));
         }
 
-        // --- phase: workspace_record_index_rejects_noncanonical_or_escaping_projections ---
         {
             let root = tempfile::tempdir().unwrap();
             for records in [
@@ -1453,15 +1258,9 @@ pub(crate) mod sync_state_tests {
         }
     }
 
-    /// Workspace roots parse and contain paths, and the revisioned pager is one-page bounded and indexes later rows incrementally.
     #[test]
     fn workspace_roots_and_pager_are_bounded() {
-        // --- phase: workspace_root_parsing_and_containment ---
         {
-            // Colon-separated roots parse, non-existent entries drop out, and
-            // containment matches the root itself and any nested path — the exact
-            // logic `read_dir_sync` uses to gate the sync-xattr query. Exercised
-            // through the pure helpers so no global env is touched.
             let a = tempfile::tempdir().unwrap();
             let b = tempfile::tempdir().unwrap();
             let missing = a.path().join("missing-root");
@@ -1491,13 +1290,8 @@ pub(crate) mod sync_state_tests {
             );
         }
 
-        // --- phase: revisioned_workspace_pager_is_one_page_bounded_and_indexes_later_rows_incrementally ---
         {
             let root = tempfile::tempdir().unwrap();
-            // An injected FUSE page source models dozens of pages without trying
-            // to store them as host xattrs (which many filesystems reject long
-            // before the protocol's per-page limit). The late target sits alone
-            // on a final partial page.
             let records = RECORD_INDEX_PAGE_ENTRIES * 64 + 1;
             let mut pager =
                 WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), records);
@@ -1543,7 +1337,6 @@ pub(crate) mod sync_state_tests {
         }
     }
 
-    /// The pager withdraws rows after the mount disappears, does not claim nested shares and refuses duplicates across pages.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -1551,7 +1344,6 @@ pub(crate) mod sync_state_tests {
     #[test]
     #[cfg(unix)]
     fn workspace_pager_withdraws_and_refuses_ambiguous_rows() {
-        // --- phase: completed_pager_withdraws_rows_after_mount_disappears ---
         {
             let root = tempfile::tempdir().unwrap();
             set_record_index(
@@ -1575,7 +1367,6 @@ pub(crate) mod sync_state_tests {
             assert!(withdrawn.complete);
         }
 
-        // --- phase: pager_does_not_advertise_nested_share_as_an_exact_record_authority ---
         {
             let parent = tempfile::tempdir().unwrap();
             let share = parent.path().join("received-share");
@@ -1599,7 +1390,6 @@ pub(crate) mod sync_state_tests {
             );
         }
 
-        // --- phase: pager_refuses_duplicate_identity_across_revisioned_page_boundary ---
         {
             let root = tempfile::tempdir().unwrap();
             let revision = "b".repeat(64);
@@ -1681,11 +1471,7 @@ pub(crate) mod fixture_io_guard {
         static LISTINGS: RefCell<Option<ListingState>> = const { RefCell::new(None) };
     }
 
-    /// Per-test-thread ambient-I/O guard.
-    ///
-    /// Rust runs independent unit tests concurrently in one process. Keeping
-    /// this state thread-local prevents one negative-boundary test from
-    /// denying legitimate fixture I/O in an unrelated test.
+    /// Per-test-thread ambient-I/O guard: unit tests share one process.
     pub(crate) struct DenyAmbientIo {
         owner: std::thread::ThreadId,
         not_send: PhantomData<Rc<()>>,

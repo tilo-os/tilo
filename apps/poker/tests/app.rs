@@ -12,9 +12,8 @@ use poker::game::{BUY_IN, Street};
 use poker::{App, Table};
 use ui::prelude::{Invoke, Replica, TestApp};
 
-/// Everyone at the table, each with their own replica of it: an action is
-/// applied by its player's replica and synced to the others, as the workspace
-/// delivers it.
+/// Everyone at the table, each with their own replica of it: an action is applied by its
+/// player's replica and synced to the others, as the workspace delivers it.
 struct Workspace {
     replicas: Vec<Replica<Table>>,
     names: Vec<&'static str>,
@@ -217,7 +216,6 @@ fn folding_to_a_raise_gives_the_raiser_the_pot() {
     assert_eq!(table.hand.street, Street::Done);
     assert_eq!(table.hand.awards.len(), 1);
     assert_eq!(table.hand.awards[0].player, first);
-    // The folder loses only their blind.
     assert!(table.chips(second) < BUY_IN && table.chips(second) >= BUY_IN - 10);
     assert_eq!(table.chips(first) + table.chips(second), 2 * BUY_IN);
 }
@@ -269,8 +267,8 @@ fn leaving_folds_your_hand() {
     assert!(table.hand.street.in_play(), "the others play on");
 }
 
-/// Opening the table seats nobody: whoever opens it watches, and takes a
-/// seat with the "Take a seat" button, through the published action, once.
+/// Opening the table seats nobody: whoever opens it watches, and takes a seat with the
+/// "Take a seat" button, through the published action, once.
 #[test]
 fn opening_the_table_seats_nobody_until_they_take_a_seat() {
     let app = TestApp::<App>::for_person("ada").expect("the app opens");
@@ -292,8 +290,8 @@ fn opening_the_table_seats_nobody_until_they_take_a_seat() {
     );
 }
 
-/// A seat is chosen from the table everyone sees: until the workspace's table
-/// has arrived, the window shows it arriving and offers no seat.
+/// A seat is chosen from the table everyone sees: until the workspace's table has arrived,
+/// the window shows it arriving and offers no seat.
 #[test]
 fn taking_a_seat_waits_for_the_table_to_arrive() {
     let told = |state| {
@@ -321,9 +319,6 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
         ui::workspace_sync::set(told(ui::workspace_sync::WorkspaceSyncState::Synced)),
         "the first sync changes what the window shows"
     );
-    // A wait that outlasted its grace showed a skeleton, which stays its
-    // least time before the table fades in: a busy machine sees the table
-    // only after that, as a person does before taking a seat.
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(30), |harness| {
@@ -370,8 +365,8 @@ fn a_viewer_cannot_sit_down() {
     assert!(app.state().players.is_empty());
 }
 
-/// The app satisfies the Tilo-native contract: every control that can cause
-/// an effect is bound to a published action.
+/// The app satisfies the Tilo-native contract: every control that can cause an effect is
+/// bound to a published action.
 #[test]
 fn initial_native_app_contract_is_certified() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -379,8 +374,8 @@ fn initial_native_app_contract_is_certified() {
     assert!(audit.is_certified(), "{audit:#?}");
 }
 
-/// The table is the window bar's location; the window draws no title row
-/// of its own, and the blinds stand with the pot.
+/// The table is the window bar's location; the window draws no title row of its own, and
+/// the blinds sit with the pot.
 #[test]
 fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
@@ -402,8 +397,8 @@ fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
     );
 }
 
-/// A table with `ada` (whose window this is) and `grace` seated, a hand
-/// dealt, and the turn brought to whoever is not `ada`.
+/// A table with `ada` (whose window this is) and `grace` seated, a hand dealt, and the turn
+/// brought to whoever is not `ada`.
 fn waiting_on_grace() -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
     take_a_seat(&mut app);
@@ -424,8 +419,6 @@ fn waiting_on_grace() -> TestApp<App> {
         ui::serde_json::json!({}),
     )
     .expect("the hand is dealt");
-    // Whoever the button put first acts first: pass the turn until it is
-    // Grace's, so the person watching is the one offered the fold.
     for _ in 0..2 {
         let Some(actor) = app.state().hand.actor().map(|p| p.player.clone()) else {
             break;
@@ -465,9 +458,8 @@ fn button(app: &mut TestApp<App>, name: &str) -> (ui::accesskit::NodeId, bool) {
     (id, !node.is_disabled())
 }
 
-/// Run `frame` at `offset` into the turn that began at `since_ms`: the wall
-/// clock the countdown and the table's rule both read, and the frame clock
-/// the host wakes on.
+/// Run `frame` at `offset` into the turn that began at `since_ms`: the wall clock the
+/// countdown and the table's rule both read, and the frame clock the host wakes on.
 fn into_turn(
     since_ms: i64,
     start: ui::time::Instant,
@@ -481,9 +473,9 @@ fn into_turn(
     });
 }
 
-/// The fold for a slow player is not refused for thirty seconds behind a
-/// button that looks ready: it waits disabled, says how many seconds are
-/// left, and opens when the table's rule does.
+/// The fold for a slow player is not refused for thirty seconds behind a button that looks
+/// ready: it waits disabled, says how many seconds are left, and opens when the table's
+/// rule does.
 #[test]
 fn folding_for_a_slow_player_counts_down_and_opens() {
     use ui::time::{Duration, Instant};
@@ -500,7 +492,6 @@ fn folding_for_a_slow_player_counts_down_and_opens() {
     let (_, open) = button(&mut app, "Fold for the slow player");
     assert!(!open, "the fold is not open yet");
 
-    // Nineteen seconds of the turn gone: the caption has counted down.
     into_turn(since, start, Duration::from_secs(19), || {
         let _ = app.harness().poll_frame();
     });
@@ -513,8 +504,8 @@ fn folding_for_a_slow_player_counts_down_and_opens() {
     let (_, open) = button(&mut app, "Fold for the slow player");
     assert!(!open, "still closed at 11 seconds left");
 
-    // The table's own instant passed: the button acts, and the caption is
-    // gone because there is nothing left to explain.
+    // The table's own instant passed: the button acts, and the caption is gone because
+    // there is nothing left to explain.
     let mut id = None;
     into_turn(since, start, Duration::from_secs(31), || {
         let _ = app.harness().poll_frame();
@@ -545,8 +536,8 @@ fn folding_for_a_slow_player_counts_down_and_opens() {
     assert!(folded, "the slow player's hand is folded");
 }
 
-/// A hand may be dealt by anyone but the dealer only once the table has
-/// waited: the button waits with the count, instead of refusing.
+/// A hand may be dealt by anyone but the dealer only once the table has waited: the button
+/// waits with the count, instead of refusing.
 #[test]
 fn dealing_is_offered_with_the_graces_count() {
     use ui::time::Instant;
@@ -573,8 +564,6 @@ fn dealing_is_offered_with_the_graces_count() {
         )
         .expect("the hand is dealt");
         app.settle();
-        // The visible player folds, so the hand is over and the table waits
-        // for a deal again.
         for _ in 0..8 {
             let Some(actor) = app.state().hand.actor().map(|p| p.player.clone()) else {
                 break;
@@ -589,7 +578,6 @@ fn dealing_is_offered_with_the_graces_count() {
         }
         assert!(!app.state().hand.street.in_play(), "the hand is over");
 
-        // The dealer's own button acts at once; the other player's waits.
         let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
         if dealer == "ada" {
             let (_, open) = button(&mut app, "Deal next hand");
@@ -614,9 +602,9 @@ fn dealing_is_offered_with_the_graces_count() {
     });
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[test]
 fn a_german_window_reads_the_catalogue() {
     let catalogue = &poker::locales::CATALOG;

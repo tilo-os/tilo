@@ -58,9 +58,6 @@ db-connections = Verbindungen
 
 ## Fenstertitel und Tabs
 
-db-tab-query-hint = SQL schreiben und gegen die offene Verbindung ausführen.
-db-tab-data-hint = Die Zeilen der ausgewählten Tabelle.
-db-tab-structure-hint = Spalten, Schlüssel und Indizes der ausgewählten Tabelle.
 
 ## Abfragebereich
 
@@ -211,3 +208,6 @@ db-client-workspace-add-connection = Verbindung hinzufügen
 db-client-workspace-remove-connection = Gespeicherte Verbindung entfernen
 db-client-workspace-save-query = Abfrage speichern
 db-client-workspace-remove-query = Gespeicherte Abfrage entfernen
+
+## What the app is called in a window and in the launcher
+db-client-app-title = Datenbank-Client

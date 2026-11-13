@@ -137,6 +137,7 @@ TextAlign = Literal["left", "center", "right", "justify"]
 
 class Deck(Resource):
     """Deck — `slides.deck`."""
+    __surface__ = "so.tilo.slides@ecf6ae57e9051fc7"
     title: str
     palette: PaletteKind
     look: DeckLook

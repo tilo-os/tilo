@@ -25,7 +25,6 @@ use super::{NowPlaying, NowPlayingAction, NowPlayingHandler, NowPlayingState, Pl
 
 pub(crate) struct Session {
     center: Retained<MPNowPlayingInfoCenter>,
-    /// Each command with the target its handler registered, removed on drop.
     targets: Vec<(Retained<MPRemoteCommand>, Retained<AnyObject>)>,
     playing: Arc<AtomicBool>,
 }
@@ -39,7 +38,6 @@ impl Session {
             let on_action = on_action.clone();
             let playing = playing.clone();
             let handler: Handler = RcBlock::new(move |event: NonNull<MPRemoteCommandEvent>| {
-                // SAFETY: the command center passes a valid event for the call.
                 let event = unsafe { event.as_ref() };
                 match action(event, playing.load(Ordering::Relaxed)) {
                     Some(action) => {
@@ -51,8 +49,6 @@ impl Session {
             });
             handler
         };
-        // SAFETY: the shared center and its commands are process-wide
-        // objects; adding a block target is how they are observed.
         let targets = unsafe {
             let commands = MPRemoteCommandCenter::sharedCommandCenter();
             let wired: [(Retained<MPRemoteCommand>, Handler); 7] = [
@@ -107,7 +103,6 @@ impl Session {
                 .collect()
         };
         Self {
-            // SAFETY: the process's default center.
             center: unsafe { MPNowPlayingInfoCenter::defaultCenter() },
             targets,
             playing,
@@ -127,7 +122,6 @@ impl Session {
                 )));
             }
         };
-        // SAFETY: MediaPlayer's constant keys are valid static strings.
         unsafe {
             text(MPMediaItemPropertyTitle, &now.title);
             text(MPMediaItemPropertyArtist, &now.artist);
@@ -139,7 +133,6 @@ impl Session {
                 Retained::into_super(NSNumber::new_f64(value)),
             )));
         };
-        // SAFETY: as above.
         unsafe {
             if let Some(duration) = state.duration {
                 number(MPMediaItemPropertyPlaybackDuration, duration.as_secs_f64());
@@ -168,9 +161,7 @@ impl Session {
 
     #[cfg(test)]
     fn published_title(&self) -> Option<String> {
-        // SAFETY: reading back the dictionary this session set.
         let info = unsafe { self.center.nowPlayingInfo() }?;
-        // SAFETY: as above.
         let title = info.objectForKey(unsafe { MPMediaItemPropertyTitle })?;
         Some(title.downcast::<NSString>().ok()?.to_string())
     }
@@ -178,8 +169,6 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // SAFETY: removing the targets this session added, and clearing the
-        // entry it published.
         unsafe {
             for (command, target) in &self.targets {
                 command.removeTarget(Some(target));
@@ -215,7 +204,6 @@ mod tests {
         assert_eq!(session.published_title().as_deref(), Some("Aria"));
         let center = session.center.clone();
         drop(session);
-        // SAFETY: reading the default center's entry.
         assert!(unsafe { center.nowPlayingInfo() }.is_none());
     }
 }

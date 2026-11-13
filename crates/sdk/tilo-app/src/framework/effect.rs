@@ -616,8 +616,10 @@ fn place_param(decl: &tilo_resource::effect::EffectDecl) -> Option<&str> {
 /// every app.
 #[inline(never)]
 fn place_from(value: serde_json::Value) -> Option<tilo_resource::Place> {
-    // ignored-failure: an argument that is not a place names no place, and the effect runs without one
-    serde_json::from_value(value).ok()
+    tilo_failure::ignored!(
+        "an argument that is not a place names no place, and the effect runs without one",
+        serde_json::from_value(value).ok()
+    )
 }
 
 /// The resource as it was at a past version a view asked for: its

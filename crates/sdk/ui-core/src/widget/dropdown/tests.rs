@@ -10,7 +10,11 @@ fn opts() -> Vec<String> {
         .collect()
 }
 
+/// The open list's panel, placed from the theme and then painted: the layout
+/// that hangs it from the field, and the paint after it that only paints.
 fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+    dd.adopt_theme(theme);
+    dd.place_list();
     dd.draw_overlay(
         &mut Scene::new(),
         Affine::IDENTITY,
@@ -21,7 +25,6 @@ fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> 
     dd.list_rect().width()
 }
 
-/// The open list's panel for the dropdown as it stands.
 fn list_of(dd: &mut Dropdown) -> Rect {
     dd.refresh_list();
     dd.list_rect()
@@ -77,7 +80,6 @@ fn open_list_width_follows_options_text_size_and_fonts() {
     assert!((paint_list(&mut dd, &mut renderer, &theme) - initial).abs() < 0.5);
 }
 
-/// A list long enough to filter: `opts` and four zones with no `a`.
 fn zones() -> Vec<String> {
     let mut zones = opts();
     zones.extend(
@@ -88,7 +90,6 @@ fn zones() -> Vec<String> {
     zones
 }
 
-/// `first`, then numbered fillers up to a list that filters.
 fn padded(first: &[&str]) -> Vec<String> {
     let mut options: Vec<String> = first.iter().map(ToString::to_string).collect();
     let mut n = 1;
@@ -101,7 +102,6 @@ fn padded(first: &[&str]) -> Vec<String> {
 
 #[test]
 fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
         for scale in [1.0, 1.5] {
@@ -163,7 +163,6 @@ fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
 
 #[test]
 fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut frame = crate::headless::FrameHarness::new_with_theme(
         crate::State::new(),
@@ -200,7 +199,6 @@ fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
 
 #[test]
 fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut frame = crate::headless::FrameHarness::new_with_theme(
         crate::State::new(),
@@ -267,7 +265,6 @@ fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
 
 #[test]
 fn dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let state = crate::LocalState::new(String::new());
     let mut dropdown = Dropdown::from_state(Vec::new(), &state);
@@ -296,7 +293,6 @@ fn dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels() {
 
 #[test]
 fn dropdown_language_empty_stable_value_keeps_its_human_label() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let state = crate::LocalState::new(String::new());
     let mut dropdown = Dropdown::from_state(Vec::new(), &state);
@@ -318,7 +314,6 @@ fn dropdown_language_empty_stable_value_keeps_its_human_label() {
 
 #[test]
 fn dropdown_language_revoked_action_releases_modal_capture() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut dropdown =
         Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
@@ -354,12 +349,8 @@ fn dropdown_language_revoked_action_releases_modal_capture() {
     assert!(capture.is_open());
 }
 
-/// The open list's rows sit inside the menu inset every menu shares,
-/// so its armed row runs concentric with the panel: the inset is not a
-/// row, and the first row starts after it.
 #[test]
 fn the_open_list_insets_its_rows_like_every_menu() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut dd = Dropdown::new(opts(), "tz");
     dd.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
@@ -382,7 +373,6 @@ fn the_open_list_insets_its_rows_like_every_menu() {
 
 #[test]
 fn updating_placeholder_does_not_select_or_replace_a_private_value() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let selection = crate::LocalState::new(String::new());
     let mut dropdown = Dropdown::from_state(opts(), &selection);
@@ -398,7 +388,6 @@ fn updating_placeholder_does_not_select_or_replace_a_private_value() {
     assert_eq!(selection.with(Clone::clone), "UTC");
 }
 
-/// CRDT doc with `tz` seeded as a Text object holding `value`.
 fn doc_with_tz(value: &str) -> (AutoCommit, ObjId) {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
@@ -409,7 +398,6 @@ fn doc_with_tz(value: &str) -> (AutoCommit, ObjId) {
 
 use crate::synthetic_input::key_press;
 
-/// Drive a key through a focused dropdown with a throwaway taffy node.
 fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
     Dispatch::new().doc(doc).path(root).send(dd, ev).handled
 }
@@ -481,7 +469,6 @@ fn dropdown_keyboard_opens_navigates_selects_and_escapes() {
         dd.sync(&doc, &root);
         dd.set_focus(true);
         dd.do_open();
-        // Move to "America/New_York" (index 2) and select it.
         feed_key(
             &mut dd,
             &key_press(Key::Named(NamedKey::ArrowDown), None),
@@ -558,7 +545,6 @@ fn dropdown_keyboard_opens_navigates_selects_and_escapes() {
         );
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     starts_closed_and_reads_value_on_sync();
     down_opens_when_closed_and_focused();
@@ -652,7 +638,6 @@ fn combobox_filter_editing_handles_case_spaces_graphemes_and_ime() {
             &root,
         );
         assert_eq!(dd.filter_query(), "a");
-        // "a" matches Amsterdam, America, Asia.
         assert_eq!(dd.visible_count(), 3);
     }
 
@@ -753,7 +738,6 @@ fn combobox_filter_editing_handles_case_spaces_graphemes_and_ime() {
         );
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     typing_filters_options_case_insensitively();
     space_is_part_of_an_open_combobox_query();
@@ -803,11 +787,6 @@ fn open_list_pointer_capture_focus_and_placement() {
         assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
     }
 
-    /// The open list flips above the control when opening below would leave
-    /// the host viewport and there is room above; hit-testing shares the
-    /// rect, so the flipped list is clickable where it is painted. The
-    /// viewport arrives either through the presence context at paint or
-    /// from the host via `set_viewport`; both routes are exercised.
     fn open_list_flips_above_when_it_would_leave_the_viewport() {
         let mut dd = Dropdown::new(opts(), "tz");
         dd.rect = Rect::new(0.0, 700.0, 200.0, 740.0);
@@ -816,7 +795,6 @@ fn open_list_pointer_capture_focus_and_placement() {
             below.y0 >= dd.rect.y1,
             "without a viewport the list opens below"
         );
-        // Route 1: the paint pass sees the App's pushed window viewport.
         let presence = PresenceCtx::default();
         presence
             .viewport
@@ -830,7 +808,6 @@ fn open_list_pointer_capture_focus_and_placement() {
             &presence,
         );
         assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
-        // Route 2: a host inside a Row/Column hands it over explicitly.
         let mut hosted =
             Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
         hosted.rect = dd.rect;
@@ -849,15 +826,10 @@ fn open_list_pointer_capture_focus_and_placement() {
             Some(0),
             "the first row is hit where it is painted"
         );
-        // No room above either: stay below rather than run off the top.
         dd.set_viewport(Rect::new(0.0, 690.0, 800.0, 760.0));
         assert!((list_of(&mut dd).y0 - below.y0).abs() < 1e-6);
     }
 
-    /// The dropdown is the fluid item in a row (F2-16): laid beside fixed
-    /// controls in a row too narrow for its `percent(100%)`, it gives the
-    /// room back, so its siblings keep their size and the trailing one is
-    /// still on screen instead of being pushed to zero width past the edge.
     fn dropdown_in_a_row_yields_width_to_fixed_siblings() {
         use crate::widget::{Button, Row};
         let mut row = Row::new()
@@ -928,7 +900,6 @@ fn open_list_pointer_capture_focus_and_placement() {
         assert_eq!(node.name.as_deref(), Some("Level"));
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     losing_focus_closes_the_list();
     open_dropdown_captures_pointer();
@@ -976,14 +947,12 @@ fn committed_selection_binds_process_local_state() {
         assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     local_state_binding_is_two_way_across_dropdowns();
 }
 
 #[test]
 fn a_menu_button_reports_a_choice_without_keeping_it() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let state = crate::LocalState::new(String::new());
     let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -1005,7 +974,6 @@ fn a_menu_button_reports_a_choice_without_keeping_it() {
         "kept in the window: {kept:?}"
     );
 
-    // Typing does not filter: a menu shows no query.
     menu.set_focus(true);
     assert!(feed_key(
         &mut menu,
@@ -1195,7 +1163,6 @@ fn dropdown_accessibility_semantics_and_disabled_state() {
         );
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     semantic_actions_expand_collapse_and_reject_unknown_values();
     with_enabled_false_is_reported_by_is_enabled();
@@ -1218,7 +1185,6 @@ fn a_sections_choosers_share_one_width_and_line_up_on_both_edges() {
                 .push(Box::new(dropdown)),
         )
     }
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let short = || vec!["A".to_string(), "B".to_string()];
     let section = Section::titled(
@@ -1338,8 +1304,6 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
             &root,
         );
         assert_eq!(dd.highlight_index(), 3, "typing again moves on");
-        // Letters typed together spell a name: from UTC, "a" arms
-        // America, the first option it begins, and "as" goes on to Asia.
         dd.close();
         dd.do_open();
         assert_eq!(dd.highlight_index(), 0);
@@ -1395,7 +1359,6 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
         let theme = Theme::dark();
         let mut dd = Dropdown::new(opts(), "tz");
         assert!(Widget::is_layout_dirty(&dd));
-        // What a host does for a frame: build, solve and place the control.
         crate::widget::layout::lay_out_detached(
             &mut dd,
             Rect::new(0.0, 0.0, 300.0, 200.0),
@@ -1435,7 +1398,6 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
         captioned.paint(&mut scene, Affine::IDENTITY, &mut text, &theme);
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     hugs_its_widest_option_unless_it_fills();
     a_short_list_jumps_instead_of_filtering();
@@ -1443,4 +1405,110 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
     a_resolved_name_is_spoken_as_given();
     an_idle_dropdown_needs_no_layout();
     the_face_matches_the_retained_control();
+}
+
+fn stands_where(what: &str, placed: Rect, drawn: Rect) {
+    let close = |a: f64, b: f64| (a - b).abs() <= 0.5;
+    assert!(
+        close(placed.x0, drawn.x0)
+            && close(placed.y0, drawn.y0)
+            && close(placed.x1, drawn.x1)
+            && close(placed.y1, drawn.y1),
+        "{what} stands where it was placed: {placed:?} then {drawn:?}"
+    );
+}
+
+#[test]
+fn an_open_list_places_its_filter_field_and_rows_before_it_draws() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let values = zones();
+    let window = Rect::new(0.0, 0.0, 640.0, 420.0);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    text.apply_typography(&theme.tokens.typography);
+    let mut dd = Dropdown::new(values.clone(), "zone");
+    crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        .expect("the closed control lays out");
+
+    dd.do_open();
+    assert!(
+        !Widget::layout_needs_measure(&dd),
+        "an open list moves nothing else in the window, so it asks for no layout"
+    );
+
+    let field = dd.rect;
+    let query = dd.query_rect;
+    assert!(
+        !query.is_zero_area(),
+        "the filter field is placed: {query:?}"
+    );
+    assert!(
+        field.x0 <= query.x0
+            && query.x1 <= field.x1
+            && field.y0 <= query.y0
+            && query.y1 <= field.y1,
+        "the filter field stands in the control: {query:?} in {field:?}"
+    );
+    let panel = dd.list_rect();
+    assert!(panel.height() > 0.0, "the list is placed: {panel:?}");
+    assert!(
+        !panel.overlaps(field),
+        "the list hangs clear of the field: {panel:?} vs {field:?}"
+    );
+    let rows: Vec<Rect> = (0..values.len())
+        .map(|row| {
+            let rect = dd
+                .list
+                .row_rect(row)
+                .unwrap_or_else(|| panic!("row {row} is placed"));
+            assert!(
+                panel.x0 <= rect.x0
+                    && rect.x1 <= panel.x1
+                    && panel.y0 <= rect.y0
+                    && rect.y1 <= panel.y1,
+                "row {row} stands in the list: {rect:?} in {panel:?}"
+            );
+            assert_eq!(
+                dd.list.row_at(rect.center()),
+                Some(row),
+                "row {row} is hit where it stands"
+            );
+            rect
+        })
+        .collect();
+
+    crate::widget::layout::lay_out_detached(&mut dd, window, &theme, &mut text)
+        .expect("the open list lays out");
+    stands_where("the filter field", query, dd.query_rect);
+    stands_where("the panel", panel, dd.list_rect());
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::empty();
+    dd.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    dd.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    stands_where("the filter field", query, dd.query_rect);
+    stands_where("the panel", panel, dd.list_rect());
+    for (row, placed) in rows.iter().enumerate() {
+        let drawn = dd.list.row_rect(row).expect("row placed after the draw");
+        stands_where(&format!("row {row}"), *placed, drawn);
+    }
+
+    let (mut doc, root) = doc_with_tz("UTC");
+    let at = Point::new(query.x0 + 2.0, query.center().y);
+    let _ = feed_key(
+        &mut dd,
+        &crate::synthetic_input::cursor_moved(at.x, at.y),
+        &mut doc,
+        &root,
+    );
+    let _ = feed_key(
+        &mut dd,
+        &crate::synthetic_input::mouse_press(),
+        &mut doc,
+        &root,
+    );
+    assert!(
+        dd.is_open(),
+        "a press in the search field edits the query instead of closing the list"
+    );
 }

@@ -1,7 +1,6 @@
-//! Calendar literals: a date `2026-10-24`, an instant `2026-10-21T09:30:00Z`, a month `2026-08`
-//! or a wall-clock time `2026-10-21T09:30` of no zone, checked as the lexer reads one.
+//! Calendar literals: a date `2026-10-24`, a month `2026-08`, an instant `2026-10-21T09:30:00Z`
+//! and a wall-clock time of no zone, checked as the lexer reads one.
 
-/// Why `text` is not an ISO calendar date `YYYY-MM-DD`, or nothing when it is one.
 pub fn check_date(text: &str) -> Result<(), String> {
     let b = text.as_bytes();
     let digits = |r: std::ops::Range<usize>| -> Option<u32> {
@@ -41,23 +40,18 @@ pub fn check_date(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Why `text` is not an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`, or nothing when it is one.
 pub fn check_time(text: &str) -> Result<(), String> {
     clock(text, Zone::Utc)
 }
 
-/// Why `text` is not a wall-clock time `YYYY-MM-DDTHH:MM[:SS]`, or nothing when it is one: a time
-/// of day of no zone, read in the person's own where a value is built from it.
 pub fn check_wall_clock(text: &str) -> Result<(), String> {
     clock(text, Zone::Person)
 }
 
-/// Whether a time text carries its zone.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Zone {
-    /// The instant itself, in UTC (`2026-10-21T09:30:00Z`).
     Utc,
-    /// The person's own time of day (`2026-10-21T09:30`).
+    /// The person's own time of day; resolved to an instant where it is used.
     Person,
 }
 

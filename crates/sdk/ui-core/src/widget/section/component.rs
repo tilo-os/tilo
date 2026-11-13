@@ -9,8 +9,8 @@ use crate::widget::{Element, Interaction};
 
 use super::Section;
 
-/// A group of related content under an optional title: rows of a list, fields, a figure. A
-/// collapsible section opens and closes under its title.
+/// A group of related content under an optional title (a list's rows, fields, a figure); a
+/// collapsible one opens and closes under its title.
 #[derive(Component, Default)]
 #[component(name = "Section", role = "Group", label = "title")]
 pub struct SectionProps {
@@ -19,16 +19,16 @@ pub struct SectionProps {
     pub title: Option<String>,
     /// Whether its title opens and closes it.
     pub collapsible: bool,
-    /// What it holds, in order.
+    /// The content, in order.
     #[component(slot(default))]
     pub content: Vec<Element>,
     /// Whether a collapsible section shows what it holds.
     #[component(state)]
     pub expanded: Option<bool>,
-    /// The pace its content arrives and leaves at, and its title's reveal: the theme's unless it
-    /// says otherwise.
+    /// The pace the content arrives and leaves at, and its title's reveal: the theme's unless
+    /// said.
     pub motion: Option<crate::motion::Feel>,
-    /// A collapsible section opened or closed; carries whether it is open now.
+    /// A collapsible section opened or closed: whether it is open now is the value.
     #[component(event(value = bool))]
     pub toggle: Event,
 }
@@ -36,7 +36,6 @@ pub struct SectionProps {
 impl Described for Section {
     type Props = SectionProps;
 
-    /// What it holds changes by key, under its header.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         (slot == "content").then_some(self as &mut dyn SlotViews)
     }
@@ -125,7 +124,6 @@ impl Described for Section {
     }
 }
 
-/// A collapsible section opened or closed: carries whether it is open now.
 fn reports(toggle: Event) -> Option<Box<dyn FnMut(bool)>> {
     if toggle.is_none() {
         None
@@ -135,12 +133,10 @@ fn reports(toggle: Event) -> Option<Box<dyn FnMut(bool)>> {
 }
 
 impl Section {
-    /// The disclosure its header carries, when it is collapsible.
     fn header_disclosure(&mut self) -> Option<&mut super::Disclosure> {
         self.header_row()?.disclosure.as_mut()
     }
 
-    /// Its header's row, when it has a header.
     fn header_row(&mut self) -> Option<&mut super::HeaderRow> {
         self.parts
             .children
@@ -150,7 +146,6 @@ impl Section {
     }
 }
 
-/// The items under a section's header.
 impl SlotViews for Section {
     fn len(&self) -> usize {
         self.parts
@@ -200,7 +195,6 @@ impl SlotViews for Section {
 }
 
 impl Section {
-    /// Its items changed in place: the window lays it out again and repaints what moved.
     fn described(&mut self) {
         self.structure = self
             .structure

@@ -1,8 +1,6 @@
-//! A native visual editor for Tilo serialized UI graphs: `tilo-ui-builder
-//! FILE` opens the graph in FILE and saves it back there.
-//!
-//! The graph is the file, not a document: the app's resource holds nothing,
-//! and the editor is the whole view.
+//! A native visual editor for Tilo serialized UI graphs: `tilo-ui-builder FILE` opens the graph in
+//! FILE and saves it back there. The graph is the file, not a document: the app's resource holds
+//! nothing, and the editor is the whole view.
 
 use std::path::{Path, PathBuf};
 

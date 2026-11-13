@@ -1,8 +1,4 @@
 //! Concise heterogeneous layout composition for application code.
-//!
-//! These macros only expand to the ordinary retained [`Column`](super::Column),
-//! [`Row`](super::Row), and [`Stack`](super::Stack) builders. They add no
-//! alternate tree, lifecycle, or reconciliation behavior.
 
 /// Build a retained [`Column`](crate::widget::Column) from concrete child
 /// widgets without repeating `push(Box::new(...))`.

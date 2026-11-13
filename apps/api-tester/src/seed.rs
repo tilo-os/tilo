@@ -1,8 +1,5 @@
-//! The sample workspace screenshots show.
-//!
-//! A representative set of collections, environments, a populated active
-//! request, and a short history, built through the workspace's field edits
-//! and verbs.
+//! The sample workspace screenshots show: collections, environments, a populated active
+//! request and a short history, built through the workspace's field edits and verbs.
 
 use ui::tilo_resource::{Collection as Items, Id, Invoke};
 
@@ -12,7 +9,6 @@ use crate::model::{
 use crate::record::{self, RequestRecord, SavedCollection, Variable, Workspace};
 use crate::resource::workspace as verbs;
 
-/// Default collections grouping a handful of saved requests.
 pub fn collections() -> Vec<Collection> {
     let mut users = Collection::new("Users API");
     users.requests = vec![
@@ -96,7 +92,6 @@ pub fn collections() -> Vec<Collection> {
     vec![users, auth, webhooks]
 }
 
-/// Default environments. The first is the active one.
 pub fn environments() -> Vec<Environment> {
     let mut production = Environment::new("Production");
     production.variables = vec![
@@ -122,8 +117,8 @@ pub fn environments() -> Vec<Environment> {
     vec![production, staging, local]
 }
 
-/// The request the builder opens on first run — the populated "List users"
-/// call so every tab has something to show.
+/// The request the builder opens on first run: the populated "List users" call, so every
+/// tab has something to show.
 pub fn active_request() -> Request {
     let mut r = Request::new("List users");
     r.method = HttpMethod::Get;
@@ -147,9 +142,7 @@ pub fn active_request() -> Request {
     r
 }
 
-/// A short recent-request history for the History list.
-/// A single blank starter request for the live app. Sending it produces a
-/// response.
+/// A short recent-request history, then a single blank starter request for the live app.
 pub fn blank_request() -> Request {
     let mut r = Request::new("New request");
     r.method = HttpMethod::Get;
@@ -189,7 +182,6 @@ pub fn history() -> Vec<HistoryEntry> {
     ]
 }
 
-/// The edits and verbs that build the sample workspace.
 pub fn workspace() -> Vec<Invoke<Workspace>> {
     // Ids in order, so the sample lists the same way on every run.
     let mut next = 0u128;

@@ -11,16 +11,16 @@ contacts-account-confirm = Associate account
 contacts-account-invalid = Enter a valid account identifier for the selected service.
 contacts-account-stale = This contact or account changed. Open the account editor and review it again.
 contacts-account-conflict = This account already has an association. Review and remove the old association first.
-contacts-account-unverified = Identity reference unavailable
+contacts-account-unverified = Not confirmed
 contacts-account-linked = Associated
 contacts-account-conflicted = Needs review
-contacts-account-hint = Add an address to this contact. A phone or name match never confirms an identity.
-contacts-account-confirm-hint = Confirm that this account belongs to the selected contact. This does not verify ownership, share files, or grant permissions.
-contacts-account-revoke-hint = Remove this association from future routing. Existing message attribution stays unchanged.
+contacts-account-hint = A matching phone number or name does not confirm an account.
+contacts-account-confirm-hint = Tilo does not check that the account is really theirs. Associating it shares no files and grants no permissions.
+contacts-account-revoke-hint = Messages from this account stop reaching this contact. Messages already received are unchanged.
 contacts-account-reference = Identity reference
 contacts-account-old-reference = Previous identity reference
 contacts-account-edit = Edit association
-contacts-account-edited-unverified = Changing this address clears its old identity reference. Sending stays unavailable until the new account identity is reviewed.
+contacts-account-edited-unverified = The changed address needs review before messages are sent to it.
 
 contacts-account-scope = Service account
 contacts-account-review-description = { $action }: Contact { $person }. Service { $service }. Account { $recipient }. Service account { $scope }. Identity reference { $revision }. Previous identity reference { $previous }.
@@ -178,3 +178,6 @@ contacts-book-new-contact = New contact
 contacts-book-add-contacts = Add contacts
 contacts-book-delete-contact = Delete contact
 contacts-book-merge-contacts = Merge contacts
+
+## What the app is called in a window and in the launcher
+contacts-app-title = Contacts

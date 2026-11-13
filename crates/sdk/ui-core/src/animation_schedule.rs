@@ -1,20 +1,13 @@
-//! Paces animation-only redraw requests on the display's own refresh; input
-//! and renderer recovery bypass it.
-//!
+//! Paces animation-only redraw requests on the display refresh; input and renderer recovery bypass it.
 //! The beat is the refresh interval of the output the window is on
-//! ([`AnimationSchedule::set_refresh_millihertz`]), read again whenever an
-//! animation starts, so a 90 Hz panel animates at 90 Hz and a window moved
-//! to a 60 Hz monitor follows it. Ticks stay on one grid: a late callback
-//! takes the next beat after it, without a catch-up burst and without
-//! drifting the phase the swapchain has settled into.
+//! ([`AnimationSchedule::set_refresh_millihertz`]), read again whenever an animation starts, so a 90 Hz
+//! panel animates at 90 Hz and a window moved to a 60 Hz monitor follows it.
 use crate::time::{Duration, Instant};
 
 /// Only when the output reports no refresh rate (some X11 and headless
 /// hosts): the common desktop rate, until the output says otherwise.
 const UNREPORTED_REFRESH_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
-/// The slowest and fastest refresh rates believed, in millihertz. A value
-/// outside is a driver reporting nonsense, not a display.
 const REFRESH_MILLIHERTZ: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
 pub(super) struct AnimationSchedule {
@@ -32,14 +25,13 @@ impl Default for AnimationSchedule {
 }
 
 impl AnimationSchedule {
-    /// Whether no animation is running, so the next active poll starts one
-    /// (the moment to read the output's refresh rate again).
+    /// Whether no animation is running, so the next active poll starts one (the moment to read the
+    /// output's refresh rate again).
     pub(super) fn idle(&self) -> bool {
         self.next_tick.is_none()
     }
 
-    /// Take the beat from the output's refresh rate. `None` (unreported)
-    /// keeps the last known beat.
+    /// Take the beat from the output's refresh rate.
     pub(super) fn set_refresh_millihertz(&mut self, millihertz: Option<u32>) {
         if let Some(millihertz) = millihertz.filter(|mhz| REFRESH_MILLIHERTZ.contains(mhz)) {
             self.interval = Duration::from_nanos(1_000_000_000_000 / u64::from(millihertz));
@@ -58,12 +50,8 @@ impl AnimationSchedule {
             return (false, None);
         }
         match self.next_tick {
-            // Unrelated callbacks between beats neither redraw early nor
-            // push the beat forward.
             Some(deadline) if now < deadline => (false, Some(deadline)),
             Some(deadline) => {
-                // The first beat after `now` on the same grid: a late
-                // callback paints once, without a burst of catch-up frames.
                 let behind = now.saturating_duration_since(deadline).as_nanos();
                 let beat = self.interval.as_nanos().max(1);
                 let beats = u32::try_from(behind / beat + 1).unwrap_or(u32::MAX);
@@ -80,15 +68,9 @@ impl AnimationSchedule {
     }
 }
 
-/// How many animation frames in a row may paint nothing before a widget
-/// asking for them is named: about a second at any refresh rate.
 const STILL_FRAMES: u32 = 90;
 
-/// A check that animation frames move something. `needs_animation_frame`
-/// is for motion; a widget that asks for frames while nothing it paints
-/// changes (polling a worker, waiting out a timer) keeps the window
-/// repainting for nothing, and should wake on a deadline or a waking
-/// channel instead. Debug builds name it ([`Self::frame`]).
+/// A check that animation frames move something.
 #[derive(Default)]
 pub(super) struct StillAnimation {
     unchanged: u32,
@@ -96,10 +78,7 @@ pub(super) struct StillAnimation {
 }
 
 impl StillAnimation {
-    /// Note one redraw. Returns `true` once a streak of [`STILL_FRAMES`]
-    /// animation-driven frames that presented nothing is reached: the
-    /// moment to name who asks for them. Any presented frame, or a frame no
-    /// animation asked for, ends the streak.
+    /// Note one redraw.
     pub(super) fn frame(&mut self, animating: bool, presented: bool) -> bool {
         if !animating || presented {
             self.unchanged = 0;
@@ -185,8 +164,8 @@ pub fn waking_leaves(root: &dyn crate::widget::Widget, due: Instant) -> Vec<Stri
     out
 }
 
-/// Deadlines computed against a slightly later clock than the minimum they
-/// are compared with still name the same owner.
+/// Deadlines computed against a slightly later clock than the minimum they are compared with still name
+/// the same owner.
 pub const WAKE_MATCH_SLACK: Duration = Duration::from_millis(1);
 
 #[cfg(test)]
@@ -197,7 +176,6 @@ mod tests {
 
     #[test]
     fn animation_schedule_ticks_once_per_refresh_without_postponing_or_catching_up() {
-        // Case `the_beat_is_the_outputs_refresh_not_a_fixed_60_hz`.
         {
             let mut schedule = AnimationSchedule::default();
             schedule.set_refresh_millihertz(HZ_90);

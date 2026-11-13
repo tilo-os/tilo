@@ -20,18 +20,40 @@ pub(super) fn arguments_of(
         .map_err(|error| invalid(format!("the step's arguments do not read: {error}")))
 }
 
+/// `arguments` of the system's `open`, with the place the asking turn is in filled in when it names
+/// none: a place it opens stands beside the conversation of the turn
+/// (`docs/designs/app-language/one-app-model.md` §3). Every other action's arguments stand as they
+/// were.
+pub(super) fn with_turn_beside(
+    address: &tilo_actions::ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    beside: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let system_open = address.resource == crate::arrangement::RESOURCE && address.action == "open";
+    if !system_open || beside.is_empty() || arguments.contains_key("beside") {
+        return arguments.clone();
+    }
+    let mut arguments = arguments.clone();
+    arguments.insert("beside".into(), beside.into());
+    arguments
+}
+
 /// Run `address` as `actor` through the session's services, which publish the actions its own
 /// doors do not: what a service keeps (Chat's `record-work` on a turn's summons, the arrangement's
 /// place read from a service) is invoked on the same pass, on the record the service writes. The
 /// `actor` an agent names is `agent:<id>`, attributed as it is at an app's record origin; a person
-/// acts as themselves. A step of a `run` is that run's, as an app's action is. `done` hears what
-/// it ran: at once, or when the async work it started lands.
+/// acts as themselves. A step of a `run` is that run's, as an app's action is. `beside` is the
+/// place the ask is in — the conversation of the turn an agent asks in — or empty for the place in
+/// front: a resource the step opens stands beside it
+/// (`docs/designs/app-language/one-app-model.md` §3). `done` hears what it ran: at once, or when
+/// the async work it started lands.
 pub(crate) fn invoke_service_step(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
     actor: &str,
     run: Option<&tilo_actions::WorkGroup>,
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
+    beside: &str,
     done: tilo_actions::remote::Completer<
         Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
     >,
@@ -43,12 +65,13 @@ pub(crate) fn invoke_service_step(
     } else {
         invoker
     };
-    let started = services.borrow_mut().invoke_as(
+    let started = services.borrow_mut().invoke_as_beside(
         &invoker,
         run,
         &address.resource,
         &address.action,
         arguments,
+        beside,
     );
     match started {
         Ok(Started::Done(output)) => done.complete(Ok(Some(output))),

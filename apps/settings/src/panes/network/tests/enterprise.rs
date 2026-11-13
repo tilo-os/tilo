@@ -1,6 +1,6 @@
-//! The work or school (enterprise, 802.1X) network as Settings sets it up:
-//! the setup opens in place under its row, and the join carries what the form
-//! holds into the session's `network` resource, its password included.
+//! The work or school (enterprise, 802.1X) network as Settings sets it up: the
+//! setup opens in place under its row, and the join carries what the form holds
+//! into the session's `network` resource, its password included.
 
 use std::sync::Arc;
 
@@ -12,8 +12,6 @@ use crate::effects::SettingsEffect;
 use crate::i18n::t;
 use crate::panes::network::NetworkEffect;
 
-/// The work or school network's setup in the composition: its row, and
-/// whether that row is open.
 fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, Rect)> {
     if let Some(row) = widget
         .as_any()
@@ -31,9 +29,6 @@ fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, Rect)> {
         .find_map(enterprise_setup_open)
 }
 
-/// The work or school network's setup opens in place under its row on the
-/// standard disclose motion. Its action and a press on the row open the
-/// same row: an agent and a person land in the same place.
 #[test]
 fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
     use ui::headless::viewport;
@@ -41,8 +36,6 @@ fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
     let fake = Arc::new(FakeNetwork::default());
     let mut network = model(&fake);
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
-    // The networks were just looked for: no periodic scan rebuilds the
-    // page between the presses.
     network.scanned_at = Some(ui::time::now());
     let (mut app, network) = window_showing(network, (1000, 1800));
     let shown_open = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
@@ -84,9 +77,6 @@ fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
     Ok(())
 }
 
-/// The work or school setup form joins through the session's `network`
-/// resource: the job carries what the form holds into the action that joins
-/// an enterprise network, its password included.
 #[test]
 fn the_work_or_school_form_joins_through_the_network_resource() {
     let fake = Arc::new(FakeNetwork::default());

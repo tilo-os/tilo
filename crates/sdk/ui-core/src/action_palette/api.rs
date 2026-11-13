@@ -1,6 +1,5 @@
-//! The action palette as the windows that own one hold it: a trait object
-//! made from [`ACTION_PALETTE`], whose code a program may fetch on first
-//! use (`lazy-palettes`).
+//! The action palette as the windows that own one hold it: a trait object made from [`ACTION_PALETTE`],
+//! whose code a program may fetch on first use (`lazy-palettes`).
 
 #![allow(
     clippy::wildcard_imports,
@@ -9,8 +8,7 @@
 
 use super::*;
 
-/// What the windows that own an action palette ask of it, as the trait
-/// object [`ACTION_PALETTE`] makes.
+/// What the windows that own an action palette ask of it, as the trait object [`ACTION_PALETTE`] makes.
 pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     #[cfg(test)]
     fn scope(&self) -> Option<&ScopeDecl>;
@@ -239,11 +237,11 @@ impl ActionPaletteApi for ActionPalette {
     }
 }
 
-/// An action palette, as a window holds it.
+/// An action palette, as a window has it.
 pub(crate) type ActionPaletteBox = Box<dyn ActionPaletteApi>;
 
-/// The action palette's code, as a program that fetches it hands it over:
-/// it makes a palette for the host text's language.
+/// The action palette's code, as a program that fetches it hands it over: it makes a palette for the
+/// host text's language.
 #[derive(Clone, Copy)]
 pub struct MakeActionPalette(fn(String) -> ActionPaletteBox);
 
@@ -254,14 +252,13 @@ pub fn builtin_action_palette() -> MakeActionPalette {
 }
 
 crate::lazy_code! {
-    /// The action palette's code: linked, or with `lazy-palettes` fetched
-    /// once a window first lays out, ahead of the first prompt or search it
-    /// shows.
+    /// The action palette's code: linked, or with `lazy-palettes` fetched once a window first lays out,
+    /// ahead of the first prompt or search it shows.
     pub static ACTION_PALETTE: MakeActionPalette = builtin_action_palette, feature = "lazy-palettes";
 }
 
-/// A palette for the host text's `locale`, or `None` while the palette's
-/// code is still on its way (and then fetched).
+/// A palette for the host text's `locale`, or `None` while the palette's code is still on its way (and
+/// then fetched).
 pub(crate) fn make_action_palette(locale: String) -> Option<ActionPaletteBox> {
     ACTION_PALETTE.get().map(|make| (make.0)(locale))
 }

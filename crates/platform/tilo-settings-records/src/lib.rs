@@ -1,74 +1,63 @@
-//! Where a profile's settings documents live, for `settings-store`, which
-//! keeps what they hold and compiles unchanged for every target.
+//! Where a profile's settings documents live, for `settings-store`, which keeps
+//! what they hold and compiles unchanged for every target.
 //!
-//! A profile keeps its documents in `<root>/records/`. One process holds
-//! them at a time ([`Records::try_hold`]); the others read the same files,
-//! notice the holder's saves ([`Records::revision`], [`Records::watch`]) and
-//! hand it their writes through its door ([`Records::open_door`],
-//! [`Records::knock`]). A target without files, locks or local sockets (a
-//! browser page) reads nothing, holds what it opens and has no door.
+//! A profile keeps its documents in `<root>/records/`. One process holds them at
+//! a time ([`Records::try_hold`]); the others read the same files, notice the
+//! holder's saves ([`Records::revision`], [`Records::watch`]) and hand it their
+//! writes through its door ([`Records::open_door`], [`Records::knock`]). A
+//! target without files, locks or local sockets (a browser page) reads nothing,
+//! holds what it opens and has no door.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The directory below a profile's root holding its documents.
 pub const RECORDS_DIR: &str = "records";
-/// The holder's lock in the documents directory, which a browser page has
-/// none of. It stays behind when the holder exits.
+/// The holder's lock in the documents directory. It stays behind when the
+/// holder exits.
 #[cfg(not(target_arch = "wasm32"))]
 pub const LOCK_FILE: &str = "settings.lock";
 const DOOR_FILE: &str = "settings.sock";
-/// The number of the save the documents stand at: what the holder writes once both documents are
-/// written, so a follower that looks while a save is under way reads the save before it, whole,
-/// rather than one document of each.
+/// The number of the save the documents stand at: written once both documents
+/// are written, so a follower looking while a save is under way reads the save
+/// before it, whole.
 pub const REVISION_FILE: &str = "documents.revision";
 
-/// The root of this person's own settings profile: `tilo` below the XDG
-/// config home.
 #[must_use]
 pub fn profile_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
-/// One profile's documents directory.
 #[derive(Clone, Debug)]
 pub struct Records {
     dir: PathBuf,
 }
 
-/// Whether this process could take the profile.
 pub enum Hold {
-    /// It holds it for as long as it keeps the [`Holding`].
     Held(Holding),
-    /// Another process holds it.
     Busy,
     /// There is nothing to lock (no directory, or a target without locks):
     /// nobody else can hold it, so this process does, in memory.
     Unlockable,
 }
 
-/// The lock of the process holding a profile. A browser page has no
-/// locks, and holds what it opens ([`Hold::Unlockable`]).
+/// The lock of the process holding a profile.
 pub struct Holding {
     #[cfg(not(target_arch = "wasm32"))]
     _lock: tilo_files::Lock,
 }
 
-/// A follower's watch on the holder's saves; ends when dropped.
 pub struct Watch {
     #[cfg(feature = "watch")]
     _watch: tilo_files::native::ChangeWatch,
 }
 
-/// The holder's door for other processes' writes; closes when dropped.
 pub struct Door {
     socket: PathBuf,
     closed: Arc<AtomicBool>,
 }
 
 impl Records {
-    /// The documents of the profile whose root is `root`.
     #[must_use]
     pub fn of(root: &Path) -> Self {
         Self {
@@ -76,28 +65,25 @@ impl Records {
         }
     }
 
-    /// The documents' directory.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// The holder's lock and door. They belong to the process holding the
-    /// profile while it runs, never to the documents it keeps.
+    /// The holder's lock and door, held while the process holds the profile,
+    /// never part of the documents it keeps.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn runtime_files(&self) -> [PathBuf; 2] {
         [self.dir.join(LOCK_FILE), self.dir.join(DOOR_FILE)]
     }
 
-    /// Take the profile if no other process holds it.
     #[cfg(target_arch = "wasm32")]
     #[must_use]
     pub fn try_hold(&self) -> Hold {
         Hold::Unlockable
     }
 
-    /// Take the profile if no other process holds it.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn try_hold(&self) -> Hold {
@@ -117,7 +103,6 @@ impl Records {
         }
     }
 
-    /// The bytes of document `name`; `None` where it was never saved.
     pub fn read(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
         match std::fs::read(self.dir.join(name)) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -126,9 +111,9 @@ impl Records {
         }
     }
 
-    /// The number of the save both documents stand at, or `0` when the holder has saved none yet.
-    /// It is written after the documents of a save, so a follower answering it takes up a whole
-    /// save and never one document of it and one of the save before.
+    /// The number of the save both documents stand at, or `0` when the holder
+    /// has saved none. Written after the documents of a save, so a follower
+    /// takes up a whole save and never one document of it.
     #[must_use]
     pub fn revision(&self) -> u64 {
         std::fs::read_to_string(self.dir.join(REVISION_FILE))
@@ -137,8 +122,8 @@ impl Records {
             .unwrap_or(0)
     }
 
-    /// Say that both documents now stand at save `revision`: written once they are, so a follower
-    /// reading it finds the save whole.
+    /// Say that both documents now stand at save `revision`, written once they
+    /// are.
     pub fn commit(&self, revision: u64) -> std::io::Result<()> {
         tilo_files::native::atomic::write(
             &self.dir.join(REVISION_FILE),
@@ -146,14 +131,13 @@ impl Records {
         )
     }
 
-    /// Replace document `name` with `bytes`, crash-safely.
     pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
         tilo_files::native::atomic::write(&self.dir.join(name), bytes)
     }
 
-    /// Call `on_change` when one of the documents `names` is saved: a
-    /// follower's watch on its holder. `None` where nothing can be watched;
-    /// the follower then looks before each read.
+    /// Call `on_change` when one of the documents `names` is saved: a follower's
+    /// watch on its holder. `None` where nothing can be watched; the follower
+    /// then looks before each read.
     pub fn watch(
         &self,
         names: &'static [&'static str],
@@ -179,13 +163,13 @@ impl Records {
         }
     }
 
-    /// Open the holder's door: each request another process sends is
-    /// answered with what `answer` makes of it, on a thread of the door's
-    /// own. However deep the profile lives, its door opens.
+    /// Open the holder's door: each request another process sends is answered
+    /// with what `answer` makes of it, on a thread of the door's own. However
+    /// deep the profile lives, its door opens.
     ///
     /// # Errors
-    /// The door cannot be opened (`Unsupported` on a target without one):
-    /// no other process can hand this one its writes.
+    /// The door cannot be opened (`Unsupported` on a target without one), so no
+    /// other process can hand this one its writes.
     pub fn open_door(
         &self,
         answer: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
@@ -222,7 +206,6 @@ mod door {
 
     use super::{Answer, Door};
 
-    /// The largest request or answer that crosses the door: settings are small.
     const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
 
     pub(super) fn open(socket: &Path, answer: Answer) -> std::io::Result<Door> {
@@ -279,7 +262,6 @@ mod door {
         Ok(line)
     }
 
-    /// Wake the door's thread, which finds it closed and ends.
     pub(super) fn close(socket: &Path) {
         drop(tilo_files::native::socket::connect(socket));
         let _ = std::fs::remove_file(socket);

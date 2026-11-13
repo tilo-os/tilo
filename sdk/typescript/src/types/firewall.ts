@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.firewall@8f6272b1c59a5183";
+
 /** One of "allow", "deny". */
 export type Action = "allow" | "deny";
 
@@ -70,7 +75,7 @@ export interface Config extends tilo.Resource {
 
 /** The `firewall.config` kind at `path`. */
 export function config(ws: tilo.Workspace, path: string): Config {
-  return resourceProxy(ws, path) as unknown as Config;
+  return resourceProxy(ws, path, SURFACE) as unknown as Config;
 }
 
 /** Applied configuration — `firewall.applied`. */
@@ -84,6 +89,6 @@ export interface Applied extends tilo.Resource {
 
 /** The `firewall.applied` kind at `path`. */
 export function applied(ws: tilo.Workspace, path: string): Applied {
-  return resourceProxy(ws, path) as unknown as Applied;
+  return resourceProxy(ws, path, SURFACE) as unknown as Applied;
 }
 

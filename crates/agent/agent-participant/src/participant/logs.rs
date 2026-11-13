@@ -1,12 +1,8 @@
-//! The opt-in JSON-lines logs a run is traced and replayed from:
-//! `TILO_AGENT_PLAN_LOG` (every plan) and `TILO_AGENT_ACTION_LOG` (every
-//! invoked action). Neither holds a picture's bytes.
+//! The opt-in JSON-lines log a run is traced from, `TILO_AGENT_PLAN_LOG`:
+//! every plan, and the end of a task that kept a checklist or failed a step.
+//! It holds no picture's bytes.
 
-use tilo_actions::ActionOutput;
-use tilo_actions::door::ActionAddress;
-use tilo_peer_state::document_frame::DocumentRoute;
-
-use super::running::{FollowUp, produced, step_brief};
+use super::running::{FollowUp, step_brief};
 use crate::planner::{Obligations, PlanRole, Step};
 
 /// One plan as [`record_plan`] logs it.
@@ -162,53 +158,6 @@ fn append_line(path: &std::ffi::OsStr, line: &serde_json::Value, what: &str) {
         .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
     if let Err(error) = written {
         tracing::warn!(%error, "cannot record {what}");
-    }
-}
-
-/// Appends one JSON line per invoked action to `TILO_AGENT_ACTION_LOG`, when
-/// set: who did what to which record, with its arguments, when, and how it
-/// went. A run can be replayed from it, every record rebuilt step by step.
-pub(super) fn record_action(
-    agent: &str,
-    route: &DocumentRoute,
-    address: &ActionAddress,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    started_ms: u64,
-    outcome: &Result<Option<ActionOutput>, String>,
-) {
-    use std::io::Write as _;
-    let Some(path) = std::env::var_os("TILO_AGENT_ACTION_LOG") else {
-        return;
-    };
-    let line = serde_json::json!({
-        "started_unix_ms": started_ms,
-        "ended_unix_ms": tilo_clock::unix_now_ms(),
-        "agent": agent,
-        "app": route.app_id,
-        "record": route.record,
-        "resource": address.resource,
-        "action": address.action,
-        "arguments": arguments,
-        "ok": outcome.is_ok(),
-        "error": outcome.as_ref().err(),
-        "produced": outcome.as_ref().ok().and_then(Option::as_ref).map(produced).unwrap_or_default(),
-        // The resources it answered with: a replay maps the ids it made (a
-        // new sheet's) onto the ones the replay makes.
-        "resources": outcome
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .map(|output| serde_json::to_value(&output.resources).unwrap_or_default()),
-        "value": outcome.as_ref().ok().and_then(Option::as_ref).and_then(|output| output.value.clone()),
-    });
-    // One write per line, as the usage log does: agents append at once.
-    let written = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
-    if let Err(error) = written {
-        tracing::warn!(%error, "cannot record an action");
     }
 }
 

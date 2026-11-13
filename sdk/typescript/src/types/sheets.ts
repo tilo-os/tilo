@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.sheets@be9693405e43cb95";
+
 export interface Area {
   top: string;
   left: string;
@@ -237,6 +242,6 @@ export interface Workbook extends tilo.Resource {
 
 /** The `sheets.workbook` kind at `path`. */
 export function workbook(ws: tilo.Workspace, path: string): Workbook {
-  return resourceProxy(ws, path) as unknown as Workbook;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workbook;
 }
 

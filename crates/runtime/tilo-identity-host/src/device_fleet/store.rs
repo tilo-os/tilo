@@ -8,12 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, SystemTime};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
+    AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
+    decode_enrollment_token, sign_device_cert, sign_revocation_entry, verify_device_cert,
+    verify_device_cert_at, verify_revocation_entry,
 };
 
 use super::{DeviceFleet, FLEET_SCHEMA_VERSION};
@@ -82,14 +80,7 @@ impl DeviceFleetStore {
                 "device fleet identity/schema mismatch",
             ));
         }
-        for cert in &fleet.certificates {
-            verify_device_cert(cert)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        }
-        for entry in &fleet.revocations {
-            verify_revocation_entry(entry)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        }
+        fleet.check(identity_id)?;
         // Home peers are enrolled by the privileged LAN broker rather than the
         // ordinary device-completion UI. Their root-signed certificates live
         // in the shared enrollment registry and are projected into the same
@@ -180,6 +171,11 @@ impl DeviceFleetStore {
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
+    ///
+    /// The device admits the new one on its own authority, so it must be
+    /// allowed to admit devices; a device that only introduces a certificate
+    /// the person's devices approved mints through
+    /// [`crate::enrollment::mint_token`] instead.
     pub fn mint_enrollment(
         &self,
         identity_id: &str,
@@ -188,35 +184,24 @@ impl DeviceFleetStore {
         expires_at_ns: u64,
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
-        let device = tilo_user_identity::persist::load_device_key(&self.identity_paths)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let cert_path = self
-            .identity_paths
-            .device_cert_for_user(&profile.user_public_key);
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_device_cert_at(&cert, issued_at_ns)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if cert.device_public_key != device.verifying_key().to_bytes()
-            || !cert.capabilities.can_admit_devices
-        {
+        let (device, cert) = crate::enrollment::device_for(
+            &self.identity_paths,
+            profile.user_public_key,
+            issued_at_ns,
+        )?;
+        if !cert.capabilities.can_admit_devices {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "this device may not admit another device",
             ));
         }
-        let mut nonce = [0_u8; 16];
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let token = mint_enrollment_token(
+        crate::enrollment::mint_token(
             profile.user_public_key,
             capabilities,
             issued_at_ns,
             expires_at_ns,
-            nonce,
             &device,
         )
-        .map_err(|error| io::Error::other(error.to_string()))?;
-        encode_enrollment_token(&token).map_err(|error| io::Error::other(error.to_string()))
     }
 
     /// Complete enrollment after the new device returns its public key:
@@ -232,7 +217,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
         encoded_token: &str,
-        role: crate::enrollment::EnrollmentRole,
+        role: crate::enrollment::DeviceRole,
         new_device_public_key: [u8; 32],
         device_label: &str,
         now_ns: u64,
@@ -336,7 +321,8 @@ impl DeviceFleetStore {
         crate::enrollment::NonceStore::under(&self.identity_root())
     }
 
-    /// Root-sign a permanent revocation and persist it with the fleet.
+    /// Root-sign a permanent revocation of an enrolled device and keep it
+    /// with the fleet.
     pub fn revoke(
         &self,
         identity_id: &str,
@@ -345,9 +331,8 @@ impl DeviceFleetStore {
         revoked_at_ns: u64,
     ) -> io::Result<RevocationEntry> {
         let (root, profile) = self.identity(identity_id)?;
-        let _fleet_lock = self.lock_fleets()?;
-        let mut fleet = self.load(identity_id)?;
-        if !fleet
+        if !self
+            .load(identity_id)?
             .certificates
             .iter()
             .any(|cert| cert.device_public_key == device_public_key)
@@ -364,16 +349,9 @@ impl DeviceFleetStore {
             reason,
             signature: [0; 64],
         };
-        let digest = revocation_signing_digest(&entry)
+        sign_revocation_entry(&mut entry, &root)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        entry.signature = root
-            .sign(&digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
-        if !fleet.is_revoked(&device_public_key) {
-            fleet.revocations.push(entry.clone());
-            self.save(&fleet)?;
-        }
+        self.record_revocation(identity_id, &entry)?;
         Ok(entry)
     }
 
@@ -438,6 +416,42 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
+    /// Root-certify `agent_public_key` as an agent's grant reaching `scope`, named `label`, from
+    /// `issued_at_ns` until `expires_at_ns`, and keep it with `identity_id`'s fleet: a key the
+    /// person gave an agent when they started a session for it. It is listed with their devices
+    /// and ends as one does, by a revocation their root signs ([`Self::revoke`]).
+    ///
+    /// # Errors
+    ///
+    /// This device does not hold the identity's root, the grant is one no verifier takes (it
+    /// outlives an agent's grant), or the fleet cannot be written.
+    pub fn certify_agent_grant(
+        &self,
+        identity_id: &str,
+        agent_public_key: [u8; 32],
+        scope: AgentScope,
+        label: &str,
+        issued_at_ns: u64,
+        expires_at_ns: u64,
+    ) -> io::Result<DeviceCert> {
+        let (root, profile) = self.identity(identity_id)?;
+        let mut cert = DeviceCert {
+            user_public_key: profile.user_public_key,
+            device_public_key: agent_public_key,
+            device_label: label.to_owned(),
+            capabilities: DeviceCapabilities::agent_grant(scope),
+            issued_at_ns,
+            expires_at_ns: Some(expires_at_ns),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).map_err(|error| io::Error::other(error.to_string()))?;
+        verify_device_cert_at(&cert, issued_at_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.insert_certificate(identity_id, cert.clone())?;
+        Ok(cert)
+    }
+
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
     pub fn secret_sync_key(&self, identity_id: &str) -> io::Result<tilo_seal::SecretKey> {
@@ -457,6 +471,121 @@ impl DeviceFleetStore {
         cert: DeviceCert,
     ) -> io::Result<DeviceFleet> {
         self.insert_certificate(identity_id, cert)
+    }
+
+    /// The fleet of `identity_id` as an approving device hands it to a device
+    /// it admits, with `cert` in it: what [`Self::accept_transferred`] takes
+    /// on the joining device. Nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`], when `cert` is not `identity_id`'s or is not valid
+    /// now.
+    pub fn transferred(&self, identity_id: &str, cert: &DeviceCert) -> io::Result<Vec<u8>> {
+        let now_ns = tilo_clock::try_unix_now_ns()
+            .ok_or_else(|| io::Error::other("the clock is before the unix epoch"))?;
+        verify_device_cert_at(cert, now_ns).map_err(|error| io::Error::other(error.to_string()))?;
+        if cert.user_public_key != decode_hex_32(identity_id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "device certificate belongs to another identity",
+            ));
+        }
+        let mut fleet = self.load(identity_id)?;
+        fleet
+            .certificates
+            .retain(|known| known.device_public_key != cert.device_public_key);
+        fleet.certificates.push(cert.clone());
+        serde_json::to_vec_pretty(&fleet)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// The fleet document `bytes` another device handed this one when it
+    /// joined, checked as a fleet of `identity_id`: within its bounds, every
+    /// certificate and revocation in it verified, and `enrolled` among its
+    /// certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the document is larger than a fleet may be,
+    /// is no fleet of `identity_id`, does not verify, or does not list the
+    /// enrolling device.
+    pub fn accept_transferred(
+        &self,
+        identity_id: &str,
+        bytes: &[u8],
+        enrolled: [u8; 32],
+    ) -> io::Result<DeviceFleet> {
+        const MAX_FLEET_BYTES: usize = 1024 * 1024;
+        const MAX_RECORDS: usize = 256;
+        if bytes.len() > MAX_FLEET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transferred device fleet exceeds 1 MiB",
+            ));
+        }
+        let fleet: DeviceFleet = serde_json::from_slice(bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fleet.check(identity_id)?;
+        if fleet.certificates.len() > MAX_RECORDS
+            || fleet.revocations.len() > MAX_RECORDS
+            || !fleet
+                .certificates
+                .iter()
+                .any(|cert| cert.device_public_key == enrolled)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transferred device fleet violates its bounded schema",
+            ));
+        }
+        Ok(fleet)
+    }
+
+    /// Install `fleet` as this device's record of `fleet.identity_id`'s
+    /// devices: the fleet another device handed it when it joined. Written
+    /// the way every fleet write is — as the person, under the fleet lock —
+    /// so a device that joined reads the fleet it was given.
+    pub fn adopt_transferred(&self, fleet: &DeviceFleet) -> io::Result<()> {
+        fleet.check(&fleet.identity_id)?;
+        let _fleet_lock = self.lock_fleets()?;
+        self.save(fleet)
+    }
+
+    /// Record a root-signed revocation another host of `identity_id` withdrew
+    /// a device with: kept once, and refused from then on.
+    ///
+    /// # Errors
+    ///
+    /// The entry is not a revocation a verifier takes or is another
+    /// identity's, or the fleet cannot be written.
+    pub fn record_revocation(
+        &self,
+        identity_id: &str,
+        entry: &RevocationEntry,
+    ) -> io::Result<DeviceFleet> {
+        verify_revocation_entry(entry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if hex::encode(entry.user_public_key) != identity_id {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "revocation belongs to another identity",
+            ));
+        }
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        if fleet.is_revoked(&entry.revoked_device_public_key) {
+            return Ok(fleet);
+        }
+        fleet.revocations.push(entry.clone());
+        self.save(&fleet)?;
+        Ok(fleet)
+    }
+
+    /// The file this store keeps `identity_id`'s fleet in.
+    #[must_use]
+    pub fn fleet_file(&self, identity_id: &str) -> PathBuf {
+        self.path(identity_id)
     }
 
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
@@ -726,6 +855,71 @@ mod tests {
     use crate::device_fleet::ConsumedEnrollment;
 
     #[test]
+    fn an_agent_grant_is_certified_into_the_fleet_and_revoked_as_a_device() {
+        let root = tempfile::tempdir().expect("temp root");
+        let identity_dir = root.path().join("config/identity");
+        let paths = IdentityPaths::under(root.path().join("system"));
+        crate::provisioning::ensure_collaboration_identity(
+            &identity_dir,
+            &paths,
+            crate::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision");
+        let identity_id = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            .load()
+            .expect("registry")
+            .default_identity
+            .expect("default identity");
+        let store = DeviceFleetStore::at(&identity_dir, paths);
+        let now = store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
+        let agent = ed25519_dalek::SigningKey::from_bytes(&[17; 32])
+            .verifying_key()
+            .to_bytes();
+        let day = 24 * 60 * 60 * 1_000_000_000_u64;
+
+        let cert = store
+            .certify_agent_grant(
+                &identity_id,
+                agent,
+                AgentScope::AllWorkspaces,
+                "Agent key",
+                now,
+                now + 30 * day,
+            )
+            .expect("the root certifies it");
+        assert_eq!(cert.capabilities.agent, Some(AgentScope::AllWorkspaces));
+        assert!(!cert.capabilities.can_admit_devices && !cert.capabilities.server_key);
+        verify_device_cert_at(&cert, now).expect("a verifier takes it");
+        let fleet = store.load(&identity_id).expect("fleet");
+        assert!(
+            fleet
+                .certificates
+                .iter()
+                .any(|kept| kept.device_public_key == agent),
+            "kept with the person's devices"
+        );
+
+        // An agent's grant expires within what any verifier takes.
+        assert!(
+            store
+                .certify_agent_grant(
+                    &identity_id,
+                    agent,
+                    AgentScope::AllWorkspaces,
+                    "Agent key",
+                    now,
+                    now + 400 * day,
+                )
+                .is_err()
+        );
+
+        store
+            .revoke(&identity_id, agent, RevocationReason::Retired, now + 1)
+            .expect("revoked as a device is");
+        assert!(store.load(&identity_id).expect("fleet").is_revoked(&agent));
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
@@ -773,7 +967,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     phone.verifying_key().to_bytes(),
                     "Phone",
                     issued_at_ns,
@@ -789,7 +983,7 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &token,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Replay",
                 issued_at_ns + 1,
@@ -829,7 +1023,7 @@ mod tests {
             let after_issuer_expiry = store.complete_enrollment(
                 &identity_id,
                 &expires_with_issuer,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Expired issuer",
                 issued_at_ns + 3,
@@ -887,7 +1081,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &first_token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     first_device.verifying_key().to_bytes(),
                     "First device",
                     issued_at_ns,
@@ -908,7 +1102,7 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &second_token,
-                    crate::enrollment::EnrollmentRole::PersonalDevice,
+                    tilo_user_identity::DeviceRole::Personal,
                     second_device.verifying_key().to_bytes(),
                     "Second device",
                     after_first_expiry,
@@ -919,7 +1113,7 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &first_token,
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Rollback replay",
                 issued_at_ns + 1,
@@ -979,7 +1173,7 @@ mod tests {
                     store.complete_enrollment(
                         &identity_id,
                         &token,
-                        crate::enrollment::EnrollmentRole::PersonalDevice,
+                        tilo_user_identity::DeviceRole::Personal,
                         device.verifying_key().to_bytes(),
                         &format!("Device {seed}"),
                         issued_at_ns,
@@ -1050,7 +1244,7 @@ mod tests {
         let replay = store.complete_enrollment(
             &identity_id,
             &spent_earlier,
-            crate::enrollment::EnrollmentRole::PersonalDevice,
+            tilo_user_identity::DeviceRole::Personal,
             [71; 32],
             "Replay",
             issued_at_ns,
@@ -1066,7 +1260,7 @@ mod tests {
             .complete_enrollment(
                 &identity_id,
                 &mint(),
-                crate::enrollment::EnrollmentRole::PersonalDevice,
+                tilo_user_identity::DeviceRole::Personal,
                 phone.verifying_key().to_bytes(),
                 "Phone",
                 issued_at_ns,

@@ -1,11 +1,5 @@
-//! Drawing + event handling for [`Music`].
-//!
-//! Split out of `app.rs` to keep the data/state logic separate from the
-//! (large) rendering surface. Music paints its content column itself, but
-//! every part of it is the toolkit's: controls are [`ButtonFace`]s, covers
-//! are [`MediaCardFace`]s and every text names a [`TextRole`]. Clicks
-//! register `Hit`s for the event handler. The sidebar and the transport are
-//! the window shell's (`shell.rs`).
+//! Drawing and event handling for [`Music`]: music paints its content column, but every
+//! part of it is the toolkit's, and the sidebar and transport belong to the shell.
 
 use super::page_part::PagePart;
 use ui::widget::DrawChild;
@@ -35,8 +29,7 @@ use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 
-/// A track's row: its title and the line under it. Real rows and the rows
-/// on their way take its geometry.
+/// A track's row: its title and the line under it, also for rows on their way.
 pub(crate) const TRACK_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
 use crate::i18n::CATALOG;
 use ui::widget::data_table::DataTableFace;
@@ -47,8 +40,6 @@ use ui::widget::{
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-
-// ---- owned per-frame display rows (decouple draw from &self.lib borrow) ---
 
 struct TrackDisp {
     id: String,
@@ -81,23 +72,18 @@ struct PlaylistDisp {
     count: usize,
 }
 
-/// The painted frame's ink and spacing, resolved from the theme once per
-/// frame. Every gap is a step of the theme's spacing rhythm.
+/// The frame's ink and spacing, resolved from the theme once per frame.
 #[derive(Clone, Copy)]
 struct Look {
     text: Color,
     dim: Color,
     faint: Color,
-    /// The content gutter and the gap between groups of sections.
+    /// The content gutter, and the gap between groups of sections.
     gutter: f64,
-    /// Between two sections of a page.
     section: f64,
-    /// Between siblings: cards, buttons in a row.
     sibling: f64,
-    /// Inside one cluster: a title and its secondary line, a bar's tools.
     related: f64,
     tight: f64,
-    /// The minimum pointer target: icon buttons, the sidebar toggle.
     target: f64,
 }
 
@@ -118,13 +104,11 @@ impl Look {
     }
 }
 
-/// The measured height of one line of `style`.
 fn line_of(ctx: &mut PaintCtx<'_>, style: &TextStyle) -> f64 {
     f64::from(ctx.text.measure_style("Ag", None, style).1)
 }
 
-/// Paint one line of `text`, elided to `max_w`, with its line box's top at
-/// `origin`. Returns the line's height.
+/// Paint one line of `text`, elided to `max_w`, at `origin`; returns the line's height.
 pub(super) fn text_line(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -138,8 +122,7 @@ pub(super) fn text_line(
     line_of(ctx, style)
 }
 
-/// Paint one line of `text` ending at `x1`, centred on its line box inside
-/// `band`. Returns the x the text starts at.
+/// Paint one line ending at `x1`, centred in `band`; returns where it starts.
 pub(super) fn text_right_in_band(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -155,37 +138,28 @@ pub(super) fn text_right_in_band(
     x
 }
 
-/// A square of `side` centred on `c`.
 pub(super) fn square_around(c: Point, side: f64) -> Rect {
     Rect::from_center_size(c, (side, side))
 }
 
-/// Keep the active-screen accessibility snapshot useful without cloning an
-/// unbounded library into AccessKit/AT-SPI on every frame.  Global search uses
-/// the paged resource provider; this tree represents what a person can
-/// currently browse in the app and deliberately follows the same bounded
-/// materialisation rule.
+/// Cap the accessibility snapshot so a large library is not cloned every frame; the
+/// resource and search layers stay paged and resolve later items by id.
 pub(super) const ACCESSIBLE_PAGE_LIMIT: usize = 100;
 
-/// What a track table lists and how: the rows, the queue a click plays from,
-/// whether the album column and the leading track numbers show, and the
-/// playlist the rows belong to (which binds the row menu to it and adds the
-/// reorder/remove affordances).
+/// What a track table lists and how, and the playlist its rows belong to, which binds
+/// the row menu.
 struct TrackTable<'a> {
     rows: &'a [TrackDisp],
     queue: &'a [String],
     show_album: bool,
     number_col: bool,
     playlist: Option<&'a str>,
-    /// Whether a header names the columns (when there is more than one).
     header: bool,
-    /// Rows stand for queue entries from this index on (the queue view):
-    /// a click plays that entry and hover offers reorder/remove in the queue.
+    /// Rows stand for queue entries from this index on.
     queue_offset: Option<usize>,
 }
 
 impl<'a> TrackTable<'a> {
-    /// A numbered table with an album column, not bound to a playlist.
     fn new(rows: &'a [TrackDisp], queue: &'a [String]) -> Self {
         Self {
             rows,
@@ -198,7 +172,6 @@ impl<'a> TrackTable<'a> {
         }
     }
 
-    /// No column header: the table continues one already headed above it.
     fn without_header(self) -> Self {
         Self {
             header: false,
@@ -206,7 +179,6 @@ impl<'a> TrackTable<'a> {
         }
     }
 
-    /// Hide the album column (an album's own page).
     fn without_album(self) -> Self {
         Self {
             show_album: false,
@@ -214,7 +186,6 @@ impl<'a> TrackTable<'a> {
         }
     }
 
-    /// Leave out the leading index column.
     fn without_numbers(self) -> Self {
         Self {
             number_col: false,
@@ -222,7 +193,6 @@ impl<'a> TrackTable<'a> {
         }
     }
 
-    /// Bind the rows to playlist `id`.
     fn in_playlist(self, id: &'a str) -> Self {
         Self {
             playlist: Some(id),
@@ -230,7 +200,6 @@ impl<'a> TrackTable<'a> {
         }
     }
 
-    /// The rows are the queue from `offset` on.
     fn in_queue(self, offset: usize) -> Self {
         Self {
             queue_offset: Some(offset),
@@ -240,42 +209,31 @@ impl<'a> TrackTable<'a> {
     }
 }
 
-/// Column edges of a track table inside its `[left, right]` span: an index
-/// column, the title block sized to its widest title, an optional album
-/// column that starts right after it and takes the rest of the free width
-/// (so no dead gap opens between them), the row's actions and the
-/// right-aligned duration.
+/// Column edges of a track table inside its span: index, title, album, actions,
+/// duration.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TrackColumns {
     pub title_x: f64,
     pub title_x1: f64,
     pub album: Option<(f64, f64)>,
-    /// The leading edge of the action cluster.
     #[cfg(test)]
     pub actions_x: f64,
 }
 
-/// The measured widths a track table lays its columns out from.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ColumnWidths {
-    /// The index column (0 for none).
+    /// The index column's width, 0 for none.
     pub index: f64,
-    /// The widest duration.
     pub duration: f64,
-    /// One action button, and how many the row holds.
+    /// One action button's width, and how many a row holds.
     pub action: f64,
     pub actions: usize,
-    /// The widest title or artist line of the rows.
     pub title: f64,
-    /// Between two columns.
     pub gap: f64,
-    /// The narrowest a title or album column may get; the album column only
-    /// shows when both keep it.
+    /// The narrowest a text column may get; the album shows only when both keep it.
     pub min_text: f64,
 }
 
-/// Lay out a track table's columns inside `[left, right]`, with an album
-/// column when `album` asks for one and it fits.
 pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool) -> TrackColumns {
     let ColumnWidths {
         index: index_w,
@@ -294,8 +252,8 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
     let actions_x = right - duration_w - gap - action_w * actions as f64;
     let free = (actions_x - gap - title_x).max(0.0);
     let (title_x1, album) = if album && free >= 2.0 * min_text + gap {
-        // The title column is as wide as its widest line, never narrower
-        // than a readable column and never more than half the free width.
+        // The title column is as wide as its widest line, between a readable minimum and half
+        // the free width.
         let title_w = title_need.clamp(min_text, ((free - gap) / 2.0).max(min_text));
         let album_x = title_x + title_w + gap;
         (title_x + title_w, Some((album_x, actions_x - gap)))
@@ -311,16 +269,12 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
     }
 }
 
-/// A Home section's track queue, and the queue position of the next track
-/// tile drawn.
 struct SectionQueue<'a> {
     ids: &'a [String],
     next: usize,
 }
 
-/// Which kind of entity a detail page shows, with the state of the toggle
-/// its header offers: "Save to library" for an album, "Follow" for an
-/// artist, playlist management for a playlist.
+/// Which entity a detail page shows, and the state of the toggle its header offers.
 #[derive(Clone, Copy)]
 enum DetailKind {
     Album { saved: bool },
@@ -328,9 +282,7 @@ enum DetailKind {
     Playlist { own: bool },
 }
 
-/// What a detail page's header shows: the entity `id` (which also keys its
-/// art and its toggle), its kind, title, one secondary line and one
-/// caption, and the queue its Play and Shuffle buttons start.
+/// What a detail page's header shows, and the queue its Play and Shuffle start.
 struct DetailHeader<'a> {
     id: &'a str,
     kind: DetailKind,
@@ -340,9 +292,7 @@ struct DetailHeader<'a> {
     queue: Vec<String>,
 }
 
-/// The lyrics view's one column: on the content gutter like every other
-/// page, bounded to a readable width, inside the gutter top and bottom. The
-/// song itself is named by the transport bar, so the column is lyrics only.
+/// The lyrics view's column: the content gutter, bounded to a readable width.
 pub(super) fn lyrics_column(body: Rect, readable: f64, gutter: f64) -> Rect {
     let x0 = body.x0 + gutter;
     let x1 = (x0 + readable).min(body.x1 - gutter).max(x0);
@@ -354,25 +304,20 @@ pub(super) fn lyrics_column(body: Rect, readable: f64, gutter: f64) -> Rect {
     )
 }
 
-/// How far the lyric lines are scrolled up in a column `column_h` high:
-/// synced lyrics keep the current line a third of the way down, so the
-/// eye finds it in one place; plain lyrics read from the top.
-/// Lines wrap, so each has its own height: the current line's top is
-/// `current_top` down the unscrolled column.
+/// How far the lyric lines are scrolled: synced lyrics keep the current line a third of
+/// the way down, so the eye finds it in one place; plain lyrics read from the top.
 pub(super) fn lyrics_scroll(current_top: Option<f64>, column_h: f64) -> f64 {
     current_top.map_or(0.0, |top| top - column_h / 3.0)
 }
 
-/// Monotonic seconds since first use — the shared animation clock.
+/// Seconds since first use: the shared animation clock.
 fn anim_time() -> f64 {
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(ui::time::now).elapsed().as_secs_f64()
 }
 
-/// Normalised `0..=1` heights for the 3-bar now-playing equalizer. While
-/// `playing` the bars bounce on out-of-phase sinusoids; paused they hold a
-/// static silhouette.
+/// Heights `0..=1` for the three equalizer bars: moving while playing, still while paused.
 fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
     if !playing || reduce_motion {
         return [0.35, 0.72, 0.48];
@@ -387,8 +332,7 @@ fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
     out
 }
 
-/// The now-playing equalizer, ending at `end`: three bars that move while
-/// the track plays and hold still when it is paused (or motion is reduced).
+/// The equalizer, ending at `end`; it holds still when paused or with motion reduced.
 pub(super) fn paint_equalizer(ctx: &mut PaintCtx<'_>, playing: bool, end: Point) {
     let theme = ctx.theme;
     let tight = f64::from(theme.tokens.spacing.rhythm.tight);
@@ -410,22 +354,18 @@ pub(super) fn paint_equalizer(ctx: &mut PaintCtx<'_>, playing: bool, end: Point)
     }
 }
 
-/// One card of a media grid: what it shows and what a click on it does.
 struct GridCard<'a> {
     art_id: &'a str,
     title: &'a str,
     meta: [Option<&'a str>; 2],
     action: Action,
-    /// A Play action over the art while hovered.
+    /// A Play action over the art while the card is hovered.
     play: Option<Action>,
-    /// A person (an artist): a round portrait with the name centred under
-    /// it, instead of a square cover.
+    /// A person: a round portrait with the name centred under it.
     portrait: bool,
 }
 
-/// The glyph a card's art stands for when it has no picture: what the
-/// object is, not its initials. An artist keeps the portrait's own
-/// placeholder (a person, in the disc).
+/// The glyph a card's art shows without a picture: what the object is, not its initials.
 fn card_kind(action: &Action) -> Option<ui::icons::Icon> {
     match action {
         Action::Nav(View::Playlist(_) | View::Liked | View::Queue) => {
@@ -454,9 +394,8 @@ impl Continuable for Music {
         if track_id.is_empty() || track_id.len() > 256 || track_id.contains(['/', '\\']) {
             return None;
         }
-        // Intentionally omit `playing`, queue and volume. A receiving device
-        // may offer this paused position, but must never autoplay or alter its
-        // local audio policy merely because another device reported it.
+        // `playing`, the queue and the volume are left out: another device may offer this paused
+        // position, never autoplay.
         let bytes = serde_json::to_vec(&serde_json::json!({
             "track_id": track_id,
             "position_ms": self.playhead_ms.max(0.0) as u64,
@@ -510,8 +449,7 @@ impl Continuable for Music {
 }
 
 impl super::Page {
-    /// The embedded widgets the page shows, with the source buttons
-    /// `mode` ([`Music::source_widget_mode`]) puts on it.
+    /// The embedded widgets the page shows, with the source buttons `mode` puts on it.
     pub(super) fn children(&self, mode: u8) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::new();
         children.extend(
@@ -557,8 +495,7 @@ impl super::Page {
         children
     }
 
-    /// How many of [`Self::children`] the page lays out where it paints
-    /// them: the track lists, card grids and page parts, which come first.
+    /// How many of [`Self::children`] the page lays out itself; they come first.
     pub(super) fn painted(&self) -> usize {
         self.track_tables
             .iter()
@@ -576,7 +513,6 @@ impl super::Page {
                 .count()
     }
 
-    /// Whether a track table's rows are still moving into place.
     pub(super) fn rows_moving(&self) -> bool {
         self.track_tables
             .iter()
@@ -584,8 +520,6 @@ impl super::Page {
     }
 }
 
-/// Whether the source button `button` stands on the page in `mode`
-/// ([`Music::source_widget_mode`]).
 fn shows_source_button(button: &ui::widget::Button, mode: u8) -> bool {
     match mode {
         2 | 3 => {
@@ -602,8 +536,7 @@ fn shows_source_button(button: &ui::widget::Button, mode: u8) -> bool {
 }
 
 impl Music {
-    /// Lay out the source buttons the page shows, as the window's
-    /// children; the rest the page lays out where it paints them.
+    /// Lay out the source buttons the page shows; the rest it lays out where it paints them.
     pub(super) fn layout_page(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -628,21 +561,17 @@ impl Widget for Music {
         dyn ui::widget::Queryable
     );
 
-    /// The name prompt and an open menu own the input over the whole window
-    /// while they are up: Escape closes them, never the shell's screen.
+    /// The name prompt and an open menu own the input while they are up.
     fn modal_capture(&self) -> Option<Rect> {
         (self.name_prompt.is_some() || self.context.is_open()).then_some(self.rect)
     }
 
-    /// A drag of songs keeps the pointer while it crosses into the shell's
-    /// sidebar, to be let go on a playlist there.
+    /// A drag of songs keeps the pointer into the shell's sidebar, to be let go on a playlist.
     fn wants_pointer_capture(&self) -> bool {
         self.search.drag.is_some()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Reported once: an app that is not rebuilt right away (a tab behind
-        // another) must not ask again on every frame.
         let visible = Some(self.source_widget_mode());
         std::mem::replace(&mut self.open_file_layout_visible, visible) != visible
     }
@@ -651,8 +580,6 @@ impl Widget for Music {
         self.page.children(self.source_widget_mode())
     }
 
-    /// The track lists, card grids and page parts are laid out by the page
-    /// where it paints them; the source buttons by the window.
     fn lays_out_child(&self, child_index: usize) -> bool {
         child_index < self.page.painted()
     }
@@ -662,8 +589,7 @@ impl Widget for Music {
         self.page.children_mut(mode)
     }
 
-    /// The context menu and the name prompt paint in the window's top
-    /// layer, over the app and its chrome.
+    /// The context menu and the name prompt paint in the window's top layer.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -675,10 +601,8 @@ impl Widget for Music {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        // The cover flying between the band and Now Playing.
         self.paint_now_playing_flight(&mut PaintCtx::new(scene, transform, text_renderer, theme));
-        // The songs being dragged follow the pointer over the whole window,
-        // onto the sidebar's playlists.
+        // The songs being dragged follow the pointer over the whole window.
         self.paint_track_drag(&mut PaintCtx::new(scene, transform, text_renderer, theme));
         if self.context.is_open() {
             self.context
@@ -711,12 +635,7 @@ impl Widget for Music {
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, _path: &ObjId) {
-        // External controls and completed effects enter the same authored
-        // action door as events, before the next read-only projection.
-        // The host admits row control effects after delivering input. Their
-        // callbacks queue requests; apply them at the next sync through the
-        // same canonical actions as the palette, without waiting for another
-        // pointer event.
+        // External controls and completed effects enter the same action door as events.
         self.take_window_toolbar_events(state);
         self.take_shell_events(state);
         if self.back_requested.replace(false) {
@@ -724,8 +643,6 @@ impl Widget for Music {
             self.dirty = true;
         }
         self.drain_table_requests(state);
-        // What the page's own controls asked for through the host (an
-        // agent's press, a control's published effect) is carried out here.
         let asked = self
             .page
             .parts
@@ -742,8 +659,6 @@ impl Widget for Music {
             self.dispatch(action, state);
             self.dirty = true;
         }
-        // Progress in-flight downloads and re-apply their device-local cache
-        // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
         self.drain_mpris(state);
         self.drain_activity(state);
@@ -763,10 +678,7 @@ impl Widget for Music {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
-        // framework-wide contract this one widget can't change — so a
-        // `new_leaf` failure (which a freshly-created tree with one valid
-        // leaf style cannot produce) has no propagation path here.
+        // `build_layout` returns a bare `NodeId`, so a leaf failure has no path to report here.
         let children = self.layout_page(taffy, theme, node_map);
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
@@ -795,16 +707,13 @@ impl Widget for Music {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // While the context menu is open it owns the pointer + keyboard: route
-        // the event to it, then drain any selection into the Action pipeline.
+        // The open menu owns pointer and keyboard; a selection runs through the actions.
         if self.context.is_open() && self.route_context_menu(event, ctx) {
             *ctx.handled = true;
             return;
         }
 
-        // The name-prompt dialog is modal: while it's up the shared ModalDialog
-        // captures every event (typing, clicks, Esc) and nothing leaks to the
-        // library behind the scrim.
+        // The name prompt is modal: the shared dialog takes every event while it is up.
         if self.name_prompt.is_some() {
             self.route_name_event(
                 event,
@@ -821,11 +730,8 @@ impl Widget for Music {
             return;
         }
 
-        // The body's scrolling: wheel and touchpad over it, its bar, and
-        // Page Up/Down, Home/End and the arrows.
         if let Some(theme) = self.frame_theme.take() {
-            // Keyboard scrolling keeps the bar visible, but pointer browsing
-            // must not pin a focused scrollbar on screen forever.
+            // Keyboard scrolling keeps the bar visible; pointer browsing must not pin it.
             match event {
                 WindowEvent::KeyboardInput { .. } => self.body_scroll.set_focused(true),
                 WindowEvent::CursorMoved { .. }
@@ -848,11 +754,8 @@ impl Widget for Music {
         "MusicApp"
     }
 
-    /// The music library is custom-painted, so it must also publish the full
-    /// active screen explicitly.  Navigation, search, content rows and the
-    /// player all route to the exact same reducers as pointer/keyboard input.
-    /// Large collections are capped here; the canonical resource/search layer
-    /// remains paged and resolves every later item lazily by stable id.
+    /// The library is custom-painted, so it publishes the screen itself; large collections are
+    /// capped and the rest resolve by id.
     #[allow(
         clippy::too_many_lines,
         reason = "the semantic tree intentionally mirrors every Music view in one exhaustive match; splitting it would separate accessibility coverage from the view enum it audits"
@@ -903,9 +806,6 @@ impl Widget for Music {
                     ),
             );
         }
-        // The custom-painted empty-state button is page content, not a
-        // transport control. Give it a separate semantic group and route it to
-        // the same reducer as the visible button.
         if matches!(self.view, View::Home)
             && !self.home_is_loading()
             && self.lib.playlists.is_empty()
@@ -1216,7 +1116,6 @@ impl Widget for Music {
                     .with_hashed_key("now-playing")
                     .with_name(self.now_playing.spoken()),
             ),
-            // A query view's rows are its track lists' and cards' own.
             View::Recommendations | View::Search | View::Kept(_) => {}
         }
         if !list_items.is_empty() {
@@ -1375,10 +1274,8 @@ impl Widget for Music {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Settled playback needs observation updates, not a full repaint at
-        // every display refresh. Leave the executor time to serve its bounded
-        // PCM output lane, especially when the renderer uses the CPU.
-        // Startup, worker replies and visible animations still wake promptly.
+        // Settled playback needs observation updates, not a repaint at every refresh: leave the
+        // executor its PCM lane. Startup, worker replies and animations still wake it.
         (self.pb.playing && ui::time::now() >= self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             || self.audio.needs_poll()
             || self.resource_stream_invocation.is_some()
@@ -1387,8 +1284,6 @@ impl Widget for Music {
             || self.live_search_pending.is_some()
             || self.search.needs_frame()
             || self.search.highlight.is_some()
-            // Asked while a frame lays out: the frame's motions read at its
-            // instant, never at the clock ([`ui::motion::frame_now`]).
             || self.now_playing.in_flight(ui::motion::frame_now())
             || self.page.rows_moving()
             || self.source_invocation.is_some()
@@ -1398,7 +1293,6 @@ impl Widget for Music {
             || self.images_pending()
             || self.lyrics_pending_for.is_some()
             || self.search_edit_at.is_some()
-            // Keep frames flowing so the download spinner spins + progresses.
             || !self.downloads.is_empty()
             || !self.offline_resolves.is_empty()
             || self
@@ -1414,8 +1308,6 @@ impl Widget for Music {
             .into_iter()
             .chain(self.toast.deadline())
             .chain(self.search.next_placeholder_step(ui::motion::frame_now()))
-            // What is on its way from the catalogue steps on at its
-            // deadlines; its answer wakes the window itself.
             .chain(self.arriving_step_at(ui::motion::frame_now()))
             .chain(
                 self.children()
@@ -1442,8 +1334,7 @@ impl Widget for Music {
         !self.images.is_idle()
     }
 
-    /// A glide after a flick scrolls the body as the wheel does; it
-    /// changes no model, so it asks for no sync.
+    /// A glide after a flick scrolls the body; it changes no model, so it asks for no sync.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.dirty |= self.body_scroll.advance();
         let mut changed = false;
@@ -1454,18 +1345,14 @@ impl Widget for Music {
     }
 
     fn needs_redraw(&self) -> bool {
-        // `render_frame` clears this after painting.  Returning `true` here
-        // used to wake an otherwise paused, settled library at display rate,
-        // duplicating the work already requested by `needs_animation_frame`
-        // for playback, downloads, worker results, and transient UI.
+        // `render_frame` clears this after painting; the animation frame already covers playback,
+        // downloads and worker results.
         self.dirty
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        // Recording a frame can outlast the playback interval. Start the
-        // next interval after that work so a slow paint cannot immediately
-        // request another paint and crowd out the output worker.
+        // A slow paint must not immediately ask for another one.
         self.last_tick = ui::time::now();
     }
 }
@@ -1548,15 +1435,12 @@ impl Music {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Start `effect`, invoked as `invocation`. A view, a queue edit or a
-    /// transport change that needs no new source answers at once; starting
-    /// a stream, a download or the file picker answers once that work
-    /// settles, through [`Self::take_effect_result`].
+    /// Start `effect`: a change that needs no new source answers at once, a stream, download or
+    /// picker answers once it settles, through [`Self::take_effect_result`].
     ///
     /// # Errors
-    /// Why the effect does not apply to what this device shows and plays
-    /// now: a target gone from the library, a stale queue occurrence, a
-    /// stream start already in flight.
+    /// Why it does not apply to what this device shows now: a target gone from the library,
+    /// a stale queue entry, a stream start already in flight.
     pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1564,7 +1448,6 @@ impl Music {
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
         if matches!(effect, MusicEffect::SetVolume { volume } if volume > 0) {
-            // A volume above zero ends a mute, as the slider's does.
             self.premute_volume = None;
         }
         match effect {
@@ -1682,8 +1565,7 @@ impl Music {
                 if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
                     return Err("offline-cache target is no longer in the library".into());
                 }
-                // Do all device-local object removals before refreshing the
-                // projection; the manifest itself is atomically replaced.
+                // Remove the objects before refreshing the projection; the manifest is replaced atomically.
                 for id in tracks {
                     if let Some(download) = self.downloads.remove(&id) {
                         download.cancel();
@@ -1714,8 +1596,6 @@ impl Music {
                 self.dirty = true;
                 Ok(done)
             }
-            // Next, previous and mute take the steps the person's own
-            // controls take ([`Self::stepped_playback`]).
             step @ (MusicEffect::Next | MusicEffect::Previous | MusicEffect::ToggleMute) => {
                 let next = self.stepped_playback(&step);
                 self.dirty = true;
@@ -1725,7 +1605,6 @@ impl Music {
         }
     }
 
-    /// A transport or queue effect that only changes this device's playback.
     fn begin_transport_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1741,9 +1620,8 @@ impl Music {
             )
         })??;
         self.dirty = true;
-        // The shuffled order follows the edit exactly as the person's own
-        // queue edits move it: a song put next is heard next, and what has
-        // played stays played.
+        // The shuffled order follows the edit as the person's own queue edits move it: a song put
+        // next is heard next, and what has played stays played.
         let before = edit.and_then(|edit| self.follow_shuffled_edit(edit, &mut next));
         let effected = self.start_or_apply_playback(invocation, next);
         if effected.is_err()
@@ -1755,7 +1633,7 @@ impl Music {
         effected
     }
 
-    /// Move to `next`: only starting a source waits for the audio it starts.
+    /// Move to `next`; only starting a source waits for the audio it starts.
     fn start_or_apply_playback(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1794,8 +1672,6 @@ impl Music {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Start the effect a published operation's `payload` names, as the
-    /// host does when it is invoked.
     #[cfg(test)]
     pub(crate) fn start_effect(
         &mut self,
@@ -1808,13 +1684,11 @@ impl Music {
         self.begin_effect(invocation, effect)
     }
 
-    /// Show `place`, once it is still in the library.
     pub(super) fn show(&mut self, place: crate::actions::Place) -> Result<(), String> {
         use crate::actions::Place;
         match place {
             Place::View(id) => {
-                // A forged destination must not acquire arbitrary local
-                // routing authority: only the exported destinations open.
+                // Only the exported destinations open: a forged one routes nowhere.
                 if crate::actions::known_view_label(&id).is_none() {
                     return Err("unknown Music destination".into());
                 }
@@ -1861,8 +1735,7 @@ impl Music {
         Ok(())
     }
 
-    /// The outcome of the effect invoked as `invocation`, once the stream,
-    /// download or picker it started has settled; taken once.
+    /// The outcome of `invocation` once its work settled; taken once.
     pub(crate) fn take_effect_result(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1880,7 +1753,6 @@ impl Music {
             })
     }
 
-    /// Answer `invocation`'s caller through `reply` once its work settles.
     pub(crate) fn await_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1889,7 +1761,6 @@ impl Music {
         self.effect_replies.push((invocation, reply));
     }
 
-    /// Answer every waiting caller whose work has settled.
     pub(super) fn deliver_effect_replies(&mut self) {
         let waiting = std::mem::take(&mut self.effect_replies);
         for (invocation, reply) in waiting {
@@ -1910,8 +1781,6 @@ impl Music {
 }
 
 impl Music {
-    /// Pointer and key input the header, the sidebar and the scroll region
-    /// left for the page.
     fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.search.drag.is_some() && self.drag_input(event, ctx) {
             return;
@@ -1934,7 +1803,7 @@ impl Music {
             } => {
                 self.on_left_press(&mut ctx.state, ctx.handled);
             }
-            // A mouse's own Back and Forward buttons walk the view stack.
+            // A mouse's Back and Forward buttons walk the view stack.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Back,
@@ -1973,9 +1842,8 @@ impl Music {
         }
     }
 
-    /// Pointer and key input while songs are dragged onto a playlist: the
-    /// pointer carries them, a release drops them, Escape lets them go.
-    /// Returns whether the drag took the event.
+    /// Input while songs are dragged: the pointer carries them, a release drops them, Escape
+    /// lets them go. Whether the drag took the event.
     fn drag_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -2006,9 +1874,7 @@ impl Music {
         true
     }
 
-    /// Hover labels for icon-only controls. Text-labelled rows and navigation
-    /// deliberately return `None`; repeating their visible label would add
-    /// noise rather than information.
+    /// Hover labels for icon-only controls; a text-labelled row says nothing.
     fn tooltip_at(&self, point: Point) -> Option<&str> {
         if let Some(name) = &self.table_tooltip {
             return Some(name.as_str());
@@ -2064,9 +1930,7 @@ impl Music {
         None
     }
 
-    /// Route an event to the open context menu; returns whether `handle_event`
-    /// should return immediately (the menu consumed it, or an outside click
-    /// dismissed it).
+    /// Route an event to the open menu; whether `handle_event` should return at once.
     fn route_context_menu(
         &mut self,
         event: &WindowEvent,
@@ -2095,14 +1959,12 @@ impl Music {
                 }
             )
         {
-            // The menu consumed the click (selection / outside-dismiss).
             self.dirty = true;
             return true;
         }
         false
     }
 
-    /// Track the pointer.
     fn on_cursor_moved(&mut self, event: &WindowEvent, scale_factor: f64) {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return;
@@ -2111,25 +1973,20 @@ impl Music {
         self.dirty = true;
     }
 
-    /// Left press: the topmost hit under the pointer.
     fn on_left_press(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
-        // Topmost matching hit wins (later-drawn = on top).
         if let Some(action) = self.hit_test(self.mouse) {
             self.dispatch(action, state);
             *handled = true;
         }
     }
 
-    /// Whether the Home page is genuinely still loading — a fetch is in flight
-    /// and hasn't come back (nor failed). The single source of truth for the
-    /// Home skeleton *and* the animation loop, so a failed/offline fetch stops
-    /// both instead of shimmering (and spinning frames) forever.
+    /// Whether Home is still loading: the one answer the skeleton and the animation loop both
+    /// use, so a failed or offline fetch stops both.
     pub(crate) fn home_is_loading(&self) -> bool {
         self.home_asked.is_some() && self.home.is_none() && !self.home_failed
     }
 
-    /// The real (live) artist, album or playlist page the current view
-    /// shows whose content has not landed yet.
+    /// The live detail page the current view shows whose content has not landed.
     fn loading_page(&self) -> Option<&str> {
         let loading = match &self.view {
             View::Artist(id) => {
@@ -2166,10 +2023,6 @@ impl Music {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
-        // The name-input overlay is modal and handled upstream in
-        // `handle_event` (the shared ModalDialog owns typing / Esc / buttons),
-        // so `on_key` never runs with it open.
-
         if self.result_key(key, state) {
             *handled = true;
             return;
@@ -2251,12 +2104,8 @@ impl Music {
         }
     }
 
-    // ---- artwork ----------------------------------------------------------
-
-    /// Paint an entity's cover art (album / track / playlist / artist) into
-    /// `rect`: the loaded image, else the toolkit's generated placeholder,
-    /// which carries the initials of `title`. The face sets the title under
-    /// its art; only the art is kept. `id` keys the cover cache.
+    /// Paint an entity's cover into `rect`: the loaded image, else the toolkit's placeholder,
+    /// which carries the initials of `title`. `id` keys the cover cache.
     fn draw_cover(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, title: &str) {
         let image = self.art_image(id);
         let art = image
@@ -2275,9 +2124,7 @@ impl Music {
         ctx.scene.pop_layer();
     }
 
-    /// A person's picture, round as people are: the artist's photo, else
-    /// the neutral placeholder with their initials, in the disc that fills
-    /// the shorter side of `rect` (a circular media card, art only).
+    /// A person's picture, round: the photo, else the neutral placeholder with their initials.
     fn draw_portrait(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, name: &str) {
         let side = rect.width().min(rect.height());
         let image = self.art_image(id);
@@ -2289,10 +2136,6 @@ impl Music {
             .seed(name)
             .paint(ctx, square_around(rect.center(), side));
     }
-
-    // ---- controls ---------------------------------------------------------
-
-    // ---- master frame -----------------------------------------------------
 
     pub(super) fn render_frame(
         &mut self,
@@ -2307,35 +2150,27 @@ impl Music {
         self.media_grids_drawn = 0;
         self.page_parts_drawn = 0;
         self.sync_context_menu_geometry(ctx.theme);
-        // Fold in any streaming-worker results (resolved stream URLs → audio
-        // engine, real search hits → library), then keep live search results
-        // visible after a `sync` reloaded the catalog from the document.
+        // Fold in the worker's results, then keep live search hits visible after a `sync`.
         self.drain_worker();
         self.inject_live_hits();
         self.poll_lyrics();
         self.maybe_prefetch();
-        // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        // A result says so in the window's bar while it lasts.
         self.toast.expire();
         self.toast.publish();
 
-        // The shell holds the sidebar and the transport; this is the
-        // content column.
+        // The shell holds the sidebar and the transport; this is the content column.
         let look = Look::of(ctx.theme);
         let r = self.rect;
-        // The toolbar is the window bar's: the page starts at the top.
         self.declare_window_toolbar();
-        // The body scrolls in the toolkit's region; its content is laid out
-        // beside the bar's lane while it overflows.
+        // The body scrolls in the toolkit's region.
         self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
         self.follow_now_playing(ctx.theme, ui::motion::frame_now());
 
-        // Body first so chrome draws on top (and chrome hits win). The window
-        // ground is the framework's; nothing here fills it.
+        // Body first so chrome draws on top and its hits win.
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -2354,8 +2189,7 @@ impl Music {
         self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
         self.body_scroll
             .set_content_size(body.width(), self.content_height);
-        // An offset asked for this frame (or during it) is clamped to the
-        // content it was laid out against.
+        // An offset asked for this frame is clamped to the content it was laid out against.
         if let Some(target) = self.scroll_target.take() {
             self.body_scroll
                 .set_offset(vello::kurbo::Vec2::new(0.0, target));
@@ -2381,8 +2215,6 @@ impl Music {
         }
     }
 
-    /// Open a `--shots`-staged track menu over its row, once the row has been
-    /// laid out this frame.
     fn open_staged_track_menu(&mut self) {
         let Some(track) = self.staged_menu_track.take() else {
             return;
@@ -2398,10 +2230,7 @@ impl Music {
         }
     }
 
-    // ---- sidebar ----------------------------------------------------------
-
-    /// Where the window is: the destination's name, or the album, artist or
-    /// playlist shown.
+    /// Where the window is: the destination's name, or the album, artist or playlist shown.
     pub(super) fn view_title(&self) -> String {
         match &self.view {
             View::Home => crate::i18n::t("music-view-home"),
@@ -2439,8 +2268,6 @@ impl Music {
                 .unwrap_or_else(|| crate::i18n::t("music-view-playlist")),
         }
     }
-
-    // ---- body dispatch ----------------------------------------------------
 
     fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         match self.view.clone() {
@@ -2496,7 +2323,7 @@ impl Music {
         }
     }
 
-    /// A section heading on the content gutter. Returns the y below it.
+    /// A section heading on the content gutter; returns the y below it.
     fn section_heading(
         ctx: &mut PaintCtx<'_>,
         look: &Look,
@@ -2516,8 +2343,7 @@ impl Music {
         y + h + look.sibling
     }
 
-    /// A one-sentence note on the content gutter (an empty list, a status).
-    /// Returns the y below it.
+    /// A one-sentence note on the content gutter; returns the y below it.
     fn note(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64, text: &str) -> f64 {
         let style = ctx.theme.text(TextRole::Body);
         let h = text_line(
@@ -2531,9 +2357,7 @@ impl Music {
         y + h
     }
 
-    /// An empty or failed page: the toolkit's empty state centred in the
-    /// rest of the body, with its one action registered. Returns the body's
-    /// bottom (the empty state owns the page).
+    /// An empty or failed page: the toolkit's empty state in what is left of the body.
     fn empty_page(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2547,13 +2371,9 @@ impl Music {
         if let (Some(hit), Some(action)) = (hit, action) {
             self.push_hit(hit, action);
         }
-        // The state fills what is left of the view, and the body adds its
-        // closing gutter below whatever a page returns: return the end less
-        // that gutter, so an empty page fits and shows no scrollbar.
+        // The body adds its closing gutter below whatever a page returns, so return the end less it.
         (rect.y1 - Look::of(ctx.theme).gutter).max(y)
     }
-
-    // ---- home -------------------------------------------------------------
 
     fn provider_note(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64, text: &str) -> f64 {
         let style = ctx.theme.text(TextRole::Body);
@@ -2569,8 +2389,7 @@ impl Music {
         y + f64::from(height)
     }
 
-    /// This page positions retained controls manually. Use the toolkit's
-    /// shared button face metrics; geometry does not acquire widget authority.
+    /// This page positions retained controls itself, at the toolkit's button metrics.
     fn source_control_size(button: &Button, ctx: &mut PaintCtx<'_>) -> Size<f32> {
         let label = button.test_id().unwrap_or_default();
         let face = ButtonFace::new(Rect::ZERO, label);
@@ -2594,7 +2413,6 @@ impl Music {
         let mut row_height: f64 = 0.0;
         let mode = self.source_widget_mode();
         if !super::ONLINE_CATALOGUE {
-            // No online catalogue: there is no source to choose or connect.
             for button in &mut self.page.source_buttons {
                 button.apply_layout_external(Rect::ZERO);
             }
@@ -2728,14 +2546,11 @@ impl Music {
     }
 
     fn draw_home(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
-        // Kick off the real Home fetch (charts / new releases / top artists).
         self.ensure_home();
         let mut y = y + look.gutter;
         self.refresh_spotify_control_flags();
         y = self.position_source_buttons(ctx, look, body, y);
-        // Put the library and catalogue first: recommendations complement
-        // browsing instead of pushing every cover below the first screen.
-        // Remote catalogue content when it has landed.
+        // The library and the catalogue come first: recommendations complement browsing.
         if let Some(home) = self.home.take() {
             for section in &home.sections {
                 y = Self::section_heading(ctx, look, body, y, &section.title);
@@ -2746,15 +2561,10 @@ impl Music {
             return self.draw_home_recommendations(ctx, look, body, y);
         }
 
-        // While a real Home fetch is in flight, show the shape of the grid
-        // it will fill. Once a fetch has failed (offline build / network
-        // error) the honest state below settles instead.
         if self.home_is_loading() {
             return self.draw_home_skeleton(ctx, look, body, y);
         }
 
-        // Nothing in the library and no source connected: invite connecting
-        // one, having fetched nothing.
         if self.lib.playlists.is_empty()
             && self.lib.albums.is_empty()
             && self.lib.tracks.is_empty()
@@ -2774,7 +2584,6 @@ impl Music {
             return self.empty_page(ctx, body, y, &content, Some(action));
         }
 
-        // Nothing live, and nothing in the library yet: the first-run state.
         if self.lib.playlists.is_empty() && self.lib.albums.is_empty() && self.lib.tracks.is_empty()
         {
             let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
@@ -2789,8 +2598,7 @@ impl Music {
             return self.empty_page(ctx, body, y, &content, action);
         }
 
-        // The user's own library (built up as they play / like / save, or
-        // synced from another device).
+        // The person's own library, built up as they play, like and save, or synced from a peer.
         let playlists = self.gather_playlists();
         if !playlists.is_empty() {
             y = Self::section_heading(ctx, look, body, y, "Your playlists");
@@ -2838,9 +2646,7 @@ impl Music {
         )
     }
 
-    /// One real Home section as a grid of cover cards. Track cards play
-    /// (queueing the whole section); album and artist cards open the real
-    /// detail page.
+    /// A Home section as a grid of cards: track cards play, the rest open their page.
     fn draw_home_section(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2849,7 +2655,6 @@ impl Music {
         y: f64,
         section: &HomeSection,
     ) -> f64 {
-        // Library ids for the track queue (a chart section plays as a queue).
         let track_ids: Vec<String> = section
             .items
             .iter()
@@ -2893,7 +2698,6 @@ impl Music {
         self.draw_media_grid(ctx, look, body, y, &cards)
     }
 
-    /// The cover-cache key of a Home item.
     fn home_item_art(item: &HomeItem) -> String {
         match item.kind {
             HomeItemKind::Track => live_track_id(&item.video_id),
@@ -2901,8 +2705,7 @@ impl Music {
         }
     }
 
-    /// The Home grid while it loads: two sections, each a heading and one
-    /// row of the toolkit's loading cards.
+    /// The Home grid while it loads: two sections of loading cards.
     fn draw_home_skeleton(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2923,7 +2726,6 @@ impl Music {
         let (named, quiet) = self.arriving_clocks(since);
         let clip = self.body_rect;
         for section in 0..2 {
-            // The first heading says where Home comes from, once it says it.
             let clock = if section == 0 { &named } else { &quiet };
             let heading = ArrivalFace::new(SkeletonShape::Text { lines: 1 }, clock, now);
             let w = (extent * 1.5).min(right - left);
@@ -2946,9 +2748,7 @@ impl Music {
         y
     }
 
-    /// The clocks of what is on its way from the catalogue, asked at
-    /// `since`: one whose placeholder says where it comes from, and one for
-    /// the placeholders around it, which keep quiet.
+    /// The clocks of what is on its way: one names the catalogue, one keeps quiet.
     fn arriving_clocks(&self, since: Instant) -> (ArrivalClock, ArrivalClock) {
         (
             ArrivalClock::new(since, Source::host(self.backend_name.as_str())),
@@ -2956,7 +2756,6 @@ impl Music {
         )
     }
 
-    /// When the placeholder of what is on its way steps on next.
     pub(crate) fn arriving_step_at(&self, now: Instant) -> Option<Instant> {
         let since = if self.home_is_loading() {
             self.home_asked
@@ -2967,11 +2766,7 @@ impl Music {
         self.arriving_clocks(since).0.next_step_at(now)
     }
 
-    // ---- media grids ------------------------------------------------------
-
-    /// Lay `cards` out as a media grid from `y`: the toolkit's grid of
-    /// cover cards, embedded in the page. The cards take their own hover,
-    /// press and Play action; what they ask for comes back through
+    /// Lay `cards` out as a media grid from `y`; what the cards ask for comes back through
     /// [`Self::route_page_widgets`]. Returns the y below the grid.
     fn draw_media_grid(
         &mut self,
@@ -3082,7 +2877,6 @@ impl Music {
         self.draw_media_grid(ctx, look, body, y, &cards)
     }
 
-    /// The user's playlists as cover cards.
     fn draw_playlist_cards(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3107,8 +2901,7 @@ impl Music {
         self.draw_media_grid(ctx, look, body, y, &cards)
     }
 
-    /// The Playlists destination: the playlists' cards. New playlist is the
-    /// window bar's action.
+    /// The Playlists destination; New playlist is the window bar's action.
     fn draw_playlist_grid(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3120,24 +2913,19 @@ impl Music {
         if self.spotify_catalogue {
             let y = self.position_source_buttons(ctx, look, body, y);
             return if pls.is_empty() {
-                Self::note(ctx, look, body, y, "Playlists you make appear here.")
+                y
             } else {
                 self.draw_playlist_cards(ctx, look, body, y, pls)
             };
         }
         if pls.is_empty() {
-            return Self::note(ctx, look, body, y, "Playlists you make appear here.");
+            return y;
         }
         self.draw_playlist_cards(ctx, look, body, y, pls)
     }
 
-    // ---- track table ------------------------------------------------------
-
-    /// The track list every view shares (songs, an album, a playlist, liked
-    /// songs, downloads, the queue): the toolkit's table, embedded in the
-    /// page and windowed by its scroll. Its rows lift, play, open their menu
-    /// and show their actions themselves; what they ask for comes back
-    /// through [`Self::route_page_widgets`]. Returns the y below the table.
+    /// The track list every view shares, embedded in the page and windowed by its scroll; what
+    /// its rows ask for comes back through [`Self::route_page_widgets`]. Returns the y below.
     fn draw_track_table(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3159,8 +2947,6 @@ impl Music {
             .enumerate()
             .map(|(i, tk)| self.track_cell(tk, i, table, downloads))
             .collect();
-        // A membership opened from search stays lifted on its row, as does
-        // the song the keyboard is on in a query view's results.
         let selected = table
             .playlist
             .and_then(|playlist| {
@@ -3197,7 +2983,6 @@ impl Music {
         if slot_index == 0
             && let Some(ids) = self.restore_selection.take()
         {
-            // Back on a view: its songs are selected as they were left.
             slot.table.select_ids(&ids);
         }
         if slot_index == 0
@@ -3208,8 +2993,7 @@ impl Music {
         slot.table.place(ctx, (left, right), y, clip)
     }
 
-    /// A track table's columns in `[left, right]`: which show, and their
-    /// measured widths.
+    /// A track table's columns in `[left, right]`: which show, and their measured widths.
     fn track_table_shape(
         ctx: &mut PaintCtx<'_>,
         look: &Look,
@@ -3259,8 +3043,7 @@ impl Music {
             },
             second_column,
         );
-        // Widths on the half pixel, so a table is rebuilt for a real change
-        // of its columns and never for float noise.
+        // Widths on the half pixel, so only a real change rebuilds the table.
         let half = |v: f64| ((v * 2.0).round() / 2.0) as f32;
         Shape {
             numbers: table.number_col,
@@ -3282,7 +3065,7 @@ impl Music {
         }
     }
 
-    /// One row of a track table as its cells show it.
+    /// One row of a track table, as its cells show it.
     fn track_cell(
         &self,
         tk: &TrackDisp,
@@ -3340,11 +3123,8 @@ impl Music {
         }
     }
 
-    /// Route `event` to the page's embedded widgets (its track tables and
-    /// cover grids) and turn what their rows and cards asked for into
-    /// actions. Chrome painted over the page (the queue
-    /// preview, a floating sidebar and its scrim) takes the pointer first.
-    /// Returns whether a table took the event.
+    /// Route `event` to the page's widgets and turn what they ask for into actions; chrome
+    /// painted over the page takes the pointer first. Whether a table took the event.
     fn route_page_widgets(
         &mut self,
         event: &WindowEvent,
@@ -3370,7 +3150,6 @@ impl Music {
         let mut tooltip = None;
         for (index, slot) in self.page.track_tables.iter_mut().enumerate() {
             if covered {
-                // The pointer is not over the page: no row stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
                     slot.table.host.handle_event(
                         &WindowEvent::CursorLeft {
@@ -3392,7 +3171,6 @@ impl Music {
         let mut cards = Vec::new();
         for grid in &mut self.page.media_grids {
             if covered {
-                // The pointer is not over the page: no card stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
                     grid.host.handle_event(
                         &WindowEvent::CursorMoved {
@@ -3472,7 +3250,6 @@ impl Music {
     fn row_action(&mut self, index: usize, ask: super::track_table::RowEvent) -> Option<Action> {
         use super::track_table::{Offline, RowEvent};
         match ask {
-            // The table selected the row itself; nothing plays.
             RowEvent::Select(_) => return None,
             RowEvent::Drag(row) => {
                 self.begin_track_drag(index, row);
@@ -3514,9 +3291,7 @@ impl Music {
         }
     }
 
-    /// Place the next embedded part of the page from `top` across
-    /// `[left, right]`, rebuilt with `build` when `key` changed. Returns the
-    /// y below it.
+    /// Place the next embedded part of the page from `top`, rebuilt when `key` changed.
     pub(super) fn page_part(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3538,8 +3313,7 @@ impl Music {
         part.host.place(ctx, span, top, clip)
     }
 
-    /// A song's offline status in words, and whether it failed. A failure
-    /// says only that; its Retry button names the cause.
+    /// A song's offline status in words, and whether it failed; its Retry button names the cause.
     fn download_status(&self, track: &str) -> (String, bool) {
         if self.offline_errors.contains_key(track) {
             return ("Download failed".into(), true);
@@ -3553,12 +3327,8 @@ impl Music {
         }
     }
 
-    // ---- detail pages -----------------------------------------------------
-
-    /// The hero of an album, artist or playlist page: the cover (a round
-    /// portrait for an artist), the title, one secondary line and one
-    /// caption, and the page's actions. The cover sits beside the text on a wide body and above it
-    /// on a narrow one. Returns the y below the hero.
+    /// The cover, title, one secondary line, one caption and the page's actions, beside each
+    /// other on a wide body and stacked on a narrow one. Returns the y below the hero.
     #[allow(
         clippy::too_many_lines,
         reason = "the hero lays out its art, its text and its wrapping action row together"
@@ -3575,9 +3345,8 @@ impl Music {
         let y = y + look.gutter;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
-        // Reserve a readable text column, not three large covers. At high
-        // UI scales the old cover-multiple breakpoint stacked a desktop hero
-        // and pushed virtually its entire track list below the fold.
+        // A readable text column, not three large covers, which at high scales pushed the track
+        // list below the fold.
         let row_h = DataTableFace::new(&[], &[]).two_line().row_height(theme);
         let hero_budget = (body.height() - 4.0 * row_h - 3.0 * look.gutter).max(3.0 * look.target);
         let side = MediaSize::Small
@@ -3621,8 +3390,7 @@ impl Music {
             }
             + look.section
             + button_h;
-        // Beside the cover the text block sits on the cover's bottom edge;
-        // under it, the block follows the cover.
+        // Beside the cover the text sits on its bottom edge; under it, the block follows.
         let mut ty = if wide {
             (art.y1 - block_h).max(art.y0)
         } else {
@@ -3655,7 +3423,6 @@ impl Music {
         }
         ty += look.section;
 
-        // Keep playback primary; playlist management lives behind More.
         let queue = header.queue;
         let mut buttons: Vec<(&str, ButtonRole, Action)> = vec![
             (
@@ -3702,7 +3469,6 @@ impl Music {
                 )),
             DetailKind::Playlist { own: false } => {}
         }
-        // The actions are the toolkit's buttons in a wrapping row.
         let key = format!("{buttons:?}");
         let gap = ui::num::f32_of_f64(look.related);
         let actions = self.actions.clone();
@@ -3731,8 +3497,7 @@ impl Music {
         art.y1.max(ty) + look.gutter
     }
 
-    /// `ids` with recordings that appear twice (a local track and the same
-    /// recording resolved live) kept once, in order.
+    /// `ids` without a recording twice: a local track and the same song resolved live.
     fn unique_recordings(&self, ids: &[String]) -> Vec<String> {
         let mut seen = std::collections::BTreeSet::new();
         ids.iter()
@@ -3757,7 +3522,6 @@ impl Music {
         y: f64,
         id: &str,
     ) -> f64 {
-        // Real YouTube-Music album (its ordered track list) when available.
         self.ensure_album(id);
         if let Some(page) = self.album_pages.remove(id) {
             let r = self.draw_album_detail_live(ctx, look, body, y, &page);
@@ -3812,7 +3576,6 @@ impl Music {
         )
     }
 
-    /// Album detail rendered straight from a real [`AlbumPage`].
     fn draw_album_detail_live(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3853,11 +3616,7 @@ impl Music {
         )
     }
 
-    /// A detail page while it loads: the shapes of its cover, title and
-    /// rows, so nothing moves when the content lands.
-    /// Its space is reserved from the start; the framework's placeholder
-    /// steps through it ([`ArrivalFace`]), the first row saying where the
-    /// page comes from once it says it.
+    /// A detail page while it loads, so nothing moves when the content lands.
     fn draw_loading_detail(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -3892,8 +3651,7 @@ impl Music {
         y
     }
 
-    /// A library page with nothing in it yet (Songs, Albums, Artists): what
-    /// fills it, and the way to find something to play.
+    /// A library page with nothing in it yet, and the way to find something to play.
     fn empty_library_page(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3910,10 +3668,8 @@ impl Music {
         self.empty_page(ctx, body, y, &content, Some(Action::OpenSearch))
     }
 
-    /// An honest error for a live detail page whose fetch failed (offline,
-    /// geo-block, network error), with a way home: a deep link can open a
-    /// page with no Back history to return to.
-    /// What a detail page shows, named in the window's language.
+    /// A live detail page whose fetch failed, with a way home: a deep link can open a page with
+    /// no Back history. Below it, what the page shows, named in the window's language.
     fn kind_name(kind: &str) -> String {
         match kind {
             "album" => CATALOG.t("music-kind-album"),
@@ -3946,7 +3702,6 @@ impl Music {
         y: f64,
         id: &str,
     ) -> f64 {
-        // Real YouTube-Music artist page (top songs, albums, subscribers).
         self.ensure_artist(id);
         if let Some(page) = self.artist_pages.remove(id) {
             let r = self.draw_artist_detail_live(ctx, look, body, y, &page);
@@ -4010,9 +3765,7 @@ impl Music {
         self.draw_album_grid(ctx, look, body, y, &albums)
     }
 
-    /// A full artist page rendered from a real [`ArtistPage`]: header (play +
-    /// shuffle + follow), popular tracks, a sectioned discography (albums vs.
-    /// singles and EPs), related artists, and the artist's biography.
+    /// A full artist page: header, popular tracks, discography, related artists and biography.
     fn draw_artist_detail_live(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -4072,8 +3825,7 @@ impl Music {
         Self::draw_artist_detail_bio(ctx, look, body, y, page)
     }
 
-    /// Discography, sectioned by release type. Full albums first, then the
-    /// shorter singles and EPs — the way listeners expect a discography to read.
+    /// Discography by release type: albums first, then singles and EPs.
     fn draw_artist_detail_discography(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -4120,7 +3872,7 @@ impl Music {
         y
     }
 
-    /// Related / similar artists ("Fans also like").
+    /// Related artists.
     fn draw_artist_detail_related(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -4153,8 +3905,7 @@ impl Music {
         y + look.gutter
     }
 
-    /// The artist's biography, wrapped to a readable width and bounded to a
-    /// few lines.
+    /// The artist's biography, wrapped and bounded to a few lines.
     fn draw_artist_detail_bio(
         ctx: &mut PaintCtx<'_>,
         look: &Look,
@@ -4194,9 +3945,6 @@ impl Music {
         y: f64,
         id: &str,
     ) -> f64 {
-        // A live (YouTube-Music) playlist opened from a search result: fetch +
-        // render its real track list. Falls back to a loading skeleton until it
-        // lands, then to the local path if it's actually one of the user's own.
         if is_live_playlist_id(id) && self.lib.playlist(id).is_none() {
             self.ensure_playlist(id);
             if let Some(page) = self.playlist_pages.remove(id) {
@@ -4234,9 +3982,8 @@ impl Music {
             },
         );
 
-        // A Ctrl+K membership hit names a specific row, not merely its owning
-        // playlist. Move it into view on the next paint (the current paint has
-        // already established its geometry), and keep the row visibly marked.
+        // A membership hit names a specific row: move it into view on the next paint and keep it
+        // marked.
         if let Some((playlist, track)) = &self.revealed_membership
             && playlist == id
         {
@@ -4252,9 +3999,7 @@ impl Music {
                     self.set_scroll_y(desired);
                 }
             } else {
-                // The authority-door check should have caught this, but never
-                // leave a stale local highlight around if a peer changes the
-                // list between operation delivery and the following frame.
+                // Never leave a stale highlight if a peer changes the list before the frame.
                 self.revealed_membership = None;
             }
         }
@@ -4268,8 +4013,6 @@ impl Music {
                 "Add songs to this playlist from a song’s menu.",
             );
         }
-        // Unified row look (equalizer + like + download + duration); the playlist
-        // context adds reorder/remove affordances and binds the row menu.
         self.draw_track_table(
             ctx,
             look,
@@ -4279,8 +4022,7 @@ impl Music {
         )
     }
 
-    /// A live (YouTube-Music) playlist rendered from a real [`PlaylistPage`]:
-    /// cover + owner header with Play / Shuffle, then the ordered track list.
+    /// A live playlist: cover and owner header with Play and Shuffle, then the track list.
     fn draw_playlist_detail_live(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -4342,8 +4084,6 @@ impl Music {
         )
     }
 
-    // ---- queue ------------------------------------------------------------
-
     fn draw_queue(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let mut y = y + look.gutter;
         y = self.draw_spotify_remote_queue(ctx, look, body, y);
@@ -4352,8 +4092,6 @@ impl Music {
             y = Self::section_heading(ctx, look, body, y, "Now playing");
             let rows = self.gather_tracks(std::slice::from_ref(&cur));
             let offset = self.pb.queue_index;
-            // One row under its own heading: the columns are named once,
-            // over the list that follows.
             y = self.draw_track_table(
                 ctx,
                 look,
@@ -4386,8 +4124,6 @@ impl Music {
             &TrackTable::new(&rows, &full).in_queue(offset),
         )
     }
-
-    // ---- downloads --------------------------------------------------------
 
     fn draw_downloads(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let y = y + look.gutter;
@@ -4447,15 +4183,12 @@ impl Music {
         )
     }
 
-    // ---- liked songs ------------------------------------------------------
-
     fn draw_liked(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let y = y + look.gutter;
         let ids = self.lib.liked_ids();
         if ids.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::Heart),
-                message: Some("Like a song and it appears here."),
                 ..EmptyStateContent::new("No liked songs yet")
             };
             return self.empty_page(ctx, body, y, &content, None);
@@ -4498,11 +4231,8 @@ impl Music {
         self.draw_track_table(ctx, look, body, y, &TrackTable::new(&rows, &ids))
     }
 
-    // ---- lyrics -----------------------------------------------------------
-
     fn draw_lyrics(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let _ = y; // lyrics own the whole body: laid out + auto-scrolled here.
-        // Resolve lyrics for the current track (cached by id).
         self.ensure_lyrics();
         let cur = self
             .pb
@@ -4532,9 +4262,7 @@ impl Music {
         column.y1
     }
 
-    /// The lyric lines in `band`, set flush with the page's leading edge and
-    /// following the playhead: the current line in the title role, its
-    /// neighbours quieter with distance.
+    /// The lyric lines in `band`, the current line in the title role and its neighbours quieter.
     fn draw_lyrics_lines(&self, ctx: &mut PaintCtx<'_>, look: &Look, band: Rect) {
         let pos = self.playhead_ms as u64;
         let current = if self.lyrics_synced {
@@ -4550,8 +4278,7 @@ impl Music {
         let style = ctx.theme.text(TextRole::Heading);
         let focus = current.unwrap_or(0);
         let maxw = ui::num::f32_of_f64(band.width().max(1.0));
-        // Every line wraps to the column, the one being sung too; a blank
-        // line (a pause in the song) is a short gap, not a glyph.
+        // Every line wraps to the column; a blank line is a short gap, not a glyph.
         let gap = look.related;
         let blank = line_of(ctx, &style) / 2.0;
         let mut tops = Vec::with_capacity(self.lyrics.len());
@@ -4587,7 +4314,6 @@ impl Music {
                 continue;
             };
             let ly = band.y0 + top - auto;
-            // Do not leave half a lyric line cut against the header or player.
             if text.is_empty() || ly < band.y0 || ly + height > band.y1 {
                 continue;
             }
@@ -4605,10 +4331,8 @@ impl Music {
         ctx.scene.pop_layer();
     }
 
-    // ---- browse -----------------------------------------------------------
-
-    /// Browse: the library's genres as cards. A card opens the platform
-    /// search for Music with the genre filled in.
+    /// Browse: the library's genres as cards; a card opens the platform search for Music with
+    /// the genre filled in.
     fn draw_browse(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let mut y = y + look.gutter;
         let mut genres: Vec<(String, usize)> = Vec::new();
@@ -4625,14 +4349,12 @@ impl Music {
         if genres.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::LayoutGrid),
-                message: Some("Genres appear here as your library grows."),
                 action_label: Some("Search music"),
                 ..EmptyStateContent::new("Nothing to browse yet")
             };
             return self.empty_page(ctx, body, y, &content, Some(Action::OpenSearch));
         }
         y = Self::section_heading(ctx, look, body, y, "Genres");
-        // A genre is a card; pressing it opens search for the genre.
         let key = format!("{genres:?}");
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
         let actions = self.actions.clone();
@@ -4665,10 +4387,6 @@ impl Music {
             Box::new(ui::widget::CardGrid::new(cards))
         })
     }
-
-    // ---- now playing bar --------------------------------------------------
-
-    // ---- gather helpers (own data so draw can borrow &mut self) -----------
 
     fn gather_tracks(&self, ids: &[String]) -> Vec<TrackDisp> {
         ids.iter()
@@ -4751,7 +4469,7 @@ impl Music {
     }
 }
 
-/// "1 song" / "12 songs".
+/// A count of songs, singular or plural.
 fn songs_label(n: usize) -> String {
     if n == 1 {
         "1 song".to_string()
@@ -4760,8 +4478,7 @@ fn songs_label(n: usize) -> String {
     }
 }
 
-/// The caption of an album page: when it came out, then how long it is
-/// ("Released in 2023, 12 songs, 48 min").
+/// An album's caption: its release, then how long it plays.
 fn album_caption(year: u32, rows: &[TrackDisp]) -> String {
     let length = length_caption(rows);
     if year > 0 {
@@ -4771,7 +4488,7 @@ fn album_caption(year: u32, rows: &[TrackDisp]) -> String {
     }
 }
 
-/// How many songs a list holds and how long it plays: "12 songs, 48 min".
+/// How many songs a list holds and how long it plays.
 fn length_caption(rows: &[TrackDisp]) -> String {
     let total: u64 = rows.iter().map(|row| u64::from(row.dur)).sum();
     let count = songs_label(rows.len());

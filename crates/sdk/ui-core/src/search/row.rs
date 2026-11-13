@@ -1,11 +1,8 @@
-//! How a search hit reads in the results list.
-//!
-//! A provider says what a hit *is* — a message, a video, a match in a file —
-//! and fills that row's slots; the platform draws it in the palette's row
-//! slot on the list row geometry, in every palette, the same way for every
-//! app. A hit without a [`SearchRow`] is drawn as the generic row: icon,
-//! title and subtitle. Rows are data, never drawing code, so they reach the
-//! shell's palette from any app unchanged.
+//! How a search hit reads in the results list. A provider says what a hit *is* — a
+//! message, a video, a match in a file — and fills that row's slots; the platform draws
+//! it in the palette's row slot on the list row geometry, in every palette, the same way
+//! for every app. Rows are data, never drawing code, so they reach the shell's palette
+//! from any app unchanged.
 
 use std::ops::Range;
 
@@ -16,8 +13,6 @@ use crate::icons::AppImage;
 /// The shape of one search hit's row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchRow {
-    /// A message: who sent it, its subject, a snippet of its body, when it
-    /// arrived, and whether it is unread (a dot before the sender).
     Message {
         sender: String,
         subject: String,
@@ -25,76 +20,49 @@ pub enum SearchRow {
         date: Option<String>,
         unread: bool,
     },
-    /// A video, track or other media item: its thumbnail, title, who made it
-    /// (the channel or artist), and its duration.
     Media {
         thumbnail: Option<AppImage>,
         title: String,
         byline: Option<String>,
         duration: Option<String>,
     },
-    /// A match inside a file: the file's path, the line, and the matched line
-    /// itself with the matched span marked (byte range into `snippet`).
+    /// A match inside a file: the file's path, the line, and the matched line itself with
+    /// the matched span marked (byte range into `snippet`).
     FileHit {
         path: String,
         line: Option<u32>,
         snippet: String,
         matched: Option<Range<usize>>,
     },
-    /// A command, place or person: the title over an optional description
-    /// (the result's subtitle), with what leads and trails it.
     Command(Box<CommandRow>),
-    /// An item of a published resource: the app that keeps it, the item's
-    /// kind and its id. A hit is a reference to what it opens, never a copy
-    /// of it: choosing one runs the app's `open` at the item, and the row it
-    /// is drawn with is the app's own. An entry the app gives a shape of its
-    /// own ([`Self::Message`], [`Self::Media`]) says how it reads already;
-    /// one without any is this.
+    /// An item of a published resource: the app that keeps it, the item's kind and its
+    /// id. A hit is a reference to what it opens, never a copy of it: choosing one runs
+    /// the app's `open` at the item, and the row it is drawn with is the app's own.
     Item {
-        /// The app that keeps the item (`so.tilo.notes`).
         app: String,
-        /// The item's kind (`notes.notebook.pages`).
         kind: String,
-        /// The item's id in that app.
         id: String,
     },
 }
 
-/// The slots of a [`SearchRow::Command`] row beyond its title, subtitle and
-/// icon.
+/// The slots of a [`SearchRow::Command`] row beyond its title, subtitle and icon.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CommandRow {
-    /// The description is a path, so it loses its middle rather than its
-    /// end when it doesn't fit. Prose loses its end.
     pub description_is_path: bool,
-    /// The description (the result's subtitle) as separate facts, drawn as
-    /// runs of their own with space between them. Empty: one run.
     pub facts: Vec<String>,
-    /// The application's own artwork, painted in place of the icon when it
-    /// decodes.
     pub image: Option<AppImage>,
-    /// A person as `(name, key)`: their avatar in place of the icon.
     pub avatar: Option<(String, String)>,
-    /// A short status, as a trailing pill.
     pub badge: Option<String>,
-    /// A shortcut's keycap legends, as a trailing chip.
     pub keycaps: Option<Vec<String>>,
-    /// The people the row is about, as a stack of faces at its end.
     pub faces: Vec<RowFace>,
-    /// What choosing the row does, as a button at its end ("Join").
     pub outcome: Option<String>,
-    /// Other activations behind a held modifier; the selected row shows the
-    /// one whose modifier is down, else the first as a hint.
     pub alternates: Vec<Alternate>,
-    /// The row's title restates the query ("Search the web for …", "Send to
-    /// Ada: …") instead of being something the query found: its words are
-    /// the person's own, so no span of them is set off as a match.
     pub echoes_query: bool,
 }
 
 impl CommandRow {
-    /// The alternative the selected row shows: the one whose modifier is
-    /// `held`, else the first it offers.
+    /// The alternative the selected row shows: the one whose modifier is `held`, else the
+    /// first it offers.
     #[must_use]
     pub fn shown_alternate(&self, held: Option<ActivationModifier>) -> Option<&Alternate> {
         self.alternates
@@ -108,17 +76,14 @@ impl CommandRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowFace {
     pub name: String,
-    /// Their stable id: picks their picture.
     pub identity: String,
-    /// Their presence colour, as every other surface draws them.
     pub colour: Color,
     pub is_agent: bool,
-    /// Idle or away: the face dims.
     pub dimmed: bool,
 }
 
-/// A modifier held while a row is activated, choosing an alternative
-/// activation the row offers ([`CommandRow::alternates`]).
+/// A modifier held while a row is activated, choosing an alternative activation the row
+/// offers ([`CommandRow::alternates`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ActivationModifier {
     Shift,
@@ -127,8 +92,8 @@ pub enum ActivationModifier {
 }
 
 impl ActivationModifier {
-    /// The one modifier `state` holds, or `None` for none or a mix: a chord
-    /// of two is not one of the alternatives.
+    /// The one modifier `state` holds, or `None` for none or a mix: a chord of two is not
+    /// one of the alternatives.
     pub fn of(state: winit::keyboard::ModifiersState) -> Option<Self> {
         match (
             state.shift_key(),
@@ -152,9 +117,8 @@ impl ActivationModifier {
     }
 }
 
-/// What a row does when it is activated with `modifier` held, in the words
-/// the selected row shows while that modifier is down ("Opens as a tab
-/// here").
+/// What a row does when it is activated with `modifier` held, in the words the selected
+/// row shows while that modifier is down ("Opens as a tab here").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alternate {
     pub modifier: ActivationModifier,
@@ -200,9 +164,9 @@ impl SearchRow {
         }
     }
 
-    /// A command row whose title is what the person typed, said back to
-    /// them: the row that hands a request to an agent or takes a query to
-    /// the web ([`CommandRow::echoes_query`]).
+    /// A command row whose title is what the person typed, said back to them: the row
+    /// that hands a request to an agent or takes a query to the web
+    /// ([`CommandRow::echoes_query`]).
     pub fn echoing_query() -> Self {
         Self::Command(Box::new(CommandRow {
             echoes_query: true,
@@ -210,10 +174,8 @@ impl SearchRow {
         }))
     }
 
-    /// The item row for `resource` (`notes.notebook/pages/<id>`) of `app`:
-    /// what a hit on a resource an app publishes as items is drawn with.
-    /// `None` when `resource` names no item of an app (a whole notebook, an
-    /// app's own surface), which is drawn as the generic row.
+    /// The item row for `resource` (`notes.notebook/pages/<id>`) of `app`: what a hit on
+    /// a resource an app publishes as items is drawn with.
     pub fn item_of(app: impl Into<String>, resource: &str) -> Option<Self> {
         let kind = tilo_resource::items::item_kind(resource)?;
         let id = resource.rsplit('/').next()?;
@@ -221,16 +183,13 @@ impl SearchRow {
     }
 
     /// The resource id of the item this row is, when it is one:
-    /// `<resource>/<collection>/<id>` (`notes.notebook/pages/<id>`), the
-    /// address its app's `open` shows. `None` for a row that names no item.
+    /// `<resource>/<collection>/<id>` (`notes.notebook/pages/<id>`), the address its
+    /// app's `open` shows.
     #[must_use]
     pub fn item_resource(&self) -> Option<String> {
         let Self::Item { kind, id, .. } = self else {
             return None;
         };
-        // An item's kind is the resource's kind and the collection's field
-        // joined by a dot (`notes.notebook.pages`); the resource id is the
-        // same two joined by a slash.
         let (resource, collection) = kind.rsplit_once('.')?;
         (!resource.is_empty() && !collection.is_empty() && !id.is_empty())
             .then(|| format!("{resource}/{collection}/{id}"))
@@ -309,8 +268,7 @@ impl SearchRow {
         self
     }
 
-    /// The matched span of a file hit's snippet, as a byte range. A range
-    /// that is not on character boundaries of the snippet is ignored.
+    /// The matched span of a file hit's snippet, as a byte range.
     #[must_use]
     pub fn matched(mut self, range: Range<usize>) -> Self {
         if let Self::FileHit {
@@ -376,8 +334,6 @@ impl SearchRow {
                 }
                 parts.join(". ")
             }
-            // The result's title says what the item is called, as the app
-            // draws it; the reference says nothing of itself.
             Self::Item { .. } => String::new(),
         }
     }
@@ -426,8 +382,9 @@ mod tests {
         assert_eq!(media.spoken(), "Talk, Conf, 12:04");
     }
 
-    /// A row that restates the query says so, so every palette draws it without setting off
-    /// spans of the person's own words; an ordinary command row matches as it always did.
+    /// A row that restates the query says so, so every palette draws it without setting
+    /// off spans of the person's own words; an ordinary command row matches as it always
+    /// did.
     #[test]
     fn a_row_that_restates_the_query_declares_itself() {
         let echo = SearchRow::echoing_query();
@@ -438,8 +395,6 @@ mod tests {
         assert!(!CommandRow::default().echoes_query);
     }
 
-    /// A hit that is an item of a resource is a reference to it: the app, the
-    /// item's kind and its id, and the resource id its `open` shows.
     #[test]
     fn an_item_row_addresses_the_item_it_is() {
         let row = SearchRow::item("so.tilo.notes", "notes.notebook.pages", "page-7");
@@ -458,8 +413,6 @@ mod tests {
         assert_eq!(SearchRow::message("Ada", "Hi").item_resource(), None);
     }
 
-    /// A hit an app publishes as an item of a resource names the item, so
-    /// every palette can draw the row the app's list draws for it.
     #[test]
     fn an_item_row_is_read_from_the_resource_it_names() {
         assert_eq!(

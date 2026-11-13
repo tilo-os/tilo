@@ -1,26 +1,19 @@
-//! What a view attaches to the element it stands in (`ui.ContextMenu`, `ui.HoverToolbar`,
-//! `ui.Swipe`: components whose description says they attach), taken to the element that
-//! runs them.
-//!
-//! A row's view puts them wherever it likes among its content; they draw nothing there. A
-//! list item (`ui.ListItem`) holds those of its row: each attachment anywhere in the row's
-//! view, through its calls (fragments) and its layout (`stack`, `row`, `grid`, `scroll` and
-//! the rest that only arrange children) moves into the item's `attached` slot, so the list
-//! runs the row's menu, toolbar and swipe. A component that gives its children a meaning of
-//! its own (a card, a section) is a place of its own: what it holds stays in it. This runs on
-//! the tree as the app sent it, before the window reads it, so the reconciler and the rows see
-//! one shape.
+//! What a view attaches to the element it is in (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`:
+//! components whose description says they attach), taken to the element that runs them. A list item
+//! (`ui.ListItem`) takes the attachments anywhere in its row's view, through its calls (fragments)
+//! and the layouts that only arrange children, into its `attached` slot, so the list runs the row's
+//! menu, toolbar and swipe; a card or a section is a place of its own and keeps what it holds. This
+//! runs on the tree as the app sent it, before the window reads it, so the reconciler and the rows
+//! see one shape.
 
 use crate::UiNode;
 use crate::adapter::{SLOT, description_of, slot_nodes};
 
-/// The kind of a list item.
 const LIST_ITEM: &str = "ui.ListItem";
-/// The slot of a list item that holds what its row attached.
 const ATTACHED: &str = "attached";
 
-/// The kinds that only arrange their children in a place: an attachment written among them
-/// belongs to the element the place is in, so it is taken through them.
+/// The kinds that only arrange their children: an attachment among them belongs to the element the
+/// place is in, so it is taken through them.
 const LAYOUT: &[&str] = &[
     "stack",
     "column",
@@ -35,18 +28,15 @@ const LAYOUT: &[&str] = &[
     "fragment",
 ];
 
-/// Whether `node` only arranges its children (`stack`, `row`, a view's call).
 fn arranges(node: &UiNode) -> bool {
     LAYOUT.contains(&node.kind.as_str())
 }
 
-/// Whether `node` attaches to the element it stands in.
 #[must_use]
 pub fn attaches(node: &UiNode) -> bool {
     description_of(node).is_some_and(|description| description.semantics.attaches)
 }
 
-/// `node` with every list item holding what its row attached.
 #[must_use]
 pub fn hoist(node: &UiNode) -> UiNode {
     let mut out = node.clone();
@@ -54,7 +44,6 @@ pub fn hoist(node: &UiNode) -> UiNode {
     out
 }
 
-/// Hoist in place, through the whole tree.
 pub fn hoist_in(node: &mut UiNode) {
     if node.kind == LIST_ITEM {
         hoist_item(node);
@@ -64,7 +53,6 @@ pub fn hoist_in(node: &mut UiNode) {
     }
 }
 
-/// Move what the row of the list item `item` attached into its `attached` slot.
 fn hoist_item(item: &mut UiNode) {
     let Some(description) = description_of(item) else {
         return;
@@ -72,7 +60,7 @@ fn hoist_item(item: &mut UiNode) {
     let Some(row_slot) = description.default_slot().map(|slot| slot.name.clone()) else {
         return;
     };
-    // Only the item's default slot (its row) is searched; its named slots are its own.
+    // Only the item's row slot is searched, not its named slots.
     let in_row = slot_nodes(item, description, &row_slot)
         .iter()
         .any(|child| holds_attachment(child));
@@ -107,14 +95,10 @@ fn hoist_item(item: &mut UiNode) {
     }
 }
 
-/// Whether `node` is an attachment, or something that only arranges children (a view's call, a
-/// loop's row, a stack) holding one anywhere in the arrangement.
 fn holds_attachment(node: &UiNode) -> bool {
     attaches(node) || (arranges(node) && node.children.iter().any(holds_attachment))
 }
 
-/// Take the attachments anywhere in `node` (through what only arranges children) out of it, in
-/// order.
 fn take_attachments(node: &mut UiNode, out: &mut Vec<UiNode>) {
     if attaches(node) || !arranges(node) {
         return;
@@ -152,7 +136,6 @@ mod tests {
         node
     }
 
-    /// The kinds of `node` and everything it holds.
     fn kinds_of(node: &UiNode, out: &mut Vec<String>) {
         out.push(node.kind.clone());
         for child in &node.children {

@@ -32,7 +32,6 @@ fn a_running_pacer_steps_once_a_beat_and_sleeps_between() {
     assert_eq!(steps.get(), 1);
     let second = pacer.next_wake_deadline().unwrap();
     assert_eq!(second, first + BEAT, "beats stay on one grid");
-    // A window busy for three beats takes one step, not a burst.
     pacer.serve_deadline(second + BEAT * 3);
     assert_eq!(steps.get(), 2);
 }

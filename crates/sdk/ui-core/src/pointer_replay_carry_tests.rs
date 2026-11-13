@@ -1,7 +1,6 @@
-//! Every shared control that runs on a completed click completes a press
-//! across a rebuild that put an equivalent control in its place, and only
-//! there; and the headless host replays a pointer a relayout slid a control
-//! under.
+//! Every shared control that runs on a completed click completes a press across a rebuild that put an
+//! equivalent control in its place, and only there; and the headless host replays a pointer a relayout
+//! slid a control under.
 
 use crate::i18n::widget_text;
 use std::cell::{Cell, RefCell};
@@ -22,7 +21,6 @@ use crate::widget::{EventCtx, PaintedTargets, TaffyTreeExt as _, Widget};
 
 type Clicks = Rc<RefCell<Vec<&'static str>>>;
 type Staged = Rc<RefCell<Option<Box<dyn Widget>>>>;
-/// Builds one generation of a control that logs `generation` when it runs.
 type Build = fn(&Clicks, &'static str) -> Box<dyn Widget>;
 
 const VIEWPORT: (u32, u32) = (480, 320);
@@ -40,9 +38,8 @@ fn log(clicks: &Clicks, generation: &'static str) -> impl FnMut() + 'static {
     move || clicks.borrow_mut().push(generation)
 }
 
-/// Shows one control `offset` down and swaps in the staged replacement on
-/// its next structural poll, as an app rebuilding its content from a
-/// worker result does.
+/// Shows one control `offset` down and swaps in the staged replacement on its next structural poll, as
+/// an app rebuilding its content from a worker result does.
 struct Shows {
     child: Box<dyn Widget>,
     staged: Staged,
@@ -114,7 +111,6 @@ impl Widget for Shows {
     }
 }
 
-/// A harness showing the first generation of a control.
 struct Stage {
     harness: FrameHarness,
     staged: Staged,
@@ -150,8 +146,8 @@ impl Stage {
         self.harness.relayout();
     }
 
-    /// Swap in a fresh, equivalent control `offset` below the first and run
-    /// the frame that shows it, as a worker result landing does.
+    /// Swap in a fresh, equivalent control `offset` below the first and run the frame that shows it, as
+    /// a worker result landing does.
     fn rebuild(&mut self, offset: f64) {
         *self.staged.borrow_mut() = Some((self.build)(&self.clicks, "rebuilt"));
         self.offset.set(offset);
@@ -159,7 +155,6 @@ impl Stage {
         assert!(self.staged.borrow().is_none(), "the frame swapped it in");
     }
 
-    /// Press, rebuild the control `offset` from where it was, release.
     fn press_rebuild_release(&mut self, offset: f64) -> Vec<&'static str> {
         self.harness.send(&button(ElementState::Pressed));
         assert!(
@@ -172,16 +167,14 @@ impl Stage {
     }
 }
 
-/// Whether `widget` or a widget inside it shows the pointer hand at
-/// `point`: where a person sees something to press.
+/// Whether `widget` or a widget inside it shows the pointer hand at `point`: where a person sees
+/// something to press.
 fn pressable_at(widget: &dyn Widget, point: Point) -> bool {
     let mut found = widget.cursor_shape(point) == Some(winit::window::CursorIcon::Pointer);
     widget.for_each_child(&mut |child| found |= pressable_at(child, point));
     found
 }
 
-/// The centre of what turns the pointer into a hand, the one pressable
-/// target the scene shows.
 fn pressable_centre(harness: &FrameHarness) -> Point {
     let mut hits = Vec::new();
     for y in (0..VIEWPORT.1).step_by(2) {
@@ -202,7 +195,6 @@ fn pressable_centre(harness: &FrameHarness) -> Point {
     bounds.center()
 }
 
-/// A named target's centre.
 fn centre_of(harness: &FrameHarness, id: &str) -> Point {
     harness
         .targets()
@@ -211,9 +203,8 @@ fn centre_of(harness: &FrameHarness, id: &str) -> Point {
         .center()
 }
 
-/// The control rebuilt at the same place under the held button completes
-/// the click; rebuilt a few pixels away, still under the pointer, it does
-/// not.
+/// The control rebuilt at the same place under the held button completes the click; rebuilt a few
+/// pixels away, still under the pointer, it does not.
 fn assert_press_carries(build: Build, locate: impl Fn(&mut FrameHarness) -> Point) {
     let mut scene = Stage::new(build);
     let point = locate(&mut scene.harness);
@@ -362,7 +353,6 @@ fn a_media_card_and_its_hover_action_carry_their_press_across_a_rebuild() {
             )
         },
         |h| {
-            // The action sits on the centre of the (square) art.
             let card = h.targets()["album"];
             Point::new(card.center().x, card.y0 + card.width() / 2.0)
         },
@@ -433,8 +423,6 @@ fn a_property_value_copy_carries_its_press_across_a_rebuild() {
 
 #[test]
 fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
-    // The toggle flips the field's own state: which name it shows after
-    // the release says whether the rebuilt toggle ran.
     let build: Build = |_, _| {
         Box::new(
             crate::widget::TextInput::local()
@@ -459,7 +447,6 @@ fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
     assert!(!revealed(scene, 3.0), "a moved toggle does not run");
 }
 
-/// A widget that paints one key and presses it through [`PaintedTargets`].
 struct Keypad {
     targets: PaintedTargets,
     clicks: Clicks,
@@ -525,7 +512,6 @@ fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
         Box::new(crate::widget::Button::new("save", "Save").on_effect(log(clicks, generation)))
     });
     let button_at = scene.harness.targets()["save"];
-    // The pointer rests below the button, where the relayout will put it.
     let below = button_at.center() + Vec2::new(0.0, 120.0);
     scene.point_at(below);
     scene.offset.set(120.0);

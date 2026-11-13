@@ -147,6 +147,10 @@ pub struct SearchOptions {
     /// The records the workspaces on this device hold: what search finds by name across them, and
     /// where a record brought here is named.
     pub records: Option<Records>,
+    /// Sources a test mounts beside the session's own, asked exactly as the host's are: an index
+    /// that answers slowly stands here to prove the loop never waits for one. No production host
+    /// sets it, and a search over no extra source is the one the device's own sources answer.
+    pub extra_sources: Vec<Held>,
 }
 
 /// The sources the session keeps between searches, each indexed once per reading of the apps they
@@ -202,6 +206,8 @@ pub struct SessionSearch {
     apps: Option<Rc<dyn AppActions>>,
     /// The records the workspaces on this device hold.
     records: Option<Records>,
+    /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
+    extra_sources: Vec<Held>,
     /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
     /// while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
@@ -230,6 +236,60 @@ pub struct SessionSearch {
     ask: crate::search_ask::Shared,
     /// What wakes the session's loop as an answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
+    /// The sources' threads for a find with no frame of the toolkit's own: a door's `find` runs
+    /// on the loop's thread and must never wait for a source, so its search asks these and the
+    /// answers come on a later pass.
+    workers: tilo_desktop_search::SearchWorkers,
+    /// The finds still waiting for a source, each taken up on a later pass.
+    pending: RefCell<Vec<PendingFind>>,
+}
+
+/// A find a door asked, as it stands between passes: the search's stream, the sources it was
+/// made from (which outlive the stream's own borrow of them), and where the answer goes.
+struct PendingFind {
+    stream: tilo_desktop_search::SearchStream,
+    /// The sources the stream was made from: moved with it, since the stream borrows them each
+    /// pass it is asked.
+    sources: Vec<Held>,
+    /// The pool this find's sources work on: its own, since a find asked while another is in
+    /// flight must not retire the other's answer (`SearchWorkers::fork`).
+    workers: tilo_desktop_search::SearchWorkers,
+    /// What the person's earlier choices add to a row, as they were when the find was asked.
+    used: std::rc::Rc<dyn Fn(&tilo_desktop_search::Hit) -> f32>,
+    needle: String,
+    workspace: Option<String>,
+    /// Where the answer goes, and the pass it must be answered by: the caller has its own
+    /// deadline, and a source that never answers is cut off with what is in.
+    answer: Option<FindAnswer>,
+    due: std::time::Instant,
+}
+
+/// Who a find was asked for, and so what its hits become when they are in.
+pub(crate) enum FindAnswer {
+    /// A door's find: the resources the hits name, as a caller who addresses them reads them,
+    /// under what a place can show ([`found_all`]).
+    Door {
+        done: FoundSearch,
+        /// What a place can show, read at the ask where the arrangement is: `'static` by holding
+        /// the catalogue itself, not a borrow of it.
+        shows: Rc<dyn Fn(&str) -> bool>,
+    },
+    /// Text typed on the canvas: the hits in the ranking's order, which the arrangement places
+    /// through its own catalogue (never a second reading of what a place can show).
+    Canvas(crate::arrangement::FindDone),
+}
+
+/// Answer `answer` with the hits a search has: a door's find as the resources they name, the
+/// canvas's as the hits themselves. `needle` is what was typed, which [`found_all`] ranks the
+/// lead by.
+fn finish(answer: FindAnswer, needle: &str, hits: &[tilo_desktop_search::Hit]) {
+    match answer {
+        FindAnswer::Door { done, shows } => {
+            let shows = &*shows;
+            done.complete(found_all(needle, hits.to_vec(), shows));
+        }
+        FindAnswer::Canvas(done) => done(hits.to_vec()),
+    }
 }
 
 /// What an app is called here, as the host's own lists name it: the answer a row says an app by.
@@ -271,6 +331,7 @@ impl SessionSearch {
             preferences,
             places,
             records,
+            extra_sources,
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
         let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
@@ -283,6 +344,12 @@ impl SessionSearch {
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
+        // The sources of a door's `find` answer on their own threads, and the wake asks the loop
+        // for the pass that takes them up: the same wake the session's services use.
+        let workers = match &wake {
+            Some(wake) => tilo_desktop_search::SearchWorkers::waking(Arc::clone(wake)),
+            None => tilo_desktop_search::SearchWorkers::waking(Arc::new(|| {})),
+        };
         Self {
             apps_lists: lists,
             preferences: RefCell::new(preferences),
@@ -294,6 +361,7 @@ impl SessionSearch {
             indexes: indexed,
             apps,
             records,
+            extra_sources,
             own: RefCell::default(),
             own_types: RefCell::default(),
             open_tabs: RefCell::default(),
@@ -304,6 +372,8 @@ impl SessionSearch {
             #[cfg(target_os = "linux")]
             agents: RefCell::default(),
             ask: crate::search_ask::Shared::default(),
+            workers,
+            pending: RefCell::default(),
             wake,
         }
     }
@@ -466,6 +536,7 @@ impl SessionSearch {
                 records.held(workspace),
             )));
         }
+        sources.extend(self.extra_sources.iter().cloned());
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),
@@ -514,6 +585,12 @@ impl SessionSearch {
     /// ranking's order: what text typed on the canvas places (shell.md §8). Every one, as ranked:
     /// the best resource to place may stand below many actions the text names ("Inbox" under each
     /// conversation's "Move to inbox").
+    ///
+    /// Test code only: a session's own caller must never wait for a source on the loop it draws
+    /// from, so the production build has no such entry at all, and its finds ask with
+    /// [`Self::find_soon`] and take the answer on a later pass. The one waiting search left is
+    /// `tilo_desktop_search::search`'s, which a test drives on its own thread.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         self.find_in(needle, None)
@@ -523,6 +600,9 @@ impl SessionSearch {
     /// publish and its records hold, and none of the desk's own rows, whose windows and places
     /// are the person's across every workspace (a window's title names what another workspace
     /// holds). `None` is the person's search, over everything they see.
+    ///
+    /// Test code only, as [`Self::find`] is.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn find_in(
         &self,
@@ -556,6 +636,250 @@ impl SessionSearch {
             None => 0.0,
         });
         groups.into_iter().flat_map(|group| group.results).collect()
+    }
+
+    /// What [`Self::find_in`] answers, asked by the session's own door on the loop's thread: the
+    /// sources are handed to their workers and the search stays pending (`shows` names what a
+    /// place can show, read here where the arrangement is), and `done` hears what it found on a
+    /// later pass ([`Self::poll_finds`]), as its answers land.
+    ///
+    /// A source that never answers cuts the find off at `within` with the rows that are in,
+    /// saying so: the caller's own deadline, never the loop's. The loop keeps running at its own
+    /// rate while a search is in flight, which is the point: an MCP `find` over the agent door
+    /// must not freeze the desktop's frames.
+    pub(crate) fn find_soon(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        shows: Rc<dyn Fn(&str) -> bool>,
+        within: std::time::Duration,
+        done: FoundSearch,
+    ) {
+        self.find_off_loop(needle, workspace, within, FindAnswer::Door { done, shows });
+    }
+
+    /// Text typed on the canvas, asked of the same search off the pass that places it: the hits
+    /// in the ranking's order reach `done` on a later pass, which places what they name. Never
+    /// waits for a source, so a canvas whose index is reading a disk keeps its frames.
+    pub(crate) fn place_soon(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        within: std::time::Duration,
+        done: crate::arrangement::FindDone,
+    ) {
+        self.find_off_loop(needle, workspace, within, FindAnswer::Canvas(done));
+    }
+
+    /// The one search a host's find runs: the sources handed to their workers, and `answer` heard
+    /// on a later pass.
+    fn find_off_loop(
+        &self,
+        needle: &str,
+        workspace: Option<&str>,
+        within: std::time::Duration,
+        answer: FindAnswer,
+    ) {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            finish(answer, needle, &[]);
+            return;
+        }
+        let (mut sources, mut published) = self.sources(workspace.unwrap_or(""), &Scope::Workspace);
+        if workspace.is_some() {
+            published.retain(|actions| actions.app != DESKTOP_APP);
+        }
+        sources.push(Held::new(tilo_desktop_search::providers::Captures(
+            published.clone(),
+        )));
+        sources.push(Held::new(tilo_desktop_search::providers::Published(
+            published,
+        )));
+        let refs: Vec<&dyn Source> = sources.iter().map(|source| source as &dyn Source).collect();
+        let now = ui::time::unix_now();
+        let usage = self.usage.borrow().clone();
+        // The find's own pool, so a find asked while this one is in flight does not retire it: a
+        // palette's newer query replaces the older, but two finds of a host's are each answered.
+        let workers = self.workers.fork();
+        let typed = needle.to_owned();
+        let used: Rc<dyn Fn(&tilo_desktop_search::Hit) -> f32> = {
+            let typed = typed.clone();
+            Rc::new(move |hit: &tilo_desktop_search::Hit| match usage.as_ref() {
+                Some(usage) => usage.strength(&typed, hit, now),
+                None => 0.0,
+            })
+        };
+        let stream = tilo_desktop_search::search_stream(needle, &refs, 0, &workers, &*used);
+        // What is in already answers at once; what still works comes on a later pass.
+        if stream.pending() {
+            let due = std::time::Instant::now()
+                .checked_add(within)
+                .unwrap_or_else(std::time::Instant::now);
+            self.pending.borrow_mut().push(PendingFind {
+                stream,
+                sources,
+                workers,
+                used,
+                needle: typed,
+                workspace: workspace.map(str::to_owned),
+                answer: Some(answer),
+                due,
+            });
+            return;
+        }
+        finish(answer, needle, &stream.rows());
+    }
+
+    /// Take up the finds whose answers are in, and those a source did not answer in time: called
+    /// once per pass, and what asks the loop for that pass (`workers`'s wake is the loop's own).
+    pub(crate) fn poll_finds(&self) {
+        let waiting = self.pending.take();
+        if waiting.is_empty() {
+            return;
+        }
+        let mut kept = Vec::with_capacity(waiting.len());
+        for mut find in waiting {
+            // The sources that stay on the frame are asked one per pass here, as a palette's
+            // frame asks them, and the answers the workers sent are merged: never a wait.
+            let refs: Vec<&dyn Source> = find
+                .sources
+                .iter()
+                .map(|source| source as &dyn Source)
+                .collect();
+            let _ = find.stream.resume(&refs, &find.workers, &*find.used);
+            let overdue = std::time::Instant::now() >= find.due;
+            if find.stream.pending() && !overdue {
+                kept.push(find);
+                continue;
+            }
+            let Some(answer) = find.answer.take() else {
+                continue;
+            };
+            if overdue && find.stream.pending() {
+                tracing::warn!(
+                    needle = %find.needle,
+                    workspace = ?find.workspace,
+                    "a find answers with the rows that came: a source did not answer in time"
+                );
+            }
+            finish(answer, &find.needle, &find.stream.rows());
+        }
+        *self.pending.borrow_mut() = kept;
+    }
+
+    /// The app and the resource kind `needle` names, when it names a type of an app whose origin
+    /// the query could ask for what it says (`outside:<origin>.search`, shell.md §8, search.md
+    /// §7): the words of the query that are a type's noun or plural, or its app's name, choose the
+    /// type, exactly as the one search ranks by what a resource is. `None` when no word of the
+    /// query names a type, or the type's app holds no origin the platform can ask.
+    ///
+    /// The app is named by the id its resources publish under (`so.tilo.lang.tube`), and the kind
+    /// as its app publishes it (`tube.channel`): the origin's own search action is the one that
+    /// asks the service for it, and an answer of that kind is what a place becomes.
+    #[must_use]
+    pub(crate) fn origin_search(&self, needle: &str) -> Option<(String, String, String)> {
+        let needle = ui::search::system::without_filler(needle.trim());
+        if needle.trim().is_empty() {
+            return None;
+        }
+        // The session's own published actions, from its door: the apps' and the seeded records'
+        // alike, which is where an app's search action and its types are (the palette's `own`).
+        let own = self.own.borrow();
+        let types = self.own_types.borrow();
+        // The app each of the session's resources belongs to, by its id in the app's own address
+        // (`tl:so.tilo.lang.tube:…` → `so.tilo.lang.tube`).
+        let app_of = |resource: &str| {
+            resource
+                .strip_prefix("tl:")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(app, _)| app.to_owned())
+        };
+        // The nouns of every type each app publishes, by app: a word naming one is about that
+        // app's things, so "youtube videos of <name>" is its `Channel` and not its `Video`.
+        let mut kin: std::collections::BTreeMap<String, Vec<&tilo_actions::Noun>> =
+            std::collections::BTreeMap::new();
+        for (resource, named) in types.iter() {
+            let Some(app) = app_of(resource) else {
+                continue;
+            };
+            let nouns = kin.entry(app).or_default();
+            if !nouns.contains(&&named.noun) {
+                nouns.push(&named.noun);
+            }
+        }
+        // The apps that ask an outside origin for a query (`outside:<origin>.search`).
+        let searchers: std::collections::BTreeSet<String> = own
+            .iter()
+            .filter(|action| {
+                action
+                    .contract
+                    .outside_capabilities()
+                    .any(|capability| capability.ends_with(".search"))
+            })
+            .filter_map(|action| app_of(action.address.resource.as_str()))
+            .collect();
+        let mut found: Vec<(usize, (String, String, String, bool))> = Vec::new();
+        for (resource, named) in types.iter() {
+            if named.root {
+                // A root names the app rather than a type of its own.
+                continue;
+            }
+            let Some(app) = app_of(resource) else {
+                continue;
+            };
+            if !searchers.contains(&app) {
+                continue;
+            }
+            // The kind the type's resources publish under (`tl.<app>.<Type>`): what a query
+            // names, and what an answer of that kind becomes a place of.
+            // Where the type is first published among the app's actions: the order its package
+            // declares its types in, which the tie between types a query names alike falls back
+            // on, so the same words name the same type on every run.
+            let Some((order, kind)) = own
+                .iter()
+                .position(|action| action.address.resource.as_str() == resource.as_str())
+                .and_then(|at| own.get(at).map(|action| (at, action.resource_kind.clone())))
+            else {
+                continue;
+            };
+            // Does any word of the query name this type? The same rule the ranking uses: a noun
+            // or plural of it, or the app's name, with the rest sent to the app.
+            let keywords = tilo_desktop_search::availability::keywords_for(&app);
+            let rest = ui::search::system::type_words_rest(
+                &needle,
+                named,
+                kin.get(&app)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|noun| **noun != named.noun),
+                keywords,
+            );
+            // Whether the query names it by its own noun ("videos") or only through its app or a
+            // kindred type's noun ("youtube videos of <channel>"): the type the person means is
+            // the one the other words name, not the one whose noun they typed to narrow it.
+            let by_own_noun = ui::search::system::named_by_own_noun(&needle, named);
+            if let Some(rest) = rest {
+                found.push((order, (app.clone(), kind, rest, by_own_noun)));
+            }
+        }
+        // One app and one kind. A type named only through its app or a kindred type ("of <channel>"
+        // after "videos") is the one the query means over one named by its own noun ("videos").
+        found.sort_by_key(|(order, _)| *order);
+        let found: Vec<(String, String, String, bool)> =
+            found.into_iter().map(|(_, named)| named).collect();
+        let narrowed: Vec<&(String, String, String, bool)> =
+            found.iter().filter(|(.., by_noun)| !by_noun).collect();
+        let candidates: Vec<&(String, String, String, bool)> = if narrowed.is_empty() {
+            found.iter().collect()
+        } else {
+            narrowed
+        };
+        let (app, kind, rest, _) = candidates.first()?;
+        if candidates.iter().any(|(other, ..)| *other != *app) {
+            return None;
+        }
+        Some((app.clone(), kind.clone(), rest.clone()))
     }
 
     /// A window was at `place` .
@@ -881,53 +1205,34 @@ impl SessionSearch {
     }
 }
 
+impl SessionSearch {
+    /// The apps installed here, which the palette offers as an app's row of its own: the machine's
+    /// own apps are one of the session's sources instead.
+    fn installed_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        self.apps_lists
+            .as_ref()
+            .map(|lists| lists.applications())
+            .unwrap_or_default()
+    }
+}
+
 impl SearchHost for SessionSearch {
     fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Self::applications(self)
     }
 
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
-        let (mut sources, published) = self.sources(workspace, scope);
-        // A question typed by the person is answered here, by the model their AI settings choose:
-        // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
-        // offers no question. A window's search is about the window: what it holds and what can be
-        // done in it, never a question of its own.
-        if self.models.is_some() && !matches!(scope, Scope::InApp(_)) {
-            sources.push(Held::new(crate::search_ask::Ask::new(
-                Arc::clone(&self.ask),
-                workspace,
-                self.wake.clone(),
-                self.models.clone(),
-            )));
-        }
-        // What the person types, handed to their agent: the one send a window's box and the canvas
-        // run. A host that sends nothing (the page) offers no such row.
-        #[cfg(target_os = "linux")]
-        if !matches!(scope, Scope::InApp(_))
-            && let Some(agents) = self.agents.borrow().as_ref()
-        {
-            let kept = agents
-                .iter()
-                .find(|agent| agent.workspace == workspace)
-                .map(|agent| (agent.id.clone(), agent.name.clone()));
-            sources.push(Held::new(crate::search_agent::AskAgent::new(
-                workspace,
-                crate::agents::agent_recipient(kept),
-            )));
-        }
-        SearchHostFeed {
-            // The apps installed here, which the palette offers as an app's row of its own: the
-            // machine's own apps are one of the sources below instead.
-            applications: self
-                .apps_lists
-                .as_ref()
-                .map(|lists| lists.applications())
-                .unwrap_or_default(),
-            published,
-            sources,
-            preferences: self.preferences.borrow().clone(),
-            now: ui::time::unix_now(),
-            usage: self.usage.borrow().clone(),
+        match SEARCH_FEED.get() {
+            Some(code) => (code.feed)(self, workspace, scope),
+            // The sources load with the desktop's search engine, which a search waits for: until
+            // then the host lists its apps and what the person chose before.
+            None => SearchHostFeed {
+                applications: self.installed_applications(),
+                preferences: self.preferences.borrow().clone(),
+                now: ui::time::unix_now(),
+                usage: self.usage.borrow().clone(),
+                ..SearchHostFeed::default()
+            },
         }
     }
 
@@ -956,10 +1261,73 @@ impl SearchHost for SessionSearch {
     }
 }
 
+/// The session's search sources: the providers over what the session keeps and publishes, and the
+/// code reading them. A desktop that fetches its search engine on first use (`lazy-search-feed`)
+/// fetches these with it, so they never stand in its start.
+#[derive(Clone, Copy)]
+pub struct SearchFeedCode {
+    feed: fn(&SessionSearch, &str, &Scope) -> SearchHostFeed,
+}
+
+/// The search sources this build links.
+#[must_use]
+pub fn builtin_search_feed() -> SearchFeedCode {
+    SearchFeedCode { feed }
+}
+
+ui::lazy_code! {
+    /// The session's search sources: linked, or with `lazy-search-feed` handed over with the
+    /// desktop's search engine.
+    pub static SEARCH_FEED: SearchFeedCode = builtin_search_feed, feature = "lazy-search-feed";
+}
+
+/// What a search over `workspace` finds beyond the desktop's own: the session's sources over what
+/// it keeps and what is published ([`SessionSearch::sources`]), its question to a model, and its
+/// send to an agent.
+fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFeed {
+    let (mut sources, published) = search.sources(workspace, scope);
+    // A question typed by the person is answered here, by the model their AI settings choose:
+    // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
+    // offers no question. A window's search is about the window: what it holds and what can be
+    // done in it, never a question of its own.
+    if search.models.is_some() && !matches!(scope, Scope::InApp(_)) {
+        sources.push(Held::new(crate::search_ask::Ask::new(
+            Arc::clone(&search.ask),
+            workspace,
+            search.wake.clone(),
+            search.models.clone(),
+        )));
+    }
+    // What the person types, handed to their agent: the one send a window's box and the canvas
+    // run. A host that sends nothing (the page) offers no such row.
+    #[cfg(target_os = "linux")]
+    if !matches!(scope, Scope::InApp(_))
+        && let Some(agents) = search.agents.borrow().as_ref()
+    {
+        let kept = agents
+            .iter()
+            .find(|agent| agent.workspace == workspace)
+            .map(|agent| (agent.id.clone(), agent.name.clone()));
+        sources.push(Held::new(crate::search_agent::AskAgent::new(
+            workspace,
+            crate::agents::agent_recipient(kept),
+        )));
+    }
+    SearchHostFeed {
+        applications: search.installed_applications(),
+        published,
+        sources,
+        preferences: search.preferences.borrow().clone(),
+        now: ui::time::unix_now(),
+        usage: search.usage.borrow().clone(),
+    }
+}
+
 /// The desktop's one search as a host that holds it offers it
-/// ([`ResourceSearch`]): the same [`SessionSearch::find`] the palette and
-/// text typed on the canvas run, so an agent's `find` answers what those do,
-/// in their order.
+/// ([`ResourceSearch`]): the same search the palette and text typed on the
+/// canvas run ([`SessionSearch::find_soon`]), so an agent's `find` answers what
+/// those do, in their order — asked on the loop's pass and answered when its
+/// sources answer, never waited for there.
 impl ResourceSearch for SearchThrough {
     fn find(
         &self,
@@ -1005,7 +1373,8 @@ impl SearchThrough {
         Self(ask)
     }
 
-    /// Ask for what `needle` finds, in `workspace` alone where one is named ([`SessionSearch::find_in`]).
+    /// Ask for what `needle` finds, in `workspace` alone where one is named
+    /// ([`SessionSearch::find_soon`]).
     fn ask(&self, needle: String, workspace: Option<String>, done: FoundSearch) {
         (self.0)(needle, workspace, done);
     }
@@ -1204,15 +1573,14 @@ mod tests {
                     .map(|name| HostAppEntry {
                         desktop_id: format!("org.example.{name}.desktop"),
                         name: format!("{name} Viewer"),
-                        generic_name: None,
-                        comment: None,
-                        keywords: Vec::new(),
+                        ..HostAppEntry::default()
                     })
                     .collect(),
                 catalogue: Vec::new(),
                 icons: std::collections::BTreeMap::new(),
                 candidates: Vec::new(),
                 declared: std::collections::BTreeMap::new(),
+                resource_kinds: std::collections::BTreeMap::new(),
                 launchable: Vec::new(),
                 tools: Vec::new(),
             }

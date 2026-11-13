@@ -35,3 +35,6 @@ speed-test-results-clear = Ergebnisse löschen
 
 ## A test that stopped
 speed-test-interrupted = Test unterbrochen
+
+## What the app is called in a window and in the launcher
+speed-test-app-title = Geschwindigkeitstest

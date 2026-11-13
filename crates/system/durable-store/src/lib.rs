@@ -1,19 +1,10 @@
 //! The storage seam behind a Tilo application's records and local views.
-//!
-//! Applications never name paths. They persist through a [`DurableStore`]
-//! addressed by [`StorageKey`], and learn when a write is safe through
-//! [`DurableStore::durability`] rather than by assuming that a returned call
-//! means the bytes survived. That one contract covers a local filesystem
-//! (fsync before acknowledging), a remote service, or any host that commits
-//! on its own schedule and reports back ([`MemoryStore::queued`]).
-//!
-//! The store is deliberately byte-oriented: it knows nothing about Automerge
-//! or view envelopes. Callers decide what a key's bytes mean; the store only
-//! promises ordering, single ownership and honest durability.
 
 use std::any::Any;
 use std::fmt;
 use std::path::PathBuf;
+
+use tilo_app_id::AppId;
 
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
@@ -22,23 +13,23 @@ pub mod waiting;
 
 pub use memory::{MemoryStore, PendingWrite};
 
-/// What a stored value is, independent of where a host keeps it. Every
-/// component is an identifier, never a path: an implementation that maps
-/// keys onto a filesystem must validate each one as a single name.
+/// What a stored value is, wherever a host keeps it. Every part is an identifier,
+/// never a path: a filesystem store validates each as one name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StorageKey {
-    /// One record's document within one workspace. A record id is unique
-    /// only within its workspace, so the workspace is part of the identity.
-    Record {
-        package: String,
+    /// One document within one workspace; its id is unique only there.
+    Document {
+        app: AppId,
         workspace: String,
-        record: String,
+        document: String,
     },
-    /// A package's own document, outside any workspace.
-    Package { package: String },
-    /// The index of records one workspace holds for a package.
-    WorkspaceIndex { package: String, workspace: String },
-    /// One application instance's local presentation on one device.
+    App {
+        app: AppId,
+    },
+    WorkspaceIndex {
+        app: AppId,
+        workspace: String,
+    },
     View {
         device: String,
         workspace: String,
@@ -47,37 +38,34 @@ pub enum StorageKey {
 }
 
 impl StorageKey {
-    pub fn record(
-        package: impl Into<String>,
+    pub fn document(
+        app: impl Into<AppId>,
         workspace: impl Into<String>,
-        record: impl Into<String>,
+        document: impl Into<String>,
     ) -> Self {
-        Self::Record {
-            package: package.into(),
+        Self::Document {
+            app: app.into(),
             workspace: workspace.into(),
-            record: record.into(),
+            document: document.into(),
         }
     }
 
-    pub fn package(package: impl Into<String>) -> Self {
-        Self::Package {
-            package: package.into(),
-        }
+    pub fn app(app: impl Into<AppId>) -> Self {
+        Self::App { app: app.into() }
     }
 
-    pub fn workspace_index(package: impl Into<String>, workspace: impl Into<String>) -> Self {
+    pub fn workspace_index(app: impl Into<AppId>, workspace: impl Into<String>) -> Self {
         Self::WorkspaceIndex {
-            package: package.into(),
+            app: app.into(),
             workspace: workspace.into(),
         }
     }
 
-    /// The package owning this key's data, when it has one.
-    pub fn package_id(&self) -> Option<&str> {
+    pub fn app_id(&self) -> Option<&AppId> {
         match self {
-            Self::Record { package, .. }
-            | Self::Package { package }
-            | Self::WorkspaceIndex { package, .. } => Some(package),
+            Self::Document { app, .. } | Self::App { app } | Self::WorkspaceIndex { app, .. } => {
+                Some(app)
+            }
             Self::View { .. } => None,
         }
     }
@@ -94,14 +82,14 @@ impl StorageKey {
 impl fmt::Display for StorageKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Record {
-                package,
+            Self::Document {
+                app,
                 workspace,
-                record,
-            } => write!(f, "record {package}/{workspace}/{record}"),
-            Self::Package { package } => write!(f, "package {package}"),
-            Self::WorkspaceIndex { package, workspace } => {
-                write!(f, "workspace index {package}/{workspace}")
+                document,
+            } => write!(f, "document {app}/{workspace}/{document}"),
+            Self::App { app } => write!(f, "app {app}"),
+            Self::WorkspaceIndex { app, workspace } => {
+                write!(f, "workspace index {app}/{workspace}")
             }
             Self::View {
                 device,
@@ -113,20 +101,16 @@ impl fmt::Display for StorageKey {
 }
 
 /// A key's current value. `writer` is the opaque identity its single writer
-/// persists beside the bytes (for a CRDT document, the actor id), so a
-/// restarted owner continues the same history instead of forking it.
+/// persists beside the bytes, so a restarted owner continues the same history.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stored {
     pub bytes: Vec<u8>,
     pub writer: Option<Vec<u8>>,
 }
 
-/// How a write changes a key's bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteOp {
-    /// The key's bytes become exactly these.
     Replace(Vec<u8>),
-    /// These bytes follow the key's current bytes.
     Append(Vec<u8>),
 }
 
@@ -141,9 +125,7 @@ impl WriteOp {
         matches!(self, Self::Replace(_))
     }
 
-    /// Fold a later write into this one so the pair has the same effect as
-    /// applying both in order. A later replacement supersedes everything; an
-    /// append extends whatever this write produces.
+    /// Fold a later write into this one, so the pair equals applying both in order.
     pub fn coalesce(&mut self, later: Self) {
         match (self, later) {
             (this, Self::Replace(bytes)) => *this = Self::Replace(bytes),
@@ -153,7 +135,6 @@ impl WriteOp {
         }
     }
 
-    /// Apply this write to a key's current bytes.
     pub fn apply(&self, current: &mut Vec<u8>) {
         match self {
             Self::Replace(bytes) => bytes.clone_into(current),
@@ -162,32 +143,27 @@ impl WriteOp {
     }
 }
 
-/// Names one accepted write. Revisions increase monotonically within one
-/// store, so a later revision of a key always describes newer bytes.
+/// Names one accepted write; a later revision of a key has newer bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Revision(pub u64);
 
-/// Whether an accepted write has survived.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Durability {
     /// Committed: it survives a crash of this process and of the host.
     Durable,
-    /// Accepted, not yet committed.
     Pending,
-    /// The commit failed. Until a later [`WriteOp::Replace`] of the same key
-    /// becomes durable, appends to that key are refused: the failed write may
-    /// have left a partial tail that further appends would bury.
+    /// The commit failed. Until a later [`WriteOp::Replace`] of the same key is
+    /// durable, appends to it are refused: they would bury a partial tail.
     Failed(String),
 }
 
-/// What [`DurableStore::wake_when_settled`] did with its wake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettleWatch {
-    /// Writes or a sync were outstanding for the key: the wake is called
-    /// once, from any thread, when they have all resolved.
+    /// Writes or a sync were outstanding for the key: the wake is called once,
+    /// from any thread, when they have all resolved.
     Armed,
-    /// Nothing was outstanding for the key: the wake was dropped, and its
-    /// durability is what [`DurableStore::durability`] says now.
+    /// Nothing was outstanding: the wake was dropped, and
+    /// [`DurableStore::durability`] says what became of it.
     Settled,
 }
 
@@ -203,9 +179,9 @@ pub enum StoreError {
     SourceChanged(String),
     #[error("{0} has writes its host has not yet committed")]
     Pending(String),
-    /// On a thread that must not wait on storage ([`waiting`]): the store's
-    /// own thread is still opening or reading the key, and calls the
-    /// thread's [wake](waiting::wake) once when it is done.
+    /// On a thread that must not wait on storage ([`waiting`]): the store's own
+    /// thread still opens or reads the key, and calls the thread's
+    /// [wake](waiting::wake) once it is done.
     #[error("{0} is still being opened")]
     Opening(String),
     #[error("revision {0} is not awaiting acknowledgement")]
@@ -214,39 +190,34 @@ pub enum StoreError {
     Failed { context: String, message: String },
 }
 
-/// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
 
-/// Called, from any thread, when work a caller must not wait for is done
-/// (see [`waiting::wake`]).
+/// Called, from any thread, when work a caller must not wait for is done.
 pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
-/// A non-exclusive claim on one key, for documents several processes may
-/// write at once because readers merge what each appends. `primary` is true
-/// for the one holder entitled to continue the stored writer identity; every
-/// other holder must write under an identity of its own.
+/// A non-exclusive claim on one key, for documents several processes write at once.
+/// `primary` is true for the one holder that continues the stored writer identity;
+/// every other holder writes under an identity of its own.
 pub struct SharedLease {
     pub lease: Lease,
     pub primary: bool,
 }
 
-/// Keyed, ordered, honestly-acknowledged storage.
-///
-/// A store is shared by every owner in one profile, so each method takes
-/// `&self`. Writes to one key apply in the order they were accepted.
+/// Keyed, ordered, honestly-acknowledged storage. Writes to one key apply in the
+/// order they were accepted.
 pub trait DurableStore {
-    /// A stable identity for this profile's storage. Two stores with the same
-    /// namespace address the same data; history and collaboration use it to
-    /// tell profiles apart, never to find files.
+    /// A stable identity for this profile's storage: two stores with the same
+    /// namespace address the same data. Collaboration tells profiles apart by it,
+    /// never to find files.
     fn namespace(&self) -> &str;
 
-    /// The key's current value, including accepted writes not yet durable.
-    /// `None` when nothing has ever been stored.
+    /// The key's current value, including accepted writes not yet durable; `None`
+    /// when nothing has ever been stored.
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, StoreError>;
 
-    /// Accept a write without waiting for it to commit. `writer`, when given,
-    /// replaces the identity stored beside the key. An implementation may
-    /// refuse writes to a key the caller has not [leased](Self::lease).
+    /// Accept a write without waiting for it to commit. `writer` replaces the
+    /// identity stored beside the key. An implementation may refuse writes to a key
+    /// the caller has not [leased](Self::lease).
     ///
     /// # Errors
     /// Refuses an invalid or unleased key, or a store that cannot accept more.
@@ -261,21 +232,19 @@ pub trait DurableStore {
     /// Never blocks.
     fn durability(&self, key: &StorageKey, revision: Revision) -> Durability;
 
-    /// Make everything read from or accepted for `key` (or every key) durable
-    /// where the store can do so itself, and report whether it now is. A store
-    /// that depends on its host returns [`StoreError::Pending`] instead of
-    /// blocking.
+    /// Make everything read from or accepted for `key` (or every key) durable where
+    /// the store can, and report whether it now is. A store that depends on its host
+    /// returns [`StoreError::Pending`] instead of blocking.
     ///
     /// # Errors
-    /// Reports the latest failed write, or writes still awaiting their host.
+    /// The latest failed write, or writes still awaiting their host.
     fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError>;
 
-    /// [`Self::flush`] for a caller that must not wait on storage (a UI
-    /// thread): start making everything read from or accepted for `key`
-    /// durable and return at once. `Ok` when it already is; otherwise
-    /// [`StoreError::Pending`], the work left to the store's own thread, and
-    /// [`Self::is_settled`] turns true when it has finished. A store with no
-    /// thread of its own waits, as [`Self::flush`] does.
+    /// [`Self::flush`] for a caller that must not wait on storage: start making
+    /// everything read from or accepted for `key` durable and return at once. `Ok`
+    /// when it already is, [`StoreError::Pending`] while the store's own thread
+    /// finishes ([`Self::is_settled`] turns true then). A store with no thread of its
+    /// own waits, as [`Self::flush`] does.
     ///
     /// # Errors
     /// The latest failed write, or [`StoreError::Pending`].
@@ -283,11 +252,10 @@ pub trait DurableStore {
         self.flush(Some(key))
     }
 
-    /// [`Self::flush`] where this thread may wait on storage; on a thread
-    /// that must not ([`waiting::forbid_on_this_thread`]: a frame loop),
-    /// [`Self::flush_without_waiting`], whose [`StoreError::Pending`] means
-    /// the store's own thread is committing and [`Self::durability`] tells
-    /// how it went.
+    /// [`Self::flush`] where this thread may wait on storage; on a thread that must
+    /// not ([`waiting::forbid_on_this_thread`], a frame loop) it makes the call
+    /// [`Self::flush_without_waiting`] does, where [`StoreError::Pending`] means the
+    /// store's own thread is committing.
     ///
     /// # Errors
     /// As the call it makes.
@@ -305,15 +273,11 @@ pub trait DurableStore {
         self.flush(Some(key)).is_ok()
     }
 
-    /// Call `wake` once, from any thread, when every write accepted for `key`
-    /// and every sync asked for it before this call has committed or failed:
-    /// how a window still showing "Saving…" hears that it is done without
-    /// asking again and again. Never called at once: when nothing is
-    /// outstanding the answer is [`SettleWatch::Settled`]. The same wake
+    /// Call `wake` once, from any thread, when every write accepted for `key` and
+    /// every sync asked for it before this call has committed or failed: how a window
+    /// showing "Saving…" hears that it is done without polling. Nothing outstanding
+    /// answers [`SettleWatch::Settled`] and calls nothing; the same wake
     /// ([`waiting::same_wake`]) armed twice is called once.
-    ///
-    /// Every store answers it: a window showing "Saving…" has no other way
-    /// to learn the write landed, and never polls for it.
     fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch;
 
     /// Become the key's only writer until the returned lease is dropped.
@@ -330,45 +294,37 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
-    /// Whether a lease or read the calling thread makes may
-    /// answer [`StoreError::Opening`]: on a thread that must not wait on storage
-    /// ([`waiting`], a frame loop), [`Self::lease`], [`Self::lease_shared`]
-    /// and [`Self::read`] of a key the store has not opened for this thread
-    /// answer it while the store's own thread opens or reads the key, and
-    /// that thread calls the caller's [wake](waiting::wake) once it has:
-    /// asked again, they then wait on nothing. Reads of a key this thread
-    /// leased answer what was read for the lease, with the writes accepted
-    /// since, and [`Self::read_hint`] answers only a hint already read.
-    /// Other threads are unaffected. A store with no thread of its own
-    /// works in place, and answers `false`.
+    /// Whether a lease or read this thread makes may answer [`StoreError::Opening`]:
+    /// on a thread that must not wait on storage, [`Self::lease`],
+    /// [`Self::lease_shared`] and [`Self::read`] answer it while the store's own
+    /// thread opens or reads the key, and that thread calls the caller's
+    /// [wake](waiting::wake) once it has. Reads of a key this thread leased answer
+    /// what was read for the lease plus the writes accepted since, and
+    /// [`Self::read_hint`] answers only a hint already read. A store with no thread
+    /// of its own works in place here and answers `false`.
     fn declined_waiting_here(&self) -> bool {
         false
     }
 
-    /// Grant custody of `key` to exactly one `claimant`, durably: the first
-    /// claim wins, and the same claimant may claim again (to resume after a
-    /// crash). Used to let exactly one successor adopt a workspace record
-    /// under a new identity.
-    /// `true` when `claimant` holds custody.
+    /// Grant custody of `key` to exactly one `claimant`, durably: the first claim
+    /// wins, and the same claimant may claim again to resume after a crash. Lets one
+    /// successor adopt a workspace record under a new identity. Answers `true` when
+    /// `claimant` holds custody.
     ///
     /// # Errors
     /// A key the store cannot claim, or a failure recording the claim.
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
 
-    /// The `record` component of every [`StorageKey::Record`] of `package`
-    /// in `workspace` that holds stored bytes, sorted. Lets a host find
-    /// records it can no longer name: an app that used to keep a record per
-    /// window and now keeps one per workspace adopts its windows' records. A
-    /// store that cannot enumerate its keys answers with none.
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
-        let _ = (package, workspace);
+    /// The document of every [`StorageKey::Document`] of `app` in `workspace` that
+    /// holds stored bytes, sorted: how a host finds documents it can no longer name.
+    /// A store that cannot enumerate its keys answers with none.
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        let _ = (app, workspace);
         Ok(Vec::new())
     }
 
-    /// Every [`StorageKey::WorkspaceIndex`] the store holds, as its `package` and
-    /// `workspace` components, sorted. Lets a host read which records the
-    /// workspaces on this device keep without knowing their names first. A
-    /// store that cannot enumerate its keys answers with none.
+    /// Every [`StorageKey::WorkspaceIndex`] the store holds, as its app and
+    /// `workspace`, sorted. A store that cannot enumerate its keys answers with none.
     fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
         Ok(Vec::new())
     }
@@ -379,12 +335,10 @@ pub trait DurableStore {
         None
     }
 
-    /// Keep `hint` beside the key's value on this device: bytes a caller
-    /// derived from a value it wrote, to make the next read of that value
-    /// cheaper to use. A hint is never part of the value, never leaves the
-    /// device and may be dropped at any time, so the caller must recognise
-    /// the value it was made for itself; a store that keeps none drops it.
-    /// The key must be leased, as for [`Self::write`].
+    /// Keep `hint` beside the key's value on this device: bytes a caller derived from a
+    /// value it wrote, to make the next read cheaper to use. A hint is never part of
+    /// the value, never leaves the device and may be dropped at any time, so the caller
+    /// must recognise the value it was made for itself. The key must be leased.
     fn write_hint(&self, _key: &StorageKey, _hint: &[u8]) -> Result<(), StoreError> {
         Ok(())
     }
@@ -426,14 +380,14 @@ mod tests {
         // Phase `keys_display_every_identifying_component`.
         {
             assert_eq!(
-                StorageKey::record("pkg", "room", "rec").to_string(),
-                "record pkg/room/rec"
+                StorageKey::document("pkg", "room", "rec").to_string(),
+                "document pkg/room/rec"
             );
             assert_eq!(
                 StorageKey::view("dev", "room", 7).to_string(),
                 "view dev/room/7"
             );
-            assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
+            assert_eq!(StorageKey::app("pkg").to_string(), "app pkg");
             assert_eq!(
                 StorageKey::workspace_index("pkg", "room").to_string(),
                 "workspace index pkg/room"

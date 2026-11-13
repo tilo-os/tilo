@@ -1,35 +1,9 @@
 //! The network capability on Linux, macOS and the web.
 //!
-//! One API on every target, all of it async and every future `Send`, so an
-//! app hands requests to `tilo_rt::app()` (or the toolkit's `LatestRequest`)
-//! and never runs a blocking client on a thread of its own:
-//!
-//! - [`Client`] sends HTTP [`Request`]s and answers a [`Response`] whose body
-//!   streams in [`Response::chunk`]s. reqwest on the desktop; `fetch` in a
-//!   page, where the browser's cross-origin rules (CORS) apply. A host may
-//!   provide a same-origin [`proxy`] that relays cross-origin requests for
-//!   apps that opt in.
-//! - `ws`: WebSocket clients. tokio-websockets on the desktop, the page's
-//!   `WebSocket` on the web.
-//! - `webtransport`: WebTransport sessions with bidirectional and
-//!   unidirectional streams and datagrams. web-transport-quinn on the
-//!   desktop, the browser's `WebTransport` where it has one.
-//! - [`status`]: whether the device is online, and whether the connection is
-//!   metered.
-//! - `sockets`: raw TCP, UDP and TLS over TCP. Desktop only; every call
-//!   answers [`Unsupported`] in a page.
-//!
-//! What a target cannot provide is an [`Unsupported`] error at run time and an
-//! entry of its [`Feature`]'s targets, never a missing item.
-//!
-//! # TLS
-//!
-//! Tilo has one TLS backend (`ring`) and one trust source: the immutable
-//! system bundle read by `tilo-native-certs`. Building those per crate is how
-//! apps drifted onto bundled Mozilla roots, so desktop clients take them from
-//! here ([`client_config`], [`system_roots`]). The reqwest builders in
-//! [`http`](mod@http) remain for desktop-only code that has not moved to
-//! [`Client`].
+//! One async API on every target, every future `Send`, so an app hands requests
+//! to `tilo_rt::app()` instead of running a blocking client on a thread of its
+//! own. What a target cannot provide is an [`Unsupported`] error at run time,
+//! never a missing item.
 
 mod caps;
 #[cfg(feature = "http")]
@@ -62,14 +36,62 @@ pub use client::{Client, ClientBuilder, Redirects, Request, RequestBuilder, Resp
 pub use error::NetError;
 pub use url::Url;
 
+/// Whether `url` is on an origin browsers treat as secure: `https`, or plain
+/// `http` on this machine, which never leaves it.
+#[must_use]
+pub fn secure_origin(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => match url.host() {
+            Some(url::Host::Domain(name)) => {
+                let name = name.trim_end_matches('.').to_ascii_lowercase();
+                name == "localhost" || name.ends_with(".localhost")
+            }
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod secure_origin_tests {
+    use super::{Url, secure_origin};
+
+    #[test]
+    fn https_anywhere_and_http_only_on_this_machine() {
+        for secure in [
+            "https://tilo.sh",
+            "https://eu1.tilo.sh:8443",
+            "http://localhost:24110",
+            "http://tilo.localhost:24120",
+            "http://127.0.0.1:24100",
+            "http://127.1.2.3",
+            "http://[::1]:80",
+        ] {
+            assert!(secure_origin(&Url::parse(secure).unwrap()), "{secure}");
+        }
+        for open in [
+            "http://tilo.sh",
+            "http://localhost.tilo.sh",
+            "http://10.0.0.1",
+            "ws://localhost",
+            "ftp://localhost",
+        ] {
+            assert!(!secure_origin(&Url::parse(open).unwrap()), "{open}");
+        }
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub use native::tls::{
     client_config, client_config_also_trusting, client_config_with_roots, crypto_provider,
     install_crypto_provider, pinned_client_config, server_verifier_also_trusting, system_roots,
 };
 
-/// Every future of the public API is `Send` on every target, so apps can
-/// hand it to `tilo_rt::app()`. This fails to compile otherwise.
+/// Every future of the public API is `Send` on every target; this fails to
+/// compile otherwise.
 #[allow(dead_code, reason = "a compile-time check, never called")]
 mod send_check {
     fn send<T: Send>(_: &T) {}
@@ -95,26 +117,16 @@ mod send_check {
     }
 }
 
-/// reqwest builders on Tilo's TLS defaults, for desktop-only code.
-///
-/// reqwest is built without a bundled crypto provider and verifies through
-/// `rustls-platform-verifier`, which on Linux reads the same system bundle as
-/// [`system_roots`]. Its builders panic unless a process default provider is
-/// installed, so every client starts from these functions.
-///
-/// Portable code uses [`Client`] instead: these exist only on the desktop,
-/// and blocking clients cannot run in a page. Unlike [`Client`] they do not
-/// decompress bodies, as before.
+/// reqwest builders on Tilo's TLS defaults, for desktop-only code. They panic
+/// unless a process default provider is installed, so every client starts
+/// from these functions.
 #[cfg(all(feature = "http", not(target_family = "wasm")))]
 pub mod http {
-    /// The one blocking client a caller keeps for its requests, built
-    /// by [`blocking_client`]: its own type, so a caller can hold it without
-    /// naming `reqwest`, and so one client's pool and TLS setup are shared by
-    /// every request it makes.
+    /// The one blocking client a caller keeps for its requests: its own type, so
+    /// a caller need not name `reqwest`.
     #[cfg(feature = "blocking")]
     pub type BlockingClient = reqwest::blocking::Client;
 
-    /// An async client builder with the crypto provider installed.
     #[allow(
         clippy::disallowed_methods,
         reason = "this is the sanctioned constructor; it installs the provider first"
@@ -127,7 +139,6 @@ pub mod http {
         builder
     }
 
-    /// A blocking client builder with the crypto provider installed.
     #[cfg(feature = "blocking")]
     #[allow(
         clippy::disallowed_methods,
@@ -143,8 +154,8 @@ pub mod http {
         builder
     }
 
-    /// reqwest's platform verifier aborts on Android without the app's JVM
-    /// context, so clients there verify against Android's system store.
+    /// Android's platform verifier aborts without the app's JVM context, so
+    /// clients there verify against Android's system store.
     #[cfg(target_os = "android")]
     fn system_certificates() -> Vec<reqwest::Certificate> {
         rustls_native_certs::load_native_certs()

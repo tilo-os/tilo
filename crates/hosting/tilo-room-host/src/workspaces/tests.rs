@@ -269,7 +269,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
 
 #[tokio::test]
 async fn every_settled_decision_is_announced_with_its_room() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -278,11 +278,11 @@ async fn every_settled_decision_is_announced_with_its_room() {
     let mut changes = workspaces.governance_changes();
     let deny_outside = Grant::new(
         "public-guests-no-outside",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         tilo_action_policy::TreePath::workspace(&created.workspace),
         KindSet::OUTSIDE,
         Answer::Deny,
-        Subject::Person(hex::encode(cert.user_public_key)),
+        Grantee::person(hex::encode(cert.user_public_key)),
     );
     workspaces
         .put_room_grants(&created.workspace, &cert, [4; 32], vec![deny_outside])
@@ -396,7 +396,10 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         .unwrap();
     assert_eq!(policy.workspace, created.workspace);
     assert_eq!(
-        policy.standing.policy.role_of(&policy.standing.person),
+        policy
+            .standing
+            .policy
+            .role_of(policy.standing.person_id().unwrap_or_default()),
         Some(collab_types::Role::Owner)
     );
     let source = tilo_peer_state::document_frame::DocumentRoute {
@@ -701,10 +704,19 @@ fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
 fn a_workspace_name_must_be_printable_and_short() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    for name in ["", "   ", "a\u{7}b", &"x".repeat(81)] {
+    for name in ["a\u{7}b", &"x".repeat(81)] {
         assert!(
             GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
                 .is_err()
+        );
+    }
+    // A workspace nobody named is founded with no name: every reader shows it
+    // in their own language.
+    for name in ["", "   "] {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now())
+                .is_ok()
         );
     }
 }
@@ -784,7 +796,7 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
 )]
 async fn legacy_window_write_respects_current_member_grants() {
     use collab_types::Role;
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let (relay, workspaces) = {
@@ -847,12 +859,12 @@ async fn legacy_window_write_respects_current_member_grants() {
             .checked_add(5000)
             .unwrap();
         let read_only = Grant::new(
-            "legacy-window-read-only-foreign",
-            Subject::ForeignDevice,
+            "legacy-window-read-only-owner",
+            Grantee::person(hex::encode(cert.user_public_key)),
             tilo_action_policy::TreePath::workspace(&created.workspace),
             KindSet::UNDOABLE,
             Answer::Deny,
-            Subject::Person(hex::encode(cert.user_public_key)),
+            Grantee::person(hex::encode(cert.user_public_key)),
         )
         .with_lifetime(Lifetime::Until(deadline_ms));
         candidate
@@ -868,23 +880,10 @@ async fn legacy_window_write_respects_current_member_grants() {
         workspaces
             .legacy_writer_role(&created.workspace, foreign.device_public_key)
             .await,
-        None,
-        "ownership must not bypass a current grant denying changes from foreign devices"
+        Some(Role::Owner),
+        "ownership is structural: no grant narrows the owner, and a device of \
+         theirs that is not the workspace's is still held to what such a device may do"
     );
-    // Expiration is an authorized transition and must be observed without restart.
-    tilo_test_env::within("the current read-only grant expires", async {
-        loop {
-            if workspaces
-                .legacy_writer_role(&created.workspace, foreign.device_public_key)
-                .await
-                == Some(Role::Owner)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
     drop(workspaces);
     crate::workspaces::fixtures::TestHost::shutdown(relay).await;
 }
@@ -936,8 +935,8 @@ async fn applications_are_prepared_for_the_current_owner_only() {
             .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
             .unwrap();
         assert_eq!(
-            grant.subject,
-            tilo_action_policy::Subject::App("so.tilo.chat".into())
+            grant.grantee,
+            tilo_action_policy::Grantee::app("so.tilo.chat")
         );
         assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }
@@ -2380,15 +2379,15 @@ async fn a_listed_room_keeps_sharing_its_windows_after_a_restart() {
     );
     // Listed in the directory: anyone may come in as an editor.
     workspaces
-        .inner
-        .listings
-        .set(
+        .publish(
             &workspace,
-            Some(tilo_relay_protocol::directory::Listing {
+            &cert,
+            tilo_relay_protocol::directory::Listing {
                 description: "Come in".into(),
                 default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-            }),
+            },
         )
+        .await
         .unwrap();
     drop(workspaces);
     relay.shutdown().await;
@@ -2899,5 +2898,79 @@ async fn a_room_names_its_own_host_to_every_member() {
     .expect("the room names its hosts")
     .unwrap();
     assert_eq!(served.len(), 1, "the governor is named once");
+    relay.shutdown().await;
+}
+
+/// Membership as the workspace's signed log makes it, on the relay that hosts
+/// it: a new workspace holds its owner alone, a person who joins through the
+/// door is a member, one removed is gone and comes back through a new
+/// invitation, and a member's copy of the workspace reaches the membership
+/// the relay holds.
+#[tokio::test]
+async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Plans").await.unwrap().workspace;
+    let live = |members: &[tilo_peer_state::GovernedMember], person: [u8; 32]| {
+        members
+            .iter()
+            .any(|member| member.user_public_key == person && !member.removed)
+    };
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .all(|member| member.user_public_key == cert.user_public_key || member.removed),
+        "a new workspace is its owner's alone: {members:?}"
+    );
+
+    let (guest_key, guest) = guest_device();
+    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 31).await;
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(live(&members, guest.user_public_key), "{members:?}");
+
+    // A member's copy, sent the workspace as it stands, holds the same people.
+    let (relay_policy, copy_policy) = {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let governed = state.lock().await;
+        let held = governed.peer().admitted_workspace().unwrap().clone();
+        let mut copy = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut copy, held.clone().get_changes(&[]))
+            .unwrap();
+        (
+            tilo_peer_state::workspace::policy_of(&held, &workspace),
+            tilo_peer_state::workspace::policy_of(&copy, &workspace),
+        )
+    };
+    assert_eq!(relay_policy, copy_policy);
+    assert!(
+        relay_policy
+            .members
+            .contains_key(&hex::encode(guest.user_public_key))
+    );
+
+    workspaces
+        .remove_member(
+            &workspace,
+            &cert,
+            RemoveMemberRequest {
+                request_id: [32; 32],
+                user_public_key: guest.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(!live(&members, guest.user_public_key), "{members:?}");
+
+    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 33).await;
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        live(&members, guest.user_public_key),
+        "a new invitation admits them again: {members:?}"
+    );
+    drop(workspaces);
     relay.shutdown().await;
 }

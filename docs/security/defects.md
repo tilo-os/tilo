@@ -646,7 +646,7 @@ Two adjacent holes in the same guarantee were found alongside it:
 - `os/containers/tilo-relay/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
   a floating tag — it never breaks, it just silently changes, so the relay image was not
   reproducible across time. **Closed:** the runtime stage of every server image that ships
-  without a bootc base (the relay, the front door, the VM host, the agent host) is pinned by
+  without a bootc base (the relay, the API server, the VM host, the agent host) is pinned by
   digest from `registry.fedoraproject.org`, which keeps the digests quay.io prunes — the same pin
   the Lounge and the browser runtime already carry, so a pin there keeps resolving and no mirrored
   copy is needed. `BASE_REF` stays the bootc base: the runtime's minimal base is a second, separately

@@ -1,52 +1,38 @@
-//! Mentions as a workspace fact: who a record's rich text names, read from the record itself.
-//!
-//! A mention is a run of rich text marked `mention` with the participant's id, whichever app wrote
-//! it: a paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a
-//! chat message (a stored mark span, as `tilo_document::ClipBlock` keeps them). [`in_record`] finds
-//! every one without the app's code, so whatever holds the record derives the same facts from what
-//! it was sent; only the record's readers are sent it, so only they learn of a mention. An excerpt
-//! reads each reference as it reads for the person told ([`Look::read`]).
-//!
-//! Where a mention is is the item of the record it was written in, as the app publishes it
-//! (`<kind>/<field>/<id>`, `tilo_resource::items`); a notice's [`Place`] is that item and the
-//! record it is in, and the notice each mentioned reader gets is the session's
-//! (`tilo_session::mentions`).
+//! Mentions as a workspace fact: who a record's rich text names, read from the record itself. A mention
+//! is a run of rich text marked `mention` with the participant's id, whichever app wrote it: a
+//! paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a chat message
+//! (a stored mark span, as `tilo_document::ClipBlock` keeps them).
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::record::RecordId;
 
 /// The mark a mention's run carries, valued with the participant's id.
-/// The same mark refers to any other resource ([`names_resource`]): those
-/// are references, not people, and tell nobody.
 pub const MARK: &str = "mention";
 
-/// Whether a `mention` mark's value names a resource rather than a
-/// person, in any form it was written in (`tilo_reference::embed`).
+/// Whether a `mention` mark's value names a resource rather than a person, in any form it was written
+/// in (`tilo_reference::embed`).
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
     tilo_reference::embed::names_resource(value)
 }
-/// The mark naming who wrote a run of text (`tilo_resource::text::AUTHOR_MARK`).
 const AUTHOR_MARK: &str = "author";
-/// The key a stored enum value keeps its variant under
-/// (`tilo_resource::VARIANT_KEY`).
+/// The key a stored enum value keeps its variant under (`tilo_resource::VARIANT_KEY`).
 const VARIANT_KEY: &str = "$variant";
-/// The key the `Str` variant of a stored mark value keeps its string under,
-/// and the bare key an older layout kept it under.
+/// The key the `Str` variant of a stored mark value keeps its string under, and the bare key an older
+/// layout kept it under.
 const STR_FIELD: &str = "$field/str/0";
 const STR_FIELD_FLAT: &str = "0";
-/// The key and value slot of an item of a stored collection
-/// (`tilo_resource::Collection`): `{ <id>: { k: <order>, v: <item> } }`.
+/// The key and value slot of an item of a stored collection (`tilo_resource::Collection`): `{ <id>: {
+/// k: <order>, v: <item> } }`.
 const ITEM_VALUE: &str = "v";
 /// The record's identity map (`crate::record`), never content.
 const RECORD_META: &str = "tilo:record";
 
-/// Deepest a mention is looked for, and most objects read in one record:
-/// the document is replicated input, not a request to walk it without end.
+/// Deepest a mention is looked for, and most objects read in one record: the document is replicated
+/// input, not a request to walk it without end.
 const MAX_DEPTH: usize = 32;
 const MAX_OBJECTS: usize = 200_000;
-/// Longest excerpt a notice carries, in characters.
 const EXCERPT_CHARS: usize = 160;
 
 /// One mention in a record: who is named, by whom, and where.
@@ -54,11 +40,9 @@ const EXCERPT_CHARS: usize = 160;
 pub struct Mention {
     /// The participant named.
     pub person: String,
-    /// Who wrote it, when the record says: the run's author mark, or the
-    /// item's author.
+    /// Who wrote it, when the record says: the run's author mark, or the item's author.
     pub by: Option<String>,
-    /// The item it was written in, as the record's top-level collection
-    /// keeps it: its field and id. `None` for a mention outside any item.
+    /// The item it was written in, as the record's top-level collection keeps it: its field and id.
     pub item: Option<(String, String)>,
     /// The paragraph it is in (a note's block), when its text has an id.
     pub block: Option<String>,
@@ -66,20 +50,18 @@ pub struct Mention {
     pub title: Option<String>,
     /// The channel the item was said in, by id, for an item of a chat.
     pub channel: Option<String>,
-    /// The text around it.
-    /// The text around it, as the person reading reads it ([`Reader`]): a reference to a
-    /// resource they cannot read says only that something is there, never the title it was
-    /// written with.
+    /// The text around it. The text around it, as the person reading reads it ([`Reader`]): a reference
+    /// to a resource they cannot read says only that something is there, never the title it was written
+    /// with.
     pub excerpt: String,
 }
 
-/// How a reference in the text reads for the person told
-/// ([`tilo_reference::embed::Reading`]): a resource they hold by what it is called now, one
-/// they cannot read as not shared.
+/// How a reference in the text reads for the person told ([`tilo_reference::embed::Reading`]): a
+/// resource they hold by what it is called now, one they cannot read as not shared.
 pub type Reader<'a> = &'a dyn Fn(&tilo_reference::Embed) -> tilo_reference::embed::Reading;
 
-/// What reads a reference for someone whose holdings nobody here can tell: a person as the
-/// text names them, every resource as not shared. A reference never grants a read.
+/// What reads a reference for someone whose holdings nobody here can tell: a person as the text names
+/// them, every resource as not shared. A reference never grants a read.
 #[must_use]
 pub fn reading_nothing(reference: &tilo_reference::Embed) -> tilo_reference::embed::Reading {
     if reference.as_person().is_some() {
@@ -89,15 +71,14 @@ pub fn reading_nothing(reference: &tilo_reference::Embed) -> tilo_reference::emb
     }
 }
 
-/// Every mention in `doc`, in document order, each excerpt read for someone whose holdings
-/// nobody here can tell ([`reading_nothing`]).
+/// Every mention in `doc`, in document order, each excerpt read for someone whose holdings nobody here
+/// can tell ([`reading_nothing`]).
 #[must_use]
 pub fn in_record(doc: &AutoCommit) -> Vec<Mention> {
     in_record_for(doc, &reading_nothing)
 }
 
-/// Every mention in `doc`, in document order, each excerpt as `read` reads the references in
-/// it.
+/// Every mention in `doc`, in document order, each excerpt as `read` reads the references in it.
 #[must_use]
 pub fn in_record_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
     let mut walk = Walk {
@@ -111,7 +92,6 @@ pub fn in_record_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
     walk.found
 }
 
-/// What encloses the object being read.
 #[derive(Clone, Default)]
 struct Context {
     item: Option<(String, String)>,
@@ -145,7 +125,6 @@ impl Walk<'_> {
                     else {
                         continue;
                     };
-                    // An item of a top-level collection: `<field>/<id>/v`.
                     let entered =
                         (cx.item.is_none() && path.len() == 2 && key == ITEM_VALUE).then(|| {
                             Context {
@@ -214,8 +193,8 @@ impl Walk<'_> {
         }
     }
 
-    /// The excerpt of `text` around character `at`, each of its `references` (a resource's
-    /// run: start, end and the mark's value) read for the person told.
+    /// The excerpt of `text` around character `at`, each of its `references` (a resource's run: start,
+    /// end and the mark's value) read for the person told.
     fn read_around(&self, text: &str, references: &[(usize, usize, String)], at: usize) -> String {
         let runs = |until: usize| {
             references
@@ -233,9 +212,8 @@ impl Walk<'_> {
         excerpt(&read_text, at)
     }
 
-    /// A mark span stored as a value (`{start, end, name, value}`), as a
-    /// chat message's paragraphs keep their marks; its text is the
-    /// paragraph's `text` beside the marks list.
+    /// A mark span stored as a value (`{start, end, name, value}`), as a chat message's paragraphs keep
+    /// their marks; its text is the paragraph's `text` beside the marks list.
     fn stored_mark(&mut self, obj: &ObjId, path: &[String], cx: &Context) {
         if self.string(obj, "name").as_deref() != Some(MARK) {
             return;
@@ -247,7 +225,6 @@ impl Walk<'_> {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);
-        // `…/<block>/marks/<n>`: the paragraph is two up, its marks one up.
         let text = (path.len() >= 2)
             .then(|| self.object_at(&path[..path.len() - 2]))
             .flatten()
@@ -266,8 +243,8 @@ impl Walk<'_> {
         self.push(person, by, None, excerpt, cx);
     }
 
-    /// The references to resources among the stored mark spans of the list `marks`: each
-    /// run's start, end and the mark's value.
+    /// The references to resources among the stored mark spans of the list `marks`: each run's start,
+    /// end and the mark's value.
     fn stored_references(&self, marks: &ObjId) -> Vec<(usize, usize, String)> {
         (0..self.doc.length(marks))
             .filter_map(|index| match self.doc.get(marks, index) {
@@ -316,8 +293,8 @@ impl Walk<'_> {
         });
     }
 
-    /// The participant a stored mark names: a plain string, or the string
-    /// of the `Str` variant it is stored as.
+    /// The participant a stored mark names: a plain string, or the string of the `Str` variant it is
+    /// stored as.
     fn mark_value(&self, obj: &ObjId) -> Option<String> {
         if let Some(value) = self.string(obj, "value") {
             return Some(value);
@@ -351,7 +328,6 @@ impl Walk<'_> {
         Some(obj)
     }
 
-    /// A field read as a string: a scalar, or a text object.
     fn string(&self, obj: &ObjId, key: &str) -> Option<String> {
         match self.doc.get(obj, key).ok()?? {
             (Value::Scalar(scalar), _) => match scalar.as_ref() {
@@ -375,14 +351,12 @@ impl Walk<'_> {
     }
 }
 
-/// The text around character `at` of `text`, on one line.
 fn excerpt(text: &str, at: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     let start = at.saturating_sub(EXCERPT_CHARS / 2).min(chars.len());
     let start = if start == 0 {
         0
     } else {
-        // Begin at a word.
         chars[start..]
             .iter()
             .position(|c| c.is_whitespace())
@@ -411,22 +385,22 @@ pub struct Place {
     pub app: String,
     /// The record, as its route names it: empty for the app's own record of the workspace.
     pub record: String,
-    /// The resource whose `open` shows the item (`<kind>/<field>/<id>`), or empty for the record
-    /// as a whole.
+    /// The resource whose `open` shows the item (`<kind>/<field>/<id>`), or empty for the record as a
+    /// whole.
     pub resource: String,
 }
 
-/// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands
-/// back when the person chooses it.
+/// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands back
+/// when the person chooses it.
 pub const SCHEME: &str = "tilo-mention";
 
-/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows
-/// which of its notifications are theirs.
+/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows which
+/// of its notifications are theirs.
 pub const TAGS: &str = "mention:";
 
 impl Place {
-    /// The activation URI a host carries the place by: `tilo-mention:<app>?<record>#<resource>`,
-    /// each part percent-encoded.
+    /// The activation URI a host carries the place by: `tilo-mention:<app>?<record>#<resource>`, each
+    /// part percent-encoded.
     #[must_use]
     pub fn activation(&self) -> String {
         format!(
@@ -451,8 +425,8 @@ impl Place {
         (!place.app.is_empty()).then_some(place)
     }
 
-    /// The tag a notice of this place for `person` goes by: the same on every device and window,
-    /// so the host shows it once.
+    /// The tag a notice of this place for `person` goes by: the same on every device and window, so the
+    /// host shows it once.
     #[must_use]
     pub fn tag(&self, person: &str) -> String {
         format!(
@@ -493,8 +467,8 @@ fn decode(part: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The route of the chain whose part the record `route` names
-/// ([`RecordId::part`]): empty for a part of the app's own record.
+/// The route of the chain whose part the record `route` names ([`RecordId::part`]): empty for a part of
+/// the app's own record.
 #[must_use]
 pub fn chain_of(route: &str) -> Option<&str> {
     let (role, chain) = route.strip_prefix("derived:")?.split_once('@')?;

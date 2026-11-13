@@ -47,20 +47,17 @@ tube-home-error = Home couldn't refresh
 tube-offline-title = You're offline
 tube-offline-message = Reconnect to load videos. Your queue and history are still here.
 tube-unreached-title = Videos can't load here
-tube-sources-no-relay = The video sources don't let web pages read them, and this site has no fetch proxy to relay them. Your queue and history are still here.
+tube-sources-no-relay = Videos can't play in a web page yet. Your queue and history are still here.
 tube-sources-failed = No video source answered. Your queue and history are still here.
 tube-home-empty-title = Nothing to show yet
 tube-home-empty-message = Search for a video to start watching.
 tube-search = Search
 tube-search-for = Search YouTube for “{ $query }”
 tube-trending-empty-title = Nothing trending yet
-tube-trending-empty-message = Popular videos show here once the catalogue loads.
 tube-subscriptions-empty-title = No subscriptions yet
-tube-subscriptions-empty-message = Subscribe to creators and their new videos show here.
 tube-latest-videos = Latest videos
 tube-history-not-saving = Watch history isn't saving
 tube-history-empty-title = Nothing watched yet
-tube-history-empty-message = Videos you watch show up here.
 tube-queue-empty-title = Your queue is empty
 tube-queue-empty-message = Add videos from their watch page.
 tube-queue-waiting = { $count ->
@@ -123,26 +120,12 @@ tube-dearrow-titles = Replace titles
 tube-dearrow-thumbnails = Replace thumbnails
 
 ## Segment kinds and what Tube does with them
-tube-segment-sponsor = Sponsor
-tube-segment-sponsor-about = Paid promotion, paid referrals and direct advertisements.
-tube-segment-selfpromo = Self-promo
-tube-segment-interaction = Interaction reminder
-tube-segment-interaction-about = Reminders to like, subscribe or follow, with no other content.
-tube-segment-intro = Intro and intermission
-tube-segment-intro-about = A stretch without content: a pause, an animation or an intro.
-tube-segment-outro = End cards and credits
-tube-segment-outro-about = Credits and end cards once the video is over.
-tube-segment-preview = Preview and recap
-tube-segment-preview-about = A recap of earlier episodes or a preview of what comes next.
-tube-segment-music-offtopic = Non-music section
-tube-segment-music-offtopic-about = The parts of a music video that are not music.
-tube-segment-filler = Filler tangent
-tube-segment-filler-about = Tangents added only to make the video longer.
 
 ## Device sync
 tube-device-sync = Device sync
 tube-sync-unavailable-now = Device sync isn't available right now.
 tube-sync-not-built = This build of Tube doesn't include Grayjay device sync.
+tube-sync-available-note = Encrypted Grayjay sync is available when the desktop's secret store is unlocked.
 tube-sync-locked-title = Device sync is unavailable
 tube-sync-locked-message = Unlock the desktop's secret store, then reopen Tube to pair Grayjay devices.
 tube-sync-now = Sync now
@@ -175,7 +158,7 @@ tube-unplayable-youtube-said = YouTube refused to play it: "{ $reason }"
 tube-unplayable-no-source = None of Tube's sources had a stream for it.
 tube-try-again = Try again
 tube-live-in-app = Live streams play in the Tilo app for now
-tube-notice-playback-limit = Playback limit reached on this host. Try again later.
+tube-notice-playback-limit = Playback hit its limit here. Try again later.
 tube-notice-no-downloads = Tube can't save videos for offline viewing
 tube-notice-pairing-busy = Device pairing is busy or unavailable
 tube-notice-sync-busy = Device sync is busy or unavailable
@@ -270,3 +253,6 @@ tube-effect-revoke-device = Revoke device access
 tube-effect-set-preference = Set a playback preference
 tube-effect-set-preferred-quality = Set preferred quality
 tube-effect-set-segment-handling = Set segment handling
+
+## What the app is called in a window and in the launcher
+tube-app-title = Tube

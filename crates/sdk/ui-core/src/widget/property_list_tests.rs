@@ -179,7 +179,6 @@ fn labels_share_one_measured_column_and_values_line_up() {
         assert!(row.value.x > row.label.x);
         assert!(row.rect.height() >= m.min_row);
     }
-    // The longest label decides the column: values start after it.
     let longest = f64::from(text.measure_style("Birthday", None, &m.label).0);
     assert!(x >= m.pad_x + longest + m.column_gap - 0.5);
 }
@@ -188,12 +187,10 @@ fn labels_share_one_measured_column_and_values_line_up() {
 fn labels_start_on_the_content_edge_and_stripes_bleed_past_it() {
     let theme = Theme::dark();
     let bleed = crate::chrome::row_bleed(&theme);
-    // A face's rect is the outer rect: labels sit one bleed in.
     let mut text = TextRenderer::new();
     let rows = rows();
     let laid = layout(&mut text, &theme, &rows, 400.0);
     assert!((laid.rows[0].label.x - bleed).abs() < 0.01);
-    // A retained list in a padded column: labels on its content edge.
     let harness = FrameHarness::new(
         crate::State::new(),
         Box::new(
@@ -242,7 +239,6 @@ fn a_narrow_list_stacks_labels_above_values() {
         assert!((row.value.x - row.label.x).abs() < 0.01, "one column");
         assert!(row.value.y > row.label.y, "label above value");
     }
-    // Larger text stacks sooner.
     let big = Theme::dark().with_text_scale(2.0);
     assert!(!face.is_stacked(&mut text, &theme, 360.0));
     assert!(face.is_stacked(&mut text, &big, 360.0));
@@ -288,7 +284,6 @@ fn a_label_wider_than_its_column_wraps_and_never_runs_into_its_value() {
         PropertyRow::new("Reporting ink or toner levels", "1 printer"),
         PropertyRow::new("Scanners available", "1"),
     ];
-    // A phone-wide window: the labels' column is capped below the longest.
     let width = 380.0;
     let laid = layout(&mut text, &theme, &rows, width);
     assert!(!laid.stacked, "the labels wrap beside their values");
@@ -418,7 +413,6 @@ fn groups_and_lists_in_a_section_share_one_label_column() {
     assert_eq!(laid.groups.len(), 2);
     assert!((laid.rows[0].value.x - laid.rows[1].value.x).abs() < 0.01);
     assert!(laid.groups[1].title_at.y > laid.rows[0].rect.y1);
-    // Two retained lists in one section line their values up.
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(crate::widget::Section::new(vec![
@@ -570,7 +564,6 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     assert_eq!(invocation.address.action, "edit");
     assert!(list.take_control_invocation().is_none());
 
-    // Unavailable, the button is disabled and runs nothing.
     list.refresh_control_action_availability(&std::collections::HashSet::new());
     let disabled = Widget::accessibility(&*list)
         .and_then(|node| node.children.first().cloned())

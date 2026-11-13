@@ -4,8 +4,7 @@ use crate::component::{Bound, Component, Described};
 
 use super::{CodeEditor, Language};
 
-/// Code to read or write, with line numbers and its language's colouring. What is typed edits
-/// the text it is bound to, each edit spliced in, never written over.
+/// Code to read or write, with line numbers and its language's colouring.
 #[derive(Component)]
 #[component(name = "CodeEditor", role = "TextInput", label = "placeholder")]
 pub struct CodeEditorProps {
@@ -14,8 +13,7 @@ pub struct CodeEditorProps {
     pub value: Bound<String>,
     /// What to type, shown while it is empty.
     pub placeholder: Option<String>,
-    /// The language it colours (the language's own name, `rust`, `json`); plain text unless
-    /// said.
+    /// The language it colours (the language's own name, `rust`, `json`); plain text unless said.
     pub language: Option<Language>,
     /// The fewest lines it is tall for.
     pub min_lines: Option<i64>,
@@ -72,8 +70,6 @@ impl Described for CodeEditor {
         editor
     }
 
-    /// The code it edits, what it says about it and how it shows it change where the editor
-    /// stands: it keeps the keyboard, the caret and whatever is being composed into it.
     fn set_props(&mut self, props: CodeEditorProps) -> bool {
         let CodeEditorProps {
             value,

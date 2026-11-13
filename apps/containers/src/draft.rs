@@ -1,19 +1,12 @@
-//! The container manager's record: the new-container draft.
-//!
-//! The engine (containers, images, volumes, distroboxes, their stats and
-//! logs) is this device's podman, mirrored into memory and never written
-//! here; where the user is in the app (section, selection, detail tab) is
-//! the window's own. What the record holds is what a person fills in and
-//! may finish on another device or with someone else: the create form, one
-//! collaborative text per field, edited at its path
-//! (`Containers::paths().draft.image`).
+//! The container manager's record: the new-container draft, one collaborative text
+//! per field, edited at its path. The engine snapshot and where the person is in the
+//! app are host data and the window's own.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Model, Path};
 
 use crate::resource::Containers;
 
-/// The editable fields of the create-container form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CreateField {
@@ -36,7 +29,6 @@ impl CreateField {
             CreateField::Command => "command",
         }
     }
-    /// The field's name, as a title.
     pub fn title(self) -> &'static str {
         match self {
             CreateField::Name => "Name",
@@ -57,7 +49,6 @@ impl CreateField {
             CreateField::Command => "",
         }
     }
-    /// Index of this field in [`Self::ALL`].
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|f| *f == self).unwrap_or(0)
     }
@@ -83,8 +74,7 @@ impl CreateField {
     }
 }
 
-/// The new-container draft: one text per field, each merging per
-/// character with a second person typing in the same form.
+/// The new-container draft: one text per field, each merging per character.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreateDraft {
     /// Name
@@ -102,7 +92,6 @@ pub struct CreateDraft {
 }
 
 impl CreateDraft {
-    /// The draft with `values` filled in and every other field empty.
     pub fn with(values: &[(CreateField, &str)]) -> Self {
         let mut draft = Self::default();
         for (field, value) in values {
@@ -111,7 +100,6 @@ impl CreateDraft {
         draft
     }
 
-    /// The text of `field`.
     pub fn get(&self, field: CreateField) -> &str {
         match field {
             CreateField::Name => &self.name,
@@ -134,20 +122,14 @@ impl CreateDraft {
         }
     }
 
-    /// Whether nothing has been filled in.
     pub fn is_empty(&self) -> bool {
         CreateField::ALL
             .iter()
             .all(|field| self.get(*field).trim().is_empty())
     }
 
-    /// The `podman run` argument vector the draft describes, or `None` while
-    /// the image (the only required field) is empty.
-    ///
-    /// Translates the comma-separated Ports / Env / Volumes drafts into the
-    /// matching `-p` / `-e` / `-v` flags, then the image, then any trailing
-    /// command override. This is the single source of truth `submit_create`
-    /// shells out with.
+    /// The `podman run` arguments the draft describes, or `None` while the image, the
+    /// only required field, is empty.
     pub fn run_args(&self) -> Option<Vec<String>> {
         let image = self.get(CreateField::Image).trim();
         if image.is_empty() {
@@ -179,7 +161,6 @@ impl CreateDraft {
     }
 }
 
-/// Split a comma-separated draft into trimmed, non-empty entries.
 fn split_list(s: &str) -> Vec<String> {
     s.split(',')
         .map(|p| p.trim().to_string())

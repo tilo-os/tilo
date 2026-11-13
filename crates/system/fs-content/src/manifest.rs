@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::tier::ChunkTier;
 
-/// First bytes of a manifest's header entry.
 pub const HEADER_MAGIC: [u8; 6] = *b"tilocf";
 /// The manifest format this crate writes.
 pub const FORMAT: u8 = 2;
@@ -15,24 +14,20 @@ pub const MAX_CHUNK_LEN: u32 = 4 * 1024 * 1024;
 const ENTRY: usize = 32;
 const LENGTHS_PER_ENTRY: usize = ENTRY / 4;
 
-/// One chunk: its BLAKE3 hash and length.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ChunkRef {
     pub hash: [u8; 32],
     pub len: u32,
 }
 
-/// The chunks of one file version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     tier: ChunkTier,
     chunks: Vec<ChunkRef>,
-    /// End offset of every chunk.
     ends: Vec<u64>,
     id: [u8; 32],
 }
 
-/// Why bytes are not a manifest.
 #[derive(Debug)]
 pub enum DecodeError {
     Malformed(&'static str),
@@ -85,7 +80,6 @@ impl Manifest {
         m
     }
 
-    /// The size tier.
     pub const fn tier(&self) -> ChunkTier {
         self.tier
     }
@@ -103,7 +97,6 @@ impl Manifest {
         self.id
     }
 
-    /// Byte range of chunk `index` in the file.
     pub fn chunk_range(&self, index: usize) -> Option<Range<u64>> {
         let end = *self.ends.get(index)?;
         let start = index
@@ -114,13 +107,11 @@ impl Manifest {
         Some(start..end)
     }
 
-    /// Index of the chunk holding byte `offset`.
     pub fn chunk_at(&self, offset: u64) -> Option<usize> {
         let index = self.ends.partition_point(|end| *end <= offset);
         (index < self.chunks.len()).then_some(index)
     }
 
-    /// Every chunk overlapping `range`: its index, start offset and entry.
     pub fn overlapping(
         &self,
         range: Range<u64>,
@@ -147,13 +138,11 @@ impl Manifest {
         (index as u64).saturating_add(2)
     }
 
-    /// Chunk index for a `RangeSpecSeq` position, if it names a chunk.
     pub fn chunk_of_child(&self, offset: u64) -> Option<usize> {
         let index = usize::try_from(offset.checked_sub(2)?).ok()?;
         (index < self.chunks.len()).then_some(index)
     }
 
-    /// The manifest's bytes.
     pub fn encode(&self) -> Vec<u8> {
         let n = self.chunks.len();
         let length_entries = n.div_ceil(LENGTHS_PER_ENTRY);
@@ -175,7 +164,6 @@ impl Manifest {
         out
     }
 
-    /// Decodes a manifest; the content id is BLAKE3 of `bytes`.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         use DecodeError::Malformed;
         if !is_manifest(bytes) {
@@ -237,7 +225,6 @@ impl Manifest {
         })
     }
 
-    /// Checks that `data` is exactly the content this manifest describes.
     pub fn verify(&self, data: &[u8]) -> bool {
         if data.len() as u64 != self.total_len() {
             return false;

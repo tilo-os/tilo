@@ -178,8 +178,8 @@ accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
-# The MCP front door, driven through its HTTP routes against the relay.
-tilo-front-door = { path = "../../hosting/tilo-front-door" }
+# The API server, driven through its HTTP routes against the relay.
+tilo-api = { path = "../../hosting/tilo-api" }
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
 test-relay = { path = "../../dev/test-relay" }
 test-http = { path = "../../dev/test-http" }
@@ -190,7 +190,7 @@ tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
 # The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
-hyper = { version = "1", features = ["client", "http1"] }
+hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-rustls.workspace = true
@@ -206,7 +206,7 @@ tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
 tilo-doc = { path = "../../doc/tilo-doc" }
 # The desktop's search over a workspace's record index, as a person finds a record.
 tilo-desktop-search = { path = "../../session/desktop-search" }
-# The campaign benchmark's `TILO_BENCH_TRACE`.
+# The subscriber the `api-on-relay` example traces with.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]

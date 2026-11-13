@@ -13,24 +13,22 @@ crate::component::choice!(RowStatus<'static>, "RowStatus", {
     Idle => "idle",
 });
 
-/// A status in a sentence: a dot in the status's colour and a caption beside it, "Engine
-/// running", "3 containers stopped". For a list's footer or a detail's state; it is never
-/// pressed.
+/// A status as a sentence: a dot in the status's colour beside a caption ("Engine running", "3
+/// containers stopped"), for a list's footer or a detail's state; it is never pressed.
 #[derive(Component, Default)]
 #[component(name = "StatusLine", role = "StaticText", label = "text")]
 pub struct StatusLineProps {
     /// The sentence: "Synced 2 minutes ago".
     #[component(required, positional)]
     pub text: String,
-    /// What state it says: `active` (running, connected, healthy) unless said, `warning`
-    /// (needs attention soon), `error` (failed, or offline unexpectedly), `idle` (present but
+    /// What state it says: `active` (running, connected, healthy) unless said, `warning` (needs
+    /// attention soon), `error` (failed or offline unexpectedly), `idle` (present but
     /// inactive).
     pub status: Option<RowStatus<'static>>,
     /// A person whose presence it says, in their colour, instead of a status.
     pub who: Option<Person>,
 }
 
-/// What a status line shows: its sentence, and the state it says it in.
 fn said(props: StatusLineProps) -> (OwnedStatus, String) {
     let StatusLineProps { text, status, who } = props;
     let status = match (who, status) {
@@ -60,9 +58,8 @@ impl Described for StatusLine {
     }
 }
 
-/// The head of a detail view: an avatar or a glyph, the thing's name as a title and one
-/// caption line under it, "Ada Lovelace" over "ada@example.org", a password's site over its
-/// address.
+/// The head of a detail view: an avatar or glyph, the thing's name and one caption line under
+/// it ("Ada Lovelace" over "ada@example.org").
 #[derive(Component, Default)]
 #[component(name = "ObjectHeader", role = "Group", label = "title")]
 pub struct ObjectHeaderProps {
@@ -82,7 +79,6 @@ pub struct ObjectHeaderProps {
 impl Described for ObjectHeader {
     type Props = ObjectHeaderProps;
 
-    /// What the header is about: its name, the line under it, and the face or glyph before it.
     fn set_props(&mut self, props: ObjectHeaderProps) -> bool {
         let ObjectHeaderProps {
             title,

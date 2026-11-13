@@ -720,3 +720,45 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     engine.close().await;
     b_endpoint.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestHost::new());
+    let endpoint = localhost_endpoint(&a.0).await;
+    let plane = ActionPlane::new(a.0.clone(), dispatcher.clone());
+    plane.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
+    let serving = Router::builder(endpoint.clone())
+        .accept(ACTIONS_ALPN, plane.clone())
+        .spawn();
+
+    // B signs as its device but asks from an endpoint keyed by another key,
+    // as a Tilo relay does.
+    let apart = SigningKey::from_bytes(&[30; 32]);
+    let b_endpoint = localhost_endpoint(&apart).await;
+    let b_plane = ActionPlane::new(b.0.clone(), Arc::new(TestHost::new()));
+    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+    assert_eq!(
+        queried(&remote, &caller).await,
+        Err(ActionHostError::NotPermitted),
+        "an endpoint nobody named asks as the device it is keyed by"
+    );
+    assert!(dispatcher.callers().is_empty());
+
+    plane.reach_device_at(b.1.device_public_key, apart.verifying_key().to_bytes());
+    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    assert_eq!(
+        dispatcher.callers()[0].device_public_key(),
+        Some(&b.1.device_public_key),
+        "answered as the device it named"
+    );
+
+    serving.shutdown().await.unwrap();
+    endpoint.close().await;
+    b_endpoint.close().await;
+}

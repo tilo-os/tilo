@@ -1,5 +1,5 @@
-//! The table's own tests: its rows, cells, selection and scrolling,
-//! driven through the widget's event and paint paths.
+//! The table's own tests: its rows, cells, selection and scrolling, driven through the widget's event
+//! and paint paths.
 
 use super::*;
 use crate::testing::Dispatch;
@@ -325,7 +325,6 @@ fn columns_split_flex_and_resize_from_the_press_origin() {
         );
     }
 
-    /// One extra stroke over the unfocused render, asserted on the production `draw` path.
     fn focused_table_paints_a_focus_ring() {
         let mut unfocused = DataTable::<R>::new(sample_cols()).selectable(true);
         unfocused.set_rows(rows4());
@@ -661,7 +660,6 @@ fn sorting_is_owned_by_the_model_and_reapplied_on_rows() {
 
     fn toggle_sort_requires_prior_sort_by_with() {
         let mut t = DataTable::<R>::new(sample_cols());
-        // No comparator installed yet → toggle returns None.
         assert!(t.toggle_sort(0).is_none());
         t.set_rows(vec![R { name: "b".into() }, R { name: "a".into() }]);
         t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
@@ -1017,7 +1015,6 @@ fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
             assert_eq!(row.role, Role::Row);
             assert_eq!(row.pos_in_set, Some(i + 1));
             assert_eq!(row.set_size, Some(4));
-            // Every row exposes one cell per column, named by the column header.
             assert_eq!(row.children.len(), 2, "two cells per row (two columns)");
             assert_eq!(row.children[0].role, Role::Cell);
             assert_eq!(row.children[0].name.as_deref(), Some("Name"));
@@ -1224,8 +1221,6 @@ fn pointer_and_keyboard_select_rows_unless_cells_or_mode_consume() {
                 u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
             });
         table.set_rows(rows4());
-        // The first pass learns flex column geometry; the second positions
-        // retained cell controls against those exact column rectangles.
         let _ = lay_out(&mut table);
         let (tree, node) = lay_out(&mut table);
         dispatch(
@@ -1507,8 +1502,6 @@ fn scrolling_shares_variable_row_geometry_with_hit_testing() {
     wheel_scrolls_in_internal_mode();
 }
 
-/// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px
-/// body over 2400 px of rows → bar is live). Bar centre x is 294.
 fn scrolling_table() -> (DataTable<R>, TaffyTree<()>, NodeId) {
     let mut t = DataTable::<R>::new(sample_cols())
         .selectable(true)
@@ -1525,10 +1518,6 @@ fn scrolling_table() -> (DataTable<R>, TaffyTree<()>, NodeId) {
     (t, tree, node)
 }
 
-/// The selection lift, the stripe and the cells share one edge: the
-/// first column's text (a cell pads it by the bleed) starts on the
-/// table's content edge, the band and its lift stand the bleed past it,
-/// and the live scroll bar keeps its own gutter at the trailing edge.
 #[test]
 fn rows_share_one_edge_and_the_scroll_bar_keeps_its_own_column() {
     let (mut t, _tree, _node) = scrolling_table();
@@ -1567,7 +1556,6 @@ fn bar_x(t: &DataTable<R>) -> f64 {
 #[test]
 fn scrollbar_visibility_thumb_drag_and_track_paging() {
     fn scrollbar_hidden_without_viewport() {
-        // No `set_viewport` → defers to an outer Scrollable, no built-in bar.
         let mut t = DataTable::<R>::new(sample_cols());
         t.set_rows(
             (0..100)
@@ -1692,7 +1680,6 @@ fn scrollbar_visibility_thumb_drag_and_track_paging() {
         );
         dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
         assert!(!t.vbar.is_dragging(), "track click is not a drag");
-        // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
         let expected =
             5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::scrollbar::PAGE_FRACTION);
         assert!(
@@ -1851,8 +1838,6 @@ fn typed_cells_align_numbers_dim_absent_values_and_measure_auto_columns() {
         theme.clone(),
     );
     let _ = harness;
-    // Reach the measure pass directly: the Auto column is as wide as its
-    // longest visible cell plus padding.
     let mut table = DataTable::new(vec![
         ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|f: &File| f.name.to_owned()),
     ]);
@@ -1949,8 +1934,6 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
         "a row the table opens a menu for announces that menu"
     );
 
-    // The activation an AT sends lands on that row, through the same host
-    // callback a double-click takes.
     assert!(Widget::perform_action(
         &mut table,
         &crate::a11y::Action::Activate,
@@ -1961,7 +1944,6 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
     assert_eq!(crate::testing::answer_controls(&mut table), 1);
     assert_eq!(&*opened.borrow(), &[0], "the row's own record is opened");
 
-    // Its menu verb opens the menu on the row the AT aimed at.
     assert!(Widget::perform_action(
         &mut table,
         &crate::a11y::Action::ShowContextMenu,

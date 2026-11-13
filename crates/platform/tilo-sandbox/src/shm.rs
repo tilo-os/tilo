@@ -1,16 +1,11 @@
-//! Anonymous memory files: how bulk data crosses a process boundary
-//! without copies through a socket.
-//!
-//! The writer creates a memory file, fills it and drops every writable
-//! mapping. On Linux it then seals the memfd against writes and resizing,
-//! and the reader verifies the seals before mapping it read-only, so a
-//! sealed mapping cannot change under the reader. macOS has no sealing:
-//! there [`map_sealed`] copies the bytes once into private memory, which
-//! gives the reader the same guarantee at the price of one copy.
-//!
-//! macOS also rounds a shared memory object's size up to the page size, so
-//! a file's length is only an upper bound. Every reader here takes the
-//! meaningful length from its caller.
+//! Anonymous memory files: how bulk data crosses a process boundary without copies through a
+//! socket. The writer creates a memory file, fills it and drops every writable mapping. On Linux it
+//! then seals the memfd against writes and resizing, and the reader verifies the seals before
+//! mapping it read-only, so a sealed mapping cannot change under the reader. macOS has no sealing:
+//! there [`map_sealed`] copies the bytes once into private memory, which gives the reader the same
+//! guarantee at the price of one copy. macOS also rounds a shared memory object's size up to the
+//! page size, so a file's length is only an upper bound. Every reader here takes the meaningful
+//! length from its caller.
 
 use std::fs::File;
 use std::io;
@@ -19,16 +14,13 @@ use std::os::fd::{AsFd, OwnedFd};
 
 use memmap2::{Mmap, MmapMut, MmapOptions};
 
-/// Create an empty anonymous memory file of at least `len` bytes. `name`
-/// is a diagnostic label.
-///
-/// A file can be sized only once on macOS: create it at its final size.
+/// Create an empty anonymous memory file of at least `len` bytes. `name` is a diagnostic label. A
+/// file can be sized only once on macOS: create it at its final size.
 pub fn create(name: &str, len: u64) -> io::Result<File> {
     sys::create(name, len)
 }
 
-/// A read-only memory file holding a copy of `bytes`, sealed where the
-/// platform can seal.
+/// A read-only memory file holding a copy of `bytes`, sealed where the platform can seal.
 pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     let len = bytes.len() as u64;
     let file = create(name, len)?;
@@ -43,8 +35,7 @@ pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     Ok(file.into())
 }
 
-/// Bytes read from a memory file or regular file, truncated to the length
-/// the caller vouched for.
+/// Bytes read from a memory file or regular file, truncated to the length the caller vouched for.
 pub struct Bytes {
     backing: Backing,
     len: usize,
@@ -73,9 +64,8 @@ impl AsRef<[u8]> for Bytes {
     }
 }
 
-/// The first `len` bytes of a descriptor received from a less trusted
-/// process, which cannot change afterwards: a verified sealed mapping on
-/// Linux, a private copy where memory cannot be sealed.
+/// The first `len` bytes of a descriptor received from a less trusted process, which cannot change
+/// afterwards: a verified sealed mapping on Linux, a private copy where memory cannot be sealed.
 pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
     let file = File::from(fd.as_fd().try_clone_to_owned()?);
     let actual = file.metadata()?.len();
@@ -93,19 +83,17 @@ pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
     }
     let len = usize::try_from(len).map_err(io::Error::other)?;
     if sys::verify_sealed(&file)? {
-        // SAFETY: the file is sealed against writes and shrinking, so the
-        // mapping can neither change nor be truncated under us. Populated up
-        // front: the caller reads every byte, and one batched fault is far
-        // cheaper than one per page.
+        // SAFETY: the file is sealed against writes and shrinking, so the mapping can neither
+        // change nor be truncated under us. Populated up front: the caller reads every byte, and
+        // one batched fault is far cheaper than one per page.
         let map = unsafe { MmapOptions::new().populate().map(&file) }?;
         return Ok(Bytes {
             backing: Backing::Mapped(map),
             len,
         });
     }
-    // SAFETY: the sender may still write this memory; the mapping is only
-    // read once, to copy the bytes out, and nothing is inferred from them
-    // until the copy is complete.
+    // SAFETY: the sender may still write this memory; the mapping is only read once, to copy the
+    // bytes out, and nothing is inferred from them until the copy is complete.
     let map = unsafe { MmapOptions::new().len(len).map(&file) }?;
     Ok(Bytes {
         backing: Backing::Copied(map.to_vec()),
@@ -113,10 +101,9 @@ pub fn map_sealed(fd: &OwnedFd, len: u64) -> io::Result<Bytes> {
     })
 }
 
-/// Map a file or memory file read-only, limited to `len` bytes when given
-/// (a memory file's size can exceed its content). A concurrent truncation
-/// by the sender can only fault this process, so use it where this process
-/// is the confined one.
+/// Map a file or memory file read-only, limited to `len` bytes when given (a memory file's size can
+/// exceed its content). A concurrent truncation by the sender can only fault this process, so use
+/// it where this process is the confined one.
 pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
     let actual = file.metadata()?.len();
     let len = len.unwrap_or(actual);
@@ -133,8 +120,8 @@ pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
         ));
     }
     let len = usize::try_from(len).map_err(io::Error::other)?;
-    // SAFETY: see the function documentation; the only party that can be
-    // hurt by a changing file is this (confined) process.
+    // SAFETY: see the function documentation; the only party that can be hurt by a changing file is
+    // this (confined) process.
     let map = unsafe { Mmap::map(file) }?;
     Ok(Bytes {
         backing: Backing::Mapped(map),
@@ -142,26 +129,23 @@ pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Bytes> {
     })
 }
 
-/// Map a memory file this process shares with another read-only, for
-/// memory the other side writes on request (a render target).
+/// Map a memory file this process shares with another read-only, for memory the other side writes
+/// on request (a render target).
 pub fn map_shared(file: &File) -> io::Result<Mmap> {
-    // SAFETY: the peer writes this memory only while serving a request the
-    // caller made and waits for; callers treat the bytes as plain data.
+    // SAFETY: the peer writes this memory only while serving a request the caller made and waits
+    // for; callers treat the bytes as plain data.
     unsafe { Mmap::map(file) }
 }
 
-/// Map a memory file writable.
 pub fn map_writable(file: &File) -> io::Result<MmapMut> {
-    // SAFETY: the file is a memory file shared only with a peer that reads
-    // it after this side reports the write complete. Populated up front,
-    // since the writer fills every byte.
+    // SAFETY: the file is a memory file shared only with a peer that reads it after this side
+    // reports the write complete. Populated up front, since the writer fills every byte.
     unsafe { MmapOptions::new().populate().map_mut(file) }
 }
 
-/// Reopen a regular file read-only, so a descriptor that also allows
-/// writing is not handed to a less trusted process. `None` when the
-/// platform cannot name the file (it was deleted, or is not a regular
-/// file); callers then copy the bytes into a memory file.
+/// Reopen a regular file read-only, so a descriptor that also allows writing is not handed to a
+/// less trusted process. `None` when the platform cannot name the file (it was deleted, or is not a
+/// regular file); callers then copy the bytes into a memory file.
 #[must_use]
 pub fn reopen_read_only(file: &File) -> Option<File> {
     sys::reopen_read_only(file)
@@ -227,12 +211,12 @@ mod sys {
 
     /// `PSHMNAMLEN`: the longest name `shm_open` accepts.
     const MAX_NAME: usize = 31;
-    /// Every object this crate creates is named under this prefix; the
-    /// Seatbelt profile lets a confined helper create only these.
+    /// Every object this crate creates is named under this prefix; the Seatbelt profile lets a
+    /// confined helper create only these.
     pub const NAME_PREFIX: &str = "/tilo-";
 
-    /// `name` is not used: shared memory names are global, so each object
-    /// gets a unique one and is unlinked at once.
+    /// `name` is not used: shared memory names are global, so each object gets a unique one and is
+    /// unlinked at once.
     pub fn create(_name: &str, len: u64) -> io::Result<File> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let len = libc::off_t::try_from(len).map_err(io::Error::other)?;
@@ -258,8 +242,8 @@ mod sys {
             }
             // SAFETY: shm_open returned a fresh descriptor we now own.
             let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-            // The object stays alive through the descriptor only.
-            // SAFETY: `cpath` is a valid NUL-terminated string.
+            // The object stays alive through the descriptor only. SAFETY: `cpath` is a valid
+            // NUL-terminated string.
             unsafe { libc::shm_unlink(cpath.as_ptr()) };
             set_cloexec(&fd)?;
             // SAFETY: ftruncate on a descriptor we own.

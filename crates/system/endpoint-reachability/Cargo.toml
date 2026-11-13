@@ -13,15 +13,14 @@ name = "tilo_endpoint_reachability"
 path = "src/lib.rs"
 
 [features]
-# `test_support::local_relay`: a loopback relay for tests that need a home relay.
-test-support = ["dep:iroh-relay"]
+# `holders()`, which a test reads to say why the relays did not rest.
+test-support = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The person's relay setting, which every endpoint of a device reads through `relays`.
 settings-store = { version = "0.1.0", path = "../settings-store" }
 iroh.workspace = true
-iroh-relay = { version = "1.0.3", features = ["server"], optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 # The local network's announcements: said and heard on every network the device is on (src/lan.rs).
 swarm-discovery = "0.6.5"
@@ -37,8 +36,8 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The settings document a test scopes its thread to.
 serde_json.workspace = true
-iroh-relay = { version = "1.0.3", features = ["server"] }
-tilo-test-env = { path = "../../dev/test-env" }
+# The tests' home relay is a loopback one no test shares.
+tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]

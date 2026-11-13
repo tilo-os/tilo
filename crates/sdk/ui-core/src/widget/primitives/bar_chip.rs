@@ -1,19 +1,5 @@
 //! `BarChip`: one bar control that holds a face stack, a label and a press
-//! (`docs/design-language.md`, "Primitives"; `docs/architecture/ui-inventory.md`,
-//! "Bar chip").
-//!
-//! The bar's people cluster used to compose a pill per person, per invite and
-//! per sharing state, each drawing its own ground and its own words. A bar
-//! chip is that whole shape as one control: the faces of everyone it stands
-//! for, a label in the bar's label role, an optional leading glyph and an
-//! optional trailing chevron, on [`BarControlFace`] — plain at rest, half a
-//! lift under the pointer, a whole lift while its panel is open.
-//!
-//! It paints no ground of its own: the bar's ground is what it stands on
-//! (`BarControlFace::fill`), so the chip never becomes a second bar inside
-//! the bar. A chip that carries something the person should notice (an
-//! unread count, a live share) wears a [`Tone`] as a faint wash, the same
-//! wash a chip in a list wears.
+//! (`docs/design-language.md`, "Primitives"; `docs/architecture/ui-inventory.md`, "Bar chip").
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
@@ -51,13 +37,10 @@ pub struct BarChipFace<'a> {
 /// Where a [`BarChipFace`] painted its parts.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BarChipLayout {
-    /// The whole chip.
     pub chip: Rect,
-    /// The face stack's rect (zero when it holds no faces).
     pub faces: Rect,
     /// The overflow badge's disc (zero when nobody stands past the faces).
     pub badge: Rect,
-    /// The label's rect (zero when it has none).
     pub label: Rect,
 }
 
@@ -103,7 +86,6 @@ impl<'a> BarChipFace<'a> {
         self
     }
 
-    /// How many people stand past the faces it shows.
     #[must_use]
     pub fn overflow(mut self, overflow: usize) -> Self {
         self.overflow = overflow;
@@ -119,22 +101,18 @@ impl<'a> BarChipFace<'a> {
         self
     }
 
-    /// A trailing glyph: the chevron of a chip that opens a panel.
     #[must_use]
     pub fn trailing(mut self, icon: Icon) -> Self {
         self.trailing = Some(icon);
         self
     }
 
-    /// A status the chip means, washed into its body: a share that is live,
-    /// a state that wants attention.
     #[must_use]
     pub fn tone(mut self, tone: Color) -> Self {
         self.tone = Some(tone);
         self
     }
 
-    /// Its panel is open: it holds the whole lift.
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
@@ -160,20 +138,17 @@ impl<'a> BarChipFace<'a> {
         self
     }
 
-    /// The most the label may grow to before it elides.
     #[must_use]
     pub fn label_width(mut self, width: f64) -> Self {
         self.label_width = Some(width.max(0.0));
         self
     }
 
-    /// The accessible name.
     #[must_use]
     pub fn name(&self) -> &str {
         self.name
     }
 
-    /// The chip's height: a bar control's.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         BarControlFace::height(theme)
@@ -203,8 +178,6 @@ impl<'a> BarChipFace<'a> {
         let h = self.height_of(theme);
         let gap = Self::gap(theme);
         let icon = Self::icon_size(theme);
-        // A chip that is one glyph alone is a square, as any bar control of
-        // an icon is: the seat it takes, not its glyph and its pad.
         if self.label.is_empty()
             && self.faces.is_empty()
             && self.overflow == 0
@@ -236,6 +209,68 @@ impl<'a> BarChipFace<'a> {
         FaceStack::in_face(self.height_of(theme)).width(self.faces.len() + self.overflow)
     }
 
+    /// The chip as a page shows it ([`crate::composition::Face`]), on `ground`, in the inks and
+    /// geometry [`Self::paint`] paints it with; `None` for a chip of faces or of more than one
+    /// glyph, which shows as its paint.
+    pub(crate) fn composed(
+        &self,
+        theme: &Theme,
+        ground: Color,
+    ) -> Option<crate::composition::Face> {
+        use crate::composition::{Face, TextLook, rgba8};
+        if !self.faces.is_empty() || self.overflow > 0 || self.icons.len() > 1 {
+            return None;
+        }
+        let colors = &theme.tokens.colors;
+        let control = BarControlFace::new(self.name)
+            .open(self.open)
+            .pressed(self.pressed)
+            .hovered(self.hovered)
+            .focused(self.focused);
+        let lift = control.fill(theme, ground);
+        let fill = match (lift, self.tone) {
+            (Some(lift), Some(tone)) => Some(over(tone.multiply_alpha(0.15), lift)),
+            (None, Some(tone)) => Some(tone.multiply_alpha(0.15)),
+            (lift, None) => lift,
+        };
+        let lit = self.open || self.hovered || self.pressed;
+        let ink = if lit {
+            colors.ink_on(ground, colors.text_primary, 4.5)
+        } else {
+            colors.ink_on(ground, colors.text_dim, 3.0)
+        };
+        let label_ink = colors.ink_on(ground, colors.text_primary, 4.5);
+        let icon = Self::icon_size(theme);
+        let leading = match self.icons.first() {
+            Some(i) => Some(i.glyph(icon, ink, false)?),
+            None => None,
+        };
+        let trailing = match self.trailing {
+            Some(i) => Some(i.glyph(icon, ink, false)?),
+            None => None,
+        };
+        let alone = self.label.is_empty() && self.trailing.is_none();
+        Some(Face {
+            icon: leading,
+            label: (!self.label.is_empty()).then(|| {
+                TextLook::new(
+                    self.label.to_owned(),
+                    &Self::label_style(theme),
+                    Some(label_ink),
+                )
+                .with_max_lines(Some(1))
+            }),
+            detail: None,
+            trailing,
+            fill: fill.map(rgba8),
+            edge: None,
+            radius: f64::from(theme.tokens.radii.control),
+            pad: if alone { 0.0 } else { Self::pad(theme) },
+            gap: Self::gap(theme),
+            spread: false,
+        })
+    }
+
     /// Paint the chip in `rect` (its width from [`Self::width`], its height
     /// [`Self::height`]) standing on `ground`.
     #[must_use]
@@ -250,7 +285,6 @@ impl<'a> BarChipFace<'a> {
             .pressed(self.pressed)
             .hovered(self.hovered)
             .focused(self.focused);
-        // The control's own lift, painted by the bar control itself.
         if let Some(fill) = control.fill(theme, ground) {
             let radius = f64::from(theme.tokens.radii.control).min(rect.height() / 2.0);
             ctx.scene.fill(
@@ -287,8 +321,6 @@ impl<'a> BarChipFace<'a> {
             chip: rect,
             ..BarChipLayout::default()
         };
-        // A chip that is one glyph alone centres it in its square seat, as
-        // any bar control of an icon does.
         let alone = self.label.is_empty()
             && self.faces.is_empty()
             && self.overflow == 0
@@ -397,6 +429,18 @@ impl<'a> BarChipFace<'a> {
     }
 }
 
+/// `top` laid over an opaque `under`, as the canvas paints a wash on a lift.
+fn over(top: Color, under: Color) -> Color {
+    let [r, g, b, a] = top.components;
+    let [ur, ug, ub, ua] = under.components;
+    Color::new([
+        r * a + ur * (1.0 - a),
+        g * a + ug * (1.0 - a),
+        b * a + ub * (1.0 - a),
+        a + ua * (1.0 - a),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,7 +469,6 @@ mod tests {
         let labelled = bare.label("Editing");
         assert!(labelled.width(&mut text, &theme) > bare.width(&mut text, &theme));
         assert!((BarChipFace::height(&theme) - 28.0).abs() < 1e-6);
-        // No faces and no label: a square, as any bar control of an icon is.
         let alone = BarChipFace::new("Watch", &[]);
         assert!((alone.width(&mut text, &theme) - 28.0).abs() < 1e-6);
     }
@@ -448,7 +491,6 @@ mod tests {
             let _ = chip.paint(&mut ctx, rect, ground);
             scene.encoding().draw_tags.len()
         };
-        // At rest the chip paints only its faces' rings and initials.
         let rest = paint(BarChipFace::new("Who is here", &people));
         let hovered = paint(BarChipFace::new("Who is here", &people).hovered(true));
         assert!(hovered > rest, "a hover adds the control's lift");

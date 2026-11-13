@@ -26,9 +26,7 @@ use crate::widget::Widget;
 struct Transcript {
     region: ScrollRegion,
     rect: Rect,
-    /// Something the host paints changed besides the offset.
     dirty: bool,
-    /// The offset moved since the frame on screen.
     scrolled: bool,
 }
 

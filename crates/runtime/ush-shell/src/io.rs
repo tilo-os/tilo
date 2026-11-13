@@ -14,7 +14,6 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-/// The host's own standard streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Std {
     In,
@@ -29,7 +28,6 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A command's input: a shared reader.
 #[derive(Clone)]
 pub struct Input {
     reader: Arc<Mutex<Reader>>,
@@ -44,7 +42,6 @@ impl Input {
         }
     }
 
-    /// The host's own standard input, read through `reader`.
     pub fn host(reader: impl Read + Send + 'static) -> Self {
         Self {
             reader: Arc::new(Mutex::new(Box::new(reader))),
@@ -52,7 +49,6 @@ impl Input {
         }
     }
 
-    /// Nothing: end of file at once.
     pub fn null() -> Self {
         Self::new(io::empty())
     }
@@ -61,12 +57,10 @@ impl Input {
         Self::new(io::Cursor::new(bytes.into()))
     }
 
-    /// Which of the host's own streams this is, if it is one.
     pub const fn host_stream(&self) -> Option<Std> {
         self.host
     }
 
-    /// Read everything that is left.
     pub fn read_all(&self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         lock(&self.reader).read_to_end(&mut out)?;
@@ -97,7 +91,6 @@ impl Input {
         }
     }
 
-    /// Read up to `buf.len()` bytes.
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         lock(&self.reader).read(buf)
     }
@@ -111,7 +104,6 @@ impl std::fmt::Debug for Input {
     }
 }
 
-/// A command's output: a shared writer.
 #[derive(Clone)]
 pub struct Output {
     writer: Arc<Mutex<Writer>>,
@@ -126,7 +118,6 @@ impl Output {
         }
     }
 
-    /// One of the host's own output streams, written through `writer`.
     pub fn host(stream: Std, writer: impl Write + Send + 'static) -> Self {
         Self {
             writer: Arc::new(Mutex::new(Box::new(writer))),
@@ -134,12 +125,10 @@ impl Output {
         }
     }
 
-    /// Discards everything.
     pub fn null() -> Self {
         Self::new(io::sink())
     }
 
-    /// A buffer in memory, and the handle that reads it back.
     pub fn buffer() -> (Self, Captured) {
         let shared = Captured(Arc::new(Mutex::new(Vec::new())));
         (Self::new(shared.clone()), shared)
@@ -159,7 +148,6 @@ impl Output {
         self.write_all(text.as_bytes())
     }
 
-    /// Whether both handles write to the same place.
     pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.writer, &other.writer)
     }
@@ -173,7 +161,6 @@ impl std::fmt::Debug for Output {
     }
 }
 
-/// What an [`Output::buffer`] collected.
 #[derive(Clone, Default)]
 pub struct Captured(Arc<Mutex<Vec<u8>>>);
 
@@ -182,7 +169,6 @@ impl Captured {
         std::mem::take(&mut *lock(&self.0))
     }
 
-    /// What it collected so far, leaving it there.
     pub fn peek(&self) -> Vec<u8> {
         lock(&self.0).clone()
     }
@@ -199,7 +185,6 @@ impl Write for Captured {
     }
 }
 
-/// The three standard streams of one command.
 #[derive(Clone, Debug)]
 pub struct Stdio {
     pub stdin: Input,
@@ -208,7 +193,6 @@ pub struct Stdio {
 }
 
 impl Stdio {
-    /// No input, and both outputs discarded.
     pub fn null() -> Self {
         Self {
             stdin: Input::null(),
@@ -244,10 +228,8 @@ impl Pipe {
     }
 }
 
-/// The reading end of a [`pipe`].
 pub struct PipeReader(Arc<Pipe>);
 
-/// The writing end of a [`pipe`].
 pub struct PipeWriter(Arc<Pipe>);
 
 /// A pipe in memory between two commands: what one writes, the other reads,

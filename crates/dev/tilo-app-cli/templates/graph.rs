@@ -1,6 +1,5 @@
 use ui::prelude::*;
 
-/// One created project.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Project {
     pub name: String,
@@ -17,9 +16,8 @@ pub struct Projects {
 
 /// The draft is edited at its path (`Projects::paths().draft`); creating a
 /// project from it is a verb.
-#[resource(kind = "generated.graph-project", label = "Project")]
+#[resource(kind = "generated.graph-project")]
 impl Projects {
-    /// Create a project from the draft.
     #[action]
     pub fn create(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let name = self.draft.trim().to_owned();

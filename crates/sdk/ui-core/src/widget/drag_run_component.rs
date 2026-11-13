@@ -1,10 +1,4 @@
 //! [`DragRun`] as a described component: a run of items a person reorders by dragging one.
-//!
-//! The run changes nothing itself. A drag that lands in a new place reports one event — the
-//! item that moved and the item it lands before, `None` for the end of the run — and the
-//! owner turns it into one action on its model (`items.move(item, before: next)`), so a
-//! reorder is attributed, permitted and undone like every other change. An item pressed and
-//! let go without moving reports `activate`.
 
 use crate::component::{
     Accepts, Component, Described, Event, ResourceId, SlotType, SlotViews, Source,
@@ -12,8 +6,8 @@ use crate::component::{
 
 use super::drag_run::{DragDrop, DragRun, RunAxis, RunItem};
 
-/// A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by dragging
-/// one. Each item is one `ui.DragItem`.
+/// A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by
+/// dragging one.
 #[derive(Component, Default)]
 #[component(name = "DragRun", role = "Group", label = "name")]
 pub struct DragRunProps {
@@ -21,17 +15,16 @@ pub struct DragRunProps {
     pub name: Option<String>,
     /// Whether the items lead to trailing (the default) or run top to bottom.
     pub axis: Option<RunAxis>,
-    /// Where the run's packed items sit along it: its leading edge (the default), its centre,
-    /// its trailing edge, or spread between its ends. A run whose items fall in groups packs
-    /// each group at its own edge; this places a run of one group, such as a dock.
+    /// Where the run's packed items sit along it: its leading edge (the default), its
+    /// centre, its trailing edge, or spread between its ends.
     pub distribute: Option<crate::widget::arrange::Distribute>,
     /// Where the items pack across the run: centred (the default).
     pub align: Option<crate::widget::arrange::Align>,
     /// The items, in order.
     #[component(slot(default))]
     pub items: DragItems,
-    /// What stands beside the items at the run's trailing end and is never moved: a taskbar's
-    /// time and device status.
+    /// What stands beside the items at the run's trailing end and is never moved: a
+    /// taskbar's time and device status.
     #[component(slot)]
     pub trailing: Vec<crate::widget::Element>,
     /// An item was let go in a new place: carries the resource it stands for and its place
@@ -47,8 +40,8 @@ pub struct DragItemProps {
     /// The item's stable key: what a drop names as moved, and as the item it lands before.
     #[component(key)]
     pub key: String,
-    /// The resource the item stands for: what a drop carries, and what a drag
-    /// out of the run reports.
+    /// The resource the item stands for: what a drop carries, and what a drag out of the
+    /// run reports.
     #[component(positional)]
     pub item: Option<ResourceId>,
     /// What the item is called, for its ghost and for assistive technology.
@@ -170,10 +163,8 @@ impl Described for DragRun {
 
     /// Take changed props in place: the items keep their keys and their order, so each item
     /// changes what it says and what it shows where it stands, and the run keeps what those
-    /// views hold — a menu a person opened under a part of the bar stays open while the clock
-    /// ticks or the desk switches the workspace the bar names. The run is built again when it
-    /// is another run, when an item came, went or moved, and when it carries its own trailing
-    /// views, which stand beside the items and are not an item's to change.
+    /// views hold — a menu a person opened under a part of the bar stays open while the
+    /// clock ticks or the desk switches the workspace the bar names.
     fn set_props(&mut self, props: DragRunProps) -> bool {
         let DragRunProps {
             name,

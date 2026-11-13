@@ -1,12 +1,9 @@
-//! A Rust app's views: named functions of a resource that return described components, exactly
-//! as a tilolang view returns them (docs/designs/app-language/one-app-model.md §2).
+//! A Rust app's views: named functions of a resource that return described components,
+//! exactly as a tilolang view returns them.
 //!
-//! A view is a function from a resource to a tree of the toolkit's described components. The app
-//! sends that tree the way a tilolang app sends its views, over the component-patch stream
-//! ([`tilo_render_protocol::patch`]), and the shell draws it in whatever place shows the
-//! resource, through the same UI host, by resource and view name. Nothing in the app knows about
-//! windows, places or themes.
-//!
+//! The app sends that tree the way a tilolang app sends its views, over the
+//! component-patch stream, and the shell draws it in whatever place shows the
+//! resource. Nothing in the app knows about windows, places or themes.
 //! ```
 //! # use tilo_view::{ui, ViewCx};
 //! # use tilo_view::node::{Node, ResourceRef, Principal};
@@ -16,18 +13,12 @@
 //! }
 //! ```
 //!
-//! The pieces:
-//!
-//! - [`node`]: the tree a view builds, and the check each prop passes against the catalogue
-//!   (`crates/dev/ui-graph/components.json`), the same one tilolang's `ui.X` passes.
-//! - [`ui`]: the typed builders, one per described component, generated from the catalogue.
-//! - [`cx`]: what the view is handed besides the resource: its events and its own state.
-//! - [`registry`]: the views an app declares, by resource type and name, so the shell finds one
-//!   by the name a place names, and the type's default view.
-//!
-//! What a view looks like is therefore the platform's: it is built from the same described
-//! components a tilolang view is, so a theme, a motion, an accessibility role and the keyboard
-//! reach it through the same code. A Rust app is not a second-class app, and not a better one.
+//! The pieces are [`node`] (the tree a view builds, and the catalogue check each
+//! prop passes), [`ui`] (the generated builders), [`cx`] (what the view is handed
+//! besides the resource) and [`registry`] (the views an app declares, by resource
+//! type and name). What a view looks like is the platform's: it is built from the
+//! same described components a tilolang view is, so a theme, a motion, an
+//! accessibility role and the keyboard reach it through the same code.
 
 pub mod cx;
 pub mod node;
@@ -46,8 +37,6 @@ pub use cx::{Arg, Effect, ViewCx};
 pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
 pub use registry::{View, ViewRegistry, ViewResource};
 
-/// The component-patch stream a view's tree travels on, as the runtime and the UI host read it.
 pub use tilo_render_protocol::patch;
 
-/// The registry a `#[view]` submits itself to, and the JSON a view's resource is read from.
 pub use {inventory, serde, serde_json};

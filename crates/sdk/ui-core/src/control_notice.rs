@@ -1,13 +1,8 @@
-//! Why something the person just did did not run, said where they did it.
-//!
-//! A control the person pressed whose action the door refused (they may not
-//! do it, the thing changed meanwhile, a remote failed) never fails with only
-//! a log line, and never opens search over the window: the reason stands in
-//! a small floating chip at that control, marked in the danger colour,
-//! announced to assistive technology, and gone with the person's next press
-//! or key. Something refused with no control on screen (an invocation an
-//! agent, a host or a remote made for the person) is said in the window's
-//! bar instead ([`crate::window_toolbar::notify`]).
+//! Why something the person just did did not run, said where they did it. A control the person pressed
+//! whose action the door refused (they may not do it, the thing changed meanwhile, a remote failed)
+//! never fails with only a log line, and never opens search over the window: the reason is in a small
+//! floating chip at that control, marked in the danger colour, announced to assistive technology, and
+//! gone with the person's next press or key.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -16,8 +11,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::tooltip::TooltipSide;
 
-/// Why an invocation from a control did not run, and where that control
-/// stands.
+/// Why an invocation from a control did not run, and where that control is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlNotice {
     /// The reason, as the person reads it.
@@ -58,10 +52,9 @@ pub fn say_in_window(reason: &str) {
     )));
 }
 
-/// The control the person acted on last, for anchoring what is said about
-/// it: under the press `pressed_at` (the innermost node there that takes
-/// focus, else the innermost node), else the node holding keyboard focus.
-/// `rect_of` reads a node's rect and whether its widget takes focus.
+/// The control the person acted on last, for anchoring what is said about it: under the press
+/// `pressed_at` (the innermost node there that takes focus, else the innermost node), else the node
+/// holding keyboard focus.
 pub(crate) fn acting_control(
     taffy: &taffy::TaffyTree<()>,
     root: Option<taffy::NodeId>,

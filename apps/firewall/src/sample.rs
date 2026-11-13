@@ -1,9 +1,4 @@
-//! A realistic offline ruleset the screenshot scenarios and tests show.
-//! The live app never uses this — it reads the
-
-//! real firewall via `firewall-cmd` (see [`crate::backend::import`]) and
-//! shows an honest unavailable state when firewalld can't be read. Models a
-//! typical laptop/workstation firewalld configuration with `public` active.
+//! The sample ruleset the captures and tests show; a live window reads the host instead.
 
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind};
 
@@ -26,13 +21,10 @@ fn port(p: &str, proto: Proto) -> Matcher {
 pub fn sample_config() -> FirewallConfig {
     let mut zones = Vec::new();
 
-    // drop — hostile networks. No services, no interfaces.
     zones.push(Zone::new(ZoneKind::Drop, Target::Drop));
 
-    // block — reject everything inbound.
     zones.push(Zone::new(ZoneKind::Block, Target::Reject));
 
-    // public — the active zone. Bound to the laptop's NICs.
     let mut public = Zone::new(ZoneKind::Public, Target::Default);
     public.interfaces = vec!["wlan0".into(), "eth0".into()];
     public.services = vec!["ssh".into(), "mdns".into(), "dhcpv6-client".into()];
@@ -47,7 +39,6 @@ pub fn sample_config() -> FirewallConfig {
     ];
     zones.push(public);
 
-    // external — router with masquerading.
     let mut external = Zone::new(ZoneKind::External, Target::Default);
     external.interfaces = vec!["ppp0".into()];
     external.services = vec!["ssh".into()];
@@ -59,13 +50,11 @@ pub fn sample_config() -> FirewallConfig {
     ];
     zones.push(external);
 
-    // dmz — limited, public-facing.
     let mut dmz = Zone::new(ZoneKind::Dmz, Target::Default);
     dmz.services = vec!["ssh".into()];
     dmz.rules = vec![rule(svc("https"), Action::Allow, "")];
     zones.push(dmz);
 
-    // work — mostly-trusted.
     let mut work = Zone::new(ZoneKind::Work, Target::Default);
     work.interfaces = vec!["eth1".into()];
     work.services = vec![
@@ -80,7 +69,6 @@ pub fn sample_config() -> FirewallConfig {
     ];
     zones.push(work);
 
-    // home — trusted home network.
     let mut home = Zone::new(ZoneKind::Home, Target::Default);
     home.services = vec![
         "ssh".into(),
@@ -95,7 +83,6 @@ pub fn sample_config() -> FirewallConfig {
     ];
     zones.push(home);
 
-    // internal — internal network, peers trusted.
     let mut internal = Zone::new(ZoneKind::Internal, Target::Default);
     internal.services = vec![
         "ssh".into(),
@@ -105,7 +92,6 @@ pub fn sample_config() -> FirewallConfig {
     ];
     zones.push(internal);
 
-    // trusted — accept everything.
     zones.push(Zone::new(ZoneKind::Trusted, Target::Accept));
 
     FirewallConfig {

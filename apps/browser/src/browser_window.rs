@@ -1,12 +1,8 @@
 //! The Browser window: one page with its chrome, and the window-level states
-//! around it — content full screen and the choice to keep or cancel
-//! downloads when the window closes.
+//! around it (content full screen, the exit download choice).
 //!
-//! A window shows exactly one page. Another page is another Browser instance
-//! in a tab of the desktop's window group: a link opened in a new tab, a
-//! page's `window.open`, Ctrl+T, the "Open in new tab" action — all ask the
-//! desktop through [`ui::shell_tabs`], and reopening, reordering, dragging and
-//! restoring those tabs is the desktop's, not the Browser's.
+//! A window shows exactly one page; another page is another Browser instance in a
+//! desktop tab, which asks the desktop through [`ui::shell_tabs`].
 
 use crate::BrowserWidget;
 use crate::browser_widget::PagePublication;
@@ -43,25 +39,22 @@ enum ExitState {
     Ready,
 }
 
-/// What the view's publications and stage hook share with the window: what
-/// the window last published of its page, and a screenshot scenario to
-/// stage on its next sync.
+/// What the view's publications and stage hook share with the window: its last
+/// publication of the page, and a screenshot scenario to stage.
 #[derive(Default)]
 pub(crate) struct WindowStore {
     staged: Option<Staged>,
     published: Option<PagePublication>,
 }
 
-/// A screenshot scenario to stage, `None` for the plain window.
 struct Staged(Option<String>);
 
 impl WindowStore {
-    /// Stage the screenshot `scenario` on the window's next sync.
+    /// Stage the screenshot `scenario` on the next sync.
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {
         self.staged = Some(Staged(scenario.map(str::to_owned)));
     }
 
-    /// What the window last published of its page.
     pub(crate) fn published(&self) -> Option<&PagePublication> {
         self.published.as_ref()
     }
@@ -74,27 +67,21 @@ impl WindowStore {
 pub struct BrowserWindow {
     page: Box<BrowserWidget>,
     store: Rc<RefCell<WindowStore>>,
-    /// The document as it changes; `None` for a window outside the
-    /// framework.
+    /// The document as it changes; `None` for a window outside the framework.
     live: Option<Live<Browser>>,
-    /// The `(revision, loads)` of the document last presented.
     presented: Option<(u64, u64)>,
     /// Who opens the person's signed-in website accounts here.
     person: Option<[u8; 32]>,
     /// Wakes the window when an account's custody answers.
     waker: Option<ui::WakeHandle>,
     rect: Rect,
-    /// What this window shows changed: its children are composed again.
     dirty: bool,
-    /// This window's paint changed since the frame that drew it: it repaints
-    /// once, and rests after the frame draws it.
+    /// This window's paint changed since the frame that drew it.
     repaint: bool,
-    /// A window opened without a page starts in the address field.
     focus_address: bool,
     address_focus_node: Option<NodeId>,
-    /// The caret was put in the address and the host has not been told yet:
-    /// every layout pass names the field's node anew, since a node id is
-    /// only good for the tree it was built in.
+    /// The caret was put in the address and the host has not been told yet: a node
+    /// id is good only for the tree it was built in.
     address_focus_pending: bool,
     layout_immersive: Option<bool>,
     exit_state: ExitState,
@@ -103,16 +90,14 @@ pub struct BrowserWindow {
     close_intent: bool,
     window_fullscreen_active: bool,
     observed_content_fullscreen: bool,
-    /// This window among the profile's open Browser windows, in every
-    /// process: closing the last of them is the Browser closing.
+    /// This window among the profile's open Browser windows, in every process:
+    /// closing the last of them is the Browser closing.
     open_window: Option<crate::storage::OpenWindow>,
 }
 
 impl BrowserWindow {
-    /// A window showing `page`. `focus_address` puts the caret in the
-    /// address field, for a window opened without a page to show.
-    /// Count this window among the open windows of the profile at `root`
-    /// instead of the Browser's own.
+    /// Count this window among the open windows of the profile at `root` instead of
+    /// the Browser's own.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn counted_in(mut self, root: &std::path::Path) -> Self {
@@ -150,21 +135,19 @@ impl BrowserWindow {
         self.page.engine_handle()
     }
 
-    /// What the window shares with the view's publications and stage
-    /// hook.
+    /// What the window shares with the view's publications and stage hook.
     pub(crate) fn shared(&self) -> Rc<RefCell<WindowStore>> {
         Rc::clone(&self.store)
     }
 
-    /// Follow the document: the page shows its bookmarks, preferences and
-    /// site exceptions as it holds them, from now on.
+    /// Follow the document: the page shows its bookmarks, preferences and site
+    /// exceptions as it holds them, from now on.
     pub(crate) fn follow(&mut self, live: Live<Browser>) {
         self.live = Some(live);
         self.follow_document();
     }
 
-    /// Present the document as it is now, when it changed since; whether it
-    /// did.
+    /// Present the document as it is now when it changed since; whether it did.
     fn follow_document(&mut self) -> bool {
         let Some(state) = self
             .live
@@ -177,15 +160,15 @@ impl BrowserWindow {
         true
     }
 
-    /// Open the person's signed-in website accounts as `person`, waking
-    /// the window through `waker` as their custody answers.
+    /// Open the person's signed-in website accounts as `person`, waking the window
+    /// through `waker` as their custody answers.
     pub(crate) fn attach_services(&mut self, person: Option<[u8; 32]>, waker: ui::WakeHandle) {
         self.person = person;
         self.waker = Some(waker);
     }
 
-    /// Submit the page's bookmark and preference edits through `dispatcher`,
-    /// and bind its preference controls to `actions`.
+    /// Submit the page's bookmark and preference edits through `dispatcher`, and bind
+    /// its preference controls to `actions`.
     pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<Browser>,
@@ -195,7 +178,6 @@ impl BrowserWindow {
         self.page.attach_actions(actions);
     }
 
-    /// Keep what the page publishes now for the view's publications.
     pub(crate) fn publish(&self) {
         self.store.borrow_mut().published = Some(self.page.publication());
     }
@@ -208,8 +190,8 @@ impl BrowserWindow {
         }
     }
 
-    /// Every effect acts on the window's page; one that waits (a page
-    /// loading, the engine answering) is answered once it settles.
+    /// Every effect acts on the window's page; one that waits (a page loading, the
+    /// engine answering) is answered once it settles.
     pub(crate) fn effect(
         &mut self,
         effect: BrowserEffect,
@@ -230,8 +212,8 @@ impl BrowserWindow {
                 | BrowserEffect::ForgetServiceSession { .. }
         ) && !self.page.browsing_mode().holds_account_custody()
         {
-            // The window's custody is fixed when it opens: what it publishes
-            // its page actions as stays true for as long as it is open.
+            // The window's custody is fixed when it opens, so what it publishes its
+            // page actions as stays true while it is open.
             return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY));
         }
         match &effect {
@@ -280,10 +262,9 @@ impl BrowserWindow {
         {
             Effected::Pending => {
                 let reply = cx.reply();
-                // The window keeps the answer, not a job of this effect, so
-                // the reply's own job is what hears the caller give up: a
-                // page action nobody waits for any more is stopped rather
-                // than left holding its tab.
+                // The window keeps the answer, not a job of this effect, so the
+                // reply's own job hears the caller give up: a page action nobody
+                // waits for is stopped rather than left holding its tab.
                 cx.cancel_by(reply.progress().cancellation_signal());
                 self.page.answer_later(invocation, reply);
                 Ok(Effected::Pending)
@@ -292,7 +273,6 @@ impl BrowserWindow {
         }
     }
 
-    /// Keep the page's downloads in this device's settings.
     pub(crate) fn attach_downloads(
         &mut self,
         store: ui::storage::Settings<crate::downloads::Stored>,
@@ -300,8 +280,6 @@ impl BrowserWindow {
         self.page.attach_downloads(store);
     }
 
-    /// Keep the widths extensions' side panels are dragged to in this
-    /// device's settings.
     pub(crate) fn attach_side_panel_widths(
         &mut self,
         store: ui::storage::Settings<crate::extension_controller::SidePanelWidths>,
@@ -309,7 +287,6 @@ impl BrowserWindow {
         self.page.attach_side_panel_widths(store);
     }
 
-    /// Keep the page's visits in the person's browsing history.
     pub(crate) fn attach_personal_bookmarks(
         &mut self,
         record: ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>,
@@ -323,7 +300,6 @@ impl BrowserWindow {
         self.page.attach_history(record);
     }
 
-    /// Fill the page's forms from the person's address book.
     pub(crate) fn attach_address_book(
         &mut self,
         book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
@@ -331,18 +307,15 @@ impl BrowserWindow {
         self.page.attach_address_book(book);
     }
 
-    /// The page this window shows.
     #[cfg(test)]
     pub(crate) fn page(&self) -> &BrowserWidget {
         &self.page
     }
 
-    /// The page this window shows, to act on.
     pub(crate) fn page_mut(&mut self) -> &mut BrowserWidget {
         &mut self.page
     }
 
-    /// Stage a screenshot scenario on the page.
     fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.page.stage(scenario);
     }
@@ -412,9 +385,9 @@ impl BrowserWindow {
         )
     }
 
-    /// Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab are the
-    /// desktop's tab chords. The page never sees them, so a site cannot keep
-    /// a person in its tab.
+    /// Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab are the desktop's
+    /// tab chords: the page never sees them, so a site cannot keep a person in its
+    /// tab.
     fn is_desktop_tab_chord(
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
@@ -495,13 +468,13 @@ impl Widget for BrowserWindow {
             // The page closed itself (`window.close()`): so does its tab.
             ui::shell_tabs::close_this();
         }
-        // A link opened in a new tab, a page's `window.open`: another page
-        // is another Browser in a desktop tab.
+        // A link opened in a new tab, a page's `window.open`: another page is
+        // another Browser in a desktop tab.
         for (url, background) in self.page.engine_handle().take_new_tab_requests() {
             self.page.open_beside(url, background);
         }
-        // A late native entry notification must not hide the window-close
-        // choices or cancellation progress while the exit flow owns the UI.
+        // A late native entry notification must not hide the close choices or the
+        // cancellation progress while the exit flow owns the UI.
         if self.exit_state != ExitState::Normal {
             self.page.exit_content_fullscreen();
         }
@@ -555,7 +528,6 @@ impl Widget for BrowserWindow {
         }
         if self.address_focus_pending {
             self.address_focus_node = nodes.iter().find_map(|(id, widget)| {
-                // Nodes were built immediately above and all widgets are retained.
                 let widget = unsafe { &**widget };
                 (widget.test_id() == Some("browser.url_input")).then_some(*id)
             });
@@ -634,8 +606,8 @@ impl Widget for BrowserWindow {
             *ctx.handled = true;
             return;
         }
-        // Full screen changes rebuild the tree; input in between would land
-        // on node ids of the previous composition.
+        // Full screen changes rebuild the tree; input in between would land on node
+        // ids of the previous composition.
         if self.layout_immersive != Some(self.immersive()) {
             *ctx.handled = true;
             return;
@@ -717,8 +689,8 @@ impl Widget for BrowserWindow {
         self.page
             .draw_overlay(scene, transform, tr, theme, presence);
     }
-    /// The window paints nothing of its own: its damage is its children's,
-    /// so a caret blinking in the page repaints the caret, not the window.
+    /// The window paints nothing of its own: its damage is its children's, so a
+    /// blinking caret repaints the caret.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         for child in self.children() {
             child.collect_damage(regions);
@@ -792,8 +764,8 @@ impl Widget for BrowserWindow {
 
 impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
     fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        // The host has stopped frames. Join native cleanup before a headless
-        // runner can exit and release the profile lease under a living child.
+        // The host has stopped frames: join native cleanup before a headless runner
+        // can exit and release the profile lease under a living child.
         let result = self.page.finish_service_close();
         let mut reports: Vec<_> = self
             .children_mut()
@@ -819,8 +791,8 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
                 WindowCloseAdmission::Defer
             }
             ExitState::Normal if self.page.download_exit_requires_choice() => {
-                // The immersive layout omits window-level dialogs. Leave page
-                // full screen before asking what to do with active downloads.
+                // The immersive layout omits window-level dialogs: leave page full
+                // screen before asking about active downloads.
                 self.page.exit_content_fullscreen();
                 self.observed_content_fullscreen = false;
                 self.exit_state = ExitState::Choice;
@@ -862,11 +834,10 @@ impl Continuable for BrowserWindow {
     }
 }
 
-/// Version of the page a window saves to show again when it reopens.
 const SAVED_PAGE_VERSION: u32 = 1;
 
-/// A reopened window shows the page it showed; the page is the window's own,
-/// kept with the window rather than in a file beside the app.
+/// A reopened window shows the page it showed, kept with the window rather than in
+/// a file beside the app.
 impl ui::application_view::ApplicationViewState for BrowserWindow {
     fn capture_application_view(
         &self,
@@ -892,7 +863,6 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
             ));
         }
         self.page.restore_page_record(&local.payload);
-        // The window shows a page again; the caret has no address to wait in.
         self.focus_address = false;
         self.dirty = true;
         Ok(ui::application_view::ApplicationFocusRestore::Generic)
@@ -950,9 +920,8 @@ impl FloatingSurfaceProvider for BrowserWindow {
 
 impl Drop for BrowserWindow {
     fn drop(&mut self) {
-        // "Clear browsing data on exit" clears the person's history when the
-        // Browser closes: its last window, not each tab. The history is the
-        // person's on every device, and a tab closing is no exit.
+        // "Clear browsing data on exit" clears the history when the Browser closes,
+        // its last window, not each tab: the history is the person's on every device.
         if self
             .open_window
             .take()
@@ -985,8 +954,8 @@ mod tests {
     use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
-    /// A page engine that records commands and replays queued events and new
-    /// tab intents.
+    /// A page engine that records commands and replays queued events and new tab
+    /// intents.
     #[derive(Default)]
     struct PageEngine {
         events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -1130,7 +1099,6 @@ mod tests {
         );
     }
 
-    /// A window is one page: other pages are desktop tabs.
     #[test]
     fn other_pages_are_desktop_tabs_never_tabs_of_this_window() {
         {
@@ -1213,7 +1181,6 @@ mod tests {
         }
     }
 
-    /// Content full screen follows the root window, and leaves on Escape.
     #[test]
     fn content_fullscreen_owner_and_exit_follow_the_root_window() {
         {
@@ -1265,7 +1232,6 @@ mod tests {
         }
     }
 
-    /// Window close and the download-exit choice.
     #[test]
     fn a_reopened_window_shows_its_page_and_a_private_one_keeps_none() {
         use ui::application_view::ApplicationViewState as View;
@@ -1410,13 +1376,9 @@ mod tests {
         }
     }
 
-    /// The address arrives on the keyboard as a person types it: Ctrl+L, the
-    /// address, Enter navigates the page to exactly that address, whatever
-    /// the engine reports about the start page before, during or after.
     #[test]
     fn a_typed_address_after_ctrl_l_navigates_there() {
         const URL: &str = "http://127.0.0.1:42975/";
-        // Before Ctrl+L, mid-scheme, mid-host, and just before Enter.
         const SPLITS: [usize; 4] = [0, 3, 12, URL.len() + 1];
         let scenarios: Vec<(&str, Vec<WebViewEvent>)> = vec![
             (
@@ -1442,8 +1404,6 @@ mod tests {
         let mut failures = Vec::new();
         for (name, events) in &scenarios {
             for split in SPLITS {
-                // Browser runs in its own app host, which routes the address
-                // bar's typed navigate action to the page's engine.
                 let engine = PageEngine::new();
                 crate::browser_widget::test_window_engine::install(engine.clone());
                 let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
@@ -1504,7 +1464,6 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// The URLs the page engine was told to navigate to, in order.
     fn navigated(engine: &PageEngine) -> Vec<String> {
         engine
             .commands
@@ -1521,17 +1480,13 @@ mod tests {
             .collect()
     }
 
-    /// How a person reaches the address field before typing.
     #[derive(Clone, Copy, Debug)]
     enum Reach {
         Launch,
         Click,
-        /// Ctrl+L.
         Shortcut,
     }
 
-    /// Open a live Browser window, reach the address field the given way,
-    /// type `typed`, and commit it with Enter or the go button.
     fn type_and_commit(typed: &str, reach: Reach, go_button: bool) -> Vec<String> {
         let engine = PageEngine::new();
         engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
@@ -1736,7 +1691,7 @@ mod tests {
                     .map(|action| action.icon.as_str())
                     .collect::<Vec<_>>(),
                 [
-                    "refresh", "star", "history", "globe", "plus", "box", "shield", "settings"
+                    "refresh", "star", "layers", "globe", "plus", "box", "shield", "settings"
                 ],
                 "the row's buttons, then the More menu's commands"
             );

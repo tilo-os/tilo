@@ -28,6 +28,8 @@ test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/s
 [dependencies]
 collab-types = { version = "0.1.0", path = "../collab-types" }
 channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+# The members' content secret a record's content is sealed under.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 # The clock (`crate::time`), background work and wake routing
 # (`crate::background`, `crate::wake`), as the toolkit reads them.
@@ -72,6 +74,7 @@ runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path =
 # reads them, without the toolkit's host services.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # A file's durable record id is the `user.tilo.record-id` attribute
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }

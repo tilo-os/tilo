@@ -1,42 +1,23 @@
-//! Music's effects and the rows it publishes for what the window shows.
-//!
-//! Every change to the shared library is the [`Library`](crate::model::Library)
-//! resource's: its verbs (making and deleting a playlist, bringing in a
-//! catalogue song) and field edits (likes, saved albums, followed artists,
-//! recommendation feedback, a playlist's name, cover and tracks). The
-//! on-screen affordances, the palette and agents all submit those.
-//!
-//! What Music does that changes no document is a [`MusicEffect`]: what is
-//! shown, and this device's player, queue and offline copies. Opening a
-//! destination or an album of the library is all the library's own row
-//! offers, published from [`crate::model::Library`] itself; the songs,
-//! artists and playlists, whose rows say what this device can do with them,
-//! are rows this window builds ([`MusicRows`]), beside its player and queue.
+//! Music's effects and the rows it publishes for what the window shows. Library changes go
+//! through the resource's verbs and field edits; what changes no document is a
+//! [`MusicEffect`]: what is shown, and this device's player, queue and copies.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect};
 
 use tilo_actions::ActionSpec;
-/// The maximum decoded size of a portable embedded playlist cover.
+/// The largest decoded cover the document accepts.
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
 pub const MAX_PORTABLE_COVER_EDGE: u32 = 512;
-/// The contextual Ctrl+K snapshot is deliberately small. The full library is
-/// still discoverable through the paged search provider and every returned
-/// canonical address is resolved through `PublishesResources::resource`.
-/// Keeping this bounded prevents opening the palette from cloning a large
-/// library (or every membership in every long playlist) on the UI thread.
+/// The Ctrl+K snapshot is small on purpose; the paged provider reaches everything else.
 pub const OPEN_RESOURCE_CATEGORY_LIMIT: usize = 16;
-/// A playlist shown in the contextual snapshot exposes its first few ordered
-/// memberships. The complete playlist remains reachable by its stable
-/// resource id, and the visible app has its own virtualised list.
+/// A playlist in the snapshot shows its first few songs; the rest stay reachable by id.
 pub const OPEN_PLAYLIST_TRACK_LIMIT: usize = 32;
 
-/// Stable identifiers for Music's app-owned destinations.  These are not
-/// synthetic content: every value names a real screen in [`crate::app::View`].
-/// Keeping the allowlist at the resource boundary prevents a caller from
-/// turning an arbitrary string into local routing authority.
+/// The app's own destinations. The allowlist keeps a caller from turning an arbitrary
+/// string into routing authority.
 pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
     ("home", "Home"),
     ("recommendations", "Recommendations"),
@@ -78,8 +59,6 @@ pub fn artist_resource_id(id: &str) -> String {
     format!("music.artist:{id}")
 }
 
-/// A playlist is an item of the library: its row joins the item, which
-/// offers deleting it.
 pub fn playlist_resource_id(id: &str) -> String {
     tilo_resource::items::item_resource_id::<crate::model::Library>(
         "playlists",
@@ -87,22 +66,18 @@ pub fn playlist_resource_id(id: &str) -> String {
     )
 }
 
-/// The playlist a playlist row id names.
 pub fn parse_playlist_resource_id(id: &str) -> Option<String> {
     tilo_resource::items::item_of_resource::<crate::model::Library>(id)
         .filter(|(field, item)| *field == "playlists" && !item.as_str().is_empty())
         .map(|(_, item)| item.as_str().to_owned())
 }
 
-/// The local-device queue. Unlike a playlist, this is intentionally not part
-/// of the shared library document: queuing or playing a track on one device
-/// must never commandeer a collaborator's speakers.
+/// The device's queue, never in the document: playing here must not commandeer a peer's
+/// speakers.
 pub const QUEUE_RESOURCE_ID: &str = "music.queue:queue";
 
-/// A queue occurrence has an identity of its own. A track may legitimately
-/// appear more than once, so `music.track:<id>` cannot name a queue row.
-/// Encoding both the observed index and the track id lets the operation host
-/// fail closed if the local queue changed before an old palette result lands.
+/// A queue occurrence has its own identity: the index and track id together fail closed when
+/// the queue changed before an old result lands.
 pub fn queue_item_resource_id(index: usize, track: &str) -> String {
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     format!(
@@ -111,8 +86,7 @@ pub fn queue_item_resource_id(index: usize, track: &str) -> String {
     )
 }
 
-/// Decode a queue occurrence resource identity. Invalid base64, UTF-8, and
-/// empty ids never become addressable queue authority.
+/// Decode a queue occurrence; a malformed id never becomes addressable.
 pub fn parse_queue_item_resource_id(id: &str) -> Option<(usize, String)> {
     let value = id.strip_prefix("music.queue-item:v1:")?;
     let (index, track) = value.split_once(':')?;
@@ -125,14 +99,10 @@ pub fn parse_queue_item_resource_id(id: &str) -> Option<(usize, String)> {
     (!track.is_empty()).then_some((index, track))
 }
 
-/// A playlist membership is distinct from the track itself: it owns the
-/// playlist-specific remove and reorder actions without duplicating a track's
-/// library-level identity in the resource tree.
+/// A membership is distinct from the track: it owns the playlist's remove and reorder actions.
 pub fn playlist_track_resource_id(playlist: &str, track: &str) -> String {
-    // URL-safe base64 without padding is an unambiguous, Unicode-preserving
-    // component encoding (unlike joining raw ids with `:`). The stable v1
-    // prefix leaves room for a future representation without changing the
-    // namespace of existing resources.
+    // URL-safe base64 keeps ids unambiguous and Unicode-safe; the `v1` prefix leaves room for
+    // another representation.
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     format!(
         "music.playlist-track:v1:{}:{}",
@@ -141,9 +111,7 @@ pub fn playlist_track_resource_id(playlist: &str, track: &str) -> String {
     )
 }
 
-/// Decode a canonical playlist-membership resource identity. Invalid UTF-8,
-/// missing fields, and malformed base64 values never become an addressable
-/// resource.
+/// Decode a membership; a malformed id never becomes addressable.
 pub fn parse_playlist_track_resource_id(id: &str) -> Option<(String, String)> {
     let value = id.strip_prefix("music.playlist-track:v1:")?;
     let (playlist, track) = value.split_once(':')?;
@@ -161,9 +129,7 @@ pub fn catalogue_playlist_resource_id(id: &str) -> String {
     format!("music.catalogue-playlist:{id}")
 }
 
-/// What opening the row `anchor` names does — a search hit's or an agent's
-/// `open`: a song plays, an album, artist, playlist, membership or place is
-/// shown. `None` for an anchor that names no row Music opens.
+/// What opening the row `anchor` does: a song plays, anything else is shown.
 pub fn anchor_effect(anchor: &str) -> Option<MusicEffect> {
     let open = |place| Some(MusicEffect::Open { place });
     if let Some(view) = parse_view_resource_id(anchor) {
@@ -199,11 +165,9 @@ pub fn anchor_effect(anchor: &str) -> Option<MusicEffect> {
     parse_playlist_resource_id(anchor).and_then(|playlist| open(Place::Playlist(playlist)))
 }
 
-/// A place in Music a view effect shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Place {
-    /// One of the stable destinations in [`NAVIGATION_VIEWS`]. The receiver
-    /// validates the id again before it changes what is shown.
+    /// A destination in [`NAVIGATION_VIEWS`]; the receiver checks the id again.
     View(String),
     Album(String),
     Artist(String),
@@ -215,11 +179,8 @@ pub enum Place {
     },
 }
 
-/// What Music does that changes no document: what is shown, and this
-/// device's player, queue and offline copies. Stream resolution and audio
-/// output are never replicated into a collaborator's session, and the queue
-/// and transport stay this device's own. Effects on one item ride that item;
-/// the ones that take arguments a caller chooses are offered on the library.
+/// What Music does that changes no document: what is shown, and this device's player, queue
+/// and copies. Effects on one item ride that item.
 #[derive(Debug, Clone, PartialEq, Effect)]
 #[effect(operation = "music.effects")]
 pub enum MusicEffect {
@@ -455,7 +416,6 @@ pub enum MusicEffect {
     },
 }
 
-/// What invoking `effect` where it is bound sends its handler.
 #[cfg(test)]
 pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
     effect
@@ -509,10 +469,6 @@ pub fn portable_cover_value(value: &str) -> bool {
         })
 }
 
-// ===========================================================================
-// Rows
-// ===========================================================================
-
 /// The file this device has open outside any library.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFile {
@@ -520,24 +476,17 @@ pub(crate) struct LocalFile {
     pub label: String,
 }
 
-/// What the window's rows are built from: the library, this device's
-/// playback, and the facts about this device the library does not hold —
-/// which songs it keeps offline and which artists it follows — beside the file
-/// it has open, if any. The library's own rows (its places and the items of
-/// its playlists) are published from [`crate::model::Library`] itself.
+/// What the window's rows are built from: the library, this device's playback and the facts
+/// the library does not hold.
 pub(crate) struct MusicRows<'a, D: DeviceFacts + ?Sized> {
     pub(crate) lib: &'a crate::model::Library,
     pub(crate) playback: &'a crate::model::Playback,
-    /// What this device knows beyond the library.
     pub(crate) device: &'a D,
     pub(crate) local_file: Option<LocalFile>,
 }
 
-/// The facts about this device a row carries that the library does not hold.
 pub(crate) trait DeviceFacts {
-    /// Whether this device keeps a copy of the song offline.
     fn offline(&self, track: &str) -> bool;
-    /// Whether this device follows the artist.
     fn followed(&self, artist: &str) -> bool;
 }
 
@@ -563,9 +512,8 @@ pub(crate) const PLAYER_RESOURCE_ID: &str = "music.player:player";
 pub const LOCAL_FILE_RESOURCE_ID: &str = "music.local-file:current";
 
 impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
-    /// The page: songs, artists and playlists of the library, then this
-    /// device's player, queue and open file, each with what the window offers
-    /// on it. Bounded; [`Self::row`] resolves the rest.
+    /// The page: the library's songs, artists and playlists, then this device's rows. Bounded;
+    /// [`Self::row`] resolves the rest.
     pub(crate) fn all(&self) -> Vec<ui::framework::LiveRow> {
         let limit = OPEN_RESOURCE_CATEGORY_LIMIT;
         let mut playlists = self.lib.playlists().collect::<Vec<_>>();
@@ -589,9 +537,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         rows
     }
 
-    /// The row `id` names, against the whole library rather than the page: a
-    /// search hit or an agent may name any song, artist, playlist or
-    /// membership, the player, the queue or an entry in it, or the open file.
+    /// The row `id` names, against the whole library: a search hit or an agent may name any row.
     pub(crate) fn row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id == LOCAL_FILE_RESOURCE_ID {
             return self.local_file.as_ref().map(|file| self.file(file));
@@ -628,14 +574,12 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         Some(self.playlist(self.lib.playlist(&playlist)?))
     }
 
-    /// The song's title, then who performs it.
     fn track_title(&self, id: &str) -> String {
         self.lib
             .track(id)
             .map_or_else(|| id.to_owned(), |track| track.title.clone())
     }
 
-    /// Who performs the song, the row's secondary line: empty when unknown.
     fn track_artist(&self, id: &str) -> String {
         self.lib
             .track(id)
@@ -643,8 +587,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
             .unwrap_or_default()
     }
 
-    /// A song of the library, with what this device can do with it: play it,
-    /// keep a copy offline, like it, queue it, and open its album or artist.
+    /// A library song with what this device can do with it.
     fn track(&self, id: &str) -> ui::framework::LiveRow {
         let artist = self.track_artist(id);
         let label = if artist.is_empty() {
@@ -698,8 +641,6 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         row
     }
 
-    /// An artist of the library, and on Spotify whether this device follows
-    /// them.
     fn artist(&self, id: &str) -> ui::framework::LiveRow {
         let name = self
             .lib
@@ -747,8 +688,6 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         row
     }
 
-    /// One song in a playlist: opening it there shows that membership, and
-    /// liking it likes the song itself.
     fn membership(&self, playlist: &str, track: &str) -> ui::framework::LiveRow {
         let artist = self.track_artist(track);
         let mut row = ui::framework::LiveRow::new(
@@ -775,8 +714,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         row
     }
 
-    /// This device's player: the transport's controls, each offered (those
-    /// that cannot act right now with the reason why).
+    /// The player: the transport's controls, each offered or refused with a reason.
     fn player(&self) -> ui::framework::LiveRow {
         transport(
             ui::framework::LiveRow::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
@@ -784,7 +722,6 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         )
     }
 
-    /// This device's queue and its first few entries.
     fn queue(&self) -> ui::framework::LiveRow {
         let mut row = ui::framework::LiveRow::new(QUEUE_RESOURCE_ID, "music.queue", "Queue")
             .operation(open_queue());
@@ -800,8 +737,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         row
     }
 
-    /// One occurrence in the queue: a song may be queued twice, so the row is
-    /// its position there, not the song.
+    /// One occurrence in the queue: a song may be queued twice, so the row is its position there.
     fn queue_item(&self, index: usize, track: &str) -> ui::framework::LiveRow {
         let artist = self.track_artist(track);
         let total = self.playback.queue.len();
@@ -865,8 +801,6 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         row
     }
 
-    /// The file this device has open: the transport when it is what plays,
-    /// else what starts it.
     fn file(&self, file: &LocalFile) -> ui::framework::LiveRow {
         let row = ui::framework::LiveRow::new(
             LOCAL_FILE_RESOURCE_ID,
@@ -895,7 +829,6 @@ fn playlist_label(playlist: &crate::model::Playlist) -> String {
     }
 }
 
-/// Liking or unliking `track`, which is `liked` now.
 fn like_operation(track: &str, liked: bool) -> ActionSpec {
     bound(
         &MusicEffect::ToggleLike {
@@ -905,7 +838,6 @@ fn like_operation(track: &str, liked: bool) -> ActionSpec {
     )
 }
 
-/// `spec` refusing with `unavailable`, when there is a reason it cannot act.
 fn with_unavailable(spec: ActionSpec, unavailable: Option<(&'static str, String)>) -> ActionSpec {
     match unavailable {
         Some((code, reason)) => spec.unavailable(code, reason),
@@ -913,7 +845,6 @@ fn with_unavailable(spec: ActionSpec, unavailable: Option<(&'static str, String)
     }
 }
 
-/// The transport's controls on `row`: the player's, or the file that plays.
 fn transport(
     row: ui::framework::LiveRow,
     playback: &crate::model::Playback,
@@ -980,26 +911,17 @@ fn open_queue() -> ActionSpec {
     )
 }
 
-/// One song joining or leaving a queue, at its position there. A queue can
-/// hold the same song twice side by side, so only the edit itself says which
-/// of the two moved, and with it which one a shuffled order has already
-/// played.
+/// One song joining or leaving a queue, at its position: a queue can hold the same song twice,
+/// so only the edit says which moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueueEdit {
-    /// A song joined at this position, to be heard after the songs still to
-    /// come.
     Added(usize),
-    /// A song joined at this position, right after the current one, to be
-    /// heard next.
     PutNext(usize),
-    /// The song at this position left.
     Removed(usize),
 }
 
-/// The playback `effect` leads to from `playback` on this device, for the
-/// transport and queue effects that only change it, with the queue edit it
-/// made; `None` for any other effect. `known` says whether a track can be
-/// played here.
+/// The playback `effect` leads to, with the queue edit it made; `None` for any other effect.
+/// `known` says whether a track can be played here.
 pub(crate) fn next_playback(
     effect: &MusicEffect,
     playback: &crate::model::Playback,
@@ -1104,9 +1026,7 @@ pub(crate) fn next_playback(
     Some(result.map(|()| (next, edit)))
 }
 
-/// Take `track`'s first occurrence out of `playback`'s queue, answering
-/// where it was; removing the current one moves on to what follows it, or
-/// stops at the end.
+/// Take `track`'s first occurrence out; removing the current one moves on, or stops at the end.
 fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<usize, String> {
     let index = playback
         .queue
@@ -1136,9 +1056,7 @@ fn track_id_from_resource(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// An album, artist or playlist the live catalogue found and the library
-/// does not hold, labelled `label`, as the row `id`: opening its page is all
-/// it offers. `None` for any other row.
+/// A catalogue album, artist or playlist the library does not hold, as the row `id`.
 pub fn live_catalogue_row(id: &str, label: &str) -> Option<ui::framework::LiveRow> {
     let kind = if id.starts_with("music.album:") {
         "music.album"
@@ -1155,9 +1073,7 @@ pub fn live_catalogue_row(id: &str, label: &str) -> Option<ui::framework::LiveRo
 
 #[cfg(test)]
 impl crate::app::Music {
-    /// What the palette and agents see of `doc` in a window showing this
-    /// surface: the library as the framework publishes it, with the
-    /// surface's rows merged in by id as a publication does.
+    /// What the palette and agents see: the library, with the surface's rows merged in by id.
     pub(crate) fn palette_tree(
         &self,
         doc: &automerge::AutoCommit,
@@ -1214,7 +1130,6 @@ mod tests {
         )
     }
 
-    /// A Music app with the sample library synced into a fresh document.
     fn seeded() -> (Music, AutoCommit) {
         let mut app = Music::new();
         let doc = crate::seed::sample_document();
@@ -1222,7 +1137,6 @@ mod tests {
         (app, doc)
     }
 
-    /// The sample library behind the door the host uses.
     fn library() -> Replica<Library> {
         let mut library = Replica::<Library>::new();
         for action in crate::seed::sample_actions() {
@@ -1252,7 +1166,6 @@ mod tests {
         ui::testing::action_contract::spec_encoding(spec, None)
     }
 
-    /// A song of `id`, with nothing else recorded about it.
     fn track(id: &str) -> crate::model::Track {
         crate::model::Track {
             id: id.to_owned(),
@@ -1268,8 +1181,6 @@ mod tests {
 
     static PLAIN: crate::actions::PlainDevice = crate::actions::PlainDevice;
 
-    /// The rows a window with no offline copies and no followed artists
-    /// builds from `lib` and `playback`.
     fn music_rows<'a>(
         lib: &'a Library,
         playback: &'a crate::model::Playback,
@@ -1282,8 +1193,6 @@ mod tests {
         }
     }
 
-    /// The library as the framework publishes it: its places and the items
-    /// of its playlists.
     fn published(lib: &Library) -> ResourceSpec {
         ui::tilo_resource::publish::<Library>("music.library", "Library", lib)
     }
@@ -1294,10 +1203,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn library_resources_publish_bounded_safe_canonical_views() {
-        // Phase `ctrl_k_publishes_the_library_tree`.
-        // The library offers making a playlist; each playlist is an item that
-        // offers deleting it, and the window's row adds opening it and its
-        // tracks; tracks, albums and artists carry their effects.
         {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
@@ -1345,9 +1250,6 @@ mod tests {
                     .any(|action| action.id == "toggle-shuffle")
             );
 
-            // A playlist with tracks nests a membership resource that opens it
-            // in the playlist and likes the song. It is not a duplicate of the
-            // catalog track entity.
             let track = &playlist.children[0];
             assert_eq!(track.kind, "music.playlist-track");
             let tk_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
@@ -1631,8 +1533,6 @@ mod tests {
             let player = music_rows(&Library::default(), &playback)
                 .player()
                 .into_resource();
-            // The transport rides the player; what takes a caller's argument
-            // is offered on the library.
             let library = MusicEffect::specs();
             for (id, on) in [
                 ("play-pause", &player.actions),

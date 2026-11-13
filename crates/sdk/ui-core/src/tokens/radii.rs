@@ -1,43 +1,25 @@
-//! Corner radii, by what the corner belongs to (`docs/design-language.md`,
-//! "Shape").
-//!
-//! Radii are **concentric**: an inner radius is its container's radius
-//! minus the inset between them, never below [`Radii::MIN`]. A thing that
-//! sits inside another rounded thing asks [`Radii::concentric`] for its
-//! radius instead of picking a token, so its corners run parallel to its
-//! container's at every inset and every scale.
+//! Corner radii, by what the corner belongs to (`docs/design-language.md`, "Shape").
+//! Radii are **concentric**: an inner radius is its container's radius minus the inset
+//! between them, never below [`Radii::MIN`].
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Radii {
-    /// A window tile.
     pub tile: f32,
-    /// A floating panel: menu, popover, palette, sheet, quick settings.
     pub panel: f32,
-    /// A control: button, field, segmented track, a quick-settings tile.
     pub control: f32,
-    /// An item inside a control or a list: a selected row, a segment thumb.
     pub item: f32,
-    /// The smallest corner anything gets: a progress track, a badge, a
-    /// sparkline clip, a caret. Also the concentric floor.
     pub detail: f32,
-    /// A pill: chips, presence pills, tags, avatars — things pill-shaped by
-    /// meaning. Buttons and tabs are not pills. A "make it a pill" sentinel,
-    /// not a real length; drawing code clamps it to half the short side.
+    /// A pill: chips, presence pills, tags, avatars — things pill-shaped by meaning.
     pub full: f32,
 }
 
 impl Radii {
-    /// The concentric floor at 1×: no corner inside a container shrinks
-    /// below this.
+    /// The concentric floor at 1×: no corner inside a container shrinks below this.
     pub const MIN: f32 = 4.0;
 
-    /// The stock window radius.
     pub const WINDOW: f32 = 14.0;
 
-    /// The whole scale from a theme's one shape role, the window tile's
-    /// radius. At the stock 14 it is the design language's table (panel 18,
-    /// control 8, item 6, detail 4); every other radius keeps its proportion
-    /// to the window, and the item stays concentric inside its control.
+    /// The whole scale from a theme's one shape role, the window tile's radius.
     #[must_use]
     pub fn from_window_radius(window: f32) -> Self {
         let window = window.max(0.0);
@@ -55,9 +37,8 @@ impl Radii {
         }
     }
 
-    /// The radius of something inset `inset` inside a container whose
-    /// corner is `outer`: `outer - inset`, never below [`Self::detail`].
-    /// A full-pill container yields a full pill.
+    /// The radius of something inset `inset` inside a container whose corner is `outer`:
+    /// `outer - inset`, never below [`Self::detail`].
     #[must_use]
     pub fn concentric(&self, outer: f32, inset: f32) -> f32 {
         if outer >= self.full {

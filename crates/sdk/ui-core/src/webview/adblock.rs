@@ -1,22 +1,9 @@
-//! Filter-list → `WebKit` content-blocker compiler for the `WebView`'s
-//! built-in ad blocking (feature `webview-adblock`).
-//!
-//! Takes Brave/EasyList-syntax filter lists (the same lists Brave ships)
-//! and compiles them via adblock-rust's `content_blocking` support into
-//! the JSON rule format `WebKit`'s `UserContentFilterStore` consumes.
-//! Blocking then happens natively inside `WebKit`'s network process —
-//! there is no per-request Rust hook (`WebKit` exposes none to embedders),
-//! which is also why this is faster than extension-based blockers.
-//!
-//! Fetching and caching the list text is the caller's job (the browser
-//! app fetches with its own HTTP stack and disk cache); this module is
-//! pure text → JSON.
-//!
-//! The compiler itself (`tilo-content-blocker`, adblock-rust) is not part of
-//! the shared runtime every app maps. With `lazy-adblock` (the runtime's
-//! build, turned on by the engine library's own build) it comes from
-//! `libtilo_adblock_engine.so`, opened the first time an app compiles lists;
-//! otherwise it is linked.
+//! Filter-list → `WebKit` content-blocker compiler for the `WebView`'s built-in ad
+//! blocking (feature `webview-adblock`). Takes Brave/EasyList-syntax filter lists (the
+//! same lists Brave ships) and compiles them via adblock-rust's `content_blocking`
+//! support into the JSON rule format `WebKit`'s `UserContentFilterStore` consumes.
+//! Fetching and caching the list text is the caller's job (the browser app fetches with
+//! its own HTTP stack and disk cache); this module is pure text → JSON.
 
 use std::sync::Arc;
 
@@ -33,17 +20,14 @@ pub enum AdblockError {
     Unavailable(String),
 }
 
-/// `WebKit` rejects a single content-rule list over this many rules with
-/// "Too many rules in JSON array". Its documented cap is higher, but a
-/// conservative split keeps every chunk comfortably valid.
+/// `WebKit` rejects a single content-rule list over this many rules with "Too many rules
+/// in JSON array".
 pub const MAX_RULES_PER_FILTER: usize = 25_000;
 
-/// The full `EasyList` + uBlock + `AdGuard` set is far larger than `WebKit`'s
-/// per-list rule cap, so it must be installed as several content filters
-/// rather than one giant array (which `WebKit` refuses to compile).
+/// The full `EasyList` + uBlock + `AdGuard` set is far larger than `WebKit`'s per-list
+/// rule cap, so it must be installed as several content filters rather than one giant
+/// array (which `WebKit` refuses to compile).
 pub struct ChunkedFilter {
-    /// Each element a JSON array of at most [`MAX_RULES_PER_FILTER`]
-    /// rules — install each as its own `WebKit` content filter.
     pub chunks: Vec<std::sync::Arc<String>>,
     pub rule_count: usize,
     pub skipped: usize,
@@ -59,17 +43,12 @@ pub type EngineEntry = fn() -> CompileFn;
 pub const ENGINE_LIBRARY: &str = "libtilo_adblock_engine.so";
 pub const ENGINE_ENTRY: &str = "tilo_adblock_engine_entry";
 
-/// Compile `lists` into `WebKit` content-blocker JSON, split into chunks of
-/// at most `max_rules_per_chunk` rules each.
-///
-/// # Errors
-///
-/// Returns [`AdblockError::Conversion`] if adblock-rust's content-blocking
-/// conversion fails, [`AdblockError::Empty`] if `lists` produces no rule
-/// convertible to `WebKit`'s declarative format,
+/// Compile `lists` into `WebKit` content-blocker JSON, split into chunks of at most
+/// `max_rules_per_chunk` rules each. Returns [`AdblockError::Conversion`] if
+/// adblock-rust's content-blocking conversion fails, [`AdblockError::Empty`] if `lists`
+/// produces no rule convertible to `WebKit`'s declarative format,
 /// [`AdblockError::Serialise`] if a chunk fails to serialise to JSON, and
-/// [`AdblockError::Unavailable`] if the compiler's engine library does not
-/// open.
+/// [`AdblockError::Unavailable`] if the compiler's engine library does not open.
 pub fn compile_filter_lists_chunked<'a>(
     lists: impl IntoIterator<Item = &'a str>,
     max_rules_per_chunk: usize,
@@ -114,9 +93,7 @@ fn linked(lists: &[&str], max_rules_per_chunk: usize) -> Result<ChunkedFilter, A
     }
 }
 
-/// [`ChunkedFilter`] from the compiler's parts. The engine library maps the
-/// compiler's result through this (the toolkit's runtime build names no
-/// compiler type).
+/// [`ChunkedFilter`] from the compiler's parts.
 #[must_use]
 pub fn chunked_filter(
     chunks: Vec<Arc<String>>,

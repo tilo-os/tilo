@@ -1,11 +1,6 @@
-//! The API tester as a bound view: the [`Store`] the window shares with the
-//! view's effect handler, and [`window`], which takes the window into the
-//! view.
-//!
-//! The effects answer here, from the workspace the document holds and what
-//! this device keeps: the response, the request in flight and the secrets.
-//! What they ask of the window itself (a sheet to open, a pane to show
-//! again) waits until the window next looks.
+//! The API tester as a bound view: the [`Store`] the window shares with the view's
+//! effect handler. The effects answer from the document and what this device keeps; what
+//! they ask of the window waits until the window next looks.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,7 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::secrets::SecretStore;
-use ui::tilo_resource::Model;
 use ui::widget::Element;
 
 use super::ApiTesterApp;
@@ -27,60 +21,43 @@ use crate::model::{Auth, Environment, HttpMethod, Id, Request, ResponseData};
 use crate::resource::{Workspace, workspace as verbs};
 use crate::vars;
 
-/// Where a request's credential is kept on this device, by request.
 const CREDENTIAL: &str = "request-credential";
-/// Where a secret variable's value is kept on this device, by variable.
 pub(super) const SECRET_VARIABLE: &str = "variable-value";
 
-/// What the effects changed that the window shows, taken when it next looks.
 #[derive(Default)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag names an independent part of the view"
 )]
 pub(super) struct Shown {
-    /// The response pane: what was sent, what came back, what failed.
     pub(super) response: bool,
-    /// A response arrived, shown pretty from its first line.
     pub(super) arrived: bool,
-    /// The bar's Send and Cancel.
     pub(super) url_bar: bool,
-    /// Anything else to draw again.
     pub(super) redraw: bool,
 }
 
-/// What the window and the view's effect handler share.
 pub(crate) struct Store {
-    /// Where credentials and secret variables are kept on this device; `None`
-    /// for a window outside the framework.
+    /// Where credentials and secret variables are kept on this device; `None` outside
+    /// the framework.
     secrets: Option<SecretStore>,
-    /// Credentials of requests made before they named theirs, read once.
     credentials: HashMap<Id, String>,
-    /// What the window's controls push, for an effect that opens a sheet.
     sink: Sink,
     pub(crate) response: Option<ResponseData>,
-    /// A request is in flight.
     pub(crate) sending: bool,
-    /// Set when the person cancels the request in flight: the send watches it
-    /// and stops, rather than holding the app's only primary action forever.
+    /// Set when the person cancels the request in flight: the send watches it and
+    /// stops.
     pub(super) send_cancel: Arc<AtomicBool>,
-    /// A copy whose outcome the clipboard reports after it returned: a copy
-    /// that fails later is said, not confirmed.
+    /// A copy whose outcome the clipboard reports after it returned.
     pub(super) copy: ui::CopyWatch,
     /// What the last copy did, shown once in the response pane.
     pub(crate) notice: Option<String>,
     pub(crate) error: Option<String>,
-    /// What changed since the window last looked.
     pub(super) shown: Shown,
-    /// The scenario a capture staged, staged by the window when it next
-    /// looks.
     pub(super) staged: Option<Staged>,
 }
 
-/// A capture's scenario (`None` for a plain capture).
 pub(super) struct Staged(pub(super) Option<String>);
 
-/// The [`Store`] as the window and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
@@ -100,7 +77,6 @@ impl Store {
         }
     }
 
-    /// Keep secrets in `secrets` from now on.
     pub(super) fn keep_secrets_in(&mut self, secrets: SecretStore) {
         self.secrets = Some(secrets);
         self.credentials.clear();
@@ -148,7 +124,7 @@ impl Store {
             .map_err(str::to_owned)?;
             return Ok(auth.secret().unwrap_or_default().to_owned());
         }
-        // Compatibility with credentials created before immutable references.
+        // A credential made before immutable references.
         if let Some(known) = self.credentials.get(id) {
             return Ok(known.clone());
         }
@@ -157,7 +133,6 @@ impl Store {
         Ok(found)
     }
 
-    /// The active environment's variables, secret ones read from this device.
     pub(super) fn env_vars(
         &self,
         environments: &[Environment],
@@ -184,7 +159,6 @@ impl Store {
         }
     }
 
-    /// The request the workspace holds, with its credential from this device.
     fn request_with_credential(&mut self, workspace: &Workspace) -> Result<Request, String> {
         let mut request = workspace.request_shown();
         let credential = self.credential(&request.id, &workspace.request.auth.reference)?;
@@ -192,8 +166,6 @@ impl Store {
         Ok(request)
     }
 
-    /// Answer one of the API tester's effects, invoked by a control, the
-    /// palette, an agent or a script.
     fn answer(
         &mut self,
         effect: ApiTesterEffect,
@@ -201,7 +173,6 @@ impl Store {
         cx: &mut EffectCx<Workspace>,
     ) -> EffectAnswer {
         match effect {
-            ApiTesterEffect::ImportLegacy { snapshot } => self.import_legacy(snapshot, cx),
             ApiTesterEffect::PickEnvironment { choice } => {
                 self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
                 Ok(Effected::done())
@@ -315,38 +286,8 @@ impl Store {
         Ok(Effected::done())
     }
 
-    fn import_legacy(&self, snapshot: String, cx: &mut EffectCx<Workspace>) -> EffectAnswer {
-        use base64::Engine;
-        let before = cx.live().get();
-        if *before != Workspace::blank() {
-            return Err("Import requires a new, empty workspace".into());
-        }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(snapshot)
-            .map_err(|_| "Invalid base64 snapshot")?;
-        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-        let imported = ui::rt::app().spawn_pinned(move || async move {
-            crate::migration::snapshot(&bytes, &secrets).await
-        });
-        Ok(cx.spawn(
-            move |_| async move {
-                imported
-                    .await
-                    .map_err(|_| "Import task failed".to_string())?
-            },
-            move |(): &mut (), imported, cx| {
-                let imported = imported?;
-                if cx.live().get() != before {
-                    return Err("Workspace changed during import; use a new workspace".into());
-                }
-                cx.submit(Workspace::IMPORT_WORKSPACE.with(imported.to_json()));
-                Ok(Effected::done())
-            },
-        ))
-    }
-
-    /// Seal `secret` as the open request's credential, keeping only its
-    /// reference in the document, which the window follows to show it.
+    /// Seal `secret` as the open request's credential, keeping only its reference in the
+    /// document.
     fn set_credential(&self, secret: &str, cx: &mut EffectCx<Workspace>) -> EffectAnswer {
         let workspace = cx.live().get();
         let request = workspace.request_shown();
@@ -354,8 +295,8 @@ impl Store {
         let before = workspace.request.auth.clone();
         let auth = request.auth.with_secret(secret);
         let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-        // Build storage futures on their owning runtime thread: browser
-        // storage handles must never move between threads.
+        // Storage futures are built on their owning runtime thread: a browser storage
+        // handle must never move between threads.
         let stored = ui::rt::app().spawn_pinned(move || async move {
             crate::credentials::seal_async(&auth, &secrets)
                 .await
@@ -381,9 +322,8 @@ impl Store {
         ))
     }
 
-    /// Stop the request in flight. The send wakes on the flag within a
-    /// moment and reports that it was cancelled, so nothing is left looking
-    /// like it is still on its way.
+    /// Stop the request in flight; the send wakes on the flag and reports that it was
+    /// cancelled.
     pub(super) fn cancel_send(&mut self) {
         if !self.sending {
             return;
@@ -391,14 +331,13 @@ impl Store {
         self.send_cancel.store(true, Ordering::Release);
         self.sending = false;
         self.error = Some(http::CANCELLED.to_owned());
-        // Show what the cancel did, the moment it is pressed: the response
-        // pane and the bar's Send/Cancel control.
+        // Show what the cancel did the moment it is pressed: the response pane and the
+        // bar's Send/Cancel.
         self.shown.response = true;
         self.shown.url_bar = true;
     }
 
-    /// Copy the response body exactly as the pane shows it — the text a bug
-    /// report or a colleague needs.
+    /// Copy the response body exactly as the pane shows it.
     pub(super) fn copy_body(&mut self) -> Result<(), String> {
         let Some(response) = &self.response else {
             return self.no_response_to_copy();
@@ -407,8 +346,7 @@ impl Store {
         self.copy_to_clipboard(&body, "api-copied-body")
     }
 
-    /// Copy every response header, one `Name: value` per line, so a token in
-    /// one of them can be taken without retyping it.
+    /// Copy every response header, one `Name: value` per line.
     pub(super) fn copy_headers(&mut self) -> Result<(), String> {
         let Some(response) = &self.response else {
             return self.no_response_to_copy();
@@ -429,9 +367,8 @@ impl Store {
         Err(reason.to_owned())
     }
 
-    /// Copy the request as it was authored (**with its `{{variables}}`, and
-    /// never a credential, which stays on this device**), the shape a bug
-    /// report needs.
+    /// Copy the request as it was authored, with its `{{variables}}` and never a
+    /// credential.
     fn copy_request(&mut self, request: &Request) -> Result<(), String> {
         let mut text = format!("{} {}", request.method.as_str(), request.url);
         for row in request.headers.iter().filter(|row| row.enabled) {
@@ -446,7 +383,6 @@ impl Store {
         self.copy_to_clipboard(&text, "api-copied-request")
     }
 
-    /// Put `text` on the clipboard and say so, or say it did not take.
     fn copy_to_clipboard(&mut self, text: &str, done: &str) -> Result<(), String> {
         let copied = self.copy.watch(ui::try_clipboard_copy(text));
         if copied {
@@ -471,9 +407,8 @@ impl Store {
         if self.sending {
             return Err("another API request is already running".into());
         }
-        // With no address there is nothing to send to; a browser would
-        // quietly fetch the page itself. Say what is missing where the
-        // answer would show.
+        // With no address there is nothing to send to; a browser would quietly fetch the
+        // page itself. Say what is missing where the answer would show.
         if out
             .url
             .split(['?', '#'])
@@ -527,9 +462,8 @@ impl Store {
     }
 }
 
-/// The window as the view lays it out: it shows the workspace the document
-/// holds, answers the effects through the store it shares with them, and
-/// stages a capture's scenario.
+/// The window as the view lays it out: it shows the workspace the document holds, answers
+/// the effects through the shared store, and stages a capture's scenario.
 pub(crate) fn window(cx: &ViewCx<Workspace>) -> Element {
     let mut window = ApiTesterApp::new_with_actions(&cx.actions());
     window.attach(cx);

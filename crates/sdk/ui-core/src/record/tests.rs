@@ -99,7 +99,7 @@ fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let chain = RecordId::derived("messages", &RecordId::workspace_default());
     let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
-    let key = StorageKey::record(
+    let key = StorageKey::document(
         "so.tilo.test-chain",
         &workspace,
         chain.part(0).storage_key(),
@@ -129,27 +129,25 @@ fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     store.try_open_record(&part).unwrap();
 }
 
-/// Writer records stamped before the kind rename reopen as rich text
-/// without rewriting their attributed history.
+/// A record reads back with the kind it was stamped with — a kind is the name
+/// its app writes — and reading it leaves its attributed history alone.
 #[test]
-fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
-    let current = RecordKind::new("tilo.rich-text");
-    assert!(current.names("tilo.rich-text"));
-    for former in ["document", "qdoc.rich-text"] {
-        assert_eq!(RecordKind::new(former), current);
-        assert!(current.names(former));
+fn records_read_back_with_the_kind_they_were_stamped_with() {
+    for kind in ["tilo.rich-text", "document"] {
+        let stamped = RecordKind::new(kind);
+        assert!(stamped.names(kind));
         let id = RecordId::for_tab(7);
         let mut doc = AutoCommit::new();
-        init(&mut doc, &id, &current, "workspace");
+        init(&mut doc, &id, &stamped, "workspace");
         let meta = meta_obj(&mut doc).unwrap();
-        doc.put(&meta, "kind", former).unwrap();
+        doc.put(&meta, "kind", kind).unwrap();
         doc.commit();
         let heads = doc.get_heads();
         assert_eq!(
             identity(&doc),
-            Some(RecordCheckout::new(id.clone(), current.clone()))
+            Some(RecordCheckout::new(id.clone(), stamped.clone()))
         );
-        assert!(init_scoped(&mut doc, &id, &current, "workspace", None));
+        assert!(init_scoped(&mut doc, &id, &stamped, "workspace", None));
         doc.commit();
         assert_eq!(doc.get_heads(), heads);
     }
@@ -214,7 +212,7 @@ fn a_record_written_while_the_field_was_named_workspace_reads_with_its_workspace
     let history = written.get_heads();
 
     let backend = Rc::new(durable_store::MemoryStore::new());
-    let key = StorageKey::record(package, &workspace, checkout.id.storage_key());
+    let key = StorageKey::document(package, &workspace, checkout.id.storage_key());
     backend
         .write(&key, durable_store::WriteOp::Replace(written.save()), None)
         .unwrap();
@@ -526,7 +524,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         assert_eq!(store.canonical_namespace().unwrap().0, backend.namespace());
         drop((store, owners));
 
-        let key = StorageKey::record("so.tilo.test", "workspace-a", want.id.storage_key());
+        let key = StorageKey::document("so.tilo.test", "workspace-a", want.id.storage_key());
         let restarted = Rc::new(MemoryStore::queued().named(backend.namespace()));
         restarted
             .hydrate(key.clone(), backend.read(&key).unwrap().unwrap())
@@ -592,7 +590,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         );
         assert!(matches!(failure, Err(RecordOpenError::Store(_))));
         assert!(store.open_records().is_empty());
-        let directory = app_state::DocStore::workspace_record_dir_at(
+        let directory = app_state::DocStore::workspace_document_dir_at(
             &tmp.path().join("state"),
             "so.tilo.test",
             "workspace-a",
@@ -977,7 +975,7 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
             .join("so.tilo.test-records")
             .join(app_state::WORKSPACES_DIR)
             .join(workspace_id)
-            .join(app_state::RECORDS_DIR);
+            .join(app_state::DOCUMENTS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("records directory exists")
             .filter_map(Result::ok)
@@ -1128,7 +1126,7 @@ fn history_existing_records_reopen_and_refuse_corruption() {
             let path = {
                 let owner = app_state::DocStore::shared(
                     Rc::clone(&documents),
-                    StorageKey::record(package, workspace, &key),
+                    StorageKey::document(package, workspace, &key),
                 )
                 .unwrap();
                 owner.document_path().to_path_buf()

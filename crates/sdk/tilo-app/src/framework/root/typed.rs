@@ -176,10 +176,10 @@ pub(crate) trait TypedRoot {
         declarations: Box<dyn Any>,
     ) -> tilo_actions::ResourceSpec;
 
-    /// [`Resource::read_content`].
+    /// [`tilo_resource::read::content`].
     ///
     /// # Errors
-    /// As [`Resource::read_content`].
+    /// As [`tilo_resource::read::content`].
     fn read_content(
         &self,
         state: &dyn Any,
@@ -502,7 +502,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
     ) -> Result<serde_json::Value, String> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource is not readable here".to_owned())?;
-        R::read_content(state, doc, item)
+        tilo_resource::read::content::<R>(state, doc, item)
     }
 
     fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String> {
@@ -560,8 +560,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         };
         let previous = previous
             .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
-            // ignored-failure: an action that does not read back does not coalesce with this one
-            .and_then(|encoded| tilo_actions::decode_json::<R::Action>(&encoded.payload).ok());
+            .and_then(|encoded| {
+                tilo_failure::ignored!(
+                    "an action that does not read back does not coalesce with this one",
+                    tilo_actions::decode_json::<R::Action>(&encoded.payload).ok()
+                )
+            });
         (
             previous
                 .as_ref()

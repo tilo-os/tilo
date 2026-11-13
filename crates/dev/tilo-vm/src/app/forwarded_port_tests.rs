@@ -41,7 +41,6 @@ fn preflight_refuses_an_occupied_explicit_port_before_creating_vm_files() {
     let port = listener.local_addr().unwrap().port();
     let mut args = args(dir.path());
     args.ssh_port = Some(port);
-    // No image: a missing port preflight would try the remaining creation inputs.
     args.image = None;
     let error = app
         .preflight_create(&linux(HostKind::Dnf, LIBVIRT), &args, "x86_64")

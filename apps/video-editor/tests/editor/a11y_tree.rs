@@ -84,7 +84,7 @@ fn panes_transport_clips_and_track_toggles_reach_a_reader() {
     let mut app = editor();
     let nodes = app.harness().a11y_nodes();
     let labelled = |name: &str| nodes.iter().find(|(_, n)| n.label() == Some(name));
-    for pane in ["Media bin", "Transport", "Timeline", "Inspector"] {
+    for pane in ["Media bin", "Playback", "Timeline", "Inspector"] {
         assert!(labelled(pane).is_some(), "the {pane} pane is in the tree");
     }
     for button in [
@@ -137,7 +137,7 @@ fn activating_a_clip_focuses_it_and_parks_the_playhead_on_it() {
         Some("Cutaway_Market.mp4")
     );
     assert_eq!(
-        value_of(&mut app, "Transport"),
+        value_of(&mut app, "Playback"),
         video_editor::timecode::timecode(20.0, 30.0)
     );
 }
@@ -254,7 +254,7 @@ fn folded_headers_report_the_value_a_keyframe_is_playing() {
     assert!(key.contains("40%") && key.contains("20%"), "{key:?}");
     let mask = value_of(&mut app, "Mask");
     assert!(
-        mask.contains("ellipse") && mask.contains("120%") && mask.contains("30%"),
+        mask.contains("Ellipse") && mask.contains("120%") && mask.contains("30%"),
         "{mask:?}"
     );
     assert!(
@@ -336,7 +336,7 @@ fn switching_the_key_on_and_choosing_a_mask_reveal_their_sliders() {
     assert!(node(&mut app, "Tolerance").is_some());
     assert!(node(&mut app, "Switch chroma key off").is_some());
 
-    activate(&mut app, "Mask shape ellipse");
+    activate(&mut app, "Mask shape Ellipse");
     assert_eq!(
         app.state().clip(interview).unwrap().mask.shape,
         MaskShape::Ellipse
@@ -351,11 +351,11 @@ fn every_transition_can_be_chosen_by_a_reader() {
     let interview = clip_of(&app.state(), "Interview_A.mp4");
     let mut chosen = Vec::new();
     for name in [
-        "Transition cut",
-        "Transition dissolve",
-        "Transition fade",
-        "Transition dip",
-        "Transition wipe",
+        "Transition Cut",
+        "Transition Dissolve",
+        "Transition Fade",
+        "Transition Dip",
+        "Transition Wipe",
     ] {
         activate(&mut app, name);
         let (_, node) = node(&mut app, name).unwrap();

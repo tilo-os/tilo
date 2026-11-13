@@ -17,16 +17,21 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.publisher@a369a701e1193f6d";
+
 /** App Publisher — `publisher.profile`. */
 export interface Profile extends tilo.Resource {
-  registry: unknown;
-  domain: unknown;
-  forge_account: unknown;
-  contact: unknown;
+  registry: string;
+  domain: string;
+  forge_account: string;
+  contact: string;
 }
 
 /** The `publisher.profile` kind at `path`. */
 export function profile(ws: tilo.Workspace, path: string): Profile {
-  return resourceProxy(ws, path) as unknown as Profile;
+  return resourceProxy(ws, path, SURFACE) as unknown as Profile;
 }
 

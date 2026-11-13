@@ -1,26 +1,5 @@
-//! Painting a decoded video frame on the GPU.
-//!
-//! A hardware decoder produces YUV, not RGB — NV12 almost always, P010 for
-//! 10-bit. Two paths bring that to the screen without the CPU touching a
-//! pixel:
-//!
-//! * **Zero-copy.** The picture never left the GPU: `crate::dmabuf_import`
-//!   aliases its dmabuf as textures. Reachable only for a linear buffer (see
-//!   that module for why).
-//! * **Plane upload.** The decoder produced planes in system memory — what
-//!   NVDEC yields, since `nvcodec` exports CUDA memory rather than a dmabuf.
-//!   [`upload_planar`] pushes the two planes to the GPU as they are: 1.5 bytes
-//!   per pixel with no conversion, against 4 bytes per pixel *after* a
-//!   full-frame CPU colour conversion, which is what asking the pipeline for
-//!   RGBA costs.
-//!
-//! Either way the result is a set of YUV planes, and [`YuvConverter`] turns
-//! them into one sampleable RGBA texture with a fullscreen pass. That is the
-//! same arithmetic [`media::frame::planar_to_rgba`] does per pixel on the CPU,
-//! moved to the GPU.
-//!
-//! [`upload_planar`]: crate::gpu_video::upload_planar
-//! [`YuvConverter`]: crate::gpu_video::YuvConverter
+//! Painting a decoded video frame on the GPU. A hardware decoder produces YUV, not RGB — NV12 almost
+//! always, P010 for 10-bit.
 
 use media::dmabuf::{ColorRange, Colorimetry};
 use media::frame::{PlanarFormat, PlanarImage};
@@ -30,8 +9,7 @@ use vello::wgpu;
 use crate::dmabuf_import::PlaneLayout;
 
 #[cfg(not(all(feature = "dmabuf-import", target_os = "linux")))]
-/// How the planes are laid out. Mirrors `dmabuf_import::PlaneLayout` for
-/// builds that upload planes but do not import dmabufs.
+/// How the planes are laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaneLayout {
     Packed,
@@ -103,8 +81,6 @@ pub fn upload_planar(
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        // The decoder pads rows; `bytes_per_row` is the source stride, not the
-        // packed width, or every row after the first lands offset.
         let Some(needed) = (src.stride as usize).checked_mul(h as usize) else {
             tracing::warn!(
                 "gpu_video: plane {i} dimensions overflow for {w}x{h} at stride {}",
@@ -152,16 +128,12 @@ pub fn upload_planar(
     })
 }
 
-/// The per-frame constants the conversion shader needs: the inverse colour
-/// matrix and the range expansion, derived from the stream's colorimetry.
-///
-/// Laid out as four `vec4`s so the alignment rules are trivially satisfied.
+/// The per-frame constants the conversion shader needs: the inverse colour matrix and the range
+/// expansion, derived from the stream's colorimetry.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ConvertUniform {
-    /// `r_cr`, `g_cb`, `g_cr`, `b_cb`.
     coeffs: [f32; 4],
-    /// `y_scale`, `y_offset`, `c_scale`, `is_yuv422`.
     range: [f32; 4],
 }
 
@@ -169,7 +141,6 @@ impl ConvertUniform {
     fn for_colorimetry(c: Colorimetry, layout: PlaneLayout) -> Self {
         let (kr, kg, kb) = c.matrix.luma_coefficients();
         let (y_scale, y_offset, c_scale) = match c.range {
-            // 16..235 luma and 16..240 chroma, expanded to 0..1.
             ColorRange::Limited => (255.0 / 219.0, 16.0 / 255.0, 255.0 / 224.0),
             ColorRange::Full => (1.0, 0.0, 1.0),
         };
@@ -273,9 +244,6 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
 ";
 
 /// Turns YUV planes into one RGBA texture with a fullscreen pass.
-///
-/// Build once and reuse: the pipeline and sampler are the expensive part, and
-/// nothing in them depends on the frame.
 pub struct YuvConverter {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -315,8 +283,8 @@ impl YuvConverter {
         )
     }
 
-    /// Build a converter producing `format` (use the surface's format so the
-    /// result can be composited directly).
+    /// Build a converter producing `format` (use the surface's format so the result can be composited
+    /// directly).
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yuv-to-rgba"),
@@ -407,7 +375,7 @@ impl YuvConverter {
 
     /// Convert `planes` into an RGBA texture and return a view of it.
     ///
-    /// The output texture is reused across calls while the frame size holds,
+    /// The output texture is reused across calls while the frame size has,
     /// so a steady stream of same-sized frames allocates nothing.
     ///
     /// # Panics
@@ -521,7 +489,6 @@ mod tests {
                 PlaneLayout::BiPlanarYuv,
             );
             let [y_scale, y_offset, ..] = u.range;
-            // The shader computes (y - offset) * scale.
             let black = (16.0 / 255.0 - y_offset) * y_scale;
             let white = (235.0 / 255.0 - y_offset) * y_scale;
             assert!(
@@ -548,7 +515,6 @@ mod tests {
         }
 
         {
-            // A sign error or a swapped coefficient shows up here immediately.
             for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
                 let u = ConvertUniform::for_colorimetry(
                     Colorimetry {
@@ -642,8 +608,6 @@ mod tests {
         }
     }
 
-    /// Run the shader's arithmetic on the CPU so the constants can be checked
-    /// against known colours without a GPU.
     fn convert_one(u: &ConvertUniform, y: f32, cb: f32, cr: f32) -> [f32; 3] {
         let yy = (y - u.range[1]) * u.range[0];
         let uu = (cb - 0.5) * u.range[2];
@@ -674,7 +638,6 @@ mod tests {
             );
         }
 
-        // Case `the_packed_422_flag_is_set_only_for_that_layout`.
         {
             let bi = ConvertUniform::for_colorimetry(
                 Colorimetry::BT709_LIMITED,

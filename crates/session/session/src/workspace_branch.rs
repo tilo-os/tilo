@@ -14,7 +14,7 @@
 //!    naming the branch as its workspace ([`ui::record::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
-//! 3. What the apps keep for the workspace on this device (`tilo-rooms/<workspace>/<app>`) is
+//! 3. What the apps keep for the workspace on this device (`tilo-workspaces/<workspace>/<app>`) is
 //!    copied, sharing extents where the file system can, every document in it forked the same way.
 //! 4. The workspace's own files (`.workspaces/<workspace>`) are copied the same way.
 //! 5. Its Terminal environments are branched by the runtime that keeps them
@@ -155,7 +155,7 @@ pub(crate) struct Branched {
 }
 
 /// Where this device keeps what a branch copies: the person's data home (the apps' directories
-/// per workspace, `tilo-rooms`) and the device's files (each workspace's own tree in them).
+/// per workspace, `tilo-workspaces`) and the device's files (each workspace's own tree in them).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Places {
     pub(crate) data_home: Option<PathBuf>,
@@ -464,7 +464,7 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
                 TERMINAL,
                 app_state::WORKSPACES_DIR,
                 from,
-                app_state::RECORDS_DIR,
+                app_state::DOCUMENTS_DIR,
             ]
     })
 }
@@ -473,7 +473,12 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
 /// when it is a record: `<app dir>/…/<app>/rooms/<workspace>/records/<record>`.
 fn record_of(parts: &[&str], workspace: &str) -> Option<(String, String)> {
     let at = parts.windows(3).position(|window| {
-        window == [app_state::WORKSPACES_DIR, workspace, app_state::RECORDS_DIR]
+        window
+            == [
+                app_state::WORKSPACES_DIR,
+                workspace,
+                app_state::DOCUMENTS_DIR,
+            ]
     })?;
     let app = parts.get(at.checked_sub(1)?)?;
     let record = parts.get(at.checked_add(3)?)?;
@@ -607,7 +612,7 @@ fn branch_environments(places: &Places, from: WorkspaceId, to: WorkspaceId) -> R
             .join(TERMINAL)
             .join(app_state::WORKSPACES_DIR)
             .join(&room)
-            .join(app_state::RECORDS_DIR)
+            .join(app_state::DOCUMENTS_DIR)
             .is_dir()
     });
     if !has_environments {
@@ -765,14 +770,21 @@ impl crate::Shared {
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
         let founded = name.clone();
-        let copied = Polled::new(Arc::clone(&self.wake_handle), async move {
-            if let Some(engine) = &engine {
-                engine
-                    .found(slot, workspace, &founded, endpoint.as_ref())
-                    .await;
-            }
-            copy(engine.as_deref(), Places::here(), from, workspace, until).await
-        });
+        let copied = Polled::new(
+            Arc::clone(&self.wake_handle),
+            async move {
+                if let Some(engine) = &engine {
+                    engine
+                        .found(slot, workspace, &founded, endpoint.as_ref())
+                        .await;
+                }
+                copy(engine.as_deref(), Places::here(), from, workspace, until).await
+            },
+            || Branched {
+                missing: vec!["the branch's copy stopped before it answered".to_owned()],
+                ..Branched::default()
+            },
+        );
         self.telling().show(
             &Notice::new(
                 String::new(),
@@ -982,7 +994,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let data = home.path().join("data");
         let files = home.path().join("files");
-        let rooms = data.join("tilo-rooms");
+        let rooms = data.join("tilo-workspaces");
         let notes = rooms
             .join(FROM)
             .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
@@ -1111,11 +1123,11 @@ mod tests {
                 ),
                 tab(
                     5,
-                    TileContent::PeerWindow {
-                        app_id: "so.tilo.browser".into(),
+                    TileContent::HostedWindow {
+                        app_id: "org.gnome.TextEditor".into(),
                         label: "theirs".into(),
-                        note: String::new(),
-                        missing: None,
+                        host: "ab".repeat(32),
+                        host_label: "Laptop".into(),
                     },
                 ),
             ],
@@ -1147,7 +1159,11 @@ mod tests {
             .collect();
         assert_eq!(names, ["Reading", "Writing"]);
         let tabs: Vec<&Tab> = branch.tabs().collect();
-        assert_eq!(tabs.len(), 1, "another person's window stays theirs");
+        assert_eq!(
+            tabs.len(),
+            1,
+            "a window that runs on another device stays there"
+        );
         assert!(matches!(
             &tabs[0].tile,
             TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"
@@ -1250,7 +1266,7 @@ mod tests {
         let mut party = record(FROM, "party-parrot");
         write(&engine, &keys, from, (CHAT, &emoji), &mut party);
         let home = tempfile::tempdir().unwrap();
-        let rooms = home.path().join("data/tilo-rooms");
+        let rooms = home.path().join("data/tilo-workspaces");
         // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
         let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
             rooms

@@ -1,14 +1,8 @@
-//! The transport checks of one immutable CI target staged in a live
-//! installer's writable `/var`: integrity, not release authority.
-//!
-//! The normal transport still requires the running installer to verify
-//! signatures and SLSA provenance. A development transport (`development`) is
-//! a separate unsigned dev-image schema with content-bound source and flavour
-//! labels; CI run authority is a separate host check.
-//!
-//! The host stages a transport with `os/dev/installer-target-transport.py`,
-//! which applies these same checks; `tilo-installer-offline-target` applies
-//! them to a development target before it trusts one.
+//! The transport checks of one immutable CI target staged in a live installer's
+//! writable `/var`: integrity, not release authority. The running installer
+//! still verifies signatures and SLSA provenance, and CI run authority is a
+//! separate host check. A development transport (`development`) is a separate
+//! unsigned dev-image schema with content-bound source and flavour labels.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -138,8 +132,8 @@ fn supported_origin(origin: &str, development: bool, profile: &str) -> bool {
 pub fn repository(profile: &str) -> Option<&'static str> {
     match profile {
         "generic" => Some("registry.tilo.so/tilo/tilo"),
-        // Board images carry private firmware and stay on the forge's
-        // private registry.
+        // Board images carry private firmware and stay on the forge's private
+        // registry.
         "lenovo-83ed" => Some("code.tilo.so/tilo/tilo"),
         _ => None,
     }
@@ -193,11 +187,9 @@ fn check_metadata(metadata: &Map<String, Value>, development: bool) -> Result<()
     Ok(())
 }
 
-/// Checks the transport in `directory` and returns its metadata.
-///
-/// # Errors
-/// Anything that differs from one bounded, hash-exact OCI layout of the
-/// pinned target (and, for a development transport, its labels).
+/// Checks the transport in `directory` and returns its metadata: anything that
+/// differs from one bounded, hash-exact OCI layout of the pinned target is
+/// refused.
 pub fn verify(directory: &Path, development: bool) -> Result<Map<String, Value>> {
     require(
         directory.is_dir() && !directory.is_symlink(),
@@ -263,8 +255,8 @@ fn read_metadata(path: &Path, development: bool) -> Result<Map<String, Value>> {
     Ok(metadata)
 }
 
-/// The index's bounded manifest list and the position of the one pinned
-/// target in it.
+/// The index's bounded manifest list and the position of the one pinned target
+/// in it.
 fn index_manifests<'a>(
     index_json: &'a Value,
     metadata: &Map<String, Value>,
@@ -322,10 +314,9 @@ fn index_manifests<'a>(
     Ok((manifests, *at))
 }
 
-/// The blobs one index descriptor references: itself, its manifest's config
-/// and layers. For the target (`target` holds its metadata) the config must
-/// be Linux ARM64 and, for a development target, carry its source and
-/// flavour labels.
+/// The blobs one index descriptor references: itself, its manifest's config and
+/// layers. For the target the config must be Linux ARM64 and, for a development
+/// target, carry its source and flavour labels.
 fn manifest_refs(
     layout: &Path,
     descriptor: &Value,

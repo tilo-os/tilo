@@ -1,13 +1,11 @@
-//! The clock a part's transitions run on. A painter declares how a change
-//! moves ([`super::PartPainter::transition`]) and draws a given moment; the
-//! toolkit holds the time.
+//! The clock a part's transitions run on. A painter declares how a change moves
+//! ([`super::PartPainter::transition`]) and draws a given moment; the toolkit holds the time.
 
 use crate::time::Instant;
 
 use super::{PainterSet, Part, PartState, States, Transition};
 
-/// Where a part is in its motion: the states it is moving between and how
-/// far it has come.
+/// Where a part is in its motion: the states it is moving between and how far it has come.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Moment {
     pub state: PartState,
@@ -56,11 +54,8 @@ impl PartMotion {
         self.to
     }
 
-    /// Move to `states` at `now`, the way `set` says `part` moves;
-    /// `inherit` is the toolkit's own motion for the change, taken where
-    /// the set inherits it or there is no set. With `reduce_motion` every
-    /// change lands at once. A change while moving starts from where the
-    /// part was going.
+    /// Move to `states` at `now`, the way `set` says `part` moves; `inherit` is the toolkit's own
+    /// motion for the change, taken where the set inherits it or there is no set.
     pub fn go(
         &mut self,
         states: States,
@@ -111,8 +106,7 @@ impl PartMotion {
         }
     }
 
-    /// Whether the part is still moving at `now`: its owner asks for
-    /// another frame.
+    /// Whether the part is still moving at `now`: its owner asks for another frame.
     #[must_use]
     pub fn moving(&self, now: Instant) -> bool {
         !self.at(now).settled

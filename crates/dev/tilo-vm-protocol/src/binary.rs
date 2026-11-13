@@ -1,6 +1,6 @@
-//! Bounded layer framing on the existing authenticated byte stream.
-//! A big-endian length precedes each chunk. Zero ends with byte count and SHA-256;
-//! `u32::MAX` cancels. No archive is accepted before its footer verifies.
+//! Bounded layer framing on the authenticated byte stream: a big-endian length before each
+//! chunk, a zero length ending with byte count and SHA-256, `u32::MAX` cancelling. No archive is
+//! accepted before its footer verifies.
 use sha2::{Digest as _, Sha256};
 use std::io::{self, Read, Write};
 
@@ -35,8 +35,6 @@ impl<W: Write> Encoder<W> {
         Ok(())
     }
     /// Finish only after the source has reached a verified EOF.
-    /// # Errors
-    /// I/O failure writing the bounded chunks or final checksum.
     pub fn finish(mut self) -> io::Result<u64> {
         self.emit()?;
         self.output.write_all(&0_u32.to_be_bytes())?;
@@ -46,10 +44,7 @@ impl<W: Write> Encoder<W> {
         Ok(self.bytes)
     }
     /// Cancel at a frame boundary, discarding pending bytes.
-    /// # Errors
-    /// I/O failure writing the cancellation marker.
     pub fn cancel(mut self) -> io::Result<()> {
-        // Pending data was never framed and must not be sent on cancellation.
         self.output.write_all(&CANCEL.to_be_bytes())?;
         self.output.flush()
     }
@@ -88,14 +83,12 @@ pub struct Decoder {
     failed: bool,
 }
 impl Decoder {
-    /// Whether a complete footer/cancellation was consumed (safe RPC alignment).
+    /// Whether a complete footer or cancellation was consumed, so the RPC loop may continue.
     #[must_use]
     pub fn at_boundary(&self) -> bool {
         self.boundary
     }
     /// Decode a bounded chunk, refusing missing or incorrect integrity evidence.
-    /// # Errors
-    /// Truncation, cancellation, bad checksum or exceeded bounds.
     pub fn read(&mut self, input: &mut impl Read, output: &mut [u8]) -> io::Result<usize> {
         let result = self.read_inner(input, output);
         if result.is_err() {

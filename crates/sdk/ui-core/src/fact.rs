@@ -1,12 +1,12 @@
-//! A value that carries its measure, its provenance and its as-of.
+//! A value that has its measure, its provenance and its as-of.
 //!
 //! A number on screen is a claim. [`Measured`] keeps the three things that make it honest
 //! together, so an app cannot render the number without also having the answer to "measured
 //! how?", "from where?" and "when?": a [`Measure`] naming what it counts and its unit, a source
 //! naming where the reading came from, and an as-of instant that makes it age on screen
-//! ([stale](Measured::is_stale) past its own expected interval).
+//! ([stale](Measured::is_stale) past its expected interval).
 //!
-//! `Unknown` is a designed state, not zero: [`Measured::unknown`] carries the reason (and the
+//! `Unknown` is a designed state, not zero: [`Measured::unknown`] has the reason (and the
 //! action that would resolve it) and renders an em dash. A number is never a stand-in for "we
 //! did not measure".
 //!
@@ -57,8 +57,8 @@ impl Measure {
         self
     }
 
-    /// The measure's name. Two values with different names are different
-    /// claims even when both read "Memory".
+    /// The measure's name. Two values with different names are different claims even when both read
+    /// "Memory".
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
@@ -71,8 +71,7 @@ impl Measure {
     }
 }
 
-/// One value as the app knows it: a measurement with provenance, or the
-/// reason it has none.
+/// One value as the app knows it: a measurement with provenance, or the reason it has none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Measured {
     measure: Measure,
@@ -94,8 +93,6 @@ enum State {
 
 impl Measured {
     /// A reading of `value` in `measure`, taken at `as_of` from `source`.
-    /// `expected` is how long the reading is good for before it is stale;
-    /// `None` means the app has no interval to judge it by.
     #[must_use]
     pub fn known(
         measure: Measure,
@@ -197,14 +194,8 @@ impl Measured {
         }
     }
 
-    /// The caption line under the value: provenance, age and — when it has
-    /// outlived its interval — that it is stale. Unknown facts say why and
-    /// nothing else.
-    ///
-    /// Captions are English fallbacks for a view with no catalog entry. An
-    /// app with localized copy can build the same line from
-    /// [`source`](Self::source), [`age`](Self::age) and
-    /// [`is_stale`](Self::is_stale).
+    /// The caption line under the value: provenance, age and — when it has outlived its interval — that
+    /// it is stale.
     #[must_use]
     pub fn caption(&self, now: SystemTime) -> String {
         match &self.state {

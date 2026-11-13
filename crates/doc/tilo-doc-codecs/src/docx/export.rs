@@ -8,6 +8,7 @@ use crate::preserve::{MARK_DOCX_XML, merge_root_namespaces};
 use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use tilo_content::ContentSource;
 use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::DocRef;
@@ -16,9 +17,6 @@ use tilo_doc::schema::{
     STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use tilo_doc::snapshot::{AttrVal, BlockView, DocSnapshot};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -104,7 +102,6 @@ fn copy_preserved_parts(
     (flags, original_core, original_app)
 }
 
-/// The header and footer parts `section` writes qdoc's regions to.
 fn region_parts(section: &super::section::SectionPlan) -> Vec<RegionPart> {
     let header = section.header_part.clone().map(|part| RegionPart {
         part,
@@ -121,7 +118,6 @@ fn region_parts(section: &super::section::SectionPlan) -> Vec<RegionPart> {
     header.into_iter().chain(footer).collect()
 }
 
-/// A header or footer part this export writes, with the relationship that references it.
 struct RegionPart {
     part: String,
     rel_id: &'static str,
@@ -139,7 +135,6 @@ impl RegionPart {
     }
 }
 
-/// Which optional parts this export is newly wiring up (synthesised but not already declared).
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each field is an independent 'is this optional part newly wired up' flag, \
@@ -161,14 +156,11 @@ struct Wireups {
     need_footnotes: bool,
     need_endnotes: bool,
     need_comments: bool,
-    /// External link relationships: (id, URL).
     links: Vec<(String, String)>,
 }
 
-/// Prefix of the relationship ids external links are written under.
 const LINK_REL_PREFIX: &str = "rIdQdocLink";
 
-/// Each distinct external link URL in the body → the relationship id it is written under.
 fn link_relationship_ids(snap: &DocSnapshot) -> BTreeMap<String, String> {
     let mut urls: BTreeSet<&str> = BTreeSet::new();
     for b in &snap.blocks {
@@ -199,7 +191,6 @@ fn link_relationship_xml(id: &str, url: &str) -> String {
     )
 }
 
-/// Builds/extends `[Content_Types].xml` with an `Override`/`Default` for every newly-wired part.
 fn build_content_types(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, images: &ImageExport) {
     if flags.had_content_types {
         let mut overrides: Vec<(String, String)> = w
@@ -239,7 +230,6 @@ fn build_content_types(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, image
                     inject_before(&mut s, "</Types>", &ovr);
                 }
             }
-            // Image content-type `Default`s — dedup on `Extension="<ext>"`.
             for img in &images.images {
                 let probe = format!(r#"Extension="{}""#, img.ext);
                 if !s.contains(&probe) {
@@ -287,7 +277,6 @@ fn build_content_types(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, image
     }
 }
 
-/// docProps relationships live in the root rels, not the document's; generated fresh or injected into an existing part.
 fn build_root_rels(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups) {
     if !flags.had_root_rels {
         let mut s = ROOT_RELS.to_string();
@@ -356,7 +345,6 @@ fn build_document_rels(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, image
         c.set("word/_rels/document.xml.rels", rels.into_bytes());
     } else if let Some(rels) = c.get("word/_rels/document.xml.rels") {
         let mut s = String::from_utf8_lossy(rels).into_owned();
-        // Link relationships an earlier export wrote are replaced by this export's.
         if s.contains(LINK_REL_PREFIX) {
             s = super::section::remove_elements(&s, b"Relationship", |e| {
                 e.attributes().flatten().any(|a| {
@@ -385,7 +373,6 @@ fn build_document_rels(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, image
         if w.need_comments && !s.contains("Target=\"comments.xml\"") {
             inject_before(&mut s, "</Relationships>", COMMENTS_REL);
         }
-        // Image rels — unique ids (`rIdImgN`), so a simple id-presence check dedups.
         for img in &images.images {
             if !s.contains(&format!(r#"Id="{}""#, img.rel_id)) {
                 inject_before(
@@ -466,7 +453,6 @@ fn write_lists_and_styles(
     if let Some(xml) = numbering.numbering_xml(has_lists) {
         c.set("word/numbering.xml", xml.into_bytes());
     }
-    // Merge referenced CRDT styles into the preserved styles.xml as `w:style` defs; already-declared styles are referenced, not redefined.
     if has_styles {
         let merged = merge_styles_xml(c.get("word/styles.xml"), named_refs, &snap.styles, doc_lang);
         c.set("word/styles.xml", merged);
@@ -532,14 +518,12 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         root.as_deref(),
     );
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
-    // A document default language forces styles.xml emission via `<w:docDefaults>`, so the language always has a home.
     let doc_lang = snap.language.clone();
     let has_styles = !named_refs.is_empty() || doc_lang.is_some();
     let has_images = !images.images.is_empty();
 
     c.set("word/document.xml", document.into_bytes());
 
-    // Each exported drawing references a synthesised media part, named by its content.
     for img in &images.images {
         c.set(&img.part, img.bytes.clone());
     }
@@ -612,8 +596,6 @@ fn kept_regions(
     }
 }
 
-/// The `<w:docDefaults>` block declaring a document default language, read by
-/// Word/LibreOffice for spell-check/screen-reader locale. Re-imported by `parse_styles`.
 fn doc_defaults_lang_xml(lang: &str) -> String {
     format!(
         r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="{}"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
@@ -680,8 +662,6 @@ fn merge_styles_xml(
 }
 
 const NORMAL_STYLE_ID: &str = "Normal";
-/// The default paragraph style a new styles part names, so a paragraph without
-/// a `w:pStyle` has one in every reader.
 const NORMAL_STYLE_XML: &str = r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>"#;
 
 /// The definition for a referenced style id: the document's own style, else Word's built-in
@@ -706,8 +686,6 @@ fn style_def_xml(id: &str, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>)
     ))
 }
 
-/// Insert `frag` right after the `<w:styles …>` open tag, so `<w:docDefaults>` lands ahead
-/// of every `<w:style>` as the schema requires.
 fn inject_after_styles_open(s: &mut String, frag: &str) {
     if let Some(open) = s.find("<w:styles")
         && let Some(tail) = s.get(open..)
@@ -718,7 +696,6 @@ fn inject_after_styles_open(s: &mut String, frag: &str) {
     }
 }
 
-/// The `w:styleId` values already declared, so merging doesn't redefine them.
 fn style_ids_in(xml: &[u8]) -> BTreeSet<String> {
     let s = String::from_utf8_lossy(xml);
     let mut out = BTreeSet::new();
@@ -744,8 +721,6 @@ fn style_ids_in(xml: &[u8]) -> BTreeSet<String> {
     out
 }
 
-/// An OOXML `w:style` paragraph definition for a CRDT styles-container style, the inverse
-/// of `styles::parse_styles` + `styles::style_props`.
 fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let getf = |k: &str| match props.get(k) {
         Some(AttrVal::Float(f)) => Some(*f),
@@ -846,7 +821,6 @@ fn px_to_twips(px: f64) -> i64 {
     twips
 }
 
-/// `#rrggbb` → OOXML `RRGGBB` (upper-case, no hash, as Word writes it); re-imports via `styles::normalize_color`.
 fn color_hex(c: &str) -> String {
     c.trim_start_matches('#').to_ascii_uppercase()
 }
@@ -865,16 +839,13 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// Build the `<w:rPr>` body for an active mark set (empty if none modeled).
 fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     let (mut bold, mut italic, mut underline, mut strike) = (false, false, false, false);
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
     let mut color: Option<&str> = None;
     let mut highlight: Option<&str> = None;
-    // Per-run language override (BCP-47, e.g. `fr`/`de-DE`) → `w:lang w:val`.
     let mut lang: Option<&str> = None;
-    // Vertical alignment: `superscript`/`subscript` (super wins if both present).
     let mut vert_align: Option<&'static str> = None;
     for mark in marks {
         match mark.name.as_str() {
@@ -909,7 +880,6 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     if let Some(c) = color {
         let _ = write!(s, r#"<w:color w:val="{}"/>"#, color_hex(c));
     }
-    // w:shd carries the arbitrary hex highlight fill, since it round-trips any colour unlike the named w:highlight palette.
     if let Some(c) = highlight {
         let _ = write!(
             s,
@@ -921,7 +891,6 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
         let hp = n.saturating_mul(2);
         let _ = write!(s, r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#);
     }
-    // BCP-47 tag emitted verbatim; Word uses it for spell-check locale and screen-reader language.
     if let Some(l) = lang {
         let _ = write!(s, r#"<w:lang w:val="{}"/>"#, escape_attr(l));
     }
@@ -934,8 +903,6 @@ fn run_props(marks: &[&tilo_doc::document::MarkSpan]) -> String {
     s
 }
 
-/// Emit run content as `text_elem` text (`w:t`, or `w:delText` for a deleted
-/// run as OOXML requires), turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
 fn push_run_content(out: &mut String, text: &str, text_elem: &str) {
     let mut rest = text;
     loop {
@@ -957,7 +924,6 @@ fn push_run_content(out: &mut String, text: &str, text_elem: &str) {
     }
 }
 
-/// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
 fn note_reference_run(
     note_id: &str,
     note_ids: &BTreeMap<String, i64>,
@@ -977,14 +943,12 @@ fn note_reference_run(
     ))
 }
 
-/// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
 type ChangeIndex<'a> = BTreeMap<String, &'a tilo_doc::snapshot::ChangeView>;
 
 fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
     snap.changes.iter().map(|c| (c.id.clone(), c)).collect()
 }
 
-/// The `<w:ins>`/`<w:del>` open tag for a tracked change (docx id + author/date), wrapping the affected `<w:r>` runs.
 fn change_open_tag(change: &tilo_doc::snapshot::ChangeView, docx_id: i64) -> String {
     let elem = match change.kind {
         tilo_doc::snapshot::ChangeKind::Ins => "w:ins",
@@ -1001,8 +965,6 @@ fn change_open_tag(change: &tilo_doc::snapshot::ChangeView, docx_id: i64) -> Str
     )
 }
 
-/// The id-lookup tables `render_runs` needs to resolve marks into DOCX-side numeric/ref ids;
-/// bundled so the function itself stays under the argument-count bar.
 struct RunIds<'a, 'b> {
     note_ids: &'a BTreeMap<String, i64>,
     note_kinds: &'a BTreeMap<String, tilo_doc::model::NoteKind>,
@@ -1010,9 +972,7 @@ struct RunIds<'a, 'b> {
     changes: &'a ChangeIndex<'b>,
     change_ids: &'a BTreeMap<String, i64>,
     bookmark_ids: &'a BTreeMap<String, i64>,
-    /// External link URL → the relationship id it is written under.
     links: &'a BTreeMap<String, String>,
-    /// The section plan, which section breaks kept in paragraph properties are rebuilt with.
     section: &'a super::section::SectionPlan,
 }
 
@@ -1023,8 +983,6 @@ struct RunIds<'a, 'b> {
 fn render_runs(text: &str, marks: &[tilo_doc::document::MarkSpan], ids: &RunIds) -> String {
     let plan = InlinePlan::new(text, marks);
     let mut out = String::new();
-    // Comment boundaries: ends (+ reference run) close before starts open, so
-    // adjacent ranges don't collide.
     let emit_comment_boundaries =
         |out: &mut String, boundary: &tilo_doc::export::RangeBoundary<'_>| {
             for id in &boundary.ends {
@@ -1041,8 +999,6 @@ fn render_runs(text: &str, marks: &[tilo_doc::document::MarkSpan], ids: &RunIds)
                 }
             }
         };
-    // Bookmark boundaries: end (by id) before start (id + name) — empty
-    // elements sitting between runs.
     let emit_bookmark_boundaries =
         |out: &mut String, boundary: &tilo_doc::export::RangeBoundary<'_>| {
             for name in &boundary.ends {
@@ -1067,14 +1023,12 @@ fn render_runs(text: &str, marks: &[tilo_doc::document::MarkSpan], ids: &RunIds)
         let Some(run) = &point.run else {
             continue;
         };
-        // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
         if let Some(note_id) = run.note_reference {
             if let Some(reference) = note_reference_run(note_id, ids.note_ids, ids.note_kinds) {
                 out.push_str(&reference);
             }
             continue;
         }
-        // The `<w:ins>`/`<w:del>` wrapper (if any) for this run group; deleted text uses `<w:delText>`.
         let (wrap_open, wrap_close, is_del) = match run.change {
             Some(active_change) => match (
                 ids.changes.get(active_change.id),
@@ -1095,8 +1049,6 @@ fn render_runs(text: &str, marks: &[tilo_doc::document::MarkSpan], ids: &RunIds)
             },
             None => (String::new(), "", false),
         };
-        // A link wraps the whole run group in `<w:hyperlink>`, the outermost wrapper: a
-        // cross-reference by `w:anchor`, an external link by its relationship's `r:id`.
         let external = run.link.and_then(|href| ids.links.get(href));
         let (xref_open, xref_close) = match (run.cross_reference(), external) {
             (Some(target), _) => (
@@ -1115,8 +1067,6 @@ fn render_runs(text: &str, marks: &[tilo_doc::document::MarkSpan], ids: &RunIds)
     out
 }
 
-/// A block's `w:pPr`: the `modeled` children plus its alignment and line spacing, merged with
-/// the properties kept verbatim from import.
 fn block_ppr(b: &BlockView, modeled: &[(&[u8], String)], ids: &RunIds) -> String {
     let mut all = modeled.to_vec();
     all.push((b"w:jc", jc_xml(b)));
@@ -1149,7 +1099,6 @@ fn push_run_group(out: &mut String, run: &tilo_doc::export::InlineRun<'_>, is_de
     }
 }
 
-/// One `w:r` of `text` with run properties `rpr`; deleted text uses `w:delText`.
 fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
     out.push_str("<w:r>");
     if !rpr.is_empty() {
@@ -1204,16 +1153,12 @@ fn ooxml_num_format(fmt: &str) -> &'static str {
 /// for the other list items are added to it, numbered past its own.
 #[derive(Default)]
 struct Numbering {
-    /// The imported `word/numbering.xml`.
     original: Option<String>,
     /// What each of the original's `w:numId`s numbers: `(ordered, format, start)`.
     known: BTreeMap<String, (bool, String, i64)>,
-    /// The first id past every `w:abstractNumId`/`w:numId` of the original.
     base: i64,
     /// `(ordered, format, start)` → added numId.
     ids: Vec<((bool, String, i64), i64)>,
-    /// The package's styles define `ListParagraph`, the paragraph style Word gives list
-    /// items. Referencing it undefined makes `LibreOffice` drop the items' numbering.
     list_paragraph_style: bool,
 }
 
@@ -1227,7 +1172,6 @@ fn list_key(b: &BlockView) -> (bool, String, i64) {
     )
 }
 
-/// The largest numeric value of the attribute `key` (`w:numId=`) in `xml`.
 fn max_attr_value(xml: &str, key: &str) -> Option<i64> {
     let needle = format!("{key}=\"");
     xml.match_indices(&needle)
@@ -1275,7 +1219,6 @@ impl Numbering {
         }
     }
 
-    /// The paragraph style reference of a list item without one of its own.
     fn paragraph_style(&self) -> String {
         if self.list_paragraph_style {
             r#"<w:pStyle w:val="ListParagraph"/>"#.to_string()
@@ -1320,7 +1263,6 @@ impl Numbering {
         id
     }
 
-    /// An abstract numbering (every level) and the `w:num` naming it, for `id`.
     fn definition(id: i64, (ordered, fmt, start): &(bool, String, i64)) -> (String, String) {
         let mut levels = String::new();
         for level in 0..9_u8 {
@@ -1374,7 +1316,6 @@ impl Numbering {
             )),
             Some(_) if self.ids.is_empty() => None,
             Some(original) => {
-                // Abstract numberings precede the `w:num`s in `CT_Numbering`.
                 let mut out = original.clone();
                 let nums_at = out
                     .find("<w:num ")
@@ -1394,27 +1335,22 @@ impl Numbering {
 /// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch).
 const EMU_PER_PX: f64 = 914_400.0 / 96.0;
 
-/// A media part + relationship synthesised for an exported image block.
 struct ExportedImage {
     /// Relationship id (e.g. `rIdImg1`) referenced by the drawing's `a:blip`.
     rel_id: String,
     /// Package part name, e.g. `word/media/qdoc-0123456789abcdef.png`.
     part: String,
-    /// `Target` written into the document rels (relative to `word/`).
     target: String,
-    /// File extension (`png`/`jpg`/…) for the content-type `Default`.
     ext: &'static str,
     bytes: Vec<u8>,
 }
 
-/// Accumulator threaded through the body build: assigns rel ids + part names so `export()` can write parts and wire rels.
 #[derive(Default)]
 struct ImageExport {
     images: Vec<ExportedImage>,
 }
 
 impl ImageExport {
-    /// The distinct `Default Extension`/`ContentType` rows the exported media parts need.
     fn content_type_defaults(&self) -> Vec<String> {
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
@@ -1430,7 +1366,6 @@ impl ImageExport {
         out
     }
 
-    /// The `<Relationship>` rows wiring each media part into the document rels.
     fn relationships(&self) -> String {
         let mut s = String::new();
         for img in &self.images {
@@ -1489,7 +1424,6 @@ fn image_extent_emu(b: &BlockView) -> (i64, i64) {
     (emu(px("width", 96)), emu(px("height", 96)))
 }
 
-/// Build the `w:drawing` XML, registering its blob with `imgs`; inline emits `wp:inline`, floating emits `wp:anchor` + `wp:wrap*`.
 fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport) -> Option<String> {
     let Some(AttrVal::Str(hash)) = b.attrs.get("blob") else {
         return None;
@@ -1499,7 +1433,6 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
     let (cx, cy) = image_extent_emu(b);
     let docpr_id = imgs.images.len(); // unique per drawing
     let name = escape_attr(&b.id);
-    // The graphic payload (blip + shape) is shared by inline and anchored drawings.
     let graphic = format!(
         r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
     );
@@ -1509,7 +1442,6 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
             r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
         ))
     } else {
-        // Floating: positioned relative to the column (paragraph anchor) or page.
         let rel_from = if anchor == "page" { "page" } else { "column" };
         let rel_from_v = if anchor == "page" {
             "page"
@@ -1542,7 +1474,6 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     let (nrows, ncols) = (grid.rows(), grid.cols());
     body.push_str("<w:tbl>");
     push_table_props(body, cells.first(), ncols);
-    // A row's properties ride on its first cell.
     let mut row_props: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
@@ -1559,8 +1490,6 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
         let mut c = 0;
         while c < ncols {
             let own = grid.origin(r, c);
-            // The rows below a vertically merged cell hold a continuation cell as wide as it,
-            // which looks like its first one.
             let cell = own.or_else(|| {
                 grid.covering(r, c)
                     .filter(|first| ExportBlock::new(first).cell_position().1 == c)
@@ -1667,7 +1596,6 @@ fn render_block(
         "list_item" => {
             let numid = numbering.num_id(b);
             let level = ExportBlock::new(b).list_level().min(8);
-            // A list item keeps its own paragraph style when it had one.
             let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
                 Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),
                 _ => numbering.paragraph_style(),
@@ -1684,14 +1612,12 @@ fn render_block(
             i.saturating_add(1)
         }
         "image" => {
-            // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
             if let Some(drawing) = image_drawing_xml(b, snap, imgs) {
                 let _ = write!(body, "<w:p>{drawing}</w:p>");
             }
             i.saturating_add(1)
         }
         "fidelity" => {
-            // Section properties are rebuilt and appended after the last block.
             if let Some(xml) = crate::preserve::fidelity_xml(b, "docx")
                 && !super::section::is_section_properties(xml)
             {
@@ -1701,7 +1627,6 @@ fn render_block(
         }
         "cell" => render_table_block(body, snap, i, ids),
         _ => {
-            // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
             let mut style = String::new();
             if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
                 && snap.styles.contains_key(sid)
@@ -1720,7 +1645,6 @@ fn render_block(
     }
 }
 
-/// Build `word/document.xml`, collecting referenced style ids, the numbering plan, and each note id's docx id + kind.
 fn build_document_xml(
     snap: &Resolved<'_>,
     section: &super::section::SectionPlan,
@@ -1778,8 +1702,6 @@ fn build_document_xml(
         );
     }
 
-    // The imported document's root keeps its namespace declarations (and `mc:Ignorable`), so
-    // the elements carried through verbatim resolve; the ones this exporter writes are added.
     let root = root
         .and_then(|r| merge_root_namespaces(r, "w:document", DOCUMENT_NAMESPACES))
         .unwrap_or_else(|| {
@@ -1790,7 +1712,6 @@ fn build_document_xml(
             tag.push('>');
             tag
         });
-    // sectPr is a direct child of `w:body`, placed after the last block.
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 {root}<w:body>{body}{}</w:body></w:document>"#,
@@ -1799,7 +1720,6 @@ fn build_document_xml(
     (document, named_refs, numbering, imgs)
 }
 
-/// The namespaces the exported `word/document.xml` declares on its root.
 const DOCUMENT_NAMESPACES: &[(&str, &str)] = &[
     ("w", W_NS),
     (
@@ -1874,7 +1794,6 @@ mod tests {
     use tilo_doc::document::MarkValue;
     use tilo_doc::{AttrVal, DocSnapshot, Document};
 
-    /// Import `bytes` into `doc`, dropping any binary inputs (these tests reference none).
     fn import_docx(bytes: &[u8], doc: &mut Document) {
         DocxCodec
             .import(
@@ -1885,7 +1804,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Export `doc` with no binary content available.
     fn export_docx(doc: &Document) -> Vec<u8> {
         DocxCodec
             .export(doc.as_ref(), &tilo_content::NoContent)
@@ -1916,7 +1834,6 @@ mod tests {
 
     type NormRegion = Vec<(String, Vec<(usize, usize, String, MarkValue)>)>;
 
-    /// Normalize a region's blocks, dropping the volatile per-import block id so imports compare equal.
     fn norm_region(blocks: &[tilo_doc::snapshot::BlockView]) -> NormRegion {
         blocks
             .iter()
@@ -2101,7 +2018,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `colored_serif_20pt_justified_run_roundtrips_through_docx`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2243,7 +2159,6 @@ mod tests {
         }
     }
 
-    // 1×1 PNG blob for the image round-trip tests.
     const TINY_PNG: [u8; 69] = [
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
@@ -2539,7 +2454,6 @@ mod tests {
             );
             assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
             assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
-            // Cells stay editable: their text lives in a real Text object.
             let id = &cells[0].id;
             d2.splice_text(id, 1, 0, "X");
             assert_eq!(d2.block_text(id).as_deref(), Some("aX"));
@@ -2872,7 +2786,6 @@ mod tests {
             );
             assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
-            // Idempotent across a second round-trip (block ids are volatile; compare text+marks, not BlockView).
             let exported2 = export_docx(&d2);
             let mut d3 = Document::new();
             import_docx(&exported2, &mut d3);
@@ -2888,8 +2801,6 @@ mod tests {
             );
         }
         {
-            // Complex-field form (fldChar begin/instrText PAGE/separate/end) imports as a single
-            // page-number field, dropping the cached result text.
             use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_FIELD};
             let header = concat!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
@@ -2923,7 +2834,6 @@ mod tests {
             import_docx(&docx, &mut d);
             let header = d.header();
             assert_eq!(header.len(), 1, "{header:?}");
-            // "p. " + a single placeholder; the cached "7" result is dropped.
             assert_eq!(
                 header[0].text,
                 format!("p. {FIELD_PLACEHOLDER}"),
@@ -3199,8 +3109,6 @@ mod tests {
                 String,
                 Option<(usize, usize)>,
             );
-            // Tracked insertion + deletion (with author) export as <w:ins>/<w:del> wrappers (deleted
-            // text via <w:delText>), re-importing kind/author + anchored ranges.
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "hello world");
@@ -3218,7 +3126,6 @@ mod tests {
             let snap = d2.materialize();
             let (ins_id, del_id) = assert_import_recovers_changes(&snap);
 
-            // accept_change on the insertion clears the mark; on the deletion removes text.
             d2.accept_change(&ins_id);
             d2.accept_change(&del_id);
             let after = d2.materialize();
@@ -3256,8 +3163,6 @@ mod tests {
         }
     }
 
-    /// Builds the footnote+endnote fixture and exports it to `.docx` bytes
-    /// (part of [`footnote_and_endnote_roundtrip_through_docx`]).
     fn export_footnote_endnote_fixture() -> Vec<u8> {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
@@ -3277,9 +3182,6 @@ mod tests {
         export_docx(&d)
     }
 
-    /// Asserts the exported `.docx` carries both note parts, their refs, and
-    /// the content-types/rels registrations (part of
-    /// [`footnote_and_endnote_roundtrip_through_docx`]).
     fn assert_footnote_endnote_docx_xml(exported: &[u8]) {
         let cont = ZipPackage::read(exported).unwrap();
         let ftn = std::str::from_utf8(
@@ -3357,8 +3259,6 @@ mod tests {
         d2
     }
 
-    /// Asserts the exported `document.xml` carries the `<w:ins>`/`<w:del>` wrappers,
-    /// `<w:delText>`, and both change authors.
     fn assert_docx_shows_tracked_changes(document: &str) {
         assert!(
             document.contains("<w:ins "),
@@ -3382,10 +3282,7 @@ mod tests {
         );
     }
 
-    /// Asserts a re-imported snapshot carries both marks at their original ranges and both
-    /// `ChangeView` records with the expected kind/author/range; returns the (ins, del) ids.
     fn assert_import_recovers_changes(snap: &DocSnapshot) -> (String, String) {
-        // The deleted text is retained (struck), the inserted text is present.
         assert_eq!(
             snap.blocks[0].text, "hello there world",
             "ins kept, del retained: {:?}",
@@ -3609,7 +3506,6 @@ mod tests {
         assert!(text("word/_rels/document.xml.rels").contains(
             r#"Id="rIdQdocLink1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/?a=1&amp;b=2" TargetMode="External""#
         ));
-        // The imported numbering still numbers the item, so it is kept as it was.
         assert!(text("word/numbering.xml").contains(r#"<w:lvlText w:val="%1)"/>"#));
 
         let mut again = Document::new();

@@ -53,6 +53,10 @@ struct Watch {
     resource: String,
     /// The services' revision this watch was last served at.
     revision: Option<u64>,
+    /// The catalogue revision, at which it was last told no service publishes
+    /// the resource: what it asks again after a service was added, and never
+    /// at every reading of one it does publish.
+    missing: Option<u64>,
     /// What it was last sent, so a change elsewhere does not re-send it.
     reading: Option<Vec<u8>>,
     sink: mpsc::UnboundedSender<Event>,
@@ -183,6 +187,7 @@ impl Link {
     /// Send the readings of the watched resources that moved.
     fn publish(&self, services: &Services) {
         let revision = services.revision();
+        let catalogue = services.catalogue_revision();
         let mut watches = self.watches.lock_recover();
         watches.retain_mut(|watch| {
             if watch.revision == Some(revision) {
@@ -190,8 +195,19 @@ impl Link {
             }
             let reading = services.read(&watch.resource).map(|value| encoded(&value));
             watch.revision = Some(revision);
-            if reading == watch.reading && watch.reading.is_some() {
-                return true;
+            if reading.is_none() {
+                // No service publishes it yet: the app is told once, and
+                // again only once a service was added, which is the only
+                // thing that can make one publish it.
+                if watch.missing == Some(catalogue) {
+                    return true;
+                }
+                watch.missing = Some(catalogue);
+            } else {
+                watch.missing = None;
+                if reading == watch.reading {
+                    return true;
+                }
             }
             watch.reading.clone_from(&reading);
             watch
@@ -233,6 +249,7 @@ impl PublishedResources for Link {
             id,
             resource: resource.to_owned(),
             revision: None,
+            missing: None,
             reading: None,
             sink,
         });
@@ -371,6 +388,9 @@ pub struct Hosted {
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
     /// screen as the REPL does.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// The person's settings, which Settings' window changes through the broker as another
+    /// provider's actions: the session keeps them, so its service answers them here.
+    pub settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
     /// This session's Nearby Send: the person's other devices, and the spool
     /// a file reaches them from. `None` on a session that runs none, where
     /// Files' send has no route at all.
@@ -604,6 +624,9 @@ pub struct DeskAuthority {
     /// whose governance names them by one of those is theirs, and what the broker decides in it is
     /// as theirs.
     names: Names,
+    /// Who is here in each workspace, by the person they are, as presence names and colours them:
+    /// what the broker tells the apps there of each member ([`Self::set_people`]).
+    people: Mutex<std::collections::HashMap<String, Vec<tilo_desktop_model::Collaborator>>>,
 }
 
 /// Who the person at this device is, as the broker's decisions name them.
@@ -633,17 +656,52 @@ impl DeskAuthority {
             revocations,
             journal,
             names,
+            people: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Who is here in `workspace` now: each person by their user root, with the name and colour
+    /// every surface here draws them in. The broker tells the apps there, so a person's caret and
+    /// marks in a window wear the name and colour of their face on the bar. Nothing is published
+    /// while it holds still.
+    pub fn set_people(&self, workspace: &str, people: Vec<tilo_desktop_model::Collaborator>) {
+        {
+            let mut held = self.people.lock_recover();
+            if held.get(workspace) == Some(&people) {
+                return;
+            }
+            held.insert(workspace.to_owned(), people);
+        }
+        let mut tree = self.tree.lock_recover();
+        self.seat_people(&mut tree);
+        drop(tree);
+        self.announce();
+    }
+
+    /// Write who is here into each workspace of `tree` presence names people in.
+    fn seat_people(&self, tree: &mut tilo_desktop_model::DesktopTree) {
+        let people = self.people.lock_recover();
+        for workspace in &mut tree.workspaces {
+            if let Some(here) = people.get(&workspace.id().to_string()) {
+                workspace.collaborators.clone_from(here);
+            }
+        }
+    }
+
+    /// Tell the broker the desk it decides against moved.
+    fn announce(&self) {
+        self.generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tilo_identity_host::policy_change::announce();
     }
 
     /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
     /// it holds on the announcement rather than on a clock.
     pub fn publish(&self, mut tree: tilo_desktop_model::DesktopTree) {
         claim_earlier_owners(&mut tree, &self.names);
+        self.seat_people(&mut tree);
         *self.tree.lock_recover() = tree;
-        self.generation
-            .send_modify(|generation| *generation = generation.wrapping_add(1));
-        tilo_identity_host::policy_change::announce();
+        self.announce();
     }
 
     /// Wait until the desk, as the loop publishes it, satisfies `held`: a
@@ -976,6 +1034,7 @@ fn seams(
         tools,
         task_programs,
         session_actions,
+        settings_steps,
         nearby,
         file_clipboard,
         personal,
@@ -1008,7 +1067,8 @@ fn seams(
         });
     // What each installed app's signed manifest declares it may do on the
     // action door: a ceiling the broker decides an app's calls against.
-    let app_action_access = crate::seams::declared_access(lists);
+    let app_action_access = crate::seams::declared_access(lists.clone());
+    let app_resource_kinds = crate::seams::declared_resource_kinds(lists);
     // Where the broker keeps the actions of apps that are closed, beside the
     // journal of what it admitted: a closed app's actions survive a restart.
     let launchable_catalogue = journal_root.as_ref().and_then(|journal| {
@@ -1180,6 +1240,7 @@ fn seams(
         // files runs.
         file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
+        app_resource_kinds: Seam::served(app_resource_kinds),
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
         // host records none of them for the door to ask.
@@ -1258,6 +1319,13 @@ fn seams(
                 // notices, which a turn's agent arranges the screen with (shell.md §8.1).
                 session_actions
                     .map(|actions| actions as std::sync::Arc<dyn HostStepServices>)
+                    .into_iter()
+                    .collect(),
+                // The person's settings, under the provider Settings' window names for every
+                // control it shows: the session keeps them, so its settings service runs each
+                // change, with the broker admitting it as any caller's first.
+                settings_steps
+                    .map(|settings| settings as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
                     .collect(),
             ]
@@ -1352,6 +1420,9 @@ pub(crate) struct Plane {
     /// The service apps join a call through, when this session carries
     /// calls at all.
     pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
+    /// The people's carets in the workspaces this session takes part in: the person here's as
+    /// their apps publish it, and everyone else's as this session's apps show them.
+    pub(crate) carets: crate::carets::Carets,
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
@@ -1610,6 +1681,7 @@ mod tests {
             tools: None,
             task_programs: None,
             session_actions: Some(test_session_actions()),
+            settings_steps: None,
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
@@ -2095,6 +2167,92 @@ mod tests {
             access("so.tilo.not-installed"),
             AppActionAccess::default(),
             "an app this device did not read declared nothing"
+        );
+    }
+
+    use tilo_actions::ResourceSpec;
+
+    /// A service publishing one reading the test moves.
+    struct Counted(std::sync::Arc<std::sync::Mutex<u8>>);
+
+    impl tilo_service::Service for Counted {
+        fn resources(&self) -> Vec<ResourceSpec> {
+            vec![
+                ResourceSpec::new("test:counted", "test", "Counted").with_action(
+                    tilo_actions::ActionSpec::typed_operation(
+                        "bump",
+                        "",
+                        "",
+                        tilo_actions::OperationKind::Effect,
+                        "test.bump",
+                        Vec::new(),
+                        |_| {
+                            tilo_actions::EncodedAction::encode_operation("test.bump", &())
+                                .unwrap_or_else(|error| tilo_actions::EncodedAction {
+                                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+                                        .to_owned(),
+                                    payload: error.to_string().into_bytes(),
+                                })
+                        },
+                    ),
+                ),
+            ]
+        }
+
+        fn read(&self, resource: &str) -> Option<serde_json::Value> {
+            (resource == "test:counted")
+                .then(|| serde_json::json!({ "value": *self.0.lock().unwrap() }))
+        }
+
+        fn invoke(
+            &mut self,
+            _resource: &str,
+            _action: &str,
+            _: &Map<String, serde_json::Value>,
+        ) -> Result<Started, DoorError> {
+            Ok(Started::Done(tilo_actions::ActionOutput::default()))
+        }
+    }
+
+    /// An app watching a resource no service of this device publishes hears it
+    /// once, and again only when a service is added: a machine without a
+    /// battery does not tell it on every reading of another service.
+    #[test]
+    fn a_resource_no_service_publishes_is_told_once() {
+        let link = Link::new(std::sync::Arc::new(|| {}));
+        let (sink, mut heard) = mpsc::unbounded_channel();
+        let caller = Caller {
+            app_id: "so.tilo.quick-settings".to_owned(),
+            workspace: String::new(),
+        };
+        let _watch = link.watch(&caller, "power:battery", sink);
+        let mut services = Services::default();
+        link.publish(&services);
+        assert!(
+            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+            "the app is told no service publishes it"
+        );
+
+        // Another service's reading moves: nothing is said of the battery
+        // again, however many revisions go by.
+        let counted = std::sync::Arc::new(std::sync::Mutex::new(1_u8));
+        services.add(Box::new(Counted(std::sync::Arc::clone(&counted))));
+        link.publish(&services);
+        // The catalogue moved with the service added, so it is asked again
+        // once, and that is all.
+        assert!(
+            matches!(heard.try_recv(), Ok(Event::Reading { reading: None, .. })),
+            "a service was added, so it is asked again once"
+        );
+        *counted.lock().unwrap() = 2;
+        services
+            .invoke("test:counted", "bump", &Map::new())
+            .expect("the service is published")
+            .expect("the bump is taken");
+        link.publish(&services);
+        assert!(
+            heard.try_recv().is_err(),
+            "a reading of another service says nothing of the battery"
         );
     }
 }

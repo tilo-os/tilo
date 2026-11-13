@@ -1,73 +1,12 @@
-//! Who else is in this edit.
+//! Who else is in this edit: the vocabulary for naming a place in the editor —
+//! a clip, the timeline, one inspector field — on the presence channel, and the
+//! two halves that must agree about it.
 //!
-//! A video editor is a spatial document, and the things a collaborator can be
-//! *at* are not runs of text: they are a clip, a track, an instant on the
-//! timeline, a field in the inspector. This module is the vocabulary for
-//! naming those places on the presence channel, plus the two halves that have
-//! to agree about it — what this editor publishes about itself, and how it
-//! resolves what arrives from everyone else.
-//!
-//! # Why presence and not the document
-//!
-//! A playhead, a selection and a caret are **view state**. Nobody's undo stack
-//! should contain "Ada moved her playhead", and nobody's project file should
-//! record which clip Ada had highlighted when she closed the window. The
-//! project's standing rule is that view state is never an action; the presence
-//! channel exists precisely so that view state can still be *shared*. So none
-//! of this goes through [`crate::actions`] and none of it reaches the CRDT —
-//! it is broadcast, rendered, and forgotten.
-//!
-//! # The keys
-//!
-//! Every key is a [`PresenceKey::Widget`] whose path starts with a constant
-//! tag, mirroring how the word processor keys a paragraph as `wp_block`:
-//!
-//! | Place | Path |
-//! |---|---|
-//! | the timeline itself | `["ve_timeline"]` |
-//! | one clip | `["ve_clip", <clip uuid>]` |
-//! | one editable field | `["ve_field", <field name>, <subject uuid>]` |
-//!
-//! The uuid is written out with `Uuid::to_string` — its plain hyphenated
-//! form. Ids are the *document's* ids, identical on every peer, which is what
-//! makes a key mean the same object on both screens; a positional index would
-//! drift the moment someone else inserted a clip. (The accessibility tree
-//! hashes the same ids because its keys are `u64`. Presence keys are strings,
-//! so they carry the id itself and stay legible in a log.)
-//!
-//! # The payloads
-//!
-//! There are only two slots per participant, and the toolkit enforces that:
-//! [`PresenceCtx::set_caret`] and [`PresenceCtx::set_selection`] each clear
-//! that peer from every *other* key first, so a person has at most one caret
-//! and at most one selection anywhere. That is a good model of a person, and
-//! this module maps the editor onto it deliberately:
-//!
-//! * **Caret** — the participant's *point*. Normally their playhead, keyed to
-//!   the timeline. While they are typing in a field it is their text caret,
-//!   keyed to that field, and their playhead ghost steps aside for as long as
-//!   that lasts. One person, one point.
-//! * **Selection** — the participant's *range*: the clip they have selected,
-//!   keyed to that clip, carrying the clip's span so a receiver can place it
-//!   even before the clip itself has replicated. Selecting nothing publishes
-//!   an empty range on the timeline key, which — because the store is
-//!   exclusive — is what retracts a previously published outline.
-//! * **Pointer** — their mouse. This one is free: [`ui::App`] broadcasts it
-//!   under the workspace scope on every move, and the toolkit's shared cursor
-//!   painter draws it. Nothing here has to do anything for it to work.
-//!
-//! Times cross the wire as **milliseconds** ([`ticks`]), because the payload
-//! fields are `usize`. A millisecond is finer than a frame at any sane rate
-//! and coarse enough to be exact after a round trip.
-//!
-//! # Appearing as a collaborator from outside
-//!
-//! Nothing here is private to this process. A separate program — the sort of
-//! thing [`apps/agent`](../../agent/index.html) is for the word processor —
-//! becomes a visible participant in a running editor by connecting to the
-//! collaboration broker and sending presence frames under these exact keys.
-//! It does not need to link this crate: the keys are four constants and a
-//! uuid, and [`external_driver_recipe`] spells out the whole exchange.
+//! Presence is view state: it never reaches the actions or the record, so no
+//! undo stack holds "someone moved their playhead". A participant has one point
+//! (their text caret while typing in a field, else their playhead) and one range
+//! (their selected clip), each published on the key of the place it is at, with
+//! times in milliseconds.
 
 use std::cell::{Cell, RefCell};
 
@@ -84,21 +23,12 @@ use ui::theme::Theme;
 
 use crate::model::ClipId;
 
-// ==========================================================================
-// The vocabulary
-// ==========================================================================
-
-/// Path tag for the timeline as a whole — where a playhead lives.
 pub const TIMELINE: &str = "ve_timeline";
-/// Path tag for one clip, followed by the clip's uuid.
 pub const CLIP: &str = "ve_clip";
-/// Path tag for one editable field, followed by the field's name and the
-/// uuid of whatever it edits.
 pub const FIELD: &str = "ve_field";
 
-/// The field name for a title clip's words — the inspector's inline
-/// multi-line editor, and the one editable field in this app that reports
-/// a caret offset. Its subject is the title's media id.
+/// A title clip's words: the inspector's inline editor and the only field here
+/// that reports a caret offset. Its subject is the title's media id.
 pub const FIELD_TITLE_WORDS: &str = "title_words";
 
 fn widget_key(parts: &[&str]) -> PresenceKey {
@@ -110,8 +40,6 @@ fn widget_key(parts: &[&str]) -> PresenceKey {
     }
 }
 
-/// The timeline itself: the scope a playhead is published under, and the
-/// scope an empty selection is published under to say "nothing selected".
 pub fn timeline_key() -> PresenceKey {
     widget_key(&[TIMELINE])
 }
@@ -120,15 +48,12 @@ pub fn clip_key(id: ClipId) -> PresenceKey {
     widget_key(&[CLIP, &id.to_string()])
 }
 
-/// One editable field — `field` names the field, `subject` the object it
-/// edits (the clip being renamed, say).
 pub fn field_key(field: &str, subject: Uuid) -> PresenceKey {
     widget_key(&[FIELD, field, &subject.to_string()])
 }
 
-/// Read a key back: the tag and the uuid that follows it, when the key is one
-/// of ours and names an object. `None` for the timeline key (which names no
-/// object), for another app's keys, and for a malformed uuid.
+/// The tag and the uuid after it. `None` for the timeline key, another app's
+/// keys, and a malformed uuid.
 fn tagged_uuid(key: &PresenceKey, tag: &str) -> Option<Uuid> {
     let PresenceKey::Widget { path } = key else {
         return None;
@@ -139,23 +64,16 @@ fn tagged_uuid(key: &PresenceKey, tag: &str) -> Option<Uuid> {
     (head == tag).then(|| Uuid::parse_str(id).ok()).flatten()
 }
 
-/// The clip a key names, if it names one.
 pub fn clip_of(key: &PresenceKey) -> Option<ClipId> {
     tagged_uuid(key, CLIP)
 }
 
-// ==========================================================================
-// Time on the wire
-// ==========================================================================
-
-/// Wire units per second. Presence payload fields are `usize`, so a time has
-/// to be an integer; a millisecond is finer than a frame at any rate this
-/// editor supports and coarse enough to survive a round trip exactly.
+/// Presence payload fields are `usize`, so a time is an integer: a millisecond is
+/// finer than a frame at any rate here and survives a round trip exactly.
 pub const TICKS_PER_SECOND: f64 = 1000.0;
 
-/// Seconds → wire units. Negative times clamp to zero: the timeline starts at
-/// zero and `usize` cannot carry a negative anyway, so this is the one place
-/// that decides it rather than wrapping to a huge positive somewhere later.
+/// Negative times clamp to zero here: `usize` cannot carry one, and this is the
+/// one place that decides it.
 pub fn ticks(seconds: f64) -> usize {
     if !seconds.is_finite() || seconds <= 0.0 {
         return 0;
@@ -163,41 +81,20 @@ pub fn ticks(seconds: f64) -> usize {
     (seconds * TICKS_PER_SECOND).round() as usize
 }
 
-/// Wire units → seconds.
 pub fn seconds(ticks: usize) -> f64 {
     ticks as f64 / TICKS_PER_SECOND
 }
 
-// ==========================================================================
-// What this editor says about itself
-// ==========================================================================
-
-/// How many independent things this editor publishes about where its user is.
-/// One point (a caret) and one range (a selection) — the two the presence
-/// stores hold per participant.
 const FACETS: usize = 2;
 
-/// Publishes the local participant's place in the edit, one frame at a time.
+/// Publishes the local participant's place one frame at a time.
 ///
-/// [`PublishesPresence::presence_payload`](ui::presence::capability::PublishesPresence::presence_payload) hands the host a *single*
-/// key-and-payload per poll, and the host broadcasts it only when it differs
-/// from the last one — which is the right contract for a text caret and an
-/// awkward one here, because this editor has two things to say at once: where
-/// the playhead is and which clip is selected.
-///
-/// They can both be true on the receiving side, because the caret store and
-/// the selection store are separate and each is keyed. So this keeps a record
-/// of what it last published *for each facet* and hands over whichever one has
-/// since moved, one per poll. A change is therefore published within a frame
-/// or two of happening, and once published it stays true on the peer until it
-/// changes again — nothing has to be re-sent to keep it alive.
-///
-/// The scan starts after the facet published last, so a playhead being dragged
-/// — which changes every single frame — cannot starve the selection of its
-/// turn.
-///
-/// When nothing has moved it returns the last frame it published, unchanged,
-/// so the host's own diff sees no change and sends nothing.
+/// The host broadcasts a single key and payload per poll, only when it differs
+/// from the last, while the editor has two things to say at once. So this keeps
+/// what it last published per facet and hands over whichever has moved, one per
+/// poll, scanning on from the last so a dragged playhead cannot starve the
+/// selection. With nothing moved it returns the last frame unchanged, and the
+/// host sends nothing.
 #[derive(Debug, Default)]
 pub struct LocalPresence {
     published: RefCell<[Option<(PresenceKey, PresencePayload)>; FACETS]>,
@@ -205,8 +102,6 @@ pub struct LocalPresence {
 }
 
 impl LocalPresence {
-    /// Offer this poll's frames — `[point, range]` — and take back the one to
-    /// publish.
     pub fn next(
         &self,
         facets: [(PresenceKey, PresencePayload); FACETS],
@@ -229,10 +124,8 @@ impl LocalPresence {
     }
 }
 
-/// The **point** frame: where this participant is, as a single spot.
-///
-/// A text caret in a field when one is being edited, otherwise the playhead.
-/// The two share the one caret store on purpose — see the module docs.
+/// The point: a text caret in a field when one is being edited, else the
+/// playhead.
 pub fn point_frame(
     editing_field: Option<(&str, Uuid, usize)>,
     playhead: f64,
@@ -251,12 +144,6 @@ pub fn point_frame(
     }
 }
 
-/// The **range** frame: what this participant has selected.
-///
-/// `selected` is the anchor clip and its span in seconds. With nothing
-/// selected this publishes an empty range on the timeline key — which,
-/// because the selection store keeps one selection per participant, is what
-/// takes a previously published outline back off the peer's screen.
 pub fn range_frame(selected: Option<(ClipId, f64, f64)>) -> (PresenceKey, PresencePayload) {
     match selected {
         Some((id, start, end)) => (
@@ -273,31 +160,22 @@ pub fn range_frame(selected: Option<(ClipId, f64, f64)>) -> (PresenceKey, Presen
     }
 }
 
-// ==========================================================================
-// What everyone else says about themselves
-// ==========================================================================
-
-/// A participant's playhead, as read back off the presence channel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerPlayhead {
     pub user: UserId,
-    /// Timeline position in seconds.
     pub at: f64,
 }
 
-/// A participant's selected clip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerClip {
     pub user: UserId,
     pub clip: ClipId,
-    /// The span they published for it, in seconds. Their view of the clip;
-    /// prefer the local document's geometry when the clip is present locally,
-    /// and fall back to this when it is not.
+    /// The span they published, for when the clip is not present locally; prefer the
+    /// local geometry when it is.
     pub span: (f64, f64),
 }
 
-/// Every participant's playhead, sorted by user id so a render is stable
-/// frame to frame rather than reordering with a hash map's whim.
+/// Sorted by user id, so a render is stable frame to frame.
 pub fn peer_playheads(presence: &PresenceCtx) -> Vec<PeerPlayhead> {
     let key = timeline_key();
     let mut out: Vec<PeerPlayhead> = presence
@@ -316,9 +194,8 @@ pub fn peer_playheads(presence: &PresenceCtx) -> Vec<PeerPlayhead> {
     out
 }
 
-/// Every participant's selected clip. The empty range published for "nothing
-/// selected" lands on the timeline key, which names no clip, so it is skipped
-/// here and the peer simply has no entry.
+/// The empty range published for "nothing selected" lands on the timeline key,
+/// which names no clip, so it is skipped.
 pub fn peer_clips(presence: &PresenceCtx) -> Vec<PeerClip> {
     let mut out = Vec::new();
     for (key, list) in &presence.selections {
@@ -338,8 +215,6 @@ pub fn peer_clips(presence: &PresenceCtx) -> Vec<PeerClip> {
     out
 }
 
-/// Every participant's caret in one named field, as a byte offset into that
-/// field's text.
 pub fn peer_field_carets(
     presence: &PresenceCtx,
     field: &str,
@@ -351,19 +226,12 @@ pub fn peer_field_carets(
     out
 }
 
-// ==========================================================================
-// Drawing them
-// ==========================================================================
-
 /// Height of a name chip, near enough, so playheads landing on the same
 /// instant can be stepped apart instead of printing on top of one another.
 const CHIP_STEP: f64 = 16.0;
 
-/// Shared drawing resources for collaborative overlays.
-///
-/// Every peer overlay uses the same scene, transform, text renderer, theme,
-/// and presence snapshot. Grouping them makes that invariant explicit and
-/// keeps new overlay geometry from growing another long positional API.
+/// What every peer overlay draws with, grouped so a new overlay does not grow
+/// another long positional API.
 pub struct PeerPaintCtx<'a> {
     paint: PaintCtx<'a>,
     presence: &'a PresenceCtx,
@@ -384,31 +252,19 @@ impl<'a> PeerPaintCtx<'a> {
     }
 }
 
-/// Where one participant's playhead name sits: the playhead's x, and the top
-/// of the line the chip hangs above.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PeerTag {
-    /// Index into [`peer_playheads`].
     pub peer: usize,
     pub x: f64,
-    /// Which chip row the name hangs in: 0 is the ruler, every further row
-    /// one chip down into the lanes.
     pub row: u32,
-    /// The line starts here; the name chip hangs just above it.
     pub top: f64,
-    /// The horizontal span the name takes, kept clear of the ruler's readings
-    /// when the chip hangs in the ruler.
+    /// Kept clear of the ruler's readings when the chip hangs in the ruler.
     pub span: (f64, f64),
 }
 
-/// Place every participant's playhead name.
-///
-/// A name hangs in the ruler band, above the lanes, where it covers no clip.
-/// The ruler only has one row, so a name that would land on the local
-/// playhead's time (`taken`) or on a name already placed steps down into the
-/// lanes, one chip at a time, until it finds room.
-///
-/// `name_width` measures a name as its chip will show it.
+/// A name hangs in the ruler, above the lanes, where it covers no clip. A name
+/// that would land on the local playhead's time (`taken`) or on one already
+/// placed steps down into the lanes until it finds room.
 pub fn place_peer_tags(
     presence: &PresenceCtx,
     lanes: Rect,
@@ -425,7 +281,6 @@ pub fn place_peer_tags(
         let w = name_width(&presence.display_name(&peer.user));
         let span = (x, x + w);
         let clashes = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 && b.0 < a.1;
-        // One more row than there are names placed always has room.
         let rows = u32::try_from(placed.len()).unwrap_or(u32::MAX);
         let row = (0..=rows)
             .find(|row| {
@@ -447,8 +302,6 @@ pub fn place_peer_tags(
     placed
 }
 
-/// Draw every participant's playhead as a ghost line down the lanes with
-/// their name above it, where [`place_peer_tags`] put it.
 pub fn draw_peer_playheads(ctx: &mut PeerPaintCtx<'_>, tags: &[PeerTag], bottom: f64) {
     let peers = peer_playheads(ctx.presence);
     for tag in tags {
@@ -468,17 +321,11 @@ pub fn draw_peer_playheads(ctx: &mut PeerPaintCtx<'_>, tags: &[PeerTag], bottom:
     }
 }
 
-/// Outline the clips other participants have selected, each in their colour
-/// and carrying their name.
+/// Each in the peer's colour, with their name.
 ///
-/// `visible` is what the timeline just drew — clip id and the rect it was
-/// drawn into — so an outline is placed from the same geometry as the clip
-/// body under it. A peer holding a clip that is not on screen (scrolled out,
-/// or not yet replicated here) simply is not drawn.
-///
-/// `area` is the region the lanes are clipped to. A name chip hangs above the
-/// clip it names, and there is nothing above the top lane to hang it in, so
-/// the chip has to know where the ceiling is or a peer on the top track is
+/// `visible` is what the timeline just drew, so an outline sits on the same
+/// geometry as the clip body. `area` is where the lanes are clipped to: a chip
+/// hangs above its clip, and without the ceiling a peer on the top track would be
 /// labelled with the bottom two pixels of their name.
 pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], area: Rect) {
     for peer in peer_clips(ctx.presence) {
@@ -496,16 +343,9 @@ pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], a
     }
 }
 
-/// Draw everyone else's caret in one editable field.
-///
-/// `caret_rect` is the field's own byte-offset-to-rectangle mapping — the
-/// very one its focused local caret is drawn from — so a peer's caret is the
-/// local caret's twin rather than a second guess at where a character sits.
-///
-/// This only reaches the screen while the field is open here too, because a
-/// closed field has no geometry to place a caret in. That is the case it
-/// exists for: two people in the same words at the same time, which is when
-/// knowing where the other one is stops being a nicety.
+/// A peer's caret is the local caret's twin, drawn from the field's own
+/// byte-offset mapping, so it reaches the screen only while the field is open
+/// here.
 pub fn draw_peer_field_carets(
     ctx: &mut PeerPaintCtx<'_>,
     field: &str,
@@ -525,20 +365,9 @@ pub fn draw_peer_field_carets(
     }
 }
 
-// ==========================================================================
-// The contract, for something that is not this program
-// ==========================================================================
-
-/// What a separate process has to send to appear in a running editor as a
-/// participant — cursor, playhead, selection and all.
-///
-/// Returned as text rather than performed, because the thing that needs it is
-/// by definition not this program. It is kept next to the key builders above
-/// so the two cannot drift: the doc test at the bottom of this module asserts
-/// that every key named here is the key those builders actually produce.
-///
-/// The frames are ordinary `CollabRequest::Presence` messages on the
-/// collaboration broker socket, exactly as [`ui::App`] sends its own.
+/// What another process sends to appear as a participant. Returned as text
+/// because the thing that needs it is not this program; a doc test asserts every
+/// key it names is the one the builders above produce.
 pub fn external_driver_recipe() -> &'static str {
     concat!(
         "Connect to the collaboration broker socket and send:\n",
@@ -583,13 +412,6 @@ mod tests {
 
     #[test]
     fn presence_keys_and_times_round_trip_exactly() {
-        // Case `a_hand_built_key_is_the_key_this_crate_publishes_under`:
-        // The exact bytes an external driver builds by hand have to be the exact
-        // bytes this crate builds through its helpers, or a driver that follows
-        // the documented recipe publishes into a scope nothing renders.
-        //
-        // Written out from primitives deliberately — calling `clip_key` on both
-        // sides would assert nothing at all.
         {
             let clip = Uuid::parse_str("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e").unwrap();
 
@@ -615,10 +437,6 @@ mod tests {
             };
             assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
         }
-        // Case `the_published_recipe_names_the_keys_this_crate_actually_builds`:
-        // The recipe is the only thing an outside program reads before writing a
-        // driver, so every key it names has to be a key this crate really uses.
-        // Prose drifts silently; this makes it fail loudly instead.
         {
             let recipe = external_driver_recipe();
             for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
@@ -657,9 +475,6 @@ mod tests {
             };
             assert_eq!(clip_of(&malformed), None);
         }
-        // Case `a_time_survives_the_round_trip_to_the_millisecond`:
-        // A time has to come back off the wire as the time that went on to it,
-        // or a peer's playhead is drawn somewhere its owner never put it.
         {
             for t in [0.0, 0.001, 1.0, 12.5, 23.456, 3600.0] {
                 assert!(
@@ -668,8 +483,7 @@ mod tests {
                     seconds(ticks(t)),
                 );
             }
-            // A negative time clamps here rather than wrapping to an enormous
-            // positive somewhere downstream.
+            // A negative time clamps here rather than wrapping to an enormous one.
             assert_eq!(ticks(-5.0), 0);
             assert_eq!(ticks(f64::NAN), 0);
             assert_eq!(ticks(f64::NEG_INFINITY), 0);
@@ -692,10 +506,6 @@ mod tests {
                 "while typing, the point is the text caret, not the playhead",
             );
         }
-        // Case `deselecting_publishes_a_frame_that_retracts_the_outline`:
-        // Deselecting has to *say* something. The selection store keeps one
-        // selection per participant keyed to where it is, so the only way to take
-        // an outline off a peer's screen is to publish a different, empty one.
         {
             let clip = Uuid::new_v4();
             let (key, _) = range_frame(Some((clip, 2.0, 6.0)));
@@ -705,8 +515,7 @@ mod tests {
             assert_eq!(key, timeline_key(), "the empty range is not on any clip");
             assert_eq!(payload, PresencePayload::Selection { start: 0, end: 0 });
 
-            // And prove it actually clears: feed both frames to a receiver in
-            // order and the clip must end up with no peer on it.
+            // Both frames to one receiver, in order: the clip ends up with no peer.
             let mut ctx = PresenceCtx::empty();
             let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
             ctx.apply_remote_presence("ada".into(), k, p);
@@ -715,10 +524,6 @@ mod tests {
             ctx.apply_remote_presence("ada".into(), k, p);
             assert!(peer_clips(&ctx).is_empty(), "and deselected again");
         }
-        // Case `both_facets_get_published_across_successive_polls`:
-        // Both facets have to reach the peer. The host only broadcasts a frame
-        // that differs from the previous one, so a publisher that returned the
-        // playhead every poll would broadcast the selection exactly never.
         {
             let clip = Uuid::new_v4();
             let local = LocalPresence::default();
@@ -738,16 +543,10 @@ mod tests {
                 "the selection was never published: {published:?}",
             );
 
-            // With nothing moving, it keeps returning the same frame, so the
-            // host's diff sees no change and the socket stays quiet.
             let third = local.next(facets());
             assert_eq!(third, Some(second.clone()));
             assert_eq!(local.next(facets()), Some(second));
         }
-        // Case `a_dragged_playhead_does_not_starve_the_selection`:
-        // A playhead being dragged changes on every single frame. If the
-        // publisher always offered the facet that moved, the selection would
-        // never get a turn for as long as the drag lasted.
         {
             let clip = Uuid::new_v4();
             let local = LocalPresence::default();
@@ -773,10 +572,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn peer_presence_is_read_back_per_peer_and_painted_in_place() {
-        // Case `a_published_frame_reads_back_as_the_peer_that_sent_it`:
-        // The peer readers resolve what the publishers produced — the two halves
-        // under test together, which is the only way to catch them keying
-        // differently.
         {
             let clip = Uuid::new_v4();
             let mut ctx = PresenceCtx::empty();
@@ -796,9 +591,6 @@ mod tests {
             assert_eq!(clips[0].clip, clip);
             assert_eq!(clips[0].span, (2.0, 6.0));
         }
-        // Case `a_peers_playhead_moves_rather_than_accumulating`:
-        // A participant has one playhead. Publishing a new one has to move it,
-        // not leave a trail of every instant they ever visited.
         {
             let mut ctx = PresenceCtx::empty();
             for t in [1.0, 2.0, 3.0] {
@@ -809,10 +601,6 @@ mod tests {
             assert_eq!(heads.len(), 1, "one participant, one playhead: {heads:?}");
             assert!((heads[0].at - 3.0).abs() < 1e-9);
         }
-        // Case `typing_in_a_field_moves_the_peers_point_off_the_ruler`:
-        // Typing in a field takes the participant's caret with it — that is what
-        // the exclusive caret store means, and it is the honest reading: their
-        // point is in the field, not on the ruler.
         {
             let clip = Uuid::new_v4();
             let mut ctx = PresenceCtx::empty();
@@ -836,9 +624,6 @@ mod tests {
             assert_eq!(peer_playheads(&ctx).len(), 1);
             assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip).is_empty());
         }
-        // Case `several_peers_each_hold_their_own_place`:
-        // Several participants at once, which is the case the whole feature is
-        // for. Each keeps their own place and their own colour.
         {
             let one = Uuid::new_v4();
             let two = Uuid::new_v4();
@@ -866,9 +651,6 @@ mod tests {
                 "two people must not be drawn in one colour",
             );
         }
-        // Case `an_empty_range_on_a_clip_is_not_read_as_a_selection`:
-        // An empty range on a clip key is not a selection. Rendering it would
-        // draw a zero-width outline on a clip nobody has selected.
         {
             let clip = Uuid::new_v4();
             let mut ctx = PresenceCtx::empty();
@@ -879,9 +661,6 @@ mod tests {
             );
             assert!(peer_clips(&ctx).is_empty());
         }
-        // Case `a_peers_caret_in_a_field_is_painted_where_the_field_puts_it`:
-        // A caret in a field has to reach the screen, in the peer's colour, at
-        // the offset the field itself puts that byte at.
         {
             use ui::offscreen::OffscreenRenderer;
             use vello::peniko::Color;
@@ -903,7 +682,6 @@ mod tests {
                 subject,
                 |byte| {
                     asked.push(byte);
-                    // Stands in for the field's own mapping: a 2px bar at x=40.
                     Rect::new(40.0, 60.0, 42.0, 80.0)
                 },
             );
@@ -921,9 +699,6 @@ mod tests {
                 "expected the peer's emerald caret in the field, got ({cr},{cg},{cb})",
             );
         }
-        // Case `an_empty_room_resolves_to_nothing`:
-        // Nobody in the workspace means nothing to draw — the single-user path must
-        // not paint stray chrome.
         {
             let ctx = PresenceCtx::empty();
             assert!(peer_playheads(&ctx).is_empty());

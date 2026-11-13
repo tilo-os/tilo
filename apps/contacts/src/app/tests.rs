@@ -134,8 +134,6 @@ fn form_slots(form: &EditForm) -> Vec<Slot> {
     slots
 }
 
-/// The surface presenting the sample book, as a capture shows it. Detached
-/// from a door, it edits nothing: tests of what an edit writes run the app.
 fn sampled() -> ContactsApp {
     let mut app = ContactsApp::new();
     app.present_book(&std::rc::Rc::new(Contacts {
@@ -146,17 +144,14 @@ fn sampled() -> ContactsApp {
     app
 }
 
-/// The sample book synced into a fresh document.
 fn synced() -> Live {
     Live::sample(1280, 800)
 }
 
-/// Queue `request` as a pane or button would, and let the app apply it.
 fn ask(app: &mut Live, request: Request) {
     app.request(request);
 }
 
-/// Whether the window's bar offers action `id` now.
 fn bar_offers(id: &str) -> bool {
     ui::window_toolbar::declared().is_some_and(|toolbar| {
         toolbar
@@ -167,8 +162,6 @@ fn bar_offers(id: &str) -> bool {
     })
 }
 
-/// Press `id` in the window's bar, as the desktop hands the press to the
-/// app, and let the app apply it.
 fn press_bar(app: &mut Live, id: &str) {
     assert!(
         bar_offers(id),
@@ -267,13 +260,10 @@ fn named(harness: &Live, name: &str) -> bool {
     contains(&**harness, name)
 }
 
-/// Whether the window's bar says `message`: its notice, which the bar
-/// reads out as a live region.
 fn announced(_app: &ContactsApp, message: &str) -> bool {
     ui::window_toolbar::notice().is_some_and(|notice| notice.text == message)
 }
 
-/// Press the button `name` beside the notice in the window's bar.
 fn press_notice_button(app: &mut Live, name: &str) {
     app.settle();
     let button = ui::window_toolbar::notice()
@@ -289,9 +279,6 @@ fn toast(app: &ContactsApp) -> Option<&str> {
     app.shell.toast_text()
 }
 
-/// The window is the shell: groups beside the people beside the person,
-/// every header command named, the sample book listed and its first
-/// contact shown.
 #[test]
 fn the_window_lists_groups_people_and_the_selected_person() {
     let harness = harness((1280, 800));
@@ -352,8 +339,6 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     );
 }
 
-/// A phone-sized window is a push stack: the list first, the person pushed
-/// over it when one is chosen.
 #[test]
 fn a_phone_window_pushes_the_person_over_the_list() {
     let mut harness = harness((390, 844));
@@ -381,8 +366,6 @@ fn a_phone_window_pushes_the_person_over_the_list() {
     );
 }
 
-/// The sidebar's destinations narrow the list: favourites, one group, and
-/// back to everyone; a destination that empties out falls back to everyone.
 #[test]
 fn sidebar_destinations_narrow_the_list() {
     let mut app = synced();
@@ -449,7 +432,6 @@ fn sidebar_destinations_narrow_the_list() {
     );
 }
 
-/// The list's order control sorts by name or by organization.
 #[test]
 fn the_sort_control_orders_the_list() {
     let mut app = synced();
@@ -490,8 +472,6 @@ fn the_sort_control_orders_the_list() {
     );
 }
 
-/// Pointer, keyboard and assistive technology all choose people through
-/// the list: a press selects, a double press edits, the arrows move.
 #[test]
 fn the_list_selects_by_pointer_keyboard_and_semantics() {
     let mut harness = harness((1280, 800));
@@ -538,9 +518,6 @@ fn the_list_selects_by_pointer_keyboard_and_semantics() {
     assert_eq!(harness.selected, Some(last));
 }
 
-/// The list's keys: Delete deletes your contact at once and its notice's
-/// Undo brings it back, `e` edits, `n` starts a new contact, and an open
-/// form ignores bare keys.
 #[test]
 fn list_keys_delete_edit_and_create() {
     let mut harness = harness((1280, 800));
@@ -586,8 +563,6 @@ fn list_keys_delete_edit_and_create() {
     );
 }
 
-/// Asked for from the keyboard or assistive technology, a contact's menu
-/// opens under its row, leaving the row readable.
 #[test]
 fn a_contact_menu_without_a_pointer_opens_under_its_row() {
     let mut harness = harness((1280, 800));
@@ -622,8 +597,6 @@ fn a_contact_menu_without_a_pointer_opens_under_its_row() {
     );
 }
 
-/// A contact's action menu reaches the canonical edit, favourite, export
-/// and delete paths.
 #[test]
 fn the_contact_menu_runs_the_canonical_actions() {
     let _settled = ui::motion::testing::settled();
@@ -712,9 +685,6 @@ fn the_contact_menu_runs_the_canonical_actions() {
     assert_eq!(app.mode, Mode::Edit);
 }
 
-/// The person's header commands: favourite toggles through the document,
-/// Delete deletes and Ctrl+Z brings the contact back, and the website
-/// opens.
 #[test]
 fn header_commands_favorite_delete_and_open_the_website() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -752,9 +722,6 @@ fn header_commands_favorite_delete_and_open_the_website() {
     assert_eq!(recorder.opened_uris(), [ada.website]);
 }
 
-/// A contact is reachable where they are: Call, Text and Email hand the
-/// person's own number and address to the desktop, which opens whichever app
-/// on this device serves `tel:`, `sms:` and `mailto:`.
 #[test]
 fn a_contact_can_be_called_messaged_and_emailed() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -785,8 +752,6 @@ fn a_contact_can_be_called_messaged_and_emailed() {
     }
 }
 
-/// A person with nothing to call or write has no verb for it: the bar draws
-/// none rather than one that would do nothing.
 #[test]
 fn a_contact_without_a_number_or_address_offers_no_call_or_email() {
     let mut bare = Contact::new();
@@ -814,8 +779,6 @@ fn a_contact_without_a_number_or_address_offers_no_call_or_email() {
     );
 }
 
-/// Saves round-trip through the document; refused saves, favourites and
-/// deletes reconcile and announce errors without claiming success.
 #[test]
 fn retained_forms_preserve_persistence_and_refusals() {
     check_save_round_trips_through_doc();
@@ -853,10 +816,8 @@ fn the_window_offers_import_and_export_on_the_book() {
     }
 }
 
-/// Search hits and published open operations reveal the addressed contact or group.
 #[test]
 fn search_and_open_operations_reveal_their_target() {
-    // --- phase: search_hit_invokes_the_exported_open_action ---
     // Contacts folds its address book into the unified search through its
     // resource's entries. A field-only query finds the contact, and the hit
     // invokes the same published `open` view operation agents and
@@ -890,7 +851,6 @@ fn search_and_open_operations_reveal_their_target() {
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
-    // --- phase: search_activation_reveals_a_contact_hidden_by_the_group ---
     {
         let mut app = Live::sample(1280, 800);
         // Grace Hopper is in "Work" only; narrowing the list to "Friends"
@@ -930,7 +890,6 @@ fn search_and_open_operations_reveal_their_target() {
         );
     }
 
-    // --- phase: group_open_operation_reveals_its_destination ---
     {
         let mut app = Live::sample(1280, 800);
         app.group_filter = Some("Friends".into());
@@ -973,9 +932,6 @@ fn search_and_open_operations_reveal_their_target() {
     }
 }
 
-/// Drive one full five-pass frame against `app` at the given size,
-/// encoding the scene on the CPU so any panic in sync/layout/draw
-/// surfaces. (GPU rasterization is verified separately by `--shots`.)
 fn drive_frame(app: &mut ContactsApp, w: u32, h: u32) {
     drive_frame_with_theme(app, w, h, &Theme::dark());
 }
@@ -1028,7 +984,6 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     let _ = &scene;
 }
 
-/// Narrow windows push the detail over the list (by selection, row press or Enter) and back; wide windows stay docked; resizing reflows the same instance.
 #[test]
 fn single_pane_push_navigation_follows_width() {
     check_narrow_frame_resolves_single_pane_push();
@@ -1044,7 +999,6 @@ fn single_pane_push_navigation_follows_width() {
     check_resizing_wide_to_narrow_reflows_the_same_instance();
 }
 
-/// 200% text reflows and scales interaction geometry and full names fit the detail row.
 #[test]
 fn text_scale_reflows_geometry_and_names_fit() {
     let mut app = Live::sample(1280, 900);
@@ -1134,7 +1088,6 @@ fn saves_persist_and_refusals_never_claim_success() {
             .set_value(Slot::Title, title);
     }
 
-    // --- phase: save_round_trips_through_doc ---
     {
         let mut app = Live::sample(1280, 800);
         let c = app
@@ -1153,7 +1106,6 @@ fn saves_persist_and_refusals_never_claim_success() {
         assert_eq!(r.title, "Edited Title");
     }
 
-    // --- phase: refused_save_reconciles_and_announces_an_error_without_claiming_success ---
     {
         let mut app = Live::sample(1280, 800);
         let contact = app
@@ -1188,7 +1140,6 @@ fn saves_persist_and_refusals_never_claim_success() {
         );
     }
 
-    // --- phase: refused_favorite_and_delete_reconcile_without_false_success ---
     {
         // A peer deletes the record after this replica rendered its detail
         // controls. Both mutations go to the door, which refuses them; the
@@ -1254,7 +1205,6 @@ fn saves_persist_and_refusals_never_claim_success() {
         );
     }
 
-    // --- phase: a_participant_who_may_only_view_cannot_save ---
     {
         let mut app = Live::mount(
             ui::framework::testing::TestApp::with_role(ui::Role::Viewer).unwrap(),
@@ -1281,7 +1231,6 @@ fn saves_persist_and_refusals_never_claim_success() {
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
-/// `text` is what a focused `TextInput` actually inserts.
 fn key_input_event(logical_key: Key, text: Option<&str>) -> WindowEvent {
     // `Key`/`PhysicalKey`/`KeyLocation`/ `ElementState` first variant; `bool` → false) and we
     // overwrite the ones we read below; the private field is inert for our widgets.
@@ -1303,21 +1252,16 @@ impl Harness {
         }
     }
 
-    /// The sample book in a window someone uses, where effects and jobs run.
     fn live(w: u32, h: u32) -> Self {
         Harness {
             app: Live::live_sample(w, h),
         }
     }
 
-    /// Rebuild, lay out and draw a whole frame (after the model changed). The
-    /// draw populates draw-time hit rects (e.g. `detail_field_hits` for
-    /// double-click-to-edit), exactly as the live renderer does each frame.
     fn relayout(&mut self) {
         self.app.recompose();
     }
 
-    /// The address book as the document holds it.
     fn book(&mut self) -> Vec<Contact> {
         self.app.book()
     }
@@ -1330,8 +1274,6 @@ impl Harness {
         self.dispatch(&ui::synthetic_input::cursor_moved(p.x, p.y));
     }
 
-    /// Press `id` in the window's bar, as the desktop hands the press to
-    /// the app.
     fn press_bar(&mut self, id: &str) {
         press_bar(&mut self.app, id);
     }
@@ -1354,7 +1296,6 @@ impl Harness {
         handled
     }
 
-    /// First visible list row's center point.
     fn row_center(&self, index: usize) -> Point {
         self.app.shared.borrow().painted[index].1.center()
     }
@@ -1363,15 +1304,12 @@ impl Harness {
         self.app.shared.borrow().painted[index].0
     }
 
-    /// Dispatch a key event with explicit modifier state through the real
-    /// `handle_event` path.
     fn dispatch_key_mods(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
         let handled = self.app.dispatch(event, mods);
         self.app.settle();
         handled
     }
 
-    /// Press a single `Named` key (no modifiers).
     fn press_named(&mut self, key: NamedKey) -> bool {
         self.dispatch_key_mods(
             &key_input_event(Key::Named(key), None),
@@ -1379,8 +1317,6 @@ impl Harness {
         )
     }
 
-    /// Press a named key with Shift held (the standard Shift+F10 context-menu
-    /// equivalent on keyboards without a dedicated Menu key).
     fn press_named_shift(&mut self, key: NamedKey) -> bool {
         self.dispatch_key_mods(
             &key_input_event(Key::Named(key), None),
@@ -1388,8 +1324,6 @@ impl Harness {
         )
     }
 
-    /// Press a single character key (no modifiers) — a global shortcut like
-    /// `n`, `e`, `/` when no field is focused.
     fn press_char(&mut self, c: &str) -> bool {
         self.dispatch_key_mods(
             &key_input_event(Key::Character(SmolStr::new(c)), Some(c)),
@@ -1397,7 +1331,6 @@ impl Harness {
         )
     }
 
-    /// Press a character key with Ctrl held (e.g. Ctrl+S, Ctrl+K).
     fn press_char_ctrl(&mut self, c: &str) -> bool {
         self.dispatch_key_mods(
             &key_input_event(Key::Character(SmolStr::new(c)), Some(c)),
@@ -1405,7 +1338,6 @@ impl Harness {
         )
     }
 
-    /// The `Slot` of the currently-focused edit-form field, if any.
     fn focused_slot(&self) -> Option<Slot> {
         self.app.form.as_ref().and_then(|form| {
             form_slots(form)
@@ -1414,15 +1346,11 @@ impl Harness {
         })
     }
 
-    /// Type a string one keystroke at a time into whichever input is
-    /// focused, driving the production `handle_event` → `TextInput` path
-    /// (NOT `set_text`), so the live edit semantics are what's exercised.
     fn type_text(&mut self, s: &str) {
         self.app.harness_mut().type_text(s);
         self.app.settle();
     }
 
-    /// Value currently held in the focused/edit form field for `slot`.
     fn field_value(&self, slot: Slot) -> String {
         self.app
             .form
@@ -1430,13 +1358,10 @@ impl Harness {
             .map_or_else(String::new, |form| form.value(slot))
     }
 
-    /// The stored (committed) contact for `id`, read back from the CRDT doc.
     fn doc_contact(&mut self, id: ContactId) -> Option<Contact> {
         self.book().into_iter().find(|c| c.id == id)
     }
 
-    /// Focus the edit-form field for `slot` by clicking its laid-out rect
-    /// through the production press path. Returns whether it was found.
     fn focus_field(&mut self, slot: Slot) -> bool {
         let Some(rect) = form_widget(&self.app, slot).map(Widget::get_rect) else {
             return false;
@@ -1454,7 +1379,6 @@ impl Harness {
     }
 }
 
-/// Detail fields enter edit on double click only, focus scrolls below-the-fold fields into view, and every slot has a placeholder.
 #[test]
 fn detail_fields_enter_edit_on_double_click_with_placeholders() {
     // The shared property's Edit action replaces the old private double-click
@@ -1551,9 +1475,6 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
     }
 }
 
-/// Build an edit-mode harness on a known contact so the field order under
-/// Tab is deterministic: First, Last, Org, Title, Phone(0), Email(0),
-/// Birthday, Website, Notes, Groups.
 fn edit_harness() -> Harness {
     let mut h = Harness::new(1280, 800);
     let mut c = Contact::new();
@@ -1566,8 +1487,6 @@ fn edit_harness() -> Harness {
     h
 }
 
-/// Tab walks all retained controls in the window; reverse traversal wraps
-/// through the same owners, and Enter progresses through the text fields.
 #[test]
 fn form_focus_moves_by_tab_shift_tab_and_enter() {
     form_tab_visits_and_wraps_every_control();
@@ -1708,10 +1627,8 @@ fn form_enter_advances_and_submits() {
     );
 }
 
-/// The shared property publishes a measured website action and opens its URI.
 #[test]
 fn website_renders_and_opens_through_the_link_widget() {
-    // --- phase: website_renders_via_the_link_widget ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.expect("a contact is selected");
@@ -1740,7 +1657,6 @@ fn website_renders_and_opens_through_the_link_widget() {
         );
     }
 
-    // --- phase: clicking_the_website_opens_it_through_the_link_widget ---
     {
         // Drive the whole click path through the shared property action and
         // confirm the contact's URL is what gets opened. A recording host
@@ -1799,7 +1715,6 @@ fn website_renders_and_opens_through_the_link_widget() {
 #[test]
 fn context_menu_opens_canonical_contact_actions() {
     let _settled = ui::motion::testing::settled();
-    // --- phase: right_click_row_opens_context_menu_then_delete_opens_confirm ---
     {
         let mut h = Harness::new(1280, 800);
         let row = h.row_center(0);
@@ -1829,7 +1744,6 @@ fn context_menu_opens_canonical_contact_actions() {
         );
     }
 
-    // --- phase: keyboard_context_menu_keys_open_selected_contacts_canonical_actions ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.expect("a contact starts selected");
@@ -1855,7 +1769,6 @@ fn context_menu_opens_canonical_contact_actions() {
         }
     }
 
-    // --- phase: context_menu_favorite_toggles_flag_persists_and_relabels ---
     // The context-menu Favorite item flips the contact's flag, persists it to
     // the CRDT, and its label reflects the (now-updated) state on reopen.
     {
@@ -1926,8 +1839,6 @@ fn context_menu_opens_canonical_contact_actions() {
     }
 }
 
-/// The person's own Delete does exactly what the palette's delete does,
-/// without asking, and Undo leaves the document as it was.
 #[test]
 fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
     let mut h = Harness::new(1280, 800);
@@ -1959,7 +1870,6 @@ fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
 )]
 #[test]
 fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
-    // --- phase: favorite_toggle_dispatches_the_action_the_palette_builds ---
     {
         // Same, on the favourite path: the context-menu Favorite item dispatches
         // the byte-identical EncodedAction the Ctrl+K "favorite" spec builds,
@@ -1983,7 +1893,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         );
     }
 
-    // --- phase: palette_action_reconciles_into_the_list_on_next_sync ---
     {
         // A Ctrl+K palette action mutates only the document; the next sync must
         // reconcile the in-memory store so the change shows in the list — the
@@ -2010,7 +1919,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         assert_eq!(h.app.store.len(), before - 1);
     }
 
-    // --- phase: detail_favorite_star_click_toggles_store_and_doc ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2031,7 +1939,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             "and persists to the doc"
         );
     }
-    // --- phase: toast_auto_dismisses_after_a_real_action ---
     {
         let shown = ui::time::now();
         ui::time::testing::with_monotonic_time(shown, || {
@@ -2134,7 +2041,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
 )]
 #[test]
 fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
-    // --- phase: switching_while_editing_dirty_pops_save_modal_then_save_commits ---
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
@@ -2180,7 +2086,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         );
     }
 
-    // --- phase: switching_while_editing_discard_drops_edits_and_switches ---
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
@@ -2210,7 +2115,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         );
     }
 
-    // --- phase: the_unsaved_question_offers_keep_editing_and_keeps_the_form ---
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
@@ -2250,7 +2154,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         );
     }
 
-    // --- phase: switching_with_no_changes_switches_directly_no_modal ---
     {
         let mut h = Harness::new(1280, 800);
         let cur = h.app.selected.unwrap();
@@ -2272,7 +2175,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         assert_eq!(h.app.mode, Mode::View);
     }
 
-    // --- phase: dirtying_via_keystrokes_makes_the_unsaved_guard_reachable ---
     {
         // Proves the guard on the REAL keystroke path (not `set_text`): typing
         // leaves the store untouched, so `form_is_dirty` sees the divergence
@@ -2317,7 +2219,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
 )]
 #[test]
 fn edits_commit_only_on_save_and_cancel_discards() {
-    // --- phase: typing_in_edit_form_does_not_commit_and_cancel_discards ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2366,7 +2267,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         );
     }
 
-    // --- phase: cancel_on_new_contact_leaves_no_phantom_record ---
     {
         let mut h = Harness::new(1280, 800);
         let store_before = h.app.store.len();
@@ -2402,7 +2302,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         );
     }
 
-    // --- phase: edit_affordance_opens_form_on_selected_contact_and_cancel_returns ---
     // The read-view Edit affordance is a plain click that opens the edit form
     // on the *same* contact, and Cancel returns tidily to the read view — the
     // clean view→edit→view round trip, driven entirely through the production
@@ -2444,7 +2343,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         assert_eq!(h.app.selected, Some(sel), "the same contact stays selected");
     }
 
-    // --- phase: typed_edit_saved_with_ctrl_s_commits_through_the_keystroke_path ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2467,10 +2365,8 @@ fn edits_commit_only_on_save_and_cancel_discards() {
     }
 }
 
-/// Bare keys never discard an open form and a new form is not dirty until a field is filled.
 #[test]
 fn open_edit_forms_ignore_bare_keys_and_start_clean() {
-    // --- phase: bare_keys_do_not_discard_an_open_edit_form ---
     {
         // Regression: with the edit form open but no field yet focused (its
         // initial state right after opening), a stray 'n' used to start a
@@ -2515,7 +2411,6 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
         );
     }
 
-    // --- phase: new_contact_form_is_not_dirty_until_a_field_is_filled ---
     {
         // A freshly-opened New Contact form (with the two empty seeded
         // phone/email rows) must not be considered dirty — otherwise the
@@ -2539,7 +2434,6 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
 // List controls: search, sort, group filter, keyboard nav, scroll.
 // =================================================================
 
-/// Focus chords and Ctrl-K focus the search, typing narrows the list and an empty result offers a clear action.
 #[test]
 fn search_field_focus_and_typing_narrow_the_list() {
     let mut h = Harness::new(1280, 800);
@@ -2599,10 +2493,8 @@ fn search_field_focus_and_typing_narrow_the_list() {
     );
 }
 
-/// The sort chip reorders, the group filter popup filters keeping selection valid, and the filter shot defers its anchor.
 #[test]
 fn sort_and_group_filters_reorder_and_filter_the_list() {
-    // --- phase: sort_chip_opens_selector_then_reorders_on_choice ---
     {
         let mut h = Harness::new(1280, 800);
         assert_eq!(h.app.sort, SortKey::Name);
@@ -2655,7 +2547,6 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         assert_eq!(h.app.sort, SortKey::Name);
     }
 
-    // --- phase: group_filter_popup_selection_filters_and_keeps_selection_valid ---
     {
         let mut h = Harness::new(1280, 800);
         // The seeded selection (Ada) is not in "Friends".
@@ -2695,7 +2586,6 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         );
     }
 
-    // --- phase: group_capture_publishes_its_sidebar_destination ---
     {
         let mut app = Live::scenario("groups", 1280, 800);
         assert!(
@@ -2707,7 +2597,6 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
     }
 }
 
-/// Arrow, n and e keys drive the list; the wheel scrolls it and large books virtualise while keeping selection in view.
 #[test]
 fn list_keyboard_and_scroll_navigation() {
     check_arrow_keys_move_the_list_selection();
@@ -2721,7 +2610,6 @@ fn list_keyboard_and_scroll_navigation() {
 
 #[test]
 fn split_divider_and_compact_toolbar_fit_their_space() {
-    // --- phase: dragging_the_divider_resizes_the_split ---
     {
         let mut h = Harness::new(1280, 800);
         let before = h.app.shell.geometry().sidebar_column.width();
@@ -2746,7 +2634,6 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         );
     }
 
-    // --- phase: compact_window_keeps_every_action_in_the_bar ---
     {
         let h = Harness::new(320, 640);
         let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
@@ -2772,10 +2659,8 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
 // Edit-form controls: add/remove field, type chip, calendar, favorites.
 // =================================================================
 
-/// Phone rows grow and shrink, repeated row ids survive edits, and the favourite pill toggles only the draft.
 #[test]
 fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
-    // --- phase: add_and_remove_phone_buttons_grow_and_shrink_the_draft ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2803,7 +2688,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
         );
     }
 
-    // --- phase: form_collect_preserves_repeated_row_ids_across_value_and_group_order_edits ---
     {
         let contact = sample_contacts().into_iter().next().unwrap();
         let phone_id = contact.phones[0].id;
@@ -2820,7 +2704,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
         assert_eq!(form.draft.groups[1].id, first_group_id);
     }
 
-    // --- phase: edit_form_favorite_pill_click_toggles_draft_only ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2850,8 +2733,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
     }
 }
 
-/// In the narrow detail pane of a half-screen window the phone's kind still
-/// reads ("Mobile", not "…") and stands at its number's height.
 #[test]
 fn a_new_contacts_phone_kind_keeps_its_label_and_the_fields_height() {
     let mut h = Harness::new(960, 820);
@@ -2877,7 +2758,6 @@ fn a_new_contacts_phone_kind_keeps_its_label_and_the_fields_height() {
 )]
 #[test]
 fn draft_popups_set_type_and_birthday_only_in_the_draft() {
-    // --- phase: type_chip_menu_selection_sets_label_in_draft_only ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2920,7 +2800,6 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         );
     }
 
-    // --- phase: calendar_day_click_sets_birthday_in_draft_only ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
@@ -2961,7 +2840,6 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         );
     }
 
-    // --- phase: popup_keyboard_selects_the_same_type_choice_as_a_pointer ---
     {
         let mut h = Harness::new(1_280, 800);
         let id = h.app.selected.expect("sample contact selected");
@@ -3000,9 +2878,6 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
     }
 }
 
-/// A unique scratch `.vcf` destination for an export test — the path the
-/// portal Save dialog would return, driven directly since the picker can't
-/// run headless.
 fn scratch_export() -> (PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "contacts-export-test-{}-{}",
@@ -3014,11 +2889,9 @@ fn scratch_export() -> (PathBuf, PathBuf) {
     (dir, vcf)
 }
 
-/// Export parks the selection, writes the VCF to the portal path and round-trips every contact.
 #[test]
 #[serial_test::serial]
 fn vcf_export_writes_the_selected_book() {
-    // --- phase: export_selection_parks_then_save_portal_path_writes_the_vcf ---
     {
         let (dir, vcf) = scratch_export();
         let mut h = Harness::live(1280, 800);
@@ -3104,7 +2977,6 @@ fn vcf_export_writes_the_selected_book() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: exporting_everything_writes_every_contact ---
     {
         // The export effect, as the palette or an agent invokes it, saves
         // every contact as vCard 4.0 where the person chooses.
@@ -3156,8 +3028,6 @@ fn scratch_book() -> (PathBuf, PathBuf) {
     (dir.clone(), dir.join("contacts.vcf"))
 }
 
-/// Run the live Import action under a recording host whose multi-select
-/// chooser answers `outcome`, and check the app asked for that chooser.
 fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick_multiple(outcome);
@@ -3171,8 +3041,6 @@ fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
     result.expect("the import runs");
 }
 
-/// Export asks for a format for the people the list shows, then writes the
-/// file the Save dialog chose; nothing is written before.
 #[test]
 #[serial_test::serial]
 fn export_asks_a_format_and_writes_the_chosen_file() {
@@ -3239,7 +3107,6 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech ---
     {
         let mut app = Live::empty(760, 620);
         assert!(app.store.is_empty());
@@ -3279,12 +3146,9 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     }
 }
 
-/// The on-disk book persists creations and deletions, merges with a
-/// diverged replica, and imports real vCard files.
 #[test]
 #[serial_test::serial]
 fn saved_book_persists_across_restarts_and_imports() {
-    // --- phase: created_contact_persists_across_a_restart ---
     // The production restart path: a contact created through the real edit
     // flow goes into the book's document, which the app's record keeps, and
     // a second launch on the same profile finds the contact again.
@@ -3311,7 +3175,6 @@ fn saved_book_persists_across_restarts_and_imports() {
         assert_eq!(loaded.phones[0].value, "+1 555 0100");
     }
 
-    // --- phase: import_reads_real_vcf_files_and_persists_them ---
     {
         let dir = scratch_dir();
         std::fs::create_dir_all(&dir).unwrap();
@@ -3362,7 +3225,6 @@ fn saved_book_persists_across_restarts_and_imports() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: deleting_a_contact_persists_the_removal ---
     {
         let mut app = Live::sample(1280, 800);
         let before = app.store.len();
@@ -3382,8 +3244,6 @@ fn saved_book_persists_across_restarts_and_imports() {
     }
 }
 
-/// Re-imports recognise identities, hostile UIDs go to review, and empty
-/// imports are silent no-ops.
 #[test]
 fn imports_recognise_identities_without_duplicating() {
     check_reimporting_an_export_recognises_its_uid();
@@ -3397,11 +3257,8 @@ fn imports_recognise_identities_without_duplicating() {
     check_import_of_nothing_is_a_clean_noop();
 }
 
-/// Importing reads the chosen files off the UI thread and merges them as
-/// one step; an export with nothing chosen asks for no file.
 #[test]
 fn import_and_export_run_through_the_file_chooser() {
-    // --- phase: chosen_files_import_through_the_import_effect ---
     {
         let dir = scratch_dir();
         std::fs::create_dir_all(&dir).unwrap();
@@ -3424,7 +3281,6 @@ fn import_and_export_run_through_the_file_chooser() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: a_running_import_refuses_a_second ---
     {
         let mut app = Live::empty(1280, 800);
         let _running = super::files::begin_file_work(&app.file_work, FileWork::Import).unwrap();
@@ -3435,7 +3291,6 @@ fn import_and_export_run_through_the_file_chooser() {
         assert!(refused.is_err(), "one file operation runs at a time");
     }
 
-    // --- phase: export_with_empty_selection_never_opens_the_portal ---
     {
         // Choosing a version with nothing ticked must not spin up a Save
         // dialog — it guides the user instead.
@@ -3450,8 +3305,6 @@ fn import_and_export_run_through_the_file_chooser() {
     }
 }
 
-/// An imported card that collides with a known identity is a decision:
-/// keep the existing contact, or import it as a new one.
 #[test]
 
 fn duplicate_and_conflict_review_is_accessible() {
@@ -3607,7 +3460,6 @@ fn check_duplicate_resource_and_compact_header() {
     assert!(bar_offers(BAR_NEW), "New contact is the window bar's");
 }
 
-/// Export and unsaved modals are focus-trapped and semantic; detail, editor and popup controls reach the durable action path.
 #[test]
 
 fn modals_and_editors_expose_semantic_action_routes() {
@@ -3832,16 +3684,12 @@ struct Live {
 }
 
 impl Live {
-    /// Import `paths` as the portal would hand them back, and let the
-    /// book present what the import added.
     fn import_paths(&mut self, paths: &[PathBuf]) -> ImportSummary {
         let summary = ContactsApp::import_paths(self, paths);
         self.settle();
         summary
     }
 
-    /// The declared sample book in the production live host, at `w`x`h`.
-    /// Its pose is presentation-only; actions keep their real admission route.
     fn sample(w: u32, h: u32) -> Self {
         Self::fixture(None, w, h)
     }
@@ -3865,7 +3713,6 @@ impl Live {
         Self::mount(app, (w, h))
     }
 
-    /// A fresh, empty book at `w`x`h`.
     fn empty(w: u32, h: u32) -> Self {
         Self::mount(ui::framework::testing::TestApp::new().unwrap(), (w, h))
     }
@@ -3899,8 +3746,6 @@ impl Live {
         self.app.harness()
     }
 
-    /// Run the frame after an event: submitted edits apply, and what they
-    /// change is presented and drawn.
     fn settle(&mut self) {
         self.app.settle();
     }
@@ -3913,32 +3758,23 @@ impl Live {
             .expect("contacts frame lays out");
     }
 
-    /// A test called the surface itself (a selection, an import decision), not
-    /// through an event: reach it through the harness, which says so, so the
-    /// component's next pass runs and shows what it changed.
     fn reached(&mut self) {
         self.app
             .with_widget(|_: &mut ContactsApp| ())
             .expect("the contacts surface is hosted");
     }
 
-    /// Deliver one window event to the app. What it submits applies on
-    /// the next frame ([`Self::settle`]).
     fn dispatch(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
         self.app
             .harness()
             .dispatch_to_root_with(event, &mods.into())
     }
 
-    /// The address book as the document holds it once the edits submitted
-    /// so far have applied.
     fn book(&mut self) -> Vec<Contact> {
         self.settle();
         self.app.state().contacts.to_vec()
     }
 
-    /// Close the app and launch it again on the same profile, as after a
-    /// restart.
     fn reopen(self) -> Self {
         let viewport = self.viewport;
         Self::mount(self.app.reopen().expect("the app relaunches"), viewport)
@@ -3969,8 +3805,6 @@ impl Live {
     fn save_edit(&mut self) {
         self.request(Request::Save);
     }
-    /// The address book as it would be after `action`, applied to a copy of
-    /// the document as the palette's action of the same name applies it.
     fn book_after(&self, invoke: Invoke<Contacts>) -> Vec<Contact> {
         let mut peer = Replica::<Contacts>::from_doc(self.app.peer_document());
         peer.apply_confirmed(invoke)
@@ -3996,15 +3830,12 @@ impl std::ops::DerefMut for Live {
     }
 }
 
-/// Lay the same instance out at `w`x`h`, to simulate a live window resize (the
-/// ui loop re-runs layout on the existing widget when the allocation changes).
 fn rerender_at(app: &mut Live, w: u32, h: u32) {
     app.harness_mut()
         .relayout_themed((w, h), Theme::dark())
         .expect("contacts frame lays out");
 }
 
-/// Form rows, pills, panel lifts, rows and toolbar faces are authored at 1x and grow with the text scale on every preset.
 #[test]
 fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut app = synced();
@@ -4081,8 +3912,6 @@ fn shared_facts_read_as_a_phrase() {
     );
 }
 
-/// Every capture scenario stages without panicking, in a wide and a phone
-/// window, dark and light.
 #[test]
 fn every_capture_scenario_renders() {
     for scenario in [
@@ -4719,8 +4548,6 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
     }
 }
 
-/// A collaborator's `invoke`, written on their replica of `doc` and merged
-/// back into it.
 fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
     let mut peer = Replica::<Contacts>::from_doc(doc.fork());
     peer.apply_confirmed(invoke)
@@ -4734,8 +4561,6 @@ fn host_confirmation_is_up(app: &mut Live) -> bool {
     app.harness_mut().asking().is_some()
 }
 
-/// Confirm the action the host asks about, as the person does: its
-/// dialog's button named for the verb.
 fn confirm_on_host(app: &mut Live) {
     assert!(
         host_confirmation_is_up(app),
@@ -4745,9 +4570,6 @@ fn confirm_on_host(app: &mut Live) {
     app.settle();
 }
 
-/// A surface that closes its own dialog in the same event its sensitive
-/// action asks the host to confirm: the host remembers where focus returns
-/// from the window as it now stands, never from the dialog that is gone.
 #[test]
 fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
     let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
@@ -4795,9 +4617,6 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
     );
 }
 
-/// A narrow window opens on the list, which stands alone: an empty book says
-/// so there instead of showing nothing (its New contact is in the bar). Beside
-/// the content, the content's first-run pane says it once.
 #[test]
 fn a_narrow_windows_empty_list_says_the_book_is_empty() {
     let mut narrow = Live::empty(460, 880);
@@ -4817,7 +4636,6 @@ fn a_narrow_windows_empty_list_says_the_book_is_empty() {
     );
 }
 
-/// The node the accessibility tree holds under `name`, as the host exports it.
 fn exported_node(app: &mut Live, name: &str) -> Option<ui::accesskit::Node> {
     app.settle();
     app.harness_mut()
@@ -4827,10 +4645,6 @@ fn exported_node(app: &mut Live, name: &str) -> Option<ui::accesskit::Node> {
         .map(|(_, node)| node)
 }
 
-/// Writing the first contact replaces the content's first-run pane with the
-/// form, so the list beside it says the book is empty and where the new
-/// contact will appear instead of standing blank. Someone who may only view
-/// is told so, and offered no New contact that would be refused.
 #[test]
 fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let mut app = Live::empty(1280, 800);
@@ -4847,10 +4661,7 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let state = exported_node(&mut app, "No contacts yet")
         .expect("the list beside the form names the empty book");
     assert_eq!(state.role(), ui::accesskit::Role::Group);
-    assert_eq!(
-        state.description(),
-        Some("The contact you're adding appears here once you save it.")
-    );
+    assert_eq!(state.description(), None, "the empty book speaks once");
     assert!(
         app.shared.borrow().painted.is_empty(),
         "no row stands where the empty state is drawn"

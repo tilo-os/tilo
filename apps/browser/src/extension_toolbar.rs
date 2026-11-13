@@ -1,11 +1,10 @@
-//! The toolbar's view of installed extensions: which action buttons show, in
-//! what order, with which icon, badge and popup; and the `DevTools` exchanges
-//! that read an extension's live action state from its service worker.
+//! The toolbar's view of installed extensions: which action buttons show, in what
+//! order, with which icon, badge and popup; and the `DevTools` exchanges that read
+//! an extension's live action state from its service worker.
 //!
-//! Chromium keeps an action's badge and title in the browser process, and the
-//! engine embeds pages without Chrome's own toolbar, so Tilo reads them the
-//! one way the engine allows: briefly attaching to the extension's service
-//! worker and calling `chrome.action`. Nothing here touches the engine; it
+//! Chromium keeps an action's badge and title in its browser process, and the engine
+//! embeds pages without Chrome's toolbar, so Tilo attaches briefly to the extension's
+//! service worker and calls `chrome.action`. Nothing here touches the engine; it
 //! builds requests and parses replies.
 
 use std::path::{Path, PathBuf};
@@ -17,26 +16,23 @@ use crate::extensions::ExtensionInfo;
 
 /// Chrome shows at most four characters of a badge.
 const MAX_BADGE_CHARS: usize = 4;
-/// What Chromium answers for the badge of every tab while an extension's
-/// button shows each page's count of what its rules did there
-/// (`declarativeNetRequest`): no text of its own. The engine tells each
-/// page's count for that page's tab (`extension_action`).
+/// What Chromium answers for the badge of every tab while an extension's button shows
+/// each page's count of what its rules did there: no text of its own. The engine tells
+/// each page's count for that page's tab (`extension_action`).
 const RULE_COUNT_PLACEHOLDER: &str = "<<declarativeNetRequestActionCount>>";
 const MAX_TITLE_BYTES: usize = 256;
 /// The button's icon is drawn at toolbar size; larger sources downscale.
 const TARGET_ICON_PX: u32 = 32;
 
-/// What an extension's manifest declares for its toolbar action.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionManifest {
     pub title: Option<String>,
     pub popup: Option<String>,
-    /// Best icon file, relative to the extension root.
     pub icon: Option<String>,
 }
 
-/// The `action` (MV3) or `browser_action` (MV2) key, reduced to what the
-/// toolbar uses. Paths that could leave the extension are dropped.
+/// The `action` (MV3) or `browser_action` (MV2) key, reduced to what the toolbar uses;
+/// a path that could leave the extension is dropped.
 pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
     let action = manifest
         .get("action")
@@ -72,32 +68,27 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
     })
 }
 
-/// What an extension may do with the Browser's tabs, as its manifest asks:
-/// its API permissions (`tabs`, `activeTab`, `scripting`), the sites it may
-/// read and script, and apart from those the sites its content scripts run
-/// on. As in Chrome, a content script's sites give no access to the tab
-/// APIs: an extension whose content scripts match every page sees no tab's
-/// address, scripts no page and captures none without asking.
+/// What an extension may do with the Browser's tabs, as its manifest asks: its API
+/// permissions, the sites it may read and script, and apart from those the sites its
+/// content scripts run on. As in Chrome, a content script's sites give no access to
+/// the tab APIs: matching every page reads no address, scripts no page and captures
+/// none without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Access {
     pub permissions: Vec<String>,
-    /// Its host permissions: `host_permissions`, and in MV2 the sites among
-    /// its `permissions`.
+    /// Its host permissions: `host_permissions`, and in MV2 the sites among its
+    /// `permissions`.
     pub hosts: Vec<String>,
-    /// Where its declared content scripts run.
     pub scriptable: Vec<String>,
-    /// Where they run in a page's frames too (`all_frames`): of the frames
-    /// another site's process renders, only these may hold its world.
+    /// The sites its content scripts run on in a page's frames too (`all_frames`): of
+    /// the frames another site's process renders, only these may hold its world.
     pub framed: Vec<String>,
-    /// The token its service worker shows the engine
-    /// ([`crate::extensions::prepare_tabs`]).
     pub token: Option<String>,
-    /// Its keyboard shortcuts: the manifest's `commands`, whose suggested
-    /// keys the engine gives and runs as Chrome does.
+    /// Its keyboard shortcuts: the manifest's `commands`, whose suggested keys the
+    /// engine gives and runs as Chrome does.
     pub commands: Option<Value>,
     /// What it may ask for later (`optional_permissions`,
-    /// `optional_host_permissions`), and what of that the person granted
-    /// ([`crate::extensions::granted`]).
+    /// `optional_host_permissions`), and what of that the person granted.
     pub optional: ExtensionPermissionSet,
     pub granted: ExtensionPermissionSet,
 }
@@ -112,11 +103,9 @@ pub fn access(manifest: &Value) -> Access {
             .map(str::to_owned)
             .collect()
     };
-    // Manifest V2 lists sites among its permissions and optional
-    // permissions. From V3 on Chrome grants none it finds there (it warns of
-    // each and drops it): sites are asked for in `host_permissions` and
-    // `optional_host_permissions` alone. A manifest without a version is
-    // read as V2, as the Library reads it ([`crate::extensions`]).
+    // Manifest V2 lists sites among its permissions; from V3 on Chrome grants none it
+    // finds there, so sites are asked for in `host_permissions` and
+    // `optional_host_permissions` alone. A manifest without a version is read as V2.
     let before_v3 = manifest
         .get("manifest_version")
         .and_then(Value::as_u64)
@@ -180,8 +169,8 @@ pub fn access(manifest: &Value) -> Access {
     }
 }
 
-/// An extension's settings page (`options_ui.page`, or MV2's
-/// `options_page`), relative to its root; one that could leave it is none.
+/// An extension's settings page (`options_ui.page`, or MV2's `options_page`), relative
+/// to its root; one that could leave it is none.
 pub fn options_page(manifest: &Value) -> Option<String> {
     manifest
         .get("options_ui")
@@ -208,22 +197,20 @@ fn best_icon(sizes: impl Iterator<Item = (u32, String)>) -> Option<String> {
         .map(|(_, path)| path.clone())
 }
 
-/// One extension, as the toolbar needs to know it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
-    /// The identifier Chromium shows (`chrome-extension://<id>/`).
     pub id: String,
     pub name: String,
     pub root: PathBuf,
     pub enabled: bool,
     pub pinned: bool,
     pub action: Option<ActionManifest>,
-    /// Its settings page, relative to its root (`options_ui.page` or MV2's
-    /// `options_page`): where an ad blocker keeps its lists and allowed sites.
+    /// Its settings page, relative to its root: where an ad blocker keeps its lists
+    /// and allowed sites.
     pub options: Option<String>,
     pub access: Access,
-    /// Its keyword in the address (`omnibox.keyword`): typed with a space,
-    /// what follows is the extension's ([`crate::extension_omnibox`]).
+    /// Its keyword in the address (`omnibox.keyword`): typed with a space, what
+    /// follows is the extension's.
     pub keyword: Option<String>,
 }
 
@@ -262,7 +249,6 @@ impl Installed {
         })
     }
 
-    /// Whether it may show a side panel beside the page (`chrome.sidePanel`).
     pub fn side_panel(&self) -> bool {
         self.access
             .permissions
@@ -270,13 +256,11 @@ impl Installed {
             .any(|permission| permission == "sidePanel")
     }
 
-    /// `chrome-extension://<id>/<popup>`, when the action has a popup.
     pub fn popup_url(&self) -> Option<String> {
         let popup = self.action.as_ref()?.popup.as_ref()?;
         Some(format!("chrome-extension://{}/{popup}", self.id))
     }
 
-    /// `chrome-extension://<id>/<settings page>`, when it has one.
     pub fn options_url(&self) -> Option<String> {
         Some(format!(
             "chrome-extension://{}/{}",
@@ -285,7 +269,6 @@ impl Installed {
         ))
     }
 
-    /// Absolute path of the action icon, when it is inside the extension.
     pub fn icon_path(&self) -> Option<PathBuf> {
         let icon = self.action.as_ref()?.icon.as_ref()?;
         let root = self.root.canonicalize().ok()?;
@@ -294,20 +277,19 @@ impl Installed {
     }
 }
 
-/// An action's state as Chromium holds it for every tab: read from the
-/// service worker, or told by the extension's script as it changed it.
+/// An action's state as Chromium holds it for every tab, read from the service worker
+/// or told by the extension's script as it changed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionState {
     pub badge: String,
     pub title: Option<String>,
-    /// The popup's address; empty when a click goes to the extension, `None`
-    /// until known, when the manifest's stands.
+    /// The popup's address; empty when a click goes to the extension, `None` until
+    /// known, when the manifest's stands.
     pub popup: Option<String>,
     pub disabled: bool,
 }
 
 impl ActionState {
-    /// Take in what the extension changed for every tab.
     pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
         if let Some(badge) = &change.badge {
             self.badge = badge_text(badge.as_deref().unwrap_or_default());
@@ -342,8 +324,7 @@ impl ActionState {
     }
 }
 
-/// What an extension set for its button on one page alone (an ad
-/// blocker's count of what it blocked there): each `None` is what every
+/// What an extension set for its button on one page alone: each `None` is what every
 /// page shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PageValues {
@@ -354,7 +335,6 @@ pub struct PageValues {
 }
 
 impl PageValues {
-    /// Take in a change for this page; `Some(None)` takes a value back.
     pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
         if let Some(badge) = &change.badge {
             self.badge = badge.as_deref().map(badge_text);
@@ -384,9 +364,7 @@ pub struct Button {
     pub tooltip: String,
     pub badge: String,
     pub icon: Option<PathBuf>,
-    /// The popup a click opens; `None` when a click goes to the extension.
     pub popup: Option<String>,
-    /// A button the extension turned off does nothing when clicked.
     pub enabled: bool,
 }
 
@@ -396,8 +374,8 @@ impl Button {
     }
 }
 
-/// The toolbar's content: pinned buttons in the row, and every enabled
-/// extension with an action in the Extensions menu.
+/// The toolbar's content: pinned buttons in the row, and every enabled extension with
+/// an action in the Extensions menu.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Model {
     pub pinned: Vec<Button>,
@@ -410,8 +388,6 @@ pub struct MenuEntry {
     pub pinned: bool,
 }
 
-/// Build the toolbar. Only enabled extensions that declare an action appear;
-/// pinned ones keep the order the list gives them.
 pub fn model(installed: &[Installed], state_of: impl Fn(&str) -> Option<ActionState>) -> Model {
     let mut model = Model::default();
     for extension in installed.iter().filter(|e| e.enabled) {
@@ -453,17 +429,14 @@ pub fn model(installed: &[Installed], state_of: impl Fn(&str) -> Option<ActionSt
     model
 }
 
-/// Chrome's badge presentation: at most four characters.
 pub fn badge_text(text: &str) -> String {
     text.chars().take(MAX_BADGE_CHARS).collect()
 }
 
-/// `Target.getTargets`.
 pub fn targets_request() -> (&'static str, Value) {
     ("Target.getTargets", json!({}))
 }
 
-/// The target identifier of `extension`'s service worker among the targets.
 pub fn worker_target(body: &str, extension: &str) -> Option<String> {
     let prefix = format!("chrome-extension://{extension}/");
     let targets: Value = serde_json::from_str(body).ok()?;
@@ -498,8 +471,8 @@ pub fn detach_request(session: &str) -> (&'static str, Value) {
     ("Target.detachFromTarget", json!({"sessionId": session}))
 }
 
-/// Reads the badge, title, popup and whether the button is on from
-/// `chrome.action`, as it is for every tab.
+/// Reads the badge, title, popup and whether the button is on from `chrome.action`, as
+/// it is for every tab.
 const READ_ACTION: &str = "(async()=>{const a=chrome.action||chrome.browserAction;\
 const [text,title,popup,enabled]=await Promise.all([a.getBadgeText({}),a.getTitle({}),\
 a.getPopup?a.getPopup({}):null,a.isEnabled?a.isEnabled():true]);\
@@ -512,7 +485,6 @@ pub fn evaluate_request() -> (&'static str, Value) {
     )
 }
 
-/// The action state in a `Runtime.evaluate` reply.
 pub fn action_state(body: &str) -> Option<ActionState> {
     let reply: Value = serde_json::from_str(body).ok()?;
     if reply.get("exceptionDetails").is_some() {
@@ -538,15 +510,13 @@ pub fn action_state(body: &str) -> Option<ActionState> {
     })
 }
 
-/// The extension identifier in a `loadUnpacked` reply.
 pub fn loaded_id(body: &str) -> Option<String> {
     let reply: Value = serde_json::from_str(body).ok()?;
     let id = reply.get("id")?.as_str()?;
     crate::crx::is_extension_id(id).then(|| id.to_owned())
 }
 
-/// The file at `path` (`/icons/on.png`, from the extension's root) when it
-/// is inside `root`: an icon an extension set for its button.
+/// The file at `path` (from the extension's root) when it is inside `root`.
 pub fn icon_within(root: &Path, path: &str) -> Option<PathBuf> {
     let relative = path.strip_prefix('/')?;
     if relative.is_empty()
@@ -560,7 +530,6 @@ pub fn icon_within(root: &Path, path: &str) -> Option<PathBuf> {
     file.starts_with(&root).then_some(file)
 }
 
-/// Read a PNG action icon inside `root` (see [`Installed::icon_path`]).
 pub fn read_icon(path: &Path) -> Option<vello::peniko::ImageData> {
     let length = std::fs::metadata(path).ok()?.len();
     if length > 512 * 1024 {
@@ -638,9 +607,8 @@ mod tests {
                 ],
             }
         );
-        // From V3 on, a site among its permissions or optional permissions
-        // is no host permission, as in Chrome: one asking for every site
-        // there reads, scripts and captures no tab.
+        // From V3 on a site among its permissions is no host permission, as in Chrome:
+        // one asking for every site there reads, scripts and captures no tab.
         let v3 = access(&serde_json::json!({
             "manifest_version": 3,
             "permissions": ["tabs", "<all_urls>", "https://old.example/*"],
@@ -656,7 +624,6 @@ mod tests {
                 origins: Vec::new(),
             }
         );
-        // Its keyboard shortcuts go to the engine as the manifest has them.
         let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
         assert_eq!(
             access(&serde_json::json!({"commands": shortcuts})).commands,
@@ -706,7 +673,6 @@ mod tests {
         assert_eq!(action.popup.as_deref(), Some("popup/index.html"));
         assert_eq!(action.icon.as_deref(), Some("i32.png"));
 
-        // Largest when nothing reaches toolbar size; MV2 and top-level icons.
         let small: Value = serde_json::from_str(
             r#"{"browser_action":{"default_icon":{"16":"a.png","19":"b.png"}}}"#,
         )
@@ -800,7 +766,6 @@ mod tests {
         assert_eq!(shown.popup, None, "a click goes to the extension");
         assert!(!shown.enabled);
 
-        // Taken back for the page: what every page shows.
         page.apply(&Change {
             badge: Some(None),
             popup: Some(None),
@@ -812,7 +777,6 @@ mod tests {
         assert_eq!(shown.popup, Some(own("p.html")), "the manifest's popup");
         assert!(shown.enabled);
 
-        // A popup Chromium resolved stands, but only among its own pages.
         every.apply(&Change {
             popup: Some(Some(own("other.html"))),
             ..Change::default()
@@ -820,7 +784,6 @@ mod tests {
         assert_eq!(button(every.clone()).popup, Some(own("other.html")));
         every.popup = Some("https://example.test/".into());
         assert_eq!(button(every.clone()).popup, None);
-        // An empty title for the page is no title.
         page.apply(&Change {
             title: Some(Some(String::new())),
             ..Change::default()
@@ -893,7 +856,6 @@ mod tests {
                 ..ActionState::default()
             })
         );
-        // A button that shows each page's count has no text for every tab.
         let counting = json!({"result":{"type":"string","value":
             json!({"text":RULE_COUNT_PLACEHOLDER,"title":"uBlock Origin Lite"}).to_string()}})
         .to_string();

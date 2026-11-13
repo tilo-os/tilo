@@ -1,8 +1,5 @@
-//! The one widget shell every chart kind shares: layout, title, hover,
-//! keyboard and touch inspection, activation, the legend toggles and the
-//! accessibility tree. A chart kind only supplies its marks — geometry, hit
-//! testing and painting — through [`PlotMarks`]; its builder name is an
-//! alias of [`Plot`] over those marks (`Heatmap` is `Plot<HeatmapMarks>`).
+//! The one widget shell every chart kind shares: layout, title, hover, keyboard and touch
+//! inspection, activation, the legend toggles and the accessibility tree.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,7 +30,6 @@ pub struct PlotFrame<H> {
 }
 
 impl<H> PlotFrame<H> {
-    /// A frame that takes the room it is given.
     pub(crate) fn fill(min_height: f32) -> Self {
         Self {
             rect: Rect::ZERO,
@@ -54,7 +50,6 @@ impl<H> PlotFrame<H> {
     }
 }
 
-/// One accessible, activatable mark: a point, bar, slice, node or link.
 pub struct PlotItem<A> {
     pub(crate) target: String,
     pub(crate) name: String,
@@ -81,18 +76,14 @@ impl<A> PlotItem<A> {
 
 /// What a chart kind supplies to [`Plot`].
 pub trait PlotMarks: 'static {
-    /// The inspected mark.
     type Hover: Clone + PartialEq;
     /// What activating a mark reports through [`Plot::take_activated`].
     type Activated: Clone;
-    /// The widget name.
     const NAME: &'static str;
-    /// The accessible name of an untitled chart.
     const LABEL: &'static str;
 
     fn frame(&self) -> &PlotFrame<Self::Hover>;
     fn frame_mut(&mut self) -> &mut PlotFrame<Self::Hover>;
-    /// The mark under `point`.
     fn hit(&self, point: Point) -> Option<Self::Hover>;
     /// The marks the keyboard steps through, in order.
     fn keyboard_items(&self) -> Vec<Self::Hover>;
@@ -100,9 +91,7 @@ pub trait PlotMarks: 'static {
     fn anchor(&self, item: &Self::Hover) -> Option<Point>;
     /// What activating `item` reports; `None` when it is not activatable.
     fn activation(&self, item: &Self::Hover) -> Option<Self::Activated>;
-    /// Every mark the accessibility tree lists.
     fn items(&self) -> Vec<PlotItem<Self::Activated>>;
-    /// The accessible name, which can depend on the marks' style.
     fn label(&self) -> &'static str {
         Self::LABEL
     }
@@ -110,7 +99,6 @@ pub trait PlotMarks: 'static {
     fn series(&self) -> Vec<(&str, &str)> {
         Vec::new()
     }
-    /// Whether clicking a legend entry shows or hides its series.
     fn legend_interactive(&self) -> bool {
         false
     }
@@ -120,7 +108,6 @@ pub trait PlotMarks: 'static {
     fn toggles_mut(&mut self) -> Option<&mut SeriesToggles> {
         None
     }
-    /// The series `item` belongs to, if any.
     fn series_of(&self, _item: &Self::Hover) -> Option<&str> {
         None
     }
@@ -136,6 +123,9 @@ pub trait PlotMarks: 'static {
     fn natural_height(&self, _tr: &mut TextRenderer, _theme: &Theme, _width: f64) -> f64 {
         320.0
     }
+    /// Places what the marks read before they paint: the plot's own rect, a legend's entries,
+    /// each measured in `theme`'s own type.
+    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {}
     /// Paints the marks. Call [`Self::follow_keyboard_anchor`] once the
     /// geometry is current and before painting the inspector.
     fn paint(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme);
@@ -149,8 +139,6 @@ pub trait PlotMarks: 'static {
     fn wants_pointer_capture(&self) -> bool {
         false
     }
-    /// A series was shown or hidden: marks that cache their domain or their
-    /// geometry drop it.
     fn visible_changed(&mut self) {}
     /// Keeps the pointer on a mark the keyboard chose while the geometry
     /// changes under it, so its inspector shows there.
@@ -178,12 +166,16 @@ pub struct Plot<M: PlotMarks> {
     pub(crate) marks: M,
     activated: Option<M::Activated>,
     focused: bool,
-    /// The theme seen at layout, for measuring a filling chart.
-    theme: Option<Theme>,
+    /// The theme the frame's marks are placed in: the layout is handed none,
+    /// and a filling chart measures its height in it too.
+    theme: Theme,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// What the marks place may have moved: input or a data change that the
+    /// layout re-places before the next frame is read or drawn.
+    layout_dirty: bool,
 }
 
 impl<M: PlotMarks> Plot<M> {
@@ -193,7 +185,8 @@ impl<M: PlotMarks> Plot<M> {
             marks,
             activated: None,
             focused: false,
-            theme: None,
+            theme: Theme::default(),
+            layout_dirty: true,
         }
     }
     #[must_use]
@@ -210,16 +203,17 @@ impl<M: PlotMarks> Plot<M> {
     pub fn take_activated(&mut self) -> Option<M::Activated> {
         self.activated.take()
     }
-    /// The activation waiting to be read, without taking it.
     pub(crate) fn activation(&self) -> Option<&M::Activated> {
         self.activated.as_ref()
     }
     pub(crate) fn clear_activation(&mut self) {
         self.activated = None;
     }
-    /// Repaints once on the next frame: for a mark that changed its data.
+    /// Repaints once on the next frame: for a mark that changed its data,
+    /// whose places the layout works out again.
     pub(crate) fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.layout_dirty = true;
     }
     pub fn clear_inspection(&mut self) {
         self.marks.frame_mut().inspection.clear();
@@ -243,7 +237,7 @@ impl<M: PlotMarks> Plot<M> {
     /// Shows or hides series `id`; whether that changed anything. Hiding
     /// the inspected mark's series ends the inspection.
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
-        self.dirty = true;
+        self.mark_dirty();
         if !self.marks.series().iter().any(|(series, _)| *series == id) {
             return false;
         }
@@ -267,7 +261,6 @@ impl<M: PlotMarks> Plot<M> {
         self.marks.visible_changed();
         true
     }
-    /// The latest series a legend showed or hid, once.
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
         self.marks.toggles_mut()?.take_changed()
     }
@@ -313,7 +306,6 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
         let Some(id) = self.marks.toggles().and_then(|toggles| toggles.hit(point)) else {
             return false;
         };
-        // A legend entry claims the click even when its series is gone.
         let _ = self.toggle_series(&id);
         true
     }
@@ -327,9 +319,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let height = self.marks.layout_height();
-        if height.is_none() {
-            self.theme = Some(theme.clone());
-        }
+        self.theme = theme.clone();
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
@@ -350,12 +340,13 @@ impl<M: PlotMarks> Widget for Plot<M> {
             taffy::AvailableSpace::Definite(width) => width,
             _ => 320.0,
         });
-        let height = match (self.marks.layout_height(), &self.theme) {
-            (Some(height), _) => height,
-            (None, Some(theme)) => {
-                crate::num::f32_of_f64(self.marks.natural_height(text, theme, f64::from(width)))
-            }
-            (None, None) => 320.0,
+        let height = match self.marks.layout_height() {
+            Some(height) => height,
+            None => crate::num::f32_of_f64(self.marks.natural_height(
+                text,
+                &self.theme,
+                f64::from(width),
+            )),
         };
         taffy::Size {
             width,
@@ -364,12 +355,20 @@ impl<M: PlotMarks> Widget for Plot<M> {
     }
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.marks.frame_mut().rect = crate::widget::layout_rect(taffy, node, origin);
+        let theme = self.theme.clone();
+        crate::text_render::with_layout_renderer(&theme, |tr| self.marks.place(tr, &theme));
     }
     fn get_rect(&self) -> Rect {
         self.marks.frame().rect
     }
     fn is_layout_dirty(&self) -> bool {
-        self.marks.frame().rect == Rect::ZERO
+        self.marks.frame().rect == Rect::ZERO || self.layout_dirty
+    }
+    fn layout_needs_measure(&self) -> bool {
+        self.is_layout_dirty()
+    }
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
     fn draw(
         &mut self,
@@ -379,13 +378,13 @@ impl<M: PlotMarks> Widget for Plot<M> {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.marks.event(event, ctx) {
+            self.layout_dirty = true;
             return;
         }
         // Keys inspect the chart only while it has focus; otherwise they

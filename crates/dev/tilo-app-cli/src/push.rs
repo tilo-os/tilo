@@ -229,7 +229,6 @@ pub fn bot_push(program: &Path, entry: &str, version: &str) -> Result<Push> {
     })
 }
 
-/// An action's argument from its named fields.
 fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
     fields
         .into_iter()

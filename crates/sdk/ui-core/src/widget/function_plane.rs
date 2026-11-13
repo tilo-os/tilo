@@ -1,12 +1,5 @@
-//! [`FunctionPlane`] — the world ↔ screen mapping and grid of a pannable,
-//! zoomable function plot (a grapher's `y = f(x)` canvas).
-//!
-//! Unlike [`crate::widget::CartesianPlot`], whose domain is fitted to its
-//! data, a function plane is an unbounded world the user pans and zooms: the
-//! axes run through the world origin wherever it lands, and the grid steps
-//! follow a 1-2-5 progression so a label never reads `0.30000000000000004`.
-//! The host samples its own curves through [`FunctionPlane::to_screen`] and
-//! paints them over [`FunctionPlane::paint_grid`].
+//! [`FunctionPlane`] — the world ↔ screen mapping and grid of a pannable, zoomable function
+//! plot (a grapher's `y = f(x)` canvas).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -17,11 +10,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// Minor rules per major step.
 const MINOR_DIVISIONS: u8 = 5;
-/// Alphas of the minor rules, major rules and axes, each derived against the
-/// canvas ground (HIG §9.5) so the grid reads on light, dark and
-/// high-contrast grounds alike.
 const MINOR_ALPHA: u8 = 18;
 const MAJOR_ALPHA: u8 = 38;
 const AXIS_ALPHA: u8 = 96;
@@ -34,8 +23,6 @@ pub struct FunctionPlane {
     pub canvas: Rect,
     pub center: Point,
     pub scale: f64,
-    /// Target on-screen distance between major grid rules, in logical
-    /// pixels; the step itself snaps to the nearest 1-2-5 value.
     pub major_spacing: f64,
 }
 
@@ -247,7 +234,6 @@ impl FunctionPlane {
         let style = theme.text(TextRole::Caption).numeric();
         let gap = f64::from(theme.tokens.spacing.s1);
         let inset = gap / 2.0;
-        // A label keeps a full step clear of the canvas edges.
         let edge = f64::from(theme.tokens.spacing.s2);
         let line_h = f64::from(text_renderer.measure_style("0", None, &style).1);
         let canvas = self.canvas;
@@ -267,7 +253,6 @@ impl FunctionPlane {
                 rect: Rect::new(x, top, x + w, top + line_h),
             }
         };
-        // x labels hang under the x axis, left to right.
         let x_top = origin.y + gap;
         let mut last: Option<Rect> = None;
         for k in step_indices(span.left, span.right, step) {
@@ -285,8 +270,6 @@ impl FunctionPlane {
             last = Some(label.rect);
             out.push(label);
         }
-        // y labels sit right of the y axis, just above their rule, top to
-        // bottom.
         let y_left = origin.x + gap;
         let mut last: Option<Rect> = None;
         let mut ys: Vec<i64> = step_indices(span.bottom, span.top, step).collect();
@@ -313,7 +296,6 @@ impl FunctionPlane {
     }
 }
 
-/// One placed tick label.
 #[derive(Clone, Debug, PartialEq)]
 struct TickLabel {
     text: String,
@@ -324,7 +306,6 @@ fn overlaps(a: Rect, b: Rect, gap: f64) -> bool {
     a.x0 < b.x1 + gap && b.x0 < a.x1 + gap && a.y0 < b.y1 + gap && b.y0 < a.y1 + gap
 }
 
-/// The world-space rectangle the canvas currently shows.
 #[derive(Clone, Copy)]
 struct WorldSpan {
     left: f64,
@@ -411,8 +392,8 @@ pub fn nice_ticks(min: f64, max: f64, max_count: usize) -> Vec<f64> {
     ends()
 }
 
-/// A tick value at the precision its `step` implies, without trailing
-/// zeros: `0.5`, `2`, `-0.25`, and exactly `0` at the origin.
+/// A tick value at the precision its `step` implies, without trailing zeros: `0.5`, `2`,
+/// `-0.25`, and exactly `0` at the origin.
 pub fn format_tick(value: f64, step: f64) -> String {
     if value.abs() < step * 1e-6 {
         return "0".to_string();
@@ -428,7 +409,6 @@ pub fn format_tick(value: f64, step: f64) -> String {
     } else {
         text.trim_end_matches('0').trim_end_matches('.').to_string()
     };
-    // A negative tick reads with a true minus sign, the width of a plus.
     match text.strip_prefix('-') {
         Some(magnitude) => format!("\u{2212}{magnitude}"),
         None => text,
@@ -499,8 +479,6 @@ mod tests {
     fn tick_labels_never_collide_and_stay_whole_inside_the_canvas() {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut text = TextRenderer::new();
-        // Zoomed out so labels are wide ("-2000") against a tight step, with
-        // the y axis near the left edge and negatives on screen.
         let plane = FunctionPlane::new(
             Rect::new(0.0, 0.0, 360.0, 240.0),
             Point::new(1500.0, 0.0),

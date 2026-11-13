@@ -1,15 +1,6 @@
-//! The status bar: persistent status at the bottom edge of a window region.
-//!
-//! What a person reads while working and expects to stay put (the cursor's
-//! line and column, a word count, the number of unresolved conflicts) goes
-//! here, never into a floating bubble over the content. The bar reserves its
-//! band ([`split`]): the content above it is laid out in what is left, so
-//! nothing is ever painted under it.
-//!
-//! The bar sits on its region's ground (the framework paints that) with one
-//! hairline along its top edge; it is never a raised band. Each readout is a
-//! `Caption` with tabular figures in the secondary ink, inset by the
-//! content gutter step `spacing.s4`.
+//! The status bar: persistent status at the bottom edge of a window region. What a person reads while
+//! working and expects to stay put (the cursor's line and column, a word count, the number of
+//! unresolved conflicts) goes here, never into a floating bubble over the content.
 
 use crate::num::f32_of_f64;
 use crate::text_render::{TextRenderer, TextStyle};
@@ -19,9 +10,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Fill;
 
-/// Height of the status bar: the compact control height, so a status bar
-/// and a bar control read as the same tier, grown with the `Caption` line
-/// at a large text scale so the readouts always have `s1` of air.
+/// Height of the status bar: the compact control height, so a status bar and a bar control read as the
+/// same tier, grown with the `Caption` line at a large text scale so the readouts always have `s1` of
+/// air.
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {
     let line = f64::from(label_style(theme).line_height_px());
@@ -29,10 +20,7 @@ pub fn height(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.bar_control_height).max((line + air).ceil())
 }
 
-/// One readout of the status bar. A readout that does something when
-/// clicked (a zoom level that opens its menu, a line number that opens "Go
-/// to line") is [`StatusReadout::action`]: it lifts under the pointer, and
-/// [`draw_readouts`] returns its rect for the host to hit-test.
+/// One readout of the status bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusReadout<'a> {
     pub text: &'a str,
@@ -56,10 +44,8 @@ impl<'a> StatusReadout<'a> {
     }
 }
 
-/// Draw the status bar in `bar` with `left` readouts from its leading edge
-/// and `right` readouts from its trailing edge, `s4` apart. `hovered` is an
-/// index into `left` then `right` (as the returned rects are ordered).
-/// Returns each readout's rect, for hit-testing the clickable ones.
+/// Draw the status bar in `bar` with `left` readouts from its leading edge and `right` readouts from
+/// its trailing edge, `s4` apart.
 pub fn draw_readouts(
     scene: &mut Scene,
     transform: Affine,
@@ -79,8 +65,6 @@ pub fn draw_readouts(
     let item_h = (line_h + f64::from(theme.tokens.spacing.s1)).min(bar.height());
     let y0 = bar.y0 + (bar.height() - item_h) / 2.0;
     let mut rects = Vec::with_capacity(left.len() + right.len());
-    // A clickable readout carries its own inset, so its text stays on the
-    // same edge as a plain one beside it.
     let width = |tr: &mut TextRenderer, item: &StatusReadout<'_>| {
         f64::from(tr.measure_style(item.text, None, &style).0)
             + if item.action { pad * 2.0 } else { 0.0 }
@@ -131,7 +115,6 @@ pub fn draw_readouts(
     rects
 }
 
-/// The hairline where the bar meets the content above it.
 fn paint_rule(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
     let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
     if rule > 0.0 {
@@ -145,9 +128,7 @@ fn paint_rule(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
     }
 }
 
-/// Reserve the status bar's band at the bottom of `region`: returns
-/// `(content, bar)`. Lay the region's content out in `content` and draw the
-/// bar in `bar`.
+/// Reserve the status bar's band at the bottom of `region`: returns `(content, bar)`.
 #[must_use]
 pub fn split(region: Rect, theme: &Theme) -> (Rect, Rect) {
     let h = height(theme).min(region.height().max(0.0));
@@ -158,24 +139,17 @@ pub fn split(region: Rect, theme: &Theme) -> (Rect, Rect) {
     )
 }
 
-/// A status readout: a caption, with tabular figures so a changing cursor
-/// position does not jitter.
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption).numeric()
 }
 
-/// Where the two readouts start, given the measured widths of the right
-/// label and of one line: both inset by `spacing.s4`, both centred on the
-/// bar by their measured line height. Pure so the geometry can be pinned.
 fn text_origins(rect: Rect, theme: &Theme, right_w: f64, line_h: f64) -> ((f64, f64), (f64, f64)) {
     let gutter = f64::from(theme.tokens.spacing.s4);
     let y = rect.y0 + (rect.height() - line_h) / 2.0;
     ((rect.x0 + gutter, y), (rect.x1 - gutter - right_w, y))
 }
 
-/// Draw the status bar in `bar` (from [`split`]) with `left`- and
-/// `right`-aligned readouts. `theme` is the theme of the region the bar sits
-/// in (`theme.in_region(..)` for a sidebar or inspector).
+/// Draw the status bar in `bar` (from [`split`]) with `left`- and `right`-aligned readouts.
 pub fn draw(
     scene: &mut Scene,
     transform: Affine,
@@ -192,12 +166,8 @@ pub fn draw(
     let ink = colors.text_dim;
     let (right_w, line_h) = tr.measure_style(right, None, &style);
     let (left_w, left_h) = tr.measure_style(left, None, &style);
-    // Both readouts share one line box, so their baselines agree even when
-    // one side is empty.
     let line_h = f64::from(line_h.max(left_h));
     let ((lx, ly), (rx, ry)) = text_origins(bar, theme, f64::from(right_w), line_h);
-    // The right readout takes precedence over a left one long enough to
-    // run into it: a cursor position is what the eye looks for.
     let left_max = (rx - lx - f64::from(theme.tokens.spacing.s2)).max(0.0);
     let left_shown = if f64::from(left_w) > left_max {
         tr.elide_to_width_style(left, f32_of_f64(left_max), &style)
@@ -271,7 +241,6 @@ mod tests {
             assert!(rects.iter().all(|r| r.y0 >= bar.y0 && r.y1 <= bar.y1));
         }
 
-        // Case `readouts_sit_on_the_s4_gutter_and_centre_their_measured_line`.
         {
             let theme = Theme::dark();
             let rect = Rect::new(0.0, 100.0, 800.0, 100.0 + height(&theme));

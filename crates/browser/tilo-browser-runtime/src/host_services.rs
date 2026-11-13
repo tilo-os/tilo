@@ -61,7 +61,7 @@ impl ModelConfig {
         if self.session_token.trim().is_empty() {
             return Err("model session is required".into());
         }
-        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_gateway::transport::check_endpoint_in_page(&self.endpoint)?;
         let choice = match (&self.profile_id, &self.model_id) {
             (None, None) => None,
             (Some(profile), Some(model))
@@ -95,7 +95,7 @@ impl ProviderManagementConfig {
         if self.session_token.trim().is_empty() {
             return Err("provider management session is required".into());
         }
-        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_gateway::transport::check_endpoint_in_page(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
             LazyAdministration {
                 service: Service::Host {

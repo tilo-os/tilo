@@ -4,7 +4,6 @@ use runtime_fs::{DirEntry, EntryKind, Metadata};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
-/// One folder holding one file.
 struct Workspace;
 
 const PLAN: &[u8] = b"# Plan\n\nShip the file provider.\n";
@@ -59,7 +58,6 @@ fn c(text: &str) -> CString {
     CString::new(text).unwrap()
 }
 
-/// Takes and parses one answer the library returned.
 fn take(answer: *mut c_char) -> Value {
     assert!(!answer.is_null());
     // SAFETY: the library returned it and it is freed right after.

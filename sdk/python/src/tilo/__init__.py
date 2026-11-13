@@ -13,12 +13,21 @@ async with AsyncTilo() as tilo:
 """
 
 from ._client import AccountKeys, AsyncTilo, SignIn, Tilo, Workspaces
-from ._errors import AskPending, KeyExpired, KeyRefused, KeyRevoked, ProtocolError, RateLimited, Refused
 from ._endpoint import RunGroup
+from ._errors import (
+    AskPending,
+    KeyExpired,
+    KeyRefused,
+    KeyRevoked,
+    ProtocolError,
+    RateLimited,
+    Refused,
+    SurfaceChanged,
+    UnsupportedVersion,
+)
 from ._models import (
     Event,
     Hit,
-    Host,
     Invitation,
     Key,
     Listing,
@@ -34,6 +43,7 @@ from ._models import (
 )
 from ._resource import FieldMap, Resource
 from ._run import Run
+from ._transport import HttpTransport, NativeTransport, Transport
 from ._workspace import Files, Members, RunOpening, Workspace, WorkspaceKeys
 
 __version__ = "0.1.0"
@@ -46,7 +56,7 @@ __all__ = [
     "FieldMap",
     "Files",
     "Hit",
-    "Host",
+    "HttpTransport",
     "Invitation",
     "Key",
     "KeyExpired",
@@ -56,6 +66,7 @@ __all__ = [
     "Member",
     "Members",
     "MintedKey",
+    "NativeTransport",
     "Person",
     "ProgramAnswer",
     "ProtocolError",
@@ -67,7 +78,10 @@ __all__ = [
     "RunGroup",
     "RunOpening",
     "SignIn",
+    "SurfaceChanged",
     "Tilo",
+    "Transport",
+    "UnsupportedVersion",
     "Usage",
     "Workspace",
     "WorkspaceInfo",

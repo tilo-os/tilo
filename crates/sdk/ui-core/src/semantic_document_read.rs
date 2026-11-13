@@ -1,14 +1,10 @@
-//! App reader registration and the SDK's committed-read admission.
-//!
-//! An app registers a reader: a closed request decoder, an exact result schema
-//! and a projection over its document at given heads. Registration confers no
-//! authority. The SDK alone runs a selected reader, and only over a document it
-//! can identify as the caller's canonical record: the record store's current
-//! loan of that exact document for a hosted invocation (whose route the scope
-//! verified against the owner), or the app's mounted primary document on its
-//! current primary route. The read binds to the document's committed heads,
-//! never commits a pending edit, and rechecks the original caller immediately
-//! before disclosure.
+//! App reader registration and the SDK's committed-read admission. An app registers a
+//! reader: a closed request decoder, an exact result schema and a projection over its
+//! document at given heads. The SDK alone runs a selected reader, and only over a
+//! document it can identify as the caller's canonical record: the record store's current
+//! loan of that exact document for a hosted invocation (whose route the scope verified
+//! against the owner), or the app's mounted primary document on its current primary
+//! route.
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use tilo_actions::{ActionSpec, EncodedAction, ResourceSpec};
 use tilo_sort::CompactSort as _;
@@ -27,9 +23,7 @@ pub enum SemanticReadError {
     Limit,
     InvalidOwner,
     MissingQualifiedOwner,
-    /// The document has an uncommitted edit; a later read sees it committed.
     Pending,
-    /// The cursor belongs to an earlier committed basis; restart without it.
     StaleCursor,
     Malformed,
 }
@@ -77,9 +71,8 @@ impl From<tilo_doc::semantic_read::ReadError> for SemanticReadError {
     }
 }
 
-/// The exact result schema of a read whose projection yields `content`: the
-/// SDK stamps `version`, `record` and `basis` around it. A `paged` read
-/// returns an opaque `nextCursor` or null; any other read always returns null.
+/// The exact result schema of a read whose projection yields `content`: the SDK stamps
+/// `version`, `record` and `basis` around it.
 #[must_use]
 pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Value {
     let next_cursor = if paged {
@@ -100,8 +93,7 @@ pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Val
     }})
 }
 
-/// A reader's closed request, decoded from its payload. The SDK has already
-/// refused a payload over [`MAX_REQUEST_BYTES`].
+/// A reader's closed request, decoded from its payload.
 pub fn decode_request<T: serde::de::DeserializeOwned>(
     payload: &[u8],
 ) -> Result<T, SemanticReadError> {
@@ -136,8 +128,8 @@ pub fn encode_cursor<C: serde::Serialize>(
     .transpose()
 }
 
-/// What a registered read's published action is called: its id, its label
-/// and the line that says what it takes.
+/// What a registered read's published action is called: its id, its label and the line
+/// that says what it takes.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadName<'a> {
     pub id: &'a str,
@@ -149,12 +141,10 @@ pub struct ReadName<'a> {
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, tilo_resource::JsonSchema)]
 pub struct NoReadParams {}
 
-/// The published action of the registered read whose operation is
-/// `operation`. Its parameters are the fields of `P` as `P`'s JSON Schema
-/// describes them (doc comments, `#[schema(range(..))]` bounds, choices); a
-/// caller's arguments, bound strictly to them, become a `P` with serde, and
-/// `request` turns that into the reader's request. It answers `schema`, and
-/// it is a view of the document: it changes nothing.
+/// The published action of the registered read whose operation is `operation`. Its
+/// parameters are the fields of `P` as `P`'s JSON Schema describes them (doc comments,
+/// `#[schema(range(..))]` bounds, choices); a caller's arguments, bound strictly to them,
+/// become a `P` with serde, and `request` turns that into the reader's request.
 #[must_use]
 pub fn read_action<P, Q>(
     name: ReadName<'_>,
@@ -181,7 +171,6 @@ where
                 .and_then(|params| {
                     EncodedAction::encode_operation(operation, &request(params)).ok()
                 })
-                // An empty payload is no request: the reader refuses it.
                 .unwrap_or_else(|| EncodedAction {
                     type_id: operation.into(),
                     payload: Vec::new(),
@@ -202,13 +191,12 @@ pub struct ReadPage {
     pub next_cursor: Option<String>,
 }
 
-/// An app projection over `document` at exactly `heads`, for a request the
-/// registration's decoder accepted.
+/// An app projection over `document` at exactly `heads`, for a request the registration's
+/// decoder accepted.
 pub type ReadProjection =
     fn(&AutoCommit, &[ChangeHash], &[u8]) -> Result<ReadPage, SemanticReadError>;
 
-/// App-owned code paired with a closed request decoder and exact result schema.
-/// Only the actual resolved Widget's table participates in SDK selection. This
+/// App-owned code paired with a closed request decoder and exact result schema. This
 /// public registration cannot create a frame, response stamp, or permission.
 pub struct RegisteredSemanticReader {
     operation_type: &'static str,
@@ -238,7 +226,6 @@ impl RegisteredSemanticReader {
 }
 
 /// A borrowed selection from the actual app table and exact current resource.
-/// It owns no copied client contract and exposes no constructor outside the SDK.
 pub(crate) struct SelectedSemanticRead<'a> {
     registration: &'a RegisteredSemanticReader,
     resource: &'a ResourceSpec,
@@ -297,11 +284,8 @@ impl SelectedSemanticRead<'_> {
     }
 
     /// Run the reader over the caller's canonical record at its committed heads.
-    ///
-    /// `document` must be the record store's current loan of the record (the
-    /// scope's, for a hosted invocation) or the app's mounted primary document. Nothing is
-    /// committed: a document with a pending edit refuses. The original caller is
-    /// rechecked after projection, immediately before the page is returned.
+    /// `document` must be the record store's current loan of the record (the scope's, for
+    /// a hosted invocation) or the app's mounted primary document.
     pub(crate) fn read(
         &self,
         scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
@@ -347,8 +331,6 @@ impl SelectedSemanticRead<'_> {
 }
 
 /// Inert descriptors for reads registered by the actual retained widget tree.
-/// This admits no invocation or document: execution still needs the normal
-/// bound SDK door and its canonical owner loan. Generic effects are excluded.
 pub fn registered_operations(
     widget: &dyn crate::widget::Widget,
     resources: &[ResourceSpec],
@@ -410,9 +392,7 @@ pub fn registered_operations(
         .collect()
 }
 
-/// A widget whose document answers semantic reads through registered
-/// readers. Registration alone supplies no qualified owner frame or
-/// disclosure. Declared with [`crate::provides!`].
+/// A widget whose document answers semantic reads through registered readers.
 pub trait SemanticReaders {
     fn semantic_readers(&self) -> &'static [RegisteredSemanticReader];
 }

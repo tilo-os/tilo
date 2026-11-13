@@ -247,8 +247,8 @@ impl Fixture {
         *self.build.borrow_mut() = None;
     }
 
-    /// `ukify build` as the fixture: checks the command line it is given and
-    /// writes a UKI of the image's payload.
+    /// `ukify build` as the fixture: checks the command line it is given and writes
+    /// a UKI of the image's payload.
     #[allow(
         clippy::unused_self,
         clippy::unnecessary_wraps,
@@ -285,8 +285,8 @@ impl Fixture {
         Ok(String::new())
     }
 
-    /// The runner's UKI as `os/dev/dev-target-uki.py construct` builds it:
-    /// the image's payload with the command-line room reserved.
+    /// The runner's UKI as `os/dev/dev-target-uki.py construct` builds it: the
+    /// image's payload with the command-line room reserved.
     fn runner_uki(&self, changes: &[(&str, &[u8])]) -> PathBuf {
         let placeholder = placeholder();
         let reserved = [placeholder.as_bytes(), b"\0"].concat();
@@ -740,8 +740,8 @@ fn ukify_wrong_dtb_is_rejected_before_boot_metadata_changes() {
     assert!(!fixture.uki_path().exists());
 }
 
-/// The VM gate, with this process modelled as root on a machine without
-/// the development installer's marker.
+/// The VM gate, with this process modelled as root on a machine without the
+/// development installer's marker.
 struct Root(Fixture);
 
 impl Host for Root {

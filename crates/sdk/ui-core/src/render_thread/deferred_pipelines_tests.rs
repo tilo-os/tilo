@@ -1,6 +1,6 @@
-//! A window's renderer builds only what its first frame dispatches
-//! (`vello::Renderer::new_deferring`); these pin that it still draws exactly
-//! what an eagerly built renderer draws, whichever pipelines a frame needs.
+//! A window's renderer builds only what its first frame dispatches (`vello::Renderer::new_deferring`);
+//! these pin that it still draws exactly what an eagerly built renderer draws, whichever pipelines a
+//! frame needs.
 
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill, Mix};
@@ -19,8 +19,6 @@ fn options() -> vello::RendererOptions {
     }
 }
 
-/// A window's ordinary content: panels, text-sized shapes, a stroke and a
-/// clipped scroll area.
 fn window_scene() -> Scene {
     let mut scene = Scene::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
@@ -66,8 +64,8 @@ fn window_scene() -> Scene {
     scene
 }
 
-/// More clips than one clip-reduce workgroup holds, so the frame dispatches
-/// the clip reduce, which a deferring renderer does not build up front.
+/// More clips than one clip-reduce workgroup holds, so the frame dispatches the clip reduce, which a
+/// deferring renderer does not build up front.
 fn many_clips_scene() -> Scene {
     let mut scene = Scene::new();
     for index in 0..320_u32 {
@@ -215,7 +213,6 @@ fn a_window_s_first_frame_needs_none_of_the_pipelines_it_defers() {
         "a full frame on the default path dispatches no deferred pipeline"
     );
 
-    // A frame that does need one builds it before encoding.
     assert_same(
         "many clips",
         &draw(&gpu, &mut deferring, &clips),
@@ -278,9 +275,7 @@ fn a_renderer_that_defers_everything_builds_what_a_frame_dispatches() {
     );
 }
 
-/// What a window on a software adapter does: everything deferred, the build
-/// started at once. A first frame drawn meanwhile waits for the build rather
-/// than compiling pipelines itself, and draws what an eager renderer draws.
+/// What a window on a software adapter does: everything deferred, the build started at once.
 #[test]
 fn a_build_started_at_once_serves_the_first_frame() {
     let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
@@ -314,11 +309,8 @@ fn a_build_started_at_once_serves_the_first_frame() {
     );
 }
 
-/// The web's renderer (`Renderer::new_async_deferring`): only the default
-/// path's pipelines are awaited, the rest compile asynchronously once the
-/// first frame is out. A frame that dispatches one before its compile is in
-/// creates it itself; none is ever drawn without its pipeline, and every
-/// frame draws what an eager renderer draws.
+/// The web's renderer (`Renderer::new_async_deferring`): only the default path's pipelines are awaited,
+/// the rest compile asynchronously once the first frame is out.
 #[test]
 fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
@@ -351,8 +343,6 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     );
     assert_eq!(web.deferred_pipelines().built_inline, 0);
 
-    // Right after the first frame, before any compile is in: a frame that
-    // dispatches a deferred pipeline creates it.
     assert_same("many clips", &draw(&gpu, &mut web, &clips), &expected_clips);
     let after_clips = web.deferred_pipelines();
     assert!(
@@ -382,11 +372,9 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     );
 }
 
-/// The web's deferred pipelines compile one at a time, each started once the
-/// one before it is in: a browser does not cancel a closed page's compiles,
-/// so all of them at once kept other pages from drawing. A frame that
-/// dispatches one still queued does not wait for the queue: it creates that
-/// one at once.
+/// The web's deferred pipelines compile one at a time, each started once the one before it is in: a
+/// browser does not cancel a closed page's compiles, so all of them at once kept other pages from
+/// drawing.
 #[test]
 fn the_web_renderer_compiles_deferred_pipelines_one_at_a_time_but_a_frame_takes_its_own_at_once() {
     let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");

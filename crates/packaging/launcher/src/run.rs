@@ -1,9 +1,5 @@
-//! Top-level `run` orchestration, matching the CLI sequence: read the
-//! manifest; resolve service sockets (per `--no-services`); stage the
-//! seccomp blob to a tempfile; build the bwrap argv; spawn `bwrap` with
-//! `pre_exec` wiring the mandatory seccomp fd; the in-namespace shim installs
-//! mandatory Landlock when requested, failing the launch if it cannot; wait
-//! and relay the exit code.
+//! `run` turns a manifest into a running app: the sandbox argv, the `bwrap` exec and
+//! the app's exit code.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -179,8 +175,6 @@ impl From<crate::capture::InvalidCapturePlan> for RunError {
 }
 
 impl RunError {
-    /// Translate to a process exit code; required-service-missing gets its
-    /// own code, distinct from a generic launch failure.
     pub fn to_exit_code(&self) -> i32 {
         match self {
             RunError::Service(ServiceError::RequiredMissing { .. }) => {
@@ -199,23 +193,18 @@ fn display_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
-/// Where a launch finds the identity record it brokers to the app.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum IdentitySource {
-    /// The active identity in the invoking user's store, located through
-    /// `$XDG_CONFIG_HOME`, else `$HOME/.config`.
+    /// The active identity in the user's store (`$XDG_CONFIG_HOME`, else `$HOME/.config`).
     #[default]
     UserStore,
-    /// The active identity in this identity store directory.
     Store(PathBuf),
-    /// This exact record, used verbatim with no existence check. It is
-    /// migrated only when it lies in the user's store.
+    /// This exact record, used verbatim with no existence check.
     Record(PathBuf),
     /// No identity: the app runs without an identity broker.
     None,
 }
 
-/// Optional knobs for `run_with`.
 #[derive(Debug, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -224,110 +213,66 @@ pub enum IdentitySource {
               state — grouping them into an enum would not make any combination less valid"
 )]
 pub struct RunOptions {
-    /// Original signed package root selected by a host launch. A different
-    /// installation must fail before any services or sandbox are constructed.
+    /// A host launch's signed package root; another installation fails the launch.
     pub expected_package_hash: Option<String>,
-    /// Skip all service-socket resolution.
     pub no_services: bool,
-    /// Explicit override for the tilo-runtime bundle directory; wins over
-    /// the manifest's `runtime` field.
+    /// Wins over the manifest's `runtime` field.
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
-    /// Override the in-namespace launcher executable. Production leaves this
-    /// unset and re-enters the currently running `tilo-launcher`; integration
-    /// tests use the separately-built binary rather than their test harness.
+    /// Override the in-namespace launcher executable.
     pub sandbox_shim_bin: Option<PathBuf>,
-    /// Bind-mount the minimum host paths a dynamically-linked ELF needs to
-    /// `execve()`, read-only. Ignored (silently) when a runtime bundle resolves.
+    /// The minimum host paths a dynamically-linked ELF needs to `execve()`, read-only.
     pub minimal_libs: bool,
-    /// Route exec through the `__sandbox-exec` shim so Landlock installs
-    /// inside bwrap's mount namespace. Requires this binary bind-mounted at
-    /// [`SHIM_MOUNT_PATH`]. Default on; off is a logged debug escape hatch.
+    /// Route exec through `__sandbox-exec` so Landlock installs inside bwrap's mount namespace.
     pub landlock_enforce: bool,
-    /// Accept Landlock not, or only partially, enforced by the kernel. Set
-    /// only for a system-store app on a provider-sandboxed machine
-    /// ([`crate::provider_sandbox`]).
+    /// Accept Landlock not, or only partially, enforced by the kernel.
     pub landlock_best_effort: bool,
-    /// Launch mode — GUI (default), an interactive CLI command, or a managed
-    /// service. CLI and service modes pick `cli_bin()` (falling back to
-    /// `bin`) and forward argv without requiring a Wayland surface.
     pub mode: LaunchMode,
-    /// Debug escape hatch: when a runtime is declared but no bundle resolves,
-    /// fall back to `minimal_libs` instead of aborting. Default off.
+    /// Debug escape hatch: fall back to `minimal_libs` when no bundle resolves.
     pub allow_missing_runtime: bool,
-    /// Accept an unsigned runtime bundle. Default refuse — the OS image only
-    /// ships signed bundles; this is a bring-up/debug escape hatch.
+    /// Accept an unsigned runtime bundle.
     pub allow_unsigned_runtime: bool,
-    /// Require the bundle's `publisher_hex` to equal this. Used by
-    /// policy-strict callers and tests.
     pub require_runtime_publisher: Option<String>,
-    /// Host path of the Wayland socket, bound into the sandbox at
-    /// `/run/user/<uid>/wayland-0`. `None` means no display — never falls
-    /// back to the launcher's own `$WAYLAND_DISPLAY`.
+    /// Host path of the Wayland socket, bound into the sandbox at `/run/user/<uid>/wayland-0`.
     pub wayland_socket: Option<PathBuf>,
-    /// The compositor's DRM render node. A client must render on the same
-    /// GPU as the compositor or buffer imports fail or cost a copy; taken
-    /// from the compositor's own `zwp_linux_dmabuf_v1` decision rather than
-    /// re-derived. `None` means loaders keep their own defaults.
+    /// The compositor's DRM render node.
     pub render_node: Option<PathBuf>,
-    /// Where the identity brokered to the app comes from. It is read only by
-    /// the launcher to create a broker capability and is never bound into
-    /// the sandbox.
+    /// Where the identity brokered to the app comes from.
     pub identity: IdentitySource,
-    /// Host data home holding the per-workspace app directories; `None` resolves
-    /// `$XDG_DATA_HOME`, else `$HOME/.local/share`.
+    /// Host data home of the per-workspace app directories; `None` resolves `$XDG_DATA_HOME`.
     pub data_home: Option<PathBuf>,
-    /// Host path of the session's bounded, non-secret human identity
-    /// projection. Honoured only for Files and mounted read-only over its
-    /// otherwise writable app directory.
+    /// Host path of the session's bounded, non-secret human identity projection.
     pub trusted_identities_host_path: Option<PathBuf>,
-    /// Device-local location metadata for Files; filesystem authority remains
-    /// with separately reviewed workspace grants.
+    /// Device-local location metadata for Files; filesystem authority remains with separately reviewed
+    /// workspace grants.
     pub retained_files_host_path: Option<PathBuf>,
     /// Verified, selected browser data; projected read-only to Browser GUI only.
     pub browser_continuity_host_path: Option<PathBuf>,
     /// Separate host action policy projection; never a sandbox capability grant.
     pub action_authority_host_path: Option<PathBuf>,
-    /// Workspace this launch belongs to — the CRDT cluster id
-    /// ([`crate::sandbox::WORKSPACE_ID_ENV`]). `None` means no session.
+    /// Workspace this launch belongs to — the CRDT cluster id ([`crate::sandbox::WORKSPACE_ID_ENV`]).
     pub workspace_id: Option<String>,
-    /// Host path of the compositor-written `Vec<CapOverride>` JSON. `None`,
-    /// missing, unreadable or malformed all mean the manifest's sandbox as-is.
+    /// Host path of the compositor-written `Vec<CapOverride>` JSON; anything unusable leaves the
+    /// manifest's sandbox as-is.
     pub capabilities_path: Option<PathBuf>,
-    /// The app id the caller launched. An app has exactly one id, so a value
-    /// other than the manifest's package id refuses the launch.
+    /// The app id the caller launched; any other id than the manifest's refuses the launch.
     pub app_id: Option<String>,
-    /// A document to open, forwarded as `argv[1]`. Only an argument — binds
-    /// and unlocks nothing on its own. `None` launches with no arguments.
+    /// A document to open, forwarded as `argv[1]`.
     pub open_document: Option<PathBuf>,
-    /// A URI to open, forwarded as one opaque argv value. The caller must
-    /// validate its scheme against the freshly-read installed manifest.
+    /// A URI to open, forwarded as one opaque argv value.
     pub open_uri: Option<String>,
-    /// A GUI launch's own arguments, after `--`, forwarded verbatim as
-    /// `argv[1..]` exactly as a CLI launch's `passthrough_argv` is. The app's
-    /// own parser decides what they mean — `--index` reads a record for
-    /// search, `--surface` reports what it publishes — and the launcher only
-    /// carries them. [`Self::open_document`] and [`Self::open_uri`] are the one
-    /// argument a person opens with; a caller passes those *or* these.
+    /// A GUI launch's own arguments, after `--`, forwarded verbatim as `argv[1..]`.
     pub gui_argv: Vec<String>,
-    /// Open [`Self::open_uri`] in a window that browses as a visitor: the
-    /// app is handed [`runtime_portal::windows::VISITOR_WINDOW_FLAG`] after
-    /// the address.
+    /// Open [`Self::open_uri`] in a window that browses as a visitor.
     pub open_as_visitor: bool,
     /// Shell instance id selecting the fixed private standard console namespace.
     pub headless_console: Option<u64>,
-    /// The app is a tilolang app whose instance a tilolang host runs: its process is its
-    /// window alone, presenting what the instance sends over the patch connection the session
-    /// hands it on its window door. It gets no collaboration connection, so it holds and
-    /// commits none of the app's data; its launch identity stays for its surface and
-    /// accessibility.
+    /// A tilolang host runs this app's instance: its process is its window and keeps none of the app's
+    /// data.
     pub tilolang_hosted: bool,
-    /// The app is a tilolang app whose types hold an outside service's resources, and this
-    /// process is its connector for that origin (`imap`), not a window: the session's
-    /// instances of the app reach it over the door the launcher hands it
-    /// (`runtime_portal::origin_connector`). It must be one of the manifest's
-    /// `[entrypoint].origins`.
+    /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
+    /// the app reach it over the door the launcher hands it.
     pub tilolang_connector: Option<String>,
 }
 
@@ -340,9 +285,7 @@ impl Default for RunOptions {
             bwrap_bin: None,
             sandbox_shim_bin: None,
             minimal_libs: false,
-            // tapp applications are untrusted by default.  A caller using the
-            // convenience constructor must not accidentally remove one of the
-            // kernel-enforced confinement layers.
+            // tapp applications are untrusted by default.
             landlock_enforce: true,
             landlock_best_effort: false,
             mode: LaunchMode::default(),
@@ -393,9 +336,7 @@ fn gui_open_args(opts: &RunOptions) -> Vec<String> {
             .to_string(),
         ]);
     }
-    // The app's own arguments ride the same opaque tail a CLI launch's
-    // passthrough does: after the entrypoint token, which bwrap forwards to
-    // the child as `argv[1..]`.
+    // The app's arguments ride the tail after the entrypoint token that bwrap forwards as `argv[1..]`.
     args.extend(opts.gui_argv.iter().cloned());
     args
 }
@@ -438,9 +379,7 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
     Ok(())
 }
 
-/// The interface versions `manifest` speaks that `provided` does not serve:
-/// every service it names, required or optional, since where an optional
-/// one is present the app speaks only its own version of it.
+/// The interface versions `manifest` speaks that `provided` does not serve.
 fn interfaces_unmet(
     manifest: &ManifestView,
     provided: Option<&tilo_app_package::interfaces::ProvidedInterfaces>,
@@ -462,12 +401,7 @@ fn interfaces_unmet(
     provided.unmet(&spoken)
 }
 
-/// Refuse a package built against interface versions this OS does not
-/// serve: the launcher sets up the app's connections, and it sets up none at
-/// a version the other side does not speak. The catalog already runs the
-/// image's copy instead of such an update, and the shell updates the package
-/// first (docs/architecture/compatibility.md); this is the same rule for
-/// every other way into a launch.
+/// Refuse a package built against an interface version this OS does not serve.
 fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = interfaces_unmet(manifest, provided.as_ref());
@@ -635,8 +569,7 @@ mod interface_tests;
 #[cfg(test)]
 mod managed_service_tests;
 
-/// Resolve the capability plan: read the compositor's file, evaluate it
-/// for this app now. Split out so [`run_with_captured`] and tests share it.
+/// Resolve the capability plan: read the compositor's file, evaluate it for this app now.
 pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> CapabilityPlan {
     let app_id = manifest.package_id.clone();
     let grants = opts
@@ -645,9 +578,7 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .map(load_capability_file)
         .unwrap_or_default();
     let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
-    // An app the workspace's grants make an author changes it; a workspace launch
-    // of any other app is a viewer. Treating missing or malformed policy as
-    // authorship made every failure permissive.
+    // A workspace launch is authorship when the grants make this app an author, else a viewer.
     if grants.authors(&app_id) {
         plan.participation = crate::capabilities::Participation::Author;
     } else if opts.workspace_id.is_some() {
@@ -665,8 +596,6 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
     plan
 }
 
-/// Priority: explicit override > manifest declaration (per-user, then
-/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -674,12 +603,8 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
-/// The launch argv after `splice_required_runtimes` ran on a bare `entry`
-/// token, and the mounts it returned for Landlock.
-///
-/// # Errors
-///
-/// As `splice_required_runtimes`.
+/// The launch argv after `splice_required_runtimes` ran on a bare `entry` token, and the mounts it
+/// returned for Landlock.
 pub fn required_runtimes_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -689,8 +614,7 @@ pub fn required_runtimes_test_helper(
     Ok((argv, mounts))
 }
 
-/// Resolve/create/migrate the one directory this launch may write to,
-/// keyed by `opts.workspace_id` — no list to walk.
+/// The one directory this launch may write to, keyed by `opts.workspace_id`.
 fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = opts
         .data_home
@@ -713,8 +637,7 @@ fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf
     })
 }
 
-/// Resolve/create the directory the person's own records of this app are
-/// kept in: one for every workspace it is launched into.
+/// The directory the person's own records of this app are kept in, one per workspace.
 fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = opts
         .data_home
@@ -730,7 +653,6 @@ fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<Path
     })
 }
 
-/// The workspace's app directory and the person directory a launch binds.
 fn resolve_launch_dirs(
     manifest: &ManifestView,
     opts: &RunOptions,
@@ -741,10 +663,7 @@ fn resolve_launch_dirs(
     ))
 }
 
-/// The identity store whose records a launch requires in provisioned form,
-/// if any: the named store, or
-/// the user's store for [`IdentitySource::UserStore`] and
-/// [`IdentitySource::Record`].
+/// The store whose records a launch requires in provisioned form, if any.
 fn identity_store(source: &IdentitySource) -> Option<PathBuf> {
     match source {
         IdentitySource::UserStore | IdentitySource::Record(_) => {
@@ -755,9 +674,7 @@ fn identity_store(source: &IdentitySource) -> Option<PathBuf> {
     }
 }
 
-/// The identity record this launch brokers: an explicit record verbatim (no
-/// existence check), else the active identity selected in the store, else
-/// `None`.
+/// The record this launch brokers: an explicit one verbatim, else the active identity in the store.
 pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     match &opts.identity {
         IdentitySource::Record(path) => Some(path.clone()),
@@ -772,12 +689,8 @@ fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // A launch only reads the identity store, and only a record's public
-    // fields: the broker answers metadata and refuses every signature, so it
-    // never needs the person's key and never asks the secret provider for it.
-    // A store record must still be in the form provisioning leaves it; one
-    // that is not fails the launch and names the step that secures it. An
-    // explicit debug record outside the store is read as written.
+    // The broker answers metadata and refuses every signature, so a launch never needs the person's
+    // key.
     let metadata = if store.is_some_and(|store| path.parent() == Some(store)) {
         runtime_identity::load_metadata_for_launch(path)
     } else {
@@ -809,16 +722,13 @@ fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread:
     }
 }
 
-/// Derive GPU pinning, or `None` when nothing to pin. Every decline is
-/// logged — landing on the wrong GPU must never happen silently.
+/// Derive GPU pinning, or `None` when nothing to pin.
 pub fn resolve_gpu_selection(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
-    // The compositor resolved its node's drivers once and pinned its own
-    // loaders to them; a launch it started inherits that pin. Asking every
-    // installed ICD again here would load each driver on every app launch.
+    // A launch the compositor started inherits its loader pin, so no ICD is loaded again here.
     let mut selection = crate::gpu::inherited_selection(node)
         .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
     selection.pipeline_seed = crate::gpu::host_pipeline_seed();
@@ -837,14 +747,12 @@ pub fn resolve_gpu_selection(
     Some(selection)
 }
 
-/// Priority: explicit override > manifest declaration (per-user, then
-/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+/// Priority: explicit override > manifest declaration (per-user, then system; system first for an
+/// ABI-bound version) > no bind.
 pub fn resolve_runtime(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Option<(PathBuf, String)>, RunError> {
-    // 1. Explicit override wins, verified against the same signature policy
-    //    as the manifest path.
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
             .runtime_ref()
@@ -852,7 +760,6 @@ pub fn resolve_runtime(
         enforce_bundle_policy(explicit, opts, false)?;
         return Ok(Some((explicit.clone(), version)));
     }
-    // 2. Manifest declaration.
     let Some(raw) = manifest.runtime.as_deref() else {
         return Ok(None);
     };
@@ -874,16 +781,8 @@ pub fn resolve_runtime(
     })
 }
 
-/// Look `raw` (`<name>/<version>`) up where runtime bundles are installed —
-/// the configured/user root first, then the immutable system fallback, and
-/// the other way round for an ABI-bound version ([`runtime_candidates`]) —
-/// and verify the first bundle found. Returns the bundle and its version, plus
-/// every directory checked.
-///
-/// A developer build honours `TILO_RUNTIME_BUNDLE_DIR`; developer sessions
-/// use it to keep the runtime matched to an overlaid registry/payload set
-/// instead of silently binding the installed `/usr` runtime. A release build
-/// ignores it (see `crate::dev_env`).
+/// Look `raw` (`<name>/<version>`) up where runtime bundles are installed and verify the first one
+/// found.
 #[allow(
     clippy::type_complexity,
     reason = "the found bundle and the searched directories travel together"
@@ -903,8 +802,7 @@ fn find_runtime_bundle(
     Ok((None, candidates))
 }
 
-/// The version `raw` (`<name>/<version>`) names and where a launch looks for its bundle, in
-/// order.
+/// The version `raw` (`<name>/<version>`) names and where a launch looks for its bundle, in order.
 fn runtime_lookup(raw: &str) -> Result<(&str, Vec<PathBuf>), RunError> {
     let (_, version) = raw
         .split_once('/')
@@ -919,8 +817,7 @@ fn runtime_lookup(raw: &str) -> Result<(&str, Vec<PathBuf>), RunError> {
     Ok((version, runtime_candidates(version, per_user, system)))
 }
 
-/// Whether the runtime `raw` (`<name>/<version>`) names is installed where a launch looks for
-/// it: a launch of an app that names one that is not fails before anything runs.
+/// Whether the runtime `raw` names is installed where a launch looks for it.
 #[must_use]
 pub fn runtime_installed(raw: &str) -> bool {
     runtime_lookup(raw).is_ok_and(|(_, candidates)| {
@@ -931,16 +828,6 @@ pub fn runtime_installed(raw: &str) -> bool {
 }
 
 /// Where to look for runtime `version`, in order.
-///
-/// A person's own store comes first, so a runtime they installed stands in
-/// for the system's of the same name. An ABI-bound version
-/// (`<release>+native.<digest>`) is the exception: its name is its payload's
-/// identity (the digest of the root hash every launch verifies), so the
-/// system's bundle of it holds the same bytes as the person's. Apps then run
-/// on the system's copy: proven once by its immutable root-owned tree rather
-/// than hashed at each launch, and the copy `tilo-runtime-resident.service`
-/// keeps in memory for every person, instead of a second copy of the same
-/// file in each person's store.
 fn runtime_candidates(version: &str, per_user: Option<PathBuf>, system: PathBuf) -> Vec<PathBuf> {
     if runtime_bundle::split_abi_version(version).is_some() {
         [system].into_iter().chain(per_user).collect()
@@ -949,8 +836,7 @@ fn runtime_candidates(version: &str, per_user: Option<PathBuf>, system: PathBuf)
     }
 }
 
-/// A version names a directory under the runtime roots and the sandbox's
-/// `/run/tilo-runtime`, so it is one plain path component.
+/// A version is one plain path component under the runtime roots and `/run/tilo-runtime`.
 pub(crate) fn valid_runtime_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 64
@@ -961,9 +847,7 @@ pub(crate) fn valid_runtime_version(version: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
 }
 
-/// The minimal-libs stopgap and the manifest's required runtimes, spliced
-/// before the entrypoint. Returns the sandbox paths Landlock must let the app
-/// read.
+/// The minimal-libs stopgap and the manifest's required runtimes, spliced before the entrypoint.
 fn splice_runtime_mounts(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
@@ -987,13 +871,7 @@ fn splice_runtime_mounts_with(
     Ok(paths)
 }
 
-/// Every bundle the manifest requires (`[package].optional-runtimes`),
-/// installed and verified, with its version. Installing or updating the app
-/// brought them, so a missing or refused one is a broken install and refuses
-/// the launch rather than starting an app that cannot work.
-///
-/// Verifying a per-user bundle reads the whole payload, so the launch runs
-/// this beside the rest of host preparation rather than after it.
+/// Every bundle the manifest requires, installed and verified, with its version.
 fn resolve_required_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1012,9 +890,7 @@ fn resolve_required_runtimes(
         .collect()
 }
 
-/// Mount each of `bundles` (from [`resolve_required_runtimes`]) read-only at
-/// its runtime mount, before the trailing entrypoint token. Returns the
-/// sandbox paths Landlock must let the app read.
+/// Mount each bundle read-only at its runtime mount, before the trailing entrypoint token.
 fn splice_resolved_required_runtimes(
     argv: &mut Vec<String>,
     bundles: &[(PathBuf, String)],
@@ -1038,15 +914,8 @@ fn splice_required_runtimes(
     splice_resolved_required_runtimes(argv, &resolve_required_runtimes(manifest, opts)?)
 }
 
-/// Verify the bundle at `path` against the signature policy. Unless
-/// `allow_unsigned_runtime`, it must be signed. Publisher policy:
-///   1. `opts.require_runtime_publisher`, if set, must match.
-///   2. Else the system trust-list file, if present and non-empty
-///      (`/etc/tilo/runtime-bundle-trusted-publishers.txt`, or
-///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE` in a developer build).
-///   3. Else any signed publisher is accepted.
-///
-/// Layering lets the OS image bake and pin a fresh key at build time.
+/// Verify the bundle at `path`: `require_runtime_publisher`, else the trust list, else any signed
+/// publisher.
 fn enforce_bundle_policy(
     path: &Path,
     opts: &RunOptions,
@@ -1055,15 +924,8 @@ fn enforce_bundle_policy(
     verified_bundle(path, opts, system_bundle).map(drop)
 }
 
-/// A runtime bundle a person installed into their own store, verified by the
-/// policy a launch applies to it (`enforce_bundle_policy`): every payload
-/// byte proven (by its signed fs-verity digest, else hashed), signed by a
-/// trusted publisher. Returns its manifest, whose root hash is the bundle's
-/// identity.
-///
-/// # Errors
-///
-/// The [`RunError`] a launch of an app on this bundle would refuse with.
+/// A bundle a person installed into their own store: every payload byte proven and signed by a trusted
+/// publisher.
 pub fn verified_user_bundle(path: &Path) -> Result<runtime_bundle::BundleManifest, RunError> {
     verified_bundle(path, &RunOptions::default(), false)
 }
@@ -1098,12 +960,8 @@ fn verified_bundle(
             }
         })
     } else {
-        // A per-user bundle is writable by the user's unconfined processes,
-        // so every byte must be proven, not assumed: files sealed with
-        // fs-verity at install by their publisher-signed digest are proven
-        // by the kernel without being read, and files a launch already
-        // proved are proven to be the same files (same inode, size, times)
-        // by the record it left. Everything else is hashed in full.
+        // A per-user bundle is writable by unconfined processes, so every byte is proven before it is
+        // used.
         let records = runtime_bundle::record::directory();
         runtime_bundle::verify_bundle_recorded_with(path, &verify_opts, records.as_deref()).map(
             |(manifest, check)| {
@@ -1156,13 +1014,8 @@ fn system_bundle_tree_is_root_owned(
         return false;
     };
 
-    // Protect against replacing the otherwise-secure version directory through
-    // a writable ancestor, then check every signed file and its subdirectories.
-    // Canonicalise first: Fedora Atomic deliberately exposes `/usr` through a
-    // root-owned symlink into its immutable deployment. Rejecting every
-    // symlink component made a normal rpm-ostree installation impossible to
-    // launch even though the resolved tree and all of its ancestors were
-    // root-owned and non-writable.
+    // A writable ancestor could replace the version directory, so every signed file and its parents
+    // are checked.
     let mut ancestor = Some(root.as_path());
     while let Some(path) = ancestor {
         if !secure(path) {
@@ -1228,10 +1081,8 @@ mod system_bundle_tree_policy_tests {
         if rustix::process::geteuid().as_raw() != 0 {
             return;
         }
-        // The policy walks every ancestor, so the fixture has to live below
-        // root-owned directories nobody else may write. The build output
-        // tree usually is one when tests run as root; a sticky, world-writable
-        // temporary directory never is, and there the check cannot be modelled.
+        // The policy walks every ancestor, so the fixture has to live below root-owned directories
+        // nobody else may write.
         let parent = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
@@ -1248,9 +1099,8 @@ mod system_bundle_tree_policy_tests {
         let temp = tempfile::tempdir_in(&parent).expect("temporary root");
         let deployment = temp.path().join("deployment/usr/lib/tilo-runtime/test");
         std::fs::create_dir_all(&deployment).expect("deployment tree");
-        // tempfile deliberately creates a private 0700 parent, whereas the
-        // real rpm-ostree deployment is rooted below traversable, immutable
-        // root-owned directories. Model that production ancestry exactly.
+        // tempfile deliberately creates a private 0700 parent, whereas the real rpm-ostree deployment
+        // is rooted below traversable, immutable root-owned directories.
         for directory in [
             temp.path(),
             &temp.path().join("deployment"),
@@ -1281,9 +1131,7 @@ mod system_bundle_tree_policy_tests {
     }
 }
 
-/// A per-user runtime is writable by the user's unconfined processes, so a
-/// launch must prove every byte: sealed files by their signed
-/// fs-verity digest without reading them, every other file by its hash.
+/// A per-user runtime is writable by unconfined processes, so a launch proves every byte.
 #[cfg(test)]
 #[cfg(unix)]
 mod per_user_runtime_verification_tests {
@@ -1292,8 +1140,8 @@ mod per_user_runtime_verification_tests {
 
     const DYLIB: &str = "lib/libruntime_dylib.so";
 
-    /// A signed per-user runtime under `parent` whose toolkit dylib is
-    /// `dylib_size` bytes, and launch options that pin its publisher.
+    /// A signed per-user runtime under `parent` whose toolkit dylib is `dylib_size` bytes, and launch
+    /// options that pin its publisher.
     fn per_user_runtime(
         parent: &Path,
         dylib_size: usize,
@@ -1330,8 +1178,8 @@ mod per_user_runtime_verification_tests {
         (work, bundle, opts)
     }
 
-    /// Replace `path` with its bytes but one, as anyone who can write the
-    /// per-user runtime directory can, sealed file or not.
+    /// Replace `path` with its bytes but one, as anyone who can write the per-user runtime directory
+    /// can, sealed file or not.
     fn replace_with_one_byte_changed(path: &Path) {
         let mut bytes = std::fs::read(path).unwrap();
         bytes[0] ^= 1;
@@ -1350,8 +1198,7 @@ mod per_user_runtime_verification_tests {
         ));
     }
 
-    /// Bytes the calling thread has read: the other tests in this binary run
-    /// on other threads.
+    /// Bytes the calling thread has read: the other tests in this binary run on other threads.
     #[cfg(target_os = "linux")]
     fn thread_bytes_read() -> u64 {
         std::fs::read_to_string("/proc/thread-self/io")
@@ -1364,8 +1211,8 @@ mod per_user_runtime_verification_tests {
             .unwrap()
     }
 
-    /// A temporary directory on a filesystem with fs-verity:
-    /// `TILO_FSVERITY_DIR`, else the system temporary directory.
+    /// A temporary directory on a filesystem with fs-verity: `TILO_FSVERITY_DIR`, else the system
+    /// temporary directory.
     fn verity_dir() -> Result<tempfile::TempDir, String> {
         let base = std::env::var_os("TILO_FSVERITY_DIR")
             .filter(|dir| !dir.is_empty())
@@ -1391,7 +1238,6 @@ mod per_user_runtime_verification_tests {
                 .unwrap();
         runtime_bundle::enable_bundle_verity(&bundle, &manifest).unwrap();
 
-        // phase: the_launch_reads_none_of_the_payload
         let before = thread_bytes_read();
         let started = std::time::Instant::now();
         enforce_bundle_policy(&bundle, &opts, false).unwrap();
@@ -1400,7 +1246,6 @@ mod per_user_runtime_verification_tests {
         eprintln!("per-user 64 MiB runtime verified in {elapsed:?}, {read} bytes read");
         assert!(read < 1 << 20, "the launch read {read} bytes");
 
-        // phase: a_replaced_file_is_refused_before_the_sandbox_is_built
         replace_with_one_byte_changed(&bundle.join(DYLIB));
         assert!(matches!(
             enforce_bundle_policy(&bundle, &opts, false),
@@ -1409,11 +1254,8 @@ mod per_user_runtime_verification_tests {
     }
 }
 
-/// A single-entry trust list is the pin handed to
-/// `verify_bundle_with`; multi-entry lists are checked after it returns.
-/// Read operator policy and canonical immutable component publisher pins.
-/// A present invalid component pin fails closed, including when another key
-/// would otherwise validate the bundle.
+/// A single-entry trust list is the pin handed to `verify_bundle_with`; longer lists are checked after
+/// it returns.
 pub(crate) fn load_trusted_publishers_for_bundle(
     bundle: &Path,
 ) -> std::io::Result<runtime_bundle::component_pins::BundleTrust> {
@@ -1426,8 +1268,7 @@ pub(crate) fn load_trusted_publishers_for_bundle(
 /// The image's runtime trusted-publisher list.
 pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
 
-/// Where the trusted-publisher list is read from, given the override the
-/// build's gate let through ([`package_store::dev_env::dev_override`]).
+/// Where the trusted-publisher list is read from, given the override the build's gate let through.
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
 }
@@ -1446,9 +1287,8 @@ mod runtime_candidate_tests {
             [system.join(bound), user.join(bound)],
             "the version names its payload, so the system's bundle is the same bytes"
         );
-        // A release-only version (a development bundle, an engine runtime)
-        // names no payload: the person's own install stands in for the
-        // system's of that name.
+        // A release-only version names no payload: the person's own install stands in for the
+        // system's.
         assert_eq!(
             runtime_candidates("1", Some(user.join("1")), system.join("1")),
             [user.join("1"), system.join("1")]
@@ -1490,8 +1330,7 @@ mod dev_override_tests {
                 runtime_bundle::RUNTIME_DIR_ENV,
                 Some("/tmp/attacker-runtime".into()),
             );
-            // Resolution may fail on a machine with no data dir; what matters is
-            // that it never lands under the override.
+            // Resolution may fail with no data dir; it must never land under the override.
             if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
                 assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
             }
@@ -1508,13 +1347,7 @@ mod dev_override_tests {
     }
 }
 
-/// Top-level entry: reads the manifest, builds the sandbox, execs.
-/// Does not call `process::exit` — that's `main.rs`'s job.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if `manifest_path` can't be read or parsed, or if
-/// [`run_with`] fails resolving the runtime/sandbox or execing the payload.
+/// Reads the manifest, builds the sandbox and execs; it does not call `process::exit`.
 pub fn run(
     manifest_path: &Path,
     payload_root: &Path,
@@ -1524,14 +1357,7 @@ pub fn run(
     run_manifest(&manifest, payload_root, opts)
 }
 
-/// The first half of [`run`]: the manifest to launch, verified against the
-/// signed installation when `opts` names one (`--expected-package-hash`).
-/// Reads and hashes files only; it starts no process.
-///
-/// # Errors
-///
-/// As [`run`], for a manifest that can't be read or an installation that
-/// changed.
+/// The first half of [`run`]: reads the manifest, verified against the signed installation.
 pub fn launch_manifest(
     manifest_path: &Path,
     payload_root: &Path,
@@ -1546,12 +1372,7 @@ pub fn launch_manifest(
     Ok(manifest)
 }
 
-/// The second half of [`run`]: build the sandbox for a manifest from
-/// [`launch_manifest`] and run the app in it.
-///
-/// # Errors
-///
-/// As [`run`].
+/// The second half of [`run`]: builds the sandbox for a manifest and runs the app in it.
 pub fn run_manifest(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -1560,10 +1381,6 @@ pub fn run_manifest(
     run_with_context(manifest, payload_root, opts, None, None)
 }
 
-/// Run an ordinary signed GUI application with canonical namespace custody.
-/// This changes supervision only: services, egress, private state and sandbox
-/// grants still come from the ordinary application pipeline. The owner does
-/// not confer retained file authority.
 pub fn run_supervised_gui(
     manifest_path: &Path,
     payload_root: &Path,
@@ -1603,71 +1420,28 @@ pub(crate) fn verified_original_manifest(
     verified_launch_installation(&installed, manifest_path, payload_root, expected)
 }
 
-/// Launch mode — which of the entrypoint binaries we're targeting
-/// and what extra args to forward.
+/// Which entrypoint binary the launch targets, and the arguments it forwards.
 #[derive(Debug, Clone, Default)]
 pub enum LaunchMode {
-    /// The default: GUI-flavour bin, used implicitly by `run`/`run_with`.
     #[default]
     Gui,
-    /// CLI-flavour bin. `passthrough_argv` follows `--` on the shim command
-    /// line, forwarded verbatim; `command` names the manifest entry resolved.
     Cli {
         command: String,
         passthrough_argv: Vec<String>,
     },
     /// A desktop-managed, headless process declared as `kind = "service"`.
-    /// Unlike [`Self::Cli`], this is not a user shell command and therefore
-    /// does not mint a `TILO_CLI_COMMAND`; its exact argv comes from trusted
-    /// desktop code.
     Service { passthrough_argv: Vec<String> },
-    /// An application Tilo did not package (a host `.desktop` entry, Flatpak
-    /// or otherwise).
-    ///
-    /// **This mode never reaches the sandbox** — `run_with` refuses it with
-    /// [`RunError::HostAppNotAPackage`]; [`crate::host`] spawns the entry's
-    /// command line directly, with a controlled environment and no bubblewrap.
-    ///
-    /// Deliberate: the baseline seccomp filter denies the `unshare`/`mount`/
-    /// `pivot_root` a Flatpak needs, and a host binary has no manifest to
-    /// sandbox from — so this is a hard error here, not a mystery failure later.
+    /// An application Tilo did not package (a host `.desktop` entry, Flatpak or otherwise).
     Host {
         /// Desktop-file id of the entry, e.g. `com.spotify.Client`.
         desktop_id: String,
     },
 }
 
-/// Env override that turns the egress gate off, downgrading a host-scoped
-/// grant to unrestricted access. Explicit only — never a silent default —
-/// and honoured only by developer builds (see [`crate::dev_env`]).
+/// Env override that turns the egress gate off, downgrading a host-scoped grant to unrestricted access.
 pub const NET_GATE_ENV: &str = crate::dev_env::NET_GATE_ENV;
 
-/// Start the egress gate if this launch needs one. Returns the bwrap bind
-/// description and the guard keeping the gate alive; both `None` when
-/// there's nothing to filter.
-///
-/// ## Degradation
-///
-/// Needs no privilege and no kernel feature beyond what `bwrap` already
-/// requires — unlike `nftables`-in-a-netns, which needs `CAP_NET_ADMIN`
-/// for a `veth` pair or a userspace TCP/IP stack. The pieces here are
-/// ordinary: the unshared netns every app gets from `--unshare-all`, one
-/// bind-mounted `AF_UNIX` socket (same primitive as Wayland/D-Bus), and a
-/// process binding an ordinary socket under `$XDG_RUNTIME_DIR`. So "kernel
-/// doesn't support this" can't arise, and "we lack privilege" can't arise
-/// either — no step is privileged. What can fail is binding the socket:
-/// a missing, full or unwritable runtime directory.
-///
-/// **On that failure we refuse the launch** rather than fall back to
-/// `--share-net`, which would silently turn "this host" into "every
-/// host" — the false assurance this code exists to remove. Cost is
-/// bounded: only a *narrowing* grant needs the gate. `TILO_LAUNCHER_NET_GATE=off`
-/// takes the unfiltered path deliberately, logged, so it's on the record.
-///
-/// Landlock is the one kernel-dependent piece and is deliberately *not*
-/// held to this standard — defence in depth behind the gate, not the
-/// boundary; without ABI 4 the port pin does nothing and the empty
-/// namespace + gate still hold.
+/// Start the egress gate if this launch needs one; a gate that cannot start refuses the launch.
 fn start_egress_gate(
     egress: &crate::netgate::EgressDecision,
 ) -> Result<
@@ -1677,9 +1451,7 @@ fn start_egress_gate(
     ),
     RunError,
 > {
-    // `Filtered` is the only decision needing a gate; `TILO_LAUNCHER_NET_GATE=off`
-    // is handled in `crate::sandbox::egress_decision` so turning it off also
-    // shares the network rather than sealing the app in an empty namespace.
+    // Only a `Filtered` decision needs a gate; the env override shares the network instead.
     let Some(policy) = egress.policy() else {
         return Ok((None, None));
     };
@@ -1704,25 +1476,16 @@ fn start_egress_gate(
     }
 }
 
-/// Put service sockets, seccomp programs and account data on their child fds, in the
-/// child, before `exec`. bwrap forwards fds it wasn't asked about
-/// untouched, so a placement here survives namespace setup.
+/// Put service sockets, seccomp programs and account data on their child fds, in the child, before `exec`.
 ///
-/// Not bwrap's `--file FD DEST`: that copies the descriptor's *contents*
-/// into a regular file, so a connected socket blocks reading for an EOF
-/// that never comes — the launch hangs before `exec` with no symptom.
-///
-/// Two passes: a source can already sit on
-/// an unwritten target, so every source is relocated above the target
-/// window first, so no `dup2` clobbers one still waiting to be placed.
-///
-/// Errors rather than continuing quietly: a failure here is a bug, not
-/// an absent service, and collaboration silently starting off is exactly
-/// the outcome worth refusing.
+/// bwrap forwards fds it was not asked about untouched, so a placement here survives namespace setup.
+/// Every source moves above the target window first, so no `dup2` clobbers one still waiting; not
+/// bwrap's `--file`, which copies a socket's contents and blocks forever.
 ///
 /// # Safety
-/// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
-/// `fcntl`, `dup2` and `close`, all async-signal-safe; allocates nothing.
+///
+/// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only `fcntl`, `dup2` and `close`, all
+/// async-signal-safe; allocates nothing.
 unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
     let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
         return Ok(());
@@ -1733,21 +1496,15 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
             "service fd relocation floor overflowed RawFd",
         )
     })?;
-    // Capture descriptors sit at fixed numbers above 1024 (the original
-    // roots from 1800), and F_DUPFD refuses a floor at or above the soft
-    // descriptor limit with EINVAL. A login's soft limit is commonly 1024
-    // under a much higher hard one, so lift the soft limit far enough for
-    // the relocation; the sandbox's own limit is set right after placement.
+    // Capture descriptors sit above 1024, and F_DUPFD refuses a floor at or above the soft limit.
     unsafe { raise_soft_nofile(floor, pairs.len())? };
     for (src, _) in pairs.iter_mut() {
-        // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
-        // every target.
+        // F_DUPFD returns the lowest free fd at or above the floor, clear of every target.
         let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
         if moved < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // The original number is done with — a second live descriptor at an
-        // unnamed number is one the app cannot close.
+        // A second live descriptor at an unnamed number is one the app cannot close.
         unsafe { libc::close(*src) };
         *src = moved;
     }
@@ -1755,8 +1512,7 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
         if unsafe { libc::dup2(*src, *dst) } == -1 {
             return Err(std::io::Error::last_os_error());
         }
-        // dup2 leaves the target without FD_CLOEXEC — it must survive bwrap's and
-        // the app's exec.
+        // dup2 leaves the target without FD_CLOEXEC, so it must survive bwrap's and the app's exec.
         unsafe {
             let flags = libc::fcntl(*dst, libc::F_GETFD);
             if flags != -1 {
@@ -1764,9 +1520,7 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
             }
         }
     }
-    // Close relocated copies now that every target holds one, so the app gets
-    // exactly one descriptor per service. Skip numbers that are themselves a
-    // target — closing one could shut a descriptor `dup2` just placed there.
+    // The app gets exactly one descriptor per service; skip numbers that are themselves a target.
     for (src, dst) in pairs.iter() {
         if *src != *dst && !pairs.iter().any(|(_, other)| other == src) {
             unsafe { libc::close(*src) };
@@ -1775,14 +1529,7 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Bound per-process resources inherited by bwrap and the tapp. Core dumps may
-/// contain workspace content or broker responses; an untrusted app also does not
-/// need an unbounded descriptor table. Both soft and hard limits are set so the
-/// app cannot raise them again.
-/// Lift the soft `RLIMIT_NOFILE` so descriptors from `floor` up to
-/// `floor + count` can be created, within the hard limit (EMFILE when the
-/// hard limit is lower). Async-signal-safe: only getrlimit and setrlimit,
-/// and errors carry an errno rather than an allocated message.
+/// The rlimits bwrap and the app inherit: no core dumps, a bounded descriptor table and CPU time.
 unsafe fn raise_soft_nofile(floor: RawFd, count: usize) -> std::io::Result<()> {
     let needed = u64::try_from(floor)
         .ok()
@@ -1821,8 +1568,7 @@ unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
         rlim_cur: 1024,
         rlim_max: 1024,
     };
-    // SAFETY: both pointers refer to initialized rlimit values for the duration
-    // of these syscalls.
+    // SAFETY: both pointers refer to initialized rlimit values for the duration of these syscalls.
     if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const core) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -1850,22 +1596,13 @@ unsafe fn set_captured_resource_limits(plan: CapturedResourcePlan) -> std::io::R
     Ok(())
 }
 
-/// Pop the trailing entrypoint token that `build_bwrap_argv` /
-/// `build_bwrap_argv_for_entry` always leave at the end of `argv`, so a
-/// splice function can insert its own flags before it and push it back.
-///
-/// # Errors
-///
-/// Returns [`RunError::ArgvInvariant`] if `argv` is empty. This should never
-/// happen on any real launch path; failing here beats silently continuing
-/// with an argv that is missing whichever sandboxing directive the caller
-/// was about to splice in.
+/// Pop the trailing entrypoint token so a splice function can insert flags before it.
 fn pop_entry(argv: &mut Vec<String>) -> Result<String, RunError> {
     argv.pop().ok_or(RunError::ArgvInvariant)
 }
 
-/// Splice in the `TILO_CLI_COMMAND` setenv before the trailing entrypoint
-/// token so bwrap still parses it as a flag.
+/// Splice in the `TILO_CLI_COMMAND` setenv before the trailing entrypoint token so bwrap still parses
+/// it as a flag.
 fn splice_cli_setenv(
     argv: &mut Vec<String>,
     extra_setenv: Option<(String, String)>,
@@ -1880,12 +1617,7 @@ fn splice_cli_setenv(
     Ok(())
 }
 
-/// Hand this launch's phase marks to the app
-/// ([`tilo_startup_metrics::LAUNCHER_MARKS_ENV`]), so its startup file also
-/// covers the launcher, and the app's startup file path, which the sandbox
-/// would otherwise clear. Only when the shell asked for startup metrics; the
-/// marks are the launcher's own fixed names and wall-clock times. The last
-/// mark is taken here, after every check and before the sandbox spawns.
+/// Hand this launch's phase marks to the app, only when the shell asked for startup metrics.
 fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
     tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
     splice_cli_setenv(
@@ -1904,9 +1636,7 @@ fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
     )
 }
 
-/// Expose the upstream NT synchronization device only to GUI packages marked
-/// as games. The fresh bwrap `/dev` hides host devices by default; without this
-/// bind Wine/Proton silently falls back to slower userspace synchronization.
+/// Expose the upstream NT synchronization device only to GUI packages marked as games.
 fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), RunError> {
     if latency_sensitive {
         let entry = pop_entry(argv)?;
@@ -1920,10 +1650,7 @@ fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result
     Ok(())
 }
 
-/// Narrow dynamic-loader binds only (not all of `/usr`), for a plain
-/// dynamically-linked `execve()`. Skipped when a runtime bundle (which already
-/// carries the loader) is mounted. Returns the extra ro paths bound, needed
-/// again by the shim's Landlock plan.
+/// Narrow dynamic-loader binds only (not all of `/usr`), for a plain dynamically-linked `execve()`.
 fn splice_minimal_libs(
     argv: &mut Vec<String>,
     opts: &RunOptions,
@@ -1940,8 +1667,6 @@ fn splice_minimal_libs(
         let entry = pop_entry(argv)?;
         for path in minimal_loader_binds() {
             // The fixed system profile already binds these parents read-only.
-            // Rebinding a child can land on a distro symlink (libgcc_s.so.1),
-            // which bubblewrap rightly refuses as a mount destination.
             let covered = crate::profile::SYSTEM_READ_PATHS
                 .iter()
                 .any(|root| std::path::Path::new(path).starts_with(root));
@@ -1957,9 +1682,7 @@ fn splice_minimal_libs(
     Ok(extra_ro_paths)
 }
 
-/// Workspace id, spliced before the entrypoint token so the child learns
-/// which workspace it was opened into. Absent when the launch has no session.
-/// Shared by `run_with` and `run_with_captured`.
+/// Workspace id, spliced before the entrypoint token, absent when the launch has no session.
 fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result<(), RunError> {
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
         let entry = pop_entry(argv)?;
@@ -1969,10 +1692,7 @@ fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result
     Ok(())
 }
 
-/// A trusted shell launch may attach a small typed context for the target
-/// app (for example, a VPN profile selected in Settings). It carries no
-/// authority and is deliberately bounded + JSON-object checked before it
-/// crosses the clean-environment sandbox boundary.
+/// A trusted shell launch's small typed context for the app; it carries no authority.
 fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
     if let Some(context) = validated_tool_context_from_env() {
         let entry = pop_entry(argv)?;
@@ -1984,9 +1704,7 @@ fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
     Ok(())
 }
 
-/// App directory: bound read-write at a fixed sandbox path, HOME/XDG vars
-/// pointed inside it. Spliced here (not in `build_bwrap_argv`) since the
-/// workspace is a launch property, not the package's.
+/// App directory: bound read-write at a fixed sandbox path, HOME/XDG vars pointed inside it.
 fn splice_app_dir(
     argv: &mut Vec<String>,
     app_dir: &Path,
@@ -1996,13 +1714,11 @@ fn splice_app_dir(
     let entry = pop_entry(argv)?;
     crate::appdir::push_app_dir(argv, app_dir);
     crate::appdir::push_person_dir(argv, person_dir);
-    // The font index every app of this build shares, so a launch after the
-    // first reads a database instead of building one.
+    // The font index every app of this build shares, so a launch after the first reads a database.
     if let Some(index) = crate::appdir::prepare_host_font_index() {
         crate::appdir::push_font_index(argv, &index);
     }
-    // After `push_app_dir` (which repoints `HOME`): this says where the
-    // *user's* home is, only when a grant actually bound it.
+    // After `push_app_dir` repoints `HOME`: the user's home, only when a grant bound it.
     if let Some(user_home) = crate::sandbox::push_user_home(argv, capabilities) {
         tracing::debug!(
             user_home = %user_home.display(),
@@ -2010,8 +1726,7 @@ fn splice_app_dir(
         );
     }
     crate::sandbox::push_user_data(argv, capabilities);
-    // And where the workspace's shared mounts are, on the same terms: a
-    // workspace the app cannot read is not one it should be told about.
+    // The workspace's shared mounts, on the same terms: only ones the app can read.
     if let Some(roots) = crate::sandbox::push_workspace_roots(argv, capabilities) {
         tracing::debug!(
             workspace_roots = %roots,
@@ -2022,13 +1737,7 @@ fn splice_app_dir(
     Ok(())
 }
 
-/// Settings remaps XDG into the app dir. Bind the parts of the session's
-/// `~/.config/tilo` it is custodian of over that path
-/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]: the account stores, and the
-/// workspace tree read-only), while the rest of that directory (the settings
-/// document and its records, trust lists, registries) stays out of the
-/// sandbox. Settings reads and writes the session's settings through the
-/// shell's settings service on its channel, as every app does.
+/// Settings remaps XDG into the app dir.
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
@@ -2053,10 +1762,8 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     Ok(())
 }
 
-/// The image-owned system authority grant ([`crate::system_authority`]):
-/// bind the control panel's host binaries, configuration and authority
-/// sockets. A no-op for every other package. The returned guard keeps the
-/// system-bus proxy alive and must outlive the child.
+/// The image-owned system authority grant: the control panel's host binaries, configuration and
+/// sockets.
 fn splice_system_authority(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
@@ -2080,9 +1787,7 @@ fn splice_system_authority(
     Ok((Some(plan), guard))
 }
 
-/// Mount Files' live workspace-governance identity directory read-only. The
-/// projection is package-scoped and must remain visible across atomic host
-/// replacement, so the containing directory—not one inode—is bound.
+/// Mount Files' live workspace-governance identity directory read-only.
 fn splice_trusted_identities(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
@@ -2117,13 +1822,7 @@ fn splice_retained_files(
     Ok(())
 }
 
-/// Bind the app's own view of the files the person chose for it in the
-/// session shell's chooser (`tilo_documents`) at
-/// [`tilo_documents::SANDBOX_DIR`]. The view is empty at launch and fills as
-/// the person chooses; nothing else of the documents filesystem, and no
-/// other app's view, is reachable. Answers whether it was bound: a launch
-/// outside a workspace, or a session whose shell serves no documents, binds
-/// nothing.
+/// The files the person chose for the app, at [`tilo_documents::SANDBOX_DIR`].
 fn splice_documents(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
@@ -2146,8 +1845,7 @@ fn splice_documents(
     Ok(true)
 }
 
-/// The host folder that is `package_id`'s view in `workspace` under the
-/// documents filesystem mounted at `mountpoint`, when it is being served.
+/// The host folder that is the app's view in `workspace`, when it is being served.
 fn documents_view(
     mountpoint: Option<&Path>,
     package_id: &str,
@@ -2187,8 +1885,7 @@ fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
     Ok(())
 }
 
-/// Bind only one app/person projection directory so atomic replacement and
-/// revocation are visible without exposing the host capability store.
+/// One app/person projection directory, so atomic replacement and revocation stay visible.
 fn splice_action_authority(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
@@ -2234,9 +1931,7 @@ fn splice_action_authority(
     Ok(())
 }
 
-/// Wayland display, spliced before the entrypoint token like the
-/// minimal-libs binds. No `wayland_socket` means no display at all. Returns
-/// the resolved bind, needed again by the shim's Landlock plan.
+/// Wayland display, spliced before the entrypoint token like the minimal-libs binds.
 fn splice_wayland(
     argv: &mut Vec<String>,
     opts: &RunOptions,
@@ -2253,9 +1948,7 @@ fn splice_wayland(
     Ok(wayland_bind)
 }
 
-/// Egress gate socket, spliced like Wayland — the app's only route out of an
-/// otherwise empty network namespace. Shared by `run_with` and
-/// `run_with_captured`.
+/// The egress gate socket: the app's only route out of an empty network namespace.
 fn splice_net_gate_bind(
     argv: &mut Vec<String>,
     net_gate: Option<&crate::sandbox::NetGateBind>,
@@ -2268,18 +1961,15 @@ fn splice_net_gate_bind(
     Ok(())
 }
 
-/// GPU: the compositor's render node decides EGL/Vulkan visibility, spliced
-/// after the manifest's own `/dev/dri` grant to narrow it. Returns the
-/// selection, needed again by the shim's Landlock plan.
+/// GPU: the compositor's render node decides EGL/Vulkan visibility, narrowing the `/dev/dri` grant.
 fn splice_gpu(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
     opts: &RunOptions,
     gpu_granted: bool,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
-    // An app without `gpu` draws through its workspace's render service: no
-    // device node, no loader pin, no shader-cache seed, and none of the ICD
-    // probing they cost.
+    // An app without `gpu` draws through its workspace's render service: no node, no pin, no ICD
+    // probe.
     if !gpu_granted {
         return Ok((None, None));
     }
@@ -2291,8 +1981,7 @@ fn splice_gpu(
         let entry = pop_entry(argv)?;
         // The device nodes were just bound: narrow them to the node.
         crate::sandbox::push_gpu_selection(argv, sel, true);
-        // No driver claims the node: no GPU drives it, and the app renders as the
-        // compositor does, with lavapipe.
+        // No driver claims the node: the app renders with lavapipe, as the compositor does.
         #[cfg(target_os = "linux")]
         if let Some(pin) = crate::gpu::unclaimed_node_pin(
             sel,
@@ -2311,10 +2000,7 @@ fn splice_gpu(
     } else if opts.render_node.is_none()
         && let Some(pin) = crate::gpu::inherited_software_pin()
     {
-        // A compositor with no GPU renders with lavapipe and pinned its own
-        // loaders to it; its apps follow, as they follow a GPU's pin. The
-        // render nodes there are of no GPU (a virtual one without 3D), and
-        // EGL opening one in the app crashed it: the app sees none.
+        // A compositor with no GPU pinned lavapipe; its apps follow that pin.
         let entry = pop_entry(argv)?;
         crate::sandbox::push_software_pin(argv, &pin);
         crate::profile::hide_gpu_devices(argv);
@@ -2349,8 +2035,7 @@ fn splice_gpu(
     Ok((gpu, seed))
 }
 
-/// Read-only metadata rules match the host projection mounts; original file
-/// permissions remain in the independently resolved capability plan.
+/// Read-only rules match the host projection mounts; file permissions stay in the capability plan.
 pub(crate) fn push_projection_landlock_rules(
     argv: &mut Vec<String>,
     opts: &RunOptions,
@@ -2390,16 +2075,12 @@ struct ShimSpliceCtx<'a> {
     gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
-    /// The app's view of the documents chosen for it is bound
-    /// ([`splice_documents`]).
+    /// The app's view of the documents chosen for it is bound ([`splice_documents`]).
     documents: bool,
 }
 
-/// In-sandbox shim: bind this launcher binary in and rewrite the trailing
-/// entrypoint token into `<shim> __sandbox-exec [rules…] -- <entry>`. Two
-/// jobs justify it alone: apply Landlock after bwrap's mount namespace is
-/// up, and start the egress relay before the app's first connect. A no-op
-/// when neither Landlock enforcement nor a net gate is requested.
+/// Bind this launcher in and rewrite the entrypoint token into `<shim> __sandbox-exec [rules] --
+/// <entry>`.
 fn splice_sandbox_shim(
     argv: &mut Vec<String>,
     opts: &RunOptions,
@@ -2430,16 +2111,15 @@ fn splice_sandbox_shim(
         argv.push("--keep-fd".to_string());
         argv.push(fd.to_string());
     }
-    // The relay's endpoints. Passed whenever a gate is running, so
-    // an unmodified HTTP client honouring ALL_PROXY reaches it.
+    // The relay's endpoints.
     if let Some(bind) = ctx.net_gate {
         argv.push("--net-gate".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
         argv.push("--net-gate-port".to_string());
         argv.push(bind.port.to_string());
     }
-    // Sandbox-side ro paths for Landlock: the payload mount, the runtime
-    // mount (if any), minimal-libs binds, and the manifest's read paths.
+    // Sandbox-side read paths for Landlock: payload, runtime, minimal-libs binds and the manifest's
+    // reads.
     let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
     argv.push("--ro".to_string());
     argv.push(payload_mount.display().to_string());
@@ -2448,9 +2128,7 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(p.clone());
     }
-    // System read profile, derived from the same list the binds came from —
-    // an unnamed bind is visible but returns EACCES on every open, which
-    // looks like a corrupted system rather than a policy.
+    // The same list the binds came from: an unnamed bind is visible but returns EACCES on every open.
     for path in crate::profile::landlock_ro_paths(ctx.egress.shares_host_network()) {
         argv.push("--ro".to_string());
         argv.push(path.display().to_string());
@@ -2458,11 +2136,9 @@ fn splice_sandbox_shim(
     // This is generated sandbox data, never the host account database.
     argv.extend(["--ro".to_string(), "/etc/passwd".to_string()]);
     push_projection_landlock_rules(argv, opts, ctx.manifest);
-    // Every grant this launch carries needs a matching rule from the same
-    // plan, or the bind is visible but every open() returns EACCES.
+    // Every grant needs a matching rule, or the bind is visible and every open returns EACCES.
     push_grant_landlock_rules(argv, ctx);
-    // Wayland needs read+write in Landlock: connect(2) on a unix socket is
-    // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
+    // Wayland needs read and write: `connect(2)` on a unix socket is write-flavoured.
     if let Some(bind) = ctx.wayland_bind {
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
@@ -2476,24 +2152,19 @@ fn splice_sandbox_shim(
             crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string(),
         ]);
     }
-    // The app's own directory, named by its in-sandbox path — the host path
-    // isn't reachable from inside, so a rule on it would match nothing.
+    // The app's directory by its in-sandbox path: the host path is not reachable from inside.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_APP_DIR.to_string());
-    // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
     // The shared font index is read and written inside the sandbox.
     crate::appdir::push_font_index_landlock(argv);
-    // The documents chosen for it, by their in-sandbox path like the app
-    // directory: read and written as each choice allows (the documents
-    // filesystem refuses the rest), never executed.
+    // The documents chosen for it, read and written as each choice allows and never executed.
     if ctx.documents {
         argv.push("--rw-noexec".to_string());
         argv.push(tilo_documents::SANDBOX_DIR.to_string());
     }
-    // The GPU device nodes a `gpu` app was bound — same O_RDWR reasoning
-    // as above.
+    // The GPU device nodes, on the same read-write terms.
     if ctx.gpu_devices {
         for path in crate::profile::landlock_rw_device_paths() {
             argv.push("--rw".to_string());
@@ -2501,18 +2172,13 @@ fn splice_sandbox_shim(
         }
     }
     push_scratch_and_engine_rules(argv, ctx.manifest);
-    // Service sockets need no Landlock rule: they arrive as already-connected
-    // descriptors dup2'd in, never mounted or opened by path.
-    //
-    // The gate socket is reached via connect(2) (write-flavoured), so it
-    // needs the same read+write rule as Wayland above.
+    // Service sockets need no rule: they arrive connected, never opened by path.
     if let Some(bind) = ctx.net_gate {
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
-    // Landlock's network restriction mirrors the namespace decision: Blocked
-    // denies all TCP on an already-empty netns; Filtered pins the app to the
-    // relay port instead.
+    // Landlock's network rule mirrors the namespace: `Blocked` denies TCP, `Filtered` pins the relay
+    // port.
     if matches!(ctx.egress, crate::netgate::EgressDecision::Blocked) {
         argv.push("--net-restricted".to_string());
     }
@@ -2521,9 +2187,7 @@ fn splice_sandbox_shim(
     Ok(())
 }
 
-/// Landlock rules for every grant the launch carries: the paths a capability
-/// plan granted, a D-Bus socket, the control panel's authority, and the app's
-/// own directories.
+/// Landlock rules for every grant the launch carries.
 fn push_grant_landlock_rules(argv: &mut Vec<String>, ctx: &ShimSpliceCtx<'_>) {
     for path in &ctx.capabilities.ro_paths {
         argv.push("--ro".to_string());
@@ -2533,14 +2197,12 @@ fn push_grant_landlock_rules(argv: &mut Vec<String>, ctx: &ShimSpliceCtx<'_>) {
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
     }
-    // A bound D-Bus socket also needs a Landlock read grant on the
-    // sandbox-side path, or ashpd's connect() surfaces EACCES.
+    // A bound D-Bus socket needs a read rule on its sandbox path, or ashpd's `connect()` gets EACCES.
     if let Some(plan) = ctx.dbus_plan {
         argv.push("--ro".to_string());
         argv.push(plan.sandbox_path.display().to_string());
     }
-    // The control panel's host binaries, configuration and authority
-    // sockets, from the same plan its binds came from.
+    // The control panel's binaries, configuration and sockets from the plan its binds came from.
     if let Some(plan) = ctx.system_authority {
         crate::system_authority::push_landlock_rules(argv, plan);
     }
@@ -2557,8 +2219,7 @@ fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &
                 crate::sandbox::RUNTIME_FONT_CATALOG_PATH.to_string(),
             ]);
         }
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        // The canonical loader paths re-bound out of the bundle, or the entry's INTERP is blocked.
         for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
             let no_slash = canonical.trim_start_matches('/');
             if rt_root.join("lib").join(no_slash).exists() {
@@ -2570,8 +2231,7 @@ fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &
 }
 
 fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &ManifestView) {
-    // Standard tmpfs mounts the app expects writable; --rw grants full FS
-    // access, and both vanish with the process (scratch, not hidden state).
+    // Scratch mounts the app expects writable; both vanish with the process.
     for p in ["/tmp", "/dev"] {
         argv.push("--rw".to_string());
         argv.push(p.to_string());
@@ -2588,7 +2248,7 @@ fn sandbox_account(uid: u32, gid: u32) -> String {
     format!("app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin\n")
 }
 
-/// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
+/// Give bwrap a private, read-only account file.
 fn stage_sandbox_account(
     argv: &mut Vec<String>,
     original_identity: Option<(u32, u32)>,
@@ -2601,8 +2261,7 @@ fn stage_sandbox_account(
     });
     let account = sandbox_account(uid, gid);
     let data = stage_seccomp_blob(account.as_bytes())?;
-    // Keep the source above the fixed child slots: earlier dup2 calls must
-    // not overwrite it before the account descriptor is handed to bwrap.
+    // The source sits above the fixed child slots, so no earlier `dup2` overwrites it.
     let fd = unsafe { libc::fcntl(data.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 128) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -2610,8 +2269,8 @@ fn stage_sandbox_account(
     let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
     let mut binding = Vec::new();
     if original_identity.is_some() {
-        // One fixed non-secret synthetic account, readable after credential
-        // drop; this mode applies to this exact next data operation only.
+        // One fixed non-secret synthetic account, readable after credential drop; this mode applies to
+        // this exact next data operation only.
         binding.extend(["--perms".into(), "0444".into()]);
     }
     binding.extend([
@@ -2654,7 +2313,6 @@ mod sandbox_account_tests {
             "/proc/self/fd/42",
         ]);
         // Move only the child's fixture onto the colliding source slot.
-        // The production handoff must preserve it before assigning account 42.
         unsafe {
             command.pre_exec(move || {
                 if libc::dup2(source, ACCOUNT_CHILD_FD) < 0 {
@@ -2707,10 +2365,9 @@ mod sandbox_account_tests {
     }
 }
 
-/// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
-/// seccomp filters, the resolved service sockets, the identity broker (app end,
-/// control end, serving thread) and whether to apply game scheduling hints.
-/// The launcher's copies are released at fixed points around `spawn`.
+/// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged seccomp filters, the resolved
+/// service sockets, the identity broker (app end, control end, serving thread) and whether to apply
+/// game scheduling hints.
 struct ChildSetup {
     seccomp_fds: SeccompFds,
     services: Vec<crate::services::ResolvedService>,
@@ -2724,11 +2381,8 @@ struct ChildSetup {
     live_module: Option<crate::live_module::LiveModule>,
 }
 
-/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
-/// with the seccomp fd and service sockets wired into the child via
-/// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
-/// the parent for observability (the shim enforces Landlock; this only
-/// records intent).
+/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap` with the seccomp fd and
+/// service sockets wired into the child via `pre_exec`, then wait for it.
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
@@ -2797,10 +2451,8 @@ fn spawn_and_wait(
         });
     let account_fd = stage_sandbox_account(&mut argv, original_identity)?;
     let host_account_fd = account_fd.as_raw_fd();
-    // The system read profile from the host's pre-built view, when it can
-    // carry this launch's mounts unchanged. Held until the child is reaped:
-    // a superseded view is retired only once no sandbox built from it runs.
-    // Supervised launches keep their audited per-path argv.
+    // The system read profile from the host's pre-built view, when it can carry this launch's mounts
+    // unchanged.
     let system_view = if observer.is_none() {
         crate::sandbox_view::attach(&mut argv)
     } else {
@@ -2826,9 +2478,8 @@ fn spawn_and_wait(
                 "private service namespace missing".into(),
             ));
         }
-        // These are bwrap options, before its command (which may already
-        // be the Landlock shim plus opaque arguments). Never append them
-        // next to the provider's trailing entrypoint.
+        // These are bwrap options, before its command (which may already be the Landlock shim plus
+        // opaque arguments).
         argv.splice(
             0..0,
             [
@@ -2839,21 +2490,19 @@ fn spawn_and_wait(
         );
     }
 
-    // Validate the canonical full namespace plan above BEFORE the root-only
-    // original-source token replaces its user-namespace component. Bootstrap
-    // admission emits a fixed private PID/net/IPC/UTS plan; the signed shim
-    // verifies actual isolation before saved source credentials become active.
+    // Validate the canonical full namespace plan above BEFORE the root-only original-source token
+    // replaces its user-namespace component.
     if let Some(capture) =
         observer.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
     {
         capture.splice_original_bootstrap(&mut argv)?;
     }
 
-    // Passthrough: everything after the entrypoint token is opaque to bwrap,
-    // forwarded as the sandboxed program's argv[1..].
+    // Passthrough: everything after the entrypoint token is opaque to bwrap, forwarded as the
+    // sandboxed program's argv[1..].
     argv.extend(cli_passthrough);
 
-    // 4. Build the bwrap Command.
+    // 4.
     let bwrap = opts
         .bwrap_bin
         .clone()
@@ -2898,8 +2547,8 @@ fn spawn_and_wait(
         }
     }
 
-    // pre_exec: place both seccomp blobs on fixed child fds, and put
-    // each service socket on the fd number the app was told to read.
+    // pre_exec: place both seccomp blobs on fixed child fds, and put each service socket on the fd
+    // number the app was told to read.
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2953,8 +2602,8 @@ fn spawn_and_wait(
         ],
     );
     let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
-    // The shim enforces Landlock via opts.landlock_enforce (argv splice
-    // above); this just logs intent — the shim's own line has the real outcome.
+    // The shim enforces Landlock via opts.landlock_enforce (argv splice above); this just logs intent
+    // — the shim's own line has the real outcome.
     tracing::info!(
         target: "tilo_launcher::landlock",
         rules = landlock_plan.len(),
@@ -2971,9 +2620,7 @@ fn spawn_and_wait(
     );
     let _ = landlock_plan;
 
-    // SAFETY: pre_exec runs in the child after fork, before exec. We
-    // perform only async-signal-safe operations: dup2, fcntl, plus the
-    // landlock crate's syscall wrappers. No allocator calls, no locks.
+    // SAFETY: pre_exec runs in the child after fork, before exec.
     let private_service = observer
         .and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
         .is_some();
@@ -2987,8 +2634,8 @@ fn spawn_and_wait(
             if latency_sensitive {
                 crate::performance::apply_game_performance_hints()?;
             }
-            // Landlock is NOT installed here — bwrap needs broad FS access to set up
-            // the namespace; the `__sandbox-exec` shim installs it after. See `landlock_shim`.
+            // Landlock is NOT installed here — bwrap needs broad FS access to set up the namespace;
+            // the `__sandbox-exec` shim installs it after.
             Ok(())
         });
     }
@@ -2997,7 +2644,7 @@ fn spawn_and_wait(
     if let Some(observer) = observer {
         observer.before_spawn().map_err(RunError::Spawn)?;
     }
-    // 5. Spawn + wait.
+    // 5.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     // Until the app exits; the watch stops and its directory goes when this drops.
     let _following = live_module.and_then(|live| {
@@ -3023,8 +2670,8 @@ fn spawn_and_wait(
     // Keep both filter fds alive until spawn has duplicated them in the child.
     drop(seccomp_fds);
     drop(account_fd);
-    // Same rule: the child holds its own copies, so the launcher's are dead
-    // weight, dropped before the wait so the far end learns of the exit.
+    // Same rule: the child holds its own copies, so the launcher's are dead weight, dropped before the
+    // wait so the far end learns of the exit.
     drop(resolved);
     drop(identity_broker_app);
     let status = if let Some(observer) = observer {
@@ -3038,10 +2685,7 @@ fn spawn_and_wait(
     Ok(status)
 }
 
-/// Seccomp baseline → tmpfile → fd. The manifest *asks* for a profile; the
-/// image decides whether this package may have it. An unrecognised name is a
-/// packaging mistake; a recognised-but-unentitled one is an app trying to
-/// lift a protection off itself — logged distinctly.
+/// Seccomp baseline → tmpfile → fd.
 fn stage_seccomp(
     manifest: &ManifestView,
     grants: crate::seccomp::SyscallGrants,
@@ -3072,14 +2716,8 @@ fn stage_seccomp(
     })
 }
 
-/// Resolve the selected identity record on the host, migrate legacy storage,
-/// then mint one app-scoped broker connection. Returns `identity_host`
-/// alongside the broker handles since `identity_arg` (a presence marker for
-/// the argv builder, computed by the caller) borrows from it.
-/// Broker handles + `identity_host` returned by [`resolve_identity_broker`]:
-/// the app- and control-side ends of the identity broker socketpair, the
-/// thread serving the control side, and the host path `identity_arg`
-/// borrows from.
+/// Resolve the selected identity record on the host, migrate legacy storage, then mint one app-scoped
+/// broker connection.
 type IdentityBrokerResolution = (
     Option<UnixStream>,
     Option<UnixStream>,
@@ -3107,16 +2745,12 @@ fn resolve_identity_broker(
     Ok((app, control, thread, identity_host))
 }
 
-/// What an argv builder produces: the bwrap command line, an optional
-/// `(name, value)` environment pair the caller must splice in, and the
-/// trailing arguments passed through to the app.
+/// What an argv builder produces: the bwrap command line, an optional `(name, value)` environment pair
+/// the caller must splice in, and the trailing arguments passed through to the app.
 type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 
-/// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
-/// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
-/// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
-/// The payload-relative binary a launch in `mode` executes; `None` for a host
-/// application, which has no payload.
+/// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses `cli_bin()` (falling back to
+/// `bin`) and splices `TILO_CLI_COMMAND` / forwards passthrough argv.
 fn launch_entry_bin<'a>(manifest: &'a ManifestView, mode: &LaunchMode) -> Option<&'a str> {
     match mode {
         LaunchMode::Gui => Some(
@@ -3135,12 +2769,8 @@ fn launch_entry_bin<'a>(manifest: &'a ManifestView, mode: &LaunchMode) -> Option
     }
 }
 
-/// Refuse a launch whose entrypoint links against a library the sandboxed
-/// loader will not find in the runtime bundle, the payload or the host's
-/// library directories. Without this the app dies in the loader before
-/// `main`, and the only trace is one loader line on stderr. Only a launch on
-/// a runtime bundle is checked: the host-library modes have no bundle the app
-/// could have been built against.
+/// Refuse a launch whose entrypoint links against a library the sandboxed loader will not find in the
+/// runtime bundle, the payload or the host's library directories.
 fn preflight_runtime_libraries(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -3154,8 +2784,8 @@ fn preflight_runtime_libraries(
         return Ok(());
     };
     if manifest.entrypoint.runtime.is_some() {
-        // The binary is the entrypoint runtime's, checked once that runtime
-        // is resolved (`preflight_entrypoint_runtime`).
+        // The binary is the entrypoint runtime's, checked once that runtime is resolved
+        // (`preflight_entrypoint_runtime`).
         return Ok(());
     }
     let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
@@ -3208,8 +2838,8 @@ fn build_initial_argv(
                 capabilities,
             ),
             None,
-            // A GUI launch carries at most one argument — the document to open —
-            // riding the same tail as CLI passthrough (opaque bytes after entrypoint).
+            // A GUI launch carries at most one argument — the document to open — riding the same tail
+            // as CLI passthrough (opaque bytes after entrypoint).
             gui_open_args(opts),
         )),
         LaunchMode::Cli {
@@ -3251,26 +2881,16 @@ fn build_initial_argv(
             );
             Ok((argv, None, passthrough_argv.clone()))
         }
-        // Refused at the top of `run_with`, before any of the setup above
-        // ran. Reaching here would mean that guard was removed; fail the
-        // launch instead of trusting it never will.
+        // Refused at the top of `run_with`, before any of the setup above ran.
         LaunchMode::Host { desktop_id } => Err(RunError::HostAppNotAPackage {
             desktop_id: desktop_id.clone(),
         }),
     }
 }
 
-/// Build and exec the sandbox for an already-parsed `manifest`: validates the
-/// launch-mode/fs policy, resolves service/identity binds, the runtime
-/// bundle, the app's writable directory and its network egress gate, then
-/// spawns `bwrap` and waits for it.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the launch is refused by policy (a host app
-/// reached the sandbox path, or the manifest names a filesystem path), if
-/// any bind/runtime/identity/egress resolution step fails, or if spawning or
-/// waiting on the sandboxed process fails.
+/// Build and exec the sandbox for an already-parsed `manifest`: validates the launch-mode/fs policy,
+/// resolves service/identity binds, the runtime bundle, the app's writable directory and its network
+/// egress gate, then spawns `bwrap` and waits for it.
 pub fn run_with(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -3319,16 +2939,16 @@ fn join_beside<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-/// What the host prepares before a sandbox can be described: the verified
-/// runtime bundle, if any, and the app's writable directories.
+/// What the host prepares before a sandbox can be described: the verified runtime bundle, if any, and
+/// the app's writable directories.
 struct LaunchHost {
     runtime: Option<(PathBuf, String)>,
     app_dir: PathBuf,
     person_dir: PathBuf,
 }
 
-/// Verify the runtime bundle, check the entrypoint's libraries against it,
-/// and create the app's directories (bwrap can only bind what exists).
+/// Verify the runtime bundle, check the entrypoint's libraries against it, and create the app's
+/// directories (bwrap can only bind what exists).
 fn prepare_launch_host(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -3336,8 +2956,7 @@ fn prepare_launch_host(
     enrolled: Option<&crate::services::EnrolledServiceContext>,
     owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
 ) -> Result<LaunchHost, RunError> {
-    // A resolved bundle wins over --minimal-libs and skips the loader-bind
-    // stopgap entirely.
+    // A resolved bundle wins over --minimal-libs and skips the loader-bind stopgap entirely.
     let retained_io =
         owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
     let target_projection =
@@ -3446,30 +3065,21 @@ pub(crate) fn run_with_context(
         ));
     }
     validate_open_uri(manifest, opts)?;
-    // 0a. A host application has no manifest and no sandbox. Refusing here,
-    // before any socket/directory/argv exists, keeps the two launch kinds
-    // from quietly converging. Managed-service constraints are shared with
-    // the captured path below: capture must never become a bypass.
+    // 0a.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
 
-    // 0. Policy: a manifest naming a filesystem path is refused before
-    // anything else exists — silently dropping it would surface as an app
-    // bug, not a policy one. Checked at launch too, not just install.
+    // 0.
     crate::manifest::enforce_fs_policy(manifest)?;
 
-    // Hold the payload and runtime trees before they are looked at, until
-    // the sandbox that mounts them has exited: an update or collection
-    // meanwhile leaves them alone (`crate::lease`).
+    // Hold the payload and runtime trees before they are looked at, until the sandbox that mounts them
+    // has exited: an update or collection meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
 
-    // The user's capability decision. Empty unless the compositor wrote a
-    // file — an app launched without one is confined to its manifest alone.
-    // Resolved before the seccomp baseline, which a grant can narrow.
+    // The user's capability decision.
     let mut capabilities = resolve_capabilities(manifest, opts);
 
     // Host preflight precedes connected service custody.
-    // Seccomp baseline → tmpfile → fd.
     let seccomp_fds = stage_seccomp(
         manifest,
         crate::seccomp::syscall_grants(
@@ -3478,8 +3088,7 @@ pub(crate) fn run_with_context(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
-    // Whether the app opens the GPU itself, or its workspace's render service
-    // draws it.
+    // Whether the app opens the GPU itself, or its workspace's render service draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
         &capabilities,
@@ -3487,16 +3096,7 @@ pub(crate) fn run_with_context(
     );
     tilo_startup_metrics::handoff_mark("seccomp-staged");
 
-    // D-Bus proxy decision. Failure leaves the bus unavailable; there is
-    // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
-    // waited on so Drop can SIGTERM the proxies.
-    //
-    // The proxies' start-up and readiness handshakes need nothing from the
-    // runtime, loader and directory preparation, and those need nothing
-    // from the proxies, so the two run side by side. Every check still
-    // completes before anything below; a failed one returns after the
-    // join, and dropping the guards stops the proxies before any sandbox
-    // exists.
+    // D-Bus proxy decision.
     let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let media_player = dbus_proxy::media_player_for(manifest);
     let media_player = media_player.as_deref();
@@ -3506,9 +3106,8 @@ pub(crate) fn run_with_context(
             tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
             bind
         })?;
-        // Verifying a required runtime reads its whole payload (a browser
-        // engine is hundreds of MB); nothing else here needs the answer
-        // before the sandbox argv is built.
+        // Verifying a required runtime reads its whole payload (a browser engine is hundreds of MB);
+        // nothing else here needs the answer before the sandbox argv is built.
         let required = spawn_beside(scope, "launch-required-runtimes", move || {
             let bundles = resolve_required_runtimes(manifest, opts);
             tilo_startup_metrics::handoff_mark("required-runtimes-verified");
@@ -3552,9 +3151,7 @@ pub(crate) fn run_with_context(
         capabilities.participation = crate::capabilities::Participation::Author;
     }
 
-    // Connect only after cold runtime verification, loader preflight and host
-    // preparation. The broker starts its executing-task deadline at handoff;
-    // those checks must not consume the sandboxed app's response window.
+    // Connect only after cold runtime verification, loader preflight and host preparation.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
@@ -3564,10 +3161,7 @@ pub(crate) fn run_with_context(
             .map_err(RunError::InvalidServiceLaunch)?
     } else {
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
-        // collaboration connection (the host's instance has the app's own). An origin connector
-        // holds none of the app's data either: its instances commit it. The connection is not
-        // opened at all: one opened and dropped is a launch handoff the broker starts to bind
-        // and then hears hang up.
+        // collaboration connection (the host's instance has the app's own).
         let mut services = manifest.sandbox.services.clone();
         if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
             services.remove(crate::services::COLLAB_SERVICE);
@@ -3622,8 +3216,8 @@ pub(crate) fn run_with_context(
         )? {
             resolved.push(stats);
         }
-        // An origin connector's door, which the session released it with as a window's: the
-        // instances of the app attach over it.
+        // An origin connector's door, which the session released it with as a window's: the instances
+        // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
             && let Some(door) = crate::registration_gate::take_window_door()
@@ -3634,8 +3228,8 @@ pub(crate) fn run_with_context(
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
-        // The shell opens the app's later windows in this process through
-        // the door it released this launch with (`runtime_portal::windows`).
+        // The shell opens the app's later windows in this process through the door it released this
+        // launch with (`runtime_portal::windows`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
@@ -3656,9 +3250,8 @@ pub(crate) fn run_with_context(
         .map(|instance| crate::headless_console::Namespace::prepare(&app_dir, instance))
         .transpose()?;
 
-    // Resolve the selected record on the host, migrate legacy storage, then
-    // mint one app-scoped broker connection. The path is only a presence
-    // marker for the argv builder; it is never mounted.
+    // Resolve the selected record on the host, migrate legacy storage, then mint one app-scoped broker
+    // connection.
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         if enrolled.is_some() {
             (None, None, None, None)
@@ -3672,9 +3265,8 @@ pub(crate) fn run_with_context(
         keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
     }
 
-    // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
-    // mode shares the host network with no allowlist to enforce, so neither
-    // needs a gate. Guard bound here (not in the `if let`) so it outlives the child.
+    // Egress: a grant naming specific hosts runs a gate; `*` or bare `host` mode shares the host
+    // network with no allowlist to enforce, so neither needs a gate.
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     tilo_startup_metrics::handoff_mark("egress-ready");
 
@@ -3896,11 +3488,8 @@ pub(crate) fn run_with_context(
     result
 }
 
-/// Debug-only, off by default: when the launching host sets
-/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed child's stdout and
-/// stderr go to a bounded log file in its data home instead of `/dev/null`.
-/// This changes no sandbox, policy or custody decision; it only keeps the
-/// diagnostic output a supervised app would otherwise lose.
+/// Debug-only, off by default: when the launching host sets `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed
+/// child's stdout and stderr go to a bounded log file in its data home instead of `/dev/null`.
 pub const DEBUG_STDERR_ENV: &str = "TILO_LAUNCHER_DEBUG_STDERR";
 /// Upper bound of one launch's captured output.
 const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
@@ -3910,9 +3499,8 @@ fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
         .then(|| data_home.join("launcher-debug-output.log"))
 }
 
-/// Copy `source` into `sink` until EOF or until `budget` bytes were written
-/// in total across all copiers sharing it; the rest is drained and dropped so
-/// the child never blocks on a full pipe.
+/// Copy `source` into `sink` until EOF or until `budget` bytes were written in total across all copiers
+/// sharing it; the rest is drained and dropped so the child never blocks on a full pipe.
 fn copy_bounded_output(
     mut source: impl std::io::Read,
     sink: &std::sync::Mutex<std::fs::File>,
@@ -3953,9 +3541,8 @@ fn validated_tool_context_from_env() -> Option<String> {
     }
 }
 
-/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
-/// with its stdout piped, capture it, and wait. Confinement is prepared by
-/// the same path as [`spawn_and_wait`]; capturing fd 1 is not a weaker launch.
+/// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap` with its stdout piped,
+/// capture it, and wait.
 fn spawn_and_capture(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
@@ -3972,8 +3559,7 @@ fn spawn_and_capture(
     SeccompFds::prepend_bwrap_args(&mut argv);
     let account_fd = stage_sandbox_account(&mut argv, None)?;
     let host_account_fd = account_fd.as_raw_fd();
-    // Everything after the entrypoint token is opaque to bwrap and
-    // becomes the child's argv[1..].
+    // Everything after the entrypoint token is opaque to bwrap and becomes the child's argv[1..].
     argv.extend(passthrough);
 
     let bwrap = opts
@@ -4007,8 +3593,8 @@ fn spawn_and_capture(
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
     drop(account_fd);
-    // As in `run_with`: the child has its own copies, so holding these open
-    // only keeps the service from seeing the app end.
+    // As in `run_with`: the child has its own copies, so holding these open only keeps the service
+    // from seeing the app end.
     drop(resolved);
     drop(identity_broker_app);
     let mut buf = Vec::new();
@@ -4275,22 +3861,7 @@ type IdentityBrokerHandles = (
     Option<std::thread::JoinHandle<()>>,
 );
 
-/// [`run_with`] sibling that captures the child's stdout instead of inheriting
-/// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
-/// identity, filesystem and egress decisions as a normal tapp launch.
-///
-/// # Errors
-///
-/// Returns [`RunError`] under the same conditions as [`run_with`]: launch
-/// refused by policy, a bind/runtime/identity/egress resolution failure, or
-/// a failure spawning or waiting on the sandboxed process.
-///
-/// # Panics
-///
-/// Panics if [`crate::sandbox::build_bwrap_argv_for_entry`] ever returns an
-/// empty argv — it always appends the entrypoint binary as the last
-/// element, so this would indicate a bug in that builder, not a runtime
-/// condition.
+/// [`run_with`] sibling that captures the child's stdout instead of inheriting it.
 pub fn run_with_captured(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -4299,14 +3870,7 @@ pub fn run_with_captured(
     run_with_capture_spawn(manifest, payload_root, opts, spawn_and_capture)
 }
 
-/// Captured sandbox launch with launcher-enforced resource limits and
-/// cancellation. Sandbox construction is exactly the same as
-/// [`run_with_captured`]; only process supervision differs.
-///
-/// # Errors
-///
-/// Returns [`RunError`] when the plan is invalid, sandbox construction fails,
-/// or the bounded child cannot be spawned, supervised, or collected.
+/// Captured sandbox launch with launcher-enforced resource limits and cancellation.
 pub fn run_with_captured_bounded(
     manifest: &ManifestView,
     payload_root: &Path,
@@ -4357,14 +3921,14 @@ fn run_with_capture_spawn<T>(
         ));
     }
     validate_open_uri(manifest, opts)?;
-    // Same refusals as `run_with`: this is a second entry into the sandbox
-    // builder, and a policy with one enforced door is a door beside it.
+    // Same refusals as `run_with`: this is a second entry into the sandbox builder, and a policy with
+    // one enforced door is a door beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
     crate::manifest::enforce_fs_policy(manifest)?;
 
-    // Seccomp baseline resolved identically to `run_with` — two paths
-    // reaching different conclusions would make capture a way around the filter.
+    // Seccomp baseline resolved identically to `run_with` — two paths reaching different conclusions
+    // would make capture a way around the filter.
     let capabilities = resolve_capabilities(manifest, opts);
     let seccomp_fds = stage_seccomp(
         manifest,
@@ -4374,18 +3938,16 @@ fn run_with_capture_spawn<T>(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
-    // Whether the app opens the GPU itself, or its workspace's render service
-    // draws it.
+    // Whether the app opens the GPU itself, or its workspace's render service draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
         &capabilities,
         crate::system_stats::image_shipped(payload_root),
     );
 
-    // As in `run_with_context`: held from before the lookup until the
-    // sandbox has exited.
+    // As in `run_with_context`: held from before the lookup until the sandbox has exited.
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
-    // Build the exact production sandbox shape. Capture changes stdout only.
+    // Build the exact production sandbox shape.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
     let runtime_arg = resolved_runtime
         .as_ref()
@@ -4398,7 +3960,6 @@ fn run_with_capture_spawn<T>(
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
     // As in `run_with_context`, cold runtime checks precede service handoff.
-    // Capture must not start the executing-task deadline during verification.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
@@ -4460,12 +4021,11 @@ fn run_with_capture_spawn<T>(
     if identity_broker_app.is_some() {
         keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
     }
-    // Same egress decision as `run_with`: without the gate spliced in here
-    // too, a host-scoped grant would be silently offline. No shim on this
-    // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
+    // Same egress decision as `run_with`: without the gate spliced in here too, a host-scoped grant
+    // would be silently offline.
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
-    // Entrypoint + trailing arguments, resolved the same way `run_with`
-    // does — both entries must agree on binary and arguments.
+    // Entrypoint + trailing arguments, resolved the same way `run_with` does — both entries must agree
+    // on binary and arguments.
     let (mut argv, extra_setenv, passthrough) = build_initial_argv(
         manifest,
         payload_root,
@@ -4549,25 +4109,15 @@ fn run_with_capture_spawn<T>(
     result
 }
 
-/// Give `bwrap` itself an environment worth inheriting, so a dropped
-/// `--clearenv` cannot silently become a leak.
-///
-/// The argv already carries `--clearenv`
-/// ([`crate::sandbox::push_clean_environment`]), deciding what the *app*
-/// sees. This is the same statement made where the process is spawned:
-/// bwrap is handed nothing to pass on, so a lost flag fails closed with
-/// an empty environment instead of handing over the compositor's.
-///
-/// `PATH` survives because spawn needs it: `bwrap_bin` defaults to the
-/// bare name `bwrap`, resolved against the child's own
-/// [`crate::sandbox::SANDBOX_PATH`], not the session's.
+/// Give `bwrap` itself an environment worth inheriting, so a dropped `--clearenv` cannot silently
+/// become a leak.
 fn clear_bwrap_environment(cmd: &mut Command) {
     cmd.env_clear();
     cmd.env("PATH", crate::sandbox::SANDBOX_PATH);
 }
 
-/// Write the seccomp blob to a `memfd` so its fd outlives the parent's
-/// tempdir teardown and the bwrap exec; falls back to a real tempfile.
+/// Write the seccomp blob to a `memfd` so its fd outlives the parent's tempdir teardown and the bwrap
+/// exec; falls back to a real tempfile.
 fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
     // Try memfd first.
     let name = b"tilo-launcher-seccomp\0";
@@ -4585,10 +4135,7 @@ fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
         return Ok(owned);
     }
 
-    // Fallback: O_TMPFILE under /tmp. If even that fails we surface the IO
-    // error — the launcher cannot safely continue without a seccomp blob fd.
-    // "/tmp" is a fixed literal with no interior NUL, so this cannot fail in
-    // practice; still routed through `?` rather than asserted.
+    // Fallback: O_TMPFILE under /tmp.
     let path = std::ffi::CString::new("/tmp")
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let fd = unsafe {
@@ -4608,11 +4155,9 @@ fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
 fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
     let mut written = 0usize;
     while written < bytes.len() {
-        // `written < bytes.len()` holds here, so this cannot run past the
-        // buffer in practice, but a real file offset is not the place to
-        // trust that silently: an error beats a payload written to the
-        // wrong offset. `remaining` is derived from the same slice `pwrite`
-        // is handed, rather than re-deriving its length separately.
+        // `written < bytes.len()` holds here, so this cannot run past the buffer in practice, but a
+        // real file offset is not the place to trust that silently: an error beats a payload written
+        // to the wrong offset.
         let Some(remaining_bytes) = bytes.get(written..) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -4660,7 +4205,6 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Narrow host paths a dynamically-linked ELF needs to `execve()`.
-/// Excludes `/usr/bin` and other non-runtime paths.
 fn minimal_loader_binds() -> &'static [&'static str] {
     &[
         // Dynamic loader itself.
@@ -4676,25 +4220,17 @@ fn minimal_loader_binds() -> &'static [&'static str] {
         "/lib64/libpthread.so.0",
         "/lib64/librt.so.1",
         "/lib64/libutil.so.1",
-        // Dynamic linker's cache. Without it the loader falls back to a slower
-        // search but still works — bound because launch-latency matters.
+        // Dynamic linker's cache.
         "/etc/ld.so.cache",
     ]
 }
 
-/// Path inside the bwrap sandbox where the launcher binary is bind-mounted
-/// to be exec'd as the Landlock shim. Kept out of `/usr` and `/tmp`.
+/// Path inside the bwrap sandbox where the launcher binary is bind-mounted to be exec'd as the Landlock
+/// shim.
 pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 
-/// Decide how to expose D-Bus: the manifest's portal declaration, and for
-/// every graphical app the accessibility buses.
-///
-/// Each bus reaches the app only through its own filtered `xdg-dbus-proxy`
-/// ([`dbus_proxy`]). There is deliberately no raw-bus fallback. Giving an
-/// untrusted sandbox the complete user bus because a filtering helper is
-/// missing turns an availability problem into a privilege-escalation path
-/// (and lets the app call portal *implementation* services directly). A failed
-/// proxy therefore means that bus is unavailable for that launch.
+/// Decide how to expose D-Bus: the manifest's portal declaration, and for every graphical app the
+/// accessibility buses.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
@@ -4709,8 +4245,8 @@ fn resolve_dbus_bind(
     resolve_dbus_bind_at(portals, graphical, media_player, &sockets)
 }
 
-/// Where one launch's D-Bus proxies listen on the host, and how long each
-/// may take to report its listener ready.
+/// Where one launch's D-Bus proxies listen on the host, and how long each may take to report its
+/// listener ready.
 struct ProxySockets {
     session: PathBuf,
     atspi: PathBuf,
@@ -4747,9 +4283,8 @@ fn resolve_dbus_bind_at(
         return (None, Vec::new());
     };
 
-    // The accessibility bus is found and proxied beside the session bus's
-    // proxy: two lookups and readiness handshakes, independent of each
-    // other. Without a session proxy the AT-SPI one is dropped (stopped).
+    // The accessibility bus is found and proxied beside the session bus's proxy: two lookups and
+    // readiness handshakes, independent of each other.
     let (session, atspi) = std::thread::scope(|scope| {
         let atspi = graphical.then(|| {
             spawn_beside(scope, "launch-atspi", || {
@@ -4804,9 +4339,9 @@ fn resolve_dbus_bind_at(
     (Some(plan), guards)
 }
 
-/// The filtered AT-SPI bus proxy for a graphical app, or `None` when the
-/// session runs no accessibility bus or the proxy cannot start; the app then
-/// stays invisible to assistive technology, never on the raw bus.
+/// The filtered AT-SPI bus proxy for a graphical app, or `None` when the session runs no accessibility
+/// bus or the proxy cannot start; the app then stays invisible to assistive technology, never on the
+/// raw bus.
 fn spawn_atspi_proxy(
     binary: &std::path::Path,
     session_bus: &str,
@@ -4865,12 +4400,7 @@ mod dbus_resolution_tests {
         assert!(guards.is_empty(), "no proxy process should have started");
     }
 
-    /// The session and AT-SPI proxies come up side by side. Each mock proxy
-    /// reports ready only once both have started, so one after the other the
-    /// first would never be ready and the session bus would stay unbound.
-    /// The proxies get the shared hang bound to report ready, not the
-    /// product's two seconds: two forked shells polling on a loaded machine
-    /// have taken longer than that to see each other.
+    /// The session and AT-SPI proxies come up side by side.
     #[test]
     fn the_session_and_accessibility_proxies_start_side_by_side() {
         use std::os::unix::fs::PermissionsExt;
@@ -4925,7 +4455,6 @@ exec sleep infinity
 }
 
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
-/// Falls back to 1000 if the syscall somehow fails.
 fn current_uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
@@ -4934,8 +4463,7 @@ fn current_uid() -> u32 {
 mod identity_resolution_tests {
     use super::*;
 
-    /// A store directory holding a `primary` record. The resolver only checks
-    /// that the record is a regular file, so the content is irrelevant here.
+    /// A store directory holding a `primary` record.
     fn store_with_primary(root: &Path) -> PathBuf {
         let store = root.join("tilo").join("identity");
         std::fs::create_dir_all(&store).unwrap();
@@ -4976,8 +4504,6 @@ mod identity_resolution_tests {
             };
             assert_eq!(resolve_identity_host_path(&opts), None);
         }
-        // Phase `no_identity_ignores_the_users_store`.
-        // `None` means no identity even when the user's store holds one.
         {
             let home = tilo_test_env::TestHome::new().unwrap();
             store_with_primary(home.config());
@@ -4987,10 +4513,6 @@ mod identity_resolution_tests {
             };
             assert_eq!(resolve_identity_host_path(&opts), None);
         }
-        // Phase `a_joined_devices_public_record_brokers_without_a_secret`.
-        // A device joined from a nearby device holds only the identity's
-        // public record; its apps sign through the workspace identity service
-        // with the certified device key.
         {
             use std::os::unix::fs::PermissionsExt;
 
@@ -5057,8 +4579,8 @@ mod identity_resolution_tests {
         }
     }
 
-    /// What any write under `dir` would change: every entry's path, mode,
-    /// inode, size, change and modification times, and bytes.
+    /// What any write under `dir` would change: every entry's path, mode, inode, size, change and
+    /// modification times, and bytes.
     fn store_snapshot(dir: &Path) -> Vec<(PathBuf, [i64; 8], Vec<u8>)> {
         use std::os::unix::fs::MetadataExt;
 
@@ -5096,8 +4618,8 @@ mod identity_resolution_tests {
         out
     }
 
-    /// Make the store read-only: directories 0500 and files 0400, which the
-    /// identity loaders accept as private.
+    /// Make the store read-only: directories 0500 and files 0400, which the identity loaders accept as
+    /// private.
     fn make_read_only(dir: &Path, read_only: bool) {
         use std::os::unix::fs::PermissionsExt;
 
@@ -5168,8 +4690,7 @@ mod identity_resolution_tests {
         .unwrap()
     }
 
-    /// Resolve the active record and start its broker, as every authored
-    /// launch does.
+    /// Resolve the active record and start its broker, as every authored launch does.
     fn launch_identity(store: &Path) -> Result<(), RunError> {
         let opts = RunOptions {
             identity: IdentitySource::Store(store.to_path_buf()),
@@ -5186,8 +4707,8 @@ mod identity_resolution_tests {
 
     #[test]
     fn launching_never_writes_the_identity_store() {
-        // Each record as provisioning leaves it: a local or threshold primary
-        // secured into its broker file, and a joined device's public record.
+        // Each record as provisioning leaves it: a local or threshold primary secured into its broker
+        // file, and a joined device's public record.
         for (name, id, primary) in [
             ("local", "primary", Some(local_record())),
             ("threshold", "primary", Some(threshold_record())),
@@ -5228,8 +4749,8 @@ mod identity_resolution_tests {
             make_read_only(&store, false);
         }
 
-        // A record whose key was never secured fails the launch, names where
-        // to secure it, and stays exactly as it was.
+        // A record whose key was never secured fails the launch, names where to secure it, and stays
+        // exactly as it was.
         {
             let root = tempfile::tempdir().unwrap();
             let store = root.path().join("identity");
@@ -5245,9 +4766,8 @@ mod identity_resolution_tests {
         }
     }
 
-    /// Ask the app end of a launch's broker for metadata and to sign, over
-    /// the broker's pinned frames: an operation or status byte, a big-endian
-    /// `u32` length, then the payload.
+    /// Ask the app end of a launch's broker for metadata and to sign, over the broker's pinned frames:
+    /// an operation or status byte, a big-endian `u32` length, then the payload.
     fn ask_broker(app: &mut UnixStream, op: u8, payload: &[u8]) -> (u8, Vec<u8>) {
         use std::io::{Read, Write};
 
@@ -5265,9 +4785,9 @@ mod identity_resolution_tests {
 
     #[test]
     fn a_launch_never_reads_the_identity_secret() {
-        // Each secured record launches, and hands the app the same public
-        // fields its full load reports, after its secret is deleted from the
-        // provider: a launch that touched the provider would fail.
+        // Each secured record launches, and hands the app the same public fields its full load
+        // reports, after its secret is deleted from the provider: a launch that touched the provider
+        // would fail.
         for (name, primary) in [("local", local_record()), ("threshold", threshold_record())] {
             let root = tempfile::tempdir().unwrap();
             let store = root.path().join("identity");
@@ -5334,8 +4854,7 @@ mod identity_resolution_tests {
         }
     }
 
-    // The user's store is located through the environment; these pin that
-    // resolution itself.
+    // The user's store is located through the environment; these pin that resolution itself.
 
     #[test]
     fn the_user_identity_store_is_located_via_xdg_then_home() {
@@ -5360,9 +4879,6 @@ mod identity_resolution_tests {
                 Some(ident)
             );
         }
-        // Phase `the_user_store_falls_back_to_the_account_home_without_an_environment`.
-        // Only the location is asserted: the account's own store is the
-        // developer's real one, and resolving its active identity would read it.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("XDG_CONFIG_HOME").remove("HOME");
@@ -5439,9 +4955,6 @@ mod app_dir_tests {
                 crate::capabilities::Participation::Author
             );
         }
-        // Phase `the_launch_resolves_one_directory_per_workspace`.
-        // The launch path resolves the directory rather than the manifest
-        // naming it — the workspace launched into decides which one.
         {
             let data = tempfile::tempdir().expect("tempdir");
 
@@ -5461,14 +4974,11 @@ mod app_dir_tests {
             );
             for dir in [&a, &b, &personal] {
                 assert!(
-                    dir.starts_with(data.path().join("tilo-rooms")),
+                    dir.starts_with(data.path().join("tilo-workspaces")),
                     "{dir:?} is outside the workspaces tree"
                 );
             }
         }
-        // Phase `the_persons_records_are_one_directory_for_every_workspace`.
-        // The person's own records are the same records whichever workspace the
-        // app is opened in, and in none of the workspaces' directories.
         {
             let data = tempfile::tempdir().expect("tempdir");
             let m = manifest("so.tilo.fixture");
@@ -5485,9 +4995,6 @@ mod app_dir_tests {
                 .expect("another app");
             assert_ne!(a, other, "an app keeps only its own records of the person");
         }
-        // Phase `a_declared_write_path_is_never_created`.
-        // A package cannot make the launcher create a directory it named: the
-        // retired `sandbox.fs.write` block is refused before the directory step.
         {
             let data = tempfile::tempdir().expect("tempdir");
 
@@ -5545,8 +5052,8 @@ mod app_dir_tests {
                 "{private} must stay out of the Settings sandbox: {argv:?}"
             );
         }
-        // The settings document is the shell's: Settings reaches it through
-        // the settings service on its channel, like every app, not a bind.
+        // The settings document is the shell's: Settings reaches it through the settings service on
+        // its channel, like every app, not a bind.
         assert!(
             !argv
                 .iter()
@@ -5605,8 +5112,8 @@ mod managed_spawn_policy_tests {
         }
         fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
             self.supervised.fetch_add(1, AtomicOrdering::SeqCst);
-            // The actual unreaped child owns its group; no ambient session group
-            // can be handed to cancellation logic as though it were this service.
+            // The actual unreaped child owns its group; no ambient session group can be handed to
+            // cancellation logic as though it were this service.
             let pid = i32::try_from(child.id()).map_err(std::io::Error::other)?;
             self.own_group
                 .store(unsafe { libc::getpgid(pid) } == pid, AtomicOrdering::SeqCst);
@@ -5682,8 +5189,6 @@ mod managed_spawn_policy_tests {
     #[test]
     fn ordinary_private_service_missing_full_namespace_plan_refuses_before_spawn() {
         // Exercise the actual final command boundary with no capture token.
-        // Explicit flags resembling the original-reader plan cannot admit an
-        // ordinary service; it still requires the canonical --unshare-all.
         for flags in [
             Vec::<String>::new(),
             [
@@ -5730,9 +5235,8 @@ mod managed_spawn_policy_tests {
 
     #[test]
     fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
-        // This exercises the real prepared-command spawn boundary, not a package,
-        // sandbox or live managed process proof. The permit's policy check is
-        // covered separately by the consuming-authority unit test.
+        // This exercises the real prepared-command spawn boundary, not a package, sandbox or live
+        // managed process proof.
         for allowed in [false, true] {
             let policy = CurrentPolicy {
                 allowed,
@@ -5959,8 +5463,8 @@ mod mesa_seed_software_tests {
     #[test]
     fn a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin() {
         let mut home = tilo_test_env::TestHome::new().unwrap();
-        // A compositor's software pin is its own case below; CI pins
-        // lavapipe in the test environment itself.
+        // A compositor's software pin is its own case below; CI pins lavapipe in the test environment
+        // itself.
         home.env()
             .remove(crate::gpu::VK_DRIVER_FILES_ENV)
             .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
@@ -6031,9 +5535,9 @@ mod mesa_seed_software_tests {
 mod render_service_launch_tests {
     use super::*;
 
-    /// An app that draws through its workspace's render service: no GPU node, no
-    /// loader pin, no shader-cache seed, and none of the probing they cost,
-    /// even with a render node and a session seed to hand out.
+    /// An app that draws through its workspace's render service: no GPU node, no loader pin, no
+    /// shader-cache seed, and none of the probing they cost, even with a render node and a session seed
+    /// to hand out.
     #[test]
     fn an_app_without_gpu_gets_no_device_and_no_graphics_setup() {
         let mut home = tilo_test_env::TestHome::new().unwrap();
@@ -6069,8 +5573,8 @@ mod render_service_launch_tests {
         assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
     }
 
-    /// An app that declares `gpu` keeps what every app had before: the
-    /// device nodes, narrowed to the compositor's render node.
+    /// An app that declares `gpu` keeps what every app had before: the device nodes, narrowed to the
+    /// compositor's render node.
     #[test]
     fn an_app_declaring_gpu_gets_its_device() {
         let manifest: ManifestView = crate::manifest::test_manifest(
@@ -6097,16 +5601,8 @@ mod render_service_launch_tests {
 mod gui_argv_tests {
     use super::*;
 
-    /// A GUI launch carries the app's own arguments after the entrypoint, as
-    /// a CLI launch carries its passthrough, and alongside the one a person
-    /// opens with rather than instead of it.
-    ///
-    /// Without this a sandboxed app never receives `--index`: the record
-    /// reader the session runs as the app's own binary to index a record for
-    /// search starts with no arguments, so it tries to open a window instead
-    /// and, in a launch that hands it no session connection, fails attaching
-    /// a runtime host. The app's parser is the one that decides what an
-    /// argument means; the launcher only carries it.
+    /// A GUI launch carries the app's own arguments after the entrypoint, as a CLI launch carries its
+    /// passthrough, and alongside the one a person opens with rather than instead of it.
     #[test]
     fn a_gui_launch_forwards_the_apps_own_arguments() {
         {
@@ -6117,8 +5613,8 @@ mod gui_argv_tests {
             assert_eq!(gui_open_args(&opts), ["--index"]);
         }
         {
-            // A document the person opened with comes first, then the app's
-            // own arguments; neither displaces the other.
+            // A document the person opened with comes first, then the app's own arguments; neither
+            // displaces the other.
             let opts = RunOptions {
                 open_document: Some(PathBuf::from("/workspace/a.note")),
                 gui_argv: vec!["--index".to_owned()],
@@ -6133,9 +5629,8 @@ mod gui_argv_tests {
         }
     }
 
-    /// The argv a GUI launch builds keeps those arguments after the
-    /// entrypoint token, where bwrap forwards them to the child as
-    /// `argv[1..]` — the same place a CLI launch's passthrough lands.
+    /// The argv a GUI launch builds keeps those arguments after the entrypoint token, where bwrap
+    /// forwards them to the child as `argv[1..]` — the same place a CLI launch's passthrough lands.
     #[test]
     fn the_arguments_reach_the_sandboxed_program_after_its_entrypoint() {
         let manifest: ManifestView = crate::manifest::test_manifest(
@@ -6158,8 +5653,8 @@ mod gui_argv_tests {
         )
         .unwrap();
         assert_eq!(tail, ["--index"], "the app's argument rides the tail");
-        // The last token is the program bwrap execs; everything after it is
-        // that program's own argv, which the spawn appends.
+        // The last token is the program bwrap execs; everything after it is that program's own argv,
+        // which the spawn appends.
         assert_eq!(
             argv.last().map(String::as_str),
             Some("/var/tilo-apps/so.tilo.chat/bin/chat")
@@ -6302,10 +5797,9 @@ mod retained_files_tests {
         assert_eq!(argv, ["settings"]);
     }
 
-    /// An app launched into a workspace is bound its own view of the documents
-    /// chosen for it, at the one sandbox path, and nothing else of the
-    /// documents filesystem; Landlock lets it read and write there as each
-    /// choice allows, never execute.
+    /// An app launched into a workspace is bound its own view of the documents chosen for it, at the
+    /// one sandbox path, and nothing else of the documents filesystem; Landlock lets it read and write
+    /// there as each choice allows, never execute.
     #[test]
     fn an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it() {
         let mount = tempfile::tempdir().unwrap();

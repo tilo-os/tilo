@@ -1,6 +1,5 @@
-//! Root widget for the calculator. A single full-window widget that owns
-//! the [`CalcModel`], paints the header + the active mode's screen, and
-//! routes all keyboard / pointer input. Durable rows (history, graphs) are
+//! The calculator's root widget: it owns the [`CalcModel`], paints the active
+//! mode's screen and routes keyboard and pointer input. Durable rows are
 //! presented from the resource and changed only through its actions.
 
 use std::cell::RefCell;
@@ -57,82 +56,61 @@ pub struct CalculatorApp {
     g2: Graph2dScreen,
     g3: Graph3dScreen,
 
-    /// The whole window.
     area: Rect,
-    /// The theme the last layout was built with: the event path has no theme
-    /// of its own and places the conversion page with this one.
+    /// The last layout's theme: the event path has none of its own.
     theme: Theme,
-    /// What kind of pointer drives the window, for the canvas hint's copy.
     environment: InteractionEnvironment,
-    /// The person has panned, orbited or zoomed a plot, so the hint that
-    /// teaches it is no longer shown.
+    /// The person has panned, orbited or zoomed, so the hint is gone.
     navigated: bool,
 
     mouse: Point,
-    /// A pointer has been over this window: until one is, no trace crosshair
-    /// is drawn. The origin is not where a pointer is.
+    /// Until a pointer has been over the window, no trace is drawn.
     pointer_seen: bool,
     dragging: bool,
     drag_last: Point,
-    /// A drag-select is in progress inside a math field.
     field_dragging: bool,
-    /// Host focus selects this component's record for undo/redo and keyboard
-    /// delivery. Individual custom-painted controls remain semantic children.
+    /// Host focus selects this component's record for undo and keyboard
+    /// delivery; controls remain semantic children.
     host_focused: bool,
-    /// Time + position of the last press, for double-click detection.
     last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
     /// The last copy, watched until it settles: a refusal must be said.
     copy: ui::CopyWatch,
     model_dirty: bool,
-    /// Something visible changed since the last paint. Cleared by
-    /// `mark_drawn`; without it the default (dirty every frame) repainted the
-    /// whole desktop on every pointer move while the Calculator was active.
+    /// Something visible changed since the last paint; `mark_drawn` clears it.
+    /// Dirty by default, so the desktop would repaint on every pointer move.
     dirty: bool,
-    /// The peers' carets last painted into a plot's formula. They follow
-    /// peer pointers, which the window does not damage for its widgets.
+    /// The carets last painted into a plot's formula; they follow peer pointers,
+    /// which the window does not damage for.
     drawn_remote_carets: Vec<(Point, Color)>,
-    /// What the view asks of the window, shared with its effect handler.
     asks: Rc<RefCell<Asks>>,
     node: Option<NodeId>,
 
-    /// The resource's door: every on-screen affordance submits its field
-    /// edit or verb here. `None` for a bare widget in a layout test.
+    /// The resource's door: every affordance submits its edit or verb here.
+    /// `None` for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
-    /// The document whose rows the window shows; `None` for a bare widget.
     document: Option<Live<Calculator>>,
-    /// The document's revision and loads last shown.
     followed: Option<(u64, u64)>,
-    /// How this calculator's changes read in the window's History: one
-    /// presenter for the instance's life, so the timeline keeps its faces.
+    /// One presenter for the instance's life, so History keeps its faces.
     entries: Rc<crate::history_face::CalculatorEntries>,
-    /// The durable rows last presented, with their stable ids.
     rows: Rc<Calculator>,
-    /// A graph row this window just added, to select once it is presented.
     select: Option<(GraphKind, Id)>,
-    /// The window's bar as it was declared last: the press heard now names
-    /// one of its slots, then the window declares the bar for what it shows.
-    /// `None` for a bare widget in a layout test, which no desktop hosts.
+    /// The bar as last declared: a press names one of its slots, then the window
+    /// declares the bar for what it shows.
     bar: Option<ui::framework::WindowBar<Calculator>>,
 }
 
-/// What the view asks of the window: taken on its next sync and settle,
-/// where its layout and the document are.
 #[derive(Default)]
 struct Asks {
-    /// An effect taken on the next settle, where the document is.
     effect: Option<actions::CalculatorEffect>,
-    /// A screenshot scenario to stage.
     stage: Option<Staged>,
 }
 
-/// A screenshot scenario the view staged: `None` for a plain capture.
 struct Staged(Option<String>);
 
 impl Asks {
-    /// Take `effect` on the next settle, if what it names is in `rows`:
-    /// showing a graph for the first time adds its starter row.
+    /// Showing a graph for the first time adds its starter row.
     fn queue_effect(
         &mut self,
         rows: &Calculator,
@@ -172,7 +150,6 @@ pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
     }
     let live = cx.live().clone();
     cx.publishing(
-        // Each history entry's recall, merged into its item.
         Publishes::new().live_rows(move || {
             live.with(|rows| {
                 rows.history
@@ -186,14 +163,10 @@ pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
 }
 
 impl CalculatorApp {
-    /// The live app: boots empty in Calculator mode. The resource's rows
-    /// arrive once the view shows the document.
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
     }
 
-    /// A lived-in instance (populated history / plots / surface) for layout
-    /// tests of the bare widget.
     #[cfg(test)]
     pub(crate) fn seeded() -> Self {
         Self::with_model(CalcModel::seeded())
@@ -234,7 +207,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Show the rows the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -245,7 +217,6 @@ impl CalculatorApp {
         self.adopt_resource_state(&rows);
     }
 
-    /// Stage the screenshot scenario the view asked for.
     fn stage_asked(&mut self) {
         let stage = self.asks.borrow_mut().stage.take();
         if let Some(Staged(scenario)) = stage {
@@ -253,7 +224,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Adopt durable history and graph rows from the framework resource state.
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Calculator>) {
         self.model.history = state.history.values().cloned().collect();
         self.model.funcs = state.funcs.values().cloned().collect();
@@ -264,7 +234,7 @@ impl CalculatorApp {
         if let Some((kind, id)) = self.select.take() {
             match state.graphs(kind).position(&id) {
                 Some(index) => *self.model.active_graph_mut(kind) = index,
-                // Not presented yet: keep waiting for it.
+                // Not presented yet: keep waiting.
                 None => self.select = Some((kind, id)),
             }
         }
@@ -280,10 +250,9 @@ impl CalculatorApp {
         self.dirty = true;
     }
 
-    /// Stage the view a screenshot scenario shows over the rows its actions
-    /// wrote, the way a person's input would: the mode, the expression being
-    /// typed, the memory register, which panel is open. Never called in a
-    /// live window.
+    /// Stages a capture's view over the rows its actions wrote: the mode, the
+    /// expression, the memory register, which panel is open. Never a live
+    /// window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("empty") {
             return;
@@ -300,7 +269,7 @@ impl CalculatorApp {
             Some("error") => self.model.apply_error_demo(),
             Some("convert" | "convert-currency") => {
                 self.set_mode(Mode::Convert);
-                // The conversion the audit asked for: 40 °C in °F.
+                // 40 °C in °F.
                 self.convert
                     .apply(&crate::convert_page::ConvertAction::Quantity(
                         crate::convert::Dimension::Temperature,
@@ -316,8 +285,8 @@ impl CalculatorApp {
             Some("graph3d" | "narrow-graph3d") => self.set_mode(Mode::Graph3d),
             _ => self.set_mode(Mode::Graph2d),
         }
-        // The drawer decides docked or floating from the window it has been
-        // laid out in, so lay the mode out before staging its panel.
+        // A drawer docks or floats by the window it was laid out in, so lay the
+        // mode out first.
         self.relayout();
         if scenario == Some("narrow-functions") {
             self.g2.panel.side_mut().snap(true);
@@ -335,30 +304,25 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
-    /// Which page this window shows, for a test that checks a switch landed.
     #[cfg(test)]
     pub(crate) fn mode_for_test(&self) -> Mode {
         self.model.mode
     }
 
-    /// The clipboard watch every copy in this window goes through.
     pub(crate) fn copy_watch_mut(&mut self) -> &mut ui::CopyWatch {
         &mut self.copy
     }
 
-    /// The conversion page, to read.
     pub(crate) fn convert_page(&self) -> &ConvertPage {
         &self.convert
     }
 
-    /// The conversion page, to change.
     pub(crate) fn convert_page_mut(&mut self) -> &mut ConvertPage {
         &mut self.convert
     }
 
-    /// Lay out the active screen in the window. Derived from the current
-    /// size every call, so a resize between breakpoints reflows rather than
-    /// staying frozen at the launch layout.
+    /// Derived from the current size every call, so a resize across a
+    /// breakpoint reflows.
     fn relayout(&mut self) {
         self.layout_active();
     }
@@ -372,38 +336,30 @@ impl CalculatorApp {
         }
     }
 
-    /// Submit one field edit or verb through the resource's door — the one
-    /// way this window changes the document, shared with the palette, agents
-    /// and scripts. It applies now, inside the event, so a formula's next
-    /// keystroke builds on this one; the rows it changed are presented back
-    /// before the next frame. The caller updates the model for immediate
-    /// feedback.
+    /// The one way this window changes the document, shared with the palette,
+    /// agents and scripts. It applies inside the event, so a formula's next
+    /// keystroke builds on it, and the caller updates the model for feedback.
     ///
-    /// Only ever call this for an action that genuinely mutates the document —
-    /// the affordances gate on a real change (a non-empty history to clear, an
-    /// existing row to toggle/delete).
+    /// Only for an action that really mutates the document: the affordances gate
+    /// on a real change.
     fn submit(
         &self,
         doc: &mut ui::widget::Edits<'_>,
         submit: impl ui::framework::Submit<Calculator>,
     ) {
         if let Some(dispatch) = &self.dispatch {
-            // A refusal (a participant who may only view) writes nothing, and
-            // the stored rows are presented again.
+            // A refusal writes nothing; the stored rows are presented again.
             let _ = dispatch.submit_now(doc, submit);
         }
     }
 
-    /// End the formula edit the last keystrokes belonged to, so the next one
-    /// is an undo step of its own.
     fn settle_edit(&self) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.settle();
         }
     }
 
-    /// Add a graph row (empty, or a starter formula), select it, and submit
-    /// its `AddGraph`.
+    /// Adds it, selects it and submits its `AddGraph`.
     fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
         let id = actions::new_row_id(kind);
@@ -423,7 +379,6 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
-    /// Show or hide the `index`-th row of a graph list.
     fn toggle_graph_row(
         &mut self,
         kind: GraphKind,
@@ -444,7 +399,6 @@ impl CalculatorApp {
         true
     }
 
-    /// Replace the formula of the `index`-th row of a graph list, as typed.
     fn set_graph_expr(
         &mut self,
         kind: GraphKind,
@@ -463,11 +417,9 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
-    /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
-    /// updates the presentation (Ans, result line) via the model, then dispatches
-    /// the [`CommitHistory`](CalculatorAction::CommitHistory) action so the new
-    /// history row lands on the shared, replayable, undoable path. A failed or
-    /// empty evaluation commits nothing and dispatches nothing.
+    /// Evaluates, updates the display, then dispatches
+    /// [`CommitHistory`](CalculatorAction::CommitHistory) so the row lands on the
+    /// shared, undoable path. A failed or empty evaluation dispatches nothing.
     fn commit_equals(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(entry) = self.model.commit_equals() {
             self.submit(
@@ -478,22 +430,19 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
-    /// Show mode `m`: presentation only.
     fn set_mode(&mut self, m: Mode) {
         if self.model.mode != m {
             self.model.mode = m;
-            // Leaving a graph mid-zoom must not carry a stale ease into the next
-            // visit; settle both animators to the current model view.
+            // Settle both animators, so no stale ease carries into the next
+            // visit.
             self.g2.settle_zoom(self.model.view2d);
             self.g3.settle_zoom(self.model.view3d.zoom);
             self.model_dirty = true;
         }
     }
 
-    /// Switch to mode `m`. A first visit to an empty graph mode gives it an
-    /// editable starter — an empty curve, an example surface — through the
-    /// same `AddGraph` action the palette offers, so it is undoable and
-    /// reaches collaborators.
+    /// A first visit to an empty graph mode adds a starter row through the same
+    /// `AddGraph` action the palette offers, so it is undoable and syncs.
     fn switch_mode(&mut self, m: Mode, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
         self.set_mode(m);
@@ -508,7 +457,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Switch the angle unit, as the window bar's menu does.
     fn set_degrees(&mut self, degrees: bool) {
         if self.model.deg != degrees {
             self.model.deg = degrees;
@@ -516,8 +464,7 @@ impl CalculatorApp {
         }
     }
 
-    /// Whether a floating drawer is up over the window, so the content
-    /// beneath it takes no presses.
+    /// A floating drawer is up, so the content beneath takes no presses.
     fn drawer_blocks(&self) -> bool {
         match self.model.mode.graph() {
             None => false,
@@ -525,8 +472,7 @@ impl CalculatorApp {
         }
     }
 
-    /// Track the pointer over every control. Returns whether anything the
-    /// window paints in response changed.
+    /// Returns whether anything painted changed.
     fn track_pointer(&mut self, p: Point) -> bool {
         match self.model.mode.graph() {
             None => self.calc.set_pointer(p),
@@ -534,8 +480,6 @@ impl CalculatorApp {
         }
     }
 
-    /// What the plot under the pointer shows: the trace of Graph 2D, and the
-    /// navigation hint until the person has navigated a plot.
     fn plot_pointer(&self) -> Pointer {
         let over = self.pointer_seen
             && self
@@ -550,11 +494,10 @@ impl CalculatorApp {
     }
 
     fn on_press(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
-        // A press ends the formula edit in progress: the next keystroke is
-        // an undo step of its own.
+        // A press ends the edit in progress: the next keystroke is its own undo
+        // step.
         self.settle_edit();
 
-        // Double-click detection (≤400 ms, within 5 px).
         let now = ui::time::now();
         let double = self
             .last_click
@@ -591,7 +534,6 @@ impl CalculatorApp {
         double: bool,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        // Overlay-drawer chrome takes priority over the canvas underneath.
         let panel = self.panel(kind);
         if panel.side().scrim_at(p) {
             self.panel_mut(kind).side_mut().close();
@@ -604,9 +546,8 @@ impl CalculatorApp {
         } else if let Some(i) = panel.vis_at(p) {
             self.toggle_graph_row(kind, i, doc);
         } else if let Some(i) = panel.field_at(p) {
-            // Click landed in row i's editor: activate it and place the caret.
-            // The field has no text renderer here, so the press hit-tests
-            // its cached layout; it relays out on the next draw.
+            // The field has no renderer here, so the press hit-tests its cached
+            // layout; it relays out on the next draw.
             *self.model.active_graph_mut(kind) = i;
             if let Some(field) = self.graph_field(kind, i) {
                 field.on_press_cached(p, double);
@@ -617,8 +558,8 @@ impl CalculatorApp {
             *self.model.active_graph_mut(kind) = i;
             self.model_dirty = true;
         } else if panel.side().covers(p) {
-            // Press inside an open drawer (not a widget): consume it so it
-            // doesn't fall through to the canvas as a pan or orbit.
+            // A press inside an open drawer must not pan or orbit what is under
+            // it.
         } else if self.canvas_contains(kind, p) {
             self.dragging = true;
             self.drag_last = p;
@@ -629,8 +570,8 @@ impl CalculatorApp {
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
             if let Some(key) = self.calc.keys().get(i).cloned() {
-                // `=` commits to the shared history through an action; every
-                // other key is a live edit of the (presentation) expression line.
+                // `=` commits through an action; every other key edits the
+                // expression line.
                 if matches!(key, model::Key::Equals) {
                     self.commit_equals(doc);
                 } else {
@@ -646,10 +587,9 @@ impl CalculatorApp {
         }
     }
 
-    /// Delete one graph row through the same stable, tombstoned action the
-    /// palette offers. The model is deliberately not spliced optimistically:
-    /// the presented rows are the exact merged list a collaborator sees, and
-    /// keep active-row clamping in one place (`adopt_resource_state`).
+    /// The same stable, tombstoned action the palette offers. The model is not
+    /// spliced optimistically: the presented rows are the merged list a
+    /// collaborator sees, and `adopt_resource_state` clamps the active row.
     fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut ui::widget::Edits<'_>) {
         if let Some(id) = self.rows.graph_id(kind, index).cloned() {
             match kind {
@@ -660,7 +600,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Extend a math-field drag-selection to the current pointer position.
     fn on_field_drag(&mut self, p: Point) {
         if self.model.mode == Mode::Calc {
             self.calc.field.on_drag_cached(p);
@@ -679,16 +618,15 @@ impl CalculatorApp {
                 let s = self.model.view2d.scale;
                 self.model.view2d.cx -= d.x / s;
                 self.model.view2d.cy += d.y / s;
-                // A pan is immediate (not eased) and resamples in place.
                 self.g2.settle_zoom(self.model.view2d);
                 self.model_dirty = true;
             }
             Mode::Graph3d => {
-                // Kept within one turn however far it orbits.
+                // Within one turn, however far it orbits.
                 let yaw = self.model.view3d.yaw + d.x * 0.01;
                 self.model.view3d.yaw = yaw - TAU * (yaw / TAU).round();
                 self.model.view3d.pitch = (self.model.view3d.pitch + d.y * 0.01).clamp(-1.5, 1.5);
-                // An orbit re-projects regardless, so settle any zoom ease.
+                // An orbit re-projects, so settle any zoom ease.
                 self.g3.settle_zoom(self.model.view3d.zoom);
                 self.model_dirty = true;
             }
@@ -696,8 +634,7 @@ impl CalculatorApp {
         }
     }
 
-    /// Scroll the math editor under the pointer by `(dx, dy)`: the axis that
-    /// overflows moves, the other stays. False with no editor there.
+    /// The overflowing axis moves, the other stays; false with no editor there.
     fn scroll_field_under_pointer(&mut self, dx: f64, dy: f64) -> bool {
         if let Some(kind) = self.model.mode.graph()
             && let Some(i) = self.panel(kind).field_at(self.mouse)
@@ -717,7 +654,7 @@ impl CalculatorApp {
     fn on_scroll(&mut self, delta: &MouseScrollDelta, scale_factor: f64, ctrl: bool) {
         match delta {
             MouseScrollDelta::LineDelta(_, y) => self.on_wheel(f64::from(*y)),
-            // A touchpad's pinch arrives as a Ctrl-scroll on some platforms.
+            // A touchpad pinch arrives as a Ctrl-scroll on some platforms.
             MouseScrollDelta::PixelDelta(pos) if ctrl => self.on_wheel(pos.y / 40.0),
             MouseScrollDelta::PixelDelta(pos) => {
                 self.on_pixel_scroll(Vec2::new(pos.x, pos.y) / scale_factor);
@@ -725,16 +662,14 @@ impl CalculatorApp {
         }
     }
 
-    /// A mouse wheel's detents scroll an editor and zoom a graph.
     fn on_wheel(&mut self, step: f64) {
         if !self.scroll_field_under_pointer(-step * 24.0, -step * 24.0) {
             self.zoom_at_pointer((1.0 + step * 0.12).clamp(0.4, 2.5));
         }
     }
 
-    /// Two fingers on a touchpad or screen moved `d` logical pixels: an
-    /// editor scrolls, and a graph's content follows them as under a drag.
-    /// Zoom is the pinch's.
+    /// An editor scrolls, and a graph's content follows as under a drag; zoom is
+    /// the pinch's.
     fn on_pixel_scroll(&mut self, d: Vec2) {
         if self.scroll_field_under_pointer(-d.x, -d.y) {
             return;
@@ -746,7 +681,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Scale the graph under the pointer by `factor`, about the pointer.
     fn zoom_at_pointer(&mut self, factor: f64) {
         match self.model.mode {
             Mode::Graph2d if self.g2.canvas_contains(self.mouse) => {
@@ -759,9 +693,8 @@ impl CalculatorApp {
                 v.cx += before.x - after.x;
                 v.cy += before.y - after.y;
                 self.model.view2d = v;
-                // Ease toward this new scale while pinning the world point under
-                // the cursor (`before`) for the whole animation; the resample is
-                // deferred until the ease settles.
+                // Pin the world point under the cursor for the whole ease; the
+                // resample waits until it settles.
                 self.g2.begin_zoom(before, self.mouse);
                 self.model_dirty = true;
             }
@@ -775,7 +708,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Keyboard and IME input an unfocused instance must leave unclaimed.
     fn ignores_unfocused_input(&self, event: &WindowEvent) -> bool {
         !self.host_focused
             && matches!(
@@ -784,8 +716,8 @@ impl CalculatorApp {
             )
     }
 
-    /// Escape with no drawer to dismiss and no expression to clear is left to
-    /// the host, whose Back then navigates out of the app.
+    /// Escape with nothing to dismiss is left to the host, whose Back navigates
+    /// out of the app.
     fn escape_is_idle(&self, key: &WKey) -> bool {
         matches!(key, WKey::Named(NamedKey::Escape))
             && self.model.mode == Mode::Calc
@@ -815,7 +747,6 @@ impl CalculatorApp {
             return;
         }
 
-        // The graph editors own a real math field; route their input there.
         if let Some(kind) = self.model.mode.graph()
             && self.on_key_graph(kind, key, modifiers, doc)
         {
@@ -824,19 +755,15 @@ impl CalculatorApp {
 
         match key {
             WKey::Named(NamedKey::Enter) => match self.model.mode {
-                // In Calc mode Enter evaluates the expression (`=`), committing
-                // the result to the shared history via an action.
+                // Enter evaluates the expression, committing it through an
+                // action.
                 Mode::Calc => {
                     self.commit_equals(doc);
                 }
-                // In a graph mode Enter commits the current row and starts a new
-                // empty function/surface, focusing it — the Desmos-style "next
-                // expression" gesture. The active-row field already round-trips
-                // its edit into the model on each keystroke, so the row is
-                // committed; here we just append (an action) and focus it.
+                // Enter appends an empty row and focuses it; the active row's
+                // edit already reached the model keystroke by keystroke.
                 Mode::Graph2d => self.add_graph(GraphKind::Curve2d, "", doc),
                 Mode::Graph3d => self.add_graph(GraphKind::Surface3d, "", doc),
-                // A conversion has nothing to evaluate: Enter is the field's.
                 Mode::Convert => {}
             },
             WKey::Named(NamedKey::Backspace) => {
@@ -869,8 +796,6 @@ impl CalculatorApp {
                 }
                 if self.model.mode == Mode::Calc {
                     for ch in s.chars() {
-                        // `=` commits to history via an action; everything else
-                        // is a live edit of the presentation expression line.
                         if ch == '=' {
                             self.commit_equals(doc);
                         } else {
@@ -887,9 +812,6 @@ impl CalculatorApp {
         }
     }
 
-    /// The shortcuts that work from any screen: copying the display's
-    /// values, Ctrl+digit mode switches and Escape dismissing a drawer.
-    /// Whether the key was consumed.
     fn on_global_shortcut(
         &mut self,
         key: &WKey,
@@ -897,9 +819,8 @@ impl CalculatorApp {
         shift: bool,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        // The display's values are copy targets. A selection in the
-        // expression keeps the editor's own copy first; with nothing
-        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
+        // A selection keeps the editor's own copy first; otherwise Ctrl+C takes
+        // the result and Ctrl+Shift+C the expression.
         if ctrl
             && self.model.mode == Mode::Calc
             && let WKey::Character(s) = key
@@ -939,9 +860,8 @@ impl CalculatorApp {
             }
         }
 
-        // Escape first dismisses transient drawers. Clearing an expression is
-        // still available on a second Escape in Calculator mode, but an open
-        // overlay must never trap a keyboard user behind its scrim.
+        // Escape dismisses drawers first: an overlay must never trap a keyboard
+        // user behind its scrim.
         if matches!(key, WKey::Named(NamedKey::Escape)) {
             let dismissed = match self.model.mode.graph() {
                 Some(kind) if self.panel(kind).side().is_open() => {
@@ -958,7 +878,6 @@ impl CalculatorApp {
         false
     }
 
-    /// Edit at the two-dimensional caret, preserving continuation after Equals.
     fn edit_calc(&mut self, key: &WKey, modifiers: winit::event::Modifiers) {
         if self.model.after_equals
             && let WKey::Character(s) = key
@@ -989,8 +908,7 @@ impl CalculatorApp {
         }
     }
 
-    /// What the display shows for `slot`, exactly as painted, so copying it
-    /// takes what the person read (not a re-formatted approximation).
+    /// Exactly as painted, so copying takes what the person read.
     fn display_text(&self, slot: DisplaySlot) -> Option<String> {
         match slot {
             DisplaySlot::Expression => {
@@ -1012,19 +930,17 @@ impl CalculatorApp {
         }
     }
 
-    /// Copy one display value to the system clipboard. The expression is
-    /// copied as typed, the result as shown, and the answer as Ans.
+    /// The expression as typed, the result as shown, the answer as Ans.
     fn copy_display(&mut self, slot: DisplaySlot) {
         let Some(text) = self.display_text(slot) else {
             return;
         };
-        // Watch the outcome: a clipboard that refuses is told, not confirmed.
+        // A clipboard that refuses is told, not confirmed.
         let copied = self.copy.watch(ui::try_clipboard_copy(&text));
         self.calc.say_copied(slot, copied);
         self.model_dirty = true;
     }
 
-    /// Pointer and semantic keypad activation use the same editor as typing.
     fn apply_calc_key(&mut self, key: &model::Key) {
         use model::Key;
         if matches!(key, Key::Page(_)) {
@@ -1062,8 +978,7 @@ impl CalculatorApp {
         }
     }
 
-    /// Route a key to the active row's field of a graph list. Returns
-    /// whether the key was consumed by the field.
+    /// `true` when the field consumed the key.
     fn on_key_graph(
         &mut self,
         kind: GraphKind,
@@ -1075,8 +990,7 @@ impl CalculatorApp {
         let Some(field) = self.graph_field(kind, active) else {
             return false;
         };
-        // Only consume keys the field actually handles (so e.g. mode switches
-        // and unhandled named keys fall through).
+        // Only keys the field handles: mode switches fall through.
         if !field_handles(key, modifiers) {
             return false;
         }
@@ -1087,7 +1001,6 @@ impl CalculatorApp {
         true
     }
 
-    /// The formula panel of a graph list.
     fn panel(&self, kind: GraphKind) -> &PlotPanel {
         match kind {
             GraphKind::Curve2d => &self.g2.panel,
@@ -1102,7 +1015,6 @@ impl CalculatorApp {
         }
     }
 
-    /// Row `index`'s editor, reconciled with the model's rows first.
     fn graph_field(&mut self, kind: GraphKind, index: usize) -> Option<&mut MathField> {
         let panel = match kind {
             GraphKind::Curve2d => &mut self.g2.panel,
@@ -1112,7 +1024,6 @@ impl CalculatorApp {
         panel.active_field_mut(index)
     }
 
-    /// Whether `p` is on a graph's interactive plot.
     fn canvas_contains(&self, kind: GraphKind, p: Point) -> bool {
         match kind {
             GraphKind::Curve2d => self.g2.canvas_contains(p),
@@ -1127,9 +1038,8 @@ impl Default for CalculatorApp {
     }
 }
 
-/// Flatten a [`PresenceCtx`]'s remote cursors into `(scene point, colour)`
-/// pairs the math fields can snap onto their glyph layout. Colours come from
-/// the peer palette already resolved by the collab layer.
+/// The peers' cursors as `(scene point, colour)`, in the peer palette's
+/// colours, for the math fields to snap onto their glyph layout.
 fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
     presence
         .remote_cursors
@@ -1147,8 +1057,8 @@ fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
         .collect()
 }
 
-/// Whether a key is one the math field acts on (so the app knows to route it
-/// there and consume it, vs. letting it fall through to mode-level handling).
+/// Whether the math field acts on the key, so the app routes it there and
+/// consumes it.
 fn field_handles(key: &WKey, modifiers: winit::event::Modifiers) -> bool {
     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
     match key {
@@ -1179,7 +1089,7 @@ fn field_accepts(ch: char) -> bool {
         || ch == '−'
 }
 
-/// Speak intent rather than a lone glyph for the custom-painted keypad.
+/// Intent rather than a lone glyph for the custom-painted keypad.
 fn key_accessible_name(key: &model::Key) -> String {
     use model::Key;
     let message = match key {
@@ -1232,8 +1142,8 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl CalculatorApp {
-    /// Take `effect` on the next settle, where the document is: showing a
-    /// graph for the first time adds its starter row.
+    /// Taken on the next settle: showing a graph the first time adds its starter
+    /// row.
     pub(crate) fn queue_effect(&mut self, effect: actions::CalculatorEffect) -> Result<(), String> {
         self.asks.borrow_mut().queue_effect(&self.rows, effect)?;
         self.dirty = true;
@@ -1282,15 +1192,14 @@ impl CalculatorApp {
                 return;
             }
         };
-        // Showing a mode is presentation, except that a first graph visit
-        // adds its starter row through the resource's action.
+        // Presentation only, except that a first graph visit adds its starter
+        // row through the resource's action.
         self.switch_mode(mode, doc);
     }
 }
 
-/// History is the calculator's list of past calculations: each reads as
-/// itself, and choosing one puts it back into the calculator through the
-/// Use calculation effect, the same door the palette and agents use.
+/// Each past calculation reads as itself; choosing one puts it back through the
+/// Use calculation effect, the door the palette and agents take too.
 impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
     fn history_entry_presenter(&self) -> Option<Rc<dyn ui::widget::HistoryEntryPresenter>> {
         Some(Rc::clone(&self.entries) as Rc<dyn ui::widget::HistoryEntryPresenter>)
@@ -1323,9 +1232,8 @@ impl Widget for CalculatorApp {
         true
     }
 
-    /// The calculator is one keyboard target: what is typed goes to the
-    /// expression or the formula being edited, so it takes the keyboard
-    /// whenever its window does without a control of its own choosing.
+    /// What is typed goes to the expression or formula being edited, so the
+    /// calculator takes the keyboard whenever its window does.
     fn is_default_keyboard_focus(&self) -> bool {
         true
     }
@@ -1354,8 +1262,7 @@ impl Widget for CalculatorApp {
         }
     }
 
-    /// A finger on a plot pans the plane or orbits the surface, as a mouse
-    /// drag does; two fingers pinch it.
+    /// A finger on a plot pans or orbits, as a mouse drag does; two pinch.
     fn touch_claim(&self, point: Point) -> ui::interaction::TouchClaim {
         match self.model.mode.graph() {
             Some(kind)
@@ -1368,8 +1275,6 @@ impl Widget for CalculatorApp {
     }
 
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        // The calculator's keypad types the expression; graph formulas are
-        // typed on the keyboard.
         let content = match self.model.mode.graph() {
             None => ui::ime::InputContent::TEXT.own_keys(),
             Some(_) => ui::ime::InputContent::TEXT,
@@ -1382,7 +1287,6 @@ impl Widget for CalculatorApp {
         self.stage_asked();
     }
 
-    /// An effect the view took waits for the next settle.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         let asked = self.asks.borrow().effect.is_some() || self.asks.borrow().stage.is_some();
         self.dirty |= asked;
@@ -1410,8 +1314,8 @@ impl Widget for CalculatorApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
-        // `new_leaf` only errs when the tree is at capacity; degrade to an
-        // inert node rather than aborting the whole session.
+        // `new_leaf` errs only at capacity: an inert node beats aborting the
+        // session.
         let node = taffy
             .new_leaf(Style {
                 size: Size::from_percent(1.0, 1.0),
@@ -1438,7 +1342,6 @@ impl Widget for CalculatorApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The window ground is the framework's; this paints content on it.
         let area = self.area;
         match self.model.mode {
             Mode::Calc => self.calc.prepare(tr, theme, &self.model, area),
@@ -1447,8 +1350,6 @@ impl Widget for CalculatorApp {
             Mode::Graph3d => self.g3.prepare(tr, theme, &self.model, area),
         }
 
-        // Content, then the panel (and the scrim of a floating drawer) over
-        // it.
         let pointer = self.plot_pointer();
         match self.model.mode {
             Mode::Calc => {
@@ -1475,9 +1376,8 @@ impl Widget for CalculatorApp {
             }
         }
 
-        // Remote collaborators' carets, mapped into the active formula field's
-        // 2D glyph layout (peers editing the same graph show up as coloured
-        // carets inside the math, not just as a pointer over the window).
+        // A peer editing the same graph shows as a coloured caret inside the
+        // math, not only as a pointer over the window.
         let remote = match self.model.mode {
             Mode::Calc | Mode::Convert => Vec::new(),
             Mode::Graph2d | Mode::Graph3d => remote_carets(presence),
@@ -1489,8 +1389,8 @@ impl Widget for CalculatorApp {
             self.panel(kind)
                 .draw_remote_carets(scene, t, active, &remote);
         }
-        // Moved, arrived or left carets change pixels no edit dirtied: report
-        // them as this frame's damage (collected after drawing).
+        // Carets that moved change pixels no edit dirtied, so report them as
+        // this frame's damage.
         if remote != self.drawn_remote_carets {
             self.drawn_remote_carets = remote;
             self.dirty = true;
@@ -1498,10 +1398,9 @@ impl Widget for CalculatorApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Window groups offer an event to visible apps in presentation order.
-        // Keyboard and IME input belongs to the host-selected Calculator only;
-        // an unfocused instance must leave it unclaimed so that selected sibling
-        // can receive the same event. Pointer routing remains geometry-based.
+        // Keyboard and IME input belongs to the host-selected Calculator; an
+        // unfocused instance leaves it unclaimed for its sibling. Pointer routing
+        // stays geometry-based.
         if self.ignores_unfocused_input(event) {
             return;
         }
@@ -1520,9 +1419,8 @@ impl Widget for CalculatorApp {
                     self.on_drag(d);
                     self.drag_last = p;
                 }
-                // Motion that changed no hover state, traces nothing and drags
-                // nothing is inert: leave it unconsumed so the host can skip
-                // the frame.
+                // Inert motion is left unconsumed, so the host can skip the
+                // frame.
                 *ctx.handled = self.dragging
                     || self.field_dragging
                     || hover_changed
@@ -1533,10 +1431,8 @@ impl Widget for CalculatorApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A press on the calculator makes it the keyboard's target,
-                // as a press on any editor does: what is typed next goes to
-                // the formula or expression it pressed, whichever widget
-                // the host focused at launch.
+                // A press makes the calculator the keyboard's target, as on any
+                // editor: what is typed next goes where it pressed.
                 *ctx.focus_target = Some(ctx.node_id);
                 self.on_press(self.mouse, &mut ctx.state);
                 *ctx.handled = true;
@@ -1568,9 +1464,7 @@ impl Widget for CalculatorApp {
             } if key_event.state == ElementState::Pressed => {
                 *ctx.handled = true;
                 if self.model.mode == Mode::Convert {
-                    // The amount is the page's one editable value: what is
-                    // typed is the amount, and nothing else on the page takes
-                    // a key.
+                    // The amount is the page's one editable value.
                     self.convert_key(event, ctx);
                 } else {
                     *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
@@ -1594,13 +1488,12 @@ impl Widget for CalculatorApp {
             _ => {}
         }
 
-        // Everything but inert pointer motion may have changed what is drawn.
+        // Everything but inert motion may have changed what is drawn.
         if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || self.model_dirty {
             self.dirty = true;
         }
-        // `model_dirty` is presentation-only. Durable changes have already
-        // travelled through `perform_action`; never mirror this window's
-        // mode, selection or viewport back into the shared document.
+        // Never mirror this window's mode, selection or viewport back into the
+        // document: durable changes travel through `perform_action`.
         self.model_dirty = false;
     }
 
@@ -1617,8 +1510,8 @@ impl Widget for CalculatorApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        // `model_dirty` covers mutations that arrive outside `handle_event`
-        // (resource operations, assistive actions) before the next event.
+        // `model_dirty` covers changes that arrive outside `handle_event`, before
+        // the next event.
         self.dirty || self.model_dirty || self.needs_animation_frame()
     }
 
@@ -1627,10 +1520,9 @@ impl Widget for CalculatorApp {
         self.model_dirty = false;
     }
 
-    /// The calculator is custom-painted, so publish the complete retained
-    /// control tree rather than leaving screen-reader users with only its
-    /// toolbar. Every painted control below has the same activation path as
-    /// its pointer counterpart.
+    /// The calculator is custom-painted, so it publishes the complete retained
+    /// control tree; each control below activates as its pointer counterpart
+    /// does.
     #[allow(
         clippy::too_many_lines,
         reason = "the retained tree is deliberately kept beside its Widget hook so every custom-painted control is auditable together"
@@ -1638,8 +1530,7 @@ impl Widget for CalculatorApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        // The modes, the angle unit and the panel's show/hide button are the
-        // window bar's slots, reached through the bar.
+        // The modes, the angle unit and the panel button are the bar's slots.
         let mut children = Vec::new();
         match self.model.mode {
             Mode::Calc => {
@@ -1674,7 +1565,7 @@ impl Widget for CalculatorApp {
                     ]);
                 }
                 children.push(display);
-                // Every value the display shows is a copy target of its own.
+                // Each displayed value is a copy target.
                 for (slot, name) in [
                     (DisplaySlot::Expression, "Copy expression"),
                     (DisplaySlot::Result, "Copy result"),
@@ -1765,7 +1656,7 @@ impl Widget for CalculatorApp {
     ) -> bool {
         use ui::a11y::Action;
         let (state, _) = ui::doc::document(state, path);
-        // Assistive actions bypass `handle_event`; they may change anything.
+        // Assistive actions bypass `handle_event`, so they may change anything.
         self.dirty = true;
         match target {
             "calculator.mode:0" if matches!(action, Action::Activate) => {
@@ -1849,12 +1740,9 @@ impl Widget for CalculatorApp {
         }
         true
     }
-    /// Keep the host pumping frames while any frame-driven animation is in
-    /// flight: the history drawer's eased reveal, or a smooth graph zoom easing
-    /// toward its target. Without this the animation would paint one frame and
-    /// then freeze until the next unrelated event. Gated by the active mode so a
-    /// transition left mid-flight by a mode switch can't pump frames forever
-    /// (only the visible screen's `draw` advances its own animation).
+    /// Keeps the host pumping frames while a drawer eases open or a zoom eases
+    /// toward its target; otherwise the animation freezes after one frame. Gated
+    /// by the mode, so a switch cannot pump frames forever.
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {
             Mode::Calc | Mode::Convert => false,
@@ -1870,9 +1758,7 @@ impl Widget for CalculatorApp {
     fn get_rect(&self) -> Rect {
         self.area
     }
-    /// One self-drawn taffy leaf filling its tile; controls are positioned
-    /// inside `self.area` by `relayout`, so only the first layout is a size
-    /// change.
+    /// One self-drawn leaf, so only the first layout is a size change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
     }
@@ -1880,8 +1766,8 @@ impl Widget for CalculatorApp {
 
 impl ui::widget::AppWidget for CalculatorApp {
     fn app_kind(&self) -> ui::widget::AppKind {
-        // The hosted glyph vocabulary has no Utility variant. Calculator is
-        // an interactive expression editor, which is the closest existing kind.
+        // The glyph vocabulary has no Utility variant; an expression editor is
+        // the closest kind.
         ui::widget::AppKind::Editor
     }
 
@@ -1895,7 +1781,6 @@ impl ui::widget::AppWidget for CalculatorApp {
 }
 
 impl CalculatorApp {
-    /// Retained semantics for the custom-painted graph editor panels.
     fn graph_accessibility(&self, kind: GraphKind) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let (title, slug) = match kind {

@@ -18,14 +18,33 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Engine",
+    "SavedConnection",
+    "SavedQuery",
     "Workspace",
 ]
 
+Engine = Literal["sqlite", "postgres", "mysql"]
+
+class SavedConnection(TypedDict):
+    name: str
+    engine: Engine
+    host: str
+    port: int
+    database: str
+    user: str
+    file_path: str
+
+class SavedQuery(TypedDict):
+    name: str
+    sql: str
+
 class Workspace(Resource):
     """Database — `db-client.workspace`."""
-    connections: Any
-    saved_queries: Any
-    sql: Any
+    __surface__ = "so.tilo.db-client@ff2837e66ce4dd02"
+    connections: list[SavedConnection]
+    saved_queries: list[SavedQuery]
+    sql: str
 
     def add_connection(self,
         *,

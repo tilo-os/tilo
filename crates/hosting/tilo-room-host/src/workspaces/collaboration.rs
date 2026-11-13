@@ -401,7 +401,7 @@ impl Workspaces {
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         let granted_by =
-            tilo_action_policy::Subject::Person(hex::encode(administrator.user_public_key));
+            tilo_action_policy::Grantee::person(hex::encode(administrator.user_public_key));
         let held = governed
             .peer()
             .permissions(administrator.device_public_key, system_time(now))
@@ -698,7 +698,7 @@ impl Workspaces {
                             &identity,
                             &person,
                             until_ms,
-                            tilo_action_policy::Subject::Person(by.clone()),
+                            tilo_action_policy::Grantee::person(by.clone()),
                         )],
                         &key,
                         system_time(now),

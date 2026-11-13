@@ -76,7 +76,6 @@ use crate::workbook::{Cell, ChartKind, ChartSnapshot, CommentThread, Workbook};
 use tilo_locale::{Currency, DateStyle, Locale};
 use ui::clock::TimeStyle;
 
-/// Rows of the sheet-tab context menu, top to bottom.
 const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::Rename,
     TabAction::Duplicate,
@@ -85,7 +84,6 @@ const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::MoveRight,
     TabAction::Delete,
 ];
-/// Options of the document-settings sheet, in display order.
 const DATE_STYLES: [(&str, DateStyle); 5] = [
     ("Language", DateStyle::Language),
     ("ISO", DateStyle::Iso),
@@ -98,16 +96,10 @@ const TIME_STYLES: [(&str, TimeStyle); 3] = [
     ("24-hour", TimeStyle::H24),
     ("12-hour", TimeStyle::H12),
 ];
-/// Importing is deliberately bounded before a parsed workbook can become a
-/// durable action stream.  This is large enough for useful real-world sheets,
-/// while keeping one user-selected file from monopolising a collaborator's
-/// document, history, or search projection.
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_CELLS: usize = crate::resource::MAX_IMPORTED_CELLS;
-/// CSV's interchange representation is rectangular.  A file with just one
-/// populated cell at a hostile far-away coordinate must not turn into a
-/// trillion-slot dense `Vec`; this caps the actually materialised rectangle,
-/// independently of the populated-cell action limit above.
+/// CSV is rectangular: a one-cell file at a far coordinate must not become a trillion-slot
+/// dense vector.
 const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,10 +146,8 @@ fn spreadsheet_export_request(format: Interchange, suggested: &str) -> PickReque
     PickRequest::save("Export spreadsheet", "Export", suggested).filter(format.filter())
 }
 
-/// A top-level menu-bar action.
 #[derive(Clone, Debug, PartialEq)]
 enum MenuItem {
-    // File menu.
     NewSheet,
     ImportCsv,
     ExportCsv,
@@ -166,36 +156,25 @@ enum MenuItem {
     ImportOds,
     ImportNotion,
     ExportOds,
-    // Format menu.
     SetFormat(CellFormat),
     ClearFormat,
-    // Settings.
     OpenDocSettings,
-    /// A view-only operation: display raw formulas in the grid instead of
-    /// their calculated values. Kept alongside the other painted commands so
-    /// narrow layouts do not hide this useful inspection mode behind Ctrl+K.
     ToggleFormulaView,
-    /// Make the selection bold, or regular again when it all is.
     ToggleBold,
-    // Inline bar action.
     AutoSum,
 }
 
-/// Whether the per-document settings panel is open.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SettingsPanel {
     None,
     Document,
 }
 
-/// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
-    /// The scene is stale and needs repainting.
     redraw: bool,
 }
 
-/// The part of a screenshot scenario staged against the document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Staged {
     CommandPalette,
@@ -203,30 +182,19 @@ enum Staged {
     PasteFormula,
 }
 
-/// A sheet to show at the next sync, with one of its cells selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingReveal {
-    /// The sheet to show; `None` for the last one (an import's, still
-    /// arriving).
     sheet_id: Option<Id>,
     addr: Addr,
-    /// What to tell the person once it is shown; else where they went.
     status: Option<String>,
-    /// The sheet is still being added (an import its dispatcher applies
-    /// next): wait for it rather than report it gone.
     arriving: bool,
 }
 
-/// A clickable option of the settings sheet.
 struct SettingChip {
     rect: Rect,
     kind: SettingKind,
 }
 
-/// The four extra parameters `Widget::handle_event` receives that only the
-/// inline editors' own [`Widget::handle_event`] delegation needs, bundled
-/// so [`SheetsApp::route_inline_editor`] stays within the argument-count
-/// limit.
 struct PaletteRouteCtx<'a> {
     path: &'a ObjId,
     focus_target: &'a mut Option<NodeId>,
@@ -234,8 +202,6 @@ struct PaletteRouteCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// Which per-document convention a settings chip sets. `None` means "inherit
-/// the global default".
 #[derive(Clone, Copy, PartialEq)]
 enum SettingKind {
     Currency(Option<Currency>),
@@ -243,7 +209,6 @@ enum SettingKind {
     Time(Option<TimeStyle>),
 }
 
-/// An action offered by a sheet tab's right-click context menu.
 #[derive(Clone, Copy, PartialEq)]
 enum TabAction {
     Rename,
@@ -252,13 +217,9 @@ enum TabAction {
     MoveLeft,
     MoveRight,
     Delete,
-    /// Set (or clear, with `None`) the tab's colour to a palette index.
     SetColor(Option<u32>),
 }
 
-/// A row of a cell's context menu. The menu names what it will act on (a
-/// range, a count) and each row runs one workbook verb, so an insert or a
-/// delete of several rows is one undo step.
 #[derive(Clone, Copy, PartialEq)]
 enum CellMenuRow {
     Cut,
@@ -276,10 +237,6 @@ enum CellMenuRow {
     ClearFormat,
 }
 
-/// One match the workbook's find found: which sheet, which cell, and the
-/// byte range of the cell's raw input it covers. Search runs over the input
-/// (formulas included), which is what replace can edit; the grid shows the
-/// cell it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FoundCell {
     sheet: usize,
@@ -302,34 +259,19 @@ enum AnnotationClick {
     DeleteComment(String),
 }
 
-/// An in-progress inline rename of a sheet tab.
 struct TabRename {
     idx: usize,
-    /// The tab's slot: the editor stands exactly on it.
     rect: Rect,
-    /// Measured width of the text being typed, so the slot (and the tabs
-    /// after it) make room for a longer name instead of the editor covering
-    /// its neighbours.
     text_w: f64,
     editor: EditableLabel,
 }
 
-/// How many theme-derived tab colours the picker offers. A sheet stores a
-/// slot index, not an RGB, so the tab's colour dot follows the live theme.
 const TAB_PALETTE_LEN: usize = 6;
 
-/// The concrete colour for a stored tab-colour palette index. Indices wrap
-/// around the theme series, so any value a peer stored resolves to a real
-/// colour after a theme change.
 fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
     ChartPalette::from_theme(theme).categorical(idx as usize)
 }
 
-/// Inclusive count of grid indices from `lo` through `hi`. Every caller passes
-/// ordered selection bounds, so the saturation only guards the degenerate
-/// whole-axis span rather than wrapping it.
-/// Whether `id` is an opaque participant id (a long hex key) rather than a
-/// name someone could read.
 fn opaque_participant_id(id: &str) -> bool {
     id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -338,21 +280,14 @@ fn span(lo: u32, hi: u32) -> u32 {
     hi.saturating_sub(lo).saturating_add(1)
 }
 
-/// The signed offset that moves grid index `from` onto `to`. Both are `u32`,
-/// so the difference always fits in `i64` and nothing is ever clamped.
 fn delta(from: u32, to: u32) -> i64 {
     i64::from(to).saturating_sub(i64::from(from))
 }
 
-/// A grid address `dc` columns and `dr` rows on from `base`, clamped at the
-/// last addressable cell rather than wrapping past it.
 fn offset_addr(base: Addr, dc: u32, dr: u32) -> Addr {
     (base.0.saturating_add(dc), base.1.saturating_add(dr))
 }
 
-/// How many whole copies of a `block`-wide span fit into `sel`, when `sel` is
-/// an exact multiple of it — Excel's "paste into a range" tiling. Anything
-/// else (including an empty block) places the block exactly once.
 fn tile_count(sel: u32, block: u32) -> u32 {
     if block == 0 || sel <= block {
         return 1;
@@ -377,191 +312,96 @@ fn tab_action_label(act: TabAction) -> &'static str {
 
 pub struct SheetsApp {
     grid: Grid,
-    /// The custom chrome has no toolkit layout primitives to inherit type
-    /// sizing from, so keep its touch targets and modal spacing aligned with
-    /// the current accessibility text preference.
     text_scale: f64,
     rect: Rect,
     formula_rect: Rect,
     grid_rect: Rect,
     tabs_rect: Rect,
-    /// What the window bar's commands last ran ([`window_bar`]).
     command_slot: CommandSlot,
-    /// The window bar's entries, each carrying the command it runs.
     bar_commands: ui::framework::BarCommands<MenuItem>,
     /// The file the workbook was opened from, which names it; `None` for
     /// one never saved.
     file: Option<PathBuf>,
-    /// The theme the chrome was last measured in, for laying the bar out
-    /// between frames.
     chrome_theme: Theme,
-    /// The document-settings sheet as last laid out.
     settings_sheet: Option<SettingsSheet>,
-    /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
     metrics: ChromeMetrics,
     tab_rects: Vec<(Rect, usize)>,
     add_tab_rect: Rect,
-    /// Per-sheet tab colours (palette indices), refreshed on each reload.
     sheet_colors: Vec<Option<u32>>,
-    /// Right-click menu on a sheet tab: the target sheet, the menu and what
-    /// each of its rows does (`None` for a separator), and the colour popover
-    /// its "Tab colour" row opens.
     tab_menu_target: Option<usize>,
     tab_menu: ContextMenu,
     tab_menu_rows: Vec<Option<overlays::TabMenuRow>>,
     tab_colour: Popover<ColorSwatchPicker>,
-    /// The tab and colour the popover's picker was last built for.
     tab_colour_shown: Option<(usize, Option<usize>)>,
-    /// Right-click menu on a cell: the menu, what each row runs, and the
-    /// cell that was under the pointer when it opened.
     cell_menu: ContextMenu,
     cell_menu_rows: Vec<Option<CellMenuRow>>,
     cell_menu_target: Option<Addr>,
-    /// The window bar's search over the workbook: the matches it found and
-    /// the one shown. This app is the `Findable` the bar drives; it draws no
-    /// find field of its own.
     find_matches: Vec<FoundCell>,
     find_current: Option<usize>,
-    /// A replacement the bar asked for, waiting for the next frame's edit
-    /// path: `Findable::replace` has no document handle.
     pending_find_replace: Vec<(usize, Addr, String)>,
-    /// The window's size changed: the next sync keeps the active cell in
-    /// view once the grid's new metrics and data are in.
     pending_ensure_visible: bool,
-    /// Whether the active cell is bold, for the Bold command's toggle state.
     active_cell_bold: bool,
-    /// A screenshot scenario's menu or sheet, waiting for the first measured
-    /// frame (see [`SheetsApp::stage_scenario`]).
     staged_overlay: Option<String>,
-    /// An inline sheet-tab rename editor, when active.
     tab_rename: Option<TabRename>,
-    /// The name box (cell-reference / Go-To field) hit-rect, and the "fx"
-    /// formula-insert affordance's hit-rect, both to the left of the formula
-    /// field. Derived in `relayout` so `handle_event` can route clicks to them.
     name_box_rect: Rect,
     fx_rect: Rect,
-    /// An active Name box Go-To entry, when the user has clicked the name box.
     name_box_edit: Option<TextInput>,
     formula_field_rect: Rect,
-    /// Cumulative x (layout space) of each character boundary in the formula
-    /// bar's current text, rebuilt each draw. Drives click-to-position-caret,
-    /// drag-select, and the bar's caret/selection rendering. `formula_char_x[i]`
-    /// is the x of the boundary before char `i`; the last entry is the end.
     formula_char_x: Vec<f64>,
-    /// Horizontal pan of the formula editor, keeping its caret inside the field.
     formula_scroll_x: f64,
-    /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
     /// Durable chart/comment records for the active sheet; refreshed together
     /// with its formula snapshot, never created as an app-local side store.
     sheet_charts: Vec<ChartSnapshot>,
     sheet_comments: Vec<CommentThread>,
-    /// Rebuilt on paint: annotation cards stay a visual projection of the
-    /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
-    /// Only this chart exposes its management controls; plots are uncluttered otherwise.
     managed_chart: Option<String>,
-    /// The strip under the grid that holds the annotation cards, and where
-    /// each card stands in it. Empty when the sheet has no annotations.
     dock_rect: Rect,
     dock_cards: Vec<(annotations::DockCard, Rect)>,
-    /// Scrolls the dock sideways to the cards past its edge.
     dock_scroll: ui::widget::ScrollRegion,
-    /// It is refreshed only with a new search projection, never per query.
     /// Each tab's durable sheet identity, which the edits it offers name.
     sheet_ids: Vec<Id>,
-    /// The workbook as the resource holds it now.
     workbook: Rc<Workbook>,
-    /// Increases whenever `workbook` is another state.
     revision: u64,
-    /// The resource's live state, read again right after an own edit.
     live: Option<ui::framework::Live<Workbook>>,
     active_sheet: usize,
-    /// The latest transient action message (e.g. "Pasted into B2"), said in
-    /// the window's bar ([`status_notice`](Self::status_notice)) rather than
-    /// a permanent status line. Initialised to `"Ready"`, which counts as
-    /// "nothing to say".
     status: String,
-    /// The selection summary or the active cell's format, or a fresh action
-    /// message, said in the window's bar for a while when that text changes
-    /// (a selection move/extend, an action), keeping the sheet-tab strip
-    /// free of status text so it reads purely as the sheet switcher.
     status_notice: ui::widget::toast::Transient<String>,
-    /// The status last said in the bar, so only a change is news.
     status_said: String,
-    /// The last frame's drawing, part by part, so a frame reports where it
-    /// differs from it.
     paint_damage: ui::widget::paint_damage::PaintDamage,
-    /// The part of a screenshot scenario staged against the document, done
-    /// by the `sync` that follows the staging.
     staged: Option<Staged>,
-    /// One-shot frame duties: repaint.
     pending: Pending,
     last_press: Option<(Instant, Addr)>,
     last_mouse: Point,
     current_active_format: CellFormat,
     settings_panel: SettingsPanel,
-    /// The person's locale defaults, as of the last `sync`.
     global: Locale,
-    /// The shared `locale` setting, followed while the app runs.
     locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
-    /// Memoised recalculation: `reload` recomputes only when the document
-    /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
-    /// The formula engine's workbook, kept between reloads so an edit
-    /// re-reads only the cells it changed.
     calc: crate::calc::WorkbookCalc,
     pending_reveal: Option<PendingReveal>,
-    /// The last copied/cut rectangle, kept so an in-app paste can restore raw
-    /// inputs and formats exactly (and shift relative formula references),
-    /// beyond the plain-text payload other apps see on the system clipboard.
     clipboard: Option<ClipboardGrid>,
-    /// Opens the host's search: Ctrl+K's palette over the workbook's
-    /// actions, or one action asking for its argument.
     search: ui::search::SearchOpener,
-    /// The workbook's dispatcher: every edit is a field edit or a verb
-    /// submitted here, checked, applied, undone and replayed like the
-    /// palette's and an agent's. `None` until the view attaches the
-    /// grid.
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
-    /// The participants' names, for the authors comments record.
     people: Option<ui::framework::People>,
-    /// The search hit or `open` waiting for the next settle to show it.
     opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
-    /// What the grid shares with the view's effect handler: what effects
-    /// ask of it, and the sheet, currency and selection it shows.
     store: store::Shared,
 }
 
-/// A rectangle captured by copy/cut, retaining each cell's raw input and
-/// format so an in-app paste is lossless. `tsv` is the exact plain-text
-/// payload pushed to the system clipboard; a later paste compares the live
-/// clipboard against it to decide whether to reuse this rich copy or parse
-/// whatever another app has since placed there.
 struct ClipboardGrid {
-    /// Top-left source address of the copied rectangle.
     src: Addr,
-    /// Row-major `(raw, format)` for every cell in the rectangle.
     cells: Vec<Vec<(String, CellFormat)>>,
-    /// A cut moves cells verbatim (source cleared on paste, refs unshifted);
-    /// a copy shifts relative references to the paste target.
     cut: bool,
-    /// The tab/newline-separated display text written to the system clipboard.
     tsv: String,
 }
 
-/// The recomputed view of the active sheet, kept between frames so that
-/// selection changes, scrolling, and format lookups don't re-snapshot the
-/// sheet or re-run the formula engine.
+/// The recomputed view of the active sheet, kept so format lookups do not re-run the engine.
 struct ReloadCache {
     revision: u64,
     sheet: usize,
-    /// Effective per-cell format (explicit format, else propagated formula
-    /// unit). Drives the type indicator and the selection summary.
     eff_fmt: HashMap<Addr, CellFormat>,
-    /// Computed cell values, reused for the live selection summary.
     values: HashMap<Addr, CellValue>,
 }
 
@@ -573,7 +413,6 @@ impl Default for SheetsApp {
 
 impl SheetsApp {}
 
-/// A numeric summary of the selection shown in the status bar.
 struct SelectionSummary {
     sum: f64,
     avg: f64,
@@ -598,13 +437,10 @@ fn time_label(t: TimeStyle) -> &'static str {
     }
 }
 
-/// Flatten a cell's display text into a single TSV field: tabs and newlines
-/// would break the row/column structure, so they collapse to spaces.
 fn tsv_cell(display: &str) -> String {
     display.replace(['\t', '\n', '\r'], " ")
 }
 
-/// A new sheet name derived from an imported file's stem.
 fn sheet_name_from_path(path: &std::path::Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
@@ -613,25 +449,15 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "Imported".to_string())
 }
 
-/// How an imported sheet remembers its file: the resolved path, so every
-/// spelling of one file finds the sheets it already became.
-/// The durable identity of the file at `path`: the same file however it
-/// is reached, by path or through the chooser.
 fn import_source(path: &std::path::Path) -> String {
     ui::record::RecordId::identify_file(path).to_string()
 }
 
-/// Spreadsheet references never contain whitespace. Keep every other
-/// printable character so submission can report a useful invalid-reference
-/// error instead of silently rewriting the user's entry.
+/// A reference takes every printable character but whitespace, so invalid input is reported.
 fn reference_box_char(ch: char) -> bool {
     !ch.is_whitespace() && !ch.is_control()
 }
 
-/// Parse a Name box (Go-To) entry into an `(anchor, active)` selection. Accepts
-/// a single reference (`B7`) or a range (`A1:C3`), case-insensitive, tolerating
-/// absolute markers (`$A$1`). Returns `None` for anything that isn't a valid
-/// reference or `ref:ref` range.
 fn parse_ref_target(s: &str) -> Option<(Addr, Addr)> {
     let s = s.trim();
     if let Some((a, b)) = s.split_once(':') {
@@ -644,7 +470,6 @@ fn parse_ref_target(s: &str) -> Option<(Addr, Addr)> {
     }
 }
 
-/// A short, user-facing label for a path (its file name) for status messages.
 fn file_label(path: &std::path::Path) -> String {
     path.file_name().and_then(|s| s.to_str()).map_or_else(
         || path.display().to_string(),
@@ -660,7 +485,6 @@ impl Widget for SheetsApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // Outside a host (a unit test) nobody else keeps the state current.
         let (doc, _) = ui::doc::document_ref(state, path);
         if let Some(live) = &self.live
             && live.sync(doc).is_ok()
@@ -715,9 +539,6 @@ impl Widget for SheetsApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Unlike toolkit tables, this virtualised canvas owns its geometry.
-        // Keep its row/header metrics in step with accessibility typography
-        // before the subsequent layout + hit-test pass.
         self.text_scale = f64::from(theme.text_scale);
         self.grid.set_text_scale(self.text_scale);
 
@@ -742,22 +563,12 @@ impl Widget for SheetsApp {
         presence: &PresenceCtx,
     ) {
         self.annotation_clicks.clear();
-        // Measure first, so this frame's chrome (and the hit-rects it leaves
-        // behind) is laid out from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
-        // A resize that arrived without a sync still keeps the active cell in
-        // view: the draw is the first moment the new metrics are settled.
         if self.pending_ensure_visible {
             self.pending_ensure_visible = false;
             self.grid.ensure_active_visible();
         }
-        // A staged menu or sheet opens once the chrome is measured, so it
-        // anchors to what is painted (and the More menu knows whether the bar
-        // overflowed).
         self.apply_staged_overlay();
-        // Each region is a part of its own, so the frame reports as damage
-        // the regions whose drawing changed: a typed character repaints the
-        // editor and the formula bar, not the window.
         let window = self.rect;
         let tr = text_renderer;
         let mut parts = PaintParts::new(scene);
@@ -791,17 +602,12 @@ impl Widget for SheetsApp {
         parts.draw(scene, "sheet-annotations", window, |scene| {
             self.draw_annotation_dock(scene, transform, tr, theme);
         });
-        // The open comment floats over the cells beside its own.
         parts.draw(scene, "sheet-comment", window, |scene| {
             self.draw_comment_popover(scene, transform, tr, theme, presence);
         });
         parts.draw(scene, "sheet-tab-rename", window, |scene| {
             self.draw_tab_rename(scene, transform, tr, theme);
         });
-        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
-        // glow that sheet's tab in their colour so you can see where they
-        // went ("Alice is on Q2"). Painted after the chrome so it reads on
-        // top of the tab surface.
         parts.draw(scene, "sheet-tab-presence", window, |scene| {
             self.draw_sheet_tab_presence(scene, transform, theme, presence);
         });
@@ -822,7 +628,6 @@ impl Widget for SheetsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A row or column arriving moves until it rests.
         self.grid.is_animating()
             || self.dock_scroll.needs_animation_frame(&self.chrome_theme)
             || self.children().iter().any(|c| c.needs_animation_frame())
@@ -836,8 +641,6 @@ impl Widget for SheetsApp {
             .min()
     }
 
-    /// The annotation dock glides on after a sideways flick, as the wheel
-    /// scrolls it; that changes no model.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.dock_scroll.advance() {
             self.pending.redraw = true;
@@ -850,8 +653,6 @@ impl Widget for SheetsApp {
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
-        // What the window's search asked to replace goes through the
-        // workbook's own edit path, with the document in hand.
         self.drain_find_replace(edits);
         self.apply_window_toolbar(edits);
         if let Some(opening) = self.opening.borrow_mut().take() {
@@ -895,7 +696,6 @@ impl Widget for SheetsApp {
         {
             return;
         }
-        // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {
             return;
         }
@@ -935,7 +735,6 @@ impl Widget for SheetsApp {
                 ..
             } => {
                 self.grid.pointer_up();
-                // A completed fill-handle drag commits its expansion here.
                 self.run_pending_fill(&mut event_ctx.state);
                 self.formula_bar_selecting = false;
                 self.pending.redraw = true;
@@ -981,15 +780,10 @@ impl Widget for SheetsApp {
         "SheetsApp"
     }
 
-    /// The grid owns Tab, as every spreadsheet's does: it commits the cell
-    /// and moves right (Shift+Tab left) instead of handing focus to the next
-    /// control. An open settings sheet or name-box edit leaves Tab to the
-    /// host's focus order.
     fn wants_tab_input(&self) -> bool {
         self.settings_panel == SettingsPanel::None && self.name_box_edit.is_none()
     }
 
-    /// A cell being edited takes input-method composition.
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.grid
             .is_editing()
@@ -1000,9 +794,6 @@ impl Widget for SheetsApp {
         self.grid.ime_cell_rect()
     }
 
-    /// The worksheet is a custom-painted cell canvas, so surface the active
-    /// cell, current selection and sheet tabs rather than exporting an opaque
-    /// drawing surface to assistive technology.
     #[allow(
         clippy::too_many_lines,
         reason = "the complete custom-canvas semantic tree stays co-located with the widget contract so its virtual bounds and interaction state remain auditable"
@@ -1011,7 +802,6 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
-        // The formula bar; the commands are the window bar's.
         let toolbar_controls: Vec<AccessNode> = [
             AccessNode::new(Role::Button)
                 .with_name(crate::resource::CATALOG.t("sheets-start-formula"))
@@ -1076,10 +866,8 @@ impl Widget for SheetsApp {
                     .with_bounds(bounds.unwrap_or_default())
             })
             .collect();
-        // The painted grid is virtualized, so its semantic tree must be too:
-        // expose every currently visible row/cell (plus a bounded pre-layout
-        // window), never the workbook's full declared million-row extent.
-        // Row/column positions retain the complete-table context for readers.
+        // The painted grid is virtualised, so its semantic tree exposes the visible rows only, with
+        // the full table's context for readers.
         let window = self.grid.accessibility_window();
         let header_cells = window
             .columns
@@ -1099,10 +887,6 @@ impl Widget for SheetsApp {
         rows.push(
             AccessNode::new(Role::Row)
                 .with_name(crate::resource::CATALOG.t("sheets-column-headers"))
-                // The virtual table's data rows are keyed by their durable
-                // row coordinate. Give the fixed header row its own reserved
-                // key too: mixing keyed and positional synthetic siblings
-                // makes AccessKit node identity shift as the viewport moves.
                 .with_key(u64::MAX)
                 .with_children(header_cells),
         );
@@ -1384,18 +1168,13 @@ impl Widget for SheetsApp {
         self.paint_damage.mark_drawn();
     }
 
-    /// The grid fills its node and places everything in it in
-    /// `apply_layout`: there is never a size for the layout solver to
-    /// measure, so a frame that only moves the window (a strip pan) solves
-    /// none.
+    /// The grid fills its node in `apply_layout`, so there is never a size to measure.
     fn layout_needs_measure(&self) -> bool {
         false
     }
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
-    /// Publish durable cell anchors so a peer's selection follows inserted
-    /// rows and columns. Empty, not-yet-authored cells retain tab presence.
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
         let key = self.cell_presence_key().or_else(|| {
             self.sheet_names
@@ -1438,7 +1217,6 @@ pub(crate) mod tests;
 
 pub(crate) use store::window;
 
-/// What the edits bound to the selection are built from.
 #[derive(PartialEq)]
 struct SelectionKey {
     revision: u64,

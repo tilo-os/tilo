@@ -21,3 +21,6 @@ disk-usage-files-one = 1 Datei
 disk-usage-files = { $count } Dateien
 disk-usage-unreadable-one = 1 Objekt konnte nicht gelesen werden
 disk-usage-unreadable = { $count } Objekte konnten nicht gelesen werden
+
+## What the app is called in a window and in the launcher
+disk-usage-app-title = Speicherplatzanalyse

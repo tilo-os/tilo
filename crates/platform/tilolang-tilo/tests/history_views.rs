@@ -4,11 +4,12 @@
 //! fold into one entry; and Undo on an entry takes back exactly that step, or the whole run,
 //! through the record's history verb.
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ChangeHash};
+use tilo_actions::{ActionRegistry, Verified, entry_of, verify_change};
 use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, ViewInstance};
 use tilolang_tilo::instance::HistoryAsk;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
@@ -109,13 +110,6 @@ fn button(node: &UiNode, label: &str) -> String {
             || panic!("a `{label}` button: {node:#?}"),
             |n| n.key.clone(),
         )
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
-    }
 }
 
 fn field(r: &Replica, app: &str, at: &ResourceRef, ty: &str, name: &str) -> Value {
@@ -901,7 +895,7 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
         &ada,
         "ada",
         RICHTEXT_APP,
-        "say",
+        "say_text",
         vec![Value::resource(&board), Value::text("Oat milk and bread")],
     );
     ada.commit();
@@ -983,6 +977,162 @@ fn body_editor(view: &ViewInstance) -> String {
         )
 }
 
+/// A post of `paragraphs` paragraphs that all read the same, which Ada wrote on her board, and
+/// Bo's replica of the workspace holding it: a long note, as two people each have it.
+struct LongPost {
+    ada: Replica,
+    bo: Replica,
+    at: ResourceRef,
+    body: tilolang_runtime::store::FieldSpec,
+    paragraphs: usize,
+}
+
+/// The paragraph every paragraph of a [`LongPost`] starts as.
+const PARAGRAPH: &str = "The quick brown fox jumps over the lazy dog and keeps on going. ";
+
+impl LongPost {
+    fn new(paragraphs: usize) -> Self {
+        const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
+        const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
+        let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
+        let ids = packages[0].ids.clone();
+        ada.commit();
+        let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
+        let body = tilolang_runtime::store::FieldSpec {
+            id: crate::fixtures::field_id(
+                &ada.host.package(RICHTEXT_APP).unwrap().meta,
+                "Post",
+                "body",
+            ),
+            kind: tilolang_runtime::meta::FieldKind::RichText,
+        };
+        let post = call(
+            &ada,
+            "ada",
+            RICHTEXT_APP,
+            "say_text",
+            vec![
+                Value::resource(&board),
+                Value::text(vec![PARAGRAPH; paragraphs].join("\n")),
+            ],
+        );
+        ada.commit();
+        let at = target(&post);
+        let bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
+        Self {
+            ada,
+            bo,
+            at,
+            body,
+            paragraphs,
+        }
+    }
+
+    /// The paragraphs of the post's body as `replica` reads it.
+    fn reads(&self, replica: &Replica) -> Vec<String> {
+        match replica.host.store().read(&self.at, &self.body).unwrap() {
+            tilolang_runtime::store::FieldValue::Rich(rich) => {
+                rich.blocks.into_iter().map(|block| block.text).collect()
+            }
+            other => panic!("the body is rich text: {other:?}"),
+        }
+    }
+
+    /// `who` (Ada or Bo) replaces `word` with `with` in the paragraph `at`, in the post's window
+    /// on their own replica, as its editor writes: the body as they read it, with that one
+    /// paragraph typed into. Answers the bytes the keystroke recorded: its change, and its
+    /// action as it ran (what the change keeps, inline or as content).
+    fn type_into(&mut self, bo: bool, at: usize, word: &str, with: &str) -> usize {
+        let mut lines = self.reads(if bo { &self.bo } else { &self.ada });
+        assert_eq!(lines.len(), self.paragraphs, "every paragraph is there");
+        let line = lines.get_mut(at).unwrap();
+        *line = line.replacen(word, with, 1);
+        self.write(bo, &lines);
+        let replica = if bo { &mut self.bo } else { &mut self.ada };
+        let head = *replica.doc.get_heads().first().unwrap();
+        let change = replica
+            .doc
+            .get_change_by_hash(&head)
+            .unwrap()
+            .raw_bytes()
+            .len();
+        change.saturating_add(replica.log.last().unwrap().action.payload.len())
+    }
+
+    /// `who` writes `lines` as the post's body in their own window, as its editor hands the body
+    /// over: one edit of the paragraphs that differ from what the field holds. Answers the change
+    /// it made, as their replica committed it.
+    fn write(&mut self, bo: bool, lines: &[String]) -> ChangeHash {
+        let value = Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+            &lines.join("\n"),
+        ));
+        let replica = if bo { &mut self.bo } else { &mut self.ada };
+        let page = view_id(replica);
+        let editors = replica.host.open_resource(&self.at, Some(&page)).unwrap();
+        let body_field = body_editor(&editors);
+        editors.edit(&body_field, &value).unwrap();
+        drop(editors);
+        replica.commit();
+        *replica.doc.get_heads().first().unwrap()
+    }
+}
+
+/// A replica's window: the wake scope its code runs in, and the content store lent to it, sealed
+/// as a record's is — where the large parts of the actions it records are kept, and read back
+/// from.
+struct Window {
+    scope: ui::WakeScope,
+    content: ui::content::ContentStore,
+}
+
+impl Window {
+    fn new() -> Self {
+        let scope = ui::WakeScope::new();
+        let content = ui::content::ContentStore::memory().sealing();
+        tilo_actions::content::register(&scope.handle(), content.clone());
+        Self { scope, content }
+    }
+
+    /// Run `run` as this window's code: what it records keeps its large parts in this store.
+    fn run<T>(&self, run: impl FnOnce() -> T) -> T {
+        let _in_this_window = self.scope.enter();
+        run()
+    }
+}
+
+/// What `from`'s actions kept as content reaches `to`'s record store, as the record's route
+/// brings it: sealed, by the reference the record names, verified against it.
+fn bring_content(from: &Replica, to: &ui::content::ContentStore) {
+    for envelope in &from.log {
+        for (reference, bytes) in envelope.recorded_content().unwrap_or_default() {
+            to.put_as(&reference, &bytes).unwrap();
+        }
+    }
+}
+
+/// What the record `doc` holds of the change `change` decodes as, read on a thread no window of
+/// this replica lent a content store: what its action kept as content comes from `store`, the
+/// record's own, and is fetched on the record's route when the record does not hold it yet.
+fn decoded(doc: &mut AutoCommit, change: ChangeHash, store: ui::content::ContentStore) -> Verified {
+    let mut peer = doc.fork();
+    std::thread::spawn(move || {
+        let mut registry = ActionRegistry::new();
+        tilolang_tilo::history::register(&mut registry);
+        registry.connect_content(store);
+        verify_change(&mut peer, change, &registry).unwrap()
+    })
+    .join()
+    .unwrap()
+}
+
+/// The body Ada pastes over the post's: seventeen paragraphs, past a mebibyte in all, each
+/// saying where it is so one reads where another was.
+fn pasted_body() -> Vec<String> {
+    (0..17)
+        .map(|at| format!("Pasted paragraph {at}: {}", "words ".repeat(11_000)))
+        .collect()
+}
+
 /// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
 /// store's reads of the record and the document's operations Automerge searches, counted.
 ///
@@ -990,57 +1140,33 @@ fn body_editor(view: &ViewInstance) -> String {
 /// the post's length, and that is not the entry's read.
 fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     use tilolang_runtime::store::Store as _;
-    const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
-    const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
-    let ids = packages[0].ids.clone();
-    ada.commit();
-    let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
-    let paragraph = "The quick brown fox jumps over the lazy dog and keeps on going. ";
-    let chars = paragraph.chars().count().saturating_mul(paragraphs);
-    let spec = tilolang_runtime::store::FieldSpec {
-        id: crate::fixtures::field_id(
-            &ada.host.package(RICHTEXT_APP).unwrap().meta,
-            "Post",
-            "body",
-        ),
-        kind: tilolang_runtime::meta::FieldKind::RichText,
-    };
-    let post = call(
-        &ada,
-        "ada",
-        RICHTEXT_APP,
-        "say",
-        vec![
-            Value::resource(&board),
-            Value::text(vec![paragraph; paragraphs].join("\n")),
-        ],
-    );
-    ada.commit();
-    let at = target(&post);
-    // Bo types one word in the first paragraph, in her own replica, and it reaches Ada's.
-    let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
-    let mut bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
-    let swift = paragraph.replacen("quick", "swift", 1);
-    let mut typed = vec![paragraph; paragraphs];
-    if let Some(first) = typed.first_mut() {
-        *first = &swift;
-    }
-    let page = view_id(&bo);
-    let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let body_field = body_editor(&editors);
-    editors.edit(&body_field, &body(&typed.join("\n"))).unwrap();
-    bo.commit();
-    drop(editors);
+    // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
+    let window = Window::new();
+    let _in_the_window = window.scope.enter();
+    let mut post = LongPost::new(paragraphs);
+    let chars = PARAGRAPH.chars().count().saturating_mul(paragraphs);
+    // Bo types one word in the first paragraph, in his own replica, and it reaches Ada's.
+    post.type_into(true, 0, "quick", "swift");
+    let LongPost {
+        mut ada,
+        mut bo,
+        at,
+        body: spec,
+        ..
+    } = post;
     ada.sync_with(&mut bo);
     // Reading the entry's diff: the change Bo made, as the history reads it.
     let change = ada
         .host
         .store()
-        .field_changed(&at, "body")
+        .field_changed(&at, &spec.id)
         .unwrap()
-        .expect("the change that wrote the body")
-        .change;
+        .expect("the change that wrote the body");
+    assert_eq!(
+        change.who, "bo",
+        "the body was last changed by Bo's typing: {change:?}"
+    );
+    let change = change.change;
     let before = ada.host.store().read_stats().doc;
     let work = automerge::work();
     let written = ada
@@ -1051,6 +1177,27 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     let after = ada.host.store().read_stats().doc;
     let done = automerge::work();
     assert_eq!(written.len(), 1, "the entry shows the body's change");
+    // What it shows is the paragraph Bo typed into, cut to the words around the change: the
+    // word he took away and the one he wrote, never the note.
+    let said = |value: &tilolang_runtime::store::FieldValue| match value {
+        tilolang_runtime::store::FieldValue::Rich(rich) => rich
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => panic!("a rich text's change: {other:?}"),
+    };
+    let (_, was, now) = &written[0];
+    let (was, now) = (said(was), said(now));
+    assert!(
+        was.contains("quick") && !was.contains("swift") && now.contains("swift"),
+        "the entry shows the word Bo replaced: {was:?} -> {now:?}"
+    );
+    assert!(
+        was.len() <= PARAGRAPH.len() && now.len() <= PARAGRAPH.len(),
+        "the entry shows one paragraph at most: {was:?} -> {now:?}"
+    );
     let reads = after
         .fields
         .saturating_sub(before.fields)
@@ -1067,6 +1214,198 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         done.searched_slabs.saturating_sub(work.searched_slabs),
         chars,
     )
+}
+
+#[test]
+fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_their_words() {
+    // A note past a hundred thousand characters, whose editor hands over the whole body on each
+    // keystroke: what the keystroke records is the paragraph it typed into, never the note.
+    // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
+    let window = Window::new();
+    let _in_the_window = window.scope.enter();
+    let mut post = LongPost::new(1_571);
+    // Each types into their own copy before either hears of the other.
+    for recorded in [
+        post.type_into(true, 0, "quick", "swift"),
+        post.type_into(false, 1_200, "lazy", "sleepy"),
+    ] {
+        assert!(recorded < 4_096, "a keystroke recorded {recorded} bytes");
+    }
+    let (ada_wrote, bo_wrote) = (post.reads(&post.ada), post.reads(&post.bo));
+    assert!(ada_wrote[1_200].contains("sleepy") && bo_wrote[0].contains("swift"));
+    let LongPost {
+        mut ada, mut bo, ..
+    } = post;
+    ada.sync_with(&mut bo);
+    let post = LongPost { ada, bo, ..post };
+    for (who, replica) in [("Ada", &post.ada), ("Bo", &post.bo)] {
+        let lines = post.reads(replica);
+        assert_eq!(lines.len(), 1_571, "{who} reads every paragraph once");
+        assert!(
+            lines[0].contains("swift") && !lines[0].contains("quick"),
+            "{who} reads Bo's word: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1_200].contains("sleepy") && !lines[1_200].contains(" lazy"),
+            "{who} reads Ada's word: {:?}",
+            lines[1_200]
+        );
+        let untouched = lines
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != 0 && *at != 1_200)
+            .all(|(_, line)| line == PARAGRAPH.trim_end() || line == PARAGRAPH);
+        assert!(untouched, "{who} reads every other paragraph as it was");
+    }
+}
+
+/// The parts the change `change` on `post` kept as content in `window`'s store: the body of a
+/// paste too large to record inline, kept sealed and named by reference.
+fn pasted_parts(post: &LongPost, change: ChangeHash, window: &Window) -> Vec<String> {
+    let entry =
+        entry_of(post.ada.doc.committed_document(), change).expect("the change names its step");
+    let recorded = entry.action.expect("the change records its action");
+    assert!(
+        !String::from_utf8_lossy(&recorded.payload).contains("Pasted paragraph 0"),
+        "the change names the body's parts, not the body: {} bytes",
+        recorded.payload.len()
+    );
+    assert!(
+        recorded.payload.len() < tilo_actions::CONTENT_PART_THRESHOLD,
+        "the change keeps references to the body: {} bytes",
+        recorded.payload.len()
+    );
+    let parts = recorded.content_parts();
+    assert!(
+        !parts.is_empty(),
+        "the pasted body is kept as content, not inline"
+    );
+    assert!(
+        parts
+            .iter()
+            .all(|reference| ui::content::is_sealed(reference)),
+        "the parts are sealed: {parts:?}"
+    );
+    assert!(
+        parts.iter().all(|reference| window.content.has(reference)),
+        "her own window holds what the paste kept"
+    );
+    parts
+}
+
+/// Both replicas read the pasted body as `paragraphs` paragraphs, with each of `words` starting
+/// the paragraph at its place.
+fn both_read(post: &LongPost, paragraphs: usize, words: &[(usize, &str)]) {
+    for (who, replica) in [("Ada", &post.ada), ("Bo", &post.bo)] {
+        let lines = post.reads(replica);
+        assert_eq!(
+            lines.len(),
+            paragraphs,
+            "{who} reads every paragraph of the paste once"
+        );
+        for (at, word) in words {
+            let line = lines.get(*at).map_or("", String::as_str);
+            assert!(
+                line.starts_with(word),
+                "{who} reads `{word}` at {at}: {line:.40}"
+            );
+        }
+    }
+}
+
+/// The words Bo's history shows as inserted into the body, cut to the words around each change.
+fn words_pasted(post: &LongPost) -> Vec<String> {
+    let page = view_id(&post.bo);
+    let mut editors = post.bo.host.open_resource(&post.at, Some(&page)).unwrap();
+    let section = history(&mut editors);
+    // Her making of the post and her paste are one step of hers: it opens to each change.
+    let show = nodes(&section)
+        .into_iter()
+        .find(|node| node.kind == "ui.Button" && text(node) == Some("tilolang-history-show"))
+        .map(|node| node.key.clone());
+    if let Some(show) = show {
+        editors.press(&show).unwrap();
+    }
+    changes(&history(&mut editors))
+        .into_iter()
+        .filter(|(label, ..)| label == "Body")
+        .flat_map(|(_, _, now)| marked(&now, "strong"))
+        .collect()
+}
+
+#[test]
+fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
+    // A post of three paragraphs, which Ada pastes a body past a mebibyte over: one edit, too
+    // large to record inline, whose change keeps the body as content in the record's store.
+    let mut post = LongPost::new(3);
+    let ada_window = Window::new();
+    let pasted = pasted_body();
+    let paste = ada_window.run(|| post.write(false, &pasted));
+    pasted_parts(&post, paste, &ada_window);
+
+    // The record returns to Ada, through Bo's replica, which now holds the paste too. She then
+    // types into the paragraph she pasted: the store knows the record already holds her paste,
+    // so it never writes the pasted body over the record's, and her word reads back at once.
+    ada_window.run(|| post.ada.sync_with(&mut post.bo));
+    let mut lines = post.reads(&post.ada);
+    lines[0] = lines[0].replacen("Pasted", "Typed", 1);
+    ada_window.run(|| post.write(false, &lines));
+    let read = post.reads(&post.ada);
+    assert_eq!(
+        read.len(),
+        pasted.len(),
+        "the body reads as the paste, written once"
+    );
+    assert!(
+        read[0].starts_with("Typed paragraph 0"),
+        "Ada reads her own word: {:.40}",
+        read[0]
+    );
+    // Bo's history reads the paste as the words Ada pasted.
+    let inserted = words_pasted(&post);
+    assert!(
+        inserted
+            .iter()
+            .any(|words| words.starts_with("Pasted paragraph 0:")),
+        "Bo's history shows the words Ada pasted, among {} inserted runs",
+        inserted.len()
+    );
+
+    // Bo holds the change, not the bytes it kept: its action reads the record's content store,
+    // on whatever thread reads the change — no window of his lent one — and what it kept reaches
+    // that store on the record's route.
+    let bo_store = ui::content::ContentStore::memory().sealing();
+    assert!(
+        matches!(
+            decoded(&mut post.bo.doc, paste, bo_store.clone()),
+            Verified::ContentMissing(_)
+        ),
+        "the action names content Bo does not hold yet"
+    );
+    bring_content(&post.ada, &bo_store);
+    assert_eq!(
+        decoded(&mut post.bo.doc, paste, bo_store),
+        Verified::Reproduced,
+        "the action decodes through Bo's store and reproduces its change"
+    );
+
+    // Bo types into another pasted paragraph before he hears of Ada's typing: both words stay,
+    // on both replicas, and both hold the same history.
+    let mut lines = post.reads(&post.bo);
+    lines[10] = lines[10].replacen("Pasted", "Pasted by Bo", 1);
+    post.write(true, &lines);
+    ada_window.run(|| post.ada.sync_with(&mut post.bo));
+    both_read(
+        &post,
+        pasted.len(),
+        &[(0, "Typed paragraph 0"), (10, "Pasted by Bo paragraph 10")],
+    );
+    assert_eq!(
+        post.ada.doc.get_heads(),
+        post.bo.doc.get_heads(),
+        "one history"
+    );
 }
 
 #[test]
@@ -1591,5 +1930,103 @@ fn the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back() {
         field(&ada, PAIRED_APP, &tally, "Tally", "note"),
         Value::text("noted"),
         "and its second with it"
+    );
+}
+
+/// The key of the note's body in its page: the editor a person writes the note in.
+fn note_body(view: &ViewInstance) -> String {
+    nodes(view.tree())
+        .into_iter()
+        .find(|node| node.kind == "ui.BlockEditor")
+        .unwrap_or_else(|| panic!("the note's page edits its body: {:#?}", view.tree()))
+        .key
+        .clone()
+}
+
+/// What one key typed in a note costs the history its page shows, in views run, where the
+/// note's history already holds `older` steps.
+fn renders_of_a_key(older: usize) -> u64 {
+    let (mut ada, notes, _) = two_people();
+    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+    ada.commit();
+    // `older` steps, each of another hand, so history lists one entry for each.
+    for step in 0..older {
+        let who = if step % 2 == 0 { "bo" } else { "ada" };
+        call(
+            &ada,
+            who,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text(format!("Note {step}"))],
+        );
+        ada.commit();
+    }
+    let mut page = ada.host.open_resource(&target(&note), None).unwrap();
+    page.poll_patches().unwrap();
+    let body = note_body(&page);
+    let before = page.stats().renders;
+    page.edit(
+        &body,
+        &Value::Rich(tilolang_runtime::rich::RichValue::from_text("Groceries")),
+    )
+    .unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    page.stats().renders.saturating_sub(before)
+}
+
+/// A key typed in a note reruns the history entry it changes and no older one: an entry reads
+/// what it shows of its own step, never the steps around it, so a page whose history is long
+/// costs a key what one whose history is short does.
+#[test]
+fn a_key_reruns_the_history_entry_it_changes_and_no_older_one() {
+    let (short, long) = (renders_of_a_key(2), renders_of_a_key(12));
+    assert_eq!(
+        short, long,
+        "a key reran {long} views where the note's history held 12 steps, and {short} where it \
+         held 2"
+    );
+}
+
+/// The faces a history opens: the steps of one hand a moment apart stand under the face of the
+/// step that opens their visit, and the same hand's steps hours apart open one each.
+#[test]
+fn one_hands_steps_a_moment_apart_share_one_face_and_hours_apart_do_not() {
+    let faces = |second: &str| {
+        let (mut ada, notes, _) = two_people();
+        let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+        ada.commit();
+        // Two runs of one agent, each a step of its own: the steps are the same hand's.
+        ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
+        call(
+            &ada,
+            AGENT,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text("Groceries")],
+        );
+        ada.commit_in_run(AGENT, "issue-7@8000000000000001", "Tidy the notes");
+        let second = second.to_owned();
+        ada.host.set_clock(move || second.clone());
+        call(
+            &ada,
+            AGENT,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text("Shopping")],
+        );
+        ada.commit_in_run(AGENT, "issue-7@8000000000000002", "Tidy the notes");
+        // Ada made the note, then the agent's two steps: each entry's face, newest first.
+        entries(&history_of(&ada, &target(&note)))
+    };
+    assert_eq!(
+        faces("2026-10-30T09:15:00Z"),
+        [AGENT, "ada"],
+        "a moment apart, the agent's two steps join the visit the newer one opened"
+    );
+    assert_eq!(
+        faces("2026-10-30T12:00:00Z"),
+        [AGENT, AGENT, "ada"],
+        "hours apart, each of the agent's steps opens a visit of its own"
     );
 }

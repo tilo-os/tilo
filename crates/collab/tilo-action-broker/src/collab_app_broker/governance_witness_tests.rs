@@ -271,7 +271,7 @@ fn owner_governance_witness_does_not_replace_current_policy_or_custody() {
 
 #[test]
 fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
-    use tilo_action_policy::{Answer, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grantee, TreePath};
 
     for answer in [Answer::Ask, Answer::Deny] {
         let (state, service, owner, mut request, tree) = broker_with_tree(true);
@@ -283,13 +283,13 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
             .any(tilo_action_policy::Level::Kind)
             .resource(RESOURCE)
             .action(ACTION);
-        tree.write().workspaces[0].allow(Subject::person("guest"), &path, KindSet::ALL);
+        tree.write().workspaces[0].allow(Grantee::person("guest"), &path, KindSet::ALL);
         request.confirmation = Some(Confirmation::Confirmed);
         invoke(&state, &person, &request).unwrap();
         service.calls.lock().unwrap().clear();
         request.invocation = tilo_actions::InvocationId::new();
         let issued_before_change = witness(&state, "guest", &request);
-        tree.write().workspaces[0].answer(Subject::person("guest"), &path, KindSet::ALL, answer);
+        tree.write().workspaces[0].answer(Grantee::person("guest"), &path, KindSet::ALL, answer);
         request.confirmation = None;
         // Canonical governance checks confirmation before current policy.
         assert_eq!(

@@ -16,6 +16,7 @@ static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
 use crate::text_entry::{self, Edit, Mods};
 use tilo_desktop_model::{DesktopTree, StripId};
+use tilo_desktop_surface::names;
 use ui::text_render::TextStyle;
 use ui::text_selection::Selection;
 use ui::widget::{FieldFace, TextInput, Widget};
@@ -87,7 +88,7 @@ impl TopBarChrome {
     }
 
     /// The shown strip's name, which the bar names after the workspace (Home, a chevron, Research):
-    /// only for a strip with a name.
+    /// only for a strip with a name, so a strip nobody named leaves the bar to the workspace.
     pub(super) fn strip_name(&self) -> Option<&str> {
         let active = self.strips.active?;
         self.strips
@@ -119,42 +120,65 @@ impl TopBarChrome {
         STRIP_CHEVRON_PX + f64::from(name) + 2.0 * Self::strip_name_gap(theme)
     }
 
-    /// Paint the shown strip's name between `x0` and `x1` , after the workspace pill: the separator
-    /// dim, the name elided to the room left. The separator and the name are one target, which
-    /// opens the strip switcher ([`ChromeIntent::ShowStrips`]).
-    pub(super) fn draw_strip_name(
+    /// The strip's chip showing `name` with `label_width` of room for it.
+    pub(super) fn strip_chip<'a>(
+        &self,
+        name: &'a str,
+        label_width: f64,
+    ) -> ui::widget::BarChipFace<'a> {
+        ui::widget::BarChipFace::new(name, &[])
+            .icons(STRIP_GLYPH)
+            .label(name)
+            .label_width(label_width)
+            .at_height(BAR_CONTROL_PX)
+            .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_STRIP_NAME))
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_STRIP_NAME),
+            )
+    }
+
+    /// Where the shown strip's name stands between `x0` and `x1`, after the workspace pill: the
+    /// separator and the name elided to the room left, one target, which opens the strip switcher
+    /// ([`ChromeIntent::ShowStrips`]). Nowhere when the room cannot hold it.
+    pub(super) fn place_strip_name(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
         span: (f64, f64),
     ) {
         self.ws_strip_rect = Rect::ZERO;
+        self.placed.strip = None;
         let Some(name) = self.strip_name().map(str::to_owned) else {
             return;
         };
         let (x0, x1) = span;
         let gap = Self::strip_name_gap(theme);
-        // The separator and the name are one bar chip: a chevron and the label, opening the strip
-        // switcher.
-        let chip = ui::widget::BarChipFace::new(&name, &[])
-            .icons(STRIP_GLYPH)
-            .label(&name)
-            .label_width((x1 - x0 - gap - STRIP_CHEVRON_PX - gap).max(0.0))
-            .at_height(BAR_CONTROL_PX)
-            .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_STRIP_NAME))
-            .focused(
-                self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_STRIP_NAME),
-            );
-        let width = chip.width(text_renderer, theme);
+        let label_width = (x1 - x0 - gap - STRIP_CHEVRON_PX - gap).max(0.0);
+        let width = self
+            .strip_chip(&name, label_width)
+            .width(text_renderer, theme);
         if x1 - x0 < width {
             return;
         }
         self.ws_strip_rect = ui::widget::BarChipFace::place_at(x0, center_y, width, BAR_CONTROL_PX);
-        let _ = chip.paint(
+        self.placed.strip = Some((name, label_width));
+    }
+
+    /// Paint the strip's name where [`Self::place_strip_name`] stood it: the separator dim, the
+    /// name after it.
+    pub(super) fn paint_strip_name(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let Some((name, label_width)) = self.placed.strip.as_ref() else {
+            return;
+        };
+        let _ = self.strip_chip(name, *label_width).paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.ws_strip_rect,
             theme.tokens.colors.surfaces.base,
@@ -191,16 +215,37 @@ impl TopBarChrome {
         theme.tokens.typography.style(TextRole::Label)
     }
 
-    /// The field the workspace's new name is typed in, where its name stands.
+    /// Stand the field the workspace's new name is typed in at `field`, where its name stands.
+    pub(super) fn place_workspace_name_field(&mut self, theme: &Theme, field: Rect) {
+        self.strips.field_rect = field;
+        let Some(naming) = self.strips.naming.as_mut() else {
+            return;
+        };
+        let face = FieldFace::new(field, &naming.text).text_role(TextRole::Caption);
+        let text_rect = face.text_rect(theme);
+        let input = naming.input.get_or_insert_with(|| {
+            TextInput::new(Vec::new())
+                .with_plain_chrome()
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+                .with_text_role(TextRole::Caption)
+        });
+        input.set_text(&naming.text);
+        input.set_selection(naming.selection.anchor, naming.selection.cursor);
+        input.set_focus(true);
+        input.apply_layout_external(text_rect);
+    }
+
+    /// Paint the field the workspace's new name is typed in where
+    /// [`Self::place_workspace_name_field`] stood it.
     pub(super) fn paint_workspace_name_field(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
-        field: Rect,
     ) {
-        self.strips.field_rect = field;
+        let field = self.strips.field_rect;
         let Some(naming) = self.strips.naming.as_mut() else {
             return;
         };
@@ -214,17 +259,9 @@ impl TopBarChrome {
         } else {
             face.paint_chrome(scene, transform, theme);
         }
-        let input = naming.input.get_or_insert_with(|| {
-            TextInput::new(Vec::new())
-                .with_plain_chrome()
-                .with_spellcheck(false)
-                .with_autocorrect(false)
-                .with_text_role(TextRole::Caption)
-        });
-        input.set_text(&naming.text);
-        input.set_selection(naming.selection.anchor, naming.selection.cursor);
-        input.set_focus(true);
-        input.apply_layout_external(face.text_rect(theme));
+        let Some(input) = naming.input.as_mut() else {
+            return;
+        };
         let input_theme = theme
             .clone()
             .with_text_scale(theme.text_scale * theme.ui_scale);
@@ -262,7 +299,13 @@ impl TopBarChrome {
     /// Start renaming the workspace in place, from its current name, as the workspace menu's Rename
     /// asks.
     pub fn begin_workspace_rename(&mut self) {
-        let text = self.workspace_name.clone();
+        // The field starts from the name the workspace holds: a workspace nobody named has none, so
+        // typing a name does not first erase the desk's word for it.
+        let text = if self.workspace_name == names::workspace("") {
+            String::new()
+        } else {
+            self.workspace_name.clone()
+        };
         let end = text.len();
         self.strips.naming = Some(Naming {
             text,

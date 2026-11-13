@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.api-tester@d6b32f527d6a5c3a";
+
 /** One of "none", "bearer", "basic", "api_key". */
 export type AuthScheme = "none" | "bearer" | "basic" | "api_key";
 
@@ -86,9 +91,6 @@ export interface Workspace extends tilo.Resource {
   request: RequestRecord;
   readonly opened: string;
   readonly history: Sent[];
-  importWorkspace(args: {
-    workspace: unknown;
-  }): Promise<tilo.Run | void>;
   newRequest(): Promise<tilo.Run | void>;
   newCollection(args: {
     name: string;
@@ -148,6 +150,6 @@ export interface Workspace extends tilo.Resource {
 
 /** The `api-tester.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
 }
 

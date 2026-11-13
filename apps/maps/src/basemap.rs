@@ -1,10 +1,9 @@
-//! The vector basemap the map draws under its tiles (roads, areas, the
-//! river), and the route drawn when no router answers.
+//! The vector basemap drawn under the tiles (roads, areas, the river), and the route drawn when no
+//! router answers.
 
 use crate::geo::{haversine_m, polyline_length_m};
 use crate::model::{LatLon, Maneuver, Route, RouteStep, TravelMode};
 
-/// Road importance class — drives stroke width + colour ramp index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoadClass {
     Primary,
@@ -18,7 +17,6 @@ pub struct Road {
     pub pts: Vec<LatLon>,
 }
 
-/// Polygonal fill kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AreaKind {
     Water,
@@ -32,29 +30,20 @@ pub struct Area {
     pub ring: Vec<LatLon>,
 }
 
-/// A static vector basemap for the sample city.
 #[derive(Clone, Debug, Default)]
 pub struct Basemap {
     pub areas: Vec<Area>,
     pub roads: Vec<Road>,
-    /// The river centre-line, drawn as a thick water stroke.
     pub river: Vec<LatLon>,
 }
 
 impl Basemap {
-    /// True when there is no vector cartography to draw — the live app's
-    /// first-run state, where a reference grid substrate stands in until real
-    /// raster imagery arrives.
     pub fn is_empty(&self) -> bool {
         self.areas.is_empty() && self.roads.is_empty() && self.river.is_empty()
     }
 }
 
-/// Recompute a grid-following route for a different mode/destination using
-/// the same shape but mode-dependent timing. Used by the live fallback when
-/// the network is unavailable.
 pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
-    // Manhattan-ish path: go along lon to target lon, then along lat.
     let corner = LatLon::new(from.lat, to.lon);
     let geometry = vec![from, corner, to];
     let distance_m = polyline_length_m(&geometry);

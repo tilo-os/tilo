@@ -61,13 +61,6 @@ impl ChatApp {
         id.to_string()
     }
 
-    /// Whether `id` authors as an agent: one of the workspace's own (`agent:<id>`, the actor its
-    /// identity record names) or a run of a task (`agent-task:<id>`). An agent is a collaborator
-    /// and reads as one, in the byline and its face, wherever its name is shown.
-    pub(crate) fn is_agent_author(&self, id: &str) -> bool {
-        id.starts_with("agent:") || self.agent_authors.contains_key(id)
-    }
-
     /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
     /// it, else the name its device announced while here. `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
@@ -98,12 +91,8 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        let agent = id
-            .strip_prefix("agent:")
-            .and_then(|agent| self.known_agent_name(agent))
-            .or_else(|| self.agent_authors.get(id).cloned());
-        if let Some(name) = agent {
-            return crate::i18n::t_args("chat-agent-author", &[("name", name.into())]);
+        if let Some(agent) = self.acting_name(id, None) {
+            return agent;
         }
         let named = self.display_name(id);
         // A name that happens to equal the id is still a name when the
@@ -116,6 +105,31 @@ impl ChatApp {
             return crate::identity::shared_name_label(id, &named);
         }
         crate::identity::unnamed_label(id)
+    }
+
+    /// What to call the agent or app `id`, by what `acting` kept of it where it wrote, else by
+    /// who is here: the workspace's name for it, else the name it went by, with the person it
+    /// acts for ("Helper for Ada"), after it left too. `None` for anyone else.
+    pub(crate) fn acting_name(
+        &self,
+        id: &str,
+        acting: Option<&ui::tilo_resource::Acting>,
+    ) -> Option<String> {
+        let name = id
+            .strip_prefix("agent:")
+            .and_then(|agent| self.known_agent_name(agent))
+            .or_else(|| self.agent_authors.get(id).cloned())
+            .or_else(|| acting?.name.as_ref().map(|name| name.0.clone()))?;
+        let person = acting
+            .and_then(|acting| acting.person.as_ref())
+            .map(|person| person.0.as_str())
+            .or_else(|| self.agent_people.get(id).map(String::as_str));
+        Some(crate::identity::acting_label(
+            &name,
+            person,
+            |person| self.user_name(person),
+            |person| self.is_me(person),
+        ))
     }
 
     /// How a narrow line names someone: their given name, so a line that
@@ -146,9 +160,9 @@ impl ChatApp {
     }
 
     /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
-    /// choice, else its identity's), a person's the one the workspace announced for them, else
-    /// the one their identity derives — so a face, a chip and a byline are one colour, here as
-    /// in every app of the workspace.
+    /// choice, else the one rule's), a person's the one the workspace announced for them, else
+    /// the one rule every surface draws a participant by ([`ui::presence::participant_hue`]) —
+    /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
     pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
         id.strip_prefix("agent:")
             .and_then(|agent| self.workspace_agent_colours.get(agent))
@@ -160,7 +174,7 @@ impl ChatApp {
                         ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
                     })
             })
-            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(id))
+            .unwrap_or_else(|| ui::presence::participant_hue(id, crate::views::is_agent(id), None))
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment

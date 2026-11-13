@@ -328,16 +328,10 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
         app.harness()
             .resize((width, 760))
             .expect("resize production surface");
-        // Narrowing into one column at a time slides the conversation from
-        // where it stood beside the people list to fill the window; the
-        // controls are checked where that slide lands.
         app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
             .expect("the messages shell is hosted");
         app.harness().relayout();
         app.settle();
-        // The window bar names the person and offers the routes to them;
-        // NavShell's Back is the bar's only in the narrow push layout: a
-        // wide window keeps the overview visible beside the conversation.
         let bar = ui::window_toolbar::declared().expect("the window declares its slots");
         let location = bar.location.expect("the bar names the conversation");
         assert_eq!(location.label, "Alex");
@@ -758,7 +752,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     let heading = harness
         .a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.label() == Some("Your people, together"))
+        .find(|(_, node)| node.label() == Some("No conversations yet"))
         .map(|(_, node)| node)
         .expect("the empty People pane has an empty state");
     let bounds = heading.bounds().expect("the empty state is laid out");
@@ -779,8 +773,6 @@ fn with_nobody_yet_the_window_says_how_to_start() {
         "no route to choose while no conversation is open"
     );
 
-    // Open Contacts runs the published action that asks the window's
-    // session to open Contacts in its workspace.
     let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
     harness.set_session_door(
         ui::RemoteActions::with_host(
@@ -814,7 +806,6 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     assert_eq!(asked.len(), 1, "one open, asked of the session");
     assert_eq!(asked[0].target, contacts);
 
-    // Pressing the button is the same request.
     harness
         .click_named("messages.open-contacts")
         .expect("the button is pressed");
@@ -858,12 +849,14 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
     );
     let tree = app.harness().inspection_json().unwrap();
     assert!(tree.contains("isn't running here"), "{tree}");
-    assert!(tree.contains("a browser has none"), "{tree}");
+    assert!(
+        tree.contains("Link WhatsApp or Signal on a Tilo computer instead"),
+        "{tree}"
+    );
 }
 
-/// Every verb and field the app publishes reads in its own words in History,
-/// never in the framework's generic fallback: the sentences a person scrolls
-/// back through are the app's.
+/// Every verb and field the app publishes reads in its own words in History, never in the
+/// framework's generic fallback: the sentences a person scrolls back through are the app's.
 #[test]
 fn every_published_change_reads_in_the_apps_own_words() {
     let mut app = live_messages_with_sender();

@@ -44,7 +44,7 @@ pub(super) fn launch(
         .arg("--workspace-id")
         .arg(&apps.workspace)
         .arg("--app-id")
-        .arg(&app.package_id)
+        .arg(app.app_id.as_str())
         .arg("--expected-package-hash")
         .arg(&original.package_hash)
         .arg("--wayland-socket")

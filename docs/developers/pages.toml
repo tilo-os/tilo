@@ -11,8 +11,9 @@
 # repository host.
 
 base = "/docs/developers/"
+origin = "https://tilo.so"
 repository = "https://code.tilo.so/tilo/tilo"
-related_manifests = ["docs/development/pages.toml"]
+related_manifests = ["docs/development/pages.toml", "docs/tilo-sh/pages.toml"]
 
 [api]
 title = "tilo-app API reference"
@@ -130,5 +131,5 @@ description = "Scripting a workspace from Python, TypeScript, the CLI and tilola
 slug = "sdk-wire"
 source = "docs/developers/sdk-wire.md"
 section = "Hosted workspaces"
-nav = "The SDKs' wire"
-description = "The MCP calls the SDKs make and the typed answers they read."
+nav = "MCP's typed answers"
+description = "The MCP calls an agent makes, and the typed answers a program reads from them."

@@ -1,8 +1,7 @@
 //! Unicode line-break opportunities shared by shaping-adjacent layout code.
-//!
-//! `RichTextLayout` receives UAX #14 behavior from cosmic-text. Components
-//! that must build matching row metadata or return individually clamped lines
-//! use this module instead of guessing at ASCII spaces.
+//! `RichTextLayout` receives UAX #14 behavior from cosmic-text. Components that must
+//! build matching row metadata or return individually clamped lines use this module
+//! instead of guessing at ASCII spaces.
 
 use std::sync::LazyLock;
 use tilo_sort::CompactSort as _;
@@ -14,17 +13,13 @@ pub enum LineBreakKind {
     Mandatory,
 }
 
-/// Iterate byte offsets where a line may or must end according to Unicode
-/// Standard Annex #14. Every offset is a UTF-8 boundary and the final text
-/// boundary is always returned as mandatory.
+/// Iterate byte offsets where a line may or must end according to Unicode Standard Annex
+/// #14.
 pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBreakKind)> {
     use std::collections::BTreeMap;
 
     use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
-    // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar,
-    // and Thai. The borrowed segmenter only references baked static data. In
-    // the browser those models (about 2 MB) would be downloaded before
-    // anything runs, so it uses the rules alone there.
+    // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar, and Thai.
     #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
         LazyLock::new(|| LineSegmenter::new_auto(Default::default()));
@@ -46,9 +41,9 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
     breaks.into_iter().collect::<Vec<_>>().into_iter()
 }
 
-/// UTF-8 byte offsets at which TeX/Liang patterns permit a discretionary
-/// hyphen for `language`. The source text is never modified; callers decide
-/// whether a chosen line break should paint the hyphen glyph.
+/// UTF-8 byte offsets at which TeX/Liang patterns permit a discretionary hyphen for
+/// `language`. The source text is never modified; callers decide whether a chosen line
+/// break should paint the hyphen glyph.
 pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
     let Ok(parsed) = language.parse::<unic_langid::LanguageIdentifier>() else {
         return Vec::new();
@@ -72,8 +67,8 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
     breaks
 }
 
-/// Calls `out` with the byte offset in `word` after each of its syllables
-/// but the last, by `lang`'s patterns.
+/// Calls `out` with the byte offset in `word` after each of its syllables but the last,
+/// by `lang`'s patterns.
 pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
 
 /// TeX/Liang hyphenation by the patterns hypher embeds.
@@ -92,8 +87,7 @@ pub fn builtin_hyphenation() -> Hyphenate {
     by_patterns
 }
 
-/// [`Hyphenate`] with the patterns in reach; no breaks while their code is
-/// still to come.
+/// [`Hyphenate`] with the patterns in reach; no breaks while their code is still to come.
 fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
     if let Some(hyphenate) = HYPHENATION.get() {
         hyphenate(word, lang, out);
@@ -101,15 +95,10 @@ fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
 }
 
 crate::lazy_code! {
-    /// The hyphenation patterns. A program built with `lazy-hyphenation`
-    /// fetches their code the first time text is hyphenated; until then text
-    /// breaks between words only, and layouts are made again once
-    /// [`hyphenation_generation`] moved.
     pub static HYPHENATION: Hyphenate = builtin_hyphenation, feature = "lazy-hyphenation";
 }
 
-/// Bumped when the patterns arrive: hyphenated layouts are made again once
-/// this moved.
+/// Bumped when the patterns arrive: hyphenated layouts are made again once this moved.
 #[must_use]
 pub fn hyphenation_generation() -> u64 {
     HYPHENATION.generation()
@@ -123,13 +112,8 @@ pub(crate) const HUGE_PARAGRAPH_BYTES: usize = 16 * 1024;
 const CHUNK_MIN_BYTES: usize = 2 * 1024;
 const CHUNK_MAX_BYTES: usize = 8 * 1024;
 
-/// Content-defined chunk boundaries (source byte offsets, each the start of a
-/// chunk) for paragraphs longer than [`HUGE_PARAGRAPH_BYTES`]. A boundary
-/// follows a space whose preceding bytes hash to an anchor value, at least
-/// [`CHUNK_MIN_BYTES`] after the previous boundary; after
-/// [`CHUNK_MAX_BYTES`] any space qualifies, and after twice that any
-/// character boundary does (text without spaces). The hash depends only on
-/// nearby bytes, so an edit shifts at most the boundaries around it.
+/// Content-defined chunk boundaries (source byte offsets, each the start of a chunk) for
+/// paragraphs longer than [`HUGE_PARAGRAPH_BYTES`].
 pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
     const WINDOW: usize = 16;
     let bytes = text.as_bytes();
@@ -168,8 +152,9 @@ pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
     boundaries
 }
 
-/// The whole lines (line-feed-delimited paragraphs) an edit touched: `old[start..old_end]`
-/// became `new[start..new_end]`; both end before a line feed or at the end.
+/// The whole lines (line-feed-delimited paragraphs) an edit touched:
+/// `old[start..old_end]` became `new[start..new_end]`; both end before a line feed or at
+/// the end.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct LineEdit {
     pub(crate) start: usize,
@@ -197,8 +182,8 @@ impl LineEdit {
             .iter()
             .rposition(|&byte| byte == b'\n')
             .map_or(0, |at| at.saturating_add(1));
-        // The first byte of the common suffix lies in the last changed
-        // paragraph; it ends at the next line feed of that suffix.
+        // The first byte of the common suffix lies in the last changed paragraph; it ends
+        // at the next line feed of that suffix.
         let changed_end = old.len().saturating_sub(suffix);
         let old_end = old_bytes[changed_end..]
             .iter()
@@ -237,8 +222,8 @@ pub(crate) struct VirtualInsertion {
     pub(crate) ch: char,
 }
 
-/// Maps the zero-width break hints used by cosmic-text back onto the
-/// application's unchanged UTF-8 byte space.
+/// Maps the zero-width break hints used by cosmic-text back onto the application's
+/// unchanged UTF-8 byte space.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OffsetMap {
     /// Virtual shaping characters inserted before source byte positions.
@@ -257,9 +242,9 @@ impl OffsetMap {
     ) -> Self {
         use std::collections::HashSet;
 
-        // cosmic-text already consumes unicode-linebreak's UAX #14 table. Only
-        // add the ICU dictionary/LSTM opportunities which that table cannot
-        // express for complex-context scripts.
+        // cosmic-text already consumes unicode-linebreak's UAX #14 table. Only add the
+        // ICU dictionary/LSTM opportunities which that table cannot express for
+        // complex-context scripts.
         let native: HashSet<usize> = unicode_linebreak::linebreaks(text)
             .map(|(byte, _)| byte)
             .collect();
@@ -300,8 +285,6 @@ impl OffsetMap {
             if a.source != b.source {
                 return false;
             }
-            // Prefer a visible discretionary hyphen over a plain zero-width
-            // dictionary break when both models identify the same boundary.
             if a.ch == VIRTUAL_BREAK && b.ch != VIRTUAL_BREAK {
                 a.ch = b.ch;
             }
@@ -310,8 +293,7 @@ impl OffsetMap {
         Self { insertions }
     }
 
-    /// Add `extra` insertions; each goes after any already at its source
-    /// position.
+    /// Add `extra` insertions; each goes after any already at its source position.
     pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
         self.insertions.extend_from_slice(extra);
         self.insertions
@@ -339,15 +321,10 @@ impl OffsetMap {
         self.insertions.is_empty()
     }
 
-    /// Split paragraphs longer than [`HUGE_PARAGRAPH_BYTES`] into shaping
-    /// chunks with virtual line feeds. cosmic-text shapes, wraps and caches
-    /// one paragraph as a unit, so a pasted page of text without paragraph
-    /// breaks was reshaped completely on every keystroke and every frame
-    /// that relaid it (and grew without bound). Boundaries are content
-    /// defined (see [`paragraph_chunk_boundaries`]): an edit moves only the
-    /// boundaries next to it, so unchanged chunks keep their shaped lines.
-    /// A chunk boundary ends a visual line early; that is the only visible
-    /// difference, and only in paragraphs over the threshold.
+    /// Split paragraphs longer than [`HUGE_PARAGRAPH_BYTES`] into shaping chunks with
+    /// virtual line feeds. cosmic-text shapes, wraps and caches one paragraph as a unit,
+    /// so a pasted page of text without paragraph breaks was reshaped completely on every
+    /// keystroke and every frame that relaid it (and grew without bound).
     pub(crate) fn add_paragraph_chunks(&mut self, text: &str) {
         let boundaries = paragraph_chunk_boundaries(text);
         if boundaries.is_empty() {
@@ -443,9 +420,7 @@ impl OffsetMap {
         let mut local_start = 0;
         for insertion in &self.insertions {
             let at = insertion.source;
-            // A boundary shared by two attributed spans belongs to the span on
-            // its left. This inserts exactly one hint without changing either
-            // neighbouring run's visible styling.
+            // A boundary shared by two attributed spans belongs to the span on its left.
             if at <= source_start || at > source_end {
                 continue;
             }
@@ -463,10 +438,8 @@ impl OffsetMap {
     }
 }
 
-/// Extended grapheme clusters (UAX #29) paired with their starting byte
-/// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
-/// whole. Offsets address the original UTF-8 string and each slice is a
-/// complete UAX #29 cluster, using the same ICU rules as toolkit selection.
+/// Extended grapheme clusters (UAX #29) paired with their starting byte offset, so
+/// combining marks, emoji modifiers, flags and ZWJ sequences stay whole.
 pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
     use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
     const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
@@ -487,10 +460,8 @@ pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Return Unicode word-like spans in original UTF-8 byte coordinates.
-/// Uses the same ICU segmentation as toolkit word selection and movement.
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
-    // As for lines: no dictionary/LSTM models in the browser.
     #[cfg(not(target_arch = "wasm32"))]
     static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
         LazyLock::new(|| WordSegmenter::new_auto(Default::default()));
@@ -505,10 +476,6 @@ pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usi
                 return None;
             };
             let range = first.0..second.0;
-            // ICU can tag a word ending in an Extend scalar as None before
-            // whitespace despite finding the correct span. Retain that
-            // complete segment when it contains a letter or number,
-            // preserving ICU's boundaries and attached marks.
             let word_like = second.1.is_word_like()
                 || text
                     .get(range.clone())
@@ -556,7 +523,6 @@ mod tests {
         );
         let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
         assert!(!paragraph_chunk_boundaries(&solid).is_empty());
-        // Line feeds split paragraphs first.
         let two = format!(
             "{}\n{}",
             &text[..HUGE_PARAGRAPH_BYTES - 10],
@@ -679,7 +645,6 @@ mod tests {
             );
         }
 
-        // Case `custom_breaks_ignore_endpoints_and_non_utf8_boundaries`.
         {
             let text = "éclair";
             let map =
@@ -699,14 +664,9 @@ mod tests {
     }
 }
 
-/// The Unicode Bidirectional Algorithm (UAX #9) run over `text` with its
-/// paragraph direction taken from its first strong character: the embedding
-/// level of every byte and the paragraphs, for code that orders a line's
-/// runs itself.
-///
-/// Call this rather than `unicode_bidi::BidiInfo::new`, which is generic over
-/// its character data and text: an app calling it compiled the whole
-/// algorithm again, while this one is compiled once, into the toolkit.
+/// The Unicode Bidirectional Algorithm (UAX #9) run over `text` with its paragraph
+/// direction taken from its first strong character: the embedding level of every byte and
+/// the paragraphs, for code that orders a line's runs itself.
 #[inline(never)]
 #[must_use]
 pub fn bidi_info(text: &str) -> unicode_bidi::BidiInfo<'_> {

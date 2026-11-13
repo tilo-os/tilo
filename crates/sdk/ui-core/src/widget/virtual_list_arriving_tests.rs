@@ -10,8 +10,6 @@ use super::tests::{PagedList, ProbeRow, lay_out};
 use super::*;
 use crate::widget::SkeletonShape;
 
-/// A list model whose rows come from another device: row 0 is on its
-/// way, row 1 failed and can be asked for again.
 struct RemoteRows {
     ready: Rc<Cell<bool>>,
     retried: Rc<Cell<Option<usize>>>,
@@ -105,7 +103,6 @@ fn a_pending_row_keeps_its_slot_and_the_list_paints_its_placeholder() {
         Some(Step::Skeleton)
     );
 
-    // The failed row says why, with a retry that asks the model again.
     assert!(matches!(
         &list.mounted[1].state,
         MountedRowState::Failed(message, true) if message == "offline"
@@ -122,8 +119,6 @@ fn a_pending_row_keeps_its_slot_and_the_list_paints_its_placeholder() {
     });
     assert_eq!(retried.get(), Some(1));
 
-    // The row lands after its skeleton showed: it stands its minimum,
-    // then the row fills its slot without moving the one below.
     ready.set(true);
     let landed = skeleton + crate::time::Duration::from_millis(10);
     with_monotonic_time(landed, || {
@@ -241,9 +236,6 @@ fn a_paged_list_requests_its_window_and_keeps_each_row_while_it_arrives() {
     });
 }
 
-/// A reader moving through the list hears a row that is still on its way as loading, not as an
-/// unnamed slot: the row is focusable from the moment its slot stands, so it says what it is
-/// until what it will show arrives.
 #[test]
 fn a_row_on_its_way_is_named_for_what_it_is() {
     let model = RemoteRows {

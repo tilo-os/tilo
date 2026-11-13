@@ -43,8 +43,10 @@ use rows::{
 /// wrote, so one that does not read as a number is no row here.
 fn more_row(id: &str) -> Option<usize> {
     let more = id.strip_prefix(MORE_PREFIX)?;
-    // ignored-failure: the id is one this palette wrote, and another row has another
-    more.parse().ok()
+    tilo_failure::ignored!(
+        "the id is one this palette wrote, and another row has another",
+        more.parse().ok()
+    )
 }
 
 /// The row under the apps that lists every one of them, by its name.

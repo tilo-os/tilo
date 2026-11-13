@@ -1,26 +1,6 @@
 //! Running out of memory, handled before the kernel has to.
 //!
-//! Running out of memory must never freeze or crash the session. Long before
-//! the kernel's OOM killer acts, a machine with compressed swap thrashes: it
-//! spends its time paging, input stalls, frames stop. So the watch over a
-//! session's apps samples memory pressure (PSI: `/proc/pressure/memory` and
-//! the apps' own `memory.pressure`) and acts in two steps:
-//!
-//! 1. **Rising pressure:** reclaim from apps in the background tier
-//!    (`memory.reclaim`), a quarter of what each holds, at most every few
-//!    seconds each. An app in the foreground tier and launches still starting
-//!    are never touched, nor is the session (it is not in the app tree).
-//! 2. **Critical pressure that stays:** end the one app growing out of
-//!    control: the one whose memory grew most over the last
-//!    [`GROWTH_WINDOW_TICKS`] samples, not the largest one. An app ends
-//!    whole, with every process it started. The person is told which and
-//!    why. Then the policy waits [`COOLDOWN_TICKS`] for the freed memory to
-//!    show before it would end anything else.
-//!
-//! This module is the policy alone, a pure function of the readings it is
-//! given ([`Policy::tick`]); [`crate::memory_monitor`] samples a source on a
-//! thread of its own and carries the actions out, and the session's app launch
-//! is the source of the apps it runs (`tilo_app_launch`'s memory module).
+//! Running out of memory must never freeze or crash the session.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -29,29 +9,26 @@ use crate::priority::Tier;
 
 const MIB: u64 = 1 << 20;
 
-/// `some avg10` (percent of the last ten seconds some task stalled on memory)
-/// from which pressure is rising.
+/// `some avg10` (percent of the last ten seconds some task stalled on memory) from which pressure is
+/// rising.
 pub const RISING_SOME: f64 = 10.0;
 /// `full avg10` from which pressure is rising.
 pub const RISING_FULL: f64 = 3.0;
-/// `some avg10` from which pressure is critical: tasks wait on memory half
-/// the time.
+/// `some avg10` from which pressure is critical: tasks wait on memory half the time.
 pub const CRITICAL_SOME: f64 = 50.0;
-/// `full avg10` from which pressure is critical: everything stalls together
-/// for a seventh of the time, which a person sees as a frozen screen.
+/// `full avg10` from which pressure is critical: everything stalls together for a seventh of the time,
+/// which a person sees as a frozen screen.
 pub const CRITICAL_FULL: f64 = 15.0;
-/// `some avg10` below which (with `full` below [`CALM_FULL`]) the machine
-/// is calm again.
+/// `some avg10` below which (with `full` below [`CALM_FULL`]) the machine is calm again.
 pub const CALM_SOME: f64 = 5.0;
-/// `full avg10` below which (with `some` below [`CALM_SOME`]) the machine is
-/// calm again.
+/// `full avg10` below which (with `some` below [`CALM_SOME`]) the machine is calm again.
 pub const CALM_FULL: f64 = 1.0;
 
-/// Consecutive critical samples before anything is ended: a moment's spike
-/// (a build linking) is no reason to end anything.
+/// Consecutive critical samples before anything is ended: a moment's spike (a build linking) is no
+/// reason to end anything.
 pub const CRITICAL_TICKS: u32 = 3;
-/// Consecutive critical samples after which the unit still growing fastest is
-/// ended even when it grew less than [`RUNAWAY_GROWTH`].
+/// Consecutive critical samples after which the unit still growing fastest is ended even when it grew
+/// less than [`RUNAWAY_GROWTH`].
 pub const STALLED_TICKS: u32 = 10;
 /// Samples over which growth is measured.
 pub const GROWTH_WINDOW_TICKS: u64 = 20;
@@ -63,8 +40,8 @@ pub const COOLDOWN_TICKS: u64 = 10;
 pub const RECLAIM_EVERY_TICKS: u64 = 5;
 /// Reclaiming less than this is not worth the work.
 pub const MIN_RECLAIM: u64 = 16 * MIB;
-/// A unit that stalls on memory this much of the time already has too little:
-/// taking more from it would only make it thrash.
+/// A unit that stalls on memory this much of the time already has too little: taking more from it would
+/// only make it thrash.
 pub const STARVED_SOME: f64 = 60.0;
 
 /// Why the system ended an app for memory.
@@ -72,21 +49,19 @@ pub const STARVED_SOME: f64 = 60.0;
 pub enum Cause {
     /// The kernel's OOM killer chose it: memory ran out.
     Kernel,
-    /// The session's pressure policy ended it: it kept taking more memory
-    /// while the machine ran low.
+    /// The session's pressure policy ended it: it kept taking more memory while the machine ran low.
     Runaway,
 }
 
-/// One PSI reading: the share of the last ten seconds in which some task
-/// (`some`) or every task (`full`) stalled on memory, in percent.
+/// One PSI reading: the share of the last ten seconds in which some task (`some`) or every task
+/// (`full`) stalled on memory, in percent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Psi {
     pub some_avg10: f64,
     pub full_avg10: f64,
 }
 
-/// The `avg10` values of a PSI file (`some avg10=1.23 avg60=… total=…` and
-/// a `full` line). `None` when the text is not one.
+/// The `avg10` values of a PSI file (`some avg10=1.23 avg60=… total=…` and a `full` line).
 #[must_use]
 pub fn parse_psi(text: &str) -> Option<Psi> {
     let avg10 = |kind: &str| {
@@ -138,8 +113,7 @@ pub struct Unit {
     pub dir: PathBuf,
     pub app_id: String,
     pub tier: Tier,
-    /// What it holds that only it can give back: anonymous memory, in RAM or
-    /// compressed in swap. Page cache is not growth: the kernel drops it.
+    /// What it holds that only it can give back: anonymous memory, in RAM or compressed in swap.
     pub footprint: u64,
     /// Everything charged to it (`memory.current`): what a reclaim works on.
     pub charged: u64,
@@ -175,7 +149,6 @@ impl Policy {
     }
 
     /// Take one sample: the machine's pressure `system` and every unit.
-    /// Returns what to do now; an empty list most of the time.
     pub fn tick(&mut self, system: Psi, units: &[Unit]) -> Vec<Action> {
         self.tick = self.tick.saturating_add(1);
         self.remember(units);
@@ -204,8 +177,7 @@ impl Policy {
         actions
     }
 
-    /// Whether `system` is calm: then sampling may stop until pressure
-    /// rises again.
+    /// Whether `system` is calm: then sampling may stop until pressure rises again.
     #[must_use]
     pub fn calm(system: Psi) -> bool {
         Level::of(system) == Level::Calm
@@ -258,10 +230,9 @@ impl Policy {
         actions
     }
 
-    /// The unit growing out of control, with its growth: the most growth of
-    /// at least [`RUNAWAY_GROWTH`], or, once pressure stayed critical for
-    /// [`STALLED_TICKS`], the most growth at all. Ties go to the background
-    /// tier before the foreground one.
+    /// The unit growing out of control, with its growth: the most growth of at least
+    /// [`RUNAWAY_GROWTH`], or, once pressure stayed critical for [`STALLED_TICKS`], the most growth at
+    /// all.
     fn runaway<'a>(&self, units: &'a [Unit]) -> Option<(&'a Unit, u64)> {
         let floor = if self.critical_for >= STALLED_TICKS {
             1
@@ -286,8 +257,7 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
 
-    /// A scripted stand-in for the kernel's PSI files and the app cgroups:
-    /// what each sample reads.
+    /// A scripted stand-in for the kernel's PSI files and the app cgroups: what each sample reads.
     struct FakeSource {
         system: Vec<Psi>,
         units: Vec<Vec<Unit>>,
@@ -413,8 +383,8 @@ mod tests {
 
     #[test]
     fn critical_pressure_ends_the_unit_growing_fastest_not_the_largest() {
-        // The browser is the largest and steady; the video call grows
-        // 200 MiB a sample while the editor in front grows a little.
+        // The browser is the largest and steady; the video call grows 200 MiB a sample while the
+        // editor in front grows a little.
         let samples: Vec<Vec<Unit>> = (0..6_u64)
             .map(|at| {
                 vec![
@@ -462,8 +432,8 @@ mod tests {
                 "sample {at}: {actions:?}"
             );
         }
-        // Critical that stays: one end, then nothing for the cooldown (the
-        // samples up to the one where it lapses).
+        // Critical that stays: one end, then nothing for the cooldown (the samples up to the one where
+        // it lapses).
         let mut policy = Policy::new();
         let mut ends = Vec::new();
         for at in 0..(u64::from(CRITICAL_TICKS) - 1 + COOLDOWN_TICKS) {
@@ -478,9 +448,8 @@ mod tests {
 
     #[test]
     fn pressure_that_stays_critical_ends_whatever_still_grows() {
-        // Nothing runs away, but the editor keeps creeping up while the
-        // machine is stuck: after STALLED_TICKS it is ended, the steady
-        // larger app is not.
+        // Nothing runs away, but the editor keeps creeping up while the machine is stuck: after
+        // STALLED_TICKS it is ended, the steady larger app is not.
         let mut policy = Policy::new();
         let mut ends = Vec::new();
         for at in 0..u64::from(STALLED_TICKS) {

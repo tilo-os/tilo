@@ -4,7 +4,7 @@
 //! wrong people.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Change, Grant, GrantId, KindSet, Lifetime, Role, Subject, TreePath,
+    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath,
 };
 use tilo_desktop_model::*;
 
@@ -21,11 +21,11 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
     let _ = ws;
     Grant::new(
         id,
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         node,
         KindSet::READ_UNDOABLE,
         Answer::Allow,
-        Subject::person("ada"),
+        Grantee::person("ada"),
     )
 }
 
@@ -88,12 +88,12 @@ fn a_grant_on_another_workspace_is_not_membership_here() {
     let mut ws = workspace();
     let here = agent_grant(&ws, "member", ws.node());
     ws.grant(Grant {
-        subject: Subject::agent("member"),
+        grantee: Grantee::agent("member"),
         ..here
     });
     ws.grant(Grant {
         id: GrantId::new("other-workspace"),
-        subject: Subject::agent("other-workspace"),
+        grantee: Grantee::agent("other-workspace"),
         node: TreePath::workspace("a-different-durable-workspace"),
         ..agent_grant(&ws, "other-workspace", ws.node())
     });
@@ -109,11 +109,11 @@ fn the_people_roster_is_the_owner_and_the_members() {
     ws.admit("member", Role::Viewer);
     ws.grant(Grant::new(
         "elsewhere",
-        Subject::person("not-a-member-here"),
+        Grantee::person("not-a-member-here"),
         TreePath::workspace("other-workspace"),
         KindSet::ALL,
         Answer::Allow,
-        Subject::person("ada"),
+        Grantee::person("ada"),
     ));
     assert_eq!(
         ws.roster(),

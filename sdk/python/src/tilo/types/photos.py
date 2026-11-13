@@ -79,7 +79,7 @@ class OpenImage(TypedDict):
     name: str
     width: int
     height: int
-    content: str
+    content: Any
 
 class PhotoLocation(TypedDict):
     latitude: float
@@ -94,7 +94,8 @@ class Rect01(TypedDict):
     h: float
 
 class Library(Resource):
-    """Photos — `photos.library`."""
+    """Library — `photos.library`."""
+    __surface__ = "so.tilo.photos@f9b8a942b600bf8f"
     photos: list[LibraryPhoto]
     albums: list[Album]
 
@@ -180,7 +181,7 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("remove-album", album=album)
 
-    def make_thumbnails(self, *, photos: list[str]) -> None:
+    def make_thumbnails(self, *, photos: list[Any]) -> None:
         """Runs the app's action."""
         return self.action("make-thumbnails", photos=photos)
 

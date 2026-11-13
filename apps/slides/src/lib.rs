@@ -52,7 +52,6 @@ pub mod strings;
 
 pub use app::SlidesApp;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SlidesShell)
 }

@@ -24,6 +24,7 @@
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use test_http::{Reply, Responder};
 use tilo_session_client::{Cmd, Event, Outbox};
 
 use crate::common::{Driveable, KeywordModel, catalogue, find_edit};
@@ -699,9 +700,10 @@ fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_participant::Planner> {
     )))
 }
 
-/// An endpoint answering `answers` in order, one connection each, and
-/// reporting every request's body.
-fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::Receiver<String>) {
+/// An endpoint answering `answers` in order, and every request's body.
+fn model_endpoint(
+    answers: Vec<serde_json::Value>,
+) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
     gated_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
 }
 
@@ -709,22 +711,23 @@ fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::
 /// opened (or dropped): a request in flight while the workspace changes.
 fn gated_model_endpoint(
     answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
-) -> (String, std::sync::mpsc::Receiver<String>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
     let (sent, received) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for (answer, gate) in answers {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = std::io::BufReader::new(stream);
-            sent.send(read_request(&mut reader)).unwrap();
-            if let Some(gate) = gate {
-                let _ = gate.recv();
-            }
-            write_answer(reader, &answer);
+    let answers = std::sync::Mutex::new(
+        answers
+            .into_iter()
+            .collect::<std::collections::VecDeque<_>>(),
+    );
+    let served = Responder::serve(move |peer| {
+        let next = answers.lock().unwrap().pop_front();
+        let Some((answer, gate)) = next else { return };
+        let _ = sent.send(peer.request().body_text());
+        if let Some(gate) = gate {
+            let _ = gate.recv();
         }
+        peer.reply(&answer_reply(&answer));
     });
-    (url, received)
+    (format!("{}/v1", served.url()), received, served)
 }
 
 /// An endpoint the test answers turn by turn: each request's body comes
@@ -733,54 +736,27 @@ fn answered_model_endpoint() -> (
     String,
     std::sync::mpsc::Receiver<String>,
     std::sync::mpsc::Sender<serde_json::Value>,
+    Responder,
 ) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let (sent, received) = std::sync::mpsc::channel();
     let (answer, answers) = std::sync::mpsc::channel::<serde_json::Value>();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { return };
-            let mut reader = std::io::BufReader::new(stream);
-            if sent.send(read_request(&mut reader)).is_err() {
-                return;
-            }
-            let Ok(answer) = answers.recv() else { return };
-            write_answer(reader, &answer);
+    let answers = std::sync::Mutex::new(answers);
+    let served = Responder::serve(move |peer| {
+        if sent.send(peer.request().body_text()).is_err() {
+            return;
         }
+        let answer = answers.lock().unwrap().recv();
+        let Ok(answer) = answer else { return };
+        peer.reply(&answer_reply(&answer));
     });
-    (url, received, answer)
+    (format!("{}/v1", served.url()), received, answer, served)
 }
 
-/// The body of the HTTP request `reader` carries.
-fn read_request(reader: &mut std::io::BufReader<std::net::TcpStream>) -> String {
-    use std::io::{BufRead as _, Read as _};
-    let mut length = 0;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
-        }
-        if line == "\r\n" {
-            break;
-        }
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).unwrap();
-    String::from_utf8(body).unwrap()
-}
-
-/// Reply `answer` as JSON and close the connection.
-fn write_answer(reader: std::io::BufReader<std::net::TcpStream>, answer: &serde_json::Value) {
-    use std::io::Write as _;
-    let answer = answer.to_string();
-    let reply = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{answer}",
-        answer.len()
-    );
-    reader.into_inner().write_all(reply.as_bytes()).unwrap();
+/// `answer` as a JSON reply.
+fn answer_reply(answer: &serde_json::Value) -> Reply {
+    Reply::status(200)
+        .header("Content-Type", "application/json")
+        .body(answer.to_string())
 }
 
 /// A chat-completions turn calling `name` with `input`.
@@ -861,7 +837,7 @@ fn run_task(
 async fn a_one_app_task_is_planned_in_one_model_request() {
     let (root, host_device, _state, host, _laptop) = session().await;
     let set_cells = "sheets.workbook#set-cells";
-    let (url, sent) = model_endpoint(vec![tool_call(
+    let (url, sent, _served) = model_endpoint(vec![tool_call(
         "p1",
         "plan",
         &serde_json::json!({"steps": [{"operation": set_cells,
@@ -907,7 +883,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_is_read_in_the_planning_conversation() {
     let (root, host_device, _state, host, _laptop) = session().await;
-    let (url, sent) = model_endpoint(vec![
+    let (url, sent, _served) = model_endpoint(vec![
         tool_call(
             "r1",
             tilo_agent_participant::READ_VIEW,
@@ -1469,7 +1445,7 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
                 "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": rows}}], "then": ""}),
         )
     };
-    let (url, sent) = model_endpoint(vec![
+    let (url, sent, _served) = model_endpoint(vec![
         set_cells(serde_json::json!([["{{Sheet1!Z99}}"]])),
         set_cells(serde_json::json!([["No figure yet"]])),
     ]);
@@ -1548,7 +1524,7 @@ async fn task_with_model(
     serde_json::Value,
 ) {
     let (root, host_device, _state, host, _laptop) = session().await;
-    let (url, sent) = model_endpoint(answers);
+    let (url, sent, _served) = model_endpoint(answers);
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1826,7 +1802,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     let (root, host_device, _state, host, _laptop) = session().await;
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
     let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent) = gated_model_endpoint(vec![
+    let (url, sent, _served) = gated_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2282,7 +2258,7 @@ impl RelayWorkspace {
 async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
     let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent) = gated_model_endpoint(vec![
+    let (url, sent, _served) = gated_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2375,7 +2351,7 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
 async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
     let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent) = gated_model_endpoint(vec![
+    let (url, sent, _served) = gated_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2539,7 +2515,7 @@ fn ana_said(workspace: &RelayWorkspace) -> String {
 /// them, and before the task finishes it is planned for them again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
     let task = workspace
         .ana
@@ -2633,7 +2609,7 @@ async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes(
 /// finish, its result saying why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn obligations_left_open_are_reminded_done_or_set_aside() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
     let ours = workspace.ana.0.open(CHAT, None).unwrap();
     let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
@@ -2710,7 +2686,7 @@ async fn obligations_left_open_are_reminded_done_or_set_aside() {
 /// request, no reminder, its result as before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plan_without_obligations_finishes_without_a_reminder() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
     let task = workspace
         .ana

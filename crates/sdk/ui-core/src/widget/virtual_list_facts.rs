@@ -5,15 +5,12 @@ use crate::widget::{ListRowProps, Tone};
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
 
-/// What a list reads of an item beside building its row: where the row stands (its group, its
-/// parent), whether it opens where it stands, and what it shows, as [`ListItemProps`] has them.
 #[derive(Default)]
 pub(super) struct ItemFacts {
     pub(super) item: Option<ResourceId>,
     pub(super) author: Option<Person>,
     pub(super) time: Option<Moment>,
     pub(super) read_by: Vec<Person>,
-    /// It carries a change the person has not seen.
     pub(super) change: bool,
     pub(super) group: Option<String>,
     pub(super) group_tone: Option<Tone>,
@@ -21,13 +18,10 @@ pub(super) struct ItemFacts {
     pub(super) removed: bool,
     pub(super) parent: Option<ResourceId>,
     pub(super) opens: bool,
-    /// It carries the document its row opens into.
     pub(super) detail: bool,
-    /// The title of its row, when the row is a list row.
     pub(super) title: Option<String>,
 }
 
-/// The prop `name` of `source`, or its default when the source gives none.
 fn prop_of<T: crate::component::PropType + Default>(
     source: &mut dyn Source,
     name: &str,
@@ -39,8 +33,6 @@ fn prop_of<T: crate::component::PropType + Default>(
 }
 
 impl ItemFacts {
-    /// The facts of an item as its source gives them, reading its props and what its slots
-    /// hold, and of its row only the title.
     pub(super) fn read(source: &mut dyn Source) -> Result<Self, String> {
         let mut title = None;
         if matches!(source.slot_kinds("row").as_slice(), [Some(kind)] if kind == ListRowProps::NAME)
@@ -67,7 +59,6 @@ impl ItemFacts {
         })
     }
 
-    /// The facts of an item given whole.
     pub(super) fn of(item: &ListItemProps) -> Self {
         Self {
             item: item.item.clone(),

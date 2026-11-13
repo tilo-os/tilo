@@ -9,8 +9,6 @@ pub enum PickerOperation {
     Select {
         entry: String,
     },
-    /// Add the entry to the selection, or take it out, where several may
-    /// be chosen; elsewhere the same as `Select`.
     AlsoSelect {
         entry: String,
     },
@@ -31,13 +29,9 @@ pub enum PickerOperation {
     Filter {
         index: usize,
     },
-    /// Search every place the person can reach (the system search), as
-    /// Enter in the search field does; an empty query goes back to the
-    /// folder.
     Search {
         query: String,
     },
-    /// Show what was chosen here before.
     Recent,
 }
 
@@ -59,8 +53,7 @@ pub fn entry_id(path: &std::path::Path) -> String {
 }
 
 impl FilePicker {
-    /// The types the list may be narrowed to, in the order the type menu
-    /// shows them.
+    /// The types the list may be narrowed to, in the order the type menu shows them.
     pub fn filter_labels(&self) -> Vec<String> {
         self.filters
             .iter()
@@ -68,8 +61,8 @@ impl FilePicker {
             .collect()
     }
 
-    /// Whether confirming now would answer: something fit is chosen, or a
-    /// name is typed to save as.
+    /// Whether confirming now would answer: something fit is chosen, or a name is typed to
+    /// save as.
     pub fn can_confirm(&self) -> bool {
         self.can_commit_open()
     }
@@ -84,7 +77,6 @@ impl FilePicker {
         self.multiple
     }
 
-    /// Binds an operation to the actual listing, selection and Save prompt.
     fn semantic_state(&self) -> String {
         let mut hash = blake3::Hasher::new();
         let listing = match &self.listing {

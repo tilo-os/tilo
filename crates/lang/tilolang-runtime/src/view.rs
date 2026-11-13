@@ -116,16 +116,6 @@ impl UiNode {
         })
     }
 
-    /// How many rows a `list` has: its children, or for a preview, which builds only the rows
-    /// it shows, the count it carries (its `len` property).
-    #[must_use]
-    pub fn items_total(&self) -> usize {
-        match self.props.get(LIST_LEN) {
-            Some(Value::Int(len)) => usize::try_from(*len).unwrap_or(0),
-            _ => self.children.len(),
-        }
-    }
-
     /// Number of nodes in the subtree.
     pub fn count(&self) -> usize {
         self.children

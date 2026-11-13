@@ -9,7 +9,6 @@ fn init() {
     notify(None);
 }
 
-/// What the window's bar says, and the button beside it.
 fn bar() -> Option<(String, ToastKind, Option<String>)> {
     notice().map(|notice| {
         (
@@ -20,16 +19,12 @@ fn bar() -> Option<(String, ToastKind, Option<String>)> {
     })
 }
 
-/// "Try again" pressed in the window's bar.
 fn press_try_again() {
     deliver(ToolbarEvent::Action {
         id: SAVE_RETRY_ACTION.to_owned(),
     });
 }
 
-/// A save that lands before it stalls says nothing, however slow it was;
-/// one that stalls says "Retrying…" and asks for one more submission, and
-/// its landing says "Saved" for a notice's lifetime.
 #[test]
 fn autosave_is_silent_until_a_save_stalls() {
     init();
@@ -59,7 +54,6 @@ fn autosave_is_silent_until_a_save_stalls() {
     );
     assert!(surface.take_retry(), "one more submission");
     assert!(!surface.take_retry(), "once");
-    // A notice's lifetime runs on the window's clock.
     let landed = t1 + SAVE_STALL + Duration::from_secs(1);
     with_monotonic_time(landed, || surface.set(SaveState::Saved, landed));
     surface.publish();
@@ -82,9 +76,7 @@ fn autosave_is_silent_until_a_save_stalls() {
     );
 }
 
-/// A failed save is an error in the window's bar with "Try again" beside
-/// it. It stays through the retry it asks for, and a save that succeeds
-/// takes it down and says "Saved".
+/// A failed save is an error in the window's bar with "Try again" beside it.
 #[test]
 fn a_failed_save_stays_in_the_bar_with_try_again_until_a_save_succeeds() {
     init();
@@ -130,9 +122,6 @@ fn a_failed_save_stays_in_the_bar_with_try_again_until_a_save_succeeds() {
     assert_eq!(surface.failure(), None);
 }
 
-/// An unconfirmed save that gave up asks the person in place: "Not saved"
-/// with "Try again", held until it is pressed, and pressing it waits
-/// afresh, quietly at first.
 #[test]
 fn a_save_that_gives_up_asks_in_the_bar_and_try_again_waits_afresh() {
     init();
@@ -159,8 +148,6 @@ fn a_save_that_gives_up_asks_in_the_bar_and_try_again_waits_afresh() {
     assert_eq!(bar(), None, "quietly at first");
 }
 
-/// A press on a notice's button that is not the save's leaves the save
-/// alone.
 #[test]
 fn only_the_saves_own_button_retries() {
     init();
@@ -225,7 +212,6 @@ fn a_save_that_gives_up_out_of_sight_raises_a_notification() {
     assert!(!surface.take_withdrawal(), "nothing was raised");
 }
 
-/// The save's notice leaves the bar with the window's surface.
 #[test]
 fn the_notice_leaves_with_its_surface() {
     init();

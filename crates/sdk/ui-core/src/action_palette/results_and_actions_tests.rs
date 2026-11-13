@@ -2,8 +2,6 @@
 // actions read as what each does, never as a second copy of the result's name; and the band
 // under the list shows the result, never an echo of the row under it.
 
-/// A provider whose one hit is `title`, found by any query containing "note": what an app's
-/// own search lists when a person finds a message or a note.
 struct OneHit(&'static str);
 
 impl SearchProvider for OneHit {
@@ -23,9 +21,6 @@ impl SearchProvider for OneHit {
     }
 }
 
-/// What the app publishes: its root, holding the message a person found. The message is an
-/// item of the root (`chat.workspace/messages/…`), so its actions read with the item's name
-/// under them, as Chat's do (`tilo_actions::listed_row`).
 fn published_tree(actions: Vec<(&'static str, &'static str)>) -> Vec<ResourceSpec> {
     let mut message = ResourceSpec::new(
         "tl:so.tilo.chat:root/messages/m1",
@@ -66,14 +61,12 @@ fn an_action_does_not_repeat_the_result_it_acts_on() {
         Box::new(OneHit("The onboarding notes")),
     );
     let rows = palette.result_rows();
-    // The result's own row names it, with the note's kind under it.
     assert!(
         rows.iter()
             .any(|(title, subtitle)| title == "The onboarding notes"
                 && subtitle.as_deref() == Some("Message")),
         "the result reads as itself: {rows:?}"
     );
-    // Its actions read as what they do: no action row says the result's name again.
     let actions: Vec<&(String, Option<String>)> = rows
         .iter()
         .filter(|(title, _)| matches!(title.as_str(), "Open" | "Edit" | "Pin"))
@@ -90,7 +83,6 @@ fn an_action_does_not_repeat_the_result_it_acts_on() {
 
 #[test]
 fn a_preview_that_only_echoes_the_row_is_not_drawn() {
-    // The hit's preview is its own title: the band would say it a second time.
     let mut echoed = SearchResult::new("Notes", "The onboarding notes", "note:1")
         .with_preview("The onboarding notes");
     assert!(
@@ -102,7 +94,6 @@ fn a_preview_that_only_echoes_the_row_is_not_drawn() {
         crate::search::SearchPreview::from("The onboarding notes").restates("The onboarding notes")
     );
 
-    // A preview that says more than the title (the body of a message, its sender) stays.
     let rich = SearchResult::new("Notes", "The onboarding notes", "note:1")
         .with_preview("Morning! The new onboarding build is on the test machines.");
     assert!(
@@ -110,15 +101,11 @@ fn a_preview_that_only_echoes_the_row_is_not_drawn() {
         "a body the title does not say is kept"
     );
 
-    // A headed preview keeps its heading even where the body matches.
     let headed = SearchResult::new("Feeds", "Rust Blog", "feed:1")
         .with_preview(crate::search::SearchPreview::titled("Rust Blog").body("Rust Blog"));
     assert!(headed.preview.is_some(), "a heading is the preview's own");
 }
 
-/// A list is told apart from one the card would cut: as many rows as
-/// the cap holds stand inside it, under their group headers, and one
-/// more does not.
 #[test]
 fn a_list_that_fits_the_card_is_told_apart_from_one_that_does_not() {
     let mut palette = ActionPalette::rows(Vec::new());
@@ -140,8 +127,6 @@ fn a_list_that_fits_the_card_is_told_apart_from_one_that_does_not() {
     );
 }
 
-/// A message with `action` published on it, the item a person found and can
-/// act on.
 fn message_with(action: ActionSpec) -> ResourceSpec {
     ResourceSpec::new(
         "tl:so.tilo.chat:root/messages/m1",
@@ -151,8 +136,6 @@ fn message_with(action: ActionSpec) -> ResourceSpec {
     .with_action(action)
 }
 
-/// The published action `spec` of a chat message, so a test states only what
-/// it is about.
 fn an_action(
     id: &str,
     label: &str,
@@ -181,7 +164,7 @@ fn the_palette_offers_only_what_a_row_can_take_now_with_its_own_picture_and_key(
     let mut message = message_with(an_action(
         "assign",
         "Assign to…",
-        vec![ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject)],
+        vec![ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee)],
     ));
     message = message.with_action(an_action(
         "remove",
@@ -198,7 +181,6 @@ fn the_palette_offers_only_what_a_row_can_take_now_with_its_own_picture_and_key(
         an_action("snooze", "Snooze", Vec::new())
             .unavailable("nothing_selected", "Choose a message first"),
     );
-    // The toolkit's own command: no picture and no chord of its own.
     message = message.with_action(an_action("undo", "Undo", Vec::new()));
     let resources = vec![
         ResourceSpec::new("tl:so.tilo.chat:root", "chat.workspace", "Chat").with_child(message),
@@ -240,8 +222,6 @@ fn the_palette_offers_only_what_a_row_can_take_now_with_its_own_picture_and_key(
     );
 }
 
-/// A hit that runs an action stands for it: the action's own row would run the
-/// same thing twice, so the list keeps the one place that runs it.
 #[test]
 fn a_hit_that_runs_an_action_is_its_row() {
     let resources = vec![
@@ -282,9 +262,6 @@ fn a_hit_that_runs_an_action_is_its_row() {
     assert!(labels.contains(&"Pin"), "{rows:?}");
 }
 
-/// An action that asks more than a row takes is no row, but whoever names it —
-/// the control bound to it, an assistive activation, a search opened on it —
-/// still asks the palette for it, and the field collects its arguments.
 #[test]
 fn an_action_no_row_lists_is_still_asked_for_by_address() {
     use tilo_actions::{ActionParam, ParamType};

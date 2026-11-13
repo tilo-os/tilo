@@ -1,47 +1,17 @@
-//! Replacing a file's contents without a window in which a crash loses them:
-//! the write path of [`Dir::write_atomic`](crate::Dir::write_atomic) on Linux
-//! and macOS, and the path-based API for native code whose files are a
-//! contract with other programs.
-//!
-//! # Why one module
-//!
-//! Writing a temp file and renaming it over the target is insufficient without
-//! syncing the file and containing directory.
-//!
-//! `rename(2)` is atomic with respect to the *directory entry*: a reader sees either the old
-//! file or the new one, never a half-written one — but it says nothing about whether the new
-//! file's **contents** reached disk. Without an `fsync` on the temp file before the rename, a
-//! power loss can leave the directory entry pointing at a file whose data blocks were never
-//! written.
-//!
-//! On Unix, [`write()`] writes and flushes a sibling file, renames it, and flushes
-//! the held containing directory. On admitted local NTFS, it creates a native
-//! write-through sibling, flushes it, renames through the held parent using
-//! extended POSIX semantics, then flushes the same retained writable file.
-//!
-//! The Windows sequence composes documented NTFS metadata behavior; native
-//! crash, operating-system and storage/filter qualification remains required.
-//! Unsupported Windows volumes fail admission before file publication effects.
-//! Both protocols require an existing durably provisioned parent and a trusted
-//! child namespace (or caller-held exclusion against child-name mutation).
-//!
-//! # What it does not do
-//!
-//! It does not create the parent directory — callers know whether a missing parent is
-//! normal (first run) or a bug, and silently creating one hides the second case. Use
-//! [`write_creating_parent`] when it is the first.
-//!
-//! The temp file is created beside the target, never in `/tmp`, so the rename is always
-//! within one filesystem — a cross-device rename fails with `EXDEV` and would leave the
-//! original untouched and the write silently lost by any caller that ignored the error.
-//!
-//! Every write gets its own exclusively created temp name (process id plus a
-//! per-process sequence), so concurrent writers never truncate each other's
-//! half-written temp file, and a temp file left behind by a crash never blocks
-//! the next save.
-//!
-//! With the `json` feature, `json` adds load-or-default reading and atomic
-//! saving of `serde` values on top of the same write path.
+//! Replacing a file's contents without a window in which a crash loses them: the write
+//! path of [`Dir::write_atomic`](crate::Dir::write_atomic) on Linux and macOS, and the
+//! path-based API for native code whose files are a contract with other programs.
+//! Writing a temp file and renaming it over the target is not enough: `rename(2)` is
+//! atomic only as to the directory entry, so without syncing the temp file and its
+//! directory a power loss can leave the entry pointing at blocks that were never
+//! written. On Unix a sibling is written, flushed and renamed, then the containing
+//! directory is flushed; on admitted local NTFS a write-through sibling is created,
+//! flushed, renamed through the held parent, and the retained handle flushed again. It
+//! does not create the parent directory: callers know whether a missing parent is a
+//! first launch or a bug. The temp file is always beside the target, never in `/tmp`,
+//! so the rename stays within one filesystem, and each write gets its own name (process
+//! id plus a sequence), so concurrent writers never share one and a crash's leftovers
+//! never block the next save.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod bounded;
@@ -83,12 +53,8 @@ pub mod test_support;
 #[cfg(any(unix, windows))]
 pub use replacement_block::block_replacement;
 
-/// Where the standard library has no file system (a browser page) there is
-/// no file to hold back: the replacement cannot be blocked.
-///
-/// # Errors
-///
-/// Always [`std::io::ErrorKind::Unsupported`].
+/// Where the standard library has no file system (a browser page) there is no file to hold back, so the
+/// replacement cannot be blocked.
 #[cfg(not(any(unix, windows)))]
 pub fn block_replacement(
     _path: &std::path::Path,
@@ -116,20 +82,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Sequence for the hidden sibling names [`write_with_temp_opener`] and
-/// [`create_with_temp_opener`] offer to caller-supplied temp openers.
+/// Sequence for the hidden sibling names [`write_with_temp_opener`] and [`create_with_temp_opener`]
+/// offer to caller-supplied temp openers.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
-/// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
-/// The parent directory must already be durable — see [`write_creating_parent`]
-/// for first-launch preparation (durable on Unix; transitional on Windows).
-///
-/// # Errors
-///
-/// Returns an error if the temp file can't be created/written/synced, or if the rename
-/// over `path` fails (including `EXDEV` if `path`'s parent is on a different filesystem
-/// than the temp file, or if `path`'s parent doesn't exist).
+/// Replaces `path`'s contents durably: a crash at any point leaves either the previous contents or the
+/// new ones, and on success the file has exactly `bytes`. The parent directory must already be durable;
+/// see [`write_creating_parent`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
@@ -141,16 +100,11 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// Atomically save a user document, following an existing symbolic link and
-/// retaining the existing target's Unix permission bits. Other [`write()`]
-/// consumers retain their directory-entry replacement semantics.
-///
-/// Existing targets must be writable regular files. Dangling links and Unix
-/// multiply-linked files fail closed rather than replacing a link or detaching
-/// another name from the edited document. New paths use [`write()`] defaults.
-/// As with [`write()`], callers must control the containing directory: resolution
-/// is not a defense against concurrent hostile namespace changes. This retains
-/// permission bits, not extended ACLs, ownership, or other inode metadata.
+/// Saves a user document, following an existing symbolic link and keeping the target's Unix permission
+/// bits, where the other [`write()`] consumers replace the directory entry. Existing targets must be
+/// writable regular files: a dangling link or a Unix multiply-linked file fails closed rather than
+/// detaching another name from the document. Callers must control the containing directory, and this
+/// keeps permission bits, not ACLs, ownership or other inode metadata.
 pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return write(path, bytes),
@@ -171,8 +125,8 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
             "document target is read-only",
         ));
     }
-    // Do not let directory replacement bypass the target's write access. This
-    // opens without truncating, so an access refusal leaves its bytes intact.
+    // Directory replacement must not bypass the target's write access; opening without truncating
+    // leaves it unchanged on a refusal.
     fs::OpenOptions::new().write(true).open(&target)?;
     #[cfg(unix)]
     {
@@ -195,20 +149,10 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write(&target, bytes)
 }
 
-/// [`write()`], creating the parent directory first when it is missing.
-///
-/// Unix creates any missing part of the parent chain under the deepest
-/// directory that already exists, fsyncs that directory and every held
-/// directory created below it leaf-to-root, and publishes relative to the held
-/// leaf. Existing aliases are admitted, but unresolved `missing/../other`
-/// suffixes fail before creation. Directories above the deepest existing prefix
-/// are reached but not opened or synced.
-/// Windows parent creation remains transitional: file commit does not establish
-/// durability of newly created ancestors.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory can't be created, or any error [`write()`] documents.
+/// [`write()`], creating the parent directory first when it is missing. On Unix the missing part of the
+/// chain is created under the deepest existing directory, which is fsynced along with every directory
+/// created below it, and the file is published relative to the deepest one; unresolved
+/// `missing/../other` suffixes fail before creation. Windows parent creation stays transitional.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -225,16 +169,8 @@ pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// [`write_with_mode`], creating the parent directory first when it is
-/// missing. The final file gets its restrictive mode before its atomic rename.
-/// Directory creation uses ordinary inherited modes, independently of file mode.
-/// Parent durability has the same platform-specific behavior as
-/// [`write_creating_parent`].
-///
-/// # Errors
-///
-/// Returns an error if the parent directory cannot be created, or any error
-/// [`write_with_mode`] documents.
+/// [`write_with_mode`], creating the parent directory first when it is missing; the final file gets its
+/// restrictive mode before its contents are visible.
 pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     #[cfg(windows)]
     publication::validate_windows_mode(mode).map_err(PublicationError::into_io_error)?;
@@ -253,21 +189,15 @@ pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> 
     }
 }
 
-/// Save user-private state: the parent directory is created owner-only (`0700`)
-/// and tightened to `0700` when it already exists, and the file lands with mode
-/// `0600` before it is visible at `path` — see [`write_with_mode`].
-///
-/// # Errors
-///
-/// Returns an error if the parent directory cannot be created or restricted, or
-/// any error [`write_with_mode`] documents.
+/// Saves user-private state: the parent directory is created owner-only (`0700`) and tightened to
+/// `0700` when it already exists, and so is the file.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     create_private_parent(path)?;
     write_with_mode(path, bytes, 0o600)
 }
 
-/// Create `path`'s parent owner-only, and restrict it when it already exists:
-/// `create_dir_all`'s mode only reaches newly created components.
+/// `create_dir_all`'s mode only reaches newly created components, so an existing parent is restricted
+/// here.
 fn create_private_parent(path: &Path) -> io::Result<()> {
     let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) else {
         return Ok(());
@@ -275,8 +205,8 @@ fn create_private_parent(path: &Path) -> io::Result<()> {
     create_private_directory(dir)
 }
 
-/// Create and restrict a host-owned private directory before opening locks or
-/// watches. Unix directories have mode `0700`, including an existing directory.
+/// Creates and restricts a host-owned private directory before locks or watches are opened in it: Unix
+/// directories have mode `0700`, an existing one too.
 pub fn create_private_directory(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -291,14 +221,8 @@ pub fn create_private_directory(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-/// [`write()`], with the temp file opened by `open_temp` instead of this module —
-/// for callers that must validate the opened object (owner, access, not a link)
-/// before trusting it with their bytes.
-///
-/// `open_temp` receives a fresh hidden sibling path and must create it
-/// **exclusively** (`create_new`); an `AlreadyExists` error makes the next
-/// name be tried. The file is synced, renamed over `path` and the directory
-/// synced exactly as [`write()`] does.
+/// [`write()`], with the temp file opened by `open_temp` instead of this module, for callers that must
+/// validate the opened object before writing into it.
 pub fn write_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -307,17 +231,9 @@ pub fn write_with_temp_opener(
     publish(path, bytes, open_temp, Publish::Replace).map(|_| ())
 }
 
-/// Publish `bytes` at `path` only if nothing exists there yet, never replacing
-/// a concurrently created file. The complete, synced temp file is hard-linked
-/// into place, so the name never refers to partial contents. Returns `false`
-/// when another writer already owns the name.
-///
-/// `open_temp` has the contract [`write_with_temp_opener`] documents.
-///
-/// # Errors
-///
-/// Returns creation, write, sync or hard-link errors. The filesystem must
-/// support same-directory hard links for the no-clobber guarantee.
+/// Publishes `bytes` only if nothing exists there yet, never replacing a concurrently created file: the
+/// complete, synced temp file is hard-linked into place, and `false` comes back when another writer
+/// owns the name.
 pub fn create_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -355,8 +271,8 @@ fn write_provisioned(path: &Path, bytes: &[u8], exact_mode: Option<u32>) -> io::
 }
 
 #[cfg(windows)]
-// Transitional parent preparation only; ancestor durability is handled elsewhere:
-// create_dir_all does not establish that the new parent is crash durable.
+// Ancestor durability is handled elsewhere: `create_dir_all` does not establish that the new parent's
+// entry is durable.
 fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -366,15 +282,8 @@ fn create_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// [`write()`], with unix permission bits applied to the temp file **before** it is renamed
-/// into place, so the file is never visible at its final path with wider permissions than
-/// intended — what a secret needs, since creating then `chmod`ing leaves a window where
-/// another user can open it.
-///
-/// # Errors
-///
-/// Returns any error [`write()`] documents. On Windows, only `0o600` is supported
-/// and maps to [`Privacy::OwnerOnly`]; other raw modes fail before mutation.
+/// [`write()`], with Unix permission bits applied to the temp file before it is renamed into place, so
+/// the file is never visible with the wrong mode.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
@@ -386,11 +295,8 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     }
 }
 
-/// Replace `path` with `bytes` for data that can be recreated, such as a cache entry: readers
-/// still see either the old file or the new one, never a partial one, but nothing is synced.
-/// After a crash `path` may hold the old contents, the new ones, or a torn file, so the reader
-/// must validate what it finds. Skipping the syncs keeps a write from waiting for the
-/// filesystem to flush every other dirty page first.
+/// Replaces `path` for data that can be recreated, such as a cache entry: readers still see either the
+/// old file or the new one.
 pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish(
         path,
@@ -406,11 +312,8 @@ pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     .map(|_| ())
 }
 
-/// [`write_regenerable()`] for a private runtime file: the new contents are created with
-/// `mode` (less the umask) before they are named, so they are never visible wider. Nothing is
-/// synced: for files a crash discards anyway, such as state under `$XDG_RUNTIME_DIR`, where a
-/// sync only makes the writer wait for the filesystem's journal and every other writer with it.
-/// `mode` is ignored where the platform has no permission bits.
+/// [`write_regenerable()`] for a private runtime file: the new contents are created with `mode` (less
+/// the umask) before they are named.
 pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     publish(
         path,
@@ -431,7 +334,6 @@ pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Publish {
-    /// Rename over whatever `path` currently names.
     Replace,
     /// Hard-link into place only while `path` is still absent.
     CreateNew,
@@ -463,8 +365,8 @@ pub(super) fn publish(
         Publish::CreateNew => fs::hard_link(&tmp, path),
     };
     if how == Publish::CreateNew || published.is_err() {
-        // Don't leave litter beside the target: after a hard link the temp
-        // name is a second link, and after a failed rename it is orphaned.
+        // Never leave litter beside the target: after a hard link the temp name is a second link, and
+        // after a failed rename it is orphaned.
         let _ = fs::remove_file(&tmp);
     }
     if let Err(error) = published {
@@ -474,11 +376,8 @@ pub(super) fn publish(
         return Err(error);
     }
 
-    // The data is durable before rename, but the new directory entry is not
-    // durable until its containing directory is synced. Reporting success
-    // without this step can resurrect an old rollback floor after power loss.
-    // A failure happens after publication, so callers may observe the new file,
-    // but they must not treat it as crash-durable and may safely retry.
+    // The data is durable before the rename, but the new directory entry is not until its containing
+    // directory is synced; report a failing sync.
     if sync {
         sync_directory(parent_or_current(path))?;
     }
@@ -492,11 +391,9 @@ fn parent_or_current(path: &Path) -> &Path {
     }
 }
 
-/// Flush an existing directory after publishing or renaming a file inside it.
-///
-/// Windows requires a writable directory handle with backup semantics for
-/// `FlushFileBuffers`; opening it with `File::open` fails before the flush.
-/// Callers requiring a strict durability barrier should propagate this result.
+/// Flushes an existing directory after publishing or renaming a file inside it. Windows needs a
+/// writable directory handle with backup semantics for `FlushFileBuffers`: `File::open` fails before
+/// the flush.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -516,10 +413,9 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     directory.sync_all()
 }
 
-/// The temp file's path: beside the target so the rename never crosses a filesystem
-/// boundary, dot-prefixed so a directory listing (or a `pages/*.md` glob) doesn't treat it
-/// as real content, and process-id-suffixed so two processes writing the same file don't
-/// clobber each other's temp file.
+/// Beside the target so the rename never crosses a filesystem boundary, dot-prefixed so a listing does
+/// not take it for content, and suffixed with the process id so two processes writing the same file do
+/// not clobber each other's temp file.
 fn temp_path(path: &Path, sequence: u64) -> PathBuf {
     let name = path
         .file_name()
@@ -582,7 +478,8 @@ mod tests {
             assert_eq!(fs::read(&p).unwrap(), b"hello");
         }
         {
-            // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents behind.
+            // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents
+            // behind.
             let d = TempDir::new().unwrap();
             let p = d.path().join("a.json");
             write(&p, b"a very long previous document").unwrap();
@@ -638,8 +535,8 @@ mod tests {
             assert!(left.is_empty(), "left {left:?}");
         }
         {
-            // A fixed `path.tmp` name opened with `create_new` would fail forever
-            // after one crash; a truncating open would share it between writers.
+            // A fixed `path.tmp` name opened with `create_new` would fail forever after one crash; a
+            // truncating open would share it between writers.
             let d = TempDir::new().unwrap();
             let p = d.path().join("state.json");
             for sequence in 0..4 {
@@ -769,7 +666,6 @@ mod tests {
 
     #[test]
     fn custom_temp_openers_retry_taken_names_and_never_clobber() {
-        // Phase `a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones`.
         fn a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones() {
             let d = TempDir::new().unwrap();
             let p = d.path().join("identity");
@@ -791,7 +687,6 @@ mod tests {
             assert_eq!(fs::read(&p).unwrap(), b"bytes");
             assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
         }
-        // Phase `a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones` (defined above).
         a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones();
         {
             let d = TempDir::new().unwrap();

@@ -1,6 +1,5 @@
-//! The hex editor's controls live in the window's bar: the file's name, the
-//! edit mode, the inspector's toggle, History, and find and replace in the
-//! bytes.
+//! The editor's controls in the window's bar: the file's name, the edit mode, the
+//! inspector's toggle, History, and find and replace.
 
 use ui::framework::testing::TestApp;
 use ui::widget::toast::ToastKind;
@@ -32,7 +31,6 @@ fn action(id: &str) -> ToolbarEvent {
     ToolbarEvent::Action { id: id.into() }
 }
 
-/// The bar's inspector toggle.
 fn inspector(view: &Editor) -> ui::window_toolbar::ToolbarAction {
     view.window_toolbar()
         .actions
@@ -41,7 +39,6 @@ fn inspector(view: &Editor) -> ui::window_toolbar::ToolbarAction {
         .expect("the inspector's toggle is a bar action")
 }
 
-/// The editor on a file of `bytes`, launched as a person opens it.
 fn launched(bytes: &[u8]) -> (tempfile::TempDir, TestApp<HexEditorShell>) {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("bytes.bin");
@@ -52,8 +49,8 @@ fn launched(bytes: &[u8]) -> (tempfile::TempDir, TestApp<HexEditorShell>) {
     (directory, app)
 }
 
-/// Run the window's search for `query` on the view and replace the current
-/// match (or every match) with `with`; whether the bytes changed.
+/// Run the window's search for `query` and replace the current or every match;
+/// whether the bytes changed.
 fn replace(
     app: &mut TestApp<HexEditorShell>,
     query: &str,
@@ -170,14 +167,13 @@ fn the_window_search_replaces_hex_bytes_as_one_undo_step() {
     assert_eq!(app.state().bytes, [0xde, 0xad, 0x00, 0xde, 0xad, 0x01]);
 }
 
-/// A clipboard this test has to itself: the process clipboard is shared with
-/// every test running beside it.
+/// A clipboard this test has to itself: the process clipboard is shared with every
+/// test running beside it.
 fn own_clipboard() -> ui::host::HostScope {
     let (services, _recorder) = ui::host::HostServices::recording();
     ui::host::enter(&services)
 }
 
-/// Press `key` with Ctrl held on the grid.
 fn chord(app: &mut TestApp<HexEditorShell>, key: &str) {
     app.harness().set_modifiers(&["Ctrl".to_owned()]);
     app.harness().key(key);
@@ -196,9 +192,8 @@ fn copying_pasting_and_cutting_carry_bytes_in_the_focus_mode() {
     chord(&mut app, "c");
     assert_eq!(ui::clipboard_paste().as_deref(), Some("de ad be ef"));
 
-    // Pasted back over the whole selection as one step: one Undo returns the
-    // file as it was opened. Overwrite mode keeps the length, so the paste is
-    // the same size as what it replaces.
+    // Pasted back over the whole selection as one step: one Undo returns the file as
+    // it was opened.
     ui::clipboard_copy("ca fe ff 00");
     chord(&mut app, "v");
     assert_eq!(app.state().bytes, [0xca, 0xfe, 0xff, 0x00]);
@@ -221,8 +216,8 @@ fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
     app.harness()
         .perform_named("hex_view", &ui::a11y::Action::Focus)
         .expect("the grid takes the keyboard");
-    // Insert mode, so a paste may be another length than the selection, and
-    // the ASCII column, which reads text and writes its UTF-8 bytes.
+    // Insert mode, so a paste may be another length than the selection, and the ASCII
+    // column, which reads text and writes its UTF-8 bytes.
     {
         let mut view = app.surface_mut::<HexView>().state();
         view.model_mut().toggle_mode();
@@ -234,7 +229,6 @@ fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
     chord(&mut app, "v");
     assert_eq!(app.state().bytes, b"!?");
 
-    // The hex column reads hexadecimal bytes.
     app.surface_mut::<HexView>()
         .state()
         .model_mut()

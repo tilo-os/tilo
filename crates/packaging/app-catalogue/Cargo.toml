@@ -21,8 +21,12 @@ app-fleet = { path = "../app-fleet" }
 # the signed manifest it was admitted with.
 package-store = { path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
+# What an app is called in a language: the one lookup every surface naming it shares.
+collab-types = { path = "../../collab/collab-types" }
 # The ids an app's records were kept under before it was renamed.
 tilo-action-policy = { path = "../../collab/action-policy" }
+# What an app is called: the one id type every surface naming it shares.
+tilo-app-id.workspace = true
 # File types, MIME types and URI schemes as the installed manifest claims
 # them, in the one vocabulary the desktop resolves opens with.
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }

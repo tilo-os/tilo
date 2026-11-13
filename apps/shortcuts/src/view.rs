@@ -29,12 +29,12 @@ use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::{NonBlank, Path};
 use ui::widget::{
-    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, ListRow,
+    Actions as ActionGroup, ArrivingView, BannerKind, ButtonRole, ControlSize, Filterable, ListRow,
     ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
-use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Notice, RunStatus};
+use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, RunStatus};
 use crate::editor::{self, Choice};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
 use tilo_automation::grant::{self, Permission};
@@ -369,7 +369,11 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
     Box::new(move || {
         let door = ui.door.get();
         if door.notice != last_notice {
-            if matches!(door.notice, Some(Notice::Saved(_))) {
+            if door
+                .notice
+                .as_ref()
+                .is_some_and(|notice| notice.kind == BannerKind::Success)
+            {
                 ui.sheet.set(false);
             }
             last_notice.clone_from(&door.notice);
@@ -592,24 +596,15 @@ fn notice(ui: &Ui) -> Element {
         &ui.door,
         |door| door.notice.clone(),
         |door| -> Element {
-            match &door.notice {
-                Some(Notice::Saved(name)) => {
-                    Box::new(Banner::success(format!("Saved “{name}”")).dismissible())
-                }
-                Some(Notice::Deleted(name)) => Box::new(
-                    Banner::info(
-                        crate::locales::CATALOG
-                            .t_args("shortcuts-deleted", &[("name", name.clone().into())]),
-                    )
-                    .dismissible(),
-                ),
-                Some(Notice::Failed(reason)) => Box::new(
-                    Banner::error(crate::locales::CATALOG.t("shortcuts-not-finished"))
-                        .with_message(reason.clone())
-                        .dismissible(),
-                ),
-                None => ui::widget::optional(None),
-            }
+            let Some(notice) = &door.notice else {
+                return ui::widget::optional(None);
+            };
+            let banner = Banner::new(notice.kind, notice.title.clone());
+            let banner = match &notice.message {
+                Some(message) => banner.with_message(message.clone()),
+                None => banner,
+            };
+            Box::new(banner.dismissible())
         },
     ))
 }
@@ -663,21 +658,15 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
         Arrival::Ready(_) => {}
     }
     if door.runs.is_empty() {
+        // Nothing yet: a saved-shortcut library with nothing in it says so, and
+        // one that has shortcuts leaves the runs out rather than heading
+        // nothing.
         if matches!(&door.library, Arrival::Ready(library) if library.is_empty()) {
-            items.push(Box::new(
-                EmptyState::new(CATALOG.t("shortcuts-saved-empty")).with_message(CATALOG.t(
-                    if drafting {
-                        "shortcuts-saved-empty-draft"
-                    } else {
-                        "shortcuts-saved-empty-blank"
-                    },
-                )),
-            ));
-        } else {
-            items.push(Box::new(Section::titled(
-                CATALOG.t("shortcuts-runs"),
-                vec![Box::new(caption("shortcuts-runs-empty"))],
-            )));
+            let mut empty = EmptyState::new(CATALOG.t("shortcuts-saved-empty"));
+            if drafting {
+                empty = empty.with_message(CATALOG.t("shortcuts-saved-empty-draft"));
+            }
+            items.push(Box::new(empty));
         }
     } else {
         items.push(run_history(ui, door));
@@ -1270,7 +1259,7 @@ fn save_open_draft(ui: &Ui) {
     };
     if let Err(reason) = core.save(&draft, None) {
         ui.door
-            .update(|state| state.notice = Some(Notice::Failed(reason)));
+            .update(|state| state.notice = Some(door::not_finished(&reason)));
         ui.sheet.set(false);
     }
 }

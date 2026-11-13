@@ -54,7 +54,7 @@ async fn on_the_scan(
         "plan",
         &serde_json::json!({"steps": [], "then": "", "reply": "The passport is valid."}),
     );
-    let (url, sent) = model_endpoint(vec![
+    let (url, sent, _served) = model_endpoint(vec![
         tool_call(
             "p1",
             "plan",

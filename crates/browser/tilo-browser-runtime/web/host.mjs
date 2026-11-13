@@ -14,6 +14,7 @@ import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,sho
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
+import {defaultDisplayName} from './workspaces.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 import {createViewPresenter,VIEW_CSS} from './view-present.mjs';
@@ -412,6 +413,12 @@ export async function mountDesktop(target,options={}) {
   }
   // The accounts elsewhere someone's profile names, which their card says.
   function showLinked(user,linked){if(!config.app&&active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
+  // The names people's profiles keep, for those the invite sheet may make a link for who are not
+  // here to say them (`profiles` host requests): each asked once per page. Someone whose profile
+  // keeps none goes by the name drawn from their key, as everywhere they are seen
+  // (`defaultDisplayName`).
+  const named=new Set();
+  function fetchNames(users){if(config.app||!options.peer?.origin)return;for(const user of users){if(typeof user!=='string'||named.has(user))continue;named.add(user);void fetchPersonProfile(options.peer.origin,user).then(profile=>{const chosen=typeof profile?.display_name==='string'?profile.display_name.trim():'';if(active()&&runtime.desktop_set_person_name)runtime.desktop_set_person_name(id,user,chosen||defaultDisplayName(user));},error=>{named.delete(user);report({profileError:String(error)});});}}
   const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
@@ -434,7 +441,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.

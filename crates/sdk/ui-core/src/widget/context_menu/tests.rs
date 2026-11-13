@@ -810,7 +810,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     // The row that sends what the menu is about, which the menu adds itself.
     let send_at = menu.items().len() - 1;
     menu.click_item(send_at);
-    assert!(!menu.is_open(), "the box takes the menu's place");
+    assert!(menu.is_open(), "the menu stays beside its box");
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
@@ -832,7 +832,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
         .children
         .iter()
         .find(|child| child.role == crate::a11y::Role::Dialog)
-        .expect("the box is read where the menu stood");
+        .expect("the box is read beside the menu");
     assert_eq!(
         dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
         Some(box_rect),
@@ -881,7 +881,7 @@ fn the_field_that_takes_typing_shows_its_hint_whole() {
     assert!(menu.can_ask(), "fixture: the menu can send what is typed");
     assert!(menu.query.is_some(), "fixture: the menu takes typing");
     menu.layout_within(&mut text, &theme);
-    let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder-ask");
+    let hint = crate::i18n::I18nManager::lookup_plain("menu-query-placeholder");
     let (hint_width, _) = text.measure_style(&hint, None, &theme.text(TextRole::Body));
     let field = menu
         .query_rect()

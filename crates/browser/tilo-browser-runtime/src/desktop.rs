@@ -34,6 +34,7 @@ use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
+use crate::app_page::Unbuilt;
 use crate::shell::{HostRequest, HostRequests};
 
 /// Applications the page can open, in launcher order: every application
@@ -557,7 +558,7 @@ impl Shared {
             .stores
             .borrow()
             .iter()
-            .find(|store| store.package_and_home() == home)
+            .find(|store| store.app_and_home() == home)
         {
             return Ok(store.clone());
         }
@@ -858,10 +859,8 @@ impl Tiles {
     /// The app `tab` shows once it can be built here, or the line the
     /// window shows instead.
     fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, Unready> {
-        if let TileContent::PeerWindow { label, .. } | TileContent::HostedWindow { label, .. } =
-            &tab.tile
-        {
-            // Another device's window: drawn there, not in a browser.
+        if let TileContent::HostedWindow { label, .. } = &tab.tile {
+            // A window that runs on another device: drawn there, not in a browser.
             let label = if label.is_empty() { &tab.title } else { label };
             return Err(Unready::Notice(format!(
                 "{label} is not shown in a browser"
@@ -909,8 +908,17 @@ impl Tiles {
             .load(tab.id)
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
-        let component =
-            self.instantiate(definition, store, (target, named_new), tab.id, restore)?;
+        let component = self
+            .instantiate(definition, store, (target, named_new), tab.id, restore)
+            .map_err(|unbuilt| match unbuilt {
+                // The record the window shows is still on its way from the workspace: it is
+                // loading, not broken, and the window is built again once it is here.
+                Unbuilt::Arriving => {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                    Unready::Arriving
+                }
+                Unbuilt::Failed(detail) => Unready::Notice(detail),
+            })?;
         let record = component.record().clone();
         let previous = self
             .shared
@@ -933,7 +941,7 @@ impl Tiles {
         (target, named_new): (LaunchTarget, Option<RecordId>),
         instance: TabId,
         restore: RestoreInput,
-    ) -> Result<AppComponent, String> {
+    ) -> Result<AppComponent, Unbuilt> {
         let inputs = HostContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
@@ -947,7 +955,7 @@ impl Tiles {
             Some(id) => HostContext::prepare_new_record(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(self.inputs.content.clone());
         // What another window handed this one to open, from the desktop's
@@ -976,7 +984,7 @@ impl Tiles {
         );
         let mut component = definition
             .instantiate(context, target, restore)
-            .map_err(|error| error.to_string())?;
+            .map_err(Unbuilt::of)?;
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
@@ -1036,13 +1044,18 @@ impl Tiles {
             )
         });
         let target = LaunchTarget::Record { checkout, reveal };
-        let component = self.instantiate(
-            definition,
-            store,
-            (target, None),
-            embed_instance(view),
-            RestoreInput::None,
-        )?;
+        let component = self
+            .instantiate(
+                definition,
+                store,
+                (target, None),
+                embed_instance(view),
+                RestoreInput::None,
+            )
+            .map_err(|unbuilt| match unbuilt {
+                Unbuilt::Arriving => "It shows once it reaches you".to_owned(),
+                Unbuilt::Failed(detail) => detail,
+            })?;
         Ok(TileHost::from_component(component))
     }
 }
@@ -1768,13 +1781,21 @@ pub(crate) fn mount(
     workspace_name: Option<&str>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
-    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
+    let key = StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = shared_with_its_host(&inputs, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
+    let history_key = StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
-    let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
+    // In a workspace the profile keeps the workspace's desk, which holds nobody's own windows
+    // (`tilo_desktop_model::personal`); a desk no workspace shares is this person's alone, all of
+    // it.
+    let stored = if inputs.peer.is_some() {
+        tilo_desktop_model::shared_record::read(&document, None)
+    } else {
+        tilo_desktop_model::shared_record::read_as_kept(&document, None)
+    };
+    let tree = if let Some(stored) = stored {
         let (bound, unbound) = adopted_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;
@@ -1803,10 +1824,12 @@ pub(crate) fn mount(
             .into_iter()
             .map(|(app, title)| app_tab(minter.mint(), app, title))
             .collect();
+        // A workspace nobody named is kept with no name: the desk names it in the language of
+        // whoever reads it.
         let name = workspace_name
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or("Workspace");
+            .unwrap_or_default();
         // In a workspace the desk is that workspace's, by its id: the one its records are kept by.
         match tilo_desktop_model::WorkspaceId::parse(&inputs.workspace) {
             Some(identity) => tilo_desktop_surface::seed_tree_in(&mut minter, identity, name, tabs),
@@ -1814,7 +1837,7 @@ pub(crate) fn mount(
         }
     };
     let notifications_key =
-        StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
+        StorageKey::document(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
     if let Some(stored) = store.read(&notifications_key).ok().flatten() {
         // A record this page cannot read leaves the centre empty rather than the page unopened.

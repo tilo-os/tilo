@@ -49,10 +49,19 @@
  * step; another tab's change reaches this one as a `storage` event.
  */
 export const SETUP = 'tilo-setup';
-/** The steps a setup is kept at: on the start (`start`), following a code
- * (`waiting`), its code ran out (`expired`), the agent is in (`connected`),
- * the person's own workspace opening (`opening`), and over (`done`). */
-const SETUP_STEPS = new Set(['start', 'waiting', 'expired', 'connected', 'opening', 'done']);
+/** The steps a setup is kept at: kept for later (`later`: the person
+ * arrived by an invitation and joined that workspace first), on the start
+ * (`start`), following a code (`waiting`), its code ran out (`expired`), the
+ * agent is in (`connected`), the person's own workspace opening (`opening`),
+ * and over (`done`). */
+const SETUP_STEPS = new Set(['later', 'start', 'waiting', 'expired', 'connected', 'opening', 'done']);
+
+/** Whether this browser's person arrived by an invitation and has not set
+ * up their own Tilo yet: the workspace offers the setup once they used it a
+ * while, and the site itself opens on it. */
+export function setupLater(storage = globalThis.localStorage) {
+  return readSetup(storage)?.step === 'later';
+}
 /** How long the screen says the agent connected before it leaves. */
 export const CONNECTED_MS = 1600;
 /** How often the tab asks where its code is. */
@@ -78,15 +87,20 @@ export const MCP_URL = 'https://mcp.tilo.sh';
 
 /** `site` as the curl command and `tilo login` read it: tilo.sh is the default. */
 const siteOf = site => (!site || site === HOME_SITE ? null : site);
-/** The command that installs `tilo` from `site`. */
-export const installCommand = site => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh`;
+/** The command that installs `tilo` from `site`; with `args`, the installer
+ * then runs the installed `tilo` with them by its full path, so the line works
+ * on a machine whose PATH does not name where it went (a fresh one, or an
+ * agent's shell, which never rereads the profile that would add it). */
+export const installCommand = (site, args = '') => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh${args ? ` -s ${args}` : ''}`;
+/** `login <code>`, naming `site` unless it is tilo.sh. */
+const loginArgs = (code, site) => `login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
 /** `tilo login <code>`, naming `site` unless it is tilo.sh. */
-export const loginCommand = (code, site) => `tilo login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
+export const loginCommand = (code, site) => `tilo ${loginArgs(code, site)}`;
 
 /** The prompt that has an agent set Tilo up: one line, complete on its own,
  * since `tilo login` tells the agent the rest. */
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site)} && ${loginCommand(code, site)}, then do what it tells you.`;
+  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code, site))}, then do what it tells you.`;
 }
 
 /** The prompt that has an agent sign this tab in as the person. */
@@ -96,7 +110,7 @@ export function signInPrompt(code, {site} = {}) {
 
 /** The commands for someone who sets up by hand, one per line. */
 export function manualCommands(code, {site} = {}) {
-  return [installCommand(site), loginCommand(code, site), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
+  return [installCommand(site, loginArgs(code, site)), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole
@@ -189,8 +203,30 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
   if (code === 'not-loaded') return 'Tilo didn’t finish loading in this tab.';
-  if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') return `Couldn’t reach ${hostOf(site)}. Check your connection, then try again.`;
-  return `${hostOf(site)} did not make a code. Try again, or skip for now.`;
+  // The host that did not answer is the one the codes come from
+  // (`error.origin`, which the entry page names), not necessarily the page's.
+  const from = typeof error?.origin === 'string' ? error.origin : site;
+  const host = hostOf(from);
+  if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') {
+    // A page cannot read why a request failed, but a host on this computer
+    // is not behind a connection: it is not running, or (over https) the
+    // browser refused its certificate, which a fetch reports as nothing more.
+    const local = onThisComputer(from);
+    if (local === 'http:') return `Couldn’t reach ${host} on this computer. Check that it is running, then try again.`;
+    if (local === 'https:') return `Couldn’t reach ${host} on this computer. It isn’t running, or this browser doesn’t trust its certificate.`;
+    return `Couldn’t reach ${host}. Check your connection, then try again.`;
+  }
+  return `${host} did not make a code. Try again, or skip for now.`;
+}
+
+/** The scheme of `origin` when it is on this computer (a `localhost` name or
+ * a loopback address), else `null`. */
+function onThisComputer(origin) {
+  let url;
+  try { url = new URL(origin); } catch { return null; }
+  const name = url.hostname;
+  const local = name === 'localhost' || name.endsWith('.localhost') || /^127\./.test(name) || name === '[::1]';
+  return local ? url.protocol : null;
 }
 
 /** What a button that has no code yet says it waits for. */
@@ -240,7 +276,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const codes = {};
   for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0};
   let state = readSetup(storage) ?? {step: 'start'};
-  if (state.step === 'done') state = {step: 'start'};
+  if (state.step === 'done' || state.step === 'later') state = {step: 'start'};
   let closed = false;
   // What the screen shows now, kept with the setup for the next first paint.
   const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false};
@@ -251,6 +287,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     writeSetup({...kept, shown: {...frame}}, storage);
   };
   const view = new Proxy(drawn, {get: (target, name) => (...args) => {
+    // A closed screen draws nothing: the person is done with it, or the page
+    // was turned away at a door, and what comes after is not the setup. Every
+    // write it makes is the page's first screen itself (`domView`'s `state`),
+    // so a late answer cannot bring it back over what took its place.
+    if (closed && name !== 'close') return undefined;
     if (name === 'offer' && args[0] === 'setup') frame.offer = args[1]?.text ?? null;
     else if (name === 'waiting') {
       if (typeof args[1]?.text === 'string') frame.prompt = args[1].text;
@@ -640,6 +681,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     }
     const made = at.made;
     const text = prompts[kind](made.code, {site});
+    // Followed before it is handed over: the host keeps a code from its tab's
+    // first follow, and the clipboard holds this prompt the moment the click
+    // returns — an agent handed it that fast is told a code the host does not
+    // know yet. What the screen says of the code still waits for the copy's
+    // answer, which only the click can give.
+    follow(made, mode, ++attempt);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
     return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {

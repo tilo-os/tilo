@@ -32,7 +32,7 @@ counter = itertools.count(1)
 
 
 async def role_in(key: str, workspace: str) -> str | None:
-    client = AsyncTilo(key=key, door=DOOR)
+    client = AsyncTilo(key=key, url=DOOR)
     try:
         listed = await client.workspaces.list()
         return next((row.role for row in listed if row.id == workspace), None)
@@ -44,7 +44,7 @@ def review(link: str) -> dict:
     out = Path(OUT) / f"reviewer-{next(counter)}"
     ran = subprocess.run(
         ["node", str(PERSON), SITE, RELAY, str(out), "--follow", link,
-         "--key", "Rosa's review", "--tilo", TILO_BIN, "--door", DOOR],
+         "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", DOOR],
         capture_output=True, text=True, timeout=600,
     )
     sys.stderr.write(ran.stderr)

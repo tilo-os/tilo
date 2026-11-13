@@ -1,7 +1,5 @@
-//! The native vocabulary: lists and their rows, view state as
-//! native controls, facts, and buttons for declared actions. Each lowers to the same `ui_*`
-//! host calls as every other node. A window's frame is no part of it: the standard library
-//! (`std.list`, `std.document`, `std.page`) composes frames from the toolkit's components.
+//! The native vocabulary: lists and their rows, view state as native controls, facts, and buttons
+//! for declared actions. Each lowers to the same `ui_*` host calls as every other node.
 
 use super::enums::Shape;
 use super::expr::dotted;
@@ -16,7 +14,6 @@ use crate::types::Ty;
 
 use std::collections::HashSet;
 
-/// The named arguments a list row takes, for messages.
 const ROW_ARGS_TEXT: &str =
     "secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
 
@@ -24,7 +21,6 @@ fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
 }
 
-/// Whether `a` is a call's `bind:` argument.
 fn is_bind(a: &ast::Arg) -> bool {
     a.name.as_ref().is_some_and(|name| name.name == "bind")
 }
@@ -34,9 +30,8 @@ fn concat(a: Ex, b: Ex) -> Ex {
 }
 
 /// What an application applies, once the steps that carry it are stripped:
-/// `send(c, d).then(set(d, ""))` is `send`, and `act(x).made_from(r)` is `act` — the button
-/// takes its look and the arguments it reads from it, while what it runs keeps `r` as what it
-/// is made from.
+/// `send(c, d).then(set(d, ""))` is `send`. The button takes its look from it, while what it runs
+/// keeps what it is made from.
 fn applied_action(e: &ast::Expr) -> &ast::Expr {
     let mut applied = e;
     while let ExprKind::Call { callee, .. } = &applied.kind
@@ -59,23 +54,22 @@ impl Checker<'_> {
                 Some(self.action_button(&callee, c, args))
             }
             "choice" => Some(self.choice(c, args)),
-            // `field(label, bind: t.assignee)`: the form's labelled row, its control the
-            // toolkit's field for the bound value's type. A person is picked with `PersonField`.
+            // `field(label, bind: t.assignee)`: the form's labelled row, its control the toolkit's
+            // field for the bound value's type.
             "field" if args.iter().any(is_bind) => Some(self.bound_field(p, c, args)),
             "facts" => Some(self.facts(c, args)),
             _ => None,
         }
     }
 
-    /// Whether a call has a positional argument that is not a flag: `row(n.title)` is a list
-    /// row, `row(fill)` a layout row.
+    /// Whether a call has a positional argument that is not a flag: `row(n.title)` is a list row,
+    /// `row(fill)` a layout row.
     fn titled(&self, args: &[ast::Arg]) -> bool {
         args.iter()
             .any(|a| a.name.is_none() && !self.is_flag(None, &a.value))
     }
 
-    /// Whether `rest` is one list row, after any `let`s it reads: what a view draws when it
-    /// draws one item's row.
+    /// Whether `rest` is one list row, after any `let`s it reads.
     pub(super) fn body_is_row(&self, rest: &[UiStmt]) -> bool {
         match rest.split_last() {
             Some((
@@ -91,7 +85,6 @@ impl Checker<'_> {
                             ExprKind::Ident(n) => {
                                 n == "row" && self.titled(args) && c.block.is_none()
                             }
-                            // The toolkit's row itself: what `row(...)` builds.
                             ExprKind::Field { base, name } => {
                                 name.name == "ListRow" && self.names_toolkit(base)
                             }
@@ -105,8 +98,7 @@ impl Checker<'_> {
     }
 
     /// `preview_rows()`: how many rows a `list` inside a card shows
-    /// ([`crate::prims::PREVIEW_ROWS`]), for a view composing a card that says how many of its
-    /// items the card leaves out.
+    /// ([`crate::prims::PREVIEW_ROWS`]).
     pub(super) fn builtin_preview_rows(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if !args.is_empty() {
             self.err(
@@ -125,13 +117,9 @@ impl Checker<'_> {
         }
     }
 
-    // ---- lists ----------------------------------------------------------------------------
-
-    /// `list(items, sort: s, filter: f, empty: "...") { x -> ... }`: a `list` node with one
-    /// `item` child per resource, each holding the item block's nodes or the type's row view.
-    /// `list(items) { x -> ... }`: a list of rows in the content (a card's summary, the rows of
-    /// a page): a `list` node with one `item` child per resource, each holding the item
-    /// block's nodes or the type's row view. A window's own list is `std.list`.
+    /// `list(items, sort: s, filter: f, empty: "...") { x -> ... }`: a `list` node with one `item`
+    /// child per resource, each holding the item block's nodes or the type's row view. A window's
+    /// own list is `std.list`.
     fn list_frame(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let list_key = self.fresh(Ty::Text);
@@ -181,8 +169,8 @@ impl Checker<'_> {
         };
         let list = self.expr(items, None);
         let elem = list.ty.element().cloned().unwrap_or(Ty::Error);
-        // A list draws resources: a record type's items, or a union's, each by the row view of
-        // the type its item is (the categories, channels and direct conversations of one page).
+        // A list draws resources: a record type's items, or a union's, each by the row view of the
+        // type its item is.
         match &elem {
             Ty::Record(_) | Ty::Error => {}
             Ty::Union(keys) if keys.iter().all(|key| self.env.row_view(key).is_some()) => {}
@@ -197,8 +185,8 @@ impl Checker<'_> {
                 return n;
             }
         }
-        // A list in a card is the card's summary: it shows its first rows, and the card opens
-        // the resource for the rest.
+        // A list in a card is the card's summary: it shows its first rows, and the card opens the
+        // resource for the rest.
         if self.st.ui.in_card {
             self.emit(host(
                 Imp::UiPropI,
@@ -241,9 +229,7 @@ impl Checker<'_> {
         n
     }
 
-    /// One `item` node per resource, with the item block's nodes or the row view as its
-    /// children: in a view, each the row of a loop node, which the host renders when it shows
-    /// the row ([`Self::list_rows`]); elsewhere keyed `<list key>/<ref id>` in place.
+    /// One `item` node per resource, with the item block's nodes or the row view as its children.
     fn list_items(&mut self, n: LocalId, list_key: LocalId, list: Ex, c: &UiCall) {
         let span = c.call.span;
         let elem = list.ty.element().cloned().unwrap_or(Ty::Error);
@@ -254,10 +240,7 @@ impl Checker<'_> {
         let Some(list) = self.list_rows(n, list, c, row_view.clone()) else {
             return;
         };
-        // A card shows its list's first rows and says how many it has
-        // ([`prims::PREVIEW_ROWS`]): where the rows are built in place, the list reads those
-        // rows of what it lists and no more, and carries the count of the whole, as a list
-        // whose rows render as the host shows them does.
+        // A card shows its list's first rows and says how many it has ([`prims::PREVIEW_ROWS`]).
         let list = if self.st.ui.in_card {
             let ty = list.ty.clone();
             let held = self.fresh(ty.clone());
@@ -333,8 +316,8 @@ impl Checker<'_> {
         self.emit(Stmt::ForList(Box::new(fl)));
     }
 
-    /// The view state an option names, when it is an enum whose variants carry no payload:
-    /// what a native control (a sort menu, a filter list, a choice) can offer.
+    /// The view state an option names, when it is an enum whose variants carry no payload: what a
+    /// native control can offer.
     fn enum_state(&mut self, what: &str, value: &ast::Expr) -> Option<(StateRef, EnumInfo)> {
         let name = match &value.kind {
             ExprKind::Ident(n) => Some(n.as_str()),
@@ -357,8 +340,8 @@ impl Checker<'_> {
         Some((state, info))
     }
 
-    /// The enum, the selected variant's name and one event per variant that selects it:
-    /// `<props>enum`, `<props>selected` and `<events><variant>`.
+    /// The enum, the selected variant and one event per variant that selects it: `<props>enum`,
+    /// `<props>selected`, `<events><variant>`.
     fn state_control(
         &mut self,
         n: LocalId,
@@ -391,7 +374,6 @@ impl Checker<'_> {
         }
     }
 
-    /// The name of the variant the view state holds.
     fn variant_name(state: &StateRef, info: &EnumInfo) -> Ex {
         let cur = Ex::local(state.local, state.ty.clone());
         let mut rev = info.variants.iter().rev();
@@ -413,11 +395,11 @@ impl Checker<'_> {
         let ident = ast::Ident {
             name: name.to_string(),
             span,
+            from_template_of: None,
         };
         self.construct_variant(&shape, &state.ty, &ident, None, span)
     }
 
-    /// `row(title, secondary: ..., ...)`: a `list_row`.
     fn list_row(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let span = c.call.span;
         if c.block.is_some() {
@@ -484,8 +466,8 @@ impl Checker<'_> {
                         ));
                     }
                 }
-                // What a press on the box does: the app's, so a check can carry more than the
-                // one field the box shows.
+                // What a press on the box does: the app's, so a check can carry more than the one
+                // field the box shows.
                 Some("check") => self.apply_arg(n, "row", "on_check", value),
                 Some(name) if prims::NODE_ARGS.contains(&name) => {
                     self.apply_arg(n, "row", name, value);
@@ -511,9 +493,8 @@ impl Checker<'_> {
     }
 
     /// A row's `avatar:`: a Principal, or an Option of one, as the row's `avatar` slot holding a
-    /// `ui.Avatar`. At `.none` (the last message's author of a conversation that has none yet) a
-    /// row that names an `icon:` shows the item itself as its avatar, that glyph on a neutral
-    /// square (a group); one that names none shows no avatar, and its facts run on without one.
+    /// `ui.Avatar`. At `.none`, a row that names an `icon:` shows the item as its avatar; one that
+    /// names none shows no avatar.
     fn avatar_arg(
         &mut self,
         n: LocalId,
@@ -548,7 +529,6 @@ impl Checker<'_> {
             vec![slot_ex.clone(), Ex::str("name"), Ex::str("avatar")],
         ));
         let avatar_kind = crate::toolkit::kind("Avatar");
-        // The participant's avatar.
         self.push_sink();
         let who_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/who"));
         let who = self.new_node(&avatar_kind, who_key);
@@ -577,8 +557,6 @@ impl Checker<'_> {
             }
             return;
         }
-        // No participant this time: a row that names an icon shows the item itself; one that
-        // names none shows no avatar, and its other facts run on without an empty slot.
         self.push_sink();
         if let Some(icon) = icon {
             let glyph_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/glyph"));
@@ -605,15 +583,11 @@ impl Checker<'_> {
         self.emit(Stmt::If(test, some, none));
     }
 
-    /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
-    /// A Date or a Time is marked for the host to format (see `prop`).
-    /// A list row's positional: its title, or the resource it shows (a `resource` prop the
-    /// host renders as that resource's row).
+    /// A list row's positional: its title (Text, a Date, a Time, or an Option of one, `.none` being
+    /// the empty text), which the host formats; or the resource it shows.
     fn row_subject(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
         let v = self.expr(value, Some(&Ty::Text));
         if matches!(v.ty, Ty::Record(_)) {
-            // The resource itself: its row shows its title and its app's icon, as a native
-            // row of a resource does.
             let r = self.fresh(v.ty.clone());
             self.emit(Stmt::Set(r, v.clone()));
             let item = Ex::local(r, v.ty);
@@ -647,7 +621,6 @@ impl Checker<'_> {
         Some(title)
     }
 
-    /// The field `name` of the `host.Meta` `meta`.
     fn field_of_meta(meta: Ex, name: &str, ty: Ty) -> Ex {
         let at = crate::host::value_field("Meta", name)
             .and_then(|at| i32::try_from(at).ok())
@@ -665,10 +638,8 @@ impl Checker<'_> {
         self.text_prop(node, "meta", v, value.span);
     }
 
-    /// A row's `mark:`: an icon (`mark: .pin`), the name of one (`mark: a.icon`), or an enum
-    /// value whose case names one (`mark: t.priority`), which also gives the row the tone the
-    /// case reads in: its mark and its checkbox ring show the item's priority. A case that
-    /// reads in no tone says the item has no importance to show, and draws no mark.
+    /// A row's `mark:`: an icon, its name, or an enum value whose case names one, with the tone the
+    /// case reads in. A case in no tone draws no mark.
     fn mark_arg(&mut self, n: LocalId, e: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if !matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
@@ -708,9 +679,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The tone the case `value` holds, as the prop `prop` of `node`: a case reads in the tone
-    /// its declaration gives it (`high (icon: .flag, tone: .warning)`), and in no tone when it
-    /// names none. `false` when `value` is not an enum value, so the caller says what it takes.
+    /// The tone the case `value` holds, as the prop `prop` of `node`; `false` when `value` is not an
+    /// enum value.
     pub(super) fn enum_tone(&mut self, node: &Ex, prop: &str, value: Ex, span: Span) -> bool {
         let Ty::Enum(key) = value.ty.clone() else {
             return false;
@@ -754,9 +724,8 @@ impl Checker<'_> {
         self.prop(node.clone(), name, v, span);
     }
 
-    /// The icon name `e` computes, when the platform names it: the `icon` of a host value (an
-    /// action, a type's metadata) or of an enum case. Text an app writes is no icon; `std`'s
-    /// own parameters carry the platform's.
+    /// The icon name `e` computes, when the platform names it: the `icon` of a host value or of an
+    /// enum case. Text an app writes is no icon.
     fn platform_icon(&mut self, e: &ast::Expr) -> Option<Ex> {
         match &e.kind {
             ExprKind::Field { base, name } if name.name == "icon" => {
@@ -765,17 +734,14 @@ impl Checker<'_> {
                     Ty::Record(key) if crate::host::is_value(&key) => {
                         self.value_field(b, &key, name)
                     }
-                    // A filter's icon is a name the platform knows, as a host value's is.
                     Ty::Filter(_) => {
                         let Ty::Record(key) = super::platform::host_ty("Filter") else {
                             return None;
                         };
                         self.value_field(b, &key, name)
                     }
-                    // A resource's own `icon` field names the glyph it shows, as a
-                    // host value's does: an app, an entry of the launcher, an item of a
-                    // dock. Read as a field, its type tells whether it is a glyph or
-                    // something else.
+                    // A resource's own `icon` field names the glyph it shows, as a host value's
+                    // does.
                     Ty::Record(_) => {
                         let icon = self.field_read(b, name);
                         (icon.ty == Ty::Text).then_some(icon)
@@ -803,8 +769,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set
-    /// only on the branches that name one.
+    /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set only
+    /// on the branches that name one.
     pub(super) fn icon_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
         match &e.kind {
             ExprKind::Variant { name, args: None } => {
@@ -829,8 +795,7 @@ impl Checker<'_> {
             }
             ExprKind::Block(b) => self.icon_block(n, prop, b),
             _ => {
-                // An icon the platform names at run time: an action's, a type's or an enum
-                // case's (`a.icon`, `meta(T).icon`, `c.icon()`); `std` passes such names on.
+                // An icon the platform names at run time: an action's, a type's or an enum case's.
                 let Some(v) = self.platform_icon(e) else {
                     self.err(
                         "E097",
@@ -881,12 +846,8 @@ impl Checker<'_> {
         found
     }
 
-    // ---- controls -------------------------------------------------------------------------
-
-    /// `field(label, bind: t.assignee)`: a form's field, its label on the row and its control
-    /// the toolkit's component for the bound value's type — a person is the toolkit's
-    /// `PersonField`, offered the workspace's members and the person the view is shown to.
-    /// The app writes the binding once and gets the control the type takes.
+    /// `field(label, bind: t.assignee)`: a form's field, its label on the row and its control the
+    /// toolkit's component for the bound value's type (a person is `PersonField`).
     fn bound_field(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let holder = self.primitive(
             p,
@@ -911,14 +872,13 @@ impl Checker<'_> {
         };
         let key = concat(self.node_key(c), Ex::str("#person"));
         let n = self.new_node(&crate::toolkit::kind(&d.name), key);
-        // `field(...)`: the form's own arguments were given to the holder, so the control
-        // takes no placeholder from them.
+        // `field(...)`: the form's own arguments were given to the holder, so the control takes no
+        // placeholder from them.
         let given: HashSet<String> = HashSet::new();
         for a in args.iter().filter(|a| is_bind(a)) {
             self.binding_prop(n, d, &a.value, &given);
         }
-        // Who may be picked, and which of them is "Me": the workspace's, never a copy the app
-        // keeps.
+        // Who may be picked, and which of them is Me: the workspace's, never a copy the app keeps.
         let people = Ty::List(Box::new(Ty::Principal));
         self.prop(
             Ex::local(n, Ty::View),
@@ -939,8 +899,8 @@ impl Checker<'_> {
         holder
     }
 
-    /// `choice(bind: s)`: the enum of the view state `s`, its selected variant and a
-    /// `pick.<variant>` event per variant.
+    /// `choice(bind: s)`: the enum of the view state `s`, its selected variant and a `pick.<variant>`
+    /// event per variant.
     fn choice(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let n = self.new_node("choice", key);
@@ -1001,18 +961,20 @@ impl Checker<'_> {
             ExprKind::Field { base, name } if self.names_import(base) => {
                 let path = dotted(base)?.join(".");
                 let import = self.env.find_import(&path)?;
-                self.env.foreign_callable(&import.app, &name.name)
+                self.env.foreign_callable_marked(
+                    &import.app,
+                    &name.name,
+                    name.from_template_of.as_deref(),
+                )
             }
             _ => None,
         }?;
         matches!(found.kind, CKind::Action).then(|| found.clone())
     }
 
-    /// What a button for the application `applied` (`pin(m)`, `move_to(b, card, other)`) shows
-    /// of the action's presentation that follows its arguments: its `label:` written with
-    /// them or as an `if`, its `icon:` as an `if`, and `on:`, each read with those arguments
-    /// as the view draws, so the button changes with them (Pin turns into Unpin). What is not
-    /// written so stays the declaration's, which the caller set before.
+    /// What a button shows of the presentation that follows the action's arguments: its `label:` and
+    /// `icon:` written with them or as an `if`, and `on:`, read as the view draws, so the button
+    /// changes with them.
     fn applied_presentation(&mut self, callee: &Callable, applied: &ast::Expr, n: LocalId) {
         let p = &callee.present;
         let (label, icon, on) = (p.label_text.clone(), p.icon_when.clone(), p.on.clone());
@@ -1023,8 +985,7 @@ impl Checker<'_> {
         let ExprKind::Call { args, .. } = &call.kind else {
             return;
         };
-        // An application that leaves a parameter for its form to ask (`button(check())`) has
-        // nothing to read it with: the button shows what the declaration says.
+        // An application that leaves a parameter for its form to ask has nothing to read it with.
         let positional = args.iter().filter(|a| a.name.is_none()).count();
         let complete = callee.params.iter().enumerate().all(|(at, p)| {
             at < positional
@@ -1041,8 +1002,8 @@ impl Checker<'_> {
             self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
         let node = Ex::local(n, Ty::View);
         self.push_sink();
-        // Each parameter as the application gives it, or as its default computes it from those
-        // before it (`pinned = not m.pinned`), as an invocation would.
+        // Each parameter as the application gives it, or as its default computes it from those before
+        // it.
         let mut given: Vec<Ex> = Vec::new();
         let mut unbound: Vec<&str> = Vec::new();
         for (p, v) in callee.params.iter().zip(bound) {
@@ -1062,12 +1023,10 @@ impl Checker<'_> {
                 _ => unbound.push(p.name.as_str()),
             }
         }
-        // What reads an argument the application leaves for a form to ask stays as declared.
         let readable =
             |e: &Option<ast::Expr>| e.clone().filter(|e| mentions(e, &unbound).is_none());
         let (label, icon, on) = (readable(&label), readable(&icon), readable(&on));
         if let Some(text) = &label {
-            // The label's words are the action's messages, read in the window's language.
             self.mark_shown(text);
             let words_of = self.st.words_of.replace(callee.id.clone());
             let v = self.expr_as(text, &Ty::Text);
@@ -1086,8 +1045,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `button(act(x))`: a button whose label, icon and role are the action's, and whose
-    /// `press` applies it.
+    /// `button(act(x))`: a button whose label, icon and role are the action's, and whose `press`
+    /// applies it.
     fn action_button(&mut self, callee: &Callable, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let span = c.call.span;
         let key = self.node_key(c);
@@ -1101,9 +1060,7 @@ impl Checker<'_> {
                 None if !applied => {
                     applied = true;
                     let act = self.expr(value, None);
-                    // What the button is called is the action's own message, in the reader's
-                    // language: the label its declaration gives, as the catalogue's source text
-                    // for one that has no translation in the window's language.
+                    // What the button is called is the action's own message, in the reader's language.
                     let message = crate::messages::key_of(&callee.id);
                     let args = self.text_pairs(Vec::new());
                     let label = Ex::host(
@@ -1115,8 +1072,7 @@ impl Checker<'_> {
                     if let Some(icon) = &callee.present.icon {
                         self.prop(node.clone(), "icon", Ex::str(icon), span);
                     }
-                    // A button in content stands on its own: `secondary` unless the action says
-                    // (an icon-only toolkit button is `plain`, as a header's are).
+                    // A button in content stands on its own: `secondary` unless the action says.
                     let role = callee.present.role.clone();
                     let role = role.as_deref().unwrap_or("secondary");
                     self.prop(node.clone(), "role", Ex::str(role), span);
@@ -1137,8 +1093,8 @@ impl Checker<'_> {
                     if name == "on" {
                         self.err("E098", value.span, format!("this button already applies `{}`; remove `on:`. A button for `set(...)` or `open(...)` is written `button(\"Label\", on: ...)`", callee.name));
                     } else if name == "icon_only" {
-                        // Only the action's icon shows, its label naming the button to
-                        // assistive technology: a composer's Send.
+                        // Only the action's icon shows, its label naming the button to assistive
+                        // technology.
                         let v = self.expr_as(value, &Ty::Bool);
                         self.prop(node.clone(), "icon_only", v, value.span);
                         continue;
@@ -1158,12 +1114,8 @@ impl Checker<'_> {
         n
     }
 
-    // ---- presentation -----------------------------------------------------------------------
-
-    /// The hidden view of an action whose `label:` or `icon:` is an `if`, or that declares
-    /// `on:`: a view of the subject (the action's first parameter) building one `present` node
-    /// with those props. `params` are the action's parameters, the subject first; the view reads
-    /// only the subject.
+    /// The hidden view of an action whose `label:` or `icon:` is an `if`, or that declares `on:`:
+    /// one `present` node of the subject with those props, read from the subject alone.
     pub(super) fn run_present(
         &mut self,
         view: &Callable,
@@ -1172,10 +1124,9 @@ impl Checker<'_> {
     ) -> crate::ir::Func {
         let params = action.params.as_slice();
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
-        // The label's words are the action's own messages, as where a view applies it.
         self.st.words_of = Some(action.id.clone());
-        // The parameters whose defaults follow from the subject are what an invocation from
-        // here would pass: `done` with `done: Bool = not item.done`. The options read them.
+        // The parameters whose defaults follow from the subject are what an invocation from here would
+        // pass: `done` with `done: Bool = not item.done`.
         let mut given: Vec<Ex> = view
             .params
             .first()
@@ -1206,7 +1157,6 @@ impl Checker<'_> {
             if !dynamic || !matches!(name, "label" | "icon" | "on") {
                 continue;
             }
-            // A label that reads other arguments is read where the action is applied with them.
             if name == "label"
                 && matches!(opt.value.kind, ExprKind::Str(_))
                 && mentions(&opt.value, others).is_some()
@@ -1241,13 +1191,9 @@ impl Checker<'_> {
         f
     }
 
-    /// The guard of the action `c` (or its `applies` conditions): the requirements its subject
-    /// and the place it is offered in alone decide, as one function answering the first reason
-    /// the action cannot run on the subject now, or the empty text while it can
-    /// ([`crate::ir::FuncKind::Guard`], [`crate::ir::FuncKind::Applies`]). A requirement that
-    /// reads what a caller gives (`to` in `move_to(t, to)`) cannot be decided before it is
-    /// given: it is checked when the action runs with it, and a form shows its reason as the
-    /// refusal.
+    /// The guard (or `applies`) of the action `c`: one function answering the first reason it cannot
+    /// run on the subject now ([`crate::ir::FuncKind::Guard`]). A requirement that reads what a
+    /// caller gives (`to` in `move_to(t, to)`) is checked when the action runs with it.
     pub(super) fn run_guard(
         &mut self,
         c: &Callable,
@@ -1256,13 +1202,11 @@ impl Checker<'_> {
         kind: crate::ir::FuncKind,
         export: fn(&str) -> String,
     ) -> crate::ir::Func {
-        // The subject, then the places a view supplies: everything an offer knows before it is
-        // made.
+        // The subject, then the places a view supplies: everything an offer knows before it is made.
         let decided = 1 + params.iter().skip(1).take_while(|p| p.place).count();
         let subject = params.get(..decided).unwrap_or_default();
         self.begin(super::Ctx::View, subject, Ty::Text, &c.id);
         for r in requires.iter().filter(|r| offer_decided(r, params)) {
-            // A requirement may read `invoker`: here, the person looking, who would run it.
             self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             self.mark_shown(&r.reason);
@@ -1276,9 +1220,6 @@ impl Checker<'_> {
         f
     }
 
-    // ---- a resource's page ----------------------------------------------------------------
-
-    /// The record a page part is about: `of` as the record it names, with its type.
     fn page_of(
         &mut self,
         prim: &str,
@@ -1330,8 +1271,8 @@ impl Checker<'_> {
         Some((b, info))
     }
 
-    /// Bind `node` to the field `field` of the record `b`, as `bind: b.field` does: the
-    /// component's binding, and the field the host merges it into.
+    /// Binds `node` to the field `field` of the record `b`, as `bind: b.field` does: the component's
+    /// binding, and the field the host merges it into.
     fn bind_part(
         &mut self,
         node: &Ex,
@@ -1365,11 +1306,8 @@ impl Checker<'_> {
         ));
     }
 
-    /// `facts(of) { ... }`: the facts of the resource as one row of chips — the same height,
-    /// the same chevron, no labels, wrapping — each derived from what the field is: the day a
-    /// date field names, the person a principal field names, and the case an enum field holds,
-    /// in the case's glyph and tone, opening the cases to pick another. The block adds the
-    /// chips only the view can offer (the project's), in the same row.
+    /// `facts(of) { ... }`: the facts of the resource as one row of chips, each derived from its
+    /// field. The block adds the chips only the view can offer.
     fn facts(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let row = self.new_node("row", key.clone());
@@ -1405,7 +1343,6 @@ impl Checker<'_> {
         row
     }
 
-    /// The chip that shows the day `field` names.
     fn date_chip(
         &mut self,
         key: &Ex,
@@ -1415,15 +1352,13 @@ impl Checker<'_> {
     ) -> Option<Ex> {
         let env = self.env;
         let d = env.toolkit.and_then(|toolkit| toolkit.get("DateField"))?;
-        // One chip per field: a type with two days puts two chips in the row, each keyed by
-        // the field it shows.
+        // One chip per field, each keyed by the field it shows.
         let n = self.new_node(
             &crate::toolkit::kind(&d.name),
             concat(key.clone(), Ex::str(&format!("#date-{}", field.name))),
         );
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
-        // A date that may be empty can be cleared.
         if matches!(field.ty, Ty::Option(_)) {
             self.emit(host(
                 Imp::UiPropI,
@@ -1433,8 +1368,8 @@ impl Checker<'_> {
         Some(view)
     }
 
-    /// The chip that shows the person `field` names: the toolkit's person field, which offers
-    /// the workspace's people and the person looking, never a copy an app keeps.
+    /// The chip that shows the person `field` names, offering the workspace's people and the person
+    /// looking, never a copy an app keeps.
     fn person_chip(
         &mut self,
         key: &Ex,
@@ -1466,14 +1401,8 @@ impl Checker<'_> {
         Some(view)
     }
 
-    /// The chip that shows the case `field` holds: the toolkit's enum field, showing the
-    /// case's own glyph, label and tone, and opening the enum's cases to pick another — one
-    /// per case, each opening with the case's glyph and reading in its tone. A case is picked
-    /// by its name, which the field takes as that case, so an edit goes through the field
-    /// itself, never through a text the case would have to be read out of.
-    ///
-    /// A field whose cases carry values has no chip: a case is then a value with fields, and
-    /// one name does not say which.
+    /// The chip that shows the case `field` holds, with its glyph, label and tone, opening the enum's
+    /// cases to pick another. A field whose cases carry values has no chip.
     fn enum_chip(
         &mut self,
         key: &Ex,
@@ -1539,10 +1468,8 @@ impl Checker<'_> {
     }
 }
 
-/// Whether the requirement `r` reads nothing a caller gives beyond the subject: what the subject
-/// alone decides, so a surface offering the action can say whether it can run before anyone gives
-/// the rest. One that reads another argument (`to` in `move_to(t, to)`) is checked when the action
-/// runs with it.
+/// Whether the requirement `r` reads nothing a caller gives beyond the subject: what a surface
+/// offering the action can decide before anyone gives the rest.
 pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
     let others: Vec<&str> = params
         .iter()
@@ -1553,9 +1480,8 @@ pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInf
     mentions(&r.cond, &others).is_none() && mentions(&r.reason, &others).is_none()
 }
 
-/// The first of `names` an expression reads as a variable, as the caller wrote them: a lambda
-/// body counts, read without the names the lambda binds itself, since what it reads of the
-/// caller's it still reads when it runs.
+/// The first of `names` an expression reads as a variable: a lambda body counts, read without the
+/// names the lambda binds.
 pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> {
     let block = |b: &ast::Block| mentions_block(b, names);
     match &e.kind {
@@ -1617,8 +1543,6 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
     }
 }
 
-/// [`mentions`] over the statements of a block, the names a `for` binds itself left out as a
-/// lambda's parameters are.
 fn mentions_block<'a>(b: &ast::Block, names: &[&'a str]) -> Option<&'a str> {
     b.stmts.iter().find_map(|s| match &s.kind {
         StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),

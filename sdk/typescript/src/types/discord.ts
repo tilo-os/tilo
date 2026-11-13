@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.discord@cb5ce9db9acc3ab4";
+
 export interface AnswerInteractionOp {
   interaction: string;
   content: string;
@@ -462,6 +467,6 @@ export interface Guild extends tilo.Resource {
 
 /** The `discord.guild` kind at `path`. */
 export function guild(ws: tilo.Workspace, path: string): Guild {
-  return resourceProxy(ws, path) as unknown as Guild;
+  return resourceProxy(ws, path, SURFACE) as unknown as Guild;
 }
 

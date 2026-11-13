@@ -1,18 +1,4 @@
 //! `ProgressBar` — determinate / indeterminate horizontal progress indicator.
-//!
-//! Determinate mode paints a rounded track with a fill that scales from
-//! 0 to `track_width` proportional to `progress` (clamped to `[0, 1]`).
-//! Indeterminate mode ignores `progress` and slides a fixed-width segment
-//! (30 % of the track) across the track on a 2 s period — the position
-//! fraction is `start.elapsed().as_secs_f32() % 2.0 / 2.0`.
-//!
-//! The fill is progress (the inverted fill) unless the bar shows a measured
-//! level ([`ProgressBar::level`]) or a status ([`ProgressBar::tone`]). Under
-//! reduced motion and the capture clock the indeterminate segment holds
-//! still in the middle of the track, so a screenshot is the same every run.
-//!
-//! [`ProgressBarFace`] paints the same bar for a host that paints into a
-//! `Scene`.
 use crate::time::Instant;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -30,16 +16,14 @@ use crate::widget::Widget;
 mod component;
 pub use component::ProgressBarProps;
 
-/// Width of the moving segment in indeterminate mode, expressed as a
-/// fraction of the track width. `0.3` keeps the affordance readable on
-/// narrow bars while still leaving room for the segment to travel.
+/// Width of the moving segment in indeterminate mode, expressed as a fraction of the track
+/// width.
 const INDETERMINATE_SEGMENT_FRAC: f64 = 0.3;
 
 /// Period (in seconds) of one full sweep of the indeterminate segment
 /// from the left edge to the right edge of the track.
 const INDETERMINATE_PERIOD_SECS: f32 = 2.0;
 
-/// What a bar's fill means.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum BarFill {
     /// Progress toward done: the inverted fill.
@@ -84,14 +68,12 @@ impl ProgressBarFace {
         }
     }
 
-    /// A fill that means a status.
     #[must_use]
     pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
         self.fill = BarFill::Tone(tone);
         self
     }
 
-    /// A measured level (a disk, a quota) that turns warning and danger.
     #[must_use]
     pub fn level(mut self, thresholds: crate::widget::GaugeThresholds) -> Self {
         self.fill = BarFill::Level(thresholds);
@@ -134,9 +116,6 @@ impl ProgressBarFace {
     pub fn paint(&self, ctx: &mut crate::paint::PaintCtx<'_>, rect: Rect) -> Rect {
         let theme = ctx.theme;
         let transform = ctx.transform;
-        // A detail inside its row: the detail radius. The track is a lift
-        // of the ground, as a slider's unfilled half is, so it reads on
-        // every material; the raised tier is white on white in light.
         let radius = f64::from(theme.tokens.radii.detail).min(rect.height() / 2.0);
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
@@ -160,8 +139,6 @@ impl ProgressBarFace {
                     Rect::ZERO
                 }
             }
-            // Skipped at zero (rather than a zero-width rect) so an empty
-            // bar paints its track alone.
             Some(progress) if progress > 0.0 => Rect::new(
                 rect.x0,
                 rect.y0,
@@ -199,10 +176,7 @@ pub struct ProgressBar {
     stepped: bool,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// Accessible label (e.g. "Uploading"). When set, the bar becomes a
-    /// *polite* live region keyed by this name, so a screen reader announces
-    /// progress updates ("Uploading, 40%") without moving focus. Anonymous bars
-    /// (no label) are not tracked as live regions and stay quiet.
+    /// Accessible label (e.g. "Uploading").
     label: Option<String>,
 }
 
@@ -265,7 +239,6 @@ impl ProgressBar {
         self
     }
 
-    /// A fill that means a status (a failed transfer stays danger).
     #[must_use]
     pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
         self.fill = BarFill::Tone(tone);
@@ -280,7 +253,6 @@ impl ProgressBar {
         self
     }
 
-    /// The segment changed in the last draw, or will in the next one.
     fn segment_moves(&self) -> bool {
         self.stepped
             || self.drawn_step
@@ -302,15 +274,11 @@ impl ProgressBar {
         }
     }
 
-    /// Set the accessible label (see [`with_label`](Self::with_label)).
     pub fn set_label(&mut self, label: impl Into<String>) {
         self.label = Some(label.into());
     }
 
     /// Update the determinate progress value. Clamped to `[0.0, 1.0]`.
-    /// Calling this while in indeterminate mode silently stores the
-    /// value but does not affect rendering until the bar is taken out
-    /// of indeterminate mode.
     pub fn set_progress(&mut self, p: f32) {
         let progress = p.clamp(0.0, 1.0);
         if self.progress.to_bits() != progress.to_bits() {
@@ -321,9 +289,8 @@ impl ProgressBar {
         }
     }
 
-    /// Place a retained progress bar inside an app-owned canvas without
-    /// constructing a second Taffy tree. This mirrors the embedding support
-    /// on [`crate::widget::Button`] and [`crate::widget::TextInput`].
+    /// Place a retained progress bar inside an app-owned canvas without constructing a second
+    /// Taffy tree.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         if self.rect != rect {
             self.rect = rect;
@@ -331,14 +298,12 @@ impl ProgressBar {
         }
     }
 
-    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this widget behind a permission scope.
     #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
@@ -356,11 +321,8 @@ impl ProgressBar {
     }
 }
 
-/// Rounds an already-clamped `[0, 100]` percentage to a whole-number
-/// `i64` for the accessible value string. The `.round()` and the
-/// `clamp(0.0, 1.0)` before it together bound the input to `[0, 100]`,
-/// far inside `i64`'s range, so the truncation the lint warns about
-/// can't occur.
+/// Rounds an already-clamped `[0, 100]` percentage to a whole-number `i64` for the accessible
+/// value string.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "input is a rounded percentage already bounded to [0, 100]"
@@ -430,10 +392,6 @@ impl Widget for ProgressBar {
                     if union.width() <= segment_width * 2.0 {
                         [union, Rect::ZERO]
                     } else {
-                        // At sweep wraparound, unioning the outgoing right-edge
-                        // segment with the incoming left-edge segment would
-                        // invalidate almost the whole bar. Keep the two small,
-                        // disconnected regions separate for that frame.
                         [self.last_segment, current_segment]
                     }
                 }
@@ -453,10 +411,6 @@ impl Widget for ProgressBar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
-        // Determinate bars expose a percentage value; indeterminate bars have
-        // no meaningful value, so omit it and mark the node busy instead. A
-        // labelled bar is a polite live region keyed by its name, so progress
-        // updates announce without moving focus.
         let mut node = if self.indeterminate {
             AccessNode::new(Role::ProgressBar).with_state(AccessState::new().busy(true))
         } else {
@@ -491,14 +445,8 @@ impl Widget for ProgressBar {
         self.stepped = false;
     }
 
-    /// Indeterminate bars must keep the redraw loop pumping so the
-    /// segment continues to advance — without this, the animation
-    /// would freeze on the first frame after an unrelated event. A segment
-    /// that holds still asks for no frame: under reduced motion, and on a
-    /// capture's frozen clock, where the segment stands in the middle of the
-    /// track (see `ProgressBarFace::phase`) and a window waiting on it — one
-    /// laid out without a paint, as a capture lays it out — would wait
-    /// forever.
+    /// Indeterminate bars must keep the redraw loop pumping so the segment continues to advance
+    /// — without this, the animation would freeze on the first frame after an unrelated event.
     fn needs_animation_frame(&self) -> bool {
         self.indeterminate && !self.reduce_motion && !crate::time::wall_frozen()
     }
@@ -510,10 +458,8 @@ impl Widget for ProgressBar {
         self.reduce_motion = reduced;
     }
 
-    /// Determinate bars never change size; indeterminate ones
-    /// change their segment fill every frame but keep the same
-    /// outer rect. Either way, layout stays clean after the
-    /// initial `apply_layout` writes a non-zero rect.
+    /// Determinate bars never change size; indeterminate ones change their segment fill every
+    /// frame but keep the same outer rect.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -545,10 +491,7 @@ mod tests {
         b
     }
 
-    /// Count the `COLOR` draw tags in a scene. Each `scene.fill` with
-    /// a solid colour emits exactly one such tag — see `tabs.rs`'s
-    /// `active_pill_emits_more_color_fills_than_inactive_siblings` for
-    /// precedent.
+    /// Count the `COLOR` draw tags in a scene.
     fn count_color_fills(scene: &Scene) -> usize {
         use vello_encoding::DrawTag;
         scene
@@ -565,7 +508,6 @@ mod tests {
         render_with(bar, false)
     }
 
-    /// Render a bar against a theme with the given reduced-motion setting.
     fn render_with(bar: &mut ProgressBar, reduce_motion: bool) -> Scene {
         let theme = Theme::dark().with_reduce_motion(reduce_motion);
         let mut tr = TextRenderer::new();
@@ -578,25 +520,17 @@ mod tests {
     #[test]
     fn determinate_fill_tracks_progress_and_is_announced() {
         // Case `progress_bar_at_zero_paints_no_fill`.
-        // At `progress == 0.0` the bar must paint the track *only* — the
-        // accent fill rect must be skipped entirely, pinned against the
-        // encoding (not pixel colour) so a future "draws a zero-width rect
-        // anyway" refactor trips the test.
         {
             let mut zero = bar_at(0.0);
             let zero_scene = render(&mut zero);
             let zero_fills = count_color_fills(&zero_scene);
 
-            // The track alone is one COLOR fill — no accent fill should
-            // appear.
             assert_eq!(
                 zero_fills, 1,
                 "zero-progress bar must emit exactly the track COLOR fill \
              with no accent fill draw — got {zero_fills} COLOR tags",
             );
 
-            // Cross-check: a half-progress bar emits *more* COLOR fills
-            // than the zero bar, proving the difference is the accent fill.
             let mut half = bar_at(0.5);
             let half_fills = count_color_fills(&render(&mut half));
             assert!(
@@ -606,11 +540,8 @@ mod tests {
             );
         }
 
-        // Case `progress_bar_at_full_paints_track_width_fill`.
-        // At `progress == 1.0` the accent fill must span the full track
-        // width. Can't inspect the encoded rect directly, so this drives
-        // the contract through the public `progress()` accessor, computing
-        // the fill rectangle the same way `draw` does.
+        // Case `progress_bar_at_full_paints_track_width_fill`. At `progress == 1.0` the accent
+        // fill must span the full track width.
         {
             let bar = bar_at(1.0);
             let track_width = bar.rect.width();
@@ -634,11 +565,8 @@ mod tests {
             );
         }
 
-        // Case `progress_bar_at_half_paints_half_fill_within_one_pixel`.
-        // At `progress == 0.5` the accent fill width must equal half the
-        // track width within a ±1 px tolerance. The 1 px slack absorbs
-        // rounding at sub-pixel layout boundaries; the underlying maths
-        // is exact for the 200 px test rect.
+        // Case `progress_bar_at_half_paints_half_fill_within_one_pixel`. At `progress == 0.5`
+        // the accent fill width must equal half the track width within a ±1 px tolerance.
         {
             let bar = bar_at(0.5);
             let track_width = bar.rect.width();
@@ -651,9 +579,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reports_progressbar_role_value_and_busy`.
-        // A determinate bar reports its progress as a percentage value with no
-        // busy flag; an indeterminate bar omits the value and is marked busy.
         {
             use crate::a11y::Role;
             let half = ProgressBar::new(0.5);
@@ -692,10 +617,6 @@ mod tests {
         let t0 = crate::time::now();
         crate::time::testing::with_monotonic_time(t0, || {
             // Case `progress_bar_indeterminate_needs_animation_frame_returns_true`.
-            // Indeterminate bars must opt into the redraw loop via
-            // `needs_animation_frame() == true`, otherwise `App` would stop
-            // pumping frames and the segment would freeze partway across the
-            // track. Determinate bars must *not* opt in — they're static.
             {
                 let indeterminate = ProgressBar::indeterminate();
                 assert!(
@@ -715,8 +636,6 @@ mod tests {
                 bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
                 let _ = render(&mut bar);
                 bar.mark_drawn();
-                // The next step moves the segment: that frame's damage is the
-                // segment alone.
                 let next = crate::animation::next_indicator_step(bar.start, crate::time::now());
                 crate::time::testing::with_monotonic_time(next, || {
                     let _ = render(&mut bar);
@@ -767,11 +686,6 @@ mod tests {
                 assert!(!bar.needs_redraw());
             }
 
-            // Case `reduce_motion_freezes_the_indeterminate_segment`.
-            // With reduced motion an indeterminate bar holds its segment fixed:
-            // a bar backdated by a full sweep paints the same geometry as a
-            // fresh one. With motion on, the same backdate lands elsewhere —
-            // proving the freeze is the reduced-motion path, not a no-op.
             {
                 use crate::time::Duration;
                 let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
@@ -808,11 +722,6 @@ mod tests {
 
     #[test]
     fn a_segment_that_holds_still_asks_for_no_frames() {
-        // A window laid out without a paint — a layout check staging a screen —
-        // asks every widget whether it moves before it draws any: a bar that
-        // kept asking would wait forever there. Reduced motion is the
-        // framework's policy, delivered before the question, so it holds the
-        // segment still without waiting to learn it from a paint.
         let mut reduced = ProgressBar::indeterminate();
         reduced.set_motion_reduced(true);
         assert!(
@@ -820,10 +729,6 @@ mod tests {
             "reduced motion holds the segment still"
         );
 
-        // A capture pins the wall clock so every shot shows the same frame; the
-        // segment then stands in the middle of the track, as
-        // `ProgressBarFace::phase` paints it, and the bar stops asking for
-        // frames.
         let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
         crate::time::testing::with_wall(at, || {
             assert!(crate::time::wall_frozen());
@@ -833,7 +738,6 @@ mod tests {
             );
         });
 
-        // A live window's bar keeps the loop pumping.
         assert!(
             ProgressBar::indeterminate().needs_animation_frame(),
             "a live segment moves"

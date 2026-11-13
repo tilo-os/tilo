@@ -31,18 +31,12 @@ use tilo_workspace_directory::web_origin;
 
 use super::Project;
 
-/// Every line the host writes for its operator starts with this.
 const OPERATOR: &str = "tilo-room-operator ";
-/// How long the host has to start serving.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// A running shared workspace.
 pub struct SharedWorkspace {
-    /// The host's page-facing origin (plain HTTP on loopback).
     pub origin: String,
-    /// The id of the relay room serving it.
     pub relay_room: String,
-    /// The app every page opens.
     pub app_id: String,
     pub name: String,
     child: Mutex<Child>,
@@ -51,7 +45,6 @@ pub struct SharedWorkspace {
     /// `records_file` across restarts.
     records: Mutex<Records>,
     records_file: PathBuf,
-    /// Everyone admitted, by person key: the name each joined under.
     people: Mutex<std::collections::BTreeMap<String, String>>,
     people_file: PathBuf,
 }
@@ -94,11 +87,9 @@ impl Records {
 /// How long the page that is opening an app's record has before another may.
 const OPENING_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Where an app's record in the workspace stands, for a page that opens it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecordClaim {
     pub record: Option<String>,
-    /// Whether the asking page is to open it.
     pub open: bool,
 }
 

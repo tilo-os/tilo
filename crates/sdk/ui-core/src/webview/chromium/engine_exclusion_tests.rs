@@ -36,8 +36,8 @@ fn native_engine_command_cannot_read_migration_files_even_through_aliases() {
     symlink(&denied, root.path().join("alias")).unwrap();
     let held = std::fs::File::open(&denied).unwrap();
     let executable = std::env::current_exe().unwrap();
-    // This is the actual engine command factory and the exact child policy
-    // attachment called by it; only the projection location is a test fixture.
+    // This is the actual engine command factory and the exact child policy attachment
+    // called by it; only the projection location is a test fixture.
     for confined in [false, true] {
         let mut command = host_command(&executable).unwrap();
         if confined {
@@ -91,14 +91,9 @@ fn dedicated_service_factory_binds_import_and_confirms_child_exit_before_cleanup
     struct ReapOnPanic(Arc<ChromiumEngine>);
     impl Drop for ReapOnPanic {
         fn drop(&mut self) {
-            // The guard is declared after TempDir and therefore reaps first on
-            // every assertion failure, preserving the live child's namespace.
             if self.0.runtime.service_session.is_some() {
                 let _ = self.0.shutdown_service_session();
             } else {
-                // Normal profiles deliberately refuse the dedicated public
-                // stop operation. The fixture owner follows Runtime::drop's
-                // lifecycle and waits for its actual supervisor before cleanup.
                 self.0
                     .runtime
                     .process
@@ -157,8 +152,6 @@ while True:
     )
     .unwrap();
     let _reap = ReapOnPanic(engine.clone());
-    // The engine no longer waits for its host to start (e2e7efdf23): the
-    // host records its arguments once it runs.
     let args_path = profile.join("host-args.json");
     tilo_test_env::wait_until("the protocol host to start", || args_path.exists());
     let args = std::fs::read_to_string(&args_path).unwrap();
@@ -184,8 +177,6 @@ while True:
             .import_service_session(super::tests::selected_service_request())
             .is_err()
     );
-    // Same process confirmation remains idempotent, even while retained WebViews
-    // still hold their engine handles. Files may now be removed by their owner.
     engine.shutdown_service_session().unwrap();
     let ordinary = root.path().join("ordinary");
     std::fs::DirBuilder::new()

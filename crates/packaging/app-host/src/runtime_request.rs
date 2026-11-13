@@ -1,15 +1,9 @@
 //! The host's answer to Settings asking for language packs (see
-//! [`runtime_portal::runtime_request`]): which ones the repositories offer,
-//! and installing one.
-//!
-//! The connection arrives stamped by the launcher with the calling app's id,
-//! and the host answers only Settings. Repository, signatures and
-//! destination are the host's (the same pipeline `app install` uses). One
-//! install runs per pack however often it is asked, and a failure is
-//! reported once, so the next request retries.
-//!
-//! An app's runtimes are not asked for here: they install and update with
-//! the app itself.
+//! [`runtime_portal::runtime_request`]): which ones the repositories offer, and installing one. The
+//! connection arrives stamped by the launcher with the calling app's id, and the host answers only
+//! Settings; repository, signatures and destination are the host's, through the pipeline `app
+//! install` uses. One install runs per pack however often it is asked, and a failure is reported
+//! once, so the next request retries.
 
 use std::collections::HashMap;
 use std::io;
@@ -108,7 +102,6 @@ impl RuntimeRequests {
         Self::with_language_packs(LanguagePackHost::enabled_repositories())
     }
 
-    /// A host with the given language packs (tests).
     #[must_use]
     pub fn with_language_packs(packs: LanguagePackHost) -> Arc<Self> {
         Arc::new(Self {
@@ -227,7 +220,7 @@ impl RuntimeRequests {
     ///
     /// # Errors
     ///
-    /// Returns a transport error; a clean hang-up is `Ok`.
+    /// A transport error; a clean hang-up is `Ok`.
     pub fn serve(
         self: &Arc<Self>,
         app_id: &str,
@@ -246,8 +239,7 @@ mod tests {
 
     use super::*;
 
-    /// Settings, and only Settings, may ask which language packs the
-    /// repositories offer and install one by its locale; the install runs
+    /// Settings, and only Settings, may ask about language packs and install one; the install runs
     /// once however often it asks, and a locale must read as one.
     #[test]
     fn settings_alone_lists_and_installs_language_packs() {

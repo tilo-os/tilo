@@ -53,8 +53,6 @@ fn status_is_read_only_and_does_not_require_identity() {
     assert!(!dir.path().join("identity").exists());
 }
 
-/// An isolated XDG profile plus a stand-in for `tilo-relay-admin` that
-/// records its argv and prints readiness output the service must not expose.
 struct Profile {
     dir: tempfile::TempDir,
     admin: std::path::PathBuf,
@@ -91,8 +89,6 @@ impl Profile {
             .expect("write namespace");
     }
 
-    /// A cache prepared by initialization or recovery: its signed authority,
-    /// before any mount has written a tree.
     fn save_authority(&self) {
         std::fs::create_dir_all(self.cache()).expect("create cache");
         std::fs::write(
@@ -273,7 +269,6 @@ fn primary_launch_gives_the_daemon_the_paths_the_authority_check_saw() {
         !profile.path("identity").exists(),
         "launch never mints identity"
     );
-    // Empty XDG variables count as unset and resolve to the same defaults.
     let defaults = Profile::new(0);
     std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
     std::fs::write(

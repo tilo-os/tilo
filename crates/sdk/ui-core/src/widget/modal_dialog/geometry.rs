@@ -1,6 +1,6 @@
-//! The sheet's geometry: where its card, title, header, body and footer
-//! actions stand inside a window, worked out before anything but the title
-//! and the action labels is measured.
+//! The sheet's geometry: where its card, title, header, body and footer actions stand
+//! inside a window, worked out before anything but the title and the action labels is
+//! measured.
 
 use vello::kurbo::{Point, Rect, Vec2};
 
@@ -17,11 +17,6 @@ use crate::widget::control_size::ControlSize;
 use crate::widget::floating_surface;
 use tilo_sort::CompactSort as _;
 
-/// The part of `window` a sheet `wanted_h` tall may cover. A sheet that
-/// fits below the window's header row (and clear of the bottom edge by the
-/// content gutter) stays below it, so the row's controls stay readable. A
-/// taller one takes the whole window inside the gutter: its own content
-/// and footer matter more than the header row it covers.
 fn sheet_room(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
     if uses_full_window(window, theme) {
         return window;
@@ -45,8 +40,7 @@ pub(super) fn target(theme: &Theme, environment: InteractionEnvironment) -> f64 
     f64::from(theme.tokens.metrics.min_pointer_target).max(f64::from(environment.minimum_target()))
 }
 
-/// Compute the geometry for `spec` inside `window` for a person with a
-/// pointing device.
+/// Compute the geometry for `spec` inside `window` for a person with a pointing device.
 pub fn layout(
     window: Rect,
     spec: &ModalSpec<'_>,
@@ -62,9 +56,8 @@ pub fn layout(
     )
 }
 
-/// Compute the geometry for `spec` inside `window` for a person reaching it
-/// through `environment`: on a coarse pointer the sheet's own controls take a
-/// finger's target.
+/// Compute the geometry for `spec` inside `window` for a person reaching it through
+/// `environment`: on a coarse pointer the sheet's own controls take a finger's target.
 pub fn layout_for(
     window: Rect,
     spec: &ModalSpec<'_>,
@@ -79,12 +72,7 @@ pub fn layout_for(
     let min_target = target(theme, environment);
     let row_h = title_row_height(theme).max(min_target);
     let close_side = min_target;
-    // The close control's glyph lines up with the content's trailing edge,
-    // so its hit target reaches a little into the padding.
     let close_overhang = (close_side - f64::from(theme.tokens.metrics.icon_md)) / 2.0;
-    // The title stops where the close control starts, so a long title wraps
-    // (and then elides) instead of running under it.
-    // A title icon stands at the leading edge; the title starts after it.
     let icon_lead = if spec.icon.is_some() && has_title {
         title_icon_side(theme) + f64::from(spacing.s3)
     } else {
@@ -145,8 +133,6 @@ pub fn layout_for(
     } else {
         Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
     };
-    // The sheet's edges on the display's pixels: half a pixel of centring blurs its border and
-    // the actions under it across two.
     let card = floating_surface::on_device_pixels(card);
     let title_top = card.y0 + pad;
 
@@ -264,9 +250,6 @@ struct FooterGeometry {
     height: f64,
 }
 
-/// Reserve the footer before allocating body space. Labels are measured in
-/// the real control typography, so larger text and translations can wrap
-/// the action group into separate rows without covering the body.
 fn footer_geometry(
     spec: &ModalSpec<'_>,
     available_width: f64,
@@ -307,11 +290,6 @@ fn footer_geometry(
     }
 }
 
-/// The footer's action rects, indexed by the authored action while the
-/// visual order follows emphasis and the platform's convention. Where the
-/// primary action stands last, an alternate answer stands apart at the
-/// leading edge (Don't save … Cancel, Save); where it stands first, the
-/// alternate follows it (Save, Don't save, Cancel).
 fn place_actions(
     spec: &ModalSpec<'_>,
     card: Rect,
@@ -402,8 +380,7 @@ impl ModalLayout {
         None
     }
 
-    /// True for the close control, and for the scrim when the spec allows
-    /// it. Everything else is swallowed.
+    /// True for the close control, and for the scrim when the spec allows it.
     pub fn dismisses(&self, p: Point) -> bool {
         match self.hit(p) {
             Some(ModalHit::Close) => true,

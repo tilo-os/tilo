@@ -1,5 +1,5 @@
-//! No stale pointer is followed: once a widget replaced children, the
-//! harness admits the new composition before it looks a node up again.
+//! No stale pointer is followed: once a widget replaced children, the harness admits the new
+//! composition before it looks a node up again.
 
 use super::*;
 use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
@@ -14,8 +14,8 @@ fn harness(at: ReplaceAt) -> (FrameHarness, std::rc::Rc<std::cell::Cell<bool>>) 
     (frame, armed)
 }
 
-/// An unhandled Alt+Arrow that replaced the focused control on its way
-/// through: host navigation looks focus up in the new composition.
+/// An unhandled Alt+Arrow that replaced the focused control on its way through: host navigation looks
+/// focus up in the new composition.
 #[test]
 fn an_event_that_replaces_the_focused_control_is_followed_by_the_new_tree() {
     let (mut frame, armed) = harness(ReplaceAt::Event);
@@ -26,7 +26,6 @@ fn an_event_that_replaces_the_focused_control_is_followed_by_the_new_tree() {
     assert_eq!(frame.focus_order().len(), 1, "the new control is laid out");
 }
 
-/// Remembering focus after a replacement reads the live tree.
 #[test]
 fn remembering_focus_after_a_replacement_reads_the_live_tree() {
     let (mut frame, armed) = harness(ReplaceAt::Sync);
@@ -41,8 +40,8 @@ fn remembering_focus_after_a_replacement_reads_the_live_tree() {
     assert_eq!(frame.focus_order().len(), 1);
 }
 
-/// An accessibility action that arrives after a replacement, before any
-/// layout: the node it names is looked up in the live composition.
+/// An accessibility action that arrives after a replacement, before any layout: the node it names is
+/// looked up in the live composition.
 #[test]
 fn an_accessibility_action_after_a_replacement_reaches_no_replaced_control() {
     let (mut frame, armed) = harness(ReplaceAt::Sync);
@@ -56,8 +55,7 @@ fn an_accessibility_action_after_a_replacement_reaches_no_replaced_control() {
     assert_eq!(frame.focus_order().len(), 1);
 }
 
-/// The harness over a container that replaces its focused child and never
-/// reports it.
+/// The harness over a container that replaces its focused child and never reports it.
 fn unreported(at: ReplaceAt) -> (FrameHarness, std::rc::Rc<std::cell::Cell<bool>>) {
     let (root, armed) = Replacing::unreported(at);
     let mut frame = FrameHarness::new(State::new(), Box::new(root), (200, 100));
@@ -67,10 +65,9 @@ fn unreported(at: ReplaceAt) -> (FrameHarness, std::rc::Rc<std::cell::Cell<bool>
     (frame, armed)
 }
 
-/// A widget that replaces a child without reporting it breaks the widget
-/// contract, but it must not make the frame call into the replaced child
-/// through the layout kept from before: the frame finds a pointer no live
-/// widget matches and builds the layout again.
+/// A widget that replaces a child without reporting it breaks the widget contract, but it must not make
+/// the frame call into the replaced child through the layout kept from before: the frame finds a
+/// pointer no live widget matches and builds the layout again.
 #[test]
 fn a_replacement_nobody_reports_is_laid_out_again_not_followed() {
     let (mut frame, armed) = unreported(ReplaceAt::Sync);
@@ -85,8 +82,8 @@ fn a_replacement_nobody_reports_is_laid_out_again_not_followed() {
     assert_eq!(frame.focus_order().len(), 1, "the new control is laid out");
 }
 
-/// The same while an event is handled: navigation after it reads the live
-/// tree, not the replaced control.
+/// The same while an event is handled: navigation after it reads the live tree, not the replaced
+/// control.
 #[test]
 fn an_event_that_silently_replaces_the_focused_control_is_not_followed() {
     let (mut frame, armed) = unreported(ReplaceAt::Event);
@@ -98,8 +95,6 @@ fn an_event_that_silently_replaces_the_focused_control_is_not_followed() {
     assert_eq!(frame.focus_order().len(), 1, "the new control is laid out");
 }
 
-/// An unchanged tree keeps its layout: checking the pointers against the
-/// live tree costs no rebuild.
 #[test]
 fn an_unchanged_tree_keeps_its_layout() {
     let (mut frame, _armed) = unreported(ReplaceAt::Sync);
@@ -109,9 +104,9 @@ fn an_unchanged_tree_keeps_its_layout() {
     assert_eq!(frame.rebuilt_frames(), rebuilt, "nothing was rebuilt");
 }
 
-/// A container that reports a structure change from every sync, as a list
-/// does when it reads its model again, while a control invocation stays
-/// queued, as one a view the person is waiting on leaves pending.
+/// A container that reports a structure change from every sync, as a list does when it reads its model
+/// again, while a control invocation stays queued, as one a view the person is waiting on leaves
+/// pending.
 struct Restless {
     dirty: bool,
     rect: vello::kurbo::Rect,
@@ -178,12 +173,10 @@ impl crate::widget::controls::ActionControls for Restless {
     }
 }
 
-/// A frame whose model reports a structure change every time (a list of rows
-/// that may have moved) while a control invocation waits admits that
-/// composition itself: the tick the sync asks for dispatches through the
-/// composition the frame laid out, instead of starting a frame inside this
-/// one that reports the change again, frame after frame, until the harness
-/// gives up on it.
+/// A frame whose model reports a structure change every time (a list of rows that may have moved) while
+/// a control invocation waits admits that composition itself: the tick the sync asks for dispatches
+/// through the composition the frame laid out, instead of starting a frame inside this one that reports
+/// the change again, frame after frame, until the harness gives up on it.
 #[test]
 fn a_frame_whose_model_reports_a_change_every_time_settles_it_itself() {
     let mut frame = FrameHarness::new(State::new(), Box::new(Restless::new()), (200, 100));

@@ -1,30 +1,25 @@
 //! Provider-sandboxed machines.
 //!
-//! A hosting provider's single-tenant VM or sandbox can be the security
-//! boundary itself and offer no Landlock (gVisor implements none; stock
-//! Firecracker guest kernels leave it out). There the image, never the
-//! environment, declares the machine provider-sandboxed, and first-party
-//! apps from the image's root-owned system store run without Landlock.
-//! Bubblewrap, seccomp and the network namespace still apply. Apps a user
-//! installs still require the complete Landlock policy.
+//! A hosting provider's single-tenant VM or sandbox can be the security boundary itself
+//! and offer no Landlock (gVisor implements none; stock Firecracker guest kernels leave
+//! it out).
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-/// The image's declaration. Only root may write it.
+/// The image's declaration.
 pub const CONFIG_FILE: &str = "/etc/tilo/provider-sandbox.toml";
 
-/// Whether a launch of the package at `payload_root` may run with Landlock
-/// not (or only partially) enforced.
+/// Whether a launch of the package at `payload_root` may run with Landlock not (or only partially)
+/// enforced.
 #[must_use]
 pub fn landlock_best_effort(payload_root: &Path) -> bool {
     declared(Path::new(CONFIG_FILE))
         && system_app(payload_root, &package_store::layout::system_payload_dir())
 }
 
-/// Whether `config` is a root-owned file no one else can write that sets
-/// `provider_sandboxed = true`.
+/// Whether `config` is a root-owned file no one else can write that sets `provider_sandboxed = true`.
 fn declared(config: &Path) -> bool {
     let Ok(metadata) = fs::symlink_metadata(config) else {
         return false;
@@ -43,15 +38,14 @@ fn parse(text: &str) -> bool {
         .any(|(key, value)| key.trim() == "provider_sandboxed" && value.trim() == "true")
 }
 
-/// Whether `payload_root` lies in the image's system store: canonically
-/// below `system_dir`, with the store and the package root both controlled
-/// by root, so no user can place a package there.
+/// Whether `payload_root` lies in the image's system store: canonically below `system_dir`, with the
+/// store and the package root both controlled by root, so no user can place a package there.
 fn system_app(payload_root: &Path, system_dir: &Path) -> bool {
     store_controlled_by(payload_root, system_dir, 0)
 }
 
-/// Whether `payload_root` lies canonically below `store`, with both owned by
-/// `owner` and writable by no one else.
+/// Whether `payload_root` lies canonically below `store`, with both owned by `owner` and writable by no
+/// one else.
 fn store_controlled_by(payload_root: &Path, store: &Path, owner: u32) -> bool {
     let (Ok(payload), Ok(store)) = (fs::canonicalize(payload_root), fs::canonicalize(store)) else {
         return false;
@@ -100,9 +94,8 @@ mod tests {
 
     #[test]
     fn system_apps_live_below_a_root_controlled_store() {
-        // A store owned by whoever runs the suite stands in for root's: a
-        // test job in a user namespace sees the host's `/usr` owned by the
-        // overflow uid, not by root.
+        // A store owned by whoever runs the suite stands in for root's: a test job in a user namespace
+        // sees the host's `/usr` owned by the overflow uid, not by root.
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store");
         let package = store.join("pkg");

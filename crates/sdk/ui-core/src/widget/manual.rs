@@ -13,11 +13,8 @@ use vello::{
 /// A proposal for one axis of a retained subtree, in logical pixels.
 #[derive(Clone, Copy, Debug)]
 pub enum MeasureConstraint {
-    /// Natural size; percentage/fill on the subtree root becomes intrinsic.
     Intrinsic,
-    /// Fit within this bound, allowing smaller natural content.
     AtMost(f32),
-    /// Allocate precisely this size, including padding and borders.
     Exact(f32),
 }
 /// Allocated size and overflowing content are separate measurements.
@@ -28,8 +25,6 @@ pub struct ChildMeasurement {
 }
 
 /// Explicit invalidation for inputs captured by a retained [`Manual`] policy.
-/// After changing an input, call [`Self::invalidate`] and schedule a normal
-/// host layout frame. This handle does not schedule a window redraw itself.
 #[derive(Clone, Default)]
 pub struct ManualInvalidation(Rc<PolicyRevision>);
 #[derive(Default)]
@@ -37,9 +32,6 @@ struct PolicyRevision {
     requested: Cell<u64>,
     solved: Cell<Option<u64>>,
     applied: Cell<Option<u64>>,
-    /// The allocation the region's last solve was handed. Nothing the policy
-    /// read changed since, when its children's flags say so and its subtree
-    /// stands where that solve put it, so the same allocation answers again.
     settled_at: Cell<Option<Size<f32>>>,
 }
 impl ManualInvalidation {
@@ -50,13 +42,13 @@ impl ManualInvalidation {
     pub(crate) fn is_pending(&self) -> bool {
         self.0.applied.get() != Some(self.0.requested.get())
     }
-    /// Whether the region's last solve was handed `available`: its answer
-    /// stands for that allocation.
+    /// Whether the region's last solve was handed `available`: its answer stands for that
+    /// allocation.
     pub(crate) fn settled_at(&self, available: Size<f32>) -> bool {
         self.0.settled_at.get() == Some(available)
     }
-    /// The region's children carry the styles it built them with, not ones a
-    /// solve placed (a rebuilt tree): its next solve is owed.
+    /// The region's children carry the styles it built them with, not ones a solve placed
+    /// (a rebuilt tree): its next solve is owed.
     pub(crate) fn rebuilt(&self) {
         self.0.applied.set(None);
         self.0.settled_at.set(None);
@@ -70,14 +62,11 @@ impl ManualInvalidation {
 }
 
 pub(crate) type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
-/// An owned descriptor. Hosts consume this through admitted Widget dispatch.
+/// An owned descriptor.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ManualPolicy {
     policy: Rc<Policy>,
-    /// The size the region was built with. The policy's answer can replace
-    /// it in the region's style; a new solve starts again from it on the axes
-    /// the region takes from its parent ([`reset_region`]).
     region: Size<Dimension>,
     children: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
@@ -155,7 +144,8 @@ impl Manual {
         self.parts.children.push(child);
         self
     }
-    /// The child at `index`, to change in place (a canvas's pin, moved or given another view).
+    /// The child at `index`, to change in place (a canvas's pin, moved or given another
+    /// view).
     pub fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
         self.parts.children.get_mut(index)
     }
@@ -196,7 +186,6 @@ impl Manual {
     pub fn effective_layout(&self) -> Option<ManualLayout> {
         self.info.get()
     }
-    /// The region fills its parent's width; its height is the policy's.
     fn region_size() -> Size<Dimension> {
         Size {
             width: Dimension::percent(1.0),
@@ -275,8 +264,6 @@ impl Widget for Manual {
         self.parts.draw(scene, transform, text, theme, presence);
     }
 
-    /// Authored allocations may deliberately be smaller than their children,
-    /// so negative as well as positive child extents count.
     fn paint_bounds(&self) -> Rect {
         self.info.get().map_or(self.parts.rect, |info| {
             let [x, y, width, height] = info.content_bounds;
@@ -332,15 +319,15 @@ impl ManualContext<'_> {
     pub fn available(&self) -> Size<f32> {
         self.available
     }
+    /// How many children the region holds.
     pub fn len(&self) -> usize {
         self.children.len()
     }
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
-    /// Allocate one child in local logical coordinates.
-    /// # Errors
-    /// Rejects out-of-range indices, duplicate placement and invalid geometry.
+    /// Allocate one child in local logical coordinates. # Errors Rejects out-of-range
+    /// indices, duplicate placement and invalid geometry.
     pub fn place(&mut self, index: usize, rect: Rect) -> Result<(), WidgetLayoutError> {
         if ![
             rect.x0,
@@ -388,8 +375,6 @@ impl ManualContext<'_> {
             .get(index)
             .ok_or(WidgetLayoutError::ManualChildIndex(index))?;
         let root = *root;
-        // The subtree the proposal solves, and the widgets the host admitted
-        // for it: a copy holds matching node ids, so the admission stands.
         let mut solved = Vec::new();
         let mut pending = vec![root];
         let mut subtree = HashMap::new();
@@ -402,10 +387,6 @@ impl ManualContext<'_> {
         }
         let live = self.tree;
         let probe = self.probes.of(live);
-        // A copy may hold what an earlier probe left in the regions inside
-        // this subtree; the window's own styles are what a fresh one gives.
-        // A node whose style already matches keeps its solved layout, as it
-        // would in a fresh copy.
         for &node in &solved {
             set_style(probe, node, live.style(node)?.clone())?;
         }
@@ -425,7 +406,6 @@ impl ManualContext<'_> {
             &mut style.min_size.height,
             &mut style.max_size.height,
         )?;
-        // The proposal is this probe's, whatever the copy solved there before.
         probe.set_style(root, style)?;
         // SAFETY: context is created only by the admitted host solver, with no
         // ancestor widget borrow alive. Reuse ORIGINAL admission, never rebuild
@@ -518,12 +498,6 @@ pub(super) fn reset_region(
     Ok(false)
 }
 
-/// The region's size on one axis after its policy answered `answer` for an
-/// `allocated` extent, with `current` the size in its style now. An axis that
-/// takes its size from the parent keeps doing so while the policy accepts
-/// the allocation, so a resize re-solves it without a pass to undo a fixed
-/// size. A size the policy chose and still answers stays put, or the region
-/// would flip between it and the parent's allocation.
 #[allow(
     clippy::float_cmp,
     reason = "exact f32 logical allocations must match, not merely fall within a tolerance"
@@ -539,7 +513,6 @@ fn region_axis(authored: Dimension, current: Dimension, answer: f32, allocated: 
     }
 }
 
-/// Called with no widget references alive and with the owner's execution lease.
 #[allow(
     clippy::float_cmp,
     reason = "exact f32 logical allocations must match, not merely fall within a tolerance"
@@ -555,9 +528,6 @@ pub(super) unsafe fn run_policy(
     probes: &mut Probes,
 ) -> Result<bool, WidgetLayoutError> {
     let revision = descriptor.invalidation.0.requested.get();
-    // A policy allocates in the solver's own geometry: the tree rounds its
-    // edges onto device pixels for placing them, and a rounded allocation fed
-    // back in would read as the policy's answer changing.
     let layout = *tree.unrounded_layout(node);
     let mut context = ManualContext {
         tree,
@@ -596,8 +566,6 @@ pub(super) unsafe fn run_policy(
             height: Dimension::length(height),
         };
         style.max_size = style.min_size;
-        // Size may still be maintained by a control's own fit-content hook.
-        // Equal min/max give authored allocation priority without oscillation.
         changed |= set_style(tree, *child, style)?;
     }
     let mut style = tree.style(node)?.clone();
@@ -645,9 +613,6 @@ pub(super) unsafe fn run_policy(
         first_conflict: conflict,
     }));
     descriptor.invalidation.0.solved.set(Some(revision));
-    // What this region answers for this allocation, once its children's flags
-    // say nothing in its subtree moved. A probe solves a copy: what it places
-    // says nothing about where the window's own children stand.
     if depth == 0 {
         descriptor.invalidation.0.settled_at.set(Some(layout.size));
     }

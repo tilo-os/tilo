@@ -72,11 +72,11 @@ mod durable_local_matrix {
             let principal = principal_id_for_root(cert.user_public_key);
             let changes = tilo_action_policy::Grant::new(
                 "changes-for-a-while",
-                tilo_action_policy::Subject::Person(principal.clone()),
+                tilo_action_policy::Grantee::person(principal.clone()),
                 workspace.node(),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Subject::Person(principal),
+                tilo_action_policy::Grantee::person(principal),
             )
             .with_lifetime(tilo_action_policy::Lifetime::Until(
                 (start / 1_000_000_000 + 50) * 1000,

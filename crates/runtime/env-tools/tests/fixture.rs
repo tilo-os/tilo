@@ -10,7 +10,6 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// Host programs the scripts use.
 const PROGRAMS: &[&str] = &["bash", "mkdir", "chmod", "chown", "ln", "cat", "rm"];
 
 pub const HELLO: &str = "hello-1.0-1.fc44.x86_64";
@@ -192,8 +191,6 @@ fn write_exec(path: &Path, text: &str) -> Option<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).ok()
 }
 
-/// A sealed tree as `(path → kind, mode, mtime, content-or-target)`, for
-/// comparing two builds.
 pub fn listing(root: &Path) -> BTreeMap<String, (char, u32, i64, Vec<u8>)> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, (char, u32, i64, Vec<u8>)>) {
         for entry in std::fs::read_dir(dir).unwrap() {

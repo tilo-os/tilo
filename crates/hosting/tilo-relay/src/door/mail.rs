@@ -449,7 +449,7 @@ fn filled(template: &str, fill: &Fill<'_>, escape: fn(&str) -> String) -> String
 
 /// Whether `url` is a page mail may link to: `https` with a host, or, in the
 /// local review mode (`TILO_ROOMS_LOCAL`) the door was started in, a plain
-/// `http` loopback address, which `TILO_ROOMS_WEB_ENTRY` accepts there too.
+/// `http` address on this machine, which `TILO_ROOMS_WEB_ENTRY` accepts there too.
 /// Nothing that could run as another kind of URL, carry credentials or break
 /// out of the attribute.
 fn safe_url(url: &str, local: bool) -> bool {
@@ -470,15 +470,12 @@ fn safe_url(url: &str, local: bool) -> bool {
     if scheme.eq_ignore_ascii_case("https") {
         return true;
     }
-    local && scheme.eq_ignore_ascii_case("http") && loopback(authority)
-}
-
-fn loopback(authority: &str) -> bool {
-    let host = match authority.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or_default(),
-        None => authority.split(':').next().unwrap_or_default(),
-    };
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    // Plain http only on this machine ([`tilo_net::secure_origin`]):
+    // `localhost`, a name under it, or a loopback address.
+    local
+        && scheme.eq_ignore_ascii_case("http")
+        && tilo_net::Url::parse(&format!("http://{authority}/"))
+            .is_ok_and(|url| tilo_net::secure_origin(&url))
 }
 
 /// Sends a mail; why not, without the address or the body.
@@ -1073,6 +1070,8 @@ mod tests {
         assert!(safe_url("http://localhost:8790/", true));
         assert!(safe_url("http://127.0.0.1:9/", true));
         assert!(safe_url("http://[::1]:9/", true));
+        assert!(safe_url("http://tilo.localhost:24120/", true));
+        assert!(!safe_url("http://localhost.tilo.example/", true));
         // A plain loopback page is the local review mode's, not a room's.
         assert!(!safe_url("http://localhost:8790/", false));
         assert!(!safe_url("http://127.0.0.1:9/", false));

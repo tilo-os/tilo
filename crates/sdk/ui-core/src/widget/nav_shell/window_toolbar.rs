@@ -24,7 +24,6 @@ pub(super) struct Requests {
     pub(super) put_drawer_away: Cell<bool>,
     /// A notice the app asked the window's bar to show ([`WindowBarLink::toast`]).
     pub(super) toast: RefCell<Option<(String, crate::widget::toast::ToastKind)>>,
-    /// The shell's own slots for the window's bar as of its last layout.
     slots: RefCell<WindowToolbar>,
     /// The inspector's frame as of the last layout, and what an
     /// [`super::InspectorLink`] asked of it.
@@ -44,13 +43,11 @@ pub(super) struct Requests {
 pub struct WindowBarLink(Rc<Requests>);
 
 impl WindowBarLink {
-    /// The shell's own slots, as it last laid out.
     #[must_use]
     pub fn slots(&self) -> WindowToolbar {
         self.0.slots.borrow().clone()
     }
 
-    /// Whether the shell shows its sidebar, as it last laid out.
     #[must_use]
     pub fn is_sidebar_open(&self) -> bool {
         self.0.slots.borrow().sidebar == Some(true)
@@ -99,7 +96,6 @@ impl WindowBarLink {
 /// The action ids of the shell's own slots in the window's bar
 /// ([`NavShell::window_toolbar`]).
 pub const WINDOW_BACK: &str = "nav-shell-back";
-/// The test id of the sidebar toggle the shell's header row holds.
 pub const WINDOW_SIDEBAR: &str = "nav-shell-sidebar";
 pub const WINDOW_INSPECTOR: &str = "nav-shell-inspector";
 
@@ -175,15 +171,8 @@ impl NavShell {
         acted
     }
 
-    /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]):
-    /// the shell draws no header row of its own, in a Tilo session or out of
-    /// it. Its own buttons (the sidebar toggle, Back, the inspector toggle)
-    /// are slots too: the app starts its declaration from
-    /// [`Self::window_toolbar`] and hands what the person did in the bar to
-    /// [`Self::window_toolbar_event`] first. The columns' titles and header
-    /// actions given to the shell are not shown in a row: the app declares its
-    /// location and actions as slots. The sidebar keeps its own header row all
-    /// the same, at the top of the sidebar, at every time.
+    /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]): the shell draws
+    /// no header row of its own, in a Tilo session or out of it.
     #[must_use]
     pub fn with_window_toolbar(self) -> Self {
         {
@@ -217,23 +206,14 @@ impl NavShell {
         self.geometry.back_column.is_some() || self.sheet_shown()
     }
 
-    /// The shell's own slots for the window's bar
-    /// ([`Self::with_window_toolbar`]): the sidebar toggle while there is a
-    /// sidebar, Back while it goes anywhere (leading), and the inspector's
-    /// toggle while there is an inspector (the last action). The app adds
-    /// its location, views and actions; the inspector's toggle stays last.
-    /// On a phone, where the sidebar is no docked column but a drawer, the
-    /// toggle stands aside for Back on a screen that went somewhere deeper:
-    /// that screen has one way back, at the leading edge, and the toggle comes
-    /// back with the first screen.
+    /// The shell's own slots for the window's bar ([`Self::with_window_toolbar`]): the sidebar
+    /// toggle while there is a sidebar, Back while it goes anywhere (leading), and the
+    /// inspector's toggle while there is an inspector (the last action).
     #[must_use]
     pub fn window_toolbar(&self) -> WindowToolbar {
         use crate::window_toolbar::ToolbarAction;
         let lookup = crate::i18n::I18nManager::lookup_plain;
         let back = self.can_go_back();
-        // A phone's sidebar screen is a screen of the push stack, and its way out is Back, to the
-        // screen the toggle covered: the toggle stands aside for it there, as it does on any screen
-        // that went somewhere deeper.
         let on_sidebar_screen = self.geometry.sidebar == SidebarPlacement::Screen
             && self.front_pane() == NavPane::Sidebar;
         let toggle_yields = back
@@ -298,8 +278,6 @@ impl NavShell {
             .map(|at| toolbar.actions.remove(at));
         toolbar.actions.extend(actions);
         if let Some(inspector) = inspector {
-            // The toggle stands in the row; the app's menu-only actions
-            // follow it in the menu.
             let at = toolbar.row_actions();
             toolbar.actions.insert(at, inspector);
         }

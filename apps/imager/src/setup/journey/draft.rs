@@ -1,4 +1,5 @@
-//! Private restart pointers. These records contain no grants or password material.
+//! Private restart pointers; these records contain no grants or password material.
+
 use imager_backend::prepared_identity::PreparedIdentity;
 use imager_backend::prepared_identity::{DraftLock, RestartStorage};
 use serde::{Deserialize, Serialize};
@@ -39,19 +40,12 @@ pub(super) struct PublicChoices {
     pub device_label: String,
     #[serde(default = "install_profile_model::default_purpose")]
     pub purpose: String,
-    /// New interactive preparations defer sensitive capture to the
-    /// destination. Older records default to the password-protected path.
     #[serde(default)]
     pub deferred: bool,
-    /// The other computer's model and, when one was imported, its hardware
-    /// report. The report is unsigned evidence supplied by the person, not a
-    /// grant; it stays in this private restart record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetDraft>,
 }
 
-/// The resumed destination selection. Every field is presentation or evidence;
-/// none authorizes a boot, partition or protection change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TargetDraft {
@@ -61,9 +55,6 @@ pub(super) struct TargetDraft {
     pub board: String,
     pub sku: String,
     pub architecture: String,
-    /// True when the imported report was too large for the bounded restart
-    /// record; the person is asked to import it again rather than resume with
-    /// an identity that looks as if it had evidence.
     #[serde(default, skip_serializing_if = "is_false")]
     pub report_omitted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,7 +276,6 @@ impl DraftStore {
             Ok(DraftStatus::Pending(pending))
         }
     }
-    /// Reserve before minting keys. Failure after this commit remains Pending.
     pub(super) fn reserve(
         &self,
         choices: &PublicChoices,
@@ -351,7 +341,6 @@ impl DraftStore {
             account_checkpoint: current.account_checkpoint,
         })
     }
-    /// Record an already authenticated backup/enrollment in this exact namespace.
     pub(super) fn record_prepared(
         &self,
         choices: &PublicChoices,
@@ -478,7 +467,6 @@ impl DraftStore {
         }
         self.write(&record)
     }
-    /// Retire only the pointer. Never remove identity/provider custody.
     pub(super) fn retire(&self) -> io::Result<()> {
         let _lock = self.lock()?;
         self.read()?;
@@ -502,8 +490,6 @@ impl PendingDraft {
                 "identity"
             })
     }
-    /// Explicit recovery of New custody created before acknowledgement. Other
-    /// kinds require their original external authentication again.
     pub(super) fn recover_created_new(&self) -> io::Result<Arc<PreparedIdentity>> {
         if self.kind() != IdentityKind::New || self.pointer.root_key.is_some() {
             return Err(invalid());
@@ -555,13 +541,10 @@ impl ReadyDraft {
     pub(super) fn resume(&self) -> io::Result<Arc<PreparedIdentity>> {
         self.with_current(|| self.restore_custody())
     }
-    /// Fence restoration against selection replacement until authentication and
-    /// fresh staging finish. Public presentation choices may change independently.
     pub(super) fn with_current<T>(&self, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         let _guard = self.acquire_current()?;
         action()
     }
-    /// Retain generation custody through worker delivery and receiver acceptance.
     pub(super) fn acquire_current(&self) -> io::Result<DraftLock> {
         let guard = self.acquire_preparation_current()?;
         if self
@@ -579,8 +562,6 @@ impl ReadyDraft {
         }
         Ok(guard)
     }
-    /// Fence storage bound to identity preparation, not the independently saved
-    /// account selection. Replacing or retiring preparation still revokes it.
     pub(super) fn acquire_preparation_current(&self) -> io::Result<DraftLock> {
         let guard = self.pending.store.lock()?;
         let current = self.pending.store.read()?.ok_or_else(invalid)?;

@@ -1,75 +1,39 @@
-//! What the installer on the live medium offers its wizard's controls, the
-//! palette, agents, its console and the unattended recipe: one typed effect
-//! vocabulary, each answered by `InstallerApp::apply`.
-//!
-//! A wizard button, a keyboard shortcut, the palette, a screen reader,
-//! `tilo-control actions invoke`, a headless scenario and the `tilo-vm
-//! scenario install` driver all end in the same handler. These are effects,
-//! not document actions: installer state is local to the privileged live
-//! session, never replicated, and several of them (install, reboot) act on
-//! the machine.
-//!
-//! The console names an effect `<id>@installer`; an effect bound to one item
-//! is named on that item: `select-disk@installer.disk:/dev/vdb`,
-//! `select-region@installer.region:1`, `set-size@installer.storage` and
-//! `begin@installer.review`.
+//! What the installer on the live medium offers its window: one effect per choice.
 
 use ui::tilo_resource::{self, Effect};
 
-/// `provider` in `tilo-control` terms, and the id its root resource is
-/// published at: the name the console socket answers under.
 pub const PROVIDER: &str = "installer";
 
-/// The review the destructive `begin` is offered on, named by the target it
-/// formats.
 pub const REVIEW: &str = "installer.review";
 
-/// The capacity choice of a guided install beside another system, bound to
-/// the free extent it divides.
 pub const STORAGE: &str = "installer.storage";
 
-/// One discovered disk: `installer.disk:/dev/vdb`.
 pub fn disk_row(device: &str) -> String {
     format!("installer.disk:{device}")
 }
 
-/// One unallocated region of the selected disk, when more than one could
-/// hold an alongside install.
 pub fn region_row(index: usize) -> String {
     format!("installer.region:{index}")
 }
 
 /// Everything the installer can be asked to do.
-///
-/// Not `Debug`: passphrase and network effects carry secrets, and a derived
-/// `Debug` would print them into any log that formats one.
 #[derive(Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.destination")]
 pub enum DestinationEffect {
     /// Installer status.
-    ///
-    /// The current step, every choice made so far, progress and what blocks
-    /// the next step. Never includes a passphrase or the recovery key.
     #[effect(returns, kind = "read")]
     Status,
     /// Next.
-    ///
-    /// Validate this step and move to the next one, exactly as the wizard's
-    /// Next button does.
     Next,
     /// Back.
     Back,
     /// Return to the existing system.
-    ///
-    /// Leave the installer without changing this disk and restart into the
-    /// system it was staged from.
     ReturnToHost,
     /// Choose keyboard layout.
     SetLayout {
         #[param("Keyboard layout", choices = imager_backend::destination::layouts::display_names())]
         layout: String,
     },
-    /// Refresh networks.
     #[effect(label = "installer-action-refresh-networks")]
     RefreshNetworks,
     /// Choose Wi-Fi network.
@@ -86,10 +50,8 @@ pub enum DestinationEffect {
     AddAccount,
     /// Retry signing in using the private form.
     RetryAccount,
-    /// Cancel sign-in.
     #[effect(label = "installer-accounts-cancel")]
     CancelSignIn,
-    /// Continue offline.
     #[effect(label = "imager-installer-continue-offline")]
     ContinueOffline,
     /// Choose install method.
@@ -100,7 +62,6 @@ pub enum DestinationEffect {
         )]
         method: String,
     },
-    /// Refresh disks.
     #[effect(label = "installer-action-refresh-disks")]
     RefreshDisks,
     /// Use this disk.
@@ -115,7 +76,6 @@ pub enum DestinationEffect {
         #[param("Index of the unallocated region")]
         index: i64,
     },
-    /// Use N GiB for Tilo.
     #[effect(row)]
     #[effect(label = "installer-storage-use-capacity")]
     SetSize {
@@ -132,10 +92,6 @@ pub enum DestinationEffect {
         full_name: Option<String>,
     },
     /// Set account and default startup secret.
-    ///
-    /// Sets the account password and, unless a separate disk secret is
-    /// supplied, the startup secret. Held only in installer memory; never
-    /// written to state, logs or replies.
     SetPassphrase {
         #[param(
             secret,
@@ -146,10 +102,6 @@ pub enum DestinationEffect {
         confirmation: String,
     },
     /// Set a separate disk startup secret.
-    ///
-    /// Replaces the disk startup secret without changing the account
-    /// password. Held only in installer memory; never written to state, logs
-    /// or replies.
     SetDiskPassphrase {
         #[param(
             secret,
@@ -164,8 +116,6 @@ pub enum DestinationEffect {
         mode: Option<String>,
     },
     /// Set a pre-hashed account password.
-    ///
-    /// Only an explicit unattended installation offers it.
     SetPasswordHash {
         #[param(
             secret,
@@ -184,9 +134,6 @@ pub enum DestinationEffect {
         enabled: bool,
     },
     /// Install media codecs.
-    ///
-    /// Downloaded to this computer from the formats' publishers once
-    /// it is online. You can turn it off in Settings.
     SetMediaCodecs {
         #[param("Install more video and audio formats once the new system is online")]
         enabled: bool,
@@ -206,7 +153,6 @@ pub enum DestinationEffect {
         #[param("IANA time zone")]
         timezone: String,
     },
-    /// I will save my recovery key.
     #[effect(label = "installer-action-recovery-promise")]
     SetRecoveryPromise {
         #[param(
@@ -215,9 +161,6 @@ pub enum DestinationEffect {
         acknowledged: bool,
     },
     /// Begin installation.
-    ///
-    /// Formats the reviewed target, then installs Tilo. Offered on the
-    /// review, where the caller types the target's name to confirm it.
     #[effect(row, destructive, phrase = "Self::target_name")]
     Begin {
         #[param("The reviewed target the installation formats")]
@@ -225,29 +168,21 @@ pub enum DestinationEffect {
         #[param("The reviewed free-space plan, for an install beside another system")]
         allocation: String,
     },
-    /// Copy recovery key.
-    ///
-    /// Copy the key to this live session's clipboard. The key itself is never
-    /// returned to the caller.
     #[effect(own_device)]
     #[effect(label = "installer-action-copy-recovery-key")]
     CopyRecoveryKey,
-    /// I saved this key off this computer.
     #[effect(label = "installer-action-recovery-saved")]
     ConfirmRecoverySaved {
         #[param("The recovery key is stored somewhere other than this computer")]
         saved: bool,
     },
-    /// Reboot now.
     #[effect(label = "installer-action-reboot")]
     Reboot,
-    /// Power off.
     #[effect(label = "installer-action-power-off")]
     PowerOff,
 }
 
 impl DestinationEffect {
-    /// What the caller types to begin: the target it formats.
     fn target_name(&self) -> String {
         match self {
             Self::Begin { target, .. } if !target.trim().is_empty() => target.clone(),
@@ -255,13 +190,10 @@ impl DestinationEffect {
         }
     }
 
-    /// A short, secret-free name for logs and errors.
     pub fn name(&self) -> &'static str {
         self.id()
     }
 
-    /// Where this effect is published: the item it is bound to, or the
-    /// installer itself.
     pub fn published_at(&self) -> String {
         match self {
             Self::SelectDisk { device } => disk_row(device),
@@ -274,20 +206,15 @@ impl DestinationEffect {
         }
     }
 
-    /// The console's name for this effect: `<id>@<where it is published>`.
     pub fn console_id(&self) -> String {
         format!("{}@{}", self.id(), self.published_at())
     }
 }
 
-/// A reference to effect `id` of the vocabulary, for a status about it.
 pub fn reference(id: &'static str) -> tilo_resource::ActionRef<DestinationEffect, ()> {
     tilo_resource::ActionRef::new(id, &[], DestinationEffect::kind())
 }
 
-/// The digest a bound effect carries of the reviewed `value` (a disk and
-/// its free extent, a free-space plan): the handler refuses the effect when
-/// what it was offered on has changed since.
 pub fn reviewed_digest<T: serde::Serialize>(value: &T) -> String {
     use sha2::Digest as _;
     serde_json::to_vec(value).map_or_else(

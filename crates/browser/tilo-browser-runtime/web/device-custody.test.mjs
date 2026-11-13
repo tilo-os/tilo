@@ -172,6 +172,27 @@ test('a reload takes its own slot back, waiting for the page before it, while ot
   page.close(); other.close();
 });
 
+test('a reload comes back as the tab’s first device, not as a second one its page opened on the same host', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const pageA = await import('./device-custody.mjs?page=two-peers');
+  const pageB = await import('./device-custody.mjs?page=two-peers-reloaded');
+  const broadcast = name => new BroadcastChannel(name);
+  const session = memorySession();
+  const events = new EventTarget();
+  // The workspace's peer, then a second peer of the same person on the same
+  // host (the one carrying reports to the home workspace).
+  const workspace = await pageA.openDeviceCustody({profile: 'p', storage, locks: locks.manager('page-1'), session, broadcast, events});
+  const home = await pageA.openDeviceCustody({profile: 'p', storage, locks: locks.manager('page-1'), session, broadcast, events});
+  assert.deepEqual([workspace.slot, home.slot], [0, 1]);
+  events.dispatchEvent(new Event('pagehide'));
+  await workspace.close(); await home.close();
+  const reloaded = await pageB.openDeviceCustody({profile: 'p', storage, locks: locks.manager('page-2'), session, broadcast, events: new EventTarget()});
+  assert.deepEqual([reloaded.slot, reloaded.created], [0, false], 'the device the host let into the workspace');
+  assert.deepEqual(reloaded.publicKey, workspace.publicKey);
+  await reloaded.close();
+});
+
 test('a duplicated tab, whose remembered slot a live tab holds, takes a slot of its own at once', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();

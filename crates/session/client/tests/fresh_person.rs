@@ -31,7 +31,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let host = enrol(
         &alice,
         "lounge-host",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let alice_laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();

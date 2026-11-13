@@ -584,7 +584,7 @@ fn parse_wifi(raw: &str) -> (String, String, String, bool) {
     (ssid, auth, password, hidden)
 }
 
-/// Parse the handful of vCard / MECARD fields we surface.
+/// Parse the vCard and MECARD fields this app reads.
 fn parse_contact(raw: &str) -> (String, String, String, String) {
     let mut name = String::new();
     let mut phone = String::new();

@@ -4,8 +4,8 @@ use crate::component::{Bound, Component, Described, Event, Value};
 
 use super::Checkbox;
 
-/// A box that is marked or not, bound to what it edits (whether to be told of a reply, which
-/// rows a bulk action takes). A labelled box is one target, its label included.
+/// A box that is marked or not, bound to what it edits (whether to be told of a reply, which rows a
+/// bulk action takes).
 #[derive(Component)]
 #[component(name = "Checkbox", role = "Checkbox", label = "label")]
 pub struct CheckboxProps {
@@ -15,13 +15,11 @@ pub struct CheckboxProps {
     /// What it is for, beside the box: the whole row chooses it.
     #[component(positional)]
     pub label: Option<String>,
-    /// Some of what it stands for is chosen: a mixed mark. The value stays `false`, so the next
-    /// choose marks all of it.
+    /// Some of what it stands for is chosen: a mixed mark.
     pub indeterminate: bool,
     /// Whether it can be chosen now.
     pub enabled: bool,
-    /// It was pressed: what a mark is, in the app's words. A task and every step under it are
-    /// done in one thing to undo; with no `check`, a press changes the bound value.
+    /// It was pressed: what a mark is, in the app's words.
     #[component(event(press))]
     pub check: Event,
     /// The pace its mark plays at: the theme's unless it says otherwise.
@@ -62,7 +60,6 @@ impl Described for Checkbox {
                 let edits = value.clone();
                 boxed = boxed.on_change(move |marked| edits.edited(Value::Bool(marked)));
             }
-            // The app's own action for a mark, run through the door like any other.
             Event::Action(binding) => boxed = boxed.on_choose(binding),
             Event::View(intent) => boxed = boxed.on_change(move |_| intent.fire(None)),
         }
@@ -72,8 +69,6 @@ impl Described for Checkbox {
         boxed.indeterminate(indeterminate)
     }
 
-    /// Whether it is marked changes in place; a box that gains or loses its label, or its mixed
-    /// mark, is built again.
     fn set_props(&mut self, props: CheckboxProps) -> bool {
         if props.label.is_some() != self.has_label()
             || props.indeterminate != self.is_indeterminate()

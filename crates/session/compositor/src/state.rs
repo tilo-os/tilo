@@ -8,7 +8,8 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -47,6 +48,7 @@ use crate::app_liveness;
 use crate::input::InputEvent;
 use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
+use tilo_session_core::super_tap::{self, SuperTap};
 use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers, SurfaceHost};
 
 /// Per-client data every Wayland client carries.
@@ -274,6 +276,9 @@ pub struct State {
     /// What is offered every input before the desktop sees it, and takes what it answers `true` to.
     pub(crate) input_observer:
         Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// Super alone, as the person presses and lets go of it: the desktop reads what it asked for
+    /// on its own pass. `None` when nobody asks.
+    pub(crate) super_tap: Option<Rc<RefCell<SuperTap>>>,
     /// Pongs counted per `xdg_wm_base` , the only way a client answers a ping.
     pub(crate) shell_pongs: app_liveness::Pongs,
     /// The pings in flight, one per client that was given input.
@@ -310,19 +315,6 @@ pub struct State {
     retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
 
-/// Besides 8-bit RGB, the 10-bit and half-float buffers an HDR surface's signal is carried in.
-fn shm_formats() -> Vec<smithay::reexports::wayland_server::protocol::wl_shm::Format> {
-    use smithay::reexports::wayland_server::protocol::wl_shm::Format;
-    vec![
-        Format::Xrgb2101010,
-        Format::Xbgr2101010,
-        Format::Argb2101010,
-        Format::Abgr2101010,
-        Format::Xrgb16161616f,
-        Format::Abgr16161616f,
-    ]
-}
-
 /// The seat every client's input arrives on: a keyboard, a pointer and a touch screen. Its
 /// keyboard starts on the US layout, which always compiles; a person's own layout replaces it once
 /// settings reach the compositor. Stated outright, because an empty name would type the machine's
@@ -347,10 +339,23 @@ fn seat(display: &DisplayHandle) -> (SeatState<State>, Seat<State>) {
 }
 
 impl State {
+    /// Offer `wl_shm` buffers in `formats`, the ones the backend's renderer draws: a client takes
+    /// the deepest format offered (a GL client's EGL offers a 10-bit config first), and one offered
+    /// that the renderer cannot draw leaves its window blank. Called by a backend before any client
+    /// connects; the two formats every client may use are always offered.
+    pub(crate) fn offer_shm_formats(
+        &mut self,
+        formats: impl IntoIterator<Item = smithay::reexports::wayland_server::protocol::wl_shm::Format>,
+    ) {
+        self.shm_state.update_formats(formats);
+    }
+
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
-        let shm_state = ShmState::new::<Self>(display, shm_formats());
+        // Only the formats every renderer takes until the backend says which its renderer draws
+        // ([`State::offer_shm_formats`]).
+        let shm_state = ShmState::new::<Self>(display, []);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
         let (seat_state, seat) = seat(display);
@@ -427,6 +432,7 @@ impl State {
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
+            super_tap: None,
             redraw: Vec::new(),
             loop_handle: None,
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
@@ -871,6 +877,28 @@ impl State {
                 .is_some_and(|observer| observer(observed))
         {
             return;
+        }
+        // Super alone, before the keys are routed: a key or a button between Super's press and its
+        // release makes it a chord's modifier, so the desktop must hear the press that did before
+        // it hears the chord. A locked session, and one whose client holds the shortcuts, take
+        // Super for their own.
+        if let Some(tap) = &self.super_tap {
+            let withheld = self.locked() || self.shortcut_inhibit.is_active();
+            let now = Instant::now();
+            let mut tap = tap.borrow_mut();
+            match &event {
+                InputEvent::Key { keycode, pressed } => {
+                    if super_tap::is_super_key(*keycode) {
+                        tap.super_key(*pressed, now, withheld);
+                    } else if *pressed {
+                        tap.chord();
+                    }
+                }
+                InputEvent::PointerButton { pressed: true, .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::TouchDown { .. } => tap.pointer(),
+                _ => {}
+            }
         }
         // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
         // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or

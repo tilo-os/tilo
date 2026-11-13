@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
-use crate::ids::{ActionId, ModuleHash, TypeId, ViewId};
+use crate::ids::{ActionId, AppId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
     ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
     field_kind, parse_ty,
@@ -663,7 +663,7 @@ impl Registry {
         let (pkg, info) = self.type_info(ty)?;
         Some(NewRecord {
             ty: info.id.clone(),
-            app: pkg.meta.app.clone(),
+            app: AppId::from(pkg.meta.app.as_str()),
             fields: info.specs(),
         })
     }

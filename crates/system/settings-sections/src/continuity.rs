@@ -1,8 +1,4 @@
 //! Device-local privacy policy for personal-device Continuity.
-//!
-//! Certified-device identity and transport stay owned by the existing device
-//! fleet and relay.  This module stores only this machine's release policy:
-//! which facets may leave or control it, plus a small non-secret audit trail.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
@@ -77,11 +73,11 @@ impl ui::storage::SettingsSchema for ContinuityPrivacy {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.continuity", label = "Continuity")]
+#[ui::tilo_resource::resource(kind = "settings.continuity")]
 impl ContinuityPrivacy {
     /// Allow continuing activities between the person's devices, or stop;
     /// the audit trail notes when.
-    #[action(label = "Allow Continuity")]
+    #[action()]
     pub fn allow_continuity(&mut self, cx: &mut tilo_resource::ActionCx, on: bool) {
         self.enabled = on;
         self.record(None, on, action_secs(cx));
@@ -89,7 +85,7 @@ impl ContinuityPrivacy {
 
     /// Allow one kind of Continuity (clipboard, notifications, media…), or
     /// stop; the audit trail notes when.
-    #[action(label = "Allow a kind of Continuity")]
+    #[action()]
     pub fn allow_capability(
         &mut self,
         cx: &mut tilo_resource::ActionCx,

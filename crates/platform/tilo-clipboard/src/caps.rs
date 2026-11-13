@@ -2,23 +2,14 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Copying and pasting text on [`ClipboardTarget::Clipboard`](crate::ClipboardTarget::Clipboard).
     Text,
-    /// Reading the clipboard outside a paste the user started (a "Paste"
-    /// button, a clipboard watcher).
     ReadAnytime,
-    /// Copying images: [`ClipboardBackend::set_image`](crate::ClipboardBackend::set_image).
     Images,
-    /// The select-then-middle-click selection:
-    /// [`ClipboardTarget::Primary`](crate::ClipboardTarget::Primary) reaching
-    /// other apps.
     PrimarySelection,
 }
 

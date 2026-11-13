@@ -11,7 +11,7 @@ impl Apps {
         let refuse = |why| {
             format!(
                 "refusing to launch {}: original signed package: {why}",
-                app.package_id
+                app.app_id
             )
         };
         let installed = self
@@ -22,7 +22,7 @@ impl Apps {
             .map_err(|error| refuse(error.to_string()))?
             .into_iter()
             .find(|package| {
-                let matches_identity = package.id == app.package_id;
+                let matches_identity = package.id == app.app_id.as_str();
                 matches_identity
                     && package.manifest_path == app.manifest_path
                     && package.payload_root == app.payload_root
@@ -43,7 +43,7 @@ impl Apps {
             .map_err(|error| refuse(error.to_string()))?;
         let manifest = tilo_app_package::manifest::Manifest::from_toml_str(source)
             .map_err(|error| refuse(error.to_string()))?;
-        if manifest.package.id != app.package_id {
+        if manifest.package.id != app.app_id.as_str() {
             return Err(refuse("package identity changed".to_owned()));
         }
         Ok(OriginalLaunch {

@@ -1,12 +1,12 @@
 //! Building a replica, and admitting a device into its governed history.
 
 use super::{
-    BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, PeerCore, ROOT,
-    RevocationList, Role, Shared, StatePeer, Subject, SystemTime, VecDeque, VerifiedCertificate,
-    administrator_grant_id, err, governed_map, held, now_ns, process_default, put_member,
-    put_member_joined_once, supersedes, workspace,
+    BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity, Grantee, PeerCore,
+    ROOT, RevocationList, Role, Shared, StatePeer, SystemTime, VecDeque, VerifiedCertificate,
+    administrator_grant_id, err, held, now_ns, process_default, supersedes, workspace,
 };
 use collab_types::signer::DeviceSigner;
+use tilo_action_policy::Change;
 
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
@@ -132,8 +132,12 @@ impl StatePeer {
         if workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
-            // ignored-failure: an identity row that does not decode is not that certificate
-            .and_then(|bytes| GovernedIdentity::decode(bytes).ok())
+            .and_then(|bytes| {
+                tilo_failure::ignored!(
+                    "an identity row that does not decode is not that certificate",
+                    GovernedIdentity::decode(bytes).ok()
+                )
+            })
             .is_some_and(|old| old.device_cert == cert)
         {
             return Ok(false);
@@ -188,64 +192,101 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.put_member(user_public_key, role, administrator, true, key, now)
+    }
+
+    /// Hold `user_public_key` as a member at `role`, an administrator or not,
+    /// whether or not one of their devices has been admitted here yet: a
+    /// workspace's declaration that someone is in it — its owner declared by a
+    /// deployment's operator before they ever join — is governance, so it is
+    /// here before they arrive and stays after a restart.
+    pub(super) fn declare_member(
+        &mut self,
+        user_public_key: [u8; 32],
+        role: Role,
+        administrator: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.put_member(user_public_key, role, administrator, false, key, now)
+    }
+
+    fn put_member(
+        &mut self,
+        user_public_key: [u8; 32],
+        role: Role,
+        administrator: bool,
+        admitted: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
         if user_public_key == self.core.owner {
             return Err("owner role cannot be changed through member governance".into());
         }
-        let mut doc = self
+        let doc = self
             .core
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
         let policy = doc.policy();
-        if !policy.identities.values().any(|bytes| {
-            GovernedIdentity::decode(bytes).is_ok_and(|identity| {
-                identity.device_cert.user_public_key == user_public_key && identity.has_admission()
+        if admitted
+            && !policy.identities.values().any(|bytes| {
+                GovernedIdentity::decode(bytes).is_ok_and(|identity| {
+                    identity.device_cert.user_public_key == user_public_key
+                        && identity.has_admission()
+                })
             })
-        }) {
+        {
             return Err("member is absent from governed admission history".into());
         }
         let person = hex::encode(user_public_key);
+        let workspace = self.core.workspace.clone();
+        let held = doc.workspace_policy(&workspace).clone();
         let admin_id = administrator_grant_id(user_public_key);
-        let before_role = policy.members.get(&person).copied();
-        let before_admin = policy.grants.iter().any(|grant| grant.id == admin_id);
-        let before = doc.get_heads();
-        let members = governed_map(&doc, "members")?;
-        let grants = governed_map(&doc, "grants")?;
-        doc.set_actor(self.workspace_actor_of(key));
-        put_member(&mut doc, &members, user_public_key, role)?;
-        // Their admission time is recorded beside the role, once: it is part of
-        // the membership an operation reproduces, not a row only some writers
-        // remember.
-        put_member_joined_once(&mut doc, user_public_key, now_ns(now) / 1_000_000)?;
+        let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
+        let before_role = held.members.get(&person).copied();
+        let before_admin = held.grants.iter().any(|grant| grant.id == admin_id);
+        let mut changes = vec![match before_role {
+            None => Change::AddMember {
+                person: person.clone(),
+                role,
+            },
+            Some(_) => Change::SetRole {
+                person: person.clone(),
+                role,
+            },
+        }];
         // An administrator moderates the workspace too: the two grants come and
         // go together.
-        let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
         if administrator {
-            let giver = Subject::Person(hex::encode(self.core.owner));
-            let workspace = self.core.workspace.clone();
+            let giver = Grantee::person(hex::encode(self.core.owner));
             for grant in [
                 tilo_action_policy::roles::administrator_grant(&workspace, &person, giver.clone()),
                 tilo_action_policy::roles::administrator_moderation_grant(
                     &workspace, &person, giver,
                 ),
             ] {
-                doc.put(
-                    &grants,
-                    grant.id.as_str(),
-                    automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).map_err(err)?),
-                )
-                .map_err(err)?;
+                if !held.grants.contains(&grant) {
+                    changes.push(Change::Grant(grant));
+                }
             }
         } else {
-            for id in [admin_id.as_str(), moderation_id.as_str()] {
-                if doc.get(&grants, id).map_err(err)?.is_some() {
-                    doc.delete(&grants, id).map_err(err)?;
+            // The moderation grant goes first: the administrator grant is what
+            // lets an administrator end their own moderation.
+            for id in [moderation_id, admin_id] {
+                if held.grants.iter().any(|grant| grant.id == id) {
+                    changes.push(Change::Revoke(id));
                 }
             }
         }
-        doc.commit();
-        let changed = self.write_governance(doc, &before, key, now)?;
-        Ok(changed && (before_role != Some(role) || before_admin != administrator))
+        if before_role == Some(role) && changes.len() == 1 {
+            return Ok(false);
+        }
+        if before_role == Some(role) {
+            changes.remove(0);
+        }
+        let wrote = self.write_changes(doc, changes, key, now)?;
+        Ok(wrote && (before_role != Some(role) || before_admin != administrator))
     }
 }

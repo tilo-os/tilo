@@ -1,8 +1,4 @@
 //! The capture bar: its items, their places and their paint.
-//!
-//! The bar has two forms — the setup form that chooses what a capture is of,
-//! and the status form a recording, a countdown or the kept last 30 seconds
-//! shows — and one shutter at its centre.
 
 use super::receipt::ReceiptAction;
 use super::{
@@ -18,9 +14,7 @@ pub(super) enum BarItem {
     Target(usize),
     Shutter,
     Options,
-    /// The elapsed time of a recording, or the seconds left of a delay.
     Time,
-    /// Frames the encoder could not keep up with, while a recording runs.
     Skipped,
     /// Save the kept last 30 seconds.
     Save,
@@ -40,7 +34,6 @@ pub(super) struct BarMetrics {
     shutter: f64,
     icon_button: f64,
     time_w: f64,
-    /// The skipped-frames chip's width: its glyph and its count.
     skipped_w: f64,
     save_w: f64,
 }
@@ -66,18 +59,14 @@ impl Default for BarMetrics {
     }
 }
 
-/// A string from the toolkit's catalogue.
 pub(super) fn studio_text(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
 }
 
-/// What a recording skipped, said in words.
 pub(super) fn skipped_sentence(skipped: u64) -> String {
     crate::i18n::widget_format("widget-recording-skipped", &[("count", skipped.into())])
 }
 
-/// Why a recording's file could not be finished, said in words, and whether
-/// what was written stays: a file without its trailer is not whole.
 pub(super) fn failed_sentence(reason: &str, kept: bool) -> String {
     let key = if kept {
         "widget-recording-incomplete"
@@ -103,8 +92,6 @@ pub(super) fn output_icon(mode: CaptureMode) -> Icon {
     }
 }
 
-/// The output's full name, for its tooltip: the bar's label for picture in
-/// picture is its short form.
 pub(super) fn output_name(mode: CaptureMode) -> String {
     match mode {
         CaptureMode::Pip => studio_text("widget-capture-mode-pip-name"),
@@ -146,7 +133,6 @@ pub(super) fn target_segments() -> Vec<Segment> {
         .collect()
 }
 
-/// A delay's row in the options popover.
 pub(super) fn delay_choice(seconds: u8) -> String {
     if seconds == 0 {
         studio_text("widget-capture-delay-none")
@@ -166,7 +152,6 @@ pub(super) fn layout_key(layout: PipLayout) -> &'static str {
     }
 }
 
-/// `label  shortcut`, the way the shell's tooltips name a shortcut.
 pub(super) fn ui_count(n: usize) -> f64 {
     crate::num::f64_of_usize(n)
 }
@@ -187,8 +172,6 @@ impl CaptureStudio {
         let size = ControlSize::Regular;
         let label = theme.text(TextRole::Label);
         let time_w = f64::from(tr.measure_style("0:00:00", None, &label).0).ceil();
-        // The skipped-frames chip: its warning glyph, then a count up to
-        // four digits.
         let digits = f64::from(tr.measure_style("0000", None, &label).0).ceil();
         let skipped_w = f64::from(spacing.s4) + f64::from(spacing.s1) + digits;
         let save_label = studio_text("widget-replay-save");
@@ -212,7 +195,6 @@ impl CaptureStudio {
         };
     }
 
-    /// The bar's height: its tallest part and its padding.
     pub(super) fn bar_height(&self) -> f64 {
         let m = &self.metrics;
         m.strip_h.max(m.shutter) + 2.0 * m.pad
@@ -303,8 +285,6 @@ impl CaptureStudio {
         self.shows_status() && !self.replay_active && self.recording_skipped > 0
     }
 
-    /// What became of the last recording: why its file could not be
-    /// finished, the frames it skipped, or that it is saved.
     pub(super) fn recording_status(&self) -> String {
         if let Some(reason) = &self.recording_failure {
             return failed_sentence(reason, self.recording_kept);
@@ -389,8 +369,6 @@ impl CaptureStudio {
         let cy = bar.center().y;
         let strip =
             |x: f64, w: f64| Rect::new(x, cy - m.strip_h / 2.0, x + w, cy + m.strip_h / 2.0);
-        // The shutter is the bar's centre: what comes out on its left, what
-        // it is of and the options on its right.
         let cx = bar.center().x;
         let mut items = Vec::with_capacity(9);
         let mut x = cx - m.shutter / 2.0 - m.gap - OUTPUTS.len() as f64 * m.output_w;
@@ -427,7 +405,6 @@ impl CaptureStudio {
             .map_or(Rect::ZERO, |(_, rect)| rect)
     }
 
-    /// What the shutter does now.
     pub(super) fn shutter_kind(&self) -> CaptureKind {
         if self.take.active || self.take.start_pending || self.replay_active {
             return CaptureKind::Recording;
@@ -453,7 +430,6 @@ impl CaptureStudio {
         })
     }
 
-    /// Whether the shutter can be pressed now.
     pub(super) fn shutter_ready(&self) -> bool {
         if self.replay_active {
             return true;
@@ -467,8 +443,6 @@ impl CaptureStudio {
         self.has_capture_source()
     }
 
-    /// The tooltip of the bar's item under the pointer: what it is and its
-    /// shortcut.
     pub(super) fn bar_tip(&self) -> Option<(Rect, String)> {
         if self.options_menu.is_some() || self.send_menu.is_some() {
             return None;
@@ -496,8 +470,6 @@ impl CaptureStudio {
         Some((rect, tip))
     }
 
-    /// A press on the status bar: the shutter stops, Save saves, anywhere
-    /// else picks the bar up to move it out of the way.
     pub(super) fn press_status(&mut self, p: Point) {
         let items = self.bar_items();
         match items

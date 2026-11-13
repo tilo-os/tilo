@@ -80,8 +80,6 @@ fn a_stale_capture_cannot_restart_the_original_person_sequence() {
     assert!(error.to_string().contains("duplicate seq 1"), "{error}");
 }
 
-/// One person typing on two devices at once: each device's change is its
-/// own actor's, so the replicas merge, and history still names the person.
 #[test]
 fn one_author_typing_on_two_devices_writes_changes_that_merge() {
     let mut base = AutoCommit::new().with_actor(automerge::ActorId::from(b"genesis".as_slice()));

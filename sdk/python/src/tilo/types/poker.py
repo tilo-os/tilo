@@ -18,14 +18,60 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Award",
+    "Hand",
+    "InHand",
+    "Move",
+    "Player",
+    "Street",
     "Table",
 ]
 
+class Award(TypedDict):
+    player: str
+    amount: int
+    category: str
+
+class Hand(TypedDict):
+    number: int
+    street: Street
+    players: list[InHand]
+    button: int
+    deck: list[int]
+    board: list[int]
+    to_act: int | None
+    current_bet: int
+    min_raise: int
+    since_ms: int
+    awards: list[Award]
+
+class InHand(TypedDict):
+    player: str
+    seat: int
+    stack: int
+    bet: int
+    committed: int
+    cards: list[int]
+    folded: bool
+    acted: bool
+    shown: bool
+    last: Move
+
+Move = Literal["none", "small_blind", "big_blind", "check", "call", "bet", "raise", "all_in", "fold"]
+
+class Player(TypedDict):
+    seat: int
+    chips: int
+    joined_ms: int
+
+Street = Literal["idle", "preflop", "flop", "turn", "river", "done"]
+
 class Table(Resource):
     """Poker table — `so.tilo.poker.table`."""
-    players: Any
-    hand: Any
-    button_seat: Any
+    __surface__ = "so.tilo.poker@ea2ab76e43cec872"
+    players: dict[str, Player]
+    hand: Hand
+    button_seat: int
 
     def sit(self, *, seat: int) -> Run | None:
         """Runs the app's action."""

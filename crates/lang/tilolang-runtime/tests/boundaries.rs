@@ -198,6 +198,12 @@ view count(bag: Bag) {
     }
 }
 
+view named_new(bag: Bag) {
+    section(bag.name) {
+        text("{bag.items.filter(item -> item.title == "new").len()}")
+    }
+}
+
 view tinted(bag: Bag) {
     section(bag.name) {
         list(bag.items.filter(item -> not item.done)) { item ->
@@ -859,6 +865,31 @@ view deck(d: Deck) {
         assert_eq!(texts(count.tree()), ["999"]);
     }
 
+    /// An item that comes into a collection reaches the filtered views of it whose filter holds
+    /// of it, and only those: one it does not match was in none of them before either.
+    #[test]
+    fn an_item_that_joins_reaches_the_filtered_views_it_matches() {
+        let rows = Rows::new(100);
+        let mut named = rows.view("named_new");
+        assert_eq!(texts(named.tree()), ["0"]);
+        let mut views = [&mut named];
+        let add = |title: &'static str| {
+            move |rows: &Rows| {
+                rows.call("add", vec![Value::resource(&rows.bag), Value::text(title)]);
+            }
+        };
+        assert_eq!(runs_for(&rows, &mut views, add("other")), [0]);
+        assert_eq!(runs_for(&rows, &mut views, add("new")), [1]);
+        assert_eq!(texts(named.tree()), ["1"]);
+        // An item already in it that comes to match is counted as well.
+        let mut views = [&mut named];
+        assert_eq!(
+            runs_for(&rows, &mut views, |rows: &Rows| rows.retitle(5, "new")),
+            [1]
+        );
+        assert_eq!(texts(named.tree()), ["2"]);
+    }
+
     #[test]
     fn a_lists_view_depends_on_the_rows_it_shows_not_on_the_rest() {
         let rows = Rows::new(1_000);
@@ -1329,7 +1360,7 @@ action switch_back(b: Board) {
     b.way = ""
 }
 
-action say(b: Board, s: Text) {
+action set_said(b: Board, s: Text) {
     b.said = s
 }
 
@@ -1413,7 +1444,7 @@ view board(b: Board) {
         call(
             &rt,
             &app,
-            "say",
+            "set_said",
             vec![Value::resource(&board), Value::text("hello")],
         );
         view.poll_patches().unwrap();

@@ -32,11 +32,9 @@ use ui::vello::peniko::ImageData;
 
 /// A tile's side, in cells of its level.
 pub const TILE: usize = 256; // a simulation unit, not on-screen spacing
-/// The finest a painted layer is simulated, in cells per artwork unit.
 use crate::content_geometry::FINEST;
 use crate::picture::image_of;
 use ui::lock::MutexRecover as _;
-/// Tiles kept between frames.
 const KEEP: usize = 240;
 /// How much coarser than a pixel the coarse picture may be before a finer
 /// level is simulated: a little blur is cheaper than a level.
@@ -196,10 +194,8 @@ impl LayerLevel {
     }
 }
 
-/// How a tile is simulated.
 #[derive(Clone)]
 pub enum Work {
-    /// A painted layer's tile.
     Paint {
         engine: Arc<dyn MediumEngine>,
         settings: Settings,
@@ -207,11 +203,12 @@ pub enum Work {
         marks: Arc<[Painted]>,
         margin: usize,
     },
-    /// The lit ground's tile.
-    Ground { texture: Texture, colour: Rgb },
+    Ground {
+        texture: Texture,
+        colour: Rgb,
+    },
 }
 
-/// One tile to simulate.
 #[derive(Clone)]
 pub struct Job {
     key: blake3::Hash,
@@ -224,7 +221,6 @@ pub struct Job {
 }
 
 impl Job {
-    /// The tile's pixels: the window around it simulated, then cut to it.
     fn run(&self) -> ImageData {
         let [x0, y0, x1, y1] = self.tile;
         let (width, height) = (x1 - x0, y1 - y0);
@@ -309,14 +305,12 @@ fn cells(value: f64) -> usize {
 /// How many tiles are simulated at once in the background.
 const WORKERS: usize = 4;
 
-/// The tiles being simulated in the background, and those finished.
 #[derive(Default)]
 struct Shared {
     running: HashSet<blake3::Hash>,
     done: Vec<(blake3::Hash, ImageData)>,
 }
 
-/// Tiles simulated so far, and the work simulating more.
 #[derive(Default)]
 pub struct Tiles {
     ready: HashMap<blake3::Hash, (ImageData, u64)>,
@@ -329,7 +323,6 @@ pub struct Tiles {
     mosaics: HashMap<String, (blake3::Hash, ImageData)>,
 }
 
-/// A picture of part of a layer at a level, built from its tiles.
 pub struct Mosaic {
     pub image: ImageData,
     /// Where it lies, in artwork units: its pixels map onto this.
@@ -340,14 +333,12 @@ pub struct Mosaic {
     pub missing: Vec<Rect>,
 }
 
-/// One layer at one level, as a request for tiles.
 pub struct Request<'a> {
     /// What the mosaic is kept under between frames.
     pub slot: &'a str,
     pub work: Work,
     /// The layer at the level: its key, scale and marks.
     pub level: &'a LayerLevel,
-    /// The level's whole grid, in cells.
     pub grid: (usize, usize),
 }
 
@@ -524,7 +515,6 @@ impl Tiles {
         }
     }
 
-    /// The tile's key: its level, its place, and what reaches it.
     fn key(request: &Request<'_>, tile: [usize; 4]) -> blake3::Hash {
         let mut key = blake3::Hasher::new();
         key.update(request.level.key.as_bytes());
@@ -557,7 +547,6 @@ impl Tiles {
         key.finalize()
     }
 
-    /// The ready tiles side by side; those not ready are left clear.
     fn assemble(
         &self,
         tiles: &[(f64, Job)],

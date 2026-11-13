@@ -1,11 +1,10 @@
 //! The ids lock file `app.ids`.
 //!
-//! Every declaration (type, field, enum variant, action, view, fn, anchor) has a stable
-//! id: 8 base32 characters, drawn when the compiler first sees it. Storage keys, action
-//! addresses and grants use ids; names appear only in source, errors and display. The lock is a
-//! sorted text file of `qualified.name = id` lines. Declarations that disappear move to a
-//! `# retired` section and their ids are never handed out again. `tilolang ids --rename` renames
-//! a declaration and keeps its id, and with it the data stored under it.
+//! Every declaration (type, field, enum variant, action, view, fn, anchor) has a stable id: 8 base32
+//! characters, drawn when the compiler first sees it. Storage keys, action addresses and grants use
+//! ids; names appear only in source, errors and display. The lock is a sorted text file of
+//! `qualified.name = id` lines. Declarations that disappear move to a `# retired` section and their
+//! ids are never handed out again. `tilolang ids --rename` renames a declaration and keeps its id.
 
 use crate::ast::{Item, Module};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,7 +34,6 @@ impl Entropy for SeededEntropy {
     }
 }
 
-/// Randomness from the operating system.
 #[derive(Debug, Default)]
 pub struct OsEntropy {
     fallback: Option<SeededEntropy>,
@@ -59,14 +57,10 @@ impl Entropy for OsEntropy {
     }
 }
 
-/// Why an ids operation failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdsError {
-    /// A line of the lock file could not be read.
     Syntax { line: usize, message: String },
-    /// `rename` was asked to rename something that has no id.
     UnknownName(String),
-    /// `rename` would overwrite an existing declaration.
     NameTaken(String),
 }
 
@@ -88,7 +82,6 @@ impl fmt::Display for IdsError {
 
 impl std::error::Error for IdsError {}
 
-/// The ids of one app package.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IdsLock {
     entries: BTreeMap<String, String>,
@@ -100,7 +93,6 @@ impl IdsLock {
         Self::default()
     }
 
-    /// Reads a lock file.
     pub fn parse(text: &str) -> Result<Self, IdsError> {
         let mut lock = Self::new();
         let mut retired = false;
@@ -146,7 +138,6 @@ impl IdsLock {
         Ok(lock)
     }
 
-    /// The lock file text, sorted.
     pub fn to_text(&self) -> String {
         let mut out = String::from(HEADER);
         out.push('\n');
@@ -168,12 +159,10 @@ impl IdsLock {
         self.entries.get(name).map(String::as_str)
     }
 
-    /// Every live `(name, id)`.
     pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
         self.entries.iter().map(|(n, i)| (n.as_str(), i.as_str()))
     }
 
-    /// Every retired `(name, id)`.
     pub fn retired(&self) -> impl Iterator<Item = (&str, &str)> {
         self.retired.iter().map(|(n, i)| (n.as_str(), i.as_str()))
     }
@@ -182,8 +171,8 @@ impl IdsLock {
         self.entries.values().any(|v| v == id) || self.retired.iter().any(|(_, v)| v == id)
     }
 
-    /// Renames a declaration and everything under it (`Album` also renames `Album.title`),
-    /// keeping every id.
+    /// Renames a declaration and everything under it (`Album` also renames `Album.title`), keeping every
+    /// id.
     pub fn rename(&mut self, old: &str, new: &str) -> Result<(), IdsError> {
         if !self.entries.contains_key(old) {
             return Err(IdsError::UnknownName(old.to_string()));
@@ -219,8 +208,8 @@ impl IdsLock {
         Ok(())
     }
 
-    /// Makes the lock match `names`: names without an id get a fresh one, and ids of names that
-    /// are gone move to the retired section.
+    /// Makes the lock match `names`: names without an id get a fresh one, and ids of names that are gone
+    /// move to the retired section.
     pub fn sync(&mut self, names: &[String], rng: &mut dyn Entropy) {
         let wanted: BTreeSet<&str> = names.iter().map(String::as_str).collect();
         let gone: Vec<String> = self
@@ -264,25 +253,24 @@ pub fn scenario_key(name: &str) -> String {
     format!("scenario \"{name}\"")
 }
 
-/// The ids-lock name of the trigger `name`: a trigger's id names what it last ran, so it is the
-/// lock's like any declaration's, and apart from the action it runs.
+/// The ids-lock name of the trigger `name`: a trigger's id names what it last ran, so it is the lock's
+/// like any declaration's, and apart from the action it runs.
 pub fn trigger_key(name: &str) -> String {
     format!("trigger {name}")
 }
 
-/// The ids-lock name (and the view name) of the hidden view that presents the action
-/// `action`'s state: a name source cannot write.
+/// The ids-lock name (and the view name) of the hidden view that presents the action `action`'s state: a
+/// name source cannot write.
 pub fn present_key(action: &str) -> String {
     format!("{action}{PRESENT_SUFFIX}")
 }
 
-/// What the name of an action's presentation view adds to the action's.
 pub const PRESENT_SUFFIX: &str = "~present";
 
-/// The qualified name of every declaration that gets an id: types (`Album`), fields
-/// (`Album.title`), actions, views and fns (`play`), anchors (`album_page#play`),
-/// scenarios (`scenario "a week of notes"`), and the presentation view of an action whose label,
-/// icon or state follow its subject (`pin~present`).
+/// The qualified name of every declaration that gets an id: types (`Album`), fields (`Album.title`),
+/// actions, views and fns (`play`), anchors (`album_page#play`), scenarios (`scenario "a week of
+/// notes"`), and the presentation view of an action whose label, icon or state follow its subject
+/// (`pin~present`).
 pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {

@@ -1,14 +1,13 @@
-//! Installing a bot from a registry: verify the listed program against its
-//! signed entry, derive the grant it needs, check its connectors, and build
-//! the `install-bot` arguments a room's governance action takes. The Store
-//! and the room service share this, so both show and install the same thing.
+//! Installing a bot from a registry: verify the listed program against its signed entry, derive the
+//! grant it needs, check its connectors, and build the `install-bot` arguments a room's governance
+//! action takes. The Store and the room service share this, so both show and install the same thing.
 
 use std::collections::BTreeSet;
 
 use app_cli::client::{RegistryError, VerifiedEntry};
 use app_cli::config::RegistryConfig;
 use registry_types::{BotArtifact, DirectoryRef, EntryKind, RegistryEntry, RegistryImageKind};
-use tilo_action_policy::{Grant, Labels, Rule, Subject};
+use tilo_action_policy::{Grant, Grantee, Labels, Rule};
 use tilo_automation::{ActionCatalog, Shortcut};
 
 /// A bot version the directory lists, with the exact program bytes it binds.
@@ -56,9 +55,8 @@ fn not_listed(entry: &str, version: &str) -> DirectoryError {
     }
 }
 
-/// Check `program_bytes` against `version` of the bot `entry` in `entries`.
-/// The registry checked this at review. A client checks again, because the
-/// bytes it installs are the ones that count.
+/// Check `program_bytes` against `version` of the bot `entry` in `entries`. The registry checked
+/// this at review; a client checks again, because the bytes it installs are the ones that count.
 pub fn verify_listed_bot(
     entries: &[VerifiedEntry],
     registry_owner: &str,
@@ -128,8 +126,8 @@ pub fn verify_listed_bot(
     })
 }
 
-/// Fetch the signed listing of `entry` (every retained version) and the
-/// program `version` binds, then verify both.
+/// Fetch the signed listing of `entry` (every retained version) and the program `version` binds,
+/// then verify both.
 pub fn fetch_listed_bot(
     reg: &RegistryConfig,
     entry: &str,
@@ -240,7 +238,7 @@ pub fn plan_install(
 ) -> BotInstallPlan {
     let rules = tilo_automation::grant::derived_rules(&bot.program, catalog);
     // The subject only names the preview grants; the sentence never prints it.
-    let preview_subject = Subject::Shortcut(bot.source.entry.clone());
+    let preview_subject = Grantee::shortcut(bot.source.entry.clone());
     let grants: Vec<Grant> = rules
         .iter()
         .enumerate()

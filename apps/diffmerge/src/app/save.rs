@@ -1,9 +1,4 @@
 //! Saving the merged result.
-//!
-//! The tool's whole reason to exist is to hand a finished merge back, so
-//! this is the one thing Diff & Merge writes: where the person pointed the
-//! host's chooser, or the place they last saved to. That place is kept here,
-//! on this device — it is a fact about here, not about the document.
 
 use std::path::Path;
 use std::rc::Rc;
@@ -15,14 +10,12 @@ use super::effects::{Asked, Shared};
 use crate::doc::Session;
 use crate::i18n::{t, t_args, text};
 
-/// Ask where to write the merged result, suggesting `name`.
 fn save_request(name: &str) -> PickRequest {
     PickRequest::save(&t("save-title"), &t("save-accept"), name)
         .all_files()
         .thread_name("diffmerge-portal-save")
 }
 
-/// Write `bytes` to `path`, returning the file name for the status line.
 fn write_text(path: &Path, bytes: &[u8]) -> Result<String, String> {
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
@@ -34,9 +27,6 @@ fn write_text(path: &Path, bytes: &[u8]) -> Result<String, String> {
     Ok(name)
 }
 
-/// Write the merged result: to `path` when the caller names one, else where
-/// it was last written, asking for a place when there is none (or when `ask`
-/// is set, as Save as… does).
 pub(super) fn answer_save(
     store: &Shared,
     cx: &mut EffectCx<Session>,
@@ -65,8 +55,6 @@ pub(super) fn answer_save(
     Ok(
         cx.choose_destination(save_request(&suggested), move |(), place, cx| {
             let Some(place) = place else {
-                // Asking and being answered with "no" is not a failure of the
-                // tool; the result simply stays unsaved.
                 written.borrow_mut().ask(Asked::Notice(t("save-cancelled")));
                 return Err("saving the merged result was cancelled".into());
             };
@@ -79,8 +67,6 @@ pub(super) fn answer_save(
     )
 }
 
-/// The name a save suggests: the file that was merged, whose result this is,
-/// or a plain merged result name.
 fn suggested_save_name(store: &Shared) -> String {
     store
         .borrow()
@@ -96,8 +82,6 @@ fn suggested_save_name(store: &Shared) -> String {
         .unwrap_or_else(|| "merged.txt".to_owned())
 }
 
-/// The save of `merged` finished: `Ok(name)` when the result was written, the
-/// reason it was not otherwise. Says so in the status bar either way.
 fn finish_save(store: &Shared, result: Result<String, String>, merged: String) -> EffectAnswer {
     let mut store = store.borrow_mut();
     match result {

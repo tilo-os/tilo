@@ -32,7 +32,7 @@ impl TiloStore {
         let kind =
             lookup(&ty).map_or_else(String::new, |schema| format!("tl.{app}.{}", schema.name));
         inner.enqueue(DynAction {
-            app,
+            app: app.to_string(),
             kind,
             action_id: note.action.clone(),
             args: note.args.clone(),

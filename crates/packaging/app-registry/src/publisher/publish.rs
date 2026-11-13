@@ -1,5 +1,5 @@
-//! Publishing builds: upload each package, then ask for one entry per package
-//! id that lists them all. Both wait for the registry owner's review.
+//! Publishing builds: upload each package, then ask for one entry per package id that lists them
+//! all. Both wait for the registry owner's review.
 
 use std::collections::BTreeMap;
 
@@ -18,14 +18,14 @@ pub struct Published {
     pub version: String,
     pub platform: &'static str,
     pub url: String,
-    /// What the registry was asked to do with the entry listing this build;
-    /// `None` when the published entry already lists it unchanged.
+    /// What the registry was asked to do with the entry listing this build; `None` when the published
+    /// entry already lists it unchanged.
     pub action: Option<EntryAction>,
 }
 
-/// Upload every package in `packages` and ask for the entries that list
-/// them, answering one [`Published`] per package in the same order: `add` for
-/// a package id the catalogue does not have yet, `update` otherwise. Builds of
+/// Upload every package in `packages` and ask for the entries that list them, answering one
+/// [`Published`] per package in the same order: `add` for a package id the catalogue does not have
+/// yet, `update` otherwise. Builds of
 /// one package id — its platforms and architectures — go into a single
 /// request that extends the one still waiting for review, if any: a newer
 /// request for a package replaces the waiting one and must keep its versions.

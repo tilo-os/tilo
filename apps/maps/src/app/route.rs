@@ -1,4 +1,5 @@
-//! Directions: the two endpoints and where they come from, the route and its transit variants, when it is replanned, and the framing that fits it in the viewport.
+//! Directions: the endpoints and where they come from, the route and its transit variants, when it
+//! is replanned, and the framing that fits it.
 
 use super::{
     Endpoint, EndpointEffect, LatLon, MapsApp, NetMsg, Panel, Place, Point, Projection, Rect,
@@ -6,9 +7,8 @@ use super::{
 };
 
 impl MapsApp {
-    /// Resolve the route/transit origin. Uses a prior origin if one is set,
-    /// otherwise the current map centre (an honest "from here"), labelled as
-    /// such — we never invent a specific "your location" without a real fix.
+    /// The origin: a set origin, else the map centre labelled as such. Never a specific location
+    /// without a real fix.
     pub(super) fn resolve_origin(&mut self) -> crate::model::LatLon {
         if let Some(o) = self.model.origin {
             o
@@ -18,7 +18,6 @@ impl MapsApp {
         }
     }
 
-    /// Apply a component effect to the route model or the geocoding worker.
     pub(super) fn apply_endpoint_effect(&mut self, effect: EndpointEffect) {
         match effect {
             EndpointEffect::Changed { endpoint, text } => {
@@ -57,14 +56,10 @@ impl MapsApp {
                 });
             });
         } else {
-            // Nothing asks the geocoder: what is here is all there is.
             self.endpoints.finish_search(endpoint, local_results);
         }
     }
 
-    /// Adopt a geocoded dropdown result as the chosen endpoint: set its coord +
-    /// label and re-route (or re-plan transit). Mirrors selecting a destination
-    /// so From and To behave symmetrically.
     pub(super) fn pick_endpoint(&mut self, endpoint: Endpoint, p: &Place) {
         self.model.upsert_place(p.clone());
         if endpoint == Endpoint::Origin {
@@ -85,9 +80,8 @@ impl MapsApp {
         }
     }
 
-    /// Kick off a real device-location fix via the location portal (`GeoClue2`
-    /// behind it), off the UI thread. Honest states only: "Locating…" now, then
-    /// either a real origin or a clear unavailable/denied message on drain.
+    /// Ask the portal (`GeoClue2`) for a real fix, off the UI thread. Honest states only:
+    /// `Locating…`, then a fix or an unavailable message.
     pub(super) fn use_my_location(&mut self) {
         if self.locating {
             return;
@@ -99,9 +93,8 @@ impl MapsApp {
         }
     }
 
-    /// Build the transit query time anchor from the picker. "Leave now" sends no
-    /// time (the planner uses its own now); otherwise an RFC-3339 wall clock at
-    /// `now + offset`, flagged depart/arrive.
+    /// The picker's anchor: `Leave now` sends no time; otherwise an RFC-3339 wall clock at `now +
+    /// offset`, flagged depart or arrive.
     pub(super) fn transit_query(&self) -> net::TransitQuery {
         let tt = self.model.transit_time;
         let time = if tt.is_now() {
@@ -116,10 +109,6 @@ impl MapsApp {
         }
     }
 
-    /// Open Directions to the selected place, forcing the destination to the
-    /// current selection. Tapping "Directions" on a place card or pressing `d`
-    /// re-targets the route at whatever is selected now, honouring the active
-    /// travel mode (a road route, or a transit journey if Transit is selected).
     pub(super) fn enter_directions(&mut self) {
         self.set_dest_to_selection();
         self.model.panel = Panel::Directions;
@@ -130,9 +119,6 @@ impl MapsApp {
         }
     }
 
-    /// Open Directions in Transit mode to the selected place, forcing the
-    /// destination to the current selection. The place-card "Transit" shortcut
-    /// and the `t` key land here.
     pub(super) fn enter_transit(&mut self) {
         self.set_dest_to_selection();
         self.choose_mode(TravelMode::Transit);
@@ -140,10 +126,6 @@ impl MapsApp {
     }
 
     pub(super) fn recompute_route(&mut self) {
-        // Adopt the selected place as destination if none has been chosen yet
-        // (e.g. the user changed travel mode straight after selecting a place).
-        // A destination set by a prior route or a swap is preserved so the
-        // endpoints don't collapse back together.
         if self.model.dest.is_none() {
             self.set_dest_to_selection();
         }
@@ -154,11 +136,9 @@ impl MapsApp {
         self.model.origin = Some(origin);
         self.nav_open = true;
         let mode = self.model.mode;
-        // Immediate offline fallback so the panel is never empty.
         self.model.route = Some(crate::basemap::fallback_route(origin, dest, mode));
         self.fit_route();
 
-        // Live OSRM request.
         self.pending += 1;
         self.model.status = failure::t("maps-routing");
         if self.online {
@@ -170,10 +150,6 @@ impl MapsApp {
         }
     }
 
-    /// React to a change of the leave/arrive time anchor. Transit re-plans the
-    /// journey against the new time; the road modes just re-derive the computed
-    /// departure/arrival clock (OSRM is not time-dependent), so a repaint is
-    /// enough — no needless refetch.
     pub(super) fn replan_for_time(&mut self) {
         if self.model.mode.is_transit() {
             self.recompute_transit();
@@ -189,20 +165,14 @@ impl MapsApp {
         };
         let origin = self.resolve_origin();
         self.model.origin = Some(origin);
-        // Transit is a mode of Directions, not a separate surface.
         self.model.panel = Panel::Directions;
         self.model.mode = TravelMode::Transit;
         self.model.transit_choice = 0;
-        // A transit journey has no road polyline — drop any road route so the
-        // map doesn't draw a car line beneath the departures.
         self.model.route = None;
         self.nav_open = true;
-        // Real departures only: clear any stale itineraries and show a loading
-        // state until the planner responds — we never fabricate departures.
         self.model.transit.clear();
         self.pending += 1;
         self.model.status = failure::t("maps-finding-departures");
-        // No route geometry to fit; frame the map on the endpoints instead.
         self.fit_points(&[origin, dest]);
         if self.online {
             let tx = self.net_tx.clone();
@@ -218,7 +188,6 @@ impl MapsApp {
         if self.model.mode != mode {
             self.choose_mode(mode);
             self.model.panel = Panel::Directions;
-            // Transit plans a public-transport journey; the road modes route.
             if mode.is_transit() {
                 self.recompute_transit();
             } else {
@@ -227,9 +196,6 @@ impl MapsApp {
         }
     }
 
-    /// Show the next route the service offered for this trip: the one after
-    /// the route shown, or the first again when it was the last. The choice is
-    /// a plan like any other, so it is taken in the workspace and framed.
     pub(super) fn next_route(&mut self) {
         if self.model.route_alternatives.len() < 2 {
             return;
@@ -283,17 +249,12 @@ impl MapsApp {
         self.navigation_end_hovered = false;
     }
 
-    /// Exchange the route's origin and destination (both the coordinates and
-    /// their labels), then re-route so the line and steps reflect the reversal.
     pub(super) fn swap_ends(&mut self) {
-        // Need a concrete point on both ends to have something to swap.
         if self.model.origin.is_none() || self.model.dest.is_none() {
             return;
         }
         std::mem::swap(&mut self.model.origin, &mut self.model.dest);
         std::mem::swap(&mut self.model.origin_name, &mut self.model.dest_name);
-        // Both planners read the exchanged endpoints. Transit must discard
-        // the old direction's departures rather than request a road route.
         if self.model.mode.is_transit() {
             self.recompute_transit();
         } else {
@@ -307,8 +268,6 @@ impl MapsApp {
         }
     }
 
-    /// Flatten the currently-selected transit journey's leg geometry into a
-    /// single polyline (empty if no journey is selected or none has geometry).
     pub(super) fn selected_journey_geometry(&self) -> Vec<LatLon> {
         self.model
             .transit
@@ -322,11 +281,8 @@ impl MapsApp {
             .unwrap_or_default()
     }
 
-    /// Frame the map on whatever journey is currently shown — a road route's
-    /// polyline, else the selected transit itinerary's leg geometry, else the
-    /// origin/destination pair. This is what the `f` key and journey selection
-    /// use so "fit" works in Transit mode (which has no road route), not only
-    /// for road routes.
+    /// Frame what is shown: a road polyline, else the selected itinerary's legs, else the
+    /// endpoints. The `f` key and selecting a journey both land here.
     pub(super) fn fit_current(&mut self) {
         if let Some(route) = self.model.route.clone()
             && route.geometry.len() >= 2
@@ -339,7 +295,6 @@ impl MapsApp {
             self.fit_points(&journey);
             return;
         }
-        // No line to fit — frame the endpoints if we have them.
         let mut ends = Vec::new();
         if let Some(o) = self.model.origin {
             ends.push(o);
@@ -352,29 +307,19 @@ impl MapsApp {
         }
     }
 
-    /// Frame the map so `pts` fit the visible map area — beside the docked
-    /// panel, under the turn card, clear of the controls — and centre them
-    /// there rather than on the window. Used to fit a road route's geometry
-    /// and, for transit where there is no road polyline, the endpoints.
     pub(super) fn fit_points(&mut self, pts: &[LatLon]) {
         let area = self.visible_map_area();
-        // Room for a pin and its name above an end of the line.
         let pad = f64::from(self.spacing.s12);
         let Some((center, zoom)) = geo::fit_bounds(pts, area.width(), area.height(), pad) else {
             return;
         };
         let zoom = zoom.min(16.5);
-        // Shift the camera so the fitted centre lands on the area's centre.
         let world = geo::lonlat_to_world(center, zoom);
         let offset = area.center() - self.view_center();
         self.model.center = geo::world_to_lonlat(world.0 - offset.x, world.1 - offset.y, zoom);
         self.model.zoom = zoom;
     }
 
-    /// Bring `pos` to the centre of the visible map area — beside the docked
-    /// panel, clear of the controls and under the turn card — rather than
-    /// the window's centre, where chrome may cover it. Before the window has
-    /// its size the camera centres on it once the size is known.
     pub(super) fn center_on(&mut self, pos: LatLon) {
         if self.rect.area() <= 0.0 {
             self.model.center = pos;
@@ -387,8 +332,6 @@ impl MapsApp {
         self.model.center = geo::world_to_lonlat(world.0 - offset.x, world.1 - offset.y, zoom);
     }
 
-    /// Bring the place whose card is open to the middle of the map above
-    /// its card, so neither the card nor the panel covers it.
     pub(super) fn focus_selected_poi(&mut self) {
         let Some(pos) = self
             .selected_poi

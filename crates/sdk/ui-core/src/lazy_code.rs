@@ -1,27 +1,12 @@
-//! A surface whose code loads on first use.
-//!
-//! A program built to fetch some of its code later (the browser desktop, whose start module is
-//! what every visitor waits for) keeps surfaces such as History, the palettes or Feedback out of
-//! the code it starts with. Three parts make a surface lazy:
-//!
-//! - **The code**, declared with `lazy_code!`: a [`LazyCode`] holding a *maker*, a plain function
-//!   that builds the surface as a trait object. Everything the surface's code reaches is reached
-//!   only through the maker, so a module splitter moves it out of the start module; a build
-//!   without the surface's lazy feature links the maker, one with it asks the program the first
-//!   time it is wanted ([`LazyCode::get`]) and is handed the module ([`LazyCode::install`]).
-//! - **The surface**, held as a [`LazySurface`]: made at once when the code is in, otherwise its
-//!   arguments kept until it is ([`LazySurface::poll`]).
-//! - **The wait**, drawn with [`draw_loading`]: a quiet panel where the surface will stand, so a
-//!   person who asked for it never sees nothing.
-//!
-//! The browser desktop declares each split point with its `split_code!` macro
-//! (`crates/browser/tilo-web-desktop/src/lazy.rs`); when the start module outgrows its budget,
-//! `tools/web/wasm_size_ratchet.py` names the parts that grew.
+//! A surface whose code loads on first use. A program built to fetch some of its code later (the
+//! browser desktop, whose start module is what every visitor waits for) keeps surfaces such as History,
+//! the palettes or Feedback out of the code it starts with. **The wait**, drawn with [`draw_loading`]:
+//! a quiet panel where the surface will stand, so a person who asked for it never sees nothing.
 
 pub use tilo_lock::lazy::LazyCode;
 
-/// A surface built from code that may still be on its way: built at once
-/// when the code is in, otherwise its arguments kept until it is.
+/// A surface built from code that may still be on its way: built at once when the code is in, otherwise
+/// its arguments kept until it is.
 pub enum LazySurface<T, A> {
     /// Waiting on the code, with what the surface is to be built from.
     Loading(A),
@@ -30,8 +15,7 @@ pub enum LazySurface<T, A> {
 }
 
 impl<T, A> LazySurface<T, A> {
-    /// The surface `make` builds from `args` with `code`, or `args` kept
-    /// while `code` is still to come.
+    /// The surface `make` builds from `args` with `code`, or `args` kept while `code` is still to come.
     pub fn new<F: Copy>(code: &LazyCode<F>, args: A, make: impl FnOnce(F, A) -> T) -> Self {
         match code.get() {
             Some(code) => Self::Ready(make(code, args)),
@@ -39,7 +23,7 @@ impl<T, A> LazySurface<T, A> {
         }
     }
 
-    /// Build the surface once `code` is in. Whether it was built just now.
+    /// Build the surface once `code` is in.
     pub fn poll<F: Copy>(
         surface: &mut Option<Self>,
         code: &LazyCode<F>,
@@ -80,9 +64,8 @@ impl<T, A> LazySurface<T, A> {
     }
 }
 
-/// Draw the quiet panel that stands in `rect` for a surface whose code is
-/// on its way: the raised surface colour, and `label` (a toolkit message
-/// key) in the body text, inset as a panel's content is.
+/// Draw the quiet panel that stands in `rect` for a surface whose code is on its way: the raised
+/// surface colour, and `label` (a toolkit message key) in the body text, inset as a panel's content is.
 pub fn draw_loading(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,

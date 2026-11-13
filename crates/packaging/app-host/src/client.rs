@@ -1,8 +1,6 @@
-//! Typed client for the launcher-issued `app-host` connection.
-//!
-//! The Store worker is synchronous, so this wrapper owns a current-thread
-//! runtime and `LocalSet` while keeping one connection alive for its whole
-//! lifetime. It never reaches for a host path or executable.
+//! Typed client for the launcher-issued `app-host` connection. The Store worker is synchronous,
+//! so this wrapper owns a current-thread runtime and `LocalSet` while keeping one connection for
+//! its whole lifetime. It never reaches for a host path or executable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,9 +18,8 @@ use package_store::InstalledPackage;
 pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
-/// Why the host refused a catalogue read: the one thing the Store decides
-/// what to say from. It travels typed on the wire, so a
-/// reworded detail never changes how the Store handles it.
+/// Why the host refused a catalogue read. It travels typed on the wire, so a reworded detail never
+/// changes how the Store handles it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Refusal {
     /// The system's interface declaration cannot be read: the system needs
@@ -50,7 +47,6 @@ pub enum CatalogueError {
 }
 
 impl CatalogueError {
-    /// The refusal, when the host refused.
     #[must_use]
     pub fn refusal(&self) -> Option<Refusal> {
         match self {
@@ -88,16 +84,16 @@ pub enum FlatpakAction {
     Remove,
 }
 
-/// One installed package as the host lists it: its store row, and what its
-/// signed manifest says to show a person about it.
+/// One installed package as the host lists it: its store row, and what its signed manifest says to
+/// show a person about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedPackage {
     pub package: InstalledPackage,
     pub about: PackageAbout,
 }
 
-/// The manifest's `[package]` display metadata. It is installed and signed,
-/// so it describes the app whether or not any repository is reachable.
+/// The manifest's `[package]` display metadata. It is installed and signed, so it describes the app
+/// whether or not any repository is reachable.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PackageAbout {
     /// `[package].name`, or a name derived from the id when it is unset.
@@ -131,8 +127,7 @@ impl PackageAbout {
         }
     }
 
-    /// What the whole manifest says to show a person: its `[package]`
-    /// metadata and the capabilities it declares.
+    /// The `[package]` display metadata and declared capabilities of a whole manifest.
     pub(crate) fn from_full_manifest(manifest: &tilo_app_package::Manifest) -> Self {
         let mut about = Self::from_manifest(&manifest.package);
         about.capabilities = manifest
@@ -145,34 +140,17 @@ impl PackageAbout {
         about
     }
 
-    /// The tag line to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else English; empty when the app declares none.
+    /// The tag line to show in `locale` (BCP 47): its tag, else its language, else English
+    /// ([`tilo_app_package::manifest::text_in`]); empty when the app declares none.
     #[must_use]
     pub fn tagline_for(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        [locale, language, "en"]
-            .into_iter()
-            .find_map(|wanted| {
-                self.taglines
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-            })
-            .map_or("", |(_, tagline)| tagline.as_str())
+        tilo_app_package::manifest::text_in(&self.taglines, locale).unwrap_or_default()
     }
 
-    /// The name to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else [`Self::name`].
+    /// The name to show in `locale` (BCP 47): its tag, else its language, else [`Self::name`].
     #[must_use]
     pub fn name_for(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        [locale, language]
-            .into_iter()
-            .find_map(|wanted| {
-                self.names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
-            })
-            .map_or(self.name.as_str(), |(_, name)| name.as_str())
+        tilo_app_package::manifest::text_in(&self.names, locale).unwrap_or(&self.name)
     }
 }
 
@@ -342,7 +320,6 @@ impl BlockingClient {
         })?)
     }
 
-    /// Install a verified package through the privileged host service.
     pub fn install(
         &self,
         bytes: &[u8],
@@ -355,7 +332,6 @@ impl BlockingClient {
         })?)
     }
 
-    /// Install the exact signed catalogue offer through the shared installer.
     pub fn install_offer(
         &self,
         registry: &str,
@@ -367,18 +343,16 @@ impl BlockingClient {
         })?)
     }
 
-    /// List the packages the host service can launch: the user's, and the
-    /// read-only system packages they do not shadow.
+    /// The packages the host can launch: the user's, and the read-only system packages they do not
+    /// shadow.
     pub fn list(&self) -> Result<Vec<ListedPackage>, String> {
         self.complete(self.begin_list())
     }
 
-    /// Launch an installed package.
     pub fn launch(&self, id: PackageId) -> Result<String, String> {
         text(self.invoke(Action::Launch { id: *id.as_bytes() })?)
     }
 
-    /// Update the retention pin for an installed package.
     pub fn pin(&self, id: PackageId, pinned: bool) -> Result<(), String> {
         self.invoke(Action::SetPinned {
             id: *id.as_bytes(),
@@ -387,7 +361,6 @@ impl BlockingClient {
         .map(drop)
     }
 
-    /// Remove an installed package.
     pub fn remove(&self, id: PackageId) -> Result<(), String> {
         self.invoke(Action::Remove { id: *id.as_bytes() }).map(drop)
     }
@@ -442,7 +415,6 @@ impl BlockingClient {
         self.complete(self.begin_last_verified_catalogue(registry))
     }
 
-    /// Read cached app metadata from one configured Flatpak repository.
     pub fn flatpak_catalogue(
         &self,
         remote: &str,

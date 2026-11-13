@@ -1,35 +1,8 @@
-//! Where a key's time goes inside the app, stage by stage.
-//!
-//! With `RUST_LOG` enabling `tilo::input_frame=debug` (the launcher forwards
-//! `RUST_LOG` into the sandbox), each key press the window dispatches starts a
-//! record, and the first frame submitted after it ends one: one content-free
-//! `INPUT-FRAME` line on stderr, which the session log keeps beside the
-//! compositor's `KEY-LATENCY` for the same key.
-//!
-//! `INPUT-FRAME keys=1 handle_us=180 wait_us=2100 frame_us=3400 ui.frame_sync=2900/1 ui.layout=300/1 ... present_us=900 total_us=6580`
-//!
-//! - `handle_us`: the window handling the key event;
-//! - `wait_us`: from the event handled to the frame that answers it starting;
-//! - `frame_us`: that frame, start to its scene handed to the render thread;
-//! - then every named scope (`tilo_resource::profiling::Phase`) that ran from
-//!   the key to that frame, as microseconds and calls: the framework's sync,
-//!   layout and draw, its publication, the app's own; those that ran while
-//!   the key was handled, before the frame, are marked `key:`. Scopes nest,
-//!   so they do not add up;
-//! - `repaint`: `full` with why (`full:structure+presence`), or the pixels
-//!   the frame's damage repaints (`repaint_px`), in how many rectangles, and
-//!   the largest;
-//! - `present_us`: the render thread rasterising and presenting it, which
-//!   commits the surface;
-//! - `total_us`: dispatch to present.
-//!
-//! Delivery to the app is not here: a Wayland key's timestamp has no defined
-//! base. The compositor's `KEY-LATENCY` key-to-commit for the same key, less
-//! `total_us`, is the time from the compositor sending the key to the window
-//! dispatching it.
-//!
-//! Keys that arrive before the frame starts join it (`keys`). Off, each call
-//! here is one thread-local flag read, and scopes read no clock.
+//! Where a key's time goes inside the app, stage by stage. With `RUST_LOG` enabling
+//! `tilo::input_frame=debug` (the launcher forwards `RUST_LOG` into the sandbox), each key press the
+//! window dispatches starts a record, and the first frame submitted after it ends one: one content-free
+//! `INPUT-FRAME` line on stderr, which the session log keeps beside the compositor's `KEY-LATENCY` for
+//! the same key.
 
 use std::cell::{Cell, RefCell};
 
@@ -43,13 +16,12 @@ struct Pending {
     handled: Option<Instant>,
     keys: u32,
     frame_started: Option<Instant>,
-    /// The scopes that ran before the frame started: handling the key.
     before_frame: Vec<tilo_resource::profiling::Sample>,
 }
 
 thread_local! {
-    /// Whether the target is on; read once, after the app installed its
-    /// subscriber (the first key comes long after).
+    /// Whether the target is on; read once, after the app installed its subscriber (the first key comes
+    /// long after).
     static ENABLED: Cell<Option<bool>> = const { Cell::new(None) };
     static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
 }
@@ -70,8 +42,8 @@ fn pending() -> bool {
         && PENDING.with(|pending| pending.borrow().is_some())
 }
 
-/// The window starts dispatching `event`: a key press starts a record, or
-/// joins the one waiting for its frame.
+/// The window starts dispatching `event`: a key press starts a record, or joins the one waiting for its
+/// frame.
 pub(crate) fn key_dispatched(event: &winit::event::WindowEvent) {
     use winit::event::{ElementState, Ime, WindowEvent};
     let is_key = matches!(event,
@@ -131,22 +103,19 @@ pub(crate) fn frame_started() {
     });
 }
 
-/// The frame that started after a key is handed to the render thread: what
-/// to call once the render thread presented it, which writes the record.
-/// What a frame repaints: the whole window, and why, or the pixels its
-/// damage covers.
+/// The frame that started after a key is handed to the render thread: what to call once the render
+/// thread presented it, which writes the record. What a frame repaints: the whole window, and why, or
+/// the pixels its damage covers.
 pub(crate) enum Repaint<'a> {
     Full(RepaintWhy),
     /// The damage's rectangles, in the frame's pixels.
     Damage(&'a [vello::kurbo::Rect]),
 }
 
-/// Why a frame repaints its whole window: each reason the frame found, by
-/// name. A few bits a frame, written only into a record.
+/// Why a frame repaints its whole window: each reason the frame found, by name.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RepaintWhy(u32);
 
-/// The reasons [`RepaintWhy`] names, by bit.
 const REASONS: [&str; 13] = [
     "structure",
     "record",

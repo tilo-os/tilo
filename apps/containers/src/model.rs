@@ -1,23 +1,15 @@
-//! Pure data model for the container manager.
-//!
-//! Everything here is rendering- and IO-free: the [`podman`](crate::podman)
-//! layer fills these structs from the live engine (or from the bundled
-//! sample set when no engine is reachable), and the widget layer renders
-//! them. Keeping the model pure means the list/detail logic is unit-testable
-//! without a running daemon.
+//! The container manager's data model: containers, images, volumes, distroboxes, their
+//! stats and logs, and the sample engine captures render. No rendering, no IO.
 
 use serde::{Deserialize, Serialize};
 
-/// First up to 12 characters of `id`, stopping at a `char` boundary. Podman
-/// ids are hex digests (always ASCII), but this walks `char_indices` rather
-/// than byte-slicing so it can never panic on non-ASCII input.
+/// The first twelve characters of `id`, cut at a `char` boundary so it cannot panic.
 fn short_id_of(id: &str) -> &str {
     let end = id.char_indices().nth(12).map_or(id.len(), |(idx, _)| idx);
     id.get(..end).unwrap_or_default()
 }
 
-/// Lifecycle state of a container, normalised across the various strings
-/// podman reports (`running`, `exited`, `created`, `paused`, …).
+/// A container's lifecycle state, normalised across the strings podman reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContainerStatus {
     Running,
@@ -29,9 +21,8 @@ pub enum ContainerStatus {
 }
 
 impl ContainerStatus {
-    /// Parse podman's `State`/`Status` string into a normalised status.
-    /// Unknown values fall back to [`ContainerStatus::Dead`] so they read
-    /// as "needs attention" rather than silently as "running".
+    /// Unknown values read as [`ContainerStatus::Dead`], "needs attention", never as
+    /// running.
     pub fn parse(raw: &str) -> Self {
         let lower = raw.trim().to_ascii_lowercase();
         if lower.starts_with("up") || lower.starts_with("running") {
@@ -49,7 +40,6 @@ impl ContainerStatus {
         }
     }
 
-    /// Short human label used in the status pill.
     pub fn label(self) -> String {
         crate::resource::CATALOG.t(match self {
             ContainerStatus::Running => "containers-status-running",
@@ -66,7 +56,6 @@ impl ContainerStatus {
     }
 }
 
-/// A published port mapping (host → container).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortMapping {
     pub host_port: u16,
@@ -74,7 +63,6 @@ pub struct PortMapping {
     pub protocol: String,
 }
 
-/// A bind/volume mount of the container.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mount {
     pub source: String,
@@ -82,31 +70,25 @@ pub struct Mount {
     pub read_only: bool,
 }
 
-/// Live resource sample for a running container. Values are best-effort —
-/// stopped containers report zeros.
+/// Best-effort resource sample: a stopped container reports zeros.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
-    /// True only when a telemetry sample was actually read. Missing telemetry
-    /// is not a measured zero (for example after an engine connection drops).
+    /// True only when a telemetry sample was read; missing telemetry is not a measured
+    /// zero.
     #[serde(default)]
     pub available: bool,
-    /// CPU usage as a fraction of one core, 0.0..=N (N = cores).
+    /// CPU use as a fraction of one core.
     pub cpu_percent: f32,
     /// Resident memory in bytes.
     pub mem_bytes: u64,
-    /// Memory limit in bytes (0 = unlimited).
+    /// Memory limit in bytes; 0 is unlimited.
     pub mem_limit_bytes: u64,
-    /// Cumulative network received bytes.
     pub net_rx_bytes: u64,
-    /// Cumulative network transmitted bytes.
     pub net_tx_bytes: u64,
     pub block_read_bytes: u64,
-    /// Block-device write bytes.
     pub block_write_bytes: u64,
-    /// Number of processes/threads in the cgroup.
     pub pids: u32,
-    /// When this telemetry sample was read, in milliseconds since the Unix
-    /// epoch. `None` for a sample with no measurement behind it.
+    /// When this sample was read, in milliseconds since the Unix epoch.
     #[serde(default)]
     pub fetched_unix_ms: Option<u64>,
 }
@@ -129,8 +111,8 @@ impl Default for Stats {
 }
 
 impl Stats {
-    /// Memory used as a 0..=1 fraction of the limit. Returns 0 when the
-    /// limit is unknown so the bar reads empty rather than full.
+    /// Memory used as a 0..=1 fraction of the limit; 0 when the limit is unknown, so the
+    /// bar reads empty.
     pub fn mem_fraction(&self) -> f32 {
         if self.mem_limit_bytes == 0 {
             0.0
@@ -140,14 +122,12 @@ impl Stats {
     }
 }
 
-/// A single container, as projected for the UI.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
     pub name: String,
     pub image: String,
     pub status: ContainerStatus,
-    /// Free-form status detail, e.g. "Up 4 hours" or "Exited (0) 2 days ago".
     pub status_detail: String,
     pub command: String,
     pub created: String,
@@ -156,26 +136,22 @@ pub struct Container {
     pub env: Vec<(String, String)>,
     pub labels: Vec<(String, String)>,
     pub stats: Stats,
-    /// Recent log lines (most recent last). Populated lazily for the
-    /// selected container.
+    /// Recent log lines, newest last, for the selected container.
     pub logs: Vec<String>,
-    /// A failed log read is separate from a successful empty log.
+    /// A failed log read is separate from an empty log.
     #[serde(default)]
     pub logs_error: Option<String>,
-    /// When these log lines were read, in milliseconds since the Unix epoch.
-    /// `None` for the bundled sample or a container never opened.
+    /// When the log lines were read, in milliseconds since the Unix epoch.
     #[serde(default)]
     pub logs_fetched_unix_ms: Option<u64>,
 }
 
 impl Container {
-    /// 12-character short id, podman-style.
     pub fn short_id(&self) -> &str {
         short_id_of(&self.id)
     }
 }
 
-/// A local container image.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Image {
     pub id: String,
@@ -183,7 +159,6 @@ pub struct Image {
     pub tag: String,
     pub size_bytes: u64,
     pub created: String,
-    /// Number of containers currently using this image.
     pub in_use_by: u32,
 }
 
@@ -193,8 +168,7 @@ impl Image {
     }
 }
 
-/// A distrobox — a tightly host-integrated container, listed separately
-/// because its lifecycle verbs differ (`enter`, `create`, `stop`).
+/// A tightly host-integrated container, listed apart because its verbs differ.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DistroBox {
     pub name: String,
@@ -203,7 +177,6 @@ pub struct DistroBox {
     pub status_detail: String,
 }
 
-/// A named podman volume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {
     pub name: String,
@@ -211,27 +184,20 @@ pub struct Volume {
     /// Host mountpoint of the volume (`.../volumes/<name>/_data`).
     pub mountpoint: String,
     pub created: String,
-    /// Number of containers currently mounting this volume.
     pub in_use_by: u32,
 }
 
-/// The complete, in-memory snapshot the UI renders from.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Engine {
     pub containers: Vec<Container>,
     pub images: Vec<Image>,
     pub volumes: Vec<Volume>,
     pub distroboxes: Vec<DistroBox>,
-    /// Identity string for the title bar — `podman` version / connection,
-    /// or "sample data" when offline.
     pub connection: String,
-    /// True when this snapshot came from a live engine rather than the
-    /// bundled sample.
     pub live: bool,
 }
 
 impl Engine {
-    /// Total bytes across all images.
     pub fn image_disk_bytes(&self) -> u64 {
         self.images.iter().map(|i| i.size_bytes).sum()
     }
@@ -241,11 +207,6 @@ impl Engine {
     }
 }
 
-// =====================================================================
-// Sample data (for --shots and as a graceful offline fallback)
-// =====================================================================
-
-/// Which top-level section is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Containers,
@@ -263,7 +224,6 @@ impl Section {
             Section::Distrobox => "distrobox",
         }
     }
-    /// The section a key names; `None` for any other text.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "containers" => Some(Section::Containers),
@@ -283,7 +243,6 @@ impl Section {
     }
 }
 
-/// Which tab of the container detail view is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailTab {
     Logs,
@@ -301,7 +260,6 @@ impl DetailTab {
             DetailTab::Terminal => "terminal",
         }
     }
-    /// The tab a key names; `None` for any other text.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "logs" => Some(DetailTab::Logs),
@@ -327,9 +285,8 @@ impl DetailTab {
     ];
 }
 
-/// A populated engine snapshot used when no live podman socket
-/// is reachable (notably the headless `--shots` renderer). Mirrors what a
-/// developer machine running a small web stack would show.
+/// A populated engine snapshot for when no podman socket is reachable, notably a
+/// capture.
 pub fn sample_engine() -> Engine {
     Engine {
         containers: sample_containers(),
@@ -836,7 +793,6 @@ fn sample_postgres_logs() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Status strings normalise, memory renders in IEC units and memory fractions clamp.
     #[test]
     fn status_and_memory_values_normalise() {
         // --- phase: status_parse_normalises_common_strings ---
@@ -857,7 +813,7 @@ mod tests {
 
         // --- phase: mem_bytes_render_with_iec_binary_units ---
         {
-            // Container memory is base-1024, so it must wear IEC binary units.
+            // Container memory is base-1024, so it wears IEC units.
             assert_eq!(ui::format::memory(512), "512 B");
             assert_eq!(ui::format::memory(2048), "2 KiB");
             assert_eq!(ui::format::memory(5 * 1024 * 1024), "5 MiB");
@@ -894,7 +850,6 @@ mod tests {
             );
             assert!(!e.images.is_empty());
             assert!(!e.distroboxes.is_empty());
-            // Each running container should carry some logs for the detail view.
             for c in e.containers.iter().filter(|c| c.status.is_running()) {
                 assert!(!c.logs.is_empty(), "{} has no sample logs", c.name);
             }

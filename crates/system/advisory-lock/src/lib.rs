@@ -2,46 +2,37 @@
 //!
 //! # What the lock belongs to
 //!
-//! On Unix the lock is `flock(2)`; elsewhere it is the standard library's
-//! file lock (`LockFileEx` on Windows). A `flock` lock belongs to the *open
-//! file description*, not to a descriptor, a thread or a process:
-//!
-//! - Every descriptor that refers to the same description shares the lock.
-//!   `File::try_clone`, `dup(2)` and `fork(2)` all create such descriptors.
-//! - Two independent `open(2)` calls create two descriptions, and their locks
-//!   conflict even inside one process and even between threads. Opening the
-//!   file again is therefore the way to test contention in-process.
-//! - The kernel drops the lock when the last descriptor of the description is
-//!   closed, or at once when any of them is explicitly unlocked.
+//! On Unix the lock is `flock(2)`; elsewhere the standard library's file lock
+//! (`LockFileEx` on Windows). A `flock` lock belongs to the open file description,
+//! not to a descriptor, a thread or a process: every descriptor that refers to the
+//! same description shares it (`try_clone`, `dup(2)` and `fork(2)` make such
+//! descriptors), two `open(2)` calls make two descriptions whose locks conflict even
+//! inside one process, and the kernel drops the lock when the last descriptor of the
+//! description closes or any of them unlocks.
 //!
 //! # Why drop unlocks explicitly
 //!
-//! A thread that spawns a child hands the child a copy of the whole
-//! descriptor table. The copy lives until the child's `exec` closes it (the
-//! lock fd is always `FD_CLOEXEC`, see below), or for the child's whole life
-//! if it never execs. Merely closing our descriptor during that window leaves
-//! the description, and so the lock, alive in the child: a peer would then see
-//! a busy owner that has already gone. [`FileLock`] therefore calls
-//! `flock(LOCK_UN)` before closing, which releases the lock however many
-//! inherited descriptors still refer to the description.
+//! A thread that spawns a child hands it a copy of the whole descriptor table, which
+//! lives until the child's `exec` closes it, or for the child's whole life if it
+//! never execs. Closing our descriptor during that window leaves the description,
+//! and so the lock, alive in the child: a peer would see a busy owner that has
+//! already gone. [`FileLock`] therefore calls `flock(LOCK_UN)` before closing, which
+//! releases the lock however many inherited descriptors still refer to the
+//! description.
 //!
-//! The same rule means a forked child must not drop a `FileLock` it inherited
-//! from its parent: the unlock would release the parent's lock too. Children
-//! created with `std::process::Command` never run Rust destructors between
-//! fork and exec, so this only concerns code that calls `fork(2)` directly.
+//! The same rule means a forked child must not drop a `FileLock` it inherited: the
+//! unlock would release the parent's lock too. Children created with
+//! `std::process::Command` never run Rust destructors between fork and exec, so this
+//! only concerns code that calls `fork(2)` directly.
 //!
-//! # Close-on-exec
+//! Every guard sets `FD_CLOEXEC` on its descriptor when it is constructed, so a lock
+//! is never handed to an executed program, whatever flags the caller opened the file
+//! with.
 //!
-//! Every guard sets `FD_CLOEXEC` on its descriptor when it is constructed, so
-//! a lock is never handed to an executed program, whatever flags the caller
-//! opened the file with.
-//!
-//! # No waiting policy
-//!
-//! Blocking variants wait in the kernel until the lock is granted; `try`
-//! variants return [`TryLockError::WouldBlock`] at once. There is deliberately
-//! no retry or timeout: a caller that cannot wait uses a `try` variant and
-//! reports the busy owner.
+//! Blocking variants wait in the kernel until the lock is granted; `try` variants
+//! return [`TryLockError::WouldBlock`] at once. There is deliberately no retry or
+//! timeout: a caller that cannot wait uses a `try` variant and reports the busy
+//! owner.
 
 // The browser has no files: there `std::fs::File` is an uninhabited stub, no
 // `FileLock` can be built, and its accessors are never reached.
@@ -60,21 +51,15 @@ use std::path::Path;
 
 pub use std::fs::TryLockError;
 
-/// Whether other holders may lock the file at the same time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LockMode {
-    /// Any number of shared holders, and no exclusive holder.
     Shared,
-    /// Exactly one holder.
     Exclusive,
 }
 
-/// A file held under an advisory lock until the guard is dropped.
-///
-/// Dropping the guard unlocks the file explicitly and then closes it; see the
-/// [crate documentation](crate) for why closing alone is not enough. The
-/// guard dereferences to the locked [`File`], so callers that keep state in
-/// the lock file read and write it through the guard.
+/// A file held under an advisory lock until the guard is dropped. Dropping it
+/// unlocks explicitly and then closes; see the [crate documentation](crate) for why
+/// closing alone is not enough. It dereferences to the locked [`File`].
 #[derive(Debug)]
 #[must_use = "the lock is released when the guard is dropped"]
 pub struct FileLock {
@@ -93,7 +78,7 @@ impl FileLock {
     /// Locks `file` in `mode` without waiting.
     ///
     /// # Errors
-    /// [`TryLockError::WouldBlock`] while a conflicting lock is held, and
+    /// [`TryLockError::WouldBlock`] while a conflicting lock is held,
     /// [`TryLockError::Error`] for any other failure.
     pub fn try_lock(file: File, mode: LockMode) -> Result<Self, TryLockError> {
         sys::set_cloexec(&file).map_err(TryLockError::Error)?;
@@ -101,43 +86,26 @@ impl FileLock {
         Ok(Self { file, mode })
     }
 
-    /// Waits for an exclusive lock on `file`.
-    ///
-    /// # Errors
-    /// See [`FileLock::lock`].
     pub fn exclusive(file: File) -> io::Result<Self> {
         Self::lock(file, LockMode::Exclusive)
     }
 
-    /// Waits for a shared lock on `file`.
-    ///
-    /// # Errors
-    /// See [`FileLock::lock`].
     pub fn shared(file: File) -> io::Result<Self> {
         Self::lock(file, LockMode::Shared)
     }
 
-    /// Takes an exclusive lock on `file` without waiting.
-    ///
-    /// # Errors
-    /// See [`FileLock::try_lock`].
     pub fn try_exclusive(file: File) -> Result<Self, TryLockError> {
         Self::try_lock(file, LockMode::Exclusive)
     }
 
-    /// Takes a shared lock on `file` without waiting.
-    ///
-    /// # Errors
-    /// See [`FileLock::try_lock`].
     pub fn try_shared(file: File) -> Result<Self, TryLockError> {
         Self::try_lock(file, LockMode::Shared)
     }
 
-    /// Opens (creating if missing, never truncating) the lock file at `path`
-    /// for reading and writing, then waits for a lock in `mode`.
-    ///
-    /// Callers with ownership or permission requirements open the file
-    /// themselves and pass it to [`FileLock::lock`].
+    /// Opens (creating if missing, never truncating) the lock file at `path` for
+    /// reading and writing, then waits for a lock in `mode`. Callers with ownership
+    /// or permission requirements open the file themselves and pass it to
+    /// [`FileLock::lock`].
     pub fn open(path: &Path, mode: LockMode) -> io::Result<Self> {
         Self::lock(open_lock_file(path)?, mode)
     }
@@ -151,16 +119,15 @@ impl FileLock {
         Self::try_lock(open_lock_file(path).map_err(TryLockError::Error)?, mode)
     }
 
-    /// Like [`FileLock::open`], but the lock is on the file `path` names when
-    /// it is granted.
+    /// Like [`FileLock::open`], but the lock is on the file `path` names when it is
+    /// granted.
     ///
-    /// A lock file that names a short-lived thing (a lease on one directory)
-    /// is removed with that thing, by an exclusive holder, so it does not
-    /// outlive it. A waiter that opened the old file would then hold a lock
-    /// nobody else can ever contend for. So once the lock is granted, the
-    /// locked file is compared with the one at `path`, and on a mismatch the
-    /// lock is dropped and taken again on the current file. Holders that
-    /// remove the file must do so only while holding it exclusively.
+    /// A lock file naming a short-lived thing (a lease on one directory) is removed
+    /// with that thing, by an exclusive holder. A waiter that opened the old file
+    /// would hold a lock nobody can contend for, so once the lock is granted the
+    /// locked file is compared with the one at `path`, and on a mismatch the lock is
+    /// dropped and taken again on the current file. Holders that remove the file must
+    /// do so only while holding it exclusively.
     pub fn open_current(path: &Path, mode: LockMode) -> io::Result<Self> {
         loop {
             let lock = Self::open(path, mode)?;
@@ -184,23 +151,19 @@ impl FileLock {
         }
     }
 
-    /// The mode this guard holds.
     pub fn mode(&self) -> LockMode {
         self.mode
     }
 
-    /// The locked file.
     pub fn file(&self) -> &File {
         &self.file
     }
 
-    /// Transfers the file without explicitly unlocking its open description.
-    ///
-    /// This is for an executed child validating a lock inherited from its
-    /// parent: dropping a normal guard would unlock the parent's transaction.
-    /// The returned file closes normally; the lock survives while any parent
-    /// descriptor still refers to that same open description. Ordinary lock
-    /// owners should keep the guard so its explicit unlock-on-drop remains.
+    /// Transfers the file without explicitly unlocking its open description, for an
+    /// executed child validating a lock inherited from its parent: dropping a normal
+    /// guard would unlock the parent's transaction. The returned file closes
+    /// normally; the lock survives while any parent descriptor still refers to that
+    /// description. Ordinary owners should keep the guard.
     #[cfg(unix)]
     pub fn into_file_preserving_lock(self) -> File {
         let guard = std::mem::ManuallyDrop::new(self);
@@ -222,13 +185,12 @@ impl FileLock {
         Ok(self)
     }
 
-    /// Converts the lock to `mode` without waiting.
-    ///
-    /// The same non-atomicity as [`FileLock::convert`] applies.
+    /// Converts the lock to `mode` without waiting, with the same non-atomicity as
+    /// [`FileLock::convert`].
     ///
     /// # Errors
-    /// [`TryLockError::WouldBlock`] while a conflicting lock is held. The guard
-    /// is dropped, and so unlocked, when conversion fails.
+    /// [`TryLockError::WouldBlock`] while a conflicting lock is held. The guard is
+    /// dropped, and so unlocked, when conversion fails.
     pub fn try_convert(mut self, mode: LockMode) -> Result<Self, TryLockError> {
         if self.mode != mode {
             sys::try_convert(&self.file, mode)?;
@@ -291,8 +253,6 @@ impl Drop for FileLock {
     }
 }
 
-/// Opens `path` for reading and writing, creating it if it is missing and
-/// never truncating an existing file.
 pub fn open_lock_file(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)

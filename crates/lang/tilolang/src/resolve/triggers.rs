@@ -1,14 +1,12 @@
-//! The compiler's reading of what a package declares runs by itself: the action a trigger
-//! invokes, the records it runs for, and when. A trigger runs where the package's actions run,
-//! so it names one of the package's own actions and hands it the record or a root: the platform
-//! reads the rest of what it needs from the declaration, never by running code.
+//! The compiler's reading of what a package declares runs by itself: the action a trigger invokes, the
+//! records it runs for, and when. A trigger names one of the package's own actions and hands it the
+//! record or a root.
 
 use super::{CKind, Resolver, TriggerArg, TriggerInfo, TriggerWhen, id_of};
 use crate::ast::{self, Item};
 use crate::ids::IdsLock;
 use crate::types::{Ty, TypeKey};
 
-/// The type key a type that is a record is.
 fn record_key(ty: &Ty) -> Option<TypeKey> {
     match ty {
         Ty::Record(key) => Some(key.clone()),
@@ -16,8 +14,8 @@ fn record_key(ty: &Ty) -> Option<TypeKey> {
     }
 }
 
-/// Whether a parameter of type `expected` takes a resource of type `actual` (a parameter may
-/// hold it or not: an `Option<T>` takes a `T`).
+/// Whether a parameter of type `expected` takes a resource of type `actual` (a parameter may hold it or
+/// not: an `Option<T>` takes a `T`).
 fn accepts(expected: &Ty, actual: &Ty) -> bool {
     match expected {
         Ty::Option(inner) => **inner == *actual,
@@ -25,16 +23,14 @@ fn accepts(expected: &Ty, actual: &Ty) -> bool {
     }
 }
 
-/// Whether a field's value is an instant: a `Time`, or an `Option<Time>` that may hold one.
 fn is_time(ty: &Ty) -> bool {
     matches!(ty, Ty::Time) || matches!(ty, Ty::Option(inner) if **inner == Ty::Time)
 }
 
 impl Resolver<'_> {
-    /// The triggers of the module: the action each runs, the type whose resources it runs for,
-    /// and when. A trigger runs where the package's actions run, so it names one of the
-    /// package's own actions and hands it the record or a root: the platform reads the rest of
-    /// what it needs from the declaration, never by running code.
+    /// The triggers of the module: the action each runs, the type whose resources it runs for, and when. A
+    /// trigger runs where the package's actions run, so it names one of the package's own actions and hands
+    /// it the record or a root.
     pub(super) fn triggers(&mut self, module: &ast::Module, lock: &IdsLock) {
         for item in &module.items {
             let Item::Trigger(t) = item else { continue };
@@ -46,11 +42,11 @@ impl Resolver<'_> {
                 );
                 continue;
             };
-            if param.default.is_some() || param.place.is_some() {
+            if param.default.is_some() || param.place.is_some() || param.label.is_some() {
                 self.err(
                     "E130",
                     t.name.span,
-                    "a trigger's parameter is the record it runs for, and no call gives it: it takes no default or place",
+                    "a trigger's parameter is the record it runs for, and no call gives it: it takes no default, place or label",
                 );
             }
             let ty = self.resolve_type(&param.ty, false);
@@ -246,8 +242,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// The root `root T` names: its type and its id, for one of this package's roots. A
-    /// diagnostic says why not for anything else.
+    /// The root `root T` names: its type and its id, for one of this package's roots. A diagnostic says why
+    /// not for anything else.
     fn own_root(&mut self, te: &ast::TypeExpr) -> Option<(crate::types::TypeKey, String)> {
         let named = match &te.kind {
             ast::TypeExprKind::Named(path) => match path.as_slice() {

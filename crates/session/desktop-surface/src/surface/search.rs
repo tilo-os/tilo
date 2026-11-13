@@ -59,7 +59,8 @@ pub(super) fn search_asked(
         let part = request.part().cloned();
         let app = super::find_group(tree, strip, group)
             .and_then(|window| window.tabs.iter().find(|tab| tab.id == window.active_tab))
-            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from);
         asked = Some(SearchRequest::Open {
             scope: Scope::InApp(AppScope { app, part }),
             query: request.query,
@@ -356,6 +357,14 @@ impl DesktopHandle {
             .any(|action| action.id == id)
     }
 
+    /// Choose the host action `id` for the person, as their pick in search or a banner does: the
+    /// host carries it out on its next pass ([`Self::take_host_choices`]). An app asks for one
+    /// through the desk ([`tilo_actions::remote::session_actions::SHOW_CONNECT`]).
+    pub fn choose_host_action(&self, id: &str) {
+        self.shared.borrow_mut().host_choices.push(id.to_owned());
+        self.wake();
+    }
+
     /// The host actions the person chose since the last call, by id.
     pub fn take_host_choices(&self) -> Vec<String> {
         std::mem::take(&mut self.shared.borrow_mut().host_choices)
@@ -413,6 +422,7 @@ impl DesktopHandle {
             .tree
             .tab(tab)
             .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
         else {
             return;
         };
@@ -444,7 +454,7 @@ impl DesktopHandle {
         let route = crate::navigation::active_route(&shared.tree)?;
         let window = crate::navigation::locate(&shared.tree, route)?;
         let tab = window.tabs.iter().find(|tab| tab.id == route.tab)?;
-        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+        tilo_desktop_model::apps::canonical_app_id(&tab.tile).map(String::from)
     }
 
     /// The palette the desk searches with, shared with the host that draws it over the windows: the
@@ -632,7 +642,8 @@ fn windows(
 ) -> Vec<WindowEntry> {
     let mut out = Vec::new();
     for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
+        for (at, strip) in workspace.strips.iter().enumerate() {
+            let strip_name = crate::names::strip_named(&strip.name, at);
             for group in &strip.window_groups {
                 for tab in &group.tabs {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
@@ -646,7 +657,7 @@ fn windows(
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())
                         .into_iter()
-                        .chain([workspace.name.clone(), strip.name.clone()])
+                        .chain([crate::names::workspace(&workspace.name), strip_name.clone()])
                         .collect();
                     // A window bar that only says what the app is called names no place: the row is
                     // the app, so the bar's words for it are dropped rather than repeated as a
@@ -663,7 +674,7 @@ fn windows(
                         tab: tab.id,
                         title,
                         app_title,
-                        app,
+                        app: app.map(String::from),
                         place,
                     });
                 }
@@ -794,7 +805,7 @@ fn commands(
                     tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
                     workspace.slot.0
                 ),
-                title: format!("Switch to {}", workspace.name),
+                title: format!("Switch to {}", crate::names::workspace(&workspace.name)),
                 subtitle: Some("Workspace".into()),
                 icon: Some(ui::icons::Icon::LayoutGrid),
                 unasked: false,

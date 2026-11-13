@@ -1,12 +1,8 @@
 //! The storage summaries of the person's other devices, each asked of the
-//! device itself.
-//!
-//! The host's device list names the person's devices; each one that is
-//! neither this device nor revoked is asked for its `storage-summary`
-//! through the host's own-device route, which carries Settings' own action
-//! to that device and brings its answer back. A device that is offline or
-//! refuses simply shows no card. An answer is only taken in for a device the
-//! latest list still names, never for a key it does not.
+//! device itself. The host's device list names the person's devices; each one
+//! that is neither this device nor revoked is asked for its `storage-summary`
+//! through the host's own-device route, which carries Settings' own action to
+//! that device and brings its answer back.
 
 use runtime_fs::storage::ResidencySummary;
 use ui::tilo_actions::remote::own_device;
@@ -16,28 +12,21 @@ use crate::device_fleet::{self, DeviceView};
 
 use super::{DeviceResidency, StorageEffect};
 
-/// One device asked for its summary, and its answer when it comes.
 struct Asked {
     key: [u8; 32],
     call: ui::InvocationCall,
 }
 
-/// One round of asking: the device list, then each device on it.
 pub(super) struct OtherDevices {
     remote: ui::RemoteActions,
     list_call: Option<ui::InvocationCall>,
-    /// The person's devices as the host last listed them.
     fleet: Vec<DeviceView>,
     asked: Vec<Asked>,
 }
 
-/// What a round brought in.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Arrived {
-    /// The devices the host listed, when a new list arrived: cards of
-    /// devices it no longer names go.
     pub listed: Option<Vec<String>>,
-    /// Summaries that arrived, one per device.
     pub summaries: Vec<DeviceResidency>,
 }
 
@@ -58,7 +47,6 @@ impl OtherDevices {
         }
     }
 
-    /// Take in whatever answers settled.
     pub(super) fn poll(&mut self) -> Arrived {
         let mut arrived = Arrived::default();
         if self.list_call.is_none() && self.asked.is_empty() {
@@ -98,33 +86,26 @@ impl OtherDevices {
     }
 }
 
-/// The devices on `fleet` to ask: neither this one nor revoked.
 fn asked_of(fleet: &[DeviceView]) -> impl Iterator<Item = &DeviceView> {
     fleet
         .iter()
         .filter(|device| !device.current && !device.revoked)
 }
 
-/// Ask device `key` for its storage summary.
 fn ask(remote: &ui::RemoteActions, key: &[u8; 32]) -> ui::InvocationCall {
     remote.invoke(own_device::target(), summary_request(key).argument(), None)
 }
 
-/// The own-device invocation that asks device `key` for Settings' storage
-/// summary.
 fn summary_request(key: &[u8; 32]) -> own_device::Invocation {
     own_device::Invocation {
         device: hex::encode(key),
         app: <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID.to_owned(),
-        // Settings publishes its effects on its one resource.
         resource: crate::resource::Settings::KIND.to_owned(),
         action: StorageEffect::STORAGE_SUMMARY.id.to_owned(),
         arguments: None,
     }
 }
 
-/// The card for what device `key` answered, if `fleet` names it as one of
-/// the person's other devices and the answer is a storage summary.
 fn residency_of(
     fleet: &[DeviceView],
     key: &[u8; 32],
@@ -155,7 +136,7 @@ mod tests {
             revoked,
             can_host: false,
             kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-            browser: None,
+            ..crate::device_fleet::DeviceView::default()
         }
     }
 
@@ -210,8 +191,6 @@ mod tests {
         assert!(residency_of(&fleet, &[2; 32], None).is_none());
     }
 
-    /// The request names Settings' own storage-summary action on the
-    /// device, which is all the route lets Settings reach.
     #[test]
     fn the_request_asks_the_device_for_settings_own_summary() {
         let request = summary_request(&[2; 32]);

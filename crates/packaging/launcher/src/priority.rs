@@ -1,68 +1,34 @@
 //! What a launched app gets, and where the OOM killer finds it.
 //!
-//! Every app the launcher starts is put in the startup tier
-//! ([`Tier::Startup`]) and, once it has opened, in the foreground tier
-//! ([`Tier::Foreground`]): a CPU and IO weight well above the default and a
-//! memory-low floor, so apps outrank batch work and a starting app is not
-//! paged out from under itself, nor served after anything else on the
-//! machine while it opens. Moving an app between the tiers is the same write
-//! ([`crate::app_cgroup::set_tier`]): the session puts the apps the person
-//! can see in the foreground tier and the ones they cannot in the background
-//! tier, whose weight is below default and whose floor is none, so the
-//! machine gives memory back from those first under pressure. An app in any
-//! tier still uses every idle cycle; the image's slices (`session.slice`,
-//! `app.slice`, `background.slice`) decide who yields.
-//!
-//! The session itself carries [`Tier::Session`] in the cgroup it runs in: the
-//! desk placing a window is work a person waits on, so it outranks every app.
-//! The image sets that weight on the compositor's logind scope; a session on a
-//! host whose units do not carries it itself
-//! ([`crate::app_cgroup::claim_session_weight`]).
-//!
-//! The values are systemd resource-control properties, written onto the app's
-//! own scope, where they are the cgroup files systemd would write
-//! ([`crate::app_cgroup::property_writes`], see [`crate::scope`]).
-//!
-//! The session (the compositor and the services of the shell) is not an
-//! OOM-killer candidate like an app: the display manager sets its score before
-//! the login, where only a privileged process can
-//! (`greetd.service.d/50-tilo-oom.conf`), and everything an app runs leaves
-//! that protection first ([`leave_session_protection`]).
-//!
-//! Failure here is a log line: a missing cgroup file or a refusing manager
-//! costs a boost, never the launch.
+//! Every app the launcher starts is put in the startup tier ([`Tier::Startup`]) and,
+//! once it has opened, in the foreground tier ([`Tier::Foreground`]): a CPU and IO
+//! weight well above the default and a memory-low floor, so apps outrank batch work and
+//! a starting app is not paged out from under itself, nor served after anything else on
+//! the machine while it opens.
 
 use std::time::Duration;
 
 const GIB: u64 = 1 << 30;
 
-/// CPU and IO weight of an app. The default is 100, so an app outweighs a
-/// default-weighted sibling eight to one.
+/// CPU and IO weight of an app.
 pub const FOREGROUND_WEIGHT: u64 = 800;
 /// CPU and IO weight of an app that yields: below default.
 pub const BACKGROUND_WEIGHT: u64 = 50;
-/// CPU and IO weight of an app while it opens: the most a cgroup may carry,
-/// so the app a person just asked for is served before every other app, the
-/// session's desk and any batch work. It is the same weight in the shares a
-/// person notices; it lasts [`STARTUP_WINDOW`] and then the app takes the
-/// tier of what the person can see.
+/// CPU and IO weight of an app while it opens: the most a cgroup may carry, so the app a person just
+/// asked for is served before every other app, the session's desk and any batch work.
 pub const STARTUP_WEIGHT: u64 = 10_000;
-/// How long a launch keeps the startup weight, counted from the process it
-/// started: the app's own start, its first frame's work and the desk's
-/// placement of its window under load. Long enough that opening an app is
-/// never the moment something else is served first, short enough that the
-/// machine goes back to sharing while the person uses the app.
+/// How long a launch keeps the startup weight, counted from the process it started: the app's own
+/// start, its first frame's work and the desk's placement of its window under load.
 pub const STARTUP_WINDOW: Duration = Duration::from_secs(2);
-/// CPU and IO weight of the session itself: the compositor and the desk
-/// placing, drawing and answering the windows of the person's work. Higher
-/// than an app, lower than one that is opening.
+/// CPU and IO weight of the session itself: the compositor and the desk placing, drawing and answering
+/// the windows of the person's work.
 pub const SESSION_WEIGHT: u64 = 1_000;
-/// `oom_score_adj` of an app: the kernel's default, the lowest an unprivileged
-/// process may hand out once the session left its own.
+/// `oom_score_adj` of an app: the kernel's default, the lowest an unprivileged process may hand out
+/// once the session left its own.
 pub const FOREGROUND_OOM_SCORE_ADJ: i32 = 0;
 
-/// A resource-control property: its name and its value, as `busctl` passes
-/// them to `StartTransientUnit` (`t`, a u64).
+/// A resource-control property: its name and its value, as `busctl` passes them to `StartTransientUnit`
+/// (`t`, a u64).
 pub type Property = (&'static str, u64);
 
 /// Which tier a cgroup is in.
@@ -78,10 +44,8 @@ pub enum Tier {
     Session,
 }
 
-/// Leave the session's protection from the OOM killer: an app, or the
-/// launcher about to start one, must be a candidate like any app. Raising
-/// one's own `oom_score_adj` needs no privilege; this only ever raises it, to
-/// the foreground tier's (every launch starts there).
+/// Leave the session's protection from the OOM killer: an app, or the launcher about to start one, must
+/// be a candidate like any app.
 pub fn leave_session_protection() {
     let path = "/proc/self/oom_score_adj";
     let Ok(current) = std::fs::read_to_string(path) else {
@@ -111,11 +75,7 @@ pub fn mem_total_bytes() -> Option<u64> {
     parse_mem_total(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
-/// Properties that put a cgroup in `tier`. `total` is physical memory; an
-/// app's floor is an eighth of it, at most 4 GiB, so the protected set fits
-/// inside the ancestors' floors shipped with the image. An app that is
-/// opening keeps the floor it will need once it has opened. The session's
-/// tier moves weights only: its floor is the image's to set.
+/// Properties that put a cgroup in `tier`.
 #[must_use]
 pub fn tier_properties(tier: Tier, total: Option<u64>) -> Vec<Property> {
     match tier {
@@ -145,8 +105,7 @@ pub fn tier_properties(tier: Tier, total: Option<u64>) -> Vec<Property> {
     }
 }
 
-/// The memory floor of an app in the foreground tier: an eighth of the
-/// machine, at most 4 GiB.
+/// The memory floor of an app in the foreground tier: an eighth of the machine, at most 4 GiB.
 fn foreground_floor(total: u64) -> u64 {
     (total / 8).min(4 * GIB)
 }
@@ -180,8 +139,8 @@ mod tests {
             "the desk outranks every app, and its floor is the image's"
         );
         let foreground = tier_properties(Tier::Foreground, Some(32 * GIB));
-        // The order a person's work is served in: what they just asked for,
-        // then the desk showing it, then what they can see, then the rest.
+        // The order a person's work is served in: what they just asked for, then the desk showing it,
+        // then what they can see, then the rest.
         let cpu_weight = |tier| {
             tier_properties(tier, Some(32 * GIB))
                 .into_iter()

@@ -1,20 +1,6 @@
-//! A hosted surface's device-local door, shared with whoever lists and
-//! invokes its actions while its host owns the surface.
-//!
-//! A host mounts a private surface app (setup, Quick Settings, a sheet)
-//! and keeps it to itself: only the host may lay it out, draw it or run it.
-//! The catalogue a person searching, a script or an agent on this device
-//! drives it through is elsewhere, and may not borrow the host. The host
-//! hands that catalogue a [`SharedDoor`]: on every pass it [`serves`] what
-//! was asked through the app's own door
-//! ([`AppWidget::invoke_device_local_action`]) and [`publishes`] what the
-//! app offers now ([`AppWidget::device_local_resources`]). The catalogue
-//! reads [`SharedDoor::actions`] and queues with [`SharedDoor::invoke`];
-//! the answer arrives once the host served it. Nothing here reaches a workspace
-//! or another device.
-//!
-//! [`serves`]: SharedDoor::serve
-//! [`publishes`]: SharedDoor::publish
+//! A hosted surface's device-local door, shared with whoever lists and invokes its actions while its
+//! host owns the surface. A host mounts a private surface app (setup, Quick Settings, a sheet) and
+//! keeps it to itself: only the host may lay it out, draw it or run it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,8 +29,7 @@ struct Queued {
 }
 
 impl SharedDoor {
-    /// The resources the surface published when its host last published
-    /// it, with their actions.
+    /// The resources the surface published when its host last published it, with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.0.borrow().resources.clone()
@@ -85,14 +70,12 @@ impl SharedDoor {
     }
 
     /// Host: run what was queued through `app`'s door, oldest first.
-    /// Returns whether anything ran.
     pub fn serve(&self, app: &mut dyn AppWidget) -> bool {
         self.serve_with(|address, arguments| app.invoke_device_local_action(address, arguments))
     }
 
-    /// Host: run what was queued through `run`, the surface's own door,
-    /// oldest first: for a host holding the surface as something other
-    /// than an [`AppWidget`]. Returns whether anything ran.
+    /// Host: run what was queued through `run`, the surface door, oldest first: for a host holding the
+    /// surface as something other than an [`AppWidget`].
     pub fn serve_with(
         &self,
         mut run: impl FnMut(
@@ -118,14 +101,13 @@ impl SharedDoor {
         }
     }
 
-    /// Host: publish what `app` offers now; nothing for a surface that is
-    /// gone or offers nothing to this device.
+    /// Host: publish what `app` offers now; nothing for a surface that is gone or offers nothing to
+    /// this device.
     pub fn publish(&self, app: Option<&dyn AppWidget>) {
         self.publish_resources(app.and_then(AppWidget::device_local_resources));
     }
 
-    /// Host: publish `resources`, what the surface offers now; `None` for
-    /// a surface that is gone.
+    /// Host: publish `resources`, what the surface offers now; `None` for a surface that is gone.
     pub fn publish_resources(&self, resources: Option<Vec<tilo_actions::ResourceSpec>>) {
         let resources = resources.unwrap_or_default();
         let actions = tilo_actions::door::survey(&resources);

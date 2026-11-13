@@ -1,15 +1,4 @@
 //! Real SSH transport, built on `russh`.
-//!
-//! A live SSH session runs the async russh event loop as a task on the shared
-//! app runtime; the UI thread talks to it over channels. Remote PTY output is
-//! streamed to a [`crate::vt::VtGrid`] that the session surface renders;
-//! keystrokes flow the other way into the PTY.
-//!
-//! Nothing here is simulated: [`SshSession::connect`] opens a real TCP
-//! connection, runs the SSH key exchange, authenticates with a real
-//! password or private key, and requests a real interactive shell. On any
-//! failure the shared [`SessionStatus`] carries the honest error — the UI
-//! never falls back to a fabricated terminal.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,12 +17,9 @@ use crate::vt::VtGrid;
 use ui::lock::MutexRecover as _;
 
 /// Keep the UI responsive under a stalled SSH transport without allowing a
-/// key-repeat storm or a hostile peer to accumulate unbounded process memory.
-/// These queues intentionally apply backpressure at the transport boundary.
 const SSH_INPUT_QUEUE_CAPACITY: usize = 256;
 const SSH_OUTPUT_QUEUE_CAPACITY: usize = 128;
 /// Agent-supplied `send-text` is useful for commands, not bulk file transfer.
-/// Bounding it keeps a single invocation from monopolising the PTY worker.
 pub const MAX_SSH_INPUT_BYTES: usize = 64 * 1024;
 
 /// How to authenticate an SSH connection. Secrets live only here, in
@@ -47,7 +33,6 @@ pub enum SshAuth {
     },
 }
 
-/// Everything needed to open an SSH session.
 #[derive(Clone, Debug)]
 pub struct SshConfig {
     pub host: String,
@@ -60,8 +45,6 @@ pub struct SshConfig {
     pub known_hosts: KnownHostStore,
 }
 
-/// The public identity that a person compares out-of-band before trusting an
-/// SSH server. It has no credentials and is safe to show in an error surface.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostKeyIdentity {
     pub algorithm: String,
@@ -124,21 +107,17 @@ impl ui::storage::SettingsSchema for KnownHostsSetting {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
-/// This device's SSH host-key trust: a device-local setting of the app.
 #[derive(Clone, Debug)]
 pub struct KnownHostStore {
     settings: ui::storage::Settings<KnownHostsSetting>,
 }
 
 impl KnownHostStore {
-    /// The trust database in the app's settings in the document its host
-    /// gave it.
     #[must_use]
     pub fn in_settings(settings: ui::storage::Settings<KnownHostsSetting>) -> Self {
         Self { settings }
     }
 
-    /// The trust database in the session's settings.
     #[must_use]
     pub fn of_session() -> Self {
         Self::in_settings(ui::storage::Settings::for_app(
@@ -268,7 +247,6 @@ pub fn default_key_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Which way a file moves over an SSH session.
 #[derive(Clone, Debug)]
 pub enum TransferDirection {
     /// From this device to the remote machine.
@@ -298,16 +276,11 @@ pub struct SshSession {
     input_tx: Sender<InputMessage>,
     command_tx: Sender<TransferCommand>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
-    // The session task on the app runtime. Dropping the handle does not
-    // cancel it: the input channel closes with this session, which tells the
-    // task to disconnect cleanly.
     _worker: ui::rt::JoinHandle<()>,
 }
 
 impl SshSession {
     /// Start connecting. Returns immediately with a handle whose status is
-    /// `Connecting`; a task on the app runtime advances it to `Connected` or
-    /// `Failed(reason)`.
     pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = channel::<Vec<u8>>(SSH_OUTPUT_QUEUE_CAPACITY);
@@ -352,13 +325,11 @@ impl SshSession {
     }
 
     /// The rejected host-key observation, if verification stopped the
-    /// handshake. This public metadata is deliberately separate from secrets.
     pub fn host_key_issue(&self) -> Option<HostKeyIssue> {
         self.host_key_issue.lock_recover().clone()
     }
 
     /// Drain any pending remote output into the grid. Returns true if the
-    /// grid changed (so the UI knows to repaint).
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         while let Ok(bytes) = self.output_rx.try_recv() {
@@ -393,8 +364,6 @@ impl SshSession {
     }
 
     /// Move one file over this session. The work runs on the session's
-    /// worker, which reports the bytes to `job` and answers through the
-    /// returned channel when it ends.
     pub fn transfer(
         &self,
         direction: TransferDirection,
@@ -497,7 +466,6 @@ async fn load_key(
 }
 
 /// Authenticate the session the way `cfg` says: a password, or a key from
-/// `path`, ordered by whatever hash the server supports.
 async fn authenticate(
     session: &mut client::Handle<Handler>,
     cfg: &SshConfig,
@@ -612,7 +580,6 @@ async fn run_session(
                     }
                 }
             } else {
-                // UI dropped the sender → tear the session down cleanly.
                 let _ = channel.eof().await;
                 break;
             },
@@ -825,7 +792,6 @@ where
 }
 
 /// Why a remote command did not finish a transfer, in the remote's own words
-/// when it supplied any.
 fn transfer_failure(remote_path: &str, status: Option<u32>, stderr: &[u8]) -> String {
     let detail = String::from_utf8_lossy(stderr).trim().to_owned();
     match (status, detail.is_empty()) {
@@ -894,7 +860,6 @@ mod tests {
     }
 
     /// A trust database in a scratch profile's settings document, and the
-    /// directory that holds it.
     fn test_known_hosts() -> (KnownHostStore, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let store = KnownHostStore::in_settings(
@@ -994,21 +959,10 @@ mod tests {
         }
     }
 
-    // ---- Real round-trip against a loopback russh server ----------------
-    //
-    // This is the gated "real" proof for SSH: a genuine russh *server* on a
-    // 127.0.0.1 socket, a genuine `SshSession` client connecting to it over
-    // TCP (real KEX, real password auth, real PTY shell channel). We assert
-    // the client reaches `Connected`, receives the server's shell banner
-    // into the grid, and that a keystroke sent upstream is echoed back.
-
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId};
 
     /// The loopback server's tiny file system, and the transfers it is
-    /// receiving, by channel.
-    /// What the loopback server holds for a path: its bytes, and for a `cat >`
-    /// the channel and path they are being written to.
     type Served = Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>;
     type Receiving = Arc<Mutex<std::collections::HashMap<ChannelId, (String, Vec<u8>)>>>;
 
@@ -1020,7 +974,6 @@ mod tests {
 
     impl TestFiles {
         /// The bytes served for `path`, read under the lock and handed on
-        /// outside it so no guard outlives the call.
         fn served(&self, path: &str) -> Option<Vec<u8>> {
             let files = self.files.lock().unwrap();
             files.get(path).cloned()
@@ -1138,8 +1091,6 @@ mod tests {
                 received.extend_from_slice(data);
                 return Ok(());
             }
-            // Echo input back prefixed, so the client can prove the upstream
-            // pipe works end-to-end.
             let mut echo = b"echo:".to_vec();
             echo.extend_from_slice(data);
             session.data(channel, echo)?;
@@ -1147,8 +1098,6 @@ mod tests {
         }
     }
 
-    // A throwaway Ed25519 host key (generated with ssh-keygen) so the test
-    // server has an identity without pulling an RNG dependency.
     const TEST_HOST_KEY: &str = "\
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -1174,7 +1123,6 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         };
         trust_host_key(&known_hosts, "127.0.0.1", port, &identity).unwrap();
 
-        // Real client — a task on the app runtime, exactly as production.
         let mut ssh = SshSession::connect(SshConfig {
             host: "127.0.0.1".into(),
             port,
@@ -1203,7 +1151,6 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             })
         });
 
-        // Prove the upstream pipe: send a byte, expect the echo back.
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
             acknowledgement
@@ -1356,7 +1303,6 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
     }
 
     /// A connected session to the loopback server on `port`, whose host key
-    /// this device already trusts. The returned directory holds that trust.
     fn trusted_session_on(port: u16) -> (SshSession, tempfile::TempDir) {
         let (known_hosts, known_hosts_directory) = test_known_hosts();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();

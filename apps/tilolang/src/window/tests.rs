@@ -1687,7 +1687,7 @@ fn an_action_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() 
             policy::ActionKind::Undoable,
         ),
         policy::Answer::Ask,
-        policy::Subject::person("ada"),
+        policy::Grantee::person("ada"),
     ));
     let standing = policy::Standing::person(policy, "ada");
     workspace
@@ -2576,13 +2576,12 @@ fn later_notes(edit: impl Fn(&str) -> String) -> tilolang_tilo::bundle::Bundle {
 /// edit that changed a field's type must not stop compiling because a
 /// parameter was renamed.
 fn tag_takes_int(source: &str, signature: &str) -> String {
-    let from = source
-        .find(signature)
-        .unwrap_or_else(|| panic!("{signature} is in the notes package"))
-        + signature.len();
-    let to = from + source[from..].find(')').expect("the parameters end");
-    let at = from + source[from..to].rfind(": Text").expect("the tag is Text");
-    format!("{}: Int{}", &source[..at], &source[at + ": Text".len()..])
+    let (head, rest) = source
+        .split_once(signature)
+        .unwrap_or_else(|| panic!("{signature} is in the notes package"));
+    let (params, tail) = rest.split_once(')').expect("the parameters end");
+    let (before, after) = params.rsplit_once(": Text").expect("the tag is Text");
+    format!("{head}{signature}{before}: Int{after}){tail}")
 }
 
 /// Whether `text` is shown anywhere under `node`.

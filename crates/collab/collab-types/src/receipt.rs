@@ -670,34 +670,32 @@ fn check_claimed_changes(
     Ok(())
 }
 
-/// `claims` grouped by the resource kind of the app's surface each is
-/// decided against, in the order they come: `kind`, when the record says
-/// which resource it is; else the kind each claim's own action names, as a
-/// record that holds items of several kinds (a tilolang app's root, whose
-/// categories and channels each have their own actions) carries them. A
-/// claim that names no kind (a record's creation, an undo) goes with the
-/// first kind the op names.
+/// `claims` grouped by the resource kind of the app's surface each is decided
+/// against, in the order they come: the kind its own action names, as a record
+/// that holds resources of several kinds (a tilolang app's record, whose
+/// tasks and projects each have their own actions) carries them. A claim that
+/// names no kind (a record's creation, an undo) goes with `kind`, the record's
+/// own, else with the first kind the op names.
 fn by_kind(
     kind: Option<&str>,
     claims: Vec<ChangeClaim>,
 ) -> Vec<(Option<String>, Vec<ChangeClaim>)> {
-    if let Some(kind) = kind {
-        return vec![(Some(kind.to_owned()), claims)];
-    }
-    let first = claimed_kind(&claims).map(str::to_owned);
+    let fallback = kind
+        .map(str::to_owned)
+        .or_else(|| claimed_kind(&claims).map(str::to_owned));
     let mut groups: Vec<(Option<String>, Vec<ChangeClaim>)> = Vec::new();
     for claim in claims {
         let own = claimed_kind(std::slice::from_ref(&claim))
             .map(str::to_owned)
-            .or_else(|| first.clone());
+            .or_else(|| fallback.clone());
         match groups.iter_mut().find(|(group, _)| *group == own) {
             Some((_, members)) => members.push(claim),
             None => groups.push((own, vec![claim])),
         }
     }
     if groups.is_empty() {
-        // An op of no change is decided as it was: against the app's own resource.
-        groups.push((None, Vec::new()));
+        // An op of no change is decided as it was: against the record's resource.
+        groups.push((fallback, Vec::new()));
     }
     groups
 }

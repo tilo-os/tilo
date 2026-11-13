@@ -32,7 +32,6 @@ __all__ = [
     "ReadMode",
     "ReadTheme",
     "Settings",
-    "StoredContent",
     "Library",
     "BooksCatalogues",
     "Files",
@@ -122,12 +121,9 @@ class Settings(TypedDict):
     mode: ReadMode
     composition: CompositionStyle
 
-class StoredContent(TypedDict):
-    hash: str
-    size: int
-
 class Library(Resource):
     """Books — `ebook.library`."""
+    __surface__ = "so.tilo.ebook@f7c27282fa766530"
     entries: list[LibraryEntry]
     progress: dict[str, Progress]
     settings: Settings
@@ -144,7 +140,7 @@ class Library(Resource):
         author: str,
         subject: str,
         shared: bool,
-        content: StoredContent | None = None,
+        content: Any | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -174,7 +170,7 @@ class Library(Resource):
     def index_book(self,
         *,
         book: str,
-        index: StoredContent,
+        index: Any,
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("index-book", book=book, index=index)
@@ -267,11 +263,13 @@ class Library(Resource):
 
 class BooksCatalogues(Resource):
     """Book catalogues — `settings.books-catalogues`."""
+    __surface__ = "so.tilo.ebook@f7c27282fa766530"
     keep_catalogues: bool
 
 
 class Files(Resource):
     """Book files — `ebook.files`."""
+    __surface__ = "so.tilo.ebook@f7c27282fa766530"
     devices: dict[str, Any]
 
     def keep(self,

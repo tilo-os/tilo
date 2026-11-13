@@ -338,6 +338,7 @@ fn apply_under_envelope(
     doc: &mut Doc,
     action: &dyn Action,
     env: &ActionEnvelope,
+    content: Option<&tilo_content::ContentStore>,
 ) -> Result<(), ActionError> {
     let prev_actor = doc.get_actor().clone();
     // `get_heads`/`set_actor` both close any open transaction, so we
@@ -366,7 +367,7 @@ fn apply_under_envelope(
         }
         doc.commit_with(options);
         doc.set_actor(prev_actor);
-        crate::content::keep(env);
+        crate::content::keep(env, content);
     } else {
         // No ops: a genuine no-op. Do not `commit_with` (it would pin then
         // prune this action's fresh actor and desync the patch log — see the
@@ -517,7 +518,7 @@ pub fn apply_local_by(
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
     let env = envelope_for(doc, action, encoded, actor, None)?;
-    apply_under_envelope(doc, action, &env)?;
+    apply_under_envelope(doc, action, &env, None)?;
     Ok(env)
 }
 
@@ -536,7 +537,7 @@ pub fn apply_local_with_context(
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
     let env = envelope_for(doc, action, encoded, actor, Some(context))?;
-    apply_under_envelope(doc, action, &env)?;
+    apply_under_envelope(doc, action, &env, None)?;
     Ok(env)
 }
 
@@ -559,7 +560,7 @@ pub fn replay(
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {
         validate_compensation(doc, action.as_ref(), env)?;
-        return apply_under_envelope(doc, action.as_ref(), env);
+        return apply_under_envelope(doc, action.as_ref(), env, registry.content());
     }
 
     // The live replica may already contain concurrent work made after the
@@ -572,7 +573,7 @@ pub fn replay(
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
     validate_compensation(&mut replay_base, action.as_ref(), env)?;
-    apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
+    apply_under_envelope(&mut replay_base, action.as_ref(), env, registry.content())?;
     doc.merge_incoming(&mut replay_base)?;
     Ok(())
 }
@@ -593,16 +594,12 @@ pub enum Verified {
     ContentMissing(String),
 }
 
-/// The action a change records, encoded as the executor dispatched it.
-fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
-    context.action.as_ref()
-}
-
 /// The action as its change records it: itself when it fits the history
-/// budget, else with its large parts kept, sealed, in this thread's content
-/// store ([`crate::keep_content_in`]). Built once, on the device that
-/// invokes the action. An action too large even then is refused: a change
-/// never commits without the action it ran.
+/// budget, else with its large parts kept, sealed, in the content store of
+/// the window that records it ([`crate::content::register`]). Built once, on
+/// the device that invokes the action. An action too large even then is
+/// refused, and so is one whose parts no store would keep: a change never
+/// commits without the action it ran.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
     if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
         return Ok(action.clone());
@@ -641,7 +638,7 @@ pub fn verify_change(
     let Some(context) = entry_of(doc.committed_document(), hash) else {
         return Ok(Verified::NothingRecorded);
     };
-    let Some(recorded) = recorded_action(&context) else {
+    let Some(recorded) = context.action.as_ref() else {
         return Ok(Verified::NothingRecorded);
     };
     if !registry.contains(&recorded.type_id) {
@@ -844,7 +841,7 @@ fn dispatch_by_maybe_context(
     match action.locus() {
         ExecutionLocus::ClientLocal => {
             let env = envelope_for(doc, action, encoded, actor, context)?;
-            apply_under_envelope(doc, action, &env)?;
+            apply_under_envelope(doc, action, &env, None)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }

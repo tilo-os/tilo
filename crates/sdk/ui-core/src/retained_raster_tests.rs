@@ -4,8 +4,7 @@ use crate::scene_parts::{PartKey, Recording, part, track};
 use vello::kurbo::Affine;
 use vello::peniko::Fill;
 
-/// A 400x200 frame (drawn at twice its size on the target) with a part in
-/// each corner.
+/// A 400x200 frame (drawn at twice its size on the target) with a part in each corner.
 fn corners() -> (Box<Scene>, crate::scene_parts::SectionParts) {
     let recording = Recording::begin();
     let mut scene = Box::new(Scene::new());

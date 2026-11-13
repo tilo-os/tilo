@@ -220,7 +220,6 @@ fn edits_that_make_no_sense_are_refused() {
     assert_eq!(device.state().unwrap(), Clocks::default());
 }
 
-/// The published tree, flattened to `(resource, action)` pairs.
 fn published(app: &mut TestApp<ClocksShell>) -> Vec<(String, String)> {
     app.agent_surface()
         .as_array()

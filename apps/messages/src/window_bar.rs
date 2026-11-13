@@ -1,9 +1,8 @@
-//! Messages' controls, as slots in the window's bar ([`ui::window_toolbar`]):
-//! the shell's sidebar toggle and Back; where the window is as the location
-//! (the people, the person a conversation is with, the record's open
-//! conversation, the open groups or the account setup); the conversation's route as the location's choices; and
-//! the actions: Accounts, Refresh messages, and in the groups Refresh
-//! membership and Close groups. The window draws no header row.
+//! Messages' controls, as slots in the window's bar ([`ui::window_toolbar`]): the shell's
+//! sidebar toggle and Back; where the window is as the location (the people, the person a
+//! conversation is with, the record's open conversation, the open groups or the account
+//! setup); the conversation's route as the location's choices; and the actions: Accounts,
+//! Refresh messages, and in the groups Refresh membership and Close groups.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,9 +18,8 @@ use ui::window_toolbar::{
 use crate::view::{Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
 
-/// What the window bar is made of: the window's state, the door its
-/// effects go through, and the shell's own slots as the shell last built
-/// laid them out.
+/// What the window bar is made of: the window's state, the door its effects go through, and
+/// the shell's own slots as the shell last built laid them out.
 #[derive(Clone)]
 pub(crate) struct Bar {
     pub(crate) sources: Sources,
@@ -30,9 +28,7 @@ pub(crate) struct Bar {
     pub(crate) setup: crate::setup::SetupView,
     pub(crate) groups: crate::groups::GroupsView,
     pub(crate) dispatcher: Dispatcher<Messages>,
-    /// The bar's entries, each invoking its effect.
     pub(crate) actions: Rc<BarActions<Messages>>,
-    /// The shell's link; the shell is built again with what it shows.
     pub(crate) link: Rc<RefCell<Option<WindowBarLink>>>,
 }
 
@@ -106,8 +102,8 @@ impl Bar {
         self.sources.person_name(person)
     }
 
-    /// The person a conversation is with, with the routes to them as the
-    /// location's choices, the one in use marked.
+    /// The person a conversation is with, with the routes to them as the location's
+    /// choices, the one in use marked.
     fn route(&self, name: String, selected: &Selection) -> ToolbarLocation {
         let options = choices(&self.sources, &selected.person);
         let current = options
@@ -141,9 +137,8 @@ impl Bar {
         }
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the window's, each through its effect. Returns whether anything
-    /// was asked.
+    /// Run what the person did in the window's bar: the shell's own slots, then the
+    /// window's, each through its effect.
     fn take_events(&self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {

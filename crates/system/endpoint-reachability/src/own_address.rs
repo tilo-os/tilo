@@ -1,12 +1,4 @@
 //! Where this device answers, as whoever it hands its address to dials it.
-//!
-//! An endpoint names a relay in its address only once it has connected to
-//! one, and until it does, the address it signs names only what its own
-//! network knows: a stranger on another network dials nothing. Both places a
-//! device says where it is — a host naming its own address in a workspace's
-//! governance, and a session naming its own endpoint in a link it hands out —
-//! say it through these: wait for the relay before naming the address, and
-//! follow the relays afterwards, so what was named stays dialable.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -41,12 +33,10 @@ pub async fn relay_addr(endpoint: &Endpoint, within: Duration) -> EndpointAddr {
     addr
 }
 
-/// [`relay_addr`] for as long as a first net report and a relay handshake take.
 pub async fn await_relay(endpoint: &Endpoint) -> EndpointAddr {
     relay_addr(endpoint, RELAY_WAIT).await
 }
 
-/// The relays `addr` says a device is reached through.
 fn relays_of(addr: &EndpointAddr) -> BTreeSet<RelayUrl> {
     addr.relay_urls().cloned().collect()
 }
@@ -70,7 +60,6 @@ where
     let mut relays = relays_of(&watch.get());
     let following = runtime.spawn(async move {
         loop {
-            // The watcher disconnects once the endpoint is gone.
             if watch.updated().await.is_err() {
                 return;
             }
@@ -117,10 +106,10 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// The relay that arrives while a host waits is the one it names.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waiting_names_the_relay_the_endpoint_reached() {
-        let (_server, own) = crate::test_support::local_relay().await;
+        let relay = tilo_test_env::relay::relay().await;
+        let own = relay.relays();
         let endpoint = endpoint_without_relays().await;
         let reachability =
             Reachability::defer(&endpoint, &own, tokio::runtime::Handle::current(), None);
@@ -138,7 +127,8 @@ mod tests {
     /// changing who reaches it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn following_names_each_relay_change_and_nothing_else() {
-        let (_server, own) = crate::test_support::local_relay().await;
+        let relay = tilo_test_env::relay::relay().await;
+        let own = relay.relays();
         let endpoint = endpoint_without_relays().await;
         let reachability = Reachability::defer(&endpoint, &own, Handle::current(), None);
         let (told, heard) = std::sync::mpsc::channel();

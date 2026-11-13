@@ -1,9 +1,5 @@
 //! What the person chose from the desktop's search on this device and where
 //! their windows were ([`settings_store::search_history`]).
-//!
-//! The desktop's search keeps both while it runs and writes them here
-//! through the section's field edits whenever they change, so they outlast
-//! the session and search starts again where the person left it.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
@@ -37,5 +33,5 @@ impl ui::storage::SettingsSchema for SearchHistory {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.search_history", label = "Search history")]
+#[ui::tilo_resource::resource(kind = "settings.search_history")]
 impl SearchHistory {}

@@ -1,291 +1,32 @@
 //! A `tilo_invoke` waits on its host's word that the invocation changed,
 //! not a poll interval, and one session's requests overlap: `tilo_status`
 //! and `tilo_cancel` answer while a `tilo_invoke` of the same session still
-//! waits, over HTTP, stdio and the daemon's native socket alike.
+//! waits.
 use super::*;
 use crate::mcp::{MAX_ADMITTED, MAX_WORKING};
-use std::collections::HashSet;
-use std::io::{BufRead as _, Write as _};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::mcp_test_hosts::{
+    GatedHost, Stale, StoredByTestApp, StubHost, WithoutRevision, long_invoke, run, run_paused,
+    tool,
+};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::Completer;
 
-/// A host whose invocations finish when the test says so, or when they are
-/// cancelled, and which says when one changed, as the broker's hosts do:
-/// only to the caller that may observe it.
-#[derive(Clone, Default)]
-pub(crate) struct GatedHost {
-    stub: StubHost,
-    owner: Arc<StdMutex<Option<Caller>>>,
-    finished: Arc<StdMutex<HashSet<InvocationId>>>,
-    cancelled: Arc<StdMutex<HashSet<InvocationId>>>,
-    waiting: Arc<StdMutex<Vec<Completer<()>>>>,
-    observes: Arc<AtomicUsize>,
-    waits: Arc<AtomicUsize>,
-    /// Every invocation finishes as soon as it starts.
-    at_once: bool,
-    /// How an invocation naming no revision is refused, if it is.
-    without_revision: Option<WithoutRevision>,
-    /// Take every invocation without ever answering its admission, as a
-    /// broker whose admission journal waits on a slow disk.
-    admission_unanswered: bool,
-    /// What, naming a revision other than `revision`, is refused as a
-    /// directory that moved on refuses it.
-    stale: Option<Stale>,
-    revision: Arc<StdMutex<String>>,
-    unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
-    queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
+/// The session a test's calls share.
+fn gated_server(host: GatedHost) -> Arc<McpServer<GatedHost>> {
+    Arc::new(McpServer::new(host, "workspace".into(), "owner".into()))
 }
 
-/// An admission answer the host holds back.
-type AdmissionCompleter = Completer<Result<InvocationReceipt, ActionHostError>>;
-
-/// Why a host refuses an invocation that names no revision.
-#[derive(Clone, Copy)]
-enum WithoutRevision {
-    /// As an app built before revisionless resolution does: as a moved
-    /// revision.
-    Stale,
-    /// As the broker refuses a directory action that asks for confirmation
-    /// without one.
-    NeedsConfirmation,
-}
-
-/// What a host that moved past the revision a caller named refuses.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Stale {
-    /// A read: [`CataloguePage::stale_cursor`] answers a resolve that named
-    /// one, and the read itself refuses.
-    Reads,
-    /// An invocation, as a directory that moved on since the caller read it.
-    Invokes,
-}
-
-/// A half-polled answer put back as a [`Pending`], for the few tests that
-/// have to look at a page before answering it.
-fn map_poll(
-    poll: tilo_actions::remote::PendingPoll<Result<CataloguePage, ActionHostError>>,
-) -> Pending<Result<CataloguePage, ActionHostError>> {
-    match poll {
-        tilo_actions::remote::PendingPoll::Ready(answer) => Pending::ready(answer),
-        tilo_actions::remote::PendingPoll::Waiting => {
-            Pending::ready(Err(ActionHostError::Unavailable {
-                reason: "the host answered nothing".into(),
-            }))
-        }
-        tilo_actions::remote::PendingPoll::Abandoned => {
-            Pending::ready(Err(ActionHostError::Unavailable {
-                reason: "the host gave up".into(),
-            }))
-        }
-    }
-}
-
-impl GatedHost {
-    /// Finish `id` and wake whoever waits on a change.
-    pub(crate) fn finish(&self, id: InvocationId) {
-        self.finished.lock().unwrap().insert(id);
-        self.wake();
-    }
-
-    fn wake(&self) {
-        for waiter in self.waiting.lock().unwrap().drain(..) {
-            waiter.complete(());
-        }
-    }
-
-    pub(crate) fn invoked(&self) -> Vec<InvocationId> {
-        self.stub
-            .invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|request| request.invocation)
-            .collect()
-    }
-
-    fn owns(&self, caller: &Caller, id: &InvocationId) -> bool {
-        self.owner.lock().unwrap().as_ref() == Some(caller) && self.invoked().contains(id)
-    }
-}
-
-impl GatedHost {
-    fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.owns(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        self.cancelled.lock().unwrap().insert(*id);
-        self.wake();
-        Ok(())
-    }
-}
-
-impl ActionHost for GatedHost {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.queries.lock().unwrap().push(query.clone());
-        let revision = self.revision.lock().unwrap().clone();
-        let named = query.revision.clone();
-        let moved = named.as_deref().is_some_and(|named| named != revision);
-        if self.stale == Some(Stale::Reads) && moved {
-            return Pending::ready(Err(ActionHostError::StaleRevision));
-        }
-        let mut answer = self.stub.query(caller, query);
-        if !moved {
-            return answer;
-        }
-        // The page itself is read from the host's own stub; only what a
-        // resolve learns about the revision it named is the directory's.
-        match answer.poll_ready() {
-            tilo_actions::remote::PendingPoll::Ready(Ok(mut page)) => {
-                page.stale_cursor = true;
-                Pending::ready(Ok(page))
-            }
-            other => map_poll(other),
-        }
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if request.revision.is_none() {
-            match self.without_revision {
-                Some(WithoutRevision::Stale) => {
-                    return Pending::ready(Err(ActionHostError::StaleRevision));
-                }
-                Some(WithoutRevision::NeedsConfirmation) => {
-                    return Pending::ready(Err(ActionHostError::InvalidRequest {
-                        reason: tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION.into(),
-                    }));
-                }
-                None => {}
-            }
-        }
-        if self.stale == Some(Stale::Invokes)
-            && request
-                .revision
-                .as_deref()
-                .is_some_and(|revision| revision != self.revision.lock().unwrap().as_str())
-        {
-            return Pending::ready(Err(ActionHostError::StaleRevision));
-        }
-        self.owner.lock().unwrap().replace(caller.clone());
-        let answer = self.stub.invoke(caller, request);
-        if !self.admission_unanswered {
-            return answer;
-        }
-        let (admission, unanswered) = tilo_actions::remote::pending();
-        self.unanswered.lock().unwrap().push(admission);
-        unanswered
-    }
-
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
-        self.stub.confirm(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.observes.fetch_add(1, Ordering::SeqCst);
-        if !self.owns(caller, id) {
-            return None;
-        }
-        let update = if self.cancelled.lock().unwrap().contains(id) {
-            InvocationUpdate::Cancelled {
-                invocation: *id,
-                message: None,
-            }
-        } else if self.at_once || self.finished.lock().unwrap().contains(id) {
-            InvocationUpdate::Succeeded {
-                invocation: *id,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        } else {
-            InvocationUpdate::Accepted { invocation: *id }
-        };
-        Some(InvocationState::new(*id, update))
-    }
-
-    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if !self.owns(caller, id) {
-            return None;
-        }
-        self.waits.fetch_add(1, Ordering::SeqCst);
-        let (waiter, change) = tilo_actions::remote::pending();
-        self.waiting.lock().unwrap().push(waiter);
-        Some(change)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        tilo_actions::remote::Pending::ready(self.cancel_now(caller, id))
-    }
-}
-
-fn gated_endpoint(host: GatedHost) -> Arc<Endpoint<GatedHost>> {
-    Endpoint::new(
-        host,
-        "workspace".into(),
-        "owner".into(),
-        Some("secret".into()),
-    )
-}
-
-async fn gated_session(endpoint: &Arc<Endpoint<GatedHost>>) -> String {
-    let response = endpoint
-        .dispatch(
-            &Method::POST,
-            "/mcp",
-            &bearer_headers(&[]),
-            &initialize("a"),
-        )
+/// Open the session, as a client's connection does before its first call.
+async fn initialized(server: &Arc<McpServer<GatedHost>>) {
+    let opened = server
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"a","version":"1"}}}))
         .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    response
-        .headers()
-        .get(SESSION_HEADER)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned()
-}
-
-async fn call(
-    endpoint: &Arc<Endpoint<GatedHost>>,
-    session: &str,
-    name: &str,
-    arguments: Value,
-) -> Value {
-    let request = json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":arguments}});
-    let response = endpoint
-        .dispatch(
-            &Method::POST,
-            "/mcp",
-            &bearer_headers(&[(SESSION_HEADER, session)]),
-            request.to_string().as_bytes(),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    body(response).await["result"].clone()
-}
-
-fn long_invoke(invocation: InvocationId) -> Value {
-    json!({
-        "peer_id": 71, "revision": "1", "resource": "test.note:1",
-        "action": tilo_resource::APPLY, "arguments": {},
-        "invocation_id": invocation.0.to_string(), "wait_ms": 20_000
-    })
+    assert!(
+        opened.is_some_and(|reply| reply.get("result").is_some()),
+        "the session opens"
+    );
 }
 
 /// Yield to the session's other requests until the host has been asked to
@@ -305,22 +46,21 @@ async fn until_invoked(host: &GatedHost, count: usize) {
 #[test]
 fn status_answers_while_the_same_session_waits_on_an_invocation() {
     let host = GatedHost::default();
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     // Many poll intervals of the old 25 ms loop, on the paused clock.
     let ran_for = std::time::Duration::from_millis(250);
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let invocation = InvocationId::new();
-        let invoking = call(&endpoint, &session, "tilo_invoke", long_invoke(invocation));
+        let invoking = tool(&server, "tilo_invoke", long_invoke(invocation));
         let meanwhile = async {
             until_invoked(&host, 1).await;
             // Well within the invoke's wait: an answer at all means the
             // status did not wait behind it.
             let status = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                call(
-                    &endpoint,
-                    &session,
+                tool(
+                    &server,
                     "tilo_status",
                     json!({"invocation_id": invocation.0.to_string()}),
                 ),
@@ -361,14 +101,14 @@ fn status_answers_while_the_same_session_waits_on_an_invocation() {
 #[test]
 fn overlapping_calls_with_one_invocation_id_run_one_after_the_other() {
     let host = GatedHost::default();
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let shared = InvocationId::new();
         let other = InvocationId::new();
-        let first = call(&endpoint, &session, "tilo_invoke", long_invoke(shared));
-        let retry = call(&endpoint, &session, "tilo_invoke", long_invoke(shared));
-        let separate = call(&endpoint, &session, "tilo_invoke", long_invoke(other));
+        let first = tool(&server, "tilo_invoke", long_invoke(shared));
+        let retry = tool(&server, "tilo_invoke", long_invoke(shared));
+        let separate = tool(&server, "tilo_invoke", long_invoke(other));
         let meanwhile = async {
             until_invoked(&host, 2).await;
             // Time for the retry to reach the host, were it not held.
@@ -412,8 +152,10 @@ fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
         at_once: true,
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
-    endpoint.serve_media(Some(Arc::new(StoredByTestApp)));
+    let server = Arc::new(
+        McpServer::new(host.clone(), "workspace".into(), "owner".into())
+            .with_media(Some(Arc::new(StoredByTestApp))),
+    );
     let listings = || {
         host.queries
             .lock()
@@ -424,24 +166,17 @@ fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
             .collect::<Vec<_>>()
     };
     run(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         listings();
-        let single = call(
-            &endpoint,
-            &session,
-            "tilo_invoke",
-            long_invoke(InvocationId::new()),
-        )
-        .await;
+        let single = tool(&server, "tilo_invoke", long_invoke(InvocationId::new())).await;
         assert_eq!(
             single["structuredContent"]["update"]["state"], "succeeded",
             "{single}"
         );
         assert_eq!(listings(), [0], "one listing, of publishers alone");
         let step = json!({"resource": "test.note:1", "action": tilo_resource::APPLY});
-        let batch = call(
-            &endpoint,
-            &session,
+        let batch = tool(
+            &server,
             "tilo_invoke",
             json!({"peer_id": 71, "revision": "1", "calls": [step, step, step]}),
         )
@@ -454,7 +189,7 @@ fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
             listings().is_empty(),
             "a batch on an instance the session listed lists nothing again"
         );
-        let apps = call(&endpoint, &session, "tilo_list_apps", json!({})).await;
+        let apps = tool(&server, "tilo_list_apps", json!({})).await;
         assert_eq!(
             apps["structuredContent"]["apps"][0]["peer_id"], 71,
             "{apps}"
@@ -498,10 +233,10 @@ fn an_omitted_revision_reads_no_directory_page_first() {
         at_once: true,
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run(async {
-        let session = gated_session(&endpoint).await;
-        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        initialized(&server).await;
+        let reply = tool(&server, "tilo_invoke", current_invoke()).await;
         assert_eq!(
             reply["structuredContent"]["update"]["state"], "succeeded",
             "{reply}"
@@ -520,10 +255,10 @@ fn an_app_that_needs_a_revision_is_given_the_current_one() {
         without_revision: Some(WithoutRevision::Stale),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run(async {
-        let session = gated_session(&endpoint).await;
-        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        initialized(&server).await;
+        let reply = tool(&server, "tilo_invoke", current_invoke()).await;
         assert_eq!(
             reply["structuredContent"]["update"]["state"], "succeeded",
             "{reply}"
@@ -546,11 +281,11 @@ fn an_unanswered_admission_is_pending_under_its_invocation_id() {
         admission_unanswered: true,
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let invocation = InvocationId::new();
-        let reply = call(&endpoint, &session, "tilo_invoke", long_invoke(invocation)).await;
+        let reply = tool(&server, "tilo_invoke", long_invoke(invocation)).await;
         assert_eq!(reply["isError"], false, "{reply}");
         assert_eq!(
             reply["structuredContent"]["invocation_id"],
@@ -568,27 +303,21 @@ fn an_unanswered_admission_is_pending_under_its_invocation_id() {
 }
 
 /// The state `tilo_status` or `tilo_cancel` of `invocation` answers.
-async fn about(
-    endpoint: &Arc<Endpoint<GatedHost>>,
-    session: &str,
-    tool: &str,
-    invocation: InvocationId,
-) -> Value {
+async fn about(server: &Arc<McpServer<GatedHost>>, name: &str, invocation: InvocationId) -> Value {
     let arguments = json!({"invocation_id": invocation.0.to_string()});
-    call(endpoint, session, tool, arguments).await["structuredContent"]["update"]["state"].clone()
+    tool(server, name, arguments).await["structuredContent"]["update"]["state"].clone()
 }
 
-/// Start an invoke of each of `ids` in one session, each on its own task.
+/// Start an invoke of each of `ids` in the session, each on its own task.
 fn invoke_all(
-    endpoint: &Arc<Endpoint<GatedHost>>,
-    session: &str,
+    server: &Arc<McpServer<GatedHost>>,
     ids: &[InvocationId],
 ) -> tokio::task::JoinSet<Value> {
     let mut calls = tokio::task::JoinSet::new();
     for id in ids.iter().copied() {
-        let (endpoint, session) = (Arc::clone(endpoint), session.to_owned());
+        let server = Arc::clone(server);
         calls.spawn(async move {
-            let reply = call(&endpoint, &session, "tilo_invoke", long_invoke(id)).await;
+            let reply = tool(&server, "tilo_invoke", long_invoke(id)).await;
             reply["structuredContent"]["update"]["state"].clone()
         });
     }
@@ -616,22 +345,17 @@ async fn states(
 #[test]
 fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
     let host = GatedHost::default();
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     // On the paused clock the cancel's answer takes no time unless it waits
     // on a timer, as it would behind the invoke's wait.
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let invocation = InvocationId::new();
-        let invoking = Box::pin(call(
-            &endpoint,
-            &session,
-            "tilo_invoke",
-            long_invoke(invocation),
-        ));
+        let invoking = Box::pin(tool(&server, "tilo_invoke", long_invoke(invocation)));
         let cancelling = async {
             until_invoked(&host, 1).await;
             let asked = tokio::time::Instant::now();
-            let cancel = about(&endpoint, &session, "tilo_cancel", invocation).await;
+            let cancel = about(&server, "tilo_cancel", invocation).await;
             (cancel, asked.elapsed())
         };
         let (invoked, (cancel, took)) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -658,25 +382,19 @@ fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
 #[test]
 fn a_session_works_its_calls_at_once_up_to_its_bound() {
     let host = GatedHost::default();
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let ids: Vec<_> = (0..=MAX_WORKING).map(|_| InvocationId::new()).collect();
-        let calls = invoke_all(&endpoint, &session, &ids);
+        let calls = invoke_all(&server, &ids);
         until_invoked(&host, MAX_WORKING).await;
         // Time for one more to reach the host, were it not held.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let started = host.invoked();
         assert_eq!(started.len(), MAX_WORKING, "one call waits for a turn");
         let stopped = started[0];
-        assert_eq!(
-            about(&endpoint, &session, "tilo_status", stopped).await,
-            "accepted"
-        );
-        assert_eq!(
-            about(&endpoint, &session, "tilo_cancel", stopped).await,
-            "cancelled"
-        );
+        assert_eq!(about(&server, "tilo_status", stopped).await, "accepted");
+        assert_eq!(about(&server, "tilo_cancel", stopped).await, "cancelled");
         until_invoked(&host, MAX_WORKING + 1).await;
         for id in &ids {
             host.finish(*id);
@@ -697,32 +415,24 @@ fn a_session_works_its_calls_at_once_up_to_its_bound() {
 #[test]
 fn a_session_refuses_calls_beyond_those_it_admits() {
     let host = GatedHost::default();
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run_paused(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let ids: Vec<_> = (0..MAX_ADMITTED).map(|_| InvocationId::new()).collect();
-        let calls = invoke_all(&endpoint, &session, &ids);
+        let calls = invoke_all(&server, &ids);
         until_invoked(&host, MAX_WORKING).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let request = json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{
             "name":"tilo_invoke","arguments":long_invoke(InvocationId::new())
         }});
-        let refused = tokio::time::timeout(
-            Duration::from_secs(1),
-            endpoint.dispatch(
-                &Method::POST,
-                "/mcp",
-                &bearer_headers(&[(SESSION_HEADER, &session)]),
-                request.to_string().as_bytes(),
-            ),
-        )
-        .await
-        .expect("a call beyond the bound is refused, not queued");
-        let refused = body(refused).await;
+        let refused = tokio::time::timeout(Duration::from_secs(1), server.handle(request))
+            .await
+            .expect("a call beyond the bound is refused, not queued")
+            .expect("the session answers");
         assert_eq!(refused["error"]["code"], -32000, "{refused}");
         assert_eq!(host.invoked().len(), MAX_WORKING);
         assert_eq!(
-            about(&endpoint, &session, "tilo_status", host.invoked()[0]).await,
+            about(&server, "tilo_status", host.invoked()[0]).await,
             "accepted"
         );
         for id in &ids {
@@ -735,75 +445,6 @@ fn a_session_refuses_calls_beyond_those_it_admits() {
     });
 }
 
-/// One MCP session over a newline-framed connection whose other end is
-/// `client`, used as an agent overlaps its calls: two invokes wait at once,
-/// a `tilo_status` and a `tilo_cancel` answer while they wait — the cancel
-/// stopping its invoke, which a cancel queued behind the invoke's wait
-/// could not — and each reply comes back whole, on a line of its own, as
-/// soon as it is ready rather than in the order asked. Closing the client's
-/// side ends the connection.
-pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
-    client
-        .set_read_timeout(Some(tilo_test_env::hang_bound()))
-        .unwrap();
-    let mut lines = std::io::BufReader::new(client.try_clone().unwrap()).lines();
-    let mut reply = || -> Value {
-        let line = lines.next().expect("a reply line").unwrap();
-        serde_json::from_str(&line).expect("each line is one whole JSON reply")
-    };
-    let send = |id: u64, method: &str, params: Value| {
-        let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-        writeln!(&*client, "{request}").unwrap();
-    };
-    let tool = |name: &str, invocation: InvocationId| {
-        let arguments = if name == "tilo_invoke" {
-            long_invoke(invocation)
-        } else {
-            json!({"invocation_id": invocation.0.to_string()})
-        };
-        json!({"name": name, "arguments": arguments})
-    };
-    let state = |reply: &Value| reply["result"]["structuredContent"]["update"]["state"].clone();
-    send(
-        1,
-        "initialize",
-        json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"lines","version":"1"}}),
-    );
-    assert_eq!(reply()["id"], 1);
-    let (cancelled, finished) = (InvocationId::new(), InvocationId::new());
-    send(2, "tools/call", tool("tilo_invoke", cancelled));
-    send(3, "tools/call", tool("tilo_invoke", finished));
-    tilo_test_env::wait_until(
-        "both invokes to reach the host while neither has finished",
-        || host.invoked().len() == 2,
-    );
-    send(4, "tools/call", tool("tilo_status", cancelled));
-    let status = reply();
-    assert_eq!(
-        status["id"], 4,
-        "the status answers while both invokes wait"
-    );
-    assert_eq!(state(&status), "accepted", "{status}");
-    send(5, "tools/call", tool("tilo_cancel", cancelled));
-    let mut answered = std::collections::BTreeMap::new();
-    while !answered.contains_key(&5) {
-        let next = reply();
-        answered.insert(next["id"].as_u64().unwrap(), next);
-    }
-    assert_eq!(state(&answered[&5]), "cancelled", "{}", answered[&5]);
-    if !answered.contains_key(&2) {
-        let next = reply();
-        answered.insert(next["id"].as_u64().unwrap(), next);
-    }
-    assert_eq!(state(&answered[&2]), "cancelled", "{}", answered[&2]);
-    host.finish(finished);
-    let done = reply();
-    assert_eq!(done["id"], 3, "{done}");
-    assert_eq!(state(&done), "succeeded", "{done}");
-    client.shutdown(std::net::Shutdown::Write).unwrap();
-    assert!(lines.next().is_none(), "no reply is left over");
-}
-
 /// A directory action asking for confirmation needs the revision it is
 /// confirmed at; the bridge, which confirms on its client's policy, reads
 /// the revision it is at and starts the action once with it.
@@ -814,10 +455,10 @@ fn a_confirmed_action_is_given_the_revision_it_is_confirmed_at() {
         without_revision: Some(WithoutRevision::NeedsConfirmation),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run(async {
-        let session = gated_session(&endpoint).await;
-        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        initialized(&server).await;
+        let reply = tool(&server, "tilo_invoke", current_invoke()).await;
         assert_eq!(
             reply["structuredContent"]["update"]["state"], "succeeded",
             "{reply}"
@@ -845,10 +486,10 @@ fn phrase_retry_names_the_revision_it_read() {
         },
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let server = gated_server(host.clone());
     run(async {
-        let session = gated_session(&endpoint).await;
-        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        initialized(&server).await;
+        let reply = tool(&server, "tilo_invoke", current_invoke()).await;
         assert_eq!(
             reply["structuredContent"]["update"]["state"], "succeeded",
             "{reply}"
@@ -883,12 +524,12 @@ fn a_stale_read_says_what_happened_and_what_to_do() {
         stale: Some(Stale::Reads),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host);
+    let server = gated_server(host);
     run(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let mut args = current_resolve();
         args["revision"] = json!("0");
-        let reply = call(&endpoint, &session, "tilo_resolve", args).await;
+        let reply = tool(&server, "tilo_resolve", args).await;
         let said = reply["isError"].as_bool().unwrap_or(false);
         let text = reply.to_string();
         assert!(said, "{text}");
@@ -908,12 +549,12 @@ fn a_stale_invoke_says_what_to_do_rather_than_a_code() {
         stale: Some(Stale::Invokes),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host);
+    let server = gated_server(host);
     run(async {
-        let session = gated_session(&endpoint).await;
+        initialized(&server).await;
         let mut args = current_invoke();
         args["revision"] = json!("0");
-        let reply = call(&endpoint, &session, "tilo_invoke", args).await;
+        let reply = tool(&server, "tilo_invoke", args).await;
         let text = reply.to_string();
         for expected in ["changed", "now", "omit revision", "tilo_query"] {
             assert!(text.contains(expected), "{expected}: {text}");

@@ -107,20 +107,56 @@ fn assert_settles(app: &mut TestApp<TlApp>, within: ui::time::Duration, what: &s
     );
 }
 
-/// The test id of the first control whose accessible name contains `name`.
-fn named_control(harness: &FrameHarness, name: &str) -> Option<String> {
-    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-        let named = node
-            .semantics
+/// The test id of the first control whose accessible name contains `name`: a note by its title,
+/// which is content the person reads, never a control they look up to press.
+fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
+    let named = |node: &&ui::headless::InspectionNode| {
+        node.semantics
             .as_ref()
             .and_then(|access| access.name.as_deref())
-            .is_some_and(|shown| shown.contains(name));
-        if named && let Some(id) = &node.test_id {
-            return Some(id.clone());
-        }
-        node.children.iter().find_map(|child| find(child, name))
-    }
-    find(&harness.inspection().root, name)
+            .is_some_and(|shown| shown.contains(name))
+    };
+    (harness.inspection().root.nodes().into_iter())
+        .filter(named)
+        .find_map(|node| node.test_id.clone())
+}
+
+/// The test id of the first control that does `identity`: what the window says it does, wherever
+/// the window's composition draws it and whatever the person's language calls it.
+fn doing_control(harness: &FrameHarness, identity: &str) -> Option<String> {
+    let does = |node: &&ui::headless::InspectionNode| {
+        node.semantics
+            .as_ref()
+            .and_then(|access| access.action.as_deref())
+            == Some(identity)
+    };
+    (harness.inspection().root.nodes().into_iter())
+        .filter(does)
+        .find_map(|node| node.test_id.clone())
+}
+
+/// What the mail conversation's Reply button does: it answers the thread.
+fn answer() -> String {
+    doing("mail", "Thread", "answer")
+}
+
+/// What the app `app`'s action `action` on its records of `ty` is known by: the record kind the
+/// app publishes and the id its ids lock gives the declaration (`answer = a4rv5wm6`).
+fn doing(app: &str, ty: &str, action: &str) -> String {
+    let lock = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tl")
+        .join(app)
+        .join("app.ids");
+    let ids = std::fs::read_to_string(&lock).expect("the app's ids lock");
+    let Some((_, id)) = ids
+        .lines()
+        .filter_map(|line| line.split_once(" = "))
+        .find(|(declared, _)| *declared == action)
+    else {
+        panic!("{} declares no {action}", lock.display());
+    };
+    let id = id.trim().to_owned();
+    format!("tl.so.tilo.lang.{app}.{ty}\u{1f}{id}")
 }
 
 /// How long a push from rest takes to settle at the window's motion setting.
@@ -170,7 +206,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
         .expect("Back is shown");
     assert_settles(&mut app, motion, "back at the list");
     assert!(
-        named_control(app.harness(), "Reply").is_none(),
+        doing_control(app.harness(), &answer()).is_none(),
         "the list stands in front"
     );
     // A person opens a conversation, which stands in front of the list.
@@ -186,7 +222,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
     );
     assert_settles(&mut app, motion, "the opened conversation");
     assert!(
-        named_control(app.harness(), "Reply").is_some(),
+        doing_control(app.harness(), &answer()).is_some(),
         "the conversation stands in front of the list"
     );
     // And back once more, which settles too: the list stands in front again.
@@ -195,7 +231,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
         .expect("Back is shown");
     assert_settles(&mut app, motion, "back at the list");
     assert!(
-        named_control(app.harness(), "Reply").is_none(),
+        doing_control(app.harness(), &answer()).is_none(),
         "the list is back in front"
     );
 }
@@ -245,7 +281,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
     app.harness().present_in_window_bar();
     app.harness().relayout();
     assert!(
-        named_control(app.harness(), "Groceries").is_some(),
+        named_text(app.harness(), "Groceries").is_some(),
         "the tree is the window's first screen"
     );
     // The person opens a note of the tree, which comes forward in front of it.
@@ -255,7 +291,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
         .expect("the row opens what it names");
     app.harness().relayout();
     assert!(
-        named_control(app.harness(), "Groceries").is_none(),
+        named_text(app.harness(), "Groceries").is_none(),
         "the tree went behind the note its row opened"
     );
     app.harness()
@@ -263,7 +299,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
         .expect("the row holds Back");
     app.harness().relayout();
     assert!(
-        named_control(app.harness(), "Groceries").is_some(),
+        named_text(app.harness(), "Groceries").is_some(),
         "Back brought the tree back"
     );
 }
@@ -281,7 +317,7 @@ fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
         .expect("the row opens what it names");
     assert_settles(&mut app, motion, "the note the row opened");
     assert!(
-        named_control(app.harness(), "Groceries").is_none(),
+        named_text(app.harness(), "Groceries").is_none(),
         "the tree stands behind the note's page"
     );
     app.harness()
@@ -291,7 +327,7 @@ fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
     // never one that rested on what stood before it.
     app.frame();
     assert!(
-        named_control(app.harness(), "Groceries").is_some(),
+        named_text(app.harness(), "Groceries").is_some(),
         "the frame after the press shows the tree: {}",
         asking(app.harness())
     );
@@ -314,14 +350,32 @@ fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
     app.harness().key("ArrowDown");
     app.frame();
     assert!(
-        named_control(app.harness(), "Reply").is_none(),
+        doing_control(app.harness(), &answer()).is_none(),
         "moving through the list keeps it in front"
     );
     app.harness().key("Enter");
     app.frame();
     assert!(
-        named_control(app.harness(), "Reply").is_some(),
-        "Enter opens the conversation in front"
+        doing_control(app.harness(), &answer()).is_some(),
+        "Enter opens the conversation in front: {:?}",
+        {
+            fn actions(
+                node: &ui::headless::InspectionNode,
+                out: &mut Vec<(Option<String>, Option<String>)>,
+            ) {
+                if let Some(access) = &node.semantics {
+                    out.push((access.action.clone(), access.name.clone()));
+                }
+                for child in &node.children {
+                    actions(child, out);
+                }
+            }
+            let mut out = Vec::new();
+            actions(&app.harness().inspection().root, &mut out);
+            out.into_iter()
+                .filter(|(doing, _)| doing.is_some())
+                .collect::<Vec<_>>()
+        }
     );
     assert!(
         !app.harness().frame_schedule().needs_animation_frame,

@@ -53,6 +53,7 @@ mod catalogue;
 mod catch_up;
 mod content;
 mod feedback;
+mod found;
 mod keys;
 mod ledger;
 mod link;
@@ -160,6 +161,20 @@ enum Job {
         length: u64,
         done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
     },
+    /// A search of what a workspace holds.
+    Search {
+        workspace_id: u64,
+        caller: Caller,
+        needle: String,
+        done: Completer<Result<Vec<tilo_actions::remote::Found>, ActionHostError>>,
+    },
+    /// The changes to a workspace's records after a cursor.
+    Changes {
+        workspace_id: u64,
+        caller: Caller,
+        after: Option<String>,
+        done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
+    },
     /// An agent's run connected to a workspace and has asked nothing yet:
     /// it is present there, waiting ([`run_voice`]).
     Arrived { workspace_id: u64, caller: Caller },
@@ -180,6 +195,8 @@ impl Job {
             Self::Arrived { .. } => "arrived",
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
+            Self::Search { .. } => "search",
+            Self::Changes { .. } => "changes",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
         }
@@ -192,6 +209,8 @@ impl Job {
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }
+            | Self::Search { workspace_id, .. }
+            | Self::Changes { workspace_id, .. }
             | Self::Arrived { workspace_id, .. } => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
@@ -204,6 +223,8 @@ impl Job {
     fn keys(&self) -> Keys {
         match self {
             Self::Catalogue { query, .. } => catalogue_keys(query),
+            // Every record the workspace holds is searched and followed.
+            Self::Search { .. } | Self::Changes { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -393,6 +414,10 @@ impl WorkspaceActions {
 
     /// Answer one request `caller` sent to the host for `workspace_id`, or
     /// `None` for a message that is not a request.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one answer for each message of the wire's vocabulary, in its order"
+    )]
     pub fn serve(
         &self,
         workspace_id: u64,
@@ -456,6 +481,41 @@ impl WorkspaceActions {
                 offset,
                 length,
             } => self.content_get(workspace_id, caller, correlation, (content, offset, length)),
+            RemoteActionMessage::SearchRequest {
+                correlation,
+                needle,
+            } => {
+                let (done, answer) = pending();
+                let job = Job::Search {
+                    workspace_id,
+                    caller: caller.clone(),
+                    needle,
+                    done,
+                };
+                if let Err(Job::Search { done, .. }) = self.submit(job) {
+                    done.complete(Err(unavailable()));
+                }
+                answer.map(move |result| RemoteActionMessage::SearchResponse {
+                    correlation,
+                    result,
+                })
+            }
+            RemoteActionMessage::ChangesRequest { correlation, after } => {
+                let (done, answer) = pending();
+                let job = Job::Changes {
+                    workspace_id,
+                    caller: caller.clone(),
+                    after,
+                    done,
+                };
+                if let Err(Job::Changes { done, .. }) = self.submit(job) {
+                    done.complete(Err(unavailable()));
+                }
+                answer.map(move |result| RemoteActionMessage::ChangesResponse {
+                    correlation,
+                    result,
+                })
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -473,6 +533,8 @@ impl WorkspaceActions {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::SearchResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }
@@ -626,7 +688,9 @@ impl HostActions {
         let supervisor = match &message {
             RemoteActionMessage::FeedbackRequest { .. }
             | RemoteActionMessage::ContentPutRequest { .. }
-            | RemoteActionMessage::ContentGetRequest { .. } => false,
+            | RemoteActionMessage::ContentGetRequest { .. }
+            | RemoteActionMessage::SearchRequest { .. }
+            | RemoteActionMessage::ChangesRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -650,6 +714,8 @@ impl HostActions {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::SearchResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {
@@ -858,6 +924,8 @@ struct Workspace {
     records: Option<WorkspaceRecords>,
     /// What the host says for the runs it executes here ([`run_voice`]).
     runs: run_voice::Runs,
+    /// What changed in its records, for those following it ([`found`]).
+    changes: ui::history_source::feed::ChangeLog,
 }
 
 impl Workspace {
@@ -906,6 +974,7 @@ impl Workspace {
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
             records: None,
+            changes: ui::history_source::feed::ChangeLog::new(),
         })
     }
 
@@ -1565,6 +1634,18 @@ impl Worker {
                     workspace_id,
                     caller,
                 } => self.voice_arrived(workspace_id, &caller),
+                Job::Search {
+                    workspace_id,
+                    caller,
+                    needle,
+                    done,
+                } => done.complete(self.search(workspace_id, &caller, &needle)),
+                Job::Changes {
+                    workspace_id,
+                    caller,
+                    after,
+                    done,
+                } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
@@ -2297,7 +2378,7 @@ impl Worker {
 
     /// Show the record an application's `open` names (its own record when it names none) as a
     /// window on the workspace's shared desktop: what the device an agent acts through asks for
-    /// each record the agent makes or changes (`tilo mcp`, the front door), so every member sees
+    /// each record the agent makes or changes (`tilo mcp`, the API server), so every member sees
     /// it open as they see a colleague's window, without anyone's view moving to it
     /// ([`crate::desk`]). The window is the person's the caller acts for — the host's own, or a
     /// member of the workspace — and names the agent run that opened it. A record a window

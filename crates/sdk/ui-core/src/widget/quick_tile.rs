@@ -1,13 +1,11 @@
-//! [`QuickTile`] — a Quick Settings control. Its glyph, name and state line sit on a tile filled
-//! with the on colour while the control is on, and a press anywhere on it switches the control.
-//! The name takes one line and the state line up to two, broken after a word and elided only
-//! past that. A tile whose control has a section of its own (the networks under Wi-Fi) gives it a
-//! chevron half, set apart by a hairline, that turns as the section opens.
+//! [`QuickTile`] — a Quick Settings control: a glyph, a name and a state line on a tile filled
+//! with the on colour while the control is on, and a press anywhere switches it. A tile whose
+//! control has a section of its own (the networks under Wi-Fi) gives it a chevron half that
+//! turns as the section opens.
 //!
-//! The tile reports what the person did as a [`QuickTileOutcome`] ([`QuickTile::take_outcome`]);
-//! the host switches the control or opens its section and hands the new state back. In an app
-//! each target is bound to an action instead ([`QuickTile::on_switch`],
-//! [`QuickTile::on_details`]), the same one the palette, scripts and agents invoke.
+//! It reports what the person did as a [`QuickTileOutcome`], and the host switches the control
+//! or opens its section; in an app each target is bound to an action instead
+//! ([`QuickTile::on_switch`], [`QuickTile::on_details`]).
 //!
 //! ```ignore
 //! let mut tile = QuickTile::new("quick_settings_network", Icon::Wifi, "Wi-Fi")
@@ -39,7 +37,6 @@ use crate::tokens::TextRole;
 use crate::widget::primitives::QuickTileFace;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// The two targets of a tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickTilePart {
     /// The tile less its chevron: switches the control.
@@ -48,7 +45,6 @@ pub enum QuickTilePart {
     Details,
 }
 
-/// What the person did on a tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickTileOutcome {
     /// Switch the control on or off.
@@ -57,7 +53,6 @@ pub enum QuickTileOutcome {
     Details,
 }
 
-/// The sizes a tile is made of, from the theme it is drawn in.
 #[derive(Clone, Debug, PartialEq)]
 struct TileMetrics {
     inset: f64,
@@ -66,9 +61,7 @@ struct TileMetrics {
     trailing: f64,
     rule_inset: f64,
     details: f64,
-    /// The tallest a tile gets: the name and the state line on two lines.
     height: f64,
-    /// The tile's height while its state line holds one line.
     height_one: f64,
     label: TextStyle,
     detail: TextStyle,
@@ -80,10 +73,6 @@ impl TileMetrics {
         let metrics = &theme.tokens.metrics;
         let label = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
         let detail = theme.text(TextRole::Caption);
-        // The name on one line and the state line on up to two: a state
-        // read in words ("Not connected", a device's name) is the part of a
-        // tile that grows, and only a tile whose state does not fit its
-        // room grows for it.
         let name = f64::from(label.line_height_px());
         let line = f64::from(detail.line_height_px());
         let padding = 2.0 * f64::from(spacing.s2);
@@ -112,10 +101,9 @@ impl TileMetrics {
     }
 }
 
-/// Where a tile's name and state line stand in `rect`: the left edge of the
-/// text and the width it may run to, past the glyph on the left and the
-/// switch (and its chevron half, if it has one) on the right. The same room
-/// is measured before the tile is drawn and drawn in after.
+/// Where a tile's name and state line stand in `rect`: the left edge of the text and the width
+/// it may run to, past the glyph on the left and the switch (and its chevron half, if it has
+/// one) on the right.
 fn text_extent(rect: Rect, has_details: bool, metrics: &TileMetrics) -> (f64, f32) {
     let switch = if has_details {
         Rect::new(
@@ -132,9 +120,8 @@ fn text_extent(rect: Rect, has_details: bool, metrics: &TileMetrics) -> (f64, f3
     (x, width)
 }
 
-/// The state line in the room it has: whole on one line when it fits,
-/// else broken after the last word that does and the rest elided on a
-/// second. `(first, second)`, the second `None` while one line holds it.
+/// The state line in the room it has: whole on one line when it fits, else broken after the
+/// last word that does and the rest elided on a second.
 fn detail_lines(
     text: &mut TextRenderer,
     detail: &str,
@@ -173,7 +160,6 @@ pub struct QuickTile {
     detail: String,
     on: bool,
     enabled: bool,
-    /// The chevron half's accessible name, while the control has a section.
     details: Option<String>,
     /// How far the chevron has turned towards the open section, 0 to 1.
     turn: f64,
@@ -182,9 +168,7 @@ pub struct QuickTile {
     pressed: Option<QuickTilePart>,
     focused: Option<QuickTilePart>,
     outcome: Option<QuickTileOutcome>,
-    /// What a press on the tile invokes, when bound to an action.
     switch_action: Option<crate::widget::ActionEmitter<()>>,
-    /// What a press on the chevron invokes, when bound to an action.
     details_action: Option<crate::widget::ActionEmitter<()>>,
     metrics: Option<TileMetrics>,
     /// How much of the room the tile is offered it draws in: half while it
@@ -220,8 +204,6 @@ impl QuickTile {
         }
     }
 
-    /// The state line under the name: what is connected, what the control
-    /// is set to.
     #[must_use]
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
@@ -342,7 +324,6 @@ impl QuickTile {
         self.rect = rect;
     }
 
-    /// What the person did since the last call.
     pub fn take_outcome(&mut self) -> Option<QuickTileOutcome> {
         self.outcome.take()
     }
@@ -384,7 +365,6 @@ impl QuickTile {
         )
     }
 
-    /// The switch half and, with a section, the chevron half.
     #[must_use]
     pub fn parts(&self) -> (Rect, Option<Rect>) {
         if self.details.is_none() {
@@ -394,7 +374,6 @@ impl QuickTile {
         (switch, Some(details))
     }
 
-    /// The part at `point`, if it is on the tile.
     #[must_use]
     pub fn part_at(&self, point: Point) -> Option<QuickTilePart> {
         let (switch, details) = self.parts();
@@ -507,9 +486,6 @@ impl QuickTile {
         );
         let (text_x, width) = text_extent(self.rect, details.is_some(), metrics);
         let label = text.elide_to_width_style(&self.label, width, &metrics.label);
-        // A tile measured for one line keeps one: the state line is drawn on
-        // two only when the tile holds them, so a narrow tile elides as
-        // before rather than running past its own edge.
         let (detail, detail_second) = if self.rect.height() + 0.5 >= metrics.height_for(2) {
             detail_lines(text, &self.detail, width, &metrics.detail)
         } else {
@@ -663,8 +639,6 @@ impl Widget for QuickTile {
     ) -> NodeId {
         let metrics = TileMetrics::of(theme);
         self.metrics = Some(metrics);
-        // Two to a row, the tile claims its share of the row, so the layout
-        // knows the width it will draw in and the state line that takes.
         let width = if self.share >= 1.0 {
             taffy::Dimension::auto()
         } else {
@@ -676,8 +650,6 @@ impl Widget for QuickTile {
                 flex_shrink: 1.0,
                 size: taffy::Size {
                     width,
-                    // As tall as the state line it needs in the room it
-                    // draws in: measured, see [`Widget::measure`].
                     height: taffy::Dimension::auto(),
                 },
                 ..Default::default()
@@ -701,8 +673,6 @@ impl Widget for QuickTile {
             taffy::AvailableSpace::MinContent => 0.0,
             taffy::AvailableSpace::MaxContent => return taffy::Size::ZERO,
         });
-        // The width the layout settled on when it knows it (a share of the
-        // row resolves to pixels), else the share of what is offered.
         let width = known.width.unwrap_or(offered * self.share).max(0.0);
         let rect = Rect::new(0.0, 0.0, f64::from(width), metrics.height);
         let (_, room) = text_extent(rect, self.details.is_some(), metrics);

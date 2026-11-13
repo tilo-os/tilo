@@ -2,9 +2,9 @@ app so.tilo.lang.views "Views" (icon: .eye, category: .system, records: .own)
 
 use so.tilo.lang.chat as chat
 
-/// A view of the person's own: a tilolang `view` definition, written as an app declares one
-/// (`view open_threads(m: mail.Mail) { ... }`), kept as their code in their own record. They
-/// wrote it, their agent answered with it, or someone sent it to them. It names no app: every
+/// A view of the person's own: a view written in tilolang, as an app declares one, kept as their
+/// code in their own record. They wrote it, their agent answered with it, or someone sent it to
+/// them. It names no app: every
 /// app the workspace has installed is in scope by its name, checked when it is drawn, and it
 /// reads as the person reads, so it shows each person what they can see. Who wrote it, as the
 /// host recorded them, is its code author: what it does with an action asks the person first
@@ -15,13 +15,13 @@ type WrittenView {
     question: Text
     /// The view, as its author wrote it.
     definition: Text
-    /// Who wrote it, as the host recorded them: the agent task that answered with it, the
-    /// person, or who sent it to them. It cannot be claimed.
+    /// Who wrote it: the agent task that answered with it, the person, or who sent it to them.
+    /// It cannot be claimed.
     author: Principal
     /// Whether the person kept it. An answer they have not kept is still the agent's answer.
     kept: Bool = false
-    /// The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it:
-    /// what it can be the default view of. Empty for a view that stands alone.
+    /// The type of the one resource it takes (`mail.Thread`), so what it can be the default view
+    /// of. Empty for a view that stands alone.
     shows: Text
 
     search {
@@ -41,7 +41,7 @@ enum Device {
 
 /// How the person shows a type on one kind of device: through one of their own views.
 type Default {
-    /// The type, as the platform names it (`so.tilo.lang.mail.Thread`).
+    /// The type it shows, by its name in the app language (`mail.Thread`).
     shows: Text
     device: Device
     chosen: WrittenView
@@ -61,8 +61,8 @@ default view view_page for WrittenView
 
 row view view_row for WrittenView
 
-/// Keeps the view an agent answered with, written by the invoker, which the host records. It
-/// opens beside what the person pointed at; until they keep it, it is the agent's answer.
+/// Records the view an agent answered with, under the name of whoever asked. It opens beside what
+/// the person pointed at; until they keep it, it is the agent's answer.
 action answer(
     all: Views,
     title: Text,
@@ -124,7 +124,7 @@ action make_default(all: Views, v: WrittenView, device: Device = .desktop) (
     }
 }
 
-/// Adds the view a message sent to the person's own. Its author is who sent the message, as
+/// Adds the view a message sent to the person's own views. Its author is who sent the message, as
 /// the log recorded them, never who adds it: what it does asks first unless the person trusts
 /// that sender. It is a copy: a later change the sender makes to theirs does not reach it.
 action add(all: Views, m: chat.Message) -> WrittenView (icon: .plus, label: "Add to my views") {

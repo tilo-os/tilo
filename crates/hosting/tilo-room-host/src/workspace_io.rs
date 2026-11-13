@@ -176,6 +176,40 @@ fn apply_loaded_membership(
     runtime.loaded_generation = observed;
 }
 
+/// Enrol `cert`'s device as a member of `workspace`, where [`crate::workspace_access::decide`]
+/// answered [`crate::workspace_access::Decision::AdmitAndEnrol`], through whoever owns the
+/// workspace's membership: the governance of a workspace this relay governs records the device
+/// under its person, and its settle projects it here; any other workspace's membership file takes
+/// it ([`admit_member`]). The caller decides again afterwards: a device governance did not take
+/// is still no member.
+///
+/// # Errors
+///
+/// The store's error when the membership file cannot be read or written.
+pub(crate) async fn enrol(
+    workspace: &SharedWorkspace,
+    cert: &tilo_user_identity::DeviceCert,
+    expected_revision: u64,
+) -> Result<(), StoreError> {
+    let governed = {
+        let runtime = workspace.lock().await;
+        (runtime.admission == AdmissionMode::Governed).then(|| {
+            runtime.workspace_authority.as_ref().and_then(|authority| {
+                Some((authority.workspaces()?, authority.workspace().to_owned()))
+            })
+        })
+    };
+    match governed {
+        None => admit_member(workspace, cert.device_public_key, expected_revision).await,
+        Some(Some((workspaces, uuid))) => {
+            workspaces.enrol_member_device(cert, &uuid).await;
+            Ok(())
+        }
+        // Governed elsewhere: only that governance admits a device.
+        Some(None) => Ok(()),
+    }
+}
+
 /// Persist an explicitly authorized admission before granting it. The detached,
 /// bounded owner finishes a started update even if its caller disconnects.
 pub(crate) async fn admit_member(
@@ -286,6 +320,11 @@ pub(crate) async fn replace_governed_access(
         let _slot = slot;
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
+        // The governor's projection: from here on governance owns who joins.
+        let access = GovernedAccessRecord {
+            governed: true,
+            ..access
+        };
         let (narrowed, removed) = {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
@@ -510,7 +549,7 @@ pub async fn admit_for(
         Decision::Admit => Ok(Ok(())),
         Decision::Deny(reason) => Ok(Err(reason)),
         Decision::AdmitAndEnrol => {
-            admit_member(workspace, peer.device_public_key, revision).await?;
+            enrol(workspace, &peer.cert, revision).await?;
             let runtime = fresh_membership(workspace).await?;
             Ok(match decide(&runtime, trust, peer, operation) {
                 Decision::Admit => Ok(()),
@@ -531,6 +570,12 @@ mod tests {
     use crate::store::test_barrier;
 
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
+        // A workspace whose membership is kept: its access record, the one
+        // projection of who is a member.
+        WorkspaceStore::open(root, 7, false)
+            .unwrap()
+            .save_governed_access(&crate::store::GovernedAccessRecord::default())
+            .unwrap();
         Arc::new(tokio::sync::Mutex::new(
             WorkspaceRuntime::open(root, 7, false, Membership::default()).unwrap(),
         ))
@@ -630,7 +675,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -671,7 +719,7 @@ mod tests {
         store.save_membership(&[[1; 32], [2; 32]]).unwrap();
         // This external update has not yet reached the cached routing metadata.
         assert!(workspace.lock().await.membership.devices.is_empty());
-        let path = store.root().join("membership.json");
+        let path = store.root().join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -813,7 +861,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();

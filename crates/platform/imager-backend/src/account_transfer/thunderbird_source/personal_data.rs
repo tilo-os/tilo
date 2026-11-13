@@ -38,7 +38,7 @@ pub(super) fn stage(
         Sidecar::Calendar => ("so.tilo.calendar", "ics", "calendars"),
     };
     let root = target_home
-        .join(".local/share/tilo-rooms/personal")
+        .join(".local/share/tilo-workspaces/personal")
         .join(app)
         .join(".local/share")
         .join(app)
@@ -272,7 +272,7 @@ mod tests {
             .unwrap()
         );
         let staged = target.path().join(
-            ".local/share/tilo-rooms/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
+            ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
         );
         let text = std::fs::read_to_string(staged).unwrap();
         assert!(text.contains("BEGIN:VCARD"));
@@ -294,7 +294,7 @@ mod tests {
             .unwrap()
         );
         let staged = target.path().join(
-            ".local/share/tilo-rooms/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
+            ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
         );
         let text = std::fs::read_to_string(staged).unwrap();
         assert!(text.contains("BEGIN:VEVENT"));
@@ -340,7 +340,7 @@ mod tests {
             .unwrap()
         );
         let staged = target.path().join(
-            ".local/share/tilo-rooms/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
+            ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
         );
         let text = std::fs::read_to_string(staged).unwrap();
         assert!(text.contains("UID:person@example.test"));
@@ -371,7 +371,7 @@ mod tests {
             .unwrap()
         );
         let staged = target.path().join(
-            ".local/share/tilo-rooms/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
+            ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
         );
         let text = std::fs::read_to_string(staged).unwrap();
         assert!(text.contains("SUMMARY:Kept"));

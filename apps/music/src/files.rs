@@ -23,7 +23,6 @@ pub(crate) fn metadata(path: &Path) -> io::Result<Meta> {
     blocking::metadata(&dir, &name).map_err(io)
 }
 
-/// A non-empty regular file.
 pub(crate) fn is_nonempty_file(path: &Path) -> bool {
     metadata(path).is_ok_and(|meta| meta.kind == tilo_files::Kind::File && meta.len > 0)
 }
@@ -33,7 +32,6 @@ pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
     blocking::read(&dir, &name).map_err(io)
 }
 
-/// Replace the file atomically, creating its folders.
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let (dir, name) = at(path)?;
     blocking::write_atomic(&dir, &name, bytes).map_err(io)
@@ -72,7 +70,6 @@ fn common_root<'a>(a: &'a Path, b: &Path) -> Option<&'a Path> {
         .find(|ancestor| b.starts_with(ancestor))
 }
 
-/// A file a download grows.
 #[cfg(feature = "live")]
 pub(crate) struct Growing {
     dir: tilo_files::Dir,
@@ -81,7 +78,6 @@ pub(crate) struct Growing {
 
 #[cfg(feature = "live")]
 impl Growing {
-    /// Start `path` empty.
     pub(crate) fn create(path: &Path) -> io::Result<Self> {
         let (dir, name) = at(path)?;
         blocking::write_atomic(&dir, &name, &[]).map_err(io)?;

@@ -1,12 +1,6 @@
-//! The word processor's File commands: open, save, save as (which is also
-//! how a document is exported to Word, PDF and the other formats) and
-//! starting over from a template.
-//!
-//! The commands are the window bar's File menu (`widget::window_bar`). A
-//! template replaces the document, so on a document that has words the
-//! editor first asks, in this menu, whether to replace it; the menu adapts
-//! the shared [`ContextMenu`] into a typed [`FileChoice`] and the editor
-//! carries out the choice.
+//! The File commands: open, save, save as (also how a document is exported) and a new
+//! document from a template. A template replaces the document, so the menu asks first
+//! when it has words.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -21,37 +15,27 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use crate::Template;
 use crate::i18n::{arg, t, t_args};
 
-/// What the person chose from the File menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FileChoice {
     Open,
     Save,
     SaveAs,
-    /// Replace the document with this template (already confirmed when the
-    /// document had words).
     Template(Template),
 }
 
-/// What a row of the menu does when chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     Choose(FileChoice),
-    /// A template row on a document with words: asks before replacing.
     AskTemplate(Template),
-    /// Keep the document: closes the question.
     Cancel,
-    /// A separator or a caption: chooses nothing.
     Inert,
 }
 
-/// Owns the File menu's lifecycle, drawing, hit-testing and typed outcome.
 pub(crate) struct FileMenu {
     menu: ContextMenu,
     rows: Vec<Row>,
     text_scale: f32,
-    /// Where the menu was opened, so the replace question opens in its place.
     placed: Option<(Rect, Rect)>,
-    /// The template a pending replace question is about.
     asking: Option<Template>,
 }
 
@@ -70,8 +54,6 @@ impl Default for FileMenu {
 }
 
 impl FileMenu {
-    /// The File menu's rows: the file commands, then the templates. On a
-    /// document with words a template asks before it replaces anything.
     fn file_rows(guard: bool) -> Vec<(MenuItem, Row)> {
         let mut rows = vec![
             (
@@ -101,7 +83,6 @@ impl FileMenu {
         rows
     }
 
-    /// The question asked before `template` replaces a document with words.
     fn ask_rows(template: Template) -> Vec<(MenuItem, Row)> {
         vec![
             (
@@ -129,15 +110,11 @@ impl FileMenu {
         self.menu.is_open()
     }
 
-    /// Whether the menu is asking whether to replace the document.
     #[cfg(test)]
     pub(crate) fn is_asking(&self) -> bool {
         self.asking.is_some() && self.is_open()
     }
 
-    /// Open the menu under `anchor` (the File button), kept inside
-    /// `viewport`. `has_words` says the document has something a template
-    /// would replace.
     pub(crate) fn open_anchored(&mut self, anchor: Rect, viewport: Rect, has_words: bool) {
         let text_scale = self.text_scale;
         *self = Self::default();
@@ -147,9 +124,6 @@ impl FileMenu {
         self.menu.open_anchored(anchor, viewport);
     }
 
-    /// Open the question whether `template` should replace the document's
-    /// words, under `anchor` (the window bar's File menu chose it), kept
-    /// inside `viewport`.
     pub(crate) fn ask_anchored(&mut self, template: Template, anchor: Rect, viewport: Rect) {
         self.open_anchored(anchor, viewport, true);
         let row = self
@@ -169,13 +143,10 @@ impl FileMenu {
         self.menu.close();
     }
 
-    /// The shared menu owns pointer tracking and keyboard navigation.
     pub(crate) fn menu_mut(&mut self) -> &mut ContextMenu {
         &mut self.menu
     }
 
-    /// Carry out the row at `index`: a choice comes back, a template on a
-    /// document with words turns the menu into its question, Cancel closes.
     fn choose(&mut self, index: Option<usize>) -> Option<FileChoice> {
         match index.and_then(|index| self.rows.get(index).copied()) {
             Some(Row::Choose(choice)) => {
@@ -197,14 +168,11 @@ impl FileMenu {
         }
     }
 
-    /// The row chosen with the keyboard since the last call, carried out.
     pub(crate) fn take_selection(&mut self) -> Option<FileChoice> {
         let index = self.menu.take_selection()?;
         self.choose(Some(index))
     }
 
-    /// Consume a click while open. A click outside the menu dismisses it;
-    /// clicking a row carries it out (see [`Self::choose`]).
     pub(crate) fn click(&mut self, point: Point) -> Option<FileChoice> {
         let index = self.menu.item_at([point.x, point.y]);
         self.choose(index)
@@ -239,7 +207,6 @@ impl FileMenu {
             .collect()
     }
 
-    /// Where the row that chooses or asks about `template` is drawn.
     #[cfg(test)]
     pub(crate) fn item_center(&self, template: Template) -> Option<Point> {
         let index = self.rows.iter().position(|row| {
@@ -248,13 +215,11 @@ impl FileMenu {
         self.menu.item_rect(index).map(|rect| rect.center())
     }
 
-    /// The index of the row choosing `choice`.
     #[cfg(test)]
     pub(crate) fn choice_row(&self, choice: FileChoice) -> Option<usize> {
         self.rows.iter().position(|row| *row == Row::Choose(choice))
     }
 
-    /// Where the row choosing `choice` is drawn.
     #[cfg(test)]
     pub(crate) fn choice_center(&self, choice: FileChoice) -> Option<Point> {
         let index = self
@@ -264,13 +229,11 @@ impl FileMenu {
         self.menu.item_rect(index).map(|rect| rect.center())
     }
 
-    /// The index of the replace question's Cancel row.
     #[cfg(test)]
     pub(crate) fn cancel_row(&self) -> Option<usize> {
         self.rows.iter().position(|row| *row == Row::Cancel)
     }
 
-    /// Where the Cancel row of the replace question is drawn.
     #[cfg(test)]
     pub(crate) fn cancel_center(&self) -> Option<Point> {
         let index = self.rows.iter().position(|row| *row == Row::Cancel)?;
@@ -290,12 +253,8 @@ mod tests {
         );
     }
 
-    /// The menu offers the file commands and every template, a click returns
-    /// a typed choice and closes, a scaled menu keeps rows mapped, and an
-    /// outside click dismisses without a choice.
     #[test]
     fn the_file_menu_maps_rows_to_choices_at_every_scale() {
-        // Phase: rows_offer_the_file_commands_then_the_templates.
         {
             let mut menu = FileMenu::default();
             open(&mut menu, false);
@@ -308,7 +267,6 @@ mod tests {
             }
         }
 
-        // Phase: click_returns_a_typed_choice_and_closes.
         {
             let mut menu = FileMenu::default();
             open(&mut menu, false);
@@ -323,7 +281,6 @@ mod tests {
             assert_eq!(menu.click(save_as), Some(FileChoice::SaveAs));
         }
 
-        // Phase: scaled_menu_keeps_rows_mapped_to_their_choices.
         {
             let mut menu = FileMenu::default();
             menu.set_text_scale(2.0);
@@ -337,7 +294,6 @@ mod tests {
             );
         }
 
-        // Phase: outside_click_dismisses_without_a_choice.
         {
             let mut menu = FileMenu::default();
             open(&mut menu, false);
@@ -346,8 +302,6 @@ mod tests {
         }
     }
 
-    /// On a document with words, a template asks first: Replace chooses it,
-    /// Keep closes without a choice.
     #[test]
     fn a_template_asks_before_replacing_words() {
         let mut menu = FileMenu::default();

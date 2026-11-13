@@ -3,8 +3,6 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::component::{BoundValue, Fired, Value};
 
-/// The actions the test's message publishes: the ones a view binds rows to and the system
-/// offers beside them.
 fn message_actions(on: &str) -> tilo_actions::ResourceSpec {
     let mut published = tilo_actions::ResourceSpec::new(on, "test.message", "Message");
     for id in ["pin", "delete"] {
@@ -22,7 +20,6 @@ fn message_actions(on: &str) -> tilo_actions::ResourceSpec {
     published
 }
 
-/// The action `action` of the message `on`, as a view binds a row to it.
 fn bound(on: &str, action: &str) -> Event {
     Event::Action(
         tilo_actions::ActionBinding::unit_for(&message_actions(on), action)
@@ -30,8 +27,6 @@ fn bound(on: &str, action: &str) -> Event {
     )
 }
 
-/// A component instance as a test writes it: its kind, props, the events it gives and the
-/// components in its slots.
 struct Node {
     kind: &'static str,
     key: String,
@@ -58,7 +53,6 @@ impl Node {
         self
     }
 
-    /// The event `name`, running the action `action` on `on` when given.
     fn on(mut self, name: &'static str, runs: Option<(&'static str, &'static str)>) -> Self {
         self.events.push((name, runs));
         self
@@ -140,8 +134,6 @@ fn labels(parts: &[MenuPart]) -> Vec<String> {
         .collect()
 }
 
-/// A message's row as a view writes it: its own menu (an emoji bar, Reply, Pin), and the
-/// actions the system offers on the message (Pin, Delete).
 fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
     let menu = Node::new("ContextMenu", "menu", queue).slot(
         "items",
@@ -298,7 +290,6 @@ fn picking_from_the_menus_emoji_bar_reports_the_emoji() {
         menu.push(entry.item().clone());
     }
     menu.open_at([10.0, 10.0]);
-    // Arm the bar's second cell from the keyboard and pick it.
     menu.focus_item(0);
     crate::testing::dispatch(
         &mut menu,
@@ -344,8 +335,6 @@ fn a_run_of_grouped_commands_folds_into_one_row_that_opens_them() {
 fn a_command_the_view_runs_itself_is_not_added_again_by_its_name() {
     let queue = crate::Intents::default();
     let (_, offered) = message(&queue);
-    // A `.tl` view places its commands as its own events, which name no action address: the
-    // action offered under the same name is the one the view placed.
     let own = |label: &str| {
         MenuPart::Item(MenuItemProps {
             label: label.into(),

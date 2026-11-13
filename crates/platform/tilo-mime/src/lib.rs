@@ -1,22 +1,19 @@
 //! A file's MIME type by its extension.
 //!
-//! The mapping is `mime_guess`'s (`tools/mime-table.py` generates
-//! `table` from it), keeping each extension's first, most prevalent type.
-//! `mime_guess` holds it as a table of string slices: about 1400 entries of
-//! pointers that the loader relocates in every process mapping the shared
-//! runtime, before `main`, whether the process ever asks for a type. This
-//! table is integers into one string literal, which costs nothing until it
-//! is read.
+//! The mapping is `mime_guess`'s (`tools/mime-table.py` generates `table` from it),
+//! keeping each extension's first, most prevalent type. `mime_guess` holds it as
+//! about 1400 string slices the loader relocates in every process mapping the shared
+//! runtime, whether the process asks for a type or not; this table is integers into
+//! one string literal, which costs nothing until it is read.
 
 mod table;
 
 use std::path::Path;
 
-/// The type of content nothing more is known about.
 pub const OCTET_STREAM: &str = "application/octet-stream";
 
-/// The MIME type of files ending in `.extension` (without the dot; any
-/// case), or `None` for an extension with no known type.
+/// The MIME type of files ending in `.extension` (without the dot, any case),
+/// or `None` for an extension with no known type.
 #[must_use]
 pub fn from_ext(extension: &str) -> Option<&'static str> {
     let wanted = extension.as_bytes();
@@ -33,8 +30,8 @@ pub fn from_ext(extension: &str) -> Option<&'static str> {
     Some(string(start, len))
 }
 
-/// The MIME type of `path` by its extension, or `None` when it has none or
-/// one with no known type.
+/// The MIME type of `path` by its extension; `None` when it has none or one
+/// with no known type.
 #[must_use]
 pub fn from_path(path: impl AsRef<Path>) -> Option<&'static str> {
     from_ext(path.as_ref().extension()?.to_str()?)
@@ -45,7 +42,6 @@ pub fn from_path_or_octet_stream(path: impl AsRef<Path>) -> &'static str {
     from_path(path).unwrap_or(OCTET_STREAM)
 }
 
-/// The string at `start..start + len` of the table's strings.
 fn string(start: u16, len: u8) -> &'static str {
     let start = usize::from(start);
     table::STRINGS

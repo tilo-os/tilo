@@ -1,5 +1,5 @@
-//! Markdown typed as structure and links: a rule, the deeper headings, `[text](url)` and a
-//! typed web address.
+//! Markdown typed as structure and links: a rule, the deeper headings, `[text](url)` and a typed web
+//! address.
 
 use super::*;
 use crate::testing::Dispatch;
@@ -45,7 +45,6 @@ fn a_typed_rule_is_a_divider_and_typing_goes_on_below_it() {
     type_text(&mut editor, &mut doc, "Next");
     assert_eq!(editor.blocks().len(), 2);
     assert_eq!(editor.blocks()[1].text(), "Next");
-    // In prose, three dashes are three dashes.
     let prose = typed("a---");
     assert_eq!(prose.blocks()[0].kind, BlockKind::Paragraph);
     assert_eq!(prose.blocks()[0].text(), "a---");

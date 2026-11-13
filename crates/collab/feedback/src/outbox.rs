@@ -277,7 +277,7 @@ mod tests {
             .unwrap()
     }
     fn key() -> StorageKey {
-        StorageKey::package("so.tilo.feedback-outbox")
+        StorageKey::app("so.tilo.feedback-outbox")
     }
     fn commit(store: &MemoryStore, outcome: &Result<(), String>) {
         for write in store.drain() {

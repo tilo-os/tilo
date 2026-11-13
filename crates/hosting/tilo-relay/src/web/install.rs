@@ -578,7 +578,7 @@ mod tests {
             InstallListener::bind(&config, paths.clone(), &format!("{TOKEN}\n")).unwrap();
         let addr = listener.plain_addr.unwrap();
         let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
-        let node = tilo_user_identity::cloud_enrollment::host_capabilities;
+        let node = tilo_user_identity::DeviceCapabilities::host;
 
         let reply = request(addr, "POST", "/peer/v1/host", "", "").await;
         assert!(reply.starts_with("HTTP/1.1 503"), "{reply}");
@@ -663,11 +663,7 @@ mod tests {
         let listener = InstallListener::bind(&config(dir.path()), paths, TOKEN).unwrap();
         let addr = listener.plain_addr.unwrap();
         let waiting = tokio::spawn(listener.installed());
-        let good = cert(
-            &root,
-            own,
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
-        );
+        let good = cert(&root, own, tilo_user_identity::DeviceCapabilities::host());
         let token = format!("{INSTALL_TOKEN_HEADER}: {TOKEN}\r\n");
         let reply = request(addr, "POST", "/peer/v1/install", &token, &good).await;
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
@@ -733,7 +729,7 @@ mod tests {
             serde_json::from_str::<DeviceCert>(&cert(
                 root,
                 own,
-                tilo_user_identity::cloud_enrollment::host_capabilities(),
+                tilo_user_identity::DeviceCapabilities::host(),
             ))
             .unwrap()
         };

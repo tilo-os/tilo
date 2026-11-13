@@ -3,13 +3,6 @@
 //! — the collaborative state (the SQL buffer and the saved-connection list)
 //! lives in the document; here we hold the transient result of talking to a
 //! live server.
-//!
-//! Every blocking operation (connecting, introspecting, running SQL) is handed
-//! to the background [`crate::worker::DbWorker`] so it never stalls the UI
-//! thread. Requests are fire-and-forget; the replies are folded back in by
-//! [`drain`](Session::drain), which the widget calls each frame. A capture
-//! and the headless tests drive the identical worker synchronously via
-//! [`block_until_idle`](Session::block_until_idle).
 
 use std::collections::HashMap;
 
@@ -21,7 +14,6 @@ use crate::model::{
 };
 use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
-/// Which workspace tab the main panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MainTab {
     /// SQL editor + results table.
@@ -55,7 +47,6 @@ impl MainTab {
     }
 }
 
-/// Outcome banner shown under the editor / data grid.
 #[derive(Clone, Debug)]
 pub enum RunStatus {
     Idle,
@@ -71,7 +62,6 @@ pub enum RunStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryHistoryEntry {
     /// Stable local connection identity. History remains local, but this keeps
-    /// its resource hierarchy truthful after the user changes connections.
     pub connection_id: Uuid,
     pub generation: usize,
     pub sql: String,
@@ -83,11 +73,9 @@ const QUERY_HISTORY_LIMIT: usize = 20;
 /// Everything the app needs at runtime that is not collaborative.
 pub struct Session {
     /// Saved connection profiles shown in the sidebar: the workspace's
-    /// `root["connections"]` as last presented.
     pub connections: Vec<ConnectionProfile>,
     pub active: usize,
     /// Whether a live engine is currently open on the worker for the active
-    /// connection (reflected by the sidebar status dot).
     pub connected: bool,
     /// Introspected schema for the active connection.
     pub schema: DatabaseSchema,
@@ -133,9 +121,6 @@ impl Default for Session {
 
 impl Session {
     /// The live session: it starts empty (the saved connections are read from
-    /// the shared document by the widget and pushed in via
-    /// [`set_connections`](Self::set_connections)). No sample database, no
-    /// fabricated profiles, no live engine until the user connects.
     pub fn new() -> Self {
         Self {
             connections: Vec::new(),
@@ -162,17 +147,10 @@ impl Session {
         }
     }
 
-    /// Build a session with the bundled sample connection live and its schema
-    /// introspected, plus two disconnected example remotes so the connection
-    /// manager has something to show. Drives the real worker synchronously so
-    /// the widget is fully populated on its first paint: the layout tests'
-    /// fixture.
     #[cfg(test)]
     pub fn with_sample() -> Self {
         let mut s = Self::new();
 
-        // The bundled sample opens for real (SQLite in-memory) and its default
-        // query runs, all synchronously so one offscreen frame shows data.
         let sample = ConnectionProfile::sqlite_sample();
         s.connections.push(sample);
         s.active = 0;
@@ -181,8 +159,6 @@ impl Session {
         s.run_query(crate::sample::DEFAULT_QUERY);
         s.block_until_idle();
 
-        // Two example remotes, disconnected (no password, gated on a real
-        // server). They demonstrate the sidebar's multi-engine roster.
         let mut pg = ConnectionProfile::new("Production analytics", crate::model::Engine::Postgres);
         pg.host = "db.internal".into();
         pg.database = "analytics".into();
@@ -198,7 +174,6 @@ impl Session {
     }
 
     /// Fold every reply the worker has ready into the session, without
-    /// blocking. Call once per frame.
     pub fn drain(&mut self) {
         let replies = self.worker.drain();
         for reply in replies {
@@ -207,7 +182,6 @@ impl Session {
     }
 
     /// Block until every outstanding worker request has replied. Used by a
-    /// capture and the headless tests to await the real engine.
     pub fn block_until_idle(&mut self) {
         let replies = self.worker.block_until_idle();
         for reply in replies {
@@ -216,8 +190,6 @@ impl Session {
     }
 
     /// Whether the worker still has work in flight (drives the app's
-    /// `needs_animation_frame`, so results land without extra input).
-    /// What the status line says now, whichever kind of news it is.
     pub fn status_message(&self) -> &str {
         match &self.status {
             RunStatus::Idle => "",
@@ -383,7 +355,6 @@ impl Session {
     }
 
     /// Reflect the live-handle state on the active profile so the sidebar
-    /// status dot is honest about whether a socket is actually open.
     fn mark_connected(&mut self, connected: bool) {
         if let Some(p) = self.connections.get_mut(self.active) {
             p.connected = connected;
@@ -416,7 +387,6 @@ impl Session {
     }
 
     /// The active profile with its in-memory password refilled, ready to hand
-    /// to the worker.
     fn active_profile_with_password(&self) -> Option<ConnectionProfile> {
         let mut p = self.connections.get(self.active).cloned()?;
         if let Some(pw) = self.passwords.get(&p.id) {
@@ -427,7 +397,6 @@ impl Session {
     }
 
     /// Open (or reopen) the active connection on the worker. Non-blocking: the
-    /// `Connected`/`ConnectFailed` reply is folded in by [`drain`](Self::drain).
     pub fn connect_active(&mut self) {
         let Some(profile) = self.active_profile_with_password() else {
             self.connected = false;
@@ -445,7 +414,6 @@ impl Session {
     }
 
     /// Make the connection called `name` the active one and leave it
-    /// unopened, as a connect that failed with `message` does.
     pub fn fail_connecting(&mut self, name: &str, message: &str) {
         if let Some(index) = self.connections.iter().position(|c| c.name == name) {
             self.active = index;
@@ -461,12 +429,7 @@ impl Session {
     }
 
     /// Reconcile the connection list from the shared document. Preserves which
-    /// profile is active (by id), keeps the session's passwords, and resets the
-    /// view when the active connection has been removed. Returns the id of a
-    /// connection that is present now but was not before (so the caller can
-    /// decide whether to auto-connect a freshly-added one).
     pub fn set_connections(&mut self, mut incoming: Vec<ConnectionProfile>) {
-        // Refill passwords the session already knows.
         for p in &mut incoming {
             if let Some(pw) = self.passwords.get(&p.id) {
                 p.password = pw.clone();
@@ -481,13 +444,11 @@ impl Session {
         self.passwords
             .retain(|id, _| incoming.iter().any(|profile| profile.id == *id));
         self.connections = incoming;
-        // Keep the same connection active if it still exists.
         if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id))
         {
             self.active = pos;
         } else {
             self.active = 0;
-            // The active connection vanished: drop its stale view state.
             self.connected = false;
             self.query_result = None;
             self.data_result = None;
@@ -510,13 +471,11 @@ impl Session {
     }
 
     /// The active connection profile, or `None` when there are no saved
-    /// connections yet (a fresh live session).
     pub fn active_connection(&self) -> Option<&ConnectionProfile> {
         self.connections.get(self.active)
     }
 
     /// Stable identity of the active profile, used to reject replies produced
-    /// for a connection that has since been removed or deselected.
     pub fn active_connection_id(&self) -> Option<Uuid> {
         self.active_connection().map(|profile| profile.id)
     }
@@ -526,10 +485,7 @@ impl Session {
         self.schema.find_relation(&relation.schema, &relation.name)
     }
 
-    // ---- query + browse -------------------------------------------------
-
     /// Run the SQL in the editor against the active engine (non-blocking). The
-    /// result is folded in by [`drain`](Self::drain).
     pub fn run_query(&mut self, sql: &str) {
         if self.active_connection().is_none() {
             self.status = RunStatus::Error(t("db-no-connection"));
@@ -641,10 +597,8 @@ mod tests {
     use super::*;
     use crate::model::Engine;
 
-    /// Sessions start empty, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
     fn session_opens_connections_and_loads_tables_honestly() {
-        // --- phase: session_seeds_sample_and_runs_default_query ---
         {
             let s = Session::with_sample();
             assert!(s.connected, "the sample engine connected");
@@ -654,7 +608,6 @@ mod tests {
             assert!(!r.rows.is_empty());
         }
 
-        // --- phase: selecting_table_loads_its_data ---
         {
             let mut s = Session::with_sample();
             s.select_table("tracks");
@@ -664,7 +617,6 @@ mod tests {
             assert!(!d.columns.is_empty());
         }
 
-        // --- phase: remote_connection_to_unreachable_server_errors_honestly ---
         {
             // A real Postgres connect to a closed port fails through the driver on
             // the worker: no live engine, no fabricated schema, and an honest error
@@ -692,10 +644,7 @@ mod tests {
             }
         }
 
-        // --- phase: live_session_starts_empty ---
         {
-            // A fresh live session fabricates nothing: no sample database, no
-            // connection profiles, no live engine.
             let s = Session::new();
             assert!(
                 s.connections.is_empty(),
@@ -707,7 +656,6 @@ mod tests {
             assert_eq!(s.schema.table_count(), 0, "no fabricated schema");
         }
 
-        // --- phase: added_sqlite_connection_opens_for_real ---
         {
             let dir = std::env::temp_dir().join(format!("db-client-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
@@ -723,10 +671,8 @@ mod tests {
         }
     }
 
-    /// Setting connections preserves the active id and passwords are refilled but kept out of the profiles list.
     #[test]
     fn session_profiles_keep_active_id_and_secrets_out() {
-        // --- phase: set_connections_preserves_the_active_id ---
         {
             let mut s = Session::new();
             let a = ConnectionProfile::new("A", Engine::Postgres);
@@ -735,31 +681,25 @@ mod tests {
             s.active = 1; // B is active
             s.set_connections(vec![b.clone(), a.clone()]);
             assert_eq!(s.active_connection().unwrap().id, b.id);
-            // Removing the active one resets to the first + clears view state.
             s.set_connections(vec![a.clone()]);
             assert_eq!(s.active_connection().unwrap().id, a.id);
             assert!(!s.connected);
         }
 
-        // --- phase: passwords_are_refilled_but_kept_out_of_profiles_list ---
         {
             let mut s = Session::new();
             let p = ConnectionProfile::new("A", Engine::Postgres);
             s.remember_password(p.id, "secret".into());
-            // set_connections refills the password onto the in-memory profile...
             s.set_connections(vec![p]);
             assert_eq!(s.connections[0].password, "secret");
-            // ...but a profile with no remembered password stays empty.
             let q = ConnectionProfile::new("B", Engine::MySql);
             s.set_connections(vec![q]);
             assert!(s.connections[0].password.is_empty());
         }
     }
 
-    /// Stale, cancelled and exhausted query generations and stale table pages are refused, and `SQLite` cancellation releases the worker.
     #[test]
     fn query_generations_fence_stale_and_cancelled_replies() {
-        // --- phase: stale_query_reply_is_ignored_after_switching_connections ---
         {
             let mut s = Session::new();
             let a = ConnectionProfile::new("A", Engine::Sqlite);
@@ -781,7 +721,6 @@ mod tests {
             assert_eq!(s.query_gen, 0);
         }
 
-        // --- phase: cancelled_reply_cannot_clear_a_newer_query_generation ---
         {
             let mut s = Session::new();
             let profile = ConnectionProfile::new("A", Engine::Sqlite);
@@ -800,7 +739,6 @@ mod tests {
             assert!(matches!(s.status, RunStatus::Busy(_)));
         }
 
-        // --- phase: exhausted_query_generation_refuses_without_reusing_authority ---
         {
             let mut s = Session::new();
             s.set_connections(vec![ConnectionProfile::new("A", Engine::Sqlite)]);
@@ -816,7 +754,6 @@ mod tests {
             ));
         }
 
-        // --- phase: sqlite_cancellation_interrupts_the_worker_and_releases_busy_state ---
         {
             let mut s = Session::with_sample();
             s.run_query(
@@ -835,7 +772,6 @@ mod tests {
             );
         }
 
-        // --- phase: stale_table_page_is_ignored_after_selection_changes ---
         {
             let mut s = Session::with_sample();
             let id = s.active_connection_id().unwrap();

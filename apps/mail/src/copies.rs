@@ -1,20 +1,10 @@
 //! The mail the person's devices hold for one another.
 //!
-//! A message a device fetched from its server is kept, as the server sent
-//! it, as content of the copies record ([`MailCopies`]): the person's own
-//! record of Mail's in the workspace it is open in, which syncs to their
-//! devices and no other member's. The record
-//! names each message and where its server holds it; the bytes travel on
-//! the record's own route, sealed, from whichever of the person's devices
-//! keeps them, and open with the reference the record names.
-//!
-//! Another of the person's devices that lacks a message the record names
-//! takes it from there, newest first, without asking any server: a device
-//! whose server cannot be reached still shows the mail its other devices
-//! fetched, and once its server answers again it is asked only for what is
-//! newer than what it holds. The server stays the authority over its
-//! messages: one it reports removed is dropped from the record by
-//! whichever device hears so.
+//! A message a device fetched is kept, as the server sent it, as content of the copies record
+//! ([`MailCopies`]): the person's own record in the workspace, which syncs to their devices and
+//! no other member's. A device that lacks a message the record names takes it from there,
+//! newest first, without asking any server; the server stays the authority over its messages,
+//! and one it reports removed is dropped from the record.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -128,7 +118,7 @@ pub struct NewCopy {
     pub uid_validity: u32,
 }
 
-#[ui::tilo_resource::resource(kind = "mail.copies", label = "Mail on your devices", params = kept)]
+#[ui::tilo_resource::resource(kind = "mail.copies", params = kept)]
 impl MailCopies {
     /// Keep fetched mail
     ///

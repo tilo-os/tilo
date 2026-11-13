@@ -1,23 +1,7 @@
-//! The `@` picker every rich-text field offers: typing `@` and a few letters
-//! lists the workspace's people and agents under the caret, narrowed as the name
-//! is typed, and picking one puts a mention of them in the text — one marked
-//! run naming their participant id ([`Mark::Mention`](super::Mark::Mention)),
-//! not prose that happens to start with `@`.
-//!
-//! Who is offered is the workspace's roster ([`PresenceCtx::roster`]), the same
-//! participants and names every app's presence shows; an owner can add
-//! participants its record knows of that the roster does not (someone who
-//! wrote in a channel and has since left). What was typed stays in the text
-//! while the list is open, so a person who keeps typing past the list, or
-//! never picks, has written ordinary text.
-//!
-//! - **Arrow Up / Down** move the armed row; **Enter** or **Tab** picks it.
-//! - **Escape** closes the list for this `@`; typing on keeps it closed
-//!   until another `@` starts.
-//! - A click on a row picks it; hovering arms it.
-//!
-//! The list is a [`SuggestionList`] anchored at the `@`, painted in the
-//! window's top layer.
+//! The `@` picker every rich-text field offers: typing `@` and a few letters lists the
+//! workspace's people and agents under the caret, narrowed as the name is typed, and
+//! picking one puts a mention of them in the text — one marked run naming their participant
+//! id ([`Mark::Mention`](super::Mark::Mention)), not prose that happens to start with `@`.
 
 use crate::i18n::widget_text;
 use tilo_sort::CompactSort as _;
@@ -37,15 +21,10 @@ use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
 /// Someone a field can mention: a participant of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionCandidate {
-    /// Their participant id: what the mention records.
     pub id: String,
-    /// What the workspace calls them; the mention reads `@name`.
     pub name: String,
     pub kind: ParticipantKind,
-    /// The presence hue they wear in the workspace: the one their member list announced, else the
-    /// one their identity derives.
     pub hue: PresenceHue,
-    /// This session's own participant.
     pub is_self: bool,
 }
 
@@ -76,9 +55,6 @@ impl MentionCandidate {
 }
 
 impl MentionCandidate {
-    /// `user` of `presence`'s roster, named as every surface names them
-    /// ([`PresenceCtx::participant_label`]). Software keeps its own name:
-    /// its kind is shown beside it, not in the mention.
     fn of(presence: &PresenceCtx, user: PresenceUser) -> Self {
         let hue = presence.hue_for(&UserId(user.id.clone()));
         let id = UserId(user.id);
@@ -106,9 +82,7 @@ impl MentionCandidate {
 /// The `@`-run the caret sits in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionQuery {
-    /// Byte offset of the `@`.
     pub start: usize,
-    /// What was typed after the `@`, up to the caret.
     pub query: String,
 }
 
@@ -145,11 +119,9 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     })
 }
 
-/// The candidates worth offering for `query`, best first, ranked as every
-/// list search ranks ([`crate::search::ranked_rows`]): a prefix of the
-/// whole name, then of a later word ("lov" finds "Ada Lovelace"), then the
-/// participant id. Within a rank the given order holds, so the list does
-/// not reshuffle while a name is typed. An empty query offers everyone.
+/// The candidates worth offering for `query`, best first, ranked as every list search ranks
+/// ([`crate::search::ranked_rows`]): a prefix of the whole name, then of a later word
+/// ("lov" finds "Ada Lovelace"), then the participant id.
 #[must_use]
 pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a MentionCandidate> {
     let index = crate::search::ListIndex::default();
@@ -168,8 +140,8 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
     .collect()
 }
 
-/// The roster `presence` names merged with what an owner adds: one entry
-/// per participant id, the roster's answer winning, sorted by name.
+/// The roster `presence` names merged with what an owner adds: one entry per participant
+/// id, the roster's answer winning, sorted by name.
 #[must_use]
 pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<MentionCandidate> {
     let mut out: Vec<MentionCandidate> = presence
@@ -182,17 +154,12 @@ pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<
             continue;
         }
         let known = out.iter().any(|known| {
-            known.id == candidate.id
-                // The workspace may spell this session's own participant
-                // differently from the id an owner recorded.
-                || (known.is_self && presence.is_own_identity(&candidate.id))
+            known.id == candidate.id || (known.is_self && presence.is_own_identity(&candidate.id))
         });
         if !known {
             out.push(candidate.clone());
         }
     }
-    // By name, as a person scans a list of people; the id keeps two of one
-    // name in a stable order.
     out.compact_sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -205,11 +172,8 @@ pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<
 /// What a key did to an open picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PickerKey {
-    /// Not the picker's: route it on.
     Pass,
-    /// Moved the armed row or closed the list.
     Handled,
-    /// Picked this candidate, replacing the typed run.
     Pick(MentionCandidate),
 }
 
@@ -218,12 +182,8 @@ pub(crate) enum PickerKey {
 pub(crate) struct MentionPicker {
     list: SuggestionList,
     shown: Vec<MentionCandidate>,
-    /// The block and byte of the `@` the list answers.
     open: Option<(usize, usize)>,
-    /// Bytes from the `@` to the caret: what a pick replaces.
     typed: usize,
-    /// The `@` the person closed the list on: it stays closed while they
-    /// type on after it.
     dismissed: Option<(usize, usize)>,
 }
 
@@ -323,8 +283,8 @@ impl MentionPicker {
         }
     }
 
-    /// Whether a key release or repeat of an arrow, Enter, Tab or Escape
-    /// belongs to the open list (so the field does not act on it too).
+    /// Whether a key release or repeat of an arrow, Enter, Tab or Escape belongs to the
+    /// open list (so the field does not act on it too).
     pub(crate) fn owns_key(&self, event: &WindowEvent) -> bool {
         self.is_open()
             && matches!(
@@ -388,8 +348,8 @@ impl MentionPicker {
         self.is_open().then(|| self.list.rect()).flatten()
     }
 
-    /// Paint the list under `caret` (the `@`'s caret rect), inside
-    /// `viewport` when the window's is known.
+    /// Paint the list under `caret` (the `@`'s caret rect), inside `viewport` when the
+    /// window's is known.
     pub(crate) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -431,8 +391,8 @@ pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
     suggestion_with_value(candidate, candidate.id.clone())
 }
 
-/// A participant as a completion offers them: their avatar and name; a pick
-/// writes `@name` and, in rich text, a mention of their participant id.
+/// A participant as a completion offers them: their avatar and name; a pick writes `@name`
+/// and, in rich text, a mention of their participant id.
 pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completion::Candidate {
     let row = suggestion_with_value(candidate, candidate.label());
     let mut out =
@@ -494,7 +454,6 @@ mod tests {
     fn a_candidate_wears_the_hue_the_member_list_announced() {
         let mut presence = PresenceCtx::empty();
         presence.set_display_name(UserId("u_ada".into()), "Ada");
-        // Ada's own colour, chosen in her settings: the violet, nothing her id derives.
         presence.set_presence_hue(UserId("u_ada".into()), PresenceHue::Violet);
         let announced = presence.hue_of("u_ada");
         assert_ne!(
@@ -512,7 +471,6 @@ mod tests {
 
     #[test]
     fn an_at_opening_a_word_starts_a_query_and_one_inside_a_word_does_not() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         assert_eq!(
             query_at_caret("hi @ad", 6),
@@ -527,7 +485,6 @@ mod tests {
 
     #[test]
     fn ranking_prefers_a_whole_name_prefix_then_a_word_prefix() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let workspace = workspace();
         let names: Vec<_> = rank(&workspace, "t")
@@ -541,7 +498,6 @@ mod tests {
 
     #[test]
     fn the_picker_follows_the_caret_and_stays_closed_after_escape() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let workspace = workspace();
         let mut picker = MentionPicker::default();

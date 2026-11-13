@@ -128,7 +128,6 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     let cwd = share.display().to_string();
     let wall = Instant::now();
 
-    // phase: the first command boots the VM, sees the share and writes to it
     let (link, booted) = service.ensure(&request, &shares).unwrap();
     let booted = booted.expect("the first command boots the VM");
     eprintln!("cold boot to agent: {booted} ms");
@@ -145,11 +144,9 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
         "built\n"
     );
 
-    // phase: the next command finds it awake
     let (_, again) = service.ensure(&request, &shares).unwrap();
     assert_eq!(again, None, "an awake VM is not woken again");
 
-    // phase: idle, it is snapshotted and its process ends
     let slept_after = wait_for_phase(&service, "Suspended", Duration::from_secs(60));
     let first_run_wall = wall.elapsed();
     eprintln!("suspended {slept_after:?} after the last command");
@@ -161,7 +158,6 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
         "the snapshot holds what the guest touched, not its RAM"
     );
 
-    // phase: the host changes a file while the VM sleeps; the next command restores it and sees the change
     std::fs::write(share.join("in.txt"), "changed while asleep\n").unwrap();
     let (link, restored) = service.ensure(&request, &shares).unwrap();
     let restored = restored.expect("a command restores the sleeping VM");
@@ -170,7 +166,6 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     assert_eq!(code, 0);
     assert_eq!(out, "changed while asleep\nbuilt\n");
 
-    // phase: a second idle suspend merges only what changed
     wait_for_phase(&service, "Suspended", Duration::from_secs(60));
     let (link, restored_again) = service.ensure(&request, &shares).unwrap();
     eprintln!(
@@ -179,11 +174,9 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     );
     assert_eq!(run(&link, "cat out.txt", &cwd).1, "built\n");
 
-    // phase: stopping ends the run and drops the snapshot
     service.stop("ws1", "default").unwrap();
     let total_wall = wall.elapsed();
 
-    // phase: every run and the held snapshot are in the account's ledger
     let records = config.ledger().records("acct-1").unwrap();
     for record in &records {
         eprintln!(
@@ -261,7 +254,6 @@ fn a_host_taken_back_saves_its_vm_and_the_next_host_restores_it() {
         out.trim().parse().unwrap()
     };
 
-    // phase: a running VM with something only its memory holds
     let first = Service::open(config(scratch.path(), "run-a"), system_clock()).unwrap();
     let (link, booted) = first.ensure(&request, &shares).unwrap();
     assert!(booted.is_some(), "the first command boots the VM");
@@ -269,7 +261,6 @@ fn a_host_taken_back_saves_its_vm_and_the_next_host_restores_it() {
     assert_eq!(code, 0, "stderr: {err}");
     let before = uptime(&link);
 
-    // phase: the notice comes; every VM is saved within it, and nothing more wakes
     let saving = Instant::now();
     first.evict();
     let saved_in = saving.elapsed();
@@ -289,7 +280,6 @@ fn a_host_taken_back_saves_its_vm_and_the_next_host_restores_it() {
     );
     drop(first);
 
-    // phase: another host, the same state: the next command restores the VM as it was
     let next = Service::open(config(scratch.path(), "run-b"), system_clock()).unwrap();
     let (link, restored) = next.ensure(&request, &shares).unwrap();
     eprintln!(

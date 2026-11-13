@@ -33,7 +33,6 @@ pub trait MessagingHost: HistoryHost {
     fn groups(&self, _account: &crate::ServiceAccount) -> Option<crate::GroupClient> {
         None
     }
-    /// An exact account's private native setup capability, if installed.
     fn setup(&self, _account: &crate::ServiceAccount) -> Option<crate::SetupClient> {
         None
     }

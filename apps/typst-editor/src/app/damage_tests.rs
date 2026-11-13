@@ -23,7 +23,6 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const WINDOW_PX: f64 = 1280.0 * 800.0;
 
-/// One frame's budget at 60 Hz, in milliseconds.
 const FRAME_BUDGET_MS: f64 = 16.667;
 
 /// The window, in logical pixels at 100 %.
@@ -54,7 +53,6 @@ struct Host {
 struct Frame {
     cpu_ms: f64,
     copied: bool,
-    /// The pixels repainted, or `None` for a frame repainted whole.
     repainted: Option<f64>,
     damage: Vec<Rect>,
 }
@@ -62,8 +60,6 @@ struct Frame {
 const GROUND: vello::peniko::Color = vello::peniko::Color::BLACK;
 
 impl Host {
-    /// A host that presents on the GPU the toolkit renders with, or one that
-    /// only counts the damage.
     fn new(presenting: bool) -> Self {
         let renderer = || {
             presenting.then(|| {
@@ -100,7 +96,6 @@ impl Host {
         )
     }
 
-    /// Present the frame drawn; its copies and damage when it had them.
     fn present(&mut self) -> Option<(bool, Vec<Rect>)> {
         let frame = self.damage.take_copying();
         if let Some(presented) = self.presented.as_mut() {
@@ -121,7 +116,6 @@ impl Host {
         frame.map(|(copies, rects)| (!copies.is_empty(), rects))
     }
 
-    /// An input and the frame it brings.
     fn input(&mut self, app: &mut ui::App, event: &ui::winit::event::WindowEvent) -> Frame {
         let before = ui::rt::thread_cpu_time();
         app.surface_input(&Window, event.clone(), false);
@@ -131,8 +125,6 @@ impl Host {
         frame
     }
 
-    /// The presented pixels that differ from a full render of the last
-    /// frame beyond anti-aliasing.
     fn differing(&mut self) -> usize {
         let (Some(presented), Some(full)) = (self.presented.as_mut(), self.full.as_mut()) else {
             return 0;
@@ -174,7 +166,6 @@ fn covered(rects: &[Rect]) -> f64 {
     cells.iter().filter(|cell| **cell).count() as f64
 }
 
-/// The editor in the window `app` drives.
 fn typst<T>(app: &mut ui::App, visit: impl FnOnce(&mut TypstApp) -> T) -> T {
     fn find(widget: &mut dyn ui::widget::Widget) -> Option<&mut TypstApp> {
         let surface = ui::framework::testing::surface_in_root::<TypstEditorShell, TypstApp>;
@@ -186,8 +177,6 @@ fn typst<T>(app: &mut ui::App, visit: impl FnOnce(&mut TypstApp) -> T) -> T {
     visit(find(app.root_widget_mut()).expect("the editor surface"))
 }
 
-/// Open the window on a 100-chapter source and wait until its pages are
-/// compiled and drawn.
 fn open_long_document(app: &mut ui::App, host: &mut Host) {
     app.init_layout();
     for _ in 0..3 {
@@ -202,8 +191,6 @@ fn open_long_document(app: &mut ui::App, host: &mut Host) {
     settle(app, host, 100);
 }
 
-/// Run frames until the window shows at least `pages` pages of its last
-/// compile and has nothing left to draw.
 fn settle(app: &mut ui::App, host: &mut Host, pages: usize) {
     let deadline = ui::time::now() + Duration::from_secs(300);
     loop {
@@ -224,8 +211,6 @@ fn settle(app: &mut ui::App, host: &mut Host, pages: usize) {
     }
 }
 
-/// Scroll `frames` touchpad steps of `px` with the pointer over `point`, at
-/// a 60 Hz display's pace.
 fn scroll(
     app: &mut ui::App,
     host: &mut Host,
@@ -248,9 +233,6 @@ fn median(values: impl IntoIterator<Item = f64>) -> f64 {
     values.get(values.len() / 2).copied().unwrap_or(0.0)
 }
 
-/// A run of scroll frames copies what stays on screen and repaints a strip
-/// as tall as the step across the pane, the bars beside it and what the
-/// frame drew in place (a page that arrived): not the pane, not the window.
 fn assert_scroll_copies(label: &str, frames: &[Frame], pane: Rect, step: f64) {
     let whole: Vec<usize> = frames
         .iter()
@@ -372,8 +354,6 @@ fn typing_repaints_the_line_and_the_caret() {
     .expect("the editor's window opens");
 }
 
-/// Restrict this process to two of the CPUs it may use, as a weak machine
-/// runs the editor.
 fn pin_to_two_cpus() {
     let status = std::fs::read_to_string("/proc/self/status").expect("the process status");
     let allowed = status

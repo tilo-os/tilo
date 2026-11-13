@@ -50,8 +50,6 @@ const SYSTEMCTL_CHANGES: &[&str] = &[
 /// tilo-vmd subcommands, which all act on the VM's state.
 const DAEMON_COMMANDS: &[&str] = &["rpc", "build", "ci-layer", "restore", "input-serve"];
 
-/// What `command` would change behind tilo-vm's back, as the end of the
-/// sentence "it ...", or `None` for anything that only reads.
 pub fn guarded_write(command: &[String]) -> Option<String> {
     let line = command.join(" ");
     segments(&line)
@@ -82,7 +80,6 @@ fn segments(line: &str) -> Vec<Vec<String>> {
     for c in line.chars() {
         match c {
             ';' | '|' | '&' | '\n' | '`' | '(' | ')' => {
-                // `2>&1` and `&>` are redirections, not separators.
                 if c == '&' && (spaced.ends_with('>') || spaced.ends_with("> ")) {
                     spaced.push(c);
                 } else {
@@ -129,7 +126,6 @@ fn simple_command(words: &[String]) -> Option<String> {
     if let Some(write) = redirect(words) {
         return Some(write);
     }
-    // Skip wrappers (and their options), VAR=value and `sh -c`.
     let mut start = 0;
     while let Some(word) = words.get(start) {
         let name = word.rsplit('/').next().unwrap_or(word);
@@ -292,10 +288,8 @@ mod tests {
         guarded_write(&[line.to_owned()])
     }
 
-    /// Reads pass anywhere and writes into guarded places are caught.
     #[test]
     fn the_ssh_guard_passes_reads_and_catches_guarded_writes() {
-        // Phase: reads_pass_anywhere.
         {
             for line in [
                 "systemctl status tilo-vmd --no-pager",
@@ -330,7 +324,6 @@ mod tests {
             assert_eq!(guarded_write(&words), None);
         }
 
-        // Phase: writes_into_guarded_places_are_caught.
         {
             for (line, says) in [
                 ("sudo cp shell /usr/bin/shell", "writes /usr/bin/shell"),

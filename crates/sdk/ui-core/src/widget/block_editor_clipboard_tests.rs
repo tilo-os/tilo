@@ -1,6 +1,6 @@
-//! Cut, copy and paste carry formatting: the editor's copy offers HTML
-//! with the words, its paste reads what Writer, Notes, Mail, a browser or
-//! an office suite copied, and Ctrl+Shift+V pastes the words alone.
+//! Cut, copy and paste carry formatting: the editor's copy offers HTML with the words, its paste reads
+//! what Writer, Notes, Mail, a browser or an office suite copied, and Ctrl+Shift+V pastes the words
+//! alone.
 
 use super::*;
 use crate::testing::Dispatch;
@@ -289,4 +289,53 @@ impl WithKind for BlockContent {
         self.kind = kind;
         self
     }
+}
+
+/// The editor's text menu ends in "Send to…", and a click on it opens the
+/// send-to box beside the menu: the editor routes every event to its open
+/// menu, so the box is the menu's to show and to hear.
+#[test]
+fn a_click_on_send_to_opens_the_box_beside_the_text_menu() {
+    let _settled = crate::motion::testing::settled();
+    crate::shared_selection::set_send_host_available(true);
+    let mut editor = editing(&[para("plan for friday", Vec::new())]);
+    editor.blocks[0]
+        .line
+        .apply_layout_external(Rect::new(0.0, 0.0, 300.0, 24.0));
+    crate::widget::context_menu::note_input(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
+    assert!(editor.open_text_menu(Point::new(10.0, 12.0)));
+    let menu = editor.text_menu().expect("the menu is open");
+    let send = menu.items().len() - 1;
+    assert_eq!(
+        menu.items()[send].label(),
+        Some(crate::i18n::widget_text("menu-send").as_str())
+    );
+    let row = menu
+        .item_rect(send)
+        .expect("the send row is drawn")
+        .center();
+    let mut doc = AutoCommit::new();
+    for event in [
+        crate::synthetic_input::cursor_moved(row.x, row.y),
+        crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+        crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+    ] {
+        Dispatch::new().doc(&mut doc).send(&mut editor, &event);
+    }
+    crate::shared_selection::set_send_host_available(false);
+    let menu = editor.text_menu().expect("the menu stays open");
+    let box_ = menu.send_to();
+    assert!(
+        box_.is_open() && box_.is_focused(),
+        "the box opened, typing"
+    );
+    assert!(
+        box_.rect().x0 >= menu.get_rect().x1,
+        "beside the menu: {:?} by {:?}",
+        box_.rect(),
+        menu.get_rect()
+    );
 }

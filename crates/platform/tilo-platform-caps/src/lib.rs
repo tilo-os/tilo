@@ -5,7 +5,6 @@
 
 use std::fmt;
 
-/// Whether a feature can be used on a target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Availability {
     Available,
@@ -15,8 +14,8 @@ pub enum Availability {
     Unsupported(&'static str),
 }
 
-/// This target's column of [`Feature::targets`]. Every wasm target reports
-/// the web column; native targets other than macOS report the Linux column.
+/// This target's column of [`Feature::targets`]: wasm targets report the web
+/// column, native targets other than macOS report the Linux column.
 pub const COLUMN: usize = if cfg!(target_family = "wasm") {
     2
 } else if cfg!(target_os = "macos") {
@@ -29,7 +28,6 @@ pub const COLUMN: usize = if cfg!(target_family = "wasm") {
 /// there (and so selects no target itself).
 pub const WEB: bool = COLUMN == 2;
 
-/// One capability of a platform crate.
 pub trait Feature: Copy {
     /// The feature's availability on Linux, macOS and the web, in that order.
     fn targets(self) -> [Availability; 3];
@@ -41,28 +39,24 @@ pub trait Feature: Copy {
     }
 }
 
-/// Whether `feature` can be used on this target.
 #[must_use]
 pub fn availability<F: Feature>(feature: F) -> Availability {
     feature.availability()
 }
 
-/// Whether `feature` can be used on this target without a prompt.
 #[must_use]
 pub fn available<F: Feature>(feature: F) -> bool {
     feature.availability() == Availability::Available
 }
 
-/// A feature this target, or this particular host, cannot provide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Unsupported<F> {
     pub feature: F,
-    /// User-facing.
+    /// What is missing, for the person.
     pub reason: &'static str,
 }
 
 impl<F: Feature> Unsupported<F> {
-    /// The error for `feature` on this target.
     #[must_use]
     pub fn of(feature: F) -> Self {
         let reason = match feature.availability() {

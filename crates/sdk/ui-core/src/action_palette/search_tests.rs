@@ -1,10 +1,7 @@
-// Palette search: a query's work is budgeted per frame, its hits are grouped,
 use std::sync::atomic::Ordering;
-// and exact matches are reached however many candidates come before them.
 
 #[test]
 fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     {
         let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -27,9 +24,6 @@ fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
         );
     }
 
-    // Case `actions_and_content_both_surface_grouped`:
-    // Both an ACTION (from the resource tree) and a searchable CONTENT hit
-    // (from a folded-in provider) surface, grouped, for one query.
     {
         let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
@@ -47,7 +41,6 @@ fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
             groups.contains(&"People".to_string()),
             "content group present: {groups:?}"
         );
-        // What the app holds leads; what it can do follows.
         assert_eq!(groups.last(), Some(&ACTIONS_KIND.to_owned()), "{groups:?}");
 
         let labels = p.result_labels();
@@ -58,7 +51,6 @@ fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
 
 #[test]
 fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
     for id in 0..100_000usize {
@@ -121,16 +113,20 @@ fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidate
             .any(|resource_id| resource_id == target_id),
         "the exact result must retain its canonical resource action"
     );
-    assert!(palette
-        .take_search_announcement()
-        .is_some_and(|announcement| announcement.contains("result")));
+    assert!(
+        palette
+            .take_search_announcement()
+            .is_some_and(|announcement| announcement.contains("result"))
+    );
 
     palette.set_query("a different query");
     assert_ne!(palette.search_generation, generation);
-    assert!(!palette
-        .result_labels()
-        .iter()
-        .any(|label| label == "The only exact abc d result"));
+    assert!(
+        !palette
+            .result_labels()
+            .iter()
+            .any(|label| label == "The only exact abc d result")
+    );
     let restarted = palette.advance_search_page();
     assert_eq!(restarted.generation, palette.search_generation);
     assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
@@ -138,7 +134,6 @@ fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidate
 
 #[test]
 fn committed_text_goes_into_the_query_field_at_the_caret() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let key = [7u8; 32];
     let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
@@ -172,7 +167,6 @@ fn committed_text_goes_into_the_query_field_at_the_caret() {
 
 #[test]
 fn committed_text_narrows_the_rows_a_host_fed() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let key = [7u8; 32];
     let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
@@ -212,9 +206,7 @@ fn committed_text_narrows_the_rows_a_host_fed() {
 /// card where nothing has been typed yet.
 #[test]
 fn a_query_that_matches_nothing_is_named_in_the_empty_list() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // A palette searching its own providers.
     let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
         SearchField::with_language("en_US")
     });
@@ -241,7 +233,6 @@ fn a_query_that_matches_nothing_is_named_in_the_empty_list() {
         Some("Check the spelling, or try another word")
     );
 
-    // A palette over the rows its host searched, as desktop search is.
     let mut fed = ActionPalette::rows(vec![
         CommandEntry::new("sheets", "Sheets").group("Apps"),
         CommandEntry::new("notes", "Notes").group("Apps"),

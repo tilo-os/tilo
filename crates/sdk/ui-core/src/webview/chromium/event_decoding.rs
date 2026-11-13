@@ -1,6 +1,5 @@
-//! Decoding the host's events that carry what a page, a site or an
-//! extension said: each is taken only when every part of it is what the
-//! host sends.
+//! Decoding the host's events that carry what a page, a site or an extension said: each
+//! is taken only when every part of it is what the host sends.
 
 use super::{
     FIRST_POPUP, MAX_PAGE_URL, Value, WebViewEvent, audio, decode_base64_bounded,
@@ -63,13 +62,10 @@ pub(super) fn valid_site_event(value: &Value, event: &str) -> bool {
 
 /// An `extension_action`, `extension_open_popup`, `extension_execute_action`,
 /// `extension_notification`, `extension_sign_in`, `extension_omnibox_*` or
-/// `extension_side_panel`
-/// event, when every part of it is what the host sends: the extension's id,
-/// its own pages or a web page to sign in on, bounded text and an icon of at
-/// most 128 pixels a side.
+/// `extension_side_panel` event, when every part of it is what the host sends: the
+/// extension's id, its own pages or a web page to sign in on, bounded text and an icon of
+/// at most 128 pixels a side.
 pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
-    // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
-    // or the event is refused.
     macro_rules! field {
         ($change:ident, $key:literal, $read:expr) => {
             match $change.get($key) {
@@ -219,8 +215,7 @@ pub(super) fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEve
 /// The longest text of a page's question the host sends, in bytes.
 const MAX_PAGE_DIALOG_TEXT: usize = 16 * 1024;
 
-/// A `js_dialog` event: the page's question, its texts within the host's
-/// bounds.
+/// A `js_dialog` event: the page's question, its texts within the host's bounds.
 pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDialog> {
     let text = |key: &str| {
         value[key]
@@ -251,8 +246,8 @@ pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDi
     })
 }
 
-/// An `extension_shortcuts` event: the keys extensions' commands hold, each
-/// a key as Chrome names it with its modifiers, at most 256.
+/// An `extension_shortcuts` event: the keys extensions' commands hold, each a key as
+/// Chrome names it with its modifiers, at most 256.
 pub(super) fn decode_extension_shortcuts(
     value: &Value,
 ) -> Option<Vec<crate::webview::ExtensionShortcut>> {
@@ -286,8 +281,8 @@ pub(super) fn decode_extension_shortcuts(
         .collect()
 }
 
-/// Whether a host event is well formed: an event this engine knows is
-/// taken only when every part of it is what the host sends.
+/// Whether a host event is well formed: an event this engine knows is taken only when
+/// every part of it is what the host sends.
 pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
@@ -361,8 +356,6 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
             valid_id(value)
                 && text("path")
                 && text("name")
-                // Any length: a page's own export (a `data:` address) is
-                // its whole file. What is kept of it is bounded in decoding.
                 && text("url")
                 && value["retryable"].is_boolean()
                 && text("error")
@@ -463,7 +456,6 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
             value["request_id"]
                 .as_u64()
                 .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                // The frame's address, as long as Chromium lets one be.
                 && value["url"]
                     .as_str()
                     .is_some_and(|uri| uri.len() <= MAX_PAGE_URL)
@@ -499,8 +491,6 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                 .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
                 && value["ok"].is_boolean()
         }
-        // A load's failure names its address; the engine's own trouble (a
-        // filter that could not check a resource) does not.
         "error" => value.get("url").is_none_or(Value::is_string) && text("message"),
         _ => true,
     };

@@ -1,8 +1,6 @@
-//! Containers as a resource: the new-container draft is the record
-//! ([`Containers`]), each field edited at its path; the podman engine's
-//! containers, images, volumes and distroboxes are live rows the view
-//! publishes; moving around the app is the window's own, offered to every
-//! caller as effects.
+//! Containers as a resource: the new-container draft is the record, and the engine's
+//! containers, images, volumes and distroboxes are live rows. Where the window is
+//! belongs to the window, offered to every caller as effects.
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -15,7 +13,6 @@ use crate::model::{DetailTab, Engine, Section};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// What the record holds: the new-container draft.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Containers {
     /// New container
@@ -24,11 +21,6 @@ pub struct Containers {
 
 impl Containers {
     /// What the record holds: the new-container draft.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -43,149 +35,115 @@ impl Containers {
 )]
 impl Containers {
     /// Clear new container
-    ///
-    /// Empty every field of the new-container draft.
     #[action]
     pub fn clear_create(&mut self) {
         self.draft = CreateDraft::default();
     }
 }
 
-/// Moving around the app, for every caller: what the rail, the list and the
-/// detail tabs do. None of it changes the document; it is where this window
-/// is.
+/// Moving around the app, for every caller: none of it changes the document.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "containers.view")]
 pub enum ContainersEffect {
-    /// Show section.
     #[effect(view, kind = "read")]
     SetSection {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
-    /// Select container.
     #[effect(view, kind = "read")]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
     },
-    /// Set detail tab.
     #[effect(view, kind = "read")]
     SetTab {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
     },
-    /// Create container.
     #[effect(kind = "read")]
     Create,
-    /// Read container
-    ///
-    /// Answers what one container is and how it stands: its name and
-    /// image, its state, the command it runs, when it was created, its
-    /// published ports, its mounts, the names of its environment variables,
-    /// its labels and its latest resource use. It is the container row's
-    /// read: what discloses the row, so starting, stopping and its other
-    /// verbs are offered to whoever may read it, an agent too.
+    /// What one container is and how it stands: its name, image, state, command,
+    /// creation time, ports, mounts, environment names, labels and latest use. It is
+    /// the row's read, so its other verbs are offered to whoever may read it.
     #[effect(view, row, returns, idempotent)]
     ReadContainer {
         #[param("Container id")]
         container: String,
     },
-    /// Open logs.
     #[effect(view, row)]
     OpenLogs {
         #[param("Container id")]
         container: String,
     },
-    /// Start.
     #[effect(row, idempotent, privileged)]
     Start {
         #[param("Container id")]
         container: String,
     },
-    /// Stop.
     #[effect(row, idempotent, privileged)]
     Stop {
         #[param("Container id")]
         container: String,
     },
-    /// Restart.
     #[effect(row, privileged)]
     Restart {
         #[param("Container id")]
         container: String,
     },
-    /// Pause.
     #[effect(row, idempotent, privileged)]
     Pause {
         #[param("Container id")]
         container: String,
     },
-    /// Resume.
     #[effect(row, idempotent, privileged)]
     Unpause {
         #[param("Container id")]
         container: String,
     },
-    /// Remove.
     #[effect(row, destructive)]
     RemoveContainer {
         #[param("Container id")]
         container: String,
     },
-    /// Open shell.
     #[effect(row, privileged)]
     Shell {
         #[param("Container id")]
         container: String,
     },
-    /// Pull image.
-    ///
-    /// Pulls the image's reference from its registry again.
     #[effect(row, idempotent)]
     PullImage {
         #[param("Image reference")]
         image: String,
     },
-    /// Add a tag to image.
-    ///
-    /// Asks which tag to give the image.
     #[effect(view, row)]
     TagImage {
         #[param("Image reference")]
         image: String,
     },
-    /// Remove image.
     #[effect(row, destructive)]
     RemoveImage {
         #[param("Image reference")]
         image: String,
     },
-    /// Remove image, asking first.
-    ///
-    /// The image rows' remove control: it opens the confirmation the person
-    /// answers before [`Self::RemoveImage`] runs.
+    /// The image rows' remove control: it opens the confirmation the person answers
+    /// before [`Self::RemoveImage`] runs.
     #[effect(view, row)]
     AskToRemoveImage {
         #[param("Image reference")]
         image: String,
     },
-    /// Remove volume.
     #[effect(row, destructive)]
     RemoveVolume {
         #[param("Volume name")]
         volume: String,
     },
-    /// Remove volume, asking first.
-    ///
-    /// The volume rows' remove control: it opens the confirmation the person
-    /// answers before [`Self::RemoveVolume`] runs.
+    /// The volume rows' remove control: it opens the confirmation the person answers
+    /// before [`Self::RemoveVolume`] runs.
     #[effect(view, row)]
     AskToRemoveVolume {
         #[param("Volume name")]
         volume: String,
     },
-    /// Enter distrobox.
     #[effect(row, privileged)]
     EnterDistrobox {
         #[param("Distrobox name")]
@@ -194,8 +152,8 @@ pub enum ContainersEffect {
 }
 
 impl ContainersEffect {
-    /// The engine operation a row effect asks for: its target's kind, the
-    /// verb, and the target.
+    /// The engine operation a row effect asks for: its target's kind, the verb and the
+    /// target.
     pub(crate) fn engine_operation(&self) -> Option<(&'static str, &'static str, &str)> {
         Some(match self {
             Self::Start { container } => ("containers.container", "start", container),
@@ -213,9 +171,8 @@ impl ContainersEffect {
     }
 }
 
-/// The screenshots: the default container detail, each section and detail
-/// tab, the new-container form, a pull in progress, no engine at all, and
-/// the confirm and text dialogs.
+/// The screenshots: each section and detail tab, the form, a pull in progress, no
+/// engine, and the dialogs.
 const SCENARIOS: &[&str] = &[
     "confirm",
     "prompt",
@@ -230,7 +187,6 @@ const SCENARIOS: &[&str] = &[
     "empty",
 ];
 
-/// Framework app.
 pub struct ContainersShell;
 
 impl ResourceApp for ContainersShell {
@@ -238,6 +194,7 @@ impl ResourceApp for ContainersShell {
     const ID: &'static str = "so.tilo.containers";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Containers];
     const TITLE: &'static str = "Containers";
+    const TITLE_KEY: &'static str = "containers-app-title";
     const ICON: Option<&'static str> = Some("containers");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -252,8 +209,7 @@ impl ResourceApp for ContainersShell {
         SCENARIOS
     }
 
-    /// A screenshot shows a made-up engine (or, for `empty`, none at all)
-    /// instead of the podman of the machine it is taken on.
+    /// A capture shows a made-up engine, or none at all for `empty`.
     fn fixture(fixture: &mut Fixture<Containers>) {
         fixture.provide(if fixture.scenario() == Some("empty") {
             Engine {
@@ -266,7 +222,6 @@ impl ResourceApp for ContainersShell {
         });
     }
 
-    /// The create form is shown filled in.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Containers>> {
         if name != Some("create") {
             return Vec::new();
@@ -285,7 +240,6 @@ impl ResourceApp for ContainersShell {
 }
 
 impl ContainersState {
-    /// What the container `id` is and how it stands, its row's read.
     pub(crate) fn read_container(&self, id: &str) -> Result<serde_json::Value, String> {
         let container = self
             .engine
@@ -311,8 +265,6 @@ impl ContainersState {
         }))
     }
 
-    /// Do what `effect` asks, for any caller: the rows, the palette, an
-    /// agent.
     pub(crate) fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         match effect {
             ContainersEffect::SetSection { section } => {
@@ -406,7 +358,6 @@ mod tests {
         assert!(replica.state().unwrap().draft.is_empty());
     }
 
-    /// Two people typing in the form at once converge per character.
     #[test]
     fn concurrent_typing_converges() {
         let mut ours = Replica::<Containers>::new();
@@ -454,8 +405,8 @@ mod tests {
         }
     }
 
-    /// An agent fills the form in with field edits and clears it with the
-    /// verb, one call each; undo takes the clear back.
+    /// An agent fills the form in with field edits and clears it with the verb; undo
+    /// takes the clear back.
     #[test]
     fn agents_fill_the_draft_and_undo_takes_a_clear_back() {
         let mut app = TestApp::<ContainersShell>::capture(None).unwrap();
@@ -470,8 +421,6 @@ mod tests {
         assert_eq!(draft(&app, CreateField::Image), "quay.io/example/app:2");
     }
 
-    /// What an agent writes into the form is history the person reads as
-    /// the app's own sentences.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -521,8 +470,6 @@ mod tests {
         );
     }
 
-    /// Every screenshot is the framework's capture of the sample engine,
-    /// staged where the scenario shows.
     #[test]
     fn captures_stage_the_sample_engine() {
         let mut detail = TestApp::<ContainersShell>::capture(None).unwrap();
@@ -557,8 +504,6 @@ mod agent_disclosure_tests {
         }
     }
 
-    /// A container's row is disclosed through its read, which answers the
-    /// container as the engine reports it.
     #[test]
     fn a_containers_read_answers_it() {
         use crate::app::ContainersApp;
@@ -589,9 +534,7 @@ mod agent_disclosure_tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German copy comes from `locales/de-DE.ftl`, not the English catalogue.
 #[cfg(test)]
 mod german_catalogue_tests {
     use super::CATALOG;

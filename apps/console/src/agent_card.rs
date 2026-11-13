@@ -1,18 +1,4 @@
-//! An agent's card: one client ("Claude Code") as a collaborator, beside
-//! the person's work.
-//!
-//! The card is what its face in the workspace's presence opens, pulled out
-//! into a window of its own: what the agent is doing now, Stop, Undo run and
-//! Take over for its newest run, what it may reach with Revoke, and every
-//! run of it, each opening the run's own page (its actions, diffs and
-//! command output). Nothing here is the card's own: the runs are the
-//! history's ([`wire::RUNS`]) and the access the agent door's
-//! ([`door::Door`]), read once for the window.
-//!
-//! Each agent is published as the resource `console.agent:<client>`, whose
-//! view is this card and whose actions are the card's commands
-//! ([`ConsoleEffect`]): a person, the desktop or another agent reaches the
-//! same card and the same commands by that address.
+//! An agent's card: one client ("Claude Code") as a collaborator, beside the person's work.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -25,14 +11,10 @@ use crate::agents::{self, Seen};
 use crate::effects::{AgentCommand, ConsoleEffect};
 use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
 
-/// The kind an agent is a resource of; its id spells it
-/// (`console.agent:<client>`).
 pub(crate) const AGENT_KIND: &str = "console.agent";
 
-/// An agent as the type its rows are items of: what a published agent says it
-/// is, so search names it by its type rather than by a tag the card writes. An
-/// agent is a client of the agent door, not a record in a document, so it
-/// declares its kind and name by hand.
+/// An agent as the type its rows are items of: what a published agent says it is, so search
+/// names it by its type rather than by a tag the card writes.
 pub(crate) struct Agent;
 
 impl ui::tilo_resource::words::RowType for Agent {
@@ -58,8 +40,8 @@ fn card_view() -> ui::tilo_actions::ResourceViewSpec {
         .with_primary(true)
 }
 
-/// The agent of `client` as the resource its address names: its card, and
-/// the card's commands.
+/// The agent of `client` as the resource its address names: its card, and the card's
+/// commands.
 pub(crate) fn live_agent(client: &str) -> LiveRow {
     let agent = || client.to_owned();
     LiveRow::typed::<Agent>(agent_resource_id(client), client.to_owned())
@@ -104,7 +86,6 @@ fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a door::Grant> {
 }
 
 /// Carry out `command` on the agent of `client`, as its card's buttons do.
-/// Answers whether there was anything to do it to.
 pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentCommand) -> bool {
     let newest = runs_of(seen, client).into_iter().next();
     match command {
@@ -126,8 +107,8 @@ pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentComman
     }
 }
 
-/// The card of `client`: once the runs and the door have answered, the
-/// command asked from outside it (`nav.command`) is carried out, once.
+/// The card of `client`: once the runs and the door have answered, the command asked from
+/// outside it (`nav.command`) is carried out, once.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str) -> Element {
     let door_state = reads.door.answer().state();
     let (nav, client) = (nav.clone(), client.to_owned());
@@ -160,8 +141,6 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
         kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     };
-    // What it is doing now leads, in the words its run's row uses; an
-    // agent at rest says when it last worked.
     let now = match (working, newest) {
         (Some(run), _) => run
             .now
@@ -242,8 +221,8 @@ mod tests {
         assert_eq!(agent_of("console.run:Claude Code"), None);
     }
 
-    /// The desktop asks these of an agent by name (its face's card, a notice): each is one of the
-    /// card's own actions.
+    /// The desktop asks these of an agent by name (its face's card, a notice): each is one
+    /// of the card's own actions.
     #[test]
     fn the_cards_actions_are_the_names_the_desktop_asks_for() {
         assert_eq!(ConsoleEffect::VIEW_AGENT.id, "view-agent");

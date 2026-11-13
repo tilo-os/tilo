@@ -1,13 +1,4 @@
-//! Which operations a drive or partition offers, and why one it would offer
-//! is unavailable.
-//!
-//! One answer for every door: the window bar, a row's context menu, the
-//! published rows agents and scripts invoke, and the check an invocation
-//! passes before anything runs. An operation that would destroy or detach
-//! the running system (its root, its home folders, what starts it, or the
-//! whole drive they live on) is unavailable, with the reason in plain words.
-//! One that makes no sense for the target (ejecting a fixed internal drive,
-//! unmounting what is not mounted) is not offered at all.
+//! Which operations a drive or partition offers, and why one it would offer is unavailable.
 
 use crate::app::ActionKind;
 use crate::model::{Drive, Partition};
@@ -15,7 +6,6 @@ use crate::model::{Drive, Partition};
 /// What an operation can do for a target now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Offer {
-    /// It makes no sense here; it is not shown.
     Hidden,
     Available,
     /// It is shown, but cannot run, for this reason.
@@ -32,14 +22,12 @@ impl Offer {
     }
 }
 
-/// Why an encrypted partition is not formatted here.
 pub(crate) const KEEPS_ENCRYPTION: &str = "Formatting would remove its encryption";
 /// Why a locked encrypted partition cannot be mounted.
 pub(crate) const LOCKED: &str = "Locked; unlock it first";
 
-/// The filesystem Mount and Unmount act on for `part` (or, for the whole
-/// drive, its only partition, so a single-filesystem stick mounts without
-/// drilling in).
+/// The filesystem Mount and Unmount act on for `part` (or, for the whole drive, its only
+/// partition, so a single-filesystem stick mounts without drilling in).
 pub(crate) fn mount_target<'a>(
     drive: &'a Drive,
     part: Option<&'a Partition>,
@@ -50,7 +38,6 @@ pub(crate) fn mount_target<'a>(
     })
 }
 
-/// What `action` can do on `part` of `drive` (`None`: the whole drive).
 pub(crate) fn offer(drive: &Drive, part: Option<&Partition>, action: ActionKind) -> Offer {
     match action {
         ActionKind::Mount => match mount_target(drive, part) {
@@ -90,7 +77,6 @@ pub(crate) fn offer(drive: &Drive, part: Option<&Partition>, action: ActionKind)
     }
 }
 
-/// Every operation `part` of `drive` shows, in the order they are offered.
 pub(crate) fn shown(drive: &Drive, part: Option<&Partition>) -> Vec<(ActionKind, Offer)> {
     ActionKind::bar()
         .into_iter()
@@ -112,10 +98,9 @@ mod tests {
         drive.partitions.iter().find(|p| p.name == name).unwrap()
     }
 
-    /// Nothing that would destroy or detach the running system can run, and
-    /// each says why in plain words: the whole system drive, its root, its
-    /// home folders, and what starts it. Windows' own data stays formattable,
-    /// and a fixed internal drive offers no Eject at all.
+    /// Nothing that would destroy or detach the running system can run, and each says why
+    /// in plain words: the whole system drive, its root, its home folders, and what starts
+    /// it.
     #[test]
     fn the_running_systems_drive_and_partitions_refuse_destructive_actions_with_the_reason() {
         let drive = yoga();

@@ -13,6 +13,9 @@ REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
 FILTERS = REPO / ".config" / "nextest-filters.toml"
 T_NEXTEST = REPO / "tools" / "ci" / "nextest.sh"
+T_TOML = REPO / "t.toml"
+sys.path.insert(0, str(REPO / "tools" / "ci"))
+import package_features  # noqa: E402
 COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
 # The test binary and module path the file is compiled into: the crate's tests are modules of one
 # `tests/it.rs`, so a test's name carries every module from there down.
@@ -203,6 +206,25 @@ class NextestPolicyTests(unittest.TestCase):
         for path in consumers:
             with self.subTest(consumer=path.name):
                 self.assertNotRegex(path.read_text(encoding="utf-8"), r"not\s*\(\s*\)")
+
+    def test_a_whole_family_names_its_packages_test_features_in_its_args(self) -> None:
+        # The wrapper adds no features to a run that names no `-p`: a family that declares no
+        # `unify` package is built whole, and t resolves its unit graph from its own args, so
+        # those args carry its packages' test features or the tests build without them.
+        families = tomllib.loads(T_TOML.read_text(encoding="utf-8"))["cargo"]
+        checked = 0
+        for family in families:
+            if "tools/ci/nextest.sh" not in family.get("wrapper", []) or "unify" in family:
+                continue
+            checked += 1
+            with self.subTest(family=family["name"]):
+                self.assertIn("packages", family, "a family without `unify` names its packages")
+                args = family["args"]
+                given = [args[i + 1] for i, arg in enumerate(args) if arg in ("--features", "-F")]
+                expected = package_features.arguments(family["packages"])
+                self.assertEqual(sorted(",".join(given).split(",")) if given else [],
+                                 sorted(expected[1].split(",")) if expected else [])
+        self.assertGreater(checked, 0)
 
 if __name__ == "__main__":
     unittest.main()

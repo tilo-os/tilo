@@ -1,4 +1,4 @@
-//! `/usr/libexec/tilo-staging-reclaim`: see the library.
+//! `/usr/libexec/tilo-staging-reclaim`; see the library.
 
 use std::process::ExitCode;
 

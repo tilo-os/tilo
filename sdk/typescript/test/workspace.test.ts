@@ -1,168 +1,172 @@
-/** Reading a workspace, acting in it, following runs and editing fields. */
+/** Reading a workspace, acting in it, following runs, editing fields and watching. */
 
 import { describe, expect, it } from "bun:test";
 
 import { AskPending, Refused, Run, Tilo } from "../src/index.ts";
-import { FakeDoor, PDF, TODO, linkTo } from "./fakeDoor.ts";
+import { FakeApi, PDF, TODO, WORKSPACE_ID, linkTo } from "./fakeApi.ts";
 
-function door(): FakeDoor {
-  return new FakeDoor();
-}
-
-function open(house: FakeDoor): Tilo {
-  return new Tilo({ key: house.key, door: "https://door.test", fetch: house.fetch });
+function open(api: FakeApi): Tilo {
+  return new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch });
 }
 
 describe("reading a workspace", () => {
   it("lists apps and a resource's children", async () => {
-    const tilo = open(door());
-    const workspace = tilo.workspace("jane-doe");
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
 
     const apps = await workspace.ls();
+    expect(apps.path).toBe("apps");
     expect(apps.rows.map((row) => row.name)).toEqual(["notes", "pdf-viewer", "terminal"]);
     expect(apps.rows[0]?.state).toBe("running");
 
     const page = await workspace.ls(TODO);
     expect(page.kind).toBe("notes.Page");
     expect(page.rows.map((row) => row.name)).toEqual(["Buy milk", "Buy bread"]);
-    expect((page.actions[0] as { id: string }).id).toBe("append-paragraph");
-    await tilo.close();
+    expect(page.actions[0]?.id).toBe("append-paragraph");
+    expect(page.actions[0]?.params[0]?.name).toBe("text");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources`);
+    expect(api.last()?.query).toEqual({ path: TODO });
   });
 
   it("pages a listing with its cursor", async () => {
-    const tilo = open(door());
+    const api = new FakeApi();
+    const first = await open(api).workspace("jane-doe").ls(TODO, { limit: 1 });
 
-    const first = await tilo.workspace("jane-doe").ls(TODO, { limit: 1 });
     expect(first.rows.map((row) => row.name)).toEqual(["Buy milk"]);
     expect(first.nextCursor).toBe("1");
+    expect(api.last()?.query).toEqual({ path: TODO, limit: "1" });
 
     const rest = await first.more();
     expect(rest?.rows.map((row) => row.name)).toEqual(["Buy bread"]);
     expect(rest?.nextCursor).toBeNull();
     expect(await rest?.more()).toBeNull();
-    await tilo.close();
   });
 
   it("is iterated page by page", async () => {
-    const tilo = open(door());
-
-    const first = await tilo.workspace("jane-doe").ls(TODO, { limit: 1 });
+    const api = new FakeApi();
     const names: string[] = [];
-    for await (const row of first) {
+    for await (const row of await open(api).workspace("jane-doe").ls(TODO, { limit: 1 })) {
       names.push(row.name);
     }
-
     expect(names).toEqual(["Buy milk", "Buy bread"]);
-    await tilo.close();
   });
 
-  it("reads fields, children and kind", async () => {
-    const tilo = open(door());
-
-    const page = await tilo.workspace("jane-doe").read(TODO);
+  it("reads fields, children and the app's surface", async () => {
+    const api = new FakeApi();
+    const page = await open(api).workspace("jane-doe").read(TODO);
 
     expect(page.kind).toBe("notes.Page");
     expect(page.title).toBe("Todo");
     expect(page.pinned).toBe(false);
     expect(page.children).toEqual([]);
-    await tilo.close();
-  });
-
-  it("reads a conversation from the chat record", async () => {
-    const house = door();
-    const chain = "derived:messages@derived:default@tab:0000000000000000";
-    house.records.set(`so.tilo.chat:${chain}`, { messages: { m1: { channel: "general", text: "hi" } } });
-    const workspace = open(house).workspace("jane-doe");
-
-    const read = (await workspace.record("so.tilo.chat", chain, { parts: true, after: "r0" })) as any;
-
-    expect(read.records[0].value.messages.m1.text).toBe("hi");
-    expect(house.asked("tilo_read").at(-1)?.arguments).toEqual({
-      path: `record:so.tilo.chat:${chain}`,
-      parts: true,
-      after: "r0",
-    });
-    const absent = (await workspace.record("so.tilo.chat")) as any;
-    expect(absent.records).toEqual([{ record: "", absent: true }]);
+    expect(page.raw.surface_version).toBe(api.surface);
   });
 
   it("answers search hits", async () => {
-    const tilo = open(door());
-
-    const hits = await tilo.workspace("jane-doe").find("todo", "notes");
+    const api = new FakeApi();
+    const hits = await open(api).workspace("jane-doe").find("todo", "notes", 5);
 
     expect(hits.map((hit) => hit.path)).toEqual([TODO, `${TODO}#append-paragraph`]);
     expect(hits[1]?.action).toBe("append-paragraph");
-    await tilo.close();
+    expect(api.last()?.query).toEqual({ q: "todo", app: "notes", limit: "5" });
+  });
+
+  it("answers a record's link", async () => {
+    const api = new FakeApi();
+    const link = await open(api).workspace("jane-doe").link(TODO, { mode: "app" });
+
+    expect(link).toBe(linkTo(TODO));
+    expect(api.last()?.query).toEqual({ path: TODO, mode: "app" });
+  });
+
+  it("lists the people in it, and invites one more", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+
+    const members = await workspace.members.list();
+    expect(members.map((member) => member.name)).toEqual(["Rosa Ortiz"]);
+    expect(members[0]?.role).toBe("editor");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/members`);
+
+    const invitation = await workspace.members.invite({ role: "editor", email: "rosa@example.com" });
+    expect(invitation.link.startsWith("https://")).toBe(true);
+    expect(invitation.email).toBe("rosa@example.com");
+    expect(invitation.sent).toBe(false);
+    expect(api.last()?.body).toBe('{"role":"editor","email":"rosa@example.com"}');
   });
 });
 
 describe("acting", () => {
-  it("answers an action's result and what it sent", async () => {
-    const house = door();
-    const tilo = open(house);
-
-    const result = await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+  it("answers an action's result, at its route, with its arguments as the body", async () => {
+    const api = new FakeApi();
+    const result = await open(api).workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" });
 
     expect(result).toEqual({ appended: "c01e" });
-    expect(house.asked("tilo_do").at(-1)?.arguments).toEqual({
-      path: `${TODO}#append-paragraph`,
-      args: { text: "Buy milk" },
-    });
-    await tilo.close();
+    expect(api.last()?.method).toBe("POST");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/append-paragraph`);
+    expect(api.last()?.body).toBe('{"text":"Buy milk"}');
+  });
+
+  it("answers a file an action made as its content reference", async () => {
+    const api = new FakeApi();
+    const letter = await open(api).workspace("jane-doe").do("word-processor#export-content", { format: "docx" });
+    expect(letter).toBe("tilo.content:15");
   });
 
   it("throws the host's refusal", async () => {
-    const tilo = open(door());
+    const api = new FakeApi();
+    const failure = open(api)
+      .workspace("jane-doe")
+      .do(`${TODO}#nonsense`);
 
-    const failure = tilo.workspace("jane-doe").do(`${TODO}#nonsense`);
-
-    await expect(failure).rejects.toThrow(Refused);
-    await expect(failure).rejects.toMatchObject({
-      code: "invalid_arguments",
-      nextSteps: [`tilo_ls ${TODO} lists its actions`],
-    });
-    await tilo.close();
+    await expect(failure).rejects.toMatchObject({ code: "unknown_action" });
   });
 
-  it("answers a pending action as a run with a result", async () => {
-    const house = door();
-    house.appendPending = true;
-    const tilo = open(house);
+  it("runs a tilolang program as one step", async () => {
+    const api = new FakeApi();
+    const answer = await open(api).workspace("jane-doe").program("notes.notebook.notes.filter(.pinned)");
+
+    expect(answer.status).toBe("ok");
+    expect(answer.changed).toBe(1);
+    expect(answer.output).toEqual(['n1 "Q3 plan"', "1 change in notes"]);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/programs`);
+  });
+});
+
+describe("a run", () => {
+  it("is what an unfinished action answers, and follows to its result", async () => {
+    const api = new FakeApi();
+    api.pendingRuns = 2;
+    const tilo = open(api);
 
     const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Run;
-
     expect(run).toBeInstanceOf(Run);
-    expect(run.invocationId.startsWith("inv-")).toBe(true);
+    expect(run.invocationId).toBe("inv-2");
+
     expect(await run.result()).toEqual({ appended: "c01e" });
-    await tilo.close();
+    expect(run.link).toBe(linkTo(TODO));
+    expect(run.path).toBe(`${TODO}#append-paragraph`);
+    expect(api.last()?.query).toEqual({ wait: "60" });
   });
 
-  it("cancels and undoes a run", async () => {
-    const house = door();
-    house.appendPending = true;
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-    const run = (await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Run;
+  it("is stopped, and undone, at its own routes", async () => {
+    const api = new FakeApi();
+    api.pendingRuns = 1;
+    const tilo = open(api);
 
-    const stopped = await run.cancel();
-    expect((stopped.result as { cancelled: string }).cancelled).toBe(run.invocationId);
-
-    expect(await run.undo()).toEqual({ undone: 1 });
-    expect(house.asked("tilo_do").at(-1)?.arguments.path).toBe(`${TODO}#undo`);
-    await tilo.close();
-  });
-
-  it("follows a run's output to its end", async () => {
-    const house = door();
-    house.appendPending = true;
-    const tilo = open(house);
     const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Run;
-    house.events = [
-      { kind: "run", phase: "started", invocation_id: run.invocationId, path: `${TODO}#append-paragraph`, run: "Fill", run_id: "mcp:1", time_ms: 1 },
-      { kind: "change", path: TODO, change: "c1", sentence: "added Buy milk", time_ms: 2, undone: false },
-      { kind: "run", phase: "succeeded", invocation_id: run.invocationId, path: `${TODO}#append-paragraph`, run: "Fill", run_id: "mcp:1", time_ms: 3 },
-    ];
+    const cancelled = await run.cancel();
+    expect(cancelled.status).toBe("cancelled");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs/${run.invocationId}/cancel`);
+
+    expect((await run.undo()).undone).toEqual([TODO]);
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/runs/${run.invocationId}/undo`);
+  });
+
+  it("answers its events as a stream, ending when it ends", async () => {
+    const api = new FakeApi();
+    api.pendingRuns = 1;
+    const run = (await open(api).workspace("jane-doe").do(`${TODO}#append-paragraph`, {})) as Run;
 
     const phases: (string | null)[] = [];
     for await (const event of run.output()) {
@@ -170,224 +174,146 @@ describe("acting", () => {
     }
 
     expect(phases).toEqual(["started", "succeeded"]);
-    await tilo.close();
+    expect(api.last()?.headers.accept).toBe("text/event-stream, application/octet-stream");
   });
 
-  it("raises an ask with its link and answers once the person did", async () => {
-    const house = door();
-    const tilo = open(house);
+  it("waits for the person, and answers what they allowed", async () => {
+    const api = new FakeApi();
+    const tilo = open(api);
+
+    const failure = tilo.workspace("jane-doe").do(`${TODO}#ask`, {});
+
+    await expect(failure).rejects.toBeInstanceOf(AskPending);
+    const ask = (await failure.catch((error) => error)) as AskPending;
+    expect(ask.url).toBe("https://api.test/ask/1");
+    expect(ask.invocationId).toBe("ask-1");
+
+    api.askAnswered = true;
+    expect(await ask.wait()).toEqual({ allowed: true });
+  });
+});
+
+describe("a grouped run", () => {
+  it("names its run and title on its calls, and keeps the links they changed", async () => {
+    const api = new FakeApi();
+    const tilo = open(api);
     const workspace = tilo.workspace("jane-doe");
 
-    let ask: AskPending | null = null;
-    try {
-      await workspace.do(`${TODO}#ask`);
-    } catch (error) {
-      ask = error as AskPending;
+    const links = await workspace.run("Fill Jane's application", async (run) => {
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+      await workspace.do(`${PDF}#read-form-fields`, {});
+      return run;
+    });
+
+    const calls = api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/append-paragraph`);
+    expect(calls[0]?.headers["tilo-run"]).toBe(links.id);
+    expect(calls[0]?.headers["tilo-run-title"]).toBe("Fill Jane's application");
+    expect(links.invocations).toHaveLength(2);
+    expect(links.link).toBe(linkTo(TODO));
+    expect(links.links).toContain(linkTo(TODO));
+  });
+
+  it("names the title on every call, so every step's row reads it", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+
+    await workspace.run("Two steps", async () => {
+      await workspace.do(`${TODO}#append-paragraph`, {});
+      await workspace.do(`${TODO}#append-paragraph`, {});
+    });
+
+    const calls = api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/append-paragraph`);
+    expect(calls[0]?.headers["tilo-run-title"]).toBe("Two steps");
+    expect(calls[1]?.headers["tilo-run-title"]).toBe("Two steps");
+    expect(calls[1]?.headers["tilo-run"]).toBe(calls[0]?.headers["tilo-run"]);
+  });
+
+  it("is taken back as its run, by the run's own route", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+
+    const run = await workspace.run("Write it", async (run) => {
+      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
+      return run;
+    });
+    const undone = await run.undo();
+
+    const last = run.invocations.at(-1);
+    expect(undone.status).toBe("ok");
+    expect(api.asked("POST", `/v1/workspaces/${WORKSPACE_ID}/runs/${last}/undo`)).toHaveLength(1);
+  });
+});
+
+describe("a workspace's stream", () => {
+  it("yields changes, run events and presence, as they come", async () => {
+    const api = new FakeApi();
+    api.events = [
+      { event: "change", data: { path: TODO, change: "edit", sentence: "Jane added a paragraph", by: "ada", run: "inv-1", time_ms: 5, undone: false } },
+      { event: "presence", data: { here: [{ who: "ada", name: "Ada", kind: "person" }] } },
+    ];
+    const workspace = open(api).workspace("jane-doe");
+
+    const seen = [];
+    for await (const event of workspace.watch(TODO)) {
+      seen.push(event);
+      if (seen.length === 2) {
+        break;
+      }
     }
 
-    expect(ask).toBeInstanceOf(AskPending);
-    expect(ask?.url).toBe("https://mcp.tilo.sh/ask/1");
-    expect(ask?.invocationId).toBe("ask-1");
-
-    house.askAnswered = true;
-    const answer = (await ask?.wait()) as { result: unknown };
-    expect(answer.result).toEqual({ allowed: true });
-    await tilo.close();
+    expect(seen[0]?.kind).toBe("change");
+    expect(seen[0]?.sentence).toBe("Jane added a paragraph");
+    expect(seen[0]?.cursor).toBe("0");
+    expect(seen[1]?.kind).toBe("presence");
+    expect(seen[1]?.here).toEqual([{ who: "ada", name: "Ada", kind: "person" }]);
+    expect(api.last()?.query).toEqual({ path: TODO });
   });
 
-  it("names the run every call inside is a step of", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-
-    await workspace.run("Fill Jane's application", async (group) => {
-      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
-      await workspace.do(`${PDF}#read-form-fields`);
-      expect(group.invocations.length).toBe(2);
-    });
-
-    const calls = house.asked("tilo_do").slice(-2);
-    expect(calls[0]?.run?.title).toBe("Fill Jane's application");
-    expect(calls[1]?.run?.id).toBe(calls[0]?.run?.id);
-    await tilo.close();
-  });
-
-  it("hands over the link to the record a run changed", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-
-    const group = await workspace.run("Fill Jane's application", async (group) => {
-      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
-      await workspace.do(`${PDF}#read-form-fields`);
-      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy bread" });
-      return group;
-    });
-
-    expect(group.links).toEqual([linkTo(TODO)]);
-    expect(group.link).toBe(linkTo(TODO));
-    await tilo.close();
-  });
-
-  it("hands over each record's link once for a run across records", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-
-    const group = await workspace.run("Fill Jane's application", async (group) => {
-      await workspace.do(`${TODO}#append-paragraph`, { text: "Buy milk" });
-      await workspace.do(`${PDF}#field-edit`, { edit: { path: "form_values.surname", op: "set", value: "Roe" } });
-      return group;
-    });
-
-    expect(group.links).toEqual([linkTo(TODO), linkTo(PDF)]);
-    expect(group.link).toBeNull();
-    await tilo.close();
-  });
-
-  it("names a finished run's link", async () => {
-    const house = door();
-    house.appendPending = true;
-    const tilo = open(house);
-
-    const run = (await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, { text: "Buy milk" })) as Run;
-    expect(run.link).toBeNull();
-    await run.result();
-
-    expect(run.link).toBe(linkTo(TODO));
-    await tilo.close();
-  });
-
-  it("answers the link to any path and refuses a bad one", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-
-    expect(await workspace.link(PDF)).toBe(linkTo(PDF));
-    expect(house.asked("tilo_link").at(-1)?.arguments).toEqual({ path: PDF });
-    await workspace.link(TODO, { mode: "desktop" });
-    expect(house.asked("tilo_link").at(-1)?.arguments).toEqual({ path: TODO, mode: "desktop" });
-    await expect(workspace.link("notes/Nothing")).rejects.toBeInstanceOf(Refused);
-    await tilo.close();
-  });
-
-  it("undoes a run group as one task", async () => {
-    const house = door();
-    const tilo = open(house);
-
-    await tilo.workspace("jane-doe").run("Fill Jane's application", async (group) => {
-      await tilo.workspace("jane-doe").do(`${TODO}#append-paragraph`, {});
-      const undone = await group.undo();
-      expect(undone.status).toBe("ok");
-    });
-
-    expect(house.asked("tilo").at(-1)?.arguments).toEqual({ program: "undo task" });
-    await tilo.close();
-  });
-
-  it("answers a program's output and steps", async () => {
-    const house = door();
-    const tilo = open(house);
-
-    const answer = await tilo.workspace("jane-doe").program("notes.notebook.notes");
-
-    expect(answer.status).toBe("ok");
-    expect(answer.output).toEqual(['n1 "Q3 plan"', "1 change in notes"]);
-    expect(house.asked("tilo").at(-1)?.arguments).toEqual({ program: "notes.notebook.notes" });
-    await tilo.close();
-  });
-
-  it("answers a program that previews as preview", async () => {
-    const tilo = open(door());
-
-    const answer = await tilo.workspace("jane-doe").program("preview me");
-
-    expect(answer.status).toBe("preview");
-    expect(answer.changed).toBe(4);
-    await tilo.close();
-  });
-
-  it("throws a failing program's refusal", async () => {
-    const tilo = open(door());
-
-    const failure = tilo.workspace("jane-doe").program("boom");
-
-    await expect(failure).rejects.toMatchObject({
-      code: "compile_error",
-      nextSteps: ["tilo_ls notes names its resources"],
-    });
-    await tilo.close();
-  });
-
-  it("keeps a watch's cursor and answers its events", async () => {
-    const house = door();
-    house.events = [
-      { kind: "change", path: TODO, change: "c1", sentence: "one", time_ms: 1, undone: false },
-      { kind: "presence", here: [{ who: "u1", name: "Jane", kind: "person" }] },
+  it("reads on from its cursor when the stream ends", async () => {
+    const api = new FakeApi();
+    api.events = [
+      { event: "change", data: { path: TODO, sentence: "one" } },
+      { event: "change", data: { path: TODO, sentence: "two" } },
+      { event: "change", data: { path: TODO, sentence: "three" } },
     ];
-    house.watchPage = 1;
-    const tilo = open(house);
-    const stream = tilo.workspace("jane-doe").watch();
+    api.eventsPerStream = 1;
+    const workspace = open(api).workspace("jane-doe");
 
-    const first = await stream.next();
-    const second = await stream.next();
+    const cursors: (string | null)[] = [];
+    for await (const event of workspace.watch()) {
+      cursors.push(event.cursor);
+      if (cursors.length === 3) {
+        break;
+      }
+    }
 
-    expect(first.value?.change).toBe("c1");
-    expect(second.value?.here[0]?.name).toBe("Jane");
-    expect(house.asked("tilo_watch").at(-1)?.arguments.cursor).toBe("1");
-    await stream.return(undefined);
-    await tilo.close();
+    expect(cursors).toEqual(["0", "1", "2"]);
+    const opened = api.asked("GET", `/v1/workspaces/${WORKSPACE_ID}/events`);
+    expect(opened[0]?.headers["last-event-id"]).toBeUndefined();
+    expect(opened[1]?.headers["last-event-id"]).toBe("0");
+    expect(opened[2]?.headers["last-event-id"]).toBe("1");
+  });
+});
+
+describe("files", () => {
+  it("uploads bytes and answers their content reference", async () => {
+    const api = new FakeApi();
+    const content = await open(api)
+      .workspace("jane-doe")
+      .files.upload(new TextEncoder().encode("passport, in bytes"));
+
+    expect(content).toBe("tilo.content:18");
+    expect(api.last()?.method).toBe("POST");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/uploads`);
+    expect(api.last()?.headers["content-type"]).toBe("application/octet-stream");
   });
 
-  it("answers an upload's content reference", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
+  it("downloads the bytes an action made", async () => {
+    const api = new FakeApi();
+    api.contents.set("tilo.content:2", new Uint8Array([0x50, 0x4b]));
+    const bytes = await open(api).workspace("jane-doe").files.download("tilo.content:2");
 
-    const content = await workspace.files.upload(new TextEncoder().encode("passport bytes"));
-
-    expect(content).toBe("tilo.content:14");
-    expect(house.uploads.length).toBe(1);
-    expect(house.uploadSessions.at(-1)).not.toBeNull();
-
-    const imported = await workspace.do(`${PDF}#import-pdf-content`, { content, name: "passport.pdf" });
-    expect(imported).toEqual({ imported: content });
-    await tilo.close();
-  });
-
-  it("downloads content in pieces", async () => {
-    const house = door();
-    const tilo = open(house);
-    const workspace = tilo.workspace("jane-doe");
-    const content = await workspace.files.upload(new TextEncoder().encode("cover letter"));
-
-    const bytes = await workspace.files.download(content);
-
-    expect(new TextDecoder().decode(bytes)).toBe("cover letter");
-    expect(house.asked("tilo_get").map((call) => call.arguments.offset)).toEqual([0, 4, 8]);
-    await tilo.close();
-  });
-
-  it("answers the file an action makes as its reference", async () => {
-    const tilo = open(door());
-    const workspace = tilo.workspace("jane-doe");
-
-    const letter = await workspace.do("word-processor#export-content", { format: "docx" });
-
-    expect(letter).toBe("tilo.content:15");
-    const bytes = await workspace.files.download(letter as string);
-    expect(new TextDecoder().decode(bytes)).toBe("PK cover letter");
-    await tilo.close();
-  });
-
-  it("refuses to download unknown content", async () => {
-    const tilo = open(door());
-    const workspace = tilo.workspace("jane-doe");
-
-    const refused = await workspace.files.download("tilo.content:nothing").catch((error) => error);
-
-    expect(refused).toBeInstanceOf(Refused);
-    expect(refused.code).toBe("not_found");
-    await tilo.close();
+    expect(Array.from(bytes)).toEqual([0x50, 0x4b]);
+    expect(api.last()?.headers.accept).toBe("text/event-stream, application/octet-stream");
   });
 });

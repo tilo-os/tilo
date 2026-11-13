@@ -99,7 +99,6 @@ fn rpc_error<T: std::fmt::Debug>(result: Result<T, ClientError>) -> tilo_vm_prot
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn slot_and_kernel_lifecycles_over_stdio() {
-    // Phase `full_slot_lifecycle_over_stdio`.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::spawn(root.path());
@@ -382,7 +381,6 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             "agent-b and vm remain"
         );
     }
-    // Phase `a_kernel_swap_prepares_the_next_boot_and_rollback_undoes_it`.
     {
         use tilo_vm_protocol::BootConfirm;
 
@@ -464,7 +462,6 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 
 #[test]
 fn rpc_requests_are_validated_and_routed_per_slot() {
-    // Phase `malformed_lines_get_error_responses`.
     {
         use std::io::{BufRead, Write};
         let root = tempfile::tempdir().unwrap();
@@ -495,7 +492,6 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
         drop(input);
         assert!(child.wait().unwrap().success());
     }
-    // Phase `input_goes_to_headful_seats_and_apps_install_per_slot`.
     {
         use tilo_vm_protocol::{AppInstall, Input, InputAction};
         let root = tempfile::tempdir().unwrap();
@@ -591,7 +587,6 @@ fn device_login_input_uses_the_physical_seat() {
 
 #[test]
 fn the_device_slot_is_the_machines_own_session() {
-    // Phase `a_machine_without_its_own_session_has_no_device_slot`.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::spawn(root.path());
@@ -609,7 +604,6 @@ fn the_device_slot_is_the_machines_own_session() {
         assert!(error.hint.contains("board"), "{}", error.hint);
         assert_eq!(error.see.as_deref(), Some("tilo-vm guide devices"));
     }
-    // Phase `swaps_restart_the_devices_session_and_roll_back`.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::spawn_with(root.path(), "record-device");
@@ -729,7 +723,6 @@ fn the_device_slot_is_the_machines_own_session() {
             .unwrap();
         assert!(!picture.png.is_empty());
     }
-    // Phase `the_device_slot_is_neither_created_removed_nor_moved`.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::spawn_with(root.path(), "record-device");
@@ -931,13 +924,11 @@ fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::
         .unwrap()
 }
 
-/// Layers are the person's deployed work. Booting another image keeps the
-/// slot on its generation with its layer in place; a layer that fits
-/// neither the new base nor its interfaces is held, not deleted, and status
-/// names it. The person rolls the slot back to the image deliberately and
-/// can roll forward again. A state root
-/// that never recorded an image (2026-10-19: the first boot of a tilo-vmd
-/// that records them dropped every slot's layers) is no change at all.
+/// Layers are the person's deployed work: booting another image keeps the slot on its generation
+/// with its layer in place, and a layer that fits neither the new base nor its interfaces is held
+/// rather than deleted and named in status. The person rolls the slot back to the image
+/// deliberately and can roll forward again, and a state root that never recorded an image is no
+/// change at all.
 #[test]
 fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     let root = tempfile::tempdir().unwrap();

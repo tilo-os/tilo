@@ -10,8 +10,8 @@ fn edit(field: &Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
 }
 use ui::tilo_actions::{ActionKind, Availability, ConfirmationPolicy, DoorError, RiskLevel};
 
-/// A machine of its own: a home with no key the developer's environment
-/// names, and secrets kept in this test's memory.
+/// A machine of its own: a home with no key the developer's environment names, and secrets
+/// kept in this test's memory.
 struct Machine {
     _home: tilo_test_env::TestHome,
     _host: ui::host::HostScope,
@@ -314,9 +314,9 @@ fn history_names_the_field_that_changed() {
     );
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[test]
 fn a_german_window_reads_the_catalogue() {
     let catalogue = &publisher::locales::CATALOG;

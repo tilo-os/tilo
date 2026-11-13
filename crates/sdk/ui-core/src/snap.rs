@@ -1,11 +1,11 @@
-//! Snapping: what is dragged lands on the edges and centres of other
+//! Snapping: what is dragged snaps to the edges and centres of other
 //! boxes, and a guide shows what it lined up with.
 #![allow(clippy::arithmetic_side_effects, reason = "kurbo's float geometry")]
 
 use vello::kurbo::{Point, Rect, Vec2};
 
-/// A line something snapped to: `x = at` from `y = from` to `to` when
-/// `vertical`, else `y = at` from `x = from` to `to`.
+/// A line something snapped to: `x = at` from `y = from` to `to` when `vertical`, else
+/// `y = at` from `x = from` to `to`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Guide {
     pub vertical: bool,
@@ -29,8 +29,6 @@ fn lines_y(rect: Rect) -> [f64; 3] {
     [rect.y0, rect.center().y, rect.y1]
 }
 
-/// The nearest pairing of one of `moving` with one of `fixed`, within
-/// `tolerance`: the shift that lines them up.
 fn nearest(moving: &[f64], fixed: &[f64], tolerance: f64) -> Option<f64> {
     let mut best: Option<f64> = None;
     for m in moving {
@@ -44,7 +42,6 @@ fn nearest(moving: &[f64], fixed: &[f64], tolerance: f64) -> Option<f64> {
     best
 }
 
-/// Guides along the lines `moved` now shares with `targets`.
 fn guides(moved: Rect, targets: &[Rect]) -> Vec<Guide> {
     let mut found: Vec<Guide> = Vec::new();
     let mut add = |guide: Guide| {
@@ -83,8 +80,8 @@ fn guides(moved: Rect, targets: &[Rect]) -> Vec<Guide> {
     found
 }
 
-/// Snap a box being moved onto `targets`' edges and centres, each axis on
-/// its own, within `tolerance` units.
+/// Snap a box being moved onto `targets`' edges and centres, each axis on its own, within
+/// `tolerance` units.
 pub fn snap_rect(moving: Rect, targets: &[Rect], tolerance: f64) -> Snap {
     let fixed_x: Vec<f64> = targets.iter().flat_map(|rect| lines_x(*rect)).collect();
     let fixed_y: Vec<f64> = targets.iter().flat_map(|rect| lines_y(*rect)).collect();
@@ -98,8 +95,8 @@ pub fn snap_rect(moving: Rect, targets: &[Rect], tolerance: f64) -> Snap {
     }
 }
 
-/// Snap one point (a corner being dragged, a new shape's corner) onto
-/// `targets`' edges and centres.
+/// Snap one point (a corner being dragged, a new shape's corner) onto `targets`' edges
+/// and centres.
 pub fn snap_point(point: Point, targets: &[Rect], tolerance: f64) -> Snap {
     snap_rect(Rect::from_points(point, point), targets, tolerance)
 }
@@ -123,7 +120,6 @@ mod tests {
                 .iter()
                 .any(|guide| !guide.vertical && (guide.at - 100.0).abs() < 1e-9)
         );
-        // Too far: no snap.
         let free = snap_rect(Rect::new(120.0, 300.0, 140.0, 320.0), &others, 5.0);
         assert_eq!(free.offset, Vec2::ZERO);
         assert!(free.guides.is_empty());

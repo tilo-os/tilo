@@ -1,13 +1,7 @@
-//! The markup's verbs, and the app.
-//!
-//! Plain fields change through the built-in field edits every path offers
-//! (`PdfMarkup::paths().annotations.item(&id).color.set(..)`): recolouring
-//! and moving an annotation, a free text's box and words, resolving and
-//! rewording a comment, form values, a page's turn, moving a page. The
-//! methods below are the operations that are more than setting a field:
-//! adding what someone writes (signed by them), deleting what takes other
-//! things with it, the page plan's duplicates and imports, and what the
-//! reader records when it first meets a file.
+//! The markup's verbs and the app. Plain field changes go through the built-in field
+//! edits; these are the operations that are more than setting a field: adding what
+//! someone writes, deleting what takes other things with it, the page plan's duplicates
+//! and imports, and what the reader records when it first meets a file.
 
 use std::rc::Rc;
 
@@ -28,77 +22,51 @@ use crate::model::{
     PdfAnchor, PtRect, Reply, SignatureInk, annotation_label,
 };
 
-/// The most text one comment or reply holds.
 const MAX_COMMENT_CHARS: usize = 100_000;
 
-/// An annotation someone makes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewAnnotation {
-    /// The id it is addressed by.
     pub id: String,
-    /// The page occurrence it is on.
     pub page_id: String,
-    /// What it marks, and where.
     pub mark: AnnoKind,
     pub color: HighlightColor,
-    /// The engine character range `[start, end)` text markup covers.
     pub chars: Option<[u32; 2]>,
-    /// The space its geometry is in.
     pub space: GeomSpace,
 }
 
-/// A sticky note someone makes: a note on the page and the comment thread
-/// pinned to it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewNote {
-    /// The id of the note on the page.
     pub annotation: String,
-    /// The id of its comment thread.
     pub comment: String,
-    /// The page occurrence it is on.
     pub page_id: String,
     pub x: f64,
     pub y: f64,
     pub color: HighlightColor,
-    /// What it says.
     pub text: String,
-    /// The space `x` and `y` are in.
     pub space: GeomSpace,
 }
 
-/// A comment someone writes: free on a page, or on an annotation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewComment {
-    /// The id it is addressed by.
     pub id: String,
-    /// The annotation it is about; it is on that annotation's page.
     pub anno: Option<String>,
-    /// The page occurrence it is on, when it is about no annotation.
     pub page_id: Option<String>,
-    /// What it says, as plain text.
     pub text: String,
-    /// Its paragraphs as written; none for plain text.
     #[serde(default)]
     pub rich: Vec<tilo_document::ClipBlock>,
 }
 
-/// A signature someone places.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewSignature {
-    /// The id it is addressed by.
     pub id: String,
-    /// The page occurrence it is on.
     pub page_id: String,
     pub rect: PtRect,
-    /// The name signed; the signer's own when empty.
     pub signer: String,
-    /// When it was signed, as written beside it.
     pub date: String,
     pub ink: SignatureInk,
     pub space: GeomSpace,
 }
 
-/// An annotation the PDF already carried, as taken over.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AdoptedAnnotation {
     pub id: String,
@@ -109,7 +77,6 @@ pub struct AdoptedAnnotation {
     pub created_ms: i64,
 }
 
-/// A reply the PDF already carried.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AdoptedReply {
     pub id: String,
@@ -117,7 +84,6 @@ pub struct AdoptedReply {
     pub text: String,
 }
 
-/// A comment thread the PDF already carried.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AdoptedThread {
     pub id: String,
@@ -125,12 +91,10 @@ pub struct AdoptedThread {
     pub page_id: String,
     pub author: String,
     pub text: String,
-    /// When it was written, as an ISO-8601 time; empty when unknown.
     pub date: String,
     pub replies: Vec<AdoptedReply>,
 }
 
-/// The markup a PDF already carries, as a record takes it over.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExistingMarkup {
     pub annotations: Vec<AdoptedAnnotation>,
@@ -139,12 +103,6 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-/// Bring markup of an earlier version up to this one. Before version 3,
-/// comment threads were kept in a shape of their own, before they were the
-/// comment model every app shares; those are not carried over, the rest of
-/// the markup is. Version 3 stored each mark's value in a comment's
-/// paragraphs flat beside its variant's name; it is stored by its variant
-/// now.
 fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     let root = ui::automerge::ROOT;
     match from {
@@ -157,13 +115,6 @@ fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelEr
 }
 
 impl PdfMarkup {
-    /// What the record holds, as the app's own types: the PDF it marks up,
-    /// the pages and the values its form holds.
-    ///
-    /// A caller with no window open — an agent filling an application, a
-    /// script reading a form's values — reads the record through the door
-    /// with this, as it reads any app's record. One page reads on its own,
-    /// by the read its page occurrence offers.
     pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         if item.is_some() {
             return Err("a PDF reads whole; read one of its pages by its own read".into());
@@ -182,8 +133,7 @@ impl PdfMarkup {
 impl PdfMarkup {
     /// Record where the reader left off.
     ///
-    /// A resume hint for the next window that opens this document: the page
-    /// occurrence, how far down it the reader was (0 to 1), and the zoom.
+    /// A resume hint for the next window: the page, how far down it (0 to 1) and the zoom.
     #[action]
     pub fn record_reading_position(
         &mut self,
@@ -208,9 +158,8 @@ impl PdfMarkup {
 
     /// Make the page plan.
     ///
-    /// The pages of the opened file, in their order, the first time a
-    /// record meets it. Page ids are deterministic, so two people opening
-    /// the same file agree.
+    /// The opened file's pages in their order. Page ids are deterministic, so two people
+    /// opening the same file agree.
     #[action(external)]
     pub fn start_page_plan(
         &mut self,
@@ -219,7 +168,6 @@ impl PdfMarkup {
         if self.page_plan_seeded {
             return Ok(());
         }
-        // Pages imported before the plan was made keep their place.
         let imported = std::mem::take(&mut self.pages);
         for source_page in 1..=pages.max(1) {
             let id = Id::from_raw(format!("source-{source_page}"));
@@ -240,35 +188,34 @@ impl PdfMarkup {
 
     /// Pin the source.
     ///
-    /// Names the PDF bytes the markup is made against by their content. The
-    /// first pin of a record wins: it never re-targets its markup.
+    /// The PDF bytes the markup is made against, from the content store. The first pin
+    /// wins: a record never re-targets its markup.
     #[action(external)]
     pub fn pin_source(
         &mut self,
-        #[param("The content hash of the PDF bytes")] hash: String,
-        #[param("How many bytes they are")] len: u64,
+        #[param("The PDF bytes, kept where the workspace's content is")] source: Bytes,
         #[param("The file's name")] name: String,
     ) -> Result<(), Refusal> {
         if !self.source.is_empty() {
             return Ok(());
         }
-        let hash = crate::markup::unhex(&hash.to_ascii_lowercase())
-            .ok_or("a source is named by its 64-digit content hash")?;
-        self.source = Bytes::Blob {
-            hash,
-            len,
-            sealed: None,
-        };
+        if source.is_empty() {
+            return Err(Refusal::new("a source is the document's bytes"));
+        }
+        if source.inline().is_some() {
+            return Err(Refusal::new(
+                "a source is kept where the workspace's content is",
+            ));
+        }
+        self.source = source;
         self.source_name = name;
         Ok(())
     }
 
     /// Take over the PDF's own markup.
     ///
-    /// The highlights, notes and their replies, free text, ink and form
-    /// values the source bytes already carry become records like any other,
-    /// once per source. Their ids derive from the source, so two people
-    /// taking it over at once agree.
+    /// The highlights, notes and replies, free text, ink and form values the bytes carry
+    /// become records, once per source, with ids derived from it.
     #[action(external, writes = comments)]
     pub fn adopt_existing(
         &mut self,
@@ -300,7 +247,6 @@ impl PdfMarkup {
                 });
             }
         }
-        // Oldest first, as they were written; undated ones before them.
         let mut threads = markup.comments;
         threads.sort_by(|a, b| a.date.cmp(&b.date));
         for thread in threads {
@@ -333,8 +279,8 @@ impl PdfMarkup {
 
     /// Import pages.
     ///
-    /// Pages of other PDFs or pictures, by content, after a page (first when
-    /// none is named). Their bytes are in the content store, never here.
+    /// Pages of other PDFs or pictures, by content, after a page (first when none is
+    /// named). Their bytes stay in the content store.
     #[action(writes = comments)]
     pub fn import_pages(
         &mut self,
@@ -379,8 +325,7 @@ impl PdfMarkup {
 
     /// Duplicate page.
     ///
-    /// Another occurrence of the page right after it. Markup stays with the
-    /// page it was made on.
+    /// Another occurrence right after it; markup stays with the page it was made on.
     #[action(item = pages)]
     pub fn duplicate_page(
         &mut self,
@@ -449,8 +394,7 @@ impl PdfMarkup {
 
     /// Add annotation.
     ///
-    /// Text markup, ink, a note or free text on a page, signed by whoever
-    /// adds it.
+    /// Text markup, ink, a note or free text on a page, signed by whoever adds it.
     #[action(writes = comments)]
     pub fn add_annotation(
         &mut self,
@@ -492,8 +436,7 @@ impl PdfMarkup {
 
     /// Add note.
     ///
-    /// A sticky note on a page and the comment thread pinned to it, signed
-    /// by whoever adds it.
+    /// A sticky note on a page and the comment thread pinned to it.
     #[action(writes = comments)]
     pub fn create_note(
         &mut self,
@@ -534,8 +477,7 @@ impl PdfMarkup {
 
     /// Add a note at the top of a page.
     ///
-    /// A sticky note with this text, where a reader looks first; for the
-    /// palette, keyboard users and agents.
+    /// A sticky note with this text, where a reader looks first.
     #[action(writes = comments)]
     pub fn add_note(
         &mut self,
@@ -709,7 +651,6 @@ impl PdfMarkup {
             NewSignature {
                 id,
                 page_id,
-                // A familiar signing place, clear of the opening paragraph.
                 rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
                 signer: signer.unwrap_or_default().trim().to_owned(),
                 date,
@@ -733,7 +674,6 @@ impl PdfMarkup {
 const NO_PAGE: &str = "there is no such page";
 
 impl PdfMarkup {
-    /// Refuse a page that is not part of the document.
     fn on_a_page(&self, page_id: &str) -> Result<(), Refusal> {
         if self.pages.contains(&Id::from_raw(page_id)) {
             Ok(())
@@ -742,7 +682,6 @@ impl PdfMarkup {
         }
     }
 
-    /// The markup people made, each entry anchored at the item it is.
     fn entries(&self) -> Vec<SearchEntry> {
         let anchor = |field: &str, id: &str| {
             tilo_resource::items::item_resource_id::<PdfMarkup>(field, &Id::from_raw(id))
@@ -803,8 +742,6 @@ impl PdfMarkup {
     }
 }
 
-/// A comment or reply's text: `rich`, when given, matches its plain text;
-/// bounded, with paragraph kinds and marks a document can hold.
 fn check_text(text: &str, rich: &[tilo_document::ClipBlock]) -> Result<(), Refusal> {
     if text.chars().count() > MAX_COMMENT_CHARS {
         return Err(Refusal::new("the comment is too long"));
@@ -842,8 +779,6 @@ fn check_text(text: &str, rich: &[tilo_document::ClipBlock]) -> Result<(), Refus
     }
 }
 
-/// The PDF reader: one record per document holds its markup, and the
-/// reader window is a view of it.
 pub struct PdfViewerShell;
 
 impl ResourceApp for PdfViewerShell {
@@ -852,9 +787,9 @@ impl ResourceApp for PdfViewerShell {
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "PDF Viewer";
+    const TITLE_KEY: &'static str = "pdf-viewer-app-title";
     const ICON: Option<&'static str> = Some("pdf-viewer");
     const OPENS: &'static [&'static str] = &["application/pdf"];
-    /// The PDF to open (`pdf-viewer paper.pdf`).
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<PdfMarkup>) -> Element {
@@ -868,8 +803,6 @@ impl ResourceApp for PdfViewerShell {
         } else {
             PdfApp::empty_with_content(content)
         };
-        // A search hit, or an agent's `open`, shows the page, markup or
-        // thread it names.
         cx.on_open_item(app.opener());
         reader_view(cx, app)
     }
@@ -891,10 +824,6 @@ impl ResourceApp for PdfViewerShell {
         }
     }
 
-    /// A document's markup is a record of its own, derived from the file's
-    /// durable identity, so renaming or moving the file finds the same
-    /// annotations, a copy starts clean, and another app's record of the
-    /// same file is left alone.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         input.argument().map(|path| {
             RecordId::derived(
@@ -904,17 +833,15 @@ impl ResourceApp for PdfViewerShell {
         })
     }
 
-    /// A handed file is kept in the content store and pinned as the record's
-    /// source, so the record reopens it wherever the bytes are.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<PdfMarkup>> {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Ok(hash) = content.put(file.bytes()) else {
+        let Ok(reference) = content.put(file.bytes()) else {
             return Vec::new();
         };
-        let len = u64::try_from(file.bytes().len()).unwrap_or(u64::MAX);
-        vec![crate::actions::pin_source_action(&hash, len, file.name())]
+        let source = Bytes::kept_as(file.bytes(), &reference);
+        vec![crate::actions::pin_source_action(&source, file.name())]
     }
 
     #[cfg(feature = "samples")]
@@ -933,15 +860,10 @@ impl ResourceApp for PdfViewerShell {
     }
 }
 
-/// The role of a document's markup record beside the document's own.
 const MARKUP_ROLE: &str = "annotations";
 
-/// The most papers the empty state offers: the ones changed last, so the paper
-/// someone just filled in is on top rather than buried in a long list.
 const MOST_OFFERED: usize = 4;
 
-/// A document the workspace holds, as the reader's empty state offers it:
-/// what the index calls it, how long it is, and the identity that opens it.
 fn workspace_document(
     document: &ui::framework::WindowDocument<PdfMarkup>,
 ) -> crate::app::WorkspaceDocument {
@@ -964,9 +886,6 @@ fn workspace_document(
     }
 }
 
-/// The reader window `app` as a view of the markup: it follows the record
-/// and the participant's permission to edit it, answers the reader's
-/// effects, and publishes the open document's rows and what it says.
 fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     app.attach_framework(cx.dispatcher());
     app.attach_people(cx.people());
@@ -1009,11 +928,7 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
         Publishes::new()
             .live_rows(move || rows.borrow().live_rows())
             .live_row(move |id| row.borrow().live_row(id))
-            // What the open document says (its pages' text, its outline, the
-            // current find hits) beside the markup the resource holds.
             .search_entries(move || entries.borrow().search_entries())
-            // The system's search reads the open document's every page, not
-            // only the pages the reader has shown.
             .search_query(move |_| {
                 query.borrow_mut().ask_search();
                 waker.wake();

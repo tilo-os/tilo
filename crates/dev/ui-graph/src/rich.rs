@@ -1,18 +1,16 @@
-//! Rich text as a component shows it: paragraphs with their marks, and how each reference in
-//! them reads for the person reading.
+//! Rich text as a component shows it: paragraphs with their marks, and how each reference in them
+//! reads for the person reading.
 //!
-//! The paragraphs are tilo-doc's, as the app keeps them (kind, text, marks counted in
-//! characters, attributes). A reference is a run marked `mention`, valued with what it refers
-//! to (`tilo_reference::embed`); beside the paragraphs, [`RichText::embeds`] says how each
-//! reference reads for this reader: their own inline view of it, resolved where the text was
-//! read, under their permissions. The component draws only what it is given.
+//! The paragraphs are tilo-doc's, as the app keeps them (kind, text, marks counted in characters,
+//! attributes). A reference is a run marked `mention`, valued with what it refers to
+//! (`tilo_reference::embed`); beside the paragraphs, [`RichText::embeds`] says how each reference
+//! reads for this reader, resolved where the text was read, under their permissions.
 //!
-//! A paragraph projecting a reference (`transclusion`, an embed) carries that reference's
-//! first content as the entry's [`preview`](Embed::preview): one level deep, every reference
-//! inside it a link, so a note embedding a note that embeds a note never opens out twice.
+//! A paragraph projecting a reference (a transclusion or an embed) carries that reference's first
+//! content as the entry's [`preview`](Embed::preview): one level deep, every reference inside it a
+//! link, so a note embedding a note that embeds a note never opens out twice.
 //!
-//! A window's patches are encoded without field names (postcard), so every field is always
-//! written: none is skipped when empty.
+//! A window's patches are encoded without field names (postcard), so every field is always written.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

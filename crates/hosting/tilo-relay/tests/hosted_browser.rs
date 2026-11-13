@@ -1931,3 +1931,189 @@ async fn only_the_windows_own_device_reports_what_it_holds() {
         "nobody is asked about a hold another device reports"
     );
 }
+
+/// What an environment's device asks of the host about itself
+/// ([`tilo_actions::remote::environment_device`]): `action` with `argument`.
+fn asks_about_itself(
+    invocation: InvocationId,
+    action: &str,
+    argument: InvokeArgument,
+) -> RemoteActionMessage {
+    RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: tilo_actions::remote::environment_device::target(action),
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    })
+}
+
+/// The window `tab` of `app`, as [`asks_about_itself`] names it.
+fn window_named(app: &str, tab: u64) -> InvokeArgument {
+    let serde_json::Value::Object(map) =
+        serde_json::to_value(tilo_actions::remote::environment_device::WindowShare {
+            app: app.to_owned(),
+            tab,
+        })
+        .unwrap()
+    else {
+        unreachable!("a window is an object");
+    };
+    InvokeArgument::Json(map)
+}
+
+#[tokio::test]
+async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    let id = InvocationId::new();
+    environment
+        .send(to_host(
+            WS,
+            fixture.home,
+            frame(asks_about_itself(
+                id,
+                tilo_actions::remote::environment_device::MEDIA_KEYS,
+                InvokeArgument::None,
+            )),
+        ))
+        .unwrap();
+    let receipt = receipt_for(&environment, id).await;
+    // This host governs no workspace's keys here, so it says so: the ask
+    // reached it, where every other action an environment starts is refused.
+    assert!(
+        matches!(
+            &receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionHostError::Unavailable { reason }
+            } if reason.contains("keys")
+        ),
+        "the environment's own ask is the host's to answer: {receipt:?}"
+    );
+
+    let agent = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let id = InvocationId::new();
+    agent
+        .send(to_host(
+            WS,
+            fixture.home,
+            frame(asks_about_itself(
+                id,
+                tilo_actions::remote::environment_device::MEDIA_KEYS,
+                InvokeArgument::None,
+            )),
+        ))
+        .unwrap();
+    let receipt = receipt_for(&agent, id).await;
+    assert!(
+        matches!(
+            receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionHostError::NotPermitted
+            }
+        ),
+        "a member that is no environment of the workspace is lent nothing: {receipt:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_shares_no_window_it_did_not_mint() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    // A window the agent's device minted: its id carries that device's salt.
+    let foreign = tilo_desktop_model::ids::IdMinter::new(
+        tilo_desktop_model::ids::device_salt_of_key(&fixture.agent.device_pubkey()),
+    )
+    .mint();
+    for action in [
+        tilo_actions::remote::environment_device::SHARE_WINDOW,
+        tilo_actions::remote::environment_device::END_WINDOW_SHARE,
+    ] {
+        let id = InvocationId::new();
+        environment
+            .send(to_host(
+                WS,
+                fixture.home,
+                frame(asks_about_itself(
+                    id,
+                    action,
+                    window_named("so.tilo.notes", foreign),
+                )),
+            ))
+            .unwrap();
+        let receipt = receipt_for(&environment, id).await;
+        assert!(
+            matches!(
+                receipt.status,
+                ReceiptStatus::Rejected {
+                    error: ActionHostError::NotPermitted
+                }
+            ),
+            "{action} of another device's window is refused: {receipt:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    let device = fixture.environments.material().device.device_public_key;
+    environment
+        .send(Envelope::Delta {
+            workspace_id: WS,
+            author_device_public_key: device,
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: b"a desk layout and a grant of its own making".to_vec(),
+            signature: [0; 64],
+        })
+        .unwrap();
+    // Neither refused nor kept: the session stays, and writes its own record.
+    environment
+        .send(Envelope::Delta {
+            workspace_id: WS,
+            author_device_public_key: device,
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: change(window_channel(), b"the page clicked"),
+            signature: [0; 64],
+        })
+        .unwrap();
+    let after = heard(&environment, std::time::Duration::from_millis(300)).await;
+    assert!(
+        !after
+            .iter()
+            .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
+        "a session that writes its desk as any session does is not cut for it: {after:?}"
+    );
+    let retained: Vec<Vec<u8>> =
+        tilo_relay::store::WorkspaceStore::open(&fixture.relay.state_root, WS, true)
+            .unwrap()
+            .load_retained()
+            .unwrap()
+            .into_iter()
+            .filter_map(
+                |frame| match tilo_relay::frame::decode(frame.get(4..)?).ok()? {
+                    Envelope::Delta { delta, .. } => Some(delta),
+                    _ => None,
+                },
+            )
+            .collect();
+    assert!(
+        !retained
+            .iter()
+            .any(|delta| delta.starts_with(b"a desk layout")),
+        "the workspace keeps nothing of its document from the environment's device"
+    );
+    assert_eq!(
+        retained.len(),
+        1,
+        "its own record's write is kept: {retained:?}"
+    );
+}

@@ -1,5 +1,5 @@
-//! Local host identity of the executing checked component callback: its
-//! lifetime scope, person, and device. Set only while a callback runs.
+//! Local host identity of the executing checked component callback: its lifetime scope, person, and
+//! device. Set only while a callback runs.
 use std::cell::RefCell;
 
 use crate::permissions::UserId;

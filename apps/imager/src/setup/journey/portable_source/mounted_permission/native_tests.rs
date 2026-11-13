@@ -1,4 +1,5 @@
 //! Actual shared-picker permission continuation, never a source epoch or receipt.
+
 use super::*;
 use std::{
     ffi::CString,
@@ -203,13 +204,9 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             ..Choices::default()
         },
     };
-    // Actual discovered custody is presented by the existing live effect/widget
-    // surface; no content epoch or granted child is seeded into the UI.
     {
         use crate::setup::journey::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
         use ui::framework::testing::TestApp;
-        // Capture mode intentionally publishes no mutable effect runner.
-        // Use the same live entry as --setup, on private scratch state.
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("HOME", &home);
         environment.set("XDG_CONFIG_HOME", temp.path().join("config"));
@@ -287,8 +284,6 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             assert!(!preview.portable_source.mounted_choices()[0].2);
         })
         .unwrap();
-        // Start a genuine platform request and verify the rendered cancel control
-        // follows exactly the same busy availability as the semantic effect.
         let actual_id = app
             .with_widget::<InstallerPreview, _>(|preview| {
                 preview.portable_source.mounted_choices()[0].0.clone()
@@ -379,8 +374,6 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
         controller.finish().unwrap_err(),
         "installer-mounted-home-grants-required"
     );
-    // The actual HostServices destructor blocks AFTER reply transmission. A
-    // channel reply must not clear busy before the production worker has exited.
     let (retiring_tx, retiring_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     {

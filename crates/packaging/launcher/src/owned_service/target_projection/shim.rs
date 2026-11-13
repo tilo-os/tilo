@@ -1,5 +1,5 @@
-//! Signed shim's transient root phase. Any error is fatal to that canonical
-//! service; `NamespaceOwner` retains the child until actual namespace teardown.
+//! Signed shim's transient root phase. Any error is fatal to that canonical service;
+//! `NamespaceOwner` retains the child until actual namespace teardown.
 use super::{
     AsRawFd, FUSE_FD, File, FromRawFd, FuseIdentity, MetadataExt, OpenOptionsExt, OsString,
     OsStringExt, OwnedFd, READY_FD, Read, Record, TOKEN_FD, TargetProjectionMode, UnixStream,
@@ -77,8 +77,7 @@ fn held_inode(file: &File) -> io::Result<u64> {
         .ok_or_else(|| refused("Target held read inode unavailable"))
 }
 impl RootTargetBootstrap {
-    /// Exact fixed descriptor admission, before mandatory Landlock. The caller
-    /// is the independently verified canonical native shim, never an app mode.
+    /// Exact fixed descriptor admission, before mandatory Landlock.
     pub fn prepare() -> io::Result<Self> {
         root()?;
         let record = receive_record(&duplicate(TOKEN_FD)?)?;
@@ -107,11 +106,7 @@ impl RootTargetBootstrap {
             filter,
         })
     }
-    /// Root kernel mount into root-private canonical namespace. No fuser
-    /// Session is created as root: its Owner ACL must snapshot the target UID.
-    ///
-    /// # Errors
-    /// Fails if private placement, mounting, receipt publication, descriptor handoff, or baseline filter installation fails. After mounting, the namespace owner must reclaim the namespace on failure.
+    /// Root kernel mount into root-private canonical namespace.
     pub fn mount_and_publish(mut self) -> io::Result<MountedTargetBootstrap> {
         root()?;
         let parent = private_parent()?;
@@ -135,8 +130,8 @@ impl RootTargetBootstrap {
             self.record.gid
         ))
         .map_err(io::Error::other)?;
-        // SAFETY: literal filesystem/source, owned held target directory and
-        // bounded NUL-terminated data remain live for the mount syscall.
+        // SAFETY: literal filesystem/source, owned held target directory and bounded NUL-terminated
+        // data remain live for the mount syscall.
         if unsafe {
             libc::mount(
                 c"tilo-retained".as_ptr(),
@@ -149,8 +144,8 @@ impl RootTargetBootstrap {
         {
             return Err(io::Error::last_os_error());
         }
-        // From successful mount onward errors are fatal; the canonical root
-        // NamespaceOwner, not lexical umount/drop, owns namespace reclamation.
+        // From successful mount onward errors are fatal; the canonical root NamespaceOwner, not
+        // lexical umount/drop, owns namespace reclamation.
         let view = open_child(&parent, c"view")?;
         let mounted_id = mount_id(&view)?;
         if mounted_id == mount_id(&parent)? {
@@ -158,8 +153,7 @@ impl RootTargetBootstrap {
         }
         self.record.namespaces = namespaces()?;
         self.record.mount_id = Some(mounted_id);
-        // Clone while still root IN the owning mount namespace. A foreign
-        // attached mount cannot be open_tree-cloned by the receiving root.
+        // Clone while still root IN the owning mount namespace.
         let exposure = super::exposure::clone_view(&view)?;
         self.record.clone_mount_id = Some(mount_id(&exposure)?);
         self.record.validate(true)?;
@@ -186,8 +180,8 @@ impl RootTargetBootstrap {
         if unsafe { libc::dup3(receipt.as_raw_fd(), TOKEN_FD, 0) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        // This exact compiled normal baseline closes the transient mount phase
-        // BEFORE mandatory LL or any credential transition.
+        // This exact compiled normal baseline closes the transient mount phase BEFORE mandatory LL or
+        // any credential transition.
         self.filter.install()?;
         drop(self.ready);
         Ok(MountedTargetBootstrap {
@@ -197,8 +191,7 @@ impl RootTargetBootstrap {
     }
 }
 impl MountedTargetBootstrap {
-    /// Consumes the exact root-opened mounted directory before ambient FD
-    /// closure. No caller-selected path/descriptor can replace this private FD.
+    /// Consumes the exact root-opened mounted directory before ambient FD closure.
     pub(crate) fn confine(
         &mut self,
         spec: &sandbox_core::landlock::RulesetSpec,
@@ -219,13 +212,12 @@ impl MountedTargetBootstrap {
             view.file.as_fd(),
             on_skip,
         );
-        // Must close before canonical close_ambient_fds, avoiding stale File
-        // ownership after the ambient closer and no new exec-inherited FD.
+        // Must close before canonical close_ambient_fds, avoiding stale File ownership after the
+        // ambient closer and no new exec-inherited FD.
         drop(view);
         result
     }
     /// Called exclusively after the canonical mandatory Landlock succeeds.
-    /// It cannot recreate transient mount privilege or admit source groups.
     pub fn drop_after_confinement(self) -> io::Result<()> {
         if self.readonly_view.is_some() {
             return Err(refused("Target worker missing held read confinement"));
@@ -276,20 +268,16 @@ fn private_parent() -> io::Result<File> {
     if m.uid() != 0 || m.mode() & 0o022 != 0 {
         return Err(refused("Target /run parent differs"));
     }
-    // The canonical sandbox already creates /run/tilo for app/person. Its root
-    // must remain root-owned and nonwritable by the target service.
+    // The canonical sandbox already creates /run/tilo for app/person.
     let tilo = open_child(&run, c"tilo")?;
     let m = tilo.metadata()?;
     if m.uid() != 0 || m.mode() & 0o022 != 0 {
         return Err(refused("Target service placement parent differs"));
     }
     // Root-private parent remains hidden even through /proc/<worker>/root.
-    // The target service needs only its inherited kernel channel, never this
-    // pathname; normal app access comes from the separately held root endpoint.
     child_directory(&tilo, c"target-projection", 0o700)
 }
-/// Constructor-private post-confinement FD admission. No pathname or FD number
-/// parameter permits a worker to select another mount/provider.
+/// Constructor-private post-confinement FD admission.
 pub struct AdmittedTargetFuse {
     fuse: OwnedFd,
     ready: TargetFuseReady,
@@ -339,9 +327,7 @@ impl AdmittedTargetFuse {
     }
 }
 impl TargetFuseReady {
-    /// Call only after actual `Session::from_fd` handshake. Root observes this
-    /// exact target task, not an app-authored readiness label, then checks the
-    /// held kernel endpoint with the connected source relay serving requests.
+    /// Call only after actual `Session::from_fd` handshake.
     pub fn serve_observations(mut self) -> io::Result<()> {
         verify_dropped(self.record.uid, self.record.gid)?;
         if namespaces()? != self.record.namespaces {

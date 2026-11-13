@@ -1,6 +1,5 @@
-//! The window bar at every width from a phone's to a wide display's: every
-//! control has a slot of its own, and the location stays inside the room
-//! the controls leave it.
+//! The window bar at every width from a phone's to a wide display's: every control has a slot of its
+//! own, and the location stays inside the room the controls leave it.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -12,13 +11,12 @@ use crate::window_toolbar::{
     LocationSegment, ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
 };
 
-/// From the narrowest window (`window_min_width`) to a wide display.
 const WIDTHS: [f64; 12] = [
     320.0, 360.0, 390.0, 420.0, 480.0, 560.0, 640.0, 720.0, 840.0, 1024.0, 1280.0, 1440.0,
 ];
 
-/// A folder deep in the home, as Files names it: its levels a breadcrumb,
-/// its path editable, and Files' actions.
+/// A folder deep in the home, as Files names it: its levels a breadcrumb, its path editable, and Files'
+/// actions.
 fn deep_folder() -> WindowToolbar {
     let levels = [
         "Home",
@@ -59,9 +57,8 @@ fn deep_folder() -> WindowToolbar {
     }
 }
 
-/// The bar of a window `width` wide showing `toolbar`, with the window's
-/// History, laid out and painted twice, as a window's first frames
-/// measure and then lay out its labels.
+/// The bar of a window `width` wide showing `toolbar`, with the window's History, laid out and painted
+/// twice, as a window's first frames measure and then lay out its labels.
 fn bar_at(harness: &mut FrameHarness, width: f64) -> TabBar {
     let mut bar = harness.window_bar(width);
     bar.set_history_control(super::TAB, Some(crate::widget::HistoryControl::of(false)));
@@ -78,9 +75,8 @@ fn bar_at(harness: &mut FrameHarness, width: f64) -> TabBar {
     bar
 }
 
-/// Every control the bar shows, by name: the app's icon, the app's slots,
-/// the window's search and its own controls. The location is not one: it
-/// takes what they leave.
+/// Every control the bar shows, by name: the app's icon, the app's slots, the window's search and its
+/// own controls.
 fn controls(bar: &TabBar) -> Vec<(String, Rect)> {
     let mut out: Vec<(String, Rect)> = bar
         .test_rects()
@@ -106,10 +102,9 @@ fn overlap(a: Rect, b: Rect) -> bool {
     i.width() > 0.01 && i.height() > 0.01
 }
 
-/// At every width, no two of the bar's controls overlap, every one stands
-/// inside the window, the location stands clear of all of them, and its
-/// breadcrumb paints inside it: its middle levels fold into the `…`, then
-/// the folder's own name is cut short, and nothing runs past its end.
+/// At every width, no two of the bar's controls overlap, every one stands inside the window, the
+/// location stands clear of all of them, and its breadcrumb paints inside it: its middle levels fold
+/// into the `…`, then the folder's own name is cut short, and nothing runs past its end.
 #[test]
 fn a_deep_folders_bar_gives_every_control_its_slot_at_every_width() {
     let _hosted = HostedReset;
@@ -189,9 +184,8 @@ fn a_deep_folders_bar_gives_every_control_its_slot_at_every_width() {
     crate::window_toolbar::declare(None);
 }
 
-/// The window's own controls are a group of their own at the trailing
-/// edge, a group's gap from the app's controls before them, and they stand
-/// in the same place however many controls the app has.
+/// The window's own controls are a group of their own at the trailing edge, a group's gap from the
+/// app's controls before them, and they stand in the same place however many controls the app has.
 #[test]
 fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
     let _hosted = HostedReset;

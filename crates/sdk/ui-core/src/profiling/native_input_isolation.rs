@@ -14,8 +14,6 @@ pub(super) fn dispatch(
     event: WindowEvent,
     deliver: impl FnOnce(WindowEvent),
 ) -> bool {
-    // Keep focus, visibility, scale, resize, redraw and close notifications:
-    // those are real lifecycle state, not replaceable scripted input.
     if isolated
         && origin == EventOrigin::Platform
         && matches!(
@@ -110,7 +108,6 @@ mod tests {
                 driver.send(&event)
             }));
             assert_eq!(offset.get().1, moved);
-            // The normal route still admits physical input; outside hover blocks wheel.
             assert!(dispatch(
                 false,
                 EventOrigin::Platform,

@@ -55,7 +55,7 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
     crate::directory::workspace_notice(
         notices,
         ("session-left-workspace", "session-left-workspace-body"),
-        name,
+        &tilo_desktop_surface::names::workspace(name),
     );
 }
 
@@ -1006,7 +1006,13 @@ impl crate::Shared {
                     workspace.slot,
                     workspace.id(),
                 );
-                let (name, endpoint) = (workspace.name.clone(), endpoint.clone());
+                // The name it is founded under is the one a person reads: a workspace nobody
+                // named keeps no name of its own, and a workspace is founded under a name, so
+                // the word the desk reads for it stands in until one is given.
+                let (name, endpoint) = (
+                    tilo_desktop_surface::names::workspace(&workspace.name),
+                    endpoint.clone(),
+                );
                 let founded = crate::landing::off_loop(async move {
                     engine.found(slot, id, &name, endpoint.as_ref()).await;
                 });
@@ -1228,7 +1234,7 @@ impl crate::Shared {
                     tree.workspaces
                         .iter()
                         .find(|workspace| workspace.id() == enrolled.workspace_id)
-                        .map(|workspace| workspace.name.clone())
+                        .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
                 })
                 .unwrap_or_else(|| key.clone());
             // The name the site listed the workspace under, not the id the desk numbers it by: a
@@ -1534,6 +1540,11 @@ impl crate::Shared {
                 cert,
                 revoked: false,
                 browser: None,
+                // What the keys' sessions on a host said of them is that
+                // host's to keep, not this list's.
+                agent: None,
+                last_active_ms: None,
+                online: false,
             })
             .collect();
         }
@@ -1564,15 +1575,17 @@ impl crate::Shared {
         };
         // A workspace this desk holds already says itself where its host is
         // reached, should none of the person's devices have said it yet.
-        // ignored-failure: a held workspace whose state cannot be read has no hint of its own; the person's devices say one
         let hint = sync.host_hint(&workspace).or_else(|| {
             opened
                 .held
                 .then(|| {
-                    engine
-                        .owner()
-                        .with_current(opened.workspace, |view| view.transport_hint().cloned())
-                        .ok()
+                    tilo_failure::ignored!(
+                        "a held workspace whose state cannot be read has no hint, and the person's devices say one",
+                        engine
+                            .owner()
+                            .with_current(opened.workspace, |view| view.transport_hint().cloned())
+                            .ok()
+                    )
                 })
                 .flatten()
         });

@@ -1,18 +1,13 @@
-//! `Tone`: the one vocabulary content composites use when a mark carries
-//! meaning. Colour means that someone is there or that something is
-//! happening, so a tone is either a status or a person; there is no
-//! decorative tone.
-
+//! `Tone`: the one vocabulary content composites use when a mark carries meaning. Colour means that
+//! someone is there or that something is happening, so a tone is either a status or a person; there
+//! is no decorative tone.
 use vello::peniko::Color;
 
 use crate::theme::Theme;
 use crate::tokens::colors::PresenceHue;
 
-/// What a coloured mark (a card's leading stripe, a stat's ticker, an empty
-/// state's glyph) means.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tone {
-    /// No status: secondary ink.
     #[default]
     Neutral,
     Success,
@@ -20,7 +15,6 @@ pub enum Tone {
     Danger,
     /// Information that is not a warning (an update is available).
     Info,
-    /// A person's or an agent's presence colour (a reviewer, an author).
     Presence(PresenceHue),
 }
 
@@ -38,14 +32,12 @@ impl Tone {
         }
     }
 
-    /// The presence tone of the person `identity`.
     #[must_use]
     pub fn of_identity(identity: &str) -> Self {
         Self::Presence(PresenceHue::of_identity(identity))
     }
 }
 
-// A status as a component's prop; a person's tone comes from the person a component shows.
 crate::component::choice!(Tone, "Tone", {
     Neutral => "neutral",
     Success => "success",

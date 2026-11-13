@@ -1,15 +1,12 @@
-//! How the host reaches a guest's vsock ports.
+//! How the host reaches a guest's vsock ports, the guest always speaking
+//! `AF_VSOCK`. On a host with `/dev/vhost-vsock` the domain gets a
+//! `vhost-vsock` device and the host connects to the guest's context id;
+//! otherwise QEMU's `vhost-user-vsock` device, served by the unprivileged
+//! `vhost-device-vsock` daemon, maps the guest's vsock onto Unix sockets.
 //!
-//! The guest always speaks `AF_VSOCK`. On the host there are two ways in:
-//!
-//! - **Kernel**: the domain has a `vhost-vsock` device and the host connects
-//!   with `AF_VSOCK` to the guest's context id. Needs `/dev/vhost-vsock`.
-//! - **Hybrid**: QEMU's `vhost-user-vsock` device is served by the
-//!   unprivileged `vhost-device-vsock` daemon, which maps the guest's vsock
-//!   onto Unix sockets: the host connects to one socket and asks for a port
-//!   (`CONNECT <port>\n` → `OK <port>\n`), and a guest connecting to the
-//!   host's port `P` reaches the Unix socket `<socket>_P`. For hosts whose
-//!   kernel has no `vhost_vsock` (nested and sandboxed hosts).
+//! - Unix socket: the host connects and asks for a port (`CONNECT <port>\n` →
+//!   `OK <port>\n`), and a guest connecting to the host's port `P` reaches
+//!   `<socket>_P`.
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -43,7 +40,6 @@ impl AgentLink {
         }
     }
 
-    /// Where a hybrid host listens for the guest's connections to `port`.
     #[must_use]
     pub fn hybrid_listener(socket: &Path, port: u32) -> PathBuf {
         let mut path = socket.as_os_str().to_owned();
@@ -81,7 +77,6 @@ fn hybrid_connect(socket: &Path, port: u32) -> io::Result<UnixStream> {
     }
 }
 
-/// One connection to a guest port, over either link.
 #[derive(Debug)]
 pub enum AgentStream {
     #[cfg(target_os = "linux")]

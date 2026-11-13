@@ -1,33 +1,15 @@
 //! The supervisor: authenticated control and individually leased shell sessions.
 //!
-//! Runs on the host, in the user's session, outside every app sandbox — the
-//! only thing here that holds `unshare` and `mount`, and it hands none of
-//! that to the guest; see the trust boundary in [`crate::lib`](crate).
+//! It runs on the host in the user's session, outside every app sandbox: the only thing
+//! here that holds `unshare` and `mount`, and it hands none of that to the guest (see the
+//! trust boundary in [`crate::lib`](crate)). It resolves the record and its images, makes
+//! the guest's network namespace and filter, starts the broker, then spawns `bwrap` and
+//! restarts it if asked.
 //!
-//! ```text
-//! ush
-//!  ├─ resolve the environment record (the default is made on first use)
-//!  ├─ resolve its images to read-only trees                (crate::images)
-//!  ├─ a network namespace of its own, its DNS stub, its
-//!  │  nftables and pasta, from the NetHost grants          (tilo_egress)
-//!  ├─ compile the guest's seccomp filter                   (crate::seccomp)
-//!  ├─ start the broker on a socket in the session dir      (crate::broker)
-//!  ├─ spawn bwrap ─┬─ (inside the network namespace) unshare, stack, pivot
-//!  │               ├─ install the seccomp filter        ← the boundary
-//!  │               └─ exec tilo-ush guest-init ─┬─ install Landlock
-//!  │                                           └─ exec the shell
-//!  ├─ wait
-//!  └─ restart if asked, from the record as it stands then
-//! ```
-//!
-//! # `serve` — how an app reaches a guest
-//!
-//! A Tilo app cannot build a namespace (its seccomp filter denies the
-//! syscalls and its sandbox has no path to this binary), so `apps/terminal`
-//! asks for a guest instead of starting one: `tilo-ush serve` listens on a
-//! socket `tilo-launcher` passes every app as a connected descriptor, and one
-//! line of JSON naming a [`Target`] gets back a pty master over `SCM_RIGHTS` —
-//! a terminal, never a namespace or a capability.
+//! An app cannot build a namespace, so `apps/terminal` asks for a guest instead:
+//! `tilo-ush serve` listens on a socket `tilo-launcher` passes every app, and one line of
+//! JSON naming a [`Target`] gets back a pty master over `SCM_RIGHTS` — a terminal, never a
+//! namespace or a capability.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
@@ -52,30 +34,16 @@ use crate::store::Store;
 mod session_end;
 use session_end::{EndReport, EndWatch, GuestEnd, watch_setup};
 
-/// What the user asked for on the command line.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
-    /// The environment record to build from; `None` is the default
-    /// environment.
     pub environment: Option<String>,
-    /// `ush -c "…"`. Empty means an interactive shell.
     pub command: Vec<String>,
     pub term: String,
-    /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
-    /// The key the shell marks its command runs with for Terminal
-    /// ([`crate::runs`]); `None` marks nothing.
     pub runs: Option<String>,
-    /// Connected participant-private editing endpoint from this served session.
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
-    /// A served session's terminal ([`crate::setup`]): standard error is the
-    /// supervisor's, and the guest's shell gets this as its own. `None` when
-    /// `ush` runs on a terminal of its own.
     pub terminal: Option<Arc<OwnedFd>>,
-    /// The environment's own agent door, which the guest sees at
-    /// [`tilo_paths::login::GUEST_AGENT_SOCKET`] ([`crate::agent_door`]): set
-    /// while the session holds its lease. `None` binds none.
     pub agent_door: Option<PathBuf>,
     /// On a host that serves other people's workspaces: the workspace's
     /// own VM runs the session's programs, not a guest on this kernel
@@ -102,8 +70,6 @@ impl Default for SessionOptions {
     }
 }
 
-/// Printed beneath the actual setup error, including loader failures.
-/// No mount-specific advice is given for unrelated startup failures.
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
 ush: the setup error is above.";
@@ -138,14 +104,14 @@ pub fn egress_options(host_root: &Path) -> EgressOptions {
     options
 }
 
-/// Where the runtime's own binary is, as the supervisor sees it.
-/// `current_exe` rather than a constant: the guest must run the same build
-/// that built its confinement, which in a dev tree is under `target/`.
+/// Where the runtime's own binary is, as the supervisor sees it. `current_exe` rather
+/// than a constant: the guest must run the same build that built its confinement, which
+/// in a dev tree is under `target/`.
 ///
 /// # Errors
 ///
-/// Returns an error if `TILO_USH_BIN` is unset and
-/// [`std::env::current_exe`] cannot resolve the running binary's path.
+/// When `TILO_USH_BIN` is unset and [`std::env::current_exe`] cannot resolve the running
+/// binary.
 pub fn runtime_binary() -> std::io::Result<PathBuf> {
     if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         return Ok(PathBuf::from(explicit));
@@ -153,7 +119,6 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// One session, built and torn down.
 pub struct Session {
     pub store: Store,
     pub opts: SessionOptions,
@@ -162,12 +127,10 @@ pub struct Session {
     pub builder: Arc<dyn ToolBuilder>,
 }
 
-/// An environment resolved for one guest: its record and its image trees.
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub key: String,
     pub environment: Environment,
-    /// `(label, root)`, topmost first: tools newest first, the runtime last.
     pub images: Vec<(String, PathBuf)>,
 }
 
@@ -191,15 +154,10 @@ impl Session {
         Records::of(&self.store)
     }
 
-    /// The environment `key` of this session's workspace, by its id
-    /// ([`crate::workspace::EnvironmentId`]).
     pub(crate) fn environment_id(&self, key: &str) -> String {
         format!("{}/{key}", self.store.workspace_id())
     }
 
-    /// What every program of the session starts with to say where it runs:
-    /// the workspace ([`crate::workspace::WORKSPACE_ENV`]) and the
-    /// environment ([`crate::workspace::ENVIRONMENT_ENV`]).
     pub(crate) fn workspace_env(&self, key: &str) -> Vec<(String, String)> {
         vec![
             (
@@ -273,8 +231,6 @@ impl Session {
         })
     }
 
-    /// This node's image of `tool`, checked to be built for `runtime` and
-    /// available here; the reason when there is none to use.
     fn tool_image(
         &self,
         tool: &tilo_environment::ToolRef,
@@ -326,12 +282,10 @@ impl Session {
             home_by_grants,
             user,
             environment: resolved.environment.name.clone(),
-            // Every workspace's records with this one's: an environment
-            // granted the user's data home reaches none of them.
             masked: [
                 Some(canonical(self.store.root())),
                 Some(canonical(self.store.records_root())),
-                self.store.rooms_dir().map(|rooms| canonical(&rooms)),
+                self.store.workspaces_dir().map(|dir| canonical(&dir)),
             ]
             .into_iter()
             .flatten()
@@ -369,21 +323,12 @@ impl Session {
         Ok((netns, egress))
     }
 
-    /// Run the session to completion: an interactive one is ush's shell on
-    /// the Tilo side ([`crate::tilo_side`]), a command runs in a guest of its
-    /// own. Returns the exit code.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the store cannot be prepared, or if building or
-    /// running a guest fails.
     pub fn run(&mut self) -> anyhow::Result<i32> {
         if self.opts.command.is_empty() {
             return self.run_tilo_side(None);
         }
         self.store.ensure()?;
         let resolved = self.resolve()?;
-        // Held for the session's life: the door closes with it.
         let door = crate::agent_door::open_for(
             &self.store,
             &self.environment_id(&resolved.key),
@@ -394,13 +339,10 @@ impl Session {
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.run_guest(&resolved, &session_dir);
         drop(door);
-        // Holds the generated `/etc`, the broker socket, an ephemeral home.
         crate::guest::remove_dir_all_forced(&session_dir);
         outcome
     }
 
-    /// What the session's broker holds: the environment, its audit log, and
-    /// who and where the session is.
     pub(crate) fn broker_state(
         &self,
         resolved: &Resolved,
@@ -426,7 +368,6 @@ impl Session {
         }
     }
 
-    /// Run the session's command in a guest of its own, to its end.
     fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<i32> {
         // Before anything else: a guest whose network cannot be confined as
         // its record says does not start.
@@ -480,15 +421,12 @@ impl Session {
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
-            // Served, the setup error above went to the supervisor's log;
-            // the session reports that no shell started.
             if self.opts.terminal.is_some() {
                 anyhow::bail!("{NOT_STARTED}");
             }
             eprintln!("{SANDBOX_SETUP_FAILED}");
         }
         drop(broker);
-        // The stub and pasta stop before the namespace's holder goes.
         drop(egress);
         drop(netns);
         Ok(code)
@@ -505,13 +443,9 @@ fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
     }
 }
 
-// serve — handing a guest to an app
-
-/// What an app asks for over the service socket.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum ServeRequest {
-    /// Open a session on `target` and hand back its pty master.
     OpenSession {
         #[serde(default)]
         target: Target,
@@ -530,11 +464,8 @@ pub enum ServeRequest {
         /// [`Target::Host`].
         #[serde(default)]
         requested_by: crate::host::RequestedBy,
-        /// The key the session's shell marks its command runs with
-        /// ([`crate::runs`]), chosen by the app for this session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runs: Option<String>,
-        /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
         /// Explicit opt-in: before a session's lease closes, tell the app on
@@ -544,18 +475,16 @@ pub enum ServeRequest {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         end_report: bool,
     },
-    /// The environments there are, for Terminal's picker and its
-    /// environments panel.
     ListEnvironments,
     /// The person allowed Terminal's Host target, for `expiry` (the shell's
     /// permission prompt answers with this). Only a caller outside every app
     /// sandbox — the shell — may record it.
-    AllowHost { expiry: collab_types::caps::Expiry },
-    /// Make a new environment on the default environment's runtime, with
-    /// nothing added and nothing granted. Answers with every environment.
-    CreateEnvironment { name: String },
-    /// Apply one of the record's actions (`rename`) to an environment.
-    /// Answers with every environment.
+    AllowHost {
+        expiry: collab_types::caps::Expiry,
+    },
+    CreateEnvironment {
+        name: String,
+    },
     EnvironmentAction {
         record: String,
         action: String,
@@ -565,17 +494,16 @@ pub enum ServeRequest {
     /// Branch the environments of the request's workspace into the workspace
     /// `into`, a branch of it the person made ([`crate::branch`]). Only the
     /// session may ask: an app names no workspace but its own.
-    BranchWorkspace { into: String },
+    BranchWorkspace {
+        into: String,
+    },
 }
 
-/// One environment as an app sees it: what it is called, what it has, and
-/// which directories it was granted.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnvironmentEntry {
     pub key: String,
     pub name: String,
     pub tools: Vec<String>,
-    /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
 }
 
@@ -617,16 +545,11 @@ fn default_rows() -> u16 {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum ServeResponse {
-    /// The pty master follows as an `SCM_RIGHTS` descriptor on this message.
     Session {
         session: String,
-        /// The environment record the session was built from.
         environment: String,
-        /// The session's shell is asked to mark its runs with the key the
-        /// request named. A shell other than `bash` writes no marks.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         runs: bool,
-        /// V1 bundles PTY first, private editor second, under this session's lifetime.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
     },
@@ -645,13 +568,10 @@ pub enum ServeResponse {
     NoRuntime {
         reason: String,
     },
-    /// Every environment, by key.
     Environments {
         environments: Vec<EnvironmentEntry>,
     },
-    /// The allow was recorded.
     Allowed,
-    /// The workspace's environments are the branch's too.
     Branched {
         #[serde(flatten)]
         branched: crate::branch::Branched,
@@ -727,18 +647,14 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
 /// without end.
 const MAX_REQUESTS_PER_CONNECTION: usize = 8;
 
-/// Whether a request ended the connection's use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Served {
     /// Answered for good: a session ran, or the request was not one to retry.
     Done,
-    /// An open was refused; the app may ask again on this connection.
     Refused,
-    /// A malformed message cannot retain persistent control.
     Malformed,
 }
 
-/// Persistent control speaks version two; legacy clients keep their single lease.
 pub const SERVICE_PROTOCOL: u16 = 2;
 const MAX_ACTIVE_SESSIONS: usize = 8;
 const MAX_SERVICE_LINE: u64 = 4096;
@@ -854,8 +770,6 @@ fn parse_service_request(
     }
 }
 
-/// The workspace a request line names: its top-level `workspace`, beside
-/// whatever the request is ([`crate::workspace::scope_of`]).
 #[derive(Debug, Default, serde::Deserialize)]
 struct RequestScope {
     #[serde(default)]
@@ -873,8 +787,6 @@ fn serve_request(
     let Some(req) = parse_service_request(writer, line)? else {
         return Ok(Served::Malformed);
     };
-    // Everything below is the workspace's: its records, its environments'
-    // state and its files as their home.
     let asked = serde_json::from_str::<RequestScope>(line)
         .unwrap_or_default()
         .workspace;
@@ -968,8 +880,6 @@ fn serve_guest_session(
     )
 }
 
-/// Build the guest of an environment on this device on a fresh pty and hand
-/// its master to the app; the connection is the session's lifetime.
 fn open_environment(
     transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
@@ -1108,8 +1018,6 @@ fn hand_off_session(
         error
     };
     if !transport.persistent {
-        // The legacy lease is the request connection itself: PTY first, then
-        // the editor capability when one was negotiated.
         if let Some(app) = &editor {
             let mut bytes = serde_json::to_vec(response)?;
             bytes.push(b'\n');
@@ -1141,8 +1049,6 @@ fn hand_off_session(
         protocol: SERVICE_PROTOCOL,
     })?;
     bytes.push(b'\n');
-    // Roles, in order: PTY master, private session lease, then the editor
-    // capability when `editor_protocol` was negotiated.
     let mut rights = vec![master.as_fd(), terminal_lease.as_fd()];
     if let Some(app) = &editor {
         rights.push(app.as_fd());
@@ -1240,7 +1146,6 @@ fn allow_host(
     }
 }
 
-/// Branch the environments of the workspace `store` is of into `into`, for the session alone.
 fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> ServeResponse {
     if *caller != crate::host::Caller::Session {
         return ServeResponse::Denied {
@@ -1267,7 +1172,6 @@ fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> 
     }
 }
 
-/// Answer a request about the environments themselves.
 fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
     let records = Records::of(store);
     match req {
@@ -1276,8 +1180,6 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
             if name.is_empty() {
                 return Err("an environment needs a name".into());
             }
-            // A new environment starts on the default environment's runtime
-            // release, or on the newest one this device holds.
             let env = if let Ok(Some(default)) = records.load(tilo_environment::DEFAULT_RECORD) {
                 Environment {
                     name: name.to_owned(),
@@ -1340,8 +1242,6 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
     Ok(out)
 }
 
-/// Run the device's own login shell on a fresh pty and hand its master to
-/// the app — once [`crate::host::decide_host`] allows `caller` this request.
 fn serve_host(
     transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
@@ -1400,7 +1300,6 @@ fn serve_host(
         "open-session",
         true,
     ));
-    // The interactive shell starts as a guest's does (crate::shell_start).
     let interactive_bash = command.is_empty() && crate::runs::is_bash(&account.shell);
     let key = runs
         .as_deref()
@@ -1455,13 +1354,11 @@ fn mark_terminal_session(stream: &UnixStream, leader: u32, session: &str) {
     }
 }
 
-/// The pid the kernel names for the other end of `stream`.
 #[cfg(not(target_os = "linux"))]
 fn peer_pid(_stream: &UnixStream) -> Option<u32> {
     None
 }
 
-/// The pid the kernel names for the other end of `stream`.
 #[cfg(target_os = "linux")]
 fn peer_pid(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
@@ -1471,7 +1368,6 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
         gid: 0,
     };
     let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: `cred` and `len` are live, correctly sized out-parameters.
     let rc = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -1485,16 +1381,15 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     u32::try_from(cred.pid).ok().filter(|pid| *pid != 0)
 }
 
-/// Wait for whichever side of a served session ends first and tear the
-/// other down; returns the line the audit log records.
+/// Wait for whichever side of a served session ends first and tear the other down; returns
+/// the line the audit log records.
 ///
-/// The private lease (or legacy request connection) is the lifetime capability, in
-/// both directions. When Terminal closes (or crashes) its end, this tears
-/// down exactly the child it created: dropping the pty master is not enough
-/// because a PID-namespace init may survive a terminal hangup. When the
-/// child exits first, it is reaped at once and the connection closed, which
-/// is how Terminal tells a finished session from the hand-off window in which
-/// its PTY master also reports `EIO`.
+/// The private lease is the lifetime capability in both directions. When Terminal closes
+/// its end, this tears down exactly the child it created: dropping the pty master is not
+/// enough, because a PID-namespace init may survive a terminal hangup. When the child exits
+/// first it is reaped at once and the connection closed, which is how Terminal tells a
+/// finished session from the hand-off window in which its pty master also reports
+/// `EIO`.
 fn finish_session(
     stream: &UnixStream,
     mut child: std::process::Child,
@@ -1541,7 +1436,6 @@ fn finish_session(
     }
 }
 
-/// Which side ended a hosted session first.
 #[derive(Debug, PartialEq, Eq)]
 enum LifetimeEnd {
     GuestExited,
@@ -1558,8 +1452,6 @@ fn wait_for_guest_or_terminal(stream: &UnixStream, child: &std::process::Child) 
     let Ok(pid) = libc::pid_t::try_from(child.id()) else {
         return wait_for_terminal(stream);
     };
-    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor
-    // or -1; it reads no memory from this process.
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     let Ok(raw) = std::os::fd::RawFd::try_from(raw) else {
         return wait_for_terminal(stream);
@@ -1567,7 +1459,6 @@ fn wait_for_guest_or_terminal(stream: &UnixStream, child: &std::process::Child) 
     if raw < 0 {
         return wait_for_terminal(stream);
     }
-    // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
     let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
     let mut fds = [
         libc::pollfd {
@@ -1582,7 +1473,6 @@ fn wait_for_guest_or_terminal(stream: &UnixStream, child: &std::process::Child) 
         },
     ];
     loop {
-        // SAFETY: `fds` is a valid array of two initialised pollfd entries.
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
         if ready >= 0 {
             break;
@@ -1605,21 +1495,16 @@ fn wait_for_terminal(stream: &UnixStream) -> LifetimeEnd {
     LifetimeEnd::TerminalClosed
 }
 
-/// What a served session runs: `tilo-ush run` on the same store, for one
-/// environment.
 struct Launch<'a> {
     store: &'a Store,
     environment: Option<&'a str>,
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
-    /// The key the session's shell marks its runs with.
     runs: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
-/// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
-/// pty as its controlling terminal.
 fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
@@ -1627,8 +1512,6 @@ fn spawn_attached(
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
-    // The pty is the guest's; `ush run`'s own standard error is this
-    // supervisor's, read by `watch_setup` (`crate::setup`).
     cmd.arg(crate::setup::TERMINAL_FD_ARG)
         .arg(crate::setup::TERMINAL_FD.to_string());
     if let Some(record) = launch.environment {
@@ -1690,8 +1573,6 @@ fn spawn_attached(
     Ok((child, read))
 }
 
-/// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
-/// its controlling terminal.
 fn spawn_on_pty(
     cmd: std::process::Command,
     slave: &std::fs::File,
@@ -1699,14 +1580,9 @@ fn spawn_on_pty(
     spawn_on_pty_with(cmd, slave, None)
 }
 
-/// [`spawn_on_pty`], with `diagnostics` as standard error in place of the
-/// pty, which the child then holds at [`crate::setup::TERMINAL_FD`] as well.
-/// A pipe whose write end becomes the spawned child's stderr: what `ush run`
-/// reports while it sets the guest up, read by [`watch_setup`].
 fn diagnostics_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     use std::os::fd::FromRawFd;
     let mut fds = [0; 2];
-    // SAFETY: `fds` holds the two descriptors pipe2 creates.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -1757,7 +1633,6 @@ fn spawn_on_pty_with(
     cmd.spawn()
 }
 
-/// Open a pty pair sized for the caller's grid.
 fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::File)> {
     use std::os::fd::FromRawFd;
     let mut master: RawFd = -1;
@@ -1768,8 +1643,6 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // SAFETY: both fds are out-parameters `openpty` fills in; `size` is a
-    // properly initialised `winsize`.
     let rc = unsafe {
         libc::openpty(
             &raw mut master,
@@ -1791,7 +1664,6 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
     })
 }
 
-/// Write a reply, optionally carrying one descriptor.
 fn reply(
     stream: &mut UnixStream,
     response: &ServeResponse,
@@ -1809,7 +1681,6 @@ fn reply(
     Ok(())
 }
 
-/// `sendmsg` with a single-descriptor `SCM_RIGHTS` control message.
 pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 
 #[cfg(test)]
@@ -1818,9 +1689,6 @@ mod tests {
     use tilo_environment::{DEFAULT_RECORD, PackageId};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A Host session's marked `bash` is the person's interactive login
-    /// shell on a real pty: it reads their `~/.bash_profile`, and Tab
-    /// completes a unique path prefix.
     #[test]
     fn a_marked_host_shell_is_a_login_shell_and_tab_completes() {
         use std::io::{Read as _, Write as _};
@@ -2006,7 +1874,6 @@ mod tests {
             ));
             let reader_clone = lease.clone_for_reader().unwrap();
             let terminal = std::fs::File::from(rights.pop().unwrap());
-            // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
             assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
             drop(lease);
             tilo_test_env::wait_until("the session to be reaped", || {
@@ -2084,7 +1951,6 @@ mod tests {
 
     #[test]
     fn the_session_ends_when_the_guest_or_the_terminal_does() {
-        // phase: a_guest_that_exits_first_ends_the_session_without_the_terminal
         {
             let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
             let mut child = std::process::Command::new("true")
@@ -2097,7 +1963,6 @@ mod tests {
             );
             assert!(child.wait().expect("reap guest").success());
         }
-        // phase: a_closed_terminal_ends_the_session_of_a_running_guest
         {
             let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
             let mut child = std::process::Command::new("sleep")
@@ -2228,11 +2093,6 @@ mod tests {
         );
     }
 
-    /// Terminal parses this reply strictly (`UshSessionReply` in
-    /// `apps/terminal/src/main_body.rs`, unknown fields refused), and its test
-    /// `a_session_that_marks_its_runs_opens_and_keeps_the_key` sends these
-    /// bytes. A field added here must be added there too, or every open of a
-    /// session that sends it fails as a malformed reply.
     #[test]
     fn a_session_reply_keeps_its_wire_form() {
         let reply = ServeResponse::Session {
@@ -2273,8 +2133,6 @@ mod tests {
         let err = decide_serve(&open(Target::Host)).unwrap_err();
         assert!(err.starts_with("not available"), "{err}");
 
-        // The host target says when an agent asked for it; leaving it out is
-        // the person.
         let host: ServeRequest = serde_json::from_str(
             r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
         )
@@ -2472,10 +2330,6 @@ mod tests {
         );
     }
 
-    /// An environment asks the session for its own agent door by its id,
-    /// naming the workspace its record belongs to (none for the primary
-    /// workspace, which the session knows by no id), and its guest gets the
-    /// door the session answered at the path its variable names.
     #[test]
     fn an_environment_asks_for_its_door_in_its_records_workspace_and_binds_it() {
         use std::io::{BufRead as _, Write as _};
@@ -2575,10 +2429,6 @@ mod tests {
         );
     }
 
-    /// A session in a workspace builds its guest from that workspace's
-    /// record: its own files as `~`, bound by their grant and nothing else
-    /// of the device's files, and its processes told the workspace and the
-    /// environment.
     #[test]
     fn a_workspace_session_is_planned_with_its_own_files_and_says_where_it_runs() {
         const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -2673,7 +2523,6 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("SHELL", "/bin/bash");
 
-        // First use creates the default environment on the current runtime.
         let resolved = session.resolve().unwrap();
         assert_eq!(resolved.key, DEFAULT_RECORD);
         assert_eq!(resolved.images.len(), 1);
@@ -2719,7 +2568,6 @@ mod tests {
             session.store.environment_home(DEFAULT_RECORD)
         );
         assert_eq!(plan.var_dir, session.store.environment_var(DEFAULT_RECORD));
-        // A session's guest hosts ush's own shell.
         assert_eq!(plan.shell, crate::shell_host::guest_shell_path());
         assert_eq!(plan.environment, tilo_environment::DEFAULT_NAME);
         assert!(
@@ -2838,18 +2686,13 @@ mod tests {
 
     #[test]
     fn a_pty_opens_at_the_requested_size_and_survives_the_socket() {
-        // phase: a_pty_pair_opens_at_the_requested_size
         {
             let (master, _slave) = open_pty(120, 40).unwrap();
             let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-            // SAFETY: `master` is a live pty master descriptor.
             let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
             assert_eq!(rc, 0);
             assert_eq!((size.ws_col, size.ws_row), (120, 40));
         }
-        // phase: a_descriptor_survives_the_socket
-        // The descriptor really crosses the socket — this is the whole mechanism
-        // by which a sandboxed app gets a terminal without getting a namespace.
         {
             let (a, b) = UnixStream::pair().unwrap();
             let (master, mut slave) = open_pty(80, 24).unwrap();

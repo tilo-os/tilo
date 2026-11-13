@@ -1,8 +1,6 @@
-//! Capability probes for the Tier 1 data plane and the tier they select.
-//!
-//! Every probe exercises the feature on the store volume and reports what
-//! the kernel actually did; nothing is inferred from a version string. The
-//! kernel facts are K1–K6.
+//! Capability probes for the Tier 1 data plane and the tier they select. Every
+//! probe exercises the feature on the store volume and reports what the kernel
+//! actually did; nothing is inferred from a version string.
 
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -23,7 +21,6 @@ use crate::{btrfs, extents, store, sys};
 pub enum Status {
     Supported,
     Unsupported,
-    /// The probe could not run here (for example without privileges).
     Unknown,
 }
 
@@ -55,7 +52,6 @@ fn run(id: &'static str, title: &'static str, f: impl FnOnce() -> Outcome) -> Ch
     }
 }
 
-/// Snapshot latency measured by K5.
 #[derive(Clone, Debug, Default)]
 pub struct SnapshotCost {
     pub files: usize,
@@ -80,23 +76,18 @@ impl SnapshotCost {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
-    /// Native tree on the store volume, fanotify journal, pre-content
-    /// placeholders.
     Native,
-    /// FUSE with passthrough for resident files.
     Passthrough,
-    /// Plain FUSE.
     Fuse,
     Unavailable,
 }
 
-/// How placeholders are made safe for every access path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlaceholderMode {
     /// Ranges hydrate on the access that needs them, `mmap` included.
     OnAccess,
-    /// `mmap` or copy paths are not covered by range events: hydrate the
-    /// whole file before it can be opened.
+    /// `mmap` or copy paths are not covered by range events: hydrate the whole
+    /// file before it can be opened.
     WholeFileOnOpen,
 }
 
@@ -202,7 +193,6 @@ impl CapabilityReport {
     }
 }
 
-/// Sizes for the snapshot-cost probe (K5).
 #[derive(Clone, Copy, Debug)]
 pub struct K5Params {
     pub files: usize,
@@ -324,7 +314,6 @@ pub fn probe(store_root: &Path, k5: Option<K5Params>) -> io::Result<CapabilityRe
     })
 }
 
-/// The kernel facts K1–K6.
 fn kernel_checks(
     checks: &mut Vec<Check>,
     root: &Path,
@@ -504,9 +493,8 @@ fn probe_fs_mark(root: &Path) -> Outcome {
     }
 }
 
-/// Whether the journal can suppress repeated `FAN_MODIFY` of one file with
-/// an inode ignore mark, for files in the top-level subvolume and in a
-/// workspace
+/// Whether the journal can suppress repeated `FAN_MODIFY` of one file with an
+/// inode ignore mark, for files in the top-level subvolume and in a workspace
 /// subvolume.
 fn probe_modify_ignore(root: &Path, scratch: &Path) -> Outcome {
     let group = match Group::new(fan::FAN_CLASS_NOTIF | fan::FAN_REPORT_DFID_NAME_TARGET, 0) {
@@ -631,8 +619,8 @@ fn probe_journal(root: &Path, scratch: &Path) -> Outcome {
 }
 
 /// A pre-content group whose events are logged and answered with a
-/// configurable response.
-/// `(mask, inode, range)` of every event a [`Recorder`] answered.
+/// configurable response. `(mask, inode, range)` of every event a
+/// [`Recorder`] answered.
 type EventLog = Arc<Mutex<Vec<(u64, u64, Option<(u64, u64)>)>>>;
 
 struct Recorder {
@@ -965,9 +953,9 @@ fn probe_k2(scratch: &Path) -> Outcome {
         "mmap(): {mmap_events} event(s) {range:?}; 1024 page faults: {fault_events} event(s) (sum {sum})"
     );
     let covers_mapping = range.is_some_and(|(o, c)| o == 0 && c >= len);
-    // K2 asks for a fault-time hook. Without one, an event for the whole
-    // mapping at mmap() time is just as safe: the daemon hydrates the
-    // mapped range before the mapping exists.
+    // K2 asks for a fault-time hook. Without one, an event for the whole mapping
+    // at mmap() time is just as safe: the daemon hydrates the mapped range before
+    // the mapping exists.
     if (mmap_events > 0 && covers_mapping) || fault_events > 0 {
         Outcome::Yes(detail)
     } else {

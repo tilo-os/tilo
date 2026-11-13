@@ -29,7 +29,6 @@ fn median(mut samples: Vec<Duration>) -> Duration {
     samples[samples.len() / 2]
 }
 
-/// Letters at a random place of `text`.
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;
     let word: String = (0..letters)
@@ -168,16 +167,11 @@ fn a_write_after_an_empty_commit_commits_as_before() {
     assert_eq!(doc.get(&map, "late").unwrap().unwrap().0.as_i64(), Some(1));
 }
 
-/// The slabs of the op id column that searches for ops by id may decode for
-/// each of a peer's next letters a replica that loaded a scattered text takes
-/// in.
 fn loaded_replica_searches(changes: usize) -> Vec<u64> {
     let mut rng = Rng(0x6a09_e667_f3bc_c909);
     let (mut base, text) = scattered(changes, &mut rng);
     let saved = base.save();
     let mut replica = AutoCommit::load(&saved).unwrap();
-    // A peer whose actor sorts after the document's: taking in its first
-    // change renumbers nothing.
     let mut peer = AutoCommit::load(&saved)
         .unwrap()
         .with_actor(ActorId::from(vec![0xf0; 16]));

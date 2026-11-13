@@ -1,37 +1,26 @@
-//! Paragraph-wide line composition.
-//!
-//! Unlike greedy wrapping, this module considers every legal line ending in a
-//! paragraph together. The cost model follows Knuth--Plass: spaces carry
-//! stretch and shrink, visually incompatible adjacent lines are discouraged,
-//! and flagged breaks (normally hyphens) acquire an additional penalty.
+//! Paragraph-wide line composition. Unlike greedy wrapping, this module considers every legal line
+//! ending in a paragraph together.
 
-/// One shaped box in logical order. A box is usually a word or an unbreakable
-/// inline fragment; callers retain the actual glyph/style data separately.
+/// One shaped box in logical order.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParagraphBox {
     /// Natural shaped advance of this fragment.
     pub width: f32,
-    /// Natural glue before this fragment. It is ignored when the fragment is
-    /// first on a line.
+    /// Natural glue before this fragment.
     pub glue_before: f32,
-    /// Additional stretch capacity at this boundary. Zero derives capacity
-    /// from natural glue; a positive value supports script-specific expansion
-    /// such as spacing between CJK ideographs.
+    /// Additional stretch capacity at this boundary.
     pub stretch_before: f32,
-    /// Additional shrink capacity at this boundary. Zero derives capacity
-    /// from natural glue.
+    /// Additional shrink capacity at this boundary.
     pub shrink_before: f32,
     /// Whether a line may end immediately before this fragment.
     pub break_before: bool,
-    /// Extra demerit for breaking before this fragment. Positive values make
-    /// the break less desirable; a negative value encourages it.
+    /// Extra demerit for breaking before this fragment.
     pub break_penalty: i32,
     pub flagged_break: bool,
-    /// Width added only when the line ends at this boundary (for example the
-    /// visible hyphen exercised by a discretionary break).
+    /// Width added only when the line ends at this boundary (for example the visible hyphen exercised
+    /// by a discretionary break).
     pub break_width: f32,
-    /// Portion of this box allowed to protrude beyond the right margin when
-    /// it ends a line. Typically a fraction of a closing punctuation glyph.
+    /// Portion of this box allowed to protrude beyond the right margin when it ends a line.
     pub end_protrusion: f32,
 }
 
@@ -51,9 +40,7 @@ impl ParagraphBox {
     }
 }
 
-/// Tunable paragraph-composition policy. Defaults are deliberately close to
-/// TeX's ordinary prose behavior while remaining expressed in font-relative
-/// space capacities supplied by the caller.
+/// Tunable paragraph-composition policy.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParagraphOptions {
     pub line_width: f32,
@@ -65,14 +52,13 @@ pub struct ParagraphOptions {
     pub line_penalty: f64,
     pub fitness_demerit: f64,
     pub flagged_demerit: f64,
-    /// Maximum horizontal glyph expansion/contraction used to improve colour
-    /// without making individual spaces conspicuously loose or tight.
+    /// Maximum horizontal glyph expansion/contraction used to improve colour without making individual
+    /// spaces conspicuously loose or tight.
     pub max_glyph_expansion: f32,
-    /// Cost of using the full configured expansion. Larger values prefer
-    /// inter-word glue; smaller values prefer micro-expansion.
+    /// Cost of using the full configured expansion.
     pub expansion_demerit: f64,
-    /// Justify non-final lines. When false, the same global break search is
-    /// used but output glue remains natural.
+    /// Justify non-final lines. When false, the same global break search is used but output glue
+    /// remains natural.
     pub justify: bool,
 }
 
@@ -100,8 +86,8 @@ pub struct ComposedLine {
     pub end: usize,
     /// Multiplier applied to every natural glue on this line.
     pub glue_scale: f32,
-    /// Horizontal scale applied to glyph outlines and advances on this line.
-    /// Values stay very close to 1.0 and are never used on the final line.
+    /// Horizontal scale applied to glyph outlines and advances on this line. Values stay very close to
+    /// 1.0 and are never used on the final line.
     pub glyph_scale: f32,
     pub natural_width: f32,
     /// Normalized stretch (>0) or shrink (<0) used by the cost model.
@@ -157,12 +143,11 @@ fn fitness_class(ratio: f32) -> u8 {
     }
 }
 
-/// Accumulate natural width, stretch, shrink and glyph width for the boxes in
-/// `start..end`, including the break-width contributed by the box that would
-/// end the line and any protrusion of the last box's closing punctuation.
-/// Returns `None` only if `start..end` is not a valid range into `boxes`,
-/// which callers never construct — `compose_at_tolerance` always derives
-/// `end` from `1..=boxes.len()` and `start` from `0..end`.
+/// Accumulate natural width, stretch, shrink and glyph width for the boxes in `start..end`, including
+/// the break-width contributed by the box that would end the line and any protrusion of the last box's
+/// closing punctuation. Returns `None` only if `start..end` is not a valid range into `boxes`, which
+/// callers never construct — `compose_at_tolerance` always derives `end` from `1..=boxes.len()` and
+/// `start` from `0..end`.
 fn accumulate_line(
     boxes: &[ParagraphBox],
     start: usize,
@@ -205,9 +190,9 @@ fn accumulate_line(
     Some((natural, stretch, shrink, glyph_width))
 }
 
-/// Metrics for a final line (or any line when justification is off), which
-/// TeX's paragraph fill glue makes effectively ragged: it is never stretched
-/// or shrunk to the measure, only checked that it does not overrun it.
+/// Metrics for a final line (or any line when justification is off), which TeX's paragraph fill glue
+/// makes effectively ragged: it is never stretched or shrunk to the measure, only checked that it does
+/// not overrun it.
 fn ragged_metrics(
     natural: f32,
     start: usize,
@@ -232,14 +217,9 @@ fn ragged_metrics(
     })
 }
 
-/// Knuth--Plass badness `100·|r|³`. Unlike TeX it is not capped at 10 000:
-/// once a paragraph needs a looser pass, a line stretched to ratio 9 must
-/// still cost more than one stretched to ratio 5, or the composer trades a
-/// barely-loose line for a gaping one to tighten its neighbour.
-///
-/// Shrinking past the glue's capacity (`r < -1`, emergency pass only) makes
-/// the line wider than the measure, so it costs more than any line the
-/// emergency pass could stretch instead.
+/// Knuth--Plass badness `100·|r|³`. Unlike TeX it is not capped at 10 000: once a paragraph needs a
+/// looser pass, a line stretched to ratio 9 must still cost more than one stretched to ratio 5, or the
+/// composer trades a barely-loose line for a gaping one to tighten its neighbour.
 fn stretch_badness(ratio: f32) -> f64 {
     let badness = 100.0 * f64::from(ratio.abs()).powi(3);
     if ratio < -1.0 {
@@ -250,14 +230,6 @@ fn stretch_badness(ratio: f32) -> f64 {
 }
 
 /// Metrics when neither stretch nor shrink is available at this boundary.
-/// A non-final line with no adjustable glue is only unavoidable when a
-/// single unbreakable box itself fills or overruns the measure. Treating a
-/// short one-word row as perfect would make every word its own line.
-///
-/// An underfull row is rated as if it could stretch like one ordinary
-/// interword space (`nominal_stretch`), so a lone short word costs what an
-/// equally loose two-word line does instead of undercutting every line that
-/// has real glue. Only the final emergency pass accepts it beyond tolerance.
 fn zero_capacity_metrics(
     boxes: &[ParagraphBox],
     start: usize,
@@ -296,9 +268,8 @@ fn zero_capacity_metrics(
     })
 }
 
-/// Search glyph micro-expansion steps for the least-bad stretch/shrink
-/// solution at this boundary, trading inter-word glue against a small
-/// horizontal scale on the glyphs themselves.
+/// Search glyph micro-expansion steps for the least-bad stretch/shrink solution at this boundary,
+/// trading inter-word glue against a small horizontal scale on the glyphs themselves.
 fn expansion_search(
     natural: f32,
     stretch: f32,
@@ -360,14 +331,8 @@ fn line_metrics(
 ) -> Option<LineMetrics> {
     let (natural, stretch, shrink, glyph_width) = accumulate_line(boxes, start, end, options)?;
 
-    // TeX's paragraph fill glue makes the final line effectively ragged.
     if final_line || !options.justify {
         let metrics = ragged_metrics(natural, start, end, options)?;
-        // Ragged text has no measure for its last line to fall short of:
-        // costing that line's slack balanced two-line paragraphs, ending
-        // the first line far short of the margin with the next word in
-        // reach. Justified text keeps the cost, which steers it away from a
-        // stub of a last line.
         if final_line && !options.justify {
             return Some(LineMetrics {
                 ratio: 0.0,
@@ -424,10 +389,8 @@ fn compose_at_tolerance(
     backtrack_composed_lines(&best, count, options)
 }
 
-/// The `start` sweep of [`compose_at_tolerance`]'s dynamic-programming
-/// step for one `end` boundary — split out to keep that function under
-/// the line-count limit. Mutates `best[end]` in place; every other slot
-/// it reads (`best[start]` for `start < end`) is already finalized.
+/// The `start` sweep of [`compose_at_tolerance`]'s dynamic-programming step for one `end` boundary —
+/// split out to keep that function under the line-count limit.
 fn accumulate_states_for_end(
     boxes: &[ParagraphBox],
     options: ParagraphOptions,
@@ -490,9 +453,8 @@ fn accumulate_states_for_end(
     }
 }
 
-/// Walks [`compose_at_tolerance`]'s finished DP table backwards from the
-/// least-demerit final state to build the forward-ordered line list —
-/// split out to keep that function under the line-count limit.
+/// Walks [`compose_at_tolerance`]'s finished DP table backwards from the least-demerit final state to
+/// build the forward-ordered line list — split out to keep that function under the line-count limit.
 fn backtrack_composed_lines(
     best: &[[Option<State>; STATE_SLOTS]],
     count: usize,
@@ -539,9 +501,9 @@ fn backtrack_composed_lines(
     Some(lines)
 }
 
-/// Compose a paragraph globally. If the requested tolerance has no feasible
-/// solution, progressively looser emergency passes are tried; the final
-/// fallback preserves every box and always makes forward progress.
+/// Compose a paragraph globally. If the requested tolerance has no feasible solution, progressively
+/// looser emergency passes are tried; the final fallback preserves every box and always makes forward
+/// progress.
 pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> Vec<ComposedLine> {
     if boxes.is_empty() {
         return Vec::new();
@@ -595,9 +557,8 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
 mod tests {
     use super::*;
 
-    /// Ragged text fills each line before its last as far as the measure
-    /// allows: a short last line is no flaw there, so two lines are not
-    /// balanced by ending the first with room for the next word.
+    /// Ragged text fills each line before its last as far as the measure allows: a short last line is
+    /// no flaw there, so two lines are not balanced by ending the first with room for the next word.
     #[test]
     fn ragged_text_does_not_balance_away_a_short_last_line() {
         let boxes: Vec<_> = (0..8)

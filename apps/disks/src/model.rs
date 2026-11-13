@@ -1,22 +1,15 @@
-//! Pure data model for the Disks app.
-//!
-//! Everything here is plain data + serde, parsed from the probe's JSON.
-//! Rendering and probing live in sibling modules — this file knows nothing
-//! about vello, taffy or `lsblk`.
+//! Drives and partitions as the session describes them, and what each kind is for.
 
 use serde::{Deserialize, Serialize};
 
-/// Broad class of a block device, used both for the left-list badge and
-/// for choosing the right icon glyph.
+/// Broad class of a block device, for the list badge and the icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriveKind {
     Nvme,
     Ssd,
     Hdd,
     Usb,
-    /// Compressed RAM-backed swap device (`zram*`).
     Zram,
-    /// Loopback / device-mapper / MD / other virtual block device.
     Virtual,
     Other,
 }
@@ -35,7 +28,6 @@ impl DriveKind {
         }
     }
 
-    /// Longer human label for the detail header.
     pub fn long(&self) -> &'static str {
         match self {
             DriveKind::Nvme => "NVMe solid state drive",
@@ -48,18 +40,16 @@ impl DriveKind {
         }
     }
 
-    /// Whether this is a memory- or software-backed device (zram, loop, dm,
-    /// md…) rather than physical storage media. Such devices legitimately
-    /// expose no SMART data and no serial, so the UI degrades accordingly
-    /// instead of implying they are disks that could be ejected or benchmarked.
+    /// Whether this is a memory- or software-backed device (zram, loop, dm, md…) rather
+    /// than physical storage media.
     pub fn is_virtual(&self) -> bool {
         matches!(self, DriveKind::Zram | DriveKind::Virtual)
     }
 
-    /// Derive the kind from a device's kernel name plus `lsblk`'s `rota` +
-    /// `tran` fields. Virtual devices are recognised by their kernel-name
-    /// prefix (they carry no transport), so a `zram` swap device never
-    /// masquerades as an "SSD" just because it is non-rotational.
+    /// Derive the kind from a device's kernel name and `lsblk`'s `rota` and `tran` fields.
+    ///
+    /// Virtual devices carry no transport, so a `zram` swap device never reads as an SSD
+    /// for being non-rotational.
     pub fn from_lsblk(name: &str, rota: bool, tran: Option<&str>) -> Self {
         if name.starts_with("zram") {
             return DriveKind::Zram;
@@ -87,7 +77,6 @@ impl DriveKind {
     }
 }
 
-/// Overall SMART verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SmartStatus {
     Passed,
@@ -107,7 +96,6 @@ impl SmartStatus {
     }
 }
 
-/// Severity of a single SMART attribute row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttrSeverity {
     Ok,
@@ -115,19 +103,16 @@ pub enum AttrSeverity {
     Crit,
 }
 
-/// One row in the SMART attribute table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SmartAttr {
-    /// The ATA attribute number; `None` for a reading with no number, such as
-    /// one from the `NVMe` health log.
     pub id: Option<u16>,
     pub name: String,
     pub value: String,
     pub severity: AttrSeverity,
 }
 
-/// Self-monitoring summary for a drive. All numeric fields are optional
-/// because USB sticks / virtual disks frequently expose none of them.
+/// Self-monitoring summary for a drive. All numeric fields are optional because USB sticks
+/// / virtual disks frequently expose none of them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SmartInfo {
     pub status: SmartStatusOpt,
@@ -137,18 +122,14 @@ pub struct SmartInfo {
     pub reallocated: Option<i64>,
     /// `NVMe` wear indicator (0-100, "percentage used").
     pub pct_used: Option<i64>,
-    /// Total host writes in GB (`NVMe` "Data Units Written" derived).
     pub written_gb: Option<i64>,
     pub attrs: Vec<SmartAttr>,
-    /// Human explanation shown when there is no usable telemetry — e.g. the
-    /// device genuinely reports no SMART, or reading it needs elevated
-    /// privileges. Keeps the "Unknown" state honest about *why*.
     #[serde(default)]
     pub detail: Option<String>,
 }
 
-/// Newtype wrapper so `SmartInfo` can derive `Default` (`SmartStatus` has
-/// no natural default otherwise).
+/// Newtype wrapper so `SmartInfo` can derive `Default` (`SmartStatus` has no natural
+/// default otherwise).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmartStatusOpt(pub SmartStatus);
 impl Default for SmartStatusOpt {
@@ -183,7 +164,6 @@ impl PartRole {
     }
 }
 
-/// A single partition on a drive.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Partition {
     pub name: String,
@@ -191,37 +171,28 @@ pub struct Partition {
     pub fstype: Option<String>,
     pub label: Option<String>,
     pub mountpoint: Option<String>,
-    /// Bytes used on the filesystem, if mounted + measurable.
     pub used: Option<u64>,
     pub uuid: Option<String>,
-    /// How the partition is encrypted, when it is. Once unlocked, the fields
-    /// above describe the filesystem inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<Encryption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_type: Option<String>,
-    /// What its type is called (`Microsoft reserved`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_type_name: Option<String>,
 }
 
-/// The EFI system partition's type GUID.
 const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-/// The extended boot loader partition's type GUID (`/boot`).
 const XBOOTLDR_TYPE: &str = "bc13c2ff-59e6-4262-a352-b275fd6f7172";
 
-/// An encrypted partition's container.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Encryption {
-    /// `LUKS2`, `LUKS1`, `BitLocker`.
     pub scheme: String,
-    /// The unlocked mapping's kernel name (`dm-1`), which is where its
-    /// filesystem is mounted from; `None` while it is locked.
+    /// The unlocked mapping's kernel name (`dm-1`), which is where its filesystem is
+    /// mounted from; `None` while it is locked.
     pub unlocked_as: Option<String>,
 }
 
 impl Partition {
-    /// Classify by mountpoint / fstype / label.
     pub fn role(&self) -> PartRole {
         let mp = self.mountpoint.as_deref().unwrap_or("");
         let fs = self.fstype.as_deref().unwrap_or("").to_ascii_lowercase();
@@ -255,7 +226,6 @@ impl Partition {
         PartRole::Data
     }
 
-    /// Fraction of the filesystem in use, if known.
     pub fn used_frac(&self) -> Option<f64> {
         let used = self.used? as f64;
         if self.size == 0 {
@@ -264,8 +234,8 @@ impl Partition {
         Some((used / self.size as f64).clamp(0.0, 1.0))
     }
 
-    /// What the partition is called: its label, else what its type is
-    /// called ("Microsoft reserved"), else its filesystem, else its device.
+    /// What the partition is called: its label, else what its type is called ("Microsoft
+    /// reserved"), else its filesystem, else its device.
     pub fn display_label(&self) -> String {
         [&self.label, &self.part_type_name, &self.fstype]
             .into_iter()
@@ -275,9 +245,9 @@ impl Partition {
             .unwrap_or_else(|| self.name.clone())
     }
 
-    /// Why this partition must not be formatted or unmounted, when it serves
-    /// the running system: its root, its home folders, or (on the drive the
-    /// system runs from, `system_drive`) what starts it.
+    /// Why this partition must not be formatted or unmounted, when it serves the running
+    /// system: its root, its home folders, or (on the drive the system runs from,
+    /// `system_drive`) what starts it.
     pub fn system_use(&self, system_drive: bool) -> Option<&'static str> {
         match self.role() {
             PartRole::Root => Some(HOLDS_SYSTEM),
@@ -287,8 +257,8 @@ impl Partition {
         }
     }
 
-    /// Where the filesystem is mounted, as a person reads it: the kernel's
-    /// `[SWAP]` marker is "Swap". `None` when it is not mounted.
+    /// Where the filesystem is mounted, as a person reads it: the kernel's `[SWAP]` marker
+    /// is "Swap".
     pub fn mount_display(&self) -> Option<String> {
         self.mountpoint.as_deref().map(|mount| {
             if mount.eq_ignore_ascii_case("[swap]") {
@@ -300,7 +270,6 @@ impl Partition {
     }
 }
 
-/// A whole block device with its partitions and SMART summary.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Drive {
     pub name: String,
@@ -325,19 +294,16 @@ impl Drive {
             .any(|part| matches!(part.role(), PartRole::Root | PartRole::Home))
     }
 
-    /// Why the whole drive must not be formatted, when it holds the running
-    /// system.
+    /// Why the whole drive must not be formatted, when it holds the running system.
     pub fn system_use(&self) -> Option<&'static str> {
         self.is_system_drive().then_some(HOLDS_SYSTEM)
     }
 
-    /// Why `part` must not be formatted or unmounted, when it serves the
-    /// running system.
+    /// Why `part` must not be formatted or unmounted, when it serves the running system.
     pub fn partition_use(&self, part: &Partition) -> Option<&'static str> {
         part.system_use(self.is_system_drive())
     }
 
-    /// Total bytes claimed by partitions.
     pub fn allocated(&self) -> u64 {
         self.partitions.iter().map(|p| p.size).sum()
     }
@@ -347,7 +313,6 @@ impl Drive {
         self.size.saturating_sub(self.allocated())
     }
 
-    /// SMART status, defaulting to Unknown when no data is present.
     pub fn smart_status(&self) -> SmartStatus {
         self.smart
             .as_ref()
@@ -366,10 +331,9 @@ impl Topology {
         self.drives.iter().map(|d| d.size).sum()
     }
 
-    /// A curated, fully-populated sample machine for screenshots and tests:
-    /// an `NVMe` with
-    /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs
-    /// attention, and a USB stick.
+    /// A fully populated sample machine for screenshots and tests: an `NVMe` with EFI,
+    /// root, home and swap, a SATA SSD, a spinning HDD that needs attention, and a USB
+    /// stick.
     pub fn sample() -> Self {
         Topology {
             drives: vec![
@@ -381,8 +345,7 @@ impl Topology {
         }
     }
 
-    /// The sample `NVMe` drive: EFI + root + home + swap, all healthy (part
-    /// of [`Self::sample`]).
+    /// The sample `NVMe` drive: EFI, root, home and swap, all healthy.
     fn sample_nvme() -> Drive {
         Drive {
             name: "nvme0n1".into(),
@@ -461,8 +424,6 @@ impl Topology {
         }
     }
 
-    /// The sample SATA SSD: one healthy backup partition (part of
-    /// [`Self::sample`]).
     fn sample_ssd() -> Drive {
         Drive {
             name: "sda".into(),
@@ -504,8 +465,7 @@ impl Topology {
         }
     }
 
-    /// The sample spinning HDD, flagged with a real attention-needing SMART
-    /// signal — reallocated + pending sectors (part of [`Self::sample`]).
+    /// The sample spinning HDD, flagged with reallocated and pending sectors.
     fn sample_hdd() -> Drive {
         Drive {
             name: "sdb".into(),
@@ -548,9 +508,8 @@ impl Topology {
         }
     }
 
-    /// The sample USB stick — removable, with SMART honestly reported as
-    /// unavailable through the bridge rather than fabricated (part of
-    /// [`Self::sample`]).
+    /// The sample USB stick: removable, with health reported as unavailable rather than
+    /// fabricated.
     fn sample_usb() -> Drive {
         Drive {
             name: "sdc".into(),
@@ -630,7 +589,8 @@ pub fn fmt_hours(hours: i64) -> String {
 mod tests {
     use super::*;
 
-    /// The sample topology: drive mix, partition classes, free tail, clamped usage and JSON round-trip.
+    /// The sample topology: drive mix, partition classes, free tail, clamped usage and JSON
+    /// round-trip.
     #[test]
     fn sample_topology_geometry_and_serialisation() {
         // --- phase: sample_has_four_drives_with_mixed_kinds ---
@@ -690,7 +650,8 @@ mod tests {
         }
     }
 
-    /// Mountpoint roles and lsblk device kinds classify atomic Fedora, media and virtual devices.
+    /// Mountpoint roles and lsblk device kinds classify atomic Fedora, media and virtual
+    /// devices.
     #[test]
     fn lsblk_classification_of_roles_and_kinds() {
         // --- phase: role_recognises_atomic_fedora_mountpoints ---
@@ -707,7 +668,6 @@ mod tests {
                 part_type: None,
                 part_type_name: None,
             };
-            // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
             assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);
             assert_eq!(part("/home", "ext4").role(), PartRole::Home);
             assert_eq!(part("/sysroot", "btrfs").role(), PartRole::Root);

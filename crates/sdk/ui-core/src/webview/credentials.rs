@@ -229,8 +229,6 @@ impl CredentialReply {
         }) {
             return None;
         }
-        // Bound collections before cloning/deserializing. Never keep unknown
-        // fields from a native reply in widget state or diagnostics.
         for (key, limit) in [("forms", 32), ("accounts", 64)] {
             if let Some(items) = value.get(key) {
                 let items = items.as_array()?;

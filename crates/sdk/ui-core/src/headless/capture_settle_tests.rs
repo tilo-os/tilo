@@ -1,5 +1,5 @@
-//! What a capture settles: the frames a window still asks for, and none it
-//! does not, and when the bound stops it.
+//! What a capture settles: the frames a window still asks for, and none it does not, and when the bound
+//! stops it.
 
 use super::*;
 
@@ -58,8 +58,8 @@ impl Widget for FinalFrameWork {
     fn has_pending_visual_work(&self) -> bool {
         self.pending.load(std::sync::atomic::Ordering::SeqCst)
     }
-    /// The work it starts is work it needs a frame for: a widget that owes
-    /// draws asks for them, as one in a live window does.
+    /// The work it starts is work it needs a frame for: a widget that owes draws asks for them, as one
+    /// in a live window does.
     fn needs_animation_frame(&self) -> bool {
         self.draws.get() < 3
     }
@@ -142,15 +142,15 @@ fn capture_final_frame_work_cannot_reset_the_original_deadline() {
     assert!(pending.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-/// Animates for `length` from the first time it is asked whether it animates; `until` records
-/// when that ends, so a slow harness start cannot end it unseen.
+/// Animates for `length` from the first time it is asked whether it animates; `until` records when that
+/// ends, so a slow harness start cannot end it unseen.
 struct Entrance {
     length: crate::time::Duration,
     until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
 }
 
-/// Animates until it has been drawn `frames` times, so the number of draws
-/// the capture runs — not the wall clock — says whether it settled.
+/// Animates until it has been drawn `frames` times, so the number of draws the capture runs — not the
+/// wall clock — says whether it settled.
 struct CountedFrames {
     frames: usize,
     drawn: std::rc::Rc<std::cell::Cell<usize>>,
@@ -250,9 +250,8 @@ fn capture_settlement_applies_the_final_push_sidebar_geometry() {
     }
 }
 
-/// A written capture is the window a person sees a moment after it opened, so a still-running
-/// entrance is waited out; otherwise `--shots` writes a scroll thumb mid-fade or a page drawn
-/// at its old width.
+/// A written capture is the window a person sees a moment after it opened, so a still-running entrance
+/// is waited out; otherwise `--shots` writes a scroll thumb mid-fade or a page drawn at its old width.
 #[cfg(feature = "native")]
 #[test]
 fn writing_a_shot_runs_the_animation_out_first() {

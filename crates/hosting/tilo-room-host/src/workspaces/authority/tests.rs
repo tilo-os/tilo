@@ -7,7 +7,7 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
@@ -68,11 +68,11 @@ async fn grant(
     let who = hex::encode(person.user_public_key);
     let grant = Grant::new(
         format!("test:{action}:{who}"),
-        Subject::Person(who),
+        Grantee::person(who),
         roles::governance_action(workspace, action),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Person(hex::encode(owner.user_public_key)),
+        Grantee::person(hex::encode(owner.user_public_key)),
     );
     let request_id = *blake3::hash(grant.id.as_str().as_bytes()).as_bytes();
     workspaces
@@ -1003,11 +1003,11 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     // resource, where the Editor's own Deny outranked it.
     let legacy = Grant::new(
         roles::administrator_grant_id(&who).as_str(),
-        Subject::Person(who),
+        Grantee::person(who),
         roles::workspace_resource(&workspace),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Person(hex::encode(owner.user_public_key)),
+        Grantee::person(hex::encode(owner.user_public_key)),
     );
     workspaces
         .put_room_grants(&workspace, &owner, [60; 32], vec![legacy])

@@ -1,11 +1,9 @@
-//! The pure surface of `Text` and of numbers: the methods every value of those types has and
-//! what each lowers to, and the text and number methods a list has (`join`, `sum`, `avg`,
-//! `contains`). Every one is a host call over a value: none of them changes anything, reads a
-//! clock or leaves the workspace, so a view and an action may both write them.
+//! The pure surface of `Text` and of numbers: the methods every value of those types has and what each lowers
+//! to, and the text and number methods a list has (`join`, `sum`, `avg`, `contains`). Every one is a host call
+//! over a value: none of them changes anything, reads a clock or leaves the workspace.
 //!
-//! What a text counts, finds and cuts in — graphemes — is [`crate::text`]'s, the same reading the
-//! index and search's identifier patterns use; the names a message lists are
-//! [`super::methods`]'.
+//! What a text counts, finds and cuts in — graphemes — is [`crate::text`]'s, the same reading the index and
+//! search's identifier patterns use.
 
 use super::{Checker, Ex, methods};
 use crate::abi::Imp;
@@ -75,8 +73,7 @@ impl Checker<'_> {
         Some(ex.unwrap_or_else(Ex::error))
     }
 
-    /// The one `Text` argument of a method that takes just it; `None` after reporting a call
-    /// with another shape.
+    /// The one `Text` argument of a method that takes just it; `None` after reporting a call with another shape.
     fn one_text(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Option<Ex> {
         if !self.arity(name, args, 1, span) {
             return None;
@@ -169,8 +166,8 @@ impl Checker<'_> {
                 let to = self.expr_as(&to.value, &Ty::Text);
                 Ex::host(Imp::StrReplace, vec![r, from, to], Ty::Text)
             }
-            // The number a text writes: an id another app gave as text, passed where its action
-            // takes the number.
+            // The number a text writes: an id another app gave as text, passed where its action takes the
+            // number.
             "to_int" => Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int))),
             _ => return None,
         })
@@ -266,8 +263,7 @@ impl Checker<'_> {
                 }
                 Ex::host(Imp::FloatAbs, vec![r], Ty::Float)
             }
-            // `f.round()`: the nearest whole number, as an Int; `f.round(2)`: that many places,
-            // as a Float. The same for `floor` and `ceil`.
+            // `f.round()`: the nearest whole number, as an Int; `f.round(2)`: that many places, as a Float.
             "round" | "floor" | "ceil" => {
                 match args.len() {
                     0 => {}

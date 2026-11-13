@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.monitor@ede2747c2e3967d9";
+
 /** One of "pid", "name", "user", "cpu", "mem", "threads". */
 export type SortKey = "pid" | "name" | "user" | "cpu" | "mem" | "threads";
 
@@ -42,6 +47,6 @@ export interface Processes extends tilo.Resource {
 
 /** The `monitor.processes` kind at `path`. */
 export function processes(ws: tilo.Workspace, path: string): Processes {
-  return resourceProxy(ws, path) as unknown as Processes;
+  return resourceProxy(ws, path, SURFACE) as unknown as Processes;
 }
 

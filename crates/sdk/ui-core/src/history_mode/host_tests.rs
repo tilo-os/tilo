@@ -215,8 +215,6 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     let mut admitted = Vec::new();
     addresses(&history, &mut admitted);
 
-    // An external open can run during update, after the runner's capture pass.
-    // Its first control capture then occurs with the prior frame still admitted.
     assert!(history.capture_pending_controls(&mut live, &state.doc, uuid::Uuid::new_v4()));
     assert!(
         history.needs_refresh(&state.doc, 900.0),
@@ -235,11 +233,8 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     assert!(history.captures_input());
 }
 
-/// An app whose header takes the History control (Settings, Files, Notes)
-/// learns it is presenting it during the first build, which rebuilds the
-/// bar to leave the control out. That bar is the one this build lays out:
-/// the build admits it, so its own first layout is not reported as a
-/// change after it and the app does not build its whole tree twice.
+/// An app whose header takes the History control (Settings, Files, Notes) learns it is presenting it
+/// during the first build, which rebuilds the bar to leave the control out.
 #[test]
 fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
     let mut state = State::new();
@@ -259,9 +254,9 @@ fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
     );
 }
 
-/// Runners keep raw pointers into the admitted composition between frames.
-/// Replacing the toolbar, or swapping which children are presented, must
-/// report structure dirty until the next build admits the new widgets.
+/// Runners keep raw pointers into the admitted composition between frames. Replacing the toolbar, or
+/// swapping which children are presented, must report structure dirty until the next build admits the
+/// new widgets.
 #[test]
 fn replacing_admitted_history_controls_reports_structure_dirty() {
     let mut state = State::new();
@@ -821,8 +816,8 @@ fn history_chrome_follows_the_desktop_language() {
     assert!(driver.targets().contains_key("live-effect"));
 }
 
-/// Every History host message is translated and formats with the variables
-/// the host passes, so no German desktop falls back to English copy.
+/// Every History host message is translated and formats with the variables the host passes, so no
+/// German desktop falls back to English copy.
 #[test]
 fn history_host_messages_exist_in_every_shipped_language() {
     let keys: Vec<&str> = TOOLKIT_EN
@@ -887,9 +882,9 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
     );
 }
 
-/// A `NavShell` app carries the window's History control in its header row;
-/// under the app's registered History that control opens and closes that
-/// History, never the standalone chrome the app does not have.
+/// A `NavShell` app carries the window's History control in its header row; under the app's registered
+/// History that control opens and closes that History, never the standalone chrome the app does not
+/// have.
 #[test]
 fn header_history_control_opens_the_registered_history() {
     fn history_toggled(driver: &FrameHarness) -> Vec<Option<accesskit::Toggled>> {
@@ -943,7 +938,6 @@ fn header_history_control_opens_the_registered_history() {
     assert!(driver.targets().contains_key("nav-shell-history"));
     assert_eq!(history_toggled(&driver), [Some(accesskit::Toggled::False)]);
 
-    // The History door the control is bound to closes it too.
     driver.click_named("nav-shell-history").unwrap();
     assert!(driver.targets().contains_key("activity_timeline"));
     driver
@@ -956,14 +950,13 @@ fn header_history_control_opens_the_registered_history() {
     assert_eq!(driver.state_mut().doc.get_heads(), before);
 }
 
-/// Opening History narrows the window's workspace for the app: its `NavShell`
-/// lays its header rows out again at the width it is given, so header
-/// actions keep their own places and never fold onto one another.
+/// Opening History narrows the window's workspace for the app: its `NavShell` lays its header rows out
+/// again at the width it is given, so header actions keep their own places and never fold onto one
+/// another.
 #[test]
 fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     use crate::icons::Icon;
     use crate::widget::decorator::Decorator;
-    /// A header action that remembers where it was last laid out.
     struct Probe(Button, Rc<Cell<Rect>>);
     impl Decorator for Probe {
         type Inner = Button;

@@ -430,15 +430,12 @@ fn built_in_names_read_in_each_members_language() {
     assert_eq!(font(&fresh, "default").title(), "Default");
     assert_eq!(scheme(&fresh, "light").title(), "Light");
 
-    // The same record, read by a member whose language is German.
     CATALOG.set_locale("de-DE");
     assert_eq!(font(&fresh, "default").title(), "Standard");
     assert_eq!(font(&fresh, "mono").title(), "Mono");
     assert_eq!(scheme(&fresh, "light").title(), "Hell");
     assert_eq!(scheme(&fresh, "high-contrast").title(), "Hoher Kontrast");
 
-    // A record written when names were kept stores the words of whichever
-    // language made it, and still counts as unnamed in every language.
     let fonts = Ebook::paths().fonts;
     let schemes = Ebook::paths().schemes;
     edit(
@@ -465,7 +462,6 @@ fn built_in_names_read_in_each_members_language() {
     );
     assert_eq!(scheme(&seeded, "dark").title(), "Dark");
 
-    // A name someone gave a built-in is theirs in every language.
     edit(
         &mut library,
         &fonts.item(&Id::from_raw("serif")).name.replace("Book face"),
@@ -523,7 +519,6 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         "a highlight is recoloured with its comments"
     );
 
-    // Finishing a note stamps it; moving a piece re-anchors that row only.
     let standalone = find(&library, |mark| {
         mark.kind == AnnoKind::Note && !mark.is_comment()
     });
@@ -556,7 +551,6 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         "a range never ends before it starts"
     );
 
-    // A malformed highlight changes nothing, not even what it would replace.
     assert!(
         apply(
             &mut library,
@@ -730,8 +724,6 @@ fn concurrent_changes_converge() {
         (ReadTheme::Dark, 1.55)
     );
 
-    // A font removed while another reader renames it stays removed; fonts
-    // added side by side are both kept.
     let fonts = Ebook::paths().fonts;
     for (replica, id) in [(&mut ours, "left"), (&mut theirs, "right")] {
         let font = FontEntry::new(id, FontKind::Named(id.into()), id, 1.0, true);
@@ -764,8 +756,6 @@ fn concurrent_changes_converge() {
         );
     }
 
-    // A highlight deleted while another reader comments on it keeps its
-    // comments gone, the late one too.
     apply(
         &mut ours,
         Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
@@ -787,8 +777,6 @@ fn concurrent_changes_converge() {
         );
     }
 
-    // Two readers bookmarking the same page at once keep both bookmarks;
-    // the next toggle takes the page's bookmarks off.
     let bookmark = |block| {
         Ebook::TOGGLE_BOOKMARK.with(books::ToggleBookmark {
             book: BOOK.into(),
@@ -1070,7 +1058,6 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
         "its row names the bytes the content store keeps, not a path"
     );
 
-    // Reopened with nothing named, the shelf still reads it.
     let mut again = app.reopen().unwrap();
     assert_eq!(again.state().entries.len(), 1);
     assert!(
@@ -1152,7 +1139,6 @@ fn the_library_verbs_bound_to_the_reader_follow_the_selection() {
         "a selection binds its highlight and note"
     );
 
-    // An empty library must not wipe a shelf it never held.
     let before = app.library().len();
     app.adopt_resource_state(&Rc::new(Ebook::default()));
     assert_eq!(app.library().len(), before);
@@ -1189,13 +1175,11 @@ fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
             .count()
     };
 
-    // A view holds the library while a book is shelved.
     let shown = Rc::clone(reader.state());
     apply(&mut library, shelve(&row(BOOK, "Shelved"))).unwrap();
     assert!(reader.sync(library.doc()).unwrap());
     assert_eq!(shared(reader.state(), &shown), 500, "no progress copied");
 
-    // And while a page is turned.
     let shown = Rc::clone(reader.state());
     apply(&mut library, record(250, 0.75)).unwrap();
     assert!(reader.sync(library.doc()).unwrap());

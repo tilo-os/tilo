@@ -100,8 +100,6 @@ fn the_empty_state_owns_the_content_area_until_something_is_listed() {
     assert!(overview.x1 <= content.x0 + 1.0, "side by side");
 }
 
-/// A swap of the content while the empty state shows lands behind it, and
-/// is what comes back.
 #[test]
 fn a_swap_behind_the_empty_state_is_what_comes_back() {
     let shell = mail_shell().nothing_listed(Probe::boxed("empty").0);
@@ -139,10 +137,9 @@ fn a_narrow_window_shows_the_empty_state_alone() {
     assert!(!geometry(&h).stack.contains(&NavPane::Overview));
 }
 
-/// A phone-wide window with a sidebar whose toggle is in the window's bar,
-/// as Passwords has: the empty state is the window's one screen, right
-/// under the bar, with no Back and no header row above it, since there is
-/// nothing to drill out of. The bar's toggle still reaches the sidebar.
+/// A phone-wide window with a sidebar whose toggle is in the window's bar, as Passwords has:
+/// the empty state is the window's one screen, right under the bar, with no Back and no header
+/// row above it, since there is nothing to drill out of.
 #[test]
 fn a_narrow_window_draws_no_back_over_the_empty_state() {
     const NARROW: u32 = 420;

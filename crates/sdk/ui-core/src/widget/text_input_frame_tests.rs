@@ -19,7 +19,6 @@ use automerge::transaction::Transactable as _;
 
 #[test]
 fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut tr = crate::font_catalog::fixture_renderer();
     let theme = Theme::dark();
@@ -48,7 +47,6 @@ fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
             "keystroke {step}: one paragraph prepared and shaped for every width"
         );
     }
-    // The paragraph measured and painted is the one a fresh field builds.
     let fresh = typing_field(input.value(), &mut tr, &theme);
     let (typed, fresh) = (
         input.single_layout.as_ref().unwrap(),
@@ -73,7 +71,6 @@ fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
 
 #[test]
 fn spelling_marks_follow_edits_like_a_full_check() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let text = "teh first paragraph\n\nsecond wrold here\nthird is fine\n\nlast lnie";
     let mut input = TextInput::local()
@@ -93,7 +90,6 @@ fn spelling_marks_follow_edits_like_a_full_check() {
         let mut edited = input.value().to_owned();
         let at = at.min(edited.len());
         if insert.is_empty() {
-            // Join the first two lines.
             if let Some(newline) = edited.find('\n') {
                 edited.remove(newline);
             }
@@ -114,7 +110,6 @@ fn spelling_marks_follow_edits_like_a_full_check() {
 
 #[test]
 fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for text in ["", "ordinary ffi text", "abc אבג xyz", "é 👩‍💻 end"] {
         for scale in [1.0, 2.0] {
@@ -151,7 +146,6 @@ fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
 
 #[test]
 fn themed_input_typography_reflows_and_centers_actual_shaped_text() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local()
         .with_initial_value("Themed input baseline")
@@ -221,7 +215,6 @@ fn themed_input_typography_reflows_and_centers_actual_shaped_text() {
 
 #[test]
 fn read_only_text_selects_and_copies_but_never_changes() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local()
         .with_initial_value("read me")
@@ -261,7 +254,6 @@ fn read_only_text_selects_and_copies_but_never_changes() {
 
 #[test]
 fn embedded_input_measurement_adopts_theme_and_keeps_document_size_override() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let text = "A wrapping field must measure the same themed typography that it paints.";
     let mut theme = Theme::dark();
@@ -306,7 +298,6 @@ fn embedded_input_measurement_adopts_theme_and_keeps_document_size_override() {
 
 #[test]
 fn read_only_text_links_its_addresses_and_the_ranges_it_is_given() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let ti = TextInput::local()
         .with_initial_value("see https://example.com/a, or www.example.org and click here")
@@ -337,7 +328,6 @@ fn read_only_text_links_its_addresses_and_the_ranges_it_is_given() {
 #[test]
 fn only_the_web_and_mail_open_from_a_link() {
     use crate::text_detect::Detected;
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     assert_eq!(
         link_target(Detected::Url, "javascript://x/%0aalert(1)"),
@@ -353,7 +343,6 @@ fn only_the_web_and_mail_open_from_a_link() {
 
 #[test]
 fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
     for theme in [
@@ -420,7 +409,6 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
 
 #[test]
 fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local().with_initial_value("hello world");
     assert!(
@@ -439,8 +427,6 @@ fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
     assert!(!read_only.replace_range(0..5, "hello", "HELLO"));
     assert_eq!(read_only.value(), "hello");
 
-    // A spelling fix chosen from the menu refuses a word that changed
-    // while the menu was open.
     let mut ti = TextInput::local()
         .with_spell_language("en_US")
         .with_initial_value("teh");
@@ -458,7 +444,6 @@ fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
 
 #[test]
 fn a_secret_field_never_hands_its_text_to_a_text_action() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for field in [
         TextInput::local().with_secret(true),
@@ -484,9 +469,7 @@ fn a_secret_field_never_hands_its_text_to_a_text_action() {
 #[test]
 fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
     use crate::ime::InputPurpose;
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // `zwp_text_input_v3` wire values.
     const NORMAL: u32 = 0;
     const DIGITS: u32 = 2;
     const NUMBER: u32 = 3;
@@ -509,8 +492,6 @@ fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
 
     let kind = |kind| TextInput::local().with_kind(kind);
     let cases: Vec<(&str, TextInput, (u32, u32))> = vec![
-        // Prose asks for nothing beyond the input method's defaults, as
-        // before, whatever the toolkit's own checking does.
         ("prose", TextInput::local(), (0, NORMAL)),
         (
             "prose, multiline",
@@ -596,7 +577,6 @@ fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
         );
     }
 
-    // Purposes no text field kind asks for, which custom editors declare.
     for (purpose, want) in [
         (InputPurpose::Decimal, NUMBER),
         (InputPurpose::OneTimeCode, DIGITS),
@@ -613,7 +593,6 @@ fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
 
 #[test]
 fn an_open_text_menu_owns_the_keyboard() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local()
         .with_spellcheck(false)
@@ -623,12 +602,10 @@ fn an_open_text_menu_owns_the_keyboard() {
     ti.core.set_selection(0, 5);
     ti.open_context_menu([10.0, 10.0]);
     let named = |key| crate::synthetic_input::named_key(key);
-    // Arrows move through the menu, not the caret or the selection.
     assert!(dispatch(&mut ti, &named(NamedKey::ArrowDown)));
     assert!(dispatch(&mut ti, &crate::synthetic_input::char_key("x")));
     assert_eq!(ti.value(), "hello world", "typing does not reach the text");
     assert_eq!(ti.selection_range(), Some((0, 5)));
-    // Enter runs the highlighted row, the registered action.
     assert!(dispatch(&mut ti, &named(NamedKey::Enter)));
     assert!(!ti.context_menu.is_open());
     assert_eq!(ti.value(), "hello world", "Enter inserts no line");
@@ -637,7 +614,6 @@ fn an_open_text_menu_owns_the_keyboard() {
         Some("translate".to_owned())
     );
 
-    // Escape closes the menu and leaves the field as it was.
     ti.open_context_menu([10.0, 10.0]);
     assert!(dispatch(&mut ti, &named(NamedKey::Escape)));
     assert!(!ti.context_menu.is_open());
@@ -646,7 +622,6 @@ fn an_open_text_menu_owns_the_keyboard() {
 
 #[test]
 fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
         let mut ti = suggesting_field(typed);
@@ -668,7 +643,6 @@ fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
 /// and the word taken back stays as typed when the space comes again.
 #[test]
 fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for (typed, corrected) in [("I cant", "I can't "), ("it wont", "it won't ")] {
         let mut ti = TextInput::local()
@@ -725,8 +699,6 @@ fn arrow_keys_cross_the_rows_a_paragraph_wraps_onto() {
     }
 }
 
-/// A focused field laid out too narrow for its text scrolls to its caret;
-/// widened so the whole text fits, it shows the text from its start again.
 #[test]
 fn a_focused_field_that_widens_shows_its_text_from_the_start() {
     let _settled = crate::motion::testing::settled();
@@ -798,14 +770,11 @@ fn a_chrome_owned_field_places_the_caret_and_reports_every_selection() {
             (2, 9),
             "the drag swept a selection the surface can paint"
         );
-        // A press back on the text collapses that selection; the surface
-        // hears the collapsed pair, not silence.
         assert!(ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)));
         let (anchor, caret) = ti.selection_anchor_focus_or_caret();
         assert_eq!(anchor, caret, "a click takes the selection back");
     }
     {
-        // The same press at a device scale of two lands on the same letter.
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         draw_to_populate(&mut ti);
@@ -848,9 +817,6 @@ fn a_bound_field_at_rest_asks_for_no_frame() {
     );
 }
 
-/// A prompt wider than the field that shows it says what fits of it, and where it stops: the
-/// field elides the words to the line it prompts in, so no prompt is cut off mid-letter at the
-/// clip, and the frame's audit reads how the prompt fits the room the text has.
 #[test]
 fn a_prompt_wider_than_its_field_shows_what_fits_and_says_where_it_stopped() {
     let prompt = "Reply to Launch plan for the autumn release";

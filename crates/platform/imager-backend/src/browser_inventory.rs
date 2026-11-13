@@ -1,19 +1,15 @@
 //! Source-oriented browser inventory shared with the installer's discovery worker.
 //!
-//! The report carries recognizable product, profile and count metadata only. It
-//! never contains an absolute source path, cookie or origin value, saved
-//! password, form value, session token or other private identity. Capabilities
-//! describe the actual export path: an unsupported class is named here instead
-//! of disappearing behind one browser total.
+//! The report carries product, profile and count metadata only, never a path, cookie, origin,
+//! password, token or form value; an unsupported class is named instead of hiding behind one
+//! browser total.
 
 use browser_continuity::sessions::Service;
 use serde::Serialize;
 
-/// Current public report schema. Version two adds the per-profile domain
-/// selection flags to the existing inclusion flag.
+/// Version two adds the per-profile domain selection flags.
 pub const SCHEMA: u32 = 2;
 
-/// Product identity of an installed browser source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BrowserKind {
@@ -26,7 +22,6 @@ pub enum BrowserKind {
 }
 
 impl BrowserKind {
-    /// Public product label from the consented discovery registry.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -39,7 +34,6 @@ impl BrowserKind {
         }
     }
 
-    /// Legacy storage family read by the reviewed capture path.
     #[must_use]
     pub const fn provider(self) -> browser_continuity::Provider {
         match self {
@@ -51,8 +45,7 @@ impl BrowserKind {
     }
 }
 
-/// How the browser was installed, so a native and a Flatpak profile of the
-/// same product remain distinct sources.
+/// A native and a Flatpak profile of the same product stay distinct sources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Installation {
@@ -60,24 +53,17 @@ pub enum Installation {
     Flatpak,
 }
 
-/// What the reviewed export path actually does with one data class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", content = "reason", rename_all = "kebab-case")]
 pub enum Capability {
-    /// A selected domain is carried through the authenticated browser plan.
     Supported,
-    /// Some, but not every, source in this class is carried.
     Limited(&'static str),
-    /// Counted for the review, but not carried by the browser transfer.
     InventoryOnly,
-    /// No export path exists; the reason is a stable presentation key.
     Unsupported(&'static str),
-    /// The browser profile has no data of this class.
     Absent,
 }
 
 impl Capability {
-    /// Whether a selected source of this class reaches the destination.
     #[must_use]
     pub const fn exported(self) -> bool {
         matches!(self, Self::Supported | Self::Limited(_))
@@ -89,14 +75,11 @@ impl Capability {
 #[serde(rename_all = "kebab-case")]
 pub enum Measure {
     Exact(u64),
-    /// The source exists but could not be counted without claiming completeness.
     Unknown,
-    /// Counting is not part of this class's supported behavior.
     Unsupported,
 }
 
 impl Measure {
-    /// Exact value when one was proven, otherwise `None`.
     #[must_use]
     pub const fn exact(self) -> Option<u64> {
         match self {
@@ -106,10 +89,8 @@ impl Measure {
     }
 }
 
-/// Recognized website-session material in one profile.
-///
-/// A cookie count is website data, not an authenticated account. No entry here
-/// establishes that a person is signed in.
+/// A cookie count is website data, not an authenticated account; nothing here establishes that a
+/// person is signed in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ServiceInventory {
     pub service: Service,
@@ -118,8 +99,8 @@ pub struct ServiceInventory {
     pub account_evidence: bool,
 }
 
-/// Website data in one profile. `accounts` stays unsupported until identity
-/// evidence exists; it is never the cookie or origin count.
+/// Accounts stay unsupported until identity evidence exists; this is never the cookie or origin
+/// count.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WebsiteInventory {
     pub origins: Measure,
@@ -141,7 +122,6 @@ impl Default for WebsiteInventory {
     }
 }
 
-/// One profile's data classes and the behavior each one has at the destination.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub bookmarks: Capability,
@@ -167,27 +147,19 @@ impl Default for Capabilities {
     }
 }
 
-/// Bounded metadata for one reviewed browser profile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProfileInventory {
-    /// Opaque source identity derived from the recognized granted profile.
     pub id: String,
     pub browser: BrowserKind,
     pub installation: Installation,
     pub application: String,
     pub profile_label: String,
-    /// Whether this profile has a reviewed bookmarks/history export selection.
-    /// A profile with only website data remains visible but cannot become an
-    /// empty plan entry.
+    /// A profile with only website data remains visible but cannot become an empty plan entry.
     pub exportable: bool,
-    /// Whether the current selection carries this profile. The actual plan is
-    /// built from the same value, so an exclusion is never display-only.
+    /// The plan is built from the same value, so an exclusion is never display-only.
     pub included: bool,
-    /// Whether the current selection carries this profile's bookmarks. A
-    /// profile exclusion clears both selected flags, and a per-profile domain
-    /// choice changes only its own flag.
+    /// A profile exclusion clears both flags; a per-profile domain choice changes only its own.
     pub bookmarks_selected: bool,
-    /// Whether the current selection carries this profile's history.
     pub history_selected: bool,
     pub capabilities: Capabilities,
     pub bookmarks: Measure,
@@ -199,8 +171,7 @@ pub struct ProfileInventory {
 }
 
 impl ProfileInventory {
-    /// Construct the empty shape for a reviewed profile. Counts are filled only
-    /// by actual read-only inspection.
+    /// Counts are filled only by actual read-only inspection.
     #[must_use]
     pub fn new(
         id: String,
@@ -229,8 +200,7 @@ impl ProfileInventory {
         }
     }
 
-    /// Any class whose source was not completely inspected. A report with this
-    /// flag must not be presented as a complete inventory.
+    /// A report with this flag must not be presented as a complete inventory.
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.bookmarks == Measure::Unknown
@@ -244,8 +214,7 @@ impl ProfileInventory {
     }
 }
 
-/// Bounded inventory of every reviewed browser profile. Paths and private
-/// values are deliberately absent.
+/// Paths and private values are deliberately absent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub schema: u32,
@@ -253,8 +222,7 @@ pub struct Report {
     pub incomplete: bool,
 }
 
-/// Stable product identity from the consented discovery registry. Labels are
-/// fixed product metadata, never inferred from a private folder name.
+/// Labels are fixed product metadata, never inferred from a private folder name.
 #[must_use]
 pub fn kind_for(provider: crate::account_sources::Provider, label: &str) -> Option<BrowserKind> {
     match (provider, label) {

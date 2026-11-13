@@ -95,14 +95,12 @@ impl Store {
     }
 
     /// Ask the pending confirmation, in the dialog the window builds when
-    /// it next looks.
     pub(super) fn show_confirmation(&mut self) {
         self.asking = true;
         self.dirty = true;
     }
 
     /// The dialog that asks the pending confirmation. It states the scope
-    /// in plain language; cancel is the safe default.
     pub(super) fn confirmation_dialog(&self) -> Option<ModalDialog<Column>> {
         let pending = self.pending_confirmation.clone()?;
         let name = self
@@ -289,13 +287,9 @@ impl Store {
         }
         let readiness = connection_readiness(&c);
         let live = if readiness.can_connect() && self.capture {
-            // A capture reaches nothing outside the process.
             LiveSession::Preview(SessionStatus::Connecting)
         } else if readiness.can_connect() {
             let live = self.start_live(&c);
-            // When a machine was last used follows the person to their other
-            // devices; whether it answered is this device's observation, made
-            // once the transport reports (`pump_session`).
             let now = self.now_ms();
             if let Some(connection) = self.workspace.get_mut(id) {
                 connection.last_used_ms = Some(now);
@@ -333,8 +327,6 @@ impl Store {
     }
 
     pub(super) fn disconnect_session(&mut self) {
-        // Dropping the live session closes the transport (the worker thread
-        // sees its channel close and disconnects).
         {
             let mut session = self.session.borrow_mut();
             if let Some(LiveSession::Tilo(tilo)) = session.live.as_ref() {
@@ -437,8 +429,6 @@ impl Store {
     }
 
     /// Drain live-session I/O and note what this device observed of the
-    /// machine: a connection that came up marks it reachable, one that
-    /// failed marks it unreachable. The observation stays on this device.
     pub(super) fn pump_session(&mut self) {
         self.expire_connect();
         let (changed, status) = {
@@ -457,7 +447,6 @@ impl Store {
             Some(SessionStatus::Failed(_)) => Presence::Offline,
             _ => return,
         };
-        // A preview has no machine behind it to observe.
         if matches!(self.session.borrow().live, Some(LiveSession::Preview(_))) {
             return;
         }

@@ -1017,6 +1017,10 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     let author = &entries.last().unwrap().author;
     assert_eq!(author.name, "Scribe");
     assert_eq!(crate::author_line(author), "Scribe for Ada");
+    // Its run, a task going by its own name, still reads as the agent's.
+    let mut run = author.clone();
+    run.task = Some("Scribe".into());
+    assert_eq!(crate::author_line(&run), "Scribe for Ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
     assert_eq!(

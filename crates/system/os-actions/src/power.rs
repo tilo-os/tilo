@@ -2,9 +2,8 @@
 
 use tilo_power_mgmt::PowerProfilesMonitor;
 
-/// Power profile, mirrors `shell::quick_settings::PowerProfile` —
-/// duplicated so this crate doesn't need to import the popover state
-/// type, and so unit tests don't need any UI scaffolding.
+/// Mirrors the shell's `PowerProfile`, duplicated so this crate needs no popover state type and tests
+/// need no UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerProfile {
     Saver,
@@ -13,7 +12,6 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    /// The daemon's name for the profile.
     pub fn cli_arg(self) -> &'static str {
         match self {
             PowerProfile::Saver => "power-saver",
@@ -22,7 +20,6 @@ impl PowerProfile {
         }
     }
 
-    /// Inverse of [`Self::cli_arg`]; used by [`get_power_profile`].
     pub fn from_cli(s: &str) -> Option<Self> {
         match s.trim() {
             "power-saver" => Some(PowerProfile::Saver),
@@ -33,7 +30,6 @@ impl PowerProfile {
     }
 }
 
-/// The power-profiles daemon on the system bus.
 async fn daemon() -> Result<PowerProfilesMonitor, String> {
     let bus = zbus::Connection::system()
         .await
@@ -43,7 +39,6 @@ async fn daemon() -> Result<PowerProfilesMonitor, String> {
         .map_err(|e| format!("power-profiles-daemon: {e}"))
 }
 
-/// Set the active power profile.
 pub fn set_power_profile(profile: PowerProfile) -> Result<(), String> {
     crate::block_on(async move {
         daemon()
@@ -54,7 +49,6 @@ pub fn set_power_profile(profile: PowerProfile) -> Result<(), String> {
     })
 }
 
-/// Read the active power profile.
 pub fn get_power_profile() -> Result<PowerProfile, String> {
     let active = crate::block_on(async {
         daemon()
@@ -67,11 +61,8 @@ pub fn get_power_profile() -> Result<PowerProfile, String> {
         .ok_or_else(|| format!("power-profiles-daemon reports an unknown profile: {active:?}"))
 }
 
-/// Return only the profiles the running power-profiles daemon advertises.
-///
-/// The daemon's `Profiles` list is deliberately treated as the capability
-/// source; callers must not offer a profile merely because it is part of the
-/// protocol.
+/// Only the profiles the daemon advertises: its `Profiles` list is the capability source, so callers do
+/// not offer a profile it leaves out.
 pub fn available_power_profiles() -> Result<Vec<PowerProfile>, String> {
     let names = crate::block_on(async {
         daemon()

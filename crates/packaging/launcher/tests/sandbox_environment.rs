@@ -1,20 +1,7 @@
 //! The environment visible to a sandboxed app.
 //!
-//! The app's environment is meant to be a closed set — a list of
-//! variables the launcher puts there, beside the binds that make each
-//! mean something. `bwrap` doesn't do that by default: it hands the
-//! child whatever the parent was carrying, the compositor's own
-//! environment.
-//!
-//! These tests start the app under `bwrap`, through the same
-//! `run_with_captured` path the launcher uses, and read the result from the
-//! process's own `environ` after `exec`. **They do
-//! not assert on the argv** — a `--setenv` spliced ahead of
-//! `--clearenv` leaves the intention intact and the environment full.
-//! The environment the process has is the boundary.
-//!
-//! These tests are not `#[ignore]`d because bwrap is required to run a Tilo
-//! app; a machine that cannot run them cannot run a Tilo app.
+//! The app's environment is meant to be a closed set — a list of variables the launcher
+//! puts there, beside the binds that make each mean something.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,12 +20,12 @@ use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
 
 const PACKAGE: &str = "so.tilo.envtest";
 
-/// A variable name no part of Tilo sets, so its presence inside the
-/// sandbox can only mean one thing: it walked in from the parent.
+/// A variable name no part of Tilo sets, so its presence inside the sandbox can only mean one thing: it
+/// walked in from the parent.
 const MARKER: &str = "TILO_ENV_LEAK_MARKER";
 
-/// Stand-ins for compositor wiring that an app must not receive: the
-/// privileged clipboard socket, collaboration broker, and user identity file.
+/// Stand-ins for compositor wiring that an app must not receive: the privileged clipboard socket,
+/// collaboration broker, and user identity file.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_WAYLAND_PRIVILEGED", "wayland-priv-9"),
     ("QUICK_COLLAB_SOCK", "/run/user/1000/tilo-collab.sock"),
@@ -49,9 +36,8 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
-/// Variables set on *this* process for the duration of one test, put
-/// back afterwards — what the launcher carries when it builds the
-/// launch is the whole subject here.
+/// Variables set on *this* process for the duration of one test, put back afterwards — what the
+/// launcher carries when it builds the launch is the whole subject here.
 fn parent_env(vars: &[(&str, &str)]) -> ScopedEnv {
     let mut env = ScopedEnv::new();
     for (key, value) in vars {
@@ -105,15 +91,13 @@ fn env_names_inside() -> Vec<String> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn the_session_environment_does_not_leak_into_the_sandbox() {
-    // Phase `the_sessions_environment_does_not_reach_a_sandboxed_app`.
-    // The launcher's environment does not become the app's.
     {
         let mut planted: Vec<(&str, &str)> = vec![(MARKER, "the-parent-was-here")];
         planted.extend_from_slice(SESSION_PRIVATE);
         let _env = parent_env(&planted);
 
-        // Without this the test would pass on a launcher that never had the
-        // variable to leak in the first place.
+        // Without this the test would pass on a launcher that never had the variable to leak in the
+        // first place.
         assert_eq!(
             std::env::var(MARKER).as_deref(),
             Ok("the-parent-was-here"),
@@ -136,13 +120,6 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             );
         }
     }
-    // Phase `every_variable_in_the_sandbox_is_one_the_launcher_set`.
-    // The app's environment is a closed set, not a filtered one.
-    //
-    // Stronger than naming variables that must be absent: a variable
-    // arriving some other way fails this even though nobody named it —
-    // the point, since the leak this closes was exactly a variable nobody
-    // had thought of.
     {
         let _env = parent_env(&[
             ("EDITOR", "vi"),
@@ -151,13 +128,12 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             (MARKER, "the-parent-was-here"),
         ]);
 
-        // What the launcher gives an app: `PATH` and the allowlist from
-        // `push_clean_environment`, plus one set beside each bind that makes
-        // it reachable.
+        // What the launcher gives an app: `PATH` and the allowlist from `push_clean_environment`, plus
+        // one set beside each bind that makes it reachable.
         let mut allowed: Vec<String> = vec![
             "PATH".to_string(),
-            // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
-            // than anything of the session's.
+            // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather than anything of the
+            // session's.
             "PWD".to_string(),
             "TILO_PACKAGE_ID".to_string(),
             "TILO_APP_NAME".to_string(),
@@ -171,11 +147,9 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "TILO_WORKSPACE_ROOTS".to_string(),
             "TILO_PARTICIPATION".to_string(),
             "TILO_CLI_COMMAND".to_string(),
-            // The shared font index's directory, set beside its bind
-            // (`appdir::push_font_index`).
+            // The shared font index's directory, set beside its bind (`appdir::push_font_index`).
             tilo_process::environment::FONT_INDEX_ENV.to_string(),
-            // The egress gate and proxy variables naming it. Absent here (this
-            // fixture declares `net = "off"`), but part of the set.
+            // The egress gate and proxy variables naming it.
             "TILO_NET_GATE".to_string(),
             "HTTPS_PROXY".to_string(),
             "HTTP_PROXY".to_string(),
@@ -197,9 +171,9 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "LD_PRELOAD".to_string(),
             "GLIBC_TUNABLES".to_string(),
         ];
-        // The loader pin, set beside the read-only bind of the manifests it
-        // names: a GPU's for a launch with a render node, lavapipe's for one
-        // without when the session pinned it (CI's environment does).
+        // The loader pin, set beside the read-only bind of the manifests it names: a GPU's for a
+        // launch with a render node, lavapipe's for one without when the session pinned it (CI's
+        // environment does).
         allowed.extend(
             [
                 launcher::gpu::VK_DRIVER_FILES_ENV,
@@ -237,11 +211,6 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
              there; these arrived some other way: {unexpected:?}"
         );
     }
-    // Phase `path_is_the_sandboxes_own`.
-    // `PATH` inside the sandbox is the sandbox's, not the session's: the
-    // inherited one named host directories outside the namespace, and
-    // could name a writable directory that decides which binary the
-    // app's `exec` resolves to.
     {
         let _env = parent_env(&[("PATH", "/home/somebody/bin:/usr/bin")]);
 
@@ -252,10 +221,6 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "a sandboxed app must not inherit the session's PATH"
         );
     }
-    // Phase `unsafe_text_scale_and_other_parent_environment_stay_out`.
-    // Recognising a preference name must not turn it into a generic string
-    // channel. Non-finite, out-of-range and non-numeric values remain absent,
-    // as does an unrelated parent variable.
     {
         for value in ["NaN", "0.49", "4.01", "1.25\nTILO_ENV_LEAK_MARKER=leaked"] {
             let _env = parent_env(&[
@@ -277,10 +242,6 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
 
 #[test]
 fn chosen_session_preferences_are_carried_across_explicitly() {
-    // Phase `the_users_locale_is_carried_across_explicitly`.
-    // The user's language crosses the boundary, since it's the user's,
-    // not the session's — clearing the environment without putting the
-    // locale back would leave every app in the C locale.
     {
         let _env = parent_env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
 
@@ -291,10 +252,6 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
              in the C locale"
         );
     }
-    // Phase `the_sessions_logging_preference_reaches_the_app`.
-    // What the session asked its applications to say out loud crosses
-    // too: without `RUST_LOG` a sandboxed app falls back to errors only,
-    // its only account of what happened inside it.
     {
         let _env = parent_env(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
 
@@ -305,9 +262,6 @@ fn chosen_session_preferences_are_carried_across_explicitly() {
              inside the sandbox is silent below error level"
         );
     }
-    // Phase `validated_accessibility_text_scale_reaches_the_app`.
-    // Text scaling is a user accessibility preference, so the launcher carries
-    // it across the clean environment after parsing and canonicalising it.
     {
         let _env = parent_env(&[
             ("TILO_A11Y_TEXT_SCALE", " 1.25 "),
@@ -350,11 +304,6 @@ fn native_closure(executables: &[&std::path::Path]) -> Vec<PathBuf> {
 }
 
 /// The real native library relocates its lookup beside the signed runtime.
-/// Exercise signature verification, loader preflight, bwrap, Landlock and
-/// seccomp through the production launch path, not just an argv assertion:
-/// the confined process must find `playbin` among the system plugins and
-/// autoplug a system decoder all the way to a decoded picture. Finding the
-/// element alone once passed while every real open still failed.
 #[test]
 fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
     use std::path::Path;
@@ -441,8 +390,8 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
             "video-sink=fakesink name=frames silent=false".into(),
         ],
     );
-    // Only decoded pictures reach playbin's video sink, so a buffer there
-    // proves a system decoder was plugged and ran.
+    // Only decoded pictures reach playbin's video sink, so a buffer there proves a system decoder was
+    // plugged and ran.
     assert!(
         output
             .lines()

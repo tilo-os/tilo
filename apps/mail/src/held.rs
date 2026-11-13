@@ -1,21 +1,11 @@
 //! Mail the workspace holds whole, for whoever works without a mail server.
 //!
-//! A server's mail stays outside the mailbox (see [`crate::resource`]); the
-//! mailbox holds only what the reader did with it. An agent's confined
-//! worker, a seeded scenario or an injected event has no account and no
-//! network, so mail delivered to the workspace itself is kept in the record
-//! ([`HeldMessage`], under [`Mail::held`]): it replicates, replays and
-//! undoes like every other mailbox edit, and every participant — a person's
-//! window, an agent's headless replica — reads the same messages. Each one's
-//! folder, read and starred state and labels are its ordinary
-//! [`MessageState`], so archiving, starring or trashing it is the same verb
-//! as for fetched mail; it has no server copy, so nothing is queued for a
+//! A server's mail stays outside the mailbox; an agent's confined worker, a seeded scenario or
+//! an injected event has no account and no network, so mail delivered to the workspace itself
+//! is kept in the record ([`HeldMessage`], under [`Mail::held`]), where it replicates, replays
+//! and undoes like every other mailbox edit. Each message's folder, read and starred state and
+//! labels are its ordinary [`MessageState`]; it has no server copy, so nothing is queued for a
 //! server and nothing is ever sent from here.
-//!
-//! What is read from it — the mailbox's `read`, `search-messages`,
-//! `export-content` — is projected from the record, beside the mail this
-//! device keeps of its servers. Drafting a reply starts a draft of its own,
-//! which a person reviews and sends.
 
 use std::fmt::Write as _;
 
@@ -517,9 +507,7 @@ impl Mail {
                 .map(|(id, held, _)| (id, held))
                 .collect(),
         };
-        // The drafts being written are the mailbox's, not held messages:
-        // they are exported with every message or the Drafts folder, each
-        // marked a draft. Their notes are private and stay out.
+        // The drafts being written are the mailbox's, not held messages.
         let drafts: Vec<WrittenDraft> = if message.is_none_or(|m| m.trim().is_empty())
             && folder.is_none_or(|folder| folder == Folder::Drafts)
         {
@@ -683,7 +671,6 @@ pub(crate) struct Drafted {
 
 impl Drafted {
     /// A reply to `message` saying `body` above the original, quoted;
-    /// `all` copies everyone else it went to but `me`.
     pub(crate) fn reply(message: &Message, body: &str, all: bool, me: &str) -> Self {
         let subject = message.subject.trim();
         let subject = if normalize_subject(subject) == subject {

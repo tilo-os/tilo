@@ -22,16 +22,10 @@ pub(super) fn selection_around(row: Rect, content: Rect, bleed: f64) -> Rect {
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// Where a row standing `top` down the view (its top less the scroll) stands on screen. A
-    /// list that follows its end stands a short list's rows down at its foot
-    /// ([`VirtualList::end_slack`]) while the view keeps their tops from the top, so every box
-    /// drawn for a row — its lift, its band, the seam a drop lands on — takes that slack with it.
     pub(super) fn shown_top(&self, top: f64) -> f64 {
         self.rect.y0 + self.end_slack() + top
     }
 
-    /// The rect a row's lift takes: the list's width, less the bar's gutter
-    /// while the rows stand beside the bar.
     pub(super) fn lift_rect(&self, top: f64, height: f64) -> Rect {
         let x1 = if self.rows_beside_bar {
             self.rect.x1 - self.gutter
@@ -54,8 +48,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Hand every mounted row its current selection: a `ListRow` takes it
-    /// in place, any other selection-aware delegate is rebuilt.
     pub(super) fn push_row_selection(&mut self) {
         if !self.delegate_selection && !self.selection_aware {
             return;

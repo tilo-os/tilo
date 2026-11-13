@@ -1,23 +1,17 @@
-//! The ZIP archives Tilo reads and writes, under bounds: reading **untrusted** packages
-//! (`.odt`/`.docx`/`.xlsx`/`.ods`, `.odp`/`.pptx`, `.epub`, browser extensions), where the
-//! archive and every part in it are attacker-controlled, and writing the archives an app makes
-//! of what it holds ([`write_zip`]), which are read back under the same bounds.
+//! The ZIP archives Tilo reads and writes, under bounds: untrusted packages
+//! (`.odt`/`.docx`/`.xlsx`, `.odp`/`.pptx`, `.epub`, browser extensions), where
+//! the archive and every part in it are attacker-controlled, and the archives an
+//! app writes of what it holds ([`write_zip`]), read back under the same bounds.
 //!
-//! * **ZIP bombs** — a few KB that decompress to gigabytes; every part is read into
-//!   memory, so an unbounded read is an OOM primitive. Every read here caps the
-//!   entry count, the per-part size and the running total (never truncating, only
-//!   rejecting), checking each entry's *declared* size first, then enforcing the
-//!   cap with a hard-limited reader so a lying header still can't exceed it.
+//! Every read caps the entry count, the per-part size and the running total,
+//! checking each entry's declared size first and then enforcing the cap through
+//! a hard-limited reader, so a lying header cannot exceed it. A breach is
+//! rejected, never truncated. [`read_zip_parts`] and [`BoundedArchive::read_xml`]
+//! reject parts that declare a DTD or entity.
 //!
-//! * **XXE / "billion laughs"** — valid ODF/OOXML parts never carry a DTD, so
-//!   [`read_zip_parts`] and [`BoundedArchive::read_xml`] reject any part
-//!   containing `<!DOCTYPE`/`<!ENTITY` outright, in depth. Formats whose XML may
-//!   legitimately carry a doctype (EPUB 2 XHTML) read through
-//!   [`BoundedArchive::read_text`] instead.
-//!
-//! Every package reader goes through this crate so the guarantees are uniform;
-//! callers whose formats warrant tighter bounds pass their own [`ZipLimits`] or a
-//! smaller per-read cap, which can only narrow the limits.
+//! Every package reader goes through this crate, so the guarantees are uniform;
+//! a caller whose format warrants tighter bounds passes its own [`ZipLimits`] or
+//! a smaller per-read cap, which can only narrow them.
 
 #[cfg(feature = "epub")]
 pub mod epub;
@@ -50,34 +44,28 @@ impl Default for ZipLimits {
     }
 }
 
-/// Why reading an untrusted archive failed. A limit breach is never silently
-/// truncated; it is always one of the `*TooLarge`/`TooManyEntries` variants.
+/// Why reading an untrusted archive failed: a limit breach is never silently
+/// truncated, only one of these variants.
 #[derive(Debug, thiserror::Error)]
 pub enum ZipError {
-    /// The bytes are not a readable ZIP archive.
     #[error("zip open: {0}")]
     Open(#[source] RawZipError),
-    /// The archive has more entries than [`ZipLimits::max_parts`].
     #[error("zip has {count} entries, over the {limit} limit (possible zip bomb)")]
     TooManyEntries { count: usize, limit: usize },
-    /// An entry's header could not be read.
     #[error("zip entry {index}: {source}")]
     Entry {
         index: usize,
         #[source]
         source: RawZipError,
     },
-    /// No part with this name exists.
     #[error("zip part {name} not found")]
     Missing { name: String },
-    /// A named part exists but its header could not be read.
     #[error("zip part {name}: {source}")]
     Member {
         name: String,
         #[source]
         source: RawZipError,
     },
-    /// A part's declared uncompressed size is over the per-part cap.
     #[error(
         "zip part {name} declares {declared} bytes, over the {limit} per-part limit (possible zip bomb)"
     )]
@@ -86,32 +74,24 @@ pub enum ZipError {
         declared: u64,
         limit: u64,
     },
-    /// A part inflated past the per-part cap despite a smaller declared size.
     #[error("zip part {name} inflates past the {limit}-byte per-part limit (possible zip bomb)")]
     PartInflatesTooLarge { name: String, limit: u64 },
-    /// The parts read (or declared) so far exceed [`ZipLimits::max_total_bytes`].
     #[error("zip parts exceed the {limit}-byte total limit (possible zip bomb)")]
     TotalTooLarge { limit: u64 },
-    /// Inflating a part failed.
     #[error("zip read {name}: {source}")]
     Read {
         name: String,
         #[source]
         source: std::io::Error,
     },
-    /// An XML part carries a DTD or entity declaration.
     #[error("zip part {name} contains a DTD/entity declaration — rejected (XXE defence)")]
     Dtd { name: String },
-    /// A part read as text is not valid UTF-8.
     #[error("zip part {name} is not UTF-8")]
     NotUtf8 { name: String },
-    /// An entry's name would place it outside the extraction directory.
     #[error("zip entry {name} names a path outside the extraction directory")]
     UnsafeName { name: String },
-    /// Two entries are called the same, so one of them would be lost.
     #[error("zip entry {name} is in the archive twice")]
     DuplicateName { name: String },
-    /// Writing an entry failed.
     #[error("zip write {name}: {source}")]
     Write {
         name: String,
@@ -121,7 +101,6 @@ pub enum ZipError {
 }
 
 impl ZipError {
-    /// Whether this error is a breach of a [`ZipLimits`] bound or a per-read cap.
     #[must_use]
     pub const fn is_limit_breach(&self) -> bool {
         matches!(
@@ -140,12 +119,9 @@ impl From<ZipError> for std::io::Error {
     }
 }
 
-/// A ZIP archive whose every read is bounded by [`ZipLimits`].
-///
-/// Opening checks the entry count. Each [`read`](Self::read) checks the part's
-/// declared size against the cap, inflates through a hard-limited reader, and
-/// adds what it read to a running total held against
-/// [`ZipLimits::max_total_bytes`].
+/// A ZIP archive whose every read is bounded by [`ZipLimits`]: opening checks the
+/// entry count, and each read checks the part's declared size, inflates through
+/// a hard-limited reader and adds what it read to the total.
 pub struct BoundedArchive<R> {
     archive: ZipArchive<R>,
     limits: ZipLimits,
@@ -153,9 +129,10 @@ pub struct BoundedArchive<R> {
 }
 
 impl<'a> BoundedArchive<Cursor<&'a [u8]>> {
-    /// Opens an in-memory archive without copying it.
+    /// Open an in-memory archive without copying it.
     ///
     /// # Errors
+    ///
     /// [`ZipError::Open`] for unreadable bytes, [`ZipError::TooManyEntries`] when
     /// the archive has more entries than `limits.max_parts`.
     pub fn from_bytes(bytes: &'a [u8], limits: ZipLimits) -> Result<Self, ZipError> {
@@ -164,9 +141,10 @@ impl<'a> BoundedArchive<Cursor<&'a [u8]>> {
 }
 
 impl<R: Read + Seek> BoundedArchive<R> {
-    /// Opens an archive from a seekable reader.
+    /// Open an archive from a seekable reader.
     ///
     /// # Errors
+    ///
     /// [`ZipError::Open`] for an unreadable archive, [`ZipError::TooManyEntries`]
     /// when it has more entries than `limits.max_parts`.
     pub fn new(reader: R, limits: ZipLimits) -> Result<Self, ZipError> {
@@ -189,32 +167,31 @@ impl<R: Read + Seek> BoundedArchive<R> {
         &self.limits
     }
 
-    /// Number of entries (files and directories).
     #[must_use]
     pub fn len(&self) -> usize {
         self.archive.len()
     }
 
-    /// Whether the archive has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.archive.is_empty()
     }
 
-    /// Names of every entry, in no particular order. An entry whose name does
-    /// not decode is left out: reading it fails with [`ZipError::Entry`].
+    /// Names of every entry; an entry whose name does not decode is left out, and
+    /// reading it fails with [`ZipError::Entry`].
     pub fn file_names(&self) -> impl Iterator<Item = Cow<'_, str>> {
         self.archive.file_names().filter_map(Result::ok)
     }
 
-    /// Rejects the archive up front if any entry *declares* more than
+    /// Reject the archive up front if any entry declares more than
     /// [`ZipLimits::max_part_bytes`] or the declared sizes sum past
-    /// [`ZipLimits::max_total_bytes`] — for callers that want a hostile package
-    /// refused before anything is inflated, or that later hand the archive to an
-    /// extractor.
+    /// [`ZipLimits::max_total_bytes`]: for a caller that refuses a hostile package
+    /// before anything is inflated, or later hands it to an extractor.
     ///
     /// # Errors
-    /// [`ZipError::Entry`], [`ZipError::PartTooLarge`] or [`ZipError::TotalTooLarge`].
+    ///
+    /// [`ZipError::Entry`], [`ZipError::PartTooLarge`] or
+    /// [`ZipError::TotalTooLarge`].
     pub fn check_declared_sizes(&mut self) -> Result<(), ZipError> {
         let mut total: u64 = 0;
         for index in 0..self.archive.len() {
@@ -243,12 +220,13 @@ impl<R: Read + Seek> BoundedArchive<R> {
         Ok(())
     }
 
-    /// Reads the part `name`, allowing at most `cap` bytes (further narrowed to
-    /// [`ZipLimits::max_part_bytes`]).
+    /// Read the part `name`, allowing at most `cap` bytes, further narrowed to
+    /// [`ZipLimits::max_part_bytes`].
     ///
     /// # Errors
-    /// [`ZipError::Missing`] when there is no such part; a limit breach or a
-    /// read failure otherwise.
+    ///
+    /// [`ZipError::Missing`] when there is no such part, a limit breach or a read
+    /// failure otherwise.
     pub fn read(&mut self, name: &str, cap: u64) -> Result<Vec<u8>, ZipError> {
         let cap = cap.min(self.limits.max_part_bytes);
         let max_total = self.limits.max_total_bytes;
@@ -270,13 +248,12 @@ impl<R: Read + Seek> BoundedArchive<R> {
         read_capped(file, name, declared, cap, max_total, &mut self.total)
     }
 
-    /// The first `len` bytes of the part `name` (fewer when it is shorter),
-    /// inflating no more than that: for a header check on a part too large
-    /// to read whole.
+    /// The first `len` bytes of the part `name`, inflating no more than that: a
+    /// header check on a part too large to read whole.
     ///
     /// # Errors
-    /// [`ZipError::Missing`] when there is no such part, a read failure
-    /// otherwise.
+    ///
+    /// [`ZipError::Missing`] when there is no such part, a read failure otherwise.
     pub fn read_prefix(&mut self, name: &str, len: usize) -> Result<Vec<u8>, ZipError> {
         let file = match self.archive.by_name(name) {
             Ok(file) => file,
@@ -302,10 +279,11 @@ impl<R: Read + Seek> BoundedArchive<R> {
         Ok(prefix)
     }
 
-    /// [`read`](Self::read), decoded as UTF-8. A doctype is allowed — use
-    /// [`read_xml`](Self::read_xml) for formats whose XML never carries one.
+    /// [`read`](Self::read), decoded as UTF-8. A doctype is allowed; formats whose
+    /// XML never carries one read through [`read_xml`](Self::read_xml).
     ///
     /// # Errors
+    ///
     /// As [`read`](Self::read), plus [`ZipError::NotUtf8`].
     pub fn read_text(&mut self, name: &str, cap: u64) -> Result<String, ZipError> {
         let bytes = self.read(name, cap)?;
@@ -314,10 +292,11 @@ impl<R: Read + Seek> BoundedArchive<R> {
         })
     }
 
-    /// [`read_text`](Self::read_text) for an XML part that must not declare a
-    /// DTD or entity (XXE defence).
+    /// [`read_text`](Self::read_text) for an XML part that must not declare a DTD or
+    /// entity (XXE defence).
     ///
     /// # Errors
+    ///
     /// As [`read_text`](Self::read_text), plus [`ZipError::Dtd`].
     pub fn read_xml(&mut self, name: &str, cap: u64) -> Result<String, ZipError> {
         let bytes = self.read(name, cap)?;
@@ -331,9 +310,8 @@ impl<R: Read + Seek> BoundedArchive<R> {
         })
     }
 
-    /// Reads every file entry into memory, preserving archive order. Directory
-    /// entries are skipped; `.xml`/`.rels` parts are rejected if they carry a
-    /// DTD/entity declaration.
+    /// Every file entry in memory, in archive order; directory entries are skipped
+    /// and `.xml`/`.rels` parts are rejected if they declare a DTD or entity.
     pub fn read_all(&mut self) -> Result<Vec<(String, Vec<u8>)>, ZipError> {
         let cap = self.limits.max_part_bytes;
         let max_total = self.limits.max_total_bytes;
@@ -360,16 +338,14 @@ impl<R: Read + Seek> BoundedArchive<R> {
         Ok(parts)
     }
 
-    /// Extracts every entry under `dir`, each part inflated under the
-    /// per-part cap and all of them under the total — the same bounds
-    /// [`read_all`](Self::read_all) enforces, applied on the way to disk.
-    /// Returns the number of files written.
+    /// Extract every entry under `dir`, each part inflated under the per-part cap and
+    /// all of them under the total, the same bounds [`read_all`](Self::read_all)
+    /// enforces. Returns the number of files written.
     ///
-    /// Declared sizes are not trusted: a header that lies small is caught
-    /// at inflate time, so [`check_declared_sizes`](Self::check_declared_sizes)
-    /// is an optional early refusal, not a precondition. Names are confined
-    /// to `dir`; a `..` or absolute entry is an error, and symbolic links
-    /// are written as the bytes they contain, never created.
+    /// Names are confined to `dir`: a `..` or an absolute entry is an error, and a
+    /// symbolic link is written as the bytes it contains, never created. A declared
+    /// size is not trusted, so [`check_declared_sizes`](Self::check_declared_sizes)
+    /// is an optional early refusal, not a precondition.
     pub fn extract_to(&mut self, dir: &Path) -> Result<usize, ZipError> {
         let cap = self.limits.max_part_bytes;
         let max_total = self.limits.max_total_bytes;
@@ -407,9 +383,9 @@ impl<R: Read + Seek> BoundedArchive<R> {
     }
 }
 
-/// Inflates one entry under `cap`, rejecting on the declared size before
-/// allocating anything and on the actual size via a hard-limited reader, then
-/// adds it to the running `total`.
+/// Inflate one entry under `cap`, rejecting on the declared size before
+/// allocating and on the actual size through a hard-limited reader, then add it
+/// to the running `total`.
 fn read_capped(
     mut file: impl Read,
     name: &str,
@@ -432,10 +408,9 @@ fn read_capped(
     // than a small first allocation.
     let mut buf = Vec::with_capacity(usize::try_from(declared.min(64 * 1024)).unwrap_or(0));
     // Enforce the cap even if the header lied: inflate at most `cap + 1`, and
-    // hitting that means over-limit. The zip reader also refuses on its own to
-    // inflate past the declared size, with an InvalidData error that only its
-    // message tells apart from a checksum failure; that is the same lie,
-    // caught earlier. (The bomb tests pin the message.)
+    // hitting that means over-limit. The zip reader also refuses to inflate past
+    // the declared size, with an InvalidData error its message alone tells apart
+    // from a checksum failure; that is the same lie, caught earlier.
     let read = match (&mut file)
         .take(cap.saturating_add(1))
         .read_to_end(&mut buf)
@@ -470,14 +445,14 @@ fn read_capped(
     Ok(buf)
 }
 
-/// Reads every file entry of an untrusted ZIP into memory, preserving order,
-/// under `limits`. Directory entries are skipped; `.xml`/`.rels` parts are
-/// scanned for a DTD/entity declaration and rejected if found (XXE defence).
+/// Every file entry of an untrusted ZIP in memory, in archive order, under
+/// `limits`; directory entries are skipped and `.xml`/`.rels` parts are rejected
+/// if they declare a DTD or entity (XXE defence).
 ///
 /// # Errors
-/// Any breach of a limit is an error — the input is never silently truncated.
-/// A malformed archive, an unreadable entry and a DTD-bearing XML part are
-/// errors too.
+///
+/// Any breach of a limit, a malformed archive, an unreadable entry or a
+/// DTD-bearing XML part; the input is never silently truncated.
 pub fn read_zip_parts(
     bytes: &[u8],
     limits: &ZipLimits,
@@ -485,18 +460,20 @@ pub fn read_zip_parts(
     BoundedArchive::from_bytes(bytes, *limits)?.read_all()
 }
 
-/// Writes each of `entries` — its name inside the archive and its bytes — into one archive,
-/// in that order, under `limits`: what an archive is read back under ([`read_zip_parts`]) is
-/// what it is written within, and a name that could place a file outside the folder the
-/// archive is extracted into ([`is_safe_name`]) is refused rather than written.
+/// Write `entries` — each name inside the archive and its bytes — into one
+/// archive, in that order, under `limits`: what it is written within is what it is
+/// read back under. A name that could place a file outside the folder the archive
+/// is extracted into ([`is_safe_name`]) is refused rather than written.
 ///
-/// The parts are stored, not deflated: what an app writes into an archive is the documents and
-/// pictures it already holds, and a reader finds them as they went in.
+/// Parts are stored, not deflated: an app writes the documents and pictures it
+/// already holds, and a reader finds them as they went in.
 ///
 /// # Errors
-/// [`ZipError::TooManyEntries`], [`ZipError::PartTooLarge`] or [`ZipError::TotalTooLarge`] for
-/// an archive over `limits`; [`ZipError::UnsafeName`] or [`ZipError::DuplicateName`] for a name
-/// no archive may hold; [`ZipError::Write`] when the bytes could not be written.
+///
+/// [`ZipError::TooManyEntries`], [`ZipError::PartTooLarge`] or
+/// [`ZipError::TotalTooLarge`] for an archive over `limits`;
+/// [`ZipError::UnsafeName`] or [`ZipError::DuplicateName`] for a name no archive
+/// may hold; [`ZipError::Write`] when the bytes could not be written.
 pub fn write_zip(entries: &[(String, Vec<u8>)], limits: &ZipLimits) -> Result<Vec<u8>, ZipError> {
     if entries.len() > limits.max_parts {
         return Err(ZipError::TooManyEntries {
@@ -548,10 +525,10 @@ pub fn write_zip(entries: &[(String, Vec<u8>)], limits: &ZipLimits) -> Result<Ve
     Ok(archive.into_inner())
 }
 
-/// Whether `name` is a name a file inside an archive may have: a path of parts that are each a
-/// file or folder name, none of them empty, `.` or `..`, so nothing it names stands outside the
-/// folder the archive is extracted into. A backslash is refused too: some extractors read it as
-/// the separator, and a name one reader takes for one folder and another for two is two files.
+/// Whether `name` is a name a file inside an archive may have: parts that are each
+/// a file or folder name, none empty, `.` or `..`, so nothing it names stands
+/// outside the extraction folder. A backslash is refused too, since some
+/// extractors read it as the separator.
 #[must_use]
 pub fn is_safe_name(name: &str) -> bool {
     !name.is_empty()
@@ -561,18 +538,18 @@ pub fn is_safe_name(name: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-/// Whether `name` is a package part we hold to the no-DTD rule (parseable XML).
-/// Binary parts (images, the ODF `mimetype` literal) are exempt — a `<!DOCTYPE`
-/// byte sequence inside a JPEG isn't a threat, and such parts are never parsed as XML.
+/// Whether `name` is a package part held to the no-DTD rule (parseable XML).
+/// Binary parts are exempt: a `<!DOCTYPE` sequence inside a JPEG is no threat,
+/// and such parts are never parsed as XML.
 fn is_xml_part(name: &str) -> bool {
     std::path::Path::new(name)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("xml") || ext.eq_ignore_ascii_case("rels"))
 }
 
-/// Whether `bytes` contains an XML DTD/entity declaration (`<!DOCTYPE`/`<!ENTITY`),
-/// scanned case-insensitively. Only the head is examined — a DTD is legal solely
-/// in the prolog, so a match past a generous prefix can't be an active DTD.
+/// Whether `bytes` declares a DTD or entity (`<!DOCTYPE`/`<!ENTITY`), scanned
+/// case-insensitively. A DTD is legal only in the prolog, so scanning a generous
+/// prefix bounds the cost without missing an active one.
 #[must_use]
 pub fn contains_dtd(bytes: &[u8]) -> bool {
     // A DTD must appear before the root element; scanning 64 KiB covers the

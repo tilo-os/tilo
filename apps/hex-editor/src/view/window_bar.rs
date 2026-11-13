@@ -1,15 +1,12 @@
-//! The hex editor's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): the file's name as the location, Overwrite and
-//! Insert as the views, and the inspector's toggle as an action. The window's
-//! search finds and replaces in the bytes ([`super::find`]) and its History
-//! control opens the record's History; the view draws no header row.
+//! The editor's controls as slots in the window's bar: the file's name as the
+//! location, Overwrite and Insert as the views, and the inspector's toggle as an
+//! action. The bar's search finds and replaces in the bytes.
 
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use super::Editor;
 use crate::model::EditMode;
 
-/// The bar's views: how a typed byte lands.
 pub(crate) const OVERWRITE: &str = "hex.mode:overwrite";
 pub(crate) const INSERT: &str = "hex.mode:insert";
 
@@ -21,8 +18,7 @@ fn mode_id(mode: EditMode) -> &'static str {
 }
 
 impl Editor {
-    /// The window bar's slots for what the view shows now; none of its own
-    /// while no file is open.
+    /// The bar's slots for what the view shows now; none while no file is open.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         if !self.has_file {
             return WindowToolbar::default();
@@ -61,8 +57,8 @@ impl Editor {
         }
     }
 
-    /// Run what the person did in the window's bar, then declare the slots
-    /// for what the view shows now.
+    /// Run what the person did in the bar, then declare the slots for what the view
+    /// shows now.
     pub(super) fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
@@ -70,7 +66,6 @@ impl Editor {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run one thing the person did in the window's bar.
     pub(crate) fn run_window_bar_event(&mut self, event: &ToolbarEvent) {
         if !self.has_file {
             return;

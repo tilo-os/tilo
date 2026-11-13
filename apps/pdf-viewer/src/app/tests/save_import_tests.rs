@@ -1,7 +1,3 @@
-//! Saving and importing: markup and page edits survive a save and reopen,
-//! a save without a path hands the host the bytes, and imported images and
-//! PDFs add pages.
-
 use super::*;
 
 #[serial(pdfium)]
@@ -18,8 +14,6 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
             .page_annotations(0)
             .len();
 
-        // Place a highlight, a sticky note with a body, and a signature on page
-        // 1 — all through the reader's real mutation methods.
         app.tool = Tool::Highlight;
         app.drag = Some(DragState {
             tool: Tool::Highlight,
@@ -53,9 +47,6 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
         );
         assert!(out.exists(), "the annotated .pdf exists on disk");
 
-        // Reopen the saved file: page 1 carries the markup as standard PDF
-        // annotations (a highlight, a note holding the comment text, and a
-        // stamp for the signature) that any viewer reads back.
         let reopened =
             crate::source::open(&out, &ContentStore::memory()).expect("the saved PDF reopens");
         let annotations = reopened.raster.page_annotations(0);
@@ -94,7 +85,6 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
             "the two pages carry distinct text so a swap is observable"
         );
 
-        // Move the first page to the end, as the shared rail's Reorder does.
         let ids = app.resource_page_ids.clone();
         edit_pages(
             &mut app,
@@ -167,9 +157,6 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
     }
 }
 
-/// A host whose Save keeps the file itself (a browser page's Save dialog
-/// or download): it answers a destination with no path and records what
-/// is written there. Every other chooser is refused.
 struct KeptSaves(std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>);
 
 impl ui::host::FilePicker for KeptSaves {
@@ -207,9 +194,6 @@ impl ui::host::FilePicker for KeptSaves {
     }
 }
 
-/// Saving where the host keeps the file (a browser page, which has no
-/// paths) hands it the flattened PDF instead of failing for want of a
-/// path.
 #[test]
 #[serial(pdfium)]
 fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
@@ -242,8 +226,6 @@ fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
     assert!(!note.contains("browser"), "{note}");
 }
 
-/// A save that cannot be written names the copy and says what to do next,
-/// in the catalogue's words, never the engine's error.
 #[test]
 #[serial(pdfium)]
 fn a_save_that_cannot_be_written_says_what_to_do() {
@@ -270,8 +252,6 @@ fn a_save_that_cannot_be_written_says_what_to_do() {
     );
 }
 
-/// Prepare an opened raster sample for page-editing tests: its record
-/// seeded and laid out so `current_page` and region rects are valid.
 fn open_laid_out_sample() -> Option<(PdfApp, ui::State)> {
     let mut app = open_raster_sample()?;
     let mut st = crate::scenarios::record_state();
@@ -282,8 +262,6 @@ fn open_laid_out_sample() -> Option<(PdfApp, ui::State)> {
     Some((app, st))
 }
 
-/// Edit the record's page plan with `invoke` and wait for the worker to
-/// materialise it.
 fn edit_pages(app: &mut PdfApp, st: &mut ui::State, invoke: ui::tilo_resource::Invoke<PdfMarkup>) {
     app.perform_action(&mut Edits::lend(&mut st.doc), invoke);
     settle_until(app, st, |app| app.pending_worker_plan.is_none());
@@ -303,8 +281,6 @@ fn saved_reopen(app: &mut PdfApp, name: &str) -> crate::source::RasterBackend {
         .raster
 }
 
-/// Wait for an accepted import to reach the record and the worker's
-/// page plan.
 fn settle_import(app: &mut PdfApp, st: &mut ui::State) {
     settle_until(app, st, |app| {
         app.pending_import.is_none() && app.pending_worker_plan.is_none()
@@ -345,7 +321,6 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
             break 'phase;
         };
         let n = app.doc.page_count();
-        // Import the sample into itself: page count should exactly double.
         assert!(
             app.import_file(std::path::Path::new(SAMPLE_PDF)),
             "import: {:?}",
@@ -369,15 +344,11 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
         };
         let (pw, ph) = app.raster_document.as_ref().unwrap().page_sizes[0];
 
-        // Marquee the upper-left portion of page 1 and copy it.
         app.region = Some(RegionSelect {
             page: 1,
             start: (40.0, 40.0),
             cur: (pw * 0.6, ph * 0.5),
         });
-        // Releasing the marquee asks for the page rendered for the crop,
-        // and the marquee itself is gone: the copy follows on its own once
-        // the worker delivers the render, with nothing more from the person.
         let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
         let key = (0, crate::source::RasterBackend::bucket_for(bucket));
         assert!(
@@ -421,9 +392,6 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
     }
 }
 
-/// Release a marquee over the upper-left of displayed page `page` before
-/// its page is rendered for the crop: the copy waits for that render.
-/// The bitmap key the crop is cut from.
 fn release_region_awaiting_render(app: &mut PdfApp, page: usize) -> (usize, u32) {
     let (pw, ph) = app.raster_document.as_ref().unwrap().page_sizes[0];
     let region = RegionSelect {
@@ -443,9 +411,6 @@ fn release_region_awaiting_render(app: &mut PdfApp, page: usize) -> (usize, u32)
     key
 }
 
-/// A released marquee whose render result was lost before the reader saw
-/// it (the bounded result queue lets its oldest results go) asks for the
-/// render again and is copied, instead of saying it is copying for good.
 #[serial(pdfium)]
 #[test]
 fn a_region_copy_whose_render_result_was_lost_asks_again() {
@@ -457,7 +422,6 @@ fn a_region_copy_whose_render_result_was_lost_asks_again() {
         .raster_handle
         .as_ref()
         .expect("the sample opened on a worker");
-    // The render finishes, and its result goes before the reader drains it.
     tilo_test_env::wait_until("the crop's render to finish", || {
         handle.drain_events().iter().any(|event| {
             matches!(
@@ -485,15 +449,12 @@ fn a_region_copy_whose_render_result_was_lost_asks_again() {
     assert!(!app.status_note.is_progress(), "{note:?}");
 }
 
-/// A released marquee whose page the engine draws no bitmap for is not
-/// copied, and the reader says so instead of saying it is copying for good.
 #[serial(pdfium)]
 #[test]
 fn a_region_copy_whose_page_cannot_be_drawn_says_it_was_not_copied() {
     let Some((mut app, mut st)) = open_laid_out_sample() else {
         return;
     };
-    // A page past the document's last: the engine answers with no bitmap.
     let past_last = app.raster_document.as_ref().unwrap().page_sizes.len() + 1;
     let key = release_region_awaiting_render(&mut app, past_last);
     settle_until(&mut app, &mut st, |app| app.region_waiting.is_none());
@@ -506,8 +467,6 @@ fn a_region_copy_whose_page_cannot_be_drawn_says_it_was_not_copied() {
     assert!(!app.status_note.is_progress());
 }
 
-/// Saving a copy before any PDF is open (an agent's Save As on an empty
-/// window) says to open one first, not to try another folder or name.
 #[test]
 fn saving_with_no_pdf_open_says_to_open_one_first() {
     let mut app = PdfApp::empty();

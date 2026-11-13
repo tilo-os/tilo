@@ -492,7 +492,7 @@ fn grace_over(
     documents: &Rc<dyn durable_store::DurableStore>,
     platform: &Rc<Counter>,
 ) -> Window {
-    let workspace = InstanceRecord::open(manager, documents, "grace").unwrap();
+    let workspace = InstanceRecord::open(manager, documents, "grace", "tl.test").unwrap();
     let (instance, patches) = instance_over("grace", &workspace, platform);
     Window {
         instance,

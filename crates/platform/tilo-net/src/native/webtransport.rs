@@ -36,9 +36,8 @@ pub(crate) async fn connect(url: Url, options: Options) -> Result<Session, NetEr
     Ok(Session(session))
 }
 
-/// A client that verifies servers as every other Tilo client does
-/// ([`client_config`](super::tls::client_config)); web-transport-quinn's own
-/// system roots read only the Linux bundle.
+/// A client that verifies servers as every other Tilo client does; the
+/// backend's own system roots read only the Linux bundle.
 fn system_trust_client() -> Result<web_transport_quinn::Client, NetError> {
     use web_transport_quinn::quinn;
     let mut tls =
@@ -304,20 +303,17 @@ impl RecvStream {
     }
 }
 
-/// How a [`Listener`] answers a session request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
-    /// Not served here: 404.
+    /// Refuse the session: 404.
     Refuse,
-    /// Served, with no subprotocol.
     Accept,
-    /// Served, answering this subprotocol.
     AcceptAs(String),
 }
 
-/// A WebTransport server on one UDP socket: HTTP/3 beside a host's HTTPS
-/// listener, on the same port and with the same certificate, so a page
-/// reaches it at the origin it already trusts.
+/// A WebTransport server on one UDP socket, beside a host's HTTPS listener
+/// on the same port and certificate, so a page reaches it at the origin it
+/// already trusts.
 pub struct Listener {
     endpoint: web_transport_quinn::quinn::Endpoint,
 }
@@ -335,24 +331,12 @@ const SERVER_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(10
 /// own, a call's pictures, and room to start over.
 const SERVER_MAX_STREAMS: u32 = 256;
 /// How much a session sends before its first acknowledgement: the window
-/// QUIC's slow start begins from.
-///
-/// A page entering a workspace waits first for its replay, the workspace's
-/// governance and its shared desktop: most of a megabyte for a few hundred
-/// members, which the host writes at once. From QUIC's default window
-/// (14,720 bytes, RFC 9002) slow start doubles it every round trip, so that
-/// took six round trips the visitor watched; from 256 KiB it takes two. The
-/// host's iroh endpoint starts from the same window, and the pacer spreads
-/// it over the round trip rather than sending it as one burst.
+/// QUIC's slow start begins from. A page entering a workspace waits first
+/// for its replay and shared desktop (most of a megabyte), which took six
+/// round trips from QUIC's default window and takes two from this.
 const SERVER_INITIAL_WINDOW: u64 = 256 * 1024;
 
 impl Listener {
-    /// Listen on `socket`, presenting the certificate `certificate` resolves.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Protocol`] when TLS or QUIC rejects the configuration,
-    /// [`NetError::Connect`] when the socket cannot be used.
     pub fn bind(
         socket: std::net::UdpSocket,
         certificate: std::sync::Arc<dyn rustls::server::ResolvesServerCert>,
@@ -393,22 +377,15 @@ impl Listener {
         Ok(Self { endpoint })
     }
 
-    /// The address the listener is bound to.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the socket has no local address.
     pub fn local_addr(&self) -> Result<std::net::SocketAddr, NetError> {
         self.endpoint
             .local_addr()
             .map_err(|error| NetError::connect(chain(&error)))
     }
 
-    /// Accept sessions until the listener closes, handing each to `serve`
-    /// with the path its CONNECT request named. `serves` reads the path and
-    /// the subprotocols the peer offered and gives the [`Answer`]. At most [`MAX_PENDING_HANDSHAKES`]
-    /// handshakes run at once, each within [`HANDSHAKE_BUDGET`]; dropping the
-    /// future aborts every session it serves.
+    /// Accepts sessions until the listener closes. At most
+    /// [`MAX_PENDING_HANDSHAKES`] handshakes run at once, each within
+    /// [`HANDSHAKE_BUDGET`]; dropping the future aborts every session it serves.
     pub async fn serve<S, F, Fut>(self, serves: S, serve: F)
     where
         S: Fn(&str, &[String]) -> Answer + Clone + Send + 'static,
@@ -419,63 +396,60 @@ impl Listener {
         let mut tasks = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
-                incoming = self.endpoint.accept() => {
-                    let Some(incoming) = incoming else { break };
-                    let Ok(permit) = pending.clone().try_acquire_owned() else {
-                        incoming.refuse();
-                        continue;
-                    };
-                    let (serves, serve) = (serves.clone(), serve.clone());
-                    tasks.spawn(async move {
-                        let request = tokio::time::timeout(HANDSHAKE_BUDGET, async {
-                            // The host's HTTP/3 SETTINGS go out with its
-                            // handshake (0.5-RTT data) rather than a round trip
-                            // later, once the peer's Finished arrives: a browser
-                            // asks for its session only once it has read them.
-                            // They say what the host takes, nothing secret, and
-                            // the peer's request is still read only after the
-                            // handshake completes.
-                            let connection = match incoming.accept().ok()?.into_0rtt() {
-                                Ok((connection, _)) => connection,
-                                Err(connecting) => connecting.await.ok()?,
-                            };
-                            web_transport_quinn::Request::accept(connection).await.ok()
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-                        let Some(request) = request else { return };
-                        let path = request.url.path().to_owned();
-                        let answer = if request.url.query().is_none() {
-                            serves(&path, &request.protocols)
-                        } else {
-                            Answer::Refuse
-                        };
-                        let response = match answer {
-                            Answer::Accept => web_transport_quinn::proto::ConnectResponse::OK,
-                            Answer::AcceptAs(protocol) => {
-                                web_transport_quinn::proto::ConnectResponse::OK.with_protocol(protocol)
+                            incoming = self.endpoint.accept() => {
+                                let Some(incoming) = incoming else { break };
+                                let Ok(permit) = pending.clone().try_acquire_owned() else {
+                                    incoming.refuse();
+                                    continue;
+                                };
+                                let (serves, serve) = (serves.clone(), serve.clone());
+                                tasks.spawn(async move {
+                                    let request = tokio::time::timeout(HANDSHAKE_BUDGET, async {
+            // The host's HTTP/3 SETTINGS go out with its handshake (0.5-RTT data)
+            // rather than a round trip later: a browser asks for its session only
+            // once it has read them. They say what the host takes, nothing secret,
+            // and the peer's request is still read only after the handshake completes.
+                                        let connection = match incoming.accept().ok()?.into_0rtt() {
+                                            Ok((connection, _)) => connection,
+                                            Err(connecting) => connecting.await.ok()?,
+                                        };
+                                        web_transport_quinn::Request::accept(connection).await.ok()
+                                    })
+                                    .await
+                                    .ok()
+                                    .flatten();
+                                    let Some(request) = request else { return };
+                                    let path = request.url.path().to_owned();
+                                    let answer = if request.url.query().is_none() {
+                                        serves(&path, &request.protocols)
+                                    } else {
+                                        Answer::Refuse
+                                    };
+                                    let response = match answer {
+                                        Answer::Accept => web_transport_quinn::proto::ConnectResponse::OK,
+                                        Answer::AcceptAs(protocol) => {
+                                            web_transport_quinn::proto::ConnectResponse::OK.with_protocol(protocol)
+                                        }
+                                        Answer::Refuse => {
+                                        let _ = tokio::time::timeout(
+                                            std::time::Duration::from_millis(100),
+                                            request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND),
+                                        )
+                                        .await;
+                                        return;
+                                        }
+                                    };
+                                    let session =
+                                        tokio::time::timeout(HANDSHAKE_BUDGET, request.respond(response))
+                                    .await;
+                                    drop(permit);
+                                    if let Ok(Ok(session)) = session {
+                                        serve(path, crate::webtransport::Session::from_backend(Session(session))).await;
+                                    }
+                                });
                             }
-                            Answer::Refuse => {
-                            let _ = tokio::time::timeout(
-                                std::time::Duration::from_millis(100),
-                                request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND),
-                            )
-                            .await;
-                            return;
-                            }
-                        };
-                        let session =
-                            tokio::time::timeout(HANDSHAKE_BUDGET, request.respond(response))
-                        .await;
-                        drop(permit);
-                        if let Ok(Ok(session)) = session {
-                            serve(path, crate::webtransport::Session::from_backend(Session(session))).await;
+                            _ = tasks.join_next(), if !tasks.is_empty() => {}
                         }
-                    });
-                }
-                _ = tasks.join_next(), if !tasks.is_empty() => {}
-            }
         }
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}

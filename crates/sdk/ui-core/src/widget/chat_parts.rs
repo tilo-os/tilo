@@ -1,7 +1,6 @@
-//! The pieces of a conversation as described components, over the widgets native Chat already
-//! uses: the reactions on a message (`ui.Reactions`, the [`ReactionStripWidget`]) and a button
-//! that opens the emoji picker (`ui.EmojiPicker`, the shared [`EmojiPicker`] in a popover).
-//! Both report the emoji as data (`on toggle(e)`, `on pick(e)`); the app's action does the rest.
+//! The pieces of a conversation as described components, over the widgets native Chat already uses: the
+//! reactions on a message (`ui.Reactions`, the [`ReactionStripWidget`]) and a button that opens the
+//! emoji picker (`ui.EmojiPicker`, the shared [`EmojiPicker`] in a popover).
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,17 +20,15 @@ use crate::widget::{
     Button, Decorator, EmojiPicker, EventCtx, PickerEvent, Popover, ReactionStripWidget, Widget,
 };
 
-/// The reactions on something: a pill per emoji with how many reacted, yours drawn on;
-/// pressing one adds or takes back your reaction, and the add button opens the emoji picker for
-/// another. Each reports the emoji (`on toggle(e)`).
+/// The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one
+/// adds or takes back your reaction, and the add button opens the emoji picker for another.
 #[derive(Component, Default)]
 #[component(name = "Reactions", role = "Toolbar")]
 pub struct ReactionsProps {
-    /// Who reacted, by emoji: the reactions as the message holds them
-    /// (`Map<Text, Set<Principal>>`).
+    /// Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).
     pub reactions: BTreeMap<String, BTreeSet<Person>>,
-    /// The emoji reacted with, in the order they were first used: the older form, with `by`,
-    /// read while `reactions` is not given.
+    /// The emoji reacted with, in the order they were first used: the older form, with `by`, read while
+    /// `reactions` is not given.
     #[component(positional)]
     #[component(data)]
     pub emoji: Vec<String>,
@@ -39,15 +36,13 @@ pub struct ReactionsProps {
     pub by: Vec<Vec<Person>>,
     /// Whether the person may react; they may unless it says not.
     pub can_react: Option<bool>,
-    /// An emoji was pressed or picked: carries it. Your reaction with it is added, or taken
-    /// back when you had reacted with it.
+    /// An emoji was pressed or picked: carries it.
     #[component(event(value = String))]
     pub toggle: Event,
 }
 
 impl ReactionsProps {
-    /// Each emoji with who reacted with it, in the order shown: the map's, else the older
-    /// form's.
+    /// Each emoji with who reacted with it, in the order shown: the map's, else the older form's.
     fn groups(
         reactions: BTreeMap<String, BTreeSet<Person>>,
         emoji: Vec<String>,
@@ -73,7 +68,6 @@ impl Described for ReactionStripWidget {
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
         let (groups, names, can_react, toggle) = said(props);
-        // Who "you" are is the window's own participant, read when it draws.
         Self::new(groups, String::new())
             .with_names(move |reactor: &Reactor| {
                 names
@@ -86,8 +80,6 @@ impl Described for ReactionStripWidget {
             .with_id(key)
     }
 
-    /// Who reacted and what a press does change where the strip stands: the picker it opened
-    /// stays open.
     fn set_props(&mut self, props: ReactionsProps) -> bool {
         let (groups, names, can_react, toggle) = said(props);
         self.set_groups(groups);
@@ -157,9 +149,7 @@ pub struct EmojiPickerProps {
     pub pick: Event,
 }
 
-/// See [`EmojiPickerProps`].
 pub struct EmojiPickerButton {
-    /// What the button is addressed by.
     key: String,
     button: Button,
     picker: Popover<EmojiPicker>,
@@ -185,7 +175,6 @@ impl EmojiPickerButton {
         }
     }
 
-    /// Whether the picker is open.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.picker.is_open()
@@ -200,8 +189,8 @@ impl Described for EmojiPickerButton {
         Self::new(key, &label, pick)
     }
 
-    /// What the button is called and what a pick reports change where the button stands, so
-    /// the picker it opened stays open.
+    /// What the button is called and what a pick reports change where the button stands, so the picker
+    /// it opened stays open.
     fn set_props(&mut self, props: EmojiPickerProps) -> bool {
         let (label, pick) = labelled(props);
         self.pick = pick;
@@ -213,8 +202,8 @@ impl Described for EmojiPickerButton {
     }
 }
 
-/// What the picker's button is called, and what it reports: the props' label, "Add reaction"
-/// unless they name it.
+/// What the picker's button is called, and what it reports: the props' label, "Add reaction" unless
+/// they name it.
 fn labelled(props: EmojiPickerProps) -> (String, Event) {
     (
         props
@@ -304,9 +293,8 @@ impl Decorator for EmojiPickerButton {
     }
 }
 
-/// A message quoted where another answers it, or in the reply banner over the composer: a rule
-/// at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a
-/// close button (the banner: "stop replying").
+/// A message quoted where another answers it, or in the reply banner over the composer: a rule at its
+/// leading edge, who wrote it and the start of what it says.
 #[derive(Component, Default)]
 #[component(name = "Quote", role = "Group", label = "excerpt")]
 pub struct QuoteProps {
@@ -317,16 +305,21 @@ pub struct QuoteProps {
     pub author: Option<Person>,
     /// What the quote is to the message (`Replying to`), shown before the author.
     pub caption: Option<String>,
-    /// The close button was pressed. Without it there is no close button.
+    /// The close button was pressed.
     #[component(event)]
     pub dismiss: Event,
+    /// The quote was pressed: show the message it quotes, or the run of it it names, where that
+    /// message stands. Without it the quote is read, not pressed.
+    #[component(event)]
+    pub activate: Event,
 }
 
-/// See [`QuoteProps`].
 pub struct Quote {
-    /// What the quote is addressed by.
     key: String,
     row: crate::widget::arrange::Row,
+    /// The press on the quote's own body: reveal what it quotes. `None` when the quote is
+    /// read, not pressed.
+    activation: crate::widget::activation::Activation,
 }
 
 impl Described for Quote {
@@ -340,15 +333,17 @@ impl Described for Quote {
             author,
             caption,
             dismiss,
+            activate,
         } = props;
         let said = QuoteLines {
             caption,
-            author: author.map(|author| author.name),
+            author: author.as_ref().map(|author| author.name.clone()),
             excerpt,
             rect: Rect::ZERO,
             dirty: true,
             layout_dirty: true,
             layout_theme: Theme::dark(),
+            interaction: crate::widget::activation::Interaction::default(),
         };
         let mut row = Row::row()
             .gap(Rhythm::Related)
@@ -365,54 +360,55 @@ impl Described for Quote {
                 .on_effect(move || close()),
             ));
         }
+        let mut activation = crate::widget::activation::Activation::new(format!("{key}/quote"));
+        let label = author.as_ref().map_or_else(
+            || crate::i18n::I18nManager::lookup_plain("quote-open"),
+            |author| author.name.clone(),
+        );
+        activation.set_event(activate, &label);
+        let row = row.with_id(key);
         Self {
             key: key.to_owned(),
-            row: row.with_id(key),
+            row,
+            activation,
         }
     }
 
-    /// What is quoted, who wrote it and whether it can be dismissed change where the quote
-    /// stands.
     fn set_props(&mut self, props: QuoteProps) -> bool {
         let key = self.key.clone();
-        self.row = Self::from_props(&key, props).row;
+        let mut quote = Self::from_props(&key, props);
+        quote.activation = std::mem::take(&mut self.activation);
+        *self = quote;
         true
     }
 }
 
-/// What a quote says, behind a rule at its leading edge. Quoted in a message it is one line:
-/// who wrote it, then the start of what it says in secondary ink, cut short at the line's end,
-/// as Slack and Discord quote a reply. With a caption (the reply banner) the caption and the
-/// author are a line over the excerpt.
 struct QuoteLines {
     caption: Option<String>,
     author: Option<String>,
     excerpt: String,
     rect: Rect,
     dirty: bool,
-    /// What it says changed its size since the layout pass last placed it.
     layout_dirty: bool,
-    /// The theme the last layout was built with, for measuring.
     layout_theme: Theme,
+    /// How the person is reaching the quote: hovered and pressed, when it can be pressed
+    /// ([`Quote::lines_mut`]).
+    interaction: crate::widget::activation::Interaction,
 }
 
 impl QuoteLines {
-    /// The rule's width: half the tight step.
     fn rule(theme: &Theme) -> f64 {
         f64::from(theme.tokens.spacing.rhythm.tight) / 2.0
     }
 
-    /// The text's leading edge from the rule's: the rule and the related step.
     fn inset(theme: &Theme) -> f64 {
         Self::rule(theme) + f64::from(theme.tokens.spacing.rhythm.related)
     }
 
-    /// The gap between the author and the excerpt on one line, and between two lines.
     fn gap(theme: &Theme) -> f64 {
         f64::from(theme.tokens.spacing.rhythm.tight)
     }
 
-    /// The author's style and the excerpt's: both captions, the author's medium.
     fn styles(theme: &Theme) -> (TextStyle, TextStyle) {
         (
             theme
@@ -422,7 +418,6 @@ impl QuoteLines {
         )
     }
 
-    /// The head: the caption and the author, or the author alone.
     fn head(&self) -> Option<String> {
         match (&self.caption, &self.author) {
             (Some(caption), Some(author)) => Some(format!("{caption} {author}")),
@@ -432,7 +427,6 @@ impl QuoteLines {
         }
     }
 
-    /// Whether the excerpt stands on a line of its own, under the head.
     fn stacked(&self) -> bool {
         self.caption.is_some()
     }
@@ -476,7 +470,6 @@ impl QuoteLines {
     }
 }
 
-/// `s` in `style` and `ink` at `at`, cut short at `right`; how wide it was drawn.
 fn draw_line(
     scene: &mut Scene,
     transform: Affine,
@@ -558,9 +551,15 @@ impl Widget for QuoteLines {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
+        // A quote that can be pressed says so under the pointer: its words come forward, the
+        // way a link's do, so the line reads as something to open.
+        let excerpt_ink = if self.interaction.hovered || self.interaction.pressed {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
         let height = self.height(text, theme);
         let top = rect.y0 + (rect.height() - height) / 2.0;
-        // The rule runs the height of what is quoted, rounded at its ends.
         let rule = vello::kurbo::RoundedRect::from_rect(
             Rect::new(rect.x0, top, rect.x0 + Self::rule(theme), top + height),
             Self::rule(theme) / 2.0,
@@ -591,7 +590,7 @@ impl Widget for QuoteLines {
                 scene,
                 transform,
                 text,
-                (&self.excerpt, &plain, colors.text_dim),
+                (&self.excerpt, &plain, excerpt_ink),
                 (x, below),
                 rect.x1,
             );
@@ -612,7 +611,7 @@ impl Widget for QuoteLines {
                     scene,
                     transform,
                     text,
-                    (&self.excerpt, &plain, colors.text_dim),
+                    (&self.excerpt, &plain, excerpt_ink),
                     (at, top),
                     rect.x1,
                 );
@@ -632,6 +631,17 @@ impl Widget for QuoteLines {
     }
 }
 
+impl Quote {
+    /// The quote's lines, when the widget that draws them is its first slot's child: the words
+    /// a press shows reaching the accent.
+    fn lines_mut(&mut self) -> Option<&mut QuoteLines> {
+        self.row
+            .child_mut(0)?
+            .as_any_mut()?
+            .downcast_mut::<QuoteLines>()
+    }
+}
+
 impl Decorator for Quote {
     type Inner = crate::widget::arrange::Row;
 
@@ -645,6 +655,40 @@ impl Decorator for Quote {
 
     fn name(&self) -> &'static str {
         "Quote"
+    }
+
+    /// The quote's own press: the whole line (and its rule) reveals what it quotes, while the
+    /// close button stands outside it and takes its own press first.
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        Widget::handle_event(&mut self.row, event, ctx);
+        if *ctx.handled || !self.activation.is_bound() {
+            return;
+        }
+        let before = self.activation.state;
+        if self
+            .activation
+            .handle_pointer(event, ctx, self.row.get_rect(), &[])
+            && self.activation.state != before
+        {
+            // A hover or a press the quote shows: its words take the accent, and the host
+            // repaints the line.
+            let interaction = self.activation.state;
+            if let Some(lines) = self.lines_mut() {
+                lines.interaction = interaction;
+                lines.dirty = true;
+            }
+        }
+    }
+
+    fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
+        if self.activation.is_bound() && self.row.get_rect().contains(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        Widget::cursor_shape(&self.row, point)
     }
 }
 

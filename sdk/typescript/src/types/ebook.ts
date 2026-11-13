@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.ebook@f7c27282fa766530";
+
 /** One of "bookmark", "highlight", "note". */
 export type AnnoKind = "bookmark" | "highlight" | "note";
 
@@ -115,11 +120,6 @@ export interface Settings {
   composition: CompositionStyle;
 }
 
-export interface StoredContent {
-  hash: string;
-  size: number;
-}
-
 /** Books — `ebook.library`. */
 export interface Library extends tilo.Resource {
   entries: LibraryEntry[];
@@ -136,7 +136,7 @@ export interface Library extends tilo.Resource {
     author: string;
     subject: string;
     shared: boolean;
-    content?: StoredContent;
+    content?: unknown;
   }): Promise<tilo.Run | void>;
   shelveFound(args: {
     book: string;
@@ -149,7 +149,7 @@ export interface Library extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   indexBook(args: {
     book: string;
-    index: StoredContent;
+    index: unknown;
   }): Promise<tilo.Run | void>;
   recordProgress(args: {
     book: string;
@@ -204,7 +204,7 @@ export interface Library extends tilo.Resource {
 
 /** The `ebook.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE) as unknown as Library;
 }
 
 /** Book catalogues — `settings.books-catalogues`. */
@@ -214,7 +214,7 @@ export interface BooksCatalogues extends tilo.Resource {
 
 /** The `settings.books-catalogues` kind at `path`. */
 export function booksCatalogues(ws: tilo.Workspace, path: string): BooksCatalogues {
-  return resourceProxy(ws, path) as unknown as BooksCatalogues;
+  return resourceProxy(ws, path, SURFACE) as unknown as BooksCatalogues;
 }
 
 /** Book files — `ebook.files`. */
@@ -228,6 +228,6 @@ export interface Files extends tilo.Resource {
 
 /** The `ebook.files` kind at `path`. */
 export function files(ws: tilo.Workspace, path: string): Files {
-  return resourceProxy(ws, path) as unknown as Files;
+  return resourceProxy(ws, path, SURFACE) as unknown as Files;
 }
 

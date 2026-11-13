@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::{
-    Answer, Authority, Context, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
+    Answer, Authority, Context, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
 };
 use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
@@ -163,17 +163,19 @@ fn messages(replica: &Replica) -> chat::messages::Messages {
 /// it: the workspace owner's installation, granted reading and undoable changes
 /// in the workspace.
 fn bot_replica(page: &Replica) -> Replica {
-    let bot = Subject::bot(BOT);
+    let bot = Grantee::bot(BOT);
     let grant = Grant::new(
         "bot:moderation",
-        bot.clone(),
+        bot,
         TreePath::workspace(ROOM),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
-        Subject::person(OWNER),
+        Grantee::person(OWNER),
     );
-    let standing =
-        Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).bounded_by(bot, vec![grant]);
+    let standing = Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).acting_as(
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(BOT)),
+        [grant],
+    );
     let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),

@@ -1,9 +1,6 @@
-//! Durable, headless full-workspace hydration for an always-on peer.
-//!
-//! The replica walks the authenticated namespace graph, not its cache
-//! directory.  A ready status therefore proves that every currently live
-//! manifest, every manifest chunk, and every referenced thumbnail is present
-//! in the content-addressed store.
+//! Durable, headless full-workspace hydration for an always-on peer. The replica
+//! walks the authenticated namespace graph, not its cache directory, so a ready
+//! status proves every live manifest, chunk and thumbnail is in the store.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,42 +15,35 @@ use crate::content::Manifest;
 use crate::{Hydrator, Namespace};
 use tilo_lock::MutexRecover as _;
 
-/// A full replica is deliberately bounded even for an authorised writer. The
-/// namespace cap alone does not constrain an adversarial manifest's vector or
-/// claimed chunk lengths.
+/// A full replica is deliberately bounded even for an authorised writer; the
+/// namespace cap alone does not constrain an adversarial manifest.
 const MAX_REPLICA_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPLICA_CHUNKS_PER_RECORD: usize = 100_000;
 const MAX_REPLICA_CHUNK_BYTES: u32 = crate::content::MAX_CHUNK_LEN;
 const MAX_REPLICA_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPLICA_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
-/// A generation lease intentionally covers only a small physical deletion
-/// batch. This keeps foreground namespace/FUSE mutations responsive even when
-/// a long-offline replica has accumulated a large obsolete cache.
+/// A generation lease covers only a small physical deletion batch, so foreground
+/// namespace and FUSE mutations stay responsive.
 const MAX_GC_BATCH_BLOBS: usize = 16;
 
-/// Transferable configuration for one always-on home peer.
-///
-/// `ticket` and `capability_json` identify a whole workspace and its existing capability
-/// policy.  Nothing is configured per file: the replica follows future
-/// namespace changes automatically.
+/// Transferable configuration for one always-on home peer. `ticket` and
+/// `capability_json` identify a whole workspace and its capability policy; nothing
+/// is configured per file, since the replica follows namespace changes.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HomePeerBundle {
     pub ticket: String,
     pub cache_dir: std::path::PathBuf,
-    /// Exact JSON capability list exported from the existing member. Keeping
-    /// it in this one file means transferring a bundle never leaves a home
-    /// peer with a host-local path back to the originating desktop.
     pub capability_json: String,
-    /// Governor-signed workspace authority. `capability_json` is retained
-    /// only to read legacy bundles; workers require this signed envelope.
+    /// Governor-signed workspace authority. `capability_json` is retained only to
+    /// read legacy bundles; workers require this signed envelope.
     #[serde(default)]
     pub authority: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
     #[serde(default)]
     pub principals: Vec<String>,
-    /// Shell/relay workspace shards backed by this filesystem workspace.
-    /// A desktop may attach one filesystem tree to several collaboration
-    /// workspaces, so this explicit mapping is authoritative for relay binding.
+    /// Shell and relay workspace shards backed by this filesystem workspace: a
+    /// desktop may attach one tree to several collaboration workspaces, so this
+    /// mapping is authoritative for relay binding.
     #[serde(default, with = "relay_workspace_ids_serde")]
     pub relay_workspace_ids: Vec<u64>,
 }
@@ -82,13 +72,9 @@ mod relay_workspace_ids_serde {
     }
 }
 
-/// The one configuration file installed on a home peer.
-///
-/// Tilo currently has one global Files namespace and one certified filesystem
-/// transport identity per device. Workspaces are mapped through
-/// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
-/// bundles would bind competing endpoints under that same certified `NodeId`.
-/// Reject that unsafe topology before any worker starts.
+/// The one configuration file installed on a home peer: Tilo has one global Files
+/// namespace and one certified transport identity per device, so several filesystem
+/// bundles would bind competing endpoints under that same `NodeId`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HomePeerSet {
@@ -97,10 +83,6 @@ pub struct HomePeerSet {
 }
 
 /// Validate the topology before binding an authenticated filesystem endpoint.
-///
-/// # Errors
-///
-/// Returns an error unless exactly one global filesystem workspace is configured.
 pub fn validate_home_peer_set(bundle: &HomePeerSet) -> anyhow::Result<()> {
     anyhow::ensure!(
         bundle.workspaces.len() == 1,
@@ -109,11 +91,9 @@ pub fn validate_home_peer_set(bundle: &HomePeerSet) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A machine-readable proof of the latest hydration pass.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FullReplicaStatus {
-    /// `ready`, `syncing`, or `failed`.
     pub state: String,
     /// True only when this pass found every current content root resident.
     pub full_content_replication: bool,
@@ -204,7 +184,6 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
     aggregate
 }
 
-/// Atomically write the status consumed by `tilo-relay` and status tooling.
 pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = tilo_clock::unix_now_ms();
@@ -214,11 +193,9 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     Ok(())
 }
 
-/// The lock a running replica holds beside its status file for its whole
-/// life, so a consumer can tell the status of a live replica from one a
-/// replica left behind when it exited ([`replica_is_running`]). The kernel
-/// releases it however the process ends, crash included.
-///
+/// The lock a running replica holds beside its status file for its whole life, so a
+/// consumer can tell the status of a live replica from one a replica left behind
+/// ([`replica_is_running`]). The kernel releases it however the process ends.
 #[derive(Debug)]
 pub struct ReplicaLiveness {
     _lock: advisory_lock::FileLock,
@@ -226,10 +203,6 @@ pub struct ReplicaLiveness {
 
 impl ReplicaLiveness {
     /// Take the liveness lock for the status file at `status`.
-    ///
-    /// # Errors
-    ///
-    /// The lock file cannot be created, or another running replica holds it.
     pub fn hold(status: &Path) -> Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         let path = liveness_path(status);
@@ -237,7 +210,6 @@ impl ReplicaLiveness {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
-        // Readable by the relay, which only ever takes a shared lock.
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -258,9 +230,9 @@ impl ReplicaLiveness {
     }
 }
 
-/// Whether a running replica holds the liveness lock of the status file at
-/// `status` ([`ReplicaLiveness`]). `false` when no replica ever ran, when
-/// the one that did has exited, or when the lock cannot be inspected.
+/// Whether a running replica holds the liveness lock of the status file at `status`.
+/// `false` when no replica ever ran, when the one that did has exited, or when the
+/// lock cannot be inspected.
 #[must_use]
 pub fn replica_is_running(status: &Path) -> bool {
     let Ok(lock) = std::fs::File::open(liveness_path(status)) else {
@@ -278,11 +250,6 @@ fn liveness_path(status: &Path) -> std::path::PathBuf {
     status.with_file_name(name)
 }
 
-/// Read the last complete status record, if any.
-///
-/// # Errors
-///
-/// Returns an error when the existing status cannot be read or decoded.
 pub fn load_status(path: &Path) -> Result<Option<FullReplicaStatus>> {
     if !path.exists() {
         return Ok(None);
@@ -290,12 +257,9 @@ pub fn load_status(path: &Path) -> Result<Option<FullReplicaStatus>> {
     Ok(Some(serde_json::from_slice(&std::fs::read(path)?)?))
 }
 
-/// Hydrate and verify the entire current live namespace.
-///
-/// This is intentionally bounded by the namespace's own live-record limit;
-/// accepting an unbounded adversarial document would turn a home peer into a
-/// memory/disk exhaustion primitive.  A bound violation leaves the status
-/// non-ready and retries on the next pass after the namespace is repaired.
+/// Hydrate and verify the entire current live namespace. Bounded by the namespace's
+/// own live-record limit, so an adversarial document cannot exhaust memory or disk; a
+/// bound violation leaves the status non-ready and retries on the next pass.
 pub async fn hydrate_full_workspace(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
@@ -358,9 +322,6 @@ pub async fn hydrate_full_workspace(
                 if chunk_bytes.len() != chunk.len as usize {
                     return status.failed(&anyhow::anyhow!("durable chunk length mismatch"));
                 }
-                // `read_blob` returning bytes is not enough proof if a future
-                // store backend changes cache behavior; check the durable
-                // content-addressed store explicitly.
                 if !hydrator.store.has(chunk_hash).await {
                     return status
                         .failed(&anyhow::anyhow!("chunk was not retained after hydration"));
@@ -401,22 +362,11 @@ pub async fn hydrate_full_workspace(
     status
 }
 
-/// Release blobs which are no longer reachable from the current namespace.
-///
-/// Home-peer caches are per-workspace, so their blob store contains only this
-/// workspace's retained content. The live set includes manifests, chunks and
-/// thumbnails; every other owned blob is an obsolete version left by a
-/// replacement, deletion or rename. Immutable history retains the signed
-/// version graph and metadata, but does not pin every historical payload on a
-/// bounded home server forever; an explicit retention/export feature can hold
-/// selected historical bytes separately. Callers invoke this only after a
-/// stable hydration pass and withdraw readiness if the pass changes
-/// underneath it.
-///
-/// # Errors
-///
-/// Returns an error when namespace roots, retained manifests, blob listing, or
-/// a bounded deletion batch cannot be read or updated.
+/// Release blobs no longer reachable from the current namespace: every other owned
+/// blob is an obsolete version left by a replacement, deletion or rename. Immutable
+/// history keeps the signed version graph and metadata but does not pin every
+/// historical payload on a bounded home server. Callers invoke this only after a
+/// stable hydration pass and withdraw readiness if the pass changes underneath it.
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
@@ -447,15 +397,11 @@ pub async fn prune_obsolete_workspace_content(
 
     let mut removed = 0_u64;
     for hashes in obsolete.chunks(MAX_GC_BATCH_BLOBS) {
-        // Namespace roots and each physical deletion batch form one generation
-        // lease: the namespace lock is held from the generation check through
-        // the physical deletion. A changed generation terminates this sweep;
-        // the next pass recomputes roots before releasing anything else. The
-        // lease is a std::Mutex guard, which cannot be held across an await,
-        // so the whole lease runs on a blocking thread that waits on the
-        // store. It waits through the store's own runtime: this runtime's
-        // workers may be blocked on the lease, and the eviction's timers and
-        // the store's actors must not depend on them.
+        // Namespace roots and each physical deletion batch form one generation lease:
+        // the namespace lock is held from the generation check through the deletion,
+        // and a changed generation ends the sweep. The lease is a std::Mutex guard,
+        // which cannot cross an await, so it runs on a blocking thread that waits
+        // through the store's own runtime.
         let selected = hashes.iter().copied().collect::<HashSet<_>>();
         let store = Arc::clone(&hydrator.store);
         let namespace = Arc::clone(namespace);
@@ -524,8 +470,6 @@ async fn retain_manifest_tree(
 mod tests {
     use super::*;
 
-    /// #4224. A replica is running exactly while it holds its liveness
-    /// lock, and two replicas cannot serve one status file.
     #[test]
     fn a_replica_is_running_while_it_holds_its_liveness_lock() {
         let temp = tempfile::tempdir().unwrap();
@@ -678,10 +622,6 @@ mod tests {
         }
     }
 
-    // The discovery address carried by a ready proof must be the endpoint
-    // serving iroh-blobs, rather than a separately-running relay listener.
-    // Once the owner goes away, a collaborator still reads the retained blob
-    // through the address that the ready proof publishes.
     #[tokio::test]
     async fn ready_endpoint_serves_blob_after_owner_is_offline() {
         let owner_endpoint = test_relay::direct_endpoint().await;

@@ -1,11 +1,6 @@
-//! The libvirt domain of a legacy VM.
-//!
-//! Defined in the user's own `qemu:///session`: QEMU runs as the user, the
-//! network is user-mode (passt), and nothing needs a privileged daemon. The
-//! domain has no display: windows leave through `waypipe` over vsock.
-//! Memory is shared (memfd) because virtio-fs needs it; shares themselves are
-//! never part of the definition but attached live, so a snapshot never
-//! contains one and a revoked grant is gone at the next sync.
+//! The libvirt domain of a legacy VM: defined in the user's own `qemu:///session`,
+//! with no display. Shares are attached live and are never part of the definition,
+//! so a snapshot never contains one and a revoked grant is gone at the next sync.
 
 use std::path::Path;
 
@@ -42,10 +37,8 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
         ),
     };
     let memory = &config.memory;
-    // q35 hot-plugs only into empty root ports, and libvirt adds ports just
-    // for the devices it knows at definition time: shares need spares.
-    // Naming any PCI controller makes libvirt want the root complex named
-    // first.
+    // q35 hot-plugs only into empty root ports, so shares need spares; naming any PCI controller
+    // makes libvirt want the root complex named first.
     let hotplug_ports = format!(
         "<controller type='pci' index='0' model='pcie-root'/>{}",
         "<controller type='pci' model='pcie-root-port'/>".repeat(HOTPLUG_PORTS)
@@ -161,7 +154,6 @@ mod tests {
     fn the_domain_is_unprivileged_headless_and_shares_nothing_by_definition() {
         let config = config();
         let xml = render_domain_xml(&config, VsockBackend::Kernel).unwrap();
-        // phase: the definition is session-safe and display-free
         {
             for required in [
                 "<name>tilo-legacy-linux</name>",
@@ -209,7 +201,6 @@ mod tests {
                 &config
             ));
         }
-        // phase: a share attaches by socket under its tag, and is found again
         {
             let share = HostShare {
                 path: PathBuf::from("/var/home/you/src"),

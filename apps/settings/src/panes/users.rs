@@ -1,11 +1,7 @@
-//! Local login accounts and Tilo signing identities.
-//!
-//! A Unix login account owns a home/session; it may contain several Tilo
-//! identities (personal, work, pseudonymous). Local-account mutations go
-//! through `AccountsService` and polkit. The identity store is the host's:
-//! Settings lists, activates, removes and protects identities through the
-//! host's identity actions, so no record or secret enters this process.
-//! Every change is a [`UsersEffect`] on the account or identity it names.
+//! Local login accounts and Tilo signing identities. A Unix login account owns
+//! a home/session; it may contain several Tilo identities (personal, work,
+//! pseudonymous). Local-account mutations go through `AccountsService` and
+//! polkit.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
@@ -43,12 +39,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`UsersArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UsersArea> {
     app.areas().find()
 }
 
-/// Changes to this device's login accounts and the person's identities.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum UsersEffect {
@@ -103,10 +97,6 @@ pub enum UsersEffect {
     },
 }
 
-/// Answer an account change on a worker, then read the accounts again on
-/// it: both may wait on `AccountsService`, so the window takes in the
-/// outcome and the fresh accounts together when the job ends. An identity
-/// change answers once the host has made it.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: UsersEffect,
@@ -115,7 +105,6 @@ pub(crate) fn answer(
     let model = crate::panes::users::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
-    // Identity changes are the host's: they answer once it has.
     let change = model.borrow().start_identity_change(&effect);
     if let Some(call) = change {
         model
@@ -160,15 +149,11 @@ pub(crate) fn answer(
     ))
 }
 
-/// The service that changes accounts.
 #[derive(Clone)]
 struct Backends {
     users: Arc<dyn UserAdmin>,
 }
 
-/// Carry out the account change `effect`. Never called on the UI thread:
-/// `AccountsService` may wait on polkit. Identity changes are the host's
-/// ([`UsersModel::start_identity_change`]).
 fn carry_out(
     backends: &Backends,
     users: &[DeviceUser],
@@ -224,39 +209,18 @@ pub struct DeviceUser {
     pub admin: bool,
     pub current: bool,
     pub automatic_login: bool,
-    /// Why `automatic_login` could not be read; it is then not offered.
     pub automatic_login_error: Option<String>,
 }
 
 pub trait UserAdmin: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns the backend's error message if account creation is rejected
-    /// (e.g. the username already exists or polkit authorization is denied).
     fn create(&self, username: &str, full_name: &str, password: &mut [u8]) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns the backend's error message if the account (and its files,
-    /// when `remove_files` is set) cannot be deleted.
     fn delete(&self, user: &DeviceUser, remove_files: bool) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns the backend's error message if changing the account's
-    /// administrator role is rejected.
     fn set_admin(&self, username: &str, admin: bool) -> Result<(), String>;
 
-    /// # Errors
-    ///
-    /// Returns the backend's error message if enabling or disabling
-    /// automatic login for the account is rejected.
     fn set_autologin(&self, username: &str, enabled: bool) -> Result<(), String>;
 
-    /// The device's login accounts as they are now, read again after a
-    /// change, or why they could not be read. `None` when the accounts
-    /// shown are not the device's (a screenshot's samples): nothing is
-    /// read.
     fn accounts(&self) -> Option<Result<Vec<DeviceUser>, String>>;
 }
 
@@ -266,8 +230,6 @@ impl UserAdmin for AccountsServiceAdmin {
     fn create(&self, username: &str, full_name: &str, password: &mut [u8]) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         os_actions::users::create_user(username, full_name, os_actions::AccountRole::Standard)?;
-        // Never destructively roll back a newly created home if credential
-        // setup fails; it may already contain PAM/AccountsService work.
         os_actions::users::set_password(username, password)
     }
 
@@ -298,11 +260,8 @@ impl UserAdmin for AccountsServiceAdmin {
     }
 }
 
-/// A call to the host's identity store, answering on its state.
 type IdentityCall = ui::InvocationCall;
 
-/// What lists and changes the person's identities. Each call answers on
-/// the state it returns; nothing here waits.
 trait IdentityAdmin {
     fn list(&self) -> IdentityCall;
     fn activate(&self, id: &str) -> IdentityCall;
@@ -310,10 +269,6 @@ trait IdentityAdmin {
     fn protect(&self, id: &str) -> IdentityCall;
 }
 
-/// The host's identity actions, invoked through the action door as the
-/// person using Settings. The host checks that they administer the
-/// identity; each change carries their confirmation, given by choosing its
-/// row or button.
 struct RemoteIdentityAdmin {
     remote: ui::RemoteActions,
 }
@@ -325,8 +280,6 @@ impl RemoteIdentityAdmin {
         if let Some(id) = id {
             arguments.insert("id".into(), id.into());
         }
-        // Choosing the row or button is the person's confirmation of a
-        // change; listing asks nothing.
         let confirmation = id.is_some().then(|| {
             arguments.insert("confirm".into(), true.into());
             Confirmation::Confirmed
@@ -358,7 +311,6 @@ impl IdentityAdmin for RemoteIdentityAdmin {
     }
 }
 
-/// The identities the host's list answered.
 fn identities_from(value: Option<serde_json::Value>) -> Result<Vec<IdentitySummary>, String> {
     serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
         .map_err(|error| format!("the identity list the host answered is not readable: {error}"))
@@ -417,8 +369,6 @@ fn read_passwd_users(
         .collect()
 }
 
-/// The device's login accounts, or why they could not be read: one
-/// `AccountsService` call per person, so never on the UI thread.
 fn read_users() -> Result<Vec<DeviceUser>, String> {
     crate::device_read::off_ui_thread();
     let current = std::env::var("USER").ok();
@@ -437,7 +387,6 @@ fn read_users() -> Result<Vec<DeviceUser>, String> {
     Ok(users)
 }
 
-/// Split a read into the accounts it found and why it found none.
 fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, Option<String>) {
     match read {
         Ok(users) => (users, None),
@@ -445,20 +394,11 @@ fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, O
     }
 }
 
-/// What the users area keeps for the window: the model, read when first
-/// needed.
 pub struct UsersArea {
-    /// Whether the model reads this device's accounts.
     devices: bool,
-    /// The window's client for the action door, shared with the other
-    /// areas that act through the host.
     remote: ui::RemoteActions,
     model: OnceCell<Rc<RefCell<UsersModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
-    /// The device's accounts, read off the UI thread after the window's
-    /// first frame ([`Self::start_read`]); `None` stands for the samples a
-    /// screenshot shows.
     pub(crate) read: crate::device_read::DeviceRead<Option<UsersRead>>,
 }
 
@@ -473,7 +413,6 @@ impl UsersArea {
         }
     }
 
-    /// The model: this device's accounts, or sample ones for a screenshot.
     pub fn model(&self) -> &Rc<RefCell<UsersModel>> {
         self.model.get_or_init(|| {
             let read = self
@@ -493,9 +432,6 @@ impl UsersArea {
         })
     }
 
-    /// Take in what the host answered about the person's identities and
-    /// what a change's job read again, if the model exists, and move what
-    /// the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -509,8 +445,6 @@ impl UsersArea {
         }
     }
 
-    /// Read the device's accounts off the UI thread; `false` when they have
-    /// been read or are being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
@@ -519,14 +453,10 @@ impl UsersArea {
         self.read.start(move || device.then(UsersRead::of_device))
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per account other than the signed-in one, and per identity.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let accounts = model
@@ -539,8 +469,6 @@ impl UsersArea {
     }
 }
 
-/// An account other than the signed-in one as a row of the published
-/// surface, offering what can be done to it now.
 fn user_live_row(user: &DeviceUser) -> LiveRow {
     let name = user.username.clone();
     let mut row = LiveRow::new(
@@ -555,7 +483,6 @@ fn user_live_row(user: &DeviceUser) -> LiveRow {
         })
         .bound(),
     );
-    // An unread automatic-login state offers no switch to flip.
     if user.automatic_login_error.is_none() {
         row = row.operation(
             SettingsEffect::from(UsersEffect::SetAutomaticLogin {
@@ -574,7 +501,6 @@ fn user_live_row(user: &DeviceUser) -> LiveRow {
     )
 }
 
-/// An identity as a row of the published surface.
 fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
     let id = identity.id.clone();
     let mut row = LiveRow::new(
@@ -604,7 +530,6 @@ fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
     row
 }
 
-/// How an identity's key is kept, in the person's words.
 fn protection_label(protection: KeyProtection) -> String {
     t(match protection {
         KeyProtection::SecretService => "settings-users-protection-service",
@@ -616,7 +541,6 @@ fn protection_label(protection: KeyProtection) -> String {
     })
 }
 
-/// What an identity is called: its display name, else its id.
 fn identity_name(identity: &IdentitySummary) -> &str {
     if identity.display_name.is_empty() {
         &identity.id
@@ -625,8 +549,6 @@ fn identity_name(identity: &IdentitySummary) -> &str {
     }
 }
 
-/// What the new-account form holds. Process-local only: none of it enters
-/// the settings, presence, undo history or diagnostics.
 #[derive(Default)]
 struct AccountForm {
     full_name: Arc<Mutex<String>>,
@@ -646,30 +568,20 @@ impl AccountForm {
 
 pub struct UsersModel {
     users: Vec<DeviceUser>,
-    /// Why the accounts could not be read; the list is then not "empty".
     users_error: Option<String>,
     identities: Vec<IdentitySummary>,
-    /// Why the host could not list the identities.
     identities_error: Option<String>,
     backends: Backends,
-    /// The host's identity store, which lists and changes the identities.
     identity_admin: Option<Rc<dyn IdentityAdmin>>,
-    /// The identity list the host is answering.
     identity_list: Option<IdentityCall>,
-    /// The identity changes the host is making, and their callers.
     identity_changes: Vec<(IdentityCall, EffectReply)>,
-    /// Whether the accounts are this device's, read again after a change.
     of_device: bool,
     form: AccountForm,
-    /// Whether the new-account form is open, kept across rebuilds.
     add_open: DisclosureState,
     error: Option<String>,
     changed: bool,
 }
 
-/// What the users area reads of the device: its login accounts (one
-/// `AccountsService` call per person for automatic login). Plain data, so
-/// it is read off the UI thread; the identities are the host's to answer.
 pub(crate) struct UsersRead {
     users: Result<Vec<DeviceUser>, String>,
 }
@@ -682,15 +594,11 @@ impl UsersRead {
     }
 }
 
-/// The accounts read again after a change, on the job that made it. The
-/// identities are the host's: they are asked for again once it answers.
 struct Reread {
     users: Result<Vec<DeviceUser>, String>,
 }
 
 impl Reread {
-    /// Read the accounts `backends` change; `None` when the accounts shown
-    /// are not the device's.
     fn of(backends: &Backends) -> Option<Self> {
         let users = backends.users.accounts()?;
         Some(Self { users })
@@ -698,8 +606,6 @@ impl Reread {
 }
 
 impl UsersModel {
-    /// The model over what `read` found on this device, asking
-    /// `identity_admin` for the person's identities.
     fn from_read(read: UsersRead, identity_admin: Rc<dyn IdentityAdmin>) -> Self {
         let (users, users_error) = users_and_error(read.users);
         Self {
@@ -721,7 +627,6 @@ impl UsersModel {
         }
     }
 
-    /// Two accounts and one identity, changed by nothing.
     fn sample() -> Self {
         let user = |username: &str, full_name: &str, uid, current| DeviceUser {
             username: username.into(),
@@ -762,8 +667,6 @@ impl UsersModel {
         }
     }
 
-    /// Take in what a read after a change found; `None` (a screenshot's
-    /// samples) keeps what is shown.
     fn adopt(&mut self, reread: Option<Reread>) {
         self.changed = true;
         let Some(reread) = reread else {
@@ -773,15 +676,12 @@ impl UsersModel {
         self.reload_identities();
     }
 
-    /// Ask the host for the identities again, unless it is answering.
     fn reload_identities(&mut self) {
         if self.of_device && self.identity_list.is_none() {
             self.identity_list = self.identity_admin.as_ref().map(|admin| admin.list());
         }
     }
 
-    /// Ask the host to make the identity change `effect`; `None` for an
-    /// account change, an error when no identity store answers here.
     fn start_identity_change(&self, effect: &UsersEffect) -> Option<Result<IdentityCall, String>> {
         let admin = self.identity_admin.as_deref();
         let call = |start: &dyn Fn(&dyn IdentityAdmin) -> IdentityCall| {
@@ -799,9 +699,6 @@ impl UsersModel {
         }
     }
 
-    /// Take in the host's answers: the identity list, and each identity
-    /// change, whose caller hears how it ended before the list is read
-    /// again.
     fn poll_identities(&mut self) {
         if let Some(answer) = self
             .identity_list
@@ -835,7 +732,6 @@ impl UsersModel {
         }
     }
 
-    /// The page as the model shows the accounts and identities now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let dispatcher = cx.dispatcher();
         let mut sections: Vec<SettingsSection> = Vec::new();
@@ -876,8 +772,6 @@ impl UsersModel {
                     .collect(),
             )
         };
-        // Backing up is about the identities listed here, so it sits with
-        // them: one place for who the person is.
         let identity_rows = if self.identities.is_empty() {
             identity_rows
         } else {
@@ -917,7 +811,6 @@ impl UsersModel {
         provider_settings_ui::widgets::page(sections)
     }
 
-    /// Adding a login account: a row that opens its form in place.
     fn add_form(&self, cx: &ViewCx<Settings>) -> Box<dyn Widget> {
         let full = TextInput::local()
             .with_kind(TextInputKind::Name)
@@ -978,8 +871,6 @@ impl UsersModel {
         )
     }
 
-    /// An account: who it is, its role, and its menu (role, automatic
-    /// login, removing it); the signed-in account offers none.
     fn user_row(dispatcher: &ui::framework::Dispatcher<Settings>, user: &DeviceUser) -> Vec<Item> {
         let role = if user.admin {
             t("settings-users-role-administrator")
@@ -1022,7 +913,6 @@ impl UsersModel {
                     },
                 ),
             );
-            // An unread automatic-login state offers no switch to flip.
             if user.automatic_login_error.is_none() {
                 menu = menu.action(
                     t(if user.automatic_login {
@@ -1070,8 +960,6 @@ impl UsersModel {
         items
     }
 
-    /// An identity: its name, how its key is protected, whether it is the
-    /// one in use, and its menu (use, protect, remove).
     fn identity_row(
         dispatcher: &ui::framework::Dispatcher<Settings>,
         id: &IdentitySummary,
@@ -1154,17 +1042,12 @@ impl UsersModel {
     }
 }
 
-/// The Users page as view code over what the area reads of the accounts
-/// and the host's identities: built again whenever what it shows changes
-/// ([`UsersArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
-/// The backends a screenshot and the crate's tests change: they accept
-/// every change and keep nothing.
 struct SampleAdmin;
 
 impl UserAdmin for SampleAdmin {
@@ -1191,7 +1074,6 @@ impl UserAdmin for SampleAdmin {
     }
 }
 
-/// A call the host already answered with `value`.
 fn answered(value: serde_json::Value) -> IdentityCall {
     ui::Arriving::ready(ui::tilo_actions::InvocationUpdate::Succeeded {
         invocation: ui::tilo_actions::InvocationId::new(),
@@ -1283,8 +1165,6 @@ mod tests {
             automatic_login_error: None,
         }
     }
-    /// The window's Users model, changed by `change`, and the page drawn
-    /// again over it.
     fn change_model(
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         change: impl FnOnce(&mut UsersModel) + 'static,
@@ -1354,8 +1234,6 @@ mod tests {
         }
     }
 
-    /// Login users are read from the device; every change reaches its narrow
-    /// backend, and never targets the signed-in account.
     #[test]
     fn user_accounts_parse_and_change_through_narrow_backends() {
         let admins = admins_from_group("wheel:x:10:ada\n");
@@ -1441,8 +1319,6 @@ mod tests {
         let _ = identity("work", false);
     }
 
-    /// The host's identity actions, in process: it records what it was
-    /// asked and answers the list with one identity.
     #[derive(Default)]
     struct IdentityHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
@@ -1583,9 +1459,6 @@ mod tests {
         assert_eq!(asked[2].confirmation, Some(Confirmation::Confirmed));
     }
 
-    /// An `AccountsService` that takes changes at once but does not answer
-    /// a read until it is let go, as one waiting on a wedged polkit. Once
-    /// let go it knows one more account.
     struct StalledAdmin(std::sync::Arc<crate::stall::Stall>);
 
     impl UserAdmin for StalledAdmin {
@@ -1617,9 +1490,6 @@ mod tests {
         }
     }
 
-    /// A change is answered and the window keeps drawing while
-    /// `AccountsService` takes its time to be read again: the accounts are
-    /// re-read on the change's job, and land once it returns.
     #[test]
     fn a_stalled_accounts_service_never_holds_the_window() {
         use crate::resource::SettingsShell;
@@ -1668,10 +1538,6 @@ mod tests {
         );
     }
 
-    /// An effect that reaches the accounts before the window has read them
-    /// waits for that read off the UI thread: the window keeps drawing
-    /// while `AccountsService` has not answered, and the effect is answered
-    /// on what the read found once it lands.
     #[test]
     fn an_effect_before_the_first_read_never_holds_the_window() {
         use crate::resource::SettingsShell;
@@ -1679,13 +1545,10 @@ mod tests {
 
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        // The accounts as a window has them before it has read them, their
-        // read waiting on AccountsService.
         crate::area::replace_in_next_window(move |context| {
             let area = UsersArea::new(context, ui::RemoteActions::current());
             assert!(area.read.start(move || {
                 crate::device_read::off_ui_thread();
-                // The samples, once AccountsService answers.
                 let _ = stalled.wait();
                 None
             }));

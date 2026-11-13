@@ -466,7 +466,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 110_000,
+                optimized_us: 100_000,
                 development_us: 500_000,
             },
         },
@@ -477,7 +477,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 96_000,
+                optimized_us: 84_000,
                 development_us: 500_000,
             },
         },
@@ -488,7 +488,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 90_000,
+                optimized_us: 60_000,
                 development_us: 340_000,
             },
         },
@@ -1314,7 +1314,7 @@ fn show_rows(session: &mut Session) -> u64 {
             session.woken.wait(std::time::Duration::from_millis(10));
         }
     }
-    let ready = session.index_ready();
+    let ready = index_ready(&session.host);
     let view = session.hosted().view();
     panic!(
         "the window never showed the workspace's rows: index ready {ready}, view {}, lists {:?}",
@@ -2545,11 +2545,10 @@ fn opening_a_rows_page_mounts_the_document_where_the_row_stands() {
 #[test]
 fn choosing_a_note_in_the_tree_opens_it_without_composing_the_window() {
     let mut session = Session::rich();
-    let plus = session.new_note_button();
     for round in 0..3 {
-        session.window.click_at(plus.0, plus.1);
+        press_new_note(&mut session);
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0, title.1);
         session.window.type_text(&format!("Note {round}"));
         session.settle();
@@ -2586,16 +2585,15 @@ const EDITOR_SUBTREE: usize = 12;
 fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
     let _motion = ui::motion::testing::settled();
     let mut session = Session::rich();
-    let plus = session.new_note_button();
     for round in 0..2 {
-        session.window.click_at(plus.0, plus.1);
+        press_new_note(&mut session);
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0, title.1);
         session.window.type_text(&format!("Note {round}"));
         session.settle();
         // The notes read differently: it is their bodies that another note replaces.
-        let body = session.field("Write something");
+        let body = session.field("body");
         session.window.click_at(body.0, body.1);
         session
             .window

@@ -1,6 +1,3 @@
-// What the palette tells assistive technology it is, in the window's language.
-
-/// The toolkit's own catalogue, as a window of `locale` reads it.
 fn speak(locale: &str) {
     let mut catalogues = vec![("en-US", "")];
     if locale != "en-US" {
@@ -10,7 +7,6 @@ fn speak(locale: &str) {
         .expect("the window's catalogues install");
 }
 
-/// The palette's query field, as an assistive client finds it.
 fn query(palette: &ActionPalette) -> crate::a11y::AccessNode {
     palette
         .accessibility()
@@ -21,8 +17,6 @@ fn query(palette: &ActionPalette) -> crate::a11y::AccessNode {
         .expect("the palette's query is a text field")
 }
 
-/// A German screen reader hears the palette, and the step that collects one
-/// action's argument, in German rather than in the source catalogue's words.
 #[test]
 fn the_palette_names_itself_in_the_windows_language() {
     use tilo_actions::{ActionParam, ParamType};
@@ -38,8 +32,6 @@ fn the_palette_names_itself_in_the_windows_language() {
             .as_deref(),
         Some("Command palette")
     );
-    // The query is the search field it is, and what it covers is what the
-    // empty field says, so a screen reader announces each once.
     assert_eq!(query(&palette).name.as_deref(), Some("Search"));
     assert_eq!(
         query(&palette).description.as_deref(),
@@ -88,16 +80,10 @@ fn the_palette_names_itself_in_the_windows_language() {
             .as_deref(),
         Some("Aktionsbestätigung")
     );
-    // The step is asked in the action's own words, and the field says them
-    // once: its name, not a description echoing it.
     assert_eq!(query(&palette).name.as_deref(), Some("To"));
     assert_eq!(query(&palette).description, None);
 }
 
-/// A search over what the host found is named as an app's palette names its
-/// own: the field is the search field it is, the words the empty field shows
-/// say what it searches, and a step asks in the host's own words — so a screen
-/// reader hears the same thing from the desktop's search bar.
 #[test]
 fn the_hosts_search_names_its_field_as_the_palette_does() {
     let open = |placeholder: &str| {
@@ -123,8 +109,6 @@ fn the_hosts_search_names_its_field_as_the_palette_does() {
         Some("Apps, Fenster, Dokumente und Aktionen durchsuchen\u{2026}")
     );
 
-    // A step collecting one row's argument is asked in the row's own words,
-    // and its name is all a screen reader has to hear of it.
     let step = ArgumentSpec {
         prompt: "Neuer Name".to_owned(),
         placeholder: "Zum Beispiel: Notizen".to_owned(),

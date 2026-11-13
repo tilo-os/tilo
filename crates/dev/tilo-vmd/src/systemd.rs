@@ -1,8 +1,7 @@
 //! [`Apply`] on a real dev image: users, systemd drop-ins, sysext, vkms seats.
-//!
-//! Everything here shells out to the same tools an administrator would use
-//! (`useradd`, `systemctl`, `systemd-sysext`, `loginctl`, `journalctl`), so
-//! what tilo-vmd does can be reproduced and inspected by hand.
+//! Everything here shells out to the tools an administrator would use (`useradd`,
+//! `systemctl`, `systemd-sysext`, `loginctl`, `journalctl`), so what `tilo-vmd`
+//! does can be reproduced by hand.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,11 +18,10 @@ use crate::input;
 use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
-/// Drop-ins that bind a slot's session view, a mount that exists only until
-/// the machine shuts down, live here and go with it. Kept in `/etc`, they
-/// outlived the view: after a reboot, or on an image without tilo-vmd to
-/// mount it again, the session bound an empty directory over `/usr` and never
-/// started. `tilo-vm-restore` writes them again with the view at boot.
+/// Drop-ins that bind a slot's session view, a mount that exists only until the machine shuts down,
+/// live here and go with it. Kept in `/etc` they outlived the view: after a reboot, or on an image
+/// without `tilo-vmd` to mount it again, the session bound an empty directory over `/usr` and never
+/// started. `tilo-vm-restore` writes them again at boot.
 const RUNTIME_UNIT_DIR: &str = "/run/systemd/system";
 
 fn dropin_dirs(file: &str) -> [&'static str; 2] {
@@ -47,8 +45,8 @@ fn remove_dropin_in(dir: &str, unit: &str, file: &str) -> Result<(), DaemonError
     }
 }
 const SYSEXT_DIR: &str = "/var/lib/extensions";
-/// Where tilo-vmd leaves notices for the owner's desktop; the session reads
-/// `held-layers.json` from here.
+/// Where `tilo-vmd` leaves notices for the owner's desktop; the session reads `held-layers.json`
+/// from here.
 const NOTICE_DIR: &str = "/run/tilo-vm";
 /// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
 const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSEXT_DIR];
@@ -57,9 +55,8 @@ const USER_REGISTRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/libexec/tilo/tilo-control";
-/// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity`
-/// reads the machine's device key, which provisioning an identity needs, and
-/// `video` opens `/dev/dri`.
+/// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity` reads the
+/// machine's device key, which provisioning an identity needs, and `video` opens `/dev/dri`.
 const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
@@ -75,10 +72,9 @@ impl SystemdApply {
         session: &Session,
         uid: u32,
     ) -> Result<Vec<(String, String)>, DaemonError> {
-        // A board's seat stops one backend before it starts the next
-        // (tilo-seat-session), so for a moment neither unit has a main
-        // process while the seat is on its way to the other. The session is
-        // the account's either way, so it is waited for like any session.
+        // A board's seat stops one backend before it starts the next, so for a moment neither unit
+        // has a main process; the session is the account's either way, so it is waited for like any
+        // session.
         let pid = match self.session_pid(session) {
             Some(pid) => Some(pid),
             None if !session.stand_in => wait_session_process(|| self.session_pid(session)),
@@ -100,22 +96,19 @@ impl SystemdApply {
     }
 }
 
-/// A board dev image runs its account's session without a greeter
-/// (os/dev/install-board-layer.sh): it installs this marker and enables one
-/// instance of [`DEVICE_SESSION_TEMPLATE`], named after the account.
+/// A board dev image runs its account's session without a greeter: it installs this marker and
+/// enables one instance of [`DEVICE_SESSION_TEMPLATE`], named after the account.
 const DEVICE_SESSION_MARKER: &str = "/usr/share/tilo/board-headless-session";
 const DEVICE_SESSION_TEMPLATE: &str = "tilo-board-headless-session@";
-/// The unit `tilo-seat-session` runs the compositor in while a display is
-/// connected, a PAM login on seat0. The headless compositor runs in the
-/// account's user manager, which gets the layers anyway.
+/// The unit `tilo-seat-session` runs the compositor in while a display is connected, a PAM login on
+/// seat0. The headless compositor runs in the account's user manager, which gets the layers anyway.
 const DEVICE_SESSION_UNITS: &[&str] = &["tilo-board-drm-session.service"];
-/// The unit the account's own user manager runs the compositor in while the
-/// seat has no display sink (os/usr/libexec/tilo-seat-session), so it is
-/// reached through that manager rather than the system one.
+/// The unit the account's own user manager runs the compositor in while the seat has no display
+/// sink, so it is reached through that manager rather than the system one.
 const DEVICE_HEADLESS_UNIT: &str = "tilo-board-session.service";
 
-/// The board session's unit among `systemctl list-units --plain
-/// --no-legend` lines: the active instance, else the first one listed.
+/// The board session's unit among `systemctl list-units --plain --no-legend` lines: the active
+/// instance, else the first one listed.
 fn device_session_unit(listing: &str) -> Option<String> {
     let units: Vec<(&str, &str)> = listing
         .lines()
@@ -149,7 +142,7 @@ struct LogindSession {
     scope: String,
 }
 
-/// `loginctl show-session <id>` output (`Key=value` lines).
+/// Parse `loginctl show-session <id>` output (`Key=value` lines).
 fn parse_logind_session(id: &str, text: &str) -> LogindSession {
     let mut session = LogindSession {
         id: id.to_owned(),
@@ -174,11 +167,9 @@ fn parse_logind_session(id: &str, text: &str) -> LogindSession {
     session
 }
 
-/// The owner's login among `sessions`: a local user session on seat0 that
-/// greetd (main process `greetd`) started; its session worker, the leader,
-/// is greetd's child. `parent` gives a process's parent. The greeter's own
-/// session is of class `greeter`, and a tilo-vm slot's session is started by
-/// systemd, not greetd.
+/// The owner's login among `sessions`: a local user session on seat0 that greetd started, whose
+/// session worker leads it. The greeter's own session is of class `greeter`, and a slot's session
+/// is started by systemd, not greetd.
 fn greetd_login(
     sessions: &[LogindSession],
     greetd: u32,
@@ -229,11 +220,8 @@ fn cgroup_members(pid: u32) -> Vec<u32> {
         .collect()
 }
 
-/// The processes `wrapper` started.
-///
-/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
-/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
-/// the wrapper's children here.
+/// The processes `wrapper` started: the parent each process reports names them, since
+/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with `CONFIG_PROC_CHILDREN`.
 fn children_of(wrapper: u32) -> Vec<u32> {
     let Ok(processes) = fs::read_dir("/proc") else {
         return Vec::new();
@@ -257,15 +245,10 @@ fn compositor_of(wrapper: u32) -> Option<u32> {
         .find(|c| comm(*c).is_some_and(|name| COMPOSITORS.contains(&name.as_str())) && !zombie(*c))
 }
 
-/// The session's own process: the one whose environment and mount namespace
-/// are the session's.
-///
-/// A login's is its compositor, else the `tilo-session` around it. A device's
-/// session unit supervises a seat that runs as root and starts the compositor
-/// in a unit of its own — a PAM login on seat0 while a display is connected,
-/// the account's user manager when it is headless — so the supervisor is the
-/// machine, not the session, and is no answer here. A stand-in slot's unit
-/// runs the compositor itself.
+/// The session's own process: the one whose environment and mount namespace are the session's. A
+/// login's is its compositor, else the `tilo-session` around it. A device's session unit supervises
+/// a seat that runs as root and starts the compositor in a unit of its own, so the supervisor is
+/// the machine's, not the session's. A stand-in slot's unit runs the compositor itself.
 fn session_process_pid(
     session: &Session,
     unit_pid: impl Fn(&str) -> Option<u32>,
@@ -286,9 +269,9 @@ fn session_process_pid(
     unit_pid(&session.unit)
 }
 
-/// A session's process once it has one, waiting out a seat that is switching
-/// backends. Bounded like [`SystemdApply::wait_session_ready`]: a session that
-/// never comes up is reported, not waited on forever.
+/// A session's process once it has one, waiting out a seat that is switching backends. Bounded like
+/// [`SystemdApply::wait_session_ready`]: a session that never comes up is reported, not waited on
+/// forever.
 fn wait_session_process(mut find: impl FnMut() -> Option<u32>) -> Option<u32> {
     const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
     let started = std::time::Instant::now();
@@ -373,8 +356,7 @@ fn login_session() -> Option<DeviceSession> {
         .collect();
     let login = greetd_login(&sessions, greetd, parent_of)?;
     let uid = uid_of(&login.name)?;
-    // A Tilo login runs tilo-session as its user; another desktop is not
-    // the device slot.
+    // A Tilo login runs `tilo-session` as its user; another desktop is not the device slot.
     let wrapper = cgroup_members(login.leader).into_iter().find(|pid| {
         comm(*pid).as_deref() == Some(LOGIN_WRAPPER)
             && proc_field(*pid, "Uid:").and_then(|u| u.split_whitespace().next().map(str::to_owned))
@@ -392,16 +374,15 @@ fn login_session() -> Option<DeviceSession> {
     })
 }
 
-/// The compositor's control socket in the board session
-/// (`TILO_TEST_CONTROL`, set by `tilo-seat-session`) and in a dev image's
-/// greetd login (set by `tilo-session`).
+/// The compositor's control socket in the board session (set by `tilo-seat-session`) and in a dev
+/// image's greetd login (set by `tilo-session`).
 fn device_control_socket(uid: u32) -> PathBuf {
     PathBuf::from(format!("/run/user/{uid}/tilo-session/test-control.sock"))
 }
 
-/// A component update preserves the operator's service activation state.
-/// Validate the installed unit first: try-restart alone can be a successful
-/// no-op for an absent unit on some systemd versions.
+/// A component update preserves the operator's service activation state, so validate the installed
+/// unit first: try-restart alone can be a successful no-op for an absent unit on some systemd
+/// versions.
 fn try_restart_unit_with(
     user: Option<&str>,
     unit: &str,
@@ -476,8 +457,8 @@ fn systemctl(verb: &str, unit: &str) -> Result<(), DaemonError> {
     .map(drop)
 }
 
-/// How long the compositor may take to paint and encode a snapshot after
-/// acknowledging it: the reply comes before the frame that writes the file.
+/// How long the compositor may take to paint and encode a snapshot after acknowledging it: the
+/// reply comes before the frame that writes the file.
 const SNAPSHOT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The PNG at `path`, once it is there in full.
@@ -787,7 +768,7 @@ impl Apply for SystemdApply {
         let Some(old) = old else {
             return Ok(());
         };
-        // tilo-session sends the compositor SIGTERM and waits for it.
+        // `tilo-session` sends the compositor SIGTERM and waits for it.
         let started = std::time::Instant::now();
         while Path::new(&format!("/proc/{old}")).exists() && !zombie(old) {
             if started.elapsed() >= DESKTOP_EXIT_TIMEOUT {
@@ -806,7 +787,7 @@ impl Apply for SystemdApply {
     }
 
     fn unit_state(&mut self, unit: &str) -> String {
-        // is-active exits non-zero for anything but "active"; stdout is the answer.
+        // `is-active` exits non-zero for anything but "active", and its stdout is the answer.
         Command::new("systemctl")
             .args(["is-active", unit])
             .output()
@@ -820,8 +801,8 @@ impl Apply for SystemdApply {
         let Some(contexts) = file_contexts() else {
             return Ok(());
         };
-        // Label as if the layer were mounted at `/`: usr/bin/* -> bin_t, and
-        // so on. Unlabelled var_lib_t files cannot be executed through the slot.
+        // Label as if the layer were mounted at `/`: `usr/bin/*` → `bin_t`, and so on. Unlabelled
+        // `var_lib_t` files cannot be executed through the slot.
         let mut command = Command::new("setfiles");
         command.arg("-r").arg(layer).arg(&contexts);
         for top in ["usr", "opt"] {
@@ -898,8 +879,8 @@ impl Apply for SystemdApply {
     }
 
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
-        // The configfs device, the logind seat and the uinput `phys` tag share
-        // one name; the shipped 72-vkms-seat.rules maps the card to the seat.
+        // The configfs device, the logind seat and the uinput `phys` tag share one name; the
+        // shipped `72-vkms-seat.rules` maps the card to the seat.
         let seat = format!("seat-{slot}");
         let device = Path::new(VKMS_CONFIGFS).join(&seat);
         if !device.exists() {
@@ -932,8 +913,8 @@ impl Apply for SystemdApply {
         })?;
         let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
         let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
-        // The session's own environment: the settings file under HOME, the
-        // compositor's display-state.json under XDG_RUNTIME_DIR.
+        // The session's own environment: the settings file under `HOME`, the compositor's
+        // `display-state.json` under `XDG_RUNTIME_DIR`.
         run(
             "tilo-vmd display-apply",
             Command::new("runuser")
@@ -999,7 +980,7 @@ impl Apply for SystemdApply {
         session: &Session,
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
-        // The session's own view: its tilo-control, not the image's.
+        // The session's own view: its `tilo-control`, not the image's.
         let pid = self
             .session_pid(session)
             .ok_or_else(|| DaemonError::Apply {
@@ -1074,16 +1055,15 @@ impl Apply for SystemdApply {
     }
 
     fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
-        // Restart=always turns a failing start into active/activating flapping,
-        // so the unit has to stay active under one main process for a while.
+        // `Restart=always` turns a failing start into active/activating flapping, so the unit has
+        // to stay active under one main process for a while.
         const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
         if let Some(login) = &session.login {
             return login
                 .wrapper
                 .map_or(Ok(()), |wrapper| wait_desktop(wrapper, SETTLE));
         }
-        // A board session first waits for its user manager, the network and
-        // the clock (tilo-board-session-prepare).
+        // A board session first waits for its user manager, the network and the clock.
         let timeout = std::time::Duration::from_secs(if session.stand_in { 20 } else { 120 });
         let unit = session.unit.clone();
         let started = std::time::Instant::now();
@@ -1133,9 +1113,8 @@ impl Apply for SystemdApply {
 
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         let main = self.session_pid(session)?;
-        // Type=simple returns once forked; wait for the switch to the slot user.
-        // A process still root is systemd setting the session up (PAM can
-        // outlast the wait on a slow board), not yet the session to judge.
+        // `Type=simple` returns once forked, so wait for the switch to the slot user; a process
+        // still root is systemd setting the session up, not yet a session to judge.
         let switched = || {
             proc_field(main, "Uid:").is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
         };
@@ -1207,8 +1186,8 @@ impl Apply for SystemdApply {
         let socket = input::socket_path(slot);
         let reply = match input::send(&socket, actions) {
             Ok(reply) if reply.seat == seat && reply.geometry == geometry => reply,
-            // Not running yet, or its devices belong to the seat the slot had
-            // before a seat0 claim or release: (re)create them.
+            // Not running yet, or its devices belong to the seat the slot had before a seat0 claim
+            // or release: (re)create them.
             _ => {
                 start_input_server(slot, seat, geometry, &socket)?;
                 input::send(&socket, actions).map_err(|e| DaemonError::Apply {
@@ -1243,8 +1222,8 @@ impl Apply for SystemdApply {
         session: &Session,
         layers: &[PathBuf],
     ) -> Result<(), DaemonError> {
-        // Another RPC process may have replaced this slot's mounted view since
-        // our last request. Never reuse an earlier connection's cached identity.
+        // Another RPC process may have replaced this slot's mounted view since the last request, so
+        // an earlier connection's cached identity is never reused.
         self.cohort_view = None;
         let view = crate::session_view::prepare(&self.views_dir, &session.slot, layers)?;
         self.cohort_view = Some((session.slot.clone(), layers.to_vec(), view));
@@ -1342,9 +1321,9 @@ impl Apply for SystemdApply {
         if !Path::new("/").join(&relative).is_dir() {
             return false;
         }
-        // `/usr` is the image's own unless systemd-sysext merged extensions
-        // over it. The image's lower `/usr` is then out of reach, so the
-        // directory counts as the image's only when no extension carries it.
+        // `/usr` is the image's own unless `systemd-sysext` merged extensions over it; the image's
+        // lower `/usr` is then out of reach, so the directory counts as the image's only when no
+        // extension carries it.
         if !Path::new("/usr/.systemd-sysext").exists() {
             return true;
         }
@@ -1371,8 +1350,8 @@ fn install_app_in_session(
     tapp: &Path,
     preserve_held: bool,
 ) -> Result<String, DaemonError> {
-    // The installed runtime and publisher pins are part of the resolved
-    // slot's verified /usr view, not the daemon's global namespace.
+    // The installed runtime and publisher pins are part of the resolved slot's verified `/usr`
+    // view, not the daemon's global namespace.
     let pid = apply
         .session_pid(session)
         .ok_or_else(|| DaemonError::Apply {
@@ -1421,9 +1400,9 @@ fn with_staged_app(
     result
 }
 
-/// A transient system service gets the same readonly slot view as the final
-/// session, independently of the old compositor's retained namespace. systemd
-/// sets the existing session account; no caller command or identity is accepted.
+/// A transient system service gets the same readonly slot view as the final session, independently
+/// of the old compositor's retained namespace. systemd sets the existing session account; no caller
+/// command or identity is accepted.
 fn cohort_view_command(
     session: &Session,
     uid: u32,
@@ -1491,10 +1470,9 @@ fn cohort_account_command(
         "--property=NoNewPrivileges=yes",
         "--property=RuntimeMaxSec=300",
         "--",
-        // systemd resolves the unit's executable in the manager's own mount
-        // namespace, before the view is bound over `/usr`, so the candidate
-        // installer cannot be the unit's command: `env` exists on both sides
-        // and execs it inside the view.
+        // systemd resolves the unit's executable in the manager's own mount namespace, before the
+        // view is bound over `/usr`, so the candidate installer cannot be the unit's command: `env`
+        // exists on both sides and execs it inside the view.
         "/usr/bin/env",
         "/usr/libexec/tilo/tilo-install",
     ]);
@@ -1540,9 +1518,8 @@ const DESKTOP_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// How long the restarted compositor may take to come up.
 const DESKTOP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Wait until `wrapper` (a login's tilo-session) runs one compositor for
-/// `settle`. The wrapper exiting means the compositor did not come up and
-/// the owner is back at the login screen.
+/// Wait until `wrapper` (a login's `tilo-session`) runs one compositor for `settle`. The wrapper
+/// exiting means the compositor did not come up and the owner is back at the login screen.
 fn wait_desktop(wrapper: u32, settle: std::time::Duration) -> Result<(), String> {
     let started = std::time::Instant::now();
     let mut stable: Option<(std::time::Instant, u32)> = None;
@@ -1573,8 +1550,8 @@ fn wait_desktop(wrapper: u32, settle: std::time::Duration) -> Result<(), String>
     }
 }
 
-/// Start `tilo-vmd input-serve` for `slot` as a transient unit and wait
-/// until its socket answers and udev has handed the devices to the seat.
+/// Start `tilo-vmd input-serve` for `slot` as a transient unit, and wait until its socket answers
+/// and udev has handed the devices to the seat.
 fn start_input_server(
     slot: &str,
     seat: &str,
@@ -1605,7 +1582,7 @@ fn start_input_server(
     run(&format!("systemd-run --unit {unit}"), &mut command)?;
     for _ in 0..100 {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            // New input devices reach the compositor via udev and libinput.
+            // New input devices reach the compositor through udev and libinput.
             let _ = Command::new("udevadm").arg("settle").output();
             std::thread::sleep(std::time::Duration::from_millis(500));
             return Ok(());
@@ -1621,8 +1598,8 @@ fn start_input_server(
     })
 }
 
-/// The desktop layout under `~/.config/tilo`: the tree, its document, the
-/// document's log and meta, and the action invocations recorded against it.
+/// The desktop layout under `~/.config/tilo`: the tree, its document, the document's log and meta,
+/// and the action invocations recorded against it.
 const DESKTOP_STATE: [&str; 5] = [
     "state.json",
     "state.automerge",
@@ -1631,8 +1608,8 @@ const DESKTOP_STATE: [&str; 5] = [
     "state.json.invocations",
 ];
 
-/// The rows of `user`'s own package registry, read as root from a file
-/// the account owns, without following a link the account could plant.
+/// The rows of `user`'s own package registry, read as root from a file the account owns without
+/// following a link the account could plant.
 fn user_registry(
     user: &str,
 ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError> {
@@ -1730,12 +1707,10 @@ fn proc_field(pid: u32, field: &str) -> Option<String> {
         .map(|v| v.trim().to_owned())
 }
 
-/// One independent output per connector: each gets its own primary plane,
-/// CRTC and encoder, so every output can run its own mode. The topology is
-/// fixed at creation: vkms refuses changes while a device is enabled, so
-/// hotplug means toggling a connector's `status` between connected (1) and
-/// disconnected (2). vkms names the connectors `Virtual-1`, `Virtual-2`, ...
-/// in this order. Link targets must be absolute.
+/// One independent output per connector, each with its own primary plane, CRTC and encoder so every
+/// output can run its own mode. The topology is fixed at creation, since vkms refuses changes while
+/// a device is enabled, so hotplug means toggling a connector's `status` between connected and
+/// disconnected. Link targets must be absolute.
 fn vkms_create(device: &Path, connectors: u32) -> std::io::Result<()> {
     fs::create_dir(device)?;
     for index in 0..connectors.max(1) {

@@ -14,11 +14,6 @@ use video_editor::agent_render::{self, AgentExportSettings};
 
 use crate::proto::{FRAMING, PROTOCOL_VERSION, Reply, Request, SNAPSHOT, SOURCES};
 
-/// The plugins a render can reach: the decode graph `tilo-media` builds
-/// (`playbin`, demuxers, parsers, software decoders, converters), the
-/// stills it imports, and the encode graph. Loaded before confinement,
-/// since a confined helper maps no new code; one this host lacks is
-/// simply absent.
 const PLUGINS: &[&str] = &[
     "coreelements",
     "app",
@@ -52,24 +47,18 @@ const PLUGINS: &[&str] = &[
     "pbtypes",
 ];
 
-/// Descriptors the helper may hold: the socket, stdio, and what the
-/// decoders, the GPU and `GStreamer`'s pollers open.
 const MAX_OPEN_FILES: u64 = 256;
 
 /// Address space a helper may map on Linux.
 const MAX_ADDRESS_SPACE: u64 = 4 << 30;
 
-/// How often progress is reported.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
-/// Entry point of `tilo-video-render`. Returns the exit code.
 #[must_use]
 pub fn run() -> u8 {
-    // Before any thread starts, so the address space capped below does not
-    // depend on how many cores the host has.
+    // Before any thread starts, so the address space cap does not depend on how
+    // many cores the host has.
     confine::share_allocator_arenas();
-    // First, before any descriptor of its own is made: everything
-    // inherited above stdio is closed.
     if let Err(error) = confine::detach() {
         tracing::error!(%error, "render helper");
         return 2;
@@ -118,8 +107,7 @@ impl Channel {
 }
 
 fn serve(channel: &mut Channel, job: &Path) -> Result<Reply, String> {
-    // The file the host opened for the render: written through, never
-    // opened here.
+    // The file the host opened for the render, written through, never opened here.
     let output = std::io::stdout()
         .as_fd()
         .try_clone_to_owned()
@@ -152,8 +140,8 @@ fn serve(channel: &mut Channel, job: &Path) -> Result<Reply, String> {
     }
 }
 
-/// Render the video into `output`, reporting progress, then zero the
-/// container's clock times so the bytes depend on the timeline alone.
+/// Render the video into `output`, reporting progress, then zero the container's
+/// clock times so the bytes depend on the timeline alone.
 fn video(
     channel: &Channel,
     project: &Project,
@@ -182,7 +170,6 @@ fn video(
     Ok(Reply::Video(rendered))
 }
 
-/// The file the host handed the helper, as the editor's encode sees it.
 struct Handed<'a>(&'a std::fs::File);
 
 impl video_editor::export::HandedOutput for Handed<'_> {
@@ -195,7 +182,6 @@ impl video_editor::export::HandedOutput for Handed<'_> {
     }
 }
 
-/// Rewrite `output` with its MP4 clock times zeroed.
 fn zero_times(output: &std::fs::File) -> Result<(), String> {
     let failed = |error: std::io::Error| format!("the render could not be finished: {error}");
     let mut file = output;
@@ -214,9 +200,6 @@ fn load(snapshot: &Path) -> Result<Project, String> {
     agent_render::read_snapshot(&bytes)
 }
 
-/// Everything a render loads that a confined helper could no longer:
-/// `GStreamer` and its plugins, the GPU device, its pipelines and the
-/// fonts a title is set in. Returns the plugin files' directories.
 fn prepare(request: &Request) -> Result<Vec<PathBuf>, String> {
     gst::init().map_err(|error| format!("GStreamer did not start: {error}"))?;
     let registry = gst::Registry::get();
@@ -244,12 +227,10 @@ fn prepare(request: &Request) -> Result<Vec<PathBuf>, String> {
     Ok(dirs)
 }
 
-/// Read-only: the plugins and the libraries beside them, the plugin
-/// directories the host passed (already validated by
-/// [`client::plugin_dirs`](crate::client::plugin_dirs)), the registry,
-/// the fonts and the job directory; and the socket pairs `GStreamer`'s
-/// buses wake through. The GPU device opened before confinement keeps
-/// working with no further grant.
+/// Read-only: the plugins and the libraries beside them, the plugin directories
+/// the host passed, the registry, the fonts and the job directory, and the
+/// socket pairs `GStreamer`'s buses wake through. The GPU device opened before
+/// confinement keeps working.
 fn policy(job: &Path, plugins: &[PathBuf]) -> confine::Policy {
     let mut read_only: Vec<PathBuf> = vec![job.to_path_buf()];
     for dir in plugins {
@@ -265,7 +246,6 @@ fn policy(job: &Path, plugins: &[PathBuf]) -> confine::Policy {
     }
     read_only.extend(registry_file());
     read_only.extend(font_dirs());
-    // The catalog its host verified and named: a title's text is set in it.
     read_only.extend(ui::font_catalog::catalog_root());
     read_only.retain(|path| path.exists());
     read_only.sort();
@@ -276,8 +256,6 @@ fn policy(job: &Path, plugins: &[PathBuf]) -> confine::Policy {
     }
 }
 
-/// The registry `GStreamer` read at start-up: the file the host named
-/// (only ever a file), else its default cache directory.
 fn registry_file() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GST_REGISTRY_1_0") {
         let path = PathBuf::from(path);

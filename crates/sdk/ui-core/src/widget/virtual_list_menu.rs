@@ -179,14 +179,6 @@ impl<M: ListModel> VirtualList<M> {
         self.menus.owned().is_some_and(|menu| menu.menu.is_open())
     }
 
-    /// Whether the box that took the menu's place stands open.
-    #[must_use]
-    pub fn send_to_alone_open(&self) -> bool {
-        self.menus
-            .owned()
-            .is_some_and(|menu| menu.menu.send_to_alone_open())
-    }
-
     /// Close the rows' menu, its chosen item unheard. A list that reports its row menus to the
     /// host has none of its own to close.
     pub fn close_context_menu(&mut self) {
@@ -272,7 +264,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
-        if !menu.menu.is_showing() {
+        if !menu.menu.is_open() {
             return false;
         }
         let mut consumed = false;
@@ -325,18 +317,18 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether the open menu needs a frame: it arrives, leaves, or a key moved its highlight.
-    /// A closed menu paints nothing, so it asks for none.
+    /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
+    /// the box beside it changed. A closed menu paints nothing, so it asks for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
-        self.menus.owned().is_some_and(|menu| {
-            (menu.menu.is_open() && menu.menu.needs_redraw()) || menu.menu.send_to().is_drawn()
-        })
+        self.menus
+            .owned()
+            .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
     }
 
     /// The open menu's semantics, its targets namespaced into the list's.
     pub(super) fn menu_node(&self) -> Option<AccessNode> {
         let menu = self.menus.owned()?;
-        if !menu.menu.is_open() && !menu.menu.send_to_alone_drawn() {
+        if !menu.menu.is_open() {
             return None;
         }
         let mut node = Widget::accessibility(&menu.menu)?;

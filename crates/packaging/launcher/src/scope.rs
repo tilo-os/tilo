@@ -1,29 +1,7 @@
 //! Asking the systemd user manager for a scope.
 //!
-//! Every launch runs in a cgroup of its own, in `app.slice` and part of the
-//! graphical session target. That makes an app one unit for resource
-//! accounting (its memory is charged to its own cgroup, never the
-//! compositor's), for the OOM killer, and for logout or a compositor crash,
-//! which stop the app and everything it forked instead of leaving it running
-//! with no display.
-//!
-//! Every launch asks for its own transient `app-tilo-<id>-<pid>.scope`
-//! ([`join`]) and moves *itself* into it before it forks the app, so the app
-//! and every process it starts are inside it rather than chased into it
-//! afterwards: no path starts an app outside one ([`crate::app_cgroup`]).
-//!
-//! `OOMPolicy` is `continue`: systemd never tears a unit down on its own when
-//! the kernel's OOM killer acts in it. What ends together is decided inside
-//! the app's own cgroup instead ([`crate::app_cgroup::set_oom_group`]): a Tilo
-//! app is one OOM group, so an app that runs out of memory ends completely,
-//! while a host app keeps one victim. systemd-oomd never acts on apps:
-//! `app.slice` is not one of its targets (see
-//! `os/etc/systemd/user/app.slice.d`); the session watches memory pressure
-//! for them ([`crate::memory_pressure`]).
-//!
-//! A manager that is unreachable (a headless test host, a session without a
-//! user manager) or refuses costs the scope, never the launch: the caller
-//! logs the reason and runs the app where the launcher already is.
+//! Every launch runs in a cgroup of its own, in `app.slice` and part of the graphical
+//! session target.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -35,29 +13,25 @@ pub const BUSCTL: &str = "/usr/bin/busctl";
 /// Stopping this target at logout stops every app's scope.
 const SESSION_TARGET: &str = "tilo-graphical-session.target";
 
-/// The slice every app scope lives in, per the desktop-environment
-/// convention (<https://systemd.io/DESKTOP_ENVIRONMENTS>).
+/// The slice every app scope lives in, per the desktop-environment convention
+/// (<https://systemd.io/DESKTOP_ENVIRONMENTS>).
 pub const APP_SLICE: &str = "app.slice";
 
 /// Unit name prefix of a launch's own scope ([`unit_name`]).
 pub const UNIT_PREFIX: &str = "app-tilo-";
 
-/// What happens to an app's scope when the kernel OOM killer kills one of
-/// its processes: only that process dies (see the module docs).
+/// What happens to an app's scope when the kernel OOM killer kills one of its processes: only that
+/// process dies (see the module docs).
 const OOM_POLICY: &str = "continue";
 
 /// The longest unit name systemd accepts.
 const UNIT_NAME_MAX: usize = 255;
 
-/// How long the manager gets to move this process once it accepted the
-/// scope. It runs the start job right after answering, so a healthy manager
-/// needs milliseconds.
+/// How long the manager gets to move this process once it accepted the scope.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// `app-tilo-<app id>-<pid>.scope`, with the id escaped as a unit name must
-/// be: `-` separates the name's fields, so it and anything else outside
-/// `[A-Za-z0-9:_.]` becomes `\xNN`. `None` when the result is too long to be
-/// a unit name.
+/// `app-tilo-<app id>-<pid>.scope`, with the id escaped as a unit name must be: `-` separates the
+/// name's fields, so it and anything else outside `[A-Za-z0-9:_.]` becomes `\xNN`.
 #[must_use]
 pub fn unit_name(app_id: &str, pid: u32) -> Option<String> {
     let escaped = escape_name(app_id)?;
@@ -65,9 +39,8 @@ pub fn unit_name(app_id: &str, pid: u32) -> Option<String> {
     (unit.len() <= UNIT_NAME_MAX).then_some(unit)
 }
 
-/// `name` escaped as systemd escapes a unit name's field: `-` separates
-/// fields, so it and anything else outside `[A-Za-z0-9:_.]` becomes `\xNN`.
-/// `None` for an empty name.
+/// `name` escaped as systemd escapes a unit name's field: `-` separates fields, so it and anything else
+/// outside `[A-Za-z0-9:_.]` becomes `\xNN`.
 #[must_use]
 pub fn escape_name(name: &str) -> Option<String> {
     use std::fmt::Write as _;
@@ -82,8 +55,7 @@ pub fn escape_name(name: &str) -> Option<String> {
     (!escaped.is_empty()).then_some(escaped)
 }
 
-/// The inverse of [`escape_name`]. Anything that is not a well-formed
-/// `\xNN` stays as it is.
+/// The inverse of [`escape_name`].
 #[must_use]
 pub fn unescape_name(escaped: &str) -> String {
     let bytes = escaped.as_bytes();
@@ -106,15 +78,8 @@ pub fn unescape_name(escaped: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Move this process into a new scope for `app_id` through the system's
-/// `busctl`, waiting until the move is visible in `/proc/self/cgroup`.
-/// Returns the unit name.
-///
-/// # Errors
-///
-/// A human-readable reason for the log when there is no `busctl`, the id
-/// cannot name a unit, the manager refuses, or it accepts but does not move
-/// this process in time.
+/// Move this process into a new scope for `app_id` through the system's `busctl`, waiting until the
+/// move is visible in `/proc/self/cgroup`.
 pub fn join(app_id: &str, description: &str) -> Result<String, String> {
     let busctl = Path::new(BUSCTL);
     if !busctl.is_file() {
@@ -124,10 +89,6 @@ pub fn join(app_id: &str, description: &str) -> Result<String, String> {
 }
 
 /// [`join`] with the manager's front end and the join wait supplied.
-///
-/// # Errors
-///
-/// As [`join`].
 pub fn join_with(
     busctl: &Path,
     app_id: &str,
@@ -144,16 +105,16 @@ pub fn join_with(
     )
 }
 
-/// Run one `StartTransientUnit` call of a scope that holds this process and
-/// wait until the move into `unit` is visible in `/proc/self/cgroup`.
+/// Run one `StartTransientUnit` call of a scope that holds this process and wait until the move into
+/// `unit` is visible in `/proc/self/cgroup`.
 fn join_unit(
     busctl: &Path,
     unit: &str,
     args: &[String],
     timeout: Duration,
 ) -> Result<String, String> {
-    // `StartTransientUnit` answers once the start job is queued, before the
-    // move, hence the wait on this process's own cgroup below.
+    // `StartTransientUnit` answers once the start job is queued, before the move, hence the wait on
+    // this process's own cgroup below.
     let output = Command::new(busctl)
         .args(args)
         .stdin(Stdio::null())
@@ -198,9 +159,9 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
         ],
         vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
     ];
-    // The person just asked for this app: it is born in the startup tier and
-    // served before everything else while it opens, then the session moves it
-    // to the tier of what the person can see (see `priority`).
+    // The person just asked for this app: it is born in the startup tier and served before everything
+    // else while it opens, then the session moves it to the tier of what the person can see (see
+    // `priority`).
     let tier = crate::priority::tier_properties(
         crate::priority::Tier::Startup,
         crate::priority::mem_total_bytes(),
@@ -216,8 +177,8 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
     start_args(unit, properties)
 }
 
-/// `busctl --user call … StartTransientUnit` of `unit` with `properties`,
-/// each a `name signature value…` run.
+/// `busctl --user call … StartTransientUnit` of `unit` with `properties`, each a `name signature
+/// value…` run.
 fn start_args(unit: &str, properties: Vec<Vec<String>>) -> Vec<String> {
     let mut args: Vec<String> = [
         "--user",

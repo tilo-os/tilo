@@ -1,7 +1,5 @@
 //! Cryptography of other applications' on-disk formats that Tilo must read.
 //!
-//! These are compatibility decoders, not sealing constructions Tilo chose:
-//!
 //! - Chromium's Linux `OSCrypt` cookie format uses `PBKDF2-HMAC-SHA1` with
 //!   the fixed salt `saltysalt` and one iteration for its `v10`/`v11` keys,
 //!   then AES-128-CBC with sixteen space bytes as the IV and PKCS#7 padding.
@@ -9,15 +7,6 @@
 //!   constant key, with a random 16-byte IV before the ciphertext and
 //!   URL-safe base64 around both. Rclone documents it as obfuscation, not
 //!   secure custody; the caller reseals the plaintext in Tilo's own storage.
-//!
-//! Both live here because raw password-KDF, AES and CTR crates may only be
-//! named by this crate ([`crate`]'s dependency boundary). Neither function
-//! authenticates its input: the formats do not carry a tag. Callers validate
-//! the application's own structure (a host hash, a URL, a length bound) and
-//! never treat a successful decode as proof of integrity.
-//!
-//! The key material and plaintext are wiped on drop, and errors name only
-//! the check that failed.
 
 use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use ctr::cipher::StreamCipher;
@@ -26,23 +15,17 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// Length of Chromium's `OSCrypt` AES-128 key.
 pub const CHROMIUM_KEY_LEN: usize = 16;
 /// Largest Chromium ciphertext this decoder accepts. Cookies are credentials,
 /// not files, and the caller's format bound is the same.
 pub const MAX_CHROMIUM_CIPHERTEXT: usize = 32 * 1024;
-/// Largest rclone `obscure` string this decoder accepts.
 pub const MAX_RCLONE_OBSCURED: usize = 16 * 1024;
-/// Chromium derives its key from this fixed salt and one iteration.
 const CHROMIUM_SALT: &[u8] = b"saltysalt";
-/// Chromium's CBC initialisation vector is sixteen spaces.
 const CHROMIUM_IV: [u8; 16] = [b' '; 16];
-/// Rclone's published `obscure` key, in the order its source writes it.
 const RCLONE_KEY: [u8; 32] = [
     0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d, 0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9, 0x2b,
     0xd3, 0x90, 0x19, 0x8e, 0xb8, 0x12, 0x8a, 0xfb, 0xf4, 0xde, 0x16, 0x2b, 0x8b, 0x95, 0xf6, 0x38,
 ];
-/// Rclone's IV length before the ciphertext.
 const RCLONE_IV_LEN: usize = 16;
 
 /// The Chromium Linux `OSCrypt` key for `password`.

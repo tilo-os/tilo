@@ -1,7 +1,7 @@
 //! A person's own workspace, as a device in the site's home workspace has it: the host makes it the
 //! first time and answers the same one after, the very device that asked redeems its invitation
 //! (so the key it holds is the one that opens it), and every refusal reads typed, as the host said
-//! it. The page asks through this same entry (`enterOwnWorkspace`), as the CLI and the front door
+//! it. The page asks through this same entry (`enterOwnWorkspace`), as the CLI and the API server
 //! do.
 
 #![allow(

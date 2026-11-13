@@ -73,7 +73,6 @@ fn subtree(root: &File, relative: &Path) -> io::Result<File> {
 
 /// Kernel mount identity of an already held file or directory descriptor.
 /// Missing kernel evidence is an error, never permission to cross mounts.
-/// This identifies mounts, not a portable filesystem or authorization grant.
 pub fn mount_id(directory: &File) -> io::Result<u64> {
     // An empty string plus `EMPTY_PATH` identifies the held descriptor, not an
     // ambient pathname; rustix issues the syscall on every C library.
@@ -165,7 +164,8 @@ fn single_component(root: &File, cancel: &AtomicBool) -> io::Result<()> {
 }
 
 /// Non-secret durable custody receipt; the broker persists this under its own
-/// authenticated operation record, never accepts an untrusted claim as authority.
+/// authenticated operation record, never accepting an untrusted claim as
+/// authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Receipt {
     pub name: String,
@@ -186,7 +186,7 @@ pub struct Request {
     pub reserve_bytes: u64,
 }
 
-/// Holds only broker-owned capture custody. Drop attempts exact-ID cleanup;
+/// Holds only broker-owned capture custody. Drop attempts exact-ID cleanup; a
 /// failed cleanup must also be recovered from the broker's durable receipt.
 pub struct SnapshotLease {
     parent: File,
@@ -291,11 +291,8 @@ impl SnapshotLease {
         &self.receipt
     }
 
-    /// Propose an extension of this exact epoch; the broker durably publishes
-    /// the receipt before committing it. This never revives an expired lease.
-    /// # Errors
-    /// Refuses cancellation, changed provenance, exhausted reserve or an
-    /// extension outside the bounded native lease lifetime.
+    /// Propose an extension of this exact epoch; the broker durably publishes the
+    /// receipt before committing it. This never revives an expired lease.
     pub fn prepare_renewal(&self, lifetime: Duration, cancel: &AtomicBool) -> io::Result<Receipt> {
         self.validate(cancel)?;
         if lifetime.is_zero() || lifetime > MAX_LIFETIME {
@@ -313,10 +310,9 @@ impl SnapshotLease {
         Ok(receipt)
     }
 
-    /// Adopt a previously durably published renewal of the same capture.
-    /// # Errors
-    /// Refuses changed identity, source, reserve, selection, cancellation,
-    /// expired custody or a deadline beyond the bounded renewal horizon.
+    /// Adopt a previously durably published renewal of the same capture, refusing
+    /// changed identity, source, reserve, selection, cancellation, expired custody
+    /// or a deadline beyond the bounded renewal horizon.
     pub fn commit_renewal(&mut self, renewal: &Receipt, cancel: &AtomicBool) -> io::Result<()> {
         self.validate(cancel)?;
         let mut expected = self.receipt.clone();
@@ -338,8 +334,6 @@ impl SnapshotLease {
         self.validate(cancel)
     }
 
-    /// Broker-only. Confine consumers through the canonical launcher before
-    /// passing this handle; a directory descriptor alone is not a sandbox.
     pub fn selected(&self) -> &File {
         &self.selected
     }
@@ -364,13 +358,11 @@ impl SnapshotLease {
         Ok(())
     }
 
-    /// Keeps the snapshot for crash/retry recovery after its receipt is durable.
     pub fn retain(mut self) -> Receipt {
         self.retained = true;
         self.receipt.clone()
     }
 
-    /// Explicit completion/cancellation cleanup; failures remain actionable.
     pub fn release(mut self) -> io::Result<()> {
         btrfs::destroy_snapshot_id(
             self.parent.as_fd(),

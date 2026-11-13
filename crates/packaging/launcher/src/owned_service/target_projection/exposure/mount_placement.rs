@@ -1,6 +1,4 @@
 //! WIP: shared exact mount syscall core. No source or application grant.
-//! Controller must own this before place and establish actual consumer stop
-//! before retire; public callers cannot construct or discharge it.
 use super::{
     AsRawFd, BASE, CString, DirBuilderExt, File, MOVE_EMPTY, OpenOptionsExt, PathBuf, exact_mode,
     held_inode, identity, io, mount_entry, mount_id, mount_row, mounted_file, namespace,
@@ -20,8 +18,7 @@ struct Preparation {
 impl Drop for Preparation {
     fn drop(&mut self) {
         if self.armed {
-            // Before placement this unique root-only path contains only
-            // our empty directory. Never recursively remove a tree.
+            // Before placement this unique root-only path contains only our empty directory.
             let _ = std::fs::remove_dir(self.path.join("view"));
             let _ = std::fs::remove_dir(&self.path);
         }
@@ -123,8 +120,6 @@ impl MountPlacement {
         }
         if self.stage_id.is_none() {
             // Inserting even an empty carrier under a shared mount propagates.
-            // Only the canonical root-managed private consuming namespace is
-            // supported; never change a shared host ancestor's propagation.
             if mount_entry(mount_id(&self.backing)?)?.is_none_or(|entry| !entry.0) {
                 return Err(refused(
                     "Exposure requires owned private consuming namespace",
@@ -238,7 +233,6 @@ impl MountPlacement {
     }
     pub(crate) fn retire(&mut self) -> io::Result<()> {
         // Recover the exact stage identity if initial post-mount fdinfo failed.
-        // Namespace and root-owned backing path remain held throughout.
         if self.stage_pending && self.stage_id.is_none() {
             root()?;
             if identity(&namespace()?)? != self.namespace_identity {

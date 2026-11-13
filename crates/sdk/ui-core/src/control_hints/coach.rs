@@ -1,18 +1,17 @@
-//! When a control hint shows, goes, and is learned: a pure schedule over
-//! what the host observed, with no drawing and no clock of its own.
+//! When a control hint shows, goes, and is learned: a pure schedule over what the host observed, with
+//! no drawing and no clock of it.
 
 use super::{Cue, HintSpec, Learned, Quiet};
 use crate::time::{Duration, Instant};
 
-/// How long an unanswered hint stays before it goes on its own.
+/// How long an unanswered hint stays before it goes on its.
 pub const IGNORED_AFTER: Duration = Duration::from_secs(9);
 /// The least time between two hints beginning to show.
 pub const MIN_GAP: Duration = Duration::from_secs(60);
-/// How long after it went unanswered a hint may come back, once, in the
-/// same session. A later session may bring it back, once, at its moment.
+/// How long after it went unanswered a hint may come back, once, in the same session.
 pub const RETURN_AFTER: Duration = Duration::from_secs(10 * 60);
-/// How long a moment a host saw ([`Cue::Saw`]) stays the moment to show a
-/// hint: one that comes after this is no longer about what just happened.
+/// How long a moment a host saw ([`Cue::Saw`]) stays the moment to show a hint: one that comes after
+/// this is no longer about what just happened.
 pub const CUE_FRESH: Duration = Duration::from_secs(20);
 /// The most times one hint shows, ever.
 pub const MAX_SHOWINGS: u8 = 2;
@@ -22,8 +21,7 @@ pub const MAX_SHOWINGS: u8 = 2;
 pub enum Phase {
     /// Arriving, then resting at its anchor, since this instant.
     Shown(Instant),
-    /// Going away unanswered (ignored, or the moment passed), since this
-    /// instant.
+    /// Going away unanswered (ignored, or the moment passed), since this instant.
     Leaving(Instant),
     /// Its gesture was done: the acknowledgement, since this instant.
     Done(Instant),
@@ -37,21 +35,13 @@ pub struct Current {
     pub phase: Phase,
 }
 
-/// Per hint, this session.
 #[derive(Clone, Copy, Debug, Default)]
 struct Track {
-    /// When its moment last came ([`Cue::Saw`]).
     cued: Option<Instant>,
-    /// When it last went unanswered in this session.
     left: Option<Instant>,
 }
 
 /// The schedule of a set of hints over the signals `S` a host observes.
-///
-/// A host feeds it what the person did ([`Self::observe`]) and, every
-/// frame, what holds and whether now is a quiet moment ([`Self::tick`]).
-/// It answers which hint to show ([`Self::current`]) and what was learned
-/// or shown that the person's own record should keep ([`Self::learned`]).
 pub struct Coach<S: 'static> {
     specs: &'static [HintSpec<S>],
     tracks: Vec<Track>,
@@ -92,28 +82,24 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         self.current
     }
 
-    /// What the person's record keeps: which hints are learned, how often
-    /// each showed, and whether hints show at all.
+    /// What the person's record keeps: which hints are learned, how often each showed, and whether
+    /// hints show at all.
     #[must_use]
     pub fn learned(&self) -> &Learned {
         &self.learned
     }
 
-    /// The record, when it changed since the last call: the host writes
-    /// it to the person's own data.
+    /// The record, when it changed since the last call: the host writes it to the person data.
     pub fn take_changed(&mut self) -> Option<Learned> {
         std::mem::take(&mut self.dirty).then(|| self.learned.clone())
     }
 
-    /// Fold in the record as another device left it: a hint learned
-    /// anywhere is learned here, and a hint on screen that the other device
-    /// learned goes.
+    /// Fold in the record as another device left it: a hint learned anywhere is learned here, and a
+    /// hint on screen that the other device learned goes.
     pub fn merge(&mut self, other: &Learned, now: Instant) {
         let before = self.learned.clone();
         self.learned.merge(other);
         if self.learned != before {
-            // What the merge added is the other device's; only what this
-            // one adds on top needs writing back.
             self.dirty |= self.learned != *other;
         }
         self.retire_unwanted(now);
@@ -151,9 +137,9 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         }
     }
 
-    /// The hint on screen has nowhere to stand now (a card over the desk covers what it points at,
-    /// or leaves it no room beside it): it goes, as one whose anchor went, and may come back once
-    /// it has been away.
+    /// The hint on screen has nowhere to stand now (a card over the desk covers what it points at, or
+    /// leaves it no room beside it): it goes, as one whose anchor went, and may come back once it has
+    /// been away.
     pub fn dismiss(&mut self, now: Instant) {
         let Some(current) = self.current else {
             return;
@@ -170,10 +156,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         });
     }
 
-    /// Advance to `now`. `holds` says whether a fact holds right now;
-    /// `quiet` is why no hint may begin now, if anything; `anchored` whether
-    /// the host can place a hint at all (its anchor is on screen); the
-    /// phases' lengths come from `timing`.
+    /// Advance to `now`.
     pub fn tick(
         &mut self,
         now: Instant,
@@ -210,9 +193,8 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         }
     }
 
-    /// When the schedule next changes on its own, for a host that sleeps
-    /// between frames: the hint on screen ending a phase, or a waiting
-    /// [`Cue::After`] coming due.
+    /// When the schedule next changes on its, for a host that sleeps between frames: the hint on
+    /// screen ending a phase, or a waiting [`Cue::After`] coming due.
     #[must_use]
     pub fn next_change(&self, timing: Timing) -> Option<Instant> {
         if let Some(current) = self.current {
@@ -222,7 +204,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
                 Phase::Done(since) => since + timing.done,
             });
         }
-        // Turned off, no hint begins: nothing is due.
         if !self.learned.enabled {
             return None;
         }
@@ -243,10 +224,10 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             }
         }
         // A moment the last tick already reached and began nothing at is
-        // held back by what holds now (typing, a menu, an anchor off
+        // held back by what has now (typing, a menu, an anchor off
         // screen), not by the clock: waking for it again would only ask for
         // a frame on every frame until that changes, and the change comes
-        // with a frame of its own.
+        // with a frame of it.
         due.filter(|at| self.ticked.is_none_or(|ticked| *at > ticked))
     }
 
@@ -261,8 +242,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         let since = |at: Instant| now.saturating_duration_since(at);
         match current.phase {
             Phase::Shown(at) => {
-                // Typing goes on beside a hint already showing; a call, a
-                // follow or a lost anchor take it away.
                 let interrupted = matches!(quiet, Some(Quiet::Call | Quiet::Following))
                     || !anchored(current.index);
                 if since(at) >= IGNORED_AFTER || interrupted || !self.learned.enabled {
@@ -319,8 +298,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         })
     }
 
-    /// A hint on screen that is no longer wanted (learned elsewhere, hints
-    /// turned off) goes.
     fn retire_unwanted(&mut self, now: Instant) {
         if let Some(current) = self.current
             && let Phase::Shown(_) = current.phase
@@ -335,8 +312,8 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
     }
 }
 
-/// How long the phases that end on their own take, from the motion
-/// ([`crate::motion::Beckon`]) under the current reduced-motion choice.
+/// How long the phases that end on their own take, from the motion ([`crate::motion::Beckon`]) under
+/// the current reduced-motion choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timing {
     pub leaving: Duration,

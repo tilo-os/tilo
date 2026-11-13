@@ -1,15 +1,4 @@
 //! The window's bar held by the row its app draws.
-//!
-//! A window shows one bar. A header row that can stand as the bar's slots draws none of its own
-//! and the strip draws the bar ([`TabBar`](crate::widget::TabBar)); a row that cannot (it holds a
-//! catch-up, a popover) draws itself at the window's top and is the window's bar: the window draws
-//! none above it, the row fills the window, and the window's own furniture stands at the row's
-//! trailing end — its close/restore controls, its search and its new-tab door
-//! ([`RowFurniture`](crate::widget::window_header::RowFurniture)). A person moves the window by the
-//! row it holds, as by the bar's own band.
-//! [`crate::widget::window_header::content_bar`] is that answer, which the frames of the shell's
-//! preset and the frame the layout check stages read too.
-
 use super::WindowGroup;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -20,8 +9,6 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 impl WindowGroup {
-    /// The bar's row: the band the window draws above its content, or the row its app draws at
-    /// the window's top while it holds the bar. A person moves the window by either.
     pub fn bar_rect(&self) -> vello::kurbo::Rect {
         self.held_bar
             .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)
@@ -33,8 +20,6 @@ impl WindowGroup {
         self.held_bar.is_some() && self.held.trailing.contains(p)
     }
 
-    /// Where the app's own header row stands while it holds the window's bar, and where the
-    /// window's controls go; `None` while the window draws its own bar.
     #[cfg(test)]
     pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarSlot> {
         self.held_bar
@@ -50,9 +35,6 @@ impl WindowGroup {
     /// desktop's: neither hands its bar to the app.
     pub(super) fn offer_bar_to_app(&mut self) -> Option<crate::widget::WindowBarSlot> {
         let active = self.bar.active_id();
-        // Nothing of the app's stands in the bar: a shell whose row can be the bar's slots declares
-        // them there, and another part of the window declares them of its own, and the bar is
-        // theirs then, not the row's.
         let declares_nothing = self.bar.toolbar(active).is_none();
         let hands_its_bar = declares_nothing
             && self.bar.tabs().len() <= 1
@@ -73,8 +55,6 @@ impl WindowGroup {
         crate::widget::window_header::content_bar(app)
     }
 
-    /// Read where the active app's header row stands, after layout: the row it draws at the
-    /// window's top is the window's bar while it holds it.
     pub(super) fn read_held_bar(&mut self) -> Option<crate::widget::WindowBarSlot> {
         let active = self.bar.active_id();
         let host = self
@@ -86,8 +66,6 @@ impl WindowGroup {
         crate::widget::window_header::content_bar(app as &dyn Widget)
     }
 
-    /// Paint the window's furniture in the row its app draws, over the app's own drawing: its
-    /// close/restore controls, its new-tab door and the window's search, as the bar shows them.
     pub(super) fn draw_held_furniture(
         &mut self,
         scene: &mut Scene,
@@ -157,7 +135,6 @@ impl WindowGroup {
             return Some(false);
         }
         match control {
-            // The window's own door: the shell decides what a new place holds.
             None => self.pending_new_tab = Some(self.id),
             Some(control) => self.run_held_control(control),
         }
@@ -165,7 +142,6 @@ impl WindowGroup {
         Some(true)
     }
 
-    /// What the window's maximize control does where the window stands now.
     #[must_use]
     pub fn resize(&self) -> crate::widget::window_controls::Resize {
         crate::widget::window_controls::Resize::of_window(
@@ -175,8 +151,6 @@ impl WindowGroup {
         )
     }
 
-    /// The card stood in the floating layer's column folded to its header, or opened again: its
-    /// collapse control points the way the control folds it.
     pub fn set_collapsed(&mut self, collapsed: bool) {
         let collapsed = collapsed && self.floating;
         if self.collapsed != collapsed {
@@ -186,8 +160,6 @@ impl WindowGroup {
         }
     }
 
-    /// The window floats over the desk, or stands in its strip: its row says so as it lays it out.
-    /// A floating window is a card: it keeps no door to a new tab.
     pub fn set_floating(&mut self, floating: bool) {
         if self.floating != floating {
             self.floating = floating;
@@ -200,24 +172,19 @@ impl WindowGroup {
         }
     }
 
-    /// Whether the window floats over the desk ([`Self::set_floating`]).
     #[must_use]
     pub fn is_floating(&self) -> bool {
         self.floating
     }
 
-    /// The person folded the floating card to its header, or opened it again, once.
     pub fn take_pending_collapse(&mut self) -> bool {
         self.bar.take_collapse()
     }
 
-    /// The person asked the floating window back into its strip, once.
     pub fn take_pending_snap(&mut self) -> bool {
         std::mem::take(&mut self.pending_snap)
     }
 
-    /// A press on the window's maximize control: a floating window snaps back into its strip, any
-    /// other fills it or takes its width back.
     pub(super) fn press_resize(&mut self) {
         if self.floating {
             self.pending_snap = true;
@@ -226,8 +193,6 @@ impl WindowGroup {
         }
     }
 
-    /// Run a press on the window's controls in a held bar's row: close ends the window, restore
-    /// and maximize change its place, as the bar's own controls do.
     pub(super) fn run_held_control(&mut self, control: WindowControl) {
         match control {
             WindowControl::Close => {
@@ -245,15 +210,10 @@ impl WindowGroup {
                 }
             }
             WindowControl::Maximize => self.press_resize(),
-            // The strip closes and restores; the desktop's window menu minimizes.
             WindowControl::Minimize => {}
         }
     }
 
-    /// What the pointer did in the row its app draws, where the row is the window's bar: the
-    /// window's furniture there is the window's, and a right press anywhere on the row opens the
-    /// window's menu, as one on the bar does. Returns whether it was the window's, so nothing
-    /// under it hears the event.
     pub(super) fn held_row_input(&mut self, event: &WindowEvent, scale: f64) -> bool {
         if self.held_bar.is_none() {
             return false;
@@ -323,7 +283,6 @@ impl WindowGroup {
                             }
                         }
                         if had_plus && plus {
-                            // The window's own door: the shell decides what a new place holds.
                             self.pending_new_tab = Some(self.id);
                             self.held_dirty = true;
                         }

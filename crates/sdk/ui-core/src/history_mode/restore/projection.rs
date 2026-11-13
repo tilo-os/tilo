@@ -8,8 +8,8 @@ pub(super) type NodeId = usize;
 pub(super) type Alternatives = Vec<NodeId>;
 pub(super) type Properties = BTreeMap<String, Alternatives>;
 
-/// Immutable semantic content backed by a flat private arena. Child indices are
-/// meaningful only inside this projection and are never CRDT object identities.
+/// Immutable semantic content backed by a flat private arena. Child indices are meaningful only inside
+/// this projection and are never CRDT object identities.
 #[derive(Clone, Debug)]
 pub struct ContentProjection(pub(super) Properties, pub(super) Vec<Node>);
 

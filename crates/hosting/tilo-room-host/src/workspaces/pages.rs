@@ -1437,7 +1437,7 @@ impl Workspaces {
             .admissions
             .grant_for(invite_id, &join.token, now)
             .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
-        self.pre_admission_signer(workspace.workspace(), grant)
+        self.pre_admission_signer(workspace, grant)
             .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
         if grant.role != role || grant.workspace != workspace.workspace() {
             return Err(Box::new(Err(CollaborationError::new(

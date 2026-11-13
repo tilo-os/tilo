@@ -183,23 +183,30 @@ fn bring_up(state_root: &Path) -> Result<(), StoreError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let path = state_root.join(REVOCATIONS_FILE);
-    let log = FORMAT
-        .migrate(bytes, 1)
+    FORMAT
+        .bring_up_moved(&old, &state_root.join(REVOCATIONS_FILE), bytes, 1)
         .map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_write(&path, &log)?;
-    match fs::rename(&old, Format::snapshot_path(&path, 1)) {
-        // Another reader brought it up first.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        result => result.map_err(Into::into),
-    }
+    Ok(())
 }
 
 /// The log's bytes, `None` when the state root holds none.
 fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     let path = state_root.join(REVOCATIONS_FILE);
     match fs::read(&path) {
-        Ok(bytes) => Ok(Some(bytes)),
+        // A log an older build wrote comes up on disk before it is read, its
+        // old bytes kept beside it.
+        Ok(bytes) => match bytes
+            .strip_prefix(MAGIC.as_slice())
+            .and_then(|rest| rest.first_chunk::<4>())
+            .map(|version| u32::from_le_bytes(*version))
+            .filter(|stored| *stored < FORMAT.version)
+        {
+            Some(stored) => FORMAT
+                .bring_up(&path, bytes, stored)
+                .map(Some)
+                .map_err(|error| StoreError::Json(error.to_string())),
+            None => Ok(Some(bytes)),
+        },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             bring_up(state_root)?;
             match fs::read(&path) {

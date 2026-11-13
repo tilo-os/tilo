@@ -341,7 +341,7 @@ impl Core {
             Self::put_field(&mut shown, RUN, Value::Action(Self::over_a_choice(runs)));
             out.push(shown);
         }
-        let mut label = self.words.borrow().word(CLEAR_WORDS.0, &[], CLEAR_WORDS.1);
+        let mut label = self.word_args(CLEAR_WORDS.0, &[], CLEAR_WORDS.1);
         if label.is_empty() {
             CLEAR_WORDS.1.clone_into(&mut label);
         }
@@ -550,7 +550,7 @@ impl Core {
     /// `action` as one a menu draws behind its "More": in that run, and no longer the primary
     /// one of a bar.
     fn behind_more(&self, mut action: Value) -> Value {
-        let more = self.words.borrow().word(MORE_RUN, &[], MORE_RUN_WORDS);
+        let more = self.word_args(MORE_RUN, &[], MORE_RUN_WORDS);
         Self::put_field(&mut action, PRIMARY, Value::Bool(false));
         Self::put_field(&mut action, GROUP, Value::some(Value::text(&more)));
         action
@@ -659,7 +659,7 @@ impl Core {
                 let registry = self.registry.borrow();
                 registry.view_shown(&subject.target.ty, id)
             };
-            let full = self.words.borrow().word(
+            let full = self.word_args(
                 &tilolang::messages::key_of(id),
                 &[],
                 &tilolang::messages::label(name),
@@ -726,7 +726,7 @@ impl Core {
             let (_, info) = registry.type_info(ty)?;
             (info.id.clone(), info.name.clone())
         };
-        Some(self.words.borrow().word(
+        Some(self.word_args(
             &tilolang::messages::key_of(&id),
             &[],
             &tilolang::messages::label(&name),
@@ -802,7 +802,7 @@ impl Core {
     /// lists what it holds.
     fn more_menu(&self, key: &str) -> NodeBuild {
         let mut menu = empty("ui.MenuButton", key);
-        let label = self.words.borrow().word(MORE, &[], "More actions");
+        let label = self.word_args(MORE, &[], "More actions");
         menu.props.insert("label".to_owned(), Value::text(&label));
         menu.props
             .insert("icon".to_owned(), Value::text("more-horizontal"));
@@ -825,7 +825,7 @@ impl Core {
         let key = self.key(shell)?;
         // The count reads in the reader's language, and as the count when it has no word for
         // this store's words.
-        let label = self.words.borrow().word(
+        let label = self.word_args(
             SELECTED,
             &[("count".to_owned(), count.to_string())],
             &format!("{count} selected"),

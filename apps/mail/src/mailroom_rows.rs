@@ -9,9 +9,6 @@
 use super::*;
 
 impl Mailroom {
-    /// Materialise one message resource row on demand. The public resource
-    /// tree deliberately carries only a bounded current-folder prefix, but a
-    /// stable message id must still resolve for agents and search activation.
     pub(crate) fn resource_message_row(&self, id: &str) -> Option<crate::actions::MessageRow> {
         self.shared
             .borrow()
@@ -22,9 +19,6 @@ impl Mailroom {
             .map(crate::actions::message_row)
     }
 
-    /// Lazily materialise a bounded thread resource by its stable key. This
-    /// keeps every loaded thread addressable even when the open-resource tree
-    /// only carries the first `OPEN_MESSAGE_LIMIT` messages.
     pub(crate) fn resource_thread_rows(
         &self,
         stable: &str,

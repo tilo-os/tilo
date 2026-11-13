@@ -1,12 +1,10 @@
-//! The agent library's words ([`crate::agent`]) as the checker lowers them (agents.md,
-//! "Querying" and "Reading and describing"): `grep` over the text of every app the code may
-//! read, `find` typed by a type and its filters, `read` of what matches or of one page,
-//! `describe`, `print` with the fields to show and `me`; and the chaining functions
-//! `count_by`, `group`, `take`, `each` and `single`, which are methods of any list.
+//! The agent library's words ([`crate::agent`]) as the checker lowers them (agents.md, "Querying" and
+//! "Reading and describing"): `grep`, `find`, `read`, `describe`, `print` and `me`, and the chaining
+//! functions `count_by`, `group`, `take`, `each` and `single`, which are methods of any list.
 //!
-//! An app the host does not hold is read through the platform: the checker names it by its id,
-//! from the apps the session says the code may read ([`crate::resolve::Env::sources`]), and the
-//! runtime asks that app's host. Its resources are `host.Resource`s.
+//! An app the host does not hold is read through the platform: the checker names it by its id, from the
+//! apps the session says the code may read ([`crate::resolve::Env::sources`]), and the runtime asks that
+//! app's host. Its resources are `host.Resource`s.
 
 use serde_json::json;
 
@@ -18,8 +16,8 @@ use crate::ir::{Ek, Stmt};
 use crate::types::{Ty, TypeKey};
 
 impl Checker<'_> {
-    /// The library word `name` called with `args`: `grep`, `find`, `read`, `describe` or
-    /// `print`; `None` for any other name, which the caller reports as it does for any name.
+    /// The library word `name` called with `args`: `grep`, `find`, `read`, `describe` or `print`; `None` for
+    /// any other name, which the caller reports as it does for any name.
     pub(super) fn agent_call(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
         Some(match name {
             "print" => self.builtin_print(args),
@@ -31,19 +29,16 @@ impl Checker<'_> {
         })
     }
 
-    /// `me`: the person the session acts for, the agent library's one name for them.
     pub(super) fn agent_me() -> Ex {
         Ex::host(Imp::Me, vec![], Ty::Principal)
     }
 
-    /// `agent.me` where a package names the library's `me`: the same person a session's bare
-    /// `me` is.
+    /// `agent.me` where a package names the library's `me`: the same person a session's bare `me` is.
     pub(super) fn agent_me_field(&self, base: &ast::Expr, name: &str) -> Option<Ex> {
         (name == crate::agent::ME && self.names_import_app(base, crate::agent::APP))
             .then(Self::agent_me)
     }
 
-    /// Whether `e` names `me`: bare in a session, `agent.me` in a package.
     fn is_agent_me(&self, e: &ast::Expr) -> bool {
         match &e.kind {
             ExprKind::Ident(name) => name == crate::agent::ME && self.env.session,
@@ -52,7 +47,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether `e` names the package `app` (and not a variable of that name).
     pub(super) fn names_import_app(&self, e: &ast::Expr, app: &str) -> bool {
         let Some(path) = super::expr::dotted(e) else {
             return false;
@@ -64,8 +58,8 @@ impl Checker<'_> {
         self.env.find_import(&path).is_some_and(|i| i.app == app)
     }
 
-    /// The apps code may name as sources, each by the name it calls it and its id: the packages
-    /// it imports, then those a session reads through the platform.
+    /// The apps code may name as sources, each by the name it calls it and its id: the packages it imports,
+    /// then those a session reads through the platform.
     pub(super) fn source_apps(&self) -> Vec<(String, String)> {
         let mut apps: Vec<(String, String)> = self
             .env
@@ -87,7 +81,6 @@ impl Checker<'_> {
         apps
     }
 
-    /// The app the name `name` calls, among the sources.
     fn source_app(&self, name: &str) -> Option<String> {
         self.source_apps()
             .into_iter()
@@ -95,7 +88,6 @@ impl Checker<'_> {
             .map(|(_, app)| app)
     }
 
-    /// An error naming the apps a program may read, for a name that is none of them.
     fn no_source(&mut self, name: &str, span: Span) {
         let apps = self.source_apps();
         let names: Vec<&str> = apps.iter().map(|(alias, _)| alias.as_str()).collect();
@@ -114,8 +106,8 @@ impl Checker<'_> {
         );
     }
 
-    /// `in: notes + chat`, `in: n3`, `in: [n3, n4]`: the apps named, and the resources whose
-    /// text to search, added to `apps` and `scope`.
+    /// `in: notes + chat`, `in: n3`, `in: [n3, n4]`: the apps named, and the resources whose text to search,
+    /// added to `apps` and `scope`.
     fn grep_sources(&mut self, e: &ast::Expr, apps: &mut Vec<String>, scope: &mut Vec<Ex>) {
         match &e.kind {
             ExprKind::Binary {
@@ -127,8 +119,8 @@ impl Checker<'_> {
                 self.grep_sources(rhs, apps, scope);
             }
             ExprKind::Ident(name) if self.lookup(name).is_none() => {
-                // A root of the program's own scope (`notes` as a package's named root) is a
-                // resource; an app's name is the app.
+                // A root of the program's own scope (`notes` as a package's named root) is a resource; an app's
+                // name is the app.
                 match self.source_app(name) {
                     Some(app) => {
                         if !apps.contains(&app) {
@@ -167,7 +159,6 @@ impl Checker<'_> {
         }
     }
 
-    /// A list of resources as one `List<host.Resource>` value, for the host.
     fn resource_list(&mut self, parts: Vec<Ex>) -> Ex {
         let list_ty = Ty::List(Box::new(Ty::Record(super::resource_key())));
         let list = self.fresh(list_ty.clone());
@@ -196,9 +187,9 @@ impl Checker<'_> {
         )
     }
 
-    /// `grep(/re/, in: notes + chat, not: .quote, changed: -14d, mentions: me)`: the matches of
-    /// the regular expression in the text of the resources named, each a `host.Match`; with no
-    /// `in:`, every app the program may read.
+    /// `grep(/re/, in: notes + chat, not: .quote, changed: -14d, mentions: me)`: the matches of the regular
+    /// expression in the text of the resources named, each a `host.Match`; with no `in:`, every app the
+    /// program may read.
     pub(super) fn builtin_grep(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let mut pattern: Option<Ex> = None;
         let mut apps: Vec<String> = Vec::new();
@@ -313,8 +304,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `changed: -14d` (or `2026-10-01..`, `today`): a time as search writes it, which the
-    /// runtime resolves against the log.
+    /// `changed: -14d` (or `2026-10-01..`, `today`): a time as search writes it, which the runtime resolves
+    /// against the log.
     fn when_text(&mut self, what: &str, e: &ast::Expr) -> Option<String> {
         match &e.kind {
             ExprKind::Duration(..)
@@ -335,8 +326,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `describe(notes)`, `describe(Note)`, `describe(notes.pin)`, `describe(Note.title)` or
-    /// `describe(n3)`: declarations as tilolang, and what the program may do with them.
+    /// `describe(notes)`, `describe(Note)`, `describe(notes.pin)`, `describe(Note.title)` or `describe(n3)`:
+    /// declarations as tilolang, and what the program may do with them.
     pub(super) fn builtin_describe(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [what] = args else {
             self.err(
@@ -427,8 +418,8 @@ impl Checker<'_> {
         }
     }
 
-    /// In a program, which has no types of its own, the type a bare name (`Note`) names: the
-    /// one app's that has it.
+    /// In a program, which has no types of its own, the type a bare name (`Note`) names: the one app's that
+    /// has it.
     pub(super) fn program_type(&self, e: &ast::Expr) -> Option<Ty> {
         if self.st.written != Written::Program {
             return None;
@@ -439,7 +430,6 @@ impl Checker<'_> {
         self.unique_type(name).map(|(key, _)| Ty::Record(key))
     }
 
-    /// The one type of any app the program holds named `name`, with its id.
     fn unique_type(&self, name: &str) -> Option<(TypeKey, String)> {
         let mut found = self
             .env
@@ -466,9 +456,8 @@ impl Checker<'_> {
         names
     }
 
-    /// `read(r, matching: /re/, around: 1, page: 2)` or `read(r, around: "¶4")`: the resource's
-    /// text with anchors, its size first, one page of it, only what matches when asked, with
-    /// the paragraphs around.
+    /// `read(r, matching: /re/, around: 1, page: 2)` or `read(r, around: "¶4")`: the resource's text with
+    /// anchors, its size first, one page of it, only what matches when asked, with the paragraphs around.
     pub(super) fn read_with(&mut self, r: Ex, args: &[ast::Arg]) -> Ex {
         let mut matching = Ex::str("");
         let mut options = serde_json::Map::new();
@@ -534,8 +523,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `print(xs, fields: [.a, .b])`, or `print(xs)` of a list of a type's resources: one row
-    /// per resource, its reference first, then the fields (by default the type's filters).
+    /// `print(xs, fields: [.a, .b])`, or `print(xs)` of a list of a type's resources: one row per resource,
+    /// its reference first, then the fields (by default the type's filters).
     pub(super) fn print_rows(&mut self, list: Ex, fields: Option<&ast::Arg>) -> Option<Ex> {
         let (Ty::List(elem) | Ty::Collection(elem) | Ty::Set(elem)) = &list.ty else {
             if let Some(f) = fields {
@@ -627,8 +616,8 @@ impl Checker<'_> {
         ))
     }
 
-    /// The chaining functions of a list: `count_by(key)`, `group(key)`, `take(n)`,
-    /// `each(f)` and `single()`; `None` for any other method.
+    /// The chaining functions of a list: `count_by(key)`, `group(key)`, `take(n)`, `each(f)` and `single()`;
+    /// `None` for any other method.
     pub(super) fn list_chain(
         &mut self,
         list: Ex,
@@ -646,6 +635,7 @@ impl Checker<'_> {
                 let map = ast::Ident {
                     name: "map".to_owned(),
                     span: name.span,
+                    from_template_of: None,
                 };
                 let keys =
                     self.higher_order(Ex::local(held, held_ty.clone()), elem, &map, args, span);
@@ -722,7 +712,6 @@ impl Checker<'_> {
         })
     }
 
-    /// `m.group(1)`: a group of a `host.Match`, the whole match for 0.
     pub(super) fn match_group(&mut self, m: Ex, args: &[ast::Arg], span: Span) -> Ex {
         let [n] = args else {
             self.err(
@@ -736,15 +725,15 @@ impl Checker<'_> {
         Ex::host(Imp::MatchGroup, vec![m, n], Ty::Text)
     }
 
-    /// `@chat.Message:...` in a program whose host does not hold chat: a resource read through
-    /// the platform, a `host.Resource`.
+    /// `@chat.Message:...` in a program whose host does not hold chat: a resource read through the platform,
+    /// a `host.Resource`.
     pub(super) fn foreign_ref(&self, r: &ast::RefLit) -> Option<Ex> {
         if self.st.written != Written::Program {
             return None;
         }
-        // An app named by its id (`so.tilo.lang.notes`) that the program neither holds nor
-        // reads: its resource is still a value, which the program passes to an action (the
-        // session's `place`) as a listing or an answer showed it.
+        // An app named by its id (`so.tilo.lang.notes`) that the program neither holds nor reads: its resource
+        // is still a value, which the program passes to an action (the session's `place`) as a listing or an
+        // answer showed it.
         let app = self
             .source_app(&r.app)
             .or_else(|| r.app.contains('.').then(|| r.app.clone()))?;

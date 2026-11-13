@@ -11,10 +11,8 @@ tab-opened-by = { $agent } opened this window
 tab-opened-by-run = { $run }
 standalone-search-title = Search
 history-mode-title = History
-history-mode-close = Close history
-history-mode-select-hint = Select a change to see details.
-history-mode-entry-ids = Changes
-history-mode-selected-details = Selected changes
+history-mode-select-hint = Show this change in History
+history-mode-entry-ids = Change
 history-mode-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
@@ -29,7 +27,7 @@ host-zoom-out = Zoom out
 host-zoom-reset = Actual size
 host-history-show = Show History
 host-history-hide = Hide History
-host-history-recent = { $author } · { $change } — { $when }
+host-history-recent = { $change } by { $author }, { $when }
 host-history-unavailable = There is no document to show History for.
 host-menu-file = File
 host-menu-edit = Edit
@@ -84,8 +82,8 @@ history-review-body = Version: { $version }
     Restoring returns the document to exactly this version as one new change. Later changes stay in history, and Undo reverses the restore.
 history-review-selected-version = Selected version
 history-review-not-content = This activity does not contain restorable document content.
-history-review-no-clock = The current time is unavailable. Restore cannot check permission expiry.
-history-restore-unsupported = This version cannot be restored safely with this application's content format.
+history-review-no-clock = This computer's clock is unavailable, so Restore can't check permissions.
+history-restore-unsupported = This app can't restore this version safely.
 history-preview-description = { $resource } as of this version
 
 # The History host's own controls and status, beside the live app.
@@ -108,17 +106,17 @@ history-mode-pending-unnamed = An action waits until you leave History
 history-mode-pending-held = “{ $action }” was held while History was open
 history-mode-pending-held-unnamed = An action was held while History was open
 history-mode-continue = Continue
-history-mode-confirm = Confirm
+history-mode-confirm = Allow
 history-mode-cancel = Cancel
 history-mode-type-to-confirm = Type “{ $phrase }” to confirm
-history-mode-owner-gone = History owner is no longer available
-history-mode-custody-lost = The original component custody could not be recovered during History
-history-mode-control-owner-closed = The original registered control owner is closed
+history-mode-owner-gone = This document is no longer open here
+history-mode-custody-lost = History couldn't bring back what this action needed
+history-mode-control-owner-closed = The app that asked for this has closed
 history-mode-loading-media = Loading historical media
-history-media-too-many = Historical media exceeds the 4096 asset preview limit
-history-media-too-large = Historical media is too large
-history-media-over-limit = Historical media exceeds the 128 MiB preview limit
-history-media-hash-mismatch = Historical media does not match its recorded content hash
+history-media-too-many = This version has too many pictures to show
+history-media-too-large = This version's pictures are too large to show
+history-media-over-limit = This version's pictures are too large to show
+history-media-hash-mismatch = This version's pictures are damaged and can't be shown
 
 ## History groups and catch-up briefs
 history-group-changes = { $count ->
@@ -208,9 +206,9 @@ history-work-task = Task
 history-work-agent-run = Run
 history-work-shortcut = Shortcut
 history-selection-clear = Clear
-history-sync-finish-edit = Finish the current edit before receiving remote changes
-history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
-history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
+history-sync-finish-edit = Finish your edit before changes from others arrive
+history-sync-queue-full = Too many changes from others are waiting. They arrive once your edit finishes.
+history-sync-owner-changed = The connection changed while changes from others were waiting. Reconnect to receive them.
 history-sync-offline = Working offline. Changes will sync when you're back.
 history-sync-reconnecting = Connecting. Changes will sync once you're connected.
 history-sync-join-refused = This workspace didn't let this app join: { $reason }. Your changes stay on this device.
@@ -241,26 +239,26 @@ history-local-action-unrecorded = Your changes in this window are saved, but you
 
 history-sync-refused = This workspace didn't accept one change. Everything else keeps syncing; the change stays on this device.
 history-sync-unreadable = This record's shared copy couldn't be read here. Your own changes stay on this device and keep saving.
-history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
-history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
+history-sync-remote-waiting = Changes from others arrive when your edit finishes.
+history-sync-owner-closed = The document's connection closed. Reconnect to receive changes from others.
 
 # File history in the History host.
 history-files-select-file = Select a file with versioned history
-history-files-choose-parent = Choose an actual parent revision for Before
+history-files-choose-parent = Choose which earlier version to compare with
 history-files-no-earlier = No earlier version
 history-files-checking-compensation = File: { $file }
 
-    Checking a fresh compensation review
+    Checking the file again
 history-files-refresh-activity = Refresh activity
 history-files-check-restore = Check restore result
 history-files-retry-restore = Retry same restore
 history-files-redo-restore = Redo file restore…
 history-files-undo-restore = Undo file restore…
-history-files-current-unavailable = Current file revision pointer unavailable
-history-files-current-revision = Current file revision: { $revision }
-history-files-live-updates = Live file has updates; selected immutable version remains pinned
-history-files-before-parent = Before parent { $revision }
-history-files-showing-parent = Before parent: { $revision }
+history-files-current-unavailable = The current version can't be read
+history-files-current-revision = Current version: { $revision }
+history-files-live-updates = The file has changed since. The version you picked stays
+history-files-before-parent = Compare with version { $revision }
+history-files-showing-parent = Comparing with version { $revision }
 history-files-created = Created
 history-files-edited = Edited
 history-files-renamed = Renamed
@@ -271,37 +269,37 @@ history-files-conflict-resolved = Conflict resolved
 history-files-unknown-author = Unknown author
 history-files-author = Author { $identity }
 history-files-loading = Loading file history
-history-files-loading-version = Loading immutable version
-history-files-checking-permissions = Checking current file permissions and frontier
-history-files-earlier-pending = An earlier restore is still pending; check its exact result
-history-files-submitting = Submitting checked restore
+history-files-loading-version = Loading the version
+history-files-checking-permissions = Checking permissions…
+history-files-earlier-pending = An earlier restore hasn't finished. Check its result
+history-files-submitting = Restoring…
 history-files-version-count = { $count ->
-        [one] { $count } immutable version
-       *[other] { $count } immutable versions
+        [one] { $count } version
+       *[other] { $count } versions
     }
-history-files-binding-changed = File binding changed; reopen History for the current file
-history-files-unavailable-host = File history is unavailable on this host
-history-files-historical-version = Historical version
-history-files-foreign-response = History response belongs to another file
-history-files-restore-explainer = Restore creates a new file revision and preserves existing history
-history-files-foreign-review = Review belongs to another file or mount
-history-files-invalid-result = Invalid backend result; the exact request remains unresolved
+history-files-binding-changed = This window now shows another file. Open History again
+history-files-unavailable-host = This file has no history here
+history-files-historical-version = Earlier version
+history-files-foreign-response = That history answer is for another file. Try again
+history-files-restore-explainer = Restoring makes a new version; the ones before it stay in history
+history-files-foreign-review = That review is for another file. Try again
+history-files-invalid-result = Couldn't tell whether the restore ran. Check the file's history
 history-files-not-visible = This file is no longer visible
-history-files-error-stale = File history changed; refresh activity and retry this version
-history-files-error-missing-version = This immutable version is unavailable
-history-files-error-invalid = Invalid history response
+history-files-error-stale = The file's history changed. Refresh, then try this version again
+history-files-error-missing-version = This version is no longer available
+history-files-error-invalid = Couldn't read this file's history
 history-files-error-unavailable = File history is temporarily unavailable
-history-files-error-too-large = Historical preview exceeds the supported size
-history-files-error-no-content = This version has no recorded content reference
-history-files-outcome-applied = Restored revision { $revision } (intent { $intent }). Current converged file content is shown separately. Prior reference: observed revision.
-history-files-outcome-unchanged = Selected content already matches; no new revision or undo entry
-history-files-outcome-pending = Restore is pending. Check result or retry the same intent
-history-files-outcome-review = Live file changed. Refresh review; the selected old version remains pinned
-history-files-outcome-read-only = This file is read-only; restore and compensation are unavailable
-history-files-outcome-pending-writes = Pending file edits must settle before restore; buffered content is preserved
-history-files-outcome-unsupported-owner = Unsupported checked content owner: { $mapping }
-history-files-outcome-unavailable = Restore acknowledgement is unavailable. Keep this intent and check its result
-history-files-outcome-invalid = Invalid checked restore request; no legacy fallback is available
+history-files-error-too-large = This version is too large to show
+history-files-error-no-content = This version has no content to show
+history-files-outcome-applied = Restored version { $revision }. The file shows its current content
+history-files-outcome-unchanged = The file already matches this version. Nothing was restored
+history-files-outcome-pending = The restore hasn't finished. Check its result, or try again
+history-files-outcome-review = The file changed. Refresh the review; the version you picked stays selected
+history-files-outcome-read-only = This file is read-only, so it can't be restored
+history-files-outcome-pending-writes = Save your edits before restoring. Nothing you typed is lost
+history-files-outcome-unsupported-owner = This app can't restore this file's content
+history-files-outcome-unavailable = The restore may not have happened. Check the file's history before trying again
+history-files-outcome-invalid = That restore didn't run. Try again
 
 close-title = Close document
 close-unsaved = Save your changes before closing?
@@ -384,8 +382,6 @@ widget-filepicker-title-choose-folder = Choose a folder
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
-widget-maximized-restore = Restore
-widget-maximized-fullscreen = Full screen
 tree-rename-field = Rename
 
 # The show/hide control inside every password field.
@@ -417,22 +413,10 @@ screen-reader-turned-on = Screen reader on
 screen-reader-turned-off = Screen reader off
 
 # Authentication surfaces share the system theme and catalog.
-lock-welcome-back = Welcome back
 
-# Now playing: Quick Settings and the lock screen.
-now-playing-title = Now playing
-now-playing-play = Play
-now-playing-pause = Pause
-now-playing-previous = Previous track
-now-playing-next = Next track
-now-playing-seek = Playback position
-now-playing-seek-help = Use Left and Right Arrow to move five seconds
+# The names the now-playing row's two choosers are read by.
 now-playing-choose-player = Choose player
 now-playing-choose-output = Choose where to play
-now-playing-output-local = On this computer
-now-playing-output-device = One of your devices
-now-playing-output-speaker-group = One of your speaker groups
-now-playing-route-gone = That destination is no longer available
 
 # The inline permission prompt a sandboxed app raises.
 permission-prompt-allow = Allow
@@ -600,8 +584,6 @@ participant-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
 participant-numbered = { $name } ({ $number })
-# An agent, a Shortcut or an app acting for a person.
-participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
@@ -621,6 +603,32 @@ interaction-committed = Committed
 interaction-failed = Failed
 interaction-cancelled = Cancelled
 interaction-progress = { $label } - { $done }/{ $total }
+
+# What one step of work is, as a person reads it beside the actor's face, in
+# the people list and on the card drawn where the step happens: the kind of
+# work the action's own declaration names, on the record or item it acts in.
+# The record is the item's title where the step names one.
+step-creating = Creating in { $record }
+# A create whose declaration names the collection it adds to says what it makes,
+# by the noun the app's own catalogue gives one of them, with its article
+# ("Creating an issue in Issues").
+step-creating-one = Creating { $noun } in { $record }
+step-writing = Writing in { $record }
+step-editing = Editing { $record }
+step-deleting = Deleting { $record }
+step-moving = Moving { $record }
+step-reading = Reading { $record }
+step-running = Running { $command }
+step-running-in = Running in { $record }
+step-working = Working in { $record }
+step-working-alone = Working
+
+# What a run is at when it is not a step of a record: waiting on its person,
+# looking at the apps or at one of them, searching for words.
+step-waiting = Waiting
+step-looking-at = Looking at { $what }
+step-looking-at-apps = Looking at the apps
+step-searching = Searching for { $what }
 # A peer whose caret a text widget draws in its own text: where they are, said
 # to a reader. A selection says that instead.
 presence-writing-here = { $name } is writing here
@@ -733,9 +741,9 @@ dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
 
 dropdown-no-matches = No matching choices
-host-native-history-unobserved = The original field’s editing history has not been confirmed.
-host-native-history-unconfirmed = This page’s history edit was not confirmed. Inspect the page before trying again.
-host-native-page-history-scope = Undo and redo apply to this page’s editing history. The latest change may be in another field.
+host-native-history-unobserved = Undo isn't ready for this page yet.
+host-native-history-unconfirmed = The page didn't confirm its undo. Check the page, then try again.
+host-native-page-history-scope = Undo and redo act on this page. Your last change may have been in another field.
 
 # Shared native screen topology canvas
 display-arrangement-name = Display arrangement
@@ -750,14 +758,14 @@ device-display-request-pending = A display placement request is already pending.
 device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
-app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+app-activate-window-description = Bring this app's window to the front.
 
-terminal-service-control-unavailable = The shell connection is unavailable.
-terminal-service-protocol-unavailable = Update the shell service before opening a session in this window.
-terminal-service-invalid-session = The shell service returned an invalid session.
-terminal-service-missing-lease = The shell session did not provide its lifetime connection.
-terminal-service-missing-terminal = The shell session did not provide a terminal.
-terminal-service-invalid-lease = The shell session connection could not be validated.
+terminal-service-control-unavailable = The terminal service isn't answering. Try again.
+terminal-service-protocol-unavailable = This window needs a newer Tilo on this computer. Update, then try again.
+terminal-service-invalid-session = The terminal didn't start. Try again.
+terminal-service-missing-lease = The terminal didn't start. Try again.
+terminal-service-missing-terminal = The terminal didn't start. Try again.
+terminal-service-invalid-lease = The terminal's connection couldn't be checked. Try again.
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = This can't be opened
@@ -780,7 +788,7 @@ display-arrangement-offline = Offline
 display-arrangement-excluded = Not in layout
 display-arrangement-offline-excluded = Offline, not in the layout
 display-arrangement-item-status = { $position }; { $status }
-display-arrangement-caption-status = { $status } · { $name }
+display-arrangement-caption-status = { $status }: { $name }
 
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }
@@ -807,7 +815,7 @@ search-field-name = Search
 search-field-filter-name = Filter
 presentation-window-title = Audience presentation
 
-approved-check-reports-disabled = Phase reports unavailable
+approved-check-reports-disabled = Working
 
 author-bot-chip = Bot
 author-via-chip = via { $service }
@@ -816,39 +824,31 @@ author-from-service-as = From { $service } as { $handle }
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
-author-persona-suffix = { $name } · { $service }
+author-persona-suffix = { $name }, via { $service }
 
 # A context menu's query field: typing narrows its entries, and its send row
-# takes the typing into the send-to box that stands in its place.
+# carries the typing into the send-to box that opens beside the menu.
 menu-query-placeholder = Type to filter
-menu-query-placeholder-ask = Type to filter or send
-menu-query-placeholder-send = Type to filter or send
 menu-query-name = Filter or send
-menu-query-name-send = Filter or send
-# The row that carries the typed sentence into the send-to box.
-menu-send = Send…
+# The last row of every context menu, which opens the send-to box; once
+# something is typed it names the sentence it carries.
+menu-send = Send to…
 menu-ask-typed = Send: { $text }
 
 # The send-to box: whom a message goes to, what it is about, and its words.
-# It stands where the menu whose send row opened it stood, and alone for a
-# report.
+# It stands beside the menu whose send row opened it, and alone for a report.
 send-to-name = Send to
 # The same box opened to the one place reports go.
 send-to-report-name = Report a problem
-send-to-to = To
 send-to-new-agent = New agent
-send-to-recipients-name = Recipients
+send-to-recipients-name = Add someone
 send-to-search-placeholder = Add someone…
 send-to-no-results = Nothing found
-send-to-subject = Subject
-send-to-subjects-name = Subjects
 send-to-add-subject = Add a subject
 send-to-message-name = Message
 send-to-message-placeholder = Write a message
 send-to-report-placeholder = What went wrong?
 send-to-send = Send
-send-to-remove = Remove
-send-to-recipient-set = Sent to { $name }
 
 widget-screenshot-saved = Saved
 widget-screenshot-copied = Copied
@@ -1022,7 +1022,6 @@ change-mark-who = { $who }
 change-mark-created = Made by { $who }
 change-mark-changed = Changed by { $who }
 change-mark-removed = Removed by { $who }
-change-mark-open = Show what { $who } did
 # A row’s mark, read out and on hover: what they did, in which task run.
 change-mark-in-run = { $what } in “{ $run }”
 # A window's title, with how many changes there are the person has not seen, and by whom.
@@ -1155,10 +1154,9 @@ conversation-day-new = { $day }: New messages
 conversation-read-by = Read to here by { $names }
 conversation-jump-unread = Jump to first unread
 conversation-jump-present = Jump to present
-conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts
+conversation-earlier-unavailable = Earlier messages aren't on this device
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size
-conversation-attachment-save = Save
 conversation-attachment-save-as = Save as…
 conversation-attachment-open-saved = Open saved copy
 conversation-attachment-saved = a copy on this device
@@ -1166,15 +1164,10 @@ conversation-attachment-no-access = This file is not shared with you
 conversation-attachment-unavailable = This file is not on this device
 conversation-attachment-uploading = Uploading
 conversation-attachment-cancel-upload = Cancel upload
-conversation-attachment-upload-cancelled = Upload cancelled
-conversation-attachment-save-failed = Couldn’t save the file
 conversation-attachment-image = Image
 conversation-attachment-video = Video
 conversation-attachment-file = File
 conversation-draft = Draft
-conversation-draft-preview = Draft: {$text}
-conversation-unread = Unread message
-conversation-day-earlier = {$date}
 # Jobs: what is running. A job's row says what it is doing and how far.
 jobs-starting = Starting
 # $phase is what it is doing ("Downloading"), $done and $total are what it has
@@ -1196,7 +1189,6 @@ jobs-more = { $count } more
 jobs-running-heading = In progress
 jobs-finished-heading = Finished
 jobs-none = Nothing is running
-jobs-none-message = Anything longer than a breath appears while it runs, and says how it ended.
 
 jobs-files-one = { $count } file
 jobs-files = { $count } files
@@ -1210,13 +1202,10 @@ attention-blocking = Now
 attention-waiting = Waiting
 attention-noted = Worth knowing
 attention-none = Nothing needs you
-attention-none-message = Anything that waits on your decision keeps waiting here.
 # $about is what it is about, $because is why it is waiting.
 attention-because = { $about }, { $because }
 attention-defer = Put aside for now
-attention-deferred-one = { $count } put aside
 attention-deferred = { $count } put aside
-attention-pill-one = { $count } waiting
 attention-pill = { $count } waiting
 action-document-replaced = This action did not run because its document was reopened or replaced. Try again in the current document.
 
@@ -1224,7 +1213,6 @@ action-document-replaced = This action did not run because its document was reop
 proposal-model-on-device = { $model }, running on this device
 proposal-model-hosted = { $model }, running on another machine
 proposal-context-selection = The selection
-proposal-context-document = The document
 proposal-context-too-many = That is too much context to send at once. Choose less.
 # $name is the part, $limit how many kilobytes one part may carry.
 proposal-context-too-long = { $name } is longer than { $limit } KB. Choose less.
@@ -1247,6 +1235,7 @@ completion-results = { $count ->
 }
 emoji-picker-add-reaction = Add reaction
 quote-dismiss = Stop replying
+quote-open = Show what this replies to
 
 toast-reply-placeholder = Reply…
 
@@ -1312,3 +1301,8 @@ media-playback-settings = Playback settings
 media-toggle-on = On
 media-toggle-off = Off
 floating-window-title = Floating window
+now-playing-seek = Playback position
+now-playing-seek-help = Use Left and Right Arrow to move five seconds
+
+## What the records are called, and the actions on them
+settings-text-assistance = Spelling and text

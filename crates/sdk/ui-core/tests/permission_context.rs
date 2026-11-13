@@ -5,7 +5,7 @@
 
 use tilo_ui::permissions::{
     Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, PermissionContext,
-    PermissionScope, ResourceRef, Role, Scope, Subject, TreePath, UserId, policy,
+    PermissionScope, ResourceRef, Role, Scope, TreePath, UserId, policy,
 };
 
 /// A viewer in the workspace: role only, no individual capabilities.
@@ -20,7 +20,7 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
     PermissionContext::member(user, Role::Editor).granting(CapOverride::grant(
-        Subject::person(user),
+        collab_types::caps::Subject::person(user),
         Scope::FsPath("/var/workspace/report.md".into()),
         Access::Write,
     ))
@@ -65,14 +65,14 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
         let block = ctx
             .standing()
             .policy
-            .block("mallory", policy::Subject::person("owner"));
+            .block("mallory", policy::Grantee::person("owner"));
         ctx.with_grant(block).with_grant(policy::Grant::new(
             "everything",
-            policy::Subject::person("mallory"),
+            policy::Grantee::person("mallory"),
             TreePath::root(),
             policy::KindSet::ALL,
             Answer::Allow,
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         ))
     };
     let denied = Some(Some(By::Grants));
@@ -266,11 +266,11 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
     {
         let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
             "terminal",
-            policy::Subject::person("alice"),
+            policy::Grantee::person("alice"),
             TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         ));
         assert_eq!(ctx.user(), &UserId("alice".into()));
         assert_eq!(ctx.role(), Some(Role::Editor));
@@ -293,11 +293,11 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
     {
         let grant = policy::Grant::new(
             "terminal",
-            policy::Subject::person("alice"),
+            policy::Grantee::person("alice"),
             TreePath::workspace(tilo_ui::permissions::LOCAL_WORKSPACE).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         )
         .with_lifetime(policy::Lifetime::Until(2_000_000));
         let ctx = || PermissionContext::member("alice", Role::Editor).with_grant(grant.clone());

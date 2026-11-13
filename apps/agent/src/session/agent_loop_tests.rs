@@ -44,18 +44,25 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     let mut f = fixture(
         "write hello",
         World::default(),
-        vec![vec![
-            TurnEvent::Neutral(StreamEvent::TextDelta {
-                text: "Partial answer".into(),
-            }),
-            TurnEvent::Neutral(StreamEvent::ReasoningDelta {
-                text: "Provider summary".into(),
-            }),
-            TurnEvent::Neutral(StreamEvent::Finished {
-                response: response.clone(),
-            }),
-            TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
-        ]],
+        // The model keeps running into its output limit: each turn is
+        // continued from where it stopped, a bounded number of times, and
+        // then the run fails with the clean sentence.
+        (0..=MOST_CONTINUATIONS)
+            .map(|_| {
+                vec![
+                    TurnEvent::Neutral(StreamEvent::TextDelta {
+                        text: "Partial answer".into(),
+                    }),
+                    TurnEvent::Neutral(StreamEvent::ReasoningDelta {
+                        text: "Provider summary".into(),
+                    }),
+                    TurnEvent::Neutral(StreamEvent::Finished {
+                        response: response.clone(),
+                    }),
+                    TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
+                ]
+            })
+            .collect(),
     );
     f.session.chooser = Chooser::scripted(
         Duration::from_secs(5),
@@ -64,9 +71,11 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     );
     f.session.run_task(&f.run).unwrap();
     assert!(f.world.borrow().steps.is_empty());
+    // What the host hears is the sentence a person reads, and nothing of the
+    // turn's record: no partial answer, no provider-exposed reasoning.
     assert!(matches!(terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Failed { message }
-            if message.contains("Partial answer") && message.contains("Provider summary")));
+            if !message.contains("Partial answer") && !message.contains("Provider summary")));
     let sent = f.sent.borrow();
     let snapshots = sent
         .iter()
@@ -91,7 +100,9 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     let final_snapshot = snapshots
         .last()
         .expect("production report carries typed output");
-    assert_eq!(final_snapshot.text, "Partial answer");
+    // Every turn of the model was cut off, so each one published its partial
+    // text as truncated; the person reads the same sentence as any failure.
+    assert!(final_snapshot.text.starts_with("Partial answer"));
     assert_eq!(final_snapshot.reasoning, "Provider summary");
     assert_eq!(
         final_snapshot.finish,
@@ -102,11 +113,17 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
             .unwrap()
             .contains("Do not write")
     );
-    assert!(
-        snapshots
-            .windows(2)
-            .all(|pair| pair[0].run == pair[1].run && pair[0].sequence < pair[1].sequence)
-    );
+    // Each turn is its own run of presentation, its sequence starting over;
+    // within one run the sequence only ever goes forward.
+    let mut last: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    for snapshot in &snapshots {
+        let previous = last.insert(snapshot.run.as_str(), snapshot.sequence);
+        assert!(
+            previous.is_none_or(|previous| previous < snapshot.sequence),
+            "a run's presentation sequence only goes forward: {}",
+            snapshot.run
+        );
+    }
 }
 
 #[test]
@@ -124,7 +141,7 @@ fn presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts() {
     assert!(f.sent.borrow().is_empty());
     let active = f.session.turn.as_mut().unwrap();
     active.presentation.text = "é".repeat(40 * 1024);
-    active.finished = Some(Err("stream lost".into()));
+    active.finished = Some(Err(Failure::said("stream lost")));
     f.session.publish_turn_presentation(&f.run).unwrap();
     f.session.publish_turn_presentation(&f.run).unwrap();
     let sent = f.sent.borrow();
@@ -189,8 +206,11 @@ fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
             .iter()
             .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
     );
+    // The transport's own words are the record, kept for debugging; the
+    // sentence a person reads is what happened, in their terms.
     assert!(matches!(terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("provider stream reset")));
+        runtime_collab::TaskRunUpdate::Failed { message }
+            if !message.contains("provider stream reset") && message.contains("The model")));
 }
 
 /// Answers each turn with the next scripted event list and records the
@@ -293,6 +313,25 @@ fn turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
     })
     .to_string())));
     events
+}
+
+/// One provider-neutral turn that answers in words and calls nothing, as a
+/// chat-style model ends a turn: its text streams as deltas, then the
+/// assembled response with no tool call and `end_turn`.
+fn said_turn(text: &str) -> Vec<TurnEvent> {
+    let response = serde_json::json!({
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+        "stop_reason": "end_turn"
+    });
+    vec![
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::TextDelta {
+            text: text.into(),
+        }),
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::Finished {
+            response: serde_json::from_value(response.clone()).unwrap(),
+        }),
+        TurnEvent::Finished(Ok(response.to_string())),
+    ]
 }
 
 /// One Anthropic-dialect turn calling `calls`, as the gateway streams it:
@@ -1596,6 +1635,7 @@ fn execution_fixture(
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
+        failure_detail: None,
         spending: None,
         web: None,
     };
@@ -1655,6 +1695,8 @@ mod pictures;
 mod programs;
 #[path = "agent_loop/tests/spending.rs"]
 mod spending;
+#[path = "agent_loop/tests/text_answers.rs"]
+mod text_answers;
 #[path = "agent_loop/tests/turn_records.rs"]
 mod turn_records;
 #[path = "agent_loop/tests/web.rs"]
@@ -2571,8 +2613,8 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     assert!(f.session.task_deadline.is_none());
     assert!(
         matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-        if message == crate::i18n::t("agent-fail-budget")),
-        "the task's own budget is what ended it: {:?}",
+        if message == crate::i18n::t("agent-fail-time")),
+        "the person reads that the task ran out of time: {:?}",
         terminal(&f.sent.borrow())
     );
 }

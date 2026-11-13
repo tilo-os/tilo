@@ -1,29 +1,9 @@
-//! Whether a retained layout's widget pointers still name live widgets.
-//!
-//! A layout map (each taffy node's `*mut dyn Widget`) is built from the widget tree and kept across
-//! frames while nothing reports a structure change ([`Widget::take_structure_dirty`]). A widget that
-//! replaces its children without reporting it would leave the map pointing at freed widgets, and
-//! the next frame would call through them — once the allocator reused that memory, a garbage
-//! vtable (the web desktop trapped in an indirect call). Safe code must not be able to cause that,
-//! so a retained map is checked against the live tree before it is trusted again: every widget it
-//! names must still be in the tree, met through [`Widget::for_each_layout_child`], at the same
-//! address and of the same concrete type. A map that fails is built again.
-//!
-//! A widget is identified by its data address and concrete type
-//! ([`Widget::concrete_type_name`]), not trait-object pointer equality: the same type's vtable can
-//! sit at different addresses in different codegen units, and a wrapper shares its address with its
-//! first field.
-//!
-//! A widget that only forwards to a field (a typed facade over its core, an app over its shell)
-//! lays the field out without the walk meeting it; the field is checked through the walked widget
-//! whose memory holds it. Only a field the walk never meets inside an enum its owner switches
-//! without reporting escapes that, which is why containers list what they lay out.
-//!
-//! A check compares the walk with the one recorded when the map was built, widget by widget in walk
-//! order: the same sequence means every widget the map can name is still there. That costs one walk
-//! and no lookups, which keeps it small in the browser bundle. Debug builds also prove, at each
-//! build, that every node of the map is covered by the recorded walk, and name any widget that is
-//! not.
+//! Whether a retained layout's widget pointers still name live widgets. A layout map (each taffy node's
+//! `*mut dyn Widget`) is built from the widget tree and kept across frames while nothing reports a
+//! structure change ([`Widget::take_structure_dirty`]). Safe code must not be able to cause that, so a
+//! retained map is checked against the live tree before it is trusted again: every widget it names must
+//! still be in the tree, met through [`Widget::for_each_layout_child`], at the same address and of the
+//! same concrete type.
 
 #[cfg(debug_assertions)]
 use std::collections::{HashMap, HashSet};
@@ -32,7 +12,6 @@ use taffy::NodeId;
 
 use crate::widget::Widget;
 
-/// A widget's data address and concrete type.
 type Identity = (usize, &'static str);
 
 fn identity(widget: &dyn Widget) -> Identity {
@@ -42,9 +21,8 @@ fn identity(widget: &dyn Widget) -> Identity {
     )
 }
 
-/// Hand `visitor` every child `widget` lays out: its
-/// [`Widget::for_each_layout_child`] when it lists them, else its routed
-/// children.
+/// Hand `visitor` every child `widget` lays out: its [`Widget::for_each_layout_child`] when it lists
+/// them, else its routed children.
 pub(crate) fn layout_children(widget: &dyn Widget, visitor: &mut dyn FnMut(&dyn Widget)) {
     if !widget.for_each_layout_child(visitor) {
         widget.for_each_child(visitor);
@@ -54,7 +32,6 @@ pub(crate) fn layout_children(widget: &dyn Widget, visitor: &mut dyn FnMut(&dyn 
 /// The trees a host lays out, handed to a visitor one root at a time.
 pub(crate) type Roots<'a> = &'a dyn Fn(&mut dyn FnMut(&dyn Widget));
 
-/// Every widget of the trees `roots` hands over, parents first.
 #[cfg(debug_assertions)]
 #[inline(never)]
 fn walk(roots: Roots<'_>, visit: &mut dyn FnMut(&dyn Widget)) {
@@ -65,8 +42,8 @@ fn walk(roots: Roots<'_>, visit: &mut dyn FnMut(&dyn Widget)) {
     roots(&mut |root| descend(root, visit));
 }
 
-/// Every widget of the trees `roots` hands over, parents first, each with
-/// how many widgets lie under it, into `walked`.
+/// Every widget of the trees `roots` hands over, parents first, each with how many widgets lie under
+/// it, into `walked`.
 #[inline(never)]
 fn record(roots: Roots<'_>, walked: &mut Vec<(Identity, usize)>) {
     fn descend(widget: &dyn Widget, walked: &mut Vec<(Identity, usize)>) {
@@ -81,9 +58,8 @@ fn record(roots: Roots<'_>, walked: &mut Vec<(Identity, usize)>) {
     roots(&mut |root| descend(root, walked));
 }
 
-/// Remove every node under each of `relaid` from `taffy` and `nodes`: their
-/// widgets may be gone, and are laid out again in place under it. Returns
-/// the nodes removed, for the host's bindings to forget.
+/// Remove every node under each of `relaid` from `taffy` and `nodes`: their widgets may be gone, and
+/// are laid out again in place under it. Returns the nodes removed, for the host's bindings to forget.
 pub(crate) fn let_go_under(
     relaid: &[NodeId],
     taffy: &mut taffy::TaffyTree<()>,
@@ -106,13 +82,11 @@ pub(crate) fn let_go_under(
 /// The walk a layout map was admitted against.
 #[derive(Default)]
 pub(crate) struct Adopted {
-    /// Each widget the walk met, in walk order, with how many widgets the
-    /// walk met under it: a subtree laid out again in place
-    /// ([`Widget::relaid_layout_node`]) is skipped as one.
+    /// Each widget the walk met, in walk order, with how many widgets the walk met under it: a subtree
+    /// laid out again in place ([`Widget::relaid_layout_node`]) is skipped as one.
     walked: Vec<(Identity, usize)>,
-    /// Each node's widget as first admitted: its registered pointer,
-    /// identity and size, kept so a later build's check never reads a
-    /// pointer that may have gone stale.
+    /// Each node's widget as first admitted: its registered pointer, identity and size, kept so a later
+    /// build's check never reads a pointer that may have gone stale.
     #[cfg(debug_assertions)]
     nodes: HashMap<NodeId, (*mut (dyn Widget + 'static), Identity, usize)>,
 }
@@ -152,13 +126,10 @@ impl Adopted {
         let _ = (nodes, taffy);
     }
 
-    /// Whether the trees `roots` hands over are still the ones admitted,
-    /// widget by widget. Only then may the map be called through.
+    /// Whether the trees `roots` hands over are still the ones admitted, widget by widget.
     #[inline(never)]
-    ///
-    /// A widget whose children are laid out again in place
-    /// ([`Widget::relaid_layout_node`]) names none of them to the walk: its
-    /// admitted subtree is skipped, and its node handed to `relaid`, so the
+    /// A widget whose children are laid out again in place ([`Widget::relaid_layout_node`]) names none
+    /// of them to the walk: its admitted subtree is skipped, and its node handed to `relaid`, so the
     /// host lets go of every node under it before the map is called through.
     pub(crate) fn still_live(&self, roots: Roots<'_>, relaid: &mut Vec<NodeId>) -> bool {
         fn check(
@@ -192,9 +163,8 @@ impl Adopted {
         same && at == self.walked.len()
     }
 
-    /// Stop on a node of `nodes` the walk does not cover: neither its
-    /// widget nor a walked widget whose memory holds it (a facade that lays
-    /// out a field) is in the walk. Safety as for [`Self::admit`].
+    /// Stop on a node of `nodes` the walk does not cover: neither its widget nor a walked widget whose
+    /// memory holds it (a facade that lays out a field) is in the walk.
     #[cfg(debug_assertions)]
     unsafe fn verify(
         &mut self,

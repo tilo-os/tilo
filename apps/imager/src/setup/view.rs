@@ -1,4 +1,5 @@
-//! Retained, process-local UI for the guided setup flow.
+//! The setup window: the pages from choosing Full Tilo or Desktop to the install
+//! that follows.
 
 mod guided_desktop;
 mod support_report;
@@ -34,14 +35,13 @@ use super::internal_install_flow::{
 };
 use super::model::{Capabilities, Experience, HostOs};
 use super::staging::helper::Action as HelperAction;
+use crate::page::{self, Frame, stack};
+use crate::resource::CATALOG;
 use crate::resource::Imager;
 use crate::window_view::{Published, PublishingWindow};
 use imager_backend::support_report::SupportReport;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ViewCx};
-// Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use crate::page::{self, Frame, stack};
-use crate::resource::CATALOG;
 
 /// Display facts only; final installation still reprobes through the native helper.
 #[derive(Clone)]
@@ -73,7 +73,6 @@ enum SetupCommand {
     DiscardInternalDownload,
     ReleaseInternalDownload,
     InternalInstallUnavailable,
-    /// Install, or continue the unfinished operation, with the shown plan.
     InstallInternal,
     RestartInternal,
     RestartInternalLater,
@@ -97,14 +96,12 @@ enum WorkerMessage {
     },
 }
 
-/// Interactive retained root for setup. All choices stay process-local.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent worker, presentation, and invalidation flags do not form one state machine"
 )]
 pub struct SetupApp {
     capabilities: SetupCapabilities,
-    /// The route the guided journey handed over for review; none before it.
     experience: Option<Experience>,
     commands: CommandSink,
     worker_tx: Sender<WorkerMessage>,
@@ -113,10 +110,8 @@ pub struct SetupApp {
     status: String,
     status_is_error: bool,
     composed: ui::widget::Composed,
-    /// Built with live adapters: a live window starts them on attach.
     starts_when_live: bool,
     actions: Option<ui::framework::Actions<Imager>>,
-    /// What the window shares with the view it stands in.
     published: Rc<RefCell<Published>>,
     guided_navigation: LocalState<bool>,
     guided_desktop: Option<guided_desktop::DesktopPreparation>,
@@ -126,8 +121,6 @@ pub struct SetupApp {
     support_report: Option<SupportReport>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
-    /// Offers the familiar folders at the first Tilo login once the Desktop
-    /// installation starts.
     desktop_offer: fn(),
     internal_download_flow: Option<InternalDownloadFlow>,
     internal_download_error: Option<String>,
@@ -137,8 +130,6 @@ pub struct SetupApp {
     host_command_pending: Option<HostCommand>,
     internal_run_announced: RunState,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -149,8 +140,6 @@ impl Default for SetupApp {
 }
 
 impl SetupApp {
-    /// Continue the guided journey using the existing gated Full-OS review and
-    /// semantic actions. No duplicate experience/folder setup or helper launch.
     pub(crate) fn from_guided_review(reviewed: ReviewedFullOs) -> Result<Self, String> {
         let mut app = Self::new();
         app.adopt_guided_review(reviewed)?;
@@ -177,7 +166,6 @@ impl SetupApp {
         Ok(())
     }
 
-    /// The same live navigation decision used by the outer guided controls.
     pub(crate) fn guided_navigation_guard(&self) -> LocalState<bool> {
         self.guided_navigation.clone()
     }
@@ -201,12 +189,6 @@ impl SetupApp {
         self.guided_navigation.set(allowed);
     }
 
-    /// Live setup with only capabilities backed by actual adapters.
-    /// Platform identity alone never enables Desktop or Full Tilo. Full Tilo
-    /// becomes available only after the host probe passes, the catalog offers
-    /// an internal release for this architecture and the product gate is open
-    /// (design spec §5, §9). Nothing outside the process starts until it is
-    /// attached to a live window (or [`Self::start_live`] is called).
     #[must_use]
     pub fn new() -> Self {
         let host = match imager_backend::setup::native_host::host() {
@@ -235,8 +217,6 @@ impl SetupApp {
         app
     }
 
-    /// Review the canonical native Full Tilo pipeline without prepared identity
-    /// or migration custody. Intent does not enable installation capabilities.
     #[must_use]
     pub fn for_full_os() -> Self {
         let mut app = Self::new();
@@ -244,7 +224,6 @@ impl SetupApp {
         app
     }
 
-    /// Read-only early compatibility review. This mode never grants installation custody.
     pub(crate) fn for_full_os_check(result: LocalState<Option<FullOsCheck>>) -> Self {
         let mut app = Self::for_full_os();
         app.full_os_check = Some(result);
@@ -295,8 +274,6 @@ impl SetupApp {
         self.status.clear();
     }
 
-    /// Review native packages for the existing Linux account. No identity,
-    /// migration, familiar-folder lookup or disk probing belongs to this route.
     #[must_use]
     pub fn for_desktop() -> Self {
         let mut app = Self::new();
@@ -307,8 +284,6 @@ impl SetupApp {
         app
     }
 
-    /// Start what live setup reads from this computer: the Desktop host
-    /// check, the familiar-folder lookup and the Full Tilo host probe.
     pub fn start_live(&mut self) {
         self.starts_when_live = false;
         self.desktop_flow = DesktopFlow::new_live();
@@ -326,7 +301,6 @@ impl SetupApp {
         self.refresh_guided_navigation();
     }
 
-    /// Deterministic constructor for tests and screenshot fixtures.
     #[must_use]
     pub fn with_capabilities(capabilities: SetupCapabilities) -> Self {
         Self::with_worker_launcher(capabilities, launch_worker)
@@ -361,7 +335,7 @@ impl SetupApp {
         let (internal_download_flow, internal_download_error) =
             match InternalDownloadFlow::new(capabilities.platform, internal_install.link()) {
                 Ok(flow) => (Some(flow), None),
-                Err(error) => (None, Some(error)),
+                Err(error) => (None, Some(error.to_owned())),
             };
         Self {
             dirty: true,
@@ -401,7 +375,6 @@ impl SetupApp {
         }
     }
 
-    /// The reviewed route; Desktop until the journey hands one over.
     fn reviewed(&self) -> Experience {
         self.experience.unwrap_or(Experience::Desktop)
     }
@@ -430,8 +403,6 @@ impl SetupApp {
         }
     }
 
-    /// Answer `effect` as its button would, after checking it against what
-    /// is shown now, with the setup's status afterwards.
     pub fn answer(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
         if self.full_os_check.is_some() {
             match &effect {
@@ -816,7 +787,6 @@ impl SetupApp {
             .on_effect(move || sink.borrow_mut().push(command))
     }
 
-    /// Tilo Desktop on the review: what will happen, and on which computer.
     fn desktop_install_card(&self) -> Section {
         let detail = match self.desktop_flow.state() {
             DesktopFlowState::Checking => CATALOG.t("imager-desktop-checking"),
@@ -1014,10 +984,10 @@ impl SetupApp {
                 super::strings::t(presentation.title_key),
             ));
         }
-        let detail = self
-            .internal_download_error
-            .clone()
-            .unwrap_or_else(|| super::strings::t("imager-desktop-cannot-download"));
+        let detail = self.internal_download_error.as_deref().map_or_else(
+            || super::strings::t("imager-desktop-cannot-download"),
+            super::strings::t,
+        );
         content = content.push(Box::new(
             Text::new(&detail)
                 .with_id("setup.internal.status")
@@ -1079,9 +1049,6 @@ impl SetupApp {
                 .push(Box::new(self.internal_blockers_card(None)));
         }
         if experience == Experience::FullOs && self.support_report.is_some() {
-            // The direct Full Tilo review reads this computer automatically,
-            // before any identity or migration work. Desktop has its own
-            // package and session check and does not use this report.
             for section in self.hardware_report_sections() {
                 body = body.push(section);
             }
@@ -1118,8 +1085,6 @@ impl SetupApp {
             }
         } else {
             let experience = self.reviewed();
-            // The review's main action names what happens; once Desktop is
-            // installed there is nothing left to do here.
             let primary = if experience == Experience::FullOs {
                 Some((
                     "setup.internal.install-unavailable",
@@ -1185,16 +1150,11 @@ impl SetupApp {
     }
 }
 
-/// Full Tilo installed alongside the current system (design spec §5, §8).
 impl SetupApp {
     fn on_full_os_review(&self) -> bool {
         self.on_review_for(Experience::FullOs)
     }
 
-    /// Validate a semantic Full Tilo operation against what is shown now and
-    /// map it to the command its button dispatches (`None` when it was
-    /// applied here). Stale digests and operation IDs are refused before
-    /// anything runs.
     fn internal_operation_command(
         &mut self,
         operation: SetupEffect,
@@ -1302,8 +1262,6 @@ impl SetupApp {
             .is_some_and(InternalDownloadFlow::is_ready)
     }
 
-    /// Probe the host off the UI thread; Full Tilo shows as checking until
-    /// the result arrives.
     fn start_host_probe(&mut self) {
         if let Some(result) = &self.full_os_check {
             result.set(None);
@@ -1338,8 +1296,6 @@ impl SetupApp {
         self.composed.invalidate();
     }
 
-    /// Mirror the gated readiness into the capabilities the review and the
-    /// download flow check. A closed gate leaves fixture capabilities alone.
     fn apply_install_capability(&mut self) {
         if !self.internal_install.gate() {
             return;
@@ -1493,7 +1449,6 @@ impl SetupApp {
         self.composed.invalidate();
     }
 
-    /// Follow helper runs and stepper commits; announce finished runs.
     fn poll_internal_install(&mut self) -> bool {
         let mut changed = self.internal_install.poll();
         changed |= self.abort_stage_on_download_failure();
@@ -1535,7 +1490,6 @@ impl SetupApp {
         changed
     }
 
-    /// End a running stage whose download failed; returns whether it did.
     fn abort_stage_on_download_failure(&mut self) -> bool {
         if matches!(
             self.internal_install.run_state(),
@@ -1593,8 +1547,6 @@ impl SetupApp {
             target_gib: ready.then(|| install.target_bytes() >> 30),
             min_gib: bounds.map(|(min, _)| min),
             max_gib: bounds.map(|(_, max)| max),
-            // Without a digest, the projection cannot offer an install action.
-            // The invocation path propagates the serialization error.
             reviewed: if self.full_os_check.is_some() {
                 None
             } else {
@@ -1687,7 +1639,6 @@ impl SetupApp {
         }
     }
 
-    /// A text on the left that grows, and its control on the right.
     fn detail_row(text: Text, control: Option<Box<dyn Widget>>) -> Row {
         let mut row = Row::new().push(Box::new(
             Container::new()
@@ -1991,8 +1942,6 @@ impl SetupApp {
         ))
     }
 
-    /// Review navigation for an offered Full Tilo: Install, or Restart now /
-    /// Restart later once the installer is set to start.
     fn internal_nav(&self, mut nav: Row) -> Row {
         let install = &self.internal_install;
         if install.can_restart() {
@@ -2062,8 +2011,6 @@ fn probe_support_report() -> SupportReport {
     imager_backend::support_report::SupportReport::probe()
 }
 
-/// The component report supplied for another computer. Important limitations
-/// are expanded; working components stay compact.
 pub(crate) fn another_computer_report_sections(report: &SupportReport) -> Vec<Box<dyn Widget>> {
     support_report::sections(report, support_report::Placement::AnotherComputer)
 }
@@ -2210,8 +2157,6 @@ impl SetupApp {
     }
 }
 
-/// `app` as a view of the imager resource: a live window starts the
-/// setup it was made to start.
 pub(crate) fn setup_window(cx: &ViewCx<Imager>, mut app: SetupApp) -> ui::widget::Element {
     app.actions = Some(cx.actions());
     if cx.mode().is_live() && app.starts_when_live {
@@ -2244,7 +2189,6 @@ impl PublishingWindow for SetupApp {
     }
 }
 
-// View fixtures depend on the Unix installer and cache worker test adapters.
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
@@ -2313,8 +2257,6 @@ mod tests {
         assert!(!guard.get());
     }
 
-    /// Put `app` on the review of `experience`, as the guided journey hands
-    /// a reviewed route to setup.
     fn review(app: &mut SetupApp, experience: Experience) {
         match experience {
             Experience::Desktop | Experience::FullOs => app.experience = Some(experience),
@@ -2378,16 +2320,12 @@ mod tests {
         matches[0]
     }
 
-    /// Full OS review download surface and command routing.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn full_os_download_is_distinct_and_reaches_only_the_real_worker() {
-        // Phase `full_os_review_has_a_distinct_download_surface_and_no_install_action`.
-        // Catches routing Full Tilo through the Desktop installer or implying
-        // installation is ready while the product gate is closed.
         {
             let mut app = supported_fixture();
             review(&mut app, Experience::FullOs);
@@ -2421,8 +2359,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `full_os_download_command_routes_to_the_real_internal_worker_only`.
-        // Catches a Full Tilo button dispatching the Desktop installer instead of the internal worker.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -2495,8 +2431,6 @@ mod tests {
             assert_eq!(app.status, "Kept for later");
         }
 
-        // Phase `full_os_download_command_is_refused_outside_full_os_review`.
-        // Catches a forged or stale command starting a Full Tilo download away from its review.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -2533,8 +2467,6 @@ mod tests {
             assert!(server.requests().is_empty());
         }
 
-        // Phase `duplicate_full_os_start_command_is_rejected_without_an_extra_request`.
-        // Catches two routed Start commands replacing the active internal download before recompose.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
@@ -2588,7 +2520,7 @@ mod tests {
             assert!(duplicate_is_error);
             assert_eq!(
                 duplicate_status,
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(requests_after, requests);
             let deadline = tilo_test_env::hang_deadline();
@@ -2659,7 +2591,6 @@ mod tests {
         Ok(rx)
     }
 
-    /// Worker loss, desktop review, installed guidance, retry and cross-experience status.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2775,7 +2706,6 @@ mod tests {
             const { std::cell::RefCell::new(None) };
     }
 
-    /// The imager showing the setup [`launch`] hands it.
     struct SetupFlow;
 
     impl ResourceApp for SetupFlow {
@@ -2791,7 +2721,6 @@ mod tests {
         }
     }
 
-    /// `setup` in a live window of the imager.
     fn launch(setup: SetupApp) -> TestApp<SetupFlow> {
         NEXT_SETUP.with(|next| *next.borrow_mut() = Some(setup));
         TestApp::<SetupFlow>::new().unwrap()
@@ -2810,8 +2739,6 @@ mod tests {
         })
     }
 
-    /// Setup as the imager resource publishes it: the live row, carrying
-    /// the setup effects as callers see them now.
     fn setup_resource(app: &SetupApp) -> tilo_actions::ResourceSpec {
         let mut root = app.rows().remove(0).into_resource();
         let blocked = super::super::actions::blocked(&app.setup_projection());
@@ -3009,8 +2936,6 @@ mod tests {
         ] {
             assert!(invoke_setup_raw(app, effect).is_err());
         }
-        // Invoke the actual resource contracts too, rather than relying on
-        // buttons being hidden or action availability metadata being honored.
         for id in [
             "start-internal-download",
             "install-internal",
@@ -3132,8 +3057,6 @@ mod tests {
         _preference: tempfile::TempDir,
     }
 
-    /// Setup with the product gate open, a fake host and helper, and a real
-    /// fixture download worker whose consumer is the staging consumer.
     fn gated_app(fakes: install_flow::tests::Fakes, host: HostOs) -> GatedFixture {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
         let server = Server::new(vec![
@@ -3193,16 +3116,12 @@ mod tests {
         });
     }
 
-    /// Probe gate, staging, stale digests, blockers, resume cards and shot fixtures.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn full_os_install_stages_only_the_current_reviewed_plan() {
-        // Phase `full_os_is_checking_until_the_probe_passes_with_the_gate_open`.
-        // Catches Full Tilo being offered before the host probe reports, and the
-        // gate, probe and catalog not all being required.
         {
             let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
@@ -3234,10 +3153,6 @@ mod tests {
             assert!(blocked.app.internal_readiness_text().contains("MBR"));
         }
 
-        // Phase `gated_full_os_install_stages_the_reviewed_plan_and_offers_restart`.
-        // Catches Install enabling before the verified download is held, the
-        // helper receiving anything but the reviewed plan and verified paths, or
-        // a success that does not offer the restart.
         {
             let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
@@ -3285,9 +3200,6 @@ mod tests {
                 let launches = fixture.fakes.launches.lock().unwrap();
                 assert_eq!(launches.len(), 1);
                 assert_eq!(launches[0].action, HelperAction::Stage);
-                // Review ran on provisional installer sizes; the stage request
-                // carries the planner's layout for the verified bundle's sizes,
-                // with the same Tilo size and no further shrink than reviewed.
                 let staged = &launches[0].plan;
                 assert_eq!(launches[0].plan_sha256, staged.digest().unwrap());
                 assert_eq!(
@@ -3339,8 +3251,6 @@ mod tests {
             );
         }
 
-        // Phase `install_action_refuses_a_plan_digest_from_before_a_size_change`.
-        // Catches an install invoked with a digest read before the plan changed.
         {
             let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
@@ -3369,10 +3279,6 @@ mod tests {
             assert!(app.internal_install.is_running());
         }
 
-        // Phase `blockers_show_remedies_and_keep_install_disabled`.
-        // Catches remedies offered for blockers that do not have them, Install
-        // enabling while a blocker remains, or a remedy action running the wrong
-        // host command.
         {
             use super::super::staging::probe::Blocker;
             let mut fixture = gated_app(
@@ -3437,9 +3343,6 @@ mod tests {
             assert!(battery.fakes.commands.lock().unwrap().is_empty());
         }
 
-        // Phase `unfinished_record_shows_a_resume_card_and_acts_on_that_record_only`.
-        // Catches the resume card acting on a record other than the one shown,
-        // and a removal that leaves stale records on screen.
         {
             use super::super::staging::probe::Blocker;
             let mut fakes = install_flow::tests::Fakes::new(vec![Blocker::PendingOperation]);

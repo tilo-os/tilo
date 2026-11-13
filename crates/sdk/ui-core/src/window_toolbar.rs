@@ -1,40 +1,19 @@
-//! An app's toolbar is slots in the window's bar, never a row it draws.
-//!
-//! The desktop draws one bar per window; what an app adds it declares here, as
-//! slots the bar lays out and draws with the system's own controls:
-//!
-//! - **navigation:** the sidebar toggle, back and forward, and whether each can go;
-//! - **location:** where the window is and can go (a page's domain, a folder's
-//!   path), editable as a field, a hierarchy's levels as a breadcrumb and a few
-//!   places as a picker: see [`LocationSegment`] and [`LocationChoice`];
-//! - **leading actions:** at most [`MAX_LEADING`] icon buttons acting on where it is;
-//! - **views:** tabs switching between the app's views of the same thing, folding
-//!   into a views menu where the row has no room;
-//! - **actions:** at most [`MAX_ACTIONS`] icon buttons, the rest (and those declared
-//!   for the menu) under the row's overflow button; one with items is a menu button.
-//!
-//! Search is the bar's own control, never a slot, and the tab label is the location's,
-//! so a window is named by what it shows. The bar's own controls reach the app as
-//! [`ToolbarEvent`]s through [`WindowOffer`]: it declares its slots with [`declare`] and
-//! reads what the person did with [`take_events`], over its authenticated `shell-ui`
-//! connection. While the desktop's bar shows the slots ([`is_hosted`]) the app draws no
-//! toolbar of its own; an app its host runs in the host's own process makes the same
-//! calls for the window the host shows it in ([`crate::hosted_window::HostedWindow`]).
+//! An app's toolbar is slots in the window's bar, never a row it draws. The desktop draws
+//! one bar per window; what an app adds it declares here, as slots the bar lays out and
+//! draws with the system's own controls.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-/// The most actions the row shows as buttons; the rest go in its overflow
-/// menu.
+/// The most actions the row shows as buttons; the rest go in its overflow menu.
 pub const MAX_ACTIONS: usize = 3;
 
 /// The most actions one window declares, buttons and overflow together.
 pub const MAX_DECLARED_ACTIONS: usize = 12;
 
-/// The most leading actions the row shows; a declaration's others are
-/// dropped.
+/// The most leading actions the row shows; a declaration's others are dropped.
 pub const MAX_LEADING: usize = 3;
 
 /// The most choices a view switcher carries.
@@ -52,73 +31,50 @@ pub const MAX_SUGGESTIONS: usize = 8;
 /// The most choices a location's picker lists.
 pub const MAX_CHOICES: usize = 32;
 
-/// Largest encoded location picture, in bytes. A favicon is a few hundred.
+/// Largest encoded location picture, in bytes.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024;
 
 /// Largest location picture, in pixels (edge squared).
 pub const MAX_IMAGE_PIXELS: u32 = 128 * 128;
 
-/// Longest label, value or name the bar takes, in bytes. Longer text is cut
-/// at a character boundary: the bar elides far sooner, and the wire never
-/// carries a page's worth of text per frame.
+/// Longest label, value or name the bar takes, in bytes. Longer text is cut at a
+/// character boundary: the bar elides far sooner, and the wire never carries a page's
+/// worth of text per frame.
 pub const MAX_TEXT_BYTES: usize = 8 * 1024;
 
 /// What an app shows in its window's bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowToolbar {
-    /// The app's sidebar toggle, and whether the sidebar is open: the
-    /// window's navigation, leading the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<bool>,
-    /// The sidebar toggle holds its place but cannot act: a view of the
-    /// window that has no sidebar, so the row stands still as the views
-    /// change. Only with [`Self::sidebar`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sidebar_unavailable: bool,
-    /// Back and forward, for an app that keeps a trail of places.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<ToolbarNavigation>,
-    /// Where the window is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<ToolbarLocation>,
-    /// The app's most used actions, at most [`MAX_ACTIONS`] in the row; the
-    /// rest in its overflow menu.
+    /// The app's most used actions, at most [`MAX_ACTIONS`] in the row; the rest in its
+    /// overflow menu.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ToolbarAction>,
-    /// Actions on where the window is, right after the navigation (previous,
-    /// next, today), at most [`MAX_LEADING`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leading: Vec<ToolbarAction>,
-    /// The app's views of what the window shows, one of them chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub views: Option<ToolbarViews>,
-    /// A transient notice ([`notify`]), shown in the location's place while
-    /// it is up. The window's notice, not a declaration's: [`shown`] puts
-    /// it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<ToolbarNotice>,
-    /// The reactions to what the window shows ([`show_reactions`]), at the
-    /// row's trailing end. The window's, as the notice is: [`shown`] puts
-    /// them here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reactions: Option<ToolbarReactions>,
 }
 
-/// The reactions to the one thing a window shows (a shared document), as
-/// its bar shows them: a pill per emoji, the person's own marked, and an
-/// add button where they may react. Pressing a pill sends
-/// [`reaction_action`] of its emoji, which takes the person's reaction back
-/// where they had one and adds it where not; the add button opens the
-/// shared emoji picker in the bar, and a pick sends the same. Whoever shows
-/// them takes the presses ([`take_reaction_presses`]); the app's slot
-/// events never carry them.
+/// The reactions to the one thing a window shows (a shared document), as its bar shows
+/// them: a pill per emoji, the person's own marked, and an add button where they may
+/// react. Whoever shows them takes the presses ([`take_reaction_presses`]); the app's
+/// slot events never carry them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarReactions {
-    /// One per emoji, the emoji reacted with first first, at most
-    /// [`MAX_REACTION_PILLS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pills: Vec<ToolbarReaction>,
-    /// The person may react: the pills press and the add button shows.
     #[serde(default)]
     pub can_react: bool,
 }
@@ -126,21 +82,16 @@ pub struct ToolbarReactions {
 /// Everyone who reacted with one emoji.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarReaction {
-    /// A Unicode emoji, or a workspace emoji as `:name:`.
     pub emoji: String,
-    /// How many reacted with it.
     pub count: u32,
-    /// The person is among them.
     #[serde(default)]
     pub mine: bool,
-    /// Who else they are, first first, at most [`MAX_REACTOR_NAMES`]: what
-    /// the pill's tooltip names after "You" ([`Self::mine`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
 }
 
-/// The most pills a window's reactions carry: as many emoji as one thing
-/// holds reactions with.
+/// The most pills a window's reactions carry: as many emoji as one thing holds reactions
+/// with.
 pub const MAX_REACTION_PILLS: usize = 20;
 
 /// The most names a pill's tooltip carries; the rest are counted.
@@ -152,9 +103,8 @@ const MAX_REACTION_EMOJI_BYTES: usize = 64;
 /// The longest name a pill's tooltip carries, in bytes.
 const MAX_REACTOR_NAME_BYTES: usize = 128;
 
-/// What a press on the pill of an emoji, or a pick of it in the picker,
-/// sends as [`ToolbarEvent::Action`]: a window's reactions own every id
-/// with this prefix.
+/// What a press on the pill of an emoji, or a pick of it in the picker, sends as
+/// [`ToolbarEvent::Action`]: a window's reactions own every id with this prefix.
 pub const REACTION_ACTION_PREFIX: &str = "window-reaction:";
 
 /// The action id a press on `emoji`'s pill sends.
@@ -170,9 +120,6 @@ impl ToolbarReactions {
         self.pills.is_empty() && !self.can_react
     }
 
-    /// As the bar takes them: at most [`MAX_REACTION_PILLS`] pills, an
-    /// emoji no longer than an emoji is, at most [`MAX_REACTOR_NAMES`]
-    /// short names each.
     fn bound(&mut self) {
         self.pills.retain(|pill| {
             !pill.emoji.is_empty() && pill.emoji.len() <= MAX_REACTION_EMOJI_BYTES && pill.count > 0
@@ -187,26 +134,16 @@ impl ToolbarReactions {
     }
 }
 
-/// What just happened, said in the window's bar for a while: an operation's
-/// result or failure ("Page 1 captured"). The bar shows it in the
-/// location's place, its kind's icon first, and announces it. A notice that
-/// asks the person to act carries what they can do: at most
-/// [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"), standing
-/// in order right after its text, each a button that names itself where the
-/// row has room and its icon where not (the last first), and never in the
-/// overflow menu.
-/// Notices replace each other; none stack. A message the person must act
-/// on before it goes is not a notice.
+/// What just happened, said in the window's bar for a while: an operation's result or
+/// failure ("Page 1 captured"). A notice that asks the person to act carries what they
+/// can do: at most [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"),
+/// standing in order right after its text, each a button that names itself where the row
+/// has room and its icon where not (the last first), and never in the overflow menu.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarNotice {
-    /// What happened, in a few words.
     pub text: String,
-    /// Whether it is a confirmation, information, a warning or a failure.
     #[serde(default)]
     pub kind: crate::widget::toast::ToastKind,
-    /// What the person can do about it, in order, at most
-    /// [`MAX_NOTICE_ACTIONS`]; each is sent as [`ToolbarEvent::Action`] when
-    /// pressed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ToolbarAction>,
 }
@@ -231,8 +168,6 @@ impl ToolbarNotice {
         self
     }
 
-    /// As [`WindowToolbar::bounded`] takes it: its texts cut, an action
-    /// without an icon of the set dropped, at most [`MAX_NOTICE_ACTIONS`].
     fn bound(&mut self) {
         cut(&mut self.text);
         self.actions
@@ -249,21 +184,15 @@ impl ToolbarNotice {
 /// Tabs switching between an app's views (Month, Week, Day).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarViews {
-    /// The switcher's accessible name ("View").
     pub name: String,
-    /// The choices, in order. Choosing one sends its id as an
-    /// [`ToolbarEvent::Action`].
     pub choices: Vec<ToolbarView>,
-    /// The id of the chosen one.
     pub chosen: String,
 }
 
 /// One choice of a [`ToolbarViews`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarView {
-    /// What the app gets back in [`ToolbarEvent::Action`].
     pub id: String,
-    /// What the segment says.
     pub label: String,
 }
 
@@ -285,73 +214,43 @@ pub struct ToolbarNavigation {
 /// Where the window is and can go.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarLocation {
-    /// What the bar shows at rest: a page's domain, a folder, a document.
     pub label: String,
-    /// Narrower forms of the label, widest first, each saying the same (a
-    /// period's `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the
-    /// label does not fit, the bar shows the widest of them that fits the
-    /// room the location has once everything else it can fold is in the
-    /// menu, and keeps that room for it, so a wider window never shows a
-    /// narrower form. Only the last is ever elided.
+    /// Narrower forms of the label, widest first, each saying the same (a period's
+    /// `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the label does not fit,
+    /// the bar shows the widest of them that fits the room the location has once
+    /// everything else it can fold is in the menu, and keeps that room for it, so a wider
+    /// window never shows a narrower form.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shorter: Vec<String>,
-    /// What an edit starts from: the whole address. Empty means the label.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
-    /// The field's hint while it is empty ("Search or enter address").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub placeholder: String,
-    /// The location's own icon, by its icon-set name (a lock for a secure
-    /// page); the bar shows the app's icon when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// A click or Ctrl+L turns it into a field.
     #[serde(default)]
     pub editable: bool,
-    /// The field's accessible name ("Address and search").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The go button's name ("Go").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub go_name: String,
-    /// The location's levels, outermost first, for a breadcrumb in place
-    /// of the label (a folder's path). Empty: the label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<LocationSegment>,
-    /// The location's own picture (a page's favicon), shown at the bar's
-    /// leading edge instead of the app's icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ToolbarImage>,
-    /// Who the location is, for a conversation with one person or agent: their face (initials in
-    /// their colour, the agent mark) and whether they are here, before the label in place of the
-    /// icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<LocationAvatar>,
-    /// What the bar lists under the field while it is edited, best first:
-    /// the app's answer to the text it heard last ([`ToolbarEvent::Edit`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<LocationSuggestion>,
-    /// The places the location can be switched to, for a location that is
-    /// one of a few (where a terminal's shell runs): the label reads as a
-    /// picker and a click opens the menu of them. Choosing one commits its
-    /// value ([`ToolbarEvent::Commit`]). Empty: no picker. Not for an
-    /// editable location, which edits instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<LocationChoice>,
-    /// Where in the app the window is, as the app's `open` action takes it
-    /// (a search entry's anchor): the desktop reopens it there, from the
-    /// launcher's Continue. `None`: the app cannot be opened at it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
-    /// The document the location names has changes not yet saved: the bar
-    /// says so after the label, in words, and tells assistive technology
-    /// the same. Every editor marks its unsaved document this one way.
     #[serde(default)]
     pub edited: bool,
-    /// The person may only look at what the location names: the bar says
-    /// "View only" after the label, in place of [`Self::edited`], and tells
-    /// assistive technology the same. Set by the window's framework from
-    /// what the person may do there ([`show_view_only`]), not by the app.
+    /// The person may only look at what the location names: the bar says "View only"
+    /// after the label, in place of [`Self::edited`], and tells assistive technology the
+    /// same.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view_only: bool,
 }
@@ -359,14 +258,10 @@ pub struct ToolbarLocation {
 /// One row of a location's picker.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationChoice {
-    /// What the row says ("Your shell on this device").
     pub label: String,
-    /// What choosing it commits ([`ToolbarEvent::Commit`]).
     pub value: String,
-    /// It is where the window is now: the row carries the menu's check.
     #[serde(default)]
     pub current: bool,
-    /// A separator stands above it: it begins another group of rows.
     #[serde(default)]
     pub separated: bool,
 }
@@ -374,24 +269,19 @@ pub struct LocationChoice {
 /// One level of a location's hierarchy.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationSegment {
-    /// What the breadcrumb shows ("Downloads").
     pub label: String,
-    /// What a click on it commits ([`ToolbarEvent::Commit`]): the level's
-    /// full location ("/home/ana/Downloads").
     pub value: String,
 }
 
 /// The person or agent a location is ([`ToolbarLocation::avatar`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationAvatar {
-    /// Their name, for the initials.
     pub name: String,
-    /// A stable id of theirs (a peer id, an agent's id), for their colour.
     pub identity: String,
-    /// Software, not a person: the agent mark.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent: bool,
-    /// Whether they are here: the badge on the face. `None`: not known, no badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<crate::tokens::PresenceHue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<LocationPresence>,
 }
@@ -434,8 +324,7 @@ impl std::fmt::Debug for ToolbarImage {
 }
 
 impl ToolbarImage {
-    /// The picture as the bar paints it: decoded once, at most
-    /// [`MAX_IMAGE_PIXELS`]. `None` for bytes that are not such a PNG.
+    /// The picture as the bar paints it: decoded once, at most [`MAX_IMAGE_PIXELS`].
     #[must_use]
     pub fn app_image(&self) -> Option<crate::icons::AppImage> {
         if self.png.is_empty() || self.png.len() > MAX_IMAGE_BYTES {
@@ -454,7 +343,6 @@ impl ToolbarImage {
     }
 }
 
-/// A decoded [`ToolbarImage`].
 struct DecodedImage {
     key: String,
     pixels: vello::peniko::ImageData,
@@ -473,23 +361,17 @@ impl crate::icons::AppImageSource for DecodedImage {
 /// One suggestion under an edited location.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationSuggestion {
-    /// What the row says ("rust-lang.org" or "Search for rust").
     pub label: String,
-    /// What choosing it commits ([`ToolbarEvent::Commit`]).
     pub value: String,
-    /// Its icon, by its icon-set name (a clock for history, a magnifier for
-    /// a search).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// The line under the label: a visited page's address under its title,
-    /// which search a search runs on. Empty: the label alone.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
 }
 
 impl ToolbarLocation {
-    /// A location naming `period` ([`crate::format::Period`]), in its
-    /// widest form, with its narrower ones for a narrow bar.
+    /// A location naming `period` ([`crate::format::Period`]), in its widest form, with
+    /// its narrower ones for a narrow bar.
     #[must_use]
     pub fn period(period: crate::format::Period) -> Self {
         let mut forms = period.forms().into_iter();
@@ -500,8 +382,7 @@ impl ToolbarLocation {
         }
     }
 
-    /// The label (`0`) or its narrower form `form`, the narrowest past the
-    /// last.
+    /// The label (`0`) or its narrower form `form`, the narrowest past the last.
     #[must_use]
     pub fn form(&self, form: usize) -> &str {
         form.checked_sub(1)
@@ -522,54 +403,40 @@ impl ToolbarLocation {
     }
 }
 
-/// One action button.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarAction {
-    /// What the app gets back in [`ToolbarEvent::Action`].
     pub id: String,
-    /// The icon, by its icon-set name ([`crate::icons::Icon::from_name`]).
     pub icon: String,
-    /// The outcome it names, for its tooltip and assistive technology.
     pub name: String,
-    /// It can act now.
     #[serde(default = "enabled")]
     pub enabled: bool,
-    /// It is a toggle that is on (a bookmarked page's star, an open panel).
     #[serde(default)]
     pub on: bool,
-    /// It is a toggle, on or off ([`Self::on`]): assistive technology
-    /// hears it as pressed or not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub toggles: bool,
-    /// It is in the overflow menu only, never a button in the row: an
-    /// occasional action (import, export, the app's settings).
+    /// It is in the overflow menu only, never a button in the row: an occasional action
+    /// (import, export, the app's settings).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub menu: bool,
-    /// What a press lists, for a menu button: each item is chosen by its
-    /// id ([`ToolbarEvent::Action`]); the button's own id is never sent.
-    /// At most [`MAX_ITEMS`], one level deep.
+    /// What a press lists, for a menu button: each item is chosen by its id
+    /// ([`ToolbarEvent::Action`]); the button's own id is never sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ToolbarAction>,
-    /// It moves the person through the content (previous, next, back): a
-    /// leading action that stays in a narrow row after the others and the
-    /// views have gone into the overflow menu.
+    /// It moves the person through the content (previous, next, back): a leading action
+    /// that stays in a narrow row after the others and the views have gone into the
+    /// overflow menu.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub navigates: bool,
-    /// It ends, removes or discards something (leaving a call, deleting):
-    /// its button has the destructive role's danger ink, as every other
-    /// destructive button does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
-    /// Where the row has room it is a text button saying its name, as a
-    /// calendar's Today; narrower it is its icon, and then an overflow
-    /// row, in the row's fold order.
+    /// Where the row has room it is a text button saying its name, as a calendar's Today;
+    /// narrower it is its icon, and then an overflow row, in the row's fold order.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub labelled: bool,
-    /// It is the app's one main action for what the window shows
-    /// ([`Self::primary`]): the bar draws it as the primary button, its
-    /// words or its icon on the accent, so a person sees at once what the
-    /// window is for. It leads the actions and stands in the row at every
-    /// width, never behind the bar's door.
+    /// It is the app's one main action for what the window shows ([`Self::primary`]): the
+    /// bar draws it as the primary button, its words or its icon on the accent, so a
+    /// person sees at once what the window is for. It leads the actions and stands in the
+    /// row at every width, never behind the bar's door.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub primary: bool,
 }
@@ -579,16 +446,13 @@ fn enabled() -> bool {
 }
 
 impl ToolbarAction {
-    /// An enabled action button: `id` comes back in
-    /// [`ToolbarEvent::Action`], `icon` is its icon-set name, `name` the
-    /// outcome it names.
+    /// An enabled action button: `id` comes back in [`ToolbarEvent::Action`], `icon` is
+    /// its icon-set name, `name` the outcome it names.
     #[must_use]
     pub fn new(id: impl Into<String>, icon: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new_owned(id.into(), icon.into(), name.into())
     }
 
-    /// [`Self::new`] once its text is owned: one copy in the toolkit
-    /// rather than one in every app that calls the generic constructor.
     fn new_owned(id: String, icon: String, name: String) -> Self {
         Self {
             id,
@@ -613,8 +477,7 @@ impl ToolbarAction {
         self
     }
 
-    /// It ends, removes or discards something, when `when`
-    /// ([`Self::destructive`]).
+    /// It ends, removes or discards something, when `when` ([`Self::destructive`]).
     #[must_use]
     pub fn destructive_if(mut self, when: bool) -> Self {
         self.destructive = when;
@@ -628,14 +491,12 @@ impl ToolbarAction {
         self
     }
 
-    /// Whether it can act now.
     #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
 
-    /// A toggle, on or off.
     #[must_use]
     pub fn on(mut self, on: bool) -> Self {
         self.on = on;
@@ -657,16 +518,14 @@ impl ToolbarAction {
         self
     }
 
-    /// Its name as a text button where the row has room
-    /// ([`Self::labelled`]).
+    /// Its name as a text button where the row has room ([`Self::labelled`]).
     #[must_use]
     pub fn labelled(mut self) -> Self {
         self.labelled = true;
         self
     }
 
-    /// The app's one main action for what the window shows
-    /// ([`Self::primary`]).
+    /// The app's one main action for what the window shows ([`Self::primary`]).
     #[must_use]
     pub fn primary(mut self) -> Self {
         self.primary = true;
@@ -678,61 +537,38 @@ impl ToolbarAction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolbarEvent {
-    /// The sidebar toggle was pressed.
     ToggleSidebar,
     Back,
     Forward,
-    /// The location field was committed (Enter or the go button) with this
-    /// text, exactly as typed; or a breadcrumb level or a suggestion was
-    /// chosen, with its value.
+    /// The location field was committed (Enter or the go button) with this text, exactly
+    /// as typed; or a breadcrumb level or a suggestion was chosen, with its value.
     Commit {
         text: String,
     },
-    /// The edited location's text is now this: the app may answer with
-    /// suggestions.
     Edit {
         text: String,
     },
-    /// An action button was pressed.
     Action {
         id: String,
     },
-    /// The window's search is open on the app with this query (empty when
-    /// nothing is typed yet): highlight a document's matches, or narrow a
-    /// list. Sent when the search opens and whenever the query changes.
     Search {
         query: String,
     },
-    /// Step to the next (or previous) match in the document.
     SearchStep {
         forward: bool,
     },
-    /// The window's search closed: stop highlighting or narrowing.
     SearchClose,
-    /// The document's find options changed: find again under them. Sent
-    /// before the query when they differ from the defaults a search opens
-    /// with.
     SearchOptions {
         options: crate::widget::FindOptions,
     },
-    /// Replace the current match in the document with `with`, or every
-    /// match (`all`), and find again.
     SearchReplace {
         with: String,
         all: bool,
     },
-    /// The search's options stand open over this much of the app's window,
-    /// in its coordinates (`None`: they closed): the current match is shown
-    /// clear of them ([`crate::widget::Findable::set_find_cover`]).
     SearchCover {
         cover: Option<WholeRect>,
     },
-    /// The window's History control was pressed: open History, or close it
-    /// while it shows.
     History,
-    /// The window floats over the desk as a card, or stands in its strip again: sent when that
-    /// changes. A window too narrow for its sidebar shows its point alone while it floats
-    /// ([`floats`]).
     Floating {
         floating: bool,
     },
@@ -742,21 +578,17 @@ pub enum ToolbarEvent {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchOffer {
-    /// Nothing: the bar's search opens the platform search narrowed to the
-    /// app.
     #[default]
     Nothing,
     /// A document: matches are highlighted and stepped through ("3 of 12").
     Document,
     /// A list: it narrows to what matches ("12 of 40").
     List,
-    /// The app's views: what is typed turns the window's view into a query
-    /// view of the app's resources, and closing returns to the view before.
     Query,
 }
 
-/// The search's count: in a document the current match of all of them, in
-/// a list the rows shown of all rows.
+/// The search's count: in a document the current match of all of them, in a list the rows
+/// shown of all rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchCount {
     pub shown: u32,
@@ -767,41 +599,31 @@ pub struct SearchCount {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryOffer {
-    /// History is closed; the control opens it.
     Closed,
-    /// History shows; the control reads as on and closes it.
     Open,
 }
 
-/// What an app's window offers the bar's own controls: its search in place
-/// and the count of the open search, and its History control. Sent whenever
-/// it changes.
+/// What an app's window offers the bar's own controls: its search in place and the count
+/// of the open search, and its History control.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowOffer {
     #[serde(default)]
     pub search: SearchOffer,
-    /// The open search's count; none before anything is typed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<SearchCount>,
-    /// The History control; none where the app has no History.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryOffer>,
-    /// What the document's find offers beyond matching (replacing, a regular
-    /// expression, hex), when the search acts on a document.
     #[serde(
         default,
         skip_serializing_if = "crate::widget::FindAbilities::is_plain"
     )]
     pub find: crate::widget::FindAbilities,
-    /// The last find the app's document ran on its own that its search took
-    /// over ([`crate::widget::Findable::take_own_find`]): the bar's field
-    /// shows its query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedQuery>,
 }
 
-/// A rect in whole logical pixels, as the bar tells an app in its own
-/// process where something of the bar stands over it.
+/// A rect in whole logical pixels, as the bar tells an app in its own process where
+/// something of the bar stands over it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WholeRect {
     pub x0: i32,
@@ -841,10 +663,9 @@ impl WholeRect {
     }
 }
 
-/// A find an app's document ran on its own (an action went to a match) that
-/// the open search took over, for the bar's field to show. `serial` tells one
-/// such find from the next, so a find already shown never overwrites what the
-/// person typed since.
+/// A find an app's document ran on its own (an action went to a match) that the open
+/// search took over, for the bar's field to show. `serial` tells one such find from the
+/// next, so a find already shown never overwrites what the person typed since.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptedQuery {
     pub serial: u64,
@@ -853,9 +674,8 @@ pub struct AdoptedQuery {
     pub options: crate::widget::FindOptions,
 }
 
-/// What an app's chord asks of its window's search: Find (Ctrl+F, ⌘F), or
-/// Find and Replace (Ctrl+H, ⌘⌥F), which opens it with the replacement
-/// field holding the keyboard.
+/// What an app's chord asks of its window's search: Find (Ctrl+F, ⌘F), or Find and
+/// Replace (Ctrl+H, ⌘⌥F), which opens it with the replacement field holding the keyboard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchOpening {
@@ -929,9 +749,9 @@ impl From<HistoryOffer> for crate::widget::HistoryControl {
 }
 
 impl WindowToolbar {
-    /// What a window floating as a card shows of these in its header: whom or what it is about,
-    /// alone, as a card's header names its activity — the app's own controls are the window's
-    /// in its strip.
+    /// What a window floating as a card shows of these in its header: whom or what it is
+    /// about, alone, as a card's header names its activity — the app's own controls are
+    /// the window's in its strip.
     #[must_use]
     pub fn card_form(&self) -> Self {
         Self {
@@ -962,10 +782,8 @@ impl WindowToolbar {
                 .is_none_or(ToolbarReactions::is_empty)
     }
 
-    /// Whether the slots are an overflow menu alone: actions, every one of
-    /// them in the menu, and nothing else. The window of an app that
-    /// declared no bar carries the desktop's own items this way, and its
-    /// title row keeps its title, with the menu button at its end.
+    /// Whether the slots are an overflow menu alone: actions, every one of them in the
+    /// menu, and nothing else.
     #[must_use]
     pub fn menu_only(&self) -> bool {
         !self.actions.is_empty()
@@ -985,10 +803,9 @@ impl WindowToolbar {
                 .is_none_or(ToolbarReactions::is_empty)
     }
 
-    /// The slots as the bar lays them out: the notice up, if any, in the
-    /// location's place (its kind's icon, then its text). Its action is the
-    /// notice's own, laid out right after its text, never among the
-    /// actions.
+    /// The slots as the bar lays them out: the notice up, if any, in the location's place
+    /// (its kind's icon, then its text). Its action is the notice's own, laid out right
+    /// after its text, never among the actions.
     #[must_use]
     pub fn presented(&self) -> Self {
         let mut shown = self.clone();
@@ -1007,8 +824,8 @@ impl WindowToolbar {
         shown
     }
 
-    /// How many of the actions may stand in the row: those not declared for
-    /// the menu, which [`Self::bounded`] puts first.
+    /// How many of the actions may stand in the row: those not declared for the menu,
+    /// which [`Self::bounded`] puts first.
     #[must_use]
     pub fn row_actions(&self) -> usize {
         self.actions
@@ -1017,22 +834,17 @@ impl WindowToolbar {
             .count()
     }
 
-    /// The declaration as the bar takes it: at most
-    /// [`MAX_DECLARED_ACTIONS`] actions, the row's before the menu's,
-    /// [`MAX_LEADING`] leading actions, [`MAX_VIEWS`] views,
-    /// [`MAX_SEGMENTS`] levels and [`MAX_SUGGESTIONS`] suggestions, every
-    /// text at most [`MAX_TEXT_BYTES`], a picture at most
-    /// [`MAX_IMAGE_BYTES`], no icon the set does not have. A button in the
-    /// row needs an icon; a menu entry is named by its text, so one with no
-    /// icon stays ([`ToolbarAction::menu`], a menu button's items).
+    /// The declaration as the bar takes it: at most [`MAX_DECLARED_ACTIONS`] actions, the
+    /// row's before the menu's, [`MAX_LEADING`] leading actions, [`MAX_VIEWS`] views,
+    /// [`MAX_SEGMENTS`] levels and [`MAX_SUGGESTIONS`] suggestions, every text at most
+    /// [`MAX_TEXT_BYTES`], a picture at most [`MAX_IMAGE_BYTES`], no icon the set does
+    /// not have.
     #[must_use]
     pub fn bounded(mut self) -> Self {
-        // A window's main action never falls out of its bar for having no glyph: its words say
-        // what it does wherever the row has room for them.
+        // A window's main action never falls out of its bar for having no glyph: its
+        // words say what it does wherever the row has room for them.
         self.actions
             .retain(|action| action.primary || shown_icon(&action.icon, action.menu));
-        // The row's actions first, in their order, then the menu's: the
-        // row shows a prefix of the declared actions.
         self.actions.sort_by_key(|action| action.menu);
         self.actions.truncate(MAX_DECLARED_ACTIONS);
         self.leading
@@ -1050,7 +862,6 @@ impl WindowToolbar {
                 item.menu = false;
             }
         }
-        // Leading actions stand in the row whatever they say.
         for action in &mut self.leading {
             action.menu = false;
         }
@@ -1134,15 +945,12 @@ impl WindowToolbar {
     }
 }
 
-/// Whether an action with `icon` can be shown: an icon the set has, or
-/// none at all for an entry of a menu (`in_menu`), which its text names.
 fn shown_icon(icon: &str, in_menu: bool) -> bool {
     crate::icons::Icon::from_name(icon).is_some() || (in_menu && icon.is_empty())
 }
 
 impl ToolbarEvent {
-    /// The event as an app takes it: a committed text at most
-    /// [`MAX_TEXT_BYTES`].
+    /// The event as an app takes it: a committed text at most [`MAX_TEXT_BYTES`].
     #[must_use]
     pub fn bounded(mut self) -> Self {
         match &mut self {
@@ -1179,8 +987,8 @@ fn cut_to(text: &mut String, most: usize) {
     }
 }
 
-/// Upper bound on events an app has not read yet. A held key repeating
-/// faster than the app draws must not queue without end.
+/// Upper bound on events an app has not read yet. A held key repeating faster than the
+/// app draws must not queue without end.
 const MAX_PENDING: usize = 32;
 
 thread_local! {
@@ -1197,15 +1005,12 @@ thread_local! {
     static FLOATS: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
-    /// The windows a host is running apps in, the innermost last: the last one is the window
-    /// this module's calls act on.
     static WINDOWS: RefCell<Vec<crate::hosted_window::HostedWindow>> =
         const { RefCell::new(Vec::new()) };
 }
 
-/// While the returned guard lives, this module's calls act on `window`: the
-/// window a host shows the app it is about to run in. `None` keeps the
-/// enclosing window. Guards nest.
+/// While the returned guard lives, this module's calls act on `window`: the window a host
+/// shows the app it is about to run in.
 #[must_use = "the window is current until the guard is dropped"]
 pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope {
     let Some(window) = window else {
@@ -1219,7 +1024,6 @@ pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope
 
 /// Leaves the window it entered when dropped: see [`enter`].
 pub struct WindowScope {
-    /// Which window this guard entered ([`crate::hosted_window::HostedWindow::identity`]).
     entered: Option<u64>,
 }
 
@@ -1228,9 +1032,9 @@ impl Drop for WindowScope {
         let Some(entered) = self.entered else {
             return;
         };
-        // The guard leaves its own window from wherever it stands: a host that runs several
-        // windows in one thread leaves them in any order, and the ones still running stay
-        // current in the order they were entered.
+        // The guard leaves its own window from wherever it stands: a host that runs
+        // several windows in one thread leaves them in any order, and the ones still
+        // running stay current in the order they were entered.
         let _ = WINDOWS.try_with(|windows| {
             let mut windows = windows.borrow_mut();
             if let Some(at) = windows
@@ -1251,20 +1055,16 @@ pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
         .flatten()
 }
 
-/// The workspace of the window the app runs in, when its host put the
-/// window in one ([`crate::hosted_window::HostedWindow::set_workspace`]).
+/// The workspace of the window the app runs in, when its host put the window in one
+/// ([`crate::hosted_window::HostedWindow::set_workspace`]).
 #[must_use]
 pub fn workspace() -> Option<String> {
     window().and_then(|window| window.workspace())
 }
 
-/// Which window this module's calls act on now: the one a host lent the app it
-/// runs ([`crate::hosted_window::HostedWindow::identity`]), or `None` for the
-/// process's own window. What the app declares, shows and is told is that
-/// window's, and a window that arrives after it declared — a harness that hosts
-/// its bar once the app is open — is a different one: an app that keeps what it
-/// last declared compares this with it, so its slots are declared on the window
-/// that shows it.
+/// Which window this module's calls act on now: the one a host lent the app it runs
+/// ([`crate::hosted_window::HostedWindow::identity`]), or `None` for the process's own
+/// window.
 #[must_use]
 pub fn current_window() -> Option<u64> {
     window()
@@ -1272,7 +1072,7 @@ pub fn current_window() -> Option<u64> {
         .map(crate::hosted_window::HostedWindow::identity)
 }
 
-/// Declare the window's slots (`None`: none). Cheap when nothing changed.
+/// Declare the window's slots (`None`: none).
 pub fn declare(toolbar: Option<WindowToolbar>) {
     if let Some(window) = window() {
         window.declare(toolbar);
@@ -1290,9 +1090,8 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
     });
 }
 
-/// `toolbar` as a declaration: bounded, without a notice or reactions,
-/// which are the window's ([`notify`], [`show_reactions`]) rather than any
-/// declaration's.
+/// `toolbar` as a declaration: bounded, without a notice or reactions, which are the
+/// window's ([`notify`], [`show_reactions`]) rather than any declaration's.
 pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
     WindowToolbar {
         notice: None,
@@ -1310,9 +1109,7 @@ pub fn declared() -> Option<WindowToolbar> {
     DECLARED.with(|declared| declared.borrow().clone())
 }
 
-/// Show `notice` in the window's bar, replacing the notice up (`None`: take
-/// it down). Cheap when nothing changed. Whoever shows a notice takes it
-/// down with [`withdraw`], so a later notice from elsewhere stays.
+/// Show `notice` in the window's bar, replacing the notice up (`None`: take it down).
 pub fn notify(notice: Option<ToolbarNotice>) {
     let notice = notice.map(|mut notice| {
         notice.bound();
@@ -1331,8 +1128,8 @@ pub fn notify(notice: Option<ToolbarNotice>) {
     });
 }
 
-/// Take `notice` down if it is the one up; a notice that replaced it stays.
-/// Nothing once the thread is ending: its window is gone with it.
+/// Take `notice` down if it is the one up; a notice that replaced it stays. Nothing once
+/// the thread is ending: its window is gone with it.
 pub fn withdraw(notice: &ToolbarNotice) {
     let mut bounded = notice.clone();
     bounded.bound();
@@ -1363,16 +1160,16 @@ pub fn notice() -> Option<ToolbarNotice> {
     NOTICE.with(|notice| notice.borrow().clone())
 }
 
-/// What the window's bar shows: the slots declared, with the notice up and
-/// the reactions shown.
+/// What the window's bar shows: the slots declared, with the notice up and the reactions
+/// shown.
 #[must_use]
 pub fn shown() -> Option<WindowToolbar> {
     with_window_owned(declared(), notice(), reactions(), view_only(), edited())
 }
 
-/// `toolbar` with `notice` up in it, `reactions` at its end and its
-/// location marked [`ToolbarLocation::view_only`] when `view_only`, and
-/// [`ToolbarLocation::edited`] when `edited`.
+/// `toolbar` with `notice` up in it, `reactions` at its end and its location marked
+/// [`ToolbarLocation::view_only`] when `view_only`, and [`ToolbarLocation::edited`] when
+/// `edited`.
 pub(crate) fn with_window_owned(
     mut toolbar: Option<WindowToolbar>,
     notice: Option<ToolbarNotice>,
@@ -1397,8 +1194,8 @@ pub(crate) fn with_window_owned(
     })
 }
 
-/// Say in the window's bar whether its person may only look at what it
-/// shows ([`ToolbarLocation::view_only`]). Cheap when nothing changed.
+/// Say in the window's bar whether its person may only look at what it shows
+/// ([`ToolbarLocation::view_only`]).
 pub fn show_view_only(view_only: bool) {
     if let Some(window) = window() {
         window.show_view_only(view_only);
@@ -1420,11 +1217,9 @@ pub fn view_only() -> bool {
     VIEW_ONLY.with(Cell::get)
 }
 
-/// Mark the window's document as having work not yet saved
-/// ([`ToolbarLocation::edited`]), as the window's framework follows its
-/// record's saves: every window marks its record this one way, and no app
-/// marks it from its own copy of the save status. Cheap when nothing
-/// changed.
+/// Mark the window's document as having work not yet saved ([`ToolbarLocation::edited`]),
+/// as the window's framework follows its record's saves: every window marks its record
+/// this one way, and no app marks it from its own copy of the save status.
 pub fn show_edited(edited: bool) {
     if let Some(window) = window() {
         window.show_edited(edited);
@@ -1437,8 +1232,7 @@ pub fn show_edited(edited: bool) {
     });
 }
 
-/// Whether the window's bar marks its document as not yet saved
-/// ([`show_edited`]).
+/// Whether the window's bar marks its document as not yet saved ([`show_edited`]).
 #[must_use]
 pub fn edited() -> bool {
     if let Some(window) = window() {
@@ -1447,10 +1241,8 @@ pub fn edited() -> bool {
     EDITED.with(Cell::get)
 }
 
-/// Show `reactions` at the end of the window's bar (`None`: none), as the
-/// reactions to the one thing the window shows. Cheap when nothing changed.
-/// Whoever shows them takes the presses on them
-/// ([`take_reaction_presses`]).
+/// Show `reactions` at the end of the window's bar (`None`: none), as the reactions to
+/// the one thing the window shows.
 pub fn show_reactions(reactions: Option<ToolbarReactions>) {
     let reactions = reactions
         .map(|mut reactions| {
@@ -1483,16 +1275,13 @@ pub fn reactions() -> Option<ToolbarReactions> {
 /// A press on the window's reactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReactionPress {
-    /// One that does nothing: the person may not react.
     Inert,
-    /// The emoji whose pill it presses, or which the picker picked.
     Emoji(String),
 }
 
-/// What `event` is to the window's `reactions`: `None` where it is no
-/// press on them (an event of the app's). Every press on them is the
-/// reactions' shower's ([`take_reaction_presses`]), never among the app's
-/// slot events.
+/// What `event` is to the window's `reactions`: `None` where it is no press on them (an
+/// event of the app's). Every press on them is the reactions' shower's
+/// ([`take_reaction_presses`]), never among the app's slot events.
 pub(crate) fn reaction_press(
     reactions: Option<&ToolbarReactions>,
     event: &ToolbarEvent,
@@ -1511,8 +1300,8 @@ pub(crate) fn reaction_press(
     })
 }
 
-/// The emoji pressed (or picked) among the window's reactions since the
-/// last call, oldest first.
+/// The emoji pressed (or picked) among the window's reactions since the last call, oldest
+/// first.
 #[must_use]
 pub fn take_reaction_presses() -> Vec<String> {
     if let Some(window) = window() {
@@ -1521,8 +1310,8 @@ pub fn take_reaction_presses() -> Vec<String> {
     REACTION_PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }
 
-/// Bumped by every [`declare`] and [`notify`] that changed something, so a
-/// runner sends what the bar shows once.
+/// Bumped by every [`declare`] and [`notify`] that changed something, so a runner sends
+/// what the bar shows once.
 #[must_use]
 pub fn revision() -> u64 {
     if let Some(window) = window() {
@@ -1531,9 +1320,8 @@ pub fn revision() -> u64 {
     REVISION.with(Cell::get)
 }
 
-/// The id of the notice's button `event` presses, if it presses one: such a
-/// press is the notice's poster's ([`take_notice_press`]), never among the
-/// app's slot events.
+/// The id of the notice's button `event` presses, if it presses one: such a press is the
+/// notice's poster's ([`take_notice_press`]), never among the app's slot events.
 pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent) -> Option<String> {
     let ToolbarEvent::Action { id } = event else {
         return None;
@@ -1543,9 +1331,8 @@ pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent)
         .map(|_| id.clone())
 }
 
-/// Whether the button `id` of a notice was pressed in the bar since the
-/// last call: the notice's poster takes it, whatever else the window does
-/// with its bar's events.
+/// Whether the button `id` of a notice was pressed in the bar since the last call: the
+/// notice's poster takes it, whatever else the window does with its bar's events.
 #[must_use]
 pub fn take_notice_press(id: &str) -> bool {
     if let Some(window) = window() {
@@ -1568,8 +1355,8 @@ pub fn take_events() -> Vec<ToolbarEvent> {
     EVENTS.with(|events| events.borrow_mut().drain(..).collect())
 }
 
-/// Whether the desktop's bar shows this window's slots, so the app draws
-/// no toolbar of its own.
+/// Whether the desktop's bar shows this window's slots, so the app draws no toolbar of
+/// its own.
 #[must_use]
 pub fn is_hosted() -> bool {
     if window().is_some() {
@@ -1578,8 +1365,46 @@ pub fn is_hosted() -> bool {
     HOSTED.with(Cell::get)
 }
 
-/// Ask the bar to turn the window's editable location into a field, as a
-/// click on it does: the app's Ctrl+L (or F6) while the bar hosts its slots.
+/// Why a control of the app's own stays where it is although the bar has a slot for it:
+/// the closed set of reasons `tools/policy/check_app_toolbars.py` accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Exemption {
+    Picker,
+    Form,
+    Service,
+    Fullscreen,
+    /// Drawn only when no window bar hosts the window.
+    Fallback,
+    Wizard,
+    ListNew,
+}
+
+/// `body` with the reason it keeps a control of its own although the bar has
+/// a slot for it ([`Exemption`]).
+///
+/// A reason outside [`Exemption`] does not compile, and the policy check
+/// reads this call rather than a comment, so tidying the comments around the
+/// control never takes the reason away from it. Wrap the expression that
+/// draws the control, not a statement that binds it: the body is a block.
+///
+/// ```
+/// use tilo_ui::window_toolbar::exempt;
+///
+/// let field = exempt!(Picker, { "type-ahead" });
+/// assert_eq!(field, "type-ahead");
+/// ```
+#[macro_export]
+macro_rules! window_bar_exempt {
+    ($reason:ident, $body:block) => {{
+        const _: $crate::window_toolbar::Exemption = $crate::window_toolbar::Exemption::$reason;
+        $body
+    }};
+}
+
+pub use crate::window_bar_exempt as exempt;
+
+/// Ask the bar to turn the window's editable location into a field, as a click on it
+/// does: the app's Ctrl+L (or F6) while the bar hosts its slots.
 pub fn edit_location() {
     if let Some(window) = window() {
         window.edit_location();
@@ -1588,8 +1413,8 @@ pub fn edit_location() {
     EDIT_REQUESTED.with(|cell| cell.set(true));
 }
 
-/// Whether the app asked to edit its location since the last call (the
-/// runner, to tell the shell).
+/// Whether the app asked to edit its location since the last call (the runner, to tell
+/// the shell).
 #[must_use]
 pub fn take_edit_request() -> bool {
     if let Some(window) = window() {
@@ -1598,9 +1423,9 @@ pub fn take_edit_request() -> bool {
     EDIT_REQUESTED.with(|cell| cell.replace(false))
 }
 
-/// Ask the bar to open the window's search, as a click on its control does:
-/// the app's Ctrl+F (or, for `SearchOpening::Replace`, its Ctrl+H) while the
-/// bar hosts its window and it has something to search in place.
+/// Ask the bar to open the window's search, as a click on its control does: the app's
+/// Ctrl+F (or, for `SearchOpening::Replace`, its Ctrl+H) while the bar hosts its window
+/// and it has something to search in place.
 pub fn open_search(opening: SearchOpening) {
     if let Some(window) = window() {
         window.open_search(opening);
@@ -1609,8 +1434,8 @@ pub fn open_search(opening: SearchOpening) {
     SEARCH_REQUESTED.with(|cell| cell.set(Some(opening)));
 }
 
-/// How the app asked to open the window's search since the last call, if it
-/// did (the runner, to tell the shell).
+/// How the app asked to open the window's search since the last call, if it did (the
+/// runner, to tell the shell).
 #[must_use]
 pub fn take_search_request() -> Option<SearchOpening> {
     if let Some(window) = window() {
@@ -1619,10 +1444,9 @@ pub fn take_search_request() -> Option<SearchOpening> {
     SEARCH_REQUESTED.with(Cell::take)
 }
 
-/// Hand the app what the person did in the bar, answering whether it is a
-/// press on the app's own slots: the host hands the app the keyboard then,
-/// if nothing in its window holds it. The bar's location, search and
-/// History keep the keyboard where it is.
+/// Hand the app what the person did in the bar, answering whether it is a press on the
+/// app's own slots: the host hands the app the keyboard then, if nothing in its window
+/// holds it.
 pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
     let hands_keyboard = matches!(
         event,
@@ -1642,8 +1466,7 @@ pub fn floats() -> bool {
     FLOATS.with(Cell::get)
 }
 
-/// Hand the app what the person did in the bar (the runner, from the
-/// shell's message).
+/// Hand the app what the person did in the bar (the runner, from the shell's message).
 pub fn deliver(event: ToolbarEvent) {
     if let Some(window) = window() {
         window.deliver(event);
@@ -1683,44 +1506,33 @@ pub fn deliver(event: ToolbarEvent) {
     });
 }
 
-/// Whether a desktop bar shows the slots (the runner, as its shell
-/// connection comes and goes). Returns whether that changed.
+/// Whether a desktop bar shows the slots (the runner, as its shell connection comes and
+/// goes).
 pub fn set_hosted(hosted: bool) -> bool {
     HOSTED.with(|cell| cell.replace(hosted) != hosted)
 }
 
-/// One control a window's bar lays out, as the desktop draws it: what it is, what it does and
-/// where it stands. The bar's own controls (its navigation, its overflow, the window's) and the
-/// app's slots are all controls of one bar, and a screen shows each of them once.
+/// One control a window's bar lays out, as the desktop draws it: what it is, what it does
+/// and where it stands.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarControl {
-    /// The slot it stands in: `sidebar`, `back`, `forward`, `leading`, `views`, `views-menu`,
-    /// `action`, `overflow`, `notice`, `reaction`, `search`, `history`, `minimize`, `maximize`,
-    /// `close`.
+    /// The slot it stands in: `sidebar`, `back`, `forward`, `leading`, `views`,
+    /// `views-menu`, `action`, `overflow`, `notice`, `reaction`, `search`, `history`,
+    /// `minimize`, `maximize`, `close`.
     pub slot: &'static str,
-    /// What pressing it names: the action's id, or the control's own target
-    /// ([`crate::widget::window_toolbar_row::SIDEBAR_TARGET`] and its siblings).
     pub id: String,
-    /// What it says for itself, where the bar shows it with words.
     pub name: String,
     /// Its icon, by the icon set's name (none: it shows words only).
     pub icon: Option<String>,
     /// It opens a menu: the bar's own overflow, an app's menu button, a views menu.
     pub menu: bool,
-    /// The bar shows it with its name beside its icon.
     pub labelled: bool,
-    /// It is the window's own furniture, not an action of the app's: the strip's door that opens
-    /// another application, whose glyph everyone reads without words. What judges whether the
-    /// app's actions say what they do leaves it alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub furniture: bool,
-    /// It is drawn as the primary button: the app's one main action, its words or its icon on
-    /// the accent.
     pub primary: bool,
-    /// The width its words need, where it has words the bar shows only when it has room for
-    /// them (`0.0`: it asks for no words, or has none).
+    /// The width its words need, where it has words the bar shows only when it has room
+    /// for them (`0.0`: it asks for no words, or has none).
     pub words: f64,
-    /// Where it stands, `[x, y, width, height]` in the window, its bar included.
     pub rect: [f64; 4],
 }
 
@@ -1756,7 +1568,6 @@ impl BarControl {
         self
     }
 
-    /// It opens a menu.
     #[must_use]
     pub fn menu(mut self) -> Self {
         self.menu = true;
@@ -1784,7 +1595,8 @@ impl BarControl {
         self
     }
 
-    /// Its words need `words` wide, where the bar shows them only when it has room for them.
+    /// Its words need `words` wide, where the bar shows them only when it has room for
+    /// them.
     #[must_use]
     pub fn words(mut self, words: f64) -> Self {
         self.words = words;
@@ -1792,17 +1604,15 @@ impl BarControl {
     }
 }
 
-/// A word the bar paints itself, at the place its ink stands: no widget lays it out, so whoever
-/// reads the bar reports it — a layout check reads these as text, and finds two labels drawn on
-/// top of each other that no widget tree would show.
+/// A word the bar paints itself, at the place its ink stands: no widget lays it out, so
+/// whoever reads the bar reports it — a layout check reads these as text, and finds two
+/// labels drawn on top of each other that no widget tree would show.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarLabel {
-    /// What paints it, as a layout finding names a widget: `TabTitle`, `BarLocation`,
-    /// `BarPicker`, `BarNotice`, `BarStripNotice`.
     pub widget: &'static str,
-    /// The words, as painted.
     pub text: String,
-    /// `[x, y, width, height]` of its ink, in logical pixels in the bar's own coordinates.
+    /// `[x, y, width, height]` of its ink, in logical pixels in the bar's own
+    /// coordinates.
     pub rect: [f64; 4],
 }
 
@@ -1818,16 +1628,12 @@ impl BarLabel {
     }
 }
 
-/// One window's bar, as it lays itself out across the window: what a person sees in it, and what
-/// room it leaves empty.
+/// One window's bar, as it lays itself out across the window: what a person sees in it,
+/// and what room it leaves empty.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarLayout {
-    /// The room the bar's location leaves empty beside its own label: the room a label of one of
-    /// its actions could stand in.
     pub spare: f64,
-    /// Its controls, in reading order.
     pub controls: Vec<BarControl>,
-    /// The words it painted itself, each at the place its ink stands.
     pub labels: Vec<BarLabel>,
 }
 
@@ -1980,8 +1786,6 @@ mod tests {
         assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
         assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
 
-        // A menu entry is named by its text: one with no icon stays, and a
-        // button in the row with none does not.
         let texts = WindowToolbar {
             actions: vec![
                 ToolbarAction::new("import", "", "Import report").in_menu(),

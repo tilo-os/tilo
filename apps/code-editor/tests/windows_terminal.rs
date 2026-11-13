@@ -8,8 +8,6 @@ fn embedded_windows_terminal_runs_a_command_and_receives_its_output() {
     let mut app = code_editor::CodeApp::new();
     let mut state = ui::State::new();
     app.shots_open_terminal();
-    // The echoed command contains the prompt and `echo`; only its output is
-    // an entire line equal to the marker.
     app.shots_terminal_input("echo TILO_CODE_CONPTY_READY\r");
     let deadline = tilo_test_env::hang_deadline();
     loop {

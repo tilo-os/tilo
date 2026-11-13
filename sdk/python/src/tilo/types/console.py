@@ -23,7 +23,8 @@ __all__ = [
 
 class View(Resource):
     """Agent runs shown — `console.view`."""
-    agent: Any
+    __surface__ = "so.tilo.console@c7c6f7a7da957f0d"
+    agent: str
     # the app's `workspace` field is the SDK's own `workspace`: read it with
     # `fields["workspace"]`.
 

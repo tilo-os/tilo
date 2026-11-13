@@ -112,6 +112,9 @@ pub struct McpServer<H> {
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::mcp::watch`]).
     pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    /// What this session's invocations changed, oldest first: where taking
+    /// one's run back finds its changes ([`McpServer::undo_run`]).
+    pub(super) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -620,7 +623,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// person's own device hands the session to that agent: the agent stays
     /// the principal, and what it may do is the person's own authority held
     /// to the delegation a device gives its agents
-    /// ([`tilo_action_policy::roles::agent_turn`]). Each session is its own
+    /// ([`tilo_action_policy::roles::agent_grants`]). Each session is its own
     /// fresh execution, retired when the session drops.
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
@@ -666,10 +669,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Self::from_caller(host, workspace, actor, caller))
     }
 
-    pub(crate) fn audience_matches(&self, workspace: &str, actor: &str) -> bool {
-        self.workspace == workspace && self.actor == actor
-    }
-
     fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
         Self {
             host: std::sync::Arc::new(host),
@@ -699,6 +698,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
+            undoable: std::sync::Mutex::default(),
         }
     }
 
@@ -1300,20 +1300,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         value
     }
     fn tools(&self) -> Vec<Value> {
-        let mut tools = match self.surface {
-            Surface::Classic => tool_definitions().to_vec(),
-            Surface::Agent => agent::tool_definitions().to_vec(),
-        };
-        if self.host.content_puts().is_some() {
-            tools.extend(put::tool_definitions());
-        }
-        if self.host.content_gets().is_some() {
-            tools.extend(get::tool_definitions());
-        }
-        if self.devices.is_some() {
-            tools.push(crate::remote_door::tool_definition());
-        }
-        tools
+        definitions(
+            self.surface,
+            self.host.content_puts().is_some(),
+            self.host.content_gets().is_some(),
+            self.devices.is_some(),
+        )
     }
     /// Attribute every invocation of this connection to one agent run, so
     /// history, undo and activity tell concurrent agents apart. Provenance
@@ -3413,6 +3405,40 @@ fn tool_definitions() -> &'static [Value] {
     static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tilo_tools);
     &TOOLS
 }
+
+/// Every tool a session offers: its surface's, then the ones its host and its
+/// door add.
+fn definitions(
+    surface: Surface,
+    content_puts: bool,
+    content_gets: bool,
+    devices: bool,
+) -> Vec<Value> {
+    let mut tools = match surface {
+        Surface::Classic => tool_definitions().to_vec(),
+        Surface::Agent => agent::tool_definitions().to_vec(),
+    };
+    if content_puts {
+        tools.extend(put::tool_definitions());
+    }
+    if content_gets {
+        tools.extend(get::tool_definitions());
+    }
+    if devices {
+        tools.push(crate::remote_door::tool_definition());
+    }
+    tools
+}
+
+/// The `tools/list` answer of an agent in a hosted workspace, which is what the
+/// developer documentation's tool reference is written from: a workspace stores
+/// and reads content, and its door reaches the person's other devices. No
+/// session and no host are needed to name the tools, so a page can be written on
+/// a machine with neither.
+#[must_use]
+pub fn tools_json() -> Value {
+    json!({"tools": definitions(Surface::Agent, true, true, true)})
+}
 /// The advertised tools. Descriptions are read on every model turn, so they
 /// say what an agent needs and no more; tuning knobs a model never needs
 /// (`max_bytes`, `max_work`, `max_depth`) are accepted but not advertised.
@@ -3463,6 +3489,12 @@ fn tilo_tools() -> Vec<Value> {
 #[cfg(test)]
 #[path = "mcp_open_tests.rs"]
 mod open_tests;
+#[cfg(test)]
+#[path = "mcp_serve_tests.rs"]
+mod serve_tests;
+#[cfg(test)]
+#[path = "mcp_settle_tests.rs"]
+mod settle_tests;
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

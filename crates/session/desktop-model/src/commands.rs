@@ -576,7 +576,7 @@ fn place(
     match placement {
         TabPlacement::EmptyWorkspace => workspace.strips.push(Strip {
             id: StripId(new_strip.ok_or("fresh strip identity missing")?),
-            name: "Main".into(),
+            name: String::new(),
             window_groups: vec![WindowGroup {
                 id: group_id,
                 active_tab: tab.id,
@@ -939,7 +939,8 @@ fn place_group(
     {
         return Err("a window on the canvas needs a size it can be shown at".into());
     }
-    workspace.arrangement.places.insert(group, place);
+    // A window's place is no smaller than a window, whatever size was asked for.
+    workspace.arrangement.places.insert(group, place.window());
     Ok(())
 }
 
@@ -967,6 +968,7 @@ fn float_group(
     {
         return Err("a floating window needs a size and an offset it can be shown at".into());
     }
+    // Set through the arrangement, which raises it to a window's least size.
     workspace.arrangement.set_float(group, float);
     Ok(())
 }
@@ -1081,7 +1083,7 @@ pub fn move_tab_to_workspace(
         strip.id
     } else {
         let strip = StripId(mint()?);
-        destination.strips.push(Strip::new(strip, "Main"));
+        destination.strips.push(Strip::new(strip, ""));
         strip
     };
     let gap_index = tree

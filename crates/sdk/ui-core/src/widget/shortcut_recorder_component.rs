@@ -4,8 +4,8 @@ use crate::component::{Bound, Component, Described};
 
 use super::ShortcutRecorder;
 
-/// A keyboard shortcut as keycaps that are the control: press them and type the new chord.
-/// A reset appears while the chord differs from its default.
+/// A keyboard shortcut as keycaps that are the control: pressing them records a new chord, with
+/// a reset while it differs from the default.
 #[derive(Component, Default)]
 #[component(name = "ShortcutRecorder", role = "Button", label = "label")]
 pub struct ShortcutRecorderProps {

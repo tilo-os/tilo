@@ -1,11 +1,8 @@
-//! Publisher applications: a key asks to publish under namespaces, the
-//! registry checks the ownership proofs (`registry_types::application`) and
-//! queues the application for the owner, and the owner's approval — which
-//! checks the proofs again — allowlists the key for exactly those namespaces.
-//!
-//! No application is ever approved remotely: approval is the owner's
-//! `tilo-registry-server publishers approve`, like every other allowlist
-//! change.
+//! Publisher applications: a key asks to publish under namespaces, the registry checks the
+//! ownership proofs (`registry_types::application`) and queues the application for the owner, and
+//! the owner's approval, which checks the proofs again, allowlists the key for exactly those
+//! namespaces. No application is approved remotely: approval is the owner's
+//! `tilo-registry-server publishers approve`, like every other allowlist change.
 
 use std::io::Read as _;
 use std::net::{SocketAddr, ToSocketAddrs as _};
@@ -25,25 +22,20 @@ pub use registry_types::application::{
 use crate::allowlist::PublisherRow;
 use crate::storage::{Storage, StorageError};
 
-/// How far an application's timestamp may be from the registry's clock.
 pub const MAX_APPLICATION_SKEW_SECONDS: u64 = 24 * 60 * 60;
 
 /// Most applications waiting at once; beyond it new ones are refused.
 pub const MAX_PENDING_APPLICATIONS: usize = 1000;
 
-/// Largest proof file read.
 const MAX_PROOF_BYTES: u64 = 4096;
 
 /// Where proofs are read from; the network in production.
 pub trait ProofSource {
-    /// The TXT records at `name`, each as one string.
     fn txt_records(&self, name: &str) -> Result<Vec<String>, String>;
 
-    /// The body of `url`, fetched over HTTPS from a public address.
     fn https_text(&self, url: &str) -> Result<String, String>;
 }
 
-/// Reads proofs from public DNS and HTTPS.
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkProofs {
     pub timeout: Duration,
@@ -147,10 +139,8 @@ pub enum ApplicationRejection {
     },
 }
 
-/// Check `application`'s signature, age and every proof.
-///
-/// # Errors
-/// The first reason the application cannot be accepted.
+/// Check `application`'s signature, age and every proof. # Errors The first reason the application
+/// cannot be accepted.
 pub fn check_application(
     application: &PublisherApplication,
     now: u64,
@@ -166,10 +156,8 @@ pub fn check_application(
     check_proofs(application, now, proofs)
 }
 
-/// Check every claim's proof, regardless of the application's age.
-///
-/// # Errors
-/// The first claim without a proof.
+/// Check every claim's proof, regardless of the application's age. # Errors The first claim without
+/// a proof.
 pub fn check_proofs(
     application: &PublisherApplication,
     now: u64,
@@ -258,8 +246,6 @@ pub enum ApplicationFailure {
     Storage(#[from] StorageError),
 }
 
-/// Check `application` and queue it for the owner, replacing any earlier
-/// application from the same key.
 pub fn submit(
     storage: &Storage,
     application: PublisherApplication,
@@ -292,11 +278,9 @@ pub fn submit(
     Ok(stored)
 }
 
-/// Check a pending application's proofs again and allowlist its key for the
-/// namespaces they prove, keeping any namespaces the key already had.
-///
-/// # Errors
-/// Why the application was not approved; nothing changes then.
+/// Check a pending application's proofs again and allowlist its key for the namespaces they prove,
+/// keeping any namespaces the key already had. # Errors Why the application was not approved;
+/// nothing changes then.
 pub fn approve(
     storage: &Storage,
     pubkey_hex: &str,
@@ -308,9 +292,9 @@ pub fn approve(
     approve_reviewed(storage, &candidate, reviewer, now, proofs)
 }
 
-/// Approve exactly the application a reviewer inspected. Proofs are checked
-/// again, and the pending snapshot is compared under the transaction lock
-/// before either the allowlist or application record changes.
+/// Approve exactly the application a reviewer inspected. Proofs are checked again, and the pending
+/// snapshot is compared under the transaction lock before either the allowlist or application
+/// record changes.
 pub fn approve_reviewed(
     storage: &Storage,
     candidate: &StoredApplication,
@@ -355,7 +339,6 @@ pub fn approve_reviewed(
     Ok((stored, row))
 }
 
-/// Turn down a pending application; the key's allowlist row is untouched.
 pub fn reject(
     storage: &Storage,
     pubkey_hex: &str,
@@ -367,8 +350,8 @@ pub fn reject(
     reject_reviewed(storage, &candidate, reviewer, reason, now)
 }
 
-/// Reject exactly the pending application a reviewer inspected, retaining
-/// its feedback without overwriting a replacement application.
+/// Reject exactly the pending application a reviewer inspected, retaining its feedback without
+/// overwriting a replacement application.
 pub fn reject_reviewed(
     storage: &Storage,
     candidate: &StoredApplication,
@@ -418,7 +401,6 @@ pub(crate) mod tests {
 
     use super::*;
 
-    /// Proofs from fixed maps, so tests never touch the network.
     #[derive(Default)]
     pub(crate) struct FixedProofs {
         pub txt: BTreeMap<String, Vec<String>>,
@@ -483,8 +465,8 @@ pub(crate) mod tests {
         application
     }
 
-    /// A publisher resubmits through the production API while the owner is
-    /// checking the old application's namespace proof.
+    /// A publisher resubmits through the production API while the owner is checking the old
+    /// application's namespace proof.
     struct ReplacingProofs<'a> {
         storage: &'a Storage,
         replacement: &'a PublisherApplication,

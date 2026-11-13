@@ -18,14 +18,12 @@ use super::*;
 use ui::TextRole;
 use ui::widget::ControlSize;
 
-/// The editor over one slide with a text box, for the chrome around it.
 fn layout_bench() -> Bench {
     let mut s = Slide::new(Layout::TitleContent);
     s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
     Bench::open(&deck_of(vec![s]), super::bench::WINDOW)
 }
 
-/// The editor over one slide whose single text box is selected.
 fn selected_text_bench() -> Bench {
     let mut s = Slide::new(Layout::TitleContent);
     let id = s.add(Element::text("Hi", 100.0, 100.0, 400.0, 100.0, 40.0));
@@ -34,7 +32,6 @@ fn selected_text_bench() -> Bench {
     bench
 }
 
-/// `slide_count` slides of one text box each.
 fn tall_deck(slide_count: usize) -> Deck {
     deck_of(
         (0..slide_count)
@@ -47,8 +44,6 @@ fn tall_deck(slide_count: usize) -> Deck {
     )
 }
 
-/// Lay the editor out at `w` × `h` from its first frame there: panels at
-/// their default for the width, as a window opened at that size shows them.
 fn size(app: &mut SlidesApp, w: f64, h: f64) {
     app.rect = Rect::new(0.0, 0.0, w, h);
     app.chrome_metrics = ChromeMetrics::fallback();
@@ -57,8 +52,6 @@ fn size(app: &mut SlidesApp, w: f64, h: f64) {
     app.sync_flaps(Some(&Theme::dark()));
 }
 
-/// [`size`] at `w` × 800 with the chrome metrics measured at `text_scale`,
-/// exactly as the first draw of a frame resolves them.
 fn measure(app: &mut SlidesApp, w: f64, text_scale: f32) -> TextRenderer {
     size(app, w, 800.0);
     let theme = Theme::dark().with_text_scale(text_scale);
@@ -75,9 +68,6 @@ fn measure(app: &mut SlidesApp, w: f64, text_scale: f32) -> TextRenderer {
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn chrome_density_follows_measured_text_at_every_width() {
-    // Case `one_x_chrome_density_is_unchanged`.
-    // At 1× the measured chrome reproduces the classic density exactly:
-    // regular rail controls and inspector pills.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -108,9 +98,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
         });
     }
 
-    // Case `two_x_chrome_rows_follow_measured_text`.
-    // At 2× every rail control and inspector row follows the measured text: labels fit their slots, pills share one centre line,
-    // and no section caption is painted under the control below it.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -215,7 +202,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
                     );
                 }
             }
-            // Rail: the pinned action row grew with its labels.
             for b in chrome
                 .buttons
                 .iter()
@@ -228,7 +214,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
         });
     }
 
-    // Case `large_text_chrome_keeps_hidden_tools_on_discoverable_routes`.
     {
         let mut bench = Bench::sample();
         bench.with(|app| {
@@ -254,7 +239,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
         });
     }
 
-    // Case `deck_theme_pills_fit_their_full_labels_and_never_overlap`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -305,7 +289,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
         });
     }
 
-    // Case `text_alignment_segments_fill_the_shared_inspector_columns`.
     {
         let mut bench = selected_text_bench();
         bench.with(|app| {
@@ -342,7 +325,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
 
 #[test]
 fn rail_docks_wide_and_overlays_narrow() {
-    // Case `wide_window_docks_the_rail_beside_the_canvas`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -351,7 +333,6 @@ fn rail_docks_wide_and_overlays_narrow() {
             assert!(app.rail_open(), "docked rail is open by default");
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Docked);
-            // The rail occupies the full left column and the canvas starts past it.
             assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
             assert!(
                 chrome.rail.width() > app.rail_drawer.resolved_docked_width() - 1.0,
@@ -370,7 +351,6 @@ fn rail_docks_wide_and_overlays_narrow() {
         });
     }
 
-    // Case `narrow_window_collapses_rail_to_a_closed_overlay`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -379,13 +359,11 @@ fn rail_docks_wide_and_overlays_narrow() {
             assert!(!app.rail_open(), "overlay rail is closed by default");
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Canvas spans the full width (rail no longer insets it).
             assert!(
                 (chrome.slide_dest.x0 - app.rect.x0)
                     < (app.rail_drawer.resolved_docked_width() * 0.5),
                 "narrow canvas reclaims the rail's column"
             );
-            // The closed flap is fully off the left edge, and no scrim shows.
             assert!(
                 chrome.rail.x1 <= app.rect.x0 + 1.0,
                 "closed flap is off-screen left"
@@ -403,22 +381,16 @@ fn rail_docks_wide_and_overlays_narrow() {
         });
     }
 
-    // Case `opening_the_overlay_flap_reveals_the_rail_over_a_scrim`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
             size(app, NARROW_BREAKPOINT - 200.0, 800.0);
-            // Summon via the production toggle path, then settle the animation.
             app.rail_drawer.toggle();
             app.rail_drawer.snap(true);
-            // Resolve the retained drawer's rect after changing its reveal,
-            // as the production frame does before computing the chrome.
             app.resolve_drawers();
             assert!(app.rail_open());
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // A fully revealed shared drawer floats at the theme's inset,
-            // leaving its dismissal scrim accessible beside the rail.
             let inset = f64::from(Theme::dark().tokens.spacing.s2);
             assert!(
                 (chrome.rail.x0 - app.rect.x0 - inset).abs() < 1.0,
@@ -436,7 +408,6 @@ fn rail_docks_wide_and_overlays_narrow() {
         });
     }
 
-    // Case `the_slide_list_toggle_opens_and_closes_the_overlay_flap`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -452,7 +423,6 @@ fn rail_docks_wide_and_overlays_narrow() {
 
 #[test]
 fn inspector_docks_wide_and_overlays_narrow() {
-    // Case `wide_window_docks_the_inspector`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -461,8 +431,6 @@ fn inspector_docks_wide_and_overlays_narrow() {
             assert!(app.inspector_open(), "docked inspector is open by default");
             let chrome = app.compute_chrome();
             assert_eq!(chrome.inspector_layout, SplitLayout::Docked);
-            // Docked inspector is a full-width right column and the canvas ends at
-            // its left edge.
             assert!(
                 chrome.inspector.width() > app.inspector_drawer.resolved_docked_width() - 1.0,
                 "docked inspector is full width"
@@ -474,12 +442,9 @@ fn inspector_docks_wide_and_overlays_narrow() {
         });
     }
 
-    // Case `narrow_window_collapses_inspector_to_a_closed_overlay`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
-            // Below the inspector breakpoint the inspector becomes a closed flap and
-            // the canvas reclaims its column (spanning to the right edge).
             size(app, INSPECTOR_BREAKPOINT - 120.0, 800.0);
             assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
             assert!(
@@ -501,7 +466,6 @@ fn inspector_docks_wide_and_overlays_narrow() {
         });
     }
 
-    // Case `inspector_toggle_hit_opens_the_overlay_flap`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -517,7 +481,6 @@ fn inspector_docks_wide_and_overlays_narrow() {
 
 #[test]
 fn compact_editor_drawers_and_breakpoint_reflow() {
-    // Case `compact_editor_keeps_the_canvas_wide_with_both_panels_as_drawers`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -545,7 +508,6 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
         });
     }
 
-    // Case `compact_drawers_are_mutually_exclusive`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -562,7 +524,6 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
         });
     }
 
-    // Case `resizing_across_the_breakpoint_returns_to_the_layout_default`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -586,7 +547,6 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
         });
     }
 
-    // Case `same_instance_reflows_both_panels_wide_then_narrow`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -628,7 +588,6 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
 
 #[test]
 fn wheel_and_scrollbar_scroll_rail_and_overview() {
-    // Case `wheel_scrolls_the_thumbnail_rail_only_over_the_rail`.
     {
         let mut bench = Bench::open(&tall_deck(16), super::bench::WINDOW);
         bench.with(|app| {
@@ -639,7 +598,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             let max_scroll = app.page_sidebar.max_scroll();
             assert!(max_scroll > 0.0, "a 16-slide rail overflows a 560px window");
 
-            // Pointer over the rail → wheel scrolls it (down).
             let rail = app.rail_rect();
             app.last_mouse = Point::new(rail.center().x, rail.center().y);
             let mut handled = false;
@@ -652,7 +610,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             assert!(handled, "wheel over the rail is handled");
             assert!(app.rail_scroll > 0.0, "wheel over the rail scrolls it");
 
-            // Overscroll clamps to the maximum, so every thumbnail stays reachable.
             for _ in 0..40 {
                 let mut h = false;
                 app.on_wheel(
@@ -684,13 +641,11 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
         });
     }
 
-    // Case `wheel_scrolls_overview_and_last_slide_becomes_reachable`.
     {
         let mut bench = Bench::open(&tall_deck(12), super::bench::WINDOW);
         bench.with(|app| {
             app.bootstrapped = true;
             app.mode = Mode::Overview;
-            // 800x600 is exactly the size the prior review reported cutting off slide 5.
             app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
             let (_, _, max_scroll) = app.compute_overview();
             assert!(
@@ -710,7 +665,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
                 "wheel scrolls the overview"
             );
 
-            // Scroll to the very end and confirm the last slide's card is on-screen.
             for _ in 0..60 {
                 let mut h = false;
                 app.on_wheel(
@@ -733,7 +687,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
         });
     }
 
-    // Case `overview_scrollbar_thumb_drag_scrolls_the_grid`.
     {
         let mut bench = Bench::open(&tall_deck(12), super::bench::WINDOW);
         bench.with(|app| {
@@ -745,7 +698,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
                 .overview
                 .scrollbar_rects(area, 0.0, max_scroll)
                 .expect("overflow ⇒ scrollbar");
-            // Start a thumb drag (the real on_press path constructs this), then move.
             app.drag = Drag::ScrollOverview {
                 start_y: thumb.center().y,
                 orig_scroll: 0.0,
@@ -759,9 +711,6 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
     }
 }
 
-/// The slide zooms and pans: fitted it fills the pane and has nowhere to go,
-/// and a zoom the person chose draws it larger, moves it by the wheel, and
-/// stops at its own edges.
 #[test]
 fn the_slide_zooms_and_pans_without_losing_its_edges() {
     let mut bench = layout_bench();
@@ -775,7 +724,6 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
             "a fitted slide has nowhere to move, so the wheel is not consumed"
         );
 
-        // One step in draws the slide larger than it stood.
         app.zoom_slide(1.0);
         let zoomed = app.compute_chrome();
         assert!(!app.slide_zoom.is_fit(), "a step in pins the zoom");
@@ -807,7 +755,6 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
         );
         let _ = avail_w;
 
-        // Fitting again brings the whole slide back, where it stood.
         app.zoom_slide_to_fit();
         assert!(app.slide_zoom.is_fit());
         assert_eq!(app.slide_pan, (0.0, 0.0));
@@ -815,7 +762,6 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
     });
 }
 
-/// The 2x inspector scrolls instead of overflowing; a fitting 1x inspector stays inert.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -848,8 +794,6 @@ fn inspector_scrolls_only_when_it_overflows() {
         );
         let in_span = |x: f64| x >= inspector.x0 - 0.5 && x <= inspector.x1 + 0.5;
         let inside_y = |y: f64| y >= inspector.y0 - 0.01 && y <= inspector.y1 + 0.01;
-        // Unscrolled: the notes box is beyond the viewport (that was the bug),
-        // and nothing kept from the panel sits outside it.
         let notes = chrome.notes_box.expect("notes box");
         assert!(
             notes.y1 > inspector.y1,
@@ -867,8 +811,6 @@ fn inspector_scrolls_only_when_it_overflows() {
             );
         }
 
-        // Hand the scroll model this frame's extent (as `draw` does) and scroll
-        // to the end.
         app.inspector_scroll.set_viewport_rect(chrome.inspector_body);
         app.inspector_scroll
             .set_content_size(inspector.width() as f32, chrome.inspector_content_h as f32);
@@ -890,8 +832,6 @@ fn inspector_scrolls_only_when_it_overflows() {
             "arrange row {:?} inside {inspector:?}",
             arrange.rect
         );
-        // The FILL swatches scrolled off the top and were culled: every panel
-        // item kept has its centre inside the panel.
         for b in scrolled
             .buttons
             .iter()
@@ -911,10 +851,6 @@ fn inspector_scrolls_only_when_it_overflows() {
                 .any(|b| matches!(b.hit, Hit::SetFill(_))),
             "the FILL swatches scrolled out and are no longer hit targets"
         );
-        // The embedded font-size field follows the same rule as the buttons: it
-        // had a slot unscrolled, and once its TYPE row leaves the panel it has
-        // none — so `position_inspector_widgets` parks it instead of leaving a
-        // stale rect over the panel's heading.
         assert!(
             chrome.font_input_rect.is_some(),
             "TYPE row is present unscrolled"
@@ -950,8 +886,6 @@ fn inspector_scrolls_only_when_it_overflows() {
             );
         }
 
-        // The wheel over the panel scrolls it and is consumed; at the end of the
-        // content it changes nothing and is left alone.
         app.inspector_scroll.set_offset_y(0.0);
         app.last_mouse = inspector.center();
         let mut handled = false;
@@ -1061,9 +995,6 @@ fn chrome_labels_are_fluent_resolved_text() {
     });
 }
 
-/// A compact window with the properties hidden shows the slide at the top
-/// of the column and its speaker notes under it, rather than empty bands
-/// above and below the slide; opening the properties takes the notes back.
 #[test]
 fn a_compact_editor_shows_the_notes_under_the_slide() {
     let mut bench = layout_bench();
@@ -1108,7 +1039,6 @@ fn a_compact_editor_shows_the_notes_under_the_slide() {
         assert!(chrome.inspector.contains(notes.center()));
     });
 
-    // A short, wide window has no room under the slide: the slide fills it.
     let mut bench = layout_bench();
     bench.with(|app| {
         size(app, 820.0, 500.0);
@@ -1117,9 +1047,6 @@ fn a_compact_editor_shows_the_notes_under_the_slide() {
     });
 }
 
-/// "No colour" is the toolkit's none swatch, for a shape's fill and its
-/// stroke alike, whatever the slide's background; text has no unfilled
-/// choice.
 #[test]
 fn the_fill_and_stroke_offer_no_colour_as_the_none_swatch() {
     let unfilled = |hit: &Hit, fill: bool| match hit {
@@ -1164,9 +1091,6 @@ fn the_fill_and_stroke_offer_no_colour_as_the_none_swatch() {
     }
 }
 
-/// Bold, italic and the lists end where the alignment strip ends; under
-/// the size field they share the whole row rather than leaving its start
-/// empty.
 #[test]
 fn the_format_toggles_fill_their_row() {
     for width in [1280.0, 1100.0, 900.0] {

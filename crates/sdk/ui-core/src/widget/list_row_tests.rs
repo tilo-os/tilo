@@ -70,10 +70,10 @@ fn a_badge_column_fits_every_badge_of_the_list() {
         .badge("SH")
         .badge_column(Rc::clone(&badges));
     let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme.clone());
-    let wide = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let wide = crate::text_render::with_layout_renderer(&theme, |text| {
         badge_column_width(text, &theme, &["SH", "RUST"])
     });
-    let own = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let own = crate::text_render::with_layout_renderer(&theme, |text| {
         badge_column_width(text, &theme, &["SH"])
     });
     assert!(wide > own);
@@ -99,7 +99,6 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
         .secondary("The analytical engine weaves algebraic patterns")
         .two_line_secondary();
     let theme = Theme::dark();
-    // Rows are 36 / 52 / 64 (design language, "Space and density").
     let single_row = f64::from(theme.tokens.metrics.row_single);
     assert!(
         (face_height(&single, 1.0) - single_row).abs() < 0.5,
@@ -124,8 +123,6 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
-/// A note is a line of the row's own under its text: the builder reaches the face, the line
-/// is measured, and the reader is told it with the row.
 #[test]
 fn a_rows_note_is_a_line_of_its_own_under_its_text() {
     let row = ListRow::new("note-row", "Claude")
@@ -144,9 +141,6 @@ fn a_rows_note_is_a_line_of_its_own_under_its_text() {
     );
 }
 
-/// A dense row is a quiet reference under content: one line at the caption's size with the
-/// small glyph, as tall as that line and its inset rather than the list's row height, and a
-/// finger's press on one still grows it to its target.
 #[test]
 fn a_dense_row_is_its_caption_line_not_a_list_row() {
     use crate::interaction::InteractionEnvironment;
@@ -223,8 +217,6 @@ fn a_quiet_word_before_the_title_shares_its_line_and_takes_its_room() {
 
 #[test]
 fn a_row_without_its_avatar_leaves_no_room_for_one() {
-    // Facts are a flowing run: a row with no avatar takes no room for one, so the facts it
-    // has run on to the row's shared trailing edge instead of stopping at a hole.
     let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
     let with = ListRowFace::new("Design")
         .secondary("See you there")
@@ -254,8 +246,6 @@ fn a_cards_facts_run_on_without_the_room_of_those_it_has_not() {
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
     let outer = Rect::new(0.0, 0.0, 320.0, 57.0);
-    // A day and a flag, nobody assigned: the flag follows the day one spacing token on,
-    // with no empty slot where the avatar would stand.
     let face = ListRowFace::new("Measure the new bedroom")
         .card()
         .meta("Saturday")
@@ -296,7 +286,6 @@ fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
-    // The narrowest room a lane gives a card.
     let width = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
     let lines = |text: &mut TextRenderer, title: &str| {
         ListRowFace::new(title)
@@ -313,7 +302,6 @@ fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
     };
     // A title that fits keeps one line: a card never cuts what it can show.
     assert_eq!(lines(&mut text, "Book the van"), 1);
-    // A longer one takes the lines it needs, and its card grows to hold them.
     let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
     let wrapped = lines(&mut text, long);
     assert!(
@@ -330,7 +318,6 @@ fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
         several > one,
         "a card as tall as its title's lines: {several} for {wrapped}, {one} for one"
     );
-    // Past three lines it is cut, and its card is no taller than three lines make it.
     let endless = "Words ".repeat(80);
     assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
     assert!(
@@ -357,8 +344,6 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
         .mark_tone(Tone::Warning);
     let geo = face.geometry(outer, &m, &mut text, &theme);
     let line = RowMetrics::line(&mut text, &face.title_style(&m));
-    // The facts stand on one line under the title, read from where the title's text begins —
-    // the day, then the flag — not spread across the card's width.
     assert!(
         (geo.meta_left - geo.text_x).abs() < 0.01,
         "the facts start at the title's text: {geo:?}"
@@ -373,7 +358,6 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
         geo.facts_cy <= outer.y1 - m.pad_y,
         "the facts stand inside the card"
     );
-    // The checkbox hangs on the title's first line, not centred on the card.
     let first_cy = face.card_content_top(outer, &m, &mut text, &theme) + line / 2.0;
     assert!(
         (geo.leading.center().y - first_cy).abs() < 0.01,
@@ -414,7 +398,6 @@ fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
         (top - (snug.y0 + m.pad_y)).abs() < 0.5,
         "a card that fits its text keeps its padding: {top}"
     );
-    // A leading checkbox hangs on the centred line, as it hangs on the title's line.
     let boxed = ListRowFace::new("Screenshots for the docs")
         .card()
         .leading(RowLeading::Checkbox {
@@ -444,8 +427,6 @@ fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
         .mark_tone(Tone::Warning);
     let geo = face.geometry(outer, &m, &mut text, &theme);
     let avatar = geo.avatar.expect("who is on it, in the facts");
-    // When it is due, who is on it, how far it has got, how important it is: left to right,
-    // and the title ends before the column starts.
     assert!(
         geo.meta_right <= avatar.x0,
         "the due fact stands left of the face: {geo:?}"
@@ -460,7 +441,6 @@ fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
         "the last fact ends on the row's content edge"
     );
     assert!(marks <= geo.value_right, "a value keeps the edge: {geo:?}");
-    // The facts column ends on one edge down a list, whatever each row's facts say.
     let other = ListRowFace::new("Water the plants")
         .meta("Jun 30")
         .avatar(AvatarFace::new("Grace", "grace"))
@@ -468,7 +448,6 @@ fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
         .mark(Icon::Star);
     let other = other.geometry(outer, &m, &mut text, &theme);
     assert!((other.value_right - geo.value_right).abs() < 0.01);
-    // A row whose facts end earlier keeps that same edge.
     let bare = ListRowFace::new("Water the plants").meta("Jun 30");
     let bare = bare.geometry(outer, &m, &mut text, &theme);
     assert!((bare.meta_right - geo.value_right).abs() < 0.01, "{bare:?}");
@@ -484,8 +463,6 @@ fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
         (plain.text_x - bleed).abs() < 0.01,
         "a face's text starts one bleed inside its outer rect"
     );
-    // A retained row in a padded column: its title starts on the column's
-    // content edge, which is the row's own layout box.
     let rows: Element = Box::new(
         Column::new()
             .with_horizontal_padding(24.0, 24.0)
@@ -541,7 +518,6 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
             "centred on the row"
         );
     }
-    // A value stays: the actions stand before it.
     let valued = ListRowFace::new("Tokyo")
         .title_value("09:41")
         .actions(&actions)
@@ -555,12 +531,10 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
                 .0,
         );
     assert!(rects.last().unwrap().x1 <= value_left + 0.01);
-    // A touch pointer has no hover: a selected row shows its actions.
     let touch = ListRowFace::new("Ada")
         .actions(&actions)
         .reveal_actions(true);
     assert_eq!(touch.action_rects(rect, &theme).len(), 2);
-    // A disabled row shows none.
     assert!(
         hover
             .clone()
@@ -570,8 +544,6 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
     );
 }
 
-/// Assistive technology reaches a row's actions without hovering it: each
-/// button says where it stands, in the slot the row keeps for it.
 #[test]
 fn a_rows_actions_say_where_they_stand_without_a_hover() {
     let theme = Theme::dark();
@@ -598,7 +570,6 @@ fn a_rows_actions_say_where_they_stand_without_a_hover() {
         row.action_rects().is_empty(),
         "the row is at rest: it shows no action"
     );
-    // The band the row's own controls are hit-tested and published in.
     let band = row.text_band();
     let slots = row.with_face(|face| {
         face.clone()
@@ -621,8 +592,6 @@ fn a_rows_actions_say_where_they_stand_without_a_hover() {
     }
 }
 
-/// A row says where its actions stand through the capability a list asks it for, so the list
-/// reports the place without knowing the kind of row its host built.
 #[test]
 fn a_row_says_where_its_actions_stand() {
     let theme = Theme::dark();
@@ -630,7 +599,6 @@ fn a_row_says_where_its_actions_stand() {
     let mut row = ListRow::new("note-1", "Ada")
         .selected(true)
         .action(Icon::Trash, "Delete", || {});
-    // A touch pointer has no hover: the selected row shows its action.
     row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
     row.metrics = Some(RowMetrics::new(&theme));
     row.theme = Some(theme.clone());
@@ -716,7 +684,6 @@ fn the_status_dot_sits_on_the_title_line_of_a_two_line_row() {
         "the dot is on the title's line"
     );
 
-    // Beside a chevron the dot centres with it: one trailing line.
     let face = face.disclosure();
     let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
     assert!(
@@ -784,7 +751,6 @@ fn toned_meta_spans_stay_legible_on_the_ground_and_the_lift() {
             }
         }
     }
-    // The spans paint without a plain meta.
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let mut scene = Scene::new();
@@ -817,7 +783,6 @@ fn a_priority_tones_the_mark_and_the_trailing_fact() {
         vec![("Jul 2".to_owned(), Tone::Warning)],
         "the trailing fact reads in the tone it was given"
     );
-    // A row no tone is given paints its mark as its quiet ink, and its fact plainly.
     let props = ListRowProps {
         key: "plain".to_owned(),
         title: "Water the plants".to_owned(),
@@ -878,7 +843,6 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         );
     }
     assert!(painted.get(), "a leading painter runs");
-    // A wide thumbnail takes a wider column than a square one.
     let wide = geometry(
         &ListRowFace::new("Clip")
             .leading(RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide)),
@@ -894,9 +858,6 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
     assert!(wide.leading.width() > square.leading.width());
 }
 
-/// The box a row leads with is a control of its own: a finger's press on it reaches the target a
-/// finger needs, inside the row, while the box it draws keeps the size of its column and the row
-/// keeps its height.
 #[test]
 fn a_rows_box_presses_as_far_as_the_pointer_needs() {
     use crate::interaction::InteractionEnvironment;
@@ -928,7 +889,6 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
             boxed.width() >= target - 0.5 && boxed.height() >= target - 0.5,
             "as {name} presses it, the box takes a press {target}×{target} wide: {boxed:?}"
         );
-        // The row's lift, which bleeds into the list's gutter as the row does.
         let lift = row_rect.inflate(crate::chrome::row_bleed(&theme), 0.0);
         assert!(
             lift.x0 - 0.5 <= boxed.x0
@@ -949,13 +909,10 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
     );
 }
 
-/// The edge a row draws its leading box at, from the theme's metrics.
 fn m_icon(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.icon_control)
 }
 
-/// Where a row's leading box takes a press: the row's own control, whose bounds say where it
-/// stands.
 fn boxed_rect(access: &crate::a11y::AccessNode) -> Rect {
     access
         .children
@@ -982,7 +939,6 @@ fn a_rows_box_keeps_its_target_when_the_pointer_grows_it() {
     let mut row = ListRow::new("boiler", "Call the landlord about the boiler")
         .checkbox(false, |_| {})
         .on_activate(|| {});
-    // The window laid the row out for a mouse: its band is the line at large text.
     row.set_interaction_environment(InteractionEnvironment::POINTER);
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes = std::collections::HashMap::new();
@@ -1003,7 +959,6 @@ fn a_rows_box_keeps_its_target_when_the_pointer_grows_it() {
         )
         .expect("the row lays out");
     row.apply_layout(&taffy, node, Point::ZERO);
-    // The person's finger: the row is told its pointer, and read as it stands.
     row.set_interaction_environment(InteractionEnvironment::TOUCH);
     let access = Widget::accessibility(&row).expect("the row is read");
     let boxed = boxed_rect(&access);
@@ -1043,8 +998,6 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
     assert_eq!(node.name.as_deref(), Some("GET /users"));
     assert_eq!(node.description.as_deref(), Some("Retrieves the resource"));
 
-    // An icon that names a kind says it the same way, and keeps the title
-    // as the row's whole name.
     let row = ListRow::new("r", "Build server")
         .icon(Icon::SquareTerminal)
         .leading_tooltip("SSH");
@@ -1061,7 +1014,6 @@ fn an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it() {
         !untitled.is_empty(),
         "a row of an item nobody has named yet shows words"
     );
-    // The row paints, so it is visible and pressable, and is announced by the placeholder.
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let mut scene = Scene::new();
@@ -1077,7 +1029,6 @@ fn an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it() {
     let node = Widget::accessibility(&row).unwrap();
     assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
 
-    // A title with nothing but space is no name either; one that says something is itself.
     let node = Widget::accessibility(&ListRow::new("r", "  ")).unwrap();
     assert_eq!(node.name.as_deref(), Some(untitled.as_str()));
     let node = Widget::accessibility(&ListRow::new("r", "Groceries")).unwrap();
@@ -1136,7 +1087,6 @@ fn hover_actions_run_from_assistive_technology_and_the_keyboard() {
         &automerge::ROOT,
     ));
     assert_eq!((replied.get(), deleted.get()), (0, 1));
-    // Arrow keys arm the actions of a focused row; Enter runs the armed one.
     row.set_focus(true);
     row.armed_action = Some(0);
     assert!(Widget::perform_action(
@@ -1197,8 +1147,6 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     assert_eq!(opened.get(), 1);
 }
 
-/// A row's own chevron button lines up with the disclosure chevrons of
-/// the rows around it.
 #[test]
 fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
     let rows = Column::new()
@@ -1404,14 +1352,11 @@ fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
         .iter()
         .filter_map(|span| line.get(span.clone()))
         .collect();
-    // "fibreglass" has it inside a word, which is not a match.
     assert_eq!(marked, ["glass", "Glass"]);
     assert!(found_spans(line, &[]).is_empty());
     assert!(found_spans(line, &[""]).is_empty());
-    // The longer of two words found at one place is marked whole.
     let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
     assert_eq!(spans, [std::ops::Range { start: 0, end: 9 }]);
-    // Letters whose lower case is longer still line up with the text.
     assert_eq!(
         found_spans("İstanbul", &["i̇stan"]),
         [std::ops::Range { start: 0, end: 6 }]
@@ -1597,8 +1542,6 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
         "Delete takes the row away as its destructive swipe does"
     );
 
-    // A swipe action the app did not mark destructive is not Delete's: the
-    // key keeps its own meaning.
     let ran = Rc::new(Cell::new(0));
     let ran_too = Rc::clone(&ran);
     let mut kept = ListRow::new("milk", "Buy milk")
@@ -1612,7 +1555,6 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
 }
 
-/// The swipe a view bound to an action runs that action once, through the row's control door.
 #[test]
 fn a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it() {
     let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
@@ -1675,7 +1617,6 @@ fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
     );
 }
 
-/// Flip the leading checkbox the way the view does when the person presses it.
 fn press_leading_checkbox(row: &mut ListRow) {
     if let Some(Leading::Checkbox { checked, .. }) = &mut row.leading {
         *checked = !*checked;
@@ -1706,7 +1647,6 @@ fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
         "it starts unchecked, at rest"
     );
 
-    // The person presses the box: the view answers with the new value.
     let pressed = start + Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         note_source(MotionSource::Pointer);
@@ -1719,7 +1659,6 @@ fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
         with_monotonic_time(at, || harness.poll_frame()).expect("a frame of the fill");
         levels.push(harness.root::<ListRow>().check_pose.expect("drawn").level);
     }
-    // The press's own frame starts the motion; the ones after it show it on its way.
     let moving = levels.get(1).copied().expect("a second frame");
     assert!(
         moving > 0.0 && moving < 1.0,
@@ -1739,7 +1678,6 @@ fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
     );
     let settled = harness.root::<ListRow>().check_pose.expect("drawn").level;
     assert!((settled - 1.0).abs() < 1e-3, "it settles marked: {settled}");
-    // Once the mark has landed it asks for no more frames.
     let landed = pressed + Duration::from_millis(900);
     with_monotonic_time(landed, || {
         assert!(
@@ -1769,8 +1707,6 @@ fn a_press_on_the_leading_box_marks_the_row() {
     );
 }
 
-/// A row of the described kind whose leading checkbox is bound to `state`, as a view binds one:
-/// what the person does with the box is reported to `intents` as the row's `check` event.
 fn bound_row(state: &crate::LocalState<bool>, intents: &crate::Intents<Fired>) -> ListRow {
     let props = ListRowProps {
         key: "milk".to_owned(),
@@ -1799,7 +1735,6 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
         "it starts unchecked"
     );
 
-    // The task is checked off somewhere else: another device, an agent, an undo.
     state.set(true);
     harness
         .recompose()
@@ -1817,7 +1752,6 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
         "assistive technology reads the check made elsewhere"
     );
 
-    // And a check taken away elsewhere goes the same way.
     state.set(false);
     harness
         .recompose()
@@ -1834,9 +1768,6 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
     );
 }
 
-/// A row checked off reads as done with: its title struck through and in the weaker ink, as a
-/// row of an item that left reads. The box says it, so the row says it too, and a row whose
-/// item came back says it no more.
 #[test]
 fn a_checked_rows_title_is_struck_through_and_muted() {
     let face_strikes = |row: &ListRow| row.with_face(|face| face.struck);
@@ -1857,7 +1788,6 @@ fn a_checked_rows_title_is_struck_through_and_muted() {
 
 #[test]
 fn a_toned_meta_is_spoken_once() {
-    // A late day draws as a span in the danger tone: one fact, one span, said once.
     let node = ListRowFace::new("Ring the letting agent")
         .meta("Overdue since Jun 29")
         .meta_spans(&[("Overdue since Jun 29", Tone::Danger)])
@@ -1940,7 +1870,6 @@ fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
         note_source(MotionSource::Pointer);
         press_leading_checkbox(&mut harness.root_mut::<ListRow>());
     });
-    // The press's frame starts the mark; with nothing to move, the one after it shows it landed.
     for ms in [16_u64, 32] {
         with_monotonic_time(pressed + Duration::from_millis(ms), || harness.poll_frame())
             .expect("a frame");
@@ -1977,9 +1906,6 @@ fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_colum
     );
 }
 
-/// A row given its own height stands at it instead of the list's row height for what it holds:
-/// a tree's rows are its own token, shorter than a list's row of the same theme, and its title
-/// reads at the row's size, not a dense row's caption.
 #[test]
 fn a_row_given_its_own_height_stands_at_it() {
     let list_row = face_height(&ListRowFace::new("Project"), 1.0);
@@ -1994,8 +1920,6 @@ fn a_row_given_its_own_height_stands_at_it() {
     );
 }
 
-/// A face is a leading mark like a glyph: it stands in the icon's slot, so a list whose rows lead
-/// with people and agents keeps one title edge, and the row is no taller for it.
 #[test]
 fn a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in() {
     let theme = Theme::dark();
@@ -2061,8 +1985,6 @@ fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
     }
 }
 
-/// A row that explains itself says that explanation after its name, and does
-/// not also read it out as its value.
 #[test]
 fn a_described_rows_explanation_is_its_description_and_not_its_value() {
     let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
@@ -2076,15 +1998,12 @@ fn a_described_rows_explanation_is_its_description_and_not_its_value() {
     );
     assert_eq!(node.value, None, "the explanation is said once");
 
-    // Without a description the same line is what the row has to say.
     let read = ListRow::new("path", "Home").secondary("/home/quinten");
     let node = Widget::accessibility(&read).unwrap();
     assert_eq!(node.value.as_deref(), Some("/home/quinten"));
     assert_eq!(node.description, None);
 }
 
-/// A row holds the words for the control it carries: its caption names it,
-/// and its explanation describes it, one resolution point for every row.
 #[test]
 fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
     let row = ListRow::new("sdr-brightness", "Brightness")
@@ -2096,16 +2015,12 @@ fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
         Widget::accessibility_child_name(&row, 1).as_deref(),
         Some("Brightness")
     );
-    // Said once: the explanation is the row's description and its second
-    // line, so a reader hears it once after the name.
     assert_eq!(
         Widget::accessibility_child_description(&row, 1).as_deref(),
         Some("How bright standard content is, External display")
     );
-    // The band's stand-in is not a control of the row's and takes no name.
     assert_eq!(Widget::accessibility_child_name(&row, 0), None);
 
-    // A row without a control holds no words for one.
     let plain = ListRow::new("path", "Home");
     assert_eq!(Widget::accessibility_child_name(&plain, 1), None);
     assert_eq!(Widget::accessibility_child_description(&plain, 1), None);

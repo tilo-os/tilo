@@ -836,7 +836,7 @@ mod tests {
         pub notes: Collection<Note>,
     }
 
-    #[resource(kind = "test.shared-board", label = "Board")]
+    #[resource(kind = "test.shared-board", catalogue = "tests/locales")]
     impl Board {
         /// Set the draft.
         #[action]
@@ -1261,7 +1261,7 @@ mod tests {
         pub tags: Vec<String>,
     }
 
-    #[resource(kind = "test.tagged", label = "Tagged", children = Tagged::tag_places)]
+    #[resource(kind = "test.tagged", children = Tagged::tag_places, catalogue = "tests/locales")]
     impl Tagged {
         /// Write the draft.
         #[action]

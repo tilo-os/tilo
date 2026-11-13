@@ -1,11 +1,4 @@
 //! Shared responsive legend layout for comparative charts.
-//!
-//! [`measure`], [`wrap`] and [`paint_entry`] lay out and paint a legend
-//! from the theme: each entry is a series swatch and its `Caption` label,
-//! measured by the renderer so long labels never overlap. [`layout`] is the
-//! older renderer-free estimate. `SeriesToggles` is the legend's
-//! interactive half: which series people hid and where to click to toggle
-//! them.
 
 use std::collections::HashSet;
 
@@ -18,7 +11,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// One measured legend entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LegendEntry {
     pub width: f64,
@@ -73,8 +65,6 @@ pub fn wrap(entries: &[LegendEntry], left: f64, right: f64, top: f64, theme: &Th
         .collect()
 }
 
-/// Paint one entry into `rect`: the series swatch, then its label in
-/// secondary ink, elided to the rect.
 pub fn paint_entry(
     scene: &mut Scene,
     transform: Affine,
@@ -87,8 +77,6 @@ pub fn paint_entry(
     paint_entry_emphasised(scene, transform, text, theme, rect, colour, label, false);
 }
 
-/// [`paint_entry`] for a legend people point at: an `emphasised` entry (the
-/// hovered or chosen series) reads in primary ink.
 pub fn paint_entry_emphasised(
     scene: &mut Scene,
     transform: Affine,
@@ -126,12 +114,13 @@ pub fn paint_entry_emphasised(
     );
 }
 
-/// The series a legend has hidden, where each entry was last painted, and
+/// The series a legend has hidden, where the layout placed each entry, and
 /// the latest visibility change for the host to read.
 #[derive(Debug, Default)]
 pub struct SeriesToggles {
     hidden: HashSet<String>,
-    hits: Vec<(String, Rect)>,
+    /// Each entry's place, by series id, in the order the legend lays them out.
+    placed: Vec<(String, Rect)>,
     changed: Option<(String, bool)>,
 }
 
@@ -140,12 +129,10 @@ impl SeriesToggles {
         self.hidden.contains(id)
     }
 
-    /// Forget hidden series the chart no longer has.
     pub(crate) fn retain(&mut self, known: impl Fn(&str) -> bool) {
         self.hidden.retain(|id| known(id));
     }
 
-    /// Show or hide `id`, recording the change; false when it already was.
     pub(crate) fn set(&mut self, id: &str, visible: bool) -> bool {
         let changed = if visible {
             self.hidden.remove(id)
@@ -162,33 +149,52 @@ impl SeriesToggles {
         self.changed.take()
     }
 
-    pub(crate) fn clear_hits(&mut self) {
-        self.hits.clear();
+    /// Place each `(id, name)` entry across `area` from its top, in the order
+    /// the legend paints them; `None` when the legend shows nothing. The
+    /// layout runs this, so a press lands on an entry before the legend has
+    /// painted and after the series changed.
+    pub(crate) fn place<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+        area: Option<Rect>,
+    ) {
+        let entries: Vec<(&str, &str)> = entries.into_iter().collect();
+        self.placed = area.map_or_else(Vec::new, |area| {
+            layout(
+                entries.iter().map(|(_, name)| *name),
+                area.x0,
+                area.x1,
+                area.y0,
+            )
+            .into_iter()
+            .zip(entries)
+            .map(|(rect, (id, _))| (id.to_owned(), rect))
+            .collect()
+        });
     }
 
-    /// Paint a legend people click to hide and show series: each `(id,
-    /// name, colour)` entry's swatch and name, laid out by [`layout`] across
-    /// `area` from its top, faded while hidden. Remembers where each entry
-    /// landed for [`Self::hit`].
+    pub(crate) fn entry(&self, id: &str) -> Option<Rect> {
+        self.placed
+            .iter()
+            .find(|(placed, _)| placed == id)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Paint the entries the layout placed: each `(id, name, colour)`
+    /// entry's swatch and name, faded while hidden. Painting adds no places.
     pub(crate) fn paint<'a>(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
         entries: impl IntoIterator<Item = (&'a str, &'a str, Color)>,
-        area: Rect,
     ) {
-        let entries: Vec<_> = entries.into_iter().collect();
-        let items = layout(
-            entries.iter().map(|(_, name, _)| *name),
-            area.x0,
-            area.x1,
-            area.y0,
-        );
         let ink = theme.tokens.colors.text_dim;
-        self.hits.clear();
-        for ((id, name, colour), item) in entries.into_iter().zip(items) {
+        for (id, name, colour) in entries {
+            let Some(item) = self.entry(id) else {
+                continue;
+            };
             let hidden = self.is_hidden(id);
             let fade = |colour: Color, alpha: u8| {
                 if hidden {
@@ -212,19 +218,16 @@ impl SeriesToggles {
                 Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
                 &theme.text(TextRole::Caption),
             );
-            self.hits.push((id.to_owned(), item));
         }
     }
 
-    /// The series whose painted entry contains `point`.
     pub(crate) fn hit(&self, point: Point) -> Option<String> {
-        self.hits
+        self.placed
             .iter()
             .find(|(_, rect)| rect.contains(point))
             .map(|(id, _)| id.clone())
     }
 
-    /// The toggle a screen reader activates in place of clicking `id`'s entry.
     pub(crate) fn access_node(&self, id: &str, name: &str) -> AccessNode {
         AccessNode::new(Role::ToggleButton)
             .with_action_target(target(id))
@@ -239,7 +242,6 @@ impl SeriesToggles {
             )
     }
 
-    /// The series among `ids` whose [`Self::access_node`] has action `key`.
     pub(crate) fn activated<'a>(
         ids: impl IntoIterator<Item = &'a str>,
         key: u64,
@@ -265,7 +267,6 @@ fn item_width(label: &str) -> f64 {
     (f64::from(glyphs) * APPROX_GLYPH_WIDTH).clamp(24.0, MAX_LABEL_WIDTH) + SWATCH_AND_GAP
 }
 
-/// Place legend items left-to-right and wrap before the chart edge.
 pub fn layout<'a>(
     labels: impl IntoIterator<Item = &'a str>,
     left: f64,

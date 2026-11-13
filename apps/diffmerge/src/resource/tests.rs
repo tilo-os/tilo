@@ -26,8 +26,6 @@ fn conflict_merge() -> Invoke<Session> {
     })
 }
 
-/// A merge with exactly one real conflict, and a comparison, opened through
-/// their verbs.
 fn opened_merge() -> Replica<Session> {
     let mut session = Replica::<Session>::new();
     session.apply(conflict_merge()).unwrap();
@@ -61,9 +59,6 @@ fn children_of_kind<'a>(tree: &'a Published, kind: &str) -> Vec<&'a Published> {
         .collect()
 }
 
-/// Opening a merge writes its inputs and a merged result with no side taken;
-/// taking a side records it and recomposes the result; a hand edit stops
-/// sides from being taken, and an unknown change is refused.
 #[test]
 fn opening_and_resolving_a_merge_goes_through_the_record() {
     let mut session = opened_merge();
@@ -128,8 +123,6 @@ fn opening_and_resolving_a_merge_goes_through_the_record() {
     assert!(state.composed(&state.merge_model()));
 }
 
-/// A custom resolution replaces exactly its change; taking both stacks the
-/// sides; each is one undoable change.
 #[test]
 fn a_change_takes_both_sides_or_custom_text() {
     let mut session = opened_merge();
@@ -148,9 +141,6 @@ fn a_change_takes_both_sides_or_custom_text() {
     assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
 }
 
-/// Resolving one change with text of its own leaves the rest of the merge
-/// open: the other changes still take a side, the written text stays, and a
-/// side taken later for the same change replaces it.
 #[test]
 fn a_change_resolved_with_text_leaves_the_others_open() {
     let mut session = Replica::<Session>::new();
@@ -210,10 +200,6 @@ fn a_change_resolved_with_text_leaves_the_others_open() {
     assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
 }
 
-/// A merge of Windows files without a final newline keeps their bytes from
-/// opening to the last resolution, so the result shows in git as the lines
-/// that changed and nothing else; the record still composes, so every
-/// change stays open to a side.
 #[test]
 fn a_windows_merge_keeps_its_line_endings_through_every_resolution() {
     let mut session = Replica::<Session>::new();
@@ -341,7 +327,6 @@ fn the_session_publishes_changes_and_change_blocks() {
         assert!(child.id.0.contains(&fingerprint));
     }
 
-    // A change's bound side applies to that change.
     let take = change
         .actions
         .iter()
@@ -368,8 +353,6 @@ fn the_sample_merge_exposes_a_conflict() {
     );
 }
 
-/// An agent opens, resolves and edits through the one published tree: each
-/// change one call.
 #[test]
 fn an_agent_merges_one_call_each() {
     let mut app = TestApp::<DiffmergeShell>::new().unwrap();
@@ -405,8 +388,6 @@ fn an_agent_merges_one_call_each() {
     assert_eq!(app.state().merged, "a\nOURS\nTHEIRS\nc\n");
 }
 
-/// What an agent does for a person is history the person reads: the app's
-/// sentence for each field and verb.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -524,10 +505,6 @@ fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable(
     );
 }
 
-/// The header's controls are the shared widgets, reached the way a person
-/// reaches them: the shell's header holds the mode switch, change
-/// navigation and file actions, and pressing the mode switch changes
-/// what the comparison shows.
 #[test]
 fn the_header_controls_drive_the_comparison_through_the_shell() {
     use ui::framework::testing::HeadlessApp;

@@ -1,11 +1,11 @@
-//! The headless host's side of the window's History: the registered History
-//! door, as the native App serves it.
+//! The headless host's side of the window's History: the registered History door, as the native App
+//! serves it.
 
 use super::FrameHarness;
 
 impl FrameHarness {
-    /// Present the window's History in the app's own header rather than a
-    /// fallback bar of its own, as a native App window does.
+    /// Present the window's History in the app's own header rather than a fallback bar of its own, as a
+    /// native App window does.
     pub fn present_history_in_header(&mut self) {
         self.invalidate_local();
         if let Some(history) = &mut self.history {
@@ -15,10 +15,8 @@ impl FrameHarness {
         }
     }
 
-    /// The doors the window answers for the app, whatever its tree
-    /// publishes: opening search, and History. A window whose app registers
-    /// no History still publishes the door, unavailable, as a native window
-    /// does.
+    /// The doors the window answers for the app, whatever its tree publishes: opening search, and
+    /// History.
     pub(super) fn host_door_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut doors = vec![crate::search::search_resource()];
         doors.push(self.history.as_ref().map_or_else(
@@ -28,11 +26,8 @@ impl FrameHarness {
         doors
     }
 
-    /// Invoke only this host's local History door. This is not a
-    /// collaborator transport entry point and never searches app destinations.
-    ///
-    /// # Errors
-    /// Refuses a window without History and invalid arguments.
+    /// Invoke only this host's local History door. This is not a collaborator transport entry point and
+    /// never searches app destinations.
     pub fn invoke_local_history_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -46,9 +41,6 @@ impl FrameHarness {
     }
 
     /// Open History as the History shortcut does.
-    ///
-    /// # Errors
-    /// Refuses a window whose app registers no History.
     pub fn open_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let history = self.history.as_ref().ok_or("History is unavailable")?;

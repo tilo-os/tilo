@@ -20,14 +20,17 @@
 //! an agent of its own (`claude-code@host#2`), so its work is attributed to it, and the person's
 //! Stop ends it alone.
 
+mod agent_key;
 mod environments;
 mod seats;
 mod service_steps;
+mod task_hosts;
 
 use environments::Origin;
 pub(crate) use seats::{Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
-use service_steps::{arguments_of, change_through};
+use service_steps::{arguments_of, change_through, with_turn_beside};
+pub(crate) use task_hosts::TaskHosts;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -198,6 +201,8 @@ struct Request {
     as_person: bool,
     /// The workspace it asks to work in, by id; `None` for the one in front.
     workspace: Option<String>,
+    /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
+    key: Option<String>,
     /// The seat it is served at, once the person answers.
     seat: u64,
     /// Answered by the loop once the person decided and the agent is a member; dropped by the
@@ -386,6 +391,8 @@ pub(crate) struct Loop {
     remote: Option<Arc<Remote>>,
     /// The doors of the confined environments open now, and the instance each agent reached.
     environments: environments::Doors,
+    /// The agent key the person started the session with, when they did.
+    agent_key: Option<agent_key::AgentKey>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -457,6 +464,7 @@ pub(crate) fn mount_named(
         wake: options.wake.handle(),
         state: options.state.as_deref(),
         admits: &options.admit_repl,
+        agent_key: options.agent_key.as_deref(),
         doors,
         control,
         seats,
@@ -480,6 +488,8 @@ pub(crate) struct Doorway<'a> {
     wake: Wake,
     state: Option<&'a Path>,
     admits: &'a [PathBuf],
+    /// The file holding the agent key the person started the session with.
+    agent_key: Option<&'a Path>,
     doors: Arc<SessionDoors>,
     control: Arc<crate::test_control::Door>,
     seats: Arc<Seats>,
@@ -499,10 +509,12 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         wake,
         state,
         admits,
+        agent_key,
         doors,
         control,
         seats,
     } = doorway;
+    let agent_key = agent_key.and_then(agent_key::AgentKey::kept);
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
     let environments = environments::Doors::new(
@@ -554,6 +566,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         seats,
         remote: None,
         environments,
+        agent_key,
     };
     Ok(Mounted { door })
 }
@@ -602,8 +615,15 @@ impl Loop {
         self.accept();
         self.accept_remote();
         self.environments.follow(handle, person);
+        if let Some(key) = self.agent_key.as_mut() {
+            key.certify(person);
+        }
         while let Ok(request) = self.asked.try_recv() {
-            self.request(handle, request, person);
+            if request.key.is_some() {
+                self.admit_by_key(handle, request, person);
+            } else {
+                self.request(handle, request, person);
+            }
         }
         self.settle_waiting(person);
     }
@@ -692,6 +712,7 @@ impl Loop {
             workspace: asked,
             seat,
             decide,
+            ..
         } = request;
         let Some(questions) = self.questions.clone() else {
             let _ = decide.send(Consent::Refuse(
@@ -907,6 +928,11 @@ impl Loop {
     /// the next time it connects, as if the person had never said "always allow". What it works on
     /// now is ended by whoever asked ([`crate::agent_door::Seats::stop`]).
     pub(super) fn revoke(&mut self, agent: &str) {
+        if let Some(key) = self.agent_key.as_mut()
+            && same_program(&key.agent(), agent)
+        {
+            key.revoke();
+        }
         self.always
             .retain(|_, admitted| !same_program(admitted, agent));
         self.session
@@ -1059,24 +1085,26 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
             .mode(0o700)
             .create(parent)?;
     }
-    match std::fs::symlink_metadata(path) {
-        Ok(existing) if !existing.file_type().is_socket() => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} exists and is not a socket", path.display()),
-            ));
+    tilo_failure::ignored!(
+        "a path with no live listener is the path to bind",
+        match std::fs::symlink_metadata(path) {
+            Ok(existing) if !existing.file_type().is_socket() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} exists and is not a socket", path.display()),
+                ));
+            }
+            Ok(_) if tilo_files::native::socket::connect(path).is_ok() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("{} already has a live listener", path.display()),
+                ));
+            }
+            // Nothing is there, or what is there is not a socket: bind it
+            // below, where a socket that answers proves itself live.
+            Ok(_) | Err(_) => {}
         }
-        Ok(_) if tilo_files::native::socket::connect(path).is_ok() => {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("{} already has a live listener", path.display()),
-            ));
-        }
-        // Nothing is there, or what is there is not a socket: bind it below,
-        // where a socket that answers proves itself live.
-        // ignored-failure: a path with no live listener is the path to bind
-        Ok(_) | Err(_) => {}
-    }
+    );
     // Short on purpose: a Unix socket path is capped near 108 bytes, and the staged path has to fit
     // wherever the final one does.
     let staging = parent.join(format!(".t{:08x}", uuid::Uuid::new_v4().as_fields().0));
@@ -1327,12 +1355,16 @@ enum DoorAsk {
     },
     /// Run one of their actions as a step of an agent's turn, already decided
     /// by the broker where it lands: `slot` is its arguments in their slot
-    /// form, as the broker carries them. No `reads_only`: the broker decided
-    /// the step.
+    /// form, as the broker carries them, and `beside` the place the ask is in
+    /// (the turn's conversation, or empty for the place in front). No
+    /// `reads_only`: the broker decided the step.
     Step {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
+        /// The place the ask is in, by the resource that place shows: the conversation of the
+        /// turn an agent asks in, or empty for the place in front.
+        beside: String,
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
@@ -1348,7 +1380,7 @@ enum DoorAsk {
     },
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
-    /// ([`installed_apps`] adds every installed app).
+    /// ([`task_hosts`] adds every installed app).
     Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
     /// as `actor` , on the pass: its answer as the door gives it, or `None` when no service keeps
@@ -1387,6 +1419,9 @@ pub(crate) struct SessionDoors {
     awaiting: std::sync::Mutex<HashMap<String, String>>,
     /// When [`Self::awaiting`] was last read: once a second, not on every pass.
     awaited_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// What changed in the records of the workspaces this device holds, for a watch of a whole
+    /// workspace ([`crate::desk_changes`]).
+    changes: Arc<crate::desk_changes::DeskChanges>,
 }
 
 /// How often the loop reads again which workspaces wait for their host to admit this device: the
@@ -1406,6 +1441,12 @@ fn unanswered() -> ActionHostError {
     }
 }
 
+/// How long a door's `find` waits for its sources before answering with the rows that came: a
+/// source reading a disk, a mailbox or a service off the loop has its own time, and the find is
+/// answered with what is in rather than the loop or the caller waiting longer than this. The
+/// answer says in its log which source did not (a called tool reads the rows, not the log).
+const FIND_WITHIN: Duration = Duration::from_secs(10);
+
 impl crate::platform::steps::SessionSteps for SessionDoors {
     /// Run the session's own action `address` as `actor` with `slot` (its
     /// arguments in the slot form the broker carries), as a step of an agent's
@@ -1416,6 +1457,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
+        beside: String,
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
             Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
@@ -1425,6 +1467,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
             actor,
             address,
             slot,
+            beside,
             run,
             done,
         });
@@ -1452,7 +1495,13 @@ impl SessionDoors {
             kept: std::sync::Mutex::default(),
             awaiting: std::sync::Mutex::default(),
             awaited_at: std::sync::Mutex::default(),
+            changes: Arc::default(),
         }
+    }
+
+    /// Follow the changes of the workspaces' records in `engine`, the device's replica of them.
+    pub(crate) fn keep_records(&self, engine: Arc<tilo_session_client::engine::Engine>) {
+        self.changes.keep(engine);
     }
 
     /// Keep which of the desk's workspaces this device holds but its host has not taken it in
@@ -1480,7 +1529,10 @@ impl SessionDoors {
                     let host = engine.awaited_host(workspace.id())?;
                     Some((
                         workspace.id().to_string(),
-                        awaited_sentence(&workspace.name, &host),
+                        awaited_sentence(
+                            &tilo_desktop_surface::names::workspace(&workspace.name),
+                            &host,
+                        ),
                     ))
                 })
                 .collect()
@@ -1529,7 +1581,7 @@ impl SessionDoors {
                 .map(|workspace| {
                     [
                         workspace.slot.0.to_string(),
-                        workspace.name.clone(),
+                        tilo_desktop_surface::names::workspace(&workspace.name),
                         workspace.id().to_string(),
                     ]
                 })
@@ -1599,7 +1651,7 @@ impl SessionDoors {
         doors: &tilo_session_core::door::Doors,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
-        shows: &dyn Fn(&str) -> bool,
+        shows: &std::rc::Rc<dyn Fn(&str) -> bool>,
         look: &mut tilo_session_core::door::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
@@ -1610,16 +1662,22 @@ impl SessionDoors {
                     workspace,
                     done,
                 } => {
-                    done.complete(crate::search::found_all(
+                    // Asked, never waited for here: the sources answer on their own threads, and
+                    // the loop takes the answer up on a later pass ([`crate::search::SessionSearch::poll_finds`]).
+                    // A source that never answers cuts the find off at the caller's own deadline.
+                    search.find_soon(
                         &needle,
-                        search.find_in(&needle, workspace.as_deref()),
-                        shows,
-                    ));
+                        workspace.as_deref(),
+                        std::rc::Rc::clone(shows),
+                        FIND_WITHIN,
+                        done,
+                    );
                 }
                 DoorAsk::Step {
                     actor,
                     address,
                     slot,
+                    beside,
                     run,
                     done,
                 } => match arguments_of(slot.as_deref()) {
@@ -1642,12 +1700,20 @@ impl SessionDoors {
                             run.as_ref(),
                             &address,
                             &arguments,
+                            &beside,
                             done,
                         );
                     }
+                    // The system's `open` stands a place beside the conversation of the turn that
+                    // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
                     Ok(arguments) => done.complete(
                         doors
-                            .invoke_as(&actor, &address, &arguments, look)
+                            .invoke_as(
+                                &actor,
+                                &address,
+                                &with_turn_beside(&address, &arguments, &beside),
+                                look,
+                            )
                             .map(ui::host_operation::ResourceOperationStart::completed)
                             .map_err(|error| crate::surfaces::refusal(&error)),
                     ),
@@ -1701,6 +1767,10 @@ pub(crate) struct Host {
     seat: Option<Arc<SeatAt>>,
 }
 
+/// What the catalogue says of one action a seat was offered: the words the person reads the step
+/// by ("Replace text at a place"), and the kind of step its own declaration names.
+type NamedStep = (String, Option<tilo_actions::StepKind>);
+
 /// The seat one admitted agent's connection sits at, and the apps of what it was offered.
 struct SeatAt {
     seats: Arc<Seats>,
@@ -1710,9 +1780,8 @@ struct SeatAt {
     /// The app each provider it was offered is of, by provider: what names the app a step of its
     /// is in.
     apps: std::sync::Mutex<HashMap<String, String>>,
-    /// What the catalogue calls each action it was offered, by provider and action: the words
-    /// the person reads the step by ("Replace text at a place").
-    named: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// What the catalogue calls each action it was offered, by provider and action.
+    named: std::sync::Mutex<HashMap<(String, String), NamedStep>>,
 }
 
 impl SeatAt {
@@ -1749,7 +1818,7 @@ impl SeatAt {
                 if let Some(words) = words {
                     named.insert(
                         (row.provider.clone(), action.address.action.clone()),
-                        words.to_owned(),
+                        (words.to_owned(), action.contract.step),
                     );
                 }
             }
@@ -1761,18 +1830,21 @@ impl SeatAt {
     fn acting(&self, request: &InvokeRequest) {
         let provider = &request.target.provider;
         let app = self.apps.lock_recover().get(provider).cloned();
-        let action = self
+        let (action, step) = self
             .named
             .lock_recover()
             .get(&(provider.clone(), request.target.address.action.clone()))
             .cloned()
             .unwrap_or_else(|| {
-                tilo_session_client::narration::action_label(&request.target.address.action)
+                (
+                    tilo_session_client::narration::action_label(&request.target.address.action),
+                    None,
+                )
             });
-        if self
-            .seats
-            .acting(self.seat, crate::agent_door::seats::Doing { action, app })
-        {
+        if self.seats.acting(
+            self.seat,
+            crate::agent_door::seats::Doing { action, step, app },
+        ) {
             (self.wake)();
         }
     }
@@ -1986,7 +2058,7 @@ impl Host {
             tilo_actions::remote::CallerPrincipal::Agent(agent) => format!("agent:{agent}"),
             _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
         };
-        self.invoke_step_at(actor, request)
+        self.invoke_step_at(actor, request, caller.turn())
     }
 
     /// The session's own actions as rows, as the kind of publisher its own door is, for a
@@ -2018,7 +2090,7 @@ impl Host {
             tilo_actions::remote::CallerPrincipal::Person(person) => person.clone(),
             _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
         };
-        self.invoke_step_at(actor, request)
+        self.invoke_step_at(actor, request, caller.turn())
     }
 
     /// The session's own action `request` names, carried out on the loop's pass as `actor` (the
@@ -2027,13 +2099,20 @@ impl Host {
         &self,
         actor: String,
         request: InvokeRequest,
+        turn: Option<&tilo_action_policy::turn::Turn>,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let slot = request.argument.to_slot();
         let invocation = request.invocation;
+        // The place the ask is in: the turn's conversation, when the step is an agent's; else the
+        // place in front. A place the step opens stands beside it
+        // (`docs/designs/app-language/one-app-model.md` §3).
+        let beside = turn
+            .map(|turn| turn.conversation.clone())
+            .unwrap_or_default();
         let run = request.context.and_then(|context| context.group);
         let (done, ran) = tilo_actions::remote::pending();
         self.session
-            .invoke_step(actor, request.target.address, slot, run, done);
+            .invoke_step(actor, request.target.address, slot, beside, run, done);
         let answered = Arc::clone(&self.answered);
         ran.map(move |ran| {
             use tilo_actions::remote::ReceiptStatus;
@@ -2202,6 +2281,12 @@ impl ActionHost for Host {
         ))) as Arc<dyn tilo_actions::remote::ResourceSearch>)
     }
 
+    /// What changed in the records of the workspace a connection works in, from this device's
+    /// replica of them: what a watch of the whole workspace reads.
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        Some(Arc::clone(&self.session.changes) as Arc<dyn tilo_actions::remote::ChangeFeed>)
+    }
+
     /// The records a connection reads outside their apps: the workspace's own, as the broker
     /// decides them, and the records of packages this session runs itself (the shell), which its
     /// services keep: a program reads them by the app, as it reads Notes', with no case of its own.
@@ -2251,132 +2336,6 @@ fn session_packages(
         .collect()
 }
 
-/// Every installed app a task's programs may name, besides the packages the session runs itself
-/// (`kept`): each tilolang app's own package, verified as a launch verifies it, which declares
-/// the names a program calls its actions and roots by, and the signed surface of every other
-/// app. With them, the id each tilolang app keeps its records under when it was renamed.
-/// One catalogue, whoever reads it: `tilolang check` reads the same packages and surfaces from
-/// the apps' directories.
-fn installed_apps(
-    kept: &std::collections::BTreeSet<String>,
-) -> (
-    Vec<runtime_portal::tilolang_host::App>,
-    std::collections::BTreeMap<String, String>,
-) {
-    use runtime_portal::tilolang_host::App;
-    let mut apps = Vec::new();
-    let mut records_under = std::collections::BTreeMap::new();
-    let mut named: std::collections::BTreeSet<String> = kept.clone();
-    for package in tilo_app_launch::tilolang_hosts::task_packages() {
-        if !named.insert(package.app.clone()) {
-            continue;
-        }
-        if let Some(under) = package.records_under {
-            records_under.insert(package.app, under);
-        }
-        apps.push(App::Module(package.module));
-    }
-    let installed = match app_catalogue::apps::signed_surfaces_from_env() {
-        Ok(installed) => installed,
-        Err(error) => {
-            tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");
-            Vec::new()
-        }
-    };
-    for (app, title, surface) in installed {
-        if named.contains(&app) {
-            continue;
-        }
-        let Ok(surface) = String::from_utf8(surface) else {
-            tracing::warn!(%app, "agent door: an app's surface is not text");
-            continue;
-        };
-        named.insert(app.clone());
-        apps.push(App::Surface {
-            app,
-            title,
-            surface,
-        });
-    }
-    (apps, records_under)
-}
-
-/// Where the session's door starts a connection's task host: a thread of the session's own running
-/// the task's tilolang host (`tilolang_host::task`) over the program connection. The host holds no
-/// authority: it decides nothing and writes no record, and everything its programs read or change
-/// comes back over the connection to the door, which does it as the program's author, through the
-/// same gate as every other call.
-pub(crate) struct TaskHosts {
-    /// The person the connection was admitted for: `me` in its programs.
-    person: std::sync::Mutex<Option<String>>,
-    /// What a connection asks the session's own doors, for the records the packages it runs itself
-    /// keep: its task host names the modules they are read by, before it starts, on the loop's
-    /// pass.
-    session: Arc<SessionDoors>,
-}
-
-impl TaskHosts {
-    /// The hosts of the task connections `person` asks about, whose programs run as `person`,
-    /// reading the session's own records through `session`.
-    pub(crate) fn new(person: &str, session: Arc<SessionDoors>) -> Self {
-        Self {
-            person: std::sync::Mutex::new(Some(person.to_owned())),
-            session,
-        }
-    }
-}
-
-impl tilo_runtime::mcp::TaskHosts for TaskHosts {
-    fn start(&self, workspace: &str, task: &str) -> io::Result<std::os::fd::OwnedFd> {
-        let (door_end, host_end) = UnixStream::pair()?;
-        // The person's own connection into the same session: the lines they type run there,
-        // where the `let`s the agent's programs bound are.
-        let (_person_ours, person_host) = UnixStream::pair()?;
-        // The apps the task's programs are compiled against: every package the session runs itself
-        // (the shell), whose records a program reads by the app, every installed tilolang app by
-        // its package, every native app this device has, from its signed surface, and the
-        // platform's own (the device and its arrangement, Settings).
-        let (done, whole) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Apps(done));
-        let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
-        let kept = self.session.kept.lock_recover().clone();
-        let (installed, records_under) = installed_apps(&kept);
-        apps.extend(installed);
-        let encoded = runtime_portal::tilolang_host::encode_apps(&apps);
-        let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", &encoded)?;
-        let request = runtime_portal::tilolang_host::TaskRequest {
-            task: task.to_owned(),
-            room: workspace.to_owned(),
-            person: self.person.lock_recover().clone(),
-            apps_len: encoded.len() as u64,
-            records_under,
-            changed_at_record: kept,
-        };
-        std::thread::Builder::new()
-            .name("tilo-task-host".into())
-            .spawn(move || {
-                let fds = runtime_portal::tilolang_host::TaskFds {
-                    program: host_end.into(),
-                    apps,
-                };
-                let opened =
-                    tilolang_host::task::Task::open_with(&request, fds, Some(person_host));
-                let task = match opened {
-                    Ok(task) => task,
-                    Err(error) => {
-                        tracing::warn!(task = request.task, %error, "agent door: a task's host did not start");
-                        return;
-                    }
-                };
-                // Every line the door or the person sends is answered; the host ends when the door
-                // closes the connection, with the client that started it.
-                while task.serve_all() {}
-                tracing::debug!(task = request.task, "agent door: a task's host ended");
-            })?;
-        Ok(door_end.into())
-    }
-}
-
 /// A client the door accepted: its socket, and where it came from.
 struct Opened {
     stream: UnixStream,
@@ -2398,6 +2357,15 @@ enum From {
     ShellRuntime(u32),
 }
 
+/// A client that left before asking needs no answer: the door lets it go
+/// without one.
+fn left_before_asking(error: &std::io::Error) {
+    tilo_failure::ignored!(
+        "a client that left before asking needs no answer",
+        tracing::debug!(%error, "agent door: the client left before its first request")
+    );
+}
+
 /// Serve one connection of this account, on its own thread: read what it opens with, ask the
 /// person, and only once they admit it answer what it asked. A refusal answers its `initialize`
 /// with a JSON-RPC error and closes.
@@ -2417,11 +2385,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     let Opened { mut stream, from } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
-        Err(error) => {
-            // ignored-failure: a client that left before asking needs no answer
-            tracing::debug!(%error, "agent door: the client left before its first request");
-            return;
-        }
+        Err(error) => return left_before_asking(&error),
     };
     let (pid, entrance) = match from {
         From::ShellRuntime(pid) => {
@@ -2618,8 +2582,10 @@ fn serve_admitted(
     );
     seats.left(seat);
     if let Err(error) = ended {
-        // ignored-failure: a client that disconnected needs no answer
-        tracing::debug!(%error, "agent door: the client disconnected");
+        tilo_failure::ignored!(
+            "a client that disconnected needs no answer",
+            tracing::debug!(%error, "agent door: the client disconnected")
+        );
     }
 }
 
@@ -2640,6 +2606,7 @@ fn ask(
         facts,
         as_person: hello.as_person,
         workspace: hello.workspace.clone(),
+        key: hello.key.clone(),
         seat,
         decide,
     };
@@ -2807,6 +2774,7 @@ mod tests {
         // What its step is, as the catalogue names it and the app it acts in: said once.
         let doing = super::seats::Doing {
             action: "Replace text at a place".into(),
+            step: Some(tilo_actions::StepKind::Write),
             app: Some("so.tilo.notes".into()),
         };
         assert!(seats.acting(asked, doing.clone()), "its step is news");

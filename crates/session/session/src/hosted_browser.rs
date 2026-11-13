@@ -39,10 +39,11 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::collab_app_broker::{AppBrokerState, ExecutionStatus};
 use tilo_action_broker::services::HostedWorkspaces;
 use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
+use tilo_actions::remote::environment_device;
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvokeArgument, InvokeRequest, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::selection::logical_resource_id;
 use tilo_relay_protocol::hosted::Material;
@@ -134,6 +135,135 @@ pub struct HostedBrowser {
     window: Window,
     /// When the page's use was last reported.
     said_used: Option<Instant>,
+    /// Whether the session's plane and its window shares ask the workspace's host yet: for the
+    /// media keys of this device's own streams, and to write its shares.
+    asks_host: bool,
+    /// Whether this session's window shares are written by the workspace's host yet.
+    governed: bool,
+}
+
+/// How this session asks the workspace's host what its device may not hold or write itself
+/// ([`tilo_actions::remote::environment_device`]).
+#[derive(Clone)]
+struct HostAsks {
+    hosted: std::sync::Arc<dyn HostedWorkspaces>,
+    caller: Caller,
+    /// The workspace, by its UUID: the one this session was placed in, and the only one it asks
+    /// about.
+    workspace: String,
+}
+
+impl HostAsks {
+    /// Ask the host for `action` with `argument`: what it answered, or `None` when it refused or
+    /// did not answer.
+    async fn ask(&self, action: &str, argument: InvokeArgument) -> Option<serde_json::Value> {
+        let host = self.hosted.host_actions(&self.workspace)?;
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: environment_device::target(action),
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let receipt = match host.invoke(&self.caller, request).await? {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                tracing::warn!(%error, action, "the workspace's host refused this session");
+                return None;
+            }
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { output } => output.value,
+            status => {
+                tracing::warn!(
+                    ?status,
+                    action,
+                    "the workspace's host did not answer this session"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// The plane's lender: the media keys of this device's own streams, as the workspace's host lends
+/// them, opened with this device's key.
+struct HostLends {
+    asking: HostAsks,
+    key: ed25519_dalek::SigningKey,
+}
+
+impl crate::live::MediaKeysLender for HostLends {
+    fn lend(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<channel_crypto::SenderMediaKeys>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if workspace.to_string() != self.asking.workspace {
+                return None;
+            }
+            let answer = self
+                .asking
+                .ask(environment_device::MEDIA_KEYS, InvokeArgument::None)
+                .await?;
+            let lent: environment_device::MediaKeys = serde_json::from_value(answer).ok()?;
+            let sealed = hex::decode(lent.sealed).ok()?;
+            match channel_crypto::SenderMediaKeys::open_with(
+                &self.key,
+                self.key.verifying_key().to_bytes(),
+                &sealed,
+            ) {
+                Ok(keys) => Some(keys),
+                Err(error) => {
+                    tracing::warn!(%error, "the media keys the host lent do not open here");
+                    None
+                }
+            }
+        })
+    }
+}
+
+/// The window shares' governor: the workspace's host writes each share of this device's windows.
+struct HostGoverns(HostAsks);
+
+impl crate::window_share::ShareGovernor for HostGoverns {
+    fn share(&self, workspace: &str, app_id: &str, tab: u64, shared: bool) {
+        if workspace != self.0.workspace {
+            return;
+        }
+        let Ok(runtime) = tilo_rt::try_app() else {
+            tracing::warn!(
+                tab,
+                "a window's share is not written: no task to ask the host on"
+            );
+            return;
+        };
+        let action = if shared {
+            environment_device::SHARE_WINDOW
+        } else {
+            environment_device::END_WINDOW_SHARE
+        };
+        let window = environment_device::WindowShare {
+            app: app_id.to_owned(),
+            tab,
+        };
+        let argument = match serde_json::to_value(window) {
+            Ok(serde_json::Value::Object(map)) => InvokeArgument::Json(map),
+            _ => return,
+        };
+        let asking = self.0.clone();
+        runtime.spawn(async move {
+            if asking.ask(action, argument).await.is_some() {
+                tracing::info!(tab, shared, "the host wrote this window's share");
+            }
+        });
+    }
 }
 
 /// What reached the loop from the tasks that watch the relay and the desk.
@@ -226,6 +356,8 @@ impl HostedBrowser {
             join: Join::Waiting,
             window: Window::Unopened,
             said_used: None,
+            asks_host: false,
+            governed: false,
         };
         hosted.say(Report::Ready);
         Ok(hosted)
@@ -322,6 +454,7 @@ impl HostedBrowser {
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
         self.join();
+        self.ask_host(shared);
         if self.holds == Holds::Apps {
             self.follow_apps(shared);
             return;
@@ -333,6 +466,48 @@ impl HostedBrowser {
             self.used();
         }
         self.publish(shared);
+    }
+
+    /// Once the workspace's host can be asked, have the session ask it for what this device may not
+    /// hold or write itself: the plane is lent the media keys of this device's own streams
+    /// ([`HostLends`]), and the window shares are written by the host ([`HostGoverns`]).
+    fn ask_host(&mut self, shared: &Shared) {
+        if self.asks_host {
+            return;
+        }
+        let Some(hosted) = self.hosted.clone() else {
+            return;
+        };
+        let asking = HostAsks {
+            hosted,
+            caller: self.caller(),
+            workspace: self.material.workspace.clone(),
+        };
+        if !self.governed {
+            // Before any window is shared: a share the session wrote itself would be dropped.
+            self.governed = true;
+            shared
+                .window_shares
+                .borrow_mut()
+                .governed_by(std::rc::Rc::new(HostGoverns(asking.clone())));
+        }
+        let Some(sync) = shared.sync.clone() else {
+            return;
+        };
+        let key = match self.material.key() {
+            Ok(key) => key,
+            Err(error) => {
+                tracing::warn!(%error, "this session's own streams cannot be lent keys");
+                self.asks_host = true;
+                return;
+            }
+        };
+        let lender = std::sync::Arc::new(HostLends { asking, key });
+        if !sync.lend_media_keys(lender) {
+            // No plane yet: the next pass hands it over.
+            return;
+        }
+        self.asks_host = true;
     }
 
     /// What an apps session does each pass: say it is up once the desk holds the workspace, start
@@ -399,9 +574,12 @@ impl HostedBrowser {
                         confirmed.apply(&mut request);
                         self.run(&request);
                     }
-                    // A denial keeps the page as it was filled.
-                    // ignored-failure: it drops the held request, as it says.
-                    Err(_) => self.run(&keep(*request)),
+                    // A denial keeps the page as it was filled, and drops the
+                    // held request, as it says.
+                    Err(_) => tilo_failure::ignored!(
+                        "a denial drops the held request, and keeps the page as it was filled",
+                        self.run(&keep(*request))
+                    ),
                 },
             }
         }
@@ -990,6 +1168,8 @@ mod tests {
             join: Join::Asking,
             window: Window::Open(provider),
             said_used: None,
+            asks_host: false,
+            governed: false,
         }
     }
 

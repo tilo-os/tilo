@@ -1,5 +1,5 @@
-//! The seccomp programs a sandboxed launch hands bwrap, and the descriptor
-//! slots a declared service may never take.
+//! The seccomp programs a sandboxed launch hands bwrap, and the descriptor slots a
+//! declared service may never take.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
@@ -68,9 +68,9 @@ mod seccomp_fd_tests {
     #[test]
     fn no_handed_over_descriptor_can_replace_a_seccomp_program() {
         use crate::services::RESERVED_CHILD_FDS;
-        // Declared services are numbered from 17 upwards around the reserved
-        // slots; a filter sharing a slot with one would make bwrap read its
-        // program from that service's socket and never start the app.
+        // Declared services are numbered from 17 upwards around the reserved slots; a filter sharing a
+        // slot with one would make bwrap read its program from that service's socket and never start
+        // the app.
         for fd in [CLONE3_COMPAT_SECCOMP_CHILD_FD, BASELINE_SECCOMP_CHILD_FD] {
             assert!(RESERVED_CHILD_FDS.contains(&fd), "{fd} must be reserved");
             assert!(fd > 31, "{fd} must stay above bwrap's own descriptors");

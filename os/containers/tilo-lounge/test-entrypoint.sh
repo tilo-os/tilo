@@ -69,8 +69,6 @@ https://eu1.tilo.sh/avatars
 Coffee and tea, and whatever is being made
 --default-role
 editor
---inactive-after-days
-30
 --web
 127.0.0.1:9781
 --packet-relay
@@ -116,8 +114,6 @@ lounge \
   TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
   TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
-  TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
-  TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
   TILO_ROOMS_PERSON_STORAGE_GB=10 \
   TILO_ROOMS_IROH_LISTEN=0.0.0.0:7704 \
   TILO_ROOMS_FETCH_PROXY=0 \
@@ -168,8 +164,7 @@ pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "th
 pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
 pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
-pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
-pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
+pair --operator-socket "$work/state/lounge/operator.sock" || fail "the operator socket did not reach the host"
 pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
 pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
@@ -289,7 +284,6 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
     TILO_ROOMS_AUTHOR_APPS='so.tilo.chat' \
     TILO_ROOMS_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_ROOMS_LAYOUT=shared \
-    TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
     TILO_ROOMS_LIVE=0.0.0.0:9881 \
     TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
     TILO_ROOMS_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \

@@ -15,7 +15,6 @@ pub struct ReportedCheckPhase {
     pub label: String,
 }
 
-/// A command's informational claim, without execution or evidence authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CheckReport {
     pub phase_id: String,
@@ -24,7 +23,6 @@ pub struct CheckReport {
     pub total: Option<u64>,
 }
 
-/// Closed, bounded reasons for refusing the informational lane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum CheckReportRefusal {
     InvalidReport,
@@ -36,7 +34,6 @@ pub enum CheckReportRefusal {
     Backpressure,
 }
 
-/// Coalesced informational events; terminal status is always the check receipt.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum ReportedCheckEvent {
     Reported(CheckReport),
@@ -179,8 +176,6 @@ impl ReportParser {
         report: &impl Fn(ReportedCheckEvent),
     ) -> Result<(), String> {
         authority()?;
-        // Bound each authority poll even when a producer continuously refills
-        // the queue. After capture joins, one full batch drains its remainder.
         for _ in 0..bounded_command::STDERR_OBSERVATION_CHUNKS {
             let Some(observation) = child.try_stderr() else {
                 break;
@@ -211,7 +206,6 @@ impl ReportParser {
 
     pub(super) fn finish(&mut self) {
         if !self.disabled && self.line.starts_with(RESERVED) {
-            // Reserved reports are newline-framed; a partial final frame is refused.
             self.refuse(CheckReportRefusal::InvalidReport);
         }
     }

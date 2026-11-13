@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Which Flatpak installation a Flathub entry was read from, and so where
-/// installing it goes.
+/// Which Flatpak installation a Flathub entry was read from, and so where installing it goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Installation {
@@ -19,8 +18,7 @@ pub enum Installation {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Source {
-    /// A Tilo package a configured registry offers. It is not installed:
-    /// opening it downloads it when it is absent.
+    /// A Tilo package a configured registry offers. Opening it downloads it when it is absent.
     Tilo {
         /// The registry's name as `registries.toml` gives it.
         registry: String,
@@ -34,16 +32,15 @@ pub enum Source {
 }
 
 impl Source {
-    /// Whether getting the app takes an explicit install (Flathub), rather
-    /// than simply opening it (Tilo).
+    /// Whether getting the app takes an explicit install (Flathub) rather than opening it (Tilo).
     #[must_use]
     pub fn needs_install(&self) -> bool {
         matches!(self, Self::Flathub { .. })
     }
 }
 
-/// A kind of document the app creates ("Workbook" for Sheets). Choosing it
-/// opens the app on a new one.
+/// A kind of document the app creates ("Workbook" for Sheets); choosing it opens the app on a new
+/// one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceType {
     /// The resource kind the app publishes (`sheets.workbook`).
@@ -52,9 +49,8 @@ pub struct ResourceType {
     pub label: String,
 }
 
-/// An action the app offers while it is not running (its manifest's
-/// `[[offers]]`). Choosing it gets the app if needed, opens it and runs the
-/// action through the normal action path.
+/// An action the app offers while it is not running (its manifest's `[[offers]]`): choosing it gets
+/// the app if needed, opens it and runs the action through the normal action path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueAction {
     /// The resource the app publishes the action on (`calendar.calendar`).
@@ -67,11 +63,10 @@ pub struct CatalogueAction {
     pub description: Option<String>,
 }
 
-/// One app a person can get.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueEntry {
-    /// The Tilo package id (`so.tilo.sheets`) or the Flatpak application id
-    /// (`com.spotify.Client`): the identity installed apps are matched on.
+    /// The Tilo package id (`so.tilo.sheets`) or the Flatpak application id (`com.spotify.Client`):
+    /// the identity installed apps are matched on.
     pub id: String,
     pub source: Source,
     /// Its name in the desktop's language.
@@ -103,17 +98,15 @@ pub struct CatalogueEntry {
     /// Actions it offers while closed.
     #[serde(default)]
     pub actions: Vec<CatalogueAction>,
-    /// Its source has no build of it for this device's processor (Flathub
-    /// lists Steam for `x86_64` only): it is still found, says it is not
-    /// available for this device, and is never offered for installing.
+    /// Its source has no build of it for this device's processor (Flathub lists Steam for `x86_64`
+    /// only): it is still found, says it is not available, and is never offered for installing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub not_built_for_this_device: bool,
 }
 
 impl CatalogueEntry {
-    /// The identity matched as installed apps and block lists name it: an
-    /// app listed by a desktop entry's id (`com.spotify.Client.desktop`) and
-    /// by its own (`com.spotify.Client`) is one app.
+    /// The identity as installed apps and block lists name it: an app listed by a desktop entry's
+    /// id (`com.spotify.Client.desktop`) and by its own (`com.spotify.Client`) is one app.
     #[must_use]
     pub fn key(&self) -> String {
         crate::catalogue::canonical_id(&self.id)

@@ -197,17 +197,17 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
 /// workspace, and nothing for grants that never expire or already did.
 #[test]
 fn the_next_grant_expiry_is_the_earliest_one_still_ahead() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
     const SOON: u64 = NOW + 5;
     const LATER: u64 = NOW + 60;
     let member = |person: &str, until: Option<u64>| {
         let grant = Grant::new(
             format!("member-{person}"),
-            Subject::person(person),
+            Grantee::person(person),
             TreePath::root(),
             KindSet::ALL,
             Answer::Allow,
-            Subject::person("owner"),
+            Grantee::person("owner"),
         );
         match until {
             Some(at) => grant.with_lifetime(Lifetime::Until(at * 1000)),

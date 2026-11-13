@@ -1,8 +1,6 @@
-//! The desk widgets card: for each widget, whether it is on the desk and
-//! when it shows itself. Each row is bound to its leaf of
+//! The desk widgets card: for each widget, whether it is on the desk and when
+//! it shows itself. Each row is bound to its leaf of
 //! [`crate::prefs::DeskWidgetsPrefs`], the section the compositor reads.
-//! Where a widget rests and how wide its card is are set on the desk
-//! itself, by dragging it and by its resize handle.
 
 use provider_settings_ui::bound::SettingRows as _;
 use settings_store::desk_widgets::{ShowMode, WidgetId, WidgetPrefs};
@@ -12,7 +10,7 @@ use ui::widget::Element;
 
 use crate::i18n::t;
 use crate::prefs::DeskWidgetsPrefs;
-use provider_settings_ui::widgets::{Item, note, rows, section};
+use provider_settings_ui::widgets::{Item, rows, section};
 
 fn show_label(mode: ShowMode) -> String {
     t(match mode {
@@ -33,12 +31,10 @@ pub(super) fn card(cx: &mut ViewCx<DeskWidgetsPrefs>) -> Element {
         for (id, on) in WidgetId::ALL.into_iter().zip(*on) {
             body.extend(widget_rows(cx, id, on));
         }
-        body.push(note(&t("settings-desk-note")));
         section(&t("settings-desk-card"), rows(body)).into_element()
     })
 }
 
-/// The preferences of the widget `id`.
 fn widget(prefs: &DeskWidgetsPrefs, id: WidgetId) -> &WidgetPrefs {
     match id {
         WidgetId::Music => &prefs.music,
@@ -48,8 +44,6 @@ fn widget(prefs: &DeskWidgetsPrefs, id: WidgetId) -> &WidgetPrefs {
     }
 }
 
-/// The rows of the widget `id`: whether it is on the desk and, while it
-/// is (`on`), when it shows.
 fn widget_rows(cx: &ViewCx<DeskWidgetsPrefs>, id: WidgetId, on: bool) -> Vec<Item> {
     let paths = DeskWidgetsPrefs::paths();
     let (enabled, show): (
@@ -86,7 +80,6 @@ fn widget_rows(cx: &ViewCx<DeskWidgetsPrefs>, id: WidgetId, on: bool) -> Vec<Ite
 mod tests {
     use super::*;
 
-    /// A chooser tells its choices apart by their labels.
     #[test]
     fn every_offered_label_names_one_choice() {
         let shows: std::collections::HashSet<_> = ShowMode::ALL.map(show_label).into();

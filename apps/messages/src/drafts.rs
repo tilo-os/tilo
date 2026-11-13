@@ -1,24 +1,15 @@
-//! What is being written and has not been sent: a record of Messages'
-//! beside the conversations, kept in the workspace it is open in.
-//!
-//! A draft survives the window closing, and it never enters a conversation's record:
-//! nothing here is sent, queued or shown to anyone else. What a person typed
-//! and did not send is theirs until they send it.
-//!
-//! The key is the transport route the words were typed for — service, account
-//! and recipient — because a draft belongs to one conversation: the same person
-//! on Signal and on SMS are two threads, and words typed into one must not turn
-//! up in the other.
+//! What is being written and has not been sent, in a record beside the conversations and
+//! kept in the workspace Messages is open in. A draft survives the window closing and never
+//! enters a conversation's record: nothing here is sent, queued or shown to anyone else.
 
 use std::collections::BTreeMap;
 
 use ui::tilo_resource::Refusal;
 use ui::tilo_resource::{self, Model};
 
-/// The most a draft may hold, matching what a message may carry.
 const MAX_DRAFT_CHARS: usize = 16 * 1024;
-/// The most a conversation key may hold, so a hostile key cannot grow the
-/// record without limit.
+/// The most a conversation key may hold, so a hostile key cannot grow the record without
+/// limit.
 const MAX_KEY_CHARS: usize = 512;
 
 /// The person's unsent message text, by conversation.
@@ -28,13 +19,11 @@ pub struct MessageDrafts {
     pub drafts: BTreeMap<String, String>,
 }
 
-#[ui::tilo_resource::resource(kind = "messages.drafts", label = "Message drafts", params = drafts)]
+#[ui::tilo_resource::resource(kind = "messages.drafts", params = drafts)]
 impl MessageDrafts {
     /// Keep a draft.
     ///
-    /// What the person has typed into a conversation's composer so far. An
-    /// empty (or blank) body removes the draft: a cleared field is not a
-    /// message half-written.
+    /// What the person has typed into a conversation's composer so far.
     #[action(housekeeping, audience = "agents")]
     pub fn keep_draft(
         &mut self,
@@ -59,8 +48,7 @@ impl MessageDrafts {
 
     /// Drop a draft.
     ///
-    /// The words were sent, or the person threw them away. Nothing else in the
-    /// record changes.
+    /// The words were sent, or the person threw them away.
     #[action(housekeeping, audience = "agents")]
     pub fn drop_draft(
         &mut self,
@@ -70,14 +58,11 @@ impl MessageDrafts {
     }
 }
 
-/// The conversation key a draft is kept under: the exact route the words were
-/// typed for, as this app names a route everywhere else.
+/// The conversation key a draft is kept under: the exact route the words were typed for, as
+/// this app names a route everywhere else.
 ///
-/// Every reviewed fact is part of it — the service, the sender account, the
-/// recipient, and the contact association and identity revision the choice was
-/// confirmed under. A route re-reviewed into a different identity is a
-/// different conversation: words typed for one must not resurface in the
-/// other.
+/// A route re-reviewed into a different identity is a different conversation: words typed
+/// for one must not resurface in the other.
 #[must_use]
 pub(crate) fn key(choice: &crate::view::Choice) -> String {
     choice.value()
@@ -121,7 +106,6 @@ mod tests {
             state.drafts.get("signal:a1:+15550100").map(String::as_str),
             Some("see you at 8")
         );
-        // A blank draft is no draft.
         ada.apply_action(&keep("signal:a1:+15550100", "   "))
             .expect("a draft is cleared");
         let state = ada.state().expect("the record is readable");
@@ -158,8 +142,6 @@ mod tests {
             scope: "s1".into(),
             revision: "r1".into(),
         };
-        // The same facts name the same conversation, and a re-reviewed
-        // identity names another one.
         assert_eq!(key(&route), key(&route.clone()));
         let rereviewed = crate::view::Choice {
             revision: "r2".into(),

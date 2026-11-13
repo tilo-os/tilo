@@ -1,23 +1,10 @@
-//! Store's side of the app host, as an engine library beside the shared
-//! runtime (`libtilo_app_host_engine.so`).
+//! Store's side of the app host, as its own library in the runtime bundle
+//! (`libtilo_app_host_engine.so`).
 //!
-//! Store installs, updates and removes apps through the app host, a
-//! privileged daemon it reaches over its socket (`app-host`'s client),
-//! and browses the catalogue the desktop's search shares (`app-catalogue`).
-//! No other app talks to the app host, so neither belongs in the runtime
-//! every app maps; linked into the tapp, the client and the
-//! catalogue were about a fifth of Store's code. Here they are a library of
-//! their own in the runtime bundle that only Store names `DT_NEEDED`, and the
-//! tapp carries Store's own code.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 

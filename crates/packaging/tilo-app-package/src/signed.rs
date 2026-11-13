@@ -1,39 +1,5 @@
 //! The "signed root" blob — the structure whose hash is the
 //! [`crate::PackageId`].
-//!
-//! Layout:
-//!
-//! ```text
-//! MAGIC  "TLOPKG\0\0"   (8 bytes)
-//! u32 LE format_version       (1 or 2: see crate::tapp::READABLE_FORMATS)
-//! [u8; 32] manifest_hash       (BLAKE3 of the manifest TOML bytes)
-//! [u8; 32] payload_root_hash   (BLAKE3 of the encoded Collection)
-//! u8       has_signature       (0 / 1)
-//! [u8; 32] publisher_identity  (Ed25519 group public key bytes)
-//! [u8; 64] signature           (zeroed if has_signature == 0)
-//! ```
-//!
-//! Total fixed size: 8 + 4 + 32 + 32 + 1 + 32 + 64 = 173 bytes.
-//!
-//! The signed *message* bytes (what the publisher's Ed25519 key
-//! signs over) cover the first 109 bytes — i.e. everything up to
-//! and including `publisher_identity`. The signature is then
-//! tacked on; the `has_signature` byte distinguishes an unsigned
-//! tree-built root from a fully signed one.
-//!
-//! **Pack convention**: the publisher signs the bytes with
-//! `has_signature = 1` and a placeholder zero signature. That
-//! way [`crate::verify::verify`], which always decodes the
-//! signed-root with the real `has_signature` byte set to 1,
-//! reconstructs the exact same prefix the publisher signed.
-//!
-//! The hash of the full 173-byte blob (signed or unsigned) is the
-//! `PackageId`. Note this means an unsigned root and the same
-//! root with a real signature attached have **different**
-//! `PackageId`s — which is the right thing: a consumer must
-//! know whether they're verifying a signed or unsigned bundle,
-//! and an attacker swapping in a forged signature would produce
-//! a different `PackageId`.
 
 use thiserror::Error;
 
@@ -44,7 +10,6 @@ const MAGIC: &[u8; 8] = b"TLOPKG\0\0";
 pub const SIGNED_ROOT_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32 + 64;
 pub const SIGNING_PREFIX_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32; // 109 bytes
 
-/// The on-disk signed-root blob.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedRoot {
     /// The package format the root was written at. It is part of the bytes
@@ -55,7 +20,6 @@ pub struct SignedRoot {
     pub manifest_hash: BlobHash,
     pub payload_root_hash: BlobHash,
     pub publisher_identity: [u8; 32],
-    /// `None` until `tilo-app-package sign` runs.
     pub signature: Option<[u8; 64]>,
 }
 
@@ -101,7 +65,6 @@ impl SignedRoot {
         out
     }
 
-    /// Full encoded blob.
     pub fn encode(&self) -> [u8; SIGNED_ROOT_LEN] {
         let mut out = [0u8; SIGNED_ROOT_LEN];
         out[..SIGNING_PREFIX_LEN].copy_from_slice(&self.signing_bytes());
@@ -182,8 +145,6 @@ impl SignedRoot {
         })
     }
 
-    /// The `PackageId` of this signed-root — BLAKE3 over the
-    /// full encoded blob.
     pub fn package_id(&self) -> crate::id::PackageId {
         crate::id::PackageId::from_bytes(*blake3::hash(&self.encode()).as_bytes())
     }

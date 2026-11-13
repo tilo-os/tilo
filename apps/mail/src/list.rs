@@ -21,123 +21,134 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowAction, RowLeading,
-    ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
+    AvatarFace, Banner, BannerContent, EmptyState, EmptyStateContent, Interaction, ListRowFace,
+    RowAction, RowLeading, ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
 };
 
+use crate::i18n::CATALOG;
 use crate::model::{Folder, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
 use crate::util::{format_relative, local_minutes};
 
-/// What the list says when it has no rows.
-pub(crate) fn zero_state(
-    has_messages: bool,
-    has_accounts: bool,
-    folder: Folder,
-) -> (Icon, &'static str, Option<&'static str>) {
-    if !has_accounts {
-        (
-            Icon::Mail,
-            "No account yet",
-            Some("Add an account to send and receive mail."),
-        )
-    } else if !has_messages {
-        (Icon::Inbox, "Nothing has arrived yet", None)
-    } else {
-        let title = match folder {
-            Folder::Inbox => "Your inbox is empty",
-            Folder::Starred => "No starred messages",
-            Folder::Drafts => "No drafts",
-            Folder::Sent => "No sent messages",
-            Folder::Archive => "Nothing archived",
-            Folder::Junk => "No junk",
-            Folder::Trash => "Trash is empty",
+pub(crate) struct ZeroState {
+    icon: Icon,
+    title: String,
+    action: Option<String>,
+}
+
+pub(crate) fn zero_state(has_messages: bool, folder: Folder) -> ZeroState {
+    if !has_messages {
+        return ZeroState {
+            icon: Icon::Inbox,
+            title: crate::i18n::t("mail-zero-nothing-yet"),
+            action: Some(crate::i18n::t("mail-account-settings")),
         };
-        (folder.icon(), title, None)
+    }
+    ZeroState {
+        icon: folder.icon(),
+        title: CATALOG.t_args(
+            "mail-zero-folder",
+            &[(
+                "folder",
+                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
+            )],
+        ),
+        action: None,
+    }
+}
+
+/// What a row's own verbs are called, in the window's language: the hover
+/// buttons and the swipe say what the context menu and the bar say.
+#[derive(Clone, Debug)]
+struct RowLabels {
+    star: String,
+    unstar: String,
+    archive: String,
+    delete: String,
+}
+
+impl RowLabels {
+    fn of() -> Self {
+        Self {
+            star: CtxAction::ToggleStar.label(false, false),
+            unstar: CtxAction::ToggleStar.label(false, true),
+            archive: CtxAction::Archive.label(false, false),
+            delete: CtxAction::Delete.label(false, false),
+        }
     }
 }
 
 /// The actions a row shows while the pointer is over it.
-fn row_actions(starred: bool) -> [(CtxAction, RowAction<'static>); 3] {
+fn row_actions(labels: &RowLabels, starred: bool) -> [(CtxAction, RowAction<'_>); 3] {
     [
         (
             CtxAction::ToggleStar,
             RowAction {
                 icon: Icon::Star,
-                label: if starred { "Remove star" } else { "Star" },
+                label: if starred {
+                    &labels.unstar
+                } else {
+                    &labels.star
+                },
             },
         ),
         (
             CtxAction::Archive,
             RowAction {
                 icon: Icon::Archive,
-                label: "Archive",
+                label: &labels.archive,
             },
         ),
         (
             CtxAction::Delete,
             RowAction {
                 icon: Icon::Trash2,
-                label: "Delete",
+                label: &labels.delete,
             },
         ),
     ]
 }
 
-/// The row action an outbox row carries: take the message out unsent.
 const CANCEL_SEND: RowAction<'static> = RowAction {
     icon: Icon::RotateCcw,
     label: "Cancel sending",
 };
 
-/// One queued message's row as last painted, with where its cancel sits.
 #[derive(Clone, Debug)]
 struct QueuedSlot {
     id: String,
-    /// The row's whole band, gaps included: the height a press lands on.
     band: Rect,
-    /// The painted row inside it.
     rect: Rect,
-    /// The cancel action's button.
     cancel: Rect,
 }
 
-/// How many rows before the end of the list the older mail is asked for.
 const OLDER_AHEAD_ROWS: u32 = 10;
 
-const SWIPE_ARCHIVE: SwipeAction<'static> = SwipeAction {
-    icon: Icon::Archive,
-    label: "Archive",
-    destructive: false,
-};
+/// The swipe across a row: it archives the message when it completes.
+fn swipe_archive(labels: &RowLabels) -> SwipeAction<'_> {
+    SwipeAction {
+        icon: Icon::Archive,
+        label: &labels.archive,
+        destructive: false,
+    }
+}
 
-/// One row as last painted, with where its hover actions sit.
 #[derive(Clone, Debug)]
 struct Slot {
     id: MessageId,
-    /// The row's whole band, gaps included: the height a press lands on.
     band: Rect,
-    /// The painted row inside it.
     rect: Rect,
     starred: bool,
-    /// How many messages the conversation holds.
     messages: usize,
     actions: Vec<Rect>,
 }
 
-/// How the rows sit in the list: their text on the column's content edge,
-/// where the column's title starts, and their lifts bleeding past it (clear
-/// of the scroll bar while the list scrolls); the first a step below the
-/// header, edge to edge so a run of selected rows is one lift.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowFrame {
     x0: f64,
     x1: f64,
-    /// The top of the first row's band, before scrolling.
     top: f64,
-    /// The distance from one row's band to the next.
     pitch: f64,
-    /// The space between a band's edge and its painted row.
     gap: f64,
 }
 
@@ -159,7 +170,6 @@ impl RowFrame {
         }
     }
 
-    /// The height every row and the space around them take.
     pub(crate) fn content_height(&self, rows: usize, theme: &Theme) -> f64 {
         self.pitch * rows as f64 + 2.0 * f64::from(theme.tokens.spacing.s2)
     }
@@ -174,12 +184,10 @@ impl RowFrame {
     }
 }
 
-/// A press on a row that may still become a swipe.
 #[derive(Clone, Copy, Debug)]
 struct Press {
     id: MessageId,
     at: Point,
-    /// How far the row has slid toward its leading edge.
     offset: f64,
 }
 
@@ -195,8 +203,6 @@ struct RowText<'a> {
 }
 
 impl<'a> RowText<'a> {
-    /// The row of message `id`: the sender, the subject under it and the
-    /// start of the message.
     fn of(id: MessageId, state: &'a MailState) -> Option<Self> {
         let message = state.mailbox.get(id)?;
         let when = format_relative(
@@ -225,28 +231,29 @@ impl<'a> RowText<'a> {
 pub struct MessageList {
     shared: Shared,
     rect: Rect,
-    /// The rows' viewport: wheel, keyboard, bar and accessible scrolling.
     region: ScrollRegion,
-    /// The theme the list was last drawn with, for the region's lanes.
     theme: Theme,
     row_h: f64,
     slots: Vec<Slot>,
-    /// The outbox rows as last painted, while the outbox is open.
     queued: Vec<QueuedSlot>,
     pointer: Option<Point>,
     press: Option<Press>,
-    /// The selection the list last scrolled into view.
     revealed: Option<MessageId>,
     dirty: bool,
-    /// Only the region's offset changed since the frame on screen: a host
-    /// that copies what stays on screen may move the rows instead.
     scrolled: bool,
-    /// The row under the pointer as this frame paints it and as the frame
-    /// on screen did: its lift and actions follow the pointer, not the rows.
     hovered_drawing: Option<Rect>,
     hovered_presented: Option<Rect>,
-    /// The first fetch's placeholder step the last frame painted.
     arriving_step: Option<ui::arriving::Step>,
+    zero_action: Option<(Rect, Intent)>,
+    /// Where the failed check's words stand, as laid out for this frame, so a
+    /// reader can tell it keeps the rows' inset. `Rect::ZERO` when the check
+    /// works.
+    banner: Rect,
+    /// The failed check's control as last painted, in the list's banner or in
+    /// the empty list's words: the way out of a check that cannot run.
+    sync_action: Option<(Rect, Intent)>,
+    /// What a row's own verbs are called, in the window's language.
+    labels: RowLabels,
 }
 
 impl MessageList {
@@ -267,11 +274,13 @@ impl MessageList {
             hovered_drawing: None,
             hovered_presented: None,
             arriving_step: None,
+            zero_action: None,
+            banner: Rect::ZERO,
+            sync_action: None,
+            labels: RowLabels::of(),
         }
     }
 
-    /// Whether the first fetch's placeholder moved on a step since the last
-    /// frame painted it.
     fn arriving_step_moved(&self) -> bool {
         let Some(painted) = self.arriving_step else {
             return false;
@@ -294,20 +303,29 @@ impl MessageList {
             .find(|slot| slot.band.y0 <= point.y && point.y < slot.band.y1)
     }
 
+    /// The one control a failed check, or a mailbox no mail has arrived in,
+    /// offers when `point` is on it: its press asks the app for the same thing
+    /// its accessible control does.
+    fn route_at(&self, point: Point) -> Option<Intent> {
+        self.sync_action
+            .iter()
+            .chain(self.zero_action.iter())
+            .find(|(pill, _)| pill.contains(point))
+            .map(|(_, intent)| intent.clone())
+    }
+
     /// The hover action under `point` in `slot`, as painted.
-    fn action_at(slot: &Slot, point: Point) -> Option<CtxAction> {
+    fn action_at(&self, slot: &Slot, point: Point) -> Option<CtxAction> {
         slot.actions
             .iter()
             .position(|rect| rect.contains(point))
             .and_then(|index| {
-                row_actions(slot.starred)
+                row_actions(&self.labels, slot.starred)
                     .get(index)
                     .map(|(action, _)| *action)
             })
     }
 
-    /// Keep the selected conversation in view when the selection moves
-    /// (arrow keys, a search hit, an agent opening a message).
     fn reveal(
         &mut self,
         rows: &[(MessageId, usize)],
@@ -336,7 +354,7 @@ impl MessageList {
             state.toggle_bulk_selection(slot.id);
             return true;
         }
-        if let Some(action) = Self::action_at(&slot, point) {
+        if let Some(action) = self.action_at(&slot, point) {
             state.apply_message_action(doc, slot.id, action);
             return true;
         }
@@ -345,7 +363,6 @@ impl MessageList {
             .get(slot.id)
             .is_some_and(|message| message.folder == Folder::Drafts);
         if is_draft {
-            // A draft reopens the composer, not the reader.
             state.push_intent(Intent::EditDraft(slot.id));
         } else {
             state.open_message(doc, slot.id);
@@ -360,7 +377,6 @@ impl MessageList {
         true
     }
 
-    /// The row under `point` and the row button under it, as painted.
     fn hover_at(&self, point: Option<Point>) -> Option<(MessageId, Option<usize>)> {
         let point = point?;
         let slot = self.slots.iter().find(|slot| slot.rect.contains(point))?;
@@ -373,9 +389,6 @@ impl MessageList {
         ))
     }
 
-    /// Ctrl- or Shift-click: choose rows instead of opening one. The open
-    /// conversation starts the selection; Shift takes every row up to the
-    /// clicked one.
     fn pick(&self, point: Point, range: bool) -> bool {
         let Some(slot) = self.slot_at(point).cloned() else {
             return false;
@@ -410,16 +423,14 @@ impl MessageList {
         true
     }
 
-    /// The row rects as last painted, for tests.
     #[cfg(test)]
     pub(crate) fn row_rects(&self) -> Vec<(MessageId, Rect)> {
         self.slots.iter().map(|slot| (slot.id, slot.rect)).collect()
     }
 }
 
-/// Where a row's hover actions sit in `rect`.
-fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
-    let actions = row_actions(starred);
+fn action_rects(labels: &RowLabels, starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
+    let actions = row_actions(labels, starred);
     let faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
     ListRowFace::new("")
         .subtitle("")
@@ -432,19 +443,14 @@ fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
         .action_rects(rect, theme)
 }
 
-/// How one row stands among its neighbours.
 #[derive(Clone, Copy, Debug)]
 struct RowState {
     selected: bool,
     previous_selected: bool,
-    /// Whether the row below is selected; `None` for the last row.
     next_selected: Option<bool>,
 }
 
 impl MessageList {
-    /// Paint the open account's outbox: one row per message still to leave,
-    /// its recipients and subject, and under them why it has not gone — the
-    /// server's own refusal, or that it waits its turn.
     fn paint_outbox(&mut self, ctx: &mut PaintCtx<'_>, state: &MailState) {
         let r = self.rect;
         let theme = ctx.theme;
@@ -464,10 +470,7 @@ impl MessageList {
             );
             return;
         }
-        self.row_h = ListRowFace::new("Ag")
-            .subtitle("Ag")
-            .secondary("Ag")
-            .height(ctx.text, theme);
+        self.row_h = row_height(ctx.text, theme);
         let unscrolled = RowFrame::new(r, self.row_h, false, theme);
         self.region
             .set_content_size(r.width(), unscrolled.content_height(queued.len(), theme));
@@ -492,19 +495,22 @@ impl MessageList {
                 .pointer
                 .filter(|point| r.contains(*point) && rect.contains(*point));
             let actions = [CANCEL_SEND];
-            let recipient = format!("To {}", message.to);
+            let recipient = crate::i18n::t_args(
+                "mail-to",
+                &[("recipient", ui::i18n::ArgValue::Text(message.to.clone()))],
+            );
+            let state_line = message.state_line();
             let mut face = ListRowFace::new(&recipient)
                 .leading(RowLeading::Icon(Icon::Send))
                 .subtitle(&message.subject)
-                .secondary(message.state_line())
+                .secondary(&state_line)
                 .selected(selected)
                 .actions(&actions)
                 .interaction(Interaction {
                     hovered: hovered.is_some(),
                     ..Interaction::default()
                 });
-            // A refused message says so with the mark as well as the words:
-            // the row a person must look at is the one that never left.
+            // A refused message says so with the mark as well as the words.
             if message.reason.is_some() {
                 face = face.mark(Icon::CircleAlert);
             }
@@ -536,7 +542,6 @@ impl MessageList {
             .map(|slot| slot.rect.inflate(2.0, 2.0));
     }
 
-    /// The outbox row at `point`, and whether `point` is on its cancel.
     fn queued_at(&self, point: Point) -> Option<(&QueuedSlot, bool)> {
         if !self.rect.contains(point) {
             return None;
@@ -547,9 +552,6 @@ impl MessageList {
             .map(|slot| (slot, slot.cancel.contains(point)))
     }
 
-    /// The outbox page's own pointer: a press opens a queued message, and a
-    /// press on its cancel takes it out unsent. There is no swipe and no
-    /// context menu here — a message that has not left has nothing to file.
     fn handle_outbox_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -594,7 +596,84 @@ impl MessageList {
         }
     }
 
-    /// Paint one conversation's row.
+    /// Paint the rows that stand in `list`, under whatever the header and a
+    /// failed check left there, and remember where each one and its buttons
+    /// are.
+    fn paint_rows(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        state: &MailState,
+        rows: &[(MessageId, usize)],
+        list: Rect,
+        row_h: f64,
+        t: Affine,
+        theme: &Theme,
+    ) {
+        let unscrolled = RowFrame::new(list, row_h, false, theme);
+        self.region
+            .set_content_size(list.width(), unscrolled.content_height(rows.len(), theme));
+        // Rows stop short of the scroll bar when the list overflows.
+        let frame = RowFrame::new(list, row_h, self.region.overflows_vertically(), theme);
+        self.reveal(rows, state.selected, frame);
+        let scroll = self.region.offset().y;
+
+        let selected_rows = selected_rows(state, rows);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &list);
+        let mut slots = Vec::with_capacity(rows.len());
+        for (index, (id, len)) in rows.iter().enumerate() {
+            let band = frame.band(index, scroll);
+            let rect = frame.row(index, scroll);
+            let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
+            let shown = band.y1 >= list.y0 && band.y0 <= list.y1;
+            let slot = Slot {
+                id: *id,
+                band,
+                rect,
+                starred,
+                messages: *len,
+                // Only a row on screen can be pointed at; one scrolled away
+                // costs no layout of its buttons.
+                actions: if shown {
+                    action_rects(&self.labels, starred, rect, theme)
+                } else {
+                    Vec::new()
+                },
+            };
+            if shown {
+                self.paint_row(
+                    ctx,
+                    state,
+                    &slot,
+                    RowState {
+                        selected: selected_rows.get(index).copied().unwrap_or(false),
+                        previous_selected: index
+                            .checked_sub(1)
+                            .and_then(|above| selected_rows.get(above).copied())
+                            .unwrap_or(false),
+                        next_selected: selected_rows.get(index + 1).copied(),
+                    },
+                );
+            }
+            slots.push(slot);
+        }
+        ctx.scene.pop_layer();
+        // Near the last row, the older mail is fetched before it is reached.
+        if let Some(last) = slots.last()
+            && last.band.y0 - list.y1 < row_h * f64::from(OLDER_AHEAD_ROWS)
+        {
+            state.wants_older.set(true);
+        }
+        self.region.note_shown(t, theme);
+        self.region.paint_bars(ctx.scene, t, theme);
+        self.hovered_drawing = self
+            .pointer
+            .filter(|point| list.contains(*point))
+            .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
+            .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
+        self.slots = slots;
+    }
+
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, state: &MailState, slot: &Slot, row: RowState) {
         let hovered = self
             .pointer
@@ -602,7 +681,7 @@ impl MessageList {
         let Some(text) = RowText::of(slot.id, state) else {
             return;
         };
-        let actions = row_actions(slot.starred);
+        let actions = row_actions(&self.labels, slot.starred);
         let action_faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
         let image = state.avatars.image(text.email);
         let avatar = AvatarFace::new(&text.sender, text.email).image(image.as_ref());
@@ -638,7 +717,7 @@ impl MessageList {
             face = face.separator(next_selected);
         }
         if let Some(press) = self.press.filter(|p| p.id == slot.id && p.offset > 0.0) {
-            face = face.swiped(SWIPE_ARCHIVE, press.offset);
+            face = face.swiped(swipe_archive(&self.labels), press.offset);
         }
         face.paint(ctx, slot.rect);
         if text.unread {
@@ -647,8 +726,6 @@ impl MessageList {
     }
 }
 
-/// Whether each of `rows` is chosen: the selection's rows while choosing
-/// several, otherwise the open one.
 fn selected_rows(state: &MailState, rows: &[(MessageId, usize)]) -> Vec<bool> {
     rows.iter()
         .map(|(id, _)| {
@@ -661,8 +738,6 @@ fn selected_rows(state: &MailState, rows: &[(MessageId, usize)]) -> Vec<bool> {
         .collect()
 }
 
-/// The first fetch is on its way: the framework's placeholder for each row
-/// it brings, filling `list`. Returns the step painted.
 fn paint_arriving_rows(
     ctx: &mut PaintCtx<'_>,
     list: Rect,
@@ -675,7 +750,6 @@ fn paint_arriving_rows(
     let frame = RowFrame::new(list, row_h, false, theme);
     let face =
         ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row(kind.shape()), clock, now);
-    // The list is one region: its first row says where the mail comes from.
     let mut named = ui::widget::NamedOnce::default();
     let mut index = 0;
     loop {
@@ -689,9 +763,6 @@ fn paint_arriving_rows(
     face.step()
 }
 
-/// An unread conversation's dot: the toolkit's "something new" mark in the
-/// gutter before the avatar, on its centre line, so unread mail reads at a
-/// glance and not only by the heavier title.
 fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
     let leading = face.leading_rect(row, ctx.text, ctx.theme);
     let gutter = (leading.x0 - row.x0).max(0.0);
@@ -703,22 +774,112 @@ fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
 }
 
 /// The empty list's face: why there is nothing here, and what to do next.
-fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) {
-    let (icon, title, message) = zero_state(
-        !state.mailbox.messages.is_empty(),
-        !state.accounts.is_empty(),
-        state.folder,
-    );
+fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Option<(Rect, Intent)> {
+    let zero = zero_state(!state.mailbox.messages.is_empty(), state.folder);
     EmptyState::paint(
         ctx,
         r,
         &EmptyStateContent {
-            icon: Some(icon),
-            message,
-            ..EmptyStateContent::new(title)
+            icon: Some(zero.icon),
+            title: &zero.title,
+            action_label: zero.action.as_deref(),
+            ..EmptyStateContent::new("")
         },
         Point::new(-1.0, -1.0),
-    );
+    )
+    .map(|pill| (pill, Intent::AccountSettings))
+}
+
+/// Where a frame's parts stand in the list's column: a failed check's words at
+/// the top, and the rows under them.
+struct Placed {
+    /// The failed check's banner; `Rect::ZERO` when the check works.
+    banner: Rect,
+    /// The rows' room: the column less the banner above them.
+    rows: Rect,
+}
+
+/// The failed check's words, as the banner reads them.
+fn sync_content(text: &crate::notice::SyncFailureText) -> BannerContent<'_> {
+    BannerContent {
+        message: text.message.as_deref().map(std::borrow::Cow::Borrowed),
+        action: text.action.as_ref().map(|offer| offer.label.as_str()),
+        ..BannerContent::new(text.kind, &text.title)
+    }
+}
+
+/// The height a row takes at the current text scale, measured from the faces
+/// the rows are painted with so layout and paint agree.
+fn row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
+    ListRowFace::new("Ag")
+        .subtitle("Ag")
+        .secondary("Ag")
+        .height(text, theme)
+}
+
+/// Lay the failed check's words and the rows under them into `column`.
+///
+/// The banner keeps the rows' own inset ([`RowFrame`]) and the step they leave
+/// above their first row, so it stands in the column rather than welded to the
+/// window's edges; the rows begin below it. A list that scrolls stops its rows
+/// short of the scroll bar, and the banner ends where they do.
+fn place(
+    column: Rect,
+    row_count: usize,
+    row_h: f64,
+    banner: Option<&BannerContent<'_>>,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Placed {
+    let Some(content) = banner else {
+        return Placed {
+            banner: Rect::ZERO,
+            rows: column,
+        };
+    };
+    let still = RowFrame::new(column, row_h, false, theme);
+    let width = |frame: &RowFrame| (frame.x1 - frame.x0).max(0.0);
+    let mut height = Banner::height(content, width(&still), text, theme);
+    let scrolls =
+        still.content_height(row_count, theme) > (column.y1 - still.top - height).max(0.0) + 0.5;
+    let frame = if scrolls {
+        let frame = RowFrame::new(column, row_h, true, theme);
+        // A narrower banner may wrap onto one more line.
+        height = Banner::height(content, width(&frame), text, theme);
+        frame
+    } else {
+        still
+    };
+    let y1 = (frame.top + height).min(column.y1);
+    let banner = Rect::new(frame.x0, frame.top, frame.x1, y1);
+    Placed {
+        banner,
+        rows: Rect::new(column.x0, y1, column.x1, column.y1),
+    }
+}
+
+/// The empty list of an account whose check failed: what cannot be reached,
+/// and the one control that helps. Returns it, so a press reaches the same
+/// place the window's own control does.
+fn paint_failure_state(
+    ctx: &mut PaintCtx<'_>,
+    r: Rect,
+    text: &crate::notice::SyncFailureText,
+) -> Option<(Rect, Intent)> {
+    EmptyState::paint(
+        ctx,
+        r,
+        &EmptyStateContent {
+            icon: Some(ui::icons::Icon::WifiOff),
+            title: &text.title,
+            message: text.message.as_deref(),
+            action_label: text.action.as_ref().map(|offer| offer.label.as_str()),
+            error: text.kind == ui::widget::BannerKind::Error,
+            ..EmptyStateContent::new("")
+        },
+        Point::new(-1.0, -1.0),
+    )
+    .zip(text.action.as_ref().map(|offer| offer.intent.clone()))
 }
 
 impl Widget for MessageList {
@@ -749,102 +910,67 @@ impl Widget for MessageList {
         let shared = self.shared.clone();
         let state = shared.borrow();
         self.theme = theme.clone();
-        self.region.set_viewport(r, theme);
+        self.zero_action = None;
+        self.sync_action = None;
+        self.labels = RowLabels::of();
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if state.outbox_open {
             // The outbox is a place of its own: what waits to leave, and why
             // what has not left has not. It is not a folder of the mailbox,
             // so none of a folder's rows or gestures are here.
+            self.region.set_viewport(r, theme);
             self.slots.clear();
+            self.banner = Rect::ZERO;
             self.paint_outbox(&mut ctx, &state);
             return;
         }
         self.queued.clear();
         let rows = state.list_rows();
+        // A check that cannot run is the list's state, not a notice that
+        // fades: its words stand above the rows, or in the place the rows
+        // would be while there are none.
+        let failure = state.sync_error.as_ref().map(crate::notice::sync_failure);
+        let content = failure
+            .as_ref()
+            .filter(|_| !rows.is_empty())
+            .map(sync_content);
+        self.row_h = row_height(ctx.text, theme);
+        let placed = place(r, rows.len(), self.row_h, content.as_ref(), ctx.text, theme);
+        self.banner = placed.banner;
+        self.sync_action = match (&content, &failure) {
+            (Some(content), Some(text)) => Banner::paint(
+                &mut ctx,
+                placed.banner,
+                content,
+                self.pointer.unwrap_or(Point::new(-1.0, -1.0)),
+            )
+            .action
+            .zip(text.action.as_ref().map(|offer| offer.intent.clone())),
+            _ => None,
+        };
+        let list = placed.rows;
+        self.region.set_viewport(list, theme);
         if rows.is_empty()
             && let Some(clock) = &state.first_fetch
         {
             self.slots.clear();
-            self.region.set_content_size(r.width(), 0.0);
+            self.region.set_content_size(list.width(), 0.0);
             let now = ui::motion::frame_now();
-            self.arriving_step = Some(paint_arriving_rows(&mut ctx, r, clock, now));
+            self.arriving_step = Some(paint_arriving_rows(&mut ctx, list, clock, now));
             return;
         }
         self.arriving_step = None;
         if rows.is_empty() {
             self.slots.clear();
-            self.region.set_content_size(r.width(), 0.0);
-            paint_zero_state(&mut ctx, r, &state);
+            self.region.set_content_size(list.width(), 0.0);
+            self.zero_action = match &failure {
+                Some(text) => paint_failure_state(&mut ctx, list, text),
+                None => paint_zero_state(&mut ctx, list, &state),
+            };
             return;
         }
 
-        self.row_h = ListRowFace::new("Ag")
-            .subtitle("Ag")
-            .secondary("Ag")
-            .height(ctx.text, theme);
-        let unscrolled = RowFrame::new(r, self.row_h, false, theme);
-        self.region
-            .set_content_size(r.width(), unscrolled.content_height(rows.len(), theme));
-        // Rows stop short of the scroll bar when the list overflows.
-        let frame = RowFrame::new(r, self.row_h, self.region.overflows_vertically(), theme);
-        self.reveal(&rows, state.selected, frame);
-        let scroll = self.region.offset().y;
-
-        let selected_rows = selected_rows(&state, &rows);
-        ctx.scene
-            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
-        let mut slots = Vec::with_capacity(rows.len());
-        for (index, (id, len)) in rows.iter().enumerate() {
-            let band = frame.band(index, scroll);
-            let rect = frame.row(index, scroll);
-            let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
-            let shown = band.y1 >= r.y0 && band.y0 <= r.y1;
-            let slot = Slot {
-                id: *id,
-                band,
-                rect,
-                starred,
-                messages: *len,
-                // Only a row on screen can be pointed at; one scrolled away
-                // costs no layout of its buttons.
-                actions: if shown {
-                    action_rects(starred, rect, theme)
-                } else {
-                    Vec::new()
-                },
-            };
-            if shown {
-                self.paint_row(
-                    &mut ctx,
-                    &state,
-                    &slot,
-                    RowState {
-                        selected: selected_rows.get(index).copied().unwrap_or(false),
-                        previous_selected: index
-                            .checked_sub(1)
-                            .and_then(|above| selected_rows.get(above).copied())
-                            .unwrap_or(false),
-                        next_selected: selected_rows.get(index + 1).copied(),
-                    },
-                );
-            }
-            slots.push(slot);
-        }
-        ctx.scene.pop_layer();
-        // Near the last row, the older mail is fetched before it is reached.
-        if let Some(last) = slots.last()
-            && last.band.y0 - r.y1 < self.row_h * f64::from(OLDER_AHEAD_ROWS)
-        {
-            state.wants_older.set(true);
-        }
-        self.region.note_shown(t, theme);
-        self.region.paint_bars(ctx.scene, t, theme);
-        self.hovered_drawing = self
-            .pointer
-            .filter(|point| r.contains(*point))
-            .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
-            .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
-        self.slots = slots;
+        self.paint_rows(&mut ctx, &state, &rows, list, self.row_h, t, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -895,6 +1021,12 @@ impl Widget for MessageList {
                 let held = ctx.modifiers.state();
                 let picking = held.control_key() || held.super_key() || held.shift_key();
                 if let Some(point) = self.pointer
+                    && let Some(intent) = self.route_at(point)
+                {
+                    self.shared.borrow_mut().push_intent(intent);
+                    *ctx.handled = true;
+                    self.dirty = true;
+                } else if let Some(point) = self.pointer
                     && picking
                     && self.pick(point, held.shift_key())
                 {
@@ -913,7 +1045,6 @@ impl Widget for MessageList {
                 ..
             } => {
                 if let Some(press) = self.press.take() {
-                    // A swipe across a quarter of the row archives it.
                     let row_w = self.rect.width();
                     if row_w > 0.0 && press.offset >= row_w / 4.0 {
                         self.shared.borrow_mut().apply_message_action(
@@ -960,14 +1091,15 @@ impl Widget for MessageList {
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer?;
         let slot = self.slot_at(point)?;
-        Self::action_at(slot, point).map(|action| {
-            match action {
-                CtxAction::ToggleStar if slot.starred => "Remove star (S)",
-                CtxAction::ToggleStar => "Star (S)",
-                CtxAction::Archive => "Archive (E)",
-                _ => "Delete (Delete)",
-            }
-            .into()
+        self.action_at(slot, point).map(|action| {
+            // The action's own name and the key that does the same.
+            let (label, key) = match action {
+                CtxAction::ToggleStar if slot.starred => (&self.labels.unstar, "S"),
+                CtxAction::ToggleStar => (&self.labels.star, "S"),
+                CtxAction::Archive => (&self.labels.archive, "E"),
+                _ => (&self.labels.delete, "Delete"),
+            };
+            format!("{label} ({key})").into()
         })
     }
 
@@ -979,10 +1111,6 @@ impl Widget for MessageList {
             || ui::widget::Widget::needs_animation_frame(self)
     }
 
-    /// A scroll that changed nothing else offers the host a copy of the
-    /// rows that stay on screen; the row under the resting pointer, whose
-    /// lift and actions do not move with the rows, repaints where it is and
-    /// was.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if !self.needs_redraw() {
             return;
@@ -1007,14 +1135,12 @@ impl Widget for MessageList {
         self.region.needs_animation_frame(&self.theme)
     }
 
-    /// A glide after a flick scrolls as the wheel does: a copy.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         self.scrolled |= self.region.advance();
         false
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        // The first fetch's placeholder steps on at its deadlines.
         let arriving = self
             .arriving_step
             .and_then(|_| self.shared.borrow().first_fetch.clone())
@@ -1074,7 +1200,6 @@ mod tests {
         assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
         assert_eq!(shared.borrow().selected, Some(second));
 
-        // The archive action under the pointer archives that row only.
         let (first, rect) = rows[0];
         list.pointer = Some(rect.center());
         draw(&mut list);
@@ -1087,10 +1212,6 @@ mod tests {
         );
     }
 
-    /// A scroll that changes nothing else offers the host a copy of the
-    /// rows, damaging only the bar's track and the row under the resting
-    /// pointer; a host that does not copy, or any other change, repaints the
-    /// list.
     #[test]
     fn a_scroll_alone_offers_a_copy_of_the_rows() {
         let shared = shared();
@@ -1135,15 +1256,126 @@ mod tests {
         assert_eq!(changed, vec![list.rect]);
     }
 
+    /// A check that cannot run stands above the rows and keeps its place
+    /// until it works: the rows move down for it, and its pill asks the app to
+    /// check again.
+    #[test]
+    fn a_failed_check_stands_above_the_rows_and_offers_to_check_again() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        draw(&mut list);
+        let rows_before = list.row_rects();
+        assert!(list.sync_action.is_none(), "a working account says nothing");
+
+        shared
+            .borrow_mut()
+            .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
+        draw(&mut list);
+        let rows_after = list.row_rects();
+        assert_eq!(rows_before.len(), rows_after.len(), "no row is lost");
+        assert!(
+            rows_after[0].1.y0 > rows_before[0].1.y0,
+            "the words stand above the rows: {:?} then {:?}",
+            rows_before[0].1,
+            rows_after[0].1
+        );
+        let (_, intent) = list.sync_action.expect("the failure offers a way out");
+        assert!(matches!(intent, Intent::CheckMail));
+    }
+
+    /// The failed check's words keep the rows' inset: the same side edges as
+    /// the rows below, a step of air above them, never a strip welded to the
+    /// column's edges.
+    #[test]
+    fn a_failed_check_keeps_the_rows_inset() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        // Once scrolling (the sample mailbox is longer than this) and once
+        // with every row in view: the banner's edges follow the rows' both
+        // times.
+        for (height, scrolls) in [(400.0, true), (2400.0, false)] {
+            list.rect = Rect::new(0.0, 0.0, 340.0, height);
+            draw(&mut list);
+            assert_eq!(list.banner, Rect::ZERO, "a working check has no words");
+
+            shared
+                .borrow_mut()
+                .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
+            draw(&mut list);
+            shared.borrow_mut().clear_sync_failure();
+            assert_eq!(
+                list.region.overflows_vertically(),
+                scrolls,
+                "the case is {height:?}"
+            );
+
+            let banner = list.banner;
+            let (_, first) = list.row_rects()[0];
+            assert!(banner.width() > 0.0 && banner.height() > 0.0);
+            assert!(
+                (banner.x0 - first.x0).abs() < 0.5,
+                "the banner starts on the rows' leading inset: {banner:?} then {first:?}"
+            );
+            assert!(
+                (banner.x1 - first.x1).abs() < 0.5,
+                "the banner ends on the rows' trailing inset: {banner:?} then {first:?}"
+            );
+            assert!(
+                banner.y0 > list.rect.y0,
+                "the banner stands a step below the column's top: {banner:?}"
+            );
+            assert!(
+                banner.y1 <= first.y0,
+                "the rows start under the banner: {banner:?} then {first:?}"
+            );
+        }
+    }
+
+    /// An empty mailbox whose check failed says that, not that nothing has
+    /// arrived, and its pill is the failure's own way out.
+    #[test]
+    fn an_empty_mailbox_whose_check_failed_says_so_instead_of_nothing_yet() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        {
+            let mut state = shared.borrow_mut();
+            let ids: Vec<MessageId> = state.mailbox.messages.keys().copied().collect();
+            for id in ids {
+                state.mailbox.purge(id);
+            }
+            state.note_sync_failure("Anna".into(), crate::state::SyncCause::SignedOut);
+        }
+        draw(&mut list);
+        let (_, intent) = list
+            .zero_action
+            .expect("a failed check offers its own way out");
+        assert!(
+            matches!(intent, Intent::AccountSettings),
+            "a sign-in failure leads to the account that has to change"
+        );
+        assert!(
+            list.sync_action.is_none(),
+            "the words are in the empty list, not twice"
+        );
+    }
+
     #[test]
     fn every_empty_list_says_one_thing() {
-        let (_, title, message) = zero_state(false, false, Folder::Inbox);
-        assert_eq!(title, "No account yet");
-        assert!(message.is_some());
+        let nothing_yet = zero_state(false, Folder::Inbox);
+        assert_eq!(nothing_yet.title, crate::i18n::t("mail-zero-nothing-yet"));
+        assert!(
+            nothing_yet.action.is_some(),
+            "a mailbox no mail has arrived in offers its account route"
+        );
         for folder in Folder::ALL {
-            let (_, title, message) = zero_state(true, true, folder);
-            assert!(message.is_none(), "{folder:?} needs one sentence");
-            assert!(title.chars().next().is_some_and(char::is_uppercase));
+            let empty = zero_state(true, folder);
+            assert!(
+                empty.action.is_none(),
+                "{folder:?} is a folder of a working mailbox, not an account to fix"
+            );
+            assert!(empty.title.chars().next().is_some_and(char::is_uppercase));
         }
     }
 }

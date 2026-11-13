@@ -1,45 +1,35 @@
-//! Who owns a record's content, decided from record metadata alone.
-//!
-//! History restore and merge treat a record by what its content is: opaque
-//! bytes, a serialized Tilo document, or a document the namespace itself holds
-//! as a CRDT. That is a property of the record (its codec, its name), never of
-//! the bytes one version happens to hold — a `.bin` whose bytes parse as a
-//! document is still opaque, and deciding otherwise would mean downloading
-//! whole versions just to classify them.
+//! Deciding a record's content kind from its record metadata alone (its codec,
+//! its name), never from the bytes a version holds, so no version is downloaded
+//! to classify it.
 
 use crate::namespace::Namespace;
 use fs_protocol::FileNameV1;
 
-/// The schema of a document serialized into a record's bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SerializedDocumentSchema {
-    /// A `tilo_doc::Document`: an Automerge document of the rich-text schema.
     TiloDoc,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordContentKind {
-    /// Bytes nobody interprets. Restoring a version puts its bytes back.
+    /// Bytes nobody interprets; restoring a version puts them back.
     Opaque,
-    /// A CRDT document stored as its own serialization. Restoring a version
-    /// is a new change on top of the current document.
+    /// A CRDT document stored as its serialization; restoring a version is a new
+    /// change on the current document.
     SerializedDocument { schema: SerializedDocumentSchema },
-    /// A legacy-format document (`.docx`, `.md`, …) the namespace holds as a
-    /// CRDT and exports on read.
+    /// A document the namespace holds as a CRDT and exports on read.
     NamespaceDocument { codec: String },
 }
 
 impl RecordContentKind {
-    /// The kind a record of this name holds when the namespace keeps no
-    /// codec for it. Signed record bindings carry the name, so every replica
-    /// classifies a record the same way.
+    /// The kind a record of this name holds when the namespace keeps no codec
+    /// for it.
     pub fn for_name(name: &FileNameV1) -> Self {
         let extension = std::str::from_utf8(name.as_bytes())
             .ok()
             .and_then(|name| name.rsplit_once('.'))
             .map(|(_, extension)| extension.to_ascii_lowercase());
         match extension.as_deref() {
-            // Existing .qdoc records retain the same serialized-document policy.
             Some("qdoc" | "tilo-doc") => Self::SerializedDocument {
                 schema: SerializedDocumentSchema::TiloDoc,
             },
@@ -47,8 +37,6 @@ impl RecordContentKind {
         }
     }
 
-    /// The kind of `ino`'s content, or `None` when the namespace has no such
-    /// file.
     pub fn of(namespace: &Namespace, ino: u64) -> Option<Self> {
         if let Some(codec) = namespace.document_codec(ino) {
             return Some(Self::NamespaceDocument { codec });

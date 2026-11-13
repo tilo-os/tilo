@@ -43,8 +43,7 @@ impl RenderRetryState {
     pub(crate) fn known_occluded(&self) -> bool {
         self.occlusions > 0 && !self.probe
     }
-    /// A visible auxiliary surface draws this primary's retained root. Preserve
-    /// its update/sync cadence without forgetting persistent primary occlusion.
+    /// A visible auxiliary surface draws this primary's retained root.
     #[cfg(feature = "native")]
     pub(crate) fn keep_shared_cadence(&mut self, now: Instant) {
         if self.known_occluded() {
@@ -91,9 +90,7 @@ impl RenderRetryState {
         self.occlusions > 0 && !self.allows(now)
     }
 }
-/// An idle redraw whose tree, layout, and damage did not change must not
-/// present. Presenting it asks the compositor for another frame callback,
-/// and answering that callback is what kept apps-open idle painting.
+/// An idle redraw whose tree, layout, and damage did not change must not present.
 #[cfg(feature = "native")]
 pub(crate) fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {
     full_redraw || has_damage
@@ -127,14 +124,11 @@ pub(crate) struct WakeDemand {
     pub animation: bool,
     pub auxiliary_startup: bool,
     pub retry_due: bool,
-    /// One refresh of the window's output: how soon a fast demand without
-    /// its own deadline wakes again. Zero (unset) means [`FRAME_INTERVAL`].
+    /// One refresh of the window's output: how soon a fast demand without its own deadline wakes again.
     pub frame_interval: Duration,
 }
 
-/// Select the actual event-loop deadline. Widget deadlines request
-/// sync/redraw and remain pending until paint admission. Collaboration is not
-/// a demand: its transport wakes the loop for every event it delivers.
+/// Select the actual event-loop deadline.
 #[cfg(feature = "native")]
 pub(crate) fn next_wake(
     now: Instant,
@@ -275,7 +269,6 @@ mod tests {
     #[test]
     fn retry_waits_defer_render_demand_but_keep_model_sibling_and_timer_work() {
         {
-            // Startup, tooltip, animation and overdue widget work share this gate.
             for _kind in ["startup", "tooltip", "animation", "widget"] {
                 assert!(!presentation_demand(true, true));
                 assert!(presentation_demand(false, true));

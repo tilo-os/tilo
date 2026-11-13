@@ -64,7 +64,6 @@ impl HeaderTitle {
         self.title.is_some()
     }
 
-    /// Whether the row's title is hidden behind the content's own heading.
     pub(super) fn is_covered(&self) -> bool {
         self.covered
     }
@@ -156,8 +155,6 @@ impl Widget for HeaderTitle {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Covered now, or given no room before the next measure takes it out of the row: the
-        // title neither paints over the actions nor flashes for one frame.
         if self.covered || self.rect.width() <= 0.0 {
             return;
         }
@@ -208,14 +205,9 @@ impl Widget for HeaderTitle {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The page shows a heading of its own with these words: that heading is the page's name,
-        // and this one would repeat it.
         if self.covered && self.edited.is_none() {
             return None;
         }
-        // The page edits its title in a field, which names itself rather than the page: this
-        // heading says the words the field holds and stands where the field does, so the page
-        // keeps its name — and the title stands on screen once.
         if let Some(shown) = &self.edited {
             let node = AccessNode::new(Role::Heading { level: 2 })
                 .with_name(shown.words.clone())

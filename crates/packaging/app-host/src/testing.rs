@@ -15,7 +15,7 @@ pub struct ConnectedService {
 }
 
 impl ConnectedService {
-    /// Supply an explicit service dependency without mutating process environment.
+    /// Supply an explicit service dependency without changing the process environment.
     pub fn start<S>(server: S) -> Result<(Self, OwnedFd), String>
     where
         S: Host + Send,
@@ -38,7 +38,7 @@ impl ConnectedService {
         ))
     }
 
-    /// Stop the fixture and assert its driver result through the caller's test.
+    /// Stop the fixture and assert its driver result.
     pub fn shutdown(mut self) -> Result<(), String> {
         self.stop()
     }
@@ -178,8 +178,8 @@ mod tests {
         }
     }
 
-    /// Lists one system package the way the service does: its signed
-    /// manifest's text and its measured size.
+    /// Lists one system package the way the service does: its signed manifest's text and its
+    /// measured size.
     struct ListingHost;
 
     const MAIL_MANIFEST: &str = concat!(

@@ -1,13 +1,7 @@
-//! What Tube shows that the document does not hold, published beneath the
-//! resource as live rows: the open watch page with its comments, the fetched
-//! catalogue (videos, creators, playlists, the completed search), the
-//! person's watch history and playback preferences, and the paired Grayjay
+//! What Tube shows that the document does not hold, published beneath the resource as live rows:
+//! the open watch page with its comments, the fetched catalogue (videos, creators, playlists, the
+//! completed search), the person's watch history and playback preferences, and the paired Grayjay
 //! devices.
-//!
-//! A row offers the effects bound to its entity (open *this* video). The
-//! edits on it — liking a video, queueing it, subscribing to its creator,
-//! liking or replying to a comment — are the resource's declarations,
-//! naming the entity by the id after the row id's `tube.<kind>:` prefix.
 
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::words::RowType;
@@ -20,10 +14,9 @@ use crate::sync::{PeerRecord, SyncStatus, SyncView};
 const MAX_ROWS: usize = 100;
 const MAX_COMMENTS: usize = 50;
 
-/// The catalogue types Tube's rows are resources of: a channel, a video, a
-/// playlist, each declared by its kind and its name in words, so a row says
-/// what it is (search finds "youtube videos of <channel>") as a tilolang
-/// item does, with nothing the row writes.
+/// The catalogue types Tube's rows are resources of: a channel, a video, a playlist, each declared
+/// by its kind and its name in words, so a row says what it is (search finds "youtube videos of
+/// <channel>") as a tilolang item does, with nothing the row writes.
 const CHANNEL_KIND: &str = "tube.channel";
 const VIDEO_KIND: &str = "tube.video";
 const PLAYLIST_KIND: &str = "tube.playlist";
@@ -78,7 +71,6 @@ fn playlist_row(model: &TubeModel, id: String, playlist_id: &str) -> Option<Live
     )
 }
 
-/// One-line comment preview for the row label.
 fn comment_label(author: &str, text: &str) -> String {
     let mut line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() > 48 {
@@ -91,8 +83,6 @@ fn comment_label(author: &str, text: &str) -> String {
     }
 }
 
-/// The open watch page, `tube.current:ID`: play or pause it, share it, its
-/// creator, and its comments as `tube.comment:ID` rows.
 fn current_watch(model: &TubeModel) -> Option<LiveRow> {
     let Route::Watch(video_id) = &model.route else {
         return None;
@@ -155,8 +145,6 @@ fn history_row(model: &TubeModel, video_id: &str) -> LiveRow {
     })
 }
 
-/// The completed search's results in order, so "the third result" means the
-/// same thing to an agent as on screen.
 fn search_results(model: &TubeModel) -> LiveRow {
     let query = model.search_hits_query.trim();
     let label = if query.is_empty() {
@@ -187,8 +175,6 @@ fn search_results(model: &TubeModel) -> LiveRow {
     )
 }
 
-/// The person's playback preferences, `tube.settings`: flip each switch, and
-/// cycle the preferred quality and each segment category's handling.
 fn preferences(settings: &Settings) -> LiveRow {
     let switches = SettingFlag::ALL
         .into_iter()
@@ -250,7 +236,6 @@ fn segment_row(settings: &Settings, category: Category) -> LiveRow {
     })
 }
 
-/// Grayjay device sync: sync now, and approve or revoke each device.
 fn devices(view: &SyncView) -> LiveRow {
     let unavailable = matches!(view.status, SyncStatus::Unavailable);
     let mut row = LiveRow::new(
@@ -291,8 +276,6 @@ fn device_row(peer: &PeerRecord) -> LiveRow {
     }
 }
 
-/// Every live row, bounded: the watch page first, as what the person is
-/// looking at.
 pub(crate) fn live_rows(model: &TubeModel, view: &SyncView) -> Vec<LiveRow> {
     current_watch(model)
         .into_iter()
@@ -330,7 +313,6 @@ pub(crate) fn live_rows(model: &TubeModel, view: &SyncView) -> Vec<LiveRow> {
         .collect()
 }
 
-/// The live row `id`, including the entities beyond the published page.
 pub(crate) fn live_row(model: &TubeModel, view: &SyncView, id: &str) -> Option<LiveRow> {
     if let Some(video_id) = id.strip_prefix("tube.video:") {
         return video_row(model, id.to_owned(), video_id);
@@ -404,9 +386,6 @@ pub(crate) fn live_row(model: &TubeModel, view: &SyncView, id: &str) -> Option<L
         .find(|row| row.id() == id)
 }
 
-/// The effects whose availability the surface reports: downloads have no
-/// storage to go to, seeking needs an open video and skipping a segment
-/// one playing, and device sync may be unavailable on this device.
 pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectStatus> {
     let mut statuses = vec![EffectStatus::unavailable(
         TubeEffect::DOWNLOAD,
@@ -429,7 +408,7 @@ pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectS
     }
     if matches!(view.status, SyncStatus::Unavailable) {
         let reason = if view.summary.trim().is_empty() {
-            crate::sync::capability().summary.to_string()
+            crate::i18n::t(crate::sync::capability().summary_key)
         } else {
             view.summary.clone()
         };

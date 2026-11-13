@@ -7,11 +7,8 @@ use crate::{
     AuthorizationRequest, OAuthError, Pkce, Provider, Refresh, Registration, Revocation, TokenSet,
 };
 
-/// Deadline for one token endpoint request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
-/// Largest token endpoint answer read.
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
-/// The editor identity GitHub's Copilot token endpoint expects.
 const COPILOT_EDITOR: [(&str, &str); 3] = [
     ("editor-version", "vscode/1.107.0"),
     ("editor-plugin-version", "copilot-chat/0.35.0"),
@@ -141,7 +138,6 @@ impl OAuthClient {
         }
     }
 
-    /// Trade a GitHub token for a Copilot token ([`Refresh::CopilotToken`]).
     fn copilot_token(&self, endpoint: &str, github_token: &str) -> Result<TokenSet, OAuthError> {
         let mut request = self
             .http
@@ -216,7 +212,6 @@ impl OAuthClient {
         }
     }
 
-    /// Send `request` and read at most [`MAX_RESPONSE_BYTES`] of its answer.
     pub(crate) fn read(
         request: reqwest::blocking::RequestBuilder,
     ) -> Result<(u16, String), OAuthError> {
@@ -276,11 +271,8 @@ fn form(params: &[(&str, &str)]) -> String {
     body.finish()
 }
 
-/// How the authorization code comes back.
 enum Return {
-    /// The browser is redirected to this listener.
     Loopback(LoopbackServer),
-    /// The provider displays the code; the person pastes it.
     Pasted,
 }
 
@@ -339,12 +331,10 @@ impl Authorization {
         })
     }
 
-    /// The authorization URL to open in the system browser.
     pub fn url(&self) -> &str {
         &self.url
     }
 
-    /// The loopback redirect URI, `None` when the code is to be pasted.
     pub fn redirect_uri(&self) -> Option<String> {
         match &self.code_return {
             Return::Loopback(server) => Some(server.redirect_uri()),

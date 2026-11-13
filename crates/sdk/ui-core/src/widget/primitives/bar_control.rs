@@ -1,15 +1,4 @@
-//! `BarControl` and `IconButton` (`docs/design-language.md`,
-//! "Primitives").
-//!
-//! A **bar control** is what stands on the desktop's top bar and on a
-//! window's bar: plain at rest, a half lift under the pointer, a whole lift
-//! while pressed or while its menu is open, the control radius, 28 high.
-//! It shows an icon, a label, or both, and an optional trailing icon (a
-//! chevron that opens its menu). Icons rest in secondary ink and turn
-//! primary under the pointer or while open; the label is primary ink.
-//!
-//! An **icon button** is a square [`crate::widget::Button`] whose
-//! constructor requires its accessible name, which is also its tooltip.
+//! `BarControl` and `IconButton` (`docs/design-language.md`, "Primitives").
 
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -21,7 +10,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{Button, ButtonRole, ControlSize};
 
-/// A bar control's content and state, borrowed.
 #[derive(Clone, Copy, Debug)]
 pub struct BarControlFace<'a> {
     name: &'a str,
@@ -59,21 +47,18 @@ impl<'a> BarControlFace<'a> {
         self
     }
 
-    /// The visible label. An empty string shows none.
     #[must_use]
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = (!label.is_empty()).then_some(label);
         self
     }
 
-    /// A trailing icon: the chevron of a control that opens a menu.
     #[must_use]
     pub fn trailing(mut self, icon: Icon) -> Self {
         self.trailing = Some(icon);
         self
     }
 
-    /// Its menu or panel is open: it holds the whole lift.
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
@@ -100,7 +85,6 @@ impl<'a> BarControlFace<'a> {
         self
     }
 
-    /// The accessible name.
     #[must_use]
     pub fn name(&self) -> &str {
         self.name
@@ -240,10 +224,59 @@ impl<'a> BarControlFace<'a> {
         }
     }
 
-    /// Paint only the control's lift in `rect` on `ground`: the fill
-    /// [`Self::paint`] lays under its content, for a bar control that draws
-    /// its content itself (an application's tray icon, a mark). The caller
-    /// draws what stands on it.
+    /// The control as a page shows it ([`crate::composition::Face`]), on
+    /// `ground`, in the inks and geometry [`Self::paint`] paints it with.
+    /// Reached through [`crate::composition::bar_control_face`].
+    pub(crate) fn composed(
+        &self,
+        theme: &Theme,
+        ground: Color,
+    ) -> Option<crate::composition::Face> {
+        use crate::composition::{Face, TextLook, rgba8};
+        let colors = &theme.tokens.colors;
+        let fill = self.fill(theme, ground);
+        let under = fill.unwrap_or(ground);
+        let lit = self.open || self.hovered || self.pressed;
+        let label_ink = colors.ink_on(under, colors.text_primary, 4.5);
+        let icon_ink = if lit {
+            label_ink
+        } else {
+            colors.ink_on(under, colors.text_dim, 3.0)
+        };
+        let icon = Self::icon_size(theme);
+        let glyph = |i: Icon| i.glyph(icon, icon_ink, false);
+        let leading = match self.icon {
+            Some(i) => Some(glyph(i)?),
+            None => None,
+        };
+        let trailing = match self.trailing {
+            Some(i) => Some(glyph(i)?),
+            None => None,
+        };
+        Some(Face {
+            icon: leading,
+            label: self.label.map(|label| {
+                TextLook::new(label.to_owned(), &self.style(theme), Some(label_ink))
+                    .with_max_lines(Some(1))
+            }),
+            detail: None,
+            trailing,
+            fill: fill.map(rgba8),
+            edge: None,
+            radius: f64::from(theme.tokens.radii.control),
+            pad: if self.label.is_none() && self.trailing.is_none() {
+                0.0
+            } else {
+                Self::pad(theme)
+            },
+            gap: f64::from(theme.tokens.metrics.icon_label_gap),
+            spread: false,
+        })
+    }
+
+    /// Paint only the control's lift in `rect` on `ground`: the fill [`Self::paint`] lays under
+    /// its content, for a bar control that draws its content itself (an application's tray
+    /// icon, a mark).
     pub fn paint_lift(
         &self,
         scene: &mut vello::Scene,
@@ -302,7 +335,6 @@ impl IconButton {
         Button::icon_only(id, icon, name).control_size(ControlSize::Small)
     }
 
-    /// The immediate face of an icon button at `rect`, for a painted host.
     #[must_use]
     pub fn face(rect: Rect, icon: Icon, name: &str) -> crate::widget::ButtonFace<'_> {
         crate::widget::ButtonFace::icon_only(rect, icon, name).role(ButtonRole::Plain)

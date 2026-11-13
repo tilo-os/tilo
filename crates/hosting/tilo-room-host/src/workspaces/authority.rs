@@ -151,14 +151,16 @@ impl Workspaces {
         if let WorkspaceOp::Host(operation) = op {
             // What anyone may do here is for a host that keeps workspaces of
             // people's own: making theirs, listing them, and keeping their list.
-            let anyones = operation == HostOperation::CreateOwnWorkspace
-                || (matches!(
-                    operation,
-                    HostOperation::ListWorkspaces
-                        | HostOperation::DeleteOwnWorkspace
-                        | HostOperation::KeepPersonalList
-                        | HostOperation::ReadPersonalList
-                ) && !relay_person);
+            // The host's own person needs no offer: every workspace governed
+            // here is theirs, and a key of theirs enters one by asking for it.
+            let anyones = matches!(
+                operation,
+                HostOperation::CreateOwnWorkspace
+                    | HostOperation::ListWorkspaces
+                    | HostOperation::DeleteOwnWorkspace
+                    | HostOperation::KeepPersonalList
+                    | HostOperation::ReadPersonalList
+            ) && !relay_person;
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",
@@ -247,8 +249,7 @@ fn decide_by_governance(
             "the device's certificate names another person than the room admitted",
         ));
     }
-    let bound = roles::foreign_device_bound();
-    let authority = member.authority(&bound);
+    let authority = member.authority();
     let cx = Context::at_time(system_time(now));
     // No person witnessed an approval here: an answer that asks first is a
     // refusal, never a pass.

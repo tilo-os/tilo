@@ -1,20 +1,6 @@
-//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
-//!
-//! The **resource + action model** ([`tilo_actions`]) is the foundation: the focused app instance
-//! publishes a tree of open [`ResourceSpec`]s, each exporting the [`ActionSpec`]s Ctrl+K offers. An
-//! app can also fold in searchable content through [`SearchProvider`]s, whose hits can address an
-//! exported resource action; search providers are discovery-only, never authority, and the host
-//! resolves every addressed resource through the owning widget and permission-filters it before
-//! activation.
-//!
-//! One registry, one renderer, one flow: input is the shared [`SearchField`], results render
-//! through [`SearchResultsView`] grouped by kind, and an action row resolves to its
-//! [`EncodedAction`] and [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through
-//! `tilo_actions` — the path a remote peer replays — collecting a
-//! [`Prompted`](tilo_actions::ActionInput::Prompted) action's argument in the field first. The host
-//! ([`crate::app::App`]) drains a completed activation with
-//! [`take_operation`](ActionPalette::take_operation) and
-//! [`take_navigation`](ActionPalette::take_navigation).
+//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`. The **resource + action model**
+//! ([`tilo_actions`]) is the foundation: the focused app instance publishes a tree of open
+//! [`ResourceSpec`]s, each exporting the [`ActionSpec`]s Ctrl+K offers.
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
 use crate::i18n::widget_text;
@@ -54,10 +40,8 @@ pub const ACTIONS_KIND: &str = "Actions";
 /// row can never collide with a flattened action key.
 const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
 
-/// Row-id prefix for "Search in" rows, which narrow the palette to a scope.
 const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 
-/// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
 pub(crate) mod api;
@@ -73,13 +57,10 @@ pub(crate) use api::{ActionPaletteBox, make_action_palette};
 pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::{list_cap, placement};
 
-/// The window a palette was asked for from, when a host lays several app
-/// tiles out in one tree (the desktop's strip of windows): the innermost
-/// tile under `pressed_at` when a press asked (a control that needs
-/// confirmation, clicked in a window that does not hold the keyboard), else
-/// the tile around the `focused` node. `None` when there is no tile there:
-/// the window is the whole surface. `tile_rect` is a node's rect when it is
-/// a tile ([`tile_rect`]).
+/// The window a palette was asked for from, when a host lays several app tiles out in one tree (the
+/// desktop's strip of windows): the innermost tile under `pressed_at` when a press asked (a control
+/// that needs confirmation, clicked in a window that does not hold the keyboard), else the tile around
+/// the `focused` node.
 pub(crate) fn invoking_window(
     taffy: &TaffyTree<()>,
     root: Option<NodeId>,
@@ -114,7 +95,7 @@ pub(crate) fn invoking_window(
     })
 }
 
-/// `widget`'s rect when it is an app's tile, a window of its own.
+/// `widget`'s rect when it is an app's tile, a window of it.
 pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
     widget
         .as_any()
@@ -131,10 +112,7 @@ use ranking::rank_and_group;
 
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
-/// One row of facet chips, a small control's height.
 const FACET_H: f64 = 28.0;
-/// The suffix the catalogue appends to the resource id a view's `open` acts
-/// on, so a search opened on a resource finds the row that opens it.
 const VIEW_OPEN_SUFFIX: &str = "#open";
 /// Cap per group so one busy provider can't flood the overlay.
 // Dense resource types routinely expose a handful of collection actions plus
@@ -146,8 +124,6 @@ mod row_text;
 pub(crate) use row_text::{
     found_by, lists_a_row, merged_facets, offers_a_person, scope_token_label, without_token,
 };
-/// Maximum number of provider hits materialised for one keystroke. Providers
-/// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
 
 /// Diagnostics for one bounded progressive-search step.
@@ -160,14 +136,13 @@ pub struct SearchAdvance {
     pub generation: u64,
 }
 
-/// The palette's query field, as text committed from outside the keyboard
-/// (an input method's, or a dictation's) may write into it.
+/// The palette's query field, as text committed from outside the keyboard (an input method's, or a
+/// dictation's) may write into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueryField {
-    /// Fingerprint of the field's text and selection
-    /// ([`crate::ime::edit_fingerprint`]): any edit or caret move since moves
-    /// it, so committed text can tell whether the field is still the one it
-    /// was meant for.
+    /// Fingerprint of the field's text and selection ([`crate::ime::edit_fingerprint`]): any edit or
+    /// caret move since moves it, so committed text can tell whether the field is still the one it was
+    /// meant for.
     pub fingerprint: [u8; 32],
     /// The field takes a secret, so words spoken elsewhere never go into it.
     pub secret: bool,
@@ -175,29 +150,22 @@ pub struct QueryField {
     pub multiline: bool,
 }
 
-/// How activating one row resolves.
 #[derive(Clone)]
 enum RowResolution {
-    /// An exported action, deliberately retained as an inert address. It is
-    /// resolved against the latest resource forest only when activated.
     Address(tilo_actions::ActionAddress),
     Bound(crate::bound_dispatch::BoundActionTarget),
     /// A legacy search-provider hit — hand the opaque id back to the app.
     Navigate(String, Option<crate::bound_dispatch::CallbackBinding>),
 }
 
-/// A resource-scoped action's path to an [`EncodedAction`].
 #[derive(Clone)]
 enum ActionKind {
-    /// Fires immediately with this pre-encoded action.
     NoArgument {
         intent: PreparedActionIntent,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
     },
-    /// Collects a free-text argument in the field first, then builds the
-    /// action with the spec's [`build_text`](tilo_actions::ActionSpec::build_text).
     Prompted {
         prompt: String,
         spec: Box<tilo_actions::ActionSpec>,
@@ -205,8 +173,6 @@ enum ActionKind {
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
     },
-    /// Collects the canonical JSON object for a structured or
-    /// multi-parameter action, then uses the `ActionSpec`'s strict binder.
     Typed {
         prompt: String,
         spec: Box<tilo_actions::ActionSpec>,
@@ -216,7 +182,6 @@ enum ActionKind {
     },
 }
 
-/// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
     bound: Option<crate::bound_dispatch::BoundActionTarget>,
     address: tilo_actions::ActionAddress,
@@ -299,9 +264,7 @@ impl PendingOperation {
         }
     }
 
-    /// Reconstruct the door argument collected by the palette. Keeping the
-    /// typed JSON prefix makes palette, semantic, button, and agent calls use
-    /// the same strict binder in the application host.
+    /// Reconstruct the door argument collected by the palette.
     pub fn wire_argument(&self) -> Option<String> {
         match &self.input {
             PendingInput::Immediate | PendingInput::Invalid => None,
@@ -359,16 +322,13 @@ struct ProviderRowValidation {
     permissions: Option<crate::permissions::PermissionContext>,
 }
 
-/// The value a host row is collecting in the field, when one is: which row
-/// and what kind of value.
 struct HostStep {
     id: String,
     kind: ArgumentKind,
 }
 
-/// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
-/// fed by the focused app's resource/action tree plus any folded-in
-/// [`SearchProvider`]s.
+/// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`], fed by the focused app's
+/// resource/action tree plus any folded-in [`SearchProvider`]s.
 #[crate::component::not_a_component(system, "the palette is the system's")]
 pub struct ActionPalette {
     field: SearchField,
@@ -376,10 +336,9 @@ pub struct ActionPalette {
     /// Row `action_id` → how activating it resolves.
     index: HashMap<String, RowResolution>,
     base_index: HashMap<String, RowResolution>,
-    /// Resolution key → the actions the palette may be asked for whether or not
-    /// it lists them as rows: a control bound to one, an assistive activation
-    /// and a search request name the action they want the field to collect the
-    /// arguments of (`offers_a_person`, [`Self::activate_address`]).
+    /// Resolution key → the actions the palette may be asked for whether or not it lists them as rows:
+    /// a control bound to one, an assistive activation and a search request name the action they want
+    /// the field to collect the arguments of (`offers_a_person`, [`Self::activate_address`]).
     askable: HashMap<String, RowResolution>,
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
@@ -418,23 +377,20 @@ pub struct ActionPalette {
     /// A revoked selection stays unselected until restored or deliberately changed.
     missing_selection: Option<String>,
     search_generation: u64,
-    /// The exported actions' titles and descriptions, indexed while they
-    /// stay the same.
+    /// The exported actions' titles and descriptions, indexed while they stay the same.
     action_index: ListIndex,
-    /// [`crate::search::engine_generation`] the rows were ranked with:
-    /// where the index's code loads on first use, an open palette ranks
-    /// again once it is in.
+    /// [`crate::search::engine_generation`] the rows were ranked with: where the index's code loads on
+    /// first use, an open palette ranks again once it is in.
     engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
-    /// `Some` while collecting the explicit confirmation required by the
-    /// selected action contract.
+    /// `Some` while collecting the explicit confirmation required by the selected action contract.
     confirm: Option<ConfirmState>,
     confirmation_sheet: crate::widget::ModalSheet,
-    /// The control a confirmation asks about, in window coordinates: the
-    /// question stands beside it as a popover rather than over the window.
+    /// The control a confirmation asks about, in window coordinates: the question sits beside it as a
+    /// popover rather than over the window.
     confirm_anchor: Option<Rect>,
     /// A ready-to-dispatch action, set on activation, drained by `take_operation`.
     pending_dispatch: Option<PendingOperation>,
@@ -446,51 +402,48 @@ pub struct ActionPalette {
     pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
     /// The palette's outer rect (field + results), set by `layout`.
     rect: Rect,
-    /// The field's own layout tree, rebuilt each `layout` so its `handle_event`
-    /// can resolve the inner text input's node.
+    /// The field layout tree, rebuilt each `layout` so its `handle_event` can resolve the inner text
+    /// input's node.
     field_taffy: TaffyTree<()>,
     field_node: Option<NodeId>,
-    /// A text renderer kept for the field's per-frame measure pass, so `layout`
-    /// does not construct a font system every frame the palette is open.
+    /// A text renderer kept for the field's per-frame measure pass, so `layout` does not construct a
+    /// font system every frame the palette is open.
     measure: Option<TextRenderer>,
     field_source: PaletteFieldSource,
     request_generation: uuid::Uuid,
     controls: crate::widget::Row,
     controls_node: Option<NodeId>,
     command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
-    /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it
-    /// at once, a click brings it in.
+    /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it at once, a click brings it
+    /// in.
     appear: crate::motion::Appearing,
-    /// The window it stands in, under the window's bar, which its modal
-    /// scrim dims ([`Self::place_in`]); `None` where a host lays it out as
-    /// a widget of its own.
+    /// The window it is in, under the window's bar, which its modal scrim dims ([`Self::place_in`]);
+    /// `None` where a host lays it out as a widget of it.
     scrim: Option<Rect>,
     /// Where the pointer last was, for a press on the scrim.
     scrim_pointer: Point,
-    /// The rows a host fed, in the order it gave them; `Some` while the
-    /// palette is over a host's own search ([`Self::rows`]).
+    /// The rows a host fed, in the order it gave them; `Some` while the palette is over a host search
+    /// ([`Self::rows`]).
     host_rows: Option<Vec<CommandEntry>>,
-    /// The rows shown, by index into `host_rows`: every one, or those the
-    /// query matches while the host lets the palette narrow.
+    /// The rows shown, by index into `host_rows`: every one, or those the query matches while the host
+    /// lets the palette narrow.
     host_visible: Vec<usize>,
-    /// The host rows' labels and descriptions, indexed while they stay the
-    /// same.
+    /// The host rows' labels and descriptions, indexed while they stay the same.
     host_index: ListIndex,
-    /// The host does its own matching, so the query does not narrow its rows.
+    /// The host does its matching, so the query does not narrow its rows.
     bypass_fuzzy: bool,
     /// More results are still coming ([`Self::set_searching`]).
     searching: bool,
     /// [`crate::search::engine_generation`] the host rows were ranked with.
     ranked_generation: u64,
-    /// What the field says while nothing is typed; a host names the source
-    /// it searches ("Search files…").
+    /// What the field says while nothing is typed; a host names the source it searches ("Search
+    /// files…").
     query_placeholder: String,
     /// `Some` while a host step collects a value in the field.
     host_step: Option<HostStep>,
     /// The query, kept aside while a host step uses the field.
     saved_host_query: String,
-    /// The chosen host row, set on activation, drained by
-    /// [`Self::take_outcome`].
+    /// The chosen host row, set on activation, drained by [`Self::take_outcome`].
     outcome: Option<CommandOutcome>,
     /// A ←/→ step asked of the selected adjustable row: its id and -1 or 1.
     adjustment: Option<(String, i8)>,
@@ -501,37 +454,37 @@ pub struct ActionPalette {
     /// Backspace at the start of the field took the token away, until the
     /// host notices ([`Self::take_scope_token_removed`]).
     scope_token_removed: bool,
-    /// What pressing the token does, when it is a control: its accessible
-    /// name. `None`: Backspace alone removes it.
+    /// What pressing the token does, when it is a control: its accessible name.
     scope_token_action: Option<String>,
-    /// Show the query field alone while nothing is typed, for a host that
-    /// opens search over content the person came to look at.
+    /// Show the query field alone while nothing is typed, for a host that opens search over content the
+    /// person came to look at.
     field_only_while_empty: bool,
-    /// The card reserves the band its host paints its own controls into.
+    /// The card reserves the band its host paints its controls into.
     band_shown: bool,
-    /// Chip rows the host's band is reserving: the palette doesn't know how
-    /// many controls the host has, so this is negotiated, not fixed.
-    /// Tallest the host rows' list may grow before it scrolls; the host knows
-    /// the display, the palette does not.
+    /// Chip rows the host's band is reserving: the palette doesn't know how many controls the host has,
+    /// so this is negotiated, not fixed.
     max_list_height: Option<f64>,
     /// The widest the card may be: the room the host has for it.
     max_width: Option<f64>,
-    /// The modifiers held now, so a selected row can show what its
-    /// alternative activation would do before it is chosen.
+    /// The modifiers held now, so a selected row can show what its alternative activation would do
+    /// before it is chosen.
     held: winit::keyboard::ModifiersState,
-    /// The modifier held as the last row was chosen: where it asked the row to open, read by the
-    /// host after the person may have let go of it.
+    /// The modifier held as the last row was chosen: where it asked the row to open, read by the host
+    /// after the person may have let go of it.
     chosen_with: Option<crate::search::ActivationModifier>,
     /// The keycap notation the host's rows are drawn with.
     platform: crate::platform::PlatformConventions,
     /// The theme's text and interface scales, as last laid out.
     text_scale: f64,
     ui_scale: f64,
-    /// The card's own composition changed: a host asks for a new frame.
+    /// The theme the field's controls are placed in, as last laid out: a field a host draws itself has
+    /// no layout pass of it, so the card places it when it is given its box.
+    layout_theme: Theme,
+    /// The card composition changed: a host asks for a new frame.
     structure_dirty: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
+    /// Input or a new document value changed what this widget paints: it repaints once, and rests after
+    /// the frame draws it.
     dirty: bool,
 }
 
@@ -555,8 +508,7 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
-    /// The action the palette is asking the person to confirm, and the
-    /// question it asks, while it asks.
+    /// The action the palette is asking the person to confirm, and the question it asks, while it asks.
     #[must_use]
     pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
         self.confirm
@@ -564,7 +516,7 @@ impl ActionPalette {
             .map(|confirm| (&confirm.pending.address, confirm.question.as_str()))
     }
 
-    /// The published semantic target of the question's own action button
+    /// The published semantic target of the question action button
     /// (named for the verb it confirms), while the palette asks. Activating
     /// it goes ahead, as the person's click or assistive technology does; a
     /// destructive question starts on Cancel, so Enter never confirms it.
@@ -573,8 +525,6 @@ impl ActionPalette {
         self.confirm.as_ref().map(|_| self.target("submit"))
     }
 
-    /// Ask the person to confirm `pending`: its own label as the question
-    /// and as the button that goes ahead.
     fn ask_confirmation(&mut self, pending: PendingOperation) {
         let (label, description) = pending
             .ordinary
@@ -591,8 +541,6 @@ impl ActionPalette {
                     })
             })
             .unwrap_or_default();
-        // Where the workspace's grants ask rather than the action, say so: the
-        // person is the one who decides.
         let asked = pending
             .ordinary
             .as_ref()
@@ -627,14 +575,10 @@ impl ActionPalette {
         }
     }
 
-    /// The person went ahead with what the palette asked: queue it with the
-    /// evidence its policy needs.
     fn accept_confirmation(&mut self) {
         if let Some(state) = &self.confirm
             && !state.satisfied()
         {
-            // Not yet the name it asks for: nothing goes ahead, and the
-            // sheet keeps asking where the person is.
             self.search_announcement = Some(state.detail.clone());
             return;
         }
@@ -647,8 +591,8 @@ impl ActionPalette {
         self.open = false;
     }
 
-    /// Why the palette asks, when the workspace's grants ask rather than the
-    /// action itself: who decides, said to the person asked.
+    /// Why the palette asks, when the workspace's grants ask rather than the action itself: who
+    /// decides, said to the person asked.
     #[must_use]
     pub fn asking_why(&self) -> Option<&str> {
         self.confirm.as_ref()?.pending.ordinary.as_ref()?.asked()
@@ -763,12 +707,12 @@ impl ActionPalette {
             platform: crate::platform::PlatformConventions::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
+            layout_theme: Theme::default(),
             structure_dirty: false,
         }
     }
 
-    /// Populate from the focused instance's open-resource forest. Each exported
-    /// action becomes an **Actions** row; rebuilds the result set + index.
+    /// Populate from the focused instance's open-resource forest.
     pub fn load_open_resources(&mut self, resources: &[ResourceSpec]) {
         self.resources = resources.to_vec();
         let query = self.field.value().to_string();
@@ -786,9 +730,8 @@ impl ActionPalette {
         self.resources = resources.to_vec();
     }
 
-    /// Refresh displayed authority asynchronously without moving an existing
-    /// selection onto a different control. Argument/confirmation fields retain
-    /// their original address; dispatch still rechecks the fresh authority.
+    /// Refresh displayed authority asynchronously without moving an existing selection onto a different
+    /// control.
     pub fn refresh_visible_resources(&mut self, resources: &[ResourceSpec]) {
         self.resources = resources.to_vec();
         if self.in_argument_mode() {
@@ -898,19 +841,19 @@ impl ActionPalette {
         self.queue_or_confirm(pending.clone(), pending.confirmation);
     }
 
-    /// Ask the next confirmation beside `anchor`, the control the person
-    /// used, as a popover; `None` asks over the window.
+    /// Ask the next confirmation beside `anchor`, the control the person used, as a popover; `None`
+    /// asks over the window.
     pub(crate) fn anchor_confirmation(&mut self, anchor: Option<Rect>) {
         self.confirm_anchor = anchor;
     }
 
-    /// The control the open confirmation stands beside, while it asks.
+    /// The control the open confirmation sits beside, while it asks.
     pub(crate) fn confirmation_anchor(&self) -> Option<Rect> {
         self.confirm.as_ref().and(self.confirm_anchor)
     }
 
-    /// Whether what was just asked for went ahead unasked (Shift held over
-    /// something Undo takes back): the host runs it now, as if confirmed.
+    /// Whether what was just asked for went ahead unasked (Shift held over something Undo takes back):
+    /// the host runs it now, as if confirmed.
     pub(crate) fn went_ahead(&self) -> bool {
         self.confirm.is_none() && self.pending_dispatch.is_some()
     }
@@ -923,8 +866,8 @@ impl ActionPalette {
             .as_ref()
     }
 
-    /// Capture a palette-row request immediately after the real argument/row
-    /// transition, before any later host frame can change its owner or value.
+    /// Capture a palette-row request immediately after the real argument/row transition, before any
+    /// later host frame can change its owner or value.
     pub(crate) fn ordinary_capture_request(&self) -> Option<PendingOperation> {
         self.pending_dispatch
             .as_ref()
@@ -947,9 +890,8 @@ impl ActionPalette {
         self.open && !self.history_suspended
     }
 
-    /// Follow whether it is presented, with the motion the person allows:
-    /// its host calls this every frame, drawn or not, so a palette hidden
-    /// and shown again arrives again.
+    /// Follow whether it is presented, with the motion the person allows: its host calls this every
+    /// frame, drawn or not, so a palette hidden and shown again arrives again.
     #[cfg(feature = "native")]
     pub(crate) fn follow_presence(&mut self, motion: crate::tokens::EffectiveMotion) {
         let presented = self.is_presented();
@@ -965,8 +907,6 @@ impl ActionPalette {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }
     fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
-        // Confirm and Cancel publish their press; the palette answers it
-        // here, before reading the command the answer sets.
         crate::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
         match self.command.take() {
             Some(true) if self.confirm.is_some() => self.accept_confirmation(),
@@ -989,8 +929,6 @@ impl ActionPalette {
 
     fn focus_part(&mut self, index: usize) {
         if let Some(state) = self.confirm.as_mut() {
-            // While it asks, the first part is the field for a name, if any;
-            // the search field steps aside.
             self.field.set_focused(false);
             if let Some(field) = state.phrase_field_mut() {
                 field.set_focus(index == 0);
@@ -1107,8 +1045,8 @@ impl ActionPalette {
         self.history_suspended
     }
 
-    /// Open (focus) the palette: reset the query, argument, and any pending
-    /// outcome, and rebuild the (empty-query) result set.
+    /// Open (focus) the palette: reset the query, argument, and any pending outcome, and rebuild the
+    /// (empty-query) result set.
     pub(crate) fn load_bound_resources(
         &mut self,
         snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
@@ -1133,9 +1071,6 @@ impl ActionPalette {
         }
     }
 
-    /// How activating `id` resolves: a row of the list, or an action the
-    /// palette was asked for by address and does not list as a row
-    /// ([`Self::askable`]).
     fn resolution_of(&self, id: &str) -> Option<&RowResolution> {
         self.index.get(id).or_else(|| self.askable.get(id))
     }
@@ -1158,7 +1093,6 @@ impl ActionPalette {
         self.rebuild("");
     }
 
-    /// The query field, showing the scope the palette is narrowed to.
     fn new_query_field(&self) -> SearchField {
         let mut field = self
             .field_source
@@ -1169,8 +1103,7 @@ impl ActionPalette {
         field
     }
 
-    /// Narrow the palette to one part of the app, or widen it to the whole
-    /// app with `None`. The field shows the scope as a removable token.
+    /// Narrow the palette to one part of the app, or widen it to the whole app with `None`.
     pub fn set_scope(&mut self, scope: Option<ScopeDecl>) {
         self.dirty = true;
         self.scope = scope;
@@ -1180,10 +1113,9 @@ impl ActionPalette {
         self.rebuild(&query);
     }
 
-    /// Show what `request` opens search on: one of the app's actions asking
-    /// for its arguments, starting from the query, else the part of the app
-    /// it narrows to with the query typed and the resource it names under
-    /// the cursor. Whether it asks for an action.
+    /// Show what `request` opens search on: one of the app's actions asking for its arguments, starting
+    /// from the query, else the part of the app it narrows to with the query typed and the resource it
+    /// names under the cursor.
     pub(crate) fn open_on(&mut self, request: &crate::search::SearchRequest) -> bool {
         if let Some(address) = request.asked()
             && self.activate_address(&address.resource, &address.action)
@@ -1226,8 +1158,7 @@ impl ActionPalette {
         &self.query
     }
 
-    /// Pick or unpick a facet value, as clicking its chip does. A value that
-    /// was typed as a `key:value` token is removed from the text.
+    /// Pick or unpick a facet value, as clicking its chip does.
     pub fn toggle_facet(&mut self, filter: &FacetFilter) {
         if let Some(at) = self.picked_filters.iter().position(|f| f == filter) {
             self.picked_filters.remove(at);
@@ -1243,17 +1174,12 @@ impl ActionPalette {
         let typed = self.field.value().to_owned();
         self.query = self.parsed_query(&typed);
         if self.hosts_rows() {
-            // The host narrows rows it searched itself: it reads what is
-            // picked and feeds the ones that match, and the chip lights up
-            // where the choice was made.
             self.structure_dirty = true;
             return;
         }
         self.rebuild(&typed);
     }
 
-    /// `typed` as the picked chips and the scope make it, before any
-    /// provider's rows are built from it.
     fn parsed_query(&self, typed: &str) -> SearchQuery {
         let mut parsed = SearchQuery::parse(typed, &self.facets);
         for filter in &self.picked_filters {
@@ -1286,11 +1212,8 @@ impl ActionPalette {
         self.field.value()
     }
 
-    /// Set the query programmatically and rebuild the result set (for tests /
-    /// hand-off from another surface).
-    ///
-    /// While the palette asks for a name to be typed, this is what stands
-    /// in its plain field instead: it searches nothing.
+    /// Set the query programmatically and rebuild the result set (for tests / hand-off from another
+    /// surface).
     pub fn set_query(&mut self, q: &str) {
         self.dirty = true;
         if self.hosts_rows() {
@@ -1301,7 +1224,6 @@ impl ActionPalette {
             && state.typed()
         {
             state.set_typed(q);
-            // What is typed for the name is typed with the keyboard there.
             self.focus_part(0);
             self.sync_confirmation();
             return;
@@ -1310,11 +1232,8 @@ impl ActionPalette {
         self.rebuild(q);
     }
 
-    /// The palette's query field while it takes typing, as text committed
-    /// from outside the keyboard may write into it: the field a dictation
-    /// binds before it listens. `None` while the palette is closed, while
-    /// something else on it takes the keyboard, and while an input method
-    /// composes.
+    /// The palette's query field while it takes typing, as text committed from outside the keyboard may
+    /// write into it: the field a dictation binds before it listens.
     pub fn query_field(&self, key: &[u8; 32]) -> Option<QueryField> {
         if !self.is_presented() {
             return None;
@@ -1331,11 +1250,8 @@ impl ActionPalette {
         })
     }
 
-    /// Write committed text (an input method's, or a dictation's) into the
-    /// query field at the caret, as the input method's commit does, and
-    /// search what it now holds. Returns whether the field took the text:
-    /// it does not while it asks for a typed name, takes a secret, or is
-    /// not focused.
+    /// Write committed text (an input method's, or a dictation's) into the query field at the caret, as
+    /// the input method's commit does, and search what it now has.
     #[must_use]
     pub fn commit_query_text(&mut self, text: &str) -> bool {
         if !self.is_presented() || !self.field.is_focused() {
@@ -1350,9 +1266,6 @@ impl ActionPalette {
         }
         self.field.insert_at_cursor(text);
         self.field.take_dirty();
-        // What typing into the field does next: a host-driven palette narrows
-        // the rows it was fed (a step keeps its query aside), a plain one
-        // searches its own.
         if self.hosts_rows() {
             self.committed_host_text();
             return true;
@@ -1471,7 +1384,6 @@ impl ActionPalette {
             ),
         };
         let mut hits = page.results;
-        // The scope narrows every provider, including one that ignores it.
         hits.retain(|hit| self.query.in_scope(&hit.anchor()));
         let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), hits);
         let complete = page.next.is_none() && page.pending.is_none();
@@ -1486,9 +1398,6 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
-        // A source that answered the whole query again: what it found before
-        // (from what it knew then) gives way to the answer, rather than
-        // standing beside it as a stale hit.
         if answered_again {
             self.drop_provider_rows(provider_index);
         }
@@ -1535,8 +1444,6 @@ impl ActionPalette {
                     crate::permissions::ActionKind::Read,
                 ));
         };
-        // Provider resolution runs through its captured owner. Eager resources
-        // remain a valid source for providers that emit only canonical hits.
         let resource = provider.resolve_action_resource(address).or_else(|| {
             self.bound_resources
                 .iter()
@@ -1657,8 +1564,6 @@ impl ActionPalette {
         self.provider_index.retain(|key, _| !denied.contains(key));
         self.provider_validation
             .retain(|key, _| !denied.contains(key));
-        // A callback may revoke an owner checked earlier in this same pass.
-        // Hide those rows now and enqueue each only on Some -> None transition.
         self.queue_stale_provider_rows();
         self.refresh_progressive_results();
         let pending =
@@ -1742,8 +1647,6 @@ impl ActionPalette {
                 .insert(row.action_id.clone(), provider);
             self.provider_rows.push(row);
         }
-        // Retain display candidates per kind. The number of kinds is not
-        // capped; retained authorization work is bounded separately.
         self.provider_rows =
             rank_and_group(&self.search_query, std::mem::take(&mut self.provider_rows))
                 .into_iter()
@@ -1802,11 +1705,8 @@ impl ActionPalette {
         }
     }
 
-    /// Put the row that acts on `resource` under the cursor, so pressing
-    /// Enter acts on it: what a search opened on a resource of the app's
-    /// does (`SearchRequest::on`). A row of it, else a row inside it (its
-    /// item view); `false` when the search lists none, which leaves the
-    /// palette as it was.
+    /// Put the row that acts on `resource` under the cursor, so pressing Enter acts on it: what a
+    /// search opened on a resource of the app's does (`SearchRequest::on`).
     pub fn select_resource(&mut self, resource: &str) -> bool {
         let found = self
             .results
@@ -1825,11 +1725,6 @@ impl ActionPalette {
         false
     }
 
-    /// The resource an exported action of the app's row acts on, from the
-    /// address the palette retained for activation: a provider hit keeps its
-    /// canonical address (with the `#<view>` suffix a view's `open` carries)
-    /// whatever id the palette filed the row under, and a resource-scoped row
-    /// is its own action's target.
     fn row_address<'a>(&'a self, row_id: &str) -> Option<&'a str> {
         match self.provider_index.get(row_id)? {
             RowResolution::Address(address) => Some(address.resource.as_str()),
@@ -1872,8 +1767,6 @@ impl ActionPalette {
         }
     }
 
-    // Superseded in production by the ordinary-confirmation flow
-    // (`activate_ordinary`); kept for the argument-capture tests.
     #[cfg(test)]
     pub(crate) fn activate_address_with_arguments(
         &mut self,
@@ -1955,11 +1848,7 @@ impl ActionPalette {
         true
     }
 
-    /// Drain a completed action activation and dispatch it against `doc` +
-    /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
-    /// same path a remote peer uses to replay. `None` when no action is
-    /// pending (e.g. the last activation was a navigation). Tests use this to
-    /// replay an activation without the application host's executor.
+    /// Drain a completed action activation and dispatch it against `doc` + `transport`.
     #[cfg(test)]
     pub fn take_dispatch(
         &mut self,
@@ -2007,8 +1896,6 @@ impl ActionPalette {
     }
 
     /// Drain the resolved operation without assuming it is a document edit.
-    /// The application host uses this to route effects/views to the owning
-    /// widget and document operations to the deterministic executor.
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
         if self.history_suspended || self.history_review_required {
             return None;
@@ -2092,8 +1979,8 @@ impl ActionPalette {
             .then(|| self.resources.clone())
     }
 
-    /// Drain a completed content activation: the opaque `action_id` of the
-    /// chosen search-provider row, for the app to navigate to.
+    /// Drain a completed content activation: the opaque `action_id` of the chosen search-provider row,
+    /// for the app to navigate to.
     pub fn take_navigation(&mut self) -> Option<String> {
         if self
             .pending_nav
@@ -2148,10 +2035,7 @@ impl ActionPalette {
         )
     }
 
-    /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
-        // A "Search in" row narrows the palette; the typed text clears so
-        // the search starts afresh inside the scope.
         if let Some(anchor) = id.strip_prefix(SCOPE_PREFIX) {
             let scope = self
                 .scopes
@@ -2203,22 +2087,7 @@ impl ActionPalette {
                             confirmation,
                         );
                     }
-                    ActionKind::Prompted { prompt, .. } => {
-                        // Repurpose the field to collect the argument; clear the result
-                        // list so only the prompt shows.
-                        self.field = self.field_source.build().control_size(FIELD_SIZE);
-                        self.field.set_placeholder(&prompt);
-                        self.focus_part(0);
-                        self.results.set_groups(Vec::new());
-                        let history_target = None;
-                        self.arg = Some(ArgState {
-                            bound,
-                            address,
-                            history_target,
-                            history_draft_identity: None,
-                        });
-                    }
-                    ActionKind::Typed { prompt, .. } => {
+                    ActionKind::Prompted { prompt, .. } | ActionKind::Typed { prompt, .. } => {
                         self.field = self.field_source.build().control_size(FIELD_SIZE);
                         self.field.set_placeholder(&prompt);
                         self.focus_part(0);
@@ -2307,8 +2176,6 @@ impl ActionPalette {
         })
     }
 
-    /// Rebuild the result set for `query`: exported actions matching it as
-    /// the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, typed: &str) {
         // Resource/provider refreshes must not repopulate a confirmation with
         // unrelated commands. Its retained request is revalidated at dispatch.
@@ -2319,29 +2186,16 @@ impl ActionPalette {
         let parsed = self.parsed_query(typed);
         let text = parsed.text().to_owned();
         let query = text.as_str();
-        // Every available action is a candidate row with the text it is
-        // found by; the index then keeps the ones matching the query.
         let mut candidates: Vec<(SearchResult, Option<String>, RowResolution)> = Vec::new();
-        // Each action once: two parts of a window publishing the same action
-        // of the same resource (its bar and its document) are one thing to
-        // the person. Different targets stay different rows.
         let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // What the palette may be asked for by address, whether or not it is a
-        // row: a control bound to an action, an assistive activation and a
-        // search request name what they want the field to ask the arguments of.
         let mut askable: HashMap<String, RowResolution> = HashMap::new();
 
-        // Keep only inert addresses in the row index. Encoding and callbacks
-        // are resolved later, against the authority snapshot current at the
-        // moment of activation.
         let flat: Vec<_> = flatten(&self.resources)
             .into_iter()
             // Programmatic actions are for agents and scripts, never a row;
             // a scoped palette offers the actions of that part of the app.
             .filter(|fa| offers_a_person(fa) && parsed.in_scope(fa.resource_id.as_str()))
             .collect();
-        // What it offers is not all rows: an action asking for more than a row
-        // takes stays askable by address, and the field collects its arguments.
         for fa in &flat {
             askable.insert(
                 fa.key.clone(),
@@ -2351,8 +2205,6 @@ impl ActionPalette {
                 )),
             );
         }
-        // Two open documents offering the same action read alike: name the
-        // document under each, so the person can tell which one it acts on.
         let mut targets_of: HashMap<tilo_actions::ListedRow, std::collections::HashSet<&str>> =
             HashMap::new();
         for fa in flat.iter().filter(|fa| lists_a_row(fa)) {
@@ -2365,15 +2217,11 @@ impl ActionPalette {
             if !listed.insert(fa.key.clone()) {
                 continue;
             }
-            // Read as a person reads it (`tilo_actions::listed_row`): the
-            // action's label, and the item it acts on or what it means.
             let mut row = fa.row();
             if targets_of.get(&row).is_some_and(|keys| keys.len() > 1) {
                 row = tilo_actions::listed_row(&fa.action.label, Some(fa.resource_label.as_str()));
             }
             let found = found_by(&row, &fa.resource_label);
-            // The same row the app's own search shows: its picture, and its
-            // shortcut as the keys it names.
             let entry = CommandEntry::of_action(fa, row, self.platform);
             let mut r = entry.result(ACTIONS_KIND, self.platform);
             if let Some(preview) = fa
@@ -2435,7 +2283,6 @@ impl ActionPalette {
             }
         }
 
-        // An unscoped palette offers to narrow to each part of the app.
         if self.scope.is_none() {
             for scope in &self.scopes {
                 candidates.push((
@@ -2491,7 +2338,6 @@ impl ActionPalette {
         self.next_provider = 0;
         self.refresh_progressive_results();
         if !query.trim().is_empty() && !crate::search::engine_ready() {
-            // The rows are ranked by the index, whose code is still loading.
             self.search_announcement = Some(String::from("Searching"));
             self.sync_plain_empty_state(query, true);
             let _ = self.advance_search_page();
@@ -2506,16 +2352,11 @@ impl ActionPalette {
     }
 
     fn refresh_progressive_results(&mut self) {
-        // The hits of the query: what an action row acts on, where that is a row of this same
-        // list. An action's secondary line that only says the name of the hit under it is that
-        // hit's own title, shown twice, and is left off.
         let hits: Vec<&SearchResult> = self
             .provider_rows
             .iter()
             .filter(|row| self.provider_row_is_current(&row.action_id))
             .collect();
-        // A hit that invokes an action stands for it: the same command as an
-        // action's own row, so the list shows the one place that runs it.
         let taken: std::collections::HashSet<tilo_actions::ActionAddress> = hits
             .iter()
             .filter(|row| row.kind != ACTIONS_KIND)
@@ -2555,14 +2396,10 @@ impl ActionPalette {
         self.results.set_groups(groups);
     }
 
-    /// Position the palette at `origin` with `width`. Called each frame
-    /// before `draw`.
     #[allow(
         clippy::expect_used,
         reason = "private palette ownership mismatch is an invariant violation"
     )]
-    /// # Panics
-    /// Internal host-text palettes must use `layout_with_text` with their owning renderer.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
         let mut text = self
             .measure
@@ -2587,7 +2424,6 @@ impl ActionPalette {
         self.layout_controls(theme, text);
     }
 
-    /// Keep room in the card for Confirm and Cancel while they are shown.
     fn reserve_controls(&mut self, theme: &Theme) {
         let shown = self.confirm.is_some() || self.history_review_required;
         self.results.set_empty_footer(if shown {
@@ -2631,14 +2467,11 @@ impl ActionPalette {
         self.field_taffy = taffy;
         self.field_node = Some(node);
 
-        // Facet chips, then the results overlay, directly under the field.
         let mut top = origin.y + FIELD_SIZE.height(theme) + GAP;
         self.layout_facet_chips(theme, origin.x, top, width, tr);
         if !self.facet_chips.is_empty() {
             top += FACET_H + GAP;
         }
-        // The card ends as far above the window's bottom as it starts below
-        // the window's top; rows past that scroll.
         self.results.set_max_height(
             self.scrim
                 .map(|window| (window.y1 - (origin.y - window.y0).max(0.0) - top).max(0.0)),
@@ -2649,7 +2482,6 @@ impl ActionPalette {
         self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
     }
 
-    /// Follow a scope the user removed from the field.
     fn follow_field_scope(&mut self) {
         if self.field.take_scope_cleared() {
             self.scope = None;
@@ -2724,7 +2556,6 @@ impl ActionPalette {
             return;
         }
         self.paint_scrim(scene, transform, theme);
-        // It arrives from its centre (`motion::Appear`).
         let pose = self.appear.pose(self.rect, self.rect.center());
         let bounds = crate::widget::floating_surface::painted_bounds(self.rect, theme);
         let Some(transform) = pose.begin(scene, transform, bounds) else {
@@ -2851,9 +2682,6 @@ impl ActionPalette {
         }
     }
 
-    /// Feed a keyboard event to the open palette; returns whether consumed.
-    /// While open, the palette is modal: it swallows every key so nothing
-    /// leaks to the app behind it.
     #[allow(
         clippy::too_many_lines,
         reason = "one modal keyboard state machine keeps confirmation, typed arguments, navigation and dispatch ordering explicit"
@@ -2875,7 +2703,6 @@ impl ActionPalette {
             return false;
         };
         if key.state != ElementState::Pressed {
-            // Swallow releases so nothing leaks to the app behind the modal.
             return true;
         }
         if self.confirm.is_some() || self.history_review_required {
@@ -2921,7 +2748,6 @@ impl ActionPalette {
             }
             return true;
         }
-        // Escape: cancel the argument step, or close the palette.
         if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
             // A question a window's control asked is answered "no", as by
             // Cancel: the person never searched, so no search is left open.
@@ -2943,7 +2769,7 @@ impl ActionPalette {
         // Escape (or Cancel) does not, every other key is swallowed. A name
         // to type goes into its labelled field, which searches nothing;
         // there Return stays the safe answer and never destroys anything,
-        // even once the name matches: only the action's own button does.
+        // even once the name matches: only the action button does.
         if let Some((typed, destructive)) = self
             .confirm
             .as_ref()
@@ -2964,8 +2790,6 @@ impl ActionPalette {
             return true;
         }
 
-        // Argument step: the field collects the free text; Enter builds +
-        // queues the action; every other key edits the argument buffer.
         if self.arg.is_some() {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
@@ -3072,9 +2896,6 @@ impl ActionPalette {
             return true;
         }
 
-        // Normal step: the list's keys move through the results, Enter
-        // drives the results view; every other key edits the query and
-        // re-runs the search.
         let held = modifiers.state();
         let caret = self.field.selection_anchor_focus_or_caret();
         let end = self.field.value().len();
@@ -3100,7 +2921,6 @@ impl ActionPalette {
         true
     }
 
-    /// Drain the results view's latched activation into a pending outcome.
     fn poll_view_activation(&mut self) {
         if let Some(id) = self.results.take_activated() {
             self.missing_selection = None;
@@ -3113,7 +2933,6 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         self.reset_controls();
-        // Restore the query field and result set.
         self.field = self.new_query_field();
         self.focus_part(0);
         self.rebuild("");
@@ -3143,8 +2962,6 @@ impl ActionPalette {
             self.search_announcement = Some(message);
             return;
         }
-        // Decide against the collected input, not only the declaration. An
-        // ordinary/History continuation already carries its captured policy.
         let confirmation = if pending.ordinary.is_some() || pending.history_target.is_some() {
             confirmation
         } else {
@@ -3162,8 +2979,6 @@ impl ActionPalette {
             self.open = false;
             return;
         }
-        // The person held Shift as they asked for something Undo takes
-        // back: it goes ahead unasked, as if they had confirmed it.
         if crate::widget::shift_skips_confirmation(self.can_be_undone(&pending)) {
             pending.confirmation_evidence = confirmation_evidence(&pending.confirmation);
             self.pending_dispatch = Some(pending);
@@ -3173,8 +2988,6 @@ impl ActionPalette {
         self.ask_confirmation(pending);
     }
 
-    /// Whether Undo takes `pending` back, by its action's contract: what
-    /// lets Shift skip its question, and the question say so.
     fn can_be_undone(&self, pending: &PendingOperation) -> bool {
         if matches!(pending.confirmation, ConfirmationPolicy::Phrase { .. }) {
             return false;
@@ -3301,9 +3114,6 @@ mod tests {
     };
     use winit::event::KeyEvent;
 
-    /// A query's rows stand as tall as what they say: a list counted in
-    /// rows with a line under their name holds fewer of them than one
-    /// counted in bare names, and the rows it holds fit under its cap.
     #[test]
     fn capacity_counts_the_rows_that_are_coming_in_their_own_bands() {
         let mut palette = ActionPalette::rows(Vec::new());
@@ -3324,7 +3134,7 @@ mod tests {
         );
     }
 
-    /// The palette of an app in a window narrower than the screen stands
+    /// The palette of an app in a window narrower than the screen is
     /// centred in that window and inside it, never spilling past its edge.
     #[test]
     fn the_palette_stands_centred_inside_its_window() {
@@ -3351,11 +3161,11 @@ mod tests {
         }
     }
 
-    /// A card standing on the display — a desktop's own search — takes
+    /// A card standing on the display — a desktop search — takes
     /// three fifths of it, between 360 and 640 wide, a little below its
     /// top, and its list grows with the display's height: the same rule a
     /// card in a window follows, so the display's card needs no size of
-    /// its own.
+    /// its.
     #[test]
     fn the_card_on_a_display_follows_the_display() {
         let theme = Theme::dark();
@@ -3380,21 +3190,16 @@ mod tests {
                 origin.y - display.y0
             );
         }
-        // A display too narrow for three fifths of it to be a card keeps
-        // its card inside its own edges.
         let (origin, card) = placement(Rect::new(0.0, 0.0, 600.0, 800.0), &theme);
         assert!((card - (600.0 - 16.0)).abs() < 1e-9, "{card} wide");
         assert!((origin.x - 8.0).abs() < 1e-9, "at {}", origin.x);
 
-        // The list grows with the display, and stops at the shortest and
-        // tallest it may be.
         let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
         assert!((tall(800.0) - 640.0).abs() < 1e-9);
         assert!((tall(1200.0) - 660.0).abs() < 1e-9);
         assert!((tall(200.0) - 160.0).abs() < 1e-9);
     }
 
-    /// A minimal replayable action: set a string under a root key.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Note {
         key: String,
@@ -3418,7 +3223,6 @@ mod tests {
         r
     }
 
-    /// A resource exporting an immediate and a prompted action.
     fn thing_resource() -> ResourceSpec {
         ResourceSpec::new("test.thing:1", "test.thing", "Thing")
             .with_action(
@@ -3456,7 +3260,6 @@ mod tests {
             ))
     }
 
-    /// A provider standing in for a searchable corpus (e.g. contacts).
     struct People;
     impl SearchProvider for People {
         fn name(&self) -> &'static str {
@@ -3548,11 +3351,7 @@ mod tests {
 
     #[test]
     fn palette_activation_dispatches_navigates_prompts_or_queues() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `activating_an_action_dispatches_and_mutates`:
-        // Activating an ACTION row dispatches through `tilo_actions` and mutates the
-        // CRDT — the real replay path.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3648,9 +3447,6 @@ mod tests {
             );
         }
 
-        // Case `activating_content_navigates_not_dispatches`:
-        // Activating a CONTENT row queues a navigation (its opaque id), NOT a
-        // dispatch.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3726,9 +3522,6 @@ mod tests {
             assert!(!p.is_open());
         }
 
-        // Case `prompted_action_collects_argument_then_dispatches`:
-        // A PROMPTED action collects its argument in the field, then dispatches the
-        // action built from the typed text.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3782,7 +3575,6 @@ mod tests {
 
     #[test]
     fn removed_or_disabled_actions_are_refused_at_activation_and_dispatch() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
@@ -3793,8 +3585,6 @@ mod tests {
             p.open();
             p.set_query("ada");
 
-            // The row remains visually selected for this key press, but its
-            // authority snapshot is fresh and no longer contains the address.
             p.refresh_open_resources(&[]);
             p.activate_selected();
 
@@ -3840,8 +3630,6 @@ mod tests {
             p.set_query("ada");
             p.activate_selected();
 
-            // Covers state changing after activation but before the host drains
-            // the pending operation (and consequential confirmation flows).
             p.refresh_open_resources(&[]);
             assert!(p.take_operation().is_none());
             assert!(p.take_navigation().is_none());
@@ -3850,7 +3638,6 @@ mod tests {
 
     #[test]
     fn consequential_actions_confirm_by_exact_value() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let resource = ResourceSpec::new("test.thing:1", "test.thing", "Thing").with_action(
@@ -3893,8 +3680,6 @@ mod tests {
                 "activation alone must not queue the operation"
             );
 
-            // An irreversible action that names what it destroys asks for
-            // that name typed: Enter in its field alone does not go ahead.
             focus_confirmation(&mut palette, &mut doc);
             palette.handle_key(
                 &enter(),
@@ -4013,7 +3798,6 @@ mod tests {
 
     #[test]
     fn history_suspends_the_same_palette_draft_and_ready_dispatch() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut palette =
             ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
@@ -4065,7 +3849,6 @@ mod tests {
 
     #[test]
     fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let resource = |id: &str, label: &str| {
             let mut value = thing_resource();
@@ -4084,7 +3867,6 @@ mod tests {
         palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
         assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
         palette.refresh_visible_resources(std::slice::from_ref(&a));
-        // One document left: the row reads as the outcome alone.
         assert_eq!(palette.result_labels(), vec!["Mark done"]);
         assert!(palette.results.selected().is_none());
         palette.activate_selected();
@@ -4096,7 +3878,6 @@ mod tests {
 
     #[test]
     fn invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut spec = ActionSpec::typed(
             "number",
@@ -4160,18 +3941,12 @@ mod tests {
         );
     }
 
-    /// The palette arrives from its centre (`motion::Appear`) when a click
-    /// opens it and is there at once for a key; its results change in place
-    /// as the person types, starting no motion; reduced motion only fades
-    /// it; at rest it asks for nothing.
     #[cfg(feature = "native")]
     #[test]
     fn the_palette_appears_for_a_click_lands_for_a_key_and_its_results_stay_instant() {
         use crate::tokens::{EffectiveMotion, Motion, MotionSource};
         let motion = EffectiveMotion::new(Motion::default(), false);
         let card = Rect::new(400.0, 96.0, 1000.0, 500.0);
-        // The frame's instant is held, so the test reads the motion where
-        // it starts.
         let _frame = crate::motion::pin_frame();
 
         crate::motion::note_source(MotionSource::Pointer);
@@ -4190,7 +3965,6 @@ mod tests {
         keyed.follow_presence(motion);
         assert!(!keyed.is_moving(), "a key opens it at once");
         assert!(keyed.appear.pose(card, card.center()).is_rest());
-        // Typing re-ranks the results in place: no motion starts.
         crate::motion::note_source(MotionSource::Pointer);
         keyed.rebuild("no");
         keyed.follow_presence(motion);

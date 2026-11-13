@@ -1,6 +1,5 @@
-//! Drawing a picture where no GPU adapter is: on the CPU, with
-//! `tilo-cpu-raster`. The native toolkit has it; a browser page has no CPU
-//! rasterizer and uses `no_cpu.rs` instead, which draws nothing.
+//! Drawing a picture where no GPU adapter is: on the CPU, with `tilo-cpu-raster`. The native toolkit
+//! has it; a browser page has no CPU rasterizer and uses `no_cpu.rs` instead, which draws nothing.
 
 use std::sync::Mutex;
 
@@ -8,8 +7,8 @@ use tilo_lock::MutexRecover as _;
 use vello::Scene;
 use vello::peniko::Color;
 
-/// What `scene` draws over `bg` at `width` x `height` without a GPU: always
-/// a picture here, or why the CPU rasterizer could not draw one.
+/// What `scene` draws over `bg` at `width` x `height` without a GPU: always a picture here, or why the
+/// CPU rasterizer could not draw one.
 pub(super) fn render(
     scene: &Scene,
     width: u32,
@@ -24,12 +23,8 @@ pub(super) fn render(
     Some(render_on_cpu(scene, width, height, bg))
 }
 
-/// What `scene` draws over `bg` at `width` x `height`, rasterised on the
-/// CPU by `tilo-cpu-raster`: straight-alpha RGBA8, as the GPU renderer
-/// returns it. For when no [`OffscreenRenderer`](super::OffscreenRenderer) can be built.
-///
-/// # Errors
-/// Returns why the CPU rasterizer has no target of this size.
+/// What `scene` draws over `bg` at `width` x `height`, rasterised on the CPU by `tilo-cpu-raster`:
+/// straight-alpha RGBA8, as the GPU renderer returns it.
 fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Vec<u8>, String> {
     let stride = (width as usize).saturating_mul(4);
     let mut rgba = vec![0; stride.saturating_mul(height as usize)];
@@ -56,23 +51,20 @@ fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Ve
     Ok(rgba)
 }
 
-/// A surface's frames kept in memory and drawn on the CPU: what a host
-/// shows on a machine where the toolkit has no GPU adapter to draw them on,
-/// exactly as it draws a normal app's frame there. Kept between frames, so
-/// damage costs only what it changed.
+/// A surface's frames kept in memory and drawn on the CPU: what a host shows on a machine where the
+/// toolkit has no GPU adapter to draw them on, exactly as it draws a normal app's frame there.
 pub struct CpuSurface {
     rasterizer: tilo_cpu_raster::CpuRasterizer,
     /// Premultiplied RGBA, `width * 4` bytes a row.
     pixels: Vec<u8>,
     size: (u32, u32),
-    /// The pixels hold a whole earlier frame, so damage can be drawn over
-    /// them.
+    /// The pixels hold a whole earlier frame, so damage can be drawn over them.
     valid: bool,
 }
 
 impl CpuSurface {
-    /// A surface of `width` x `height` pixels, rasterized with up to
-    /// `threads` cores, or `None` where this build has no CPU rasterizer.
+    /// A surface of `width` x `height` pixels, rasterized with up to `threads` cores, or `None` where
+    /// this build has no CPU rasterizer.
     #[must_use]
     pub fn new(width: u32, height: u32, threads: u16) -> Option<Self> {
         let length = (width as usize)
@@ -101,20 +93,8 @@ impl CpuSurface {
         &self.pixels
     }
 
-    /// Draw `scene` (physical pixels) over the pixels already here, in the
-    /// `damage` regions of the surface as `(x, y, width, height)`; the first
-    /// draw covers all of it, and a surface draws nothing outside its own
-    /// pixels. Returns the regions drawn, or `None` where no pixel changed.
-    ///
-    /// The regions drawn are the ones this rasterizer saw its prepared
-    /// scenes differ in ([`tilo_cpu_raster::CpuRasterizer::changes`]): the
-    /// pixels are its own and it keeps the frame before, so it proves what a
-    /// caller cannot, more finely than `damage` says and for nothing when
-    /// nothing changed. Pixels that only moved, as they do in a strip that
-    /// slides, are moved rather than drawn. `damage` is what the caller knows
-    /// of the change, drawn where that proof is too large to list, and a
-    /// change listed in more places than [`MAX_REGIONS`] is drawn in the
-    /// region they cover.
+    /// Draw `scene` (physical pixels) over the pixels already here, in the `damage` regions of the
+    /// surface as `(x, y, width, height)`.
     pub fn draw(
         &mut self,
         scene: &vello::Scene,
@@ -184,17 +164,14 @@ impl CpuSurface {
     }
 }
 
-/// Tiles a change's motion is proven in, and the regions around it are drawn
-/// in: fine enough that little is redrawn beside what moved.
+/// Tiles a change's motion is proven in, and the regions around it are drawn in: fine enough that
+/// little is redrawn beside what moved.
 const MOVED_TILE: u32 = 16;
 
-/// Regions a frame is drawn in before it is drawn in their bounds: each one
-/// walks the prepared scene, and past this many that walk costs more than
-/// drawing what lies between them.
+/// Regions a frame is drawn in before it is drawn in their bounds: each one walks the prepared scene,
+/// and past this many that walk costs more than drawing what lies between them.
 const MAX_REGIONS: usize = 32;
 
-/// What `regions` cover together, as one region of a `width` x `height`
-/// surface.
 fn bounds(regions: &[tilo_cpu_raster::Region], width: u32, height: u32) -> tilo_cpu_raster::Region {
     let left = regions.iter().map(|region| region.x).min().unwrap_or(0);
     let top = regions.iter().map(|region| region.y).min().unwrap_or(0);
@@ -218,11 +195,10 @@ fn bounds(regions: &[tilo_cpu_raster::Region], width: u32, height: u32) -> tilo_
     )
 }
 
-/// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
-/// outlines and images it has converted.
+/// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph outlines and images it has
+/// converted.
 static CPU_RASTERIZER: Mutex<Option<tilo_cpu_raster::CpuRasterizer>> = Mutex::new(None);
 
-/// Premultiplied RGBA8 to straight alpha, in place.
 fn unpremultiply(rgba: &mut [u8]) {
     for pixel in rgba.chunks_exact_mut(4) {
         let Some((&mut alpha, colour)) = pixel.split_last_mut() else {
@@ -265,8 +241,8 @@ mod tests {
         out
     }
 
-    /// Without an adapter a picture is still drawn, on the CPU, at the
-    /// asked size and in straight alpha like the GPU path.
+    /// Without an adapter a picture is still drawn, on the CPU, at the asked size and in straight alpha
+    /// like the GPU path.
     #[test]
     fn a_picture_without_a_gpu_is_drawn_on_the_cpu() {
         let (width, height) = (40, 30);
@@ -295,8 +271,6 @@ mod tests {
         assert!(a.abs_diff(0x80) <= 1, "half coverage, got {a}");
     }
 
-    /// The backdrop fills what the scene leaves uncovered, and over an
-    /// opaque one every pixel is opaque.
     #[test]
     fn the_backdrop_shows_where_nothing_is_drawn() {
         let grey = Color::from_rgb8(0x33, 0x44, 0x55);
@@ -308,10 +282,8 @@ mod tests {
         );
     }
 
-    /// A frame is drawn where this surface saw its own frames differ, more
-    /// finely than a caller's damage says, and a frame that changed nothing
-    /// costs nothing. What it leaves behind is a full render of the last
-    /// frame all the same.
+    /// A frame is drawn where this surface saw its own frames differ, more finely than a caller's
+    /// damage says, and a frame that changed nothing costs nothing.
     #[test]
     fn a_frame_is_drawn_only_where_its_own_raster_saw_it_change() {
         let (width, height) = (64, 48);
@@ -362,9 +334,8 @@ mod tests {
         );
     }
 
-    /// A frame that only moved, as a strip that slides does, is moved rather
-    /// than drawn again, and what it leaves behind is a full render all the
-    /// same: the pixels it left and the pixels it reached.
+    /// A frame that only moved, as a strip that slides does, is moved rather than drawn again, and what
+    /// it leaves behind is a full render all the same: the pixels it left and the pixels it reached.
     #[test]
     fn a_frame_that_only_moves_leaves_a_full_render_behind() {
         let (width, height) = (200, 120);
@@ -416,9 +387,8 @@ mod tests {
         );
     }
 
-    /// A frame that changed in more places than a scene walk is worth is
-    /// drawn in one region covering them, and leaves the same picture
-    /// behind.
+    /// A frame that changed in more places than a scene walk is worth is drawn in one region covering
+    /// them, and leaves the same picture behind.
     #[test]
     fn many_changed_places_are_drawn_in_their_bounds() {
         let (width, height) = (200, 100);

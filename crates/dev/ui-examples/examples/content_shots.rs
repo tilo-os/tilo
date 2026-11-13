@@ -4,10 +4,7 @@
 //! surfaces (banners with their actions, progress bars, badges,
 //! avatars with presence, charts) on the window ground, dark and light, wide
 //! and narrow, and at twice the text size.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- content_shots [OUT]`
-//! Out:  `OUT` (default `target/look/fw-content`): `<page>-<theme>-<size>.png`
-//!       plus an inspection `.json` beside each.
 
 use std::path::{Path, PathBuf};
 

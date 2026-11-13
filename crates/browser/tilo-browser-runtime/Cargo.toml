@@ -23,6 +23,8 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# The person's settings sections, which this page keeps as their session does.
+settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The model service clients, and the page's own model service with the
 # gateway's provider dialects.
@@ -131,17 +133,29 @@ deferred-feedback-composer = []
 deferred-feedback = []
 # The bundling crate supplies the code that shows a mount as HTML
 # (`DOM_CODE`), which the browser desktop fetches as its own module the
-# first time a page asks for `dom: true`. Without it the code is linked in.
-deferred-dom-presenter = []
-# The bundling crate supplies the directory and invite sheets' code
-# (`SHEETS`), which the browser desktop fetches as its own module the first
-# time the person opens one. Without it they are linked in.
+# first time a page asks for `dom: true`, with the toolkit's code that only a
+# page shows (`ui::composition::HTML_CODE`). Without it the code is linked in.
+deferred-dom-presenter = ["ui/lazy-html-faces"]
+# The bundling crate supplies the directory and invite sheets' and the
+# shortcut guide's code (`SHEETS`), which the browser desktop fetches as its
+# own module the first time the person opens one. Without it they are linked
+# in.
 deferred-sheets = []
 # The bundling crate supplies what a person's agents on a host ask them
 # (`QUESTIONS`): the approver session and the question sheet it fills, which
 # the browser desktop fetches as its own module the first time a page holding
 # someone's root is asked to answer. Without it they are linked in.
 deferred-questions = []
+# The bundling crate supplies the keeper of the person's settings sections
+# (`SETTINGS_KEEPER`), which the browser desktop fetches as its own module as
+# the page starts. Without it the keeper and the sections' models are linked
+# in.
+deferred-settings-keeper = []
+# The bundling crate supplies the renderer's maker (`RENDERER_CODE`): vello's
+# shaders and the code compiling them, which the browser desktop fetches as
+# its own module while the first frames rasterize on the CPU. Without it they
+# are linked in.
+deferred-renderer = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.
@@ -175,4 +189,14 @@ tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
 # The input a person gives another device's window, as the wire encodes it.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
+# The device list's keys as text, as the page's own module writes them.
+hex.workspace = true
 
+# The person's settings the page keeps, and Settings' window changing them
+# (src/kept_settings.rs).
+tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
+settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
+# Which appearance mode follows the system (src/page_theme.rs).
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+settings = { path = "../../../apps/settings", default-features = false }
+tilo-test-env = { path = "../../dev/test-env" }

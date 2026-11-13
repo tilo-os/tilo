@@ -1,19 +1,14 @@
-//! One drive, run in-process: the steps a scenario names, performed through
-//! the shipped [`FrameHarness`] path, answering what the app showed rather
-//! than writing it to files.
-//!
-//! [`drive`] runs the steps `--headless-drive` runs, on the same
-//! [`FrameHarness`] and through the same `FrameHarness::perform_bound` — no
-//! test copy — and answers the state the app is in afterwards where the CLI
-//! writes it to files. A scenario that passes here therefore passes in the
-//! app's own process, on the same frames; what changes is only who reads the
-//! answer.
+//! One drive, run in-process: the steps a scenario names, performed through the shipped
+//! [`FrameHarness`] path, answering what the app showed rather than writing it to files. [`drive`] runs
+//! the steps `--headless-drive` runs, on the same [`FrameHarness`] and through the same
+//! `FrameHarness::perform_bound` — no test copy — and answers the state the app is in afterwards where
+//! the CLI writes it to files.
 
 use super::{Action, FrameHarness};
 use tilo_sort::CompactSort as _;
 
-/// One published resource, its actions (address, kind, availability and
-/// parameters) and its children, as the `resources` answer lists them.
+/// One published resource, its actions (address, kind, availability and parameters) and its children,
+/// as the `resources` answer lists them.
 pub(super) fn resource_json(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     let actions: Vec<serde_json::Value> = resource
         .actions
@@ -40,24 +35,22 @@ pub(super) fn resource_json(resource: &tilo_actions::ResourceSpec) -> serde_json
     })
 }
 
-/// The answers earlier steps bound, by the name their step kept them under
-/// (`{"name": {"value": ..., "resources": [...]}}`): what a later invocation's
-/// resource and arguments fill their `{{name.path}}` placeholders from.
+/// The answers earlier steps bound, by the name their step kept them under (`{"name": {"value": ...,
+/// "resources": [...]}}`): what a later invocation's resource and arguments fill their `{{name.path}}`
+/// placeholders from.
 pub type Bindings = std::collections::BTreeMap<String, serde_json::Value>;
 
-/// One step of a drive. Every action `--headless-drive` accepts is a step,
-/// and so is a question about the app's state that no action asks.
+/// One step of a drive.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
-    /// One action from the headless grammar, run through
-    /// [`FrameHarness::perform`] as `--headless-drive` runs it.
+    /// One action from the headless grammar, run through [`FrameHarness::perform`] as
+    /// `--headless-drive` runs it.
     Action(Action),
-    /// The document as it stands now is exactly this JSON: the app's own
-    /// state as a value, which no widget's text can stand in for.
+    /// The document as it stands now is exactly this JSON: the app's own state as a value, which no
+    /// widget's text can stand in for.
     Document(serde_json::Value),
-    /// The named resource is published now — `notes`, an app's `library`,
-    /// the host's `history` — and, when `action` is named, it publishes that
-    /// action too. What a scenario needs to `invoke` it next.
+    /// The named resource is published now — `notes`, an app's `library`, the host's `history` — and,
+    /// when `action` is named, it publishes that action too.
     Resource { id: String, action: Option<String> },
 }
 
@@ -86,8 +79,8 @@ impl Step {
     }
 }
 
-/// The steps a `--headless-drive` payload names, in order: its actions, as
-/// the steps [`drive`] runs them.
+/// The steps a `--headless-drive` payload names, in order: its actions, as the steps [`drive`] runs
+/// them.
 #[must_use]
 pub fn steps_of(spec: &super::Spec) -> Vec<Step> {
     spec.actions.iter().cloned().map(Step::Action).collect()
@@ -144,21 +137,16 @@ impl StepRecord {
     }
 }
 
-/// Everything one drive answers: the state the app is in once the steps ran,
-/// step by step, and the first step that failed.
-///
-/// The answers are values, so a test asserts on them and a CLI serialises
-/// them; nothing here names a file.
+/// Everything one drive answers: the state the app is in once the steps ran, step by step, and the
+/// first step that failed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Outcome {
     /// The document as it stands at the end, the JSON `dump` writes.
     pub document: serde_json::Value,
-    /// The inspection tree `inspect` writes: each widget, its bounds and what
-    /// it shows.
+    /// The inspection tree `inspect` writes: each widget, its bounds and what it shows.
     pub inspection: serde_json::Value,
-    /// Every addressable widget with its `(x, y, width, height)` in the window,
-    /// by the name a click or an expectation addresses it with, sorted by name:
-    /// what `targets` writes.
+    /// Every addressable widget with its `(x, y, width, height)` in the window, by the name a click or
+    /// an expectation addresses it with, sorted by name: what `targets` writes.
     pub targets: Vec<(String, [f64; 4])>,
     /// The resources the app publishes, each action's address among them.
     pub resources: Vec<serde_json::Value>,
@@ -180,13 +168,9 @@ impl Outcome {
     }
 }
 
-/// Run `steps` against the app `harness` hosts and answer what it shows.
-///
-/// Each step runs through the path `--headless-drive` runs it on, and the
-/// harness is left where the last step put it, so the caller keeps driving it
-/// or closes it as it would after a CLI run. A step that fails ends the drive:
-/// the steps after it would run against state the failed one never produced,
-/// and the record names the one that stopped it.
+/// Run `steps` against the app `harness` hosts and answer what it shows. A step that fails ends the
+/// drive: the steps after it would run against state the failed one never produced, and the record
+/// names the one that stopped it.
 pub fn drive(harness: &mut FrameHarness, steps: &[Step]) -> Outcome {
     let (records, _bindings) = run_steps(harness, steps);
     Outcome {
@@ -198,8 +182,7 @@ pub fn drive(harness: &mut FrameHarness, steps: &[Step]) -> Outcome {
     }
 }
 
-/// Run each step, keeping the answers every step bound for the ones after
-/// it. Answers what each step did, stopping at the first failure.
+/// Run each step, keeping the answers every step bound for the ones after it.
 pub(crate) fn run_steps(harness: &mut FrameHarness, steps: &[Step]) -> (Vec<StepRecord>, Bindings) {
     let mut records = Vec::with_capacity(steps.len());
     let mut bindings = Bindings::new();
@@ -219,8 +202,8 @@ pub(crate) fn run_steps(harness: &mut FrameHarness, steps: &[Step]) -> (Vec<Step
     (records, bindings)
 }
 
-/// Draw a frame and let its edits land, as a live session does between two
-/// things a person does: the steps after it judge the state that frame shows.
+/// Draw a frame and let its edits land, as a live session does between two things a person does: the
+/// steps after it judge the state that frame shows.
 fn refresh(harness: &mut FrameHarness) {
     harness.relayout();
     harness.persist_tick();
@@ -289,8 +272,7 @@ fn read_inspection(harness: &FrameHarness) -> serde_json::Value {
     )
 }
 
-/// Every addressable widget and its rect, sorted by name so two drives of one
-/// app answer the same list.
+/// Every addressable widget and its rect, sorted by name so two drives of one app answer the same list.
 fn read_targets(harness: &FrameHarness) -> Vec<(String, [f64; 4])> {
     let mut targets: Vec<(String, [f64; 4])> = harness
         .targets()
@@ -313,7 +295,6 @@ mod tests {
     use super::*;
     use crate::headless::{State, Theme, parse_spec};
 
-    /// A focused field, as a scenario leaves one before it types.
     fn field(value: &str) -> FrameHarness {
         FrameHarness::new_with_controlled_inputs(
             State::new(),
@@ -329,7 +310,6 @@ mod tests {
         )
     }
 
-    /// The text the field shows, as an app reads back the value it edits.
     fn shown(harness: &FrameHarness) -> String {
         harness
             .access_node_named("field", None)
@@ -338,8 +318,6 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// The `Spec` a CLI payload names, parsed by the parser
-    /// `--headless-drive` parses it with.
     fn spec(actions: serde_json::Value) -> crate::headless::Spec {
         parse_spec(&serde_json::json!({ "actions": actions }).to_string())
             .expect("the payload is a scenario")
@@ -379,8 +357,6 @@ mod tests {
         let mut sorted = outcome.targets.clone();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(outcome.targets, sorted);
-        // The inspection tree those names come from, and the resources the app
-        // publishes — the field's own among them.
         assert!(outcome.inspection.is_object(), "{}", outcome.inspection);
         assert!(
             outcome
@@ -421,7 +397,6 @@ mod tests {
         let failure = outcome.failure().expect("the second step cannot pass");
         assert_eq!(failure.index, 1);
         let error = failure.error.as_deref().unwrap_or_default();
-        // The record says what the step expected and what the app showed.
         assert!(error.contains("goodbye"), "{error}");
         assert!(error.contains(&compact(&empty)), "{error}");
         // The step after the failure never ran: it would judge state the failed

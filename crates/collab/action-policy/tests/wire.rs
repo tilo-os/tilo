@@ -4,7 +4,7 @@
 //! fails here. A new variant goes at the end of its enum; the `match`es
 //! without a wildcard ask for its bytes.
 
-use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, Role, TreePath};
 
 fn read_as<T: serde::de::DeserializeOwned>(_: &T, bytes: &[u8]) -> postcard::Result<T> {
     postcard::from_bytes(bytes)
@@ -74,27 +74,23 @@ fn an_action_kind_keeps_its_bytes() {
 }
 
 #[test]
-fn a_subject_keeps_its_bytes() {
-    let cases: &[(Subject, &[u8])] = &[
-        (Subject::Person("p".into()), &[0x00, 0x01, b'p']),
-        (Subject::Role(Role::Editor), &[0x01, 0x02]),
-        (Subject::Agent("a".into()), &[0x02, 0x01, b'a']),
-        (Subject::Task("t".into()), &[0x03, 0x01, b't']),
-        (Subject::Shortcut("s".into()), &[0x04, 0x01, b's']),
-        (Subject::App("x".into()), &[0x05, 0x01, b'x']),
-        (Subject::Bot("b".into()), &[0x06, 0x01, b'b']),
-        (Subject::ForeignDevice, &[0x07]),
+fn a_grantee_keeps_its_bytes() {
+    let cases: &[(Grantee, &[u8])] = &[
+        (Grantee::person("p"), &[0x00, 0x00, 0x01, b'p']),
+        (Grantee::agent("a"), &[0x00, 0x01, 0x01, b'a']),
+        (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
+        (Grantee::role(Role::Editor), &[0x01, 0x02]),
+        (Grantee::task("t"), &[0x02, 0x01, b't']),
+        (Grantee::shortcut("s"), &[0x03, 0x01, b's']),
+        (Grantee::app("x"), &[0x04, 0x01, b'x']),
     ];
-    for (subject, golden) in cases {
-        match subject {
-            Subject::Person(_)
-            | Subject::Role(_)
-            | Subject::Agent(_)
-            | Subject::Task(_)
-            | Subject::Shortcut(_)
-            | Subject::App(_)
-            | Subject::Bot(_)
-            | Subject::ForeignDevice => stored_as!(subject, golden),
+    for (grantee, golden) in cases {
+        match grantee {
+            Grantee::Member(_)
+            | Grantee::Role(_)
+            | Grantee::Task(_)
+            | Grantee::Shortcut(_)
+            | Grantee::App(_) => stored_as!(grantee, golden),
         }
     }
 }
@@ -128,20 +124,20 @@ fn a_grant_given_while_a_task_was_open_still_reads_and_has_expired() {
 fn a_grant_keeps_its_bytes() {
     let grant = Grant::new(
         "g",
-        Subject::Person("p".into()),
+        Grantee::person("p"),
         TreePath::workspace("r"),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Person("c".into()),
+        Grantee::person("c"),
     );
     let mut golden = vec![0x01, b'g'];
-    golden.extend([0x00, 0x01, b'p']);
+    golden.extend([0x00, 0x00, 0x01, b'p']);
     golden.push(0x06);
     golden.extend(b"room:r");
     golden.extend([0x03, 0x00, 0x01, 0x02]);
     golden.push(0x02);
     golden.push(0x04);
-    golden.extend([0x00, 0x01, b'c']);
+    golden.extend([0x00, 0x00, 0x01, b'c']);
     stored_as!(&grant, &golden);
 }
 
@@ -149,18 +145,18 @@ fn a_grant_keeps_its_bytes() {
 fn a_grant_written_while_the_level_was_named_for_workspaces_reads_as_the_same_grant() {
     // The same grant as above, with the node as one build wrote it: its bytes
     // still name a node, and the same one.
-    let stored = b"\x01g\x00\x01p\x0bworkspace:r\x03\x00\x01\x02\x02\x04\x00\x01c";
+    let stored = b"\x01g\x00\x00\x01p\x0bworkspace:r\x03\x00\x01\x02\x02\x04\x00\x00\x01c";
     let read: Grant = postcard::from_bytes(stored).expect("the stored grant still loads");
     assert_eq!(read.node, TreePath::workspace("r"));
     assert_eq!(
         read,
         Grant::new(
             "g",
-            Subject::Person("p".into()),
+            Grantee::person("p"),
             TreePath::workspace("r"),
             KindSet::ALL,
             Answer::Allow,
-            Subject::Person("c".into()),
+            Grantee::person("c"),
         )
     );
 }

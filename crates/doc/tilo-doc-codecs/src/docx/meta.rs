@@ -26,7 +26,6 @@ pub(super) fn import_app(xml: &[u8], doc: &mut DocMut) {
 const APP_NS: &str =
     r#"xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties""#;
 
-/// The modeled child elements (by local name) of `cp:coreProperties` we own.
 const CORE_MODELED: [&[u8]; 6] = [
     b"title",
     b"creator",
@@ -36,8 +35,6 @@ const CORE_MODELED: [&[u8]; 6] = [
     b"modified",
 ];
 
-/// The inner XML of `cp:coreProperties` with modeled children stripped, so an existing
-/// `core.xml`'s unmodeled fields (lastModifiedBy, revision, …) survive.
 fn core_unmodeled_children(xml: &[u8]) -> String {
     unmodeled_inner(xml, "coreProperties", &CORE_MODELED)
 }
@@ -75,7 +72,6 @@ pub(super) fn export_app(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8
     Some(xml.into_bytes())
 }
 
-/// The inner XML of `Properties` with the modeled `Application` child stripped.
 fn app_unmodeled_children(xml: &[u8]) -> String {
     unmodeled_inner(xml, "Properties", &[b"Application"])
 }

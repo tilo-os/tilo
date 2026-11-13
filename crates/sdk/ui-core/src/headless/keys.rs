@@ -2,8 +2,8 @@
 
 use winit::keyboard::Key;
 
-/// The key `spec` names: `Enter`, `Tab`, `Escape`, the arrows, `F1`–`F12`,
-/// `Home`, `End`, … or, failing those, the character itself.
+/// The key `spec` names: `Enter`, `Tab`, `Escape`, the arrows, `F1`–`F12`, `Home`, `End`, … or, failing
+/// those, the character itself.
 pub(super) fn parse_key(spec: &str) -> Key {
     crate::keys::parse(spec)
 }

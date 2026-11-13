@@ -14,84 +14,44 @@ pub(crate) enum Slot {
     Sidebar,
     Back,
     Forward,
-    /// One of the actions after the navigation.
     Leading(usize),
     Location,
-    /// One choice of the view switcher.
     View(usize),
-    /// The views folded into a menu: the chosen one named, the others a
-    /// press away.
     ViewsMenu,
     Action(usize),
-    /// Button `n` of the notice's own, after its text.
     Notice(usize),
-    /// The button whose menu holds the actions the row has no room for.
     Overflow,
-    /// Pill `n` of the window's reactions: the person's reaction with its
-    /// emoji, or taking it back.
     Reaction(usize),
-    /// The add button after the reactions' pills: the emoji picker.
     ReactionAdd,
 }
 
-/// Where each slot of one toolbar sits.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Slots {
     pub sidebar: Rect,
     pub back: Rect,
     pub forward: Rect,
-    /// The leading actions, after the navigation.
     pub leading: Vec<Rect>,
     pub location: Rect,
-    /// The view switcher's segments (none: folded into the views menu, or
-    /// into the overflow menu).
     pub views: Vec<Rect>,
-    /// The views menu, where the row has no room for the switcher
-    /// (`Rect::ZERO`: none).
     pub views_menu: Rect,
-    /// The actions standing in the row, the first of the declared ones.
     pub actions: Vec<Rect>,
-    /// The labelled actions in the row are text buttons
-    /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
     pub actions_labelled: bool,
-    /// The widths the leading actions' words need, whether or not the row shows
-    /// them (`0.0`: the action has no words).
     pub leading_words: Vec<f64>,
-    /// The widths the actions' words need, whether or not the row shows them
-    /// (`0.0`: the action has no words).
     pub action_words: Vec<f64>,
-    /// The room the location leaves empty in the row, beside its label and above
-    /// the least it needs: room a label of the row's actions could stand in.
     pub spare: f64,
-    /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
-    /// Which form of its label the location shows
-    /// ([`crate::window_toolbar::ToolbarLocation::form`]).
     pub form: usize,
-    /// The labelled leading actions in the row are text buttons
-    /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
     pub labelled: bool,
-    /// The notice's buttons, in order right after its text (none: it has
-    /// none, or the row has no room for its text).
     pub notice: Vec<Rect>,
-    /// Which of the notice's buttons name themselves, not only their icon.
     pub notice_labelled: Vec<bool>,
-    /// The window's reactions' pills standing at the row's end, the first
-    /// of them (none: no reactions, or no room for any).
     pub reactions: Vec<Rect>,
-    /// Their add button, after the pills (`Rect::ZERO`: none).
     pub reaction_add: Rect,
 }
 
-/// What the row lays out beside the toolbar: the view switcher's size and
-/// the views menu's width, as the theme draws their labels (none before
-/// they are measured).
 pub(crate) type ViewsSize = Option<ViewsMeasure>;
 
-/// The two forms the views take in the row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ViewsMeasure {
-    /// The segmented switcher's width and height.
     pub strip: (f64, f64),
     /// The views menu's width: as wide as its widest label needs, so
     /// choosing another view never moves the row.
@@ -103,25 +63,17 @@ pub(crate) struct ViewsMeasure {
     pub location: Option<f64>,
 }
 
-/// The location's label and its narrower forms as the theme draws them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LocationForms {
-    /// Each form's text width, the label's first.
     pub text: Vec<f64>,
-    /// What stands beside the text in the location at rest: its icon, a
-    /// field's frame.
     pub chrome: f64,
     /// Each of the notice's buttons as a text button (none: the notice up
     /// has none, or it is not measured).
     pub actions: Vec<f64>,
-    /// The word that follows the label ([`super::trailing_word`]): its width and the gap before
-    /// it, where there is one.
     pub trailing: Option<(f64, f64)>,
 }
 
 impl LocationForms {
-    /// The widest form that stands whole at rest in `room`, else the
-    /// narrowest.
     pub(super) fn fitting(&self, room: f64) -> usize {
         self.text
             .iter()
@@ -129,9 +81,6 @@ impl LocationForms {
             .unwrap_or_else(|| self.text.len().saturating_sub(1))
     }
 
-    /// The room the location at rest keeps for `form` to stand whole: none
-    /// where it has no narrower form to choose, or `form` is cut short in
-    /// `room` all the same.
     pub(super) fn least(&self, form: usize, room: f64) -> f64 {
         match self.text.get(form) {
             Some(width) if self.text.len() > 1 && width + self.chrome <= room => {
@@ -141,19 +90,10 @@ impl LocationForms {
         }
     }
 
-    /// The text width of `form` (nothing measured: none).
     pub(super) fn width(&self, form: usize) -> f64 {
         self.text.get(form).copied().unwrap_or(0.0)
     }
 
-    /// How a notice up in the location stands where the location has
-    /// `room` beside the navigation alone: its buttons' widths, which name
-    /// themselves, and the room the location keeps for the notice to stand
-    /// whole, its buttons included. The buttons name themselves, in order,
-    /// as far as they stand so beside the whole text in `room`: the last
-    /// is its icon first. The location keeps no more than `room`,
-    /// everything that yields before it in the menu, the text cut short
-    /// beside the buttons.
     pub(super) fn notice(&self, toolbar: &WindowToolbar, room: f64) -> Option<NoticeFit> {
         let notice = toolbar.notice.as_ref()?;
         let whole = self.width(0) + self.chrome;
@@ -186,57 +126,37 @@ impl LocationForms {
     }
 }
 
-/// How a notice up in the location stands in the row
-/// ([`LocationForms::notice`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct NoticeFit {
-    /// Its buttons' widths, in order.
     pub(super) buttons: Vec<f64>,
-    /// Which of them name themselves.
     pub(super) labelled: Vec<bool>,
-    /// The room the location keeps for it.
     pub(super) least: f64,
 }
 
-/// The views, the location's forms and the labelled leading actions as
-/// the theme draws them, and what they were measured for.
 #[derive(Clone, Debug)]
 pub(super) struct Measured {
     pub(super) key: MeasureKey,
     pub(super) views: ViewsSize,
     pub(super) forms: LocationForms,
-    /// Each view's tab width.
     pub(super) tabs: Vec<f64>,
-    /// Each leading action's text button width (`0.0`: not labelled).
     pub(super) leading: Vec<f64>,
-    /// Each action's text button width (`0.0`: not labelled).
     pub(super) actions: Vec<f64>,
 }
 
-/// What the views and the location's forms were measured for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MeasureKey {
     pub(super) labels: Vec<String>,
-    /// Each leading action's name where it is labelled, else empty, and whether it is the
-    /// app's primary one: the face it is drawn with decides how wide its button is.
     pub(super) leading: Vec<(String, bool)>,
-    /// Each action's name where it is labelled, else empty, and whether it is the app's
-    /// primary one.
     pub(super) actions: Vec<(String, bool)>,
     pub(super) forms: Vec<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
     pub(super) lead: LocationLead,
-    /// The notice's buttons' names.
     pub(super) notice: Vec<String>,
-    /// The word that follows the label: "Edited", "View only".
     pub(super) trailing: Option<String>,
     pub(super) text_scale: u32,
 }
 
-/// What stands beside the label's text in the location at rest
-/// ([`paint_location`]): a picker's face and chevron where it chooses
-/// among places, a field's frame where it is edited, its icon.
 pub(super) fn location_chrome(
     (editable, picker, lead): (bool, bool, LocationLead),
     theme: &Theme,
@@ -257,7 +177,6 @@ pub(super) fn location_chrome(
     chrome
 }
 
-/// What leads a location's label: nothing, its icon, or the face of who it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LocationLead {
     None,
@@ -277,22 +196,15 @@ impl LocationLead {
     }
 }
 
-/// Where the views stand in one layout of the row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ViewsPlace {
-    /// The segmented switcher, this wide and tall.
     Strip(f64, f64),
-    /// The views menu, this wide.
     Menu(f64),
     /// The location as the views' picker, at least this wide.
     InLocation(f64),
-    /// The overflow menu's first rows (or there are no views).
     Overflow,
 }
 
-/// Where the views go once the switcher has no room: into the location,
-/// as its picker, where it can be one ([`picks_views`]), else into a views
-/// menu of their own.
 pub(super) fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
     measured
         .location
@@ -311,10 +223,7 @@ fn main_action_floor(toolbar: &WindowToolbar, row_actions: usize) -> usize {
         .min(row_actions)
 }
 
-/// Whether `toolbar`'s location can be the views' picker: a plain label,
-/// neither edited, nor a picker of its own places, nor a breadcrumb.
 pub(super) fn picks_views(toolbar: &WindowToolbar) -> bool {
-    // A notice says what happened; it is no place to pick a view from.
     toolbar.notice.is_none()
         && toolbar.location.as_ref().is_some_and(|location| {
             !location.editable
@@ -339,7 +248,6 @@ pub(super) struct Kept {
 }
 
 impl Kept {
-    /// Every leading action, and the first `inline` actions.
     pub(super) fn all(toolbar: &WindowToolbar, inline: usize) -> Self {
         let navigating = toolbar
             .leading
@@ -355,7 +263,6 @@ impl Kept {
         }
     }
 
-    /// Whether leading action `index` stands in the row.
     pub(super) fn shows(self, toolbar: &WindowToolbar, index: usize) -> bool {
         let Some(action) = toolbar.leading.get(index) else {
             return false;
@@ -418,8 +325,6 @@ impl Slots {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
         }
-        // The room the location has beside the navigation alone, everything
-        // that yields before it ([`Self::yielding`]) in the menu.
         let navigation = Kept {
             plain: 0,
             inline: 0,
@@ -452,12 +357,7 @@ impl Slots {
         } else {
             icons
         };
-        // The room this layout leaves empty beside its location: what a word of an action could
-        // stand in ([`Self::spare`], before the notice takes its own).
         let spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
-        // The actions that say what they do say it where the row leaves room for their words
-        // beside its location, the first actions first, even while the rest keep their glyph
-        // alone: a glyph with the room to be read is a glyph nobody can name.
         if !slots.actions_labelled {
             let mut extra = 0.0;
             let mut kept = vec![0.0; action_labels.len()];
@@ -487,8 +387,6 @@ impl Slots {
                 }
             }
         }
-        // The window's main action says what it does where the row leaves room for its words
-        // beside its location: a glyph with the room to be read is a glyph nobody can name.
         if !slots.labelled
             && let Some(index) = toolbar.leading.iter().position(|action| action.primary)
             && let Some(words) = labels
@@ -534,8 +432,6 @@ impl Slots {
             slots = below;
         }
         slots.settle(form, labels, action_labels, notice, forms);
-        // The room the location leaves empty beside its own label is where its actions say what
-        // they do: the bar stands their words there rather than glyphs nobody can name.
         let extra: f64 = action_labels
             .iter()
             .take(slots.actions.len())
@@ -546,8 +442,6 @@ impl Slots {
             && extra <= slots.spare
             && !slots.views_in_location()
         {
-            // The words take the room out of the location's end, so whatever stands between it and
-            // the actions moves along, and the actions grow from their own trailing edge.
             let moved = |rect: Rect| Rect::new(rect.x0 - extra, rect.y0, rect.x1 - extra, rect.y1);
             let mut x1 = slots.actions.iter().map(|rect| rect.x1).fold(0.0, f64::max);
             for (rect, words) in slots.actions.iter_mut().zip(action_labels).rev() {
@@ -568,8 +462,6 @@ impl Slots {
         slots
     }
 
-    /// What a layout of the row carries whatever stood in it: the form the location shows, the
-    /// words its slots ask for, the notice in the location, and the room its label leaves empty.
     fn settle(
         &mut self,
         form: usize,
@@ -579,23 +471,16 @@ impl Slots {
         forms: &LocationForms,
     ) {
         self.form = form;
-        // What the actions' words need, whether or not this layout shows them: a row that had
-        // room for a label and showed its icon instead is what a check reports.
         self.leading_words = labels.to_vec();
         self.action_words = action_labels.to_vec();
         if let Some(notice) = notice {
             self.place_notice(notice, forms.width(form) + forms.chrome);
         }
-        // The room the location leaves empty beside its label, once the notice has its own, and
-        // above the least it needs: what a label of the actions could stand in.
         self.spare =
             (self.location.width() - (forms.width(form) + forms.chrome) - super::MIN_LOCATION_PX)
                 .max(0.0);
     }
 
-    /// Put the notice's buttons in order right after its text, `text` wide
-    /// with its icon, and inside the location's end where the text is cut
-    /// short; the location keeps what is left before them.
     fn place_notice(&mut self, notice: NoticeFit, text: f64) {
         let location = self.location;
         if notice.buttons.is_empty() || location.area() <= 0.0 {
@@ -621,9 +506,6 @@ impl Slots {
         self.location.x1 = (first - CONTROL_GAP).max(location.x0);
     }
 
-    /// Whether these slots keep everything of `toolbar` in the row: every
-    /// leading action, every action the row can hold, the views as their
-    /// strip.
     pub(super) fn folds_nothing(&self, toolbar: &WindowToolbar) -> bool {
         let views = toolbar
             .views
@@ -637,8 +519,6 @@ impl Slots {
             && self.views.len() == views
     }
 
-    /// Whether these slots keep in the row exactly what `other` keeps, and
-    /// the views in the same place.
     pub(super) fn folds_as(&self, other: &Self) -> bool {
         let shown = |slots: &Self| -> Vec<bool> {
             slots.leading.iter().map(|rect| rect.area() > 0.0).collect()
@@ -654,11 +534,6 @@ impl Slots {
             && (self.location.area() > 0.0) == (other.location.area() > 0.0)
     }
 
-    /// [`Self::lay_out`] for a location showing a form `form_w` wide, which
-    /// at rest stands whole in a location `least` wide, and leading actions
-    /// `labels` wide (none, or `0.0`: an icon). Where the form is
-    /// `shortened` the plain leading actions are in the menu: they yield
-    /// before the location's label does.
     pub(super) fn arranged(
         toolbar: &WindowToolbar,
         row: Rect,
@@ -699,8 +574,6 @@ impl Slots {
                     .map(|chrome| form_w.ceil() + chrome),
                 ..m
             });
-        // A menu holding one action alone saves no width: its button takes
-        // the action's place and hides it.
         let lone = |inline: usize, place: ViewsPlace| {
             keep_alone
                 && row_actions - inline == 1
@@ -715,8 +588,6 @@ impl Slots {
         if shortened {
             all.plain = 0;
         }
-        // The window's main action stands in the row wherever the bar is drawn
-        // ([`crate::window_toolbar::ToolbarAction::primary`]).
         let floor = main_action_floor(toolbar, row_actions);
         for &place in &places {
             let mut inline = row_actions.min(most).max(floor).min(row_actions);
@@ -824,10 +695,6 @@ impl Slots {
         plain.chain(navigating).chain(navigation).collect()
     }
 
-    /// The slots with the leading actions and the actions `kept` keeps in
-    /// the row and the rest in the overflow menu, and the views at `place`;
-    /// leading action `n` is `labels[n]` wide where that is wider than an
-    /// icon.
     pub(super) fn with_inline(
         toolbar: &WindowToolbar,
         row: Rect,
@@ -933,7 +800,6 @@ impl Slots {
         slots
     }
 
-    /// Every button stands inside `row`, clear of the ones before it.
     pub(super) fn fits(&self, row: Rect) -> bool {
         let lead = self.leading.iter().map(|rect| rect.x1).fold(
             self.forward
@@ -965,8 +831,6 @@ impl Slots {
         if declared && self.location.area() <= 0.0 {
             return true;
         }
-        // A location with shorter forms names itself in one that stands whole: where the room it
-        // got cuts even that one short, the row is short of room.
         let cut = declared
             && forms.is_some_and(|forms| {
                 forms.text.len() > 1
@@ -975,24 +839,18 @@ impl Slots {
         cut || !self.fits(row)
     }
 
-    /// Whether the location is the views' picker.
     pub(crate) fn views_in_location(&self) -> bool {
         self.views_menu.area() > 0.0 && self.views_menu == self.location
     }
 
-    /// Whether the forward button is in the overflow menu, the row having
-    /// no room for it.
     pub(crate) fn forward_folded(&self, toolbar: &WindowToolbar) -> bool {
         toolbar.navigation.is_some() && self.forward.area() <= 0.0
     }
 
-    /// Whether the sidebar's toggle is in the overflow menu, the row having
-    /// no room for it.
     pub(crate) fn sidebar_folded(&self, toolbar: &WindowToolbar) -> bool {
         toolbar.sidebar.is_some() && self.sidebar.area() <= 0.0
     }
 
-    /// The leading actions the row has no room for, in their order.
     pub(super) fn folded_leading(&self) -> impl Iterator<Item = usize> + '_ {
         self.leading
             .iter()
@@ -1001,7 +859,6 @@ impl Slots {
             .map(|(index, _)| index)
     }
 
-    /// The view switcher's whole strip (`Rect::ZERO`: in the menu).
     #[cfg(test)]
     pub(crate) fn views_strip(&self) -> Rect {
         match (self.views.first(), self.views.last()) {
@@ -1067,8 +924,6 @@ impl Slots {
     }
 }
 
-/// `strip` split into `n` equal segments, as a segmented control of
-/// labels that all fit splits itself.
 pub(super) fn equal_segments(strip: Rect, n: usize) -> Vec<Rect> {
     let Some(count) = u32::try_from(n).ok().filter(|n| *n > 0) else {
         return Vec::new();

@@ -1,8 +1,7 @@
 //! Windows migration review from explicitly selected directory grants only.
 //!
-//! Registry/known-folder suggestions are not grants. Cloud membership never
-//! establishes a backup; every unclassified byte is potentially unique. This
-//! inventory is an estimate, not a snapshot or authority for the copier.
+//! Registry and known-folder suggestions are not grants, cloud membership never establishes a
+//! backup, and the inventory is an estimate rather than authority for the copier.
 
 pub(crate) mod metadata;
 mod native;
@@ -33,8 +32,8 @@ pub enum RootRole {
     Other,
 }
 
-/// The caller must obtain independent consent for each path, including Steam
-/// libraries or redirected folders mentioned by metadata in another grant.
+/// The caller must obtain consent for each path, including libraries or redirected folders named
+/// by metadata in another grant.
 #[derive(Clone, Debug)]
 pub struct SelectedRoot {
     pub path: PathBuf,
@@ -55,8 +54,6 @@ pub enum Category {
     PotentiallyUnique,
 }
 
-/// What the reviewed entry is, so a source tree can group it without a second
-/// filesystem scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntryKind {
@@ -86,11 +83,10 @@ pub struct Entry {
     pub relative: PathBuf,
     pub kind: EntryKind,
     pub category: Category,
-    /// Logical bytes, not physical allocation. None means unreadable metadata.
+    /// Logical bytes, not physical allocation; `None` means unreadable metadata.
     pub bytes: Option<u64>,
     pub availability: Availability,
     pub copy_eligible: bool,
-    /// Local bytes do not prove server-side sync or a recoverable cloud copy.
     pub sync_verified: bool,
 }
 
@@ -107,21 +103,19 @@ pub struct RootInventory {
     pub role: RootRole,
     pub entries: Vec<Entry>,
     pub gaps: Vec<CoverageGap>,
-    /// Suggestions only: the metadata parser never opens these paths. Only
-    /// a separate selected root can authorize inventory of a referenced library.
+    /// Suggestions only: nothing here opens the path, and only a separate selected root can
+    /// authorize inventory of a referenced library.
     pub additional_grants: Vec<PathBuf>,
-    /// A root already inside another selected root by real directory identity.
-    /// Its content is inventoried once, through the containing root: redirected
-    /// folders are deduplicated, never merged by matching names.
+    /// A root inside another selected root by real directory identity is inventoried once, through
+    /// the containing root; redirected folders are deduplicated, never merged by name.
     pub covered_by: Option<String>,
     pub decision: Decision,
     pub exclusion_reason: Option<String>,
-    /// Nested, root-relative subtrees the person explicitly excluded. Paths are
-    /// matched as path prefixes, so excluding a folder excludes its contents.
+    /// Matched as path prefixes, so excluding a folder excludes its contents.
     pub excluded: Vec<PathBuf>,
     pub category_decisions: std::collections::BTreeMap<Category, Decision>,
     pub category_exclusion_reasons: std::collections::BTreeMap<Category, String>,
-    /// Public catalog metadata read from bounded Valve manifests.
+    /// Public catalog metadata from bounded Valve manifests.
     pub steam_apps: Vec<SteamAppManifest>,
     #[serde(skip)]
     examined: usize,
@@ -144,8 +138,8 @@ pub struct Budget {
 }
 
 impl Inventory {
-    /// All roots must be absolute, non-overlapping and admitted before scanning.
-    /// No environment-derived home/profile is consulted.
+    /// All roots must be absolute, non-overlapping and admitted before scanning; no
+    /// environment-derived home or profile is consulted.
     pub fn discover(selected: &[SelectedRoot]) -> Result<Self, String> {
         if selected.len() > 64 {
             return Err("too many selected Windows roots".into());
@@ -154,10 +148,7 @@ impl Inventory {
         for root in selected {
             pins.push(PinnedDirectory::open_absolute(&root.path).map_err(|e| e.to_string())?);
         }
-        // Directory identity, not the spelling of a path, decides whether two
-        // grants are the same data. A redirected folder inside a cloud root is
-        // covered by that root; two different folders that merely share a name
-        // stay separate.
+        // Directory identity, not a path's spelling, decides whether two grants are the same data.
         let mut container: Vec<Option<usize>> = vec![None; pins.len()];
         for (index, pin) in pins.iter().enumerate() {
             for (other_index, other) in pins.iter().enumerate() {
@@ -178,8 +169,7 @@ impl Inventory {
                 continue;
             };
             let covered_by = container.get(index).copied().flatten().and_then(|_| {
-                // Resolve to the outermost container, which is the root that
-                // actually walks and owns the data.
+                // Resolve to the outermost container, which owns the walk.
                 let mut outer = index;
                 for _ in 0..pins.len() {
                     match container.get(outer).copied().flatten() {
@@ -228,11 +218,8 @@ impl Inventory {
         Ok(inventory)
     }
 
-    /// Semantic review operation. Explicit exclusions always require a reason;
-    /// nothing is excluded automatically because of an app or cloud label.
-    ///
-    /// # Errors
-    /// Refuses unknown source identities and exclusions without an explicit reason.
+    /// Explicit exclusions always require a reason; nothing is excluded automatically because of an
+    /// app or cloud label. Refuses unknown source identities.
     pub fn select(
         &mut self,
         source_id: &str,
@@ -257,10 +244,8 @@ impl Inventory {
         Ok(())
     }
 
-    /// Override one reviewed inventory category, without excluding other data.
-    ///
-    /// # Errors
-    /// Refuses unknown sources/categories and exclusions without an explicit reason.
+    /// Overrides one reviewed category without excluding other data; refuses unknown sources or
+    /// categories.
     pub fn select_category(
         &mut self,
         source_id: &str,
@@ -292,9 +277,8 @@ impl Inventory {
         Ok(())
     }
 
-    /// Exclude reviewed subtrees of one selected root. Each prefix must name an
-    /// entry of that root's own inventory, so a selection can never reach data
-    /// outside the grant, and excluding a folder excludes everything beneath it.
+    /// Each prefix must name an entry of that root's own inventory, so a selection never reaches
+    /// data outside the grant.
     pub fn select_exclusions(
         &mut self,
         source_id: &str,
@@ -355,7 +339,6 @@ impl Inventory {
         budget
     }
 
-    /// Refuse output within any granted source, even if that source is retained.
     pub fn validate_export_destination(&self, parent: &PinnedDirectory) -> Result<(), String> {
         if self
             .roots
@@ -367,8 +350,7 @@ impl Inventory {
         Ok(())
     }
 
-    /// Execute only an explicitly reviewed Copy selection with the verified
-    /// copier. Skipped placeholders remain at source and are not copied.
+    /// Skipped placeholders stay at source and are not copied.
     pub fn copy_selected(
         &self,
         source_id: &str,
@@ -400,9 +382,6 @@ impl Inventory {
         )
     }
 
-    /// Validate the held grant before returning an opener target.
-    ///
-    /// # Errors
     /// Refuses unknown or changed grants and paths without a directory URI.
     pub fn source_folder_uri(&self, source_id: &str) -> Result<String, String> {
         let root = self
@@ -440,8 +419,7 @@ impl RootInventory {
                 .any(|decision| *decision == Decision::Copy)
     }
 
-    /// Record one installed title from its own bounded Valve manifest. The
-    /// manifest names public catalog metadata; it never authorizes a library.
+    /// The manifest names public catalog metadata; it never authorizes a library.
     fn steam_manifest(
         &mut self,
         pin: &Arc<PinnedDirectory>,
@@ -616,8 +594,8 @@ fn category(role: RootRole, path: &Path) -> Category {
     } else if text.split('/').any(|s| matches!(s, "mods" | "workshop")) {
         Category::GameMod
     } else if text.starts_with("steamapps/common/") {
-        // Installation directories can contain mods/local changes: this label
-        // does not make them regenerable or authorize automatic exclusion.
+        // Installs can contain mods or local changes: this label never authorizes automatic
+        // exclusion.
         Category::GameInstallation
     } else {
         match role {

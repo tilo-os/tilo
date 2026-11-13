@@ -8,12 +8,8 @@ use ui::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-/// How many `Code` rows one wheel notch scrolls.
 const WHEEL_ROWS: u8 = 3;
 
-/// The distance a wheel event asks a pane to scroll, in logical pixels, as
-/// `(horizontal, vertical)`. The vertical wheel scrolls along `x` while shift
-/// is held.
 pub fn wheel_pixels(delta: MouseScrollDelta, row_h: f64, shift: bool) -> (f64, f64) {
     let (dx, dy) = match delta {
         MouseScrollDelta::LineDelta(x, y) => (
@@ -29,20 +25,16 @@ pub fn wheel_pixels(delta: MouseScrollDelta, row_h: f64, shift: bool) -> (f64, f
     }
 }
 
-/// Horizontal scrolling the code columns of a pane share: one offset, a bar
-/// along the bottom of each column, and the pointer handling that goes with it.
 #[derive(Debug, Default)]
 pub struct HScroll {
     offset: f64,
     bar: Option<Scrollbar>,
-    /// Where each column's bar was drawn last, for the pointer.
     tracks: Vec<Rect>,
     content: f64,
     viewport: f64,
 }
 
 impl HScroll {
-    /// How far the code has scrolled to the left.
     pub fn offset(&self) -> f64 {
         self.offset
     }
@@ -55,20 +47,16 @@ impl HScroll {
         ScrollMetrics::new(self.content, self.viewport, self.offset)
     }
 
-    /// Learn how wide the code is and how much of it shows; the offset stays
-    /// inside what that allows.
     pub fn set_extent(&mut self, content: f64, viewport: f64) {
         self.content = content;
         self.viewport = viewport;
         self.offset = self.offset.clamp(0.0, self.metrics().max_scroll());
     }
 
-    /// Back to the start of the lines.
     pub fn reset(&mut self) {
         self.offset = 0.0;
     }
 
-    /// Scroll by `dx`; returns whether anything moved.
     pub fn scroll_by(&mut self, dx: f64) -> bool {
         let next = (self.offset + dx).clamp(0.0, self.metrics().max_scroll());
         let moved = (next - self.offset).abs() > f64::EPSILON;
@@ -76,12 +64,10 @@ impl HScroll {
         moved
     }
 
-    /// Whether the code is wider than its columns.
     pub fn overflows(&self) -> bool {
         self.metrics().overflows()
     }
 
-    /// The bar's track along the bottom of a column's code `view`.
     pub fn track_in(view: Rect, theme: &Theme) -> Rect {
         let margin = f64::from(theme.tokens.spacing.s1) / 2.0;
         let thickness = f64::from(theme.tokens.spacing.s2);
@@ -93,7 +79,6 @@ impl HScroll {
         )
     }
 
-    /// Draw the bar in each of `tracks` (none while the code fits).
     pub fn draw(&mut self, ctx: &mut PaintCtx<'_>, tracks: &[Rect]) {
         self.tracks.clear();
         if !self.overflows() {
@@ -107,9 +92,6 @@ impl HScroll {
         }
     }
 
-    /// Pointer input at `cursor` (logical px): press, drag and release on a
-    /// bar. Returns whether the bar took the event; `moved` is set when the
-    /// offset changed.
     pub fn pointer(&mut self, event: &WindowEvent, cursor: Point, moved: &mut bool) -> bool {
         let metrics = self.metrics();
         match event {

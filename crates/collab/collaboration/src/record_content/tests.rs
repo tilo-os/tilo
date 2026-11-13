@@ -292,3 +292,65 @@ fn the_records_route_reaches_the_lanes_of_the_windows_showing_it() {
         "only the record's own lane is left once the window let its lane go"
     );
 }
+
+#[test]
+fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
+    const APP: &str = "so.tilo.record-content-convergent-test";
+    let picture = b"a picture two windows of the workspace place".repeat(500);
+    let secret = tilo_seal::SymmetricKey::generate().unwrap();
+    let mine = Arc::new(ContentLane::default());
+    let theirs = Arc::new(ContentLane::default());
+    ContentLane::show_on_route(APP, "a record", &mine);
+    ContentLane::show_on_route(APP, "another record", &theirs);
+    let local = ContentStore::memory();
+    let my_window = RecordContent::store(local.clone(), Arc::clone(&mine));
+    let their_window = RecordContent::store(local.clone(), Arc::clone(&theirs));
+    let before = my_window.put(&picture).unwrap();
+    assert_ne!(
+        before,
+        my_window.put(&picture).unwrap(),
+        "without the members' keys, each item has a fresh key"
+    );
+    mine.take_requests();
+
+    ContentLane::of(APP, "a record").hold_secret(Some(secret.clone()));
+    ContentLane::of(APP, "another record").hold_secret(Some(secret));
+    let reference = my_window.put(&picture).unwrap();
+    assert_eq!(my_window.put(&picture).unwrap(), reference);
+    assert_eq!(
+        their_window.put(&picture).unwrap(),
+        reference,
+        "another record of the same members names it alike"
+    );
+    let offers = mine.take_requests().offers;
+    assert_eq!(offers.len(), 2);
+    assert!(
+        offers.iter().all(|(hash, sealed)| Some(hash.as_str())
+            == tilo_content::content_address(&reference).as_deref()
+            && *sealed == offers[0].1),
+        "one ciphertext under one address"
+    );
+    assert!(
+        !offers[0].1.windows(64).any(|w| w == &picture[..64]),
+        "sealed all the same"
+    );
+    assert_eq!(my_window.read(&reference), Some(picture.clone()));
+    assert_eq!(
+        my_window.read(&before),
+        Some(picture.clone()),
+        "an item sealed under a fresh key still opens"
+    );
+
+    let elsewhere = Arc::new(ContentLane::default());
+    ContentLane::show_on_route(APP, "a record elsewhere", &elsewhere);
+    ContentLane::of(APP, "a record elsewhere")
+        .hold_secret(Some(tilo_seal::SymmetricKey::generate().unwrap()));
+    let other = RecordContent::store(ContentStore::memory(), elsewhere)
+        .put(&picture)
+        .unwrap();
+    assert_ne!(
+        tilo_content::content_address(&other),
+        tilo_content::content_address(&reference),
+        "members of another workspace seal it to other ciphertext"
+    );
+}

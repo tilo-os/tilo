@@ -8,7 +8,6 @@ use winit::keyboard::ModifiersState;
 use super::bench::{Bench, key_event};
 use super::*;
 
-/// Press `key` (typing `text`) through the window while `modifiers` are held.
 fn press(bench: &mut Bench, modifiers: ModifiersState, key: Key, text: Option<&str>) {
     bench.send(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
     bench.send(&key_event(key.clone(), text, ElementState::Pressed));
@@ -53,8 +52,6 @@ fn press_char(app: &mut SlidesApp, ch: &str) -> bool {
     handled
 }
 
-/// The editor over one slide whose single text box reads `words` and is
-/// selected, and the box's id.
 fn selected_text(words: &str, align: TextAlign) -> (Bench, Id) {
     let mut s = Slide::new(Layout::Blank);
     let id =
@@ -66,7 +63,6 @@ fn selected_text(words: &str, align: TextAlign) -> (Bench, Id) {
     (bench, id)
 }
 
-/// [`selected_text`] with the box open for editing.
 fn editing(words: &str, align: TextAlign) -> (Bench, Id) {
     let (mut bench, id) = selected_text(words, align);
     bench.with(|app| app.begin_text_edit(false));
@@ -83,7 +79,6 @@ fn text_box(app: &SlidesApp) -> &ui::widget::BlockEditor {
         .editor()
 }
 
-/// The text selected in the text box being edited.
 fn edit_selection(app: &SlidesApp) -> String {
     let editor = text_box(app);
     if let Some(text) = editor.selected_text() {
@@ -113,7 +108,6 @@ fn notes(bench: &Bench) -> String {
     bench.deck().slides[0].notes.clone()
 }
 
-/// The editor over one slide whose notes read `words`, editing them.
 fn editing_notes(words: &str) -> Bench {
     let mut s = Slide::new(Layout::TitleContent);
     s.notes = words.into();
@@ -126,7 +120,6 @@ fn editing_notes(words: &str) -> Bench {
 
 #[test]
 fn help_overlay_and_accessibility_expose_the_deck() {
-    // Case `help_overlay_is_visible_and_dismissable_in_present_mode`.
     Bench::sample().with(|app| {
         app.enter_present();
         assert!(!app.help_overlay.is_visible());
@@ -154,7 +147,6 @@ fn help_overlay_and_accessibility_expose_the_deck() {
         );
     });
 
-    // Case `accessibility_exposes_deck_and_current_slide`.
     Bench::sample().with(|app| {
         let tree = app.accessibility().expect("presentation semantics");
         assert_eq!(tree.role, ui::a11y::Role::Document);
@@ -173,7 +165,6 @@ fn help_overlay_and_accessibility_expose_the_deck() {
         );
     });
 
-    // Case `accessibility_activation_uses_stable_slide_identity_and_modal_help_owns_tree`.
     {
         let mut bench = Bench::sample();
         let target_id = bench.deck().slides[3].id.clone();
@@ -209,10 +200,8 @@ fn help_overlay_and_accessibility_expose_the_deck() {
     }
 }
 
-/// Caret placement under alignment and word-wise moves.
 #[test]
 fn caret_navigation_tracks_alignment_and_lines() {
-    // Case `caret_tracks_center_and_right_alignment_not_just_left`.
     {
         let caret_x = |align: TextAlign| {
             let (mut bench, _id) = editing("Hello", align);
@@ -232,7 +221,6 @@ fn caret_navigation_tracks_alignment_and_lines() {
         );
     }
 
-    // Case `ctrl_arrow_moves_word_wise`.
     {
         let (mut bench, _id) = editing("Hello world", TextAlign::Left);
         press(
@@ -303,11 +291,8 @@ fn notes_typing_edits_the_notes_and_up_down_move_the_caret() {
     assert_eq!(notes(&bench), "line one\nsecond!", "the notes edit landed");
 }
 
-/// The text box editor opens, navigates and selects on the widget's own
-/// event path; notes selection, IME and multiline edit the slide's notes.
 #[test]
 fn text_box_keys_and_notes_editing() {
-    // Case `enter_opens_the_box_and_escape_ends_editing_keeping_it_selected`.
     {
         let (mut bench, id) = selected_text("Hi", TextAlign::Left);
         assert!(bench.with(|app| press_named(app, NamedKey::Enter)));
@@ -324,7 +309,6 @@ fn text_box_keys_and_notes_editing() {
         });
     }
 
-    // Case `shift_arrow_extends_a_selection_over_the_text`.
     {
         let (mut bench, _id) = editing("Hi", TextAlign::Left);
         assert!(
@@ -346,7 +330,6 @@ fn text_box_keys_and_notes_editing() {
         );
     }
 
-    // Case `ctrl_a_selects_the_whole_box`.
     {
         let (mut bench, _id) = editing("Hi", TextAlign::Left);
         chord(&mut bench, ModifiersState::CONTROL, "a");
@@ -357,7 +340,6 @@ fn text_box_keys_and_notes_editing() {
         );
     }
 
-    // Case `notes_selection_ime_and_multiline_edit_the_slides_notes`.
     {
         let mut bench = editing_notes("abc");
         chord(&mut bench, ModifiersState::CONTROL, "a");
@@ -379,7 +361,6 @@ fn text_box_keys_and_notes_editing() {
         assert_eq!(notes(&bench), "東京\n");
     }
 
-    // Case `a_viewer_cannot_type_in_the_notes`.
     {
         let mut s = Slide::new(Layout::TitleContent);
         s.notes = "abc".into();
@@ -417,8 +398,6 @@ fn an_agent_writes_speaker_notes_by_a_field_edit() {
     assert_eq!(notes(&bench), "");
 }
 
-/// Where the starter deck's text box reading `words` is drawn, with the
-/// editor open for `role`.
 fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, String) {
     let mut slide = Slide::new(Layout::Blank);
     slide.add(Element::text(words, 96.0, 90.0, 1088.0, 100.0, 54.0));
@@ -458,8 +437,6 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
             "the retained editor belongs to the physically clicked box"
         );
     });
-    // The double-click selects the word under it, as in any text field;
-    // the cases below write after the box's words.
     bench.key("End");
     (bench, id)
 }
@@ -474,7 +451,6 @@ fn element_text(bench: &Bench, id: &str) -> Element {
 #[test]
 fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
     use ui::permissions::Role;
-    // Case `typing_edits_the_box_through_the_deck`.
     {
         let (mut bench, id) = editing_starter_box("Title", Role::Owner);
         bench.type_text(" Hi!");
@@ -488,7 +464,6 @@ fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
         assert_eq!(element_text(&bench, &id).text, "Title Hi\n");
     }
 
-    // Case `bold_typed_in_a_box_is_a_mark`.
     {
         let (mut bench, id) = editing_starter_box("Subtitle", Role::Owner);
         bench.type_text(" ");
@@ -506,7 +481,6 @@ fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
         );
     }
 
-    // Case `a_viewer_cannot_type_in_a_box`.
     {
         let (mut bench, id) = editing_starter_box("Title", Role::Viewer);
         let before = bench.app.versions().len();
@@ -516,8 +490,6 @@ fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
     }
 }
 
-/// A text box's words are a rich-text resource of their own beneath their
-/// element, which an agent edits as the deck's action.
 #[test]
 fn an_agent_edits_a_text_box_by_a_field_edit() {
     let (mut bench, _) = editing_starter_box("Title", ui::permissions::Role::Owner);
@@ -564,15 +536,11 @@ fn typing_on_a_selected_text_box_writes_words_not_shortcuts() {
         );
     });
 
-    // Text from the input method opens a selected box the same way.
     let (mut bench, id) = selected_text("Old", TextAlign::Left);
     bench.send(&WindowEvent::Ime(winit::event::Ime::Commit("Neu".into())));
     assert_eq!(element_text(&bench, &id).text, "Neu");
 }
 
-/// A click on an empty box (one showing its "Add a title" prompt) opens it
-/// for typing; a new slide's boxes are empty prompts, so its title is typed
-/// rather than appended to stock words.
 #[test]
 fn an_empty_prompt_box_opens_on_one_click_and_new_slides_prompt() {
     let mut slide = Slide::new(Layout::Blank);
@@ -606,8 +574,6 @@ fn an_empty_prompt_box_opens_on_one_click_and_new_slides_prompt() {
     );
 }
 
-/// The Text tool's new box opens with its stock word selected: typing
-/// replaces it.
 #[test]
 fn a_new_text_box_opens_ready_to_type() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));

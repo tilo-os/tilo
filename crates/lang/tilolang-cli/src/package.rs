@@ -14,14 +14,9 @@ use tilolang::source::{write_catalogue, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
-/// The record kind of every tilolang app's workspace record.
-pub const RECORD_KIND: &str = "tilolang.room";
-/// The binary of the tilolang runtime bundle, relative to the bundle.
 pub const RUNTIME_BIN: &str = "bin/tilolang-app";
-/// The tilolang runtime bundle a package built by this tool runs on.
 pub const DEFAULT_TILOLANG_RUNTIME: &str =
     concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
-/// The Tilo runtime release an app names when the build is not told the exact one.
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
 /// What a build makes of the package in a directory and the packages it uses.
@@ -36,22 +31,18 @@ pub struct BuildOptions {
     pub tilo_runtime: String,
     /// The tilolang runtime bundle the apps execute (`tilolang/<version>`).
     pub tilolang_runtime: String,
-    /// The packages' version.
     pub version: String,
 }
 
-/// One app a build made.
 #[derive(Clone, Debug)]
 pub struct BuiltApp {
     pub app: String,
     pub title: String,
-    /// The compiled package's metadata: what decides whether a build takes over a running one
-    /// in place ([`tilolang_tilo::upgrade`]).
+    /// The compiled package's metadata: what decides whether a build takes over a running one in
+    /// place ([`tilolang_tilo::upgrade`]).
     pub meta: PackageMeta,
-    /// SHA-256 (hex) of what the app is: its manifest and its payload. Two builds with the same
-    /// digest are the same app.
+    /// SHA-256 (hex) of what the app is: its manifest and its payload.
     pub digest: String,
-    /// The staged payload directory.
     pub payload: PathBuf,
     pub manifest: PathBuf,
     pub tapp: PathBuf,
@@ -87,12 +78,6 @@ fn toml_string(value: &str) -> String {
 }
 
 /// The outside origins a package's types hold, each once, in a fixed order: `imap`, `youtube`.
-///
-/// A type names the kind of an outside service's resource it holds (`type Message (origin:
-/// imap.message)`), and the system runs a connector process for the origin its manifest
-/// declares ([`tilolang::origin`]). The manifest's `[entrypoint] origins` is what the launcher
-/// admits a connector with, so a package whose manifest leaves one out is refused the connector
-/// it needs.
 #[must_use]
 pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     let mut origins: Vec<&'static str> = Vec::new();
@@ -113,13 +98,8 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     origins
 }
 
-/// A package's `[sandbox]`: the capabilities, namespaces and network mode of a package holding
-/// the outside `origins`.
-///
-/// A package whose types hold an outside service's resources runs that origin's connector: it
-/// reaches the service, and reads the credentials from custody, both in the runtime's native
-/// code and never the package's. The origins are the ones the platform runs a connector for; a
-/// package with none opens no socket of its own.
+/// A package's `[sandbox]`: the capabilities, namespaces and
+/// network mode of a package holding the outside `origins`.
 fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
     if origins.is_empty() {
         return (
@@ -142,8 +122,8 @@ fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
     )
 }
 
-/// The manifest's `[entrypoint]` line naming each of the outside `origins`' connectors: one
-/// launch per origin the package's types hold, and nothing when it holds none.
+/// The manifest's `[entrypoint]` line naming each of the outside `origins`' connectors: one launch
+/// per origin the package's types hold, and nothing when it holds none.
 fn connector_origins(origins: &[&str]) -> String {
     if origins.is_empty() {
         return String::new();
@@ -162,6 +142,7 @@ pub fn manifest_text(
     publisher: &str,
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
+    let record_kind = tilolang_tilo::meta::MetaExt::record_kind(meta);
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
@@ -176,18 +157,18 @@ pub fn manifest_text(
         extra.push_str(&ids.join(", "));
         extra.push_str("]\n");
     }
-    // What the app may do on the session's action door beyond its own actions: an action or a
-    // view of it that reaches another app's published action asks it at that app's door, under
-    // its own identity. Nothing else is declared: what a workspace grants the app still decides
-    // each call.
+    // What the app may do on the session's action door beyond its own
+    // actions: an action or a view of it that reaches another app's
+    // published action asks it at that app's door, under its own
+    // identity.
     let invokes = if calls_another_app(meta) {
         "[actions]\ninvoke = true\n"
     } else {
         ""
     };
     // The name the app gives itself, in each language it ships: what a person reads in the
-    // launcher, in search and where a change it made is named ("Heute"), never the words its
-    // id makes.
+    // launcher, in search and where a change it made is named ("Heute"), never the words its id
+    // makes.
     let names = names_table(meta, catalogues);
     format!(
         r#"# Generated by `tilolang build` from the package's `app` declaration.
@@ -251,10 +232,10 @@ ext = []
         version = toml_string(&options.version),
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
-        // The app's workspace record, and the workspace's record of each person's own state
-        // of it, which every app of the language opens.
+        // The app's workspace record, and the workspace's record of each person's own state of it,
+        // which every app of the language opens.
         record_kinds = [
-            toml_string(RECORD_KIND),
+            toml_string(&record_kind),
             toml_string(tilolang::PERSONAL_RECORD_KIND),
         ]
         .join(", "),
@@ -265,8 +246,9 @@ ext = []
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
-        // The system runs one connector per outside origin the app's types hold, in this
-        // sandbox, window or not.
+        // The system runs one connector per outside origin
+        // the app's types hold, in this sandbox, window or
+        // not.
         origins = connector_origins(&origins),
     )
 }
@@ -294,8 +276,8 @@ fn names_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String {
     table
 }
 
-/// Whether an action of the app, or a view of it, reaches an action another app publishes: what
-/// the manifest declares as `[actions] invoke`.
+/// Whether an action of the app, or a view of it, reaches an action another app publishes: what the
+/// manifest declares as `[actions] invoke`.
 fn calls_another_app(meta: &PackageMeta) -> bool {
     meta.actions
         .iter()
@@ -313,10 +295,8 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
 }
 
-/// Compile the package in `options.dir` and those it uses, and stage and sign each as an app.
-///
-/// # Errors
-/// A package does not compile (the message lists the errors by file), or a file cannot be
+/// Compile the package in `options.dir` and those it uses, and stage and sign each as an app. #
+/// Errors A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
     assembled(options, identity)?
@@ -364,11 +344,8 @@ fn deliver(
 
 /// Compile the packages of `options` in dependency order, writing each one's ids lock and source
 /// catalogue when it changed: what every delivery starts from, so a build leaves the package's
-/// words where its sources say they are.
-///
-/// # Errors
-/// A package does not compile (the message lists the errors by file), or an ids lock or a
-/// catalogue cannot be written.
+/// words where its sources say they are. # Errors A package does not compile (the message lists the
+/// errors by file), or an ids lock or a catalogue cannot be written.
 fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
@@ -383,22 +360,18 @@ fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage
     Ok(built)
 }
 
-/// One app of a build, as every delivery takes it.
 struct Assembled {
     app: String,
     title: String,
     meta: PackageMeta,
-    /// Its manifest: the description of the app an install signs, and what identifies it here.
     manifest: String,
     bundle: Bundle,
     /// SHA-256 (hex) of the manifest and the bundle, as an install of the same build gets it.
     digest: String,
 }
 
-/// Compile the package in `options.dir` and those it uses, its bundle carrying those it uses.
-///
-/// # Errors
-/// A package does not compile (the message lists the errors by file).
+/// Compile the package in `options.dir` and those it uses, its bundle carrying those it uses. #
+/// Errors A package does not compile (the message lists the errors by file).
 fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<Assembled>, String> {
     let built = compiled(options)?;
     let publisher = hex::encode(identity.public_key_bytes());
@@ -406,8 +379,8 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     for (index, package) in built.iter().enumerate() {
         let meta = &package.compiled.meta;
         let used = &meta.uses;
-        // The standard library first: every module's code may call into it, and it is compiled
-        // with Tilo rather than with the packages of this build.
+        // The standard library first: every module's code may call into it, and it is compiled with
+        // Tilo rather than with the packages of this build.
         let imports = std::iter::once(tilolang::stdlib::compiled())
             .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
             .filter(|earlier| used.contains(&earlier.meta.app));
@@ -426,6 +399,35 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     Ok(apps)
 }
 
+/// Stage, pack and sign one already-compiled package as the `.tapp` a session installs: the same
+/// delivery [`build`] makes, for a caller that compiled its package itself against packages it
+/// publishes (a style package compiled against the shell a session runs, which is no directory this
+/// build searches). # Errors The icon, manifest, packing or signing fails.
+pub fn deliver_compiled(
+    compiled: &tilolang::Compiled,
+    imports: &[&tilolang::Compiled],
+    options: &BuildOptions,
+    identity: &SigningIdentity,
+) -> Result<BuiltApp, String> {
+    let meta = &compiled.meta;
+    let publisher = hex::encode(identity.public_key_bytes());
+    let bundle = Bundle::new(compiled, imports.iter().copied());
+    let manifest = manifest_text(meta, &bundle.catalogues(), options, &publisher);
+    let digest = digest(&manifest, &bundle)?;
+    deliver(
+        Assembled {
+            app: meta.app.clone(),
+            title: meta.title.clone(),
+            meta: meta.clone(),
+            manifest,
+            bundle,
+            digest,
+        },
+        options,
+        identity,
+    )
+}
+
 /// A build of one app as the directory a running desktop app follows it takes it: the bundle
 /// itself, and what decides whether the running build takes it in place.
 pub struct Published {
@@ -436,11 +438,9 @@ pub struct Published {
     pub bundle: Bundle,
 }
 
-/// Compile the package in `options.dir` and those it uses into the bundles a desktop app reads
-/// from its generations, with nothing staged, packed or signed: a local run signs nothing.
-///
-/// # Errors
-/// A package does not compile (the message lists the errors by file).
+/// Compile the package in `options.dir` and those it uses into the bundles a desktop app reads from
+/// its generations, with nothing staged, packed or signed: a local run signs nothing. # Errors A
+/// package does not compile (the message lists the errors by file).
 pub fn published(
     options: &BuildOptions,
     identity: &SigningIdentity,

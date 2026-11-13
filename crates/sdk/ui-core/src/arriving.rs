@@ -1,27 +1,6 @@
-//! Data that is not here yet: the one model for every read whose answer arrives later.
-//!
-//! An [`Arriving`] value is a read in flight, its [`Arrival`] pending (with the [`Source`] the
-//! answer comes from), ready or failed. App code says only what it shows once the data is
-//! there; the framework decides every timing and placeholder ([`crate::widget::ArrivingView`]):
-//!
-//! - **Local data** answers within a frame or two: the frame that would show it waits up to
-//!   one frame budget ([`frame_budget`]), and an answer inside it shows with no placeholder and
-//!   no motion. A local read that misses the budget (a cold disk) behaves like a remote one.
-//! - **Remote data** reserves its space at the content's geometry: nothing but that ground for
-//!   [`GRACE`], then a skeleton in the content's shape for at least [`MIN_SHOWN`] so it never
-//!   flashes, saying where it comes from after [`NAME_SOURCE_AFTER`]. The answer cross-fades in
-//!   ([`crate::motion::CrossFade::arrive`]); a failure turns the reserved space into the error,
-//!   with a retry.
-//!
-//! Every timed step is a deadline ([`ArrivalClock::next_step_at`]) served by the window's wake
-//! scheduler, so a pending read draws no frames between its steps.
-//!
-//! A window whose first frame is not drawn is the same arrival at a tile's scale
-//! ([`crate::widget::TileHost`]): its content says where that frame comes from and, when what
-//! it waits on can measure itself, how much of it has come ([`Progress`]). The answer lives in
-//! a [`LocalState`], so a bound view updates and an idle window wakes when it lands;
-//! [`Arriving::begin`] restarts the read and makes every older [`ArrivalCompletion`] stale, so
-//! a slow answer can never overwrite a newer one.
+//! Data that is not here yet: the one model for every read whose answer arrives later. An [`Arriving`]
+//! value is a read in flight, its [`Arrival`] pending (with the [`Source`] the answer comes from),
+//! ready or failed.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -38,15 +17,12 @@ pub const MIN_SHOWN: Duration = Duration::from_millis(300);
 /// When a placeholder starts saying where its data comes from.
 pub const NAME_SOURCE_AFTER: Duration = Duration::from_secs(2);
 
-/// Where data that is not here yet comes from. The read fills it in: a
-/// read through this device's store says [`Self::Local`], one answered by a
-/// workspace's host says [`Self::Host`].
+/// Where data that is not here yet comes from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
     /// This device: its files, its workspaces, its store.
     Local,
-    /// Another device, the person's own or a collaborator's, by the name the
-    /// person knows it by ("Laptop").
+    /// Another device, the person or a collaborator's, by the name the person knows it by ("Laptop").
     Peer(Arc<str>),
     /// A host that serves the data ("eu1.tilo.sh").
     Host(Arc<str>),
@@ -71,8 +47,8 @@ impl Source {
         matches!(self, Self::Local)
     }
 
-    /// The name a placeholder says the data comes from; `None` for this
-    /// device, which is not worth saying.
+    /// The name a placeholder says the data comes from; `None` for this device, which is not worth
+    /// saying.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         match self {
@@ -82,9 +58,7 @@ impl Source {
     }
 }
 
-/// How much of a pending answer has come, when what it waits on can
-/// measure itself (a download). The placeholder says it from its skeleton
-/// on ([`crate::widget::ArrivalFace::with_progress`]).
+/// How much of a pending answer has come, when what it waits on can measure itself (a download).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress {
     /// Bytes received so far.
@@ -112,7 +86,7 @@ impl Progress {
     }
 }
 
-/// Where one read stands.
+/// Where one read is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Arrival<T, E = String> {
     /// Asked; the answer comes from `from`.
@@ -123,7 +97,6 @@ pub enum Arrival<T, E = String> {
     Failed(E),
 }
 
-/// A read of this device's data, not answered yet.
 impl<T, E> Default for Arrival<T, E> {
     fn default() -> Self {
         Self::local()
@@ -211,7 +184,6 @@ impl<T, E> From<Result<T, E>> for Arrival<T, E> {
 }
 
 thread_local! {
-    /// One refresh of the display this thread's window is on.
     static FRAME_BUDGET: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(DEFAULT_FRAME_BUDGET) };
 }
@@ -226,9 +198,7 @@ pub fn frame_budget() -> Duration {
     FRAME_BUDGET.with(std::cell::Cell::get)
 }
 
-/// The window's display refreshes every `interval`: the frame budget local
-/// reads get. The native runner calls this when it learns the display's
-/// refresh rate.
+/// The window's display refreshes every `interval`: the frame budget local reads get.
 pub fn set_frame_budget(interval: Duration) {
     if !interval.is_zero() {
         FRAME_BUDGET.with(|budget| budget.set(interval));
@@ -248,9 +218,8 @@ pub enum Step {
     Shown,
 }
 
-/// The timing of one read, from the moment it was asked: the one place the
-/// placeholder steps are decided, for [`crate::widget::ArrivingView`] and for
-/// immediate-mode painters alike.
+/// The timing of one read, from the moment it was asked: the one place the placeholder steps are
+/// decided, for [`crate::widget::ArrivingView`] and for immediate-mode painters alike.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrivalClock {
     since: Instant,
@@ -260,15 +229,13 @@ pub struct ArrivalClock {
 }
 
 impl ArrivalClock {
-    /// A read asked at `since`, from `from`, with this window's frame
-    /// budget.
+    /// A read asked at `since`, from `from`, with this window's frame budget.
     #[must_use]
     pub fn new(since: Instant, from: Source) -> Self {
         Self::with_budget(since, from, frame_budget())
     }
 
-    /// A read asked at `since`, from `from`, given `budget` for a local
-    /// answer.
+    /// A read asked at `since`, from `from`, given `budget` for a local answer.
     #[must_use]
     pub fn with_budget(since: Instant, from: Source, budget: Duration) -> Self {
         Self {
@@ -291,17 +258,14 @@ impl ArrivalClock {
         &self.from
     }
 
-    /// The same read, its answer now coming from `from`: what stands in for
-    /// it changed (a window's place taken over by its app), and when it was
-    /// asked did not. An answer that already landed is forgotten with the
-    /// content it was for.
+    /// The same read, its answer now coming from `from`: what takes the place of it changed (a window's
+    /// place taken over by its app), and when it was asked did not.
     #[must_use]
     pub fn answered_from(&self, from: Source) -> Self {
         Self::with_budget(self.since, from, self.budget)
     }
 
-    /// The answer (or a failure) landed at `at`. Only the first landing
-    /// counts.
+    /// The answer (or a failure) landed at `at`.
     pub fn arrive(&mut self, at: Instant) {
         if self.arrived.is_none() {
             self.arrived = Some(at.max(self.since));
@@ -323,14 +287,11 @@ impl ArrivalClock {
         self.after(GRACE)
     }
 
-    /// Whether a skeleton showed before the answer landed (or is showing
-    /// now, at `now`, with none landed).
     fn skeleton_showed(&self, now: Instant) -> bool {
         self.arrived.unwrap_or(now) >= self.skeleton_at()
     }
 
-    /// When the answer shows: when it landed, or once a skeleton that
-    /// showed has stood [`MIN_SHOWN`].
+    /// When the answer shows: when it landed, or once a skeleton that showed has stood [`MIN_SHOWN`].
     #[must_use]
     pub fn shows_at(&self) -> Option<Instant> {
         let arrived = self.arrived?;
@@ -342,8 +303,8 @@ impl ArrivalClock {
         }
     }
 
-    /// Whether a frame showing this read waits for it at `now`: a local
-    /// read inside its frame budget, with no answer yet.
+    /// Whether a frame showing this read waits for it at `now`: a local read inside its frame budget,
+    /// with no answer yet.
     #[must_use]
     pub fn holds_frame(&self, now: Instant) -> bool {
         self.from.is_local() && self.arrived.is_none() && now < self.after(self.budget)
@@ -356,7 +317,7 @@ impl ArrivalClock {
     }
 
     /// Whether the answer moves in (cross-fades) when it shows. A local
-    /// answer inside the frame budget lands at once: the person never saw
+    /// answer inside the frame budget shows at once: the person never saw
     /// the space without it.
     #[must_use]
     pub fn arrives_with_motion(&self) -> bool {
@@ -393,7 +354,7 @@ impl ArrivalClock {
     }
 
     /// The next instant after `now` at which [`Self::step`] changes; `None`
-    /// once the answer shows, or while nothing will change until it lands.
+    /// once the answer shows, or while nothing will change until it arrives.
     #[must_use]
     pub fn next_step_at(&self, now: Instant) -> Option<Instant> {
         let shows_at = self.shows_at();
@@ -416,10 +377,7 @@ impl ArrivalClock {
 
 type Retry<T, E> = Arc<dyn Fn(&Arriving<T, E>) + Send + Sync>;
 
-/// A read whose answer arrives later. Clones share one read.
-///
-/// Build the view with [`Self::view`]: it says what shows once the answer
-/// is there, and nothing about waiting.
+/// A read whose answer arrives later.
 pub struct Arriving<T, E = String> {
     task: LatestTask<Arrival<T, E>>,
     began: Arc<Mutex<Instant>>,
@@ -457,15 +415,14 @@ impl<T, E> Arriving<T, E> {
         Self::with_state(Arrival::Ready(value))
     }
 
-    /// A read asked now, its answer coming from `from`. Publish the answer
-    /// through [`Self::writer`] or [`Self::begin`].
+    /// A read asked now, its answer coming from `from`.
     #[must_use]
     pub fn pending(from: Source) -> Self {
         Self::with_state(Arrival::Pending { from })
     }
 
-    /// A read asked at `since`, its answer coming from `from`: for a model
-    /// that keeps when its read began and builds its view again meanwhile.
+    /// A read asked at `since`, its answer coming from `from`: for a model that keeps when its read
+    /// began and builds its view again meanwhile.
     #[must_use]
     pub fn pending_since(from: Source, since: Instant) -> Self {
         let arriving = Self::pending(from);
@@ -473,12 +430,12 @@ impl<T, E> Arriving<T, E> {
         arriving
     }
 
-    /// Where the read stands, without exposing its lock.
+    /// Where the read is, without exposing its lock.
     pub fn with<R>(&self, read: impl FnOnce(&Arrival<T, E>) -> R) -> R {
         self.task.state().with(read)
     }
 
-    /// Where the read stands, cloned.
+    /// Where the read is, cloned.
     #[must_use]
     pub fn get(&self) -> Arrival<T, E>
     where
@@ -488,15 +445,14 @@ impl<T, E> Arriving<T, E> {
         self.with(Clone::clone)
     }
 
-    /// The observable state, for [`crate::widget::ModelView`], `Text` or a
-    /// callback that needs the whole arrival.
+    /// The observable state, for [`crate::widget::ModelView`], `Text` or a callback that needs the
+    /// whole arrival.
     #[must_use]
     pub fn state(&self) -> LocalState<Arrival<T, E>> {
         self.task.state()
     }
 
-    /// Advances with every change of the read, for a widget that skips work
-    /// while nothing changed.
+    /// Advances with every change of the read, for a widget that skips work while nothing changed.
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.task.state().revision()
@@ -508,8 +464,7 @@ impl<T, E> Arriving<T, E> {
         *self.began.lock_recover()
     }
 
-    /// Which read this is: the same for every clone of it, and for no other
-    /// read while it lives.
+    /// Which read this is: the same for every clone of it, and for no other read while it lives.
     pub(crate) fn identity(&self) -> usize {
         Arc::as_ptr(&self.began).addr()
     }
@@ -538,8 +493,7 @@ impl<T, E> Arriving<T, E> {
         self.retry.lock_recover().is_some()
     }
 
-    /// Ask again after a failure, the way the read was first asked. A read
-    /// that set no way to retry ([`Self::on_retry`]) ignores this.
+    /// Ask again after a failure, the way the read was first asked.
     pub fn retry(&self) {
         let retry = self.retry.lock_recover().clone();
         if let Some(retry) = retry {
@@ -547,18 +501,16 @@ impl<T, E> Arriving<T, E> {
         }
     }
 
-    /// How to ask again after a failure: `retry` restarts the read on this
-    /// handle (usually through [`Self::begin`]).
+    /// How to ask again after a failure: `retry` restarts the read on this handle (usually through
+    /// [`Self::begin`]).
     #[must_use]
     pub fn on_retry(self, retry: impl Fn(&Self) + Send + Sync + 'static) -> Self {
         *self.retry.lock_recover() = Some(Arc::new(retry));
         self
     }
 
-    /// Say where the read stands, from the thread that holds its data (a
-    /// record the window follows), with no worker to publish through. A
-    /// read that settled and is pending again was asked now; one still
-    /// pending keeps when it was asked, now waiting on `from`.
+    /// Say where the read is, from the thread that has its data (a record the window follows), with no
+    /// worker to publish through.
     pub fn stand(&self, arrival: Arrival<T, E>) {
         if arrival.is_pending() && !self.with(Arrival::is_pending) {
             self.mark_began();
@@ -576,9 +528,8 @@ where
     T: Send + Sync + 'static,
     E: Send + Sync + 'static,
 {
-    /// A handle for a producer that publishes more than one answer (an
-    /// invocation's updates, pages gathering). It does not restart the
-    /// read: [`Self::begin`] does.
+    /// A handle for a producer that publishes more than one answer (an invocation's updates, pages
+    /// gathering).
     #[must_use]
     pub fn writer(&self) -> ArrivalWriter<T, E> {
         ArrivalWriter {
@@ -587,8 +538,8 @@ where
         }
     }
 
-    /// Restart the read, its answer now coming from `from`: every older
-    /// completion becomes stale before the pending state is published.
+    /// Restart the read, its answer now coming from `from`: every older completion becomes stale before
+    /// the pending state is published.
     pub fn begin(&self, from: Source) -> ArrivalCompletion<T, E> {
         self.mark_began();
         ArrivalCompletion {
@@ -609,9 +560,7 @@ where
     }
 
     /// A read of this device's data: `load` runs on a background worker
-    /// ([`crate::background::Background`]) and a failure offers a retry that
-    /// runs it again. A host that runs no background work fails it, saying
-    /// so.
+    /// ([`crate::background::Background`]) and a failure offers a retry that runs it again.
     #[must_use]
     pub fn local(
         name: &'static str,
@@ -628,8 +577,7 @@ where
         arriving
     }
 
-    /// Restart the read with `load`, run on a background worker, its answer
-    /// coming from `from`.
+    /// Restart the read with `load`, run on a background worker, its answer coming from `from`.
     pub fn read_in_background(
         &self,
         name: &'static str,
@@ -649,8 +597,7 @@ where
     }
 }
 
-/// Publishes a read's answers without restarting it. See
-/// [`Arriving::writer`].
+/// Publishes a read's answers without restarting it.
 pub struct ArrivalWriter<T, E = String> {
     state: LocalStateWriter<Arrival<T, E>>,
     began: Arc<Mutex<Instant>>,
@@ -693,15 +640,13 @@ impl<T, E> ArrivalWriter<T, E> {
     }
 }
 
-/// The single-use capability of one restart of a read
-/// ([`Arriving::begin`]). Only the newest restart may publish.
+/// The single-use capability of one restart of a read ([`Arriving::begin`]).
 pub struct ArrivalCompletion<T, E = String> {
     completion: TaskCompletion<Arrival<T, E>>,
 }
 
 impl<T, E> ArrivalCompletion<T, E> {
-    /// Whether this is still the newest restart: a long read may stop early
-    /// once it is not.
+    /// Whether this is still the newest restart: a long read may stop early once it is not.
     #[must_use]
     pub fn is_current(&self) -> bool {
         self.completion.is_current()
@@ -745,7 +690,6 @@ mod tests {
         assert!(!clock.holds_frame(at(t0, 17)), "the frame stops waiting");
         assert_eq!(clock.step(at(t0, 100)), Step::Ground);
         assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
-        // This device is not worth naming.
         assert_eq!(clock.step(at(t0, 5_000)), Step::Skeleton);
         clock.arrive(at(t0, 60));
         assert!(clock.arrives_with_motion());

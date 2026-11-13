@@ -1166,9 +1166,16 @@ fn its_palette_lists_its_own_resources_and_actions() {
         shown.iter().any(|label| label == "Write the launch notes"),
         "the issue by its title: {shown:?}"
     );
+    // What the tracker does is offered as the catalogue words it, whatever
+    // those are in the language this window speaks.
+    let made =
+        ui::tilo_actions::door::spec_of(&app.harness().resources(), "tasks.tracker", "create")
+            .expect("the tracker publishes making an issue")
+            .label
+            .clone();
     assert!(
-        shown.iter().any(|label| label == "Create an issue"),
-        "and what the tracker does: {shown:?}"
+        shown.contains(&made),
+        "and what the tracker does, named `{made}`: {shown:?}"
     );
     for internal in ["Focus", "Go to", "Submit", "Search the window"] {
         assert!(

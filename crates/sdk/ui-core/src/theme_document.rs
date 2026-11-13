@@ -1,17 +1,11 @@
-//! The theme document: everything a theme may say, as data
-//! (`docs/design-language.md`, "Theming"; `docs/architecture/theming.md`).
-//!
-//! Built-in presets, distribution defaults, the user's theme and every
-//! theme Theme Studio writes are one [`ThemeDocument`]. It names semantic
-//! roles only — a palette, an emphasis, the presence tone, the shape
-//! (window radius and border), density, type, motion, what each surface
-//! role is made of and how surfaces stand off what is below them — and
-//! never a widget, so it cannot restyle an app's internals, remove the lift
-//! or the focus ring, or break a contrast floor that [`ThemeDocument::findings`]
-//! measures and the runtime repairs.
-//!
-//! A document of any other schema version is not admitted: the layer it
-//! sits on contributes nothing and the layers below it apply.
+//! The theme document: everything a theme may say, as data (`docs/design-language.md`,
+//! "Theming"; `docs/architecture/theming.md`). Built-in presets, distribution defaults,
+//! the user's theme and every theme Theme Studio writes are one [`ThemeDocument`]. It
+//! names semantic roles only — a palette, an emphasis, the presence tone, the shape
+//! (window radius and border), density, type, motion, what each surface role is made of
+//! and how surfaces stand off what is below them — and never a widget, so it cannot
+//! restyle an app's internals, remove the lift or the focus ring, or break a contrast
+//! floor that [`ThemeDocument::findings`] measures and the runtime repairs.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,16 +18,9 @@ use crate::tokens::selector::SelectorFinish;
 /// The schema this build writes.
 pub const THEME_SCHEMA_VERSION: u32 = 8;
 
-/// Every schema this build reads. A document of an older one is read as
-/// the current schema: every role added since takes its stock value, and
-/// the document is written back at [`THEME_SCHEMA_VERSION`] the next time
-/// it is saved. A schema leaves this list only with a reader that still
-/// resolves its documents as they were.
+/// Every schema this build reads.
 pub const THEME_SCHEMAS_READ: &[u32] = &[7, THEME_SCHEMA_VERSION];
 
-/// Reads `schema_version`: a schema in [`THEME_SCHEMAS_READ`] is read as
-/// the current one; any other is kept so [`ThemeDocument::validate`]
-/// refuses it.
 fn read_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
     let version = u32::deserialize(deserializer)?;
     Ok(if THEME_SCHEMAS_READ.contains(&version) {
@@ -53,9 +40,8 @@ struct MaterialV7 {
 }
 
 impl From<MaterialV7> for ThemeMaterial {
-    /// The floating role keeps exactly the blur and tint schema 7 built
-    /// it with; every other role takes its stock finish, as schema 7 had
-    /// no way to name one.
+    /// The floating role keeps exactly the blur and tint schema 7 built it with; every
+    /// other role takes its stock finish, as schema 7 had no way to name one.
     fn from(old: MaterialV7) -> Self {
         Self {
             floating: Finish::frosted(old.blur, old.tint_opacity, 1.0),
@@ -65,7 +51,6 @@ impl From<MaterialV7> for ThemeMaterial {
     }
 }
 
-/// `material` as either schema writes it.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum MaterialWire {
@@ -82,15 +67,13 @@ fn read_material<'de, D: serde::Deserializer<'de>>(
     })
 }
 
-/// The window tile's radius, from which every other radius derives
-/// concentrically (`crate::tokens::Radii::from_window_radius`; `0` makes
-/// every corner square), and how surfaces are outlined.
+/// The window tile's radius, from which every other radius derives concentrically
+/// (`crate::tokens::Radii::from_window_radius`; `0` makes every corner square), and how
+/// surfaces are outlined.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeShape {
     pub window_radius: f32,
-    /// The outline every surface carries ([`Border`]); the stock border
-    /// keeps the design language's hairlines.
     #[serde(default)]
     pub border: Border,
 }
@@ -102,29 +85,27 @@ impl ThemeShape {
     pub const USABLE: std::ops::RangeInclusive<f32> = 0.0..=28.0;
 }
 
-/// How icons are drawn ([`crate::icons`]): one icon set, at a weight the
-/// theme names. Sizes stay the metrics' (a 16 px glyph in a row, 20 at a
-/// bar's head); a theme moves the outline, never the size a layout is built
-/// against.
+/// How icons are drawn ([`crate::icons`]): one icon set, at a weight the theme names.
+/// Sizes stay the metrics' (a 16 px glyph in a row, 20 at a bar's head); a theme moves
+/// the outline, never the size a layout is built against.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeIcons {
-    /// The outline's width in logical pixels: 1.5 at stock (Lucide's own);
-    /// a look with pixels wants 2, a whole-pixel stroke it can land on.
+    /// The outline's width in logical pixels: 1.5 at stock (Lucide's own); a look with
+    /// pixels wants 2, a whole-pixel stroke it can land on.
     pub stroke: f32,
 }
 
 impl ThemeIcons {
-    /// Band a document may state: below one pixel an outline breaks up at
-    /// 1x, and past two and a half it reads as a drawn shape, not a symbol.
+    /// Band a document may state: below one pixel an outline breaks up at 1x, and past
+    /// two and a half it reads as a drawn shape, not a symbol.
     pub const STROKE_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=2.5;
 
     /// The design language's icons.
     pub const STOCK: Self = Self { stroke: 1.5 };
 }
 
-/// The spacing scale, as a multiple of the stock 4 px scale. Pointer
-/// targets and control heights stay put.
+/// The spacing scale, as a multiple of the stock 4 px scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeDensity {
@@ -138,34 +119,26 @@ impl ThemeDensity {
     pub const USABLE: std::ops::RangeInclusive<f32> = 0.75..=1.5;
     /// The compact density Settings offers.
     pub const COMPACT: f32 = 0.85;
-    /// The stock density.
     pub const REGULAR: f32 = 1.0;
     /// The roomy density Settings offers.
     pub const ROOMY: f32 = 1.2;
 }
 
-/// The UI face, the reading face and the body size every text role derives
-/// from.
+/// The UI face, the reading face and the body size every text role derives from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeType {
     pub face: String,
-    /// The Reading role's face ([`crate::tokens::ReadingFace`]), by name.
     pub reading: String,
     pub base_size: f32,
-    /// "Always distinguish similar letters": set I, l, 1 and 0, O apart in
-    /// all text, not only in identifiers, codes and links. `None` follows
-    /// the face: on with Hyperlegible, off otherwise
-    /// ([`Self::distinguishes_letters`]).
+    /// "Always distinguish similar letters": set I, l, 1 and 0, O apart in all text, not
+    /// only in identifiers, codes and links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_letters: Option<bool>,
-    /// How far the role sizes stand apart: each role's size is the body
-    /// size times its stock ratio to the body raised to this power. `1` is
-    /// the design language's scale, below it titles come closer to body
-    /// text, above it they stand further off.
+    /// How far the role sizes stand apart: each role's size is the body size times its
+    /// stock ratio to the body raised to this power.
     #[serde(default = "ThemeType::stock_contrast")]
     pub contrast: f32,
-    /// The weight of each weight tier.
     #[serde(default)]
     pub weights: ThemeWeights,
 }
@@ -181,7 +154,6 @@ pub enum ThemeWeight {
 }
 
 impl ThemeWeight {
-    /// The renderer's weight.
     #[must_use]
     pub const fn text_weight(self) -> crate::text_render::TextWeight {
         use crate::text_render::TextWeight;
@@ -194,9 +166,9 @@ impl ThemeWeight {
     }
 }
 
-/// The weights of the three tiers the type roles are set in: body text
-/// (body, caption, reading, code), labels (control labels and row titles)
-/// and headings (display down to subheading).
+/// The weights of the three tiers the type roles are set in: body text (body, caption,
+/// reading, code), labels (control labels and row titles) and headings (display down to
+/// subheading).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeWeights {
@@ -213,8 +185,8 @@ impl ThemeWeights {
         heading: ThemeWeight::Semibold,
     };
 
-    /// Whether the tiers keep their order: a heading is never lighter than
-    /// a label, nor a label than body text, so hierarchy survives.
+    /// Whether the tiers keep their order: a heading is never lighter than a label, nor a
+    /// label than body text, so hierarchy survives.
     #[must_use]
     pub fn ordered(&self) -> bool {
         let rank = |w: ThemeWeight| w.text_weight().to_u16();
@@ -231,30 +203,28 @@ impl Default for ThemeWeights {
 impl ThemeType {
     /// The stock spread of role sizes.
     pub const STOCK_CONTRAST: f32 = 1.0;
-    /// Band of role-size contrast a document may state: below it a title
-    /// no longer reads larger than body text.
+    /// Band of role-size contrast a document may state: below it a title no longer reads
+    /// larger than body text.
     pub const CONTRAST_ADMITTED: std::ops::RangeInclusive<f32> = 0.5..=1.5;
 
     const fn stock_contrast() -> f32 {
         Self::STOCK_CONTRAST
     }
 
-    /// The stock body size.
     pub const BASE_SIZE: f32 = 14.0;
     /// Band a document may state.
     pub const ADMITTED: std::ops::RangeInclusive<f32> = 10.0..=24.0;
     /// Band a theme is built at; a value outside it is clamped.
     pub const USABLE: std::ops::RangeInclusive<f32> = 12.0..=18.0;
 
-    /// The stock reading face.
     #[must_use]
     pub fn default_reading() -> String {
         crate::tokens::ReadingFace::Default.name().into()
     }
 
-    /// Whether this type sets every look-alike letter apart: the
-    /// document's own choice, else on exactly when the face is Hyperlegible
-    /// — the face people choose to tell letters apart.
+    /// Whether this type sets every look-alike letter apart: the document's own choice,
+    /// else on exactly when the face is Hyperlegible — the face people choose to tell
+    /// letters apart.
     #[must_use]
     pub fn distinguishes_letters(&self) -> bool {
         self.distinct_letters.unwrap_or_else(|| {
@@ -264,29 +234,22 @@ impl ThemeType {
     }
 }
 
-/// How the shared UI moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MotionCurve {
-    /// Springs, at the document's `character`: the stock motion.
     Spring,
-    /// Critically damped: every movement eases in and settles with no
-    /// overshoot, whatever its character.
     Eased,
-    /// Nothing moves and nothing fades: every change lands at once.
     None,
 }
 
-/// The motion of the shared UI: its curve, the character of its springs
-/// (`0` calm, `1` the stock snappy motion, `2` lively) and how long timed
-/// transitions take. Reduced motion still replaces movement with a fade.
+/// The motion of the shared UI: its curve, the character of its springs (`0` calm, `1`
+/// the stock snappy motion, `2` lively) and how long timed transitions take.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMotion {
     pub character: f32,
     #[serde(default = "ThemeMotion::stock_curve")]
     pub curve: MotionCurve,
-    /// Every timed transition's duration, as a multiple of the stock one.
     #[serde(default = "ThemeMotion::stock_duration_scale")]
     pub duration_scale: f32,
 }
@@ -297,7 +260,6 @@ impl ThemeMotion {
     /// Duration band a document may state, and is built at.
     pub const DURATION_ADMITTED: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
-    /// The stock motion.
     pub const STOCK: Self = Self {
         character: 1.0,
         curve: MotionCurve::Spring,
@@ -313,27 +275,19 @@ impl ThemeMotion {
     }
 }
 
-/// What every surface role is made of ([`Finish`] per
-/// [`crate::tokens::SurfaceRole`]), and the finish of selectors. A role a
-/// document leaves out keeps its stock finish.
+/// What every surface role is made of ([`Finish`] per [`crate::tokens::SurfaceRole`]),
+/// and the finish of selectors.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMaterial {
-    /// The window ground every app paints on.
     #[serde(default = "ThemeMaterial::stock_window")]
     pub window: Finish,
-    /// Raised controls: buttons, fields, tracks, cards.
     #[serde(default = "ThemeMaterial::stock_control")]
     pub control: Finish,
-    /// Floating chrome: menus, popovers, the palette, sheets, notifications.
     #[serde(default = "ThemeMaterial::stock_floating")]
     pub floating: Finish,
-    /// The top bar's body, stock where a document leaves it out; `null`, the
-    /// bar stands on the desktop.
     #[serde(default = "ThemeMaterial::stock_bar")]
     pub bar: Option<Finish>,
-    /// What the window group's tab strip stands on, and the lit rim and
-    /// hover film of the selectors in it and everywhere else.
     #[serde(default = "ThemeMaterial::stock_selector")]
     pub selector: SelectorFinish,
 }
@@ -387,7 +341,6 @@ impl ThemeMaterial {
         SelectorFinish::STOCK
     }
 
-    /// The finish of every role.
     #[must_use]
     pub fn roles(&self) -> RoleFinishes {
         RoleFinishes {
@@ -399,12 +352,9 @@ impl ThemeMaterial {
     }
 }
 
-/// A theme, as data. See the module documentation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeDocument {
-    /// Read through [`THEME_SCHEMAS_READ`]: an older schema it lists is
-    /// held as the current one.
     #[serde(deserialize_with = "read_schema")]
     pub schema_version: u32,
     pub id: String,
@@ -412,7 +362,6 @@ pub struct ThemeDocument {
     pub palette: Palette,
     #[serde(default)]
     pub emphasis: Emphasis,
-    /// Lightness and chroma of the twelve presence colours.
     pub presence: Tone,
     pub shape: ThemeShape,
     pub density: ThemeDensity,
@@ -421,16 +370,11 @@ pub struct ThemeDocument {
     pub motion: ThemeMotion,
     #[serde(deserialize_with = "read_material")]
     pub material: ThemeMaterial,
-    /// How surfaces stand off what is below them.
     #[serde(default)]
     pub depth: Depth,
-    /// How the shared components answer the pointer (hover and press). A
-    /// document that states none takes the stock response, or the still one
-    /// when its motion curve is `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<crate::tokens::Response>,
-    /// How icons are drawn: the outline's width. Absent keeps the design
-    /// language's 1.5.
+    /// How icons are drawn: the outline's width.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icons: Option<ThemeIcons>,
 }
@@ -482,9 +426,8 @@ impl ThemeDocument {
         }
     }
 
-    /// Structural check: the schema, the text fields, and every number
-    /// finite and inside the band its role admits. A document that fails is
-    /// not a theme. Legibility is [`Self::findings`].
+    /// Structural check: the schema, the text fields, and every number finite and inside
+    /// the band its role admits.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != THEME_SCHEMA_VERSION {
             return Err("unsupported theme schema");
@@ -549,10 +492,8 @@ impl ThemeDocument {
         Ok(())
     }
 
-    /// Every contrast floor this document misses as authored, whoever wears
-    /// it (each presence hue as the focus ring), worst ratio first per pair.
-    /// Theme Studio refuses to save a document with findings; the runtime
-    /// repairs one that arrives anyway.
+    /// Every contrast floor this document misses as authored, whoever wears it (each
+    /// presence hue as the focus ring), worst ratio first per pair.
     #[must_use]
     pub fn findings(&self) -> Vec<ContrastFinding> {
         let mut worst: Vec<ContrastFinding> = Vec::new();
@@ -585,9 +526,9 @@ impl ThemeDocument {
         self.palette.dark
     }
 
-    /// The same document as the high-contrast palette of its polarity:
-    /// shape, density, type and motion stay; the palette, presence tone and
-    /// emphasis become the AAA ones and the material turns opaque.
+    /// The same document as the high-contrast palette of its polarity: shape, density,
+    /// type and motion stay; the palette, presence tone and emphasis become the AAA ones
+    /// and the material turns opaque.
     #[must_use]
     pub fn in_high_contrast(&self) -> Self {
         let preset = if self.palette.dark {
@@ -617,42 +558,28 @@ impl ThemeDocument {
     }
 }
 
-/// The themes Tilo ships.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Preset {
-    /// The default: pure neutral dark.
     Dark,
     DarkCool,
     DarkGraphite,
     DarkSoft,
     Light,
     HighContrast,
-    /// Light, every text pairing at WCAG AAA.
     HighContrastLight,
-    /// Everything glass: translucent windows, controls, bars and floating
-    /// chrome that bend and catch the light. A plain theme document
-    /// (`themes/glass.json`).
     Glass,
-    /// [`Self::Glass`] on the light ladder (`themes/glass-light.json`).
     GlassLight,
-    /// Everything flat and square: opaque, bordered, no shadows, no motion
-    /// (`themes/block.json`).
     Block,
-    /// [`Self::Block`] on the light ladder (`themes/block-light.json`).
     BlockLight,
-    /// Square and bordered, every surface shown as coarse pixels of what
-    /// lies below it (`themes/pixelated.json`).
+    /// Square and bordered, every surface shown as coarse pixels of what lies below it
+    /// (`themes/pixelated.json`).
     Pixelated,
-    /// Every surface a lens of glass: what lies below bent along its
-    /// rounded edge, straight in the middle, with a specular rim
-    /// (`themes/liquid-glass.json`).
+    /// Every surface a lens of glass: what lies below bent along its rounded edge,
+    /// straight in the middle, with a specular rim (`themes/liquid-glass.json`).
     LiquidGlass,
-    /// [`Self::LiquidGlass`] on the light ladder, dark ink on clear bright
-    /// glass (`themes/liquid-glass-light.json`).
     LiquidGlassLight,
 }
 
-/// The shipped themes that are plain documents, by preset.
 const SHIPPED_DOCUMENTS: [(Preset, &str); 7] = [
     (Preset::Glass, include_str!("../themes/glass.json")),
     (
@@ -714,7 +641,6 @@ impl Preset {
         }
     }
 
-    /// The name a person reads.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -752,8 +678,8 @@ impl Preset {
         }
     }
 
-    /// The preset's document: the stock roles around its palette, or for a
-    /// shipped document its file, parsed once.
+    /// The preset's document: the stock roles around its palette, or for a shipped
+    /// document its file, parsed once.
     #[must_use]
     pub fn document(self) -> ThemeDocument {
         static PARSED: std::sync::LazyLock<Vec<(Preset, ThemeDocument)>> = std::sync::LazyLock::new(
@@ -764,8 +690,6 @@ impl Preset {
                         match serde_json::from_str::<ThemeDocument>(json) {
                             Ok(document) => Some((*preset, document)),
                             Err(error) => {
-                                // `shipped_documents_are_valid_and_legible`
-                                // keeps this from ever reaching a build.
                                 tracing::error!(preset = preset.id(), %error, "a shipped theme document does not parse");
                                 None
                             }
@@ -783,8 +707,8 @@ impl Preset {
             )
     }
 
-    /// A preset by id or name, loosely: case, spaces, hyphens and
-    /// underscores are ignored (`"high-contrast"`, `"High contrast"`).
+    /// A preset by id or name, loosely: case, spaces, hyphens and underscores are ignored
+    /// (`"high-contrast"`, `"High contrast"`).
     #[must_use]
     pub fn find(key: &str) -> Option<Self> {
         let key: String = key
@@ -873,10 +797,10 @@ mod tests {
         );
     }
 
-    /// The Liquid Glass document round-trips with its lens: the set's name
-    /// and every parameter it states come back, a band, light angle or
-    /// dispersion out of its admitted range is refused, and the theme built
-    /// from it hands the lens to every role's parts.
+    /// The Liquid Glass document round-trips with its lens: the set's name and every
+    /// parameter it states come back, a band, light angle or dispersion out of its
+    /// admitted range is refused, and the theme built from it hands the lens to every
+    /// role's parts.
     #[test]
     fn the_liquid_glass_document_round_trips_with_its_lens() {
         use crate::tokens::SurfaceRole;
@@ -1056,8 +980,8 @@ mod tests {
         assert!(block.shape.border.outlines());
         assert_eq!(block.material.roles().opaque(), block.material.roles());
 
-        // Every look's icon role is its own: Pixelated's outline is a whole
-        // 2 px it can land on, and no other shipped look restates it.
+        // Every look's icon role is its own: Pixelated's outline is a whole 2 px it can
+        // land on, and no other shipped look restates it.
         let pixelated = Preset::Pixelated.document();
         assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
         for preset in Preset::ALL {
@@ -1071,7 +995,6 @@ mod tests {
                 preset.name()
             );
         }
-        // And the built theme carries it.
         assert!(
             (crate::theme::Theme::preset(Preset::Pixelated)
                 .tokens
@@ -1090,9 +1013,9 @@ mod tests {
         );
     }
 
-    /// A theme a person saved at schema 7 keeps applying: it is read as
-    /// the current schema, resolves to exactly the theme it built before,
-    /// and is written back at the current schema.
+    /// A theme a person saved at schema 7 keeps applying: it is read as the current
+    /// schema, resolves to exactly the theme it built before, and is written back at the
+    /// current schema.
     #[test]
     fn a_schema_7_document_resolves_as_it_did_and_saves_as_the_current_schema() {
         const EMBER_V7: &str = include_str!("../tests/fixtures/themes/ember-schema-7.json");
@@ -1101,8 +1024,8 @@ mod tests {
         assert_eq!(old.validate(), Ok(()));
         assert_eq!(old.schema_version, THEME_SCHEMA_VERSION);
 
-        // What schema 7 built: its blur and tint on floating chrome, and
-        // every role it could not name at its stock value.
+        // What schema 7 built: its blur and tint on floating chrome, and every role it
+        // could not name at its stock value.
         let mut current: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
         current["schema_version"] = serde_json::json!(THEME_SCHEMA_VERSION);
         current["material"] = serde_json::json!({
@@ -1147,7 +1070,6 @@ mod tests {
         assert!(saved["material"].get("blur").is_none());
         assert_eq!(serde_json::from_value::<ThemeDocument>(saved).unwrap(), old);
 
-        // A schema the list does not name is still refused.
         let mut unknown: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
         unknown["schema_version"] = serde_json::json!(6);
         let unknown: ThemeDocument = serde_json::from_value(unknown).unwrap();
@@ -1214,9 +1136,6 @@ mod tests {
     fn the_backdrop_band_narrows_to_what_the_ink_can_afford() {
         use crate::tokens::SurfaceRole;
         use crate::tokens::finish::{MATERIAL_SPREAD, material_spread, worst_grounds};
-        // Ink that clears its floor on the opaque ground with little to
-        // spare: the band a translucent window shows through narrows so it
-        // still clears it over the darkest and the lightest backdrop.
         let mut doc = Preset::Dark.document();
         doc.palette.ink.secondary = 0.64;
         doc.material.window = Finish::glass([24.0, 0.0, 1.0, 8.0, 0.2, 0.1]);
@@ -1237,7 +1156,6 @@ mod tests {
                 .any(|f| matches!(f.ground, crate::tokens::contrast::Role::Material(_))),
             "no ink misses its floor on the material"
         );
-        // The stock dark ink affords the whole band.
         let stock = Colors::as_authored(
             &Palette::dark(),
             Emphasis::You,

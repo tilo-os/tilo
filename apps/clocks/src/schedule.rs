@@ -1,13 +1,8 @@
-//! When alarms and timers ring on this device.
-//!
-//! What rings is the person's [`Clocks`], the same on every
-//! device. Whether this device has already rung it is not: each device keeps
-//! its own delivery ledger ([`OnThisDevice`]) in a record beside the clocks
-//! ([`ClocksOnDevices`]), persisted across restarts, so every device rings a
-//! deadline exactly once however often the app is reopened, and no two
-//! devices race to write the same marker: each writes only its own entry.
-//! Wall time is passed in explicitly, which keeps suspend, clock
-//! corrections, time zone changes and tests deterministic.
+//! When alarms and timers ring on this device. What rings is the person's
+//! [`Clocks`], the same on every device; whether this device has rung it is not,
+//! so each keeps its own delivery ledger in the [`ClocksOnDevices`] record beside
+//! the clocks and writes only its own entry. Wall time is passed in, so suspend,
+//! clock corrections and tests are deterministic.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +15,10 @@ use ui::prelude::*;
 
 use crate::model::{Alarm, Clocks, instant};
 
-/// What Clocks keeps for one device alone: which clocks float above other
-/// windows there, and the delivery ledger of the alarms and timers it has
-/// rung or handed to the platform's scheduler.
+/// What Clocks keeps for one device alone: the clocks floating there, and the
+/// ledger of what it has rung or handed to the platform.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OnThisDevice {
-    /// Timers floating above other windows on this screen.
     #[serde(default)]
     pub floating_timers: BTreeSet<String>,
     #[serde(default)]
@@ -36,21 +29,12 @@ pub struct OnThisDevice {
 
 tilo_resource::json_model!(OnThisDevice);
 
-/// What each device keeps for itself ([`OnThisDevice`]), by device: a record
-/// Clocks keeps beside the clocks in the workspace, each device reading and
-/// writing only its own entry.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct ClocksOnDevices {
     pub devices: BTreeMap<String, OnThisDevice>,
 }
 
 impl ClocksOnDevices {
-    /// What the record holds: what each device has already rung.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -86,8 +70,7 @@ impl ClocksOnDevices {
     }
 }
 
-/// What this device keeps for itself, read and changed: its entry in the
-/// [`ClocksOnDevices`] record in a live window, held in memory where there
+/// This device's entry in the [`ClocksOnDevices`] record, or memory where there
 /// is no record (a capture, a past version).
 #[derive(Clone)]
 pub(crate) struct DeviceChoices {
@@ -103,7 +86,6 @@ impl DeviceChoices {
         }
     }
 
-    /// What this device keeps now.
     pub(crate) fn get(&self) -> OnThisDevice {
         match &self.record {
             Some((record, device)) => record.with(|kept| kept.on(device)),
@@ -111,7 +93,6 @@ impl DeviceChoices {
         }
     }
 
-    /// Change what this device keeps.
     pub(crate) fn update(&self, change: impl FnOnce(&mut OnThisDevice)) -> Result<(), String> {
         let mut kept = self.get();
         change(&mut kept);
@@ -129,62 +110,46 @@ impl DeviceChoices {
     }
 }
 
-/// The delivery ledger of one device.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Delivery {
-    /// The next occurrence armed for each alarm, by alarm id.
     #[serde(default)]
     pub alarms: BTreeMap<String, ArmedAlarm>,
-    /// The deadline this device last rang, by timer id.
     #[serde(default)]
     pub timers_rung: BTreeMap<String, i64>,
-    /// The deadline the platform's scheduler accepted, by timer id: it shows
-    /// that notification itself, so the app must not show it again.
+    /// The deadline the host accepted, by timer id: it shows that notification
+    /// itself, so the app must not show it again.
     #[serde(default)]
     pub native_scheduled: BTreeMap<String, i64>,
-    /// Timers whose platform notification this device may still have to
-    /// cancel, kept until cancellation or delivery is confirmed even when
-    /// the timer was deleted.
+    /// Timers whose notification this device may still have to cancel, kept until
+    /// cancellation or delivery is confirmed, even for a deleted timer.
     #[serde(default)]
     pub native_owners: BTreeSet<String>,
-    /// Alarm occurrences handed to the host, retained across app restarts.
     #[serde(default)]
     pub native_alarms_scheduled: BTreeMap<String, i64>,
-    /// Alarm tags this device owns until cancellation is confirmed.
     #[serde(default)]
     pub native_alarm_owners: BTreeSet<String>,
-    /// Completed host one-shot generations: automatic switch-off must not
-    /// cancel a snooze retained by the host. Edits and deletion still cancel.
+    /// Completed host one-shot generations: automatic switch-off must not cancel a
+    /// snooze the host retains. Edits and deletion still cancel.
     #[serde(default)]
     pub native_completed_alarms: BTreeMap<String, (u8, u8, u8, i64)>,
-    /// Alarm occurrences this device snoozed, by alarm id. Kept beside the
-    /// alarm's ordinary armed occurrence so a one-shot alarm that already
-    /// rang (and was turned off) can still ring once more.
+    /// Snoozed occurrences, by alarm id: beside the armed one, so an alarm that
+    /// already rang and was turned off can ring once more.
     #[serde(default)]
     pub snoozes: BTreeMap<String, Snooze>,
 }
 
-/// One snoozed alarm occurrence on this device.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snooze {
-    /// When it rings again.
     pub due_ms: i64,
-    /// The alarm settings it was snoozed under; an edit arms it afresh and
-    /// cancels the snooze.
     pub schedule: (u8, u8, u8, i64),
 }
 
-/// One alarm's armed occurrence on this device.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArmedAlarm {
-    /// The alarm settings the occurrence was computed for; a change on any
-    /// device arms it afresh.
     pub schedule: (u8, u8, u8, i64),
-    /// The occurrence, kept rather than only its time of day: reopening
-    /// after midnight must still ring the alarm that was armed yesterday.
+    /// The occurrence, not only its time of day: reopening after midnight still
+    /// rings the alarm armed yesterday.
     pub next_due_ms: Option<i64>,
-    /// The local date it last rang, so a clock moved backwards does not
-    /// ring it twice.
     pub last_rung: Option<NaiveDate>,
 }
 
@@ -193,9 +158,8 @@ pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
 }
 
 /// Snooze `alarm` on this device for `minutes`, keeping the settings it was
-/// snoozed under so an edit cancels the snooze. A snooze is an occurrence of
-/// its own: it rings once at `now_ms + minutes` even when the alarm has
-/// already turned itself off.
+/// snoozed under so an edit cancels it. It rings once at `now_ms + minutes`, even
+/// when the alarm has turned itself off.
 pub fn snooze(
     delivery: &mut Delivery,
     id: &Id,
@@ -217,7 +181,6 @@ pub fn snooze(
     Ok(())
 }
 
-/// An alarm or timer that is due now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DueEvent {
     Alarm {
@@ -229,21 +192,16 @@ pub enum DueEvent {
     Timer {
         id: Id,
         label: String,
-        /// The platform's scheduler shows this one itself.
         native_scheduled: bool,
     },
 }
 
-/// What one tick found: what rings, and the one-shot alarms that rang and
-/// turn off (an edit of the person's clocks, made by the device that rang).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Tick {
     pub due: Vec<DueEvent>,
     pub finished_alarms: Vec<Id>,
 }
 
-/// Ring the snoozes whose time has come, and drop the ones whose alarm is
-/// gone or was rescheduled since.
 fn ring_snoozes(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &mut Tick) {
     let mut snoozed_due = Vec::new();
     delivery.snoozes.retain(|id, snooze| {
@@ -274,7 +232,7 @@ fn ring_snoozes(clocks: &Clocks, delivery: &mut Delivery, now_ms: i64, found: &m
 }
 
 /// Ring what is due at `now_utc` (`now_local` on this device's clock), each
-/// deadline once, and update `delivery` to match.
+/// deadline once.
 pub fn tick(
     clocks: &Clocks,
     delivery: &mut Delivery,
@@ -306,9 +264,8 @@ pub fn tick(
             continue;
         }
         if armed.next_due_ms.is_none_or(|deadline| deadline > now_ms) {
-            // Resolve in local time, so future deadlines follow time zone
-            // changes. A persisted deadline that has passed stays due, even
-            // when the app was closed for several days.
+            // Local time, so future deadlines follow time zone changes; a passed
+            // one stays due, even after days closed.
             armed.next_due_ms = next_occurrence(alarm, armed.last_rung, now_local)
                 .map(|deadline| deadline.timestamp_millis());
         }
@@ -337,8 +294,8 @@ pub fn tick(
             armed.next_due_ms = None;
             found.finished_alarms.push(id.clone());
         } else {
-            // Catch up once after suspend or exit, then arm the next future
-            // occurrence instead of replaying the missed days.
+            // Catch up once, then arm the next occurrence instead of replaying
+            // the missed days.
             armed.next_due_ms = next_occurrence(alarm, armed.last_rung, now_local)
                 .map(|deadline| deadline.timestamp_millis());
         }
@@ -364,9 +321,8 @@ pub fn tick(
     found
 }
 
-/// The next occurrence of `alarm` after `after`, on this device's clock.
-/// Missing spring-forward times advance minute by minute; an ambiguous
-/// autumn time takes the first.
+/// The next occurrence after `after`: a missing spring-forward time advances
+/// minute by minute, an ambiguous autumn time takes the first.
 #[must_use]
 pub fn next_occurrence(
     alarm: &Alarm,
@@ -392,7 +348,6 @@ pub(crate) fn next_occurrence_in<Tz: TimeZone>(
     .next_in(last_rung, after)
 }
 
-/// The clock the shell shows above other windows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellActivity {
     /// The timer's id; `None` is the stopwatch.
@@ -404,8 +359,6 @@ pub struct ShellActivity {
     pub paused: bool,
 }
 
-/// What the shell shows at `now`: the stopwatch while it floats, else the
-/// floating timer, else the running timer that ends first.
 #[must_use]
 pub fn shell_activity(
     clocks: &Clocks,
@@ -428,9 +381,8 @@ pub fn shell_activity(
         .iter()
         .map(|(id, timer)| (id, timer, device.floating_timers.contains(id.as_str())))
         .filter(|(_, timer, floating)| timer.is_running(now) || *floating)
-        // A timer the person floated owns the controller, even if some
-        // unrelated timer ends sooner. Within each class the most urgent
-        // timer wins.
+        // A floated timer wins even against a sooner one; otherwise the most
+        // urgent wins.
         .min_by_key(|(_, timer, floating)| (!floating, timer.remaining(now)))
         .map(|(id, timer, floating)| ShellActivity {
             activity_id: Some(id.as_str().to_owned()),

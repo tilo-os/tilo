@@ -242,6 +242,9 @@ pub struct Message {
     pub history: Vec<EditRecord>,
     /// `Some(parent_id)` when this message is a threaded reply.
     pub parent: Option<Id>,
+    /// The run of the answered message it quotes, when it answers a span rather than the whole
+    /// message: the words as they read, and where they stand in the answered message.
+    pub quoted: Option<crate::record::Quote>,
     pub reactions: Vec<Reaction>,
     /// Who this message refers to, resolved at authoring time. Structure, not
     /// prose: a consumer asks the message who it mentions instead of scanning
@@ -264,6 +267,8 @@ pub struct Message {
     /// The name and avatar a bot showed for this message instead of its own
     /// (a bridge posting an outside user's line). The author stays the bot.
     pub appearance: Option<tilo_actions::Appearance>,
+    /// The agent or app that wrote it for a person, and its name, as the message keeps them.
+    pub acting: Option<ui::tilo_resource::Acting>,
     /// The window it shares live, and whether it still does.
     pub share: Option<crate::record::WindowShare>,
     /// How many times a person asked the agent again for an answer to this
@@ -344,6 +349,11 @@ pub struct AgentWork {
     pub state: AgentWorkState,
     /// Epoch seconds at which the agent entered `state`.
     pub since: i64,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Never the reply's words, and shown only behind a disclosure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_detail: Option<String>,
     /// One row per operation the agent **dispatched**, in the order it
     /// dispatched them.
     ///
@@ -503,6 +513,7 @@ impl AgentWork {
         Ok(Self {
             state,
             since: 0,
+            failure_detail: update.detail.clone(),
             trace,
             stream: None,
         })
@@ -518,6 +529,7 @@ impl AgentWork {
         Self {
             state,
             since,
+            failure_detail: None,
             trace: Vec::new(),
             stream: None,
         }
@@ -707,12 +719,14 @@ mod tests {
             edited: false,
             history: vec![],
             parent: parent.map(std::string::ToString::to_string),
+            quoted: None,
             reactions: vec![],
             mentions: vec![],
             attachments: Vec::new(),
             pinned: false,
             work: None,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,

@@ -1,8 +1,7 @@
-//! Publisher-side reconciliation of never-published native release history.
-//!
-//! A delayed app can accumulate more pending releases than the SDK catalogue
-//! retains. Keep published history intact; retire an unpublished orphan only
-//! after the same target has four newer releases with offered exact runtimes.
+//! Publisher-side reconciliation of never-published native release history. A delayed app can
+//! accumulate more pending releases than the SDK catalogue retains: published history stays intact,
+//! and an unpublished orphan is retired only after the same target has four newer releases with
+//! offered exact runtimes.
 
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
@@ -31,8 +30,8 @@ impl fmt::Display for MissingRuntime {
 
 impl std::error::Error for MissingRuntime {}
 
-/// Re-sign `entry` after reconciling obsolete, unpublished SDK dependencies.
-/// The caller must first verify the catalogue against its existing owner pin.
+/// Re-sign `entry` after reconciling obsolete, unpublished SDK dependencies. The caller must first
+/// verify the catalogue against its existing owner pin.
 pub fn reconcile(
     entry: &mut RegistryEntry,
     catalogue: &[RegistryEntry],
@@ -67,8 +66,8 @@ pub fn reconcile(
                     })
         })
     };
-    // A publisher folds architectures one at a time. The other architecture
-    // of this same signed release may still be waiting for its SDK submission.
+    // A publisher folds architectures one at a time; the other architecture of this release may still
+    // be waiting for its SDK submission.
     let current_release = entry
         .versions
         .iter()

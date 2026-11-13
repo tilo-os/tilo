@@ -1,71 +1,119 @@
 //! The controls page: the tiles two to a row, the sliders, what plays and
 //! the rows under them; a tile's chevron or a row's disclosure opens that
-//! section as its own page.
+//! section in place, under it, and what follows moves down to make room.
 
-use ui::LocalState;
-use ui::TextRole;
 use ui::framework::ViewCx;
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::primitives::Facts;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Element, IconWidget, ListRow, QuickTile, Row, Slider,
-    Spacer, Text,
+    Button, ButtonRole, Column, Container, DisclosureBand, Element, IconWidget, ListRow, QuickTile,
+    Row, Spacer,
 };
 
 use super::Parts;
 use crate::QsSection;
 use crate::effect::QsEffect;
-use crate::faces::{RootRow, SliderFace, SliderKind, Sliders, TileFace};
+use crate::faces::{RootRow, RowFace, SliderFace, SliderKind, Sliders, TileFace};
+use crate::host::Showing;
 use crate::i18n::t;
 use crate::resource::QuickSettings;
 
-/// The controls page.
+/// The controls page, built again with the section open on it.
 pub(super) fn page(cx: &ViewCx<QuickSettings>, parts: &Parts) -> Element {
+    let parts = parts.clone();
+    cx.switch(&parts.open.clone(), move |cx, &open| {
+        parts.host.showing(&Showing {
+            section: open,
+            ..Showing::default()
+        });
+        controls(cx, &parts, open)
+    })
+}
+
+/// The controls with `open` unrolled under the control that opened it: under its tile's row,
+/// the volume or its row. A section whose control is not on the page (one an action opened)
+/// unrolls at the page's foot.
+fn controls(cx: &ViewCx<QuickSettings>, parts: &Parts, open: Option<QsSection>) -> Element {
+    let opener = |section: QsSection| {
+        parts
+            .tiles
+            .with(|tiles| tiles.iter().any(|face| face.section == Some(section)))
+            || parts
+                .rows
+                .with(|rows| rows.iter().any(|face| face.section() == Some(section)))
+            || (section == QsSection::Sound && parts.sliders.with(|sliders| sliders.outputs))
+    };
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Section);
     // What the machine is connected to stands first: the tiles say at a
     // glance what is on, and the rest of the page reads under them.
-    column = column.push(cx.switch(&parts.tiles, |cx, tiles: &Vec<TileFace>| {
-        tile_grid(cx, tiles)
+    let within = parts.clone();
+    column = column.push(cx.switch(&parts.tiles, move |cx, tiles: &Vec<TileFace>| {
+        tile_grid(cx, tiles, &within, open)
     }));
-    column = column.push(cx.switch(&parts.sliders, |cx, sliders: &Sliders| {
-        slider_block(cx, sliders)
+    let within = parts.clone();
+    column = column.push(cx.switch(&parts.sliders, move |cx, sliders: &Sliders| {
+        slider_block(cx, sliders, &within, open)
     }));
     column = column.push(super::now_playing::card(cx, &parts.now_playing));
-    column = column.push(
-        cx.switch(&parts.rows, |cx, rows: &Vec<crate::faces::RowFace>| {
-            let mut list = Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_rhythm(Rhythm::Tight);
-            for row in rows {
-                list = list.push(root_row(cx, row));
+    let within = parts.clone();
+    column = column.push(cx.switch(&parts.rows, move |cx, rows: &Vec<RowFace>| {
+        let mut list = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_rhythm(Rhythm::Tight);
+        for row in rows {
+            list = list.push(root_row(cx, row));
+            if row.section().is_some() && row.section() == open {
+                list = list.push(opened(cx, &within, row.section()));
             }
-            Box::new(list)
-        }),
-    );
+        }
+        Box::new(list)
+    }));
+    if open.is_some_and(|section| !opener(section)) {
+        column = column.push(opened(cx, parts, open));
+    }
     column.into_widget()
+}
+
+/// `section`'s own rows, unrolled in place on the disclosure motion; nothing when none is open.
+fn opened(cx: &ViewCx<QuickSettings>, parts: &Parts, section: Option<QsSection>) -> Element {
+    let Some(section) = section else {
+        return Box::new(Spacer::fixed(0.0));
+    };
+    Box::new(DisclosureBand::new(
+        super::sections::section_id(section),
+        super::sections::section(cx, section, parts),
+    ))
 }
 
 /// The sliders, a compact row each: what it sets, the track it moves, the
 /// value it stands at, and the device under the track it sets it on.
-fn slider_block(cx: &ViewCx<QuickSettings>, sliders: &Sliders) -> Element {
+fn slider_block(
+    cx: &ViewCx<QuickSettings>,
+    sliders: &Sliders,
+    parts: &Parts,
+    open: Option<QsSection>,
+) -> Element {
     let mut block = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Related);
     for face in &sliders.rows {
         block = block.push(slider_row(cx, face, sliders));
+        if face.kind == SliderKind::Volume && sliders.outputs && open == Some(QsSection::Sound) {
+            block = block.push(opened(cx, parts, open));
+        }
     }
     block.into_widget()
 }
 
 /// One slider's row: its icon (the volume's mutes it), the track over the
-/// device it plays on, the value it stands at and, for sound, the chevron
-/// that opens where it plays.
+/// device it plays on with the value it stands at beside it and, for sound,
+/// the chevron that opens where it plays.
 fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) -> Element {
     let leading: Element = match face.kind {
         // With no device to set, the speaker says what the row would set and
@@ -117,9 +165,6 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
                 .with_child(Box::new(Facts::new(face.device.clone()))),
         ));
     }
-    let value = Text::new(&face.value)
-        .with_role(TextRole::Label)
-        .with_id(format!("{}-value", face.id));
     let trailing: Element = if face.kind == SliderKind::Volume && sliders.outputs {
         Box::new(
             cx.actions().bind_invocation(
@@ -155,20 +200,18 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
                             .with_flex_grow()
                             .with_child(track.into_widget()),
                     ))
-                    .push(Box::new(value))
                     .push(trailing),
             )),
     )
 }
 
 fn slider(cx: &ViewCx<QuickSettings>, face: &SliderFace) -> Element {
-    let level = LocalState::new(face.level);
-    let slider = Slider::from_state(&level)
-        .with_id(&face.id)
-        .with_accessible_name(&face.name)
-        .range(0.0, 1.0)
-        .step(0.05)
-        .commits_on_release();
+    let said = face.clone();
+    // The slider shows its value beside its track, clear of its knob, in the words it is
+    // spoken in: the level, or that sound is muted.
+    let slider = super::sections::level_slider(&face.id, &face.name, false, face.level)
+        .value_text(move |level| said.value_at(level))
+        .shows_value();
     let actions = cx.actions();
     Box::new(match &face.kind {
         SliderKind::Brightness => actions.bind_effect(slider, QsEffect::SET_BRIGHTNESS),
@@ -202,7 +245,12 @@ fn glyph_space() -> Container {
 const GLYPH_COLUMN: f32 = ui::tokens::Metrics::BASE.min_pointer_target;
 
 /// The tiles two to a row.
-fn tile_grid(cx: &ViewCx<QuickSettings>, tiles: &[TileFace]) -> Element {
+fn tile_grid(
+    cx: &ViewCx<QuickSettings>,
+    tiles: &[TileFace],
+    parts: &Parts,
+    open: Option<QsSection>,
+) -> Element {
     let mut grid = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -224,6 +272,12 @@ fn tile_grid(cx: &ViewCx<QuickSettings>, tiles: &[TileFace]) -> Element {
             ));
         }
         grid = grid.push(Box::new(row));
+        if pair
+            .iter()
+            .any(|face| face.section.is_some() && face.section == open)
+        {
+            grid = grid.push(opened(cx, parts, open));
+        }
     }
     grid.into_widget()
 }
@@ -266,7 +320,7 @@ fn details_name(section: QsSection) -> String {
 
 /// A row under the tiles: it opens its section's page, or, for the
 /// notifications, the desk's centre — the one list.
-fn root_row(cx: &ViewCx<QuickSettings>, face: &crate::faces::RowFace) -> Element {
+fn root_row(cx: &ViewCx<QuickSettings>, face: &RowFace) -> Element {
     let mut row = ListRow::new(face.id(), &face.title).icon(face.icon);
     if let Some(detail) = &face.detail {
         row = row.secondary(detail);

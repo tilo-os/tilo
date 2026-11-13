@@ -11,8 +11,8 @@ use collab_types::caps::{
     Subject as SandboxSubject, decide_capability,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, KindSet, Lifetime, Preset,
-    PresetError, Refusal, Role, Subject, TreePath, WorkspacePolicy, roles,
+    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
+    MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
@@ -103,11 +103,6 @@ pub struct Workspace {
     /// the person closed it, with the app this device opens.
     #[serde(skip)]
     pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
-    /// The fields a stored workspace holds that this one does not read (the
-    /// shell engine's tasks among them), kept exactly as they were: saving
-    /// the workspace again leaves them in place, and nothing is migrated.
-    #[serde(flatten)]
-    pub retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A workspace as stored: its policy names the workspace it was stored for, or is
@@ -140,24 +135,17 @@ struct StoredWorkspace {
     schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     #[serde(default)]
     shared_surfaces: SharedSurfaces,
-    #[serde(flatten)]
-    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<StoredWorkspace> for Workspace {
     fn from(stored: StoredWorkspace) -> Self {
         let identity = stored.id;
-        // What this workspace writes but never reads back is its own, not
-        // retired.
-        let mut retired_fields = stored.retired_fields;
-        retired_fields.remove("collaborators");
-        retired_fields.remove("bots");
         let policy = match stored.policy {
             Some(mut policy) => {
                 policy.rehome(identity.to_string());
                 policy
             }
-            None => WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            None => WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
         };
         Self {
             slot: stored.slot,
@@ -176,7 +164,6 @@ impl From<StoredWorkspace> for Workspace {
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields,
         }
     }
 }
@@ -387,7 +374,7 @@ impl Workspace {
                 continue;
             };
             if let Some(desc) = Capability::from_capability(c) {
-                out.entry(app.clone()).or_default().push(desc);
+                out.entry(AppId::new(app)).or_default().push(desc);
             }
         }
         out
@@ -536,19 +523,14 @@ impl Workspace {
     /// from a device that is not theirs, in a workspace this machine does not
     /// govern (the caller decides `foreign` accordingly).
     #[must_use]
-    pub fn person_authority_on<'a>(
-        &'a self,
-        user: &str,
-        foreign: bool,
-        foreign_bound: &'a [Grant],
-    ) -> Authority<'a> {
-        self.policy.person_on_device(user, foreign, foreign_bound)
+    pub fn person_authority_on(&self, user: &str, foreign: bool) -> Authority<'_> {
+        self.policy.person_on_device(user, foreign)
     }
 
     /// The authority of `subject` acting on its own (an app, or an agent no
     /// person delegated): only what the workspace grants it.
     #[must_use]
-    pub fn subject_authority(&self, subject: Subject) -> Authority<'_> {
+    pub fn subject_authority(&self, subject: Grantee) -> Authority<'_> {
         Authority::person(self.policy.party_of(subject))
     }
 
@@ -654,8 +636,8 @@ impl Workspace {
         if self.is_owner(user) {
             return false;
         }
-        let person = Subject::Person(user.to_owned());
-        self.policy.grants.retain(|grant| grant.subject != person);
+        let person = Grantee::person(user.to_owned());
+        self.policy.grants.retain(|grant| grant.grantee != person);
         self.policy.joined.remove(user);
         self.policy.members.remove(user).is_some()
     }
@@ -677,10 +659,10 @@ impl Workspace {
     /// on the workspace.
     #[must_use]
     pub fn is_blocked(&self, user: &str) -> bool {
-        let person = Subject::Person(user.to_owned());
+        let person = Grantee::person(user.to_owned());
         let workspace_node = self.node();
         self.policy.grants.iter().any(|grant| {
-            grant.subject == person
+            grant.grantee == person
                 && grant.node == workspace_node
                 && grant.answer == Answer::Deny
                 && grant.kinds == KindSet::ALL
@@ -719,7 +701,7 @@ impl Workspace {
             .map(|(person, _)| (person, None))
             .collect();
         for grant in &self.policy.grants {
-            let Subject::Person(person) = &grant.subject else {
+            let Some(person) = grant.grantee.person_id() else {
                 continue;
             };
             if grant.answer != Answer::Allow
@@ -733,7 +715,7 @@ impl Workspace {
                 Lifetime::UntilRevoked => None,
                 Lifetime::Once | Lifetime::Session(_) => continue,
             };
-            let held = readers.entry(person.clone()).or_insert(until);
+            let held = readers.entry(person.to_owned()).or_insert(until);
             *held = match (*held, until) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 _ => None,
@@ -758,7 +740,7 @@ impl Workspace {
         let workspace_node = self.node();
         let mut agents: Vec<(String, KindSet)> = Vec::new();
         for grant in &self.policy.grants {
-            let Subject::Agent(agent) = &grant.subject else {
+            let Some(agent) = grant.grantee.agent_id() else {
                 continue;
             };
             if grant.node != workspace_node || grant.answer == Answer::Deny || !grant.is_live(&cx) {
@@ -766,10 +748,26 @@ impl Workspace {
             }
             match agents.iter_mut().find(|(held, _)| held == agent) {
                 Some((_, kinds)) => *kinds = kinds.union(grant.kinds),
-                None => agents.push((agent.clone(), grant.kinds)),
+                None => agents.push((agent.to_owned(), grant.kinds)),
             }
         }
         agents
+    }
+
+    /// The person who admitted the agent `agent` to the workspace: the one it acts for, whose
+    /// colour it is painted clear of.
+    #[must_use]
+    pub fn agent_keeper(&self, agent: &str) -> Option<&str> {
+        self.policy
+            .grants
+            .iter()
+            .find_map(|grant| match (&grant.grantee, &grant.granted_by) {
+                (
+                    Grantee::Member(MemberId::Agent(held)),
+                    Grantee::Member(MemberId::Person(person)),
+                ) if held == agent => Some(person.as_str()),
+                _ => None,
+            })
     }
 
     /// What a launch into this workspace hands its apps at `now`: the apps the
@@ -780,8 +778,8 @@ impl Workspace {
             .policy
             .grants
             .iter()
-            .filter_map(|grant| match &grant.subject {
-                Subject::App(app) => Some(app.clone()),
+            .filter_map(|grant| match &grant.grantee {
+                Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })
             .filter(|app| self.app_is_author_at(app, now))
@@ -823,7 +821,7 @@ impl Workspace {
             .grants
             .iter()
             .filter(|grant| {
-                matches!(grant.subject, Subject::Person(_))
+                grant.grantee.person_id().is_some()
                     && grant.node != workspace_node
                     && grant.answer != Answer::Deny
                     && grant.is_live(&cx)
@@ -886,7 +884,7 @@ impl Workspace {
         actor: &str,
         authority: &Authority<'_>,
         name: &str,
-        subject: &Subject,
+        subject: &Grantee,
         lifetime: &Lifetime,
         now: u64,
     ) -> Result<Vec<GrantId>, PresetMutationError> {
@@ -921,7 +919,7 @@ impl Workspace {
             .assign(
                 &prefix,
                 subject,
-                &Subject::Person(actor.to_owned()),
+                &Grantee::person(actor.to_owned()),
                 lifetime,
             )
             .into_iter()
@@ -983,7 +981,7 @@ impl Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -993,7 +991,6 @@ impl Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1022,7 +1019,6 @@ impl Workspace {
             bots,
             shared_surfaces,
             closed_tabs: _,
-            retired_fields: _,
         } = self;
         Self {
             slot: *slot,
@@ -1041,7 +1037,6 @@ impl Workspace {
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1085,7 +1080,7 @@ impl Default for Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -1095,7 +1090,6 @@ impl Default for Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 }

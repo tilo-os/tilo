@@ -1,16 +1,4 @@
-//! Speakers — play through several of your devices as one stereo pair,
-//! surround set, or set of speakers around a room.
-//!
-//! The pane walks [`SpeakerSetup`]: choose outputs, listen to each and say
-//! which one it was, optionally place room speakers, name and save. Saving
-//! asks the other devices to join; once every speaker is ready the set can
-//! be calibrated with any microphone, and the result is a before/after
-//! proposal that changes nothing until it is applied.
-//!
-//! The steps are [`SpeakerFlow`] views; what reaches the compositor is a
-//! [`SpeakerEffect`], run through [`SpeakerService`] on a worker thread,
-//! so agents and automation use the same door as the buttons. The page is
-//! view code over what the area keeps of the flow and the sets ([`view`]).
+//! Speakers: play through several of the person's devices as one set.
 
 mod room_canvas;
 
@@ -66,12 +54,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`SpeakersArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&SpeakersArea> {
     app.areas().find()
 }
 
-/// What reaches the compositor's speaker sets.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum SpeakerEffect {
@@ -135,7 +121,6 @@ pub enum SpeakerEffect {
 }
 
 impl SpeakerEffect {
-    /// The shell command this effect asks for.
     fn command(&self) -> SpeakerCommand {
         match self.clone() {
             Self::CreateSpeakerSet { name, members } => SpeakerCommand::Create { name, members },
@@ -158,7 +143,6 @@ impl SpeakerEffect {
     }
 }
 
-/// The steps of setting up and calibrating a speaker set.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum SpeakerFlow {
@@ -198,7 +182,6 @@ pub enum SpeakerFlow {
     CloseSpeakerSetup,
 }
 
-/// Run `effect` through the speaker service; `cx` is told how it ends.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: SpeakerEffect,
@@ -218,8 +201,6 @@ pub(crate) fn answer(
     Ok(Effected::Pending)
 }
 
-/// Take a step of the flow; a step that reaches the compositor invokes its
-/// [`SpeakerEffect`].
 pub(crate) fn answer_flow(
     app: &SettingsApp,
     step: SpeakerFlow,
@@ -255,15 +236,12 @@ fn trim_summary(trim: &SpeakerTrimInfo) -> String {
     )
 }
 
-/// Metres sound travels per millisecond at room temperature.
 const SOUND_METRES_PER_MS: f64 = 0.343;
 
 fn one_decimal(value: f64) -> String {
     format!("{value:.1}")
 }
 
-/// "Arrives after 48.2 ms at your seat · its output takes 41.0 ms · about
-/// 2.4 m away".
 fn measured_text(
     delay_ms: f64,
     output_latency_ms: Option<f64>,
@@ -322,17 +300,13 @@ fn role_from_slug(slug: &str) -> Option<SpeakerRoleSpec> {
     .find(|role| role_slug(*role) == slug)
 }
 
-/// Where the ask for the speaker sets stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refresh {
     Idle,
     Asked,
-    /// The compositor said the sets changed while the ask was unanswered:
-    /// its answer may show them from before, so one more ask follows it.
     AskedBeforeChange,
 }
 
-/// What a finished background call was for.
 enum Purpose {
     Refresh,
     Effect(SpeakerEffect),
@@ -343,16 +317,10 @@ struct Finished {
     result: Result<SpeakerReply, String>,
 }
 
-/// What the speakers area keeps for the window: the model, asked for the
-/// sets when first needed.
 pub struct SpeakersArea {
-    /// Whether the model talks to this device's compositor.
     devices: bool,
-    /// The layout a capture stages; `None` in a live window.
     staged: Option<crate::scenarios::SpeakersSample>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<SpeakersModel>>>,
-    /// Moves whenever what the page shows does: a step taken, a control
-    /// changed, an answer of the compositor.
     shown: ui::LocalState<u64>,
 }
 
@@ -366,8 +334,6 @@ impl SpeakersArea {
         }
     }
 
-    /// The model, over the compositor, or over sample sets for a
-    /// screenshot.
     pub fn model(&self) -> &Rc<std::cell::RefCell<SpeakersModel>> {
         self.model.get_or_init(|| {
             let service: Arc<dyn SpeakerService> = if self.devices {
@@ -383,9 +349,6 @@ impl SpeakersArea {
         })
     }
 
-    /// Take in finished calls and what the controls changed, if the model
-    /// exists; the page is built again when what it shows moved. Only an
-    /// open page keeps asking for the sets again.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
             && model.borrow_mut().poll()
@@ -394,15 +357,10 @@ impl SpeakersArea {
         }
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per set this device leads, offering its calibration and
-    /// deletion.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         model
@@ -435,31 +393,23 @@ pub struct SpeakersModel {
     finished_rx: Receiver<Finished>,
     in_flight: usize,
     refresh: Refresh,
-    /// What a shown pane holds; a pane shown anew asks at once.
     shown: std::rc::Weak<()>,
     arrangement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
     listening_state: ui::LocalState<String>,
     microphone_states: Vec<(String, ui::LocalState<bool>)>,
     chosen_states: Vec<(String, String, ui::LocalState<bool>)>,
-    /// Each room speaker's place, as the canvas stores it on release.
     room_points: ui::LocalState<Vec<(i32, i32)>>,
     last_room_points: Vec<(i32, i32)>,
-    /// The canvas's drag or settle, kept across recompositions.
     room_gesture: ui::LocalState<RoomGesture>,
-    /// The speaker chosen on the canvas or in the picker, by its place in
-    /// the chosen list: one selection for both, and only its settings show.
     room_selected: ui::LocalState<String>,
     room_selected_seen: u64,
-    /// The layout capture this model shows, if it is one.
     capture: Option<crate::scenarios::SpeakersSample>,
     replies: Replies,
     changed: bool,
 }
 
 impl SpeakersModel {
-    /// The model over `service`; a `sample` stages the layout capture
-    /// `staged`, if any.
     fn new(
         service: Arc<dyn SpeakerService>,
         sample: bool,
@@ -497,8 +447,6 @@ impl SpeakersModel {
         model
     }
 
-    /// A capture of the room layout step: four speakers chosen as a room,
-    /// each told apart, and the selection or drag the scenario shows.
     fn stage_capture(&mut self, staged: Option<crate::scenarios::SpeakersSample>) {
         use crate::scenarios::SpeakersSample;
         let Some(sample) = staged else {
@@ -530,7 +478,6 @@ impl SpeakersModel {
         self.changed = true;
     }
 
-    /// The flow state (tests read this).
     #[must_use]
     pub fn setup(&self) -> &SpeakerSetup {
         &self.setup
@@ -540,8 +487,6 @@ impl SpeakersModel {
         let service = Arc::clone(&self.service);
         let finished = self.finished_tx.clone();
         self.in_flight = self.in_flight.saturating_add(1);
-        // Only the in-memory screenshot/test service runs here. Real broker
-        // calls keep their worker so device I/O never blocks the UI thread.
         if self.sample {
             let _ = finished.send(Finished {
                 purpose,
@@ -566,7 +511,6 @@ impl SpeakersModel {
         }
     }
 
-    /// Ask for the sets, unless an ask is already out.
     fn refresh(&mut self) {
         if self.refresh == Refresh::Idle {
             self.refresh = Refresh::Asked;
@@ -574,10 +518,6 @@ impl SpeakersModel {
         }
     }
 
-    /// The compositor says what the sets show may have changed (a device came
-    /// or went, a member answered, a calibration moved on): a shown pane asks
-    /// once, a burst of changes during that ask once more. Nothing asks on a
-    /// timer; a hidden pane asks when it is shown again.
     pub(crate) fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         if !matches!(event, ui::collaboration::CollabEvent::SpeakersChanged)
             || self.shown.upgrade().is_none()
@@ -587,12 +527,10 @@ impl SpeakersModel {
         if self.refresh == Refresh::Idle {
             self.refresh();
         } else {
-            // The ask that is out may show the sets from before the change.
             self.refresh = Refresh::AskedBeforeChange;
         }
     }
 
-    /// Ask the compositor for `effect`; `reply` is told how it ends.
     fn start(&mut self, effect: SpeakerEffect, reply: Option<EffectReply>) {
         if let Some(reply) = reply {
             self.replies.wait(effect.id(), reply);
@@ -601,7 +539,6 @@ impl SpeakersModel {
         self.call(Purpose::Effect(effect), command);
     }
 
-    /// Take `step`; the effect it starts, if it reaches the compositor.
     fn flow(&mut self, step: SpeakerFlow) -> Result<Option<SpeakerEffect>, String> {
         self.changed = true;
         let job = match step {
@@ -772,8 +709,6 @@ impl SpeakersModel {
         self.changed = true;
     }
 
-    /// Reflect flow state into the widget-bound local states, so a rebuilt
-    /// composition shows the model rather than stale control values.
     fn sync_bound_states(&mut self) {
         let candidates = self.setup.candidates();
         let keys = candidates
@@ -843,8 +778,6 @@ impl SpeakersModel {
         self.normalize_room_selection();
     }
 
-    /// Keep the shared selection on a chosen speaker: the first one when
-    /// none (or one no longer chosen) is selected, quietly.
     fn normalize_room_selection(&mut self) {
         let count = self.setup.chosen().len();
         let valid = self
@@ -856,14 +789,12 @@ impl SpeakersModel {
         }
     }
 
-    /// The speaker selected on the canvas or in the picker.
     fn room_selection(&self) -> Option<usize> {
         self.room_selected
             .with(|selected| selected.parse::<usize>().ok())
             .filter(|index| *index < self.setup.chosen().len())
     }
 
-    /// Apply control edits made since the last pass.
     fn read_controls(&mut self) {
         let arrangement = self.arrangement_state.with(Clone::clone);
         if let Some(arrangement) = Arrangement::from_label(&arrangement)
@@ -917,7 +848,6 @@ impl SpeakersModel {
             }
         }
         if self.setup.step() == &Step::Layout {
-            // The canvas stores a place once, when a drag is let go.
             let placed = self.room_points.with(Clone::clone);
             for (index, point) in placed.iter().enumerate() {
                 if self.last_room_points.get(index) != Some(point) {
@@ -927,8 +857,6 @@ impl SpeakersModel {
             if self.setup.room_points() != self.last_room_points {
                 self.changed = true;
             }
-            // A choice on the canvas or in the picker shows that speaker's
-            // settings, once the hand lets go of the canvas.
             let revision = self.room_selected.revision();
             if revision != self.room_selected_seen && !self.room_gesture.with(RoomGesture::holding)
             {
@@ -938,7 +866,6 @@ impl SpeakersModel {
         }
     }
 
-    /// "Where you sit" and "Also listen with" for the calibrate step.
     fn microphone_rows(&self, group: &str) -> Vec<Item> {
         let mut body = Vec::new();
         let choices = self.setup.listening_choices(group);
@@ -1033,9 +960,6 @@ impl SpeakersModel {
         self.setup.message().map(note).into_iter().collect()
     }
 
-    /// One saved set: its members, readiness, playback and actions.
-    /// The controls of a set led here: calibrate it from its row; deleting
-    /// it is in its menu.
     fn led_set_controls(
         actions: &Actions<Settings>,
         group: &ui::collaboration::SpeakerGroupInfo,
@@ -1308,9 +1232,6 @@ impl SpeakersModel {
         vec![section(&t("speakers-identify-title"), rows(body))]
     }
 
-    /// The room layout: the canvas, directly under it the speaker picker
-    /// (one selection for both), then the selected speaker's settings and
-    /// nothing else of any other speaker.
     fn build_layout(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let chosen = self.setup.chosen();
         let labels = chosen
@@ -1604,8 +1525,6 @@ impl SpeakersModel {
     }
 }
 
-/// What a chosen speaker is called: its device's name, with the output
-/// only where one device gives the set two speakers.
 fn speaker_name(
     chosen: &[crate::speaker_setup::Candidate],
     candidate: &crate::speaker_setup::Candidate,
@@ -1622,8 +1541,6 @@ fn speaker_name(
     }
 }
 
-/// Where a room speaker stands, as a person reads it: "1.2 m to your
-/// left, 2.0 m in front of you".
 fn position_text((x_mm, y_mm): (i32, i32)) -> String {
     let metres = |mm: i32| one_decimal(f64::from(mm.unsigned_abs()) / 1_000.0);
     // Within 5 cm reads as level: a tenth of a metre is what is shown.
@@ -1656,8 +1573,6 @@ fn position_text((x_mm, y_mm): (i32, i32)) -> String {
 }
 
 impl SpeakersModel {
-    /// Take in finished calls and what the controls changed; whether what
-    /// the page shows changed since the last call.
     fn poll(&mut self) -> bool {
         self.poll_finished();
         self.read_controls();
@@ -1665,20 +1580,16 @@ impl SpeakersModel {
         std::mem::take(&mut self.changed)
     }
 
-    /// What a page showing the model holds: while one does, the
-    /// compositor's changes are asked for. A page shown anew asks at once.
     fn follow(&mut self) -> Rc<()> {
         let anew = self.shown.upgrade().is_none();
         let shown = crate::watch::shared(&mut self.shown, || ());
         if anew {
-            // Changes while no page showed the model were not asked for.
             self.refresh();
         }
         shown
     }
 }
 
-/// `control` (a button), bound to `effect`.
 fn invoking<C: ui::framework::ActionControl<()>>(
     actions: &Actions<Settings>,
     control: C,
@@ -1687,7 +1598,6 @@ fn invoking<C: ui::framework::ActionControl<()>>(
     actions.bind_effect_invocation(control, &effect.into())
 }
 
-/// The binding of a menu entry running `effect`.
 fn invocation(
     actions: &Actions<Settings>,
     effect: impl Into<SettingsEffect>,
@@ -1695,10 +1605,6 @@ fn invocation(
     actions.effect(&effect.into())
 }
 
-/// The Speakers page as view code over what the area keeps: the step of
-/// the flow, the sets and the compositor's answers. It is built again when
-/// any of those moves; the compositor's changes are asked for while it is
-/// shown.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let following = held.model().borrow_mut().follow();
@@ -1706,7 +1612,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let actions = cx.actions();
     let app = Rc::clone(app);
     Some(cx.switch(&shown, move |_, _| {
-        // The part keeps the sets followed while it is shown.
         #[allow(
             clippy::no_effect_underscore_binding,
             reason = "the part holds the follow token while it is shown"
@@ -1719,8 +1624,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     }))
 }
 
-/// The speaker sets a screenshot and the crate's tests show: one stereo
-/// pair led here, and two devices that could join. Every command succeeds.
 struct SampleSpeakers;
 
 impl SpeakerService for SampleSpeakers {
@@ -1817,7 +1720,6 @@ mod tests {
         assert_eq!(model.setup.groups().len(), 1);
     }
 
-    /// Answers from a fixed snapshot and records every command.
     struct FakeService {
         snapshot: Mutex<SpeakerSnapshot>,
         commands: Mutex<Vec<SpeakerCommand>>,
@@ -1890,8 +1792,6 @@ mod tests {
         })
     }
 
-    /// The service as the session runs it: its snapshot holds the sets it
-    /// saved, so what the page shows after saving is what it reads back.
     struct StatefulService {
         snapshot: Mutex<SpeakerSnapshot>,
     }
@@ -1935,8 +1835,6 @@ mod tests {
         }
     }
 
-    /// Saving a set is read back from the service: the set the session now
-    /// carries is what the page lists, not one it kept of its own.
     #[test]
     fn a_saved_set_is_read_back_from_the_service() {
         let stateful = Arc::new(StatefulService {
@@ -1983,7 +1881,6 @@ mod tests {
         SpeakersModel::new(service, false, None)
     }
 
-    /// Run passes until the model has no call in flight.
     fn settle(model: &mut SpeakersModel) {
         let deadline = ui::time::now() + tilo_test_env::hang_bound();
         while ui::time::now() < deadline {
@@ -1996,7 +1893,6 @@ mod tests {
         panic!("speaker calls did not settle");
     }
 
-    /// Take `step` as its button does: the effect it starts runs too.
     fn press(model: &mut SpeakersModel, step: SpeakerFlow) {
         if let Some(job) = model.flow(step).unwrap() {
             model.start(job, None);
@@ -2028,8 +1924,6 @@ mod tests {
         let shown = pane.follow();
         settle(&mut pane);
         let first = asked();
-        // A device yet to answer, or an open setup flow, asks nothing by
-        // itself.
         press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
         for _ in 0..3 {
             let _ = pane.poll();
@@ -2120,8 +2014,6 @@ mod tests {
         );
     }
 
-    /// A refused effect reports the compositor's reason; deleting a set
-    /// asks first.
     #[test]
     fn effects_report_the_compositors_answer() {
         use crate::resource::SettingsShell;
@@ -2176,8 +2068,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The set's own shelf listens too by default; the phone is switched on,
-    /// the listening position moves to it, and the shelf is switched off.
     fn sit_at_the_phone_without_the_shelf(pane: &mut SpeakersModel) {
         let phone = microphone_switch(pane, "phone");
         assert!(!phone.with(|on| *on));
@@ -2247,7 +2137,6 @@ mod tests {
                     listening: Some("phone".into()),
                 })
         );
-        // The measurement finishes: the shell reports a proposal.
         service
             .snapshot
             .lock()
@@ -2305,7 +2194,6 @@ mod tests {
 
     type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
 
-    /// Change the window's Speakers model as `change` does.
     fn change_model(app: &mut App, change: impl FnOnce(&mut SpeakersModel) + 'static) {
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             change(&mut area(settings).unwrap().model().borrow_mut());
@@ -2321,14 +2209,12 @@ mod tests {
         }
     }
 
-    /// Take `step` as its button does.
     fn take(app: &mut App, step: SpeakerFlow) {
         app.effect(&SettingsEffect::from(step))
             .expect("the step is taken");
         settle_window(app);
     }
 
-    /// The step the window's flow is at.
     fn step(app: &mut App) -> Step {
         app.with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings)
@@ -2342,8 +2228,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The window on Speakers, walked to the room layout of every offered
-    /// speaker.
     fn at_room_layout() -> App {
         ui::i18n::I18nManager::init("en-US");
         let mut app = App::new().unwrap();
@@ -2402,8 +2286,6 @@ mod tests {
         let root = app.harness().root_widget();
         assert_eq!(named(root, "Slider"), 0, "no slider on the step");
         assert_eq!(named(root, "RoomCanvas"), 1, "one canvas");
-        // The picker and the canvas hold the same selection: choosing the
-        // other speaker shows its settings, and only its.
         change_model(&mut app, |pane| pane.room_selected.set("1".into()));
         let text = said(&mut app);
         let now = lines(&text, "Play a sound on ");

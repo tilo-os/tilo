@@ -5,7 +5,7 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, TriggerWhenMeta, Ty, TypeMeta,
+    ActionMeta, EffectClass, FieldKind, FieldMeta, Meta, TriggerWhenMeta, Ty, TypeMeta,
     element_record, field_kind, parse_ty,
 };
 
@@ -66,9 +66,6 @@ pub fn unreadable_types(meta: &Meta) -> Vec<String> {
 
 /// Derived facts of a package's metadata.
 pub trait MetaExt {
-    /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
-    fn type_named(&self, name: &str) -> Option<&TypeMeta>;
-
     /// The record schemas of every declared type, ready to register.
     fn schemas(&self) -> Vec<TypeSchema>;
 
@@ -76,9 +73,14 @@ pub trait MetaExt {
     /// records was built for, and is built anew when it differs.
     fn schema_text(&self) -> String;
 
-    /// Register the schemas of every declared type, and the ids the app had before; peers that
-    /// replay this package's actions resolve its records through them.
+    /// Register the schemas of every declared type; peers that replay this package's actions
+    /// resolve its records through them.
     fn register_schemas(&self);
+
+    /// The action a caller names `action`: the name the app publishes it under (`new_note`, as a
+    /// native verb is) or the id its declaration keeps (`qymo5lg2`), which is what a change of it
+    /// says in the record and what a window's control says it does.
+    fn action_published_as(&self, action: &str) -> Option<&ActionMeta>;
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.
     fn kind_of(&self, type_name: &str) -> String;
@@ -86,8 +88,9 @@ pub trait MetaExt {
     /// The kind a package-level action (one with no record parameter) is published under.
     fn package_kind(&self) -> String;
 
-    /// The type an action is on: that of its first parameter, when it is a declared record.
-    fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta>;
+    /// The kind of the record a package keeps its resources in: its first root type's, which its
+    /// surface publishes (`tl.<app>.<Root>`), else the package's own.
+    fn record_kind(&self) -> String;
 }
 
 /// Whether a field's declared type names a resource: a record, or one inside an option.
@@ -102,8 +105,10 @@ fn names_a_resource(ty: &Ty) -> bool {
 fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
-    // ignored-failure: checked where the package is loaded
-    let Ok(ty_of_field) = parse_ty(&field.ty, &meta.app) else {
+    let Ok(ty_of_field) = tilo_failure::ignored!(
+        "a field type checked where the package is loaded",
+        parse_ty(&field.ty, &meta.app)
+    ) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
     let mut schema = match field_kind(field, &ty_of_field) {
@@ -211,8 +216,10 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
-        // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).
-        let parsed = parse_ty(&f.ty, &meta.app).ok();
+        let parsed = tilo_failure::ignored!(
+            "a loaded package's filter types all parse, as `unreadable_types` checked",
+            parse_ty(&f.ty, &meta.app).ok()
+        );
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
             _ => match parsed.as_ref().and_then(|t| kind_of_ty(meta, t)) {
@@ -249,12 +256,13 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
-        // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
-        let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
-            .ok()
-            .filter(|_| columned)
-            .and_then(|t| kind_of_ty(meta, &t))
-        else {
+        let Some((kind, cases)) = tilo_failure::ignored!(
+            "a loaded package's field types all parse, as `unreadable_types` checked",
+            parse_ty(&field.ty, &meta.app)
+                .ok()
+                .filter(|_| columned)
+                .and_then(|t| kind_of_ty(meta, &t))
+        ) else {
             continue;
         };
         out.push(ColumnSchema {
@@ -302,20 +310,6 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
 }
 
 impl MetaExt for Meta {
-    fn type_named(&self, name: &str) -> Option<&TypeMeta> {
-        if let Some(found) = self.types.iter().find(|ty| ty.id == name) {
-            return Some(found);
-        }
-        // A qualified name (`so.tilo.todo.Item`) names a type of another app.
-        let (app, last) = name
-            .rsplit_once('.')
-            .map_or((None, name), |(app, last)| (Some(app), last));
-        if app.is_some_and(|app| app != self.app) {
-            return None;
-        }
-        self.types.iter().find(|ty| ty.name == last)
-    }
-
     fn schemas(&self) -> Vec<TypeSchema> {
         self.types
             .iter()
@@ -351,7 +345,12 @@ impl MetaExt for Meta {
         for schema in self.schemas() {
             crate::schema::register(schema);
         }
-        crate::schema::register_previously(&self.app, &self.previously);
+    }
+
+    fn action_published_as(&self, action: &str) -> Option<&ActionMeta> {
+        self.actions.iter().find(|declared| {
+            !declared.scenario && (declared.name == action || declared.id == action)
+        })
     }
 
     fn kind_of(&self, type_name: &str) -> String {
@@ -362,8 +361,14 @@ impl MetaExt for Meta {
         format!("tl.{}", self.app)
     }
 
-    fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
-        params.first().and_then(|param| self.type_named(&param.ty))
+    fn record_kind(&self) -> String {
+        let root = self.roots.first().and_then(|id| {
+            self.types
+                .iter()
+                .find(|declared| declared.id == *id)
+                .map(|declared| declared.name.as_str())
+        });
+        root.map_or_else(|| self.package_kind(), |name| self.kind_of(name))
     }
 }
 

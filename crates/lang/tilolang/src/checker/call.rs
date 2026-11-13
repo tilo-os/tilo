@@ -12,10 +12,8 @@ use crate::prims;
 use crate::resolve::{CKind, Callable, FieldInfo, Import};
 use crate::types::{Ty, TypeKey};
 
-/// The module a draw is asked of: `random.int(lo, hi)`.
 const RANDOM: &str = "random";
 
-/// The module a file is asked of a person with: `file.choose(a)`, `file.save(a, name:)`.
 const FILE: &str = "file";
 
 impl Checker<'_> {
@@ -26,7 +24,6 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        // `Map<Text>()`: a map the code fills while it runs, as against one a record keeps.
         if let ExprKind::Ident(name) = &callee.kind
             && name == "Map"
             && self.lookup(name).is_none()
@@ -60,33 +57,31 @@ impl Checker<'_> {
                             }
                         };
                     }
+                    // `std.say(...)`: words the code writes for a person, not a bare `say`, which
+                    // a package's own action takes.
+                    if name.name == "say" {
+                        return self.builtin_say(args, span);
+                    }
                 }
-                // `random.int(lo, hi)`: a draw, which the invocation records (effects.md).
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
                     && self.lookup(RANDOM).is_none()
                     && self.env.find_import(RANDOM).is_none()
                 {
                     return self.builtin_random(name, args, span);
                 }
-                // `web.get` and `web.post`: a request to a service outside Tilo, which the
-                // invocation makes once and records (effects.md).
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == "web")
                     && self.lookup("web").is_none()
                     && self.env.find_import("web").is_none()
                 {
                     return self.builtin_web(name, args, span);
                 }
-                // `json.parse`, `json.decode<T>` and `json.encode`: reading and writing JSON
-                // text, which is no effect: it reaches nothing outside the values it is given.
+                // `json.parse`, `json.decode<T>`, `json.encode`: JSON text, which is no effect.
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json")
                     && self.lookup("json").is_none()
                     && self.env.find_import("json").is_none()
                 {
                     return self.builtin_json(name, types, args, span);
                 }
-                // `file.choose` and `file.save`: the person's own chooser, which hands an
-                // action a file it picked, or takes what an action made and puts it where they
-                // choose (effects.md).
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == FILE)
                     && self.lookup(FILE).is_none()
                     && self.env.find_import(FILE).is_none()
@@ -106,7 +101,6 @@ impl Checker<'_> {
                         return self.call_foreign(&import, name, args, span);
                     }
                 }
-                // `Task.project(p)`: a filter of the type with the value it asks of.
                 if let Some(Ty::Record(key)) = self.type_named(base)
                     && let Some(ex) = self.filter_value(&key, name, Some(args), span)
                 {
@@ -159,7 +153,7 @@ impl Checker<'_> {
                 }
             };
         }
-        // `Duration(n)`: a length of time of `n` seconds, for one an app keeps as a number.
+        // `Duration(n)`: `n` seconds, for a length of time an app keeps as a number.
         if name == "Duration" {
             let [n] = args else {
                 self.err(
@@ -178,7 +172,6 @@ impl Checker<'_> {
             }
             return self.expr_as(&n.value, &Ty::Int).typed(Ty::Duration);
         }
-        // A session's code has the agent library's words in scope, its default import.
         if env.session
             && let Some(ex) = self.agent_call(name, args, span)
         {
@@ -216,7 +209,6 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
-            "say" => return self.builtin_say(args, span),
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
@@ -226,6 +218,14 @@ impl Checker<'_> {
         }
         if prims::prim(name).is_some() {
             self.err("E061", name_span, format!("`{name}` is a UI primitive; it builds UI and can only be written as a statement of a view"));
+            return Ex::error();
+        }
+        if name == "say" {
+            self.err(
+                "E014",
+                name_span,
+                "the words marker is `std.say(\"Morning: 3 done\")`, in the library's namespace, since a bare `say` is a name a package can take for an action of its own",
+            );
             return Ex::error();
         }
         let mut names: Vec<&str> = env
@@ -261,15 +261,16 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        // The agent library's words are host imports the checker lowers rather than calls into
-        // a module: `agent.grep(...)` in a package is the code a session's `grep` is.
+        // The agent library's words are host imports the checker lowers, not calls into a module.
         if import.app == crate::agent::APP
             && let Some(ex) = self.agent_call(&name.name, args, span)
         {
             return ex;
         }
         let env = self.env;
-        if let Some(c) = env.foreign_callable(&import.app, &name.name) {
+        if let Some(c) =
+            env.foreign_callable_marked(&import.app, &name.name, name.from_template_of.as_deref())
+        {
             let c = c.clone();
             return self.call_callable(&c, args, span);
         }
@@ -300,7 +301,6 @@ impl Checker<'_> {
         Ex::error()
     }
 
-    /// Matches arguments to parameters; positional first, then named.
     pub(super) fn bind_args(
         &mut self,
         name: &str,
@@ -315,8 +315,7 @@ impl Checker<'_> {
             .collect()
     }
 
-    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`. With
-    /// `at_press`, the arguments are those of an action a view applies ([`Self::arg_at_press`]).
+    /// As [`Self::bind_args`], but a parameter with a default may be left out, as `None`.
     pub(super) fn bind_args_or_default(
         &mut self,
         name: &str,
@@ -389,9 +388,8 @@ impl Checker<'_> {
                 ),
             }
         }
-        // An action a view applies may leave out its last parameters: running it opens its
-        // form, which asks the person for them. A parameter of type `File` is no form's, and a
-        // chooser fills it: the action `file.choose(a)` runs, whose person's file it is.
+        // An action a view applies may leave out its last parameters: running it opens its form,
+        // which asks for them. A `File` parameter is no form's: a chooser fills it.
         let choosing = self.st.choosing;
         let trailing_none = |rest: &[Option<Ex>]| rest.iter().all(Option::is_none);
         let filled_by_a_chooser = |at: usize| {
@@ -416,9 +414,7 @@ impl Checker<'_> {
             .filter(|(at, (p, s))| s.is_none() && p.default.is_none() && !asked(*at))
             .map(|(_, (p, _))| p.name.as_str())
             .collect();
-        // A parameter a form cannot ask for says so, naming the action, the parameter and its
-        // type, rather than reading as one the person simply forgot: the action stays a command
-        // only an argument given here or a default reaches.
+        // A parameter no form can ask for says so, rather than reading as one the person forgot.
         let unaskable: Vec<_> = params
             .iter()
             .zip(&slots)
@@ -476,13 +472,10 @@ impl Checker<'_> {
             .collect()
     }
 
-    /// An argument of an action a view applies, of type `want`. An action's arguments are
-    /// evaluated when it is invoked, on what the invoker sees, as its parameter defaults are:
-    /// view state given as itself is read when the event fires, and an argument that computes
-    /// from view state (`set(open, not open)`, `send(c, "{draft}!")`) is a function the
-    /// runtime runs then ([`Self::at_event`]), so a press right after a keystroke, or a second
-    /// press before the view drew again, sees what came before it. Any other argument is the
-    /// value the view drew with.
+    /// An argument of an action a view applies, of type `want`. View state given as itself is read
+    /// when the event fires, and an argument that computes from view state (`set(open, not open)`)
+    /// is a function the runtime runs then ([`Self::at_event`]). Any other argument is the value
+    /// the view drew with.
     pub(super) fn arg_at_press(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
         if let ExprKind::Ident(name) = &e.kind
             && let Some(state) = self.state_named(name)
@@ -490,7 +483,6 @@ impl Checker<'_> {
         {
             return Self::state_at(&state);
         }
-        // A scalar an event carries goes to the action boxed, as its place until it fires.
         if let ExprKind::Ident(name) = &e.kind
             && let Some((local, ty)) = self.lookup(name)
             && self.st.event_scalars.contains(&local)
@@ -500,9 +492,8 @@ impl Checker<'_> {
         }
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
-        // An action value computes nothing from view state itself: the applications in it
-        // take their own arguments at the press. The clock is read then too: an argument that
-        // says "today" is the day of the invocation, not the day the view last drew.
+        // An action value computes nothing from view state itself: the applications in it take
+        // their own arguments at the press. The clock is read then too.
         let reads_state = names
             .iter()
             .any(|n| self.state_named(n).is_some() || self.clock_named(n));
@@ -512,21 +503,18 @@ impl Checker<'_> {
         self.expr_as(e, want)
     }
 
-    /// Whether `name` in an action's argument is the clock (`today`, `now`) rather than a value
-    /// the view drew with: it is read when the action is invoked.
+    /// Whether `name` in an action's argument is the clock (`today`, `now`), read when the action
+    /// is invoked.
     fn clock_named(&self, name: &str) -> bool {
         matches!(name, "today" | "now")
             && self.lookup(name).is_none()
             && self.state_named(name).is_none()
     }
 
-    /// The argument `e` of type `want`, which reads view state among `names`, as a function
-    /// of its own the runtime runs when the event fires ([`ir::AtEventFn`]): it takes each view
-    /// state `e` reads, read then, and each value from around it, as the view drew it. It is
-    /// checked in the discipline of a `fn`, as a parameter default is, but for the clock: a `fn`
-    /// computes from the values it is given, and this one runs as the action it is an argument
-    /// of is invoked, so it reads `today` and `now` then, and they are recorded with the
-    /// invocation's arguments.
+    /// The argument `e` of type `want`, which reads view state among `names`, as a function the
+    /// runtime runs when the event fires ([`ir::AtEventFn`]). It is checked as a parameter default
+    /// is, but for the clock: it reads `today` and `now` then, recorded with the invocation's
+    /// arguments.
     fn at_event(
         &mut self,
         e: &ast::Expr,
@@ -541,7 +529,6 @@ impl Checker<'_> {
             } else if let Some((local, ty)) = self.lookup(name) {
                 (ty.clone(), Ex::local(local, ty))
             } else {
-                // A name of the package (a fn, a type, an enum), seen the same from anywhere.
                 continue;
             };
             params.push(crate::resolve::ParamInfo {
@@ -549,6 +536,7 @@ impl Checker<'_> {
                 ty,
                 default: None,
                 place: false,
+                label: None,
                 entry: false,
             });
             args.push(arg);
@@ -614,8 +602,7 @@ impl Checker<'_> {
 
     fn call_callable(&mut self, c: &Callable, args: &[ast::Arg], span: Span) -> Ex {
         let sig = c.signature(&self.env.app);
-        // An action a view applies runs when its event fires: the view state it takes is read
-        // then, not when the view drew.
+        // An action a view applies runs when its event fires: the view state it takes is read then.
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         let ctx = self.st.ctx;
@@ -632,8 +619,7 @@ impl Checker<'_> {
                 Ex::error()
             }
             (CKind::Action, Ctx::Action | Ctx::Program) => {
-                // A call runs the action at its own door, as a change of its own: the
-                // authority decides it, and the caller suspends around it and goes on from
+                // A call runs the action at its own door, as a change of its own, and goes on from
                 // its journaled result. `suggest act(args)` is the same call, recorded as a
                 // proposal instead of applied.
                 let bound = Self::applied_args(c, bound);
@@ -657,11 +643,9 @@ impl Checker<'_> {
         }
     }
 
-    /// A `fn`: the module's own is a call, another package's one runs there, as that package's
-    /// own code, over the values it is given. A fn changes nothing — it cannot use actions
-    /// (E043) or change fields (E040) — so a call of one asks nobody, as reading that
-    /// package's resources asks nobody. The host boxes a scalar result like an action's, so it
-    /// unboxes as one.
+    /// A `fn`: the module's own is a call, another package's runs there as its own code. A fn
+    /// changes nothing, so a call of one asks nobody; the host boxes a scalar result like an
+    /// action's.
     fn call_fn(&mut self, c: &Callable, bound: Vec<Ex>, span: Span) -> Ex {
         if c.own {
             return match c.func {
@@ -688,7 +672,6 @@ impl Checker<'_> {
         }
     }
 
-    /// A list handle holding the arguments, in parameter order.
     fn arg_list(&mut self, args: Vec<Ex>) -> Ex {
         let ty = Ty::List(Box::new(Ty::Error));
         let tmp = self.fresh(ty.clone());
@@ -705,8 +688,8 @@ impl Checker<'_> {
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
         self.st.facts.action_values.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
-        // A block's whole expression is the proposal, and its value the action: the host
-        // records it as one where it runs the block, instead of applying it.
+        // A block's whole expression is the proposal: the host records it as one instead of
+        // applying it.
         self.st.suggest = None;
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }
@@ -716,8 +699,6 @@ impl Checker<'_> {
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
         if let Some(value) = self.st.suggest.take() {
-            // The host records the proposal where it runs; a block's value is the proposal
-            // itself, which the host records where it runs the block.
             if value {
                 return act.typed(Ty::Action);
             }
@@ -748,8 +729,8 @@ impl Checker<'_> {
         matches!(ty, Ty::Record(_) | Ty::Union(_))
     }
 
-    /// Whether `e` writes a record out here (`Note(title: ...)`) rather than naming one the
-    /// store holds (an action's result, a root, a reference).
+    /// Whether `e` writes a record here (`Note(title: ...)`) rather than naming one the store
+    /// holds.
     fn constructs(&self, e: &ast::Expr) -> bool {
         match &e.kind {
             ast::ExprKind::Call { callee, .. } => {
@@ -846,10 +827,9 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            // A field holding a resource takes one the store has: an action's result, a root,
-            // a reference (`@app.Type:id`). A record written out here is not one: it has no id
-            // until the store makes it, so nothing can hold it, and the change would be rolled
-            // back when it runs. Make it first (`let n = notes.new_note(...)`) and give that.
+            // A field holding a resource takes one the store has: an action's result, a root, a
+            // reference. A record written here has no id until the store makes it, so nothing can
+            // hold it: make it first (`let n = notes.new_note(...)`) and give that.
             if Self::is_any_resource_field(&f.ty) && self.constructs(&a.value) {
                 self.err(
                     "E020",
@@ -876,11 +856,9 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 
-    /// `person("Mia")` in a scenario: a principal named for the sample data, whose id is
-    /// `scenario:Mia`. Nothing else can make a principal from text.
-    /// `RichText("Ask ", ada, " about ", task)`: text as it is, a run naming each person
-    /// (`@Ada`) or resource (its title) that refers to it, and each time as a run every reader
-    /// reads in their own zone and language; `RichText()` is empty.
+    /// `person("Mia")` in a scenario: a principal whose id is `scenario:Mia`; nothing else makes
+    /// one from text. `RichText("Ask ", ada, " about ", task)`: text with a run naming each person
+    /// or resource it refers to, and each time read in the reader's own zone and language.
     fn builtin_rich_text(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let list_ty = Ty::List(Box::new(Ty::Text));
         let tmp = self.fresh(list_ty.clone());
@@ -897,7 +875,6 @@ impl Checker<'_> {
                 );
             }
             let mut v = self.expr(&a.value, None);
-            // A moment is a run every reader reads in their own zone and language.
             if v.ty == Ty::Time {
                 v = Ex::host(Imp::RichTime, vec![v], Ty::RichText);
             }
@@ -989,8 +966,8 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `outside(capability, payload)` or, held back until a moment, `outside(capability,
-        // payload, at: <a Time>)`: the device carries it out only once the clock reaches it.
+        // `outside(capability, payload)`, or `outside(capability, payload, at: <a Time>)`: the
+        // device carries it out once the clock reaches it.
         let (Some(cap), Some(payload)) = (args.first(), args.get(1)) else {
             self.err(
                 "E022",
@@ -1053,6 +1030,7 @@ impl Checker<'_> {
         }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
+        self.st.facts.outside_caps.insert(name.clone());
         match held {
             Some(third) => {
                 let at = self.expr_as(&third.value, &Ty::Time);
@@ -1071,8 +1049,7 @@ impl Checker<'_> {
     }
 
     /// `withdraw(r, reason)`: take back the outside effects `r`'s actions queued that nothing
-    /// carried out yet, settling each as withdrawn for `reason`, so they never happen. A person
-    /// takes back what they wrote before it went (undo send); an agent does the same.
+    /// carried out yet, settling each as withdrawn for `reason`.
     fn builtin_withdraw(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::Action {
             self.err(
@@ -1112,9 +1089,9 @@ impl Checker<'_> {
         Ex::host(Imp::Withdraw, vec![primary, why], Ty::Unit)
     }
 
-    /// `run_block(part, source)`: after this action commits, the host evaluates `source` as a
-    /// block written by the invoker and, when it applies an action, records what happened as
-    /// an `Invocation` stored in the part's `invocation` field.
+    /// `run_block(part, source)`: after this action commits, the host evaluates `source` as a block
+    /// the invoker wrote, and records what it applies as an `Invocation` in the part's `invocation`
+    /// field.
     fn builtin_run_block(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::Action {
             self.err(
@@ -1162,8 +1139,7 @@ impl Checker<'_> {
         Ex::host(Imp::QueueBlock, vec![p, Ex::str(&f.id), src], Ty::Unit)
     }
 
-    /// `set(name, value)`: an action reference that changes the view state `name` when the
-    /// control it is on is used. Views only.
+    /// `set(name, value)`: an action reference that changes the view state `name`. Views only.
     fn builtin_set(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -1196,7 +1172,6 @@ impl Checker<'_> {
         Self::set_action(&state, v)
     }
 
-    /// The action that sets the view state `state` to `v`.
     pub(super) fn set_action(state: &super::StateRef, v: Ex) -> Ex {
         Ex::host(
             Imp::ActSet,
@@ -1205,8 +1180,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `open(r)` or `open(r, view: v)`: an action reference that goes to the window of `r`
-    /// (workspace-model.md, "Windows"). Views only.
+    /// `open(r)`, or `open(r, view: v)`: an action reference that goes to the window of `r`. Views
+    /// only.
     fn builtin_open(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -1244,7 +1219,7 @@ impl Checker<'_> {
         for a in args.iter().skip(1) {
             if a.name.as_ref().is_some_and(|n| n.name == "front") {
                 // `front: false`: shown in the next column, not brought in front of a narrow
-                // window (a selection the keyboard moves).
+                // window.
                 front = self.expr_as(&a.value, &Ty::Bool);
                 continue;
             }
@@ -1281,7 +1256,7 @@ impl Checker<'_> {
             [one] => self.own_callable(one)?,
             [prefix @ .., last] => {
                 let import = self.env.find_import(&prefix.join("."))?;
-                self.env.foreign_callable(&import.app, last)?
+                self.env.foreign_callable_marked(&import.app, last, None)?
             }
             [] => return None,
         };
@@ -1290,11 +1265,9 @@ impl Checker<'_> {
         fits.then(|| c.id.clone())
     }
 
-    /// `file.choose(a, accept: [...])`: the action `a`, run with the file the person picks in
-    /// their own chooser as the argument it still needs. `file.save(a, name: "...")`: the
-    /// action `a` run, and what it made — text, or a file — put in a file the person picks.
-    /// Both stand on a control, as `open` does: they are a request to the person, and what the
-    /// person does in their chooser is what runs the action.
+    /// `file.choose(a, accept: [...])`: the action `a` run with the file the person picks.
+    /// `file.save(a, name: "...")`: the action run, and what it made put in a file the person
+    /// picks. Both stand on a control, as `open` does.
     fn builtin_file(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -1408,8 +1381,7 @@ impl Checker<'_> {
     }
 
     /// `notify(to: who, title: text, body: text, opens: r)`: tell the person `to` something on
-    /// their device, and open the resource `r` when they choose it. The invocation records it,
-    /// so a run replayed after waiting tells them no more than the first time.
+    /// their device, and open `r` when they choose it. The invocation records it.
     fn builtin_notify(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let mut to = None;
         let mut title = None;
@@ -1523,8 +1495,6 @@ impl Checker<'_> {
         Ex::host(Imp::ModelCall, vec![k, Self::handle_of(i)], Ty::Text)
     }
 
-    // ---- methods --------------------------------------------------------------------------
-
     pub(super) fn method(
         &mut self,
         recv: &ast::Expr,
@@ -1532,8 +1502,8 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        // `Date.parse(text, near: now)`: a day a text names, read at a moment. It stands on the
-        // type, which is not a value, so it is read before the receiver.
+        // `Date.parse(text, near: now)` stands on the type, which is not a value, so it is read
+        // before the receiver.
         if let ExprKind::Ident(n) = &recv.kind
             && self.lookup(n).is_none()
             && !self.names_import(recv)
@@ -1557,8 +1527,8 @@ impl Checker<'_> {
         self.value_method(r, name, args, span)
     }
 
-    /// Whether `e` is `space` or `workspace`, read only through their fields (`space.width`,
-    /// `workspace.members`), and not a variable of that name.
+    /// Whether `e` is `space` or `workspace`, read only through their fields, and not a variable of
+    /// that name.
     fn names_platform(&self, e: &ast::Expr) -> bool {
         matches!(&e.kind, ExprKind::Ident(n) if (n == "space" || n == "workspace") && self.lookup(n).is_none())
     }
@@ -1587,8 +1557,8 @@ impl Checker<'_> {
         false
     }
 
-    /// The arguments `wanted` of a call that names them, each once: the form a method takes when
-    /// what it is given needs a word of its own (`r.markdown(links: pages, from: folder)`).
+    /// The arguments `wanted` of a call that names them, each once (`r.markdown(links: pages, from:
+    /// folder)`).
     fn named_args<'a>(
         &mut self,
         args: &'a [ast::Arg],
@@ -1618,10 +1588,7 @@ impl Checker<'_> {
         None
     }
 
-    /// `Map<Text>()`: a map the code fills while it runs, as against one a record keeps as a
-    /// field. What it is handed to reads what was put in it, and a function that fills one the
-    /// caller declared leaves it filled: a notebook's export names its notes once, in a map it
-    /// then gives the walk that writes them.
+    /// `Map<Text>()`: a map the code fills while it runs, unlike one a record keeps as a field.
     fn builtin_map(&mut self, types: &[ast::TypeExpr], args: &[ast::Arg], span: Span) -> Ex {
         if !args.is_empty() {
             self.err(
@@ -1666,23 +1633,21 @@ impl Checker<'_> {
         if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
             return self.map_read(b, f, t, name, args, span);
         }
-        // The items under (above) one by a field of theirs is a query of the store's index: the
-        // field it follows is a column of the collection, and the runs of one value are a
-        // node's children. The field's own read stays the answer's fallback, and the one a list
-        // held anywhere else takes.
+        // Items under (above) one by a field of theirs is a query of the store's index; the field's
+        // own read is the fallback for a list held anywhere else.
         if let (Ty::Collection(t), "descendants" | "ancestors") = (&f.ty, m) {
             let list = self.field_read(
                 b.clone(),
                 &ast::Ident {
                     name: f.name.clone(),
                     span: name.span,
+                    from_template_of: None,
                 },
             );
             let field = f.id.clone();
             return self.relatives(list, t, name, args, span, Some((b, field)));
         }
-        // What a container field can be written through, and what it answers besides: the
-        // reads are its value's (`methods::names`), so a field accepts what a list or set does.
+        // What a container field can be written through; its reads are its value's.
         let writes: &[&str] = match &f.ty {
             Ty::Collection(_) => &["insert", "remove", "remove_where", "move"],
             Ty::Set(_) => &["add", "remove"],
@@ -1718,6 +1683,7 @@ impl Checker<'_> {
                 &ast::Ident {
                     name: f.name.clone(),
                     span: name.span,
+                    from_template_of: None,
                 },
             );
             return self.value_method(r, name, args, span);
@@ -1741,8 +1707,6 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                // Into a collection of a union, an item of one of its types is inserted as
-                // that type: `channels.insert(Category(...))` gives the Category.
                 let v = self.expr(&a.value, Some(t));
                 let case = (matches!(**t, Ty::Union(_))
                     && !v.ty.is_error()
@@ -1783,8 +1747,7 @@ impl Checker<'_> {
                 };
                 Ex::host(imp, vec![b, fid, v], Ty::Unit)
             }
-            // A map of sets: an element added to or taken from one key's set, each element
-            // stored on its own so concurrent additions all stay.
+            // A map of sets: each element stored on its own, so concurrent additions all stay.
             (Ty::Map(t), "add" | "remove")
                 if matches!(**t, Ty::Set(_)) && (m == "add" || args.len() == 2) =>
             {
@@ -1843,9 +1806,8 @@ impl Checker<'_> {
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
         let usage = "write `.move(item, after: other)`, `.move(item, before: other)`, `.move(item, to: index)` or `.move(item, to: index, among: run)`";
-        // `to: i, among: run`: the place `i` among the items of `run` (any part of the
-        // collection in its own order, such as the items one filter shows) other than the one
-        // moved.
+        // `to: i, among: run`: the place `i` among the items of `run` (any part of the collection
+        // in its own order, such as the items one filter shows) other than the one moved.
         if let [item, place, among] = args
             && place.name.as_ref().is_some_and(|n| n.name == "to")
             && among.name.as_ref().is_some_and(|n| n.name == "among")
@@ -1867,8 +1829,8 @@ impl Checker<'_> {
         let after = match side {
             Some("after") => true,
             Some("before") => false,
-            // An index, as a drag gives one: resolved, when the action runs, to the item it
-            // then comes before, which is what is recorded (convergence.md, "Actions").
+            // An index, as a drag gives one: resolved, when the action runs, to the item it then
+            // comes before, which is what is recorded.
             Some("to") => {
                 let item = self.expr_as(&item.value, t);
                 let index = self.expr_as(&place.value, &Ty::Int);
@@ -1907,11 +1869,13 @@ impl Checker<'_> {
             &ast::Ident {
                 name: f.name.clone(),
                 span: name.span,
+                from_template_of: None,
             },
         );
         let filter = ast::Ident {
             name: "filter".into(),
             span: name.span,
+            from_template_of: None,
         };
         let gone = self.higher_order(read, t, &filter, args, span);
         if gone.ty.is_error() {
@@ -1968,7 +1932,6 @@ impl Checker<'_> {
             return Ex::error();
         };
         let key = self.expr_as(&k.value, &Ty::Text);
-        // A key's set reads as the list of its elements, a value to pass around.
         let value = match value {
             Ty::Set(element) => Ty::List(element.clone()),
             other => other.clone(),
@@ -1992,8 +1955,8 @@ impl Checker<'_> {
             }
             return Ex::host(Imp::MapKeysValue, vec![m], Ty::List(Box::new(Ty::Text)));
         }
-        // `m.put(key, value)` and `m.remove(key)`: what the code fills the map with, which the
-        // code it hands the map to reads. A view draws what a map holds, it never fills one.
+        // `m.put(key, value)` and `m.remove(key)` fill the map; a view draws what a map holds, it
+        // never fills one.
         if matches!(name.name.as_str(), "put" | "remove") {
             if !matches!(self.st.ctx, Ctx::Action | Ctx::Fn) {
                 let who = self.st.ctx.word();
@@ -2041,12 +2004,11 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetValue, vec![m, key], Ty::Option(Box::new(value)))
     }
 
-    /// The words of `random`, for a message that names them.
     const DRAWS: &'static str = "`random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and `random.id()`";
 
     /// `random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and
-    /// `random.id()`: a draw. Only an action makes one, declaring `uses random`, and
-    /// its invocation keeps each value drawn, so a replay reads the same values (effects.md).
+    /// `random.id()`: only an action makes a draw, declaring `uses random`, and its invocation
+    /// keeps each value, so a replay reads the same.
     fn builtin_random(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let word = name.name.as_str();
         let what = format!("`random.{word}`");
@@ -2112,7 +2074,6 @@ impl Checker<'_> {
                     );
                 }
                 let got = self.expr(&xs.value, None);
-                // A collection or a set reads as the list of what it holds.
                 let element = match &got.ty {
                     Ty::List(t) | Ty::Collection(t) | Ty::Set(t) => (**t).clone(),
                     Ty::Error => return Ex::error(),
@@ -2148,9 +2109,9 @@ impl Checker<'_> {
         }
     }
 
-    /// `web.get(url, headers:, if_none_match:)` and `web.post(url, body:, headers:)`: a request
-    /// to a service outside Tilo, which the invocation makes once, records, and replays from the
-    /// record (effects.md).
+    /// `web.get(url, headers:, if_none_match:)` and `web.post(url, body:, headers:)`: a request to
+    /// a service outside Tilo, which the invocation makes once, records, and replays from the
+    /// record.
     fn builtin_web(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let get = match name.name.as_str() {
             "get" => true,
@@ -2267,10 +2228,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `json.parse(text)`, `json.decode<T>(text)` and `json.encode(value)`: JSON text read into
-    /// a value of a type the caller names, and a value written as text. No effect: it reads no
-    /// clock, draws nothing and reaches no service, so an action that only reads text it was
-    /// given needs no `uses`.
+    /// `json.parse(text)`, `json.decode<T>(text)` and `json.encode(value)`. No effect: it reaches no
+    /// service and reads no clock, so an action that only reads text it was given needs no `uses`.
     fn builtin_json(
         &mut self,
         name: &ast::Ident,
@@ -2386,7 +2345,6 @@ impl Checker<'_> {
         }
     }
 
-    /// The one text argument of `json.parse` and `json.decode<T>`.
     fn json_text_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
         if args.len() != 1 || args.first().is_some_and(|a| a.name.is_some()) {
             self.err("E022", span, format!("{what} takes one text: `{what}`"));
@@ -2399,11 +2357,9 @@ impl Checker<'_> {
         Some(text)
     }
 
-    /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
-    /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
-    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone;
-    /// `RichText.from_markdown(text)`, the document a Markdown text says; and `File`'s, which
-    /// make a file of what an action holds (`File.of_text(name, text)`).
+    /// A method that stands on a type instead of a value: `Date.parse` and `Time.parse` (the day or
+    /// the moment a text names, read at a moment in the person's zone), `RichText.from_markdown`,
+    /// and `File`'s.
     fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let t = self.show(&ty);
         if ty == Ty::RichText {
@@ -2441,8 +2397,7 @@ impl Checker<'_> {
                 "`.parse` takes the text by position: `.parse(\"tomorrow 9am\", near: now)`",
             );
         }
-        // The moment is named, as the text it is read at: a bare second argument reads as a
-        // count of something other than what it is.
+        // The moment is named as the text it is read at.
         match &near.name {
             Some(named) if named.name == "near" => {}
             Some(named) => self.err(
@@ -2467,12 +2422,8 @@ impl Checker<'_> {
         Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
     }
 
-    /// `RichText.from_markdown(text)`, the document a Markdown text says, and `RichText.embed(r)`,
-    /// the text whose one paragraph projects the resource `r`: the type's methods of its own. They
-    /// read nothing but what they are given, so they are as pure as a value's method.
+    /// `RichText.from_markdown(text)` and `RichText.embed(r)`: pure, as a value's method is.
     fn rich_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
-        // `RichText.embed(r)`: the text whose one paragraph projects the resource `r`, which is
-        // what a card of it shows where the text is drawn.
         if name.name == "embed" {
             let Some(r) = self.resource_arg("RichText.embed", args, span) else {
                 return Ex::error();
@@ -2490,10 +2441,8 @@ impl Checker<'_> {
             }
             return Ex::error();
         }
-        // The text it reads, then — for the pages of a bundle that link to each other — the
-        // address each page stands at, by the note it is, and the folder this one is written in:
-        // a link to a page reads as the reference to it, which every reader reads as it reads now
-        // and what links to it lists.
+        // The text it reads, then the address each page stands at by the note it is, and the folder
+        // this one is written in: a link to a page reads as the reference to it.
         let mut text: Option<Ex> = None;
         let mut links: Option<Ex> = None;
         let mut from: Option<Ex> = None;
@@ -2542,11 +2491,8 @@ impl Checker<'_> {
             Ty::RichText,
         )
     }
-    /// `File`'s methods, which make a file of what an action holds:
-    /// `File.of_text(name, text)` the file `name` holding `text`, `File.of_bytes(name, bytes)`
-    /// the file holding `bytes`, `File.at(name, address)` the file whose content the device
-    /// holds at `address` (a `tilo-blob://` address, as a picture of a record reads), and
-    /// `File.zip(name, files)` the archive `name` holding each of `files` under its own name.
+    /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,
+    /// address)` and `File.zip(name, files)`.
     fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let (held, imp, what, of) = match name.name.as_str() {
             "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
@@ -2624,8 +2570,6 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
-        // The text and number surface first: it holds every method those values have (and the
-        // text and number methods of a list), and its names are `methods`'.
         if let Some(ex) = self.text_math(r.clone(), name, args, span) {
             return ex;
         }
@@ -2641,10 +2585,8 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
-            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
-            // to a page of `links` — the notes of a bundle, by the address each stands at — a
-            // link to that page, at the path from the folder the page is written in. Two notes
-            // of one title are two files, and the link is the one its note stands at.
+            // `r.markdown(links: pages, from: folder)`: each reference to a page of `links` a link
+            // to that page, at the path from the folder the page is written in.
             (Ty::RichText, "markdown") => {
                 let form = "markdown(links: pages, from: folder)`: the document as Markdown, a \
                             reference to a page of `links` (an address by each resource) written \
@@ -2656,14 +2598,13 @@ impl Checker<'_> {
                 let from = self.expr_as(&named[1].value, &Ty::Text);
                 Ex::host(Imp::RichMarkdown, vec![r, links, from], Ty::Text)
             }
-            // The body of a response, and bytes, read as the text they decode as; bytes counted.
+            // The body of a response, and bytes, read as their text; bytes counted.
             (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
             }
             (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
-            // A file: what it is called, the media type it holds, how many bytes it is, where
-            // its bytes are (a `tilo-blob://` address a picture takes), and its content read as
-            // text, which answers what went wrong when it is not text or too large.
+            // A file: what it is called, its media type, its size, where its bytes are, and its
+            // content as text.
             (Ty::File, "name" | "media" | "url") if args.is_empty() => {
                 let part = match m {
                     "name" => 0,
@@ -2679,23 +2620,21 @@ impl Checker<'_> {
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),
-            // The files an archive holds, each kept in the device's content store under the name
-            // it has inside it: what an import of a package reads its pages and their nesting
-            // from, and refuses with why when the archive is not one or holds too much.
+            // The files an archive holds, each kept in the content store under the name it has
+            // inside.
             (Ty::File, "files") if args.is_empty() => Ex::host(
                 Imp::FileFiles,
                 vec![r],
                 Ty::Result(Box::new(Ty::List(Box::new(Ty::File))), Box::new(Ty::Text)),
             ),
-            // A map read as a value (a `json.Value`'s object, one `json.decode` read, or the
-            // `Map<T>()` a function fills): its keys, the value one key holds, and — in the code
-            // that runs — the entry put there or taken out.
+            // A map read as a value: its keys, the value one key holds, and — in the code that
+            // runs — the entry put there or taken out.
             (Ty::Map(t), "get" | "keys" | "put" | "remove") => {
                 let value = t.clone();
                 self.map_value_method(r, &value, name, args, span)
             }
-            // A day read as people read it: the day of the week it is, the day, month and year
-            // it names, and the first day of the week it stands in.
+            // A day as people read it: the day of the week, the day, month and year, and the first
+            // day of its week.
             (Ty::Date, "weekday") if args.is_empty() => {
                 Ex::host(Imp::DayWeekday, vec![r], Ty::Choice("weekday"))
             }
@@ -2711,8 +2650,7 @@ impl Checker<'_> {
             (Ty::Date, "start_of_week") if args.is_empty() => {
                 Ex::host(Imp::DayStartOfWeek, vec![r], Ty::Date)
             }
-            // A moment read as people read it: the day it falls on for the person, in their
-            // zone, and the time of day it is then.
+            // A moment read as people read it: the day it falls on for the person, and its time.
             (Ty::Time, "day") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`day`");
                 Ex::host(Imp::TimeDay, vec![r], Ty::Date)
@@ -2721,8 +2659,7 @@ impl Checker<'_> {
                 self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
             }
-            // The time of day it falls at, as the person reads a clock in the style they chose
-            // in Settings: `10:41` or `10:41 AM`.
+            // The time of day, as the person's clock style writes it: `10:41` or `10:41 AM`.
             (Ty::Time, "clock") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`clock`");
                 Ex::host(Imp::TimeClock, vec![r], Ty::Text)
@@ -2739,8 +2676,8 @@ impl Checker<'_> {
                 Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
-            // `as.many()`: an action that applies each of `as` to its own item, all at once:
-            // one change, one undo.
+            // `as.many()`: an action that applies each of `as` to its own item, all at once: one
+            // change, one undo.
             (Ty::List(inner), "many") if args.is_empty() && matches!(**inner, Ty::Action) => {
                 Ex::host(Imp::ActMany, vec![r], Ty::Action)
             }
@@ -2753,8 +2690,8 @@ impl Checker<'_> {
                 let next = self.expr_as(&next.value, &Ty::Action);
                 Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
             }
-            // `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the
-            // resources it makes record as what they were made from (`created(r)?.from`).
+            // `a.made_from(r)`: the action invoked made from the resource `r`, which what it makes
+            // records (`created(r)?.from`).
             (Ty::Action, "made_from") => {
                 let [from] = args else {
                     self.err("E022", span, "`.made_from` takes the resource the action is made from: `comment(comments).made_from(t)`");
@@ -2777,16 +2714,14 @@ impl Checker<'_> {
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "len") if args.is_empty() => {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
-            // How many it holds, once the store has read the whole workspace: none until then,
-            // so a window that counts what it shows never shows a part as the whole
+            // How many it holds, once the store has read the whole workspace: none until then
             // ([`Imp::CollCounted`]).
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "counted") if args.is_empty() => {
                 Ex::host(Imp::CollCounted, vec![r], Ty::Option(Box::new(Ty::Int)))
             }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
                 // Whether it holds nothing reads whether it shows a first item: a filtered
-                // collection's length is only the most it can hold, so measuring it said an
-                // empty one held something ([`Imp::CollEmpty`]), and counting it read the run.
+                // collection's length is only the most it can hold ([`Imp::CollEmpty`]).
                 Ex::host(Imp::CollEmpty, vec![r], Ty::Bool)
             }
             (
@@ -2804,7 +2739,6 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.relatives(r, &elem, name, args, span, None)
             }
-            // `items.index_of(x)`: where it stands among the items, or none when it is not one.
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "index_of") => {
                 let elem = (**t).clone();
                 if !self.arity(name, args, 1, span) {
@@ -2830,9 +2764,8 @@ impl Checker<'_> {
                 };
                 self.item_at(r, &elem, a)
             }
-            // `items.previous(x)`: the item just before `x` in the list as a view shows it —
-            // the row over the one a list is rendering — or none for the first. A row's place
-            // is the host's, so a row tells what stands over it without walking the list.
+            // `items.previous(x)`: the item just before `x` in the list as a view shows it, or none
+            // for the first. A row's place is the host's.
             (Ty::List(t) | Ty::Collection(t), "previous") => {
                 let elem = (**t).clone();
                 if !self.arity(name, args, 1, span) {
@@ -2876,8 +2809,6 @@ impl Checker<'_> {
                 let known = match other {
                     Ty::Principal => "name, kind, role".to_owned(),
                     Ty::Action => "then, made_from".to_owned(),
-                    // Every other type's methods are in one table, whose names the check of a
-                    // container field reads too.
                     other => super::methods::described(other),
                 };
                 let words = known.split([',', ' ', '(', ')']).filter(|w| {
@@ -2903,8 +2834,8 @@ impl Checker<'_> {
     }
 }
 
-/// The type a text names, where it is written before a method instead of a value:
-/// `Date.parse(...)`, `Time.parse(...)`, `RichText.from_markdown(...)`, `File.of_text(...)`.
+/// The type a text names, where it is written before a method instead of a value: `Date.parse(...)`,
+/// `Time.parse(...)`, `RichText.from_markdown(...)`, `File.of_text(...)`.
 fn parse_ty(name: &str) -> Option<Ty> {
     match name {
         "Date" => Some(Ty::Date),

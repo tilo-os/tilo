@@ -1,12 +1,11 @@
-//! What each type's methods are called: one list per type, read by the lowering that checks a
-//! call (`call.rs`, `text_math.rs`) and by the messages that say what a type has. A field that
-//! is a container is checked against the same list, so a method a container field's read accepts
-//! is one its value has.
+//! What each type's methods are called: one list per type, read by the lowering that checks a call
+//! (`call.rs`, `text_math.rs`) and by the messages that say what a type has. A field that is a container is
+//! checked against the same list, so a method a container field's read accepts is one its value has.
 
 use crate::types::Ty;
 
-/// The text methods, in the order a reader meets them: how a text is counted, read and cut, how
-/// it is cased, how it is asked about, and what it becomes.
+/// The text methods, in the order a reader meets them: how a text is counted, read and cut, how it is cased,
+/// how it is asked about, and what it becomes.
 pub const TEXT: &[&str] = &[
     "len",
     "words",
@@ -25,18 +24,14 @@ pub const TEXT: &[&str] = &[
     "to_int",
 ];
 
-/// What a whole number can be asked.
 pub const INT: &[&str] = &["min", "max", "clamp", "abs", "to_float", "to_text"];
 
-/// What a fractional number can be asked.
 pub const FLOAT: &[&str] = &[
     "min", "max", "clamp", "abs", "round", "floor", "ceil", "to_int", "to_text",
 ];
 
-/// `Bool.to_text`.
 pub const BOOL: &[&str] = &["to_text"];
 
-/// The methods every list has.
 const LIST: &[&str] = &[
     "len",
     "is_empty",
@@ -72,8 +67,8 @@ const SET: &[&str] = &[
     "counted", "index_of", "contains", "sort_by", "count_by", "group", "take", "each", "single",
 ];
 
-/// The methods a collection's items have, as a view reads them: the list's, less `of`, which
-/// reads a list's own item, and without `first`/`last` counting a stored order the store keeps.
+/// The methods a collection's items have, as a view reads them: the list's, less `of`, and without
+/// `first`/`last` counting a stored order the store keeps.
 const COLLECTION: &[&str] = &[
     "len",
     "is_empty",
@@ -105,19 +100,18 @@ const COLLECTION: &[&str] = &[
 /// The methods a map field's value has, read with the key they ask for.
 const MAP: &[&str] = &["get", "keys"];
 
-/// What a day can be asked: the day of the week it is, the day, month and year it names, and
-/// the first day of the week it stands in.
+/// What a day can be asked: the day of the week it is, the day, month and year it names, and the first day of
+/// the week it stands in.
 const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week"];
 
-/// What a moment can be asked: the day it falls on, the time of day it is then, and that time as
-/// the person reads a clock.
+/// What a moment can be asked: the day it falls on, the time of day it is then, and that time as the person
+/// reads a clock.
 const MOMENT: &[&str] = &["day", "time_of_day", "clock"];
 
-/// What a length of time can be asked: the seconds it is, which is how a record keeps one.
 const LENGTH: &[&str] = &["seconds"];
 
-/// The methods a value of `ty` has, by name; `None` for a type whose methods a message says in
-/// words of their own ([`described`]).
+/// The methods a value of `ty` has, by name; `None` for a type whose methods a message says in words of their
+/// own ([`described`]).
 #[must_use]
 pub fn names(ty: &Ty) -> Option<Vec<&'static str>> {
     let names: Vec<&'static str> = match ty {
@@ -141,8 +135,8 @@ pub fn names(ty: &Ty) -> Option<Vec<&'static str>> {
     Some(names)
 }
 
-/// What a list of `item` holds that sums, joins or averages, which only some items do: text
-/// joins, numbers sum and average.
+/// What a list of `item` holds that sums, joins or averages, which only some items do: text joins, numbers sum
+/// and average.
 fn aggregates(item: &Ty) -> Vec<&'static str> {
     match item {
         Ty::Text => vec!["join"],
@@ -151,8 +145,8 @@ fn aggregates(item: &Ty) -> Vec<&'static str> {
     }
 }
 
-/// The methods a value of `ty` has, as a message names them, telling apart the types whose
-/// methods are a sentence rather than a list.
+/// The methods a value of `ty` has, as a message names them, telling apart the types whose methods are a
+/// sentence rather than a list.
 #[must_use]
 pub fn described(ty: &Ty) -> String {
     match ty {
@@ -166,8 +160,8 @@ pub fn described(ty: &Ty) -> String {
         Ty::Json => "a document whose shape code asks as it reads, `match` on `.object(fields)`, `.array(items)`, `.string(text)`, `.number(number)`, `.bool(flag)`, `.null`".to_owned(),
         Ty::Response => "text (and the fields ok, status, status_text, headers, body)".to_owned(),
         Ty::Record(_) => "id (and fields)".to_owned(),
-        // A day and a moment also come from a text, by way of the global reader rather than a
-        // method of the value.
+        // A day and a moment also come from a text, by way of the global reader rather than a method of the
+        // value.
         Ty::Date => format!("{} (and `Date.parse`)", DAY.join(", ")),
         Ty::Time => format!("{} (and `Time.parse`)", MOMENT.join(", ")),
         Ty::Option(_) | Ty::Result(..) | Ty::Enum(_) => {

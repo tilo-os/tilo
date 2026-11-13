@@ -1,5 +1,5 @@
-//! Windows lifted over the desk: where a float is laid out and hit, and what
-//! a drag that lifts or snaps one reports.
+//! Windows lifted over the desk: where a float is laid out and hit, and what a drag that
+//! lifts or snaps one reports.
 
 use std::collections::HashMap;
 
@@ -254,8 +254,6 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
         let mut scene = Scene::new();
         row.draw(&mut scene, Affine::IDENTITY, text, &theme, &presence);
     };
-    // The frame it first shows on fades it in over the desk: what it covers still shows through, so
-    // the windows under it are drawn as they stand.
     draw(&mut row, now);
     assert!(
         row.drawn_covers().is_empty(),
@@ -340,8 +338,6 @@ fn a_floating_window_s_maximize_control_snaps_it_back_where_it_stood() {
     assert_eq!(row.take_pending_float(), None, "the snap is asked once");
 }
 
-/// The collapse control of a card follows the card: folded to its header it offers to open it
-/// again, pointing up, and the card opens with the same press.
 #[test]
 fn a_folded_card_s_collapse_control_points_up_and_opens_it_again() {
     let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
@@ -367,8 +363,6 @@ fn a_folded_card_s_collapse_control_points_up_and_opens_it_again() {
     );
 }
 
-/// A float keeps the size its place says: a conversation card stands at the card's size, not at
-/// the size a window lifted whole takes.
 #[test]
 fn a_float_takes_the_size_its_place_keeps() {
     let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);

@@ -106,3 +106,42 @@ pub struct GlyphRun {
     /// of the outlines. Never read by the GPU pipeline.
     pub text: Option<std::sync::Arc<str>>,
 }
+
+/// Draw `outline` with `settings` into `pen`.
+///
+/// Every caller draws through this one function, so the outline code (the
+/// `glyf` and `CFF` interpreters and their hinting) is compiled once, for a
+/// pen behind a pointer, rather than once for each pen type: in a web
+/// module, each copy was the whole interpreter again.
+pub fn draw_outline(
+    outline: &skrifa::outline::OutlineGlyph<'_>,
+    settings: skrifa::outline::DrawSettings<'_>,
+    pen: &mut dyn skrifa::outline::OutlinePen,
+) -> Result<skrifa::outline::AdjustedMetrics, skrifa::outline::DrawError> {
+    outline.draw(settings, &mut AnyPen(pen))
+}
+
+/// A pen of any type, as [`draw_outline`] hands it to the outline code.
+struct AnyPen<'a>(&'a mut dyn skrifa::outline::OutlinePen);
+
+impl skrifa::outline::OutlinePen for AnyPen<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.move_to(x, y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.line_to(x, y);
+    }
+
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        self.0.quad_to(cx0, cy0, x, y);
+    }
+
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.0.curve_to(cx0, cy0, cx1, cy1, x, y);
+    }
+
+    fn close(&mut self) {
+        self.0.close();
+    }
+}

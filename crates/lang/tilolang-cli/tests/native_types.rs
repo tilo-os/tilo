@@ -75,13 +75,11 @@ fn native_chat_describes_as_tilolang_types() {
         "{text}"
     );
     assert_eq!(text.matches("type Emoji {").count(), 1, "{text}");
-    // Reactions are the platform's and not read by tilolang code.
     assert!(!message.contains("reactions"), "{message}");
     assert!(
         text.contains("action create_category(workspace: Workspace, name: Text)"),
         "{text}"
     );
-    // A verb's parameters are typed as the code declares them.
     assert!(
         text.contains(
             "action create_channel(workspace: Workspace, name: Text, category: Option<Text>, \
@@ -156,12 +154,11 @@ fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
     );
 }
 
-/// Every package of `apps/tl` builds from its directory with its committed ids, after the
-/// packages it uses: tilolang ones among its siblings, and native apps by their committed
-/// descriptions (the shell `use`s `so.tilo.session`) and the platform's packages
-/// (`so.tilo.device`, `so.tilo.settings`).
+/// Every package of `apps/tl` builds from its directory, after the packages it uses: tilolang ones
+/// among its siblings, and native apps by their committed descriptions (the shell `use`s
+/// `so.tilo.session`) and the platform's packages (`so.tilo.device`, `so.tilo.settings`).
 #[test]
-fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
+fn every_example_package_builds_from_its_directory_with_the_files_it_writes() {
     let apps = repo().join("apps/tl");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps)
         .expect("apps/tl reads")
@@ -185,12 +182,18 @@ fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
         let built = compile_dirs(&order, &natives, &mut SeededEntropy(1))
             .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
         for b in &built {
+            let dir = b.dir.display();
             let committed = std::fs::read_to_string(b.dir.join("app.ids")).expect("app.ids");
             assert_eq!(
                 b.compiled.ids.to_text(),
                 committed,
-                "{}: app.ids is out of date",
-                b.dir.display()
+                "{dir}: app.ids is not what its sources write; write it with \
+                 `tilolang check --write-ids {dir}` and commit it with them"
+            );
+            assert!(
+                tilolang::source::catalogue_current(b),
+                "{dir}: locales/en-US.ftl is not what its sources write; write it with \
+                 `tilolang check --write-ids {dir}` and commit it with them"
             );
         }
     }

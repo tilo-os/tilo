@@ -1,20 +1,14 @@
-//! An export that runs a step at a time on the UI thread, for a build
-//! without the `GStreamer` encoder: a browser page, whose one thread may
-//! never wait.
+//! An export that runs a step at a time on the UI thread, for a build without the `GStreamer`
+//! encoder: a browser page, whose one thread may never wait.
 //!
-//! Each step composites at most one frame through the same GPU compositor
-//! the preview uses (so the file is what the preview shows), hands a frame
-//! whose pixels have come back to a [`media::edit::ClipEncoder`], and
-//! returns. A frame whose sources have not reached their exact picture yet is
-//! composited again on a later step — never written with a stand-in. When
-//! every frame is encoded the file is written to the destination the person
-//! chose before the render began: a page saves by contents, and its Save
-//! dialog needs the press that started the export, not one a minute later.
+//! Each step composites at most one frame through the same compositor the preview uses, hands a
+//! frame whose pixels are back to a [`media::edit::ClipEncoder`], and returns. A frame whose
+//! sources have not reached their exact picture is composited again later, never written with a
+//! stand-in. The file is written to the destination chosen before the render began: a page saves
+//! by contents, and its Save dialog needs the press that started the export.
 //!
-//! Sound is mixed by the same mixer the preview plays, a video frame's worth
-//! after each frame, from sources the page decoded
-//! ([`crate::page_sound::PagePcm`]); the render waits for every source's
-//! sound before the first frame, so the file never starts silent.
+//! Sound is mixed by the preview's mixer a frame's worth at a time, and the render waits for
+//! every source's sound before the first frame, so the file never starts silent.
 
 use std::sync::atomic::Ordering;
 

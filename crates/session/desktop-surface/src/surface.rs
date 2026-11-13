@@ -2005,6 +2005,14 @@ impl Widget for DesktopSurface {
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let changed = changed || peers_changed;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
+        // A window's control pressed outside the pointer's path — by assistive technology, an
+        // agent or a key — is asked in the row's update: it is carried out in this pass, not with
+        // the next pointer move.
+        let asked = self.shared.borrow().revision;
+        self.harvest();
+        if self.shared.borrow().revision != asked {
+            self.present();
+        }
         self.offer_window_shares();
         let bars_changed = self.sync_window_bars();
         let share_asked = self.take_window_share_asks();

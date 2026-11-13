@@ -51,6 +51,8 @@ pub use follow::RecordWrite;
 mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
+#[cfg(test)]
+mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 /// Wait until this host is reached through a relay, before it names its own
@@ -341,7 +343,7 @@ impl GovernedWorkspace {
         device: Option<&DeviceKeys>,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let name = valid_name(name)?;
+        let name = tilo_peer_state::workspace_membership::valid_founding_name(name)?;
         let workspace = uuid::Uuid::parse_str(workspace)
             .map_err(|_| "a room is a UUID".to_owned())?
             .hyphenated()
@@ -739,13 +741,20 @@ impl GovernedWorkspace {
     /// earlier stored layout as it opened: its document starts over from a
     /// base newer than any a member's device brought up for itself, and what
     /// the relay retains of the earlier layout is archived as it settles.
-    fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        if !self.peer().governance_brought_up() {
-            return Ok(());
-        }
+    /// Whether a membership a 0.1 release kept was carried into this layout:
+    /// that workspace's records were written by such a release too.
+    fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
+        let brought_up = self.peer().governance_brought_up();
         let shared = self.peer.shared();
         let mut replica = shared.lock();
-        let candidate = replica.clone();
+        let mut candidate = replica.clone();
+        // A membership log a 0.1 release kept is written anew in this
+        // layout's by this host, the device that governs the workspace, before
+        // the governance is published.
+        let carried = candidate.carry_earlier_membership(key, now)?;
+        if !brought_up && !carried {
+            return Ok(false);
+        }
         let committed = self.commit_held(
             &mut replica,
             candidate,
@@ -754,7 +763,7 @@ impl GovernedWorkspace {
             |record, _| Ok(record.collaboration.clone()),
         );
         drop(replica);
-        committed.map(drop)
+        committed.map(|_| carried)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -975,8 +984,9 @@ struct WorkspacesInner {
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
-    /// The workspaces listed as public workspaces, and how lively each is.
-    listings: listing::Listings,
+    /// When each workspace was last written to, and a ping after each door
+    /// that changed: the directory's own, beside the doors' governance.
+    directory: listing::Directory,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
@@ -995,6 +1005,10 @@ struct WorkspacesInner {
     memberships: memberships::Memberships,
     /// The workspace lists people's devices kept here ([`personal`]).
     personal: personal::PersonalLists,
+    /// How many sessions of each device key are open here now, by key: every
+    /// session of every person's, so a record says which of their keys is
+    /// here ([`personal`]).
+    online: std::sync::Mutex<HashMap<[u8; 32], usize>>,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
@@ -1174,7 +1188,6 @@ impl Workspaces {
         // A workspace a host made keeps the certificate it made it with: a host
         // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
-        let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
         let store =
@@ -1202,7 +1215,7 @@ impl Workspaces {
                 queued_writes: std::sync::Mutex::default(),
                 session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
-                listings,
+                directory: listing::Directory::default(),
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
@@ -1211,6 +1224,7 @@ impl Workspaces {
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 personal: personal::PersonalLists::new(&dir),
+                online: std::sync::Mutex::default(),
                 agent_door: agent_door::AgentDoor::default(),
                 own_address: std::sync::OnceLock::new(),
             }),
@@ -1249,6 +1263,7 @@ impl Workspaces {
         // workspace learns an address this host must rename.
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
+        this.adopt_listings_file().await?;
         this.start_following().await;
         Ok(this)
     }
@@ -1260,11 +1275,22 @@ impl Workspaces {
         &self,
         workspaces: Vec<Arc<AsyncMutex<GovernedWorkspace>>>,
     ) -> Result<(), String> {
+        #[cfg(feature = "agents")]
+        let mut carried = Vec::new();
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
-            workspace
+            let from_a_release = workspace
                 .publish_brought_up(&self.inner.host.key, tilo_clock::wall())
                 .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
+            // Its records are founded again once every workspace is served
+            // ([`Self::refound_earlier_records`]); a build without agents
+            // writes no record and leaves them as they are.
+            #[cfg(feature = "agents")]
+            if from_a_release {
+                carried.push(workspace.workspace().to_owned());
+            }
+            #[cfg(not(feature = "agents"))]
+            let _: bool = from_a_release;
             self.bind(&workspace)
                 .await
                 .map_err(|e| format!("bind: {e}"))?;
@@ -1290,6 +1316,10 @@ impl Workspaces {
             tracing::info!("desktop record ready");
             // What the relay's log revoked while the workspace was closed.
             self.carry_revocations(&mut workspace, &[]).await?;
+        }
+        #[cfg(feature = "agents")]
+        for workspace in carried {
+            self.refound_earlier_records(&workspace).await;
         }
         Ok(())
     }
@@ -1823,8 +1853,8 @@ impl Workspaces {
         Ok(policy
             .grants
             .iter()
-            .filter_map(|grant| match &grant.subject {
-                tilo_action_policy::Subject::App(app) => Some(app.clone()),
+            .filter_map(|grant| match &grant.grantee {
+                tilo_action_policy::Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })
             .filter(|app| policy.app_authors(app, &cx))
@@ -1914,7 +1944,7 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
-        let public = self.inner.listings.is_public(&workspace);
+        let public = Self::door_of(governed).is_listed();
         runtime.store.set_records_when_opened(public);
         // This relay's workspace authority governs the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.

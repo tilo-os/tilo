@@ -1,9 +1,9 @@
-//! The launcher's D-Bus allowlists, enforced by a real `xdg-dbus-proxy`
-//! between a sandboxed client and real buses: what a portal-less graphical
-//! app may reach on the session bus and on the AT-SPI bus, and that
-//! everything else is refused. Calls *into* the app pass the proxy, so the
-//! app's own AT-SPI bridge answers other clients read-only: they read its
-//! tree, and pressing, typing, setting values and taking focus are refused.
+//! The launcher's D-Bus allowlists, enforced by a real `xdg-dbus-proxy` between a
+//! sandboxed client and real buses: what a portal-less graphical app may reach on the
+//! session bus and on the AT-SPI bus, and that everything else is refused. Calls *into*
+//! the app pass the proxy, so the app's own AT-SPI bridge answers other clients
+//! read-only: they read its tree, and pressing, typing, setting values and taking focus
+//! are refused.
 #![allow(
     clippy::unused_self,
     reason = "zbus interface methods are defined on &self"
@@ -183,8 +183,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         .unwrap();
     let other_app_name = other_app.unique_name().unwrap().to_string();
 
-    // A portal-less graphical app: the session filter has only the
-    // accessibility status rules.
+    // A portal-less graphical app: the session filter has only the accessibility status rules.
     let session_proxy = Proxy::start(
         session.address(),
         &dir.path().join("session-proxy"),
@@ -199,8 +198,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         ATSPI_FILTER_ARGS,
     );
     let app_session = session_proxy.connect();
-    // The app publishes its accessible tree on its own connection, through
-    // the proxy.
+    // The app publishes its accessible tree on its own connection, through the proxy.
     let app_atspi = connect(&format!(
         "unix:path={}",
         atspi_proxy.guard.socket_path().display()
@@ -284,10 +282,8 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     )
     .expect("GetKeystrokeListeners is allowed");
 
-    // Assistive technology on the AT-SPI bus reads the app's tree: calls
-    // into the sandboxed app pass the proxy. The proxy cannot filter calls
-    // into the app, so the app's own bridge decides which of them it answers:
-    // reads only (`another_client_reads_an_apps_tree_but_cannot_act_on_it`).
+    // Assistive technology on the AT-SPI bus reads the app's tree: calls into the sandboxed app pass
+    // the proxy.
     let reader = connect(atspi.address()).build().unwrap();
     let app_name = app_atspi.unique_name().unwrap().to_string();
     let reply = call(
@@ -301,8 +297,8 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     let count: i32 = reply.body().deserialize().unwrap();
     assert_eq!(count, 1);
 
-    // Nothing else on the AT-SPI bus: not the registry's tree, not input
-    // injection, and never another app.
+    // Nothing else on the AT-SPI bus: not the registry's tree, not input injection, and never another
+    // app.
     assert!(
         call(
             &app_atspi,
@@ -353,8 +349,8 @@ fn a_media_app_owns_its_own_player_name_and_no_other() {
         connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into())
     };
 
-    // The app takes its player's name, as the toolkit's media session does,
-    // and the desktop's now-playing observer on the real bus finds it there.
+    // The app takes its player's name, as the toolkit's media session does, and the desktop's
+    // now-playing observer on the real bus finds it there.
     let app = proxy.connect();
     assert_eq!(
         request(&app, &player).expect("the app may own its player name"),
@@ -376,9 +372,8 @@ fn a_media_app_owns_its_own_player_name_and_no_other() {
     }
 }
 
-/// The AT-SPI registry as an app's adapter meets it: `Socket.Embed` takes the
-/// app's root and answers with the registry's own. Records every embedding
-/// app's bus name, so the test reaches the app the way a reader would.
+/// The AT-SPI registry as an app's adapter meets it: `Socket.Embed` takes the app's root and answers
+/// with the registry's own.
 #[cfg(target_os = "linux")]
 struct RegistrySocket {
     plugs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -407,8 +402,8 @@ const ATSPI_ROOT: &str = "/org/a11y/atspi/accessible/root";
 #[cfg(target_os = "linux")]
 const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
 
-/// The app's side of the bridge: the tree it publishes, and every request
-/// that reached its action handler.
+/// The app's side of the bridge: the tree it publishes, and every request that reached its action
+/// handler.
 #[cfg(target_os = "linux")]
 mod app_tree {
     use std::sync::{Arc, Mutex};
@@ -424,8 +419,8 @@ mod app_tree {
     pub const RUN: NodeId = NodeId(3);
     pub const SLIDER: NodeId = NodeId(4);
 
-    /// A window holding a button, a text field with one run and a slider:
-    /// one node behind each interface a client could act through.
+    /// A window holding a button, a text field with one run and a slider: one node behind each
+    /// interface a client could act through.
     pub fn tree() -> TreeUpdate {
         let mut window = Node::new(Role::Window);
         window.set_label("Example");
@@ -562,10 +557,9 @@ fn interfaces_of(reader: &Connection, app: &str, path: &str) -> Vec<String> {
     .expect("GetInterfaces answers a list of interface names")
 }
 
-/// A sandboxed app's real accessibility bridge (AccessKit's AT-SPI adapter,
-/// as every Tilo app runs it) behind the launcher's AT-SPI proxy: another
-/// client on the bus reads the whole tree, but once the launcher's variable
-/// tells the app to serve it read-only, pressing, typing, setting a value and
+/// A sandboxed app's real accessibility bridge (AccessKit's AT-SPI adapter, as every Tilo app runs it)
+/// behind the launcher's AT-SPI proxy: another client on the bus reads the whole tree, but once the
+/// launcher's variable tells the app to serve it read-only, pressing, typing, setting a value and
 /// taking focus are refused before they reach the app.
 #[cfg(target_os = "linux")]
 #[test]
@@ -580,8 +574,7 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    // Session bus: the accessibility bus launcher, whose IsEnabled the
-    // adapter follows.
+    // Session bus: the accessibility bus launcher, whose IsEnabled the adapter follows.
     let session = PrivateBus::start_at(&dir.path().join("session"));
     let _a11y_launcher = connect(session.address())
         .name("org.a11y.Bus")
@@ -594,8 +587,7 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         .unwrap();
     let switch = connect(session.address()).build().unwrap();
 
-    // AT-SPI bus: the registry, the launcher's proxy in front of it, and a
-    // reader that is not the app.
+    // AT-SPI bus: the registry, the launcher's proxy in front of it, and a reader that is not the app.
     let atspi = PrivateBus::start_at(&dir.path().join("atspi"));
     let plugs = Arc::new(Mutex::new(Vec::new()));
     let _registry = connect(atspi.address())
@@ -617,8 +609,8 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
     );
     let reader = connect(atspi.address()).build().unwrap();
 
-    // The app: the adapter finds the AT-SPI bus where the launcher points a
-    // sandboxed app's (`AT_SPI_BUS_ADDRESS`, the proxy's socket).
+    // The app: the adapter finds the AT-SPI bus where the launcher points a sandboxed app's
+    // (`AT_SPI_BUS_ADDRESS`, the proxy's socket).
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(
         "AT_SPI_BUS_ADDRESS",
@@ -632,8 +624,8 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
     };
     let _adapter = accesskit_unix::Adapter::new(app(), app(), app());
 
-    // Assistive technology turns on: the adapter follows a change of
-    // IsEnabled, so switch it until the app has embedded its tree.
+    // Assistive technology turns on: the adapter follows a change of IsEnabled, so switch it until the
+    // app has embedded its tree.
     tilo_test_env::wait_until("the app embeds its accessible tree in the registry", || {
         for enabled in [false, true] {
             switch
@@ -690,8 +682,7 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         );
     }
 
-    // Without the launcher's read-only variable, any client presses the
-    // button.
+    // Without the launcher's read-only variable, any client presses the button.
     let reply = reader
         .call_method(
             Some(app_name.as_str()),
@@ -708,8 +699,8 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         "the press reached the app's action handler: the hole a Tilo app closes"
     );
 
-    // What the launcher sets in a sandboxed app's environment on a release
-    // image (`dbus_proxy::atspi_read_only`).
+    // What the launcher sets in a sandboxed app's environment on a release image
+    // (`dbus_proxy::atspi_read_only`).
     env.set(launcher::dbus_proxy::ATSPI_READ_ONLY_ENV, "1");
 
     // Reading still works.

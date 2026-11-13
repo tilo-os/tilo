@@ -1,10 +1,6 @@
-//! The studio window: your themes in the sidebar, the presets as rendered
-//! previews, and an editor for one theme with its contrast findings live.
-//!
-//! Every control is bound to the role it shows, by its path in the
-//! [`Studio`]; switching polarity, resetting and deleting are the studio's
-//! verbs. Applying and exporting are effects on this machine
-//! ([`crate::apply`]) and refuse a theme that misses a contrast floor.
+//! The studio window: your themes in the sidebar, the presets as rendered previews, and an
+//! editor for one theme with its contrast findings live. Applying and exporting are effects
+//! on this machine ([`crate::apply`]) and refuse a theme that misses a contrast floor.
 
 use std::sync::Arc;
 
@@ -29,14 +25,7 @@ use crate::studio::{Rung, Studio, Theme};
 pub enum Page {
     Gallery,
     Theme(String),
-    /// A theme started from `base` (a preset id or a theme id) that only
-    /// its first edit writes, under `id`: until then the editor shows the
-    /// base and the studio holds nothing, so one opened and left untouched
-    /// leaves no copy behind.
-    Draft {
-        id: String,
-        base: String,
-    },
+    Draft { id: String, base: String },
 }
 
 impl Page {
@@ -49,21 +38,17 @@ impl Page {
     }
 }
 
-/// View state shared by the parts of the window: never stored, synced or
-/// undone.
+/// View state shared by the parts of the window: never stored, synced or undone.
 #[derive(Clone)]
 struct Ui {
     page: LocalState<Page>,
     pane: LocalState<NavPane>,
     notice: LocalState<String>,
-    /// The person's theme choice, followed: which preset is in use.
     appearance: LocalState<AppearanceChoice>,
     dispatcher: Dispatcher<Studio>,
     actions: Actions<Studio>,
     live: Live<Studio>,
-    /// The theme the editor shows, for the window bar's commands.
     shown: window_bar::Shown,
-    /// Which miniature the editor previews: desktop, list, dialog or presence.
     preview_view: LocalState<String>,
 }
 
@@ -72,8 +57,8 @@ impl Ui {
         open(&self.page, &self.pane, &self.notice, page);
     }
 
-    /// Open a draft of a theme from `base` (a preset id or a theme id): its
-    /// first edit writes it.
+    /// Open a draft of a theme from `base` (a preset id or a theme id): its first edit
+    /// writes it.
     fn start_from(&self, base: &str) {
         start_from(&self.page, &self.pane, &self.notice, base);
     }
@@ -96,8 +81,8 @@ pub(crate) fn open(
     notice.set(String::new());
 }
 
-/// Open a draft of a theme from `base` (a preset id or a theme id): its first
-/// edit writes it.
+/// Open a draft of a theme from `base` (a preset id or a theme id): its first edit writes
+/// it.
 pub(crate) fn start_from(
     content: &LocalState<Page>,
     pane: &LocalState<NavPane>,
@@ -115,19 +100,15 @@ pub(crate) fn start_from(
     );
 }
 
-/// The theme the editor writes: one in the studio, or a draft whose first
-/// edit writes it.
+/// The theme the editor writes: one in the studio, or a draft whose first edit writes it.
 #[derive(Clone)]
 struct Editing {
     id: Id,
-    /// A draft's base and the theme it shows until it is written.
     draft: Option<Arc<(String, Theme)>>,
-    /// Whether the studio holds the theme.
     written: LocalState<bool>,
-    /// Whether this editor sent the draft's create and the studio does not
-    /// hold the theme yet: edits made meanwhile are plain edits of it, sent
-    /// after the create, rather than creates of their own that the studio
-    /// would refuse.
+    /// Whether this editor sent the draft's create and the studio does not hold the theme
+    /// yet: edits made meanwhile are plain edits of it, sent after the create, rather than
+    /// creates of their own that the studio would refuse.
     pending: LocalState<bool>,
 }
 
@@ -144,9 +125,6 @@ impl Editing {
             let pending = pending.clone();
             cx.value(move |studio: &Studio| {
                 let written = studio.themes.contains(&id);
-                // Stored, the create is no longer pending; should the theme
-                // go again (its creating edit undone), the next edit
-                // creates it anew.
                 if written {
                     pending.set(false);
                 }
@@ -161,9 +139,8 @@ impl Editing {
         }
     }
 
-    /// The door refused `refusal` while the draft's create was pending: the
-    /// theme was not written, so say why in `notice` and let the next edit
-    /// create it again.
+    /// The door refused `refusal` while the draft's create was pending: the theme was not
+    /// written, so say why in `notice` and let the next edit create it again.
     fn refused(&self, refusal: &Refused, notice: &LocalState<String>) {
         if refusal.action == ui::tilo_resource::GROUP && self.pending.get() && !self.written.get() {
             self.pending.set(false);
@@ -194,10 +171,8 @@ impl Editing {
         role.under(&Studio::paths().themes.item_path(&self.id))
     }
 
-    /// `change`, writing an unwritten draft first: one action, one undo
-    /// step, so the first edit of a draft is the one that creates it. Once
-    /// the create is sent, later changes are the change alone, whether or
-    /// not the studio holds the theme yet.
+    /// `change`, writing an unwritten draft first: one action, one undo step, so the first
+    /// edit of a draft is the one that creates it.
     fn invoke(&self, change: Invoke<Studio>) -> Invoke<Studio> {
         let create = self
             .draft
@@ -231,8 +206,8 @@ impl Editing {
         )
     }
 
-    /// `control`, showing the role at `role` and setting it to what `value`
-    /// makes of each committed input.
+    /// `control`, showing the role at `role` and setting it to what `value` makes of each
+    /// committed input.
     fn set<T, I, C>(
         &self,
         cx: &ViewCx<Studio>,
@@ -251,8 +226,8 @@ impl Editing {
         })
     }
 
-    /// What applying or exporting refers to: the written theme, or the
-    /// base an untouched draft shows.
+    /// What applying or exporting refers to: the written theme, or the base an untouched
+    /// draft shows.
     fn reference(&self) -> String {
         match self.draft.as_deref() {
             Some((base, _)) if !self.written.get() => base.clone(),
@@ -261,8 +236,8 @@ impl Editing {
     }
 }
 
-/// A control's binding through [`Editing::invoke`]: always a group, which
-/// is the change alone once the theme is written.
+/// A control's binding through [`Editing::invoke`]: always a group, which is the change
+/// alone once the theme is written.
 struct Writes<F> {
     editing: Editing,
     change: F,
@@ -285,7 +260,6 @@ where
     }
 }
 
-/// The whole window.
 pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     let ui = Ui {
         page: LocalState::new(Page::Gallery),
@@ -332,8 +306,6 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         })
     };
     let shell = NavShell::new()
-        // The gallery's tiles and the editor's form need a page's width
-        // beside the list; narrower, the window shows one at a time.
         .content_kind(ui::widget::ContentKind::Page)
         .with_id("themes-shell")
         .with_window_toolbar()
@@ -350,8 +322,8 @@ fn notice(ui: &Ui) -> Text {
         .with_live(ui::a11y::Politeness::Polite)
 }
 
-/// The editor's notice, which also says when the door refused the draft's
-/// create ([`Editing::refused`]).
+/// The editor's notice, which also says when the door refused the draft's create
+/// ([`Editing::refused`]).
 fn editor_notice(ui: &Ui, editing: &Editing) -> ModelView<Option<Refused>> {
     let ui = ui.clone();
     let editing = editing.clone();
@@ -366,20 +338,36 @@ fn editor_notice(ui: &Ui, editing: &Editing) -> ModelView<Option<Refused>> {
     )
 }
 
-/// The navigation list's id, for tests and inspection.
 pub const NAV_ID: &str = "themes-nav";
-/// The destination that shows the presets.
 const PRESETS: &str = "presets";
-/// The prefix of a written theme's destination.
 const THEME: &str = "theme:";
-/// The section of written themes, and its "New theme" action.
 const YOURS: &str = "yours";
 const NEW_THEME: &str = "new-theme";
-/// The preset "New theme" starts a draft from.
 const NEW_THEME_BASE: &str = "dark";
 
 fn t(key: &str) -> String {
     crate::locales::CATALOG.t(key)
+}
+
+/// The catalogue key of a dropdown option, named by the word it means.
+fn option_ftl(english: &str) -> &'static str {
+    match english {
+        "Dark" => "themes-option-dark",
+        "Light" => "themes-option-light",
+        "Accent" => "themes-option-accent",
+        "Monochrome" => "themes-option-monochrome",
+        "Your colour" => "themes-option-your-colour",
+        "Chosen hue" => "themes-option-chosen-hue",
+        "Always" => "themes-option-always",
+        "With the typeface" => "themes-option-with-the-typeface",
+        "Frosted" => "themes-option-frosted",
+        _ => "themes-option-solid",
+    }
+}
+
+/// One of the editor's dropdown rows, in the window's language.
+fn option(english: &str) -> String {
+    t(option_ftl(english))
 }
 
 fn destination(page: &Page) -> String {
@@ -387,8 +375,8 @@ fn destination(page: &Page) -> String {
         .map_or_else(|| PRESETS.to_owned(), |id| format!("{THEME}{id}"))
 }
 
-/// The destinations: the presets, then the themes you wrote under their
-/// own header, whose trailing action starts a new one.
+/// The destinations: the presets, then the themes you wrote under their own header, whose
+/// trailing action starts a new one.
 fn sections(studio: &Studio) -> Vec<NavSection> {
     let presets = NavItem::new(PRESETS, t("themes-presets")).icon(Icon::LayoutGrid);
     let yours = studio
@@ -411,9 +399,8 @@ fn sections(studio: &Studio) -> Vec<NavSection> {
     ]
 }
 
-/// The sidebar: the toolkit's navigation list, kept in step with the
-/// studio and the open page, so its rows, selection, keyboard and narrow
-/// layout are every other Tilo sidebar's.
+/// The sidebar: the toolkit's navigation list, kept in step with the studio and the open
+/// page, so its rows, selection, keyboard and narrow layout are every other Tilo sidebar's.
 fn sidebar(ui: &Ui) -> Element {
     let source = {
         let live = ui.live.clone();
@@ -434,15 +421,11 @@ fn sidebar(ui: &Ui) -> Element {
         .with_accessible_name(crate::locales::CATALOG.t("themes-app-title"))
         .follow(source)
         .on_view(NAV_ID, select);
-    // "New theme" opens a draft of a preset, and Delete removes the row's
-    // theme: both the studio's own effects, so the section header's button,
-    // the Delete key, the palette and an agent run the same two.
     if let Some(new_theme) = ui.actions.effect_binding(
         crate::effects::ThemesEffect::DUPLICATE_THEME.map(|_: String| NEW_THEME_BASE.to_owned()),
     ) {
         list = list.section_action(NEW_THEME, new_theme);
     }
-    // A row is a written theme, so deleting it always has something to delete.
     if let Some(delete) = ui.actions.effect_binding(
         crate::effects::ThemesEffect::DELETE_THEME
             .try_map(|id: String| Some((id.strip_prefix(THEME)?.to_owned(), true))),
@@ -453,15 +436,11 @@ fn sidebar(ui: &Ui) -> Element {
 }
 
 fn gallery(ui: &Ui) -> Element {
-    // One tile per preset, as many columns as fit tiles of the card grid's
-    // wide minimum; the tiles stretch to fill each row and resize with it.
     let tiles = Preset::ALL
         .into_iter()
         .map(|preset| preset_tile(ui, preset))
         .collect();
     Box::new(
-        // The cards keep their height to their width: the scrollbar's lane
-        // stays, so the grid's width does not change as it starts to scroll.
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_stable_vertical_gutter()
@@ -472,9 +451,7 @@ fn gallery(ui: &Ui) -> Element {
     )
 }
 
-/// One preset: its preview leading a card, its name and its actions in one
-/// row under it. The preset the system shows says "In use" in place of
-/// "Use".
+/// One preset: its preview leading a card, its name and its actions in one row under it.
 fn preset_tile(ui: &Ui, preset: Preset) -> Element {
     let document = preset.document();
     let actions = {
@@ -518,8 +495,8 @@ fn preset_tile(ui: &Ui, preset: Preset) -> Element {
     })
 }
 
-/// A preset's card, selected while the system shows its preset: the
-/// design system's selected edge marks the theme in use across the grid.
+/// A preset's card, selected while the system shows its preset: the design system's
+/// selected edge marks the theme in use across the grid.
 struct InUse {
     card: Card,
     preset: Preset,
@@ -586,8 +563,7 @@ fn band_id(lo: f64, hi: f64) -> String {
     format!("slider-{lo}-{hi}")
 }
 
-/// A slider over `band` for an optional hue at `role`: moving it gives the
-/// theme that hue.
+/// A slider over `band` for an optional hue at `role`: moving it gives the theme that hue.
 fn hue_slider(
     cx: &ViewCx<Studio>,
     editing: &Editing,
@@ -636,8 +612,8 @@ fn rung_label(rung: Rung) -> &'static str {
     }
 }
 
-/// A choice between two values of the role at `role`: the first option is
-/// `on`, the second `off`.
+/// A choice between two values of the role at `role`: the first option is `on`, the second
+/// `off`.
 fn choice<T>(
     cx: &ViewCx<Studio>,
     editing: &Editing,
@@ -648,19 +624,23 @@ fn choice<T>(
 where
     T: ui::tilo_resource::Settable + PartialEq + Clone + Send + Sync + 'static,
 {
-    let [first, second] = options;
+    let [first, second] = options.map(option);
     let read = role.clone();
     let shown = on.clone();
-    let state = editing.value(cx, move |theme| {
-        String::from(if read.get(theme) == Some(&shown) {
-            first
-        } else {
-            second
-        })
+    let rows = [first.clone(), second];
+    let state = editing.value(cx, {
+        let rows = rows.clone();
+        move |theme| {
+            if read.get(theme) == Some(&shown) {
+                rows[0].clone()
+            } else {
+                rows[1].clone()
+            }
+        }
     });
     editing.set(
         cx,
-        Dropdown::from_state(vec![first.to_owned(), second.to_owned()], &state),
+        Dropdown::from_state(rows.to_vec(), &state),
         role,
         move |picked: String| {
             if picked == first {
@@ -688,13 +668,19 @@ fn preview_show(picked: &str) -> Show {
 /// Dark or light: switching flips the ladder, so it is the studio's verb.
 fn polarity(cx: &ViewCx<Studio>, editing: &Editing) -> Dropdown {
     let state = editing.value(cx, |theme| {
-        String::from(if theme.dark { "Dark" } else { "Light" })
+        if theme.dark {
+            option("Dark")
+        } else {
+            option("Light")
+        }
     });
     let id = editing.id.clone();
+    let dark = option("Dark");
+    let light = option("Light");
     editing.bind(
         cx,
-        Dropdown::from_state(vec!["Dark".to_owned(), "Light".to_owned()], &state),
-        move |picked: String| Studio::SWITCH_POLARITY.with((id.clone(), picked == "Dark")),
+        Dropdown::from_state(vec![dark.clone(), light], &state),
+        move |picked: String| Studio::SWITCH_POLARITY.with((id.clone(), picked == dark)),
     )
 }
 
@@ -949,9 +935,8 @@ mod tests {
 
     const BASE: &str = "dark-graphite";
 
-    /// An editor of a draft of `BASE` under `id`, outside any window: what
-    /// its controls send is applied when the test says, as a door that has
-    /// not caught up yet would.
+    /// An editor of a draft of `BASE` under `id`, outside any window: what its controls
+    /// send is applied when the test says, as a door that has not caught up yet would.
     fn draft(studio: &Replica<Studio>, id: &str) -> Editing {
         let theme = studio.state().unwrap().draft(BASE).unwrap();
         Editing {

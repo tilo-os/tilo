@@ -1,6 +1,7 @@
 use super::*;
 use agent_provider_config::protocol as neutral;
 use serde_json::json;
+use test_http::{Reply, Responder};
 
 fn request() -> neutral::ModelRequest {
     neutral::ModelRequest {
@@ -80,49 +81,19 @@ fn mismatched_tool_results_and_wrong_role_content_are_refused_locally() {
     assert!(neutral_request(ask).is_err());
 }
 
-/// The request `socket` received: its head as sent, and its body.
-pub(super) fn read_request(socket: &mut std::net::TcpStream) -> (String, Vec<u8>) {
-    use std::io::{BufRead as _, Read as _};
-    socket
-        .set_read_timeout(Some(tilo_test_env::hang_bound()))
-        .unwrap();
-    let mut reader = std::io::BufReader::new(socket);
-    let (mut head, mut length) = (String::new(), 0);
-    loop {
-        let mut line = String::new();
-        assert!(
-            reader.read_line(&mut line).unwrap() > 0,
-            "the peer closed before the request ended"
-        );
-        if line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
-        }
-        head.push_str(&line);
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).unwrap();
-    (head, body)
-}
-
-fn spawn_anthropic_peer(
-    listener: std::net::TcpListener,
-    pending_events: Arc<Mutex<Vec<serde_json::Value>>>,
-    delta_received: std::sync::mpsc::Receiver<()>,
-) -> std::thread::JoinHandle<()> {
-    use std::io::Write as _;
-    std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let (_, body) = read_request(&mut socket);
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+/// An Anthropic stream that stops after its tool block until the gateway has
+/// emitted the call's argument delta, then finishes the turn.
+fn anthropic_stream(
+    events: Arc<Mutex<Vec<serde_json::Value>>>,
+    delta_delivered: std::sync::mpsc::Receiver<()>,
+) -> Responder {
+    let delta_delivered = Mutex::new(delta_delivered);
+    Responder::serve(move |peer| {
+        let body: serde_json::Value = serde_json::from_str(&peer.request().body_text()).unwrap();
         assert_eq!(body["stream"], true);
-        write!(
-            socket,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
+        let _ = peer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+        );
         for (index, event) in [
             json!({"type":"message_start","message":{"id":"reply","type":"message","role":"assistant","model":"checked-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":0}}}),
             json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}),
@@ -134,33 +105,36 @@ fn spawn_anthropic_peer(
             if index == 4 {
                 // The tool block is closed, but the turn has not finished.
                 // Observe the real emitter before permitting a valid finish.
-                delta_received.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                let events = pending_events.lock().unwrap();
+                delta_delivered
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .expect("the gateway emits the call's argument delta before the turn ends");
+                let events = events.lock().unwrap();
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0]["event"], EVENT_TOOL_CALL_DELTA);
                 assert!(!events.iter().any(|event| event["event"] == EVENT_TOOL_CALL));
                 drop(events);
             }
-            write!(
-                socket,
-                "event: {}\ndata: {}\n\n",
-                event["type"].as_str().unwrap(),
-                event
-            )
-            .unwrap();
+            let _ = peer.write(
+                format!(
+                    "event: {}\ndata: {}\n\n",
+                    event["type"].as_str().unwrap(),
+                    event
+                )
+                .as_bytes(),
+            );
         }
     })
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-    profile.endpoint = format!("http://{}", listener.local_addr().unwrap());
     let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-    let pending_events = events.clone();
-    let (delta_sent, delta_received) = std::sync::mpsc::channel();
-    let peer = spawn_anthropic_peer(listener, pending_events, delta_received);
+    let (delta_sent, delta_delivered) = std::sync::mpsc::channel();
+    let served = anthropic_stream(events.clone(), delta_delivered);
+    let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+    profile.endpoint = served.url();
     let transport = GatewayHttp {
         client: provider_client().unwrap(),
         endpoint: provider_url(&profile),
@@ -185,7 +159,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
             .unwrap()
             .push(serde_json::to_value(event).unwrap());
         if event.event.as_deref() == Some(EVENT_TOOL_CALL_DELTA) {
-            delta_sent.send(()).unwrap();
+            let _ = delta_sent.send(());
         }
         true
     };
@@ -218,12 +192,10 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
         completed,
         json!({"id":"call_1","name":"lookup","arguments":"{\"count\":2}"})
     );
-    peer.join().unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
-    use std::io::Write as _;
     for (protocol, reply) in [
         (
             ProviderProtocol::OpenAiCompatible,
@@ -234,14 +206,13 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
             r#"{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"count":2}}],"stop_reason":"tool_use"}"#,
         ),
     ] {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let served = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(reply),
+        ]);
         let mut profile = ProviderProfile::hosted(protocol);
-        profile.endpoint = format!("http://{}", listener.local_addr().unwrap());
-        let peer = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let _ = read_request(&mut socket);
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
-        });
+        profile.endpoint = served.url();
         let mut body = json!({"model":"checked-model", "max_tokens":256, "messages":[{"role":"user","content":"question"}]});
         body["tools"] = if protocol == ProviderProtocol::OpenAiCompatible {
             json!([{"type":"function", "function":{"name":"lookup", "parameters":{"type":"object"}}}])
@@ -261,32 +232,27 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
         .map_err(|failure| failure.why)
         .unwrap();
         assert_eq!(response, reply);
-        peer.join().unwrap();
+        assert_eq!(served.next_request().method, "POST");
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
-    use std::io::Write as _;
     for protocol in [
         ProviderProtocol::OpenAiCompatible,
         ProviderProtocol::Anthropic,
     ] {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
-        let peer = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let (headers, body) = read_request(&mut socket);
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            let reply = match protocol {
-                ProviderProtocol::OpenAiCompatible => json!({"id":"reply","object":"chat.completion","created":1,"model":"checked-model","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"count\":2}"}}]}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}),
-                ProviderProtocol::Anthropic => json!({"id":"reply","type":"message","role":"assistant","model":"checked-model","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"count":2}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7}}),
-            }.to_string();
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
-            (headers, body)
-        });
+        let reply = match protocol {
+            ProviderProtocol::OpenAiCompatible => json!({"id":"reply","object":"chat.completion","created":1,"model":"checked-model","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"count\":2}"}}]}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}),
+            ProviderProtocol::Anthropic => json!({"id":"reply","type":"message","role":"assistant","model":"checked-model","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"count":2}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":7}}),
+        }.to_string();
+        let served = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(reply),
+        ]);
         let mut profile = ProviderProfile::hosted(protocol);
-        profile.endpoint = endpoint;
+        profile.endpoint = served.url();
         let transport = GatewayHttp {
             client: provider_client().unwrap(),
             endpoint: provider_url(&profile),
@@ -319,27 +285,21 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
         let calls = response.tool_calls().unwrap();
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].input["count"], 2);
-        let (headers, body) = peer.join().unwrap();
+        let seen = served.next_request();
+        let body: serde_json::Value = serde_json::from_str(&seen.body_text()).unwrap();
         assert_eq!(body["model"], "checked-model");
         assert_eq!(body["max_tokens"], 256);
         assert!(!body.get("stream").is_some_and(|value| value == true));
+        assert_eq!(seen.method, "POST");
         match protocol {
             ProviderProtocol::OpenAiCompatible => {
-                assert!(headers.starts_with("POST /chat/completions "));
-                assert!(
-                    headers
-                        .to_ascii_lowercase()
-                        .contains("authorization: bearer fabricated-key")
-                );
+                assert_eq!(seen.target, "/chat/completions");
+                assert_eq!(seen.header("authorization"), Some("Bearer fabricated-key"));
                 assert_eq!(body["tools"][0]["function"]["name"], "lookup");
             }
             ProviderProtocol::Anthropic => {
-                assert!(headers.starts_with("POST /v1/messages "));
-                assert!(
-                    headers
-                        .to_ascii_lowercase()
-                        .contains("x-api-key: fabricated-key")
-                );
+                assert_eq!(seen.target, "/v1/messages");
+                assert_eq!(seen.header("x-api-key"), Some("fabricated-key"));
                 assert_eq!(body["tools"][0]["name"], "lookup");
                 assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
             }

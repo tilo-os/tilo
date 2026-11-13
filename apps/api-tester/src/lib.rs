@@ -1,17 +1,11 @@
-//! API Tester — a Postman/Insomnia-class HTTP client for Tilo.
-//!
-//! Build requests (method, URL, params, headers, auth, body), send them
-//! through `tilo_net`, and inspect the response: status, timing, size, headers,
-//! and a pretty or raw body with syntax-highlighted, collapsible JSON.
-//! Saved requests live in collections; `{{variable}}` placeholders resolve
-//! against the active environment. Collections, environments, the active
-//! request, and history are the [`Workspace`] record, so a workspace can be
-//! edited collaboratively; credentials stay on the device. [`ApiTesterShell`]
-//! runs it.
+//! API Tester: an HTTP client. Requests are built from the method, URL, params,
+//! headers, auth and body, sent through `tilo_net`, and their responses shown with
+//! status, timing and a highlighted body. Collections, environments, the active request
+//! and history are the [`Workspace`] record, so they collaborate; credentials stay on the
+//! device.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Panic-producing lints stay denied; shared crates keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -26,9 +20,7 @@ pub mod credentials;
 mod dialog;
 mod http;
 mod kv;
-mod legacy;
 pub mod locales;
-mod migration;
 mod model;
 mod palette;
 mod record;
@@ -42,7 +34,6 @@ mod vars;
 pub use app::ApiTesterApp;
 pub use resource::{ApiTesterShell, Workspace};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(ApiTesterShell)
 }

@@ -12,14 +12,10 @@ use ui::{
 #[derive(Clone)]
 pub(crate) struct Sending {
     client: Option<MessagingClient>,
-    /// The conversations with the workspace's people are Chat's: they are
-    /// written through Chat's published operations.
     direct: bool,
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
     generation: LocalState<u64>,
-    /// The person's own record of unsent words, and the conversation the live
-    /// text belongs to.
     drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
     open: LocalState<String>,
 }
@@ -41,12 +37,8 @@ impl Sending {
         }
     }
 
-    /// Seed the composer with the words the person left in `choice`'s
-    /// conversation, when it is not the one already open.
-    ///
-    /// A draft follows the conversation, not the window: switching to the same
-    /// person on another service starts an empty composer, and switching back
-    /// finds what was typed there.
+    /// Seed the composer with the words the person left in `choice`'s conversation, when it
+    /// is not the one already open.
     pub(crate) fn open_draft(&self, choice: &Choice) {
         let key = crate::drafts::key(choice);
         if self.open.get() == key {
@@ -85,8 +77,8 @@ impl Sending {
         });
     }
 
-    /// Drop the words typed for the conversation that is no longer there: a
-    /// route the directory forgot or re-reviewed takes its draft with it.
+    /// Drop the words typed for the conversation that is no longer there: a route the
+    /// directory forgot or re-reviewed takes its draft with it.
     pub(crate) fn forget_draft(&self) {
         let Some(record) = &self.drafts else {
             return;
@@ -103,9 +95,9 @@ impl Sending {
         });
     }
 
-    /// The draft `key`'s conversation holds, once it has been sent: removed
-    /// only while it is still exactly what was sent, so a word typed while the
-    /// send was in flight is the next message rather than a lost one.
+    /// The draft `key`'s conversation holds, once it has been sent: removed only while it
+    /// is still exactly what was sent, so a word typed while the send was in flight is the
+    /// next message rather than a lost one.
     fn sent_draft(&self, key: &str, sent: &str) {
         let Some(record) = &self.drafts else {
             return;
@@ -148,8 +140,6 @@ impl Sending {
             .is_some_and(|client| client.supports(route))
     }
     pub(crate) fn account_state(&self, choice: &Choice) -> tilo_messaging::AccountState {
-        // A Tilo conversation needs no service account: the workspace holds
-        // it.
         if choice.service == "tilo" {
             return tilo_messaging::AccountState::Ready;
         }
@@ -251,8 +241,8 @@ impl Sending {
         }))
     }
 
-    /// Send `text` into the conversation with one of the workspace's people,
-    /// through Chat's operation for it: the same message Chat sends.
+    /// Send `text` into the conversation with one of the workspace's people, through Chat's
+    /// operation for it: the same message Chat sends.
     fn send_direct(
         &self,
         sources: &Sources,
@@ -270,8 +260,8 @@ impl Sending {
         let peer = selection.get().person;
         let call = crate::history::tilo_call(crate::history::SEND_DIRECT_MESSAGE, &peer)
             .with(serde_json::json!({ "public_key": peer, "text": text }));
-        // The words are the message: an attempt that is asked for twice is
-        // the same message, under the operation it was asked with.
+        // The words are the message: an attempt that is asked for twice is the same
+        // message, under the operation it was asked with.
         let answered = operation.to_owned();
         let sent_text = text.to_owned();
         let sent_route = route;
@@ -279,8 +269,6 @@ impl Sending {
         let sending = self.clone();
         Ok(cx.call(&call, move |(), sent, cx| {
             let _ = sent?;
-            // Read the conversation again: the message is in it now, and the
-            // composer empties only once it is.
             let opened = history.clone();
             let sending = sending.clone();
             let sent_text = sent_text.clone();

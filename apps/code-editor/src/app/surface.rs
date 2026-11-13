@@ -6,23 +6,18 @@ use std::path::PathBuf;
 
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
+use ui::widget::toast::ToastKind;
 
 use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId};
 use crate::actions;
 use crate::effects::CodeEditorEffect;
 use crate::project::Project;
 
-/// How many files, symbols and search hits the published tree carries; the
-/// rest resolve by id.
 pub(super) const ROW_LIMIT: usize = actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
 
-/// How long the terminal scenario lets the shell answer before the capture.
 const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 
 impl CodeApp {
-    /// Follow the project the view's document holds, with the host's
-    /// dispatcher, waker and preferences; a capture opens the sample project
-    /// its fixture wrote.
     pub(super) fn follow(&mut self, cx: &ui::framework::ViewCx<Project>) {
         self.set_highlight_waker(cx.waker());
         self.attach_framework(
@@ -39,8 +34,6 @@ impl CodeApp {
         }
     }
 
-    /// What the editor shares with the view: what it publishes, and what a
-    /// capture staged.
     pub(super) fn store(&self) -> super::view::Shared {
         std::rc::Rc::clone(&self.store)
     }
@@ -60,7 +53,6 @@ impl CodeApp {
         self.present_terminal(shown.terminal_panel.as_ref());
     }
 
-    /// Stage the scenarios a capture asked for since the editor last looked.
     pub(super) fn follow_store(&mut self) {
         let staged = std::mem::take(&mut self.store.borrow_mut().staged);
         for scenario in staged {
@@ -103,7 +95,7 @@ impl CodeApp {
             reveal @ CodeEditorEffect::Reveal { .. } => return self.answer_reveal(reveal, cx),
             CodeEditorEffect::OpenFile { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 if self.open_disk_file(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
@@ -111,7 +103,7 @@ impl CodeApp {
             }
             CodeEditorEffect::OpenFolder { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 if self.open_project_dir(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
@@ -163,8 +155,6 @@ impl CodeApp {
         Ok(Effected::done())
     }
 
-    /// Show the location a [`CodeEditorEffect::Reveal`] names. A path in a
-    /// folder the tree has not read is answered once it is read.
     fn answer_reveal(
         &mut self,
         effect: CodeEditorEffect,
@@ -204,7 +194,6 @@ impl CodeApp {
             let answer = target
                 .map(|target| reveal(app, target))
                 .ok_or_else(|| "Code location no longer exists".to_string());
-            // Answered by the effect itself when the reveal waited on nothing.
             if app.file_reply.is_some() {
                 app.finish_file_effect(answer);
             } else {
@@ -219,9 +208,8 @@ impl CodeApp {
         Ok(Effected::Pending)
     }
 
-    /// Flip one of the person's preferences and say what it is now.
     fn toggle_setting(
-        &mut self,
+        &self,
         field: fn(&mut crate::settings::CodeSettings) -> &mut bool,
         (on, off): (&'static str, &'static str),
     ) -> Result<(), String> {
@@ -236,12 +224,10 @@ impl CodeApp {
             })
             .map_err(|error| error.to_string())?;
         let now = *field(&mut settings.get());
-        self.note(if now { on } else { off }, false);
+        Self::note(if now { on } else { off }, ToastKind::Info);
         Ok(())
     }
 
-    /// Run one of the editor's commands. Those that need the document run on the
-    /// next sync; those that ask the user for a file answer once they did.
     fn answer_command(&mut self, command: Command, cx: &mut EffectCx<Project>) -> EffectAnswer {
         if command == Command::NextTheme {
             return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
@@ -261,7 +247,7 @@ impl CodeApp {
                         self.request_save_as(node);
                     }
                 }
-                self.notice = None;
+                ui::window_toolbar::notify(None);
                 self.file_reply = Some(cx.reply());
                 Ok(Effected::Pending)
             }
@@ -290,8 +276,6 @@ impl CodeApp {
             .ok_or_else(|| "Code file no longer exists".to_string())
     }
 
-    /// One file operation at a time: the picker and the conflict prompt are
-    /// one question each.
     fn ensure_no_file_effect(&self) -> Result<(), String> {
         if self.file_reply.is_some() || self.portal.is_some() {
             return Err("another file operation is already running".into());
@@ -299,7 +283,6 @@ impl CodeApp {
         Ok(())
     }
 
-    /// Write `node` to `target` (a new destination), or to its own file.
     pub(super) fn save_to(
         &mut self,
         doc: &AutoCommit,
@@ -323,7 +306,6 @@ impl CodeApp {
         self.save_buffer_then(doc, node, true, then);
     }
 
-    /// What the file effects can do right now.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = vec![EffectStatus::unavailable(
             CodeEditorEffect::NEXT_THEME,
@@ -343,8 +325,6 @@ impl CodeApp {
         if self.session.active_buffer().is_none() {
             const CODE: &str = "code_editor.no_file";
             const REASON: &str = "No file is open";
-            // What acts on the open file (its text, its lines, the caret's
-            // place) has nothing to act on.
             statuses.extend([
                 EffectStatus::unavailable(CodeEditorEffect::REVERT_FILE, CODE, REASON),
                 EffectStatus::unavailable(CodeEditorEffect::SAVE_AS, CODE, REASON),
@@ -362,9 +342,6 @@ impl CodeApp {
         statuses
     }
 
-    /// The row of the file at `node`, by its resource id: open it and read
-    /// it. What the open file adds (saving it) is the view's
-    /// ([`super::view::Shown`]).
     fn file_row(&self, node: TreeId) -> Option<(String, LiveRow)> {
         let item = self.session.project.get(node)?;
         if item.is_folder() {
@@ -392,9 +369,6 @@ impl CodeApp {
         Some((item.resource_id.clone(), row))
     }
 
-    /// Keep what the editor shows where the view publishes it: the project's
-    /// files, symbols and search hits once they were projected again, the
-    /// file on screen and what the effects can do every time.
     pub(super) fn publish_shown(&mut self) {
         let projected = std::mem::take(&mut self.shown_stale).then(|| {
             let files: Vec<(String, LiveRow)> = self
@@ -428,7 +402,6 @@ impl CodeApp {
         shown.statuses = statuses;
     }
 
-    /// Open the sample project a capture's fixture wrote, on its main file.
     #[cfg(feature = "samples")]
     pub(crate) fn open_sample(&mut self, root: &std::path::Path) {
         if matches!(self.open_project_dir(root), Some(Ok(()))) {
@@ -438,11 +411,9 @@ impl CodeApp {
                 self.open_node(node);
             }
         }
-        self.notice = None;
+        ui::window_toolbar::notify(None);
     }
 
-    /// Stage `scenario`: what it shows is set once the file it is about is
-    /// open and bound ([`Self::continue_staging`]).
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("terminal") {
             self.shots_open_terminal();
@@ -462,7 +433,6 @@ impl CodeApp {
         }
     }
 
-    /// Set the staged scenario's view state once the editor holds its file.
     pub(super) fn continue_staging(&mut self, doc: &AutoCommit) {
         let Some(Staging { scenario }) = self.staging.clone() else {
             return;
@@ -507,7 +477,6 @@ impl CodeApp {
     }
 }
 
-/// A declaration the symbol scan found, opening where it is declared.
 pub(super) fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
     LiveRow::new(
         actions::symbol_resource_id(symbol),
@@ -523,7 +492,6 @@ pub(super) fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
     })
 }
 
-/// One hit of the project search, revealed beside the results.
 pub(super) fn result_row(result: &actions::SearchResultRef) -> LiveRow {
     LiveRow::new(
         actions::result_resource_id(result),

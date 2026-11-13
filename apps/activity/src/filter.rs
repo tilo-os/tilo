@@ -1,38 +1,18 @@
-//! The app's record of the workspace: which changes History shows. It
-//! follows the person to every device and is shared with the workspace like
-//! any record, so an agent asked to "show me Ada's changes" sets it as the
-//! person would.
-//!
-//! The history itself is the workspace's, read through the session
-//! ([`ui::tilo_actions::remote::workspace_activity`]); this record holds no
-//! part of it.
+//! The app's record of the workspace: which changes History shows.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 
-/// Which changes History shows. Each part is picked whole from a list, so
-/// each is written whole.
+/// Which changes History shows.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Filter {
     /// Period
-    ///
-    /// Only changes from this period: `today`, `week` or `month`; empty for
-    /// all time.
     pub period: String,
     /// Person
-    ///
-    /// Only this person's changes, by the name History shows; empty for
-    /// everyone.
     pub author: String,
     /// Browse by
-    ///
-    /// Only the changes under this lens (an app, a resource, a work group,
-    /// agent tasks), by its key; empty for everything.
     pub lens: String,
     /// Search
-    ///
-    /// Only the changes whose words, person, app or outcome contain this
-    /// text, as the window bar's search writes it; empty for everything.
     pub query: String,
 }
 
@@ -53,14 +33,13 @@ impl Filter {
         self != &Self::default()
     }
 
-    /// Whether the window bar's search is on: the feed keeps reading past
-    /// one page while it is.
+    /// Whether the window bar's search is on: the feed keeps reading past one page while it
+    /// is.
     pub fn searching(&self) -> bool {
         !self.query.trim().is_empty()
     }
 
-    /// Whether `haystack`'s words contain the search's query, ignoring
-    /// case.
+    /// Whether `haystack`'s words contain the search's query, ignoring case.
     pub fn matches(&self, haystacks: &[&str]) -> bool {
         let query = self.query.trim().to_lowercase();
         if query.is_empty() {
@@ -83,13 +62,8 @@ pub fn period(key: &str) -> wire::Period {
 }
 
 impl Filter {
-    /// What the record holds: which changes History shows — the agent, the workspace and the
-    /// span of time, each picked whole from a list.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: which changes History shows — the agent, the workspace and
+    /// the span of time, each picked whole from a list.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,

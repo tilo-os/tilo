@@ -1,5 +1,5 @@
-//! The feedback and display components: their parts read from their slots, and what a person
-//! does to them is reported as their events.
+//! The feedback and display components: their parts read from their slots, and what a person does to
+//! them is reported as their events.
 
 #![allow(
     clippy::unwrap_used,
@@ -42,7 +42,6 @@ fn a_stat_group_holds_only_stat_tiles() {
         "tiles",
         Node::new("Badge", "new", &queue).prop("count", Value::Int(3)),
     );
-    // The host reads a slot's children by the component the slot accepts.
     assert_eq!(
         <Vec<crate::widget::StatTileProps> as SlotType>::accepts(),
         Accepts::Component("StatTile".into())

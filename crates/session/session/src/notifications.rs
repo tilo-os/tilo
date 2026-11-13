@@ -733,12 +733,13 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
 
-    /// The notification centre as the session publishes it: how many it keeps. The list itself is
-    /// the shell's centre, which reads the desk's own log; what the panel needs is the count that
-    /// opens it.
+    /// The notification centre as the session publishes it: how many the person has not read, which
+    /// is what the bar's bell counts and the row that opens the centre shows. The list itself is the
+    /// shell's centre, which reads the desk's own log; what the panel needs is the count that opens
+    /// it.
     pub(crate) fn centre(&self) -> NotificationCentre {
         NotificationCentre {
-            count: self.desktop.log().history().len(),
+            count: self.desktop.unread(),
             quiet: self.quiet_status(),
         }
     }

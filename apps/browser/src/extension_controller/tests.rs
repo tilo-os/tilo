@@ -70,7 +70,6 @@ fn a_popup_is_as_big_as_its_page_and_closes_when_its_page_closes_it() {
     });
     assert!(controller.sync(&window, ""));
     assert_eq!(shown(&controller), Some((380.0, 430.0)));
-    // Never past Chrome's largest popup.
     page.push_event(ui::webview::WebViewEvent::DocumentSize {
         width: 2000.0,
         height: 2000.0,
@@ -78,10 +77,8 @@ fn a_popup_is_as_big_as_its_page_and_closes_when_its_page_closes_it() {
     });
     controller.sync(&window, "");
     assert_eq!(shown(&controller), Some(POPUP_MAX));
-    // The panel is as wide as its page, within the window's room.
     assert_eq!(controller.page_width(1200.0), Some(POPUP_MAX.0));
     assert_eq!(controller.page_width(500.0), Some(500.0));
-    // Its page called window.close(): the panel goes.
     page.push_event(ui::webview::WebViewEvent::TabClosed);
     assert!(controller.sync(&window, ""));
     assert!(controller.panel.is_none());
@@ -137,7 +134,6 @@ fn an_extensions_button_menu_shows_its_items_and_a_choice_reaches_it() {
     assert!(controller.on_engine_event(told.clone(), &shared));
     assert!(!controller.on_engine_event(told, &shared), "nothing new");
 
-    // The Extensions menu: its own rows, then the extension's.
     let mut menu = controller.extensions_menu(&controller.model());
     let rows = menu.menu_mut().items().to_vec();
     assert_eq!(rows.len(), 3, "{rows:?}");
@@ -186,7 +182,6 @@ fn an_extensions_button_menu_shows_its_items_and_a_choice_reaches_it() {
         Some(format!(r#"ChooseMenuItem("{id}", "1")"#).as_str())
     );
 
-    // Taken away: the menu row goes.
     assert!(controller.on_engine_event(
         WebViewEvent::ExtensionMenu {
             id,
@@ -228,7 +223,6 @@ fn a_buttons_keyboard_shortcut_acts_as_a_click_on_it() {
     ];
     let pressed = |id: &str| WebViewEvent::ExtensionExecuteAction { id: id.into() };
 
-    // Without a popup, the extension hears of a click.
     assert!(controller.on_engine_event(pressed(&clicker), &shared));
     assert!(window.commands().contains(&WebViewCommand::ExtensionClick {
         id: clicker.clone()
@@ -249,7 +243,6 @@ fn a_buttons_keyboard_shortcut_acts_as_a_click_on_it() {
     controller.on_engine_event(pressed(&opener), &shared);
     assert!(controller.panel.is_none());
 
-    // One turned off has no button to act as.
     controller.installed[0].enabled = false;
     let clicks = || {
         window
@@ -290,7 +283,6 @@ fn the_toolbar_shows_what_an_extension_set_for_this_page() {
             .count()
     };
 
-    // An ad blocker's count for this page, and no popup on it.
     let page = Change {
         badge: Some(Some("12".into())),
         popup: Some(Some(String::new())),
@@ -307,7 +299,6 @@ fn the_toolbar_shows_what_an_extension_set_for_this_page() {
     assert_eq!(clicks(&window), 1, "a click goes to the extension");
     assert!(window.created_tabs().is_empty());
 
-    // Turned off on this page: a click does nothing.
     controller.on_engine_event(
         event(
             false,
@@ -322,7 +313,6 @@ fn the_toolbar_shows_what_an_extension_set_for_this_page() {
     controller.open_action(&id, &shared);
     assert_eq!(clicks(&window), 1);
 
-    // Its icon for every tab outlasts the page; the page's values do not.
     controller.on_engine_event(
         event(
             true,
@@ -364,7 +354,6 @@ fn the_toolbar_shows_what_an_extension_set_for_this_page() {
     assert!(commands.contains(&WebViewCommand::ExtensionPanel { action: None }));
     assert!(commands.contains(&WebViewCommand::Navigate(popup.clone())));
 
-    // One turned off asks for nothing.
     controller.panel = None;
     controller.installed[0].enabled = false;
     assert!(!controller.on_engine_event(
@@ -459,8 +448,6 @@ fn a_popup_is_no_tab_and_finds_the_page_it_opened_over() {
     );
 }
 
-/// Invoke the action `action` of `resource` as a caller of the door
-/// does: its bound payload, decoded as the window decodes it.
 fn invoke(
     controller: &mut ExtensionController,
     resource: &ResourceSpec,
@@ -472,8 +459,6 @@ fn invoke(
     })
 }
 
-/// The operation the action `action` of `resource` decodes to, as a
-/// caller of the door sends it, handed to `run`.
 fn invoke_operation(
     resource: &ResourceSpec,
     action: &str,
@@ -528,7 +513,6 @@ fn a_script_or_an_agent_manages_extensions_as_the_library_does() {
             .map(|spec| spec.id.clone())
             .collect::<Vec<_>>()
     };
-    // On: what its Library row offers.
     assert_eq!(
         actions(&controller),
         [
@@ -561,7 +545,6 @@ fn a_script_or_an_agent_manages_extensions_as_the_library_does() {
         ]
     );
 
-    // Off: it can be turned on, and has no settings or button meanwhile.
     controller.installed = vec![Installed {
         enabled: false,
         ..on
@@ -594,8 +577,6 @@ fn a_script_or_an_agent_manages_extensions_as_the_library_does() {
     );
 }
 
-/// Adding from the Web Store is the extensions' action on a store item
-/// not added yet; it shows the offer the person adds it from.
 #[test]
 fn adding_from_the_store_is_an_action_on_a_store_item_only() {
     let available = |controller: &ExtensionController| {
@@ -653,8 +634,6 @@ fn adding_from_the_store_is_an_action_on_a_store_item_only() {
     );
 }
 
-/// A failed add or change says what happened and what to do; the raw
-/// file, archive or network error is for the log only.
 #[test]
 fn a_failure_says_what_happened_and_what_to_do() {
     let folder = tempfile::tempdir().unwrap();
@@ -732,11 +711,9 @@ fn a_removed_extensions_page_and_update_notice_go_with_it() {
         enabled: false,
         ..installed("abc", None, toolbar::Access::default())
     };
-    // Still there, but off: its page closes, its update still waits.
     controller.apply_profile(profile(vec![off]));
     assert!(controller.panel.is_none());
     assert_eq!(controller.awaiting, ["abc"]);
-    // Removed: nothing is left waiting for it.
     controller.apply_profile(profile(Vec::new()));
     assert!(controller.awaiting.is_empty());
 }
@@ -842,14 +819,12 @@ fn turning_an_extension_off_keeps_it_installed_and_its_data() {
         keyword: None,
     };
     let mut switched = HashMap::new();
-    // At start each is put in the state the person chose, once.
     let installed = [extension("blocker", true), extension("sleeper", false)];
     assert_eq!(
         switches_for(&installed, &mut switched),
         [("blocker".to_owned(), true), ("sleeper".to_owned(), false)]
     );
     assert!(switches_for(&installed, &mut switched).is_empty());
-    // Turned off: switched off, never uninstalled.
     let installed = [extension("blocker", false), extension("sleeper", false)];
     assert_eq!(
         switches_for(&installed, &mut switched),
@@ -862,7 +837,6 @@ fn turning_an_extension_off_keeps_it_installed_and_its_data() {
         ),
         "chrome-extension://mgr/manage.html?on=a&off=b,c"
     );
-    // The host is asked to uninstall nothing for it.
     let mut controller = ExtensionController::new(true);
     controller.host.reconcile(&[], &[], ui::time::now());
     assert!(

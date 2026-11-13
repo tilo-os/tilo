@@ -1,27 +1,4 @@
 //! Where a package store keeps things, and where the stores are.
-//!
-//! ```text
-//! <root>/
-//!   registry.toml              # the installed packages (one row per app id)
-//!   pkgs/<package-id>/         # materialised payload tree, read-only files
-//!   pkgs/<package-id>.pkg/     # signed-root, manifest.toml, collection.qcl
-//!   content/                   # the content store holding payload blobs
-//!   bin/                       # PATH shims for CLI packages
-//!   tmp/                       # staging for in-flight installs
-//!   leases/<package-id>        # held shared by each launch of that tree
-//!   .lock                      # serialises writers across processes
-//! ```
-//!
-//! A payload tree is named by its package id, so two versions of one app
-//! never share a directory and an upgrade swaps a registry row rather than a
-//! directory's contents. Its files are materialised from the content store
-//! by reflink where the filesystem allows, so the tree and the store share
-//! extents instead of holding two copies.
-//!
-//! The per-user store lives at `$XDG_DATA_HOME/tilo-apps`. The image ships a
-//! read-only store at `/usr/share/tilo-apps` in the same format (payloads may
-//! live under `/usr/lib/tilo-apps`); a user install of the same app id
-//! shadows it.
 
 use std::path::{Path, PathBuf};
 
@@ -37,7 +14,6 @@ pub const TMP_DIR: &str = "tmp";
 pub const LOCK_FILE: &str = ".lock";
 pub const LEASES_DIR: &str = "leases";
 
-/// File names inside a package's metadata directory.
 pub const SIGNED_ROOT_FILE: &str = "signed-root";
 pub const MANIFEST_FILE: &str = "manifest.toml";
 pub const COLLECTION_FILE: &str = "collection.qcl";
@@ -47,10 +23,8 @@ const META_SUFFIX: &str = ".pkg";
 /// The image-wide store. Read-only at runtime: populated during the image
 /// build so a first boot already has applications.
 pub const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
-/// Where a host package (RPM) puts system payload trees.
 pub const SYSTEM_PAYLOAD_DIR: &str = "/usr/lib/tilo-apps";
 
-/// Names the system store instead of [`SYSTEM_DATA_DIR`].
 pub const SYSTEM_DIR_ENV: &str = "TILO_APPS_SYSTEM_DIR";
 /// Names the system payload root instead of [`SYSTEM_PAYLOAD_DIR`].
 pub const SYSTEM_PAYLOAD_DIR_ENV: &str = "TILO_APPS_SYSTEM_PAYLOAD_DIR";
@@ -78,18 +52,15 @@ impl Layout {
         self.root.join(PACKAGES_DIR)
     }
 
-    /// The materialised payload tree of `id`.
     pub fn payload(&self, id: PackageId) -> PathBuf {
         self.packages().join(id.to_hex())
     }
 
-    /// The signed metadata of `id`: root, manifest and collection.
     pub fn meta_dir(&self, id: PackageId) -> PathBuf {
         self.packages()
             .join(format!("{}{META_SUFFIX}", id.to_hex()))
     }
 
-    /// The manifest the launcher reads for `id`.
     pub fn manifest(&self, id: PackageId) -> PathBuf {
         self.meta_dir(id).join(MANIFEST_FILE)
     }
@@ -110,7 +81,6 @@ impl Layout {
         self.root.join(LOCK_FILE)
     }
 
-    /// The launch lease of `id`'s payload tree; see `crate::lease`.
     pub fn lease(&self, id: PackageId) -> PathBuf {
         self.root.join(LEASES_DIR).join(id.to_hex())
     }
@@ -161,8 +131,6 @@ pub fn system_data_dir() -> Option<PathBuf> {
     )
 }
 
-/// [`system_data_dir`] as a function of the system-store override the
-/// build's gate let through and whether the user store was overridden.
 fn system_data_dir_from(
     allowed_system_override: Option<std::ffi::OsString>,
     user_store_overridden: bool,
@@ -191,7 +159,6 @@ mod tests {
 
     #[test]
     fn system_store_overrides_are_gated() {
-        // phase: a_release_build_ignores_the_system_store_overrides
         {
             for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
                 assert_eq!(
@@ -217,7 +184,6 @@ mod tests {
                 Some(PathBuf::from("/dev/store"))
             );
         }
-        // phase: tilo_apps_data_dir_alone_suppresses_the_system_store
         {
             // The isolation rule the shell's fixture tests depend on: setting only
             // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a

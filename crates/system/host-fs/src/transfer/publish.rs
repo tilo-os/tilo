@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use super::{Failure, TransferObserver};
 
-/// The most numbered names one folder is asked for before a transfer gives up.
 pub(crate) const MAX_NUMBER: u32 = 10_000;
 
 /// A received item's name and the numbered names it may take instead, so a
@@ -49,7 +48,6 @@ impl Names {
     }
 }
 
-/// Whether something already holds the directory entry `path`.
 pub(crate) fn occupied(path: &Path) -> Result<bool, Failure> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -102,7 +100,6 @@ pub(crate) fn publish(staged: &Path, target: &Path) -> io::Result<()> {
     crate::rename_noreplace(staged, target)
 }
 
-/// Publish the copy at `staged` under `names`' first free name in `dest_dir`.
 pub(crate) fn publish_numbered(
     staged: &Path,
     dest_dir: &Path,

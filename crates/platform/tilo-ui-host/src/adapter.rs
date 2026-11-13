@@ -1,20 +1,17 @@
-//! The one host adapter: a view's node of a described component (`ui.ListRow`) as the
-//! toolkit's widget.
-//!
-//! The adapter knows no widget. It reads each node through the component's description:
-//!
-//! - a **prop** is the node's prop of that name, converted to the description's type (a date
-//!   reads the person's way, a participant by what the workspace calls them);
-//! - an **event** the view gave the node is an intent queued for the window, which fires the
-//!   action reference the view attached through the door, or applies its view-state update; a
-//!   component that presents a resource opens it when activated, unless the view says otherwise;
-//! - a **binding** goes through the model-binding path: the reconciler keeps the value in step
-//!   with what it is bound to, and each edit is reported for the runtime to merge (text is
-//!   spliced, never written over);
-//! - a **slot**'s content is the node's children: a named slot's are those of its `slot` child,
-//!   the default slot's are the node's own. A slot that accepts a component reads that
-//!   component's props; one that accepts views holds each child built, in a [`Pane`] the
-//!   reconciler reaches again.
+//! The one host adapter: a view's node of a described component (`ui.ListRow`) as the toolkit's
+//! widget. The adapter knows no widget. It reads each node through the component's description:
+//! - a **prop** is the node's prop of that name, converted to the description's type (a date reads
+//!   the person's way, a participant by what the workspace calls them);
+//! - an **event** the view gave the node is an intent queued for the window, which fires the action
+//!   reference the view attached through the door, or applies its view-state update; a component
+//!   that presents a resource opens it when activated, unless the view says otherwise;
+//! - a **binding** goes through the model-binding path: the reconciler keeps the value in step with
+//!   what it is bound to, and each edit is reported for the runtime to merge (text is spliced,
+//!   never written over);
+//! - a **slot**'s content is the node's children: a named slot's are those of its `slot` child, the
+//!   default slot's are the node's own. A slot that accepts a component reads that component's
+//!   props; one that accepts views holds each child built, in a [`Pane`] the reconciler reaches
+//!   again.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,80 +32,68 @@ use crate::reconcile::{Reconciler, UiEvent, presence_path};
 /// What a node of a described component is called: `ui.` and the component's name.
 pub const KIND_PREFIX: &str = "ui.";
 
-/// The kind of a `slot` node: the content of a component's named slot.
 pub const SLOT: &str = "slot";
 
-/// The toolkit's components, as it describes them.
 #[must_use]
 pub fn catalogue() -> &'static Catalogue {
     static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
     CATALOGUE.get_or_init(ui::component::catalogue)
 }
 
-/// The component a node kind names (`ui.ListRow`: `ListRow`).
 #[must_use]
 pub fn component_name(kind: &str) -> Option<&str> {
     kind.strip_prefix(KIND_PREFIX)
 }
 
-/// The kind of the component `name`'s nodes.
 #[must_use]
 pub fn kind(name: &str) -> String {
     format!("{KIND_PREFIX}{name}")
 }
 
-/// The description of the component a node is of.
 #[must_use]
 pub fn description_of(node: &UiNode) -> Option<&'static Description> {
     catalogue().get(component_name(&node.kind)?)
 }
 
-/// Where the rows of a virtual list come from: the host renders them as the list shows them.
-/// Given the list node's key, its rows; `None` when the host renders no rows for it.
+/// Where the rows of a virtual list come from: the host renders them as the list shows them. Given
+/// the list node's key, its rows; `None` when the host renders no rows for it.
 pub type RowsOf = Rc<dyn Fn(&str) -> Option<ui::component::SharedRows>>;
 
 /// What a built component's events do, kept by its key until its node is built again.
 struct Built {
     component: String,
-    /// The events its view gave it.
     events: Vec<String>,
     /// The resource it presents, which it opens when activated without an event of its own.
     presents: Option<ResourceRef>,
-    /// How an edit through its binding merges, when it has one.
     merge: Option<Merge>,
 }
 
-/// The events the components of one view report, and what each component's events do. Clones
-/// share both.
+/// The events the components of one view report, and what each component's events do. Clones share
+/// both.
 #[derive(Clone, Default)]
 pub struct Adapter {
     fired: ui::Intents<Fired>,
     built: Rc<RefCell<HashMap<String, Built>>>,
     /// The resources components were given, by id: what an event that carries one reports.
     resources: Rc<RefCell<HashMap<String, ResourceRef>>>,
-    /// The actions the app publishes at the window, as the window offers them, and the bindings
-    /// the controls reading them were made with.
+    /// The actions the app publishes at the window, as the window offers them, and the bindings the
+    /// controls reading them were made with.
     published: Rc<RefCell<Published>>,
 }
 
-/// The actions the app publishes at the window, as its controls bind to them: each resource by
-/// the id a control names it with, and the binding of each action a control's event runs, kept
-/// so a frame that reads a control it already bound builds nothing.
 #[derive(Default)]
 pub struct Published {
-    /// The resources, as the window offered them: each holds the resources published under it.
     resources: Vec<tilo_actions::ResourceSpec>,
     /// Where each resource stands, by the id a control names it with (the last segment of its
     /// published id): the way to it from the window's first resource, by index.
     stands: HashMap<String, Vec<usize>>,
-    /// The binding of the action a control's event runs, by the resource a control names and
-    /// the action on it; `None` where the published actions offer none that binds. Kept until
-    /// the window offers other actions.
+    /// The binding of the action a control's event runs, by the resource a control names and the
+    /// action on it; `None` where the published actions offer none that binds. Kept until the
+    /// window offers other actions.
     bindings: HashMap<String, HashMap<String, Option<tilo_actions::ActionBinding<()>>>>,
 }
 
 impl Published {
-    /// The actions `resources`, as the window offers them.
     #[must_use]
     fn new(resources: Vec<tilo_actions::ResourceSpec>) -> Self {
         let mut stands = HashMap::new();
@@ -120,8 +105,6 @@ impl Published {
         }
     }
 
-    /// Whether these are the actions `resources`, resource for resource and action for action:
-    /// a control bound to one of them is bound to the same one.
     fn same(&self, resources: &[tilo_actions::ResourceSpec]) -> bool {
         fn same(a: &[tilo_actions::ResourceSpec], b: &[tilo_actions::ResourceSpec]) -> bool {
             a.len() == b.len()
@@ -135,9 +118,9 @@ impl Published {
         same(&self.resources, resources)
     }
 
-    /// The resource a control names with `resource` — the last segment of its published id, as
-    /// an item is published under the record that holds it — the first one published. `None`
-    /// when the window publishes no such resource.
+    /// The resource a control names with `resource` — the last segment of its published id, as an
+    /// item is published under the record that holds it — the first one published. `None` when the
+    /// window publishes no such resource.
     fn holding(&self, resource: &str) -> Option<&tilo_actions::ResourceSpec> {
         let (first, below) = self.stands.get(resource)?.split_first()?;
         below
@@ -147,12 +130,11 @@ impl Published {
             })
     }
 
-    /// The binding of the action (`resource`, `action`) a control's event runs: the action the
-    /// window publishes for the resource a control names, when it takes no arguments. Built
-    /// once and kept, so a frame that reads the control again builds nothing.
+    /// The binding of the action (`resource`, `action`) a control's event runs, built once and
+    /// kept.
     fn binding(&mut self, resource: &str, action: &str) -> Option<tilo_actions::ActionBinding<()>> {
-        // What the control runs, as it was bound when it read these actions: a row read again
-        // reads it, and nothing is searched or validated for it.
+        // The control runs what it was bound to when it read these actions: nothing is searched or
+        // validated for it.
         if let Some(bound) = self
             .bindings
             .get(resource)
@@ -172,17 +154,21 @@ impl Published {
         bound
     }
 
-    /// Whether the window publishes (`resource`, `action`) as a binding: what a control's event
-    /// running it takes the action's path, not the view's.
     pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
         self.holding(resource)
             .is_some_and(|held| tilo_actions::ActionBinding::unit_for(held, action).is_ok())
     }
+
+    /// The kind of record `resource` is, as it publishes it (`so.tilo.lang.notes.Notebook`): what
+    /// an identity names instead of the one record, which is the window's business.
+    fn kind(&self, resource: &str) -> Option<&str> {
+        Some(self.holding(resource)?.kind.as_str())
+    }
 }
 
 /// Note where each resource of `resources` stands at `path`, and where those it holds under it
-/// stand: the first resource of an id is the one a control naming that id finds, as the first
-/// match depth first was before the actions were indexed.
+/// stand: the first resource of an id is the one a control naming that id finds, as the first match
+/// depth first was before the actions were indexed.
 fn stand(
     resources: &[tilo_actions::ResourceSpec],
     path: &mut Vec<usize>,
@@ -199,12 +185,12 @@ fn stand(
 }
 
 impl Adapter {
-    /// Offer the actions the app publishes (`resources`): an event that runs one of them is
-    /// bound to the action itself, so pressing the control and anyone else running the action
-    /// take one path, and what the window publishes names the control that is bound to it.
-    /// Answers the actions offered before, when these are not the same ones: the controls bound
-    /// while they were stand may bind differently now. Nothing is offered again while the app
-    /// publishes the same actions, so the bindings its controls were made with stand.
+    /// Offer the actions the app publishes (`resources`): an event that runs one of them is bound
+    /// to the action itself, so pressing the control and anyone else running the action take one
+    /// path, and what the window publishes names the control bound to it. Answers the actions
+    /// offered before, when these are not the same ones: the controls bound while they were still
+    /// offered may bind differently now. Nothing is offered again while the app publishes the same
+    /// actions, so the bindings its controls were made with stand.
     pub fn published(&self, resources: Vec<tilo_actions::ResourceSpec>) -> Option<Published> {
         let mut held = self.published.borrow_mut();
         if held.same(&resources) {
@@ -213,19 +199,36 @@ impl Adapter {
         Some(std::mem::replace(&mut *held, Published::new(resources)))
     }
 
-    /// The binding of the action (`resource`, `action`) a control's event runs, as the actions
-    /// the window publishes offer it, or the binding it built when the control last read them.
     fn bind(&self, resource: &str, action: &str) -> Option<tilo_actions::ActionBinding<()>> {
         self.published.borrow_mut().binding(resource, action)
     }
 
-    /// Whether a control whose event runs (`resource`, `action`) is bound to the action the
-    /// window publishes now.
     pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
         self.published.borrow().holds(resource, action)
     }
 
-    /// What the components reported since the last call, as what the window applies.
+    /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
+    /// acts on and the operation, named as the app publishes it at its door. A control that runs an
+    /// app action does that action; one that edits a record's field edits that field. Where the
+    /// composition moves the control and what the person's language renames it by do not change
+    /// either.
+    pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
+        // One event per control runs what the person presses it for. A node whose events run
+        // several actions is none of them in particular, so the first the ordered map holds answers
+        // for it, the same one every frame.
+        if let Some(invoked) = node
+            .events
+            .values()
+            .find_map(|event| event.invokes.as_ref())
+        {
+            let kind = self.published.borrow().kind(&invoked.resource)?.to_owned();
+            return Some(tilo_actions::ActionAddress::new(kind, &invoked.declared).encode());
+        }
+        let (_, field) = node.binding.as_ref()?.field()?;
+        let kind = node.binding.as_ref()?.kind.as_deref()?;
+        Some(tilo_actions::ActionAddress::new(kind, field).encode())
+    }
+
     #[must_use]
     pub fn take_events(&self) -> Vec<UiEvent> {
         let built = self.built.borrow();
@@ -239,8 +242,8 @@ impl Adapter {
                     return match fired.value {
                         Some(Prop::Text(text)) => Some(UiEvent::Edit(fired.key, text)),
                         Some(Prop::Bool(checked)) => Some(UiEvent::Toggle(fired.key, checked)),
-                        // A number's edit goes as its text: the runtime reads it back as the
-                        // number the bound field holds (a number, a date's ISO text).
+                        // A number's edit goes as its text: the runtime reads it back as the number
+                        // the bound field holds (a number, a date's ISO text).
                         Some(Prop::Int(number)) => {
                             Some(UiEvent::Edit(fired.key, number.to_string()))
                         }
@@ -271,9 +274,9 @@ impl Adapter {
             .collect()
     }
 
-    /// What an event carries, as the runtime's value, in the parts the component describes: a
-    /// move names the row that moved and the row it lands at, and the one a parameter of an
-    /// option takes is handed over as an option — none where the part holds no row.
+    /// What an event carries, as the runtime's value, in the parts the component describes: a move
+    /// names the row that moved and the row it lands at, and the one a parameter of an option takes
+    /// is handed over as an option — none where the part holds no row.
     fn event_value(&self, value: &Prop, event: &ui::component::EventDescription) -> Option<Value> {
         match (value, &event.value, &event.at) {
             (Prop::List(parts), Some(first), Some(at)) => {
@@ -289,8 +292,8 @@ impl Adapter {
         }
     }
 
-    /// `part` as the type `ty` describes it: an option takes the part as one, and a list takes
-    /// its items as the type the list describes.
+    /// `part` as the type `ty` describes it: an option takes the part as one, and a list takes its
+    /// items as the type the list describes.
     fn as_typed(&self, part: &Prop, ty: &Type) -> Option<Value> {
         match (part, ty) {
             (Prop::None, Type::Option(_)) => Some(Value::Opt(None)),
@@ -314,7 +317,19 @@ impl Adapter {
             Prop::Int(number) => Value::Int(*number),
             Prop::Float(number) => Value::Float(*number),
             Prop::Bool(flag) => Value::Bool(*flag),
-            Prop::Resource(id) => Value::Ref(self.resources.borrow().get(id)?.clone()),
+            // A resource the view gave as a prop comes back whole; one no prop named — what a
+            // drag carried from another view, or a drop target takes from any runtime — comes
+            // back by the address the component fired, which is all the toolkit knows of it.
+            // Its type is read where the drop lands, from the record or the reading that holds
+            // it, so the value is never lost at this boundary.
+            Prop::Resource(id) => {
+                Value::Ref(self.resources.borrow().get(id).cloned().unwrap_or_else(|| {
+                    ResourceRef {
+                        id: id.clone(),
+                        ty: String::new(),
+                    }
+                }))
+            }
             Prop::Principal { identity, name } => Value::Principal(crate::Principal {
                 id: identity.clone(),
                 name: name.clone(),
@@ -338,7 +353,6 @@ impl Adapter {
         })
     }
 
-    /// Keep the resource `target` a component was given, by its id.
     fn given(&self, target: &ResourceRef) {
         self.resources
             .borrow_mut()
@@ -346,7 +360,6 @@ impl Adapter {
             .or_insert_with(|| target.clone());
     }
 
-    /// Keep what the events of `node`, about to be built, do.
     fn remember(&self, node: &UiNode, description: &Description) {
         self.built.borrow_mut().insert(
             node.key.clone(),
@@ -367,8 +380,8 @@ impl Adapter {
     }
 }
 
-/// The binding of `node`'s component an edit it reports is for: the one its `bind` prop names,
-/// or the only one it has.
+/// The binding of `node`'s component an edit it reports is for: the one its `bind` prop names, or
+/// the only one it has.
 fn bound<'a>(
     node: &UiNode,
     description: &'a Description,
@@ -380,9 +393,9 @@ fn bound<'a>(
     }
 }
 
-/// The resource `node` presents, when its component presents one and the view leaves opening
-/// it to the host: a view that draws the open item itself (a tree beside its page) says the row
-/// opens nothing (`navigates: false`), and answers the activation with its own event.
+/// The resource `node` presents, when its component presents one and the view leaves opening it to
+/// the host: a view that draws the open item itself (a tree beside its page) says the row opens
+/// nothing (`navigates: false`), and answers the activation with its own event.
 fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     if description.prop("navigates").is_some()
         && matches!(
@@ -399,9 +412,8 @@ fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     }
 }
 
-/// The nodes in the slot `slot` of `node`, a view call's or a loop row's fragment seen through:
-/// the components a slot that takes components holds, wherever the view's calls and loops put
-/// them.
+/// The nodes in the slot `slot` of `node`, a view call's or a loop row's fragment seen through: the
+/// components a slot that takes components holds, wherever the view's calls and loops put them.
 #[must_use]
 pub fn slot_parts<'a>(node: &'a UiNode, description: &Description, slot: &str) -> Vec<&'a UiNode> {
     fn through<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
@@ -436,24 +448,22 @@ pub fn slot_nodes<'a>(node: &'a UiNode, description: &Description, slot: &str) -
         .collect()
 }
 
-/// A node of a described component, as the toolkit reads an instance.
 pub struct NodeSource<'a> {
     node: &'a UiNode,
     description: &'static Description,
     reconciler: &'a mut Reconciler,
-    /// Whether the views in its slots are built: not when its props are read to take them in
-    /// place, where the reconciler reaches the views it has.
+    /// Whether the views in its slots are built: not when its props are read to take them in place,
+    /// where the reconciler reaches the views it has.
     build_views: bool,
     /// Whether what it reads is remembered as built ([`Adapter::remember`]): not when only its
     /// props are read, for what a list knows of a row it holds.
     remembers: bool,
-    /// The words of the heading over the rows it reads, where one heads them: a row's day fact
-    /// that says the same day as the heading is the heading's to say.
+    /// The words of the heading over the rows it reads, where one heads them: a row's day fact that
+    /// says the same day as the heading is the heading's to say.
     under: Option<String>,
 }
 
 impl<'a> NodeSource<'a> {
-    /// `node`, to build its widget.
     pub fn new(
         node: &'a UiNode,
         description: &'static Description,
@@ -470,8 +480,8 @@ impl<'a> NodeSource<'a> {
         }
     }
 
-    /// `node`, standing under `under` as [`Self::under_heading`], its props and what its slots
-    /// hold read alone: nothing built, nothing remembered.
+    /// `node`, as [`Self::under_heading`], its props and what its slots hold read alone: nothing
+    /// built, nothing remembered.
     pub fn props_of(
         node: &'a UiNode,
         description: &'static Description,
@@ -488,8 +498,8 @@ impl<'a> NodeSource<'a> {
         }
     }
 
-    /// `node`, to build its widget, standing under `under`: the words of the heading over the
-    /// rows it holds.
+    /// `node`, to build its widget, standing under `under`: the words of the heading over the rows
+    /// it holds.
     pub fn under_heading(
         node: &'a UiNode,
         description: &'static Description,
@@ -502,7 +512,6 @@ impl<'a> NodeSource<'a> {
         }
     }
 
-    /// `node`, to read its props into a widget built before.
     pub fn in_place(
         node: &'a UiNode,
         description: &'static Description,
@@ -516,8 +525,8 @@ impl<'a> NodeSource<'a> {
 
     fn value(&self, name: &str, ty: &Type) -> Option<Prop> {
         // The tone of a date fact is the presenter's, not the view's: a component that declares
-        // `<prop>_tone` reads it off the date `<prop>` holds, so a day gone by is overdue in
-        // every list, card and chip alike.
+        // `<prop>_tone` reads it off the date `<prop>` holds, so a day gone by is overdue in every
+        // list, card and chip alike.
         if let (Type::Choice { name: choice, .. }, Some(base)) = (ty, name.strip_suffix("_tone"))
             && choice == "Tone"
             && !self.node.props.contains_key(name)
@@ -547,8 +556,8 @@ impl<'a> NodeSource<'a> {
 }
 
 /// The value a view gave the control `node` as its `name` rather than bound it to
-/// (`ui.Slider(value: level)` over a device's reading): the control shows it, and what the
-/// person does with it goes to the event the view handles, never back into the value.
+/// (`ui.Slider(value: level)` over a device's reading): the control shows it, and what the person
+/// does with it goes to the event the view handles, never back into the value.
 fn shown_value(
     node: &UiNode,
     description: &Description,
@@ -590,7 +599,6 @@ fn shown_value(
     })
 }
 
-/// `value` as a value of the description's `ty`.
 fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
     Some(match (ty, value) {
         (Type::Option(_), Value::Opt(None)) => Prop::None,
@@ -619,8 +627,8 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         (Type::Picture, Value::Picture(picture)) => Prop::Picture(ui::component::Picture {
             src: picture.src.clone(),
         }),
-        // A moment reaches the component as the instant it is, never as text read the
-        // person's way: the component decides how to show it.
+        // A moment reaches the component as the instant it is, never as text read the person's way:
+        // the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
         (Type::Choice { .. }, Value::Text(case) | Value::Enum(case)) => Prop::Choice(case.clone()),
         (Type::Cases { name }, Value::Case { case, fields }) => {
@@ -660,23 +668,24 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
 }
 
 impl NodeSource<'_> {
-    /// The action the event `name` of the node runs, when it runs one the app published and
-    /// that action takes nothing: the control is bound to it, so it offers the action the way
-    /// every control offers one. An event that runs no action, an action the app has not
-    /// published yet, and an event that is not its control's own action
-    /// ([`ui::component::Event::press`], or one of the actions a control offers by a prop)
-    /// are the view's own.
+    /// The action the event `name` of the node runs, when it runs one the app published and that
+    /// action takes nothing: the control is bound to it, so it offers the action the way every
+    /// control offers one. An event that runs no action, an action the app has not published yet,
+    /// and an event that is not its control's own action ([`ui::component::Event::press`], or one
+    /// of the actions a control offers by a prop) are the view's own.
     fn published(&self, name: &str) -> Option<tilo_actions::ActionBinding<()>> {
         if !self.presses(name) {
             return None;
         }
-        let (resource, action) = self.node.events.get(name)?.invokes.as_ref()?;
-        self.reconciler.adapter().bind(resource, action)
+        let invoked = self.node.events.get(name)?.invokes.as_ref()?;
+        self.reconciler
+            .adapter()
+            .bind(&invoked.resource, &invoked.action)
     }
 
-    /// Whether the event `name` is a press of its control: the event the description declares
-    /// for it, or one of the actions the control offers by a prop (`add`, `actions`), whose
-    /// event runs the action it offers.
+    /// Whether the event `name` is a press of its control: the event the description declares for
+    /// it, or one of the actions the control offers by a prop (`add`, `actions`), whose event runs
+    /// the action it offers.
     fn presses(&self, name: &str) -> bool {
         if self
             .description
@@ -709,10 +718,9 @@ impl Source for NodeSource<'_> {
         let opens = (name == "activate" && presented(self.node, self.description).is_some())
             || name == ui::widget::OPEN_REFERENCE;
         if given || opens {
-            // An event that runs an action the app publishes runs it the one way every action
-            // runs: the control is bound to it, and the host that owns the tree hands the
-            // invocation to the app. A view event, and an action the app has not published,
-            // stays the view's own.
+            // An event that runs an action the app publishes runs it the one way every action runs:
+            // the control is bound to it, and the host that owns the tree hands the invocation to
+            // the app. A view event, and an action the app has not published, stays the view's own.
             if let Some(binding) = self.published(name) {
                 return Event::Action(binding);
             }
@@ -731,9 +739,9 @@ impl Source for NodeSource<'_> {
             if let Some(shown) = shown_value(self.node, self.description, self.reconciler, name) {
                 return Some(shown);
             }
-            // A text field the view gave no value is its own draft, keyed by where it stands:
-            // the entry at the end of a list keeps what is typed into it across the app's own
-            // changes, and commits it through its submit.
+            // A text field the view gave no value is its own draft, keyed by where it stands: the
+            // entry at the end of a list keeps what is typed into it across the app's own changes,
+            // and commits it through its submit.
             let ty = &self.description.binding(name)?.ty;
             if *ty != Type::Text || self.node.kind != kind("TextInput") {
                 return None;
@@ -763,8 +771,8 @@ impl Source for NodeSource<'_> {
         let path = presence_path(self.node);
         let key = self.node.key.clone();
         Some(match ty {
-            // A moment is held as its ISO text (or the day it names), a person as their
-            // identity, and a case as its name: what its widget shows, and what an edit carries.
+            // A moment is held as its ISO text (or the day it names), a person as their identity,
+            // and a case as its name: what its widget shows, and what an edit carries.
             Type::Text | Type::Time | Type::Principal | Type::Enum => BoundValue::Text(Bound {
                 state: self.reconciler.text_state(&key),
                 edits,
@@ -799,9 +807,9 @@ impl Source for NodeSource<'_> {
         })
     }
 
-    /// Each view built: a component as its widget (a header's button stays the button the
-    /// header lays out), anything else in a pane the reconciler reaches again, each carrying
-    /// the fit its node wrote so the component's slot sizes it as the view asked ([`Fitted`]).
+    /// Each view built: a component as its widget (a header's button stays the button the header
+    /// lays out), anything else in a pane the reconciler reaches again, each carrying the fit its
+    /// node wrote so the component's slot sizes it as the view asked ([`Fitted`]).
     fn children(&mut self, slot: &str) -> Vec<Element> {
         if !self.build_views {
             return Vec::new();
@@ -840,8 +848,8 @@ impl Source for NodeSource<'_> {
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String> {
         let nodes = slot_parts(self.node, self.description, slot);
-        // The heading over the rows it holds: the group they stand in, where it names a day,
-        // else the heading the rows above it stood under.
+        // The heading over the rows it holds: the group they stand in, where it names a day, else
+        // the heading the rows above it stood under.
         let under = crate::date::group_heading(self.node).or_else(|| self.under.clone());
         let mut count = 0usize;
         for child in nodes {
@@ -869,10 +877,9 @@ impl Source for NodeSource<'_> {
     }
 }
 
-/// Whether two nodes of a component give its widget the same data: the same props, binding
-/// and events (an event name bound to another action is another event: the widget holds the
-/// action it was built with), and in the slots that accept components, the same components by
-/// the same rule.
+/// Whether two nodes of a component give its widget the same data: the same props, binding and
+/// events (an event name bound to another action is another event: the widget holds the action it
+/// was built with), and in the slots that accept components, the same components by the same rule.
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
     // The rows of a virtual list change through the host's rows, never through the node.
@@ -902,8 +909,8 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
             })
 }
 
-/// The views in a component node's slots, in order, by slot, key and kind: a component whose
-/// views keep this shape keeps its widget, and its views are reconciled where they stand.
+/// The views in a component node's slots, in order, by slot, key and kind: a component whose views
+/// keep this shape keeps its widget, and its views are reconciled where they stand.
 #[must_use]
 pub fn views_of<'a>(node: &'a UiNode, description: &'a Description) -> Vec<(&'a str, &'a UiNode)> {
     description
@@ -944,13 +951,12 @@ mod tests {
         Reconciler::new(Rc::default())
     }
 
-    /// The identity of a widget, to tell the same one from one built again.
     fn identity(widget: &dyn Widget) -> usize {
         std::ptr::from_ref(widget).cast::<()>() as usize
     }
 
-    /// The widgets the views of a component hold, in order: those in panes, and the texts the
-    /// tests give each view, one letter each (a component's own title is a word).
+    /// The widgets the views of a component hold, in order: those in panes, and the texts the tests
+    /// give each view, one letter each (a component's own title is a word).
     fn views(widget: &mut Element) -> Vec<usize> {
         fn walk(widget: &mut dyn Widget, out: &mut Vec<usize>) {
             if let Some(pane) = widget
@@ -1079,6 +1085,37 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_carries_its_resource_even_when_no_prop_gave_it() {
+        // A drag that started in another view — the shell's place handle, a chip of another
+        // app's transcript — reaches a drop target carrying its resource by its published
+        // address alone. No prop of this view gave that resource, so the adapter has no map
+        // entry for it; the event still carries the resource, by its address, and its type is
+        // read where the drop lands. Without that the value vanished at this boundary and the
+        // drop arrived at the runtime with nothing ("event `drop` carries no value").
+        let mut reconciler = reconciler();
+        let mut target = node("DropTarget", "composer", &[]);
+        target.events.insert("drop".to_owned(), Event::default());
+        let described = description_of(&target).expect("described");
+        let event = NodeSource::new(&target, described, &mut reconciler).event("drop");
+        event.fire(Some(ui::component::Value::Resource(
+            "notes.pages:page_1".to_owned(),
+        )));
+        assert_eq!(
+            reconciler.adapter().take_events(),
+            vec![UiEvent::Fire(
+                "composer".to_owned(),
+                "drop".to_owned(),
+                Some(Value::Ref(ResourceRef {
+                    id: "notes.pages:page_1".to_owned(),
+                    // The adapter does not know the type: it reads where the drop lands.
+                    ty: String::new(),
+                })),
+            )],
+            "the drop carries the resource the drag let go with, by its address"
+        );
+    }
+
+    #[test]
     fn events_are_the_views_action_references_and_a_presented_resource_opens() {
         let mut reconciler = reconciler();
         let mut button = node("Button", "b", &[("label", Value::text("Send"))]);
@@ -1121,9 +1158,9 @@ mod tests {
         );
     }
 
-    /// A row whose window draws the open item itself opens nothing: it says so
-    /// (`navigates: false`), and its activation is the view's to answer, so the page beside the
-    /// list is the only one.
+    /// A row whose window draws the open item itself opens nothing: it says so (`navigates:
+    /// false`), and its activation is the view's to answer, so the page beside the list is the only
+    /// one.
     #[test]
     fn a_row_that_says_it_opens_nothing_presents_no_resource() {
         let mut reconciler = reconciler();
@@ -1231,6 +1268,7 @@ mod tests {
         let mut input = node("TextInput", "i", &[("bind", Value::text("value"))]);
         input.binding = Some(Binding {
             field: Some(("doc".to_owned(), "title".to_owned())),
+            kind: Some("notes.Note".to_owned()),
             name: "Title".to_owned(),
         });
         let description = description_of(&input).expect("described");
@@ -1267,7 +1305,11 @@ mod tests {
         bound.events.insert(
             "activate".to_owned(),
             Event {
-                invokes: Some(("rows/r1".to_owned(), "open".to_owned())),
+                invokes: Some(crate::Invocation {
+                    resource: "rows/r1".to_owned(),
+                    action: "open".to_owned(),
+                    declared: "open".to_owned(),
+                }),
                 ..Event::default()
             },
         );

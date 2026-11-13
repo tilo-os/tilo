@@ -1,44 +1,5 @@
-//! The shared **external-accounts stores** — the on-disk contracts the
-//! Settings "External Accounts" panel edits and the Mail / Calendar / file
-//! apps consume.
-//!
-//! # Why Settings owns these
-//!
-//! Account inventory in Tilo is presented in one place: this app's External
-//! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
-//! and Nextcloud can be added, edited, tested, reauthenticated, and removed
-//! there. Google Drive, `OneDrive` and Dropbox sign in through the browser
-//! (`OAuth`), Nextcloud through its Login Flow v2, and `iCloud` Drive with an
-//! Apple ID and verification code; `account_custody` keeps those grants and
-//! hands the storage daemon only short-lived credentials. Mail's Gmail and
-//! Outlook sign-in runs in Mail, through the same client registrations and
-//! the same custody.
-//!
-//! # Where email + `CalDAV` live: the shared `accounts` crate
-//!
-//! Email and `CalDAV` accounts are persisted through the shared
-//! [`accounts::AccountStore`] — one canonical JSON document at
-//! `~/.config/tilo/accounts/store.json` — the **same** store Mail and Calendar
-//! read. Settings owns the write lifecycle (add / edit / remove); those apps
-//! consume it. Passwords are sealed in the accompanying encrypted
-//! [`accounts::SecretVault`], never in the plaintext store.
-//!
-//! The pane renders that store as it is ([`AccountDirectory`]).
-//!
-//! # Whose accounts these are
-//!
-//! In a host the accounts are the person's own record
-//! ([`accounts::person::PersonAccounts`]), which follows them to every
-//! device they sign in on and which Settings alone edits; the device's
-//! `store.json` is kept its projection for the services that read it.
-//! Outside a host (a bare app in a test) the file is the store.
-//!
-//! # Credentials are never serialised
-//!
-//! Passwords / tokens live in the OS secret store, not these JSON files.
-//! Every credential field is `#[serde(skip)]`. Settings persists secrets
-//! separately keyed by the account id; consumers ask the secret store for
-//! them at connect time.
+//! The external-account stores on disk: the contracts this app's External.
+//! Accounts panel writes and Mail, Calendar and the file apps read.
 
 use std::path::PathBuf;
 
@@ -52,28 +13,18 @@ pub struct AccountMutationJournal {
     store: accounts::AccountStore,
     #[serde(rename = "previous_statuses")]
     statuses: accounts::AccountSyncStatusStore,
-    /// Previous vault ciphertext, never plaintext credential material.
     #[serde(rename = "previous_vault_ciphertext")]
     vault_ciphertext: Option<Vec<u8>>,
 }
 
-/// Where the account stores, the credential vault and the mutation journal
-/// live. The live root follows the signed-in user's config directory and the
-/// session's credential custody; an explicit root pins every store under one
-/// directory with a private local vault key, so an embedded or test instance
-/// never reads, replays or deletes another instance's accounts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountRoot {
     explicit: Option<PathBuf>,
-    /// The person's accounts, when a host opened their record.
     person: Option<PersonAccountsRecord>,
-    /// What opening the vault waits for first (tests).
     #[cfg(test)]
     vault_gate: VaultGate,
 }
 
-/// What a test makes every opening of the vault wait for: a Secret Service
-/// that does not answer.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub struct VaultGate(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
@@ -97,10 +48,6 @@ impl PartialEq for VaultGate {
 #[cfg(test)]
 impl Eq for VaultGate {}
 
-/// What reaching the credential vault needs of an [`AccountRoot`]: where it
-/// lives, without the person's record, which stays on the UI thread. A
-/// worker opens the vault through it, since opening and saving it ask the
-/// Secret Service for its key, a round trip that may take seconds.
 #[derive(Clone)]
 pub struct VaultOpener {
     explicit: Option<PathBuf>,
@@ -109,22 +56,16 @@ pub struct VaultOpener {
 }
 
 impl VaultOpener {
-    /// Open the vault: a Secret Service round trip for its key on the live
-    /// root.
     pub fn open(&self) -> accounts::SecretVault {
         self.reach();
         accounts::SecretVault::open_person(self.explicit.as_deref())
     }
 
-    /// Credential custody over the same stores, which opens the vault
-    /// itself when it publishes.
     #[cfg(feature = "tilo-os")]
     pub fn custodian(&self) -> account_custody::Custodian {
         account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
-    /// Which of the accounts `ids` custody holds an `OAuth` grant for: it
-    /// opens the vault, a Secret Service round trip on the live root.
     #[cfg(feature = "tilo-os")]
     pub fn oauth_granted(&self, ids: Vec<String>) -> std::collections::BTreeSet<String> {
         self.reach();
@@ -155,7 +96,6 @@ impl VaultOpener {
     }
 }
 
-/// The person's record of their accounts, as [`AccountRoot`] keeps it.
 #[derive(Clone)]
 struct PersonAccountsRecord(ui::framework::PersonRecord<accounts::person::PersonAccounts>);
 
@@ -165,8 +105,6 @@ impl std::fmt::Debug for PersonAccountsRecord {
     }
 }
 
-/// A root is told apart by where its files live; the person has one
-/// record of their accounts.
 impl PartialEq for PersonAccountsRecord {
     fn eq(&self, _: &Self) -> bool {
         true
@@ -176,13 +114,10 @@ impl PartialEq for PersonAccountsRecord {
 impl Eq for PersonAccountsRecord {}
 
 impl AccountRoot {
-    /// The user's config root, resolved when each store is opened.
     pub fn live() -> Self {
         Self::default()
     }
 
-    /// Every account store under `config_root` (the directory holding
-    /// `accounts/`, `files/`, `nextcloud/` …).
     pub fn at(config_root: impl Into<PathBuf>) -> Self {
         Self {
             explicit: Some(config_root.into()),
@@ -190,8 +125,6 @@ impl AccountRoot {
         }
     }
 
-    /// The same root, whose vault opens only once `gate` returns: a stalled
-    /// Secret Service (tests).
     #[cfg(test)]
     #[must_use]
     pub fn with_vault_gate(mut self, gate: impl Fn() + Send + Sync + 'static) -> Self {
@@ -208,18 +141,15 @@ impl AccountRoot {
         self
     }
 
-    /// The explicit config root, `None` for the live root.
     pub fn explicit(&self) -> Option<&std::path::Path> {
         self.explicit.as_deref()
     }
 
-    /// Credential custody for cloud accounts over the same stores.
     #[cfg(feature = "tilo-os")]
     pub fn custodian(&self) -> account_custody::Custodian {
         account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
-    /// The config root, `None` when the live root has no usable home.
     pub fn path(&self) -> Option<PathBuf> {
         self.explicit.clone().or_else(accounts::config_root)
     }
@@ -233,8 +163,6 @@ impl AccountRoot {
             .ok_or_else(|| std::io::Error::other("no config dir"))
     }
 
-    /// The person's accounts: their record in a host, else this device's
-    /// file.
     pub fn store(&self) -> accounts::AccountStore {
         if let Some(PersonAccountsRecord(record)) = &self.person {
             return record.get().store();
@@ -244,19 +172,12 @@ impl AccountRoot {
             .unwrap_or_default()
     }
 
-    /// Increases whenever the person's accounts change; `None` outside a
-    /// host.
     pub fn revision(&self) -> Option<u64> {
         self.person
             .as_ref()
             .map(|PersonAccountsRecord(record)| record.revision())
     }
 
-    /// Take into the person's accounts the accounts this device's file held
-    /// before it became the record's projection: once, on the first open
-    /// that keeps the record. After that the file only follows the record,
-    /// so an account removed on another device is never brought back.
-    /// Nothing to do outside a host.
     pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
         let Some(PersonAccountsRecord(record)) = &self.person else {
             return Ok(());
@@ -273,7 +194,6 @@ impl AccountRoot {
         Ok(())
     }
 
-    /// Publish public metadata through Settings' existing personal record.
     pub fn publish_browser_identity(
         &self,
         root: String,
@@ -294,7 +214,6 @@ impl AccountRoot {
             .map_err(|error| error.to_string())
     }
 
-    /// Change browser picker visibility in the existing public account record.
     pub fn set_browser_identity_enabled(
         &self,
         account: String,
@@ -324,7 +243,6 @@ impl AccountRoot {
             .map_err(|error| error.to_string())
     }
 
-    /// Remove public picker metadata; existing sign-in custody is untouched.
     pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
         let Some(PersonAccountsRecord(record)) = &self.person else {
             return Err("Settings' personal account record is unavailable".into());
@@ -365,10 +283,6 @@ impl AccountRoot {
         self.save_store(&store).map_err(|error| error.to_string())
     }
 
-    /// Seal `password` as account `id`'s secret in an explicit root's own
-    /// vault (a test or `--data-dir` profile). The person's own root is
-    /// sealed by the session's custody, which a sandboxed Settings cannot
-    /// reach the key of: it is refused here.
     pub fn seal_password(&self, id: &accounts::AccountId, password: &str) -> Result<(), String> {
         let Some(root) = &self.explicit else {
             return Err("This device's account custody is unavailable".into());
@@ -385,9 +299,6 @@ impl AccountRoot {
         credentials.try_save()
     }
 
-    /// Keep this device's account file the projection of the person's
-    /// accounts, for the services outside any app that read it. Nothing to
-    /// do outside a host, where the file is the store.
     pub fn project(&self) -> std::io::Result<()> {
         match &self.person {
             Some(PersonAccountsRecord(record)) => {
@@ -397,8 +308,6 @@ impl AccountRoot {
         }
     }
 
-    /// Make the person's accounts `store`: in a host, the edits that turn
-    /// their record into it, then the device file its projection.
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
         let root = self.require_io()?;
         let Some(PersonAccountsRecord(record)) = &self.person else {
@@ -418,8 +327,6 @@ impl AccountRoot {
             }
         }
         for account in store.all() {
-            // The record keeps connection settings as an object; none is an
-            // empty one.
             let mut account = account.clone();
             if account.config.is_null() {
                 account.config = serde_json::json!({});
@@ -445,17 +352,12 @@ impl AccountRoot {
         record.get().project_in(&root).map(|_| ())
     }
 
-    /// Operational sync health per account.
     pub fn statuses(&self) -> accounts::AccountSyncStatusStore {
         self.path()
             .map(|root| accounts::AccountSyncStatusStore::load_in(&root))
             .unwrap_or_default()
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when no config root resolves or the status store
-    /// cannot be written.
     pub fn save_statuses(
         &self,
         statuses: &accounts::AccountSyncStatusStore,
@@ -469,7 +371,6 @@ impl AccountRoot {
         self.vault_opener().open()
     }
 
-    /// What a worker opens the vault with.
     pub fn vault_opener(&self) -> VaultOpener {
         VaultOpener {
             explicit: self.explicit.clone(),
@@ -478,7 +379,6 @@ impl AccountRoot {
         }
     }
 
-    /// The per-account sync health writer.
     pub fn sync_reporter(&self, id: accounts::AccountId) -> accounts::AccountSyncReporter {
         match &self.explicit {
             Some(root) => accounts::AccountSyncReporter::in_root(id, root.clone()),
@@ -516,9 +416,6 @@ impl AccountRoot {
         .map_err(|error| format!("could not persist account transaction intent: {error}"))
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the completed mutation journal cannot be removed.
     pub fn finish_mutation(&self) -> Result<(), String> {
         remove_file(&self.mutation_journal_path()?)
             .map_err(|error| format!("could not clear account transaction intent: {error}"))
@@ -585,11 +482,6 @@ impl AccountRoot {
     }
 }
 
-// ---------------------------------------------------------------------------
-// What the panel renders of the canonical store.
-// ---------------------------------------------------------------------------
-
-/// The protocol family of an account — drives grouping and the row icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccountKind {
     Mail,
@@ -602,7 +494,6 @@ pub enum AccountKind {
     ICloudDrive,
 }
 
-/// The bytes of the file at `path`, or `None` when there is none.
 fn read_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, tilo_files::FsError> {
     let (dir, file) = tilo_files::file_at(path)?;
     match tilo_files::blocking::read(&dir, &file) {
@@ -629,7 +520,6 @@ fn remove_file(path: &std::path::Path) -> Result<(), tilo_files::FsError> {
 }
 
 impl AccountKind {
-    /// Every kind, in panel order.
     pub const ALL: [Self; 8] = [
         Self::Mail,
         Self::CalDav,
@@ -667,7 +557,6 @@ impl AccountKind {
         }
     }
 
-    /// The canonical store's type id for accounts of this kind.
     #[cfg(feature = "tilo-os")]
     pub fn type_id(self) -> &'static str {
         match self {
@@ -694,50 +583,38 @@ impl AccountKind {
         Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
     }
 
-    /// The `OAuth` provider behind a cloud storage kind.
     #[cfg(feature = "tilo-os")]
     pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
         account_custody::OAuthCloud::from_type_id(self.type_id())
     }
 
-    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: accounts held
-    /// entirely by credential custody, listed from the canonical store.
     #[cfg(feature = "tilo-os")]
     pub fn is_cloud_storage(self) -> bool {
         self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
     }
 
-    /// Whether accounts of this kind are connected through a sign-in flow
-    /// (browser or Apple ID) rather than a typed password.
     #[cfg(feature = "tilo-os")]
     pub fn signs_in(self) -> bool {
         self.is_cloud_storage() || self == AccountKind::Nextcloud
     }
 
-    /// Whether the provider is reached through an undocumented API and is
-    /// supported on a best-effort basis.
     pub fn best_effort(self) -> bool {
         self == AccountKind::ICloudDrive
     }
 }
 
 #[cfg(feature = "tilo-os")]
-/// A uniform, read-only view of one account for the panel. This is
-/// render-only; edits go through the canonical store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountView {
     pub id: String,
     pub kind: AccountKind,
     pub label: String,
-    /// A one-line connection summary.
     pub summary: String,
     pub enabled: bool,
     pub tint: u8,
 }
 
 #[cfg(feature = "tilo-os")]
-/// The accounts the panel shows: the canonical store's, of every kind it
-/// lists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountDirectory {
     pub accounts: Vec<accounts::Account>,
@@ -745,7 +622,6 @@ pub struct AccountDirectory {
 
 #[cfg(feature = "tilo-os")]
 impl AccountDirectory {
-    /// Loads the directory from the store under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
         Self {
@@ -759,27 +635,22 @@ impl AccountDirectory {
         }
     }
 
-    /// Whether there are no accounts — the panel uses this to substitute a
-    /// populated sample so the surface is never blank.
     pub fn is_empty(&self) -> bool {
         self.accounts.is_empty()
     }
 
-    /// The accounts of one kind, in store order.
     pub fn of(&self, kind: AccountKind) -> impl Iterator<Item = &accounts::Account> {
         self.accounts.iter().filter(move |account| {
             AccountKind::from_type_id(account.type_id.as_str()) == Some(kind)
         })
     }
 
-    /// A mail account's configuration.
     pub fn mail_config(&self, id: &str) -> Option<AccountConfig> {
         self.of(AccountKind::Mail)
             .find(|account| account.id.as_str() == id)
             .and_then(|account| AccountConfig::from_value(account.config.clone()).ok())
     }
 
-    /// The uniform views for one kind, in store order.
     pub fn views_of(&self, kind: AccountKind) -> Vec<AccountView> {
         self.of(kind)
             .filter_map(|account| account_view(kind, account))
@@ -788,7 +659,6 @@ impl AccountDirectory {
 }
 
 #[cfg(feature = "tilo-os")]
-/// A string field of an account's configuration, empty when absent.
 fn config_str<'a>(account: &'a accounts::Account, key: &str) -> &'a str {
     account
         .config
@@ -861,7 +731,6 @@ fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
 }
 
 #[cfg(feature = "tilo-os")]
-/// Trim a URL to host[/first-segment] for compact display.
 pub fn short_url(url: &str) -> String {
     url.trim_start_matches("https://")
         .trim_start_matches("http://")
@@ -870,9 +739,7 @@ pub fn short_url(url: &str) -> String {
 }
 
 #[cfg(feature = "tilo-os")]
-/// The shared-store type id for email accounts (Mail contributes these).
 const MAIL_TYPE: &str = "email";
-/// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
 #[cfg(feature = "tilo-os")]
 const CALDAV_TYPE: &str = "caldav";
 pub use accounts::cloud_types::{NEXTCLOUD as NEXTCLOUD_TYPE, WEBDAV as WEBDAV_TYPE};
@@ -1051,7 +918,6 @@ mod tests {
                 .browser_accounts(&root_key, "https://host.example")
                 .is_empty()
         );
-        // Republishing is idempotent and never silently restores a hidden choice.
         root.publish_browser_identity(
             root_key.clone(),
             "https://host.example".into(),
@@ -1089,7 +955,6 @@ mod tests {
                 .browser_accounts(&root_key, "https://host.example")
                 .is_empty()
         );
-        // Public metadata never provisions this device's credential vault.
         assert!(!dir.path().join("accounts").exists());
         assert!(
             AccountRoot::at(dir.path())
@@ -1163,7 +1028,6 @@ mod tests {
         assert_eq!(person.get(&kept.id), Some(&kept));
         assert_eq!(accounts::AccountStore::load_in(dir.path()), person);
 
-        // Removed elsewhere: the projected file does not bring it back.
         record
             .invoke(&PersonAccounts::REMOVE_ACCOUNT.with(ui::tilo_resource::Id::from_raw("cal-1")))
             .unwrap();
@@ -1265,8 +1129,6 @@ mod tests {
         }
     }
 
-    /// The window bar's sidebar button flips the sidebar on every click, in a
-    /// window wide enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(

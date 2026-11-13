@@ -1,4 +1,4 @@
-//! The floating navigation surface a journey draws in, and the card for the place a person selected.
+//! The floating surface a journey draws in, and the card for the place a person selected.
 
 use super::{
     Affine, Button, ButtonFace, ButtonRole, ControlSize, Hit, Icon, MapsApp, PaintCtx, Point,
@@ -7,8 +7,6 @@ use super::{
 };
 
 impl MapsApp {
-    /// The live turn card: a floating panel with the next instruction and
-    /// the trip summary, dragged out to the desktop by its title row.
     #[allow(
         clippy::too_many_lines,
         reason = "the navigation card is one cohesive painted surface with shared geometry for its drag and end-navigation targets"
@@ -41,8 +39,6 @@ impl MapsApp {
         let body_numeric = theme.text(TextRole::Body).numeric();
         let heading_h = draw::line_h(tr, &heading);
 
-        // The next instruction: its manoeuvre icon and the instruction across
-        // the card's width; the distance to it on the line below.
         let end_label = failure::t("maps-end");
         let end_face = ButtonFace::new(Rect::ZERO, &end_label).control_size(ControlSize::Small);
         let end_w = end_face.intrinsic_width(tr, theme);
@@ -53,7 +49,6 @@ impl MapsApp {
             rect.x1 - pad,
             rect.y0 + pad + heading_h,
         );
-        // The instruction rows are the drag handle; End stays a plain press.
         let mut ctx = PaintCtx::new(scene, visual, tr, &ink);
         ui::surface::floating_drag_grip(ctx.scene, visual, rect, ink.text_tertiary);
         let instruction = route.steps.first();
@@ -100,8 +95,6 @@ impl MapsApp {
             ink.tokens.colors.surfaces.content,
         );
 
-        // The summary: the time to go and, on its baseline, the distance
-        // left; End at its trailing edge.
         let summary = Rect::new(
             rect.x0 + pad,
             rule_y + s3,
@@ -150,10 +143,6 @@ impl MapsApp {
         );
     }
 
-    /// Floating info card for the selected POI, anchored at the bottom of the
-    /// visible map area (clear of the docked panel and the control column):
-    /// its name, what it is, the facts OpenStreetMap has for it, and
-    /// Directions.
     #[allow(
         clippy::many_single_char_names,
         reason = "the shared drawing names (t: transform, x/y: the pen, s1–s4: spacing steps) \
@@ -207,7 +196,6 @@ impl MapsApp {
         let x = card.x0 + pad;
         let right = card.x1 - pad;
         let mut y = card.y0 + pad;
-        // Close: an icon button seated on the title line.
         let side = ButtonFace::height(ControlSize::Regular, theme);
         let close = Rect::new(
             card.x1 - s2 - side,
@@ -233,7 +221,6 @@ impl MapsApp {
             close.x0 - s2 - x,
         );
         y += title_h + s1;
-        // What it is: OpenStreetMap's kind when tagged, else the category.
         draw::text_clip(
             &mut ctx,
             &poi.kind_label(),
@@ -260,7 +247,6 @@ impl MapsApp {
     }
 }
 
-/// The names the place card gives the facts OpenStreetMap has for it.
 struct FactLabels {
     address: String,
     hours: String,
@@ -278,7 +264,6 @@ impl FactLabels {
         }
     }
 
-    /// The facts `poi` carries, in the order the card lists them.
     fn rows<'a>(&'a self, poi: &'a crate::model::Poi) -> Vec<PropertyRow<'a>> {
         let mut facts: Vec<PropertyRow<'a>> = Vec::new();
         if !poi.address.is_empty() {

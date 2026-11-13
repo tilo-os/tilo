@@ -11,6 +11,7 @@ use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use crate::handshake::{Doorway, EntryFuture};
+use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
 
@@ -218,6 +219,17 @@ impl Workspaces {
         ))
     }
 
+    /// Enrol `cert`'s device in `workspace`, where its person is a member, as
+    /// [`Self::member_device`] admits a further device of theirs: what a join
+    /// on the session asks for when the workspace's governance has the person
+    /// and not yet this device ([`crate::workspace_access::Decision::AdmitAndEnrol`]).
+    /// Whoever asked decides again afterwards.
+    pub(crate) async fn enrol_member_device(&self, cert: &DeviceCert, workspace: &str) {
+        if let Some(refused @ JoinReply::Refused(_)) = self.member_device(cert, workspace).await {
+            tracing::debug!(%workspace, ?refused, "a member's further device was not enrolled");
+        }
+    }
+
     /// Admit `cert`'s device to `workspace` as a device of its person, who
     /// is a member there already: governance records the device under them
     /// ([`tilo_peer_state::PeerGovernanceMut::admit_member_device`]), so it
@@ -291,19 +303,6 @@ impl Workspaces {
         self.retained_for(&reply).await;
         Some(reply)
     }
-}
-
-/// Whether `cert` is a device of its person's own: certified by their root,
-/// or by the stand-in their browser holds for it ([`DeviceCert::issuer`]).
-/// An agent's grant, or a key one minted, acts for the person and is no
-/// device of theirs: it comes in by the delegation that bounds it, never as
-/// the person.
-fn person_device(cert: &DeviceCert) -> bool {
-    cert.capabilities.agent.is_none()
-        && cert
-            .issuer
-            .as_ref()
-            .is_none_or(|issuer| issuer.capabilities.stand_in)
 }
 
 impl Workspaces {

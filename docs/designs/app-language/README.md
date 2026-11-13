@@ -238,6 +238,5 @@ state, a function or a view (`template.rs`).
 | Layout | layout.md |
 | Forms, dialogs and diagrams | forms-and-diagrams.md |
 | The shell | shell.md |
-| The first new experience | first-experience.md |
 | Language changes found by writing the apps | language-changes.md |
 | Chat | chat.md |

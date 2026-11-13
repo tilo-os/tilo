@@ -159,9 +159,8 @@ fn deciding_and_overturning_sit_under_the_moderation_node() {
     assert_eq!(field("report"), None);
 }
 
-/// A moderation record from before a decision's reports and take-backs were
-/// model values: each was one JSON string. Opened now, it reads as the record
-/// with both as lists, and nothing of the decision is lost.
+/// A moderation record from before a decision's reports and take-backs were model values:
+/// each was one JSON string.
 #[test]
 fn a_decision_kept_as_json_strings_migrates_to_lists() {
     use ui::tilo_resource::evolution;

@@ -112,16 +112,17 @@ fn found(spec: &tilo_actions::ResourceSpec, needle: &str) -> bool {
 
 /// What the action `name` says it is, as the package published it on the notebook.
 fn said(spec: &tilo_actions::ResourceSpec, name: &str, package: &Package) -> String {
-    let id = &package
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == name)
-        .expect("the notes app declares it")
-        .id;
+    assert!(
+        package
+            .meta
+            .actions
+            .iter()
+            .any(|action| action.name == name),
+        "the notes app declares it"
+    );
     spec.actions
         .iter()
-        .find(|action| &action.id == id)
+        .find(|action| action.id == name)
         .expect("it is offered on the notebook")
         .label
         .clone()
@@ -152,7 +153,8 @@ fn notebooks_find_notes() {
         .resource_type
         .as_ref()
         .expect("a notebook says what it is");
-    // What English cannot derive from "notes" ("noteses"): the catalogue's nouns, by count.
+    // The app calls a note a notebook: a noun its own, which the catalogue says, not the derived
+    // one ("note", or "notes" as a plural name would read).
     assert_eq!(
         (ty.noun.one.as_str(), ty.noun.many.as_str()),
         ("notebook", "notebooks")
@@ -301,6 +303,56 @@ fn every_apps_catalogue_parses() {
     assert!(read >= 9, "an app ships a catalogue ({read} read)");
 }
 
+/// The words a drawn window shows, in the order the tree holds them: every text of a node and of
+/// its children, whatever prop carries it.
+fn drawn(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+    for value in node.props.values() {
+        if let tilolang_runtime::Value::Text(text) = value {
+            out.push(text.clone());
+        }
+    }
+    for child in &node.children {
+        drawn(child, out);
+    }
+}
+
+/// A German desktop's counter window draws German: its catalogue reaches what the window shows,
+/// not only the labels it publishes, so the window's title, its section's name and its two
+/// buttons read in the person's language and nothing of them in English.
+#[test]
+fn a_german_counter_window_draws_german() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/counter");
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the counter package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the counter package's ids"),
+    )
+    .expect("its ids parse");
+    let compiled =
+        tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
+    ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
+    let record = automerge::AutoCommit::new();
+    let host = Host::new(&record, Principal::new("ada"), || None).expect("a host");
+    host.set_words(Toolkit);
+    host.load_compiled(&compiled).expect("the counter loads");
+    let view = host
+        .open_main("so.tilo.lang.counter")
+        .expect("its window opens");
+    let mut words = Vec::new();
+    drawn(view.tree(), &mut words);
+    for word in ["Zähler", "Anzahl", "Erhöhen", "Verringern"] {
+        assert!(
+            words.iter().any(|said| said == word),
+            "the window says {word}: {words:?}"
+        );
+    }
+    for english in ["Counter", "Count", "Increment", "Decrement"] {
+        assert!(
+            !words.iter().any(|said| said == english),
+            "and nothing of it in English ({english}): {words:?}"
+        );
+    }
+}
+
 #[test]
 fn a_packages_words_are_published_without_a_record() {
     let (host, package) = notes("de-DE");
@@ -363,4 +415,28 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
         rows("radians").is_empty() && rows("new note").is_empty(),
         "and neither reads in English"
     );
+}
+
+/// A German reader asked to let an agent file a note reads what it fills in in German: the
+/// consent sheet names each argument by the package's catalogue (`d-<action>-<param>`).
+#[test]
+fn the_consent_sheet_names_file_notes_arguments_in_german() {
+    let (host, package) = notes("de-DE");
+    let notebook = notebook(&host, &package);
+    let id = "file_note";
+    let descriptor = tilo_actions::door::survey(std::slice::from_ref(&notebook))
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == id)
+        .expect("filing a note is offered on the notebook");
+    let arguments = serde_json::json!({"title": "Einkauf", "tag": "Haushalt"});
+    let sheet = tilo_actions::Draft::render(
+        &descriptor,
+        arguments.as_object().expect("arguments are an object"),
+    );
+    let labels: Vec<&str> = sheet
+        .fields
+        .iter()
+        .map(|field| field.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Titel", "Schlagwort"], "{sheet:?}");
 }

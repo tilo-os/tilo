@@ -4,9 +4,6 @@
 
 use crate::Key;
 
-/// The section these choices live in.
 pub const SECTION: &str = "identity";
 
-/// The presence hue this person chose to wear, by id (`teal`, `violet`, …);
-/// `None` until they choose, when their identity picks one.
 pub const COLOUR: Key<Option<String>> = Key::new(SECTION, "colour", || None);

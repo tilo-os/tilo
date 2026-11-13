@@ -22,7 +22,6 @@ use provider_settings_ui::widgets::{
     setting_row_described, value_row,
 };
 
-/// A priority as the effect takes it: a whole number from -999 to 999.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "clamped to -999..=999 and rounded first"
@@ -31,7 +30,6 @@ fn priority_of(value: f64) -> i32 {
     value.clamp(-999.0, 999.0).round() as i32
 }
 
-/// When a network was last joined, in words.
 fn last_joined(profile: &SavedNetworkProfile) -> String {
     match profile.last_used.and_then(|at| i64::try_from(at).ok()) {
         Some(at) if at > 0 => t_args(
@@ -46,8 +44,6 @@ fn last_joined(profile: &SavedNetworkProfile) -> String {
 }
 
 impl Page<'_> {
-    /// Every network in range, narrowed by the window bar's search, the way
-    /// into one that hides its name and the networks this device knows.
     pub(super) fn all_page(&self) -> Vec<SettingsSection> {
         let mut content = self.wifi_status_rows();
         if self.wifi_enabled && !self.wifi_absent() {
@@ -100,8 +96,6 @@ impl Page<'_> {
         )]
     }
 
-    /// Every Wi-Fi network this device knows, the last joined first: how
-    /// strong it is while in range, when it was last joined, and Forget.
     pub(super) fn known_page(&self) -> Vec<SettingsSection> {
         if let Some(error) = &self.read_errors.profiles {
             return vec![card(
@@ -137,8 +131,6 @@ impl Page<'_> {
         )]
     }
 
-    /// One known network: the meter while it is in range, when it was last
-    /// joined, and a menu to forget it. Choosing it opens its page.
     fn known_row(&self, profile: &SavedNetworkProfile) -> El {
         let resource = self.wifi_live(&profile.name).into_resource();
         let in_range = self
@@ -195,8 +187,6 @@ impl Page<'_> {
         )
     }
 
-    /// A network's page: how it stands now, its settings (also while it is
-    /// out of range) and what can be done with it.
     pub(super) fn network_page(&self, ssid: &str) -> Vec<SettingsSection> {
         let net = self.in_range(ssid).filter(|_| self.wifi_enabled);
         let profile = self.saved_profile_of(ssid);
@@ -214,7 +204,6 @@ impl Page<'_> {
             &t("net-actions"),
             rows(self.action_rows(ssid, net, profile)),
         ));
-        // What few change last: how this network is joined and addressed.
         if let Some(profile) = profile {
             let mut advanced = self.advanced_rows(profile);
             advanced.extend(self.address_rows(profile));
@@ -223,8 +212,6 @@ impl Page<'_> {
         sections
     }
 
-    /// How the network stands: its signal, and while it is the one in use
-    /// its band, speed, security and addresses.
     fn status_rows(
         &self,
         ssid: &str,
@@ -311,10 +298,7 @@ impl Page<'_> {
         out
     }
 
-    /// A saved network's everyday settings: joining it by itself, metered
-    /// data and its password.
     fn settings_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        // Every setting here acts on the network's own row.
         let live = self.profile_live(profile).into_resource();
         let uuid = profile.uuid.clone();
         let mut out = vec![setting_row(
@@ -367,11 +351,7 @@ impl Page<'_> {
         out
     }
 
-    /// A saved network's rarer settings: joining it first, the address it
-    /// shows, whether it hides its name, on a work or school network who it
-    /// knows this device as, and waking this machine over it.
     fn advanced_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        // Every setting here acts on the network's own row.
         let live = self.profile_live(profile).into_resource();
         let uuid = profile.uuid.clone();
         let mut out = Vec::new();
@@ -465,8 +445,6 @@ impl Page<'_> {
         out
     }
 
-    /// The saved password: shown on request (the system asks the person to
-    /// authenticate first) and changed in place.
     fn password_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
         let live = self.wifi_live(&profile.name).into_resource();
         let revealed = self
@@ -522,10 +500,7 @@ impl Page<'_> {
         out
     }
 
-    /// A saved network's addresses: IPv4, its name servers, IPv6 and the
-    /// proxy its connections go through.
     fn address_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
-        // Every setting here acts on the network's own row.
         let live = self.profile_live(profile).into_resource();
         let uuid = profile.uuid.clone();
         let id = format!("settings.network.profile.ipv4.{uuid}");
@@ -622,8 +597,6 @@ impl Page<'_> {
         out
     }
 
-    /// What can be done with a network: share it by QR code, with the
-    /// person's own devices, and forget it.
     fn action_rows(
         &self,
         ssid: &str,

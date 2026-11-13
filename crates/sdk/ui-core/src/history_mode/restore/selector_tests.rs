@@ -123,8 +123,6 @@ fn restore(
     schema: &'static HistoryRestoreSchema,
     target: &[ChangeHash],
 ) -> RestoreOutcome {
-    // Written at the version the schema reads: version admission has its own
-    // test, and these scenarios are about what the selectors restore.
     tilo_resource::evolution::write_version(doc, schema.version).unwrap();
     let live = doc.get_heads();
     let prepared = prepare_content_restore(doc, schema, &live, target).unwrap();
@@ -142,8 +140,8 @@ fn sheets_fixture() -> (AutoCommit, ObjId, Vec<ChangeHash>) {
     (doc, wb, target)
 }
 
-/// A document written at the storage version the sheets schema reads, for
-/// scenarios that check selectors rather than version admission.
+/// A document written at the storage version the sheets schema reads, for scenarios that check
+/// selectors rather than version admission.
 fn at_sheets_version() -> AutoCommit {
     let mut doc = AutoCommit::new();
     tilo_resource::evolution::write_version(&mut doc, SHEETS.version).unwrap();
@@ -1939,8 +1937,6 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
 #[test]
 fn complement_normalized_absence_noop_and_private_excluded_key_refusal_are_exact() {
     let optional = complement_schema(&["presence"]);
-    // The version stamp comes before the target: the empty state the schema
-    // normalises is the one it reads.
     let mut doc = at_sheets_version();
     tilo_resource::evolution::write_version(&mut doc, optional.version).unwrap();
     let target = doc.get_heads();

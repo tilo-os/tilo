@@ -48,10 +48,6 @@ tilo_agent_participant::app_worker!();
 mod app_coverage;
 #[path = "asking_first.rs"]
 mod asking_first;
-#[path = "campaign_bench.rs"]
-mod campaign_bench;
-#[path = "campaign_replay.rs"]
-mod campaign_replay;
 #[path = "chain_reads.rs"]
 mod chain_reads;
 #[path = "check_facts.rs"]

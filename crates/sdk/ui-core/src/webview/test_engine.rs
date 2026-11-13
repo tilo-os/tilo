@@ -1,11 +1,7 @@
-//! Deterministic in-process engine used by unit tests and `--shots`
-//! headless renders. It loads no network content: every "page" is a flat
-//! colour derived from a stable hash of the URL, with a darker header
-//! band, so different URLs render visibly different frames and pixel
-//! assertions stay byte-stable across runs.
-//!
-//! All received commands are recorded and inspectable via
-//! [`TestEngine::commands`], which is what widget tests assert against.
+//! Deterministic in-process engine used by unit tests and `--shots` headless renders. It
+//! loads no network content: every "page" is a flat colour derived from a stable hash of
+//! the URL, with a darker header band, so different URLs render visibly different frames
+//! and pixel assertions stay byte-stable across runs.
 
 use std::sync::{Arc, Mutex};
 
@@ -15,8 +11,8 @@ use super::{
 };
 use tilo_lock::MutexRecover as _;
 
-/// Height of the darker "chrome" band painted at the top of every test
-/// page, in physical pixels.
+/// Height of the darker "chrome" band painted at the top of every test page, in physical
+/// pixels.
 const HEADER_BAND_PX: u32 = 24;
 
 #[derive(Default)]
@@ -24,7 +20,6 @@ struct Inner {
     history: Vec<String>,
     last_navigation_request: u32,
     history_snapshot: Option<(u32, Vec<usize>)>,
-    /// `history.is_empty()` means nothing loaded yet.
     index: usize,
     width: u32,
     height: u32,
@@ -38,47 +33,29 @@ struct Inner {
     page_data: std::collections::HashMap<&'static str, serde_json::Value>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
-    /// Every `set_visible` the engine was told, oldest first.
     visibility: Vec<bool>,
-    /// What a paint capture answers with; `None` until a test sets one.
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
-    /// What a capture answers with; a test page's own pixels until one sets
-    /// others.
+    /// What a capture answers with; a test page's own pixels until one sets others.
     page_capture: Option<Vec<u8>>,
-    /// Whether it says it measures its document, as a ready host does.
     measures_document: bool,
-    /// Whether it says it tells page events of its own accord, as a ready
-    /// host does.
     page_events: bool,
-    /// What the page has selected, as [`WebViewCommand::CopySelection`]
-    /// answers it.
     selection: String,
-    /// Links the page asked to open in a new window, not taken yet.
     new_tabs: Vec<(String, bool)>,
-    /// Whether it was asked for the page's popups, the popups the page
-    /// opened and not yet taken, and the engines of those adopted.
     accepts_popups: bool,
     popups: Vec<super::Popup>,
-    /// Whether it was asked for the page's own questions.
     accepts_page_dialogs: bool,
     /// Whether it was asked for the page's file choosers.
     accepts_file_choosers: bool,
     /// Whether it was asked for the sign-ins servers ask for.
     accepts_http_auth: bool,
     adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
-    /// The tabs it was asked to create, oldest first.
     created: Vec<Arc<TestEngine>>,
-    /// Whether it paints nothing new, as a busy renderer has not yet.
     holds_frames: bool,
-    /// Whether it was asked to hold what the page sends.
     holds_departures: bool,
-    /// Its pages carry an end mark, as a mail's document does.
     marks_page_end: bool,
     /// Addresses that fail to load, and the network error each fails with.
     failing: std::collections::HashMap<String, String>,
-    /// A test reported the page's focused field: the engine then takes an
-    /// input method's composition, as a ready host does.
     composition: bool,
     text_field: Option<super::TextField>,
 }
@@ -106,8 +83,8 @@ impl TestEngine {
         self.lock_inner().commands.clone()
     }
 
-    /// Whether it was asked to hold what the page sends, as a window an
-    /// agent operates asks.
+    /// Whether it was asked to hold what the page sends, as a window an agent operates
+    /// asks.
     pub fn holds_departures(&self) -> bool {
         self.lock_inner().holds_departures
     }
@@ -127,8 +104,8 @@ impl TestEngine {
         self.lock_inner().visibility.clone()
     }
 
-    /// Answer every later paint capture with this layout snapshot (raw
-    /// `DOMSnapshot` JSON), as a real engine would for its current page.
+    /// Answer every later paint capture with this layout snapshot (raw `DOMSnapshot`
+    /// JSON), as a real engine would for its current page.
     pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
         self.lock_inner().paint_snapshot = Some(snapshot.into());
     }
@@ -139,15 +116,13 @@ impl TestEngine {
         self.lock_inner().measures_document = measures;
     }
 
-    /// Say the page asked to open `url` in a new window, as a link the
-    /// person followed does.
+    /// Say the page asked to open `url` in a new window, as a link the person followed
+    /// does.
     pub fn push_new_tab_request(&self, url: impl Into<String>) {
         self.lock_inner().new_tabs.push((url.into(), false));
     }
 
-    /// Say the page opened a popup, as `window.open` with a size does. An
-    /// engine nobody asked for popups ignores it, as Chromium's opens it
-    /// as a tab.
+    /// Say the page opened a popup, as `window.open` with a size does.
     pub fn push_popup(&self, id: u32, url: impl Into<String>, width: u32, height: u32) {
         let mut inner = self.lock_inner();
         if inner.accepts_popups {
@@ -190,22 +165,22 @@ impl TestEngine {
         self.lock_inner().adopted.get(&id).cloned()
     }
 
-    /// Say the page has `text` selected: a later
-    /// [`WebViewCommand::CopySelection`] answers with it.
+    /// Say the page has `text` selected: a later [`WebViewCommand::CopySelection`]
+    /// answers with it.
     pub fn set_selection(&self, text: impl Into<String>) {
         self.lock_inner().selection = text.into();
     }
 
-    /// Report the page's focused field (`None`: nothing editable has the
-    /// focus), as a host that takes compositions does.
+    /// Report the page's focused field (`None`: nothing editable has the focus), as a
+    /// host that takes compositions does.
     pub fn set_text_field(&self, field: Option<super::TextField>) {
         let mut inner = self.lock_inner();
         inner.composition = true;
         inner.text_field = field;
     }
 
-    /// Hold back every frame, as a renderer still laying out a page does,
-    /// or paint the page at the view's current size now.
+    /// Hold back every frame, as a renderer still laying out a page does, or paint the
+    /// page at the view's current size now.
     pub fn hold_frames(&self, hold: bool) {
         let mut inner = self.lock_inner();
         inner.holds_frames = hold;
@@ -214,16 +189,15 @@ impl TestEngine {
         }
     }
 
-    /// Paint its pages with a document's end mark: the bottom-right 2×2
-    /// pixels one level off the page beneath, as a mail's document marks
-    /// them (`mix-blend-mode: difference` with `rgb(1,1,1)`).
+    /// Paint its pages with a document's end mark: the bottom-right 2×2 pixels one level
+    /// off the page beneath, as a mail's document marks them
+    /// (`mix-blend-mode: difference` with `rgb(1,1,1)`).
     pub fn mark_page_end(&self) {
         self.lock_inner().marks_page_end = true;
     }
 
-    /// Paint the view at its current size in the page's background colour
-    /// and nothing of the page, as Chromium paints a resized view before
-    /// the page has drawn there.
+    /// Paint the view at its current size in the page's background colour and nothing of
+    /// the page, as Chromium paints a resized view before the page has drawn there.
     pub fn paint_before_page(&self) {
         let inner = self.lock_inner();
         let (width, height) = (inner.width.max(1), inner.height.max(1));
@@ -243,8 +217,8 @@ impl TestEngine {
         });
     }
 
-    /// Deliver a frame painted for an earlier `width` × `height`, as an
-    /// engine does that finishes a paint after the view has moved on.
+    /// Deliver a frame painted for an earlier `width` × `height`, as an engine does that
+    /// finishes a paint after the view has moved on.
     pub fn paint_stale(&self, width: u32, height: u32) {
         let bytes = usize::try_from(width)
             .unwrap_or(usize::MAX)
@@ -259,18 +233,15 @@ impl TestEngine {
         });
     }
 
-    /// Make every load of `uri` fail with the network `error`
-    /// (`ERR_CONNECTION_REFUSED`), as an unreachable site does: the engine
-    /// reports the address, the failure and its history, and an owned
-    /// navigation's outcome carries the error.
+    /// Make every load of `uri` fail with the network `error` (`ERR_CONNECTION_REFUSED`),
+    /// as an unreachable site does: the engine reports the address, the failure and its
+    /// history, and an owned navigation's outcome carries the error.
     pub fn fail_address(&self, uri: impl Into<String>, error: impl Into<String>) {
         self.lock_inner().failing.insert(uri.into(), error.into());
     }
 
-    /// Deliver `event` on the next drain, as the engine would on its own (a
-    /// page reporting its document size).
-    /// Report `request` held, as a window an agent operates does when its
-    /// page is ready to send something.
+    /// Deliver `event` on the next drain, as the engine would on its own (a page
+    /// reporting its document size).
     pub fn hold(&self, request: super::HeldRequest) {
         self.push_event(WebViewEvent::HeldRequest(request));
     }
@@ -303,14 +274,13 @@ impl TestEngine {
         self.push_event(WebViewEvent::PageChanged(change));
     }
 
-    /// Answer every later page capture with these pixels (a PNG), as a real
-    /// engine paints the page it shows.
+    /// Answer every later page capture with these pixels (a PNG), as a real engine paints
+    /// the page it shows.
     pub fn set_page_capture(&self, image: impl Into<Vec<u8>>) {
         self.lock_inner().page_capture = Some(image.into());
     }
 
-    /// Queue the answer to the next page request. Without one, an outline
-    /// is a single document line and every other request succeeds.
+    /// Queue the answer to the next page request.
     pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
         self.lock_inner().page_replies.push_back(reply);
     }
@@ -338,7 +308,6 @@ impl TestEngine {
                 PageRequest::Outline { .. } | PageRequest::Changes { .. }
             )
             .then(|| format!("- document \"{url} — test page\"")),
-            // Logs and lookups answer with an empty, well-formed finding.
             data: match request {
                 // What a test said the page holds for this kind of read.
                 _ if inner.page_data.contains_key(request.action()) => {
@@ -382,8 +351,6 @@ impl TestEngine {
                     }
                     Some(data)
                 }
-                // A find answers the ref of the description it was asked
-                // for, as a page with that element would.
                 PageRequest::Find {
                     role, name, nth, ..
                 } => Some(serde_json::json!({
@@ -396,8 +363,8 @@ impl TestEngine {
                 })),
                 _ => None,
             },
-            // A capture answers with the picture it painted, and nothing else:
-            // the engine paints pixels, it does not read anything back.
+            // A capture answers with the picture it painted, and nothing else: the engine
+            // paints pixels, it does not read anything back.
             image: match request {
                 PageRequest::Capture { .. } => {
                     Some(inner.page_capture.clone().unwrap_or_else(test_png))
@@ -424,19 +391,15 @@ impl TestEngine {
         })
     }
 
-    /// Stable page colour for a URL — exposed so tests can compute the
-    /// expected pixels.
+    /// Stable page colour for a URL — exposed so tests can compute the expected pixels.
     pub fn page_color(uri: &str) -> [u8; 3] {
-        // FNV-1a, folded to RGB. Keep in sync with nothing else — this is
-        // the definition.
         let mut h: u32 = 2_166_136_261;
         for b in uri.bytes() {
             h ^= u32::from(b);
             h = h.wrapping_mul(16_777_619);
         }
-        // The low three bytes of the hash, big-endian — equivalent to the
-        // old `(h >> 16) as u8, (h >> 8) as u8, h as u8` but without a
-        // truncating cast.
+        // The low three bytes of the hash, big-endian — equivalent to the old
+        // `(h >> 16) as u8, (h >> 8) as u8, h as u8` but without a truncating cast.
         let [_, r, g, b] = h.to_be_bytes();
         [r, g, b]
     }
@@ -585,14 +548,12 @@ impl TestEngine {
         inner.events.push(event);
     }
 
-    /// Recovers the mutex if a panicking test callback poisoned it while
-    /// holding the lock, rather than making every later call into the
-    /// engine panic too.
+    /// Recovers the mutex if a panicking test callback poisoned it while holding the
+    /// lock, rather than making every later call into the engine panic too.
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock_recover()
     }
 
-    /// Same recovery as [`Self::lock_inner`], for the frame slot.
     fn lock_frames(&self) -> std::sync::MutexGuard<'_, Option<Frame>> {
         self.frames.lock_recover()
     }
@@ -771,8 +732,6 @@ impl WebViewEngine for TestEngine {
                 inner.scale_factor = scale_factor;
                 self.render_locked(&inner);
             }
-            // Owned navigation returned before locking; input/filter commands
-            // are recorded above but have no observable page effect here.
             WebViewCommand::ImportServiceSession(request) => {
                 inner.events.push(WebViewEvent::ServiceSessionResult(
                     super::ServiceSessionReply {
@@ -840,8 +799,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ImeCommit(_)
             | WebViewCommand::ImeCancel
             | WebViewCommand::ImeFinish
-            // The test engine runs a page action as it arrives, so there is
-            // never one left to stop.
+            // The test engine runs a page action as it arrives, so there is never one
+            // left to stop.
             | WebViewCommand::CancelPage { .. } => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
@@ -920,8 +879,6 @@ impl WebViewEngine for TestEngine {
                 }
             }
         }
-        // Nothing below uses `inner` — drop the guard here rather than
-        // leaving it held until the function's closing brace.
         drop(inner);
     }
 
@@ -938,8 +895,8 @@ impl WebViewEngine for TestEngine {
 const TEST_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcEgAAAFEAMELjZZCAAAAAElFTkSuQmCC";
 
-/// The picture a test page paints when a test sets none: one pixel, in the
-/// page's own colour, so an answer is a real PNG and nothing else.
+/// The picture a test page paints when a test sets none: one pixel, in the page's own
+/// colour, so an answer is a real PNG and nothing else.
 fn test_png() -> Vec<u8> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -1124,7 +1081,6 @@ mod tests {
             engine.send(WebViewCommand::GoForward);
             assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
 
-            // At the tail: GoForward is a no-op and emits nothing.
             engine.drain_events();
             engine.send(WebViewCommand::GoForward);
             assert!(engine.drain_events().is_empty());
@@ -1138,7 +1094,6 @@ mod tests {
             engine.send(WebViewCommand::Navigate("https://c.test".into()));
             engine.drain_events();
 
-            // b.test is gone: back from c leads to a.
             engine.send(WebViewCommand::GoBack);
             assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
         }

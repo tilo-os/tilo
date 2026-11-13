@@ -22,7 +22,6 @@ use iroh_blobs::protocol::{ChunkRanges, ChunkRangesSeq, GetManyRequest};
 use super::{Bytes, Duration, EndpointAddr, Hash, Hydrator, Instant, Result, anyhow};
 use tilo_lock::RwLockRecover as _;
 
-/// Blobs requested in one `GetMany`.
 pub const BATCH_BLOBS: usize = 512;
 /// Bytes requested in one `GetMany`, by the callers' size hints.
 pub const BATCH_BYTES: u64 = 8 * 1024 * 1024;
@@ -41,7 +40,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub hash: Hash,
-    /// Expected size in bytes, for batching; 0 when unknown.
     pub size_hint: u64,
     /// The manifest this blob is a chunk of, when it is one. The serving
     /// peer authorises the chunk through it.
@@ -73,10 +71,8 @@ impl Want {
 /// What a [`Hydrator::fetch_many`] call achieved.
 #[derive(Debug, Default)]
 pub struct FetchReport {
-    /// Blobs fetched and stored.
     pub fetched: usize,
     pub bytes: u64,
-    /// Wanted blobs no peer served.
     pub missing: Vec<Hash>,
 }
 

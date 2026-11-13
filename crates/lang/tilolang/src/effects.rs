@@ -1,36 +1,30 @@
 //! Effect classes and what each declaration can reach, computed from the IR facts.
 //!
-//! An action is *Read* if it changes nothing, *Outside* if it reaches outside Tilo (itself or
-//! through an action it calls), and *Undoable* otherwise. For every action and view the
-//! metadata lists the actions it
-//! can reach, its own and other packages', each with its class. Granting, keeping and updating
-//! code are decided against that list (authority.md).
+//! An action is *Read* if it changes nothing, *Outside* if it reaches outside Tilo (itself or through an
+//! action it calls), and *Undoable* otherwise. For every action and view the metadata lists the actions
+//! it can reach, its own and other packages', each with its class. Granting, keeping and updating code
+//! are decided against that list (authority.md).
 //!
-//! [`Effect`] is the other axis: what a body reads that a replay cannot compute again, which its
-//! `uses` clause declares and its invocation records.
+//! [`Effect`] is the other axis: what a body reads that a replay cannot compute again, which its `uses`
+//! clause declares and its invocation records.
 
 use crate::ir::{ActionRef, FuncKind, Module};
 use crate::meta::Reach;
 use crate::types::EffectClass;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What an action reads that a replay cannot compute again: what its `uses` clause
-/// declares and what its invocation records (convergence.md, "Actions").
+/// What an action reads that a replay cannot compute again: what its `uses` clause declares and what its
+/// invocation records (convergence.md, "Actions").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Effect {
-    /// A service outside Tilo: a request and the answer it got.
     Web,
-    /// A draw: a number, a choice, an order.
     Random,
-    /// The clock and the person's zone: `now`, a day of a moment, a wall time of day.
     Time,
-    /// A person told something: `notify(to: ..., title: ..., body: ..., opens: ...)` reaches
-    /// their device, which a replay cannot take back.
+    /// A person told something: `notify(...)` reaches their device, which a replay cannot take back.
     Notify,
 }
 
 impl Effect {
-    /// Every effect, in the order a message lists them.
     pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time, Self::Notify];
 
     pub const fn word(self) -> &'static str {
@@ -42,7 +36,6 @@ impl Effect {
         }
     }
 
-    /// What reading it is, in a message: what a replay cannot compute again.
     pub const fn what(self) -> &'static str {
         match self {
             Self::Web => "a service outside Tilo",
@@ -52,15 +45,14 @@ impl Effect {
         }
     }
 
-    /// The effect a `uses` clause names, if it names one.
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|e| e.word() == name)
     }
 }
 
-/// The effects `funcs` reach: each function's own, and those of the code it calls, iterated to
-/// a fixed point. An action that calls another runs it as its own change, so its effects are
-/// not this action's; what it calls is decided on its own (see [`analyze`]).
+/// The effects `funcs` reach: each function's own, and those of the code it calls, iterated to a fixed
+/// point. An action that calls another runs it as its own change, so its effects are not this action's;
+/// what it calls is decided on its own (see [`analyze`]).
 pub fn reached(funcs: &[crate::ir::Func]) -> Vec<BTreeSet<Effect>> {
     let mut out: Vec<BTreeSet<Effect>> = funcs.iter().map(|f| f.facts.effects.clone()).collect();
     loop {
@@ -86,20 +78,16 @@ pub fn reached(funcs: &[crate::ir::Func]) -> Vec<BTreeSet<Effect>> {
     }
 }
 
-/// The result of the analysis, indexed like [`Module::funcs`].
 pub struct Effects {
-    /// Class of each action; `Read` for the rest.
     pub class: Vec<EffectClass>,
-    /// Every action each function can reach.
     pub reaches: Vec<Vec<Reach>>,
-    /// Whether each action's body invokes another action, itself included: what a run journals
-    /// for, because a call can wait for a person and the run then runs again from its start.
+    /// Whether each action's body invokes another action, itself included: what a run journals for,
+    /// because a call can wait for a person and the run then runs again from its start.
     pub invokes: Vec<bool>,
 }
 
 type ReachMap = BTreeMap<(String, String), Reach>;
 
-/// The id of the declaration behind a function export (`a_<id>` and so on).
 fn func_id(export: &str) -> &str {
     export.get(2..).unwrap_or(export)
 }
@@ -120,8 +108,8 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             } else {
                 EffectClass::Read
             };
-            // An action reaches what it calls: the invocations are what its change makes of
-            // them, so its class is at least theirs.
+            // An action reaches what it calls: the invocations are what its change makes of them, so its
+            // class is at least theirs.
             for a in &f.facts.invokes {
                 c = c.max(ref_class(a, &class));
             }
@@ -137,8 +125,8 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
         }
     }
     let mut reaches: Vec<ReachMap> = vec![ReachMap::new(); n];
-    // Actions reach themselves and what they call; views reach what their buttons apply and
-    // what the views they call reach. Iterate to a fixed point.
+    // Actions reach themselves and what they call; views reach what their buttons apply and what the
+    // views they call reach. Iterate to a fixed point.
     loop {
         let mut changed = false;
         for (i, f) in m.funcs.iter().enumerate() {
@@ -151,8 +139,8 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
                         &f.export,
                         class.get(i).copied().unwrap_or(EffectClass::Read),
                     ));
-                    // What an action calls runs as its own action, decided on its own: it is a
-                    // step of the run, not of this action's change.
+                    // What an action calls runs as its own action, decided on its own: it is a step of the
+                    // run, not of this action's change.
                     for a in &f.facts.invokes {
                         add.extend(reach_of(a, &class, &reaches, app));
                     }

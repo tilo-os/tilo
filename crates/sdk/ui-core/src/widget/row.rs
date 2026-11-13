@@ -7,9 +7,8 @@ use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 
-/// Keep the small savings from coalescing adjacent row children without
-/// turning sparse animation damage into a broad horizontal strip. A merged
-/// rectangle may cover at most 25% more pixels than its two inputs.
+/// Keep the small savings from coalescing adjacent row children without turning sparse
+/// animation damage into a broad horizontal strip.
 const MAX_DAMAGE_MERGE_OVERDRAW: f64 = 1.25;
 
 fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
@@ -28,7 +27,6 @@ pub struct Row {
     /// its parent (`flex_grow:1`) and stretches its children to its height —
     /// the right choice for a sidebar|content body row.
     fill_height: bool,
-    /// Optional explicit insets for toolbars and sticky action rows.
     horizontal_padding: f32,
     vertical_padding: f32,
     /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
@@ -70,7 +68,6 @@ impl Row {
 
     flow_builders!();
 
-    /// Apply layout flags from a serialized row node without rebuilding.
     pub fn apply_graph_props(&mut self, id: &str, no_wrap: bool, fill_remaining_height: bool) {
         self.flow.id = Some(id.to_owned());
         self.no_wrap = no_wrap;
@@ -90,7 +87,6 @@ impl Row {
         self
     }
 
-    /// Inset row contents without introducing a second layout wrapper.
     #[must_use]
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
         self.flow.padding_rhythm = None;
@@ -99,11 +95,8 @@ impl Row {
         self
     }
 
-    /// Override the gap between children (and between wrapped lines;
-    /// default `theme.gap_standard`, `s3`). Pass a spacing token —
-    /// `theme.tokens.spacing.s2` for a tight icon-and-label cluster, `s1`
-    /// for a segmented pair — rather than a number. `0.0` for children that
-    /// carry their own spacing.
+    /// Override the gap between children (and between wrapped lines; default
+    /// `theme.gap_standard`, `s3`).
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.flow.gap_override = Some(px.max(0.0));
@@ -111,11 +104,8 @@ impl Row {
         self
     }
 
-    /// Place children along the row: `SpaceBetween` for a title on the left
-    /// and actions on the right, `End` for a trailing action group, `Center`
-    /// for a centred pager. Without it children pack at the start, and the
-    /// grow-to-fill [`super::Spacer`] remains the way to push one group away
-    /// from another when the row also wraps.
+    /// Place children along the row: `SpaceBetween` for a title on the left and actions on the
+    /// right, `End` for a trailing action group, `Center` for a centred pager.
     #[must_use]
     pub fn with_justify(mut self, justify: taffy::JustifyContent) -> Self {
         self.justify = Some(justify);
@@ -123,10 +113,7 @@ impl Row {
     }
 
     /// Align children across the row (default: centred, or stretched for a
-    /// [`Row::with_fill_remaining_height`] body row). `Start` keeps a
-    /// single-line control level with the first line of a wrapping label
-    /// beside it; `Baseline` lines text of different sizes up on one
-    /// baseline.
+    /// [`Row::with_fill_remaining_height`] body row).
     #[must_use]
     pub fn with_align_items(mut self, align: taffy::AlignItems) -> Self {
         self.align_items_override = Some(align);
@@ -143,8 +130,6 @@ impl Row {
         self
     }
 
-    /// Top-align children with different intrinsic heights, as in a wrapping
-    /// collection of cards.
     #[must_use]
     pub fn align_start(mut self) -> Self {
         self.align_start = true;
@@ -153,7 +138,6 @@ impl Row {
 }
 
 impl Widget for Row {
-    /// Its children, as its layout node lines them up.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -203,7 +187,6 @@ impl Widget for Row {
                 taffy::AlignItems::Center
             })),
             justify_content: self.justify,
-            flex_grow: if self.fill_height { 1.0 } else { 0.0 },
             flex_shrink: 0.0, // Prevent vertical squashing
             gap: taffy::Size {
                 width: length(gap),
@@ -221,21 +204,20 @@ impl Widget for Row {
                     taffy::Dimension::auto()
                 },
             },
-            // Keep optional toolbar padding inside the row's percentage
-            // width instead of growing the parent's content bounds.
             box_sizing: taffy::BoxSizing::BorderBox,
             padding: super::layout::insets_xy(pad_x, pad_y),
             ..Default::default()
         };
+        // A body row that fills what its parent's column leaves takes that room and no more
+        // (`super::layout::filling`), its children sharing it.
+        let style = super::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    /// The row's own intrinsic size, from its children's, for a host that
-    /// measures a control before laying it out (a form field deciding
-    /// whether it fits beside its label). A single-line row is its children
-    /// side by side; a wrapping one is at least its widest child.
+    /// The row's own intrinsic size, from its children's, for a host that measures a control
+    /// before laying it out (a form field deciding whether it fits beside its label).
     fn measure(
         &mut self,
         known: taffy::Size<Option<f32>>,
@@ -270,11 +252,8 @@ impl Widget for Row {
         for child in &self.flow.children {
             child.collect_damage(regions);
         }
-        // Adjacent row children can share a pass, but unconditionally
-        // unioning them turns the two narrow endpoints of an indeterminate
-        // ProgressBar's wrap into a full-width strip. Coalesce only when the
-        // added bounding-box area is tightly bounded; preserving sparse
-        // regions is materially cheaper than one broad redraw at 4K.
+        // Adjacent row children can share a pass, but unconditionally unioning them turns the
+        // two narrow endpoints of an indeterminate ProgressBar's wrap into a full-width strip.
         let mut merged = Vec::with_capacity(regions.len().saturating_sub(first));
         for candidate in regions.drain(first..) {
             if let Some(previous) = merged.last_mut()
@@ -299,20 +278,10 @@ impl Widget for Row {
 
 flow_capabilities!(Row);
 
-/// Along a row's axis, children ask only for the room they need:
-///
-/// * A child that claims its parent's full width and refuses to shrink —
-///   a nested `Row`, a fluid `Container` — keeps a `Column` from squashing
-///   it vertically, but beside siblings in a row the same style takes the
-///   whole row on top of them and overflows it, starving any spacer to
-///   nothing. A nested row is as wide as its own children, and any other
-///   such child gives back what its siblings need, down to its content's
-///   width, as `Dropdown` and `SearchField` already do.
-/// * A child that grows into the room its siblings leave and names the
-///   least it can be (`Container::with_flex_grow().with_min_width(..)`)
-///   needs no more than that: its content's width must not count towards
-///   the row's own, or a row measured for its content (in a column with no
-///   scrollable above it) is as wide as its longest label and overflows.
+/// Along a row's axis, children ask only for the room they need: * A child that claims its
+/// parent's full width and refuses to shrink — a nested `Row`, a fluid `Container` — keeps a
+/// `Column` from squashing it vertically, but beside siblings in a row the same style takes the
+/// whole row on top of them and overflows it, starving any spacer to nothing.
 fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
     for &child in children {
         let Ok(style) = taffy.style(child) else {
@@ -345,8 +314,6 @@ fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
 /// The row's children are its slot: a component that holds a row takes the views it is given
 /// where they stand, and the row lays them out again.
 impl crate::component::SlotViews for Row {
-    // The row holds its children whole; a slot view is one of them.
-    // (`crate::widget::Element` is the same box.)
     fn len(&self) -> usize {
         self.flow.children.len()
     }

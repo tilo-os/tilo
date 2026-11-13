@@ -63,9 +63,6 @@ impl Snapshot {
             root: root.to_owned(),
             branch: None,
         };
-        // What changed is what the person holding the tree changed, and the
-        // worktree is theirs while the layers build from it: name it rather
-        // than the digest it moved.
         if worktree.head() != self.provenance.source_commit {
             return Err(CliError::InvalidInput(format!(
                 "the worktree's commit moved from {} to {} while the layers were building; a remote \
@@ -145,9 +142,6 @@ fn listed_paths(root: &Path) -> Result<Vec<String>, CliError> {
     {
         let path = std::str::from_utf8(raw)
             .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
-        // `.tilo-vm` names the machine this worktree builds for: which target
-        // a person picks is theirs to change while layers build from it, and it
-        // is not source either way.
         if path.split('/').any(|part| part == ".git")
             || path.starts_with("target/")
             || path.starts_with(".tilo-vm-inputs-")
@@ -209,9 +203,6 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// The machine a worktree builds for is local state, not source: choosing
-    /// another one while layers build must not look like the worktree changed
-    /// under the build, once for the inventory and once per file it names.
     #[test]
     fn the_machine_a_worktree_builds_for_is_not_a_source_input() {
         let root = tempfile::tempdir().unwrap();

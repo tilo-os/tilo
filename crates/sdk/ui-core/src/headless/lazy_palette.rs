@@ -1,6 +1,5 @@
-//! The action palette whose code may still be on its way (`lazy-palettes`):
-//! what a window asked of it meanwhile (a confirmation, search) waits here
-//! and is shown once the code is in.
+//! The action palette whose code may still be on its way (`lazy-palettes`): what a window asked of it
+//! meanwhile (a confirmation, search) waits here and is shown once the code is in.
 
 use super::FrameHarness;
 use crate::action_palette::ActionPaletteBox;
@@ -14,8 +13,7 @@ pub(super) struct Waiting {
 }
 
 impl FrameHarness {
-    /// A palette for this window, or `None` while its code is still on its
-    /// way (and then fetched).
+    /// A palette for this window, or `None` while its code is still on its way (and then fetched).
     pub(super) fn new_action_palette(&self) -> Option<ActionPaletteBox> {
         crate::action_palette::make_action_palette(self.text.font_system.locale().to_owned())
     }
@@ -29,12 +27,10 @@ impl FrameHarness {
             self.palette_waiting.ordinary = Some(request);
             return;
         };
-        // Read before the tree it is found in is discarded.
         self.palette_window = self.tree().invoking_window_rect();
         let anchor = self.tree().acting_control_rect();
         self.discard_layout_tree();
         self.focused = None;
-        // The question stands at the control the person used.
         palette.anchor_confirmation(anchor);
         palette.activate_ordinary(request);
         let went_ahead = palette.went_ahead();
@@ -45,8 +41,6 @@ impl FrameHarness {
     }
 
     /// Show what waited on the palette's code, once it is in.
-    /// Asking for the code here, as the window first lays out, fetches it
-    /// ahead of the first prompt or search it shows.
     pub(super) fn adopt_loaded_palette(&mut self) {
         let ready = crate::action_palette::ACTION_PALETTE.get().is_some();
         let waiting = &self.palette_waiting;

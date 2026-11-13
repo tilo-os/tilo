@@ -26,6 +26,8 @@ use tilo_session::{ActionPlane, Options, Session};
 /// The channel the test places: the demo workspace's `#design-crit`, as Chat's demo publishes
 /// it.
 const CHANNEL: &str = "chat.workspace.channels:c_crit";
+/// The channel's id within Chat's record: what a channel item names.
+const CHANNEL_ID: &str = "c_crit";
 /// A message the demo channel holds, as its page shows it.
 const MESSAGE: &str = "Morning! Pushed the new call overlay mock";
 /// What the person types into the composer, and what the channel says once it is posted.
@@ -96,6 +98,39 @@ fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u
         "y": 60,
         "width": width,
         "height": height,
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    session
+        .invoke("shell:arrangement", "place", &arguments)
+        .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
+    place
+}
+
+/// Place `resource` on the canvas far from the origin, so it stands clear of a conversation
+/// placed there: through the arrangement's published `place`, as an agent puts it there.
+fn place_far(session: &mut Session, resource: &str) -> u64 {
+    let (workspace, row, strip, place) = {
+        let tree = session.handle().read(Clone::clone);
+        let workspace = tree.active_workspace().expect("a workspace is in front");
+        (
+            workspace.slot.0.to_string(),
+            workspace.strips.first().expect("a row").id.0,
+            session.handle().mint_id(),
+            session.handle().mint_id(),
+        )
+    };
+    let arguments: Map<String, Value> = json!({
+        "workspace": workspace,
+        "row": row,
+        "strip": strip,
+        "place": place,
+        "resource": resource,
+        "x": 900,
+        "y": 540,
+        "width": 320,
+        "height": 220,
     })
     .as_object()
     .unwrap()
@@ -436,4 +471,210 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
             .collect::<Vec<_>>(),
         session.shell_refusals()
     );
+}
+
+/// The example drag from a message's attachment chip onto the canvas: a press on a chip inside
+/// the transcript's scrolling region travels out of it, lifts the chip carrying its resource,
+/// and the map under the pointer where it is let go runs the system's `place`. The video the
+/// chip holds is placed at the point it was let go, not left unplaced or placed at the origin.
+#[test]
+fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_canvas() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = session(root.path());
+    // The small demo channel whose whole transcript fits: its shared video's row is what the
+    // page draws for the attachment, in reach of a pointer.
+    const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
+    const DROPPED: &str = "tube.video:vid_rust_async";
+    place(&mut session, "chat.workspace.channels:c_general");
+    // The Frames canvas snaps a place let go to the style's grid by default, so it lands on the
+    // cell nearest the pointer rather than exactly where it was let go (`snap_x`/`snap_y`,
+    // `canvas.tl`; `frames_snap`, the style's own setting). This test reads where the drop lands
+    // against the point it was let go at, so it turns the grid off — what the person's own
+    // "Snap places to a grid" toggle does — and the place then stands at that exact point.
+    session
+        .run_shell_setting("set_frames_snap", vec![serde_json::json!(false)])
+        .expect("the Frames grid turns off");
+    crate::common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(SHARED)
+    });
+    // The chip stands on screen: its row's label, drawn through the transcript's scroll view.
+    let (chip_x, chip_y, chip_w, chip_h) = session.shell_text_bounds(SHARED).unwrap_or_else(|| {
+        panic!(
+            "the attachment's row stands on screen: {:?}",
+            session.accessible_labels()
+        )
+    });
+    // Bare canvas under the place: the map fills the desk below the entry, and the channel's
+    // window stands over it. A spot near the map's foot, left of the window's right edge and
+    // below its bottom, is the map itself — not the window's own drop target (its composer).
+    let (from_x, from_y) = (chip_x + chip_w / 2.0, chip_y + chip_h / 2.0);
+    let (to_x, to_y) = (60.0, f64::from(crate::common::HEIGHT) - 40.0);
+    // The resources placed before the drag: the drag adds the video beside the channel.
+    let before: Vec<String> = crate::common::places(&session)
+        .into_iter()
+        .map(|place| place.record)
+        .collect();
+    assert!(
+        !before.iter().any(|record| record == DROPPED),
+        "the video is not placed before the drag: {before:?}"
+    );
+    shot(&mut session, root.path(), "before-drag.png");
+    let socket = root.path().join("test-control.sock");
+    assert_eq!(
+        crate::common::control(
+            &mut session,
+            &socket,
+            &json!({
+                "op": "drag",
+                "x_from": from_x,
+                "y_from": from_y,
+                "x_to": to_x,
+                "y_to": to_y,
+            })
+        ),
+        json!({"ok": {}}),
+        "the drag is taken"
+    );
+    // The drag places the resource the chip held: the map's `drop` ran the system's `place`, so
+    // a place of the video stands in the arrangement, at the canvas point it was let go.
+    crate::common::until(&mut session, "the video placed on the canvas", |session| {
+        crate::common::places(session)
+            .iter()
+            .any(|place| place.record == DROPPED)
+    });
+    let placed: Vec<String> = crate::common::places(&session)
+        .into_iter()
+        .map(|place| place.record)
+        .collect();
+    assert!(
+        placed.iter().any(|record| record == DROPPED),
+        "the dragged chip places the resource it holds; before: {before:?}, after: {placed:?}; the \
+         shell refused {:?}",
+        session.shell_refusals()
+    );
+    // The video's strip stands where it was dropped, not at the origin: its canvas point is the
+    // map point under the pointer where the drag ended.
+    let place_key = crate::common::places(&session)
+        .into_iter()
+        .find(|place| place.record == DROPPED)
+        .and_then(|place| place.key.parse().ok())
+        .expect("the video's place stands in the arrangement");
+    let strip =
+        crate::common::strip_of(&session, place_key).expect("the video's place has a strip");
+    assert!(
+        strip.canvas_x > 0 && strip.canvas_y > 0,
+        "the drop places the video at the point it was let go, not the origin: {strip:?}"
+    );
+    shot(&mut session, root.path(), "dragged-out.png");
+}
+
+/// Send `count` messages to the conversation `channel` through Chat's own `send`, the verb its
+/// composer runs, so the transcript is longer than any place the canvas gives it.
+fn post_many(session: &mut Session, channel: &str, count: usize) {
+    for index in 0..count {
+        let mut arguments = Map::new();
+        arguments.insert(
+            "to".to_owned(),
+            json!([{"kind": "conversation", "id": channel, "name": channel}]),
+        );
+        arguments.insert("attached".to_owned(), json!([]));
+        arguments.insert(
+            "text".to_owned(),
+            json!(format!("line {index:02} of the transcript")),
+        );
+        session
+            .invoke(CHANNEL, "send", &arguments)
+            .unwrap_or_else(|error| panic!("send {index}: {error:?}"));
+    }
+}
+
+/// A conversation forty messages long in a place 520 px tall — the height the system places a
+/// place at — keeps its page inside the place: the composer stands within the place's own
+/// frame, the transcript scrolls in the room above it, and the newest message is drawn.
+#[test]
+fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = session(root.path());
+    place_at(&mut session, CHANNEL, 720, 520);
+    crate::common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(MESSAGE)
+    });
+    post_many(&mut session, CHANNEL_ID, 40);
+    let newest = "line 39 of the transcript";
+    crate::common::until(&mut session, "the newest message", |session| {
+        session.shell_says(newest)
+    });
+    // Where the place stands on the desk, as the shell lays it out: the frame's own box, the
+    // largest node named for the channel (the frame's group holds the page's heading of the
+    // same words inside it).
+    let (_, frame_y, _, frame_h) = session
+        .shell_text_bounds_all("#design-crit")
+        .into_iter()
+        .fold(None, |held: Option<(f64, f64, f64, f64)>, rect| {
+            Some(match held {
+                Some(best) if best.2 * best.3 >= rect.2 * rect.3 => best,
+                _ => rect,
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the place stands on the desk: {:?}",
+                session.accessible_labels()
+            )
+        });
+    assert!(
+        (frame_h - 520.0).abs() <= 1.0,
+        "the place stands 520 tall: {frame_h}"
+    );
+    let (_, clip_y, _, clip_h) = session.shell_scroll_clip(newest).unwrap_or_else(|| {
+        panic!(
+            "the transcript draws through its scroll view: {:?}",
+            session.accessible_labels()
+        )
+    });
+    let (_, composer_y, _, composer_h) = session
+        .shell_text_bounds("Message #design-crit")
+        .unwrap_or_else(|| {
+            panic!(
+                "the page offers its composer: {:?}",
+                session.accessible_labels()
+            )
+        });
+    assert!(
+        clip_h > 0.0,
+        "the transcript keeps a room to scroll in: {clip_h}"
+    );
+    assert!(
+        clip_y + clip_h <= composer_y + 1.0,
+        "the transcript's room ends over the composer: {} vs {composer_y}",
+        clip_y + clip_h
+    );
+    assert!(
+        composer_y + composer_h <= frame_y + 520.0 + 1.0,
+        "the composer stands inside the place: it ends at {}, the place at {}",
+        composer_y + composer_h,
+        frame_y + 520.0
+    );
+    let (_, newest_y, _, newest_h) = session.shell_drawn_text_bounds(newest).unwrap_or_else(|| {
+        panic!(
+            "the newest message is drawn: {:?}",
+            session.accessible_labels()
+        )
+    });
+    assert!(
+        newest_y >= clip_y - 0.5 && newest_y + newest_h <= clip_y + clip_h + 0.5,
+        "the newest message is drawn in the transcript's room: {newest_y}..{}, the room \
+         {clip_y}..{}",
+        newest_y + newest_h,
+        clip_y + clip_h
+    );
+    // The transcript is longer than its room: it scrolls, rather than the page growing past the
+    // place.
+    assert!(
+        clip_h < 520.0,
+        "the transcript's room is less than the whole place: {clip_h}"
+    );
+    crate::common::shot(&mut session, "place-520.png");
 }

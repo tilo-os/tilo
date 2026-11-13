@@ -39,8 +39,6 @@ pub(super) fn parse_pt(v: &str) -> Option<i64> {
         .map(|f| f.round() as i64)
 }
 
-/// Canonicalise an ODF `fo:color` (`#RRGGBB`) to lowercase so that the round-trip
-/// is stable and two replicas that imported the same colour converge.
 pub(super) fn normalize_color(v: &str) -> String {
     let t = v.trim();
     if let Some(hex) = t.strip_prefix('#')
@@ -52,8 +50,6 @@ pub(super) fn normalize_color(v: &str) -> String {
     t.to_string()
 }
 
-/// Classify an ODF `style:text-position` (`<pos> [height]`) as superscript (`Some(true)`),
-/// subscript (`Some(false)`), or neither: positive/`super` → superscript, negative/`sub` → subscript.
 pub(super) fn text_position_kind(v: &str) -> Option<bool> {
     let first = v.split_whitespace().next()?;
     match first {
@@ -72,8 +68,6 @@ pub(super) fn text_position_kind(v: &str) -> Option<bool> {
     }
 }
 
-/// Parse an ODF `fo:line-height` percentage into the model's unitless `line_spacing`
-/// multiple; fixed lengths and `normal` are left unset (best-effort).
 pub(super) fn parse_line_height(v: &str) -> Option<f64> {
     let t = v.trim();
     let pct = t.strip_suffix('%')?.trim().parse::<f64>().ok()?;
@@ -93,8 +87,6 @@ pub(super) fn map_align(v: &str) -> String {
     }
 }
 
-/// Map an ODF `style:wrap` value onto the model wrap (`none`|`left`|`right`|`both`).
-/// `run-through`/`none` → no wrap; `parallel`/`dynamic`/`biggest` → wrap both sides.
 pub(super) fn map_odf_wrap(v: &str) -> &'static str {
     match v {
         "left" => "left",
@@ -104,7 +96,6 @@ pub(super) fn map_odf_wrap(v: &str) -> &'static str {
     }
 }
 
-/// Map a model wrap (`none`|`left`|`right`|`both`) onto the ODF `style:wrap` value.
 pub(super) fn model_wrap_to_odf(v: &str) -> &'static str {
     match v {
         "left" => "left",
@@ -114,8 +105,6 @@ pub(super) fn model_wrap_to_odf(v: &str) -> &'static str {
     }
 }
 
-/// Parse an ODF length used in margins/indents (`fo:margin-*`, `fo:text-indent`) to pixels.
-/// Mirrors `content::parse_len_px` but kept local to avoid a cross-module dependency.
 pub(super) fn parse_margin_px(v: &str) -> Option<f64> {
     let v = v.trim();
     let split = v
@@ -153,8 +142,6 @@ pub(super) fn text_fields(e: &BytesStart) -> TextFields {
         match a.key.as_ref() {
             b"fo:font-weight" => f.bold = Some(val == "bold"),
             b"fo:font-style" => f.italic = Some(val == "italic"),
-            // Parse as f64 (not the rounded `parse_pt`) so fractional sizes like 16.5pt survive the
-            // round-trip; percentage sizes (`130%`) fail the parse and stay unset.
             b"fo:font-size" => f.size = val.trim_end_matches("pt").trim().parse::<f64>().ok(),
             b"style:font-name" | b"fo:font-family" => {
                 f.font = Some(crate::generic_font_family(&val).to_owned());
@@ -181,10 +168,8 @@ pub(super) fn reassemble_bcp47(language: Option<&str>, country: Option<&str>) ->
     }
 }
 
-/// Inline marks (with values) implied by a `style:text-properties` element.
 pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> {
     let mut m = Vec::new();
-    // Per-run language override is split across fo:language/fo:country; collect both, then reassemble one BCP-47 `lang` mark.
     let (mut fo_language, mut fo_country) = (None, None);
     for a in e.attributes().flatten() {
         let val = crate::unescape_attr(&a).unwrap_or_default();
@@ -209,17 +194,14 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 ));
             }
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
-            // Text background (highlight): fo:background-color, skipping the `transparent` sentinel ("no highlight").
             b"fo:background-color" if val != "transparent" => {
                 m.push(("highlight".into(), MarkValue::Str(normalize_color(&val))));
             }
-            // Vertical alignment: style:text-position is `<pos> <height>`; a positive position (or `super`) is superscript, negative (or `sub`) is subscript.
             b"style:text-position" => match text_position_kind(&val) {
                 Some(true) => m.push(("super".into(), MarkValue::Bool(true))),
                 Some(false) => m.push(("sub".into(), MarkValue::Bool(true))),
                 None => {}
             },
-            // Per-run language override: fo:language (+ optional fo:country) reassembled into one BCP-47 `lang` mark below.
             b"fo:language" => fo_language = Some(val),
             b"fo:country" => fo_country = Some(val),
             _ => {}
@@ -253,13 +235,11 @@ pub(crate) struct ListNumbering {
 
 #[derive(Default)]
 pub(crate) struct StyleRegistry {
-    /// `text`- and `paragraph`-family styles by name.
     pub table: StyleTable,
     /// list-style name → is it numbered (ordered)?
     pub list_ordered: HashMap<String, bool>,
     /// list-style name → its level-0 numbering (format + start), for ordered-list fidelity.
     pub list_numbering: HashMap<String, ListNumbering>,
-    /// `graphic`-family (frame) style name → the model wrap value, parsed from `style:wrap`.
     pub graphic_wrap: HashMap<String, String>,
     /// `text`-family styles that say more than their marks: named (character) styles, styles
     /// derived from one, and styles with text properties the model has no mark for.
@@ -325,7 +305,6 @@ struct StyleScratch {
     indent: Option<f64>,
     line_height: Option<f64>,
     graphic_wrap: Option<String>,
-    /// The style's text properties include one no mark represents.
     text_extra: bool,
 
     list_name: Option<String>,
@@ -508,8 +487,6 @@ impl StyleScratch {
     }
 }
 
-/// Text properties the model has marks for (their Asian/complex-script twins follow them), and
-/// ones that carry nothing to keep (editing-session ids, the underline's width/colour).
 const MODELED_TEXT_PROPS: &[&str] = &[
     "fo:background-color",
     "fo:color",
@@ -530,7 +507,6 @@ const MODELED_TEXT_PROPS: &[&str] = &[
     "officeooo:paragraph-rsid",
 ];
 
-/// Whether a `style:text-properties` sets anything the model has no mark for.
 fn has_unmodeled_text_props(e: &BytesStart) -> bool {
     e.attributes().flatten().any(|a| {
         let key = String::from_utf8_lossy(a.key.as_ref());
@@ -557,7 +533,6 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
 
     while let Ok(ev) = reader.read_event() {
         match ev {
-            // A self-closing <style:style/> (no properties) has no End event, so register it straight from its attributes (parent/outline/heading).
             Event::Empty(e) if e.name().as_ref() == b"style:style" => {
                 register_self_closing_style(&e, reg, from_named_section);
             }

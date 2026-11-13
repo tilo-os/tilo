@@ -98,8 +98,6 @@ pub fn load_shipped_catalogue(
         }
     }
 
-    // Stable key ordering makes source traversal irrelevant. Image-owned
-    // built-ins win an ID collision; imported duplicates are discarded.
     let built_in_records = builtins.records.len();
     let umu_records = umu.len();
     let bottles_records = bottles.len();

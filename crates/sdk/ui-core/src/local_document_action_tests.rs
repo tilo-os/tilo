@@ -73,7 +73,6 @@ fn canonical_host_captures_each_execution_not_each_undo_step() {
     let queue = Queue::new();
     let mut doc = AutoCommit::new();
     let mut host = crate::local_dispatch::LocalDispatch::new();
-    // A native/background action outside local input has no user observation.
     host.try_dispatch(&mut doc, "put", &Put(0)).unwrap();
     assert!(queue.drain().is_empty());
     let before = doc.get_heads();
@@ -116,9 +115,8 @@ fn canonical_host_captures_each_execution_not_each_undo_step() {
     assert!(host.take_committed().is_none());
 }
 
-/// The queue bounds reports, not edits: past its capacity an edit still
-/// lands, reserves no report and records the gap once; reports resume as
-/// soon as replies release capacity.
+/// The queue bounds reports, not edits: past its capacity an edit still lands, reserves no report and
+/// records the gap once; reports resume as soon as replies release capacity.
 #[test]
 fn saturation_bounds_reports_records_the_gap_and_reply_restores_capacity() {
     let queue = Queue::new();
@@ -126,8 +124,6 @@ fn saturation_bounds_reports_records_the_gap_and_reply_restores_capacity() {
     let _published = published();
     let mut doc = AutoCommit::new();
     let mut host = crate::local_dispatch::LocalDispatch::new();
-    // Every edit lands; the first one the queue has no room to report for
-    // is recorded as a gap.
     let mut reported = 0;
     loop {
         let heads = doc.get_heads();
@@ -300,7 +296,6 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         ACTIVE.with_borrow_mut(|active| {
             active.as_mut().unwrap().custody = Some(custody.clone());
         });
-        // Include an existing head and context (including a duplicated group).
         doc.put(ROOT, "existing", true).unwrap();
         let context = ActionContext::default()
             .with_purpose("quoted \" purpose\n")
@@ -380,10 +375,7 @@ fn reservation_accepts_exact_wire_limit_and_refuses_one_extra_byte() {
     }
 }
 
-/// A report is only ever made against a published surface the input
-/// pinned. With none pinned (every surface that may be held is held by
-/// changes on their way), the edit still lands, nothing is reported for
-/// it, and the gap is recorded for the person to see.
+/// A report is only ever made against a published surface the input pinned.
 #[test]
 fn input_without_any_pinned_directory_reports_nothing_and_records_the_gap() {
     let queue = Queue::new();

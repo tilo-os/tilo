@@ -1,11 +1,11 @@
-messages-empty-heading = Your people, together
+messages-empty-heading = No conversations yet
 messages-empty-hint = Add people in Contacts to start a conversation.
 messages-open-contacts = Open Contacts
 messages-open-contacts-description = Add the people you message in Contacts
 messages-choose-heading = Choose a person
 messages-choose-hint = Your conversations stay separate for each service and account.
 messages-choose-conversation = Choose a conversation
-messages-held-hint = Kept in this Messages. Words written here wait for a person to send them from a device holding the account.
+messages-held-hint = Kept in this copy of Messages. Words written here wait for a device that holds the account to send them.
 messages-conversation-missing = This conversation is no longer here.
 messages-people = People
 messages-back = Back to people
@@ -82,7 +82,7 @@ messages-setup-linked = Device linked. Messaging resumes after its connection an
 messages-first-signal = Link a Signal account
 messages-first-self-review = Verify the selected service identity: { $identity }
 messages-first-confirm = Confirm identity and request access
-messages-first-permission-review = Review this account’s access request in Passwords. Messages starts only after you approve it.
+messages-first-permission-review = Approve this account’s access request in Passwords.
 
 messages-first-sms = Choose an SMS SIM
 messages-select-sim = Use this SIM
@@ -93,10 +93,10 @@ messages-first-whatsapp = Link a WhatsApp account
 messages-whatsapp-show-code = Show private linking code
 messages-whatsapp-review-storage = Review protected storage access
 messages-whatsapp-refresh-code = Refresh private linking code
-messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp. This version supports direct text and ordinary private group text, with reviewed membership changes. Community, disappearing-message, media and call features are unavailable.
+messages-whatsapp-storage-explanation = Review access to WhatsApp's private encrypted storage, then confirm the identity WhatsApp reports. Text messages and private group text work, including membership changes you review. Communities, disappearing messages, media and calls don't work.
 messages-setup-link-heading = Link an account
 messages-setup-your-accounts = Your accounts
-messages-setup-service-missing = Messaging isn't running here, so no account can be linked. Linking WhatsApp or Signal needs the messaging service a Tilo computer runs; a browser has none.
+messages-setup-service-missing = Messaging isn't running here, so no account can be linked. Link WhatsApp or Signal on a Tilo computer instead.
 messages-first-whatsapp-hint = Scan a code with WhatsApp on your phone
 messages-first-signal-hint = Scan a code with Signal on your phone
 messages-first-account-prepare = Set up a private Messages account
@@ -110,7 +110,7 @@ messages-account-groups = WhatsApp groups for { $account }
 messages-groups-unavailable = Group membership is unavailable for this account.
 messages-groups-empty = No participating groups.
 messages-group-untitled = Untitled group
-messages-groups-scope = These groups belong to the selected WhatsApp account, separately from workspace collaborators. Refresh membership before sending or changing members.
+messages-groups-scope = These groups belong to the selected WhatsApp account, separately from workspace collaborators.
 messages-group-role-member = Member
 messages-group-role-admin = Administrator
 messages-group-role-super-admin = Group creator
@@ -199,3 +199,10 @@ tilo-messages-view-confirm-account = Review account
 tilo-messages-view-search-messages = Search messages
 tilo-messages-view-export-content = Export conversations
 tilo-messages-view-send = Send message
+
+## What the app is called in a window and in the launcher
+messages-app-title = Messages
+## What the records are called, and the actions on them
+messages-drafts = Message drafts
+messages-drafts-keep-draft = Keep a draft
+messages-drafts-drop-draft = Drop a draft

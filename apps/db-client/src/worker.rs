@@ -1,20 +1,5 @@
 //! The database worker: a background thread that owns the live engine handle
 //! and runs every blocking operation off the UI thread.
-//!
-//! Connecting to a remote server (a 10 s socket timeout), introspecting the
-//! catalog and running a query all block. Doing them on the render thread
-//! would freeze the whole window, so they run here instead: the widget
-//! [`request`](DbWorker::request)s work over a channel, the worker executes it
-//! and sends a [`DbReply`] back on a waking channel: each reply wakes the app,
-//! whose next sync [`drain`](DbWorker::drain)s it (see [`crate::session`]).
-//! Nothing polls for replies frame by frame. The engine never crosses the thread boundary — it is created and used
-//! entirely on the worker — so no live driver handle has to be `Send`/`Sync`.
-//!
-//! The same channel path is driven synchronously by
-//! [`block_until_idle`](DbWorker::block_until_idle) for a capture and the
-//! headless tests, so those exercise the identical
-//! production engine code and only differ in that they wait for the reply
-//! instead of pumping frames.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -25,11 +10,9 @@ use uuid::Uuid;
 use crate::engine::{LiveEngine, QueryCancellation, open_engine};
 use crate::model::{ConnectionProfile, DatabaseSchema, QueryResult};
 
-/// Work handed to the background thread.
 #[derive(Debug)]
 pub enum DbRequest {
     /// Open a live engine for this profile (carries the in-memory password)
-    /// and introspect its catalog.
     Connect(Box<ConnectionProfile>),
     /// Run an arbitrary SQL statement against the open engine.
     Query {
@@ -49,7 +32,6 @@ pub enum DbRequest {
     Shutdown,
 }
 
-/// A result handed back from the background thread.
 #[derive(Debug)]
 pub enum DbReply {
     /// A connection opened and its catalog was introspected.
@@ -65,7 +47,6 @@ pub enum DbReply {
         error: String,
     },
     /// A `Run`/`Query` finished. `schema` is `Some` when the statement was
-    /// DML/DDL, so the caller can re-adopt the possibly-changed catalog.
     Queried {
         connection_id: Uuid,
         generation: u64,
@@ -83,8 +64,6 @@ pub enum DbReply {
 }
 
 /// Handle to the background worker thread. Owns the request/reply channels and
-/// tracks how many requests are still outstanding, so the UI can say it is
-/// busy until every reply has landed.
 pub struct DbWorker {
     tx: Sender<DbRequest>,
     rx: Receiver<DbReply>,
@@ -100,7 +79,6 @@ struct ActiveQuery {
     cancellation: QueryCancellation,
 }
 
-/// Result of a generation-checked cancellation request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CancelQueryResult {
     Requested,
@@ -148,7 +126,6 @@ impl DbWorker {
     }
 
     /// Collect every reply that has arrived, without blocking. Call on each
-    /// sync; a reply wakes the app for one.
     pub fn drain(&mut self) -> Vec<DbReply> {
         let mut out = Vec::new();
         while let Ok(reply) = self.rx.try_recv() {
@@ -169,7 +146,6 @@ impl DbWorker {
                 self.outstanding -= 1;
                 out.push(reply);
             } else {
-                // Sender hung up; nothing more will arrive.
                 self.outstanding = 0;
                 break;
             }
@@ -212,7 +188,6 @@ impl Drop for DbWorker {
 }
 
 /// The background loop: owns the single live engine handle and services one
-/// request at a time.
 fn worker_loop(
     rx: &Receiver<DbRequest>,
     tx: &ui::wake::WakingSender<DbReply>,
@@ -254,8 +229,6 @@ fn worker_loop(
                     publish_active_query(active_query, connection_id, generation, eng);
                     let result = eng.run(&sql);
                     clear_active_query(active_query, connection_id, generation);
-                    // A DML/DDL statement may have changed the catalog; a
-                    // failed or row-returning statement leaves it untouched.
                     let schema = match &result {
                         Ok(r) if !r.is_select => eng.introspect().ok(),
                         _ => None,
@@ -295,7 +268,6 @@ fn worker_loop(
             }
         };
         if tx.send(reply).is_err() {
-            // UI side is gone.
             break;
         }
     }

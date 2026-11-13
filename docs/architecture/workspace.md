@@ -452,7 +452,7 @@ the desk's actions; a branch of another workspace is refused at the agent door.
   document the branch's engine holds. No document is shared between the two
   workspaces: an edit in either stays there, also after a restart.
 - **What the apps keep for the workspace on this device**
-  (`tilo-rooms/<workspace>/<app>`): every file, with each document in it forked
+  (`tilo-workspaces/<workspace>/<app>`): every file, with each document in it forked
   the same way and without the source's writer id, locks or load hints.
 - **The workspace's own files** (`.workspaces/<workspace>`), into the branch's
   tree, each file sharing its source's extents where the file system can
@@ -652,7 +652,7 @@ the model but instead of it:
 
 - **The stored room spelling.** `RoomId`, the `room` key a desktop entry or an
   action row stores its workspace id under, `(app, room, record)` addresses and
-  `tilo-rooms` on disk. The workspace is the key and is written `workspace`;
+  `tilo-workspaces` on disk. The workspace is the key and is written `workspace`;
   what is stored today keeps reading, and `RoomId`'s last uses are the old
   shell's.
 - **Governance by one device.** The governor, the pinned governance writer,

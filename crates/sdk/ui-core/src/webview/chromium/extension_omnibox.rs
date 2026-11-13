@@ -1,14 +1,11 @@
-//! What the person types after an extension's keyword in the Browser's
-//! address (`chrome.omnibox`), as the engine is told of it, and the
-//! extension's suggestions as the host tells the Browser of them
-//! (`extension_tabs.h`).
+//! What the person types after an extension's keyword in the Browser's address
+//! (`chrome.omnibox`), as the engine is told of it, and the extension's suggestions as
+//! the host tells the Browser of them (`extension_tabs.h`).
 
 use serde_json::{Value, json};
 
 use crate::webview::{OmniboxInput, OmniboxSuggestion, WebViewEvent};
 
-/// The most suggestions the host sends for an extension's keyword at once,
-/// and the longest text of one or of what is typed after the keyword.
 const SUGGESTIONS: usize = 16;
 const TEXT_BYTES: usize = 2048;
 
@@ -19,9 +16,8 @@ fn text(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Extension `id`'s `extension_omnibox_suggestions` or
-/// `extension_omnibox_default` event, when every part of it is what the
-/// host sends; `None` for any other event.
+/// Extension `id`'s `extension_omnibox_suggestions` or `extension_omnibox_default` event,
+/// when every part of it is what the host sends; `None` for any other event.
 pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
     match value["event"].as_str()? {
         "extension_omnibox_suggestions" => {
@@ -56,8 +52,8 @@ pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
     }
 }
 
-/// Whether what is typed is what the host reads: bounded text, and a
-/// request within the numbers it carries.
+/// Whether what is typed is what the host reads: bounded text, and a request within the
+/// numbers it carries.
 pub(super) fn within_limits(input: &OmniboxInput) -> bool {
     match input {
         OmniboxInput::Changed { text, request } => {

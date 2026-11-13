@@ -1,16 +1,12 @@
-//! Bounded, speculative local action observations. These are not authorizations.
-//!
-//! A collaboration route installs a scope only while processing its local input,
-//! pinned to the directory revision actually published for that route. Background
-//! work and delivered broker invocations must not inherit a local-input scope.
+//! Bounded, speculative local action observations. These are not authorizations. Background work and
+//! delivered broker invocations must not inherit a local-input scope.
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionContext, ActionError, EncodedAction};
 
-/// The local execution observation and the invocation it reports, as the
-/// collab client sends them.
+/// The local execution observation and the invocation it reports, as the collab client sends them.
 pub use ::collaboration::local_document_action::{
     CapturedAction, MAX_REPORT_FIELD, PublishedInvocation, validate_report_field,
 };
@@ -34,15 +30,15 @@ struct Active {
     custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     queue: Queue,
     revision: String,
-    /// The input's surface moved under it: its actions get their revision
-    /// once a surface they can be reported against is published.
+    /// The input's surface moved under it: its actions get their revision once a surface they can be
+    /// reported against is published.
     revision_pending: bool,
     aliases: Option<Rc<std::collections::HashMap<String, String>>>,
     pin: Option<Rc<dyn std::any::Any>>,
 }
 
-/// Frozen before input: each retained component has its own route queue and
-/// transport aliases from the directory snapshot that supplied `revision`.
+/// Frozen before input: each retained component has its own route queue and transport aliases from the
+/// directory snapshot that supplied `revision`.
 #[derive(Clone)]
 pub(crate) struct InputRoute {
     pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
@@ -50,10 +46,8 @@ pub(crate) struct InputRoute {
     pub queue: Queue,
     /// Empty when no published surface could be pinned for this input.
     pub revision: String,
-    /// The surface moved under this input: its actions are admitted and
-    /// reported once a later surface can be pinned. Otherwise an input with
-    /// no revision reports nothing: its actions still edit, and the queue
-    /// records the gap.
+    /// The surface moved under this input: its actions are admitted and reported once a later surface
+    /// can be pinned.
     pub revision_pending: bool,
     pub aliases: Rc<std::collections::HashMap<String, String>>,
     pub pin: Option<Rc<dyn std::any::Any>>,
@@ -66,10 +60,9 @@ thread_local! {
     static UNSIGNED: RefCell<Option<UnsignedEdits>> = const { RefCell::new(None) };
 }
 
-/// Set when local input actually changed a document while no authenticated
-/// publication could observe it. Input that edits nothing (scroll, selection,
-/// hover, focus) never sets it: unsigned history is a fact about recorded
-/// edits, not about input.
+/// Set when local input actually changed a document while no authenticated publication could observe
+/// it. Input that edits nothing (scroll, selection, hover, focus) never sets it: unsigned history is a
+/// fact about recorded edits, not about input.
 #[derive(Clone, Default)]
 pub(crate) struct UnsignedEdits(Rc<std::cell::Cell<bool>>);
 
@@ -101,9 +94,7 @@ pub fn input_is_active() -> bool {
     ACTIVE.with_borrow(Option::is_some) || INPUT_ROUTES.with_borrow(|routes| !routes.is_empty())
 }
 
-/// Install only around a synchronous local input/semantic dispatch, never a
-/// model pass. The actual route is selected at typed execution from the retained
-/// component's host scope, not from whichever document happens to be primary.
+/// Install only around a synchronous local input/semantic dispatch, never a model pass.
 pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
     let scope = suspend();
     if routes.is_empty() {
@@ -122,8 +113,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
     scope
 }
 
-/// Local input with no authenticated publication to observe it. Editing
-/// proceeds unobserved; `edits` learns only of input that changed a document.
+/// Local input with no authenticated publication to observe it.
 pub(crate) fn enter_unsigned_input(edits: UnsignedEdits) -> Scope {
     let scope = suspend();
     UNSIGNED.with(|unsigned| *unsigned.borrow_mut() = Some(edits));
@@ -131,7 +121,6 @@ pub(crate) fn enter_unsigned_input(edits: UnsignedEdits) -> Scope {
 }
 
 /// The unsigned input scope a local typed execution runs in, if any.
-/// Continuations and external content are not this person's edits.
 pub(crate) fn unsigned_input(context: Option<&ActionContext>) -> Option<UnsignedEdits> {
     if context.is_some_and(|context| {
         context.source_invocation.is_some()
@@ -239,7 +228,6 @@ impl Queue {
 }
 
 /// Exclude native work or a retained remote continuation from local-user capture.
-/// The surrounding route scope is restored on drop.
 pub fn suspend() -> Scope {
     let previous = ACTIVE.with(|active| active.take());
     let published = PUBLISHED.with(|published| published.take());
@@ -254,7 +242,6 @@ pub fn suspend() -> Scope {
 }
 
 /// Temporarily retain an invocation before the framework builds its action.
-/// An inner typed apply keeps the outer named invocation instead of replacing it.
 pub fn with_invocation(invocation: PublishedInvocation) -> InvocationScope {
     let previous = PUBLISHED.with(|published| published.replace(Some(invocation)));
     InvocationScope { previous }
@@ -273,9 +260,7 @@ pub fn has_invocation() -> bool {
     PUBLISHED.with(|published| published.borrow().is_some())
 }
 
-/// Reserve before mutation. A saturated queue reserves nothing: the edit runs
-/// unreported and the queue records the refusal, so no report is ever lost
-/// silently and no keystroke is ever refused for want of report capacity.
+/// Reserve before mutation.
 pub(crate) fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
@@ -435,7 +420,6 @@ impl Reservation {
                 pin: self.active.pin.clone(),
             },
         ));
-        // The outstanding lease survives draining and transport submission.
         self.bytes = 0;
         Ok(())
     }
@@ -458,8 +442,8 @@ pub(crate) struct Lease {
     pin: Option<Rc<dyn std::any::Any>>,
 }
 impl Lease {
-    /// Hold `pin` instead of the surface the input froze: a report waiting
-    /// for its answer needs only the row it is reported against.
+    /// Hold `pin` instead of the surface the input froze: a report waiting for its answer needs only
+    /// the row it is reported against.
     pub(crate) fn narrow_pin(&mut self, pin: Rc<dyn std::any::Any>) {
         self.pin = Some(pin);
     }
@@ -564,8 +548,6 @@ fn report_budget(
     if before.len() > 256 {
         return Err("local action exceeds head budget".into());
     }
-    // A change whose surface moved under its input has no revision yet:
-    // budget the longest one it can be given.
     let pending_revision = revision.is_empty();
     if !pending_revision {
         validate_report_field(revision)?;

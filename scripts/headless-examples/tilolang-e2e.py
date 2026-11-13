@@ -33,8 +33,8 @@ app gets on a real system:
              show in Today's window, which holds none of them itself (today-*.png); one is
              marked done by its box, a checkbox Tasks' window names ("Mark ... done"), another
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
-             cleanup", pressed by name, runs on them and asks the person before changing Tasks
-             and Notes
+             cleanup", found by the action it runs and pressed where its header stands it, runs
+             on them and asks the person before changing Tasks and Notes
   places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
              places through its own toggle, pressed by name as a tool presses a control, though
              another window goes by that name too: Inbox chosen there takes that window to the
@@ -197,6 +197,20 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
+def doing(name: str, ty: str, action: str, on: str | None = None) -> str:
+    """What the app `name`'s action `action`, run on records of the app `on`'s type `ty`, is known
+    by: the record kind it acts on and the operation, in the apps' own ids, which no composition
+    and no language changes.
+
+    `ty` is the type as its app declares it (`Tasks`, `Notebook`): the kind that app publishes the
+    records under is `tl.` and the app's id before it. `on` names the app holding those records,
+    when it is not the one declaring the action (`today`'s cleanup runs on `tasks`' tasks). `action`
+    is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`), as every
+    declaration there is named (`new_task = qymo5lg2`)."""
+    kind = f"tl.{app_id(on or name)}.{ty}"
+    return "\x1f".join((kind, app_id_of(name, action)))
+
+
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
     """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
     view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
@@ -225,50 +239,59 @@ def descendants(pid: int) -> list[int]:
     return out
 
 
-def environ(pid: int) -> dict:
+def read_proc(path: str) -> bytes | None:
+    """What `/proc` entry `path` holds, read as the process's own owner would read it.
+
+    A session holding the person's identity keys turns `PR_SET_DUMPABLE` off, so the kernel
+    hands its `/proc` entry to nobody but root: what keeps another process from reading its
+    keys also keeps a test from reading its command line, its namespaces or its maps. `sudo -n`
+    is tried once for those, as [`vulkan_drivers`] does for the maps."""
     try:
-        raw = Path(f"/proc/{pid}/environ").read_bytes()
+        return Path(path).read_bytes()
     except OSError:
+        result = subprocess.run(["sudo", "-n", "cat", path], capture_output=True)
+        return result.stdout if result.returncode == 0 else None
+
+
+def read_proc_link(path: str) -> str | None:
+    """What the `/proc` symbolic link `path` names, as [`read_proc`] reads an entry."""
+    try:
+        return os.readlink(path)
+    except OSError:
+        result = subprocess.run(["sudo", "-n", "readlink", path], text=True, capture_output=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+
+def environ(pid: int) -> dict:
+    raw = read_proc(f"/proc/{pid}/environ")
+    if raw is None:
         return {}
     pairs = (item.split(b"=", 1) for item in raw.split(b"\0") if b"=" in item)
     return {k.decode(errors="replace"): v.decode(errors="replace") for k, v in pairs}
 
 
 def exe(pid: int) -> str:
-    try:
-        return os.readlink(f"/proc/{pid}/exe")
-    except OSError:
-        return ""
+    return read_proc_link(f"/proc/{pid}/exe") or ""
 
 
 def cmdline(pid: int) -> list[str]:
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")
-    except OSError:
+    raw = read_proc(f"/proc/{pid}/cmdline")
+    if raw is None:
         return []
+    return raw.decode(errors="replace").split("\0")
 
 
 def namespaces(pid: int) -> dict:
-    out = {}
-    for ns in ("user", "mnt", "pid"):
-        try:
-            out[ns] = os.readlink(f"/proc/{pid}/ns/{ns}")
-        except OSError:
-            out[ns] = None
-    return out
+    return {ns: read_proc_link(f"/proc/{pid}/ns/{ns}") for ns in ("user", "mnt", "pid")}
 
 
 def vulkan_drivers(pid: int) -> list[str] | None:
     """The Vulkan drivers mapped into `pid`, or None when its maps are not
-    readable (a non-dumpable process; `sudo -n` is tried once)."""
-    try:
-        maps = Path(f"/proc/{pid}/maps").read_text()
-    except OSError:
-        result = subprocess.run(["sudo", "-n", "cat", f"/proc/{pid}/maps"], text=True, capture_output=True)
-        if result.returncode != 0:
-            return None
-        maps = result.stdout
-    return sorted({m for m in re.findall(r"libvulkan_[a-z_]+\.so", maps)})
+    readable (a non-dumpable process `sudo -n` cannot read either)."""
+    raw = read_proc(f"/proc/{pid}/maps")
+    if raw is None:
+        return None
+    return sorted({m for m in re.findall(r"libvulkan_[a-z_]+\.so", raw.decode(errors="replace"))})
 
 
 def switches(pid: int) -> dict[str, int]:
@@ -486,7 +509,10 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
             time.sleep(1.0)
             if name is None:
                 continue
-            rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+            # Read once the session says the window is drawn: a window the compositor has not
+            # mapped yet has no rect to capture.
+            rect = until(f"window {window['tab']} to be drawn",
+                         lambda: drawn_window(session, window["tab"]), 30)["rect"]
             path = out / f"tasks-window-{i}-{name}.png"
             session.control_cmd("snapshot", str(path))
             seen.append(window_pixels(png_rgb(path), rect))
@@ -593,8 +619,8 @@ def check_record_open(session: Session, out: Path) -> dict:
     before = tasks_windows()
     if [w.get("title") for w in before] != [tasks_place("today")] * len(before):
         raise Failed(f"Tasks' windows do not all stand on Today: {before}")
-    new_task = app_word("tasks", "new_task")
-    made = until(new_task, lambda: app_action(session, tasks, new_task, "Document"))
+    new_task = doing("tasks", "Tasks", "new_task")
+    made = until(new_task, lambda: app_action(session, tasks, "new_task", "Document"))
     invoke_found(session, made, {"title": title})
     search_beside(session, title, beside=False)
     shown = until(f"a window of Tasks named {title!r}", lambda: next(
@@ -644,6 +670,18 @@ def check_places(session: Session, out: Path) -> dict:
     return {"titles": tabs()}
 
 
+def drawn_window(session: Session, tab) -> dict | None:
+    """The desk's row of the window `tab` once the session says the window is drawn: the
+    compositor placed it on a display (`rect`) and its client committed a frame (`frames`). A
+    tab is on the desk as soon as its app opened the window, and the compositor maps the window
+    when its first buffer arrives, so a row whose `rect` is null is a window nothing has drawn
+    yet. A tool reads a window once the session reports it drawn, never on a timer's guess."""
+    row = next((shown for shown in session.windows() if shown.get("tab") == tab), None)
+    if row is None or not row.get("rect") or not row.get("frames"):
+        return None
+    return row
+
+
 def window_controls(session: Session, window: dict) -> list[str]:
     """The controls the desk names in `window`, with the window in front: what its app drew of its
     own content — its rows, its lists — named where the window stands."""
@@ -651,15 +689,9 @@ def window_controls(session: Session, window: dict) -> list[str]:
     until(f"window {window['tab']} in front", lambda: any(
         shown.get("tab") == window["tab"] and shown.get("active")
         for shown in session.windows()), 30)
-    time.sleep(0.5)
-    shown = next((shown for shown in session.windows() if shown.get("tab") == window["tab"]), None)
-    if shown is None:
-        raise Failed(f"window {window['tab']} is not on the desk to be read")
-    rect = shown.get("rect")
-    if rect is None:
-        # Not drawn yet: it names nothing, and a caller waiting for a name asks again.
-        return []
-    x, y, width, height = rect
+    drawn = until(f"window {window['tab']} drawn on the desk to be read",
+                  lambda: drawn_window(session, window["tab"]), 30)
+    x, y, width, height = drawn["rect"]
     return [target["name"] for target in session.targets()
             if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
 
@@ -669,8 +701,11 @@ def today_shown(session: Session, out: Path, name: str) -> bytes:
     today = app_id("today")
     window = next(w for w in session.windows() if w.get("app_id") == today)
     focus(session, window)
+    until(f"window {window['tab']} drawn on the desk to be read",
+          lambda: drawn_window(session, window["tab"]), 30)
+    # The frame that shows the window in front, drawn before its picture is taken.
     time.sleep(1.0)
-    rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+    rect = drawn_window(session, window["tab"])["rect"]
     path = out / f"today-{name}.png"
     session.control_cmd("snapshot", str(path))
     return window_pixels(png_rgb(path), rect)
@@ -692,11 +727,12 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
     them as its own controls. Two of them are finished in Tasks: one by its box, the other from its
     row's menu, opened where the row stands and run by the command a tool presses by name, both
-    standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
-    as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
-    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps, which
-    this check denies: an app's change of another app is made only with the person's leave
-    (`docs/architecture/apps.md`)."""
+    standing in Tasks' history. Its "Morning cleanup" is a control of that window too: it runs
+    Today's action on Tasks' record, so it is found by that action and that record's kind and
+    pressed where it stands, as a tool or an assistive technology presses it: with tasks done in
+    Tasks it clears them and files "Morning: 2 done" in Notes, or asks the person's leave to
+    change those two apps, which this check denies: an app's change of another app is made only
+    with the person's leave (`docs/architecture/apps.md`)."""
     today = app_id("today")
     held = ["Water the plants", "Call the plumber"]
     # What Today's window offers by name: the card's rows, read off Tasks' record, and the
@@ -704,8 +740,8 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     focus(session, next(w for w in session.windows() if w.get("app_id") == today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = app_word("today", "morning_cleanup")
-    session.wait_target(cleanup)
+    cleanup = doing("today", "Tasks", "morning_cleanup", on="tasks")
+    session.wait_doing(cleanup)
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
     # The tasks the two checks above finished: what the cleanup counts, in the words Today files
@@ -716,7 +752,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
     # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.
-    session.click_named(cleanup)
+    session.click_doing(cleanup)
 
     def ran():
         shown = named(session)
@@ -809,6 +845,9 @@ def menu_complete(session: Session, title: str) -> dict:
     tasks = app_id("tasks")
     focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
     session.wait_target(title)
+    # A row's own command: every task's menu offers it, so its identity names the action and not
+    # the row it stands on. It is pressed here where the one open menu draws it, by the words it
+    # reads in — the check that nothing else of the window offers those words is below.
     complete = app_word("tasks", "check", "w-complete")
     shown = named(session)
     if complete in shown:
@@ -841,7 +880,7 @@ def history_total(session: Session, name: str) -> int:
 
 def check_actions(session: Session) -> dict:
     out = {}
-    news = {name: app_word(name, action) for name, action in
+    news = {name: action for name, action in
             [("notes", "new_note"), ("chat", "new_channel"), ("tasks", "new_task")]}
     for name in APPS:
         published = until(
@@ -877,12 +916,14 @@ def app_operation(session: Session, app: str, operation: str):
     return None
 
 
-def app_action(session: Session, app: str, title: str, kind: str | None = None):
-    """The first action called `title` that the window of `app` publishes, of the kind its effect
-    has when `kind` names one (`View`, `Document`). Its application is `app` exactly: so.tilo.notes
-    never matches so.tilo.lang.notes."""
-    for action in session.actions(title):
-        if (action.get("application") == app and action.get("title") == title
+def app_action(session: Session, app: str, declared: str, kind: str | None = None):
+    """The action `declared` (`new_task`, as the app's source writes it) that the window of `app`
+    publishes, of the kind its effect has when `kind` names one (`View`, `Document`). The action is
+    found by the name the app publishes it under — as a native app's verb, which an agent at the
+    door calls it by — never by the words its title reads in. Its application is `app` exactly:
+    so.tilo.notes never matches so.tilo.lang.notes."""
+    for action in session.actions(""):
+        if (action.get("application") == app and action.get("operation") == declared
                 and kind in (None, action.get("operation_kind"))):
             return action
     return None

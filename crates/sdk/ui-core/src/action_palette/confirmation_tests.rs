@@ -1,8 +1,3 @@
-// The palette's confirmation step and the rows it lists, included in
-// `action_palette::tests`.
-
-/// Put the keyboard in the field for the name, as a person tabbing to it
-/// does.
 fn focus_confirmation(palette: &mut ActionPalette, doc: &mut automerge::AutoCommit) {
     let target = palette.target("field");
     Widget::perform_semantic_action(
@@ -14,8 +9,6 @@ fn focus_confirmation(palette: &mut ActionPalette, doc: &mut automerge::AutoComm
     );
 }
 
-/// Press the palette's `part` ("submit", "cancel") as a click or a screen
-/// reader does.
 fn press(palette: &mut ActionPalette, part: &str, doc: &mut automerge::AutoCommit) {
     let target = palette.target(part);
     Widget::perform_semantic_action(
@@ -27,7 +20,6 @@ fn press(palette: &mut ActionPalette, part: &str, doc: &mut automerge::AutoCommi
     );
 }
 
-/// Type `text` into the field for the name, the keyboard there.
 fn type_confirmation(palette: &mut ActionPalette, text: &str, doc: &mut automerge::AutoCommit) {
     focus_confirmation(palette, doc);
     let target = palette.target("field");
@@ -62,7 +54,6 @@ fn confirmation_refreshes_never_turn_the_question_back_into_search() {
     palette.open();
     palette.activate_selected();
     let original = palette.asking().unwrap().0.clone();
-    // These are the refreshes a live frame performs after opening a question.
     palette.load_open_resources(&resources);
     palette.load_bound_resources(Vec::new());
     palette.set_providers(Vec::new());
@@ -182,8 +173,6 @@ fn the_standard_confirmation_button_keeps_exact_evidence_and_cancels_on_escape()
     }
 }
 
-/// A plain question: the palette asks the action's own question with no
-/// field at all, swallows typing, and one Enter queues the action.
 #[test]
 fn a_confirmation_asks_the_actions_question_and_one_enter_goes_ahead() {
     let _settled = crate::motion::testing::settled();
@@ -313,9 +302,6 @@ fn a_confirmation_field_never_shows_search_results() {
         "a plain text field"
     );
     let mut doc = automerge::AutoCommit::new();
-    // Whatever reaches the palette meanwhile (typing, the app's
-    // resources, its search sources, another page of results), the card
-    // under the field stays the question: no result list opens.
     for typed in ["n", "Alan", "Refresh", "nvme0"] {
         type_confirmation(&mut palette, typed, &mut doc);
         palette.load_open_resources(&resources);
@@ -337,7 +323,6 @@ fn a_confirmation_field_never_shows_search_results() {
         "no search field is offered: {shown}"
     );
 
-    // The name typed in full lets Erase go ahead.
     type_confirmation(&mut palette, "nvme0n1", &mut doc);
     press(&mut palette, "submit", &mut doc);
     assert_eq!(
@@ -349,9 +334,6 @@ fn a_confirmation_field_never_shows_search_results() {
     );
 }
 
-/// Listed action rows read as outcomes and appear once: no raw ids, no
-/// separator glyphs, no implementation suffixes, and window-bar actions are
-/// not listed again as app actions.
 #[test]
 fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs() {
     let _settled = crate::motion::testing::settled();
@@ -386,11 +368,10 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
                     .unwrap(),
                 ),
             ),
-        // A bar button's own verb, as the control projection publishes
+        // A bar button verb, as the control projection publishes
         // it: for agents, never a person's row.
         ResourceSpec::new("ui:new-folder", "tilo.ui.control", "New folder")
             .with_action(focus.for_audience(tilo_actions::Audience::Agents)),
-        // The same action published twice (the bar and the document).
         ResourceSpec::new("feeds.library", "feeds.library", "Feeds").with_action(new_folder()),
     ];
     let mut palette = ActionPalette::new();
@@ -427,7 +408,7 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
     }
 }
 
-/// An action's row in the window's own search says what every list says of
+/// An action's row in the window search says what every list says of
 /// it — its picture and its declared keys as keycaps — and lists only what
 /// the app offers a person: never the host's operations or the window's
 /// control mirrors.
@@ -460,11 +441,8 @@ fn action_rows_carry_the_actions_picture_and_its_keys() {
     let internal_step = tapped(&new_task, "internal", "Internal step");
     let resources = vec![
         ResourceSpec::new("tasks", "tasks.Tasks", "Tasks").with_action(new_task),
-        // The host runs these for agents; they are no one's palette entry.
         ResourceSpec::new("tl:host", "tl.host", "tilolang").with_action(run_block),
-        // A control the window already draws.
         ResourceSpec::new("ui:new-task", "tilo.ui.control", "New task").with_action(focus),
-        // A node without a title names nothing to look for.
         ResourceSpec::new("tasks:internal", "tasks.Task", " ").with_action(internal_step),
     ];
     let mut palette = ActionPalette::new();
@@ -493,9 +471,6 @@ fn action_rows_carry_the_actions_picture_and_its_keys() {
     );
 }
 
-/// Two open documents offering the same action are two rows, each naming
-/// its document under the outcome: neither is hidden as a duplicate, and
-/// neither joins the name on with a glyph.
 #[test]
 fn the_same_action_of_two_documents_is_two_rows_naming_each() {
     let _settled = crate::motion::testing::settled();
@@ -537,7 +512,6 @@ fn the_same_action_of_two_documents_is_two_rows_naming_each() {
 
 #[test]
 fn history_requires_fresh_palette_confirmation_for_ready_work() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut resource = thing_resource();
     resource
@@ -563,7 +537,6 @@ fn history_requires_fresh_palette_confirmation_for_ready_work() {
     palette.set_cursor(idx);
     palette.activate_selected();
     let mut doc = automerge::AutoCommit::new();
-    // The name goes into the confirmation's own plain field.
     palette.set_query("MARK THING");
     press(&mut palette, "submit", &mut doc);
     assert!(palette.pending_dispatch.is_some());
@@ -587,8 +560,6 @@ fn history_requires_fresh_palette_confirmation_for_ready_work() {
     );
 }
 
-/// The palette asking to erase a drive named "Samsung T7", which it asks to
-/// be typed.
 fn asking_to_erase() -> ActionPalette {
     let mut erase = ActionSpec::immediate(
         "erase",
@@ -615,7 +586,6 @@ fn asking_to_erase() -> ActionPalette {
     palette
 }
 
-/// The palette's part `part` ("submit", "cancel") as a screen reader finds it.
 fn part(palette: &ActionPalette, part: &str) -> crate::a11y::AccessNode {
     let target = palette.target(part);
     Widget::accessibility(palette)
@@ -627,7 +597,7 @@ fn part(palette: &ActionPalette, part: &str) -> crate::a11y::AccessNode {
 }
 
 /// The dialog names the action and what it destroys, says what is lost, and
-/// its button is the action's own verb, disabled until the name is typed
+/// its button is the action verb, disabled until the name is typed
 /// exactly.
 #[test]
 fn a_typed_confirmation_names_what_is_lost_and_its_verb_waits_for_the_exact_name() {
@@ -657,7 +627,6 @@ fn a_typed_confirmation_names_what_is_lost_and_its_verb_waits_for_the_exact_name
         part(&palette, "submit").state.disabled,
         "and not once it changes"
     );
-    // The field for the name is labelled; the search field is gone.
     let field = Widget::accessibility(&palette)
         .unwrap()
         .children
@@ -670,7 +639,6 @@ fn a_typed_confirmation_names_what_is_lost_and_its_verb_waits_for_the_exact_name
         description.contains("Erases every file on Samsung T7."),
         "{description}"
     );
-    // It is the shared sheet, the field inside its body, in any window.
     let mut text = crate::font_catalog::fixture_renderer();
     for theme in [Theme::dark(), Theme::light()] {
         for window in [
@@ -758,8 +726,6 @@ fn enter_never_erases_only_the_erase_button_does() {
     );
 }
 
-/// Cancel has the keyboard when the dialog opens: Enter straight away
-/// cancels, and Tab reaches the field for the name past the disabled verb.
 #[test]
 fn cancel_has_the_keyboard_when_a_typed_confirmation_opens() {
     let _settled = crate::motion::testing::settled();

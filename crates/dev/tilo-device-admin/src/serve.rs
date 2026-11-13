@@ -1,9 +1,8 @@
-//! The device side: serve the route, admit administrators, bridge each
-//! admitted session to a fresh `tilo-vmd rpc`, and log every session.
+//! The device side: serve the route, admit administrators, bridge each admitted session to a
+//! fresh `tilo-vmd rpc`, and log every session.
 //!
-//! The service reads the device's identity again for every session, so a
-//! device enrolled or a revocation learned after it started counts at once.
-//! Every refused and every admitted session, and each request an admitted
+//! The service reads the device's identity again for every session, so a device enrolled or a
+//! revocation learned after it started counts at once. Every session, and each request an admitted
 //! one makes, is a line in the service's journal.
 
 use std::path::PathBuf;
@@ -23,8 +22,7 @@ use crate::net::{self, Relays};
 
 /// How long a dialer may take for each handshake step.
 const STEP: Duration = Duration::from_secs(20);
-/// A request line longer than this ends the session (a layer upload chunk
-/// is a fraction of it).
+/// A request line longer than this ends the session; a layer upload chunk is a fraction of it.
 const MAX_LINE: usize = 64 << 20;
 /// How often the service records its endpoint for `tilo-device-admin id`.
 const STATE_EVERY: Duration = Duration::from_secs(30);
@@ -146,7 +144,6 @@ pub async fn run(options: Options) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What the running service records about its endpoint.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct State {
     pub endpoint: String,
@@ -256,8 +253,8 @@ async fn session(shared: &Shared, connection: Connection) {
     );
 }
 
-/// Run the handshake after the dialer's greeting; `true` once the dialer
-/// is admitted. Every refusal is logged and answered.
+/// Run the handshake after the dialer's greeting; `true` once the dialer is admitted. Every
+/// refusal is logged and answered.
 async fn admitted(
     shared: &Shared,
     peer: iroh::EndpointId,
@@ -350,8 +347,8 @@ async fn admitted(
     true
 }
 
-/// The `"method"` of a request line, read from its first bytes (tilo-vm
-/// writes the envelope's `method` before its `params`).
+/// The `"method"` of a request line, read from its first bytes: tilo-vm writes the envelope's
+/// `method` before its `params`.
 pub fn method(line: &[u8]) -> Option<&str> {
     let head = line.get(..line.len().min(256))?;
     let key = b"\"method\":\"";

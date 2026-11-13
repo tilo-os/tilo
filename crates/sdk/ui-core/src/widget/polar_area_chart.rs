@@ -70,7 +70,6 @@ pub struct PolarAreaMarks {
     sectors: Vec<Sector>,
 }
 
-/// Equal-angle sectors whose radius shows each value (a Nightingale rose).
 pub type PolarAreaChart = Plot<PolarAreaMarks>;
 
 impl PolarAreaChart {
@@ -163,7 +162,6 @@ impl PolarAreaMarks {
                 center.x + mid_r * angle.cos(),
                 center.y + mid_r * angle.sin(),
             );
-            // The chord of the sector through its middle bounds the width.
             let room = (2.0 * mid_r * (sweep / 2.0).sin()).min(radius - inner);
             let Some((shown, w, h)) =
                 crate::widget::chart_labels::fit_label(tr, label, room, &style)

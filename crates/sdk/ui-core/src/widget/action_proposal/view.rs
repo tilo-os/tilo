@@ -1,10 +1,5 @@
-//! The shared surface of an [`ActionProposal`]: what it would change, what it
-//! sends, which model answers, and the decision.
-//!
-//! Built from the design system's own parts — [`Column`], [`Text`] and
-//! [`Button`] — so it carries the toolkit's focus, accessibility and theming
-//! rather than a copy of them. What the person is about to send stands in
-//! full above the decision: not a summary and not a count, the text itself.
+//! The shared surface of an [`ActionProposal`]: what it would change, what it sends, which model
+//! answers, and the decision.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,9 +9,6 @@ use crate::i18n::ArgValue;
 use crate::tokens::TextRole;
 use crate::widget::{Button, ButtonRole, Column, Text};
 
-/// A proposal on screen: its title, the model's note, the change as a diff
-/// (or a value's before and after), which model answered and where it ran,
-/// exactly what is sent, and Accept and Reject.
 pub struct ActionProposalView<R: tilo_resource::Resource> {
     proposal: ActionProposal,
     target: ProposalTarget<R>,
@@ -25,8 +17,6 @@ pub struct ActionProposalView<R: tilo_resource::Resource> {
 }
 
 impl<R: tilo_resource::Resource> ActionProposalView<R> {
-    /// The proposal `proposal` in front of the person, which accepting
-    /// writes at `target`.
     #[must_use]
     pub fn new(proposal: ActionProposal, target: ProposalTarget<R>) -> Self {
         let mut sheet = Column::new().with_rhythm(crate::tokens::Rhythm::Related);
@@ -67,7 +57,6 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
             Text::new(&proposal.model.placed()).with_role(TextRole::Caption),
             &mut index,
         );
-        // What is sent, in full: the person reads it before it goes.
         for part in proposal
             .context
             .instruction
@@ -100,17 +89,14 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
         }
     }
 
-    /// The proposal on screen.
     pub fn proposal(&self) -> &ActionProposal {
         &self.proposal
     }
 
-    /// What the person decided through this view, once they did.
     pub fn decision(&self) -> Option<&ProposalDecision> {
         self.decision.as_ref()
     }
 
-    /// The one action accepting runs, once the person has accepted.
     pub fn accepted(&self) -> Option<super::ProposalAccept<R>> {
         matches!(self.decision, Some(ProposalDecision::Accept { .. }))
             .then(|| self.proposal.accept_action(self.target.clone()))
@@ -131,8 +117,6 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
         }
     }
 
-    /// Put Accept and Reject under the proposal. `on_decision` runs once,
-    /// from whichever the person picks.
     #[must_use]
     pub fn with_decisions(self, on_decision: impl FnMut(ProposalDecision) + 'static) -> Self {
         let changed = Rc::new(RefCell::new(on_decision));
@@ -160,15 +144,12 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
         Self { sheet, ..self }
     }
 
-    /// The laid-out sheet itself, for a dialog or a page to hold.
     pub fn into_widget(mut self) -> Box<dyn crate::widget::Widget> {
         let sheet = std::mem::take(&mut self.sheet);
         Box::new(sheet)
     }
 }
 
-/// One diff line as the person reads it: the mark that says how it stands,
-/// then the line as it is.
 fn diff_text(line: &super::DiffLine) -> Text {
     let mark = match line.tag {
         DiffTag::Same => "  ",

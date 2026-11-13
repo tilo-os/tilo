@@ -11,10 +11,9 @@ pub struct ResourceKind(String);
 impl ResourceKind {
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `ext` is empty
-    /// (after trimming and stripping a leading `.`), longer than 64
-    /// characters, or contains anything but letters, digits, `+`, `-` or
-    /// `_`.
+    /// [`DefaultAppError::InvalidResource`] for an empty extension, one over 64
+    /// characters, or one with characters other than letters, digits, `+`, `-`
+    /// or `_`.
     pub fn extension(ext: &str) -> Result<Self, DefaultAppError> {
         let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         if ext.is_empty()
@@ -30,10 +29,8 @@ impl ResourceKind {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `mime` has no `/`,
-    /// is longer than 255 characters, either side of the `/` is empty,
-    /// contains an invalid MIME token character, contains a second `/`, or
-    /// either side is a bare `*` wildcard.
+    /// [`DefaultAppError::InvalidResource`] unless `mime` is one non-wildcard
+    /// type whose sides hold valid token characters.
     pub fn mime(mime: &str) -> Result<Self, DefaultAppError> {
         let mime = mime.trim().to_ascii_lowercase();
         let Some((top, subtype)) = mime.split_once('/') else {
@@ -53,11 +50,9 @@ impl ResourceKind {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidResource`] if `scheme` is empty
-    /// (after trimming and stripping a trailing `:`), longer than 32
-    /// characters, does not start with a letter, contains anything but
-    /// letters, digits, `+`, `-` or `.`, or names a reserved scheme
-    /// (`file`, `data`, `javascript`).
+    /// [`DefaultAppError::InvalidResource`] unless `scheme` is one registered
+    /// name a second `:`-free remainder can follow, not `file`, `data` or
+    /// `javascript`.
     pub fn scheme(scheme: &str) -> Result<Self, DefaultAppError> {
         let scheme = scheme.trim().trim_end_matches(':').to_ascii_lowercase();
         let mut chars = scheme.chars();
@@ -110,7 +105,6 @@ impl ResourceKind {
             .or_else(|| self.scheme_name().map(|s| format!("x-scheme-handler/{s}")))
     }
 
-    /// The inverse of [`Self::mimeapps_type`]: a `MimeType=` entry as a resource.
     pub fn from_mimeapps_type(value: &str) -> Option<Self> {
         let value = value.trim();
         match value.to_ascii_lowercase().strip_prefix("x-scheme-handler/") {
@@ -149,35 +143,89 @@ pub struct AppCandidate {
     pub package_id: String,
     pub display_name: String,
     pub resources: BTreeSet<ResourceKind>,
-    /// Picked for these resources on purpose rather than opened by default
-    /// (an editor that imports video): without an explicit choice, another
-    /// app claiming the resource wins. The manifest's `[providers].secondary`.
+    /// Picked for these resources on purpose rather than opened by default (an
+    /// editor that imports video): without an explicit choice, another app claiming
+    /// the resource wins. The manifest's `[providers].secondary`.
     pub secondary: bool,
 }
 
 impl AppCandidate {
+    /// A Tilo package, claiming the file extensions, MIME types and URI schemes its signed
+    /// manifest declares.
+    #[must_use]
+    pub fn package(
+        package_id: String,
+        display_name: String,
+        extensions: &[String],
+        mime_types: &[String],
+        schemes: &[String],
+        secondary: bool,
+    ) -> Self {
+        Self {
+            package_id,
+            display_name,
+            resources: extensions
+                .iter()
+                .filter_map(|extension| ResourceKind::extension(extension).ok())
+                .chain(
+                    mime_types
+                        .iter()
+                        .filter_map(|mime| ResourceKind::mime(mime).ok()),
+                )
+                .chain(
+                    schemes
+                        .iter()
+                        .filter_map(|scheme| ResourceKind::scheme(scheme).ok()),
+                )
+                .collect(),
+            secondary,
+        }
+    }
+
+    /// One of the machine's own applications, by its desktop-file id, claiming the types its
+    /// entry's `MimeType=` names — `x-scheme-handler/<scheme>` for a link. `None` for an entry
+    /// that claims nothing: an app that opens no type is no candidate.
+    #[must_use]
+    pub fn host(desktop_id: &str, display_name: String, mime_types: &[String]) -> Option<Self> {
+        let resources: BTreeSet<ResourceKind> = mime_types
+            .iter()
+            .filter_map(|mime| ResourceKind::from_mimeapps_type(mime))
+            .collect();
+        (!resources.is_empty()).then(|| Self {
+            package_id: crate::mimeapps::host_app_id(desktop_id),
+            display_name,
+            resources,
+            secondary: false,
+        })
+    }
+
     pub fn handles(&self, resource: &ResourceKind) -> bool {
         self.resources.contains(resource)
     }
 
+    /// The desktop-file id of the machine's own application this is, if it is one; a Tilo
+    /// package's own id else.
+    #[must_use]
+    pub fn host_desktop_id(&self) -> Option<&str> {
+        crate::mimeapps::host_desktop_id(&self.package_id)
+    }
+
     /// A host desktop entry rather than a Tilo package; see [`crate::mimeapps`].
     pub fn is_host(&self) -> bool {
-        crate::mimeapps::host_desktop_id(&self.package_id).is_some()
+        self.host_desktop_id().is_some()
     }
 }
 
-/// The administrator's choice for a workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "app")]
 pub enum WorkspaceDefaultPolicy {
-    /// No workspace preference: resolve through each person's personal default.
     #[default]
     FollowPersonal,
     App(String),
 }
 
-/// A person's choice inside one workspace. `FollowWorkspace` is the absent/default
-/// state: it follows an admin app when set and otherwise reaches personal defaults.
+/// A person's choice inside one workspace. `FollowWorkspace` is the absent state:
+/// it follows an admin app when set and otherwise reaches personal defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "app")]
 pub enum UserWorkspaceChoice {
@@ -187,7 +235,6 @@ pub enum UserWorkspaceChoice {
     App(String),
 }
 
-/// The settings section holding a person's [`PersonalDefaults`].
 pub const PERSONAL_DEFAULTS_SECTION: &str = "default_apps";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,8 +298,8 @@ impl<'a> DefaultAppResolver<'a> {
         }
     }
 
-    /// Consult the host's `mimeapps.list` chain when choosing among host applications that
-    /// no personal or workspace choice names.
+    /// Consult the host's `mimeapps.list` chain when choosing among host
+    /// applications that no personal or workspace choice names.
     #[must_use]
     pub fn with_system_defaults(mut self, chain: &'a crate::mimeapps::MimeAppsChain) -> Self {
         self.system_defaults = Some(chain);
@@ -261,10 +308,10 @@ impl<'a> DefaultAppResolver<'a> {
 
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::InvalidPackage`] if `package_id` fails
-    /// [`validate_package_id`], [`DefaultAppError::NotInstalled`] if it
-    /// names no candidate, or [`DefaultAppError::DoesNotHandle`] if the
-    /// candidate does not claim `resource`.
+    /// [`DefaultAppError::InvalidPackage`] if `package_id` fails
+    /// [`validate_package_id`], [`DefaultAppError::NotInstalled`] if it names no
+    /// candidate, or [`DefaultAppError::DoesNotHandle`] if the candidate does not
+    /// claim `resource`.
     pub fn validate_app(
         &self,
         resource: &ResourceKind,
@@ -283,8 +330,8 @@ impl<'a> DefaultAppResolver<'a> {
         Ok(())
     }
 
-    /// Resolve in strict precedence order. Stale/uninstalled selections are
-    /// skipped rather than becoming a denial-of-open after an uninstall.
+    /// Resolve one kind of file or link, in strict precedence order. Stale/uninstalled
+    /// selections are skipped rather than becoming a denial-of-open after an uninstall.
     pub fn resolve(
         &self,
         resource: &ResourceKind,
@@ -292,66 +339,98 @@ impl<'a> DefaultAppResolver<'a> {
         personal: &PersonalDefaults,
         workspace: Option<&WorkspaceDefaults>,
     ) -> Option<DefaultAppSelection> {
-        let valid = |id: &str| self.validate_app(resource, id).is_ok();
-        let personal_id = || personal.handlers.get(resource).filter(|id| valid(id));
+        self.resolve_document(std::slice::from_ref(resource), user_id, personal, workspace)
+    }
+
+    /// The app that opens one document or link, of `kinds` — the kinds it has, the narrowest
+    /// first, so that an extension (`.txt`) precedes the type it names (`text/plain`): the app
+    /// the workspace or the person chose for one of them; else a Tilo app that claims one; else
+    /// the app this machine opens it with (`mimeapps.list`); else `None`, and the person is
+    /// asked which app they want.
+    ///
+    /// A choice is the person's, not a claim: an app they picked for a kind opens their files of
+    /// it even when its manifest claims none (a `.txt` in an app that only names Markdown is
+    /// still what they asked for). Only an app this device no longer has is skipped, since no
+    /// open could reach it.
+    ///
+    /// Callers must not reorder these layers: one file opens the same way wherever it is opened.
+    pub fn resolve_document(
+        &self,
+        kinds: &[ResourceKind],
+        user_id: &str,
+        personal: &PersonalDefaults,
+        workspace: Option<&WorkspaceDefaults>,
+    ) -> Option<DefaultAppSelection> {
+        let installed = |id: &str| self.candidates.iter().any(|app| app.package_id == id);
+        let personal_id = || {
+            kinds.iter().find_map(|kind| {
+                personal
+                    .handlers
+                    .get(kind)
+                    .filter(|id| installed(id.as_str()))
+                    .cloned()
+            })
+        };
 
         if let Some(ws) = workspace {
-            let choice = ws
-                .user_choices
-                .get(user_id)
-                .and_then(|m| m.get(resource))
-                .unwrap_or(&UserWorkspaceChoice::FollowWorkspace);
-            match choice {
-                UserWorkspaceChoice::App(id) if valid(id) => {
+            // The person's own choice in this workspace, for the narrowest kind they made one for.
+            let own = kinds.iter().find_map(|kind| {
+                ws.user_choices
+                    .get(user_id)
+                    .and_then(|m| m.get(kind))
+                    .map(|choice| (kind, choice))
+            });
+            match own {
+                Some((_, UserWorkspaceChoice::App(id))) if installed(id) => {
                     return Some(DefaultAppSelection {
                         package_id: id.clone(),
                         source: SelectionSource::UserWorkspaceOverride,
                     });
                 }
-                UserWorkspaceChoice::PersonalDefault => {
-                    if let Some(id) = personal_id() {
-                        return Some(DefaultAppSelection {
-                            package_id: id.clone(),
+                // An explicit escape from workspace policy remains an escape when the personal
+                // app has since been removed: neither the policy nor the personal defaults are
+                // asked, and the safe installed fallback answers.
+                Some((_, UserWorkspaceChoice::PersonalDefault)) => {
+                    return match personal_id() {
+                        Some(package_id) => Some(DefaultAppSelection {
+                            package_id,
                             source: SelectionSource::PersonalOverride,
-                        });
-                    }
-                    // An explicit escape from workspace policy remains an
-                    // escape when the personal app has since been removed.
-                    // Use the safe installed fallback below instead.
+                        }),
+                        None => self.fallback(kinds),
+                    };
                 }
-                _ => {}
+                Some((_, UserWorkspaceChoice::App(_))) => return self.fallback(kinds),
+                Some((_, UserWorkspaceChoice::FollowWorkspace)) | None => {}
             }
-            if matches!(choice, UserWorkspaceChoice::FollowWorkspace) {
-                if let Some(WorkspaceDefaultPolicy::App(id)) = ws.policy.get(resource)
-                    && valid(id)
-                {
-                    return Some(DefaultAppSelection {
-                        package_id: id.clone(),
-                        source: SelectionSource::WorkspacePolicy,
-                    });
-                }
-            } else {
-                return self.fallback(resource);
+            // The workspace's own rule, for the narrowest kind it names an installed app for.
+            if let Some(id) = kinds.iter().find_map(|kind| match ws.policy.get(kind) {
+                Some(WorkspaceDefaultPolicy::App(id)) if installed(id) => Some(id),
+                _ => None,
+            }) {
+                return Some(DefaultAppSelection {
+                    package_id: id.clone(),
+                    source: SelectionSource::WorkspacePolicy,
+                });
             }
         }
-        if let Some(id) = personal_id() {
+        if let Some(package_id) = personal_id() {
             return Some(DefaultAppSelection {
-                package_id: id.clone(),
+                package_id,
                 source: SelectionSource::PersonalDefault,
             });
         }
-        self.fallback(resource)
+        self.fallback(kinds)
     }
 
-    /// Without an explicit choice: a Tilo package first, since it runs sandboxed and
-    /// collaborative, one that opens the resource ahead of one that is only picked
-    /// for it; then the host's own `mimeapps.list` default; then any host
-    /// application, deterministically by name.
-    fn fallback(&self, resource: &ResourceKind) -> Option<DefaultAppSelection> {
+    /// Every app that claims any of `kinds`, in the order the resolver tries them: a Tilo package
+    /// first, since it runs sandboxed and collaborative, one that opens the kind ahead of one
+    /// only picked for it; then the machine's own applications by name.
+    #[must_use]
+    pub fn claimants(&self, kinds: &[ResourceKind]) -> Vec<&'a AppCandidate> {
         let mut candidates: Vec<&AppCandidate> = self
             .candidates
             .iter()
-            .filter(|app| app.handles(resource))
+            .filter(|app| kinds.iter().any(|kind| app.handles(kind)))
             .collect();
         candidates.sort_by(|a, b| {
             a.is_host()
@@ -360,6 +439,14 @@ impl<'a> DefaultAppResolver<'a> {
                 .then_with(|| a.display_name.cmp(&b.display_name))
                 .then_with(|| a.package_id.cmp(&b.package_id))
         });
+        candidates
+    }
+
+    /// Without an explicit choice: a Tilo package that claims one of `kinds`; then the host's own
+    /// `mimeapps.list` default for one of them; then any host application, deterministically by
+    /// name.
+    fn fallback(&self, kinds: &[ResourceKind]) -> Option<DefaultAppSelection> {
+        let candidates = self.claimants(kinds);
         let first = candidates.first()?;
         if !first.is_host() {
             return Some(DefaultAppSelection {
@@ -367,15 +454,20 @@ impl<'a> DefaultAppResolver<'a> {
                 source: SelectionSource::DeterministicFallback,
             });
         }
-        if let (Some(chain), Some(mime)) = (self.system_defaults, resource.mimeapps_type())
-            && let Some(id) = chain.default_for(&mime, |id| {
-                candidates.iter().any(|app| app.package_id == id)
-            })
-        {
-            return Some(DefaultAppSelection {
-                package_id: id.to_string(),
-                source: SelectionSource::SystemDefault,
-            });
+        if let Some(chain) = self.system_defaults {
+            for kind in kinds {
+                let Some(mime) = kind.mimeapps_type() else {
+                    continue;
+                };
+                if let Some(id) = chain.default_for(&mime, |id| {
+                    candidates.iter().any(|app| app.package_id == id)
+                }) {
+                    return Some(DefaultAppSelection {
+                        package_id: id.to_string(),
+                        source: SelectionSource::SystemDefault,
+                    });
+                }
+            }
         }
         Some(DefaultAppSelection {
             package_id: first.package_id.clone(),
@@ -387,8 +479,8 @@ impl<'a> DefaultAppResolver<'a> {
 impl PersonalDefaults {
     /// # Errors
     ///
-    /// Returns an error if [`DefaultAppResolver::validate_app`] rejects
-    /// `package_id` for `resource`; the existing handler is left untouched.
+    /// An error if [`DefaultAppResolver::validate_app`] rejects `package_id` for
+    /// `resource`; the existing handler is untouched.
     pub fn set(
         &mut self,
         resource: ResourceKind,
@@ -400,9 +492,8 @@ impl PersonalDefaults {
         Ok(())
     }
 
-    /// The person's defaults, from their settings: the
-    /// [`PERSONAL_DEFAULTS_SECTION`] section, which follows them to each of
-    /// their devices.
+    /// The person's defaults, from the [`PERSONAL_DEFAULTS_SECTION`] section of
+    /// their settings, which follows them to each of their devices.
     #[cfg(feature = "host-storage")]
     pub fn load() -> Self {
         Self::from_section(&settings_store::load_section(PERSONAL_DEFAULTS_SECTION))
@@ -412,8 +503,7 @@ impl PersonalDefaults {
     ///
     /// # Errors
     ///
-    /// Returns [`DefaultAppError::Persist`] if the settings could not be
-    /// written.
+    /// [`DefaultAppError::Persist`] when the settings cannot be written.
     #[cfg(feature = "host-storage")]
     pub fn save(&self) -> Result<(), DefaultAppError> {
         let serde_json::Value::Object(section) =
@@ -436,9 +526,9 @@ impl PersonalDefaults {
 
 /// # Errors
 ///
-/// Returns [`DefaultAppError::InvalidPackage`] if `id` is empty, longer
-/// than 255 characters, starts or ends with `.`, contains `..`, or
-/// contains anything but letters, digits, `.`, `-` or `_`.
+/// [`DefaultAppError::InvalidPackage`] if `id` is empty, over 255 characters,
+/// starts or ends with `.`, contains `..`, or holds anything but letters,
+/// digits, `.`, `-` or `_`.
 pub fn validate_package_id(id: &str) -> Result<(), DefaultAppError> {
     if id.is_empty()
         || id.len() > 255
@@ -666,6 +756,176 @@ mod tests {
                 .package_id,
             "so.tilo.video-editor",
             "choosing the editor still makes it the default"
+        );
+    }
+
+    #[test]
+    fn a_choice_opens_a_kind_the_app_claims_nothing_of() {
+        let txt = ResourceKind::extension("txt").unwrap();
+        // Notes names Markdown only, and the person still picked it for `.txt` files.
+        let notes = AppCandidate::package(
+            "so.tilo.notes".into(),
+            "Notes".into(),
+            &["md".into()],
+            &[],
+            &[],
+            false,
+        );
+        let editor = AppCandidate::host(
+            "org.gnome.TextEditor",
+            "Text Editor".into(),
+            &["text/plain".into()],
+        )
+        .expect("an entry that claims a type");
+        let apps = [editor, notes];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = PersonalDefaults {
+            handlers: [(txt.clone(), "so.tilo.notes".into())].into(),
+        };
+        let selected = resolver
+            .resolve_document(std::slice::from_ref(&txt), "ada", &personal, None)
+            .expect("a selection");
+        assert_eq!(selected.package_id, "so.tilo.notes");
+        assert_eq!(selected.source, SelectionSource::PersonalDefault);
+
+        // An app this device does not have is no answer: the open would reach nothing.
+        let gone = PersonalDefaults {
+            handlers: [(txt.clone(), "so.tilo.gone".into())].into(),
+        };
+        let kinds = [txt, ResourceKind::mime("text/plain").expect("a type")];
+        assert_eq!(
+            resolver
+                .resolve_document(&kinds, "ada", &gone, None)
+                .expect("the machine's own app")
+                .package_id,
+            "org.gnome.TextEditor.desktop"
+        );
+    }
+
+    #[test]
+    fn a_document_falls_through_the_layers_the_same_way_whatever_kind_claims_it() {
+        let kinds = [
+            ResourceKind::extension("txt").unwrap(),
+            ResourceKind::mime("text/plain").unwrap(),
+        ];
+        // The extension is claimed by a Tilo app, the type only by the machine's own editor.
+        let notes = AppCandidate::package(
+            "so.tilo.notes".into(),
+            "Notes".into(),
+            &["txt".into()],
+            &[],
+            &[],
+            false,
+        );
+        let editor = AppCandidate::host(
+            "org.gnome.TextEditor",
+            "Text Editor".into(),
+            &["text/plain".into()],
+        )
+        .expect("an entry that claims a type");
+        let chain =
+            crate::mimeapps::MimeAppsChain::new(vec![crate::mimeapps::MimeAppsList::parse(
+                "[Default Applications]\ntext/plain=org.gnome.TextEditor.desktop;\n",
+            )]);
+        let personal = PersonalDefaults::default();
+
+        let apps = [editor, notes];
+        let selected = DefaultAppResolver::new(&apps)
+            .with_system_defaults(&chain)
+            .resolve_document(&kinds, "ada", &personal, None)
+            .expect("a claimant");
+        assert_eq!(
+            selected.package_id, "so.tilo.notes",
+            "a Tilo app claiming any of the document's kinds opens it, before the machine's own"
+        );
+
+        let hosts = [AppCandidate::host(
+            "org.gnome.TextEditor",
+            "Text Editor".into(),
+            &["text/plain".into()],
+        )
+        .expect("an entry that claims a type")];
+        let selected = DefaultAppResolver::new(&hosts)
+            .with_system_defaults(&chain)
+            .resolve_document(&kinds, "ada", &personal, None)
+            .expect("a claimant");
+        assert_eq!(selected.package_id, "org.gnome.TextEditor.desktop");
+        assert_eq!(
+            selected.source,
+            SelectionSource::SystemDefault,
+            "the machine's own default decides between its apps"
+        );
+
+        assert_eq!(
+            DefaultAppResolver::new(&[]).resolve_document(&kinds, "ada", &personal, None),
+            None,
+            "nothing claims it: the person is asked"
+        );
+    }
+
+    #[test]
+    fn a_documents_choice_is_the_workspaces_or_the_persons_for_any_of_its_kinds() {
+        let notes = AppCandidate::package(
+            "so.tilo.notes".into(),
+            "Notes".into(),
+            &[],
+            &["text/plain".into()],
+            &[],
+            false,
+        );
+        let writer = AppCandidate::package(
+            "so.tilo.word-processor".into(),
+            "Word Processor".into(),
+            &["txt".into()],
+            &[],
+            &[],
+            false,
+        );
+        let apps = [notes, writer];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = PersonalDefaults::default();
+        let kinds = [
+            ResourceKind::extension("txt").unwrap(),
+            ResourceKind::mime("text/plain").unwrap(),
+        ];
+        let mut ws = WorkspaceDefaults::default();
+        ws.policy.insert(
+            kinds[1].clone(),
+            WorkspaceDefaultPolicy::App("so.tilo.notes".into()),
+        );
+        assert_eq!(
+            resolver
+                .resolve_document(&kinds, "ada", &personal, Some(&ws))
+                .expect("a selection")
+                .package_id,
+            "so.tilo.notes",
+            "the workspace's choice names the type, and the document is of that type"
+        );
+
+        ws.user_choices.entry("ada".into()).or_default().insert(
+            kinds[0].clone(),
+            UserWorkspaceChoice::App("so.tilo.word-processor".into()),
+        );
+        assert_eq!(
+            resolver
+                .resolve_document(&kinds, "ada", &personal, Some(&ws))
+                .expect("a selection")
+                .package_id,
+            "so.tilo.word-processor",
+            "the person's own choice, made for the narrower kind, is theirs"
+        );
+
+        let mut theirs = PersonalDefaults::default();
+        theirs
+            .handlers
+            .insert(kinds[0].clone(), "so.tilo.word-processor".into());
+        assert_eq!(
+            resolver
+                .resolve_document(&kinds, "ada", &theirs, None)
+                .expect("a selection")
+                .package_id,
+            "so.tilo.word-processor",
+            "the person's own default opens it outside any workspace"
         );
     }
 

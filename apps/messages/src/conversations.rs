@@ -1,36 +1,10 @@
-//! The Messages record: conversations put into it on purpose, and the
-//! messages delivered into them or written in them, held whole.
-//!
-//! ## Why message text is in the record
-//!
-//! A person's own service histories (SMS, Signal, `WhatsApp`, Tilo) never
-//! enter it: those stay the privileged broker's account-owned data, read
-//! through `crate::history` on a device holding the account. What this
-//! record holds is what was put into it on purpose: messages *delivered*
-//! into it (a seeded scenario, an import, an integration relaying a text)
-//! and messages *written* in it, queued for a person to send. The person
-//! approved giving agents access to that content. An agent works on a
-//! workspace's records only through their published operations, in a confined
-//! worker with no network and no account, so a conversation it is to read
-//! or answer has to be in the record it holds, as Mail's delivered mail is.
-//! Whoever the record is shared with reads these messages, so nothing
-//! reaches it except through `deliver-message`, `send-message` and `reply`
-//! (the collection is read-only to field edits).
-//!
-//! ## Nothing is sent from here
-//!
-//! `send-message` and `reply` only *queue* a message in its conversation:
-//! no transport is reached from a record operation, least of all from an
-//! agent's worker. A person sends it from a device holding the account.
-//!
-//! ## Deterministic addresses
-//!
-//! A conversation's id comes from what the caller names (the `conversation`
-//! given, else the person it is with), normalised so `+1 555 0100` and
-//! `+15550100` are one conversation and `Ada Lovelace` is `ada-lovelace`. A
-//! delivered message's id comes from what it says. So a written step can
-//! name `tilo.messages/conversations/<id>` before it runs, and delivering the
-//! same message twice changes nothing.
+//! The Messages record: conversations put into it on purpose, and the messages delivered
+//! into them or written in them, held whole. A person's own service histories (SMS, Signal,
+//! `WhatsApp`, Tilo) never enter it: those stay the privileged broker's account-owned data,
+//! read through `crate::history` on a device holding the account. A conversation's id comes
+//! from what the caller names (the `conversation` given, else the person it is with),
+//! normalised so `+1 555 0100` and `+15550100` are one conversation and `Ada Lovelace` is
+//! `ada-lovelace`.
 
 use std::fmt::Write as _;
 
@@ -38,28 +12,23 @@ use ui::prelude::{Collection, Id, Model};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
 use ui::tilo_resource::{self, ActionCx, NonBlank, Refusal, resource};
 
-/// Bounds on what one message carries, so a hostile payload cannot grow the
-/// record without limit.
+/// Bounds on what one message carries, so a hostile payload cannot grow the record without
+/// limit.
 const MAX_PARTY_CHARS: usize = 256;
 const MAX_BODY_CHARS: usize = 16 * 1024;
 const MAX_KEY_CHARS: usize = 64;
 
-/// How much of a body a listing shows.
 const SNIPPET_CHARS: usize = 160;
-/// The most messages one read or search answers with, so an answer fits
-/// what an agent is shown of it.
 const MOST_LISTED: usize = 200;
 
-/// The start of a conversation's item address
-/// (`tilo.messages/conversations/<id>`), which a caller may name it by.
 const CONVERSATION_PREFIX: &str = "tilo.messages/conversations/";
 
-/// The record. Its conversations are keyed by their deterministic ids.
+/// The Messages record: conversations, each with its messages.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Messages {
-    /// The conversations, keyed by [`conversation_key`]: made and changed
-    /// only by the record's verbs, so no field edit can put words in
-    /// someone's mouth or mark a message sent.
+    /// The conversations, keyed by [`conversation_key`]: made and changed only by the
+    /// record's verbs, so no field edit can put words in someone's mouth or mark a message
+    /// sent.
     #[model(readonly)]
     pub conversations: Collection<Conversation>,
 }
@@ -84,8 +53,8 @@ pub struct Message {
     pub body: String,
     /// When it was sent, RFC 3339 in UTC.
     pub date: String,
-    /// The same instant in milliseconds since the Unix epoch, which orders
-    /// the conversation.
+    /// The same instant in milliseconds since the Unix epoch, which orders the
+    /// conversation.
     pub at_ms: i64,
     /// Written here rather than received.
     pub outgoing: bool,
@@ -101,9 +70,8 @@ pub struct Message {
 impl Messages {
     /// Deliver message.
     ///
-    /// Adds a message to its conversation as if it had arrived, with no
-    /// service or account: a seeded scenario, an import, an integration.
-    /// Delivering the same message again changes nothing.
+    /// Adds a message to its conversation as if it had arrived, with no service or account:
+    /// a seeded scenario, an import, an integration.
     #[action(external, answers, audience = "agents")]
     pub fn deliver_message(
         &mut self,
@@ -157,7 +125,6 @@ impl Messages {
             .conversations
             .get_mut(&key)
             .ok_or("the conversation could not be made")?;
-        // A message delivered before is left as it was.
         if held.messages.contains(&id) {
             return Ok(());
         }
@@ -179,9 +146,7 @@ impl Messages {
 
     /// Send message.
     ///
-    /// Queues a message in the conversation with that person, starting it
-    /// if there is none. Nothing is sent from here: a person sends it from
-    /// a device holding the account.
+    /// Queues a message in the conversation with that person, starting it if there is none.
     #[action(answers, audience = "agents")]
     pub fn send_message(
         &mut self,
@@ -206,8 +171,7 @@ impl Messages {
 
     /// Reply.
     ///
-    /// Queues a reply in an existing conversation. Nothing is sent from
-    /// here: a person sends it from a device holding the account.
+    /// Queues a reply in an existing conversation.
     #[action(item = conversations, answers, audience = "agents")]
     pub fn reply(
         &mut self,
@@ -222,8 +186,7 @@ impl Messages {
 }
 
 impl Messages {
-    /// Queue `body` in conversation `key`, starting it with `with` when it
-    /// is new.
+    /// Queue `body` in conversation `key`, starting it with `with` when it is new.
     fn queue(
         &mut self,
         cx: &mut ActionCx,
@@ -264,10 +227,9 @@ impl Messages {
         Ok(())
     }
 
-    /// What `read` answers: with no item, the conversations, most recent
-    /// first; with a conversation (its id, its item address or who it is
-    /// with), its latest messages, oldest first; with a message's id, that
-    /// message.
+    /// What `read` answers: with no item, the conversations, most recent first; with a
+    /// conversation (its id, its item address or who it is with), its latest messages,
+    /// oldest first; with a message's id, that message.
     pub fn read(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item
             .map(Id::as_str)
@@ -345,8 +307,8 @@ impl Messages {
         self.conversations.iter().find(|(held, _)| **held == key)
     }
 
-    /// The messages holding every word of `query` (any case) in their
-    /// sender, recipient, conversation or text, newest first.
+    /// The messages holding every word of `query` (any case) in their sender, recipient,
+    /// conversation or text, newest first.
     pub fn search(&self, query: &str) -> Result<serde_json::Value, String> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         if words.is_empty() {
@@ -383,11 +345,11 @@ impl Messages {
         }))
     }
 
-    /// The transcript of one conversation, or of every one, as `format`
-    /// (`md`, the default, or `json`): what `export-content` keeps as
-    /// content. Answers the bytes and how many messages they hold.
+    /// The transcript of one conversation, or of every one, as `format` (`md`, the default,
+    /// or `json`), which is what `export-content` keeps as content.
     ///
     /// # Errors
+    ///
     /// An unknown format, or a conversation that is not here.
     pub fn transcript(
         &self,
@@ -429,9 +391,9 @@ impl Messages {
     }
 }
 
-/// What `export-content` answers once the transcript is kept as `hash`:
-/// its content address (also as the operation's resource, so the workspace keeps
-/// it), the format and how much it holds.
+/// What `export-content` answers once the transcript is kept as `hash`: its content address
+/// (also as the operation's resource, so the workspace keeps it), the format and how much
+/// it holds.
 #[must_use]
 pub fn exported(
     hash: &str,
@@ -491,8 +453,8 @@ fn conversation_address(key: &Id) -> String {
     item_resource_id::<Messages>("conversations", key)
 }
 
-/// The conversation and message a change added: the entry it put into a
-/// conversation's messages.
+/// The conversation and message a change added: the entry it put into a conversation's
+/// messages.
 fn made(changes: &[ui::automerge::Patch]) -> Option<(String, String)> {
     use ui::automerge::{PatchAction, Prop};
     changes.iter().find_map(|patch| {
@@ -516,8 +478,8 @@ fn made(changes: &[ui::automerge::Patch]) -> Option<(String, String)> {
     })
 }
 
-/// A delivery or a queued message answers with its conversation and
-/// message, or that it changed nothing.
+/// A delivery or a queued message answers with its conversation and message, or that it
+/// changed nothing.
 fn answer(
     _doc: &tilo_resource::Doc,
     action: &str,
@@ -543,8 +505,8 @@ fn answer(
     ))
 }
 
-/// Insert `message` after every message sent no later than it, so a
-/// conversation reads in time order whatever order it was delivered in.
+/// Insert `message` after every message sent no later than it, so a conversation reads in
+/// time order whatever order it was delivered in.
 fn insert_in_order(messages: &mut Collection<Message>, id: Id, message: Message) {
     let index = messages
         .values()
@@ -567,9 +529,8 @@ fn check_message(from: &str, to: &str, body: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The id of the conversation with `party`, or the one a caller named: a
-/// number keeps its digits (and a leading `+`), anything else becomes a
-/// lowercase slug. `None` when nothing of it is left.
+/// The id of the conversation with `party`, or the one a caller named: a number keeps its
+/// digits (and a leading `+`), anything else becomes a lowercase slug.
 #[must_use]
 pub fn conversation_key(party: &str) -> Option<String> {
     let party = party.trim();
@@ -604,8 +565,8 @@ pub fn conversation_key(party: &str) -> Option<String> {
     (!key.is_empty() && key != "+").then_some(key)
 }
 
-/// A delivered message's id, from what it says: the same delivery always
-/// names the same message. Two FNV-1a passes give 128 bits.
+/// A delivered message's id, from what it says: the same delivery always names the same
+/// message. Two FNV-1a passes give 128 bits.
 fn derived_id(parts: &[&str]) -> String {
     fn fnv1a(bytes: &[u8], basis: u64) -> u64 {
         bytes.iter().fold(basis, |hash, byte| {
@@ -620,10 +581,8 @@ fn derived_id(parts: &[&str]) -> String {
     )
 }
 
-/// `text` as an instant in milliseconds: `YYYY-MM-DD`, optionally with a
-/// time `THH:MM[:SS[.fff]]` and a zone (`Z` or `±HH:MM`; UTC when absent).
-/// Dates come from callers, so nothing here can overflow: an impossible one
-/// reads as none.
+/// `text` as an instant in milliseconds: `YYYY-MM-DD`, optionally with a time
+/// `THH:MM[:SS[.fff]]` and a zone (`Z` or `±HH:MM`; UTC when absent).
 pub(crate) fn parse_date(text: &str) -> Option<i64> {
     let text = text.trim();
     let (date, time) = match text.split_once(['T', 't', ' ']) {
@@ -673,7 +632,6 @@ fn clock_of(clock: &str) -> Option<(i64, i64)> {
         .checked_mul(3600)?
         .checked_add(minute.checked_mul(60)?)?
         .checked_add(second)?;
-    // Milliseconds from the first three digits of the fraction, padded.
     let mut millis = 0_i64;
     let mut digits = fraction.chars();
     for _ in 0..3 {
@@ -710,12 +668,14 @@ pub(crate) fn format_date(at_ms: i64) -> String {
     let seconds = at_ms.div_euclid(1000);
     let (year, month, day) = ui::date::civil_from_days(seconds.div_euclid(86_400));
     let of_day = seconds.rem_euclid(86_400);
-    // format: machine (RFC 3339 in UTC, as stored and exchanged, never shown)
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        of_day / 3600,
-        of_day % 3600 / 60,
-        of_day % 60
+    ui::format::machine!(
+        "RFC 3339 in UTC, as stored and exchanged, never shown",
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            of_day / 3600,
+            of_day % 3600 / 60,
+            of_day % 60
+        )
     )
 }
 

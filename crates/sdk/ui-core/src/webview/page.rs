@@ -1,24 +1,16 @@
-//! Typed requests against a live page's content.
+//! Typed requests against a live page's content. Browser chrome turns its page actions
+//! into a [`PageRequest`]; the engine answers with exactly one
+//! [`WebViewEvent::PageResult`](super::WebViewEvent) carrying the same request id.
 //!
-//! Browser chrome turns its page actions into a [`PageRequest`]; the engine
-//! answers with exactly one [`WebViewEvent::PageResult`](super::WebViewEvent)
-//! carrying the same request id. Elements are addressed by the refs a prior
-//! [`PageRequest::Outline`] printed. A ref names one element of one document,
-//! so a ref from a page the tab has since left is refused rather than
-//! resolved against whatever now sits at the same position.
+//! A page inside a frame is addressed by the number the outline printed for the frame
+//! (`[frame=3]`). The number is the tab's: a frame keeps it while frames around it come and
+//! go, and a frame inside a frame has a number of its own.
 //!
-//! A page inside a frame is addressed by the number the outline printed for
-//! the frame (`[frame=3]`). The number is the tab's: a frame keeps it while
-//! frames around it come and go, and a frame inside a frame has a number of
-//! its own. A request with that number runs in the frame's own document, and
-//! its refs and outline describe that document alone.
-//!
-//! Several actors may work in one tab: two agents, agents on other devices,
-//! an agent and the person reviewing what it did. A request then travels with
-//! the [`PageActor`] who asks, the engine keeps a record of what each did
-//! ([`PageRequest::Ledger`], [`PageRequest::Fields`]), and an answer says
-//! where its action stands in that record and what the others did meanwhile
-//! ([`PageRecordNote`]).
+//! Several actors may work in one tab: two agents, agents on other devices, an agent and the
+//! person reviewing what it did. A request then travels with the [`PageActor`] who asks, the
+//! engine keeps a record of what each did ([`PageRequest::Ledger`], [`PageRequest::Fields`]),
+//! and an answer says where its action stands in that record and what the others did
+//! meanwhile ([`PageRecordNote`]).
 
 use super::KeyModifiers;
 
@@ -26,19 +18,18 @@ use super::KeyModifiers;
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
 /// Upper bound on structured reply data (`PageReply::data`), serialised.
 pub const MAX_DATA_BYTES: usize = 256 * 1024;
-/// The widest picture a capture paints; a wider request is scaled down to
-/// it, so a picture is never larger than a person could look at.
+/// The widest picture a capture paints; a wider request is scaled down to it, so a
+/// picture is never larger than a person could look at.
 pub const MAX_CAPTURE_WIDTH: u16 = 1600;
-/// Upper bound on the pixels one capture may carry, as a PNG. What the engine
-/// paints is bounded the same way before it ever reaches this boundary.
+/// Upper bound on the pixels one capture may carry, as a PNG.
 pub const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
 /// Largest viewport coordinate a point may name, CSS pixels.
 const MAX_COORDINATE: f64 = 100_000.0;
-/// Upper bound on the points of one pointer path, and the steps of one
-/// drag, so a gesture is always a bounded amount of work for the engine.
+/// Upper bound on the points of one pointer path, and the steps of one drag, so a gesture
+/// is always a bounded amount of work for the engine.
 pub const MAX_PATH_POINTS: usize = 1024;
 pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
@@ -53,22 +44,20 @@ pub const MAX_FILE_PATHS: usize = 16;
 pub const MAX_FILE_PATH_BYTES: usize = 4096;
 /// Upper bound on the steps of one pointer gesture.
 pub const MAX_POINTER_STEPS: usize = 256;
-/// Upper bound on the button names a gesture may name.
 const POINTER_BUTTONS: &[&str] = &["left", "right"];
-/// How far one scroll may ask to travel in one go, CSS pixels: a wheel notch
-/// moves about 100, and a bounded distance keeps one request a bounded amount
-/// of work for the page.
+/// How far one scroll may ask to travel in one go, CSS pixels: a wheel notch moves about
+/// 100, and a bounded distance keeps one request a bounded amount of work for the page.
 pub const MAX_SCROLL_BY: u32 = 10_000;
 const MAX_REF_BYTES: usize = 40;
 /// A frame id is a small decimal number, such as `3`. The dotted path an
 /// older outline printed for a frame inside a frame (`1.2`) still fits.
 const MAX_FRAME_BYTES: usize = 16;
 const MAX_FRAME_DEPTH: usize = 8;
-/// Upper bound on the accessible name a
-/// [`PageRequest::Find`] matches, as the outline prints it.
+/// Upper bound on the accessible name a [`PageRequest::Find`] matches, as the outline
+/// prints it.
 pub const MAX_FIND_NAME_BYTES: usize = 512;
-/// Upper bound on the role words a [`PageRequest::Find`] matches: a few
-/// words of the outline's own vocabulary, never a selector.
+/// Upper bound on the role words a [`PageRequest::Find`] matches: a few words of the
+/// outline's own vocabulary, never a selector.
 pub const MAX_FIND_ROLE_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
@@ -170,32 +159,22 @@ impl std::fmt::Display for PageActor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageRequest {
-    /// A compact accessibility outline of the document. Interactive elements
-    /// carry the refs every other request addresses, and a frame carries the
-    /// id that addresses its own document. A long page is read in parts: a
-    /// read that stops short says the line to read on from, and `from` is
-    /// that line (the first is 1). Lines keep their numbers while the page
-    /// does not change. Reading on does not move what
-    /// [`PageRequest::Changes`] compares with; only a read from the top does.
+    /// A long page is read in parts: a read that stops short says the line to read on from,
+    /// and `from` is that line (the first is 1). Lines keep their numbers while the page does
+    /// not change. Reading on does not move what [`PageRequest::Changes`] compares with; only
+    /// a read from the top does.
     Outline {
         from: Option<u32>,
         frame: Option<FrameId>,
     },
-    /// A trusted pointer click at the element's visible centre.
     Click {
         element: String,
         frame: Option<FrameId>,
     },
-    /// A trusted pointer move to the element's visible centre, or to the
-    /// viewport point (`x`, `y`) when no element is named: moving the pointer
-    /// alone, with no button, so the page's hover styles apply.
     Hover {
         element: Option<String>,
         point: Option<(f64, f64)>,
     },
-    /// A trusted press, move and release on the element's visible centre, or
-    /// on the viewport point when no element is named: the drag and drop
-    /// gesture of a person holding the pointer down and moving it.
     Drag {
         from: Option<String>,
         from_point: Option<(f64, f64)>,
@@ -203,74 +182,64 @@ pub enum PageRequest {
         to_point: Option<(f64, f64)>,
         steps: u8,
     },
-    /// A trusted contact path: press at the first point, move through the
-    /// rest and release at the last, for drawing on canvases and other
-    /// surfaces that read pointer contact. Points are viewport CSS pixels
-    /// when the element is named and are measured from its padding box,
-    /// otherwise from the viewport's top left.
+    /// A trusted contact path: press at the first point, move through the rest and
+    /// release at the last, for drawing on canvases and other surfaces that read pointer
+    /// contact.
     Path {
         element: Option<String>,
         points: Vec<(f64, f64)>,
     },
-    /// Replace an editable element's contents with `text`. A password or
-    /// card field is refused unless `secret` says the caller means it, and
-    /// then the text is a secret the caller keeps out of logs.
+    /// Replace an editable element's contents with `text`. A password or card field is
+    /// refused unless `secret` says the caller means it, and then the text is a secret
+    /// the caller keeps out of logs.
     Fill {
         element: String,
         text: String,
         secret: bool,
         frame: Option<FrameId>,
     },
-    /// Choose `<select>` options by value or visible label.
     Select {
         element: String,
         values: Vec<String>,
         frame: Option<FrameId>,
     },
-    /// Choose the files of an `<input type=file>`, by absolute path.
-    ///
-    /// The caller has already checked each path is a regular file it may
-    /// read; the engine hands those files to the page as a person's own
-    /// picker would, dispatching `input` and `change`. A path that names no
-    /// readable regular file, or one the element's `accept` refuses, is
-    /// refused rather than silently dropped.
+    /// Choose the files of an `<input type=file>`, by absolute path. The caller has
+    /// already checked each path is a regular file it may read; the engine hands those
+    /// files to the page as a person's own picker would, dispatching `input` and
+    /// `change`.
     FillFiles {
         element: String,
         paths: Vec<String>,
         frame: Option<FrameId>,
     },
-    /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
         key: PageKey,
         frame: Option<FrameId>,
     },
-    /// Submit the element's form through the page's own validation. A form
-    /// that sends its data to another site than the page's is refused unless
-    /// `cross_origin` says the caller means it.
+    /// Submit the element's form through the page's own validation. A form that sends its
+    /// data to another site than the page's is refused unless `cross_origin` says the
+    /// caller means it.
     Submit {
         element: String,
         cross_origin: bool,
         frame: Option<FrameId>,
     },
-    /// What changed in the outline since this tab's last read or changes:
-    /// lines added (`+`) and removed (`-`), or the whole outline when the
-    /// document is new.
-    Changes { frame: Option<FrameId> },
-    /// The element a click at viewport point (`x`, `y`) in CSS pixels would
-    /// hit, and the nearest interactive element holding it.
+    Changes {
+        frame: Option<FrameId>,
+    },
+    /// The element a click at viewport point (`x`, `y`) in CSS pixels would hit, and the
+    /// nearest interactive element holding it.
     At {
         x: f64,
         y: f64,
         frame: Option<FrameId>,
     },
-    /// Wait until the document has stopped changing for `quiet_ms` and has
-    /// loaded, or `timeout_ms` passed. A page that waits on a timer or a
-    /// server changes nothing meanwhile, so it is quiet while it still says
-    /// it is loading: `text` names words the page must say, and `gone` words
-    /// it must no longer say, as a read of the page prints them. With
-    /// either, the wait ends when that holds or after `timeout_ms`, whatever
-    /// `quiet_ms` is, and the answer says which it was.
+    /// A page that waits on a timer or a server changes nothing meanwhile, so it is quiet
+    /// while it still says it is loading: `text` names words the page must say, and `gone`
+    /// words it must no longer say, as a read of the page prints them. With either, the wait
+    /// ends when that holds or after `timeout_ms`, whatever `quiet_ms` is, and the answer says
+    /// which it was.
     Settle {
         quiet_ms: u32,
         timeout_ms: u32,
@@ -279,20 +248,28 @@ pub enum PageRequest {
         frame: Option<FrameId>,
     },
     /// Console messages and uncaught errors after sequence number `since`.
-    Console { since: u64 },
-    /// Network requests after sequence number `since`: method, URL, type,
-    /// status and failure, never headers, bodies or cookies.
-    Network { since: u64 },
+    Console {
+        since: u64,
+    },
+    /// Network requests after sequence number `since`: method, URL, type, status and
+    /// failure, never headers, bodies or cookies.
+    Network {
+        since: u64,
+    },
     /// The tab's record of who did what, after the place `since` names: every
     /// action that operated the page, with who asked, what it acted on and
     /// how it ended. It reads nothing of the page. A secret that was filled
     /// is never in it.
-    Ledger { since: u64 },
+    Ledger {
+        since: u64,
+    },
     /// Every field of the document with what it holds now and who set it: an
     /// action (and whose), direct input as a person types, or the page's own
     /// script, and whether the field changed after it was set. Secrets are
     /// listed by length. It dispatches nothing to the page.
-    Fields { frame: Option<FrameId> },
+    Fields {
+        frame: Option<FrameId>,
+    },
     /// The outline lines that hold `text`, in any letter case, each with its
     /// line number: a number a [`PageRequest::Outline`] reads on from. It
     /// reads what the outline reads, so a secret's value is found by neither.
@@ -307,7 +284,9 @@ pub enum PageRequest {
     /// The document's forms as what they ask: each form's id and signature,
     /// its questions by name and kind, the answers they offer, which are
     /// required, what each holds now and the buttons that send it.
-    Forms { frame: Option<FrameId> },
+    Forms {
+        frame: Option<FrameId>,
+    },
     /// Answer a form by the names it asks under: `form` is the id or the
     /// signature [`PageRequest::Forms`] gave, `answers` an object from a
     /// question's name to text, a number, a boolean or a list of texts. The
@@ -325,28 +304,17 @@ pub enum PageRequest {
         cross_origin: bool,
         frame: Option<FrameId>,
     },
-    /// Show the document's article alone in a reading layout (`enabled`), or
-    /// put the page back as it was. A page without an article is refused.
-    Reader { enabled: bool },
-    /// A picture of the page as it is shown: the box of `element` when one is
-    /// named, the viewport otherwise, at most `max_width` pixels wide. A page
-    /// can say things no outline reaches, and this is how they are seen.
-    /// Captured by the engine itself, so the page cannot see or answer it.
-    /// What the picture shows is page content: never trusted as instructions.
+    Reader {
+        enabled: bool,
+    },
+    /// A picture of the page as it is shown: the box of `element` when one is named, the
+    /// viewport otherwise, at most `max_width` pixels wide. Captured by the engine
+    /// itself, so the page cannot see or answer it.
     Capture {
         element: Option<String>,
         max_width: Option<u32>,
         frame: Option<FrameId>,
     },
-    /// The element a stable description names: the same role and name a
-    /// person reads on it, wherever the document sits in its history.
-    ///
-    /// Every other request addresses an element by the ref one outline
-    /// printed, and a ref belongs to one document. This one reads the page
-    /// it is asked of, so a description recorded once is answered with the
-    /// ref of the page as it is now: what a step replaying a person's work
-    /// needs.
-    ///
     /// With no `frame` named, a find the page's own document has no match
     /// for looks on in the frames the page shows, and with `frames` it looks
     /// there as well as in the page: the answer says the frame of what it
@@ -358,23 +326,14 @@ pub enum PageRequest {
         frame: Option<FrameId>,
         frames: bool,
     },
-    /// Move the pointer over the page as a hand does: `steps` in order, a
-    /// press and release of `button` where the page asks for one. A step
-    /// naming `element` is placed in that element's box, every other step is
-    /// a viewport position in CSS pixels. All of it is real input to the
-    /// page, so hover, drag and drop and drawing see what a person's hand
-    /// would have done, and the reply reports what changed.
+    /// Move the pointer over the page as a hand does: `steps` in order, a press and
+    /// release of `button` where the page asks for one.
     Pointer {
         steps: Vec<PointerStep>,
         button: PointerButton,
     },
-    /// Turn the page's wheel as a hand does: `by` CSS pixels down (or up,
-    /// when negative) at the element's visible centre, or at the viewport's
-    /// when no element is named. `to` names an end of the page instead, and
-    /// `into_view` an element to bring into view. The wheel is real input,
-    /// so the page's scroll listeners, lazy loading and intersection
-    /// observers run as they do for a person, and the reply reports what
-    /// changed.
+    /// Turn the page's wheel as a hand does: `by` CSS pixels down (or up, when negative)
+    /// at the element's visible centre, or at the viewport's when no element is named.
     Scroll {
         element: Option<String>,
         to: Option<ScrollTarget>,
@@ -412,13 +371,8 @@ impl ScrollTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerStep {
     pub kind: PointerStepKind,
-    /// Where the step happens, relative to `element`'s box when it names one.
     pub at: PointerPoint,
-    /// The element the step is placed against. A gesture that keeps naming
-    /// the same element keeps stepping inside the same box.
     pub element: Option<String>,
-    /// The frame the step names, when its element lives in one: the step's
-    /// point is then moved by the frame's place, as a click is.
     pub frame: Option<FrameId>,
 }
 
@@ -508,18 +462,15 @@ impl PageRequest {
         }
     }
 
-    /// Whether the request writes text into the page's focused field: a
-    /// fill, or keys pressed. Which field that is, and so whether what it
-    /// wrote is a credential, is the field's type, read as it settles.
+    /// Whether the request writes text into the page's focused field: a fill, or keys
+    /// pressed.
     pub const fn enters_text(&self) -> bool {
         matches!(self, Self::Fill { .. } | Self::Press { .. })
     }
 
-    /// Whether the request only looks at the page, as any visitor can: it
-    /// reads the document, its picture, its messages or its requests, or
-    /// waits for it, and the page sees none of it. Everything else acts on
-    /// the page: it moves the pointer, types, scrolls, submits or changes
-    /// how the page is shown.
+    /// Whether the request only looks at the page, as any visitor can: it reads the
+    /// document, its picture, its messages or its requests, or waits for it, and the page
+    /// sees none of it.
     pub const fn only_observes(&self) -> bool {
         match self {
             Self::Outline { .. }
@@ -550,8 +501,8 @@ impl PageRequest {
         }
     }
 
-    /// What the request does, in the words an answer that a dialog it opened
-    /// cut short repeats: `Clicked element d1e5`, `Submitted form d1e7`.
+    /// What the request does, in the words an answer that a dialog it opened cut short
+    /// repeats: `Clicked element d1e5`, `Submitted form d1e7`.
     pub fn described(&self) -> String {
         match self {
             Self::Outline { .. } => "Read the page".to_string(),
@@ -854,15 +805,14 @@ impl PageRequest {
         }
     }
 
-    /// Whether this request names a frame the page outline could have
-    /// printed. A caller that makes one up is refused, never silently run
-    /// against the main document instead.
+    /// Whether this request names a frame the page outline could have printed. A caller
+    /// that makes one up is refused, never silently run against the main document
+    /// instead.
     pub fn frame_valid(&self) -> bool {
         self.frame()
             .is_none_or(|frame| FrameId::parse(frame.as_str()) == Some(frame.clone()))
     }
 
-    /// Whether every field is within the bounds an engine accepts.
     #[allow(
         clippy::too_many_lines,
         reason = "one match names every request's bounds, so none can be forgotten"
@@ -877,8 +827,8 @@ impl PageRequest {
         if refs.iter().any(|element| !is_element_ref(element)) {
             return false;
         }
-        // Structured so that `FrameId::malformed` fails here rather than
-        // running the request in the main document instead.
+        // Structured so that `FrameId::malformed` fails here rather than running the
+        // request in the main document instead.
         if self
             .frame()
             .is_some_and(|frame| FrameId::parse(frame.as_str()) != Some(frame.clone()))
@@ -1018,11 +968,10 @@ impl PageRequest {
                 into_view,
                 ..
             } => {
-                // The wheel turns over the viewport's centre unless the
-                // caller names what it turns over.
-                // Bringing an element into view is the place itself, and may
-                // name the box the wheel turns over; otherwise the wheel goes
-                // to an end of the page or by a distance, never both.
+                // The wheel turns over the viewport's centre unless the caller names what
+                // it turns over. Bringing an element into view is the place itself, and
+                // may name the box the wheel turns over; otherwise the wheel goes to an
+                // end of the page or by a distance, never both.
                 let aimed = usize::from(to.is_some()) + usize::from(by.is_some());
                 (to.is_some() || by.is_some() || into_view.is_some())
                     && if into_view.is_some() {
@@ -1056,7 +1005,6 @@ fn form_answer_valid(answer: &serde_json::Value) -> bool {
     }
 }
 
-/// A finite point inside the viewport coordinate bounds.
 fn point_is_viewport((x, y): (f64, f64)) -> bool {
     [x, y]
         .iter()
@@ -1073,15 +1021,14 @@ fn point_is_viewport((x, y): (f64, f64)) -> bool {
 pub struct FrameId(String);
 
 impl FrameId {
-    /// Reads a frame id the outline printed, refusing anything else so an id
-    /// can never smuggle selector or script syntax to the engine. A frame is a
-    /// number, so the number alone, the number as text and the outline's own
-    /// `[frame=1]` all name the same frame: a caller that copies what it read
-    /// is understood.
+    /// Reads a frame id the outline printed, refusing anything else so an id can never
+    /// smuggle selector or script syntax to the engine. A frame is a number, so the
+    /// number alone, the number as text and the outline's own `[frame=1]` all name the
+    /// same frame: a caller that copies what it read is understood.
     pub fn parse(value: &str) -> Option<Self> {
         let written = value.trim();
-        // What the outline brackets is the id, and what marks it is not part
-        // of it: `frame=3`, `[frame=3]` and `3` are one id.
+        // What the outline brackets is the id, and what marks it is not part of it:
+        // `frame=3`, `[frame=3]` and `3` are one id.
         let written = written
             .strip_prefix('[')
             .and_then(|rest| rest.strip_suffix(']'))
@@ -1105,9 +1052,8 @@ impl FrameId {
         .then(|| Self(written.to_string()))
     }
 
-    /// A frame id no outline printed, standing in for one the caller wrote
-    /// wrongly: it fails the request rather than being read as the main
-    /// document.
+    /// A frame id no outline printed, standing in for one the caller wrote wrongly: it
+    /// fails the request rather than being read as the main document.
     pub fn malformed() -> Self {
         Self(String::new())
     }
@@ -1123,8 +1069,8 @@ impl std::fmt::Display for FrameId {
     }
 }
 
-/// Element refs are `d<document>e<element>`: both parts are decimal, so a ref
-/// can never smuggle selector or script syntax to the engine.
+/// Element refs are `d<document>e<element>`: both parts are decimal, so a ref can never
+/// smuggle selector or script syntax to the engine.
 pub fn is_element_ref(value: &str) -> bool {
     let Some((document, element)) = value
         .strip_prefix('d')
@@ -1136,17 +1082,15 @@ pub fn is_element_ref(value: &str) -> bool {
     value.len() <= MAX_REF_BYTES && digits(document) && digits(element)
 }
 
-/// One key plus modifiers, written as a chord such as `Enter`, `Shift+Tab`
-/// or `Control+a`.
+/// One key plus modifiers, written as a chord such as `Enter`, `Shift+Tab` or
+/// `Control+a`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageKey {
-    /// A named key (`Enter`, `ArrowDown`, …) or a single character.
     pub key: String,
     pub modifiers: KeyModifiers,
 }
 
-/// Keys the engines map to a physical key. `Space` is spelled out because a
-/// literal space is invisible in a chord.
+/// Keys the engines map to a physical key.
 const NAMED_KEYS: &[&str] = &[
     "Enter",
     "Tab",
@@ -1163,8 +1107,6 @@ const NAMED_KEYS: &[&str] = &[
     "PageDown",
 ];
 
-/// How a key's name is read: without regard to case, so `END`, `End` and
-/// `end` name the same key, as do `CTRL` and `Ctrl` as a modifier.
 fn named_key(name: &str) -> Option<&'static str> {
     NAMED_KEYS
         .iter()
@@ -1172,8 +1114,8 @@ fn named_key(name: &str) -> Option<&'static str> {
         .find(|named| named.eq_ignore_ascii_case(name))
 }
 
-/// The named keys `name` could have been misspelled for, as the closest ones
-/// first: the keys sharing its first letter, so an error can offer them.
+/// The named keys `name` could have been misspelled for, as the closest ones first: the
+/// keys sharing its first letter, so an error can offer them.
 fn near_keys(name: &str) -> Vec<&'static str> {
     let wanted = name.trim().to_ascii_lowercase();
     let Some(first) = wanted.chars().next() else {
@@ -1191,12 +1133,9 @@ impl PageKey {
         Self::parse_detailed(chord).ok()
     }
 
-    /// [`Self::parse`], saying why the chord names no key: a caller needs to
-    /// know what to write instead, and that is never the same for a missing
-    /// modifier as for a key that does not exist.
-    ///
-    /// # Errors
-    /// The chord's own problem, phrased for the person who wrote it.
+    /// [`Self::parse`], saying why the chord names no key: a caller needs to know what to
+    /// write instead, and that is never the same for a missing modifier as for a key that
+    /// does not exist. The chord's own problem, phrased for the person who wrote it.
     pub fn parse_detailed(chord: &str) -> Result<Self, String> {
         let written = chord.trim();
         if written.is_empty() {
@@ -1206,7 +1145,6 @@ impl PageKey {
             );
         }
         let mut parts: Vec<&str> = written.split('+').collect();
-        // `Control++` names the plus key itself.
         if written.ends_with("++") {
             parts.truncate(parts.len().saturating_sub(2));
             parts.push("+");
@@ -1284,22 +1222,14 @@ impl PageKey {
 /// What a completed page request observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageReply {
-    /// The main document's URL when the request finished.
     pub url: String,
     pub message: String,
-    /// Present for [`PageRequest::Outline`], and the line diff for
-    /// [`PageRequest::Changes`].
     pub outline: Option<String>,
-    /// Structured findings: the element at a point, how a settle went, log
-    /// entries. Always page content, so never trusted as instructions.
+    /// Structured findings: the element at a point, how a settle went, log entries.
+    /// Always page content, so never trusted as instructions.
     pub data: Option<serde_json::Value>,
-    /// The picture a [`PageRequest::Capture`] painted, a PNG. What it shows
-    /// came from the page: a reader of it trusts none of the words in it.
     pub image: Option<Vec<u8>>,
-    /// Whether the request led the page away from its document.
     pub navigation: PageNavigation,
-    /// The navigation it started had not finished loading when the engine
-    /// answered.
     pub loading: bool,
     /// Where the action stands in the tab's record, and what the tab's other
     /// actors did meanwhile.
@@ -1334,17 +1264,12 @@ impl PageRecordNote {
     }
 }
 
-/// Whether a page request led the page to another document, as far as the
-/// engine can tell when it answers.
+/// Whether a page request led the page to another document, as far as the engine can tell
+/// when it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageNavigation {
-    /// The request ran none of the page's code, so it cannot have.
     None,
-    /// The page began a main-frame navigation while it handled the request.
     Started,
-    /// It had not by the time it handled the request, and may still: a
-    /// navigation the page starts later arrives as its own document request in
-    /// the network log.
     Possible,
 }
 
@@ -1358,8 +1283,7 @@ impl PageNavigation {
     }
 }
 
-/// Why a page request did nothing. `code` is stable, such as
-/// `stale_element`, `obscured` or `unavailable`.
+/// Why a page request did nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageFailure {
     pub code: String,
@@ -1503,7 +1427,6 @@ pub(crate) fn encode_request(
                 .collect();
         }
         PageRequest::Hover { element, point } => {
-            // An unnamed element hovers a viewport point instead.
             if element.is_none()
                 && let Some((x, y)) = point
             {
@@ -1519,8 +1442,6 @@ pub(crate) fn encode_request(
             steps,
             ..
         } => {
-            // A named element travels as its ref under `element`; the
-            // destination element under `to`; unnamed ends as points.
             if let Some((x, y)) = from_point {
                 command["x"] = (*x).into();
                 command["y"] = (*y).into();
@@ -1576,9 +1497,6 @@ pub(crate) fn encode_request(
         PageRequest::Scroll {
             to, by, into_view, ..
         } => {
-            // A named element travels as its ref under `element`, as every
-            // other request's does; the end of the page, the distance and
-            // the element to bring into view have keys of their own.
             if let Some(to) = to {
                 command["to"] = to.as_str().into();
             }
@@ -1626,8 +1544,8 @@ pub(crate) fn decode_result(
         if navigated != (navigation == PageNavigation::Started) {
             return None;
         }
-        // The picture travels as its own bytes, so the findings beside it are
-        // measured without it: a photograph of a page is never findings.
+        // The picture travels as its own bytes, so the findings beside it are measured
+        // without it: a photograph of a page is never findings.
         let mut picture = None;
         capture_image(&value["data"], &mut picture)?;
         let data = match &value["data"] {
@@ -1855,8 +1773,8 @@ fn decode_record_note(value: &serde_json::Value) -> Option<PageRecordNote> {
     })
 }
 
-/// The findings an answer carries, with the picture taken out of them: the
-/// picture's own bytes are the reply's image, never part of its findings.
+/// The findings an answer carries, with the picture taken out of them: the picture's own
+/// bytes are the reply's image, never part of its findings.
 fn without_image(data: &serde_json::Value) -> serde_json::Value {
     let mut findings = data.clone();
     if let Some(object) = findings.as_object_mut() {
@@ -1865,9 +1783,9 @@ fn without_image(data: &serde_json::Value) -> serde_json::Value {
     findings
 }
 
-/// The picture an answer carries, decoded from its base64 PNG, bounded in
-/// both its encoding and its pixels. `None` refuses the whole answer: a
-/// picture it cannot take is not one it may quietly drop.
+/// The picture an answer carries, decoded from its base64 PNG, bounded in both its
+/// encoding and its pixels. `None` refuses the whole answer: a picture it cannot take is
+/// not one it may quietly drop.
 fn capture_image(data: &serde_json::Value, image: &mut Option<Vec<u8>>) -> Option<()> {
     let Some(capture) = data.get("capture") else {
         return Some(());
@@ -1880,8 +1798,6 @@ fn capture_image(data: &serde_json::Value, image: &mut Option<Vec<u8>>) -> Optio
 /// The first bytes of every PNG file.
 const PNG_SIGNATURE: [u8; 4] = [0x89, b'P', b'N', b'G'];
 
-/// The PNG `encoded` stands for, refused if it is longer than a picture may
-/// be or is not a PNG at all.
 fn decode_png(encoded: &str) -> Option<Vec<u8>> {
     if encoded.len() > MAX_CAPTURE_BYTES.div_ceil(3) * 4 {
         return None;
@@ -1890,7 +1806,6 @@ fn decode_png(encoded: &str) -> Option<Vec<u8>> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .ok()?;
-    // A PNG, and no other kind of file, whatever the page may have wanted.
     if !bytes.starts_with(&PNG_SIGNATURE) || bytes.len() > MAX_CAPTURE_BYTES {
         return None;
     }

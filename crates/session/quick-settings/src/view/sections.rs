@@ -1,8 +1,8 @@
 //! The sections the controls page opens: Wi-Fi's networks (with the
 //! password prompt under the network asking for one), Bluetooth's
 //! accessories, the VPN profiles, the power modes, the battery, where sound
-//! plays, the person's devices and the clipboard history. Each replaces the
-//! controls page with a page of its own, and Back returns.
+//! plays, the person's devices and the clipboard history. Each unrolls under
+//! the control that opened it, and Back rolls it up.
 
 use ui::LocalState;
 use ui::TextRole;
@@ -11,76 +11,16 @@ use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Section, Segment,
-    SignalLevel, Slider, Spacer, Text, TextInput, Toggle, ToggleGroup,
+    SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
 use crate::QsSection;
 use crate::effect::QsEffect;
-use crate::faces::{Item, NetworkFace, StreamFace, TileFace};
+use crate::faces::{Item, NetworkFace, StreamFace};
 use crate::hosted::{HostedActions, HostedRow};
 use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
-
-/// `section`'s page: Back and its name, a radio's switch, then what it lists.
-pub(super) fn page(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
-    let title = t(section_title(section));
-    Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .with_rhythm(Rhythm::Sibling)
-        .push(crate::view::pages::header(
-            cx,
-            &title,
-            &t("qs-back-to-controls"),
-            Some(cx.switch(&parts.switches, move |cx, switches| {
-                switches
-                    .iter()
-                    .find(|face| face.section == Some(section))
-                    .map_or_else(
-                        || Box::new(Spacer::fixed(0.0)) as Element,
-                        |face| radio_switch(&cx.actions(), face),
-                    )
-            })),
-        ))
-        .push(self::section(cx, section, parts))
-        .into_widget()
-}
-
-/// A radio's switch in its section's header: on and off as its tile turns it, and inert while a
-/// change of it is under way.
-fn radio_switch(actions: &Actions<QuickSettings>, face: &TileFace) -> Element {
-    let toggle = Toggle::from_state(&LocalState::new(face.on))
-        .with_id("qs-section-switch")
-        .with_accessible_name(&face.label);
-    Box::new(match &face.switch {
-        Some(QsEffect::SetWifi { .. }) => actions.bind_effect(toggle, QsEffect::SET_WIFI),
-        Some(QsEffect::SetWired { .. }) => actions.bind_effect(toggle, QsEffect::SET_WIRED),
-        Some(QsEffect::SetBluetooth { .. }) => actions.bind_effect(toggle, QsEffect::SET_BLUETOOTH),
-        Some(QsEffect::SetVpn { profile, .. }) => {
-            let profile = profile.clone();
-            actions.bind_effect(
-                toggle,
-                QsEffect::SET_VPN.map(move |on: bool| (profile.clone(), on)),
-            )
-        }
-        _ => toggle.with_enabled(false),
-    })
-}
-
-/// The heading a section's page is titled with.
-fn section_title(section: QsSection) -> &'static str {
-    match section {
-        QsSection::Wifi => "qs-network-details",
-        QsSection::Bluetooth => "qs-bluetooth-details",
-        QsSection::Vpn => "qs-vpn-details",
-        QsSection::PowerMode => "qs-power-mode",
-        QsSection::Battery => "qs-battery",
-        QsSection::Sound => "qs-sound-output",
-        QsSection::Devices => "qs-devices",
-        QsSection::Clipboard => "qs-clipboard",
-    }
-}
 
 /// `section`, built again whenever what it lists changes.
 pub(super) fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
@@ -102,7 +42,7 @@ pub(super) fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Pa
 }
 
 /// A section's stable name in test ids.
-fn section_id(section: QsSection) -> &'static str {
+pub(super) fn section_id(section: QsSection) -> &'static str {
     match section {
         QsSection::Wifi => "wifi",
         QsSection::Bluetooth => "bluetooth",
@@ -488,7 +428,7 @@ fn stream_rows(cx: &ViewCx<QuickSettings>, face: &StreamFace) -> Vec<Element> {
 
 /// A level from 0 to 1 in steps of a twentieth: the slider of a control
 /// that has a level, empty while it is muted as the volume's is.
-fn level_slider(id: &str, name: &str, muted: bool, level: f64) -> Slider {
+pub(super) fn level_slider(id: &str, name: &str, muted: bool, level: f64) -> Slider {
     let level = LocalState::new(if muted { 0.0 } else { level });
     Slider::from_state(&level)
         .with_id(id)

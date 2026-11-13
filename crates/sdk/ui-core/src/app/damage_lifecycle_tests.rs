@@ -147,6 +147,71 @@ fn relayout_redraws_everything_only_when_geometry_moves() {
     assert!(!idle, "no layout work, no full repaint");
 }
 
+/// A box its style alone sizes, which asks no measure of its own: a view
+/// whose size is its place in the window, as a menu over a desk is.
+struct Styled {
+    rect: KurboRect,
+}
+
+impl Widget for Styled {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size::from_lengths(120.0, 40.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "Styled"
+    }
+
+    fn get_rect(&self) -> KurboRect {
+        self.rect
+    }
+}
+
+/// A tree rebuilt between frames, as a sync rebuilds it when what a widget
+/// shows changed (a menu whose rows arrived), is a fresh tree with no layout
+/// in it: the next frame solves it, though its window kept its size and the
+/// frame rebuilt nothing itself. Placing it unsolved put every widget at
+/// zero size, and a window menu opened that way drew nothing.
+#[test]
+fn a_tree_rebuilt_between_frames_is_solved_by_the_next() {
+    let mut app = App::new(
+        State::new(),
+        Box::new(Styled {
+            rect: KurboRect::ZERO,
+        }),
+    );
+    app.init_layout();
+    let root = app.layout.root_node.unwrap();
+    run_layout_pass(&mut app, root, 400, 300, 1.0, true, None).unwrap();
+    assert_eq!(app.root_widget.get_rect().size(), (120.0, 40.0).into());
+
+    app.rebuild_structure();
+    let root = app.layout.root_node.unwrap();
+    run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
+    assert_eq!(
+        app.root_widget.get_rect().size(),
+        (120.0, 40.0).into(),
+        "the rebuilt tree is laid out, not placed unsolved"
+    );
+}
+
 // ── Collaborators' presence ─────────────────────────────────────────────
 //
 // A visible peer used to turn widget damage off: every frame repainted the

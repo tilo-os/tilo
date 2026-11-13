@@ -12,9 +12,8 @@ pub struct PreviewView {
     pub scroll: (f64, f64),
     pub zoom: f64,
     pub page: Option<String>,
-    /// The live window's own presentation (a mode, the open item), so a
-    /// past version opens as the window shows it, drawn by the same view
-    /// ([`crate::application_view::ApplicationViewState`]).
+    /// The live window's own presentation (a mode, the open item), so a past version opens as the
+    /// window shows it, drawn by the same view ([`crate::application_view::ApplicationViewState`]).
     pub application: Option<crate::application_view::ApplicationLocalView>,
 }
 
@@ -39,8 +38,8 @@ pub enum PreviewNavigation {
     SelectPage(String),
 }
 
-/// Keys are immutable historical content hashes admitted by the source owner.
-/// Absence is an unavailable historical asset, never a request for current bytes.
+/// Keys are immutable historical content hashes admitted by the source owner. Absence is an unavailable
+/// historical asset, never a request for current bytes.
 #[derive(Clone, Debug, Default)]
 pub struct FrozenPreviewAssets(BTreeMap<String, Arc<[u8]>>);
 impl FrozenPreviewAssets {
@@ -66,8 +65,6 @@ pub struct PreviewAccessibility {
 }
 
 pub trait HistoryPreview {
-    /// # Errors
-    /// Returns a description when the preview cannot lay out the frozen content.
     fn layout(
         &mut self,
         bounds: Rect,
@@ -84,9 +81,8 @@ pub trait HistoryPreview {
     fn navigate(&mut self, command: PreviewNavigation) -> bool;
     fn view(&self) -> PreviewView;
     fn accessibility(&self) -> PreviewAccessibility;
-    /// The live window's bar presents search and History for the app, so
-    /// the version is drawn as the live view is: its header without a
-    /// button of its own that opens the app's search.
+    /// The live window's bar presents search and History for the app, so the version is drawn as the
+    /// live view is: its header without a button of its own that opens the app's search.
     fn set_window_presents_search(&mut self, presents: bool) {
         let _ = presents;
     }

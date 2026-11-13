@@ -1,9 +1,4 @@
 //! Import the canonical calendars a same-computer handoff left for this app.
-//!
-//! The source calendar is retained byte for byte and its events are published
-//! in this app's own data area. Opening the calendar parses them through the
-//! same iCalendar reader as a chosen file and applies one ordinary resource
-//! change, so repeated opens do not duplicate events.
 
 use ui::application::HostContext;
 use ui::tilo_resource::Replica;
@@ -13,7 +8,6 @@ use crate::model::Calendar;
 const INBOX: &str = "personal-data-incoming/calendars";
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Import the calendars waiting in this app's import inbox.
 pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;

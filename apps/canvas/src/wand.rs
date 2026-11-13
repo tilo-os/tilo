@@ -34,14 +34,11 @@ pub struct Picture<'a> {
     pub height: usize,
 }
 
-/// What the wand looks for.
 pub struct Wand<'a> {
-    /// The pixel it starts from.
     pub seed: Option<(usize, usize)>,
     pub colour: Option<[u8; 3]>,
     /// `0..=1`.
     pub tolerance: f64,
-    /// Like colour anywhere, touching the start or not.
     pub everywhere: bool,
     /// The pixels it may find, row by row; all when absent. Its edge is
     /// traced a pixel past them, to be cut exactly where they end.
@@ -206,7 +203,6 @@ fn blur_radius(pixels_per_unit: f64) -> usize {
     radius
 }
 
-/// How far apart two colours look.
 fn apart(a: &Lab, b: &Lab) -> f32 {
     a.iter()
         .zip(b)

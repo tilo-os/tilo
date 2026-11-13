@@ -1,15 +1,12 @@
 //! Content hydration: serve file bytes locally, fetching from peers on demand.
 //!
-//! A `read()` resolves an inode to its content id via the namespace, then
-//! asks the [`Hydrator`]. Small content is loose blobs: the missing ones are
-//! fetched in batched `GetMany` requests (`batch`). File-backed content is
-//! read from the store's area, and the missing byte ranges are fetched into
-//! it with ranged, BAO-verified `GET`s of the content id (`ranges`).
+//! A `read()` resolves an inode to its content id through the namespace, then asks the
+//! [`Hydrator`]. Small content is loose blobs, fetched in batched `GetMany` requests; file-backed
+//! content is read from the store's area, and its missing byte ranges are fetched into it with
+//! ranged, BAO-verified `GET`s of the content id.
 //!
-//! A tree whose bytes travel beside its record rather than between daemons
-//! (a workspace a host serves, whose members reach each other only through
-//! it) names a [`ContentSource`] instead: what no peer serves is asked of it,
-//! one blob at a time, and kept as a loose blob once it hashes to its name.
+//! A workspace whose bytes travel beside its record rather than between daemons names a
+//! [`ContentSource`] instead: what no peer serves is asked of it, one blob at a time.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -43,21 +40,13 @@ const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
 const FETCH_DEADLINE: Duration = Duration::from_secs(6);
 const HEDGE_DELAY: Duration = Duration::from_millis(150);
 
-/// Longest a blocked read waits for bytes a peer must supply, through FUSE
-/// and through the native placeholders alike. Past it the read fails with
-/// `EIO`, and the fetch keeps going so a retry can find the bytes local.
-/// Well inside the kernel's two-minute hung-task report: neither a reader
-/// waiting on a peer that went quiet nor anyone queued behind it on the
-/// same pages is ever reported as hung.
+/// Longest a blocked read waits for bytes a peer must supply, through FUSE and through native
+/// placeholders alike. Past it the read fails with `EIO` and the fetch keeps going, so a retry finds
+/// the bytes local. Well inside the kernel's two-minute hung-task report.
 pub const BLOCKED_READ_BOUND: Duration = Duration::from_secs(30);
 
-/// Waits at most `bound` for `read`, which runs on as a task of its own: a
-/// read that outlives the bound still makes its bytes local for the next
-/// one.
-///
-/// # Errors
-///
-/// `read`'s error, or an error naming the bound when it was reached.
+/// Waits at most `bound` for `read`, which runs on as a task of its own: a read that outlives the
+/// bound still makes its bytes local for the next one.
 pub async fn bounded_read<T, F>(bound: Duration, read: F) -> Result<T>
 where
     T: Send + 'static,
@@ -81,57 +70,43 @@ struct PeerHealth {
 
 /// Where blobs come from when no peer of the sync plane serves them.
 pub trait ContentSource: Send + Sync {
-    /// The bytes named `hash`, when the source can hand them over. They are
-    /// checked against `hash` before anything keeps them.
+    /// The bytes named `hash`, when the source can hand them over; they are checked against `hash`
+    /// before anything keeps them.
     fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>>;
 }
 
 pub struct Hydrator {
     pub endpoint: Endpoint,
     pub store: Arc<ContentStore>,
-    /// Peers we may hydrate missing blobs from (populated by the sync layer).
     peers: Arc<RwLock<Vec<PeerHealth>>>,
-    /// Number of hydration fetches currently in flight for each blob. This is
-    /// refcounted rather than a set: two overlapping guards for the same hash
-    /// must keep the file `downloading` until the final fetch ends.
+    /// Number of hydration fetches in flight for each blob, refcounted rather than a set: two
+    /// overlapping guards for the same hash keep the file `downloading` until the final fetch ends.
     in_flight: Arc<Mutex<HashMap<Hash, usize>>>,
-    /// Per-blob single-flight cells. Concurrent foreground reads and predictive
-    /// prefetches await the same peer request instead of downloading identical
-    /// bytes independently.
+    /// Per-blob single-flight cells: concurrent reads and prefetches await the same peer request
+    /// instead of downloading identical bytes.
     fetches: Arc<AsyncMutex<FetchMap>>,
-    /// Verified peer source for fetched blobs, used as remote-durability evidence.
     remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
-    /// Decoded manifests (with their offset tables), bounded by total
-    /// chunk count.
+    /// Decoded manifests with their offset tables, bounded by total chunk count.
     manifests: moka::sync::Cache<Hash, Arc<Manifest>>,
-    /// Ranges of file-backed content being fetched right now.
     flights: ranges::Flights,
-    /// Orders content requests by priority.
     scheduler: ranges::Scheduler,
-    /// Bytes of file-backed content received so far.
     ranged_bytes: std::sync::atomic::AtomicU64,
-    /// Bytes of loose blobs received so far.
     blob_bytes: std::sync::atomic::AtomicU64,
-    /// One blob-protocol connection per peer, reused by every request.
-    /// Pooled blob-protocol connections per peer, by lane: batches use
-    /// lane 0, large content spreads over several lanes.
+    /// Pooled blob-protocol connections per peer, by lane: batches use lane 0, large content spreads
+    /// over several.
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
-    /// Woken by the first peer: a device that knows a peer may be dialled
-    /// by it.
+    /// Woken by the first peer: a device that knows a peer may be dialled by it.
     reachability: crate::reachability::Reachability,
-    /// Asked for what no peer served.
     source: Option<Arc<dyn ContentSource>>,
 }
 
-/// Chunk entries held by the manifest cache: roughly 40 bytes each, so
-/// about 20 MiB.
+/// Chunk entries held by the manifest cache: roughly 40 bytes each, so about 20 MiB.
 const MANIFEST_CHUNK_BUDGET: u64 = 512 * 1024;
 
-/// Decrements a hash's in-flight count on drop; hold it for the duration of a
-/// hydration so `sync_state` reports `downloading` until every overlapping
-/// fetch has ended.
+/// Decrements a hash's in-flight count on drop; hold it for the duration of a hydration so
+/// `sync_state` reports `downloading` until every overlapping fetch has ended.
 pub struct FetchGuard {
     counts: Arc<Mutex<HashMap<Hash, usize>>>,
     hash: Hash,
@@ -175,16 +150,14 @@ impl Hydrator {
         }
     }
 
-    /// Ask `source` for every blob no peer serves.
     #[must_use]
     pub fn with_source(mut self, source: Arc<dyn ContentSource>) -> Self {
         self.source = Some(source);
         self
     }
 
-    /// Make `hashes` local from the content source, as loose blobs; the
-    /// ones it did not hand over, or handed over as other bytes, are
-    /// returned.
+    /// Make `hashes` local from the content source, as loose blobs; the ones it did not hand over, or
+    /// handed over as other bytes, are returned.
     pub(crate) async fn fetch_from_source(&self, hashes: Vec<Hash>) -> Vec<Hash> {
         let Some(source) = self.source.clone() else {
             return hashes;
@@ -216,9 +189,8 @@ impl Hydrator {
         results.into_iter().filter_map(Result::err).collect()
     }
 
-    /// Wake `reachability` when the first peer is added: every peer the
-    /// daemon learns of — persisted, from a ticket or
-    /// authenticated in a session — passes through [`Self::add_peer`].
+    /// Wake `reachability` when the first peer is added: every peer the daemon learns of passes
+    /// through [`Self::add_peer`].
     #[must_use]
     pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
         self.reachability = reachability;
@@ -233,8 +205,8 @@ impl Hydrator {
             .is_some_and(|count| *count > 0)
     }
 
-    /// Mark `hash` as being fetched; the returned guard releases one reference
-    /// on drop. Overlapping fetches therefore cannot clear each other's state.
+    /// Mark `hash` as being fetched; the returned guard releases one reference on drop, so
+    /// overlapping fetches cannot clear each other's state.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
         let mut counts = self.in_flight.lock_recover();
         let count = counts.entry(hash).or_insert(0);
@@ -246,19 +218,17 @@ impl Hydrator {
         }
     }
 
-    /// The hydration state of the file whose content is `manifest_hash`:
-    /// `downloading` if a fetch is in flight, `projected` if the manifest or a chunk is still missing, `local` only when all are present.
+    /// The hydration state of the file whose content is `manifest_hash`: `downloading` if a fetch is
+    /// in flight, `projected` if the manifest or a chunk is still missing, `local` only when all are
+    /// present.
     pub async fn sync_state(&self, manifest_hash: Hash) -> SyncState {
-        // A fetch of the manifest blob itself is under way.
         if self.is_fetching(manifest_hash) {
             return SyncState::Downloading;
         }
-        // Without the manifest we don't have the chunk list — purely projected, as a freshly-joined peer sees every file until it reads one.
         let Some(mbytes) = self.store.local(manifest_hash).await else {
             return SyncState::Projected;
         };
         let Ok(manifest) = Manifest::decode(&mbytes) else {
-            // A manifest we can't parse can't be served locally → projected.
             return SyncState::Projected;
         };
         if content::is_file_backed(&manifest) {
@@ -291,9 +261,8 @@ impl Hydrator {
         let mut peers = self.peers.write_recover();
         let now = Instant::now();
         if let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == addr.id) {
-            // A stable node id can acquire new direct/relay hints after a
-            // network move. Keep the health history, but always use the fresh
-            // address rather than requiring a daemon restart.
+            // A stable node id can acquire new direct or relay hints after a network move: keep the
+            // health history but use the fresh address.
             peer.addr = addr;
             peer.last_seen = now;
         } else {
@@ -363,9 +332,8 @@ impl Hydrator {
         drop(peers);
     }
 
-    /// Local residency and the exact physical blobs that comprise one file.
-    /// `remotely_durable` is deliberately strict: every present component must
-    /// have been bao-verified from a peer in this process.
+    /// Local residency and the exact physical blobs that make up one file. `remotely_durable` is
+    /// strict: every present component must have been bao-verified from a peer in this process.
     pub async fn residency(&self, manifest_hash: Hash) -> ContentResidency {
         let mut result = ContentResidency {
             remote_only: true,
@@ -385,9 +353,8 @@ impl Hydrator {
         result.remotely_durable = sources.contains_key(&manifest_hash);
         result.remote_source = sources.get(&manifest_hash).cloned();
         if content::is_file_backed(&manifest) {
-            // Fetched ranges are verified per group but not attributed to a
-            // peer, so file-backed content never counts as remotely durable
-            // here; receipts are the durability proof.
+            // Fetched ranges are verified per group but not attributed to a peer, so file-backed
+            // content never counts as remotely durable here; receipts are the durability proof.
             result.remotely_durable = false;
             result.remote_source = None;
             if let Some(entry) = self.store.files().entry(manifest_hash.as_bytes()) {
@@ -492,10 +459,9 @@ impl Hydrator {
             .map_err(|message| anyhow!(message))
     }
 
-    /// One chunk of `manifest_hash`, from the store or fetched with its
-    /// manifest named: a serving peer authorises a chunk only through a
-    /// manifest in the same request, so a bare [`Self::read_blob`] of a
-    /// chunk is refused.
+    /// One chunk of `manifest_hash`, from the store or fetched with its manifest named: a serving peer
+    /// authorises a chunk only through a manifest in the same request, so a bare [`Self::read_blob`]
+    /// of a chunk is refused.
     pub async fn read_chunk(&self, hash: Hash, len: u64, manifest_hash: Hash) -> Result<Bytes> {
         if let Some(bytes) = self.store.local(hash).await {
             return Ok(bytes);
@@ -508,24 +474,14 @@ impl Hydrator {
             .ok_or_else(|| anyhow!("no peer served chunk {hash} of {manifest_hash}"))
     }
 
-    /// Read a byte range of a file given its content id: fetch the manifest,
-    /// then only what `[offset, offset+size)` needs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest or any part of the range can't be
-    /// loaded (locally or from a peer).
+    /// Read a byte range of a file given its content id: fetch the manifest, then only what
+    /// `[offset, offset+size)` needs.
     pub async fn read(&self, manifest_hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         self.read_with(manifest_hash, offset, size, Priority::Foreground)
             .await
     }
 
     /// [`Self::read`] at a given priority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest or any part of the range can't be
-    /// loaded.
     pub async fn read_with(
         &self,
         manifest_hash: Hash,
@@ -569,14 +525,9 @@ impl Hydrator {
         Ok(out)
     }
 
-    /// Makes `[offset, offset+size)` of `manifest_hash` local at
-    /// `priority` without returning it. For file-backed content the bytes
-    /// are then in the store's area, where [`ContentStore::files`] can copy
-    /// or clone them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if part of the range cannot be fetched.
+    /// Makes `[offset, offset+size)` of `manifest_hash` local at `priority` without returning it. For
+    /// file-backed content the bytes are then in the store's area, where [`ContentStore::files`] can
+    /// clone them.
     pub async fn hydrate_range(
         &self,
         manifest_hash: Hash,
@@ -598,13 +549,8 @@ impl Hydrator {
         Ok(manifest)
     }
 
-    /// [`read`](Self::read); kept for callers that name a fetch
-    /// parallelism, which the transfer engine now chooses itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest or any part of the range can't be
-    /// loaded.
+    /// [`read`](Self::read); kept for callers that name a fetch parallelism, which the transfer engine
+    /// chooses itself.
     pub async fn read_parallel(
         &self,
         manifest_hash: Hash,
@@ -615,10 +561,8 @@ impl Hydrator {
         self.read(manifest_hash, offset, size).await
     }
 
-    /// [`read`](Self::read) served only from local content: `None` when the
-    /// manifest or any part of the range would have to be fetched from a
-    /// peer. Never touches the network, so it is safe on a latency-critical
-    /// thread.
+    /// [`read`](Self::read) served only from local content: `None` when the manifest or any part of the
+    /// range would have to be fetched. Safe on a latency-critical thread.
     pub async fn read_local(&self, manifest_hash: Hash, offset: u64, size: u64) -> Option<Vec<u8>> {
         let manifest = self.local_manifest_index(manifest_hash).await?;
         let end = offset.saturating_add(size);
@@ -627,9 +571,8 @@ impl Hydrator {
             .await
     }
 
-    /// The blobs `manifest_hash`'s content is made of, as a
-    /// [`ContentSource`] hands them over: the manifest first, then each
-    /// distinct chunk. `None` when the manifest is not local.
+    /// The blobs `manifest_hash`'s content is made of, as a [`ContentSource`] hands them over: the
+    /// manifest first, then each distinct chunk. `None` when the manifest is not local.
     pub async fn content_blobs(&self, manifest_hash: Hash) -> Option<Vec<Hash>> {
         let manifest = self.local_manifest_index(manifest_hash).await?;
         let mut seen = std::collections::HashSet::new();
@@ -643,9 +586,8 @@ impl Hydrator {
         Some(blobs)
     }
 
-    /// One blob of `manifest_hash`'s content ([`Self::content_blobs`]) when
-    /// it is local: a loose blob as it is kept, a chunk of file-backed
-    /// content read from the store's area. Never touches the network.
+    /// One blob of `manifest_hash`'s content ([`Self::content_blobs`]) when it is local: a loose blob as
+    /// kept, a chunk read from the store's area. Never touches the network.
     pub async fn local_content_blob(&self, manifest_hash: Hash, blob: Hash) -> Option<Bytes> {
         if let Some(bytes) = self.store.local(blob).await {
             return Some(bytes);
@@ -673,9 +615,8 @@ impl Hydrator {
         Some(manifest)
     }
 
-    /// The byte length of `manifest_hash` when every byte of it is local;
-    /// `None` when the manifest or any part of the content would have to be
-    /// fetched. Never touches the network.
+    /// The byte length of `manifest_hash` when every byte of it is local; `None` when anything would
+    /// have to be fetched. Never touches the network.
     pub async fn local_len(&self, manifest_hash: Hash) -> Option<u64> {
         let manifest = self.local_manifest_index(manifest_hash).await?;
         self.store
@@ -684,28 +625,20 @@ impl Hydrator {
             .then(|| manifest.total_len())
     }
 
-    /// Run `fut` to completion on the daemon runtime from a synchronous
-    /// caller — a FUSE worker, the native plane or a test. This is the one
-    /// bridge from those threads into async code.
+    /// Run `fut` to completion on the daemon runtime from a synchronous caller: a FUSE worker, the
+    /// native plane or a test. This is the one bridge from those threads into async code.
     ///
-    /// A FUSE worker that waits here is unavailable to every other process
-    /// using the mount, so callers on one keep `fut` local or explicitly
-    /// bounded (a preview's few KiB, a thumbnail). Open-ended network
-    /// hydration belongs on the runtime instead: history restores and
-    /// conflict resolutions hydrate through a history job and commit once
-    /// the bytes are local.
+    /// A FUSE worker that waits here is unavailable to every other process using the mount, so callers
+    /// on one keep `fut` local or explicitly bounded (a preview's few KiB, a thumbnail). Open-ended
+    /// hydration belongs on the runtime: history restores and conflict resolutions hydrate through a
+    /// history job.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         tokio::task::block_in_place(|| self.runtime_handle.block_on(fut))
     }
 
-    /// Write the complete local content of `manifest_hash` to `dest` as a
-    /// read-only file. `Ok(false)` (and nothing written) when any part is
-    /// not local; this never fetches from a peer. File-backed content is
+    /// Write the complete local content of `manifest_hash` to `dest` as a read-only file. `Ok(false)`,
+    /// with nothing written, when any part is not local; this never fetches. File-backed content is
     /// cloned from the area where the filesystem shares extents.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be written or moved into place.
     pub async fn export_local(&self, manifest_hash: Hash, dest: &std::path::Path) -> Result<bool> {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
@@ -741,12 +674,7 @@ impl Hydrator {
         Ok(true)
     }
 
-    /// The decoded manifest for `manifest_hash`, fetched once and then
-    /// served from a bounded cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest can't be loaded or decoded.
+    /// The decoded manifest for `manifest_hash`, fetched once and then served from a bounded cache.
     pub async fn manifest_index(&self, manifest_hash: Hash) -> Result<Arc<Manifest>> {
         if let Some(manifest) = self.local_manifest_index(manifest_hash).await {
             return Ok(manifest);
@@ -756,42 +684,25 @@ impl Hydrator {
         Ok(manifest)
     }
 
-    /// Total byte length of a file from its manifest (fetches only the manifest).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest can't be loaded.
+    /// Total byte length of a file from its manifest, fetching only the manifest.
     pub async fn content_len(&self, manifest_hash: Hash) -> Result<u64> {
         Ok(self.manifest_index(manifest_hash).await?.total_len())
     }
 
-    /// Hydrate every byte of `manifest_hash` without assembling the file in
-    /// memory. Predictive prefetch uses this path: the manifest is fetched
-    /// first, its declared size is checked before any content is requested,
-    /// then what is missing is fetched at predictive priority.
+    /// Hydrate every byte of `manifest_hash` without assembling the file in memory: the manifest is
+    /// fetched first, its declared size checked before any content is requested, then what is missing
+    /// is fetched at predictive priority.
     ///
-    /// Returns `Ok(false)` when the file exceeds `max_bytes`; that is a policy
-    /// refusal, not a transport failure. A later foreground read remains free
-    /// to hydrate the range the caller requested.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the manifest or any required content cannot be
-    /// fetched, verified, decoded, or persisted.
+    /// `Ok(false)` when the file exceeds `max_bytes`, which is a policy refusal rather than a transport
+    /// failure.
     pub async fn prefetch(&self, manifest_hash: Hash, max_bytes: u64) -> Result<bool> {
         self.prefetch_with_progress(manifest_hash, max_bytes, Priority::Predictive, |_, _| {})
             .await
     }
 
-    /// Hydrate a complete file at `priority` while reporting verified
-    /// file-byte progress. The callback is deliberately synchronous and
-    /// cheap: callers can atomically project progress without holding a
-    /// namespace lock across network I/O. Pinned hydration keeps the
-    /// content from being evicted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a required manifest or chunk cannot be hydrated.
+    /// Hydrate a complete file at `priority` while reporting verified file-byte progress. The callback
+    /// is synchronous and cheap so callers can project progress without holding a namespace lock across
+    /// network I/O.
     pub async fn prefetch_with_progress(
         &self,
         manifest_hash: Hash,
@@ -806,8 +717,6 @@ impl Hydrator {
         }
         let mut completed = 0_u64;
         progress(completed, total);
-        // Progress is reported per window of requests; a window is large
-        // enough to keep every peer's pipeline full.
         let window_bytes = batch::BATCH_BYTES.saturating_mul(batch::WINDOW_PER_PEER as u64);
         if content::is_file_backed(&manifest) {
             let mut at = 0_u64;
@@ -864,8 +773,6 @@ impl Hydrator {
             .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Content received from peers so far: bytes of file-backed ranges and
-    /// of loose blobs.
     pub fn received_bytes(&self) -> (u64, u64) {
         (
             self.fetched_range_bytes(),
@@ -878,12 +785,10 @@ impl Hydrator {
         Ok(Manifest::decode(&bytes)?)
     }
 
-    /// Fetch a whole blob from a specific peer, verify, persist, and return it.
-    /// `get_blob` streams bao-verified content, so a corrupt/wrong blob fails the stream rather than returning bad bytes.
+    /// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
+    /// bao-verified content, so a corrupt blob fails the stream instead of returning bad bytes.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
-        // Publish that this blob is downloading so `sync_state` reports it; the guard clears on completion or failure.
         let _guard = self.mark_fetching(hash);
-        // Bounded so an unreachable/stalled peer can't hang a read forever.
         let started = Instant::now();
         let peer_id = peer.id;
         let result = match tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
@@ -931,14 +836,11 @@ fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Peers for tests of what a fetch does when a peer stops answering.
 #[cfg(test)]
 pub(crate) mod test_peers {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
-    /// Accepts blob connections and never answers a request on them, as a
-    /// peer does that went quiet without closing its connection.
     #[derive(Debug)]
     struct Silent;
 
@@ -949,7 +851,6 @@ pub(crate) mod test_peers {
         }
     }
 
-    /// A running silent peer; it stops when the router is dropped.
     pub(crate) async fn silent() -> Router {
         let endpoint = test_relay::direct_endpoint().await;
         Router::builder(endpoint)
@@ -978,7 +879,6 @@ mod tests {
             "held far past its bound: {waited:?}"
         );
 
-        // The fetch outlives the reader that gave up on it.
         let (done, landed) = tokio::sync::oneshot::channel();
         let slow = bounded_read(bound, async move {
             tokio::time::sleep(Duration::from_millis(400)).await;
@@ -996,8 +896,6 @@ mod tests {
         assert_eq!(quick, 7, "a read inside its bound returns its bytes");
     }
 
-    /// A content source over another device's store, as a record's route
-    /// hands over what that device keeps.
     struct OtherDevice(Arc<Hydrator>, Hash);
 
     impl ContentSource for OtherDevice {
@@ -1017,8 +915,6 @@ mod tests {
             .unwrap()
     }
 
-    /// With no peer, small and file-backed content alike arrive from the
-    /// content source, blob by blob, and read as the bytes that were written.
     #[tokio::test]
     async fn content_no_peer_serves_arrives_from_the_content_source() {
         for length in [11_usize, 300_000, 3 * 1024 * 1024] {
@@ -1097,7 +993,6 @@ mod tests {
         {
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
-            // A multi-chunk buffer (well over MAX_CHUNK).
             let data: Vec<u8> = (0..300_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) & 0xff).unwrap())
                 .collect();
@@ -1109,7 +1004,6 @@ mod tests {
 
             assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
 
-            // ranges that cross chunk boundaries
             for (off, len) in [
                 (0usize, 100usize),
                 (8000, 20000),
@@ -1139,7 +1033,6 @@ mod tests {
         {
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
-            // A multi-chunk file so we exercise the per-chunk presence check.
             let data: Vec<u8> = (0..250_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 11) & 0xff).unwrap())
                 .collect();
@@ -1155,7 +1048,6 @@ mod tests {
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hyd = Hydrator::new(endpoint, store);
-            // A manifest hash the store never ingested: exactly what a freshly-joined peer holds — projected metadata, no content.
             let absent = Hash::from([7u8; 32]);
             assert_eq!(
                 hyd.sync_state(absent).await,
@@ -1164,7 +1056,6 @@ mod tests {
             );
         }
         {
-            // Manifest present locally but one referenced chunk was never stored: partially projected (the state after a torn/partial fetch).
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let present = store
@@ -1196,7 +1087,6 @@ mod tests {
         {
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
-            // Ingest a real file (so absent state would otherwise be Local)...
             let data: Vec<u8> = (0..200_000u32)
                 .map(|i| u8::try_from((i.wrapping_mul(40_503) >> 9) & 0xff).unwrap())
                 .collect();
@@ -1204,7 +1094,6 @@ mod tests {
             let hyd = Hydrator::new(endpoint, store);
             assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
 
-            // Hold the exact in-flight marker `fetch_from` publishes for the manifest blob: `sync_state` must report downloading.
             let guard = hyd.mark_fetching(mh);
             assert!(hyd.is_fetching(mh));
             assert_eq!(
@@ -1272,7 +1161,6 @@ mod tests {
 
     #[tokio::test]
     async fn peers_hydrate_real_bytes_and_unhealthy_peers_are_backed_off() {
-        // Phase `failed_peer_is_backed_off_behind_a_healthy_peer`.
         async fn failed_peer_is_backed_off_behind_a_healthy_peer() {
             let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
@@ -1285,8 +1173,6 @@ mod tests {
             hydrator.record_peer_result(failed, Duration::from_secs(2), false);
             assert_eq!(hydrator.known_peers()[0].id, healthy);
             assert!(hydrator.remove_peer(healthy));
-            // If every peer is cooling down, return the best remaining candidate
-            // so a foreground retry is never permanently starved.
             assert_eq!(hydrator.known_peers()[0].id, failed);
         }
         {
@@ -1312,12 +1198,8 @@ mod tests {
                 .expect("test monotonic clock has sufficient range");
             assert!(hydrator.known_peers().is_empty());
         }
-        // Phase `failed_peer_is_backed_off_behind_a_healthy_peer` (defined above).
         failed_peer_is_backed_off_behind_a_healthy_peer().await;
-        // Phase `hydrates_real_bytes_from_a_peer`.
-        // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
         {
-            // --- node A: serve a blob over iroh-blobs ---
             let server_ep = test_relay::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload = Bytes::from_static(b"collaborative filesystem payload");
@@ -1331,7 +1213,6 @@ mod tests {
                 .spawn();
             let server_addr = server_ep.addr();
 
-            // --- node B: empty store, must hydrate from A ---
             let client_ep = test_relay::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store.clone());
@@ -1349,7 +1230,6 @@ mod tests {
                 "B must read A's real bytes"
             );
 
-            // after hydration the blob is cached locally on B
             assert!(
                 client_store.has(hash).await,
                 "fetched blob must be cached on B"
@@ -1376,9 +1256,6 @@ mod tests {
             hydrator.record_peer_result(server_id, Duration::from_millis(2), true);
             assert_eq!(hydrator.known_peers()[0].id, ghost);
 
-            // Every peer's attempt runs at once, each a hedge delay after the
-            // one before; how soon the healthy peer answers is the machine's
-            // to report, not this test's to judge.
             let started = Instant::now();
             let got = hydrator.read_blob(hash, 0, u64::MAX).await.unwrap();
             assert_eq!(got.as_slice(), payload.as_ref());

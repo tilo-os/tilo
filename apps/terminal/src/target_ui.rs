@@ -1,7 +1,3 @@
-// Where a tab's session runs, on screen: the target chip in the tab's header,
-// the target picker it opens, and the environments panel. Included into the
-// widget's module next to `main_body.rs`.
-
 use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, SessionTarget};
@@ -17,15 +13,12 @@ enum TargetMenuRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PickerRow {
     label: String,
-    /// It is where the tab's session runs: the row carries the check.
     current: bool,
-    /// A separator stands above it.
     separated: bool,
     row: TargetMenuRow,
 }
 
 impl TargetMenuRow {
-    /// The row as the window bar's picker commits it.
     fn encode(&self) -> String {
         match self {
             Self::Open(target) => format!("open:{}", target.encode()),
@@ -33,8 +26,6 @@ impl TargetMenuRow {
         }
     }
 
-    /// The row a window bar's picker committed; anything malformed or
-    /// invalid is none.
     fn decode(raw: &str) -> Option<Self> {
         if raw == "manage" {
             return Some(Self::Manage);
@@ -43,22 +34,17 @@ impl TargetMenuRow {
     }
 }
 
-/// The environments panel: list, create and rename.
 #[derive(Default)]
 struct EnvironmentsPanel {
     open: bool,
     input: Option<TextInput>,
-    /// The record being renamed; `None` while the input names a new one.
     renaming: Option<String>,
     error: Option<String>,
     rect: Rect,
     close_rect: Rect,
     submit_rect: Rect,
-    /// Try again, while the shell runtime does not answer.
     retry_rect: Rect,
-    /// Per environment: its buttons.
     rows: Vec<EnvironmentRow>,
-    /// A folder picker the person opened for this environment record.
     picker: Option<(String, ui::portal::PortalChannel)>,
 }
 
@@ -67,14 +53,10 @@ struct EnvironmentsPanel {
 /// wrong and what can be done about it, never a form that cannot work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PanelOffer {
-    /// The environments, and the name field that makes or renames one.
     Environments,
-    /// Why environments cannot be listed or made here; `retry` when asking
-    /// the runtime again may help.
     Problem { message: String, retry: bool },
 }
 
-/// One environment's buttons in the panel, as last drawn.
 struct EnvironmentRow {
     key: String,
     grant: Rect,
@@ -82,14 +64,12 @@ struct EnvironmentRow {
     open: Rect,
 }
 
-/// What a click on an environment's row asks for.
 enum RowAction {
     Grant,
     Rename,
     Open,
 }
 
-/// The tools and granted folders of an environment, as the panel shows them.
 fn environment_details(env: &EnvironmentSummary) -> (String, String) {
     let tools = if env.tools.is_empty() {
         t("terminal-env-no-tools")
@@ -116,7 +96,6 @@ fn environment_details(env: &EnvironmentSummary) -> (String, String) {
     (tools, grants)
 }
 
-/// What the chip and the picker call a target.
 fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
@@ -144,8 +123,6 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
     }
 }
 
-/// Parse an agent's or a person's spelled-out target: `host`,
-/// `environment`, `environment:<record>` or `legacy:<vm>`.
 pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
     let target = match raw.split_once(':') {
@@ -159,24 +136,18 @@ pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
 }
 
 impl TerminalWidget {
-    /// Where this tab's session runs, once it has a target.
     pub fn session_target(&self) -> Option<&SessionTarget> {
         self.sessions.target.as_ref()
     }
 
-    /// The pending request for the shell (the device's own shell needs the
-    /// person's allow).
     pub fn take_session_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.sessions.take_intent()
     }
 
-    /// Where this tab's session stands.
     pub fn session_state(&self) -> &OpenState {
         &self.sessions.state
     }
 
-    /// Show `target` and `environments` without opening anything — for
-    /// screenshot scenes and hosts that render a recorded session.
     pub fn show_target(&mut self, target: SessionTarget, environments: Vec<EnvironmentSummary>) {
         self.sessions.target = Some(target);
         self.sessions.environments = environments;
@@ -189,13 +160,11 @@ impl TerminalWidget {
         self.sessions.legacy_vms = vms;
     }
 
-    /// The tab's session source and the places it lists — for tests.
     #[cfg(test)]
     pub(crate) fn sessions(&self) -> &crate::sessions::Sessions {
         &self.sessions
     }
 
-    /// Open sessions through `sessions` — for tests.
     #[cfg(test)]
     pub(crate) fn set_sessions(&mut self, mut sessions: crate::sessions::Sessions) {
         if let TerminalWindow::Hosted(window) = &self.life.window {
@@ -218,7 +187,6 @@ impl TerminalWidget {
         self.submit(crate::resource::Terminal::RECORD_TARGET.with((target.encode(), device)));
     }
 
-    /// Keep (or forget) the relay session this session re-attaches to.
     fn record_relay_session(&mut self, session: Option<String>) {
         if session.is_none() && self.recorded_relay_session.is_none() {
             return;
@@ -227,13 +195,10 @@ impl TerminalWidget {
         self.submit(crate::resource::Terminal::RECORD_RELAY_SESSION.with(session));
     }
 
-    /// Open the tab's session if it has none yet: on the record's target or,
-    /// for a new tab, the default — recorded, so reopening returns to it.
     fn ensure_session(&mut self) {
         if matches!(self.sessions.state, OpenState::NoRuntime(_))
             && std::mem::take(&mut self.sessions.host_requested)
         {
-            // Keep the explanation until the person's allowed session replaces it.
             let _ = self.switch_target(&SessionTarget::Host, Requester::Person);
             return;
         }
@@ -242,10 +207,6 @@ impl TerminalWidget {
             self.poll_allow();
             return;
         }
-        // A session set up in another window (another device's, or another
-        // participant's) is joined, not started again: opening it writes
-        // nothing to its record, and its runs still reach the process that
-        // runs it. The person starts a shell here with Restart shell.
         if self.runs_elsewhere {
             self.sessions.target.clone_from(&self.recorded_target);
             self.sessions.state = OpenState::Joined;
@@ -263,13 +224,10 @@ impl TerminalWidget {
         self.open_session_attaching(&target, Requester::Person, attach.as_deref());
     }
 
-    /// Put a session on `target` behind this tab, replacing any it has.
     fn open_session(&mut self, target: &SessionTarget, requested_by: Requester) {
         self.open_session_attaching(target, requested_by, None);
     }
 
-    /// [`Self::open_session`], re-attaching to the relay session `attach`
-    /// when one is named; a session that is gone is replaced by a new one.
     fn open_session_attaching(
         &mut self,
         target: &SessionTarget,
@@ -277,8 +235,6 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        // The session this replaces ends: that closes no window. Dropping the
-        // platform lifetime also shuts down reader-held clones.
         self.end_session_exit();
         self.service_lifetime = None;
         if let Some(result) =
@@ -311,7 +267,6 @@ impl TerminalWidget {
                 self.record_relay_session(backend.relay_session.clone());
                 self.tell_window_session(backend.supervisor_session.clone());
                 self.attach_backend(backend);
-                // A process stands behind the grid from now on.
                 self.headless = false;
                 self.resize_pty_to_grid();
                 self.sessions.state = OpenState::Open;
@@ -347,10 +302,7 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::Failed(reason);
             }
         }
-        // A reconnect attempt settled, one way or the other.
         self.settle_reconnect();
-        // The window bar's picker names the places there are; they are
-        // listed off the UI thread.
         if self.bar_shows_target() {
             self.sessions
                 .refresh_environments_in_background(Arc::clone(&self.waker));
@@ -358,9 +310,6 @@ impl TerminalWidget {
         request_terminal_wake(&self.waker);
     }
 
-    /// Say on the tab why its environment cannot start and what to do: the
-    /// device's own shell for the person (behind its allow), another target
-    /// from the picker, or a runtime to install. Never a blank pane.
     fn explain_no_runtime(&mut self, reason: &str, requested_by: Requester) {
         let mut lines = vec![
             t("terminal-no-runtime-title"),
@@ -385,8 +334,6 @@ impl TerminalWidget {
         });
     }
 
-    /// Enter on a tab whose environment cannot start takes its offer of the
-    /// device's own shell. Returns whether the key was taken.
     fn take_no_runtime_offer(
         &mut self,
         key: &Key,
@@ -405,7 +352,6 @@ impl TerminalWidget {
         true
     }
 
-    /// The person answered the shell's prompt for the device's own shell.
     fn poll_allow(&mut self) {
         if self.sessions.state != OpenState::AwaitingAllow {
             return;
@@ -420,9 +366,6 @@ impl TerminalWidget {
                 let reason = t("terminal-host-denied");
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
-                // A refusal is not where the tab runs: reopened (the next
-                // login restores it), it goes where a new tab would rather
-                // than put the same question to the person unasked.
                 if self
                     .recorded_target
                     .as_ref()
@@ -436,18 +379,11 @@ impl TerminalWidget {
         }
     }
 
-    /// The authenticated owner selected Host through the trusted shell lifecycle channel.
-    /// This follows the ordinary picker path and still waits for supervisor permission.
     pub(crate) fn request_device_shell(&mut self) -> bool {
         self.switch_target(&SessionTarget::Host, Requester::Person)
             .is_ok()
     }
 
-    /// Move this tab to `target`: record it, end the current session, and
-    /// open one there.
-    ///
-    /// # Errors
-    /// Refuses the device's own shell for anyone but the person.
     pub(crate) fn switch_target(
         &mut self,
         target: &SessionTarget,
@@ -467,7 +403,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Show a lifecycle line on the tab, replacing any earlier one.
     fn show_status(&self, message: &str) {
         self.session_disconnected.store(true, Ordering::Release);
         if let Ok(mut status) = self.session_status_message.lock() {
@@ -486,8 +421,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Route an event to the target chrome: the environments panel while it
-    /// is open, and a click on the chip. Returns whether it was taken.
     fn route_target_chrome(
         &mut self,
         event: &WindowEvent,
@@ -516,8 +449,6 @@ impl TerminalWidget {
         }
         false
     }
-
-    // --- the chip and the picker
 
     fn chip_label(&self) -> Option<String> {
         self.sessions
@@ -570,16 +501,12 @@ impl TerminalWidget {
         ui::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
-    /// Drop the picker's rows once its menu has closed.
     fn forget_closed_target_menu(&mut self) {
         if !self.context_menu.is_open() {
             self.target_menu_rows = None;
         }
     }
 
-    /// The target picker's rows, in order: the targets (the current one
-    /// marked), then "Manage environments…" after a separator. The same rows
-    /// in the window bar's picker and in the picker the tab opens itself.
     fn target_picker_rows(&self) -> Vec<PickerRow> {
         let targets = crate::target::picker_targets(
             &self.sessions.environments,
@@ -613,7 +540,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Open the target picker under the chip.
     pub fn open_target_menu(&mut self) {
         self.sessions.refresh_environments();
         let mut menu = ContextMenu::new();
@@ -643,8 +569,6 @@ impl TerminalWidget {
         self.target_menu_rows = Some(rows);
     }
 
-    /// The picker's rows, in order: `None` for a separator — for tests and
-    /// accessibility.
     pub fn target_menu_labels(&self) -> Option<Vec<String>> {
         self.target_menu_rows.as_ref()?;
         Some(
@@ -657,8 +581,6 @@ impl TerminalWidget {
         )
     }
 
-    /// Which of the picker's rows (as [`Self::target_menu_labels`] lists
-    /// them) carry the check of the current target — for tests.
     #[cfg(test)]
     pub(crate) fn target_menu_checked(&self) -> Option<Vec<bool>> {
         self.target_menu_rows.as_ref()?;
@@ -672,8 +594,6 @@ impl TerminalWidget {
         )
     }
 
-    /// Act on picker row `index`; `false` when the open menu is not the
-    /// picker.
     fn activate_target_menu_item(&mut self, index: usize) -> bool {
         let Some(rows) = self.target_menu_rows.take() else {
             return false;
@@ -683,8 +603,6 @@ impl TerminalWidget {
         }
         true
     }
-
-    // --- the environments panel
 
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
@@ -716,8 +634,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Ask the person for a folder to grant the environment `record`,
-    /// through the same folder picker every app uses.
     fn pick_folder_to_grant(&mut self, record: String) {
         if self.environments_panel.picker.is_some() {
             return;
@@ -731,7 +647,6 @@ impl TerminalWidget {
         self.environments_panel.picker = Some((record, channel));
     }
 
-    /// Grant the folder the person picked, once they have.
     fn poll_folder_picker(&mut self) {
         let Some((record, channel)) = self.environments_panel.picker.as_ref() else {
             return;
@@ -755,13 +670,10 @@ impl TerminalWidget {
         }
     }
 
-    /// Whether a folder picker is waiting for the person.
     fn folder_picker_pending(&self) -> bool {
         self.environments_panel.picker.is_some()
     }
 
-    /// What the environments panel offers, by whether the shell runtime
-    /// answered.
     pub(crate) fn environments_panel_offer(&self) -> PanelOffer {
         use crate::sessions::Directory;
         match self.sessions.directory {
@@ -781,15 +693,12 @@ impl TerminalWidget {
         self.environments_panel = EnvironmentsPanel::default();
     }
 
-    /// Type into the panel's name field — for hosts and screenshot scenes.
     pub fn set_environment_name_input(&mut self, text: &str) {
         if let Some(input) = self.environments_panel.input.as_mut() {
             input.set_text(text);
         }
     }
 
-    /// Create a new environment, or finish renaming one, from the name field.
-    /// Nothing is made where the shell runtime did not answer.
     pub(crate) fn submit_environment_name(&mut self) {
         if self.sessions.directory != crate::sessions::Directory::Reached {
             return;
@@ -908,7 +817,6 @@ impl TerminalWidget {
                 },
             );
         }
-        // The panel is a focus boundary, like find: nothing reaches the shell.
         *ctx.handled = true;
     }
 
@@ -936,15 +844,12 @@ impl TerminalWidget {
         let title_style = theme.text(TextRole::Subheading);
         let name_style = theme.text(TextRole::Label).strong();
         let caption = theme.text(TextRole::Caption);
-        // Text on the panel is inked for the panel's own ground.
         let ink = theme.on_ground(ui::chrome::panel_ground(theme));
         let envs = self.sessions.environments.clone();
         let top = self.rect.y0 + self.header_h();
         let panel_w = (f64::from(metrics.panel_width_sheet) * theme.responsive_scale())
             .min(self.rect.width() - margin * 2.0)
             .max(0.0);
-        // Everything an environment has is shown in full: the lists wrap to
-        // the panel's width rather than being cut off.
         let text_w = (panel_w - margin * 2.0).max(1.0) as f32;
         let (_, caption_line) = tr.measure_style("Ag", None, &caption);
         let caption_line = f64::from(caption_line);
@@ -985,7 +890,6 @@ impl TerminalWidget {
         ui::widget::floating_surface::paint(scene, transform, panel_rect, theme);
         let p = self.last_cursor_pos;
 
-        // Title and close.
         let close = Rect::new(
             panel_rect.x1 - gap - button_h,
             panel_rect.y0 + gap,
@@ -1017,7 +921,6 @@ impl TerminalWidget {
                 .hovered(close.contains(p)),
         );
 
-        // One row per environment; its buttons are as wide as their labels.
         let row_labels = [
             t("terminal-env-grant"),
             t("terminal-env-rename"),
@@ -1087,8 +990,6 @@ impl TerminalWidget {
             let band = Rect::new(panel_rect.x0 + margin, y, grant.x0 - gap, y + button_h);
             let mut name_x = band.x0;
             if current {
-                // The environment this tab runs in carries the check a menu
-                // gives its applied row.
                 let mark_side = f64::from(metrics.icon_sm);
                 let mark = Rect::from_center_size(
                     Point::new(name_x + mark_side / 2.0, band.center().y),
@@ -1141,8 +1042,6 @@ impl TerminalWidget {
             y += row_h;
         }
 
-        // The name field: a new environment, or the one being renamed. Making
-        // or renaming one is the panel's main action.
         let field_y = panel_rect.y1 - gap - button_h;
         let submit_label = if self.environments_panel.renaming.is_some() {
             t("terminal-env-rename")
@@ -1198,9 +1097,6 @@ impl TerminalWidget {
         }
     }
 
-    // --- agent and palette operations
-
-    /// `open-in`: move this session to another target.
     fn open_in(&mut self, raw: &str) -> Result<(), String> {
         let target = parse_target_argument(raw).ok_or_else(|| {
             format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host")

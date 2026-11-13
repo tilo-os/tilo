@@ -1,18 +1,14 @@
 //! Back: the inspector's sheet first, then the app's page stack, then a narrow window's push
-//! stack, where a phone's places screen returns to the screen its toggle covered. The window
-//! bar's Back, Escape and the system's back gesture all take these steps, so a sheet the person
-//! raised is lowered or put away before anything navigates, and a sidebar floating over the
-//! window is put away before a screen changes.
+//! stack, where a phone's places screen returns to the screen its toggle covered.
 
 use super::{Column, NavPane, NavShell, SidebarPlacement, stack_index};
 use crate::gesture::{NavAvailability, NavDirection};
 use crate::widget::{AppModel, ModelPath, Widget};
 
 impl NavShell {
-    /// Go back one step: lower or put away the inspector's sheet
-    /// (`Self::sheet_back`), put away a sidebar floating over the window, else go back one
-    /// screen, the app's page stack first ([`Self::with_back`]), then a narrow window's push
-    /// stack. Returns whether it did.
+    /// Go back one step: lower or put away the inspector's sheet (`Self::sheet_back`), put away
+    /// a sidebar floating over the window, else go back one screen, the app's page stack first
+    /// ([`Self::with_back`]), then a narrow window's push stack.
     pub fn back(&mut self) -> bool {
         if self.sheet_back() || self.drawer_back() {
             return true;
@@ -43,8 +39,6 @@ impl NavShell {
             return false;
         }
         if self.front_pane() == NavPane::Sidebar {
-            // The places stand in front of the screen the window opens on: Back goes forward to the
-            // screen the toggle covered, so the list the person came from is one step away.
             self.show(self.screen_behind_sidebar());
             return true;
         }
@@ -75,7 +69,6 @@ impl NavShell {
         dir == NavDirection::Back && self.back()
     }
 
-    /// Whether a sidebar floats over the window (a drawer) and the person has it raised.
     fn drawer_open(&self) -> bool {
         self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open()
     }

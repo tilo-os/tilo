@@ -27,8 +27,6 @@ fn structural_projection(
         .into_iter()
         .filter_map(|id| namespace.record_id_for_id(&id))
         .collect::<BTreeSet<_>>();
-    // Reopened snapshots assign process-local inodes lazily while walking the
-    // live tree. Warm that map before resolving stable record IDs.
     let mut pending = vec![ROOT_INO];
     let mut visited = BTreeSet::new();
     while let Some(parent) = pending.pop() {
@@ -72,7 +70,6 @@ fn converge_structural_partition(
     left_peer.resolve();
     right_peer.resolve();
 
-    // Exchange deterministic repair changes as an explicit second barrier.
     let left_repair = left_peer.save();
     let right_repair = right_peer.save();
     let mut right_repair_wire = Namespace::from_bytes("right-repair-wire", &right_repair).unwrap();
@@ -86,7 +83,6 @@ fn converge_structural_partition(
         structural_projection(&mut right_peer, records)
     );
 
-    // A durable reopen and exact replay cannot change the chosen structure.
     let expected = structural_projection(&mut left_peer, records);
     let mut left_restarted =
         Namespace::from_bytes("left-final-restart", &left_peer.save()).unwrap();
@@ -106,14 +102,8 @@ fn converge_structural_partition(
     (left_restarted, right_restarted)
 }
 
-/// Mandatory deterministic coverage for structural conflicts representable by
-/// the namespace CRDT: divergent rename/move, delete versus rename, and a
-/// POSIX replacement racing a victim move. Stable record identity is never
-/// synthesized from a path, every source is either live exactly once or
-/// directly trashed, and both merge orders survive restart/replay identically.
 #[test]
 fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart() {
-    // One source concurrently moves to another directory and renames in place.
     let mut seed = Namespace::new("structural-seed-move").unwrap();
     let left_dir = seed.create_dir(ROOT_INO, "left", 1).unwrap();
     let _right_dir = seed.create_dir(ROOT_INO, "right", 1).unwrap();
@@ -137,8 +127,6 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
         structural_projection(&mut moved_right, &[source_record])
     );
 
-    // Delete wins over a concurrent path edit without erasing the stable node
-    // or its recorded deletion source hash.
     let mut seed = Namespace::new("structural-seed-delete").unwrap();
     let source = seed
         .create_file(ROOT_INO, "delete-me.txt", Some(&hash(2)), 1, 1)
@@ -164,9 +152,6 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
         structural_projection(&mut deleted_right, &[source_record])
     );
 
-    // A replacing rename racing a move of the victim preserves both record
-    // identities. The conflict may choose either live placement, but neither
-    // source can disappear or be duplicated and both peers choose identically.
     let mut seed = Namespace::new("structural-seed-replace").unwrap();
     let _archive = seed.create_dir(ROOT_INO, "archive", 1).unwrap();
     let source = seed
@@ -200,10 +185,6 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     }));
 }
 
-/// Deterministic release evidence for the partition boundary. The two peers
-/// cannot exchange state until the explicit merge barrier below; each offline
-/// edit is atomically persisted and reopened first. No timeout or sleep can
-/// turn a missing event into a pass.
 #[test]
 fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
     let temp = tempfile::tempdir().unwrap();
@@ -232,7 +213,6 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
     assert_eq!(left.entry_at("offline.txt").unwrap().hash, Some(hash(10)));
     assert_eq!(right.entry_at("offline.txt").unwrap().hash, Some(hash(20)));
 
-    // Explicitly heal the partition in both orders.
     let mut right_for_left = right.clone();
     let mut left_for_right = left.clone();
     left.merge_doc(&mut right_for_left).unwrap();

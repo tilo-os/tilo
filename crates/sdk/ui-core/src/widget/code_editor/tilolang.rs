@@ -1,6 +1,6 @@
-//! tilolang, coloured by its own lexer (`tilolang_lex::lexer`): what the compiler reads as a
-//! keyword, a string, a number, a reference literal (`@board.Card:c1`) or a comment is what the
-//! editor colours as one, so the colours never disagree with the language.
+//! tilolang, coloured by its own lexer (`tilolang_lex::lexer`): what the compiler reads as a keyword, a
+//! string, a number, a reference literal (`@board.Card:c1`) or a comment is what the editor colours as
+//! one, so the colours never disagree with the language.
 
 use tilolang_lex::lexer::{self, CONTEXTUAL, Tok};
 
@@ -180,7 +180,6 @@ mod tests {
                 .all(|pair| pair[0].range.end <= pair[1].range.start),
             "{spans:?}"
         );
-        // An unfinished line still colours what it can.
         assert!(!kinds(r#"board.cards.filter(.title == "Wri"#).is_empty());
     }
 }

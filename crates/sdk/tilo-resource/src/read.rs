@@ -6,7 +6,7 @@
 //! Every app publishes the same `read`: a framework app's root, and a tilolang
 //! host for each of its instances.
 
-use crate::{Id, Model};
+use crate::{Id, Model, Resource};
 
 /// The operation type of `read`.
 pub const TYPE: &str = "tilo.resource.read";
@@ -15,7 +15,27 @@ pub const TYPE: &str = "tilo.resource.read";
 /// (its own `read`, without an `item` parameter).
 #[must_use]
 pub fn spec(item: Option<&str>) -> tilo_actions::ActionSpec {
-    let item = item.map(str::to_owned);
+    spec_on(None, item)
+}
+
+/// The `read` of `record`, a record an app keeps beside its own (the
+/// person's own record of a kind): the read names it, and the app's process
+/// answers it from that record.
+#[must_use]
+pub fn record_spec(record: &str) -> tilo_actions::ActionSpec {
+    spec_on(Some(record), None)
+}
+
+/// The record a `read` asked as `payload` names, when it is not the app's
+/// own ([`record_spec`]).
+#[must_use]
+pub fn record_of(payload: &[u8]) -> Option<String> {
+    let args: serde_json::Value = tilo_actions::decode_json(payload).ok()?;
+    args.get("record")?.as_str().map(str::to_owned)
+}
+
+fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec {
+    let (record, item) = (record.map(str::to_owned), item.map(str::to_owned));
     let mut spec = tilo_actions::ActionSpec::typed_operation(
         "read",
         "Read the content",
@@ -40,10 +60,13 @@ pub fn spec(item: Option<&str>) -> tilo_actions::ActionSpec {
         .filter(|param| item.is_none() || param.name != "item")
         .collect(),
         move |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                TYPE,
-                &serde_json::json!({ "item": item.as_deref().or_else(|| args.text("item")), "version": args.text("version") }),
-            )
+            let mut asked = serde_json::Map::new();
+            asked.insert("item".into(), item.as_deref().or_else(|| args.text("item")).into());
+            asked.insert("version".into(), args.text("version").into());
+            if let Some(record) = &record {
+                asked.insert("record".into(), record.as_str().into());
+            }
+            tilo_actions::EncodedAction::encode_operation(TYPE, &asked)
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: TYPE.into(),
                 payload: Vec::new(),
@@ -92,4 +115,34 @@ pub fn fields<M: Model>(record: &M, item: Option<&Id>) -> Result<serde_json::Val
         );
     }
     Ok(record.to_json())
+}
+
+/// What `state`, an `R` in `doc`, holds, or the part of it `item` names:
+/// through `R`'s own [`Resource::read_content`] where it reads itself, else
+/// from the record's model tables. The one way `read` is answered, by the
+/// app's process and by a host that reads the record without it.
+///
+/// # Errors
+/// Why the record, or the part named, does not answer reads.
+pub fn content<R: Resource>(
+    state: &R::State,
+    doc: &crate::Doc,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let reads_item = |item: &str| {
+        R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
+    };
+    if R::READABLE {
+        tilo_failure::ignored!(
+            "the record table answers what the typed read did not",
+            match R::read_content(state, doc, item) {
+                Ok(content) => return Ok(content),
+                Err(error) if !item.is_some_and(reads_item) => return Err(error),
+                Err(_) => {}
+            }
+        )
+    }
+    let table = R::RECORD_TABLE
+        .ok_or_else(|| format!("a {} does not answer reads of its parts", R::LABEL))?;
+    crate::table::item_json(table, state, R::KIND, item.unwrap_or_default())
 }

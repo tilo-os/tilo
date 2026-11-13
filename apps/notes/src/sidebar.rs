@@ -145,7 +145,7 @@ fn new_child_binding(
         .as_ref()?
         .invocation(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
             page: notebook::page_id(page),
-            title: crate::notebook::UNTITLED.to_owned(),
+            title: crate::notebook::NO_TITLE.to_owned(),
         }))
 }
 
@@ -159,11 +159,11 @@ fn make_note(door: &SharedDoor, wanted: &SharedWanted, parent: Option<PageId>, n
     if let Some(parent) = parent {
         dispatcher.submit(Notebook::NEW_CHILD.with(notebook::notebook::NewChild {
             page: notebook::page_id(parent),
-            title: crate::notebook::UNTITLED.to_owned(),
+            title: crate::notebook::NO_TITLE.to_owned(),
         }));
     } else {
         dispatcher.submit(Notebook::NEW_NOTE.with(notebook::notebook::NewNote {
-            title: crate::notebook::UNTITLED.to_owned(),
+            title: crate::notebook::NO_TITLE.to_owned(),
             parent: None,
         }));
     }
@@ -400,7 +400,11 @@ impl PageList {
         let mut titles: HashMap<PageId, (String, Option<PageId>)> = HashMap::new();
         for page in workspace.pages() {
             children.entry(page.parent).or_default().push(page.id);
-            titles.insert(page.id, (page.title.clone(), page.parent));
+            // A note nobody named reads as the word for one, so its row is never blank.
+            titles.insert(
+                page.id,
+                (crate::metadata::note_title(&page.title), page.parent),
+            );
         }
         let mut list = Self {
             rows: Vec::with_capacity(titles.len()),

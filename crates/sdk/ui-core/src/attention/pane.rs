@@ -1,14 +1,6 @@
-//! The Needs you surface: the waiting stack as rows a person can act on.
-//!
-//! One row per item, ordered by what it costs to leave: the app's icon and
-//! name (never the icon alone), what happened, what it is about and why,
-//! since when, and one button naming the verb. Up and Down move the choice,
-//! Enter acts, Escape defers ([`Presses::key`]); the count of what is
-//! deferred stays under the stack, because a quiet system must still say
-//! what it holds back.
-//!
-//! A row without an action cannot be built ([`super::Action`] is required),
-//! so the surface never shows a line a person can only read.
+//! The Needs you surface: the waiting stack as rows a person can act on. One row per item, ordered by
+//! what it costs to leave: the app's icon and name (never the icon alone), what happened, what it is
+//! about and why, since when, and one button naming the verb.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,8 +26,7 @@ pub enum Press {
     Defer(ItemId),
 }
 
-/// The stack's state: what its rows wrote, which row the keyboard is on, and
-/// the revision it last drew.
+/// The stack's state: what its rows wrote, which row the keyboard is on, and the revision it last drew.
 #[derive(Clone, Default)]
 pub struct Presses {
     pressed: Rc<RefCell<Vec<Press>>>,
@@ -65,7 +56,7 @@ impl Presses {
         self.drawn.get() != Some(revision())
     }
 
-    /// Note that the stack was built against the registry as it stands.
+    /// Note that the stack was built against the registry as it is.
     pub fn drawn(&self) {
         self.drawn.set(Some(revision()));
     }
@@ -87,10 +78,8 @@ impl Presses {
         self.chosen.set(id);
     }
 
-    /// The keys the stack answers, as its owner hands them over: Up and Down
-    /// move the choice, Home and End go to the ends of the stack, Enter acts
-    /// on the chosen row, Escape puts it aside. `true` when the key was the
-    /// stack's.
+    /// The keys the stack answers, as its owner hands them over: Up and Down move the choice, Home and
+    /// End go to the ends of the stack, Enter acts on the chosen row, Escape puts it aside.
     pub fn key(&self, event: &KeyEvent) -> bool {
         if event.state != ElementState::Pressed {
             return false;
@@ -138,8 +127,8 @@ impl Presses {
         }
     }
 
-    /// Record `press` as the person's: what a row's control does, and what a
-    /// host that stands for the row (a chord, a test) does.
+    /// Record `press` as the person's: what a row's control does, and what a host that is the row (a
+    /// chord, a test) does.
     pub fn pressed(&self, press: Press) {
         self.pressed.borrow_mut().push(press);
     }
@@ -157,8 +146,6 @@ pub fn pane(presses: &Presses) -> Column {
     if stack.is_empty() {
         return Column::new().with_no_padding().push(empty());
     }
-    // One section per urgency, in the order the stack is sorted by: what
-    // costs most to leave is first.
     let mut sections: Vec<(super::Urgency, Vec<Element>)> = Vec::new();
     for item in &stack {
         match sections.last_mut() {
@@ -196,17 +183,14 @@ pub fn pane(presses: &Presses) -> Column {
     ))
 }
 
-/// An empty stack says so, and says what it is for.
 fn empty() -> Element {
     Box::new(
         EmptyState::new(crate::i18n::widget_format("attention-none", &[]))
-            .with_message(crate::i18n::widget_format("attention-none-message", &[]))
             .with_icon(Icon::Check)
             .with_id("attention-empty"),
     )
 }
 
-/// One item: who is asking, what about, why, and the one thing to do.
 fn row(item: &Item, presses: &Presses) -> Element {
     let id = item.id();
     let detail = item.detail_line();
@@ -241,7 +225,6 @@ fn row(item: &Item, presses: &Presses) -> Element {
     Box::new(row.trailing(Box::new(controls)))
 }
 
-/// How long ago `at_ms` was, in the relative style History uses.
 fn ago(at_ms: u64) -> String {
     let secs = crate::time::unix_now_ms().saturating_sub(at_ms) / 1000;
     #[allow(
@@ -252,8 +235,7 @@ fn ago(at_ms: u64) -> String {
     crate::format::relative(secs)
 }
 
-/// The count a window's bar shows: nothing while nothing waits, else how
-/// many nobody has looked at.
+/// The count a window's bar shows: nothing while nothing waits, else how many nobody has looked at.
 #[must_use]
 pub fn pill() -> Option<String> {
     let unseen = super::unseen();
@@ -278,12 +260,8 @@ pub fn apply(press: Press) -> Option<super::Acted> {
     }
 }
 
-/// The waiting stack as a widget: it keeps its rows, rebuilds them when the
-/// stack moves, and reports what was pressed through its [`Presses`].
-///
-/// An app declares one where it shows what wants a person, hands it the keys
-/// ([`Presses::key`]) while it is open, and answers what was pressed with
-/// [`apply`].
+/// The waiting stack as a widget: it keeps its rows, rebuilds them when the stack moves, and reports
+/// what was pressed through its [`Presses`].
 #[crate::component::not_a_component(system, "the attention ledger's pane (HIG 11)")]
 pub struct Stack {
     inner: Column,
@@ -309,15 +287,13 @@ impl Stack {
         }
     }
 
-    /// What was pressed, what the keyboard chose, and whether the stack
-    /// moved.
+    /// What was pressed, what the keyboard chose, and whether the stack moved.
     #[must_use]
     pub fn presses(&self) -> &Presses {
         &self.presses
     }
 
-    /// Whether anything waits: an app keeps the surface out of the window
-    /// while nothing does.
+    /// Whether anything waits: an app keeps the surface out of the window while nothing does.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         items().is_empty()

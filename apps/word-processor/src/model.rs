@@ -1,12 +1,5 @@
-//! The Writer document: its storage, the operations people, agents and
-//! scripts take on it, and the objects inside it they are offered on.
-//!
-//! Typing, deleting, formatting and paragraph styles are edits of the body
-//! field ([`Document::paths`]`().body`), in the rich-text vocabulary
-//! ([`RichTextAction`]); the framework applies them at the body, coalesces a
-//! typed word into one undo step and names them in history. What is more
-//! than an edit of the text — a table, a review decision, a comment — is a
-//! verb of the document.
+//! The Writer document: its storage, the edits of its body field in the rich-text
+//! vocabulary, and its verbs for what is not an edit of the text.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,10 +14,8 @@ use ui::tilo_resource::{
     Reactions, Refusal, Resource, resource,
 };
 
-/// The field of [`Document`] the rich text is stored under.
 pub const BODY: &str = "body";
 
-/// A Writer document.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Document {
     /// The text: paragraphs, tables, images, styles, the page header and
@@ -42,15 +33,10 @@ pub struct Document {
     pub reactions: Reactions,
 }
 
-/// A comment thread on some text of the document.
 pub type Comment = tilo_document::annotation::Comment<TextAnchor>;
 pub use tilo_document::annotation::Reply;
 
-/// Bring a document of an older version up to this one. Version 1 kept a
-/// reply's formatted paragraphs as one JSON string; they are a list of
-/// paragraphs now. Versions 1 and 2 stored each mark's value in a comment's
-/// paragraphs flat beside its variant's name; it is stored by its variant
-/// now.
+/// Bring a document of an older version up to this one.
 fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     use ui::tilo_resource::evolution::{collection_items, retype_json};
     if !(1..=2).contains(&from) {
@@ -69,10 +55,7 @@ fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
 }
 
 impl Document {
-    /// What the workspace lists of the document and search finds of it:
-    /// the document by its first line (its heading, or its first
-    /// paragraph), found by its words. A document with no text yet is not
-    /// listed.
+    /// The document by its heading, or its first paragraph, found by its words.
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         let text = self.body.text();
         let Some(title) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
@@ -87,12 +70,6 @@ impl Document {
 }
 
 impl Document {
-    /// What the record holds: the body and its paragraphs, in the order they are written.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -115,8 +92,6 @@ impl Document {
 )]
 impl Document {
     /// Add a paragraph.
-    ///
-    /// A new paragraph holding the text, at the end of the document.
     #[action(answers, audience = "agents")]
     pub fn append_paragraph(&mut self, text: String) -> Result<(), Refusal> {
         if text.is_empty() {
@@ -127,9 +102,7 @@ impl Document {
     }
 
     /// Replace the body.
-    ///
-    /// The whole body written again from Markdown: headings, lists, pipe
-    /// tables, emphasis and links. Pictures are placed with place-image.
+    /// From Markdown: headings, lists, pipe tables, emphasis, links; pictures need place-image.
     #[action(answers, audience = "agents")]
     pub fn replace_body(
         &mut self,
@@ -154,9 +127,8 @@ impl Document {
 
     /// Find and replace.
     ///
-    /// Replace a phrase where it is in the document, the first occurrence
-    /// or every one, keeping the rest of each paragraph, its marks and the
-    /// other paragraphs. Refused, saying so, when the text is not there.
+    /// The first occurrence or every one, keeping each paragraph's marks.
+    /// Refused when the text is not there.
     #[action(answers, audience = "agents")]
     pub fn replace_text(
         &mut self,
@@ -189,8 +161,6 @@ impl Document {
     }
 
     /// Add a row.
-    ///
-    /// A new empty row at the bottom of the table.
     #[action(answers, audience = "agents", label = "toolbar-row-add")]
     pub fn add_row(&mut self, table: String) -> Result<(), Refusal> {
         let (rows, _) = self.table_size(&table)?;
@@ -199,8 +169,6 @@ impl Document {
     }
 
     /// Add a column.
-    ///
-    /// A new empty column at the right of the table.
     #[action(answers, audience = "agents", label = "toolbar-col-add")]
     pub fn add_column(&mut self, table: String) -> Result<(), Refusal> {
         let (_, columns) = self.table_size(&table)?;
@@ -235,8 +203,6 @@ impl Document {
     }
 
     /// Accept change.
-    ///
-    /// Keep one tracked insertion or deletion as the text.
     #[action]
     pub fn accept_change(&mut self, change: String) {
         self.body
@@ -244,8 +210,6 @@ impl Document {
     }
 
     /// Reject change.
-    ///
-    /// Undo one tracked insertion or deletion.
     #[action]
     pub fn reject_change(&mut self, change: String) {
         self.body
@@ -286,7 +250,7 @@ impl Document {
 
     /// Reply to a comment.
     ///
-    /// An answer below the comment; `body`, when given, is the answer's
+    /// `body` is the answer's formatted paragraphs, `text` its plain text.
     /// paragraphs with their formatting, and `text` its plain text.
     #[action(item = comments)]
     pub fn reply_to_comment(
@@ -310,8 +274,6 @@ impl Document {
     }
 
     /// Resolve a comment.
-    ///
-    /// The thread is done with and goes away.
     #[action(item = comments, label = "review-resolve-comment")]
     pub fn resolve_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         self.comments
@@ -321,9 +283,6 @@ impl Document {
     }
 
     /// Keep imported comments.
-    ///
-    /// The comments a file brought along with its text become the
-    /// document's comment threads.
     #[action(writes = comments)]
     pub fn adopt_comments(&mut self, cx: &mut ActionCx) -> Result<(), Refusal> {
         let imported: Vec<tilo_doc::snapshot::CommentView> = self
@@ -377,8 +336,6 @@ impl Document {
     }
 
     /// Generate table of contents.
-    ///
-    /// A table of contents of the document's headings.
     #[action]
     pub fn generate_toc(&mut self) -> Result<(), Refusal> {
         let entries: Vec<TocTarget> = self
@@ -402,9 +359,7 @@ impl Document {
     }
 
     /// Note the file written.
-    ///
-    /// The document was written to its file, whose bytes have the content
-    /// address `digest`: what a later open compares the file with.
+    /// `digest` is the content address a later open compares the file with.
     #[action(external, audience = "agents")]
     pub fn note_file_written(&mut self, digest: String) {
         self.body
@@ -415,7 +370,6 @@ impl Document {
         self.body.perform(RichTextAction::EditTable { table, edit });
     }
 
-    /// The rows and columns of `table`.
     fn table_size(&self, table: &str) -> Result<(usize, usize), Refusal> {
         let cells = self
             .body
@@ -436,8 +390,8 @@ impl Document {
         size.ok_or_else(|| Refusal::new("there is no such table"))
     }
 
-    /// The objects inside the document people act on: its tables, images
-    /// and tracked changes, each with the operations it offers. The very
+    /// The document's objects, made again only when what they are made of changes: a
+    /// keystroke in a paragraph or reading more of a long document lists nothing again.
     /// ones of the last call while what they are made of is the same, so a
     /// keystroke in a paragraph or reading more of a long document lists
     /// nothing again.
@@ -448,7 +402,6 @@ impl Document {
         OBJECTS.with_borrow_mut(|kept| kept.get_or_insert_with(Objects::default).follow(state))
     }
 
-    /// The document's tables, each with its cells, then its images.
     fn tables_and_images(state: &RichTextState) -> Vec<Derived<Self>> {
         let mut objects = Vec::new();
         let mut tables: Vec<(&str, Vec<&Rc<BlockView>>)> = Vec::new();
@@ -474,7 +427,6 @@ impl Document {
                 .with(
                     Self::DELETE_TABLE.bind(document::DeleteTable::paths().table, table.to_owned()),
                 );
-            // Each cell goes to its text, and deletes its row or column.
             for cell in cells {
                 let (row, column) = (attr_index(cell, "row"), attr_index(cell, "col"));
                 node = node.with_child(
@@ -518,7 +470,6 @@ impl Document {
         objects
     }
 
-    /// The tracked changes, each to accept or reject.
     fn tracked_changes(state: &RichTextState) -> Vec<Derived<Self>> {
         state
             .changes()
@@ -544,9 +495,8 @@ impl Document {
             .collect()
     }
 
-    /// The first paragraphs and headings, by their first words: the places
-    /// an edit is told to act at (`at: {"item": <paragraph>}`). Headings are
-    /// always read; a paragraph once it has been loaded.
+    /// The first paragraphs and headings, as `at: {"item": <paragraph>}` places: headings
+    /// always, a paragraph once it has been loaded.
     fn paragraph_places(state: &RichTextState) -> Vec<Derived<Self>> {
         state
             .body()
@@ -570,7 +520,6 @@ impl Document {
             .collect()
     }
 
-    /// Read the paragraphs a view shows, and only those.
     fn demand(&mut self, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
         self.body.demand(doc, demand)
     }
@@ -590,23 +539,19 @@ impl Document {
         }
     }
 
-    /// Where an object of a paragraph on screen sits, from the body's index.
     fn locate(&self, obj: &ObjId) -> Option<ui::tilo_resource::ObjPath> {
         self.body.object_path(obj)
     }
 }
 
-/// Objects of each kind a published document lists, in document order.
 const MAX_OBJECTS: usize = 64;
 
 thread_local! {
     static OBJECTS: RefCell<Option<Objects>> = const { RefCell::new(None) };
 }
 
-/// The objects [`Document::objects`] listed last, in their parts, and what
-/// each part was made of: the tables and images of the featured blocks in
-/// paragraph order, the places of the first paragraphs as read, the tracked
-/// changes. Held weakly, so the state still changes them in place.
+/// The parts of the objects listed last, each with what it was made of.
+/// Weak, so the state still changes them in place.
 struct Objects {
     featured: Weak<HashMap<String, Rc<BlockView>>>,
     body: Weak<tilo_document::BodyOrder>,
@@ -634,8 +579,6 @@ impl Default for Objects {
 }
 
 impl Objects {
-    /// The objects of `state`, listing again only the parts whose making
-    /// moved.
     fn follow(&mut self, state: &RichTextState) -> Rc<[Derived<Document>]> {
         let same_body = Weak::as_ptr(&self.body) == Rc::as_ptr(state.body());
         let mut moved = self.listed.is_none();
@@ -686,7 +629,6 @@ impl Objects {
     }
 }
 
-/// The paragraph `id` as read, or the heading: what a place is made of.
 fn placed_block<'a>(state: &'a RichTextState, id: &str) -> Option<&'a Rc<BlockView>> {
     state.block(id).or_else(|| {
         state
@@ -706,7 +648,6 @@ fn attr_index(block: &tilo_doc::snapshot::BlockView, key: &str) -> usize {
         .map_or(0, |value| usize::try_from(value).unwrap_or_default())
 }
 
-/// The paragraphs of an imported comment as one text.
 fn joined(blocks: &[tilo_doc::snapshot::BlockView]) -> String {
     blocks
         .iter()
@@ -715,7 +656,6 @@ fn joined(blocks: &[tilo_doc::snapshot::BlockView]) -> String {
         .join("\n")
 }
 
-/// An imported comment's paragraph as the clipboard form a reply keeps.
 fn clip_block(block: &tilo_doc::snapshot::BlockView) -> ClipBlock {
     ClipBlock {
         kind: block.kind.clone(),
@@ -728,8 +668,6 @@ fn clip_block(block: &tilo_doc::snapshot::BlockView) -> ClipBlock {
     }
 }
 
-/// The action that edits the body with `op`: what the editor, a control or
-/// an agent submits for a keystroke, a mark or a paragraph style.
 #[must_use]
 pub fn edit(op: &RichTextAction) -> Edit<Document> {
     // A rich-text action is a plain serde enum over owned data, so it always
@@ -741,7 +679,6 @@ pub fn edit(op: &RichTextAction) -> Edit<Document> {
         })
 }
 
-/// [`edit`] as the document's action value.
 #[must_use]
 pub fn action(op: &RichTextAction) -> <Document as Resource>::Action {
     ui::tilo_resource::Stamped {
@@ -750,13 +687,11 @@ pub fn action(op: &RichTextAction) -> <Document as Resource>::Action {
     }
 }
 
-/// The body's rich text in `doc`: the map the `body` field is stored in.
 #[must_use]
 pub fn body(doc: &AutoCommit) -> Option<ObjId> {
     body_at(doc, &ROOT)
 }
 
-/// The body of the document stored under `record`.
 #[must_use]
 pub fn body_at(doc: &AutoCommit, record: &ObjId) -> Option<ObjId> {
     match doc.get(record, BODY) {
@@ -765,15 +700,13 @@ pub fn body_at(doc: &AutoCommit, record: &ObjId) -> Option<ObjId> {
     }
 }
 
-/// The body of `doc` opened as rich text.
 pub fn open(doc: &AutoCommit) -> Result<tilo_doc::Containers, String> {
     let body = body(doc).ok_or("the document has no body")?;
     tilo_doc::model::open(doc, &body).map_err(|error| error.to_string())
 }
 
-/// `doc` as a file holds it: its body with the comment threads written
-/// into the text the way file formats keep comments, for the codecs
-/// ([`tilo_doc::Document::as_ref`]).
+/// `doc` as a file holds it: the comment threads written into the text as file
+/// formats keep them, for the codecs.
 pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
     let document = <Document as Resource>::read(doc).map_err(|error| error.to_string())?;
     let threads = document.comment_views(doc);
@@ -802,8 +735,6 @@ pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
     Ok(copy)
 }
 
-/// Start a document's body in `doc` with the rich-text schema and nothing
-/// else, for tools and tests that build a document block by block.
 pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
     let body = match body(doc) {
         Some(body) => body,
@@ -815,9 +746,6 @@ pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
 }
 
 impl Document {
-    /// What a change to the document made, for its caller: the blocks it
-    /// changed, each with the handle that edits it, so an agent fills
-    /// what it made without reading the document again.
     #[allow(
         clippy::unnecessary_wraps,
         reason = "the resource's answer hook: some records answer nothing"
@@ -833,19 +761,15 @@ impl Document {
     }
 }
 
-/// The body of the Writer document `doc` as a tilo-doc [`tilo_doc::Document`].
 pub fn reopen(doc: AutoCommit) -> Result<tilo_doc::Document, String> {
     let body = body(&doc).ok_or("the document has no body")?;
     tilo_doc::Document::from_automerge_under(doc, &body).map_err(|error| error.to_string())
 }
 
-/// Apply `op` to the body of `doc` directly, outside any host: for tools and
-/// tests that build a document.
 pub fn apply(doc: &mut AutoCommit, op: &RichTextAction) -> Result<(), tilo_actions::ActionError> {
     tilo_actions::Action::apply(&action(op), doc)
 }
 
-/// [`action`] encoded for the wire, as the door and replay carry it.
 #[must_use]
 pub fn encoded(op: &RichTextAction) -> tilo_actions::EncodedAction {
     let action = action(op);
@@ -855,7 +779,6 @@ pub fn encoded(op: &RichTextAction) -> tilo_actions::EncodedAction {
     })
 }
 
-/// The body edit an encoded document action carries, when it is one.
 #[must_use]
 pub fn decoded(encoded: &tilo_actions::EncodedAction) -> Option<RichTextAction> {
     let action: <Document as Resource>::Action = serde_json::from_slice(&encoded.payload).ok()?;
@@ -868,7 +791,6 @@ pub fn decoded(encoded: &tilo_actions::EncodedAction) -> Option<RichTextAction> 
     }
 }
 
-/// One paragraph of comment text, as the review margin draws it.
 fn paragraph(id: String, text: &str) -> tilo_doc::snapshot::BlockView {
     tilo_doc::snapshot::BlockView {
         id,
@@ -880,7 +802,6 @@ fn paragraph(id: String, text: &str) -> tilo_doc::snapshot::BlockView {
     }
 }
 
-/// A reply's paragraphs as written, or its text as one paragraph.
 fn reply_blocks(id: &Id, reply: &Reply) -> Vec<tilo_doc::snapshot::BlockView> {
     if reply.body.is_empty() {
         return vec![paragraph(format!("{id}.0"), &reply.text)];
@@ -910,8 +831,6 @@ fn reply_blocks(id: &Id, reply: &Reply) -> Vec<tilo_doc::snapshot::BlockView> {
 }
 
 impl Document {
-    /// The comment threads as the review margin draws them, each with where
-    /// its text is in `doc` now.
     #[must_use]
     pub fn comment_views(&self, doc: &AutoCommit) -> Vec<tilo_doc::snapshot::CommentView> {
         self.comments
@@ -936,15 +855,12 @@ impl Document {
             .collect()
     }
 
-    /// What views read of the body, once it has been read.
     #[must_use]
     pub fn text(&self) -> Option<&RichTextState> {
         self.body.state()
     }
 }
 
-/// Write a comment thread by `author` on `start..end` of `block` straight
-/// into `doc`, outside any host, as a tool importing comments does.
 #[cfg(test)]
 pub(crate) fn comment_by(
     doc: &mut AutoCommit,
@@ -964,7 +880,6 @@ pub(crate) fn comment_by(
     id.to_string()
 }
 
-/// Write a reply by `author` to the thread `comment` straight into `doc`.
 #[cfg(test)]
 pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: &str, text: &str) {
     let mut document = <Document as Resource>::read(doc).expect("a Writer document");
@@ -980,14 +895,10 @@ pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: 
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the reply is written");
 }
 
-/// How many of the document's first paragraphs are published as places an
-/// edit can be told to act at.
 pub const PLACED_PARAGRAPHS: usize = 128;
 
-/// The words a paragraph published as a place is labelled with.
 const LABEL_WORDS: usize = 8;
 
-/// `text`'s first words, as a paragraph published as a place is labelled.
 fn first_words(text: &str) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut label = words
@@ -1007,7 +918,6 @@ mod tests {
     use super::*;
     use ui::tilo_resource::{Invoke, Replica};
 
-    /// A document whose one paragraph says `text`, as `author` would edit it.
     fn written(text: &str, author: &str) -> (Replica<Document>, String) {
         let _ = author;
         let mut replica = Replica::<Document>::new();
@@ -1031,8 +941,6 @@ mod tests {
         (replica, block)
     }
 
-    /// A document with a comment and a reply to it written in
-    /// `paragraphs`: a strong word, and a checked item.
     fn replied() -> (Replica<Document>, Vec<ClipBlock>) {
         let (mut replica, block) = written("The budget doubled this year.", "ada");
         replica
@@ -1078,14 +986,10 @@ mod tests {
         (replica, paragraphs)
     }
 
-    /// A document from before a reply's formatted paragraphs were a list:
-    /// they were one JSON string. Opened now, the reply reads with its
-    /// paragraphs, formatting included.
     #[test]
     fn a_reply_kept_as_a_json_string_migrates_to_its_paragraphs() {
         use ui::tilo_resource::evolution::{self, collection_items};
         let (mut replica, paragraphs) = replied();
-        // Back to the old shape: the paragraphs as one JSON string, version 1.
         let doc = replica.doc_mut();
         let comment = collection_items(doc, &ROOT, "comments").unwrap()[0].clone();
         let reply = collection_items(doc, &comment, "replies").unwrap()[0].clone();
@@ -1111,11 +1015,6 @@ mod tests {
         assert_eq!(thread.replies.values().next().unwrap().body, paragraphs);
     }
 
-    /// A document of version 2 stored each mark's value and block attribute
-    /// in a reply's paragraphs flat beside its variant's name. Opened now,
-    /// the reply reads with the same formatting, stored by its variant, and
-    /// the document is marked as the version a reader of version 2 refuses
-    /// as newer rather than misreading.
     #[test]
     fn a_reply_kept_with_flat_mark_values_migrates_to_values_stored_by_variant() {
         use automerge::ReadDoc as _;
@@ -1188,7 +1087,6 @@ mod tests {
         let threads = replica.state().unwrap().comment_views(replica.doc());
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].range, Some((block, 4, 10)));
-        // The thread is offered as an item a reply and a resolve act on.
         let published = replica.published().unwrap();
         let thread = format!("{}/comments/{}", Document::KIND, threads[0].id);
         let item = published
@@ -1283,7 +1181,6 @@ mod tests {
                 .collect::<String>(),
             "seven"
         );
-        // The text it came in no longer holds comments of its own.
         let snapshot = tilo_doc::model::materialize(reopened.doc(), &open(reopened.doc()).unwrap());
         assert!(snapshot.comments.is_empty());
     }

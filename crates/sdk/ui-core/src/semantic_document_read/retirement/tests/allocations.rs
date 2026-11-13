@@ -62,7 +62,6 @@ fn requested_bytes_charge_full_successful_realloc_sizes_growing_and_shrinking() 
         assert_eq!(unsafe { pointer.read() }, 19);
         pointer
     });
-    // Release outside the measured window, before assertions: Stats is the real retained result.
     unsafe {
         ALLOCATOR.dealloc(pointer, shrunk);
     }

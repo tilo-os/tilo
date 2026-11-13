@@ -15,7 +15,7 @@ power-restart = Restart
 power-restart-detail = Open apps close
 power-shut-down = Shut down
 power-shut-down-detail = Open apps close
-power-shut-down-session-detail = The window closes; the computer stays on
+power-shut-down-session-detail = The window closes. The computer stays on
 power-not-offered-switch-user = Switching user is not possible in this window
 power-not-offered-power = This window cannot change the computer's power
 
@@ -75,7 +75,7 @@ dictation-open-settings = Set up
 ## Shortcut guide
 
 guide-title = Keyboard shortcuts
-guide-reopen-hint = Select a navigation shortcut to change it
+guide-reopen-hint = Navigation shortcuts can be changed here
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }”
 guide-listening-cancel = Cancel
@@ -158,6 +158,16 @@ shortcut-name-emoji-picker = Emoji
 shortcut-name-workspace-overview = Overview
 shortcut-name-quick-settings = Quick Settings
 shortcut-name-lock = Lock screen
+shortcut-name-toggle-fullscreen = Full screen
+shortcut-name-detach-tab = Move tab to new group
+shortcut-name-open-files = Open Files
+shortcut-name-notifications = Notifications
+shortcut-name-clipboard-history = Clipboard history
+shortcut-name-ask-agent = Ask agent about selection
+shortcut-name-say-something = Say something here
+shortcut-name-report-problem = Report a problem
+peek-apps = Apps
+peek-agent-search = Agent and search
 shortcut-switch-windows = Switch windows
 shortcut-close-tab = Close tab
 shortcut-new-window = New window
@@ -219,7 +229,6 @@ directory-role-moderator = a moderator
 
 ## Display sheet
 display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears.
 display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
 display-mode-extend = Extend
 display-mode-extend-detail = One desktop across every display
@@ -314,7 +323,7 @@ portal-email-to = To: { $addresses }
 portal-email-cc = Cc: { $addresses }
 portal-email-bcc = Bcc: { $addresses }
 portal-email-subject = Subject: { $subject }
-portal-email-attachments = { $count } attachment(s)
+portal-email-attachments = Attachments: { $count }
 portal-email-open = Open mail app
 portal-background-title = Let { $app } keep running?
 portal-background-background = Run in the background
@@ -415,7 +424,6 @@ portal-sim-pin-wrong = That PIN is wrong.
 portal-sim-puk-title = SIM locked
 portal-sim-puk-lead = Too many wrong PINs locked the SIM for “{ $network }”. Enter the PUK from the SIM’s card holder and choose a new PIN.
 portal-sim-puk-wrong = That PUK is wrong.
-portal-network-heading = Network
 portal-network-this-network = this network
 portal-network-password = Password
 portal-network-key = Key
@@ -512,14 +520,12 @@ agent-door-environment-as-person = A program in an environment works as an agent
 agent-door-seat = { $client } #{ $instance }
 agent-door-seat-in-environment = { $client } in { $environment } #{ $instance }
 agent-door-workspace-gone = The workspace this program asked to work in is gone.
-agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
 agent-door-withdrawn = The request was withdrawn before anyone answered it.
 agent-door-declined = You didn’t let this program work here as an agent.
 agent-door-no-run = This agent’s work here could not start
 agent-door-person-from-device = Only a program on this device can act as you; an agent from another of your devices works here as an agent.
 agent-door-admission-person = Act as you in “{ $workspace }”
 agent-door-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
-agent-door-session-reads-only = An agent reads the desktop’s own resources here; ask the person to do this.
 
 ## The shortcut catalogue on the action door: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
@@ -579,7 +585,6 @@ workspace-delete-title = Delete { $name }?
 workspace-delete-body = Everything in this workspace goes with it: its windows, its groups, its history. It disappears from every device that has it.
 workspace-delete-confirm = Delete
 workspace-delete-keep = Keep
-workspace-delete-lens = Delete workspace
 
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
@@ -592,17 +597,19 @@ invite-role-label = They join as
 invite-for-label = This link is for
 invite-anyone = Anyone with the link
 invite-create = Create link
+invite-create-another = Create another link
 invite-making = Making the link…
 invite-link-label = The link
 invite-copy = Copy link
 invite-code-alt = The invitation link as a code to scan
 invite-created-anyone = Anyone with this link joins as { $role }.
 invite-created-for = { $name } joins as { $role }.
-invite-created-lasts = The link works for the next { $minutes } minutes.
-invite-lasts = { $minutes } min left
+invite-created-lasts = The link stops working { $left }.
+invite-lasts = Ends { $left }
 invite-for-anyone = For anyone with the link
 invite-for-person = For { $name }
 invite-for-someone = For a person this workspace knows
+invite-person-unnamed = Someone without a name yet
 invite-pending-title = Links that still work
 invite-pending-empty = No link is waiting to be used.
 invite-revoke = Take back

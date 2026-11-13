@@ -3,7 +3,7 @@
 //! [`Workspace::policy_view`].
 
 use collab_types::caps::{Access, Actor, CapOverride, ResourceRef, Scope};
-use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Subject, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
 
@@ -89,11 +89,11 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     let notes = workspace.node().app("so.tilo.notes");
     workspace.grant(Grant::new(
         "notes-reads",
-        Subject::app("so.tilo.notes"),
+        Grantee::app("so.tilo.notes"),
         notes,
         KindSet::READ,
         Answer::Allow,
-        Subject::person("owner"),
+        Grantee::person("owner"),
     ));
     workspace.grant_sandbox(CapOverride::grant(
         collab_types::caps::Subject::app("so.tilo.notes"),
@@ -131,7 +131,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
         }
     }
     let app = |ws: &Workspace| {
-        ws.subject_authority(Subject::app("so.tilo.notes"))
+        ws.subject_authority(Grantee::app("so.tilo.notes"))
             .decide(
                 &ws.node().join(&TreePath::root().app("so.tilo.notes")),
                 ActionKind::Read,

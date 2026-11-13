@@ -1,14 +1,10 @@
-//! Tube's search source: [`model_entries`] are what the host-wide search
-//! finds in Tube, each anchored at the video, creator, playlist or local
-//! watch-history entry the window's opener shows ([`opened`]).
+//! Tube's search source: [`model_entries`] are what the host-wide search finds in Tube, each
+//! anchored at the video, creator, playlist or local watch-history entry the window's opener shows
+//! ([`opened`]).
 
 use ui::tilo_resource::SearchEntry;
 
 const MAX_INDEXED_ENTITIES: usize = 100;
-/// The videos, creators, playlists and watch history Tube shows, as search
-/// entries, each anchored at what it opens. Kept to
-/// the same 100-item ceiling as the published rows, so every hit stays
-/// activatable; no entry gains authority merely because it is searchable.
 pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     let dearrow = model.settings.dearrow_titles_on();
     let mut entries = Vec::new();
@@ -60,10 +56,6 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     entries
 }
 
-/// The row that searches `YouTube` for what the platform search was asked,
-/// `query`: the catalogue only holds what has loaded, so without it a
-/// search for anything else would find nothing. Leads the results, so
-/// Enter searches; `None` for an empty query.
 pub fn query_entry(query: &str) -> Option<SearchEntry> {
     let query = query.trim();
     if query.is_empty() || query.chars().any(char::is_control) {
@@ -79,9 +71,6 @@ pub fn query_entry(query: &str) -> Option<SearchEntry> {
     )
 }
 
-/// The rows of the videos `YouTube` answered for `query` ([`crate::suggest`]),
-/// in its order, under [`query_entry`]'s row; each opens its video. Found
-/// by the query they answer, whatever their titles say.
 pub fn suggested_entries(
     query: &str,
     videos: &[crate::model::Video],
@@ -106,7 +95,6 @@ pub fn suggested_entries(
         .collect()
 }
 
-/// The anchor of the hit that opens the video `id`.
 pub fn video_anchor(id: &str) -> String {
     format!("tube.video:{id}")
 }
@@ -122,8 +110,6 @@ const QUERY_BOOST: i32 = 1000;
 /// searches for it only contains it).
 const PLACE: i32 = 101;
 
-/// What opening the anchor `anchor` runs: the video (from the catalogue or
-/// the watch history), the creator or the playlist it names.
 pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
     use crate::actions::TubeEffect;
     let (kind, id) = anchor.split_once(':')?;
@@ -139,12 +125,9 @@ pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
     }
 }
 
-/// The scheme a launch names a search under: `tube:search?q=<query>`,
-/// the query percent-encoded.
+/// The scheme a launch names a search under: `tube:search?q=<query>`, the query percent-encoded.
 pub const SEARCH_URI_PREFIX: &str = "tube:search?q=";
 
-/// The query a launch asks Tube to search for, decoded; `None` for any
-/// other launch, and for an empty or malformed query.
 pub fn launch_search(arguments: &[String]) -> Option<String> {
     arguments.iter().find_map(|arg| {
         let prefix = arg.get(..SEARCH_URI_PREFIX.len())?;
@@ -157,8 +140,6 @@ pub fn launch_search(arguments: &[String]) -> Option<String> {
     })
 }
 
-/// `text` with `+` as a space and `%XX` as its byte; `None` when an escape
-/// is malformed or the bytes are not UTF-8.
 fn percent_decode(text: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(text.len());
     let mut rest = text.bytes();

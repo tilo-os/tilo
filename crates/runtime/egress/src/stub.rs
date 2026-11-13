@@ -1,12 +1,6 @@
-//! The DNS stub: the sandbox's only resolver.
-//!
-//! It listens on `127.0.0.1:53` inside the namespace (the sockets were
-//! opened there; the threads serving them run in the supervisor) and
-//! forwards a query to the host's resolver only when the policy allows the
-//! name. Every address in the answer is put in the filter's allowed set —
-//! with the record's TTL — *before* the answer goes back, so the connection
-//! that follows finds it admitted. Any other name is answered `NXDOMAIN`
-//! without leaving the machine.
+//! The DNS stub, the sandbox's only resolver: it listens on `127.0.0.1:53`
+//! inside the namespace, answers a name the policy allows by asking the host's
+//! resolvers and admitting the addresses it got, and refuses every other name.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
@@ -22,18 +16,14 @@ use crate::dns::{self, Rcode};
 use crate::nft::Netfilter;
 use crate::policy::{Allowed, EgressPolicy, admissible};
 
-/// How long the upstream resolver may take.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(4);
 /// The longest the UDP thread may block in `recv_from` once `poll(2)` said
 /// a datagram is ready, should that readiness turn out to be spurious. It
 /// never runs while the stub is idle: the thread blocks in `poll(2)`.
 const RECV_GUARD: Duration = Duration::from_millis(200);
-/// Queries in flight at once; more are dropped (the client retries).
 const MAX_IN_FLIGHT: usize = 64;
-/// A TCP client that sends nothing for this long is dropped.
 const TCP_IDLE: Duration = Duration::from_secs(10);
 
-/// State the stub shares with [`crate::Egress`].
 #[derive(Debug)]
 pub struct Shared {
     pub policy: RwLock<EgressPolicy>,
@@ -41,7 +31,6 @@ pub struct Shared {
     pub upstream: Vec<SocketAddr>,
 }
 
-/// The kernel's sets and their mirror, changed together.
 #[derive(Debug)]
 pub struct Filter {
     pub netfilter: Option<Netfilter>,
@@ -85,8 +74,8 @@ impl Filter {
     }
 }
 
-/// The threads serving the stub's sockets. Each blocks in `poll(2)` on its
-/// socket and on `stop`, so it runs only for DNS traffic or to end.
+// The threads serving the stub's sockets: each blocks in `poll(2)` on its
+// socket and on `stop`, so it runs only for DNS traffic or to end.
 #[derive(Debug)]
 pub struct Stub {
     /// Rung once, by [`Drop`], and never drained: readable from then on, so
@@ -98,8 +87,6 @@ pub struct Stub {
 impl Stub {
     /// Serve `udp` and `tcp` (already bound inside the namespace).
     pub fn start(udp: UdpSocket, tcp: TcpListener, shared: &Arc<Shared>) -> std::io::Result<Self> {
-        // The UDP socket stays blocking: its clones send the replies, and a
-        // non-blocking send could drop one when the buffer is full.
         udp.set_read_timeout(Some(RECV_GUARD))?;
         tcp.set_nonblocking(true)?;
         let stop = Arc::new(WakeFd::new()?);
@@ -138,7 +125,6 @@ impl Drop for Stub {
     }
 }
 
-/// A slot in the in-flight budget, released on drop.
 struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
@@ -158,12 +144,9 @@ impl Drop for Slot {
     }
 }
 
-/// What woke a serving thread.
 #[derive(Debug, PartialEq, Eq)]
 enum Ready {
-    /// The socket has a datagram, a connection or an error to collect.
     Socket,
-    /// The stub is being dropped.
     Stop,
 }
 
@@ -506,8 +489,6 @@ mod tests {
     /// Tests that start a stub hold this, so a thread name is one stub's.
     static STUBS: Mutex<()> = Mutex::new(());
 
-    /// A stub serving loopback sockets, as `spawn_egress` starts it on the
-    /// namespace's, with its two threads' ids.
     struct Running {
         stub: Stub,
         udp: SocketAddr,

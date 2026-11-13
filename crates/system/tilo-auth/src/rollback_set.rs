@@ -1,10 +1,5 @@
 //! Whether this machine could still boot an image whose sign-in checks the
 //! old password hash, and so needs it kept.
-//!
-//! An image from before `pam_tilo` checks secrets with `pam_unix` against its
-//! own `/etc/shadow`. Until the booted update is confirmed and every
-//! deployment the machine could boot ships the `tilo-auth` PAM service,
-//! a migrated person's old hash stays where such an image may need it.
 
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
@@ -14,16 +9,13 @@ use tilo_rollback::{confirm, generation};
 /// image, relative to a deployment's root.
 const PAM_TILO_SERVICE: &str = "etc/pam.d/tilo-auth";
 
-/// Where to read the deployments and the confirmation from.
 #[derive(Clone, Debug)]
 pub struct RollbackSet {
     /// The physical root: ostree's `ostree/deploy/<stateroot>/deploy/*` or
     /// the composefs backend's `state/deploy/*` hold one directory per
     /// deployment, each with its own `/etc`.
     pub sysroot: PathBuf,
-    /// tilo-rollback's bookkeeping, with the last confirmed generation.
     pub rollback_state: PathBuf,
-    /// The kernel command line, with the booted generation.
     pub cmdline: PathBuf,
 }
 
@@ -205,7 +197,6 @@ mod tests {
     fn an_unconfirmed_generation_keeps_them_while_rollback_protection_is_in_use() {
         let m = Machine::new("root=/dev/vda3 tilo.generation=7");
         m.deployment(NEW, true);
-        // Not enrolled: nothing will ever confirm, so there is nothing to wait for.
         assert_eq!(m.set().needs_old_passwords(), None);
         m.confirmed(Some(6));
         assert!(

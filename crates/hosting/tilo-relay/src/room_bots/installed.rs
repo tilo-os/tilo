@@ -858,9 +858,9 @@ fn bot_standing(
     connectors: &BTreeSet<String>,
 ) -> tilo_action_policy::Standing {
     use tilo_action_policy::{
-        Answer, Grant, KindSet, Level, Rule, Standing, Subject, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, Level, Rule, Standing, TreePath, WorkspacePolicy,
     };
-    let bot = Subject::bot(installation);
+    let bot = Grantee::bot(installation);
     let mut rules = if shortcut.grant.is_empty() {
         tilo_automation::grant::derived_rules(
             shortcut,
@@ -886,7 +886,7 @@ fn bot_standing(
             Rule::new(settle, KindSet::ALL, Answer::Allow),
         ]
     }));
-    let grants = rules
+    let grants: Vec<Grant> = rules
         .into_iter()
         .enumerate()
         .map(|(index, rule)| {
@@ -896,11 +896,14 @@ fn bot_standing(
                 rule.node,
                 rule.kinds,
                 rule.answer,
-                Subject::person(installer),
+                Grantee::person(installer),
             )
         })
         .collect();
-    Standing::person(WorkspacePolicy::new(workspace, installer), installer).bounded_by(bot, grants)
+    Standing::person(WorkspacePolicy::new(workspace, installer), installer).acting_as(
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(installation)),
+        grants,
+    )
 }
 
 /// What changed in the workspace's membership from `before` to `after`, as

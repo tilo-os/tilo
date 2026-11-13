@@ -1,14 +1,6 @@
-//! Interactive pie and donut charts.
-//!
-//! The widget owns interaction geometry as well as painting, so pointer,
-//! keyboard/accessibility activation, tooltips and the rendered wedges always
-//! agree. Values may be updated without rebuilding the widget tree.
-//!
-//! Its height comes from the space it is given: the donut and its legend
-//! are one unit, centred, the donut as large as the room allows. The legend
-//! and the tooltip state a share the same way (whole percent), a slice can
-//! add a detail column to the legend (its size), and the tooltip never
-//! covers the legend.
+//! Interactive pie and donut charts. The widget owns interaction geometry as well as painting,
+//! so pointer, keyboard/accessibility activation, tooltips and the rendered wedges always
+//! agree.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -40,7 +32,6 @@ pub struct PieSlice {
     /// A column after the legend's label and share: the slice's size
     /// ("12.4 GB"). Empty for none.
     pub legend_detail: String,
-    /// Whether activation is meaningful. Inspection remains available when false.
     pub interactive: bool,
 }
 
@@ -57,8 +48,6 @@ impl PieSlice {
         }
     }
 
-    /// A detail column in the legend (the slice's size), aligned after the
-    /// label and its share.
     #[must_use]
     pub fn with_legend_detail(mut self, detail: impl Into<String>) -> Self {
         self.legend_detail = detail.into();
@@ -71,7 +60,6 @@ impl PieSlice {
         self
     }
 
-    /// Keep the slice visible and hover-inspectable without presenting a dead action.
     #[must_use]
     pub fn non_interactive(mut self) -> Self {
         self.interactive = false;
@@ -79,20 +67,15 @@ impl PieSlice {
     }
 }
 
-/// Visual configuration shared by pies and donuts.
 #[derive(Clone, Copy, Debug)]
 pub struct PieStyle {
     /// Hole radius divided by outer radius. `0` is a pie, `0.62` is a donut.
     pub inner_radius: f64,
-    /// Angular whitespace between adjacent slices, in radians.
     pub gap: f64,
     /// Rotation in radians; the default starts at twelve o'clock.
     pub start_angle: f64,
-    /// Distance the hovered wedge moves away from the centre.
     pub hover_offset: f64,
-    /// Outer padding kept available for hover lift and focus treatment.
     pub padding: f64,
-    /// Minimum width for the two-line inspector overlay.
     pub tooltip_min_width: f64,
     /// Fixed tooltip width. `None` sizes to content within available bounds.
     pub tooltip_width: Option<f64>,
@@ -149,19 +132,18 @@ pub struct PieMarks {
     style: PieStyle,
     center_title: String,
     center_subtitle: String,
-    /// Where the legend's entries were painted, for the tooltip to avoid.
-    legend_rects: Vec<Rect>,
+    chart_rect: Rect,
+    /// The legend's entries as the layout placed them: the slice's index and
+    /// its rect (swatch, label and share, then its detail column).
+    legend_entries: Vec<(usize, Rect)>,
+    legend_detail_w: f64,
     frame: PlotFrame<usize>,
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
     reduce_motion: bool,
-    /// The chart names its slices in a legend beside or under it.
     legend: bool,
-    /// Where the wedges go: the whole rect, less the legend's area.
-    chart_rect: Rect,
 }
 
-/// A responsive interactive pie or donut.
 pub type PieChart = Plot<PieMarks>;
 
 impl PieChart {
@@ -171,36 +153,39 @@ impl PieChart {
             style: PieStyle::default(),
             center_title: String::new(),
             center_subtitle: String::new(),
-            legend_rects: Vec::new(),
+            chart_rect: Rect::ZERO,
+            legend_entries: Vec::new(),
+            legend_detail_w: 0.0,
             frame: PlotFrame::fill(80.0),
             transition_from: None,
             transition_started: crate::time::now(),
             reduce_motion: false,
             legend: false,
-            chart_rect: Rect::ZERO,
         })
     }
 
     pub fn set_slices(&mut self, slices: Vec<PieSlice>) {
+        self.mark_dirty();
         self.marks.set_slices(slices);
     }
     /// Replace data without motion, useful for initial hydration, restored
     /// sessions, and deterministic capture.
     pub fn set_slices_immediate(&mut self, slices: Vec<PieSlice>) {
+        self.mark_dirty();
         self.marks.set_slices_immediate(slices);
     }
     pub fn is_animating(&self) -> bool {
         self.marks.is_animating()
     }
     pub fn set_center(&mut self, title: impl Into<String>, subtitle: impl Into<String>) {
+        self.mark_dirty();
         self.marks.set_center(title, subtitle);
     }
     pub fn hovered(&self) -> Option<&PieSlice> {
         self.marks.hovered()
     }
-    /// Name every slice in a legend (a swatch, its label and its share)
-    /// beside the chart when there is room, under it otherwise. The legend
-    /// and the wedges never overlap: the chart shrinks to make room.
+    /// Name every slice in a legend (a swatch, its label and its share) beside the chart when
+    /// there is room, under it otherwise.
     #[must_use]
     pub fn with_legend(mut self) -> Self {
         self.marks.legend = true;
@@ -267,7 +252,6 @@ impl PieMarks {
             crate::widget::chart_legend::measure(text, theme, labels.iter().map(String::as_str));
         let label_w = entries.iter().map(|e| e.width).fold(0.0, f64::max);
         for entry in &mut entries {
-            // Details line up in one column after the longest label.
             if detail_w > 0.0 {
                 entry.width = label_w + detail_w;
             }
@@ -277,7 +261,6 @@ impl PieMarks {
         let row = entries.first().map_or(0.0, |e| e.height);
         let side_room = rect.width() - rect.height().min(rect.width() * 0.6);
         if widest + gap <= side_room {
-            // Beside: the donut and one legend column, centred together.
             let diameter = (rect.width() - widest - gap).min(rect.height()).max(0.0);
             let unit = diameter + gap + widest;
             let x0 = (rect.center().x - unit / 2.0).max(rect.x0);
@@ -300,7 +283,6 @@ impl PieMarks {
                 .collect();
             (Rect::new(x0, rect.y0, x0 + diameter, rect.y1), items)
         } else {
-            // Under: wrapping rows, each centred, under the donut.
             let rows = crate::widget::chart_legend::wrap(&entries, rect.x0, rect.x1, 0.0, theme);
             let height = rows.iter().map(|r| r.y1).fold(0.0, f64::max);
             let diameter = (rect.height() - gap - height).min(rect.width()).max(0.0);
@@ -335,7 +317,6 @@ impl PieMarks {
         if !self.legend || self.slices.is_empty() {
             return diameter;
         }
-        // Lay out at the donut's height to see where the legend lands.
         let probe = Rect::new(0.0, 0.0, width, diameter);
         let (_, items) = self.legend_layout(text, theme, probe);
         let beside = items.first().is_some_and(|(_, r)| r.x0 > probe.center().x);
@@ -354,6 +335,15 @@ impl PieMarks {
                     .fold(f64::INFINITY, f64::min);
             diameter + f64::from(theme.tokens.spacing.rhythm.section) + rows.max(0.0)
         }
+    }
+
+    /// Lay the donut and the legend out inside the frame's rect as one centred unit, measured
+    /// in the theme's own type.
+    fn place(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let (chart_rect, legend) = self.legend_layout(text, theme, self.frame.rect);
+        self.chart_rect = chart_rect;
+        self.legend_detail_w = self.legend_detail_width(text, theme);
+        self.legend_entries = legend;
     }
 
     fn set_slices(&mut self, slices: Vec<PieSlice>) {
@@ -460,11 +450,7 @@ impl PieMarks {
             .collect()
     }
     fn geometry(&self) -> (Point, f64, f64) {
-        let area = if self.chart_rect == Rect::ZERO {
-            self.frame.rect
-        } else {
-            self.chart_rect
-        };
+        let area = self.chart_rect;
         let center = area.center();
         let outer = (area.width().min(area.height()) / 2.0 - self.style.padding).max(1.0);
         (
@@ -570,9 +556,9 @@ impl PieMarks {
         // Never over the legend: try the other side of the anchor, then
         // above it, then above and to the other side.
         let covers = |r: Rect| {
-            self.legend_rects
+            self.legend_entries
                 .iter()
-                .any(|legend| r.intersect(*legend).area() > 0.0)
+                .any(|(_, legend)| r.intersect(*legend).area() > 0.0)
         };
         let mut rect = Rect::new(x, y, x + width, y + height);
         if covers(rect) {
@@ -640,6 +626,9 @@ impl PlotMarks for PieMarks {
     fn natural_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         self.natural_height(text, theme, width)
     }
+    fn place(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        self.place(text, theme);
+    }
     fn hit(&self, point: Point) -> Option<usize> {
         self.hit_test(point)
     }
@@ -694,8 +683,6 @@ impl PlotMarks for PieMarks {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
-        let (chart_rect, legend) = self.legend_layout(tr, theme, self.frame.rect);
-        self.chart_rect = chart_rect;
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
         if sectors.is_empty() {
@@ -736,12 +723,11 @@ impl PlotMarks for PieMarks {
                 ),
             );
         }
-        self.legend_rects = legend.iter().map(|(_, rect)| *rect).collect();
-        if !legend.is_empty() {
+        if !self.legend_entries.is_empty() {
             let total = self.total();
-            let detail_w = self.legend_detail_width(tr, theme);
+            let detail_w = self.legend_detail_w;
             let detail_style = theme.text(TextRole::Caption).numeric();
-            for (index, rect) in &legend {
+            for (index, rect) in &self.legend_entries {
                 let Some(slice) = self.slices.get(*index) else {
                     continue;
                 };
@@ -855,12 +841,11 @@ mod tests {
         ] {
             let mut chart = PieChart::new(slices.clone()).with_legend();
             chart.marks.frame.rect = rect;
-            let (area, legend) = chart.marks.legend_layout(&mut text, &theme, rect);
-            chart.marks.chart_rect = area;
+            chart.marks.place(&mut text, &theme);
             let (center, outer, _) = chart.marks.geometry();
             let disc = Rect::from_center_size(center, (2.0 * outer, 2.0 * outer));
-            assert_eq!(legend.len(), 4);
-            for (_, entry) in &legend {
+            assert_eq!(chart.marks.legend_entries.len(), 4);
+            for (_, entry) in &chart.marks.legend_entries {
                 assert!(
                     disc.intersect(*entry).area() <= 0.0,
                     "{rect:?}: legend {entry:?} overlaps the chart {disc:?}"
@@ -871,12 +856,15 @@ mod tests {
         assert_eq!(legend_label(&slices[0], 76.0), "Photos 55%");
     }
 
+    /// A pie with no legend, placed in a 200 by 200 frame: the wedges take
+    /// the whole rect.
     fn chart() -> PieChart {
         let mut chart = PieChart::new(vec![
             PieSlice::new("a", "A", 3.0, Color::WHITE),
             PieSlice::new("b", "B", 1.0, Color::BLACK),
         ]);
         chart.marks.frame.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+        chart.marks.place(&mut TextRenderer::new(), &Theme::dark());
         chart
     }
 
@@ -1003,7 +991,9 @@ mod tests {
         assert!(!tooltip.contains('\u{b7}'), "no dot chains");
         let rect = Rect::new(0.0, 0.0, 640.0, 300.0);
         chart.marks.frame.rect = rect;
-        let (area, legend) = chart.marks.legend_layout(&mut text, &theme, rect);
+        chart.marks.place(&mut text, &theme);
+        let legend = chart.marks.legend_entries.clone();
+        let area = chart.marks.chart_rect;
         // Beside: donut and legend centred as one unit.
         let left_gap = area.x0 - rect.x0;
         let right_gap = rect.x1 - legend.iter().map(|(_, r)| r.x1).fold(0.0, f64::max);
@@ -1020,6 +1010,81 @@ mod tests {
         assert!(natural > 100.0 && natural < 640.0, "{natural}");
         assert_eq!(share_text(0.2, 100.0), "<1%");
     }
+
+    /// A pie with a legend laid out, and nothing painted: the wedges and the
+    /// legend stand where the layout placed them, so a hover lands on what
+    /// the chart draws.
+    fn placed_pie(theme: &Theme) -> PieChart {
+        let mut chart = PieChart::new(vec![
+            PieSlice::new("photos", "Photos", 42.0, Color::WHITE),
+            PieSlice::new("music", "Music", 21.0, Color::WHITE),
+            PieSlice::new("documents", "Documents and spreadsheets", 9.0, Color::WHITE),
+            PieSlice::new("other", "Other", 4.0, Color::WHITE),
+        ])
+        .with_legend();
+        crate::testing::lay_out_in(&mut chart, 640.0, 300.0, theme).expect("the chart lays out");
+        chart
+    }
+
+    #[test]
+    fn a_legend_and_a_wedge_are_hit_where_the_layout_places_them() {
+        let theme = Theme::dark();
+        let chart = placed_pie(&theme);
+
+        let legend = chart.marks.legend_entries[0].1;
+        assert!(
+            chart.marks.hit(legend.center()).is_none(),
+            "{legend:?} is the legend, not a wedge"
+        );
+
+        let (center, outer, inner) = chart.marks.geometry();
+        let sector = chart.marks.sectors_for_progress(1.0)[1];
+        let angle = sector.start.midpoint(sector.end);
+        let radius = inner.midpoint(outer);
+        let point = Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        );
+        assert_eq!(
+            chart.marks.hit(point),
+            Some(sector.index),
+            "the wedge drawn at {point:?} is the one a hover names"
+        );
+    }
+
+    #[test]
+    fn new_slices_place_the_legend_again() {
+        let theme = Theme::dark();
+        let mut chart = PieChart::new(vec![
+            PieSlice::new("photos", "Photos", 42.0, Color::WHITE),
+            PieSlice::new("music", "Music", 58.0, Color::WHITE),
+        ])
+        .with_legend();
+        crate::testing::lay_out_in(&mut chart, 640.0, 300.0, &theme).expect("the chart lays out");
+        Widget::layout_measured(&mut chart);
+        assert!(!Widget::is_layout_dirty(&chart));
+        let before = chart.marks.legend_entries[0].1;
+
+        chart.set_slices_immediate(vec![
+            PieSlice::new("photos", "Photos and videos", 42.0, Color::WHITE)
+                .with_legend_detail("120.4 GB"),
+            PieSlice::new("music", "Music", 58.0, Color::WHITE),
+        ]);
+        assert!(
+            Widget::is_layout_dirty(&chart),
+            "new data re-places the legend"
+        );
+        crate::testing::lay_out_in(&mut chart, 640.0, 300.0, &theme).expect("the chart lays out");
+        let after = chart.marks.legend_entries[0].1;
+        assert!(
+            after.width() > before.width(),
+            "the wider entry takes more room: {before:?} then {after:?}"
+        );
+        assert!(
+            chart.marks.hit(after.center()).is_none(),
+            "the room the wider legend takes holds no wedge"
+        );
+    }
 }
 
 /// How far a chart's data change has come `elapsed` after it, `0..=1`: its
@@ -1033,7 +1098,6 @@ pub(crate) fn data_change_progress(elapsed: Duration) -> f64 {
     )
 }
 
-/// How long a chart's data change runs.
 pub(crate) fn data_change_time() -> Duration {
     crate::motion::ListChange::MOVE.settle_time(
         crate::motion::Direction::Enter,

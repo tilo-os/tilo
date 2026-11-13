@@ -1,9 +1,8 @@
 //! Reading a bundle's designated requirement from `codesign`'s output.
 
-/// The designated requirement in `codesign --display --requirements -`
-/// output. An explicit one is printed as `designated => …`; the implicit one
-/// every bundle signed without its own requirement has, ad hoc or Developer
-/// ID, is printed as a comment, `# designated => …`.
+/// The designated requirement in `codesign --display --requirements -` output. An explicit one is
+/// printed as `designated => …`; the implicit one every bundle signed without its own requirement
+/// has, ad hoc or Developer ID, is printed as a comment, `# designated => …`.
 #[must_use]
 pub fn designated(output: &str) -> Option<String> {
     output.lines().find_map(|line| {

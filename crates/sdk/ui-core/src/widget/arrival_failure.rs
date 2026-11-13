@@ -1,10 +1,4 @@
 //! The one face for something that did not arrive.
-//!
-//! A piece of data that failed to load ([`ArrivingView`](super::ArrivingView))
-//! and a window that did not open show the same thing: an error banner that
-//! says what failed, then why, with the way to try again as its action
-//! ([`arrival_failure`]). A window shows it as a [`WindowFailure`]: the same
-//! banner, centred in the window's area at the readable width.
 
 use std::collections::HashMap;
 

@@ -1,8 +1,4 @@
 //! Narrow asynchronous client for the owner-managed Windows appliance.
-//!
-//! The command names and arguments are fixed. In particular, installation
-//! media moves from the XDG portal's already-open file descriptor directly to
-//! `pkexec` stdin; no user-controlled path crosses the privileged boundary.
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -61,8 +57,8 @@ pub struct TemporaryEgressLease {
 }
 
 impl TemporaryEgressLease {
-    /// How long the connection has left, said in the person's words: the
-    /// status the lease is read with follows it, so this counts down.
+    /// How long the connection has left, said in the person's words: the status the lease
+    /// is read with follows it, so this counts down.
     #[must_use]
     pub fn expiry_label(&self) -> String {
         let now = ui::time::unix_now();
@@ -228,8 +224,8 @@ impl ApplianceStatus {
         }
     }
 
-    /// A set-up, running, activated appliance with one published app: the
-    /// offline catalogue's appliance.
+    /// A set-up, running, activated appliance with one published app: the offline
+    /// catalogue's appliance.
     #[must_use]
     pub fn sample_ready() -> Self {
         Self {
@@ -267,8 +263,8 @@ impl ApplianceStatus {
         })
     }
 
-    /// The one sentence the appliance page states its status in: how far
-    /// setup is and, once Windows is ready, whether it is running.
+    /// The one sentence the appliance page states its status in: how far setup is and, once
+    /// Windows is ready, whether it is running.
     #[must_use]
     pub fn status_statement(&self) -> String {
         strings::t(match (&self.phase, self.power_state) {
@@ -285,8 +281,8 @@ impl ApplianceStatus {
         })
     }
 
-    /// The appliance's status in a list row: its power state once Windows is
-    /// ready, how far setup is before that.
+    /// The appliance's status in a list row: its power state once Windows is ready, how far
+    /// setup is before that.
     #[must_use]
     pub fn summary_label(&self) -> String {
         match (&self.phase, self.power_state) {
@@ -296,8 +292,7 @@ impl ApplianceStatus {
         }
     }
 
-    /// Tilo reports only what the authenticated guest said. It deliberately
-    /// does not turn activation into a licensing determination.
+    /// Tilo reports only what the authenticated guest said.
     #[must_use]
     pub fn license_label(&self) -> String {
         strings::t(match self.license {
@@ -310,8 +305,7 @@ impl ApplianceStatus {
         })
     }
 
-    /// Additional context for unusual activation states. This stays in
-    /// management UI and is intentionally absent for normal app launches.
+    /// Additional context for unusual activation states.
     #[must_use]
     pub fn license_detail(&self) -> Option<String> {
         Some(strings::t(match self.license {
@@ -334,8 +328,7 @@ enum OwnerEvent {
     EgressRevoked(Result<(), String>),
 }
 
-/// One narrow nonblocking owner-command queue. It never exposes a generic
-/// command interface to the UI.
+/// It never exposes a generic command interface to the UI.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "pending status, pending action, checked and offline are independent facts"
@@ -348,8 +341,6 @@ pub struct ApplianceOwnerClient {
     action_result: Option<Result<String, String>>,
     next_refresh: Instant,
     status: ApplianceStatus,
-    /// A status has arrived (or was given): the appliance is not still
-    /// being checked.
     checked: bool,
     /// Never asks the owner helper: the status was given and stays.
     offline: bool,
@@ -376,8 +367,8 @@ impl ApplianceOwnerClient {
         client
     }
 
-    /// A client that reports `status` and never runs the owner helper: for
-    /// offline catalogues, screenshots and tests.
+    /// A client that reports `status` and never runs the owner helper: for offline
+    /// catalogues, screenshots and tests.
     #[must_use]
     pub fn offline(status: ApplianceStatus) -> Self {
         let (sender, events) = mpsc::channel();
@@ -394,8 +385,8 @@ impl ApplianceOwnerClient {
         }
     }
 
-    /// Refuse a new owner action while one runs, or when this client only
-    /// reports a given status.
+    /// Refuse a new owner action while one runs, or when this client only reports a given
+    /// status.
     fn ensure_idle(&self) -> Result<(), String> {
         if self.offline {
             return Err(strings::t("windows-error-unmanageable"));
@@ -445,8 +436,6 @@ impl ApplianceOwnerClient {
         std::thread::spawn(move || {
             let mut command = Command::new("pkexec");
             command.arg(OWNER).arg("import-iso");
-            // The open XDG portal descriptor is intentionally the only
-            // installation-media input handed to the privileged helper.
             let result =
                 command_with_stdin(command, source).and_then(|output| success_output(&output));
             let _ = sender.send(OwnerEvent::Imported(result));
@@ -462,8 +451,7 @@ impl ApplianceOwnerClient {
         self.start_recovery()
     }
 
-    /// Execute one fixed appliance lifecycle action through the existing
-    /// polkit boundary. There is intentionally no generic command facility.
+    /// Execute one fixed appliance lifecycle action through the existing polkit boundary.
     pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
@@ -487,9 +475,8 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
-    /// Materialise a ten-minute, purpose-bound appliance connection and then
-    /// take the owner to the already-authorised recovery/update desktop. The
-    /// system-owned lease reaper closes it even if this manager exits.
+    /// Materialise a ten-minute, purpose-bound appliance connection and then take the owner
+    /// to the already-authorised recovery/update desktop.
     pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
@@ -514,8 +501,7 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
-    /// Revoke the active temporary egress lease early. The owner helper looks
-    /// it up from authoritative state, so no lease identifier reaches UI.
+    /// Revoke the active temporary egress lease early.
     pub fn revoke_temporary_egress(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         if self.status.temporary_egress.is_none() {
@@ -533,9 +519,9 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
-    /// This deliberately bypasses the read-only status precheck only after a
-    /// successful `import-iso`: the helper has just prepared the appliance,
-    /// while the status cache has not yet had an opportunity to refresh.
+    /// This deliberately bypasses the read-only status precheck only after a successful
+    /// `import-iso`: the helper has just prepared the appliance, while the status cache has
+    /// not yet had an opportunity to refresh.
     fn start_recovery(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         self.action_pending = true;
@@ -562,8 +548,8 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
-    /// Applies completed worker events and returns a human-facing result for
-    /// the Windows Apps notice area.
+    /// Applies completed worker events and returns a human-facing result for the Windows
+    /// Apps notice area.
     pub fn drain(&mut self) -> Option<String> {
         let mut notice = None;
         while let Ok(event) = self.events.try_recv() {
@@ -587,9 +573,6 @@ impl ApplianceOwnerClient {
                 OwnerEvent::Imported(Ok(())) => {
                     self.action_pending = false;
                     notice = Some(strings::t("windows-media-accepted"));
-                    // First provisioning intentionally uses the recovery-only
-                    // desktop route, then normal apps return to app-focused
-                    // guest windows.
                     if let Err(error) = self.start_recovery() {
                         self.action_result = Some(Err(error.clone()));
                         notice = Some(error);

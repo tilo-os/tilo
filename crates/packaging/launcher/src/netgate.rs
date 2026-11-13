@@ -1,118 +1,11 @@
 //! Per-host egress filtering for a sandboxed app.
 //!
-//! ## The problem
-//!
-//! `bwrap` has no per-host vocabulary: `--unshare-net` gives an empty
-//! network namespace, `--share-net` the host's, no middle setting. A
-//! capability naming `mail.example.com` and one naming `*` produced the
-//! same sandbox — the named host reached no mechanism at all.
-//!
-//! ## The mechanism
-//!
-//! Leave the namespace empty and put the only way out through a socket
-//! whose far end we hold:
-//!
-//! ```text
-//!  ┌ sandbox: empty netns ─────────────┐
-//!  │  app ──TCP──▶ 127.0.0.1:<port>    │   in-sandbox relay, untrusted
-//!  │                    │              │
-//!  └────────────────────┼──────────────┘
-//!                       │ AF_UNIX (the one bind-mount)
-//!                       ▼
-//!                    netgate                 ◀── host netns, holds the policy
-//!                       │ SOCKS5: check the NAME, then resolve, then connect
-//!                       ▼
-//!                   the network
-//! ```
-//!
-//! Two kernel properties make that exclusive rather than advisory
-//! (`tests/netgate_egress.rs` asserts both): an unshared netns has no
-//! route (`connect(2)` fails `ENETUNREACH` before a packet exists, and
-//! the sandbox's `127.0.0.1` is its own loopback); a bind-mounted
-//! pathname `AF_UNIX` socket crosses the boundary anyway, addressed
-//! through the filesystem.
-//!
-//! **An app that ignores the gate is not unfiltered, it is offline** —
-//! unlike a proxy an app can decline to use.
-//!
-//! ## Why the alternatives lose
-//!
-//! - **nftables in a per-app netns** needs `CAP_NET_ADMIN` in the host
-//!   namespace (or a userspace TCP/IP stack), and a rule set is written
-//!   against addresses, so it can't express `mail.example.com`.
-//! - **Landlock `AccessNet`** scopes by port only, no address vocabulary
-//!   — a second layer ([`crate::landlock_shim`] pins the relay port),
-//!   never the host filter.
-//! - **seccomp on `connect(2)`** can't see a name even with
-//!   `SECCOMP_USER_NOTIF`, only an address, at the cost of a
-//!   synchronous supervisor.
-//! - **`LD_PRELOAD` interposition** is bypassed by a static binary or a
-//!   direct syscall.
-//!
-//! ## Hostnames are not addresses
-//!
-//! The gate never pins an address — it matches the *name* in the
-//! request against the allowlist, then resolves per connection, so a
-//! rotating CDN or mid-session DNS change doesn't matter (nothing is
-//! cached). The app can't resolve for itself either: the sandbox has no
-//! route to any resolver, so it never supplies an address for a
-//! name-scoped grant.
-//!
-//! An **address literal** never matches a hostname entry, since "this
-//! address is currently that name" isn't verifiable and accepting it
-//! would make every name-scoped grant bypassable by resolving first. Nor
-//! is an address a grant: the allowlist is an [`EgressPolicy`] read
-//! through the one grant grammar (`collab_types::caps::NetHostPattern`,
-//! the same one environments' `tilo-egress` reads), which refuses IP
-//! literals, so only `*` reaches an address. Fail-closed, deliberately.
-//!
-//! ## DNS is egress
-//!
-//! An app with no network capability reaches no resolver — the
-//! namespace is empty, even if `/etc/resolv.conf` is bound; there's no
-//! route to any address it names. An app with an allowlist also
-//! reaches no resolver: it hands the gate a name, which resolves in the
-//! host namespace *after* the name passes policy, so resolution isn't
-//! a side channel. An app **can** open port 53 on an already-granted
-//! host and speak DNS-over-TCP — not an escape, since any answer is
-//! still only usable through the gate. An app granted `*` keeps
-//! `--share-net` and resolves for itself, as before.
-//!
-//! ## Device-local is network
-//!
-//! Tilo runs its own services (collaboration broker, registry, …) on the
-//! network like anything else, so device-local addresses get the same
-//! policy: no network capability means an empty namespace (the
-//! sandbox's `127.0.0.1` is its own); a host allowlist means the gate's
-//! host-namespace resolution could reach `127.0.0.1` or the machine's
-//! LAN address, so [`is_device_local`] drops the destination *after*
-//! resolution unless the allowlist names that host **exactly** (see
-//! [`EgressPolicy::permits_device_local`]); `*` means device-local is
-//! reachable, since it becomes `--share-net` in production. IPv4-mapped
-//! IPv6 forms are folded to v4, so `::ffff:127.0.0.1` is loopback too.
-//!
-//! That last case is the one place an app's grant reaches further than
-//! the same grant does for an environment, whose `*` keeps a namespace of
-//! its own (`tilo-egress`). It is kept on purpose: apps whose manifests
-//! say `host` take OAuth redirects on a loopback listener the host's
-//! browser must reach, and the gate carries TCP only. The grammar and the
-//! decision are shared; the backend differs.
-//!
-//! ## A refusal looks like an absence of network
-//!
-//! A denied destination answers SOCKS5 `HOST_UNREACHABLE` and HTTP
-//! `502` — not `NOT_ALLOWED`/`403` (the wire spellings of `EACCES`) —
-//! since "no route" is a state every client already handles by backing
-//! off, while "forbidden" sends the user to fix a permission they can't
-//! reach from inside the app. A refusal is instant; a genuinely
-//! unroutable host may take until `CONNECT_TIMEOUT`.
-//!
-//! ## What this does not constrain
-//!
-//! **Ports** — `Scope::NetHost` names a host with no port, so a grant
-//! permits any port on it. **Content** — the gate is a TCP relay, not a
-//! TLS terminator: it sees the name and the byte stream, and doesn't
-//! inspect it.
+//! The namespace stays empty and the only way out is a socket the gate holds on the
+//! host side, so an app that ignores the gate is offline, not unfiltered. The gate
+//! matches the name in the request against the allowlist and resolves per connection:
+//! no address is pinned, an address literal never matches a hostname entry, and
+//! device-local addresses are dropped after resolution unless the allowlist names them
+//! exactly.
 
 use std::future::Future;
 use std::io::{self, Read, Write};
@@ -127,53 +20,41 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, oneshot};
 
-/// How long a client gets for each read and write of the handshake, and
-/// how long the gate waits on an upstream `connect`.
+/// How long a client gets for each read and write of the handshake, and how long the gate waits on an
+/// upstream `connect`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How many connections one gate, or one relay, carries at once. Past
-/// this it stops accepting: further connections wait in the socket's
-/// listen backlog until an open one closes, rather than each costing a
-/// task and two descriptors the moment it arrives.
+/// How many connections one gate, or one relay, carries at once.
 pub const MAX_CONNECTIONS: usize = 256;
 
-/// The loopback port the in-sandbox relay listens on. Fixed rather
-/// than negotiated, so `ALL_PROXY`, the relay's argv and the Landlock
-/// rule never disagree.
+/// The loopback port the in-sandbox relay listens on.
 pub const RELAY_PORT: u16 = 9050;
 
-/// Where the gate socket is bind-mounted inside the sandbox. Short on
-/// purpose: `sun_path` is 108 bytes, so a long path fails
-/// `ENAMETOOLONG` at connect.
+/// Where the gate socket is bind-mounted inside the sandbox.
 pub const SANDBOX_GATE_PATH: &str = "/run/tilo/net/gate.sock";
 
-/// Host-side path the gate listens on. Mirrors
-/// [`crate::dbus_proxy::proxy_socket_path`] — one per launcher process.
+/// Host-side path the gate listens on.
 pub fn gate_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/net/{launcher_pid}.sock"))
 }
 
-/// What outbound access an app ends up with, after the packager's
-/// manifest and the user's grants have both been read.
+/// What outbound access an app ends up with, after the packager's manifest and the user's grants have
+/// both been read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressDecision {
-    /// No network at all. The namespace stays empty and no gate runs.
     Blocked,
     /// Unrestricted outbound access — `--share-net`, no gate.
     Unrestricted,
-    /// A specific set of hosts: the namespace stays empty and a gate
-    /// carries the traffic.
+    /// A specific set of hosts: the namespace stays empty and a gate carries the traffic.
     Filtered(EgressPolicy),
 }
 
 impl EgressDecision {
-    /// Should the sandbox get `--share-net`?
     pub fn shares_host_network(&self) -> bool {
         matches!(self, EgressDecision::Unrestricted)
     }
 
-    /// The policy to run a gate with, if any.
     pub fn policy(&self) -> Option<&EgressPolicy> {
         match self {
             EgressDecision::Filtered(p) => Some(p),
@@ -181,45 +62,16 @@ impl EgressDecision {
         }
     }
 
-    /// Resolve the packager's declaration and the user's grants into one
-    /// decision. `net_mode`/`manifest_hosts` come from `[sandbox.net]`;
-    /// `granted_hosts` are the `Scope::NetHost` capabilities the user
-    /// granted, already filtered through `decide_capability`.
-    ///
-    /// Precedence, and why:
-    ///
-    /// | manifest | user grants | result |
-    /// |---|---|---|
-    /// | `off` | none | blocked |
-    /// | `allowlist = [h…]` | none | filtered to `h…` |
-    /// | `host` | none | unrestricted |
-    /// | `off` / `host` | `["*"]` | unrestricted |
-    /// | `off` / `host` | `[h…]` | filtered to `h…` |
-    /// | `allowlist = [c…]` | any grant | filtered to the `c…` that grant permits |
-    /// | any | only non-hosts (`10.0.0.5`) | blocked |
-    ///
-    /// Grants and manifest entries are both read through the one grant
-    /// grammar ([`EgressPolicy::from_grants`]), the same one environments
-    /// get: `*.example.com` is the domain, and an IP literal is ignored.
-    ///
-    /// **The user's decision replaces the manifest's**, it does not union
-    /// with it — a union would leave `host` unrestricted no matter how
-    /// specific the user was. **A grant is still capped by an explicit
-    /// manifest allowlist**: an out-of-surface grant is dropped with a
-    /// warning, not silently widened.
+    /// Resolve the packager's declaration and the user's grants into one decision.
     pub fn resolve(net_mode: &str, manifest_hosts: &[String], granted_hosts: &[String]) -> Self {
         let declared = || EgressPolicy::from_grants(manifest_hosts.iter().map(String::as_str));
 
         if granted_hosts.is_empty() {
             return match net_mode {
-                // `dns-only` grants no host egress, listed explicitly rather than
-                // falling into "not off means unrestricted".
                 "off" | "dns-only" => EgressDecision::Blocked,
                 "allowlist" => decision_of(declared()),
                 "host" => EgressDecision::Unrestricted,
-                // A spelling this launcher does not know is not a policy it
-                // can enforce. The only safe reading of "allow-list" or
-                // "Off" is no egress — not the host network.
+                // A spelling this launcher does not know is not a policy it can enforce.
                 other => {
                     tracing::warn!(
                         mode = other,
@@ -230,18 +82,12 @@ impl EgressDecision {
             };
         }
 
-        // Read through the one grammar: a grant that is not a host (an IP
-        // literal, junk) is dropped with a warning, so it narrows. A user
-        // whose every grant was refused gets no network, not the manifest's.
+        // Read through the one grammar: a grant that is not a host (an IP literal, junk) is dropped
+        // with a warning, so it narrows.
         let granted = EgressPolicy::from_grants(granted_hosts.iter().map(String::as_str));
 
-        // An explicit manifest allowlist is exhaustive, so the effective set
-        // is the declared entries the grant covers in full — not the grant
-        // filtered against the list, which lets a `*` grant narrow instead of
-        // matching nothing.
         if net_mode == "allowlist" {
             let EgressPolicy::Hosts(declared) = declared() else {
-                // A manifest allowlist of `*` declares nothing to cap with.
                 return decision_of(granted);
             };
             let mut kept = Vec::new();
@@ -259,14 +105,12 @@ impl EgressDecision {
             return decision_of(EgressPolicy::hosts(kept));
         }
 
-        // No enumeration to cap against: `off` and `host` declare
-        // nothing specific, so the grant stands as written.
         decision_of(granted)
     }
 }
 
-/// What outbound access a policy alone amounts to: nothing, everything
-/// (`*`, which for an app is `--share-net`), or a gate.
+/// What outbound access a policy alone amounts to: nothing, everything (`*`, which for an app is
+/// `--share-net`), or a gate.
 fn decision_of(policy: EgressPolicy) -> EgressDecision {
     match policy {
         EgressPolicy::Any => EgressDecision::Unrestricted,
@@ -275,8 +119,8 @@ fn decision_of(policy: EgressPolicy) -> EgressDecision {
     }
 }
 
-/// Counts of what the gate decided, so a test can assert on the
-/// decision the production path actually took rather than on argv.
+/// Counts of what the gate decided, so a test can assert on the decision the production path actually
+/// took rather than on argv.
 #[derive(Debug, Default)]
 pub struct GateStats {
     pub allowed: AtomicU64,
@@ -320,30 +164,17 @@ pub enum GateError {
     Runtime(#[source] io::Error),
 }
 
-/// A running gate. Drop stops it and unlinks the socket.
-///
-/// Every gate in the process serves on one shared, bounded runtime; each
-/// connection is a task on it, and at most [`MAX_CONNECTIONS`] are open
-/// per gate.
+/// A running gate.
 #[derive(Debug)]
 pub struct NetGate {
     socket_path: PathBuf,
     stats: Arc<GateStats>,
-    /// Dropping this sender ends the accept loop, which closes the
-    /// listener. Connections already open run to completion.
+    /// Dropping this sender ends the accept loop, which closes the listener.
     _stop: oneshot::Sender<()>,
 }
 
 impl NetGate {
-    /// Bind `socket_path` and serve SOCKS5 against `policy` until
-    /// dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GateError::Mkdir`] if the socket's parent directory can't
-    /// be created, [`GateError::Bind`] if the socket itself can't be
-    /// bound, or [`GateError::Runtime`] if the runtime that serves it
-    /// can't start.
+    /// Bind `socket_path` and serve SOCKS5 against `policy` until dropped.
     pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<NetGate, GateError> {
         Self::start_limited(socket_path, policy, MAX_CONNECTIONS)
     }
@@ -359,8 +190,7 @@ impl NetGate {
                 source,
             })?;
         }
-        // A socket left behind by a crashed launcher would make bind()
-        // fail with EADDRINUSE.
+        // A socket left behind by a crashed launcher would make bind() fail with EADDRINUSE.
         let _ = std::fs::remove_file(socket_path);
 
         let bind_error = |source| GateError::Bind {
@@ -405,14 +235,8 @@ impl Drop for NetGate {
     }
 }
 
-/// A gate on a loopback TCP port, for a host with no network namespace to
-/// leave empty (macOS): there the sandbox profile admits connections to this
-/// one port, and the proxy environment names it. Same protocols, same policy
-/// and the same device-local rule as [`NetGate`]; dropping it stops it.
-///
-/// Any local process can connect to the port. That grants nothing: an
-/// unconfined process already has the network, and what the gate reaches is
-/// at most what the policy names.
+/// A gate on a loopback TCP port, for a host with no network namespace to leave empty (macOS): there
+/// the sandbox profile admits connections to this one port, and the proxy environment names it.
 #[derive(Debug)]
 pub struct LoopbackGate {
     addr: SocketAddr,
@@ -421,13 +245,7 @@ pub struct LoopbackGate {
 }
 
 impl LoopbackGate {
-    /// Bind a free port on `127.0.0.1` and serve `policy` on it until
-    /// dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GateError::Bind`] if no port can be bound, or
-    /// [`GateError::Runtime`] if the runtime that serves it can't start.
+    /// Bind a free port on `127.0.0.1` and serve `policy` on it until dropped.
     pub fn start(policy: EgressPolicy) -> Result<LoopbackGate, GateError> {
         let bind_error = |source| GateError::Bind {
             path: PathBuf::from("127.0.0.1:0"),
@@ -459,8 +277,8 @@ impl LoopbackGate {
     }
 }
 
-/// Serve every connection `listener` accepts against `policy` on
-/// `runtime`, until the returned sender is dropped.
+/// Serve every connection `listener` accepts against `policy` on `runtime`, until the returned sender
+/// is dropped.
 fn serve_gate<L>(
     runtime: &tokio::runtime::Handle,
     listener: L,
@@ -492,14 +310,8 @@ where
     (stats, stop)
 }
 
-/// The proxy environment that sends an ordinary HTTP client through a gate
-/// listening on `127.0.0.1:port`.
-///
-/// Both proxy forms are advertised, since picking one breaks apps:
-/// `HTTP(S)_PROXY` works with no feature flags (`reqwest`'s SOCKS support is
-/// non-default); `ALL_PROXY` is `socks5h://…`, where the `h` sends the
-/// **hostname** to the proxy instead of resolving locally, which a confined
-/// app cannot do.
+/// The proxy environment that sends an ordinary HTTP client through a gate listening on
+/// `127.0.0.1:port`.
 pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
     let http = format!("http://127.0.0.1:{port}");
     let socks = format!("socks5h://127.0.0.1:{port}");
@@ -514,11 +326,8 @@ pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The runtime every egress relay in this process serves on — each
-/// [`NetGate`], and other confined transports built on
-/// [`connect_upstream_async`]. Built on first use: two workers, since a
-/// relay only moves bytes and waits on sockets, and the daemon profile's
-/// bounded blocking pool, which is where name resolution runs.
+/// The runtime every egress relay in this process serves on — each [`NetGate`], and other confined
+/// transports built on [`connect_upstream_async`].
 pub fn egress_runtime() -> io::Result<&'static tokio::runtime::Handle> {
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RUNTIME
@@ -553,11 +362,7 @@ impl Acceptor for tokio::net::TcpListener {
     }
 }
 
-/// Accept connections and serve each as its own task, at most `limit`
-/// at once. A slot is claimed *before* accepting, so at the limit the
-/// loop stops calling `accept` and new peers queue in the kernel's
-/// listen backlog — backpressure, not unbounded growth. Returns when
-/// `stop` resolves (its sender sent or dropped).
+/// Accept connections and serve each as its own task, at most `limit` at once.
 async fn accept_bounded<L, S, F>(
     listener: L,
     limit: usize,
@@ -597,10 +402,9 @@ async fn accept_bounded<L, S, F>(
 /// Where a SOCKS5 client asked to go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
-    /// `ATYP=0x03`. The name the app asked for — this is what the
-    /// allowlist is matched against.
+    /// `ATYP=0x03`.
     Domain(String, u16),
-    /// `ATYP=0x01` / `0x04`. An address literal.
+    /// `ATYP=0x01` / `0x04`.
     Addr(IpAddr, u16),
 }
 
@@ -630,13 +434,7 @@ pub mod reply {
     pub const ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
 }
 
-/// Read the client greeting and answer it. No authentication: peer
-/// identity is established by the bind-mount, not a credential.
-///
-/// # Errors
-///
-/// Returns an error if `stream` fails to read/write, or if the version byte
-/// is not `0x05` (not SOCKS5).
+/// Read the client greeting and answer it.
 pub fn socks5_greet<S: Read + Write>(stream: &mut S) -> io::Result<()> {
     let mut head = [0u8; 2];
     stream.read_exact(&mut head)?;
@@ -652,14 +450,7 @@ pub fn socks5_greet<S: Read + Write>(stream: &mut S) -> io::Result<()> {
     Ok(())
 }
 
-/// Read a CONNECT request. Returns the destination, or writes the
-/// appropriate refusal and returns an error.
-///
-/// # Errors
-///
-/// Returns an error if `stream` fails to read/write, if the version byte is
-/// not `0x05`, if the command is not CONNECT, if the address type is
-/// unrecognised, or if a domain name is not valid UTF-8.
+/// Read a CONNECT request.
 pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination> {
     let mut head = [0u8; 4];
     stream.read_exact(&mut head)?;
@@ -671,8 +462,8 @@ pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination
         ));
     }
     if cmd != 0x01 {
-        // BIND and UDP ASSOCIATE would each need their own policy story, and
-        // neither is expressible in a `NetHost` grant, so neither is offered.
+        // BIND and UDP ASSOCIATE would each need their own policy story, and neither is expressible in
+        // a `NetHost` grant, so neither is offered.
         write_reply(stream, reply::COMMAND_NOT_SUPPORTED)?;
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -717,24 +508,19 @@ fn read_port<S: Read>(stream: &mut S) -> io::Result<u16> {
     Ok(u16::from_be_bytes(raw))
 }
 
-/// Write a reply header. The bound-address fields are zeroed — a
-/// CONNECT client has no use for them.
+/// Write a reply header.
 pub fn write_reply<S: Write>(stream: &mut S, code: u8) -> io::Result<()> {
     stream.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
 }
 
-/// Which proxy protocol a client is speaking. Both served on one
-/// socket, chosen by the first byte — SOCKS5 is a non-default
-/// `reqwest` feature, so an app built without it silently ignores
-/// `ALL_PROXY`, while HTTP `CONNECT` works everywhere.
+/// Which proxy protocol a client is speaking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     Socks5,
     HttpConnect,
 }
 
-/// SOCKS5's first byte is its version, `0x05`. No HTTP method begins
-/// with a control character, so one byte separates them unambiguously.
+/// SOCKS5's first byte is its version, `0x05`.
 pub fn detect_protocol(first_byte: u8) -> Protocol {
     if first_byte == 0x05 {
         Protocol::Socks5
@@ -753,8 +539,8 @@ async fn within_handshake<T>(io: impl Future<Output = io::Result<T>>) -> io::Res
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy handshake timed out"))?
 }
 
-/// The parsers' view of a handshake in progress: the bytes received so
-/// far as input, and a buffer collecting what the parser answers.
+/// The parsers' view of a handshake in progress: the bytes received so far as input, and a buffer
+/// collecting what the parser answers.
 struct Exchange<'a> {
     input: io::Cursor<&'a [u8]>,
     output: Vec<u8>,
@@ -775,14 +561,8 @@ impl Write for Exchange<'_> {
     }
 }
 
-/// A client connection during the proxy handshake, with the bytes it has
-/// sent that no parser has consumed yet.
-///
-/// The SOCKS5 parsers above are written against a blocking `Read + Write`.
-/// The gate runs them unchanged over what has arrived so far: a parser
-/// that runs out of input fails with `UnexpectedEof` and is re-run once
-/// more bytes arrive. They are pure functions of their input, so a re-run
-/// is a replay; what a parser writes is sent once, when it finishes.
+/// A client connection during the proxy handshake, with the bytes it has sent that no parser has
+/// consumed yet.
 struct Handshake<'c, C> {
     client: &'c mut C,
     received: Vec<u8>,
@@ -812,8 +592,8 @@ impl<C: AsyncRead + AsyncWrite + Unpin> Handshake<'_, C> {
         self.send(&out).await
     }
 
-    /// Run `parse` over the received bytes, reading more for as long as
-    /// it runs out, then send its answer and drop what it consumed.
+    /// Run `parse` over the received bytes, reading more for as long as it runs out, then send its
+    /// answer and drop what it consumed.
     async fn run<T>(
         &mut self,
         parse: impl Fn(&mut Exchange<'_>) -> io::Result<T>,
@@ -845,8 +625,7 @@ impl<C: AsyncRead + AsyncWrite + Unpin> Handshake<'_, C> {
         }
     }
 
-    /// Read an HTTP message head, up to and including the blank line. A
-    /// peer that closes mid-head leaves what it sent as the head.
+    /// Read an HTTP message head, up to and including the blank line.
     async fn http_head(&mut self) -> io::Result<String> {
         loop {
             if let Some(end) = self.received.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -898,9 +677,8 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     let Some(mut upstream) = upstream else {
         return Ok(());
     };
-    // Past the handshake the stream is a bulk pipe, with no timeout that
-    // would kill a long-lived idle connection. Bytes the client sent
-    // ahead of the handshake's answer go first.
+    // Past the handshake the stream is a bulk pipe, with no timeout that would kill a long-lived idle
+    // connection.
     let Handshake {
         received: early, ..
     } = handshake;
@@ -924,8 +702,7 @@ async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
         .await?;
     let key = dest.host_key();
 
-    // THE decision. Everything before this is parsing and everything
-    // after is plumbing.
+    // The policy decision; resolution happens after it, per connection.
     if !policy.permits(&key) {
         stats.denied.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
@@ -934,14 +711,14 @@ async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
             allow = ?policy.describe(),
             "egress DENIED: the app asked for a host it was not granted"
         );
-        // `HOST_UNREACHABLE`, not `NOT_ALLOWED`: told there's no route (a state
-        // it handles) rather than that it lacks a permission.
+        // `HOST_UNREACHABLE`, not `NOT_ALLOWED`: told there's no route (a state it handles) rather
+        // than that it lacks a permission.
         handshake.socks5_reply(reply::HOST_UNREACHABLE).await?;
         return Ok(None);
     }
 
-    // Resolution happens here, after the policy decision and per
-    // connection — never cached, never pinned.
+    // Resolution happens here, after the policy decision and per connection — never cached, never
+    // pinned.
     let upstream = match connect_upstream_async(&dest, policy).await {
         Ok(s) => s,
         Err(e) => {
@@ -961,19 +738,16 @@ async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
 /// What an HTTP proxy request asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpProxyRequest {
-    /// The destination, taken from the `CONNECT` target or the
-    /// absolute-form request URI. A **name**, exactly as the client wrote it.
+    /// The destination, taken from the `CONNECT` target or the absolute-form request URI.
     pub dest: Destination,
-    /// True for `CONNECT` (a tunnel), false for an ordinary proxied
-    /// request that must be forwarded.
+    /// True for `CONNECT` (a tunnel), false for an ordinary proxied request that must be forwarded.
     pub tunnel: bool,
-    /// For a forwarded request, the bytes to send upstream: the request line
-    /// rewritten to origin-form plus the original headers. Empty for a tunnel.
+    /// For a forwarded request, the bytes to send upstream: the request line rewritten to origin-form
+    /// plus the original headers.
     pub forward: Vec<u8>,
 }
 
-/// Parse an HTTP proxy request: `CONNECT host:port` or an absolute-URI
-/// GET. `None` if malformed; default port 443/80.
+/// Parse an HTTP proxy request: `CONNECT host:port` or an absolute-URI GET.
 pub fn parse_http_proxy_head(head: &str) -> Option<HttpProxyRequest> {
     let mut lines = head.split("\r\n");
     let request_line = lines.next()?;
@@ -991,8 +765,7 @@ pub fn parse_http_proxy_head(head: &str) -> Option<HttpProxyRequest> {
         });
     }
 
-    // Absolute-form URI; origin servers aren't required to accept it, so
-    // rewritten before forwarding.
+    // Absolute-form URI; origin servers aren't required to accept it, so rewritten before forwarding.
     let rest = target
         .strip_prefix("http://")
         .or_else(|| target.strip_prefix("HTTP://"))?;
@@ -1055,8 +828,8 @@ async fn open_http<C: AsyncRead + AsyncWrite + Unpin>(
             allow = ?policy.describe(),
             "egress DENIED: the app asked for a host it was not granted"
         );
-        // `502`, not `403`: same reasoning as the SOCKS5 reply code — makes a
-        // refused host indistinguishable from an unreachable one.
+        // `502`, not `403`: same reasoning as the SOCKS5 reply code — makes a refused host
+        // indistinguishable from an unreachable one.
         let _ = handshake.send(BAD_GATEWAY).await;
         return Ok(None);
     }
@@ -1084,8 +857,8 @@ async fn open_http<C: AsyncRead + AsyncWrite + Unpin>(
     Ok(Some(upstream))
 }
 
-/// Fold an address to its v4 form for the device-local test, so one
-/// spelling of loopback can't slip past a test for another.
+/// Fold an address to its v4 form for the device-local test, so one spelling of loopback can't slip
+/// past a test for another.
 fn canonical_ip(addr: IpAddr) -> IpAddr {
     match addr {
         IpAddr::V6(v6) => v6.to_ipv4().map_or(addr, IpAddr::V4),
@@ -1093,18 +866,10 @@ fn canonical_ip(addr: IpAddr) -> IpAddr {
     }
 }
 
-/// Is `addr` an address of *this device*? Three cases, the third being
-/// what a loopback check alone misses: (1) loopback and unspecified;
-/// (2) link-local; (3) any address configured on this machine's
-/// interfaces — a name resolving to the machine's own LAN address is
-/// device-local however public it looks, checked via `bind(2)` failing
-/// `EADDRNOTAVAIL`.
-///
-/// Private ranges as such are *not* device-local — `192.168.1.7` is
-/// usually a different machine.
+/// Is `addr` an address of *this device*?
 pub fn is_device_local(addr: IpAddr) -> bool {
-    // Before folding: `Ipv6Addr::to_ipv4` maps `::1` to `0.0.0.1`, so the
-    // v6 loopback has to be recognised as itself first.
+    // Before folding: `Ipv6Addr::to_ipv4` maps `::1` to `0.0.0.1`, so the v6 loopback has to be
+    // recognised as itself first.
     if addr.is_loopback() || addr.is_unspecified() {
         return true;
     }
@@ -1114,8 +879,7 @@ pub fn is_device_local(addr: IpAddr) -> bool {
     }
     let link_local = match addr {
         IpAddr::V4(v4) => v4.is_link_local(),
-        // `fe80::/10`, spelled out because `Ipv6Addr::is_unicast_link_local`
-        // is not stable.
+        // `fe80::/10`, spelled out because `Ipv6Addr::is_unicast_link_local` is not stable.
         IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
     };
     link_local || is_assigned_to_this_host(addr)
@@ -1126,10 +890,8 @@ fn is_assigned_to_this_host(addr: IpAddr) -> bool {
     std::net::UdpSocket::bind((addr, 0)).is_ok()
 }
 
-/// Whether a resolved candidate address may be connected to: one that is
-/// this device is dropped unless the policy named the host exactly. Runs
-/// on the **resolved** address, since a name says nothing about where it
-/// points.
+/// Whether a resolved candidate address may be connected to: one that is this device is dropped unless
+/// the policy named the host exactly.
 fn admit_resolved(addr: SocketAddr, key: &str, policy: &EgressPolicy) -> io::Result<()> {
     if policy.permits_device_local(key) || !is_device_local(addr.ip()) {
         return Ok(());
@@ -1149,11 +911,8 @@ fn no_addresses() -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, "name resolved to no addresses")
 }
 
-/// Connect an already parsed destination after applying the exact same
-/// post-DNS device-local protection used by [`NetGate`], dropping any
-/// candidate address that turns out to be this device unless the policy
-/// named the host exactly. Other confined transports must use this rather
-/// than resolving a permitted name themselves.
+/// Connect a parsed destination, dropping candidates that are this device unless the policy named the
+/// host.
 pub async fn connect_upstream_async(
     dest: &Destination,
     policy: &EgressPolicy,
@@ -1180,13 +939,7 @@ pub async fn connect_upstream_async(
     Err(last)
 }
 
-/// The in-sandbox relay: accept on loopback, carry each connection to
-/// the gate socket verbatim.
-///
-/// **Untrusted and doesn't need to be trusted.** The app could kill or
-/// bypass it — the bytes are opaque to it and every policy decision is
-/// made on the host side. Exists so an unmodified HTTP client honouring
-/// `ALL_PROXY` works, since `socks5h://` needs a TCP endpoint.
+/// The in-sandbox relay: accept on loopback, carry each connection to the gate socket verbatim.
 pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
     serve_relay(
         std::net::TcpListener::bind(("127.0.0.1", port))?,
@@ -1194,10 +947,7 @@ pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
     )
 }
 
-/// Serve the relay on an already bound `listener`, so a caller can
-/// connect as soon as this is called. At most [`MAX_CONNECTIONS`] are
-/// carried at once, each as a task on a one-worker runtime owned by the
-/// calling thread. Returns only on error.
+/// Serve the relay on an already bound `listener`, so a caller can connect as soon as this is called.
 pub fn serve_relay(listener: std::net::TcpListener, gate_socket: &Path) -> io::Result<()> {
     serve_relay_limited(listener, gate_socket, MAX_CONNECTIONS)
 }
@@ -1262,8 +1012,7 @@ mod tests {
             );
         }
         {
-            // The ten apps whose endpoint is user data keep working
-            // exactly as before when the user has granted nothing.
+            // An app whose endpoint is user data keeps working when the user granted nothing.
             assert_eq!(
                 EgressDecision::resolve("host", &[], &[]),
                 EgressDecision::Unrestricted
@@ -1285,8 +1034,7 @@ mod tests {
             );
         }
         {
-            // The canonical manifest vocabulary has a `dns-only` mode, answered
-            // explicitly rather than falling into "not off means unrestricted".
+            // `dns-only` is answered explicitly, not as "not off means unrestricted".
             assert_eq!(
                 EgressDecision::resolve("dns-only", &[], &[]),
                 EgressDecision::Blocked
@@ -1297,8 +1045,7 @@ mod tests {
     #[test]
     fn grants_narrow_but_never_widen_the_manifest_allowlist() {
         {
-            // The point of the whole exercise: a user who granted one host
-            // to an app whose manifest asks for `host` gets one host.
+            // A user who granted one host to an app that asks for `host` gets one host.
             let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]));
             let policy = decision.policy().expect("a named host must be filtered");
             assert!(policy.permits("mail.example.com"));
@@ -1319,8 +1066,8 @@ mod tests {
             );
         }
         {
-            // "Allow everything this app asks for" must mean the declared
-            // endpoints, not the whole internet.
+            // "Allow everything this app asks for" means its declared endpoints, not the whole
+            // internet.
             let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
             let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]));
             let policy = decision
@@ -1372,8 +1119,7 @@ mod tests {
             assert_eq!(decision, EgressDecision::Blocked);
         }
         {
-            // The bypass this closes: resolving the allowed name yourself then
-            // asking the gate for the address would make every name-scoped grant
+            // Resolving the allowed name and then asking for the address would make every name grant
             // an any-host grant.
             let policy = EgressPolicy::from_grants(["mail.example.com"]);
             assert!(policy.permits("mail.example.com"));
@@ -1381,16 +1127,15 @@ mod tests {
                 !policy.permits("93.184.216.34"),
                 "an address literal must not satisfy a hostname allowlist entry"
             );
-            // An entry that IS a literal is not a host in the one grammar
-            // (`collab_types::caps::NetHostPattern`): refused, so it covers
-            // nothing, not even itself — the same answer an environment gets.
+            // An entry that is a literal is not a host in the one grammar: refused, so it covers
+            // nothing.
             let by_addr = EgressPolicy::from_grants(["93.184.216.34"]);
             assert!(!by_addr.permits("93.184.216.34"));
             assert_eq!(by_addr, EgressPolicy::none());
         }
         {
-            // `.example.com` is `host_covers`' suffix form, the same spelling the
-            // compositor evaluates — asserted so a matcher change shows up here.
+            // `.example.com` is `host_covers`' suffix form, the same spelling the compositor evaluates
+            // — asserted so a matcher change shows up here.
             let policy = EgressPolicy::from_grants([".example.com"]);
             assert!(policy.permits("example.com"));
             assert!(policy.permits("mail.example.com"));
@@ -1401,9 +1146,7 @@ mod tests {
 
     #[test]
     fn a_star_dot_grant_covers_the_domain_for_apps() {
-        // `*.example.com` is how environments, the permissions UI and users
-        // spell a domain grant. Read as an exact name it covered nothing, and
-        // the app looked offline.
+        // `*.example.com` is how environments, the permissions UI and users spell a domain grant.
         let decision = EgressDecision::resolve("host", &[], &v(&["*.example.com"]));
         let policy = decision
             .policy()
@@ -1421,16 +1164,13 @@ mod tests {
             .policy()
             .unwrap_or_else(|| panic!("expected the covered endpoint, got {decision:?}"));
         assert_eq!(policy.describe(), ["imap.fastmail.com"]);
-        // Legacy spellings read the same: case and a trailing dot.
         let decision = EgressDecision::resolve("off", &[], &v(&["Example.COM."]));
         assert!(decision.policy().is_some_and(|p| p.permits("example.com")));
     }
 
     #[test]
     fn an_address_grant_is_refused_for_apps() {
-        // Hosts are granted by name, for apps as for environments: an IP
-        // literal grant is ignored (with a warning), so it narrows. Every
-        // grant refused means no network, not the manifest's.
+        // Hosts are granted by name: an IP literal grant is ignored with a warning, so it narrows.
         for mode in ["off", "host"] {
             assert_eq!(
                 EgressDecision::resolve(mode, &[], &v(&["10.0.0.5"])),
@@ -1451,28 +1191,19 @@ mod tests {
         assert!(!policy.permits("192.168.1.1"));
     }
 
-    /// The one place apps and environments still differ, on purpose: `*`
-    /// keeps `--share-net` for an app, so it reaches this device's loopback;
-    /// an environment's `*` keeps a namespace of its own. The grammar and the
-    /// policy are the same (`EgressPolicy::Any`); the backend is not. Apps
-    /// whose manifests say `host` (Music, Mail) take OAuth redirects on a
-    /// loopback listener the host's browser must reach, and the gate carries
-    /// TCP only.
+    /// The one place apps and environments differ: `*` keeps `--share-net` for an app, so it reaches
+    /// this device's loopback.
     #[test]
     fn a_star_grant_keeps_the_host_network_for_apps_deliberately() {
         let decision = EgressDecision::resolve("off", &[], &v(&["*"]));
         assert_eq!(decision, EgressDecision::Unrestricted);
         assert!(decision.shares_host_network());
         assert_eq!(EgressPolicy::from_grants(["*"]), EgressPolicy::Any);
-        // A gate standing in for `*` must not be stricter than the
-        // `--share-net` it stands in for.
+        // A gate standing in for `*` is not stricter than the `--share-net` it stands in for.
         assert!(EgressPolicy::Any.permits_device_local("localhost"));
     }
 
-    /// Apps and environments answer every row of the shared vector file
-    /// identically: this is the app side, through the production decision
-    /// (`tilo-egress`'s `environment_egress_answers_every_shared_vector` is
-    /// the other).
+    /// The app side of the shared vector file, through the production decision.
     #[test]
     fn app_egress_answers_every_shared_vector() {
         let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");
@@ -1506,8 +1237,7 @@ mod tests {
     #[test]
     fn the_gate_relay_bounds_its_resources_and_forwards_early_bytes() {
         {
-            // 108 bytes including the NUL. A path over the limit cannot be
-            // connected to, and the failure surfaces far from its cause.
+            // 108 bytes including the NUL.
             let p = gate_socket_path(Path::new("/run/user/1000"), 4_194_304);
             assert!(
                 p.as_os_str().len() < 100,
@@ -1583,7 +1313,6 @@ mod tests {
             second.read_exact(&mut byte).unwrap();
             assert_eq!(&byte, b"b");
         }
-        // Phase `bytes_sent_ahead_of_the_socks5_reply_reach_the_upstream`.
         {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("gate.sock");
@@ -1700,7 +1429,6 @@ mod tests {
                 assert_eq!(detect_protocol(m), Protocol::HttpConnect);
             }
         }
-        // Phase `greeting_rejects_a_non_socks5_peer`.
         {
             let mut p = pipe(vec![0x04, 0x01]);
             assert!(socks5_greet(&mut p).is_err());
@@ -1715,7 +1443,6 @@ mod tests {
                 Destination::Domain("example.com".to_string(), 443)
             );
         }
-        // Phase `parses_an_ipv4_connect_request`.
         {
             let mut req = vec![0x05, 0x01, 0x00, 0x01, 198, 51, 100, 9];
             req.extend_from_slice(&80u16.to_be_bytes());
@@ -1742,8 +1469,8 @@ mod tests {
     #[test]
     fn http_proxy_heads_parse_to_the_requested_authority() {
         {
-            // The property that matters: an HTTP CONNECT names a host, so the
-            // policy sees a name, same as socks5h, without a client feature flag.
+            // The property that matters: an HTTP CONNECT names a host, so the policy sees a name, same
+            // as socks5h, without a client feature flag.
             let req = parse_http_proxy_head(
                 "CONNECT api.open-meteo.com:443 HTTP/1.1\r\nHost: api.open-meteo.com:443\r\n\r\n",
             )
@@ -1754,7 +1481,6 @@ mod tests {
             );
             assert!(req.tunnel);
         }
-        // Phase `connect_without_a_port_defaults_to_443`.
         {
             let req =
                 parse_http_proxy_head("CONNECT example.com HTTP/1.1\r\n\r\n").expect("parses");
@@ -1764,8 +1490,8 @@ mod tests {
             );
         }
         {
-            // A plain-HTTP proxied request arrives with an absolute URI, which
-            // origin servers aren't required to accept, so it's rewritten first.
+            // A plain-HTTP proxied request arrives with an absolute URI, which origin servers aren't
+            // required to accept, so it's rewritten first.
             let req = parse_http_proxy_head(
                 "GET http://tile.openstreetmap.org/1/2/3.png HTTP/1.1\r\nUser-Agent: x\r\n\r\n",
             )
@@ -1785,7 +1511,6 @@ mod tests {
                 "headers must survive the rewrite: {forward:?}"
             );
         }
-        // Phase `an_ipv6_literal_authority_parses`.
         {
             let req = parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n")
                 .expect("parses");
@@ -1793,16 +1518,14 @@ mod tests {
                 req.dest,
                 Destination::Domain("2001:db8::1".to_string(), 8443)
             );
-            // And it is still matched as a literal, so it cannot satisfy a
-            // hostname grant.
+            // And it is still matched as a literal, so it cannot satisfy a hostname grant.
             let policy = EgressPolicy::from_grants(["example.com"]);
             assert!(!policy.permits(&req.dest.host_key()));
         }
         {
             assert!(parse_http_proxy_head("").is_none());
             assert!(parse_http_proxy_head("GARBAGE\r\n\r\n").is_none());
-            // An absolute-form URI with a scheme we do not proxy must not
-            // silently become a hostname.
+            // An absolute-form URI with a scheme we do not proxy must not silently become a hostname.
             assert!(parse_http_proxy_head("GET ftp://example.com/x HTTP/1.1\r\n\r\n").is_none());
         }
     }
@@ -1820,8 +1543,7 @@ mod tests {
                 "::",
                 "169.254.169.254",
                 "fe80::1",
-                // IPv4-mapped and IPv4-compatible loopback. A test written
-                // only against `is_loopback()` misses both.
+                // IPv4-mapped and IPv4-compatible loopback.
                 "::ffff:127.0.0.1",
                 "::127.0.0.1",
             ] {
@@ -1832,8 +1554,8 @@ mod tests {
             }
         }
         {
-            // Reserved for documentation (RFC 5737 / 3849), so no machine
-            // running this test holds them.
+            // Reserved for documentation (RFC 5737 / 3849), so no machine running this test holds
+            // them.
             for addr in ["198.51.100.9", "203.0.113.7", "2001:db8::1"] {
                 assert!(
                     !is_device_local(addr.parse().unwrap()),
@@ -1842,11 +1564,10 @@ mod tests {
             }
         }
         {
-            // Every address the host holds routes to its own services; loopback
-            // is assertable without knowing the network.
+            // Every address the host holds routes to its own services; loopback is assertable without
+            // knowing the network.
             assert!(is_device_local("127.0.0.1".parse().unwrap()));
-            // The mechanism itself: an address the host does not hold cannot
-            // be bound.
+            // The mechanism itself: an address the host does not hold cannot be bound.
             assert!(!is_assigned_to_this_host("198.51.100.9".parse().unwrap()));
         }
         {
@@ -1863,17 +1584,13 @@ mod tests {
             let exact = EgressPolicy::from_grants(["localhost"]);
             assert!(exact.permits_device_local("localhost"));
 
-            // A wildcard allowlist becomes `--share-net` in production; the gate
-            // must not be stricter than the sandbox it stands in for.
+            // A wildcard allowlist becomes `--share-net`, so the gate is not stricter than the sandbox
+            // it stands in for.
             assert!(EgressPolicy::from_grants(["*"]).permits_device_local("localhost"));
 
-            // An exact grant for one host does not carry device-local access
-            // for a different one.
+            // An exact grant for one host does not carry device-local access for a different one.
             assert!(!exact.permits_device_local("other.localhost"));
         }
-        // Phase `a_suffix_grant_cannot_reach_a_loopback_service_an_exact_grant_can`.
-        // The production connect path, against a real listener on the host's
-        // loopback — the shape a local service actually has.
         {
             let listener =
                 std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback service");
@@ -1919,8 +1636,7 @@ mod tests {
         }
     }
 
-    /// An acceptor of numbered connections that counts how often the loop
-    /// asked it for one.
+    /// An acceptor of numbered connections that counts how often the loop asked it for one.
     struct CountedAcceptor {
         asked: Arc<std::sync::atomic::AtomicUsize>,
         queued: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<u32>>,
@@ -1981,8 +1697,7 @@ mod tests {
         });
     }
 
-    /// SOCKS5 CONNECT to `localhost:port` through the gate at `socket`;
-    /// returns the reply code.
+    /// SOCKS5 CONNECT to `localhost:port` through the gate at `socket`; returns the reply code.
     fn socks_connect_localhost(stream: &mut std::os::unix::net::UnixStream, port: u16) -> u8 {
         stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
         let mut greeting = [0u8; 2];

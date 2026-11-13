@@ -1,10 +1,7 @@
-//! The keyboard's preferences: what may change in them ([`SetPreference`]),
-//! the effects through which a palette, an agent or a script changes them,
-//! and the preference rows the keyboard surface publishes.
-//!
-//! Preferences are the person's settings ([`OskPreferences`]), not the
-//! content of a record: they follow the person to their other devices,
-//! carry no history and are never undone.
+//! The keyboard's preferences: what may change them ([`SetPreference`]), the
+//! effects a palette, an agent or a script takes, and the rows the keyboard
+//! publishes. They are the person's settings ([`OskPreferences`]), not a record's
+//! content: they follow the person to their devices and are never undone.
 use serde::{Deserialize, Serialize};
 use ui::framework::LiveRow;
 use ui::tilo_actions::ActionSpec;
@@ -13,22 +10,17 @@ use ui::tilo_resource::{self, Effect};
 use crate::dict::Language;
 use crate::resource::{KeyboardSize, OskPreferences};
 
-/// The letter layouts every keyboard carries; a preference names one of them.
 pub const LETTER_LAYOUTS: [(&str, &str); 2] = [
     ("qwerty", "English (QWERTY)"),
     ("azerty", "French (AZERTY)"),
 ];
 
-/// The letter layout names a preference may take.
 pub use tilo_keyboard_map::touch::LAYOUT_NAMES;
 
-/// The keyboard sizes a preference may take.
 pub const KEYBOARD_SIZES: [&str; 3] = KeyboardSize::NAMES;
 
-/// The typing languages a preference may take; `layout` follows the keys.
 pub const TYPING_LANGUAGES: [&str; 3] = ["layout", "en", "fr"];
 
-/// One keyboard preference set to a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SetPreference {
     /// The letter layout text fields open in.
@@ -50,7 +42,6 @@ pub enum SetPreference {
 }
 
 impl SetPreference {
-    /// Apply this change to `preferences`.
     pub fn apply(&self, preferences: &mut OskPreferences) -> Result<(), String> {
         match self {
             Self::Layout(layout) => {
@@ -98,8 +89,7 @@ impl SetPreference {
     }
 }
 
-/// What the keyboard does on request: change one of the person's
-/// preferences, or forget what it learned.
+/// Change a preference, or forget what the keyboard learned.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "osk.keyboard")]
 pub enum OskEffect {
@@ -154,8 +144,6 @@ pub enum OskEffect {
 }
 
 impl OskEffect {
-    /// The preference change this effect asks for; `None` for one that
-    /// changes no preference.
     #[must_use]
     pub fn preference(&self) -> Option<SetPreference> {
         Some(match self {
@@ -171,7 +159,6 @@ impl OskEffect {
     }
 }
 
-/// `effect` offered as `id`, labelled `label`.
 fn offer(id: &str, label: &str, effect: &OskEffect) -> ActionSpec {
     let mut spec = effect.bound();
     id.clone_into(&mut spec.type_mut().id);
@@ -179,16 +166,14 @@ fn offer(id: &str, label: &str, effect: &OskEffect) -> ActionSpec {
     spec
 }
 
-/// `effect` offered as `id`, still asking for its `value`.
 fn asking(id: &str, effect: &OskEffect) -> ActionSpec {
     let mut spec = effect.bound_asking(&["value"]);
     id.clone_into(&mut spec.type_mut().id);
     spec
 }
 
-/// The preference rows the keyboard publishes beside its resource: the
-/// layout, the suggestions and the recent emoji as they stand, each with the
-/// changes it offers.
+/// The layout, the suggestions and the recent emoji as they stand, each with
+/// the changes it offers.
 pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
     vec![
         layout_row(preferences),
@@ -200,7 +185,6 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
     ]
 }
 
-/// The letter layout row, offering each bundled layout.
 fn layout_row(preferences: &OskPreferences) -> LiveRow {
     let mut layout = LiveRow::new(
         "osk.keyboard.layout",
@@ -225,7 +209,6 @@ fn layout_row(preferences: &OskPreferences) -> LiveRow {
     layout
 }
 
-/// The keyboard size row, offering each size.
 fn size_row(preferences: &OskPreferences) -> LiveRow {
     let mut size = LiveRow::new(
         "osk.keyboard.size",
@@ -250,7 +233,7 @@ fn size_row(preferences: &OskPreferences) -> LiveRow {
     size
 }
 
-/// The typing-language row; the dictionary language need not match the layout.
+/// The dictionary language need not match the layout.
 fn language_row(preferences: &OskPreferences) -> LiveRow {
     let language_name = preferences
         .typing_language
@@ -294,7 +277,6 @@ fn language_row(preferences: &OskPreferences) -> LiveRow {
     ))
 }
 
-/// The autocorrect row.
 fn autocorrect_row(preferences: &OskPreferences) -> LiveRow {
     LiveRow::new("osk.keyboard.autocorrect", "osk.autocorrect", "Autocorrect")
         .operation(asking(
@@ -315,7 +297,6 @@ fn autocorrect_row(preferences: &OskPreferences) -> LiveRow {
         ))
 }
 
-/// The suggestions and privacy row.
 fn suggestions_row(preferences: &OskPreferences) -> LiveRow {
     LiveRow::new(
         "osk.keyboard.suggestions",
@@ -357,7 +338,6 @@ fn suggestions_row(preferences: &OskPreferences) -> LiveRow {
     .operation(OskEffect::ClearPersonal.bound())
 }
 
-/// The recent-emoji row.
 fn emoji_row(preferences: &OskPreferences) -> LiveRow {
     LiveRow::new("osk.keyboard.emoji", "osk.emoji", "Recent emoji").operation(asking(
         "set-recents",

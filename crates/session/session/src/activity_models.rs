@@ -80,8 +80,10 @@ fn gateway() -> Option<std::os::fd::OwnedFd> {
     match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
         Ok(resolved) => resolved.into_iter().next().map(|service| service.host),
         Err(error) => {
-            // ignored-failure: a session with no model gateway describes the history without one
-            tracing::debug!(%error, "no model gateway for describing the history");
+            tilo_failure::ignored!(
+                "a session with no model gateway describes the history without one",
+                tracing::debug!(%error, "no model gateway for describing the history")
+            );
             None
         }
     }

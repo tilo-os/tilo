@@ -1,6 +1,6 @@
-//! The touchpad's and mouse's choices that are about motion, drawn as
-//! pictures: where a secondary click is pressed, how fingers scroll, and
-//! which way content follows them.
+//! The touchpad's and mouse's choices that are about motion, drawn as pictures:
+//! where a secondary click is pressed, how fingers scroll, and which way
+//! content follows them.
 
 use provider_settings_ui::bound::SettingRows as _;
 use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
@@ -12,7 +12,6 @@ use super::{CLICK_METHOD_CHOICES, InputPrefs, SCROLL_METHOD_CHOICES};
 use crate::i18n::t;
 use provider_settings_ui::widgets::Item;
 
-/// The localized label of `value` among `choices`.
 fn choice_label<T: PartialEq>(choices: &[(&str, &str, T)], value: &T) -> String {
     choices
         .iter()
@@ -21,8 +20,6 @@ fn choice_label<T: PartialEq>(choices: &[(&str, &str, T)], value: &T) -> String 
         .unwrap_or_default()
 }
 
-/// How the touchpad clicks the secondary button: a press where the device
-/// decides, in the bottom-right corner, or with two fingers.
 pub(super) fn click_method(cx: &ViewCx<InputPrefs>) -> Item {
     cx.setting(t("input-click-method"))
         .described(t("input-click-method-caption"))
@@ -41,7 +38,6 @@ pub(super) fn click_method(cx: &ViewCx<InputPrefs>) -> Item {
         )
 }
 
-/// How fingers scroll on the touchpad: two together, or one along the edge.
 pub(super) fn scroll_method(cx: &ViewCx<InputPrefs>) -> Item {
     cx.setting(t("input-scroll-method"))
         .id("input.touchpad_scroll_method")
@@ -58,8 +54,6 @@ pub(super) fn scroll_method(cx: &ViewCx<InputPrefs>) -> Item {
         )
 }
 
-/// Which way content scrolls, as two pictures: with the fingers or the
-/// wheel (natural) or against them, setting `field`.
 pub(super) fn scroll_direction(
     cx: &ViewCx<InputPrefs>,
     wheel: bool,

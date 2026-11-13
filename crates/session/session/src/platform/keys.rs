@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use tilo_actions::{ActionAddress, DoorError};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
+use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use ui::host_operation::ResourceOperationStart;
+use ui::shortcut_table::ShortcutAction;
 use ui::winit::keyboard::{Key, NamedKey};
 use xkeysym::key as keysyms;
 
@@ -375,6 +377,64 @@ impl SurfaceHost for NativeKeys {
 }
 
 impl Shared {
+    /// What tapping or holding Super alone asked for, as the compositor read it: the search of a
+    /// tap, the keys a hold reaches, and those going with the release or the chord that ended it.
+    pub(crate) fn follow_super_tap(&self, locked: bool) {
+        let asks = {
+            let mut tap = self.super_tap.borrow_mut();
+            if locked {
+                tap.withheld();
+            }
+            tap.take(Instant::now())
+        };
+        for ask in asks {
+            match ask {
+                Ask::Search => self
+                    .invocations
+                    .borrow_mut()
+                    .push(Invocation::shortcut(ShortcutAction::Search)),
+                Ask::Hints => {
+                    // The guide the person put up themselves (F1) already says every key.
+                    if self.shortcut_guide.up() {
+                        self.super_tap.borrow_mut().took_hints();
+                    } else {
+                        self.super_peek
+                            .show(self.shortcut_guide.peek(self.peek_desk()));
+                    }
+                }
+                Ask::HintsGone => self.super_peek.hide(),
+            }
+        }
+    }
+
+    /// What the desk holds where the person works: the windows of the shown strip, and the tabs
+    /// of the focused one.
+    fn peek_desk(&self) -> tilo_sheets::shortcut_guide::PeekDesk {
+        self.handle
+            .read(|tree| {
+                let strip_id = tree.active_strip_id()?;
+                let strip = tree
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find(|strip| strip.id == strip_id)?;
+                let tabs = tree
+                    .active_group_for(strip_id)
+                    .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
+                    .map_or(0, |group| group.tabs.len());
+                Some(tilo_sheets::shortcut_guide::PeekDesk {
+                    windows: strip.window_groups.len(),
+                    tabs,
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// When a held Super turns into the keys it reaches.
+    pub(crate) fn super_tap_deadline(&self) -> Option<Instant> {
+        self.super_tap.borrow().deadline()
+    }
+
     /// What the touchpad gestures the desktop took asked, as the chrome's published actions.
     pub(crate) fn follow_gestures(&self) {
         let gestures = self.desktop.take_gestures();

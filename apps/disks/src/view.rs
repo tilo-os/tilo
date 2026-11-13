@@ -1,10 +1,7 @@
-//! The window's content, built from the toolkit's widgets.
-//!
-//! The drive list is a [`NavList`] in the shell's sidebar; the detail is one
-//! scrolling page of sections, property lists, stat tiles and tables. Nothing
-//! here paints, sizes or colours anything: every control says what it is and
-//! the theme decides how it looks. Interaction leaves as an `Intent` the
-//! app applies to the window and the machine.
+//! The window's content, built from the toolkit's widgets. The drive list is a [`NavList`]
+//! in the shell's sidebar; the detail is one scrolling page of sections, property lists,
+//! stat tiles and tables. Nothing here paints, sizes or colours anything: every control
+//! says what it is and the theme decides how it looks.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -31,46 +28,32 @@ use crate::model::{
 };
 use crate::offer::{self, Offer};
 
-/// What a control in the window asks for. The app applies each one to the
-/// window and the machine, the same way for a click, a key or an
-/// accessibility action.
+/// What a control in the window asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Intent {
     SelectDrive(usize),
-    /// A partition of the selected drive, or `None` for the whole disk.
     SelectPartition(Option<usize>),
-    /// An operation on partition `partition` of the selected drive (`None`:
-    /// the whole drive), from that row's context menu.
     RunOn {
         action: ActionKind,
         partition: Option<usize>,
     },
-    /// Open a mounted filesystem in Files: `partition` of the selected drive,
-    /// or its first mounted filesystem.
     OpenInFiles(Option<usize>),
-    /// Show what a mounted filesystem's files take up, in the Disk Usage
-    /// analyzer.
     DiskUsage(Option<usize>),
     Rescan,
 }
 
-/// The queue controls write to and the app drains.
 pub(crate) type Intents = ui::Intents<Intent>;
 
-/// Everything the detail page shows, borrowed from the app.
 pub(crate) struct DetailModel<'a> {
     pub drive: &'a Drive,
     pub tab: Tab,
     pub partition: Option<usize>,
 }
 
-/// The bar action that rescans the machine.
 pub(crate) const RESCAN: &str = "rescan";
-/// What the location's drive level commits: back to the whole drive.
 pub(crate) const WHOLE_DRIVE: &str = "drive";
 
-/// Where the window is: the drive, and the partition of it when one is
-/// chosen.
+/// Where the window is: the drive, and the partition of it when one is chosen.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Location {
     pub drive: String,
@@ -84,7 +67,6 @@ impl Location {
     }
 }
 
-/// The icon an operation shows, by its icon-set name.
 fn action_icon(action: ActionKind) -> Icon {
     match action {
         ActionKind::Mount => Icon::Link,
@@ -99,22 +81,19 @@ fn action_icon(action: ActionKind) -> Icon {
 fn action_name(action: ActionKind, offer: Offer) -> String {
     match offer {
         Offer::Unavailable(reason) => format!("{}: unavailable. {reason}", action.title()),
-        // A glyph in the row is named by what it does; a menu entry by its
-        // verb.
         Offer::Available | Offer::Hidden if in_row(action) => action.describe().to_owned(),
         Offer::Available | Offer::Hidden => action.label(),
     }
 }
 
-/// Ejecting a removable drive is the one operation a glyph says plainly;
-/// the others are named in the window bar's menu.
+/// Ejecting a removable drive is the one operation a glyph says plainly; the others are
+/// named in the window bar's menu.
 fn in_row(action: ActionKind) -> bool {
     action == ActionKind::Eject
 }
 
-/// The window bar's slots: the shell's own (`shell`), where the window is
-/// (the drive, and the partition when one is chosen), and the selection's
-/// operations followed by Rescan.
+/// The window bar's slots: the shell's own (`shell`), where the window is (the drive, and
+/// the partition when one is chosen), and the selection's operations followed by Rescan.
 pub(crate) fn window_toolbar(
     mut shell: WindowToolbar,
     selection: Option<(Location, Vec<(ActionKind, Offer)>)>,
@@ -149,13 +128,9 @@ pub(crate) fn window_toolbar(
             .collect(),
         chosen: tab.view_id().to_owned(),
     });
-    // Where the shell's Back stands, it is the one way back: the location
-    // names where the window is and offers no second path up.
-    // The shell's slots lead with nothing but its Back.
     let backs = !shell.leading.is_empty();
     shell.location = (!location.drive.is_empty()).then(|| ToolbarLocation {
         label: location.title().to_owned(),
-        // A partition is a level under its drive: the path goes back up.
         segments: match &location.partition {
             Some(partition) if !backs => vec![
                 LocationSegment {
@@ -174,9 +149,8 @@ pub(crate) fn window_toolbar(
     shell
 }
 
-/// A context menu of what `part` of `drive` offers (`partition`: its
-/// index, `None` for the whole drive): each operation it shows, and under an
-/// unavailable one, why.
+/// A context menu of what `part` of `drive` offers (`partition`: its index, `None` for the
+/// whole drive): each operation it shows, and under an unavailable one, why.
 fn operations_menu(
     drive: &Drive,
     partition: Option<usize>,
@@ -188,9 +162,6 @@ fn operations_menu(
     let intents = intents.clone();
     move |_| {
         let mut entries = Vec::new();
-        // A mounted filesystem's files are reachable: going to them, and
-        // seeing what they take up, come before anything that changes the
-        // device.
         if mounted {
             let open = intents.clone();
             entries.push(
@@ -239,8 +210,8 @@ pub(crate) fn drive_icon(drive: &Drive) -> Icon {
     }
 }
 
-/// The drive list: one destination per drive under the name it shows, its
-/// size beside it and a dot when its health needs the person.
+/// The drive list: one destination per drive under the name it shows, its size beside it
+/// and a dot when its health needs the person.
 pub(crate) fn drive_list(
     drives: &[(&Drive, String)],
     selected: usize,
@@ -263,7 +234,6 @@ pub(crate) fn drive_list(
         })
         .collect();
     let intents = intents.clone();
-    // While the machine is being read, a row holds the first drive's place.
     let section = NavSection::untitled("drives", items).pending(u8::from(loading));
     NavList::new(vec![section])
         .selected(&drive_id(selected))
@@ -280,8 +250,6 @@ fn drive_id(index: usize) -> String {
 }
 
 /// Nothing to show: the system reported no block devices.
-/// No drives to show: none attached, or (with `unreadable`, the reason) the
-/// machine's storage could not be read.
 pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Element {
     let state = match unreadable {
         Some(reason) => EmptyState::new("Storage can't be read")
@@ -298,10 +266,9 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
     )
 }
 
-/// The page while this machine's storage is being read, since `since`: the
-/// detail page's own layout with the drive's state and the sections'
-/// contents standing in, so nothing moves when the drives arrive. A read
-/// inside its frame budget shows none of it: the window opens complete.
+/// The page while this machine's storage is being read, since `since`: the detail page's
+/// own layout with the drive's state and the sections' contents standing in, so nothing
+/// moves when the drives arrive.
 pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -> Element {
     let local = || ui::arriving::Source::Local;
     let sections = ui::widget::Column::new()
@@ -317,7 +284,6 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
             vec![ui::widget::ArrivingView::placeholder_since(
                 local(),
                 since,
-                // A filesystem's row: its icon, its label and a summary.
                 SkeletonShape::Row(
                     ui::widget::RowShape::TITLE
                         .led_by(ui::widget::RowLeadingShape::Mark)
@@ -344,9 +310,8 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
     )
 }
 
-/// The detail of the selected drive: its state at a glance and the view
-/// the window bar chose. Its operations are in the window bar (or the content header) and
-/// each row's context menu.
+/// The detail of the selected drive: its state at a glance and the view the window bar
+/// chose.
 pub(crate) fn detail(
     model: &DetailModel<'_>,
     intents: &Intents,
@@ -361,8 +326,8 @@ pub(crate) fn detail(
     page(badges(drive), content, offset)
 }
 
-/// The detail page's layout: the drive's state at a glance, then the view
-/// the window bar chose (`content`), a group apart.
+/// The detail page's layout: the drive's state at a glance, then the view the window bar
+/// chose (`content`), a group apart.
 fn page(state: Row, content: Element, offset: &Rc<Cell<(f32, f32)>>) -> Element {
     let page = ui::widget::Column::new()
         .with_intrinsic_height()
@@ -386,13 +351,11 @@ fn status_tone(status: SmartStatus) -> Tone {
     }
 }
 
-/// The drive's state at a glance: its health when it reports any, what kind
-/// of device it is, and whether it can be pulled out.
+/// The drive's state at a glance: its health when it reports any, what kind of device it
+/// is, and whether it can be pulled out.
 fn badges(drive: &Drive) -> Row {
     let status = drive.smart_status();
     let mut row = Row::new();
-    // A device that reports nothing has no health to show; the Health tab
-    // says why.
     if status != SmartStatus::Unknown {
         row = row.push(Box::new(
             Chip::new(status.label()).style(ChipStyle::Tinted(status_tone(status))),
@@ -477,8 +440,6 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 .dimmed(),
         ));
     }
-    // The two ways on from the drive page, under the filesystems they act
-    // for, so they are reachable without opening a menu.
     if let Some(target) = mounted_target(drive, selected) {
         let mount = drive
             .partitions
@@ -508,10 +469,10 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
     Section::titled(CATALOG.t("disks-section-filesystems"), items)
 }
 
-/// The mounted partition the drive page's two ways on act for: the chosen
-/// one when it is mounted, else the one holding the most — what a person
-/// means by "the drive" when they have not chosen a partition, rather than
-/// whichever partition happens to be first (usually a boot partition).
+/// The mounted partition the drive page's two ways on act for: the chosen one when it is
+/// mounted, else the one holding the most — what a person means by "the drive" when they
+/// have not chosen a partition, rather than whichever partition happens to be first
+/// (usually a boot partition).
 fn mounted_target(drive: &Drive, selected: Option<usize>) -> Option<usize> {
     if let Some((index, part)) = selected.map(|index| (index, drive.partitions.get(index)))
         && let Some(part) = part
@@ -528,8 +489,8 @@ fn mounted_target(drive: &Drive, selected: Option<usize>) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-/// One of the two ways on from a mounted filesystem, as a button that says
-/// what it does and, in its tooltip, which filesystem it does it for.
+/// One of the two ways on from a mounted filesystem, as a button that says what it does
+/// and, in its tooltip, which filesystem it does it for.
 fn mounted_action(
     id: &str,
     label: &str,
@@ -547,12 +508,9 @@ fn mounted_action(
         .on_effect(intents.sender(intent))
 }
 
-/// Share of a filesystem in use above which it needs attention.
 const NEARLY_FULL: f64 = 0.9;
-/// Share above which there is hardly any room left.
 const FULL: f64 = 0.97;
 
-/// A mounted filesystem: what it is, where it is, and how much room is left.
 fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents) -> ListRow {
     let pick = intents.clone();
     let secondary = match (part.mount_display(), &part.fstype) {
@@ -628,8 +586,6 @@ fn health(drive: &Drive) -> Element {
         }
         SmartStatus::Unknown => "This device does not report health data.",
     };
-    // An unknown verdict is best explained by the probe's own reason
-    // (privileges, a USB bridge, a virtual device).
     let message = match (&drive.smart, status) {
         (
             Some(SmartInfo {
@@ -715,7 +671,6 @@ fn smart_tiles(smart: &SmartInfo) -> Vec<Element> {
 }
 
 fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
-    // Only ATA numbers its attributes; an NVMe drive's log has no ids.
     let mut columns = Vec::new();
     if attrs.iter().any(|attr| attr.id.is_some()) {
         columns.push(
@@ -749,9 +704,7 @@ fn severity_label(severity: AttrSeverity) -> String {
     crate::locales::CATALOG.t(message)
 }
 
-/// What a partition is for, in words, when it serves something the person
-/// knows by name. Everything but a foreign system's own name comes from the
-/// catalogue.
+/// What a partition is for, in words, when it serves something the person knows by name.
 fn purpose(drive: &Drive, part: &Partition) -> Option<String> {
     use crate::model::PartRole;
     let windows = |name: &str| {
@@ -776,10 +729,9 @@ fn purpose(drive: &Drive, part: &Partition) -> Option<String> {
     Some(crate::locales::CATALOG.t(message))
 }
 
-/// What a partition's row says under its name: what it is for, its state
-/// and its room, in words ("Home folders, encrypted, 134 GB free", "Not in
-/// use"), joined the way this language writes a list. The facts behind it are
-/// on the partition's own page.
+/// What a partition's row says under its name: what it is for, its state and its room, in
+/// words ("Home folders, encrypted, 134 GB free", "Not in use"), joined the way this
+/// language writes a list.
 fn partition_summary(drive: &Drive, part: &Partition) -> String {
     let cat = &crate::locales::CATALOG;
     let lock = part.encryption.as_ref().map(|encryption| {
@@ -789,8 +741,6 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
             "disks-partition-encrypted"
         }
     });
-    // A purpose the name already says ("Windows" called "Windows") gives
-    // way to the state.
     let purpose = purpose(drive, part)
         .filter(|purpose| !purpose.eq_ignore_ascii_case(part.display_label().trim()));
     let state = match purpose {
@@ -814,8 +764,8 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
     ui::format::list(&facts)
 }
 
-/// The partition's facts: its device, size, type, filesystem, encryption,
-/// where it is mounted and its room, and what of the running system it holds.
+/// The partition's facts: its device, size, type, filesystem, encryption, where it is
+/// mounted and its room, and what of the running system it holds.
 fn partition_details(drive: &Drive, part: &Partition) -> Section {
     let mut facts = vec![
         Property::new(CATALOG.t("disks-device"), format!("/dev/{}", part.name))
@@ -895,7 +845,6 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .collect();
     let list = Section::new(rows);
     match model.partition.and_then(|i| drive.partitions.get(i)) {
-        // The chosen partition's facts under the list, which stays put.
         Some(part) => Box::new(
             ui::widget::Column::new()
                 .with_intrinsic_height()
@@ -912,8 +861,8 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
 mod tests {
     use super::*;
 
-    /// The window bar shows the system drive's Format as unavailable and
-    /// says why; a fixed internal drive has no Eject in it at all.
+    /// The window bar shows the system drive's Format as unavailable and says why; a fixed
+    /// internal drive has no Eject in it at all.
     #[test]
     fn the_window_bar_says_why_the_system_drive_is_not_formatted() {
         let drive = crate::probe::captured::yoga().unwrap().drives.remove(0);
@@ -965,8 +914,6 @@ mod tests {
         assert_eq!(levels, ["SAMSUNG", "home"]);
         assert_eq!(location.segments[0].value, WHOLE_DRIVE);
 
-        // Where the shell shows Back (a narrow window), that is the one way
-        // back: the location names the partition alone.
         let mut shell = WindowToolbar::default();
         shell
             .leading
@@ -987,8 +934,8 @@ mod tests {
         assert!(location.segments.is_empty(), "{:?}", location.segments);
     }
 
-    /// A partition row says what the partition is for and its state, in
-    /// words; its device, filesystem and mount point are on its own page.
+    /// A partition row says what the partition is for and its state, in words; its device,
+    /// filesystem and mount point are on its own page.
     #[test]
     fn partition_rows_say_what_each_partition_is_for() {
         let drive = crate::probe::captured::yoga().unwrap().drives.remove(0);

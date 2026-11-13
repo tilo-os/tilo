@@ -1,5 +1,6 @@
 //! Governance is decoded once per workspace document state, not once per message.
 use super::*;
+use automerge::ObjType;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -244,33 +245,31 @@ fn crowded_workspace(
     let mut doc =
         crate::workspace::candidate(None, &seed_workspace(workspace, &owner, &roster).unwrap())
             .unwrap();
-    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
-    for cert in &people {
-        doc.put(
-            &members,
-            hex::encode(cert.user_public_key).as_str(),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Editor).unwrap()),
-        )
-        .unwrap();
-    }
     let hidden = hex::encode(people[0].user_public_key);
-    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
-    for n in 0..named {
-        let grant = Grant::new(
-            format!("hidden-{n}"),
-            Subject::person(hidden.as_str()),
-            collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
-            tilo_action_policy::KindSet::READ,
-            tilo_action_policy::Answer::Deny,
-            Subject::person(hex::encode(owner.user_public_key)),
-        );
-        doc.put(
-            &grants,
-            grant.id.as_str(),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
-        )
-        .unwrap();
-    }
+    let changes = people
+        .iter()
+        .map(|cert| tilo_action_policy::Change::AddMember {
+            person: hex::encode(cert.user_public_key),
+            role: Role::Editor,
+        })
+        .chain((0..named).map(|n| {
+            tilo_action_policy::Change::Grant(Grant::new(
+                format!("hidden-{n}"),
+                Grantee::person(hidden.as_str()),
+                collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Deny,
+                Grantee::person(hex::encode(owner.user_public_key)),
+            ))
+        }))
+        .collect();
+    crate::members::op::tests_support::sign_into(
+        &mut doc,
+        &(owner_key.clone(), owner.clone()),
+        crate::state::now_ns(now),
+        changes,
+    );
+    doc.commit();
     let workspace_changes = doc
         .get_changes(&[])
         .into_iter()

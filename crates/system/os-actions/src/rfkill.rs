@@ -1,41 +1,30 @@
-//! The kernel's radio kill switches (`rfkill`), read from sysfs and changed
-//! through `/dev/rfkill`.
-//!
-//! A radio is off when any of its switches blocks it: a *soft* block is a
-//! program's (`NetworkManager`, `rfkill block`, a laptop's Fn key handled by
-//! its platform driver); a *hard* block is a physical switch no program can
-//! undo. `NetworkManager`'s own "Wi-Fi enabled" flag is a third, separate
-//! layer, so turning Wi-Fi on has to clear a soft block as well as set that
-//! flag, and only the kernel can say whether the radio really is on.
+//! The kernel's radio kill switches, read from sysfs and changed through `/dev/rfkill`.
+//! A radio is off when any of its switches blocks it: a soft block is a program's, a
+//! hard one a physical switch no program can undo. `NetworkManager`'s own "Wi-Fi
+//! enabled" flag is a third, separate layer, so turning Wi-Fi on has to clear a soft
+//! block as well as set that flag.
 
 use std::path::Path;
 
-/// The sysfs directory the kernel lists its kill switches in.
 const SYS_CLASS_RFKILL: &str = "/sys/class/rfkill";
-/// The control device that changes them; logind grants the seat's person
-/// access to it.
+/// The control device; logind grants the seat's person access.
 const DEV_RFKILL: &str = "/dev/rfkill";
 
-/// How the kill switches of one kind of radio stand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RfkillState {
-    /// At least one switch of this kind exists.
     pub present: bool,
-    /// A program has switched it off.
     pub soft_blocked: bool,
     /// A physical switch has: nothing in software can turn it back on.
     pub hard_blocked: bool,
 }
 
 impl RfkillState {
-    /// Whether the kill switches let the radio run.
     #[must_use]
     pub fn allows(self) -> bool {
         !self.soft_blocked && !self.hard_blocked
     }
 
-    /// Fold another switch of the same kind in: any one of them blocking keeps
-    /// the radio off, whichever order they are read in.
+    /// Any switch blocking keeps the radio off, in whatever order they are read.
     #[must_use]
     pub fn fold(self, other: Self) -> Self {
         Self {
@@ -46,7 +35,7 @@ impl RfkillState {
     }
 }
 
-/// The kinds of radio the kernel names in `/sys/class/rfkill/*/type`.
+/// The kinds the kernel names in `/sys/class/rfkill/*/type`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RadioKind {
     Wlan,
@@ -73,9 +62,7 @@ impl RadioKind {
     }
 }
 
-/// Every switch of `kind`, folded together: a machine can have several for
-/// one radio (the card's own and the laptop's platform switch), and any one
-/// of them blocking keeps the radio off.
+/// Every switch of `kind`, folded: a machine can have the card's own and the platform's for one radio.
 #[must_use]
 pub fn state(kind: RadioKind) -> RfkillState {
     state_in(Path::new(SYS_CLASS_RFKILL), kind)
@@ -89,12 +76,8 @@ fn state_in(class: &Path, kind: RadioKind) -> RfkillState {
         .fold(RfkillState::default(), RfkillState::fold)
 }
 
-/// Every switch the kernel lists in `class`, by the `type` name it publishes
-/// and that switch's own reading.
-///
-/// The names are the kernel's (`wlan`, `bluetooth`, `wwan`, …), and some
-/// platforms also expose physical camera and microphone shutters through
-/// `rfkill` even though those names are not mandated by Linux.
+/// Every switch the kernel lists, by the `type` name it publishes; some platforms also expose camera
+/// and microphone shutters through rfkill.
 #[must_use]
 pub fn switches(class: &Path) -> Vec<(String, RfkillState)> {
     let Ok(entries) = std::fs::read_dir(class) else {
@@ -110,10 +93,8 @@ pub fn switches(class: &Path) -> Vec<(String, RfkillState)> {
         .collect()
 }
 
-/// One switch's own reading: `present`, and whether it is blocked.
 fn state_of(root: &Path) -> RfkillState {
-    // Older kernels only publish `state`: 0 soft-blocked, 1 unblocked,
-    // 2 hard-blocked.
+    // Older kernels only publish `state`: 0 soft-blocked, 1 unblocked, 2 hard-blocked.
     let soft_blocked = match read(&root.join("soft")).as_deref() {
         Some(value) => value == "1",
         None => read(&root.join("state")).as_deref() == Some("0"),
@@ -125,8 +106,8 @@ fn state_of(root: &Path) -> RfkillState {
     }
 }
 
-/// Lift every soft block on `kind`, as `rfkill unblock` does. A hard block
-/// stays; [`state`] says whether one remains.
+/// Lifts every soft block on `kind`, as `rfkill unblock` does; a hard block stays and [`state`] says
+/// so.
 pub fn unblock(kind: RadioKind) -> Result<(), String> {
     use std::io::Write as _;
     let mut device = std::fs::OpenOptions::new()
@@ -138,8 +119,8 @@ pub fn unblock(kind: RadioKind) -> Result<(), String> {
         .map_err(|error| format!("{DEV_RFKILL}: {error}"))
 }
 
-/// `struct rfkill_event` (the 8-byte first version every kernel accepts):
-/// `idx` (u32, ignored for `CHANGE_ALL`), `type`, `op`, `soft`, `hard`.
+/// `struct rfkill_event` (the 8-byte first version every kernel accepts): `idx` (u32, ignored for
+/// `CHANGE_ALL`), `type`, `op`, `soft`, `hard`.
 fn change_all_event(kind: RadioKind, soft_block: bool) -> [u8; 8] {
     const OP_CHANGE_ALL: u8 = 3;
     let mut event = [0_u8; 8];

@@ -1,11 +1,7 @@
-//! How this host gives a VM its vsock device.
-//!
-//! The kernel's `vhost-vsock` is the normal case. A host whose kernel lacks
-//! it (nested and sandboxed hosts) can still run legacy apps through
-//! QEMU's `vhost-user-vsock` served by the unprivileged `vhost-device-vsock`
-//! daemon ([`AgentLink::Hybrid`]). QEMU cannot save a VM with a vhost-user
-//! vsock device, so on such a host an idle VM is shut down instead of saved,
-//! and the next launch boots it.
+//! How this host gives a VM its vsock device: the kernel's `vhost-vsock`, or QEMU's
+//! `vhost-user-vsock` through `vhost-device-vsock` on a host whose kernel lacks it.
+//! QEMU cannot save a VM with a vhost-user vsock device, so on such a host an idle
+//! VM is shut down instead of saved.
 
 use std::path::Path;
 
@@ -15,7 +11,6 @@ use libvirt_domain::xml_text;
 /// The libvirt namespace for raw QEMU arguments.
 pub const QEMU_NAMESPACE: &str = "http://libvirt.org/schemas/domain/qemu/1.0";
 
-/// The vhost-user vsock daemon.
 pub const VHOST_DEVICE_VSOCK: &str = "vhost-device-vsock";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,7 +61,6 @@ fn on_path(program: &str) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
-/// `vhost-device-vsock --vm guest-cid=3,socket=<vhost-user>,uds-path=<uds>`.
 #[must_use]
 pub fn vhost_device_vsock_argv(vhost_user: &Path, uds: &Path) -> Vec<String> {
     vec![
@@ -96,7 +90,6 @@ pub fn hybrid_commandline_xml(vhost_user: &Path) -> String {
     )
 }
 
-/// The link to the guest for a backend.
 #[must_use]
 pub fn hybrid_link(uds: &Path) -> AgentLink {
     AgentLink::Hybrid {
@@ -110,7 +103,6 @@ mod tests {
 
     #[test]
     fn the_vsock_backend_falls_back_to_the_user_space_daemon() {
-        // phase: the kernel device wins, the daemon is the fallback
         {
             assert_eq!(VsockBackend::choose(true, true), Some(VsockBackend::Kernel));
             assert_eq!(
@@ -121,7 +113,6 @@ mod tests {
             assert!(VsockBackend::Kernel.snapshots());
             assert!(!VsockBackend::Hybrid.snapshots());
         }
-        // phase: the daemon and QEMU agree on one socket
         {
             let vhu = Path::new("/run/user/1000/tilo-legacy/linux/vsock-vhu.sock");
             let uds = Path::new("/run/user/1000/tilo-legacy/linux/vsock.sock");

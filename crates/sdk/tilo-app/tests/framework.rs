@@ -20,8 +20,8 @@ pub struct Item {
 
 #[resource(
     kind = "test.checklist",
-    label = "Checklist",
-    app = "so.tilo.test-checklist"
+    app = "so.tilo.test-checklist",
+    catalogue = "tests/locales"
 )]
 impl Checklist {
     /// Rename the checklist.
@@ -531,14 +531,14 @@ fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
 fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     use std::sync::{Arc, Mutex};
     use tilo_app::permissions::policy::{
-        Answer, Grant, GrantId, KindSet, Lifetime, Subject, TreePath,
+        Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
     };
     let mut app = TestApp::<ChecklistApp>::new().unwrap();
     app.set_role(tilo_app::permissions::Role::Viewer);
     let viewer = app.permissions();
     let mut standing = viewer.standing().clone();
     let workspace = TreePath::workspace(&standing.policy.workspace);
-    let person = Subject::person(standing.person.clone());
+    let person = Grantee::person(standing.person_id().unwrap_or_default());
     std::sync::Arc::make_mut(&mut standing.policy)
         .grants
         .extend([
@@ -548,7 +548,7 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
                 workspace.clone(),
                 KindSet::UNDOABLE,
                 Answer::Ask,
-                Subject::person("owner"),
+                Grantee::person("owner"),
             ),
             Grant::new(
                 "once",
@@ -556,7 +556,7 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
                 workspace.app(ChecklistApp::ID),
                 KindSet::UNDOABLE,
                 Answer::Allow,
-                Subject::person("owner"),
+                Grantee::person("owner"),
             )
             .with_lifetime(Lifetime::Once),
         ]);

@@ -8,19 +8,7 @@
 //! Drives the real five-pass pipeline (`sync` → `build_layout` →
 //! `compute_layout` → `apply_layout` → `draw`) plus a real `CursorMoved`
 //! event to exercise the hovered/active thumb state.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- scrollbar_shots`
-//! Out:  `$SCROLLBAR_SHOTS_OUT` (default `/tmp/scrollbar_shots`) —
-//!       scrollbar-{dark,light}-{idle,active,both}.png
-//!
-//! Each shot scrolls the list a little so the thumb sits mid-track:
-//!   * `idle`   — the resting overlay thumb (neutral, no track chrome).
-//!   * `active` — pointer parked on the thumb: brightened + track revealed.
-//!   * `both`   — content overflowing on both axes: vertical + horizontal bars.
-//!   * `window-rounded` / `window-square` — `both` filling a window the
-//!     shell rounds at the theme's window radius (the bars stop that radius
-//!     short of each corner) or draws edge to edge (they run to the edge),
-//!     over the desktop ground.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

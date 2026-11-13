@@ -58,7 +58,6 @@ fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
 }
 
 /// The skyline of one mountain range at column `x` (0..1), as a share of
-/// the screen height from the top.
 fn ridge(x: f64, base: f64, scale: f64, phase: f64) -> f64 {
     let tau = std::f64::consts::TAU;
     base - scale
@@ -68,12 +67,9 @@ fn ridge(x: f64, base: f64, scale: f64, phase: f64) -> f64 {
 }
 
 /// An idle desktop: a mountain range at dusk filling the screen, as
-/// RGBA rows of [`DESKTOP_SIZE`].
 pub(crate) fn desktop() -> Vec<u8> {
     let (width, height) = DESKTOP_SIZE;
     let (w, h) = (f64::from(width), f64::from(height));
-    // Sky from the zenith to the horizon, then three ranges from the
-    // farthest (hazy, lit by the sky) to the nearest (dark).
     let zenith: Rgb = [28.0, 36.0, 78.0];
     let middle: Rgb = [104.0, 92.0, 150.0];
     let horizon: Rgb = [242.0, 164.0, 116.0];
@@ -112,7 +108,6 @@ pub(crate) fn desktop() -> Vec<u8> {
             };
             for ((_, _, _, tone), top) in ranges.iter().zip(skyline) {
                 if fy >= *top {
-                    // Each range darkens a little toward its foot.
                     let depth = ((fy - top) / (0.25 * h)).clamp(0.0, 1.0);
                     colour = mix(*tone, mix(*tone, [12.0, 12.0, 24.0], 0.35), depth);
                 }

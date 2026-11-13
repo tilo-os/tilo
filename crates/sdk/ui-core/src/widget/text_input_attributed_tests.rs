@@ -13,7 +13,6 @@ use automerge::transaction::Transactable as _;
 fn attributed_single_line_is_shaped_during_measure_before_draw() {
     use crate::widget::marks::{Mark, MarkSpan};
     use crate::widget::rich_text_line::RichTextLine;
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -48,7 +47,6 @@ fn attributed_single_line_is_shaped_during_measure_before_draw() {
 #[test]
 fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -108,7 +106,6 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
 #[test]
 fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -164,7 +161,6 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
 #[test]
 fn attributed_single_line_style_inputs_invalidate_cached_shape() {
     use crate::richtext::{BaselineShift, FontFamily};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("WWW");
     input.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
@@ -208,7 +204,6 @@ fn attributed_single_line_style_inputs_invalidate_cached_shape() {
 #[test]
 fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     use crate::widget::marks::{Mark, MarkSpan};
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut state = crate::State::new();
     let text = state
@@ -224,7 +219,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
     let theme = Theme::dark().with_text_scale(2.0);
     draw_rich_line_for_test(&mut line, &theme);
-    let wide = line.pixel_x_for_byte(&theme, 3);
+    let wide = line.caret_rect(&theme, 3).x0;
     state.doc.splice_text(&text, 0, 3, "iii").unwrap();
     state.commit_action(None, None);
     for (step, expected) in [(0, "iii"), (1, "WWW"), (2, "iii")] {
@@ -250,7 +245,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
                 .flat_map(|r| r.glyphs.iter())
                 .all(|g| g.font_weight.0 == 700)
         );
-        let x = line.pixel_x_for_byte(&theme, 3);
+        let x = line.caret_rect(&theme, 3).x0;
         if expected == "WWW" {
             assert!((x - wide).abs() < 0.01);
         } else {

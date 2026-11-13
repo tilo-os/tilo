@@ -390,6 +390,8 @@ pub(crate) struct ChromeWiring {
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
     /// What the desktop's control hints read and give back.
     pub(crate) hints: tilo_desktop::control_hints::HintsFeed,
+    /// The keys a held Super reaches, as the session says them.
+    pub(crate) peek: tilo_desktop::super_peek::SuperPeek,
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, who is here, the machine's
@@ -778,6 +780,7 @@ pub(crate) fn host(
         feeds,
         engine,
         hints,
+        peek,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
     let tree = handle.read(Clone::clone);
@@ -813,6 +816,7 @@ pub(crate) fn host(
     chrome.set_reveals(reveals);
     chrome.set_shortcuts(shortcuts);
     chrome.set_hints_feed(hints);
+    chrome.set_super_peek(peek);
     // Keys come to the chrome while one of the surfaces it draws holds the keyboard: the stack says
     // which, and it says the window's again as soon as the top surface closes.
     let desk = handle.clone();
@@ -868,8 +872,13 @@ pub(crate) fn host(
 impl crate::Shared {
     /// A verb of the empty desk's launchpad, as its card, its host action and its resource action
     /// all ask for it: the app action the verb declares, what only the session can do, and else the
-    /// app itself.
+    /// app itself. A verb whose app this device does not have opens nothing: the person is shown
+    /// the apps it does have, never a window of an app that is not here.
     pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        #[cfg(target_os = "linux")]
+        if !crate::host_actions::offers(&self.lists, action) {
+            return self.handle.open_search(Scope::WindowGroup(None), None);
+        }
         if let Some(app_action) = action.app_action() {
             return self.invoke_app_action(app_action);
         }

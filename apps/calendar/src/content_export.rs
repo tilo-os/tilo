@@ -1,7 +1,5 @@
-//! The calendar as an iCalendar file kept as content, for whoever acts
-//! without a file chooser: an agent hands the `.ics` on (attaches it to a
-//! mail, shares it) rather than writing on this device's disk, which the
-//! person's own Export ICS does through the chooser.
+//! The calendar as an iCalendar file kept as content, for a caller with no file chooser: an agent
+//! hands the `.ics` on.
 
 use ui::tilo_resource::{Id, Keyed};
 

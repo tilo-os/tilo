@@ -43,10 +43,7 @@ fn shared_menu_layout_matches_the_former_taffy_pass() {
     }
 }
 
-/// Stands in for the session's document door in tests: it records what Files
-/// asks to open and answers what Files lists, so a test reads the ask the
-/// session would have served. Files asks off its own thread, so what it asked
-/// is one lock, not a thread's own state.
+/// A stand-in for the session's door: what Files asked for, and what it answers.
 pub(super) mod session_door {
     use runtime_portal::tools::DocumentApp;
     use std::path::{Path, PathBuf};
@@ -54,15 +51,10 @@ pub(super) mod session_door {
 
     #[derive(Default)]
     struct Door {
-        /// What Files asked to open, `(path, app)` newest last.
         opens: Vec<(PathBuf, Option<String>)>,
-        /// What the door answers the next open with; `None` opens.
         refusal: Option<String>,
-        /// What the door lists for a document's type.
         candidates: Vec<DocumentApp>,
-        /// What the door answers the next listing with; `None` answers.
         listing_refusal: Option<String>,
-        /// How many listings Files asked for.
         listings: usize,
     }
 
@@ -73,13 +65,10 @@ pub(super) mod session_door {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Record from now on: forget earlier asks and listings.
     pub(super) fn start() {
         *door() = Door::default();
     }
 
-    /// The door's answer to an open: record the ask, then open or refuse.
-    /// Stands in for [`crate::open_with::request`].
     pub(super) fn record_open(path: &Path, app: Option<&str>) -> Result<(), String> {
         let mut door = door();
         door.opens
@@ -90,8 +79,6 @@ pub(super) mod session_door {
         }
     }
 
-    /// The door's answer to a listing: [`listing`]'s apps, counted. Stands in
-    /// for [`crate::open_with::candidates`].
     pub(super) fn record_candidates(_path: &Path) -> Result<Vec<DocumentApp>, String> {
         let mut door = door();
         door.listings += 1;
@@ -101,22 +88,18 @@ pub(super) mod session_door {
         }
     }
 
-    /// Answer the next listing with `reason`; listings after it answer again.
     pub(super) fn refuse_listing(reason: &str) {
         door().listing_refusal = Some(reason.into());
     }
 
-    /// Answer every listing with `apps`, the one the type opens with first.
     pub(super) fn listing(apps: Vec<DocumentApp>) {
         door().candidates = apps;
     }
 
-    /// Answer the next open with `reason`; opens after it succeed again.
     pub(super) fn refuse(reason: &str) {
         door().refusal = Some(reason.into());
     }
 
-    /// What Files asked to open, `path app` each, `-` for the type's own app.
     pub(super) fn asks() -> Vec<String> {
         door()
             .opens
@@ -125,25 +108,20 @@ pub(super) mod session_door {
             .collect()
     }
 
-    /// The paths Files asked to open, in order.
     pub(super) fn opened() -> Vec<PathBuf> {
         door().opens.iter().map(|(path, _)| path.clone()).collect()
     }
 
-    /// How many listings Files asked for.
     pub(super) fn listings() -> usize {
         door().listings
     }
 }
 
-/// Make `w` ask [`session_door`] instead of the session.
 pub(super) fn asking_session(w: &FileExplorerWidget) {
     w.state().open_request = session_door::record_open;
     w.state().document_candidates = session_door::record_candidates;
 }
 
-/// Wait for the open `w` asked for to be answered and taken in, as its next
-/// pump would: the ask runs off the window's thread.
 pub(super) fn settle_opens(w: &FileExplorerWidget) {
     tilo_test_env::wait_until("the window to take in the open's answer", || {
         w.state().take_open_replies()
@@ -163,11 +141,15 @@ mod open_with_tests {
             DocumentApp {
                 id: "org.gnome.Evince.desktop".into(),
                 name: "Evince".into(),
+                icon: Some("file".into()),
+                source: Some(runtime_portal::tools::AppKind::System),
                 is_default: true,
             },
             DocumentApp {
                 id: "so.tilo.pdf-viewer".into(),
                 name: "PDF Viewer".into(),
+                icon: Some("file".into()),
+                source: None,
                 is_default: false,
             },
         ]
@@ -205,11 +187,6 @@ mod open_with_tests {
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }
 
-    /// Every activated file is handed to the session, whatever its type. The
-    /// explorer must not sort files into "documents" and "everything else" —
-    /// which app owns a `.pdf` or a `.png` is the session's answer, from what
-    /// is installed, and a table here would be wrong the moment anybody
-    /// installs anything.
     #[test]
     fn activation_hands_every_file_to_the_session_to_open() {
         session_door::start();
@@ -237,8 +214,6 @@ mod open_with_tests {
         assert_eq!(w.state().status, None, "a successful open reports nothing");
     }
 
-    /// A session that cannot open the file says why, and the explorer shows it.
-    /// Activation is never silent.
     #[test]
     fn a_refused_open_is_shown_to_the_user() {
         session_door::start();
@@ -274,15 +249,12 @@ mod open_with_tests {
             .iter()
             .filter_map(|i| i.label().map(std::string::ToString::to_string))
             .collect();
-        // Selection-aware actions are present.
         for expected in ["Open", "Rename", "Cut", "Copy", "Move to Trash"] {
             assert!(
                 labels.contains(&expected.to_string()),
                 "menu missing {expected}: {labels:?}"
             );
         }
-        // The menu of a file is about the file: what belongs to the folder
-        // (new items, sorting, hidden files, a terminal) is the folder's menu.
         for folder_item in [
             "New folder",
             "Open terminal here",
@@ -294,13 +266,9 @@ mod open_with_tests {
                 "a file's menu carries the folder item {folder_item}: {labels:?}"
             );
         }
-        // No clipboard yet → no Paste.
         assert!(!labels.contains(&"Paste".to_string()));
     }
 
-    /// No menu fences a single item off with a hairline, and none starts or
-    /// ends on one: a separator stands only between two groups of at least
-    /// two items.
     pub(super) fn menus_never_separate_a_lone_item() {
         let mut w = FileExplorerWidget::new();
         w.state().entries = vec![file_entry("a.txt"), file_entry("b.txt")];
@@ -336,8 +304,6 @@ mod open_with_tests {
         }
     }
 
-    /// The folder's own menu, from empty space: new items, a terminal, and
-    /// how the folder is shown (sorting with a check on the active key).
     pub(super) fn the_folder_menu_holds_the_folder_actions() {
         let mut w = FileExplorerWidget::new();
         w.state().entries = vec![file_entry("a.txt")];
@@ -369,7 +335,6 @@ mod open_with_tests {
     pub(super) fn empty_selection_menu_omits_item_actions() {
         let mut w = FileExplorerWidget::new();
         w.state().entries = vec![file_entry("a.txt")];
-        // No selection.
         w.state().open_context_menu(Point::new(10.0, 10.0));
         let labels: Vec<String> = w
             .chrome()
@@ -387,7 +352,6 @@ mod open_with_tests {
         let mut w = FileExplorerWidget::new();
         w.state().entries = vec![file_entry("a.txt")];
         w.state().selection.select_only(0);
-        // Simulate a copy populating the clipboard.
         w.state().apply_command(crate::command::FileCommand::Copy);
         assert_eq!(w.state().clipboard.len(), 1);
         w.state().open_context_menu(Point::new(10.0, 10.0));
@@ -408,8 +372,6 @@ mod open_with_tests {
             .collect()
     }
 
-    /// A Files window on `/docs` with a PDF selected, asking the stand-in
-    /// session door and told that [`pdf_apps`] opens its type.
     fn pdf_widget() -> FileExplorerWidget {
         session_door::start();
         session_door::listing(pdf_apps());
@@ -440,6 +402,25 @@ mod open_with_tests {
                 app_id: "so.tilo.pdf-viewer".into(),
             }
         );
+        // Each row wears the app's own glyph, and a row two apps share a name with says where the
+        // machine got it.
+        let rows: Vec<(Option<ui::icons::Icon>, Option<String>)> = w
+            .chrome()
+            .submenu
+            .items()
+            .iter()
+            .map(|item| match item {
+                ui::widget::context_menu::MenuItem::Action { icon, detail, .. } => {
+                    (*icon, detail.clone())
+                }
+                _ => (None, None),
+            })
+            .collect();
+        assert_eq!(
+            rows[0],
+            (Some(ui::icons::Icon::File), Some("System".into()))
+        );
+        assert_eq!(rows[1], (Some(ui::icons::Icon::File), None));
         w.state().apply_command(viewer);
         settle_opens(&w);
         assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);
@@ -460,8 +441,6 @@ mod open_with_tests {
         assert_eq!(w.state().open_with_subject(), None, "one file at a time");
     }
 
-    /// A type nothing claims: "Open with" says so, the chooser stays shut, and
-    /// nothing is launched.
     #[test]
     fn a_type_no_app_opens_says_so_and_opens_nothing() {
         let mut w = pdf_widget();
@@ -477,8 +456,6 @@ mod open_with_tests {
         assert!(session_door::opened().is_empty(), "nothing was launched");
     }
 
-    /// A session that cannot answer the listing leaves Files with no apps to
-    /// offer rather than a guess at which one.
     #[test]
     fn a_listing_the_session_cannot_answer_offers_no_apps() {
         let mut w = pdf_widget();
@@ -555,22 +532,37 @@ mod open_with_tests {
         );
         let doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
-        let rows: Vec<String> = ui::tilo_actions::flatten(&resources)
-            .into_iter()
-            .filter(|row| {
-                row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
-            })
-            .map(|row| row.action.label.clone())
-            .collect();
+        let rows: Vec<(String, Option<String>, Option<String>)> =
+            ui::tilo_actions::flatten(&resources)
+                .into_iter()
+                .filter(|row| {
+                    row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
+                })
+                .map(|row| {
+                    (
+                        row.action.label.clone(),
+                        row.action.icon.clone(),
+                        row.action.description.clone(),
+                    )
+                })
+                .collect();
+        // Each row is the app's own name, wears its glyph, and says where the machine got it where
+        // its name alone does not.
         assert_eq!(
             rows,
             vec![
-                "Open with Evince (default)".to_string(),
-                "Open with PDF Viewer".to_string(),
+                (
+                    "Open with Evince (default)".to_string(),
+                    Some("file".to_string()),
+                    Some("System".to_string()),
+                ),
+                (
+                    "Open with PDF Viewer".to_string(),
+                    Some("file".to_string()),
+                    Some("Open with…".to_string()),
+                ),
             ]
         );
-        // Picking a row resolves through the published resource, exactly as
-        // the application host dispatches a palette selection.
         let mut doc = doc;
         let spec = ui::tilo_actions::door::spec_of(
             &resources,
@@ -656,7 +648,6 @@ mod open_with_tests {
         );
     }
 
-    /// The Recent list is this device's setting: a reopened window lists it.
     #[test]
     fn recent_is_a_device_setting_that_survives_a_restart() {
         let folder = tempfile::tempdir().unwrap();
@@ -774,10 +765,6 @@ mod open_with_tests {
     }
 }
 
-/// Tests for the real command-application paths — the things a user actually
-/// triggers from the toolbar / context menu / keyboard, exercised through
-/// `apply_command`, `sync`, and the fs mutations (never through a tautological
-/// helper). These are the paths the review flagged as untested.
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod command_path_tests {
@@ -787,8 +774,6 @@ mod command_path_tests {
     #[cfg(target_os = "linux")]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// Wake scheduling, record-preserving metadata refresh and record-id search
-    /// reveal — each phase with its own fixture and scoped environment.
     #[test]
     fn scheduled_refresh_and_record_search_preserve_the_view() {
         opaque_hold_deadline_reaches_files_root_before_metadata_refresh();
@@ -798,9 +783,6 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
-    /// A metadata poll is real work, but an unchanged directory
-    /// must not look like a frame request. The native runner used to turn
-    /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
     #[cfg(unix)]
     #[test]
     fn idle_directory_refresh_does_not_request_frames() {
@@ -809,7 +791,6 @@ mod command_path_tests {
         use ui::theme::Theme;
         use vello::kurbo::Point;
 
-        // As on the desktop smoke's runner: no identity projection directory.
         let mut env = tilo_test_env::ScopedEnv::new();
         let _identities = absent_identity_projection(&mut env);
         let dir = tempfile::tempdir().unwrap();
@@ -860,14 +841,10 @@ mod command_path_tests {
             "an idle Files poll must not keep requesting frames"
         );
 
-        // Production AboutToWait: update + sync on the due deadline. Files
-        // stays `needs_redraw` after `mark_drawn`; the runner must ignore
-        // that bit. A model/structure/animation change is a real present.
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
         assert_idle_turn_is_clean(&mut widget, &state, "idle scheduled sync");
 
-        // Nearby Send used to ask every 2s; now only on an announced change.
         assert!(
             !widget.take_collab_requests().iter().any(|request| matches!(
                 request,
@@ -904,8 +881,6 @@ mod command_path_tests {
         assert_watched_idle_window_needs_no_wake(&widget);
     }
 
-    /// The host's turn on a due deadline (update, then sync) found nothing to
-    /// present: no model, structure or animation change.
     #[cfg(unix)]
     fn assert_idle_turn_is_clean(widget: &mut FileExplorerWidget, state: &ui::State, what: &str) {
         let updated = ui::widget::Widget::update(widget, &state.doc, &state.root);
@@ -918,8 +893,6 @@ mod command_path_tests {
         );
     }
 
-    /// Once the forced polls are done, a window whose directory and identity
-    /// projection are watched asks the host for no wake at all.
     #[cfg(unix)]
     fn assert_watched_idle_window_needs_no_wake(widget: &FileExplorerWidget) {
         widget.state().next_metadata_refresh = None;
@@ -937,8 +910,6 @@ mod command_path_tests {
         );
     }
 
-    /// Point the identity projection and the workspace roots at fixtures,
-    /// so the only refresh sources are the ones the test controls.
     #[cfg(unix)]
     fn quiet_refresh_sources(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
         let identities = tempfile::tempdir().unwrap();
@@ -950,8 +921,6 @@ mod command_path_tests {
         identities
     }
 
-    /// Point the identity projection at a directory that does not exist, as
-    /// on a host or sandbox without one, and the workspace roots at nothing.
     #[cfg(unix)]
     fn absent_identity_projection(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
         let identities = tempfile::tempdir().unwrap();
@@ -965,9 +934,6 @@ mod command_path_tests {
         identities
     }
 
-    /// A missing identity projection is not polled: its creation is awaited
-    /// on the nearest directory that exists. A projection that appears later
-    /// is still read, without any poll falling due.
     #[cfg(unix)]
     #[test]
     fn a_missing_identity_projection_is_awaited_not_polled() {
@@ -1009,8 +975,6 @@ mod command_path_tests {
             .unwrap(),
         )
         .unwrap();
-        // The same `now` every turn: no poll can fall due, so only the
-        // watch can bring the projection in.
         tilo_test_env::wait_until("the new identity projection is read", || {
             let _ = widget.state().refresh_metadata_if_due(now);
             !widget.state().trusted_humans.humans().is_empty()
@@ -1025,10 +989,6 @@ mod command_path_tests {
         );
     }
 
-    /// An idle window over an unchanged local directory has no metadata
-    /// deadline at all: its watch wakes it on change, so nothing is re-read
-    /// on a timer. Where the watch cannot vouch for every change, the poll
-    /// stays, never faster than the fallback interval.
     #[cfg(unix)]
     #[test]
     fn idle_files_has_no_periodic_deadline_with_a_subscription() {
@@ -1060,10 +1020,6 @@ mod command_path_tests {
         }
     }
 
-    /// The record catalogue of a workspace root whose watch sees every
-    /// change (a local folder, or the tilo-fs mount, which signals its
-    /// peers' edits) is checked when the root changes, not on a timer: an
-    /// idle window over it asks for no wake at all.
     #[cfg(unix)]
     #[test]
     fn idle_files_over_a_watched_workspace_root_has_no_catalogue_poll() {
@@ -1082,8 +1038,6 @@ mod command_path_tests {
                 .has_roots(),
             "the root holds a record catalogue"
         );
-        // The open folder is not the root, so only the catalogue's watch
-        // can report a change to the root.
         widget.state().load(folder);
         let _ = widget.state().refresh_metadata_if_due(ui::time::now());
         assert_ne!(
@@ -1097,8 +1051,6 @@ mod command_path_tests {
         tilo_test_env::wait_until(
             "the root's change to move the catalogue's generation",
             || {
-                // Where the watch sees every change nothing is polled, so only
-                // the watch can make this check.
                 #[cfg(target_os = "linux")]
                 assert_eq!(
                     widget.state().next_metadata_refresh,
@@ -1111,8 +1063,6 @@ mod command_path_tests {
         assert_watched_idle_window_needs_no_wake(&widget);
     }
 
-    /// A file another program creates in the open directory shows, read
-    /// because the watch reported it, before any poll is due.
     #[cfg(unix)]
     #[test]
     fn a_file_created_in_the_open_directory_appears_without_a_poll() {
@@ -1131,11 +1081,7 @@ mod command_path_tests {
                 .iter()
                 .any(|entry| entry.name == "b.txt")
         };
-        // How soon is `change_read_gap`'s (under a second); wall time here
-        // would only measure the test machine's load.
         tilo_test_env::wait_until("the new file to be listed", || {
-            // The earliest moment a reported change may be read, which is
-            // before any poll is due: only the watch can make this read.
             let readable = {
                 let state = widget.state();
                 state.last_directory_read + metadata_refresh::change_read_gap(state.entries.len())
@@ -1152,11 +1098,6 @@ mod command_path_tests {
         );
     }
 
-    /// "a file put in a folder appears in Files without reopening the
-    /// folder": another process makes a multi-gigabyte (sparse) archive in
-    /// a sibling folder and moves it into a folder of about a hundred
-    /// entries that Files shows; it is listed, at its size, without the
-    /// folder being opened again.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_file_put_in_a_folder_appears_in_files_without_reopening_the_folder() {
@@ -1251,7 +1192,6 @@ mod command_path_tests {
         );
     }
 
-    /// In-memory entry with a controllable name/mime (no fs touch).
     fn ent(name: &str, is_dir: bool, mime: &str) -> Entry {
         Entry {
             name: name.into(),
@@ -1271,8 +1211,6 @@ mod command_path_tests {
         }
     }
 
-    /// Sort, location bar, shortcut reference, zoom and hidden-file toggles, each
-    /// phase on a fresh widget.
     #[test]
     fn view_commands_are_reachable_from_keyboard_and_command_paths() {
         set_sort_command_selects_the_key_including_type();
@@ -1288,8 +1226,6 @@ mod command_path_tests {
             ent("b.png", false, "image/png"),
             ent("a.txt", false, "text/plain"),
         ];
-        // SortBy::Type is ONLY reachable via this command (no column/button),
-        // so exercising it proves the previously-unreachable key now works.
         assert!(w.state().apply_command(FileCommand::SetSort(SortBy::Type)));
         assert_eq!(w.state().sort_by(), SortBy::Type);
         assert_eq!(
@@ -1345,8 +1281,6 @@ mod command_path_tests {
             .expect("shortcut reference opens")
             .clone();
         assert_eq!(panel.title, "Keyboard shortcuts");
-        // Real chords with the platform's key names, never narration
-        // about modifiers.
         assert!(
             panel.lines.iter().any(|line| line == "Rename: F2"),
             "{:?}",
@@ -1374,7 +1308,6 @@ mod command_path_tests {
             return;
         };
         let mut w = FileExplorerWidget::new();
-        // Pretend we are viewing the Trash (without touching the real trash).
         w.state().current_path = trash;
         w.state().entries = vec![ent("deleted.txt", false, "text/plain")];
         w.state().selection.select_only(0);
@@ -1408,8 +1341,6 @@ mod command_path_tests {
         );
     }
 
-    /// The folder resource's action catalogue, contracts, paging and ids, each
-    /// phase on a fresh widget and document.
     #[test]
     fn folder_resource_exports_canonical_actions_handlers_and_ids() {
         resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
@@ -1488,9 +1419,6 @@ mod command_path_tests {
         w.state().rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
         let mut menu = w.state().new_overlay_menu();
         menu.push(MenuItem::action(t("files-menu-remove-favourite"), || {}));
-        // Model a top-right toolbar trigger before the menu paints at 200%
-        // text. The overlay must use the window as its viewport, not the
-        // normal-scale trigger's original right-edge position.
         menu.open_at([1428.0, 52.0]);
         menu.set_text_scale(2.0);
         let menu = menu.get_rect();
@@ -1521,7 +1449,6 @@ mod command_path_tests {
         std::fs::create_dir(&destination).unwrap();
         std::fs::create_dir(mount.join("Folder")).unwrap();
         std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
-        // Provider-native documents are already projected as link files.
         std::fs::write(
             mount.join("Folder/document.gdoc"),
             b"{\"url\":\"https://docs.google.com/document/d/test\"}",
@@ -1553,7 +1480,6 @@ mod command_path_tests {
             })
             .unwrap();
         assert!(row.actions.iter().any(|action| action.id == "import-once"));
-        // The import finishes once its copy is in place.
         app.call_on_finished(
             row.id.as_str(),
             "import-once",
@@ -1601,7 +1527,6 @@ mod command_path_tests {
             );
         })
         .unwrap();
-        // A symlink cannot turn the local destination into a cloud folder.
         let link = home.path().join("cloud-link");
         std::os::unix::fs::symlink(&mount, &link).unwrap();
         assert!(
@@ -1632,8 +1557,6 @@ mod command_path_tests {
         let mut app =
             ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
                 .unwrap();
-        // Hold the surface's submission until the admitted alias is redirected.
-        // Execution below still goes through the receiving host's checked door.
         let row = app
             .with_surface(|files: &mut FileExplorerWidget| {
                 files.state().home_path = Some(home.path().to_path_buf());
@@ -1701,8 +1624,6 @@ mod command_path_tests {
             b"remote edit"
         );
 
-        // The action schema requires an absolute folder, even when a
-        // submitted relative folder exists and canonicalizes successfully.
         assert!(
             app.call_on(
                 row.id.as_str(),
@@ -1758,9 +1679,6 @@ mod command_path_tests {
         ));
     }
 
-    /// An account that needs signing in is a row in the places list that
-    /// opens one short sheet: said once, with no subtitle and nothing about
-    /// the vault, and one action that looks again.
     #[test]
     fn a_cloud_account_needing_sign_in_is_visible_and_says_what_to_do() {
         let account = remote_account(
@@ -1799,7 +1717,6 @@ mod command_path_tests {
             w.state().collab_panel_action_command(),
             Some(FileCommand::RecheckRemoteAccount("cloud".into()))
         );
-        // Choosing the row opens the same sheet.
         w.state().close_collab_panel();
         assert!(
             w.state()
@@ -1820,8 +1737,6 @@ mod command_path_tests {
         assert!(!first_id.contains("Templates"));
     }
 
-    /// Entry-level resource actions carry opaque ids and refuse stale, replayed
-    /// or mistyped invocations — each phase on its own temp dir and widget.
     #[test]
     fn entry_resource_actions_are_opaque_and_fail_closed() {
         resource_open_refuses_a_deleted_or_replayed_entry_target();
@@ -1904,8 +1819,6 @@ mod command_path_tests {
             return;
         };
         let w = FileExplorerWidget::new();
-        // Keep this entirely in-memory: the assertion is the interaction
-        // boundary, before Files ever calls the OS trash implementation.
         w.state().current_path = trash;
         w.state().entries = vec![ent("deleted.txt", false, "text/plain")];
         w.state().selection.select_only(0);
@@ -1951,7 +1864,6 @@ mod command_path_tests {
         );
     }
 
-    /// Every context/overlay menu surface, each phase on a fresh widget.
     #[test]
     fn context_menus_follow_selection_clipboard_location_and_templates() {
         super::open_with_tests::context_menu_opens_with_selection_aware_items();
@@ -1993,8 +1905,6 @@ mod command_path_tests {
         }
     }
 
-    /// Listing, error copy/retry, history, double-click and scroll retention, each
-    /// phase on its own temp dir and widget.
     #[test]
     fn navigation_listing_history_and_error_recovery() {
         state_surface_copy_names_the_folder_and_offers_what_can_help();
@@ -2036,7 +1946,6 @@ mod command_path_tests {
         assert_eq!(recovery_label(&w), t("files-try-again"));
     }
 
-    /// What the failed listing's button says, as the pane shows it.
     fn recovery_label(w: &FileExplorerWidget) -> String {
         let pane = w.state().build_content_pane(&ui::theme::Theme::dark());
         let state = pane.accessibility().expect("the failure is a state");
@@ -2055,10 +1964,8 @@ mod command_path_tests {
             w.state().error_message().is_some(),
             "missing dir sets an error"
         );
-        // The "Try again" button pushes Refresh — still errors while missing.
         assert!(w.state().apply_command(FileCommand::Refresh));
         assert!(w.state().error_message().is_some());
-        // Once the directory exists, the same retry clears the error.
         std::fs::create_dir(&target).unwrap();
         assert!(w.state().apply_command(FileCommand::Refresh));
         assert!(
@@ -2067,10 +1974,6 @@ mod command_path_tests {
         );
     }
 
-    /// A link to a folder lists as the folder it opens and a link to a file
-    /// as the file it opens: first among the folders, with the target's size,
-    /// and named as a folder to an agent. On Tilo's own image `/home`, `/opt`
-    /// and `/srv` are such links. A link to nothing stays a file.
     #[cfg(unix)]
     #[test]
     fn a_link_lists_as_what_it_opens() {
@@ -2113,8 +2016,6 @@ mod command_path_tests {
         );
         let dangling = shown.iter().find(|entry| entry.name == "dangling").unwrap();
         assert!(!dangling.is_dir, "a link to nothing stays a file");
-        // The row keeps the link's own identity: operations on it act on the
-        // link, never on what it points at.
         let link_meta = std::fs::symlink_metadata(d.path().join("z-linked-folder")).unwrap();
         assert_eq!(
             linked_folder.observed,
@@ -2127,8 +2028,6 @@ mod command_path_tests {
         );
     }
 
-    /// Rename (command, exported action and headless F2) plus the flows that drop
-    /// into rename — each phase on its own temp dir and widget.
     #[test]
     fn rename_and_creation_flows_change_disk_names_locally() {
         rename_flow_renames_the_selected_file_on_disk();
@@ -2154,12 +2053,10 @@ mod command_path_tests {
             .unwrap();
         w.state().select(Some(idx));
 
-        // Begin the rename via the real command; the bar seeds the name.
         assert!(w.state().apply_command(FileCommand::Rename));
         assert!(w.state().is_renaming());
         assert_eq!(w.state().rename_buffer(), "old.txt");
 
-        // Type a new name + commit through the command path.
         w.state().set_rename_buffer("new.txt".into());
         assert!(w.state().apply_command(FileCommand::RenameCommit));
         assert!(!w.state().is_renaming(), "commit closes the rename bar");
@@ -2354,8 +2251,6 @@ mod command_path_tests {
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        // One published operation without a handler refuses the app's whole
-        // surface, and a directory search then finds none of its actions.
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
         let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
@@ -2364,8 +2259,6 @@ mod command_path_tests {
         let registry = ui::tilo_actions::ActionRegistry::with(
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
         );
-        // The surface host answers the effect vocabulary beside the window's
-        // own operations.
         let mut handlers = ui::widget::resource_operation_handlers(&files);
         handlers.insert(
             <crate::effects::FilesEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
@@ -2374,8 +2267,6 @@ mod command_path_tests {
         assert!(violations.is_empty(), "{violations:?}");
     }
 
-    /// An agent sorts a downloads folder with typed actions only: `go-to` an
-    /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
     #[test]
     fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
         use ui::tilo_actions::door;
@@ -2401,8 +2292,6 @@ mod command_path_tests {
                 serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
             )]);
             let address = door::published(&resources, &resource, action).unwrap();
-            // A path the effect cannot take is the door's refusal, answered
-            // before the window is asked to do anything.
             let encoded = door::encode_json(&resources, &address, &arguments)
                 .map_err(|error| error.to_string())?;
             let kind = if action == "go-to" {
@@ -2476,8 +2365,6 @@ mod command_path_tests {
         );
     }
 
-    /// `go-to` and `open` with a path show the folder and answer with its
-    /// new resource id and entries, so the caller needs no query to act.
     #[test]
     fn showing_a_folder_answers_with_its_resource_and_entries() {
         use ui::tilo_actions::door;
@@ -2544,9 +2431,6 @@ mod command_path_tests {
         std::fs::write(&occupied, b"keep occupied content").unwrap();
         let files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
         files.state().navigate(directory.path().into());
-        // The rename editor's commit queues the same operation an agent's
-        // `rename` does; a window no framework hosts carries it out at once,
-        // keeping the editor open when it fails.
         let invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
             files.state().refresh();
             let index = files
@@ -2576,8 +2460,6 @@ mod command_path_tests {
         assert!(invoke_rename(&renamed, "occupied.txt").is_err());
         assert_eq!(std::fs::read(&renamed).unwrap(), b"source content");
         assert_eq!(std::fs::read(&occupied).unwrap(), b"keep occupied content");
-        // Sharing file identity does not make another directory entry the
-        // spelling being renamed. The action must preserve both hard links.
         let hardlink = directory.path().join("hardlink.txt");
         std::fs::hard_link(&renamed, &hardlink).unwrap();
         assert!(invoke_rename(&renamed, "hardlink.txt").is_err());
@@ -2636,7 +2518,6 @@ mod command_path_tests {
             Some(address.clone())
         );
         assert!(door::resolve(&resources, &address).is_some());
-        // Renamed in place, the file keeps its record identity.
         w.state().selection.select_only(0);
         w.state().begin_rename();
         w.state().set_rename_buffer("new.txt".into());
@@ -2645,8 +2526,6 @@ mod command_path_tests {
         assert!(!old.exists());
         let renamed = d.path().join("new.txt");
         assert!(renamed.exists());
-        // A mount refresh presents a new path but the same daemon-provided
-        // record identity, so the old action address resolves against it.
         w.state().entries[0].path = renamed;
         w.state().entries[0].name = "new.txt".into();
         w.state().entries[0].record_id = Some(*record_id.as_bytes());
@@ -2672,8 +2551,6 @@ mod command_path_tests {
             )
         }) {
             if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
-                // Inspection and recovery answer with declared JSON receipts.
-                // Every existing void job must still declare Job.
                 let expected = if [
                     crate::effects::FilesEffect::CLIPBOARD_STATUS.id,
                     crate::effects::FilesEffect::RECOVER_CLIPBOARD_TRANSFERS.id,
@@ -2696,7 +2573,6 @@ mod command_path_tests {
         }
     }
 
-    /// Each transfer phase uses its own temp tree and widget.
     #[test]
     fn clipboard_copy_cut_paste_moves_files_and_retries_failures() {
         copy_then_paste_duplicates_the_file_into_the_current_dir();
@@ -2877,8 +2753,6 @@ mod command_path_tests {
         files.state().navigate(directory.path().into());
         assert!(invoke_transfer_action(&mut files, Some(&source), "cut").unwrap());
         files.state().navigate(destination.clone());
-        // The folder disappears after selection. A file now occupies that
-        // entry: failure must preserve both objects and keep Cut retryable.
         std::fs::remove_dir(&destination).unwrap();
         std::fs::write(&destination, b"replacement bytes").unwrap();
         assert!(invoke_transfer_action(&mut files, None, "paste").is_err());
@@ -2887,8 +2761,6 @@ mod command_path_tests {
         assert_eq!(files.state().clipboard, vec![source.clone()]);
         assert!(files.state().clipboard_cut);
 
-        // Restore only this owned fixture directory and use the same public
-        // Paste action again, without rebuilding the selection or clipboard.
         std::fs::remove_file(&destination).unwrap();
         std::fs::create_dir(&destination).unwrap();
         assert!(invoke_transfer_action(&mut files, None, "paste").unwrap());
@@ -2925,8 +2797,6 @@ mod command_path_tests {
         assert_eq!(w.state().current_path(), a, "forward re-visits");
     }
 
-    /// A hermetic widget whose recent files and previews live in a throwaway
-    /// dir, so tests never touch the user's real `~/.config`.
     fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -3005,7 +2875,6 @@ mod command_path_tests {
             command: NearbyTransferCommand::SendAirDrop { source_path, address, port: 443 }, ..
         }] if source_path == source.as_os_str().as_encoded_bytes() && address == "127.0.0.1")
         );
-        // Retaining an encoded action does not retain its source capability.
         std::fs::remove_file(&source).unwrap();
         widget.state().refresh();
         assert!(
@@ -3241,8 +3110,6 @@ mod command_path_tests {
     }
 
     fn double_click_click_command_navigates_into_a_directory() {
-        // Drives the real pointer path: a `Click` command, then a second within
-        // the double-click window → the app opens (navigates into) the folder.
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("sub")).unwrap();
         let (w, _cfg) = hermetic();
@@ -3286,7 +3153,6 @@ mod command_path_tests {
         w.state().apply_command(FileCommand::ZoomOut);
         w.state().apply_command(FileCommand::ZoomOut);
         assert_eq!(w.state().zoom_level(), base - 1, "zoom out lowers the step");
-        // Clamps at the extremes.
         for _ in 0..50 {
             w.state().apply_command(FileCommand::ZoomOut);
         }
@@ -3297,9 +3163,6 @@ mod command_path_tests {
         );
     }
 
-    /// Favourite commands edit the sidebar, which follows the localized
-    /// user folders. (The stored places are the resource's: see
-    /// `resource::tests`.)
     #[test]
     fn favourites_edit_the_sidebar_and_follow_localized_user_dirs() {
         favorite_commands_add_reorder_and_remove();
@@ -3323,7 +3186,6 @@ mod command_path_tests {
         );
         assert_eq!(w.state().favorites().last().unwrap().path, sub);
 
-        // Reorder: drag the new favourite (last) up to index 1.
         let last = w.state().favorites().len() - 1;
         w.state()
             .apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
@@ -3342,7 +3204,6 @@ mod command_path_tests {
         use crate::favorites::{FavKind, UserDirs};
         let cfg = tempfile::tempdir().unwrap();
         let home = PathBuf::from("/home/tester");
-        // A German desktop: the XDG user dirs resolve to localized folder names.
         let dirs = UserDirs {
             home: Some(home.clone()),
             documents: Some(home.join("Dokumente")),
@@ -3360,8 +3221,6 @@ mod command_path_tests {
             .iter()
             .map(|f| f.label.clone())
             .collect();
-        // The sidebar shows the user's real localized names, not hard-coded
-        // English ones.
         assert!(
             labels.contains(&"Dokumente".to_string()),
             "labels: {labels:?}"
@@ -3372,9 +3231,6 @@ mod command_path_tests {
             !labels.contains(&"Documents".to_string()),
             "must not show hard-coded English Documents"
         );
-        // The Documents favourite points at the actual localized directory (so
-        // clicking it opens ~/Dokumente, where the files really are) and keeps
-        // its evocative glyph despite the localized label.
         let docs = w
             .state()
             .favorites()
@@ -3445,20 +3301,6 @@ mod command_path_tests {
         );
     }
 
-    /// A file manager pointed at a directory that has files in it lists
-    /// those files.
-    ///
-    /// Asserts the *exact* set rather than "contains one of them". The
-    /// frame this guards showed "This folder is empty" over a directory
-    /// that held five entries, and an `.iter().any(|e| e.name == …)`
-    /// probe for a single name — the shape every other listing test in
-    /// this file uses — would still have passed on a listing that had
-    /// lost the other four.
-    ///
-    /// The empty-state banner is a draw-only side effect with no
-    /// accessor, so the assertions are on the two conditions that gate
-    /// it (a non-empty `entries`, no error) plus the item count the same
-    /// view renders in its footer.
     fn a_populated_directory_lists_exactly_its_contents() {
         let d = tempfile::tempdir().unwrap();
         let names = [
@@ -3504,12 +3346,11 @@ mod command_path_tests {
     }
 
     fn scroll_position_survives_a_structural_rebuild_but_resets_on_navigation() {
-        // The real fix: selecting a row / re-sorting rebuilds the whole
-        // composition (a fresh Scrollable), which used to snap the list back to
-        // the top. The persisted offset cell — the exact one the rebuilt
-        // Scrollable binds to via `with_persisted_offset` — must carry the
-        // position across those rebuilds, and only reset when the directory
-        // actually changes.
+        // Selecting a row or re-sorting rebuilds the whole composition with a
+        // fresh `Scrollable`. The persisted offset cell, the one the rebuilt
+        // `Scrollable` binds to through `with_persisted_offset`, must carry the
+        // position across those rebuilds and reset only when the directory
+        // changes.
         let d = tempfile::tempdir().unwrap();
         let a = d.path().join("a");
         std::fs::create_dir(&a).unwrap();
@@ -3521,10 +3362,8 @@ mod command_path_tests {
 
         let (w, _cfg) = hermetic();
         w.state().navigate(a);
-        // Simulate the list having been scrolled down 240px.
         w.state().scroll_offset.set((0.0, 240.0));
 
-        // Selecting a row is a structural rebuild — scroll must hold.
         w.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: false,
@@ -3534,14 +3373,12 @@ mod command_path_tests {
             (w.state().scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "selecting a row keeps the scroll"
         );
-        // Re-sorting is a structural rebuild — scroll must hold.
         w.state().apply_command(FileCommand::SetSort(SortBy::Size));
         assert!(
             (w.state().scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "re-sorting keeps the scroll"
         );
 
-        // Navigating to a different directory starts at the top.
         w.state().navigate(b);
         assert_eq!(
             w.state().scroll_offset.get(),
@@ -3560,9 +3397,7 @@ mod command_path_tests {
             ent("b.txt", false, "text/plain"),
             ent("c.txt", false, "text/plain"),
         ];
-        // Stale selection on row 0.
         w.state().selection.select_only(0);
-        // Right-press on row 2 moves the selection there.
         assert!(w.state().apply_command(FileCommand::ContextSelect(Some(2))));
         assert_eq!(
             w.state().selected_indices(),
@@ -3570,8 +3405,6 @@ mod command_path_tests {
             "context select targets the clicked row"
         );
 
-        // A right-press inside an existing multi-selection preserves all of it
-        // (so a menu action applies to every highlighted item).
         w.state().selection.select_only(1);
         w.state().selection.toggle(2);
         w.state().apply_command(FileCommand::ContextSelect(Some(1)));
@@ -3583,7 +3416,6 @@ mod command_path_tests {
             "right-click within a multi-selection keeps it"
         );
 
-        // A right-press on empty space clears the selection.
         w.state().apply_command(FileCommand::ContextSelect(None));
         assert!(
             w.state().selected_indices().is_empty(),
@@ -3592,9 +3424,6 @@ mod command_path_tests {
     }
 
     fn a_screen_reader_opens_a_rows_menu_on_the_row_it_names() {
-        // The row menu an assistive technology asks for reaches the same menu
-        // a right-press opens, on the row it named: a reader, an agent and a
-        // person all get one menu, acting on what it was opened for.
         let (w, _cfg) = hermetic();
         w.state().entries = vec![
             ent("a.txt", false, "text/plain"),
@@ -3618,9 +3447,6 @@ mod command_path_tests {
     }
 
     fn context_menu_gates_new_file_on_templates_existing() {
-        // The "New File ▸" entry appears iff the Templates dir has files, and
-        // "New folder" is always present. Templates are injected so the check is
-        // hermetic (no reliance on the ambient Templates dir).
         let (w, _cfg) = hermetic();
         let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
             spec.iter().any(|(label, _)| label.starts_with("New file"))
@@ -3629,12 +3455,10 @@ mod command_path_tests {
             spec.iter().any(|(label, _)| label == "New folder")
         };
 
-        // Empty Templates dir → no "New File", but "New folder" stays.
         let none = w.state().context_menu_spec(&[]);
         assert!(!has_new_file(&none), "no templates → submenu hidden");
         assert!(has_new_folder(&none), "New Folder is always offered");
 
-        // Two templates → the "New File ▸" entry appears.
         let two = w
             .state()
             .context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
@@ -3647,15 +3471,11 @@ mod command_path_tests {
 
     fn disappearing_templates_do_not_leave_an_empty_flyout() {
         let (mut w, _cfg) = hermetic();
-        // A catalogue can be emptied after the parent menu opens. The flyout
-        // must close instead of painting an empty, focusable surface.
         w.state().open_templates_submenu(Point::new(80.0, 80.0));
         assert!(!w.chrome().submenu.is_open());
         assert!(w.chrome().submenu_commands.is_empty());
     }
 
-    /// Keep-offline, free-space, policy and retry/details affordances, each phase
-    /// on its own temp files and widget.
     #[test]
     fn availability_policy_commands_write_only_eligible_records() {
         #[cfg(unix)]
@@ -3783,9 +3603,6 @@ mod command_path_tests {
     #[cfg(unix)]
     fn scheduled_metadata_refresh_preserves_record_selection_and_scroll() {
         let dir = tempfile::tempdir().unwrap();
-        // Production discovers this from the mounted workspace root. Mark the
-        // isolated fixture as a collaborative root so the listing reads the
-        // record/sync xattrs whose refresh behavior this test exercises.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_WORKSPACE_ROOTS", dir.path());
         let before = dir.path().join("before.txt");
@@ -3890,9 +3707,6 @@ mod command_path_tests {
         assert_eq!(xattr::get(&pinned, fs_protocol::PIN_XATTR).unwrap(), None);
         assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
 
-        // `refresh` deliberately treats this temp directory as an ordinary
-        // non-workspace path. Restore the directly-read projections so the
-        // second half can exercise the opposite command independently.
         for entry in &mut w.state().entries {
             entry.availability = crate::model::read_availability(&entry.path);
         }
@@ -3993,7 +3807,6 @@ mod command_path_tests {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
         }));
 
-        // The row says it is unavailable to an agent before anyone opens it.
         let resource = {
             let state = w.state();
             state.entry_resource(&state.entries[0])
@@ -4038,8 +3851,6 @@ mod command_path_tests {
         );
     }
 
-    /// Sharing, version history and governed-identity surfaces, each phase with
-    /// its own fixture.
     #[test]
     fn sharing_history_and_identity_surfaces_use_governed_identity() {
         sharing_offers_the_desks_invite_sheet();
@@ -4049,7 +3860,6 @@ mod command_path_tests {
         previous_immutable_version_is_an_explicit_restore_command();
     }
 
-    /// A directory that knows Ada Lovelace and her one laptop, and her key.
     fn adas_directory() -> (crate::identity_directory::TrustedHumanDirectory, [u8; 32]) {
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let person = root_key.verifying_key().to_bytes();
@@ -4083,9 +3893,6 @@ mod command_path_tests {
         (directory, person)
     }
 
-    /// Sharing a folder offers one row: the desk's own invite sheet, where the
-    /// link into the workspace is made and the part it brings people in at is
-    /// picked, asked of the desk as the person using Files.
     fn sharing_offers_the_desks_invite_sheet() {
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("shared-assets");
@@ -4227,8 +4034,6 @@ mod command_path_tests {
         assert!(w.state().collab_panel.is_none());
     }
 
-    /// A version an agent's own device signed reaches Workspace Activity as
-    /// the agent's, on behalf of its person, as the file's History names it.
     #[test]
     fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
@@ -4487,15 +4292,11 @@ mod command_path_tests {
                 crate::model::WorkspaceRecordIndexPager::new(&state.workspace_roots),
             );
         }
-        // Workspace roots are an explicit external-source revision boundary;
-        // refresh once, then Ctrl+K itself performs no mount traversal.
         widget.state().refresh_external_search_catalogs();
 
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.state().search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record anchor rather than
-        // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
@@ -4750,7 +4551,6 @@ mod command_path_tests {
     }
 
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {
-        // Opened members are copied under the private home's cache.
         let _home = tilo_test_env::TestHome::new().expect("private test home");
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -4795,8 +4595,6 @@ mod command_path_tests {
         files.state().open_entry(photos).unwrap();
         assert_eq!(files.state().entries_snapshot().len(), 1);
         assert_eq!(files.state().entries_snapshot()[0].name, "one.jpg");
-        // A file inside opens as a copy read off the window's thread, which
-        // the session is then asked to open.
         assert!(files.state().open_entry(0).unwrap());
         files.state().wait_for_archive_members();
         settle_opens(&files);
@@ -4867,7 +4665,6 @@ mod accessibility_tests {
         (home, widget)
     }
 
-    /// Each phase starts from its own empty widget.
     #[test]
     fn files_states_and_modal_sheets_publish_accessible_semantics() {
         custom_empty_loading_and_error_states_are_live_semantics();
@@ -5019,25 +4816,10 @@ mod accessibility_tests {
 mod breadcrumb_home_tests {
     use super::*;
 
-    /// The window opens on the user's real home, and the breadcrumb has
-    /// to be measured against the same one.
-    ///
-    /// Under a sandbox this process's `HOME` is its own per-package
-    /// directory (`/run/tilo/app`) while the directory actually opened is
-    /// the user's real home, bound by a grant and named by
-    /// `TILO_USER_HOME`. `new` resolved the start directory from the
-    /// second and the breadcrumb's home from the first, so
-    /// [`crate::model::format_path`] was measuring against a directory
-    /// nothing is under — and the trail rendered as an absolute path
-    /// from the filesystem root instead of a `~`.
     #[test]
     fn breadcrumb_home_is_the_granted_user_home_not_the_process_home() {
         let granted = tempfile::tempdir().expect("tempdir");
         let granted_path = granted.path().to_path_buf();
-        // Only `TILO_USER_HOME` is touched: `HOME` is left as the machine's,
-        // which is precisely the disagreement under test — the override has
-        // to win over whatever `tilo_paths::home()` says, and it does not say
-        // this temp dir.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_USER_HOME", &granted_path);
 
@@ -5065,11 +4847,6 @@ mod breadcrumb_home_tests {
             "the widget measures its breadcrumb against the home it opens on",
         );
 
-        // Which is what makes the trail read as somebody's home rather
-        // than as a path from the filesystem root. This is the function
-        // that rendered the bad one: handed a home the path is not
-        // under, it falls through to the `/`-rooted branch and emits a
-        // component per directory from the filesystem root.
         let deep = granted_path.join("Documents").join("Investors");
         let labels: Vec<String> =
             crate::breadcrumbs::breadcrumb_components(&deep, widget_home.as_deref(), &[])
@@ -5093,9 +4870,6 @@ mod breadcrumb_home_tests {
     }
 }
 
-// Exercise metadata projection inside the same checked callback entry the
-// host uses for its catalogue. Keeping the real component alive preserves
-// its registry owner, record lifetime and immutable local-person identity.
 pub(super) fn with_owner_callback(callback: impl FnOnce() + 'static) {
     use std::cell::RefCell;
     use ui::widget::Widget;
@@ -5240,8 +5014,6 @@ mod injected_startup_tests {
         );
     }
 
-    /// Each phase owns its fixture directory and fixture-IO guards, dropped before
-    /// the next phase begins.
     #[test]
     fn injected_startup_uses_only_explicit_host_inputs_and_services() {
         injected_startup_and_reload_keep_the_host_directory_and_catalogs();
@@ -5296,8 +5068,6 @@ mod injected_startup_tests {
         );
     }
 
-    /// Without hosted services a window builds no thumbnails and reaches only
-    /// the session's document door: activation asks it, and nothing else.
     fn injected_services_absence_never_builds_thumbnails_or_reaches_past_the_session() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
@@ -5583,14 +5353,10 @@ mod sort_selection_tests {
             shift: false,
         });
         assert!(!files.state().selection.is_selected(2));
-        // The anchor stays where the choice began (a, now at the top), while the cursor
-        // is the row the Ctrl-click just took out of the choice (b, now second).
         files.state().toggle_sort_order();
         assert_eq!(files.state().selection.selected(), vec![0]);
         assert_eq!(files.state().selection.anchor(), Some(0));
         assert_eq!(files.state().selection.primary(), Some(1));
-        // Shift extends from the choice's beginning, so the row the cursor rests on and
-        // everything between come back in rather than a range from it replacing the choice.
         files.state().apply_command(FileCommand::Click {
             index: 3,
             ctrl: false,
@@ -5710,8 +5476,6 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
 #[path = "oauth_cloud_location_tests.rs"]
 mod oauth_cloud_location_tests;
 
-/// Selected files are shared with an agent as their rows' published
-/// resources, each a whole item, in the order shown.
 #[test]
 fn selected_files_are_shared_as_the_items_an_agent_acts_on() {
     let folder = tempfile::tempdir().unwrap();
@@ -5761,9 +5525,6 @@ fn selected_files_are_shared_as_the_items_an_agent_acts_on() {
     );
 }
 
-/// Moving into a folder with a taken name asks once; each answer does what
-/// it says, and Replace sends the existing item to Trash rather than
-/// destroying it.
 #[test]
 fn a_name_clash_asks_once_and_each_answer_does_what_it_says() {
     let _home = tilo_test_env::TestHome::new().expect("private test home");
@@ -5818,8 +5579,6 @@ fn a_name_clash_asks_once_and_each_answer_does_what_it_says() {
     );
 }
 
-/// A tracked copy counts its bytes, and Cancel stops it with nothing past
-/// the item it was on.
 #[test]
 fn a_tracked_copy_reports_bytes_and_stops_on_cancel() {
     use std::sync::atomic::Ordering;
@@ -5848,7 +5607,6 @@ fn a_tracked_copy_reports_bytes_and_stops_on_cancel() {
         paths: vec![large.display().to_string(), src.display().to_string()],
         folder: dest.display().to_string(),
     };
-    // Cancel at the first report, part way through the large file.
     let outcome = crate::file_ops::execute_tracked(&op, None, &cancelling);
     assert_eq!(outcome.reason(), Some(crate::file_ops::CANCELLED));
     assert!(
@@ -5857,7 +5615,6 @@ fn a_tracked_copy_reports_bytes_and_stops_on_cancel() {
     );
 }
 
-/// Space shows the selected file large and closes it again; arrows move on.
 #[test]
 fn space_previews_the_selection_and_closes_again() {
     use winit::keyboard::{Key, NamedKey};
@@ -5899,7 +5656,6 @@ fn space_previews_the_selection_and_closes_again() {
     assert!(w.state().preview.is_none(), "Space closes it again");
 }
 
-/// Files dropped in from another app are copied into the folder shown.
 #[test]
 fn files_dropped_from_another_app_are_copied_here() {
     let src = tempfile::tempdir().unwrap();
@@ -5930,7 +5686,6 @@ fn files_dropped_from_another_app_are_copied_here() {
     );
 }
 
-/// A file inside an archive opens as a read-only copy, made once.
 #[test]
 fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
     let _home = tilo_test_env::TestHome::new().expect("private test home");
@@ -5954,9 +5709,6 @@ fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
     assert!(missing.is_err());
 }
 
-/// A row's entry is found by the row's id through ids made once per
-/// listing, and found again as the listing changes: a new file, a file
-/// gone.
 #[test]
 fn a_listed_entry_is_found_by_its_row_id_as_the_listing_changes() {
     let directory = tempfile::tempdir().unwrap();
@@ -5981,9 +5733,6 @@ fn a_listed_entry_is_found_by_its_row_id_as_the_listing_changes() {
     assert_eq!(found(&files, "a.txt").as_deref(), Some("a.txt"));
 }
 
-/// An entry whose row shows what it showed publishes the row it
-/// published, so the publication shares it; one that changed makes it
-/// again.
 #[test]
 fn an_unchanged_entry_publishes_the_row_it_published() {
     let directory = tempfile::tempdir().unwrap();
@@ -6002,7 +5751,6 @@ fn an_unchanged_entry_publishes_the_row_it_published() {
     };
     let a = row(&files, "a.txt");
     assert!(row(&files, "a.txt").same_row(&a), "the same row again");
-    // The entry changed: its row is made again, the other kept.
     let b = row(&files, "b.txt");
     if let Some(entry) = files
         .state()
@@ -6022,9 +5770,6 @@ fn an_unchanged_entry_publishes_the_row_it_published() {
     );
 }
 
-/// The listing's poll is served without a sync: a read that finds the folder
-/// as it was asks for nothing (no sync, nothing republished), and one that
-/// finds a new file asks for the sync that shows it.
 #[test]
 fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
     let directory = tempfile::tempdir().unwrap();
@@ -6056,8 +5801,6 @@ fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
     );
 }
 
-/// Run `test` on a thread that is a frame loop's, where a window reads its
-/// folders on a worker, since that thread never waits on the disk.
 fn on_a_frame_loop(test: impl FnOnce() + Send) {
     std::thread::scope(|scope| {
         scope
@@ -6070,7 +5813,6 @@ fn on_a_frame_loop(test: impl FnOnce() + Send) {
     });
 }
 
-/// A hosted window showing `home`, as the compositor mounts one.
 fn hosted_window(home: &Path) -> FileExplorerWidget {
     FileExplorerWidget::with_startup_inputs_and_services(
         StartupInputs {
@@ -6087,7 +5829,6 @@ fn hosted_window(home: &Path) -> FileExplorerWidget {
     )
 }
 
-/// Apply the worker's read once it is done.
 fn settle_folder_read(files: &FileExplorerWidget) {
     tilo_test_env::wait_until("the folder read to finish", || {
         files.state().take_folder_read()
@@ -6101,8 +5842,6 @@ fn on_a_frame_loop_a_folder_shows_the_loading_state_until_its_worker_has_read_it
     std::fs::create_dir(&folder).unwrap();
     std::fs::write(folder.join("a.txt"), b"a").unwrap();
     on_a_frame_loop(|| {
-        // Building the window lists nothing on this thread: a listing here
-        // would panic.
         let files = hosted_window(home.path());
         settle_folder_read(&files);
         files.state().navigate(folder.clone());
@@ -6214,9 +5953,6 @@ fn on_a_frame_loop_reveal_in_folder_selects_the_item_once_its_folder_is_read() {
     });
 }
 
-/// A file of the system Tilo replaced is never edited where it lies: opening it puts a copy in the
-/// workspace, and the edit lands there. The original keeps exactly what it had, and an earlier copy
-/// the person may have edited since is never overwritten by a second open.
 #[test]
 fn opening_a_file_of_the_replaced_system_brings_a_copy_into_the_workspace() {
     let replaced = tempfile::tempdir().unwrap();

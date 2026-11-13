@@ -1,17 +1,12 @@
-//! Print Centre as a resource: the print and scan defaults a person keeps
-//! across their devices. Printers, documents in the queues and scanners are
-//! this machine's live state, published as live rows; printing, scanning and
-//! the pages are the view's [`PrintCentreEffect`]s.
+//! Print Centre as a resource: the print and scan defaults a person keeps across their
+//! devices.
 
 use ui::framework::{Effect, Fixture, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::tilo_resource::{self, Atom, Invoke};
 
-/// Scan resolutions offered, in dots per inch.
 pub const SCAN_RESOLUTIONS: [u16; 3] = [150, 300, 600];
-/// Scan appearances offered.
 pub const SCAN_COLORS: [&str; 3] = ["color", "grayscale", "line-art"];
-/// Paper sources offered.
 pub const SCAN_SOURCES: [&str; 3] = ["flatbed", "feeder", "feeder-duplex"];
 /// Text recognition languages offered (ISO 639-2), with their names.
 pub const OCR_LANGUAGES: [(&str, &str); 4] = [
@@ -21,9 +16,8 @@ pub const OCR_LANGUAGES: [(&str, &str); 4] = [
     ("spa", "Spanish"),
 ];
 
-/// How a person prints and scans unless they choose otherwise for one
-/// document. It follows them to every device. Each default is edited at its
-/// path; a value that is not offered is refused however it is set.
+/// How a person prints and scans unless they choose otherwise for one document. Each
+/// default is edited at its path; a value that is not offered is refused however it is set.
 #[derive(Model, Clone, Debug, PartialEq)]
 #[model(check = PrintDefaults::offered)]
 pub struct PrintDefaults {
@@ -52,13 +46,8 @@ impl Default for PrintDefaults {
 }
 
 impl PrintDefaults {
-    /// What the record holds: how the person prints and scans unless they choose otherwise for
-    /// one document.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: how the person prints and scans unless they choose otherwise
+    /// for one document.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -124,128 +113,85 @@ impl PrintDefaults {
     }
 }
 
-/// What Print Centre does on this machine: the pages it shows, and the work
-/// it asks of CUPS and SANE.
+/// What Print Centre does on this machine: the pages it shows, and the work it asks of CUPS
+/// and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "print-centre.effects")]
 pub enum PrintCentreEffect {
-    /// Refresh printers and documents.
     #[effect(kind = "read")]
     Refresh,
-    /// Find network printers.
     #[effect(job)]
     FindPrinters,
-    /// Add printer.
-    ///
-    /// Sets up a printer the last search found nearby for every app.
     #[effect(job)]
     AddPrinter {
         #[param("The found printer's address")]
         printer: String,
     },
-    /// Open dashboard.
     #[effect(view)]
     OpenDashboard,
-    /// Open print queue.
     #[effect(view)]
     OpenQueue,
-    /// Open print history.
     #[effect(view)]
     OpenHistory,
-    /// Run printer diagnostics.
     #[effect(view)]
     RunDiagnostics,
-    /// Open what wants a person.
     #[effect(view)]
     OpenNeeds,
-    /// Print a document.
-    ///
-    /// Asks for the document, then shows its preview and printing options.
     #[effect(view)]
     PrintDocument,
-    /// Scan a document.
     #[effect(view)]
     ScanDocument,
-    /// New scanned document.
-    ///
-    /// Discards the current scanned pages after confirmation. Save the
-    /// document first to keep it; exporting one page does not save the rest.
     #[effect(destructive)]
     NewScannedDocument,
-    /// Open printer.
     #[effect(view)]
     OpenPrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
-    /// Set as default printer.
     #[effect(job)]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
-    /// Pause printer.
-    ///
-    /// Documents wait until it is resumed.
     #[effect(job)]
     #[effect(label = "print-centre-pause-printer")]
     PausePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
-    /// Resume printer.
     #[effect(job)]
     #[effect(label = "print-centre-resume-printer")]
     ResumePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
-    /// Cancel document.
     #[effect(job)]
     CancelDocument {
         #[param("The print job's id")]
         job: String,
     },
-    /// Print again.
     #[effect(job)]
     #[effect(label = "print-centre-print-again")]
     RetryDocument {
         #[param("The print job's id")]
         job: String,
     },
-    /// Confirm cancelling.
-    ///
-    /// Shows the document in the queue, asking whether to cancel it.
     #[effect(view, audience = "agents")]
     ConfirmCancel {
         #[param("The print job's id")]
         job: String,
     },
-    /// Choose printer.
-    ///
-    /// Sends the document being set up to this printer.
     #[effect(view)]
     ChoosePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
-    /// Previous document page.
-    ///
-    /// Shows the page before the one under review, so a wrong page is caught
-    /// before anything is sent.
     #[effect(view)]
     #[effect(label = "print-centre-previous-page")]
     PreviousPrintPage,
-    /// Next document page.
-    ///
-    /// Shows the page after the one under review.
     #[effect(view)]
     #[effect(label = "print-centre-next-page")]
     NextPrintPage,
-    /// Choose a printing option.
-    ///
-    /// Sets one option the chosen printer reports: its paper size, colour
-    /// mode, two-sided mode or orientation.
     #[effect(view)]
     SetPrintOption {
         #[param("The option's name")]
@@ -253,82 +199,46 @@ pub enum PrintCentreEffect {
         #[param("The value the printer reported")]
         value: String,
     },
-    /// Send to printer.
-    ///
-    /// Prints the document being set up, with its copies and sides.
     #[effect(job)]
     SendToPrinter,
-    /// Close print setup.
-    ///
-    /// Puts the document being set up away without printing it.
     #[effect(view)]
     ClosePrintSetup,
-    /// Scan with a scanner.
-    ///
-    /// Opens scanning with it, keeping the pages scanned so far when
-    /// scanning is already open.
     #[effect(view)]
     ScanWith {
         #[param("The scanner's device name")]
         scanner: String,
     },
-    /// Scan page.
-    ///
-    /// Scans a page with the chosen scanner and settings and recognizes its
-    /// text.
     #[effect(job)]
     #[effect(label = "print-centre-scan-page")]
     ScanPage,
-    /// Scan another page.
     #[effect(view)]
     #[effect(label = "print-centre-scan-another")]
     ScanAnother,
-    /// Previous scanned page.
     #[effect(view)]
     PreviousScanPage,
-    /// Next scanned page.
     #[effect(view)]
     NextScanPage,
-    /// Move scanned page earlier.
     MoveScanPageEarlier,
-    /// Move scanned page later.
     MoveScanPageLater,
-    /// Remove scanned page.
     RemoveScanPage,
-    /// Rotate scanned page.
-    ///
-    /// Turns the page under review a quarter turn clockwise.
     RotateScanPage,
-    /// Crop scanned page.
-    ///
-    /// Keeps the part of the page under review the crop frame selects.
     CropScanPage,
-    /// Update recognized text.
-    ///
-    /// Recognizes the text of the page under review again.
     #[effect(job)]
     RecognizeText,
-    /// Copy recognized text.
     CopyRecognizedText,
-    /// Export scanned page.
-    ///
-    /// Asks where to save the page under review as an image.
     #[effect(attended, job)]
     SaveScannedPage,
-    /// Save scanned document.
-    ///
-    /// Asks where to save every scanned page as one PDF with its text.
     #[effect(attended, job)]
     SaveScannedDocument,
 }
 
-/// Framework app.
 pub struct PrintCentreShell;
 
 impl ResourceApp for PrintCentreShell {
     type Resource = PrintDefaults;
     const ID: &'static str = "so.tilo.print-centre";
     const TITLE: &'static str = "Print Centre";
+    const TITLE_KEY: &'static str = "print-centre-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -369,8 +279,8 @@ impl ResourceApp for PrintCentreShell {
         ]
     }
 
-    /// A made-up studio printer, its documents and a scanner, instead of
-    /// asking the machine the screenshot is taken on.
+    /// A made-up studio printer, its documents and a scanner, instead of asking the machine
+    /// the screenshot is taken on.
     fn fixture(fixture: &mut Fixture<PrintDefaults>) {
         if let Some(snapshot) = crate::surface::scenario_snapshot(fixture.scenario()) {
             fixture.provide(snapshot);
@@ -422,7 +332,6 @@ mod tests {
             ),
             (2, 1, 1, 2, true)
         );
-        // A resolution or language that is not offered changes nothing.
         set(&mut app, &paths.scan_resolution.set(1200));
         set(&mut app, &paths.ocr_language.set(Atom("klingon".into())));
         assert_eq!(app.state(), state);

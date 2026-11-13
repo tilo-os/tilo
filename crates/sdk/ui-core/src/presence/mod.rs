@@ -10,6 +10,7 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
+pub(crate) use interaction::written_in;
 mod key;
 mod labels;
 mod layer;
@@ -31,7 +32,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{ParticipantLabels, name_key};
+pub use labels::{ParticipantLabels, guest_label, name_key, shown_name};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -98,27 +99,25 @@ pub use collab_types::presence::{
     identity_rgb, user_color,
 };
 
-/// The hue a participant wears, from who they are: a person the one their identity
-/// derives ([`crate::tokens::PresenceHue::of_identity`]), software the one what it is
-/// wears ([`crate::tokens::PresenceHue::of_agent`], the same for every run of it and
-/// every surface that draws it). The one lookup every surface asks — the bar's faces,
-/// the People list, a profile card, an agent's card in a window, its pointer, its text
-/// marks and carets, and the run a change is attributed to — so one actor is one colour
-/// everywhere, and no surface picks its own.
+/// The hue a participant wears ([`crate::tokens::PresenceHue::of_participant`]): the one
+/// lookup every surface asks — the bar's faces, the People list, a profile card, an agent's
+/// card in a window, its marks and carets, and the run a change is attributed to — so one
+/// actor is one colour everywhere. `id` is who the actor is, never the run it works in;
+/// `for_person` is `None` for software whose person the surface does not know.
 #[must_use]
-pub fn participant_hue(id: &str, is_agent: bool) -> crate::tokens::PresenceHue {
-    if is_agent {
-        crate::tokens::PresenceHue::of_agent(id)
-    } else {
-        crate::tokens::PresenceHue::of_identity(id)
-    }
+pub fn participant_hue(
+    id: &str,
+    is_agent: bool,
+    for_person: Option<&str>,
+) -> crate::tokens::PresenceHue {
+    crate::tokens::PresenceHue::of_participant(id, is_agent, for_person)
 }
 
 /// [`participant_hue`] as the colour it travels as: what the workspace paints a
 /// participant in until it hears the colour they chose.
 #[must_use]
-pub fn participant_color(id: &str, is_agent: bool) -> (u8, u8, u8) {
-    identity_rgb(participant_hue(id, is_agent))
+pub fn participant_color(id: &str, is_agent: bool, for_person: Option<&str>) -> (u8, u8, u8) {
+    identity_rgb(participant_hue(id, is_agent, for_person))
 }
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
@@ -423,6 +422,76 @@ mod color_tests {
             assert_eq!(before["bob"], after["bob"]);
         }
     }
+
+    /// An agent keeps one colour however often it comes: the key is the agent it is, never the
+    /// run it works in.
+    #[test]
+    fn an_agent_keeps_one_colour_across_its_runs() {
+        let person = Some("person-ada");
+        for (first, second) in [
+            // The same agent admitted again, with a run of its own each time.
+            ("agent:claude-code@box#1", "agent:claude-code@box#4"),
+            ("agent:helper@box#2", "agent:helper@box#12"),
+            // The name a desk shows it under, numbered per connection.
+            ("Claude Code #1", "Claude Code #3"),
+            // Its identity, as the workspace grants name it.
+            ("agent:helper@box", "helper@box"),
+        ] {
+            assert_eq!(
+                participant_color(first, true, person),
+                participant_color(second, true, person),
+                "{first} and {second} are one agent, so one colour"
+            );
+        }
+    }
+
+    /// Software never wears the hue of the person it acts for, whichever hues the two land on:
+    /// the agent steps round the ring, and the person keeps theirs.
+    #[test]
+    fn an_agent_never_wears_the_hue_of_the_person_it_acts_for() {
+        use crate::tokens::PresenceHue;
+        let distance = |a: PresenceHue, b: PresenceHue| {
+            let len = PEER_PALETTE.len();
+            let ahead = a
+                .slot()
+                .wrapping_add(len)
+                .wrapping_sub(b.slot())
+                .checked_rem(len)
+                .unwrap_or(0);
+            ahead.min(len.wrapping_sub(ahead))
+        };
+        let ids = |hue: PresenceHue, agent: bool| {
+            (0..1000)
+                .map(|n| format!("{}-{n}", if agent { "agent" } else { "person" }))
+                .find(|id| {
+                    let own = if agent {
+                        PresenceHue::of_agent(id)
+                    } else {
+                        PresenceHue::of_identity(id)
+                    };
+                    own == hue
+                })
+                .expect("some identity lands on every hue")
+        };
+        for person_hue in PresenceHue::ALL {
+            let person = ids(person_hue, false);
+            for agent_hue in PresenceHue::ALL {
+                let agent = ids(agent_hue, true);
+                let worn = participant_hue(&agent, true, Some(&person));
+                assert!(
+                    distance(worn, person_hue) >= 2,
+                    "{agent} ({worn:?}) reads as {person}'s own ({person_hue:?})"
+                );
+                // The person's own colour never moves for it.
+                assert_eq!(participant_hue(&person, false, None), person_hue);
+            }
+        }
+        // Software whose person the surface does not know still wears its own hue.
+        assert_eq!(
+            participant_hue("agent:claude-code@box", true, None),
+            crate::tokens::PresenceHue::Orange
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -662,7 +731,7 @@ pub struct PresenceCtx {
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
     /// The person each agent, Shortcut or app acts for, as the broker
-    /// admitted it: "Claude, for Ada".
+    /// admitted it: "Claude for Ada".
     acting_for: HashMap<UserId, UserId>,
     /// The person (their user root) each participant here is a device of,
     /// where presence names devices rather than people (a browser page's
@@ -1479,7 +1548,7 @@ impl PresenceCtx {
     /// own, and for software the one what it is wears rather than the one its run's id
     /// would — [`participant_hue`], the rule every surface asks.
     fn identity_hue(&self, user: &UserId) -> crate::tokens::PresenceHue {
-        participant_hue(&user.0, self.is_agent(user))
+        participant_hue(&user.0, self.is_agent(user), None)
     }
 
     /// The hue `user` wears: the one the workspace announced for them (their
@@ -1670,20 +1739,30 @@ impl PresenceCtx {
     /// The friendly name to show for `user`, this session's own participant included, falling back
     /// to the raw id when the roster has not announced one. Never blank. People sharing a name
     /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
-    /// with that person ("Claude, for Ada"), else with its kind.
+    /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &UserId) -> String {
-        let name = self.names.get(user).cloned().or_else(|| {
-            self.self_participant
-                .as_ref()
-                .filter(|(id, _)| id == user)
-                .map(|(_, name)| name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-        });
+        let name = self
+            .names
+            .get(user)
+            .and_then(|name| shown_name(name))
+            .or_else(|| {
+                self.self_participant
+                    .as_ref()
+                    .filter(|(id, _)| id == user)
+                    .and_then(|(_, name)| shown_name(name))
+            })
+            .map(str::to_owned);
         let name = match name {
             Some(name) => name,
             // Software the roster has not named is named by what it is, never by its id:
-            // "Today · App". Someone presence knows only an id of keeps it until it knows a name.
-            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| user.0.clone()),
+            // "Today · App". A person nobody named yet is a guest, never their key.
+            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| {
+                if self.participant_kind(user) == ParticipantKind::Person {
+                    guest_label()
+                } else {
+                    user.0.clone()
+                }
+            }),
         };
         self.kind_label(user, &name)
     }
@@ -1693,22 +1772,19 @@ impl PresenceCtx {
         if kind == ParticipantKind::Person {
             return self.labels.label(&user.0, name);
         }
-        // A person the roster has not named yet is left out rather than
-        // shown as their raw key: "Claude" reads better than "Claude, for
-        // 3f9a…".
-        if let Some(person) = self
-            .acting_for
-            .get(user)
-            .and_then(|person| self.names.get(person).map(|name| (person, name)))
-            .and_then(|(person, name)| {
-                crate::history_source::human_label(name, &person.0)
-                    .map(|name| self.labels.label(&person.0, name))
-            })
-        {
-            return crate::i18n::widget_format(
-                "participant-acting-for",
-                &[("name", name.into()), ("person", person.as_str().into())],
-            );
+        // Whom software acts for: "Claude for you", "Claude for Ada". A person the roster has not
+        // named yet is left out rather than shown as their raw key.
+        if let Some(person) = self.acting_for.get(user) {
+            let me = self.self_id();
+            let reader = Some(person) == me || Some(person) == me.and_then(|me| self.person_of(me));
+            let named = self.names.get(person).and_then(|named| {
+                crate::history_source::human_label(named, &person.0)
+                    .map(|named| self.labels.label(&person.0, named))
+            });
+            if reader || named.is_some() {
+                let person = named.unwrap_or_default();
+                return crate::history_source::sentence::acting_line(name, Some(&person), reader);
+            }
         }
         match kind {
             ParticipantKind::Shortcut => {
@@ -2582,7 +2658,7 @@ mod remote_cursor_tests {
             let c = &ctx.remote_cursors[0];
             assert_eq!(c.user_id, "alice");
             assert_eq!(c.position, [42.0, 17.0]);
-            assert_eq!(c.label, "alice");
+            assert_eq!(c.label, guest_label(), "an unnamed person is a guest");
             let (r, g, b) = user_color("alice");
             assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
             assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
@@ -2793,8 +2869,8 @@ mod string_id_wrapper_tests {
             );
             assert_eq!(
                 ctx.display_name(&alice),
-                "alice",
-                "name reverts to id fallback"
+                guest_label(),
+                "a person whose name went is a guest again"
             );
         }
         // phase: unregister_peer_leaves_other_users_alone
@@ -2850,8 +2926,8 @@ mod string_id_wrapper_tests {
         {
             let mut ctx = PresenceCtx::empty();
             let alice = UserId("alice".into());
-            // No roster entry yet → falls back to the id.
-            assert_eq!(ctx.display_name(&alice), "alice");
+            // No roster entry yet: a guest, never their id.
+            assert_eq!(ctx.display_name(&alice), guest_label());
             ctx.set_display_name(alice.clone(), "Alice Smith");
             assert_eq!(ctx.display_name(&alice), "Alice Smith");
             // `user()` bundles id + name + colour.
@@ -2878,20 +2954,18 @@ mod string_id_wrapper_tests {
             assert!(!ctx.user(&scribe).is_agent);
             assert_eq!(ctx.display_name(&scribe), "Editorial helper");
         }
-        // phase: an_unnamed_peer_is_labelled_with_its_id_and_never_with_a_stand_in
-        // Labelled with the raw id, never blank and never a stand-in name — a
-        // blank chip reads as a rendering fault, a stand-in reads as a real person.
+        // phase: an_unnamed_peer_is_a_guest_and_never_its_id
+        // A person nobody named is a guest on every surface: never blank, and never their key,
+        // which reads as a fault on a caret chip.
         {
             let ctx = PresenceCtx::empty();
-            let peer = UserId("peer@5537458103208628978".into());
-
+            let peer = UserId("ab".repeat(32));
             let label = ctx.display_name(&peer);
-            assert_eq!(label, "peer@5537458103208628978");
-            assert!(!label.trim().is_empty(), "a caret chip must never be blank");
+            assert_eq!(label, guest_label());
             assert_eq!(
                 ctx.user(&peer).name,
-                "peer@5537458103208628978",
-                "every renderer resolves the same way, so none of them invents a name",
+                guest_label(),
+                "every renderer resolves the same way",
             );
         }
         // phase: a_peer_that_gains_a_name_keeps_its_colour
@@ -2912,12 +2986,12 @@ mod string_id_wrapper_tests {
         }
         // phase: a_name_that_arrives_after_the_pointer_relabels_it
         // A name can arrive after the pointer it belongs to. The pill has to
-        // pick it up, or a peer stays a number on screen until they happen
+        // pick it up, or a peer stays a guest on screen until they happen
         // to move again.
         {
             let mut ctx = PresenceCtx::empty();
             ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
-            assert_eq!(ctx.remote_cursors[0].label, "peer@77");
+            assert_eq!(ctx.remote_cursors[0].label, guest_label());
 
             ctx.set_display_name(UserId("peer@77".into()), "Bob");
 
@@ -3897,3 +3971,7 @@ mod one_person_one_pointer_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "render_label_tests.rs"]
+mod render_label_tests;

@@ -36,6 +36,7 @@ import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 import {siteHost, STALE_SITE_HOST, staleSiteHost, staleSiteHostReport} from './site-host.mjs';
+import {deviceLabel} from './pairing.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -438,7 +439,7 @@ export async function withCustody(custody, connecting, signal) {
 }
 
 async function connect({
-  origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
+  origin, userPublicKey, label = deviceLabel(), workspace, custody, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
@@ -490,9 +491,16 @@ async function connect({
   const ownColor = () => runtime.presenceColor(userPublicKey);
   // Who the host is and where it is dialled: as the page's own site names
   // it, handed on by the entry that took it (`enterOnSession`), else asked
-  // of the host here.
+  // of the host here. An answer from a door says where the host's packet
+  // relay answers and nothing of how a page reaches the host itself (the
+  // WebTransport origin, and the certificate a page pins when the host's is
+  // not trusted by the browser): the site's own naming of the host has
+  // that, and the host is the same one, so it is kept.
   const named = siteHost(origin)?.info;
   let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
+  if (answered?.address && !answered.address.web && named?.address?.web) {
+    host = {...answered, address: {...answered.address, web: named.address.web}};
+  }
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
@@ -521,6 +529,10 @@ async function connect({
     publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
+  /** The workspace's name as its host answered admission with it
+   * ([`certifiedPeer.noteWorkspaceName`]), kept until the workspace's own
+   * shared desktop names it again. */
+  let admittedName = null;
   // A session dialling the host as the site named it, which it has not
   // reached yet, asks the host who it is once it fails or takes long: a host
   // set up again since answers as another, and the page stops there with the
@@ -529,10 +541,25 @@ async function connect({
   let reached = host !== named;
   let checking = null;
   let stale = null;
+  // A session whose first try to connect failed before it ever got through
+  // is a host this page cannot reach: a refused or dropped connection says
+  // so at once, and the page says so then (`hostUnreached`)
+  // instead of waiting out a timeout. The session goes on trying; once it
+  // gets through, it is a session like any other. A host the site named is
+  // first asked who it is (`siteChecked`), which tells a host set up again
+  // from a host down.
+  let connectedOnce = false;
+  let unreached = false;
+  let siteChecked = false;
+  const checked = () => {
+    siteChecked = true;
+    if (!disposed) publish();
+  };
   const checkSiteHost = () => {
-    if (reached || checking || stale || disposed) return;
+    if (reached || checking || stale || siteChecked || disposed) return;
     checking = runtime.hostInfo(post).then(text => {
-      if (reached || disposed || !staleSiteHost(host, JSON.parse(text))) return;
+      if (reached || disposed) return;
+      if (!staleSiteHost(host, JSON.parse(text))) { checked(); return; }
       const report = staleSiteHostReport(origin);
       console.error(report);
       // The site's door logs what a page did not catch (`reportErrors` in entry-page.mjs).
@@ -540,8 +567,9 @@ async function connect({
       stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
       publish();
     }, () => {
-      // Not reached either: the session's own failure says so, and the next one asks again.
+      // Its web address does not answer either: the host is down.
       checking = null;
+      checked();
     });
   };
   let siteHostCheck;
@@ -563,6 +591,11 @@ async function connect({
       } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
         checkSiteHost();
       }
+    }
+    if (snapshot.health?.transport?.phase === 'connected') connectedOnce = true;
+    if (!connectedOnce && !stale) {
+      if ((reached || siteChecked) && snapshot.health?.transport?.phase === 'offline') unreached = true;
+      if (unreached) snapshot = {...snapshot, ...hostUnreached(origin, snapshot)};
     }
     // Once in, a session started again (a recovery) is a member's and enters no more.
     if (snapshot.entry?.outcome === 'admitted') entering = undefined;
@@ -1049,11 +1082,19 @@ async function connect({
     userPublicKey,
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
+    /** The workspace's name as its host answered this page's admission with:
+     * the name the tab is titled after and the desk's first space is given,
+     * for a workspace the page read in no directory — one a link's invitation
+     * admits into, or the person's own. */
+    noteWorkspaceName(name) {
+      admittedName = typeof name === 'string' && name.trim() ? name.trim() : null;
+    },
     /** The workspace's name as its people last set it (the workspace in front on
-     * its shared desktop), once the workspace delivered it; else `undefined`. */
+     * its shared desktop), once the workspace delivered it; else the name its
+     * host answered admission with; else `undefined`. */
     get workspaceName() {
       // Asked after a failure too, when the session may be gone.
-      try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
+      try { return peer?.workspaceName?.() ?? admittedName ?? undefined; } catch { return admittedName ?? undefined; }
     },
     setDisplayName: name => rename(name),
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
@@ -1234,8 +1275,12 @@ async function connect({
      * is still getting the page there (the session moving on to admitting,
      * another of the workspace's records arriving) is waited for, up to
      * `capMs` in all: a busy host replaying a workspace to a slow device
-     * takes longer than a silent one is given, and is no unreachable host. */
-    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false} = {}) {
+     * takes longer than a silent one is given, and is no unreachable host;
+     * `onProgress(records)` hears each step, with how many of the
+     * workspace's records are here, for the page to show it is moving.
+     * One that refuses the page, or a session that never reached the host
+     * (`hostUnreached`), is said as soon as the session says so. */
+    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false, onProgress = null} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
         let done = false;
@@ -1248,17 +1293,34 @@ async function connect({
           if (error) reject(error); else resolve(value);
         };
         const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-        // Not a refusal: the host has not answered yet.
-        const timedOut = () => finish(new DOMException('Workspace admission timed out', 'TimeoutError'));
+        // Not a refusal: the host has not let the page in yet. What the
+        // session last said goes with it (whether the host answered at all,
+        // and why it waits), for the page to say which of the two it was.
+        const timedOut = () => finish(Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {
+          phase: snapshot.phase ?? null, sessionError: snapshot.error ?? null, sessionErrorCode: snapshot.errorCode ?? null,
+          connected: snapshot.health?.transport?.phase === 'connected'}));
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
-          else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+          // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
+          else if (current.phase === 'failed') {
+            finish(Object.assign(new Error(current.error ?? 'the host refused this device'),
+              current.errorCode === 'unanswered' ? {code: 'unanswered'} : {}));
+          }
+          // The host answered the page's subscription with a no: the session
+          // asks no more, so nothing comes of waiting on.
+          else if (current.phase === 'admitting' && current.errorCode === 'permission-required') {
+            finish(Object.assign(new Error(`the host did not let this tab in: ${current.error ?? 'refused'}`), {
+              code: 'not-let-in', phase: current.phase, sessionError: current.error ?? null,
+              sessionErrorCode: current.errorCode, connected: true}));
+          }
           if (done) return;
           // Each step the host takes gives it `timeoutMs` more, within `capMs`.
-          const now = `${current.phase}:${JSON.parse(peer?.workspaceRecords?.() ?? '[]').length}`;
+          const records = JSON.parse(peer?.workspaceRecords?.() ?? '[]').length;
+          const now = `${current.phase}:${records}`;
           if (now === progress) return;
+          if (progress !== null && records > 0) onProgress?.(records);
           progress = now;
           clearTimeout(timer);
           timer = setTimeout(timedOut, Math.max(0, Math.min(timeoutMs, began + capMs - Date.now())));
@@ -1413,7 +1475,7 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = 'Browser', door, signal} = options;
+  const {origin, userPublicKey, label = deviceLabel(), door, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.custody`, of `profile`) stays the
@@ -1479,6 +1541,15 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
   } finally {
     await opened?.release?.();
   }
+}
+
+/** What a session that never got through to the host at `origin` says in
+ * place of its own phase: `failed`, `unanswered` (the code a door not
+ * reached ends an entry with), and words that name the host and read as a
+ * connection that failed (`failure-screen.mjs`, `unanswered`). */
+function hostUnreached(origin, snapshot) {
+  const why = snapshot?.error ? `: ${snapshot.error}` : '';
+  return {phase: 'failed', errorCode: 'unanswered', error: `connection refused or lost before ${new URL(origin).origin} answered${why}`};
 }
 
 /** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
@@ -1567,6 +1638,10 @@ async function enterOnSession({
   });
   try {
     const answered = await entryAnswered(peer);
+    // The name the workspace gave itself, before its shared desktop reaches
+    // the page: what the tab is titled after and the desk's first space is
+    // given.
+    peer.noteWorkspaceName?.(answered.name);
     onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});
     return peer;
   } catch (error) {
@@ -1583,7 +1658,7 @@ async function enterOnSession({
 }
 
 async function join({
-  origin, invitation, door, identity, displayName = '', label = 'Browser', signal, onProgress,
+  origin, invitation, door, identity, displayName = '', label = deviceLabel(), signal, onProgress,
   admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as

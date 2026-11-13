@@ -15,7 +15,6 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 
 impl super::TextInput {
-    /// The person is using this field: spelling applies to it from now on.
     pub(super) fn activate_spelling(&mut self) {
         if !self.spell_active {
             self.spell_active = true;
@@ -127,9 +126,6 @@ impl super::TextInput {
     }
 }
 
-// What the field learns from spelling, and what it offers as a correction: the
-// preview under the caret, the words it knows, and the marks it draws for them.
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Autocorrection {
     pub(super) start: usize,
@@ -139,9 +135,6 @@ pub(super) struct Autocorrection {
     replacement: String,
 }
 
-/// A correction offered for the word under the caret. `automatic` ones are
-/// confident enough that typing a word boundary applies them ("Space →");
-/// the rest are suggestions the person accepts by clicking the chip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AutocorrectionPreview {
     language: String,
@@ -152,24 +145,17 @@ pub(super) struct AutocorrectionPreview {
     pub(super) automatic: bool,
 }
 
-/// What the cached preview was computed for: language, word, its range, and
-/// whether the word had settled under the caret.
 pub(super) type PreviewKey = (String, String, usize, usize, bool);
 
 pub(super) fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-/// Spellcheck runs immediately, but the word containing the caret stays
-/// visually quiet for this long after an edit so its underline does not
-/// flicker while the user is still forming it.
 pub(super) const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
 #[derive(PartialEq)]
 pub(super) struct PersonalSpelling {
     owner: Option<[u8; 32]>,
     generation: u64,
-    /// The field's language as it was set, so an unchanged one is compared
-    /// rather than spelled again.
     configured: String,
     pub(super) language: String,
     pub(super) snapshot: Option<crate::personal_dictionary::Snapshot>,
@@ -276,11 +262,6 @@ impl super::TextInput {
         self.autocorrection_preview = None;
     }
 
-    /// Offer a correction for the word under the caret: a confident
-    /// autocorrection as soon as the word ends at the caret, and an ordinary
-    /// suggestion for any misspelled word once it has rested under the caret
-    /// for [`SUGGESTION_SETTLE`](crate::text_edit::SUGGESTION_SETTLE) — a
-    /// pause at the end of a word or the caret coming back to an earlier one.
     pub(in crate::widget) fn refresh_suggestion_at(&mut self, now: Instant) {
         self.refresh_personal_spelling();
         let offers = self.autocorrect_enabled() || self.checks_spelling();
@@ -393,8 +374,6 @@ impl super::TextInput {
         {
             return None;
         }
-        // Check the word in its line so sentence-start capitals and names
-        // are judged the way the squiggles judge them.
         let (line_start, _) = line_boundaries(&self.text, range.start);
         let context = self.text.get(line_start..range.end)?;
         let local = range.start.saturating_sub(line_start)..range.end.saturating_sub(line_start);
@@ -418,16 +397,11 @@ impl super::TextInput {
         })
     }
 
-    /// What the last draw painted outside the field's rect: while a
-    /// correction is offered, its chip, which floats above or below the
-    /// field. A host proving its own damage repaints this too when the field
-    /// changes.
     #[must_use]
     pub fn overhang(&self) -> Option<Rect> {
         self.suggestion_chip
     }
 
-    /// Replace the previewed word with its correction (a click on the chip).
     pub(super) fn accept_suggestion(&mut self) -> bool {
         self.refresh_personal_spelling();
         let Some(preview) = self.autocorrection_preview.take() else {
@@ -522,8 +496,6 @@ impl super::TextInput {
         true
     }
 
-    /// The word currently being formed. Checking is immediate, but its result
-    /// is hidden briefly; all completed words remain visible during typing.
     pub(super) fn actively_edited_word(&self) -> Option<(usize, usize)> {
         if !self.is_focused
             || self.has_selection()
@@ -550,9 +522,6 @@ impl super::TextInput {
             .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
     }
 
-    /// Draw a theme-aware wavy underline under misspellings and the owner's
-    /// marked mistakes, using the same range geometry as selection, so it
-    /// follows shaping, `BiDi`, and soft wrapping.
     #[allow(
         clippy::while_float,
         reason = "x advances by a fixed positive 2px and is clamped to x1"
@@ -597,9 +566,6 @@ impl super::TextInput {
         }
     }
 
-    /// A quiet solid underline marks the most recent automatic replacement.
-    /// It disappears on the next edit, but remains long enough to explain what
-    /// changed and to invite Backspace or the context-menu undo action.
     pub(super) fn draw_autocorrection(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let Some(correction) = self.last_autocorrection.as_ref() else {
             return;
@@ -623,9 +589,6 @@ impl super::TextInput {
         }
     }
 
-    /// Show the exact high-confidence replacement before Space/punctuation
-    /// applies it. The compact chip floats above the field like an IME
-    /// candidate, leaving the text and caret unobscured.
     pub(super) fn draw_autocorrection_preview(
         &mut self,
         scene: &mut Scene,

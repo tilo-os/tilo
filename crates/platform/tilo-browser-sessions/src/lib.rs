@@ -1,13 +1,9 @@
-//! Native website-session codec qualification.
-//!
-//! Canonical account custody owns protected-secret encoding. This backend checks
-//! its cookie and origin-storage contracts using bounded synthetic selections;
-//! callers receive only public selection metadata, never account/vault types.
-//! It neither opens the vault nor claims that a provider authenticated a session.
+//! Native website-session codec qualification: this backend checks its cookie and
+//! origin-storage contracts with bounded synthetic selections, opens no vault, hands
+//! out only public metadata and claims no provider authenticated anything.
 
 use browser_continuity::sessions::{Service, SessionCookies};
 
-/// Public metadata used to qualify a consumer's resource/action codec.
 pub struct SessionSelection {
     pub id: String,
     pub service: Service,
@@ -22,9 +18,8 @@ fn selection(session: &SessionCookies) -> SessionSelection {
     }
 }
 
-/// Verify cookie and raw origin-storage custody codecs before qualifying consumers.
-///
-/// No native engine, account store, keychain, network or provider is accessed.
+/// Verify cookie and raw origin-storage custody codecs before qualifying
+/// consumers; no engine, account store, keychain, network or provider is touched.
 pub fn probe_service_session_codecs() -> Result<Vec<SessionSelection>, String> {
     use browser_continuity::sessions::{Cookie, OriginStorage, SameSite};
     let failure = || "Selected account consumer contract failed".to_owned();

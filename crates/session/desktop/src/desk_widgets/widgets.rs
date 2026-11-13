@@ -2570,6 +2570,7 @@ mod tests {
             Box::new(StubSurface),
             handle,
             crate::launchpad::CollaborationLaunchpad::new(),
+            Rc::new(|| crate::launchpad::LaunchpadAction::ALL.to_vec()),
             Rc::new(RefCell::new(Vec::new())),
             vec![Box::new(widgets)],
         );

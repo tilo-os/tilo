@@ -99,19 +99,22 @@ pub fn unseen(
     mark: Option<&SeenMark>,
     runs: &[String],
 ) -> Vec<Version> {
-    let mut from = 0;
-    if let Some(mark) = mark {
-        from = match versions.iter().rposition(|v| v.change == mark.change) {
-            Some(at) => at.saturating_add(1),
-            None => versions
-                .iter()
-                .rposition(|v| v.at <= mark.at)
-                .map_or(0, |at| at.saturating_add(1)),
-        };
-    }
+    let mut from = mark.map_or(0, |mark| after_mark(versions, mark));
     if let Some(own) = versions.iter().rposition(|v| v.who == person) {
         from = from.max(own.saturating_add(1));
     }
+    unseen_after(versions.get(from..).unwrap_or_default(), person, runs)
+}
+
+/// Which of `versions` (oldest first, all of them after the person's mark) `person` has not
+/// seen, oldest first: what [`unseen`] reads, for a page of a record's history read from the
+/// mark on rather than the whole of it.
+#[must_use]
+pub fn unseen_after(versions: &[Version], person: &str, runs: &[String]) -> Vec<Version> {
+    let from = versions
+        .iter()
+        .rposition(|v| v.who == person)
+        .map_or(0, |own| own.saturating_add(1));
     versions
         .get(from..)
         .unwrap_or_default()
@@ -120,6 +123,27 @@ pub fn unseen(
         .filter(|v| !v.run.as_ref().is_some_and(|run| runs.contains(&run.id)))
         .cloned()
         .collect()
+}
+
+/// Where in `versions` (oldest first, by [`Version::order`]) the versions after the one `mark`
+/// names start: after the change it names, or, when the record no longer holds that change,
+/// after the last version made at or before its time. Counting what follows costs the log no
+/// copy, so a catch-up reads a page of a record's history without the whole of it.
+#[must_use]
+pub fn after_mark(versions: &[Version], mark: &SeenMark) -> usize {
+    let made_by = versions.partition_point(|v| v.at.as_str() <= mark.at.as_str());
+    let same_moment = versions
+        .get(..made_by)
+        .unwrap_or_default()
+        .partition_point(|v| v.at.as_str() < mark.at.as_str());
+    versions
+        .get(same_moment..made_by)
+        .unwrap_or_default()
+        .iter()
+        .position(|v| v.change == mark.change)
+        .map_or(made_by, |at| {
+            same_moment.saturating_add(at).saturating_add(1)
+        })
 }
 
 #[cfg(test)]
@@ -184,6 +208,21 @@ mod tests {
             changes(unseen(&versions, "ada", None, &["t1@1".to_owned()])),
             ["c3"]
         );
+        // The page of the log a catch-up reads: what follows the mark, and nothing of what the
+        // record held before it.
+        assert_eq!(after_mark(&versions, &mark), 2);
+        assert_eq!(
+            changes(unseen_after(&versions[2..], "ada", &[])),
+            ["c3", "c4"]
+        );
+        // Two versions of one second (a change's place in the log decides): the mark names one
+        // of them, and what came after it stands.
+        let earlier = version("ben", "2026-10-30T09:02:00Z", "c3", false);
+        let mut second = version("ben", "2026-10-30T09:02:00Z", "c4", false);
+        second.op = 9;
+        let both = [earlier, second];
+        assert_eq!(after_mark(&both, &SeenMark::of(&both[0])), 1);
+        assert_eq!(after_mark(&both, &SeenMark::of(&both[1])), 2);
     }
 
     #[test]

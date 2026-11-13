@@ -1302,7 +1302,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
     {
         /// A typed effect vocabulary as an app declares it.
         #[derive(Clone, Debug, tilo_resource::Effect)]
-        #[effect(operation = "test.counter")]
+        #[effect(operation = "test.counter", catalogue = "tests/locales")]
         enum Folder {
             /// Copy the folder to this computer's clipboard.
             #[effect(own_device)]

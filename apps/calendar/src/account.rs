@@ -1,24 +1,4 @@
 //! Calendar's view of the shared multi-account store.
-//!
-//! ## One shared store, one vault
-//! Account *management* (adding, editing, removing calendar accounts,
-//! entering credentials) lives in the **Settings app**, not in the Calendar —
-//! the same way display, network, and Bluetooth settings do, and the same way
-//! the Mail app consumes its accounts. The canonical store is the shared
-//! [`accounts`] crate: a single JSON document under
-//! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
-//! credentials sealed in the encrypted [`accounts::AccountCredentials`], never in the
-//! plaintext store.
-//!
-//! Historically Calendar and Settings each declared their own store *shape*
-//! and disagreed (Settings persisted a `DavAccount` layout, Calendar expected
-//! `CalendarAccount`), so an account added in one was invisible to the other.
-//! Reading and writing the one shared store resolves that by construction —
-//! both sides now (de)serialise the same [`accounts::Account`], with the
-//! `CalDAV` settings carried in its opaque `config`. An existing Nextcloud
-//! account can also carry selected calendars: Calendar projects that canonical
-//! account under its original ID and reads its existing vault entry, never a
-//! second account or a copied credential.
 
 use std::path::Path;
 
@@ -30,28 +10,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Palette;
 
-/// The account-type id Calendar contributes to the shared store.
 pub const TYPE_ID: &str = "caldav";
 
-/// `CalDAV` connection + identity settings — what Settings' account form
-/// collects and the sync layer consumes.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CalDavConfig {
-    /// Friendly account name shown in the sidebar header ("Work", "Fastmail").
     #[serde(default)]
     pub display_name: String,
-    /// Server URL entered in Settings. Settings resolves principal and home-set
-    /// discovery during setup and saves the selected collection URLs below;
-    /// sync reads those collections directly, without guessing login paths.
     pub server_url: String,
-    /// Login name for the `CalDAV` server (often the email address).
     pub username: String,
     /// Held only in memory here and hydrated from the [`accounts::AccountCredentials`]
     /// on load; the sync layer uses it at connect time. Never written to the
     /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
     #[serde(skip)]
     pub password: String,
-    /// Canonical account ID whose Google calendar grant Custodian refreshes.
     #[serde(skip)]
     pub oauth_account_id: Option<String>,
 }
@@ -63,8 +34,6 @@ impl std::fmt::Debug for CalDavConfig {
 }
 
 impl CalDavConfig {
-    /// Field-level validation for the setup form: returns `(field, reason)`
-    /// pairs for anything missing or malformed. Empty vec == valid.
     pub fn validate(&self) -> Vec<(&'static str, String)> {
         let mut out = Vec::new();
         if self.display_name.trim().is_empty() {
@@ -88,23 +57,14 @@ impl CalDavConfig {
     }
 }
 
-/// One remote calendar collection within an account (a `CalDAV` `calendar-home-set`
-/// child). Each is an independent sync target with its own visibility toggle and
-/// display colour, so a user can show "Work" but hide "Holidays".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteCalendar {
-    /// Stable id — in a live deployment the collection href; here a slug.
     pub id: String,
-    /// Calendar display name from the `CalDAV` `displayname` property.
     pub name: String,
-    /// Which palette slot tints this calendar's events. Stored as the palette
-    /// index so the JSON stays OS-theme-agnostic.
     #[serde(default)]
     pub color: u8,
-    /// Whether this calendar's events are shown. Off == synced but hidden.
     #[serde(default = "default_true")]
     pub visible: bool,
-    /// The server did not grant write privileges; this remains a sync target.
     #[serde(default)]
     pub read_only: bool,
 }
@@ -119,21 +79,12 @@ impl RemoteCalendar {
     }
 }
 
-/// A single configured calendar account: its `CalDAV` connection settings, the
-/// calendars discovered within it, plus the per-account UI state the Calendar
-/// app needs (sidebar expand/collapse).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarAccount {
-    /// Stable id (the username at creation time is a fine natural key, but we
-    /// keep an explicit field so a later rename doesn't reshuffle the store).
     pub id: String,
     pub config: CalDavConfig,
-    /// Calendars selected from this account's discovered home-set. Settings
-    /// writes them after confirmation; Calendar uses them as its sync targets
-    /// and sidebar inventory.
     #[serde(default)]
     pub calendars: Vec<RemoteCalendar>,
-    /// Whether this account's calendar list is collapsed in the sidebar.
     #[serde(default)]
     pub collapsed: bool,
 }
@@ -153,8 +104,6 @@ impl CalendarAccount {
         }
     }
 
-    /// Display label for the account header: the display name, falling back to
-    /// the username, falling back to a generic placeholder.
     pub fn label(&self) -> &str {
         if !self.config.display_name.is_empty() {
             &self.config.display_name
@@ -179,15 +128,11 @@ impl CalendarAccount {
         stored
     }
 
-    /// The account as the shared store holds it, for a test that saves it
-    /// elsewhere.
     #[cfg(test)]
     pub(crate) fn to_stored_for_test(&self) -> StoredAccount {
         self.to_stored()
     }
 
-    /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
-    /// password back from `vault`.
     fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
@@ -228,9 +173,6 @@ impl CalendarAccount {
     }
 }
 
-/// The opaque config payload a [`CalendarAccount`] serialises into a
-/// shared [`StoredAccount`]: the `CalDAV` settings (password skipped), the discovered
-/// calendars, and the sidebar collapse state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     #[serde(flatten)]
@@ -241,7 +183,6 @@ struct StoredConfig {
     collapsed: bool,
 }
 
-/// Calendar's in-memory account list, projected from the shared store.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountStore {
     pub accounts: Vec<CalendarAccount>,
@@ -260,7 +201,6 @@ impl AccountStore {
         self.accounts.len()
     }
 
-    /// Add (or replace, by id) an account.
     pub fn upsert(&mut self, account: CalendarAccount) {
         if let Some(slot) = self.accounts.iter_mut().find(|a| a.id == account.id) {
             *slot = account;
@@ -273,16 +213,12 @@ impl AccountStore {
         self.accounts.retain(|a| a.id != id);
     }
 
-    /// Every visible calendar across every account, in account-then-calendar
-    /// order. The sidebar's calendar checklist iterates this.
     pub fn all_calendars(&self) -> impl Iterator<Item = (&CalendarAccount, &RemoteCalendar)> {
         self.accounts
             .iter()
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// The accounts kept under the config root `config_root`, none when its
-    /// credentials cannot be opened.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
             tracing::error!("calendar account credentials could not be opened");
@@ -290,7 +226,6 @@ impl AccountStore {
         })
     }
 
-    /// Load accounts under an explicit root, returning custody failures.
     pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(
@@ -299,15 +234,10 @@ impl AccountStore {
         ))
     }
 
-    /// Project the shared accounts using the trusted account-owner credentials.
     pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         Self::from_shared(shared, Some(vault))
     }
 
-    /// The accounts `shared` holds, with the passwords from `vault` when this
-    /// device's credential store could be opened. Without it the accounts and
-    /// their calendars still show; signing in to their servers fails until
-    /// the store is back, and says so.
     pub(crate) fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts = shared
@@ -327,18 +257,13 @@ impl AccountStore {
         Self { accounts }
     }
 
-    /// Write these accounts into the shared store + vault under an explicit
-    /// config root, preserving unrelated accounts. For a Nextcloud projection,
-    /// only calendar preferences change; its type, services and sign-in stay.
-    /// The
-    /// write half of the seam (Settings owns the lifecycle; this exists so the
-    /// round-trip is testable).
+    /// Write these accounts into the shared store and vault under `config_root`, preserving unrelated
+    /// accounts. For a Nextcloud projection only calendar preferences change; its type, services and
+    /// sign-in stay.
     ///
     /// # Errors
     ///
-    /// Returns an error if the shared account store cannot be saved to
-    /// `config_root` (for example, if the directory cannot be created or
-    /// written to).
+    /// When the shared account store cannot be saved to `config_root`.
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
         self.persist_with_vault(
             config_root,
@@ -358,8 +283,6 @@ impl AccountStore {
             if let Some(source) = shared.get(&id).filter(|source| {
                 source.type_id.as_str() != TYPE_ID || acct.config.oauth_account_id.is_some()
             }) {
-                // Keep the canonical service account and its credential. Calendar
-                // is a projection of it, not a second account with a copied key.
                 let mut stored = source.clone();
                 let config = stored
                     .config
@@ -392,10 +315,8 @@ impl AccountStore {
         shared.save_in(config_root)
     }
 
-    /// A representative offline store so `--shots` shows real `CalDAV` accounts in
-    /// the sidebar without a network or a configured machine. These mirror the
-    /// shape Settings would persist after a successful connect — minus the
-    /// credentials, which never live here.
+    /// A representative offline store so `--shots` shows real `CalDAV` accounts in the sidebar without a
+    /// network: the shape Settings persists after a connect, minus the credentials.
     pub fn sample() -> Self {
         Self {
             accounts: vec![

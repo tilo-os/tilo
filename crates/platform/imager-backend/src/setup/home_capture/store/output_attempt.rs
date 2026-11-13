@@ -199,8 +199,7 @@ fn save(store: &Store, record: &Attempt, mode: PublishMode) -> io::Result<()> {
         || failure("Original output attempt exceeds bounds"),
     )
 }
-/// Actual descriptor-relative enumeration, fresh directory cursor; no pathname
-/// or reused read offset. A single non-dot entry makes retry refuse.
+/// A single non-dot entry makes retry refuse.
 fn empty(file: &File) -> io::Result<()> {
     only_entries(file, &[])
 }
@@ -264,7 +263,6 @@ fn check_stage(store: &Store, record: &Attempt, output: &File) -> io::Result<()>
     }
     store.check_original_output_filesystem(metadata.dev())
 }
-/// Exact paired ciphertext expectations under one authenticated output budget.
 pub(in crate::setup::home_capture) struct OriginalOutputExpectations<'a> {
     pub(in crate::setup::home_capture) home: &'a crate::setup::portable_home_media::Expectation,
     pub(in crate::setup::home_capture) applications:
@@ -387,9 +385,8 @@ impl Store {
         }
         Ok((committed.expected, committed.marker_sha256))
     }
-    /// A fresh setup generation is separate from the retired Home stage. Its
-    /// first inode is durably recorded under the already held operation lease;
-    /// an unrecorded existing name is quarantined, never adopted on retry.
+    /// A fresh setup generation is separate from the retired Home stage: its first inode is recorded
+    /// under the held lease, and an unrecorded existing name is quarantined.
     pub(in crate::setup::home_capture) fn completed_original_setup_directory(
         &self,
         parent: &Arc<PinnedDirectory>,
@@ -418,9 +415,8 @@ impl Store {
             }
             pin
         } else {
-            // Use the same protocol ciphertext bound and bounded completion
-            // metadata reserve admitted by the original media plan. No larger
-            // arbitrary estimate may fail an already promised allocation.
+            // The same ciphertext bound and completion reserve the media plan admitted; no larger
+            // estimate may fail an allocation already promised.
             let required = crate::setup::prepared_setup::completed_setup_write_reservation()?;
             let available = crate::setup::prepared_setup::completed_setup_free_bytes(&parent.file)?;
             if available < required {
@@ -428,7 +424,7 @@ impl Store {
                     "Completed setup generation has insufficient capacity",
                 ));
             }
-            // create_child is exclusive and never adopts an existing directory.
+            // `create_child` is exclusive and never adopts an existing directory.
             let pin = parent.create_child(OsStr::new(&name))?;
             let metadata = pin.file.metadata()?;
             if metadata.uid() != 0 || metadata.gid() != 0 || metadata.mode() & 0o7777 != 0o700 {
@@ -451,8 +447,8 @@ impl Store {
         pin.validate_destination()?;
         Ok(pin)
     }
-    /// A verified checkpoint alone is not ciphertext authority. The caller
-    /// separately supplies actual verifier quiescence and the canonical receipt.
+    /// A verified checkpoint is not ciphertext authority; the caller supplies verifier quiescence
+    /// and the canonical receipt.
     pub(in crate::setup::home_capture) fn check_verified_original_output(
         &self,
         attempt: &str,
@@ -477,8 +473,8 @@ impl Store {
         {
             return Err(failure("Verified original output checkpoint differs"));
         }
-        // Canonical publication retires the worker stage to root only after
-        // the actual verifier namespace has died; never adopt another inode.
+        // Publication retires the worker stage to root only after the verifier namespace has died;
+        // never adopt another inode.
         let metadata = output.metadata()?;
         if !metadata.is_dir()
             || metadata.ino() != record.inode
@@ -515,8 +511,8 @@ impl Store {
             return Err(failure("Verified original output checkpoint differs"));
         }
         check_pair(&record, expected)?;
-        // Canonical publication retires the worker stage to root only after
-        // the actual verifier namespace has died; never adopt another inode.
+        // Publication retires the worker stage to root only after the verifier namespace has died;
+        // never adopt another inode.
         let metadata = output.metadata()?;
         if !metadata.is_dir()
             || metadata.ino() != record.inode
@@ -692,7 +688,6 @@ impl Store {
             return Err(failure("Applications verified intent differs"));
         }
         check_applications(&record, expected, reserve_bytes)?;
-        // Publication can have retired this exact stage to root ownership.
         let metadata = output.metadata()?;
         if !metadata.is_dir()
             || metadata.ino() != record.inode
@@ -807,8 +802,6 @@ impl Store {
             save(self, &record, PublishMode::IfAbsent)?;
             (record, file)
         };
-        // Safe to repeat only before a durable Launching state and only on the
-        // held exact empty stage under the exclusive root operation lease.
         if unsafe { libc::fchown(file.as_raw_fd(), record.binding.uid, record.binding.gid) } < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -834,8 +827,8 @@ impl Store {
                 if e.kind() == io::ErrorKind::AlreadyExists
                     || e.kind() == io::ErrorKind::PermissionDenied =>
             {
-                // Prepared record is authority to refresh ephemeral claims;
-                // malformed, foreign-operation/attempt intents never qualify.
+                // A prepared record is authority to refresh ephemeral claims; a malformed or
+                // foreign-operation intent never qualifies.
                 let directory = storage(&self.records)?;
                 let name = format!("{}.original-output", self.operation);
                 let file = directory.open_read(OsStr::new(&name), Privacy::OwnerOnly)?;
@@ -884,8 +877,8 @@ impl Store {
     }
 }
 
-/// Read-only protected facts, retaining the existing shared operation lease.
-/// This is not an output/export authority and must retire inside BootMedium.
+/// Read-only protected facts under the existing shared lease; not output authority, and it must
+/// retire inside the medium.
 pub struct CommittedOriginalSelection {
     _store: Store,
     declaration: crate::setup::prepared_setup::OfflineHomePlan,
@@ -955,8 +948,8 @@ fn bounded_private_bytes(
     })?;
     Ok(bytes)
 }
-/// Opens the committed original output store under a shared lease, and hands
-/// back the pinned `original-output` parent that holds the stage directories.
+/// Opens the committed original output store under a shared lease and hands back the pinned
+/// `original-output` parent holding the stage directories.
 fn open_original_output(
     private: &Arc<PinnedDirectory>,
     operation: &str,
@@ -980,7 +973,6 @@ fn open_original_output(
     Ok((store, parent))
 }
 
-/// The attempt's own stage and completed-setup pins.
 fn attempt_stages(
     parent: &Arc<PinnedDirectory>,
     attempt: &str,
@@ -991,7 +983,6 @@ fn attempt_stages(
     ))
 }
 
-/// Refuses unless the stages the caller holds are this attempt's own.
 fn pin_attempt_stages(
     parent: &Arc<PinnedDirectory>,
     attempt: &str,
@@ -1092,8 +1083,8 @@ pub fn review_committed_original_selection(
     })
 }
 
-/// Proves only never-started or exact clean Prepared state. Absence of a selected
-/// completion is not permission to retry a launched or exported attempt.
+/// Proves only never-started or exact clean Prepared state; a missing completion is not permission
+/// to retry a launched or exported attempt.
 pub fn review_uncommitted_original_selection(
     private: &Arc<PinnedDirectory>,
     declaration: &crate::setup::prepared_setup::OfflineHomePlan,
@@ -1233,9 +1224,8 @@ fn review_uncommitted_original_selection_plan(
             &parent.file,
             &[b"records", b"snapshots", stage_name.as_bytes()],
         )?;
-        // A Prepared stage intentionally belongs to the original source UID.
-        // Its root-private parent and Store lease have already been checked;
-        // recheck held/named identity and the exact declared owner separately.
+        // A Prepared stage belongs to the original source UID; its parent and lease are checked, so
+        // recheck held and named identity and the declared owner separately.
         stage.validate()?;
         check_stage(&store, &record, &stage.file)?;
     } else {
@@ -1247,9 +1237,8 @@ fn review_uncommitted_original_selection_plan(
     store.check_original_output_operation(&store.operation)
 }
 
-/// Locate the single committed attempt from the authenticated source operation's
-/// fixed protected journal. This never scans generations, creates a Store, or
-/// grants writer authority. All returned facts come from the existing reviewer.
+/// The authenticated source operation's fixed protected journal. Never scans generations, creates a
+/// store or grants writer authority.
 pub fn lookup_committed_original_selection(
     private: &Arc<PinnedDirectory>,
     declaration: &crate::setup::prepared_setup::OfflineHomePlan,
@@ -1281,9 +1270,8 @@ pub fn lookup_committed_original_selection(
             "Original attempt has no committed setup recovery proof",
         ));
     }
-    // load() rejects malformed phase/checkpoint combinations. The canonical
-    // reviewer below separately verifies declaration, namespace, root witnesses,
-    // original caller, paired expectations, retired stages and committed marker.
+    // `load()` rejects malformed phase and checkpoint combinations; the canonical reviewer below
+    // separately verifies declaration, namespace, witnesses, caller, expectations and marker.
     let (home, completed) = attempt_stages(&parent, &record.attempt)?;
     let facts = review_committed_original_selection(
         private,
@@ -1292,8 +1280,8 @@ pub fn lookup_committed_original_selection(
         &home,
         &completed,
     )?;
-    // Keep this first lease until the returned review has acquired its own
-    // shared lease, preventing a journal mutation gap between lookup and proof.
+    // Keep this lease until the returned review acquired its own, so no journal mutation fits
+    // between lookup and proof.
     private.validate_destination()?;
     parent.validate_destination()?;
     Ok(Some(facts))
@@ -1451,9 +1439,8 @@ pub fn lookup_committed_original_applications_selection(
             "Original attempt has no committed setup recovery proof",
         ));
     }
-    // load() rejects malformed phase/checkpoint combinations. The canonical
-    // reviewer below separately verifies declaration, namespace, root witnesses,
-    // original caller, paired expectations, retired stages and committed marker.
+    // See the journal lookup above: `load()` rejects malformed combinations, and the canonical
+    // reviewer verifies the whole binding.
     let (applications, completed) = attempt_stages(&parent, &record.attempt)?;
     let facts = review_committed_original_applications_selection(
         private,
@@ -1462,8 +1449,8 @@ pub fn lookup_committed_original_applications_selection(
         &applications,
         &completed,
     )?;
-    // Keep this first lease until the returned review has acquired its own
-    // shared lease, preventing a journal mutation gap between lookup and proof.
+    // Keep this lease until the returned review acquired its own, so no journal mutation fits
+    // between lookup and proof.
     private.validate_destination()?;
     parent.validate_destination()?;
     Ok(Some(facts))

@@ -364,10 +364,12 @@ impl RecordId {
 
     /// The filesystem record id of a `file-record:` identity.
     pub fn file_record(&self) -> Option<uuid::Uuid> {
-        self.0
-            .strip_prefix(FILE_RECORD_PREFIX)
-            // ignored-failure: a probe of the identity's kind; a malformed id is no filesystem record
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        self.0.strip_prefix(FILE_RECORD_PREFIX).and_then(|id| {
+            tilo_failure::ignored!(
+                "a probe of the identity's kind: a malformed id is no filesystem record",
+                uuid::Uuid::parse_str(id).ok()
+            )
+        })
     }
 
     /// A filesystem-safe directory name for this record's document. Must be
@@ -399,8 +401,12 @@ fn numbered(index: &str) -> Option<u64> {
         && index.bytes().all(|byte| byte.is_ascii_digit())
         && (index == "0" || !index.starts_with('0'));
     canonical
-        // ignored-failure: a probe of the id's shape; digits only, so only an index past u64 fails, which is no number
-        .then(|| index.parse().ok())
+        .then(|| {
+            tilo_failure::ignored!(
+                "a probe of the id's shape: only an index past u64 fails, and it names no number",
+                index.parse().ok()
+            )
+        })
         .flatten()
 }
 
@@ -499,25 +505,14 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordKind(String);
 
-/// Old Writer kind stamps still name the current rich-text resource.
-/// Reopening a record must not rewrite its attributed CRDT history.
-const FORMER_KINDS: [(&str, &str); 2] = [
-    ("document", "tilo.rich-text"),
-    ("qdoc.rich-text", "tilo.rich-text"),
-];
-
 impl RecordKind {
     pub fn new(kind: impl Into<String>) -> Self {
-        let kind = kind.into();
-        match FORMER_KINDS.iter().find(|(former, _)| *former == kind) {
-            Some((_, current)) => Self((*current).to_owned()),
-            None => Self(kind),
-        }
+        Self(kind.into())
     }
 
-    /// Whether a stored current or former name identifies this kind.
+    /// Whether a stored name identifies this kind.
     pub fn names(&self, stored: &str) -> bool {
-        Self::new(stored) == *self
+        self.0 == stored
     }
 
     pub fn as_str(&self) -> &str {

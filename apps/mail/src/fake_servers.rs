@@ -12,12 +12,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub use crate::fake_imap::{FakeImap, Layout, Stored};
 
-/// The mock servers present a fresh self-signed certificate.
 pub fn accepting_client_config() -> Arc<rustls::ClientConfig> {
     Arc::new(tilo_net::pinned_client_config(|_| true).unwrap())
 }
 
-/// A fresh self-signed cert + rustls server config for the mock servers.
 pub fn server_tls_config() -> Arc<rustls::ServerConfig> {
     let cert =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
@@ -38,14 +36,6 @@ pub fn server_tls_config() -> Arc<rustls::ServerConfig> {
     Arc::new(cfg)
 }
 
-/// A scripted STARTTLS SMTP server — the path the engine drives for the
-/// non-465 submission port (`Tls::Required`): a plaintext greeting +
-/// EHLO advertising STARTTLS, the in-band TLS upgrade, then EHLO +
-/// AUTH LOGIN + MAIL/RCPT/DATA over TLS, capturing the DATA payload.
-/// The plaintext half of the test SMTP server: greeting, EHLO, and the
-/// STARTTLS upgrade. Returns the raw socket once the client has been
-/// told to start TLS, or `None` if the session ended first (QUIT, EOF,
-/// or a write error).
 async fn smtp_plaintext_until_starttls(tcp: TcpStream) -> Option<TcpStream> {
     let mut plain = BufReader::new(tcp);
     if plain
@@ -117,7 +107,6 @@ pub async fn serve_smtp(
                 .write_all(b"250-localhost\r\n250-AUTH LOGIN\r\n250 8BITMIME\r\n")
                 .await;
         } else if up.starts_with("AUTH LOGIN") {
-            // base64("Username:") then base64("Password:").
             let _ = wr.write_all(b"334 VXNlcm5hbWU6\r\n").await;
             let _ = wr.flush().await;
             line.clear();
@@ -163,15 +152,12 @@ pub async fn serve_smtp(
     }
 }
 
-/// A STARTTLS SMTP server on a loopback port that accepts every message and keeps what it was
-/// handed, or refuses every recipient while [`FakeSmtp::refuse`] says why.
 pub struct FakeSmtp {
     pub port: u16,
     sent: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 impl FakeSmtp {
-    /// Start serving on the current tokio runtime, which must outlive the server.
     pub async fn start(tls: Arc<rustls::ServerConfig>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -196,7 +182,6 @@ impl FakeSmtp {
         Self { port, sent }
     }
 
-    /// The messages it accepted, as their DATA.
     #[must_use]
     pub fn sent(&self) -> Vec<Vec<u8>> {
         self.sent.lock().expect("not poisoned").clone()

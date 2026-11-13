@@ -1,19 +1,6 @@
-//! A standalone themed 1px rule, horizontal or vertical, usable as a
-//! free-standing element inside a `Column` / `Row` (unlike
-//! `Toolbar::push_separator`, which is toolbar-scoped). Sizes itself along
-//! its cross-axis and stretches to fill the main axis.
-//!
-//! [`Divider::horizontal`] fills the parent's width, 1px tall, for stacked
-//! sections in a `Column`; [`Divider::vertical`] fills the parent's height,
-//! 1px wide, for side-by-side panes in a `Row`. Colour comes from
-//! `theme.border_standard` — a rule on `surfaces.base` (HIG §9.5). A rule
-//! inside a raised or overlay surface names that surface with
-//! [`Divider::on`], which derives the colour so the line stays visible on
-//! the dark preset; [`Divider::with_color`] is the explicit override.
-//!
-//! A surface painted by hand, with no widget laid out for its rule (a
-//! heading's foot, a side panel's edge), paints the same rule with
-//! [`paint_rule`] along an edge of its rect.
+//! A standalone themed 1px rule, horizontal or vertical, usable as a free-standing element
+//! inside a `Column` / `Row` (unlike `Toolbar::push_separator`, which is toolbar-scoped).
+//! Sizes itself along its cross-axis and stretches to fill the main axis.
 
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -37,11 +24,7 @@ pub enum DividerAxis {
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,
-    /// Optional explicit colour. `None` ⇒ derived from [`Self::surface`]
-    /// when set, else `theme.border_standard`.
     color: Option<vello::peniko::Color>,
-    /// The surface the rule is painted on, when it is not `surfaces.base`;
-    /// the colour is then `surface::edge_on(surface)`.
     surface: Option<vello::peniko::Color>,
     rect: Rect,
 }
@@ -75,17 +58,16 @@ impl Divider {
     }
 
     /// Pass a theme token so the choice still tracks the active theme.
-    /// Prefer [`Self::on`] for a rule inside a raised or overlay surface.
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
         self
     }
 
-    /// A rule inside `surface` (a card, popover or panel fill): the colour
-    /// becomes [`crate::surface::edge_on`] measured against that surface,
-    /// so it registers on every theme where a declared `border_standard`
-    /// would sit within rounding distance of the fill (HIG §9.5).
+    /// A rule inside `surface` (a card, popover or panel fill): the colour becomes
+    /// [`crate::surface::edge_on`] measured against that surface, so it registers on every
+    /// theme where a declared `border_standard` would sit within rounding distance of the
+    /// fill (HIG §9.5).
     #[must_use]
     pub fn on(mut self, surface: vello::peniko::Color) -> Self {
         self.surface = Some(surface);
@@ -96,9 +78,8 @@ impl Divider {
         self.axis
     }
 
-    /// The colour `draw` paints: an explicit [`Self::with_color`] wins, then
-    /// a surface named with [`Self::on`] derives its edge, else the theme's
-    /// rule on `surfaces.base`.
+    /// The colour `draw` paints: an explicit [`Self::with_color`] wins, then a surface
+    /// named with [`Self::on`] derives its edge, else the theme's rule on `surfaces.base`.
     pub fn rule_color(&self, theme: &Theme) -> vello::peniko::Color {
         self.color.unwrap_or_else(|| {
             self.surface
@@ -116,9 +97,8 @@ pub enum RuleEdge {
     Right,
 }
 
-/// Paint the rule a [`Divider`] draws along `edge` of `rect`, inside it, for
-/// a surface painted by hand. `surface` is the ground it stands on when that
-/// is not `surfaces.base` (as [`Divider::on`]).
+/// Paint the rule a [`Divider`] draws along `edge` of `rect`, inside it, for a surface
+/// painted by hand.
 pub fn paint_rule(
     scene: &mut Scene,
     transform: Affine,
@@ -177,8 +157,6 @@ impl Widget for Divider {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// A rule's size is its style's alone, fixed when it is built: nothing it shows asks for a
-    /// measure, so a still frame re-measures nothing for it.
     fn is_layout_dirty(&self) -> bool {
         false
     }
@@ -220,7 +198,6 @@ mod tests {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        // Wrap in a fixed-size flex parent so percent() resolves.
         let child = d.build_layout(&mut taffy, &theme, &mut node_map);
         let parent = taffy.parent_node(
             Style {
@@ -268,10 +245,6 @@ mod tests {
             );
         }
 
-        /// The colour `draw` resolves (`rule_color` is what `draw` paints):
-        /// default is the theme's rule on `surfaces.base`; `.on(surface)`
-        /// derives an edge that registers against that surface on every preset;
-        /// an explicit `.with_color` wins over both.
         fn rule_color_follows_with_color_then_on_then_default() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let raised = theme.tokens.colors.surfaces.raised;

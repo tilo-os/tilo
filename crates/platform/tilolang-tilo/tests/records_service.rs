@@ -52,32 +52,19 @@ fn service() -> (RecordService, tilolang_runtime::Meta) {
     )
 }
 
-fn action_id(meta: &tilolang_runtime::Meta, name: &str) -> String {
-    meta.actions
-        .iter()
-        .find(|action| action.name == name)
-        .unwrap_or_else(|| panic!("the action `{name}`"))
-        .id
-        .clone()
-}
-
 fn args(value: Json) -> Map<String, Json> {
     value.as_object().cloned().unwrap()
 }
 
 /// A new note, made through the notes app's `new_note` on the notebook the session publishes.
-fn new_note(service: &mut RecordService, meta: &tilolang_runtime::Meta) -> String {
+fn new_note(service: &mut RecordService) -> String {
     let notebook = service
         .resources()
         .into_iter()
         .find(|resource| resource.kind == format!("tl.{APP}.Notebook"))
         .expect("the notebook is published");
     let started = service
-        .invoke(
-            notebook.id.as_str(),
-            &action_id(meta, "new_note"),
-            &Map::new(),
-        )
+        .invoke(notebook.id.as_str(), "new_note", &Map::new())
         .unwrap();
     let Started::Done(output) = started else {
         panic!("a tilolang action is done once committed");
@@ -103,10 +90,68 @@ fn texts(node: &UiNode) -> Vec<String> {
     out
 }
 
+/// A published resource's own `open` is answered, never refused: opening is the system's
+/// (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes views; it
+/// opens nothing"). The record publishes the `open` so an agent reading the catalogue finds it,
+/// and invoking it changes nothing of the record — the place it asks for waits for the session to
+/// stand through its arrangement, beside the place the asking step was in.
+#[test]
+fn a_resources_own_open_is_answered_and_changes_no_record() {
+    let (mut service, _) = service();
+    let note = new_note(&mut service);
+    // The note publishes its own `open`: the effect a search hit and an agent invoke.
+    let published = service
+        .resources()
+        .into_iter()
+        .flat_map(|resource| std::iter::once(resource.clone()).chain(resource.children))
+        .find(|resource| resource.id.as_str() == note)
+        .expect("the note is published");
+    let open = published
+        .actions
+        .iter()
+        .find(|action| action.id == "open")
+        .expect("the note publishes its own open");
+    assert!(open.encode_immediate().is_some(), "its open takes no input");
+
+    let before = service.record().clone().get_heads();
+    // Invoked as an agent answering in a conversation, the open is answered with nothing done to
+    // the record: the session places the note beside that conversation.
+    let agent =
+        tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+    service.note_beside("chat.workspace/channels/c_tide");
+    let started = service
+        .invoke_as(&agent, &note, "open", &Map::new())
+        .unwrap_or_else(|error| panic!("the resource's open is answered: {error}"));
+    assert_eq!(
+        started,
+        Started::Done(tilo_actions::ActionOutput::default()),
+        "it changed nothing of the record"
+    );
+    assert_eq!(
+        service.record().clone().get_heads(),
+        before,
+        "the record did not change"
+    );
+    // What it asked stands for the session to place: the note, beside the conversation that asked,
+    // and the actor that asked is the agent's.
+    let opened = service.take_open();
+    assert_eq!(opened.len(), 1, "one place asked for");
+    let (invoker, place) = &opened[0];
+    assert_eq!(invoker.actor, "agent:tide", "asked as the agent");
+    assert_eq!(place.resource, note, "the note the invocation addressed");
+    assert_eq!(place.view, "", "its primary view: its own default `open`");
+    assert_eq!(
+        place.beside, "chat.workspace/channels/c_tide",
+        "beside the conversation of the turn that asked"
+    );
+    // Nothing is left to take: the place asked for once.
+    assert!(service.take_open().is_empty(), "the ask is taken once");
+}
+
 #[test]
 fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
     let (mut service, meta) = service();
-    let note = new_note(&mut service, &meta);
+    let note = new_note(&mut service);
     assert!(
         note.starts_with(&resource_id(APP, "")),
         "the note is named by its published id: {note}"
@@ -123,11 +168,7 @@ fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
 
     service.poll();
     service
-        .invoke(
-            &note,
-            &action_id(&meta, "retitle"),
-            &args(json!({ "title": "Groceries" })),
-        )
+        .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
         .unwrap();
     assert!(service.poll(), "a retitled note moves its reading");
     let reading = service.read(&note).expect("the note reads");
@@ -137,9 +178,7 @@ fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
     );
     assert_eq!(reading[field_id(&meta, "Note", "pinned")], json!(false));
 
-    service
-        .invoke(&note, &action_id(&meta, "pin"), &Map::new())
-        .unwrap();
+    service.invoke(&note, "pin", &Map::new()).unwrap();
     assert!(
         service.poll(),
         "a field no published tree shows moves the reading too"
@@ -151,14 +190,10 @@ fn a_note_made_through_its_action_is_a_session_resource_with_its_fields() {
 
 #[test]
 fn another_app_reads_the_published_note_through_the_notes_package() {
-    let (mut service, meta) = service();
-    let note = new_note(&mut service, &meta);
+    let (mut service, _) = service();
+    let note = new_note(&mut service);
     service
-        .invoke(
-            &note,
-            &action_id(&meta, "retitle"),
-            &args(json!({ "title": "Groceries" })),
-        )
+        .invoke(&note, "retitle", &args(json!({ "title": "Groceries" })))
         .unwrap();
     let reading = service.read(&note).unwrap();
 
@@ -211,13 +246,9 @@ fn another_app_reads_the_published_note_through_the_notes_package() {
 
 /// Ada's workspace with its tasks, as the session runs them: a `RecordService` over the record,
 /// with no window of the app open, and the clock its app and its triggers read.
-fn tasks() -> (
-    RecordService,
-    tilolang_runtime::Meta,
-    std::rc::Rc<std::cell::RefCell<String>>,
-) {
+fn tasks() -> (RecordService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -230,7 +261,7 @@ fn tasks() -> (
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
     });
-    (service, packages.last().unwrap().meta.clone(), clock)
+    (service, clock)
 }
 
 /// The id of the app's published root: the tasks.
@@ -257,14 +288,10 @@ impl tilo_session_core::notice::Notices for Told {
 }
 
 /// A task added by `new_task` under `title`.
-fn task(service: &mut RecordService, meta: &tilolang_runtime::Meta, title: &str) -> String {
+fn task(service: &mut RecordService, title: &str) -> String {
     let root = tasks_root(service);
     let started = service
-        .invoke(
-            root.as_str(),
-            &action_id(meta, "new_task"),
-            &args(json!({ "title": title })),
-        )
+        .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
         .unwrap();
     let Started::Done(output) = started else {
         panic!("a tilolang action is done once committed");
@@ -275,23 +302,19 @@ fn task(service: &mut RecordService, meta: &tilolang_runtime::Meta, title: &str)
 
 #[test]
 fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
-    let (mut service, meta, clock) = tasks();
+    let (mut service, clock) = tasks();
     let told: std::rc::Rc<std::cell::RefCell<Vec<Notice>>> = std::rc::Rc::default();
     service.set_tell(Told(std::rc::Rc::clone(&told)));
 
     // Ada adds a task, gives it to Bo, and asks to be reminded of it in an hour.
-    let call = task(&mut service, &meta, "Call the landlord");
+    let call = task(&mut service, "Call the landlord");
     service
-        .invoke(
-            &call,
-            &action_id(&meta, "assign"),
-            &args(json!({ "who": { "person": "bo" } })),
-        )
+        .invoke(&call, "assign", &args(json!({ "who": { "person": "bo" } })))
         .unwrap();
     service
         .invoke(
             &call,
-            &action_id(&meta, "remind_at"),
+            "remind_at",
             &args(json!({ "when": "2026-10-27T10:00:00Z" })),
         )
         .unwrap();

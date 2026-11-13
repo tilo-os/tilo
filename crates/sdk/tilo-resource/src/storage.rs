@@ -788,9 +788,11 @@ impl Bytes {
     }
 
     /// The value an action's argument names: its stored form, or, where the
-    /// action is invoked, the data inline or a `tilo.content:<reference>`
-    /// to content readable in the workspace, which is kept, sealed, in the
-    /// window's store ([`crate::content::invoking`]).
+    /// action is invoked, the data inline or the reference to content
+    /// readable in the workspace — a `tilo.content:<reference>` address, or
+    /// the reference alone, as an operation that collects content takes it —
+    /// which is kept, sealed, in the window's store
+    /// ([`crate::content::invoking`]).
     fn from_argument(value: serde_json::Value) -> Result<Self, String> {
         match value {
             serde_json::Value::Array(_) => {
@@ -802,25 +804,31 @@ impl Bytes {
                 }
                 Self::keep_here(&data)
             }
-            serde_json::Value::String(text) if text.starts_with("tilo.content:") => {
-                if !crate::content::is_invoking() {
-                    return Err(format!(
-                        "{text} is read where the action is invoked, never where it replays"
-                    ));
-                }
-                let reference = crate::content::reference_hash(&text)
-                    .ok_or_else(|| crate::content::ContentRefusal::NotAReference(text.clone()))
-                    .map_err(|refusal| refusal.to_string())?
-                    .to_owned();
-                let data =
-                    crate::content::read_reference(&text).map_err(|refusal| refusal.to_string())?;
-                if tilo_content::is_sealed(&reference) {
-                    Ok(Self::kept_as(&data, &reference))
-                } else {
-                    Self::keep_here(&data)
-                }
-            }
+            serde_json::Value::String(text) => Self::from_content_argument(&text),
             other => Self::from_json(&other).map_err(|error| error.to_string()),
+        }
+    }
+
+    /// The data the text argument `text` names, read where the action is
+    /// invoked and kept in the window's store: a `tilo.content:<reference>`
+    /// address, or the reference alone — a plain hash, as content was named
+    /// before it was sealed, or an address and the key that opens it. Any
+    /// other text is the stored form ([`Self::parse_text`]), or no content.
+    fn from_content_argument(text: &str) -> Result<Self, String> {
+        let Some(reference) = tilo_actions::named_reference(text) else {
+            return Self::from_json(&serde_json::Value::String(text.to_owned()))
+                .map_err(|error| error.to_string());
+        };
+        if !crate::content::is_invoking() {
+            return Err(format!(
+                "{text} is read where the action is invoked, never where it replays"
+            ));
+        }
+        let data = crate::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
+        if tilo_content::is_sealed(reference) {
+            Ok(Self::kept_as(&data, reference))
+        } else {
+            Self::keep_here(&data)
         }
     }
 

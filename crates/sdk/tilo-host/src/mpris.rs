@@ -317,7 +317,7 @@ mod tests {
         // `media_player_bus_name(<package id>)`; whatever id the app passes,
         // its session must request that name or the bus refuses the player.
         let launched = crate::host::HostIdentity {
-            package_id: Some("so.tilo.music".into()),
+            app_id: Some("so.tilo.music".into()),
             ..crate::host::HostIdentity::default()
         };
         let (services, recorder) = crate::host::HostServices::recording();

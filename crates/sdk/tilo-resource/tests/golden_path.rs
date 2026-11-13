@@ -23,7 +23,7 @@ pub enum Stage {
     Done,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Rename the board.
     #[action]
@@ -81,7 +81,7 @@ pub struct Channel {
     pub read: i64,
 }
 
-#[resource(kind = "test.channel", label = "Channel")]
+#[resource(kind = "test.channel", catalogue = "tests/locales")]
 impl Channel {
     /// Set the topic.
     #[action]

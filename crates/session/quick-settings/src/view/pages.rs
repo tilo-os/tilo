@@ -1,45 +1,16 @@
-//! The panel's pages: one Bluetooth accessory with the devices it can move
-//! to. A page's header is its way back to the controls.
+//! The panel's page of one Bluetooth accessory with the devices it can move
+//! to; its header is its way back to the controls.
 
 use ui::TextRole;
 use ui::framework::ViewCx;
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
-use ui::widget::{Button, ButtonRole, Column, Element, ListRow, Row, Section, Spacer, Text};
+use ui::widget::{Button, ButtonRole, Column, Element, ListRow, Row, Section, Text};
 
 use super::Parts;
 use crate::effect::QsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
-
-/// A page's header: Back, named for where it goes, and the page's title.
-pub(super) fn header(
-    cx: &ViewCx<QuickSettings>,
-    title: &str,
-    back: &str,
-    trailing: Option<Element>,
-) -> Element {
-    let back = cx.actions().bind_invocation(
-        Button::icon_only("qs-back", Icon::ChevronLeft, back).role(ButtonRole::Plain),
-        QuickSettings::BACK.invoke(),
-    );
-    let mut row = Row::new()
-        .no_wrap()
-        .with_align_items(ui::taffy::AlignItems::Center)
-        .with_rhythm(Rhythm::Related)
-        .push(Box::new(back))
-        .push(Box::new(
-            Text::new(title)
-                .with_role(TextRole::Heading)
-                .with_heading_level(2)
-                .with_id("qs-page-title"),
-        ))
-        .push(Box::new(Spacer::new()));
-    if let Some(trailing) = trailing {
-        row = row.push(trailing);
-    }
-    Box::new(row)
-}
 
 /// One accessory: disconnect it here, or move it to another of the
 /// person's devices (one already paired with it).
@@ -58,11 +29,28 @@ pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts
             .with_no_padding()
             .with_rhythm(Rhythm::Related)
             .with_id("qs-accessory")
-            .push(header(
-                cx,
-                &t_args("qs-bluetooth-move", &[("accessory", name.into())]),
-                &t("qs-back-to-controls"),
-                None,
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .with_rhythm(Rhythm::Related)
+                    .push(Box::new(
+                        actions.bind_invocation(
+                            Button::icon_only(
+                                "qs-back",
+                                Icon::ChevronLeft,
+                                &t("qs-back-to-controls"),
+                            )
+                            .role(ButtonRole::Plain),
+                            QuickSettings::BACK.invoke(),
+                        ),
+                    ))
+                    .push(Box::new(
+                        Text::new(&t_args("qs-bluetooth-move", &[("accessory", name.into())]))
+                            .with_role(TextRole::Heading)
+                            .with_heading_level(2)
+                            .with_id("qs-page-title"),
+                    )),
             ))
             .push(Box::new(
                 Text::new(&t("qs-bluetooth-move-note")).with_role(TextRole::Caption),
@@ -97,7 +85,7 @@ pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts
                     let row = ListRow::new(format!("qs-accessory-to-{}", target.id), &target.label)
                         .icon(Icon::Monitor)
                         .secondary(t(if target.local {
-                            "qs-bluetooth-this-certified"
+                            "qs-bluetooth-this-device"
                         } else if target.online {
                             "qs-devices-online"
                         } else {

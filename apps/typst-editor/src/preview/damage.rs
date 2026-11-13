@@ -25,7 +25,6 @@ pub(super) struct PreviewLook {
     rect: Rect,
     zoom: u64,
     content: (u64, u64),
-    /// The compile shown, by address.
     document: usize,
     selection: Option<(usize, usize)>,
     stale: bool,
@@ -145,7 +144,6 @@ impl PreviewPane {
         }
     }
 
-    /// From the host's `mark_drawn`: the frame just drawn is on screen.
     pub fn mark_shown(&mut self) {
         self.shown.present();
     }

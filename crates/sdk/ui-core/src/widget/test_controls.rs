@@ -3,8 +3,6 @@
 
 use super::{Decorator, Widget, capability, controls};
 
-/// A widget mounted outside any host's custody, so a test drains its
-/// control intents itself rather than the host dispatching them.
 pub(crate) struct Uncustodied<W>(pub W);
 
 impl<W: Widget + controls::ActionControls + 'static> Decorator for Uncustodied<W> {
@@ -52,8 +50,6 @@ impl<W: Widget + controls::ActionControls + 'static> controls::ActionControls fo
     }
 }
 
-/// A test action taking one `value` of `param`'s type, bound to a control
-/// whose input `value` serializes.
 pub(crate) fn test_value_action_binding<I: serde::Serialize + 'static>(
     param: tilo_actions::ParamType,
 ) -> tilo_actions::ActionBinding<I> {

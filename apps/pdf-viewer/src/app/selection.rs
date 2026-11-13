@@ -18,12 +18,8 @@ use crate::model::{AnnoKind, Annotation, HighlightColor, PtRect};
 use crate::source::{TextBatch, TextRequest};
 use crate::text_layer::PageText;
 
-/// Text layers the reader keeps beyond those on screen, selected or found.
 const MAX_TEXT_LAYERS: usize = 48;
 
-/// A place in the document's text: a displayed page (1-based) and a caret
-/// position of its text layer, before glyph `glyph` (`glyph` = the layer's
-/// length is after its last). Ordered as the text reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct TextPos {
     pub(super) page: usize,
@@ -36,13 +32,10 @@ impl TextPos {
     }
 }
 
-/// A text selection between two caret positions: the anchor is where it
-/// began, the caret follows the pointer.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TextSelection {
     pub(super) anchor: TextPos,
     pub(super) caret: TextPos,
-    /// True while a press or grip is extending it.
     pub(super) dragging: bool,
 }
 
@@ -55,17 +48,14 @@ impl TextSelection {
         self.anchor.max(self.caret)
     }
 
-    /// Whether it covers any text (a bare click selects nothing).
     pub(super) fn is_active(&self) -> bool {
         self.anchor != self.caret
     }
 
-    /// The pages it spans.
     pub(super) fn pages(&self) -> std::ops::RangeInclusive<usize> {
         self.start().page..=self.end().page
     }
 
-    /// The glyphs it covers on `page`, whose layer holds `len`, as `[lo, hi)`.
     pub(super) fn range_on(&self, page: usize, len: usize) -> Option<(usize, usize)> {
         let (start, end) = (self.start(), self.end());
         if page < start.page || page > end.page {
@@ -77,50 +67,35 @@ impl TextSelection {
     }
 }
 
-/// A press on a page whose text layer had not arrived yet.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingPress {
     pub(super) page: usize,
     pub(super) pt: (f64, f64),
     pub(super) press: Point,
     pub(super) scroll: (f64, f64),
-    /// Where the button lifted, when the drag ended before the text came:
-    /// the gesture is carried out whole once it does.
     pub(super) released: Option<Point>,
 }
 
-/// What a press on page text began.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelectionStart {
-    /// A selection, at the glyph pressed.
     Armed,
-    /// Nothing: there is no text there.
     NoText,
-    /// The page's text is on its way; the press waits for it.
     Waiting,
 }
 
-/// A selection effect an agent or assistive tool invoked, waiting for the
-/// text of the pages it reads.
 pub(super) struct PendingSelectionEffect {
     pub(super) effect: SelectionEffect,
-    /// The displayed pages (1-based) whose text it needs.
     pub(super) pages: Vec<usize>,
     pub(super) reply: ui::framework::EffectReply,
 }
 
-/// What a selection effect does once its pages' text is here.
 #[derive(Clone, Debug)]
 pub(super) enum SelectionEffect {
-    /// Select `text` (all of the page's text when `None`) on `page`.
     Select { text: Option<String>, page: usize },
-    /// Copy the live selection.
     Copy,
 }
 
 impl PdfApp {
-    /// The text layer of displayed page `page`, asked of the worker ahead
-    /// of anything read ahead when it is not here yet.
     pub(super) fn ensure_raster_text(&mut self, page: usize) -> Option<Arc<PageText>> {
         if let Some(layer) = self.raster_text.get(&page) {
             return Some(layer.clone());
@@ -145,8 +120,6 @@ impl PdfApp {
         None
     }
 
-    /// The displayed page `p` (screen) is on, or the nearest one above or
-    /// below it.
     pub(super) fn page_near(&self, p: Point) -> Option<usize> {
         let count = self.doc.page_count();
         let unit = self.stack_unit();
@@ -158,8 +131,6 @@ impl PdfApp {
         Some(index + 1)
     }
 
-    /// `p` (screen) in page points of displayed page `page`, past its edges
-    /// as well.
     fn point_on_page(&self, page: usize, p: Point) -> (f64, f64) {
         let origin = self.viewport.content_point_to_screen(Point::new(
             0.0,
@@ -169,10 +140,6 @@ impl PdfApp {
         ((p.x - origin.x) / zoom, (p.y - origin.y) / zoom)
     }
 
-    /// The caret position `p` (screen) falls at: on the page under it (or
-    /// the nearest), before or after the glyph under it (or the nearest) by
-    /// which half of it `p` is over. `None` while that page's text is on
-    /// its way.
     fn text_pos_at(&mut self, p: Point) -> Option<TextPos> {
         let page = self.page_near(p)?;
         let layer = self.ensure_raster_text(page)?;
@@ -181,11 +148,6 @@ impl PdfApp {
         Some(TextPos::new(page, caret_by(&layer, glyph, x)))
     }
 
-    /// Begin a text selection at page-point `pt` on `page`, through the
-    /// shared [`ui::gesture::DragSelect`] click ladder: a click places the
-    /// caret, a double-click selects the word, a triple-click the line, as
-    /// in every text field and the ebook reader. `press` is the screen
-    /// point, for the multi-click distance.
     pub(super) fn begin_selection(
         &mut self,
         page: usize,
@@ -207,8 +169,6 @@ impl PdfApp {
         SelectionStart::Armed
     }
 
-    /// Start a selection over glyph `glyph` of `page`, pressed at page x
-    /// `x`, snapped to `granularity`'s unit.
     fn arm_selection(
         &mut self,
         page: usize,
@@ -245,9 +205,6 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// A press that waited for its page's text now has it (or the pointer
-    /// moved): it becomes the selection it would have begun, extended to
-    /// `now`, or over no text the pan it would have been.
     pub(super) fn resolve_pending_press(&mut self, now: Point) {
         let Some(pending) = self.pending_press else {
             return;
@@ -301,9 +258,6 @@ impl PdfApp {
         None
     }
 
-    /// Shift+press: move the live selection's caret to `p` and keep
-    /// extending it while the button is held. Whether there was a
-    /// selection to extend.
     pub(super) fn extend_selection_to(&mut self, p: Point) -> bool {
         let Some(sel) = self.selection else {
             return false;
@@ -320,10 +274,6 @@ impl PdfApp {
         true
     }
 
-    /// Extend the live selection to the pointer at `p` (screen), on
-    /// whichever page it is over. A character drag walks the caret glyph by
-    /// glyph; after a double- or triple-click it keeps the anchored unit and
-    /// grows by whole units ([`ui::extend_span_drag`]).
     pub(super) fn update_selection_at(&mut self, p: Point) {
         let Some(sel) = self.selection.filter(|sel| sel.dragging) else {
             return;
@@ -337,7 +287,6 @@ impl PdfApp {
                 let Some(layer) = self.raster_text.get(&pos.page) else {
                     return;
                 };
-                // The glyph the pointer is over, not the caret beside it.
                 let glyph = pos.glyph.min(layer.chars.len().saturating_sub(1));
                 let (lo, hi) = if self.sel_gran == Granularity::Word {
                     layer.word_range(glyph)
@@ -380,8 +329,6 @@ impl PdfApp {
         }
     }
 
-    /// Select all the document's text. Whether there is a document whose
-    /// text can be selected.
     pub(super) fn select_all(&mut self) -> bool {
         let count = self.doc.page_count();
         if !self.raster_active() || count == 0 {
@@ -398,9 +345,6 @@ impl PdfApp {
         true
     }
 
-    /// Answer a selection effect: select text on a page, or copy the
-    /// selection. Answered at once when the pages' text is here, else when
-    /// it arrives (or the document goes).
     pub(crate) fn selection_effect(
         &mut self,
         effect: &crate::actions::PdfEffect,
@@ -445,8 +389,6 @@ impl PdfApp {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// A waiting selection effect whose pages' text has all arrived is
-    /// carried out and answered.
     fn answer_pending_selection_effect(&mut self) {
         let ready = self
             .pending_selection_effect
@@ -472,8 +414,6 @@ impl PdfApp {
         pending.reply.finish(answer);
     }
 
-    /// A waiting selection effect fails: its document went, or its text
-    /// cannot be read.
     pub(super) fn fail_pending_selection_effect(&mut self, why: &str) {
         self.pending_copy = false;
         self.pending_press = None;
@@ -482,8 +422,6 @@ impl PdfApp {
         }
     }
 
-    /// Do `effect`, every page's text being here: answers with the selected
-    /// (or copied) text.
     fn carry_out_selection_effect(
         &mut self,
         effect: &SelectionEffect,
@@ -532,7 +470,6 @@ impl PdfApp {
         }
     }
 
-    /// The pages the live selection spans whose text is not here yet.
     pub(super) fn selection_pages_missing(&self) -> Vec<usize> {
         self.selection
             .filter(TextSelection::is_active)
@@ -544,8 +481,6 @@ impl PdfApp {
             .unwrap_or_default()
     }
 
-    /// The selected text, pages joined by a line break, once every page it
-    /// spans has its text here.
     pub(super) fn selection_text(&self) -> Option<String> {
         let sel = self.selection.filter(TextSelection::is_active)?;
         let mut parts = Vec::new();
@@ -559,9 +494,6 @@ impl PdfApp {
         (!text.trim().is_empty()).then_some(text)
     }
 
-    /// Copy the selection to the clipboard and say so. A selection over
-    /// pages whose text is still on its way is copied when it arrives.
-    /// Whether there was a selection to copy.
     pub(super) fn copy_selection(&mut self) -> bool {
         if !self.selection.is_some_and(|sel| sel.is_active()) {
             return false;
@@ -587,8 +519,6 @@ impl PdfApp {
         true
     }
 
-    /// A page's text arrived: a press waiting for it resolves, a copy
-    /// waiting for it completes, and the reader keeps its layers bounded.
     pub(super) fn text_arrived(&mut self, page: usize) {
         if self
             .pending_press
@@ -597,7 +527,6 @@ impl PdfApp {
             self.resolve_pending_press(self.last_mouse);
             self.dirty = true;
         } else if self.selection.is_some_and(|sel| sel.dragging) {
-            // A drag onto a page whose text was on its way reaches it now.
             self.update_selection_at(self.last_mouse);
             self.dirty = true;
         }
@@ -609,8 +538,6 @@ impl PdfApp {
         self.submit_text_batch();
     }
 
-    /// A page's text cannot be read: a press waiting for it pans instead,
-    /// and a copy or effect that needs it fails.
     pub(super) fn text_failed(&mut self, page: usize, why: &str) {
         if self
             .pending_press
@@ -636,8 +563,6 @@ impl PdfApp {
         }
     }
 
-    /// The worker dropped the text it was asked for: ask again for what a
-    /// waiting press, copy or effect needs.
     pub(super) fn text_requests_dropped(&mut self) {
         if let Some(pending) = self.pending_press {
             self.ensure_raster_text(pending.page);
@@ -645,9 +570,6 @@ impl PdfApp {
         self.submit_text_batch();
     }
 
-    /// Every text layer is gone (another document, its pages rearranged):
-    /// the selection, which named places in them, goes too, and whatever
-    /// waited for them fails.
     pub(super) fn text_layers_replaced(&mut self, why: &str) {
         self.selection = None;
         self.text_hover = None;
@@ -655,10 +577,6 @@ impl PdfApp {
         self.fail_pending_selection_effect(why);
     }
 
-    /// The pages were laid out again (the shared page plan arrived or
-    /// changed): every text layer is gone and the selection with it, so a
-    /// copy of it fails. A selection effect names pages as the reader shows
-    /// them, so it waits for their text in the new layout instead.
     pub(super) fn page_plan_replaced(&mut self, why: &str) {
         let selecting = self
             .pending_selection_effect
@@ -667,9 +585,6 @@ impl PdfApp {
         self.pending_selection_effect = selecting;
     }
 
-    /// Drop text layers beyond [`MAX_TEXT_LAYERS`] that nothing shows or
-    /// needs (on screen, selected, found, under the pointer), farthest from
-    /// the current page first.
     fn evict_text_layers(&mut self) {
         if self.raster_text.len() <= MAX_TEXT_LAYERS
             || self.finding()
@@ -697,7 +612,6 @@ impl PdfApp {
         }
     }
 
-    /// The displayed pages (1-based) the canvas shows.
     pub(super) fn visible_page_range(&self) -> std::ops::Range<usize> {
         let canvas = self.canvas_rect;
         match (
@@ -709,8 +623,6 @@ impl PdfApp {
         }
     }
 
-    /// The pointer rests at `p`: the page under it is about to be pressed,
-    /// so its text is read ahead (after every pixel and asked text).
     pub(super) fn hover_text(&mut self, p: Point) {
         let hover = if self.raster_active()
             && matches!(
@@ -727,9 +639,6 @@ impl PdfApp {
         }
     }
 
-    /// Hand the worker the text layers wanted ahead of need: the page under
-    /// the pointer, and every page of a selection being copied or answered
-    /// to a caller. Replaces the previous batch; empty cancels it.
     pub(super) fn submit_text_batch(&mut self) {
         let Some(document_id) = self.raster_document.as_ref().map(|document| document.id) else {
             return;
@@ -760,8 +669,6 @@ impl PdfApp {
         }
     }
 
-    /// The selection's bands on `page` (glyph boxes merged per line), in
-    /// page points.
     pub(super) fn selection_bands_on(&self, page: usize) -> Vec<PtRect> {
         let Some(sel) = self.selection.filter(TextSelection::is_active) else {
             return Vec::new();
@@ -774,7 +681,6 @@ impl PdfApp {
             .unwrap_or_default()
     }
 
-    /// `band` on displayed page `page`, on screen.
     fn band_on_screen(&self, page: usize, band: &PtRect) -> Rect {
         let origin = self.viewport.content_point_to_screen(Point::new(
             0.0,
@@ -789,7 +695,6 @@ impl PdfApp {
         )
     }
 
-    /// The selection's bands on screen, on the pages the canvas shows.
     pub(super) fn selection_screen_bands(&self) -> Vec<Rect> {
         let Some(sel) = self.selection.filter(TextSelection::is_active) else {
             return Vec::new();
@@ -806,15 +711,12 @@ impl PdfApp {
             .collect()
     }
 
-    /// The bounds of the selection's visible bands, for anchoring its HUD.
     pub(super) fn selection_screen_bounds(&self) -> Option<Rect> {
         self.selection_screen_bands()
             .into_iter()
             .reduce(|a, b| a.union(b))
     }
 
-    /// On a touchscreen, the grips of a settled selection whose ends are
-    /// on screen.
     pub(super) fn selection_grips(&self) -> Option<ui::widget::TextGrips> {
         if self.interaction.modality != ui::interaction::InputModality::Touch {
             return None;
@@ -837,8 +739,6 @@ impl PdfApp {
         ))
     }
 
-    /// A press on one of the selection's grips takes that end: the other
-    /// end anchors and the grip follows the finger. Whether it landed on one.
     pub(super) fn take_selection_grip(&mut self, p: Point) -> bool {
         let Some(grip) = self.selection_grips().and_then(|grips| grips.grip_at(p)) else {
             return false;
@@ -860,10 +760,6 @@ impl PdfApp {
         true
     }
 
-    /// A secondary press (a right click, a held finger) over page text: on
-    /// the selection it keeps it, elsewhere it selects the word there. The
-    /// selection's one menu (the selection bar) then stands over it, the
-    /// same for a pointer and a finger. Whether it was over text.
     pub(super) fn select_for_menu(&mut self, at: Point) -> bool {
         if !self.raster_active() {
             return false;
@@ -898,9 +794,6 @@ impl PdfApp {
         true
     }
 
-    /// While a selection drag holds the pointer near the canvas's top or
-    /// bottom edge (or past it), scroll that way and extend to it. Called
-    /// once per frame; whether it scrolled.
     pub(super) fn autoscroll_selection(&mut self, now: ui::time::Instant) -> bool {
         let velocity = self.selection_autoscroll_velocity();
         let dy = self.selection_autoscroll.advance(velocity, now);
@@ -928,8 +821,6 @@ impl PdfApp {
         ui::edge_autoscroll::velocity(self.last_mouse.y, canvas.y0, canvas.y1)
     }
 
-    /// Highlight the live selection in `swatch`: one highlight per page it
-    /// spans, then clear it.
     pub(super) fn highlight_selection(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -975,8 +866,6 @@ impl PdfApp {
         true
     }
 
-    /// Attach a sticky note to the start of the live selection and open its
-    /// editor (as the ebook reader's note from a selection does).
     pub(super) fn note_from_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some(sel) = self.selection.filter(TextSelection::is_active) else {
             return false;
@@ -991,8 +880,6 @@ impl PdfApp {
     }
 }
 
-/// The caret beside glyph `glyph` of `layer` nearest page x `x`: before it
-/// over its leading half, after it over its trailing half.
 fn caret_by(layer: &PageText, glyph: usize, x: f64) -> usize {
     let after = layer
         .bands_for_range(glyph, glyph + 1)

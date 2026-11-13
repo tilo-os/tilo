@@ -3,9 +3,7 @@
 use crate::component::{Component, Described, Event};
 use crate::widget::{ControlRow, Element, Row};
 
-/// A selectable row of a short list whose items carry their own controls (a layers panel, each
-/// layer's name beside its switches): a press none of its controls took chooses the row, and the
-/// chosen row is lifted off the ground it stands on.
+/// A selectable row of a short list whose items carry their own controls.
 #[derive(Component, Default)]
 #[component(name = "ControlRow", role = "ListItem", label = "label")]
 pub struct ControlRowProps {
@@ -44,8 +42,6 @@ impl Described for ControlRow {
         row
     }
 
-    /// What it is called and what a press does change where the row stands; its content changes
-    /// by key through [`Self::slot_views`]. A row that gains or loses its press is built again.
     fn set_props(&mut self, props: ControlRowProps) -> bool {
         if props.choose.is_none() == self.has_choose() {
             return false;
@@ -55,7 +51,6 @@ impl Described for ControlRow {
         true
     }
 
-    /// What stands in the row changes by key in place.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
         if slot != "children" {
             return None;

@@ -1,13 +1,4 @@
 //! The folder comparison's listing.
-//!
-//! One row per file that differs between the two roots: what happened to it
-//! (added on the left, removed, modified), its path in the tree, and how its
-//! size changed. Choosing a row opens those two files as an ordinary
-//! comparison, which is where the work happens; this listing is only the
-//! index.
-//!
-//! The listing says when the walk stopped at its bound, so a very large tree
-//! is never presented as a complete answer.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
@@ -20,7 +11,6 @@ use ui::widget::{BadgeFace, ListRowFace, RowLeading, badge_column_width};
 use crate::folder::{FolderComparison, FolderEntry, FolderKind};
 use crate::i18n::{count, t, t_args};
 
-/// A row's height at the current text scale.
 pub fn row_height(text: &mut ui::text_render::TextRenderer, theme: &ui::theme::Theme) -> f64 {
     f64::from(
         text.measure_style("Ag", None, &theme.text(TextRole::Body))
@@ -28,13 +18,10 @@ pub fn row_height(text: &mut ui::text_render::TextRenderer, theme: &ui::theme::T
     ) + 2.0 * f64::from(theme.tokens.spacing.s2)
 }
 
-/// A byte count as the system writes it (`1.5 kB`): the folder listing is
-/// read with everything else on the desktop.
 fn format_bytes(bytes: u64) -> String {
     ui::format::size(bytes)
 }
 
-/// What a row says happened, beside its path.
 fn entry_meta(entry: &FolderEntry) -> String {
     let left = format_bytes(entry.left_len);
     let right = format_bytes(entry.right_len);
@@ -49,17 +36,12 @@ fn entry_meta(entry: &FolderEntry) -> String {
     }
 }
 
-/// What one paint produced.
 pub struct FolderDraw {
-    /// Every row that was painted, with the entry it shows.
     pub rows: Vec<(usize, Rect)>,
-    /// Height of everything, for clamping the scroll.
     pub content_height: f64,
-    /// The band the rows were painted in.
     pub viewport: Rect,
 }
 
-/// Paint the listing into `area`.
 pub fn paint(
     ctx: &mut PaintCtx<'_>,
     area: Rect,
@@ -112,7 +94,6 @@ pub fn paint(
         );
         rows.push((index, row));
     }
-    // Rows are drawn after the selection band so the text sits over it.
     let badges: Vec<&str> = comparison
         .entries
         .iter()
@@ -143,8 +124,6 @@ pub fn paint(
     }
 }
 
-/// The band above the rows, `band_h` tall at the top of `area`: which two
-/// folders, how much differs, and whether the listing was cut short.
 fn paint_summary(ctx: &mut PaintCtx<'_>, area: Rect, band_h: f64, comparison: &FolderComparison) {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;

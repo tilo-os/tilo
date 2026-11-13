@@ -3,9 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-/// The checkout this program runs in: the tree above it that holds the tool. A build made in
-/// another checkout (`/src/tilo` on a builder) names that one at compile time, and the tree beside
-/// the executable is the one whose tools run here.
+/// The checkout this program runs in: the tree above it that holds the tool.
 fn repo(exe: &Path) -> PathBuf {
     let tool = Path::new("scripts/headless-examples/startup-frame-timeline.py");
     exe.ancestors()

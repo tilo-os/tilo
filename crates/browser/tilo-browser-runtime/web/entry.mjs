@@ -240,6 +240,14 @@ async function recordArrived(peer, {app, record}) {
   }
 }
 
+/** The apps this page shows as HTML (`mountDesktop({dom: true})`): every
+ * widget of their windows renders as its own elements (`Widget::html`), so
+ * the page holds real text, fields, lists and buttons that the browser lays
+ * out, finds, selects and reads out. Any other app is drawn on the canvas
+ * until its widgets render as HTML too; which renderer shows an app is this
+ * page's choice, never the link's. */
+export const HTML_APPS = new Set(['so.tilo.notes']);
+
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the desk: the page's own, or a peer's. */
@@ -251,7 +259,8 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   if (mode === 'app') {
     if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
     if (peer && target.record !== undefined) await recordArrived(peer, target);
-    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), onStatus});
+    const html = HTML_APPS.has(target.app) ? {dom: true} : {};
+    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), ...html, onStatus});
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }
@@ -267,6 +276,12 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   navigation ??= mounted.navigation;
   await openTarget({mount: mounted, navigation, target, mode});
   return {mount: mounted, navigation};
+}
+
+/** What the page says while the host replays the workspace to it: how many
+ * of its records are here (`records`). */
+export function receivingNote(records) {
+  return `Receiving the workspace… ${records} ${records === 1 ? 'record' : 'records'} so far`;
 }
 
 /**
@@ -335,8 +350,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
-      say(event.phase === 'pairing' ? 'Asking to pair this device…'
-        : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
+      // A host replaying a big workspace to this device is working: the
+      // page says how far it got, in place of a note that it takes long.
+      say(event.phase === 'receiving' ? receivingNote(event.records)
+        : event.phase === 'pairing' ? 'Asking to pair this device…'
+          : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
   // Nothing to mount: an embed shows its site's fallback until the visitor
@@ -386,6 +404,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
   const listed = listedAt(workspaces, scope, admittedWorkspace);
+  // The name the workspace answered this page's admission with, for one no
+  // directory of the page's lists: a workspace a link's invitation admits
+  // into, or the person's own. Without it the desk it starts has no name and
+  // the tab never says which workspace it is.
+  const workspaceName = listed?.name || peer?.workspaceName || null;
   // The desktop shows its invite sheet in a workspace the page can invite
   // to, made and listed through the workspace's host.
   const invite = deps.invite?.({peer, entry}) ?? null;
@@ -397,7 +420,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const unsupported = await deps.rendererUnavailable?.();
   if (unsupported) return {peer, rendererUnavailable: unsupported};
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
-    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
+    diagnostics: {...(workspaceName ? {workspaceName} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),

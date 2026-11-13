@@ -1,11 +1,5 @@
-//! [`HoverToolbar`] — controls shown over the trailing top corner of a row while it is hovered
-//! or holds focus: a message's quick reactions and Reply.
-//!
-//! The toolbar is laid out with the row (a layer straddling the row's top edge at its trailing
-//! corner, so a one-line message's text stays clear), so showing it moves nothing. It comes the moment the pointer is over the row
-//! ([`crate::motion::Transient::CONFIRMATION`]) and fades when it leaves; while hidden it takes
-//! no pointer input, but it stays in the focus order: Tab from the row reaches its controls,
-//! and focus in them keeps it shown. Showing and hiding it damages only the toolbar.
+//! [`HoverToolbar`] — controls shown over the trailing top corner of a row while it is
+//! hovered or holds focus: a message's quick reactions and Reply.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -24,16 +18,14 @@ use crate::widget::arrange::{At, Layers, Row};
 use crate::widget::context_menu_area::focus_within;
 use crate::widget::{Decorator, Element, EventCtx, Widget};
 
-/// How the toolbar is shown, shared by the row that decides and the toolbar that draws.
 #[derive(Default)]
 struct Shown {
-    /// How far it is shown (`0..=1`), as last drawn.
     openness: Cell<f64>,
-    /// It changed since it was last drawn.
     changed: Cell<bool>,
 }
 
-/// A row with controls shown over its trailing top corner while it is hovered or holds focus.
+/// A row with controls shown over its trailing top corner while it is hovered or holds
+/// focus.
 #[crate::component::not_a_component(part, "shown by the `ui.HoverToolbar` attachment")]
 pub struct HoverToolbar {
     layers: Layers,
@@ -56,7 +48,6 @@ impl HoverToolbar {
             bar = bar.push(control);
         }
         let face = ToolbarFace {
-            // A floating surface, as every control that stands over content.
             bar: Box::new(
                 crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
                     .padded(Rhythm::Tight),
@@ -65,7 +56,6 @@ impl HoverToolbar {
         };
         let layers = Layers::layers()
             .push(row)
-            // Over the row's top edge, half above it: a one-line message keeps its text clear.
             .push_straddling(Box::new(face), At::TopTrailing);
         Self {
             layers,
@@ -89,7 +79,6 @@ impl HoverToolbar {
         self.layers.children().into_iter().next()
     }
 
-    /// Show it while the row is hovered or holds focus.
     fn follow(&mut self, theme: Option<&Theme>) {
         let want = self.hovered || self.focused;
         let now = crate::motion::frame_now();
@@ -133,7 +122,6 @@ impl Decorator for HoverToolbar {
                 self.hovered = !self.touch && self.layers.get_rect().contains(at);
             }
             WindowEvent::CursorLeft { .. } => self.hovered = false,
-            // A finger: the pointer the platform makes of it hovers nothing.
             WindowEvent::Touch(_) => {
                 self.touch = true;
                 self.hovered = false;
@@ -211,7 +199,6 @@ impl Decorator for ToolbarFace {
                 | WindowEvent::MouseWheel { .. }
                 | WindowEvent::Touch(_)
         );
-        // Hidden, it takes no pointer; the keyboard reaches it, which shows it.
         if pointer && !self.visible() {
             return;
         }

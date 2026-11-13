@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-/// The unchanged console semantic operations carried by the authenticated admin route.
+/// Console operations carried on the authenticated admin route.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceActions {
@@ -21,8 +21,8 @@ impl Drop for DeviceActions {
     }
 }
 
-/// Enroll only the machine's current encrypted root for sibling consent.
-/// Paths, account ids, boot keys and key files are never accepted from a caller.
+/// Enroll only the machine's current encrypted root for sibling consent; paths, account ids, boot
+/// keys and key files are never accepted from a caller.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceUnlockEnrol {
@@ -49,9 +49,6 @@ impl Drop for DeviceUnlockEnrol {
 }
 impl DeviceUnlockEnrol {
     /// Validate before any privileged side effect, with content-free refusals.
-    ///
-    /// # Errors
-    /// Refuses empty, oversized or invalid private input without reflecting it.
     pub fn validate(&self) -> Result<(), String> {
         if self.passphrase.is_empty()
             || self.passphrase.len() > 4096
@@ -69,7 +66,7 @@ impl DeviceUnlockEnrol {
         Ok(())
     }
 }
-/// Public enrollment facts; no factor, certificate private key or credential readback.
+/// Public enrollment facts: no factor, certificate private key or credential is readable back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceUnlockEnrolResult {
     pub volume_uuid: String,

@@ -177,7 +177,7 @@ fn a_float_opened_beside_the_last_window_of_a_full_strip_stands_clear_of_its_car
 
 /// Open a window floating beside the one in front, and check it stands in the column, never over
 /// that window, and moves where the layer puts it.
-fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
+fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle) -> u64 {
     let beside = handle
         .snapshot("g", vec![])
         .active
@@ -270,5 +270,71 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
         row.floats().get(&group),
         Some(&slot),
         "where the layer put it"
+    );
+    group
+}
+
+/// A card snapped into its strip stands there in the same pass, and floated again it goes back to
+/// the column as the card it was, not over the desk at a window's size: both are the desk's
+/// actions, so a key or an agent snaps and floats it as the card's own controls do.
+#[test]
+fn a_card_snapped_into_its_strip_floats_back_as_the_card() {
+    let (mut frame, handle) = mount();
+    let group = floats_beside(&mut frame, &handle);
+    let float = |on| ChromeEffect::Float {
+        group: group.to_string(),
+        on,
+    };
+    // The card's own snap, pressed as assistive technology or an agent presses it: no pointer
+    // move follows to carry it out.
+    let snap = frame
+        .a11y_node_named("Snap back into the strip")
+        .expect("the card offers to snap back");
+    frame
+        .perform_a11y_action(snap, &ui::a11y::Action::Activate)
+        .unwrap();
+    frame.relayout();
+    assert!(
+        handle.docked_cards().is_empty(),
+        "snapped, it leaves the column"
+    );
+    assert!(
+        !frame
+            .widget_mut::<ui::widget::GroupRow>()
+            .expect("the shown strip")
+            .is_floating(group),
+        "it stands in its strip at once"
+    );
+    handle.dispatch(float(true)).unwrap();
+    frame.relayout();
+    frame.relayout();
+    assert_eq!(
+        handle
+            .docked_cards()
+            .iter()
+            .map(|card| card.group)
+            .collect::<Vec<_>>(),
+        [group],
+        "floated again, it stands in the column"
+    );
+    let row = frame
+        .widget_mut::<ui::widget::GroupRow>()
+        .expect("the shown strip");
+    let card = *row.floats().get(&group).expect("it floats");
+    assert_eq!(
+        card.size(),
+        ui::kurbo::Size::new(ui::widget::FLOAT_CARD_SIZE.0, ui::widget::FLOAT_CARD_SIZE.1),
+        "as the card, not a window lifted whole"
+    );
+    let beside = floats::opened_beside(row, group).expect("a window beside it");
+    let beside = row
+        .groups
+        .iter()
+        .find(|held| held.id == beside)
+        .map(Widget::get_rect)
+        .expect("in the strip");
+    assert!(
+        !beside.overlaps(card),
+        "the window beside it stands clear of it again: card {card:?}, that window {beside:?}"
     );
 }

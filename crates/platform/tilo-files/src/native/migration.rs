@@ -1,65 +1,56 @@
-//! Forward-only migrations of a versioned on-disk format, with a snapshot
-//! taken before each.
+//! Forward-only migrations of a versioned on-disk format, with a snapshot taken before
+//! each, so going back to an older build loses nothing. A file a program writes
+//! declares a [`Format`]: its current version, and one [`Step`] per older version it
+//! still brings up. Opening an older file runs the steps from there, after copying it
+//! as it was to `<file>.v<version>`; a newer one is left alone and refused, since a
+//! build never rewrites what a newer one wrote. A build's version is pinned by the
+//! bytes it wrote ([`assert_golden_bytes`]): a persisted type's layout is its field
+//! order, so changing one bumps the version and adds the step that reads what devices
+//! have.
 //!
-//! User data is the one thing every update keeps
-//! (docs/architecture/compatibility.md). A file a program writes in a
-//! format of its own declares a [`Format`]: its current version, and one
-//! [`Step`] per older version it still brings up, each taking the bytes of
-//! one version to the next. Opening a file of an older version runs the
-//! steps from there, after copying the file as it was to a snapshot beside
-//! it (`<file>.v<version>`), so going back to the build that wrote it loses
-//! nothing. A file of a newer version is left as it is and refused: a build
-//! never rewrites what a newer one wrote.
-//!
-//! Each step is tested against a file the previous version wrote, and only
-//! that ([`assert_step_reads_previous`]); `tools/policy/check_format_migrations.py`
-//! holds every format to it and keeps the chain from losing a step.
-//!
-//! The version a build writes is pinned by the bytes it wrote
-//! ([`assert_golden_bytes`]): a persisted type's layout is its field order, so
-//! a change to one has to bump the format's version and add the step that
-//! reads what devices hold, never slip in under the version they already have.
+//! The steps keep data only when the code that opens the file runs them: its loader
+//! reads the version the file names and hands it to [`Format::bring_up`] before it
+//! reads the bytes, whatever version that is. A version that lived in a file of its
+//! own comes up into the new one through [`Format::bring_up_moved`]. [`Format::migrate`]
+//! alone keeps no copy of the old file and is for testing the steps.
+//! `tools/policy/check_format_migrations.py` fails a format whose crate opens its file
+//! any other way.
 
 use std::path::{Path, PathBuf};
 
-/// Brings the bytes of one version of a format to the next.
 pub type Step = fn(Vec<u8>) -> Result<Vec<u8>, String>;
 
 /// A versioned on-disk format and how its older versions come up to date.
 #[derive(Clone, Copy, Debug)]
 pub struct Format {
-    /// What the format holds, for snapshots' and errors' sake.
+    /// What the format holds, for snapshots and errors.
     pub name: &'static str,
     /// The version this build writes and reads.
     pub version: u32,
-    /// The oldest version this build brings up; `steps[i]` takes version
-    /// `oldest + i` to `oldest + i + 1`, so there are `version - oldest`.
+    /// The oldest version this build brings up: `steps[i]` takes version `oldest + i` to `oldest + i +
+    /// 1`.
     pub oldest: u32,
     pub steps: &'static [Step],
 }
 
-/// Why a file could not be brought up to date. The file is unchanged.
+/// Why a file could not be brought up to date; the file is unchanged.
 #[derive(Debug)]
 pub enum MigrationError {
-    /// A newer build wrote it.
     Newer {
         name: &'static str,
         stored: u32,
         version: u32,
     },
-    /// It is older than any version this build brings up.
     TooOld {
         name: &'static str,
         stored: u32,
         oldest: u32,
     },
-    /// A step refused the bytes.
     Step {
         name: &'static str,
         from: u32,
         reason: String,
     },
-    /// The snapshot or the migrated file could not be written.
     Io {
         name: &'static str,
         source: std::io::Error,
@@ -103,8 +94,7 @@ impl std::error::Error for MigrationError {
 }
 
 impl Format {
-    /// Whether the declaration is whole: one step per version between
-    /// [`Self::oldest`] and [`Self::version`].
+    /// One step per version between [`Self::oldest`] and [`Self::version`].
     #[must_use]
     pub fn is_whole(&self) -> bool {
         self.version
@@ -113,13 +103,7 @@ impl Format {
             .is_some_and(|count| count == self.steps.len())
     }
 
-    /// `bytes` of version `stored`, brought up to [`Self::version`] by the
-    /// steps from `stored` on.
-    ///
-    /// # Errors
-    ///
-    /// [`MigrationError::Newer`], [`MigrationError::TooOld`] or the
-    /// [`MigrationError::Step`] that refused.
+    /// `bytes` of version `stored`, brought up to [`Self::version`] by the steps from `stored` on.
     pub fn migrate(&self, mut bytes: Vec<u8>, stored: u32) -> Result<Vec<u8>, MigrationError> {
         if stored > self.version {
             return Err(MigrationError::Newer {
@@ -157,16 +141,8 @@ impl Format {
         path.with_file_name(name)
     }
 
-    /// The file at `path`, whose contents `bytes` are of version `stored`,
-    /// brought up to [`Self::version`] on disk. A file already current is
-    /// returned as it is and nothing is written. Otherwise the file as it was
-    /// is copied to [`Self::snapshot_path`] first, then replaced, atomically,
-    /// by the migrated bytes, which are returned.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::migrate`], or [`MigrationError::Io`]; the file is unchanged
-    /// on every error.
+    /// The file at `path`, whose contents `bytes` are of version `stored`, brought up to
+    /// [`Self::version`] on disk; a file already current is left alone.
     pub fn bring_up(
         &self,
         path: &Path,
@@ -185,11 +161,42 @@ impl Format {
         super::atomic::write(path, &migrated).map_err(io)?;
         Ok(migrated)
     }
+
+    /// [`Self::bring_up`] for a format whose older version lived in a file of
+    /// its own: the file at `from`, whose contents `bytes` are of version
+    /// `stored`, brought up to [`Self::version`] at `to`. The migrated bytes
+    /// are written to `to` first, then the old file moves beside it as its
+    /// snapshot ([`Self::snapshot_path`] of `to`), so a crash between the two
+    /// leaves both and the next open finds `to` current. An old file another
+    /// opener already moved is no error.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::migrate`], or [`MigrationError::Io`]; `from` is unchanged
+    /// on every error.
+    pub fn bring_up_moved(
+        &self,
+        from: &Path,
+        to: &Path,
+        bytes: Vec<u8>,
+        stored: u32,
+    ) -> Result<Vec<u8>, MigrationError> {
+        let migrated = self.migrate(bytes, stored)?;
+        let io = |source| MigrationError::Io {
+            name: self.name,
+            source,
+        };
+        super::atomic::write(to, &migrated).map_err(io)?;
+        match std::fs::rename(from, Self::snapshot_path(to, stored)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            result => result.map_err(io)?,
+        }
+        Ok(migrated)
+    }
 }
 
-/// The test every [`Format`] past its first version carries: the step from
-/// the previous version, applied to a file that version wrote (`previous`),
-/// gives bytes `reads` accepts as the current version.
+/// The step from the previous version, applied to a file that version wrote (`previous`), gives bytes
+/// `reads` accepts as the current version.
 #[allow(
     clippy::panic,
     reason = "an assertion other crates' tests call; failing is its whole answer"
@@ -211,17 +218,11 @@ pub fn assert_step_reads_previous(format: &Format, previous: &[u8], reads: impl 
     reads(&migrated);
 }
 
-/// The test every kept layout carries beside it: the bytes are those a build
-/// wrote for it (`golden`, checked in as they were), `read` takes them with
-/// the types this build has, and `write` encodes the same value again, which
-/// must give those bytes back exactly.
-///
-/// A persisted type's layout is its field order; adding, removing, reordering
-/// or changing the type of one changes what it encodes and breaks this, which
-/// is when the format needs a new version and a [`Step`] that reads the bytes
-/// devices already hold. Nothing else notices: postcard reads a shorter or
-/// longer field happily as long as the types line up, and names no field when
-/// it fails.
+/// The test every kept layout carries beside it: `golden` is what a build wrote, `read` takes it with
+/// this build's types, and `write` must give those bytes back exactly. A field added, removed,
+/// reordered or retyped breaks it, which is when the format needs a new version and a [`Step`] for the
+/// bytes devices already have. Nothing else notices: postcard reads a shorter or longer field as long
+/// as the types line up, and names no field when it fails.
 pub fn assert_golden_bytes(
     name: &str,
     golden: &[u8],
@@ -296,6 +297,43 @@ mod tests {
 
         assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
         assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+    }
+
+    #[test]
+    fn an_older_file_of_its_own_comes_up_in_the_new_place_and_is_kept_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("notes-v1.json");
+        let path = dir.path().join("notes.log");
+        std::fs::write(&old, b"v1").unwrap();
+
+        let migrated = NOTES
+            .bring_up_moved(&old, &path, b"v1".to_vec(), 1)
+            .unwrap();
+        assert_eq!(migrated, b"v1++");
+        assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
+        assert!(!old.exists(), "the old file moved");
+        assert_eq!(
+            std::fs::read(Format::snapshot_path(&path, 1)).unwrap(),
+            b"v1",
+            "rollback loses nothing"
+        );
+
+        let refusing = Format {
+            steps: &[add_tail, refuse],
+            ..NOTES
+        };
+        std::fs::write(&old, b"v1").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            refusing.bring_up_moved(&old, &path, b"v1".to_vec(), 1),
+            Err(MigrationError::Step { from: 2, .. })
+        ));
+        assert_eq!(
+            std::fs::read(&old).unwrap(),
+            b"v1",
+            "a refusal moves nothing"
+        );
+        assert!(!path.exists());
     }
 
     #[test]

@@ -1,7 +1,6 @@
-//! Stateful Git SSH transport without libssh2 or OpenSSL.
-//!
-//! Only an already trusted host and identities held by the local SSH agent are
-//! accepted. No private key, trust prompt, or shell command is synthesized.
+//! Stateful Git SSH transport without libssh2 or OpenSSL: only an already trusted
+//! host and identities held by the local SSH agent are accepted, and no private
+//! key, trust prompt or shell command is synthesized.
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -413,9 +412,8 @@ impl Write for SshStream {
 mod tests {
     use super::*;
 
-    /// SSH transport: scp/url remotes preserve repository paths, remote shell
-    /// arguments cannot escape the path, and host verification requires existing
-    /// trust and rejects revocation. Each phase is a former test with its own fresh fixture.
+    /// SSH transport: scp and url remotes preserve repository paths, remote shell arguments cannot
+    /// escape the path, and host verification requires existing trust and rejects revocation.
     #[test]
     fn ssh_remotes_keep_repository_paths_and_require_existing_trust() {
         scp_and_url_remotes_preserve_repository_paths();

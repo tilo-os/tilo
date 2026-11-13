@@ -24,7 +24,6 @@ fn h(b: u8) -> Hash {
     Hash::from([b; 32])
 }
 
-/// A saved namespace of `files` files in one directory under the root.
 fn saved_tree(files: u64) -> Vec<u8> {
     let mut source = Namespace::new("a").unwrap();
     let dir = source.create_dir(ROOT_INO, "dir", 1).unwrap();
@@ -49,8 +48,6 @@ fn rebuilding_the_index_reads_each_node_document_once() {
     assert_eq!(nodes, 65, "the fixture holds the directory and its files");
     assert_eq!(reopened.indexed_record_count() as u64, nodes);
 
-    // The walk binds every node to its stable record, so a record still
-    // resolves to its live inode after the merge rebuilt the index.
     let ino = reopened.lookup(ROOT_INO, "f1").unwrap().ino.0;
     let record_id = reopened.record_id_for(ino).unwrap();
     assert_eq!(reopened.ino_for_record_id(record_id), Some(ino));
@@ -63,9 +60,6 @@ fn rebuilding_the_index_reads_each_node_document_once() {
         "rebuilding read {reads} node documents for {nodes} nodes"
     );
 
-    // A peer's content edit arrives as a delta, merged and resolved: it reads
-    // the one node the change names, not the 65 here. A rebuild that read a
-    // node per field again would read every node and fail here.
     let mut peer = Namespace::from_bytes("b", &saved).unwrap();
     let peer_ino = peer.lookup(ROOT_INO, "f3").unwrap().ino.0;
     assert!(peer.set_content(peer_ino, Some(&h(2)), 7, 7));
@@ -81,9 +75,6 @@ fn rebuilding_the_index_reads_each_node_document_once() {
     assert_eq!(reopened.hash_for(applied), Some(h(2)));
 }
 
-/// The reserved root id is not a node: a document that nevertheless carries
-/// one under the nodes map must not gain a row, lose the root record, or
-/// change which record the structural index binds for that key.
 #[test]
 fn a_node_under_the_reserved_root_id_keeps_the_root_record_its_own() {
     let saved = saved_tree(8);
@@ -115,14 +106,11 @@ fn a_node_under_the_reserved_root_id_keeps_the_root_record_its_own() {
     );
     assert_eq!(ns.record_id_for(ROOT_INO), Some(root_record));
     assert!(!ns.record_index_ambiguous.contains(&root_record));
-    // The structural index binds the node's own key, as the scan it replaced
-    // did, so the root record stays the document root's.
     assert!(ns.tree.nodes_of(own_record).any(|id| id == ROOT_ID));
     assert!(!ns.tree.nodes_of(root_record).any(|id| id == ROOT_ID));
     assert!(ns.indexed_record(own_record).is_none());
 }
 
-/// A workspace the size a real Files tree reaches.
 const WIDE_DIRECTORIES: usize = 100;
 const WIDE_FILES: usize = 1_000;
 
@@ -140,10 +128,6 @@ fn wide_tree() -> Namespace {
     ns
 }
 
-/// One change costs the change, not the 100,100-node tree: renames and moves
-/// of this replica's own, and a peer's create, delete, move and concurrent
-/// rename through every entry point that takes a delta, each read the nodes
-/// they name, and each leave behind the index a from-scratch rebuild makes.
 #[test]
 fn a_change_costs_the_change_not_the_tree() {
     let mut ns = wide_tree();
@@ -151,8 +135,6 @@ fn a_change_costs_the_change_not_the_tree() {
     assert_eq!(nodes, 100_100, "the fixture is the whole tree");
     assert_eq!(ns.indexed_record_count() as u64, nodes);
 
-    // What one whole walk of this tree costs, so each change is bounded
-    // against real work on this machine rather than a wall-clock number.
     let mut rebuilt = ns.clone();
     let start = std::time::Instant::now();
     rebuilt.rebuild_record_index();
@@ -164,8 +146,6 @@ fn a_change_costs_the_change_not_the_tree() {
     assert_indexes_match_rebuild(&ns);
 }
 
-/// Make one change, bounded by the node documents it may read and the time;
-/// the index it leaves must equal a rebuild's.
 fn measure<T>(
     label: &str,
     ns: &mut Namespace,
@@ -200,10 +180,6 @@ fn indexed_path(ns: &Namespace, ino: u64) -> String {
         .path
 }
 
-/// The renames and moves this replica makes itself. A rename reads the
-/// entries of the directories it joins or leaves (for the name conflict
-/// check) and the moved subtree; the walk it replaced read 4-5 documents per
-/// node.
 fn local_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let one_directory = WIDE_FILES as u64 + 1;
     let quarter = rebuild_ms / 4;
@@ -219,8 +195,6 @@ fn local_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let renamed = ns.lookup(dir, "renamed").unwrap().ino.0;
     assert_eq!(indexed_path(ns, renamed), "/dir-000/renamed");
 
-    // A 1,000-entry directory moved into another: its whole subtree is
-    // re-pathed and nothing else in the catalogue moves.
     let target = ns.lookup(ROOT_INO, "dir-002").unwrap().ino.0;
     measure(
         "local-move-1000-entry-dir",
@@ -237,8 +211,6 @@ fn local_changes(ns: &mut Namespace, rebuild_ms: u128) {
     assert!(ns.lookup(ROOT_INO, "dir-001").is_none());
 }
 
-/// What a peer does to the tree. Inodes are this replica's own, so the peer's
-/// work is found here by path.
 fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let one_directory = WIDE_FILES as u64 + 1;
     let quarter = rebuild_ms / 4;
@@ -246,7 +218,6 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     peer.prime_baseline();
     let peer_dir = peer.lookup(ROOT_INO, "dir-003").unwrap().ino.0;
 
-    // A peer creates a file: the row arrives with it.
     let here = ns.lookup(ROOT_INO, "dir-003").unwrap().ino.0;
     peer.create_file(peer_dir, "created", Some(&h(2)), 2, 4)
         .unwrap();
@@ -257,7 +228,6 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let created = ns.lookup(here, "created").unwrap().ino.0;
     assert_eq!(indexed_path(ns, created), "/dir-003/created");
 
-    // A peer deletes (= trashes) a file: its row goes.
     let doomed = ns.lookup(here, "f-0002").unwrap().ino.0;
     let doomed_record = ns.record_id_for(doomed);
     let theirs = peer.lookup(peer_dir, "f-0002").unwrap().ino.0;
@@ -267,8 +237,6 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     });
     assert!(ns.indexed_record(doomed_record.unwrap()).is_none());
 
-    // A peer moves a 1,000-entry directory, arriving as its whole document:
-    // reading that is the merge's own load, the catalogue work is the move.
     let harvest = peer.lookup(ROOT_INO, "dir-006").unwrap().ino.0;
     assert!(peer.rename(ROOT_INO, "dir-005", harvest, "harvest", 5));
     let harvest_here = ns.lookup(ROOT_INO, "dir-006").unwrap().ino.0;
@@ -286,8 +254,6 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     let harvest_file = ns.lookup(harvest_dir, "f-0005").unwrap().ino.0;
     assert_eq!(indexed_path(ns, harvest_file), "/dir-006/harvest/f-0005");
 
-    // Both sides rename one file at once: the peer's change arrives, and the
-    // row names the winner.
     let contested_dir = peer.lookup(ROOT_INO, "dir-007").unwrap().ino.0;
     assert!(peer.rename(contested_dir, "f-0003", contested_dir, "peer-name", 6));
     let ours = ns.lookup(ROOT_INO, "dir-007").unwrap().ino.0;

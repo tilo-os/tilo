@@ -1,6 +1,5 @@
-//! Go to clip: from a playhead parked between clips to the nearest clip
-//! the preview can show, as a published action and as the button the
-//! preview's hint carries.
+//! From a playhead parked between clips to the nearest clip the preview can show: a
+//! published action and the button the preview's hint carries.
 
 #[allow(
     clippy::wildcard_imports,
@@ -8,14 +7,13 @@
 )]
 use super::*;
 
-/// The catalogue message naming the button, and its node's key in the
-/// transport's semantics.
+/// The catalogue message naming the button, and its node's key.
 pub(super) const GO_TO_CLIP_LABEL: &str = "video-editor-go-to-clip";
 pub(super) const GO_TO_CLIP_KEY: &str = "go to clip";
 
 impl VideoEditorApp {
-    /// Where Go to clip takes the playhead: the start of the first picture
-    /// clip after it, or of the last one before it when none follows.
+    /// The start of the first picture clip after it, or of the last one before it when none
+    /// follows.
     pub(super) fn go_to_clip_target(&self) -> Option<f64> {
         let starts = || {
             self.project
@@ -47,30 +45,19 @@ impl VideoEditorApp {
         true
     }
 
-    /// Whether the preview shows its "no clip at the playhead" hint now,
-    /// with a clip to go to: then the hint carries Go to clip.
     pub(super) fn preview_offers_go_to_clip(&self) -> bool {
         !self.project.clips.is_empty()
             && self.project.top_video_clip_at(self.playhead).is_none()
             && self.go_to_clip_target().is_some()
     }
 
-    /// The preview's words over an empty canvas, stacked about its centre:
-    /// where the title starts and, when `offer`, where Go to clip stands
-    /// under the hint.
     pub(super) fn preview_hint_stack(
         canvas: Rect,
         tr: &mut TextRenderer,
         theme: &Theme,
-        hint: bool,
+        th: f64,
         offer: bool,
     ) -> (f64, Option<Rect>) {
-        let th = line_height(tr, &theme.text(TextRole::Body).strong());
-        let hh = if hint {
-            line_height(tr, &theme.text(TextRole::Caption))
-        } else {
-            -S1
-        };
         let (bw, bh) = if offer {
             (
                 ButtonFace::new(Rect::ZERO, &crate::resource::CATALOG.t(GO_TO_CLIP_LABEL))
@@ -82,9 +69,9 @@ impl VideoEditorApp {
             (0.0, 0.0)
         };
         let below = if offer { S2 + bh } else { 0.0 };
-        let top = canvas.center().y - (th + S1 + hh + below) / 2.0;
+        let top = canvas.center().y - f64::midpoint(th, below);
         let button = offer.then(|| {
-            let y = top + th + S1 + hh + S2;
+            let y = top + th + S2;
             let x = canvas.center().x - bw / 2.0;
             Rect::new(x, y, x + bw, y + bh)
         });
@@ -100,7 +87,8 @@ impl VideoEditorApp {
             return None;
         }
         self.with_dialog_layout(|_, tr, theme| {
-            Self::preview_hint_stack(r.canvas, tr, theme, true, true).1
+            let th = line_height(tr, &theme.text(TextRole::Body).strong());
+            Self::preview_hint_stack(r.canvas, tr, theme, th, true).1
         })
     }
 }

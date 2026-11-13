@@ -1,20 +1,10 @@
-//! Diff — a CRDT-native diff & merge tool for Tilo, built on the `ui` toolkit.
-//!
-//! Two modes:
-//!
-//! * **Diff** — a side-by-side, line-aligned comparison of two files with
-//!   syntax highlighting, add/remove/modify tinting, a change minimap, and
-//!   prev/next-change navigation.
-//! * **3-way merge** — base / ours / theirs source columns with per-hunk
-//!   conflict resolution (take ours / theirs / both) and an editable merged
-//!   result, a text in the document every collaborator edits.
-//!
-//! What is open and the merged result are the [`Session`] resource;
-//! [`DiffmergeShell`] runs it.
+//! Diff: a side-by-side, line-aligned comparison of two texts with syntax highlighting, a
+//! change minimap and prev/next navigation, and a three-way merge with per-hunk conflict
+//! resolution and an editable merged result. What is open and the merged result are the
+//! [`Session`] resource.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Panic-producing lints stay denied; shared crates keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -53,7 +43,6 @@ pub use doc::{HunkChoice, Session};
 pub use model::{DiffModel, MergeModel, Resolution};
 pub use resource::DiffmergeShell;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(DiffmergeShell)
 }

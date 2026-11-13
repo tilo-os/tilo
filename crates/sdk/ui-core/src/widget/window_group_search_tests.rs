@@ -8,8 +8,6 @@ use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::{InPlace, SearchHandoff, SearchReach};
 use winit::keyboard::{ModifiersState, NamedKey};
 
-/// A document app: finds in its text, keeps which match is current and
-/// whether it was told to stop.
 #[derive(Default)]
 struct Draft {
     text: String,
@@ -272,7 +270,6 @@ fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
         "12 of 40"
     );
 
-    // The app's window went away under its search: nothing is sent to it.
     assert!(group.set_tab_window_offer(1, None));
     assert!(!group.window_search().is_open());
     assert!(group.take_toolbar_events().is_empty());
@@ -294,7 +291,6 @@ fn an_app_in_its_own_process_with_nothing_to_search_in_place_opens_the_platform_
     assert!(group.take_toolbar_events().is_empty());
 }
 
-/// Lay the window out and draw it, as its host does in a frame.
 fn laid_out_window(group: &mut WindowGroup) {
     use taffy::prelude::TaffyMaxContent;
     let theme = Theme::dark();
@@ -306,7 +302,6 @@ fn laid_out_window(group: &mut WindowGroup) {
         .compute_layout(root, Size::MAX_CONTENT)
         .expect("the window lays out");
     group.apply_layout(&taffy, node, Point::ZERO);
-    // The bar's search lays itself out as it is drawn.
     group.draw(
         &mut Scene::new(),
         Affine::IDENTITY,
@@ -316,7 +311,6 @@ fn laid_out_window(group: &mut WindowGroup) {
     );
 }
 
-/// What the bar's top layer paints, for a host that draws it itself.
 fn bar_top_layer_tags(group: &mut WindowGroup) -> usize {
     let mut scene = Scene::new();
     group.draw_bar_popups(

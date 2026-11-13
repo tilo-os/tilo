@@ -1,10 +1,8 @@
-//! The open project as search entries: every marker, track, clip, effect
-//! and bin source is a findable place, and choosing one reveals it.
+//! The open project as search entries: every marker, track, clip, effect and bin source is a
+//! findable place, and choosing one reveals it.
 //!
-//! Timeline data is a durable namespace, not a viewport: a marker near the
-//! end of a large collaborative project must be as discoverable as the first
-//! one, so nothing here is truncated. Searchable text is not display-trimmed
-//! either: a word late in a caption or a marker note remains findable.
+//! Timeline data is a durable namespace rather than a viewport, so nothing here is truncated
+//! and searchable text is not display-trimmed.
 
 use std::collections::HashMap;
 
@@ -42,9 +40,8 @@ pub fn project_entries(project: &Project) -> Vec<SearchEntry> {
         entries.push(track_entry(track));
     }
     for clip in &project.clips {
-        // A dangling placement cannot be revealed coherently, so never
-        // publish an action for it. The action tree makes the same refusal
-        // after a concurrent delete.
+        // A dangling placement cannot be revealed coherently, so publish no action for it. The
+        // action tree makes the same refusal after a concurrent delete.
         let (Some(item), Some(track)) = (media.get(&clip.media), tracks.get(&clip.track)) else {
             continue;
         };
@@ -98,47 +95,84 @@ fn track_entry(track: &Track) -> SearchEntry {
     SearchEntry::new(track.name.clone(), track.kind.as_str())
         .anchored(anchor("tracks", track.id))
         .grouped(TRACK_KIND)
-        .subtitled(format!("{} track", track.kind.as_str()))
+        .subtitled(crate::resource::CATALOG.t_args(
+            "video-editor-search-track",
+            &[(
+                "kind",
+                ui::i18n::ArgValue::Text(track_kind_words(track.kind)),
+            )],
+        ))
         .with_icon("layers")
+}
+
+/// A lane's kind as a person reads it.
+fn track_kind_words(kind: crate::model::TrackKind) -> String {
+    crate::resource::CATALOG.t(match kind {
+        crate::model::TrackKind::Video => "video-editor-a11y-track-kind-video",
+        crate::model::TrackKind::Audio => "video-editor-a11y-track-kind-audio",
+    })
 }
 
 fn clip_entry(clip: &Clip, media: &MediaItem, track: &Track) -> SearchEntry {
     SearchEntry::new(media.name.clone(), media_text(media))
         .anchored(anchor("clips", clip.id))
         .grouped(CLIP_KIND)
-        .subtitled(format!(
-            "In {} at {}",
-            track.name,
-            timecode::clock(clip.start)
+        .subtitled(crate::resource::CATALOG.t_args(
+            "video-editor-search-clip",
+            &[
+                ("track", ui::i18n::ArgValue::Text(track.name.clone())),
+                (
+                    "time",
+                    ui::i18n::ArgValue::Text(timecode::clock(clip.start)),
+                ),
+            ],
         ))
         .with_icon("film")
 }
 
 fn effect_entry(clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Track) -> SearchEntry {
-    SearchEntry::new(format!("{} effect", effect.kind.label()), String::new())
-        .anchored(format!(
-            "{}/effects/{}",
-            anchor("clips", clip.id),
-            effect.id
-        ))
-        .grouped(EFFECT_KIND)
-        .subtitled(format!(
-            "In {} on {} at {:.0}% strength",
-            media.name,
-            track.name,
-            effect.amount * 100.0
-        ))
-        .with_icon("sparkles")
+    let kind = crate::resource::CATALOG.t(effect.kind.message());
+    SearchEntry::new(
+        crate::resource::CATALOG.t_args(
+            "video-editor-search-effect",
+            &[("effect", ui::i18n::ArgValue::Text(kind))],
+        ),
+        String::new(),
+    )
+    .anchored(format!(
+        "{}/effects/{}",
+        anchor("clips", clip.id),
+        effect.id
+    ))
+    .grouped(EFFECT_KIND)
+    .subtitled(crate::resource::CATALOG.t_args(
+        "video-editor-search-effect-where",
+        &[
+            ("media", ui::i18n::ArgValue::Text(media.name.clone())),
+            ("track", ui::i18n::ArgValue::Text(track.name.clone())),
+            (
+                "strength",
+                ui::i18n::ArgValue::Text(format!("{:.0}", effect.amount * 100.0)),
+            ),
+        ],
+    ))
+    .with_icon("sparkles")
 }
 
 fn media_entry(item: &MediaItem, uses: usize) -> SearchEntry {
+    let kind = crate::resource::CATALOG.t(item.kind.message());
     let subtitle = if uses == 0 {
-        format!("{} in the bin", item.kind.as_str())
+        crate::resource::CATALOG.t_args(
+            "video-editor-search-in-bin",
+            &[("kind", ui::i18n::ArgValue::Text(kind))],
+        )
     } else {
-        format!(
-            "{} used {uses} time{}",
-            item.kind.as_str(),
-            if uses == 1 { "" } else { "s" }
+        crate::resource::CATALOG.t_args(
+            "video-editor-search-used",
+            &[
+                ("kind", ui::i18n::ArgValue::Text(kind)),
+                ("count", ui::i18n::ArgValue::Number(uses as f64)),
+            ],
         )
     };
     SearchEntry::new(item.name.clone(), media_text(item))
@@ -154,7 +188,7 @@ fn media_entry(item: &MediaItem, uses: usize) -> SearchEntry {
 
 fn marker_label(marker: &Marker) -> String {
     if marker.name.trim().is_empty() {
-        "Marker".to_string()
+        crate::resource::CATALOG.t("video-editor-marker")
     } else {
         marker.name.clone()
     }
@@ -167,7 +201,13 @@ fn marker_subtitle(at: f64, marker: &Marker) -> String {
         // The subtitle is merely presentation; the complete note is the
         // entry's text, so nothing caps discovery while rows stay compact.
         let note: String = marker.note.chars().take(160).collect();
-        format!("At {}: {}", timecode::clock(at), note)
+        crate::resource::CATALOG.t_args(
+            "video-editor-search-marker",
+            &[
+                ("time", ui::i18n::ArgValue::Text(timecode::clock(at))),
+                ("note", ui::i18n::ArgValue::Text(note)),
+            ],
+        )
     }
 }
 
@@ -354,9 +394,8 @@ mod tests {
                 );
             }
 
-            // The provider may outlive the edit while a palette is open. The
-            // current project is the authority and refuses the stale anchor
-            // rather than revealing something else.
+            // The provider may outlive the edit while a palette is open: the current project is
+            // the authority and refuses the stale anchor.
             project.clips.clear();
             project.media.clear();
             assert!(

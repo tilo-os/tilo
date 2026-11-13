@@ -1,17 +1,14 @@
-//! Tilo packages: a registry's `app list --json` row, joined with the fleet's
-//! manifest metadata.
+//! Tilo packages: a registry's `app list --json` row, joined with the fleet's manifest metadata.
 
 use registry_types::RegistryImageKind;
 use registry_types::catalogue::CatalogueApp;
 
 use crate::entry::{CatalogueAction, CatalogueEntry, ResourceType, Source};
 
-/// The catalogue entry for the registry row `app`.
-///
-/// What the registry signed (name, tag line, description, artwork,
-/// category) comes first; the fleet's manifest metadata adds the other
-/// names, keywords, documents and offered actions, and stands in for a tag
-/// line the registry left empty.
+/// The catalogue entry for the registry row `app`: what the registry signed (name, tag line,
+/// description, artwork, category) comes first, and the fleet's manifest metadata adds the other
+/// names, keywords, documents and offered actions, standing in for a tag line the registry left
+/// empty.
 #[must_use]
 pub fn entry(app: &CatalogueApp) -> CatalogueEntry {
     let manifest = app_fleet::metadata(&app.package_id);

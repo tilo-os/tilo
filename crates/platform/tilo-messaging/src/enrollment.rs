@@ -1,4 +1,4 @@
-//! Unpublished first-account setup. This loan grants no account editing,
+//! Unpublished first-account setup: the loan grants no account editing,
 //! credential decision, message route or storage access to an application.
 use crate::{LinkedAccount, Pairing, PairingFuture, SendError, ServiceAccount};
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -12,8 +12,6 @@ pub enum EnrollmentPhase {
     Ready,
     Interrupted,
 }
-/// Ephemeral self-identity review. Neither provider proof nor credentials are
-/// serialized into the app's replicated resource or its action results.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnrollmentReview {
@@ -31,7 +29,7 @@ pub type EnrollmentReviewFuture =
     Pin<Box<dyn Future<Output = Result<EnrollmentReview, SendError>> + Send + 'static>>;
 pub type EnrollmentApprovalFuture =
     Pin<Box<dyn Future<Output = Result<String, SendError>> + Send + 'static>>;
-/// Private chooser projection. Selection is an opaque host token, never a bus
+/// Private chooser projection: selection is an opaque host token, never a bus
 /// path, phone number, ICCID, account editor right or modem permission.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
@@ -47,15 +45,13 @@ impl std::fmt::Debug for SimChoice {
 pub type SimChoicesFuture =
     Pin<Box<dyn Future<Output = Result<Vec<SimChoice>, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
-    /// Prepare private storage review before a service can create device keys.
-    /// The original protected credential owner still decides its grant.
     fn prepare(&self, _service: String) -> EnrollmentReviewFuture {
         Box::pin(async { Err(SendError::Unavailable) })
     }
     fn begin(&self, service: String) -> PairingFuture;
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
-    /// Propose only. The original protected Passwords owner must separately
-    /// decide permission before publication, activation or any message write.
+    /// Propose only; the original protected Passwords owner decides permission
+    /// before publication, activation or any message write.
     fn review(&self, account: ServiceAccount, display_name: String) -> EnrollmentApprovalFuture;
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase;
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount>;
@@ -86,8 +82,6 @@ impl EnrollmentClient {
     pub fn supports_sim_selection(&self) -> bool {
         self.host.supports_sim_selection()
     }
-    /// # Errors
-    /// Refuses oversized, duplicate or malformed private chooser results.
     pub async fn sim_choices(&self) -> Result<Vec<SimChoice>, SendError> {
         let choices = self.host.sim_choices().await?;
         let mut seen = std::collections::BTreeSet::new();
@@ -110,8 +104,6 @@ impl EnrollmentClient {
         }
         Ok(choices)
     }
-    /// # Errors
-    /// Refuses an invalid choice or another service's unpublished identity.
     pub async fn select_sim(&self, selection: String) -> Result<EnrollmentReview, SendError> {
         if selection.is_empty()
             || selection.len() > 128
@@ -136,8 +128,6 @@ impl EnrollmentClient {
     pub fn cancel_sim_selection(&self) {
         self.host.cancel_sim_selection();
     }
-    /// # Errors
-    /// Refuses unsupported storage review or foreign unpublished identity.
     pub async fn prepare(&self, service: String) -> Result<EnrollmentReview, SendError> {
         if !matches!(service.as_str(), "tilo" | "whatsapp") {
             return Err(SendError::InvalidRequest);
@@ -154,8 +144,6 @@ impl EnrollmentClient {
         }
         Ok(review)
     }
-    /// # Errors
-    /// Refuses unsupported service selections and malformed private results.
     pub async fn begin(&self, service: String) -> Result<Pairing, SendError> {
         if !matches!(service.as_str(), "signal" | "whatsapp" | "sms") {
             return Err(SendError::InvalidRequest);
@@ -174,8 +162,6 @@ impl EnrollmentClient {
         }
         Ok(private)
     }
-    /// # Errors
-    /// Refuses another unpublished account or malformed self-identity evidence.
     pub async fn finish(
         &self,
         account: ServiceAccount,
@@ -195,8 +181,6 @@ impl EnrollmentClient {
         }
         Ok(result)
     }
-    /// # Errors
-    /// Refuses invalid labels or a retired/changed original review.
     pub async fn review(
         &self,
         account: ServiceAccount,

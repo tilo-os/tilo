@@ -445,14 +445,14 @@ impl BrowserWidget {
     /// what was done in the tab.
     pub(super) fn build_review_composition(
         &self,
-        notices: &[crate::notice::Notice],
+        notices: &[ui::widget::BannerNotice],
     ) -> Box<dyn Widget> {
         let review = &self.page_review;
         let mut page = ui::widget::Page::new()
             .with_persisted_offset(Rc::clone(&review.scroll))
             .with_semantic_key("browser.review");
         for notice in notices {
-            page = page.section(notice.widget(false));
+            page = page.section(Box::new(crate::settings::notice_banner(notice)));
         }
         if !ui::window_toolbar::is_hosted() {
             page = page.section(Box::new(self.review_header()));

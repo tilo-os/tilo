@@ -8,42 +8,31 @@ use vello::kurbo::{Point, Rect};
 
 use super::{NavList, NavSection};
 
-/// The app's side of a [`NavList`] that stands in a shell around it: the
-/// app shows its places and the chosen one with [`Self::show`], and takes
-/// what the person chose with [`Self::take_chosen`] and the section
-/// actions they ran ("New playlist") with [`Self::take_section_actions`],
-/// the rows they checked with [`Self::take_checks`] and what they folded
-/// with [`Self::take_expands`], the menus they asked for with
-/// [`Self::take_menus`] and the names they gave with [`Self::take_renames`].
-/// The list reads the feed at every sync and update ([`NavList::fed_by`]).
+/// The app's side of a [`NavList`] that stands in a shell around it: the app shows its places
+/// and the chosen one with [`Self::show`], and takes what the person chose with
+/// [`Self::take_chosen`] and the section actions they ran ("New playlist") with
+/// [`Self::take_section_actions`], the rows they checked with [`Self::take_checks`] and what
+/// they folded with [`Self::take_expands`], the menus they asked for with [`Self::take_menus`]
+/// and the names they gave with [`Self::take_renames`].
 #[derive(Clone, Default)]
 pub struct NavFeed(Rc<RefCell<Feed>>);
 
 #[derive(Default)]
 struct Feed {
-    /// What the list shows, as the app last said.
     shown: Option<(Vec<NavSection>, Option<String>)>,
     /// Bumped whenever `shown` changes: each list reading the feed keeps
     /// the revision it last read.
     revision: u64,
-    /// What the person chose since the app last looked, oldest first.
     chosen: Vec<String>,
     /// The person chose since the app last showed: the next show is the
     /// app's answer, read even where nothing changed, so a choice the app
     /// does not take (a call it joins, a row that is no place) is undone.
     answer_due: bool,
-    /// The section actions the person ran, as (section id, action id).
     section_actions: Vec<(String, String)>,
-    /// The rows the person checked or cleared, as (place id, checked).
     checks: Vec<(String, bool)>,
-    /// The sections and rows the person opened or folded, as (id, open).
     expands: Vec<(String, bool)>,
-    /// The item actions the person ran, as (place id, action id).
     item_actions: Vec<(String, String)>,
-    /// The menus the person asked for, as (place or section id, the row's
-    /// lift, where the menu opens).
     menus: Vec<(String, Rect, Point)>,
-    /// The names the person gave in place, as (place or section id, name).
     renames: Vec<(String, String)>,
     /// The row the app asked to rename, until the list opens its field.
     rename: Option<String>,
@@ -51,14 +40,11 @@ struct Feed {
     openings: Vec<(String, bool)>,
     /// The list's own layout node: where the keyboard goes to rename.
     node: Option<crate::taffy::NodeId>,
-    /// Where the list's rows stood when it last painted, by place id.
     rows: Vec<(String, Rect)>,
-    /// Where the list stood when it last painted.
     rect: Option<Rect>,
 }
 
 impl NavFeed {
-    /// An empty feed.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -76,20 +62,16 @@ impl NavFeed {
         }
     }
 
-    /// What the app last showed: the places and the chosen one.
     #[must_use]
     pub fn shown(&self) -> Option<(Vec<NavSection>, Option<String>)> {
         self.0.borrow().shown.clone()
     }
 
-    /// The places the person chose since the last call, oldest first.
     #[must_use]
     pub fn take_chosen(&self) -> Vec<String> {
         std::mem::take(&mut self.0.borrow_mut().chosen)
     }
 
-    /// The section actions the person ran since the last call, as
-    /// (section id, action id), oldest first.
     #[must_use]
     pub fn take_section_actions(&self) -> Vec<(String, String)> {
         std::mem::take(&mut self.0.borrow_mut().section_actions)
@@ -116,10 +98,8 @@ impl NavFeed {
         std::mem::take(&mut self.0.borrow_mut().item_actions)
     }
 
-    /// The menus the person asked for since the last call, as (place or
-    /// section id, the row's lift, where the menu opens), oldest first
-    /// ([`NavList::fed_menus`]). Hand the lift to `ContextMenu::anchor_row`
-    /// so the row stays marked while its menu is open.
+    /// The menus the person asked for since the last call, as (place or section id, the row's
+    /// lift, where the menu opens), oldest first ([`NavList::fed_menus`]).
     #[must_use]
     pub fn take_menus(&self) -> Vec<(String, Rect, Point)> {
         std::mem::take(&mut self.0.borrow_mut().menus)
@@ -132,10 +112,9 @@ impl NavFeed {
         std::mem::take(&mut self.0.borrow_mut().renames)
     }
 
-    /// Open the rename field on the row or section `id` (its menu's
-    /// Rename), handing the list the keyboard through `focus_target`, the
-    /// one of the event that asked for it ([`crate::widget::EventCtx`]). The
-    /// name comes back through [`Self::take_renames`].
+    /// Open the rename field on the row or section `id` (its menu's Rename), handing the list
+    /// the keyboard through `focus_target`, the one of the event that asked for it
+    /// ([`crate::widget::EventCtx`]).
     pub fn begin_rename(&self, id: &str, focus_target: &mut Option<crate::taffy::NodeId>) {
         let mut feed = self.0.borrow_mut();
         feed.rename = Some(id.to_owned());
@@ -206,7 +185,6 @@ impl NavList {
     pub fn fed_by(self, feed: &NavFeed) -> Self {
         let (reads, chooses, acts) = (feed.clone(), feed.clone(), feed.clone());
         let (checks, folds) = (feed.clone(), feed.clone());
-        // The list's id names its published selection.
         let id = crate::widget::Widget::test_id(&*self.list)
             .unwrap_or("navigation")
             .to_owned();

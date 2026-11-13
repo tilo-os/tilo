@@ -1,5 +1,4 @@
-//! Authentication of a separate offline installed image (formerly
-//! `os/tests/test_installer_offline_target.py`).
+//! Authentication of a separate offline installed image.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,11 +38,10 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// Answers one tool call.
 type Responder = Box<dyn Fn(&[String]) -> Result<String>>;
 
-/// A fixture installer: paths in a temporary directory, tool calls answered
-/// by `respond` or a queue, and every call recorded.
+/// A fixture installer: paths in a temporary directory, tool calls answered by
+/// `respond` or a queue, and every call recorded.
 struct Fixture {
     dir: PathBuf,
     calls: RefCell<Vec<Vec<String>>>,
@@ -615,8 +613,8 @@ fn import_rejects_metadata_changed_after_preflight() {
         .metadata
         .insert("update_origin".into(), json!(origin));
     write_metadata(&target.root, &target.metadata);
-    // The changed origin no longer names a supported child, or differs from
-    // the receipt: either way nothing runs.
+    // The changed origin no longer names a supported child, or differs from the
+    // receipt: either way nothing runs.
     let error = import_image(&host).unwrap_err();
     assert!(
         error.0.contains("changed after verified preflight"),

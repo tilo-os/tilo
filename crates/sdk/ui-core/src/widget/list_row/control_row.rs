@@ -1,5 +1,5 @@
-//! [`ControlRow`] — a selectable row of real controls standing in the list
-//! row's selection lift.
+//! [`ControlRow`] — a selectable row of real controls standing in the list row's selection
+//! lift.
 
 use super::{RowMetrics, row_fill};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -13,11 +13,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-/// Whether a [`ControlRow`] is the chosen one, and how to choose it.
 struct RowChoice {
     is_chosen: Box<dyn Fn() -> bool>,
-    /// Whether the row is chosen as the component's event asks, before the published action
-    /// runs: `choosing` writes the bound state, a row bound by its press alone does not.
     choose: Box<dyn FnMut()>,
 }
 
@@ -37,18 +34,11 @@ pub struct ControlRow {
     id: Option<String>,
     name: Option<String>,
     choice: Option<RowChoice>,
-    /// A row chosen by its press alone: what its press runs, published as the row's own view
-    /// action `choose` once the row is named (its `id` and spoken name are set after the
-    /// builder that hands the handler over), so a person's press, a screen reader, a script and
-    /// an agent choose it the same way. A row bound to a state (`choosing`) keeps this `None`.
     choose_handler: Option<Box<dyn FnMut()>>,
-    /// The row's published press: bound while `choose_handler` is `None` and the row has a
-    /// name to be addressed by.
     activation: crate::widget::activation::Activation,
     selected: bool,
     hovered: bool,
     cursor: Point,
-    /// The lift changed since the last frame.
     dirty: bool,
 }
 
@@ -68,8 +58,8 @@ impl ControlRow {
         }
     }
 
-    /// The row stands for `value`: it is selected while `state` holds it,
-    /// and choosing the row stores it.
+    /// The row stands for `value`: it is selected while `state` holds it, and choosing the
+    /// row stores it.
     #[must_use]
     pub fn choosing<T: Clone + PartialEq + Send + Sync + 'static>(
         self,
@@ -140,10 +130,7 @@ impl ControlRow {
     }
 
     /// A row that is chosen by its press alone, as a component places one: a press its own
-    /// controls did not take runs `chosen`. Where the row is named (`with_id`, or a spoken
-    /// name), that press is the row's published view action `choose`, so a person's press, a
-    /// screen reader, a script and an agent choose it the same way; an unnamed row runs it
-    /// as a plain callback, there being nothing to address.
+    /// controls did not take runs `chosen`.
     #[must_use]
     pub fn on_choose(mut self, chosen: Box<dyn FnMut()>) -> Self {
         self.choice = Some(RowChoice {
@@ -155,8 +142,6 @@ impl ControlRow {
         self
     }
 
-    /// Publish the press of a row chosen by it alone as its view action `choose`, addressed
-    /// as the row's id (else its spoken name).
     fn publish_choose(&mut self) {
         let Some(handler) = self.choose_handler.take() else {
             return;
@@ -239,8 +224,6 @@ impl crate::widget::Decorator for ControlRow {
         "ControlRow"
     }
 
-    /// The row answers for its own published choose, and reaches every control inside it
-    /// ([`activation_controls!`]'s drain and inventory walk it forwards), as a card does.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
@@ -303,7 +286,6 @@ impl crate::widget::Decorator for ControlRow {
             self.hovered = false;
         }
         self.content.handle_event(event, ctx);
-        // A press the row's own controls did not take chooses the row.
         if let WindowEvent::MouseInput {
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
@@ -327,8 +309,6 @@ impl crate::widget::Decorator for ControlRow {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        // A row of a list is addressed by its position: the item it shows
-        // is addressed by its own controls' actions.
         Some(
             AccessNode::new(Role::ListItem)
                 .with_optional_name(self.name.clone())
@@ -392,7 +372,6 @@ mod tests {
             .choosing_any(&chosen, vec!["oil".to_owned(), "oil-mask".to_owned()]);
         assert!(ink.is_selected() && !oil.is_selected());
 
-        // Activating a row chooses it; the other follows on sync.
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         assert!(Widget::perform_action(
@@ -406,8 +385,6 @@ mod tests {
         Widget::sync(&mut ink, &doc, &root);
         assert!(!ink.is_selected() && oil.is_selected());
 
-        // A part of the row (its mask) keeps the row chosen, and choosing
-        // the row again does not take the part's place.
         chosen.set("oil-mask".to_owned());
         Widget::sync(&mut oil, &doc, &root);
         assert!(oil.is_selected());
@@ -433,8 +410,6 @@ mod tests {
             .with_id("canvas-history-now")
             .on_choose(Box::new(move || counted.set(counted.get() + 1)));
 
-        // The row publishes the press as its view action, named as the row, so a
-        // screen reader, a script and an agent reach what a press does.
         let published =
             crate::resources::PublishesResources::resources(&row, &automerge::AutoCommit::new());
         let resource = published.first().expect("the row publishes its press");
@@ -442,8 +417,6 @@ mod tests {
         assert_eq!(resource.actions.len(), 1);
         assert_eq!(resource.actions[0].kind, tilo_actions::OperationKind::View);
 
-        // An activation through the published action runs the handler once: the press
-        // queues the row's own view action, which the host drains and answers here.
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         assert!(Widget::perform_action(

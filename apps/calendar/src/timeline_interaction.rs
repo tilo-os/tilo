@@ -1,9 +1,4 @@
 //! Week/day timeline interaction controller.
-//!
-//! This owns the timeline viewport, pointer/scroll capture, and the complete
-//! create/move gesture state machine. It resolves screen coordinates into typed
-//! effects; [`CalendarApp`](crate::app::CalendarApp) remains responsible for
-//! applying those effects to the calendar model and CRDT.
 
 use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
@@ -25,18 +20,12 @@ use ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
-/// Where an event's block sits across its day's column: overlapping events
-/// share the column side by side, each in its own lane.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Lane {
     pub index: usize,
     pub of: usize,
 }
 
-/// The lanes of a day's timed events, `[start, end)` minutes each, in the
-/// same order. Events that overlap, directly or through others, form a
-/// cluster that splits the column evenly; each takes the leftmost lane free
-/// when it starts.
 pub(super) fn lanes(intervals: &[(i64, i64)]) -> Vec<Lane> {
     let mut order: Vec<(usize, i64, i64)> = intervals
         .iter()
@@ -82,14 +71,11 @@ pub(super) fn lanes(intervals: &[(i64, i64)]) -> Vec<Lane> {
     placed.into_iter().map(|(_, lane)| lane).collect()
 }
 
-/// How far up from a block's bottom edge a press resizes it instead of
-/// moving it, in logical pixels.
 const RESIZE_GRIP: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimelineSpan {
     pub id: Id,
-    /// The occurrence's date in its series.
     pub original: NaiveDate,
     pub day: NaiveDate,
     pub start_min: i64,
@@ -105,15 +91,11 @@ pub(super) struct TimelineRenderEvent<'a> {
     pub color: Palette,
     pub start_min: i64,
     pub end_min: i64,
-    /// Authored wall endpoint, unlike the elapsed-time geometry endpoint.
     pub clock_end_min: i64,
     pub all_day: bool,
     pub lane: Lane,
 }
 
-/// Compact, presentation-ready snapshot supplied by `CalendarApp`. Filtering
-/// and display-title policy stay in the host; all timeline paint geometry and
-/// hit surfaces stay here.
 pub(super) struct TimelineRenderModel<'a, 'event> {
     pub days: &'a [NaiveDate],
     pub events: &'a [TimelineRenderEvent<'event>],
@@ -122,8 +104,6 @@ pub(super) struct TimelineRenderModel<'a, 'event> {
     pub untitled: &'a str,
 }
 
-/// A domain-neutral result from the pointer controller. Calendar policy and
-/// persistence deliberately live in the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TimelineEffect {
     Create {
@@ -138,7 +118,6 @@ pub(super) enum TimelineEffect {
         start_min: i64,
         dur_min: i64,
     },
-    /// A new end for the occurrence, on the day it starts.
     Resize {
         id: Id,
         original: NaiveDate,
@@ -400,7 +379,6 @@ impl TimelineInteraction {
         })
     }
 
-    /// A span's block in column `col`, in its lane.
     fn span_rect(&self, area: Rect, days_len: usize, col: usize, span: &TimelineSpan) -> Rect {
         let geom = self.geometry(area);
         let block = self.block_rect(area, days_len, geom, col, span.start_min, span.end_min);
@@ -425,8 +403,6 @@ impl TimelineInteraction {
             && point.y <= block.y1
     }
 
-    /// Whether `point` is on an event's resize grip: the pointer shows the
-    /// vertical resize shape there.
     pub fn resize_grip_at(
         &self,
         area: Rect,
@@ -527,8 +503,6 @@ impl TimelineInteraction {
         self.effect_for_drag(area, days, drag)
     }
 
-    /// The event a drag is moving or resizing, whose block the ghost
-    /// stands in for.
     fn moving_id(&self) -> Option<Id> {
         match self.drag {
             Some(TimelineDrag::Move {
@@ -545,9 +519,6 @@ impl TimelineInteraction {
         self.drag.take().is_some()
     }
 
-    /// Paint the complete week/day surface and return its typed hit surfaces.
-    /// The app maps these effects to domain actions, just as it does effects
-    /// emitted directly by pointer gestures.
     pub fn draw_timeline(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -599,8 +570,6 @@ impl TimelineInteraction {
         let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
-        // Weekday label, then the day number directly beneath it: both rows
-        // come from the measured lines the header height was solved from.
         let weekday_h = line_height(ctx, &ty.weekday);
         let day_h = line_height(ctx, &ty.day);
         let weekday_y = area.y0 + s2;
@@ -625,8 +594,6 @@ impl TimelineInteraction {
             );
             let number = day.day().to_string();
             if is_today {
-                // Today's number stands on the inverted disc, as in the
-                // month grid.
                 let number_w = f64::from(ctx.text.measure_style(&number, None, &ty.day).0);
                 let side = day_h.max(number_w + s2);
                 let disc = Rect::new(text_x - s1, day_y, text_x - s1 + side, day_y + day_h);
@@ -666,7 +633,6 @@ impl TimelineInteraction {
                     x0 + col_w - geom.block_inset,
                     top + chip_h,
                 );
-                // The last row counts what does not fit.
                 if row + 1 == rows && all_day.len() > rows {
                     let more = format!("+{} more", all_day.len() - row);
                     text_in_band(
@@ -692,9 +658,6 @@ impl TimelineInteraction {
         }
     }
 
-    /// An all-day event's chip in its day's strip: a deeper wash of the
-    /// calendar colour, its title wrapped over the lines the density gives
-    /// the strip and centred as one block.
     fn draw_all_day_chip(
         ctx: &mut PaintCtx<'_>,
         ty: &TimelineType,
@@ -789,8 +752,6 @@ impl TimelineInteraction {
         if let Some((now_day, now_min)) = model.now
             && let Some(index) = model.days.iter().position(|day| *day == now_day)
         {
-            // The current time is live state: the status colour, a rule
-            // across today's column with a dot where it starts.
             let y = y_at(now_min as f64);
             let x0 = grid_x0 + col_w * index as f64;
             let live = colors.semantic.danger;
@@ -839,8 +800,6 @@ impl TimelineInteraction {
                     event.lane,
                 );
                 let color = event.color.color(theme);
-                // The block is a wash of the calendar colour over the grid,
-                // with the colour itself as a bar down its leading edge.
                 let tinted = colors.tinted_chip_on(
                     colors.surfaces.content,
                     color,
@@ -861,14 +820,8 @@ impl TimelineInteraction {
                 );
                 let text_x = block.x0 + 2.0 * s1;
                 let text_w = (block.x1 - s1 - text_x).max(0.0);
-                // The title comes first and wraps over every line the block
-                // has room for; the time and then the location follow on
-                // lines of their own while room is left. The block's place
-                // in the grid already tells the time.
                 let title_h = line_height(ctx, &ty.title);
                 let subtitle_h = line_height(ctx, &ty.subtitle);
-                // A block that began above the scrolled-to hours keeps its
-                // title at the top of what shows of it.
                 let top = block.y0.max(body.y0.min(block.y1 - title_h - 2.0 * s1));
                 let room = block.y1 - top - 2.0 * s1;
                 let max_lines = ((room / title_h).floor() as usize).max(1);
@@ -965,8 +918,6 @@ impl TimelineInteraction {
         ctx.scene.pop_layer();
     }
 
-    /// What the drag ghost shows for `preview`: its column, minutes, title
-    /// and colours.
     fn ghost<'a>(
         theme: &ui::theme::Theme,
         model: &'a TimelineRenderModel<'_, '_>,
@@ -980,7 +931,6 @@ impl TimelineInteraction {
                 end_min,
             } => {
                 let column = model.days.iter().position(|item| *item == day)?;
-                // A new event being drawn is your own selection.
                 (
                     column,
                     start_min,
@@ -1039,14 +989,10 @@ impl TimelineInteraction {
         })
     }
 
-    /// Geometry at the viewport's measured type, so paint, hit-testing and
-    /// drag mapping all read one description of the header / strip / body.
     fn geometry(&self, area: Rect) -> TimelineGeom {
         self.viewport.current_geometry(area)
     }
 
-    /// Measure the theme's type so header, strip and block heights grow
-    /// with the type they carry. Called from the app's layout pass.
     pub fn set_layout_theme(&mut self, theme: &ui::theme::Theme) {
         self.viewport.set_layout_theme(theme);
     }
@@ -1072,8 +1018,6 @@ impl TimelineInteraction {
             .block_rect(area, days_len, geom, col, start_min, end_min)
     }
 
-    /// Lay out `days_len` columns under an all-day strip of `allday_rows`
-    /// chips.
     pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize, allday_rows: usize) {
         self.viewport
             .layout(area, initial_hour, (days_len, allday_rows));
@@ -1147,7 +1091,6 @@ impl TimelineInteraction {
     }
 }
 
-/// The drag ghost's content.
 struct Ghost<'a> {
     column: usize,
     start_min: i64,
@@ -1157,8 +1100,6 @@ struct Ghost<'a> {
     edge: vello::peniko::Color,
 }
 
-/// `block` narrowed to its lane of the column, with a hairline between
-/// neighbours.
 fn in_lane(block: Rect, lane: Lane) -> Rect {
     if lane.of <= 1 {
         return block;
@@ -1173,7 +1114,6 @@ fn snap_minute(minute: i64) -> i64 {
     ((minute + TIMELINE_SNAP_MIN / 2) / TIMELINE_SNAP_MIN * TIMELINE_SNAP_MIN).clamp(0, 24 * 60)
 }
 
-/// A minute of the day as the person reads clocks.
 fn fmt_min(minute: i64) -> String {
     let minute = u32::try_from(minute.clamp(0, 24 * 60)).unwrap_or(0);
     ui::clock::hour_minute(minute / 60, minute % 60)
@@ -1319,7 +1259,6 @@ mod tests {
             }),
             "the day stays; the end snaps to a quarter hour"
         );
-        // An end above the start is the shortest event instead.
         controller.update_drag(point_at(2, 8 * 60));
         assert!(matches!(
             controller.preview(area(), &days),
@@ -1330,8 +1269,6 @@ mod tests {
     #[test]
     fn overlapping_events_share_their_day_side_by_side() {
         let lane = |index, of| Lane { index, of };
-        // 9–10 and 9:30–11 overlap; 10–10:30 fits beside 9:30–11 in the
-        // first lane; 12–13 stands alone.
         assert_eq!(
             lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
             vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
@@ -1340,7 +1277,6 @@ mod tests {
             lanes(&[(540, 600), (540, 600), (540, 600)]),
             vec![lane(0, 3), lane(1, 3), lane(2, 3)]
         );
-        // Back to back is no overlap.
         assert_eq!(
             lanes(&[(540, 600), (600, 660)]),
             vec![lane(0, 1), lane(0, 1)]

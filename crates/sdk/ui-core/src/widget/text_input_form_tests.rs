@@ -10,7 +10,6 @@ use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release,
 
 #[test]
 fn accessible_selection_preserves_anchor_and_focus_direction() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
     input.core.set_selection(8, 1);
@@ -21,7 +20,6 @@ fn accessible_selection_preserves_anchor_and_focus_direction() {
 
 #[test]
 fn insertion_collapses_an_empty_drag_selection() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
         let mut ti = TextInput::new(Vec::new());
@@ -38,7 +36,6 @@ fn insertion_collapses_an_empty_drag_selection() {
 
 #[test]
 fn field_kinds_set_their_text_kind_while_typing() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     for (kind, text) in [
         (TextInputKind::Prose, TextKind::Prose),
@@ -84,9 +81,7 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         }
     }
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `a_small_field_is_as_tall_as_a_small_button`.
     {
         let theme = Theme::dark();
         let mut small = TextInput::local().control_size(ControlSize::Small);
@@ -97,7 +92,6 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         );
     }
 
-    // Case `min_lines_holds_a_wrapping_field_open_with_the_field_inset`.
     {
         let theme = Theme::dark();
         let mut notes = TextInput::local().with_min_lines(4);
@@ -119,7 +113,6 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         );
     }
 
-    // Case `a_plain_field_leaves_the_gutter_to_its_parent`.
     {
         let theme = Theme::dark();
         let plain = TextInput::local().multiline(true).with_plain_chrome();
@@ -129,7 +122,6 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         assert_eq!(document.text_inset_x(&theme), ML_PAD_X);
     }
 
-    // Case `the_role_sets_the_family_and_the_placeholder_follows_it`.
     {
         let reading = TextInput::local().with_text_role(TextRole::Reading);
         assert_eq!(reading.placeholder_style(16.0).family, FontChoice::Serif);
@@ -139,7 +131,6 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         assert_eq!(body.placeholder_style(14.0).family, FontChoice::SansSerif);
     }
 
-    // Case `set_text_parks_the_caret_at_the_end`.
     {
         let mut ti = TextInput::local().with_initial_value("abc");
         ti.set_cursor_pos(1);
@@ -147,7 +138,6 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         assert_eq!(ti.cursor_pos(), 5);
     }
 
-    // Case `content_sized_text_does_not_grow_with_the_text_scale`.
     {
         let big = Theme::dark().with_text_scale(2.0);
         let mut document = TextInput::local().with_content_size(12.0);
@@ -162,9 +152,7 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
 
 #[test]
 fn submit_accessory_and_span_highlighting() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `on_submit_reports_the_text_on_enter`.
     {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let sink = seen.clone();
@@ -188,7 +176,6 @@ fn submit_accessory_and_span_highlighting() {
         assert!(ti.take_submit(), "the polled signal still fires");
     }
 
-    // Case `the_clear_accessory_empties_the_field_as_an_edit`.
     {
         let mut ti = TextInput::local()
             .with_initial_value("query")
@@ -221,7 +208,6 @@ fn submit_accessory_and_span_highlighting() {
         );
     }
 
-    // Case `a_toggle_accessory_is_a_pressed_toggle_for_people_and_agents`.
     {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
         let sink = seen.clone();
@@ -271,7 +257,6 @@ fn submit_accessory_and_span_highlighting() {
         assert!(ti.take_dirty().is_none(), "toggling is not a text edit");
     }
 
-    // Case `a_go_accessory_shows_while_editing_and_commits_the_field`.
     {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let sink = seen.clone();
@@ -312,7 +297,6 @@ fn submit_accessory_and_span_highlighting() {
         assert!(ti.take_submit(), "the polled signal fires too");
         assert_eq!(ti.value(), "example.org", "going is not an edit");
 
-        // Case `an_empty_field_keeps_its_go_button_dim_and_inert`.
         ti.set_text("");
         draw_to_populate(&mut ti);
         let node = Widget::accessibility(&ti).expect("field semantics");
@@ -354,7 +338,6 @@ fn submit_accessory_and_span_highlighting() {
         );
     }
 
-    // Case `a_secret_fields_show_control_steps_inboard_of_its_go_button`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -409,7 +392,6 @@ fn submit_accessory_and_span_highlighting() {
         assert!(!ti.take_submit(), "and showing is not submitting");
     }
 
-    // Case `a_span_highlighter_colours_the_single_line`.
     {
         let mut ti = TextInput::local()
             .with_initial_value("=A1+B2")
@@ -428,7 +410,6 @@ fn submit_accessory_and_span_highlighting() {
         assert!(spans[1].color.is_some() && spans[0].color.is_none());
     }
 
-    // Case `the_painted_field_matches_the_retained_one`.
     {
         let theme = Theme::dark();
         let mut face = Scene::new();
@@ -450,10 +431,7 @@ fn submit_accessory_and_span_highlighting() {
 #[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // The authenticated host it installs is process-wide: every field
-    // checking spelling on another thread would read its personal words.
     if !crate::testing::in_own_process(&crate::testing::test_path(
         module_path!(),
         "shared_personal_words_protect_autocorrection_and_clear_stale_spelling",
@@ -564,7 +542,6 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
             "delayed-paste"
         }
     }
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let clipboard = Arc::new(Delayed::default());
     let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
@@ -642,9 +619,6 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
     }
 }
 
-/// A field that reports its edits and is submitted publishes one resource
-/// carrying both verbs; a second spec under the same id would shadow the
-/// first and leave one of them answering nothing.
 #[test]
 fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
     let _settled = crate::motion::testing::settled();
@@ -679,4 +653,163 @@ fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
         "the submit reaches its handler"
     );
     assert_eq!(submitted.borrow().as_slice(), ["42"]);
+}
+
+#[test]
+fn an_entry_reports_its_emptied_state_after_it_submits() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.insert_at_cursor("hello");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(changes.borrow().as_slice(), ["hello"]);
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    assert_eq!(ti.value(), "", "the entry emptied itself");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both reported"
+    );
+    assert_eq!(submitted.borrow().as_slice(), ["hello"]);
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["hello", ""],
+        "the emptied field is reported after the submit, so the bound draft is emptied too"
+    );
+}
+
+/// A submit is answered with the words it caught, never with what the field shows when the answer
+/// runs: the shell collects a press and answers it a step later, and an entry has let go of its
+/// words by then. Reading the field back at the answer would send an empty message — the words
+/// the person typed are lost between the press and the door.
+///
+/// Marked by `insert_at_cursor`, whose rows before the fix never reached the change verb and the
+/// submit's answer read an emptied field: this test fails on both counts without the fix.
+#[test]
+fn a_submit_is_answered_with_the_words_it_caught_even_after_an_entry_emptied_itself() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let answered = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, answer_sink) = (changes.clone(), answered.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| answer_sink.borrow_mut().push(text.to_owned()));
+    ti.insert_at_cursor("ship it");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["ship it"],
+        "the typed words are reported as they land"
+    );
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    assert_eq!(ti.value(), "");
+    assert_eq!(
+        answered.borrow().as_slice(),
+        [] as [String; 0],
+        "a press is answered when the host collects it, not at the press"
+    );
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both answered"
+    );
+    assert_eq!(
+        answered.borrow().as_slice(),
+        ["ship it"],
+        "the submit is answered with the words it caught, not the emptied field"
+    );
+}
+
+/// An entry that sent its words keeps the keyboard and takes the very next typing: one message
+/// after another is typed and sent through the one field, as a person does in Chat's composer.
+/// `ui.TextInput(entry: true, bind: draft)` is that field: Enter submits what it holds and the
+/// field clears itself, and what is typed next must land in it as a new draft rather than be
+/// lost or drawn over the sent words.
+#[test]
+fn an_entry_that_submitted_takes_the_next_typing_at_once() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    for word in ["first", "second"] {
+        for ch in word.chars() {
+            assert!(
+                drive(
+                    &mut ti,
+                    &mut doc,
+                    &char_key(&ch.to_string()),
+                    mods(false, false)
+                ),
+                "the entry took {ch:?} with the keyboard in it"
+            );
+            let _ = crate::testing::answer_controls(&mut ti);
+        }
+        assert_eq!(ti.value(), word, "the field draws what was typed");
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false)
+        ));
+        let _ = crate::testing::answer_controls(&mut ti);
+        assert_eq!(ti.value(), "", "the entry let go of what it sent");
+        assert!(
+            Widget::is_focused(&ti),
+            "the entry keeps the keyboard after submitting"
+        );
+    }
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["first", "second"],
+        "each send carried the words it held, and the next words are a new message"
+    );
+    assert_eq!(
+        changes.borrow().last().map(String::as_str),
+        Some(""),
+        "the field's latest report is the empty field, which empties the draft it binds: {:?}",
+        changes.borrow()
+    );
+    assert!(
+        changes.borrow().iter().any(|text| text == "first")
+            && changes.borrow().iter().any(|text| text == "second"),
+        "each word reached the draft it binds as it was typed: {:?}",
+        changes.borrow()
+    );
 }

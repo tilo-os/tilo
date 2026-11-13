@@ -1,7 +1,5 @@
 # PDF Viewer — English (source locale).
 
-pdf-viewer-history-scope = PDF and its markup
-
 ## History: what each change did, by field and by verb
 
 pdf-viewer-page-occurrence-rotation = Turned a page to { $new } degrees
@@ -318,3 +316,6 @@ pdf-document-add-typed-signature = Sign with typed name
 pdf-signature-profile = Signature
 pdf-signature-profile-set-signer = Sign as
 pdf-signature-profile-set-strokes = Draw signature
+
+## What the app is called in a window and in the launcher
+pdf-viewer-app-title = PDF Viewer

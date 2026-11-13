@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 21
+version = 22
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -208,9 +208,11 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "DisplayOrigin::LocalHost" = "#0 unit"
 "DisplayOrigin::Published" = "#1 tuple([u8; 16])"
 "DocumentApp" = "struct"
+"DocumentApp.icon" = "#3 Option<String>"
 "DocumentApp.id" = "#0 String"
 "DocumentApp.is_default" = "#2 bool"
 "DocumentApp.name" = "#1 String"
+"DocumentApp.source" = "#4 Option<AppKind>"
 "DriveEntry" = "struct"
 "DriveEntry.id" = "#0 String"
 "DriveEntry.internal" = "#3 bool"

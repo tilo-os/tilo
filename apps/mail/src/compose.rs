@@ -1,36 +1,12 @@
 //! The composer: where a message is written.
 //!
-//! ## Where it stands
-//! Beside the list, the composer takes the message column, where the open
-//! message is read ([`DockState::Pane`]): the list stays in reach, a click
-//! there gives it the keys back, and nothing floats over the mailbox. In a
-//! window too narrow for both it fills the window, as a page. Only where the
-//! app gives it no column (a bare host, a test) does it float as a modal
-//! panel over the app ([`DockState::Docked`]).
+//! In the message column beside the list ([`DockState::Pane`]); in a window too narrow for
+//! both it fills the window; only where the app gives it no column does it float as a modal
+//! panel ([`DockState::Docked`]).
 //!
-//! ## Focus capture
-//! `ui`'s `App` has no modal/overlay focus-trap and `ModalDialog`'s "blocking"
-//! is only partially implemented, so a naive overlay lets clicks fall through
-//! to whatever is painted behind it, and embedded `TextInput`s never register a
-//! click (they require a prior `CursorMoved` to set their internal `hovered`
-//! flag before a press counts). This window fixes both:
-//!
-//! * While it is open the host routes **every** event here first. Any pointer
-//!   event whose position is inside the window — and every keyboard event — is
-//!   consumed, so nothing reaches the mailbox behind it.
-//! * It forwards `CursorMoved` to each visible child `TextInput`/body editor
-//!   so their hover state is correct, then forwards the press so the caret
-//!   lands. It owns explicit focus (one field at a time).
-//!
-//! ## Floating
-//! Only the floating panel moves (its title bar) and resizes (its edges),
-//! clamped to a minimum size and kept on-screen.
-//!
-//! ## Look
-//! In the column it is the page's own ground; floating, a panel (the
-//! toolkit's material, radius and shadow) over the modal scrim. Its fields
-//! are the shared text inputs, its buttons and the formatting toolbar are the
-//! toolkit's, and every size comes from the theme it is drawn with.
+//! While it is open the host routes every event here first and it consumes them, since `ui`
+//! has no modal focus trap. It forwards `CursorMoved` to the visible editors so their hover
+//! state is right, then the press, so the caret is placed.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -62,9 +38,6 @@ use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
 use ui::widget::DrawChild;
 
-/// The HTML body: the SDK rich-text editor over the draft's body, every
-/// edit a field edit of the body through `dispatcher`; shown view-only
-/// until there is one.
 type BodyEditor = RichTextSurface<RichTextField>;
 
 fn body_editor(dispatcher: Option<&Dispatcher<Mail>>, draft: Option<&str>) -> BodyEditor {
@@ -84,23 +57,15 @@ fn body_editor(dispatcher: Option<&Dispatcher<Mail>>, draft: Option<&str>) -> Bo
     )
 }
 
-/// The editor's own layout inside the body card: the window is drawn
-/// immediately, the editor is a laid-out widget.
 #[derive(Default)]
 struct BodyLayout {
     taffy: TaffyTree<()>,
     node: Option<NodeId>,
-    /// The card it was laid out in.
     laid_in: Option<Rect>,
-    /// How far the text is scrolled up inside the card.
     scroll: f64,
-    /// The text's height, for the scroll limit.
     content_h: f64,
 }
 
-/// Whether `next` continues `previous` line by line in plain text: items of
-/// one list, lines of one quote, and a quote under the line of text that
-/// introduces it ("On Jun 30, Maya wrote:").
 fn runs_on(previous: &BlockKind, next: &BlockKind) -> bool {
     let list = |kind: &BlockKind| {
         matches!(
@@ -115,8 +80,6 @@ fn runs_on(previous: &BlockKind, next: &BlockKind) -> bool {
         )
 }
 
-/// The body as the `text/plain` alternative: a line per paragraph, list
-/// items and quotes marked as a reader of plain text expects.
 fn plain_of(blocks: &[BlockContent]) -> String {
     let mut out = String::new();
     let mut number = 1_usize;
@@ -149,7 +112,6 @@ fn plain_of(blocks: &[BlockContent]) -> String {
     out
 }
 
-/// The formatting commands of the toolbar, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Format {
     Bold,
@@ -161,14 +123,10 @@ enum Format {
     Numbered,
     Quote,
     Link,
-    /// Write without formatting: the message goes as plain text.
     PlainText,
 }
 
 impl Format {
-    /// The toolbar's groups: inline marks, headings, blocks, the link, and
-    /// last, the switch to plain text, the first to give way to the More
-    /// menu.
     const GROUPS: [&'static [Format]; 5] = [
         &[Format::Bold, Format::Italic, Format::Underline],
         &[Format::Heading1, Format::Heading2],
@@ -207,18 +165,15 @@ impl Format {
         }
     }
 
-    /// Whether the command formats text, which plain text has none of.
     fn formats(self) -> bool {
         self != Self::PlainText
     }
 
-    /// Whether the command is a toggle (everything but inserting a link).
     fn toggles(self) -> bool {
         self != Self::Link
     }
 }
 
-/// The formatting toolbar and the command its last click chose.
 struct FormatBar {
     bar: Toolbar,
     chosen: Rc<Cell<Option<Format>>>,
@@ -248,7 +203,6 @@ impl FormatBar {
         Self { bar, chosen }
     }
 
-    /// Where the bar shows each command it has room for, by its label.
     fn command_bounds(&self) -> Vec<(String, Rect)> {
         ui::Widget::accessibility(&self.bar)
             .map(|bar| {
@@ -261,8 +215,6 @@ impl FormatBar {
             .unwrap_or_default()
     }
 
-    /// Where the command `label` is: its own button, not anywhere on the
-    /// bar, or the "More commands" button when the bar has no room for it.
     fn command_at(commands: &[(String, Rect)], label: &str) -> Option<Rect> {
         commands
             .iter()
@@ -271,8 +223,6 @@ impl FormatBar {
             .map(|(_, bounds)| *bounds)
     }
 
-    /// Show which commands are on, from the editor; in plain text only the
-    /// switch back is offered.
     fn set_active(&mut self, active: impl Fn(Format) -> bool, plain: bool) {
         let mut index = 0;
         for (group_index, group) in Format::GROUPS.iter().enumerate() {
@@ -290,20 +240,12 @@ impl FormatBar {
     }
 }
 
-/// Sizes the compose window is laid out with, measured with the theme it is
-/// drawn with, so a larger text scale grows its rows instead of stacking
-/// them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ComposeMetrics {
-    /// Inset of the content from the window's edge.
     pad: f64,
-    /// Gap between related rows and controls.
     gap: f64,
-    /// The column the field labels stand in.
     label_w: f64,
-    /// A field, the toolbar row and a footer button.
     control_h: f64,
-    /// An icon-only button's side.
     icon_button: f64,
     cc_bcc_w: f64,
     send_w: f64,
@@ -317,11 +259,8 @@ struct ComposeMetrics {
     default_h: f64,
 }
 
-/// How long typing in the recipients or subject rests before what was typed
-/// is kept in the draft.
 const HEADERS_KEPT_AFTER: std::time::Duration = std::time::Duration::from_millis(800);
 
-/// The title of a window writing a fresh message.
 const NEW_MESSAGE: &str = "New message";
 
 impl ComposeMetrics {
@@ -385,8 +324,6 @@ pub(crate) struct ComposeEventContext<'a> {
 }
 
 impl ComposeEventContext<'_> {
-    /// The event context a compose child sees, reporting into `handled` and
-    /// `focus_target`.
     fn event_ctx<'b>(
         &'b mut self,
         handled: &'b mut bool,
@@ -405,18 +342,12 @@ impl ComposeEventContext<'_> {
     }
 }
 
-/// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockState {
-    /// Centred over the app content as an in-app modal: where the window
-    /// has no message column to write in.
     Docked,
-    /// In the message column, where the open message is read: the list
-    /// beside it stays in reach, as in every desktop mail program.
     Pane,
 }
 
-/// Which compose control currently has keyboard focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     None,
@@ -427,7 +358,6 @@ enum Field {
     Body,
 }
 
-/// An interactive region inside the window, resolved during layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ComposeHit {
     Send,
@@ -441,50 +371,34 @@ pub enum ComposeHit {
     FieldBcc,
     FieldSubject,
     Body,
-    /// The formatting toolbar.
     Toolbar,
-    // inline URL prompt
     PromptField,
     PromptConfirm,
     PromptCancel,
 }
 
-/// What the inline prompt bar is collecting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PromptKind {
-    /// A URL to link the current selection (or insert) to.
     Link,
 }
 
-/// A small inline entry bar shown inside the compose window when the user needs
-/// to type a link target. File attachments use the host portal, preserving the
-/// selected descriptor rather than accepting arbitrary host paths.
 struct ComposePrompt {
     kind: PromptKind,
     input: TextInput,
     error: Option<String>,
 }
 
-/// What the host should do after dispatching a window action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeAction {
     None,
     RequestAttachment,
     Send,
     SaveDraft,
-    /// The window closed; what was written stays a draft.
     Close,
-    /// The person threw the message away.
     Discard,
 }
 
 /// A drag in progress on the window's edge.
-///
-/// A floating composer is not moved: it is placed by the layout and clamped
-/// into the window, and it sits over a scrim, so there is nothing to look at
-/// behind it. Its band is the formatting toolbar, and its name, Discard draft
-/// and Close are the window bar's — the composer draws no title bar of its
-/// own in any presentation.
 #[derive(Clone, Copy)]
 enum Drag {
     Resize {
@@ -509,70 +423,39 @@ enum Edge {
 )]
 pub struct ComposeWindow {
     pub open: bool,
-    /// The draft this message is written in, by id: the composer's own
-    /// draft when `None`.
     draft: Option<String>,
-    /// The message this one answers, so the reply names it on the wire.
     replying_to: Option<crate::model::MessageId>,
-    /// The address of the account the message goes from, when it is not
-    /// the open one: a reply goes from the account the answered mail came
-    /// to.
     sending_from: Option<String>,
-    /// Whether the person has an account to send from; Send waits for one.
     has_account: bool,
-    /// Whether the person typed, attached or formatted anything since the
-    /// window opened: closing such a message keeps it as a draft.
     touched: bool,
-    /// Who the person writes to, for completing recipients; set by the app
-    /// when the composer opens.
     book: Option<crate::address_book::AddressBook>,
-    /// The completions offered under the recipient field being typed in.
     completions: ui::widget::SuggestionList,
-    /// When the recipients or the subject were last typed in, until they
-    /// are kept in the draft.
     headers_edited: Option<ui::time::Instant>,
     dock: DockState,
     /// Window rect in screen coordinates. The source of truth for placement;
-    /// movable + resizable mutate it directly.
     rect: Rect,
-    /// Bounds the window must stay within (the app content area).
     bounds: Rect,
-    /// The message column the composer takes, where there is one.
     pane: Option<Rect>,
-    /// Whether keys go to the composer: it was opened or clicked into, and
-    /// the person has not clicked the list beside it since.
     has_keys: bool,
-    /// `true` once the window has been positioned for the current open, so a
-    /// re-layout doesn't recentre it after the user has moved it.
     placed: bool,
 
     sender: Option<crate::model::DraftSender>,
-    // header inputs
     to: TextInput,
     cc: TextInput,
     bcc: TextInput,
     subject: TextInput,
     show_cc_bcc: bool,
 
-    // body
     format: ComposeFormat,
     format_bar: FormatBar,
     editor: BodyEditor,
     body_layout: BodyLayout,
-    /// The body to start the draft with, applied when the window next
-    /// reaches the document.
     seed: Option<DraftBodySeed>,
-    /// Submits [`Mail::START_DRAFT_BODY`].
     dispatcher: Option<Dispatcher<Mail>>,
-    /// The body as plain text as of the last frame, for accessibility and a
-    /// switch to plain-text authoring.
     body_plain: String,
-    /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
-    /// Portable content-addressed attachment references, never host paths.
     attachments: Vec<DraftAttachment>,
-    /// The inline URL prompt, when open.
     prompt: Option<ComposePrompt>,
     focus: Field,
     drag: Option<Drag>,
@@ -580,26 +463,14 @@ pub struct ComposeWindow {
     hits: Vec<(Rect, ComposeHit)>,
     dirty: bool,
     /// What the window is writing ("New message", "Reply", …), its title.
-    /// The subject stands in its own field just below, so it is not
-    /// repeated here.
     heading: &'static str,
-    /// Sizes the window is laid out with, measured on paint (the authored
-    /// 1× rules until then).
     metrics: ComposeMetrics,
-    /// The band above the button row that `relayout_regions` reserved for
-    /// the staged-attachment chips (empty when there are none); the chip
-    /// painter reads this instead of re-deriving the offset.
     chips_band: Rect,
-    /// The band `relayout_regions` reserved for the inline prompt bar (empty
-    /// when no prompt is open).
     prompt_band: Rect,
-    /// The theme the window was last drawn with, for the toolbar's layout
-    /// and events between frames.
     theme: Theme,
 }
 
 impl ComposeWindow {
-    /// What the window is writing ("New message", "Reply", …).
     pub fn heading(&self) -> &'static str {
         self.heading
     }
@@ -639,7 +510,6 @@ impl ComposeWindow {
             dispatcher: None,
             body_plain: String::new(),
             plain_body: {
-                // The body stands on the window like the rich editor does.
                 let mut b = TextInput::local()
                     .multiline(true)
                     .with_placeholder(crate::i18n::t("mail-compose-placeholder-body"));
@@ -665,9 +535,6 @@ impl ComposeWindow {
         self.format
     }
 
-    /// Set the authoring format directly (used to restore the persisted
-    /// preference on open). Content is not converted; call on a fresh/empty
-    /// window.
     pub fn set_format(&mut self, format: ComposeFormat) {
         self.format = format;
     }
@@ -688,9 +555,6 @@ impl ComposeWindow {
         self.rect
     }
 
-    /// Semantic mirror of the immediate-mode compose surface. Bounds come from
-    /// the same hit map as pointer input and values come from the retained text
-    /// fields, so screen readers and automation operate the editor users see.
     pub fn accessibility_node(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let rect_for = |hit| {
@@ -773,7 +637,6 @@ impl ComposeWindow {
             );
         }
         children.extend(self.accessibility_controls(rect_for));
-        // Beside the list it is a part of the window, not a dialog over it.
         let (role, modal) = if self.in_pane() {
             (Role::Group, false)
         } else {
@@ -787,7 +650,6 @@ impl ComposeWindow {
             .with_children(children)
     }
 
-    /// The composer's buttons, each where a person presses it.
     fn accessibility_controls(
         &self,
         rect_for: impl Fn(ComposeHit) -> Option<Rect>,
@@ -796,7 +658,6 @@ impl ComposeWindow {
         let commands = self.format_bar.command_bounds();
         let mut controls = Vec::new();
         for (hit, name, target, checked) in self.accessibility_control_specs() {
-            // Plain text has no formatting to offer; only the switch back.
             if hit == ComposeHit::Toolbar
                 && target != "format"
                 && self.format == ComposeFormat::Text
@@ -999,8 +860,6 @@ impl ComposeWindow {
         Some(ComposeAction::None)
     }
 
-    /// Open a blank compose window (or a reply when fields are pre-seeded by
-    /// the caller right after).
     pub fn open_blank(&mut self) {
         self.open = true;
         self.draft = None;
@@ -1026,7 +885,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Seed the window as a reply: recipient, subject, and a quoted body.
     pub fn open_reply(&mut self, to: &str, subject: &str, quote: &str) {
         self.open_blank();
         self.to.set_text(to);
@@ -1041,8 +899,6 @@ impl ComposeWindow {
         self.set_focus(Field::Body);
     }
 
-    /// Seed the window as a reply-all: the sender in `To`, everyone else in
-    /// `Cc` (revealed), the subject, and a quoted body.
     pub fn open_reply_all(&mut self, to: &str, cc: &str, subject: &str, quote: &str) {
         self.open_reply(to, subject, quote);
         self.heading = "Reply all";
@@ -1052,33 +908,26 @@ impl ComposeWindow {
         }
     }
 
-    /// Seed the window to pass a message on: the subject, the forwarded
-    /// message as the body and its `files` attached, with no recipient yet.
     pub fn open_forward(&mut self, subject: &str, quoted: &str, files: &[DraftAttachment]) {
         self.open_reply("", subject, quoted);
         self.attachments = crate::attachment_store::bounded(files);
         self.heading = "Forward";
     }
 
-    /// Reopen the composer's own draft for editing (from the Drafts folder).
     pub fn open_with_draft(&mut self, draft: &Draft) {
         self.open_draft(None, draft);
     }
 
-    /// The draft this message is written in, by id: the composer's own
-    /// draft when `None`.
     pub fn draft_id(&self) -> Option<&str> {
         self.draft.as_deref()
     }
 
-    /// The subject as typed.
     #[cfg(test)]
     pub(crate) fn subject_text(&self) -> String {
         self.subject.value().to_owned()
     }
 
-    /// Reopen the draft `id` (the composer's own when `None`) for editing:
-    /// every change is that draft's.
+    /// Reopen the draft `id` (the composer's own when `None`) for editing.
     pub fn open_draft(&mut self, id: Option<&str>, draft: &Draft) {
         self.open_blank();
         self.draft = id.map(str::to_owned);
@@ -1096,21 +945,16 @@ impl ComposeWindow {
         }
         self.heading = "Draft";
         self.replying_to = draft.in_reply_to;
-        // A reopened draft is a draft already.
         self.touched = true;
         self.set_focus(Field::Body);
     }
 
-    /// When the recipients and subject typed last are due to be kept in the
-    /// draft: a moment after the typing stops, so a word is one change.
     pub(crate) fn headers_due_at(&self) -> Option<ui::time::Instant> {
         self.headers_edited
             .filter(|_| self.open)
             .map(|edited| edited + HEADERS_KEPT_AFTER)
     }
 
-    /// The recipients and subject as typed, once they are due to be kept
-    /// (`to`, `cc`, `bcc`, `subject`).
     pub(crate) fn take_due_headers(&mut self) -> Option<[String; 4]> {
         let due = self.headers_due_at()?;
         if ui::motion::frame_now() < due {
@@ -1125,17 +969,14 @@ impl ComposeWindow {
         ])
     }
 
-    /// Whether the composer waits for the person's correspondents.
     pub(crate) fn wants_address_book(&self) -> bool {
         self.open && self.book.is_none()
     }
 
-    /// Complete recipients from `book`.
     pub(crate) fn set_address_book(&mut self, book: crate::address_book::AddressBook) {
         self.book = Some(book);
     }
 
-    /// The recipient field with the keys, if one has them.
     fn recipient_field(&mut self) -> Option<&mut TextInput> {
         match self.focus {
             Field::To => Some(&mut self.to),
@@ -1145,7 +986,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Offer the correspondents the recipient being typed could be.
     fn refresh_completions(&mut self) {
         let viewport = self.bounds;
         let Some((text, anchor)) = self
@@ -1180,7 +1020,6 @@ impl ComposeWindow {
         self.completions.set_viewport(viewport);
     }
 
-    /// Put the offered completion `index` into the recipient field.
     fn accept_completion(&mut self, index: usize) {
         let Some(chosen) = self
             .completions
@@ -1199,8 +1038,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Keys the offered completions take: arrows move through them, Enter
-    /// or Tab takes one, Esc puts them away. `true` when the key was theirs.
     fn completion_key(&mut self, event: &WindowEvent) -> bool {
         use winit::event::KeyEvent as WKeyEvent;
         use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
@@ -1237,27 +1074,21 @@ impl ComposeWindow {
         self.sending_from = Some(address);
     }
 
-    /// The address of the account the message goes from, when chosen.
     pub fn sending_from(&self) -> Option<&str> {
         self.sending_from.as_deref()
     }
 
-    /// Type `to` into the To field, as a person would.
     #[cfg(test)]
     pub(crate) fn type_recipient(&mut self, to: &str) {
         self.to.set_text(to);
     }
 
-    /// Tell the composer whether there is an account to send from.
     pub fn set_has_account(&mut self, has_account: bool) {
         if self.has_account != has_account {
             self.has_account = has_account;
         }
     }
 
-    /// Whether Send does anything: there is an account to send from and a
-    /// recipient to send to. Until then it is shown disabled, announced as
-    /// such, and inert.
     pub fn can_send(&self) -> bool {
         self.has_account
             && [&self.to, &self.cc, &self.bcc]
@@ -1265,18 +1096,14 @@ impl ComposeWindow {
                 .any(|field| !crate::transport::parse_addr_list(field.value()).is_empty())
     }
 
-    /// The message this one answers.
     pub fn reply_to(&mut self, message: crate::model::MessageId) {
         self.replying_to = Some(message);
     }
 
-    /// Whether closing should keep what was written as a draft.
     pub fn touched(&self) -> bool {
         self.touched
     }
 
-    /// Open the window pre-filled with a representative formatted message, used
-    /// by the headless screenshot to show the WYSIWYG editor in action.
     pub fn open_demo(&mut self) {
         self.open_blank();
         self.format = ComposeFormat::Html;
@@ -1313,18 +1140,14 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Toggle between HTML (WYSIWYG) and plain-text authoring, converting the
-    /// current body so no content is lost. The host persists the new choice.
     pub fn toggle_format(&mut self) {
         match self.format {
             ComposeFormat::Html => {
-                // HTML → plain: flatten.
                 let flat = self.body_plain.clone();
                 self.plain_body.set_text(&flat);
                 self.format = ComposeFormat::Text;
             }
             ComposeFormat::Text => {
-                // plain → HTML: a paragraph per line.
                 self.start_body(DraftBodySeed::text(self.plain_body.value()));
                 self.format = ComposeFormat::Html;
             }
@@ -1335,8 +1158,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Seam for re-attaching an externally-edited draft back into the in-app
-    /// window (e.g. after a real OS pop-out hands the draft back).
     pub fn reattach(&mut self, draft: &Draft) {
         self.to.set_text(&draft.to);
         self.cc.set_text(&draft.cc);
@@ -1348,8 +1169,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// The current draft, with both a plain body and (in HTML mode) an HTML
-    /// body, ready for `transport::build_mime`.
     pub fn to_draft(&mut self, doc: &mut ui::widget::Edits<'_>) -> Draft {
         self.start_pending_body(doc);
         let (body, html_body) = match self.format {
@@ -1381,8 +1200,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Add a verified portal-staged attachment, enforcing the same bounds the
-    /// replicated draft action will enforce on every collaborator.
     pub fn add_attachment(&mut self, attachment: DraftAttachment) -> Result<(), String> {
         self.touched = true;
         let mut next = self.attachments.clone();
@@ -1396,8 +1213,6 @@ impl ComposeWindow {
         Ok(())
     }
 
-    /// Start the body afresh from `seed` when the window next reaches the
-    /// document; until then the body reads as the seed's text.
     fn start_body(&mut self, seed: DraftBodySeed) {
         self.editor = body_editor(self.dispatcher.as_ref(), self.draft.as_deref());
         self.body_layout = BodyLayout::default();
@@ -1406,8 +1221,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher: a new draft body and every edit of
-    /// it are that resource's actions.
     pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Mail>) {
         self.editor
             .source_mut()
@@ -1415,7 +1228,6 @@ impl ComposeWindow {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Apply a pending [`Self::start_body`].
     fn start_pending_body(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
@@ -1440,8 +1252,6 @@ impl ComposeWindow {
             .unwrap_or_default()
     }
 
-    /// Bring the body up to date with the document: a pending start, and
-    /// what peers or an undo changed. Called by the host every frame.
     pub fn sync(&mut self, doc: &automerge::AutoCommit, path: &automerge::ObjId) {
         if !self.open || self.format != ComposeFormat::Html {
             return;
@@ -1453,7 +1263,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Author a pending draft start and the body editor's queued actions.
     pub fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         if !self.open || self.format != ComposeFormat::Html {
             return;
@@ -1475,8 +1284,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Make the focused paragraph `kind`, or a plain paragraph again when it
-    /// already is one.
     fn toggle_kind(&mut self, kind: BlockKind) {
         let editor = self.editor.editor_mut();
         let Some(index) = editor.focused_index() else {
@@ -1487,8 +1294,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Lay the editor out in the body card, when the card or the text
-    /// changed since the last layout.
     fn lay_out_body(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let card = self.body_rect();
         let layout = &mut self.body_layout;
@@ -1503,7 +1308,6 @@ impl ComposeWindow {
         let mut nodes: std::collections::HashMap<NodeId, *mut dyn ui::Widget> =
             std::collections::HashMap::new();
         let node = ui::Widget::build_layout(&mut self.editor, &mut layout.taffy, theme, &mut nodes);
-        // The text's inset from its card: `s3` beside it, `s2` above.
         let (pad_x, pad_y) = (
             f64::from(theme.tokens.spacing.s3),
             f64::from(theme.tokens.spacing.s2),
@@ -1554,7 +1358,6 @@ impl ComposeWindow {
     fn body_event(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.start_pending_body(&mut ctx.state);
         if self.body_layout.node.is_none() {
-            // An event before the first frame: lay out with the last theme.
             let theme = self.theme.clone();
             self.lay_out_body(&mut TextRenderer::new(), &theme);
         }
@@ -1619,23 +1422,16 @@ impl ComposeWindow {
         }
     }
 
-    /// Position the window for the current dock state within `bounds`, then
-    /// lay out every interactive region. `bounds` is the app content rect.
-    /// The message column to write in (`None` where there is none, and
-    /// the composer floats over the app instead).
     pub fn set_pane(&mut self, pane: Option<Rect>) {
         if self.pane != pane {
             self.pane = pane;
         }
     }
 
-    /// Whether the composer stands in the message column, beside the list.
     pub fn in_pane(&self) -> bool {
         matches!(self.dock, DockState::Pane) && self.pane.is_some() && !self.is_full_window_page()
     }
 
-    /// Whether the composer holds every click and key while open: it
-    /// floats over the app or fills the window.
     pub fn is_modal(&self) -> bool {
         self.open && !self.in_pane()
     }
@@ -1690,13 +1486,6 @@ impl ComposeWindow {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
-    /// Lay out and register the To/Cc/Bcc/Subject fields and the Attach
-    /// button. Returns the y past the header, where the formatting toolbar
-    /// band starts. Part of [`Self::relayout_regions`].
-    ///
-    /// There is no title bar of the composer's own in any presentation: the
-    /// window bar names the message and holds Discard draft and Close, as it
-    /// does for every other surface ([`crate::window_bar`]).
     fn layout_header_hits(&mut self, r: Rect, lx: f64, rx: f64) -> f64 {
         let m = self.metrics;
         let field_x = lx + m.label_w;
@@ -1704,7 +1493,6 @@ impl ComposeWindow {
 
         let mut y = r.y0 + m.pad;
 
-        // To row, with the Cc/Bcc button at its end.
         let to_rect = Rect::new(field_x, y, rx - m.cc_bcc_w - m.gap, y + m.control_h);
         self.to.apply_layout_external(to_rect);
         self.hits.push((to_rect, ComposeHit::FieldTo));
@@ -1723,7 +1511,6 @@ impl ComposeWindow {
             self.hits.push((bcc_rect, ComposeHit::FieldBcc));
             y += m.control_h + m.gap;
         }
-        // Subject, with the Attach button at its end.
         let subject_rect = Rect::new(field_x, y, rx - side - m.gap, y + m.control_h);
         self.subject.apply_layout_external(subject_rect);
         self.hits.push((subject_rect, ComposeHit::FieldSubject));
@@ -1750,7 +1537,6 @@ impl ComposeWindow {
         y += m.control_h + m.gap;
 
         // Below the body, bottom-up: the footer buttons, then (when shown)
-        // the link prompt and the attachment chips.
         let by = r.y1 - m.pad - m.control_h;
         let prompt_h = if self.prompt.is_some() {
             m.control_h + m.gap
@@ -1767,18 +1553,13 @@ impl ComposeWindow {
         let body = Rect::new(lx, y, rx, (self.chips_band.y0 - m.gap).max(y));
         self.hits.push((body, ComposeHit::Body));
         match self.format {
-            // Laid out when drawn: the editor measures with the theme.
             ComposeFormat::Html => {}
             ComposeFormat::Text => self.plain_body.apply_layout_external(body),
         }
 
         // Footer: Discard at the leading edge, Send at the trailing edge.
-        // What is written is kept as a draft when the composer closes, so
-        // there is no Save draft button to remember. While the window bar
-        // hosts the window, Discard draft is the bar's.
         let bh = m.control_h;
         if !ui::window_toolbar::is_hosted() {
-            // window-bar: fallback, the bar discards the draft while it hosts the window
             self.hits.push((
                 Rect::new(lx, by, lx + m.discard_w, by + bh),
                 ComposeHit::Discard,
@@ -1787,7 +1568,6 @@ impl ComposeWindow {
         let send = Rect::new(rx - m.send_w, by, rx, by + bh);
         self.hits.push((send, ComposeHit::Send));
 
-        // The link prompt: a field and its two buttons.
         if let Some(p) = self.prompt.as_mut() {
             let band = self.prompt_band;
             let py = band.y0;
@@ -1819,14 +1599,6 @@ impl ComposeWindow {
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
-    /// Returns `true` if the event was consumed (so the host must NOT let it
-    /// fall through to the mailbox behind the window). The contract that makes
-    /// the window truly modal: **every keyboard event** while open is consumed,
-    /// and **every pointer event inside the window rect** is consumed.
-    /// A `CursorMoved`: track the active drag if any, otherwise forward the
-    /// move to every input (and the prompt, if open) so their hover state
-    /// tracks — required before a press will register a caret. Part of
-    /// [`Self::handle_event`].
     fn handle_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
@@ -1836,7 +1608,6 @@ impl ComposeWindow {
         let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         self.last_mouse = pt;
         self.dirty = true;
-        // Active move/resize drag.
         if let Some(drag) = self.drag {
             self.apply_drag(drag, pt);
             self.relayout_regions();
@@ -1882,7 +1653,6 @@ impl ComposeWindow {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                // The toolbar tracks the pointer for its hover.
                 self.route_toolbar(event, ctx);
                 self.handle_cursor_moved(*position, event, ctx)
             }
@@ -1911,7 +1681,6 @@ impl ComposeWindow {
                     return (true, ComposeAction::None);
                 }
                 self.has_keys = true;
-                // Resize edge?
                 if let Some(edge) = self.resize_edge_at(pt) {
                     self.drag = Some(Drag::Resize {
                         edge,
@@ -1949,10 +1718,6 @@ impl ComposeWindow {
         }
     }
 
-    /// A `KeyboardInput`: the inline prompt (if open) captures keys first
-    /// (Esc cancels it, Enter confirms), then Esc closes the window, then the
-    /// focused body editor or header field gets the key. Always consumed
-    /// while the window is open (modal). Part of [`Self::handle_event`].
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
@@ -1968,7 +1733,6 @@ impl ComposeWindow {
         if self.completion_key(event) {
             return (true, ComposeAction::None);
         }
-        // Escape closes.
         if Self::is_escape_press(event) {
             self.close();
             return (true, ComposeAction::Close);
@@ -1983,20 +1747,14 @@ impl ComposeWindow {
             };
             return (true, action);
         }
-        // Body editor.
         if matches!(self.focus, Field::Body) {
             self.handle_body_key(event, ctx);
             return (true, ComposeAction::None);
         }
-        // Header input.
         self.handle_header_key(event, ctx);
-        // Always consume keyboard while open (modal).
         (true, ComposeAction::None)
     }
 
-    /// Keys while the inline prompt bar is open: Esc cancels it, Enter
-    /// confirms, everything else edits the prompt's field. Part of
-    /// [`Self::handle_keyboard_input`].
     fn handle_prompt_key(
         &mut self,
         event: &WindowEvent,
@@ -2037,7 +1795,6 @@ impl ComposeWindow {
         (true, ComposeAction::None)
     }
 
-    /// Ctrl+Enter (Cmd+Enter on a Mac keyboard): send the message.
     fn is_send_press(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
         let state = modifiers.state();
         (state.control_key() || state.super_key())
@@ -2068,9 +1825,6 @@ impl ComposeWindow {
         )
     }
 
-    /// Route a key to the HTML editor or the plain-text body input,
-    /// depending on the active compose format. Part of
-    /// [`Self::handle_keyboard_input`].
     fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.touched = true;
         match self.format {
@@ -2085,8 +1839,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Forward a key to whichever header field (To/Cc/Bcc/Subject) has focus.
-    /// Part of [`Self::handle_keyboard_input`].
     fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.touched = true;
         self.headers_edited = Some(ui::motion::frame_now());
@@ -2128,7 +1880,6 @@ impl ComposeWindow {
             | ComposeHit::FieldBcc
             | ComposeHit::FieldSubject => {
                 // Each `Field*` hit just differs in which field it focuses;
-                // the forwarding that follows is identical.
                 let field = match hit {
                     ComposeHit::FieldCc => Field::Cc,
                     ComposeHit::FieldBcc => Field::Bcc,
@@ -2157,10 +1908,6 @@ impl ComposeWindow {
         ComposeAction::None
     }
 
-    /// Handle a press on the body region: place the WYSIWYG caret directly
-    /// (HTML mode), or forward the real press so the plain-text body places
-    /// its own caret at the click point (the preceding `CursorMoved` already
-    /// set its hover). Part of [`Self::dispatch_hit`].
     fn dispatch_body_press(
         &mut self,
         pt: Point,
@@ -2184,8 +1931,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Whether the formatting toolbar owns `event`: its overflow menu is
-    /// open, it is mid-press, or the pointer is over it.
     fn toolbar_takes(&self, event: &WindowEvent, scale_factor: f64) -> bool {
         let bar = &self.format_bar.bar;
         if bar.is_overflow_open() || ui::Widget::wants_pointer_capture(bar) {
@@ -2206,7 +1951,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Route an event to the formatting toolbar and apply what it chose.
     fn route_toolbar(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         let mut handled = false;
         let mut focus = None;
@@ -2235,8 +1979,6 @@ impl ComposeWindow {
         }
     }
 
-    /// Open the inline prompt bar to collect a URL. File selection always
-    /// goes through the root's host-native portal boundary.
     fn open_prompt(&mut self, kind: PromptKind) {
         let mut input = TextInput::local().with_kind(TextInputKind::Url);
         if kind == PromptKind::Link {
@@ -2253,9 +1995,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Apply the prompt's value: attach the real file at the typed path, or link
-    /// the selection/insert the URL. An unreadable path keeps the prompt open
-    /// with an error rather than staging a fabricated attachment.
     fn confirm_prompt(&mut self) {
         let Some(p) = self.prompt.take() else { return };
         let val = p.input.value().trim().to_string();
@@ -2296,7 +2035,6 @@ impl ComposeWindow {
             return None;
         }
         let r = self.rect;
-        // The grip is the window's own edge, a `s2` band inside it.
         let grip = f64::from(self.theme.tokens.spacing.s2);
         if !r.contains(pt) {
             return None;
@@ -2304,7 +2042,6 @@ impl ComposeWindow {
         let near_r = r.x1 - pt.x <= grip;
         let near_l = pt.x - r.x0 <= grip;
         let near_b = r.y1 - pt.y <= grip;
-        // The title bar moves the window; only the sides and bottom resize.
         match (near_l, near_r, near_b) {
             (_, true, true) => Some(Edge::BottomRight),
             (true, _, true) => Some(Edge::BottomLeft),
@@ -2315,7 +2052,6 @@ impl ComposeWindow {
         }
     }
 
-    /// The pointer over the window's edges says it resizes.
     pub fn cursor_shape(&self, pt: Point) -> Option<winit::window::CursorIcon> {
         use winit::window::CursorIcon;
         if !self.open {
@@ -2406,7 +2142,6 @@ impl ComposeWindow {
             );
             ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         }
-        // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(self.ground(theme));
         self.draw_header_fields(scene, t, tr, &panel);
         self.draw_body(scene, t, tr, &panel, presence);
@@ -2422,12 +2157,9 @@ impl ComposeWindow {
         ] {
             self.draw_button(scene, t, tr, &panel, button);
         }
-        // The toolbar's overflow menu floats over everything else.
         ui::Widget::draw_overlay(&mut self.format_bar.bar, scene, t, tr, &panel, presence);
     }
 
-    /// What the composer is painted on: the message column's ground, or
-    /// the panel's where it floats or fills the window.
     fn ground(&self, theme: &Theme) -> vello::peniko::Color {
         if self.in_pane() {
             theme.tokens.colors.surfaces.content
@@ -2440,8 +2172,6 @@ impl ComposeWindow {
         self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)
     }
 
-    /// The field labels, the Cc/Bcc and Attach buttons, the formatting
-    /// toolbar and the format switch. Part of [`Self::draw`].
     fn draw_header_fields(
         &mut self,
         scene: &mut Scene,
@@ -2530,8 +2260,6 @@ impl ComposeWindow {
         }
     }
 
-    /// The message body: the rich editor or the plain multiline input, on
-    /// the window under a rule. Part of [`Self::draw`].
     fn draw_body(
         &mut self,
         scene: &mut Scene,
@@ -2577,8 +2305,6 @@ impl ComposeWindow {
         }
     }
 
-    /// The staged attachments as chips above the footer. Part of
-    /// [`Self::draw`].
     fn draw_staged_attachment_chips(
         &self,
         scene: &mut Scene,
@@ -2604,8 +2330,6 @@ impl ComposeWindow {
         }
     }
 
-    /// The link prompt: its label, its field and its two buttons, with the
-    /// reason a link was refused. Part of [`Self::draw`].
     fn draw_prompt(
         &mut self,
         scene: &mut Scene,
@@ -2678,7 +2402,6 @@ impl ComposeWindow {
         }
     }
 
-    /// A footer button: where it is, its label key and its role.
     fn draw_button(
         &self,
         scene: &mut Scene,
@@ -2703,8 +2426,6 @@ impl ComposeWindow {
         );
     }
 
-    /// Draw the header inputs (their text and caret). Called by the host
-    /// after `draw` so they paint on top of the window.
     pub fn draw_inputs(
         &mut self,
         scene: &mut Scene,
@@ -2723,7 +2444,6 @@ impl ComposeWindow {
             self.bcc.draw_child(scene, t, tr, &panel, presence);
         }
         self.subject.draw_child(scene, t, tr, &panel, presence);
-        // Offered recipients float over everything under the field.
         self.completions.paint(scene, t, tr, theme);
     }
 }
@@ -2742,8 +2462,6 @@ mod tests {
         ))
     }
 
-    /// Paragraphs stand apart by a blank line in the plain part; a list's
-    /// items and a quote's lines run on.
     #[test]
     fn the_plain_part_separates_paragraphs_by_a_blank_line() {
         let block = |kind: BlockKind, text: &str| BlockContent {
@@ -2812,9 +2530,6 @@ mod tests {
         }
     }
 
-    /// A reply quotes the original's blank lines as a bare `>`. Those lines
-    /// stay inside the quote: neither the formatted message nor its text
-    /// alternative shows a stray `>` paragraph between the quoted ones.
     #[test]
     fn a_reply_quote_keeps_its_blank_lines_inside_the_quote() {
         let mut w = win();
@@ -2917,10 +2632,6 @@ mod tests {
             assert_eq!(d.body, "Just text");
         }
 
-        // Phase `plain_body_accepts_a_multiline_draft_via_the_real_key_path`.
-        // The plain body is now a shared multiline `TextInput`: typing a newline
-        // through the window's real keyboard path lands a genuinely multi-line
-        // draft body — the thing a single-line field could not do.
         {
             let mut w = ComposeWindow::new(ComposeFormat::Text);
             w.open_blank();
@@ -2959,8 +2670,6 @@ mod tests {
         }
     }
 
-    /// Ctrl+Enter sends from the body and from a header field alike; Enter
-    /// alone stays a new line.
     #[test]
     fn ctrl_enter_sends_from_any_field() {
         let mut w = win();
@@ -3004,7 +2713,6 @@ mod tests {
         {
             let mut w = win();
             let before = w.window_rect();
-            // A panel placed past the window's edge is clamped back into it.
             w.rect = Rect::new(
                 5000.0,
                 5000.0,

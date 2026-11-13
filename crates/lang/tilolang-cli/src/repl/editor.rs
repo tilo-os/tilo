@@ -16,16 +16,12 @@ pub trait Complete {
     fn complete(&self, line: &str, cursor: usize) -> (usize, Vec<String>);
 }
 
-/// What one read gave.
 pub enum Read {
     Line(String),
-    /// Ctrl-C: the line was dropped.
     Interrupted,
-    /// Ctrl-D on an empty line, or the input ended.
     Eof,
 }
 
-/// How many entries the history keeps.
 const HISTORY_KEPT: usize = 1000;
 
 pub struct Editor {
@@ -34,7 +30,6 @@ pub struct Editor {
     terminal: bool,
 }
 
-/// The terminal in raw mode until this is dropped.
 struct Raw {
     saved: rustix::termios::Termios,
 }
@@ -71,7 +66,6 @@ fn columns() -> usize {
         .unwrap_or(80)
 }
 
-/// A key as the terminal sends it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     Char(char),
@@ -96,7 +90,6 @@ enum Key {
     Other,
 }
 
-/// The key a control byte is.
 const fn control(byte: u8) -> Key {
     match byte {
         b'\r' | b'\n' => Key::Enter,
@@ -132,7 +125,6 @@ fn sequence(code: &[u8]) -> Key {
     }
 }
 
-/// Reads keys from the terminal.
 struct Keys<R> {
     input: R,
     pending: Vec<u8>,
@@ -193,7 +185,6 @@ impl<R: io::Read> Keys<R> {
     }
 }
 
-/// The line being written and the cursor in it, in characters.
 #[derive(Default)]
 struct Line {
     chars: Vec<char>,
@@ -224,7 +215,6 @@ impl Line {
         self.chars.get(at).copied().map(is_word)
     }
 
-    /// Where the word before the cursor starts.
     fn word_start(&self) -> usize {
         let mut at = self.cursor;
         while at > 0 && self.is_word_at(at.saturating_sub(1)) == Some(false) {
@@ -236,7 +226,6 @@ impl Line {
         at
     }
 
-    /// Where the word after the cursor ends.
     fn word_end(&self) -> usize {
         let mut at = self.cursor;
         while self.is_word_at(at) == Some(false) {
@@ -285,7 +274,6 @@ impl Editor {
         }
     }
 
-    /// Whether keys are read from a terminal.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         self.terminal
@@ -336,8 +324,9 @@ impl Editor {
         Ok(Read::Line(line))
     }
 
-    /// Complete the word before the cursor: as far as every candidate agrees, and list them
-    /// when that is no further.
+    /// Complete the word before the cursor: as far as every
+    /// candidate agrees, and list them when that is no
+    /// further.
     fn complete(
         line: &mut Line,
         completer: &dyn Complete,
@@ -437,7 +426,6 @@ fn redraw(out: &mut impl io::Write, prompt: &str, line: &Line) -> io::Result<()>
     out.flush()
 }
 
-/// The longest start every candidate shares.
 #[must_use]
 pub fn common_prefix(candidates: &[String]) -> String {
     let mut all = candidates.iter();

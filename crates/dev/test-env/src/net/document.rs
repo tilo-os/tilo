@@ -1,12 +1,11 @@
-//! What a [`super::FakeNet`] carries between Automerge devices: publish a
-//! replica's changes, and check that the devices converged.
+//! What a [`super::FakeNet`] carries between Automerge devices: publish a replica's changes, and
+//! check that the devices converged.
 //!
-//! The net itself moves bytes. This module is the pairing a scenario on a CRDT
-//! usually wants: [`FakeDocumentNet::publish`] sends the changes a document
-//! holds that the net does not carry yet — so offering a replica again after a
-//! heal sends only what was written meanwhile — and
-//! [`FakeDocumentNet::converged`] checks that each device has taken in what the
-//! others sent it, and that they read the same values.
+//! The net itself moves bytes. This module is the pairing a scenario on a CRDT usually wants:
+//! [`FakeDocumentNet::publish`] sends the changes a document holds that the net does not carry yet
+//! — so offering a replica again after a heal sends only what was written meanwhile — and
+//! [`FakeDocumentNet::converged`] checks that each device has taken in what the others sent it, and
+//! that they read the same values.
 //!
 //! ```
 //! use automerge::transaction::Transactable as _;
@@ -33,9 +32,8 @@ use super::{Converged, FakeNet, Peer};
 
 /// A [`FakeNet`] whose devices carry Automerge changes.
 ///
-/// A `FakeDocumentNet` is a `FakeNet` with the CRDT pairing on top of it: the
-/// same peers, partitions, heals and delivery order, plus the two things a
-/// document test asks of them.
+/// A `FakeDocumentNet` is a `FakeNet` with the CRDT pairing on top of it: the same peers,
+/// partitions, heals and delivery order, plus the two things a document test asks of them.
 #[derive(Debug, Default)]
 pub struct FakeDocumentNet {
     net: FakeNet,
@@ -49,7 +47,6 @@ impl FakeDocumentNet {
         Self::default()
     }
 
-    /// A device on this net, under `name`. See [`FakeNet::peer`].
     pub fn peer(&mut self, name: &str) -> Peer {
         self.net.peer(name)
     }
@@ -59,9 +56,9 @@ impl FakeDocumentNet {
         &mut self.net
     }
 
-    /// Lose what the net held for cut devices, as [`FakeNet::forget_held`]
-    /// does, together with the record of what was published for them: a frame
-    /// that was dropped has to be offered again, from the replica that wrote it.
+    /// Lose what the net held for cut devices, as [`FakeNet::forget_held`] does, together with the
+    /// record of what was published for them: a frame that was dropped has to be offered again,
+    /// from the replica that wrote it.
     pub fn forget_held(&mut self) {
         for (author, bytes) in self.net.held_traffic() {
             let Some(offered) = self.offered.get_mut(&author) else {
@@ -83,18 +80,17 @@ impl FakeDocumentNet {
         self.net.names()
     }
 
-    /// Offer the changes `document` holds that the net does not carry yet, as
-    /// `device` publishes them.
+    /// Offer the changes `document` holds that the net does not carry yet, as `device` publishes
+    /// them.
     ///
-    /// Offering a replica again sends only what is new: the bytes already
-    /// offered are compared change by change (by hash), so a device that
-    /// published a change before a partition, or in an earlier step, does not
-    /// publish it a second time. A device therefore catches up after a heal by
-    /// offering the same replica again.
+    /// Offering a replica again sends only what is new: the bytes already offered are compared
+    /// change by change (by hash), so a device that published a change before a partition, or in an
+    /// earlier step, does not publish it a second time. A device therefore catches up after a heal
+    /// by offering the same replica again.
     ///
-    /// What the message carries is recorded, not what the device holds: a
-    /// replica forked from shared history owns changes this net never carried,
-    /// and a message between devices that already share them is not those.
+    /// What the message carries is recorded, not what the device holds: a replica forked from
+    /// shared history owns changes this net never carried, and a message between devices that
+    /// already share them is not those.
     pub fn publish(&mut self, device: &Peer, document: &mut AutoCommit) {
         let carried = self.offered.entry(device.name().to_owned()).or_default();
         let novel = unwritten(document, carried);
@@ -111,17 +107,17 @@ impl FakeDocumentNet {
         }
     }
 
-    /// Hand every device what reached it, taking it into that device's
-    /// replica: `(peer, document)` pairs, one per device.
+    /// Hand every device what reached it, taking it into that device's replica: `(peer, document)`
+    /// pairs, one per device.
     ///
-    /// A message is taken in by loading it as a replica and merging that in,
-    /// which is how the app path applies a peer's delta.
+    /// A message is taken in by loading it as a replica and merging that in, which is how the app
+    /// path applies a peer's delta.
     pub fn deliver_into(&mut self, devices: &mut [(&Peer, &mut AutoCommit)]) {
         for (peer, document) in devices.iter_mut() {
             let (peer, document) = (peer.clone(), &mut **document);
             self.net.deliver_to(peer.name(), |_, bytes| {
-                // A frame that will not load is a sender that got it wrong; the
-                // convergence check names the device that is missing it.
+                // A frame that will not load is a sender that got it wrong; the convergence check
+                // names the device that is missing it.
                 let _ = document.load_incoming(bytes);
             });
         }
@@ -129,8 +125,8 @@ impl FakeDocumentNet {
 
     /// What `document` has not taken in of what `author` published.
     ///
-    /// An author that published nothing has nothing to take in, which is how
-    /// two devices that never wrote agree.
+    /// An author that published nothing has nothing to take in, which is how two devices that never
+    /// wrote agree.
     fn missing(&self, document: &mut AutoCommit, author: &Peer) -> Vec<ChangeHash> {
         let Some(offered) = self.offered.get(author.name()) else {
             return Vec::new();
@@ -143,9 +139,8 @@ impl FakeDocumentNet {
             .collect()
     }
 
-    /// Whether `first` and `second` agree: each holds every change the other
-    /// sent it, and both hold the same value at each of `paths` (a path is
-    /// read by [`at_path`]).
+    /// Whether `first` and `second` agree: each holds every change the other sent it, and both hold
+    /// the same value at each of `paths` (a path is read by [`at_path`]).
     #[must_use]
     pub fn converged(
         &self,
@@ -186,8 +181,8 @@ impl FakeDocumentNet {
         Converged::from(disagreements)
     }
 
-    /// Fail the calling test unless every device agrees with every other, at
-    /// each of `paths`: the assertion a scenario makes once the net delivered.
+    /// Fail the calling test unless every device agrees with every other, at each of `paths`: the
+    /// assertion a scenario makes once the net delivered.
     ///
     /// # Panics
     ///
@@ -237,11 +232,10 @@ impl FakeDocumentNet {
 
 /// The hashes of the changes `document` holds that `written` does not name.
 ///
-/// A change is compared by hash rather than looked up through the document, so
-/// a device that has taken in the first change of a run and not the second is
-/// missing exactly the second, whichever actor wrote them. What is named here
-/// is what a delta closing the gap has to carry; [`delta_hashes`] says which
-/// of them it did.
+/// A change is compared by hash rather than looked up through the document, so a device that has
+/// taken in the first change of a run and not the second is missing exactly the second, whichever
+/// actor wrote them. What is named here is what a delta closing the gap has to carry;
+/// [`delta_hashes`] says which of them it did.
 fn unwritten(document: &mut AutoCommit, written: &[ChangeHash]) -> Vec<ChangeHash> {
     let held = written_hashes(document);
     held.into_iter()
@@ -249,7 +243,6 @@ fn unwritten(document: &mut AutoCommit, written: &[ChangeHash]) -> Vec<ChangeHas
         .collect()
 }
 
-/// The hashes of every change `document` holds.
 fn written_hashes(document: &mut AutoCommit) -> Vec<ChangeHash> {
     document
         .get_changes(&[])
@@ -258,14 +251,13 @@ fn written_hashes(document: &mut AutoCommit) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// The hashes of the changes a delta carries: which of `novel`, the changes a
-/// sender holds and this net has not carried, the bytes it published hold.
+/// The hashes of the changes a delta carries: which of `novel`, the changes a sender holds and this
+/// net has not carried, the bytes it published hold.
 ///
-/// A delta is not the changes named: one that closes a gap other devices hold
-/// already carries the history they hang from and leaves out changes it can
-/// say nothing with, so `novel` on its own cannot say what a device now holds.
-/// Each change is therefore saved on its own and its bytes looked for in what
-/// the sender saves; `document` is left holding the changes it was given.
+/// A delta is not the changes named: one that closes a gap other devices hold already carries the
+/// history they hang from and leaves out changes it can say nothing with, so `novel` on its own
+/// cannot say what a device now holds. Each change is therefore saved on its own and its bytes
+/// looked for in what the sender saves; `document` is left holding the changes it was given.
 fn delta_hashes(document: &mut AutoCommit, novel: &[ChangeHash]) -> Vec<ChangeHash> {
     if novel.is_empty() {
         return Vec::new();
@@ -292,13 +284,13 @@ fn delta_hashes(document: &mut AutoCommit, novel: &[ChangeHash]) -> Vec<ChangeHa
     carried
 }
 
-/// The value at `path` in `document`, as a person sees it: a map key or a list
-/// index per segment, separated by dots, where an index is written `[n]` after
-/// the key that holds the list — `title`, `pages[0].title`.
+/// The value at `path` in `document`, as a person sees it: a map key or a list index per segment,
+/// separated by dots, where an index is written `[n]` after the key that holds the list — `title`,
+/// `pages[0].title`.
 ///
-/// A text object reads as its text, and a list or a map as `Null`: a scenario
-/// asserts on the value a person sees, and names the field inside a map when it
-/// wants that. A path the document does not hold reads as `None`.
+/// A text object reads as its text, and a list or a map as `Null`: a scenario asserts on the value
+/// a person sees, and names the field inside a map when it wants that. A path the document does not
+/// hold reads as `None`.
 #[must_use]
 pub fn at_path(document: &mut AutoCommit, path: &str) -> Option<serde_json::Value> {
     let mut object = automerge::ROOT;
@@ -347,7 +339,6 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable as _;
 
-    /// Two devices on one net, each holding its own replica.
     fn two_devices() -> (FakeDocumentNet, Peer, Peer, AutoCommit, AutoCommit) {
         let mut net = FakeDocumentNet::new();
         let alice = net.peer("alice");
@@ -359,8 +350,8 @@ mod tests {
         (net, alice, bob, a, b)
     }
 
-    /// A replica forked from shared history answers about itself, not about the
-    /// actor that wrote that history: both actors are the forking device's.
+    /// A replica forked from shared history answers about itself, not about the actor that wrote
+    /// that history: both actors are the forking device's.
     fn forked_from(document: &mut AutoCommit) -> AutoCommit {
         let mut forked = document.fork();
         forked.set_actor(automerge::ActorId::from(b"bob".as_slice()));
@@ -630,8 +621,8 @@ mod tests {
         let (mut net, alice, bob, mut a, _b) = two_devices();
         a.put(automerge::ROOT, "title", "shared").unwrap();
         net.publish(&alice, &mut a);
-        // Bob joins with the document he holds, and both write on their own
-        // device while the net is cut between them.
+        // Bob joins with the document he holds, and both write on their own device while the net is
+        // cut between them.
         let mut b = forked_from(&mut a);
         a.put(automerge::ROOT, "title", "alice's").unwrap();
         b.put(automerge::ROOT, "note", "bob's").unwrap();
@@ -691,8 +682,8 @@ mod tests {
         net.publish(&bob, &mut a);
         net.deliver_into(&mut [(&alice, &mut a), (&bob, &mut b)]);
 
-        // Alice writes while bob is off the net, and bob never takes it in.
-        // Their paths still read the same, so only the changes tell them apart.
+        // Alice writes while bob is off the net, and bob never takes it in. Their paths still read
+        // the same, so only the changes tell them apart.
         net.net().partition(&["bob"]);
         a.put(automerge::ROOT, "count", 2_i64).unwrap();
         net.publish(&alice, &mut a);

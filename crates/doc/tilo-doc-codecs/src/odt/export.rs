@@ -7,6 +7,7 @@ use crate::package::ZipPackage;
 use crate::preserve::MARK_ODT_XML;
 use crate::resolved::Resolved;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use tilo_content::ContentSource;
 use tilo_doc::document::MarkSpan;
 use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
@@ -16,9 +17,6 @@ use tilo_doc::schema::{
     STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 use tilo_doc::snapshot::{AttrVal, DocSnapshot};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
 /// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a `pm1`
@@ -72,8 +70,6 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         }
     }
     splice_styles_xml(&doc, &mut c, original_styles.as_deref(), &mut had_styles);
-    // Document properties → `meta.xml`: regenerate from the canonical properties, merging in
-    // any unmodeled `office:meta` children from the preserved original so they survive.
     if let Some(meta_xml) = super::meta::export_meta(&doc, original_meta.as_deref()) {
         let is_new = !had_meta;
         c.set("meta.xml", meta_xml);
@@ -81,7 +77,6 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
             had_meta = true;
         }
     }
-    // Fall back to generated mimetype/manifest when the source had none (e.g. a doc created from scratch).
     if !had_mimetype {
         c.set("mimetype", MIMETYPE.to_vec());
     }
@@ -113,8 +108,6 @@ fn splice_styles_xml(
     original_styles: Option<&[u8]>,
     had_styles: &mut bool,
 ) {
-    // Page header/footer → `styles.xml` master-page: splice regenerated header/footer into a
-    // copy of `styles.xml` (or synthesise one). No-op when the document has neither.
     if let Some(styles_xml) = super::headers::export_master_headers(doc, original_styles) {
         let is_new = !*had_styles;
         c.set("styles.xml", styles_xml);
@@ -122,8 +115,6 @@ fn splice_styles_xml(
             *had_styles = true;
         }
     }
-    // Multi-column layout → `styles.xml` page-layout: splice `style:columns` into the first
-    // page-layout properties, preserving the rest. No-op for a single-column document.
     {
         let base = c
             .get("styles.xml")
@@ -136,8 +127,6 @@ fn splice_styles_xml(
             }
         }
     }
-    // Document default language → `styles.xml` paragraph default-style: splice the BCP-47 tag
-    // (split into `fo:language`/`fo:country`). No-op when the document declares no default language.
     {
         let base = c
             .get("styles.xml")
@@ -152,8 +141,6 @@ fn splice_styles_xml(
     }
 }
 
-/// Write each `image` block's blob into the zip as `Pictures/<hash>.<ext>` and return the
-/// manifest entries it needs, seeded with meta.xml/styles.xml when those were (re)written.
 fn write_image_blobs(
     snap: &Resolved<'_>,
     c: &mut ZipPackage,
@@ -185,13 +172,11 @@ fn write_image_blobs(
     pic_entries
 }
 
-/// The `Pictures/<hash>.<ext>` href an image block's blob is written under.
 fn picture_href(hash: &str, bytes: &[u8]) -> String {
     let (ext, _) = crate::office_image_part(bytes);
     format!("Pictures/{hash}.{ext}")
 }
 
-/// Insert `manifest:file-entry` rows for `entries` not already present, just before the closing `</manifest:manifest>`.
 fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) -> Vec<u8> {
     let s = String::from_utf8_lossy(manifest);
     let mut inserts = String::new();
@@ -222,7 +207,6 @@ fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) 
     }
 }
 
-/// Codec-authored automatic *text* style for a mark: `(style name, properties)`. Boolean marks map to fixed styles; valued font marks get a per-value style.
 fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     match m.name.as_str() {
         "strong" => Some(("qdoc-strong".into(), r#"fo:font-weight="bold""#.into())),
@@ -257,13 +241,11 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
                 format!(r#"fo:background-color="{c}""#),
             )
         }),
-        // Vertical alignment: ODF `style:text-position` (keyword + 58% font height, matching what LibreOffice writes for menu super/subscript).
         "super" => Some((
             "qdoc-super".into(),
             r#"style:text-position="super 58%""#.into(),
         )),
         "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
-        // Per-run language override: split BCP-47 `de-DE` into ODF `fo:language="de" fo:country="DE"` text-properties.
         "lang" => m
             .value
             .as_str()
@@ -273,7 +255,6 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     }
 }
 
-/// A style-name-safe token for a colour value (`#rrggbb` → `rrggbb`); keeps the generated automatic-style name a valid XML name.
 fn color_token(c: &str) -> String {
     c.chars().filter(char::is_ascii_alphanumeric).collect()
 }
@@ -304,16 +285,13 @@ fn note_index(snap: &DocSnapshot) -> NoteIndex<'_> {
     snap.notes.iter().map(|n| (n.id.clone(), n)).collect()
 }
 
-/// A comment-id → `&CommentView` lookup for emitting `office:annotation`(+`-end`) at a commented range's boundaries on export.
 type CommentIndex<'a> = std::collections::BTreeMap<String, &'a tilo_doc::snapshot::CommentView>;
 
 fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
     snap.comments.iter().map(|c| (c.id.clone(), c)).collect()
 }
 
-/// What inline rendering reads and accumulates across the whole body.
 struct InlineCtx<'a> {
-    /// Generated span styles referenced so far (see [`span_styles`]).
     used: BTreeMap<String, String>,
     notes: NoteIndex<'a>,
     /// Inline notes emitted so far, numbering them in document order.
@@ -328,7 +306,6 @@ fn render_inline(text: &str, marks: &[MarkSpan], ctx: &mut InlineCtx<'_>) -> Str
     let plan = InlinePlan::new(text, marks);
     let text_len = text.chars().count();
     let mut out = String::new();
-    // A leading space would be collapsed away; see `push_odf_text`.
     let mut after_space = true;
     let mut open: Vec<String> = Vec::new();
     let mut cur_link: Option<&str> = None;
@@ -391,7 +368,6 @@ fn render_inline(text: &str, marks: &[MarkSpan], ctx: &mut InlineCtx<'_>) -> Str
         };
         let link = run.link;
         if link != cur_link {
-            // A link is the outer element, so close any open spans first, then the old link, then open the new link (spans re-open below).
             close_spans(&mut out, &mut open);
             if cur_link.is_some() {
                 out.push_str("</text:a>");
@@ -411,9 +387,6 @@ fn render_inline(text: &str, marks: &[MarkSpan], ctx: &mut InlineCtx<'_>) -> Str
         }
         if let Some(note_id) = run.note_reference {
             if let Some(note) = ctx.notes.get(note_id) {
-                // A per-document note counter; bounded by how many notes
-                // one document has, nowhere near `usize::MAX` (or the
-                // note-counter's actual integer type's max).
                 ctx.note_ctr = ctx.note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, ctx.note_ctr));
             }
@@ -455,8 +428,6 @@ fn span_styles(
     want
 }
 
-/// Append a run's content: the unmodeled inline element kept verbatim that it shows, while it
-/// still shows it unedited (see `preserve::run_content`), then its text.
 fn push_run_text(out: &mut String, run: &tilo_doc::export::InlineRun<'_>, after_space: &mut bool) {
     let content = crate::preserve::run_content(run.text, &run.marks, MARK_ODT_XML);
     if let Some(xml) = content.kept {
@@ -501,7 +472,6 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// Paragraph-properties for a block's alignment, if non-default (font is a per-run mark, handled by `render_inline`).
 fn para_props(b: &BlockView) -> Option<(String, String)> {
     let mut pp = String::new();
     if let Some(AttrVal::Str(a)) = b.attrs.get("align") {
@@ -515,7 +485,6 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
             let _ = write!(pp, r#" fo:text-align="{v}""#);
         }
     }
-    // Line spacing → `fo:line-height` percent (1.5 → "150%").
     if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing")
         && *ls > 0.0
     {
@@ -648,7 +617,6 @@ impl ListKey {
     }
 }
 
-/// A registered reconstructed list-style: its generated name + the key it encodes + its full XML.
 struct ListStyle {
     name: String,
     key: ListKey,
@@ -679,18 +647,14 @@ fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListS
     if start != 1 && ExportBlock::new(li).num_restart() {
         let _ = write!(tag, r#" text:start-value="{start}""#);
     } else if start != 1 {
-        // A non-default start that continues: mark it continuing so the importer doesn't treat it as a fresh restart.
         tag.push_str(r#" text:continue-numbering="true""#);
     }
     tag.push('>');
     tag
 }
 
-/// A resolved paragraph automatic style: `(parent style name, paragraph-properties XML,
-/// text-properties XML)`.
 type ParaStyleEntry = (Option<String>, String, String);
 
-/// Get-or-create a paragraph automatic style for `(parent, paragraph-props, text-props)`, returning its `P{n}` name. Dedups identical styles.
 fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> String {
     if let Some(i) = styles.iter().position(|p| p == &key) {
         format!("Pqdoc{}", i.saturating_add(1))
@@ -709,7 +673,6 @@ fn resolve_para_style(
     auto: &mut Vec<ParaStyleEntry>,
     named_refs: &mut BTreeSet<String>,
 ) -> String {
-    // The imported automatic style, while the model still agrees with it.
     if let Some(style) = head.reused_para_style(b) {
         return format!(r#" text:style-name="{}""#, escape_attr(style));
     }
@@ -752,7 +715,6 @@ fn fmt_num(f: f64) -> String {
     }
 }
 
-/// Style names already declared in a preserved `styles.xml`, so the exporter can reference rather than redefine them.
 fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     let s = String::from_utf8_lossy(xml);
     let mut out = BTreeSet::new();
@@ -780,7 +742,6 @@ fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
     out
 }
 
-/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container style, so `LibreOffice` renders the document's named styles.
 fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let name = super::styles::encode_style_name(id);
     let getf = |k: &str| match props.get(k) {
@@ -861,8 +822,6 @@ struct ContentHead {
     root: Option<String>,
     prelude: String,
     automatic_styles: String,
-    /// The carried automatic styles and the preserved `styles.xml`, parsed as import does, to
-    /// tell whether a kept style reference still agrees with the model.
     registry: super::styles::StyleRegistry,
     automatic_names: BTreeSet<String>,
 }
@@ -893,8 +852,6 @@ impl ContentHead {
         }
     }
 
-    /// The imported style of the list `li` is in, while it still numbers `li` the way the
-    /// model says (`key`).
     fn reused_list_style<'b>(&self, li: &'b BlockView, key: &ListKey) -> Option<&'b str> {
         let Some(AttrVal::Str(style)) = li.attrs.get(super::content::ODT_LIST_STYLE) else {
             return None;
@@ -908,8 +865,6 @@ impl ContentHead {
         agrees.then_some(style.as_str())
     }
 
-    /// The imported automatic paragraph style of `b`, while the block's modeled paragraph
-    /// attributes (no named style, alignment, line spacing) still agree with it.
     fn reused_para_style<'b>(&self, b: &'b BlockView) -> Option<&'b str> {
         let Some(AttrVal::Str(style)) = b.attrs.get(super::content::ODT_STYLE) else {
             return None;
@@ -929,8 +884,6 @@ impl ContentHead {
         agrees.then_some(style.as_str())
     }
 
-    /// The imported root keeps its namespace declarations, so the elements carried through
-    /// verbatim resolve; the ones this exporter writes are added.
     fn root_tag(&self) -> String {
         const NAME: &str = "office:document-content";
         self.root
@@ -956,8 +909,6 @@ impl ContentHead {
     }
 }
 
-/// `styles` (a sequence of style elements) without the top-level ones whose `style:name` is in
-/// `names`.
 fn without_styles_named(styles: &str, names: &BTreeSet<String>) -> String {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(styles);
@@ -1002,7 +953,6 @@ fn without_styles_named(styles: &str, names: &BTreeSet<String>) -> String {
     out
 }
 
-/// The namespaces the exported `content.xml` declares on its root.
 const CONTENT_NAMESPACES: &[(&str, &str)] = &[
     ("office", "urn:oasis:names:tc:opendocument:xmlns:office:1.0"),
     ("text", "urn:oasis:names:tc:opendocument:xmlns:text:1.0"),
@@ -1066,15 +1016,12 @@ fn build_content_xml(
                 );
             }
             "image" => {
-                // Emit a top-level `draw:frame` referencing the blob written as a `Pictures/<hash>.<ext>`
-                // part; size (svg:width/height) and alt (svg:title) round-trip when present.
                 if let Some(frame) = image_frame_xml(b, snap, &mut graphic_styles) {
                     body.push_str(&frame);
                 }
                 i = i.saturating_add(1);
             }
             "fidelity" => {
-                // Re-emit the preserved unmodeled element verbatim, in place.
                 if let Some(xml) = crate::preserve::fidelity_xml(b, "odt") {
                     body.push_str(xml);
                 }
@@ -1128,7 +1075,6 @@ fn render_heading(
     );
 }
 
-/// Renders any block that isn't one of the other recognised kinds as a plain `text:p`.
 fn render_paragraph(
     b: &BlockView,
     body: &mut String,
@@ -1170,9 +1116,6 @@ fn render_list_run(
             top = Some(key.clone());
         }
         if target > depth {
-            // Deeper: open new lists nested inside the current open item. The outermost list,
-            // and the innermost one when it differs from it, reference `li`'s list style; the
-            // others continue the outer list's style at their level.
             while depth < target {
                 depth = depth.saturating_add(1);
                 let open = if depth == 1 || (depth == target && top.as_ref() != Some(&key)) {
@@ -1183,7 +1126,6 @@ fn render_list_run(
                 body.push_str(&open);
             }
         } else {
-            // Sibling or shallower: close the current item, then unwind any deeper lists (each wrapped in its parent item).
             if item_open {
                 body.push_str("</text:list-item>");
             }
@@ -1218,8 +1160,6 @@ fn close_lists(body: &mut String, depth: &mut i64, item_open: &mut bool) {
     }
 }
 
-/// Renders a run of consecutive `cell` blocks belonging to the same table (starting at `*i`)
-/// as an ODF `table:table`; advances `*i` past the run.
 fn render_table_run(
     snap: &Resolved<'_>,
     i: &mut usize,
@@ -1232,7 +1172,6 @@ fn render_table_run(
     *i = i.saturating_add(cells.len().max(1));
     let ncols = grid.cols();
     push_table_open(body, grid.table(), cells.first(), ncols);
-    // A row's style rides on its first cell.
     let mut row_styles: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(s)) = cell.attrs.get(super::content::ODT_ROW_STYLE) {
@@ -1302,7 +1241,6 @@ fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncol
     }
 }
 
-/// How many grid columns a run of `table:table-column` elements declares.
 fn column_count(columns: &str) -> usize {
     use quick_xml::events::Event;
     let mut reader = quick_xml::Reader::from_str(columns);
@@ -1322,7 +1260,6 @@ fn column_count(columns: &str) -> usize {
     n
 }
 
-/// The spanning attributes of a merged cell.
 fn cell_spans_xml(b: &BlockView) -> String {
     let mut out = String::new();
     let (cols, rows) = (
@@ -1399,7 +1336,6 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_doc::{AttrVal, DocSnapshot, Document};
 
-    /// Import `bytes` into `doc`, dropping any binary inputs (these tests reference none).
     fn import_odt(bytes: &[u8], doc: &mut Document) {
         OdtCodec
             .import(
@@ -1410,7 +1346,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Export `doc` with no binary content available.
     fn export_odt(doc: &Document) -> Vec<u8> {
         OdtCodec
             .export(doc.as_ref(), &tilo_content::NoContent)
@@ -1439,13 +1374,11 @@ mod tests {
             .collect()
     }
 
-    /// One block's `(text, marks-with-values)`, marks as `(start, end, name, value)`.
     type NormalizedRegionBlock = (
         String,
         Vec<(usize, usize, String, tilo_doc::document::MarkValue)>,
     );
 
-    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
     fn norm_region(blocks: &[tilo_doc::snapshot::BlockView]) -> Vec<NormalizedRegionBlock> {
         blocks
             .iter()
@@ -1584,7 +1517,6 @@ mod tests {
         }
         {
             use tilo_doc::document::MarkValue;
-            // A `sub` run exports as `style:text-position="sub …"` and re-imports as `sub`.
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
             d.splice_text(&id, 0, 0, "H2O");
@@ -1625,7 +1557,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `colored_serif_20pt_justified_run_roundtrips_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             let mut d = Document::new();
@@ -1760,7 +1691,6 @@ mod tests {
     fn hyperlinks_and_cross_references_roundtrip_through_odt() {
         {
             use tilo_doc::document::MarkValue;
-            // A `link` mark exports as `text:a` and re-imports as the same mark+href.
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
             d.splice_text(&id, 0, 0, "go home now");
@@ -1886,7 +1816,6 @@ mod tests {
         }
         {
             use tilo_doc::document::MarkValue;
-            // A bold, coloured hyperlink: link (outer text:a) wraps the style spans.
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
             d.splice_text(&id, 0, 0, "click");
@@ -1917,8 +1846,6 @@ mod tests {
         }
     }
 
-    /// A genuinely valid 1x1 truecolor-RGB PNG (signature + IHDR + IDAT + IEND),
-    /// embedded so the image round-trip is self-contained.
     const TINY_PNG: [u8; 69] = [
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
@@ -2299,7 +2226,6 @@ mod tests {
             );
         }
         {
-            // An imported meta.xml with an unmodeled field (editing-cycles) plus an existing title: the unmodeled field survives and the title updates.
             let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
@@ -2370,9 +2296,6 @@ mod tests {
             assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
             assert!(out.get("content.xml").is_some(), "content regenerated");
         }
-        // Phase `preserved_multi_atom_part_round_trips_verbatim`.
-        // Round-trip fidelity: a preserved multi-atom `styles.xml` re-emits verbatim through the full
-        // import→export codec path even though it is now stored as per-atom segments, not one blob.
         {
             let odt = odt_with_two_style_atoms();
             let original_styles = ZipPackage::read(&odt)
@@ -2396,14 +2319,9 @@ mod tests {
                 "styles.xml stored as multiple per-atom segments"
             );
         }
-        // Phase `different_preserved_atom_edits_converge_through_codec`.
-        // Two replicas import the same document, each rewrites a different
-        // preserved style atom, and both edits survive in the exported
-        // `styles.xml`. A whole-part `Bytes` scalar would overwrite the other edit.
         {
             let odt = odt_with_two_style_atoms();
 
-            // Replica A imports; replica B forks A (so they share atom ids).
             let mut a = Document::new();
             import_odt(&odt, &mut a);
             let mut b = a.fork();
@@ -2467,7 +2385,6 @@ mod tests {
                         && styles.contains("</office:document-styles>")
                 );
             }
-            // Convergence: identical exported styles.xml on both replicas.
             let sa = ZipPackage::read(&export_odt(&a))
                 .unwrap()
                 .get("styles.xml")
@@ -2545,7 +2462,6 @@ mod tests {
             );
             assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
-            // Idempotent across a second round-trip: block ids are volatile per import, so compare on text + marks, not the full BlockView.
             let exported2 = export_odt(&d2);
             let mut d3 = Document::new();
             import_odt(&exported2, &mut d3);
@@ -2599,7 +2515,6 @@ mod tests {
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
-            // A paragraph "see ref" with an inline footnote right after "see ": the body gets a `note-ref` marker over a placeholder, and the note's body becomes a note in the `notes` container.
             let body = concat!(
                 r#"<text:p>see <text:note text:id="ftn1" text:note-class="footnote">"#,
                 r#"<text:note-citation>1</text:note-citation>"#,
@@ -2736,7 +2651,6 @@ mod tests {
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
-            // A paragraph "fix this word" with an annotation spanning "this word": the annotation sits at the range start, an annotation-end at the range end.
             let body = concat!(
                 r#"<text:p>fix "#,
                 r#"<office:annotation office:name="c1"><dc:creator>Ada</dc:creator><dc:date>2021-01-02T03:04:05</dc:date><text:p>note: fix</text:p></office:annotation>"#,
@@ -2780,7 +2694,6 @@ mod tests {
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
-            // (author, body text, (range start, range end)) per comment, for a stable equality check.
             type CommentSummary = (String, String, Option<(usize, usize)>);
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2939,7 +2852,6 @@ mod tests {
             assert_eq!(dc.author, "Bob");
             assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
 
-            // Accept on the imported document: insertion clears its mark (text kept), deletion removes its struck text.
             d2.accept_change(&ins_id);
             d2.accept_change(&del_id);
             let after = d2.materialize();
@@ -2951,22 +2863,16 @@ mod tests {
         }
     }
 
-    /// Builds a paragraph "hello world" with a tracked insertion (" there" after "hello", by
-    /// Ada) and a tracked deletion ("world", by Bob), for the tracked-changes round-trip test.
     fn build_tracked_changes_doc() -> Document {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "hello world");
-        // Insert " there" after "hello" (idx 5).
         let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00");
-        // Delete "world" (now chars 12..17 in "hello there world").
         let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00");
         let _ = (ins, del);
         d
     }
 
-    /// Asserts the exported ODT `content.xml` carries the tracked-changes block, both region
-    /// wrappers, both inline change markers, and both authors.
     fn assert_tracked_changes_xml(content: &str) {
         assert!(
             content.contains("<text:tracked-changes>"),
@@ -3104,7 +3010,6 @@ mod tests {
         }
     }
 
-    /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level style atoms — the canonical "two unmodeled regions in one part" shape.
     fn odt_with_two_style_atoms() -> Vec<u8> {
         let styles_xml = concat!(
             r#"<?xml version="1.0" encoding="UTF-8"?>"#,
@@ -3120,7 +3025,6 @@ mod tests {
         c.write_odf().unwrap()
     }
 
-    /// The id + current bytes of the preserved `styles.xml` atom containing `needle`.
     fn atom_containing(d: &Document, needle: &str) -> (String, Vec<u8>) {
         let r = d.as_ref();
         tilo_doc::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml")
@@ -3164,8 +3068,6 @@ mod tests {
             styles
         );
 
-        // Editing the header regenerates it (dropping the first-page variant with it); the
-        // unedited footer keeps its page count.
         let head = d.header_blocks_in_order()[0].clone();
         d.splice_header_text(&head, 4, 0, "er");
         let out = styles_of(

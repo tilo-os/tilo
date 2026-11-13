@@ -1,26 +1,7 @@
-//! QR-code ingestion for the Add-account flow.
-//!
-//! An authenticator QR reaches us **from a still image** — a screenshot of
-//! the enrolment page, or a photo of a printed code, saved as a file. It is
-//! decoded fully offline with the pure-Rust [`rqrr`] detector (built on the
-//! `quirc` algorithm) over the greyscale of the image the toolkit's codec
-//! decodes (`ui::image_codec`). No camera, no native libraries.
-//!
-//! [`decode_image_bytes`] decodes the chosen image's bytes and hands its
-//! greyscale buffer to the shared [`decode_luma`] core. The output is a single decoded payload string,
-//! which the panel hands to [`crate::model::parse_otpauth_uri`]. This module
-//! never touches the UI or the vault.
+//! QR-code ingestion: a still image (a screenshot or a photo) decoded offline
+//! into its `otpauth://` payload by the pure-Rust `rqrr` detector.
 
-/// Decode the first QR code in an encoded image's bytes (PNG, JPEG, GIF, ...),
-/// as a chooser delivers them on every host, a browser page included.
-///
-/// Returns the decoded payload string — for an authenticator export this is
-/// the `otpauth://` URI.
-///
-/// # Errors
-/// Returns `Err` with a short, user-facing reason when the bytes can't be
-/// decoded as an image, when no QR grid is found in it, or when a grid is
-/// found but its content can't be decoded.
+/// The payload of the first QR code in an image, or a short reason none decoded.
 pub async fn decode_image_bytes(bytes: Vec<u8>) -> Result<String, String> {
     let image = ui::image_codec::decode(&bytes, None)
         .await
@@ -28,12 +9,6 @@ pub async fn decode_image_bytes(bytes: Vec<u8>) -> Result<String, String> {
     decode_luma(image.width, image.height, &image.luma())
 }
 
-/// Decode the first QR code in an already-greyscale buffer, `width` by
-/// `height` bytes row by row.
-///
-/// The shared core of the ingestion path: the file importer feeds it a
-/// decoded screenshot. Returns the payload string, or a short reason when no
-/// readable QR grid is present.
 pub fn decode_luma(width: u32, height: u32, luma: &[u8]) -> Result<String, String> {
     let width = width as usize;
     let mut prepared =
@@ -63,14 +38,8 @@ mod tests {
     use super::*;
     use image::{GrayImage, Luma};
 
-    /// The QR decoder reads a rendered otpauth URI back and reports images without a code.
     #[test]
     fn qr_decoder_round_trips_otpauth_and_reports_empty_images() {
-        // Case `round_trips_an_otpauth_qr_through_the_decoder`.
-        // Render a known otpauth URI into a clean, high-resolution QR bitmap
-        // with the `qrcode` crate, then prove our decoder reads it back
-        // verbatim. This exercises the real `rqrr` detect+decode path end to
-        // end on the exact buffer type the file importer produces.
         {
             let uri = "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme&algorithm=SHA256&digits=8&period=45";
             let luma = render_qr_luma(uri);

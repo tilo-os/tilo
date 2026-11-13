@@ -1,12 +1,10 @@
-//! The thumbnails package as a compute worker receives it.
-//!
-//! The real `tilo-app.toml` and the built `thumbnail-batch`, staged and
-//! packed the way `dist/apps/package-apps.sh` packs every app, give a signed
-//! `.tapp` that reads back and verifies; its manifest offers exactly the
-//! catalogue entrypoint a compute worker requires before it launches
-//! anything; and the packaged binary, run with the command line the worker
-//! gives it over a request staged the way the worker stages one, writes the
-//! very thumbnails the requesting device would have made itself.
+//! The thumbnails package as a compute worker receives it. The real `tilo-app.toml` and the
+//! built `thumbnail-batch`, staged and packed the way `dist/apps/package-apps.sh` packs
+//! every app, give a signed `.tapp` that reads back and verifies; its manifest offers
+//! exactly the catalogue entrypoint a compute worker requires before it launches anything;
+//! and the packaged binary, run with the command line the worker gives it over a request
+//! staged the way the worker stages one, writes the very thumbnails the requesting device
+//! would have made itself.
 
 #![allow(
     clippy::expect_used,
@@ -25,9 +23,7 @@ use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::view::read_manifest;
 use tilo_app_package::{Manifest, SigningIdentity, Verification, pack, tapp, unpack, verify};
 
-/// The manifest Release / apps packs, before it is staged.
 const MANIFEST: &str = include_str!("../tilo-app.toml");
-/// The publisher placeholder the release pipeline replaces with its key.
 const PLACEHOLDER: &str =
     "\"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"";
 
@@ -112,10 +108,9 @@ fn picture(width: u32, height: u32, seed: u8, format: image::ImageFormat) -> Vec
     bytes
 }
 
-/// Run the packaged entrypoint over `inputs` as the compute worker does:
-/// the inputs staged under `inputs/` by digest beside `request.json`, the
-/// command line naming the request and an empty output directory. Returns
-/// the process output and the files written, by name.
+/// Run the packaged entrypoint over `inputs` as the compute worker does: the inputs staged
+/// under `inputs/` by digest beside `request.json`, the command line naming the request and
+/// an empty output directory.
 fn run_job(package: &Unpacked, inputs: &[Vec<u8>]) -> (Output, BTreeMap<String, Vec<u8>>) {
     let job = tempfile::tempdir().unwrap();
     let io_root = job.path().join(".tilo-compute");
@@ -174,13 +169,10 @@ fn entrypoint(package: &Unpacked) -> PathBuf {
 #[test]
 fn the_signed_package_offers_the_entrypoint_a_compute_worker_runs() {
     let package = packaged();
-    // What `ComputeWorker` checks of the installed manifest before it
-    // launches the job, on the manifest the signed root commits to.
     let manifest = read_manifest(&package.manifest).expect("the signed manifest reads");
     assert_eq!(manifest.package_id, PACKAGE);
     assert_eq!(manifest.cli_commands, vec![ENTRYPOINT.to_string()]);
     assert_eq!(manifest.entrypoint.cli_bin(), Some("bin/thumbnail-batch"));
-    // A windowless package with no egress and no services of its own.
     assert_eq!(manifest.kind, "service");
     assert_eq!(manifest.sandbox.net.mode, "off");
     assert!(manifest.sandbox.services.is_empty());

@@ -1,11 +1,8 @@
-//! Content-addressed, immutable sysext layers under `<root>/layers/<sha256>/`.
-//!
-//! A layer is imported into a private staging directory, validated, hashed
-//! and only then renamed into place, so a reader never sees a partial layer
-//! and an interrupted import leaves nothing behind but staging debris.
-//!
-//! `SELinux` labels are part of the layer format: the `label` callback runs
-//! on the staged tree before it is published (see [`crate::apply::Apply::label_layer`]).
+//! Content-addressed, immutable sysext layers under `<root>/layers/<sha256>/`. A
+//! layer is imported into a private staging directory, validated, hashed and only
+//! then renamed into place, so a reader never sees a partial layer. `SELinux`
+//! labels are part of the layer format: the `label` callback runs on the staged
+//! tree before it is published.
 
 use std::fs;
 use std::io::Read;
@@ -17,7 +14,7 @@ use tilo_vm_protocol::{LayerInfo, Provenance};
 use crate::error::DaemonError;
 use crate::fsutil::{self, write_atomic};
 
-/// Top-level trees systemd-sysext merges; anything else is rejected.
+/// Top-level trees `systemd-sysext` merges; anything else is rejected.
 const ALLOWED_TOP: [&str; 2] = ["usr", "opt"];
 
 /// What [`LayerStore::collect`] removed, and what it kept for its age.
@@ -57,11 +54,11 @@ impl LayerStore {
         }
     }
 
-    /// The paths of `hashes` to merge, in order, leaving out the layers
-    /// held on the booted image ([`crate::image::held`]): those stay in the
-    /// store and in their generations, unmerged.
+    /// The paths of `hashes` to merge, in order, leaving out the layers held on the booted image:
+    /// those stay in the store and in their generations, unmerged.
     ///
     /// # Errors
+    ///
     /// [`DaemonError::LayerNotFound`] for a layer that is not in the store.
     pub fn merged_paths(&self, hashes: &[String]) -> Result<Vec<PathBuf>, DaemonError> {
         let held = crate::image::held_hashes(&self.root);
@@ -155,7 +152,7 @@ impl LayerStore {
         Ok(out)
     }
 
-    /// Recompute the canonical identity; directory names alone are not cache proof.
+    /// Recompute the canonical identity: directory names alone are not cache proof.
     pub fn verify(&self, hash: &str) -> Result<LayerInfo, DaemonError> {
         let path = self.require(hash)?;
         if !path.join("usr").is_dir() || tree_hash(&path)? != hash {
@@ -182,8 +179,8 @@ impl LayerStore {
         fsutil::allocated_bytes(&self.layers)
     }
 
-    /// Delete unreferenced layers older than `min_age` (younger ones may be
-    /// an import whose swap has not happened yet). Returns hashes and bytes.
+    /// Delete unreferenced layers older than `min_age`, since younger ones may be an import whose
+    /// swap has not happened yet. Returns hashes and bytes.
     pub fn collect(
         &self,
         referenced: &std::collections::BTreeSet<String>,
@@ -210,7 +207,7 @@ impl LayerStore {
             }
             freed = freed.saturating_add(fsutil::allocated_bytes(&path));
             if !dry_run {
-                // Move out of the store first so no reader sees a half-deleted layer.
+                // Move out of the store first, so no reader sees a half-deleted layer.
                 fs::create_dir_all(&self.staging).map_err(DaemonError::io("create staging"))?;
                 let doomed = self.staging.join(format!("gc-{}", layer.hash));
                 fs::rename(&path, &doomed)
@@ -227,8 +224,8 @@ impl LayerStore {
         })
     }
 
-    /// Every file and symlink the layer adds, sorted by path, with the
-    /// SHA-256 of each regular file; the importer's own metadata is left out.
+    /// Every file and symlink the layer adds, sorted by path, with the SHA-256 of each regular
+    /// file; the importer's own metadata is left out.
     pub fn files(&self, hash: &str) -> Result<Vec<LayerFile>, DaemonError> {
         let root = self.require(hash)?;
         let entries = layer_hash::entries(&root).map_err(layer_error("list layer"))?;
@@ -276,17 +273,15 @@ impl LayerStore {
         let target = self.path(&hash);
         if target.is_dir() {
             self.verify(&hash)?;
-            // The same bytes packed again from another tree: a rebuild that
-            // came out identical because nothing of the component changed,
-            // while the tree it was built from moved the interface
-            // declaration on. What the store records is the claim of the tree
-            // that packed it, so the newest import replaces the older one; a
-            // generation is judged by it (crate::interfaces).
+            // The same bytes packed again from another tree: a rebuild that came out identical
+            // while the tree it was built from moved the interface declaration on. What the store
+            // records is the claim of the tree that packed it, so the newest import replaces the
+            // older one, and a generation is judged by it.
             record_provenance(&target, provenance)?;
             return Ok((hash, true));
         }
-        // systemd matches `extension-release.<NAME>` against the image name,
-        // which for a directory is its basename: the content hash.
+        // systemd matches `extension-release.<NAME>` against the image name, which for a directory
+        // is its basename: the content hash.
         let release_dir = stage.join(RELEASE_DIR);
         fs::create_dir_all(&release_dir).map_err(DaemonError::io("create extension-release.d"))?;
         let release = format!("ID=_any\nTILO_VM_COMPONENT={}\n", provenance.component);
@@ -343,11 +338,9 @@ fn validate_top(stage: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// SHA-256 over a canonical walk: files and symlinks sorted by path bytes,
-/// each hashed as kind, path and content (file digest or link target). Ownership and
-/// timestamps are ignored; the executable bit is not. The importer's own
-/// outputs (extension-release, provenance) are excluded, so a published
-/// layer hashes to its directory name.
+/// SHA-256 over a canonical walk: files and symlinks sorted by path bytes, each hashed as kind,
+/// path and content. Ownership and timestamps are ignored and the executable bit is not; the
+/// importer's own outputs are excluded, so a published layer hashes to its directory name.
 pub fn tree_hash(root: &Path) -> Result<String, DaemonError> {
     layer_hash::tree_hash(root).map_err(layer_error("hash layer"))
 }

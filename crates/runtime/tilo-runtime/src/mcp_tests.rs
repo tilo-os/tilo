@@ -86,7 +86,7 @@ mod schema_rows {
         pub pinned: bool,
     }
 
-    #[resource(kind = "test.note", label = "Note")]
+    #[resource(kind = "test.note", catalogue = "tests/locales")]
     impl Note {
         /// Rename the note.
         #[action]

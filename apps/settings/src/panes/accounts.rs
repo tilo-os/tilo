@@ -1,32 +1,7 @@
-//! External Accounts pane — one inventory over the canonical account stores
-//! that installed clients consume.
-//!
-//! ## What's wired
-//!
-//! - **Add** and **Edit** use one device-local form for email, `CalDAV`, `WebDAV`,
-//!   and Nextcloud metadata; email setup auto-configures IMAP/SMTP.
-//! - **Sign in again** replaces only the sealed vault credential.
-//! - Google Drive, `OneDrive` and Dropbox connect through `OAuth` in the
-//!   system browser, Nextcloud through Login Flow v2 (an app password minted
-//!   for this device, never a typed password), and `iCloud` Drive with an
-//!   Apple ID and verification code; see `cloud_signin`. A provider without
-//!   a configured client id shows why it cannot be connected instead of
-//!   starting a flow that cannot finish.
-//! - **Remove** is explicitly confirmed, then transactionally clears the
-//!   canonical metadata, sealed credential, and local sync-health record.
-//! - **Sync now**, **Pause sync** and **Resume sync** reach a file account's
-//!   mount through the cloud account service (`cloud_control`), offered
-//!   exactly while the service lists the account as mounted.
-//!
-//! ## Live vs. sample
-//!
-//! Production loads the configured stores and renders an empty state when none
-//! are available.
-//! Screenshot and widget tests may inject [`crate::accounts::sample_directory`]
-//! explicitly; those rows are labelled examples and omit mutation controls.
-//!
-//! Connection checks run asynchronously through bounded, protocol-level
-//! probes. No form draft or credential is written to collaborative state.
+//! External Accounts: one inventory over the canonical account stores that
+//! installed clients consume. Accounts are added and edited in one device-local
+//! form; removing one clears its metadata, its sealed credential and its sync
+//! record together.
 
 use std::rc::Rc;
 
@@ -81,22 +56,16 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`AccountsArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AccountsArea> {
     app.areas().find()
 }
 
-/// The External Accounts page as view code over the area's model: built
-/// again whenever what it shows changes ([`AccountsArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
-    // What finished while no page showed the model is taken in before the
-    // page is built.
     let _ = model.borrow_mut().poll();
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
-// Drives the FUSE-backed cloud service, which exists only on Linux.
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
@@ -104,16 +73,19 @@ mod cloud_import_acceptance;
 #[cfg(test)]
 mod signin_tests;
 
-/// Adding, editing, checking and removing the person's external accounts.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
     /// Forget one selected website account through the browser, including its local lease.
     #[effect(row, job, returns, destructive)]
-    RemoveBrowserServiceSession { session_id: String },
+    RemoveBrowserServiceSession {
+        session_id: String,
+    },
     /// Discover only ordinary account metadata from a granted prefs.js path.
     #[effect(job, returns, kind = "read")]
-    DiscoverThunderbirdAccounts { prefs: String },
+    DiscoverThunderbirdAccounts {
+        prefs: String,
+    },
     /// Choose ordinary Thunderbird prefs through the existing file portal.
     #[effect(attended, job, returns, kind = "read")]
     ChooseThunderbirdMetadata,
@@ -130,16 +102,23 @@ pub enum AccountsEffect {
     },
     /// Import only selected configuration as pending sign-in metadata.
     #[effect(job, returns, idempotent)]
-    CommitThunderbirdImport { revision: u64 },
+    CommitThunderbirdImport {
+        revision: u64,
+    },
     /// Discard the metadata review and fence unfinished discovery callbacks.
     #[effect(view)]
     CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
     #[effect(row, idempotent)]
-    SetBrowserIdentityEnabled { account: String, enabled: bool },
+    SetBrowserIdentityEnabled {
+        account: String,
+        enabled: bool,
+    },
     /// Remove browser picker metadata; this does not revoke sign-in or access.
     #[effect(row, destructive)]
-    RemoveBrowserIdentity { account: String },
+    RemoveBrowserIdentity {
+        account: String,
+    },
     /// Publish the signed-in Tilo identity's public browser connection metadata.
     #[effect(idempotent)]
     PublishBrowserIdentity {
@@ -193,13 +172,18 @@ pub enum AccountsEffect {
     SaveAccountForm,
     /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
     #[effect(row, label = "accounts-nextcloud-calendars")]
-    ConnectNextcloudCalendars { account: String },
+    ConnectNextcloudCalendars {
+        account: String,
+    },
     /// Read the discovered, secret-free calendar choices for the current form.
     #[effect(returns, kind = "read")]
     InspectCalendarChoices,
     /// Select a discovered collection before saving this account.
     #[effect(view)]
-    SelectCalendar { href: String, selected: bool },
+    SelectCalendar {
+        href: String,
+        selected: bool,
+    },
     /// Select the services on the open provider connection form.
     #[effect(view)]
     SelectAccountServices {
@@ -208,12 +192,10 @@ pub enum AccountsEffect {
         #[param("Files mode: sync or import")]
         files_mode: String,
     },
-    /// Compatibility action requesting both Google services.
     ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
     CancelAccountForm,
-    /// Check and save the password typed to sign an account in again.
     SaveNewPassword,
     /// Close the sign-in-again form without saving.
     #[effect(view)]
@@ -251,10 +233,9 @@ pub enum AccountsEffect {
     },
     /// Recover an interrupted Files mode change after closing the connection form.
     #[effect(row, job, idempotent, label = "accounts-recover-mode")]
-    RecoverCloudMode { account: String },
-    /// Link your account with a service this workspace is connected to (a
-    /// Discord server it bridges): the page goes to the service's consent
-    /// page, which comes back here linked.
+    RecoverCloudMode {
+        account: String,
+    },
     LinkService {
         #[param("The connector's app id")]
         app: String,
@@ -265,21 +246,16 @@ pub enum AccountsEffect {
         #[param("The connector's app id")]
         app: String,
     },
-    /// Link the account a link from the service offers (Discord's /link).
     AcceptService {
         #[param("The connector's app id")]
         app: String,
     },
-    /// Turn down the account a link from the service offers.
     DeclineService {
         #[param("The connector's app id")]
         app: String,
     },
 }
 
-/// Answer `effect` on the area's model; a connection check runs on a
-/// worker, and what changes the credential vault answers once the vault
-/// took it, in turn with the account changes under way (`vault_lane`).
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AccountsEffect,
@@ -363,8 +339,6 @@ pub(crate) fn answer(
     answer_model(app, effect, cx)
 }
 
-/// Answer an effect of the Thunderbird import review on `model`, or hand
-/// `effect` back when it is not one.
 fn answer_import(
     model: &mut AccountsPane,
     effect: AccountsEffect,
@@ -513,7 +487,6 @@ fn commit_thunderbird_import(
     revision: u64,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    // No account work under way: answered at once, as before.
     if model.lane.is_idle() {
         let root = model.account_root.clone();
         let result = model.import_review.commit(&root, revision)?;
@@ -571,8 +544,6 @@ fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
     outcome.map(Effected::value)
 }
 
-/// Send `request` to the cloud account service on a worker; the pane asks
-/// the service for its mounts again once it answered.
 fn cloud(
     app: &SettingsApp,
     model: std::cell::RefMut<'_, AccountsPane>,
@@ -596,38 +567,20 @@ fn cloud(
     ))
 }
 
-/// What the External Accounts area keeps for the window: the model, read
-/// when first needed.
 pub struct AccountsArea {
-    /// The sample accounts and form a screenshot shows; `None` in a live
-    /// window.
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
-    /// The person's accounts with the services the workspace is connected
-    /// to, when the host lent them.
     linked: ui::linked_accounts::LinkedAccounts,
     pub(crate) remote: ui::RemoteActions,
     removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
-    /// The session's account custody on this window's route; `None` outside a session.
     custody: Option<ui::collaboration::browser_service_sessions::Client>,
-    /// An email account being added ([`add_email`]).
     adding: std::cell::RefCell<Option<add_email::AddingEmail>>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AccountsPane>>>,
     account_root: Option<AccountRoot>,
-    /// The credential vault, its custody and the sync statuses, opened off
-    /// the UI thread after the window's first frame ([`Self::start_read`]).
     pub(crate) read: crate::device_read::DeviceRead<AccountsRead>,
-    /// The linked accounts' revision the pane last showed.
     linked_seen: std::cell::Cell<u64>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
-/// What the External Accounts area opens of the device: the credential
-/// vault (a Secret Service round trip for its custody and key), the
-/// custodian (an HTTP client for iCloud sign-in) and the accounts' sync
-/// statuses. Opened off the UI thread; the person's directory, which a
-/// host's record may hold, is read on the UI thread
-/// ([`AccountsPane::from_read`]).
 pub(crate) struct AccountsRead {
     statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
@@ -635,7 +588,6 @@ pub(crate) struct AccountsRead {
 }
 
 impl AccountsRead {
-    /// Open the stores under `root`.
     fn of(root: &AccountRoot) -> Self {
         Self {
             statuses: root.statuses(),
@@ -644,8 +596,6 @@ impl AccountsRead {
         }
     }
 
-    /// Open the stores under the config root `explicit`, or the user's: the
-    /// same stores as the root's, whose person's record none of them read.
     fn under(explicit: Option<std::path::PathBuf>) -> Self {
         Self::of(&explicit.map_or_else(AccountRoot::live, AccountRoot::at))
     }
@@ -668,8 +618,6 @@ impl AccountsArea {
         }
     }
 
-    /// The area holding `pane` as its model, its linked accounts the
-    /// window's unless `pane` was given its own.
     #[cfg(test)]
     pub(crate) fn holding(cx: &AreaContext, mut pane: AccountsPane) -> Self {
         let area = Self::new(cx);
@@ -680,9 +628,6 @@ impl AccountsArea {
         area
     }
 
-    /// Open the vault, the custodian and the statuses off the UI thread;
-    /// `false` when they have been opened or are being opened, or for a
-    /// screenshot, which opens none of them.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() || self.scene.is_some() {
             return false;
@@ -699,8 +644,6 @@ impl AccountsArea {
         self
     }
 
-    /// The model over the person's accounts; a screenshot shows the sample
-    /// accounts and the form its scene asks for.
     pub fn model(&self) -> &Rc<std::cell::RefCell<AccountsPane>> {
         self.model.get_or_init(|| {
             let scene = self.scene.as_deref();
@@ -720,16 +663,11 @@ impl AccountsArea {
                     None => AccountsPane::recovered_in(root, None),
                 }
             } else {
-                // Nothing was read, or an interrupted mutation is recovered
-                // first, which may rewrite the vault read: the vault is
-                // opened again, off the UI thread.
                 AccountsPane::recovered_in(root, read.map(|read| read.custodian))
             };
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
                 model = model.with_open_form_for_shot(kind);
             }
-            // Where the person stands with each connected service is asked
-            // of the workspace's host; the pane shows it once answered.
             self.linked.refresh();
             Rc::new(std::cell::RefCell::new(
                 model.with_linked(self.linked.clone()),
@@ -737,8 +675,6 @@ impl AccountsArea {
         })
     }
 
-    /// Take in finished checks and sign-in steps, if the model exists, and
-    /// move what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         self.remote.poll();
         self.follow_linked();
@@ -763,8 +699,6 @@ impl AccountsArea {
         }
     }
 
-    /// Whether a check, a sign-in or vault work is under way, so the window
-    /// keeps polling for it.
     fn busy(&self) -> bool {
         let pane = |model: &Rc<std::cell::RefCell<AccountsPane>>| {
             model.try_borrow().is_ok_and(|pane| pane.busy())
@@ -772,13 +706,10 @@ impl AccountsArea {
         self.adding.borrow().is_some() || self.model.get().is_some_and(pane)
     }
 
-    /// The person's accounts with the services the workspace is connected to.
     pub(crate) fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
         &self.linked
     }
 
-    /// Show the linked accounts again when the workspace's host answered
-    /// something new about them.
     fn follow_linked(&self) {
         let revision = self.linked.revision();
         if self.linked_seen.replace(revision) != revision
@@ -788,21 +719,16 @@ impl AccountsArea {
         }
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per account, offering what can be done to it.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         if model.is_sample {
             return Vec::new();
         }
         let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
-        // The person's accounts are read once for every row, not per row.
         let store = model.account_root.store();
         let mut published: Vec<LiveRow> = AccountKind::ALL
             .into_iter()
@@ -888,8 +814,6 @@ impl AccountsArea {
     }
 }
 
-/// The browser's website sessions, and when the file they came from was
-/// last changed.
 type SessionsRead = Option<(Option<std::time::SystemTime>, Vec<accounts::Account>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -904,12 +828,9 @@ pub enum AccountViewCommand {
     CancelReauthentication,
 }
 
-/// The account form's fields, as checked and then committed.
 struct AccountDraft {
     kind: AccountKind,
-    /// The account being edited; `None` adds a new one.
     existing_id: Option<String>,
-    /// The id a new account takes once its draft has been checked.
     assigned_id: Option<accounts::AccountId>,
     name: String,
     identity: String,
@@ -918,11 +839,8 @@ struct AccountDraft {
     password: String,
 }
 
-/// What takes in how a piece of account work in the lane ended, and says
-/// what comes next.
 type Settle = Box<dyn FnOnce(&mut AccountsPane, Result<(), String>) -> Step>;
 
-/// What removing an account changed, to finish or roll back.
 struct Removal {
     id: accounts::AccountId,
     original_store: accounts::AccountStore,
@@ -931,7 +849,6 @@ struct Removal {
     original_secret: Option<accounts::Secret>,
 }
 
-/// Why the sample's accounts offer no removal.
 const SAMPLE_NOT_REMOVABLE: &str = "example accounts cannot be removed";
 
 struct ProbeJob<T = String> {
@@ -967,40 +884,22 @@ impl Default for AccountsPane {
     }
 }
 
-/// The person's external accounts as the pane shows them, with the forms
-/// and sign-ins in progress.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent state of the pane's forms and vault work, never a parameter"
 )]
 pub struct AccountsPane {
-    /// The person's accounts with the services the workspace is connected to,
-    /// as the window this model serves was lent them; none for a model a
-    /// test drives directly.
     linked: Option<ui::linked_accounts::LinkedAccounts>,
     account_root: AccountRoot,
-    /// The revision of the person's accounts last shown, so an edit from
-    /// another window or device is shown too.
     seen_accounts: Option<u64>,
-    /// The browser's website sessions as last read, with the modification
-    /// time of the file they were read from.
     sessions_read: std::cell::RefCell<SessionsRead>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
-    /// The credential vault as last opened, for where it keeps
-    /// credentials; `None` until it first opened.
     vault: Option<accounts::SecretVault>,
-    /// The vault being opened again on a worker; a later opening replaces
-    /// an earlier one.
     vault_opening: Option<crate::device_read::Landing>,
-    /// Which Mail accounts custody holds an `OAuth` grant for, read on a
-    /// worker: each asks the Secret Service for the vault.
     mail_grants: MailGrants,
-    /// The vault work queued and running, in order.
     lane: vault_lane::VaultLane,
-    /// A reload waits in the lane.
     reload_queued: bool,
-    /// Whether `dir` is the illustrative sample (the real stores are empty).
     is_sample: bool,
     form_kind: Option<AccountKind>,
     form_error: Option<String>,
@@ -1016,31 +915,21 @@ pub struct AccountsPane {
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob<Vec<tilo_dav::discovery::CalendarCollection>>>,
     calendar_choices: Vec<(tilo_dav::discovery::CalendarCollection, bool)>,
-    /// Canonical Nextcloud metadata only; its credential stays under this ID.
     calendar_source: Option<accounts::Account>,
     // Private discovery baseline: never published into the resource tree.
     calendar_baseline: Option<(Option<accounts::Account>, Option<accounts::Secret>)>,
     form_candidate: Option<AccountDraft>,
-    /// The form's draft is read against the vault or saved to it.
     form_saving: bool,
-    /// Which opening of the form the work under way serves: work for a
-    /// form since cancelled or replaced shows nothing in the new one.
     form_round: u64,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
-    /// The sign-in-again password is read against the vault or saved to it.
     reauth_saving: bool,
-    /// As `form_round`, for the sign-in-again form.
     reauth_round: u64,
-    /// A running browser or Apple ID sign-in.
     sign_in: Option<cloud_signin::SignInFlow>,
-    /// A completed sign-in is being saved.
     sign_in_saving: bool,
-    /// As `form_round`, for the sign-in.
     sign_in_round: u64,
     custodian: account_custody::Custodian,
     opener: std::sync::Arc<dyn BrowserOpener>,
-    /// The file accounts the cloud service has mounted.
     cloud: CloudMounts,
     browser_removal_error: Option<String>,
     browser_removal_pending: bool,
@@ -1049,7 +938,6 @@ pub struct AccountsPane {
 }
 
 impl AccountsPane {
-    /// The live pane over the person's account stores.
     #[must_use]
     pub fn new() -> Self {
         Self::in_root(AccountRoot::live())
@@ -1059,21 +947,12 @@ impl AccountsPane {
     /// vault opened here: never on the UI thread, where the window builds
     /// its pane from what the area read off it.
     pub fn in_root(account_root: AccountRoot) -> Self {
-        // Loading the directory first recovers an interrupted mutation,
-        // which may rewrite the vault the read then opens.
         let dir = AccountDirectory::load_in(&account_root);
         let read = AccountsRead::of(&account_root);
         Self::from_read(account_root, dir, read)
     }
 
-    /// The live pane over the account stores under `account_root`, showing
-    /// `dir` and holding what `read` opened.
     fn from_read(account_root: AccountRoot, dir: AccountDirectory, read: AccountsRead) -> Self {
-        // The live pane shows the *real* stores — empty until the user adds an
-        // account. It never substitutes illustrative sample accounts: showing
-        // fabricated `ada@example.com` rows would present made-up data on an
-        // empty state. The deterministic `--shots`/tests use
-        // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
             sync_statuses: read.statuses,
             vault: Some(read.vault),
@@ -1082,9 +961,6 @@ impl AccountsPane {
         }
     }
 
-    /// The live pane over the account stores under `account_root`, an
-    /// interrupted mutation recovered first: the vault opens off the UI
-    /// thread, and `custodian`, when one was opened, is used.
     fn recovered_in(
         account_root: AccountRoot,
         custodian: Option<account_custody::Custodian>,
@@ -1100,9 +976,6 @@ impl AccountsPane {
         pane
     }
 
-    /// The pane showing `dir` over `account_root`, holding nothing it read
-    /// of the device: no sync statuses, no vault, the service asked for no
-    /// mounts.
     fn over(
         account_root: AccountRoot,
         dir: AccountDirectory,
@@ -1158,16 +1031,10 @@ impl AccountsPane {
         }
     }
 
-    /// Test / `--shots` constructor over an explicit directory. `is_sample`
-    /// controls whether Remove buttons render (real accounts) or not
-    /// (illustration).
     pub fn from_dir(dir: AccountDirectory, is_sample: bool) -> Self {
         Self::from_dir_in(AccountRoot::live(), dir, is_sample)
     }
 
-    /// [`Self::from_dir`] whose edits persist under `account_root`. The
-    /// vault, which only says where credentials are kept here, opens off
-    /// the UI thread.
     pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
         let custodian = account_root.custodian();
         let mut pane = Self::over(account_root, dir, is_sample, custodian);
@@ -1175,7 +1042,6 @@ impl AccountsPane {
         pane
     }
 
-    /// Know the cloud service's mounts from `cloud` (tests).
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_cloud_mounts(mut self, cloud: CloudMounts) -> Self {
@@ -1195,8 +1061,6 @@ impl AccountsPane {
         &self.dir
     }
 
-    /// Harness seam for exercising vault persistence without ever placing a
-    /// credential in the Automerge document.
     #[doc(hidden)]
     pub fn set_form_password_for_test(&self, password: &str) {
         self.form_password.set(password.to_string());
@@ -1219,12 +1083,6 @@ impl AccountsPane {
     /// submission settles: either calendar selection is ready or the account
     /// is saved. Returns false on failure; a ready calendar review is not a
     /// saved account.
-    ///
-    /// A submission is three steps (opening the vault, the probe, the save),
-    /// and only the probe has a production deadline, so waiting out the
-    /// probe's deadline gave up on a busy machine while the vault was still
-    /// opening. `bound` is the caller's hang bound: the pane itself decides
-    /// whether the submission failed.
     #[doc(hidden)]
     pub fn finish_form_submission_for_test(&mut self, bound: std::time::Duration) -> bool {
         let deadline = ui::time::now() + bound;
@@ -1248,15 +1106,12 @@ impl AccountsPane {
         !self.form_open()
     }
 
-    /// The model shown with `linked`, the workspace's connected services.
     #[must_use]
     pub(crate) fn with_linked(mut self, linked: ui::linked_accounts::LinkedAccounts) -> Self {
         self.linked = Some(linked);
         self
     }
 
-    /// `button`, invoking `effect` through the page's actions: on the
-    /// account's row for a row effect, else on the window.
     fn bound(cx: &ViewCx<Settings>, button: Button, effect: AccountsEffect) -> Button {
         match Self::row_effect_binding(cx, effect) {
             Some(binding) => button.bind_action(binding),
@@ -1264,7 +1119,6 @@ impl AccountsPane {
         }
     }
 
-    /// The account a row effect acts on; `None` for an effect of the page.
     fn row_account(effect: &AccountsEffect) -> Option<&String> {
         match effect {
             AccountsEffect::EditAccount { account }
@@ -1314,15 +1168,12 @@ impl AccountsPane {
         self
     }
 
-    /// Use `custodian` for cloud sign-ins (tests point it at a fake
-    /// provider; builds link an iCloud provider through it).
     #[must_use]
     pub fn with_custodian(mut self, custodian: account_custody::Custodian) -> Self {
         self.custodian = custodian;
         self
     }
 
-    /// Open sign-in pages with `opener` instead of the desktop portal.
     #[must_use]
     pub fn with_browser_opener(mut self, opener: std::sync::Arc<dyn BrowserOpener>) -> Self {
         self.opener = opener;
@@ -1367,9 +1218,6 @@ impl AccountsPane {
         }
     }
 
-    /// Block until the running sign-in step reports, then apply it exactly
-    /// as `sync` would, and wait for a completed sign-in to be saved.
-    /// Returns whether a step reported before `timeout`.
     #[doc(hidden)]
     pub fn finish_sign_in_step_for_test(&mut self, timeout: std::time::Duration) -> bool {
         let reported = if let Some(flow) = self.sign_in.as_mut()
@@ -1379,10 +1227,8 @@ impl AccountsPane {
             self.poll_sign_in();
             reported
         } else {
-            // No step runs: the sync that started it already took it in.
             true
         };
-        // A completed sign-in is saved through the vault on a worker.
         self.settle_lane();
         reported
     }
@@ -1473,7 +1319,6 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    /// Take in how saving the sign-in of `round` ended.
     fn sign_in_saved(&mut self, round: u64, saved: Result<accounts::AccountId, String>) -> Step {
         let current = round == self.sign_in_round;
         if current {
@@ -1483,7 +1328,6 @@ impl AccountsPane {
             Ok(id) => {
                 if current && let Some(flow) = self.sign_in.as_mut() {
                     flow.finish_async(id);
-                    // A non-mode-changing sign-in finishes immediately.
                     if let Some(id) = flow.take_saved() {
                         self.publish_signed_in(id);
                     }
@@ -1503,7 +1347,6 @@ impl AccountsPane {
 
     fn publish_signed_in(&mut self, id: accounts::AccountId) {
         let custodian = self.custodian.clone();
-        // Credential publication may renew a session over the network.
         let _ = crate::device_read::thread(
             "settings-accounts-worker",
             Box::new(move || {
@@ -1517,10 +1360,6 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    /// Update the open, idle connection form's service choices without starting sign-in.
-    ///
-    /// Uses the same validation as the `select-account-services` action; `mode`
-    /// must be `sync` or `import`.
     pub fn select_account_services(
         &mut self,
         files: bool,
@@ -1551,9 +1390,6 @@ impl AccountsPane {
         Ok(())
     }
 
-    /// The accounts a completed sign-in saves, the signed-in one first: its
-    /// metadata over the stored envelope it signs in again, or a new one,
-    /// and the Gmail account granted with it, which shares its credential.
     fn signed_in_accounts(
         account_root: &AccountRoot,
         completed: &cloud_signin::Completed,
@@ -1656,7 +1492,6 @@ impl AccountsPane {
         Ok((stored, granted))
     }
 
-    /// Exercise the ordinary sign-in transaction synchronously in a test.
     #[cfg(test)]
     fn save_signed_in(
         account_root: &AccountRoot,
@@ -1672,7 +1507,6 @@ impl AccountsPane {
         Ok(id)
     }
 
-    /// Seed the ordinary add surface for a deterministic acceptance capture.
     #[must_use]
     pub(crate) fn with_open_form_for_shot(mut self, kind: AccountKind) -> Self {
         if kind.signs_in() {
@@ -1756,8 +1590,6 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    /// A new opening of the account form: work still under way for an
-    /// earlier one shows nothing in it.
     fn next_form_round(&mut self) {
         self.form_round = self.form_round.wrapping_add(1);
         self.form_saving = false;
@@ -1765,7 +1597,6 @@ impl AccountsPane {
         self.form_candidate = None;
     }
 
-    /// Take `command`, as the pane's buttons and their effects ask.
     pub fn command(&mut self, command: AccountViewCommand) {
         if matches!(
             &command,
@@ -1796,7 +1627,6 @@ impl AccountsPane {
                 self.changed = true;
             }
             Some(AccountViewCommand::Submit) if self.sign_in.is_some() => {
-                // A completed sign-in being saved is not started again.
                 if !self.sign_in_saving
                     && let Some(flow) = self.sign_in.as_mut()
                 {
@@ -1813,8 +1643,6 @@ impl AccountsPane {
         }
     }
 
-    /// "Sign in again": a new browser / Apple ID sign-in for accounts that
-    /// sign in, a replacement password otherwise.
     fn open_reauthentication(&mut self, id: String) {
         let stored = self
             .account_root
@@ -1859,7 +1687,6 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    /// A new opening of the sign-in-again form, as [`Self::next_form_round`].
     fn next_reauth_round(&mut self) {
         self.reauth_round = self.reauth_round.wrapping_add(1);
         self.reauth_saving = false;
@@ -1875,8 +1702,6 @@ impl AccountsPane {
         self.form_password.set(String::new());
     }
 
-    /// The page as the model shows the person's accounts now, its controls
-    /// bound to `cx`'s actions.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let mut panel: Vec<SettingsSection> = Vec::new();
 
@@ -1889,17 +1714,12 @@ impl AccountsPane {
             intro.push(note(&t("accounts-vault-local")));
         }
         if self.is_sample {
-            // Be honest that the visible rows are an illustration, not real
-            // connected accounts — the store is empty until you add one.
             intro.push(note(&t("accounts-empty-sample")));
         } else if self.dir.is_empty() {
-            // The live empty state: honest, no fabricated rows.
             intro.push(note(&t("accounts-empty")));
         }
         panel.push(untitled(rows(intro)));
 
-        // Adding an account opens its form where "Add account" was, under
-        // the person's pointer; signing an account in again stays on top.
         let adding = match &self.sign_in {
             Some(flow) if !flow.renews_an_account() => {
                 Some(flow.section(&|button, effect| Self::bound(cx, button, effect)))
@@ -1954,7 +1774,6 @@ impl AccountsPane {
     }
 
     fn browser_service_sessions(&self) -> Vec<accounts::Account> {
-        // These are device-bound selections, not public identity-picker records.
         if self.is_sample {
             return Vec::new();
         }
@@ -2009,10 +1828,6 @@ impl AccountsPane {
         section(&t("accounts-browser-sessions-title"), rows(body))
     }
 
-    /// The person's accounts with the services this workspace is connected
-    /// to (a Discord server it bridges), as the profile card shows them:
-    /// connect one, confirm one a link offers, or unlink it. `None`
-    /// where the workspace is connected to none.
     fn linked_accounts_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
         let accounts = self.linked.as_ref()?.accounts();
         if accounts.is_empty() {
@@ -2160,8 +1975,6 @@ impl AccountsPane {
         section(&t("accounts-browser-identity-title"), rows(body))
     }
 
-    /// The services an account can be added for, one row each: choosing
-    /// one opens its form.
     fn add_account_card(cx: &ViewCx<Settings>) -> SettingsSection {
         let providers = AccountKind::ALL
             .into_iter()
@@ -2260,7 +2073,6 @@ impl AccountsPane {
         rows(body)
     }
 
-    /// One broker-routed contract shared by the painted button and account row.
     fn files_handoff(&self, view: &AccountView) -> Option<ui::tilo_actions::ActionSpec> {
         if !self.may_hand_off_files(view) {
             return None;
@@ -2268,8 +2080,6 @@ impl AccountsPane {
         self.files_handoff_in(&self.account_root.store(), view)
     }
 
-    /// Whether `view`'s account can bring files at all, before its stored
-    /// configuration is read.
     fn may_hand_off_files(&self, view: &AccountView) -> bool {
         !self.is_sample
             && view.enabled
@@ -2277,8 +2087,6 @@ impl AccountsPane {
                 || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud))
     }
 
-    /// [`Self::files_handoff`] reading the account from `store`, for a caller
-    /// that reads the store once for many accounts.
     fn files_handoff_in(
         &self,
         store: &accounts::AccountStore,
@@ -2339,11 +2147,6 @@ impl AccountsPane {
         )
     }
 
-    /// One account: label + connection summary, status, and a Remove button
-    /// (only for real accounts — sample rows are illustrative).
-    ///
-    /// Sample rows report an "Example" status; they do not represent a live
-    /// connection.
     fn account_row(&self, cx: &ViewCx<Settings>, view: &AccountView) -> Item {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
@@ -2383,9 +2186,6 @@ impl AccountsPane {
                 )
             };
 
-        // Identity and health lead; what is worth knowing sits under the
-        // name, the files the account brings is the row's one button, and
-        // every other thing to do with it is in its menu.
         let mut tags: Vec<(String, StatusTone)> = Vec::new();
         if view.kind.best_effort() {
             tags.push((t("accounts-best-effort"), StatusTone::Neutral));
@@ -2402,12 +2202,7 @@ impl AccountsPane {
                 mount.map(|mount| mount.paused),
                 &mut details,
             ));
-            entries.extend(Self::account_maintenance_entries(
-                view,
-                runtime.is_some_and(|status| {
-                    status.health == accounts::AccountSyncHealth::NeedsAuthentication
-                }),
-            ));
+            entries.extend(Self::account_maintenance_entries(view));
         }
         let label = self.account_row_label(view, &mut details);
         let menu = (!entries.is_empty()).then(|| {
@@ -2508,44 +2303,15 @@ impl AccountsPane {
     /// What the account's menu offers to keep it working: edit it, sign in
     /// again, check it, and remove it. Each entry runs the account row's own
     /// action, so the host admits it as it does a button.
-    fn account_maintenance_entries(view: &AccountView, needs_sign_in: bool) -> Vec<AccountEntry> {
+    fn account_maintenance_entries(view: &AccountView) -> Vec<AccountEntry> {
         let mut actions = Vec::new();
-        let service_label = |action: String| {
-            let service = if view.kind == AccountKind::Mail {
-                Some(t("accounts-service-mail"))
-            } else if view.kind.is_cloud_storage()
-                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud)
-            {
-                Some(t("accounts-service-files"))
-            } else {
-                None
-            };
-            service.map_or_else(
-                || action.clone(),
-                |service| {
-                    t_args(
-                        "accounts-service-action",
-                        &[
-                            ("action", action.clone().into()),
-                            ("service", service.into()),
-                        ],
-                    )
-                },
-            )
-        };
-        let reauth_label = if view.kind == AccountKind::ICloudDrive && needs_sign_in {
-            t("accounts-reauth-icloud")
-        } else {
-            t("accounts-reauth")
-        };
-        let reauth_label = service_label(reauth_label);
-        let edit = service_label(t("accounts-edit"));
+        let reauth_label = t("accounts-reauth");
+        let edit = t("accounts-edit");
         let check = if view.kind == AccountKind::Mail {
             t("accounts-check-server")
         } else {
             t("accounts-verify")
         };
-        let check = service_label(check);
         let remove = t(if view.kind == AccountKind::Mail {
             "accounts-disconnect-mail"
         } else if view.kind.is_cloud_storage()
@@ -2594,7 +2360,6 @@ impl AccountsPane {
                 .is_some_and(|status| status.health == accounts::AccountSyncHealth::Error)
     }
 
-    /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
     #[allow(
         clippy::too_many_lines,
         reason = "the form declares every credential field and accessibility label in one reviewable surface"
@@ -2718,7 +2483,6 @@ impl AccountsPane {
                         ))
                     });
                 }
-                fields.push(note(&t("accounts-form-caption")));
                 fields.push(buttons);
                 fields
             }),
@@ -2788,15 +2552,11 @@ impl AccountsPane {
         self.reopen_vault();
     }
 
-    /// Open the vault again on a worker. What the pane shows of it, where
-    /// it keeps credentials, changes nothing, so this waits for no other
-    /// vault work; [`Self::poll`] takes it in.
     fn reopen_vault(&mut self) {
         let vault = self.account_root.vault_opener();
         self.vault_opening = Some(crate::device_read::Landing::start(move || vault.open()));
     }
 
-    /// Take in the vault a worker opened again.
     fn poll_vault_opening(&mut self) {
         let Some(opening) = &self.vault_opening else {
             return;
@@ -2813,8 +2573,6 @@ impl AccountsPane {
         }
     }
 
-    /// Take in the Mail grants a worker read, and read them again when the
-    /// Mail accounts or the vault changed since they were asked for.
     fn poll_mail_grants(&mut self) {
         if let Some(reading) = &self.mail_grants.reading {
             match reading.poll::<std::collections::BTreeSet<String>>() {
@@ -3010,8 +2768,6 @@ impl AccountsPane {
         Ok(stored)
     }
 
-    /// The credential account `id` is checked and saved with: the one
-    /// `vault` holds, its password replaced by a typed `password`.
     fn prepare_secret(
         vault: &accounts::SecretVault,
         id: &accounts::AccountId,
@@ -3034,12 +2790,6 @@ impl AccountsPane {
         Ok(secret)
     }
 
-    /// Commit a draft after its protocol probe succeeds: rebuilt over the
-    /// latest canonical envelope to preserve concurrent/newer fields, its
-    /// credential read from the vault on a worker, then journalled and
-    /// saved ([`Self::commit_then`]). A typed `WebDAV` or Nextcloud
-    /// password reaches the storage daemon before `settle` takes how it
-    /// ended. Runs in the lane.
     fn save_draft_then(&mut self, draft: AccountDraft, settle: Settle) -> Step {
         let stored = match Self::prepare_metadata(&self.account_root, &draft) {
             Ok(stored) => stored,
@@ -3063,8 +2813,6 @@ impl AccountsPane {
                         if committed.is_err() || !publishes {
                             return settle(pane, committed);
                         }
-                        // Replace the daemon's Basic credential right away rather
-                        // than after its next rejected request.
                         Step::vault(
                             move |vault| {
                                 if let Err(error) = vault.custodian().publish(&id, false) {
@@ -3170,16 +2918,12 @@ impl AccountsPane {
         )
     }
 
-    /// The metadata half of [`Self::commit_then`]; `previous` is what the
-    /// vault held for each account whose credential was written.
     fn commit_metadata(
         &mut self,
         stored: Vec<accounts::Account>,
         previous: PreviousSecrets,
         settle: Settle,
     ) -> Step {
-        // Over the accounts as they are now: an edit that reached the
-        // person's record while the vault was written is kept.
         let before = self.account_root.store();
         let mut shared = before.clone();
         for account in stored {
@@ -3189,14 +2933,9 @@ impl AccountsPane {
             let finished = finish_or_recover(&self.account_root, "account save");
             return settle(self, finished);
         };
-        // A live record publishes each edit before projecting it to disk:
-        // put its metadata back too, and keep the journal if that fails.
         let metadata_rollback = self.account_root.save_store(&before);
         warn!(target: "tilo::settings", op = "account_store_save", %error, "failed to persist account metadata");
         let failed = format!("could not persist account: {error}");
-        // Once the credentials are back as they were (or that failed),
-        // the mutation ends; the journal stays when a rollback failed, so
-        // the next load rolls the rest back.
         let rolled_back = move |pane: &mut Self, credentials: Result<(), String>| {
             if let Err(rollback) = credentials {
                 return settle(
@@ -3237,8 +2976,6 @@ impl AccountsPane {
         )
     }
 
-    /// Commit `accounts` with their credentials as a sign-in does, waiting
-    /// for the vault work: for a test, off the UI thread.
     #[cfg(test)]
     fn commit_accounts(
         account_root: &AccountRoot,
@@ -3266,8 +3003,6 @@ impl AccountsPane {
             .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
     }
 
-    /// Remove the account `id`, its credential and its sync record, in turn
-    /// with the vault work under way; `done` takes how it ended.
     pub(crate) fn remove_then(
         &mut self,
         id: &str,
@@ -3293,8 +3028,6 @@ impl AccountsPane {
         });
     }
 
-    /// Journal the removal of `account_id`, then drop its credential on a
-    /// worker. Runs in the lane.
     fn removal(&mut self, account_id: accounts::AccountId, settle: Settle) -> Step {
         let root = &self.account_root;
         let original_store = root.store();
@@ -3344,14 +3077,10 @@ impl AccountsPane {
         )
     }
 
-    /// The metadata half of [`Self::removal`], once the credential is gone.
     fn removal_metadata(&mut self, removal: Removal, settle: Settle) -> Step {
         let root = &self.account_root;
-        // Over the accounts as they are now: an edit that reached the
-        // person's record while the vault was written is kept.
         let mut updated_store = root.store();
         updated_store.remove(&removal.id);
-        // Removing Mail is an explicit disconnect, not an implicit grant rewrite.
         let linked: Vec<_> = updated_store
             .all()
             .iter()
@@ -3547,8 +3276,6 @@ impl AccountsPane {
         }
     }
 
-    /// Check `account` with `secret` on a worker; `draft` is saved once the
-    /// server accepted it.
     fn start_form_probe(
         &mut self,
         draft: AccountDraft,
@@ -3626,7 +3353,6 @@ impl AccountsPane {
         self.changed = true;
     }
 
-    /// Take in how saving the form of `round` ended.
     fn form_saved(&mut self, round: u64, saved: Result<(), String>) -> Step {
         if saved.is_ok() {
             self.queue_reload();
@@ -3662,9 +3388,6 @@ impl AccountsPane {
         }
     }
 
-    /// Read the account's credential from the vault on a worker, then check
-    /// it with the typed password on another; nothing is saved before the
-    /// server accepted it.
     fn submit_reauth(&mut self) {
         {
             if self.reauth_probe.is_some() || self.reauth_saving {
@@ -3767,9 +3490,6 @@ impl AccountsPane {
 }
 
 impl AccountsPane {
-    /// Remove the account `id`, its credential and its sync record, waiting
-    /// for the vault: for a caller off the UI thread. The window removes
-    /// through [`AccountsEffect::RemoveAccount`], which waits for nothing.
     pub fn remove(&mut self, id: &str) -> Result<(), String> {
         let outcome = Rc::new(std::cell::RefCell::new(None));
         let landed = Rc::clone(&outcome);
@@ -3780,9 +3500,6 @@ impl AccountsPane {
             .unwrap_or_else(|| Err("the removal stopped unexpectedly".into()))
     }
 
-    /// The check of account `id`'s saved sign-in, to run on a worker: its
-    /// credential read from the vault, then a protocol probe, or for a
-    /// cloud drive a fresh token from the provider.
     fn connection_check(
         &self,
         id: &str,
@@ -3814,8 +3531,6 @@ impl AccountsPane {
         })
     }
 
-    /// Take in finished checks, sign-in steps and vault work; whether
-    /// anything shown changed.
     pub fn poll(&mut self) -> bool {
         let revision = self.account_root.revision();
         if !self.is_sample && revision != self.seen_accounts {
@@ -3847,8 +3562,6 @@ impl AccountsPane {
 }
 
 impl AccountsPane {
-    /// Whether a check, a sign-in or vault work is under way, so the window
-    /// keeps polling for it.
     pub fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()
@@ -3862,12 +3575,9 @@ impl AccountsPane {
     }
 }
 
-/// The Mail accounts an `AccountsPane` shows as granted, read on a worker.
 #[derive(Default)]
 struct MailGrants {
-    /// The Mail accounts last read as granted.
     granted: std::collections::BTreeSet<String>,
-    /// The Mail accounts the last read asked about; `None` reads again.
     asked: Option<Vec<String>>,
     reading: Option<crate::device_read::Landing>,
 }
@@ -3904,7 +3614,6 @@ fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
     }
 }
 
-/// Put back in `vault` what it held for `id` before a failed mutation.
 fn restore_secret(
     mut vault: accounts::SecretVault,
     id: &accounts::AccountId,
@@ -3952,8 +3661,6 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
 /// so a failed metadata write can put it back.
 type PreviousSecrets = Vec<(accounts::AccountId, Option<accounts::Secret>)>;
 
-/// An account row's trailing slot: the files it brings as the one button,
-/// beside the menu of everything else to do with it.
 fn account_trailing(files: Option<Button>, menu: Option<RowMenu>) -> Option<El> {
     match (files, menu) {
         (Some(files), Some(menu)) => Some(Box::new(

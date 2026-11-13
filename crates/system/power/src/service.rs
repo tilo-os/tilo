@@ -1,30 +1,8 @@
-//! The power **service** — the async orchestrator that pairs the pure policy
-//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the `systemd-logind`
-//! / `UPower` integration ([`super::logind`], [`super::upower`]).
-//!
-//! Runs on a background tokio runtime (spawned by the compositor next to the notification
-//! service) and:
-//!
-//! * on the seat that owns them, takes a logind *block* lock so logind delegates the lid
-//!   switch and power key to the compositor's policy;
-//! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock, and the other way
-//!   round holds the registry while another program (`systemd-inhibit`, a remote admin
-//!   session) holds a logind `idle` or `sleep` block lock, so idle-suspend waits for it;
-//! * watches the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
-//!   + a critical auto-suspend;
-//! * reacts to lid changes per policy (suspend / lock / ignore);
-//! * drains [`PowerCommand::Suspend`] requests and issues `logind.Suspend`;
-//! * resets the compositor's idle timer on resume;
-//! * samples the battery history at its own resolution.
-//!
-//! The service sleeps until something happens: a command wakes it through the bridge, an
-//! inhibitor change through the registry, the lid and the battery through `UPower`'s
-//! `PropertiesChanged`. Only what announces nothing runs on a deadline (`Deadlines`): logind's
-//! inhibitor list while an idle timeout is armed, the next history sample, a lease's lapse, and
-//! resubscribing a signal stream that ended.
-//!
-//! The reaction *mappings* (battery events → signals, lid → effect) are pure functions
-//! tested below; `run` only wires them to the D-Bus streams.
+//! The power service: the async orchestrator that pairs the pure policy
+//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the logind and
+//! `UPower` integration. It runs on a background runtime, takes logind's block
+//! lock on the seat that owns the lid and power key, watches the battery, the
+//! lid and sleep/resume, and applies the policy to what it sees.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,21 +22,21 @@ use crate::policy::{PowerAction, PowerPolicy};
 use crate::profiles::PowerProfilesMonitor;
 use crate::upower::UPowerMonitor;
 
-/// Retry D-Bus signal subscriptions slowly enough that a repeatedly failing
-/// bus cannot turn the service loop into a hot spin, while still recovering
-/// promptly after logind/power-profiles-daemon restarts.
+/// Retry D-Bus signal subscriptions slowly enough that a repeatedly failing bus
+/// cannot turn the loop into a hot spin, while still recovering promptly after
+/// logind or power-profiles-daemon restarts.
 const SIGNAL_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// How often the service re-reads logind's inhibitor list while an idle timeout is armed. logind
-/// announces no change to it, so this is a poll; an idle suspend reads it once more before acting
-/// ([`PowerCommand::IdleSuspend`]).
+/// How often the service re-reads logind's inhibitor list while an idle timeout
+/// is armed. logind announces no change to it, so this is a poll; an idle
+/// suspend reads it once more before acting.
 const FOREIGN_INHIBITOR_POLL: Duration = Duration::from_secs(30);
 
 /// Never sample the battery history more often than this.
 const HISTORY_SAMPLE_FLOOR: Duration = Duration::from_secs(60);
 
-/// When no history point is due (no battery, a failed read), look again after the history's own
-/// resolution.
+/// When no history point is due (no battery, a failed read), look again after
+/// the history's own resolution.
 const HISTORY_SAMPLE_RETRY: Duration = Duration::from_secs(MIN_INTERVAL_MINUTES * 60);
 
 fn stream_retry_after(now: Instant) -> Instant {
@@ -69,8 +47,9 @@ fn after(now: Instant, delay: Duration) -> Instant {
     now.checked_add(delay).unwrap_or(now)
 }
 
-/// Every moment the service must wake without being told to. Commands, inhibitor changes, the
-/// lid, the battery, sleep and profile changes wake it by themselves.
+/// Every moment the service must wake without being told to; commands,
+/// inhibitor changes, the lid, the battery, sleep and profile changes wake it by
+/// themselves.
 #[derive(Debug, Default)]
 struct Deadlines {
     /// Resubscribe to logind's `PrepareForSleep`.
@@ -83,11 +62,11 @@ struct Deadlines {
     battery_stream: Option<Instant>,
     /// Re-read logind's inhibitor list; only while an idle timeout is armed.
     foreign_inhibitors: Option<Instant>,
-    /// Sample the battery history.
     history: Option<Instant>,
     /// A registry lease stops counting by itself.
     lease_lapse: Option<Instant>,
-    /// Whether `foreign_inhibitors` follows an armed idle timeout; becoming armed reads at once.
+    /// Whether `foreign_inhibitors` follows an armed idle timeout; becoming armed
+    /// reads at once.
     foreign_armed: bool,
 }
 
@@ -108,8 +87,8 @@ impl Deadlines {
     }
 }
 
-/// The signal streams the loop waits on; `None` while one waits for its resubscription
-/// deadline.
+/// The signal streams the loop waits on, `None` while one waits for its
+/// resubscription deadline.
 struct Streams {
     sleep: Option<zbus::proxy::SignalStream<'static>>,
     profile: Option<zbus::proxy::PropertyStream<'static, String>>,
@@ -127,14 +106,14 @@ fn take_due(slot: &mut Option<Instant>, now: Instant) -> bool {
     }
 }
 
-/// Whether any idle timeout is armed — the only time another program's logind lock changes what
-/// the compositor does.
+/// Whether any idle timeout is armed: the only time another program's logind lock
+/// changes what the compositor does.
 fn idle_timeout_armed(policy: &PowerPolicy) -> bool {
     policy.idle_blank.is_some() || policy.idle_lock.is_some() || policy.idle_suspend.is_some()
 }
 
-/// How long to wait for the next history sample: until the first second a point can land
-/// (`due_minute`), but never less than [`HISTORY_SAMPLE_FLOOR`].
+/// How long to wait for the next history sample: until the first second a point
+/// can land, but never less than [`HISTORY_SAMPLE_FLOOR`].
 fn history_wait(due_minute: Option<u64>, now_secs: u64) -> Duration {
     due_minute
         .map_or(HISTORY_SAMPLE_RETRY, |minute| {
@@ -143,7 +122,7 @@ fn history_wait(due_minute: Option<u64>, now_secs: u64) -> Duration {
         .max(HISTORY_SAMPLE_FLOOR)
 }
 
-/// What a lid/power-key/critical decision resolves to for the service.
+/// What a lid, power-key or critical decision resolves to for the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     /// Suspend the machine.
@@ -164,9 +143,9 @@ impl From<Option<PowerAction>> for Effect {
     }
 }
 
-/// Decide the effect of a lid observation given the previous state. Only an
-/// open→closed edge acts; the first observation (`prev == None`) or a lid that stays closed
-/// records the state. Pure — the async [`PowerService`] calls exactly this.
+/// Decide the effect of a lid observation given the previous state: only an
+/// open→closed edge acts, and the first observation records the state. Pure, so
+/// the async [`PowerService`] calls exactly this.
 pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> Effect {
     if now && prev == Some(false) {
         Effect::from(policy.on_lid(true))
@@ -175,8 +154,8 @@ pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> E
     }
 }
 
-/// Map battery-threshold events to the compositor signals + whether to auto-suspend. Pure:
-/// this is what [`PowerService::run`] applies.
+/// Map battery-threshold events to the compositor signals and whether to
+/// auto-suspend. Pure: this is what [`PowerService::run`] applies.
 pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<PowerSignal>, bool) {
     let mut signals = Vec::new();
     let mut suspend = false;
@@ -206,9 +185,9 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
     (signals, suspend)
 }
 
-/// Map logind's `PrepareForSleep` value to the mandatory compositor action.
-/// The session locks on the pre-sleep edge and only resets its idle state after
-/// resume. Keeping this pure makes the security decision testable without D-Bus.
+/// Map logind's `PrepareForSleep` value to the mandatory compositor action: the
+/// session locks on the pre-sleep edge and only resets its idle state after the
+/// resume. Pure, so the security decision is testable without D-Bus.
 #[must_use]
 pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
     if going_to_sleep {
@@ -218,21 +197,23 @@ pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
     }
 }
 
-/// Who names the logind locks Tilo's own power services take. Another Tilo session on the same
-/// machine (a second seat, a dev slot) mirrors its registry under these names too; counting its
-/// mirror as an outside hold would let two sessions keep each other awake forever.
+/// Who names the logind locks Tilo's own power services take. Another Tilo session
+/// on the same machine (a second seat, a dev slot) mirrors its registry under
+/// these names too, and counting its mirror as an outside hold would let two
+/// sessions keep each other awake forever.
 const OWN_INHIBITOR_WHO: [&str; 2] = ["Tilo power", "Tilo compositor"];
 
 /// One logind `ListInhibitors` row: `(what, who, why, mode, uid, pid)`.
 pub type LogindInhibitorRow = (String, String, String, String, u32, u32);
 
-/// The registry hold that mirrors other programs' logind block locks: their reasons
-/// (`who: why`) and the registry flags they map to. Pure — the service applies exactly this.
+/// The registry hold that mirrors other programs' logind block locks: their
+/// reasons (`who: why`) and the registry flags they map to. Pure, so the service
+/// applies exactly this.
 ///
-/// A `block` lock on `sleep` holds off idle-suspend only, so the screen still blanks and locks
-/// while, say, a remote admin keeps the machine awake; a `block` lock on `idle` is a request to
-/// keep the whole session awake and holds both. `delay` locks, Tilo's own locks
-/// (`OWN_INHIBITOR_WHO`) and anything this process (`own_pid`) holds are not outside holds.
+/// A `block` lock on `sleep` holds off idle-suspend only, so the screen still
+/// blanks and locks while, say, a remote admin keeps the machine awake; a `block`
+/// lock on `idle` keeps the whole session awake and holds both. `delay` locks and
+/// Tilo's own locks are no hold.
 #[must_use]
 pub fn foreign_sleep_hold(rows: &[LogindInhibitorRow], own_pid: u32) -> Option<(Vec<String>, u32)> {
     let mut reasons = Vec::new();
@@ -259,8 +240,8 @@ pub fn foreign_sleep_hold(rows: &[LogindInhibitorRow], own_pid: u32) -> Option<(
     (flags != 0).then_some((reasons, flags))
 }
 
-/// The running power service. Construct with [`Self::connect`], then [`Self::run`] on a
-/// tokio runtime.
+/// The running power service. Construct with [`Self::connect`], then [`Self::run`]
+/// on a tokio runtime.
 pub struct PowerService {
     logind: LogindManager,
     upower: UPowerMonitor,
@@ -269,19 +250,20 @@ pub struct PowerService {
     registry: InhibitRegistry,
     policy: PowerPolicy,
     battery: BatteryMonitor,
-    /// Last observed lid state, for edge detection (act only on the open→closed transition, not
-    /// on every poll while it stays closed).
+    /// Last observed lid state, for edge detection: act only on the open→closed
+    /// transition, not on every poll while it stays closed.
     last_lid_closed: Option<bool>,
-    /// The "delegate lid/power-key to us" block lock, held for the service's lifetime.
+    /// The "delegate lid and power key to us" block lock, held for the service's
+    /// lifetime.
     _delegate_lock: Option<LogindInhibitor>,
-    /// The logind `idle:sleep` lock mirroring the registry (present iff the registry currently
-    /// holds any inhibitor).
+    /// The logind `idle:sleep` lock mirroring the registry, present iff the registry
+    /// currently holds any inhibitor.
     idle_sleep_lock: Option<LogindInhibitor>,
     /// The registry hold standing in for other programs' logind block locks, with the
     /// [`foreign_sleep_hold`] it was taken for.
     foreign_hold: Option<((Vec<String>, u32), InhibitToken)>,
-    /// Delay inhibitor held while awake. It is released only after the
-    /// compositor confirms that locked chrome has been submitted.
+    /// Delay inhibitor held while awake; it is released only after the compositor
+    /// confirms that locked chrome has been submitted.
     sleep_delay_lock: Option<LogindInhibitor>,
     sleep_lock_drawn: bool,
     preparing_for_sleep: bool,
@@ -293,15 +275,10 @@ pub struct PowerService {
 }
 
 impl PowerService {
-    /// Connect to logind + `UPower` on a shared system-bus connection and take the delegate lock.
-    /// Errors if the system bus / daemons are unreachable — the caller (the compositor)
-    /// downgrades that to a warning and keeps running with the pure policy only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the system bus is unreachable, or if either the `logind` or
-    /// `UPower` proxy cannot be built. Failing to take the delegate lock is not an error — it
-    /// is logged and the service still starts.
+    /// Connect to logind and `UPower` on a shared system-bus connection and take the
+    /// delegate lock. The caller downgrades an unreachable bus to a warning and keeps
+    /// running with the pure policy only; failing to take the delegate lock is not an
+    /// error, it is logged.
     pub async fn connect(
         bridge: PowerBridge,
         registry: InhibitRegistry,
@@ -311,11 +288,6 @@ impl PowerService {
         Self::with_connection(&conn, bridge, registry, policy).await
     }
 
-    /// [`Self::connect`] on an existing connection to logind and `UPower`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either the `logind` or `UPower` proxy cannot be built.
     pub async fn with_connection(
         conn: &zbus::Connection,
         bridge: PowerBridge,
@@ -326,8 +298,6 @@ impl PowerService {
         let upower = UPowerMonitor::with_connection(conn).await?;
         let power_profiles = PowerProfilesMonitor::with_connection(conn).await.ok();
 
-        // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
-        // just also act on the lid. Do not fail startup.
         let seat = std::env::var("XDG_SEAT").ok();
         let delegate = if receives_seat_buttons(seat.as_deref()) {
             match logind.delegate_handled_keys().await {
@@ -371,13 +341,13 @@ impl PowerService {
         })
     }
 
-    /// Counts every time the running loop wakes, for diagnostics and the idle-wakeup tests: an
-    /// idle session with no armed timeout should leave it still for minutes.
+    /// Counts every time the running loop wakes: an idle session with no armed timeout
+    /// should leave it still for minutes.
     pub fn wakeup_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.wakeups)
     }
 
-    /// Run the service loop until the process ends. Never returns under normal operation.
+    /// Run the service loop until the process ends.
     pub async fn run(mut self) {
         let policy = self.policy;
         info!(target: "tilo::power", ?policy, "power service started");
@@ -454,13 +424,12 @@ impl PowerService {
         }
     }
 
-    /// Subscribe to every signal the loop waits on and prime the state they report, so a machine
-    /// that boots already-low / lid-closed reacts promptly; from then on the daemons announce
-    /// their changes.
+    /// Subscribe to every signal the loop waits on and prime the state they report, so
+    /// a machine that boots already low or lid-closed reacts promptly.
     async fn start(&mut self, deadlines: &mut Deadlines) -> Streams {
-        // Resume stream. D-Bus signal streams can end when the bus daemon or
-        // connection is restarted (common during a desktop/session restart),
-        // so keep a bounded retry instead of leaving resume handling disabled.
+        // D-Bus signal streams can end when the bus daemon or connection is restarted
+        // (common during a desktop restart), so keep a bounded retry instead of leaving
+        // resume handling disabled.
         let sleep = match self.logind.receive_prepare_for_sleep().await {
             Ok(stream) => Some(stream),
             Err(error) => {
@@ -521,9 +490,8 @@ impl PowerService {
         if take_due(&mut deadlines.profile_stream, now)
             && let Some(monitor) = self.power_profiles.as_ref()
         {
-            // power-profiles-daemon's zbus property stream has
-            // no fallible subscription step; if its stream
-            // ended, creating a new one is the retry.
+            // power-profiles-daemon's zbus property stream has no fallible subscription step;
+            // if its stream ended, creating a new one is the retry.
             streams.profile = Some(monitor.receive_active_profile_changed().await);
             info!(target: "tilo::power", "subscribed to power-profile changes");
         }
@@ -551,14 +519,14 @@ impl PowerService {
         }
     }
 
-    /// Arm the deadlines that follow from the current state: logind's inhibitor list is read
-    /// only while an idle timeout is armed (and another program's hold is dropped when none is),
-    /// and a lease that will lapse needs a wake when it does.
+    /// Arm the deadlines that follow from the current state: logind's inhibitor list
+    /// is read only while an idle timeout is armed, and a lease that will lapse needs
+    /// a wake when it does.
     fn schedule_polls(&mut self, deadlines: &mut Deadlines) {
         let now = Instant::now();
         if idle_timeout_armed(&self.policy) {
-            // An idle timeout that was just armed reads at once: a lock taken while none was
-            // armed must not wait a whole poll to count.
+            // An idle timeout that was just armed reads at once: a lock taken while none
+            // was armed must not wait a whole poll to count.
             let first = !std::mem::replace(&mut deadlines.foreign_armed, true);
             deadlines.foreign_inhibitors.get_or_insert_with(|| {
                 if first {
@@ -581,8 +549,8 @@ impl PowerService {
             .map(|lapse| after(now, lapse.saturating_duration_since(wall)));
     }
 
-    /// Sample the power sources into the history and schedule the next sample for when a point
-    /// can land.
+    /// Sample the power sources into the history and schedule the next sample for
+    /// when a point can land.
     async fn sample_history(&mut self, deadlines: &mut Deadlines) {
         let now_secs = tilo_clock::unix_now();
         let mut due_minute: Option<u64> = None;
@@ -608,7 +576,6 @@ impl PowerService {
         deadlines.history = Some(after(Instant::now(), history_wait(due_minute, now_secs)));
     }
 
-    /// Read the battery once and apply the threshold reaction.
     async fn poll_battery(&mut self) {
         let snap = match self.upower.battery_snapshot().await {
             Ok(s) => s,
@@ -625,8 +592,6 @@ impl PowerService {
         self.reapply_policy();
     }
 
-    /// Resolve the policy for the profile and power source last seen, and
-    /// hand the compositor its idle-suspend timeout when that changed.
     fn reapply_policy(&mut self) {
         let profile = self.bridge.active_profile();
         let on_battery = self.bridge.on_battery();
@@ -641,7 +606,6 @@ impl PowerService {
     }
 
     async fn apply_battery_snapshot(&mut self, snap: BatterySnapshot) {
-        // Unplugged or plugged in: each source has its own suspend timer.
         if self.bridge.note_on_battery(snap.runs_on_battery()) {
             self.reapply_policy();
         }
@@ -659,8 +623,6 @@ impl PowerService {
         }
     }
 
-    /// Read the lid and apply the lid policy to it, as the reading taken when
-    /// the loop starts or resubscribes.
     async fn poll_lid(&mut self) {
         let closed = match self.upower.lid_is_closed().await {
             Ok(c) => c,
@@ -672,14 +634,6 @@ impl PowerService {
         self.follow_lid(closed).await;
     }
 
-    /// The lid as `closed` says it is: on the open→closed edge, apply the lid
-    /// policy. Edge-triggered so we act once per close, not on every reading
-    /// while it stays shut.
-    ///
-    /// The reading is the one the change carried, never read again here: two
-    /// changes that arrive while the machine was busy would otherwise both
-    /// read the lid as it stands *after* them, and the open between them would
-    /// be lost — closing the lid again would then act on nothing.
     async fn follow_lid(&mut self, closed: bool) {
         let prev = self.last_lid_closed;
         self.last_lid_closed = Some(closed);
@@ -697,7 +651,6 @@ impl PowerService {
     }
 
     async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message, deadlines: &mut Deadlines) {
-        // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
                 info!(target: "tilo::power", "system preparing for sleep: locking session");
@@ -710,8 +663,6 @@ impl PowerService {
                 self.sleep_lock_drawn = false;
                 self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
                 self.bridge.push_signal(sleep_reaction(false));
-                // The loop's deadlines run on the monotonic clock, which stood still while the
-                // machine slept: what came due during sleep is due now.
                 let now = Instant::now();
                 deadlines.history = Some(now);
                 if deadlines.foreign_inhibitors.is_some() {
@@ -721,7 +672,6 @@ impl PowerService {
         }
     }
 
-    /// Drain compositor-issued suspend requests.
     async fn drain_commands(&mut self) {
         for cmd in self.bridge.drain_commands() {
             match cmd {
@@ -737,9 +687,6 @@ impl PowerService {
         }
     }
 
-    /// Switch power-profiles-daemon to `profile`, and apply the idle policy
-    /// the profile resolves to: the daemon's own property stream confirms it
-    /// a moment later, and a machine without the daemon keeps its policy.
     async fn switch_profile(&mut self, profile: &str) {
         let Some(monitor) = self.power_profiles.clone() else {
             warn!(target: "tilo::power", %profile, "no power profiles here: the profile was not switched");
@@ -753,8 +700,6 @@ impl PowerService {
         }
     }
 
-    /// Take/release the logind `idle:sleep` block lock to match the Tilo inhibitor registry, so
-    /// an app holding a Tilo inhibitor also blocks logind's own idle/suspend handling.
     async fn mirror_inhibit_registry(&mut self) {
         let inhibited = self.registry.is_inhibited();
         match (inhibited, self.idle_sleep_lock.is_some()) {
@@ -774,14 +719,15 @@ impl PowerService {
             }
             (false, true) => {
                 debug!(target: "tilo::power", "releasing logind idle:sleep lock");
-                self.idle_sleep_lock = None; // drop closes the fd
+                self.idle_sleep_lock = None;
             }
             _ => {}
         }
     }
 
-    /// Hold the registry while another program holds a logind `idle` or `sleep` block lock, so
-    /// the compositor's idle-suspend waits for it exactly as it waits for media or a running task.
+    /// Hold the registry while another program holds a logind `idle` or `sleep` block
+    /// lock, so the compositor's idle-suspend waits for it as it waits for media or a
+    /// running task.
     async fn poll_foreign_inhibitors(&mut self) {
         let rows = match self.logind.list_inhibitors().await {
             Ok(rows) => rows,
@@ -806,9 +752,10 @@ impl PowerService {
         }
     }
 
-    /// Suspend because the session went idle, unless another program took a logind lock since
-    /// the last [`FOREIGN_INHIBITOR_POLL`]: then report [`PowerSignal::SuspendFailed`], which
-    /// un-latches the compositor's idle suspend until the registry is clear again.
+    /// Suspend because the session went idle, unless another program took a logind
+    /// lock since the last [`FOREIGN_INHIBITOR_POLL`]; then report
+    /// [`PowerSignal::SuspendFailed`], which un-latches the compositor's idle suspend
+    /// until the registry is clear again.
     async fn start_idle_suspend(&mut self) {
         self.poll_foreign_inhibitors().await;
         if self.registry.is_inhibited() {
@@ -823,17 +770,18 @@ impl PowerService {
         self.start_suspend().await;
     }
 
-    /// Issue the suspend request, if logind allows it. The inhibitor registry is the compositor's
-    /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
+    /// Issue the suspend request, if logind allows it. The inhibitor registry is the
+    /// compositor's gate for idle suspend; lid and critical suspends are deliberate
+    /// and proceed regardless.
     async fn start_suspend(&mut self) {
         if self.suspend_task.is_some() {
             return;
         }
-        // A delay inhibitor is the safety barrier that gives the compositor
-        // time to draw its lock scene. Never initiate a compositor-requested
-        // suspend without it: otherwise a slow frame can leave app content
-        // visible during the sleep transition. Retry acquisition here as the
-        // bus may have recovered since startup/resume.
+        // A delay inhibitor is the safety barrier that gives the compositor time to draw
+        // its lock scene. Never initiate a compositor-requested suspend without it:
+        // otherwise a slow frame can leave app content visible during the sleep
+        // transition. Retry acquisition here as the bus may have recovered since startup
+        // or resume.
         if self.sleep_delay_lock.is_none() {
             self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
             if self.sleep_delay_lock.is_none() {
@@ -844,9 +792,9 @@ impl PowerService {
         }
         match self.logind.can_suspend().await {
             Ok(v) if v == "yes" => {
-                // Ask the compositor to lock before invoking logind. The delay
-                // inhibitor remains held until the drawn-frame acknowledgement,
-                // including for externally initiated sleep.
+                // Ask the compositor to lock before invoking logind; the delay inhibitor remains
+                // held until the drawn-frame acknowledgement, including for externally initiated
+                // sleep.
                 self.sleep_lock_drawn = false;
                 self.bridge.push_signal(PowerSignal::PreparingForSleep);
                 let logind = self.logind.clone();
@@ -877,10 +825,10 @@ impl PowerService {
     }
 }
 
-/// Whether a session on `seat` gets the lid switch and power key. logind tags those
-/// buttons `seat0` and keeps them there; a session on any other seat (a second
-/// head, a dev-VM slot) never sees them, so delegating them to it would leave the
-/// power button, and an ACPI shutdown request, doing nothing at all.
+/// Whether a session on `seat` gets the lid switch and power key. logind tags
+/// those buttons `seat0` and keeps them there, so a session on any other seat (a
+/// second head, a dev-VM slot) never sees them, and delegating them to it would
+/// leave the power button and an ACPI shutdown request doing nothing.
 fn receives_seat_buttons(seat: Option<&str>) -> bool {
     seat.is_none_or(|seat| seat.is_empty() || seat == "seat0")
 }
@@ -903,7 +851,8 @@ async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor
     }
 }
 
-/// `select!` helper: wait for the running suspend task, or park forever when there is none.
+/// `select!` helper: wait for the running suspend task, or park forever when
+/// there is none.
 async fn join_or_pending(
     task: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> Result<(), tokio::task::JoinError> {
@@ -921,8 +870,8 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
     }
 }
 
-/// `select!` helper: poll an `Option<Stream>`, or park forever when absent so the branch is
-/// simply inert rather than a busy `None`.
+/// `select!` helper: poll an `Option<Stream>`, or park forever when absent so the
+/// branch is inert rather than a busy `None`.
 async fn next_or_pending<S: futures_util::Stream + Unpin>(
     stream: &mut Option<S>,
 ) -> Option<S::Item> {
@@ -956,7 +905,8 @@ mod tests {
                 (what.into(), who.into(), "why".into(), mode.into(), 0, pid)
             };
             let own = 100;
-            // Nothing held, Tilo's own locks, delay locks and this process's locks are no hold.
+            // Nothing held, Tilo's own locks, delay locks and this process's locks are no
+            // hold.
             assert_eq!(foreign_sleep_hold(&[], own), None);
             assert_eq!(
                 foreign_sleep_hold(
@@ -972,7 +922,8 @@ mod tests {
                 ),
                 None
             );
-            // A remote admin's `sleep` lock holds suspend only: the screen still blanks and locks.
+            // A remote admin's `sleep` lock holds suspend only: the screen still blanks and
+            // locks.
             assert_eq!(
                 foreign_sleep_hold(&[row("sleep", "tilo-vm", "block", 5)], own),
                 Some((vec!["tilo-vm: why".to_string()], INHIBIT_SUSPEND))
@@ -1138,10 +1089,9 @@ mod tests {
             assert!(signals.is_empty());
             assert!(!suspend);
         }
-        // Phase `monitor_plus_reaction_full_discharge`.
-        // End-to-end pure path: a discharging battery crossing the low then the critical threshold
-        // produces exactly the toasts + suspend the service would apply — the same `BatteryMonitor`
-        // + `battery_reaction` the async loop uses, minus the bus.
+        // End-to-end pure path: a discharging battery crossing the low then the
+        // critical threshold produces exactly the toasts and suspend the service would
+        // apply, the same `BatteryMonitor` and `battery_reaction` the async loop uses.
         {
             use crate::battery::BatteryState;
             let p = PowerPolicy {
@@ -1163,7 +1113,7 @@ mod tests {
             let (s, susp) = battery_reaction(&mon.evaluate(&disch(14), &p), &p);
             assert_eq!(s.len(), 1);
             assert!(!susp);
-            // Critical: critical toast + suspend.
+            // Critical: critical toast and suspend.
             let (s, susp) = battery_reaction(&mon.evaluate(&disch(4), &p), &p);
             assert!(susp);
             assert!(matches!(s[0], PowerSignal::Notify(ref n) if n.critical));

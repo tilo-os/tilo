@@ -1,13 +1,4 @@
 //! `Skeleton`: the shape of content that is still loading.
-//!
-//! A skeleton takes the geometry of what will replace it, from the same
-//! metrics: a list row's line boxes, a paragraph's lines, a media card's art
-//! and text. When the content arrives nothing moves. Its tone is a derived
-//! step of the ground that registers on every material, including the
-//! high-contrast one where a plain lift collapses. It does not shimmer:
-//! nothing animates at idle.
-//!
-//! [`SkeletonFace`] paints the same shapes for immediate-mode callers.
 
 use std::collections::HashMap;
 
@@ -50,16 +41,12 @@ pub enum SkeletonShape {
 }
 
 impl SkeletonShape {
-    /// Whether the shape takes the space it is given rather than a height of
-    /// its own.
     #[must_use]
     pub fn fills(self) -> bool {
         matches!(self, Self::Page)
     }
 }
 
-/// The lines a page's skeleton reserves where its region is given no height
-/// of its own.
 const PAGE_LINES: u8 = 12;
 
 /// The skeleton tone on `ground`: a derived wash that registers even on a
@@ -72,10 +59,8 @@ pub fn skeleton_tone(ground: Color) -> Color {
     )
 }
 
-/// The tone's strength before the near-black gain.
 const TONE_ALPHA: u8 = 32;
 
-/// Immediate-mode skeleton.
 #[derive(Clone, Copy, Debug)]
 pub struct SkeletonFace {
     shape: SkeletonShape,
@@ -107,7 +92,6 @@ impl SkeletonFace {
                 f64::from(PAGE_LINES) * line
             }
             SkeletonShape::Media(aspect) => {
-                // A card's full text block: its title and a meta line.
                 crate::widget::MediaCardFace::new(crate::widget::MediaArt::Placeholder)
                     .aspect(aspect)
                     .title(" ")
@@ -122,10 +106,8 @@ impl SkeletonFace {
         self.paint_naming(ctx, rect, None);
     }
 
-    /// The rect a retained widget paints the skeleton in, from its layout
-    /// box: the box the content it stands for paints in. A row paints in
-    /// its box grown by the row bleed (its text on the box's edge), so the
-    /// row's skeleton does too; every other shape paints in its box.
+    /// The rect a retained widget paints the skeleton in, from its layout box: the box the
+    /// content it stands for paints in.
     #[must_use]
     pub fn painted_rect(&self, layout: Rect, theme: &Theme) -> Rect {
         match self.shape {
@@ -134,9 +116,8 @@ impl SkeletonFace {
         }
     }
 
-    /// Paint the skeleton in `rect`, `caption` (where the content comes
-    /// from) standing in a place the shape keeps for it: a row's last line,
-    /// a text's first, inside a card's art. Naming the source moves nothing.
+    /// Paint the skeleton in `rect`, `caption` (where the content comes from) standing in a
+    /// place the shape keeps for it: a row's last line, a text's first, inside a card's art.
     pub fn paint_naming(&self, ctx: &mut PaintCtx<'_>, rect: Rect, caption: Option<&str>) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -200,8 +181,6 @@ impl SkeletonFace {
                     &RoundedRect::from_rect(art, art_radius),
                 );
                 if let Some(caption) = caption {
-                    // A card keeps its art where its neighbours have theirs:
-                    // the line sits inside the art.
                     let inset = f64::from(theme.tokens.spacing.s3);
                     paint_caption(
                         ctx,
@@ -237,11 +216,8 @@ impl SkeletonFace {
     }
 }
 
-/// How much of a line box a bar fills.
 const BAR_SHARE: f64 = 0.6;
-/// A paragraph's last line and a row's secondary line run this far.
 pub(crate) const LAST_LINE_SHARE: f64 = 0.6;
-/// A title runs this far.
 pub(crate) const TITLE_SHARE: f64 = 0.7;
 
 /// A skeleton bar for a line box `line` tall at `top`, `w` wide from `x0`:
@@ -292,17 +268,13 @@ pub(crate) fn paint_caption(
         Some(room),
     );
 }
-/// A chip's pill is this many body lines wide: a short status's width.
 const CHIP_WIDTH_IN_LINES: u8 = 6;
 
-/// A retained skeleton. See the module docs.
 pub struct Skeleton {
     shape: SkeletonShape,
     rect: Rect,
     theme: Option<Theme>,
-    /// Its shape changed since the last frame drew it.
     dirty: bool,
-    /// What it holds changed its size since the layout pass last placed it.
     layout_dirty: bool,
 }
 
@@ -334,7 +306,6 @@ impl Skeleton {
         Self::new(SkeletonShape::Text { lines })
     }
 
-    /// A list row of `shape`'s kind.
     #[must_use]
     pub fn row(shape: RowShape) -> Self {
         Self::new(SkeletonShape::Row(shape))

@@ -1,17 +1,7 @@
-//! A branch's first boot, beside its running source (`vm branch` without `--no-admit`).
-//!
-//! A branch gives itself a new device key at its first boot, and a workspace takes a new device
-//! in only through its host. The source hosts every desk workspace it made, so a branch first
-//! booted while its source is off waits for it ("waiting for <source> to take this device in"),
-//! and one whose source was removed waits for good. So `vm branch` boots the source and its new
-//! branches once, as many at a time as the host's memory holds, waits until each branch has
-//! re-keyed and every workspace the source hosts has taken it in, and stops them again: the
-//! source as it was before, the branches off.
-//!
-//! What the guests say is read through [`Guests`]: in production over SSH and tilo-vmd from the
-//! guest itself (its machine record, and each session's `workspace_hosts`, which says of every
-//! workspace it holds who hosts it and whether the host took this device in yet); faked in the
-//! tests.
+//! A branch's first boot, beside its running source: a workspace takes a new
+//! device in only through its host, so `vm branch` boots the source and its
+//! branches once, waits until every workspace the source hosts has taken each
+//! branch in, and stops them again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -28,56 +18,37 @@ use crate::remote;
 /// What the host keeps for itself beside the VMs it boots, in MiB.
 pub(super) const HOST_RESERVE_MB: u64 = 2048;
 
-/// How often the guests are read while they come up.
 const POLL: Duration = Duration::from_secs(5);
 
-/// What a booted VM says of itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Guest {
-    /// A digest of its device key, to tell a branch that re-keyed from one that kept its source's.
     pub key: Option<String>,
-    /// Its machine record names its own UUID and no re-key is in progress.
     pub recorded: bool,
-    /// Its sessions, by slot: what each holds, or `None` while it does not answer yet.
     pub slots: BTreeMap<String, Option<Vec<Held>>>,
 }
 
-/// A workspace a session holds, as its `workspace_hosts` says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Held {
     pub room: String,
     pub name: String,
-    /// The host's name as its person gave it.
     pub host: String,
-    /// This device is the workspace's host.
     pub hosted_here: bool,
-    /// This device holds the workspace but its host has not taken it in yet.
     pub awaiting: bool,
 }
 
-/// Where `vm branch` learns what the host and the guests say.
 pub(super) trait Guests {
     /// The host's memory free for VMs, in MiB; `None` where it cannot tell.
     fn available_memory_mb(&mut self) -> Option<u64>;
-    /// What `vm` says of itself now; `None` while it does not answer. Only the sessions of
-    /// `slots` are read (all but the `vm` slot's when `None`); with `wake`, a session that is not
-    /// running is started.
-    ///
-    /// # Errors
-    /// The guest answered with something tilo-vm cannot use.
     fn read(
         &mut self,
         vm: &str,
         slots: Option<&BTreeSet<String>>,
         wake: bool,
     ) -> Result<Option<Guest>, CliError>;
-    /// Let time pass before the next read.
     fn pause(&mut self);
-    /// Time since the admission started.
     fn elapsed(&self) -> Duration;
 }
 
-/// What still keeps a branch from being taken in.
 fn pending(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> Option<String> {
     let Some(guest) = guest else {
         return Some("it does not answer yet".into());
@@ -110,8 +81,6 @@ fn pending(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> Opt
     None
 }
 
-/// Split `branches` into batches that fit beside the source in `available` MiB, keeping
-/// [`HOST_RESERVE_MB`] for the host. `Err` names what does not fit.
 pub(super) fn batches(
     source: (&str, u64),
     branches: &[(String, u64)],
@@ -159,7 +128,6 @@ pub(super) fn batches(
 }
 
 impl App {
-    /// Check, before anything is made, that `src` can boot beside at least one branch.
     pub(super) fn admission_fits(
         guests: &mut dyn Guests,
         registry: &Registry,
@@ -179,8 +147,6 @@ impl App {
         .map_err(|why| no_room(src, &why, rerun))
     }
 
-    /// Boot `src` (unless it runs) and `names`, wait until each re-keyed and every workspace `src`
-    /// hosts took it in, and stop what was booted. A branch taken in no longer `awaits_host`.
     pub(super) fn admit(
         &self,
         runner: &mut dyn Runner,
@@ -225,15 +191,12 @@ impl App {
             (&mut started, &mut taken),
             !was_running,
         );
-        // Back to how the person had it: the branches off, the source as it was.
         for name in &started {
             self.power_down(runner, name);
         }
         if !was_running {
             self.power_down(runner, src);
         }
-        // In the order they were named, whichever was taken in first; also those an earlier batch
-        // had taken in when a later one failed.
         let admitted: Vec<String> = names
             .iter()
             .filter(|n| taken.contains(n))
@@ -259,7 +222,6 @@ impl App {
         wake_source: bool,
     ) -> Result<(), CliError> {
         let deadline = guests.elapsed().saturating_add(timeout);
-        // The source up, with every session it has: those are the hosts.
         let source = loop {
             let guest = guests.read(src, None, wake_source)?;
             if let Some(guest) = guest.filter(|g| g.slots.values().all(Option::is_some)) {
@@ -342,8 +304,6 @@ impl App {
         Ok(())
     }
 
-    /// Shut `name` down the way `vm stop` does without its guest's lock: ACPI, then `systemctl
-    /// poweroff` over SSH, then a hard power-off. A VM that does not go down is said in a warning.
     fn power_down(&self, runner: &mut dyn Runner, name: &str) {
         let Ok(vm) = self.resolve_vm(Some(name)) else {
             return;
@@ -404,17 +364,13 @@ fn timed_out(src: &str, still: &[(String, String)], rerun: &str) -> CliError {
     )
 }
 
-/// The guests as they are: read over SSH and tilo-vmd.
 pub(super) struct LiveGuests {
     pub app: App,
     pub started: Instant,
-    /// Sessions already started once, as `vm:slot`.
     pub woken: BTreeSet<String>,
 }
 
-/// What a guest's machine record says, as root: a digest of its device key, and whether the
-/// record names this machine's UUID with no re-key journal left.
-const MACHINE: &str = r#"cd /var/lib/tilo/device-private 2>/dev/null || exit 0
+pub(super) const MACHINE: &str = r#"cd /var/lib/tilo/device-private 2>/dev/null || exit 0
 [ -f keypair.bin ] && echo "KEY=$(sha256sum < keypair.bin | cut -c1-16)"
 u=$(tr -d '-' < /sys/class/dmi/id/product_uuid | tr 'A-F' 'a-f')
 r=$([ -f machine.bin ] && od -An -tx1 -v machine.bin | tr -d ' \n')
@@ -434,7 +390,6 @@ impl Guests for LiveGuests {
         let resolved = self.app.resolve_vm(Some(vm))?;
         let mut remote = match self.app.connect(&resolved) {
             Ok(remote) => remote,
-            // Still booting: SSH or tilo-vmd not up yet.
             Err(CliError::Unreachable { .. } | CliError::DaemonMissing { .. }) => return Ok(None),
             Err(error) => return Err(error),
         };
@@ -472,7 +427,6 @@ impl Guests for LiveGuests {
                     })?;
                 }
                 if !wake && slots.is_none() {
-                    // A session the person keeps stopped on a running source hosts nothing now.
                     continue;
                 }
                 None
@@ -494,22 +448,22 @@ impl Guests for LiveGuests {
 impl LiveGuests {
     fn machine(&mut self, vm: &Resolved) -> Result<String, CliError> {
         let endpoint = self.app.endpoint(vm)?;
-        let command = remote::ssh_command(
-            &endpoint,
-            vm.entry.key.as_deref(),
-            &["sh".into(), "-c".into(), MACHINE.into()],
-            false,
-        );
+        let command =
+            remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &machine_line(), false);
         let mut runner = SystemRunner { cwd: None };
         Ok(runner.output(&command)?.stdout)
     }
 }
 
-/// What a session is asked of the workspaces it holds: who hosts each, and whether its host took
-/// this device in yet (the session's `workspace_hosts`).
+/// [`MACHINE`] as the one shell line SSH hands the guest's login shell: ssh joins the remote
+/// words with spaces, so `sh`, `-c` and the script as three words ran `sh -c cd` and the rest of
+/// the script in the login shell's own directory, where it found no record and said nothing.
+pub(super) fn machine_line() -> Vec<String> {
+    vec![format!("sh -c {}", crate::vmbuild::sh_quote(MACHINE))]
+}
+
 const HOSTS: [&str; 2] = ["raw", r#"{"op":"workspace_hosts"}"#];
 
-/// The workspaces a session's `workspace_hosts` answer lists.
 pub(super) fn held_of(answer: &Value) -> Vec<Held> {
     answer
         .pointer("/answer/workspaces")
@@ -533,8 +487,6 @@ pub(super) fn held_of(answer: &Value) -> Vec<Held> {
         .collect()
 }
 
-/// The host's memory free for VMs, in MiB: Linux's `MemAvailable`, macOS's free, inactive and
-/// speculative pages. `None` elsewhere.
 fn available_memory_mb() -> Option<u64> {
     if cfg!(target_os = "linux") {
         let text = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -555,7 +507,6 @@ fn available_memory_mb() -> Option<u64> {
     None
 }
 
-/// Free memory in MiB from `vm_stat`'s output: free, inactive and speculative pages.
 pub(super) fn vm_stat_free_mb(text: &str) -> Option<u64> {
     let page: u64 = text
         .lines()

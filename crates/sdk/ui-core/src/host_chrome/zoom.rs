@@ -1,6 +1,5 @@
-//! Zoom in, Zoom out and Actual size as host actions, so the palette,
-//! assistive technology and agents reach the window's content zoom
-//! (`crate::content_zoom`) through the same door, not only Ctrl+Plus,
+//! Zoom in, Zoom out and Actual size as host actions, so the palette, assistive technology and agents
+//! reach the window's content zoom (`crate::content_zoom`) through the same door, not only Ctrl+Plus,
 //! Ctrl+Minus, Ctrl+0, Ctrl+scroll and a pinch.
 
 use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourceSpec};

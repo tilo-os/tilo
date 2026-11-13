@@ -19,19 +19,14 @@ pub mod udisks;
 pub use descriptor::*;
 pub use target::*;
 
-/// The terminal result of running a job to completion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobResult {
-    /// Written and verified: the read-back matched the source byte-for-byte.
     Verified,
-    /// The write itself failed (I/O error, permission denied, short write).
     WriteFailed(String),
-    /// The write finished but the read-back did not match at this byte offset.
     VerifyMismatch(u64),
-    /// The verify pass could not be run (I/O error re-reading).
     VerifyFailed(String),
-    /// The operator requested a cooperative stop. The partially written media
-    /// is never reported as usable and must be rewritten before use.
+    /// The operator requested a cooperative stop; a partially written medium is never reported
+    /// as usable.
     Cancelled,
 }
 
@@ -41,32 +36,18 @@ impl JobResult {
     }
 }
 
-/// Streaming buffer shared by copy, hash and read-back operations.
 pub const CHUNK: usize = 4 * 1024 * 1024;
 
 pub fn cancelled_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "image write cancelled")
 }
 
-// ---------------------------------------------------------------------------
-// The real engine. `stream_copy` + `verify_readback` are the exact loops that
-// flash a device; tests point them at temp files so the byte path is proven
-// without touching hardware.
-// ---------------------------------------------------------------------------
-
-/// Stream `src` onto `dst` in [`CHUNK`]-sized blocks, flushing and syncing at
-/// the end. `on_progress` is called with the cumulative bytes written after
-/// each chunk (for the live progress bar). Returns the total bytes copied.
-///
-/// `dst` is opened for writing (created if absent — for a block device the
-/// node already exists and is opened in place). This is the real copy loop:
-/// in tests `dst` is a temp file; in a gated production run it is `/dev/sdX`.
+/// Streams `src` onto `dst` in [`CHUNK`] blocks, flushing and syncing at the end; `on_progress`
+/// gets the cumulative bytes written after each chunk.
 ///
 /// # Errors
 ///
-/// Returns an error if `src` cannot be opened for reading, `dst` cannot be
-/// opened for writing, any chunk read or write fails, or the final flush or
-/// sync to `dst` fails.
+/// Fails when either side cannot be opened, a chunk read or write fails, or the final sync fails.
 pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let expected_size = src.metadata()?.len();
     stream_copy_bound(
@@ -80,12 +61,12 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
     )
 }
 
-/// Copy exactly the source which was reviewed before elevation. The file is
-/// identified from the opened handle (not from a separate path lookup), then
-/// read to the exact reviewed length with an explicit EOF check. Catalog media
-/// additionally carries a signed expected digest, calculated during the copy.
+/// Copies the source reviewed before elevation, identified from the opened handle and read to the
+/// exact reviewed length with an EOF check; catalog media also carries a signed expected digest.
+///
 /// # Errors
-/// Rejects changed source identity, size or signed digest, cancellation, and native source/destination I/O failures.
+///
+/// Rejects changed source identity, size or digest, cancellation, and native I/O failures.
 pub fn stream_copy_bound(
     src: &Path,
     dst: &Path,
@@ -132,10 +113,8 @@ pub fn stream_copy_bound(
         }
         reader.seek(SeekFrom::Start(0))?;
     }
-    // `truncate(true)`: a fresh, exact byte-for-byte copy — no stale trailing
-    // bytes survive from whatever previously occupied `dst`. Truncation is a
-    // no-op on a real block device (not a regular file), so this is safe for
-    // both the temp-file test path and the gated device path.
+    // `truncate(true)` leaves no stale trailing bytes; it is a no-op on a block device, so this
+    // suits both the temp-file tests and the device path.
     let regular_file = dst.metadata().map_or(true, |meta| meta.is_file());
     let mut options = OpenOptions::new();
     options.write(true);
@@ -167,9 +146,8 @@ pub fn stream_copy_bound(
                 "source image became shorter after review",
             ));
         }
-        // `n` is guaranteed <= buf.len() by the `Read::read` contract, but a
-        // block-device write is exactly the place to fail loudly rather than
-        // trust that contract silently.
+        // A block-device write is exactly where to fail loudly instead of trusting the read
+        // contract.
         let chunk = buf
             .get(..n)
             .ok_or_else(|| io::Error::other("read() returned a length past the buffer end"))?;
@@ -204,9 +182,8 @@ pub fn stream_copy_bound(
     Ok(written)
 }
 
-/// Hash exactly the reviewed source length and require EOF. This runs before
-/// a catalog-backed write opens its destination, so a corrupt cached image
-/// cannot cause any destructive I/O.
+/// Runs before a catalog-backed write opens its destination, so a corrupt cached image cannot
+/// cause destructive I/O.
 pub fn hash_source_exact(
     reader: &mut impl Read,
     expected_size: u64,
@@ -250,12 +227,8 @@ pub fn hash_source_exact(
     Ok(hex::encode(hash.finalize()))
 }
 
-/// Re-read `dst` and compare it against `src`, [`CHUNK`] bytes at a time, over
-/// the first `len` bytes (the region the image occupies). Returns `Ok(None)`
-/// when every byte matches, or `Ok(Some(offset))` at the first differing byte.
-/// `on_progress` reports cumulative bytes verified. This is a genuine
-/// post-write read-back — the device is re-opened and its bytes are compared,
-/// not merely re-hashed from memory.
+/// Re-opens `dst` and compares the first `len` bytes against `src` [`CHUNK`] at a time: `Ok(None)`
+/// when all match, else the first differing offset. `on_progress` reports cumulative bytes read.
 pub fn verify_readback(
     src: &Path,
     dst: &Path,
@@ -292,8 +265,7 @@ pub fn verify_readback_bound(
                 .min(CHUNK as u64),
         )
         .map_err(io::Error::other)?;
-        // `want` <= CHUNK == ba.len() == bb.len() by construction; still fail
-        // loudly instead of trusting that on a device read-back.
+        // `want` fits both buffers by construction; still fail loudly on a device read-back.
         let chunk_a = ba
             .get_mut(..want)
             .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
@@ -325,9 +297,8 @@ pub fn verify_readback_bound(
     Ok(None)
 }
 
-/// Read exactly `buf.len()` bytes, tolerating short reads by looping. A source
-/// image file and a freshly written device should both yield full chunks; a
-/// premature EOF surfaces as an error the caller reports as a verify failure.
+/// Tolerates short reads by looping; a premature EOF surfaces as an error the caller reports as a
+/// verify failure.
 pub fn read_exact_fill(r: &mut impl Read, buf: &mut [u8]) -> io::Result<()> {
     let mut off = 0;
     while off < buf.len() {

@@ -1,5 +1,5 @@
-//! The controls a finger reaches: a station of a stepper, a link's line, a shortcut's keycaps —
-//! each as large as the input the host has.
+//! The controls a finger reaches: a station of a stepper, a link's line, a shortcut's keycaps — each as
+//! large as the input the host has.
 
 use super::*;
 use crate::component::{Bound, Described};
@@ -33,9 +33,8 @@ fn on_touch_a_step_done_is_a_fingers_target_and_a_pointers_by_mouse() {
         );
         host.set_interaction_environment(input);
         host.relayout_at((600, 200)).expect("the stepper lays out");
-        // Its stations are where it drew them: a frame draws it.
         let theme = Theme::light();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(&theme, |text| {
             let mut scene = vello::Scene::new();
             Widget::draw(
                 &mut *host.root_mut::<Stepper>(),
@@ -108,7 +107,6 @@ fn on_touch_a_shortcut_recorder_and_an_autocompletes_field_stand_a_fingers_targe
     }
 }
 
-/// An autocomplete over a bound field, as the gallery places one.
 struct Auto;
 
 impl Auto {

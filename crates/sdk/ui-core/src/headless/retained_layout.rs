@@ -1,23 +1,14 @@
-//! The retained layout: when a frame may keep the last one, and whether its
-//! raw widget pointers still name live widgets.
-//!
-//! `node_map` holds a `*mut dyn Widget` per taffy node, built from the tree
-//! and kept while no widget reports a structure change. The pointers a build
-//! registers are adopted at once ([`crate::host_core::HostCore::admit_layout_maps`]), and
-//! every structure check walks the live tree first
-//! ([`crate::host_core::HostCore::layout_maps_stale`]): a widget that replaced children
-//! without reporting it makes the maps stale and the layout is built again,
-//! instead of the frame calling through a pointer to a freed widget. See
-//! [`crate::retained_widgets`].
+//! The retained layout: when a frame may keep the last one, and whether its raw widget pointers still
+//! name live widgets. `node_map` holds a `*mut dyn Widget` per taffy node, built from the tree and kept
+//! while no widget reports a structure change.
 
 use super::*;
 
 impl FrameHarness {
-    /// Drop the raw layout maps so no later frame re-solves a composition
-    /// whose widgets may have been replaced; the next frame rebuilds.
+    /// Drop the raw layout maps so no later frame re-solves a composition whose widgets may have been
+    /// replaced; the next frame rebuilds.
     pub(super) fn discard_layout_tree(&mut self) {
         self.serviced_layout = None;
-        // The tree the window's History was validated against is going.
         self.history_standing.set(None);
         self.bindings.clear();
         self.node_map.clear();
@@ -25,11 +16,9 @@ impl FrameHarness {
         self.layout_built = false;
     }
 
-    /// Retire the maps before a model service's callbacks, as
-    /// [`Self::discard_layout_tree`] does, and hand them back to keep aside.
-    /// Nothing reads them while aside: until they are readmitted the tree
-    /// is retired exactly as if they were gone. Maps an earlier batch of
-    /// the same service set aside are handed back again.
+    /// Retire the maps before a model service's callbacks, as [`Self::discard_layout_tree`] does, and
+    /// hand them back to keep aside. Nothing reads them while aside: until they are readmitted the tree
+    /// is retired exactly as if they were gone.
     pub(super) fn set_layout_aside(&mut self) -> Option<ServicedLayout> {
         let kept = self.serviced_layout.take().or_else(|| {
             self.layout_built.then(|| ServicedLayout {
@@ -43,14 +32,8 @@ impl FrameHarness {
         kept
     }
 
-    /// Take back the maps a completed model service set aside, at the start
-    /// of the frame that readmits its tree, when nothing has built, retired
-    /// or asked for a fresh composition since. The frame's structure check
-    /// that follows walks the live tree against them before any pointer is
-    /// called through ([`Self::layout_maps_stale`]), as after input that ran
-    /// widget code: a widget the service replaced, reported or not, makes
-    /// the frame build the tree again. A service that changed nothing the
-    /// layout follows (a save landing) keeps the tree it had.
+    /// Take back the maps a completed model service set aside, at the start of the frame that readmits
+    /// its tree, when nothing has built, retired or asked for a fresh composition since.
     pub(super) fn readmit_serviced_layout(&mut self) {
         let Some(kept) = self.serviced_layout.take() else {
             return;
@@ -71,8 +54,8 @@ impl FrameHarness {
     }
 }
 
-/// A retained layout's maps a model service set aside while its callbacks
-/// ran ([`FrameHarness::set_layout_aside`]).
+/// A retained layout's maps a model service set aside while its callbacks ran
+/// ([`FrameHarness::set_layout_aside`]).
 pub(super) struct ServicedLayout {
     bindings: crate::bound_dispatch::BoundNodeMap,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -81,25 +64,23 @@ pub(super) struct ServicedLayout {
 }
 
 impl FrameHarness {
-    /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
+    /// Whether this frame must rebuild the layout tree regardless of what the widgets report: the test
+    /// override first, then `TILO_UI_FULL_RELAYOUT`.
     pub(super) fn full_relayout_forced_now(&self) -> bool {
         self.full_relayout_override
             .unwrap_or_else(full_relayout_forced)
     }
 
-    /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
-    /// returns to the environment's choice. Benchmarks use this to compare
-    /// both paths inside one process.
+    /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path for every following frame,
+    /// overriding `TILO_UI_FULL_RELAYOUT`; `None` returns to the environment's choice.
     pub fn set_full_relayout(&mut self, forced: Option<bool>) {
         self.invalidate_local();
         self.full_relayout_override = forced;
     }
 
-    /// Cumulative text measurement-cache hits and misses for this host's
-    /// renderer. Compare around input to distinguish retained scrolling from
-    /// remeasuring a whole page; a cold frame must first warm the counters.
+    /// Cumulative text measurement-cache hits and misses for this host's renderer. Compare around input
+    /// to distinguish retained scrolling from remeasuring a whole page; a cold frame must first warm
+    /// the counters.
     pub fn text_cache_stats(&self) -> (u64, u64) {
         self.text.cache_stats()
     }
@@ -117,40 +98,34 @@ impl FrameHarness {
         self.last_relayout
     }
 
-    /// Completed relayout frames since construction; unchanged across a
-    /// skipped (inert pointer) `send`.
+    /// Completed relayout frames since construction; unchanged across a skipped (inert pointer) `send`.
     pub fn relayout_frames(&self) -> u64 {
         self.relayout_frames
     }
 
-    /// Completed frames that recomposed the layout tree. One input may
-    /// produce several frames (press and release, a commit tick), so callers
-    /// asserting on a structural change compare this across the input.
+    /// Completed frames that recomposed the layout tree.
     pub fn rebuilt_frames(&self) -> u64 {
         self.relayout_frames.saturating_sub(self.retained_frames)
     }
 
-    /// Layout nodes built since construction: every node of each tree a
-    /// frame rebuilt, and each node a change carried out in place mounted.
-    /// What a change cost the layout, whichever way it went.
+    /// Layout nodes built since construction: every node of each tree a frame rebuilt, and each node a
+    /// change carried out in place mounted.
     pub fn layout_nodes_built(&self) -> u64 {
         self.layout_nodes_built
     }
 
-    /// Every taffy node of the current composition, sorted. Equal across two
-    /// frames exactly when the tree was retained rather than rebuilt.
+    /// Every taffy node of the current composition, sorted. Equal across two frames exactly when the
+    /// tree was retained rather than rebuilt.
     pub fn layout_node_ids(&self) -> Vec<u64> {
         let mut ids: Vec<u64> = self.node_map.keys().map(|node| u64::from(*node)).collect();
         ids.compact_sort();
         ids
     }
 
-    /// Invalidate taffy's cached measurement for every node whose widget
-    /// reports it may have changed size (`is_layout_dirty`) or must be
-    /// re-solved (`layout_needs_measure`), so the following
-    /// `compute_widget_layout` re-measures exactly those and their ancestors.
-    /// A node that cannot be inspected is invalidated too: stale is worse than
-    /// a redundant measure. Returns `(marked nodes, marked childless nodes)`.
+    /// Invalidate taffy's cached measurement for every node whose widget reports it may have changed
+    /// size (`is_layout_dirty`) or must be re-solved (`layout_needs_measure`), so the following
+    /// `compute_widget_layout` re-measures exactly those and their ancestors. A node that cannot be
+    /// inspected is invalidated too: stale is worse than a redundant measure.
     pub(super) fn mark_layout_dirty_nodes(&mut self) -> (usize, usize) {
         let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
         let dirty: Vec<NodeId> = self
@@ -204,9 +179,7 @@ impl FrameHarness {
         (dirty.len(), leaves)
     }
 
-    /// Compare the retained composition's geometry against a fresh rebuild of
-    /// the same state. Runs one forced full relayout, so it is a test and
-    /// diagnostics hook, not something a live host calls per frame.
+    /// Compare the retained composition's geometry against a fresh rebuild of the same state.
     pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
         self.invalidate_local();
         use crate::widget::layout::composition_geometry;
@@ -258,9 +231,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Debug builds only: after every `every`th retained frame, verify the
-    /// retained geometry against a fresh rebuild and panic on a mismatch.
-    /// `0` disables the check (the default).
+    /// Debug builds only: after every `every`th retained frame, verify the retained geometry against a
+    /// fresh rebuild and panic on a mismatch.
     pub fn set_retained_geometry_check(&mut self, every: u32) {
         self.invalidate_local();
         self.retained_geometry_check_every = if cfg!(debug_assertions) { every } else { 0 };

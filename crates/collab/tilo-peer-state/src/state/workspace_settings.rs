@@ -1,9 +1,10 @@
 //! The workspace's own settings: its name, its saved grant sets and their
 //! assignment, the actions its apps may use of each other, its apps' sandbox
-//! capabilities and its saved shortcuts, which every member reads from the
-//! workspace's governance document
+//! capabilities, its door and its saved shortcuts, which every member reads
+//! from the workspace's governance document
 //! ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::workspace_sandbox_of`],
+//! [`tilo_desktop_model::projection::workspace_door_of`],
 //! [`tilo_desktop_model::projection::workspace_shortcuts_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
@@ -14,7 +15,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, roles};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
 
@@ -29,8 +30,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority();
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
@@ -85,11 +85,11 @@ impl StatePeer {
                 // undoably: an outside effect still asks.
                 let grant = Grant::new(
                     action.grant_id().as_str(),
-                    Subject::App(action.app.clone()),
+                    Grantee::app(action.app.clone()),
                     action.node(&workspace.node()),
                     KindSet::READ_UNDOABLE,
                     Answer::Allow,
-                    Subject::person(member.person.as_str()),
+                    Grantee::person(member.person.as_str()),
                 )
                 .with_lifetime(Lifetime::UntilRevoked);
                 self.apply_member_change(
@@ -119,6 +119,10 @@ impl StatePeer {
                 }
                 self.governance_mut()
                     .put_governed_sandbox(&workspace.sandbox, key, now)
+            }
+            SettingsChange::Door(door) => {
+                let door = door.clone().checked().map_err(|error| error.to_string())?;
+                self.governance_mut().put_governed_door(&door, key, now)
             }
             SettingsChange::Shortcuts(change) => self
                 .workspace_mut()
@@ -152,14 +156,14 @@ fn app_action_grants(
     workspace: &tilo_desktop_model::Workspace,
     action: &crate::workspace_membership::AppAction,
 ) -> Vec<tilo_action_policy::GrantId> {
-    let subject = Subject::App(action.app.clone());
+    let subject = Grantee::app(action.app.clone());
     let node = action.node(&workspace.node());
     workspace
         .policy
         .grants
         .iter()
         .filter(|grant| {
-            grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+            grant.grantee == subject && (grant.node == node || node.covers(&grant.node))
         })
         .map(|grant| grant.id.clone())
         .collect()
@@ -188,6 +192,19 @@ fn grant_sandbox(
 }
 
 impl PeerGovernance<'_> {
+    /// The workspace's door, as its governance records it: whether a directory
+    /// lists it, and whom it lets in. Every host serving the workspace answers
+    /// its door from this one record.
+    #[must_use]
+    pub fn governed_door(self) -> tilo_action_policy::DoorPolicy {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map(projection::workspace_door_of)
+            .unwrap_or_default()
+    }
+
     /// The grant sets the workspace has saved, as its governance records them.
     #[must_use]
     pub fn governed_presets(self) -> Vec<tilo_action_policy::Preset> {
@@ -201,6 +218,24 @@ impl PeerGovernance<'_> {
 }
 
 impl PeerGovernanceMut<'_> {
+    /// Settle the workspace's door as `door`, written by `key`: whether a
+    /// directory lists it, whether it takes people by invitation only, and how
+    /// many requests it keeps. Answers whether governance changed.
+    ///
+    /// # Errors
+    ///
+    /// `key` is not a member's device, or governance cannot be updated.
+    pub fn put_governed_door(
+        self,
+        door: &tilo_action_policy::DoorPolicy,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.author(key, now, |doc| {
+            projection::project_workspace_door(doc, door)
+        })
+    }
+
     /// Make the workspace's saved grant sets `presets`, written by `key`. A set
     /// grants nothing itself; assigning it writes grants.
     /// Answers whether governance changed.

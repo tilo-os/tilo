@@ -42,7 +42,7 @@ fn export_is_withheld_with_its_reason_while_the_footage_is_elsewhere() {
     let (_, why) = node(&mut app, Role::Label, "Why export cannot run").unwrap();
     let reason = why.value().unwrap_or_default().to_string();
     assert!(
-        reason.contains("Drone_Coastline.mov") && reason.contains("onto this device"),
+        reason.contains("Drone_Coastline.mov") && reason.contains("does not have"),
         "and says why: {reason}"
     );
     let _ = app

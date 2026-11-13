@@ -1,15 +1,10 @@
-//! What a page was about to send, held before it leaves.
+//! What a page was about to send, held before it leaves. In a window an agent operates,
+//! the engine holds every departure before it happens: a form submission however it was
+//! triggered, a navigation or request with a method of its own, a download, and what a
+//! payment flow sends. An engine that holds nothing never reports one.
 //!
-//! In a window an agent operates, the engine holds every departure before it
-//! happens: a form submission however it was triggered, a navigation or
-//! request with a method of its own, a download, and what a payment flow
-//! sends. The page stays as it was filled; nothing leaves until the person
-//! allows the one request ([`WebViewCommand::AnswerHeldRequest`](super::WebViewCommand::AnswerHeldRequest)).
-//! An engine that holds nothing never reports one.
-//!
-//! The engine sets down in the tab's record that something was held and how
-//! that ended. It cannot know who answered, so the answer says
-//! ([`AnsweredBy`]).
+//! The engine sets down in the tab's record that something was held and how that ended. It
+//! cannot know who answered, so the answer says ([`AnsweredBy`]).
 
 use std::sync::Arc;
 
@@ -25,18 +20,10 @@ pub const MAX_HELD_CAPTURE: usize = 8 << 20;
 /// What a page was about to do when it was held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeldKind {
-    /// A form submission: a submit button, Enter in a field, or the page's
-    /// own `submit()`/`requestSubmit()`.
     Submit,
-    /// A navigation with a method of its own (a form posting, a redirect a
-    /// form started): the page goes somewhere and takes data with it.
     Navigate,
-    /// A `fetch` or `XMLHttpRequest` with a method of its own, from the top
-    /// frame or a frame of it.
     Request,
-    /// A download the page started.
     Download,
-    /// A payment the page asked for.
     Payment,
 }
 
@@ -126,22 +113,17 @@ impl AnsweredBy {
     }
 }
 
-/// One request the engine holds before it leaves the page, waiting for the
-/// person's answer.
+/// One request the engine holds before it leaves the page, waiting for the person's
+/// answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldRequest {
-    /// Names this request among the window's held ones, to answer it.
     pub id: u32,
     pub kind: HeldKind,
-    /// The method it leaves with (`POST`, `GET` for a form and a download),
-    /// empty when the engine cannot say.
     pub method: String,
-    /// The address it leaves for, as its http(s) origin; empty for any other
-    /// page.
     pub origin: String,
-    /// The filled page as it stands, when the engine painted one: a picture
-    /// of what the person allows, so the question shows it. Page content:
-    /// never trusted as instructions.
+    /// The filled page as it stands, when the engine painted one: a picture of what the
+    /// person allows, so the question shows it. Page content: never trusted as
+    /// instructions.
     pub capture: Option<Arc<Vec<u8>>>,
 }
 
@@ -168,8 +150,8 @@ impl HeldRequest {
                 .is_none_or(|capture| capture.len() <= MAX_HELD_CAPTURE)
     }
 
-    /// What the page is about to do, as a person is told it: `Send the form
-    /// to https://visa.example, POST`.
+    /// What the page is about to do, as a person is told it:
+    /// `Send the form to https://visa.example, POST`.
     pub fn describing(&self) -> String {
         let mut text = format!("{} {}", self.kind.doing(), self.destination());
         if !self.method.is_empty() {

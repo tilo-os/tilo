@@ -881,3 +881,189 @@ fn the_layout_places_the_controls_without_a_paint() {
         "inside the banner's slot: {placed:?} in {slot:?}"
     );
 }
+
+/// A banner a stack gives no slot — it is not a container of its bands, as an
+/// arranged column is not — still has its controls placed by the layout, in the
+/// box its own geometry says, every pass it is laid out in: a frame read before
+/// it is painted — a test, assistive technology, a press — finds them in it.
+#[test]
+fn a_banner_its_stack_gives_no_slot_places_its_controls_inside_it() {
+    use crate::widget::arrange::Stack as Arranged;
+    let state = crate::LocalState::new(Some(sync_failed()));
+    let mut d = FrameHarness::for_root(
+        State::new(),
+        Arranged::stack()
+            .push(Box::new(
+                Banner::from_state(&state)
+                    .with_id("sync")
+                    .with_action(Button::new("sync.retry", "Try again")),
+            ))
+            .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
+        (640, 400),
+        Theme::dark(),
+    );
+    d.relayout();
+    // The box the banner is drawn in: its own at rest, its slot on its way.
+    let inside = |d: &FrameHarness, what: &str| {
+        let box_ = d.root_widget().children()[0].paint_bounds();
+        let action = d.targets()["sync.retry"];
+        assert!(
+            !action.is_zero_area(),
+            "{what}: the action stands where the layout put it: {action:?}"
+        );
+        assert!(
+            box_.contains(action.center()) && action.y1 <= box_.y1 + 0.5,
+            "{what}: the action {action:?} stands in the banner {box_:?}"
+        );
+    };
+    inside(&d, "at rest");
+
+    // The window goes offline, then comes back a size narrower: the banner is
+    // laid out again where it stands, and its controls follow it there.
+    let frame = crate::motion::pin_frame();
+    state.set(None);
+    d.relayout();
+    state.set(Some(sync_failed()));
+    d.relayout();
+    d.relayout_at((420, 400)).expect("lies out narrower");
+    inside(&d, "on its way, laid out narrower");
+    drop(frame);
+    let _settled = crate::motion::testing::settled();
+    d.relayout();
+    inside(&d, "at rest narrower");
+}
+
+/// The type the person chose — a face whose letterforms are told apart, and
+/// "Always distinguish similar letters" on — is the type the box the layout
+/// gives the banner and the controls it places there are both measured in: the
+/// action stands in the box the same type sized.
+#[test]
+fn a_themed_banner_measures_and_places_with_the_same_type() {
+    let mut theme = Theme::light().with_text_scale(1.5);
+    theme
+        .tokens
+        .typography
+        .set_face(crate::tokens::UiFace::Hyperlegible.name());
+    theme.tokens.typography.distinct_letters = true;
+    let notice = sync_failed().source("Illinois 1011 mail");
+    let state = crate::LocalState::new(Some(notice.clone()));
+    let banner = || {
+        Banner::from_state(&state)
+            .with_id("sync")
+            .with_action(Button::new("sync.retry", "Try again"))
+    };
+    let mut d = FrameHarness::for_root(
+        State::new(),
+        Column::new().push(Box::new(banner())),
+        (420, 400),
+        theme.clone(),
+    );
+    d.relayout();
+    let box_ = d.targets()["sync"];
+    let placed = d.targets()["sync.retry"];
+
+    // The same measurement, taken the way a caller outside the layout takes it: in the theme's
+    // own type.
+    let mut text = TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog())
+        .expect("the fixture fonts load");
+    text.set_text_scale(theme.text_scale);
+    text.apply_typography(&theme.tokens.typography);
+    let content = BannerContent::new(notice.kind, &notice.title)
+        .with_message(notice.message.as_deref())
+        .with_source(notice.source.as_deref())
+        .action("Try again");
+    let height = Banner::height(&content, box_.width(), &mut text, &theme);
+    assert!(
+        (box_.height() - height).abs() <= 1.0,
+        "the box the layout gives it is the height its text takes: {:?} against {height}",
+        box_.height()
+    );
+    assert!(
+        !placed.is_zero_area() && box_.contains(placed.center()) && placed.y1 <= box_.y1 + 0.5,
+        "the action {placed:?} stands inside the box the same type measured {box_:?}"
+    );
+}
+
+/// A banner painted at `width`: its box, and the tops of the lines it paints, each once.
+fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let height = Banner::height(content, width, &mut text, &theme);
+    let rect = Rect::new(0.0, 0.0, width, height);
+    let mut scene = Scene::new();
+    Banner::paint(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        rect,
+        content,
+        Point::new(-1.0, -1.0),
+    );
+    let mut tops: Vec<f64> = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| f64::from(run.transform.translation[1]))
+        .collect();
+    tops.sort_by(f64::total_cmp);
+    tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    (rect, tops)
+}
+
+/// What sent a banner is a line of its own above the title, and a reader hears it with what the
+/// banner says; a banner that names no sender has no such line.
+#[test]
+fn a_banner_names_what_sent_it_above_the_title() {
+    let bare = BannerContent::new(BannerKind::Error, "Build failed")
+        .with_message(Some("The link check found 4 broken links."));
+    let sent = bare.clone().with_source(Some("Forgejo"));
+    let (bare_box, lines) = lines_of(&bare, 600.0);
+    let (sent_box, with_sender) = lines_of(&sent, 600.0);
+    assert_eq!(lines.len(), 2, "the title and its message: {lines:?}");
+    assert_eq!(
+        with_sender.len(),
+        3,
+        "the sender above them: {with_sender:?}"
+    );
+    assert!(
+        with_sender[0] < lines[0],
+        "the sender is the first line: {with_sender:?} against {lines:?}"
+    );
+    let caption = f64::from(Theme::dark().tokens.typography.size(TextRole::Caption));
+    assert!(
+        sent_box.height() >= bare_box.height() + caption,
+        "the sender takes a line of its own: {bare_box:?} -> {sent_box:?}"
+    );
+    assert!(
+        with_sender
+            .iter()
+            .all(|top| *top >= sent_box.y0 && top + caption <= sent_box.y1),
+        "every line stands inside the banner: {with_sender:?} in {sent_box:?}"
+    );
+    assert_eq!(
+        lines_of(&bare.with_source(Some("")), 600.0),
+        (bare_box, lines.clone()),
+        "a sender that names nothing shows no line"
+    );
+
+    let announced = Banner::error("Build failed")
+        .with_message("The link check found 4 broken links.")
+        .with_source("Forgejo");
+    let node = Widget::accessibility(&announced).expect("banner exposes a11y");
+    assert_eq!(node.name.as_deref(), Some("Build failed"));
+    let description = node.description.unwrap_or_default();
+    assert!(
+        description.contains("Forgejo")
+            && description.contains("The link check found 4 broken links."),
+        "the reader hears who sent it and what it says: {description}"
+    );
+    let unnamed =
+        Banner::error("Build failed").with_message("The link check found 4 broken links.");
+    assert_eq!(
+        Widget::accessibility(&unnamed)
+            .unwrap()
+            .description
+            .as_deref(),
+        Some("The link check found 4 broken links."),
+        "a banner with no sender says only what it says"
+    );
+}

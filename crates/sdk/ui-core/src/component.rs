@@ -128,20 +128,15 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A Rust type a prop (or state, or an event's value) may have: its [`Type`] in a description,
-/// and how a [`Value`] of it reads.
+/// A Rust type a prop (or state, or an event's value) may have: its [`Type`] in a description, and how
+/// a [`Value`] of it reads.
 pub trait PropType: Sized {
     fn ty() -> Type;
 
-    /// # Errors
-    /// The value is of another type.
     fn from_value(value: &Value) -> Result<Self, String>;
 
-    /// The value as the instance `source` gives it: what it reads beside the value itself (the
-    /// event an offered action fires) is the instance's.
-    ///
-    /// # Errors
-    /// The value is of another type.
+    /// The value as the instance `source` gives it: what it reads beside the value itself (the event an
+    /// offered action fires) is the instance's.
     fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
         let _ = source;
         Self::from_value(value)
@@ -302,8 +297,8 @@ pub struct OfferedAction {
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
     pub on: Option<bool>,
-    /// The plain key that runs it while its window has the keyboard (and, on a row's action,
-    /// while that row is selected), as the app declared it.
+    /// The plain key that runs it while its window has the keyboard (and, on a row's action, while that
+    /// row is selected), as the app declared it.
     pub key: Option<String>,
     pub run: Event,
 }
@@ -313,7 +308,6 @@ impl PropType for OfferedAction {
         Type::Action
     }
 
-    /// An action read without its instance runs nothing.
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Action(offered) = value else {
             return Err(wrong(&Self::ty(), value));
@@ -361,9 +355,7 @@ impl PropType for Icon {
 pub struct Person {
     pub identity: String,
     pub name: String,
-    /// The hue their chip and avatar wear. A value names an identity and a name only, so a person
-    /// read from one wears the hue their identity derives ([`PresenceHue::of_identity`]); one a
-    /// host knows more of is given the hue the member list announced.
+    /// The hue their chip and avatar wear.
     pub hue: crate::tokens::PresenceHue,
 }
 
@@ -410,8 +402,8 @@ impl PropType for Person {
     }
 }
 
-/// A case of one of the app's own enums, by its name, as a binding says it: which cases it
-/// holds is the field the binding names, so a description says only that it takes one.
+/// A case of one of the app enums, by its name, as a binding says it: which cases it has is the field
+/// the binding names, so a description says only that it takes one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EnumCase;
 
@@ -426,8 +418,7 @@ impl PropType for EnumCase {
     }
 }
 
-/// A moment, as a component shows one: the instant, in seconds since the Unix epoch. The
-/// component decides how it reads (a time of day, a day's divider).
+/// A moment, as a component shows one: the instant, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Moment(pub i64);
 
@@ -436,8 +427,6 @@ impl PropType for Moment {
         Type::Time
     }
 
-    /// A moment is an instant (`YYYY-MM-DDTHH:MM:SSZ`), or the day it falls on (`YYYY-MM-DD`,
-    /// its midnight): that is what a day's field binds.
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Text(at) => moment_of(at).ok_or_else(|| format!("is no moment: {at}")),
@@ -446,8 +435,8 @@ impl PropType for Moment {
     }
 }
 
-/// The instant `at` is, in seconds since the Unix epoch: its instant, or the midnight of the
-/// day it names.
+/// The instant `at` is, in seconds since the Unix epoch: its instant, or the midnight of the day it
+/// names.
 fn moment_of(at: &str) -> Option<Moment> {
     if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(at) {
         return Some(Moment(instant.timestamp()));
@@ -460,7 +449,6 @@ fn moment_of(at: &str) -> Option<Moment> {
 /// The day a moment's text names: its date, or the day an instant falls on.
 #[must_use]
 pub fn moment_day(text: &str) -> Option<chrono::NaiveDate> {
-    // An instant falls on the day it is in the person's zone, which is the day they picked.
     if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
         return Some(at.with_timezone(&chrono::Local).date_naive());
     }
@@ -489,7 +477,7 @@ impl PropType for ResourceId {
 /// renamed later reads by its new title wherever it was linked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Link {
-    /// What refers to it: the catalogue's reference, the value a `mention` mark carries.
+    /// What refers to it: the catalogue's reference, the value a `mention` mark has.
     pub reference: String,
     /// How it reads for the person now: its title, or the phrase for one they cannot read.
     pub title: String,
@@ -511,9 +499,6 @@ impl PropType for Link {
     }
 }
 
-/// One of the design system's closed sets (a role, a size) as a prop: [`Type::Choice`] of its
-/// cases' snake-case names. Crate-wide, so a component declares its choices beside itself:
-/// `crate::component::choice!(MyRole, "MyRole", { A => "a", B => "b" });`.
 macro_rules! choice {
     ($ty:ty, $name:literal, { $($case:ident => $text:literal),+ $(,)? }) => {
         impl $crate::component::PropType for $ty {
@@ -543,8 +528,6 @@ macro_rules! choice {
 )]
 pub(crate) use choice;
 
-/// A slot of any number of one part, whose props the slot's owner reads (a stat group's tiles,
-/// a trail's segments): `crate::component::part_slot!(FactProps);` beside the part.
 macro_rules! part_slot {
     ($props:ty) => {
         impl $crate::component::SlotType for Vec<$props> {
@@ -646,8 +629,8 @@ impl std::fmt::Debug for Event {
     }
 }
 
-/// An event a component reports to its host: which instance (by key) and which event, with the
-/// value the event carries.
+/// An event a component reports to its host: which instance (by key) and which event, with the value
+/// the event has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fired {
     pub key: String,
@@ -684,7 +667,7 @@ impl Intent {
         });
     }
 
-    /// A handler that queues the intent each time it runs, for a widget's own activation path.
+    /// A handler that queues the intent each time it runs, for a widget activation path.
     pub fn sender(&self) -> impl FnMut() + 'static {
         let intent = self.clone();
         move || intent.fire(None)
@@ -692,16 +675,14 @@ impl Intent {
 }
 
 impl Event {
-    /// Queue a view intent, carrying `value`. An action is run through its widget's emitter
-    /// ([`Self::handler`]), which knows whether it is available.
+    /// Queue a view intent, carrying `value`.
     pub fn fire(&self, value: Option<Value>) {
         if let Self::View(intent) = self {
             intent.fire(value);
         }
     }
 
-    /// The event as the handler of a widget that runs one when it happens: `None` for
-    /// [`Event::None`].
+    /// The event as the handler of a widget that runs one when it happens: `None` for [`Event::None`].
     #[must_use]
     pub fn handler(self) -> Option<Box<dyn FnMut()>> {
         match self {
@@ -719,17 +700,17 @@ impl Event {
     }
 }
 
-/// A two-way binding as a widget takes it: the value through the widget's model-binding path
-/// (a [`LocalState`] its host keeps in step with what it is bound to), and where each edit is
-/// reported, for the host to apply with the binding's merge.
+/// A two-way binding as a widget takes it: the value through the widget's model-binding path (a
+/// [`LocalState`] its host keeps in step with what it is bound to), and where each edit is reported,
+/// for the host to apply with the binding's merge.
 #[derive(Clone)]
 pub struct Bound<T> {
     pub state: LocalState<T>,
     pub edits: Option<Intent>,
     /// What the bound value is called, for assistive technology: the field's name.
     pub name: String,
-    /// Where the bound value lives, for presence: collaborators at the same path see each
-    /// other's carets and selections in it.
+    /// Where the bound value lives, for presence: collaborators at the same path see each other's
+    /// carets and selections in it.
     pub path: Vec<crate::presence::PathSegment>,
 }
 
@@ -768,8 +749,6 @@ pub enum BoundValue {
 pub trait BindType: Sized {
     fn ty() -> Type;
 
-    /// # Errors
-    /// The host bound a value of another type.
     fn from_bound(bound: BoundValue) -> Result<Self, String>;
 }
 
@@ -838,7 +817,6 @@ impl BindType for Bound<tilo_ui_graph::rich::RichText> {
     }
 }
 
-/// What a binding of another type is, for the message saying it fits neither.
 impl BoundValue {
     fn kind(&self) -> &'static str {
         match self {
@@ -871,7 +849,6 @@ impl BoundValue {
     }
 }
 
-/// A binding a widget may go without: `None` when the instance binds nothing.
 impl<B: BindType> BindType for Option<B> {
     fn ty() -> Type {
         B::ty()
@@ -882,19 +859,15 @@ impl<B: BindType> BindType for Option<B> {
     }
 }
 
-/// A Rust type a slot may have: [`Option<Element>`] for one view, [`Vec<Element>`] for any
-/// number, `Option<P>` of another component's props for that component only (the derive
-/// implements it).
+/// A Rust type a slot may have: [`Option<Element>`] for one view, [`Vec<Element>`] for any number,
+/// `Option<P>` of another component's props for that component only (the derive implements it).
 pub trait SlotType {
-    /// Whether it holds any number of children.
+    /// Whether it has any number of children.
     const MANY: bool;
 
     fn accepts() -> Accepts;
 
     /// Take the slot `slot`'s content from `source`.
-    ///
-    /// # Errors
-    /// The content does not fit the slot.
     fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String>;
 }
 
@@ -928,8 +901,8 @@ impl SlotType for Vec<Element> {
     }
 }
 
-/// An instance of a component as its host gives it: the values of its props, its events and
-/// bindings as data, and its slots' content.
+/// An instance of a component as its host gives it: the values of its props, its events and bindings as
+/// data, and its slots' content.
 pub trait Source {
     /// The instance's stable key.
     fn key(&self) -> &str;
@@ -952,31 +925,27 @@ pub trait Source {
     /// The views in the slot `slot`, built.
     fn children(&mut self, slot: &str) -> Vec<Element>;
 
-    /// Each component in the slot `slot`, in order, read by `read`. Returns how many there
-    /// were.
-    ///
-    /// # Errors
-    /// What `read` returned, or the slot holds something other than a component.
+    /// Each component in the slot `slot`, in order, read by `read`.
     fn components(
         &mut self,
         slot: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<usize, String>;
 
-    /// The component each child of the slot `slot` is an instance of, in order: `None` for a
-    /// child that is a view of another kind.
+    /// The component each child of the slot `slot` is an instance of, in order: `None` for a child that
+    /// is a view of another kind.
     fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
         let _ = slot;
         Vec::new()
     }
 
-    /// Whether the slot `slot` holds anything: a view or a component, built or not.
+    /// Whether the slot `slot` has anything: a view or a component, built or not.
     fn holds(&mut self, slot: &str) -> bool {
         !self.slot_kinds(slot).is_empty()
     }
 
-    /// The rows of the slot `slot` when its host renders them only as they are shown (a loop
-    /// over a collection of any length): the widget reads them from there rather than from
+    /// The rows of the slot `slot` when its host renders them only as they are shown (a loop over a
+    /// collection of any length): the widget reads them from there rather than from
     /// [`Self::components`].
     fn rows(&mut self, slot: &str) -> Option<SharedRows> {
         let _ = slot;
@@ -984,10 +953,8 @@ pub trait Source {
     }
 }
 
-/// Rows its host renders only when the widget shows them: a loop over ten thousand items costs
-/// the rows on screen. The host keeps the keys of every row, renders the rows the widget asks
-/// for and forgets the others, and queues what changed (rows inserted, removed or moved, and
-/// rendered rows that show something else now) for the widget to take.
+/// Rows its host renders only when the widget shows them: a loop over ten thousand items costs the rows
+/// on screen.
 pub trait RowSource {
     /// How many rows there are, rendered or not.
     fn len(&self) -> usize;
@@ -999,12 +966,10 @@ pub trait RowSource {
     /// The key of the row at `index`.
     fn key_at(&self, index: usize) -> Option<String>;
 
-    /// Where the row `key` stands.
+    /// Where the row `key` is.
     fn index_of(&self, key: &str) -> Option<usize>;
 
     /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
-    /// Render the rows of `range` as they are shown, and the document of the row `open` — the
-    /// row standing open into its item where it stands, when one does.
     fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<String>);
 
     /// Whether the row `key` is rendered now, its content there to read: a row named but not
@@ -1012,24 +977,16 @@ pub trait RowSource {
     /// arrives ([`crate::widget::virtual_list::ListModel::row_state`]).
     fn rendered(&self, key: &str) -> bool;
 
-    /// Read the rendered row `key` as an instance of a component: `Ok(false)` when it is not
-    /// rendered.
-    ///
-    /// # Errors
-    /// What `read` returned.
+    /// Read the rendered row `key` as an instance of a component: `Ok(false)` when it is not rendered.
     fn read(
         &mut self,
         key: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<bool, String>;
 
-    /// Read the rendered row `key` for its own props and what its slots hold, building none of
-    /// its views: what a list reads of a row beside building it (its group, its place in a
-    /// tree, the item it shows), which it asks for every row it holds on every pass. `Ok(false)`
-    /// when it is not rendered.
-    ///
-    /// # Errors
-    /// What `read` returned.
+    /// Read the rendered row `key` for its props and what its slots hold, building none of its views:
+    /// what a list reads of a row beside building it (its group, its place in a tree, the item it
+    /// shows), which it asks for every row it has on every pass.
     fn read_props(
         &mut self,
         key: &str,
@@ -1041,8 +998,7 @@ pub trait RowSource {
     /// The key of the row showing the resource `id`, rendered or not.
     fn key_presenting(&self, id: &str) -> Option<String>;
 
-    /// What changed since it was asked last, each change against the rows the one before it
-    /// left.
+    /// What changed since it was asked last, each change against the rows the one before it left.
     fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>>;
 
     /// Whether changes are waiting.
@@ -1052,17 +1008,14 @@ pub trait RowSource {
 /// Rows a host and the widget showing them share.
 pub type SharedRows = std::rc::Rc<std::cell::RefCell<dyn RowSource>>;
 
-/// A widget's props: the struct its instances are made of. Derive it.
+/// A widget's props: the struct its instances are made of.
 pub trait Component: Default + Sized {
     /// The component's name, as code calls it.
     const NAME: &'static str;
 
     fn describe() -> Description;
 
-    /// The props `source` gives.
-    ///
-    /// # Errors
-    /// A required prop is missing, or a value is of another type.
+    /// The props `source` gives. # Errors A required prop is missing, or a value is of another type.
     fn from_source(source: &mut dyn Source) -> Result<Self, Error>;
 }
 
@@ -1070,7 +1023,7 @@ pub trait Component: Default + Sized {
 /// key: a change of a slot's content costs what changed, and is described to the window
 /// ([`crate::widget::StructureChange::Described`]) rather than rebuilding the widget.
 pub trait SlotViews {
-    /// How many views the slot holds.
+    /// How many views the slot has.
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
@@ -1117,11 +1070,6 @@ impl<L: crate::widget::arrange::Layout + 'static> SlotViews
 }
 
 /// A widget made from props.
-///
-/// A described widget answers its own type through [`crate::widget::Widget::as_any_mut`]: the
-/// adapter reaches it with that to change its props in place, and a widget that answers no
-/// type is built again on every change it is told about. Declare the answer inside its
-/// [`Widget`](crate::widget::Widget) impl with [`crate::described!`].
 pub trait Described: crate::widget::Widget + Sized + 'static {
     type Props: Component;
 
@@ -1135,29 +1083,29 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
         false
     }
 
-    /// The views of its slot `slot`, to change by key in place: `None` when a change of what
-    /// the slot holds builds the widget again.
+    /// The views of its slot `slot`, to change by key in place: `None` when a change of what the slot
+    /// has builds the widget again.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         let _ = slot;
         None
     }
 
-    /// The views its slot `slot` holds for the part `key` — a part being a component the slot
-    /// takes, whose props the widget reads — in that part's own view slot `of`, to change them
-    /// by key where they stand. `None` when a change inside a part builds the widget again.
+    /// The views its slot `slot` has for the part `key` — a part being a component the slot takes,
+    /// whose props the widget reads — in that part view slot `of`, to change them by key where they
+    /// stand.
     fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
         let _ = (slot, key, of);
         None
     }
 }
 
-/// Say that a described widget is its own type, inside its [`Widget`](crate::widget::Widget)
+/// Say that a described widget is its type, inside its [`Widget`](crate::widget::Widget)
 /// impl: `described!();`.
 ///
 /// Without it the adapter reaches the widget as `dyn Widget`, cannot downcast it, and builds it
 /// again on every change it is told about, so what the person was doing with it — the focus in a
 /// field, a drag, the menu a press opened — goes with it. Every described component of the
-/// toolkit answers this; `component::tests` builds each one from the catalogue and holds it to it.
+/// toolkit answers this; `component::tests` builds each one from the catalogue and has it to it.
 #[macro_export]
 macro_rules! described {
     () => {
@@ -1192,10 +1140,6 @@ pub fn entry<W: Described>() -> Entry {
         let key = source.key().to_owned();
         let props = W::Props::from_source(source)?;
         let mut widget = W::from_props(&key, props);
-        // A widget just built owes the host no structure change: its props are read before the
-        // host builds its layout, so the build realises what they set. A flag left over from
-        // building it would rebuild the host's whole layout tree — a row's document opening
-        // into its list, a note opened beside its tree, mounted where it stands.
         widget.take_structure_dirty();
         Ok(Box::new(widget))
     }
@@ -1238,9 +1182,9 @@ pub fn entry<W: Described>() -> Entry {
 
 include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
 
-/// Every described widget: generated by the build script from each `impl Described` in the
-/// toolkit's sources (`component_scan.rs`), so a widget described where it is written is
-/// registered with no list to add it to.
+/// Every described widget: generated by the build script from each `impl Described` in the toolkit's
+/// sources (`component_scan.rs`), so a widget described where it is written is registered with no list
+/// to add it to.
 #[must_use]
 pub fn registry() -> &'static [Entry] {
     static REGISTRY: std::sync::OnceLock<Vec<Entry>> = std::sync::OnceLock::new();
@@ -1254,37 +1198,29 @@ pub fn get(name: &str) -> Option<&'static Entry> {
 }
 
 /// Build the component `name` of `source`.
-///
-/// # Errors
-/// `name` is not described, or `source`'s props do not fit it.
 pub fn build(name: &str, source: &mut dyn Source) -> Result<Element, Error> {
     let entry = get(name).ok_or_else(|| Error::unknown(name))?;
     (entry.build)(source)
 }
 
-/// Bring `widget`, built for an instance of `name`, to `source`'s props in place: `Ok(false)`
-/// when it is to be built again.
-///
-/// # Errors
-/// `name` is not described, or `source`'s props do not fit it.
+/// Bring `widget`, built for an instance of `name`, to `source`'s props in place: `Ok(false)` when it
+/// is to be built again.
 pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Result<bool, Error> {
     let entry = get(name).ok_or_else(|| Error::unknown(name))?;
     (entry.update)(widget, source)
 }
 
-/// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places and sections, a menu's commands, separators and
-/// emoji bar, a row's swipe, the items of a virtual list, and what a view attaches to the
-/// element it stands in (its context menu, hover toolbar and swipe). Generated: every
-/// `#[derive(Component)]` props that no described widget is built from.
+/// The components that stand only in a slot of another, which reads their props: a property list's
+/// facts, a navigation list's places and sections, a menu's commands, separators and emoji bar, a row's
+/// swipe, the items of a virtual list, and what a view attaches to the element it is in (its context
+/// menu, hover toolbar and swipe).
 #[must_use]
 pub fn parts() -> &'static [fn() -> Description] {
     &GENERATED_PARTS
 }
 
-/// The views its slot `slot` holds for the part `key`, in the part's own view slot `of`, built
-/// for an instance of `name`, to change by key in place: `None` when the widget changes them
-/// only by being built again.
+/// The views its slot `slot` has for the part `key`, in the part view slot `of`, built for an instance
+/// of `name`, to change by key in place: `None` when the widget changes them only by being built again.
 pub fn part_views<'a>(
     name: &str,
     widget: &'a mut Element,
@@ -1296,8 +1232,8 @@ pub fn part_views<'a>(
     (entry.part_views)(widget, slot, key, of)
 }
 
-/// The views of the slot `slot` of `widget`, built for an instance of `name`, to change by key
-/// in place: `None` when the widget changes them only by being built again.
+/// The views of the slot `slot` of `widget`, built for an instance of `name`, to change by key in
+/// place: `None` when the widget changes them only by being built again.
 pub fn slot_views<'a>(
     name: &str,
     widget: &'a mut Element,

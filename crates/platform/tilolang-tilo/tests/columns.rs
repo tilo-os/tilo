@@ -951,6 +951,65 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
     );
 }
 
+/// The inbox's app ([`INBOX_VIEW`]) with what a person does to a conversation: snooze it until a
+/// moment.
+fn snoozing() -> String {
+    format!(
+        "{INBOX_VIEW}\naction snooze(t: Thread, until: Time) {{\n    t.snoozed_until = until\n}}\n"
+    )
+}
+
+// USER REQUIREMENT: a conversation snoozed just now comes back at its moment, with no window
+// open: the window waits for that moment, and the store's own write holds it before the record
+// brings it back.
+#[test]
+fn a_snooze_an_action_just_set_is_the_moment_the_view_waits_for() {
+    let (mut ada, meta, mail) = inbox_workspace_of(&snoozing(), 3, |_, _, _| {});
+    let thread = meta.types.iter().find(|t| t.name == "Thread").unwrap();
+    assert_eq!(
+        texts(ada.view(INBOX_APP).tree()).len(),
+        3,
+        "three conversations are in the inbox"
+    );
+    let first = inbox_listing(&ada, &meta, &mail)
+        .ids()
+        .into_iter()
+        .next()
+        .map(|id| mail.item(&id, thread.id.clone()))
+        .expect("the inbox lists a conversation");
+    let moment = "2027-01-01T00:00:00Z";
+    let action = meta.actions.iter().find(|a| a.name == "snooze").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (
+                action.id.as_str(),
+                vec![Value::resource(&first), Value::text(moment)],
+            ),
+        )
+        .unwrap();
+    // The write is the store's: the record has not brought it back yet, and the view that reads
+    // the inbox waits for the moment the conversation comes back.
+    let view = ada.view(INBOX_APP);
+    assert_eq!(
+        texts(view.tree()).len(),
+        2,
+        "the snoozed conversation is out of the inbox"
+    );
+    assert_eq!(
+        view.wakes_at(),
+        tilolang::calendar::instant(moment),
+        "the snooze the action set is the moment the view waits for"
+    );
+    ada.commit();
+    assert_eq!(
+        view.wakes_at(),
+        tilolang::calendar::instant(moment),
+        "and it is once the record holds it"
+    );
+}
+
 /// The inbox filter's answers for a clock that runs behind the process's own, as a test's pinned
 /// clock and a device whose clock was corrected backwards do.
 #[test]

@@ -1,10 +1,8 @@
-//! What a frame shows an inspector, a screen reader and an automated check:
-//! the widget and semantic tree, the named targets a caller addresses, and
-//! the accessibility issues a driven frame reports. [`FrameHarness`] builds
-//! its [`InspectionSnapshot`](super::InspectionSnapshot) and
-//! [`AccessibilityAudit`](super::AccessibilityAudit) through these; the
-//! spec's `targets`, `inspect`, `audit` and `expect` outputs are read
-//! through them.
+//! What a frame shows an inspector, a screen reader and an automated check: the widget and semantic
+//! tree, the named targets a caller addresses, and the accessibility issues a driven frame reports.
+//! [`FrameHarness`] builds its [`InspectionSnapshot`](super::InspectionSnapshot) and
+//! [`AccessibilityAudit`](super::AccessibilityAudit) through these; the spec's `targets`, `inspect`,
+//! `audit` and `expect` outputs are read through them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,8 +13,8 @@ use crate::widget::Widget;
 
 use super::{AccessibilityIssue, InspectionNode};
 
-/// The node a semantic `target` names: the one whose action target or semantic key is `target`
-/// — the latter is the name the accessibility tree keys a node by (a list row an agent chooses).
+/// The node a semantic `target` names: the one whose action target or semantic key is `target` — the
+/// latter is the name the accessibility tree keys a node by (a list row an agent chooses).
 pub(super) fn find_semantic_target<'a>(
     node: &'a AccessNode,
     target: &str,
@@ -71,8 +69,8 @@ pub(super) fn compare_bool(
     }
 }
 
-/// The editable text's selection, as the anchor and focus the widget published
-/// for it: absent when nothing published a selection.
+/// The editable text's selection, as the anchor and focus the widget published for it: absent when
+/// nothing published a selection.
 pub(super) fn compare_text_selection(
     mismatches: &mut Vec<String>,
     field: &str,
@@ -171,8 +169,6 @@ pub(super) fn collect_targets(
     let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
         return;
     };
-    // What a widget hides is not on screen: no name reaches it, and the
-    // pointer passes through it, as [`crate::pick`] reads a hidden node.
     if w.accessibility_hidden() {
         return;
     }
@@ -207,8 +203,6 @@ pub(super) fn collect_targets(
     }
 }
 
-/// Where the control `id` names sits in `node`'s tree, if one of its nodes
-/// is that control.
 fn control_bounds(node: &crate::a11y::AccessNode, id: &str) -> Option<crate::a11y::AccessBounds> {
     if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
         return node.bounds;
@@ -257,11 +251,9 @@ pub(super) fn collect_named_targets(
     for_each_retained_child(widget, &mut visit);
 }
 
-/// Every child a walk of the retained tree must see, in the order it lists
-/// them: those the widget routes input to, then the ones it hosts without
-/// routing — a subtree it does not own and answers the person's events for
-/// itself, like the chrome's search card. Hosted children come last, so the
-/// paths and sibling indices of everything routed stay as they were.
+/// Every child a walk of the retained tree must see, in the order it lists them: those the widget
+/// routes input to, then the ones it hosts without routing — a subtree it does not own and answers the
+/// person's events for itself, like the chrome's search card.
 fn for_each_retained_child(widget: &dyn Widget, visit: &mut dyn FnMut(&dyn Widget)) {
     for child in widget.children() {
         visit(child);
@@ -296,8 +288,6 @@ pub(super) fn collect_inspection(
     if let Some(node) = &mut semantics {
         crate::a11y_tree::walk::with_slot_words(node, slot.as_ref());
     }
-    // A widget with no node of its own that holds one child stands for that
-    // child, as it does in the accessibility walk.
     let children_of = widget.children().len();
     let inherited = (semantics.is_none() && children_of == 1)
         .then_some(slot)
@@ -349,9 +339,8 @@ pub(super) fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<Acce
     }
 }
 
-/// Every semantic control a binding may stand behind: the effect-capable
-/// roles, and a focusable list item, which is pressed as a whole (a list
-/// row bound through `ListRow::on_view`).
+/// Every semantic control a binding may stand behind: the effect-capable roles, and a focusable list
+/// item, which is pressed as a whole (a list row bound through `ListRow::on_view`).
 pub(super) fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
     effect_control_ids_of(node, &|_| true, true)
 }
@@ -387,10 +376,8 @@ fn effect_control_ids_of(
     controls
 }
 
-/// Which semantic nodes count as controls.
 struct EffectFilter<'a> {
     include: &'a dyn Fn(&AccessNode) -> bool,
-    /// Count a focusable list, tree or menu item too.
     pressable_items: bool,
 }
 
@@ -529,9 +516,6 @@ fn audit_access_node_contract(node: &AccessNode, path: &str, issues: &mut Vec<Ac
 }
 
 fn audit_access_children(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
-    // A child is keyed when its id stays the same across a rebuild: by the key
-    // it hashed, or by the semantic key it named — the same test the semantic
-    // tree gives a synthetic node's durability.
     let keyed = node
         .children
         .iter()

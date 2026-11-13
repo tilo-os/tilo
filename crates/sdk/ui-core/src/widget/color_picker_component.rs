@@ -5,8 +5,8 @@ use crate::widget::ColorSwatch;
 
 use super::ColorPicker;
 
-/// A colour, picked from a saturation and value field, a hue strip, the red, green and blue
-/// sliders, or a hex field; a palette of quick picks sits under them when given.
+/// A colour, picked from a saturation and value field, a hue strip, the red, green and blue sliders, or
+/// a hex field; a palette of quick picks sits under them when given.
 #[derive(Component)]
 #[component(name = "ColorPicker", role = "Group", label = "label")]
 pub struct ColorPickerProps {
@@ -37,7 +37,6 @@ impl Default for ColorPickerProps {
     }
 }
 
-/// The colour `hex` names, when it is one.
 fn color_of(hex: &str) -> Option<vello::peniko::Color> {
     crate::color::parse_hex(hex.trim())
 }
@@ -54,7 +53,6 @@ impl Described for ColorPicker {
             ..
         } = props;
         let shown = value.clone();
-        // A field with no colour yet starts at the first colour offered, else at none.
         let fallback = swatches
             .iter()
             .find_map(|hex| color_of(hex))
@@ -77,7 +75,6 @@ impl Described for ColorPicker {
         picker
     }
 
-    /// A colour set elsewhere is shown in place; other swatches are built again.
     fn set_props(&mut self, props: ColorPickerProps) -> bool {
         // A colour set elsewhere shows in place through the binding, and so does its spoken
         // name; a palette of quick picks is what it is built around, so one that carries any

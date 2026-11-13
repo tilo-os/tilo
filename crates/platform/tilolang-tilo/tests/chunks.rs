@@ -148,7 +148,7 @@ fn a_record_split_over_two_chunks_reads_writes_and_syncs_each_resource_through_i
     // A record the manifest places in chunk 1 is made there, and read back from there.
     let new = NewRecord {
         ty: list,
-        app: APP.to_owned(),
+        app: tilolang_runtime::ids::AppId::from(APP),
         fields: Vec::new(),
     };
     let before = held(&host);
@@ -177,7 +177,7 @@ fn a_change_to_a_resource_in_a_chunk_reaches_only_that_chunk() {
             .create_with_id(
                 &NewRecord {
                     ty: list.clone(),
-                    app: APP.to_owned(),
+                    app: tilolang_runtime::ids::AppId::from(APP),
                     fields: Vec::new(),
                 },
                 id,
@@ -255,19 +255,12 @@ impl Docs {
         self.0.open(chunk)
     }
 
-    /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
-    /// the record's manifest places its resource.
+    /// Apply `action` as its edits are written: an edit names its chunk, or goes where the
+    /// record routes it ([`Chunks::chunk_of`]).
     pub(crate) fn apply(&mut self, action: &DynAction) {
         let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
-        let placement = self
-            .0
-            .first()
-            .map(chunk::Placement::read)
-            .unwrap_or_default();
         for edit in &action.edits {
-            let chunk = edit
-                .chunk()
-                .unwrap_or_else(|| placement.chunk(edit.resource()));
+            let chunk = self.0.chunk_of(edit);
             edits
                 .entry(chunk)
                 .or_default()

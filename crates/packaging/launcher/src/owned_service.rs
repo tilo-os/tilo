@@ -1,5 +1,5 @@
-//! Signed services whose successful exit proves their private PID namespace
-//! has finished. Ordinary bwrap leader exit is deliberately not this witness.
+//! Signed services whose successful exit proves their private PID namespace has
+//! finished. Ordinary bwrap leader exit is deliberately not this witness.
 use crate::{
     managed::EnrolledProcessObserver,
     run::{RunError, RunOptions},
@@ -21,15 +21,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A refusal that names what a caller is not allowed to make the
-/// workspace do.
+/// A refusal that names what a caller is not allowed to make the workspace do.
 pub(crate) fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
-/// The namespaces every signed worker keeps, and the only capabilities its
-/// shim receives: mount, PID, network, IPC and cgroup isolation are mandatory
-/// even though the worker runs as the source account.
+/// The namespaces every signed worker keeps, and the only capabilities its shim receives: mount, PID,
+/// network, IPC and cgroup isolation are mandatory even though the worker runs as the source account.
 const WORKER_NAMESPACES: &[&str] = &[
     "--unshare-pid",
     "--unshare-net",
@@ -44,8 +42,8 @@ const WORKER_NAMESPACES: &[&str] = &[
     "CAP_SETGID",
 ];
 
-/// What one signed service's credential splice names, where its own protocol
-/// differs from every other's.
+/// What one signed service's credential splice names, where its own protocol differs from every
+/// other's.
 pub(crate) struct CustodySplice {
     /// The flag the signed shim reads its custody token from.
     pub token_flag: &'static str,
@@ -55,8 +53,8 @@ pub(crate) struct CustodySplice {
     pub extra_caps: &'static [&'static str],
     /// Directories the worker must traverse before any bind lands on them.
     pub traversal: &'static [&'static str],
-    /// Flags that must not already be in the argv: their presence means the
-    /// plan this splice was written for is not the plan it got.
+    /// Flags that must not already be in the argv: their presence means the plan this splice was
+    /// written for is not the plan it got.
     pub forbidden: &'static [&'static str],
     /// Refusal when [`CustodySplice::forbidden`] matches.
     pub changed: &'static str,
@@ -67,13 +65,6 @@ pub(crate) struct CustodySplice {
 }
 
 /// The credential splice every signed service performs on a launch's argv.
-///
-/// Replace the launcher's `--unshare-all` with the namespaces a worker may
-/// keep, drop every capability and grant the shim only the ids it clears
-/// before `exec`, hand the shim its custody token after `__sandbox-exec`, and
-/// create the directories it traverses before any bind lands on them. What
-/// differs per service — token, extra capabilities, directories, refusals —
-/// is [`CustodySplice`], so the part that is the same cannot drift.
 pub(crate) fn splice_custody(argv: &mut Vec<String>, spec: &CustodySplice) -> io::Result<()> {
     if argv.iter().any(|v| spec.forbidden.contains(&v.as_str())) {
         return Err(refused(spec.changed));
@@ -146,37 +137,28 @@ pub use capture::{
 /// Original host admission/custody, checked before spawn and while running.
 pub trait ServiceAuthority: Send + Sync {
     /// Temporary protected network decision of the original native host.
-    /// # Errors
-    /// Refuses a retired review; absence grants no egress.
     fn network_hosts(&self) -> io::Result<Vec<String>> {
         Ok(Vec::new())
     }
 
-    /// Protected original controller's actual reopened per-volume table. Ordinary
-    /// authorities and caller-authored metadata confer no mounted read authority.
+    /// Protected original controller's actual reopened per-volume table.
     fn original_mounted_binding(&self) -> io::Result<Option<OriginalMountedBinding>> {
         Ok(None)
     }
 
-    /// # Errors
     /// Refuses retired original authority.
     fn check(&self) -> io::Result<()>;
 }
-/// How often a running service's supervisor re-checks [`ServiceAuthority`]
-/// and the host lifetime of [`ServiceCancellation::for_owner`]. Neither can
-/// ring the supervisor when it changes, so this bounds how long a retired
-/// grant or host keeps the service running. An explicit
-/// [`ServiceCancellation::cancel`] (and so every consent revocation built on
-/// it) wakes the supervisor at once. The previous 10 ms poll woke the host
-/// 100 times a second for a session-long service.
+/// How often a running service's supervisor re-checks [`ServiceAuthority`] and the host lifetime of
+/// [`ServiceCancellation::for_owner`].
 const AUTHORITY_RECHECK: Duration = Duration::from_millis(250);
 /// SIGTERM grace before the private namespace init is killed.
 const STOP_GRACE: Duration = Duration::from_secs(3);
 #[derive(Default)]
 struct CancelState {
     cancelled: AtomicBool,
-    /// Supervisors to ring on [`ServiceCancellation::cancel`]; dead entries
-    /// are pruned whenever another supervisor subscribes.
+    /// Supervisors to ring on [`ServiceCancellation::cancel`]; dead entries are pruned whenever another
+    /// supervisor subscribes.
     waiters: Mutex<Vec<std::sync::Weak<bounded_command::WakeFd>>>,
 }
 #[derive(Clone, Default)]
@@ -218,8 +200,7 @@ impl ServiceCancellation {
             parent: Some(Arc::new(self.clone())),
         }
     }
-    /// Ring `wake` when this cancellation or any parent is cancelled. Check
-    /// [`Self::is_cancelled`] after subscribing so no cancel is missed.
+    /// Ring `wake` when this cancellation or any parent is cancelled.
     fn subscribe(&self, wake: &Arc<bounded_command::WakeFd>) {
         if let Ok(mut waiters) = self.state.waiters.lock() {
             waiters.retain(|waiter| waiter.strong_count() > 0);
@@ -244,8 +225,7 @@ impl ServiceCancellation {
 /// Nonserializable ownership token retained by a private working image.
 #[derive(Clone, Default)]
 pub struct ServiceLeaseKey(Arc<()>);
-/// Created only after actual signed launch, successful wait and PID-namespace
-/// init exit. Forced shutdowns and unobservable namespaces cannot create it.
+/// Created only after actual signed launch, successful wait and PID-namespace init exit.
 pub struct QuiescentExit {
     key: ServiceLeaseKey,
     data_home: PathBuf,
@@ -256,8 +236,7 @@ impl QuiescentExit {
         Arc::ptr_eq(&self.key.0, &key.0) && self.data_home == data_home && self.package == package
     }
 }
-/// Cleanup-only receipt. It proves exact namespace death, never successful
-/// export/checkpoint, retained authority or ciphertext integrity.
+/// Cleanup-only receipt.
 pub struct ConfirmedShutdown {
     key: ServiceLeaseKey,
     data_home: PathBuf,
@@ -279,7 +258,6 @@ pub struct ServiceLaunch {
     pub options: RunOptions,
 }
 /// Use the normal signed sandbox pipeline, with the actual provider as PID 1.
-/// Linux completes descendant teardown before that init becomes waitable.
 pub fn run(
     launch: ServiceLaunch,
     authority: Arc<dyn ServiceAuthority>,
@@ -289,10 +267,7 @@ pub fn run(
     run_connected(launch, authority, cancellation, key, None)
 }
 
-/// Connect only to a peer in the verified private namespace of this exact
-/// signed launch. This callback runs on the owning service worker, never the UI.
-/// # Errors
-/// As [`run`], also refusing an unavailable or substituted private endpoint.
+/// Connect only to a peer in the verified private namespace of this exact signed launch.
 pub fn run_connected(
     launch: ServiceLaunch,
     authority: Arc<dyn ServiceAuthority>,
@@ -304,8 +279,6 @@ pub fn run_connected(
 }
 
 /// Run the one offline signed source-I/O service and observe canonical shutdown.
-/// The callback connects/transfers its private stream and returns promptly; it
-/// must not run the projector loop while blocking namespace supervision.
 pub fn run_retained_io_connected(
     launch: ServiceLaunch,
     admission: RetainedIoAdmission,
@@ -339,8 +312,6 @@ pub fn run_retained_io_connected(
 }
 
 /// Run the fixed signed target-FUSE worker through canonical native custody.
-/// Callback starts connected relay before `observe_ready` and returns promptly;
-/// `NamespaceOwner` continues actual service supervision and observed teardown.
 pub fn run_target_projection_connected(
     launch: ServiceLaunch,
     admission: TargetProjectionAdmission,
@@ -437,13 +408,10 @@ fn configure_service_options(
         ));
     }
     options.bwrap_bin = Some("/usr/bin/bwrap".into());
-    // This API is called in-process by the shell, whose executable deliberately
-    // refuses shim mode. Use the OS-owned launcher, never current_exe or a
-    // caller-selected replacement that could skip mandatory confinement.
+    // This API is called in-process by the shell, whose executable deliberately refuses shim mode.
     options.sandbox_shim_bin = Some("/usr/libexec/tilo/tilo-launcher".into());
     if let Some(capture) = capture {
         // Refuse unguarded original readers before workspace creation/spawn.
-        // Builder admission remains usable before the private context attaches.
         capture.check_execution()?;
         capture.configure(options);
     }
@@ -623,8 +591,8 @@ fn run_admitted_inner(
     if let Some(target) = &target_projection {
         target.prepare_workspace(&data_home)?;
     }
-    // Endpoint clones must retain and revalidate the mandatory original read
-    // context too; caller-selected authority cannot substitute for it.
+    // Endpoint clones must retain and revalidate the mandatory original read context too;
+    // caller-selected authority cannot substitute for it.
     let authority = original_read_authority(authority, capture.as_ref());
     let mut owner = NamespaceOwner::new(authority, cancellation)?;
     owner.endpoint = crate::appdir::host_app_dir(
@@ -640,8 +608,7 @@ fn run_admitted_inner(
     owner.target_connected = Mutex::new(target_connected);
     let status =
         crate::run::run_with_context(&manifest, &launch.payload, &options, None, Some(&owner));
-    // Even errors return only after canonical ServiceChild teardown. Unknown
-    // init/outer wait never sets shutdown. Preserve the original result below.
+    // Even errors return only after canonical ServiceChild teardown.
     if owner.shutdown.load(Ordering::Acquire)
         && let Some(observed) = observed_shutdown
     {
@@ -698,7 +665,6 @@ impl ServiceAuthority for OriginalReadAuthority {
 pub type ConnectedService = Box<dyn FnOnce(ServiceEndpoint) -> io::Result<()> + Send>;
 
 /// Host-only endpoint pinned to the actual private namespace and lease path.
-/// No public constructor or ambient socket path can substitute for it.
 pub struct ServiceEndpoint {
     retained_program: Option<Arc<retained_worker::RetainedWorkerProgram>>,
     retained_gid: Option<u32>,
@@ -719,8 +685,7 @@ pub struct ServiceCustody {
     pub namespace_ino: u64,
 }
 impl ServiceEndpoint {
-    /// Observe exact retained init pidfd readiness even after cancellation or
-    /// authority revocation. This is stop evidence, never a successful exit.
+    /// Observe exact retained init pidfd readiness even after cancellation or authority revocation.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -728,19 +693,13 @@ impl ServiceEndpoint {
         exited(&self.init)
     }
     /// Observe the exact live namespace before issuing any provider command.
-    /// # Errors
-    /// Refuses retired authority, cancellation, dead init or unavailable held evidence.
     pub fn custody(&self) -> io::Result<ServiceCustody> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
         }
         let held = self.namespace.metadata()?;
-        // PID namespace membership belongs to this exact process for its
-        // lifetime. init_handle authenticated and retained both namespace and
-        // pidfd before credential drop; a live held pidfd excludes PID reuse.
-        // Reopening /proc/<init>/ns here adds ptrace permissions, not evidence,
-        // and fails after the confined original reader changes credentials.
+        // PID namespace membership belongs to this exact process for its lifetime.
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.init_pid))?;
         let start_ticks = stat
             .rsplit_once(") ")
@@ -759,15 +718,13 @@ impl ServiceEndpoint {
             namespace_ino: held.ino(),
         })
     }
-    /// Open a separate authenticated stream to this one provider. No protocol
-    /// byte is sent before peer namespace, ownership and live authority match.
+    /// Open a separate authenticated stream to this one provider.
     pub fn connect(&self) -> io::Result<UnixStream> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        // AF_UNIX has a tiny address field. Hold the actual private parent so
-        // long preparation roots need neither a global alias nor a shorter lease.
+        // AF_UNIX has a tiny address field.
         let parent = self.path.parent().ok_or(io::ErrorKind::InvalidInput)?;
         let name = self.path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
         let directory = File::options()
@@ -776,8 +733,8 @@ impl ServiceEndpoint {
             .open(parent)?;
         let socket = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
         let metadata = std::fs::symlink_metadata(&socket)?;
-        // Retained and target workers can run as an admitted UID distinct from
-        // the controller's; privacy is checked against that exact worker owner.
+        // Retained and target workers can run as an admitted UID distinct from the controller's;
+        // privacy is checked against that exact worker owner.
         if !metadata.file_type().is_socket()
             || metadata.uid() != self.expected_uid
             || !tilo_files::native::private::is_owner_only(&metadata)
@@ -806,10 +763,7 @@ impl ServiceEndpoint {
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        // The held live init pidfd prevents reuse of this exact PID. Its
-        // namespace was authenticated before credential drop, which can make
-        // /proc/<pid>/ns inaccessible to a controller without CAP_SYS_PTRACE.
-        // Other peers still need the independent namespace comparison.
+        // The held live init pidfd prevents reuse of this exact PID.
         if u32::try_from(credentials.pid).map_err(io::Error::other)? != self.init_pid {
             let peer = File::open(format!("/proc/{}/ns/pid", credentials.pid))?.metadata()?;
             let namespace = self.namespace.metadata()?;
@@ -860,8 +814,8 @@ impl NamespaceOwner {
         cancellation: ServiceCancellation,
     ) -> io::Result<Self> {
         let mut fds = [0; 2];
-        // Each end is exclusively owned here; the launcher duplicates only the
-        // writer into bwrap, which closes it before entering the provider.
+        // Each end is exclusively owned here; the launcher duplicates only the writer into bwrap,
+        // which closes it before entering the provider.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -990,8 +944,7 @@ impl NamespaceOwner {
                 init_pid,
                 owned.child.id(),
             );
-            // The fixed bounded handoff sends held descriptors to the protected
-            // root owner. Returning never retires actual namespace custody.
+            // The fixed bounded handoff sends held descriptors to the protected root owner.
             connected.send(witness, &self.cancellation)?;
             self.before_connection()?;
         }
@@ -1127,8 +1080,8 @@ impl EnrolledProcessObserver for NamespaceOwner {
         let (init, namespace, init_pid) = self.init_handle(&owned.child)?;
         owned.init = Some(init);
         self.connect_services(&owned, namespace, init_pid)?;
-        // Sleep on the outer child's exit and on cancellation; wake on a
-        // timer only to re-check what cannot ring (AUTHORITY_RECHECK).
+        // Sleep on the outer child's exit and on cancellation; wake on a timer only to re-check what
+        // cannot ring (AUTHORITY_RECHECK).
         let wake = Arc::new(bounded_command::WakeFd::new()?);
         self.cancellation.subscribe(&wake);
         let mut stopping = None;
@@ -1153,8 +1106,7 @@ impl EnrolledProcessObserver for NamespaceOwner {
                         self.shutdown.store(true, Ordering::Release);
                         owned.init.take();
                     }
-                    // An outer failure is not proof that the private namespace
-                    // stopped. Retain the init pidfd so Drop kills only that init.
+                    // An outer failure is not proof that the private namespace stopped.
                     return Ok(status);
                 }
                 // Drain before checking, so a cancel racing the check rings again.
@@ -1168,9 +1120,8 @@ impl EnrolledProcessObserver for NamespaceOwner {
                     .ok_or(io::ErrorKind::InvalidData)?;
             }
             if stopping.is_none()
-                // The root-held clone must be detached after actual consumer
-                // stop before this target's intentional teardown. Checks below
-                // still fail and source/relay calls still deny immediately.
+                // The root-held clone must be detached after actual consumer stop before this target's
+                // intentional teardown.
                 && (self.cancellation.is_cancelled()
                     || self.authority.check().is_err()
                     || self
@@ -1278,18 +1229,12 @@ impl Drop for ServiceChild {
             let _ = self.signal(libc::SIGKILL);
         }
         if self.child.try_wait().ok().flatten().is_none() {
-            // The privately owned outer group covers setup failure before an
-            // init pidfd could be acquired. It cannot mint a checkpoint witness.
-            // The unreaped child owns this private group, so its number
-            // cannot have been recycled into another session's group.
+            // The privately owned outer group covers setup failure before an init pidfd could be
+            // acquired.
             bounded_command::terminate_tree(&mut self.child, Duration::ZERO);
         }
         if let Some(init) = &self.init {
             // This destructor runs on the canonical owning service worker.
-            // Outer wait is not namespace quiescence. Keep the owner (including
-            // original source/mount/store custody) alive until the exact init
-            // pidfd becomes readable, even if killed tasks remain in kernel IO.
-            // A deadline diagnoses incomplete cleanup; it cannot release leases.
             let started = Instant::now();
             let mut reported = false;
             loop {
@@ -1385,8 +1330,8 @@ mod tests {
                 "python3 -c 'import socket,time; s=socket.socket(socket.AF_UNIX); s.bind(\"/fixture/provider.sock\"); s.listen(); open(\"/fixture/ready\",\"w\").close(); time.sleep(60)' & ",
             );
             let fd = owner.namespace_init_fd().unwrap();
-            // Qualify the real kernel/production namespace owner without an
-            // unsigned package or synthetic runtime becoming a trusted launch.
+            // Qualify the real kernel/production namespace owner without an unsigned package or
+            // synthetic runtime becoming a trusted launch.
             let mut command = std::process::Command::new("/usr/bin/bwrap");
             command
                 .args([
@@ -1471,8 +1416,7 @@ mod tests {
             }
         }
         fn orphan_handle(&self) -> OwnedFd {
-            // Observe the production-authenticated writer directly. The
-            // optional /proc/<pid>/task/<tid>/children file is not a witness.
+            // Observe the production-authenticated writer directly.
             let stream = self.endpoint.connect().unwrap();
             let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
             let mut length = u32::try_from(std::mem::size_of::<libc::ucred>()).unwrap();
@@ -1585,9 +1529,7 @@ mod tests {
             !exited(&init).unwrap(),
             "test must observe its live namespace subject"
         );
-        // Retain actual root-side handle but withhold descriptor ACK. The
-        // owner is still inside its real registration path, not its wait loop.
-        // The ACK stays withheld: only the cancel can end the registration.
+        // Retain actual root-side handle but withhold descriptor ACK.
         cancellation.cancel();
         tilo_test_env::wait_until("the cancelled registration to return", || {
             worker.is_finished()
@@ -1705,10 +1647,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         let window = started.elapsed();
         let idle = context_switches(&tid).saturating_sub(before);
-        // Only the authority recheck may wake it, however long the window
-        // really lasted, and a woken thread may be preempted once while it
-        // runs; the 10 ms poll this replaces switched about forty times in
-        // 400 ms.
+        // Only the authority recheck may wake it, however long the window really lasted, and a woken
+        // thread may be preempted once while it runs; the 10 ms poll this replaces switched about
+        // forty times in 400 ms.
         let rechecks = window.as_millis() / AUTHORITY_RECHECK.as_millis() + 1;
         let allowed = u64::try_from(2 * rechecks).unwrap();
         assert!(
@@ -1727,8 +1668,8 @@ mod tests {
     fn cancellation_and_revocation_latency() {
         let mut running = Running::with_script(WAITING_PROVIDER);
         let tid = running.worker_tid.to_string();
-        // Cancel right after a recheck: only the cancellation ring, not the
-        // next recheck, can then deliver SIGTERM well inside one period.
+        // Cancel right after a recheck: only the cancellation ring, not the next recheck, can then
+        // deliver SIGTERM well inside one period.
         let ticked = context_switches(&tid);
         let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
         while context_switches(&tid) == ticked && Instant::now() < deadline {

@@ -1,23 +1,7 @@
-//! [`Placed`] — a surface that appears where it stands, leaves from there, and moves when its
-//! place changes — a window on a desk, a place on a canvas, a panel over the screen.
-//!
-//! A shell draws its windows, its canvas places and its floating surfaces from a view, and a
-//! view is built again whenever the arrangement changes (`shell.md` §7: motion stays in the Rust
-//! components, never in the view). So the motion is the component's own: it is told where it
-//! stands and whether it is up, keeps where and how open it was drawn, and moves from there.
-//!
-//! It composes two of the library's named motions and adds nothing of its own:
-//!
-//! - **Coming and going** is [`WindowMotion::OPEN`] on [`Presence`]: the surface fades and scales
-//!   from 0.96 about its centre as it arrives, and fades out as it leaves.
-//! - **Moving** is [`WindowMotion::MOVE`] on a [`MotionValue<Rect>`]: the surface springs from the
-//!   rectangle it was last drawn at to the one it is laid out at, so a window carried to another
-//!   strip or a place dragged on the canvas glides there instead of jumping.
-//!
-//! Both land at once for a still theme and for reduced motion (the specs say so), so a pixelated
-//! theme and a person who asked for less motion see the change on the frame it happens. Every
-//! motion asks the frame pump for frames only while it moves ([`MotionValue`] does), so a surface
-//! at rest costs nothing.
+//! [`Placed`] — a surface that appears where it stands, leaves from there, and moves when its place
+//! changes — a window, a place on a canvas, a panel over the screen. A shell draws its windows, its
+//! canvas places and its floating surfaces from a view, and a view is built again whenever the
+//! arrangement changes (`shell.md` §7: motion stays in the Rust components, never in the view).
 
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -31,18 +15,16 @@ use crate::tokens::{EffectiveMotion, MotionSource};
 /// One surface's arrival, departure and movement, sampled once per drawn frame.
 #[derive(Clone, Debug)]
 pub struct Placed {
-    /// Whether it is drawn at all, and how far into its arrival or departure.
     presence: Presence,
-    /// Where it is drawn (canvas or layout coordinates): the spring that carries it from the
-    /// place it last stood to the one it is laid out at.
+    /// Where it is drawn (canvas or layout coordinates): the spring that carries it from the place it
+    /// last stood to the one it is laid out at.
     rect: MotionValue<Rect>,
-    /// The rectangle it is laid out at, as of the last frame.
     target: Rect,
-    /// It has been placed once: the first placement rests (first paint shows the resting
-    /// state; motion explains changes).
+    /// It has been placed once: the first placement rests (first paint shows the resting state; motion
+    /// explains changes).
     settled: bool,
-    /// The motion it last drew with, so a departure after the theme changed keeps the person's
-    /// reduced motion.
+    /// The motion it last drew with, so a departure after the theme changed keeps the person's reduced
+    /// motion.
     motion: EffectiveMotion,
 }
 
@@ -77,11 +59,8 @@ impl Placed {
         }
     }
 
-    /// Where it is drawn this frame, its motion advanced to `now`: laid out at `rect`, up
-    /// (`open`) or going, with `motion` the person allows and `source` what asked for the change.
-    ///
-    /// Call it once a frame, where the widget draws or lays out, so every read in that frame sees
-    /// the same value.
+    /// Where it is drawn this frame, its motion advanced to `now`: laid out at `rect`, up (`open`) or
+    /// going, with `motion` the person allows and `source` what asked for the change.
     pub fn follow(
         &mut self,
         rect: Rect,
@@ -149,12 +128,8 @@ impl Placed {
         self.presence.settles_at().max(self.rect.settles_at())
     }
 
-    /// The pose it is drawn under at `now`, in a surface laid out at `rest`: its content's
-    /// arrival, and the transform carrying it from where it stood toward where it is laid out.
-    ///
-    /// A surface that is coming or going scales and fades about its own centre
-    /// ([`WindowMotion::content_pose`]); one that only moves is drawn at its place plus the
-    /// offset the move has still to cover.
+    /// The pose it is drawn under at `now`, in a surface laid out at `rest`: its content's arrival, and
+    /// the transform carrying it from where it stood toward where it is laid out.
     pub fn pose(&self, rest: Rect, now: Instant) -> Pose {
         let content = WindowMotion::content_pose(self.presence.progress(now), rest, self.motion);
         let drawn = self.rect.get(now);
@@ -168,9 +143,9 @@ impl Placed {
         }
     }
 
-    /// The ground it stands on moved (a canvas panned or zoomed under it): it stands at `rect`
-    /// at once, its coming or going untouched, as the windows in it do. `false` for one never
-    /// placed, which [`Self::follow`] places.
+    /// The ground it stands on moved (a canvas panned or zoomed under it): it stands at `rect` at once,
+    /// its coming or going untouched, as the windows in it do. `false` for one never placed, which
+    /// [`Self::follow`] places.
     pub fn carry(&mut self, rect: Rect) -> bool {
         if self.settled {
             self.target = rect;
@@ -194,8 +169,8 @@ impl Placed {
     }
 
     /// The move's value, for a capture or a test that poses it at a chosen point of its run
-    /// ([`MotionValue::sampled_after`]). Never for a live frame, which reads [`Self::rect`] at
-    /// the frame's instant.
+    /// ([`MotionValue::sampled_after`]). Never for a live frame, which reads [`Self::rect`] at the
+    /// frame's instant.
     #[must_use]
     pub fn movement(&self) -> &MotionValue<Rect> {
         &self.rect
@@ -308,7 +283,6 @@ mod tests {
             MotionSource::Pointer,
             now,
         );
-        // Read a little into the arrival at that frame's own instant.
         let mid = now + Duration::from_millis(40);
         let _later = crate::motion::pin_frame_at(mid);
         let coming = placed.openness().progress(mid);
@@ -316,7 +290,6 @@ mod tests {
         assert!(placed.openness().is_moving(mid));
         drop(_later);
 
-        // A still theme jumps: shown at once, and nothing asks for a frame.
         let mut still_surface = Placed::closed();
         still_surface.follow(rect(0.0), false, still(), MotionSource::Pointer, now);
         still_surface.follow(rect(0.0), true, still(), MotionSource::Pointer, now);
@@ -327,7 +300,6 @@ mod tests {
         );
         assert!(!still_surface.is_moving(now), "and it asks for nothing");
 
-        // Reduced motion lands movement too.
         let mut reduced_surface = Placed::opened();
         reduced_surface.follow(rect(40.0), true, reduced(), MotionSource::Pointer, now);
         reduced_surface.follow(rect(400.0), true, reduced(), MotionSource::Pointer, now);

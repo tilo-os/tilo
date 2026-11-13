@@ -1,9 +1,8 @@
-//! The test doubles the suite needs to act through the app's real interfaces: an
-//! action host that answers in-process, and a clipboard that remembers what was
-//! put on it. They live apart so a test reads as what it checks.
+//! The test doubles the suite needs to act through the app's real interfaces: an action host that
+//! answers in-process, and a clipboard that remembers what was put on it. They live apart so a test
+//! reads as what it checks.
 
 use super::*;
-/// The workspace's host behind the door, announcing a web entry for links.
 pub(super) fn link_host() -> tilo_actions::remote::TestHost {
     tilo_actions::remote::TestHost::new()
         .with_catalogue(|_, query| {
@@ -79,10 +78,13 @@ fn share_copies_the_open_photographs_link() {
     );
 }
 
-/// Making thumbnails is published as an offloadable transform of the
-/// thumbnails package, and its local run makes exactly what that package's
-/// entrypoint makes on another device: content named twice is one input,
-/// and an input that is not an image fails the whole batch.
+fn photo_png(width: u32, height: u32) -> Vec<u8> {
+    let rgba = (0..width * height * 4)
+        .map(|index| u8::try_from(index % 251).expect("a byte"))
+        .collect();
+    pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image")).expect("a PNG")
+}
+
 #[test]
 fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint() {
     let spec = <PhotosEffect as ui::tilo_resource::Effect>::specs()
@@ -103,21 +105,31 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     );
     assert!(spec.params()[0].is_content_list());
 
-    let store = tilo_content::ContentStore::memory();
+    let store = tilo_content::ContentStore::memory().sealing();
     let photographs: Vec<Vec<u8>> = [(3, 2), (40, 17)]
         .into_iter()
-        .map(|(width, height)| {
-            let rgba = (0..width * height * 4)
-                .map(|index| u8::try_from(index % 251).expect("a byte"))
-                .collect();
-            pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image"))
-                .expect("a PNG")
+        .map(|(width, height)| photo_png(width, height))
+        .collect();
+    let content: Vec<ui::tilo_resource::Bytes> = photographs
+        .iter()
+        .map(|bytes| {
+            let reference = store.put(bytes).expect("stage a photograph");
+            assert!(tilo_content::is_sealed(&reference), "{reference}");
+            ui::tilo_resource::Bytes::kept_as(bytes, &reference)
         })
         .collect();
-    let hashes: Vec<String> = photographs
-        .iter()
-        .map(|bytes| store.put(bytes).expect("stage a photograph"))
-        .collect();
+    assert!(
+        !store.has(&tilo_content::hash_bytes(&photographs[0])),
+        "the store keeps no plaintext photograph"
+    );
+    let address =
+        tilo_content::content_address(&content[0].reference().expect("a reference")).expect("one");
+    assert_ne!(
+        store.read(&address),
+        Some(photographs[0].clone()),
+        "a plain address answers with the ciphertext, never the picture"
+    );
+
     let app = PhotosApp::with_content(store.clone());
     let doc = crate::test_doc::new_doc();
     let library = crate::test_doc::library(&doc);
@@ -125,11 +137,7 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
-                photos: vec![
-                    hashes[0].clone(),
-                    tilo_actions::content_resource(&hashes[1]).expect("an address"),
-                    hashes[0].clone(),
-                ],
+                photos: vec![content[0].clone(), content[1].clone(), content[0].clone()],
             },
             tilo_actions::InvocationId::new(),
             &library,
@@ -150,13 +158,26 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         })
         .collect();
     assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
+}
 
-    let broken = store.put(b"not a photograph").expect("stage bytes");
+#[test]
+fn make_thumbnails_fails_only_the_picture_that_is_not_an_image() {
+    let store = tilo_content::ContentStore::memory().sealing();
+    let photograph = photo_png(3, 2);
+    let reference = store.put(&photograph).expect("stage a photograph");
+    let good = ui::tilo_resource::Bytes::kept_as(&photograph, &reference);
+    let broken_bytes = b"not a photograph";
+    let broken_reference = store.put(broken_bytes).expect("stage bytes");
+    let broken = ui::tilo_resource::Bytes::kept_as(broken_bytes, &broken_reference);
+
+    let app = PhotosApp::with_content(store);
+    let doc = crate::test_doc::new_doc();
+    let library = crate::test_doc::library(&doc);
     let partial = app
         .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
-                photos: vec![hashes[0].clone(), broken.clone()],
+                photos: vec![good, broken],
             },
             tilo_actions::InvocationId::new(),
             &library,
@@ -171,20 +192,18 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     assert_eq!(
         partial.value,
         Some(serde_json::json!({
-            "failed": [{"photo": broken, "reason": "is not an image"}]
+            "failed": [{
+                "photo": tilo_content::hash_bytes(broken_bytes),
+                "reason": "is not an image",
+            }]
         })),
-        "the failure names the picture the caller named, not an index"
+        "the failure names the picture's content, not an index"
     );
     assert!(
-        app.state()
-            .answer_effect(
-                PhotosEffect::MakeThumbnails {
-                    photos: vec!["/home/someone/photo.png".into()],
-                },
-                tilo_actions::InvocationId::new(),
-                &library,
-            )
-            .is_err(),
+        serde_json::from_value::<Vec<ui::tilo_resource::Bytes>>(serde_json::json!([
+            "/home/someone/photo.png"
+        ]))
+        .is_err(),
         "a path is never content"
     );
 }
@@ -209,10 +228,6 @@ fn the_empty_library_open_button_asks_the_host_chooser() {
     assert_eq!(asked[0].title(), tr("photos-open-title"));
 }
 
-/// The sidebar is the window shell's list, declared from the library: the
-/// destinations with the Timeline's and Favorites' counts, then the albums
-/// under their heading; what is shown is the chosen row, and a row the
-/// person chooses opens what it names.
 #[test]
 fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     use ui::chrome::NavCount;
@@ -269,7 +284,6 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         "an album stands in the icon's place by its cover or initials"
     );
 
-    // The person chooses the album in the shell's list.
     let shell = ui::widget::NavShell::new()
         .sidebar(Box::new(
             ui::widget::NavList::new(Vec::new()).fed_by(&app.state().chrome.places),
@@ -303,10 +317,6 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     );
 }
 
-/// The album panel never hides the way to fill an empty library: where the
-/// timeline keeps its readable width beside it, it docks; narrower, it rises
-/// as a sheet from the window's foot and the empty state's Open stands in the
-/// part above it.
 #[test]
 fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
     let _settled = ui::motion::testing::settled();
@@ -361,9 +371,6 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
     }
 }
 
-/// Photos opened in a narrow window draws its timeline on the first frame,
-/// as it does when a wide window narrows, with its places listed for the
-/// screen behind Back.
 #[test]
 fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
     for viewport in [(1280, 800), (420, 800)] {
@@ -393,9 +400,6 @@ fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
     }
 }
 
-/// In a narrow window the album editor rises as a sheet at half height, and
-/// the timeline above it stays live: a press on a photograph there adds it
-/// to the album, or takes it out.
 #[test]
 fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
     let _settled = ui::motion::testing::settled();
@@ -404,7 +408,6 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
         (420, 800),
     )
     .expect("the album editor captures");
-    // A narrow window shows one pane: the timeline, under the editor.
     app.with_widget(|shell: &mut ui::widget::NavShell| {
         shell.show(ui::widget::NavPane::Content);
     })
@@ -443,8 +446,6 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
     );
 }
 
-/// What takes Back's step: the window bar's Back, Escape, or the system's
-/// back gesture.
 #[derive(Clone, Copy, Debug)]
 enum BackInput {
     Bar,
@@ -452,9 +453,6 @@ enum BackInput {
     Gesture,
 }
 
-/// In a narrow window Back, Escape and the system's back gesture each take
-/// the album editor's sheet down from the whole window to half, and from
-/// half or peeking put the editor away, before anything navigates.
 #[test]
 fn back_lowers_or_puts_away_the_narrow_album_editor_before_it_goes_anywhere() {
     use ui::widget::SheetDetent;

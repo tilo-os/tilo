@@ -76,7 +76,7 @@ async function viaInvitation({origin, invitation, room = null, secrets, runtime,
   return ready(await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),
-  }));
+  }), onProgress);
 }
 
 /** A link a site hands over (`https://<site>/i/<handle>#<key>`): the site
@@ -90,11 +90,12 @@ async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) 
   return viaInvitation({origin, invitation: opened.invitation, secrets, runtime, deps, onProgress});
 }
 
-/** `{peer}` once `peer` is ready to use. */
-async function ready(peer) {
+/** `{peer}` once `peer` is ready to use; `onProgress` hears the workspace
+ * arriving (`receiving`, with how many of its records are here). */
+async function ready(peer, onProgress = () => {}) {
   // The desktop shows once the workspace's shared desktop record is here,
   // not after the whole workspace: the rest arrives while it is shown.
-  await peer?.whenReady?.({shown: true});
+  await peer?.whenReady?.({shown: true, onProgress: records => onProgress({phase: 'receiving', records})});
   return {peer};
 }
 
@@ -114,7 +115,7 @@ async function viaHost({workspace, room, runtime, deps, onProgress}) {
     await peer?.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);
   }
-  return ready(peer);
+  return ready(peer, onProgress);
 }
 
 /** The person's own desktop: this browser's, with no peer. What syncs
@@ -158,6 +159,14 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
     tickets: Boolean(tickets),
     pairing: Boolean(deps.pairDevice),
   };
+  // A link that names a workspace at a host this page lists nothing at has no
+  // door to ask: it can only come back as the person this device holds, and a
+  // device that holds none is told it has no access. Said once, with what the
+  // page knew, so that refusal names what it was missing rather than reading
+  // like a workspace that turned the person away.
+  if (room && origin && !here.door) {
+    console.warn('admission: no door to ask at', origin, JSON.stringify({listed: Boolean(listed), entered: here.entered}));
+  }
   const link = JSON.stringify({
     scope: scope.kind === 'room' ? {kind: 'room', room: room ?? undefined} : {kind: scope.kind},
     malformed: Boolean(secrets.malformed), invite: Boolean(secrets.invite), ticket: Boolean(secrets.ticket),
@@ -180,10 +189,10 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
       }
       case 'ticket':
         onProgress({phase: 'joining'});
-        return ready(await deps.redeemTicket({origin, room, ticket: secrets.ticket, tickets}));
+        return ready(await deps.redeemTicket({origin, room, ticket: secrets.ticket, tickets}), onProgress);
       case 'pair':
         onProgress({phase: 'pairing'});
-        return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}));
+        return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}), onProgress);
       case 'door':
         if (room) console.warn('admission: asking at the host\'s door');
         return viaHost({workspace: listed, room, runtime, deps, onProgress});
@@ -197,7 +206,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         try {
           // A host that revoked this device answers the connection and refuses it
           // once the peer is certified: that, too, is no access.
-          return await ready(await deps.connectMember({origin, room, account}));
+          return await ready(await deps.connectMember({origin, room, account}), onProgress);
         } catch (error) {
           // Other tabs of this browser hold every device key the account has here:
           // not the host's answer, and not no access.
@@ -216,6 +225,9 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
       case 'reconnect': {
         let peer = null;
         let held = false;
+        // Reaching the host now: a host that does not answer is waited on as
+        // the connection, not as this device starting Tilo.
+        onProgress({phase: 'connecting'});
         try {
           peer = await deps.reconnect?.({origin, room, onProgress});
         } catch (error) {
@@ -226,7 +238,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           // As below: the host's reason could tell a missing workspace from a private one.
           if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
         }
-        if (peer) return ready(peer);
+        if (peer) return ready(peer, onProgress);
         // Every key this browser could get in with is held by other tabs:
         // that is what to say, not the host's answer.
         if (held) throw busy;

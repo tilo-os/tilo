@@ -1,7 +1,6 @@
 # Tilo shell navigation and keyboard map
 
-Status: implemented contract, 2026-09-01. This is the compact product map for
-shell navigation. Every chord the desktop answers lives in one table,
+Every chord the desktop answers lives in one table,
 `crates/session/session/src/keys.rs`, rendered below under "Fixed shell
 chords". Editable bindings default to what this page shows and follow the
 user's Settings. Overlay-specific behavior lives in
@@ -110,10 +109,7 @@ Super+1 … 9 go straight to a strip, counting from the top; a number past
 the last strip does nothing. Shift carries the focused group in the direction
 Ctrl+Super+Up/Down moves focus; carrying past the first or last strip does
 nothing, and the group lands after the destination strip's focused group.
-Before 2026-10-17 Super+Up/Down switched strips (maximizing only on the top
-strip), Super+Shift+Up/Down carried the group and Super+1 … 9 focused a
-window; a settings file that still holds one of those defaults takes the new
-one, and a chord the person chose stays. Ctrl+Super is rarely bound by apps,
+A chord the person chose stays bound. Ctrl+Super is rarely bound by apps,
 so these reach the desktop without taking app shortcuts. Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
 window group instead. Each resize step is 5% of the display's width. With

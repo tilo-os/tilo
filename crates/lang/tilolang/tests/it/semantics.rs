@@ -14,8 +14,8 @@ fn counter_takes_plus_equals_and_register_does_not() {
     assert_eq!(codes(bad), vec!["E030"]);
 }
 
-// A register written from itself recomputes wherever the change is applied, so the read and the
-// write written out are refused as `+=` is (convergence design 1.1); `outcomes.rs` has the rest.
+// A register written from itself recomputes wherever the change is applied, so the read and the write
+// written out are refused as `+=` is.
 #[test]
 fn writing_the_read_and_write_out_is_refused_on_a_register() {
     assert_eq!(
@@ -219,8 +219,7 @@ fn options_are_taken_apart_only_by_match() {
 
 const SHAPES: &str = "enum Shape {\n    dot\n    line\n    box\n}\n";
 
-// An enum's cases are plain names (cases that hold data are types of their own, joined in a
-// union: `unions.rs`). Values are dot literals resolved from the expected type, or `Shape.dot`.
+// An enum's cases are plain names; values are dot literals resolved from the expected type.
 #[test]
 fn enums_build_from_dot_literals_and_match_takes_them_apart() {
     let src = format!(
@@ -327,9 +326,8 @@ fn view_state_is_declared_read_bound_and_set() {
     );
 }
 
-/// A template's text parameter is words the view shows, as a component's prop of words is: the
-/// literal a caller gives it is the caller's message, in its catalogue under the view that
-/// writes it, its interpolation an argument (i18n.md §2).
+/// A template's text parameter is words the view shows, as a component's prop of words is: the literal a
+/// caller gives it is the caller's message.
 #[test]
 fn a_templates_text_parameter_carries_its_callers_message() {
     let c = compile(
@@ -343,13 +341,12 @@ fn a_templates_text_parameter_carries_its_callers_message() {
     );
 }
 
-/// Every word a person reads is a message: an action's label that follows its subject, why it
-/// cannot run, and the words its body writes with `say` into a record, each under the action's
-/// own message, its interpolation an argument (i18n.md §2).
+/// Every word a person reads is a message: an action's label that follows its subject, why it cannot run,
+/// and the words its body writes with `say` into a record.
 #[test]
 fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
     let c = compile(
-        "type Note {\n    title: Text\n    pinned: Bool\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot Book\ndefault view book for Book\naction pin(n: Note, pinned: Bool = not n.pinned) (\n    label: if pinned { \"Pin\" } else { \"Unpin\" },\n) {\n    require n.title != \"\" \"Name the note first\"\n    n.pinned = pinned\n}\naction tally(b: Book) {\n    let n = b.notes.count(x -> x.pinned)\n    b.notes.insert(Note(title: say(\"{n} pinned\")))\n}\nview book(b: Book) {\n    for n in b.notes {\n        button(pin(n))\n    }\n}",
+        "type Note {\n    title: Text\n    pinned: Bool\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot Book\ndefault view book for Book\naction pin(n: Note, pinned: Bool = not n.pinned) (\n    label: if pinned { \"Pin\" } else { \"Unpin\" },\n) {\n    require n.title != \"\" \"Name the note first\"\n    n.pinned = pinned\n}\naction tally(b: Book) {\n    let n = b.notes.count(x -> x.pinned)\n    b.notes.insert(Note(title: std.say(\"{n} pinned\")))\n}\nview book(b: Book) {\n    for n in b.notes {\n        button(pin(n))\n    }\n}",
     );
     crate::common::validate(&c.wasm);
     let source = tilolang::messages::source_catalogue(&c.meta);
@@ -366,15 +363,72 @@ fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
         assert!(source.contains(&line), "{line:?} in {source}");
     }
     assert_eq!(
-        codes("action a() {\n    let t = \"x\"\n    let s = say(t)\n}"),
+        codes("action a() {\n    let t = \"x\"\n    let s = std.say(t)\n}"),
         vec!["E022"],
-        "`say` takes the words themselves"
+        "`std.say` takes the words themselves"
     );
 }
 
-// A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
-// declares `state` keeps it there: the host binds the state by the id the row's
-// body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
+/// An app's own `say` action keeps its name: the words marker is the library's `std.say`, so the bare name
+/// is the package's to declare.
+#[test]
+fn an_apps_own_say_action_and_the_words_marker_stand_side_by_side() {
+    let c = compile(
+        "type Line {\n    said: Text\n}\n\ntype Talk {\n    lines: Collection<Line>\n}\n\nroot Talk\n\ndefault view talk for Talk\n\n/// Posts a line.\naction say(t: Talk, said: Text) {\n    t.lines.insert(Line(said: said))\n}\n\n/// Posts a line that says how many came before it.\naction greet(t: Talk) {\n    let n = t.lines.count()\n    say(t, std.say(\"{n} lines before this\"))\n}\n\nview talk(t: Talk) {\n    for l in t.lines {\n        text(l.said)\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let say = tilolang::messages::key_of(c.ids.get("say").expect("the app's own action"));
+    let greet = tilolang::messages::key_of(c.ids.get("greet").expect("the action"));
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    for line in [
+        format!("{say} = Say"),
+        "    .doc = Posts a line.".to_owned(),
+        format!("{greet} = Greet"),
+        "    .w-lines-before-this = { $n } lines before this".to_owned(),
+    ] {
+        assert!(source.contains(&line), "{line:?} in {source}");
+    }
+    // With no action of its own named `say`, the marker is still `std.say`: a bare `say` names
+    // nothing, and the error says which call marks words.
+    assert_eq!(
+        codes("action a() {\n    let s = say(\"x\")\n}"),
+        vec!["E014"],
+        "the words marker is `std.say`"
+    );
+}
+
+/// What a parameter is called where a person gives it is the message its key holds: its `label:` when its
+/// name in words would read as something else beside the value.
+#[test]
+fn a_parameters_label_is_what_a_person_reads_and_its_name_records_the_argument() {
+    let c = compile(
+        "type Video {\n    title: Text\n    watch_later: Bool\n}\ntype Tube {\n    videos: Collection<Video>\n}\nroot Tube\ndefault view tube for Tube\n/// Keeps the video to watch later, or takes it off the list.\naction watch_later(v: Video, saved: Bool (label: \"On the Watch later list\") = not v.watch_later, at: Int = 0) {\n    v.watch_later = saved\n}\nview tube(t: Tube) {\n    for v in t.videos {\n        button(watch_later(v))\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let action = tilolang::messages::key_of(c.ids.get("watch_later").expect("the action"));
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    assert!(
+        source.contains(&format!("{action}-saved = On the Watch later list")),
+        "the label is the words a person reads: {source}"
+    );
+    assert!(
+        source.contains(&format!("{action}-at = At")),
+        "a parameter nothing labels reads its name in words: {source}"
+    );
+    let params = &c
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "watch_later")
+        .expect("the action")
+        .params;
+    assert_eq!(params[1].name, "saved", "the argument keeps its name");
+    assert_eq!(params[1].words(), "On the Watch later list");
+    assert_eq!(params[2].words(), "At");
+}
+
+// A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that declares
+// `state` keeps it there.
 #[test]
 fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     let c = compile(
@@ -393,10 +447,8 @@ fn view_state_of_a_component_called_in_a_lists_row_is_the_rows() {
     assert_eq!(row.state[0].name, "typed");
 }
 
-// A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action
-// it makes in its own state, run with the item. Anything else it answers is not a show, so a
-// staging that asks a window to show a task reads the window's declaration, never a shape guessed
-// from the data.
+// A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action it makes
+// in its own state, run with the item.
 #[test]
 fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let c = compile(
@@ -418,8 +470,8 @@ fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let unnamed = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
                     view v(n: Note) {\n    on show: ping(n)\n    text(\"the list\")\n}";
     assert_eq!(codes(unnamed), vec!["E063"]);
-    // The view's state is the live view's to start: a default that reads the view's own
-    // parameter is no part of the frame that answers with the item.
+    // The view's state is the live view's to start: a default that reads the view's own parameter is no part
+    // of the frame that answers with the item.
     let held = compile(
         "type Note {\n    title: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\n\
          root Book\ndefault view book for Book\n\

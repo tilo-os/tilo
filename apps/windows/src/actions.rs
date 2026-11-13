@@ -1,100 +1,68 @@
-//! What Windows Apps does on this machine, as typed effects, and the live
-//! rows it publishes for what the compatibility service reports.
-//!
-//! Launch, VM resume, permission changes, repair, and snapshot operations are
-//! external service calls and therefore never document changes. The
-//! selected route is the one durable, user-authored policy value, so it is a
-//! field of [`crate::resource::Windows`], edited at its path. This keeps
-//! collaboration from becoming remote process control while allowing a team
-//! to agree on a launch policy.
+//! What Windows Apps does on this machine, as typed effects, and the live rows it publishes
+//! for what the compatibility service reports. Launch, VM resume, permission changes,
+//! repair, and snapshot operations are external service calls and therefore never document
+//! changes.
 use crate::model::{Catalogue, Route};
 use tilo_actions::{ActionSpec, Availability, ConfirmationPolicy};
 use ui::framework::LiveRow;
 use ui::tilo_resource::{self, AbsolutePath, Effect};
 
-/// What Windows Apps asks the compatibility service and the managed
-/// appliance to do. None of it is document state: a launch, an install or a
-/// lifecycle change happens on this machine, where it is invoked.
+/// What Windows Apps asks the compatibility service and the managed appliance to do.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "windows.effect")]
 pub enum WindowsEffect {
-    /// Show this application in the manager.
     #[effect(view, row, idempotent)]
     Show {
         #[param("The application id")]
         app: String,
     },
-    /// Read application
-    ///
-    /// Answers what one application is and where it stands: its name and
-    /// publisher, how it runs and how it is recommended to run, how well
-    /// the catalogue knows it, its installation state and what it may use.
-    /// It is the application row's read: what discloses the row, so
-    /// launching, publishing, uninstalling and its other operations are
-    /// offered to whoever may read it, an agent too.
     #[effect(view, row, returns, idempotent)]
     ReadApp {
         #[param("The application id")]
         app: String,
     },
-    /// Install Windows application.
     #[effect(job, privileged, kind = "outside")]
     Install {
         #[param("Absolute path of the installer; omit to choose one")]
         path: Option<AbsolutePath>,
     },
-    /// Import Windows ISO.
     #[effect(job, privileged, kind = "outside")]
     ImportIso {
         #[param("Absolute path of the ISO; omit to choose one")]
         path: Option<AbsolutePath>,
     },
-    /// Open recovery desktop.
     #[effect(row, job, privileged, kind = "outside")]
     Recovery,
-    /// Start Windows.
     #[effect(row, job, privileged, kind = "outside")]
     Start,
-    /// Restart Windows.
     #[effect(row, job, privileged, kind = "outside")]
     Restart,
-    /// Suspend Windows.
     #[effect(row, job, privileged, kind = "outside")]
     Suspend,
-    /// Resume Windows.
     #[effect(row, job, privileged, kind = "outside")]
     Resume,
-    /// Shut down Windows.
     #[effect(row, job, privileged, kind = "outside")]
     Shutdown,
-    /// Connect temporarily for activation.
     #[effect(row, job, privileged, kind = "outside")]
     TemporaryNetwork,
-    /// Connect temporarily for Windows Update.
     #[effect(row, job, privileged, kind = "outside")]
     UpdateNetwork,
-    /// Disconnect temporary network access.
     #[effect(row, job, privileged, kind = "outside")]
     RevokeNetwork,
-    /// Install in a private capsule.
     #[effect(row, job, privileged, kind = "outside")]
     InstallPrivateCapsule,
-    /// Install in the Windows appliance.
     #[effect(row, job, privileged, kind = "outside")]
     InstallWindowsAppliance,
-    /// Launch.
     #[effect(row, job)]
     Launch {
         #[param("The application's id")]
         app: String,
     },
-    /// Open in Windows appliance.
     #[effect(row, job, privileged, kind = "outside")]
     LaunchVmFallback {
         #[param("The application's id")]
         app: String,
     },
-    /// Open file in Windows.
     #[effect(job, kind = "read")]
     OpenFile {
         #[param("The application's id")]
@@ -102,7 +70,6 @@ pub enum WindowsEffect {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<AbsolutePath>,
     },
-    /// Publish launcher.
     #[effect(row, job, kind = "outside")]
     Publish {
         #[param("The application's id")]
@@ -114,25 +81,21 @@ pub enum WindowsEffect {
         #[param("The application's private capsule")]
         capsule: String,
     },
-    /// Install in Windows appliance.
     #[effect(row, job, privileged, kind = "outside")]
     EscalateInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
-    /// Remove launcher.
     #[effect(row, job, destructive, kind = "outside")]
     RemoveLauncher {
         #[param("The application's id")]
         app: String,
     },
-    /// Uninstall.
     #[effect(row, job, destructive, kind = "outside")]
     Uninstall {
         #[param("The application's id")]
         app: String,
     },
-    /// Delete application data.
     #[effect(row, job, destructive, kind = "outside")]
     DeleteData {
         #[param("The application's private capsule")]
@@ -159,8 +122,7 @@ impl WindowsEffect {
     }
 }
 
-/// `effect` as an item offers it now: available or not, as the service
-/// reports.
+/// `effect` as an item offers it now: available or not, as the service reports.
 fn offered(effect: &WindowsEffect, available: bool, reason: Option<&str>) -> ActionSpec {
     let mut spec = effect.bound();
     spec.type_mut().contract.availability = availability(available, reason);
@@ -204,10 +166,9 @@ fn appliance_effects(ready: bool) -> Vec<ActionSpec> {
     .collect()
 }
 
-/// What the service reports, as rows beneath the manager: the install
-/// awaiting a choice, the appliance and every catalogue application, each
-/// with the effects the service offers on it now. A route change is not
-/// among them: it is a field edit of the resource's routes.
+/// What the service reports, as rows beneath the manager: the install awaiting a choice,
+/// the appliance and every catalogue application, each with the effects the service offers
+/// on it now.
 pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
     let mut rows = Vec::new();
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
@@ -275,7 +236,6 @@ fn maintenance_specs(app: &crate::model::WindowsApp) -> Vec<ActionSpec> {
         app.can_delete_data,
         Some(REASON),
     );
-    // Erasing an application's data asks for its name.
     delete.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
         phrase: app.name.clone(),
     };
@@ -320,10 +280,8 @@ fn maintenance_specs(app: &crate::model::WindowsApp) -> Vec<ActionSpec> {
 }
 
 fn open_file_spec(app: &crate::model::WindowsApp) -> Option<ActionSpec> {
-    // Keep the operation discoverable for every published guest application,
-    // including app-focused SPICE entries where it is deliberately disabled.
-    // Omitting its availability made search and agents advertise a file
-    // bridge that the rendered control correctly refused.
+    // Omitting its availability made search and agents advertise a file bridge that the
+    // rendered control correctly refused.
     if app.route != Route::Vm {
         return None;
     }
@@ -369,10 +327,8 @@ fn pending_install_row(confirmation: &crate::model::VmInstallConfirmation) -> Li
     .effect(&WindowsEffect::InstallWindowsAppliance)
 }
 
-/// The managed appliance's row.
 pub const APPLIANCE_ROW: &str = "windows.appliance";
 
-/// The row of the install awaiting a choice.
 pub const PENDING_INSTALL_ROW: &str = "windows.pending-install";
 
 fn appliance_row(catalogue: &Catalogue) -> LiveRow {

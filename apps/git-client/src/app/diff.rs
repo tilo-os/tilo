@@ -1,4 +1,5 @@
-//! What the selection becomes: the diff a row names, staging and unstaging a file or a hunk, the commit, discard, and the branch verbs.
+//! What the selection becomes: the diff a row names, staging and unstaging a file
+//! or a hunk, the commit, discard, and the branch verbs.
 
 use super::{
     ChangeArea, DiffKey, Field, FileChange, GitClientState, Invoke, RemoteAction, Screen, Widget,
@@ -23,10 +24,8 @@ impl GitClientState {
         matches!(self.selected_change, Some((ChangeArea::Staged, _)))
     }
 
-    /// Stage or unstage a single file. Against a real repo this calls
-    /// `git2` (`add` / `reset HEAD -- path`) and re-reads the model so the
-    /// list reflects the actual index. For the sample it falls back to the
-    /// in-memory move so the offscreen capture still demonstrates the flow.
+    /// Stage or unstage a single file: against a real repository through `git2`, then re-read the
+    /// model, and for the sample as an in-memory move so the capture still shows the flow.
     pub(super) fn toggle_stage(&mut self, area: ChangeArea, idx: usize) {
         if self.repository_busy() {
             return;
@@ -52,7 +51,6 @@ impl GitClientState {
         self.toggle_stage_in_memory(area, idx);
     }
 
-    /// In-memory move used only by the sample-backed app (no repo on disk).
     pub(super) fn toggle_stage_in_memory(&mut self, area: ChangeArea, idx: usize) {
         match area {
             ChangeArea::Staged => {
@@ -152,8 +150,8 @@ impl GitClientState {
         self.do_commit_in_memory();
     }
 
-    /// Sample-only commit: synthesise a tip commit so the offscreen capture
-    /// shows the action's effect without a repository.
+    /// Sample-only commit: synthesise a tip commit so the capture shows the effect without a
+    /// repository.
     pub(super) fn do_commit_in_memory(&mut self) {
         let staged = std::mem::take(&mut self.model.staged);
         let parent = self.model.commits.first().map(|c| c.id.clone());
@@ -199,9 +197,8 @@ impl GitClientState {
         self.selected_change = first_change(&self.model);
     }
 
-    /// Discard a file's worktree changes (revert unstaged edits, or delete an
-    /// untracked file). The controls reach here only through the
-    /// confirmation sheet.
+    /// Discard a file's worktree changes (revert unstaged edits, or delete an untracked file); the
+    /// controls reach here only through the confirmation sheet.
     pub(super) fn discard_file(&mut self, area: ChangeArea, idx: usize) {
         if self.repository_busy() {
             return;
@@ -227,8 +224,8 @@ impl GitClientState {
         let Some((area, _)) = self.selected_change else {
             return;
         };
-        // Only worktree (unstaged/untracked) hunks are discardable — a staged
-        // file's diff is the index side, which "discard" doesn't act on.
+        // Only worktree hunks are discardable: a staged file's diff is the index side, which
+        // discard does not act on.
         if area == ChangeArea::Staged {
             return;
         }
@@ -246,8 +243,7 @@ impl GitClientState {
         }
     }
 
-    /// The repository path the person typed, or why it names none (said in
-    /// the window too).
+    /// The repository path the person typed, or why it names none (said in the window too).
     pub(super) fn typed_repository(
         &mut self,
         raw: &str,
@@ -264,8 +260,8 @@ impl GitClientState {
         typed
     }
 
-    /// Open the repository at `path`, typed, chosen in the file chooser or
-    /// named by an action. Answers why not when there is none.
+    /// Open the repository at `path`, typed, chosen in a file chooser or named by an action;
+    /// answers why not when there is none.
     pub(super) fn open_repository_at(&mut self, path: &std::path::Path) -> Result<(), String> {
         if self.repository_busy() {
             return Err(crate::i18n::t("git-remote-busy"));
@@ -294,9 +290,8 @@ impl GitClientState {
     /// Give keyboard focus to one embedded text field (or none), keeping the
     /// toolkit inputs' focus flags mutually exclusive.
     pub(super) fn set_focus(&mut self, field: Option<Field>) {
-        // The message is written in the list column, which a narrow window
-        // keeps in the drawer: focusing the field opens it, so the person is
-        // never typing into something they cannot see.
+        // The message is written in the list column, which a narrow window keeps in the drawer:
+        // focusing the field opens it, so the person never types into something they cannot see.
         if field == Some(Field::Commit) && self.drawer.is_overlay() && !self.drawer.is_open() {
             // A window someone uses slides the column in; a capture puts it
             // where it stands, so the frame does not depend on the clock.
@@ -318,18 +313,13 @@ impl GitClientState {
             .set_focus(field == Some(Field::WorktreeStart));
     }
 
-    // --- Durable view-preference actions -------------------------------
-    // The diff-view preferences are the app's only shared-document state.
-    // Each toggle updates the local snapshot for an immediate redraw AND
-    // dispatches its `GitClientAction` through the framework `LocalDispatch`,
-    // which brackets the undo boundary and applies it through the executor
-    // (so it records one Ctrl+Z step and replays byte-identically on peers).
-    // The next `sync` re-reads the same value straight back out of the doc.
-    // These are the exact actions the Ctrl+K resource tree exports — one
-    // source of truth (see `crate::actions`).
+    // The diff-view preferences are the app's only shared-document state. Each toggle updates the
+    // local snapshot for an immediate redraw and dispatches its action through the framework's
+    // local dispatch, which brackets the undo step and applies it through the executor, so it
+    // records one undo step and replays identically on peers. These are the same actions the
+    // resource tree exports.
 
-    /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
-    /// window bar's layout items and the `d` shortcut.
+    /// Flip the diff-pane layout, routed to by the window bar's layout items and the `d` shortcut.
     pub(super) fn toggle_diff_layout(&mut self) {
         if let Err(error) = self.switch_diff_layout() {
             self.last_error = Some(error);
@@ -371,16 +361,9 @@ impl GitClientState {
         }
     }
 
-    /// Stage (or unstage) a single hunk of the selected file. Against a real
-    /// repo this applies exactly that hunk to the index via `git2` (the
-    /// equivalent of `git add -p` / `git restore --staged -p`) and re-reads.
-    /// The `hunk` argument is the hunk's index within the file's diff, which
-    /// the diff view assigns its button to.
-    ///
-    /// The currently shown diff direction depends on which area is selected:
-    /// a staged file shows the HEAD→index diff (so a hunk action *unstages*),
-    /// an unstaged/untracked file shows the index→workdir diff (so a hunk
-    /// action *stages*). That matches `apply_hunk`'s ordering exactly.
+    /// Stage or unstage a single hunk of the selected file, which the diff view assigns its button
+    /// to. A staged file shows the HEAD→index diff, so its hunk action unstages, and an unstaged or
+    /// untracked file shows the index→workdir diff, so its action stages.
     pub(super) fn stage_hunk(&mut self, hunk: usize) {
         if self.repository_busy() {
             return;
@@ -396,28 +379,24 @@ impl GitClientState {
             self.run_action(res);
             return;
         }
-        // Sample fallback: move the whole file to prove the hit-test.
+        // Sample fallback: move the whole file to prove the hit test.
         if let Some((area, idx)) = self.selected_change {
             self.toggle_stage_in_memory(area, idx);
         }
     }
 
-    /// The 0-based hunk position (within the file's diff, excluding meta
-    /// "hunk 0 = file header" noise) for the diff line's `hunk` field. The
-    /// parsed `DiffLine.hunk` is already a 0-based index into the file's
-    /// `DiffHunk` list, so it maps directly; this helper exists so the
-    /// mapping is named and testable if the parser's convention shifts.
+    /// The 0-based hunk position within the file's diff: the parsed `DiffLine.hunk` already indexes
+    /// the file's `DiffHunk` list, and this helper names the mapping.
     pub(super) fn local_hunk_index(file: &str, hunk: usize) -> usize {
-        // `hunk` indexes `FileDiff.hunks`; libgit2's hunk callback walks the
-        // same hunks in the same order, so they're 1:1.
+        // `hunk` indexes `FileDiff.hunks`; libgit2's hunk callback walks the same hunks in the same
+        // order, so they are 1:1.
         let _ = file;
         hunk
     }
 
-    /// Apply a remote action (fetch / pull / push) against the live repo via
-    /// `git2`, then re-read the model so the ahead/behind counters reflect
-    /// the real tracking state. For the sample, reconcile the counters so the
-    /// offscreen capture shows the effect.
+    /// Apply a remote action against the live repository, then re-read the model so the
+    /// ahead/behind counters reflect the real tracking state; for the sample, reconcile the
+    /// counters so the capture shows the effect.
     pub(super) fn apply_remote_action(&mut self, action: RemoteAction) {
         if self.repo().is_some() {
             if let Err(error) = self.start_remote(action, None, None) {

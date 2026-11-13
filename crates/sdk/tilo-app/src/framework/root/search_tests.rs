@@ -50,7 +50,7 @@ fn scopes(_: &Mailbox) -> Vec<ScopeDecl> {
     vec![ScopeDecl::new("folder:inbox", "Inbox")]
 }
 
-#[resource(kind = "test.mailbox", label = "Mailbox", search = entries, scopes = scopes)]
+#[resource(kind = "test.mailbox", search = entries, scopes = scopes, catalogue = "tests/locales")]
 impl Mailbox {
     /// Set the subject.
     #[action]
@@ -454,7 +454,7 @@ fn shelf_entries(shelf: &Shelf) -> Vec<SearchEntry> {
     ]
 }
 
-#[resource(kind = "test.shelf", label = "Shelf", search = shelf_entries)]
+#[resource(kind = "test.shelf", search = shelf_entries, catalogue = "tests/locales")]
 impl Shelf {
     /// Retitle the book.
     #[action]
@@ -600,7 +600,7 @@ fn notebook_scopes(_: &Notebook) -> Vec<ScopeDecl> {
     vec![ScopeDecl::new("test.notebook/notes/7", "One note")]
 }
 
-#[resource(kind = "test.notebook", label = "Notebook", scopes = notebook_scopes)]
+#[resource(kind = "test.notebook", scopes = notebook_scopes, catalogue = "tests/locales")]
 impl Notebook {
     /// Add a note.
     #[action]

@@ -190,14 +190,14 @@ fn admitted(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
 async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::test_support::{Grants as _, KindSet, Subject};
+            use crate::test_support::{Grantee, Grants as _, KindSet};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
             }
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -278,14 +278,14 @@ async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
 async fn a_child_reaches_no_further_than_what_it_continues() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::test_support::{Grants as _, KindSet, Subject};
+            use crate::test_support::{Grantee, Grants as _, KindSet};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
             }
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();

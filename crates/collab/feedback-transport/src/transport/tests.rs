@@ -38,7 +38,7 @@ fn no_member(person: &str) -> PermissionContext {
         Actor::person(person).in_workspace(WORKSPACE),
         vec![],
         ui::permissions::Standing::person(
-            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Subject::Role(Role::Owner)),
+            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),
             person,
         ),
     )
@@ -48,7 +48,7 @@ fn no_member(person: &str) -> PermissionContext {
 fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
-        policy::Subject::person(hex::encode([12; 32])),
+        policy::Grantee::person(hex::encode([12; 32])),
         TreePath::workspace(WORKSPACE).join(&chat_action(
             "channels",
             "feedback",
@@ -57,7 +57,7 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
         )),
         kinds,
         answer,
-        policy::Subject::person(hex::encode([11; 32])),
+        policy::Grantee::person(hex::encode([11; 32])),
     )
 }
 
@@ -325,7 +325,7 @@ fn reviewed_retry_and_canonical_receipt_survive_both_process_restarts() {
             enrollment().destination,
             Outbox::open(
                 store.clone(),
-                StorageKey::package("so.tilo.feedback-test-outbox"),
+                StorageKey::app("so.tilo.feedback-test-outbox"),
             )
             .unwrap(),
             Box::new(host),
@@ -654,7 +654,7 @@ fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
     let host = Host::open(store.clone(), setup).unwrap();
     let mut outbox = Outbox::open(
         store.clone(),
-        StorageKey::package("so.tilo.feedback-test-outbox"),
+        StorageKey::app("so.tilo.feedback-test-outbox"),
     )
     .unwrap();
     outbox.queue(report.clone()).unwrap();

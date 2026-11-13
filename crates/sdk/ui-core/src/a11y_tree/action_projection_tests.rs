@@ -137,7 +137,6 @@ fn action_projection_rejects_a_durable_key_colliding_with_a_pruned_position() {
         .push(Box::new(Button::new("prefix", "Prefix")))
         .push(Box::new(branch))
         .push(Box::new(Button::new("prefix~1~k:leaf", "Forged collision")));
-    // A currently unlaid-out tree uses positional IDs under its last sibling.
     let map = HashMap::new();
     let full = projected_survey(&root, &map, false);
     assert!(

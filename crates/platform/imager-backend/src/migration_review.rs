@@ -13,9 +13,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-/// Socket inodes are live IPC endpoints, not persistent user file content.
-/// Never classify by a filename or directory: keys/config next to a socket
-/// remain ordinary transferable data.
+/// Socket inodes are live IPC endpoints, not user content: classify them as sockets, never by
+/// name, since keys next to one remain ordinary transferable data.
 pub fn runtime_socket(metadata: &Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -46,8 +45,8 @@ fn changed_source(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, ReviewedSourceChanged(message))
 }
 
-/// A nested mount needs an independently approved source and transfer mapping.
-/// Keep this distinct from metadata incompatibility and source substitution.
+/// A nested mount needs its own approved source and transfer mapping; keep it distinct from
+/// metadata incompatibility.
 #[derive(Debug)]
 struct NestedHomeMount(#[cfg(target_os = "linux")] Option<Arc<MountedHomeLocations>>);
 impl std::fmt::Display for NestedHomeMount {
@@ -103,12 +102,10 @@ pub mod storage;
 #[cfg(target_os = "linux")]
 pub use storage::scratch::InventoryScratch;
 
-/// Retained preparation authority, rechecked whenever working storage is used.
 pub trait InventoryScratchCustody: Send + Sync {
     fn check(&self) -> io::Result<()>;
 }
 
-/// Working storage cannot be constructed on hosts without native admission.
 #[cfg(not(target_os = "linux"))]
 pub struct InventoryScratch {
     _never: std::convert::Infallible,
@@ -159,9 +156,8 @@ pub struct SourceInventory {
     custody: Option<Arc<InstallerCustody>>,
     #[cfg(target_os = "linux")]
     original_custody: Vec<Arc<original_custody::OriginalCustody>>,
-    /// Nested, root-relative subtrees the person excluded from this review.
     exclusions: Vec<PathBuf>,
-    /// Root-relative files the running setup keeps in this Home for itself.
+    /// Files the running setup keeps in this Home for itself.
     running: Vec<PathBuf>,
 }
 
@@ -175,9 +171,9 @@ pub struct InventorySummary {
     pub runtime_sockets: u64,
 }
 impl SourceInventory {
-    /// Reviewed entries as path, entry kind and logical size. Crate-internal:
-    /// a source review derives its labels and counts from the same facts the
-    /// copy engine enforces, instead of walking the source again.
+    /// Reviewed entries as path, entry kind and logical size. Crate-internal: a source review
+    /// derives its labels and counts from the same facts the copy engine enforces, instead of
+    /// walking the source again.
     pub(crate) fn entries(
         &self,
     ) -> impl Iterator<Item = io::Result<(PathBuf, u8, Option<u64>)>> + '_ {
@@ -245,8 +241,7 @@ impl SourceInventory {
         Ok(inventory)
     }
 
-    /// Whole-home review never descends through bind mounts or another volume.
-    /// Such a grant needs an explicit separate transfer, not ambient traversal.
+    /// Such a grant needs its own explicit transfer, not ambient traversal.
     pub fn capture_home(root: &Arc<PinnedDirectory>) -> io::Result<Self> {
         use cap_fs_ext::MetadataExt;
         let mut inventory = Self {
@@ -268,8 +263,8 @@ impl SourceInventory {
         Ok(inventory)
     }
 
-    /// The only permitted portable omission is the installer's own held,
-    /// private preparation namespace. No caller supplies a traversal filter.
+    /// The only permitted portable omission is the installer's own held preparation namespace; no
+    /// caller supplies a traversal filter.
     #[cfg(target_os = "linux")]
     pub fn capture_portable_home(root: &Arc<PinnedDirectory>, home: &Path) -> io::Result<Self> {
         let mut inventory = Self::capture_home_policy(root, InstallerCustody::review(home)?)?;
@@ -376,9 +371,8 @@ impl SourceInventory {
             .collect()
     }
 
-    /// Apply nested, root-relative exclusions from an explicit source selection.
-    /// Shape is checked here; existence is checked against the pinned source by
-    /// the caller, so a stale selection refuses instead of silently widening.
+    /// Shape is checked here; the caller checks existence against the pinned source, so a stale
+    /// selection refuses instead of silently widening.
     pub fn set_exclusions(&mut self, exclusions: &[PathBuf]) -> io::Result<()> {
         crate::setup::source_tree::exclusion_paths(
             &exclusions
@@ -394,9 +388,8 @@ impl SourceInventory {
         &self.exclusions
     }
 
-    /// Re-walk this review with nested exclusions applied. The walk is the same
-    /// canonical producer, so every downstream consumer (archive, verification,
-    /// totals and the installed import) sees one consistent inventory.
+    /// Re-walks this review with the exclusions applied, through the same canonical producer, so the
+    /// archive, verification, totals and installed import see one inventory.
     pub(crate) fn with_exclusions(
         mut self,
         root: &Arc<PinnedDirectory>,
@@ -460,14 +453,13 @@ impl SourceInventory {
         self.check_projected_root(relative, &directory.file)?;
         let before = Metadata::from_file(&directory.file)?;
         self.insert(relative, &before, cancel)?;
-        // Read the listing before descending so each level keeps only its
-        // pinned directory open. Holding the listing's descriptors across the
-        // recursion exhausts macOS's default limit of 256 well before the
-        // depth limit below can refuse the selection.
+        // Read the listing before descending so each level keeps only its pinned directory open;
+        // holding them across the recursion exhausts macOS's 256-descriptor default long before the
+        // depth limit can refuse the selection.
         let names = cap_std::fs::Dir::from_std_file(directory.file.try_clone()?)
             .entries()?
-            // One more than the inventory admits, so an oversized folder is
-            // refused by `insert` without buffering its whole listing.
+            // One more than the inventory admits, so an oversized folder is refused by `insert`
+            // without buffering its whole listing.
             .take(MAX_ENTRIES + 1)
             .map(|entry| {
                 super::migration::check_cancel(cancel)?;
@@ -636,8 +628,8 @@ fn open_mount_entry(
         unix::ffi::OsStrExt,
     };
     let name_c = std::ffi::CString::new(name.as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: retained parent and single entry name; O_PATH neither reads file
-    // contents nor opens devices/FIFOs, and O_NOFOLLOW pins literal symlinks.
+    // SAFETY: retained parent and single entry name; O_PATH reads no file contents and follows no
+    // symlink.
     let raw = unsafe {
         libc::openat(
             parent.file.as_raw_fd(),
@@ -648,7 +640,6 @@ fn open_mount_entry(
     if raw == -1 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful openat returned one new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(raw) };
     if Fact::capture(&Metadata::from_file(&file)?)? != Fact::capture(expected)? {
         return Err(changed_source("Source entry changed during mount review."));
@@ -755,7 +746,6 @@ mod tests {
     }
 }
 
-/// Exact installer namespace grant, unavailable for arbitrary exclusions.
 #[cfg(target_os = "linux")]
 struct InstallerCustody {
     mutable_ancestors: bool,
@@ -764,9 +754,7 @@ struct InstallerCustody {
     stable: (u64, u32, u32, u32),
 }
 #[cfg(target_os = "linux")]
-/// Files the running setup keeps in `home` for itself, relative to it: the
-/// lock and door of the settings profile it holds. They are where the
-/// settings records put them, never data of the Home.
+/// The lock and door of the settings profile the running setup holds.
 #[cfg(target_os = "linux")]
 fn running_setup_files(home: &Path) -> Vec<PathBuf> {
     let Some(root) = tilo_settings_records::profile_root() else {
@@ -789,7 +777,6 @@ fn running_setup_files(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The settings lock the running setup keeps in `home`, relative to it.
 #[cfg(target_os = "linux")]
 fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
     running_setup_files(home).into_iter().find(|file| {
@@ -797,8 +784,7 @@ fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Whether `relative` can name a settings profile's lock below a Home: a
-/// bounded path of plain names ending where the settings records keep it.
+/// A bounded path of plain names ending where the settings records keep it.
 #[cfg(target_os = "linux")]
 fn settings_lock_shape(relative: &Path) -> bool {
     !relative.as_os_str().is_empty()
@@ -811,9 +797,8 @@ fn settings_lock_shape(relative: &Path) -> bool {
         )
 }
 
-/// Inode, mode, owner and group of the regular file at `relative` below
-/// `root`, reached one no-follow edge at a time. `None` where nothing, or
-/// anything but a plain file, is there.
+/// Reached one no-follow edge at a time; `None` where nothing, or anything but a plain file, is
+/// there.
 #[cfg(target_os = "linux")]
 fn held_file(
     root: &Arc<PinnedDirectory>,

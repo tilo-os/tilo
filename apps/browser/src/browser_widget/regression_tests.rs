@@ -42,7 +42,6 @@ fn a_navigation_while_a_page_loads_replaces_it() {
         )
         .unwrap();
     let slow_request = widget.resource_navigation_request.unwrap();
-    // Still loading: the person types another address, then goes back.
     let next = ui::tilo_actions::InvocationId::new();
     assert!(matches!(
         widget.admit(
@@ -59,7 +58,6 @@ fn a_navigation_while_a_page_loads_replaces_it() {
         Ok(ui::framework::Effected::Pending)
     ));
     let back_request = widget.resource_navigation_request.unwrap();
-    // The engine reports the replaced loads as such, and the last one.
     engine.0.lock().unwrap().extend([
         WebViewEvent::NavigationOutcome {
             request_id: slow_request,
@@ -130,7 +128,6 @@ fn a_selection_dragged_off_the_page_is_released_on_it() {
     );
     send(&mut widget, left(ElementState::Pressed));
     assert!(widget.wants_pointer_capture());
-    // Up over the toolbar, and let go there.
     send(
         &mut widget,
         WindowEvent::CursorMoved {
@@ -227,7 +224,6 @@ fn an_address_abandoned_in_the_bar_is_not_suggested_for_again() {
         text: "secret words".into(),
     });
     assert_eq!(widget.bar_query.as_deref(), Some("secret words"));
-    // Esc in the bar: the field holds the page's address again.
     widget.run_window_toolbar_event(ui::window_toolbar::ToolbarEvent::Edit {
         text: "https://page.test/".into(),
     });
@@ -248,7 +244,6 @@ fn a_page_whose_renderer_died_says_so_and_reloads() {
         Some("This page stopped working")
     );
     assert!((widget.progress - 1.0).abs() < f64::EPSILON, "no load runs");
-    // Try again opens the page afresh.
     widget
         .perform_browser_operation(BrowserOperation::Reload)
         .unwrap();
@@ -299,7 +294,6 @@ fn the_active_download_notice_goes_once_the_download_does() {
     };
     widget.capabilities.apply(download("progress"));
     architecture_tests::compose(&mut widget);
-    // The tab was closed while it downloaded: it stayed, and says why.
     widget.close_blocked = true;
     architecture_tests::compose(&mut widget);
     assert!(widget.close_blocked, "still downloading");
@@ -319,7 +313,6 @@ fn a_jump_within_the_page_keeps_find_and_reader_view() {
         .daily
         .act(crate::daily_controls::Action::Open, &widget.engine);
     widget.reader_view = true;
-    // A footnote link, or the page marking the section scrolled to.
     engine.push_event(WebViewEvent::UriChanged(
         "https://docs.test/guide#install".into(),
     ));
@@ -327,7 +320,6 @@ fn a_jump_within_the_page_keeps_find_and_reader_view() {
     assert!(widget.daily.open, "Find stays open on the same page");
     assert!(widget.reader_view);
     assert_eq!(widget.title, "Guide");
-    // Another page is another document.
     engine.push_event(WebViewEvent::UriChanged("https://docs.test/api".into()));
     widget.apply_engine_events();
     assert!(!widget.reader_view);
@@ -415,7 +407,6 @@ fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
         widget.downloads.get(&key).map(|entry| entry.status.clone()),
         Some(crate::downloads::DownloadStatus::Downloading)
     );
-    // Cancelling it from its row, or by an agent, reaches the engine's download.
     widget
         .perform_browser_operation(BrowserOperation::CancelDownload { id: key.clone() })
         .unwrap();
@@ -431,7 +422,6 @@ fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
         entry.destination.as_deref(),
         Some(std::path::Path::new("/home/person/Downloads/report.pdf"))
     );
-    // A page's own export has no address to fetch again: not kept.
     engine.push_event(WebViewEvent::DownloadUpdated {
         id: 2,
         state: "complete".into(),
@@ -478,12 +468,10 @@ fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
     w.apply_engine_events();
     assert_eq!(title("https://app.test/watch").as_deref(), Some("A video"));
 
-    // A title it changes to later keeps the name it was recorded with.
     engine.push_event(WebViewEvent::TitleChanged("(1) A video".into()));
     w.apply_engine_events();
     assert_eq!(title("https://app.test/watch").as_deref(), Some("A video"));
 
-    // A title arriving for another page does not name this one.
     for event in [
         WebViewEvent::UriChanged("https://app.test/next".into()),
         WebViewEvent::LoadFinishedAt {
@@ -519,10 +507,6 @@ impl WebViewEngine for Asking {
     }
 }
 
-/// A page that asks waits on its question: the person answers it in the
-/// dialog over the page (Escape cancels, Enter takes the default, which is
-/// staying when the page asks to be left), and an agent's page action the
-/// question stopped answers at once instead of timing out.
 #[test]
 fn a_question_the_page_asks_is_answered_from_its_dialog() {
     use ui::webview::{PageDialog, PageDialogKind};
@@ -556,7 +540,6 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
             .collect::<Vec<_>>()
     };
 
-    // An agent clicks a button that asks before it acts.
     let click = ui::tilo_actions::InvocationId::new();
     widget
         .admit(
@@ -678,10 +661,6 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
     assert_eq!(answers().len(), 4);
 }
 
-/// A page waiting on its question runs nothing, so an agent's page action
-/// started then is refused at once with the question to answer, rather than
-/// sent to the page to time out 45 seconds later as retryable; once the
-/// question is answered, the page takes actions again.
 #[test]
 fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     use ui::webview::{PageDialog, PageDialogKind};
@@ -767,8 +746,6 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     );
 }
 
-/// The pages the person saved are what the address bar suggests too:
-/// typing what a bookmark says recalls it, marked as a saved page.
 #[test]
 fn typing_in_the_address_bar_suggests_saved_pages() {
     let mut w = BrowserWidget::new_headless();
@@ -794,13 +771,11 @@ fn typing_in_the_address_bar_suggests_saved_pages() {
     assert_eq!(saved.title, "Annual report");
     assert_eq!(saved.detail, "reports.example.test/annual");
     assert_eq!(saved.url, "https://reports.example.test/annual");
-    // Choosing it opens the page it names.
     assert_eq!(
         row_destination(saved, &w.settings.search_engine),
         "https://reports.example.test/annual"
     );
 
-    // A bookmark saved in the person's own library is suggested as well.
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let personal = app
         .person::<crate::personal_bookmarks::PersonalBookmarks>()
@@ -833,8 +808,6 @@ fn typing_in_the_address_bar_suggests_saved_pages() {
     );
 }
 
-/// The Library's history rows forget one page each, through the same
-/// `forget` verb that clears all of them: the rest stay.
 #[test]
 fn a_history_row_forgets_only_its_own_page() {
     let (_app, record) = tests::person_history();
@@ -862,11 +835,9 @@ fn a_history_row_forgets_only_its_own_page() {
 
     let forgotten = "https://two.test/";
     let id = history_resource_id(forgotten);
-    // The row still opens its page, and now offers its own removal.
     architecture_tests::assert_action_binding(&w, &format!("{id}.open"), &id, "open");
     architecture_tests::assert_action_binding(&w, &format!("{id}.forget"), &id, "forget-visit");
 
-    // What its press runs is the row's own published action.
     let page = w.resource_by_id(&id).expect("the history page is a row");
     let forget = page
         .actions
@@ -908,7 +879,6 @@ fn a_history_row_forgets_only_its_own_page() {
         "the record forgets exactly that page"
     );
 
-    // The list the person sees agrees: one row gone, the others there.
     architecture_tests::compose(&mut w);
     assert!(
         w.find_rect(&format!("{id}.open")).is_none(),
@@ -923,9 +893,6 @@ fn a_history_row_forgets_only_its_own_page() {
     }
 }
 
-/// Answering the page's question says what answering did and what to do
-/// next, so an agent that never read the question still knows the page goes
-/// on: the answer is the action's output, not a bare acknowledgement.
 #[test]
 fn answering_a_pages_question_says_what_happens_next() {
     use ui::webview::{PageDialog, PageDialogKind};
@@ -980,11 +947,8 @@ fn answering_a_pages_question_says_what_happens_next() {
     );
 }
 
-/// A completed download reads as bounded text (or names its type and size),
-/// and an offered download is saved or discarded through its own row.
 #[test]
 fn downloads_read_and_answer_their_offer_through_resource_actions() {
-    // Phase `a_completed_download_reads_as_text`.
     {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine, true);
@@ -1056,11 +1020,9 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // Phase `an_offered_download_is_saved_or_discarded_through_its_row`.
     {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        // The engine offers a file: a row appears and asks the person.
         engine.push_event(WebViewEvent::NativeDownloadRequested {
             id: 1,
             url: "https://example.test/receipt.txt".into(),
@@ -1086,7 +1048,6 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
         assert!(actions.contains(&"save-download"), "{actions:?}");
         assert!(actions.contains(&"discard-download"), "{actions:?}");
 
-        // Keeping it answers the engine's question, which continues.
         widget
             .admit(
                 ui::tilo_actions::InvocationId::new(),
@@ -1107,16 +1068,10 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
     }
 }
 
-/// A busy or unanswered page used to report its refusal as retryable, which
-/// contradicts the at-most-once contract every Browser action is published
-/// under: the broker refused the answer, dropped the collaboration bridge and
-/// the tab then refused every later action for the rest of the run. A refused
-/// page action is reported as what it is, and the tab keeps working.
 #[test]
 fn a_refused_page_action_is_never_reported_retryable() {
     use ui::tilo_resource::Effect as _;
 
-    /// `read-page`, as an agent invokes it.
     fn read_page(widget: &BrowserWidget) -> BrowserOperation {
         let published = widget.published();
         let page = published
@@ -1172,12 +1127,6 @@ fn a_refused_page_action_is_never_reported_retryable() {
     }
 }
 
-/// A failure may only advertise a retry when the action it answers was
-/// published under a policy that allows one: the broker refuses the answer
-/// otherwise, and a single refused terminal update drops the collaboration
-/// bridge, so every later action on the tab is refused for the rest of the
-/// run. The mutating page actions are at-most-once, and the failures this app
-/// reports for them are never retryable.
 #[test]
 fn a_page_action_failure_is_retryable_only_where_its_contract_allows_it() {
     use ui::tilo_actions::RetryPolicy;

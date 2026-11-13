@@ -1,22 +1,6 @@
-//! Disk unlock: how each encrypted volume enrolled for sibling unlock keeps
-//! its secrets, and which Wi-Fi networks early boot may join to ask the
-//! owner's other devices (docs/device-reach.md, "Unlocking it after a
-//! reboot").
-//!
-//! The enrolment is described under `/var/lib/tilo/sibling-unlock`, readable
-//! by root alone because it names the networks the owner trusts to unlock
-//! this machine. Settings never reads the files: it asks `tilo-sibling-unlock
-//! volumes` through `pkexec`, which the image's polkit rule grants an
-//! administrator at this machine's seat without a prompt. Choosing the
-//! networks again runs the same enrolment, `tilo-sibling-unlock enrol
-//! --replace-networks`, after administrator authentication.
-//!
-//! A change is a device-local [`DiskUnlockEffect`]: the buttons here and
-//! the Ctrl+K entries build it with [`network_change`], and both reach
-//! [`DiskUnlockModel::start`].
-//!
-//! The section is view code over the model the area keeps ([`view`]): the
-//! area moves what it is keyed by whenever what it shows changes.
+//! Disk unlock: how each encrypted volume enrolled for sibling unlock keeps its
+//! secrets, and which Wi-Fi networks early boot may join to ask the owner's
+//! other devices (docs/device-reach.md, "Unlocking it after a reboot").
 
 use crate::area::AreaContext;
 use crate::channel;
@@ -38,7 +22,6 @@ use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Element, Row};
 
-/// Read the enrolled disks or replace one disk's whole unlock-network list.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DiskUnlockEffect {
@@ -75,16 +58,13 @@ pub(crate) fn answer(
     Ok(Effected::Pending)
 }
 
-/// The host keeps the disk-unlock model when its pane is closed.
 pub struct DiskUnlockArea {
-    /// Whether the enrolment is this device's.
     devices: bool,
     model: OnceCell<Rc<RefCell<DiskUnlockModel>>>,
     /// What the enrolment is read and changed through, where it is not the
     /// device's or the detached stand-in: a test's.
     #[cfg(test)]
     over: Option<Arc<dyn UnlockAuthority>>,
-    /// Moves whenever what the section shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -99,7 +79,6 @@ impl DiskUnlockArea {
         }
     }
 
-    /// The area over `authority` in place of the device's.
     #[cfg(test)]
     fn over(cx: &AreaContext, authority: Arc<dyn UnlockAuthority>) -> Self {
         Self {
@@ -128,8 +107,6 @@ impl DiskUnlockArea {
         })
     }
 
-    /// Take in what the background reads and changes answered, and move
-    /// what the section is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -143,7 +120,6 @@ impl DiskUnlockArea {
         }
     }
 
-    /// Whether a read or a change runs, which the window keeps polling for.
     fn busy(&self) -> bool {
         self.model
             .get()
@@ -205,10 +181,6 @@ crate::area::pane_area! {
     }
 }
 
-/// The Disk unlock section of Privacy & Security as view code over the
-/// model the area keeps: the volumes are read again each time it is shown,
-/// and it is built again whenever what it shows changes
-/// ([`DiskUnlockArea::poll`]).
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
@@ -216,53 +188,38 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
-/// The window's [`DiskUnlockArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DiskUnlockArea> {
     app.areas().find()
 }
 
-/// The sibling-unlock client; polkit's `org.tilo.disk-unlock.manage` names it.
 pub const HELPER: &str = "/usr/libexec/tilo/tilo-sibling-unlock";
 const PKEXEC: &str = "pkexec";
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Long enough for the person to answer the authentication dialog.
 const CHANGE_TIMEOUT: Duration = Duration::from_secs(300);
 const OUTPUT_LIMIT: usize = 256 * 1024;
-/// More than any machine has disks; a longer answer is refused.
 const MAX_VOLUMES: usize = 64;
-/// The unlock networks one volume may name.
 pub const MAX_NETWORKS: usize = 16;
 
-/// How a volume's device half and unlock-network passwords are stored in its
-/// LUKS2 header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sealing {
-    /// Sealed to this machine's TPM.
     Tpm2,
-    /// In the clear: anyone holding the disk can read them.
     Cleartext,
 }
 
-/// One enrolled volume, as `tilo-sibling-unlock volumes` prints it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct UnlockVolume {
-    /// The LUKS UUID.
     pub volume: String,
-    /// `/dev/disk/by-uuid/<volume>`.
     pub device: String,
     pub keyslot: u32,
     pub sealing: Sealing,
-    /// The Wi-Fi networks early boot may join, by connection name.
     #[serde(default)]
     pub networks: Vec<String>,
-    /// The devices asked at boot, by label.
     #[serde(default)]
     pub siblings: Vec<String>,
 }
 
 impl UnlockVolume {
-    /// A short name for the volume: the start of its UUID.
     #[must_use]
     pub fn short_name(&self) -> String {
         t_args(
@@ -275,7 +232,6 @@ impl UnlockVolume {
     }
 }
 
-/// A LUKS UUID in the form `/dev/disk/by-uuid` uses.
 #[must_use]
 pub fn valid_volume(volume: &str) -> bool {
     volume.len() == 36
@@ -288,8 +244,6 @@ pub fn valid_volume(volume: &str) -> bool {
         })
 }
 
-/// A connection name the enrolment accepts (the rule early boot applies to
-/// the file it writes).
 #[must_use]
 pub fn valid_network(name: &str) -> bool {
     !name.is_empty()
@@ -372,8 +326,6 @@ fn network_resource(volume: &UnlockVolume, network: &str) -> LiveRow {
     )
 }
 
-/// The Wi-Fi networks a volume's controls offer: the chosen ones first, then
-/// every other saved Wi-Fi connection the enrolment could take.
 #[must_use]
 pub fn candidates(volume: &UnlockVolume, saved_wifi: &[String]) -> Vec<String> {
     let mut out = volume.networks.clone();
@@ -385,26 +337,17 @@ pub fn candidates(volume: &UnlockVolume, saved_wifi: &[String]) -> Vec<String> {
     out
 }
 
-/// The privileged reads and the enrolment, behind a seam for tests.
 pub trait UnlockAuthority: Send + Sync {
-    /// Every enrolled volume.
     fn volumes(&self) -> Result<Vec<UnlockVolume>, String>;
 
-    /// The saved Wi-Fi connections, by name.
-    ///
-    /// # Errors
-    /// When `NetworkManager` cannot be asked.
     fn saved_wifi(&self) -> Result<Vec<String>, String>;
 
-    /// Chooses `volume`'s unlock networks again.
     fn set_networks(&self, volume: &UnlockVolume, networks: &[String]) -> Result<(), String>;
 }
 
-/// The real authority: `pkexec tilo-sibling-unlock …` and `nmcli`.
 pub struct PolkitAuthority;
 
 fn helper_failure(output: &bounded_command::Output) -> String {
-    // pkexec: the dialog was dismissed or authentication was refused.
     if let Some(126 | 127) = output.status.code() {
         return t("settings-disk-unlock-not-authorised");
     }
@@ -516,7 +459,6 @@ fn change(authority: &dyn UnlockAuthority, operation: &DiskUnlockEffect) -> Resu
     }
 }
 
-/// The Disk unlock section of Privacy & Security.
 pub struct DiskUnlockModel {
     authority: Arc<dyn UnlockAuthority>,
     /// `None` until the first read answers.
@@ -524,14 +466,12 @@ pub struct DiskUnlockModel {
     saved_wifi: Result<Vec<String>, String>,
     read_rx: Option<channel::Receiver<Snapshot>>,
     change_rx: Option<channel::Receiver<(DiskUnlockEffect, Result<String, String>)>>,
-    /// The last change's outcome: `Ok` said plainly, `Err` as a failure.
     outcome: Option<Result<String, String>>,
     replies: Replies,
     structure_dirty: bool,
 }
 
 impl DiskUnlockModel {
-    /// A model over `authority`, reading it once.
     pub fn with_authority(authority: Arc<dyn UnlockAuthority>) -> Self {
         let mut card = Self {
             authority,
@@ -564,7 +504,6 @@ impl DiskUnlockModel {
         }
     }
 
-    /// Starts `operation`: what a button and a Ctrl+K entry both reach.
     pub fn start(&mut self, operation: &DiskUnlockEffect, reply: Option<EffectReply>) {
         if let Some(reply) = reply {
             self.replies.wait(operation.id(), reply);
@@ -651,16 +590,12 @@ impl DiskUnlockModel {
         self.saved_wifi.as_deref().unwrap_or(&[])
     }
 
-    /// Whether a read or a change runs.
     fn busy(&self) -> bool {
         self.read_rx.is_some() || self.change_rx.is_some()
     }
 
-    /// The section as the model shows the enrolment now.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let dispatcher = cx.dispatcher();
-        // The volumes are read again each time the page is shown and after
-        // every change: no refresh.
         let mut body: Vec<Item> = vec![note(&t("settings-disk-unlock-intro"))];
         match &self.volumes {
             None => body.push(note(&t("settings-disk-unlock-loading"))),
@@ -692,7 +627,6 @@ impl DiskUnlockModel {
         provider_settings_ui::widgets::page(items)
     }
 
-    /// One volume: how its secrets are kept, then the networks it may unlock over.
     fn volume_cards(
         &self,
         dispatcher: &ui::framework::Dispatcher<Settings>,
@@ -860,8 +794,6 @@ mod tests {
         }
     }
 
-    /// A Settings window on Privacy & Security whose Disk unlock reads
-    /// `authority`, once its first read is shown; what the window shows.
     fn shown_over(authority: Arc<dyn UnlockAuthority>) -> String {
         crate::area::replace_in_next_window(move |context| {
             DiskUnlockArea::over(context, authority)
@@ -938,8 +870,6 @@ mod tests {
         assert!(!shown.contains(&t("settings-disk-unlock-none")), "{shown}");
     }
 
-    /// The network button and the Ctrl+K entry build one operation; it runs
-    /// the enrolment with the whole new list against the volume's device.
     #[test]
     fn a_network_button_runs_the_enrolment_with_the_new_list() {
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Cleartext, &["Home"])]));
@@ -993,8 +923,6 @@ mod tests {
         })
         .unwrap();
 
-        // The palette's operation for "stop using Home" is the same value the
-        // button builds, and it reaches the same enrolment.
         let operation = network_change(
             &volume(Sealing::Cleartext, &["Home", "Office 5G"]),
             "Home",
@@ -1038,8 +966,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A refused authentication or a volume that is gone is reported, and
-    /// nothing is enrolled.
     #[test]
     fn a_refused_or_stale_change_reports_and_changes_nothing() {
         let authority = Arc::new(FakeAuthority {

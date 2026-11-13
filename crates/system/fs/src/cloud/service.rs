@@ -1,36 +1,21 @@
 //! The per-user cloud account service and its mount processes.
 //!
-//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) watches the
-//! account store Settings writes, and keeps exactly one mount per enabled
-//! file account at `~/Remote/<account label>`:
+//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) watches the account store
+//! Settings writes and keeps exactly one mount per enabled file account at
+//! `~/Remote/<account label>`. An account that appears or is enabled gets a mount
+//! process with its one short-lived credential on stdin; one disabled, reconfigured or
+//! removed has its mount stopped, and removal also drops its cache and queued state.
+//! The service records each mount's health in the account status store Settings and
+//! Files read.
 //!
-//! - an account appears or is enabled → a mount process starts with the
-//!   account's one short-lived credential on its stdin;
-//! - an account is disabled, its configuration changes or it is removed →
-//!   the mount stops and its directory goes; removal also drops the
-//!   account's cache and queued state;
-//! - a mount reports health → the service records it in the account
-//!   status store Settings and Files read.
-//!
-//! The service also serves its mounts' control (`runtime_fs::cloud`) on two
-//! sockets, each mode 0600 in its own 0700 directory. The account socket
-//! (`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`, which Settings' sandbox
-//! is granted) lists the mounts with their health and provider
-//! capabilities, syncs one now (which also retries one that could not
-//! start), and pauses and resumes one (remembered across restarts). The
-//! file socket (`$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`) also
-//! asks a mount for a file's revisions, to restore a revision or for a
-//! share link; the account socket refuses those. Each request travels down
-//! the mount's stdin like a credential and its answer comes back on stdout.
-//! No credential crosses either socket.
-//!
-//! Neither this service nor its mounts open Settings' account vault. The
-//! service reads each account's short-lived credential from the handoff
-//! store ([`accounts::HandoffCredentialSource`]); when it is missing, expired
-//! or rejected, the handoff runs Settings' credential helper
-//! (`tilo-account-credential refresh <id>`, through bounded-command), which
-//! alone holds the vault for that one call. Mount processes see one
-//! credential.
+//! It serves its mounts' control (`runtime_fs::cloud`) on two sockets, each mode 0600
+//! in its own 0700 directory: the account socket lists mounts with their health and
+//! capabilities, syncs, pauses and resumes; the file socket also asks a mount for a
+//! file's revisions, to restore a revision or for a share link. Each request travels
+//! down the mount's stdin and its answer comes back on stdout, so no credential
+//! crosses either socket. Neither the service nor its mounts open Settings' vault:
+//! the credential comes from the handoff store, which runs Settings' credential
+//! helper when it is missing, expired or rejected.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -65,31 +50,24 @@ use tilo_lock::MutexRecover as _;
 mod import_transition;
 use import_transition::ImportHold;
 
-/// What a running mount tells the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MountEvent {
     Health(MountHealth),
     CredentialRejected,
     CredentialExpired,
-    /// The answer to a [`ToMount::Request`].
     Reply(MountReply),
     Exited,
 }
 
-/// A started mount.
 pub trait RunningMount: Send {
     fn send_credential(&mut self, credential: &Credential) -> io::Result<()>;
-    /// Send a control message: sync now, pause, resume or a file request.
     fn send(&mut self, message: &ToMount) -> io::Result<()>;
-    /// What the mount's provider offers beyond files and folders.
     fn capabilities(&self) -> CloudCapabilities;
-    /// Unmount and wait for the mount to end.
     fn stop(self: Box<Self>) -> io::Result<()>;
 }
 
-/// Starts mounts. [`ProcessLauncher`] runs `fs mount-cloud` children with a
-/// FUSE mount each; [`InProcessLauncher`] runs volumes in this process
-/// without the kernel mount (tools and tests).
+/// Starts mounts: [`ProcessLauncher`] runs `fs mount-cloud` children with a FUSE mount
+/// each, [`InProcessLauncher`] runs volumes in this process without the kernel mount.
 pub trait Launcher: Send + Sync {
     fn start(
         &self,
@@ -102,46 +80,38 @@ pub trait Launcher: Send + Sync {
 }
 
 pub struct ServiceConfig {
-    /// The Settings config root; `None` is the user's (`$XDG_CONFIG_HOME/tilo`).
     pub config_root: Option<PathBuf>,
-    /// Where account folders appear (`~/Remote`).
     pub mounts_root: PathBuf,
-    /// Per-account private state: metadata, queue, cache.
     pub state_root: PathBuf,
     /// Publishes a fresh handoff credential when one is missing, expired or
     /// rejected: [`accounts::CommandRefresher`] (Settings' credential
     /// helper) in production.
     pub refresher: Arc<dyn CredentialRefresher>,
-    /// Where to serve the account socket ([`CloudSocket::Accounts`]: list,
-    /// sync now, pause, resume); `None` serves none (tools and tests drive
-    /// [`CloudService::request`]).
+    /// Where to serve the account socket ([`CloudSocket::Accounts`]: list, sync now,
+    /// pause, resume); `None` serves none, and tools drive [`CloudService::request`].
     pub control_socket: Option<PathBuf>,
-    /// Where to serve the file socket ([`CloudSocket::Files`]: everything,
-    /// file requests included); `None` serves none. It must not share a
-    /// directory with `control_socket`, which a sandbox may be granted.
+    /// Where to serve the file socket ([`CloudSocket::Files`]: everything, file
+    /// requests included); `None` serves none. It must not share a directory with
+    /// `control_socket`, which a sandbox may be granted.
     pub file_socket: Option<PathBuf>,
 }
 
-/// How often accounts that could not start (offline, no credential yet)
-/// are tried again while nothing else happens.
+/// How often accounts that could not start (offline, no credential yet) are tried
+/// again while nothing else happens.
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
-/// How long a control connection waits for the service's answer; shorter
-/// than the client's own timeout, so the client hears why.
+/// How long a control connection waits for the service's answer; shorter than the
+/// client's own timeout, so the client hears why.
 const CONTROL_ANSWER: Duration = Duration::from_secs(80);
-/// Control connections served at once.
 const MAX_CONTROL_CONNECTIONS: usize = 8;
-/// A control connection that sends nothing for this long is closed, so idle
-/// clients cannot hold every slot.
+/// A control connection that sends nothing for this long is closed, so idle clients
+/// cannot hold every slot.
 const CONTROL_IDLE: Duration = Duration::from_secs(30);
 /// The accounts paused through the control socket, below the state root.
 const PAUSED_FILE: &str = "paused.json";
 
-/// Why the service needs an account's credential.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Need {
-    /// To start a mount, or because the mount's one expired.
     Current,
-    /// The server rejected the one the mount holds.
     Replacement,
 }
 
@@ -149,7 +119,6 @@ struct Mounted {
     spec: MountSpec,
     dir_name: String,
     running: Box<dyn RunningMount>,
-    /// The health the mount last reported.
     health: Option<MountHealth>,
 }
 
@@ -157,7 +126,6 @@ enum Signal {
     Accounts,
     ImportStopped(String, Result<(), String>),
     Event(String, MountEvent),
-    /// A control request and where its answer goes.
     Control(CloudRequest, Sender<CloudResponse>),
 }
 
@@ -166,12 +134,10 @@ pub struct CloudService {
     launcher: Box<dyn Launcher>,
     mounts: HashMap<String, Mounted>,
     credentials: HashMap<String, Arc<HandoffCredentialSource>>,
-    /// Accounts to start again after [`RETRY_INTERVAL`].
     retry: HashSet<String>,
-    /// Accounts whose background sync is paused; kept in the state root.
     paused: BTreeSet<String>,
-    /// File requests sent to a mount, by request id: the account and where
-    /// the answer goes.
+    /// File requests sent to a mount, by request id: the account and where the answer
+    /// goes.
     pending: HashMap<u64, (String, Sender<CloudResponse>)>,
     next_request: u64,
     imports: super::import::Imports,
@@ -243,9 +209,8 @@ impl CloudService {
         }
     }
 
-    /// The account's credential from the handoff store, refreshed through
-    /// the credential helper when needed. Failures are reported to the
-    /// account status store.
+    /// The account's credential from the handoff store, refreshed through the
+    /// credential helper when needed; failures go to the account status store.
     fn credential(&mut self, account_id: &str, need: Need) -> Option<Credential> {
         let source = if let Some(source) = self.credentials.get(account_id) {
             Arc::clone(source)
@@ -282,7 +247,6 @@ impl CloudService {
         }
     }
 
-    /// The account folders currently mounted: `(account id, directory)`.
     pub fn mounted(&self) -> Vec<(String, PathBuf)> {
         let mut out: Vec<(String, PathBuf)> = self
             .mounts
@@ -293,7 +257,6 @@ impl CloudService {
         out
     }
 
-    /// Bring the mounts in line with the account store.
     pub fn reconcile(&mut self) {
         if self.transition_error.is_some() {
             return; // An unreadable commit journal cannot authorize writable mounts.
@@ -420,7 +383,6 @@ impl CloudService {
         }
     }
 
-    /// Answer the file requests still waiting on `id`'s mount: it stopped.
     fn drop_pending(&mut self, id: &str) {
         self.pending.retain(|_, (account, reply)| {
             if account == id {
@@ -432,7 +394,6 @@ impl CloudService {
         });
     }
 
-    /// Handle one mount event (health, credential refresh, exit).
     fn on_event(&mut self, id: &str, event: MountEvent) {
         if self.import_holds.contains_key(id) && !matches!(event, MountEvent::Reply(_)) {
             if event == MountEvent::Exited && self.mounts.contains_key(id) {
@@ -493,7 +454,6 @@ impl CloudService {
         }
     }
 
-    /// The mounted accounts as the control protocol lists them.
     fn mount_list(&self) -> Vec<CloudMount> {
         let mut mounts: Vec<CloudMount> = self
             .mounts
@@ -526,8 +486,8 @@ impl CloudService {
         })
     }
 
-    /// Handle one control request; `reply` gets the answer, at once or
-    /// when the mount answers a file request.
+    /// Handle one control request; `reply` gets the answer, at once or when the mount
+    /// answers a file request.
     fn control(&mut self, request: CloudRequest, reply: Sender<CloudResponse>) {
         let done = |result: Result<(), String>| match result {
             Ok(()) => CloudResponse::Done,
@@ -555,10 +515,9 @@ impl CloudService {
                     .get(&AccountId::from(account.as_str()))
                     .is_some()
                 {
-                    // A mount that could not start (offline, no credential
-                    // yet) is tried again next on this loop rather than at
-                    // the next retry; starting it can take a while, so the
-                    // answer does not wait for it.
+                    // A mount that could not start (offline, no credential yet) is tried
+                    // again next on this loop rather than at the next retry; starting it
+                    // can take a while, so the answer does not wait for it.
                     let _ = self.signals.send(Signal::Accounts);
                     CloudResponse::Done
                 } else {
@@ -597,7 +556,6 @@ impl CloudService {
                     ));
                     return;
                 };
-                // Credential refresh and all provider I/O happen on bounded import workers.
                 let credentials = Arc::new(HandoffCredentialSource::new(
                     AccountId::from(account.as_str()),
                     handoff,
@@ -621,16 +579,15 @@ impl CloudService {
         let _ = reply.send(response);
     }
 
-    /// Serve the control protocol on `path` from now on, answering what
-    /// `kind` serves and refusing the rest. Requests are handled on the
-    /// service's loop ([`Self::run`], [`Self::pump`]), like an account
-    /// change.
+    /// Serve the control protocol on `path` from now on, answering what `kind` serves
+    /// and refusing the rest. Requests are handled on the service's loop, like an
+    /// account change.
     pub fn serve_control(&self, path: &Path, kind: CloudSocket) -> io::Result<()> {
         bind_control(path, kind, self.signals.clone())
     }
 
-    /// Answer one control request the way the socket does, handling mount
-    /// events until it is answered or `timeout` passes (tools and tests).
+    /// Answer one control request the way the socket does, handling mount events until
+    /// it is answered or `timeout` passes; for tools and tests.
     pub fn request(&mut self, request: CloudRequest, timeout: Duration) -> CloudResponse {
         let (answer, answered) = mpsc::channel();
         self.control(request, answer);
@@ -655,7 +612,6 @@ impl CloudService {
         }
     }
 
-    /// Process queued events without blocking.
     pub fn pump(&mut self) {
         self.expire_import_holds();
         while let Ok(signal) = self.inbox.try_recv() {
@@ -663,8 +619,8 @@ impl CloudService {
         }
     }
 
-    /// Handle events until `account_id` reports `health`, for at most
-    /// `timeout`. Returns whether it did.
+    /// Handle events until `account_id` reports `health`, for at most `timeout`.
+    /// Returns whether it did.
     pub fn wait_for_health(
         &mut self,
         account_id: &str,
@@ -705,8 +661,8 @@ impl CloudService {
         }
     }
 
-    /// Serve until the process is stopped: reconcile now and whenever the
-    /// account store changes.
+    /// Serve until the process is stopped: reconcile now and whenever the account store
+    /// changes.
     pub fn run(mut self) -> io::Result<()> {
         let accounts_dir = match &self.config.config_root {
             Some(root) => root.join("accounts"),
@@ -737,7 +693,6 @@ impl CloudService {
             if let Some(socket) = socket
                 && let Err(error) = self.serve_control(&socket, kind)
             {
-                // The mounts work without their control; keep serving them.
                 tracing::warn!(%error, ?kind, "cannot serve cloud mount control");
             }
         }
@@ -781,7 +736,6 @@ impl CloudService {
         Ok(())
     }
 
-    /// Stop every mount.
     pub fn shutdown(&mut self) {
         self.imports.cancel_all();
         let ids: Vec<String> = self.mounts.keys().cloned().collect();
@@ -791,9 +745,9 @@ impl CloudService {
     }
 }
 
-/// Serve the control protocol on `path`: each request is handled on the
-/// service's own loop, like an account change. The socket is the user's
-/// alone (0600 in a 0700 directory), and answers only what `kind` serves.
+/// Serve the control protocol on `path`: each request is handled on the service's own
+/// loop, like an account change. The socket is the user's alone (0600 in a 0700
+/// directory) and answers only what `kind` serves.
 fn bind_control(path: &Path, kind: CloudSocket, signals: Sender<Signal>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         prepare_dir(parent)?;
@@ -825,9 +779,9 @@ fn bind_control(path: &Path, kind: CloudSocket, signals: Sender<Signal>) -> io::
     Ok(())
 }
 
-/// Serve one control connection until it closes, idles past
-/// [`CONTROL_IDLE`] or sends a bad frame. A request `kind` does not serve
-/// is refused here and never reaches the service's loop or a mount.
+/// Serve one control connection until it closes, idles past [`CONTROL_IDLE`] or sends a
+/// bad frame. A request `kind` does not serve is refused here and never reaches the
+/// service's loop or a mount.
 fn serve_connection(mut stream: UnixStream, kind: CloudSocket, signals: &Sender<Signal>) {
     if stream.set_read_timeout(Some(CONTROL_IDLE)).is_err() {
         return;
@@ -853,10 +807,9 @@ fn serve_connection(mut stream: UnixStream, kind: CloudSocket, signals: &Sender<
     }
 }
 
-/// Carry out a control message from the service on `volume`: the one path
-/// for mount processes and in-process mounts. A file request runs on its
-/// own thread (a provider round trip, never on a FUSE thread or the pipe)
-/// and `reply` gets the answer.
+/// Carry out a control message from the service on `volume`, the one path for mount
+/// processes and in-process mounts. A file request runs on its own thread (a provider
+/// round trip, never on a FUSE thread or the pipe) and `reply` gets the answer.
 pub fn dispatch(
     volume: &Arc<CloudVolume>,
     message: ToMount,
@@ -914,9 +867,9 @@ pub fn dispatch(
     }
 }
 
-/// Subscribe to mutations of the account store on the normal service channel.
-/// The watch reports writes, creation, removal and renames only, so the
-/// service reading the store does not feed itself.
+/// Subscribe to mutations of the account store on the normal service channel. The watch
+/// reports writes, creation, removal and renames only, so the service reading the store
+/// does not feed itself.
 fn watch_accounts(directory: &Path, signals: Sender<Signal>) -> io::Result<ChangeWatch> {
     fs::create_dir_all(directory)?;
     let store = directory.join("store.json");
@@ -933,7 +886,6 @@ fn watch_accounts(directory: &Path, signals: Sender<Signal>) -> io::Result<Chang
 mod watcher_tests {
     use super::*;
 
-    /// The accounts watch on `directory`, and its event thread.
     #[cfg(target_os = "linux")]
     fn watching(directory: &Path, signals: Sender<Signal>) -> (ChangeWatch, String) {
         tilo_test_env::idle::spawned_thread(tilo_files::native::CHANGE_WATCH_THREAD, || {
@@ -941,9 +893,9 @@ mod watcher_tests {
         })
     }
 
-    /// Waits until the watch's thread has handled every event queued so far:
-    /// inotify queues an event in the syscall that causes it and wakes the
-    /// thread, which sleeps again only once the queue is empty.
+    /// Waits until the watch's thread has handled every event queued so far: inotify
+    /// queues an event in the syscall that causes it and wakes the thread, which sleeps
+    /// again only once the queue is empty.
     #[cfg(target_os = "linux")]
     fn caught_up(watch_thread: &str) {
         tilo_test_env::wait_until("the accounts watch to catch up", || {
@@ -1022,10 +974,8 @@ fn prepare_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Runs each mount as `fs mount-cloud` with a FUSE mount.
 pub struct ProcessLauncher {
     pub executable: PathBuf,
-    /// How long a mount may take to report readiness.
     pub ready_timeout: Duration,
 }
 
@@ -1033,9 +983,7 @@ struct ChildMount {
     child: Child,
     stdin: Option<ChildStdin>,
     mount_point: PathBuf,
-    /// Signalled when the child's stdout closes (it exited).
     exited: Receiver<()>,
-    /// What the child said its provider offers, before it was ready.
     capabilities: Arc<Mutex<CloudCapabilities>>,
 }
 
@@ -1188,7 +1136,6 @@ struct InProcessMount {
     volume: Arc<CloudVolume>,
     credentials: Arc<PipeCredential>,
     volumes: Arc<Mutex<HashMap<String, Arc<CloudVolume>>>>,
-    /// Hands file-request answers to the service as events.
     reply: Arc<dyn Fn(MountReply) + Send + Sync>,
 }
 

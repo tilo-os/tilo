@@ -1,8 +1,5 @@
-//! Host-owned input capabilities shared by the retained widget tree.
-//!
-//! Apps describe semantic controls once. The host updates this environment
-//! from platform events, and controls adapt their hit targets and hover-only
-//! affordances without app code branching on raw `winit` events.
+//! Host-owned input capabilities shared by the retained widget tree. Apps describe semantic controls
+//! once.
 
 use vello::kurbo::Rect;
 
@@ -21,9 +18,6 @@ pub enum InputModality {
 }
 
 /// Controller legend/layout used when rendering face buttons.
-///
-/// Actions bind to positions (`South`, `East`, …), not printed letters: the
-/// south button is `A` on Xbox, `B` on Nintendo and `×` on `PlayStation` hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControllerFamily {
     Generic,
@@ -45,10 +39,6 @@ impl ControllerFamily {
     }
 
     /// Classify the names exposed by HID/udev, SDL or a platform gamepad API.
-    /// Unknown hardware remains positional/generic rather than guessing face
-    /// letters incorrectly. Linux hid-nintendo names a lone half "Nintendo
-    /// Switch Left Joy-Con" (with " (Grip)" in the charging grip); joycond
-    /// names a pair "Nintendo Switch Combined Joy-Cons".
     pub fn from_device_name(name: &str) -> Self {
         let name = name.to_ascii_lowercase();
         if name.contains("joy-con (l)")
@@ -77,8 +67,8 @@ impl ControllerFamily {
         }
     }
 
-    /// The face buttons that confirm, cancel and carry the third and fourth
-    /// roles, in that order: the buttons printed A, B, X and Y on this family.
+    /// The face buttons that confirm, cancel and carry the third and fourth roles, in that order: the
+    /// buttons printed A, B, X and Y on this family.
     #[must_use]
     pub fn faces(self) -> [crate::input::ControllerButton; 4] {
         use crate::input::ControllerButton;
@@ -107,8 +97,8 @@ impl ControllerFamily {
     }
 }
 
-/// Physical legends printed on the connected keyboard. Tilo may run on Linux
-/// with an Apple keyboard attached, so this cannot be inferred from the OS.
+/// Physical legends printed on the connected keyboard. Tilo may run on Linux with an Apple keyboard
+/// attached, so this cannot be inferred from the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardFamily {
     Pc,
@@ -142,9 +132,8 @@ impl KeyboardFamily {
     }
 }
 
-/// Devices known to be available in this session. This is deliberately
-/// separate from [`InputModality`]: moving a mouse must not make a connected
-/// touchscreen or controller disappear from shortcut help.
+/// Devices known to be available in this session. This is deliberately separate from [`InputModality`]:
+/// moving a mouse must not make a connected touchscreen or controller disappear from shortcut help.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum InputDevice {
@@ -155,9 +144,6 @@ pub enum InputDevice {
 }
 
 /// A compact set of the input devices discovered for this session.
-///
-/// Keeping capability mutation behind [`Self::with`] prevents modality updates
-/// from accidentally rebuilding the set and forgetting an unrelated device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputAvailability(u8);
 
@@ -262,20 +248,14 @@ impl InteractionEnvironment {
         matches!(self.pointer_precision, PointerPrecision::Fine)
     }
 
-    /// Whether a file can be dragged onto the window: a drag is carried by a
-    /// pointing device, and a finger cannot carry one. A device without a
-    /// pointer — a touch-only phone — is told how to open a file, never where
-    /// to drop one.
+    /// Whether a file can be dragged onto the window: a drag is carried by a pointing device, and a
+    /// finger cannot carry one. A device without a pointer — a touch-only phone — is told how to open a
+    /// file, never where to drop one.
     pub const fn drags_files(self) -> bool {
         self.available.contains(InputDevice::Pointer)
     }
 
-    /// Input language to lead with in shortcut help: the one the person used
-    /// last. Typing after touch leads with keyboard shortcuts, touching after
-    /// typing leads with gestures, and a controller leads only while it is
-    /// still connected. Pointer use carries no instructions of its own, so it
-    /// defers to keyboard hints when a keyboard exists and to gestures on a
-    /// touch-only device.
+    /// Input language to lead with in shortcut help: the one the person used last.
     pub const fn preferred_hint_modality(self) -> InputModality {
         match self.modality {
             InputModality::Controller if self.available.contains(InputDevice::Controller) => {
@@ -297,8 +277,8 @@ impl InteractionEnvironment {
         }
     }
 
-    /// Minimum vertical extent for adjacent full-width collection rows.
-    /// Fine pointers can distinguish compact rows; direct touch cannot.
+    /// Minimum vertical extent for adjacent full-width collection rows. Fine pointers can distinguish
+    /// compact rows; direct touch cannot.
     pub const fn minimum_collection_row(self) -> f32 {
         match self.pointer_precision {
             PointerPrecision::Fine => 1.0,
@@ -306,11 +286,8 @@ impl InteractionEnvironment {
         }
     }
 
-    /// The environment the person shows they use by `event`: the pointer
-    /// for pointer motion, a press or a wheel, the keyboard for a key
-    /// press. A touch switches only once its gesture has landed, so it hits
-    /// what the person saw, and the pointer events it is emulated by do not
-    /// count (`touch_emulated`).
+    /// The environment the person shows they use by `event`: the pointer for pointer motion, a press or
+    /// a wheel, the keyboard for a key press.
     #[must_use]
     pub fn detected_from(
         self,
@@ -353,8 +330,8 @@ impl InteractionEnvironment {
         }
     }
 
-    /// Record direct touch while preserving keyboard, mouse and controller
-    /// availability for multi-device systems such as convertibles.
+    /// Record direct touch while preserving keyboard, mouse and controller availability for
+    /// multi-device systems such as convertibles.
     #[must_use]
     pub const fn with_touch_modality(self) -> Self {
         Self {
@@ -377,9 +354,8 @@ impl InteractionEnvironment {
     }
 }
 
-/// The navigation a mouse side button asks for: Back and Forward go back and
-/// forward through whatever history the view under them owns, as in every
-/// desktop browser and file manager.
+/// The navigation a mouse side button asks for: Back and Forward go back and forward through whatever
+/// history the view under them owns, as in every desktop browser and file manager.
 pub(crate) fn mouse_nav_direction(
     event: &winit::event::WindowEvent,
 ) -> Option<crate::gesture::NavDirection> {
@@ -400,8 +376,8 @@ pub(crate) fn mouse_nav_direction(
     }
 }
 
-/// Android's Back key as the Escape the toolkit dismisses with; what Escape
-/// leaves unconsumed falls through to back navigation, then to closing.
+/// Android's Back key as the Escape the toolkit dismisses with; what Escape leaves unconsumed falls
+/// through to back navigation, then to closing.
 #[cfg(any(feature = "native", test))]
 pub(crate) fn back_key_as_escape(
     event: &winit::event::WindowEvent,
@@ -423,34 +399,27 @@ pub(crate) fn back_key_as_escape(
 /// What a contact means to the widget where it begins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TouchClaim {
-    /// Ordinary content: a tap clicks, a drag scrolls, a hold is the
-    /// secondary click.
+    /// Ordinary content: a tap clicks, a drag scrolls, a hold is the secondary click.
     #[default]
     Pointer,
-    /// A drag moves something (a canvas item, a text selection): past the
-    /// tap's slop it is a left-button drag; a tap and a hold are as for
-    /// [`Self::Pointer`] ([`Widget::touch_claim`](crate::widget::Widget::touch_claim)).
+    /// A drag moves something (a canvas item, a text selection): past the tap's slop it is a
+    /// left-button drag; a tap and a hold are as for [`Self::Pointer`]
+    /// ([`Widget::touch_claim`](crate::widget::Widget::touch_claim)).
     Drag,
-    /// A held item can be picked up and moved (a page in a list that also
-    /// scrolls): a drag scrolls as for [`Self::Pointer`], but a still hold
-    /// lifts the item, a left press where the finger rests, and a drag after
-    /// it moves the item. A hold lifted where it began is the secondary
-    /// click, made before the left button lifts: a widget ends the pick-up
-    /// there, as for a mouse's right press during a drag.
+    /// A held item can be picked up and moved (a page in a list that also scrolls): a drag scrolls as
+    /// for [`Self::Pointer`], but a still hold lifts the item, a left press where the finger rests, and
+    /// a drag after it moves the item.
     HoldDrag,
-    /// A sideways drag moves something (a switch's knob) while a column of
-    /// such things still scrolls: the contact's direction is read once, as
-    /// it passes the tap's slop. Mostly across, it is a drag as for
-    /// [`Self::Drag`]; mostly up or down, it scrolls as for
-    /// [`Self::Pointer`]. A tap and a hold are as for [`Self::Pointer`].
+    /// A sideways drag moves something (a switch's knob) while a column of such things still scrolls:
+    /// the contact's direction is read once, as it passes the tap's slop.
     DragAcross,
     /// The widget reads the raw contact stream itself
     /// ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch)).
     Raw,
 }
 
-/// Pointer events synthesised from direct touch, so ordinary widgets work on a
-/// touchscreen without interpreting contact streams themselves.
+/// Pointer events synthesised from direct touch, so ordinary widgets work on a touchscreen without
+/// interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TouchPointerEvent {
     Move(winit::dpi::PhysicalPosition<f64>),
@@ -460,8 +429,8 @@ pub enum TouchPointerEvent {
         delta: winit::dpi::PhysicalPosition<f64>,
         phase: winit::event::TouchPhase,
     },
-    /// Incremental magnification, with `WindowEvent::PinchGesture`'s
-    /// meaning: the content scale is multiplied by `1.0 + delta`.
+    /// Incremental magnification, with `WindowEvent::PinchGesture`'s meaning: the content scale is
+    /// multiplied by `1.0 + delta`.
     Pinch {
         delta: f64,
         phase: winit::event::TouchPhase,
@@ -507,21 +476,14 @@ struct ActiveTouch {
     start: winit::dpi::PhysicalPosition<f64>,
     last: winit::dpi::PhysicalPosition<f64>,
     started_at: crate::time::Instant,
-    /// Travelled past the tap's slop: scrolling, or dragging when `drag`.
     scrolling: bool,
     long_pressed: bool,
-    /// A drag of this contact is a pointer drag ([`TouchClaim::Drag`]).
     drag: bool,
-    /// Whether it drags is read from its direction at the slop
-    /// ([`TouchClaim::DragAcross`]).
     across: bool,
-    /// A hold picks up what is under the finger ([`TouchClaim::HoldDrag`]).
     hold_drag: bool,
-    /// The hold has picked it up: the left button is down where it began.
     lifted: bool,
 }
 
-/// Two or more fingers on ordinary content: pinch zooms, a joint drag pans.
 #[derive(Debug, Clone, Copy, Default)]
 struct MultiTouch {
     pinching: bool,
@@ -529,26 +491,11 @@ struct MultiTouch {
     scale: f64,
 }
 
-/// Converts direct touch into the toolkit's ordinary pointer contract.
-///
-/// * One finger: a tap is a left click, a drag scrolls, and a still 500 ms
-///   hold is a secondary click (the context menu). Where the widget moves
-///   things by dragging ([`TouchClaim::Drag`]) a drag is a left-button drag
-///   instead, pressed where the finger landed once it passes the slop. Where
-///   a held item can be moved ([`TouchClaim::HoldDrag`]) the hold presses
-///   the left button and a drag after it is a left-button drag. Press is deliberately
-///   delayed until touch-end: many controls activate on pointer-down, so
-///   emitting it earlier would toggle a checkbox before a scroll or edge
-///   swipe had enough movement to cancel the tap.
-/// * Two fingers: [`TouchGestureArena`](crate::gesture::TouchGestureArena)
-///   arbitrates a pinch (`PinchGesture`, anchored at the fingers' centre)
-///   from a pan (pixel scroll), so every pinch-aware view zooms on a
-///   touchscreen exactly as on a touchpad.
-/// * A contact that begins on a widget claiming raw touch
-///   ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch))
-///   produces no pointer events at all and never cancels, or is cancelled by,
-///   another finger; that widget handles its `WindowEvent::Touch` stream
-///   itself.
+/// Converts direct touch into the toolkit's ordinary pointer contract. * One finger: a tap is a left
+/// click, a drag scrolls, and a still 500 ms hold is a secondary click (the context menu). * Two
+/// fingers: [`TouchGestureArena`](crate::gesture::TouchGestureArena) arbitrates a pinch
+/// (`PinchGesture`, anchored at the fingers' centre) from a pan (pixel scroll), so every pinch-aware
+/// view zooms on a touchscreen exactly as on a touchpad.
 #[derive(Default)]
 pub struct TouchPointerEmulator {
     active: Option<ActiveTouch>,
@@ -559,15 +506,14 @@ pub struct TouchPointerEmulator {
 }
 
 impl TouchPointerEmulator {
-    /// How far, in the window's pixels, a finger travels before it is a
-    /// drag rather than a tap.
+    /// How far, in the window's pixels, a finger travels before it is a drag rather than a tap.
     pub(crate) const TAP_SLOP: f64 = 16.0;
     pub const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
     const CANCEL_POINT: winit::dpi::PhysicalPosition<f64> =
         winit::dpi::PhysicalPosition::new(-1.0, -1.0);
 
-    /// Translate one contact update. `claims_raw` is asked only when a
-    /// contact begins, with its physical position.
+    /// Translate one contact update. `claims_raw` is asked only when a contact begins, with its
+    /// physical position.
     pub fn events(
         &mut self,
         touch: &winit::event::Touch,
@@ -582,8 +528,8 @@ impl TouchPointerEmulator {
         })
     }
 
-    /// Translate one contact update. `claim` is asked only when a contact
-    /// begins, with its physical position.
+    /// Translate one contact update. `claim` is asked only when a contact begins, with its physical
+    /// position.
     pub fn events_claimed(
         &mut self,
         touch: &winit::event::Touch,
@@ -643,8 +589,6 @@ impl TouchPointerEmulator {
             });
             return Vec::new();
         };
-        // A second finger turns the contact into a two-finger gesture; the
-        // first finger's pending tap, hold or scroll is withdrawn.
         self.multi = Some(MultiTouch {
             scale: 1.0,
             ..MultiTouch::default()
@@ -767,7 +711,6 @@ impl TouchPointerEmulator {
                     active
                 };
                 if active.lifted {
-                    // The button went down at the hold: the item follows.
                     self.active = Some(ActiveTouch {
                         last: touch.location,
                         scrolling: true,
@@ -850,8 +793,6 @@ impl TouchPointerEmulator {
         }
     }
 
-    /// The end of a pointer drag at `at`: the button lifts there and the
-    /// pointer leaves, as after a tap.
     fn drag_end(at: winit::dpi::PhysicalPosition<f64>) -> Vec<TouchPointerEvent> {
         vec![
             TouchPointerEvent::Move(at),
@@ -860,10 +801,9 @@ impl TouchPointerEmulator {
         ]
     }
 
-    /// An item a hold picked up, put down where it was: the hold is the
-    /// secondary click there, made while the left button is still down so
-    /// the widget ends the pick-up instead of reading a click, and then the
-    /// button lifts and the pointer leaves.
+    /// An item a hold picked up, put down where it was: the hold is the secondary click there, made
+    /// while the left button is still down so the widget ends the pick-up instead of reading a click,
+    /// and then the button lifts and the pointer leaves.
     fn put_back(at: winit::dpi::PhysicalPosition<f64>) -> Vec<TouchPointerEvent> {
         use winit::event::MouseButton;
         vec![
@@ -875,12 +815,8 @@ impl TouchPointerEmulator {
         ]
     }
 
-    /// Whether every gesture begun has reached its target: no finger is
-    /// down whose tap, drag, pinch or raw contact is still to land. A
-    /// finger held into a secondary click has landed, and one that went
-    /// on to scroll has no target to land on. A host keeps what is on
-    /// screen laid out as it was until then, so a touch lands on what the
-    /// person saw when it began.
+    /// Whether every gesture begun has reached its target: no finger is down whose tap, drag, pinch or
+    /// raw contact is still to land.
     pub fn settled(&self) -> bool {
         self.raw.is_empty()
             && self.multi.is_none()
@@ -896,9 +832,9 @@ impl TouchPointerEmulator {
             .map(|active| active.started_at + Self::LONG_PRESS)
     }
 
-    /// Fire a long press whose deadline has passed: a secondary click where
-    /// the finger rests, after which the finger's lift does nothing; or,
-    /// where a held item can be moved, the left press that picks it up.
+    /// Fire a long press whose deadline has passed: a secondary click where the finger rests, after
+    /// which the finger's lift does nothing; or, where a held item can be moved, the left press that
+    /// picks it up.
     pub fn poll(
         &mut self,
         now: crate::time::Instant,
@@ -1322,8 +1258,8 @@ mod tests {
         }
     }
 
-    /// Where a drag moves things only across (a switch's knob), the
-    /// direction at the slop decides: across drags, up or down scrolls.
+    /// Where a drag moves things only across (a switch's knob), the direction at the slop decides:
+    /// across drags, up or down scrolls.
     #[test]
     fn where_a_drag_goes_only_across_a_vertical_swipe_still_scrolls() {
         use TouchPointerEvent::{Move, Press, Release, Scroll};
@@ -1496,8 +1432,6 @@ mod tests {
             );
         }
         assert!(emulator.raw.is_empty());
-        // A raw contact does not turn an ordinary finger into a two-finger
-        // gesture: the ordinary tap still clicks.
         emulator.events(&touch(TouchPhase::Started, 3, 10.0, 10.0), |_| true);
         assert!(feed(&mut emulator, TouchPhase::Started, 4, 300.0, 300.0).is_empty());
         assert_eq!(

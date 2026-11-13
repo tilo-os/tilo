@@ -14,18 +14,12 @@ use ui::interaction::InteractionEnvironment;
 
 use crate::layout_check::stage;
 
-/// What to profile.
 #[derive(Clone, Debug)]
 pub struct ProfileOptions {
-    /// The package directory.
     pub dir: PathBuf,
-    /// Where the packages it uses and the platform's are found.
     pub search: Vec<PathBuf>,
-    /// The scenario to stage; the app's first when none is named.
     pub scenario: Option<String>,
-    /// How many items the workspace holds; none leaves it as a new one.
     pub seed: Option<usize>,
-    /// The window's size, in logical pixels.
     pub size: (u32, u32),
     /// The layer of a package with more than one root to show (`Desk`, `Arrangement`).
     pub root: Option<String>,
@@ -33,7 +27,6 @@ pub struct ProfileOptions {
     pub then: Vec<String>,
 }
 
-/// One thing a person does to a window.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Interaction {
     /// A key press, as [`ui::headless::FrameHarness::key`] names one (`Tab`, `Down`, `Space`).
@@ -92,20 +85,17 @@ impl Interaction {
     }
 }
 
-/// Print what the app in `options.dir` costs to open, and then to do each of `options.then`,
-/// in the language's own terms.
-///
-/// # Errors
-/// A package does not read or compile, the scenario fails, or a `--then` interaction does not
-/// spell one.
+/// Print what the app in `options.dir` costs to open, and then to do each of `options.then`, in the
+/// language's own terms. # Errors A package does not read or compile, the scenario fails, or a
+/// `--then` interaction does not spell one.
 pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     let interactions: Vec<Interaction> = options
         .then
         .iter()
         .map(|spec| Interaction::parse(spec))
         .collect::<Result<_, _>>()?;
-    // The instant a run is of does not matter, but it must not move while it runs: the days a
-    // view shows are read from it, as a layout check reads them.
+    // The instant a run is of does not matter, but it must not move while it runs: the days a view
+    // shows are read from it, as a layout check reads them.
     ui::clock::freeze_for_capture();
     tilo_ui_host::i18n::ensure();
     let search = if options.search.is_empty() {
@@ -127,8 +117,8 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     let compiled: Rc<Vec<tilolang_tilo::tilolang::Compiled>> =
         Rc::new(built.into_iter().map(|built| built.compiled).collect());
     let packages = Rc::new(stage::Packages(Rc::clone(&compiled), published));
-    // The scenario named, else the app's first: `layout-check` checks every one, and a profile
-    // of an app nobody stages is of the workspace before anything was made.
+    // The scenario named, else the app's first: `layout-check` checks every one, and a profile of
+    // an app nobody stages is of the workspace before anything was made.
     let scenario = options
         .scenario
         .clone()
@@ -183,7 +173,6 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     Ok(())
 }
 
-/// One interaction's table, by the unit that ran it.
 fn print_costs(staged: &stage::Staged, interaction: &str) -> Result<(), String> {
     let costs = staged
         .costs()

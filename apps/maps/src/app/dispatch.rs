@@ -1,4 +1,5 @@
-//! The one door an action comes through: a menu row, a control, an offline verb or a touch, turned into the state or resource change it names.
+//! The path an action takes — a menu row, a control, an offline verb or a touch — turned
+//! into the state or resource change it names.
 
 use super::{
     Hit, MapControlAction, MapMenu, MapsApp, OfflineAction, Panel, TileLayer, Workspace,
@@ -17,9 +18,6 @@ impl MapsApp {
                 self.panel_collapsed = !self.panel_collapsed;
             }
             Hit::PanelBack => {
-                // Return from the Directions view to the plain places list. The
-                // route stays in the model (it keeps drawing on the map); only
-                // the panel view changes — this is navigation, not a tab.
                 self.model.panel = Panel::Explore;
                 self.endpoints.dismiss();
                 self.scroll = 0.0;
@@ -71,8 +69,6 @@ impl MapsApp {
             }
             Hit::Journey(i) => {
                 self.model.transit_choice = *i;
-                // Frame the newly-selected itinerary on the map (its legs are
-                // what draws now), not just expand the panel card.
                 self.fit_current();
             }
             Hit::ToggleOverflow => {
@@ -101,7 +97,6 @@ impl MapsApp {
         }
     }
 
-    /// Apply an effect requested by the self-contained offline panel.
     pub(super) fn dispatch_offline(&mut self, action: OfflineAction) {
         match action {
             OfflineAction::Close => self.offline_panel.close(),

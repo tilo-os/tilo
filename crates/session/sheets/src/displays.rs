@@ -811,9 +811,7 @@ fn sheet(shown: &Shown, parts: &Parts) -> Element {
     let sheet = &shown.sheet;
     let spot = shown.spot();
     let gap = ui::tokens::Spacing::BASE.s3;
-    let mut body = Column::new().with_gap(gap).push(Box::new(
-        Text::new(&t("display-sheet-subtitle")).with_role(TextRole::Caption),
-    ));
+    let mut body = Column::new().with_gap(gap);
     body = body.push(layouts(sheet, spot.as_ref(), parts));
     if let Some(band) = band(sheet, spot.as_ref(), parts) {
         body = body.push(band);

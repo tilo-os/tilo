@@ -1,9 +1,9 @@
-//! The contract every [`Notifier`] keeps, as checks a backend's tests (and a
-//! host's own backend's tests) run, plus a [`Recording`] notifier.
+//! The contract every [`Notifier`] keeps, as checks a backend's tests run, plus a
+//! [`Recording`] notifier.
 //!
-//! The checks send only requests the contract says must fail before the
-//! platform sees them, so they run headless against the real system
-//! backends without showing anything. They panic with the violated rule.
+//! The checks send only requests the contract says must fail before the platform
+//! sees them, so they run headless against the real backends; a violation panics
+//! with the rule.
 #![allow(
     clippy::panic,
     clippy::missing_panics_doc,
@@ -14,8 +14,6 @@ use std::sync::Mutex;
 
 use crate::{Feature, Notification, Notifier, NotifyError, Scheduled, SystemTime, availability};
 
-/// Malformed requests are refused as [`NotifyError::Invalid`] (or the host is
-/// [`NotifyError::Unavailable`] altogether) before the platform sees them.
 pub fn check_contract(notifier: &dyn Notifier) {
     for (label, malformed) in [
         ("an empty tag", Notification::new("", "Title", "Body")),
@@ -48,9 +46,8 @@ pub fn check_contract(notifier: &dyn Notifier) {
     );
 }
 
-/// [`check_contract`] for this target's [`system`](crate::system) backend,
-/// which also answers `Unsupported` for scheduling exactly where the
-/// target's column says so.
+/// [`check_contract`] for this target's [`system`](crate::system) backend, which
+/// also answers `Unsupported` for scheduling where the target's column says so.
 pub fn check_system(notifier: &dyn Notifier) {
     check_contract(notifier);
     let unsupported = matches!(
@@ -67,8 +64,6 @@ pub fn check_system(notifier: &dyn Notifier) {
     }
 }
 
-/// A notifier that records what it was asked, for tests and for hosts that
-/// observe an app without letting it reach the desktop.
 #[derive(Default)]
 pub struct Recording {
     log: Mutex<RecordingLog>,
@@ -82,7 +77,6 @@ struct RecordingLog {
 }
 
 impl Recording {
-    /// Every notification shown, in order.
     pub fn shown(&self) -> Vec<Notification> {
         self.log
             .lock()
@@ -90,7 +84,6 @@ impl Recording {
             .unwrap_or_default()
     }
 
-    /// Every tag withdrawn, in order.
     pub fn withdrawn(&self) -> Vec<String> {
         self.log
             .lock()

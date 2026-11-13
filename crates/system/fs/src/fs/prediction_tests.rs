@@ -21,32 +21,21 @@ use std::time::Instant;
 use crate::smart::history::TOGETHER_WINDOW;
 use crate::smart::kept_history::KeptHistory;
 
-/// A scanned page: large enough to live in the file-backed area, the way a
-/// PDF or a photo does.
 const PAGE_BYTES: usize = 2 * 1024 * 1024;
-/// What an app's first read asks for.
 const FIRST_READ: u64 = 64 * 1024;
-/// Opt-in for the timed run, which prints the numbers it measures.
 const BENCH_ENV: &str = "TILO_FS_PREFETCH_BENCH";
-/// How long the person looks at a page before opening the next one.
 const DWELL: Duration = Duration::from_secs(1);
-/// The timed run's link to the peer: a home connection to a peer across
-/// the internet.
 const BENCH_LINK: Link = Link {
     round_trip: Duration::from_millis(40),
     bytes_per_second: 50_000_000 / 8,
 };
 
-/// Distinct bytes per page: `pseudo` folds the seed's low bit away, so
-/// every page gets its own odd seed.
 fn page_bytes(index: usize) -> Vec<u8> {
     let seed = u64::try_from(index).unwrap() * 2 + 1;
     crate::test_bytes::pseudo(PAGE_BYTES, seed)
 }
 
-/// The workspace whose history the tests keep.
 const WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(0x7110_0951);
-/// A flush delay no test waits out: the keeper stays asleep.
 const NEVER: Duration = Duration::from_secs(3600);
 
 fn files_paths(files: &[(&str, String)]) -> Vec<String> {
@@ -57,17 +46,11 @@ fn files_paths(files: &[(&str, String)]) -> Vec<String> {
 }
 
 fn page_names(count: usize) -> Vec<(&'static str, String)> {
-    // Unpadded, as scanners and exports name them: `page-10.pdf` sorts
-    // before `page-2.pdf` byte-wise.
     (1..=count)
         .map(|page| ("scans", format!("page-{page}.pdf")))
         .collect()
 }
 
-/// A network between the mount and the peer, imposed on the peer's blob
-/// provider: every request waits one round trip before it is served, and
-/// every byte sent shares one link of fixed bandwidth, so speculative and
-/// foreground transfers compete for it as they would on a real one.
 #[derive(Clone, Copy)]
 struct Link {
     round_trip: Duration,
@@ -123,14 +106,10 @@ impl Link {
     }
 }
 
-/// Files whose content is only on a peer, and the mount that projects them.
 struct RemoteFolder {
     fs: QuickFS,
-    /// `(inode, content id)` in the order the files were given.
     files: Vec<(u64, Hash)>,
-    /// `directory/name` of each file, in the same order.
     paths: Vec<String>,
-    /// The peer's store, alive for as long as it serves.
     source_store: ContentStore,
     router: Router,
     source: Endpoint,
@@ -138,8 +117,6 @@ struct RemoteFolder {
 }
 
 impl RemoteFolder {
-    /// `files` are `(directory under the root, name)`; the content of the
-    /// `n`th file is [`page_bytes`]`(n)`.
     async fn with_files(files: &[(&str, String)], link: Option<Link>) -> Self {
         let files_given = files;
         let source = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -197,8 +174,6 @@ impl RemoteFolder {
         }
     }
 
-    /// Keep the mount's opened-together history under `cache_root`,
-    /// writing `flush_delay` after a change.
     fn keep_history(self, cache_root: &std::path::Path, flush_delay: Duration) -> Self {
         Self {
             fs: self
@@ -208,12 +183,6 @@ impl RemoteFolder {
         }
     }
 
-    /// Restart the mount the way a reboot does: the old mount goes away
-    /// (its keeper writes the last change), and the new one reads the
-    /// namespace back from its saved bytes, so inodes are handed out afresh
-    /// and, resolving the files last first, differently. The predictor is
-    /// fresh; the content store and the peer are the same. `kept` keeps the
-    /// history under that cache root, as before the restart.
     fn restart(self, kept: Option<(&std::path::Path, Duration)>) -> Self {
         let hydrator = Arc::clone(&self.fs.hydrator);
         let saved = self.fs.ns().save();
@@ -265,15 +234,12 @@ impl RemoteFolder {
         }
     }
 
-    /// `(directory, file)` inodes of file `index`, as the history keys them.
     fn open_of(&self, index: usize) -> (u64, u64) {
         let ino = self.files[index].0;
         let dir = self.fs.ns().parent_ino(ino).unwrap();
         (dir, ino)
     }
 
-    /// Open file `index` the way the FUSE `open` does once it is
-    /// authorised, then time the app's first read of it.
     async fn open_and_time_first_byte(&self, index: usize) -> Duration {
         let (ino, hash) = self.files[index];
         self.fs.predict_after_open(ino);
@@ -287,7 +253,6 @@ impl RemoteFolder {
         elapsed
     }
 
-    /// Wait until every admitted prediction has finished.
     async fn settle(&self) {
         tilo_test_env::within("predictive hydration settles", async {
             while self.fs.heuristics.pending_work() != (0, 0) {
@@ -310,9 +275,6 @@ impl RemoteFolder {
     }
 }
 
-/// Opening pages `1..=k` of a folder in order, then pausing, finds page
-/// `k + 1` already local, for every `k`, including across `page-9` to
-/// `page-10`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn paging_through_a_folder_finds_each_next_page_local() {
     let folder = RemoteFolder::with_files(&page_names(12), None).await;
@@ -329,8 +291,6 @@ async fn paging_through_a_folder_finds_each_next_page_local() {
     folder.close().await;
 }
 
-/// Record two earlier occasions, minutes apart and well before now, on
-/// which `opens` (`(directory, file)` inodes) were opened together.
 fn seed_opened_together(fs: &QuickFS, opens: &[(u64, u64)]) {
     let now = Instant::now();
     let mut history = fs.access_history.lock().unwrap();
@@ -351,12 +311,8 @@ fn report_and_chart() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// A file opened together with another before is hydrated when the other
-/// is opened again, across directories and extensions, but only while the
-/// mount's identity may read it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
-    // Phase `the_partner_is_hydrated`.
     {
         let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
         let opens = [folder.open_of(0), folder.open_of(1)];
@@ -370,7 +326,6 @@ async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
         );
         folder.close().await;
     }
-    // Phase `an_unreadable_partner_is_never_fetched`.
     {
         const ME: [u8; 32] = [0xB7; 32];
         let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
@@ -398,9 +353,6 @@ fn percentile(sorted: &[Duration], percent: usize) -> Duration {
     sorted[rank - 1]
 }
 
-/// One paging run for the timed measurement: over [`BENCH_LINK`], open
-/// twelve pages in `order` with a [`DWELL`] on each, and report the first
-/// read of every page after the first.
 async fn timed_paging(scenario: &str, order: &[usize], predict: bool) {
     let folder = RemoteFolder::with_files(&page_names(order.len()), Some(BENCH_LINK)).await;
     if !predict {
@@ -438,10 +390,6 @@ async fn timed_paging(scenario: &str, order: &[usize], predict: bool) {
     folder.close().await;
 }
 
-/// The headless time-to-first-byte measurement for opening page `k + 1`
-/// after pages `1..=k`, paging forwards and backwards, with prediction off
-/// and on. Opt-in through [`BENCH_ENV`]: it takes about a minute and only
-/// reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn time_to_first_byte_of_the_next_page() {
     if std::env::var_os(BENCH_ENV).is_none() {
@@ -456,7 +404,6 @@ async fn time_to_first_byte_of_the_next_page() {
     }
 }
 
-/// Whether an open of file `from` predicts file `to` right now.
 fn predicts(folder: &RemoteFolder, from: usize, to: usize) -> bool {
     let (ino, _) = folder.files[from];
     let hash = folder.files[to].1;
@@ -467,12 +414,8 @@ fn predicts(folder: &RemoteFolder, from: usize, to: usize) -> bool {
         .any(|(candidate, _)| *candidate == hash)
 }
 
-/// Files opened together before a restart still predict each other after
-/// it, although every inode was handed out afresh; without the kept
-/// history the restart forgets them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn files_opened_together_still_predict_each_other_after_a_restart() {
-    // Phase `a_restart_without_the_kept_history_forgets`.
     {
         let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
         seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
@@ -484,7 +427,6 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
         );
         folder.close().await;
     }
-    // Phase `the_kept_history_is_warm_after_a_restart`.
     {
         let root = tempfile::tempdir().unwrap();
         let folder = RemoteFolder::with_files(&report_and_chart(), None)
@@ -511,13 +453,9 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
     }
 }
 
-/// Opening files only records into memory and wakes the keeper: however
-/// many opens, nothing is written on the request path, and a burst of
-/// opens costs one write once it is over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn opening_files_never_writes_the_kept_history() {
     const BURST: usize = 20;
-    // Phase `no_write_on_the_request_path`.
     {
         let root = tempfile::tempdir().unwrap();
         let folder = RemoteFolder::with_files(&report_and_chart(), None)
@@ -530,9 +468,6 @@ async fn opening_files_never_writes_the_kept_history() {
         }
         folder.close().await;
     }
-    // Phase `a_burst_of_opens_is_one_write`. The keeper's delay is an hour
-    // here, so the burst is whole when it is written, however slowly it
-    // runs; the write is the one the keeper makes once the delay passes.
     {
         let root = tempfile::tempdir().unwrap();
         let folder = RemoteFolder::with_files(&report_and_chart(), None)
@@ -548,7 +483,6 @@ async fn opening_files_never_writes_the_kept_history() {
         assert!(folder.kept().path().exists());
         folder.close().await;
     }
-    // Phase `the_keeper_writes_once_its_delay_has_passed`.
     {
         let root = tempfile::tempdir().unwrap();
         let folder = RemoteFolder::with_files(&report_and_chart(), None)
@@ -577,8 +511,6 @@ fn kept_pairs(folder: &RemoteFolder) -> usize {
         .len()
 }
 
-/// Turning prefetching off in Settings forgets the history, in memory and
-/// on disk, learns nothing while it is off, and a restart finds nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turning_prefetch_off_forgets_the_kept_history() {
     let root = tempfile::tempdir().unwrap();
@@ -589,8 +521,6 @@ async fn turning_prefetch_off_forgets_the_kept_history() {
     assert!(folder.kept().flush().unwrap());
     assert!(folder.kept().path().exists());
 
-    // The storage socket's `SetCachePolicy`, which Settings'
-    // `set-prefetch { on: false }` sends.
     let (policies, kept) = crate::cache_policy::CachePolicies::load(
         None,
         Arc::clone(&folder.fs.heuristics),
@@ -626,12 +556,9 @@ async fn turning_prefetch_off_forgets_the_kept_history() {
     folder.close().await;
 }
 
-/// A kept file that is torn or altered is deleted and never trusted, not
-/// even in part.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_corrupt_kept_history_is_discarded() {
     let root = tempfile::tempdir().unwrap();
-    // A real file first, kept by a mount with a warm pair.
     let mut folder = RemoteFolder::with_files(&report_and_chart(), None)
         .await
         .keep_history(root.path(), NEVER);
@@ -646,8 +573,6 @@ async fn a_corrupt_kept_history_is_discarded() {
         ("altered", altered),
         ("garbage", b"not a history".to_vec()),
     ] {
-        // Stop the mount first, so what it keeps on its way out is replaced
-        // by the damaged bytes before the next one starts.
         folder = folder.restart(None);
         std::fs::write(&path, &bytes).unwrap();
         folder = folder.restart(Some((root.path(), NEVER)));
@@ -657,10 +582,6 @@ async fn a_corrupt_kept_history_is_discarded() {
     folder.close().await;
 }
 
-/// The headless measurement of the first read of a file opened together
-/// with another before a restart, opened a [`DWELL`] after that other one
-/// over [`BENCH_LINK`]: cold (the history forgotten, as before it was kept)
-/// and warm (the kept history). Opt-in through [`BENCH_ENV`].
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_read_after_restart() {
     const ROUNDS: usize = 7;

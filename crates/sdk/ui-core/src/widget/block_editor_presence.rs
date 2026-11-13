@@ -1,6 +1,5 @@
-//! What peers and agents do inside a block's text: the runs each author
-//! wrote, a live typing glow, and an agent's write as the marks a person's
-//! typing leaves.
+//! What peers and agents do inside a block's text: the runs each author wrote, a live typing glow, and
+//! an agent's write as the marks a person's typing leaves.
 
 use vello::kurbo::{Point, Rect};
 
@@ -26,33 +25,23 @@ impl BlockEditor {
         let key = self.presence_key_for(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
-        // A caret's name chip ends before the text's own right edge.
         let text_right = brect.x1 - line.text_inset(ctx.theme);
-        let _tr_rect = {
-            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
-            Rect::new(p0.x, p0.y, p1.x, p1.y)
-        };
         // Drawn first, under caret/selection: the runs each foreign
-        // author wrote, marker-style in their color.
+        // author wrote, marker-style in their color, band by band as the
+        // run wraps.
         for (bs, be, author) in line.author_runs() {
             if self.local_author.as_deref() == Some(author.as_str()) {
                 continue;
             }
-            let x0 = line.pixel_x_for_byte(ctx.theme, *bs);
-            let x1 = line.pixel_x_for_byte(ctx.theme, *be);
-            let p0 = transformed(ctx.transform, Point::new(x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(x1, brect.y1));
+            let bands: Vec<Rect> = line
+                .mark_rects(ctx.theme, *bs..*be)
+                .into_iter()
+                .map(|band| ctx.transform.transform_rect_bbox(band))
+                .collect();
             let user = crate::permissions::UserId(author.clone());
-            ctx.presence.draw_peer_authorship(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
-            );
+            ctx.presence
+                .draw_peer_authorship(ctx.scene, ctx.theme, &user, &bands);
         }
-        // A peer's recently-inserted run glows and decays over
-        // TYPING_FADE. Drawn over authorship, under caret/selection.
         let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
@@ -75,7 +64,9 @@ impl BlockEditor {
         // own caret here draws no second one.
         let mut acting: Vec<crate::permissions::UserId> = Vec::new();
         for interaction in ctx.presence.visible_interactions(now) {
-            let Some((start, end)) = written_in(&interaction, &b.id, line.value()) else {
+            let Some((start, end)) =
+                crate::presence::written_in(&interaction, None, &b.id, line.value())
+            else {
                 continue;
             };
             let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
@@ -113,9 +104,13 @@ impl BlockEditor {
                 .among(self.ink_around(i, ctx.theme), text_right),
             );
         }
-        if let Some(list) = ctx.presence.carets.get(&key) {
-            // What sits above the editor (a note's title and dates) is not
-            // the editor's to cover: a chip on the first line hangs below.
+        let digest = key.digest_form();
+        let carets = ctx.presence.carets.get(&key).into_iter().chain(
+            digest
+                .as_ref()
+                .and_then(|digest| ctx.presence.carets.get(digest)),
+        );
+        for list in carets {
             let top = self
                 .blocks
                 .first()
@@ -137,7 +132,12 @@ impl BlockEditor {
                 );
             }
         }
-        if let Some(list) = ctx.presence.selections.get(&key) {
+        let selections = ctx.presence.selections.get(&key).into_iter().chain(
+            digest
+                .as_ref()
+                .and_then(|digest| ctx.presence.selections.get(digest)),
+        );
+        for list in selections {
             for (user, range) in list {
                 ctx.presence.draw_peer_selection(
                     ctx.scene,
@@ -148,8 +148,6 @@ impl BlockEditor {
                 );
             }
         }
-        // Cross-block selection presence is sent once under a document
-        // key, then expanded into the same per-line geometry locally.
         for &(start_block, end_block, user, range) in document_selections {
             if i < start_block || i > end_block {
                 continue;
@@ -185,27 +183,4 @@ impl BlockEditor {
             .filter(|glyphs| glyphs.width() > 0.0 && glyphs.height() > 0.0)
             .collect()
     }
-}
-
-/// The characters of the block `block` an invocation writes, as byte offsets
-/// in `text`: the `Text` range its anchor names for that block, counted in
-/// characters because a place counts them that way.
-fn written_in(
-    interaction: &tilo_actions::SemanticInteraction,
-    block: &str,
-    text: &str,
-) -> Option<(usize, usize)> {
-    let tilo_actions::InteractionAnchor::Text { ranges, .. } = &interaction.anchor else {
-        return None;
-    };
-    let range = ranges.iter().find(|range| range.block == block)?;
-    let chars = text.chars().count();
-    let start = usize::try_from(range.start).ok()?.min(chars);
-    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
-    let byte = |index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(byte, _)| byte)
-    };
-    Some((byte(start), byte(end)))
 }

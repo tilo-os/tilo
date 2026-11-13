@@ -1,16 +1,12 @@
-//! A whole native file's bytes, read-only, for a reader that wants many
-//! large files at hand but reads few of them (a font database whose faces
-//! are shaped on demand).
-//!
-//! On Unix the file is mapped privately and read-only, so its pages load
-//! only when read; elsewhere its bytes are read into memory. On the web the
-//! standard library has no file system and opening fails.
+//! A whole native file's bytes, read-only, for a reader that wants many large files at
+//! hand but reads few of them (a font database whose faces are shaped on demand). On
+//! Unix the file is mapped privately and read-only, so pages load only when read;
+//! elsewhere its bytes are read into memory, and on the web opening fails.
 
 use std::io;
 use std::path::Path;
 
-/// A read-only copy of a file's bytes as they were when it was opened; see
-/// the [module docs](self).
+/// The bytes as they were when the file was opened.
 pub struct MappedFile {
     bytes: Bytes,
 }
@@ -24,7 +20,7 @@ impl std::fmt::Debug for MappedFile {
 }
 
 impl MappedFile {
-    /// Map (or read) the whole file at `path`, following symbolic links.
+    /// Maps (or reads) the whole file at `path`, following symbolic links.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             bytes: Bytes::open(path)?,
@@ -52,8 +48,8 @@ struct Bytes {
     len: usize,
 }
 
-// SAFETY: the mapping is read-only and owned by this value until it drops;
-// nothing writes through `ptr`.
+// SAFETY: the mapping is read-only and owned by this value until it drops; nothing writes through
+// `ptr`.
 #[cfg(unix)]
 unsafe impl Send for Bytes {}
 // SAFETY: as above; shared reads of immutable memory.
@@ -73,8 +69,8 @@ impl Bytes {
                 len: 0,
             });
         }
-        // SAFETY: a fresh read-only private mapping of a whole open file;
-        // the descriptor may close once mapped.
+        // SAFETY: a fresh read-only private mapping of a whole open file; the descriptor may close
+        // once mapped.
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),

@@ -1,8 +1,5 @@
 //! What a running session shares with the service that supervises it: the
 //! stop request, readiness, and the events it reports.
-//!
-//! Everything here wakes its waiters through one condition variable. A session
-//! never learns about a stop by looking at the filesystem.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -27,7 +24,6 @@ struct State {
     wakers: Vec<Waker>,
 }
 
-/// The stop/ready/finished flags of one session.
 #[derive(Default)]
 pub(crate) struct SessionControl {
     state: Mutex<State>,
@@ -137,10 +133,8 @@ struct Flags {
     finished: bool,
 }
 
-/// Where a session's events go: every client of the service, or a test.
 pub(crate) type EventSink = Arc<dyn Fn(ProjectorEvent) + Send + Sync>;
 
-/// Everything a session needs from its supervisor.
 #[derive(Clone)]
 pub(crate) struct SessionContext {
     pub(crate) paths: SessionPaths,
@@ -207,7 +201,6 @@ impl SessionContext {
         });
     }
 
-    /// The receiver is showing the stream.
     pub(crate) fn ready(&self) {
         self.control.mark_ready();
         (self.events)(ProjectorEvent::Connected {
@@ -241,7 +234,6 @@ mod tests {
         std::thread::spawn(move || {
             let _ = stopped_tx.send(waiting.wait_stop(Duration::from_secs(3600)));
         });
-        // Not ready in time: the expiry is the stop, and its reason sticks.
         control.expire_unless_ready(
             Duration::from_millis(20),
             "projection session did not become ready in time",
@@ -256,7 +248,6 @@ mod tests {
             control.stop_reason(),
             Some("projection session did not become ready in time")
         );
-        // Registering after the stop runs the waker at once.
         let (late_tx, late_rx) = std::sync::mpsc::channel();
         control.on_stop(move || {
             let _ = late_tx.send(());

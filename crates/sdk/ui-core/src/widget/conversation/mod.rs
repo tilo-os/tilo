@@ -1,30 +1,4 @@
 //! `conversation`: what a conversation is made of, once for every app that has one.
-//!
-//! Chat and Messages both talk to people, and stay two apps because their primary object differs:
-//! Chat's is a **channel** (a room with a history, a membership and a mood), Messages' is a
-//! **person** (a private thread that may arrive by SMS, Signal or WhatsApp). Neither is a subset of
-//! the other.
-//!
-//! What they do *not* differ in is the mechanics underneath — when a day starts, what time a line
-//! was said, whether it arrived, what happens to the draft you were typing, which key sends, what
-//! an attachment does when you touch it. Each app used to invent those separately, which is why the
-//! same gesture behaved differently in the two windows. This module is that substrate, made of
-//! small, separately usable pieces, because the two apps paint differently: Chat composes the whole
-//! window immediately, Messages builds a widget tree.
-//!
-//! | Piece | What it settles |
-//! |---|---|
-//! | [`day`] | Day boundaries, the divider that marks one, the local clock a line carries |
-//! | [`band`] | The conversation's one divider: a centred caption, ruled out to both sides, quiet for a day and in the accent where reading starts again |
-//! | [`delivery`] | One delivery-state vocabulary — the same words, glyphs and tones in both apps |
-//! | [`attachment`] | The ladder an attachment opens through: preview → full size → save → open the saved copy |
-//! | [`draft`] | A draft kept per conversation, and the line that shows it wherever the conversation is listed |
-//! | [`composer`] | Enter sends, Shift+Enter breaks the line, Escape lets go — the same rule in both |
-//! | [`list`] | [`ConversationList`]: the message list itself, for a widget-tree app |
-//! | [`jump`] | The pill that takes the reader back to what is unread or to what is now |
-//!
-//! A host that adopts a piece keeps its own identity: a channel still shows authors and avatars, a
-//! private thread still shows one person and their transport.
 
 pub mod attachment;
 pub mod band;

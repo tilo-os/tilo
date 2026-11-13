@@ -1,9 +1,7 @@
-//! Which sandbox an app gets, decided from its code signature.
-//!
-//! The signature is inspected once (`crate::codesign::inspect` on macOS)
-//! into a [`CodeSignature`]; [`decide`] maps that onto a [`MacLaunchMode`].
-//! Keeping the decision pure means every row of the table below is a unit
-//! test on the function production calls, on any host.
+//! Which sandbox an app gets, decided from its code signature. The signature is inspected once
+//! (`crate::codesign::inspect` on macOS) into a [`CodeSignature`], and [`decide`] maps that onto a
+//! [`MacLaunchMode`]. The decision is pure, so every row of the table below is a unit test on the
+//! function production calls, on any host.
 //!
 //! | signature | trusted signer | app-sandbox entitlement | mode |
 //! |---|---|---|---|
@@ -31,16 +29,16 @@ pub enum TrustRequirement {
     DeveloperId,
     /// A Developer ID Application signature issued to this team only.
     DeveloperIdTeam(TeamId),
-    /// A literal requirement, so tests can reach the App Sandbox verdict
-    /// with signatures that exist on every Mac (Apple's own apps).
+    /// A literal requirement, so tests reach the App Sandbox verdict with signatures every Mac has
+    /// (Apple's own apps).
     #[cfg(test)]
     Custom(&'static str),
 }
 
 impl TrustRequirement {
-    /// The requirement a payload must satisfy on disk before it is launched
-    /// outside Seatbelt: the signer's identity, and a notarization ticket —
-    /// the same `notarized` clause Gatekeeper evaluates.
+    /// The requirement a payload must satisfy on disk before it is launched outside Seatbelt: the
+    /// signer's identity and a notarization ticket, the same `notarized` clause Gatekeeper
+    /// evaluates.
     pub fn static_requirement(&self) -> String {
         match self {
             #[cfg(test)]
@@ -49,13 +47,9 @@ impl TrustRequirement {
         }
     }
 
-    /// The requirement the *running* process must satisfy before it is
-    /// resumed.
-    ///
-    /// Identity only: what makes the kernel enforce App Sandbox is a valid
-    /// signature carrying the entitlement, so that is what must hold for the
-    /// image actually exec'd. Notarization is a property of the file, already
-    /// checked by [`Self::static_requirement`].
+    /// The requirement the running process must satisfy before it is resumed. Identity only: the
+    /// kernel enforces App Sandbox from a valid signature carrying the entitlement, and
+    /// notarization is a property of the file, already checked by [`Self::static_requirement`].
     pub fn identity_requirement(&self) -> String {
         match self {
             TrustRequirement::DeveloperId => DEVELOPER_ID_ANCHOR.to_string(),
@@ -69,10 +63,8 @@ impl TrustRequirement {
     }
 }
 
-/// An Apple Developer team identifier: ten uppercase ASCII letters or digits.
-///
-/// Validated because it is spliced into requirement text; nothing else can
-/// reach that string.
+/// An Apple Developer team identifier: ten uppercase ASCII letters or digits. Validated because it
+/// is spliced into requirement text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamId(String);
 
@@ -84,8 +76,7 @@ pub struct InvalidTeamId(pub String);
 impl TeamId {
     /// # Errors
     ///
-    /// Returns [`InvalidTeamId`] unless `raw` is exactly ten uppercase ASCII
-    /// letters or digits.
+    /// [`InvalidTeamId`] unless `raw` is exactly ten uppercase ASCII letters or digits.
     pub fn new(raw: &str) -> Result<Self, InvalidTeamId> {
         let valid = raw.len() == 10
             && raw
@@ -103,36 +94,30 @@ impl TeamId {
     }
 }
 
-/// What inspecting a code signature found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeSignature {
-    /// Nothing at the path could be inspected, or the signing API failed
-    /// before reaching a verdict.
+    /// Nothing at the path could be inspected, or the signing API failed before a verdict.
     Unreadable { reason: String },
     /// The code carries no signature.
     Unsigned,
-    /// A signature is present and does not verify: tampered, truncated,
-    /// revoked or otherwise malformed. `status` is the Security framework's
-    /// `OSStatus`.
+    /// A signature is present and does not verify: tampered, truncated, revoked or otherwise
+    /// malformed. `status` is the Security framework's `OSStatus`.
     Invalid { status: i32 },
-    /// The signature verifies but is ad-hoc: it names no signer, so its
-    /// entitlements are the payload's own claim.
+    /// The signature verifies but is ad-hoc: it names no signer, so its entitlements are the
+    /// payload's own claim.
     AdHoc { app_sandbox: bool },
     /// The signature verifies and names a signer.
     Identified {
-        /// The signer satisfies the configured [`TrustRequirement`],
-        /// notarization included.
+        /// The signer satisfies the configured [`TrustRequirement`], notarization included.
         trusted: bool,
         /// `com.apple.security.app-sandbox` is present and exactly `true`.
         app_sandbox: bool,
     },
 }
 
-/// How an app is launched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacLaunchMode {
-    /// Exec'd directly; the kernel applies the App Sandbox from the
-    /// signature's entitlements.
+    /// Exec'd directly; the kernel applies the App Sandbox from the signature's entitlements.
     AppSandbox,
     /// Exec'd under the generated Seatbelt profile.
     Seatbelt(SeatbeltReason),
@@ -166,8 +151,8 @@ impl SeatbeltReason {
     }
 }
 
-/// The launch mode for an inspected signature. Only a trusted, identified
-/// signature that enables App Sandbox escapes Seatbelt.
+/// The launch mode for an inspected signature: only a trusted, identified signature that enables
+/// App Sandbox escapes Seatbelt.
 pub fn decide(signature: &CodeSignature) -> MacLaunchMode {
     let reason = match signature {
         CodeSignature::Identified {

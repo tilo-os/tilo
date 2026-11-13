@@ -39,8 +39,6 @@ fn cursor(p: Point) -> WindowEvent {
 }
 use crate::synthetic_input::mouse_press;
 
-/// Representative numbers: the dark theme's `xl` title and `sm` message at
-/// the spacing scale a docked panel is drawn with.
 fn metrics() -> Metrics {
     Metrics {
         title_h: 24.0,
@@ -73,7 +71,6 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
         };
         let m = metrics();
 
-        // Tall pane: everything fits, nothing is dropped.
         let roomy = Fit::choose(400.0, want, m);
         assert!(
             roomy.icon && roomy.message,
@@ -81,8 +78,6 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
         );
         assert!(roomy.total <= 400.0);
 
-        // Docked panel: the disc alone is 72px plus a 16px gap, so the stack
-        // does not fit and the disc is what goes.
         let docked = Fit::choose(120.0, want, m);
         assert!(!docked.icon, "the disc is shed first");
         assert!(docked.message, "the explanation is kept while it fits");
@@ -292,7 +287,6 @@ fn empty_state_action_fires_once_through_pointer_keyboard_and_semantics() {
             .with_message("Your inbox is empty")
             .with_action("Compose");
         lay_out(&mut es, 600.0, 400.0);
-        // draw resolves the action rect.
         let _ = draw(&mut es);
         let target = es.action_rect().center();
         assert!(target.x > 0.0, "action rect must resolve after draw");
@@ -438,7 +432,6 @@ fn empty_state_action_fires_once_through_pointer_keyboard_and_semantics() {
         lay_out(&mut es, 600.0, 400.0);
         let _ = draw(&mut es);
         assert_eq!(es.action_rect(), Rect::ZERO, "no action ⇒ no pill rect");
-        // A press anywhere is ignored when there's no action.
         let center = es.get_rect().center();
         dispatch(&mut es, &cursor(center));
         assert!(!dispatch(&mut es, &mouse_press()));
@@ -453,8 +446,6 @@ fn empty_state_action_fires_once_through_pointer_keyboard_and_semantics() {
     without_action_paints_no_pill_and_has_no_hit_target();
 }
 
-/// The "Details" disclosure is a control the native audit sees, so it
-/// carries a binding of its own: a view-local one, whatever the action.
 #[test]
 fn the_details_disclosure_is_an_inventoried_view_control() {
     let es = EmptyState::new("Unavailable")
@@ -502,8 +493,6 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count();
-        // disc + icon strokes + title glyphs + message glyphs + pill + label
-        // glyphs ⇒ comfortably many COLOR tags.
         assert!(
             fills > 5,
             "a fully-populated empty state paints multiple fills, got {fills}"
@@ -511,8 +500,6 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
     }
 
     fn immediate_mode_paint_returns_action_rect() {
-        // The canvas-app entry point paints into an arbitrary rect and hands
-        // back the pill hit target, matching what Widget::draw resolves.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
@@ -534,7 +521,6 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
         );
         let r = action.expect("action label ⇒ a returned pill rect");
         assert!(rect.contains(r.center()), "pill sits inside the paint rect");
-        // No action label ⇒ no returned rect.
         let none = EmptyState::paint(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
             rect,
@@ -788,7 +774,6 @@ fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
     let node = Widget::accessibility(&state).unwrap();
     assert_eq!(node.description.as_deref(), Some(detail), "full text");
 
-    // The glyph is the danger colour, not an accent or the inverted fill.
     let mut scene = Scene::new();
     paint_empty_state(
         &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
@@ -912,9 +897,6 @@ fn layout_reports_the_action_where_paint_puts_it() {
     assert!(layout.natural_height > 0.0 && layout.natural_height < rect.height());
 }
 
-/// A failure's technical side (what a service answered) is not the
-/// person's message: it waits behind a closed "Details" disclosure under
-/// the action, opens in place with a click, and is always spoken.
 #[test]
 fn technical_details_wait_behind_a_closed_disclosure_under_the_action() {
     let detail = "command process failed: No such file or directory (os error 2)";
@@ -1127,4 +1109,75 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
         Some("New note")
     );
     crate::workspace_sync::set(None);
+}
+
+/// A control's place is the layout's: a window that has laid out and has not
+/// yet painted still finds the empty state's action inside it, never at the
+/// window's origin, where a box nothing placed stands.
+#[test]
+fn the_layout_places_the_action_without_a_paint() {
+    let mut state = EmptyState::new("No notes yet")
+        .with_message("Notes you write show up here.")
+        .with_action("New note")
+        .on_view(|| {});
+    lay_out(&mut state, 600.0, 400.0);
+    let action = state.action_rect();
+    let box_ = Widget::get_rect(&state);
+    assert!(
+        !action.is_zero_area(),
+        "the layout places the action: {action:?}"
+    );
+    let published = state
+        .engine
+        .as_ref()
+        .map(Widget::get_rect)
+        .expect("the action is a published button");
+    assert_eq!(
+        published, action,
+        "the published button stands where the action does"
+    );
+    assert!(
+        box_.contains(action.center()),
+        "inside the state that holds it: {action:?} in {box_:?}"
+    );
+
+    let mut placed = EmptyState::new("No notes yet").with_action("New note");
+    let external = Rect::new(120.0, 60.0, 720.0, 460.0);
+    placed.apply_layout_external(external);
+    let action = placed.action_rect();
+    assert!(
+        !action.is_zero_area() && external.contains(action.center()),
+        "a host-placed state places its action too: {action:?} in {external:?}"
+    );
+}
+
+#[test]
+fn the_layout_places_the_details_disclosure_without_a_paint() {
+    let detail = "command process failed: No such file or directory (os error 2)";
+    let mut state = EmptyState::new("Podman isn't available")
+        .with_message("Install Podman to manage containers here.")
+        .with_action("Try again")
+        .with_details(detail);
+    lay_out(&mut state, 600.0, 400.0);
+    let toggle = state.details_rect;
+    let box_ = Widget::get_rect(&state);
+    assert!(
+        !toggle.is_zero_area(),
+        "the layout places the disclosure: {toggle:?}"
+    );
+    assert!(
+        box_.contains(toggle.center()),
+        "inside the state: {toggle:?} in {box_:?}"
+    );
+    assert!(
+        toggle.y0 >= state.action_rect().y1,
+        "under the action: {toggle:?} {:?}",
+        state.action_rect()
+    );
+    dispatch(&mut state, &cursor(toggle.center()));
+    assert!(
+        dispatch(&mut state, &mouse_press()),
+        "the click opens it before anything painted"
+    );
+    assert!(state.details_open());
 }

@@ -1,17 +1,7 @@
-//! The app's window-bar slots in a row of the frame's own, as a window of its
-//! own shows them outside a Tilo session.
-//!
-//! A browser page that mounts one app is such a window: no desktop draws a
-//! bar over it, so nothing would show the slots the app declares
-//! ([`crate::window_toolbar`]), and an app whose controls are its slots
-//! would have none. [`FrameHarness::host_window_slots`] makes the frame host
-//! them in the same [`SlotRow`] the native runner draws across a window of
-//! its own: the app's slots, its notice, the window's History in the row's
-//! menu and the window's search at its end. The app's frame is laid out
-//! under the row; the row is painted over it, takes the pointer and the
-//! keyboard where they are its, and joins the frame's inspection as one
-//! toolbar ([`WINDOW_SLOTS`]) whose slots a reader, a script or an agent
-//! activates by their `window-toolbar-*` targets.
+//! The app's window-bar slots in a row of the frame's own, as a window of its own shows them outside a
+//! Tilo session. A browser page that mounts one app is such a window: no desktop draws a bar over it,
+//! so nothing would show the slots the app declares ([`crate::window_toolbar`]), and an app whose
+//! controls are its slots would have none.
 
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
@@ -25,22 +15,18 @@ use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost};
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOffer, SearchOpening, ToolbarEvent};
 
-/// The name the row goes by in the frame's inspection and in its semantic
-/// actions: its slots are performed on this owner with their targets.
+/// The name the row goes by in the frame's inspection and in its semantic actions: its slots are
+/// performed on this owner with their targets.
 pub const WINDOW_SLOTS: &str = "window-slots";
 
 /// The row the frame hosts, and what it showed when last refreshed.
 pub(super) struct HostedSlots {
     row: SlotRow,
-    /// How far below the window's top the app's frame starts.
     inset: f64,
-    /// The slots' revision the row last showed
-    /// ([`crate::window_toolbar::revision`]).
     revision: u64,
 }
 
-/// The frame lent to its row: the app the row serves. A search of the app's
-/// own the row asks for waits until the row is back in the frame.
+/// The frame lent to its row: the app the row serves.
 struct Lent<'a> {
     frame: &'a mut FrameHarness,
     search: Option<SearchRequest>,
@@ -99,12 +85,10 @@ impl SlotRowHost for Lent<'_> {
 }
 
 impl FrameHarness {
-    /// Host the app's window-bar slots in a row across the top of the
-    /// frame, as a window of its own outside a Tilo session does (a browser
-    /// page that mounts one app): the app is told its slots, search and
-    /// History are hosted, its frame is laid out under the row, and the row
-    /// is painted, routed and inspected with it. A frame standing in for the
-    /// desktop's bar ([`Self::present_in_window_bar`]) already hosts them.
+    /// Host the app's window-bar slots in a row across the top of the frame, as a window of its own
+    /// outside a Tilo session does (a browser page that mounts one app): the app is told its slots,
+    /// search and History are hosted, its frame is laid out under the row, and the row is painted,
+    /// routed and inspected with it.
     pub fn host_window_slots(&mut self) {
         self.invalidate_local();
         if self.window_bar || self.slot_row.is_some() {
@@ -129,19 +113,17 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Whether the frame hosts the app's window-bar slots in a row of its
-    /// own ([`Self::host_window_slots`]).
+    /// Whether the frame hosts the app's window-bar slots in a row of its own
+    /// ([`Self::host_window_slots`]).
     #[must_use]
     pub fn hosts_window_slots(&self) -> bool {
         self.slot_row.is_some()
     }
 
-    /// The frame is a window of its own on a desktop that leaves the frame
-    /// to the app ([`Self::host_window_slots`]): its row carries the
-    /// window's minimize, maximize and close in their pill at its trailing
-    /// end, as the native runner's row does, and a press on the row's empty
-    /// ground moves the window. A browser page's row carries none: the
-    /// browser has the window's own chrome.
+    /// The frame is a window of its own on a desktop that leaves the frame to the app
+    /// ([`Self::host_window_slots`]): its row carries the window's minimize, maximize and close in
+    /// their pill at its trailing end, as the native runner's row does, and a press on the row's empty
+    /// ground moves the window.
     pub fn host_window_controls(&mut self) {
         self.invalidate_local();
         let Some(hosted) = self.slot_row.as_mut() else {
@@ -151,8 +133,7 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Whether the frame's row carries the window's controls
-    /// ([`Self::host_window_controls`]).
+    /// Whether the frame's row carries the window's controls ([`Self::host_window_controls`]).
     #[must_use]
     pub fn hosts_window_controls(&self) -> bool {
         self.slot_row
@@ -160,14 +141,14 @@ impl FrameHarness {
             .is_some_and(|hosted| hosted.row.shows_window_controls())
     }
 
-    /// How far below the window's top the app's frame starts: the row's
-    /// height while the frame hosts the slots.
+    /// How far below the window's top the app's frame starts: the row's height while the frame hosts
+    /// the slots.
     pub(super) fn slot_row_inset(&self) -> f64 {
         self.slot_row.as_ref().map_or(0.0, |hosted| hosted.inset)
     }
 
-    /// Run `serve` with the row and the frame lent to it, then open the
-    /// search of the app's own it asked for.
+    /// Run `serve` with the row and the frame lent to it, then open the search of the app's own it
+    /// asked for.
     fn with_slot_row<R>(
         &mut self,
         serve: impl FnOnce(&mut SlotRow, &mut Lent<'_>) -> R,
@@ -188,9 +169,8 @@ impl FrameHarness {
         Some(result)
     }
 
-    /// Keep the row current before a frame lays out: what the app declares,
-    /// the window's History and width. Returns whether the row changed, so
-    /// a frame already drawn must be drawn again.
+    /// Keep the row current before a frame lays out: what the app declares, the window's History and
+    /// width. Returns whether the row changed, so a frame already drawn must be drawn again.
     pub(super) fn refresh_slot_row(&mut self) -> bool {
         if self.slot_row.is_none() {
             return false;
@@ -219,7 +199,6 @@ impl FrameHarness {
         if (hosted.inset - height).abs() > f64::EPSILON {
             hosted.inset = height;
             changed = true;
-            // The app's frame starts at the row's new height.
             self.invalidate_layout_tree();
         }
         self.with_slot_row(|row, lent| row.drive_search(lent));
@@ -229,8 +208,8 @@ impl FrameHarness {
         changed
     }
 
-    /// Whether the row asks for a frame: the app declared other slots since
-    /// it last showed them, or a menu or the search's caret moves.
+    /// Whether the row asks for a frame: the app declared other slots since it last showed them, or a
+    /// menu or the search's caret moves.
     pub(super) fn slot_row_wants_frame(&self) -> (bool, bool) {
         self.slot_row.as_ref().map_or((false, false), |hosted| {
             (
@@ -240,9 +219,7 @@ impl FrameHarness {
         })
     }
 
-    /// Paint the row over the app's frame, its menus and the search's
-    /// options over the app. Unchanged, the row repaints nothing: while no
-    /// menu is open and the search is closed it paints only its band.
+    /// Paint the row over the app's frame, its menus and the search's options over the app.
     pub(super) fn draw_slot_row(&mut self, transform: Affine) {
         let Some(hosted) = self.slot_row.as_mut() else {
             return;
@@ -271,8 +248,8 @@ impl FrameHarness {
         );
     }
 
-    /// Hand `event` to the row when it is the row's, before the app sees
-    /// it. Returns whether the row took it.
+    /// Hand `event` to the row when it is the row's, before the app sees it. Returns whether the row
+    /// took it.
     pub(super) fn slot_row_event(&mut self, event: &WindowEvent) -> bool {
         if self.slot_row.is_none() {
             return false;
@@ -285,8 +262,6 @@ impl FrameHarness {
         };
         let Some((took, redraw)) = self.with_slot_row(|row, lent| {
             let routed = row.route(lent, event, &input);
-            // The window the frame stands for takes the row's self actions
-            // (move, maximize, minimize, close) nowhere: there is no window.
             let _ = row.take_window_actions();
             routed
         }) else {
@@ -303,8 +278,8 @@ impl FrameHarness {
         took
     }
 
-    /// The row as the frame's inspection shows it: one toolbar of the
-    /// app's slots and the window's search.
+    /// The row as the frame's inspection shows it: one toolbar of the app's slots and the window's
+    /// search.
     pub(super) fn slot_row_inspection(&self) -> Option<InspectionNode> {
         let hosted = self.slot_row.as_ref()?;
         if !hosted.row.is_shown() {
@@ -331,8 +306,8 @@ impl FrameHarness {
         })
     }
 
-    /// The row as HTML: a toolbar across the top of the window, each slot a
-    /// real button named as a reader hears it, over the row's painted band.
+    /// The row as HTML: a toolbar across the top of the window, each slot a real button showing its
+    /// face, named as a reader hears it, and the location as its words.
     pub(super) fn slot_row_composition(&self) -> Option<crate::composition::Composed> {
         use crate::composition::{Composed, Own};
         use std::hash::{Hash, Hasher};
@@ -341,59 +316,118 @@ impl FrameHarness {
             return None;
         }
         let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
-        let slots = hosted.row.accessibility();
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&slots)
-            .unwrap_or_default()
-            .hash(&mut hash);
-        window.width().to_bits().hash(&mut hash);
-        format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
-        let children = slots
-            .iter()
-            .filter_map(|slot| {
-                let rect = slot.bounds?.to_rect();
-                (rect.width() > 0.0 && rect.height() > 0.0).then(|| Composed {
-                    tag: Some("button"),
-                    fallback: false,
-                    path: format!(
-                        "{WINDOW_SLOTS}#{}",
-                        slot.action_target.as_deref().unwrap_or_default()
-                    ),
-                    widget: "WindowSlot".into(),
-                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
-                    clip: None,
-                    layout: None,
-                    scroll: None,
-                    semantics: Some(slot.clone()),
-                    own: None,
-                    focusable: true,
-                    flows: false,
-                    surfaces: Vec::new(),
-                    children: Vec::new(),
-                })
-            })
-            .collect();
-        Some(Composed {
-            tag: Some("header"),
-            fallback: false,
-            path: WINDOW_SLOTS.into(),
-            widget: "WindowSlots".into(),
-            rect: [window.x0, window.y0, window.width(), window.height()],
-            clip: None,
-            layout: None,
-            scroll: None,
-            semantics: Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
-                    .with_name(self.window_tab().title),
-            ),
-            own: Some(Own::Painted {
+        let nodes = hosted.row.accessibility();
+        let named = |key: &str| {
+            nodes
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some(key))
+                .cloned()
+        };
+        let mut row = Composed::new(
+            WINDOW_SLOTS.into(),
+            "WindowSlots",
+            [window.x0, window.y0, window.width(), window.height()],
+        );
+        row.tag = Some("header");
+        row.semantics = Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
+                .with_name(self.window_tab().title),
+        );
+        if !hosted.row.composes() {
+            // Its paint, with each slot a real button over it.
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&nodes)
+                .unwrap_or_default()
+                .hash(&mut hash);
+            window.width().to_bits().hash(&mut hash);
+            format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
+            row.own = Some(Own::Painted {
                 version: hash.finish(),
-            }),
-            focusable: false,
-            flows: false,
-            surfaces: Vec::new(),
-            children,
-        })
+            });
+            row.children = nodes
+                .iter()
+                .filter_map(|slot| {
+                    let rect = slot.bounds?.to_rect();
+                    (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+                        let mut button = Composed::new(
+                            format!(
+                                "{WINDOW_SLOTS}#{}",
+                                slot.action_target.as_deref().unwrap_or_default()
+                            ),
+                            "WindowSlot",
+                            [rect.x0, rect.y0, rect.width(), rect.height()],
+                        );
+                        button.tag = Some("button");
+                        button.semantics = Some(slot.clone());
+                        button.focusable = true;
+                        button
+                    })
+                })
+                .collect();
+            return Some(row);
+        }
+        row.surfaces.push((
+            [window.x0, window.y0, window.width(), window.height()],
+            "ground",
+        ));
+        let strip = hosted.row.strip_card(&self.theme);
+        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
+            let notice = key == crate::widget::window_toolbar_row::STRIP_KEY;
+            let location = key == crate::widget::window_toolbar_row::LOCATION_KEY;
+            let mut part = Composed::new(
+                format!("{WINDOW_SLOTS}#{key}"),
+                "WindowSlot",
+                [rect.x0, rect.y0, rect.width(), rect.height()],
+            );
+            part.own = Some(own);
+            if notice {
+                part.widget = "WindowNotice".into();
+                part.semantics = nodes
+                    .iter()
+                    .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
+                    .cloned();
+            } else if location {
+                part.widget = "WindowLocation".into();
+                part.semantics =
+                    named(crate::widget::window_toolbar_row::LOCATION_TARGET).or_else(|| {
+                        nodes
+                            .iter()
+                            .find(|node| node.bounds.is_some_and(|b| b.to_rect() == rect))
+                            .cloned()
+                    });
+                if part
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|node| node.action_target.is_some())
+                {
+                    part.tag = Some("button");
+                    part.focusable = true;
+                }
+            } else {
+                part.tag = Some("button");
+                part.focusable = true;
+                part.semantics = named(&key);
+            }
+            row.children.push(part);
+        }
+        if let Some(band) = strip {
+            let mut card = Composed::new(
+                format!("{WINDOW_SLOTS}#strip"),
+                "WindowNoticeStrip",
+                [band.x0, band.y0, band.width(), band.height()],
+            );
+            card.surfaces
+                .push(([band.x0, band.y0, band.width(), band.height()], "raised"));
+            if let Some(index) = row
+                .children
+                .iter()
+                .position(|child| child.widget == "WindowNotice")
+            {
+                card.children.push(row.children.remove(index));
+            }
+            row.children.push(card);
+        }
+        Some(row)
     }
 
     /// The row's band alone, at `scale`, for its picture.
@@ -412,22 +446,16 @@ impl FrameHarness {
         Some((scene, [0.0, 0.0, width, hosted.inset]))
     }
 
-    /// The window's own actions pressed through the row's semantics since
-    /// the last call. The frame stands for no window, so a test reads them.
+    /// The window's own actions pressed through the row's semantics since the last call.
     #[cfg(test)]
     pub(super) fn take_slot_row_window_actions(&mut self) -> Vec<WindowAction> {
         self.with_slot_row(|row, _| row.take_window_actions())
             .unwrap_or_default()
     }
 
-    /// Perform `action` on the row's part `target` (a `window-toolbar-*`
-    /// slot or a `window-search-*` part), as assistive technology and
-    /// automation do, and show what the app made of it, as a press on the
-    /// slot does.
-    ///
-    /// The row itself is no slot: a part of it that names no target names
-    /// the window for a reader (its location's label, a menu's name) and
-    /// stands where a press on the row's own background does nothing.
+    /// Perform `action` on the row's part `target` (a `window-toolbar-*` slot or a `window-search-*`
+    /// part), as assistive technology and automation do, and show what the app made of it, as a press
+    /// on the slot does.
     pub(super) fn perform_slot_row_semantic(
         &mut self,
         target: Option<&str>,
@@ -442,9 +470,6 @@ impl FrameHarness {
         if !ran {
             return Err(format!("the window slot {target} took no {action:?} now"));
         }
-        // What the app asked of the host when its sync took the press (the
-        // Undo beside a notice asks for an undo) is done and shown, as
-        // after a press on a slot.
         self.relayout();
         self.host_tick();
         self.invalidate_local();
@@ -463,8 +488,8 @@ mod tests {
 
     const MUTE: &str = "window-toolbar-action:call-mute";
 
-    /// An app whose one control is a slot in the window's bar: a call's
-    /// microphone, named for what a press does, as Chat declares it.
+    /// An app whose one control is a slot in the window's bar: a call's microphone, named for what a
+    /// press does, as Chat declares it.
     struct CallApp {
         content: crate::widget::Column,
         muted: bool,
@@ -496,8 +521,6 @@ mod tests {
             let name = if self.muted { "Unmute" } else { "Mute" };
             crate::window_toolbar::declare(Some(WindowToolbar {
                 actions: vec![ToolbarAction::new("call-mute", "mic", name)],
-                // What the call is, in the bar: a label a reader hears, and
-                // no control of its own.
                 location: Some(crate::window_toolbar::ToolbarLocation {
                     label: "Call".into(),
                     ..crate::window_toolbar::ToolbarLocation::default()
@@ -527,7 +550,6 @@ mod tests {
         (harness, heard)
     }
 
-    /// The slot `target` as the frame's inspection shows it.
     fn slot(harness: &FrameHarness, target: &str) -> Option<crate::a11y::AccessNode> {
         fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<crate::a11y::AccessNode> {
             if node.action_target.as_deref() == Some(target) {
@@ -544,10 +566,6 @@ mod tests {
         find(row.semantics.as_ref()?, target)
     }
 
-    // A window of its own outside a session (a browser page mounting one
-    // app) hosts the app's slots in a row of its own: the app hears they are
-    // hosted, its frame starts under the row, and the row's slots are in
-    // the frame's semantics, named for what they do.
     #[test]
     fn the_frame_hosts_the_apps_slots_in_a_row_above_its_frame() {
         let (harness, _) = call_app();
@@ -572,9 +590,6 @@ mod tests {
         );
     }
 
-    // A window of its own on a desktop that leaves the frame to the app is
-    // one bar tall: the app's frame starts under it, and the row's trailing
-    // end is the window's controls, not a second row above the app's.
     #[test]
     fn a_window_of_its_own_has_one_bar_with_the_windows_controls() {
         let (mut harness, _) = call_app();
@@ -600,9 +615,6 @@ mod tests {
         );
     }
 
-    // Activating the slot through the semantics a reader and an agent use
-    // hands the app the press as the desktop's bar does, and the row shows
-    // what the app declares after it.
     #[test]
     fn activating_a_slot_reaches_the_app_and_the_row_shows_its_outcome() {
         let (mut harness, heard) = call_app();
@@ -658,8 +670,6 @@ mod tests {
         );
     }
 
-    // The window's own controls are named for a reader, and a reader's press
-    // on one reaches the window as a pointer's does.
     #[test]
     fn the_windows_controls_are_named_and_run_for_a_reader() {
         let (mut harness, _) = call_app();
@@ -729,8 +739,8 @@ mod tests {
         assert!(harness.take_slot_row_window_actions().is_empty());
     }
 
-    /// An app whose bar holds a menu, as a list's sort menu does: the row's button says what the
-    /// menu is, and the rows it lists run by their id.
+    /// An app whose bar holds a menu, as a list's sort menu does: the row's button says what the menu
+    /// is, and the rows it lists run by their id.
     struct SortApp {
         content: crate::widget::Column,
         heard: Rc<RefCell<Vec<ToolbarEvent>>>,
@@ -784,9 +794,6 @@ mod tests {
         (harness, heard)
     }
 
-    // A menu in the window's own bar opens on one click and stays open while it is read: the
-    // frames that follow the click leave it up, a second click on its button closes it, and a row
-    // chosen in it runs.
     #[test]
     fn a_menu_in_a_window_of_its_own_opens_on_one_click_and_stays_open() {
         let (mut harness, heard) = sort_app();
@@ -824,7 +831,6 @@ mod tests {
             "one click opens the menu: {:?}",
             rows(&harness)
         );
-        // It stays up: the frames after the click leave it alone.
         for _ in 0..4 {
             harness.relayout();
         }

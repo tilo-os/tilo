@@ -1,60 +1,62 @@
-//! `org.freedesktop.impl.portal.Lockdown`: the session's durable policy
+//! `org.freedesktop.impl.portal.Lockdown`: the person's durable policy
 //! (no printing, no saving to disk, no camera...) as the frontend reads it.
+//!
+//! The policy is the `lockdown` section of the person's settings: what the
+//! person stores there is what every portal operation enforces, at the point
+//! of use.
 //!
 //! Zbus 4 property setters cannot receive a message header. Accepting a
 //! writable D-Bus property without authenticating its sender would let any
 //! session client weaken policy, so D-Bus setters reject all writes. Tilo
-//! Settings uses [`LockdownBackend::set_policy`] in-process.
-
-use std::path::PathBuf;
+//! Settings writes [`LockdownPolicy::set`] in-process.
 
 use zbus::interface;
 
-use tilo_lockdown_policy::PolicyStore;
-pub use tilo_lockdown_policy::{LockdownPolicy, PolicyListener};
+pub use settings_store::lockdown::LockdownPolicy;
 
-#[derive(Clone)]
-pub struct LockdownBackend {
-    state: PolicyStore,
-}
+/// Called with the policy, now and whenever the person changes it.
+pub type PolicyListener = dyn Fn(&LockdownPolicy) + Send + Sync;
+
+/// Follows the policy while it is held; dropping it stops the delivery.
+pub type PolicyWatch = settings_store::watch::SettingsWatch;
+
+#[derive(Clone, Default)]
+pub struct LockdownBackend;
+
 impl LockdownBackend {
     /// The policy of this person's session.
     #[must_use]
     pub fn for_session() -> Self {
-        Self::at_path(default_path())
-    }
-    pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        Self {
-            state: PolicyStore::at_path(path),
-        }
-    }
-    pub fn policy(&self) -> LockdownPolicy {
-        self.state.policy()
-    }
-    pub fn set_policy(&self, policy: LockdownPolicy) -> zbus::fdo::Result<()> {
-        self.state
-            .set_policy(policy)
-            .map_err(|error| failed(&error.to_string()))
+        Self
     }
 
-    /// Follow every policy committed here: `listener` hears the current one
-    /// first and then each change in order, so a service that must act on
-    /// the policy while it runs — stop the microphone, silence output —
-    /// keeps up with what the person chose. Nothing is remembered about the
-    /// listener beyond this session, so it must hold it alive itself.
+    pub fn policy(&self) -> LockdownPolicy {
+        LockdownPolicy::get()
+    }
+
+    pub fn set_policy(&self, policy: LockdownPolicy) -> zbus::fdo::Result<()> {
+        policy.set().map_err(|error| failed(&error.to_string()))
+    }
+
+    /// Follow every policy the person commits: `listener` hears the current
+    /// one first and then each change, so a service that must act on the
+    /// policy while it runs — stop the microphone, silence output — keeps up
+    /// with what the person chose. The returned watch keeps the delivery
+    /// alive; dropping it stops the listener hearing anything more.
     ///
     /// # Errors
-    /// The policy file cannot be watched.
-    pub fn watch(&self, listener: &std::sync::Arc<PolicyListener>) -> std::io::Result<()> {
-        self.state.watch(listener)
+    /// The settings cannot be watched.
+    pub fn watch(&self, listener: &std::sync::Arc<PolicyListener>) -> std::io::Result<PolicyWatch> {
+        let listener = std::sync::Arc::clone(listener);
+        settings_store::lockdown::watch(move |policy| listener(policy))
     }
 }
 
-/// Read the current policy at the point of use.  Portal operations must
+/// Read the current policy at the point of use. Portal operations must
 /// enforce Lockdown themselves; merely exposing these properties would let a
 /// policy controller report a restriction while privileged work still runs.
 pub fn current_policy() -> LockdownPolicy {
-    tilo_files::native::atomic::json::load_or_default(&default_path())
+    LockdownPolicy::get()
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Lockdown")]
@@ -117,11 +119,6 @@ impl LockdownBackend {
     }
 }
 
-fn default_path() -> PathBuf {
-    crate::private_state_root()
-        .unwrap_or_else(|| PathBuf::from("/dev/null"))
-        .join("tilo/portal/lockdown.json")
-}
 fn failed(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(message.into())
 }
@@ -134,36 +131,47 @@ fn denied() -> zbus::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use settings_store::SettingsSource as _;
     #[test]
-    fn lockdown_policy_is_trusted_persistent_and_not_dbus_settable() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let p = dir.path().join("policy.json");
-            let b = LockdownBackend::at_path(&p);
-            b.set_policy(LockdownPolicy {
+    fn lockdown_policy_is_persistent_and_not_dbus_settable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = settings_store::Store::open(dir.path()).unwrap();
+        let _scoped = settings_store::scoped_source(Some(store));
+        let backend = LockdownBackend::for_session();
+        assert_eq!(backend.policy(), LockdownPolicy::default());
+        backend
+            .set_policy(LockdownPolicy {
                 disable_camera: true,
                 ..LockdownPolicy::default()
             })
             .unwrap();
-            assert!(LockdownBackend::at_path(p).policy().disable_camera);
-            assert_eq!(
-                fs::metadata(dir.path().join("policy.json"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+        assert!(LockdownBackend::for_session().policy().disable_camera);
+        assert!(current_policy().disable_camera);
+        let watched = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&watched);
+        let listener: std::sync::Arc<PolicyListener> =
+            std::sync::Arc::new(move |policy: &LockdownPolicy| {
+                seen.lock().unwrap().push(policy.disable_microphone);
+            });
+        let _watch = backend.watch(&listener).unwrap();
+        assert_eq!(watched.lock().unwrap().as_slice(), [false]);
+        LockdownPolicy {
+            disable_microphone: true,
+            ..LockdownPolicy::default()
         }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            assert!(
-                LockdownBackend::at_path(dir.path().join("lockdown.json"))
-                    .set_disable_camera(false)
-                    .is_err()
-            );
-        }
+        .set()
+        .unwrap();
+        assert_eq!(watched.lock().unwrap().as_slice(), [false, true]);
+        assert!(
+            backend.set_disable_camera(false).is_err(),
+            "D-Bus must not weaken the policy"
+        );
+        settings_store::flush_pending_writes();
+        let reopened = settings_store::Store::follow(dir.path()).unwrap();
+        assert_eq!(
+            reopened.load()["lockdown"]["policy"]["disable_microphone"],
+            serde_json::json!(true),
+            "the policy persisted"
+        );
     }
 }

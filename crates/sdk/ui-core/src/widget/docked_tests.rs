@@ -4,8 +4,6 @@ use super::{Docked, DockedProps};
 use crate::component::Described;
 use crate::widget::{StructureChange, Widget};
 
-/// Content whose change is one the host can carry out in place, as a list mounting
-/// the rows a scroll brought near: it asks for a remount, not a rebuild.
 struct InPlace {
     pending: bool,
 }
@@ -51,9 +49,6 @@ fn a_docked_column_reports_what_it_holds_changing_in_place() {
     );
 }
 
-/// The bar stands in the column its content is read at, however the content is wrapped: what
-/// it says of itself reaches through the scroll around it, through a decorator a host put it
-/// in, and it says nothing at all where the column is no page.
 #[test]
 fn a_bar_under_a_page_column_stands_where_its_content_is_read() {
     fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {
@@ -131,9 +126,6 @@ fn a_bar_under_a_page_column_stands_where_its_content_is_read() {
     assert!(across > measure * 2.0, "a column that is no page: {across}");
 }
 
-/// A column the host puts its content in after the column was built stands in that content's
-/// column too: a view says the column with what it shows, not with the first frame it was made
-/// with.
 #[test]
 fn a_column_standing_in_content_put_in_later_follows_that_content() {
     fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {

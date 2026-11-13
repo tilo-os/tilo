@@ -1,7 +1,4 @@
-//! Read-only Linux host discovery and exact Desktop release selection.
-//!
-//! The worker does not grant installation authority. The privileged adapter must
-//! independently re-probe immediately before any future package operation.
+//! Read-only Linux host discovery, and the exact Desktop release it finds.
 
 use super::desktop_catalog::{DesktopRelease, PackageFormat};
 use std::collections::HashMap;
@@ -11,11 +8,9 @@ pub struct OsRelease {
     pub id: String,
     /// Missing is distinct from a version; only exact ID=arch means rolling.
     pub version_id: Option<String>,
-    /// The distribution's own name for people ("Fedora Linux"), when given.
     pub name: Option<String>,
 }
 
-/// Parse os-release as data, without expansion, execution, or `ID_LIKE` inheritance.
 pub fn parse_os_release(input: &str) -> Result<OsRelease, String> {
     let mut fields = HashMap::new();
     for line in input.lines() {
@@ -103,7 +98,6 @@ fn parse_value(raw: &str) -> Result<String, String> {
     }
 }
 
-/// Catalog architecture names are deliberate, not loose package-name aliases.
 pub fn catalog_architecture(rust_architecture: &str) -> Option<&'static str> {
     match rust_architecture {
         "aarch64" => Some("aarch64"),
@@ -132,11 +126,7 @@ impl PackageManager {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstalledPackage {
     Absent,
-    /// Exact native version: RPM [nonzero epoch:]version-release,
-    /// Debian epoch:upstream-revision as emitted by dpkg, Arch pacman version.
-    Installed {
-        version: String,
-    },
+    Installed { version: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,7 +135,6 @@ pub struct SessionSupport {
     pub other_wayland_sessions: Vec<String>,
 }
 
-/// Fail-closed evidence snapshot. An Err is unavailable/ambiguous evidence, never false.
 #[derive(Clone, Debug)]
 pub struct DesktopHost {
     pub operating_system: String,
@@ -174,9 +163,6 @@ fn adapter(id: &str) -> Option<PackageManager> {
     }
 }
 
-/// Select an exact authenticated release using only the supplied snapshot.
-/// No IO is performed. Callers must supply the bundled authenticated catalog;
-/// a successful result is informational and never privileged authorization.
 pub fn desktop_readiness(host: &DesktopHost, releases: &[DesktopRelease]) -> DesktopReadiness {
     let mut blockers = Vec::new();
     if host.operating_system != "linux" {
@@ -311,8 +297,6 @@ fn select_release<'a>(
     }
 }
 
-/// Start read-only discovery on a named worker. Poll `is_finished` or receive the
-/// result on a controller worker; never join a running probe on the UI thread.
 pub fn probe_desktop_host() -> std::io::Result<std::thread::JoinHandle<DesktopHost>> {
     std::thread::Builder::new()
         .name("desktop-readiness".into())
@@ -417,7 +401,6 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
     .any(&mut present)
 }
 
-// Also compile the read-only primitives on Unix test hosts for bounded IO tests.
 #[cfg(any(target_os = "linux", all(test, unix)))]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -444,8 +427,6 @@ mod native {
         pub stderr: String,
     }
 
-    /// No shell or PATH resolution. Drain bounded, nonblocking pipes so a hung
-    /// command or inherited pipe cannot strand the readiness worker.
     pub(super) fn query(
         program: &str,
         args: &[&str],
@@ -639,9 +620,6 @@ mod native {
         Ok(decoded)
     }
 
-    /// Kernel mountinfo mountpoints are relative to each process's root. Require
-    /// one identical root mount for this process and PID 1, without following the
-    /// permission-restricted /proc/1/root link. Missing evidence is not absence.
     pub(super) fn root_mount(text: &str) -> Result<RootMount, String> {
         let number = |value: &str| {
             value
@@ -848,7 +826,6 @@ mod native {
 mod tests {
     use super::*;
 
-    /// Sandbox markers, mount evidence, special files, runner bounds and confinement.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1190,8 +1167,6 @@ mod tests {
         }
     }
 
-    /// Diagnostic only: uses the actual worker and authenticated bundled catalog.
-    /// No fixture can be substituted into this path.
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "read-only native host diagnostic, run explicitly"]

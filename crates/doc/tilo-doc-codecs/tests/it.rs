@@ -11,7 +11,6 @@
 
 use tilo_automerge::heap;
 
-/// Counts heap per thread, for the tests comparing what documents hold (see `heap`).
 #[global_allocator]
 static HEAP: heap::ThreadCounting = heap::ThreadCounting;
 

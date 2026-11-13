@@ -1,6 +1,5 @@
-//! `tilo-install trust …`, `revoke` and `revoked`: the attestors this
-//! person trusts and the publisher keys they refuse, and `check`, the
-//! verdict `app install <file>` asks before it installs.
+//! The attestors this device trusts, the publisher keys it refuses, and the verdict `check` prints
+//! for a package.
 
 use tilo_app_package::trust::{AttestorScope, RevokedKey, TrustFile, TrustedAttestor};
 
@@ -10,7 +9,7 @@ use super::{
 };
 
 pub(super) fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
-    // Validate scope + pubkey hex up-front, before touching the file.
+    // Validate scope and pubkey before touching the file.
     let scope_parsed = AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
     let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
     let mut attestors = load_trusted_attestors()?;
@@ -88,13 +87,12 @@ pub(super) fn revoked_list() -> Result<(), Error> {
     Ok(())
 }
 
-/// `tilo-install check <tapp>`: read and verify a `.tapp` as `install`
-/// would, store nothing, and print one JSON object saying who signed it.
+/// Read and verify a `.tapp` as `install` would, store nothing, and print one JSON object saying who
+/// signed it.
 ///
-/// `verdict` is `trusted` when a publisher this person trusts signed it
-/// (directly, through an attestor, or the publisher `--require-publisher`
-/// named) and `unverified` for a valid self-signed or unknown publisher.
-/// A revoked publisher or a bad signature is an error, as for `install`.
+/// `verdict` is `trusted` when a publisher this device trusts signed it (directly, through an
+/// attestor, or the publisher `--require-publisher` named) and `unverified` for a valid self-signed
+/// or unknown publisher. A revoked publisher or a bad signature is an error, as for `install`.
 pub(super) fn check_verdict(tapp: &std::path::Path, trust: &TrustFlags) -> Result<(), Error> {
     // Self-signed is a verdict here, not a refusal: the caller decides.
     let trust = TrustFlags {

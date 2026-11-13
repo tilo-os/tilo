@@ -1,17 +1,11 @@
-//! Pulling the cover image out of an EPUB container.
-//!
-//! An EPUB is a ZIP: `META-INF/container.xml` points at the OPF package
-//! document, whose `<manifest>` names the cover image. The resolution (in
-//! descending confidence: `properties="cover-image"`, the legacy
-//! `<meta name="cover">` pointer, then a cover-named image item) is the same
-//! [`bounded_zip::epub`] path the ebook reader uses, so the shared generator
-//! needs no app crate and stays hermetic. It returns the *raw cover bytes*;
-//! [`crate::generate()`] decodes them.
+//! Pulling the cover image out of an EPUB container: `META-INF/container.xml` → the OPF
+//! package document → its `<manifest>` cover image, through the [`bounded_zip::epub`]
+//! path the ebook reader uses.
 
 use bounded_zip::{BoundedArchive, ZipLimits, epub};
 
-/// A cover image is never larger than a few MB; cap the read so a malformed
-/// entry can't make a worker allocate without bound.
+// A cover image is never larger than a few MB; the cap keeps a malformed entry from
+// making a worker allocate without bound.
 const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The raw (undecoded) bytes of an EPUB's cover image, or `None` if the book
@@ -42,7 +36,6 @@ mod tests {
             let deflated =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-            // The mimetype must be first and stored.
             zip.start_file("mimetype", stored).unwrap();
             zip.write_all(b"application/epub+zip").unwrap();
 

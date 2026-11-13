@@ -24,15 +24,12 @@ use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 /// The size chosen when it is none of the presets.
 pub const CUSTOM: &str = "custom";
 
-/// The new-artwork dialog's choices, kept while the window is open.
 #[derive(Clone)]
 pub struct Choices {
-    /// A size's id, or [`CUSTOM`].
     pub size: LocalState<String>,
     pub landscape: LocalState<bool>,
     pub width: LocalState<String>,
     pub height: LocalState<String>,
-    /// A start's id.
     pub start: LocalState<String>,
     pub title: LocalState<String>,
 }
@@ -68,7 +65,6 @@ impl Choices {
         Some(turned(preset.width, preset.height, self.landscape.get()))
     }
 
-    /// The ground chosen.
     pub fn ground(&self) -> Ground {
         let start = document::start(&self.start.get()).unwrap_or(STARTS[0]);
         Ground {
@@ -103,7 +99,6 @@ fn turned(width: f64, height: f64, landscape: bool) -> (f64, f64) {
     }
 }
 
-/// Start the artwork the dialog is set to, and show it whole.
 pub fn create(dispatch: &Dispatcher<Artwork>, tools: &Tools) -> bool {
     let Some(action) = tools.new.action() else {
         return false;
@@ -136,7 +131,6 @@ pub fn create(dispatch: &Dispatcher<Artwork>, tools: &Tools) -> bool {
     true
 }
 
-/// A sheet of the artwork's proportions in a ground, as a choice shows it.
 pub struct Swatch {
     rect: Rect,
     sheet: Box<dyn Fn() -> (f64, f64)>,
@@ -160,8 +154,6 @@ impl Swatch {
     }
 }
 
-/// The long side of the small artwork a swatch draws, in units: enough
-/// for the ground's tooth to read, few enough cells to make at once.
 use crate::content_geometry::SWATCH_UNITS;
 
 impl Widget for Swatch {
@@ -289,12 +281,11 @@ fn rows(tiles: Vec<Element>, per_row: usize) -> Element {
     Box::new(grid)
 }
 
-/// "1920 × 1080".
 fn sides(width: f64, height: f64) -> String {
-    format!("{width:.0} by {height:.0}")
+    // ratchet-allow(glyph_icon): the multiplication sign of a size is text, not an icon
+    format!("{width:.0} × {height:.0}")
 }
 
-/// The size tiles: the presets turned as the dialog says, and any size.
 fn size_tiles(choices: &Choices) -> Vec<Element> {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut sizes: Vec<Element> = SIZES
@@ -342,7 +333,6 @@ fn size_tiles(choices: &Choices) -> Vec<Element> {
     sizes
 }
 
-/// The tiles of the grounds with the medium of their first layer.
 fn start_tiles(choices: &Choices) -> Vec<Element> {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let starts: Vec<Element> = STARTS
@@ -375,7 +365,6 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
     starts
 }
 
-/// Portrait or landscape, and for any size its sides.
 fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let choices = choices.clone();
@@ -408,7 +397,6 @@ fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
     })
 }
 
-/// A custom size's width and height, typed.
 fn custom_sides(choices: &Choices) -> Element {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let width = TextInput::from_state(&choices.width)
@@ -444,7 +432,6 @@ fn custom_sides(choices: &Choices) -> Element {
     )
 }
 
-/// What creating the artwork does to the one in the window.
 fn replacing(cx: &ViewCx<Artwork>) -> Element {
     let replacing = {
         let live = cx.live().clone();
@@ -518,7 +505,6 @@ pub fn welcome(cx: &ViewCx<Artwork>, tools: &Tools, compact: bool) -> Element {
     })
 }
 
-/// The welcome's card.
 fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
@@ -654,7 +640,6 @@ fn placed(card: Element, compact: bool) -> Element {
     )
 }
 
-/// How many artworks the welcome lists.
 const RECENT_ROWS: usize = 4;
 
 /// The artworks worked on lately, each opened by a click: those the

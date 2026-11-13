@@ -31,8 +31,12 @@ mod emoji;
 mod page_top_bar;
 #[path = "palette_above_windows.rs"]
 mod palette_above_windows;
+#[path = "popover_frame.rs"]
+mod popover_frame;
 #[path = "press_outside.rs"]
 mod press_outside;
+#[path = "retained_popover.rs"]
+mod retained_popover;
 #[path = "search_overlay.rs"]
 mod search_overlay;
 #[path = "shortcuts.rs"]

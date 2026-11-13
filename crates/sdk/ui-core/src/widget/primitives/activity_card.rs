@@ -1,11 +1,5 @@
-//! An activity's card on the floating layer: which app it belongs to, what the
-//! activity is doing, its reading, its progress and the controls it offers,
-//! drawn in the floating frame.
-//!
-//! The layer places the cards ([`crate::floating_layer`]) and the activity
-//! describes itself ([`crate::live_activity::Summary`]); this is the one face
-//! they are all drawn as, so every card in the layer looks and reads the same
-//! wherever its app put it.
+//! An activity's card on the floating layer: which app it belongs to, what the activity is
+//! doing, its reading, its progress and the controls it offers, drawn in the floating frame.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -29,13 +23,10 @@ use crate::widget::{
 #[derive(Clone, Copy, Debug)]
 pub struct ActivityCardFace<'a> {
     pub summary: &'a Summary,
-    /// The collapse control's name, localised by the session that shows it.
     pub collapse_label: &'a str,
-    /// The close control's name.
     pub close_label: &'a str,
     /// The card holds keyboard focus.
     pub focused: bool,
-    /// One of the activity's offered controls is held down, by id.
     pub held: Option<&'a str>,
     /// The person is dragging the song's progress bar: how far into it they
     /// point, from 0 to 1, until they let go.
@@ -54,8 +45,6 @@ impl ActivityCardFace<'_> {
     ) -> Parts {
         let parts = card_parts(rect, self.summary);
         let summary = self.summary;
-        // The app's own glyph, in the activity's tone: a glance says whose
-        // card this is.
         let glyph = Icon::from_name(summary.glyph())
             .or_else(|| Icon::from_name(summary.kind.glyph()))
             .unwrap_or(Icon::Layers);
@@ -87,12 +76,7 @@ impl ActivityCardFace<'_> {
             theme,
             &ButtonFace::icon_only(parts.close, Icon::X, self.close_label),
         );
-        // The hero: the countdown or reading, large and in tabular figures so
-        // a ticking number keeps its width; a card with no reading leads with
-        // its title instead.
         let hero = if summary.art == Art::Hero {
-            // The picture is what the card is for: its title stands under it,
-            // the size of a heading rather than of a reading.
             theme.text(TextRole::Heading)
         } else {
             theme.text(TextRole::LargeTitle).numeric()
@@ -111,8 +95,6 @@ impl ActivityCardFace<'_> {
             None,
             &hero,
         );
-        // The artwork a song heads its card with: its cover, or the kind's
-        // glyph while the picture loads or when there is none to load.
         if let Some(rect) = parts.artwork {
             let radius = f64::from(theme.tokens.radii.control);
             let picture = PictureSource {
@@ -144,7 +126,6 @@ impl ActivityCardFace<'_> {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
             ProgressBarFace::new(self.scrub.unwrap_or(progress)).paint(&mut ctx, row);
         }
-        // Where the song is and what is left of it, at the bar's ends.
         if let (Some(elapsed), Some(remaining)) = (parts.elapsed, parts.remaining) {
             let style = theme.text(TextRole::Caption);
             for (rect, seconds, align_end) in [
@@ -177,9 +158,6 @@ impl ActivityCardFace<'_> {
             }
         }
         let offered = summary.action_controls();
-        // A transport stands the way every media surface paints one: a round
-        // play/pause in the accent, plain previous and next beside it, on the
-        // card's own ground instead of in a well of their own.
         if let (Some(_), Some(steps)) = (parts.controls_row, summary.transport()) {
             for (id, step) in steps {
                 let Some(rect) = parts
@@ -206,10 +184,6 @@ impl ActivityCardFace<'_> {
             };
             let held = self.held == Some(id.as_str());
             if let Some(icon) = Icon::from_name(&control.icon) {
-                // A glyph leads its label where the slot is wide enough for
-                // both, so a row of three says what each one does; a narrower
-                // slot keeps the glyph, and its label is still what it is
-                // called out loud.
                 let style = theme.text(TextRole::Label);
                 let fits = f64::from(text.measure_style(&control.label, None, &style).0) + 24.0
                     <= rect.width();

@@ -1,12 +1,6 @@
-//! The pages of Print Centre, composed from the toolkit's semantic widgets.
-//!
-//! Every page is a column inside one vertical `Scrollable` that spans the
-//! window, so the scroll bar sits on the window edge; the column is bounded to
-//! the readable measure and centred. A page's title, the way back and the
-//! page's actions are the window bar's ([`super::window_bar`]): no page draws
-//! them. Nothing here picks a colour, size, radius
-//! or padding: text names its role, buttons their role, and the toolkit
-//! spaces what it composes.
+//! The pages of Print Centre, composed from the toolkit's semantic widgets. Every page is a
+//! column inside one vertical `Scrollable` that spans the window, so the scroll bar sits on
+//! the window edge; the column is bounded to the readable measure and centred.
 
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
@@ -79,7 +73,7 @@ fn button_row(buttons: Vec<Button>) -> El {
     Box::new(row)
 }
 
-/// A group of items on the ground, spaced by the toolkit.
+/// A group of items in the page, spaced by the toolkit.
 fn section(items: Vec<El>) -> El {
     Box::new(Section::new(items))
 }
@@ -88,8 +82,8 @@ fn titled_section(title: impl AsRef<str>, items: Vec<El>) -> El {
     Box::new(Section::titled(title.as_ref(), items))
 }
 
-/// Space that, with the column's own gap on each side, separates two groups of
-/// a page by the group rhythm.
+/// Space that, with the column's own gap on each side, separates two groups of a page by
+/// the group rhythm.
 fn group_break() -> El {
     Box::new(Spacer::token(SpacingStep::S0))
 }
@@ -115,13 +109,13 @@ fn column() -> Column {
     Column::new().with_intrinsic_height()
 }
 
-/// Content with no gutter of its own, for a card body or a group.
+/// Content with no gutter, for a card body or a group.
 fn bare_column() -> Column {
     Column::new().with_no_padding().with_intrinsic_height()
 }
 
-/// Content bounded to the readable measure of every page, so it starts at the
-/// same edge on each one.
+/// Content bounded to the readable measure of every page, so it starts at the same edge on
+/// each one.
 fn centred(content: El) -> El {
     Box::new(
         Container::new()
@@ -131,8 +125,8 @@ fn centred(content: El) -> El {
     )
 }
 
-/// A scrolling page: the scroll view spans the window, the column inside it
-/// holds the readable measure.
+/// A scrolling page: the scroll view spans the window, the column inside it holds the
+/// readable measure.
 fn page(body: Column) -> El {
     Box::new(Scrollable::new_vertical().with_child(centred(Box::new(body))))
 }
@@ -148,9 +142,6 @@ fn page_with_footer(body: Column, footer: Option<Actions>) -> El {
                 .with_child(centred(Box::new(body))),
         ));
     if let Some(footer) = footer {
-        // The scroll view keeps a lane for its bar that the footer does not
-        // have. An empty trailing item leaves one row gap, the same width,
-        // so the footer and the content share a right edge.
         let aligned = Row::new()
             .no_wrap()
             .push(Box::new(
@@ -195,7 +186,6 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
         return None;
     }
     let (subject, detail) = unavailable_copy(areas);
-    // Trying again is what resolves it, so the banner holds that action.
     Some(Box::new(
         Banner::error(CATALOG.t(subject))
             .with_message(CATALOG.t(detail))
@@ -222,9 +212,9 @@ pub(super) fn loading_view() -> El {
         ])))
 }
 
-/// A supply gauge stays neutral while there is plenty, then turns warning
-/// and danger as the supply runs out, so the band comes from how much is
-/// left rather than how full the bar is.
+/// A supply gauge stays neutral while there is plenty, then turns warning and danger as the
+/// supply runs out, so the band comes from how much is left rather than how full the bar
+/// is.
 fn supply_gauge(level: f32) -> BarGauge {
     let gauge = BarGauge::new(level);
     if level <= 0.10 {
@@ -242,8 +232,8 @@ fn supply_gauge(level: f32) -> BarGauge {
     }
 }
 
-/// The measure of a supply: what it is called and how much is left, over a
-/// track that shows the whole scale.
+/// The measure of a supply: what it is called and how much is left, over a track that shows
+/// the whole scale.
 fn supply_meter(name: impl Into<String>, level: f32) -> El {
     let percent = (level.clamp(0.0, 1.0) * 100.0).round();
     Box::new(supply_gauge(level).with_label(name, format!("{percent}%")))
@@ -274,7 +264,6 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
             ],
         )
     };
-    // Progress is neutral until the printer stops the document.
     let gauge = BarGauge::new(f32::from(percent) / 100.0).with_label(label, format!("{percent}%"));
     Box::new(
         if matches!(job.state, Some(os_actions::printing::JobState::Stopped)) {
@@ -513,8 +502,8 @@ fn history_status(job: &os_actions::printing::PrintJob) -> String {
     }
 }
 
-/// A finished document: what became of it and where, with the way to print
-/// it again always in view.
+/// A finished document: what became of it and where, with the way to print it again always
+/// in view.
 fn history_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     let again = command_button(
         &format!("print-centre.history.repeat.{}", job.id),
@@ -558,8 +547,6 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
         items.push(issue);
     }
-    // With the jobs unread, "No completed documents yet" would claim what
-    // nobody knows: the notice above says they couldn't be checked.
     if terminal.is_empty() && snapshot.jobs.is_ok() {
         items.push(copy(CATALOG.t("print-centre-nothing-completed")));
     } else {
@@ -954,26 +941,20 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
     }
 }
 
-/// What the print setup form is filled from: the range being typed, the
-/// options the chosen printer reports, the values chosen so far, and the page
-/// of the document under review.
+/// What the print setup form is filled from: the range being typed, the options the chosen
+/// printer reports, the values chosen so far, and the page of the document under review.
 pub(super) struct PrintForm<'a> {
     pub(super) copies: &'a ui::LocalState<f64>,
     pub(super) two_sided: &'a ui::LocalState<bool>,
     pub(super) range: &'a ui::LocalState<String>,
     pub(super) options: &'a os_actions::printing::PrinterOptions,
     pub(super) choice: &'a PrintChoice,
-    /// How many pages the document has: the range field is drawn only when
-    /// there is more than one to choose from.
     pub(super) pages: usize,
 }
 
-/// The document being printed: its preview, which the person can check before
-/// anything is sent, page by page for a document of more than one. A wrong
-/// page or a wrong paper size is caught here rather than on paper.
+/// The document being printed: its preview, which the person can check before anything is
+/// sent, page by page for a document of more than one.
 fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
-    // How many pages the document has decides whether there is a pager at
-    // all: one page has nothing to turn.
     let (page, pages) = match preview {
         PrintPreview::Ready { page, pages, .. } => (*page, *pages),
         _ => (0, 0),
@@ -1009,8 +990,7 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
     };
     let body = if pages > 1 {
         let shown = page.min(pages.saturating_sub(1));
-        // The count keeps its own line above the pager: a card this narrow
-        // would otherwise break "Page 3 of 40" into three.
+        // The count keeps a line above the pager: a card this narrow would otherwise break "Page 3 of 40" into three.
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1063,9 +1043,6 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
         )
         .with_trailing_control(),
     );
-    // A document with one page has no pages to choose, so it is not offered a
-    // field that would change nothing. The count comes with the preview, so
-    // the form is told it.
     if form.pages > 1 {
         options = options.field(
             Field::new(
@@ -1078,9 +1055,9 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
             .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),
         );
     }
-    // The driver's own list decides which of these fields is drawn: a paper
-    // size, a colour mode, a two-sided mode or an orientation it never
-    // reported is a field it would silently ignore.
+    // The driver's own list decides which of these fields is drawn: a paper size, a colour
+    // mode, a two-sided mode or an orientation it never reported is a field it would
+    // silently ignore.
     for (option, key, choices, chosen) in [
         (
             "Paper",
@@ -1115,8 +1092,6 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
             driver_choice(key, choices, chosen, tx).with_accessible_name(option.to_owned()),
         ));
     }
-    // A printer that reports no duplex mode keeps the one setting every CUPS
-    // printer reads, so a person can still ask for both sides.
     if form.options.duplex_modes.len() < 2 {
         let mut both_sides = Toggle::from_state(form.two_sided);
         if let Some(binding) =
@@ -1200,8 +1175,8 @@ pub(super) fn print_setup_view(
     page_with_footer(body, actions(buttons))
 }
 
-/// One of the driver's own options, as the choices it reported: the values
-/// it listed, with the one the person chose standing on the selection lift.
+/// One of the driver's own options, as the choices it reported: the values it listed, with
+/// the one the person chose standing on the selection lift.
 fn driver_choice(
     key: &str,
     choices: &[os_actions::printing::OptionChoice],
@@ -1247,8 +1222,7 @@ fn segments(labels: &[&str]) -> Vec<Segment> {
     labels.iter().map(|label| Segment::new(*label)).collect()
 }
 
-/// What the scan looked like to the text reader, and what can be done to the
-/// page.
+/// What the scan looked like to the text reader, and what can be done to the page.
 fn page_details(
     page_data: &super::ScannedPage,
     selected_page: usize,
@@ -1392,8 +1366,6 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
         scan.crop.clone(),
     );
     let details = page_details(page_data, selected_page, page_count, tx);
-    // The editor shows the whole page inside a box of its own proportions, so
-    // the page starts on the column's edge instead of floating in the middle.
     let longest = f64::from(page_data.width.max(page_data.height).max(1));
     let fit = 360.0 / longest;
     let side = |pixels: u32| ui::num::f32_of_f64((f64::from(pixels) * fit).round());
@@ -1492,8 +1464,8 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
     devices
 }
 
-/// A scan setting's segments, bound to the default it sets: the choice is
-/// the defaults' field edit, as the palette and an agent make it.
+/// A scan setting's segments, bound to the default it sets: the choice is the defaults'
+/// field edit, as the palette and an agent make it.
 fn scan_choice<V: 'static>(
     (id, labels): (&str, &[&str]),
     state: &ui::LocalState<usize>,

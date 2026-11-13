@@ -1,6 +1,6 @@
-//! What the window does beside its record: the selection History shows and
-//! the morning sources What's new reads, each an effect a row's button, the
-//! palette, an agent or a script invokes alike.
+//! What the window does beside its record: the selection History shows and the morning
+//! sources What's new reads, each an effect a row's button, the palette, an agent or a
+//! script invokes alike.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -10,7 +10,6 @@ use crate::{Nav, Provider};
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "activity.effects")]
 pub enum ActivityEffect {
-    /// Select every change from one change through another in History.
     #[effect(view, label = "activity-select-through")]
     SelectThrough {
         #[param("Id of the change the selection starts at")]
@@ -18,21 +17,19 @@ pub enum ActivityEffect {
         #[param("Id of the change the selection ends at")]
         to: String,
     },
-    /// Read a morning source again.
     #[effect(label = "activity-morning-refresh")]
     RefreshSource {
         #[param("Key of the morning source")]
         key: String,
     },
-    /// Stop reading a morning source.
     RemoveSource {
         #[param("Key of the morning source")]
         key: String,
     },
 }
 
-/// Answer `effect` on the window `nav` shows, asking the workspace's history
-/// through `provider`.
+/// Answer `effect` on the window `nav` shows, asking the workspace's history through
+/// `provider`.
 pub(crate) fn answer(effect: ActivityEffect, nav: &Nav, provider: &Provider) {
     match effect {
         ActivityEffect::SelectThrough { from, to } => {

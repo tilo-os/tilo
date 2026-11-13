@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
-    // Phase `raw_ancestry_is_bounded_lossless_and_refuses_normalization`.
     {
         assert_eq!(
             raw_components(b"/home/user/\xff/cache").unwrap(),
@@ -34,10 +33,7 @@ fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
         assert!(raw_components(over_limit.as_bytes()).is_err());
     }
 
-    // Phase `effective_acl_mask_permits_safe_named_grants_and_refuses_effective_access`.
     {
-        // Linux POSIX ACL named entries are bounded by these group-class mask bits.
-        // A named rwx entry with mask --- is safe on a private directory/file.
         assert!(effective_mode_allowed(1000, 1000, 0o700, true, true));
         assert!(effective_mode_allowed(1000, 1000, 0o600, false, true));
         assert!(effective_mode_allowed(0, 1000, 0o755, true, false));
@@ -52,8 +48,6 @@ fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
     }
 }
 
-// These fixtures exercise actual Linux syscalls. They are source-checked only
-// under the current runtime holds; host tests above make no native claim.
 #[cfg(target_os = "linux")]
 mod native {
     use super::super::{native::fixture_acquire, *};
@@ -86,8 +80,6 @@ mod native {
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
     fn directory() -> tempfile::TempDir {
-        // No /tmp fallback: native fixtures need a qualified filesystem, and
-        // never the real cache of the account running the tests.
         crate::setup::test_support::qualified_tempdir()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
@@ -103,7 +95,6 @@ mod native {
                 _ => panic!("expected partial"),
             })
     }
-    /// Fresh and cancelled bootstrap, zero-record residue and visitor errors.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -184,8 +175,6 @@ mod native {
                 );
                 let [mut a, b] = parts(dir.path(), &s);
                 assert!(a.provider.retain(&[]).is_err());
-                // Full authenticated bytes isolate the preparation gate: failure must
-                // not be attributable to an empty/short/corrupt component.
                 let namespace = root(dir.path(), &s);
                 let partial_path = namespace.join("payload").join(a.provider.ownership().leaf);
                 let final_path = namespace
@@ -205,7 +194,6 @@ mod native {
                 finish(&mut a, &s, 0);
                 drop(a.publish(&AtomicBool::new(false)).unwrap());
                 drop(b);
-                // Remove only this test's known component-1 fixture to exercise final/fresh.
                 let namespace = root(dir.path(), &s);
                 let record_path = namespace.join("journal-1/record-0000000001");
                 let bytes = fs::read(&record_path).unwrap();
@@ -319,7 +307,6 @@ mod native {
             )
             .unwrap();
     }
-    /// Process lock, non-UTF-8 ancestry, hardlink substitution, changed ancestors and ACLs.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -353,7 +340,6 @@ mod native {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // libtest exits 0 when `--exact` selects nothing; require the child ran.
                 assert!(
                     stdout.contains("test result: ok. 1 passed"),
                     "the child ran no test: {stdout}"
@@ -538,7 +524,6 @@ mod native {
                     assert!(count >= 0, "{}", std::io::Error::last_os_error());
                     bytes[..count as usize].to_vec()
                 }
-                // Independent ordinary no-ACL positive control.
                 let ordinary = directory();
                 let held = std::fs::File::open(ordinary.path()).unwrap();
                 for key in [c"system.posix_acl_access", c"system.posix_acl_default"] {
@@ -555,7 +540,6 @@ mod native {
                     .bootstrap(&s, &AtomicBool::new(false))
                     .unwrap();
                 drop(components);
-                // Access-only safe mask and unsafe effective-write mask use fresh roots.
                 for mask in [0u16, 2] {
                     let dir = directory();
                     let held = std::fs::File::open(dir.path()).unwrap();
@@ -563,8 +547,6 @@ mod native {
                     let result = fixture_acquire(dir.path(), &s);
                     assert_eq!(result.is_ok(), mask == 0);
                 }
-                // Install the default BEFORE the provider has created any descendants.
-                // Its broad named grant is reduced by the actual private create modes.
                 let inherited = directory();
                 let held = std::fs::File::open(inherited.path()).unwrap();
                 assert!(!inherited.path().join("tilo-internal-install").exists());
@@ -601,7 +583,6 @@ mod native {
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
-    /// Collisions, durability faults, crash boundaries, cancellation and reset fences.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -765,7 +746,6 @@ mod native {
             }
         });
     }
-    /// Failed post-scan preparation and new session revocation.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -787,9 +767,6 @@ mod native {
                     entries.sort();
                     entries
                 }
-                // Each case has a genuine authenticated full component. Native bootstrap
-                // and record decoding succeed; only common history/prefix validation
-                // distinguishes the independently valid control from the two failures.
                 for case in 0..3 {
                     let dir = directory();
                     let s = selected();

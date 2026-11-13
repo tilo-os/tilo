@@ -1,28 +1,6 @@
-//! Network: Wi-Fi, wired, VPN, hotspot and the saved connection profiles
-//! of this device, as `NetworkManager` reports them, and mobile data
-//! (`mobile`), whose card sits next to Wi-Fi.
-//!
-//! The pane opens on the Wi-Fi list (`order` says which networks it shows
-//! and in what order) with the controls under it, and drills into pages
-//! ([`crate::pages`]): every network in range, one network's page, the known
-//! networks, the VPNs and a VPN's page (`vpn`), the hotspot and the
-//! advanced settings. Every page is view code over the same model
-//! ([`view`]); the page on top of the window's trail says which one it
-//! builds.
-//!
-//! Every read and change may block on `nmcli` or the system bus for
-//! seconds, so none runs on the UI thread: the model reads a snapshot in the
-//! background when it is first needed and again after each change, and every
-//! change is a [`NetworkEffect`] (or a `vpn::VpnEffect`) that runs on a
-//! worker and reports what happened. Passwords, keys and PINs live in
-//! process-local buffers that are zeroed once used; they never reach a
-//! document.
-//!
-//! A radio the device does not have is not offered: Wi-Fi and the hotspot
-//! without a Wi-Fi radio, airplane mode without a Wi-Fi radio or a modem
-//! (`NetworkArea::statuses`). The rows only the network service can fill are
-//! left out the same way when this device runs none, and the page names that
-//! once instead of showing its state as unreadable.
+//! Network: Wi-Fi, wired, VPN, hotspot and the saved connection profiles of
+//! this device, as `NetworkManager` reports them, and mobile data (`mobile`),
+//! whose card sits next to Wi-Fi.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -82,7 +60,6 @@ pub(crate) use labels::{
 #[cfg(test)]
 mod tests;
 
-/// What Network changes on this device.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
@@ -94,17 +71,25 @@ pub enum NetworkEffect {
     RefreshNetworks,
     /// Turn Wi-Fi on or off.
     #[effect(job, idempotent)]
-    SetWifi { on: bool },
+    SetWifi {
+        on: bool,
+    },
     /// Turn the wired connection on or off.
     #[effect(job, idempotent)]
-    SetWired { on: bool },
+    SetWired {
+        on: bool,
+    },
     /// Turn every radio off, or back on.
     #[effect(job, idempotent, label = "net-airplane")]
-    SetAirplaneMode { on: bool },
+    SetAirplaneMode {
+        on: bool,
+    },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
     #[effect(job, idempotent)]
     #[effect(keywords = "tethering, share internet, personal hotspot")]
-    SetHotspot { on: bool },
+    SetHotspot {
+        on: bool,
+    },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
     /// prompt.
@@ -327,7 +312,6 @@ pub enum NetworkEffect {
     /// Show or hide the enterprise (802.1X) network setup.
     #[effect(view)]
     ShowEnterpriseSetup,
-    /// Choose the organization's CA certificate file.
     ChooseCaCertificate,
     /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
     /// omitted is what the setup form holds, and a password omitted is asked
@@ -376,31 +360,23 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`NetworkArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
     app.areas().find()
 }
 
-/// The pages the pane drills into, by their key in the window's trail.
 pub(crate) const PAGE_ALL: &str = "all";
 pub(crate) const PAGE_KNOWN: &str = "known";
 pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
 pub(crate) const PAGE_ADVANCED: &str = "advanced";
-/// The modem's page: mobile data and the SIM.
 pub(crate) const PAGE_MOBILE: &str = "mobile";
-/// The wired connection's page.
 pub(crate) const PAGE_WIRED: &str = "wired";
-/// The data each connection used.
 pub(crate) const PAGE_USAGE: &str = "usage";
-/// A network's page: `wifi:<ssid>`.
 const PAGE_WIFI: &str = "wifi:";
 
 fn wifi_page_key(ssid: &str) -> String {
     format!("{PAGE_WIFI}{ssid}")
 }
 
-// Ask the authenticated host: this app intentionally has an isolated network
-// namespace and cannot inspect the host's nl80211 interface by spawning iw.
 fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
     match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
         profile_uuid: profile.into(),
@@ -432,15 +408,14 @@ fn wake_description(status: &NetworkWakeStatus) -> &'static str {
     }
 }
 
-/// What a new hotspot is called until the person names it.
 const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
 
+/// The name a saved profile is shown by; the profile's id stays the value
+/// the selector carries, so two networks with one name stay apart.
 fn profile_label(profile: &SavedNetworkProfile) -> String {
-    let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} ({})", profile.name, short_uuid)
+    profile.name.clone()
 }
 
-/// The entries of a list separated by commas or spaces, at most 17.
 fn list_of(value: &str) -> Vec<String> {
     value
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -450,12 +425,10 @@ fn list_of(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// `Some(value)` unless it is blank.
 fn non_blank(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
-/// What a secret buffer holds, leaving it zeroed.
 fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
     buffer.lock().map_or_else(
         |_| Zeroizing::new(String::new()),
@@ -463,7 +436,6 @@ fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
     )
 }
 
-/// Answer `effect`: a change starts on a worker and reports when it lands.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: NetworkEffect,
@@ -476,7 +448,6 @@ pub(crate) fn answer(
             .map(Effected::value);
     }
     if effect == NetworkEffect::RefreshNetworks {
-        // A dongle plugged in a moment ago is seen without waiting.
         app.radios().look_again();
     }
     let begun = crate::panes::network::area(app)
@@ -487,8 +458,6 @@ pub(crate) fn answer(
     Ok(answer_begun(app, begun, cx))
 }
 
-/// Carry out what an effect began: nothing more, or its work on a worker,
-/// landing in the model.
 pub(crate) fn answer_begun(
     app: &SettingsApp,
     begun: Begun,
@@ -519,7 +488,6 @@ fn load_profile_settings(
         .collect()
 }
 
-/// A network in range in words: whether it is secured, and how strong.
 fn network_detail(net: &WifiNetworkInfo) -> String {
     let security = t(if net.secure {
         "net-security-secured"
@@ -529,7 +497,6 @@ fn network_detail(net: &WifiNetworkInfo) -> String {
     format!("{security}, {}", wifi_signal_words(net.signal))
 }
 
-/// How strong a 0..=4 bar signal is, in words.
 fn wifi_signal_words(signal: u8) -> String {
     t(match signal {
         0 => "net-signal-unknown",
@@ -540,7 +507,6 @@ fn wifi_signal_words(signal: u8) -> String {
     })
 }
 
-/// How a network checks who joins it, in words.
 fn security_shown(security: os_actions::WifiSecurity) -> String {
     t(match security {
         os_actions::WifiSecurity::Open => "net-security-type-open",
@@ -552,16 +518,12 @@ fn security_shown(security: os_actions::WifiSecurity) -> String {
     })
 }
 
-/// A configured VPN or `WireGuard` connection and whether it is up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnInfo {
     pub name: String,
     /// `NetworkManager`'s id for it, which never changes.
     pub uuid: String,
-    /// `wireguard`, or `vpn` for a plugin's.
     pub kind: String,
-    /// A plugin's service type, which says its protocol
-    /// (`org.freedesktop.NetworkManager.openvpn`).
     pub service: Option<String>,
     pub active: bool,
 }
@@ -609,12 +571,8 @@ pub(crate) struct NetworkSnapshot {
     profile_list: Part<Vec<SavedNetworkProfile>>,
     hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
     vpns: Part<Vec<VpnInfo>>,
-    /// The Wi-Fi link in use; `None` when not read or not on Wi-Fi.
     link: Option<WifiLinkDetails>,
-    /// The VPN plugins installed; read only for the first snapshot.
     plugins: Option<Vec<VpnPlugin>>,
-    /// What the session publishes of the person's devices as VPNs; `None`
-    /// when not read.
     device_vpn: DeviceVpnPart,
 }
 
@@ -739,7 +697,6 @@ impl NetworkSnapshot {
         }
     }
 
-    /// Only `networks`, with every other part read and empty.
     fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
             networks: Ok(networks),
@@ -770,8 +727,6 @@ impl NetworkSnapshot {
 /// enough that the radio is not kept busy.
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What a snapshot sets of the model, to tell whether adopting one changed
-/// what the pane shows.
 #[derive(PartialEq)]
 struct Adopted {
     loaded: bool,
@@ -816,7 +771,6 @@ fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<
         .map_err(Clone::clone)
 }
 
-/// Whether `listed` names the same saved profiles as `held`, in any order.
 fn same_profiles(held: &[SavedNetworkProfile], listed: &[SavedNetworkProfile]) -> bool {
     held.len() == listed.len()
         && listed
@@ -840,7 +794,6 @@ fn adopt<T>(part: Part<T>, error: &mut Option<String>) -> Option<T> {
     }
 }
 
-/// A radio Network switches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Radio {
     Airplane,
@@ -909,7 +862,6 @@ pub(crate) enum NetworkChange {
         config: EnterpriseWifiConfiguration,
         password: Zeroizing<String>,
     },
-    /// Bring a VPN up or down.
     Vpn {
         uuid: String,
         name: String,
@@ -934,17 +886,16 @@ impl Drop for NetworkChange {
     }
 }
 
-/// A VPN to set up.
 pub(crate) enum VpnSetup {
-    /// A configuration file's text, of `kind` (`wireguard` or `openvpn`).
     Text {
         kind: &'static str,
         name: String,
         text: Zeroizing<String>,
     },
-    /// A configuration file the person picked.
-    File { kind: &'static str, path: PathBuf },
-    /// A profile of an installed plugin's type.
+    File {
+        kind: &'static str,
+        path: PathBuf,
+    },
     Plugin {
         service: String,
         name: String,
@@ -952,8 +903,6 @@ pub(crate) enum VpnSetup {
     },
 }
 
-/// What carries out Network's reads and changes: `NetworkManager` on a
-/// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the installed
     /// VPN plugins.
@@ -968,52 +917,31 @@ pub(crate) trait NetworkService: Send + Sync {
     fn scan(&self) -> Result<(), String> {
         Ok(())
     }
-    /// The networks in range as last seen, and nothing else: what the
-    /// periodic look reads after its scan.
     fn networks(&self) -> NetworkSnapshot {
         NetworkSnapshot::networks_only(self.snapshot(false).networks)
     }
-    /// What changes as the device runs (the radios, the links, the
-    /// networks in range, the VPNs) and the saved profiles listed, without
-    /// their settings: what is read again when the device reports a change.
     fn status(&self) -> NetworkSnapshot {
         self.snapshot(false)
     }
-    /// Follow the device: `changed` is called, on another thread, each time
-    /// it reports a change Network shows, for as long as the answer is
-    /// held. `None` when nothing can be followed.
     fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
         None
     }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
-    /// What the session publishes of the person's devices as VPNs; `None`
-    /// while no session publishes it.
     fn device_vpn(&self) -> Option<DeviceVpnStatus> {
         None
     }
-    /// Carry out `change`.
     fn change(&self, change: &NetworkChange) -> Result<(), String>;
-    /// Set up a VPN; its new profile's id.
     fn create_vpn(&self, setup: &VpnSetup) -> Result<String, String>;
-    /// A VPN profile's settings.
     fn vpn_settings(&self, uuid: &str) -> Result<VpnProfileSettings, String>;
-    /// A VPN profile as the file Export writes, its secrets included.
     fn export_vpn(&self, uuid: &str) -> Result<Zeroizing<String>, String>;
-    /// A saved Wi-Fi network's password, which asks the person to
-    /// authenticate where the system requires it.
     fn wifi_password(&self, uuid: &str) -> Result<Zeroizing<String>, String>;
-    /// Ask the person's Wi-Fi continuity service.
     fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String>;
-    /// Diagnose the connection.
     fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String>;
-    /// The captive portal's sign-in page.
     fn sign_in_page(&self) -> Result<String, String>;
 }
 
-/// This device's `NetworkManager`, its radios switched through the
-/// dispatcher.
 struct DeviceNetwork {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
 }
@@ -1057,8 +985,6 @@ impl NetworkService for DeviceNetwork {
 
     fn recheck_connectivity(&self) {
         crate::device_read::off_ui_thread();
-        // A refused or failed recheck still leaves the last verdict, which
-        // the snapshot that follows reads and reports.
         let _ = os_actions::check_connectivity_now();
     }
 
@@ -1155,8 +1081,6 @@ impl NetworkService for DeviceNetwork {
     }
 }
 
-/// A street's worth of networks, a wired port, two VPNs, for a screenshot:
-/// every change is accepted and reaches nothing.
 struct SampleNetwork;
 
 const SAMPLE_HOME: &str = "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10";
@@ -1165,7 +1089,6 @@ const SAMPLE_HOTEL: &str = "3c8f9b21-7d44-4e0a-b5c6-1a2b3c4d5e6f";
 const SAMPLE_WIRED: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const SAMPLE_VPN_HOME: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 const SAMPLE_VPN_WORK: &str = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
-/// The person's other devices, by their endpoint ids.
 const SAMPLE_DESK_PC: &str = "6f1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091";
 const SAMPLE_STUDIO: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
 const SAMPLE_PHONE: &str = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0";
@@ -1281,7 +1204,6 @@ impl SampleNetwork {
 impl NetworkService for SampleNetwork {
     fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
         let mut snapshot = NetworkSnapshot::of_networks(Self::networks());
-        // A laptop on Wi-Fi with its Ethernet port empty.
         snapshot.wired = Some(Ok(WiredInfo {
             connected: false,
             device: Some("enp3s0".into()),
@@ -1384,7 +1306,6 @@ impl NetworkService for SampleNetwork {
     }
 }
 
-/// How an effect began: finished at once, or work for a worker.
 pub(crate) enum Begun {
     Done,
     Work(Box<dyn FnOnce() -> Landed + Send>),
@@ -1396,21 +1317,16 @@ impl Begun {
     }
 }
 
-/// How a connection attempt ended.
 pub(crate) enum Joined {
     Connected { continuity_notice: Option<String> },
     PasswordRequired { continuity_warning: Option<String> },
 }
 
-/// What a saved network's password was read for.
 pub(crate) enum PasswordFor {
-    /// To show it on the network's page.
     Reveal,
-    /// To draw the QR code that shares the network.
     Code { ssid: String, hidden: bool },
 }
 
-/// Work that finished on a worker, for the model to take in.
 pub(crate) enum Landed {
     Refreshed {
         snapshot: Box<NetworkSnapshot>,
@@ -1433,20 +1349,16 @@ pub(crate) enum Landed {
         uuid: String,
         result: Result<VpnProfileSettings, String>,
     },
-    /// A VPN turned on; one carrying all traffic turned the others off.
     VpnOn {
         change: NetworkChange,
         result: Result<(), String>,
         full_tunnel: bool,
     },
-    /// The VPNs carrying all traffic turned off for a route through one of
-    /// the person's devices.
     TunnelsLeft(Result<(), String>),
     VpnCreated(Result<String, String>),
     VpnExported(Result<(), String>),
 }
 
-/// The fields of one profile's IPv4 form.
 struct Ipv4Form {
     automatic: LocalState<bool>,
     addresses: LocalState<String>,
@@ -1454,26 +1366,22 @@ struct Ipv4Form {
     dns: LocalState<String>,
 }
 
-/// The fields of one profile's IPv6 form.
 struct Ipv6Form {
     method: LocalState<String>,
     addresses: LocalState<String>,
     gateway: LocalState<String>,
 }
 
-/// The fields of one profile's proxy form.
 struct ProxyForm {
     mode: LocalState<String>,
     address: LocalState<String>,
 }
 
-/// The fields of one work or school network's identity form.
 struct IdentityForm {
     identity: LocalState<String>,
     ca: LocalState<String>,
 }
 
-/// The form that joins a network that does not broadcast its name.
 /// A secret shown on a network's page, for the profile or network it
 /// belongs to; zeroed when it goes.
 struct Shown {
@@ -1481,12 +1389,8 @@ struct Shown {
     secret: Zeroizing<String>,
 }
 
-/// What the network areas and their models reach of the window: this
-/// device (when `devices`), the settings document and its sections' actions,
-/// the radios, the pages drilled into and the password prompt.
 #[derive(Clone)]
 pub(crate) struct Reach {
-    /// Whether they read and drive this device's networks and modem.
     pub(crate) devices: bool,
     pub(crate) storage: ui::storage::AppStorage,
     pub(crate) sections: crate::sections::Sections,
@@ -1496,7 +1400,6 @@ pub(crate) struct Reach {
 }
 
 impl Reach {
-    /// What the areas made in `cx` reach.
     pub(crate) fn of(cx: &AreaContext) -> Self {
         Self {
             devices: cx.devices,
@@ -1539,21 +1442,15 @@ impl NetworkRadios {
         }
     }
 
-    /// Whether there is no radio for airplane mode to switch: both known
-    /// to be missing. An unread radio is not missing.
     fn without_radios(self) -> bool {
         self.wifi == Some(false) && self.wwan == Some(false)
     }
 }
 
-/// What the Network area keeps for the window: the model, read when first
-/// needed.
 pub struct NetworkArea {
     reach: Reach,
-    /// The networks a capture shows; `None` in a live window.
     sample: Option<crate::scenarios::NetworkSample>,
     model: std::cell::OnceCell<Rc<RefCell<NetworkModel>>>,
-    /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
@@ -1567,13 +1464,10 @@ impl NetworkArea {
         }
     }
 
-    /// The model, where the networks were read; never reads them.
     pub(crate) fn read(&self) -> Option<&Rc<RefCell<NetworkModel>>> {
         self.model.get()
     }
 
-    /// The model over this device's networks, or over sample networks for a
-    /// screenshot.
     pub fn model(&self) -> &Rc<RefCell<NetworkModel>> {
         self.model.get_or_init(|| {
             let model = if self.reach.devices {
@@ -1585,7 +1479,6 @@ impl NetworkArea {
         })
     }
 
-    /// Observe the already mounted model; reading never starts or polls a scan.
     fn inspection(&self) -> Result<serde_json::Value, String> {
         match self.model.get() {
             Some(model) => model.borrow().inspection(),
@@ -1658,9 +1551,6 @@ impl NetworkArea {
         statuses
     }
 
-    /// Take in background results, if the model exists. While a page shows
-    /// the model, also take in what the device reported, scan when due and
-    /// move what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
         let Some(model) = self.model.get() else {
             return;
@@ -1677,14 +1567,11 @@ impl NetworkArea {
         }
     }
 
-    /// When the page next scans for networks, while one shows them.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         let model = self.model.get()?.try_borrow().ok()?;
         model.shown().then(|| model.next_wake()).flatten()
     }
 
-    /// Whether a page shows "Scanning…" for a scan already under way, which
-    /// its networks replace when it lands.
     fn pending_visual_work(&self) -> bool {
         self.model
             .get()
@@ -1692,15 +1579,10 @@ impl NetworkArea {
             .is_some_and(|model| model.shown() && model.scan_in_flight)
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
 
-    /// One row per Wi-Fi network (in range or saved), per other saved
-    /// profile and per VPN, each offering what can be done with it.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let mut rows: Vec<LiveRow> = model
@@ -1741,16 +1623,11 @@ impl crate::area::PaneQuery for NetworkArea {
 pub struct NetworkModel {
     reach: Reach,
     service: Arc<dyn NetworkService>,
-    /// False until the first snapshot arrives; until then the pane shows a
-    /// pending view.
     loaded: bool,
-    /// Whether this device runs a network service, once read says: the rows
-    /// only it fills are left out when it does not, as for absent hardware.
     service_present: Option<bool>,
     snapshot: Option<crate::channel::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
-    /// The radios the kernel listed when the model last looked.
     listed: Option<crate::radios::Present>,
     wired: WiredInfo,
     radios: os_actions::RadioState,
@@ -1763,51 +1640,30 @@ pub struct NetworkModel {
     link: Option<WifiLinkDetails>,
     plugins: Vec<VpnPlugin>,
     diagnostics: Option<os_actions::ConnectionDiagnostics>,
-    /// Why each part of the last snapshot could not be read.
     read_errors: NetworkReadErrors,
-    /// Changes running; a snapshot taken meanwhile does not overrule what
-    /// they show.
     in_flight: usize,
-    /// Explicit refresh operations whose worker result has not landed.
     refreshes_pending: usize,
-    /// Networks being joined.
     connecting: Vec<String>,
     notice: Option<String>,
-    /// What the window's password prompt asks for Network, while it is
-    /// open.
     asking: Option<asking::Asking>,
-    /// Whether the pointer is over the Wi-Fi list of the first page, and of
-    /// the page of every network.
     held_short: Rc<Cell<bool>>,
     held_all: Rc<Cell<bool>>,
-    /// Whether either list was held when the pane last looked.
     held_seen: bool,
     short_list: RefCell<order::HeldList>,
     all_list: RefCell<order::HeldList>,
-    /// What the window bar's search narrows the page of every network to.
     filter: String,
-    /// The window's pages when the pane last composed.
     pages_seen: u64,
-    /// Whether the work or school network's setup is open under its row,
-    /// and its reveal: the row's press and the setup action share it.
     enterprise_setup: ui::widget::DisclosureState,
-    /// When the open page last scanned for networks: it scans again every
-    /// [`SCAN_EVERY`] while it shows them.
     scanned_at: Option<ui::time::Instant>,
-    /// A scan the page started has not landed yet.
     scan_in_flight: bool,
     hotspot_code_shown: bool,
-    /// The saved password shown on a network's page.
     revealed: Option<Shown>,
-    /// The QR code shown on a network's page, by network.
     code: Option<Shown>,
-    /// The wired profile being edited, by label.
     wired_profile: LocalState<String>,
     seen_selection: String,
     hotspot_name: LocalState<String>,
     hotspot_password: Arc<Mutex<String>>,
     hotspot_band: LocalState<String>,
-    /// The span the data usage chart shows ([`usage::Span`]).
     usage_span: LocalState<usize>,
     ipv4_forms: HashMap<String, Ipv4Form>,
     ipv6_forms: HashMap<String, Ipv6Form>,
@@ -1816,16 +1672,9 @@ pub struct NetworkModel {
     enterprise: EnterpriseForm,
     ca_picker: Option<ui::portal::PortalChannel>,
     vpn: vpn::VpnState,
-    /// Work started by the pane itself (an import a picker answered), not
-    /// by an effect: it lands here when done.
     jobs: Vec<crate::channel::Receiver<Landed>>,
-    /// The modem's model, whose card the first page shows next to Wi-Fi
-    /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
-    /// keeps it, the page shows it and the model polls it.
     mobile: Option<Rc<RefCell<mobile::MobileModel>>>,
-    /// What follows the device while a pane shows the model.
     following: std::rc::Weak<crate::watch::Counted>,
-    /// The device's change count when the model last started a read.
     changes_seen: u64,
     changed: bool,
 }
@@ -1839,8 +1688,6 @@ impl Drop for NetworkModel {
 }
 
 impl NetworkModel {
-    /// Only state already adopted by the ordinary snapshot/completion pump.
-    /// Bound the explicit read, and omit editable forms, profiles and secrets.
     fn inspection(&self) -> Result<serde_json::Value, String> {
         const MAX_ROWS: usize = 256;
         const MAX_BYTES: usize = 128 * 1024;
@@ -1899,8 +1746,6 @@ impl NetworkModel {
         Ok(value)
     }
 
-    /// This device's networks: the pane is pending until the first
-    /// snapshot, read in the background, arrives.
     fn of_device(reach: Reach) -> Self {
         let mut model = Self::with_service(
             reach,
@@ -1912,11 +1757,9 @@ impl NetworkModel {
         model
     }
 
-    /// Sample networks, on the page a network capture asks for.
     fn sample(reach: Reach, wanted: Option<crate::scenarios::NetworkSample>) -> Self {
         use crate::scenarios::NetworkSample;
         let mut model = Self::loaded_from(reach, Arc::new(SampleNetwork));
-        // A capture's own profile shows counted data usage.
         if wanted.is_some() {
             usage::sample(&model.reach.storage);
         }
@@ -1927,8 +1770,6 @@ impl NetworkModel {
                 model.networks.clear();
             }
             Some(NetworkSample::Scanning) => {
-                // The first search under way: none is due again yet, so the
-                // capture holds that moment.
                 model.networks.clear();
                 model.scan_in_flight = true;
                 model.scanned_at = Some(ui::time::now());
@@ -1969,9 +1810,6 @@ impl NetworkModel {
                 }
             }
             Some(NetworkSample::VpnDevices) => {
-                // Out through the desk PC, and the phone out through this
-                // laptop. Everything goes through the desk PC, so the Home
-                // tunnel, which carries everything too, is off.
                 for vpn in &mut model.vpns {
                     vpn.active = false;
                 }
@@ -2002,7 +1840,6 @@ impl NetworkModel {
         model
     }
 
-    /// A model over `service`, its first snapshot read at once.
     fn loaded_from(reach: Reach, service: Arc<dyn NetworkService>) -> Self {
         let mut model = Self::with_service(reach, service);
         let snapshot = model.service.snapshot(true);
@@ -2071,7 +1908,6 @@ impl NetworkModel {
         }
     }
 
-    /// Show the modem `mobile` describes on the first page and its own page.
     pub(crate) fn host_mobile(&mut self, mobile: &Rc<RefCell<mobile::MobileModel>>) {
         if !self
             .mobile
@@ -2083,55 +1919,43 @@ impl NetworkModel {
         }
     }
 
-    /// The radio state `NetworkManager` last reported, once it has.
     fn reported_radios(&self) -> Option<&os_actions::RadioState> {
         (self.loaded && self.read_errors.radios.is_none()).then_some(&self.radios)
     }
 
-    /// Which radios Network can switch now.
     fn radios_present(&self) -> NetworkRadios {
         NetworkRadios::of(&self.reach.radios, self.reported_radios())
     }
 
-    /// Whether this device has no Wi-Fi radio.
     fn wifi_absent(&self) -> bool {
         self.radios_present().wifi == Some(false)
     }
 
-    /// Whether this device runs no network service: what only it answers is
-    /// left out, as for absent hardware, rather than shown as unreadable.
     fn network_absent(&self) -> bool {
         self.service_present == Some(false)
     }
 
-    /// Whether Wi-Fi is left out: no radio, or no service to switch it.
     fn wifi_unavailable(&self) -> bool {
         self.network_absent() || self.wifi_absent()
     }
 
-    /// Whether airplane mode has a radio to switch.
     fn airplane_switchable(&self) -> bool {
         !self.network_absent() && !self.radios_present().without_radios()
     }
 
-    /// The networks in range, as last scanned.
     pub fn networks(&self) -> &[WifiNetworkInfo] {
         &self.networks
     }
 
-    /// The page the pane shows: its key in the window's trail, `None` on the
-    /// first page.
     pub(crate) fn page_key(&self) -> Option<String> {
         self.reach.pages.top(Category::Network).map(|page| page.key)
     }
 
-    /// Drill into the page `key`, titled `title`.
     fn open_page(&mut self, key: &str, title: String) {
         self.reach.pages.open(Category::Network, key, title);
         self.changed = true;
     }
 
-    /// Narrow the page of every network to `text`.
     fn set_filter(&mut self, text: &str) {
         if self.filter != text {
             text.clone_into(&mut self.filter);
@@ -2139,27 +1963,18 @@ impl NetworkModel {
         }
     }
 
-    /// Start reading a snapshot in the background; a newer read supersedes
-    /// an older one still running.
     fn start_snapshot(&mut self) {
         let initial = !self.loaded;
-        // A whole read covers every change the device reported before it.
         if let Some(changes) = self.device_changes() {
             self.changes_seen = changes;
         }
         self.start_read(move |service| service.snapshot(initial));
     }
 
-    /// The device's change count, while it is followed.
     fn device_changes(&self) -> Option<u64> {
         self.following.upgrade()?.changes()
     }
 
-    /// Read the device's status again once it reported a change: a VPN
-    /// brought up from quick settings, a cable pulled out, airplane mode
-    /// turned on elsewhere shows while the page is open. One read at a
-    /// time; changes during it are read after it, and none while a change
-    /// of the pane's own runs (its landing reads the device anyway).
     fn read_reported_changes(&mut self) {
         let Some(changes) = self.device_changes() else {
             return;
@@ -2175,7 +1990,6 @@ impl NetworkModel {
         self.start_read(|service| service.status());
     }
 
-    /// Follow the device while a pane shows the model.
     fn follow_device(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
             return held;
@@ -2184,15 +1998,10 @@ impl NetworkModel {
         let started = crate::watch::shared(&mut self.following, move || {
             crate::watch::Counted::start(|changed| service.follow(changed))
         });
-        // Nothing was followed while no pane showed the model: a model
-        // already read reads the status again once; a first read on its way
-        // covers it.
         self.changes_seen = if self.loaded { u64::MAX } else { 0 };
         started
     }
 
-    /// Read with `read` in the background; a newer read supersedes an older
-    /// one still running.
     fn start_read(
         &mut self,
         read: impl FnOnce(&dyn NetworkService) -> NetworkSnapshot + Send + 'static,
@@ -2215,8 +2024,6 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Run `work` on a worker of the pane's own; what it lands is taken in
-    /// when it arrives.
     fn start_job(&mut self, name: &str, work: Box<dyn FnOnce() -> Landed + Send>) {
         let (sender, receiver) = crate::channel::channel();
         let wake = ui::WakeHandle::new();
@@ -2235,10 +2042,6 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Adopt a snapshot; what refreshing reports. The pane is composed
-    /// again only when the snapshot changed what it shows: a read again of
-    /// a device that did not change (the status read once a pane follows
-    /// the device) rebuilds nothing.
     fn adopt_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
         let before = self.adopted();
         let outcome = self.take_snapshot(snapshot);
@@ -2248,7 +2051,6 @@ impl NetworkModel {
         outcome
     }
 
-    /// What [`Self::take_snapshot`] writes that the pane shows.
     fn adopted(&self) -> Adopted {
         Adopted {
             loaded: self.loaded,
@@ -2271,7 +2073,6 @@ impl NetworkModel {
     }
 
     fn take_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
-        // A whole snapshot says which Wi-Fi link is in use, also none.
         let whole = snapshot.wifi_enabled.is_some();
         if snapshot.service_present.is_some() {
             self.service_present = snapshot.service_present;
@@ -2284,15 +2085,12 @@ impl NetworkModel {
             }
             Err(error) => {
                 warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
-                // The last list is no longer what the radio sees.
                 self.networks.clear();
                 self.read_errors.networks = Some(error.clone());
                 Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
             }
         };
         if self.loaded && self.in_flight > 0 {
-            // Read before a running change landed; the snapshot taken once
-            // the changes land reports the device.
             return outcome;
         }
         if let Some(enabled) = adopt(snapshot.wifi_enabled, &mut self.read_errors.wifi_enabled) {
@@ -2323,10 +2121,6 @@ impl NetworkModel {
         if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
             self.vpns = vpns;
         }
-        // A profile added or removed elsewhere (a network joined from quick
-        // settings, one forgotten with `nmcli`) has its settings read with
-        // everything else; the same profiles only take their new names and
-        // last uses.
         let reread = match snapshot.profile_list {
             Some(Ok(listed)) if same_profiles(&self.profiles, &listed) => {
                 self.profiles = listed;
@@ -2352,8 +2146,6 @@ impl NetworkModel {
         outcome
     }
 
-    /// Give each saved profile its forms, filled from what `NetworkManager`
-    /// reports, and keep the wired selector on a profile that still exists.
     fn fill_forms(&mut self) {
         for profile in &self.profiles {
             let Some(settings) = self.profile_settings.get(&profile.uuid) else {
@@ -2404,19 +2196,18 @@ impl NetworkModel {
         if !self
             .profiles
             .iter()
-            .any(|p| p.kind == "802-3-ethernet" && profile_label(p) == current)
+            .any(|p| p.kind == "802-3-ethernet" && p.uuid == current)
         {
             self.wired_profile.set(
                 self.profiles
                     .iter()
                     .find(|p| p.kind == "802-3-ethernet")
-                    .map(profile_label)
+                    .map(|p| p.uuid.clone())
                     .unwrap_or_default(),
             );
         }
     }
 
-    /// The saved profile `id` (its id or its name).
     fn profile(&self, id: &str) -> Result<SavedNetworkProfile, String> {
         self.profiles
             .iter()
@@ -2425,7 +2216,6 @@ impl NetworkModel {
             .ok_or_else(|| format!("No saved network is called {id}."))
     }
 
-    /// The saved Wi-Fi profile `id` names, and its settings as read.
     fn wifi_profile(
         &self,
         id: &str,
@@ -2439,26 +2229,20 @@ impl NetworkModel {
         Ok((profile, settings))
     }
 
-    /// The saved Wi-Fi networks, as this device knows them.
     fn saved_wifi(&self) -> impl Iterator<Item = &SavedNetworkProfile> {
         self.profiles
             .iter()
             .filter(|profile| profile.kind == "802-11-wireless")
     }
 
-    /// The saved profile a network joins with: the one named for it, as
-    /// `NetworkManager` names a profile it makes when joining.
     fn saved_profile_of(&self, ssid: &str) -> Option<&SavedNetworkProfile> {
         self.saved_wifi().find(|profile| profile.name == ssid)
     }
 
-    /// Whether this device knows `network`: a saved profile, or
-    /// `NetworkManager` says so.
     fn knows(&self, network: &WifiNetworkInfo) -> bool {
         network.known || self.saved_profile_of(&network.ssid).is_some()
     }
 
-    /// Every Wi-Fi network the pane has a row for: in range or saved.
     fn wifi_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .networks
@@ -2473,13 +2257,10 @@ impl NetworkModel {
         names
     }
 
-    /// The network in range called `ssid`.
     fn in_range(&self, ssid: &str) -> Option<&WifiNetworkInfo> {
         self.networks.iter().find(|network| network.ssid == ssid)
     }
 
-    /// The published row of the Wi-Fi network `ssid`: what can be done with
-    /// it, in range or saved.
     fn wifi_live(&self, ssid: &str) -> LiveRow {
         let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
         let mut row = LiveRow::new(wifi_row_id(ssid), "network.wifi", ssid.to_owned()).operation(
@@ -2503,8 +2284,6 @@ impl NetworkModel {
         };
         let uuid = profile.uuid.clone();
         let settings = self.profile_settings.get(&uuid);
-        // A setting is offered with its value to give; the profile is the
-        // row's own.
         let asking = |effect: NetworkEffect, asking: &[&str]| {
             SettingsEffect::from(effect).bound_asking(asking)
         };
@@ -2535,8 +2314,6 @@ impl NetworkModel {
         self.with_wake(row, profile)
     }
 
-    /// The live row a saved profile's settings act on: a Wi-Fi network's
-    /// row, or the profile's own (a wired connection's).
     pub(crate) fn profile_live(&self, profile: &SavedNetworkProfile) -> LiveRow {
         if profile.kind == "802-11-wireless" {
             return self.wifi_live(&profile.name);
@@ -2562,8 +2339,6 @@ impl NetworkModel {
         self.with_wake(row, profile)
     }
 
-    /// `row`, saying how `profile` wakes this machine and offering to
-    /// change it where it can.
     fn with_wake(&self, mut row: LiveRow, profile: &SavedNetworkProfile) -> LiveRow {
         if let Some(Ok(wake)) = self.wake_settings.get(&profile.uuid) {
             row = row.presentation(ui::tilo_actions::ResourcePresentation {
@@ -2584,7 +2359,6 @@ impl NetworkModel {
         row
     }
 
-    /// Start `change` on a worker, showing `notice` meanwhile.
     fn change(&mut self, change: NetworkChange, notice: Option<String>) -> Begun {
         if notice.is_some() {
             self.notice = notice;
@@ -2597,7 +2371,6 @@ impl NetworkModel {
         })
     }
 
-    /// A change to the policy of the saved Wi-Fi network `profile`.
     fn policy_change(
         &mut self,
         profile: &SavedNetworkProfile,
@@ -2613,7 +2386,6 @@ impl NetworkModel {
         )
     }
 
-    /// Begin `effect`.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per effect; the longer ones call out"
@@ -3055,8 +2827,6 @@ impl NetworkModel {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
             }
             NetworkEffect::OpenNetworkSignIn => {
-                // The opener is resolved here: a scoped host is only visible
-                // on this thread.
                 let opener = ui::host::current().opener;
                 Begun::work(move || {
                     Landed::SignedIn(service.sign_in_page().and_then(|uri| {
@@ -3145,7 +2915,6 @@ impl NetworkModel {
         })
     }
 
-    /// Switch `radio`, showing the requested state at once.
     fn switch(&mut self, radio: Radio, on: bool) -> Result<Begun, String> {
         if let Some(error) = &self.read_errors.radios {
             return Err(t_args(
@@ -3160,8 +2929,6 @@ impl NetworkModel {
         Ok(self.change(NetworkChange::Radio(radio, on), None))
     }
 
-    /// Join `ssid`: with `password`, else with what its open prompt holds,
-    /// else (a secure network) with a password the person's devices share.
     fn connect(
         &mut self,
         ssid: String,
@@ -3175,7 +2942,6 @@ impl NetworkModel {
             return Err(format!("Already connecting to {ssid}."));
         }
         let password = password.filter(|password| !password.is_empty());
-        // A known network joins with what this device saved for it.
         let saved = self.knows(&network) && password.is_none();
         let lookup_shared = network.secure && password.is_none() && !saved;
         self.connecting.push(ssid.clone());
@@ -3195,7 +2961,6 @@ impl NetworkModel {
         }))
     }
 
-    /// The hotspot from what is given, else what its form holds.
     fn hotspot(
         &self,
         name: Option<String>,
@@ -3223,8 +2988,6 @@ impl NetworkModel {
         Ok(config)
     }
 
-    /// Save the enterprise network `given` asks for and connect with
-    /// `password`.
     fn connect_enterprise(&mut self, given: EnterpriseGiven, password: Zeroizing<String>) -> Begun {
         let config = self.enterprise.config(given);
         self.change(
@@ -3233,15 +2996,12 @@ impl NetworkModel {
         )
     }
 
-    /// Join `ssid`, a network that does not broadcast its name.
     fn join_hidden(&mut self, ssid: String, password: Option<Zeroizing<String>>) -> Begun {
         let notice = t_args("net-notice-connecting", &[("ssid", ssid.as_str().into())]);
         self.connecting.push(ssid.clone());
         self.change(NetworkChange::JoinHidden { ssid, password }, Some(notice))
     }
 
-    /// A VPN turned on: one carrying all traffic leaves the route through
-    /// a device.
     fn vpn_on(
         &mut self,
         change: NetworkChange,
@@ -3254,8 +3014,6 @@ impl NetworkModel {
         self.land(Landed::Changed(change, result))
     }
 
-    /// The VPNs carrying all traffic turned off for a route through a
-    /// device: read back what stands.
     fn tunnels_left(&mut self, result: Result<(), String>) -> Result<String, String> {
         self.in_flight = self.in_flight.saturating_sub(1);
         if self.in_flight == 0 {
@@ -3264,7 +3022,6 @@ impl NetworkModel {
         result.map(|()| String::new())
     }
 
-    /// A saved network's password, read to show it or its code.
     fn password_read(
         &mut self,
         uuid: String,
@@ -3294,7 +3051,6 @@ impl NetworkModel {
         }
     }
 
-    /// Take in work that landed; what the effect answers.
     fn land(&mut self, landed: Landed) -> EffectAnswer {
         self.changed = true;
         let reported = match landed {
@@ -3302,8 +3058,6 @@ impl NetworkModel {
                 self.refreshes_pending = self.refreshes_pending.saturating_sub(1);
                 let adopted = self.adopt_snapshot(*snapshot);
                 match scan {
-                    // The list and status still read; only the fresh look
-                    // failed. A radio that is off cannot scan, and says so.
                     Err(error) if adopted.is_ok() && self.wifi_enabled => {
                         warn!(target: "tilo::settings", op = "scan_wifi", %error, "Wi-Fi scan failed");
                         Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
@@ -3384,8 +3138,6 @@ impl NetworkModel {
         reported.map(|_| Effected::done())
     }
 
-    /// Report a landed change, putting back what the pane showed if it
-    /// failed.
     #[expect(clippy::too_many_lines, reason = "one arm per change and outcome")]
     fn report(
         &mut self,
@@ -3543,7 +3295,6 @@ impl NetworkModel {
         })
     }
 
-    /// Take in how joining `ssid` ended.
     fn joined(&mut self, ssid: &str, result: Result<Joined, String>) -> Result<String, String> {
         self.connecting.retain(|pending| pending != ssid);
         match result {
@@ -3585,7 +3336,6 @@ impl NetworkModel {
         }
     }
 
-    /// Take in the CA certificate the picker chose.
     fn poll_picker(&mut self) {
         let Some(result) = self
             .ca_picker
@@ -3608,8 +3358,6 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Why the Wi-Fi status cannot be told, when it cannot: the radio or the
-    /// network list could not be read.
     fn wifi_status_error(&self) -> Option<String> {
         let error = self
             .read_errors
@@ -3637,8 +3385,6 @@ fn wifi_row_id(ssid: &str) -> String {
     format!("network.wifi:{ssid}")
 }
 
-/// Connect to `ssid`, then seal a typed password for the person's other
-/// devices.
 fn join(
     service: &dyn NetworkService,
     ssid: &str,
@@ -3670,8 +3416,6 @@ fn join(
     Ok(Joined::Connected { continuity_notice })
 }
 
-/// Connect to secure `ssid` with a password the person's devices share; a
-/// password is asked for when they share none.
 fn join_with_shared_password(
     service: &dyn NetworkService,
     ssid: &str,
@@ -3704,13 +3448,10 @@ fn join_with_shared_password(
 }
 
 impl NetworkModel {
-    /// Whether a page shows the model: it follows the device while it does.
     fn shown(&self) -> bool {
         self.following.strong_count() > 0
     }
 
-    /// Take in what background work finished and what the device reports
-    /// now, scanning when due; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background();
         self.read_reported_changes();
@@ -3733,7 +3474,6 @@ impl NetworkModel {
             self.left_pages();
             self.changed = true;
         }
-        // A list let go takes the order it held back.
         let held = self.held_short.get() || self.held_all.get();
         if held != self.held_seen {
             self.held_seen = held;
@@ -3744,16 +3484,12 @@ impl NetworkModel {
         std::mem::take(&mut self.changed)
     }
 
-    /// When the page next scans for networks while nothing else happens.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
             .flatten()
     }
 
-    /// Follow the device, and the modems whose card and page are Network's,
-    /// for a page that shows the model, for as long as the answer is held;
-    /// pages share one follow.
     fn follow(&mut self) -> Rc<dyn std::any::Any> {
         let device = self.follow_device();
         let mobile = self
@@ -3765,14 +3501,10 @@ impl NetworkModel {
 }
 
 impl NetworkModel {
-    /// Whether the page looks for networks by itself: Wi-Fi is on and the
-    /// device has answered.
     fn scans_networks(&self) -> bool {
         self.loaded && self.wifi_enabled && !self.wifi_absent()
     }
 
-    /// Drop what only a page that is no longer shown held: a password shown
-    /// or a code drawn on a network's page, a filter of the full list.
     fn left_pages(&mut self) {
         let trail: Vec<String> = self
             .reach
@@ -3804,9 +3536,6 @@ impl NetworkModel {
         }
     }
 
-    /// Scan, then read the networks in range, when the last look is
-    /// [`SCAN_EVERY`] old: the list keeps up while the page is
-    /// open, with no Refresh to press. The status never waits for it.
     fn scan_when_due(&mut self, now: ui::time::Instant) {
         let due = self.scans_networks()
             && self.snapshot.is_none()
@@ -3836,21 +3565,16 @@ impl NetworkModel {
         if started.is_ok() {
             self.snapshot = Some(receiver);
             self.scan_in_flight = true;
-            // "Scanning…" shows only where no network is listed yet.
             self.changed |= self.networks.is_empty();
         }
     }
 
-    /// Take in a snapshot, a chosen file or work of the pane's own that
-    /// arrived.
     fn poll_background(&mut self) {
         let listed = self.reach.radios.now();
         if listed != self.listed {
             let plugged = self.listed.is_some();
             self.listed = listed;
             self.changed = true;
-            // A radio plugged in or pulled out: what `NetworkManager` makes
-            // of it is read again.
             if plugged && self.loaded && self.snapshot.is_none() {
                 self.start_snapshot();
             }
@@ -3859,8 +3583,6 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
-                    // "Scanning…" gives way to the list, whatever it holds;
-                    // a list shown stays unless the scan changed it.
                     self.changed |=
                         std::mem::take(&mut self.scan_in_flight) && self.networks.is_empty();
                     let _ = self.adopt_snapshot(snapshot);
@@ -3883,7 +3605,6 @@ impl NetworkModel {
             Err(crate::channel::TryRecvError::Empty) => true,
         });
         for done in landed {
-            // The notice says how it went; nobody waits on the answer.
             let _ = self.land(done);
         }
         self.poll_picker();
@@ -3891,8 +3612,6 @@ impl NetworkModel {
     }
 }
 
-/// `row` with the settings of the saved profile `uuid` offered on it, each
-/// asking the value to give.
 fn with_profile_settings(
     mut row: LiveRow,
     uuid: &str,

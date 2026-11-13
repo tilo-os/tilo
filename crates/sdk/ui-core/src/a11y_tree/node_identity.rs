@@ -1,5 +1,5 @@
-//! Correlates live traversal with inert layout registrations. Raw pointers are
-//! compared only; even an unavailable public-map entry is never dereferenced.
+//! Correlates live traversal with inert layout registrations. Raw pointers are compared only; even an
+//! unavailable public-map entry is never dereferenced.
 use super::{HashMap, TaffyNodeId, Widget};
 
 #[derive(Default)]
@@ -55,8 +55,6 @@ impl<'a> WidgetNodeMap<'a> {
         };
         collect::<BOUND>(root, &mut result.live_names);
         for (&id, &pointer) in nodes {
-            // The optional name was captured by the real live layout owner.
-            // It conveys no permission, and only accompanies this exact entry.
             let name = admitted.and_then(|names| names.get(id, pointer));
             if admitted.is_some() && name.is_none() {
                 continue;

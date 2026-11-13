@@ -1,15 +1,9 @@
-//! Fetching a package the machine does not have yet.
+//! Fetching a package the machine does not have yet: find it in the catalogue, download the `.tapp`
+//! to a staging file, hand the path to `tilo-install`.
 //!
-//! Three steps in one blocking call: find the entry in the catalogue,
-//! download the `.tapp` to a staging file, hand the path to
-//! `tilo-install`.
-//!
-//! Trust is decided there, not here: `tilo-install` recomputes the
-//! content-addressed package id and checks the publisher signature
-//! fail-closed before extracting, so a tampered download fails at
-//! install rather than becoming an installed app. Nothing in this
-//! module passes `--allow-self-signed` — an install started by typing
-//! a name into search is the last place to relax a signature check.
+//! Trust is decided there, not here: `tilo-install` recomputes the package id and checks the publisher
+//! signature fail-closed before extracting. Nothing here passes `--allow-self-signed`: an install
+//! started by typing a name into search is the last place to relax a signature check.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,26 +44,29 @@ fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-/// Why an install did not happen; every variant renders to something a person can act on — reaches a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
-    /// No configured registry offers this id (any more).
-    NotOffered { package_id: String },
-    /// Nowhere writable to stage the download.
+    NotOffered {
+        package_id: String,
+    },
     NoStagingDir,
-    /// The download itself failed.
-    Download { detail: String },
-    /// `tilo-install` could not be run at all.
-    InstallerMissing { detail: String },
-    /// `tilo-install` ran and refused; `detail` is its own output — usually the signature or hash complaint.
-    Refused { code: i32, detail: String },
-    /// Downloaded bytes did not match the signed registry metadata.
-    Integrity { detail: String },
-    /// Not enough free space to download and install it; nothing was
-    /// downloaded.
-    NotEnoughSpace { needed: u64, available: u64 },
-    /// The app needs a runtime build this device lacks and its registry
-    /// does not offer; nothing was changed.
+    Download {
+        detail: String,
+    },
+    InstallerMissing {
+        detail: String,
+    },
+    Refused {
+        code: i32,
+        detail: String,
+    },
+    Integrity {
+        detail: String,
+    },
+    NotEnoughSpace {
+        needed: u64,
+        available: u64,
+    },
     RuntimeUnavailable {
         package_id: String,
         runtime: String,
@@ -78,7 +75,6 @@ pub enum InstallError {
 }
 
 impl InstallError {
-    /// One-line summary for a notification body.
     pub fn user_message(&self) -> String {
         match self {
             InstallError::NotOffered { package_id } => {
@@ -167,7 +163,6 @@ fn readable_size(bytes: u64) -> String {
     }
 }
 
-/// Where downloaded .tapps are staged before install, under the cache dir so a read-only home in a sandbox isn't fatal.
 pub fn staging_dir() -> Option<PathBuf> {
     let base = crate::config::cache_dir()?;
     let staged = base.join("staged-tapp");
@@ -175,7 +170,6 @@ pub fn staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-/// Names the `tilo-install` binary instead of the one on `PATH`.
 pub const INSTALL_BIN_ENV: &str = "TILO_INSTALL_BIN";
 
 /// The installer binary. [`INSTALL_BIN_ENV`] overrides it in a developer
@@ -404,8 +398,6 @@ fn download_package(
                 on_progress,
             );
         }
-        // No twin: a package published before twins, or a host that keeps
-        // none. Any other answer, a redirect included, is not followed either.
     }
     download_reporting_limited(url, dest, signed_bytes, on_progress)
 }
@@ -451,8 +443,6 @@ fn package_client() -> Result<&'static reqwest::blocking::Client, String> {
         .map_err(Clone::clone)
 }
 
-/// What a response body is: the package itself, or its compressed twin.
-/// `limit` is the most package bytes either may yield.
 #[derive(Clone, Copy)]
 enum Body {
     Raw { limit: u64 },
@@ -541,8 +531,6 @@ impl Read for Wire<'_> {
         let n = self.response.read(buf)?;
         let received = self.received.saturating_add(n as u64);
         if received > self.limit {
-            // Refused before the caller sees these bytes, so the over-limit
-            // read never reaches disk.
             return Err(std::io::Error::other(format!(
                 "download exceeded the {}-byte limit",
                 self.limit
@@ -594,7 +582,6 @@ fn fetch_verified(
     Ok(downloaded)
 }
 
-/// [`download_reporting`] for callers with nothing to report to.
 pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
     download_reporting(url, dest, &mut |_| {})
 }
@@ -671,10 +658,10 @@ pub fn install_runtime_from_enabled(
     }
 }
 
-/// Install the language pack for `locale` (`de-DE`) from the first enabled
-/// repository that offers it, through the verified pipeline apps and
-/// runtimes take; the caller names only the locale. Nothing is done when
-/// the newest offered version is installed already.
+/// Install the language pack of the language `tag` names (`de`, `de-DE`) from
+/// the first enabled repository that offers it, through the verified pipeline
+/// apps and runtimes take; nothing is done when the newest version of it is
+/// installed already.
 ///
 /// # Errors
 ///
@@ -697,18 +684,15 @@ pub fn install_language_pack_from_enabled(
         .offer;
     match crate::installed_language_pack(locale) {
         Some(installed) if installed == offer.version => Ok(()),
-        // An installed pack takes the update path apps and runtimes take.
         Some(_) => update_app_reporting(&offer, on_progress),
         None => install_or_update_app_reporting(&offer, on_progress, Change::Install),
     }
 }
 
-/// What [`install_or_update_app_reporting`] does with the verified package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
     Install,
     Update,
-    /// Replace the installed version with an older one.
     Rollback,
 }
 
@@ -753,7 +737,6 @@ fn install_or_update_app_reporting(
     install_staged(app, staged, on_progress, change)
 }
 
-/// [`ensure_runtime`] for the runtime `app` declares, when it is an app.
 fn ensure_app_runtime(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -778,7 +761,6 @@ pub struct StagingFile {
 }
 
 impl StagingFile {
-    /// A new file in `staging` named after `stem`, locked by this process.
     pub fn claim(staging: &Path, stem: &str) -> std::io::Result<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         loop {
@@ -795,20 +777,15 @@ impl StagingFile {
             };
             let lock = match advisory_lock::FileLock::try_exclusive(file) {
                 Ok(lock) => lock,
-                // A sweep took it between its creation and this lock, and
-                // removes it: take another name.
                 Err(advisory_lock::TryLockError::WouldBlock) => continue,
                 Err(advisory_lock::TryLockError::Error(error)) => return Err(error),
             };
-            // A sweep may also have taken and removed it, and let go, before
-            // this lock: then the lock holds a file no name leads to.
             if still_named(&lock, &path) {
                 return Ok(Self { path, _lock: lock });
             }
         }
     }
 
-    /// Where the file is.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -873,7 +850,6 @@ pub struct StagedPackage {
 }
 
 impl StagedPackage {
-    /// Where the checked download is staged, until this is dropped.
     #[must_use]
     pub fn path(&self) -> &Path {
         self.file.path()
@@ -911,7 +887,6 @@ pub fn stage(
     Ok(StagedPackage { file, bytes })
 }
 
-/// Packages [`stage_each`] downloads at once.
 pub const PARALLEL_DOWNLOADS: usize = 8;
 
 /// Download the package of every app in `apps`, [`PARALLEL_DOWNLOADS`] at a
@@ -951,7 +926,6 @@ pub fn stage_each(
     });
 }
 
-/// Update `app` from the package [`stage`] downloaded for it.
 pub fn update_staged_reporting(
     app: &CatalogueApp,
     staged: StagedPackage,
@@ -1100,7 +1074,6 @@ pub fn rollback_app_reporting(
     install_or_update_app_reporting(app, on_progress, Change::Rollback)
 }
 
-/// Resolve `package_id` against the live catalogue, then install it.
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
     install_reporting(package_id, &mut |_| {})
 }
@@ -1160,10 +1133,8 @@ mod tests {
     #[test]
     fn a_download_a_dead_process_left_goes_and_one_in_progress_stays() {
         let staging = tempfile::tempdir().expect("staging dir");
-        // A process that died mid-download left its file and holds nothing.
         let abandoned = staging.path().join("so.tilo.runtime-0.1.0.4242.0.tapp");
         std::fs::write(&abandoned, vec![7_u8; 4096]).expect("abandoned download");
-        // This process is downloading another.
         let current = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
         std::fs::write(current.path(), b"partial").expect("write");
 
@@ -1174,11 +1145,9 @@ mod tests {
             "a download in progress was removed"
         );
 
-        // Two downloads of the same build never share a file.
         let again = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
         assert_ne!(again.path(), current.path());
 
-        // Once the download is done with, its file goes with it.
         let path = current.path().to_path_buf();
         drop(current);
         assert!(!path.exists());
@@ -1207,9 +1176,6 @@ mod tests {
                 dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
             assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
         }
-        // Phase `the_install_invocation_never_relaxes_signature_checking`.
-        // The one argv assertion that is a security property rather than
-        // a formatting detail.
         {
             let publisher = "ab".repeat(32);
             let root = "cd".repeat(32);
@@ -1482,10 +1448,6 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let dest = temp.path().join("staged.tapp");
 
-        // Phase `compressed_tapp_download_verifies_the_uncompressed_hash`:
-        // the twin is fetched instead of the package, decompressed, and the
-        // plain bytes pass the signed length and hash; progress counts the
-        // compressed bytes that crossed the network.
         {
             let (base, asked) = package_host(std::collections::HashMap::from([
                 ("/app.tapp.zst".to_string(), twin.clone()),
@@ -1501,8 +1463,6 @@ mod tests {
             assert_eq!(wire, twin.len() as u64, "progress is wire bytes");
             assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst"]);
         }
-        // Phase `compressed_tapp_beyond_the_signed_size_is_refused`: one
-        // byte more than the entry signed is a bomb, however small the twin.
         {
             let mut longer = package.clone();
             longer.push(b'!');
@@ -1543,8 +1503,6 @@ mod tests {
             );
             assert!(!dest.exists());
         }
-        // Phase `a_host_without_twins_serves_the_raw_package`: what every
-        // package published before twins, and every other host, looks like.
         {
             let (base, asked) = package_host(std::collections::HashMap::from([(
                 "/app.tapp".to_string(),
@@ -1556,8 +1514,6 @@ mod tests {
             assert_eq!(std::fs::read(&dest).expect("staged"), package);
             assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst", "/app.tapp"]);
         }
-        // Phase `a_signed_url_with_a_query_is_fetched_as_signed`: a suffix
-        // would land in the query, so no twin is asked for.
         {
             let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp?token=1").unwrap();
             assert_eq!(twin_url(&parsed), None);
@@ -1611,8 +1567,6 @@ mod tests {
                 "the installer's own reason has to survive to the user"
             );
         }
-        // Phase `a_silent_refusal_still_reports_the_exit_code`.
-        // An empty installer complaint must still say *something* — "tilo-install refused it" with a code beats a blank line.
         {
             let msg = InstallError::Refused {
                 code: 7,
@@ -1627,9 +1581,6 @@ mod tests {
             assert_eq!(installer_complaint(""), "");
             assert_eq!(installer_complaint("   \n\n  "), "");
         }
-        // Phase `the_installers_own_name_prefix_is_stripped`.
-        // The rendered toast already says who refused it, so the installer's
-        // own name prefix would stutter — caught by looking at the rendered notification.
         {
             let msg = InstallError::Refused {
                 code: 1,
@@ -1645,9 +1596,6 @@ mod tests {
                 "the sentence must not name the installer twice: {msg:?}"
             );
         }
-        // Phase `an_overlong_complaint_is_elided_rather_than_clipped`.
-        // The notification card is two lines tall; a longer complaint is
-        // elided here rather than cut off mid-word by the renderer.
         {
             let long = "x".repeat(400);
             let out = installer_complaint(&long);

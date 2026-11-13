@@ -1,16 +1,9 @@
-//! Apps blocked from the catalogue: by the person, by a workspace's policy
-//! or by the device's administrator. A blocked app appears in neither search
-//! nor the Store's lists; its Store page says who blocked it, and only that
-//! blocker can unblock it.
+//! Apps blocked from the catalogue by the person, by a workspace's policy or by the device's
+//! administrator: a blocked app is in no search or Store list, and only its blocker can unblock it.
 //!
-//! The person's list is a record of the person's own, kept by the Store in
-//! its person directory: `$TILO_PERSON_DIR/blocked.json` inside the Store,
-//! `<data home>/tilo-person/so.tilo.store/blocked.json` from outside it
-//! (`{"blocked": ["com.example.App"]}`). The device's policy is
-//! [`DEVICE_POLICY_PATH`] (`{"admin": "IT", "blocked": [...]}`), written by
-//! whoever administers the device and only readable here. A workspace's
-//! policy comes from the workspace itself, through
-//! [`BlockList::with_workspace_policy`].
+//! The person's list is the Store's `blocked.json` in its person directory
+//! (`<data home>/tilo-person/so.tilo.store/blocked.json`), the device's policy is
+//! [`DEVICE_POLICY_PATH`], and a workspace's policy comes from the workspace.
 
 use std::path::{Path, PathBuf};
 
@@ -19,33 +12,32 @@ use serde::{Deserialize, Serialize};
 /// Where the device administrator's catalogue policy lives.
 pub const DEVICE_POLICY_PATH: &str = "/etc/tilo/store-policy.json";
 
-/// Who blocked an app.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Blocker {
-    /// The person using this device.
     Person,
     /// A workspace's policy, named as the workspace is.
-    Workspace { workspace: String },
+    Workspace {
+        workspace: String,
+    },
     /// The device's administrator, named as the policy names them; empty
     /// when it names nobody, which a page reads as "your administrator".
-    Device { admin: String },
+    Device {
+        admin: String,
+    },
 }
 
-/// One app one blocker blocked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    /// The app's catalogue id, as `app_catalogue::CatalogueEntry::id`.
+    /// The catalogue's id for the app.
     pub app_id: String,
     pub by: Blocker,
 }
 
-/// Why an unblock was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnblockError {
     /// Someone else blocked it; only they can unblock it.
     NotTheBlocker(Vec<Blocker>),
-    /// It was not blocked.
     NotBlocked,
 }
 
@@ -58,14 +50,12 @@ impl std::fmt::Display for UnblockError {
     }
 }
 
-/// The person's list on disk.
 #[derive(Default, Deserialize, Serialize)]
 struct PersonFile {
     #[serde(default)]
     blocked: Vec<String>,
 }
 
-/// The device policy on disk.
 #[derive(Default, Deserialize)]
 struct PolicyFile {
     #[serde(default)]
@@ -74,7 +64,6 @@ struct PolicyFile {
     blocked: Vec<String>,
 }
 
-/// Every block in force.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockList {
     blocks: Vec<Block>,
@@ -83,12 +72,10 @@ pub struct BlockList {
 /// The Store, whose person directory keeps the person's list.
 pub const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
-/// The person's list's file name in the Store's person directory.
 pub const PERSON_LIST_FILE: &str = "blocked.json";
 
-/// The person's list: in the Store's person directory, which the launcher
-/// names `TILO_PERSON_DIR` inside the Store and keeps at
-/// `<data home>/tilo-person/so.tilo.store` for everyone else (the shell).
+/// The person's list: `TILO_PERSON_DIR` inside the Store, `<data home>/tilo-person/so.tilo.store`
+/// for everyone else.
 #[must_use]
 pub fn person_list_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_PERSON_DIR").filter(|dir| !dir.is_empty()) {
@@ -102,14 +89,12 @@ pub fn person_list_path() -> Option<PathBuf> {
 }
 
 impl BlockList {
-    /// Nothing blocked.
     #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// The person's list and the device's policy, from their usual places.
-    /// A missing or unreadable file blocks nothing.
+    /// The person's list and the device's policy. A missing or unreadable file blocks nothing.
     #[must_use]
     pub fn load() -> Self {
         Self::load_from(
@@ -118,8 +103,7 @@ impl BlockList {
         )
     }
 
-    /// The directories holding the files [`Self::load`] reads, to watch for
-    /// a block made or lifted.
+    /// The directories holding the files [`Self::load`] reads, to watch.
     #[must_use]
     pub fn directories() -> Vec<PathBuf> {
         person_list_path()
@@ -129,7 +113,6 @@ impl BlockList {
             .collect()
     }
 
-    /// [`Self::load`] from the given files.
     #[must_use]
     pub fn load_from(person: Option<&Path>, device: Option<&Path>) -> Self {
         let mut list = Self::empty();
@@ -190,7 +173,6 @@ impl BlockList {
             .any(|block| block.app_id.eq_ignore_ascii_case(app_id))
     }
 
-    /// Everyone who blocked `app_id`, for its Store page.
     #[must_use]
     pub fn blockers(&self, app_id: &str) -> Vec<&Blocker> {
         self.blocks
@@ -200,7 +182,6 @@ impl BlockList {
             .collect()
     }
 
-    /// Every block in force.
     #[must_use]
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
@@ -233,7 +214,7 @@ impl BlockList {
         }
     }
 
-    /// Write the person's own blocks to `path` (see [`person_list_path`]).
+    /// Write the person's own blocks to `path`.
     pub fn save_person(&self, path: &Path) -> std::io::Result<()> {
         let file = PersonFile {
             blocked: self

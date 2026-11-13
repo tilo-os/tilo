@@ -1174,7 +1174,7 @@ impl PeerSurfaces {
 }
 
 /// The tab of `tree` a peer's stream of `app_id` mounts into: exactly the tab it names when that
-/// tab shows another device's window, else the first such tab of its app in the active workspace
+/// tab shows a window that runs on another device, else the first such tab of its app in the active workspace
 /// that `unclaimed` says holds no other stream.
 fn stream_tab_in(
     tree: &DesktopTree,
@@ -1182,12 +1182,7 @@ fn stream_tab_in(
     tab: TabId,
     unclaimed: impl Fn(TabId) -> bool,
 ) -> Option<TabId> {
-    let elsewhere = |candidate: &Tab| {
-        matches!(
-            candidate.tile,
-            ModelTile::PeerWindow { .. } | ModelTile::HostedWindow { .. }
-        )
-    };
+    let elsewhere = |candidate: &Tab| matches!(candidate.tile, ModelTile::HostedWindow { .. });
     if tab != 0
         && let Some(named) = tree
             .workspaces
@@ -1198,8 +1193,7 @@ fn stream_tab_in(
         return Some(named.id);
     }
     let of_app = |candidate: &Tab| match &candidate.tile {
-        ModelTile::PeerWindow { app_id: window, .. }
-        | ModelTile::HostedWindow { app_id: window, .. } => window == app_id,
+        ModelTile::HostedWindow { app_id: window, .. } => window == app_id,
         _ => false,
     };
     tree.active_workspace()

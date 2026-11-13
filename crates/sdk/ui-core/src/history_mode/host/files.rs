@@ -230,8 +230,6 @@ impl HistoryHost {
     }
 
     pub(super) fn service_file_review(&mut self, command: review::ReviewCommand) {
-        // Root callbacks can change selection after refresh but before the
-        // runner services a queued dialog command. Recheck at this final door.
         if self.reconcile_file_target() {
             self.rebuild_toolbar();
             return;
@@ -262,8 +260,6 @@ impl HistoryHost {
                 }
                 files.confirm(token);
             }
-            // A file's versions are restored whole; a single change of a
-            // file is not taken back on its own.
             review::ReviewCommand::Confirm
             | review::ReviewCommand::RevertChange
             | review::ReviewCommand::Name => return,
@@ -458,9 +454,8 @@ mod tests {
     use crate::history_mode::HistoryRegistration;
     use automerge::AutoCommit;
 
-    /// A file-history backend that never answers: every read fails, and a
-    /// submit either fails or, where the case proves none can happen, panics
-    /// with its reason.
+    /// A file-history backend that never answers: every read fails, and a submit either fails or, where
+    /// the case proves none can happen, panics with its reason.
     mod no_transport {
         use crate::history_mode::checked_files::FileHistoryTransport;
         use fs_protocol::files::*;
@@ -872,9 +867,9 @@ mod tests {
         );
     }
 
-    /// A file version an agent's own device signed reads as the agent's, on
-    /// behalf of its person, in the file history rows; its person's own
-    /// devices read as the person, and a stranger still reads by key.
+    /// A file version an agent's own device signed reads as the agent's, on behalf of its person, in
+    /// the file history rows; its person's own devices read as the person, and a stranger still reads
+    /// by key.
     #[test]
     fn file_rows_attribute_an_agents_version_to_the_agent_for_its_person() {
         use crate::history_mode::checked_files::FileHistoryTarget;
@@ -970,7 +965,6 @@ mod tests {
         assert_eq!(rows[1].author.name, "Ada", "an unattributed version");
         assert_eq!(rows[1].author.attribution, None);
 
-        // A record that names no agent changes nothing.
         files.attributions = [(
             version(5, ada, ada_laptop).id,
             fs_protocol::FileAttributionV1 {

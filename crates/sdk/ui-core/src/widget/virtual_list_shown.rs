@@ -10,11 +10,7 @@ use vello::kurbo::{Affine, Rect};
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ListShown {
     pub(super) offset: f64,
-    /// How far along the frame stands, as the scroll a copy compares: the
-    /// last presented frame's, less how far its rows moved on screen since.
     pub(super) position: f64,
-    /// Whether how far the rows moved is known: the first row the last
-    /// presented frame showed is still that row.
     pub(super) moved_known: bool,
     pub(super) rect: Rect,
     pub(super) transform: Affine,
@@ -23,31 +19,17 @@ pub(super) struct ListShown {
     /// Rows were drawn off their places (a list change moving): the frame
     /// is not a copy of another, whatever else matches.
     pub(super) in_motion: bool,
-    /// The first row on screen: its index, its key's hash and its top in
-    /// the list. The next frame tells how far the rows moved on screen from
-    /// where it stands then, which is the scroll only while no row it showed
-    /// changed height; a row measured for the first time above it moves the
-    /// offset and the row alike.
     pub(super) first_shown: Option<(usize, u64, f64)>,
-    /// The bar's track, which stands over the rows without moving.
     pub(super) overlay: Option<Rect>,
     /// The rows near the box, in order: each one's key hash, its top in the
     /// list and its height. A row that took or gave up a heading's band, or
     /// moved because one above it did, stands elsewhere against the others:
     /// the rows still showing are not where the frame on screen drew them.
     pub(super) places: Vec<(u64, f64, f64)>,
-    /// The headings drawn, each with the number it shows over its rows where it
-    /// shows one, and whether its group is folded: a heading whose count
-    /// changed is drawn anew.
     pub(super) headings: Vec<(String, Option<usize>, bool)>,
 }
 
 impl ListShown {
-    /// Whether the rows both frames show stand as they did against each
-    /// other, and the headings both draw say what they did. A scroll moves
-    /// every row alike, and rows coming into view or leaving it are the
-    /// scroll's to draw; anything else that moved a row, or changed a
-    /// heading, is a frame no copy of the last one shows.
     fn places_agree(&self, other: &Self) -> bool {
         const SAME: f64 = 0.5;
         let mut shift = None;

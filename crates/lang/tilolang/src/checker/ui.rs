@@ -13,16 +13,16 @@ use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its
-    /// default while the slot is empty, into a local of its name. Returns the rest of the body.
+    /// Lowers the `state` declarations at the top of a view body: each reads its slot, or its default
+    /// while the slot is empty, into a local of its name. Returns the rest of the body.
     pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
         self.state_slots(view, body, None)
     }
 
-    /// [`Self::view_state`], in a frame that runs over a live view — an `on show` handler reads
-    /// the state the view holds. Such a frame has no view around it, so `live` names the view's
-    /// parameters: a default that reads one is the render's to compute, and the frame starts the
-    /// state at a value of its type instead.
+    /// [`Self::view_state`], in a frame that runs over a live view — an `on show` handler reads the state
+    /// the view holds. Such a frame has no view around it, so `live` names the view's parameters: a
+    /// default that reads one is the render's to compute, and the frame starts the state at a value of its
+    /// type instead.
     fn state_slots(
         &mut self,
         view: &str,
@@ -73,7 +73,6 @@ impl Checker<'_> {
         rest
     }
 
-    /// The value view state of type `ty` starts with when it declares no default.
     pub(super) fn zero_of(&mut self, ty: &Ty, span: Span) -> Ex {
         match ty {
             Ty::Int => Ex::int(0),
@@ -92,7 +91,11 @@ impl Checker<'_> {
                     .filter(|v| v.fields.is_empty());
                 match (shape, first) {
                     (Some(shape), Some(v)) => {
-                        let name = ast::Ident { name: v.name, span };
+                        let name = ast::Ident {
+                            name: v.name,
+                            span,
+                            from_template_of: None,
+                        };
                         self.construct_variant(&shape, ty, &name, None, span)
                     }
                     _ => {
@@ -114,17 +117,14 @@ impl Checker<'_> {
         }
     }
 
-    /// The view state `name` names here, unless a variable of that name hides it.
     pub(super) fn state_named(&self, name: &str) -> Option<StateRef> {
         let state = self.st.states.get(name)?;
         let (local, _) = self.lookup(name)?;
         (local == state.local).then(|| state.clone())
     }
 
-    /// The `on show(x: T): ...` statements of a view's body, and its body without them: what
-    /// the view answers when the window is asked to show an item of `T` — an item one thing
-    /// names, an agent's suggestion, or a capture staging what a scenario made. Everything else
-    /// stays where it is.
+    /// The `on show(x: T): ...` statements of a view's body, and its body without them: what the view
+    /// answers when the window is asked to show an item of `T`. Everything else stays where it is.
     pub(super) fn view_shows(body: &[UiStmt]) -> (Vec<UiStmt>, Vec<UiStmt>) {
         let mut shows = Vec::new();
         let mut rest = Vec::new();
@@ -137,9 +137,8 @@ impl Checker<'_> {
         (shows, rest)
     }
 
-    /// The function a view answers `on show(x: T): action` with: run with the item, in the
-    /// view's own state, and what it returns is applied there. `id` is the view's, and `name`
-    /// what it is called.
+    /// The function a view answers `on show(x: T): action` with: run with the item, in the view's own
+    /// state, and what it returns is applied there. `id` is the view's, and `name` what it is called.
     pub(super) fn run_show(
         &mut self,
         id: &str,
@@ -183,8 +182,8 @@ impl Checker<'_> {
         };
         let types = self.st.types.clone();
         let ty = self.type_in(written, &types);
-        // The item's type as the runtime knows a resource's: the declaration's id, which is what
-        // a resource reference carries.
+        // The item's type as the runtime knows a resource's: the declaration's id, which is what a
+        // resource reference carries.
         let shown = match &ty {
             Ty::Record(key) => self.env.type_info(key).map(|info| info.id.clone()),
             _ => None,
@@ -203,17 +202,18 @@ impl Checker<'_> {
             ty: ty.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         };
-        // The handler runs in a frame of its own, as an argument computed from view state does:
-        // it reads the view's state, and what it applies changes it.
+        // The handler runs in a frame of its own, as an argument computed from view state does: it reads
+        // the view's state, and what it applies changes it.
         let outer = std::mem::take(&mut self.st);
         self.begin(Ctx::View, std::slice::from_ref(&item), Ty::Action, id);
         self.st.ns.clone_from(&outer.ns);
         self.st.types.clone_from(&outer.types);
         self.at = self.outer_at;
-        // The state the view declares, read from its slots: this frame has the item and no view
-        // around it, so a default that reads one of the view's parameters is not its to compute.
+        // The state the view declares, read from its slots: this frame has the item and no view around it,
+        // so a default that reads one of the view's parameters is not its to compute.
         self.state_slots(name, body, Some(params));
         if !ty.is_error() {
             let act = self.expr_as(action, &Ty::Action);
@@ -238,7 +238,6 @@ impl Checker<'_> {
         ));
     }
 
-    /// The names of the view state in scope, for messages.
     pub(super) fn state_names(&self) -> String {
         let mut names: Vec<&str> = self.st.states.keys().map(String::as_str).collect();
         names.sort_unstable();
@@ -249,8 +248,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Lowers a whole view body and returns its root node. A body of `let`s and one call has
-    /// that call as its root.
+    /// Lowers a whole view body and returns its root node. A body of `let`s and one call has that call as
+    /// its root.
     pub(super) fn view_body(&mut self, body: &[UiStmt]) {
         let lets_then_call = match body.split_last() {
             Some((
@@ -298,7 +297,7 @@ impl Checker<'_> {
                         None => self.expr(value, None),
                     };
                     let bound = v.ty.clone();
-                    self.bind_let(&name.name, bound, v);
+                    self.bind_let(&name.name, bound, v, value);
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);
@@ -384,8 +383,8 @@ impl Checker<'_> {
         }
     }
 
-    /// A loop whose items get keys built from the item's identity (a record's reference id,
-    /// or the index for plain values).
+    /// A loop whose items get keys built from the item's identity (a record's reference id, or the index
+    /// for plain values).
     fn ui_for(&mut self, var: &str, iter: &ast::Expr, body: &[UiStmt], parent: LocalId) {
         let list = self.expr(iter, None);
         let Some(elem) = self.element_of(&list.ty, iter.span) else {
@@ -463,7 +462,6 @@ impl Checker<'_> {
         }
     }
 
-    /// The name of the view being checked, for anchor lookups.
     pub(super) fn view_name(&self) -> String {
         if let Some(owner) = &self.st.owner_view {
             return owner.clone();
@@ -483,8 +481,7 @@ impl Checker<'_> {
             _ => (&c.call, &[]),
         };
         let span = c.call.span;
-        // A template's parameter that is a view, or a template: they place their nodes
-        // themselves.
+        // A template's parameter that is a view, or a template: they place their nodes themselves.
         if let ExprKind::Ident(name) = &callee.kind
             && let Some(m) = self.st.macros.get(name).cloned()
             && !matches!(m, super::template::Macro::State(_))
@@ -574,7 +571,13 @@ impl Checker<'_> {
                 let path = dotted(base).unwrap_or_default().join(".");
                 let found = env
                     .find_import(&path)
-                    .and_then(|i| env.foreign_callable(&i.app, &name.name))
+                    .and_then(|i| {
+                        env.foreign_callable_marked(
+                            &i.app,
+                            &name.name,
+                            name.from_template_of.as_deref(),
+                        )
+                    })
                     .cloned();
                 match found {
                     Some(v) => self.view_call(&v, c, args, span),
@@ -637,7 +640,6 @@ impl Checker<'_> {
         node
     }
 
-    /// A node local for statements that failed to check, so lowering can go on.
     pub(super) fn dead_node(&mut self) -> LocalId {
         self.fresh(Ty::Error)
     }
@@ -684,8 +686,8 @@ impl Checker<'_> {
         n
     }
 
-    /// The people a rich input's `@` drawer offers after the conversation's own, which no view
-    /// declares: the system gives every rich input its `people`.
+    /// The people a rich input's `@` drawer offers after the conversation's own, which no view declares:
+    /// the system gives every rich input its `people`.
     pub(super) fn drawer_props(&mut self, n: LocalId) {
         let subject = self
             .st
@@ -700,13 +702,12 @@ impl Checker<'_> {
         )));
     }
 
-    /// The statements of a primitive's block, as children of `n`.
     pub(super) fn child_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
         self.child_block_of(prim, block, n, false);
     }
 
-    /// The statements of a block, as children of `n`; `parts` when they are parts of the
-    /// component `n` is (a named slot's).
+    /// The statements of a block, as children of `n`; `parts` when they are parts of the component `n` is
+    /// (a named slot's).
     pub(super) fn child_block_of(
         &mut self,
         prim: &'static str,
@@ -746,8 +747,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of
-    /// the primitive's own (`page(full)`).
+    /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of the primitive's
+    /// own (`page(full)`).
     pub(super) fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
         let name = match &e.kind {
             ExprKind::Ident(n) => n,
@@ -887,8 +888,8 @@ impl Checker<'_> {
         }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
-            // A union's value draws through the view its own type has: a row view when the
-            // `show` asks for one (`show(x, row: true)`), as a list of a union draws its rows.
+            // A union's value draws through the view its own type has: a row view when the `show` asks for
+            // one (`show(x, row: true)`).
             let drawn = match &v.ty {
                 Ty::Record(_) | Ty::Error => true,
                 Ty::Union(keys) => keys.iter().all(|key| self.env.row_view(key).is_some()),
@@ -927,8 +928,6 @@ impl Checker<'_> {
         self.apply_arg(n, p.name, &name, &a.value);
     }
 
-    /// Lowers one named argument of the UI call `prim` (empty for a view call) to its host
-    /// call.
     pub(super) fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if let Some(kind) = prims::arg_choice(prim, name) {
@@ -968,8 +967,8 @@ impl Checker<'_> {
         }
     }
 
-    /// An option of a UI call that takes a built-in enum (`gap: .section`): the property holds
-    /// the variant's name.
+    /// An option of a UI call that takes a built-in enum (`gap: .section`): the property holds the
+    /// variant's name.
     fn choice_arg(&mut self, node: Ex, kind: &'static str, name: &str, value: &ast::Expr) {
         if let ExprKind::Ident(word) = &value.kind
             && self.lookup(word).is_none()
@@ -1004,8 +1003,8 @@ impl Checker<'_> {
         )));
     }
 
-    /// A Date or a Time, or an Option of one, as the ISO text a UI prop holds (empty for
-    /// `.none`), and `"date"` or `"time"`; `None` for any other value.
+    /// A Date or a Time, or an Option of one, as the ISO text a UI prop holds (empty for `.none`), and
+    /// `"date"` or `"time"`; `None` for any other value.
     pub(super) fn dated(&mut self, v: Ex) -> Result<(Ex, &'static str), Ex> {
         let kind = |t: &Ty| match t {
             Ty::Date => Some("date"),
@@ -1037,8 +1036,8 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(vec![Stmt::Set(tmp, v)], Box::new(pick)), Ty::Text)
     }
 
-    /// Sets the prop `name`. A Date or a Time is its ISO text, and the sibling prop
-    /// `<name>:as` says which (`"date"` or `"time"`), for the host to format it.
+    /// Sets the prop `name`. A Date or a Time is its ISO text, and the sibling prop `<name>:as` says which
+    /// (`"date"` or `"time"`), for the host to format it.
     pub(super) fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
         let v = match self.dated(v) {
             Ok((text, kind)) => {
@@ -1078,8 +1077,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Sets the prop `name` to the text `text`, and nothing of what the text is: a companion of
-    /// a prop (`meta:time`) is read beside the prop it completes, never formatted on its own.
+    /// Sets the prop `name` to the text `text`, and nothing of what the text is: a companion of a prop
+    /// (`meta:time`) is read beside the prop it completes, never formatted on its own.
     pub(super) fn prop_text(&mut self, node: Ex, name: &str, text: Ex) {
         self.emit(Stmt::Eval(Ex::host(
             Imp::UiPropH,
@@ -1088,8 +1087,8 @@ impl Checker<'_> {
         )));
     }
 
-    /// `bind:` to a field or view state whose type is one of `allowed`, or — with `enum_case` —
-    /// of whichever enum the field declares.
+    /// `bind:` to a field or view state whose type is one of `allowed`, or — with `enum_case` — of
+    /// whichever enum the field declares.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
@@ -1193,10 +1192,9 @@ impl Checker<'_> {
             vec![node.clone(), b, Ex::str(&f.id)],
             Ty::Unit,
         )));
-        // A control the description declares `title` on draws the resource's title when it binds
-        // the field the type is named by: a document's large title, as TextInput does. A
-        // control with a placeholder takes it from the type, which says once what one of its
-        // records is called while its title is empty, so an app writes those words on its type.
+        // A control the description declares `title` on draws the resource's title when it binds the field
+        // the type is named by. A control with a placeholder takes it from the type, which says once what
+        // one of its records is called while its title is empty.
         let named = self
             .env
             .type_info(&key)
@@ -1230,8 +1228,8 @@ impl Checker<'_> {
         Some(f.ty.clone())
     }
 
-    /// A call of a view: the caller wraps the result in a node keyed by the call site, so two
-    /// calls of the same view never share keys.
+    /// A call of a view: the caller wraps the result in a node keyed by the call site, so two calls of the
+    /// same view never share keys.
     fn view_call(&mut self, v: &Callable, c: &UiCall, args: &[ast::Arg], span: Span) -> LocalId {
         if v.kind != CKind::View {
             self.err("E061", span, format!("`{}` is {} {}, not a view or a UI primitive; an action goes in an event: `on: {}(...)`", v.name, super::expr::article(v.kind.word()), v.kind.word(), v.name));
@@ -1248,8 +1246,8 @@ impl Checker<'_> {
             );
         }
         let sig = v.signature(&self.env.app);
-        // Sizing and placement arguments (`fill`, `min:`, `at:`, ...) belong to the node the
-        // call is wrapped in; the rest are the view's parameters.
+        // Sizing and placement arguments (`fill`, `min:`, `at:`, ...) belong to the node the call is wrapped
+        // in; the rest are the view's parameters.
         let is_node_arg = |this: &Self, a: &ast::Arg| match &a.name {
             Some(n) => {
                 prims::NODE_ARGS.contains(&n.name.as_str())
@@ -1260,9 +1258,8 @@ impl Checker<'_> {
         let (node_args, param_args): (Vec<&ast::Arg>, Vec<&ast::Arg>) =
             args.iter().partition(|a| is_node_arg(self, a));
         let param_args: Vec<ast::Arg> = param_args.into_iter().cloned().collect();
-        // The literals a view's text parameters show are the caller's messages (i18n.md §2),
-        // as a component's are: what `std.composer(draft, "Message #{c.name}", send)` puts
-        // over the field is the calling view's words, translated with it.
+        // The literals a view's text parameters show are the caller's messages (i18n.md §2), as a
+        // component's are.
         let mut positional = 0usize;
         for a in &param_args {
             let param = match &a.name {
@@ -1292,11 +1289,10 @@ impl Checker<'_> {
         node
     }
 
-    /// A view call is its own boundary: a node of kind `view:<app>:<view id>` whose arguments
-    /// are properties named `arg.<name>`, which the host renders by calling the view, and renders
-    /// again only when what that view read changed or its arguments did. A view that takes a
-    /// `View` (content built by the caller) is inlined instead: a node handle does not outlive
-    /// the caller's run.
+    /// A view call is its own boundary: a node of kind `view:<app>:<view id>` whose arguments are
+    /// properties named `arg.<name>`, which the host renders by calling the view, and renders again only
+    /// when what that view read changed or its arguments did. A view that takes a `View` is inlined
+    /// instead: a node handle does not outlive the caller's run.
     pub(super) fn view_node(
         &mut self,
         v: &Callable,
@@ -1348,7 +1344,6 @@ impl Checker<'_> {
     }
 }
 
-/// What replaced a primitive that is gone, for its error.
 fn removed_prim(name: &str) -> Option<&'static str> {
     Some(match name {
         "heading" => {
@@ -1368,7 +1363,6 @@ fn removed_prim(name: &str) -> Option<&'static str> {
     })
 }
 
-/// What replaced an argument that is gone, for its error.
 pub(super) fn removed_arg(prim: &str, arg: &str) -> Option<&'static str> {
     Some(match (prim, arg) {
         ("text" | "Text", "style") => {
@@ -1384,8 +1378,8 @@ pub(super) fn removed_arg(prim: &str, arg: &str) -> Option<&'static str> {
     })
 }
 
-/// Whether `e` names any of `names`: a default that reads the view's parameters is the render's
-/// to compute, and no frame around it can.
+/// Whether `e` names any of `names`: a default that reads the view's parameters is the render's to
+/// compute, and no frame around it can.
 fn names_any(e: &ast::Expr, names: &BTreeSet<String>) -> bool {
     let mut found = BTreeSet::new();
     super::boundary::names_in(e, &mut found);

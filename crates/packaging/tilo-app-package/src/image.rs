@@ -1,14 +1,4 @@
 //! Environment images: `env-runtime` and `tool` packages.
-//!
-//! An image is a directory tree that becomes part of an environment's `/usr`
-//! and `/etc`. A payload [`Collection`] names regular files only, so the
-//! rest of a tree — which files are executable, its symbolic links and its
-//! empty directories — travels in one more payload file, [`TREE_FILE`], at
-//! the root of the payload. Being a payload file, it is covered by the
-//! collection hash and so by the publisher's signature.
-//!
-//! [`seal_image`] turns a directory into a signed image; whoever
-//! materialises one ([`TreeSpec::apply`]) recreates the tree exactly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,7 +16,6 @@ use crate::package::is_safe_path;
 /// a regular file's bytes.
 pub const TREE_FILE: &str = ".tilo-tree.toml";
 
-/// Why an image could not be sealed or its tree is malformed.
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
     #[error("{0} is not an image kind; use env-runtime or tool")]
@@ -49,14 +38,12 @@ pub enum ImageError {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TreeSpec {
-    /// Regular files materialised with their execute bits set.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub executable: BTreeSet<String>,
     /// Symbolic links, path → target, created verbatim. A target is read
     /// inside the environment, never on the host.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub symlinks: BTreeMap<String, String>,
-    /// Directories that hold nothing else in the payload.
     #[serde(
         default,
         rename = "empty-dirs",
@@ -238,20 +225,14 @@ fn symlink(_target: &str, link: &Path) -> std::io::Result<()> {
     ))
 }
 
-/// What an image is, beyond its tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageSpec {
-    /// [`Kind::EnvRuntime`] or [`Kind::Tool`].
     pub kind: Kind,
-    /// Reverse-DNS package id, such as `so.tilo.env-runtime`.
     pub id: String,
-    /// Semver of this build.
     pub version: String,
     /// Display name, when the id's trailing component is not enough.
     pub name: Option<String>,
-    /// The architecture the image's binaries run on.
     pub arch: Arch,
-    /// For a tool: the env-runtime package it was built on.
     pub runtime: Option<PackageId>,
     pub packages: Vec<String>,
 }

@@ -1,18 +1,7 @@
-//! A control hint calling for attention, showing its gesture, and
-//! acknowledging that it was done.
-//!
-//! The one motion in the library that is meant to be noticed: a hint comes
-//! once, at the moment its control is useful, so it arrives with a spring
-//! that overshoots a little and a single glow pulse, where routine motion
-//! never bounces. Its picture loops the gesture it teaches a few times,
-//! then holds its resting pose: a hint left on screen draws no more frames.
-//! When the person does it, a check is drawn, the card folds into a dot and
-//! the dot drifts to where hints are kept (the person's own menu).
-//!
-//! Every phase is a pure function of the instant it began, so the owner
-//! keeps no motion state. Under reduced motion nothing moves: the card and
-//! its check fade at `fast`, the picture holds its resting pose, and the
-//! dot does not travel.
+//! A control hint calling for attention, showing its gesture, and acknowledging that it was done. The
+//! one motion in the library that is meant to be noticed: a hint comes once, at the moment its control
+//! is useful, so it arrives with a spring that overshoots a little and a single glow pulse, where
+//! routine motion never bounces.
 
 use super::named::{stage, unit_opacity};
 use super::spring::SpringSpec;
@@ -29,11 +18,9 @@ pub struct Arrival {
     pub scale: f64,
     /// Opacity of the whole card.
     pub opacity: f32,
-    /// How far the card still stands back from its resting place, toward
-    /// its anchor, in px.
+    /// How far the card still stands back from its resting place, toward its anchor, in px.
     pub approach: f64,
-    /// The single glow pulse: how far it has spread (`0..=1`) and how
-    /// strong it is.
+    /// The single glow pulse: how far it has spread (`0..=1`) and how strong it is.
     pub pulse: Option<(f64, f32)>,
 }
 
@@ -60,48 +47,38 @@ impl Beckon {
         response: 0.42,
         damping: 0.62,
     };
-    /// How small the card starts, about its anchor side.
     const ARRIVE_FROM_SCALE: f64 = 0.72;
     /// How far back from its anchor it starts, in px.
     const ARRIVE_FROM_PX: f64 = 14.0;
-    /// The glow pulse spreading out from the card, once.
     const PULSE: SpringSpec = SpringSpec {
         response: 0.7,
         damping: 1.0,
     };
-    /// When the pulse leaves, after the card began to arrive.
     const PULSE_DELAY: Duration = Duration::from_millis(140);
-    /// The pulse is gone once it has spread this far.
     const PULSE_END: f64 = 0.97;
     /// One loop of the picture's gesture.
     pub const GESTURE_PERIOD: Duration = Duration::from_millis(2600);
-    /// Where in its loop the picture rests when motion may not loop: the
-    /// gesture well under way, so the still picture says what to do.
+    /// Where in its loop the picture rests when motion may not loop: the gesture well under way, so the
+    /// still picture says what to do.
     pub const RESTING_PHASE: f64 = 0.7;
-    /// How many times the picture shows its gesture before it rests: the
-    /// last loop stops at [`Self::RESTING_PHASE`], where it rests.
+    /// How many times the picture shows its gesture before it rests: the last loop stops at
+    /// [`Self::RESTING_PHASE`], where it rests.
     pub const GESTURE_LOOPS: u32 = 3;
-    /// The check being drawn.
     const CHECK: SpringSpec = SpringSpec {
         response: 0.34,
         damping: 1.0,
     };
-    /// How much the card lifts as its check lands.
     const POP: f64 = 0.05;
-    /// When the card starts folding, after the gesture was done: the check
-    /// has been seen.
     const FOLD_AT: Duration = Duration::from_millis(620);
     const FOLD: SpringSpec = SpringSpec {
         response: 0.3,
         damping: 1.0,
     };
-    /// When the dot leaves for where hints are kept.
     const DRIFT_AT: Duration = Duration::from_millis(820);
     const DRIFT: SpringSpec = SpringSpec {
         response: 0.62,
         damping: 1.0,
     };
-    /// When the dot lands and rings once.
     const LAND_AT: Duration = Duration::from_millis(1260);
     const LAND: SpringSpec = SpringSpec {
         response: 0.6,
@@ -109,7 +86,6 @@ impl Beckon {
     };
     /// The whole acknowledgement, after which nothing is drawn.
     pub const COMPLETION: Duration = Duration::from_millis(1800);
-    /// Under reduced motion: the check holds this long, then the card fades.
     const REDUCED_HOLD: Duration = Duration::from_millis(700);
 
     /// The card `age` after it began to arrive.
@@ -129,7 +105,6 @@ impl Beckon {
         }
         let secs = age.as_secs_f64();
         let travel = progress(Self::ARRIVE, secs);
-        // Opacity leads: whole by the time the card first reaches its size.
         let opacity = unit_opacity(stage(progress(Self::CHECK, secs), 0.0, 0.6));
         let pulse = age.checked_sub(Self::PULSE_DELAY).and_then(|since| {
             let spread = progress(Self::PULSE, since.as_secs_f64());
@@ -143,9 +118,8 @@ impl Beckon {
         }
     }
 
-    /// Where the picture is in its gesture's loop, `0..1`, `age` after the
-    /// card began to arrive; [`Self::RESTING_PHASE`] where motion may not
-    /// loop.
+    /// Where the picture is in its gesture's loop, `0..1`, `age` after the card began to arrive;
+    /// [`Self::RESTING_PHASE`] where motion may not loop.
     #[must_use]
     pub fn gesture_phase(age: Duration, motion: EffectiveMotion) -> f64 {
         if !motion.loops() || super::clock::testing::is_settled() || age >= Self::loops_end() {
@@ -154,23 +128,22 @@ impl Beckon {
         (age.as_secs_f64() / Self::GESTURE_PERIOD.as_secs_f64()).fract()
     }
 
-    /// How long after the card began to arrive its picture stops looping:
-    /// [`Self::GESTURE_LOOPS`] loops, the last ending at its resting pose.
+    /// How long after the card began to arrive its picture stops looping: [`Self::GESTURE_LOOPS`]
+    /// loops, the last ending at its resting pose.
     fn loops_end() -> Duration {
         Self::GESTURE_PERIOD.mul_f64(f64::from(Self::GESTURE_LOOPS - 1) + Self::RESTING_PHASE)
     }
 
-    /// How far one stroke of the picture's gesture, which runs over
-    /// `from..to` of its loop, has got at `phase`: `0..=1`, starting and
-    /// stopping gently as a hand does.
+    /// How far one stroke of the picture's gesture, which runs over `from..to` of its loop, has got at
+    /// `phase`: `0..=1`, starting and stopping gently as a hand does.
     #[must_use]
     pub fn stroke(phase: f64, from: f64, to: f64) -> f64 {
         let t = stage(phase, from, to);
         t * t * (3.0 - 2.0 * t)
     }
 
-    /// The card going away unanswered, `age` after it began to: it fades
-    /// where it is, at `base` (`fast` under reduced motion).
+    /// The card going away unanswered, `age` after it began to: it fades where it is, at `base` (`fast`
+    /// under reduced motion).
     #[must_use]
     pub fn leaving(age: Duration, motion: EffectiveMotion) -> f32 {
         if super::clock::testing::is_settled() {
@@ -196,8 +169,7 @@ impl Beckon {
         }
     }
 
-    /// The acknowledgement, `age` after the gesture was done; `None` once it
-    /// is over.
+    /// The acknowledgement, `age` after the gesture was done; `None` once it is over.
     #[must_use]
     pub fn completion(age: Duration, motion: EffectiveMotion) -> Option<Completion> {
         if age >= Self::COMPLETION || super::clock::testing::is_settled() {
@@ -242,8 +214,8 @@ impl Beckon {
         })
     }
 
-    /// When a hint shown since `shown` next needs a frame: soon while it
-    /// arrives or its picture loops, never once it rests still.
+    /// When a hint shown since `shown` next needs a frame: soon while it arrives or its picture loops,
+    /// never once it rests still.
     #[must_use]
     pub fn next_frame(shown: Instant, now: Instant, motion: EffectiveMotion) -> Option<Instant> {
         let age = now.saturating_duration_since(shown);
@@ -266,14 +238,12 @@ impl Arrival {
     }
 }
 
-/// A run from rest on `spring`, `secs` in: `0` to `1`, past `1` where the
-/// spring overshoots.
+/// A run from rest on `spring`, `secs` in: `0` to `1`, past `1` where the spring overshoots.
 fn progress(spring: SpringSpec, secs: f64) -> f64 {
     1.0 - spring.state(1.0, 0.0, secs).0
 }
 
-/// How far through `span` `age` is, `0..=1`, eased as a critically damped
-/// spring settling over `span`.
+/// How far through `span` `age` is, `0..=1`, eased as a critically damped spring settling over `span`.
 fn fraction(age: Duration, span: Duration) -> f64 {
     if span.is_zero() {
         return 1.0;
@@ -332,8 +302,8 @@ mod tests {
         assert!(c.drift.abs() < f64::EPSILON && c.fold.abs() < f64::EPSILON);
     }
 
-    /// The picture shows its gesture a few times, comes to rest where its
-    /// last loop stops, and then asks for no frames.
+    /// The picture shows its gesture a few times, comes to rest where its last loop stops, and then
+    /// asks for no frames.
     #[test]
     fn the_picture_loops_a_few_times_then_rests() {
         let shown = crate::time::now();

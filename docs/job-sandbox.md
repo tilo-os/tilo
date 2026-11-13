@@ -335,10 +335,9 @@ starts:
     cluster's pod and service ranges the caller names. DNS goes to the
     worker's stub inside the namespace, which forwards every name.
 
-The grant grammar both modes share used to live in `collab-types`, which pulls
-in Tilo's identity and wire types. It now has a crate of its own,
-`tilo-net-grants`, that `collab-types` re-exports. A caller can depend on egress
-without the collaboration stack.
+The grant grammar both modes share is its own crate, `tilo-net-grants`, which
+`collab-types` re-exports, so a caller gets egress without the collaboration
+stack.
 
 ### Micro-VM steps
 

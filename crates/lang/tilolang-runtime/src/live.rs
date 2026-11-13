@@ -19,7 +19,7 @@ use crate::handles::Retained;
 use crate::ids::Principal;
 use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget, VirtualRows};
 use crate::space::Space;
-use crate::store::{ANY_FIELD, ChangeSummary, Splice, doc_of};
+use crate::store::{ANY_FIELD, ChangeSummary, FieldKey, Splice, doc_of};
 use crate::value::Value;
 use crate::view::{Patch, UiNode, VirtualLists, diff_at};
 
@@ -57,10 +57,9 @@ pub(crate) struct Bound {
     /// does not depend on which items those have.
     pub loops: Vec<Rc<LoopRows>>,
     pub space_reads: Vec<(String, f64)>,
-    /// The participants whose names it asked the window for (`who.name()`).
-    pub name_reads: Vec<Principal>,
-    /// Whether it wrote a day or a time of day in the person's format.
-    pub format_reads: bool,
+    /// Whether it showed something only the window knows: a participant's name, a day or a time
+    /// of day in the person's formats, a word in the language their window speaks.
+    pub person_reads: bool,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
     /// When the time it read next reads differently (seconds since 1970, UTC): it runs again
@@ -92,8 +91,7 @@ impl Bound {
             colls: Vec::new(),
             loops: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
@@ -130,6 +128,33 @@ fn item_in(core: &Core, resource: &str) -> Option<(String, String, String)> {
     Some((holder.id_string(), field, item))
 }
 
+/// What the change `change` put into the collection `field` of `resource` that was in none of
+/// its filtered views before: every item, when putting items in is all it did to it, or `item`
+/// alone, when it put that in. `None` when the store did not say how the collection moved.
+fn joined_items<'a>(
+    change: &'a ChangeSummary,
+    (resource, field): (&str, &str),
+    item: Option<&'a str>,
+) -> Option<BTreeSet<&'a str>> {
+    let key = FieldKey {
+        resource: resource.to_owned(),
+        field: field.to_owned(),
+    };
+    let splices = change.listing(&key)?;
+    let put = |wanted: &str, insert: bool| {
+        splices.iter().any(|splice| {
+            matches!(splice, Splice::Insert { .. }) == insert && splice.item() == wanted
+        })
+    };
+    match item {
+        Some(item) => (put(item, true) && !put(item, false)).then(|| BTreeSet::from([item])),
+        None => splices
+            .iter()
+            .map(|splice| matches!(splice, Splice::Insert { .. }).then(|| splice.item()))
+            .collect(),
+    }
+}
+
 /// Which boundaries read what.
 ///
 /// A view over a list reads a field of every item, so a boundary can hold tens of thousands of
@@ -146,10 +171,8 @@ struct Index {
     docs: FastMap<String, HashSet<BoundId>>,
     states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
-    /// The boundaries that read a name (`who.name()`), and those that write a day or a time of
-    /// day in the person's format: what the window says, where a field is what the record says.
-    names: HashSet<BoundId>,
-    formats: HashSet<BoundId>,
+    /// The boundaries that show something only the window knows: a name, a format, a word.
+    people: HashSet<BoundId>,
     /// The boundaries that read the time, by when it next reads differently for them: the
     /// first is when the view next needs to run without anything else changing.
     times: BTreeSet<(i64, BoundId)>,
@@ -200,11 +223,8 @@ impl Index {
         if !b.space_reads.is_empty() {
             self.space.insert(id);
         }
-        if !b.name_reads.is_empty() {
-            self.names.insert(id);
-        }
-        if b.format_reads {
-            self.formats.insert(id);
+        if b.person_reads {
+            self.people.insert(id);
         }
         if let Some(at) = b.changes_at {
             self.times.insert((at, id));
@@ -246,8 +266,7 @@ impl Index {
             drop_from(&mut self.states, key, id);
         }
         self.space.remove(&id);
-        self.names.remove(&id);
-        self.formats.remove(&id);
+        self.people.remove(&id);
         if let Some(at) = b.changes_at {
             self.times.remove(&(at, id));
         }
@@ -369,6 +388,76 @@ struct Reach {
     mine: std::collections::BTreeSet<String>,
 }
 
+/// What the changes heard together had checked of the collections boundaries saw: each listing
+/// read once for every boundary that saw it, and each thing a boundary saw checked once against
+/// it, however many fields of the changes reach it.
+#[derive(Default)]
+struct CollChecks {
+    listings: Vec<(Rc<crate::value::CollRef>, Option<Rc<crate::store::Listing>>)>,
+    /// Whether what each boundary saw of a collection, by the boundary and where it is among
+    /// what it saw, no longer holds.
+    seen: HashMap<(BoundId, usize), bool>,
+    /// The fields of items read to check filters, by the item and the field: each read once
+    /// however many views filter by it (`None` for one the store could not read).
+    read: HashMap<(String, String), Option<crate::store::Lit>>,
+}
+
+impl CollChecks {
+    /// Whether the filter of `coll` holds of none of `items`, read as the store holds them now:
+    /// items that were not in its collection before are then not in it either. A filter that
+    /// reads the time or the person looking, or that cannot be read of an item, is not answered
+    /// here.
+    fn none_held(
+        &mut self,
+        core: &Core,
+        coll: &crate::value::CollRef,
+        items: &BTreeSet<&str>,
+    ) -> bool {
+        let Some(pred) = coll.filter.as_deref() else {
+            return false;
+        };
+        if coll.item.is_empty() || pred.reads_clock() || pred.reads_viewer() {
+            return false;
+        }
+        let store = core.store.borrow();
+        items.iter().all(|item| {
+            let target = coll.target.item(item, coll.item.clone());
+            let mut lit = |read: &crate::store::FieldRead| {
+                self.read
+                    .entry((target.id_string(), read.spec.id.clone()))
+                    .or_insert_with(|| store.field_lit(&target, read).ok())
+                    .clone()
+                    .ok_or_else(|| crate::store::StoreError::Invalid(read.spec.id.clone()))
+            };
+            matches!(pred.eval(&mut lit), Ok(false))
+        })
+    }
+
+    /// Whether `seen`, what the boundary `id` saw of a collection at `at` among what it saw, no
+    /// longer holds in the store.
+    fn stale(&mut self, core: &Core, id: (BoundId, usize), seen: &CollSeen) -> bool {
+        if let Some(stale) = self.seen.get(&id) {
+            return *stale;
+        }
+        let at = self
+            .listings
+            .iter()
+            .position(|(held, _)| seen.is_of(held))
+            .unwrap_or_else(|| {
+                let listing = crate::colls::listing_of(&**core.store.borrow(), &seen.coll);
+                self.listings.push((Rc::clone(&seen.coll), listing.ok()));
+                self.listings.len().saturating_sub(1)
+            });
+        let stale = !self
+            .listings
+            .get(at)
+            .and_then(|(_, listing)| listing.as_ref())
+            .is_some_and(|listing| seen.holds(listing));
+        self.seen.insert(id, stale);
+        stale
+    }
+}
+
 /// What a view instance counts, for tests and the benchmark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LiveStats {
@@ -452,8 +541,7 @@ impl Live {
             colls: Vec::new(),
             loops: Vec::new(),
             space_reads: Vec::new(),
-            name_reads: Vec::new(),
-            format_reads: false,
+            person_reads: false,
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
@@ -580,7 +668,7 @@ impl Live {
                     b.colls.len(),
                     b.loops.len(),
                     b.space_reads.len(),
-                    b.name_reads.len(),
+                    usize::from(b.person_reads),
                     b.state_reads.len(),
                 ]
                 .into_iter()
@@ -633,7 +721,7 @@ impl Live {
     /// something of a collection it changed that is no longer so, and the steps the rows of
     /// loops over a collection it changed take. Rows whose steps the store could not tell are
     /// built again by their boundary.
-    fn reached(&self, core: &Core, change: &ChangeSummary) -> Reach {
+    fn reached(&self, core: &Core, change: &ChangeSummary, checked: &mut CollChecks) -> Reach {
         let mut reach = Reach::default();
         // What the person looking did in this window, as opposed to anyone else's change:
         // the rows of a list they changed themselves linger ([`crate::live::virtual_rows`]).
@@ -669,7 +757,14 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            self.reach_colls(core, &key.resource, &key.field, false, &mut reach);
+            let joined = joined_items(change, (&key.resource, &key.field), None);
+            self.reach_colls(
+                core,
+                (&key.resource, &key.field),
+                (None, joined.as_ref()),
+                checked,
+                &mut reach,
+            );
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
@@ -729,40 +824,68 @@ impl Live {
             // view of it, and where in a sorted one: the readers of those views look again,
             // and the rows of a virtual list over one find where the item is now.
             if let Some((parent, coll, item)) = item_in(core, &key.resource) {
-                let (parent, coll) = (parent.as_str(), coll.as_str());
-                self.reach_colls(core, parent, coll, true, &mut reach);
-                for (id, field) in self.index.loop_holders(parent, coll) {
-                    let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
-                    for rows in held
-                        .filter(|rows| rows.coll.field == field)
-                        .filter(|rows| rows.coll.reads_field(&key.field))
-                    {
-                        if rows.coll.derived() && self.lists.contains_key(&rows.parent) {
-                            reach.steps.push(Pending {
-                                holder: id,
-                                rows: Rc::clone(rows),
-                                steps: Steps::Moved(BTreeSet::from([item.clone()])),
-                                mine,
-                            });
-                        } else {
-                            reach.hit.push(id);
-                        }
-                    }
-                }
+                let at = (parent.as_str(), coll.as_str(), item.as_str());
+                self.reach_item(core, (change, &key.field, mine), at, checked, &mut reach);
             }
         }
         reach
     }
 
+    /// What a change of the field `field_of_item` of `item`, an item of the collection `coll` of
+    /// `parent`, reaches of the views of that collection: those that filter or order it by that
+    /// field ([`Self::reach_colls`]), and the rows of loops over it.
+    fn reach_item(
+        &self,
+        core: &Core,
+        (change, field_of_item, mine): (&ChangeSummary, &str, bool),
+        (parent, coll, item): (&str, &str, &str),
+        checked: &mut CollChecks,
+        reach: &mut Reach,
+    ) {
+        // An item that came into the collection with this change was in none of its
+        // filtered views before, whatever its fields were.
+        let joined = joined_items(change, (parent, coll), Some(item));
+        self.reach_colls(
+            core,
+            (parent, coll),
+            (Some(field_of_item), joined.as_ref()),
+            checked,
+            reach,
+        );
+        for (id, held_field) in self.index.loop_holders(parent, coll) {
+            let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
+            for rows in held
+                .filter(|rows| rows.coll.field == held_field)
+                .filter(|rows| rows.coll.reads_field(field_of_item))
+            {
+                if rows.coll.derived() && self.lists.contains_key(&rows.parent) {
+                    reach.steps.push(Pending {
+                        holder: id,
+                        rows: Rc::clone(rows),
+                        steps: Steps::Moved(BTreeSet::from([item.to_owned()])),
+                        mine,
+                    });
+                } else {
+                    reach.hit.push(id);
+                }
+            }
+        }
+    }
+
     /// The boundaries that saw something of the collection `field` of `resource` (or of any
-    /// collection of it, for [`ANY_FIELD`]) that no longer holds: of its filtered views alone
-    /// when `filtered`.
+    /// collection of it, for [`ANY_FIELD`]) that no longer holds. When only the field
+    /// `item_field` of one of its items changed, of the views of it whose filter or order reads
+    /// that field alone: no other view of it holds other items or orders them otherwise. When
+    /// what changed is items `joined` that were not in the collection before, of the filtered
+    /// views of it whose filter holds of one of them now: no other one lists them. What
+    /// `checked` holds was checked against the store as it is now by an earlier field of the same
+    /// changes, and is not checked again.
     fn reach_colls(
         &self,
         core: &Core,
-        resource: &str,
-        field: &str,
-        filtered: bool,
+        (resource, field): (&str, &str),
+        (item_field, joined): (Option<&str>, Option<&BTreeSet<&str>>),
+        checked: &mut CollChecks,
         reach: &mut Reach,
     ) {
         for (id, coll) in self.index.coll_readers(resource, field) {
@@ -772,46 +895,36 @@ impl Live {
             let stale = b
                 .colls
                 .iter()
-                .filter(|seen| seen.resource == resource && seen.coll.field == coll)
-                .filter(|seen| !filtered || seen.coll.derived())
-                .any(|seen| !seen.holds_now(core));
+                .enumerate()
+                .filter(|(_, seen)| seen.resource == resource && seen.coll.field == coll)
+                .filter(|(_, seen)| {
+                    item_field.is_none_or(|read| seen.coll.derived() && seen.coll.reads_field(read))
+                })
+                .any(|(at, seen)| {
+                    !joined.is_some_and(|items| checked.none_held(core, &seen.coll, items))
+                        && checked.stale(core, (id, at), seen)
+                });
             if stale {
                 reach.hit.push(id);
             }
         }
     }
 
-    /// Whether a change reaches some boundary or the rows of some loop.
-    pub fn reaches(&self, core: &Core, change: &ChangeSummary) -> bool {
-        let reach = self.reached(core, change);
-        !reach.hit.is_empty() || !reach.steps.is_empty()
-    }
-
-    /// Whether a view state slot some boundary read moved since.
-    pub fn states_moved(&self, core: &Core) -> bool {
-        let states = core.view_states.borrow();
-        if states.clock() == self.state_clock {
-            return false;
+    /// Mark the boundaries the changes `changes` reach, heard together: the store is as each of
+    /// them left it, so what one of them had checked of a collection holds for the rest.
+    pub fn absorb(&mut self, core: &Core, changes: &[ChangeSummary]) {
+        let mut checked = CollChecks::default();
+        for change in changes {
+            let reach = self.reached(core, change, &mut checked);
+            self.dirty.extend(reach.hit);
+            self.pending.extend(reach.steps);
+            self.mine_items.extend(reach.mine);
         }
-        self.index.states.iter().any(|(key, ids)| {
-            let now = states.generation(key);
-            ids.iter().any(|id| {
-                self.bound(*id).is_some_and(|b| {
-                    b.state_reads
-                        .iter()
-                        .any(|(k, seen)| k == key && *seen != now)
-                })
-            })
-        })
     }
 
-    /// Mark the boundaries a change reaches.
-    pub fn absorb(&mut self, core: &Core, change: &ChangeSummary) {
-        let reach = self.reached(core, change);
-
-        self.dirty.extend(reach.hit);
-        self.pending.extend(reach.steps);
-        self.mine_items.extend(reach.mine);
+    /// Whether a view state moved since the boundaries' states were last checked.
+    pub fn states_moved(&self, core: &Core) -> bool {
+        core.view_states.borrow().clock() != self.state_clock
     }
 
     /// Mark the boundaries whose view state moved since they read it.
@@ -889,17 +1002,11 @@ impl Live {
         }
     }
 
-    /// Mark the boundaries that read a name: the window calls a participant something else, and
-    /// the views showing a name show it again. A view that shows no name is not run.
-    pub fn names_moved(&mut self) {
-        let hit: Vec<BoundId> = self.index.names.iter().copied().collect();
-        self.dirty.extend(hit);
-    }
-
-    /// Mark the boundaries that write a day or a time of day in the person's format: they chose
-    /// another, and what shows one shows it again.
-    pub fn formats_moved(&mut self) {
-        let hit: Vec<BoundId> = self.index.formats.iter().copied().collect();
+    /// Mark the boundaries that show something only the window knows: the person chose another
+    /// language, another clock or another date style, or the window calls a participant
+    /// something else, and what shows one shows it again. A view that shows none is not run.
+    pub fn person_moved(&mut self) {
+        let hit: Vec<BoundId> = self.index.people.iter().copied().collect();
         self.dirty.extend(hit);
     }
 
@@ -994,8 +1101,7 @@ impl Live {
             reads,
             colls,
             space_reads,
-            name_reads,
-            format_reads,
+            person_reads,
             retained,
             state_reads,
             state_seen,
@@ -1012,8 +1118,7 @@ impl Live {
             b.colls = colls;
             b.loops = loops;
             b.space_reads = space_reads;
-            b.name_reads = name_reads;
-            b.format_reads = format_reads;
+            b.person_reads = person_reads;
             b.state_reads = state_reads;
             b.state_seen = state_seen;
             b.changes_at = changes_at;
@@ -1083,8 +1188,7 @@ impl Live {
             b.colls.clear();
             b.loops.clear();
             b.space_reads.clear();
-            b.name_reads.clear();
-            b.format_reads = false;
+            b.person_reads = false;
             b.state_reads.clear();
             b.changes_at = None;
             b.rendered = false;

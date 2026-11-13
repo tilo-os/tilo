@@ -1,7 +1,6 @@
-//! `--shots-live` and `--shots-live-pip`: the real Chromium engine over the
-//! real network, captured without a window. They cover the engine → frame →
-//! widget → offscreen-render pipeline that deterministic scenarios stand in
-//! for with the test engine.
+//! `--shots-live` and `--shots-live-pip`: the real Chromium engine over the real network,
+//! captured without a window, covering the engine to offscreen-render pipeline that
+//! deterministic scenarios stand in for with the test engine.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,7 +18,6 @@ use crate::BrowserWidget;
 use ui::lock::MutexRecover as _;
 use ui::widget::DrawChild;
 
-/// The page a live capture opens unless `TILO_BROWSER_LIVE_URL` names one.
 const DEFAULT_LIVE_URL: &str = "https://example.org";
 const LIVE_VIEWPORT: (u32, u32) = (1200, 720);
 
@@ -27,8 +25,8 @@ pub(crate) fn shots_live(out: &str) -> Result<(), String> {
     capture(out, false)
 }
 
-/// Capture the live page at `out` with Picture in Picture probed, writing
-/// the floating surface it asks for beside it.
+/// Capture the live page at `out` with Picture in Picture probed, writing the floating
+/// surface it asks for beside it.
 pub(crate) fn shots_live_pip(out: &str) -> Result<(), String> {
     capture(out, true)
 }
@@ -43,8 +41,7 @@ fn capture(out: &str, probe_pip: bool) -> Result<(), String> {
 pub(crate) struct PageState {
     uri: String,
     title: String,
-    /// The engine reported load completion. This is not an HTTP status check;
-    /// captures of error documents still require visual inspection.
+    /// The engine reported load completion; not an HTTP status check.
     loaded: bool,
     error: Option<String>,
 }
@@ -116,10 +113,8 @@ impl WebViewEngine for LiveProbe {
     }
 }
 
-/// `--shots-live`: real engine, real network. Boot Chromium, navigate, wait
-/// for the painted page at the web view's laid-out size, then render
-/// one frame to PNG — the same five-pass cycle as `render_shot_to_png`,
-/// with an engine-pumping wait between layout and draw.
+/// `--shots-live`: real engine, real network. Boot Chromium, navigate, wait for the painted
+/// page at the view's laid-out size, then render one frame to PNG.
 fn render_live_shot_to_png(
     url: &str,
     viewport: (u32, u32),
@@ -132,8 +127,8 @@ fn render_live_shot_to_png(
         .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
     let probe = LiveProbe::new(real_engine);
     let engine: SharedEngine = probe.clone();
-    // Keep capture chrome/session data isolated while using real maintained
-    // protection and the same WebViewEngine event/render pipeline as the app.
+    // Keep capture session data isolated while using the real protection and the same
+    // engine and render pipeline as the app.
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
         crate::blocker::user_scripts(),
@@ -152,10 +147,9 @@ fn render_live_shot_to_png(
     let state = ui::State::new();
     let root_obj = state.root.clone();
 
-    // Pump sync + layout until the engine has painted a frame at the
-    // web view's laid-out (physical) size — the first layout pass sends
-    // the Resize, subsequent frames arrive at the right dimensions.
-    // Then let the page settle briefly so late-loading content paints.
+    // Pump sync and layout until the engine has painted a frame at the web view's laid-out
+    // size: the first layout pass sends the Resize, later frames arrive at the right
+    // dimensions. Then let the page settle so late content paints.
     let deadline = ui::time::now() + Duration::from_secs(45);
     let mut sized_frame_seen_at: Option<Instant> = None;
     let mut pip_probe_started = false;
@@ -174,8 +168,8 @@ fn render_live_shot_to_png(
             &[child],
         )?;
         let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-        // SAFETY: this capture exclusively owns the widget and the exact live
-        // layout tree; neither changes between admission and measurement.
+        // SAFETY: this capture owns the widget and the live layout tree; neither changes
+        // between admission and measurement.
         unsafe {
             bindings.rebuild(&widget, &taffy, root, &node_map);
             ui::widget::compute_widget_layout(
@@ -211,17 +205,13 @@ fn render_live_shot_to_png(
                 .rgba
                 .chunks_exact(4)
                 .any(|px| px.last().is_some_and(|alpha| *alpha != 0));
-            // Wait for a painted frame at the requested viewport width
-            // (edge-to-edge web view, scale 1.0 → frame width ≈ w), so
-            // the layout-driven Resize has taken hold rather than the
-            // engine's 1024×768 default. Works for any width, wide or
-            // narrow.
+            // A frame at the requested viewport width means the layout-driven Resize took
+            // hold rather than the engine's own default.
             let sized = (f.width as i32 - w as i32).abs() <= 2;
             if painted && sized && page.loaded && page.uri.starts_with("http") {
                 let seen = *sized_frame_seen_at.get_or_insert_with(Instant::now);
-                // Settle long enough that a UA-driven reload (the mobile/
-                // desktop switch fires one on the first resize) completes
-                // over the network before we capture.
+                // Settle so a UA-driven reload on the first resize completes over the
+                // network before the capture.
                 if seen.elapsed() > Duration::from_secs(6) {
                     if probe_pip && !pip_probe_started {
                         widget.debug_request_picture_in_picture();

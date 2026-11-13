@@ -1,23 +1,4 @@
-//! Notifications pane — the editor for the **shared notification policy**.
-//!
-//! This panel edits [`crate::prefs::NotificationPrefs`], the `notifications`
-//! section of the person's settings. The compositor's notification layer
-//! reads that section when it decides whether to raise a banner, reveal its
-//! contents, sound it, or mirror it to the lock screen — so the toggles here
-//! are the single source of truth the rest of the system follows, exactly
-//! like Appearance owns the theme.
-//!
-//! The page is view code over that section ([`view`]); every control is a
-//! field edit of it, or its `mute-app` verb:
-//! - **Do Not Disturb** — master mute for banners and sounds.
-//! - **Show banners** — pop-up banners for incoming notifications.
-//! - **Show previews** — reveal the message body (off shows only the app name).
-//! - **Play sounds** — an audible cue when a notification arrives.
-//! - **Show on lock screen** — mirror notifications onto the lock screen.
-//! - **Focus** — a scheduled quiet period that only priority apps pierce.
-//! - **Per app** — overrides of the delivery choices for one verified app,
-//!   priority during focus, and a temporary mute. An app's rows are live rows
-//!   (`settings.notification-app:<id>`) offering the same edits bound to it.
+//! Notifications: the editor for the shared notification policy.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
@@ -44,7 +25,6 @@ use ui::storage::SettingsCache;
 
 crate::area::pane_area!(NotificationsArea);
 
-/// The window's [`NotificationsArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NotificationsArea> {
     app.areas().find()
 }
@@ -120,8 +100,6 @@ fn installed_notification_apps_from(
             apps.entry(id).or_insert_with(|| entry.name.clone());
         }
     }
-    // Preserve access to a rule when an app has just been uninstalled. It can
-    // be reset without trusting the sender-controlled notification app_name.
     for id in existing.keys().filter(|id| valid_app_id(id)) {
         apps.entry(id.clone())
             .or_insert_with(|| package_store::display_name_for_package_id(id));
@@ -134,7 +112,6 @@ fn installed_notification_apps_from(
     apps
 }
 
-/// One of an app's delivery choices a person turns on or off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppChoice {
     Banners,
@@ -146,7 +123,6 @@ enum AppChoice {
 }
 
 impl AppChoice {
-    /// Every choice, in the order an app's rules list them.
     const ALL: [Self; 6] = [
         Self::Banners,
         Self::Previews,
@@ -156,8 +132,6 @@ impl AppChoice {
         Self::PriorityContacts,
     ];
 
-    /// Whether the choice is on for an app with `rule`: its own override,
-    /// else the policy's.
     fn on(self, prefs: &NotificationPrefs, rule: &AppNotificationRule) -> bool {
         match self {
             Self::Banners => rule.banners.unwrap_or(prefs.show_banners),
@@ -169,8 +143,6 @@ impl AppChoice {
         }
     }
 
-    /// What it is called where an agent turns it on or off, and in the flip
-    /// a person presses.
     fn noun(self) -> String {
         t(match self {
             Self::Banners => "notif-choice-banners",
@@ -182,7 +154,6 @@ impl AppChoice {
         })
     }
 
-    /// The field of an app's rule it is, as its control's id ends.
     const fn field(self) -> &'static str {
         match self {
             Self::Banners => "banners",
@@ -194,7 +165,6 @@ impl AppChoice {
         }
     }
 
-    /// The catalogue key of its row's label; its line is `-desc`.
     const fn label(self) -> &'static str {
         match self {
             Self::Banners => "notif-app-banners",
@@ -206,9 +176,6 @@ impl AppChoice {
         }
     }
 
-    /// The field edit turning this choice of `app` on or off: the one field
-    /// of its rule, the rest untouched (a rule the app has none of yet
-    /// starts from the default).
     fn edit(self, app: &str, on: bool) -> tilo_resource::Edit<NotificationPrefs> {
         let rule = NotificationPrefs::paths().per_app.key(app);
         match self {
@@ -221,7 +188,6 @@ impl AppChoice {
         }
     }
 
-    /// The id a row offers this choice under.
     const fn id(self) -> &'static str {
         match self {
             Self::Banners => "set-app-banners",
@@ -234,16 +200,11 @@ impl AppChoice {
     }
 }
 
-/// What the notification area keeps for the window: the policy as last
-/// read, and the apps it lists.
 pub struct NotificationsArea {
-    /// The notification section's actions its rows offer.
     sections: Sections,
     prefs: RefCell<SettingsCache<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
-    /// The installed apps, read off the UI thread after the window's first
-    /// frame ([`Self::start_read`]).
     pub(crate) read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
     /// The rows, kept for the policy version and locale they show, until
     /// the first mute they show runs out.
@@ -251,8 +212,6 @@ pub struct NotificationsArea {
 }
 
 impl NotificationsArea {
-    /// The area over `cx`'s settings. A capture lists a fixed set of apps
-    /// rather than the ones this device has installed.
     pub fn new(cx: &AreaContext) -> Self {
         Self {
             sections: cx.sections.clone(),
@@ -266,8 +225,6 @@ impl NotificationsArea {
         }
     }
 
-    /// The apps whose notifications have rules: installed ones, and any
-    /// with a rule left behind.
     fn apps(&self) -> &[InstalledNotificationApp] {
         self.apps.get_or_init(|| {
             self.read
@@ -276,8 +233,6 @@ impl NotificationsArea {
         })
     }
 
-    /// The installed apps (every package manifest and desktop entry), or
-    /// the sample a capture lists.
     fn read_apps(
         sample: bool,
         per_app: &BTreeMap<String, AppNotificationRule>,
@@ -290,8 +245,6 @@ impl NotificationsArea {
         }
     }
 
-    /// Read the installed apps off the UI thread; `false` when they have
-    /// been read or are being read.
     pub(crate) fn start_read(&self) -> bool {
         if self.is_open() {
             return false;
@@ -301,15 +254,10 @@ impl NotificationsArea {
         self.read.start(move || Self::read_apps(sample, &per_app))
     }
 
-    /// Whether the area has read what its rows show: its pane was shown,
-    /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.apps.get().is_some()
     }
 
-    /// One live row per app, offering its delivery choices flipped and its
-    /// mute lifted or set.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         self.prefs.borrow_mut().refresh();
         let apps = self.apps();
@@ -338,7 +286,6 @@ impl NotificationsArea {
     }
 }
 
-/// The verified apps a capture lists.
 fn sample_apps() -> Vec<InstalledNotificationApp> {
     [
         ("so.tilo.calendar", "Calendar"),
@@ -353,9 +300,6 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
     .collect()
 }
 
-/// The live row of `app` under `prefs`: each delivery choice offered as the
-/// flip of what applies to it now, and its mute lifted or set, all changes
-/// of the app's rule in the notification section.
 fn app_row(
     sections: &Sections,
     prefs: &NotificationPrefs,
@@ -364,9 +308,15 @@ fn app_row(
     let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
     let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
     let (duration, mute_label) = if muted {
-        ("Not muted", "Unmute notifications")
+        (
+            "Not muted",
+            tilo_resource::word!("settings-notifications-unmute-app-now"),
+        )
     } else {
-        ("For 1 hour", "Mute notifications for an hour")
+        (
+            "For 1 hour",
+            tilo_resource::word!("settings-notifications-mute-app-hour"),
+        )
     };
     let params = crate::prefs::notification_prefs::MuteApp::paths();
     let mute = NotificationPrefs::MUTE_APP
@@ -509,7 +459,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The page over `prefs`, as the policy is now.
 fn page(
     cx: &ViewCx<NotificationPrefs>,
     prefs: &NotificationPrefs,
@@ -567,7 +516,6 @@ fn dnd_card(cx: &ViewCx<NotificationPrefs>, prefs: &NotificationPrefs) -> Settin
     section(&t("notif-dnd-title"), rows(content))
 }
 
-/// Banners, and while they show, whether they show what a message says.
 fn banners_card(cx: &ViewCx<NotificationPrefs>, prefs: &NotificationPrefs) -> SettingsSection {
     let mut content = vec![banners(cx)];
     if prefs.show_banners {
@@ -577,7 +525,6 @@ fn banners_card(cx: &ViewCx<NotificationPrefs>, prefs: &NotificationPrefs) -> Se
 }
 
 fn delivery_card(cx: &ViewCx<NotificationPrefs>) -> SettingsSection {
-    // Sounds that work need no line of their own: the switch says it.
     let sounds_row = match (
         media::event_sound::sound_backend(),
         super::installed_programs_unreadable(),
@@ -598,8 +545,6 @@ fn delivery_card(cx: &ViewCx<NotificationPrefs>) -> SettingsSection {
     section(&t("notif-delivery-title"), rows(content))
 }
 
-/// Quiet hours: the switch, and while it is on, when they start and end
-/// and on which days.
 fn focus_rows(cx: &ViewCx<NotificationPrefs>, prefs: &NotificationPrefs) -> Vec<Item> {
     let focus = NotificationPrefs::paths().focus;
     let focus_time = |minutes: &u16| focus_time_label(*minutes).to_owned();
@@ -782,8 +727,6 @@ mod tests {
     use crate::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use ui::prelude::TestApp;
 
-    /// Set `field` of the rule of `app_id` through the door, as an agent
-    /// does: a field edit of the notification section.
     fn edit_rule(
         app: &mut TestApp<SettingsShell>,
         app_id: &str,
@@ -930,9 +873,6 @@ mod tests {
         );
     }
 
-    /// Every app is a live row offering the flip of what applies to it now,
-    /// through the same edits as the pane's toggles; opening the pane
-    /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
         tilo_clock::testing::with_wall(tilo_clock::wall(), || {
@@ -964,8 +904,6 @@ mod tests {
             settings.get().per_app["so.tilo.chat"].muted_until,
             Some(unix_now_i64() + 60 * 60)
         );
-        // The rows' operations are the session's actions on the section it
-        // keeps: the window offers them, and the session alone publishes.
         let offered = ui::tilo_actions::door::survey(&app.harness().resources());
         assert!(
             offered.iter().any(
@@ -987,16 +925,12 @@ mod tests {
         );
     }
 
-    /// The page shows the stored policy and follows a change made
-    /// elsewhere: the status line and an app's rules say what the policy
-    /// makes of them now.
     #[test]
     fn the_page_follows_the_policy() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         app.harness().resize((1400, 4000)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Notifications);
         app.settle();
-        // The delivery row says what holds notifications back.
         let banners_off = |app: &mut TestApp<SettingsShell>| {
             let off = t("notif-status-banners-off");
             app.harness()
@@ -1026,9 +960,6 @@ mod tests {
         assert!(banners_on("so.tilo.mail"), "overridden");
     }
 
-    /// A switch of an app's rule is named by its row: "Banners" under Mail
-    /// says what it turns on for Mail, and the line under the row explains
-    /// it to the same reader.
     #[test]
     fn a_per_app_switch_is_named_by_its_row() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();

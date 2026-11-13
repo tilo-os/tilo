@@ -63,7 +63,6 @@ fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .fold(String::with_capacity(64), |mut output, byte| {
-            // Formatting into a String is infallible.
             let _ = write!(output, "{byte:02x}");
             output
         })
@@ -146,7 +145,6 @@ impl Prepared {
         prepared.verify()?;
         Ok(prepared)
     }
-    /// Validate the expectation, ciphertext digest, size and password envelope.
     pub fn verify(&self) -> io::Result<()> {
         if !self.expectation.valid()
             || self.ciphertext.len() != self.expectation.sealed_bytes as usize
@@ -157,7 +155,6 @@ impl Prepared {
         PasswordHints::from_bytes(&self.ciphertext).map_err(io::Error::other)?;
         Ok(())
     }
-    /// Check that this preparation authenticates the supplied recovery receipt.
     pub fn verify_receipt(&self, receipt: &[u8]) -> io::Result<()> {
         self.verify()?;
         if hash(receipt) != self.expectation.recovery_receipt_sha256 {

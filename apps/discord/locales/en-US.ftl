@@ -1,5 +1,5 @@
 discord-empty-title = Bring a Discord server into this workspace
-discord-empty-body = Bridge a server with the Discord Bridge bot and its channels and messages show up in this workspace's Chat, in step both ways. Then everyone can link their Discord account here.
+discord-empty-body = Bridge a server with the Discord Bridge bot. Its channels and messages then show up in this workspace's Chat, kept in step both ways, and everyone can link their Discord account here.
 discord-bridge-server = Bridge a server
 discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
 discord-status-bridged = Messages go both ways between this workspace's Chat and the server.
@@ -195,3 +195,6 @@ discord-guild-apply-emoji = Apply an emoji
 discord-guild-delete-emoji = Delete an emoji
 discord-guild-settle-emoji = Settle an emoji upload
 discord-guild-report-voice = Report voice support
+
+## What the app is called in a window and in the launcher
+discord-app-title = Discord

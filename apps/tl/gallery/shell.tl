@@ -1,7 +1,7 @@
 /// The parts the shell is made of, as a view places them: a bar or a dock's body, a run of
-/// items a person reorders by dragging one, and the divider a conversation marks its first
-/// unread line with. Each draws with the theme's own finish and rhythm, as the shell and the
-/// system search use them.
+/// items a person reorders by dragging one, a view picked up and dragged to another, the target
+/// that takes it, and the divider a conversation marks its first unread line with. Each draws
+/// with the theme's own finish and rhythm, as the shell and the system search use them.
 type ShellParts {
     title: Text
     /// What the dock's items stand for: the apps pinned to it.
@@ -74,6 +74,28 @@ view shell_parts(x: ShellParts) {
                 }
             }
         }
+        ui.Section("Dragging one view to another") {
+            ui.Text(
+                "A view a person picks up and drags to a target in the same window, and the target that takes what it carried.",
+                role: .caption,
+                secondary: true,
+            )
+            for pinned in x.apps {
+                ui.DragSource(pinned.id(), title: pinned.title) {
+                    ui.ListRow(pinned.title, icon: .folder)
+                }
+            }
+            ui.DropTarget {
+                on drop(target: host.Resource): dropped(last, target)
+                ui.Card(title: "A drop target") {
+                    ui.Text(
+                        "A pinned app let go over this card is taken here.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+            }
+        }
         ui.Section("Unread") {
             ui.SectionDivider(tone: .accent)
             ui.Text(
@@ -97,4 +119,9 @@ scenario "shell parts" {
 /// Note the item moved, in the window's last answer.
 action mark_moved(last: Text, moved: Pinned, at: Int) {
     last = "Moved {moved.title} to {at}"
+}
+
+/// Note what a drop target took, in the window's last answer.
+action dropped(last: Text, target: host.Resource) {
+    last = "Dropped {meta(target).noun}"
 }

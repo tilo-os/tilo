@@ -1,30 +1,27 @@
 //! The files a person chose for an app in the system file chooser.
 //!
-//! Choosing a file in the session shell's chooser is the person's consent,
-//! and it gives the app that asked exactly what was chosen: the file to read
-//! for an Open, the file to write (created if it is new) for a Save, the
-//! folder and everything under it for a folder. Nothing else.
+//! Choosing a file in the session shell's chooser is the person's consent, and it
+//! gives the app that asked exactly what was chosen: the file to read for an Open,
+//! the file to write (created if it is new) for a Save, the folder and everything
+//! under it for a folder. Nothing else.
 //!
-//! A sandboxed app's mount namespace is fixed when its sandbox starts, so a
-//! choice made while it runs cannot add a bind to it. Instead the shell keeps
-//! one filesystem, mounted before any app starts, and the launcher binds each
-//! app's own view of it into the app's sandbox at [`SANDBOX_DIR`]. The view
-//! starts empty; a choice adds a document to it, visible inside at once
-//! (`/run/tilo/documents/<token>/<name>`). This is how `xdg-document-portal`
-//! solves the same problem.
+//! A sandboxed app's mount namespace is fixed when its sandbox starts, so a later
+//! choice cannot bind anything into it. The shell keeps one filesystem, mounted before
+//! any app starts, and the launcher binds each app's own view of it into the sandbox
+//! at [`SANDBOX_DIR`]; the view starts empty and a choice adds a document to it,
+//! visible inside at once (`/run/tilo/documents/<token>/<name>`). This is how
+//! `xdg-document-portal` solves the same problem.
 //!
-//! An app's view is keyed by the workspace it was launched into and its
-//! package ([`AppKey`]), so the same app in another workspace sees none of
-//! it, and no app can reach another's view: only its own subtree is bound.
-//! Documents stay private to this device ([`Documents::kept_in`] keeps them
-//! across sessions in a private file, so a recent file reopens where it
-//! was): they are never written into the workspace's shared capability
-//! list, which would replicate a private choice to every peer and widen the
-//! app's next launch.
+//! An app's view is keyed by the workspace it was launched into and its package
+//! ([`AppKey`]), so the same app in another workspace sees none of it, and no app can
+//! reach another's view. Documents stay private to this device ([`Documents::kept_in`]
+//! keeps them across sessions in a private file, so a recent file reopens where it
+//! was): they are never written into the workspace, which would replicate a private
+//! choice to every peer and widen the app's next launch.
 //!
-//! [`Documents`] is the table both sides share; [`host`] turns a path inside
-//! an app's view into the host file it names, refusing anything a choice did
-//! not cover; `mount` (feature `mount`, Linux) serves the table over FUSE.
+//! [`Documents`] is the table both sides share; [`host`] turns a path inside an app's
+//! view into the host file it names, refusing anything a choice did not cover;
+//! `mount` (feature `mount`, Linux) serves the table over FUSE.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -37,16 +34,13 @@ pub mod host;
 #[cfg(all(target_os = "linux", any(feature = "mount", test)))]
 pub mod mount;
 
-/// Where an app finds its documents inside its sandbox.
 pub const SANDBOX_DIR: &str = "/run/tilo/documents";
 
-/// The directory under the session's runtime directory the shell mounts
-/// the documents filesystem on.
 const MOUNT_SUBDIR: &str = "tilo/documents";
 
 /// Where the session's documents filesystem is mounted on the host:
-/// `$XDG_RUNTIME_DIR/tilo/documents`. `None` without an absolute runtime
-/// directory, where no session shell serves one.
+/// `$XDG_RUNTIME_DIR/tilo/documents`. `None` without an absolute runtime directory,
+/// where no session shell serves one.
 pub fn mountpoint() -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)?;
     runtime.is_absolute().then(|| runtime.join(MOUNT_SUBDIR))
@@ -58,7 +52,6 @@ pub fn app_view(mountpoint: &Path, key: &AppKey) -> PathBuf {
     mountpoint.join(&key.workspace).join(&key.app)
 }
 
-/// Whose documents: the workspace an app was launched into and its package.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AppKey {
     workspace: String,
@@ -101,18 +94,16 @@ pub(crate) fn is_app(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
-/// What a choice gave the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
-    /// An existing file, to read: an Open.
     Read,
-    /// One file to write, created if it does not exist yet: a Save. Its
-    /// save sibling (`.<name>.tilo-save`, `tilo_dialogs::portal::save_sibling`)
-    /// may be written and renamed over it, so a save replaces the file
-    /// whole or not at all.
+    /// One file to write, created if it does not exist yet: a Save. Its save sibling
+    /// (`.<name>.tilo-save`, `tilo_dialogs::portal::save_sibling`) may be written and
+    /// renamed over it, so a save replaces the file whole or not at all.
     Save,
-    /// A folder and everything under it: to read, or (`write`) to change.
-    Folder { write: bool },
+    Folder {
+        write: bool,
+    },
 }
 
 impl Kind {
@@ -135,13 +126,11 @@ impl Kind {
         }
     }
 
-    /// Whether the document may be changed.
     pub fn writes(self) -> bool {
         matches!(self, Self::Save | Self::Folder { write: true })
     }
 }
 
-/// One choice: the host file or folder, and what the app may do with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
     /// The chosen file or folder on the host, resolved when it was chosen.
@@ -152,15 +141,12 @@ pub struct Document {
 }
 
 impl Document {
-    /// The name the app sees it by: the chosen file's or folder's own.
     pub fn name(&self) -> &OsStr {
         self.host
             .file_name()
             .unwrap_or_else(|| OsStr::new("document"))
     }
 
-    /// The names a [`Kind::Save`] may write besides its own: its save
-    /// sibling.
     pub fn save_sibling(&self) -> Option<OsString> {
         (self.kind == Kind::Save).then(|| {
             let mut sibling = OsString::from(".");
@@ -171,7 +157,6 @@ impl Document {
     }
 }
 
-/// Why a choice could not be given to the app.
 #[derive(Debug)]
 pub enum GrantError {
     /// What was chosen is not what the chooser asked for (a folder for a
@@ -196,13 +181,10 @@ impl std::error::Error for GrantError {}
 #[derive(Default)]
 struct View {
     documents: BTreeMap<String, Document>,
-    /// The tokens of `documents`, most recently chosen first.
     recent: Vec<String>,
 }
 
 impl View {
-    /// Add `document` as the latest choice. Answers whether the view
-    /// changed.
     fn choose(&mut self, token: String, document: Document) -> bool {
         if self.recent.first() == Some(&token) {
             return false;
@@ -230,18 +212,15 @@ impl View {
 
 type Views = HashMap<AppKey, View>;
 
-/// Every app's documents. Cheap to clone: clones share the table.
 #[derive(Clone, Default)]
 pub struct Documents {
     views: Arc<RwLock<Views>>,
-    /// Where the table is kept between sessions, when it is.
     record: Option<Arc<PathBuf>>,
     /// Open while the kept table is still being read: every use of the
     /// table waits for it, so none sees, or writes over, half a table.
     loading: Arc<Loading>,
 }
 
-/// Whether the kept table is still being read.
 #[derive(Default)]
 struct Loading {
     pending: Mutex<bool>,
@@ -276,8 +255,8 @@ impl Loading {
     }
 }
 
-/// The kept table: what each app in each workspace was given, each app's
-/// documents newest first.
+/// The kept table: what each app in each workspace was given, each app's documents
+/// newest first.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Record {
     documents: Vec<Kept>,
@@ -295,21 +274,18 @@ struct Kept {
 }
 
 impl Documents {
-    /// A table for this session only.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A table kept in `record`, a private file on this device, so a file
-    /// chosen in an earlier session reopens where it was. Like the
-    /// person's other portal answers it stays on this device: it is never
-    /// written into a workspace, which would replicate a private choice to
-    /// every peer and widen what the app is given at launch. A kept item
-    /// that is gone or no longer what it was chosen as is dropped when read.
+    /// A table kept in `record`, a private file on this device, so a file chosen in an
+    /// earlier session reopens where it was. Like the person's other portal answers it
+    /// stays on this device: never written into a workspace, which would replicate a
+    /// private choice to every peer and widen what the app is given at launch. A kept
+    /// item that is gone or no longer what it was chosen as is dropped when read.
     ///
-    /// The record is read on a thread of its own, so a session starts
-    /// without waiting on the disk; anything that uses the table before it
-    /// is in waits for it.
+    /// The record is read on a thread of its own, so a session starts without waiting
+    /// on the disk; anything that uses the table before it is in waits for it.
     pub fn kept_in(record: PathBuf) -> Self {
         let documents = Self {
             views: Arc::default(),
@@ -327,7 +303,6 @@ impl Documents {
         documents
     }
 
-    /// Read the kept record into the table, behind anything chosen since.
     fn load(&self) {
         let Some(record) = self.record.as_deref() else {
             self.loading.finish();
@@ -359,7 +334,6 @@ impl Documents {
         self.loading.finish();
     }
 
-    /// Write the table to its record, when it is kept.
     fn keep(&self) {
         let Some(record) = self.record.as_deref() else {
             return;
@@ -385,10 +359,10 @@ impl Documents {
         let _ = write_private(record, &snapshot);
     }
 
-    /// Give `key` the item the person chose at `chosen`, as `kind`, and
-    /// answer the path the app reaches it by inside its sandbox. Choosing
-    /// the same item again answers the same path, so a recent file reopens
-    /// where it was, and makes it the most recent.
+    /// Give `key` the item the person chose at `chosen`, as `kind`, and answer the path
+    /// the app reaches it by inside its sandbox. Choosing the same item again answers
+    /// the same path, so a recent file reopens where it was, and makes it the most
+    /// recent.
     ///
     /// # Errors
     ///
@@ -412,7 +386,6 @@ impl Documents {
         Ok(path)
     }
 
-    /// The document `token` of `key`'s view, while it is given.
     pub fn document(&self, key: &AppKey, token: &str) -> Option<Document> {
         self.loading.wait();
         self.views
@@ -450,7 +423,6 @@ impl Documents {
             .unwrap_or_default()
     }
 
-    /// Take back everything given to `key`.
     pub fn revoke(&self, key: &AppKey) {
         self.loading.wait();
         let removed = self
@@ -470,7 +442,6 @@ fn write_private(path: &Path, record: &Record) -> std::io::Result<()> {
     tilo_files::native::atomic::write_private(path, &bytes)
 }
 
-/// What a choice resolves to on the host, checked against what it is for.
 fn resolve_choice(chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {
     match kind {
         Kind::Read => {
@@ -512,7 +483,6 @@ fn resolve_choice(chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {
     }
 }
 
-/// The last component of `path` when it is an ordinary name.
 fn plain_name(path: &Path) -> Option<&OsStr> {
     match path.components().next_back()? {
         Component::Normal(name) => Some(name),
@@ -536,8 +506,6 @@ fn token(key: &AppKey, document: &Document) -> String {
     hex.chars().take(24).collect()
 }
 
-/// The token and the path inside the document of a path an app was given
-/// (`/run/tilo/documents/<token>/<name>/…`): `None` for any other path.
 pub fn split_sandbox_path(path: &Path) -> Option<(String, PathBuf)> {
     let rest = path.strip_prefix(SANDBOX_DIR).ok()?;
     let mut components = rest.components();

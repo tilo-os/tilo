@@ -17,6 +17,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
+use crate::dpi::PhysicalSize;
 use crate::event_loop::{ActiveEventLoop, EventLoop, EventLoopBuilder};
 use crate::monitor::MonitorHandle;
 use crate::window::{Window, WindowAttributes};
@@ -141,14 +142,19 @@ pub trait WindowExtWayland {
     /// Outcome is accepted (0), known rejection (1), or unknown delivery (2).
     fn acknowledge_private_text_input(&self, serial: u32, outcome: u32);
 
-    /// Observe the next committed buffer with the standard presentation protocol.
-    /// Holds the native window state lock across the request and `present` so an
-    /// IME/configure commit cannot take the feedback for an unrelated buffer.
-    /// Always calls `present`; returns false when the protocol is unavailable.
-    /// A frame callback or client submission never completes this observer.
-    fn present_with_feedback(
+    /// Present a frame of `size` pixels that `present` commits (a swapchain
+    /// present), observing it with the standard presentation protocol when
+    /// `observer` is given. The surface takes the logical size that frame was
+    /// drawn for in the same commit, so a frame is never shown stretched to
+    /// a size configured after it was drawn. Holds the native window state
+    /// lock across `present` so an IME/configure commit cannot take the
+    /// feedback or the size for an unrelated buffer. Always calls `present`;
+    /// returns whether the presentation is observed. A frame callback or
+    /// client submission never completes this observer.
+    fn present_frame(
         &self,
-        observer: WaylandPresentationObserver,
+        size: PhysicalSize<u32>,
+        observer: Option<WaylandPresentationObserver>,
         present: impl FnOnce(),
     ) -> bool;
 
@@ -251,20 +257,22 @@ impl WindowExtWayland for Window {
         }
     }
 
-    fn present_with_feedback(
+    fn present_frame(
         &self,
-        observer: WaylandPresentationObserver,
+        size: PhysicalSize<u32>,
+        observer: Option<WaylandPresentationObserver>,
         present: impl FnOnce(),
     ) -> bool {
         match &self.window {
             #[cfg(x11_platform)]
             crate::platform_impl::Window::X(_) => {
+                let _ = (size, observer);
                 present();
                 false
             }
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => {
-                window.present_with_feedback(observer, present)
+                window.present_frame(size, observer, present)
             }
         }
     }

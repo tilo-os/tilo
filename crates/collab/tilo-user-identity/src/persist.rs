@@ -47,10 +47,7 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
-use crate::cert::{
-    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert,
-    verify_device_cert_at,
-};
+use crate::cert::{DeviceCapabilities, DeviceCert, verify_device_cert, verify_device_cert_at};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -430,6 +427,103 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     write_public_file(path, pubkey)
+}
+
+/// Most revocations one device's list holds.
+pub const MAX_REVOCATIONS: usize = 4096;
+/// Largest revocation list file this reads.
+pub const MAX_REVOCATIONS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Failures reading or extending the signed revocations beside the person's
+/// public key.
+#[derive(Debug, Error)]
+pub enum RevocationsError {
+    /// The list could not be read or replaced.
+    #[error("revocation list {0} could not be read or replaced: {1}")]
+    Io(String, #[source] io::Error),
+    /// The file is not the vector of signed entries this writes.
+    #[error("revocation list {0} could not be decoded: {1}")]
+    Decode(String, #[source] postcard::Error),
+    /// An entry was not one the person's root signed.
+    #[error("revocation list {0} holds an entry that does not verify: {1}")]
+    Entry(String, #[source] crate::RevocationError),
+    /// The list holds its bound already.
+    #[error("revocation list {0} is full")]
+    Full(String),
+}
+
+/// Where this device keeps the revocations it verified: beside the person's
+/// public key, where the filesystem daemon, the relay and every other reader
+/// of the identity root find them.
+#[must_use]
+pub fn revocations_path(paths: &IdentityPaths) -> std::path::PathBuf {
+    paths
+        .user_pubkey
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("revocations.bin")
+}
+
+/// The signed revocations beside the person's public key, verified. A list
+/// that is not there is empty; one that does not decode or hold a root-signed
+/// entry is an error rather than an empty list, so corrupt trust state never
+/// reads as "nothing is revoked".
+///
+/// # Errors
+///
+/// As [`RevocationsError`]: the file cannot be read, is not a list of at most
+/// [`MAX_REVOCATIONS`] entries, or an entry's signature does not verify.
+pub fn read_revocations(paths: &IdentityPaths) -> Result<crate::RevocationList, RevocationsError> {
+    let path = revocations_path(paths);
+    let name = path.display().to_string();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(crate::RevocationList::new());
+        }
+        Err(error) => return Err(RevocationsError::Io(name, error)),
+    };
+    if bytes.len() as u64 > MAX_REVOCATIONS_BYTES {
+        return Err(RevocationsError::Io(
+            name,
+            io::Error::new(io::ErrorKind::InvalidData, "the list is too large"),
+        ));
+    }
+    let entries: Vec<crate::RevocationEntry> = postcard::from_bytes(&bytes)
+        .map_err(|error| RevocationsError::Decode(name.clone(), error))?;
+    let mut list = crate::RevocationList::new();
+    for entry in entries {
+        list.insert(entry)
+            .map_err(|error| RevocationsError::Entry(name.clone(), error))?;
+    }
+    Ok(list)
+}
+
+/// Add `entry` to the revocations beside the person's public key: verified,
+/// kept once, ordered by root and device, and replacing the file atomically.
+///
+/// # Errors
+///
+/// As [`read_revocations`], or [`RevocationsError::Full`] when the list holds
+/// [`MAX_REVOCATIONS`] already.
+pub fn append_revocation(
+    paths: &IdentityPaths,
+    entry: &crate::RevocationEntry,
+) -> Result<(), RevocationsError> {
+    let path = revocations_path(paths);
+    let name = path.display().to_string();
+    let mut list = read_revocations(paths)?;
+    if list.len() >= MAX_REVOCATIONS {
+        return Err(RevocationsError::Full(name));
+    }
+    list.insert(entry.clone())
+        .map_err(|error| RevocationsError::Entry(name.clone(), error))?;
+    let mut entries: Vec<crate::RevocationEntry> = list.iter().cloned().collect();
+    entries.sort_by_key(|entry| (entry.user_public_key, entry.revoked_device_public_key));
+    let bytes = postcard::to_allocvec(&entries)
+        .map_err(|error| RevocationsError::Decode(name.clone(), error))?;
+    tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
+        .map_err(|error| RevocationsError::Io(name, error))
 }
 
 /// The directories public identity files live in get this mode whatever the
@@ -1142,7 +1236,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 pub fn provision_joined_device(
     paths: &IdentityPaths,
     user_public_key: [u8; 32],
-    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    sign: impl Fn(&[u8]) -> Result<[u8; 64], String>,
     label: &str,
     now_ns: u64,
 ) -> Result<DeviceCert, PersistError> {
@@ -1173,13 +1267,8 @@ pub fn provision_joined_device(
         signature: [0; 64],
         issuer: None,
     };
-    let digest = device_cert_signing_digest(&cert).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("device certificate digest failed: {error}"),
-        ))
-    })?;
-    cert.signature = sign(&digest).map_err(|error| {
+    let signer = crate::sign::CallbackSigner::new(user_public_key, &sign);
+    crate::cert::sign_device_cert(&mut cert, &signer).map_err(|error| {
         PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("device certificate was not signed: {error}"),
@@ -1538,7 +1627,7 @@ mod tests {
             cert
         };
         let own = device.verifying_key().to_bytes();
-        let node = crate::cloud_enrollment::host_capabilities;
+        let node = crate::DeviceCapabilities::host;
         let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
 
         assert!(

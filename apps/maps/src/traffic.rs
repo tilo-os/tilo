@@ -1,37 +1,22 @@
-//! Real-time road-traffic overlay — the data model.
-//!
-//! Tilo's traffic layer is, by design, a *crowdsourced, peer-shared* layer over
-//! OSM: devices report the speed they observe on a road
-//! and the network aggregates those into a live congestion picture. There is no
-//! turnkey free real-time-traffic feed to wire, so the live app ships the
-//! overlay and this data model with an **honest empty state**: with no peer
-//! reports the map shows "No traffic data" rather than inventing colours.
-//!
-//! The rendering lives in [`crate::canvas::draw_traffic`]; sample congestion
-//! exists only on the bundled offline basemap (captures and tests), never on
-//! the live map.
+//! The traffic overlay's data model. Tilo's layer is crowdsourced and peer-shared: devices report
+//! the speeds they see and the network aggregates them. No live feed is wired yet, so the live app
+//! shows "No traffic data" rather than inventing colours, and sample congestion exists only on the
+//! bundled basemap.
 
 use crate::basemap::{Basemap, RoadClass};
 use crate::failure;
 use crate::model::LatLon;
 
-/// Congestion on a road segment, from free flow to a standstill. This is the
-/// signal a live report (or a routing provider's current-vs-typical speed
-/// ratio) maps onto, so peer reports and provider data share one bucketing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Congestion {
-    /// Traffic moving at (or near) the free-flow speed.
     Free = 0,
-    /// Noticeably slower than free flow, still moving.
     Moderate = 1,
-    /// Heavy — well below free flow.
     Heavy = 2,
-    /// Standstill / stop-and-go.
     Severe = 3,
 }
 
 impl Congestion {
-    /// Every level, in worsening order — for legends and iteration.
+    /// Every level, in worsening order.
     pub const ALL: [Congestion; 4] = [
         Congestion::Free,
         Congestion::Moderate,
@@ -39,7 +24,6 @@ impl Congestion {
         Congestion::Severe,
     ];
 
-    /// Human-readable label for the legend / a tapped segment.
     pub fn label(self) -> String {
         failure::t(match self {
             Congestion::Free => "maps-congestion-free",
@@ -50,28 +34,22 @@ impl Congestion {
     }
 }
 
-/// One coloured road segment: a geographic polyline + its congestion level.
 #[derive(Clone, Debug)]
 pub struct TrafficSegment {
     pub geometry: Vec<LatLon>,
     pub level: Congestion,
 }
 
-/// The traffic overlay's data. Empty until real reports arrive — the honest
-/// live state, which the overlay says.
 #[derive(Clone, Debug, Default)]
 pub struct TrafficData {
     pub segments: Vec<TrafficSegment>,
 }
 
 impl TrafficData {
-    /// No congestion to draw — the live "No traffic data" state.
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
-    /// Count of segments at each [`Congestion`] level, indexed by the level's
-    /// discriminant — drives the legend's per-level tallies.
     pub fn counts(&self) -> [usize; 4] {
         let mut c = [0usize; 4];
         for s in &self.segments {
@@ -82,22 +60,14 @@ impl TrafficData {
         c
     }
 
-    /// Build a **sample** congestion overlay from the bundled vector basemap.
-    ///
-    /// Every drivable road is split into short sub-segments, each given a
-    /// deterministic congestion level (derived from its geometry, so the same
-    /// map always colours the same — no RNG, no per-frame churn). Congestion
-    /// varies *along* a road the way real traffic does, and the level
-    /// distribution is weighted by road class: primary avenues run busy
-    /// (heavy → standstill), secondaries mixed, and the residential grid mostly
-    /// free-flowing — so the overlay reads like a real arterial network rather
-    /// than a flat wash.
-    ///
-    /// Sample only: the live app never calls this; it waits for real peer
-    /// reports.
+    /// A sample overlay from the bundled basemap: each drivable road split into short segments with
+    /// a congestion level derived from its geometry, so the same map colours the same every time.
+    /// Levels are weighted by road class, so primary avenues carry the most traffic and the
+    /// residential grid
+    /// flows freely. The live app never calls this.
     pub fn sample(base: &Basemap) -> Self {
-        // Points per sub-segment window (they overlap by one point so the
-        // coloured ribbon stays continuous across a level change).
+        /// Points per sub-segment window (they overlap by one point so the coloured ribbon stays
+        /// continuous across a level change).
         const WINDOW: usize = 2;
         let mut segments = Vec::new();
         for road in &base.roads {
@@ -114,7 +84,6 @@ impl TrafficData {
                 let Some(&seed) = geom.first() else {
                     break;
                 };
-                // Deterministic per-sub-segment hash.
                 let h = (seed.lat.abs() * 1000.0) as u64 * 73
                     + (seed.lon.abs() * 1000.0) as u64 * 19
                     + sub.wrapping_mul(101)
@@ -131,8 +100,8 @@ impl TrafficData {
     }
 }
 
-/// Class-weighted congestion pick for the sample overlay. Primary avenues carry
-/// the most traffic (never free); the residential grid mostly flows freely.
+/// Class-weighted congestion for the sample overlay: primary avenues never free, the
+/// residential grid mostly does.
 fn level_for(class: RoadClass, h: u64) -> Congestion {
     let b = h % 100;
     match class {
@@ -182,8 +151,6 @@ mod tests {
             let base = crate::sample::basemap();
             let t = TrafficData::sample(&base);
             assert!(!t.is_empty(), "the sample basemap has roads to colour");
-            // Every segment is a real polyline (>= 2 points) and is counted in
-            // exactly one level bucket.
             for s in &t.segments {
                 assert!(s.geometry.len() >= 2, "a segment is a real polyline");
             }
@@ -193,15 +160,12 @@ mod tests {
                 t.segments.len(),
                 "every segment is counted in exactly one level bucket"
             );
-            // Sub-segmentation makes the overlay dense: many more coloured segments
-            // than there are roads, so congestion varies *along* a road.
             let drivable = base.roads.iter().filter(|r| r.pts.len() >= 2).count();
             assert!(
                 t.segments.len() > drivable,
                 "roads are split into sub-segments: {} segments from {drivable} roads",
                 t.segments.len()
             );
-            // Deterministic: the same basemap yields the identical overlay each run.
             let again = TrafficData::sample(&base);
             assert_eq!(
                 again.counts(),
@@ -211,7 +175,6 @@ mod tests {
         }
 
         {
-            // A believable traffic picture uses the whole ramp, not one flat colour.
             let base = crate::sample::basemap();
             let counts = TrafficData::sample(&base).counts();
             let levels_present = counts.iter().filter(|&&n| n > 0).count();
@@ -219,8 +182,6 @@ mod tests {
                 levels_present >= 3,
                 "at least three congestion levels are represented: {counts:?}"
             );
-            // The residential grid keeps some free-flowing streets, and the busy
-            // arterials produce heavy/severe segments — both ends of the ramp show.
             assert!(
                 counts[Congestion::Free as usize] > 0,
                 "some roads flow freely"
@@ -232,8 +193,6 @@ mod tests {
         }
 
         {
-            // Primaries carry the most traffic — every sub-segment on a primary road
-            // is at least Moderate, so the overlay reads like a real arterial net.
             for h in 0..500u64 {
                 assert_ne!(
                     super::level_for(RoadClass::Primary, h),

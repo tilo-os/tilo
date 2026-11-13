@@ -1,22 +1,7 @@
-//! The font database a launch builds, kept on disk so the next launch reads it instead of
-//! building it again.
-//!
-//! Building it verifies the product catalog (hashing every font of a catalog not on an immutable
-//! mount) and parses every face of the catalog and of the system's fonts: tens of milliseconds
-//! before a process could set any text. The index records the database face by face (file, face
-//! index, families, style, weight, width) with the identity of every file and directory it was
-//! built from, so a later process that finds them all unchanged parses no font and hashes
-//! nothing.
-//!
-//! Identity is device, inode, size, modification and change times: a catalog font whose identity
-//! is the one it had when hashed holds the bytes that were hashed, since rewriting a file or
-//! changing its times moves its change time, which no unprivileged process can set, and a font
-//! added to or removed from a directory moves that directory's times. Anything that does not
-//! match, or an index from another build, is ignored and the database is built as before.
-//!
-//! Every app's home is its own, so the launcher binds one directory in the user's data home into
-//! every sandbox and names it in `TILO_FONT_INDEX`: the first app opened records the database and
-//! every launch after it, any app in any workspace, reads the record.
+//! The font database a launch builds, kept on disk so the next launch reads it instead of building it
+//! again. Building it verifies the product catalog (hashing every font of a catalog not on an immutable
+//! mount) and parses every face of the catalog and of the system's fonts: tens of milliseconds before a
+//! process could set any text.
 
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};
@@ -24,16 +9,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tilo_files::native::checked::Identity;
 
-/// Bumped whenever what an index records, or how a database is made from
-/// it, changes.
 const VERSION: u32 = 3;
 
-/// An index larger than this is not one this build wrote.
 const MAX_INDEX_BYTES: u64 = 64 << 20;
 
-/// The system font directories and configuration a build reads besides the
-/// directories that hold a font: a font added to a new directory under one
-/// of them, or a new configuration, moves one of these.
 fn system_inputs() -> Vec<PathBuf> {
     let mut inputs: Vec<PathBuf> = [
         "/usr/share/fonts",
@@ -58,11 +37,9 @@ fn system_inputs() -> Vec<PathBuf> {
     inputs
 }
 
-/// Where this process keeps its index: the directory `TILO_FONT_INDEX` names
-/// — in a sandbox, one every app of the build shares, so the second app
-/// opened on the device reads the database the first one's launch recorded —
-/// else `tilo/font-index` under its cache directory. The file inside is named
-/// for this build's catalog.
+/// Where this process keeps its index: the directory `TILO_FONT_INDEX` names — in a sandbox, one every
+/// app of the build shares, so the second app opened on the device reads the database the first one's
+/// launch recorded — else `tilo/font-index` under its cache directory.
 #[cfg(not(test))]
 pub(crate) fn location() -> Option<PathBuf> {
     let paths = &crate::host::environment().paths;
@@ -76,8 +53,6 @@ pub(crate) fn location() -> Option<PathBuf> {
 /// This platform cannot identify files: no index is recorded or trusted.
 struct Unidentifiable;
 
-/// `path`'s identity now, following links as fontdb does; `None` when
-/// nothing readable is there.
 fn identify(path: &Path) -> Result<Option<Identity>, Unidentifiable> {
     match Identity::of_path(path) {
         Ok(identity) => Ok(identity),
@@ -86,7 +61,6 @@ fn identify(path: &Path) -> Result<Option<Identity>, Unidentifiable> {
     }
 }
 
-/// One input of the build and its identity then (`None`: it did not exist).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Input {
     path: PathBuf,
@@ -104,15 +78,12 @@ impl Input {
     }
 }
 
-/// One face of the database, as fontdb described it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Face {
-    /// Index into [`Index::files`].
     file: usize,
     index: u32,
     families: Vec<String>,
     post_script_name: String,
-    /// 0 normal, 1 italic, 2 oblique.
     style: u8,
     weight: u16,
     /// fontdb's width, 1 (ultra-condensed) to 9 (ultra-expanded).
@@ -120,22 +91,14 @@ struct Face {
     monospaced: bool,
 }
 
-/// A database and what it was built from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Index {
     version: u32,
-    /// The catalog manifest this build accepts.
     build: String,
-    /// The catalog roots that existed, in order, up to and including the
-    /// one the catalog loaded from.
     roots: Vec<PathBuf>,
-    /// Every font file a face is in.
     files: Vec<Input>,
-    /// Every directory holding one of them, and the system's font
-    /// directories and configuration.
     inputs: Vec<Input>,
     faces: Vec<Face>,
-    /// The generic families: sans-serif, serif, monospace, cursive, fantasy.
     generic: [String; 5],
 }
 
@@ -147,10 +110,6 @@ const GENERIC: [fontdb::Family<'static>; 5] = [
     fontdb::Family::Fantasy,
 ];
 
-/// The roots that exist, as the directories they are, in order, up to and
-/// including `chosen`: a catalog reached through a symlink or a different
-/// mount of the same directory is the same catalog, and the session and an
-/// app reach it by different spellings.
 fn existing_roots(roots: &[PathBuf], chosen: &Path) -> Vec<PathBuf> {
     let mut existing = Vec::new();
     for root in roots.iter().filter(|root| root.is_dir()) {
@@ -199,7 +158,6 @@ pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
     Some(database(&index))
 }
 
-/// The database `index` records, its faces in order.
 fn database(index: &Index) -> fontdb::Database {
     let mut db = fontdb::Database::new();
     for face in &index.faces {
@@ -311,9 +269,6 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
             continue;
         }
         let input = Input::now(directory).ok()?;
-        // Only what the build read: a directory that is not there adds no
-        // font, and the load side rejects an input this did not name only
-        // when it exists.
         if input.identity.is_some() {
             inputs.push(input);
         }
@@ -333,7 +288,6 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
 mod tests {
     use super::*;
 
-    /// Two of the fixture catalog's font files, by name, with their bytes.
     fn fixture_files() -> Vec<(String, Vec<u8>)> {
         let system = crate::font_catalog::fixture_font_system();
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -401,7 +355,7 @@ mod tests {
 
     /// Move `path`'s mtime a second on, as time passing between two writes
     /// does: on a filesystem whose timestamps are coarser than the time
-    /// between the index being stored and the change, the change's own
+    /// between the index being stored and the change, the change
     /// times can equal the ones recorded.
     fn a_second_later(path: &Path) {
         let file = std::fs::File::open(path).unwrap();
@@ -410,8 +364,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Anything the database was built from that changed, a font added to a
-    /// font directory, or another root in front, makes the index not hold.
     #[test]
     fn an_index_does_not_hold_once_what_it_was_built_from_changes() {
         let dir = tempfile::tempdir().unwrap();
@@ -456,10 +408,6 @@ mod tests {
         assert!(load(&index_path, &roots).is_none(), "another build");
     }
 
-    /// The session and an app reach one catalog by different spellings (a
-    /// symlink next to the shell's executable, the directory itself in an
-    /// app's namespace). The index names the directory, not the spelling, so
-    /// a launch still reads the database the session recorded.
     #[test]
     fn a_catalog_reached_through_another_spelling_is_the_same_catalog() {
         let dir = tempfile::tempdir().unwrap();

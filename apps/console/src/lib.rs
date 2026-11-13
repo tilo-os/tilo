@@ -1,34 +1,7 @@
-//! Console: what your agents do in your workspaces, for a person who mostly
-//! has agents work for them rather than working at the desktop themselves.
-//!
-//! Four places, one beside the other in the sidebar:
-//!
-//! * **Agents** (`agents`): every run of every agent across the person's
-//!   workspaces, live ones first. A run is the timeline of the actions it
-//!   took, and every action opens its own view (the file it changed, the
-//!   program it ran and what that printed, the page it acted on, the record it
-//!   edited): nothing an agent does is opaque. A run can be stopped, undone
-//!   whole or one action at a time, or taken over in the full desktop.
-//! * **Workspaces** (`workspaces`): the workspaces the person or their agents
-//!   made, each one step from the full desktop ("Open in Tilo").
-//! * **Connect** (`connect`): the one line that connects an MCP client, and
-//!   the agents let in, each revocable.
-//! * **Usage** (`usage`): what the agents' machines ran for.
-//!
-//! Nothing here is the app's own: runs are the workspaces' history, served
-//! under [`ui::tilo_actions::remote::workspace_activity`] like Activity's
-//! feed; the door and its grants are the agent door's
-//! ([`ui::tilo_actions::remote::agent_door`]). The app follows those reads
-//! and asks for changes through the same doors; its record holds only which
-//! runs Agents shows.
-//!
-//! The person, a collaborator and an agent never look alike: a person wears a
-//! round avatar, an agent a square one with the agent mark, and an agent's
-//! line always says whom it acted for.
+//! Console: what your agents do in your workspaces, for a person who mostly has agents work
+//! for them rather than working at the desktop themselves.
 
-/// The application id.
 pub const APP_ID: &str = "so.tilo.console";
-/// The window and launcher title.
 pub const APP_TITLE: &str = "Console";
 
 mod agent_card;
@@ -60,14 +33,10 @@ pub use record::Console;
 /// What the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Place {
-    /// Every agent run, live ones first.
     #[default]
     Agents,
-    /// The workspaces the person and their agents made.
     Workspaces,
-    /// How an agent connects, and the agents let in.
     Connect,
-    /// What the agents' machines ran for.
     Usage,
 }
 
@@ -112,19 +81,12 @@ impl Place {
 /// The window's view state, shared by its parts: never stored or synced.
 #[derive(Clone)]
 pub(crate) struct Nav {
-    /// The key of the place shown, as the sidebar selects it.
     pub(crate) place: LocalState<Option<String>>,
     pub(crate) pane: LocalState<ui::widget::NavPane>,
-    /// The run Agents shows in place of every run, by its id.
     pub(crate) run: LocalState<Option<String>>,
-    /// The action of that run whose view is open, by its place in the run.
     pub(crate) action: LocalState<Option<usize>>,
-    /// The command of that run whose every line of output is shown, by its place in the run.
     pub(crate) full_output: LocalState<Option<usize>>,
-    /// The agent whose card Agents shows when no run is chosen, by its client's name.
     pub(crate) agent: LocalState<Option<String>>,
-    /// What was asked of that agent from outside its card, carried out once its card has read
-    /// what it needs.
     pub(crate) command: LocalState<Option<effects::AgentCommand>>,
 }
 
@@ -152,8 +114,8 @@ impl Nav {
         self.run.set(Some(id.to_owned()));
     }
 
-    /// Show the run `id` from wherever the window is: a run's page is the
-    /// Agents place, so opening the run a link names shows it there.
+    /// Show the run `id` from wherever the window is: a run's page is the Agents place, so
+    /// opening the run a link names shows it there.
     pub(crate) fn show_run(&self, id: &str) {
         self.place.set(Some(Place::Agents.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
@@ -169,8 +131,8 @@ impl Nav {
         self.agent.set(Some(client.to_owned()));
     }
 
-    /// Go back one step: from a run to the card it was opened from or every run, from a card to
-    /// every run.
+    /// Go back one step: from a run to the card it was opened from or every run, from a
+    /// card to every run.
     pub(crate) fn back(&self) {
         if self.run.get().is_some() {
             self.close_run();
@@ -187,20 +149,17 @@ impl Nav {
     }
 }
 
-/// What every place reads, followed once for the window: a place shown
-/// again, or a run chosen, reads the answers already here rather than asking
-/// anew.
+/// What every place reads, followed once for the window: a place shown again, or a run
+/// chosen, reads the answers already here rather than asking anew.
 #[derive(Clone)]
 pub(crate) struct Reads {
-    /// Every agent run in every workspace.
     pub(crate) runs: Query<wire::Runs>,
-    /// The agent door: its grants and the workspaces it reaches.
     pub(crate) door: Query<door::Door>,
 }
 
 impl Reads {
-    /// Every run the history listed, once it answered: none before, so a
-    /// run's address resolves meanwhile without its run.
+    /// Every run the history listed, once it answered: none before, so a run's address
+    /// resolves meanwhile without its run.
     pub(crate) fn runs(&self) -> Vec<wire::AgentRun> {
         self.runs.answer().with(|read| match read {
             Arrival::Ready(runs) => runs.runs.clone(),
@@ -209,8 +168,7 @@ impl Reads {
     }
 }
 
-/// A door the app reads and asks through: the workspaces' history or the
-/// agent door.
+/// A door the app reads and asks through: the workspaces' history or the agent door.
 #[derive(Clone)]
 pub(crate) struct Doors(RecordEnv<Console>);
 
@@ -246,18 +204,17 @@ impl Doors {
         self.0.query(door::target(door::DOOR), InvokeArgument::None)
     }
 
-    /// Ask for the link to `resource`, as the framework's `share-link` hands
-    /// it out: copying it is the framework's, so a link to a run is the same
-    /// link any resource gets.
+    /// Ask for the link to `resource`, as the framework's `share-link` hands it out:
+    /// copying it is the framework's, so a link to a run is the same link any resource
+    /// gets.
     pub(crate) fn share_link(&self, resource: &str) {
         self.0.dispatcher().share_link(resource);
     }
 
     /// Open the full desktop where `href`, a `tilo://open#…` address, says.
     pub(crate) fn open_in_tilo(&self, href: &str) {
-        // The address is the door's, and an open the session refuses is
-        // told where the open lands; one that does not parse names nothing
-        // to open.
+        // The address is the door's, and an open the session refuses is told where the open
+        // lands; one that does not parse names nothing to open.
         let _ = self.0.dispatcher().open_link(href);
     }
 }
@@ -282,9 +239,8 @@ pub(crate) fn ago(at_ms: i64) -> String {
     ui::format_relative_time(at, ui::time::wall())
 }
 
-/// A row led by `author`'s face: a person's round avatar, or an agent's
-/// square one with the agent mark, so the two are never mistaken — both in
-/// the colour presence paints them in.
+/// A row led by `author`'s face: a person's round avatar, or an agent's square one with the
+/// agent mark, so the two are never mistaken — both in the colour presence paints them in.
 pub(crate) fn faced(row: ListRow, author: &wire::Author) -> ListRow {
     ui::author_face(row, author)
 }
@@ -317,6 +273,7 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "console-app-title";
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }
@@ -355,7 +312,6 @@ impl ResourceApp for App {
             runs: doors.follow_history(wire::RUNS, &agents::query()),
             door: doors.follow_door(),
         };
-        // Opening the run a link names shows its page here, in this window.
         let opened = nav.clone();
         cx.effects(move |effect: ConsoleEffect, _cx| {
             match effects::agent(&effect) {
@@ -370,9 +326,6 @@ impl ResourceApp for App {
         });
         let (listed, named) = (reads.clone(), reads.clone());
         let door_read = reads.door.clone();
-        // The window is built once for each record the person narrows with:
-        // which runs show is the record's, and a place's switch keeps the
-        // part it built, so the record keys the build itself.
         let filter = cx.value(Console::clone);
         let content = cx.switch(&filter, move |cx, _| {
             let (nav, reads) = (nav.clone(), reads.clone());
@@ -388,13 +341,6 @@ impl ResourceApp for App {
         });
         cx.publishing(
             Publishes::new()
-                // Each run shown is published as the resource its link names,
-                // and so is any run whose address is asked for before the
-                // history's read lands: a link opens straight into a fresh
-                // window, which shows the run once its read answers.
-                // Each agent the runs or the door name is published too, as
-                // `console.agent:<client>`: its card and its commands, which
-                // the agent's face in the workspace's presence asks for.
                 .live_rows(move || {
                     let runs = listed.runs();
                     let door = door_read.answer().with(|read| match read {
@@ -422,8 +368,8 @@ impl ResourceApp for App {
     }
 }
 
-/// The window as it shows `nav`'s place: the sidebar of places, and the place
-/// with its commands in the header.
+/// The window as it shows `nav`'s place: the sidebar of places, and the place with its
+/// commands in the header.
 fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     let chosen = nav.clone();
     let sidebar = ui::widget::NavList::new(vec![NavSection::untitled(
@@ -441,9 +387,6 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     });
 
     let place = nav.place();
-    // The run shown in place of the list has one way back to it, the shell's:
-    // leading the window's bar at every width, and the narrow window's own Back
-    // where the places push under it.
     let (open, close) = (nav.clone(), nav.clone());
     let shell = ui::widget::NavShell::new()
         .content_kind(ui::widget::ContentKind::Page)
@@ -457,8 +400,6 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
             move || open.run.get().is_some() || open.agent.get().is_some(),
             move || close.back(),
         );
-    // What the window shows names it, in its bar and so in its tab: an agent's
-    // card is its client's, every other place its own.
     let (shell, location) = match place {
         Place::Agents if nav.run.get().is_none() && nav.agent.get().is_some() => {
             let client = nav.agent.get().unwrap_or_default();

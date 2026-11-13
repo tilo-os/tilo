@@ -1,5 +1,5 @@
-//! Real consumer qualification. The original installation is an isolated USER
-//! fixture: these tests do not qualify native SYSTEM discovery or privileged media.
+//! Real consumer qualification against an isolated USER fixture; these tests do not qualify native
+//! SYSTEM discovery or privileged media.
 use super::*;
 use crate::setup::{
     migration::PinnedDirectory,
@@ -137,13 +137,12 @@ struct Fixture {
     app_commit: String,
 }
 /// Explicit live material for the authenticated selected-app receiver constructor.
-/// Retain this owner until the original source epoch and signing tools retire.
 #[cfg(feature = "native-capture-qualification")]
 pub struct RunnableFixture(Fixture);
 #[cfg(feature = "native-capture-qualification")]
 impl RunnableFixture {
-    /// Install through the same actual native CLI into the admitted disposable
-    /// GPT Home before capture. This material builder supplies no source grant.
+    /// Installs through the same native CLI into the admitted disposable GPT Home before capture;
+    /// this builder supplies no source grant.
     pub fn create_in(actual_home: &Path) -> Self {
         use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
         assert!(actual_home.is_absolute());
@@ -159,8 +158,8 @@ impl RunnableFixture {
         assert_ne!(uid, 0, "runnable USER installation needs original account");
         assert!(before.is_dir() && before.uid() == uid && before.mode() & 0o7022 == 0);
         validate_fixture_branches(actual_home, uid);
-        // Only a fresh disposable installation branch is admitted. Never mutate
-        // an existing user repository/remotes or follow its internal links.
+        // Only a fresh disposable installation branch is admitted; never mutate an existing user
+        // repository or follow its internal links.
         assert_eq!(
             fs::symlink_metadata(actual_home.join(".local/share/flatpak"))
                 .unwrap_err()
@@ -577,9 +576,8 @@ fn add_source_remote(root: &Path, home: &Path) {
         format!("[Flatpak Repo]\nTitle=Native Fixture\nUrl={url}\nGPGKey={key}\n"),
     )
     .unwrap();
-    // Source construction uses the real bounded CLI so failures expose native
-    // diagnostics. Destination restoration still uses NativeOfflineRunner's
-    // canonical trust gate and isolated user installation.
+    // Source construction uses the real bounded CLI so failures expose native diagnostics;
+    // destination restoration still runs through the canonical trust gate.
     command(
         "/usr/bin/flatpak",
         home,
@@ -588,9 +586,8 @@ fn add_source_remote(root: &Path, home: &Path) {
             "--user",
             "--from",
             "--collection-id=org.tilo.NativeFixture",
-            // Upstream remote-add checks an explicit collection's --gpg-import
-            // before reading .flatpakrepo (1.18.4, lines 300-315). Supply the
-            // same genuine key embedded in the definition, never disable GPG.
+            // Upstream remote-add reads .flatpakrepo only after an explicit collection's --gpg-import
+            // (1.18.4), so supply the same genuine key and never disable GPG.
             &format!("--gpg-import={}", root.join("signing.gpg").display()),
             "fixture",
             definition.to_str().unwrap(),
@@ -665,10 +662,8 @@ fn export_build_material(
         "app-build"
     };
     let build = root.join(name);
-    // Flatpak 1.18.4 build-export first requires files + metadata for BOTH
-    // kinds, then writes runtime usr into the committed files tree (upstream
-    // app/flatpak-builtins-build-export.c:823-827,945-950). This bootstrap
-    // fixture needs no downloaded SDK and never launches its payload.
+    // Flatpak 1.18.4 build-export needs files and metadata for both kinds, then writes runtime usr
+    // into the committed files tree; this fixture needs no downloaded SDK.
     private(&build.join("files"));
     let contents = build.join(if runtime { "usr" } else { "files" });
     private(&contents.join("bin"));
@@ -733,8 +728,8 @@ fn export_build_material(
     command("/usr/bin/flatpak", root, args);
 }
 
-// Static x86_64 fixture apply_extra: rename payload.bin to applied.bin, exit
-// with syscall status. No host interpreter/library/SDK or network is involved.
+// Static x86_64 apply_extra: rename payload.bin to applied.bin and exit with syscall status; no
+// interpreter, SDK or network is involved.
 fn extra_apply_program() -> Vec<u8> {
     let code = [
         0xb8, 82, 0, 0, 0, 0x48, 0x8d, 0x3d, 18, 0, 0, 0, 0x48, 0x8d, 0x35, 23, 0, 0, 0, 0x0f,
@@ -775,9 +770,8 @@ fn assert_undeployed(home: &Path) {
 }
 #[test]
 fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
-    // Root cannot own a production user installation. Re-exec only this test
-    // under an unrelated unprivileged UID; every fixture is created by that owner.
-    // SAFETY: geteuid has no preconditions and only reads current credentials.
+    // Root cannot own a production user installation, so re-exec only this test under an unrelated
+    // unprivileged UID, which owns every fixture.
     if rustix::process::geteuid().as_raw() == 0 {
         tilo_test_env::require_capability!(
             Chown,
@@ -803,8 +797,8 @@ fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
             .arg(std::env::current_exe().unwrap())
             .args([TEST, "--exact", "--nocapture"])
             .env("TILO_NATIVE_FLATPAK_OWNER_CHILD", "1")
-            // The container's root-only TMPDIR is not a grant to the owner child.
-            // tempfile creates each exclusive owner-private fixture beneath /tmp.
+            // The container's root-only TMPDIR is not a grant to the owner child; tempfile creates
+            // each exclusive owner-private fixture beneath /tmp.
             .env("TMPDIR", "/tmp")
             .env_remove("TMP")
             .env_remove("TEMP")
@@ -850,16 +844,16 @@ fn verify_positive(fixture: &Fixture, cancel: &AtomicBool) {
     verify_target(fixture, &target);
     NativeOfflineRunner.verify_repository(&target).unwrap();
     let observed = ObservedNative::default();
-    // The API reports verified deployments, including already restored refs.
-    // Observe real delegated effects separately: retry must not install again.
+    // The API reports verified deployments, including already restored refs; retry must not install
+    // again.
     assert_eq!(import.restore(&observed, &target, cancel).unwrap(), 2);
     assert_eq!(
         observed.installs.load(std::sync::atomic::Ordering::Relaxed),
         0
     );
     verify_target(fixture, &target);
-    // Real GC aliases work above; a differently named alias pointing at the
-    // same correctly signed runtime must still fail the logical binding proof.
+    // A differently named alias to the same correctly signed runtime must still fail the logical
+    // binding proof.
     let runtime = fixture
         .manifest
         .deployments
@@ -934,14 +928,12 @@ fn verify_target(fixture: &Fixture, target: &Path) {
 fn verify_corruption(fixture: &Fixture, cancel: &AtomicBool) {
     let object = fixture.object("commit");
     let original = fs::read(&object).unwrap();
-    // create-usb can share immutable object inodes: replace only this fixture
-    // namespace entry instead of modifying a possible original hardlink.
+    // create-usb can share immutable object inodes, so replace only this fixture namespace entry.
+    // Every sealed commit is read against its checksum before the target is touched, so the corrupted
+    // app is refused with its intact runtime undeployed.
     fs::remove_file(&object).unwrap();
     fs::write(&object, b"corrupted real commit object").unwrap();
     let (mut corrupt, target) = fixture.import("corrupt", &fixture.manifest);
-    // Every sealed commit is read against its checksum before the target is
-    // touched, so the corrupted app is refused with its intact runtime
-    // undeployed too.
     assert_eq!(
         corrupt
             .restore(&NativeOfflineRunner, &target, cancel)

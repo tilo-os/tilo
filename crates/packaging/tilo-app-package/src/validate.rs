@@ -1,18 +1,4 @@
 //! Manifest schema validation.
-//!
-//! Second pass after TOML decode: structural fields are guaranteed to
-//! exist, so this checks cross-field invariants:
-//!
-//! - `package.version` parses as semver.
-//! - `package.runtime` is `<name>/<semver>`, absent for `kind = "runtime"`.
-//! - `package.platform-reason` is present exactly when `package.platforms`
-//!   narrows the default targets; capability names are non-empty and unique.
-//! - `kind = "app"` has `[entrypoint]` with `bin` set.
-//! - `kind = "format-provider"` has non-empty `providers.mime` and
-//!   ships [`FORMAT_PROVIDER_MODULE`] (payload-side counterpart in
-//!   [`validate_manifest_with_payload`]; this only enforces the mime half).
-//! - `publisher.identity` parses as `ed25519:<32-byte-hex>`.
-//! - `publisher.signature`, if present, parses as 64-byte hex.
 
 use semver::Version;
 
@@ -24,7 +10,6 @@ use crate::manifest::{ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manife
 /// when loading it.
 pub const FORMAT_PROVIDER_MODULE: &str = "provider.wasm";
 
-/// Validation failure reasons; each variant is one concrete invariant a manifest can violate, surfaced verbatim by the CLI.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ManifestError {
     #[error("package.version {0:?} is not valid semver: {1}")]
@@ -394,9 +379,6 @@ fn validate_kind_entrypoint(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// A language pack is one locale's catalogues: data, named by its locale,
-/// for every architecture, with nothing a launcher could start or a runtime
-/// to bind. Its id prefix is reserved for it.
 fn validate_language_pack(m: &Manifest) -> Result<(), ManifestError> {
     let reserved = m.package.id.starts_with(crate::id::LANGUAGE_PACK_ID_PREFIX);
     if m.package.kind != Kind::LanguagePack {
@@ -526,7 +508,6 @@ fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// What the app claims to open and the resource kinds its records hold.
 fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
     for ext in &m.providers.ext {
         if !valid_extension(ext) {
@@ -644,8 +625,6 @@ fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
     }
 }
 
-/// The icon is one SVG or PNG file of the payload, named by a safe relative
-/// path; [`validate_manifest_with_payload`] checks that it is there.
 fn validate_icon(m: &Manifest) -> Result<(), ManifestError> {
     let Some(icon) = &m.package.icon else {
         return Ok(());
@@ -660,9 +639,6 @@ fn validate_icon(m: &Manifest) -> Result<(), ManifestError> {
     }
 }
 
-/// An entrypoint that executes a runtime's binary belongs to an app, names a
-/// runtime the package declares among its required runtimes, and a safe path
-/// inside that runtime.
 fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
     let Some(entrypoint) = &m.entrypoint else {
         return Ok(());
@@ -701,14 +677,10 @@ fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// Most screenshots a package lists; the Store shows them in one gallery.
 pub const MAX_SCREENSHOTS: usize = 8;
 
-/// The longest tag line, in characters: one phrase under the app's name.
 pub const MAX_TAGLINE_CHARS: usize = 80;
 
-/// Tag lines are one short line each; screenshots are image files directly
-/// under the package's `screenshots/` directory, each listed once.
 fn validate_store_listing(m: &Manifest) -> Result<(), ManifestError> {
     for (tag, tagline) in &m.package.taglines {
         let trimmed = tagline.trim();
@@ -843,8 +815,6 @@ pub(crate) fn valid_scheme(scheme: &str) -> bool {
         && !matches!(scheme, "file" | "data" | "javascript")
 }
 
-/// The shape the toolkit's `RecordKind` accepts, so every declared kind can
-/// name a record.
 fn valid_resource_kind(kind: &str) -> bool {
     !kind.is_empty()
         && kind.len() <= 64
@@ -854,7 +824,6 @@ fn valid_resource_kind(kind: &str) -> bool {
         })
 }
 
-/// How many actions one package may offer while it is not running.
 pub const MAX_OFFERS: usize = 64;
 
 /// Resource prefixes an app cannot offer under: `app.` names the host's own
@@ -863,7 +832,6 @@ pub const MAX_OFFERS: usize = 64;
 /// before the app runs.
 const RESERVED_OFFER_RESOURCES: [&str; 2] = ["app.", "tilo-ui-bound:"];
 
-/// `[[offers]]`: stable addresses, a readable label, and each address once.
 fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), ManifestError> {
     if offers.len() > MAX_OFFERS {
         return Err(ManifestError::BadOffer(format!(
@@ -928,8 +896,6 @@ fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), Mani
     Ok(())
 }
 
-/// How many further runtime bundles one package may ask the launcher to
-/// mount.
 pub const MAX_REQUIRED_RUNTIMES: usize = 4;
 
 fn validate_required_runtimes(m: &Manifest) -> Result<(), ManifestError> {
@@ -964,10 +930,6 @@ fn validate_required_runtimes(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// `package.provides` belongs to a native runtime package and names the
-/// runtime it is: the exact build of the runtime thin apps link
-/// (`<name>/<release>+native.<digest>`), or an engine runtime an app mounts
-/// as one of its required runtimes (`<name>/<version>`).
 fn validate_provides(m: &Manifest) -> Result<(), ManifestError> {
     match (&m.package.kind, &m.package.provides) {
         (Kind::Runtime, Some(provides)) => validate_runtime_string(provides)

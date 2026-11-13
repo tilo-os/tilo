@@ -27,6 +27,26 @@
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
 #[cfg(test)]
+#[path = "workspace_actions/api.rs"]
+mod api;
+#[cfg(test)]
+#[path = "workspace_actions/api_desk.rs"]
+mod api_desk;
+#[cfg(test)]
+#[path = "workspace_actions/api_invites.rs"]
+mod api_invites;
+#[cfg(test)]
+#[path = "workspace_actions/api_links.rs"]
+mod api_links;
+#[path = "workspace_actions/api_on_relay.rs"]
+pub mod api_on_relay;
+#[cfg(test)]
+#[path = "workspace_actions/api_questions.rs"]
+mod api_questions;
+#[cfg(test)]
+#[path = "workspace_actions/api_v1.rs"]
+mod api_v1;
+#[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
 mod chat_post;
 #[cfg(test)]
@@ -36,28 +56,11 @@ mod chat_restart;
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
-#[path = "workspace_actions/door_desk.rs"]
-mod door_desk;
-#[cfg(test)]
-#[path = "workspace_actions/door_invites.rs"]
-mod door_invites;
-#[cfg(test)]
-#[path = "workspace_actions/door_links.rs"]
-mod door_links;
-#[path = "workspace_actions/door_on_relay.rs"]
-pub mod door_on_relay;
-#[cfg(test)]
-#[path = "workspace_actions/door_questions.rs"]
-mod door_questions;
-#[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
-#[cfg(test)]
-#[path = "workspace_actions/front_door.rs"]
-mod front_door;
 #[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
@@ -142,7 +145,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let host = enrol(
         &identity_key,
         "temporary-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let browser_device = enrol(
         &identity_key,

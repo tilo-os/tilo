@@ -658,6 +658,7 @@ fields = [
   { path = "messages.*.edited", type = "bool", readonly = true },
   { path = "messages.*.history", type = { list = { named = "Revision" } }, readonly = true },
   { path = "messages.*.parent", type = { option = "text" }, readonly = true },
+  { path = "messages.*.quoted", type = { option = { named = "Quote" } }, readonly = true },
   { path = "messages.*.reactions", type = "reactions", readonly = true },
   { path = "messages.*.mentions", type = { list = { named = "Mention" } }, readonly = true },
   { path = "messages.*.attachments", type = { list = { named = "Attached" } }, readonly = true },
@@ -686,6 +687,9 @@ fields = [
   { path = "messages.*.appearance.persona.service", type = "text" },
   { path = "messages.*.appearance.persona.account", type = "text" },
   { path = "messages.*.appearance.persona.linked", type = { option = "text" } },
+  { path = "messages.*.acting", type = { option = { named = "Acting" } }, readonly = true, stored = "record" },
+  { path = "messages.*.acting.name", type = { option = "text" } },
+  { path = "messages.*.acting.person", type = { option = "text" } },
   { path = "messages.*.share", type = { option = { named = "WindowShare" } }, readonly = true, stored = "record" },
   { path = "messages.*.share.access", type = { named = "ShareAccess" } },
   { path = "messages.*.share.open", type = "bool" },
@@ -826,7 +830,7 @@ id = "record-work"
 kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
-  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } } }, required = ["state"] } },
+  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, detail = { type = ["string", "null"] }, did = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } } }, required = ["state"] } },
   { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -845,6 +849,13 @@ params = [
   { name = "reply", type = "text", required = true, schema = { type = "string" } },
   { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
   { name = "event", required = true, schema = {} },
+]
+
+[[resources.types]]
+name = "Acting"
+fields = [
+  { name = "name", type = { option = "text" } },
+  { name = "person", type = { option = "text" } },
 ]
 
 [[resources.types]]
@@ -952,12 +963,14 @@ fields = [
   { name = "edited", type = "bool" },
   { name = "history", type = { list = { named = "Revision" } } },
   { name = "parent", type = { option = "text" } },
+  { name = "quoted", type = { option = { named = "Quote" } } },
   { name = "reactions", type = "reactions" },
   { name = "mentions", type = { list = { named = "Mention" } } },
   { name = "attachments", type = { list = { named = "Attached" } } },
   { name = "pinned", type = "bool" },
   { name = "work", type = { option = { named = "Work" } } },
   { name = "appearance", type = { option = { named = "ShownAs" } } },
+  { name = "acting", type = { option = { named = "Acting" } } },
   { name = "share", type = { option = { named = "WindowShare" } } },
   { name = "attempts", type = "int" },
 ]
@@ -971,6 +984,14 @@ fields = [
   { name = "progress", type = "text" },
   { name = "finish", type = { option = { named = "AgentFinish" } } },
   { name = "detail", type = "text" },
+]
+
+[[resources.types]]
+name = "Quote"
+fields = [
+  { name = "text", type = "text", label = true },
+  { name = "start", type = "int" },
+  { name = "end", type = "int" },
 ]
 
 [[resources.types]]
@@ -1077,6 +1098,7 @@ fields = [
   { name = "stream", type = { option = { named = "ProviderStream" } } },
   { name = "state", type = { option = { named = "Transition" } } },
   { name = "trace", type = { collection = { named = "Step" } } },
+  { name = "failure_detail", type = { option = "text" } },
 ]
 
 [[resources.types]]
@@ -1087,6 +1109,7 @@ fields = [
   { name = "did", type = { option = "text" } },
   { name = "about", type = { option = "text" } },
   { name = "trace", type = { list = { named = "StepUpdate" } } },
+  { name = "detail", type = { option = "text" } },
 ]
 
 [[resources]]

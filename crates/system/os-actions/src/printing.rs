@@ -1,9 +1,5 @@
-//! Typed CUPS integration shared by Settings and Print Centre.
-//!
-//! This is deliberately a narrow vocabulary.  Callers cannot pass command
-//! fragments: queue names and URIs are validated and are always individual
-//! argv entries.  CUPS remains the policy/driver authority; Tilo does not grow
-//! a second printer database.
+//! Typed CUPS integration for Settings and Print Centre: a narrow vocabulary, so
+//! callers cannot pass command fragments or arbitrary option strings.
 
 use crate::process::{run, run_capture};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,12 +22,9 @@ pub struct PrinterQueue {
     pub default: bool,
     pub accepting_jobs: bool,
     pub reason: Option<String>,
-    /// The printer this queue prints to, as CUPS reports it (`lpstat -v`).
-    /// `None` when CUPS did not say.
     pub device_uri: Option<String>,
-    /// Live standard IPP attributes. `available == false` means CUPS/the
-    /// device could not be queried; `supplies == None` means it answered but
-    /// did not implement marker attributes.
+    /// Live standard IPP attributes: `available == false` when CUPS or the device could not be queried,
+    /// `supplies == None` when it answered but lists none.
     pub telemetry: PrinterTelemetry,
 }
 
@@ -59,7 +52,7 @@ pub struct DiscoveredPrinter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintJob {
     pub id: String,
-    /// Human-facing document name reported by IPP, sanitized and bounded.
+    /// The document name IPP reports, sanitized and bounded.
     pub title: Option<String>,
     pub owner: String,
     pub size_bytes: u64,
@@ -71,9 +64,8 @@ pub struct PrintJob {
     pub impressions_total: Option<u32>,
 }
 
-/// One value of an option the driver reports, as `lpoptions` prints it: the
-/// key CUPS takes, the label the form shows, and whether it is the printer's
-/// default.
+/// One value of an option the driver reports, as `lpoptions` prints it: the key CUPS takes, the label
+/// the form shows, and whether it is the default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OptionChoice {
     pub key: String,
@@ -81,12 +73,8 @@ pub struct OptionChoice {
     pub default: bool,
 }
 
-/// What a printer's driver says it can do, from `lpoptions -l -p <queue>`.
-///
-/// The print form draws a control only for an option that appears here: a
-/// field the driver did not report is a field the printer may silently
-/// ignore, which is how a person comes to print forty pages on A4 when they
-/// asked for A5.
+/// What a printer's driver says it can do, from `lpoptions -l -p <queue>`; the print form draws a
+/// control only for an option the printer lists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PrinterOptions {
     /// Paper sizes the printer accepts (`PageSize`, `media`).
@@ -100,12 +88,10 @@ pub struct PrinterOptions {
 }
 
 impl PrinterOptions {
-    /// The choice `key` names, if the driver reported it.
     pub fn choice<'a>(choices: &'a [OptionChoice], key: &str) -> Option<&'a OptionChoice> {
         choices.iter().find(|choice| choice.key == key)
     }
 
-    /// The default of `choices`, if the driver marked one.
     pub fn default_key(choices: &[OptionChoice]) -> Option<&str> {
         choices
             .iter()
@@ -114,13 +100,6 @@ impl PrinterOptions {
     }
 }
 
-/// Every option `queue`'s driver reports, with the values its own list holds.
-///
-/// # Errors
-///
-/// Returns an error when the queue name is invalid or CUPS cannot answer for
-/// it. An empty [`PrinterOptions`] is a printer that reported none of them,
-/// which the form shows by drawing none of those fields.
 pub fn printer_options(queue: &str) -> Result<PrinterOptions, String> {
     let queue = queue_name(queue)?;
     Ok(parse_lpoptions(&run_capture(
@@ -129,9 +108,7 @@ pub fn printer_options(queue: &str) -> Result<PrinterOptions, String> {
     )?))
 }
 
-/// `lpoptions` text into the options the form can offer. Each line is
-/// `Key/Label: *default other other`; the `*` marks the default. Only the
-/// four options the form asks about are kept, and only their own values.
+/// Each line is `Key/Label: *default other`; the `*` marks the default.
 fn parse_lpoptions(text: &str) -> PrinterOptions {
     let mut options = PrinterOptions::default();
     for line in text.lines() {
@@ -169,9 +146,8 @@ fn parse_lpoptions(text: &str) -> PrinterOptions {
     options
 }
 
-/// A value as the form says it: CUPS's own keys are run together
-/// (`DuplexNoTumble`, `3`), and a person reads "Two-sided, long edge" or
-/// "Landscape".
+/// A value as the form says it: CUPS's own keys are run together (`DuplexNoTumble`), and a person reads
+/// "Two-sided, long edge".
 fn option_value_label(value: &str) -> String {
     match value {
         "DuplexNoTumble" | "two-sided-long-edge" => "Two-sided, long edge".to_owned(),
@@ -187,13 +163,12 @@ fn option_value_label(value: &str) -> String {
     }
 }
 
-/// A page range as `lp` takes it: `1-3`, `1,4,9`, `2-`. Pages are positive,
-/// a range never runs backwards, and nothing else is allowed through.
+/// A page range as `lp` takes it: `1-3`, `1,4,9`, `2-`. Pages are positive, a range never runs
+/// backwards, and nothing else is allowed through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PageRange(String);
 
 impl PageRange {
-    /// `text` as a page range that `lp` will read.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         if text.is_empty() {
@@ -239,24 +214,16 @@ fn page_number(text: &str) -> Result<u32, String> {
     }
 }
 
-/// Finite document options accepted by the Print Centre. Callers cannot pass
-/// arbitrary CUPS option strings through this type: every option here is one
-/// the printer's driver reported, and [`print_document`] checks it against
-/// that report before CUPS sees it.
+/// Document options accepted by Print Centre. Callers cannot pass arbitrary CUPS option strings: every
+/// option here is one a driver reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintSettings {
     pub copies: u16,
     pub two_sided: bool,
-    /// The pages to print: `None` is the whole document.
     pub page_range: Option<PageRange>,
-    /// `PageSize`/`media` value, as the driver reported it.
     pub page_size: Option<String>,
-    /// `ColorModel`/`print-color-mode` value.
     pub colour: Option<String>,
-    /// `Duplex`/`sides` value; the plain boolean above stays for a call that
-    /// only knows two-sided or not.
     pub duplex: Option<String>,
-    /// `Orientation`/`orientation-requested` value.
     pub orientation: Option<String>,
 }
 
@@ -296,7 +263,6 @@ impl PrintJob {
     }
 }
 
-/// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.
 pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     let printers = run_capture("lpstat", &["-p", "-d"])?;
     let accepting = run_capture("lpstat", &["-a"]).unwrap_or_default();
@@ -314,11 +280,9 @@ pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     Ok(queues)
 }
 
-/// List CUPS print jobs, enriched with live IPP telemetry where a destination answers it.
 pub fn jobs() -> Result<Vec<PrintJob>, String> {
-    // Include completed/cancelled jobs retained by CUPS: Print Centre is a
-    // recovery and audit surface, not merely a duplicate of the transient
-    // portal dialog.
+    // Completed and cancelled jobs are included: Print Centre recovers and audits, it does not mirror
+    // the transient queue.
     let mut jobs = parse_jobs(&run_capture("lpstat", &["-W", "all", "-o"])?);
     let destinations: BTreeSet<String> = jobs.iter().map(|job| job.destination.clone()).collect();
     for destination in destinations {
@@ -355,16 +319,12 @@ fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
     run_capture("ipptool", &["-tv", &uri, test])
 }
 
-/// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
-/// IPP capability probing to cups-filters and therefore avoids a Tilo-specific
-/// discovery stack or legacy PPD downloads.
+/// Only driverless IPP devices: `driverless` leaves DNS-SD and capability probing to cups-filters.
 pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
     Ok(parse_driverless(&run_capture("driverless", &[])?))
 }
 
-/// Whether `printer` already backs one of `queues`: the same device,
-/// whichever of its addresses (`ipp`/`ipps`, port, trailing slash) the queue
-/// was added with.
+/// The same device, whichever of its addresses (`ipp`/`ipps`, port, trailing slash) the queue names.
 pub fn is_added(printer: &DiscoveredPrinter, queues: &[PrinterQueue]) -> bool {
     let wanted = device_identity(&printer.uri);
     queues
@@ -373,8 +333,6 @@ pub fn is_added(printer: &DiscoveredPrinter, queues: &[PrinterQueue]) -> bool {
         .any(|uri| device_identity(uri) == wanted)
 }
 
-/// The printers in `found` that no queue in `queues` prints to yet: the ones
-/// that can still be added.
 pub fn not_added(found: &[DiscoveredPrinter], queues: &[PrinterQueue]) -> Vec<DiscoveredPrinter> {
     found
         .iter()
@@ -383,10 +341,7 @@ pub fn not_added(found: &[DiscoveredPrinter], queues: &[PrinterQueue]) -> Vec<Di
         .collect()
 }
 
-/// What tells two printer URIs apart as devices. A printer advertised over
-/// DNS-SD is the same device as `ipp://NAME._ipp._tcp.local/` and
-/// `ipps://NAME._ipps._tcp.local/`; a printer at an address is its host and
-/// resource path, whatever the scheme and port.
+/// What tells two printer URIs apart as devices.
 fn device_identity(uri: &str) -> String {
     let rest = uri.split_once("://").map_or(uri, |(_, rest)| rest);
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -408,12 +363,11 @@ fn device_identity(uri: &str) -> String {
     format!("{host}/{}", path.trim_end_matches('/'))
 }
 
-/// Add a driverless IPP printer at `uri`, naming the queue `requested_name`.
 pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     validate_uri(uri)?;
     let name = queue_name(requested_name)?;
-    // One queue per printer: CUPS's own list decides, so a second window,
-    // a stale search or another app can't add the same printer twice.
+    // One queue per printer: CUPS's own list decides, so a second window, a stale search or another
+    // app can't add the same printer twice.
     let devices = parse_device_uris(&run_capture("lpstat", &["-v"]).unwrap_or_default());
     let wanted = device_identity(uri);
     if let Some((queue, _)) = devices
@@ -428,50 +382,40 @@ pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     )
 }
 
-/// Remove the print queue `name`.
 pub fn remove_queue(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpadmin", &["-x", &name])
 }
 
-/// Make `name` the default print queue.
 pub fn set_default(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpoptions", &["-d", &name])
 }
 
-/// Enable/accept or disable/reject jobs on the print queue `name`.
 pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
     let name = queue_name(name)?;
     if enabled {
         run("cupsenable", &[&name])?;
         run("cupsaccept", &[&name])
     } else {
-        // Stop accepting before disabling so a paused queue does not keep
-        // accumulating work users believe will print immediately.
+        // Stop accepting before disabling so a paused queue does not keep accumulating work users
+        // believe will print immediately.
         run("cupsreject", &[&name])?;
         run("cupsdisable", &[&name])
     }
 }
 
-/// Cancel the CUPS job `id`.
 pub fn cancel_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("cancel", &[id])
 }
 
-/// Restart the CUPS job `id`.
 pub fn retry_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("lp", &["-i", id, "-H", "restart"])
 }
 
-/// Submit one portal-authorized local document to a named queue.
-///
-/// # Errors
-///
-/// Returns an error if the queue, file, or bounded settings are invalid, or
-/// if CUPS cannot accept the document.
+/// Submits one portal-authorized local document to a named queue.
 pub fn print_document(
     queue: &str,
     path: &std::path::Path,
@@ -504,9 +448,7 @@ pub fn print_document(
     run("lp", &borrowed)
 }
 
-/// The `-o key=value` pairs `settings` asks of `queue`, each one a value the
-/// driver reported: an option the printer never listed is refused here rather
-/// than silently dropped by CUPS after the person chose it.
+/// Each pair is a value the driver reported: an option the printer never listed is refused here.
 fn print_options(queue: &str, settings: &PrintSettings) -> Result<Vec<(String, String)>, String> {
     let mut options: Vec<(String, String)> = Vec::new();
     if let Some(range) = &settings.page_range {
@@ -525,8 +467,8 @@ fn print_options(queue: &str, settings: &PrintSettings) -> Result<Vec<(String, S
     if unsupported == 0 {
         return Ok(options);
     }
-    // Whatever the driver reports decides which of them may travel; a queue
-    // that cannot answer keeps only what every printer reads (pages, sides).
+    // Whatever the driver reports decides which of them may travel; a queue that cannot answer keeps
+    // only what every printer reads (pages, sides).
     let reported = printer_options(queue).unwrap_or_default();
     for (name, value) in asked {
         let Some(value) = value else { continue };
@@ -815,8 +757,8 @@ pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
             })
         })
         .fold(Vec::new(), |mut found: Vec<DiscoveredPrinter>, printer| {
-            // A printer advertising both `ipp` and `ipps` is one printer,
-            // reached over `ipps` when it offers it.
+            // A printer advertising both `ipp` and `ipps` is one printer, reached over `ipps` when it
+            // offers it.
             let identity = device_identity(&printer.uri);
             match found
                 .iter_mut()
@@ -937,25 +879,20 @@ mod tests {
     }
 }
 
-/// What a subscription to the print service's notifications made by
-/// [`follow_changes`] carries as its user data: whose it is, by process.
+/// The user data of the subscription [`follow_changes`] makes: whose it is, by process.
 const FOLLOWER: &str = "tilo-follow:";
 
-/// The notifications a follower asks the print service for: queues added,
-/// removed or changed, and jobs made, moving on or done.
+/// Queues added, removed or changed, and jobs made, moving on or done.
 const FOLLOWED_EVENTS: &str = "printer-added,printer-deleted,printer-state-changed,\
 printer-config-changed,job-created,job-state-changed,job-completed";
 
-/// The subscription a [`PrintFollow`] made, and whether it was let go
-/// before the subscription was.
 #[derive(Debug, Default)]
 struct Subscribed {
     id: Option<u32>,
     dropped: bool,
 }
 
-/// Following the print service for [`follow_changes`]; it stops, and its
-/// subscription is cancelled, when this is dropped.
+/// Stops, and cancels its subscription, when dropped.
 #[derive(Debug)]
 pub struct PrintFollow {
     task: tilo_rt::JoinHandle<()>,
@@ -979,17 +916,7 @@ impl Drop for PrintFollow {
     }
 }
 
-/// Call `on_change` on the app runtime each time the print service reports
-/// a queue or a job changed: it subscribes to the service's notifications,
-/// which it sends on the system bus, and listens for them. Nothing polls.
-/// The subscription is made off the calling thread, and subscriptions an
-/// earlier follower left behind (a process that ended without cancelling)
-/// are cancelled first.
-///
-/// # Errors
-///
-/// When the app runtime cannot start. A print service or a system bus that
-/// cannot be reached is logged and followed no further.
+/// Calls `on_change` on the app runtime whenever the print service reports a queue or a job changed.
 pub fn follow_changes(on_change: impl Fn() + Send + Sync + 'static) -> Result<PrintFollow, String> {
     follow_boxed(Box::new(on_change))
 }
@@ -1048,8 +975,6 @@ fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, S
     Ok(PrintFollow { task, subscribed })
 }
 
-/// Run the IPP request `test` (an `ipptool` test) at the print service with
-/// `values` defined; what `ipptool` printed.
 fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
     if !crate::process::which("ipptool") {
         return Err("ipptool not installed".into());
@@ -1119,8 +1044,6 @@ const CANCEL_TEST: &str = "{
 }
 ";
 
-/// Subscribe to the print service's notifications on the system bus; the
-/// subscription's id.
 fn subscribe() -> Result<u32, String> {
     let follower = format!("{FOLLOWER}{}", std::process::id());
     let output = ipp_request(
@@ -1140,7 +1063,7 @@ fn cancel_subscription(id: u32) {
     }
 }
 
-/// Cancel the subscriptions a follower whose process has ended left.
+/// Cancels the subscriptions a follower whose process has ended left.
 fn cancel_left_behind() {
     let Ok(listed) = ipp_request(LIST_TEST, &[]) else {
         return;
@@ -1157,7 +1080,6 @@ fn cancel_left_behind() {
     }
 }
 
-/// Each subscription `ipptool -tv` printed, with its user data.
 fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
     output
         .split("-- separator --")
@@ -1177,8 +1099,7 @@ fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
 
 #[cfg(test)]
 mod follow_tests {
-    /// What `ipptool -tv` prints of two subscriptions is read as their ids
-    /// and user data, each group on its own.
+    /// The ids and user data `ipptool -tv` prints for two subscriptions, each group on its own.
     #[test]
     fn subscriptions_are_read_group_by_group() {
         let output = "    /dev/stdin [PASS]

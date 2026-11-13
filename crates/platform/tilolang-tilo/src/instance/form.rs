@@ -610,6 +610,7 @@ fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
             BTreeMap::new(),
             Some(ui::Binding {
                 field: None,
+                kind: None,
                 name: "value".to_owned(),
             }),
             Vec::new(),
@@ -630,6 +631,7 @@ fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
         props,
         Some(ui::Binding {
             field: None,
+            kind: None,
             name: "value".to_owned(),
         }),
         children,
@@ -661,6 +663,7 @@ fn text_node(
         props,
         Some(ui::Binding {
             field: None,
+            kind: None,
             name: label.to_owned(),
         }),
         Vec::new(),

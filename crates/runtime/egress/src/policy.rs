@@ -1,23 +1,12 @@
-//! Which names a sandbox may resolve, and so which addresses it may reach.
-//!
-//! The grammar and the decision are `collab_types::caps::net`'s — the same
-//! [`EgressPolicy`] the launcher's gate enforces for apps — so a grant means
-//! one thing to an app and to an environment: `*` is every host, a leading
-//! `.` (or `*.`) is a domain and everything under it, anything else is one
-//! exact host, and an IP literal is not a host. What is this crate's own is
-//! the backend: which *addresses* the DNS stub may admit for an allowed
-//! name ([`admissible`]).
+//! Which names a sandbox may resolve, and so which addresses it may reach;
+//! the grammar and the decision are `collab_types::caps::net`'s.
 
 use std::net::IpAddr;
 
 pub use collab_types::caps::{Allowed, EgressPolicy, HostPattern, NetHostError};
 
-/// Whether an address a resolver answered for an allowed name may be
-/// admitted. Never the unspecified, multicast, broadcast, link-local
-/// (cloud metadata lives at `169.254.169.254`) or loopback addresses — the
-/// last is the sandbox's own anyway. Private and shared ranges only for an
-/// exact host grant: a name under a granted domain may belong to someone
-/// else, who could point it at the local network (DNS rebinding).
+/// Whether an address a resolver answered for an allowed name may be admitted:
+/// never the unspecified, multicast, broadcast, link-local or loopback ones.
 pub fn admissible(addr: IpAddr, how: Allowed) -> bool {
     match addr {
         IpAddr::V4(v4) => {
@@ -169,10 +158,6 @@ mod tests {
         }
     }
 
-    /// Apps and environments answer every row of the shared vector file
-    /// identically: this is the environment side, through the policy the DNS
-    /// stub consults; `launcher`'s `app_egress_answers_every_shared_vector`
-    /// is the app side.
     #[test]
     fn environment_egress_answers_every_shared_vector() {
         let vectors = include_str!("../../../collab/collab-types/tests/net_host_vectors.txt");

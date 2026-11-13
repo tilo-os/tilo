@@ -1,5 +1,5 @@
-//! A block that is only a Markdown picture: its description, where its bytes are, and the width
-//! the person sized it to. The one place the `![alt|width](source)` form is read and written.
+//! A block that is only a Markdown picture: its description, where its bytes are, and the width the
+//! person sized it to. The one place the `![alt|width](source)` form is read and written.
 
 /// A block that is only a Markdown picture: its description and where its
 /// bytes are. A width the person sized it to (`![alt|480](…)`, as Obsidian
@@ -31,7 +31,6 @@ pub(super) fn markdown_image_parts(source: &str) -> Option<(&str, &str, Option<u
     Some((alt.trim(), destination, width))
 }
 
-/// `source` with its picture sized to `width` logical pixels.
 pub(super) fn with_markdown_image_width(source: &str, width: u32) -> Option<String> {
     let (alt, destination, _) = markdown_image_parts(source)?;
     let width = width.clamp(*IMAGE_WIDTH_RANGE.start(), *IMAGE_WIDTH_RANGE.end());

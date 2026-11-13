@@ -2,6 +2,7 @@
 
 console-effects-view-run = Lauf öffnen
 console-effects-view-agent = Agent öffnen
+console-effects-view-connect = Agent verbinden
 console-effects-stop-agent = Agent stoppen
 console-effects-undo-agent-run = Agent-Lauf rückgängig machen
 console-effects-take-over-agent = Übernehmen

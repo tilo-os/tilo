@@ -5,8 +5,6 @@ use super::*;
 const W: u32 = 1400;
 const H: u32 = 800;
 
-/// A shell with a sidebar, a content column and a one-control band whose
-/// presses are counted.
 fn banded(kind: ContentKind) -> (NavShell, SharedRc<Cell<usize>>) {
     let presses = SharedRc::new(Cell::new(0usize));
     let counted = SharedRc::clone(&presses);

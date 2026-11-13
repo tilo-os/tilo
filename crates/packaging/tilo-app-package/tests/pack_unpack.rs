@@ -47,7 +47,6 @@ fn packed_fixture() -> (SigningKey, tempfile::TempDir, tilo_app_package::Packed)
 
 #[test]
 fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
-    // phase: pack_archive_unpack_roundtrip
     {
         let (_sk, payload_dir, packed) = packed_fixture();
 
@@ -85,7 +84,6 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
             assert_ne!(mode & 0o111, 0, "the entrypoint is executable");
         }
     }
-    // phase: unpack_refuses_bytes_that_do_not_match_the_collection
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
         let mut blobs = BTreeMap::new();
@@ -106,7 +104,6 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
             "{error} ({target:?})"
         );
     }
-    // phase: deduplicated_blob_references_cannot_expand_an_app_past_the_materialized_limit
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
         // Past the materialized limit when referenced 2,049 times, while
@@ -125,7 +122,6 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
             Err(tilo_app_package::UnpackError::PayloadTooLarge { .. })
         ));
     }
-    // phase: empty_files_cannot_expand_an_app_past_the_inode_budget
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
         let empty = BlobHash::of(&[]);
@@ -144,11 +140,9 @@ fn unpacking_verifies_bytes_and_enforces_materialised_limits() {
 
 #[test]
 fn package_signatures_bind_the_hash_chain_and_root() {
-    // phase: sign_verify_symmetric
     {
         let (sk_a, _payload_dir, packed) = packed_fixture();
 
-        // Verify against A's pubkey → Trusted.
         let v_a = verify(&packed.meta, &[sk_a.verifying_key().to_bytes()]);
         assert!(matches!(v_a, Verification::Trusted { .. }), "got {v_a:?}");
 
@@ -161,7 +155,6 @@ fn package_signatures_bind_the_hash_chain_and_root() {
             "got {v_b:?}"
         );
     }
-    // phase: tampered_manifest_breaks_the_hash_chain
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
         let mut manifest_bytes = packed.meta.manifest_bytes.clone();
@@ -175,7 +168,6 @@ fn package_signatures_bind_the_hash_chain_and_root() {
         .unwrap_err();
         assert!(matches!(error, MetaError::ManifestHashMismatch), "{error}");
     }
-    // phase: a_root_that_is_not_the_package_id_is_refused
     {
         let (_sk, _payload_dir, packed) = packed_fixture();
         let error = PackageMeta::from_parts(
@@ -187,7 +179,6 @@ fn package_signatures_bind_the_hash_chain_and_root() {
         .unwrap_err();
         assert!(matches!(error, MetaError::IdMismatch { .. }), "{error}");
     }
-    // phase: a_forged_signature_fails_verify
     {
         let (sk, _payload_dir, packed) = packed_fixture();
         let mut root = packed.meta.root.clone();
@@ -203,7 +194,6 @@ fn package_signatures_bind_the_hash_chain_and_root() {
         let v = verify(&forged, &[sk.verifying_key().to_bytes()]);
         assert!(matches!(v, Verification::SignatureMismatch), "got {v:?}");
     }
-    // phase: unsigned_root_fails_verify_with_not_signed
     {
         let (sk, _payload_dir, packed) = packed_fixture();
         let unsigned = SignedRoot {
@@ -324,7 +314,6 @@ fn thin_runtime_restores_only_its_signed_entrypoint_execute_bits() {
     assert!(process.status.success());
     assert_eq!(process.stdout, b"thin engine started\n");
 
-    // Changing which file is executable breaks the signed manifest hash.
     let mut forged = decoded.meta.manifest.clone();
     forged.entrypoint.as_mut().unwrap().bin = "resources.pak".into();
     assert!(matches!(

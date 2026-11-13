@@ -204,7 +204,6 @@ fn a_field_being_checked_keeps_its_face_and_says_it_is_busy() {
     assert!(!node.state.busy && !node.state.disabled);
 }
 
-/// The secret field's label.
 fn t_label(prompt: &SecretPrompt) -> String {
     prompt
         .fields
@@ -297,7 +296,6 @@ fn a_short_pin_is_refused_in_place() {
             .field(FieldRole::Pin)
             .is_some_and(TextInput::is_focused)
     );
-    // Too short is completed, not retyped: the caret stays at the end.
     typed(&mut prompt, "34");
     dispatch(&mut prompt, &named_key(NamedKey::Enter));
     assert_eq!(submitted(&mut prompt).secret.as_str(), "1234");
@@ -598,13 +596,11 @@ fn choices_and_the_option_are_answered_with_the_secret() {
         .with_choices("Authenticate as", vec!["quinn".into(), "root".into()], 0)
         .with_option("Remember on this device", true);
     typed(&mut prompt, "pw");
-    // Back to the choices, then the next one.
     Dispatch::new()
         .modifiers(ModifiersState::SHIFT)
         .send(&mut prompt, &named_key(NamedKey::Tab));
     dispatch(&mut prompt, &named_key(NamedKey::ArrowRight));
     assert_eq!(prompt.choice(), 1);
-    // On to the option past the field, and untick it.
     dispatch(&mut prompt, &named_key(NamedKey::Tab));
     dispatch(&mut prompt, &named_key(NamedKey::Tab));
     dispatch(&mut prompt, &named_key(NamedKey::Space));
@@ -631,7 +627,6 @@ fn a_prompt_built_afresh_keeps_what_was_typed_in_the_hosts_buffer() {
         "the host's buffer outlives the prompt"
     );
 
-    // The next build starts from it; wiping the prompt wipes it.
     let mut prompt = focused(SecretKind::Secret).with_secret_buffer(Arc::clone(&buffer));
     assert_eq!(
         prompt.field(FieldRole::Secret).map(TextInput::value),

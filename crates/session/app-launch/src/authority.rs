@@ -216,7 +216,7 @@ mod tests {
             serde_json::from_slice(&bytes).expect("a projection");
         projection.validate().expect("a valid projection");
         projection
-            .authority(&collab_types::action_authority::foreign_device_bound())
+            .authority()
             .decide(
                 &projection.app_node().action("new-note"),
                 ActionKind::Undoable,

@@ -10,12 +10,11 @@ use std::collections::{HashSet, VecDeque};
 use tilo_automerge::ApplyIncoming;
 
 const MAX_PENDING_ITEMS: usize = 64;
-/// A single remote change can be as large as the transport carries, so a
-/// deferred queue must hold at least one of them.
+/// A single remote change can be as large as the transport carries, so a deferred queue must hold at
+/// least one of them.
 const MAX_PENDING_BYTES: usize = collab_types::MAX_DOCUMENT_TRANSFER_BYTES;
 
-/// Only invalid mutation data may be quarantined. Owner/capacity failures keep
-/// their admitted queue entry for the existing lifetime/recovery policy.
+/// Only invalid mutation data may be quarantined.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RemoteApplyError {
     #[error("{0}")]
@@ -31,17 +30,16 @@ impl RemoteApplyError {
 
 /// What merging a peer's write into an owned document did.
 pub(crate) struct MergedRemote {
-    /// Whether the document changed; `None` while it cannot take the write
-    /// yet (an unfinished edit, a restore in flight).
+    /// Whether the document changed; `None` while it cannot take the write yet (an unfinished edit, a
+    /// restore in flight).
     pub(crate) changed: Option<bool>,
-    /// The changes the merge brought in. The route delivered them, so they
-    /// are never published back on it.
+    /// The changes the merge brought in. The route delivered them, so they are never published back on
+    /// it.
     pub(crate) observed: Vec<ChangeHash>,
 }
 
 impl MergedRemote {
-    /// A merge the document cannot take yet: an unfinished edit, a restore
-    /// in flight. Nothing was applied or observed.
+    /// A merge the document cannot take yet: an unfinished edit, a restore in flight.
     pub(crate) fn deferred() -> Self {
         Self {
             changed: None,
@@ -50,9 +48,8 @@ impl MergedRemote {
     }
 }
 
-/// Apply a mutation the host has already committed. Bytes from peers reach an
-/// app only after the host admitted them through `tilo_automerge_isolate`, so
-/// this applies in the app's own process.
+/// Apply a mutation the host has already committed. Bytes from peers reach an app only after the host
+/// admitted them through `tilo_automerge_isolate`, so this applies in the app's own process.
 pub(crate) fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
@@ -74,9 +71,9 @@ pub(crate) fn merge_committed(
     Ok(before != super::sorted_heads(doc.base_heads()))
 }
 
-/// [`merge_committed`] into `candidate`, a copy its caller keeps only when
-/// the mutation applied and validated: the changes load straight into it,
-/// with no second copy of the document and no merge of a whole one.
+/// [`merge_committed`] into `candidate`, a copy its caller keeps only when the mutation applied and
+/// validated: the changes load straight into it, with no second copy of the document and no merge of a
+/// whole one.
 pub(crate) fn merge_committed_into_copy(
     candidate: &mut AutoCommit,
     mutation: &DocumentMutation,
@@ -108,10 +105,7 @@ fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
     AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 
-/// Apply an incremental stream to `doc`, whole or not at all. Automerge's
-/// incremental loader takes a valid prefix of a stream that stops parsing,
-/// so every chunk is parsed first; the parsed changes are then applied, and
-/// the ones that need history `doc` lacks wait for it, as every delta's may.
+/// Apply an incremental stream to `doc`, whole or not at all.
 pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
     let changes = automerge::Automerge::parse_changes(bytes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
@@ -221,8 +215,7 @@ impl PendingRemote {
         self.queue.is_empty()
     }
 }
-/// A route an owner holds that the transport is not yet joined to, and the
-/// kind its record holds.
+/// A route an owner holds that the transport is not yet joined to, and the kind its record holds.
 pub(crate) struct RouteJoin {
     pub(crate) route: RouteSpec,
     pub(crate) record_kind: crate::record::RecordKind,
@@ -231,33 +224,21 @@ pub(crate) struct RouteJoin {
 pub(crate) struct OwnerRoute {
     pub(crate) route: RouteSpec,
     pub(crate) owners: Vec<HistoryOwner>,
-    /// Whether this app publishes what changes in the record. A record it
-    /// only reads is joined and merged from the route, and nothing local is
-    /// sent there: the identity service signs no change of another app's
-    /// record, and a refusal stops the whole collaboration
-    /// ([`HistoryOwner::publishes_record`]).
+    /// Whether this app publishes what changes in the record.
     pub(crate) publishes: bool,
     /// Heads the transport holds from this app: the changes it accepted.
-    /// Changes that arrived from the route are counted as held too, without
-    /// claiming this app's own unsent ones were sent, so the next
-    /// publication omits the echo and keeps the local changes.
     pub(crate) sent: crate::state::DocumentFrontier,
     pub(crate) needs_snapshot: bool,
     pub(crate) pending: PendingRemote,
     /// Why local changes on this route are not reaching peers.
     pub(crate) outbound_failure: Option<String>,
-    /// A record kept beside the shown document ([`Widget::record_owners`]):
-    /// no host replays its route, so a snapshot that leaves this replica
-    /// ahead of its sender is answered with this replica's own.
+    /// A record kept beside the shown document ([`Widget::record_owners`]): no host replays its route,
+    /// so a snapshot that leaves this replica ahead of its sender is answered with this replica's own.
     pub(crate) answers_snapshots: bool,
-    /// Joined, and not yet open for documents: its first publication
-    /// waits for the route instead of failing. A record a running action
-    /// created (the next part of a chain) has no route until the action
-    /// made it.
+    /// Joined, and not yet open for documents: its first publication waits for the route instead of
+    /// failing.
     pub(crate) opening: bool,
 }
-/// A record of a live owner's tree, and the lifetime its owner on the
-/// route lives by.
 struct TreeRecord {
     store: crate::record::RecordStore,
     checkout: crate::record::RecordCheckout,
@@ -271,31 +252,26 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
-    /// Whether the primary route was given the window's document whole since
-    /// it opened on this witness: a route's first publication is the
-    /// document whole, and only the changes made after it go out one by one
-    /// ([`Self::observe_witness`] starts a new route over).
+    /// Whether the primary route was given the window's document whole since it opened on this witness:
+    /// a route's first publication is the document whole, and only the changes made after it go out one
+    /// by one ([`Self::observe_witness`] starts a new route over).
     pub(crate) primary_whole: bool,
-    /// Why local changes on the primary or workspace-index route are not reaching
-    /// peers. Cleared by the next accepted change.
+    /// Why local changes on the primary or workspace-index route are not reaching peers.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
-    /// The records held as part of a live owner's tree ([`RecordId::tree`])
-    /// that no view owns: each keeps its route while its store has it open.
+    /// The records held as part of a live owner's tree ([`RecordId::tree`]) that no view owns: each
+    /// keeps its route while its store has it open.
     tree: Vec<TreeRecord>,
     #[cfg(test)]
     pub(crate) sent: Vec<(RouteSpec, crate::collaboration::CollabRequest)>,
-    /// Transport outcome the recording test transport reports for owned
-    /// routes; `None` accepts every change.
+    /// Transport outcome the recording test transport reports for owned routes; `None` accepts every
+    /// change.
     #[cfg(test)]
     pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
-    /// Give every record of a live owner's tree its own owner: a chat's
-    /// message parts, a container's child records. They are records of the
-    /// owner's store, synced on their own routes like the owner's record,
-    /// whether or not a view shows them. Without this a part only one device
-    /// wrote never left it.
+    /// Give every record of a live owner's tree its own owner: a chat's message parts, a container's
+    /// child records. Without this a part only one device wrote never left it.
     fn hold_trees(&mut self, current: &mut Vec<(HistoryOwner, bool)>) {
         let mut stores: Vec<crate::record::RecordStore> = Vec::new();
         for (owner, _) in current.iter() {
@@ -329,7 +305,6 @@ impl OwnerDocumentRoutes {
                 held.push(entry);
             }
         }
-        // What closed, or a view now owns, gives up its tree owner.
         for gone in self.tree.drain(..) {
             gone.lifetime.active.set(false);
         }
@@ -339,8 +314,6 @@ impl OwnerDocumentRoutes {
                     entry.store.clone(),
                     entry.checkout.clone(),
                     &entry.lifetime,
-                    // A record held for a live owner's tree is that owner's
-                    // own: the app publishes it.
                     true,
                 ),
                 true,
@@ -349,9 +322,9 @@ impl OwnerDocumentRoutes {
         self.tree = held;
     }
 
-    /// Whether `entry` syncs only records held for a live owner's tree
-    /// ([`Self::hold_trees`]): no view shows them and no published action
-    /// names them, so the window's published surface never waits for them.
+    /// Whether `entry` syncs only records held for a live owner's tree ([`Self::hold_trees`]): no view
+    /// shows them and no published action names them, so the window's published surface never waits for
+    /// them.
     pub(crate) fn holds_only_tree_records(&self, entry: &OwnerRoute) -> bool {
         entry.owners.iter().all(|owner| {
             let (store, checkout) = owner.store_checkout();
@@ -392,15 +365,13 @@ impl OwnerDocumentRoutes {
         let mut current = vec![];
         collect(root, &mut current);
         self.hold_trees(&mut current);
-        // Hidden live subtrees retain their admitted collaboration owners.
         crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
             collect(live, &mut current)
         });
         self.install(current, outer)
     }
 
-    /// Follow the primary route `witness` (of `generation`): another one
-    /// starts every route over. Whether there is one to sync beside.
+    /// Follow the primary route `witness` (of `generation`): another one starts every route over.
     fn observe_witness(&mut self, witness: Option<PrimaryRouteWitness>, generation: u64) -> bool {
         if self.witness != witness || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
@@ -419,9 +390,8 @@ impl OwnerDocumentRoutes {
         self.witness.is_some()
     }
 
-    /// Hold the routes of the `current` owners (each with whether it
-    /// answers snapshot requests), giving up those no owner holds any more.
-    /// The routes newly joined.
+    /// Hold the routes of the `current` owners (each with whether it answers snapshot requests), giving
+    /// up those no owner holds any more.
     fn install(
         &mut self,
         current: Vec<(HistoryOwner, bool)>,
@@ -565,8 +535,8 @@ mod committed_changes_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// What a window holds, and the workspace's next committed change as the
-    /// owner hands it over: changes that build on what the window holds.
+    /// What a window holds, and the workspace's next committed change as the owner hands it over:
+    /// changes that build on what the window holds.
     fn held_and_delta() -> (AutoCommit, AutoCommit, Vec<u8>) {
         let mut workspace = AutoCommit::new();
         workspace.put(automerge::ROOT, "title", "notes").unwrap();
@@ -579,7 +549,6 @@ mod committed_changes_tests {
         (workspace, held, delta)
     }
 
-    /// The ERROR lines logged while `run` runs on this thread.
     fn errors_during(run: impl FnOnce()) -> String {
         #[derive(Clone, Default)]
         struct Sink(Arc<Mutex<Vec<u8>>>);

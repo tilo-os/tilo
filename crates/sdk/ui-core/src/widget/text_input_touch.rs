@@ -9,13 +9,9 @@ use taffy::NodeId;
 use vello::kurbo::Point;
 use winit::event::{Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
 
-/// What the finger that owns the field ([`TextInput::active_touch`]) does.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum TouchIntent {
-    /// Within the tap's slop: its lift is a tap.
     Undecided,
-    /// It went across the text: the drag selects, and the scroll the
-    /// toolkit makes of the same finger is the selection's, not the page's.
     Selecting,
     /// Another finger joined, or an open menu took it: the field keeps the
     /// contact but neither taps nor selects with it.
@@ -23,9 +19,6 @@ pub(super) enum TouchIntent {
 }
 
 impl TextInput {
-    /// The scroll the toolkit makes of the finger on this field: it tells
-    /// which way the finger went, and while the finger selects, it is the
-    /// selection's, not the page's. True when the field took it.
     pub(super) fn touch_takes_wheel(
         &mut self,
         event: &WindowEvent,
@@ -68,13 +61,9 @@ impl TextInput {
             touch.location.y / scale_factor,
         );
         match touch.phase {
-            // Nothing moves yet: a lift is a tap, a drag across the text
-            // selects, and a drag up or down scrolls what holds the field,
-            // which neither takes focus nor brings up the keyboard.
             TouchPhase::Started if self.active_touch.is_none() && self.rect.contains(point) => {
                 self.active_touch = Some(touch.id);
                 self.touch_origin = touch.location;
-                // A finger on an open menu is the menu's.
                 self.touch_intent = if self.context_menu.is_open() {
                     TouchIntent::Withdrawn
                 } else {
@@ -85,7 +74,6 @@ impl TextInput {
                 *handled = true;
             }
             TouchPhase::Started if self.active_touch.is_some() => {
-                // A second finger makes it a two-finger gesture: no tap.
                 if self.touch_intent == TouchIntent::Undecided {
                     self.touch_intent = TouchIntent::Withdrawn;
                 }
@@ -103,8 +91,6 @@ impl TextInput {
                 if self.touch_intent == TouchIntent::Selecting {
                     self.handle_cursor_moved(touch.location, scale_factor, handled);
                 }
-                // Movement that leaves the field can retain the same resolved
-                // cursor, but the owned gesture is consumed until release.
                 if self.active_touch.is_some() {
                     *handled = true;
                 }
@@ -156,8 +142,6 @@ impl TextInput {
         }
     }
 
-    /// A finger lifted where it came down: a press of the trailing button
-    /// or the suggestion under it, or else a click on the text there.
     fn touch_tap(
         &mut self,
         focus_target: &mut Option<NodeId>,
@@ -165,7 +149,6 @@ impl TextInput {
         handled: &mut bool,
     ) {
         if self.context_menu.is_open() {
-            // The hold opened it; the lift leaves it open.
             return;
         }
         if self.is_focused
@@ -184,17 +167,16 @@ impl TextInput {
         self.handle_left_press(Modifiers::default(), focus_target, node_id, handled);
     }
 
-    /// The button or finger that pressed lifts: the selection is made.
     pub(super) fn end_drag(&mut self) {
         self.is_dragging = false;
         self.drag_select.release();
         self.publish_primary_selection();
-        // A click, not a drag, on a link of read-only text opens it.
         if self.read_only && !self.has_selection() {
             let byte = self.resolve_position(self.last_mouse_pos).byte;
             if let Some(target) = self.link_at(byte) {
                 crate::widget::open_external_url(&target);
             }
         }
+        self.report_selection();
     }
 }

@@ -1,4 +1,4 @@
-use super::{InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate};
+use super::{InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate, VERSION};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 fn fixture(
@@ -239,7 +239,7 @@ fn entry_versions(root: &std::path::Path) -> Vec<u64> {
 }
 
 #[test]
-fn prepared_effect_after_a_native_task_keeps_the_writer_floor() {
+fn every_write_is_stamped_the_store_version() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("journal");
     let (mut journal, key, request, update) = fixture(&root);
@@ -248,11 +248,11 @@ fn prepared_effect_after_a_native_task_keeps_the_writer_floor() {
     drop(journal);
     assert_eq!(
         entry_versions(&root),
-        [1, 6, 6],
-        "preparing an effect never lowers the floor a native task raised"
+        [u64::from(VERSION); 3],
+        "every entry names the store version this build writes"
     );
     let journal = InvocationJournal::open(&root).expect("the store reopens after a restart");
-    assert_eq!(journal.snapshot.version, 6);
+    assert_eq!(journal.snapshot.version, VERSION);
     assert!(journal.lookup(&native).unwrap().unwrap().uncertain);
     assert!(
         journal
@@ -265,41 +265,7 @@ fn prepared_effect_after_a_native_task_keeps_the_writer_floor() {
 }
 
 #[test]
-fn store_with_an_entry_stamped_below_the_floor_reopens_under_the_raised_floor() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("journal");
-    let (mut journal, key, request, update) = fixture(&root);
-    let native = admit_native_task(&mut journal, &key.workspace);
-    let prepared = journal
-        .prepare_effect(&key, update.clone(), &request)
-        .unwrap();
-    journal.finish_effect(&key, &prepared).unwrap();
-    drop(journal);
-    // What an earlier writer left: every entry after the preparation stamped
-    // 5, beneath the native task's floor of 6.
-    let path = root.join("records.json");
-    let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
-    let mut lines: Vec<String> = stored.lines().map(str::to_owned).collect();
-    for line in lines.iter_mut().skip(3) {
-        *line = line.replacen("{\"version\":6,", "{\"version\":5,", 1);
-    }
-    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-    assert_eq!(entry_versions(&root), [1, 6, 5, 5]);
-
-    let mut journal = InvocationJournal::open(&root).expect("a downgraded entry is recovered");
-    assert_eq!(journal.snapshot.version, 6, "the floor never falls");
-    let record = journal.lookup(&key).unwrap().unwrap();
-    assert_eq!(record.update, update);
-    assert!(!record.uncertain, "the finished effect stays terminal");
-    let native_record = journal.lookup(&native).unwrap().unwrap();
-    assert!(native_record.uncertain, "recovery never reissues dispatch");
-    assert!(!journal.admit(native, native_record.intent, 2).unwrap());
-    drop(journal);
-    drop(InvocationJournal::open(&root).expect("the recovered store reopens"));
-}
-
-#[test]
-fn native_task_entry_stamped_below_its_floor_is_still_refused() {
+fn an_entry_of_another_version_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("journal");
     let (mut journal, key, _, _) = fixture(&root);
@@ -309,10 +275,10 @@ fn native_task_entry_stamped_below_its_floor_is_still_refused() {
     let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
     let mut lines: Vec<String> = stored.lines().map(str::to_owned).collect();
     let last = lines.last_mut().unwrap();
-    *last = last.replacen("{\"version\":6,", "{\"version\":5,", 1);
+    *last = last.replacen(&format!("{{\"version\":{VERSION},"), "{\"version\":6,", 1);
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     assert!(
         InvocationJournal::open(&root).is_err(),
-        "no earlier entry raised the floor a native task row requires"
+        "a store of a version this build does not read is refused"
     );
 }

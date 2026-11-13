@@ -1,14 +1,6 @@
-//! Disks — Tilo native disk utility, built on the `ui` toolkit.
-//!
-//! A drive list in the sidebar, and a detail page with a proportional
-//! partition map, filesystem usage and a SMART health summary beside it.
-//! Topology is probed from `lsblk` + `smartctl` in a live window;
-//! screenshots use a curated sample machine so they are fully populated
-//! offline.
+//! Disks — the machine's drives, their partitions and the operations on them.
 
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

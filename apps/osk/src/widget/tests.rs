@@ -212,7 +212,6 @@ fn backspace_after_a_correction_reverts_it_and_keeps_the_word() {
         ]
     );
     assert_eq!(osk.pending_text(), "teh ");
-    // Kept as typed: the same word is no longer corrected.
     type_word(&mut osk, "teh");
     osk.apply_action(KeyAction::Space);
     assert_eq!(osk.pending_text(), "teh teh ");
@@ -475,7 +474,6 @@ fn pointer_and_toolbar_taps_route_to_their_targets() {
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut osk, 800.0, 360.0);
 
-        // Pick the rect of the 'q' key (row 0, col 0) and aim at its centre.
         let target = KeyId::new(0, 0);
         let rect = osk
             .key_geometry()
@@ -538,7 +536,6 @@ fn pointer_and_toolbar_taps_route_to_their_targets() {
         osk.apply_action(KeyAction::Layout("azerty".into()));
         assert_eq!(osk.active_layout_name(), "azerty");
         lay_out(&mut osk, 800.0, 360.0);
-        // AZERTY row 0 starts with 'a'.
         assert!(osk.activate_label("a"));
         assert_eq!(osk.pending_text(), "a");
     }
@@ -680,7 +677,6 @@ fn initial_purpose_selects_matching_layout_and_names_round_trip() {
         assert!(osk.activate_label("2"));
         assert!(osk.activate_label("3"));
         assert_eq!(osk.pending_text(), "123");
-        // There is no Shift key to tap on a number pad.
         assert!(!osk.activate_label("Shift"), "no Shift on the number pad");
     }
 
@@ -764,11 +760,8 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
     {
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut osk, 720.0, 360.0);
-        // Cold start: the bar shows common-word predictions, so geometry is
-        // populated and chips fit within the suggestion band.
         let path = path_through(&osk, "hello");
         osk.swipe(&path);
-        // Re-layout so suggestion_rects is rebuilt from the new suggestions.
         lay_out(&mut osk, 720.0, 360.0);
         let n = osk.suggestions().len();
         assert!(n > 0);
@@ -801,11 +794,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
 
 // --- swipe + prediction + suggestion bar -----------------------
 
-/// Build a dense pointer path through the live key centres of `word`,
-/// using the widget's own laid-out geometry (the same source of truth the
-/// decoder consumes).
 fn path_through(osk: &OskWidget, word: &str) -> Vec<Point> {
-    // letter -> key centre from the current frame's geometry.
     let layout = osk.current_layout();
     let mut centres: HashMap<char, Point> = HashMap::new();
     for (id, r) in osk.key_geometry() {
@@ -864,14 +853,11 @@ fn swipes_and_suggestion_chips_edit_the_current_word() {
     {
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut osk, 720.0, 360.0);
-        // Type a prefix that yields completions, e.g. "th" -> the/this/that...
         osk.activate_label("t");
         osk.activate_label("h");
         assert_eq!(osk.current_word(), "th");
         let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
         assert!(!chips.is_empty(), "completions shown for 'th': {chips:?}");
-        // Tap the top chip; it replaces the in-progress word with the full
-        // word and a space, committed in one step.
         let top = chips[0].clone();
         osk.take_output();
         assert!(osk.activate_suggestion(0));
@@ -893,7 +879,6 @@ fn swipes_and_suggestion_chips_edit_the_current_word() {
             chips.contains(&"the".to_string()),
             "next-word after 'of': {chips:?}"
         );
-        // Find and tap the "the" chip; it inserts "the ".
         let idx = chips.iter().position(|w| w == "the").unwrap();
         assert!(osk.activate_suggestion(idx));
         assert_eq!(osk.pending_text(), "of the ");
@@ -970,7 +955,6 @@ fn swipes_and_suggestion_chips_edit_the_current_word() {
             ui::testing::dispatch(osk, &ev);
         };
 
-        // Hover the first key, press, drag along the whole path, release.
         dispatch(
             &mut osk,
             WindowEvent::CursorMoved {
@@ -1188,8 +1172,6 @@ fn visibility_defaults_toggle_and_collapse_height() {
 
     eprintln!("phase hidden_keyboard_takes_zero_height");
     {
-        // A visible keyboard occupies its intrinsic height; when the compositor
-        // has hidden it the widget requests no height and paints nothing.
         let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut visible, 720.0, 360.0);
         assert!(visible.get_rect().height() > 0.0);
@@ -1208,7 +1190,6 @@ fn visibility_defaults_toggle_and_collapse_height() {
         osk.set_visible(true);
         assert!(osk.is_visible());
         assert!(osk.take_structure_dirty(), "showing relays out");
-        // Idempotent: setting the same state again is a no-op (no relayout).
         osk.set_visible(true);
         assert!(!osk.take_structure_dirty(), "no-op when unchanged");
         osk.set_visible(false);
@@ -1453,7 +1434,6 @@ fn search_is_typed_with_the_keys_and_enter_picks_the_best_match() {
 fn long_press_offers_skin_tones_and_commits_the_toned_form() {
     let mut osk = OskWidget::new();
     open_panel(&mut osk);
-    // Thumbs up is in People & Body; search puts it on screen.
     assert!(semantic(
         &mut osk,
         "osk:emoji-search",
@@ -1638,7 +1618,6 @@ fn touch_swipe(osk: &mut OskWidget, id: u64, word: &str) {
     for &point in path.iter().skip(1).take(path.len().saturating_sub(2)) {
         finger(osk, id, TouchPhase::Moved, point);
     }
-    // End owns the final endpoint, rather than repeating a Moved sample.
     finger(osk, id, TouchPhase::Ended, *path.last().unwrap());
 }
 
@@ -1660,8 +1639,6 @@ fn swipe_correction_preserves_the_phrase_and_the_next_gesture() {
     let correction = candidate.word.clone();
     let target = format!("osk:suggestion:{index}:{correction}");
     assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
-    // Swipe corrections remain preedit so another candidate can still
-    // replace them. The next gesture commits exactly one separating space.
     assert_eq!(osk.pending_text(), format!("the {correction}"));
     assert_eq!(osk.current_word(), correction);
     assert!(osk.word_from_swipe);
@@ -1998,7 +1975,6 @@ fn lifting_selects_the_accent_at_the_final_contact_position() {
     finger(&mut osk, 1, TouchPhase::Started, e.center());
     osk.poll_hold(osk.next_wake_deadline().unwrap());
     let accent = osk.alternates.as_ref().unwrap().1.cells[1].center();
-    // No intervening Moved event: the Ended event owns the last sample.
     finger(&mut osk, 1, TouchPhase::Ended, accent);
     assert_eq!(osk.pending_text(), "é");
 }
@@ -2055,14 +2031,11 @@ fn french_elisions_compose_as_prefix_plus_word() {
         "l'homme ",
         "only the word after the elision is corrected"
     );
-    // The word after the elision is the next word's context.
     assert_eq!(osk.prev_word.as_deref(), Some("homme"));
-    // A typographic apostrophe composes the same way.
     for c in ["q", "u", "\u{2019}", "i"] {
         osk.apply_action(KeyAction::Char(c.into()));
     }
     assert_eq!(osk.current_word(), "qu'i");
-    // An apostrophe that starts no known word still ends the word.
     let mut osk = OskWidget::new().with_active_layout("azerty");
     for c in ["x", "y", "'"] {
         osk.apply_action(KeyAction::Char(c.into()));
@@ -2132,7 +2105,6 @@ fn shifted_long_press_offers_capitals() {
     osk.apply_action(KeyAction::Shift);
     let e = long_press_options(&mut osk, "e");
     assert_eq!(&e[..3], ["E", "É", "È"], "{e:?}");
-    // A form whose capital is two letters (ß → SS) stays as it is.
     let mut s = OskWidget::new();
     lay_out(&mut s, 390.0, 312.0);
     s.apply_action(KeyAction::Shift);
@@ -2299,7 +2271,6 @@ fn a_parked_keyboard_is_one_strip_and_asks_for_a_strip_of_a_surface() {
         "a keyboard with its keys up fills the panel it was given"
     );
 
-    // The toolbar offers the way to park.
     let park = osk
         .toolbar_items()
         .iter()
@@ -2324,7 +2295,6 @@ fn a_parked_keyboard_is_one_strip_and_asks_for_a_strip_of_a_surface() {
         "the strip is one toolbar row: {height} of a 96-pixel panel"
     );
 
-    // The strip's own item brings them back.
     let unpark = osk
         .toolbar_items()
         .iter()

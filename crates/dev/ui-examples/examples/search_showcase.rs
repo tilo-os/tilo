@@ -4,16 +4,7 @@
 //! media and file-hit rows; the in-content filter field in its states; and
 //! the find bar over a document with its match highlights; and the window
 //! bar's search on the same document with its options and replacement open.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- search_showcase [OUT_DIR]`
-//! Out:  `OUT_DIR`, else `$SEARCH_SHOWCASE_OUT`, else `/tmp/search_showcase` —
-//!       search-{dark,light}-populated.png, search-dark-selected.png,
-//!       search-dark-empty.png, palette-scoped-{dark,light}.png,
-//!       palette-rows-{dark,light}.png, filter-{dark,light}.png,
-//!       find-bar-{dark,light}.png, window-search-replace-{dark,light}.png
-//!
-//! Each shot drives the real five-pass path for the field and the real
-//! self-layout of the overlay, so the pixels match the live widgets.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

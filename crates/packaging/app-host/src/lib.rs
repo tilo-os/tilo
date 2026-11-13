@@ -1,28 +1,12 @@
-//! `app-host` — the runtime service for Tilo's native app model.
+//! `app-host`: the runtime service for Tilo's native app model. The daemon is the privileged
+//! door to the device's [`PackageStore`], installing verified packages for the Store app, pinning,
+//! removing and launching them, running size-pressure eviction, and serving a control socket. It
+//! keeps no store of its own: packages, their registry and their payload bytes live in the one
+//! package store the launcher, the shell and `tilo-install` share.
 //!
-//! The daemon is the privileged door to the device's [`PackageStore`]:
-//! it installs verified packages on behalf of the Store app, pins,
-//! removes and launches them, runs size-pressure eviction, and exposes a
-//! control socket. It keeps no store of its own — packages,
-//! their registry and their payload bytes all live in the one package
-//! store that the launcher, the shell and `tilo-install` share.
-//!
-//! ## Crate layout
-//!
-//! - [`install`] — admit a `.tapp` against the catalogue identity the Store
-//!   capability approved, and install it into the package store.
-//! - [`wire`] — the resources a caller reads and the actions it invokes.
-//! - [`service`] — the host's side of the wire.
-//! - [`transport`] — Unix-domain socket bind + accept loop.
-//! - [`client`] — the typed client the Store app uses.
-//!
-//! The crate exposes both a daemon binary (`tilo-app-host`) and the
-//! library surface, so tests can drive the service in-process without
-//! spawning the binary. Only the client side — [`client`], the wire schema,
-//! [`install::InstallExpectation`] and archive review in [`local_package`] —
-//! builds without the default `service` feature. The Store app depends on
-//! that side alone, so an app never compiles the privileged door it talks to
-//! and the shared app runtime does not carry it.
+//! Only the client side ([`client`], [`wire`], [`install::InstallExpectation`] and archive review
+//! in [`local_package`]) builds without the default `service` feature, so the Store app never
+//! compiles the privileged door it talks to.
 
 use std::path::PathBuf;
 
@@ -44,14 +28,12 @@ pub use package_store::PackageStore;
 pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
-/// The app-host interface's one version: what the `app-host` service speaks
-/// to the apps it is handed to (the Store and Settings), on its own
-/// rather than the runtime interface's (crates/packaging/app-host/interface.toml).
+/// The `app-host` interface's one version (crates/packaging/app-host/interface.toml), which the
+/// service speaks to the apps it is handed to, on its own rather than the runtime interface's.
 pub const APP_HOST_INTERFACE_VERSION: u32 = 5;
 
-/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
-/// `None` without a runtime directory. Never the shared temp directory, where
-/// any local user could bind the name first.
+/// `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or `None` without a runtime directory. Never
+/// the shared temp directory, where any local user could bind the name first.
 pub fn default_socket_path() -> Option<PathBuf> {
     tilo_paths::xdg::runtime_dir()
         .map(|base| base.join("tilo").join("services").join("app-host.sock"))

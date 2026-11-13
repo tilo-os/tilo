@@ -1,15 +1,7 @@
-//! The player's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): the library's toggle as the sidebar, the open
-//! video's title as the location and Open as an action. The bar's History
-//! control is the window's; the player draws nothing over the picture for
-//! any of them.
-//!
-//! While the video plays full screen the desktop's chrome, this bar with it,
-//! steps aside and the player's own controls are all that shows.
-//!
-//! Every slot runs the player's published action for it
-//! ([`crate::actions::VideoEffect`]) through the framework's door, so a press
-//! in the bar, an assistive technology and an agent take one path.
+//! The player's controls as slots in the window's bar: the library's toggle as the
+//! sidebar, the video's title as the location and Open as an action. Every slot runs the
+//! player's published action, so a press, an assistive activation and an agent take one
+//! path.
 
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
@@ -17,7 +9,6 @@ use super::PlayerState;
 use crate::actions::VideoEffect;
 
 impl PlayerState {
-    /// The window bar's slots for what the player shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         WindowToolbar {
             sidebar: Some(self.library_visible),
@@ -38,9 +29,8 @@ impl PlayerState {
         }
     }
 
-    /// Run what the person did in the window's bar (the sidebar shows or
-    /// hides the library, Open opens a video, as their published actions
-    /// do), then declare the slots for what the player shows now.
+    /// Run what the person did in the bar, then declare the slots for what the player shows
+    /// now.
     pub(super) fn run_window_toolbar(&self) {
         for event in ui::window_toolbar::take_events() {
             if event == ToolbarEvent::ToggleSidebar {

@@ -1,24 +1,15 @@
-//! The renders an agent asks of a timeline: `export-video-content` (the
-//! timeline as an MP4 kept as content), `export-video-status`,
-//! `cancel-video-export`, `view-frame-content` (one still as a PNG), and
-//! the editor's own `render-timeline` when an agent invokes it.
+//! The renders an agent asks of a timeline: `export-video-content`, `export-video-status`,
+//! `cancel-video-export`, `view-frame-content`, and the editor's own `render-timeline`.
 //!
-//! An agent's record lives in a confined app worker with no GPU, no media
-//! stack and no paths, so these are tagged `host_render`
-//! ([`tilo_actions::HOST_RENDER_TAG`]): an agent's host answers them in its
-//! render service, which runs the confined `tilo-video-render` helper (its
-//! own crate: the process, its confinement and its channel to the host are
-//! platform code) on a snapshot of the record. This module holds what both
-//! sides agree on — the settings an agent may ask for, the answers it gets
-//! back, which timelines it may render — what the helper renders with
-//! ([`render_video`], [`render_still`]), and what a person's editor answers
-//! when one of them reaches it directly (they are for agents; a person
-//! renders with `render-timeline` or Export).
+//! An agent's record lives in a confined worker with no GPU, no media stack and no paths, so
+//! these are tagged `host_render`: an agent's host answers them in its render service, which
+//! runs the confined `tilo-video-render` helper on a snapshot of the record. This module holds
+//! what both sides agree on — the settings an agent may ask for, the answers it gets, which
+//! timelines it may render — and what the helper renders with ([`render_video`],
+//! [`render_still`]).
 //!
-//! An agent's render is deterministic: one software encoder
-//! ([`AGENT_VIDEO_ENCODER`]) with fixed settings, and the container's clock
-//! times zeroed ([`zero_mp4_times`]), so two renders of one timeline are the
-//! same bytes and a repeated export is recognisably the same content.
+//! An agent's render is deterministic: one software encoder with fixed settings and the
+//! container's clock times zeroed, so two renders of one timeline are the same bytes.
 
 use serde_json::{Map, Value, json};
 
@@ -43,11 +34,9 @@ pub const AGENT_MAX_WAIT: u64 = 120;
 /// The frame rates an agent may ask for: the editor's presets.
 pub const AGENT_FRAME_RATES: [u32; 3] = [24, 30, 60];
 
-/// The software encoder every agent render writes H.264 with.
-///
-/// `OpenH264` is BSD-licensed and Baseline-only, and it is the one encoder
-/// that is both free to ship and deterministic single-threaded: two renders
-/// of one timeline are byte-equal. A hardware encoder is neither.
+/// `OpenH264` is BSD-licensed and Baseline-only, and the one encoder both free to ship and
+/// deterministic single-threaded: two renders of one timeline are byte-equal. A hardware
+/// encoder is neither.
 pub const AGENT_VIDEO_ENCODER: &str = "openh264enc";
 
 /// What an agent's render answers when this host's `GStreamer` lacks
@@ -64,12 +53,11 @@ pub const CANCELLED: &str = crate::export::CANCELLED;
 pub const HOST_ONLY: &str = "this render is made by an agent host's render service \
     (tilo-video-render), not in the editor: render with Render video, or export a file";
 
-/// An agent's video export, as `export-video-content` names it: MP4 / H.264
-/// (Baseline, through [`AGENT_VIDEO_ENCODER`]) at an even frame size within
-/// 1920×1080 (either way round) and one of [`AGENT_FRAME_RATES`].
+/// MP4 / H.264 (Baseline, through [`AGENT_VIDEO_ENCODER`]) at an even frame size within
+/// 1920×1080 either way round, at one of [`AGENT_FRAME_RATES`].
 ///
-/// Explicit numbers from a caller that has no dialog, and the render's
-/// identity: two exports of one timeline with equal settings are one render.
+/// Explicit numbers from a caller that has no dialog, and the render's identity: two exports
+/// with equal settings are one render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AgentExportSettings {
     pub width: u32,
@@ -102,15 +90,13 @@ fn even(value: f64) -> u64 {
 }
 
 impl AgentExportSettings {
-    /// The settings `args` name, for a project of `aspect` (width over
-    /// height): `format` (mp4, the only one), `width`, `height`, `fps`.
-    /// Neither dimension named is 1280×720; one named gives the other from
-    /// the project's aspect, rounded to even.
+    /// For a project of `aspect` (width over height): `format` (mp4, the only one), `width`,
+    /// `height`, `fps`. Neither dimension named is 1280×720; one named gives the other from the
+    /// aspect, rounded to even.
     ///
     /// # Errors
     ///
-    /// Why the arguments name no render an agent may ask for, in words the
-    /// caller can correct.
+    /// Why the arguments name no render an agent may ask for.
     pub fn from_args(args: &Map<String, Value>, aspect: f64) -> Result<Self, String> {
         let args = AgentArgs::read(args)?;
         args.mp4_only()?;
@@ -127,10 +113,8 @@ impl AgentExportSettings {
         Self::checked(width, height, fps)
     }
 
-    /// The settings the editor's `render-timeline` names for an agent: `format` (mp4
-    /// only, as every agent render) and `size` (`720p` or `1080p`, the
-    /// height; the width follows the project's aspect), at 30 frames a
-    /// second.
+    /// `format` (mp4 only) and `size` (`720p` or `1080p`, the height; the width follows the
+    /// project's aspect), at 30 frames a second.
     ///
     /// # Errors
     ///
@@ -177,11 +161,8 @@ impl AgentExportSettings {
         })
     }
 
-    /// The video bitrate the encoder is asked for, in bits per second: 2.5
-    /// megabits at 720p30, scaled by pixels per second and capped at 3.5, so
-    /// two minutes stay under the 60 MiB a render may keep when the encoder
-    /// holds to its rate (a very busy picture can come out larger, and such
-    /// a render is refused by size).
+    /// 2.5 megabits at 720p30, scaled by pixels per second and capped at 3.5, so two minutes
+    /// stay under the 60 MiB a render may keep when the encoder holds to its rate.
     #[must_use]
     pub fn video_bitrate(&self) -> u64 {
         let pixels = u64::from(self.width) * u64::from(self.height) * u64::from(self.fps);
@@ -190,8 +171,7 @@ impl AgentExportSettings {
     }
 }
 
-/// How long an agent's call waits for its render, from its `wait` (seconds,
-/// at most [`AGENT_MAX_WAIT`]; [`AGENT_DEFAULT_WAIT`] when absent).
+/// From its `wait` (seconds, at most [`AGENT_MAX_WAIT`]; [`AGENT_DEFAULT_WAIT`] when absent).
 ///
 /// # Errors
 ///
@@ -212,8 +192,7 @@ pub struct AgentFrameSettings {
 }
 
 impl AgentFrameSettings {
-    /// The still `args` name: `at` seconds (required, within the timeline of
-    /// `duration` seconds), `width` (default 640, even, 16 to 1920).
+    /// `at` seconds (required, within the timeline), `width` (default 640, even, 16 to 1920).
     ///
     /// # Errors
     ///
@@ -308,7 +287,7 @@ pub fn renderable(project: &Project) -> Result<(), String> {
         ));
     }
     if let Some(item) =
-        placed(project).find(|item| tilo_actions::content_hash(&item.path).is_none())
+        placed(project).find(|item| tilo_actions::named_reference(&item.path).is_none())
     {
         return Err(format!(
             "{} is not workspace content: an agent's render reads only sources imported with \
@@ -319,20 +298,21 @@ pub fn renderable(project: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// The workspace content every source `project` places is read from, once each,
-/// lowercase.
+/// The workspace content every source `project` places is read from, once
+/// each, as the record names it: a source's content reference carries the key
+/// its bytes are sealed with, so a reader opens them where a bare address
+/// would only find ciphertext.
 #[must_use]
 pub fn placed_content(project: &Project) -> Vec<String> {
-    let mut hashes: Vec<String> = Vec::new();
+    let mut references: Vec<&str> = Vec::new();
     for item in placed(project) {
-        if let Some(hash) = tilo_actions::content_hash(&item.path) {
-            let hash = hash.to_ascii_lowercase();
-            if !hashes.contains(&hash) {
-                hashes.push(hash);
-            }
+        if let Some(reference) = tilo_actions::named_reference(&item.path)
+            && !references.contains(&reference)
+        {
+            references.push(reference);
         }
     }
-    hashes
+    references.into_iter().map(str::to_owned).collect()
 }
 
 /// `project` rendering only `start..end` (each defaulting to its render
@@ -359,12 +339,10 @@ pub fn ranged(project: &Project, start: Option<f64>, end: Option<f64>) -> Result
     Ok(whole)
 }
 
-/// The `GStreamer` graph an agent's render runs: the composited RGBA frames
-/// through [`AGENT_VIDEO_ENCODER`] with fixed settings — one thread, one
-/// slice, no frame skipping, a keyframe every second — into `mp4mux` and
-/// `sink`, with the timeline's mix beside it when there is any. The muxer
-/// writes in place (no faststart: that needs a scratch file a confined
-/// helper may not make).
+/// The composited RGBA frames through [`AGENT_VIDEO_ENCODER`] with fixed settings — one thread,
+/// one slice, no frame skipping, a keyframe every second — into `mp4mux` and `sink`, with the
+/// timeline's mix beside it when there is any. The muxer writes in place: faststart needs a
+/// scratch file a confined helper may not make.
 #[must_use]
 pub fn pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: bool) -> String {
     let AgentExportSettings { width, height, fps } = *settings;

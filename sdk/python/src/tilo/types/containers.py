@@ -32,6 +32,7 @@ class CreateDraft(TypedDict):
 
 class Engine(Resource):
     """Containers — `containers.engine`."""
+    __surface__ = "so.tilo.containers@5426b1fbca56758c"
     draft: CreateDraft
 
     def clear_create(self) -> Run | None:

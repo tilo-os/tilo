@@ -15,7 +15,7 @@ use crate::collab_app_broker::principal_id_for_root;
 use crate::services::{
     DocumentBytes, HostServices, LocalPersonServices, NativeDocumentReads, RecordChangeServices,
 };
-use crate::test_support::{Grants as _, KindSet, Subject, TreePath, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Grantee, Grants as _, KindSet, TreePath, WorkspaceSlot, WorkspaceTree};
 
 const NOTES: &str = "so.tilo.lang.notes";
 const MAIL: &str = "so.tilo.lang.mail";
@@ -160,16 +160,16 @@ fn fixture_with(owner: Owner) -> Fixture {
     workspace.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
     let scribe = workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
+    workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
     // Mail's changes the workspace keeps from the agent.
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root().app(MAIL),
         KindSet::UNDOABLE,
     );
     // One Notes record the workspace keeps from the agent, though its person may read it.
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root().app(NOTES).resource("private"),
         KindSet::READ,
     );
@@ -355,31 +355,27 @@ fn a_person_or_an_agent_task_acting_for_them_reads_records_here() {
     drop(f.state);
 }
 
-/// An app on the person's device reads another app's records for them only as far as the
-/// workspace grants it, and never acting for nobody.
+/// An app reads another app's records as the person whose session runs it, and never
+/// acting for nobody.
 #[test]
-fn an_app_reads_another_apps_record_for_its_person_as_the_workspace_grants_it() {
+fn an_app_reads_another_apps_record_as_its_person() {
     const MESSAGES: &str = "so.tilo.messages";
     let f = fixture();
     let app = Caller::local_app(MESSAGES)
         .acting_for(f.person.clone())
         .in_workspace(f.workspace.clone());
-    assert!(
-        matches!(
-            f.read(&app, NOTES, ""),
-            Err(ActionHostError::Refused { reason }) if reason == RECORD_READ_REFUSED
-        ),
-        "an app the workspace grants nothing reads nothing of Notes"
-    );
-    f.membership.write().workspaces[0].allow_app(Subject::app(MESSAGES), NOTES, KindSet::READ);
     assert_eq!(
         f.read(&app, NOTES, "").unwrap(),
         RecordCopy::Document(format!("{NOTES}/").into_bytes()),
-        "granted, it reads the record with the person's device"
+        "it reads the record with the person's device, as them"
     );
+    let alone = Caller::local_app(MESSAGES).in_workspace(f.workspace.clone());
     assert!(
-        matches!(f.read(&app, MAIL, ""), Err(ActionHostError::Refused { .. })),
-        "a grant on Notes reads nothing of Mail"
+        matches!(
+            f.read(&alone, NOTES, ""),
+            Err(ActionHostError::Refused { reason }) if reason == RECORD_READS_FOR_TASKS
+        ),
+        "an app acting for nobody reads nothing"
     );
 }
 

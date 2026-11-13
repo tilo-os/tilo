@@ -12,8 +12,6 @@ fn key(bench: &mut Bench, key: NamedKey) -> bool {
     })
 }
 
-/// New, duplicate, move and delete slide land in the deck, and the editor
-/// shows the slide each one leaves current.
 #[test]
 fn slide_ops_update_the_deck_and_the_current_slide() {
     let mut bench = Bench::sample();
@@ -32,7 +30,6 @@ fn slide_ops_update_the_deck_and_the_current_slide() {
     assert_eq!(bench.deck().slides.len(), n0 + 2);
     assert_eq!(bench.read(|app| app.cur_slide), 3);
 
-    // Moving up and down (the rail menu's reorder) reorders by rank.
     let moved = bench.deck().slides[3].id.clone();
     bench.with(|app| app.apply_rail_event(PageSidebarEvent::Reorder { from: 3, to: 2 }));
     assert_eq!(bench.read(|app| app.cur_slide), 2);
@@ -109,7 +106,6 @@ fn the_last_slide_cannot_be_deleted() {
     assert_eq!(bench.deck().slides.len(), 1);
 }
 
-/// An arrow nudges the selection, Tab cycles it and Delete removes it.
 #[test]
 fn arrow_nudge_tab_cycle_and_delete_edit_the_deck() {
     let mut slide = Slide::new(Layout::Blank);
@@ -234,6 +230,32 @@ fn the_selection_publishes_its_bound_edits() {
             "`{id}` in {ids:?}"
         );
     }
+    // Each names the element it changes, so the palette and an agent say
+    // which one rather than "Delete selection".
+    let labels = |bench: &mut Bench| -> Vec<String> {
+        bench
+            .app
+            .agent_surface()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "slides.deck")
+            .filter(|row| {
+                row["action"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with("-selection") || id.contains("selection-"))
+            })
+            .filter_map(|row| row["label"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert_eq!(
+        labels(&mut bench),
+        [
+            "Bring to front: Rectangle",
+            "Delete Rectangle",
+            "Send to back: Rectangle",
+        ]
+    );
     bench
         .app
         .call("bring-selection-front", serde_json::json!({}))

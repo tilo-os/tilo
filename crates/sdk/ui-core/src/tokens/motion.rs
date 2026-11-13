@@ -1,19 +1,17 @@
-//! Motion tokens — the one shared timing + spring vocabulary the whole UI
-//! (toolkit widgets AND shell chrome) animates against, so same-class
-//! gestures share a feel.
+//! Motion tokens — the one shared timing + spring vocabulary the whole UI (toolkit
+//! widgets AND shell chrome) animates against, so same-class gestures share a feel.
 
 use crate::time::Duration;
 
 /// A dragged group that moves less than this per second is settled.
 pub const MOVE_SETTLED_PX_PER_S: f64 = 4.0;
-/// How deep the band along a viewport's edge is in which a drag scrolls
-/// the viewport ([`crate::edge_autoscroll`]).
+/// How deep the band along a viewport's edge is in which a drag scrolls the viewport
+/// ([`crate::edge_autoscroll`]).
 pub const EDGE_AUTOSCROLL_BAND: f64 = crate::tokens::Spacing::BASE.s8 as f64;
-/// How fast a drag pressed right against a viewport's edge scrolls it; it
-/// starts from nothing at the band's inner side and grows with depth.
+/// How fast a drag pressed right against a viewport's edge scrolls it; it starts from
+/// nothing at the band's inner side and grows with depth.
 pub const EDGE_AUTOSCROLL_PX_PER_S: f64 = 1600.0;
-/// Longest frame step an edge autoscroll integrates, so a stalled frame does
-/// not fling.
+/// Longest frame step an edge autoscroll integrates, so a stalled frame does not fling.
 pub const EDGE_AUTOSCROLL_MAX_STEP: Duration = Duration::from_millis(50);
 /// The slowest release that still flings.
 pub const FLING_MIN_VELOCITY: f64 = 60.0;
@@ -31,38 +29,15 @@ pub struct SpringParams {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpringPresets {
-    /// Gentle, no overshoot (ζ ≈ 1.0). Ambient settles.
+    /// Gentle, no overshoot (ζ ≈ 1.0).
     pub subtle: SpringParams,
-    /// Quick, barely-perceptible overshoot (ζ ≈ 0.87). Default for UI.
+    /// Quick, barely-perceptible overshoot (ζ ≈ 0.87).
     pub snappy: SpringParams,
-    /// Playful overshoot (ζ ≈ 0.45). Reserved for deliberate bounce.
+    /// Playful overshoot (ζ ≈ 0.45).
     pub bouncy: SpringParams,
-    /// Mass you can feel (ζ = 1.0, ω = 32 rad/s). For a control that is
-    /// meant to read as a physical object rather than a state change.
-    ///
-    /// Weight and bounce are opposites: overshoot reads *light* (a thing
-    /// with very little inertia springs past and wobbles back), so this is
-    /// critically damped — ζ = exactly 1.0, the boundary where overshoot
-    /// disappears.
-    ///
-    /// Weight does **not** come from a long settle: an earlier ω = 14
-    /// (~0.5s) tuning read as slow, not heavy — the control had visually
-    /// arrived and was still creeping. Inertia is legible while you're
-    /// *pushing* (follow-lag, detent pull); once released it should land
-    /// promptly, so the settle sits at ~0.26s.
+    /// Mass you can feel (ζ = 1.0, ω = 32 rad/s).
     pub heavy: SpringParams,
-    /// Stiff critical follow (ζ = 1.0, ω = 40 rad/s). For a surface that
-    /// trails a dragging pointer instead of being welded to it.
-    ///
-    /// A surface pinned exactly under the cursor reads weightless — mass
-    /// can't change velocity instantly, and routing the drag through a
-    /// spring puts a lag between hand and surface proportional to speed,
-    /// which is how inertia presents itself.
-    ///
-    /// Tracking error of a critically damped spring at constant speed `v`
-    /// is `2v/ω`, so ω sets the whole feel: too soft reads as *late*
-    /// rather than heavy. At ω = 40 an unhurried drag trails by a couple
-    /// of degrees, a hard yank by about half a detent.
+    /// Stiff critical follow (ζ = 1.0, ω = 40 rad/s).
     pub tracking: SpringParams,
 }
 
@@ -98,11 +73,7 @@ impl Default for SpringPresets {
     }
 }
 
-/// Three-slot duration scale. Everything time-parametric picks one of
-/// these instead of a bespoke literal:
-/// - `fast`  — micro-feedback: hover, drop-zone hints, chip toggles.
-/// - `base`  — the default: opens, closes, reflows, tab in/out.
-/// - `slow`  — large spatial moves: overview zoom, window spawn.
+/// Three-slot duration scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Durations {
     pub fast_ms: u32,
@@ -132,37 +103,17 @@ impl Durations {
     }
 }
 
-/// Tuning for direct-manipulation gestures — the numbers that decide how
-/// a dragged surface resists, catches and coasts. Shared for the same
-/// reason the springs are: two controls that resist differently read as
-/// two unrelated machines.
-///
-/// Each value is a *fraction of the surface's own reference extent*
-/// rather than an absolute distance, so one number covers a scroll
-/// viewport and a detented wheel alike. The caller supplies the extent.
+/// Tuning for direct-manipulation gestures — the numbers that decide how a dragged
+/// surface resists, catches and coasts. The caller supplies the extent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gesture {
-    /// Ceiling on overscroll past an end, as a multiple of the surface's
-    /// reference extent — the pull approaches this and never reaches it.
-    ///
-    /// Big enough that first contact reads as give rather than a stop,
-    /// small enough the surface never leaves its region: slightly over
-    /// one extent means you can pull an end clear of where it rests, see
-    /// nothing beyond it, and be unable to pull further.
+    /// Ceiling on overscroll past an end, as a multiple of the surface's reference extent
+    /// — the pull approaches this and never reaches it. Big enough that first contact
+    /// reads as give rather than a stop, small enough the surface never leaves its
+    /// region: slightly over one extent lets a drag pull an end clear of where it
+    /// rests, see nothing beyond it, and be unable to pull further.
     pub overscroll_reach_frac: f32,
-    /// Peak strength of the corrective pull toward the nearest detent
-    /// while dragging, as a fraction of one detent.
-    ///
-    /// What makes notches *felt* rather than merely landed on: crossing
-    /// between two is a small acceleration then resistance. Zero would be
-    /// a smooth slide; too large and the surface fights the hand and
-    /// can't be held between notches.
     pub detent_magnet_frac: f32,
-    /// How long a release's residual velocity is projected forward when
-    /// choosing where a flick lands — the coast time the projection
-    /// assumes; the settle spring supplies the actual deceleration.
-    /// A flick should carry: distance travelled after release is what
-    /// separates throwing something from pushing it.
     pub fling_projection_ms: u32,
 }
 
@@ -170,9 +121,9 @@ impl Default for Gesture {
     fn default() -> Self {
         Self {
             overscroll_reach_frac: 1.2,
-            // At 0.18 an in-between rest was comfortable (read as
-            // continuous, not notched); at 0.45 the pull dominates the
-            // last third of a gap and crossing feels like give-then-catch.
+            // At 0.18 an in-between rest was comfortable (read as continuous, not
+            // notched); at 0.45 the pull dominates the last third of a gap and crossing
+            // feels like give-then-catch.
             detent_magnet_frac: 0.45,
             fling_projection_ms: 110,
         }
@@ -184,16 +135,14 @@ pub struct Motion {
     pub springs: SpringPresets,
     pub durations: Durations,
     pub gesture: Gesture,
-    /// The theme asks for no motion at all (`MotionCurve::None`): nothing
-    /// moves and nothing fades, every change lands at once. Unlike reduced
-    /// motion it keeps no fade, because nobody asked for the change to be
-    /// softened, only for the interface to hold still.
+    /// The theme asks for no motion at all (`MotionCurve::None`): nothing moves and
+    /// nothing fades, every change lands at once.
     pub still: bool,
 }
 
 impl Motion {
-    /// These tokens with every spring critically damped: an eased curve
-    /// with no overshoot at each spring's own speed.
+    /// These tokens with every spring critically damped: an eased curve with no overshoot
+    /// at each spring's own speed.
     #[must_use]
     pub fn eased(mut self) -> Self {
         let critical = |spring: SpringParams| SpringParams {
@@ -230,23 +179,15 @@ impl Motion {
     }
 }
 
-/// What started a transition. Motion follows the input: a shortcut is a
-/// frequent expert action with a known result, so animating it adds latency
-/// to every repetition, while pointer and finger motion explains where
-/// things went.
+/// What started a transition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MotionSource {
-    /// A key chord.
     Keyboard,
-    /// A click or tap on what is shown.
     #[default]
     Pointer,
-    /// Direct manipulation: a drag, swipe or pinch. The surface follows the
-    /// hand and the release hands its velocity to the settle.
     Gesture,
-    /// An agent, a script or the action door. Nobody watches a hand move,
-    /// and the caller acts on the result at once, so it follows the
-    /// keyboard rule.
+    /// An agent, a script or the action door. Nobody watches a hand move, and the caller
+    /// acts on the result at once, so it follows the keyboard rule.
     Action,
 }
 
@@ -259,9 +200,9 @@ impl MotionSource {
 }
 
 impl Motion {
-    /// How long a transition that changes what is shown (a crossfade, a
-    /// group springing to its new slot) lasts when `source` started it:
-    /// `nominal` for a pointer or gesture, nothing for a shortcut or action.
+    /// How long a transition that changes what is shown (a crossfade, a group springing
+    /// to its new slot) lasts when `source` started it: `nominal` for a pointer or
+    /// gesture, nothing for a shortcut or action.
     #[must_use]
     pub fn result(&self, source: MotionSource, nominal: Duration) -> Duration {
         if source.lands_at_once() {
@@ -271,10 +212,9 @@ impl Motion {
         }
     }
 
-    /// How long a transition that only says where something went (an
-    /// off-screen target sliding into view, a direction cue) lasts when
-    /// `source` started it: `nominal` for a pointer or gesture, at most
-    /// `fast` for a shortcut or action.
+    /// How long a transition that only says where something went (an off-screen target
+    /// sliding into view, a direction cue) lasts when `source` started it: `nominal` for
+    /// a pointer or gesture, at most `fast` for a shortcut or action.
     #[must_use]
     pub fn context(&self, source: MotionSource, nominal: Duration) -> Duration {
         if source.lands_at_once() {
@@ -285,21 +225,8 @@ impl Motion {
     }
 }
 
-/// The motion a widget may play: the [`Motion`] tokens with the person's
-/// reduced-motion setting applied. Read through [`crate::Theme::motion`];
-/// it is the one place reduced motion is decided, so every widget and the
-/// shell's chrome follow the same rule (HIG §9.7, design-language "Motion"):
-///
-/// - Movement — a slide, a scale, a spring, a snap, an overshoot — lands at
-///   once ([`Self::movement`] is zero, [`Self::moves`] is false).
-/// - A change of what is shown may still cross-fade, at most `fast`
-///   ([`Self::fade`]): opacity carries the change without anything moving.
-/// - A looping indicator (spinner, busy arc, sweeping bar) stands still
-///   ([`Self::loops`] is false); progress and status keep updating.
-///
-/// Reduced motion never stops the frame pump: a widget that settles asks
-/// for no frames, and one that still has a fade or new content to show
-/// gets them.
+/// The motion a widget may play: the [`Motion`] tokens with the person's reduced-motion
+/// setting applied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectiveMotion {
     tokens: Motion,
@@ -307,8 +234,6 @@ pub struct EffectiveMotion {
 }
 
 impl Default for EffectiveMotion {
-    /// The default tokens with motion on: what a surface uses before it has
-    /// been drawn with a theme.
     fn default() -> Self {
         Self::new(Motion::default(), false)
     }
@@ -320,8 +245,8 @@ impl EffectiveMotion {
         Self { tokens, reduced }
     }
 
-    /// Whether movement is off: the person asked for reduced motion, or
-    /// the theme holds still ([`Motion::still`]).
+    /// Whether movement is off: the person asked for reduced motion, or the theme holds
+    /// still ([`Motion::still`]).
     #[must_use]
     pub const fn reduced(self) -> bool {
         self.reduced || self.tokens.still
@@ -339,8 +264,8 @@ impl EffectiveMotion {
         !self.reduced()
     }
 
-    /// Whether a looping indicator animates; under reduced motion it draws
-    /// its resting mark.
+    /// Whether a looping indicator animates; under reduced motion it draws its resting
+    /// mark.
     #[must_use]
     pub const fn loops(self) -> bool {
         !self.reduced()
@@ -356,8 +281,8 @@ impl EffectiveMotion {
         }
     }
 
-    /// How long a cross-fade lasts: `nominal`, or at most `fast` under
-    /// reduced motion, where it stands in for the movement it replaces.
+    /// How long a cross-fade lasts: `nominal`, or at most `fast` under reduced motion,
+    /// where it stands in for the movement it replaces.
     #[must_use]
     pub fn fade(self, nominal: Duration) -> Duration {
         if self.tokens.still {
@@ -369,9 +294,8 @@ impl EffectiveMotion {
         }
     }
 
-    /// The cross-fade that replaces a spatial transition under reduced
-    /// motion: `fast`, or nothing when motion is on (the movement itself
-    /// shows the change).
+    /// The cross-fade that replaces a spatial transition under reduced motion: `fast`, or
+    /// nothing when motion is on (the movement itself shows the change).
     #[must_use]
     pub fn replacement_fade(self) -> Duration {
         if self.tokens.still {
@@ -401,15 +325,15 @@ impl EffectiveMotion {
         self.movement(self.tokens.durations.slow())
     }
 
-    /// The tokens themselves, for values reduced motion does not change
-    /// (springs a gesture tracks with, gesture tuning).
+    /// The tokens themselves, for values reduced motion does not change (springs a
+    /// gesture tracks with, gesture tuning).
     #[must_use]
     pub const fn tokens(self) -> Motion {
         self.tokens
     }
 
-    /// These tokens instead, with the person's reduced-motion setting kept: how a component
-    /// paces its own motion ([`crate::motion::Feel`]).
+    /// These tokens instead, with the person's reduced-motion setting kept: how a
+    /// component paces its own motion ([`crate::motion::Feel`]).
     #[must_use]
     pub const fn with_tokens(self, tokens: Motion) -> Self {
         Self {
@@ -419,18 +343,8 @@ impl EffectiveMotion {
     }
 }
 
-/// iOS-style overscroll resistance.
-///
-/// `distance` is how far past the end the input asks to go; the return is
-/// how far the surface is allowed to move. `limit` is the asymptote — the
-/// surface approaches it and never arrives.
-///
-/// `L·d / (d + L)` is the algebraic simplification of the form usually
-/// quoted for `UIScrollView`, `(1 − 1/(d·c/D + 1))·D/c` with `L = D/c`. Two
-/// properties matter, both visible here: slope at `d = 0` is exactly 1 (the
-/// first pixel past the end tracks the finger, the edge is never a wall),
-/// and slope decays monotonically toward zero (resistance builds the whole
-/// way, always a little more give and never much).
+/// iOS-style overscroll resistance. `limit` is the asymptote — the surface approaches it
+/// and never arrives.
 pub fn rubber_band(distance: f32, limit: f32) -> f32 {
     if distance <= 0.0 || limit <= 0.0 {
         return 0.0;
@@ -501,8 +415,8 @@ mod tests {
         }
         // phase: snappy_is_lightly_underdamped
         {
-            // ζ = c / (2 sqrt(k m)); snappy should sit just under 1.0 so it
-            // settles fast with a barely-visible overshoot.
+            // ζ = c / (2 sqrt(k m)); snappy should sit just under 1.0 so it settles fast
+            // with a barely-visible overshoot.
             let p = SpringPresets::default().snappy;
             let zeta = p.damping / (2.0 * (p.stiffness * p.mass).sqrt());
             assert!(zeta > 0.8 && zeta < 1.0, "snappy ζ = {zeta}");
@@ -539,8 +453,8 @@ mod tests {
                 "heavy must settle within 0.10-0.30 s, took {elapsed:.3} s"
             );
 
-            // Critical damping is a claim about the path, not just the
-            // endpoint: it must approach from one side and never cross.
+            // Critical damping is a claim about the path, not just the endpoint: it must
+            // approach from one side and never cross.
             for ms in 0..2000_u64 {
                 let v = s.get(start + Duration::from_millis(ms));
                 assert!(v <= 1.0 + 1e-4, "overshot to {v}");
@@ -604,8 +518,8 @@ mod tests {
                 "first contact should barely resist, got {tiny}"
             );
 
-            // Every additional unit of input buys strictly less movement
-            // than the one before it, all the way out.
+            // Every additional unit of input buys strictly less movement than the one
+            // before it, all the way out.
             let mut prev_gain = f32::INFINITY;
             let mut prev = 0.0;
             for step in 1_u16..=400 {
@@ -624,7 +538,6 @@ mod tests {
                 prev_gain = gain;
                 prev = v;
             }
-            // Far out, the surface has all but stopped moving.
             assert!(rubber_band(1.0e4, limit) > limit * 0.99);
         }
         // phase: a_new_spring_preserves_value_and_velocity

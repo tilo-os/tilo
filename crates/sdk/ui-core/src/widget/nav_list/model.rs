@@ -1,10 +1,5 @@
-//! What a navigation list shows: the sections and items an app hands over,
-//! flattened into the rows the list scrolls, with the person's folds and the
-//! window's filter applied.
-//!
-//! The rows are the list's model ([`ListModel`]): each row has a stable key
-//! (`section:{id}`, `item:{id}`, `caption:{id}`, `pending:{id}:{n}`), so a
-//! section handed over again keeps its selection, its fold and its focus.
+//! What a navigation list shows: the sections and items an app hands over, flattened into the
+//! rows the list scrolls, with the person's folds and the window's filter applied.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -48,7 +43,6 @@ impl NavStatus {
     }
 }
 
-/// Every part of one destination's row, owned.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NavItemSpec {
     pub icon: Option<Icon>,
@@ -60,7 +54,6 @@ pub(crate) struct NavItemSpec {
     pub status: Option<NavStatus>,
     pub status_label: Option<(String, Tone)>,
     pub badge: Option<String>,
-    /// Every badge code of the row's section, which share one column.
     pub section_badges: Rc<Vec<String>>,
     pub swatch: Option<Color>,
     pub art: Option<super::NavArt>,
@@ -69,18 +62,15 @@ pub(crate) struct NavItemSpec {
     pub presence: Vec<String>,
     pub person: Option<super::NavPerson>,
     pub unread: bool,
-    /// The resource the place shows, when it is one.
     pub shows: Option<String>,
 }
 
-/// One row of the navigation list: its stable key and what it is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NavRowData {
     pub(crate) key: String,
     pub(crate) kind: NavRowKind,
 }
 
-/// What a navigation row is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NavRowKind {
     /// A section header. `first` is the first row of the list, which has no
@@ -89,15 +79,11 @@ pub(crate) enum NavRowKind {
         id: String,
         title: String,
         collapsible: bool,
-        /// The section's items show.
         open: bool,
         action: Option<Icon>,
-        /// What the trailing action is announced as.
         action_label: Option<String>,
         first: bool,
-        /// The title can be renamed in place.
         editable: bool,
-        /// The header asks for its menu as a row does.
         menu: bool,
     },
     /// A destination.
@@ -105,16 +91,10 @@ pub(crate) enum NavRowKind {
         id: String,
         label: String,
         spec: Box<NavItemSpec>,
-        /// The row has children, so it shows a disclosure whether or not they
-        /// stand in the list now.
         branch: bool,
-        /// The row's children show.
         open: bool,
-        /// The row offers the list's item actions.
         actions: bool,
-        /// Other items may be dropped into it.
         drop_target: bool,
-        /// The label can be renamed in place.
         editable: bool,
         semantic_key: Option<String>,
     },
@@ -125,7 +105,6 @@ pub(crate) enum NavRowKind {
 }
 
 impl NavRowKind {
-    /// The id the app gave this row's section or item.
     pub(crate) fn id(&self) -> &str {
         match self {
             Self::Section { id, .. }
@@ -216,8 +195,7 @@ impl NavModel {
 
     /// The row whose place shows the resource `id`: the place bound to it (a channel's place
     /// shows the channel), or one whose key names it — a place key ends with the id of the
-    /// resource it shows (`project:<id>`) or is the id itself. No row for a resource no place
-    /// names.
+    /// resource it shows (`project:<id>`) or is the id itself.
     pub(crate) fn item_naming(&self, id: &str) -> Option<&str> {
         let shows = |row: &NavRowData| matches!(&row.kind, NavRowKind::Item { spec, .. } if spec.shows.as_deref() == Some(id));
         if let Some(row) = self.rows.iter().find(|row| shows(row))
@@ -237,7 +215,6 @@ impl NavModel {
         })
     }
 
-    /// The row of item or section `id`.
     pub(crate) fn row_id(&self, id: &str) -> Option<usize> {
         self.index_of(&format!("item:{id}"))
             .or_else(|| self.index_of(&format!("section:{id}")))
@@ -270,7 +247,6 @@ impl NavModel {
         )
     }
 
-    /// Whether `key`'s row shows the list's item actions.
     pub(crate) fn shows_row_actions(&self, key: &str) -> bool {
         matches!(
             self.row_of(key).map(|row| &row.kind),
@@ -339,7 +315,6 @@ impl NavModel {
         }
     }
 
-    /// The first row from the top the arrow keys stop on.
     pub(crate) fn first_stop(&self) -> Option<usize> {
         (0..self.rows.len()).find(|index| self.is_stop(&self.rows[*index].key))
     }
@@ -398,15 +373,10 @@ impl ListModel for NavModel {
     }
 }
 
-/// The folds and checks the person made, kept across rebuilds of the rows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NavState {
-    /// Sections and rows the person folded away.
     folded: HashSet<String>,
-    /// Sections and rows the person opened against what the app said.
     opened: HashSet<String>,
-    /// Checkable rows the person toggled, before the app's next sections
-    /// confirm them: key → checked.
     checks: HashMap<String, bool>,
 }
 
@@ -458,7 +428,6 @@ pub(crate) fn build(sections: &[NavSection], query: &str, state: &NavState) -> N
                 .collect(),
         );
         let titled = !section.title.trim().is_empty();
-        // Under a filter every section shows what matched.
         let open = !section.collapsible
             || filtering
             || state.open(
@@ -585,7 +554,6 @@ impl NavModel {
             },
         });
         if branch && open {
-            // Nested codes line up among their siblings.
             let child_badges: Rc<Vec<String>> = Rc::new(
                 item.children
                     .iter()

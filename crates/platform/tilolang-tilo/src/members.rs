@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority as Policy, Context, Standing, Subject, TreePath,
+    ActionKind, Answer, Authority as Policy, Context, Grantee, Standing, TreePath,
 };
 use tilolang_runtime::members::{Member, MemberKind, Reads};
 use tilolang_runtime::{Principal, ResourceRef};
@@ -59,7 +59,7 @@ impl People {
 
     /// The principal the person `person` of `standing`'s policy is.
     fn principal(&self, standing: &Standing, person: &str) -> String {
-        if person == standing.person {
+        if Some(person) == standing.person_id() {
             return self.me.clone();
         }
         self.participant
@@ -71,7 +71,7 @@ impl People {
     /// The person of `standing`'s policy the principal `who` is.
     fn person_of<'a>(&'a self, standing: &'a Standing, who: &'a str) -> &'a str {
         if who == self.me {
-            return &standing.person;
+            return standing.person_id().unwrap_or_default();
         }
         self.person.get(who).map_or(who, String::as_str)
     }
@@ -108,8 +108,8 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
         // answers a person gave an agent working for them admit nobody.
         .filter(|grant| grant.id.0.starts_with("agent-member:"))
-        .filter_map(|grant| match &grant.subject {
-            Subject::Agent(agent) => Some(agent.as_str()),
+        .filter_map(|grant| match &grant.grantee {
+            Grantee::Member(tilo_action_policy::MemberId::Agent(agent)) => Some(agent.as_str()),
             _ => None,
         })
         .collect();
@@ -132,8 +132,8 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
         .packages()
         .into_iter()
         .flat_map(|package| {
-            let meta = package.meta;
-            let own = crate::own_record(&meta, &standing.person);
+            let meta = &package.meta;
+            let own = crate::own_record(meta, standing.person_id().unwrap_or_default());
             meta.types
                 .iter()
                 .map(|ty| {
@@ -165,7 +165,7 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
 fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &TreePath) -> bool {
     let policy = &standing.policy;
     let party = match who.0.strip_prefix("agent:") {
-        Some(agent) => policy.party_of(Subject::agent(agent)),
+        Some(agent) => policy.party_of(Grantee::agent(agent)),
         None => policy.party(people.person_of(standing, &who.0)),
     };
     let earlier = crate::schema::earlier_ids();
@@ -187,23 +187,23 @@ mod tests {
         policy.members.insert("cy".to_owned(), Role::Viewer);
         policy.grants.push(Grant::new(
             "agent-member:planner",
-            Subject::agent("planner"),
+            Grantee::agent("planner"),
             TreePath::workspace("workspace"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            Subject::person("ada"),
+            Grantee::person("ada"),
         ));
         // Cy may not read the secret note.
         policy.grants.push(Grant::new(
             "hide-secret",
-            Subject::person("cy"),
+            Grantee::person("cy"),
             TreePath::workspace("workspace")
                 .app("notes")
                 .kind("tl.notes.Note")
                 .resource("secret"),
             KindSet::ALL,
             Answer::Deny,
-            Subject::person("ada"),
+            Grantee::person("ada"),
         ));
         Standing::person(policy, "ada")
     }

@@ -8,18 +8,16 @@ use crate::widget::flap::SplitLayout;
 use crate::widget::{BottomSheet, SheetDetent, SheetFrame, SheetInput};
 
 impl SidebarDrawer {
-    /// Too narrow to dock, the inspector rises as a sheet from the window's
-    /// foot instead of floating beside the content: the content above it
-    /// stays live (a press there is the content's, it puts nothing away)
-    /// and keeps the part the sheet rests on clear ([`Self::content_rect`]).
-    /// For a trailing drawer; a sidebar keeps its own narrow form.
+    /// Too narrow to dock, the inspector rises as a sheet from the window's foot instead of
+    /// floating beside the content: the content above it stays live (a press there is the
+    /// content's, it puts nothing away) and keeps the part the sheet rests on clear
+    /// ([`Self::content_rect`]).
     #[must_use]
     pub fn sheet_when_narrow(mut self) -> Self {
         self.sheet = Some(BottomSheet::new());
         self
     }
 
-    /// Whether the drawer is a sheet now: narrow, and asked to be one.
     #[must_use]
     pub fn rises_as_sheet(&self) -> bool {
         self.sheet.is_some()
@@ -27,13 +25,11 @@ impl SidebarDrawer {
             && self.layout == SplitLayout::Overlay
     }
 
-    /// The sheet while the drawer is one.
     #[must_use]
     pub fn sheet(&self) -> Option<&BottomSheet> {
         self.sheet.as_ref().filter(|_| self.rises_as_sheet())
     }
 
-    /// Where the sheet rests, while the drawer is one.
     #[must_use]
     pub fn sheet_detent(&self) -> Option<SheetDetent> {
         self.sheet().map(BottomSheet::detent)

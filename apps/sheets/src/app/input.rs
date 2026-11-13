@@ -1,4 +1,4 @@
-//! What a press, a wheel or a key does: the targets the last paint recorded, the cell menu and its rows, the annotation cards, the palette and chrome clicks, and the clipboard chords a keyboard sends.
+//! Pointer and key input, routed to the grid, the chrome or the window bar.
 
 use super::{
     Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, ContextMenu, Edits, ElementState,
@@ -163,9 +163,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Ask in the host's palette for what the published action `action` of
-    /// the annotation `place` (`chart:<id>`, `comment:<id>`) takes, starting
-    /// from `prefill`; the palette invokes it as Ctrl+K does.
     pub(super) fn ask_annotation(&mut self, place: &str, action: &str, prefill: String) -> bool {
         let resources = self.published();
         let Some(flat) = tilo_actions::flatten(&resources)
@@ -186,7 +183,6 @@ impl SheetsApp {
         true
     }
 
-    /// Run the row the open cell menu reported, if any.
     pub(super) fn drain_cell_menu(&mut self, doc: &mut Edits<'_>) {
         if let Some(choice) = self.cell_menu.take_selection() {
             let row = self.cell_menu_rows.get(choice).copied().flatten();
@@ -210,14 +206,10 @@ impl SheetsApp {
     ) {
         let before = self.last_mouse;
         self.last_mouse = Point::new(x / scale_factor, y / scale_factor);
-        // The painted buttons and tabs light up under the pointer, so a move
-        // into, within or out of the bars repaints them.
         let on_bar = |p: Point| self.tabs_rect.contains(p) || self.annotation_hit(p);
         if on_bar(before) || on_bar(self.last_mouse) {
             self.pending.redraw = true;
         }
-        // A drag that began in the formula bar extends the text
-        // selection there, not the grid selection.
         if self.formula_bar_selecting {
             let idx = self.formula_caret_at_x(self.last_mouse.x);
             self.grid.set_edit_caret_shown(idx, true);
@@ -234,10 +226,6 @@ impl SheetsApp {
         }
     }
 
-    /// Clipboard + select-all chords while a cell/formula-bar edit owns the
-    /// keyboard, operating on the edit buffer's text selection (so Ctrl+V
-    /// pastes text instead of inserting the letter 'v'). Returns whether the
-    /// chord was handled.
     pub(super) fn handle_edit_clipboard_chord(
         &mut self,
         event: &WindowEvent,
@@ -285,8 +273,6 @@ impl SheetsApp {
         true
     }
 
-    /// Ctrl+C/X/V/A/D/R while the grid selection (not a cell edit) owns the
-    /// keyboard. Returns whether the chord was handled.
     pub(super) fn handle_grid_clipboard_chord(
         &mut self,
         event: &WindowEvent,
@@ -343,10 +329,6 @@ impl SheetsApp {
         true
     }
 
-    /// Escape closes an overlay, clipboard chords route to either
-    /// the grid selection or an in-progress edit's text selection, and
-    /// anything left falls through to the grid's own key handling. Inline
-    /// editors are routed before this method by [`Self::route_inline_editor`].
     pub(super) fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
@@ -354,8 +336,6 @@ impl SheetsApp {
         state: &mut Edits<'_>,
         handled: &mut bool,
     ) {
-        // Familiar spreadsheet navigation stays on the keyboard, whatever
-        // the window bar has room for.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             let shift = modifiers.state().shift_key();
@@ -392,7 +372,6 @@ impl SheetsApp {
             }
         }
 
-        // Escape closes any open overlay.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
             && ke.state.is_pressed()
             && matches!(
@@ -422,10 +401,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Left-press: routes to whichever modal surface is open (rename, name
-    /// box, tab menu, settings panel, dropdown menu), then the
-    /// menu bar / name box / fx / formula field / sheet tabs, and finally the
-    /// grid body, in priority order.
     pub(super) fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
@@ -455,11 +430,6 @@ impl SheetsApp {
             MouseScrollDelta::LineDelta(x, y) => (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0),
             MouseScrollDelta::PixelDelta(pos) => (-pos.x / scale_factor, -pos.y / scale_factor),
         };
-        // A sideways wheel travels the columns, which end: a sheet already at
-        // its first (or last) column has nowhere to go, and the wheel is left
-        // to whatever encloses the window — on a desktop, the strip of
-        // windows, which pans it — instead of being swallowed by a grid that
-        // does not move. A wheel that does move the columns is the sheet's.
         let sideways = dx.abs() > dy.abs();
         let moved = self.grid.on_scroll(dx, dy);
         if sideways && !moved {
@@ -471,7 +441,6 @@ impl SheetsApp {
 
     pub(super) fn handle_right_press(&mut self, handled: &mut bool) {
         let p = self.last_mouse;
-        // Right-click on a sheet tab opens its context menu.
         if self.tabs_rect.contains(p)
             && let Some(idx) = self
                 .tab_rects
@@ -484,10 +453,6 @@ impl SheetsApp {
             *handled = true;
             return;
         }
-        // Right-click on a cell opens the cell menu. Pressing a cell outside
-        // the selection makes it the selection first, as a right-press does
-        // in every spreadsheet; a press inside one keeps the range so a
-        // multi-row delete is one action.
         if let Some(addr) = self.cell_under(p) {
             if !self.grid.selected_cells().contains(&addr) {
                 self.grid.select_only(addr);
@@ -498,8 +463,6 @@ impl SheetsApp {
         }
     }
 
-    /// Open the cell context menu at `p`, naming the range and the count each
-    /// structural edit will act on.
     pub(super) fn open_cell_menu(&mut self, p: Point) {
         self.close_overlays();
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
@@ -598,9 +561,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Route every input kind through the active shared inline editor before
-    /// the spreadsheet's grid or chrome can see it. Both editors are modal in
-    /// Sheets: a tab rename blur-commits, while a Name-box blur cancels.
     pub(super) fn route_inline_editor(
         &mut self,
         event: &WindowEvent,
@@ -637,8 +597,6 @@ impl SheetsApp {
             };
             self.resolve_tab_rename_outcome(state, outcome);
             self.pending.redraw = true;
-            // The previous inline editor was modal too: clicking away commits
-            // but does not also activate the newly clicked spreadsheet target.
             *handled = true;
             return true;
         }
@@ -736,10 +694,6 @@ impl SheetsApp {
         false
     }
 
-    /// One cell-menu command. Structural edits reach the workbook as a single
-    /// verb with the range's count or rows, so undo takes the whole change
-    /// back in one step; cell contents and formats go through the app's
-    /// grouped write path, which is also one step.
     pub(super) fn run_cell_menu_row(&mut self, doc: &mut Edits<'_>, row: CellMenuRow) {
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let Some(sheet) = self.active_sheet_id() else {
@@ -782,7 +736,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Insert rows above the selection.
     fn insert_rows_above(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
         let count = span(r0, r1);
         self.submit(
@@ -794,8 +747,6 @@ impl SheetsApp {
             }),
         );
         self.reload();
-        // The rows arrive where they were put: the band opens, and the rows
-        // below make room on the standard disclosure.
         self.grid.rows_inserted(r0, count);
         self.status = format!(
             "Inserted {} above row {}",
@@ -808,7 +759,6 @@ impl SheetsApp {
         );
     }
 
-    /// Insert rows below the selection.
     fn insert_rows_below(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
         let count = span(r0, r1);
         let at = r1.saturating_add(2);
@@ -833,7 +783,6 @@ impl SheetsApp {
         );
     }
 
-    /// Delete the selected rows.
     fn delete_rows(&mut self, doc: &mut Edits<'_>, sheet: Id, (r0, r1): (u32, u32)) {
         let rows: Vec<u32> = (r0..=r1).map(|r| r.saturating_add(1)).collect();
         let count = rows.len();
@@ -842,7 +791,6 @@ impl SheetsApp {
             Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
         );
         self.reload();
-        // The gap closes: the rows below rise into it rather than jumping.
         self.grid
             .rows_removed(r0, u32::try_from(count).unwrap_or(u32::MAX));
         self.status = format!(
@@ -855,7 +803,6 @@ impl SheetsApp {
         );
     }
 
-    /// Insert columns left of the selection.
     fn insert_columns_left(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
         let count = span(c0, c1);
         let at = crate::model::col_to_letters(c0);
@@ -872,7 +819,6 @@ impl SheetsApp {
         self.status = format!("Inserted {count} column(s) left of {at}");
     }
 
-    /// Insert columns right of the selection.
     fn insert_columns_right(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
         let count = span(c0, c1);
         let at = crate::model::col_to_letters(c1.saturating_add(1));
@@ -888,7 +834,6 @@ impl SheetsApp {
         self.status = format!("Inserted {count} column(s) right of {at}");
     }
 
-    /// Delete the selected columns.
     fn delete_columns(&mut self, doc: &mut Edits<'_>, sheet: Id, (c0, c1): (u32, u32)) {
         let columns: Vec<String> = (c0..=c1).map(crate::model::col_to_letters).collect();
         let count = columns.len();
@@ -926,8 +871,6 @@ impl SheetsApp {
         true
     }
 
-    /// Chrome hit-tests below the modal/menu checks: name box, "fx", formula
-    /// field, and the sheet-tab strip.
     pub(super) fn try_chrome_click(
         &mut self,
         p: Point,
@@ -935,21 +878,17 @@ impl SheetsApp {
         state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        // Name box → open a Go-To entry seeded with the active cell.
         if self.name_box_rect.contains(p) {
             self.begin_name_box_edit();
             *handled = true;
             return true;
         }
-        // "fx" → focus the active cell for a formula entry (seed `=`).
         if self.fx_rect.contains(p) {
             self.start_formula_entry();
             *handled = true;
             return true;
         }
 
-        // Formula field click → edit the active cell, positioning the
-        // caret where the user clicked (shift-click extends a selection).
         if self.formula_field_rect.contains(p) {
             let shift = modifiers.state().shift_key();
             if !self.grid.is_editing() {
@@ -962,7 +901,6 @@ impl SheetsApp {
             *handled = true;
             return true;
         }
-        // Sheet tabs?
         if self.tabs_rect.contains(p) {
             if self.add_tab_rect.contains(p) {
                 self.add_sheet(state);
@@ -981,10 +919,6 @@ impl SheetsApp {
         false
     }
 
-    /// Fallback: click lands on the grid body. Detects double-click (skipped
-    /// while a formula is being edited, since grid clicks there are
-    /// reference insertions in point mode) and drives the resulting
-    /// pointer-down / selection.
     pub(super) fn try_grid_click(
         &mut self,
         p: Point,

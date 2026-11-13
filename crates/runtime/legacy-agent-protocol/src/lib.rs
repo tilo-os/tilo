@@ -1,8 +1,7 @@
-//! The protocol between Tilo and the agent inside a legacy VM guest.
-//!
-//! A legacy VM (`linux` or `windows`, one per user and guest OS) runs an agent
-//! that listens on `AF_VSOCK` port [`AGENT_PORT`]. The host opens one
-//! connection per operation:
+//! The protocol between Tilo and the agent inside a legacy VM guest. A legacy
+//! VM (`linux` or `windows`, one per user and guest OS) runs an agent on
+//! `AF_VSOCK` port [`AGENT_PORT`], and the host opens one connection per
+//! operation:
 //!
 //! ```text
 //! host  → Hello { protocol_major }        guest → Hello(AgentHello)
@@ -13,17 +12,9 @@
 //!         | Resize                        guest → Exited(ExitStatus), close
 //! ```
 //!
-//! A launch with [`Stdio::Terminal`] runs on a pseudo-terminal in the
-//! guest: its input is the terminal's keys, its output (both streams) comes
-//! back as `Stdout`, and `Resize` follows the host terminal's size, so
-//! programs that read the terminal (editors, prompts, pagers) work.
-//!
 //! Every message is one [`FRAMING`] frame carrying a postcard value. The
-//! guest is not trusted with anything the host did not already give it: the
-//! agent reports, the host decides. Windows that a launched app opens never
-//! cross this channel; they travel over `waypipe` to [`WAYPIPE_PORT`] (see
-//! [`waypipe`]) and arrive at the compositor as ordinary Wayland clients,
-//! named by [`window`].
+//! agent reports and the host decides; windows never cross this channel but
+//! travel over `waypipe` to [`WAYPIPE_PORT`].
 
 #![allow(
     clippy::missing_errors_doc,
@@ -46,23 +37,16 @@ pub mod vsock;
 pub mod waypipe;
 pub mod window;
 
-/// Bumped on any incompatible change; both ends refuse a different major.
 pub const PROTOCOL_MAJOR: u16 = 1;
 
-/// The guest agent's vsock port.
 pub const AGENT_PORT: u32 = 7110;
 
-/// The host's vsock port for forwarded Wayland connections. One host-side
-/// `waypipe client` per VM accepts every app's `waypipe server`.
 pub const WAYPIPE_PORT: u32 = 7111;
 
-/// `VMADDR_CID_HOST`: how a guest names the host.
 pub const HOST_CID: u32 = 2;
 
-/// The largest frame either side sends. Output is chunked well below it.
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 
-/// The largest stdio chunk carried by one frame.
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Little-endian length prefix, postcard payload, never empty (every message
@@ -76,7 +60,6 @@ const MAX_SHARES: usize = 64;
 /// virtio-fs tags are at most 36 bytes.
 const MAX_TAG_BYTES: usize = 36;
 
-/// The guest operating system of a legacy VM.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum GuestOs {
     Linux,
@@ -92,7 +75,6 @@ impl GuestOs {
         }
     }
 
-    /// What a person reads next to a legacy window's name.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -111,64 +93,40 @@ impl GuestOs {
     }
 }
 
-/// Host → guest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HostMessage {
-    Hello {
-        protocol_major: u16,
-    },
+    Hello { protocol_major: u16 },
     Health,
     ListRunning,
-    /// The complete set of shares the guest should have mounted. Shares
-    /// missing from it are unmounted.
-    Mount {
-        shares: Vec<GuestShare>,
-    },
+    Mount { shares: Vec<GuestShare> },
     InstalledApps,
     Launch(Launch),
     Stdin(Vec<u8>),
     CloseStdin,
     Signal(Signal),
-    /// The complete set of directories the guest should have mounted over
-    /// vsock ([`files`]), for a VM without virtio-fs. Missing ones are
-    /// unmounted.
-    MountFiles {
-        shares: Vec<files::FileShare>,
-    },
-    /// The host terminal of a [`Stdio::Terminal`] launch changed size.
+    MountFiles { shares: Vec<files::FileShare> },
     Resize(TerminalSize),
 }
 
-/// Guest → host.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GuestMessage {
     Hello(AgentHello),
     Health(Health),
     Running(Vec<RunningApp>),
-    Mounted {
-        shares: Vec<GuestShare>,
-    },
+    Mounted { shares: Vec<GuestShare> },
     InstalledApps(Vec<InstalledApp>),
-    Started {
-        pid: u32,
-    },
+    Started { pid: u32 },
     Stdout(Vec<u8>),
     Stderr(Vec<u8>),
     Exited(ExitStatus),
-    Error {
-        message: String,
-    },
-    /// The paths mounted over vsock after a [`HostMessage::MountFiles`].
-    FilesMounted {
-        paths: Vec<String>,
-    },
+    Error { message: String },
+    FilesMounted { paths: Vec<String> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentHello {
     pub protocol_major: u16,
     pub os: GuestOs,
-    /// Changes on every guest boot. A resumed snapshot keeps it.
     pub boot_id: String,
     pub agent_version: String,
 }
@@ -180,11 +138,9 @@ pub struct Health {
     pub mem_available_kib: u64,
     /// Apps started through this agent that are still running.
     pub running: u32,
-    /// Of those, the ones whose windows are forwarded to the host.
     pub windowed: u32,
 }
 
-/// One app started through the agent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunningApp {
     pub pid: u32,
@@ -193,11 +149,8 @@ pub struct RunningApp {
     pub started_unix: u64,
 }
 
-/// An app the guest has installed (a Flatpak export), as its desktop entry
-/// describes it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledApp {
-    /// Desktop-file id without `.desktop`, e.g. `org.gnome.Calculator`.
     pub id: String,
     pub name: String,
     /// The Wayland app id or X11 class the app's windows report.
@@ -206,20 +159,16 @@ pub struct InstalledApp {
     pub terminal: bool,
 }
 
-/// One host directory exposed to the guest at the same path.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct GuestShare {
-    /// The virtio-fs tag the host attached the share under.
     pub tag: String,
     pub path: String,
     pub read_only: bool,
 }
 
-/// Start `argv` in the guest as the guest's user.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Launch {
     pub argv: Vec<String>,
-    /// Absolute guest path; the guest user's home when absent.
     pub cwd: Option<String>,
     pub env: Vec<(String, String)>,
     pub stdio: Stdio,
@@ -228,16 +177,12 @@ pub struct Launch {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Stdio {
-    /// stdin, stdout and stderr travel over this connection.
     Relay,
     /// The app gets `/dev/null`; the connection only reports its exit.
     Null,
-    /// The app runs on a pseudo-terminal of this size, its session's
-    /// controlling terminal: input is keys, output both streams in one.
     Terminal(TerminalSize),
 }
 
-/// A terminal's size in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TerminalSize {
     pub cols: u16,
@@ -246,7 +191,6 @@ pub struct TerminalSize {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Display {
-    /// No windows (a command-line tool).
     None,
     /// Run under a `waypipe server` connected to the host; X11 clients reach
     /// the guest's Xwayland through the same forwarder.
@@ -316,7 +260,6 @@ pub fn send<W: Write + ?Sized, T: Serialize>(
     Ok(())
 }
 
-/// Read one message; `None` when the peer closed between messages.
 pub fn recv<R: Read + ?Sized, T: serde::de::DeserializeOwned>(
     reader: &mut R,
 ) -> Result<Option<T>, ProtocolError> {
@@ -324,7 +267,6 @@ pub fn recv<R: Read + ?Sized, T: serde::de::DeserializeOwned>(
 }
 
 impl Launch {
-    /// Shape checks both ends apply before acting on a launch.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.argv.is_empty() || self.argv.len() > MAX_ARGS {
             return Err(ProtocolError::Invalid("argv length"));
@@ -384,7 +326,6 @@ impl GuestShare {
         Ok(())
     }
 
-    /// Validates a whole desired set: each share, and no duplicate tag or path.
     pub fn validate_set(shares: &[Self]) -> Result<(), ProtocolError> {
         if shares.len() > MAX_SHARES {
             return Err(ProtocolError::Invalid("share count"));
@@ -404,7 +345,6 @@ impl GuestShare {
 }
 
 impl files::FileShare {
-    /// Validates a whole desired set: each path allowed, none twice.
     pub fn validate_set(shares: &[Self]) -> Result<(), ProtocolError> {
         if shares.len() > MAX_SHARES {
             return Err(ProtocolError::Invalid("share count"));
@@ -425,7 +365,6 @@ impl files::FileShare {
     }
 }
 
-/// An absolute, normalised path outside the guest's own system directories.
 #[must_use]
 pub fn share_path_allowed(path: &Path) -> bool {
     let Some(text) = path.to_str() else {
@@ -445,7 +384,6 @@ pub fn share_path_allowed(path: &Path) -> bool {
         .any(|system| path == Path::new(system) || path.starts_with(system))
 }
 
-/// A connection both directions of which can be used from different threads.
 pub trait Duplex: Read + Write + Send + Sized + 'static {
     fn try_clone(&self) -> io::Result<Self>;
     fn shutdown_write(&self) -> io::Result<()>;

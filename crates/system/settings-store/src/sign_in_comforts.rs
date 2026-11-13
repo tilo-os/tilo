@@ -1,17 +1,9 @@
-//! The device's sign-in comforts: what the login screens start with before
-//! anyone has signed in (docs/security/sign-in.md §3.4).
+//! The device's sign-in comforts: what the login screens start with before anyone has signed in
+//! (docs/security/sign-in.md §3.4). `tilo-authd` keeps them in device storage and mirrors them into
+//! the volume header as the `tilo-comforts` token, which the initrd reads before the volume opens.
 //!
-//! They are the person's own settings, carried to where no person's
-//! settings file is readable: the screen-reader keys of the `accessibility`
-//! section ([`crate::accessibility`]), the `appearance` section's language,
-//! contrast and text scale ([`crate::appearance`]) and the active keyboard
-//! source ([`crate::hardware::KeyboardInputSource`]). `tilo-authd` keeps them
-//! in device storage and mirrors them into the volume header as the
-//! `tilo-comforts` token, which the initrd reads before the volume opens.
-//!
-//! That header is unauthenticated: someone holding the disk can write it. So
-//! reading is forgiving and clamps every value, as the settings file's own
-//! reads do, and the result is preferences only.
+//! That header is unauthenticated, so reading clamps every value and the result is preferences
+//! only.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -22,9 +14,6 @@ use crate::accessibility::{
 use crate::appearance::{TEXT_SCALE_MAX, TEXT_SCALE_MIN};
 use crate::hardware::KeyboardInputSource;
 
-/// Whether a person's changes to these comforts apply to this device's login
-/// screens too: a shared machine and a laptop of their own want different
-/// answers. On unless they keep the two apart.
 pub const APPLY_TO_SIGN_IN: crate::Key<bool> = crate::Key::new(
     crate::accessibility::DEVICE_SECTION,
     "apply_to_sign_in",
@@ -38,14 +27,10 @@ const MAX_LANGUAGE_LEN: usize = 35;
 #[serde(from = "Map<String, Value>")]
 pub struct SignInComforts {
     pub screen_reader: bool,
-    /// Normalised speech rate, where 100 is the engine default.
     pub screen_reader_rate: u16,
     pub screen_reader_voice: ScreenReaderVoice,
-    /// The interface language as a BCP 47 tag; `None` follows the system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    /// The XKB layout typed into the secret field; `None` keeps the
-    /// machine's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xkb_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,8 +61,6 @@ impl From<Map<String, Value>> for SignInComforts {
 }
 
 impl SignInComforts {
-    /// The comforts in `map`; a missing or malformed field keeps its default
-    /// without resetting the others, and every value is clamped.
     pub fn from_map(map: &Map<String, Value>) -> Self {
         fn key<T: for<'de> Deserialize<'de>>(map: &Map<String, Value>, name: &str) -> Option<T> {
             map.get(name).and_then(|value| T::deserialize(value).ok())
@@ -97,8 +80,6 @@ impl SignInComforts {
         .clamped()
     }
 
-    /// The comforts in a JSON value, as [`Self::from_map`] reads them; anything
-    /// but an object is the defaults.
     pub fn from_value(value: &Value) -> Self {
         value.as_object().map(Self::from_map).unwrap_or_default()
     }
@@ -122,8 +103,6 @@ impl SignInComforts {
                 None => layout.to_owned(),
             })
         });
-        // A layout with a variant that does not parse loses both: half of a
-        // keyboard source is a different keyboard.
         (self.xkb_layout, self.xkb_variant) = match source {
             Some(source) => (Some(source.layout), source.variant),
             None => (None, None),
@@ -143,11 +122,6 @@ impl SignInComforts {
         self
     }
 
-    /// What changed from `before` to `after`, as the fields to change: an
-    /// unset language or layout is `null`, and the layout and its variant go
-    /// together. Applied with [`Self::with_changes`], a person who makes the
-    /// text larger leaves the screen reader someone turned on at the login
-    /// screen on.
     pub fn changes(before: &Self, after: &Self) -> Map<String, Value> {
         let fields = |comforts: &Self| match serde_json::to_value(comforts) {
             Ok(Value::Object(map)) => map,
@@ -180,8 +154,6 @@ impl SignInComforts {
         changes
     }
 
-    /// These comforts with the fields `changes` names replaced, clamped as
-    /// [`Self::from_map`] reads them.
     #[must_use]
     pub fn with_changes(&self, changes: &Map<String, Value>) -> Self {
         let Ok(Value::Object(mut fields)) = serde_json::to_value(self) else {
@@ -191,7 +163,6 @@ impl SignInComforts {
         Self::from_map(&fields)
     }
 
-    /// What the screen reader does with these comforts.
     pub fn screen_reader_settings(&self) -> ScreenReaderSettings {
         ScreenReaderSettings::new(
             self.screen_reader,
@@ -201,7 +172,6 @@ impl SignInComforts {
     }
 }
 
-/// Letters, digits and `-`, starting with a letter: `de`, `de-DE`, `zh-Hant-TW`.
 fn plain_language_tag(tag: &str) -> bool {
     tag.len() <= MAX_LANGUAGE_LEN
         && tag.bytes().next().is_some_and(|b| b.is_ascii_alphabetic())

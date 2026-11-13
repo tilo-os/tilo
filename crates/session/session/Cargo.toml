@@ -51,6 +51,10 @@ dev-overrides = []
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
 # with it (`--features dev-rust-views`); a production image never does.
 dev-rust-views = ["dep:tube", "chat/samples"]
+# The session's search sources (`search::SEARCH_FEED`) are handed over by the
+# bundling crate, with the desktop's search engine, rather than linked: the
+# browser desktop fetches them as their own module.
+lazy-search-feed = []
 
 [dependencies]
 # A window's page reaches this session as the paint stream its app encoded.
@@ -139,6 +143,7 @@ sha2.workspace = true
 uuid.workspace = true
 futures-util.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # The workspaces' live plane: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.
@@ -180,13 +185,16 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "ti
 # A Rust app's views and resources, published in a development session only
 # (`dev-rust-views`): the sample catalogue, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+# Which app opens a file or a link: the workspace's and the person's default apps, and this
+# machine's own `mimeapps.list`, resolved in that order.
+desktop-policy = { path = "../../system/desktop-policy" }
 tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
 # The session's own app store, read as the launcher reads it: a development session seeds the
-# tilolang apps it installed (`crate::seeded_apps`).
-package-store = { path = "../../packaging/package-store" }
+# tilolang apps it installed (`crate::seeded_apps`), and a desk style a person owns is installed
+# into it from their workspace (`crate::style_packages`), which needs the store's writer.
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 # The filesystem daemon's content store, as this desktop session reaches it:
 # what names an agent as the cause of the writes Files made for a person.
@@ -285,6 +293,9 @@ tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# `tilolang check` and build as the session's own commands over a package in the person's
+# workspace: a desk style is written, checked and installed as any app is (`shell.md` §6).
+tilolang-cli = { path = "../../lang/tilolang-cli" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
 # The pictures the desk shows: the image's own, and the person's.
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
@@ -418,10 +429,10 @@ pollster.workspace = true
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
-# their own app store: the same packages a development session installs.
-tilolang-cli = { path = "../../lang/tilolang-cli" }
+# their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
+# `package-store`'s writer are normal dependencies of the session (a person's own desk style is
+# written, checked and installed the same way), so a test needs nothing extra here.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-package-store = { path = "../../packaging/package-store", features = ["store"] }
 # The events the actor hands the session, which its own tests hand the sync
 # directly: the membership epoch on them is the actor's to mint.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }

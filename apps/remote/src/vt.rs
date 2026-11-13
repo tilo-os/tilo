@@ -1,21 +1,9 @@
 //! A compact VT/ANSI terminal emulator.
-//!
-//! The SSH session hands us the raw byte stream from the remote PTY; this
-//! turns it into a fixed-size grid of styled [`Cell`]s that the session
-//! surface renders. It is deliberately small — enough of xterm's grammar
-//! to make an interactive login shell (prompts, `ls --color`, `htop`-style
-//! cursor moves, clears) read correctly — not a full terminal.
-//!
-//! Parsing is delegated to `vte` (the same state machine the standalone
-//! terminal app uses); we only implement the [`vte::Perform`] callbacks and
-//! the grid model.
 
 use crate::session::{Cell, TermLine};
 use vte::{Params, Parser, Perform};
 
 /// A live terminal grid driven by a byte stream. Owns the `vte` parser and
-/// the cell buffer; call [`VtGrid::feed`] with PTY bytes, then read
-/// [`VtGrid::lines`] to render.
 pub struct VtGrid {
     parser: Parser,
     grid: Grid,
@@ -40,8 +28,6 @@ impl VtGrid {
     }
 
     /// Snapshot the grid as render-ready lines. Trailing all-blank rows are
-    /// kept so the caret has somewhere to sit; each row is trimmed of its
-    /// trailing blanks to keep the scene light.
     pub fn lines(&self) -> Vec<TermLine> {
         self.grid
             .cells
@@ -60,8 +46,6 @@ impl VtGrid {
 }
 
 /// The mutable cell buffer + cursor + pen. Separate from [`VtGrid`] so it
-/// can be the `&mut self` the `vte::Perform` callbacks mutate while the
-/// parser borrows `VtGrid` immutably.
 struct Grid {
     cols: usize,
     rows: usize,
@@ -86,7 +70,6 @@ impl Grid {
     }
 
     /// Move to the start of the next line, scrolling the buffer up if the
-    /// cursor is already on the last row.
     fn newline(&mut self) {
         if self.cy + 1 >= self.rows {
             self.cells.remove(0);
@@ -98,7 +81,6 @@ impl Grid {
 
     fn put(&mut self, ch: char) {
         if self.cx >= self.cols {
-            // Auto-wrap to the next line.
             self.cx = 0;
             self.newline();
         }
@@ -158,7 +140,6 @@ impl Grid {
             }
         }
         if !any {
-            // A bare `ESC [ m` is SGR reset.
             self.pen_color = None;
             self.pen_bold = false;
         }
@@ -184,7 +165,6 @@ impl Perform for Grid {
             b'\r' => self.cx = 0,
             0x08 => self.cx = self.cx.saturating_sub(1),
             b'\t' => {
-                // Advance to the next 8-column tab stop.
                 let next = ((self.cx / 8) + 1) * 8;
                 self.cx = next.min(self.cols.saturating_sub(1));
             }
@@ -196,7 +176,6 @@ impl Perform for Grid {
         match c {
             'm' => self.apply_sgr(params),
             'H' | 'f' => {
-                // Cursor position: 1-based (row, col).
                 let mut it = params.iter();
                 let row = it
                     .next()
@@ -225,8 +204,6 @@ impl Perform for Grid {
             'D' => self.cx = self.cx.saturating_sub(first_param(params, 1) as usize),
             'G' => self.cx = (first_param(params, 1) as usize - 1).min(self.cols.saturating_sub(1)),
             'J' => {
-                // Erase in display: 2 = whole screen (and home the cursor is
-                // common but not required); 0 = to end (approximate as line).
                 match params
                     .iter()
                     .next()
@@ -285,7 +262,6 @@ mod tests {
         {
             let mut g = VtGrid::new(8, 2);
             g.feed(b"a\r\nb\r\nc");
-            // Grid is 2 rows: "a" scrolled off, leaving "b" then "c".
             let lines = g.lines();
             assert_eq!(plain_text(&lines[0]), "b");
             assert_eq!(plain_text(&lines[1]), "c");
@@ -321,7 +297,6 @@ mod tests {
         {
             let mut g = VtGrid::new(10, 4);
             g.feed(b"line0\r\nline1");
-            // Home the cursor, erase to end of the first line, write new text.
             g.feed(b"\x1b[1;1H\x1b[Knew");
             assert_eq!(plain_text(&g.lines()[0]), "new");
             assert_eq!(plain_text(&g.lines()[1]), "line1");

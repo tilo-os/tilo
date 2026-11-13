@@ -1,13 +1,7 @@
-//! `.tapp` install through the device's package store.
-//!
-//! The package streams straight into the [`PackageStore`]: its signed
-//! metadata is checked here before any payload byte is stored, the payload
-//! goes into the content store, and the tree is materialised once from
-//! there. A thin package installs when its payload is already stored or a
+//! `.tapp` install through the device's package store: the signed metadata is checked here before
+//! any payload byte is stored, the payload goes into the content store, and the tree is
+//! materialised once from there. A thin package installs when its payload is already stored or a
 //! [`BlobFetcher`] can supply the rest.
-//!
-//! [`InstallExpectation`] is the client's vocabulary too; installing is the
-//! daemon's and needs the `service` feature.
 
 #[cfg(feature = "service")]
 use package_store::{Admission, BlobFetcher, InstalledPackage, PackageStore, Pinning, StoreError};
@@ -26,12 +20,9 @@ pub enum InstallError {
     Store(#[from] StoreError),
 }
 
-/// Registry-authenticated identity that downloaded bytes must match.
-///
-/// This is deliberately supplied by the privileged Store capability, not
-/// inferred from the archive: an archive is allowed to describe itself, but
-/// it is not allowed to choose the identity the user approved in the
-/// catalogue.
+/// The registry-authenticated identity downloaded bytes must match, supplied by the privileged
+/// Store capability: an archive may describe itself, but it may not choose the identity the user
+/// approved in the catalogue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstallExpectation {
     pub package_root: PackageId,
@@ -69,8 +60,8 @@ fn signed(meta: &PackageMeta) -> Result<(), String> {
 ///
 /// # Errors
 ///
-/// Returns [`InstallError::Store`] when the package is malformed, its
-/// signature is invalid, payload is unavailable, or the store fails.
+/// [`InstallError::Store`] when the package is malformed, its signature is invalid, payload is
+/// unavailable, or the store fails.
 pub fn install_tapp(
     store: &PackageStore,
     bytes: &[u8],
@@ -89,15 +80,14 @@ pub fn install_tapp(
 }
 
 #[cfg(feature = "service")]
-/// Install a registry download after checking it against every signed
-/// catalogue identity: size, package root, publisher, app id and version.
-/// Nothing is stored for a package that does not match.
+/// Install a registry download after checking it against every signed catalogue identity: size,
+/// package root, publisher, app id and version. Nothing is stored for a package that does not
+/// match.
 ///
 /// # Errors
 ///
-/// Returns [`InstallError::Verify`] when the bytes do not match the expected
-/// catalogue identity, or [`InstallError::Store`] when the store refuses or
-/// fails.
+/// [`InstallError::Verify`] when the bytes do not match the expected catalogue identity, or
+/// [`InstallError::Store`] when the store refuses or fails.
 pub fn install_verified_tapp(
     store: &PackageStore,
     bytes: &[u8],

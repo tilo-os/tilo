@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.weather@3150b872b91bc7e1";
+
 export interface Place {
   name: string;
   region: string;
@@ -63,6 +68,6 @@ export interface Locations extends tilo.Resource {
 
 /** The `weather.locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {
-  return resourceProxy(ws, path) as unknown as Locations;
+  return resourceProxy(ws, path, SURFACE) as unknown as Locations;
 }
 

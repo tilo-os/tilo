@@ -1,26 +1,16 @@
-//! tilo-cli-shim — the PATH-facing wrapper installed once per CLI
-//! command a Tilo package publishes.
+//! `tilo-cli-shim`: the PATH-facing wrapper installed once per CLI command a Tilo package publishes.
 //!
-//! Reads `argv[0]` (bare command or full path), locates its own
-//! executable path via [`std::env::current_exe`], reads the sidecar
-//! `<exe-path>.tilo-shim` (TOML: `package_id`, `command`, optional
-//! `launcher`), and `execv`s the launcher:
+//! It reads `argv[0]`, finds its own executable path, reads the sidecar `<exe-path>.tilo-shim`
+//! (TOML: `package_id`, `command`, optional `launcher`) and execs the launcher:
 //! ```text
 //! tilo-launcher run-installed --package <pkg-id> --command <cmd> -- <argv[1..]>
 //! ```
-//! The sidecar lets one shim binary serve every installed command
-//! without recompiling per install; its one open/read/close is
-//! dwarfed by the launcher's bwrap fork anyway.
+//! One shim binary serves every installed command.
 //!
-//! ### Security posture
-//!
-//! - The sidecar sits in the user's own data dir and is only writable
-//!   by `install` — write access there already means owning the account.
-//! - `LD_PRELOAD`/`LD_LIBRARY_PATH` are NOT inherited specially; the
-//!   launcher runs unsandboxed and reconstructs a clean env for the
-//!   sandboxed entrypoint.
-//! - The sidecar's `launcher` override exists only for out-of-tree
-//!   testing; production installs leave it unset.
+//! The sidecar sits in the user's own data dir and is only writable by `install`, where write access
+//! already means owning the account. `LD_PRELOAD`/`LD_LIBRARY_PATH` are not inherited specially: the
+//! launcher runs unsandboxed and reconstructs a clean env for the sandboxed entrypoint. The sidecar's
+//! `launcher` override exists only for out-of-tree testing.
 
 use std::env;
 use std::ffi::CString;
@@ -28,12 +18,12 @@ use std::path::{Path, PathBuf};
 
 use cli_shim::{Sidecar, missing_sidecar_message, sidecar_path_for};
 
-/// System install path for the launcher; overridable by the sidecar's
-/// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
+/// System install path for the launcher, overridable by the sidecar's `launcher = ...` field so tests
+/// can point at a target/debug/tilo-launcher without root-installing.
 const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/tilo/tilo-launcher";
 
 fn main() -> ! {
-    // Diverges — either execvs the launcher (never returns) or exits via the error path with a status the caller can inspect.
+    // Diverges: either execs the launcher (never returns) or exits through the error path.
     let exe = env::current_exe().unwrap_or_else(|e| {
         die(&format!("tilo-cli-shim: cannot resolve current exe: {e}"));
     });
@@ -48,9 +38,8 @@ fn main() -> ! {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
     let mut passthrough: Vec<String> = env::args().skip(1).collect();
 
-    // Build the argv the launcher expects. The `--` separator matters:
-    // everything after it is opaque user args forwarded verbatim —
-    // without it clap would try to interpret --help etc. as launcher flags.
+    // The `--` separator matters: everything after it is opaque user args forwarded verbatim, and
+    // without it clap would read --help as a launcher flag.
     let mut argv: Vec<String> = Vec::with_capacity(6usize.saturating_add(passthrough.len()));
     argv.push(launcher.file_name().map_or_else(
         || "tilo-launcher".to_string(),

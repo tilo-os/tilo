@@ -1,12 +1,5 @@
-//! "Run shortcut ▸": the person's shortcuts, offered on a file.
-//!
-//! Files asks the session's action host which shortcuts the person may run
-//! (the `shortcuts.shortcut:*` rows of its catalogue) and offers on a
-//! selected entry those whose first input takes that entry's kind of
-//! resource ([`tilo_automation::quick_action_input`]). Choosing one invokes
-//! that shortcut's `run` through the same door every other caller uses, with
-//! the entry's resource id bound to that input, so the run meets the same
-//! checks as one from the palette or an agent.
+//! "Run shortcut": the person's shortcuts that run on the selected entry, fetched
+//! from the session and offered in a flyout.
 
 use ui::time::{Duration, Instant};
 
@@ -21,14 +14,10 @@ use tilo_automation::{
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-/// How long a fetched list of shortcuts is offered before it is asked for
-/// again.
 const REFRESH_AFTER: Duration = Duration::from_secs(15);
 
-/// Where Files numbers its own catalogue requests, far from the toolkit's.
 const CORRELATION_BASE: u64 = 0x5107_c075_0000_0000;
 
-/// One shortcut the person may run, as the action host offered it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShortcutOffer {
     pub provider: String,
@@ -36,7 +25,6 @@ pub struct ShortcutOffer {
 }
 
 impl ShortcutOffer {
-    /// The shortcut's resource id, which names it.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.descriptor.address.resource
@@ -47,8 +35,6 @@ impl ShortcutOffer {
         &self.descriptor.action_label
     }
 
-    /// The resource of `identities` (kind and id) this shortcut runs on,
-    /// when it runs on one of them.
     #[must_use]
     pub fn resource_in<'r>(&self, identities: &'r [(String, String)]) -> Option<&'r str> {
         identities
@@ -58,14 +44,12 @@ impl ShortcutOffer {
     }
 }
 
-/// What became of a shortcut run from the menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShortcutOutcome {
     Started { label: String },
     Refused { label: String, reason: String },
 }
 
-/// The shortcuts offered in Files, and the runs started from its menu.
 #[derive(Debug, Default)]
 pub struct ShortcutMenuState {
     offers: Vec<ShortcutOffer>,
@@ -78,8 +62,6 @@ pub struct ShortcutMenuState {
 }
 
 impl ShortcutMenuState {
-    /// Ask for the shortcuts again when the list is older than
-    /// `REFRESH_AFTER` and no answer is outstanding.
     pub fn poll_if_due(&mut self, now: Instant) {
         let stale = self
             .refreshed
@@ -108,13 +90,10 @@ impl ShortcutMenuState {
         });
     }
 
-    /// Requests for the session, oldest first.
     pub fn take_requests(&mut self) -> Vec<CollabRequest> {
         std::mem::take(&mut self.requests)
     }
 
-    /// Take the session's answer to a request made here; what became of a
-    /// run, when `event` says.
     pub fn handle_event(&mut self, event: &CollabEvent) -> Option<ShortcutOutcome> {
         let CollabEvent::RemoteAction { message } = event else {
             return None;
@@ -174,8 +153,6 @@ impl ShortcutMenuState {
         }
     }
 
-    /// The shortcuts that run on a resource with one of `identities` (kind
-    /// and id), in the order the host offered them.
     #[must_use]
     pub fn offered_on(&self, identities: &[(String, String)]) -> Vec<&ShortcutOffer> {
         self.offers
@@ -184,7 +161,6 @@ impl ShortcutMenuState {
             .collect()
     }
 
-    /// Run shortcut `shortcut` on the resource of `identities` it takes.
     pub fn run(
         &mut self,
         shortcut: &str,
@@ -266,8 +242,6 @@ mod tests {
         }
     }
 
-    /// A menu that has fetched a shortcut on files, one on calendar events
-    /// and one that takes nothing.
     fn fetched() -> ShortcutMenuState {
         let mut menu = ShortcutMenuState::default();
         menu.poll_if_due(ui::time::now());

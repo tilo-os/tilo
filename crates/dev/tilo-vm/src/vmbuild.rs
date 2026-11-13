@@ -34,7 +34,6 @@ pub fn worktree_id(worktree: &Worktree, host: Option<&str>) -> String {
     )
 }
 
-/// POSIX shell quoting for one word.
 pub fn sh_quote(word: &str) -> String {
     if !word.is_empty()
         && word
@@ -91,10 +90,6 @@ fn use_msys_ssh(ssh: &mut CommandLine, sibling: &Path) {
     }
 }
 
-/// `rsync` that mirrors the worktree into `SRC_DIR/<id>/` in the VM:
-/// `.gitignore` rules apply, `.git` and `target/` stay behind (the VM's
-/// `target/` is its own build dir and is never deleted by the sync), and
-/// the remote side holds the worktree's build lock while it writes.
 pub fn rsync_command(
     root: &Path,
     endpoint: &SshEndpoint,
@@ -148,8 +143,6 @@ pub(crate) fn rsync_source(root: &Path) -> String {
     path
 }
 
-/// The remote command for a `tilo-vmd` subcommand, following the VM's
-/// configured daemon command (e.g. `sudo -n tilo-vmd rpc`).
 pub fn daemon_command(configured: Option<&str>, subcommand: &str) -> Vec<String> {
     let mut words: Vec<String> = configured
         .unwrap_or(DEFAULT_DAEMON)
@@ -163,8 +156,6 @@ pub fn daemon_command(configured: Option<&str>, subcommand: &str) -> Vec<String>
     words
 }
 
-/// Run a streaming job: `job` goes to the remote stdin, the remote stderr
-/// streams to ours, and the job line comes back on stdout.
 pub fn run_job(
     vm: &str,
     endpoint: &SshEndpoint,
@@ -246,11 +237,8 @@ mod tests {
         }
     }
 
-    /// Worktree ids are readable and unique per host; rsync respects gitignore and leaves target alone; the
-    /// Windows worktree is a local MSYS2 rsync operand; job commands follow the configured daemon.
     #[test]
     fn vm_builds_sync_each_worktree_to_its_configured_daemon() {
-        // Phase: worktree_ids_are_readable_and_unique_per_host.
         {
             let wt = Worktree {
                 root: PathBuf::from("/home/a/tilo/.claude/worktrees/agent-A74"),
@@ -263,7 +251,6 @@ mod tests {
             assert_eq!(a, worktree_id(&wt, Some("laptop")));
         }
 
-        // Phase: rsync_respects_gitignore_and_leaves_target_alone.
         {
             let line =
                 rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1").unwrap();
@@ -290,7 +277,6 @@ mod tests {
             );
         }
 
-        // Phase: windows_worktree_is_a_local_msys2_rsync_operand.
         #[cfg(windows)]
         {
             assert_eq!(
@@ -314,7 +300,6 @@ mod tests {
             );
         }
 
-        // Phase: job_commands_follow_the_configured_daemon.
         {
             assert_eq!(daemon_command(None, "build"), ["tilo-vmd", "build"]);
             assert_eq!(

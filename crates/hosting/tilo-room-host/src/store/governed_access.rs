@@ -1,5 +1,6 @@
-//! A governed workspace's access as the host keeps it on disk: its member
-//! devices and the person roots its handshake admits, in one file.
+//! A workspace's access as the host keeps it on disk: its member devices, the
+//! person roots its handshake admits, and whether governance owns admission,
+//! in one file. It is the host's only answer to who is a member.
 //!
 //! The file was written whole with every change, so each person a public
 //! workspace let in cost a write of everyone let in before (about 7 ms at
@@ -15,10 +16,11 @@
 //! cut short by one, and it and anything after it are dropped as the file
 //! is read.
 //!
-//! Version 1 was a JSON object written whole (`governed-access-v1.json`).
-//! Opening a workspace that holds one brings it up through [`FORMAT`] into
-//! [`GOVERNED_ACCESS_FILE`], keeping the old file beside it as the
-//! migration's snapshot.
+//! Version 1 was a JSON object written whole (`governed-access-v1.json`);
+//! opening a workspace that holds one brings it up through [`FORMAT`] into
+//! [`GOVERNED_ACCESS_FILE`], keeping the old file beside it as the migration's
+//! snapshot. Version 2 knew no admission flag: every record it held was the
+//! governor's, so version 3 reads all of them as governed.
 
 use std::collections::HashSet;
 use std::fs;
@@ -41,12 +43,13 @@ const HEADER: usize = MAGIC.len() + 4;
 /// The bytes of a frame beside its change: its length and its digest.
 const FRAMING: usize = 4 + 8;
 
-/// Version 1 (whole JSON) and 2 (this log).
+/// Version 1 (whole JSON), 2 (this log) and 3 (the log, with the admission
+/// flag).
 pub(crate) const FORMAT: Format = Format {
     name: "governed workspace access",
-    version: 2,
+    version: 3,
     oldest: 1,
-    steps: &[v1_to_v2],
+    steps: &[v1_to_v2, v2_to_v3],
 };
 
 /// One write: the whole access when `whole`, else what it added and took away.
@@ -57,6 +60,9 @@ struct Change {
     removed_devices: Vec<[u8; 32]>,
     added_roots: Vec<[u8; 32]>,
     removed_roots: Vec<[u8; 32]>,
+    /// Whether governance owns the workspace's admission, when this write
+    /// changes it.
+    governed: Option<bool>,
 }
 
 /// What a store knows its access log holds, so a write appends only the
@@ -71,10 +77,14 @@ pub(super) struct Held {
     digest: blake3::Hasher,
 }
 
-fn header() -> Vec<u8> {
+fn header_by(version: u32) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
-    bytes.extend_from_slice(&FORMAT.version.to_le_bytes());
+    bytes.extend_from_slice(&version.to_le_bytes());
     bytes
+}
+
+fn header() -> Vec<u8> {
+    header_by(FORMAT.version)
 }
 
 fn frame(change: &Change) -> Result<Vec<u8>, StoreError> {
@@ -92,6 +102,7 @@ fn whole(access: &GovernedAccessRecord) -> Change {
         whole: true,
         added_devices: access.member_devices.clone(),
         added_roots: access.member_user_roots.clone(),
+        governed: Some(access.governed),
         ..Change::default()
     }
 }
@@ -120,6 +131,9 @@ fn apply(held: &mut GovernedAccessRecord, change: Change) {
         change.added_roots,
         &change.removed_roots,
     );
+    if let Some(governed) = change.governed {
+        held.governed = governed;
+    }
 }
 
 /// The access a log's `bytes` hold and the length of their frames that
@@ -199,9 +213,70 @@ fn v1_to_v2(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let access = GovernedAccessRecord {
         member_devices: keys(v1.member_devices)?,
         member_user_roots: keys(v1.member_user_roots)?,
+        governed: true,
     };
-    let mut log = header();
+    let mut log = header_by(2);
     log.extend(frame(&whole(&access)).map_err(|error| error.to_string())?);
+    Ok(log)
+}
+
+/// Version 2 to 3: every record version 2 wrote was the governor's, so each of
+/// its changes is one governance still owns, and the flag is written with it.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a migration step takes the bytes it brings up"
+)]
+fn v2_to_v3(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    /// The change as version 2 framed it.
+    #[derive(Deserialize)]
+    struct ChangeV2 {
+        whole: bool,
+        added_devices: Vec<[u8; 32]>,
+        removed_devices: Vec<[u8; 32]>,
+        added_roots: Vec<[u8; 32]>,
+        removed_roots: Vec<[u8; 32]>,
+    }
+    let refused = |reason: &str| format!("governed access log: {reason}");
+    let (magic, rest) = bytes
+        .split_first_chunk::<8>()
+        .ok_or_else(|| refused("no header"))?;
+    let (version, mut rest) = rest
+        .split_first_chunk::<4>()
+        .ok_or_else(|| refused("no version"))?;
+    if magic != MAGIC {
+        return Err(refused("not an access log"));
+    }
+    if u32::from_le_bytes(*version) != 2 {
+        return Err(refused("not a version 2 log"));
+    }
+    let mut log = header_by(3);
+    while let Some((len, tail)) = rest.split_first_chunk::<4>() {
+        let Some(len) = usize::try_from(u32::from_le_bytes(*len)).ok() else {
+            break;
+        };
+        let Some((body, tail)) = tail.split_at_checked(len) else {
+            break;
+        };
+        let Some((digest, tail)) = tail.split_first_chunk::<8>() else {
+            break;
+        };
+        if digest != &blake3::hash(body).as_bytes()[..8] {
+            break;
+        }
+        let Ok(change) = postcard::from_bytes::<ChangeV2>(body) else {
+            break;
+        };
+        let change = Change {
+            whole: change.whole,
+            added_devices: change.added_devices,
+            removed_devices: change.removed_devices,
+            added_roots: change.added_roots,
+            removed_roots: change.removed_roots,
+            governed: Some(true),
+        };
+        log.extend(frame(&change).map_err(|error| error.to_string())?);
+        rest = tail;
+    }
     Ok(log)
 }
 
@@ -215,12 +290,9 @@ impl WorkspaceStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let log = FORMAT
-            .migrate(bytes, 1)
+        FORMAT
+            .bring_up_moved(&old, &self.root.join(GOVERNED_ACCESS_FILE), bytes, 1)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        let path = self.root.join(GOVERNED_ACCESS_FILE);
-        atomic_write(&path, &log)?;
-        fs::rename(&old, Format::snapshot_path(&path, 1))?;
         Ok(())
     }
 
@@ -247,6 +319,19 @@ impl WorkspaceStore {
             }
             Err(error) => return Err(error.into()),
         };
+        // A log an older build wrote is brought up on disk, its old bytes kept
+        // beside it, before it is read: a host keeps the workspaces it governs
+        // across every release.
+        if let Some(stored) = bytes
+            .strip_prefix(MAGIC.as_slice())
+            .and_then(|rest| rest.first_chunk::<4>())
+            .map(|version| u32::from_le_bytes(*version))
+            .filter(|stored| *stored < FORMAT.version)
+        {
+            bytes = FORMAT
+                .bring_up(&path, bytes, stored)
+                .map_err(|error| StoreError::Json(error.to_string()))?;
+        }
         let (access, valid) = read(&bytes)?;
         if valid < bytes.len() {
             let kept = u64::try_from(valid).unwrap_or(u64::MAX);
@@ -309,6 +394,7 @@ impl WorkspaceStore {
                         &held.access.member_user_roots,
                         &access.member_user_roots,
                     ),
+                    governed: (held.access.governed != access.governed).then_some(access.governed),
                 };
                 if change == Change::default() {
                     return Ok((*held.digest.finalize().as_bytes(), 0));
@@ -384,6 +470,7 @@ mod tests {
         GovernedAccessRecord {
             member_devices: devices.iter().copied().map(key).collect(),
             member_user_roots: roots.iter().copied().map(key).collect(),
+            governed: true,
         }
     }
 
@@ -482,9 +569,8 @@ mod tests {
     "0202020202020202020202020202020202020202020202020202020202020202"
   ]
 }"#;
-        tilo_files::native::migration::assert_step_reads_previous(&FORMAT, v1, |log| {
-            assert_eq!(read(log).unwrap().0, access(&[1], &[2]));
-        });
+        let brought_up = FORMAT.migrate(v1.to_vec(), 1).unwrap();
+        assert_eq!(read(&brought_up).unwrap().0, access(&[1], &[2]));
         let dir = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
         let root = dir.path().join("workspaces/7");
@@ -500,10 +586,52 @@ mod tests {
         );
     }
 
+    /// A version 2 log, as a build before the admission flag wrote it, opens
+    /// as the same access, governed by the workspace's own policy.
+    #[test]
+    fn a_version_2_log_is_brought_up_as_governed() {
+        /// The change as version 2 framed it.
+        #[derive(Serialize)]
+        struct ChangeV2 {
+            whole: bool,
+            added_devices: Vec<[u8; 32]>,
+            removed_devices: Vec<[u8; 32]>,
+            added_roots: Vec<[u8; 32]>,
+            removed_roots: Vec<[u8; 32]>,
+        }
+        let body = postcard::to_stdvec(&ChangeV2 {
+            whole: true,
+            added_devices: vec![key(1)],
+            removed_devices: Vec::new(),
+            added_roots: vec![key(2)],
+            removed_roots: Vec::new(),
+        })
+        .unwrap();
+        let mut v2 = header_by(2);
+        v2.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+        v2.extend_from_slice(&body);
+        v2.extend_from_slice(&blake3::hash(&body).as_bytes()[..8]);
+        let brought_up = FORMAT.migrate(v2.clone(), 2).unwrap();
+        assert_eq!(read(&brought_up).unwrap().0, access(&[1], &[2]));
+
+        // A workspace whose log a version 2 build wrote opens, and keeps the
+        // log as it was beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let path = dir.path().join("workspaces/7").join(GOVERNED_ACCESS_FILE);
+        fs::write(&path, &v2).unwrap();
+        assert_eq!(
+            store.load_governed_access().unwrap(),
+            Some(access(&[1], &[2]))
+        );
+        assert_eq!(fs::read(Format::snapshot_path(&path, 2)).unwrap(), v2);
+        assert_eq!(fs::read(&path).unwrap(), brought_up);
+    }
+
     /// The bytes this build writes for a workspace's first access.
     #[test]
     fn the_log_this_build_writes() {
-        const KEPT: &str = "74696c6f61636300020000004500000001010101010101010101010101010101010101010101010101010101010101010101000102020202020202020202020202020202020202020202020202020202020202020029e1badbc241afd3";
+        const KEPT: &str = "74696c6f61636300030000004700000001010101010101010101010101010101010101010101010101010101010101010101000102020202020202020202020202020202020202020202020202020202020202020001017059f4fed357fdc7";
         tilo_files::native::migration::assert_golden_bytes(
             "governed workspace access",
             &hex::decode(KEPT).unwrap(),

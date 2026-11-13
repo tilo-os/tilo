@@ -1,25 +1,19 @@
-//! What a row shows and offers at its edges: the unseen change its trailing
-//! side carries, the action a hover offers, the action a swipe reveals.
+//! What a row shows and offers at its edges: the unseen change its trailing side carries,
+//! the action a hover offers, the action a swipe reveals.
 
 use crate::icons::Icon;
 use crate::theme::Theme;
 use crate::tokens::colors::PresenceHue;
 use vello::peniko::Color;
 
-/// A change someone else made to what the row shows and the person has not seen yet
-/// (task-legibility §3): their face on the row's trailing edge, their colour faintly under it,
-/// at the row's own height.
+/// A change someone else made to what the row shows and the person has not seen yet (task-
+/// legibility §3): their face on the row's trailing edge, their colour faintly under it, at
+/// the row's own height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RowChange<'a> {
-    /// Their presence identity, which picks their colour.
     pub identity: &'a str,
-    /// What the room calls them: their face's initials.
     pub name: &'a str,
-    /// What assistive technology says of it: who, and in which run.
     pub spoken: &'a str,
-    /// What they did, as the line under the row's title: the sentence history says of the
-    /// change, after who did it ("Scout moved this to today"), and how many more of the row's
-    /// changes wait behind it ("and 1 more"). Empty: no line.
     pub said: &'a str,
 }
 

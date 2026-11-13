@@ -1,14 +1,6 @@
-//! Pure data model for the Authenticator vault.
-//!
-//! An [`Account`] is one 2FA entry: the issuer + account label shown in
-//! the list, plus the cryptographic parameters needed to derive a rotating
-//! TOTP code (secret, algorithm, digits, period). Only secret-free account
-//! metadata is mirrored into Automerge for collaboration; the encrypted local
-//! vault remains the source of bearer keys and live code generation.
-//!
-//! This module is pure logic — no IO, no rendering, no crypto. Code
-//! generation lives in [`crate::totp`]. What is shared is the [`Totp`]
-//! record: each account's secret-free metadata, in list order.
+//! The Authenticator's data model: one [`Account`] per 2FA entry with its base32
+//! seed, and the secret-free [`StoredAccount`] the document shares. Pure logic:
+//! no IO, rendering or crypto.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
@@ -19,12 +11,9 @@ use ui::color::contrast_ratio;
 use ui::theme::Theme;
 use ui::widget::avatar::initial_ink;
 
-/// Stable identifier for one account. Backs every cross-reference and
-/// the per-account Map key in the CRDT.
 pub type AccountId = Uuid;
 
-/// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
-/// parameter of an `otpauth://` URI.
+/// The HMAC hash of the TOTP construction, as an `otpauth://` URI names it.
 #[derive(Model, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Algorithm {
     #[default]
@@ -34,7 +23,6 @@ pub enum Algorithm {
 }
 
 impl Algorithm {
-    /// Canonical otpauth spelling (`SHA1` / `SHA256` / `SHA512`).
     pub fn as_str(self) -> &'static str {
         match self {
             Algorithm::Sha1 => "SHA1",
@@ -43,8 +31,7 @@ impl Algorithm {
         }
     }
 
-    /// Parse the otpauth spelling, case-insensitively. Unknown values
-    /// fall back to the spec default `SHA1`.
+    /// Unknown values fall back to `SHA1`.
     pub fn parse(s: &str) -> Algorithm {
         match s.trim().to_ascii_uppercase().as_str() {
             "SHA256" => Algorithm::Sha256,
@@ -53,7 +40,7 @@ impl Algorithm {
         }
     }
 
-    /// All three, in selector order — for the algorithm chip row.
+    /// In selector order.
     pub const ALL: [Algorithm; 3] = [Algorithm::Sha1, Algorithm::Sha256, Algorithm::Sha512];
 
     pub fn index(self) -> usize {
@@ -66,8 +53,8 @@ impl Algorithm {
 }
 
 /// One account as the document shares it: everything but its secret, which
-/// stays in each device's secret store. Its item id is the account's uuid,
-/// and its position in [`Totp::accounts`] is its place in the list.
+/// stays in each device's secret store. The item id is the account's uuid, and
+/// its place in the collection is its place in the list.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = StoredAccount::valid)]
 pub struct StoredAccount {
@@ -87,7 +74,6 @@ pub struct StoredAccount {
 }
 
 impl StoredAccount {
-    /// The shared part of `account`.
     pub fn of(account: &Account) -> Self {
         Self {
             issuer: account.issuer.clone(),
@@ -99,8 +85,7 @@ impl StoredAccount {
         }
     }
 
-    /// Codes an authenticator can compute: 4 to 10 digits, every 5 to 300
-    /// seconds.
+    /// Codes an authenticator can compute: 4 to 10 digits, every 5 to 300 seconds.
     fn valid(&self) -> Result<(), Refusal> {
         if !(4..=10).contains(&self.digits) {
             return Err(Refusal::new("a code has 4 to 10 digits"));
@@ -112,21 +97,17 @@ impl StoredAccount {
     }
 }
 
-/// The accounts a person keeps, in list order. Adding one is the
-/// collection's insert under the account's uuid; its fields are edited at
-/// their paths; moving and deleting are the vault's verbs.
+/// The accounts a person keeps, in list order.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Totp {
     pub accounts: Collection<StoredAccount>,
 }
 
 impl Totp {
-    /// The item id of the account with uuid `id`.
     pub fn item(id: AccountId) -> Id {
         Id::from_raw(id.to_string())
     }
 
-    /// The accounts the record holds, in order, without secrets.
     pub fn list(&self) -> Vec<Account> {
         self.accounts
             .iter()
@@ -148,32 +129,27 @@ impl Totp {
     }
 }
 
-/// One 2FA account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub id: AccountId,
-    /// Service name, e.g. "GitHub". Names the account's avatar.
+    /// The service's name, e.g. "GitHub".
     pub issuer: String,
-    /// Account label, e.g. "ada@example.com".
+    /// The account's name at the service, e.g. "ada@example.com".
     pub label: String,
-    /// Base32 (RFC 4648) secret, normalised upper-case, no spaces/padding.
+    /// Base32 (RFC 4648) secret, upper-case, without spaces or padding.
     pub secret: String,
     pub algorithm: Algorithm,
-    /// Number of digits in the generated code (6 or 8 in practice).
     pub digits: u8,
-    /// Rotation period in seconds (almost always 30).
+    /// Rotation period in seconds.
     pub period: u32,
-    /// Slot in the theme's presence palette the account's avatar wears (see
-    /// [`account_color`]). Wraps modulo the palette length.
+    /// Slot in the theme's presence palette; wraps modulo the palette length.
     pub color: u8,
-    /// Position in the list (smaller = earlier). Re-densified on
-    /// reorder / delete.
+    /// Position in the list; renumbered on reorder and delete.
     pub order: u32,
 }
 
 impl Account {
-    /// A blank account with spec defaults, ready to be filled by the
-    /// add form. `order` is set by the vault on insert.
+    /// A blank account with the spec's defaults; `order` is set when it is inserted.
     pub fn blank(id: AccountId) -> Self {
         Account {
             id,
@@ -188,8 +164,7 @@ impl Account {
         }
     }
 
-    /// Human display title: "Issuer" or, when there is no issuer, the
-    /// label. Never empty for a well-formed account.
+    /// The issuer, or the label when there is no issuer.
     pub fn title(&self) -> &str {
         if self.issuer.trim().is_empty() {
             &self.label
@@ -198,16 +173,12 @@ impl Account {
         }
     }
 
-    /// True when the secret decodes to a non-empty key — a cheap
-    /// validity gate the add form uses to enable Save.
     pub fn secret_is_valid(&self) -> bool {
         crate::totp::decode_secret(&self.secret).is_some_and(|b| !b.is_empty())
     }
 }
 
-/// In-memory vault: an ordered list of accounts plus the runtime ops the
-/// UI needs (add / delete / reorder). Pure logic; the app mirrors it to
-/// the CRDT.
+/// An ordered list of accounts.
 #[derive(Clone, Debug, Default)]
 pub struct Vault {
     pub accounts: Vec<Account>,
@@ -218,7 +189,6 @@ impl Vault {
         Self::default()
     }
 
-    /// Accounts sorted by `order`.
     pub fn ordered(&self) -> Vec<Account> {
         let mut v = self.accounts.clone();
         v.sort_by_key(|a| a.order);
@@ -237,9 +207,7 @@ impl Vault {
         self.accounts.is_empty()
     }
 
-    /// Insert (appending at the end) or replace an account by id. The
-    /// `order` of a brand-new account is set to the current end; an
-    /// existing account keeps its slot.
+    /// Insert an account at the end, or replace one by id and keep its slot.
     pub fn upsert(&mut self, mut acc: Account) {
         if let Some(existing) = self.accounts.iter_mut().find(|a| a.id == acc.id) {
             acc.order = existing.order;
@@ -250,9 +218,8 @@ impl Vault {
         }
     }
 
-    /// The `order` value a brand-new account should take to land at the end of
-    /// the list (one past the current maximum). Computed at *authoring* time and
-    /// baked into the add action so replay stays deterministic.
+    /// The `order` for an account added at the end, computed when the action is
+    /// written so replay stays deterministic.
     pub fn next_order(&self) -> u32 {
         self.accounts
             .iter()
@@ -261,14 +228,12 @@ impl Vault {
             .map_or(0, |m| m + 1)
     }
 
-    /// Remove an account and re-densify the remaining order values.
     pub fn delete(&mut self, id: AccountId) {
         self.accounts.retain(|a| a.id != id);
         self.renumber();
     }
 
-    /// Swap an account one slot earlier (towards index 0). No-op at the
-    /// top. Returns true if anything moved.
+    /// `false` at the top.
     pub fn move_up(&mut self, id: AccountId) -> bool {
         let mut ord = self.ordered();
         let Some(pos) = ord.iter().position(|a| a.id == id) else {
@@ -282,7 +247,7 @@ impl Vault {
         true
     }
 
-    /// Swap an account one slot later. No-op at the bottom.
+    /// `false` at the bottom.
     pub fn move_down(&mut self, id: AccountId) -> bool {
         let mut ord = self.ordered();
         let Some(pos) = ord.iter().position(|a| a.id == id) else {
@@ -304,59 +269,44 @@ impl Vault {
         }
     }
 
-    /// Rewrite `order` to a contiguous 0..n sequence preserving the
-    /// current relative order.
     pub fn renumber(&mut self) {
         let ord = self.ordered();
         self.apply_order(&ord);
     }
 }
 
-/// Parse an `otpauth://totp/...` URI into an [`Account`]. Returns
-/// `Err(reason)` on malformed input. Handles:
-///
-/// * `otpauth://totp/Issuer:account@host?secret=...&issuer=...&...`
-/// * percent-encoded label / issuer
-/// * `secret` (required), `issuer`, `algorithm`, `digits`, `period`
-/// * issuer taken from the query param, else from the `Issuer:` label
-///   prefix.
-///
-/// `hotp://` (counter-based) is rejected with a clear message — this
-/// app is time-based only.
-///
-/// # Errors
-/// Returns `Err` when the string doesn't start with `otpauth://`, names an
-/// unsupported type (`hotp://`, or anything other than `totp`), or omits
-/// the required `secret` query parameter.
+/// Parse an `otpauth://totp/` URI: a percent-encoded label with `secret`,
+/// `issuer`, `algorithm`, `digits` and `period` in the query; the issuer
+/// parameter wins over the label prefix. `hotp://` is rejected: this app is
+/// time-based only.
 pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String> {
     let uri = uri.trim();
     let rest = uri
         .strip_prefix("otpauth://")
-        .ok_or_else(|| "not an otpauth:// URI".to_string())?;
+        .ok_or_else(|| "This is not a setup link".to_string())?;
 
-    // type / label-and-query
     let (otp_type, after_type) = match rest.split_once('/') {
         Some((t, r)) => (t.to_ascii_lowercase(), r),
         None => (rest.to_ascii_lowercase(), ""),
     };
     if otp_type == "hotp" {
-        return Err("counter-based hotp:// is not supported — TOTP only".to_string());
+        return Err(
+            "Tilo only makes time-based codes, and this link is for a counter-based one"
+                .to_string(),
+        );
     }
     if otp_type != "totp" {
-        return Err(format!("unsupported otpauth type '{otp_type}'"));
+        return Err("This link is for a kind of code Tilo does not make".to_string());
     }
 
     let (label_raw, query_raw) = match after_type.split_once('?') {
         Some((l, q)) => (l, q),
         None => (after_type, ""),
     };
-    // `otpauth://` is a URI, not a form submission: the label is a *path*
-    // segment, so RFC 3986 applies and `+` is a literal plus. Decoding it as a
-    // space would rename `Google+` to `Google ` and mangle a leading `+` on a
-    // phone-number account name.
+    // The label is a URI path segment, so `+` is a literal plus: reading it as a
+    // space renamed `Google+` to `Google `.
     let label = ui::uri::decode(label_raw);
 
-    // Query params.
     let mut secret = String::new();
     let mut issuer_param = String::new();
     let mut algorithm = Algorithm::Sha1;
@@ -380,10 +330,9 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     }
 
     if secret.is_empty() {
-        return Err("otpauth URI is missing the required 'secret' param".to_string());
+        return Err("This setup link has no key in it".to_string());
     }
 
-    // Split "Issuer:account" label. The issuer query param wins when set.
     let (label_issuer, account_label) = match label.split_once(':') {
         Some((iss, acc)) => (iss.trim().to_string(), acc.trim().to_string()),
         None => (String::new(), label.trim().to_string()),
@@ -407,8 +356,6 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     })
 }
 
-/// Normalise a base32 secret: strip whitespace + padding, upper-case (base32
-/// is ASCII, so anything else stays and fails to decode).
 pub fn normalise_secret(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_whitespace() && *c != '=')
@@ -416,8 +363,8 @@ pub fn normalise_secret(s: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// Reject obvious pasted TOTP material in a display identity before it can
-/// enter a searchable resource, action envelope or collaborative history.
+/// Reject secret-shaped text before it enters a searchable resource, an action
+/// envelope or collaborative history.
 pub fn contains_secret_shaped_text(value: &str) -> bool {
     value
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -427,12 +374,8 @@ pub fn contains_secret_shaped_text(value: &str) -> bool {
 /// The WCAG AA floor an avatar's initials must clear against its fill.
 const AVATAR_INK_CONTRAST: f64 = 4.5;
 
-/// Resolve an account's avatar colour from its `color` slot against the
-/// theme's presence palette. Presence hues share one lightness and chroma, but
-/// at a mid lightness some hues leave their initials under AA whichever ink
-/// is chosen, and neighbouring rows would wear different inks. The slots
-/// wrap over the hues whose initials clear AA in the one ink most of them
-/// share in this theme, so every avatar reads the same way.
+/// The avatar fill for a `color` slot: only hues whose initials clear AA in the
+/// ink most presence hues share, so every avatar reads the same way.
 pub fn account_color(theme: &Theme, color_index: u8) -> Color {
     let palette = &theme.tokens.colors.presence;
     let reading = |fill: Color| {
@@ -460,12 +403,8 @@ pub fn account_color(theme: &Theme, color_index: u8) -> Color {
         .unwrap_or_else(|| palette.get(usize::from(color_index)))
 }
 
-/// Sample vault for captures and tests: a handful of recognisable services
-/// with valid base32 secrets so the list renders real codes and countdowns.
-/// The ids are fixed so a capture is identical on every run. These are
-/// throwaway demo secrets, not real credentials.
+/// A sample vault for captures and tests: fixed ids, throwaway demo secrets.
 pub fn demo_accounts() -> Vec<Account> {
-    /// The first sample account's id; the others follow it.
     const DEMO_ID_BASE: u128 = 0x0a07_7e57_0000_4000_8000_0000_0000_0000;
     let specs: [(&str, &str, &str, Algorithm, u8, u32, u8); 5] = [
         (
@@ -537,7 +476,6 @@ pub fn demo_accounts() -> Vec<Account> {
 mod tests {
     use super::*;
 
-    /// otpauth URI parsing.
     #[test]
     fn otpauth_uri_parsing_keeps_issuer_labels_and_rejects_invalid() {
         {
@@ -556,17 +494,12 @@ mod tests {
             let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
             assert_eq!(acc.issuer, "ACME Co");
             assert_eq!(acc.label, "bob");
-            // spec defaults
             assert_eq!(acc.algorithm, Algorithm::Sha1);
             assert_eq!(acc.digits, 6);
             assert_eq!(acc.period, 30);
         }
 
         {
-            // `otpauth://` is a URI, so RFC 3986 governs both the label path
-            // segment and the query values: `+` is a literal plus, not a space.
-            // A space is spelled `%20`, as `parse_uri_issuer_from_label_prefix`
-            // shows. Reading `+` as a space renamed `Google+` to `Google `.
             let uri =
                 "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
             let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
@@ -579,7 +512,6 @@ mod tests {
                 "%2B decodes, the bare + stays"
             );
 
-            // And with no issuer param, the label prefix supplies it — also intact.
             let uri = "otpauth://totp/Google+:ada?secret=JBSWY3DPEHPK3PXP";
             let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
             assert_eq!(acc.issuer, "Google+");
@@ -593,7 +525,6 @@ mod tests {
         }
     }
 
-    /// Vault renumbering on reorder.
     #[test]
     fn vault_reorder_renumbers() {
         let mut v = Vault::new();
@@ -605,7 +536,6 @@ mod tests {
         assert!(v.move_down(first));
         assert_eq!(v.ordered()[0].id, second);
         assert_eq!(v.ordered()[1].id, first);
-        // orders stay contiguous
         for (i, a) in v.ordered().iter().enumerate() {
             assert_eq!(a.order, i as u32);
         }

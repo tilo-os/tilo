@@ -1,4 +1,5 @@
-//! Device-local first-login migration choices. Never collaborative state.
+//! The first login's migration choices, kept on this device: the folders offered,
+//! the review, and what was acknowledged.
 
 use super::controller::{FolderChoice, FolderDestination};
 use super::model::FolderMode;
@@ -89,8 +90,6 @@ fn path_identity(path: &Path) -> Result<Identity, String> {
     absolute(path)?;
     let pin = PinnedDirectory::open_absolute(path).map_err(|e| e.to_string())?;
     pin.validate().map_err(|e| e.to_string())?;
-    // Linux traversal descriptors are O_PATH. Sample the same readable
-    // directory capability as the journal, including durable Btrfs identity.
     let readable =
         migration_durability::readable_directory(&pin.file).map_err(|e| e.to_string())?;
     migration_durability::identity(&readable).map_err(|e| e.to_string())
@@ -139,9 +138,6 @@ impl Continuation {
                 resolved: None,
             });
         }
-        // Content identity binds this complete reviewed selection, including native
-        // source identities, policy overrides and destination intent. A repeated
-        // install of the exact same review retains stable operation IDs.
         let revision = hex::encode(Sha256::digest(
             serde_json::to_vec(&folders).map_err(|e| e.to_string())?,
         ));
@@ -205,7 +201,6 @@ impl Continuation {
         Ok(())
     }
 
-    /// Resolve and display endpoints. This is still not permission to copy.
     pub(super) fn resolve(
         &mut self,
         index: usize,
@@ -273,8 +268,6 @@ impl Continuation {
         Ok(())
     }
 
-    /// An explicit retry may recover the checkpoint-before-journal crash gap,
-    /// but only if both output names are genuinely absent beneath pinned roots.
     pub(super) fn unpublished_retry(
         &self,
         index: usize,
@@ -380,8 +373,6 @@ impl Continuation {
         Ok(())
     }
 
-    /// An existing durable ID wins if acknowledgement was interrupted. The
-    /// index/journal retains terminal outcomes and remains overwrite authority.
     pub(super) fn prepare(
         &self,
         index: usize,
@@ -423,18 +414,12 @@ impl Continuation {
     }
 }
 
-/// The Desktop route asks nothing about data before it installs: the person's
-/// files stay where they are. Its familiar folders are offered instead at the
-/// first Tilo login, where Add folders opens with them chosen for copying and
-/// every choice still open. Looking the folders up starts helper processes,
-/// so it runs off the caller's thread.
 pub(super) fn offer_familiar_folders() {
     std::thread::spawn(|| {
         let sources: Vec<PathBuf> = imager_backend::known_folders::discover()
             .into_iter()
             .filter_map(|folder| folder.path)
             .collect();
-        // A folder that cannot be offered stays reachable from Add folders.
         let _ = MigrationStore::open_default().and_then(|store| offer(&store, &sources));
     });
 }
@@ -469,14 +454,11 @@ fn offer(store: &MigrationStore, sources: &[PathBuf]) -> Result<(), String> {
     if let Some(previous) = Continuation::load(store)?
         && (previous.same_review(&offered) || previous.show_on_login)
     {
-        // An outstanding review keeps its choices; Add folders finishes it.
         return Ok(());
     }
     offered.save(store)
 }
 
-/// Read-only confirmation from the live trusted compositor. The UI runs this
-/// off-thread; a missing, unauthentic or incomplete session keeps work pending.
 #[cfg(target_os = "linux")]
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
     let runtime = tilo_paths::xdg::runtime_dir().ok_or("No Tilo session runtime directory")?;
@@ -486,8 +468,6 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     let parent = executable
         .parent()
         .ok_or("Import executable has no installed directory")?;
-    // Nix seals the session's ELF path at build time. FHS packages keep the
-    // root-owned session ELF beside this installed import executable.
     let trusted_session = option_env!("TILO_DESKTOP_TRUSTED_SESSION_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| parent.join("tilo-session"));
@@ -630,10 +610,6 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
         *slot = *byte as libc::c_char;
     }
-    // A filled or malicious listener backlog must not hang the check thread.
-    // Local AF_UNIX connects finish immediately or fail pending; a later
-    // explicit check can retry, without granting identity readiness.
-    // SAFETY: valid AF_UNIX socket constants; no pointers are passed.
     let raw = unsafe {
         libc::socket(
             libc::AF_UNIX,
@@ -667,7 +643,6 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
 }
 
-// Migration fixtures exercise Linux directory handles and session sockets.
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
@@ -702,8 +677,6 @@ mod tests {
         (temp, store, choices)
     }
 
-    /// The Desktop route offers the familiar folders for copying at the first
-    /// login, and never replaces a review still waiting there.
     #[test]
     fn desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review() {
         let (_temp, store, choices) = fixture();
@@ -733,7 +706,6 @@ mod tests {
         );
     }
 
-    /// Readiness connection refusals on Linux.
     #[test]
     #[cfg(target_os = "linux")]
     #[allow(
@@ -744,8 +716,6 @@ mod tests {
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
             use std::os::unix::net::UnixListener;
-            // Only the directory itself must be private; the platform temp
-            // directory keeps the socket paths below the sun_path limit.
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path();
             fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -780,9 +750,6 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("gate");
             let _server = UnixListener::bind(&path).unwrap();
-            // Pin the fixture backlog instead of inheriting the kernel's changing
-            // SOMAXCONN default. The production client remains non-blocking either
-            // way; this test only needs to reach a known full queue promptly.
             assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
             let mut held = Vec::new();
             let started = ui::time::now();
@@ -800,7 +767,6 @@ mod tests {
         }
     }
 
-    /// Edits and source/destination swaps after review are refused.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -840,9 +806,6 @@ mod tests {
                             let path = source.join(if edit_already_copied { "aaa" } else { "zzz" });
                             let reviewed_at = fs::metadata(&path).unwrap().modified().unwrap();
                             fs::write(&path, b"edited").unwrap();
-                            // A same-size rewrite within one tick of the kernel's coarse
-                            // file clock keeps the reviewed mtime; stamp the edit a second
-                            // later, as a real later edit would be.
                             fs::File::options()
                                 .write(true)
                                 .open(&path)
@@ -858,7 +821,6 @@ mod tests {
                 if !edit_already_copied {
                     assert!(!destination.join("zzz").exists());
                 }
-                // Even the ordinary resume route must retain the reviewed journal baseline.
                 assert!(
                     imager_backend::migration_journal::resume_folder(
                         &journal,
@@ -883,9 +845,6 @@ mod tests {
             op.approve();
             let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
             let modified = fs::metadata(&file).unwrap().modified().unwrap();
-            // Some CI overlay filesystems expose coarse ctime resolution. Cross a
-            // full timestamp tick so the metadata-preserving rewrite below still
-            // has a distinct change-time fact for the reviewed inventory.
             std::thread::sleep(std::time::Duration::from_secs(1));
             fs::write(&file, b"edited").unwrap();
             fs::File::options()
@@ -969,7 +928,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn private_continuation_record_round_trips_and_fails_closed() {
-        // Phase `native_non_utf8_source_survives_private_roundtrip`.
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::ffi::OsStringExt;
@@ -1047,7 +1005,6 @@ mod tests {
         }
     }
 
-    /// Retry, identity gates and interrupted acknowledgement.
     #[test]
     #[allow(
         clippy::too_many_lines,

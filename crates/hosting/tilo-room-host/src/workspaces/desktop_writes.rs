@@ -15,10 +15,11 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 use super::{GovernedWorkspace, Workspaces};
 use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 
-pub(crate) use tilo_desktop_model::shared_record::guard::is_shared_desktop as is_desktop;
+pub(crate) use tilo_desktop_model::shared_record::guard::is_desktop;
 
-/// Whether `body`, a member's retained write, is one of the workspace's shared
-/// desktop: what a door asks before taking the workspace's lock for it.
+/// Whether `body`, a member's retained write, is one of the workspace's records of the desktop:
+/// its layout, or a person's view of it. What a door asks before taking the workspace's lock for
+/// it.
 pub(crate) fn writes_desktop(body: &[u8]) -> bool {
     matches!(
         postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
@@ -172,13 +173,15 @@ impl Workspaces {
         body: &[u8],
     ) -> Result<(), String> {
         let host = author == self.inner.host.cert.device_public_key;
-        // ignored-failure: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,
             ..
-        }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        }) = tilo_failure::ignored!(
+            "a classifier: a write that does not decode is reported where the governor takes it in",
+            postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        )
         else {
             return Ok(());
         };
@@ -194,13 +197,24 @@ impl Workspaces {
             // What the host itself writes (a window an agent's action opened through the host's
             // own session) is the workspace's: not decided, but followed, so the members' writes
             // that build on it are decided against the desktop they saw.
-            return governed.absorb_host_desktop_write(&envelope).await;
+            if guard::is_shared_desktop(&app_id, &record_id) {
+                return governed.absorb_host_desktop_write(&envelope).await;
+            }
+            return Ok(());
         }
         let now = tilo_clock::wall();
         let member = governed
             .peer()
             .permissions(author, now)
             .map_err(|error| error.to_string())?;
+        // A person's view of the layout is theirs to write: every member reads it.
+        guard::may_write(&app_id, &record_id, &member.person)
+            .map_err(|refusal| refusal.to_string())?;
+        if !guard::is_shared_desktop(&app_id, &record_id) {
+            // Nothing of the workspace's own layout is judged where this record holds none: what a
+            // view names is the person's, and it is theirs alone.
+            return Ok(());
+        }
         let mutation = match governed.readable_mutation(&envelope).await? {
             Readable::Whole(mutation) => mutation,
             Readable::Partial => return Ok(()),
@@ -213,7 +227,7 @@ impl Workspaces {
         let members = governed
             .peer()
             .admitted_workspace()
-            .and_then(tilo_desktop_model::projection::workspace_members);
+            .and_then(tilo_peer_state::members::people);
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(&identity, act), ActionKind::Undoable, now)
         };

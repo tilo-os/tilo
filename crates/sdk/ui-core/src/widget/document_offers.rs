@@ -1,12 +1,7 @@
-//! `DocumentOffer`s — the documents an app's workspace already holds, painted
-//! as the short list a person opens one from, under the heading that says
-//! where they are: what an app whose windows each show a document of their
-//! own (a reader, a video player) puts in its empty state, so a document is
-//! one click away rather than a file chooser away.
-//!
-//! The rows are the toolkit's own [`ListRowFace`]s — a leading icon, the name
-//! and a caption under it — so the list reads exactly like the app's other
-//! lists, and each row's rect is handed back for the press that opens it.
+//! `DocumentOffer`s — the documents an app's workspace already holds, painted as the short
+//! list a person opens one from, under the heading that says where they are: what an app
+//! whose windows each show a document of their own (a reader, a video player) puts in its
+//! empty state, so a document is one click away rather than a file chooser away.
 
 use crate::i18n::widget_text;
 use vello::kurbo::{Point, Rect};
@@ -18,16 +13,12 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{Interaction, ListRowFace, RowLeading};
 
-/// One document a person can open from the list: what it is called, what it
-/// is, and the target a press on it answers.
+/// One document a person can open from the list: what it is called, what it is, and the
+/// target a press on it answers.
 #[derive(Clone, Copy, Debug)]
 pub struct DocumentOffer<'a> {
-    /// The identity a press on the row opens: the launch argument that shows
-    /// the document, as the app's own open answers it.
     pub target: &'a str,
-    /// What the document is called.
     pub name: &'a str,
-    /// A line under the name: how long it is, or where it is kept.
     pub caption: Option<&'a str>,
 }
 
@@ -57,8 +48,8 @@ impl PaintedOffers {
     }
 }
 
-/// The height the heading and one row per offer take at `width` — the list's
-/// own column, narrower than the surface it stands in.
+/// The height the heading and one row per offer take at `width` — the list's own column,
+/// narrower than the surface it stands in.
 #[must_use]
 pub fn height(
     text: &mut TextRenderer,
@@ -77,9 +68,8 @@ pub fn height(
     f64::from(heading) + gap(theme) + rows
 }
 
-/// Paint the heading and one row per offer from the top of `rect`, `hover`
-/// the pointer for the rows' hover state. Every row spans `rect`'s width, and
-/// a row that no longer fits is left out.
+/// Paint the heading and one row per offer from the top of `rect`, `hover` the pointer for
+/// the rows' hover state.
 #[must_use]
 pub fn paint(
     ctx: &mut PaintCtx<'_>,
@@ -121,7 +111,6 @@ pub fn paint(
     painted
 }
 
-/// The row `offer` paints as: its icon, its name and its caption under it.
 fn row_face<'a>(offer: &'a DocumentOffer<'a>) -> ListRowFace<'a> {
     let face = ListRowFace::new(offer.name).leading(RowLeading::Icon(Icon::FileText));
     match offer.caption {
@@ -130,12 +119,10 @@ fn row_face<'a>(offer: &'a DocumentOffer<'a>) -> ListRowFace<'a> {
     }
 }
 
-/// The heading over the list, a section's label.
 fn heading_style(theme: &Theme) -> crate::text_render::TextStyle {
     theme.text(TextRole::Label)
 }
 
-/// The space between the heading and the first row.
 fn gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.tight)
 }

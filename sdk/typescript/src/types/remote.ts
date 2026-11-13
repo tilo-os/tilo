@@ -17,13 +17,36 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.remote@2d98f6509ef35270";
+
+/** One of "password", "public_key", "device_identity". */
+export type AuthMethod = "password" | "public_key" | "device_identity";
+
+export interface Connection {
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  kind: ConnectionKind;
+  auth: AuthMethod;
+  last_used_ms: number | null;
+  group: string;
+  favorite: boolean;
+}
+
+/** One of "ssh", "vnc", "rdp", "tilo". */
+export type ConnectionKind = "ssh" | "vnc" | "rdp" | "tilo";
+
 /** Remote connections — `remote.connection-list`. */
 export interface ConnectionList extends tilo.Resource {
-  connections: unknown;
+  connections: Connection[];
   addConnection(args: {
     name: string;
     host: string;
-    kind: unknown;
+    kind: ConnectionKind;
     port?: number;
     user?: string;
   }): Promise<tilo.Run | void>;
@@ -38,6 +61,6 @@ export interface ConnectionList extends tilo.Resource {
 
 /** The `remote.connection-list` kind at `path`. */
 export function connectionList(ws: tilo.Workspace, path: string): ConnectionList {
-  return resourceProxy(ws, path) as unknown as ConnectionList;
+  return resourceProxy(ws, path, SURFACE) as unknown as ConnectionList;
 }
 

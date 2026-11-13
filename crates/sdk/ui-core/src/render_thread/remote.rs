@@ -1,23 +1,9 @@
-//! The remote renderer: a window's frames drawn by the workspace's render service
-//! instead of a GPU in this process.
-//!
-//! The render worker's contract is unchanged — the main thread still lays
-//! out, records each frame as a vello [`Scene`] and sends it with its damage
-//! through [`RenderThreadHandle`] — so app code does not change. What the
-//! worker does with a frame does: it writes the scene into the shared ring
-//! (`tilo_render_protocol::frame`), names fonts and images by id (a font from
-//! the shared read-only view by its path, anything else uploaded once into a
-//! sealed memfd this process owns, so its memory is the app's), and tells the
-//! service. The service answers with the buffer the frame is in; the worker
-//! attaches it to the window's own surface and commits, so the compositor
-//! takes it like any client buffer. No GPU device, no surface, no pipelines in
-//! the app.
-//!
-//! Each window renders on a channel of its own, which the worker asks the
-//! compositor's render broker for (`tilo_render_protocol::broker`). When the
-//! service goes away (it crashed, or the workspace moved to another one), the
-//! window keeps showing its last frame, the worker asks for a new channel and
-//! the next frame is a whole one: the toolkit always has the full scene.
+//! The remote renderer: a window's frames drawn by the workspace's render service instead of a GPU in
+//! this process. The render worker's contract is unchanged — the main thread still lays out, records
+//! each frame as a vello [`Scene`] and sends it with its damage through [`RenderThreadHandle`] — so app
+//! code does not change. When the service goes away (it crashed, or the workspace moved to another
+//! one), the window keeps showing its last frame, the worker asks for a new channel and the next frame
+//! is a whole one: the toolkit always has the full scene.
 
 use std::collections::HashMap;
 use std::io;
@@ -49,21 +35,17 @@ use super::{
     notify_render_completion,
 };
 
-/// The ring a connection starts with; a frame larger than it grows it.
 const INITIAL_RING: usize = 4 << 20;
 
-/// The one surface a window's channel draws.
 const SURFACE: SurfaceId = SurfaceId(1);
 
 /// DRM's linear modifier: the service hands out linear buffers only.
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 
-/// Frames between sweeps for images the app dropped.
 const SWEEP_EVERY: u64 = 64;
 
-/// Whether this process draws through a render service: the launcher handed
-/// it a broker connection, or (outside a sandbox) it was pointed at the
-/// broker's socket. `TILO_RENDER=local` keeps the in-process renderer.
+/// Whether this process draws through a render service: the launcher handed it a broker connection, or
+/// (outside a sandbox) it was pointed at the broker's socket.
 pub fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
@@ -80,14 +62,14 @@ pub fn requested() -> bool {
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Whether frames go to a render service, cheaply, for code that records
-/// what the service will need (font origins).
+/// Whether frames go to a render service, cheaply, for code that records what the service will need
+/// (font origins).
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
 }
 
-/// Fonts the text renderer loaded from a file, by blob: the service maps the
-/// same file from the shared read-only view rather than receiving its bytes.
+/// Fonts the text renderer loaded from a file, by blob: the service maps the same file from the shared
+/// read-only view rather than receiving its bytes.
 fn font_files() -> &'static Mutex<HashMap<u64, PathBuf>> {
     static FILES: OnceLock<Mutex<HashMap<u64, PathBuf>>> = OnceLock::new();
     FILES.get_or_init(Mutex::default)
@@ -101,9 +83,8 @@ pub fn note_font_file(font: &FontData, path: &Path) {
         .or_insert_with(|| path.to_path_buf());
 }
 
-/// Uploads shared by every window's connection: one sealed memfd per image
-/// or font, sent to each connection that draws it, closed once the app drops
-/// the image.
+/// Uploads shared by every window's connection: one sealed memfd per image or font, sent to each
+/// connection that draws it, closed once the app drops the image.
 fn uploads() -> &'static Mutex<HashMap<u64, (Arc<OwnedFd>, WeakBlob<u8>)>> {
     static UPLOADS: OnceLock<Mutex<HashMap<u64, (Arc<OwnedFd>, WeakBlob<u8>)>>> = OnceLock::new();
     UPLOADS.get_or_init(Mutex::default)
@@ -119,7 +100,6 @@ fn upload(data: &vello::peniko::Blob<u8>, bytes: &[u8]) -> io::Result<Arc<OwnedF
     Ok(fd)
 }
 
-/// The broker connection: the launcher's, or one this process made.
 fn broker() -> Option<&'static Mutex<OwnedFd>> {
     static BROKER: OnceLock<Option<Mutex<OwnedFd>>> = OnceLock::new();
     BROKER
@@ -150,8 +130,6 @@ fn broker() -> Option<&'static Mutex<OwnedFd>> {
         .as_ref()
 }
 
-/// A connection to the service: its channel, its ring and what was
-/// registered on it.
 struct Session {
     channel: Arc<Channel>,
     ring: RingWriter,
@@ -194,9 +172,6 @@ impl Session {
             return Err("the render service did not welcome this app".to_owned());
         };
         tilo_startup_metrics::mark("remote-render-connect-done");
-        // The window's adapter line, as a window drawing on its own device
-        // logs it (`gpu::report_adapter`): GPU health and the startup gate
-        // read which device drew this window, here the service's.
         crate::diag!(
             "{} window adapter {:?} type={} backend={} driver={:?} via=render-service",
             crate::gpu::ADAPTER_LINE_PREFIX,
@@ -227,7 +202,6 @@ impl Session {
             .map_err(|_| WireError::Malformed("the render service is gone"))
     }
 
-    /// Tell the service about images the app no longer holds.
     fn sweep(&mut self) {
         let dead: Vec<(u64, ImageId)> = self
             .images
@@ -312,8 +286,6 @@ impl ResourceIds for Session {
             .size_in_bytes(image.width, image.height)
             .ok_or(WireError::Overflow)?;
         let pixels = image.data.data();
-        // An image without CPU pixels (drawn from a texture elsewhere) is
-        // transparent here, as vello draws it without a source.
         let zeros;
         let bytes = if let Some(bytes) = pixels.get(..length) {
             bytes
@@ -345,14 +317,13 @@ impl ResourceIds for Session {
     }
 }
 
-/// A connection made while the app constructs, for its first window.
 fn prepared() -> &'static Mutex<Option<Receiver<Result<Session, String>>>> {
     static PREPARED: OnceLock<Mutex<Option<Receiver<Result<Session, String>>>>> = OnceLock::new();
     PREPARED.get_or_init(Mutex::default)
 }
 
-/// Connect to the service on a thread of its own from process start, so the
-/// first window's first frame finds the channel open.
+/// Connect to the service on a thread of its own from process start, so the first window's first frame
+/// finds the channel open.
 pub(crate) fn prepare() {
     let (sender, receiver) = mpsc::channel();
     if tilo_rt::spawn_thread("remote-render-connect", move || {
@@ -372,14 +343,12 @@ fn take_session() -> Result<Session, String> {
     }
 }
 
-/// Where buffer releases and presentation feedback go: the current channel,
-/// replaced when the worker reconnects. Each channel is an epoch: a buffer
-/// of an earlier service, released late, must not free a buffer of the same
-/// number on the new one while the app still shows it.
+/// Where buffer releases and presentation feedback go: the current channel, replaced when the worker
+/// reconnects. Each channel is an epoch: a buffer of an earlier service, released late, must not free a
+/// buffer of the same number on the new one while the app still shows it.
 #[derive(Default)]
 struct Sink {
     channel: Mutex<(u64, Option<Arc<Channel>>)>,
-    /// The window is closing: its channel is shut and no new one is opened.
     stopped: AtomicBool,
 }
 
@@ -399,10 +368,7 @@ impl Sink {
         current.1 = Some(channel);
     }
 
-    /// End the worker's wait on the service. A frame the service holds back,
-    /// waiting for a buffer the compositor no longer releases because the
-    /// window is closing, would otherwise keep the worker, and the app's exit
-    /// joining it, waiting for ever.
+    /// End the worker's wait on the service.
     fn stop(&self) {
         let current = self.channel.lock_recover();
         self.stopped.store(true, Ordering::Release);
@@ -415,7 +381,6 @@ impl Sink {
         self.stopped.load(Ordering::Acquire)
     }
 
-    /// Send `message` on the channel of `epoch`, if it is still the current one.
     fn send(&self, epoch: u64, message: &AppMessage) {
         let channel = {
             let current = self.channel.lock_recover();
@@ -427,18 +392,13 @@ impl Sink {
     }
 }
 
-/// The surface's buffers, as `wl_buffer`s.
 struct Buffers {
     generation: u32,
     list: Vec<ClientBuffer>,
 }
 
-/// A render worker that draws through the workspace's render service, with the
-/// same handle the in-process one has.
-///
-/// # Errors
-///
-/// When the worker thread cannot start.
+/// A render worker that draws through the workspace's render service, with the same handle the
+/// in-process one has. # Errors When the worker thread cannot start.
 #[allow(
     clippy::disallowed_methods,
     reason = "native host runner: the remote render worker is a dedicated thread"
@@ -497,7 +457,6 @@ pub(crate) fn spawn(
     })
 }
 
-/// A frame, as the main thread sent it.
 struct FrameJob<'a> {
     scene: &'a Scene,
     width: u32,
@@ -509,9 +468,7 @@ struct FrameJob<'a> {
     backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
-/// Why a frame got no outcome from the service.
 enum Lost {
-    /// The channel broke: reconnect, then repaint everything.
     Disconnected(String),
     /// This frame cannot be drawn (an encoding or ring failure).
     Failed(String),
@@ -527,8 +484,8 @@ struct Worker {
     outcome_tx: SyncSender<FrameOutcome>,
     sink: Arc<Sink>,
     buffers: Option<Buffers>,
-    /// The previous buffers, kept until a buffer of the new ones is on
-    /// screen: destroying an attached buffer would blank the window.
+    /// The previous buffers, kept until a buffer of the new ones is on screen: destroying an attached
+    /// buffer would blank the window.
     retired: Option<Buffers>,
     sequence: u64,
     first_presented: bool,
@@ -606,7 +563,6 @@ impl Worker {
         notify_buffer_waiter(&self.waiting, self.wake.as_ref());
     }
 
-    /// A session with this window's surface on it.
     fn open(&self) -> Result<Session, String> {
         let session = take_session()?;
         let formats = self
@@ -818,7 +774,6 @@ impl Worker {
             });
         self.window
             .attach_client_buffer(buffer, &damage, Some(observer));
-        // A buffer of the new generation is on screen: the old ones can go.
         drop(self.retired.take());
         if !self.first_presented {
             self.first_presented = true;
@@ -853,11 +808,7 @@ impl Worker {
     }
 }
 
-/// Whether a frame the service dropped is drawn again at once, whole. One
-/// it throttled or failed to draw is: nothing else may change, and the
-/// window would keep the frame before it (a theme change showing only where
-/// a caret blinked). One it refused is not: the same scene would be refused
-/// again; it is drawn whole with the next change.
+/// Whether a frame the service dropped is drawn again at once, whole.
 fn wake_after_drop(why: &Refusal) -> bool {
     match why {
         Refusal::Throttled | Refusal::RenderFailed(_) => true,
@@ -878,7 +829,6 @@ fn wire_rect(rect: Rect) -> WireRect {
     }
 }
 
-/// A frame as its record in the ring.
 fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Vec<u8>, WireError> {
     let mut record = Vec::new();
     let mut writer = FrameWriter::new(

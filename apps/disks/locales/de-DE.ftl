@@ -92,3 +92,6 @@ disks-device-format = Format
 disks-device-disk-usage = Speicherbelegung anzeigen
 disks-system = Speichergeräte
 disks-system-name-drive = Laufwerk benennen
+
+## What the app is called in a window and in the launcher
+disks-app-title = Datenträger

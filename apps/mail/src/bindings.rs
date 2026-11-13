@@ -10,16 +10,12 @@ use ui::tilo_resource::{Effect, Resource};
 use crate::actions::MailEffect;
 use crate::resource::Mail;
 
-/// The mailbox resource as the palette, an agent and a control see it: what
-/// the mailbox publishes, with its effects beside it.
 static MAILBOX: LazyLock<ResourceSpec> = LazyLock::new(|| {
     let mut mailbox = ui::tilo_resource::publish::<Mail>(Mail::KIND, Mail::LABEL, &Mail::default());
     mailbox.actions.extend(MailEffect::specs());
     mailbox
 });
 
-/// A section header's button, taking the section it was pressed on and
-/// opening Settings' External Accounts page.
 pub fn account_settings() -> Option<ActionBinding<String>> {
     let effect = MailEffect::AccountSettings;
     let spec = MAILBOX.actions.iter().find(|spec| spec.id == effect.id())?;
@@ -30,8 +26,6 @@ pub fn account_settings() -> Option<ActionBinding<String>> {
 mod tests {
     use super::*;
 
-    /// The section header's button is bound to a published, non-document
-    /// action of the mailbox.
     #[test]
     fn the_section_header_binds_the_published_settings_action() {
         let binding = account_settings().expect("the mailbox publishes account settings");

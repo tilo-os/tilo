@@ -37,6 +37,16 @@ use effects::SettingEffect;
 
 /// The resource holding the settings people look for by name.
 pub const INDEX: &str = "settings";
+/// The prefix of a section's resource id, after which its kind follows: every section is
+/// published as `settings:<kind>`.
+pub const SECTION_PREFIX: &str = "settings:";
+
+/// Whether the resource `id` is one of the settings this service publishes: a section of the
+/// person's settings, or the index people look settings up in.
+#[must_use]
+pub fn keeps(id: &str) -> bool {
+    id == INDEX || id.starts_with(SECTION_PREFIX)
+}
 pub const INDEX_KIND: &str = "settings.index";
 /// The kind of one setting under [`INDEX`].
 pub const SETTING_KIND: &str = "settings.setting";
@@ -345,7 +355,7 @@ impl SettingsService {
 
 /// The address of the action `action` of the section `kind`.
 fn section_action(kind: &str, action: &str) -> ActionAddress {
-    ActionAddress::new(format!("settings:{kind}"), action)
+    ActionAddress::new(format!("{SECTION_PREFIX}{kind}"), action)
 }
 
 /// The published action `action` of `section`.
@@ -448,7 +458,7 @@ impl Service for SettingsService {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        let kind = resource.strip_prefix("settings:")?;
+        let kind = resource.strip_prefix(SECTION_PREFIX)?;
         self.stored(kind)
     }
 

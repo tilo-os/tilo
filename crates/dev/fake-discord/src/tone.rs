@@ -1,5 +1,5 @@
-//! Tones as Opus frames, and telling which tones a stream of Opus frames
-//! holds: how the voice tests say something and check what was heard.
+//! Tones as Opus frames, and telling which tones a stream of Opus frames holds: how the voice tests
+//! say something and check what was heard.
 
 use opus::{Application, Channels, Decoder, Encoder};
 
@@ -53,10 +53,9 @@ pub fn decode(frames: &[Vec<u8>]) -> Vec<f32> {
     mono
 }
 
-/// How much of the signal's energy is a tone at `hz`: about 1 for that
-/// tone alone, about half for each of two equally loud tones, near 0 for
-/// a tone that is not there (Goertzel's single-bin DFT, against the total
-/// energy).
+/// How much of the signal's energy is a tone at `hz`: about 1 for that tone alone, about half for
+/// each of two equally loud tones, near 0 for a tone that is not there (Goertzel's single-bin DFT,
+/// against the total energy).
 #[must_use]
 pub fn share(samples: &[f32], hz: f32) -> f32 {
     if samples.is_empty() {

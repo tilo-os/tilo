@@ -1,15 +1,5 @@
-//! "Scan a QR image" against the chooser the app reaches on a Tilo device.
-//!
-//! On a device the launcher hands every app a connection to the session
-//! shell's chooser service, and the app's host services answer every chooser
-//! through it (`tilo_dialogs::shell`). The shell shows the chooser for an Open
-//! that asks for the chosen file's contents; an Open that asks for a path is
-//! answered through the app's documents, which a session may not serve, and
-//! then only from what the workspace already granted the app: the
-//! Authenticator is granted nothing. These tests drive the real client of that
-//! service over a socket, against a stand-in for the shell that answers as the
-//! shell does, so a regression to a path chooser fails here rather than on the
-//! device.
+//! "Scan a QR image" against the chooser a Tilo device reaches: these drive the
+//! real client over a socket, against a stand-in for the shell.
 
 #![cfg(unix)]
 
@@ -22,22 +12,17 @@ use tilo_dialogs::shell::{FilePortalGrant, Reply, Request};
 
 use super::tests::{click, opened, panel};
 
-/// What the session shell answers an app it cannot give a chosen path to
-/// (`portal-chooser-cannot-give`).
 const CANNOT_GIVE: &str = "This device can't give apps the files you choose right now. Sign out and back in, then try again.";
 
-/// The session shell's end of one app's chooser connection: every request
-/// it was sent, in order.
+/// The shell's end of one app's chooser connection: every request, in order.
 #[derive(Clone, Default)]
 struct SessionShell {
     requests: Arc<Mutex<Vec<Request>>>,
 }
 
 impl SessionShell {
-    /// Serve the shell's end of the connection on a thread, answering every
-    /// contents chooser with `chosen` (as the person picking `name`) and
-    /// refusing every path chooser, as a shell that cannot give refuses an app granted no
-    /// files. Returns the app's end.
+    /// Serve the shell's end on a thread: every contents chooser answers `chosen`,
+    /// every path chooser is refused, as it is for an app granted no files.
     fn serve(&self, name: &str, chosen: Vec<u8>) -> UnixStream {
         let (app, shell) = UnixStream::pair().expect("a socket pair");
         let requests = Arc::clone(&self.requests);
@@ -135,7 +120,6 @@ fn request_id(request: &Request) -> u64 {
     }
 }
 
-/// A PNG of the QR code that sets up `uri`.
 fn qr_png(uri: &str) -> Vec<u8> {
     let path = std::env::temp_dir().join(format!("totp-setup-qr-{}.png", uuid::Uuid::new_v4()));
     crate::app::tests::render_qr_png(uri, &path);
@@ -194,9 +178,7 @@ fn the_totp_app_opens_the_file_picker() {
     );
 }
 
-/// A chooser that answers once the test says the person picked, after the
-/// frames the click ran: as a browser page's file input does, which wakes
-/// the window and changes nothing else.
+/// A chooser that answers once the test says the person picked.
 #[derive(Clone, Default)]
 struct LaterChooser {
     answer: Arc<Mutex<Option<std::sync::mpsc::Sender<ContentsOutcome>>>>,
@@ -247,7 +229,6 @@ fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
         .expect("answer")
         .take()
         .expect("Scan a QR image opens the chooser");
-    // A photo with no code in it.
     let mut photo = std::io::Cursor::new(Vec::new());
     image::GrayImage::from_pixel(96, 96, image::Luma([255]))
         .write_to(&mut photo, image::ImageFormat::Png)
@@ -260,8 +241,7 @@ fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
             location: None,
         }]))
         .expect("the app waits for the chooser");
-    // Frames as the live window runs them once nothing but the chooser
-    // moved: no input, no document change.
+    // Frames as the live window runs them once nothing but the chooser moved.
     for _ in 0..3 {
         app.harness().idle();
     }

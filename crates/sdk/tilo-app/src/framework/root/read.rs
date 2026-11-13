@@ -12,19 +12,13 @@ use super::typed::{ResourceType, TypedRoot};
 /// The operation type of the framework's `read` view.
 pub(crate) const READ_TYPE: &str = tilo_resource::read::TYPE;
 
-/// `read`: what a [readable](tilo_resource::Resource::READABLE) resource holds, as typed
-/// data ([`tilo_resource::read::spec`]).
-pub(super) fn read_spec() -> tilo_actions::ActionSpec {
-    read_spec_for(None)
-}
-
 /// Bind a document read to one of the readable resource's own children.
 /// These declarations never apply to live surface rows or external resources.
 pub(super) fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> bool) {
     if eligible(resource.id.as_str()) && !resource.actions.iter().any(|spec| spec.id == "read") {
         resource
             .actions
-            .push(read_spec_for(Some(resource.id.as_str())));
+            .push(tilo_resource::read::spec(Some(resource.id.as_str())));
     }
     for child in &mut resource.children {
         offer_document_reads(child, eligible);
@@ -48,15 +42,11 @@ pub(super) fn offer_item_reads(
     {
         resource
             .actions
-            .push(read_spec_for(Some(resource.id.as_str())));
+            .push(tilo_resource::read::spec(Some(resource.id.as_str())));
     }
     for child in &mut resource.children {
         offer_item_reads(child, table, kind);
     }
-}
-
-pub(super) fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
-    tilo_resource::read::spec(item)
 }
 
 /// Answer a `read` request against the committed document of the resource
@@ -68,56 +58,67 @@ pub(super) fn read(
     doc: &AutoCommit,
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
+    let value = answer(
+        doc,
+        payload,
+        |item| typed.read_content(state, doc, item),
+        |frozen, item| {
+            // The type's own adapter over the frozen version: its content,
+            // or the exact bytes it holds. A version that does not read as
+            // the type says which of the three ways it does not.
+            if resource.readable {
+                tilo_failure::ignored!(
+                    "the record table answers what the adapter did not",
+                    match typed.historical_content(frozen, item) {
+                        Ok(content) => return Ok(content),
+                        Err(gap) if !reads_as_item(resource, item) => return Err(gap.to_string()),
+                        Err(_) => {}
+                    }
+                )
+            }
+            let past = typed.read(frozen).map_err(|error| error.to_string())?;
+            typed.read_content(&*past, frozen, item)
+        },
+    )?;
+    Ok(tilo_actions::ActionOutput {
+        value: Some(value),
+        resources: Vec::new(),
+    })
+}
+
+/// Answer a `read` of a record whose committed document is `doc`, asked as
+/// `payload` ([`tilo_resource::read::spec`]): `current` reads the record as
+/// it is, `past` a frozen version of it, each the item a read names. The
+/// one way every record an app publishes is read: its own, and those it
+/// keeps beside it.
+pub(crate) fn answer(
+    doc: &AutoCommit,
+    payload: &[u8],
+    current: impl FnOnce(Option<&str>) -> Result<serde_json::Value, String>,
+    past: impl FnOnce(&AutoCommit, Option<&str>) -> Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
     let args: serde_json::Value = if payload.is_empty() {
         serde_json::Value::Null
     } else {
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
     };
     let item = args.get("item").and_then(serde_json::Value::as_str);
-    let value = match args.get("version").and_then(serde_json::Value::as_str) {
+    match args.get("version").and_then(serde_json::Value::as_str) {
         Some(version) => {
             let heads = ui_core::history_source::steps::resolve(doc, version)?;
             let frozen = doc
                 .clone()
                 .fork_at(&heads)
                 .map_err(|error| error.to_string())?;
-            // The type's own adapter over the frozen version: its content,
-            // or the exact bytes it holds. A version that does not read as
-            // the type says which of the three ways it does not.
-            let content = if resource.readable {
-                match typed.historical_content(&frozen, item) {
-                    Ok(content) => content,
-                    Err(gap) if !reads_as_item(resource, item) => return Err(gap.to_string()),
-                    Err(_) => {
-                        let past = typed.read(&frozen).map_err(|error| error.to_string())?;
-                        item_content(resource, &*past, item)?
-                    }
-                }
-            } else {
-                let past = typed.read(&frozen).map_err(|error| error.to_string())?;
-                item_content(resource, &*past, item)?
-            };
-
+            let content = past(&frozen, item)?;
             super::super::history::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
                 "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "content": content,
-            }))?
+            }))
         }
-        None if resource.readable => match typed.read_content(state, doc, item) {
-            Ok(content) => content,
-            Err(error) if !reads_as_item(resource, item) => return Err(error),
-            // A read that does not answer this item is asked for the table's
-            // own content instead.
-            // ignored-failure: the record table answers what the typed read did not
-            Err(_) => item_content(resource, state, item)?,
-        },
-        None => item_content(resource, state, item)?,
-    };
-    Ok(tilo_actions::ActionOutput {
-        value: Some(value),
-        resources: Vec::new(),
-    })
+        None => current(item),
+    }
 }
 
 /// Whether `item` names a published part of the record its table reads
@@ -126,18 +127,4 @@ pub(super) fn read(
 pub(super) fn reads_as_item(resource: &ResourceType, item: Option<&str>) -> bool {
     item.zip(resource.record_table)
         .is_some_and(|(item, table)| tilo_resource::table::reads_item(table, resource.kind, item))
-}
-
-/// The document read of one item the resource's own read does not answer:
-/// what the item holds, from the record's table.
-pub(super) fn item_content(
-    resource: &ResourceType,
-    state: &dyn std::any::Any,
-    item: Option<&str>,
-) -> Result<serde_json::Value, String> {
-    let item = item.ok_or_else(|| format!("a {} answers reads of its items", resource.label))?;
-    let table = resource
-        .record_table
-        .ok_or_else(|| format!("a {} does not answer reads", resource.label))?;
-    tilo_resource::table::item_json(table, state, resource.kind, item)
 }

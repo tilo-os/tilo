@@ -1,11 +1,5 @@
-//! Compact, theme-aware page preview for print queues, scan flows, file
-//! inspectors, and document pickers. It communicates page shape and progress
-//! without pretending to rasterize content that is not available.
-//!
-//! The preview is flat: a sheet on the raised surface with its rest edge,
-//! text lines in the skeleton tone and "Page n of m" under it in `Caption`.
-//! It casts no shadow and carries no stripe; every size comes from the
-//! theme.
+//! Compact, theme-aware page preview for print queues, scan flows, file inspectors, and
+//! document pickers.
 
 use std::collections::HashMap;
 
@@ -22,9 +16,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// A sheet's height over its width (ISO A-series).
 const SHEET_ASPECT: f64 = std::f64::consts::SQRT_2;
-/// How far each placeholder line runs across the sheet.
 const LINE_SHARES: [f64; 5] = [0.82, 0.9, 0.7, 0.86, 0.6];
 
 struct Geometry {
@@ -140,7 +132,6 @@ impl Widget for PagePreview {
             None,
             &shape,
         );
-        // Placeholder lines: what a page of text looks like from a distance.
         let tone = crate::widget::skeleton_tone(paper);
         let margin = f64::from(theme.tokens.spacing.s3);
         let line_h = f64::from(theme.tokens.spacing.s1);

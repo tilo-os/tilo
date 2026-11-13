@@ -12,19 +12,15 @@ use winit::event::{MouseScrollDelta, TouchPhase};
 use winit::keyboard::{Key, NamedKey};
 
 impl Scrollable {
-    /// Cursor motion: continues an active drag, or refreshes bar
-    /// hover/fade state. Distinguishes a drag from a duplicate no-op so the
-    /// latter never creates an undo boundary or synchronization request.
+    /// Cursor motion: continues an active drag, or refreshes bar hover/fade state.
     pub(super) fn on_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
     ) -> CursorMoveOutcome {
         let cur = Point::new(position.x / scale_factor, position.y / scale_factor);
-        // A duplicate position carries no hover information. Coalesce it at
-        // the viewport instead of routing it through every retained child.
-        // Active drags are excluded because their geometry may have changed
-        // independently between ticks while the pointer stayed still.
+        // A duplicate position carries no hover information. Coalesce it at the viewport
+        // instead of routing it through every retained child.
         if self.cursor_initialized
             && cur == self.last_cursor
             && !self.vbar.is_dragging()
@@ -50,7 +46,6 @@ impl Scrollable {
             }
             return CursorMoveOutcome::DragConsumed;
         }
-        // Falls through so the child updates its own hover too.
         let mut changed = false;
         if let Some(track) = self.vertical_track() {
             changed |= self.vbar.update_hover(track, self.v_metrics(), cur);
@@ -62,7 +57,6 @@ impl Scrollable {
         } else {
             changed |= self.hbar.set_hover(false);
         }
-        // Only edge transitions touch the fade timer.
         let near = self.cursor_near_bar(cur);
         if near != self.pointer_near_bar {
             self.pointer_near_bar = near;
@@ -75,10 +69,8 @@ impl Scrollable {
         CursorMoveOutcome::Forward
     }
 
-    /// Thumb press begins a drag; track press pages toward the click and,
-    /// if it actually moved, arms a hold for auto-repeat. Returns `true`
-    /// when either bar consumed the press; `focus_target`/`node_id` are
-    /// handled by the caller since they don't depend on this outcome.
+    /// Thumb press begins a drag; track press pages toward the click and, if it actually moved,
+    /// arms a hold for auto-repeat.
     pub(super) fn on_track_or_thumb_press(&mut self, cur: Point) -> bool {
         if let Some(track) = self.vertical_track() {
             match self.vbar.press(track, self.v_metrics(), cur) {
@@ -153,23 +145,14 @@ impl Scrollable {
             _ => return false,
         };
         self.scroll_by(dx, dy);
-        // A key walks the content's detents one at a time: the line it moves
-        // the view takes it to where the content sits one detent on, and it
-        // settles there.
         if self.snaps() {
             self.settle_step(dx, dy, crate::tokens::MotionSource::Keyboard);
         }
         true
     }
 
-    /// Wheel delta → scroll offset; shift remaps vertical onto X for a
-    /// plain wheel (a tilt wheel's own X delta passes through untouched).
-    /// Returns `true` when the view actually moved, so an at-the-edge
-    /// wheel can bubble to an outer/sibling scroll region.
-    ///
-    /// Pixel deltas (touchpads, touchscreens) follow the fingers 1:1; when
-    /// the gesture's `Ended` phase arrives while they were still moving, the
-    /// content keeps gliding and decelerates, unless motion is reduced.
+    /// Wheel delta → scroll offset; shift remaps vertical onto X for a plain wheel (a tilt
+    /// wheel's own X delta passes through untouched).
     pub(super) fn on_wheel(
         &mut self,
         delta: &MouseScrollDelta,
@@ -181,7 +164,6 @@ impl Scrollable {
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
         self.device_scale = scale_factor;
-        // The hand takes over a jump in progress from where it is drawn.
         self.scroll_to.take_over(crate::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
@@ -189,7 +171,6 @@ impl Scrollable {
                 TouchPhase::Ended => {
                     let release = self.kinetic.release(crate::time::now());
                     let now = crate::motion::frame_now();
-                    // Let go past an end, the give springs back instead.
                     if self.band.is_stretched(now) {
                         let (vx, vy) = release.unwrap_or_default();
                         self.band.release(
@@ -201,8 +182,6 @@ impl Scrollable {
                         self.scroll_dirty = true;
                         return true;
                     }
-                    // Content that offers detents settles on the one the
-                    // release heads for, carrying the gesture's speed into it.
                     if self.snaps() {
                         self.settle_snap(
                             release.unwrap_or_default(),
@@ -237,7 +216,6 @@ impl Scrollable {
         } else {
             self.kinetic.reset();
         }
-        // Fingers (or a wheel) back on the input catch a glide in progress.
         self.fling(0.0, 0.0);
         let (mut dx, mut dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
@@ -257,8 +235,6 @@ impl Scrollable {
         self.scroll_by(dx, dy);
         let moved = self.offset_x.to_bits() != before.0.to_bits()
             || self.offset_y.to_bits() != before.1.to_bits();
-        // A notch steps to the detent it heads for, so a wheel walks content
-        // that snaps one detent at a time.
         if moved && self.snaps() {
             self.settle_step(dx, dy, crate::tokens::MotionSource::Pointer);
         }
@@ -280,7 +256,6 @@ impl Scrollable {
             f64::from(self.offset_x - before.0),
             f64::from(self.offset_y - before.1),
         );
-        // What the content could not take, on an axis it scrolls along.
         let excess = vello::kurbo::Vec2::new(
             if self.axis_has_horizontal() && self.content_w > self.viewport_w + FIT_EPS {
                 rest.x - moved.x
@@ -310,7 +285,6 @@ impl Scrollable {
         true
     }
 
-    /// The view the give is measured against.
     pub(super) fn band_viewport(&self) -> vello::kurbo::Vec2 {
         vello::kurbo::Vec2::new(
             f64::from(self.viewport_w),

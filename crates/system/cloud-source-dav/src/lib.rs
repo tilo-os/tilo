@@ -1,8 +1,5 @@
 //! `WebDAV` and Nextcloud accounts as a [`cloud_source::CloudSource`].
 //!
-//! One provider covers both, because Nextcloud is a `WebDAV` server with
-//! extensions. What the Nextcloud flavour adds:
-//!
 //! - folder `getetag`s that change when anything below them changes, so a
 //!   poll skips unchanged subtrees ([`Capabilities::recursive_folder_revisions`]);
 //! - `oc:checksums` (SHA-1/MD5) as provider hashes and `oc:fileid` for the
@@ -10,15 +7,6 @@
 //! - chunked upload sessions (`uploads/<user>/<transfer>`), resumable after
 //!   a restart;
 //! - file versions (list, read, restore) and a trash bin.
-//!
-//! Any server that answers an RFC 6578 `sync-collection` REPORT on the root
-//! with `sync-level` infinity gets a cursor change feed ([`DavSource::probe`]);
-//! otherwise the daemon polls.
-//!
-//! Transport policy follows Files' former browser: redirects are refused (a
-//! request body is never replayed and credentials never follow a hop), every
-//! response href must stay on the account's origin and under its root, and
-//! listings are size-bounded. Errors never carry URLs or bodies.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -47,9 +35,7 @@ mod upload;
 
 pub use account::{AccountError, config_for_account};
 
-/// Largest `PROPFIND`/REPORT body read for one listing.
 pub const MAX_LISTING_BYTES: usize = 64 * 1024 * 1024;
-/// Default Nextcloud upload chunk.
 pub const DEFAULT_UPLOAD_CHUNK: u64 = 10 * 1024 * 1024;
 
 const OWNCLOUD: &str = "http://owncloud.org/ns";
@@ -81,7 +67,6 @@ const NEXTCLOUD_PROPS: [PropName; 7] = [
     OC_CHECKSUMS,
 ];
 
-/// `true` when `tag` is `W/` followed by the opaque tag of `revision`.
 fn is_weak_form_of(tag: &str, revision: &Revision) -> bool {
     tag.strip_prefix("W/") == Some(revision.as_str())
 }
@@ -96,7 +81,6 @@ fn listing_limits() -> Limits {
     }
 }
 
-/// Which server dialect an account speaks.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Flavor {
     /// A plain RFC 4918 server.
@@ -106,10 +90,8 @@ pub enum Flavor {
     Nextcloud { base: Url, user: String },
 }
 
-/// Where and how to reach one account. Contains no secret.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DavConfig {
-    /// The collection URL of the account root, ending in `/`.
     pub root: Url,
     pub flavor: Flavor,
     /// Bytes per chunk of a Nextcloud upload session; larger files use a
@@ -149,7 +131,6 @@ impl DavConfig {
         matches!(self.flavor, Flavor::Nextcloud { .. })
     }
 
-    /// `<base>/remote.php/dav/<area>/<user>/<rest…>`.
     fn nextcloud_url(&self, area: &str, rest: &[&str], folder: bool) -> Option<Url> {
         let Flavor::Nextcloud { base, user } = &self.flavor else {
             return None;
@@ -184,7 +165,6 @@ pub struct DavSource {
     config: DavConfig,
     client: DavClient,
     credentials: Arc<dyn CredentialSource>,
-    /// Whether the root answers `sync-collection` (decided by [`Self::probe`]).
     sync_collection: Arc<RwLock<bool>>,
 }
 
@@ -204,7 +184,6 @@ impl DavSource {
         // server, which is the same failure mode as a refused connection.
         .map_err(|error| match error {
             tilo_dav::Error::Build(error) => transport_error(tilo_dav::Error::Build(error)),
-            // `DavClient::new` only ever answers with `Build`.
             _ => Error::InvalidResponse("client build"),
         })?;
         Ok(Self {
@@ -507,7 +486,6 @@ impl DavSource {
         }
     }
 
-    /// `true` when `id` exists.
     fn exists(&self, id: &ItemId) -> Result<bool> {
         match self.stat(id) {
             Ok(_) => Ok(true),
@@ -601,7 +579,6 @@ fn unreached(error: &tilo_dav::Error) -> bool {
     false
 }
 
-/// Why a body could not be read to its end.
 fn read_failure(error: &std::io::Error) -> &'static str {
     // reqwest reports a body that stopped under its own kind, with the
     // reason (an `UnexpectedEof` from a declared length that was not sent, a
@@ -624,7 +601,6 @@ fn read_failure(error: &std::io::Error) -> &'static str {
     }
 }
 
-/// Why a listing body is not an acceptable `multistatus` document.
 fn xml_failure(error: &tilo_dav::XmlError, what: &'static str) -> &'static str {
     match error {
         // Checked before decoding anything, so the size cap keeps its own
@@ -645,7 +621,6 @@ fn xml_failure(error: &tilo_dav::XmlError, what: &'static str) -> &'static str {
     }
 }
 
-/// Parse `oc:checksums` (`SHA1:… MD5:…`).
 fn parse_checksums(text: &str) -> Vec<ContentHash> {
     text.split_whitespace()
         .filter_map(|entry| {
@@ -939,7 +914,6 @@ impl CloudSource for DavSource {
             .prop_text("quota-used-bytes")
             .and_then(|v| v.parse().ok())
             .ok_or(Error::Unsupported("quota"))?;
-        // Negative "available" values mean unknown/unlimited.
         let available: Option<u64> = first
             .prop_text("quota-available-bytes")
             .and_then(|v| v.parse().ok());

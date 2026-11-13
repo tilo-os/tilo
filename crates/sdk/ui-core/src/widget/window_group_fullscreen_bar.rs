@@ -13,33 +13,24 @@ use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::Widget;
 
-/// A fullscreen window's bar as the person reached for it.
 #[derive(Default)]
 pub(super) struct FullscreenBar {
     /// Shown over the window: drawn over the content, which keeps its whole
     /// size.
     pub(super) revealed: bool,
-    /// Its fade (`motion::CROSS_FADE`); reduced motion cuts.
     pub(super) fade: crate::motion::Presence,
-    /// The last layout stood it over the content; once its fade-out ends
-    /// the next one drops it, so nothing takes input where it was.
     pub(super) laid_out: bool,
 }
 
 impl WindowGroup {
-    /// Whether a fullscreen window's bar is drawn: shown, or still fading
-    /// out.
     pub(super) fn fullscreen_bar_drawn(&self) -> bool {
         self.fullscreen_bar.revealed || self.fullscreen_bar.fade.is_visible(crate::time::now())
     }
 
-    /// The bar stands over the content rather than above it: a fullscreen
-    /// window's bar the person reached for.
     pub(super) fn bar_over_content(&self) -> bool {
         self.fullscreen_presentation && self.fullscreen_bar_drawn() && !self.external_navigation
     }
 
-    /// The bar and the window's search under it.
     pub(super) fn draw_bar(
         &mut self,
         scene: &mut Scene,
@@ -51,7 +42,6 @@ impl WindowGroup {
         self.bar.set_resize(self.resize());
         self.bar
             .set_group_focused(self.focused || self.search_active);
-        // The bar's menus stay inside the window.
         self.bar.set_popup_area(self.rect);
         self.bar.draw_child(scene, transform, tr, theme, presence);
         self.search.set_ground(self.bar.ground_color(theme));
@@ -59,11 +49,6 @@ impl WindowGroup {
             .draw_child(scene, transform, tr, theme, presence);
     }
 
-    /// Show or hide a fullscreen window's bar over it (the host reads the
-    /// top edge for it, `top_edge_reveal`); nothing while not fullscreen.
-    /// `source` is what showed or hid it: the pointer's reach fades it, a
-    /// key or an action (entering fullscreen by Super+F, Super alone) lands
-    /// it at once.
     pub fn set_fullscreen_bar_revealed(
         &mut self,
         revealed: bool,
@@ -72,8 +57,6 @@ impl WindowGroup {
         if self.fullscreen_bar.revealed != revealed {
             self.fullscreen_bar.revealed = revealed;
             self.style_dirty = true;
-            // It fades in place, so nothing under it moves; reduced motion
-            // cuts.
             if self.chrome_motion.reduced() {
                 self.fullscreen_bar.fade.snap(revealed);
             } else {
@@ -103,13 +86,10 @@ impl WindowGroup {
         }
     }
 
-    /// Whether a fullscreen window's bar is fading in or out.
     pub(super) fn fullscreen_bar_fading(&self) -> bool {
         self.fullscreen_presentation && self.fullscreen_bar.fade.is_moving(crate::time::now())
     }
 
-    /// A fullscreen window's bar standing over its content (`over`),
-    /// fading with its reveal.
     pub(super) fn draw_bar_over_content(
         &mut self,
         over: bool,
@@ -131,7 +111,6 @@ impl WindowGroup {
                 vello::peniko::BlendMode::default(),
                 alpha,
                 transform,
-                // The window's search hangs under the bar.
                 &self.rect,
             );
         }

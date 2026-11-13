@@ -10,7 +10,6 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Match a live filesystem UUID without accepting boot-local device IDs.
     #[cfg(target_os = "linux")]
     pub fn binds_filesystem(&self, filesystem_uuid: &str) -> bool {
         let durable = (self.volume.len() == 17 && self.volume.first() == Some(&1))
@@ -20,7 +19,6 @@ impl Identity {
                 .is_ok_and(|id| self.volume.get(1..17) == Some(id.as_bytes().as_slice()))
     }
 
-    /// Validate a persisted Btrfs source binding before using it as a hint.
     pub fn binds_btrfs(&self, filesystem_uuid: &str, inode: u64) -> bool {
         self.inode == inode
             && self.volume.len() == 41
@@ -40,8 +38,8 @@ pub fn supported() -> io::Result<()> {
     }
 }
 
-/// # Errors
-/// Returns an error if descriptor metadata or a persistent/boot-bound volume identity cannot be read.
+/// Returns an error if descriptor metadata or a persistent or boot-bound volume identity cannot be
+/// read.
 pub fn identity(file: &File) -> io::Result<Identity> {
     use cap_fs_ext::MetadataExt;
     let metadata = cap_primitives::fs::Metadata::from_file(file)?;
@@ -51,10 +49,9 @@ pub fn identity(file: &File) -> io::Result<Identity> {
     })
 }
 
-/// A literal link uses its containing volume identity and its own inode. The
-/// link is inspected without opening or following the referent.
+/// A literal link uses its containing volume identity and its own inode, inspected without opening
+/// or following the referent.
 #[cfg(target_os = "linux")]
-/// # Errors
 /// Rejects non-link entries and propagates directory metadata or volume-identity read failures.
 pub fn link_identity(directory: &File, name: &std::ffi::OsStr) -> io::Result<Identity> {
     use cap_fs_ext::MetadataExt;
@@ -117,7 +114,6 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
     if u64::try_from(unsafe { status.assume_init() }.f_type).ok() == Some(0x9123_683e) {
         return btrfs_volume(file);
     }
-    // Linux UAPI fsuuid2: u8 len; u8 uuid[16]. _IOR(0x15, 0, fsuuid2).
     let mut result = [0_u8; 17];
     // SAFETY: live readable descriptor; kernel writes at most 17 bytes.
     if unsafe {
@@ -141,8 +137,6 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
             return Ok(volume);
         }
     }
-    // Session-only fallback explicitly binds the device number to this boot.
-    // A different boot refuses resume, rather than treating dev_t as durable.
     let boot = std::fs::read("/proc/sys/kernel/random/boot_id")?;
     if boot.len() != 37
         || !boot
@@ -162,10 +156,9 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
 #[cfg(target_os = "linux")]
 fn btrfs_volume(file: &File) -> io::Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
-    // Linux UAPI BTRFS_IOC_FS_INFO: 1024 bytes, filesystem UUID at offset16.
-    // GET_SUBVOL_INFO: 504 bytes, treeid at0, subvolume UUID at296. The kernel
-    // derives the subvolume from the fd's inode, including ordinary file fds.
-    // Native Fedora's headers verify both layouts; no pathname ioctl is used.
+    // Linux UAPI BTRFS_IOC_FS_INFO: 1024 bytes, filesystem UUID at offset 16. GET_SUBVOL_INFO: 504
+    // bytes, treeid at 0, subvolume UUID at 296. The kernel derives the subvolume from the fd's
+    // inode, including ordinary file fds; no pathname ioctl is used.
     let mut filesystem = [0_u8; 1024];
     let mut subvolume = [0_u8; 504];
     // SAFETY: live readable fd and correctly sized, writable UAPI buffers.
@@ -208,8 +201,6 @@ fn btrfs_volume(file: &File) -> io::Result<Vec<u8>> {
             "Btrfs filesystem/subvolume identity unavailable; reselect folders",
         ));
     }
-    // Tree5 is the top-level filesystem tree and can lack a subvolume UUID.
-    // Tree ID plus UUID separates reused inode numbers and snapshot aliases.
     let mut identity = vec![3];
     identity.extend_from_slice(filesystem_uuid);
     identity.extend_from_slice(&tree.to_le_bytes());
@@ -223,8 +214,6 @@ fn volume(_file: &File) -> io::Result<Vec<u8>> {
     unreachable!()
 }
 
-/// # Errors
-/// Propagates native sync failures, including full filesystem-cache flush failures on macOS.
 pub fn sync_file(file: &File) -> io::Result<()> {
     file.sync_all()?;
     #[cfg(target_os = "macos")]
@@ -238,17 +227,12 @@ pub fn sync_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// # Errors
-/// Returns an error if the held directory cannot be reopened for reading or synchronized.
 pub fn sync_directory(file: &File) -> io::Result<()> {
-    // Linux no-follow traversal handles can be O_PATH. Reopen '.' relative to
-    // the pinned directory, not through its pathname, for fsync and ioctls.
     let reopened = readable_directory(file)?;
     sync_file(&reopened)
 }
 
-/// # Errors
-/// Returns the native open error if `.` cannot be reopened relative to the held directory.
+/// The native open error if `.` cannot be reopened relative to the held directory.
 pub fn readable_directory(file: &File) -> io::Result<File> {
     use cap_fs_ext::OpenOptionsMaybeDirExt;
     let mut options = cap_primitives::fs::OpenOptions::new();

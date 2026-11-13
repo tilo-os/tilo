@@ -1,31 +1,17 @@
-//! The image writer's view of a prepared installer medium, in a build without
-//! the installation (`installation`, apps/imager/Cargo.toml).
-//!
-//! Only the installer journey prepares a medium that carries a person's
-//! identity, belongings and original files, and only it hands the writer a
-//! [`prepared_media::PreparedMedia`](crate::setup::journey::prepared_media::PreparedMedia) or a [`portable_source::OriginalSource`](crate::setup::journey::portable_source::OriginalSource).
-//! Without it neither can exist: both are uninhabited, so every path of the
-//! writer that would deliver, refresh or complete a prepared medium is
-//! statically unreachable, and none of the native preparation, capture or
-//! delivery code is linked. [`prepared_media::Delivery`](crate::setup::journey::prepared_media::Delivery) answers what the
-//! journey's own delivery answers when no native preparation is available
-//! (`journey/prepared_media/presentation.rs`): nothing is pending, and a
-//! request to deliver is refused.
+//! The image writer's view of a prepared installer medium in a build without the
+//! installation.
 
-/// The original system's files a person granted to the installer journey.
 pub mod portable_source {
     /// Never constructed without the installation.
     pub struct OriginalSource(pub(crate) std::convert::Infallible);
 
     impl OriginalSource {
-        /// Whether only the original applications are carried over.
         pub fn applications_only(&self) -> bool {
             match self.0 {}
         }
     }
 }
 
-/// A prepared installer medium and its delivery after the write.
 pub mod prepared_media {
     use std::io;
     use std::sync::Arc;
@@ -74,13 +60,11 @@ pub mod prepared_media {
         }
     }
 
-    /// A medium prepared to carry the original system's files.
     pub struct PreparedOriginalMedia {
         pub artifact: Arc<PreparedMedia>,
         pub review: Arc<offline::OfflineMediaReview>,
     }
 
-    /// Refreshing a prepared medium before its write.
     pub fn refresh_for_write(
         prepared: &Arc<PreparedMedia>,
         _cancel: &AtomicBool,
@@ -88,24 +72,18 @@ pub mod prepared_media {
         match prepared.0 {}
     }
 
-    /// No native source review exists to have failed.
     pub fn source_review_reason(_error: &io::Error) -> Option<ReturnReason> {
         None
     }
 
-    /// No drive carries a pending prepared medium.
     pub fn pending_target(_stable_id: &str) -> bool {
         false
     }
 
-    /// Nothing to retire: without native preparation no drive carries a
-    /// prepared medium ([`pending_target`] is always false), and closing the
-    /// window retires each target it touched, which must not fail here.
     pub fn finish_target(_stable_id: &str) -> io::Result<()> {
         Ok(())
     }
 
-    /// The journey's navigation back to a prepared medium.
     #[derive(Clone)]
     pub struct Navigation {
         pub artifact: ui::LocalState<Option<Arc<PreparedMedia>>>,
@@ -120,7 +98,6 @@ pub mod prepared_media {
         }
     }
 
-    /// The delivery of a prepared medium after its write: never one here.
     #[derive(Default)]
     pub struct Delivery {
         _none: (),
@@ -205,7 +182,6 @@ pub mod prepared_media {
         }
     }
 
-    /// The native review of a medium that carries the original files.
     pub mod offline {
         /// Never constructed without the installation.
         pub struct OfflineMediaReview(pub(crate) std::convert::Infallible);

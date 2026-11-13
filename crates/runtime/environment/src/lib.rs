@@ -1,22 +1,14 @@
-//! The environment record: where a shell runs.
-//!
-//! An environment is a synced record (`#[resource(kind = "environment")]`)
-//! declared by the Terminal app. It names the read-only images that make up
-//! the guest's `/usr` and `/etc` — one `env-runtime` and the `tool` images
-//! built for it — the directories the guest was granted, and whether its home
-//! outlives a session. `ush` builds the guest from it; nothing else about a
-//! guest is configured anywhere. See `docs/app-model/environments.md`.
+//! The environment record: where a shell runs. It names the read-only images
+//! that make up the guest's `/usr` and `/etc` — one `env-runtime` and the
+//! `tool` images built for it — the directories the guest was granted, and
+//! whether its home outlives a session; `ush` builds the guest from it.
 //!
 //! The record is the only package manifest there is: `pkg install` builds a
 //! tool image through a [`ToolBuilder`] and appends it with
-//! [`Environment::ADD_TOOL`]; `perm trust-dir` is [`Environment::GRANT_DIR`]
-//! and `perm allow-host` is [`Environment::ALLOW_HOST`].
-//! History and undo come from the record layer.
-//!
-//! The file commands a guest answers (`cp`, `mv`, `rm`, …) are the record's
-//! verbs too ([`files`]): one action per command, checked against
-//! [`Environment::grants`] as a whole and carried out by the device whose
-//! disk it changes.
+//! [`Environment::ADD_TOOL`]. The file commands a guest answers (`cp`, `mv`,
+//! `rm`, …) are the record's verbs too ([`files`]): one action per command,
+//! checked against [`Environment::grants`] as a whole and carried out by the
+//! device whose disk it changes.
 
 pub mod files;
 
@@ -35,53 +27,34 @@ use crate::files::{
     RestoreOp, RevertOp, TruncateOp, UndoEntry, WriteOp, paths_of,
 };
 
-/// The app id every environment grant is written against — an app in the
-/// capability vocabulary, because that is what the permissions panel renders
-/// and revokes.
 pub const RUNTIME_APP_ID: &str = "so.tilo.ush";
 
-/// The app whose records environments are.
 pub const OWNER_APP_ID: &str = "so.tilo.terminal";
 
-/// The record key of the environment a session gets when it names none.
 pub const DEFAULT_RECORD: &str = "default";
 
-/// The name a freshly created default environment carries.
 pub const DEFAULT_NAME: &str = "Default";
 
-/// One environment. Architecture-neutral: a node uses the images for its own
+/// One environment, architecture-neutral: a node uses the images for its own
 /// architecture, so an environment made on an `x86_64` laptop opens on an
 /// `aarch64` relay.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Environment {
-    /// What the person calls it.
     pub name: String,
-    /// The `env-runtime` release: the base of `/usr` and `/etc`.
     pub runtime: RuntimeRef,
-    /// Tools built for [`Self::runtime`], topmost last.
     pub tools: Vec<ToolRef>,
-    /// `FsPath` and `NetHost` grants, subject [`RUNTIME_APP_ID`].
     pub grants: Vec<CapOverride>,
-    /// Whether the home survives the session.
     pub home: HomePolicy,
-    /// The home `~` names on the Tilo side and in the guest alike: the
-    /// workspace's own folder, the one synced between its devices and
-    /// collaborators, which every environment of the workspace shares.
-    /// Empty until the first device that opens the environment gives it
-    /// one ([`Environment::SET_HOME`]), which also grants it.
+    /// The home `~` names, in the guest and on Tilo: the workspace's own
+    /// folder, which every environment of the workspace shares.
+    ///
+    /// Empty until the first device that opens the environment gives it one
+    /// ([`Environment::SET_HOME`]), which also grants it.
     pub home_dir: String,
-    /// The workspace the environment belongs to, by id: the one whose room
-    /// keeps the record and whose files are its home. Written when the
-    /// record is made and changed by no action. Empty for an environment
-    /// made before environments belonged to a workspace: it is the primary
-    /// workspace's.
     pub workspace: String,
-    /// File actions, each settled by the device that carried it out with
-    /// what it changed.
     pub files: Outbox<FileTask, Vec<UndoEntry>>,
 }
 
-/// An `env-runtime` release and its image per architecture.
 #[derive(
     Model, Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
@@ -93,33 +66,26 @@ pub struct RuntimeRef {
     pub images: BTreeMap<String, String>,
 }
 
-/// A tool in an environment and its image per architecture.
 #[derive(
     Model, Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
 pub struct ToolRef {
-    /// What the person asked for, e.g. `["pandoc"]`.
     pub packages: Vec<String>,
-    /// The tool image (`tapp:<hex>`) per architecture, built for the
-    /// runtime's image of that architecture.
     pub images: BTreeMap<String, String>,
 }
 
-/// What a `write` is asked: the files, and what they hold afterwards:
-/// `text` (base64 of the bytes when `base64`), or, for contents of any
-/// size, `content`.
+/// What a `write` is asked: the files, and what they hold afterwards.
+/// `text` carries the contents, in base64 when `base64`, and `content` a
+/// `tilo.content:<hash>` reference for contents of any size.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
 pub struct WriteFiles {
-    /// The device whose files change.
     pub device: String,
-    /// Absolute paths of the files.
     pub paths: Vec<String>,
     /// Only make a file that is not there yet.
     #[serde(default)]
     pub no_clobber: Option<bool>,
-    /// The contents, as given.
     #[serde(default)]
     pub text: String,
     /// `text` is base64 of the contents, for contents that are not text.
@@ -131,20 +97,16 @@ pub struct WriteFiles {
     pub content: Option<String>,
 }
 
-/// What happens to an environment's home when a session ends.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomePolicy {
-    /// One home per environment, kept: [`Environment::home_dir`].
     #[default]
     Persistent,
-    /// A fresh home per session, removed when it ends.
     Ephemeral,
 }
 
-/// Bring an environment of an older version up to this one. Version 1 kept
-/// its grants as one JSON string; they are a list of capabilities now.
-/// Versions 1 and 2 stored the fields of a grant's subject, scope and expiry
-/// flat beside their variant's name; they are stored by their variant now.
+/// Bring an environment of an older version up to this one: version 1 kept its
+/// grants as one JSON string, and versions 1 and 2 stored a grant's subject,
+/// scope and expiry flat beside their variant's name.
 fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     use tilo_resource::evolution::{retype_json, retype_variant_fields};
     let root = tilo_resource::__private::ROOT;
@@ -161,13 +123,9 @@ fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
 }
 
 impl Environment {
-    /// What the record holds: where a shell runs — the images its guest is built from, the
-    /// directories it may reach, and whether its home outlives a session.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds, read as any app's record through
+    /// [`fields`](tilo_resource::read::fields): a caller with no window open
+    /// reads the whole record, or one named item as its own type reads it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -185,8 +143,7 @@ impl Environment {
 impl Environment {
     /// Add tool.
     ///
-    /// Records the image built for `packages` on `arch`: a new tool, or the
-    /// image an existing tool was missing for that architecture.
+    /// A new tool, or the image an existing tool was missing for `arch`.
     #[action]
     pub fn add_tool(
         &mut self,
@@ -240,7 +197,7 @@ impl Environment {
     /// Grant directory.
     ///
     /// Binds a host directory into the guest at the same path, read-write or
-    /// read-only. Granting a directory again replaces the earlier grant.
+    /// read-only; granting it again replaces the earlier grant.
     #[action]
     pub fn grant_dir(
         &mut self,
@@ -255,11 +212,8 @@ impl Environment {
 
     /// Set home.
     ///
-    /// Makes a directory the environment's home: the folder `~` names in
-    /// its shell, on the Tilo side and in its guest — the workspace's own
-    /// folder. The home is granted to the environment read-write, as
-    /// `grant-dir` would; revoking that grant later is the person's choice
-    /// and is kept.
+    /// Makes a directory the home `~` names, and grants it read-write as
+    /// `grant-dir` would; revoking that grant later is the person's choice.
     #[action]
     pub fn set_home(&mut self, #[param("Directory")] path: String) -> Result<(), String> {
         let path = path.trim();
@@ -277,9 +231,9 @@ impl Environment {
 
     /// Allow host.
     ///
-    /// Lets the guest resolve and connect to a host: `example.com`, a
-    /// domain and everything under it (`*.example.com`), or `*` for any
-    /// host. Allowing a host again replaces the earlier grant.
+    /// Lets the guest resolve and connect to a host: `example.com`, a domain
+    /// and everything under it (`*.example.com`), or `*` for any host.
+    /// Allowing a host again replaces the earlier grant.
     #[action]
     pub fn allow_host(&mut self, #[param("Host")] host: String) -> Result<(), String> {
         let grant = host_grant(&host)?;
@@ -302,8 +256,8 @@ impl Environment {
     /// Set runtime.
     ///
     /// Switches to another `env-runtime` release together with every tool
-    /// rebuilt for it, in one step: a tool is never mounted on a runtime it
-    /// was not built for.
+    /// rebuilt for it: a tool is never mounted on a runtime it was not built
+    /// for.
     #[action]
     pub fn set_runtime(
         &mut self,
@@ -346,10 +300,9 @@ impl Environment {
 
     /// Copy files.
     ///
-    /// Copies `sources` to `destination` on the environment's device: into
-    /// it when it is a folder or several sources are named. Every path must
-    /// be granted to the environment, or nothing is copied. A file the copy
-    /// replaces is kept aside; undo removes the copies and puts it back.
+    /// Copies into `destination` when it is a folder or several sources are
+    /// named. Every path must be granted, or nothing is copied. A file the
+    /// copy replaces is kept aside; undo puts it back.
     #[action(undo = Self::revert_queued, keywords = "cp")]
     pub fn copy(
         &mut self,
@@ -388,9 +341,8 @@ impl Environment {
 
     /// Move files.
     ///
-    /// Moves `sources` to `destination` on the environment's device: into it
-    /// when it is a folder or several sources are named. Every path must be
-    /// granted to the environment, or nothing moves. A file the move
+    /// Moves into `destination` when it is a folder or several sources are
+    /// named. Every path must be granted, or nothing moves. A file the move
     /// replaces is kept aside; undo moves everything back.
     #[action(id = "move", undo = Self::revert_queued, keywords = "mv, rename")]
     pub fn move_paths(
@@ -412,8 +364,8 @@ impl Environment {
 
     /// Remove files.
     ///
-    /// Moves `paths` into the environment's recoverable store rather than
-    /// unlinking them; undo puts them back.
+    /// Moves them into the recoverable store rather than unlinking; undo puts
+    /// them back.
     #[action(undo = Self::revert_queued, keywords = "rm, delete")]
     pub fn remove(
         &mut self,
@@ -554,8 +506,8 @@ impl Environment {
 
     /// Write a file.
     ///
-    /// Makes each file hold exactly `text`, keeping what it held aside; a
-    /// file that is missing is made. What a shell's `>` does.
+    /// Makes each file hold exactly `text`, keeping what it held aside, and
+    /// makes one that is missing. What a shell's `>` does.
     #[action(undo = Self::revert_queued, keywords = "write, save, redirect")]
     pub fn write(
         &mut self,
@@ -575,8 +527,8 @@ impl Environment {
 
     /// Restore a kept file.
     ///
-    /// Puts back one thing the environment's recoverable store keeps, by
-    /// the id `history` lists it under, at the path it came from.
+    /// Puts back one thing the recoverable store keeps, by the id `history`
+    /// lists it under, at the path it came from.
     #[action(undo = Self::revert_queued)]
     pub fn restore(
         &mut self,
@@ -591,8 +543,8 @@ impl Environment {
         self.queue_file(cx, files, device, FileAction::Restore(RestoreOp { kept }))
     }
 
-    /// Take back a file action: the device that carried it out walks back
-    /// what it recorded, latest first.
+    /// Take back a file action: the device that carried it out walks back what
+    /// it recorded, latest first.
     #[action(item = files)]
     pub fn revert(
         &mut self,
@@ -602,7 +554,6 @@ impl Environment {
     ) -> Result<(), String> {
         let queued = files.get(&entry).ok_or("no such file action")?;
         if queued.settled.is_none() {
-            // Not carried out yet: now it never will be.
             files.forget(&entry);
             return Ok(());
         }
@@ -621,9 +572,6 @@ impl Environment {
 }
 
 impl Environment {
-    /// Queue `action` for `device`, once the record's grants admit all of
-    /// it, forgetting the oldest settled tasks beyond
-    /// [`files::KEPT_TASKS`].
     fn queue_file(
         &self,
         cx: &mut ActionCx,
@@ -641,8 +589,6 @@ impl Environment {
         Ok(())
     }
 
-    /// The verb that queues `action` for `device`, with its arguments: what
-    /// a command line typed in a guest invokes.
     #[must_use]
     pub fn file_invoke(device: &str, action: &FileAction) -> Invoke<Self> {
         let device = device.to_owned();
@@ -688,7 +634,6 @@ impl Environment {
             FileAction::Link(op) => Self::LINK.with(environment::Link {
                 device,
                 target: text(&op.target),
-                // `ln TARGET DIR` names the link inside the folder.
                 path: match (op.into_directory, op.target.file_name()) {
                     (true, Some(name)) => text(&op.path.join(name)),
                     _ => text(&op.path),
@@ -728,22 +673,17 @@ impl Environment {
         }
     }
 
-    /// Undoing a file action queues its revert for the same device.
     fn revert_queued<P>(undoing: Undoing<'_, Self, P>) -> Option<Invoke<Self>> {
         Some(Self::REVERT.with(undoing.minted.first()?.clone()))
     }
 
-    /// Write this environment as the whole of a fresh record document — how
-    /// a record is created; every later change is an action.
     pub fn write_record(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
         tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
-        // A fresh record is at today's storage version; without the stamp it
-        // would read as the first one and wait for a migration it never needs.
+        // A fresh record is at today's version: without the stamp it would read
+        // as the first one and wait for a migration it never needs.
         tilo_resource::evolution::write_version(doc, <Self as tilo_resource::Resource>::VERSION)
     }
 
-    /// A new environment on the runtime `release`, whose image for `arch` is
-    /// `image`, with nothing added and nothing granted.
     pub fn new(name: &str, release: &str, arch: &str, image: &PackageId) -> Self {
         Self {
             name: name.to_owned(),
@@ -755,11 +695,10 @@ impl Environment {
         }
     }
 
-    /// The runtime image for `arch`.
-    ///
     /// # Errors
-    /// Returns the reason when the release has no image for `arch` or the
-    /// stored id is not a `tapp:<hex>` id.
+    ///
+    /// The release has no image for `arch`, or the stored id is not a
+    /// `tapp:<hex>` id.
     pub fn runtime_image(&self, arch: &str) -> Result<PackageId, String> {
         let id = self.runtime.images.get(arch).ok_or_else(|| {
             format!(
@@ -770,7 +709,6 @@ impl Environment {
         parse_image(id)
     }
 
-    /// The tool that provides `package`, if one does.
     pub fn tool_providing(&self, package: &str) -> Option<&ToolRef> {
         self.tools
             .iter()
@@ -779,17 +717,16 @@ impl Environment {
 }
 
 impl ToolRef {
-    /// The tool's image for `arch`: `None` when it has not been built there
-    /// yet.
+    /// The tool's image for `arch`, `None` when it is not built there yet.
     ///
     /// # Errors
-    /// Returns the reason when the stored id is not a `tapp:<hex>` id.
+    ///
+    /// The stored id is not a `tapp:<hex>` id.
     pub fn image(&self, arch: &str) -> Result<Option<PackageId>, String> {
         self.images.get(arch).map(|id| parse_image(id)).transpose()
     }
 }
 
-/// The architecture this node runs, as the record names it.
 pub fn host_arch() -> &'static str {
     if cfg!(target_arch = "aarch64") {
         "aarch64"
@@ -798,8 +735,6 @@ pub fn host_arch() -> &'static str {
     }
 }
 
-/// The architectures an image may be recorded for — the spelling of
-/// `tilo_app_package::manifest::Arch`.
 pub const ARCHES: &[&str] = &["x86_64", "aarch64"];
 
 fn check_arch(arch: &str) -> Result<(), String> {
@@ -831,22 +766,20 @@ pub fn same_packages(a: &[String], b: &[String]) -> bool {
     set(a) == set(b)
 }
 
-/// Parse an image id as the record stores it.
 pub fn parse_image(id: &str) -> Result<PackageId, String> {
     PackageId::from_str(id).map_err(|e| format!("{id:?} is not an image id: {e}"))
 }
 
-/// Guest trees a grant may not reach into: the images' read-only `/usr` and
-/// `/etc`, the guest's pseudo-filesystems and the runtime's commands.
-/// Binding there would replace part of the guest rather than add a
-/// directory to it.
+/// Guest trees a grant may not reach: the images' read-only `/usr` and `/etc`,
+/// the pseudo-filesystems and the runtime's commands. Binding there would
+/// replace part of the guest rather than add a directory to it.
 const GUEST_OWNED_TREES: &[&str] = &[
     "/usr", "/etc", "/proc", "/dev", "/bin", "/sbin", "/lib", "/lib64", "/run/ush",
 ];
 
-/// Guest directories a grant may sit below but not replace: the fresh
-/// scratch mounts, the environment's own `/var` state and the parent of its
-/// home. `/run/media/…`, `/tmp/build` or `/var/lib/data` are ordinary grants.
+/// Guest directories a grant may sit below but not replace: the fresh scratch
+/// mounts, the environment's own `/var` state and the parent of its home.
+/// `/run/media/…`, `/tmp/build` or `/var/lib/data` are ordinary grants.
 const GUEST_OWNED_DIRS: &[&str] = &[
     "/tmp",
     "/run",
@@ -858,8 +791,7 @@ const GUEST_OWNED_DIRS: &[&str] = &[
 ];
 
 /// Whether a host directory may be granted: absolute, without `..`, not the
-/// root, and not a path the guest builds itself (see `GUEST_OWNED_TREES`
-/// and `GUEST_OWNED_DIRS`).
+/// root, and not a path the guest builds itself.
 pub fn is_grantable(path: &Path) -> bool {
     let Some(raw) = path.to_str() else {
         return false;
@@ -882,13 +814,12 @@ pub fn is_grantable(path: &Path) -> bool {
 /// The grant id for a directory: stable, so granting it again replaces one
 /// record instead of adding another.
 pub fn grant_id(path: &Path) -> String {
-    // FNV-1a: only has to be deterministic and short enough to read.
+    // FNV-1a: it only has to be deterministic and short enough to read.
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, path.as_os_str().as_encoded_bytes());
     format!("ush-grant-{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// The hash a `content` parameter names, when it is given.
 fn content_param(content: Option<&str>) -> Result<Option<String>, String> {
     content
         .map(str::trim)
@@ -901,11 +832,12 @@ fn content_param(content: Option<&str>) -> Result<Option<String>, String> {
         .transpose()
 }
 
-/// The capability that grants `path` — exactly what the compositor writes
-/// for "Always allow" on a filesystem prompt, against [`RUNTIME_APP_ID`].
+/// The capability that grants `path`, as the compositor writes it for "Always
+/// allow" on a filesystem prompt.
 ///
 /// # Errors
-/// Returns the reason when `path` is not [`is_grantable`].
+///
+/// `path` is not [`is_grantable`].
 pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     if !is_grantable(path) {
         return Err(format!(
@@ -924,11 +856,6 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     .granted_by(Principal::Person("local".to_owned())))
 }
 
-/// A host as a `NetHost` grant spells it: `*`, `example.com`, or
-/// `.example.com` for the domain and everything under it (`*.example.com`
-/// is accepted and written that way). Lower-case, no trailing dot. The
-/// grammar is [`collab_types::caps::NetHostPattern`]'s, the one apps' grants
-/// are read with too.
 pub fn normalize_host(host: &str) -> Result<String, String> {
     collab_types::caps::NetHostPattern::parse(host)
         .map(|pattern| pattern.to_string())
@@ -943,11 +870,12 @@ pub fn host_grant_id(host: &str) -> String {
     format!("ush-host-{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// The capability that lets the guest reach `host` — a `NetHost` grant
-/// against [`RUNTIME_APP_ID`], what the permissions panel shows and revokes.
+/// The `NetHost` grant that lets the guest reach `host`, as the permissions
+/// panel shows and revokes it.
 ///
 /// # Errors
-/// Returns the reason when `host` is not a host (see [`normalize_host`]).
+///
+/// `host` is not a host (see [`normalize_host`]).
 pub fn host_grant(host: &str) -> Result<CapOverride, String> {
     let host = normalize_host(host)?;
     Ok(CapOverride::grant(
@@ -979,14 +907,10 @@ pub fn is_record_key(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
-/// Where a session runs. Carried by `ush`'s `open-session` request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Target {
-    /// The machine's own login shell.
     Host,
-    /// A guest built from an environment record; `None` is the default
-    /// environment, created on first use. It runs on the device that asks.
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
@@ -994,7 +918,6 @@ pub enum Target {
 }
 
 impl Target {
-    /// The default environment, on this device.
     pub fn default_environment() -> Self {
         Self::Environment { record: None }
     }
@@ -1021,21 +944,18 @@ pub enum ToolBuildError {
 }
 
 /// Builds `tool` images: the files a set of packages adds on top of one
-/// `env-runtime`.
-///
-/// The cache key is `(runtime id, sorted package NEVRAs)`; a hit returns an
-/// existing image id. A miss builds in a sandbox whose `/usr` is the runtime
-/// with a writable upper, seals the upper into a `tool` tapp naming
-/// `runtime`, signs and stores it. The returned id must be materialisable by
-/// the package store on this device.
+/// `env-runtime`. A miss builds in a sandbox whose `/usr` is the runtime with a
+/// writable upper, seals the upper into a `tool` tapp naming `runtime`, signs
+/// and stores it; the id must be materialisable by this device's package
+/// store.
 pub trait ToolBuilder: Send + Sync {
-    /// Build (or find) the tool image adding `packages` to `runtime`.
-    /// Progress — the package manager's output — goes to `progress`, which
-    /// reaches the shell that asked.
+    /// Build (or find) the tool image adding `packages` to `runtime`; progress
+    /// goes to `progress`, which reaches the shell that asked.
     ///
     /// # Errors
-    /// Returns [`ToolBuildError`] when the packages do not resolve or the
-    /// build fails.
+    ///
+    /// [`ToolBuildError`] when the packages do not resolve or the build
+    /// fails.
     fn build(
         &self,
         runtime: &PackageId,
@@ -1044,7 +964,6 @@ pub trait ToolBuilder: Send + Sync {
     ) -> Result<PackageId, ToolBuildError>;
 }
 
-/// The [`ToolBuilder`] for a device without one.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoToolBuilder;
 
@@ -1130,8 +1049,6 @@ mod tests {
         assert_eq!(r.state().unwrap().tools.len(), 1);
     }
 
-    /// An environment from before its grants were stored values: one JSON
-    /// string. Opened now, it holds the same capabilities.
     #[test]
     fn grants_kept_as_a_json_string_migrate_to_capabilities() {
         use tilo_resource::{Slot, evolution};
@@ -1219,9 +1136,6 @@ mod tests {
         );
     }
 
-    /// An environment written before environments belonged to a workspace
-    /// reads as naming none (the primary workspace's), and no action names
-    /// one: a record's workspace is written when it is made.
     #[test]
     fn an_environment_from_before_workspaces_names_none_and_no_action_sets_one() {
         use tilo_resource::Slot;
@@ -1252,8 +1166,6 @@ mod tests {
         );
     }
 
-    /// An environment written before it had a home reads with none, and
-    /// gets one by an action that keeps every tool and grant it held.
     #[test]
     fn an_environment_from_before_homes_gets_one_and_keeps_what_it_held() {
         use tilo_resource::Slot;
@@ -1359,8 +1271,6 @@ mod tests {
             ]
         );
         assert!(env.grants.iter().all(is_runtime_grant));
-        // The record's spelling is the evaluator's: a leading dot covers
-        // the domain and everything under it.
         assert!(collab_types::caps::host_covers(
             ".crates.io",
             "static.crates.io"

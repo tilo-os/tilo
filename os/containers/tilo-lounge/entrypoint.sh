@@ -15,11 +15,12 @@
 #                             TILO_ROOMS_DEFAULT_ROLE
 #   TILO_ROOMS_WEB_ENTRY      the Tilo app's web entry the links it mints open
 #
-# The operator may declare more owners and moderators than the workspace's
-# owner root, in a file `{"owners": [hex], "moderators": [hex]}` the host
-# reads again whenever it changes, so a person's role reaches the workspace
-# while it runs:
-#   TILO_ROOMS_ROLES_FILE    that file's path (unset: the owner root alone)
+# The operator declares a person an owner of the running workspace through its
+# operator socket (os/containers/tilo-lounge/declare-owner), which the host
+# answers by letting them in at its door and making them an administrator once
+# they are a member:
+#   TILO_ROOMS_OPERATOR_SOCKET  that socket (default: the workspace's state
+#                               directory, operator.sock)
 #
 # The pages reach the host's live plane through the host's own iroh packet
 # relay, over websockets, which the deployment publishes beside the HTTP
@@ -68,7 +69,7 @@ TILO_ROOMS_MAIL_FROM TILO_ROOMS_RESEND_KEY_FILE TILO_ROOMS_RESEND_URL TILO_ROOMS
 TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
-TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
+TILO_ROOMS_ROOT_FILE TILO_ROOMS_OPERATOR_SOCKET
 TILO_ROOMS_PERSON_STORAGE_GB TILO_ROOMS_IROH_LISTEN
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
@@ -154,7 +155,6 @@ set -- room \
   --public-avatars-url "$origin/avatars" \
   --listing-description "$description" \
   --default-role "${TILO_ROOMS_DEFAULT_ROLE:-editor}" \
-  --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
   --web "${TILO_ROOMS_WEB:-127.0.0.1:9781}" \
   --packet-relay "${TILO_ROOMS_LIVE:-0.0.0.0:9782}" \
   --tls "$tls" \
@@ -209,12 +209,9 @@ fi
 if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy
 fi
-# The roles the operator declares beside the workspace's owner root: a file
-# the host takes in again whenever it changes, so a role granted while the
-# workspace runs reaches it without a restart.
-if [ -n "${TILO_ROOMS_ROLES_FILE:-}" ]; then
-  set -- "$@" --roles-file "$TILO_ROOMS_ROLES_FILE"
-fi
+# Where the operator declares owners of the running workspace: a UNIX socket in
+# its state directory, which a container has instead of a stdin to write to.
+set -- "$@" --operator-socket "${TILO_ROOMS_OPERATOR_SOCKET:-$dir/operator.sock}"
 
 # A chat with no channel has nowhere for a visitor's first message to go, and
 # the workspace's apps are its Chat unless the deployment says otherwise.

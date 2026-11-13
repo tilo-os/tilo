@@ -1,41 +1,4 @@
 //! `tilo-app-package` — the format of Tilo packages (`.tapp`).
-//!
-//! Tilo distributes everything (apps, services, format providers,
-//! plugins, runtimes) as content-addressed signed packages. The
-//! same packaging machinery handles all kinds; the `Kind`
-//! discriminates *what* the package is, not *how* it is packed.
-//!
-//! ## What this crate provides
-//!
-//! - [`Manifest`] + supporting types (TOML schema) — see
-//!   [`manifest`].
-//! - [`PackageId`] — BLAKE3 hash that identifies a package. See
-//!   [`id`].
-//! - [`validate_manifest`] / [`validate::ManifestError`] — schema
-//!   checks beyond TOML decode.
-//! - [`BlobHash`], [`Collection`] and the streaming [`BlobSource`] /
-//!   [`BlobSink`] edges — see [`blobs`].
-//! - [`chunks`] — the payload objects (`<blob>.blob`, `<blob>.chunks`) that
-//!   complete a thin package, chunked and verified with bounded memory.
-//! - [`compressed`] — the zstd twins packages and payload objects travel
-//!   as, decompressed with a bound before they are verified (native only).
-//! - [`PackageMeta`] — the signed root, manifest and collection with every
-//!   hash link checked. See [`package`].
-//! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
-//!   (thin or full) — the operations consumers compose.
-//! - [`SigningIdentity`] — wraps either a plain Ed25519
-//!   `SigningKey` or a 1-of-1 `ThresholdIdentity`. The true
-//!   threshold (`t-of-n`, `t≥2`) signing flow is driven outside
-//!   this crate; pass the aggregated signature in via
-//!   [`pack::pack_with_signature`].
-//!
-//! ## Scope boundaries
-//!
-//! - No tokio. Everything in this crate is synchronous.
-//! - No storage. Payload bytes flow through [`BlobSource`] and
-//!   [`BlobSink`]; keeping them is the device content store's job.
-//! - No networking. Fetching the payload of a thin `.tapp` belongs to
-//!   whoever knows where bytes are.
 
 pub mod blobs;
 pub mod chunks;
@@ -76,7 +39,6 @@ pub use pack::{
     PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,
 };
 pub use package::{MetaError, PackageMeta, is_safe_path};
-/// The versioned system-interface contracts packages require and images serve.
 pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
@@ -158,8 +120,6 @@ pub fn payload_size_limit(manifest: &Manifest) -> Option<u64> {
 }
 
 /// Whether a package of `kind` and wire `size` satisfies the thin-app limit.
-/// Non-app bundles are shared infrastructure and use their own distribution
-/// policy.
 pub fn tapp_size_allowed(kind: Kind, size: u64) -> bool {
     kind != Kind::App || size <= MAX_APP_TAPP_BYTES
 }

@@ -1,7 +1,6 @@
-//! A sort clicked on a header and rows the person adds or removes move on
-//! the standard list change (`motion::ListChange`): only rows shown in the
-//! body move, rows coming from off-screen fade in at their slot, and a key,
-//! reduced motion and a settled table land and ask for nothing.
+//! A sort clicked on a header and rows the person adds or removes move on the standard list change
+//! (`motion::ListChange`): only rows shown in the body move, rows coming from off-screen fade in at
+//! their slot, and a key, reduced motion and a settled table land and ask for nothing.
 
 use super::*;
 use crate::time::Duration;
@@ -146,7 +145,6 @@ fn a_header_click_moves_the_shown_rows_to_their_new_places_and_nothing_else() {
     frame(&mut table, &theme);
     assert!(!Widget::is_layout_dirty(&table));
 
-    // It settles exactly and asks for no more frames.
     let later = now + Duration::from_secs(2);
     assert!(!table.moving.rows.is_moving(later));
     table
@@ -252,7 +250,6 @@ fn a_row_the_person_adds_fades_in_and_pushes_the_shown_rows_down() {
     );
     assert!(table.moving.rows.get(&key("00")).is_none());
 
-    // The same change by a key lands.
     crate::motion::note_source(MotionSource::Keyboard);
     table.rows_mut().remove(1);
     table.apply_changes(&[TableModelChange::RowsRemoved { index: 1, count: 1 }]);
@@ -293,8 +290,6 @@ fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
     assert!(table.moving.rows.get(&key("00")).is_none());
     assert!(Widget::needs_animation_frame(&table));
 
-    // Built again once more, mid-motion: the rows go on, they do not
-    // start over.
     let now = crate::motion::frame_now();
     let offset = table
         .moving

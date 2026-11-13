@@ -1,5 +1,5 @@
-//! What the conversation substrate promises: one rule per mechanic, the same
-//! answer in every app that draws it.
+//! What the conversation substrate promises: one rule per mechanic, the same answer in every app that
+//! draws it.
 
 use vello::kurbo::Rect;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -16,7 +16,6 @@ use super::draft::{self, DraftBook};
 use super::list::{ConversationLine, ConversationRole, ListFace, bubble_colors, run_breaks};
 use crate::theme::Theme;
 
-/// 2026-06-30T14:05:00Z.
 const NOONISH: i64 = 1_782_828_300;
 
 fn clock_at(now: i64) -> ConversationClock {
@@ -29,12 +28,10 @@ fn a_divider_appears_wherever_the_day_changes() {
     let days = [
         day(NOONISH),
         day(NOONISH.saturating_add(60)),
-        // Midnight, three days later.
         day(NOONISH.saturating_add(3 * 86_400)),
         day(NOONISH.saturating_add(3 * 86_400 + 60)),
     ];
     assert_eq!(day_break_indices(days), vec![0, 2]);
-    // The rule is the same whether it is walked in one pass or restarted.
     let mut breaks = DayBreaks::new();
     assert!(breaks.begins(days[0]));
     assert!(!breaks.begins(days[1]));
@@ -96,8 +93,6 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
                 lead.x1 <= parts.label.x0 && trail.x0 >= parts.label.x1,
                 "{what} rules stop short of the words it says: {parts:?}"
             );
-            // The words stand centred in the band itself, top to bottom: one band, whatever
-            // the divider says.
             assert_eq!(
                 (parts.label.y0, parts.label.y1),
                 (band.y0, band.y1),
@@ -108,8 +103,6 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
                 "{what} words are centred in the band: {parts:?}"
             );
         }
-        // The day is dimmed text over a hairline; the place reading starts again is the
-        // person's colour, as an unread count is.
         let colors = &theme.tokens.colors;
         let ground = colors.surfaces.content;
         assert_eq!(DividerTone::Quiet.ink(&theme).label, theme.text_dim);
@@ -152,8 +145,6 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
             "the accent divider's rule is clearly stronger than a day's: {accent_rule:?} against \
              {day_rule:?} on {ground:?}"
         );
-        // And the unread one carries the person's colour itself, not a wash of black or white
-        // over it.
         let accent = colors.intent.accent_ink;
         let accent_rule = DividerTone::Accent.ink_on(&theme, ground).rule;
         let drawn = accent_rule.to_rgba8();
@@ -171,7 +162,6 @@ fn both_dividers_of_a_conversation_rule_the_column_on_each_side_of_their_label()
                 < crate::tokens::colors::HAIRLINE_MIN_DELTA,
             "an edge of the accent itself carries none of it onto the ground: {ground:?}"
         );
-        // The toolkit's own unread divider is that accent one, saying where reading starts.
         let built = <SectionDivider as crate::component::Described>::from_props(
             "unread",
             super::SectionDividerProps {
@@ -236,7 +226,6 @@ fn the_clock_reads_the_zone_it_was_given() {
     let east = ConversationClock::at(2 * 3_600, NOONISH);
     let west = ConversationClock::at(-11 * 3_600, NOONISH);
     assert_ne!(east.clock(NOONISH), west.clock(NOONISH));
-    // 23:30 UTC is the next local day an hour east.
     let late = NOONISH.saturating_add(9 * 3_600 + 25 * 60);
     assert_eq!(east.day(late).days_after(west.day(late)), 1);
 }
@@ -343,7 +332,6 @@ fn an_attachment_that_cannot_be_read_says_why_instead_of_offering_nothing() {
     assert!(unshared.unavailable_reason().is_some());
     assert!(unshared.describe().contains("payroll.pdf"));
 
-    // An upload in flight offers exactly one thing: to stop.
     let uploading = AttachmentSummary::ready(AttachmentKind::Video, "clip.mp4", Some(1_000))
         .in_state(Availability::Uploading(UploadProgress {
             sent: 250,
@@ -372,15 +360,12 @@ fn an_upload_says_how_far_it_has_got_and_never_invents_a_denominator() {
 #[test]
 fn a_full_size_picture_is_contained_and_never_enlarged() {
     let view = Rect::new(0.0, 0.0, 800.0, 600.0);
-    // Bigger than the viewport: contained, centred, aspect kept.
     let big = full_size_rect(view, 1_600, 1_200);
     assert_eq!(big, Rect::new(0.0, 0.0, 800.0, 600.0));
-    // Smaller than the viewport: its own pixels, in the middle.
     let small = full_size_rect(view, 100, 50);
     assert_eq!(small.width(), 100.0);
     assert_eq!(small.height(), 50.0);
     assert_eq!(small.center(), view.center());
-    // A shape with no size paints nothing at all.
     assert_eq!(full_size_rect(view, 0, 0), Rect::new(0.0, 0.0, 0.0, 0.0));
 }
 
@@ -394,10 +379,8 @@ fn a_draft_is_kept_per_conversation_and_cleared_only_when_it_is_sent() {
         book.line("+15550100").as_deref(),
         Some("Draft: see you at 8")
     );
-    // Blank is not a draft: a person who clears the field has no draft.
     book.edit("+15550100", "   ");
     assert!(!book.has("+15550100"));
-    // A word typed while the send was in flight is the next message.
     book.edit("+15550100", "see you at 8");
     book.sent("+15550100", "see you at 8!");
     assert!(book.has("+15550100"), "the unsent word survives the send");
@@ -436,9 +419,7 @@ fn enter_sends_and_shift_enter_breaks_the_line() {
         ComposerIntent::Submit
     );
     assert_eq!(enter(ModifiersState::SHIFT, false), ComposerIntent::Newline);
-    // A held key does not send twice.
     assert_eq!(enter(ModifiersState::empty(), true), ComposerIntent::None);
-    // A chord belongs to the window, not the composer.
     assert_eq!(enter(ModifiersState::CONTROL, false), ComposerIntent::None);
     assert_eq!(
         ComposerRule::Enter.intent(
@@ -472,11 +453,8 @@ fn a_run_continues_for_the_same_person_within_the_window() {
     let lines = [
         at("1", 0, "Ada", ConversationRole::Incoming),
         at("2", 60_000, "Ada", ConversationRole::Incoming),
-        // Another person starts a run.
         at("3", 120_000, "Bo", ConversationRole::Incoming),
-        // The same person, an hour later, starts one too.
         at("4", 3_720_000, "Bo", ConversationRole::Incoming),
-        // Your own line is always its own run: it sits on the other side.
         at("5", 3_780_000, "", ConversationRole::Outgoing),
     ];
     assert_eq!(run_breaks(&lines), vec![true, false, true, true, true]);
@@ -540,7 +518,6 @@ fn your_own_words_read_on_their_own_colour_in_every_theme() {
                 "{role:?} on {fill:?} leaves {ink:?} unreadable"
             );
         }
-        // The two sides are told apart by more than their position.
         assert_ne!(
             bubble_colors(&theme, ConversationRole::Incoming).0,
             bubble_colors(&theme, ConversationRole::Outgoing).0

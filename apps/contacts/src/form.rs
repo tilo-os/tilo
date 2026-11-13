@@ -1,10 +1,9 @@
 //! The edit form: a draft contact and the form that edits it.
 //!
-//! Every field's text lives in a [`LocalState`] that its [`TextInput`] is
-//! bound to, so the app reads and rebases values without reaching into the
-//! widget tree, and the form is ordinary retained widgets: the window's
-//! focus order, Tab, the caret and the semantics are the toolkit's. Nothing
-//! reaches the shared document until Save.
+//! Every field's text lives in a [`LocalState`] its [`TextInput`] is bound to, so
+//! the app reads and rebases values without reaching into the widget tree, and
+//! the form is ordinary retained widgets: focus order, Tab, the caret and the
+//! semantics are the toolkit's. Nothing reaches the shared document until Save.
 
 use ui::LocalState;
 use ui::i18n::ArgValue;
@@ -27,7 +26,6 @@ pub(crate) const TYPE_OPTIONS: &[(&str, &str)] = &[
     ("other", "Other"),
 ];
 
-/// Kinds other apps write that the menu does not offer, and how they read.
 pub(crate) const OTHER_KINDS: &[(&str, &str)] = &[
     ("cell", "Mobile"),
     ("voice", "Phone"),
@@ -49,7 +47,6 @@ pub(crate) enum RowKind {
     Address,
 }
 
-/// One repeated row: its kind and its index in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TypeTarget {
     Phone(usize),
@@ -66,7 +63,6 @@ impl TypeTarget {
         }
     }
 
-    /// "Phone 2", as screen readers and the remove button name the row.
     pub(crate) fn spoken(self) -> String {
         let (noun, index) = match self {
             TypeTarget::Phone(index) => ("Phone", index),
@@ -82,7 +78,6 @@ impl TypeTarget {
     }
 }
 
-/// Identifies which draft field a text input edits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Slot {
     First,
@@ -116,7 +111,6 @@ impl Slot {
         })
     }
 
-    /// The detail [`Self::detail_key`] names.
     pub(crate) fn of_detail_key(key: &str) -> Option<Self> {
         match key {
             "birthday" => return Some(Self::Birthday),
@@ -163,7 +157,6 @@ pub(crate) fn field_name(slot: Slot) -> String {
     }
 }
 
-/// One line of the Nth address: "Address 2 street".
 fn address_field(catalogue: &ui::i18n::EmbeddedCatalog, message: &str, index: usize) -> String {
     catalogue.t_args(message, &[("number", ArgValue::Number(index as f64 + 1.0))])
 }
@@ -200,25 +193,17 @@ fn type_options(current: &str) -> Vec<(String, String)> {
     options
 }
 
-/// The live editing state: the record when the editor opened, the draft
-/// with its repeated rows, and the text of every field.
+/// The editing state: the record when the editor opened, the draft with its
+/// repeated rows, and every field's text.
 pub(crate) struct EditForm {
-    /// Contact value when the editor opened. Save derives a granular patch
-    /// against this stable base, rather than overwriting peer changes that
-    /// arrived while the form was open.
     pub base: Contact,
     pub draft: Contact,
     pub is_new: bool,
     pub fields: Vec<(Slot, LocalState<String>)>,
     pub types: Vec<(TypeTarget, LocalState<String>)>,
-    /// A cancellable favorite choice, committed with the other fields on Save.
     pub favorite: LocalState<bool>,
-    /// The birthday calendar is shown under the field.
     pub calendar_open: bool,
-    /// Field focus requested by an editor affordance or Enter progression.
     pub focus: Option<Slot>,
-    /// Where the form is scrolled to; it survives the form being rebuilt
-    /// when a row is added or removed.
     pub scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 }
 
@@ -276,7 +261,6 @@ fn read(state: &LocalState<String>) -> String {
     state.with(Clone::clone)
 }
 
-/// Write `value` only when it differs, so a bound field keeps its caret.
 fn write(state: &LocalState<String>, value: &str) {
     if state.with(|current| current != value) {
         state.set(value.to_owned());
@@ -319,19 +303,16 @@ impl EditForm {
             .map(|(_, state)| state)
     }
 
-    /// The text a field holds now.
     pub(crate) fn value(&self, slot: Slot) -> String {
         self.state(slot).map(read).unwrap_or_default()
     }
 
-    /// Replace a field's text, as typing would.
     pub(crate) fn set_value(&self, slot: Slot, value: &str) {
         if let Some(state) = self.state(slot) {
             write(state, value);
         }
     }
 
-    /// The kind a repeated row holds now.
     #[cfg(test)]
     pub(crate) fn kind(&self, target: TypeTarget) -> String {
         self.types
@@ -341,7 +322,6 @@ impl EditForm {
             .unwrap_or_default()
     }
 
-    /// Fold every field's text and every row's kind into the draft.
     pub(crate) fn collect(&mut self) {
         self.draft.favorite = self.favorite.with(|value| *value);
         let values: Vec<(Slot, String)> = self
@@ -420,8 +400,6 @@ impl EditForm {
         }
     }
 
-    /// The fields and rows in order, by stable identity: two forms with the
-    /// same layout show the same widgets.
     pub(crate) fn layout_key(&self) -> Vec<String> {
         self.fields
             .iter()
@@ -429,10 +407,6 @@ impl EditForm {
             .collect()
     }
 
-    /// Rebase only local differences onto the current canonical contact.
-    /// Unchanged fields adopt restored content; genuinely edited values
-    /// (including temporarily invalid birthday text) remain unsaved.
-    /// Returns whether the form's rows changed, so the caller rebuilds it.
     pub(crate) fn reconcile(&mut self, canonical: &Contact) -> bool {
         if self.is_new || self.base == *canonical {
             return false;
@@ -494,7 +468,6 @@ impl EditForm {
         self.layout_key() != before
     }
 
-    /// Whether any field differs from the record the editor opened on.
     pub(crate) fn has_local_edits(&mut self) -> bool {
         let baseline: Vec<(String, String)> = slots_of(&self.base)
             .into_iter()
@@ -511,7 +484,6 @@ impl EditForm {
         raw_edit || self.draft != self.base
     }
 
-    /// Append an empty row of `kind`.
     pub(crate) fn add(&mut self, kind: RowKind) {
         self.collect();
         match kind {
@@ -525,7 +497,6 @@ impl EditForm {
         self.restructure();
     }
 
-    /// Remove one repeated row; the rows after it keep their text.
     pub(crate) fn remove(&mut self, target: TypeTarget) {
         self.collect();
         match target {
@@ -543,8 +514,6 @@ impl EditForm {
         self.restructure();
     }
 
-    /// Rebuild the field states after the draft's rows changed, keeping
-    /// every surviving field's text.
     fn restructure(&mut self) {
         let birthday_text = self.value(Slot::Birthday);
         let calendar_open = self.calendar_open;
@@ -557,8 +526,6 @@ impl EditForm {
         *self = next;
     }
 
-    /// Whether the draft holds anything worth keeping (a new contact's
-    /// seeded empty rows do not count).
     pub(crate) fn has_content(&mut self) -> bool {
         self.collect();
         let draft = &self.draft;
@@ -613,16 +580,13 @@ impl EditForm {
         Some(menu)
     }
 
-    /// `[kind][value][remove]`: one phone, email or the first line of an
-    /// address.
     fn typed_row(&self, target: TypeTarget, slot: Slot, shared: &Shared) -> Element {
         let mut row = Row::new().no_wrap();
         if let Some(menu) = self.type_menu(target) {
             row = row.push(Box::new(menu));
         }
-        // The value takes the room the kind's menu and the remove button
-        // leave; as a plain row child it squeezed the menu down to its
-        // chevron, eliding "Mobile" to "…".
+        // The value takes the room the kind menu and remove button leave; as a plain row
+        // child it squeezed the menu to its chevron, eliding "Mobile" to "…".
         let value = ui::widget::Container::new()
             .with_no_padding()
             .with_flex_grow()
@@ -664,8 +628,6 @@ impl EditForm {
         )
     }
 
-    /// The form as widgets, in a scrolling page bounded to a readable
-    /// measure.
     pub(crate) fn element(&self, shared: &Shared) -> Element {
         let name = FormSection::new("Name")
             .field(Field::new("First name", self.input(Slot::First, shared)))
@@ -798,7 +760,6 @@ fn slot_key(slot: Slot) -> String {
     }
 }
 
-/// Stable identity across reordered repeated fields; indices are layout slots.
 pub(crate) fn form_input_key(contact: &Contact, slot: Slot) -> String {
     match slot {
         Slot::Phone(i) => format!("phone:{:?}", contact.phones.get(i).map(|row| row.id)),

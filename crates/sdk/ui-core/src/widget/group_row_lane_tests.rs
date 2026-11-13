@@ -1,11 +1,11 @@
-//! A strip across several displays: one lane per display, each laid out and
-//! panned on its own.
+//! A strip across several displays: one lane per display, each laid out and panned on its
+//! own.
 
 use super::tests::{make_group, relayout_row_owned};
 use super::*;
 
-/// A 1000-wide display with the wheel gutter beside an 800-wide one
-/// whose bottom edge is 200 rows higher.
+/// A 1000-wide display with the wheel gutter beside an 800-wide one whose bottom edge is
+/// 200 rows higher.
 pub(super) fn two_lanes() -> Vec<StripLane> {
     vec![
         StripLane {
@@ -33,8 +33,6 @@ pub(super) fn partitioned_row() -> GroupRow {
         .map(|i| (i.saturating_mul(100), u32::from(i > 3)))
         .collect();
     row.set_lanes(&two_lanes(), &assignment);
-    // The first pass learns where the row sits; lanes are built
-    // against that on the second.
     let (row, _, _) = relayout_row_owned(row, 1800.0);
     let (row, _, _) = relayout_row_owned(row, 1800.0);
     row
@@ -81,7 +79,6 @@ fn a_partitioned_strip_lays_each_display_out_on_its_own() {
         );
         assert_eq!(row.output_of_group(id), Some(1));
     }
-    // The seam between the displays is not a resize gap.
     let seam = row.handle_at(2).expect("handle after the third group");
     assert!(seam.get_rect().area() <= 0.0, "{:?}", seam.get_rect());
     assert_eq!(row.group_ids_on(1), vec![400, 500, 600]);

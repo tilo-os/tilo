@@ -239,20 +239,17 @@ impl Query for Unscored {
     }
 }
 
-/// A title word within typing distance of `word`; the last word typed may
-/// still be incomplete, so it matches as a prefix.
-/// `word` in the words of `field`: exactly (or, for the last word, as a
-/// prefix) when it is short, otherwise within a typo or two of the words
-/// `vocabulary` holds. `None` when no word of the field is that close.
-fn fuzzy_word(field: Field, vocabulary: &Vocabulary, word: &str, last: bool) -> Option<BoxQuery> {
+/// `word` as the words of `field` hold it: itself when it is too short to
+/// have a typo, otherwise any word `vocabulary` holds within a typo or two
+/// of it. `None` when no word of the field is that close.
+fn fuzzy_word(field: Field, vocabulary: &Vocabulary, word: &str) -> Option<BoxQuery> {
     let term = Term::from_field_text(field, word);
     let scalars: Vec<char> = word.chars().collect();
-    match (typo_distance(&scalars), last) {
-        (0, false) => Some(Box::new(TermQuery::new(term, IndexRecordOption::Basic))),
-        (0, true) => Some(prefix_query(term)),
-        (distance, prefix) => any_of(
+    match typo_distance(&scalars) {
+        0 => Some(Box::new(TermQuery::new(term, IndexRecordOption::Basic))),
+        distance => any_of(
             vocabulary
-                .near(&scalars, distance, prefix)
+                .near(&scalars, distance)
                 .map(|near| -> BoxQuery {
                     Box::new(TermQuery::new(
                         Term::from_field_text(field, near),
@@ -293,8 +290,8 @@ pub struct Matching {
     /// [`MatchTier::Spanning`] — every whitespace-separated word of the query
     /// occurs in some field.
     pub spanning: bool,
-    /// [`MatchTier::Typo`] — every word of the query matches a title word
-    /// within a small edit distance, the last one as a prefix.
+    /// [`MatchTier::Typo`] — every word of the query matches a title or
+    /// keyword word within a small edit distance.
     pub typos: bool,
 }
 
@@ -317,9 +314,9 @@ fn typo_queries(
     typos: &Typos,
     query_words: &[String],
 ) -> Vec<BoxQuery> {
-    let Some(last) = query_words.len().checked_sub(1) else {
+    if query_words.is_empty() {
         return Vec::new();
-    };
+    }
     [
         (0, fields.title_words, FieldWeight::TITLE, &typos.title),
         (
@@ -336,8 +333,7 @@ fn typo_queries(
         let rank = ranks(MatchTier::Typo, weight)?;
         let every = query_words
             .iter()
-            .enumerate()
-            .map(|(at, word)| fuzzy_word(field, vocabulary, word, at == last))
+            .map(|word| fuzzy_word(field, vocabulary, word))
             .collect::<Option<Vec<_>>>()?;
         Some(constant(all_of(every), rank))
     })
@@ -355,7 +351,6 @@ fn spanning_typo_query(
     chunks: &[&str],
     query_words: &[String],
 ) -> Option<BoxQuery> {
-    let last = query_words.len().checked_sub(1)?;
     let vocabularies: Vec<(Field, &Vocabulary)> = [
         (0, fields.title_words, &typos.title),
         (KEYWORD_SLOT, fields.keyword_words, &typos.keyword),
@@ -382,9 +377,7 @@ fn spanning_typo_query(
                     any_of(
                         vocabularies
                             .iter()
-                            .filter_map(|(field, vocabulary)| {
-                                fuzzy_word(*field, vocabulary, word, word_at == last)
-                            })
+                            .filter_map(|(field, vocabulary)| fuzzy_word(*field, vocabulary, word))
                             .collect(),
                     )
                 })

@@ -35,8 +35,9 @@ use ui::application::ApplicationDefinition;
 /// the built-in packages run like that.
 pub const UNBUNDLED_ID: &str = "so.tilo.lang";
 
-/// The record kind of an app's workspace record.
-pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
+/// The resource kind of the runtime's own record: the host package's, which every tilolang
+/// surface publishes.
+pub const RECORD_KIND: &str = tilolang_tilo::surface::HOST_KIND;
 
 /// The variable the launcher names the package's signed id with.
 pub const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";

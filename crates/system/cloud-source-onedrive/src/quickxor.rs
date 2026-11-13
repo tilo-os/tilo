@@ -1,8 +1,4 @@
 //! `quickXorHash`, the content hash every `OneDrive` flavour reports.
-//!
-//! A 160-bit value: each input byte is folded (XOR) into a 160-bit ring at a bit
-//! position advancing by 11 per byte, and the total length is folded into
-//! the last 64 bits, little endian. Reported base64 encoded.
 
 use base64::Engine as _;
 
@@ -12,7 +8,6 @@ const SHIFT: usize = 11;
 const PERIOD: usize = SHIFT * WIDTH_BITS;
 const SIZE: usize = WIDTH_BITS / 8;
 
-/// An incremental `quickXorHash`.
 #[derive(Clone)]
 pub struct QuickXorHash {
     /// Input bytes folded by their position modulo [`PERIOD`].
@@ -35,7 +30,6 @@ impl QuickXorHash {
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
-        // `len % PERIOD` is below PERIOD, so it fits usize on every target.
         let mut position =
             usize::try_from(self.len.checked_rem(PERIOD as u64).unwrap_or(0)).unwrap_or(0);
         for byte in bytes {
@@ -74,13 +68,11 @@ impl QuickXorHash {
         digest
     }
 
-    /// The hash as Graph reports it.
     pub fn base64(&self) -> String {
         base64::engine::general_purpose::STANDARD.encode(self.digest())
     }
 }
 
-/// `quickXorHash` of `bytes`, base64 encoded.
 pub fn quick_xor_base64(bytes: &[u8]) -> String {
     let mut hash = QuickXorHash::new();
     hash.update(bytes);

@@ -1,5 +1,5 @@
-//! The library on its own: verbs, field edits, the invariant, merging,
-//! the published tree and search, through the same door the host uses.
+//! The library on its own: verbs, field edits, the invariant, merging, the published tree
+//! and search, through the same door the host uses.
 
 use super::*;
 use crate::model::Language;
@@ -53,8 +53,8 @@ fn action<'a>(resource: &'a Published, id: &str) -> &'a ActionSpec {
         .unwrap_or_else(|| panic!("{} offers {id}", resource.id.as_str()))
 }
 
-/// Apply what `spec` builds for `arguments`, as the door does for an action
-/// a published child offers.
+/// Apply what `spec` builds for `arguments`, as the door does for an action a published
+/// child offers.
 fn invoke_spec(library: &mut Replica<Snippets>, spec: &ActionSpec, arguments: serde_json::Value) {
     let serde_json::Value::Object(arguments) = arguments else {
         panic!("arguments are an object");
@@ -65,8 +65,8 @@ fn invoke_spec(library: &mut Replica<Snippets>, spec: &ActionSpec, arguments: se
     library.apply_action(&action).unwrap();
 }
 
-/// Plain fields change through field edits at their paths; the verbs do
-/// what is more than setting a field.
+/// Plain fields change through field edits at their paths; the verbs do what is more than
+/// setting a field.
 #[test]
 fn verbs_and_field_edits_change_one_snippet() {
     let mut library = Replica::<Snippets>::new();
@@ -116,7 +116,6 @@ fn verbs_and_field_edits_change_one_snippet() {
     assert_eq!(copy.body, "kubectl apply");
     assert!(!copy.favorite && copy.uses.get() == 0);
 
-    // Undo takes a deletion back, so it runs at once.
     library
         .apply(Snippets::DELETE.with(deploy.clone()))
         .expect("an undoable delete runs at once");
@@ -127,8 +126,8 @@ fn verbs_and_field_edits_change_one_snippet() {
     );
 }
 
-/// Every way in runs the snippet's invariant: a blank or padded tag, a
-/// padded folder are refused whole.
+/// Every way in runs the snippet's invariant: a blank or padded tag, a padded folder are
+/// refused whole.
 #[test]
 fn the_invariant_refuses_blank_tags_and_padded_folders() {
     let mut library = Replica::<Snippets>::new();
@@ -155,8 +154,8 @@ fn the_invariant_refuses_blank_tags_and_padded_folders() {
     );
 }
 
-/// Two people editing one library at once converge: the body merges per
-/// character, tags per tag, uses add up.
+/// Two people editing one library at once converge: the body merges per character, tags per
+/// tag, uses add up.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Snippets>::new();
@@ -199,8 +198,8 @@ fn concurrent_edits_converge() {
     assert_eq!(merged.uses.get(), 2);
 }
 
-/// Each snippet is published with the verbs that act on it; each folder
-/// and tag is a place whose verbs are the library's, bound to it.
+/// Each snippet is published with the verbs that act on it; each folder and tag is a place
+/// whose verbs are the library's, bound to it.
 #[test]
 fn snippets_folders_and_tags_offer_their_verbs() {
     let mut library = Replica::<Snippets>::new();

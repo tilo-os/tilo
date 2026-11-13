@@ -1,6 +1,5 @@
-//! Control dispatch: what the native and headless app hosts do with the
-//! control intents their tree queued, written once. Each host lends the
-//! doors an intent finally enters through [`ControlHost`].
+//! Control dispatch: what the native and headless app hosts do with the control intents their tree
+//! queued, written once. Each host lends the doors an intent finally enters through [`ControlHost`].
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments, Origin};
@@ -19,12 +18,10 @@ pub(crate) trait ControlHost: HostCore {
     /// How the host publishes its components' resources to the workspace.
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication;
 
-    /// Whether the workspace's broker is at hand to admit an effect's edits
-    /// for its invoker.
+    /// Whether the workspace's broker is at hand to admit an effect's edits for its invoker.
     fn broker_connected(&self) -> bool;
 
-    /// Ask the broker to admit an edit the effect invocation `running`
-    /// submitted for its invoker.
+    /// Ask the broker to admit an edit the effect invocation `running` submitted for its invoker.
     fn send_follow_up(
         &mut self,
         running: InvocationId,
@@ -33,16 +30,15 @@ pub(crate) trait ControlHost: HostCore {
         context: Option<tilo_actions::ActionContext>,
     ) -> Started;
 
-    /// The confirmation `intent` needs from the local actor, or `None` when
-    /// its action is unavailable to them.
+    /// The confirmation `intent` needs from the local actor, or `None` when its action is unavailable
+    /// to them.
     fn local_confirmation(
         &self,
         intent: &ControlInvocation,
     ) -> Option<tilo_actions::ConfirmationPolicy>;
 
-    /// A control bound to the window's History door (or its unsaved-changes
-    /// Retry) runs there, never as an app action. An app `owner` hosted in a
-    /// tile opens that tile's History. Whether it was one.
+    /// A control bound to the window's History door (or its unsaved-changes Retry) runs there, never as
+    /// an app action.
     fn take_history_invocation(
         &mut self,
         intent: &ControlInvocation,
@@ -70,8 +66,8 @@ pub(crate) trait ControlHost: HostCore {
         true
     }
 
-    /// Whether `resource` names one of the window's own actions that runs
-    /// like History (the unsaved-changes Retry in its header).
+    /// Whether `resource` names one of the window's own actions that runs like History (the
+    /// unsaved-changes Retry in its header).
     fn is_host_action_resource(&self, _resource: &str) -> bool {
         false
     }
@@ -82,9 +78,8 @@ pub(crate) trait ControlHost: HostCore {
     /// A History surface embedded in the app took a control.
     fn embedded_history_acted(&mut self) {}
 
-    /// A control addressed to the host search door opens search instead of
-    /// reaching the app; `owner` is the component it came from. Whether it
-    /// was one.
+    /// A control addressed to the host search door opens search instead of reaching the app; `owner` is
+    /// the component it came from.
     fn take_search_invocation(
         &mut self,
         intent: &ControlInvocation,
@@ -104,14 +99,11 @@ pub(crate) trait ControlHost: HostCore {
     /// The control intents this host's tree registered, by owner.
     fn control_domain(&self) -> &crate::control_custody::ControlDomain;
 
-    /// Put `request` to the person in the window's palette. Whether the
-    /// question went up or the action went ahead.
+    /// Put `request` to the person in the window's palette.
     fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool;
 
-    /// Ask the person before `address` goes ahead: as the door asked, or,
-    /// `confirming`, as the app asked for a pick of theirs
-    /// ([`Origin::PersonConfirming`]). Whether a question went up or the
-    /// action went ahead.
+    /// Ask the person before `address` goes ahead: as the door asked, or, `confirming`, as the app
+    /// asked for a pick of theirs ([`Origin::PersonConfirming`]).
     fn ask_person(
         &mut self,
         target: LocalResourceTarget,
@@ -138,12 +130,10 @@ pub(crate) trait ControlHost: HostCore {
         }
     }
 
-    /// Say that an invocation the person made did not run, and why, at the
-    /// control they used.
+    /// Say that an invocation the person made did not run, and why, at the control they used.
     fn refuse_visibly(&mut self, error: &DoorError);
 
-    /// An invocation nobody at this device asked for was refused; only its
-    /// app hears of it.
+    /// An invocation nobody at this device asked for was refused; only its app hears of it.
     fn refused_unsaid(&mut self, _error: &DoorError) {}
 
     /// Enter the door `target` names with `request`.
@@ -164,8 +154,8 @@ pub(crate) trait ControlHost: HostCore {
         }
     }
 
-    /// Run a control a History surface held back, as the person at this
-    /// device, confirmed when they already confirmed it.
+    /// Run a control a History surface held back, as the person at this device, confirmed when they
+    /// already confirmed it.
     fn invoke_held_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
@@ -189,15 +179,8 @@ pub(crate) trait ControlHost: HostCore {
         self.ask_person(target, address, arguments, false)
     }
 
-    /// Deliver the control intents the tree queued: `registered` ones the
-    /// control domain drained, then those the components and the outer
-    /// document hold. How many went ahead.
-    ///
-    /// Answering a control's published action runs what the view hung on
-    /// it (a check's `on_view`), which may queue its own resource's action
-    /// in turn. That is answered in the same pass, round after round until
-    /// nothing more is queued, so what the press meant has landed before
-    /// the next event reads the tree.
+    /// Deliver the control intents the tree queued: `registered` ones the control domain drained, then
+    /// those the components and the outer document hold.
     fn dispatch_drained_controls(
         &mut self,
         registered: crate::control_custody::RegisteredControls,
@@ -213,8 +196,8 @@ pub(crate) trait ControlHost: HostCore {
         }
     }
 
-    /// One round of [`Self::dispatch_drained_controls`]: how many went ahead,
-    /// and how many were delivered at all.
+    /// One round of [`Self::dispatch_drained_controls`]: how many went ahead, and how many were
+    /// delivered at all.
     fn dispatch_control_round(
         &mut self,
         registered: crate::control_custody::RegisteredControls,
@@ -247,9 +230,6 @@ pub(crate) trait ControlHost: HostCore {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
-            // The window's own component's History control (the History
-            // button in a framework app's header row) opens this window's
-            // History, as the shortcut does; it is no app action.
             if on_behalf_of.is_none()
                 && self
                     .tree()
@@ -278,8 +258,7 @@ pub(crate) trait ControlHost: HostCore {
         (dispatched, delivered)
     }
 
-    /// Deliver one control intent the outer document produced. Whether it
-    /// went ahead.
+    /// Deliver one control intent the outer document produced.
     fn dispatch_outer_control_invocation(
         &mut self,
         intent: ControlInvocation,
@@ -295,8 +274,6 @@ pub(crate) trait ControlHost: HostCore {
         {
             return true;
         }
-        // An edit an effect submitted is applied for the effect's invoker,
-        // in its context, as long as the effect runs.
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
         let Some(confirmation) = self.local_confirmation(&intent) else {
             let error = DoorError::Unknown(intent.address.clone());
@@ -342,8 +319,6 @@ pub(crate) trait ControlHost: HostCore {
             );
             return true;
         }
-        // With the workspace's broker at hand it admits the edit for the
-        // invoker, with their own grants.
         if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
             && self.broker_connected()
         {
@@ -367,8 +342,6 @@ pub(crate) trait ControlHost: HostCore {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
-        // An outer control was produced outside every component: it acts on the outer document it was captured with, even
-        // when an owner declares the same address.
         let result = self.invoke_outer_control(
             &ResourceInvocation::new(&intent.address, &actor)
                 .argument(Some(&json))
@@ -378,8 +351,6 @@ pub(crate) trait ControlHost: HostCore {
         self.outer_control_settled(&intent.address, on_behalf_of, &result);
         match result {
             Ok(_) => true,
-            // The action needs no confirmation of its own, but the workspace's
-            // grants ask the person here before it runs.
             Err(DoorError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(
                     LocalResourceTarget::Outer,
@@ -415,8 +386,7 @@ pub(crate) trait ControlHost: HostCore {
         );
     }
 
-    /// Deliver one control intent a component produced. Whether it went
-    /// ahead (or a question about it went up).
+    /// Deliver one control intent a component produced.
     fn dispatch_bound_control_invocation(
         &mut self,
         target: &BoundActionTarget,
@@ -424,9 +394,6 @@ pub(crate) trait ControlHost: HostCore {
         on_behalf_of: Option<InvocationId>,
         origin: Origin,
     ) -> bool {
-        // A pick the app asks the person to confirm is asked before it
-        // reaches the door, through the same question the door's own
-        // confirmations get.
         if origin == Origin::PersonConfirming && on_behalf_of.is_none() {
             return self.ask_person(
                 LocalResourceTarget::Component(target.clone()),
@@ -436,12 +403,7 @@ pub(crate) trait ControlHost: HostCore {
             );
         }
         let argument = json_argument(&intent.arguments);
-        // An edit an effect submitted is applied for the effect's invoker,
-        // in its context, as far as the invoker was admitted.
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
-        // With the workspace's broker at hand it admits the edit for the
-        // invoker, with their own grants, under the component's published
-        // address.
         if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
             && self.broker_connected()
         {

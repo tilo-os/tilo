@@ -191,12 +191,19 @@ pub(in crate::standalone) fn plane(
             "a member that takes work runs the workspace's shell on Linux",
         )
     })?;
+    let (device, endpoint) = (relay.device, relay.endpoint);
     let entering = Arc::new(super::joined::enter::Entering::new(
         Arc::clone(joined),
         relay,
     ));
-    let _entered = tilo_rt::app().handle().enter();
-    Ok(ActionPlane::over(joined.signer(), dispatcher, entering))
+    let plane = {
+        let _entered = tilo_rt::app().handle().enter();
+        ActionPlane::over(joined.signer(), dispatcher, entering)
+    };
+    // The relay asks from its endpoint, which a Tilo relay keys apart from
+    // the device it signs its runs as.
+    plane.reach_device_at(device, endpoint);
+    Ok(plane)
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the
@@ -230,7 +237,13 @@ fn shell_runs(
                 .and_then(|((replicas, joined), id)| super::hold_files(replicas, &joined, id))
                 .unwrap_or_else(|| files(&member, workspace))
         })
-        .with_browsers_on(browsers);
+        // Browser starts on the hosted-VM service this host names, else the
+        // one its environment does: the account each open is paid by comes
+        // with the relay's request, so the socket alone says this member
+        // runs the workspaces' VMs.
+        .with_browsers_on(
+            browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
+        );
     Some(Arc::new(EnvironmentRuns::new(shells, joined.operator())))
 }
 

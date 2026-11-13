@@ -1,71 +1,45 @@
 //! The one directory an app may write to, and where it lives.
 //!
-//! An app does not name a writable path. It is *given* one: the
-//! launcher decides the location, creates it, binds it read-write at a
-//! fixed in-sandbox path, and points `HOME` and the `XDG_*` variables
-//! inside it. Everything an app already does —
-//! `cli::standalone_state_dir`, `dirs::home_dir()`, a hard-coded
-//! `~/.local/share/<pkg>` — lands inside without changing a line, and an
-//! app cannot opt out because there's no field to opt out with.
-//!
-//! ## Per-workspace partitioning falls out of the location
-//!
-//! The host location is `<data home>/tilo-workspaces/<workspace>/<package>`. The
-//! workspace is [`crate::sandbox::WORKSPACE_ID_ENV`], the same value the
-//! collaboration cluster is keyed on, so two launches of one app into
-//! two workspaces get two directories, neither able to name the other's.
-//!
-//! A launch with no workspace gets the [`PERSONAL_WORKSPACE`]: one directory like any
-//! other, unreachable from a workspace.
-//!
-//! ## The person's own records are one directory per app
-//!
-//! Some of an app's data belongs to the person rather than to any workspace:
-//! what they watched, the words they taught the keyboard. Those records
-//! live in the person's own workspace and must be one record on the device whatever workspace the app is
-//! opened in, so the launcher binds one more directory, the same for every
-//! workspace: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
-//! named by [`PERSON_DIR_ENV`]. The app keeps nothing else there.
+//! An app does not name its writable path; the launcher resolves one per app and
+//! workspace.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Where the app's directory appears inside the sandbox. Fixed, so the
-/// app never learns the host layout.
+/// Where the app's directory appears inside the sandbox.
 pub const SANDBOX_APP_DIR: &str = "/run/tilo/app";
 
-/// Env var naming [`SANDBOX_APP_DIR`], so an app can be explicit about
-/// "the directory the system gave me" rather than inferring it from `HOME`.
+/// Env var naming [`SANDBOX_APP_DIR`], so an app can be explicit about "the directory the system gave
+/// me" rather than inferring it from `HOME`.
 pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
-/// The directory a launch with no workspace belongs to. A slug like any
-/// other, deliberately not a UUID, so it cannot collide with a workspace id.
+/// The directory a launch with no workspace belongs to.
 pub const PERSONAL_WORKSPACE: &str = "personal";
 
 /// Directory under the user's data home that holds every workspace.
-pub const WORKSPACES_DIR: &str = "tilo-rooms";
+pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
-/// Directory under the user's data home that holds each app's records of
-/// the person's own, shared by the app's launches in every workspace.
+/// Directory under the user's data home that holds each app's records of the person's own, shared by
+/// the app's launches in every workspace.
 pub const PERSON_DIR: &str = "tilo-person";
 
 /// Where the app's person directory appears inside the sandbox.
 pub const SANDBOX_PERSON_DIR: &str = "/run/tilo/person";
 
-/// Env var naming [`SANDBOX_PERSON_DIR`]; the toolkit keeps the person's
-/// records there (`ui::application::PERSON_DIR_ENV`, the same name).
+/// Env var naming [`SANDBOX_PERSON_DIR`]; the toolkit keeps the person's records there
+/// (`ui::application::PERSON_DIR_ENV`, the same name).
 pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 
 /// Where the shared font index appears inside the sandbox.
 pub const SANDBOX_FONT_INDEX: &str = "/run/tilo/font-index";
 
-/// Directory under the user's data home that holds the font index every app
-/// of a build shares, beside [`WORKSPACES_DIR`] and [`PERSON_DIR`].
+/// Directory under the user's data home that holds the font index every app of a build shares, beside
+/// [`WORKSPACES_DIR`] and [`PERSON_DIR`].
 pub const FONT_INDEX_DIR: &str = "tilo-font-index";
 
-/// Create the shared font index directory and answer where it is: one per
-/// user, so the second app opened on the device reads the database the first
-/// one's launch built instead of parsing every face again.
+/// Create the shared font index directory and answer where it is: one per user, so the second app
+/// opened on the device reads the database the first one's launch built instead of parsing every face
+/// again.
 pub fn prepare_host_font_index() -> Option<PathBuf> {
     let dir = tilo_paths::xdg::data_home()?.join(FONT_INDEX_DIR);
     std::fs::create_dir_all(&dir).ok()?;
@@ -73,14 +47,6 @@ pub fn prepare_host_font_index() -> Option<PathBuf> {
 }
 
 /// Bind that directory into the sandbox and name it to the app.
-///
-/// Writable, because the first launch of a build is the one that records the
-/// database and the launcher cannot build it: the session and the apps see
-/// the catalog through different mounts, so only what a launch sees is a
-/// usable record. What a record may name is bounded by what the reading app
-/// can open — the catalog and the system's fonts, both outside anything an
-/// app can write — so a planted record costs a reader a rebuild, not a
-/// parse of another app's bytes.
 pub fn push_font_index(argv: &mut Vec<String>, dir: &Path) {
     argv.push("--bind".to_string());
     argv.push(dir.display().to_string());
@@ -90,20 +56,14 @@ pub fn push_font_index(argv: &mut Vec<String>, dir: &Path) {
     argv.push(SANDBOX_FONT_INDEX.to_string());
 }
 
-/// The Landlock grant for [`push_font_index`]'s bind, read and write: a
-/// bound tree the ruleset does not name is visible and unreadable.
+/// The Landlock grant for [`push_font_index`]'s bind, read and write: a bound tree the ruleset does not
+/// name is visible and unreadable.
 pub fn push_font_index_landlock(argv: &mut Vec<String>) {
     argv.push("--rw".to_string());
     argv.push(SANDBOX_FONT_INDEX.to_string());
 }
 
-/// Turn a workspace id into a single path component that cannot escape
-/// its parent.
-///
-/// The compositor passes a UUID, but the value is untrusted input like
-/// any other. Everything outside `[A-Za-z0-9._-]` becomes `_`, which
-/// removes `/` and `\0`, and the pure-dots cases (`.`, `..`) are
-/// replaced outright since they name a directory rather than creating one.
+/// Turn a workspace id into a single path component that cannot escape its parent.
 pub fn workspace_slug(workspace_id: Option<&str>) -> String {
     let raw = workspace_id.unwrap_or("").trim();
     if raw.is_empty() {
@@ -119,31 +79,27 @@ pub fn workspace_slug(workspace_id: Option<&str>) -> String {
             }
         })
         .collect();
-    // `.` and `..` survive the character filter and are the two names
-    // that resolve somewhere other than a child.
+    // `.` and `..` survive the character filter and are the two names that resolve somewhere other
+    // than a child.
     if mapped.chars().all(|c| c == '.') {
-        // The prefix names a directory already created on some devices.
-        return format!("room_{}", hex_digest(raw));
+        return format!("workspace_{}", hex_digest(raw));
     }
-    // A very long id would hit NAME_MAX and fail the mkdir with an
-    // error that says nothing about workspaces.
+    // A very long id would hit NAME_MAX and fail the mkdir with an error that says nothing about
+    // workspaces.
     if mapped.len() > 128 {
-        // The prefix names a directory already created on some devices.
-        return format!("room_{}", hex_digest(raw));
+        return format!("workspace_{}", hex_digest(raw));
     }
     mapped
 }
 
-/// Short, stable, collision-resistant name for an id we refuse to use
-/// verbatim. Not a security boundary — just a filename.
+/// Short, stable, collision-resistant name for an id we refuse to use verbatim.
 fn hex_digest(raw: &str) -> String {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, raw.as_bytes());
     format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// The user's data home, as the *launcher's* own environment describes
-/// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
+/// The user's data home, as the *launcher's* own environment describes it.
 pub fn host_data_home() -> Option<PathBuf> {
     tilo_paths::xdg::data_home()
 }
@@ -156,8 +112,8 @@ pub fn host_app_dir(data_home: &Path, workspace: &str, package_id: &str) -> Path
         .join(sanitise_component(package_id))
 }
 
-/// A package id is a reverse-DNS string from a manifest, untrusted for
-/// the same reason a workspace id is.
+/// A package id is a reverse-DNS string from a manifest, untrusted for the same reason a workspace id
+/// is.
 fn sanitise_component(raw: &str) -> String {
     let mapped: String = raw
         .trim()
@@ -177,11 +133,6 @@ fn sanitise_component(raw: &str) -> String {
 }
 
 /// Create the directory this launch gets.
-///
-/// Returns the host path to bind at [`SANDBOX_APP_DIR`]. Errors are
-/// real: an app with nowhere to write loses the user's work on exit, so
-/// a failure here refuses the launch rather than starting something
-/// that cannot save.
 pub fn prepare_host_app_dir(
     data_home: &Path,
     workspace_id: Option<&str>,
@@ -190,11 +141,8 @@ pub fn prepare_host_app_dir(
     let workspace = workspace_slug(workspace_id);
     let dir = host_app_dir(data_home, &workspace, package_id);
     std::fs::create_dir_all(&dir)?;
-    // The XDG tree the environment will point at, created up front so a
-    // first-run write doesn't have to create its own parent. The app owns
-    // this directory read-write, so a component it replaced with a symlink
-    // would send the unconfined launcher's `mkdir` wherever the link points;
-    // every component is checked to be a real directory first.
+    // The XDG tree the environment will point at, created up front so a first-run write doesn't have
+    // to create its own parent.
     for sub in [
         ".local",
         ".local/share",
@@ -211,8 +159,6 @@ pub fn prepare_host_app_dir(
 }
 
 /// Prepare an owner-private service directory in a fresh private working lease.
-/// The native capture host supplies this lease; ordinary app storage preparation
-/// remains independent. Refuse existing contents before resolving descendants.
 #[cfg(target_os = "linux")]
 pub fn prepare_private_host_app_dir(
     data_home: &Path,
@@ -264,8 +210,7 @@ pub fn prepare_private_host_app_dir(
     Ok(dir)
 }
 
-/// Fails when `path` is a symbolic link, which only the sandboxed app could
-/// have put there.
+/// Fails when `path` is a symbolic link, which only the sandboxed app could have put there.
 fn refuse_symlink(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
@@ -279,8 +224,7 @@ fn refuse_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Host location of one package's person directory: the same for every
-/// workspace it is launched into.
+/// Host location of one package's person directory: the same for every workspace it is launched into.
 pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
     data_home
         .join(PERSON_DIR)
@@ -288,12 +232,6 @@ pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
 }
 
 /// Create the person directory this launch binds.
-///
-/// # Errors
-///
-/// Returns an error if the directory cannot be created; like the app
-/// directory, a launch that could not keep the person's records refuses
-/// rather than losing them.
 pub fn prepare_host_person_dir(data_home: &Path, package_id: &str) -> io::Result<PathBuf> {
     let dir = host_person_dir(data_home, package_id);
     std::fs::create_dir_all(&dir)?;
@@ -310,10 +248,8 @@ pub fn push_person_dir(argv: &mut Vec<String>, host_dir: &Path) {
     argv.push(SANDBOX_PERSON_DIR.to_string());
 }
 
-/// **Migration.** Startup traces used to be written at the top of the app
-/// directory, which is the app's home: Files listed them, and the one being
-/// written kept it repainting. They now go to `.local/state`; the old files
-/// are diagnostics nothing reads, so they are removed rather than moved.
+/// **Migration.** Startup traces used to be written at the top of the app directory, which is the app's
+/// home: Files listed them, and the one being written kept it repainting.
 fn remove_startup_traces_from_home(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -334,14 +270,7 @@ fn remove_startup_traces_from_home(dir: &Path) {
     }
 }
 
-/// Bind the app's directory into the sandbox and point the environment
-/// at it.
-///
-/// `HOME` is inside it on purpose: an app that writes `~/notes` is
-/// doing the ordinary thing, and the answer to "where does that go" has
-/// to be "somewhere the system chose", not the real home directory or
-/// nowhere. Callers must splice this in before the trailing entrypoint
-/// token.
+/// Bind the app's directory into the sandbox and point the environment at it.
 pub fn push_app_dir(argv: &mut Vec<String>, host_dir: &Path) {
     argv.push("--bind".to_string());
     argv.push(host_dir.display().to_string());
@@ -353,8 +282,7 @@ pub fn push_app_dir(argv: &mut Vec<String>, host_dir: &Path) {
     }
 }
 
-/// The environment [`push_app_dir`] sets. Split out so tests and the
-/// Landlock rule builder can read it without parsing an argv.
+/// The environment [`push_app_dir`] sets.
 pub fn sandbox_env() -> Vec<(String, String)> {
     let root = SANDBOX_APP_DIR;
     vec![
@@ -367,47 +295,32 @@ pub fn sandbox_env() -> Vec<(String, String)> {
     ]
 }
 
-/// Where Settings sees the session's configuration root, the remapped
-/// `$XDG_CONFIG_HOME/tilo`. Only the parts [`SESSION_SETTINGS_BINDS`] names
-/// are the host's; the rest is the app's own directory.
+/// Where Settings sees the session's configuration root, the remapped `$XDG_CONFIG_HOME/tilo`.
 pub const SANDBOX_SESSION_CONFIG: &str = "/run/tilo/app/.config/tilo";
 
 /// How one part of the session's configuration reaches Settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionBind {
-    /// A directory Settings writes, bound read-write. The launcher creates it
-    /// first: a write landing in the app's own directory instead would be
-    /// lost to the session.
+    /// A directory Settings writes, bound read-write.
     Writable,
-    /// A file Settings reads, bound read-only when it exists. A file bind
-    /// holds the inode it found, so a host replacing the file later is seen
-    /// by the next launch.
+    /// A file Settings reads, bound read-only when it exists.
     ReadOnly,
 }
 
-/// The parts of `~/.config/tilo` Settings reaches, by path under that root,
-/// and nothing else of it: not the settings document or its records (Settings
-/// reads and writes the session's settings through the shell's settings
-/// service on its collaboration channel, as every app does, with the reach
-/// the image grants the device's settings app), not the identity store
-/// (records, root secrets, the active selector, device fleets — the host
-/// administers them behind its `tilo.identity` actions), the trust and
-/// revocation lists, the app registries, or a file added there later.
-///
-/// - `accounts/`: the account stores and their credential vault, which
-///   Settings is the custodian of (Accounts pane, sign-in, refresh).
-/// - `state.json`, `continuity-provenance.json`: the workspace tree and the
-///   roamed-settings provenance the shell writes, which the Permissions and
-///   Devices panes show. Read-only: the workspace tree records every grant.
+/// The parts of `~/.config/tilo` Settings reaches, by path under that root, and nothing else of it: not
+/// the settings document or its records (Settings reads and writes the session's settings through the
+/// shell's settings service on its collaboration channel, as every app does, with the reach the image
+/// grants the device's settings app), not the identity store (records, root secrets, the active
+/// selector, device fleets — the host administers them behind its `tilo.identity` actions), the trust
+/// and revocation lists, the app registries, or a file added there later.
 pub const SESSION_SETTINGS_BINDS: &[(&str, SessionBind)] = &[
     ("accounts", SessionBind::Writable),
     ("state.json", SessionBind::ReadOnly),
     ("continuity-provenance.json", SessionBind::ReadOnly),
 ];
 
-/// Bind the parts of the session's `~/.config/tilo` (`host_tilo_config`)
-/// Settings reaches ([`SESSION_SETTINGS_BINDS`]) over its remapped XDG path.
-/// The [`SessionBind::Writable`] directories must already exist on the host.
+/// Bind the parts of the session's `~/.config/tilo` (`host_tilo_config`) Settings reaches
+/// ([`SESSION_SETTINGS_BINDS`]) over its remapped XDG path.
 pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Path) {
     for (relative, bind) in SESSION_SETTINGS_BINDS {
         let flag = match bind {
@@ -446,9 +359,6 @@ mod tests {
 
     #[test]
     fn app_directory_paths_are_confined_per_workspace_and_package() {
-        // Phase `a_workspace_name_can_never_escape_its_parent`.
-        // The workspace name is the one path component an outside caller
-        // supplies, so it is the one that has to be unable to escape.
         {
             let data = Path::new("/data");
             for hostile in [
@@ -473,12 +383,12 @@ mod tests {
                 );
                 let dir = host_app_dir(data, &slug, "so.tilo.notes");
                 assert!(
-                    dir.starts_with("/data/tilo-rooms/"),
+                    dir.starts_with("/data/tilo-workspaces/"),
                     "{hostile:?} escaped to {}",
                     dir.display()
                 );
-                // `..` inside the assembled path would let a later canonicalisation
-                // walk out even though the string looks contained.
+                // `..` inside the assembled path would let a later canonicalisation walk out even
+                // though the string looks contained.
                 assert!(
                     !dir.components().any(|c| c.as_os_str() == ".."),
                     "{hostile:?} left a parent component in {}",
@@ -486,21 +396,18 @@ mod tests {
                 );
             }
         }
-        // Phase `a_package_id_can_never_escape_its_workspace`.
-        // Same argument for the package id: it comes out of a manifest, which
-        // is the thing being distrusted.
         {
             let data = Path::new("/data");
             for hostile in ["..", "../../etc", "/", "a/b"] {
                 let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
                 assert!(
-                    dir.starts_with("/data/tilo-rooms/personal/"),
+                    dir.starts_with("/data/tilo-workspaces/personal/"),
                     "{hostile:?} escaped to {}",
                     dir.display()
                 );
                 assert_eq!(
                     dir.components().count(),
-                    Path::new("/data/tilo-rooms/personal/x")
+                    Path::new("/data/tilo-workspaces/personal/x")
                         .components()
                         .count(),
                     "{hostile:?} produced more than one component: {}",
@@ -508,9 +415,6 @@ mod tests {
                 );
             }
         }
-        // Phase `two_workspaces_are_two_directories`.
-        // Two workspaces are two directories. This is the whole of per-workspace
-        // partitioning at the filesystem layer.
         {
             let data = Path::new("/data");
             let a = host_app_dir(data, &workspace_slug(Some("workspace-a")), "so.tilo.notes");
@@ -525,8 +429,8 @@ mod tests {
         }
     }
 
-    /// Every app of a build reads and writes one font index, bound where the
-    /// launcher names it, not in its own home.
+    /// Every app of a build reads and writes one font index, bound where the launcher names it, not in
+    /// its own home.
     #[test]
     fn the_font_index_is_one_directory_for_every_app() {
         let mut argv = Vec::new();
@@ -556,10 +460,6 @@ mod tests {
 
     #[test]
     fn app_directory_bind_and_xdg_tree() {
-        // Phase `every_announced_path_is_inside_the_bound_directory`.
-        // `XDG_DATA_HOME` has to land inside the bound directory or
-        // `cli::standalone_state_dir` writes somewhere unbound and the app
-        // silently loses its state.
         {
             for (key, value) in sandbox_env() {
                 assert!(
@@ -579,11 +479,11 @@ mod tests {
             let mut argv = Vec::new();
             push_app_dir(
                 &mut argv,
-                Path::new("/data/tilo-rooms/personal/so.tilo.notes"),
+                Path::new("/data/tilo-workspaces/personal/so.tilo.notes"),
             );
             assert!(
                 argv.windows(3).any(|w| w[0] == "--bind"
-                    && w[1] == "/data/tilo-rooms/personal/so.tilo.notes"
+                    && w[1] == "/data/tilo-workspaces/personal/so.tilo.notes"
                     && w[2] == SANDBOX_APP_DIR),
                 "app dir must be bound read-write at the fixed path: {argv:?}"
             );
@@ -631,7 +531,10 @@ mod tests {
             assert!(dir.join(".local/share").is_dir());
             assert!(dir.join(".config").is_dir());
             assert!(dir.join(".cache").is_dir());
-            assert_eq!(dir, tmp.path().join("tilo-rooms/workspace-a/so.tilo.notes"));
+            assert_eq!(
+                dir,
+                tmp.path().join("tilo-workspaces/workspace-a/so.tilo.notes")
+            );
         }
         {
             let tmp = tempfile::tempdir().unwrap();

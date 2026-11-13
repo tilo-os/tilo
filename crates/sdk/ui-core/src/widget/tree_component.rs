@@ -267,9 +267,9 @@ pub struct TreeViewProps {
     /// past it, as every list in a column does — including a phone's window, where the pane is
     /// the whole screen and the rows keep the page gutter at its glass.
     pub fill: bool,
-    /// The tree's root node — the tree itself, labelled with its `name` — is not a row: the
-    /// nodes at the top level are, at the first depth. Off, the tree's name stands over them
-    /// as a row of its own. Hide it where a heading or a page title already names the tree.
+    /// The tree's root node — the tree itself, labelled with its `name` — is not a row: the nodes at
+    /// the top level are, at the first depth. Off, the tree's name stands over them as a row of its
+    /// own.
     pub hide_root: bool,
     /// A press selects and activates in one, as a navigator sidebar does; a double click
     /// activates otherwise.
@@ -294,11 +294,8 @@ pub struct TreeViewProps {
     /// they stand after the nodes, struck, each with its mark. The UI host places them.
     #[component(slot)]
     pub removed: RemovedNodes,
-    /// The nodes open now, by the resource each stands for. Given, it is where the view says
-    /// the tree is; without it the tree keeps what a person opened. A view that says it only
-    /// while it narrows the tree — a search opens the branches to what it found — leaves the
-    /// person's own folding as it was: what they had opened comes back when the view stops
-    /// saying it.
+    /// The nodes open now, by the resource each stands for. Given, it is where the view says the tree
+    /// is; without it the tree keeps what a person opened.
     #[component(state)]
     pub expanded: Option<Vec<ResourceId>>,
     /// The rows a search found, by the resource each stands for, when the tree shows what the
@@ -588,8 +585,6 @@ impl Nodes {
                 check: Event::None,
             });
         }
-        // Where each node stands, read as the props give them: a parent the tree does not hold,
-        // or the node itself, leaves it at the top level.
         let mut parents: HashMap<String, Option<String>> = HashMap::new();
         for part in parts {
             if index.contains_key(&part.key) {
@@ -599,10 +594,6 @@ impl Nodes {
                 Some(parent) if keys.contains(&parent) && parent != part.key => Some(parent),
                 _ => None,
             };
-            // Two people moving a node into each other's subtree at the same moment can leave
-            // links that close a loop. The node that comes last in the order does not follow
-            // its link and stands at the top level, so the tree holds every node once and shows
-            // the same thing to everyone.
             let parent = parent.filter(|parent| {
                 let mut at = Some(parent.clone());
                 for _ in 0..=keys.len() {
@@ -616,8 +607,6 @@ impl Nodes {
             });
             parents.insert(part.key.clone(), parent.clone());
             if part.branch {
-                // A branch shows its disclosure whether or not its nodes are in the list: a
-                // folder read when it opens.
                 branches.insert(part.key.clone());
             }
             let under = parent.clone().unwrap_or_else(|| TOP_LEVEL.to_owned());
@@ -650,7 +639,6 @@ impl Nodes {
             });
             item_keys.insert(part.item.0.clone(), part.key.clone());
         }
-        // A row with nodes under it opens them, whether or not it says it is a branch.
         let mut with_children = HashSet::new();
         for (under, rows) in &children {
             if rows.is_empty() {
@@ -832,8 +820,6 @@ impl Remote {
             .read(key, &mut take)
             .ok()?;
         let part = shown.then_some(read).flatten()?;
-        // The rows this one names stand somewhere the list may not have built: what each of
-        // them is stays known, so a move can land at one and say where it landed.
         let mut keyed = |id: &str| {
             let at = self.parent_key(id)?;
             self.named
@@ -841,7 +827,6 @@ impl Remote {
                 .insert(at.clone(), ResourceId(id.to_owned()));
             Some(at)
         };
-        // A row stands under the row of the item it names, when the list holds one.
         let parent = part.parent.as_deref().and_then(&mut keyed);
         let above = part.above.as_ref().and_then(|above| keyed(&above.0));
         Some(Rc::new(Node {
@@ -966,8 +951,8 @@ impl TreeRows {
                 menu: std::cell::Cell::new(true),
             })),
         };
-        // A struck row stands at the top level, after every other row: the row it stood under
-        // is one the tree may never have built, and its branch may be folded away.
+        // // A struck row stands at the top level, after every other row: the row it stood under // is one
+        // the tree may never have built, and its branch may be folded away.
         let struck: Vec<Node> = removed
             .0
             .into_iter()
@@ -987,8 +972,6 @@ impl TreeRows {
                     menu: props.menu.into_iter().map(Command::of).collect(),
                     toolbar: props.toolbar,
                     change: props.change.map(Rc::new),
-                    // What it stood under no longer holds it: no row of the tree stands over
-                    // it, and its mark says who removed it.
                     above: None,
                     check: props.check,
                 }
@@ -1083,7 +1066,6 @@ impl TreeRows {
     /// inside only a row that takes subtasks. A row the list has not built says nothing of its
     /// own, so what lands in it is the owner's to refuse.
     fn can_reorder(&self, source: &String, target: &DropTarget<String>) -> bool {
-        // The tree's own row stands for nothing to move.
         if target.key == *source || self.value_of(source).is_none() {
             return false;
         }
@@ -1105,16 +1087,14 @@ impl TreeRows {
         true
     }
 
-    /// Where a dragged or keyed move lands, told to the tree: the row that moved and the row it
-    /// lands at, by the resource each shows — none for the end of the top level. A row the list
-    /// does not hold says where it lands still, from what the rows that named it said: the view
-    /// places the row without the tree having built the one it lands at. Returns whether the
-    /// owner was told.
+    /// Where a dragged or keyed move lands, told to the tree: the row that moved and the row it lands
+    /// at, by the resource each shows — none for the end of the top level. A row the list does not hold
+    /// says where it lands still, from what the rows that named it said: the view places the row
+    /// without the tree having built the one it lands at.
     fn report(&self, dropped: &ReorderDrop<String>) -> bool {
         let Some(moved) = self.value_of(&dropped.source) else {
             return false;
         };
-        // Past every row the tree holds: the end of the top level, which names no row.
         let (event, at) = if dropped.target.key == TOP_LEVEL {
             (self.drop(), None)
         } else {
@@ -1123,7 +1103,6 @@ impl TreeRows {
                 (DropPlacement::Before, _) => self.drop(),
                 (DropPlacement::Inside, Some(_)) => self.into(),
                 (DropPlacement::After, Some(_)) => self.after(),
-                // A row nothing says anything of: the tree has no place to offer.
                 _ => return false,
             };
             (event, at)
@@ -1186,7 +1165,6 @@ impl ListModel for TreeRows {
     }
 
     fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<&String>) {
-        // The struck rows of removed nodes are whole, not the host's to render.
         let held = self.held_len();
         let range = range.start.min(held)..range.end.min(held);
         if range.is_empty() {
@@ -1242,8 +1220,6 @@ impl ListModel for TreeRows {
 
     fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
         if let Some(node) = self.removed_at(index) {
-            // A struck row stands at the top level, where the row it left is no longer: the
-            // list holds its place without a branch to fold it away.
             return Some(TreeRow {
                 parent: node.parent.clone(),
                 depth: node.depth,
@@ -1326,8 +1302,6 @@ fn row_of(
     let Some(node) = rows.node(key) else {
         return Box::new(ListRow::new(key.to_owned(), ""));
     };
-    // A row the search did not find stands for where one it did stands: shown for it, and read
-    // quieter than the match it leads to.
     let context = matching.is_some_and(|found| !found.contains(node.item.0.as_str()));
     let key_owned = key.to_owned();
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
@@ -1339,7 +1313,6 @@ fn row_of(
         row = row.faint();
     }
     if let Some(props) = &node.row {
-        // The box leads, and the glyph after it: a task checks off and still says what it is.
         if let Some(checked) = props.checkbox {
             let check = node.check.clone();
             row = match props.icon {
@@ -1362,28 +1335,19 @@ fn row_of(
             row = row.description(text.clone());
         }
     }
-    // How far the branch got, just before the trailing text, folded or open: the same count a
-    // list row of the same item says.
     if let Some(progress) = &node.progress {
         row = row.meta(progress.clone());
     }
-    // It stands in for an item someone removed: its title struck through, as a list row of one
-    // says it.
     if node.removed {
         row = row.struck();
     }
-    // What someone else changed of it, at the row's own height: on the trailing edge their
-    // face, and their colour under it, as a list row says it.
     if let Some(mark) = node.change.as_ref().and_then(|mark| mark.again().row()) {
         row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
     }
-    // Who else is at the item, in their colour, as a list row shows them.
     if let Some(person) = &node.presence {
         row = row.presence(person.identity.clone());
     }
     let row = Box::new(row) as Element;
-    // A row's quick actions ride over its trailing corner while the row is hovered or holds
-    // focus, as a list row's do: each is the toolkit's button, built again as the row is.
     if node.toolbar.is_empty() {
         row
     } else {
@@ -1467,11 +1431,7 @@ impl DescribedTreeView {
             after,
         } = props;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
-        // What the rows of the tree are: the list fills it as it mounts them, and reads it as
-        // it builds each one.
         let marks = Rc::new(TreeMarks::<String>::default());
-        // A view that says which rows it holds open is where the tree is, every build; one that
-        // says nothing leaves what a person folded to the list.
         let rows = TreeRows::of(
             nodes,
             removed,
@@ -1482,7 +1442,6 @@ impl DescribedTreeView {
             &marks,
         );
         let row_marks = Rc::clone(&marks);
-        // What the search found, as the rows' own keys: a row reads whether it is one of them.
         let found: Option<Rc<HashSet<String>>> =
             matching.map(|found| Rc::new(found.iter().map(|id| id.0.clone()).collect()));
         let mut list = VirtualList::with_selection_delegate(
@@ -1501,15 +1460,10 @@ impl DescribedTreeView {
         )
         .with_tree(Rc::clone(&marks))
         .with_id(key)
-        // A node's target is its resource: the same node keeps it while its row moves.
         .with_semantic_key(|key: &String| format!("node:{key}"));
         if let Some(name) = &name {
             list = list.with_accessible_name(name.clone());
         }
-        // A tree inside another scroll is as tall as its rows, its rows keeping their own insets
-        // inside the page they stand in; one that fills a pane is the pane's list, so it takes
-        // its height, scrolls its rows itself, and stands them on the pane's content edge as
-        // every list in a column does.
         list = if fill {
             list.filling().in_column()
         } else {
@@ -1524,9 +1478,6 @@ impl DescribedTreeView {
         if single_click {
             list = list.open_on_press();
         }
-        // Each event carries the resource its row shows. A row opened is the person moving on to
-        // it, whether the view reports what it opened or nothing: a window showing one column at
-        // a time closes the drawer its tree stood in, as it does over a list of places.
         let reporting = rows.clone();
         let picking = rows.clone();
         let select_single = single_click;
@@ -1544,8 +1495,6 @@ impl DescribedTreeView {
             .on_activate(move |key| {
                 opening.set(true);
                 let value = picking.value_of(&key);
-                // Opening a row is one act: the selection it moved there on the way is
-                // reported as the choice it is, as a press on a navigator's row is.
                 if select_single && by_hand() {
                     select.fire(value.clone());
                 }
@@ -1565,7 +1514,6 @@ impl DescribedTreeView {
                     rows.can_reorder(source, target)
                 },
                 move |_: &mut TreeRows, dropped: ReorderDrop<String>| {
-                    // The owner moves it; the rows show what the model then says.
                     moves.report(&dropped);
                     false
                 },
@@ -1617,8 +1565,6 @@ impl Described for DescribedTreeView {
         let scroll = self.list.scroll_offset();
         let keep_folded = props.expanded.is_none();
         let said = props.expanded.is_some();
-        // What the person had folded before a view said where the tree is: kept across every
-        // build that says it, and put back by the first that does not.
         let kept = self.own_folds.take();
         let keep_selected = props.selection.is_none();
         let key = self.key.clone();
@@ -1891,14 +1837,12 @@ mod tests {
             expanded,
             ..TreeViewProps::default()
         };
-        // The person leaves "home" folded and reads the plan.
         let mut tree = DescribedTreeView::from_props("tree", props(None));
         tree.marks.fold(&"home".to_owned(), true);
         assert!(
             tree.is_open("plan"),
             "nothing is folded but what the person folded"
         );
-        // A search opens the way to the match, and the rest stands as it finds it.
         let found = vec![ResourceId("plan".into()), ResourceId("standups".into())];
         tree.set_props(props(Some(found)));
         assert!(tree.is_open("plan") && tree.is_open("standups"));
@@ -1906,7 +1850,6 @@ mod tests {
             !tree.is_open("home"),
             "a branch the search does not open stands folded"
         );
-        // Clearing the search shows the tree the person left: their folding, not the search's.
         tree.set_props(props(None));
         assert!(tree.is_open("plan"), "the branch they were reading is open");
         assert!(
@@ -1946,23 +1889,20 @@ mod tests {
         }));
         assert_eq!(queue.take(), [landed("c", "b", "drop")]);
 
-        // Inside a branch: the owner puts it at the end of the branch's own, and the tree names
-        // the branch whether or not it was built.
         assert!(nodes.report(&ReorderDrop {
             source: "c".to_owned(),
             target: DropTarget::new("a".to_owned(), DropPlacement::Inside),
         }));
         assert_eq!(queue.take(), [landed("c", "a", "into")]);
 
-        // After a row: the row itself is named, so the owner places it past that row's own
-        // without the tree having to find the row after them, which may be one it never built.
+        // // After a row: the row itself is named, so the owner places it past that row's own // without
+        // the tree having to find the row after them, which may be one it never built.
         assert!(nodes.report(&ReorderDrop {
             source: "c".to_owned(),
             target: DropTarget::new("a".to_owned(), DropPlacement::After),
         }));
         assert_eq!(queue.take(), [landed("c", "a", "after")]);
 
-        // Past every row: the end of the top level, with no row to land at.
         assert!(nodes.report(&ReorderDrop {
             source: "b".to_owned(),
             target: DropTarget::new(String::new(), DropPlacement::After),
@@ -2025,7 +1965,6 @@ mod tests {
         let mut said = node("a", None, true, &queue);
         said.progress = Some("1/3".into());
         said.row = Some(TreeViewRowProps::default());
-        // Its children say nothing of a count: the node is asked, not counted.
         let mut child = node("b", Some("a"), false, &queue);
         child.row = Some(TreeViewRowProps {
             checkbox: Some(true),
@@ -2192,8 +2131,6 @@ mod tests {
             branch.text_x, leaf.text_x
         );
 
-        // The chevron stands in the step the row keeps free in front of its box, so it is
-        // drawn beside the box rather than over it.
         let chevron = harness
             .root::<DescribedTreeView>()
             .list
@@ -2224,8 +2161,8 @@ mod tests {
         use crate::theme::Theme;
         use crate::widget::{LayoutInfo, RowLayout};
 
-        // Where the top-level row's box and its content start, and where its chevron column
-        // stands, for a tree of `nodes` in a 320 px window.
+        // // Where the top-level row's box and its content start, and where its chevron column // stands,
+        // for a tree of `nodes` in a 320 px window.
         fn column(fill: bool, nodes: Vec<TreeViewNodeProps>) -> (f64, f64, Option<f64>) {
             let folding = nodes.iter().any(|node| node.branch);
             let keys: Vec<String> = nodes.iter().map(|node| node.label.clone()).collect();
@@ -2274,8 +2211,6 @@ mod tests {
             "a tree whose first level folds nothing keeps no column"
         );
 
-        // The branch and the leaf beside it stand on one column, and the chevron column stands
-        // on the pane's content edge rather than in the margin outside it.
         let (folded_box, folded, chevron) = column(
             true,
             vec![
@@ -2350,7 +2285,6 @@ mod tests {
                 .cloned()
         };
         let (row, _) = node_of(AkRole::TreeItem, "a").expect("the tree hands over its node");
-        // What stands under the node, depth first.
         let mut controls = Vec::new();
         let mut frontier = vec![row];
         while let Some(next) = frontier.pop() {
@@ -2582,7 +2516,6 @@ mod tests {
                 return;
             }
             self.shown = range;
-            // The window's rows arrive, as a host reports them once it rendered them.
             self.changed = self.rows.clone();
         }
 
@@ -2724,8 +2657,6 @@ mod tests {
         queue: &crate::Intents<Fired>,
         movement: TreeMove,
     ) -> Vec<(String, String, Option<Value>)> {
-        // The tree's owner moves the row: the list reports the place and keeps no order of
-        // its own, so what it says is the move.
         harness
             .root_mut::<DescribedTreeView>()
             .list
@@ -2790,7 +2721,6 @@ mod tests {
         }
         harness.relayout();
         harness.relayout();
-        // The window followed the row: the branch's own stand above it, unbuilt.
         let at = shown.borrow().at("b").expect("the last row");
         assert!(
             !shown.borrow().shown.contains(&0),
@@ -2799,14 +2729,13 @@ mod tests {
         );
         assert!(at > 0);
 
-        // Tab puts it under the branch the view says stands over it: the branch's own rows
-        // between them were never built, and the branch itself was not either.
+        // // Tab puts it under the branch the view says stands over it: the branch's own rows // between
+        // them were never built, and the branch itself was not either.
         assert_eq!(
             moved(&mut harness, &queue, TreeMove::Indent),
             [landing("b", "a", "into")],
             "Tab indents the row into the branch over it"
         );
-        // A top row has nothing to step out of.
         assert_eq!(moved(&mut harness, &queue, TreeMove::Outdent), []);
     }
 

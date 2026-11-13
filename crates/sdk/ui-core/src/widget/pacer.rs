@@ -1,13 +1,9 @@
-//! `Pacer`: a part of the view that steps something on a steady beat while
-//! it runs — a replay playing frame by frame, a slideshow advancing.
+//! `Pacer`: a part of the view that steps something on a steady beat while it runs — a replay
+//! playing frame by frame, a slideshow advancing.
 //!
-//! The pacer draws nothing of its own: it wraps its content and, while
-//! `running` holds `true`, calls its step once a beat. The step says
-//! whether to go on; returning `false` (the last frame was reached) stops
-//! the pacer by setting `running` to `false`, so the control that started it
-//! reads as stopped again. Between beats the window sleeps: the pacer asks
-//! to be woken at the next beat ([`Widget::next_wake_deadline`]) rather than
-//! for animation frames.
+//! The step says whether to go on; returning `false` (the last frame) stops the pacer and sets
+//! `running` to `false`. Between beats the window sleeps: the pacer asks to be woken at the next
+//! beat ([`Widget::next_wake_deadline`]) and not for animation frames.
 //!
 //! ```ignore
 //! let playing = cx.local(false);
@@ -53,7 +49,6 @@ impl Pacer {
         }
     }
 
-    /// When the next step is due, starting the beat if it just started.
     fn due(&self, now: Instant) -> Option<Instant> {
         if !self.running.get() {
             self.due.set(None);
@@ -73,8 +68,6 @@ impl Pacer {
             return false;
         }
         if (self.step)() {
-            // The next beat counts from this one, without a burst to catch
-            // up on beats a busy window missed.
             let behind = now.checked_sub(self.beat).map_or(due, |back| due.max(back));
             self.due.set(Some(behind + self.beat));
         } else {

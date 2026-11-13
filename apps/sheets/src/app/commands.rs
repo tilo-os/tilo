@@ -1,4 +1,4 @@
-//! The commands the bar, the menus and the palette run: sheets and tabs, document settings, the command palette, row and column verbs, navigation, and the effects an answer comes back as.
+//! The commands the sheets binary runs instead of opening a window.
 
 use super::{
     CellFormat, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind, SettingsPanel, SheetsApp,
@@ -30,8 +30,6 @@ impl SheetsApp {
                 },
             }),
         );
-        // The active sheet tab is presentation, not a document change. The
-        // appended sheet is at `n`.
         self.active_sheet = n;
         self.grid.select_only((0, 0));
         self.reload();
@@ -44,8 +42,6 @@ impl SheetsApp {
             SettingKind::Date(d) => self.doc_settings.date_format = d,
             SettingKind::Time(t) => self.doc_settings.time_format = t,
         }
-        // The document's overrides are the workbook's, so collaborators (and
-        // the next session) share the document's conventions.
         let settings = Workbook::paths().settings;
         let edit = match kind {
             SettingKind::Currency(c) => settings.currency.set(c),
@@ -58,8 +54,6 @@ impl SheetsApp {
         self.reload();
     }
 
-    /// Open the host's search on the workbook's actions, as Ctrl+K does,
-    /// over any other overlay.
     pub(super) fn open_command_palette(&mut self) {
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
@@ -69,9 +63,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Run the action the palette emitted, dispatching by id. `argument`
-    /// carries the free-text a `with_argument` entry collected (e.g. the cell
-    /// reference for "Go to cell").
     #[cfg(test)]
     pub(super) fn dispatch_command(
         &mut self,
@@ -121,8 +112,6 @@ impl SheetsApp {
         }
     }
 
-    /// "Sum selection": write a `=SUM(col_top:col_bottom)` total for each column
-    /// of the selection into the row directly below it, then select that row.
     #[cfg(test)]
     pub(super) fn sum_selection(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
@@ -226,7 +215,6 @@ impl SheetsApp {
         );
     }
 
-    /// The File menu's rows, in order.
     pub(super) fn file_menu_items() -> [(&'static str, MenuItem); 8] {
         [
             ("New sheet", MenuItem::NewSheet),
@@ -292,16 +280,12 @@ impl SheetsApp {
             .unwrap_or_default()
     }
 
-    /// Invoke one of the workbook's effects through its door, as the palette
-    /// or an agent does.
     pub(super) fn invoke_effect(&self, effect: &actions::SheetsEffect) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.effect(effect);
         }
     }
 
-    /// Do what an effect asked of the grid: show a cell, the formulas or a
-    /// sheet, open the commands, say what happened.
     pub(super) fn take_ask(&mut self, ask: super::store::Ask) {
         use super::store::Ask;
         self.pending.redraw = true;
@@ -318,7 +302,6 @@ impl SheetsApp {
         }
     }
 
-    /// Change what is shown, as a view effect asks.
     pub(super) fn show(&mut self, effect: actions::SheetsEffect) -> Result<(), String> {
         use actions::SheetsEffect as E;
         match effect {

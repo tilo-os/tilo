@@ -1,5 +1,5 @@
-//! Ctrl+V with an image on the clipboard hands the image to the editor's
-//! host, which keeps its bytes with the document; text still pastes as text.
+//! Ctrl+V with an image on the clipboard hands the image to the editor's host, which keeps its bytes
+//! with the document; text still pastes as text.
 
 use super::*;
 use crate::testing::Dispatch;

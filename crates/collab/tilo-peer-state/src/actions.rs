@@ -271,6 +271,9 @@ struct Inner {
     replay: Mutex<ActionReplayWindow>,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
+    /// Endpoints keyed apart from the device they answer for, by endpoint
+    /// id ([`ActionPlane::reach_device_at`]).
+    endpoints: Mutex<HashMap<[u8; 32], [u8; 32]>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -318,6 +321,7 @@ impl ActionPlane {
             replay: Mutex::default(),
             bounds,
             callers: Mutex::default(),
+            endpoints: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
     }
@@ -343,8 +347,29 @@ impl ActionPlane {
             replay: Mutex::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
+            endpoints: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
+    }
+
+    /// Take a connection from the endpoint `endpoint` as one from the device
+    /// `device`: a device whose endpoint is keyed apart from its device key,
+    /// as a Tilo relay's is, asks from that endpoint and signs as the device.
+    /// Every other connection asks as the device its endpoint is keyed by.
+    pub fn reach_device_at(&self, device: [u8; 32], endpoint: [u8; 32]) {
+        if device != endpoint {
+            self.0.endpoints.lock_recover().insert(endpoint, device);
+        }
+    }
+
+    /// The device a connection from `endpoint` asks as.
+    fn device_of(&self, endpoint: [u8; 32]) -> [u8; 32] {
+        self.0
+            .endpoints
+            .lock_recover()
+            .get(&endpoint)
+            .copied()
+            .unwrap_or(endpoint)
     }
 
     /// This device's public key, as the other devices see it.
@@ -625,13 +650,13 @@ impl ActionPlane {
         let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
-        let caller = match authority.delegate.map(|bound| bound.subject) {
-            Some(tilo_action_policy::Subject::Agent(agent)) => {
-                Caller::delegated_agent(agent, certificate.user_public_key, source)
-            }
-            Some(tilo_action_policy::Subject::Bot(installation)) => {
-                Caller::bot(installation, certificate.user_public_key, source)
-            }
+        let caller = match authority.delegate.map(|delegation| delegation.grantee()) {
+            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Agent(
+                agent,
+            ))) => Caller::delegated_agent(agent, certificate.user_public_key, source),
+            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(
+                installation,
+            ))) => Caller::bot(installation, certificate.user_public_key, source),
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
         Ok((
@@ -785,7 +810,7 @@ impl ActionPlane {
 
     /// Serve `connection` until it ends, answering each stream on its own.
     async fn serve(&self, connection: Connection) -> Result<(), String> {
-        let remote = *connection.remote_id().as_bytes();
+        let remote = self.device_of(*connection.remote_id().as_bytes());
         loop {
             let (send, recv) = match connection.accept_bi().await {
                 Ok(stream) => stream,
@@ -1103,8 +1128,10 @@ impl Device {
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
-            // ignored-failure: an answer that does not decode is no answer; the caller answers `away`
-            postcard::from_bytes::<Answer>(&answer).ok()
+            tilo_failure::ignored!(
+                "an answer that does not decode is no answer, and the caller answers `away`",
+                postcard::from_bytes::<Answer>(&answer).ok()
+            )
         };
         let Some(mut heard) = heard.await else {
             return away();

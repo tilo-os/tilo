@@ -79,11 +79,10 @@ pub enum Error {
     #[error("peer state belongs to another device")]
     OtherDevice,
 
-    /// The kept state is in a format no upgrade reaches: one no build wrote,
-    /// or older than the upgrade path keeps. It is this device's own and
-    /// authentic, but cannot be read; the caller can only drop it and join
-    /// again, and anything only this device held is lost.
-    #[error("peer state was kept in a format no upgrade reaches")]
+    /// The kept state is in a format this build does not write. It is this
+    /// device's own and authentic, but cannot be read; the caller can only
+    /// drop it and join again, and anything only this device held is lost.
+    #[error("peer state is in a format this build does not write")]
     OtherFormat,
 
     /// AEAD authentication failed, or sealing could not be performed.

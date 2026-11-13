@@ -1,19 +1,11 @@
 //! `tilo-rollback` — bounded rollback protection and TPM lockout hardening.
 //!
-//! Subcommands, in the order a machine meets them:
+//! Subcommands follow a machine's life: `tpm-status`, `harden`, `enroll`, `unlock`, `confirm`,
+//! `status`, `certify`, plus the build-side `sign-prediction` and the authority-side
+//! `floor-request` and `approve-floor`.
 //!
-//! * `tpm-status`  — what this TPM's dictionary-attack lockout actually permits.
-//! * `harden`      — set the DA reset authorisation and tighten the parameters.
-//! * `enroll`      — define the floor counter and seal a generation's keyslot.
-//! * `unlock`      — unseal a generation's passphrase in early userspace.
-//! * `confirm`     — after a healthy boot: prove the generation, prune the
-//!   window, THEN raise the floor.
-//! * `status`      — floor, retained generations, and whether each unseals.
-//! * `certify`     — a signed statement of the floor, for a peer to verify.
-//! * `sign-prediction` — build-side: sign a PCR prediction for a generation.
-//!
-//! Secrets never travel on `argv`. The recovery key and the PIN are read from
-//! stdin or from a file passed by path.
+//! Secrets never travel on `argv`: the recovery key and the PIN are read from stdin or from a file
+//! passed by path.
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -237,8 +229,8 @@ struct ConfirmArgs {
     dry_run: bool,
 }
 
-/// What every subcommand runs against: the TPM tool runner, the scratch workspace, the
-/// resolved configuration and the paths derived from it.
+/// What every subcommand runs against: the TPM tool runner, the scratch workspace, the resolved
+/// configuration and the paths derived from it.
 struct Env<'a> {
     runner: &'a exec::Real,
     ws: &'a policy::Workspace,
@@ -343,10 +335,9 @@ fn run() -> Result<()> {
         .clone()
         .unwrap_or_else(|| PathBuf::from(policy::DEFAULT_PREDICTION_DIR));
 
-    // Grouped by the module doc's own command ordering (provisioning / runtime /
-    // authority-side); the split exists only to stay under the line-count lint, it carries
-    // no behavioural significance, and this outer match stays exhaustive over `Cmd` so a new
-    // subcommand fails to compile until it's routed somewhere.
+    // Split by when a command runs (provisioning, runtime, authority side) only to stay under the
+    // line-count lint. This match stays exhaustive over `Cmd`, so a new subcommand fails to
+    // compile until it is routed somewhere.
     let env = Env {
         runner: &runner,
         ws: &ws,
@@ -370,8 +361,8 @@ fn run() -> Result<()> {
     }
 }
 
-/// Provisioning-time commands: check the TPM's lockout posture, harden it, enroll a
-/// generation's keyslot.
+/// Provisioning-time commands: check the TPM's lockout posture, harden it, enroll a generation's
+/// keyslot.
 fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
     let runner = env.runner;
     match &cli.cmd {
@@ -407,12 +398,11 @@ fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
             pin_file.as_deref(),
             *automatic,
         ),
-        // Unreachable: `run` only calls this for TpmStatus/Harden/Enroll.
         _ => bail!("internal error: dispatch_provisioning called for a non-provisioning command"),
     }
 }
 
-/// Boot/runtime commands: unseal a generation, confirm it, report status, certify the floor.
+/// Boot and runtime commands: unseal a generation, confirm it, report status, certify the floor.
 fn dispatch_runtime(cli: &Cli, env: &Env<'_>) -> Result<()> {
     let Env {
         runner,
@@ -451,7 +441,6 @@ fn dispatch_runtime(cli: &Cli, env: &Env<'_>) -> Result<()> {
         Cmd::Certify { nonce, out_dir } => {
             cmd_certify(runner, ws, cfg, state_path, scratch, nonce, out_dir)
         }
-        // Unreachable: `run` only calls this for Unlock/Confirm/Status/Certify.
         _ => bail!("internal error: dispatch_runtime called for a non-runtime command"),
     }
 }
@@ -502,12 +491,10 @@ fn dispatch_authority(cli: &Cli, env: &Env<'_>) -> Result<()> {
             out_dir,
             label,
         ),
-        // Unreachable: `run` only calls this for FloorRequest/ApproveFloor/SignPrediction.
         _ => bail!("internal error: dispatch_authority called for a non-authority command"),
     }
 }
 
-/// Read once per command, from the firmware's own boot entries.
 fn windows_is_installed() -> bool {
     dual_boot::windows_is_installed(Path::new(dual_boot::EFIVARS))
 }
@@ -589,10 +576,10 @@ fn cmd_harden(
         }
     );
 
-    // The settings are global to the TPM, and Windows provisions them itself when it finds
-    // them empty. Taking them first would leave Windows unable to provision its TPM or reset
-    // a lockout, with "Clear TPM" — which also wipes Tilo's keyslots — as its only remedy.
-    // Nothing is recorded, so the next boot looks again.
+    // The settings are global to the TPM, and Windows provisions them itself when it finds them
+    // empty. Taking them first would leave Windows unable to provision its TPM or reset a
+    // lockout, with "Clear TPM" — which also wipes Tilo's keyslots — as its only remedy. Nothing
+    // is recorded, so the next boot looks again.
     if !before.lockout_auth_set && shared_with_windows {
         println!(
             "this TPM is shared with Windows, which sets the reset authorisation and the \
@@ -623,8 +610,8 @@ fn cmd_harden(
         }
     } else {
         let auth = lockout::new_reset_auth()?;
-        // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two
-        // leaves a TPM whose DA counter can never be reset by anyone.
+        // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two leaves a TPM
+        // whose DA counter can never be reset by anyone.
         if let Some(d) = auth_file.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
         }
@@ -697,9 +684,9 @@ fn cmd_enroll(
     let pin = pin_file.map(read_secret).transpose()?;
     let pin_bytes = pin.as_deref().map(|v| &v[..]);
 
-    // A PIN-less keyslot releases the volume with nothing typed, so the boot has to be one
-    // this machine can prove it approved. Establish that *before* the recovery key is even
-    // read, so an unverified machine is refused without touching the device.
+    // A PIN-less keyslot releases the volume with nothing typed, so the boot has to be one this
+    // machine can prove it approved. Establish that before the recovery key is even read, so an
+    // unverified machine is refused without touching the device.
     let verified = if automatic {
         let facts = verified::BootFacts::read();
         let recorded = verified::require_verified(&facts)
@@ -773,9 +760,9 @@ fn cmd_enroll(
         );
     }
     println!("recovery key still verified. Enrollment complete.");
-    // Record what this machine trusted at the moment it created the PIN-less slot. Written
-    // after the seal is proven, so a failed enrollment leaves no claim behind, and written at
-    // all only when there is a slot that opens by itself.
+    // Record what this machine trusted when it created the PIN-less slot. Written after the seal
+    // is proven, so a failed enrollment leaves no claim behind, and only when there is a slot
+    // that opens by itself.
     if let Some(recorded) = &verified {
         verified::save_enrollment(state_path, recorded)?;
     }
@@ -793,9 +780,9 @@ fn cmd_enroll(
     Ok(())
 }
 
-/// Define the NV counter (idempotent) and work out the floor this enrollment should record —
-/// the existing floor if the counter has already been incremented, or the bottom of the
-/// retention window if this is the very first enrollment.
+/// Define the NV counter (idempotent) and work out the floor this enrollment should record: the
+/// existing floor if the counter has already been incremented, or the bottom of the retention
+/// window on the very first enrollment.
 fn establish_floor(env: &Env<'_>, device: &Path, gen_num: u64) -> Result<counter::FloorState> {
     let Env {
         runner,
@@ -817,8 +804,8 @@ fn establish_floor(env: &Env<'_>, device: &Path, gen_num: u64) -> Result<counter
             base: b,
         }
     } else {
-        // First enrollment starts the floor at the bottom of the window, not at this generation —
-        // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
+        // First enrollment starts the floor at the bottom of the window, not at this generation:
+        // an immediate floor of `gen_num` would leave the very first update nothing to fall back
         let window = cfg
             .retained_generations
             .checked_sub(1)
@@ -836,6 +823,13 @@ fn establish_floor(env: &Env<'_>, device: &Path, gen_num: u64) -> Result<counter
 }
 
 /// SAFETY-CRITICAL: prove as much of the seal as is provable right now. For the *running*
+/// generation the whole round trip is provable: live measurements match the prediction, so the TPM
+/// releases the secret and opens the keyslot. A generation that is not running — staging an update
+/// — is bound to measurements that will not exist until it boots, so all that is provable is that
+/// its keyslot works (`enroll_generation` verified it) and the current generation's token is
+/// untouched; a first boot that cannot unseal then falls back rather than fails.
+///
+/// Returns the running generation, if any, for the caller's `last_confirmed` bookkeeping.
 /// generation the whole round-trip is provable (live measurements match the prediction, so
 /// the TPM should release the secret and open the keyslot). For a generation that is not
 /// running — staging an update — it can't be proven: the seal is bound to measurements that
@@ -902,6 +896,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Which tokens this boot is allowed to try, and why not when one is skipped.
+///
+/// A token sealed without a PIN opens the volume with nothing typed, so it is only tried on a boot
+/// this machine can prove it approved: Secure Boot on, a `db` still holding the authorities
+/// enrollment recorded, lockdown active. A token sealed with a PIN is tried everywhere; the PIN is
+/// the factor and the policy checks it.
 ///
 /// A token sealed without a PIN opens the volume with nothing typed, so it is only tried on a
 /// boot this machine can prove it approved — Secure Boot on, a `db` still holding the
@@ -1017,7 +1016,6 @@ fn cmd_unlock(
     )
 }
 
-/// Report whether this boot is verified, and what that means for a PIN-less keyslot.
 fn cmd_boot_status(state_path: &Path, json: bool) {
     let facts = verified::BootFacts::read();
     let recorded = verified::load_enrollment(state_path);
@@ -1314,7 +1312,6 @@ fn cmd_sign_prediction(
     Ok(())
 }
 
-/// Shared setup: the floor authority's key Name and the index's `authPolicy`.
 fn floor_authority(
     runner: &dyn exec::Runner,
     ws: &policy::Workspace,

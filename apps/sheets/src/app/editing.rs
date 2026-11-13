@@ -1,4 +1,4 @@
-//! The commands the chrome hands back: the name box, the formula entry, bold and formula view, a tab's rename, the find bar and the menu rows each action names.
+//! Editing: what typing, Enter, Tab and the formula bar do to the active cell.
 
 use super::{
     Addr, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, SheetsApp, TabAction,
@@ -7,11 +7,6 @@ use super::{
 };
 
 impl SheetsApp {
-    // --- name box (Go-To) + fx formula entry -------------------------------
-
-    /// Open the Name box for a Go-To entry, seeded with the active cell's
-    /// reference and fully selected (Excel-style: the first keystroke replaces
-    /// it). Closes any other overlay so the box owns input.
     pub(super) fn begin_name_box_edit(&mut self) {
         self.close_overlays();
         let (c, r) = self.grid.active();
@@ -98,11 +93,6 @@ impl SheetsApp {
         best
     }
 
-    // --- find and replace --------------------------------------------------
-
-    /// Open the window bar's search on the workbook: on its query for Find,
-    /// on its replacement for Replace. The bar hosts the field at every
-    /// width, with match case, whole word and the replacement.
     pub(super) fn open_find(&mut self, opening: ui::window_toolbar::SearchOpening) {
         self.close_overlays();
         ui::window_toolbar::open_search(opening);
@@ -174,7 +164,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Execute a tab context-menu action against sheet `idx`.
     pub(super) fn run_tab_action(&mut self, doc: &mut Edits<'_>, idx: usize, act: TabAction) {
         let Some(id) = self.sheet_ids.get(idx).cloned() else {
             return;
@@ -187,7 +176,6 @@ impl SheetsApp {
                     doc,
                     Workbook::DUPLICATE_SHEET.with(verbs::DuplicateSheet { sheet: id }),
                 ) {
-                    // The duplicate lands immediately after the source.
                     self.active_sheet = idx + 1;
                     self.grid.select_only((0, 0));
                     self.reload();
@@ -267,9 +255,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// The "fx" formula-insert affordance: focus the active cell for a formula
-    /// entry, seeding it with `=` (prepended to any existing content) and
-    /// placing the caret at the end so typing continues the formula.
     pub(super) fn start_formula_entry(&mut self) {
         if !self.grid.is_editing() {
             self.grid.begin_edit_in_place();
@@ -284,7 +269,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Make every selected cell bold, or regular again when they all are.
     pub(super) fn toggle_bold(&mut self, doc: &mut Edits<'_>) {
         let bold = !self
             .grid
@@ -309,9 +293,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Shared implementation behind the More menu, accessibility control, and
-    /// the view effect. Formula visibility is presentation state,
-    /// so it intentionally does not create a CRDT/undo entry.
     pub(super) fn toggle_formula_view(&mut self) {
         let on = self.grid.toggle_formula_view();
         self.status = if on {

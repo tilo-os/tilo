@@ -578,6 +578,7 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
             targets: vec![WindowTarget {
                 role: "ListItem".to_owned(),
                 name: "Documents".to_owned(),
+                identity: None,
                 rect: [4.0, 6.0, 44.0, 24.0],
                 actions: vec![TargetAction::Activate, TargetAction::ShowContextMenu],
             }],
@@ -591,13 +592,14 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
             session
                 .controls()
                 .iter()
-                .any(|(name, _)| name == "Documents")
+                .any(|control| control.name == "Documents")
         },
     );
-    let (_, (x, y, width, height)) = session
+    let (x, y, width, height) = session
         .controls()
         .into_iter()
-        .find(|(name, _)| name == "Documents")
+        .find(|control| control.name == "Documents")
+        .map(|control| control.rect)
         .expect("the control the app described");
     assert_eq!(
         (width, height),
@@ -621,6 +623,7 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
         told.contains(&FloatingSurfaceHostMessage::PressTarget {
             name: "Documents".to_owned(),
             role: "ListItem".to_owned(),
+            identity: None,
             action: TargetAction::ShowContextMenu,
         }),
         "the app is told which of its controls was pressed, and how: {told:?}"
@@ -686,6 +689,8 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
             id: "rename".to_owned(),
             label: "Rename".to_owned(),
             app: None,
+            step: None,
+            creates: None,
         },
         resource: tilo_actions::ActionResource {
             id: "documents".to_owned(),
@@ -1020,7 +1025,7 @@ fn may_make_a_note(
     projection: &collab_types::action_authority::AppActionAuthorityProjection,
 ) -> Answer {
     projection
-        .authority(&collab_types::action_authority::foreign_device_bound())
+        .authority()
         .decide(
             &projection.app_node().action("new-note"),
             ActionKind::Undoable,
@@ -1053,6 +1058,7 @@ fn apps_in(session: &Session, workspace: &str) -> Vec<String> {
             .filter(|held| held.id().to_string() == workspace)
             .flat_map(tilo_desktop_model::Workspace::tabs)
             .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
             .collect()
     })
 }
@@ -1227,6 +1233,7 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
             targets: vec![WindowTarget {
                 role: "ListItem".to_owned(),
                 name: "Documents".to_owned(),
+                identity: None,
                 rect: [4.0, 6.0, 44.0, 24.0],
                 actions: vec![TargetAction::Activate],
             }],
@@ -1254,15 +1261,15 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
         session
             .controls()
             .iter()
-            .any(|(name, _)| name == "Documents")
+            .any(|control| control.name == "Documents")
     });
 
     let control = |session: &Session| {
         session
             .controls()
             .into_iter()
-            .find(|(name, _)| name == "Documents")
-            .map(|(_, rect)| rect)
+            .find(|control| control.name == "Documents")
+            .map(|control| control.rect)
     };
     let (at, _, _, _) = control(&session).expect("the control the app described");
 

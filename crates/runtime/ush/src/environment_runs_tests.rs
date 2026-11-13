@@ -25,7 +25,6 @@ fn member(dir: &std::path::Path) -> EnvironmentRuns {
     )
 }
 
-/// What a pending answer settled to, within a few seconds.
 fn answered<T>(pending: tilo_actions::remote::Pending<T>) -> T {
     match pending.wait_timeout(Duration::from_secs(5)) {
         Ok(Some(value)) => value,
@@ -106,7 +105,6 @@ fn the_host_runs_a_command_in_the_members_copy_of_the_workspace() {
     // The same invocation again is the same run, not a second one.
     answered(runs.invoke(&host(), request)).unwrap();
 
-    // The session's shell carries its directory to the next command.
     let next = asking("pwd");
     let id = next.invocation;
     answered(runs.invoke(&host(), next)).unwrap();
@@ -142,8 +140,6 @@ fn a_cancelled_run_ends_its_command_promptly() {
     let id = request.invocation;
     answered(runs.invoke(&host(), request)).unwrap();
 
-    // Once the command is under way, the host cancels it, as a person's
-    // Ctrl+C in the session or an agent's cancel of its invocation does.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(state) = runs.observe(&host(), &id)
@@ -170,7 +166,6 @@ fn a_cancelled_run_ends_its_command_promptly() {
     assert!(ran.output.starts_with("started\n"), "{}", ran.output);
     assert!(!ran.output.contains("never"), "{}", ran.output);
 
-    // A run that ended is no longer one a cancel ends.
     let late = answered(runs.cancel(&host(), &id));
     assert!(
         matches!(late, Err(ActionHostError::NotCancellable { .. })),
@@ -197,7 +192,6 @@ fn only_the_hosts_own_devices_may_ask_and_only_for_runs() {
     );
 }
 
-/// A member whose host runs its workspaces' VMs on `socket`.
 fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> EnvironmentRuns {
     let files = dir.join("replicas");
     EnvironmentRuns::new(
@@ -215,8 +209,6 @@ fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> Environm
     )
 }
 
-/// A hosted-VM service answering each ask with the next of `replies`, and what
-/// it was asked.
 fn fake_hosted(
     dir: &std::path::Path,
     replies: Vec<legacy_vm::hosted::control::Reply>,
@@ -245,7 +237,6 @@ fn fake_hosted(
     (socket, asked)
 }
 
-/// A Browser to open, as the relay asks for it.
 fn opening(material: &str) -> InvokeRequest {
     use tilo_actions::remote::browser;
     let asked = browser::OpenBrowser {
@@ -301,7 +292,6 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     let (socket, asked) = fake_hosted(
         dir.path(),
         vec![
-            // Every machine is full at first: it waits, and asks again.
             Reply::Busy("Starting another machine for it, about 3 minutes.".into()),
             Reply::Opened {
                 opened_ms: Some(900),

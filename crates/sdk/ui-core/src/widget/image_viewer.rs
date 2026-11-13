@@ -1,16 +1,7 @@
 //! Interactive image viewer with pan + zoom semantics, unlike the static
-//! [`crate::widget::Image`] widget: scroll-wheel zoom, click-drag pan, and
-//! a deterministic "fit to viewport" reset. Interaction state (zoom, pan,
-//! drag origin) lives on the widget directly; CRDT reflection is out of scope.
-//!
-//! Coordinate model: `zoom == 1.0` is the "contain" baseline (mirrors CSS
-//! `object-fit: contain`). Higher zooms multiply that baseline scale, and
-//! `pan` is an *image-space* offset applied after it — storing pan in image
-//! space rather than pixels keeps drag velocity constant across zooms.
-//! Scroll-wheel zoom centres on the cursor by re-projecting the image-space
-//! point under it before/after the scale change and nudging `pan` to keep
-//! that point fixed on screen — otherwise zooming "to a feature" would feel
-//! like the image sliding away from the pointer.
+//! [`crate::widget::Image`] widget: scroll-wheel zoom, click-drag pan, and a deterministic
+//! "fit to viewport" reset. Interaction state (zoom, pan, drag origin) lives on the widget
+//! directly; CRDT reflection is out of scope.
 
 use crate::num::f32_of_f64;
 use std::collections::HashMap;
@@ -27,17 +18,10 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Minimum/maximum zoom factor. Below 0.1 the image becomes effectively
-/// invisible; above 10.0 the sampling artifacts dominate over content.
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 10.0;
-/// Per-notch zoom factor: one wheel tick (`LineDelta` y == 1.0) multiplies
-/// the zoom by `ZOOM_STEP`. Chosen to feel responsive without skipping
-/// over detail — `1.1` per notch matches Krita/Inkscape defaults.
 const ZOOM_STEP: f32 = 1.1;
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine composition is f64 matrix math; it never panics \
@@ -114,8 +98,6 @@ impl ImageViewport {
     }
 }
 
-/// Interactive viewer for a pre-decoded [`peniko::ImageData`]. See module
-/// docs for the contract.
 #[crate::component::not_a_component(
     part,
     "the pan-and-zoom surface `ui.ImageViewer` shows its picture in"
@@ -125,14 +107,9 @@ pub struct ImageViewer {
     zoom: f32,
     pan: Vec2,
     drag_origin: Option<Vec2>,
-    /// Last cursor position seen in this widget's logical-pixel space.
-    /// Cached so [`WindowEvent::MouseWheel`] (which carries no position)
-    /// can still anchor its zoom on the pointer.
     cursor: Option<Vec2>,
     rect: Rect,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -212,10 +189,10 @@ impl Widget for ImageViewer {
     ) -> NodeId {
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
-            flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -232,9 +209,6 @@ impl Widget for ImageViewer {
         self.viewport().draw(&self.image, scene, transform, theme);
     }
 
-    /// `kurbo::Vec2`'s `Sub`/`AddAssign` below are plain f64 component-wise
-    /// math with no panic path; `arithmetic_side_effects` flags the
-    /// operator overloads anyway.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
@@ -247,9 +221,6 @@ impl Widget for ImageViewer {
                     Vec2::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let prev = self.cursor;
                 self.cursor = Some(logical);
-                // `pan` is image-space, so the screen delta is divided by
-                // the total scale — a drag of 50px shifts the image 50px
-                // under the cursor regardless of zoom level.
                 if let (Some(start), Some(prev_pos)) = (self.drag_origin, prev) {
                     let _ = start;
                     let base = self.base_scale();
@@ -289,9 +260,6 @@ impl Widget for ImageViewer {
                 if !self.rect.contains(Point::new(cursor.x, cursor.y)) {
                     return;
                 }
-                // PixelDelta is normalised to a "lines scrolled" scalar
-                // with a 100-pixel notch, matching winit's convention for
-                // platforms that report pixel deltas for trackpads.
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(pp) => f32_of_f64(pp.y) / 100.0,
@@ -300,9 +268,6 @@ impl Widget for ImageViewer {
                     return;
                 }
 
-                // The image-space point under the cursor is re-projected
-                // after the zoom change; `pan` is counter-translated by
-                // the difference to keep it fixed on screen.
                 let before = self.screen_to_image(cursor);
                 let factor = ZOOM_STEP.powf(scroll_y);
                 let new_zoom = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
@@ -332,9 +297,6 @@ impl Widget for ImageViewer {
         "ImageViewer"
     }
 
-    /// No alt-text field on the viewer (it's a pan/zoom canvas around
-    /// raw `ImageData`), so the node carries no intrinsic name — a host
-    /// that knows the source can supply one via its own wrapping `Image`.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Image))
@@ -350,7 +312,6 @@ mod tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-    /// 16×16 opaque white; the `Arc` inside `Blob` keeps clones zero-copy.
     fn make_image() -> Image {
         let pixels = vec![255u8; 4 * 16 * 16];
         let blob = Blob::new(Arc::new(pixels));
@@ -374,12 +335,10 @@ mod tests {
 
         fn image_viewer_scroll_up_zooms_in() {
             let mut iv = ImageViewer::new(make_image());
-            // Bypasses taffy — a real layout pass would need a parent.
             iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
             let dev = winit::event::DeviceId::dummy();
 
-            // So the wheel handler's `inside` check passes.
             let mut handled = dispatch(
                 &mut iv,
                 &WindowEvent::CursorMoved {
@@ -407,8 +366,6 @@ mod tests {
 
         fn image_viewer_drag_pans() {
             let mut iv = ImageViewer::new(make_image());
-            // The public surface doesn't need a rect setter — callers run
-            // through taffy in production.
             iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
 
             let dev = winit::event::DeviceId::dummy();
@@ -434,8 +391,6 @@ mod tests {
                 "Pressed inside rect must start a drag"
             );
 
-            // Move cursor 30px right, 20px down; the magnitude is delta /
-            // base_scale (zoom is 1.0, so total_scale == base_scale).
             dispatch(
                 &mut iv,
                 &WindowEvent::CursorMoved {

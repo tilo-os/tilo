@@ -1,12 +1,5 @@
-//! [`Board`] as a described component: lanes of cards, a card moved by dragging it (a press
-//! and a drag with a pointer, a hold and a drag on a touchscreen).
-//!
-//! The board changes nothing itself. A drop is an event of where the card lands: the lane
-//! ([`BoardLaneProps::drop`]), carrying the card and its place among the lane's other cards,
-//! which the owner moves it to (`move(card, to: at, among: lane)`); or, when the card it lands
-//! before takes drops itself ([`BoardCardProps::drop`]), that card, carrying the dropped one, so
-//! the owner can name the place by its neighbour (`move(card, before: other)`). Either way the
-//! drop is one action on its model; the board then shows the card where the model puts it.
+//! [`Board`] as a described component: lanes of cards, a card moved by dragging it (a press and a drag
+//! with a pointer, a hold and a drag on a touchscreen).
 
 use std::collections::HashMap;
 
@@ -19,10 +12,7 @@ use crate::widget::{
 
 use super::{Board, BoardDrop};
 
-/// Cards in lanes, side by side: a kanban board, a pipeline, tasks by status. Dragging a card
-/// to another place in its lane or into another lane is reported by the card or lane it lands
-/// at; each card also opens, and offers its commands on its context menu, so nothing needs a
-/// drag.
+/// Cards in lanes, side by side: a kanban board, a pipeline, tasks by status.
 #[derive(Component, Default)]
 #[component(name = "Board", role = "Group", label = "name")]
 pub struct BoardProps {
@@ -47,31 +37,24 @@ pub struct BoardLaneProps {
     pub title: Option<String>,
     /// How many cards the lane holds, beside its heading.
     pub count: Option<i64>,
-    /// The label of the one action that adds to the lane, at its foot under the cards: "New
-    /// card". Drawn there, not in the heading, so the lane has one add and it is where the
-    /// cards end; a lane that gives a `foot` of its own says it there instead.
+    /// The label of the one action that adds to the lane, at its foot under the cards: "New card".
     pub action: Option<String>,
     /// The cards, in order.
     #[component(slot(default))]
     pub cards: Vec<BoardCardProps>,
-    /// What stands at the lane's foot, under its cards: the entry that adds to the lane. It
-    /// stays in reach while the cards scroll above it.
+    /// What stands at the lane's foot, under its cards: the entry that adds to the lane.
     #[component(slot)]
     pub foot: Option<Element>,
     /// The lane's action was pressed.
     #[component(event)]
     pub act: Event,
-    /// A card was dropped into the lane: carries the card and its place among the lane's other
-    /// cards, from 0. A card that takes drops itself reports those that land just before it.
+    /// A card was dropped into the lane: carries the card and its place among the lane's other cards, from
+    /// 0.
     #[component(event(value = ResourceId, at = i64))]
     pub drop: Event,
 }
 
-/// One card of a lane: a summary of the resource it stands for, which a press opens. The card is
-/// its body: a row given as its body is shown as a card — the row paints the surface, wraps its
-/// title and stands its facts under it — so what the card says is written once, and the row is
-/// what assistive technology reads as the lane's item. The card itself is the container around
-/// it, with no role of its own.
+/// One card of a lane: a summary of the resource it stands for, which a press opens.
 #[derive(Component, Default)]
 #[component(name = "BoardCard", role = "Generic", presents = "item")]
 pub struct BoardCardProps {
@@ -97,7 +80,6 @@ pub struct BoardCardProps {
     pub drop: Event,
 }
 
-/// Read every component of `slot` with `read`.
 fn read_all<T>(
     source: &mut dyn Source,
     slot: &str,
@@ -149,7 +131,6 @@ struct Command {
     group: Option<String>,
     enabled: bool,
     reason: Option<String>,
-    /// What choosing the row presses: the action the view bound to it, or the view's own event.
     press: Press,
 }
 
@@ -211,8 +192,6 @@ impl Command {
     }
 }
 
-/// The card widget of `props`, and what a drop on it or of it needs: the resource it stands
-/// for and its own drop event.
 fn card(props: BoardCardProps) -> (String, Element, Option<ResourceId>, Event) {
     let BoardCardProps {
         key,
@@ -235,10 +214,6 @@ fn card(props: BoardCardProps) -> (String, Element, Option<ResourceId>, Event) {
     (key, widget, item, drop)
 }
 
-/// A card's own widget: a body that is one widget able to stand as a card (a row) is the card,
-/// since a row already knows how to stand its facts and its leading column; anything else — a
-/// note, a picture — stands inside the card's chrome, where the card is the chrome around a
-/// body of its own.
 fn card_body(
     key: &str,
     mut body: Vec<Element>,
@@ -266,10 +241,6 @@ fn card_body(
     ))
 }
 
-/// Show `widget` as a card, if it is one: the widget itself, or the one widget a layout holds
-/// alone. A view call is built as a stack around what the view shows — the call's way to its
-/// body, not a box around it — so a card whose body is a view that shows a row is still that
-/// row's card. `false` when `widget` holds no widget that can be one.
 fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> bool {
     if let Some(card) = capability_mut::<dyn CardBody>(widget) {
         card.show_as_card(selected, activate);
@@ -282,8 +253,6 @@ fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> boo
     show_as_card(children.remove(0), selected, activate)
 }
 
-/// The lanes `props` describe, as the board takes them, and what a drop on the board needs to
-/// resolve where a card lands.
 struct Lanes {
     /// Each lane's key, heading, cards and foot, in order.
     columns: Vec<(
@@ -300,7 +269,6 @@ struct Lanes {
     lane_drops: HashMap<String, (Event, Vec<String>)>,
 }
 
-/// Build the lanes of `props`.
 fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
     // Whether any lane of the board heads itself: a lane nobody named heads nothing, but
     // keeps a heading's height while a lane beside it has one, so the lanes' cards line up.
@@ -334,8 +302,6 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
             }
             .into_element()
         });
-        // The one add stands at the lane's foot, where the cards end, not in its heading:
-        // a lane gives its own entry there, or the label of its adding action.
         let foot = foot.or_else(|| {
             let label = action?;
             let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
@@ -366,8 +332,6 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
     built
 }
 
-/// Answer a card dropped on the board: the card it lands before, or the lane it lands in and its
-/// place among that lane's other cards.
 fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
     let Lanes {
         columns: _,
@@ -393,7 +357,6 @@ fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
             let Some((drop, order)) = lane_drops.get(&lane) else {
                 return;
             };
-            // Its place among the lane's other cards: before `next`, or after them all.
             let others = order.iter().filter(|key| **key != card);
             let at = match &next {
                 Some(next) => others.take_while(|key| *key != next).count(),
@@ -419,13 +382,6 @@ impl Described for Board {
         board
     }
 
-    /// The lanes, what heads them and what a drop does change where the board stands: the
-    /// board keeps what the person is doing with it, a card in flight included.
-    ///
-    /// Props given in place name the lanes and cards and carry none of their views, so the
-    /// lanes and cards they name must be the ones the board holds, one for one: a board given
-    /// other lanes or other cards is another board, and is built again around them. Rebuilding
-    /// its cards from those props would show none of their content.
     fn set_props(&mut self, props: BoardProps) -> bool {
         let BoardProps { name, lanes } = props;
         let shaped: Vec<(String, Vec<String>)> = lanes
@@ -509,7 +465,6 @@ mod tests {
         )
     }
 
-    /// The action a view binds to a card's press.
     fn published(resource: &str, action: &str) -> tilo_actions::ActionBinding<()> {
         let mut spec = tilo_actions::ResourceSpec::new(resource, "test.card", "Card");
         spec = spec.with_action(
@@ -525,8 +480,6 @@ mod tests {
         tilo_actions::ActionBinding::unit_for(&spec, action).expect("the card publishes it")
     }
 
-    /// A card pressed runs the action its view bound once, through the door its own control
-    /// reports to: the card is the part the board shows, and its press is the action's route.
     #[test]
     fn a_card_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
         let bound = published("res-a", "open");
@@ -541,7 +494,6 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         let mut state = crate::widget::Edits::lend(&mut doc);
         let path = automerge::ROOT;
-        // What assistive technology asks of the card, and what a press on it does.
         assert!(
             card.perform_action(&crate::a11y::Action::Activate, &[], &mut state, &path),
             "the card takes the press"
@@ -558,8 +510,6 @@ mod tests {
         );
     }
 
-    /// A board built from a view's props hands the host the control every card's press is: the
-    /// inventory names the action with the card's own control.
     #[test]
     fn a_boards_inventory_carries_the_action_its_card_binds() {
         let bound = published("res-a", "open");
@@ -594,7 +544,6 @@ mod tests {
         assert_eq!(card.control_id, "a", "named by the card's own key");
     }
 
-    /// A lane nobody named, holding the cards `keys`.
     fn lane(key: &str, keys: &[&str]) -> BoardLaneProps {
         BoardLaneProps {
             key: key.into(),
@@ -611,8 +560,8 @@ mod tests {
         }
     }
 
-    /// A board no lane heads has nothing to line its cards up with: no lane keeps a heading's
-    /// height, so the first card stands where the first row of a list of the same items does.
+    /// A board no lane heads has nothing to line its cards up with: no lane keeps a heading's height,
+    /// so the first card stands where the first row of a list of the same items does.
     #[test]
     fn a_board_no_lane_heads_starts_its_cards_where_a_list_starts_its_first_row() {
         let host = laid_out(BoardProps {
@@ -627,7 +576,6 @@ mod tests {
             (card.y0 - lane.y0).abs() < 0.5,
             "no band stands over the cards: {card:?} in a lane from {lane:?}"
         );
-        // The same room, holding a list of the same items: its first row starts at the top.
         let list = crate::headless::FrameHarness::for_root(
             crate::State::new(),
             crate::widget::Column::new()
@@ -655,8 +603,8 @@ mod tests {
         );
     }
 
-    /// A lane nobody named keeps a heading's height while a lane beside it has one, so the cards
-    /// of every lane line up and the unnamed lane heads nothing.
+    /// A lane nobody named keeps a heading's height while a lane beside it has one, so the cards of
+    /// every lane line up and the unnamed lane heads nothing.
     #[test]
     fn a_lane_nobody_named_keeps_the_heading_row_of_the_lanes_beside_it() {
         let mut named = lane("doing", &["c"]);
@@ -688,7 +636,6 @@ mod tests {
         );
     }
 
-    /// How many heading rows a frame draws.
     fn headings(frame: &crate::headless::InspectionSnapshot) -> usize {
         let mut children = vec![&frame.root];
         let mut found = 0;
@@ -704,8 +651,6 @@ mod tests {
     #[test]
     fn a_card_whose_body_is_a_row_is_that_row_shown_as_a_card() {
         let mut props = props(&Intents::default());
-        // A body arrives wrapped — in the host's pane, the stack a view call is built as, a
-        // context menu — and still answers as the row it is.
         let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
         props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
             Box::new(
@@ -723,8 +668,6 @@ mod tests {
         );
         let root = host.root::<Board>();
         let card = root.card_rects(0)[0];
-        // A card is a small document: a title line with its facts on a line under it, in its
-        // own surface — not the one line a list row is.
         assert!(
             (44.0..=56.0).contains(&card.height()),
             "a card of one title line and its facts is {} tall",
@@ -851,7 +794,6 @@ mod tests {
         let root = host.root::<Board>();
         let [a, b] = [root.card_rects(0)[0], root.card_rects(0)[1]];
         let c = root.card_rects(1)[0];
-        // Within its lane: b above a is the first place.
         host.drag_at((b.center().x, b.center().y), (a.center().x, a.y0 + 5.0));
         // Into the other lane, above its only card.
         let root = host.root::<Board>();

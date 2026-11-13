@@ -346,7 +346,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await tab.evaluate(`document.getElementById('first-run-agent').click()`);
     await sleep(1500);
     await shoot('agent-waiting');
-    const match = prompt.match(/tilo login (\S+)(?: --site (\S+?))?(?:,|\s|$)/);
+    const match = prompt.match(/(?:tilo|sh -s) login (\S+)(?: --site (\S+?))?(?:,|\s|$)/);
     if (!match) report.problems.push(`desk: the prompt names no login code: ${prompt}`);
     else {
       const login = await tilo(['login', match[1], '--site', match[2] ?? site]);

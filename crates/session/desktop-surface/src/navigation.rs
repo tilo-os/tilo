@@ -1611,7 +1611,7 @@ pub fn snapshot_with(
 ) -> Snapshot {
     let mut entries = Vec::new();
     for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
+        for (at, strip) in workspace.strips.iter().enumerate() {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
                     entries.push(Entry {
@@ -1621,10 +1621,11 @@ pub fn snapshot_with(
                             group: group.id,
                             tab: tab.id,
                         }),
-                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile),
+                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .map(String::from),
                         label: tab.title.clone(),
-                        strip_label: strip.name.clone(),
-                        workspace_label: workspace.name.clone(),
+                        strip_label: crate::names::strip_named(&strip.name, at),
+                        workspace_label: crate::names::workspace(&workspace.name),
                     });
                 }
             }

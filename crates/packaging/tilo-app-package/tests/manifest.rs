@@ -20,7 +20,6 @@ fn render_with_dummy_key() -> String {
 
 #[test]
 fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
-    // phase: manifest_roundtrip
     {
         let src = render_with_dummy_key();
         let m = Manifest::from_toml_str(&src).expect("decode");
@@ -45,7 +44,6 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
         assert_eq!(svc.version, 1);
         assert_eq!(svc.protocol, "collab");
     }
-    // phase: cli_block_roundtrips
     {
         let src = fixtures::render_template(fixtures::CLI_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
         let m = Manifest::from_toml_str(&src).expect("decode");
@@ -53,12 +51,10 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
         assert_eq!(ep.r#type, tilo_app_package::EntrypointType::Cli);
         let cli = m.cli.as_ref().expect("[cli] block present");
         assert_eq!(cli.commands, vec!["notes".to_string()]);
-        // round-trip preserves both.
         let re = m.to_toml_string().expect("encode");
         let m2 = Manifest::from_toml_str(&re).expect("decode-2");
         assert_eq!(m, m2, "cli manifest round-trips");
     }
-    // phase: entrypoint_type_both_prefers_split_bins
     {
         let src = fixtures::render_template(fixtures::BOTH_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
         let m = Manifest::from_toml_str(&src).expect("decode");
@@ -72,18 +68,13 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
             ep.cli_bin_path().map(|p| p.to_string_lossy().into_owned()),
             Some("bin/notes".to_string())
         );
-        // Absent `[cli]` even on `type = both` is allowed — the CLI
-        // just publishes zero PATH commands.
         let cli = m.cli.as_ref().expect("[cli] present in template");
         assert_eq!(cli.commands, vec!["notes".to_string()]);
         let re = m.to_toml_string().expect("encode");
         let m2 = Manifest::from_toml_str(&re).expect("decode-2");
         assert_eq!(m, m2, "both-flavour manifest round-trips");
     }
-    // phase: entrypoint_type_defaults_to_gui
     {
-        // The original SAMPLE_APP_MANIFEST_TEMPLATE has no `type` — it
-        // should decode as Gui and pass validation.
         let src =
             fixtures::render_template(fixtures::SAMPLE_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
         let m = Manifest::from_toml_str(&src).expect("decode");
@@ -96,7 +87,6 @@ fn manifest_round_trips_with_cli_and_entrypoint_blocks() {
 
 #[test]
 fn provider_claims_normalise_and_reject_active_content() {
-    // phase: provider_claims_normalize_and_roundtrip_canonically
     {
         let src = render_with_dummy_key().replace(
             "ext  = [\"odt\"]",
@@ -115,13 +105,11 @@ fn provider_claims_normalise_and_reject_active_content() {
             manifest.providers
         );
     }
-    // phase: extension_only_provider_is_valid
     {
         let manifest = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
         assert!(manifest.providers.schemes.is_empty());
         validate_manifest(&manifest).expect("extension-only manifest is valid");
     }
-    // phase: malformed_and_active_content_claims_are_rejected
     {
         let cases = [
             ("mime", "text/html; charset=utf-8"),
@@ -149,16 +137,6 @@ fn provider_claims_normalise_and_reject_active_content() {
 
 #[test]
 fn manifest_validation_requires_entrypoints_mimes_and_no_paths() {
-    // phase: a_manifest_that_names_a_filesystem_path_is_refused
-    // The install-time half of the filesystem policy.
-    //
-    // `validate_manifest` is what `tilo-install install` and `tilo-app-package pack`
-    // both call, so this is the check a package meets before it is ever
-    // launched. Every shape the retired `[sandbox.fs]` block made possible
-    // is here, including the two that a denylist would have missed: `~`,
-    // which is the whole home directory spelled in one character, and
-    // another package's state directory, which is a perfectly ordinary
-    // path that happens to belong to someone else.
     {
         for entry in [
             "~",
@@ -198,13 +176,10 @@ fn manifest_validation_requires_entrypoints_mimes_and_no_paths() {
             assert!(err.to_string().contains(entry));
         }
 
-        // And the fixture is capable of validating: with no paths named, it
-        // passes. Otherwise the refusals above would prove nothing.
         let clean = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
         assert!(clean.sandbox.fs.read.is_empty() && clean.sandbox.fs.write.is_empty());
         validate_manifest(&clean).expect("a manifest naming no path validates");
     }
-    // phase: app_without_entrypoint_fails_validation
     {
         let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
         m.entrypoint = None;
@@ -213,7 +188,6 @@ fn manifest_validation_requires_entrypoints_mimes_and_no_paths() {
             Err(ManifestError::AppMissingEntrypoint)
         ));
     }
-    // phase: format_provider_without_mime_fails_validation
     {
         let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
         m.package.kind = tilo_app_package::Kind::FormatProvider;
@@ -227,7 +201,6 @@ fn manifest_validation_requires_entrypoints_mimes_and_no_paths() {
             Err(ManifestError::FormatProviderMissingMime)
         ));
     }
-    // phase: cli_manifest_validates
     {
         let src = fixtures::render_template(fixtures::CLI_APP_MANIFEST_TEMPLATE, &"aa".repeat(32));
         let m = Manifest::from_toml_str(&src).expect("decode");
@@ -252,26 +225,22 @@ impl<E> UnwrapErrOrPanic<E> for Result<(), E> {
 
 #[test]
 fn service_requirements_and_portal_policy_parse_strictly() {
-    // phase: service_req_parse_required_at_1
     {
         let r = ServiceReq::parse("collab", "required@1").unwrap();
         assert_eq!(r.requirement, Requirement::Required);
         assert_eq!(r.version, 1);
         assert_eq!(r.protocol, "collab");
     }
-    // phase: service_req_parse_optional_at_2
     {
         let r = ServiceReq::parse("spellcheck", "optional@2").unwrap();
         assert_eq!(r.requirement, Requirement::Optional);
         assert_eq!(r.version, 2);
     }
-    // phase: service_req_parse_required_defaults_to_v1
     {
         let r = ServiceReq::parse("collab", "required").unwrap();
         assert_eq!(r.requirement, Requirement::Required);
         assert_eq!(r.version, 1);
     }
-    // phase: service_req_parse_rejects_garbage
     {
         let e = ServiceReq::parse("collab", "Garbage").unwrap_err();
         assert!(
@@ -284,7 +253,6 @@ fn service_requirements_and_portal_policy_parse_strictly() {
             "got {e2:?}"
         );
     }
-    // phase: portal_policy_parses_via_host_and_deny
     {
         let src = render_with_dummy_key();
         // The sample template only declares `file-chooser = "via-host"`.
@@ -307,12 +275,9 @@ fn service_requirements_and_portal_policy_parse_strictly() {
         let again = Manifest::from_toml_str(&reencoded).expect("decode-2");
         assert_eq!(m.sandbox.portals, again.sandbox.portals);
     }
-    // phase: portal_policy_rejects_typo
     {
         let src = render_with_dummy_key();
         let bad = src.replace("\"via-host\"", "\"via-hst\"");
-        // A misspelling now surfaces at manifest-decode time (rather
-        // than silently being accepted as an opaque string).
         assert!(Manifest::from_toml_str(&bad).is_err());
     }
 }

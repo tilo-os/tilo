@@ -20,13 +20,11 @@ fn leaf(
     taffy.widget_leaf(taffy::Style::default(), node_map, widget)
 }
 
-/// A text that finds under the options it is given and can replace.
 #[derive(Default)]
 struct Draft {
     text: String,
     replaces: bool,
     regex: bool,
-    /// The options the last find ran under.
     found_with: Option<FindOptions>,
     found: Vec<FindMatch>,
     current: Option<usize>,
@@ -102,7 +100,6 @@ fn editable(text: &str) -> Draft {
     }
 }
 
-/// A search open on `doc` with `query` typed and driven once.
 fn searching(doc: &mut Draft, query: &str) -> WindowSearch {
     let mut search = WindowSearch::new();
     search.set_app_name("Writer");
@@ -123,7 +120,6 @@ fn act(search: &mut WindowSearch, target: &str, action: &Action) -> bool {
     )
 }
 
-/// The open search laid out at rest, as a frame draws it.
 fn laid_out(search: &mut WindowSearch) {
     search.layout(1.0, &mut TextRenderer::new(), &Theme::dark());
 }
@@ -137,7 +133,6 @@ fn rect_of(search: &WindowSearch, target: &str) -> Rect {
         .1
 }
 
-/// Route `event` to the open search as its window does; whether it took it.
 fn route(search: &mut WindowSearch, event: &WindowEvent) -> bool {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy
@@ -160,8 +155,6 @@ fn route(search: &mut WindowSearch, event: &WindowEvent) -> bool {
     search.route(event, &mut ctx)
 }
 
-/// A tap, as a touchscreen's contact arrives: the pointer moves there and
-/// presses and lifts. Returns whether the search took the press.
 fn tap(search: &mut WindowSearch, at: Point) -> bool {
     route(search, &cursor_moved(at.x, at.y));
     let pressed = route(search, &mouse_press());
@@ -433,7 +426,6 @@ fn the_find_and_replace_chords_follow_the_platform() {
     assert_eq!(search_chord(&f, ModifiersState::empty(), linux), None);
     let cmd = ModifiersState::SUPER;
     assert_eq!(search_chord(&f, cmd, mac), Some(SearchOpening::Find));
-    // Option turns the Mac's F into ƒ: the key names the chord.
     let option_f = key("ƒ", KeyCode::KeyF);
     assert_eq!(
         search_chord(&option_f, cmd | ModifiersState::ALT, mac),

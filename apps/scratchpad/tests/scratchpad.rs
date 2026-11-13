@@ -45,8 +45,8 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
 fn editor_layout_uses_available_width_and_reflows_for_large_text() {
     eprintln!("phase large_text_theme_reflows_the_real_editor_layout");
     {
-        // The same words, set at twice the size, take more lines: the note
-        // is laid out again rather than only styled again.
+        // The same words, set at twice the size, take more lines: the note is laid out
+        // again rather than only styled again.
         let note = "Pick up the printed tickets before noon. Ask Maria whether the studio is \
                     free on the 14th, and send Tomas the revised floor plan. "
             .repeat(6);
@@ -131,9 +131,6 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
 
     eprintln!("phase a_second_instance_shares_the_open_note_without_overwriting_it");
     {
-        // The note is the workspace's one record: a second window opens the
-        // same note as a writer of its own, so what each window keeps is
-        // merged rather than one save replacing the other's.
         let directory = tempfile::tempdir().unwrap();
         let mut first = open(directory.path());
         first.invoke(write("first window")).unwrap();
@@ -264,8 +261,8 @@ fn stored_documents(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// The window is where the note is: the bar's location is the note's opening
-/// line, not the app's name twice.
+/// The window is where the note is: the bar's location is the note's opening line, not the
+/// app's name twice.
 #[test]
 fn the_window_bar_names_the_note_it_shows() {
     let directory = tempfile::tempdir().unwrap();
@@ -280,16 +277,12 @@ fn the_window_bar_names_the_note_it_shows() {
         Some("Notes for Thursday"),
         "the opening line is where the window is"
     );
-    // Declaring the bar's slots is what takes the History control out of a
-    // band above the app: the note now starts at its page's own inset, the
-    // same one from the top as from the left.
     let editor = app.harness().targets()["note-editor"];
     assert!(
         (editor.y0 - editor.x0).abs() < 0.5,
         "nothing of the framework's stands above the note: {editor:?}"
     );
 
-    // A note nobody has written yet is still a note.
     app.invoke(write("")).unwrap();
     let _ = app.harness().poll_frame();
     let bar = ui::window_toolbar::declared().expect("the note declares its slots");

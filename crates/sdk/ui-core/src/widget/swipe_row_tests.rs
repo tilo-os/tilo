@@ -21,7 +21,6 @@ fn touch(phase: TouchPhase, at: Point) -> WindowEvent {
     })
 }
 
-/// Where the actions the tests' swipes run are reported.
 struct Runs(crate::Intents<Fired>);
 
 impl Runs {
@@ -29,13 +28,11 @@ impl Runs {
         Self(crate::Intents::default())
     }
 
-    /// How many ran since asked last.
     fn get(&self) -> usize {
         self.0.take().len()
     }
 }
 
-/// An action reported to `runs`.
 fn counted(label: &str, runs: &Runs) -> SwipeActionProps {
     SwipeActionProps {
         label: label.to_owned(),
@@ -45,7 +42,6 @@ fn counted(label: &str, runs: &Runs) -> SwipeActionProps {
     }
 }
 
-/// A row laid out, with the tree its events are dispatched over.
 struct Laid {
     row: SwipeRow,
     taffy: TaffyTree<()>,
@@ -196,8 +192,6 @@ fn a_tap_is_the_lists_click_and_not_the_rows() {
     let spot = Point::new(f64::from(WIDTH) / 2.0, 24.0);
     with_monotonic_time(at, || {
         row.send(&touch(TouchPhase::Started, spot));
-        // A finger that lifts where it came down is a click here: the row holds the press for
-        // its swipe and lets the tap go to its list.
         row.send(&crate::synthetic_input::cursor_moved(spot.x, spot.y));
         row.send(&crate::synthetic_input::mouse_press());
         assert!(
@@ -250,9 +244,8 @@ fn an_armed_or_destructive_label_reads_at_body_text_contrast_in_both_shades() {
     }
 }
 
-/// A row the frame did not draw owes nothing after it: the list culls the rows away from its box,
-/// and the offset such a row moved by unseen is where the next frame draws it. A window at rest is
-/// not kept awake by it.
+/// A row the frame did not draw owes nothing after it: the list culls the rows away from its
+/// box, and the offset such a row moved by unseen is where the next frame draws it.
 #[test]
 fn a_row_the_frame_did_not_draw_rests_after_it() {
     let runs = Runs::new();

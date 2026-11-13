@@ -40,8 +40,6 @@ fn app_dirs() -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.join("Cargo.toml").is_file())
         .filter(|p| builds_a_binary(p))
-        // A runtime bundle's binary (its `tilo-runtime.toml`: the tilolang
-        // runtime) is packed by that manifest as a runtime, not as an app.
         .filter(|p| !p.join("tilo-runtime.toml").is_file())
         .collect();
     out.sort();
@@ -75,8 +73,6 @@ fn load(app_dir: &Path) -> Manifest {
 
 #[test]
 fn every_shipped_manifest_exists_validates_and_round_trips() {
-    // phase: every_app_crate_ships_a_manifest
-    // An app crate with no manifest can never be installed or launched.
     {
         let missing: Vec<String> = app_dirs()
             .iter()
@@ -89,7 +85,6 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
          packed, installed or launched: {missing:?}"
         );
     }
-    // phase: every_manifest_passes_schema_validation
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -97,9 +92,6 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
                 .unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
         }
     }
-    // phase: every_manifest_survives_a_toml_round_trip
-    // `tilo-app-package pack` re-serialises the manifest for the payload, and the launcher
-    // reads that copy — anything lost in the round-trip is lost between authoring and launch.
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -116,9 +108,6 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
             );
         }
     }
-    // phase: every_shipped_manifest_passes_the_installers_own_validation
-    // Runs the same fs-permission validation the installer runs on any third-party
-    // package, with no first-party exception — replacing a prior denylist over specific paths.
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -126,9 +115,6 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
                 .unwrap_or_else(|e| panic!("{}: refused by its own installer: {e}", dir.display()));
         }
     }
-    // phase: package_ids_are_unique_and_reverse_dns
-    // Package ids are the registry's primary key: a collision means
-    // installing one app silently replaces another.
     {
         let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
         for dir in app_dirs() {
@@ -157,10 +143,6 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
 
 #[test]
 fn shipped_apps_declare_presentation_metadata() {
-    // phase: app_fleet_declares_structural_continuity_fidelity
-    // Handoff fidelity is a signed package promise, not an app-by-app convention.
-    // The runtime supplies presentation state for the whole GUI fleet; apps with
-    // a domain projection pin that stronger promise in their manifests.
     {
         let semantic_apps = ["so.tilo.browser", "so.tilo.ebook", "so.tilo.music"];
         let semantic_schemas = BTreeMap::from([
@@ -200,9 +182,6 @@ fn shipped_apps_declare_presentation_metadata() {
             );
         }
     }
-    // phase: apps_declare_a_display_name_and_category
-    // Human-facing name for the shell's palette — declared, not derived from the
-    // id (which would give "Api Tester").
     {
         // Freedesktop main categories, narrowed to the ones Tilo actually groups
         // by. Adding one is deliberate: the palette groups on this string, so a
@@ -246,9 +225,6 @@ fn shipped_apps_declare_presentation_metadata() {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn shipped_manifests_declare_consistent_sandbox_policy() {
-    // phase: entrypoints_are_payload_relative
-    // The entrypoint is joined onto the in-sandbox payload mount, so it must be
-    // payload-relative — absolute escapes the mount, empty fails the launch.
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -271,9 +247,6 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
             );
         }
     }
-    // phase: net_mode_and_namespace_agree
-    // `tilo-launcher` grants `--share-net` iff `sandbox.net.mode != "off"`; the
-    // `namespaces` list is what an auditor reads, so the two must agree.
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -293,9 +266,6 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
             }
         }
     }
-    // phase: allowlisted_egress_names_at_least_one_host
-    // An allowlist with no hosts blocks every request the app makes — that's a
-    // manifest bug, not a policy.
     {
         for dir in app_dirs() {
             let m = load(&dir);
@@ -316,9 +286,6 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
             }
         }
     }
-    // phase: no_manifest_names_a_filesystem_path
-    // The launcher binds the Wayland socket itself (`--wayland-socket`, normalised
-    // to `wayland-0`); no manifest should name that path.
     {
         let mut checked = 0usize;
         for dir in app_dirs() {
@@ -338,11 +305,6 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
         }
         assert!(checked >= 40, "expected the shipped fleet, found {checked}");
     }
-    // phase: service_packages_agree_with_their_entrypoint_about_drawing
-    // A service's entrypoint kind must agree with its declared kind: the shell hides
-    // `kind = "service"` apps, so the entrypoint alone decides whether the launcher
-    // ever gives it a surface. Asserts over whatever services exist rather than a
-    // fixed name, so deleting one can't make this pass vacuously.
     {
         let mut checked = 0usize;
         for dir in app_dirs() {

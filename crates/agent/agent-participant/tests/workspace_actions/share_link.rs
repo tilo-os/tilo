@@ -20,7 +20,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let host = enrol(
         &owner,
         "share-link-host",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let writer_device = enrol(&author, "writer", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();

@@ -1,6 +1,6 @@
-//! The panel's views: the controls page and the page each section opens in
-//! its place, one accessory's page, the clipboard opened to paste and the
-//! arrangement editor. The notifications have no page here: their row opens
+//! The panel's views: the controls page, with the section a control opens
+//! unrolled under it, one accessory's page, the clipboard opened to paste and
+//! the arrangement editor. The notifications have no page here: their row opens
 //! the shell's centre, the one list they are read in. Built from the toolkit's widgets;
 //! every control is bound to one of the panel's actions or effects.
 
@@ -37,10 +37,12 @@ use crate::resource::{Page, QuickSettings};
 pub(crate) struct Parts {
     sliders: LocalState<Sliders>,
     tiles: LocalState<Vec<TileFace>>,
-    /// The radios' switches their sections' pages carry in their headers.
-    switches: LocalState<Vec<TileFace>>,
     rows: LocalState<Vec<RowFace>>,
     sections: Rc<HashMap<QsSection, LocalState<Vec<Item>>>>,
+    /// The section open under its control on the controls page.
+    open: LocalState<Option<QsSection>>,
+    /// What shows the panel, told what it lists.
+    host: Rc<dyn PanelHost>,
     accessory: LocalState<Accessory>,
     arrangement: LocalState<Arrangement>,
     /// What was typed to search the clipboard's copies.
@@ -86,7 +88,11 @@ impl Arrangement {
 }
 
 impl Parts {
-    fn new(readings: &Readings) -> Self {
+    fn new(
+        readings: &Readings,
+        host: Rc<dyn PanelHost>,
+        open: LocalState<Option<QsSection>>,
+    ) -> Self {
         let sections = QsSection::ALL
             .into_iter()
             .map(|section| {
@@ -99,9 +105,10 @@ impl Parts {
         Self {
             sliders: readings.project(Sliders::of),
             tiles: readings.project(faces::tiles),
-            switches: readings.project(faces::section_switches),
             rows: readings.project(faces::rows),
             sections: Rc::new(sections),
+            open,
+            host,
             accessory: readings.project(|state| Accessory {
                 devices: state.bluetooth.accessories.clone(),
                 targets: state.handoff_targets.clone(),
@@ -140,19 +147,37 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let readings = host.readings().readings();
     readings.built_again();
     answer_effects(cx, &host, &readings);
-    let parts = Parts::new(&readings);
-    let showing = cx.value(QuickSettings::showing);
+    // A section opens in place on the controls page, so the page stands as it is while one
+    // opens and closes: only the clipboard opened to paste is a section of its own.
+    let open = cx.value(|panel: &QuickSettings| {
+        let showing = panel.showing();
+        showing.section.filter(|_| !showing.pasting)
+    });
+    let parts = Parts::new(&readings, Rc::clone(&host), open);
+    let showing = cx.value(|panel: &QuickSettings| {
+        let mut showing = panel.showing();
+        if !showing.pasting {
+            showing.section = None;
+        }
+        showing
+    });
     // Opened to paste, the panel is the clipboard and nothing else: no footer to reach past the
     // copies the person is choosing from. The card is built again as that changes, because a
     // footer is part of the card, not of the page it shows.
     let pasting = cx.value(|panel: &QuickSettings| panel.showing().pasting);
-    let told = Rc::clone(&host);
     cx.switch(&pasting, move |cx, &pasting| {
-        let told = Rc::clone(&told);
         let parts = parts.clone();
         let showing = showing.clone();
         let page = cx.switch(&showing, move |cx, showing| {
-            told.showing(showing);
+            // The controls page tells what it lists itself, with the section open on it.
+            if showing.is_deeper() {
+                parts.host.showing(showing);
+            }
+            // Opened to paste, the clipboard is the whole panel from its first frame: nothing
+            // slides in over the page the panel was left on.
+            if showing.pasting {
+                return with_refusal(cx, showing, &parts);
+            }
             // The page stands one deep when it is not the controls, and the
             // page it replaces leaves as it arrives: Back runs it the other
             // way.
@@ -236,12 +261,7 @@ fn page(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element
         return edit::page(cx, parts);
     }
     match showing.page {
-        // A section opened from the controls replaces them, so a narrow
-        // panel shows one page at a time and Back returns.
-        Page::Root => match showing.section {
-            Some(section) => sections::page(cx, section, parts),
-            None => root::page(cx, parts),
-        },
+        Page::Root => root::page(cx, parts),
         Page::Accessory => pages::accessory(cx, &showing.accessory, parts),
     }
 }

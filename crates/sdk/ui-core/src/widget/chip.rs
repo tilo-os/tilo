@@ -1,23 +1,4 @@
 //! Chips and badges: one family of pill-shaped marks.
-//!
-//! A [`Chip`] is a compact interactive pill for tags, filters and tokens: it
-//! carries a label and can be **selectable** (a filter that toggles, lifted
-//! when chosen) and/or **removable** (a trailing × that removes a token, a
-//! recipient or an applied filter). A [`super::Badge`] is the
-//! non-interactive member of the family: a count, a dot or a short status.
-//!
-//! Both are pills (`radii.full`): pill-shaped by meaning. Both take a
-//! [`ChipStyle`], never a colour: [`ChipStyle::Neutral`] is the quiet raised
-//! pill, [`ChipStyle::Tinted`] carries a [`Tone`] (a status or a person) as a
-//! faint wash and edge with neutral ink, [`ChipStyle::Live`] is the one filled
-//! pill, in your colour, for something that wants your attention (an unread
-//! count, something live). Danger red is only for errors and failures, a
-//! `Tinted(Tone::Danger)` status. Canvas hosts paint the same
-//! pills with [`ChipFace`] and [`super::BadgeFace`].
-//!
-//! Interactions surface through the toolkit's drain channel —
-//! [`Chip::take_toggled`] and [`Chip::take_removed`] — rather than callbacks,
-//! so a CRDT-native host reads them each frame and mutates its own model.
 
 use std::collections::HashMap;
 
@@ -42,26 +23,16 @@ use crate::widget::Tone;
 use crate::widget::Widget;
 use crate::widget::activation::Activation;
 
-/// How strongly a tone washes the pill's body over its ground.
 pub(crate) const TINT_FILL: f32 = 0.15;
-/// How strongly the same tone draws the pill's edge: enough to close the
-/// shape on a dark and a light ground, quieter than the label.
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
-/// The chip's own flips, as the view actions it publishes.
 const TOGGLE_CHIP: &str = "tilo.ui.chip.toggle";
 const REMOVE_CHIP: &str = "tilo.ui.chip.remove";
 
-/// What a chip or badge is. The style is the whole appearance; there is no
-/// colour, size or radius to set.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
-    /// The quiet pill: the raised tier with its derived edge and primary
-    /// ink. A selected chip is the accent washed in, with an accent edge.
     #[default]
     Neutral,
-    /// A tone washed into the body and drawn as the edge, with neutral ink
-    /// measured on the washed body.
     Tinted(Tone),
     /// Something that wants your attention (an unread count, a mention,
     /// something live): a filled pill in your colour
@@ -73,34 +44,24 @@ pub enum ChipStyle {
     /// as a primary action's, so the number is the selection's colour and
     /// reads white in every theme.
     Accent,
-    /// Someone's own colour, for a chip naming them: their presence colour
-    /// washed into the body and drawn as the edge, and their name inked in
-    /// it, as legible on the wash as any label.
     Identity(Color),
 }
 
-/// The resolved colours of one pill.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChipColors {
     pub fill: Color,
     pub edge: Option<Color>,
     pub ink: Color,
-    /// The lead (dot or glyph) where it is not a content colour of its own.
     pub lead: Color,
 }
 
 impl ChipStyle {
-    /// The colours of a pill in this style on `ground`. `selected` lifts a
-    /// neutral chip; `hovered` lifts it halfway.
     pub fn colors(self, theme: &Theme, ground: Color, selected: bool, hovered: bool) -> ChipColors {
         let colors = &theme.tokens.colors;
         match self {
             Self::Neutral => {
                 let raised = colors.surfaces.raised;
                 let (fill, edge) = if selected {
-                    // Chosen: the accent washed into the body and drawn as
-                    // the edge, clearly apart from the idle chips beside it
-                    // in every theme.
                     let accent = colors.intent.accent_ink;
                     let fill = mix8(ground, accent, TINT_FILL);
                     let fill = if hovered {
@@ -171,29 +132,20 @@ impl ChipStyle {
     }
 }
 
-/// What sits in a chip's leading slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipLead {
     /// Label only.
     #[default]
     None,
-    /// A colour-coded dot: a calendar's or a category's own colour (content),
-    /// or a person's presence colour.
     Dot(Color),
     /// A glyph, for chips that name an action rather than a value.
     Glyph(Icon),
-    /// A person's face: the initials of the chip's label (their name) on
-    /// their presence colour, as their avatar shows them everywhere.
     Face(Color),
-    /// An agent's face: the identity mark every surface names an agent by,
-    /// on its presence colour, where a person's chip shows their initials.
     Agent(Color),
 }
 
-/// A pill's geometry in one theme: everything the text scale moves.
 #[derive(Clone, Debug, PartialEq)]
 struct PillMetrics {
-    /// The selector height, grown with the label's line.
     height: f64,
     /// Inset of the content: half the height, so the label clears the
     /// round ends at every text scale.
@@ -220,9 +172,16 @@ impl PillMetrics {
         }
     }
 
-    /// A face in a chip: as tall as the label's line, inside the pill.
     fn face(&self) -> f64 {
         (self.height - 8.0).max(self.glyph)
+    }
+
+    fn remove_rect(&self, pill: Rect) -> Rect {
+        let x1 = pill.x1 - self.pad_x;
+        Rect::from_center_size(
+            Point::new(x1 - self.glyph / 2.0, pill.center().y),
+            (self.glyph, self.glyph),
+        )
     }
 
     fn lead_width(&self, lead: ChipLead) -> f64 {
@@ -234,8 +193,6 @@ impl PillMetrics {
         }
     }
 
-    /// The narrowest pill showing everything without eliding. `trailing` is
-    /// a remove × or a menu chevron.
     fn intrinsic_width(
         &self,
         label: &str,
@@ -260,11 +217,6 @@ impl PillMetrics {
     }
 }
 
-/// An immediate-mode chip for a canvas that lays out its own rows (a rail,
-/// a curve, a toolbar): the [`Chip`] widget's look with no layout node.
-///
-/// Size the rect from the face: [`ChipFace::height`] and
-/// [`ChipFace::intrinsic_width`]. A rect narrower than that elides the label.
 pub struct ChipFace<'a> {
     rect: Rect,
     label: &'a str,
@@ -297,13 +249,11 @@ impl<'a> ChipFace<'a> {
             opacity: 1.0,
         }
     }
-    /// A trailing chevron: the chip opens a menu of choices.
     #[must_use]
     pub fn menu(mut self) -> Self {
         self.menu = true;
         self
     }
-    /// Keyboard focus: the focus ring around the pill.
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
@@ -319,7 +269,6 @@ impl<'a> ChipFace<'a> {
         self.style = style;
         self
     }
-    /// The chosen one of a set of filter chips: a lift.
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -330,7 +279,6 @@ impl<'a> ChipFace<'a> {
         self.hovered = hovered;
         self
     }
-    /// A trailing × that removes the token; `hovered` raises its ink.
     #[must_use]
     pub fn removable(mut self, hovered: bool) -> Self {
         self.removable = true;
@@ -345,19 +293,16 @@ impl<'a> ChipFace<'a> {
         self.bare = true;
         self
     }
-    /// Fade the whole chip for an entrance or exit transition.
     #[must_use]
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
         self
     }
 
-    /// The pill height in `theme`: the selector height, grown with the label.
     pub fn height(theme: &Theme) -> f64 {
         PillMetrics::of(theme, TextRole::Label).height
     }
 
-    /// The narrowest pill that shows `label` and `lead` without eliding.
     pub fn intrinsic_width(
         label: &str,
         lead: ChipLead,
@@ -368,17 +313,11 @@ impl<'a> ChipFace<'a> {
         PillMetrics::of(theme, TextRole::Label).intrinsic_width(label, lead, removable, text)
     }
 
-    /// Where the × is painted, for the host's remove hit-test.
     pub fn remove_rect(&self, theme: &Theme) -> Rect {
         if !self.removable {
             return Rect::ZERO;
         }
-        let metrics = PillMetrics::of(theme, TextRole::Label);
-        let x1 = self.rect.x1 - metrics.pad_x;
-        Rect::from_center_size(
-            Point::new(x1 - metrics.glyph / 2.0, self.rect.center().y),
-            (metrics.glyph, metrics.glyph),
-        )
+        PillMetrics::of(theme, TextRole::Label).remove_rect(self.rect)
     }
 
     pub fn paint(
@@ -388,8 +327,6 @@ impl<'a> ChipFace<'a> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // A slot wider than the pill needs (a key on a keyboard) centres the
-        // label in it.
         let intrinsic = PillMetrics::of(theme, TextRole::Label).intrinsic_width(
             self.label,
             self.lead,
@@ -420,21 +357,15 @@ impl<'a> ChipFace<'a> {
     }
 }
 
-/// Everything one pill paint needs; shared by [`ChipFace`], the [`Chip`]
-/// widget and the badges.
 pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
-    /// Whose face a [`ChipLead::Face`] shows, when the label says more than their name;
-    /// empty: the label is the name.
     pub face: &'a str,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
     pub hovered: bool,
-    /// `Some(hovered)` paints a trailing ×.
     pub remove: Option<bool>,
-    /// A trailing chevron: the chip opens a menu.
     pub menu: bool,
     pub bare: bool,
     pub opacity: f32,
@@ -466,7 +397,6 @@ impl<'a> PillPaint<'a> {
     }
 }
 
-/// The one pill painter.
 pub(crate) fn paint_pill(
     pill: &PillPaint<'_>,
     scene: &mut Scene,
@@ -537,7 +467,6 @@ pub(crate) fn paint_pill(
         } else {
             text_renderer.elide_to_width_style(
                 pill.label,
-                // Half a pixel of slack over shaping round-off.
                 crate::num::f32_of_f64(room + 0.5),
                 &metrics.label,
             )
@@ -556,7 +485,6 @@ pub(crate) fn paint_pill(
             0.0
         }
         + label_w;
-    // A pill with nothing but a lead, and a badge, centre their content.
     let mut x = if pill.centred || (label_w <= 0.0 && pill.remove.is_none() && !pill.menu) {
         rect.center().x - content_w / 2.0
     } else {
@@ -670,7 +598,6 @@ pub use component::ChipProps;
 
 pub struct Chip {
     label: String,
-    /// Whose face leads it ([`Self::with_face`]); empty: the label is the name.
     face: String,
     selectable: bool,
     selected: bool,
@@ -684,10 +611,7 @@ pub struct Chip {
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
-    /// What pressing the "×" does, when the view bound it: the action runs through the chip's
-    /// custody, as the chip's own press does.
     remove_press: crate::widget::Press,
-    /// The chip's own flips, published as its view actions.
     toggle_verb: Option<super::control_verb::ControlVerb<bool>>,
     remove_verb: Option<super::control_verb::ControlVerb<bool>>,
     rect: Rect,
@@ -695,13 +619,9 @@ pub struct Chip {
     last_cursor: Point,
     hovered: bool,
     focused: bool,
-    /// What pressing the chip does when it navigates or opens something (a
-    /// tag, a backlink, a filter menu): a callback or a bound action.
     activation: Activation,
     tooltip: Option<String>,
     accessible_name: Option<String>,
-    /// The geometry resolved at `build_layout`, for `measure` and
-    /// `adjust_layout_style`, which have no theme of their own.
     metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
@@ -714,12 +634,9 @@ pub struct Chip {
     /// extra pass. Cleared when the theme's geometry changes.
     footprint: Option<taffy::Size<f32>>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
-/// What leads a reference's label on its chip: a link.
 pub const REFERENCE_LEAD: ChipLead = ChipLead::Glyph(Icon::Link);
 
 impl Chip {
@@ -727,10 +644,6 @@ impl Chip {
         Self::new_owned(label.into())
     }
 
-    /// A reference to a resource another app keeps, named `label` and
-    /// addressed by `id`: the pill a reference is everywhere, led by a link
-    /// and announced as opening it. Pressing it does what
-    /// [`Self::on_click`] says: open the resource where it lives.
     #[must_use]
     pub fn reference(label: impl Into<String>, id: &str) -> Self {
         let label = label.into();
@@ -778,8 +691,6 @@ impl Chip {
         }
     }
 
-    /// Led by the face of `name` (their initials) on their presence `colour`, when the label
-    /// says more than their name: `Helper · Tidy my notes`.
     #[must_use]
     pub fn with_face(mut self, name: impl Into<String>, colour: Color) -> Self {
         self.face = name.into();
@@ -787,31 +698,24 @@ impl Chip {
         self
     }
 
-    /// A stable id for tests, inspection and the chip's bound action
-    /// (defaults to the label). Set it before [`Self::on_click`].
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.activation = Activation::new(id);
         self
     }
 
-    /// Run `f` when the chip is pressed (a pointer, Enter or Space, or
-    /// assistive technology): a tag that opens its notes, a backlink.
     #[must_use]
     pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self {
         self.activation.set_callback(Box::new(f));
         self
     }
 
-    /// [`Self::on_click`] through an exported resource action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.activation.set_action(binding);
         self
     }
 
-    /// Publish a press as a zero-argument effect, as
-    /// [`Button::on_effect`](crate::widget::Button::on_effect) does.
     #[must_use]
     pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
         let label = self.label.clone();
@@ -820,8 +724,6 @@ impl Chip {
         self
     }
 
-    /// Publish a press as a transient view action (a filter, what is shown),
-    /// as [`Button::on_view`](crate::widget::Button::on_view) does.
     #[must_use]
     pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
         let label = self.label.clone();
@@ -830,22 +732,18 @@ impl Chip {
         self
     }
 
-    /// What the chip does or stands for, shown when the pointer rests on it.
     #[must_use]
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
         self
     }
 
-    /// The name the chip is announced by when its label alone is not enough
-    /// ("Tag: design").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
     }
 
-    /// A trailing chevron: pressing the chip opens a menu of choices.
     #[must_use]
     pub fn menu(mut self) -> Self {
         self.menu = true;
@@ -882,7 +780,6 @@ impl Chip {
         }
     }
 
-    /// The painted pill: centred in the chip's box ([`Self::box_height`]).
     fn pill_rect(&self) -> Rect {
         let height = self.metrics.height.ceil().min(self.rect.height());
         let y0 = self.rect.center().y - height / 2.0;
@@ -904,14 +801,12 @@ impl Chip {
         rect.inflate(0.0, slack)
     }
 
-    /// Make the chip a toggle (a filter). Clicking the body flips selection.
     #[must_use]
     pub fn selectable(mut self) -> Self {
         self.selectable = true;
         self
     }
 
-    /// Set the initial selected state (implies [`selectable`](Self::selectable)).
     #[must_use]
     pub fn selected(mut self, on: bool) -> Self {
         self.selectable = true;
@@ -919,30 +814,22 @@ impl Chip {
         self
     }
 
-    /// Show the chip as standing for what is applied now (a menu chip whose
-    /// filter has a choice), without making a press flip it: its press stays
-    /// its activation, which opens the menu.
     #[must_use]
     pub fn current(mut self, on: bool) -> Self {
         self.selected = on;
         self
     }
 
-    /// Whether the chip is drawn in the selected treatment: a toggle that is
-    /// on, a menu chip standing for a choice applied now
-    /// ([`Self::current`]), or any chip while it is pressed.
     fn shows_chosen(&self) -> bool {
         self.selected || self.activation.state.pressed
     }
 
-    /// Show a trailing "×" that removes the chip when clicked.
     #[must_use]
     pub fn removable(mut self) -> Self {
         self.removable = true;
         self
     }
 
-    /// What sits before the label: a content-colour dot or a glyph.
     #[must_use]
     pub fn with_lead(mut self, lead: ChipLead) -> Self {
         self.lead = lead;
@@ -950,7 +837,6 @@ impl Chip {
         self
     }
 
-    /// What the chip is: neutral, tinted with a tone, or live.
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
@@ -961,16 +847,11 @@ impl Chip {
         self.selected
     }
 
-    /// Programmatically set selection (host syncing from its model).
     pub fn set_selected(&mut self, on: bool) {
         self.dirty = true;
         self.selected = on;
     }
 
-    /// Flip the chip's selection as the chip's published view action
-    /// `toggle` (implies [`selectable`](Self::selectable)): a person's press,
-    /// a screen reader, a script and an agent flip it through the same
-    /// action, and `f` hears the selection it reports.
     #[must_use]
     pub fn on_toggle_view(mut self, f: impl FnMut(bool) + 'static) -> Self {
         self.selectable = true;
@@ -996,7 +877,6 @@ impl Chip {
         self
     }
 
-    /// [`Self::on_remove_view`] on a chip already built.
     pub fn set_on_remove_view(&mut self, f: impl FnMut() + 'static) {
         self.removable = true;
         let id = self.activation.id().to_owned();
@@ -1012,8 +892,6 @@ impl Chip {
         self.dirty = true;
     }
 
-    /// Pressing the "×" presses what the view bound to it (`press`): the chip takes it away
-    /// through the same door as anything else it runs.
     #[must_use]
     pub fn with_remove_press(self, press: crate::widget::Press) -> Self {
         let mut chip = self;
@@ -1021,7 +899,6 @@ impl Chip {
         chip
     }
 
-    /// [`Self::with_remove_press`] on a chip already built.
     pub fn set_remove_press(&mut self, press: crate::widget::Press) {
         if press.is_none() {
             return;
@@ -1033,7 +910,6 @@ impl Chip {
         self.dirty = true;
     }
 
-    /// The selection was flipped by a person.
     fn flipped(&mut self) {
         let selected = !self.selected;
         if let Some(verb) = &mut self.toggle_verb {
@@ -1047,7 +923,6 @@ impl Chip {
         }
     }
 
-    /// The "×" was pressed.
     fn remove_pressed(&mut self) {
         if !self.remove_press.is_none() {
             self.removed = true;
@@ -1064,13 +939,10 @@ impl Chip {
         }
     }
 
-    /// Drain the "selection toggled" signal (fires once per click on the body
-    /// of a selectable chip). Read `is_selected()` for the new value.
     pub fn take_toggled(&mut self) -> bool {
         std::mem::take(&mut self.toggled)
     }
 
-    /// Drain the "× clicked / remove me" signal (fires once).
     pub fn take_removed(&mut self) -> bool {
         std::mem::take(&mut self.removed)
     }
@@ -1080,18 +952,14 @@ impl Chip {
         self.x_rect
     }
 
-    /// Whether pressing the body does something.
     fn pressable(&self) -> bool {
         self.selectable || self.activation.is_bound()
     }
 
-    /// Whether a press on the body flips the selection: a filter that names nothing to run. A
-    /// selectable chip with a press bound runs it, and shows the selection it is bound to.
     fn flips(&self) -> bool {
         self.selectable && !self.activation.is_bound()
     }
 
-    /// Press the body: toggle a filter, or run the bound activation.
     fn press(&mut self) -> bool {
         if self.flips() {
             self.flipped();
@@ -1116,6 +984,17 @@ impl Chip {
             height: self.box_height() as f32,
         }
     }
+
+    /// Where the "×" stands: the layout's place, so a press, a screen reader
+    /// or a script finds it before anything paints, inside the chip rather
+    /// than at the window's origin, where a control nothing placed stands.
+    fn place_remove(&mut self) {
+        self.x_rect = if self.removable && self.rect.width() > 0.0 {
+            self.metrics.remove_rect(self.pill_rect())
+        } else {
+            Rect::ZERO
+        };
+    }
 }
 
 impl Widget for Chip {
@@ -1133,7 +1012,6 @@ impl Widget for Chip {
     ) {
         if self.interaction != environment {
             self.interaction = environment;
-            // The box grows to a coarse pointer's target: measure it again.
             self.footprint = None;
         }
     }
@@ -1169,8 +1047,6 @@ impl Widget for Chip {
             .footprint
             .map_or_else(taffy::Dimension::auto, |size| length(size.width));
         let style = Style {
-            // A pill wider than its line gives way and elides its label rather
-            // than running past the edge.
             flex_shrink: 1.0,
             min_size: taffy::Size {
                 width: length(self.metrics.height as f32),
@@ -1185,7 +1061,6 @@ impl Widget for Chip {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// Replace the seed with the measured pill.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1233,6 +1108,7 @@ impl Widget for Chip {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.place_remove();
     }
 
     /// A settled pill keeps its footprint until its label or type changes
@@ -1253,12 +1129,6 @@ impl Widget for Chip {
             return;
         }
         let pill = self.pill_rect();
-        let face = ChipFace::new(pill, &self.label);
-        self.x_rect = if self.removable {
-            face.removable(false).remove_rect(theme)
-        } else {
-            Rect::ZERO
-        };
         // Highlight over the same grown rect the press handler and
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
@@ -1352,8 +1222,6 @@ impl Widget for Chip {
         self.focused
     }
 
-    /// Enter, Space and assistive technology press the chip as a click does;
-    /// Delete is the × of a removable one.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -1562,7 +1430,6 @@ impl crate::widget::ResourceOperations for Chip {
     }
 }
 
-/// The chip's own operations, indexed by the mask of those it publishes.
 #[allow(
     clippy::indexing_slicing,
     reason = "the mask is built from the same bits"
@@ -1777,8 +1644,6 @@ mod tests {
             assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
-            // A chosen chip is the design system's selected treatment, the
-            // accent as wash and edge, unmistakable beside idle ones.
             let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
             assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
             assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
@@ -1833,7 +1698,6 @@ mod tests {
             assert!(c.is_selected(), "click selects");
             assert!(c.take_toggled(), "toggle signal fires");
             assert!(!c.take_toggled(), "toggle drains after one read");
-            // Click again → deselect.
             dispatch(&mut c, &mouse_press());
             assert!(!c.is_selected(), "second click deselects");
         }
@@ -1856,7 +1720,7 @@ mod tests {
             lay_out(&mut c);
             draw(&mut c);
             let x = c.remove_rect().center();
-            assert!(x.x > 0.0, "× rect resolves after draw");
+            assert!(x.x > 0.0, "the × stands where the layout puts it");
             dispatch(&mut c, &cursor(x));
             assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
             assert!(c.take_removed(), "remove signal fires");
@@ -1914,8 +1778,6 @@ mod tests {
             assert!(!c.take_toggled(), "nothing flipped");
         }
 
-        /// A chip whose remove the view bound to an action runs that action once, through the
-        /// chip's own control door, and removes itself.
         fn a_chip_whose_remove_is_bound_runs_the_action_it_names_once() {
             let mut spec = tilo_actions::ResourceSpec::new("res-tag", "test.tag", "Tag");
             spec = spec.with_action(
@@ -1970,6 +1832,25 @@ mod tests {
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
     }
+
+    /// A control's place is the layout's: a chip laid out and not yet painted
+    /// still answers a press on its "×", inside the chip, never at the
+    /// window's origin where a control nothing placed stands.
+    #[test]
+    fn the_layout_places_the_remove_control_without_a_paint() {
+        let mut chip = Chip::new("alice@example.com").removable();
+        lay_out(&mut chip);
+        let x = chip.remove_rect();
+        assert!(!x.is_zero_area(), "the layout places the ×: {x:?}");
+        assert!(
+            chip.get_rect().contains(x.center()),
+            "inside the chip: {x:?} in {:?}",
+            chip.get_rect()
+        );
+        dispatch(&mut chip, &cursor(x.center()));
+        assert!(dispatch(&mut chip, &mouse_press()), "the × press lands");
+        assert!(chip.take_removed(), "and removes");
+    }
 }
 
 #[cfg(test)]
@@ -2009,7 +1890,6 @@ mod activation_tests {
         let [x, y, w, h] = harness.inspection().root.children[0].rect;
         harness.click_at(x + w / 2.0, y + h / 2.0);
         assert_eq!(opened.get(), 2);
-        // A plain label chip is not a control.
         assert!(!Chip::new("label").is_focusable());
     }
 
@@ -2109,7 +1989,6 @@ mod activation_tests {
         let chip = Chip::new("Sort").menu().on_view(|| {});
         let node = Widget::accessibility(&chip).unwrap();
         assert_eq!(node.state.expanded, Some(false));
-        // A key wider than its label: the label sits in the middle.
         let paint_x = |width: f64, text: &mut TextRenderer| {
             let mut scene = Scene::new();
             ChipFace::new(Rect::new(0.0, 0.0, width, ChipFace::height(&theme)), "q").paint(

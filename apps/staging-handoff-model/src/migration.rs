@@ -1,5 +1,5 @@
-//! Secret-free source hints. These types grant neither a mount nor a copy;
-//! consumers must re-attest the source before using it.
+//! Secret-free source hints. These types grant neither a mount nor a copy; consumers must
+//! re-attest the source before using it.
 use super::{Extent, Handoff, HostOs, is_guid};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;

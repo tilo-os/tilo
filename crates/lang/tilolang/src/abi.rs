@@ -1,27 +1,23 @@
-//! The host imports, module `"tl"`: every function a compiled module may call, with its wasm
-//! signature.
+//! The host imports, module `"tl"`: every function a compiled module may call, with its wasm signature.
 //!
 //! `Int` is an `i64`, `Float` an `f64`, `Bool` an `i32`. Every other value (text, lists, records,
 //! references, actions, UI nodes) lives in the host and the guest holds an `i32` handle to it, so a
 //! module can't forge a reference or an action: it can only name handles the host gave it. Fields,
 //! types and actions are named by their ids, passed as string literal handles. An import traps on
-//! misuse (a wrong kind of handle, a mutation outside an action); well-typed code never makes such
-//! a call, apart from a reference literal that doesn't resolve. The runtime's table
+//! misuse (a wrong kind of handle, a mutation outside an action); well-typed code never makes such a
+//! call, apart from a reference literal that doesn't resolve. The runtime's table
 //! (`tilolang_runtime::abi`) must match this one.
 
 use crate::types::Vt;
 
 macro_rules! imports {
     ($($v:ident = $n:literal ([$($p:ident),*] -> [$($r:ident),*]);)*) => {
-        /// One import of the `"tl"` module.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum Imp { $($v),* }
 
         impl Imp {
-            /// Every import, in declaration order.
             pub const ALL: &'static [Self] = &[$(Self::$v),*];
 
-            /// The import's name in the module.
             pub const fn name(self) -> &'static str {
                 match self { $(Self::$v => $n),* }
             }
@@ -271,23 +267,21 @@ imports! {
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
-    // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link
-    // to a page of the bundle read as the reference to it. The arguments are the text, the
-    // pages by the address each stands at, the folder the page is written in, and the app the
-    // references name.
+    // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link to a page
+    // of the bundle read as the reference to it. The arguments are the text, the pages by the address each
+    // stands at, the folder the page is written in, and the app the references name.
     RichFromMarkdown = "rich_from_markdown" ([H, H, H, H] -> [H]);
-    // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links`
-    // written as the link to the page it stands at, from the folder the page is written in.
+    // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links` written as
+    // the link to the page it stands at, from the folder the page is written in.
     RichMarkdown = "rich_markdown" ([H, H, H] -> [H]);
     RichEmbed = "rich_embed" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
     Today = "today" ([] -> [H]);
-    // The day a moment falls on and the time of day it is, both for the person, the time of day
-    // as a clock reads it in the style they chose; a day moved by days; how far two days or two
-    // moments are apart; a part of a day, its weekday and the day its week starts on; and a day
-    // or a moment a text names, read at a moment.
+    // The day a moment falls on and the time of day it is, both for the person; a day moved by days; how
+    // far two days or two moments are apart; a part of a day, its weekday and the day its week starts on;
+    // and a day or a moment a text names, read at a moment.
     TimeDay = "time_day" ([H] -> [H]);
     TimeOfDay = "time_of_day" ([H] -> [I64]);
     TimeClock = "time_clock" ([H] -> [H]);
@@ -298,8 +292,8 @@ imports! {
     DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
     DayParse = "day_parse" ([H, H] -> [H]);
     TimeParse = "time_parse" ([H, H] -> [H]);
-    // A draw (`uses random`): a number in `0..upto`, one call per number, which the invocation
-    // records so a replay reads the same value.
+    // A draw (`uses random`): a number in `0..upto`, one call per number, which the invocation records so
+    // a replay reads the same value.
     RandomInt = "random_int" ([I64, I64] -> [I64]);
     RandomFloat = "random_float" ([] -> [F64]);
     RandomChoice = "random_choice" ([H] -> [H]);
@@ -310,15 +304,14 @@ imports! {
     UiActions = "ui_actions" ([H, H, H] -> []);
     UiAction = "ui_action" ([H, H, H] -> []);
 
-    // A file: its name, media type or `tilo-blob://` address (by the part asked), its size in
-    // bytes, its content read as text (a `Result`), and the chooser a control runs.
+    // A file: its name, media type or `tilo-blob://` address (by the part asked), its size in bytes, its
+    // content read as text (a `Result`), and the chooser a control runs.
     FilePart = "file_part" ([H, I32] -> [H]);
     FileSize = "file_size" ([H] -> [I64]);
     FileText = "file_text" ([H] -> [H]);
     FileFiles = "file_files" ([H] -> [H]);
-    // A file an action makes of what it holds: the text, the bytes, or the content an address
-    // names, as a file called by its name; and an archive of the files it holds, each under its
-    // own name.
+    // A file an action makes of what it holds: the text, the bytes, or the content an address names, as a
+    // file called by its name; and an archive of the files it holds, each under its own name.
     FileOfText = "file_of_text" ([H, H] -> [H]);
     FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
@@ -328,8 +321,8 @@ imports! {
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);
-    // Whether the row the view is running for stands open into its document: what a slot that
-    // holds the document is built under.
+    // Whether the row the view is running for stands open into its document: what a slot that holds the
+    // document is built under.
     RowOpen = "row_open" ([] -> [I32]);
 
     Abort = "abort" ([H] -> []);

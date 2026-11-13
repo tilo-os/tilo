@@ -1,20 +1,9 @@
-//! What the reader does beside its markup, and the typed edits and verbs it
-//! submits.
-//!
-//! Presentation — which page is shown, the zoom / pan, the current
-//! selection, the active tool, and the sidebar tab — stays out of the
-//! document: those are [`PdfEffect`]s. Every change of the markup the
-//! on-page affordances make (the selection HUD's highlight swatches, the
-//! window bar's marker colours, the comment rail's edit / reply / resolve / delete
-//! buttons, the note-marker drag, the page rail) is one of the typed field
-//! edits or verbs built here and submitted through the resource's
-//! dispatcher: the same values the palette and agents invoke.
-//!
-//! The open document's outline and the current find hits are live rows of
-//! the surface, published beside the resource with view operations only.
+//! What the reader does beside its markup, and the typed edits and verbs it submits.
+//! Presentation stays out of the document and is a [`PdfEffect`]; every markup change
+//! an affordance makes is one typed edit built here, the same value the palette and an
+//! agent invoke. The outline and the find hits are live rows with view operations only.
 
 use ui::framework::LiveRow;
-// `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
@@ -22,20 +11,11 @@ use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{Annotation, FormEntry, GeomSpace, HighlightColor, PtRect, Signature, Tool};
 use crate::resource::{NewAnnotation, NewComment, NewNote, NewSignature, pdf_markup};
 
-/// The action palette is refreshed frequently. Keep that contextual snapshot
-/// small even for a scanned book with thousands of pages or a heavily-reviewed
-/// contract, while `PublishesResources::resource` retains complete reachability
-/// by stable id.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
-/// A find query can produce hundreds of matches, but resources are consumed by
-/// global search, agents and history.  Project a useful first page without
-/// turning a pathological PDF into an unbounded action directory.
+/// The first page of matches: resources are consumed by search, agents and history,
+/// so a pathological PDF must not become an unbounded action directory.
 pub const SEARCH_RESULT_RESOURCE_LIMIT: usize = 32;
 
-/// Stable, non-secret identity for one local find projection.  Include the
-/// matching options because the same words under a different option set are a
-/// different result set.  This is deliberately an address token rather than a
-/// display value; the original query remains in the operation payload.
 pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) -> String {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, query.trim().as_bytes());
@@ -46,14 +26,8 @@ pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) 
     format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// Return the stable resource id for one source-PDF outline entry.
-///
-/// Outline order is presentation state: changing an earlier bookmark must not
-/// make a saved action for a later bookmark open a different section.  The
-/// identity therefore covers the immutable entry value plus its occurrence
-/// among identical entries (PDFs may legitimately repeat a title/page/level).
-/// A changed or removed entry fails closed during resolution instead of being
-/// rebound to a new ordinal.
+/// The resource id of one outline entry: its immutable value and its occurrence
+/// among identical entries, never its position, so a changed entry fails closed.
 pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String> {
     let (title, page, level) = ctx.outline.get(index)?;
     let occurrence = ctx
@@ -76,10 +50,6 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
     Some(format!("pdf.outline:{}:{hash:016x}", ctx.doc_id))
 }
 
-/// What the reader does that changes no markup: moving through the
-/// document and its view, the highlight tool's style, and opening and saving
-/// files. Every caller — a window bar slot, the palette, an agent — reaches
-/// the reader's handler as one of these.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "pdf_viewer.effects")]
 pub enum PdfEffect {
@@ -120,8 +90,7 @@ pub enum PdfEffect {
     Find,
     /// Use tool
     ///
-    /// Arms what a press on the page does: select text, highlight, draw,
-    /// add a note, add text or sign.
+    /// What a press on the page does: select, highlight, draw, note, text or sign.
     #[effect(view, idempotent)]
     UseTool {
         #[param("select, highlight, ink, note, text or sign")]
@@ -149,8 +118,7 @@ pub enum PdfEffect {
     MarkStrikeout,
     /// Go to
     ///
-    /// Shows the page the item (a page, an annotation, a comment, a
-    /// bookmark) is on.
+    /// Shows the page an item is on.
     #[effect(view, row, idempotent)]
     GoTo {
         #[param("1-based page")]
@@ -158,8 +126,7 @@ pub enum PdfEffect {
     },
     /// Go to match
     ///
-    /// A bounded find result, carrying the complete query so the exact
-    /// result is restored before navigating.
+    /// A bounded find result, carrying its query so the exact result is restored.
     #[effect(view, row, idempotent)]
     GoToMatch {
         #[param("the find query")]
@@ -175,10 +142,8 @@ pub enum PdfEffect {
     },
     /// Read text
     ///
-    /// Answers with the text of the PDF's pages, page by page, at most 50
-    /// pages at a time: read on from the `next` an answer gives. Reads the
-    /// PDF the record pinned, so a record opened from content reads with no
-    /// file. Changes nothing.
+    /// The text of the PDF's pages, at most 50 at a time: read on from `next`.
+    /// Reads the PDF the record pinned; changes nothing.
     #[effect(kind = "read", returns = crate::model::PdfText, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
@@ -188,17 +153,13 @@ pub enum PdfEffect {
     },
     /// Read form fields
     ///
-    /// Answers with the fields of the PDF's form: each one's name, its
-    /// kind (text, checkbox, radio or choice), its value now in the shape
-    /// a field edit sets, the path that edit takes (`form_values/<name>`),
-    /// its choices or the value a checkbox exports, the page it is on, and
-    /// whether it is read-only or required. Changes nothing.
+    /// The PDF's form fields: name, kind, value, the path a field edit takes
+    /// (`form_values/<name>`), choices, page, read-only and required. Changes nothing.
     #[effect(kind = "read", returns = crate::model::FormFields, idempotent)]
     ReadFormFields,
     /// Look at a page
     ///
-    /// Answers with a picture of one page as the PDF draws it, kept as
-    /// content: its address, width and height. Changes nothing.
+    /// A picture of one page as the PDF draws it, kept as content. Changes nothing.
     #[effect(kind = "read", returns, idempotent)]
     LookPage {
         #[param("The page to look at, 1-based")]
@@ -208,22 +169,18 @@ pub enum PdfEffect {
     },
     /// Open PDF from content
     ///
-    /// Pins a PDF the workspace keeps as content (an attachment, a shared file,
-    /// an export) as the document this record marks up, so read-text and
-    /// look-page read it and markup is made on it, and answers with its
-    /// name and page count. A record marks up one PDF: the PDF it holds
-    /// already answers again, another is refused.
+    /// Pins a PDF the workspace keeps as content as the document this record
+    /// marks up. A record marks up one PDF: another is refused.
     #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
     ImportPdfContent {
-        #[param(content, "The PDF's content address, `tilo.content:<hash>`")]
+        #[param(content, "The PDF's content reference, `tilo.content:<reference>`")]
         content: String,
         #[param("The file's name, such as report.pdf; Document.pdf when omitted")]
         name: Option<String>,
     },
     /// Select text
     ///
-    /// Selects `text` on a page (all of the page's text when omitted), as
-    /// a drag across it would, and answers with what it selected.
+    /// Selects `text` on a page, all of it when omitted.
     #[effect(job, returns)]
     SelectText {
         #[param(
@@ -252,10 +209,8 @@ pub enum PdfEffect {
     },
     /// Insert pages from a file
     ///
-    /// Puts pages of the PDF or picture at `path` into this document, as
-    /// the page rail's Add does: all of its pages, or those `pages` names
-    /// in that order, the first of them at position `at`. Answers with the
-    /// ids of the new pages and the document's page count.
+    /// Pages of the PDF or picture at `path`, all of them or those `pages` names,
+    /// the first at position `at`.
     #[effect(job, returns)]
     InsertPages {
         #[param("Absolute path of the PDF or picture")]
@@ -276,27 +231,22 @@ pub enum PdfEffect {
     },
 }
 
-/// The paths of annotation `id`.
 fn annotation(id: &str) -> <Annotation as tilo_resource::Model>::Paths<PdfMarkup> {
     PdfMarkup::paths().annotations.item(&Id::from_raw(id))
 }
 
-/// The paths of comment `id`.
 fn comment(id: &str) -> <crate::model::Comment as tilo_resource::Model>::Paths<PdfMarkup> {
     PdfMarkup::paths().comments.item(&Id::from_raw(id))
 }
 
-/// One field edit as an invocation.
 fn edit(edit: &Edit<PdfMarkup>) -> Invoke<PdfMarkup> {
     edit.into()
 }
 
-/// Field edits as one change: one version, one undo step.
 fn group(edits: &[Edit<PdfMarkup>]) -> Invoke<PdfMarkup> {
     Invoke::group(edits.iter().map(Invoke::from))
 }
 
-/// Add annotation `a`, made by the tools, on page occurrence `page_id`.
 pub fn add_annotation_on(a: &Annotation, page_id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::ADD_ANNOTATION.with(NewAnnotation {
         id: a.id.clone(),
@@ -312,7 +262,6 @@ pub fn set_annotation_color_action(id: &str, color: HighlightColor) -> Invoke<Pd
     edit(&annotation(id).color.set(color))
 }
 
-/// Move note `id` to `(x, y)` in its page's PDF user space.
 pub fn set_annotation_position_user_action(
     markup: &PdfMarkup,
     id: &str,
@@ -333,7 +282,6 @@ pub fn set_form_value_action(name: &str, value: &FormEntry) -> Invoke<PdfMarkup>
     edit(&PdfMarkup::paths().form_values.key(name).set(value.clone()))
 }
 
-/// Take over the existing markup an import plan found in `source_hash`.
 pub fn import_existing_action(
     source_hash: &str,
     plan: &crate::adopt::ImportPlan,
@@ -378,7 +326,6 @@ pub fn import_existing_action(
     PdfMarkup::ADOPT_EXISTING.with((source_hash.to_owned(), markup))
 }
 
-/// Change free text `id`'s words, keeping its box.
 pub fn set_free_text_action(markup: &PdfMarkup, id: &str, text: &str) -> Option<Invoke<PdfMarkup>> {
     let stored = markup.annotations.find(&Id::from_raw(id))?;
     let crate::model::AnnoKind::FreeText { rect, size, .. } = &stored.kind else {
@@ -393,8 +340,6 @@ pub fn set_free_text_action(markup: &PdfMarkup, id: &str, text: &str) -> Option<
     )))
 }
 
-/// Move or resize free text `id` and set its size; `rect` and `size` in
-/// its page's user space.
 pub fn set_free_text_box_user_action(
     markup: &PdfMarkup,
     id: &str,
@@ -416,11 +361,10 @@ pub fn set_free_text_box_user_action(
     ]))
 }
 
-pub fn pin_source_action(hash: &str, len: u64, name: &str) -> Invoke<PdfMarkup> {
-    PdfMarkup::PIN_SOURCE.with((hash.to_owned(), len, name.to_owned()))
+pub fn pin_source_action(source: &ui::tilo_resource::Bytes, name: &str) -> Invoke<PdfMarkup> {
+    PdfMarkup::PIN_SOURCE.with((source.clone(), name.to_owned()))
 }
 
-/// Record the reader's place as the resume hint of the open document.
 pub fn record_reading_position_action(page: &str, fraction: f64, zoom: f64) -> Invoke<PdfMarkup> {
     PdfMarkup::RECORD_READING_POSITION.with((page.to_owned(), fraction, zoom))
 }
@@ -429,8 +373,6 @@ pub fn delete_annotation_action(id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::DELETE_ANNOTATION.with(Id::from_raw(id))
 }
 
-/// A sticky note being authored: the ids minted for its marker and its
-/// comment thread, its colour and its opening text.
 pub struct NoteDraft<'a> {
     pub anno_id: &'a str,
     pub comment_id: &'a str,
@@ -438,8 +380,6 @@ pub struct NoteDraft<'a> {
     pub body: &'a str,
 }
 
-/// A note anchored to page occurrence `page_id` at a point of its PDF user
-/// space.
 pub fn create_note_on_action(
     note: &NoteDraft<'_>,
     page_id: &str,
@@ -457,7 +397,6 @@ pub fn create_note_on_action(
     })
 }
 
-/// A comment free on page occurrence `page_id`, or on annotation `anno`.
 pub fn add_comment_action(
     id: &str,
     anno: Option<&str>,
@@ -473,15 +412,12 @@ pub fn add_comment_action(
     })
 }
 
-/// Replace a comment's text with plain `body`.
 #[cfg(test)]
 pub fn set_comment_body_action(id: &str, body: &str) -> Invoke<PdfMarkup> {
     let paths = comment(id);
     group(&[paths.text.replace(body), paths.body.set(Vec::new())])
 }
 
-/// Replace a comment's text with what was written in the editor: its
-/// paragraphs as `clips`, its plain text derived from them.
 pub fn set_comment_text_action(
     id: &str,
     clips: Vec<tilo_document::ClipBlock>,
@@ -490,7 +426,6 @@ pub fn set_comment_text_action(
     group(&[paths.text.replace(plain_of(&clips)), paths.body.set(clips)])
 }
 
-/// Reply to a comment with what was written in the editor.
 pub fn add_reply_text_action(
     comment_id: &str,
     clips: Vec<tilo_document::ClipBlock>,
@@ -503,7 +438,6 @@ pub fn add_reply_text_action(
     })
 }
 
-/// The plain text of paragraphs, a line each.
 pub(crate) fn plain_of(clips: &[tilo_document::ClipBlock]) -> String {
     clips
         .iter()
@@ -521,7 +455,6 @@ pub fn add_reply_action(comment_id: &str, body: &str) -> Invoke<PdfMarkup> {
     add_reply_action_with_id(comment_id, &crate::model::new_id(), body)
 }
 
-/// A reply with its already-minted durable id.
 pub fn add_reply_action_with_id(comment_id: &str, reply_id: &str, body: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::REPLY.with(pdf_markup::Reply {
         comment: Id::from_raw(comment_id),
@@ -535,8 +468,6 @@ pub fn delete_comment_action(id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::DELETE_COMMENT.with(Id::from_raw(id))
 }
 
-/// Place a signature on page occurrence `page_id`, its box in whatever
-/// space the signature carries.
 pub fn add_signature_on(signature: &Signature, page_id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::ADD_SIGNATURE.with(NewSignature {
         id: signature.id.clone(),
@@ -561,9 +492,6 @@ pub fn import_pages_action(after_id: Option<&str>, pages: Vec<PagePlanEntry>) ->
     PdfMarkup::IMPORT_PAGES.with((after_id.map(str::to_owned), pages))
 }
 
-/// Imported `pages` after page occurrence `after`, or first when none, as
-/// one change: an import without a page to follow appends, so each new page
-/// then moves after the one before it, the first to the start.
 pub fn insert_pages_action(after: Option<&str>, pages: Vec<PagePlanEntry>) -> Invoke<PdfMarkup> {
     if after.is_some() {
         return import_pages_action(after, pages);
@@ -586,10 +514,6 @@ pub fn move_page_plan_action(id: &str, after_id: Option<&str>) -> Invoke<PdfMark
     PdfMarkup::MOVE_PAGE.with((Id::from_raw(id), after_id.map(str::to_owned)))
 }
 
-/// The page rail's reorder of the page at `from` to final position `to`
-/// (the page is taken out, then put back at `to`) among the pages `ids`, as
-/// the move it is: after the page that will precede it, or to the start.
-/// Moving down, that page is the one at `to`; moving up, the one before it.
 pub fn reorder_page_plan_action(
     ids: &[String],
     from: usize,
@@ -604,7 +528,6 @@ pub fn reorder_page_plan_action(
     Some(move_page_plan_action(id, after.map(String::as_str)))
 }
 
-/// Turn page occurrence `id` to `degrees` clockwise.
 #[cfg(test)]
 pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
     edit(
@@ -616,27 +539,18 @@ pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
     )
 }
 
-/// The presentation context the reader hands `provide_resources` so the
-/// document-level "Add note" action can be built from the live reading position
-/// and author — state that lives in the app, not the document.
 #[derive(Debug, Clone)]
 pub struct PdfResourceCtx {
-    /// Stable identity for the open document's markup record.
     pub doc_id: String,
     pub title: String,
-    /// Durable CRDT occurrence ids parallel to the current shared page order.
-    /// They move with a page, so an old resource address never starts
-    /// addressing whichever page later occupies its ordinal.
+    /// Durable ids parallel to the page order, so an old address never rebinds to
+    /// whichever page later takes that ordinal.
     pub page_ids: Vec<String>,
-    /// Immutable source-page identities parallel to `page_ids`.
     pub page_sources: Vec<usize>,
-    /// Current bounded find projection. Search itself stays local view state;
-    /// each materialized hit is still navigable by agents and history.
     pub search_query: String,
     pub search_whole_word: bool,
     pub search_case_sensitive: bool,
-    /// Stable token for the query plus options.  It prevents a stale result
-    /// address from being rebound to ordinal `N` in a later find query.
+    /// A token for the query and options, so a stale result never rebinds by ordinal.
     pub search_token: String,
     pub search_pages: Vec<usize>,
     pub outline: Vec<(String, usize, u8)>,
@@ -669,8 +583,6 @@ fn search_result_row(ctx: &PdfResourceCtx, index: usize, page: usize) -> LiveRow
     })
 }
 
-/// The current find results — presentation, not markup — as one live row
-/// whose children are the bounded first matches.
 fn find_result_row(ctx: &PdfResourceCtx) -> Option<LiveRow> {
     if ctx.search_query.trim().is_empty() {
         return None;
@@ -692,9 +604,6 @@ fn find_result_row(ctx: &PdfResourceCtx) -> Option<LiveRow> {
     Some(search)
 }
 
-/// The open document's live rows: its outline (a bounded first page) and
-/// the current find hits. Both come from the PDF and the find bar rather
-/// than the record and carry only view operations.
 pub fn live_rows(ctx: &PdfResourceCtx) -> Vec<LiveRow> {
     let mut rows: Vec<LiveRow> = (0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT))
         .filter_map(|index| outline_row(ctx, index))
@@ -703,9 +612,6 @@ pub fn live_rows(ctx: &PdfResourceCtx) -> Vec<LiveRow> {
     rows
 }
 
-/// The live row `id`, beyond the bounded page [`live_rows`] lists. Every id
-/// is checked against the live model, so a changed outline entry or a stale
-/// find hit fails closed instead of being rebound by position.
 pub fn live_row(ctx: &PdfResourceCtx, id: &str) -> Option<LiveRow> {
     let outline_prefix = format!("pdf.outline:{}:", ctx.doc_id);
     if id.starts_with(&outline_prefix) {

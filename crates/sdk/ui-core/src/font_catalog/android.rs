@@ -1,12 +1,5 @@
-//! The font catalog on Android.
-//!
-//! `tilo-app build --platform android` packs the catalog into the APK's
-//! `assets/tilo/fonts`. Font files inside an APK have no path fontdb could
-//! map, so the first start of each catalog version copies them into the app's
-//! files directory; loading then verifies that copy like any installed
-//! catalog. Android has no
-//! fontconfig: the device's own faces, which cover scripts the catalog does
-//! not, are read from `/system/fonts`.
+//! The font catalog on Android. `tilo-app build --platform android` packs the catalog into the APK's
+//! `assets/tilo/fonts`.
 
 use std::ffi::CString;
 use std::io::Write;
@@ -42,8 +35,6 @@ pub(crate) fn android_font_system(locale: String) -> Option<FontSystem> {
     })
 }
 
-/// The catalog's directory under `$XDG_DATA_HOME`, copied out of the APK if
-/// this version is not there yet.
 fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
     let data = tilo_paths::data_dir()
         .ok_or_else(|| FontCatalogError::at("XDG_DATA_HOME", "no app data directory"))?;
@@ -57,7 +48,6 @@ fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
     let staging = versions.join(".staging");
     let _ = std::fs::remove_dir_all(&staging);
     extract(&app.asset_manager(), &staging)?;
-    // Only one catalog version is ever loaded; earlier ones are dead weight.
     if let Ok(entries) = std::fs::read_dir(&versions) {
         for entry in entries.flatten() {
             if entry.path() != staging {
@@ -69,8 +59,6 @@ fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
     Ok(root)
 }
 
-/// Copy every product font, then the manifest last: a directory holding a
-/// manifest is a complete copy.
 fn extract(assets: &ndk::asset::AssetManager, into: &Path) -> Result<(), FontCatalogError> {
     let manifest = tilo_font_catalog::manifest()?;
     for asset in manifest.font.iter().filter(|a| a.scope == Scope::Product) {

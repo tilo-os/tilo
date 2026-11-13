@@ -62,9 +62,6 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
     }
     // phase: pending_live_edits_are_neither_committed_nor_projected_as_history
     {
-        // Catches calling get_heads/entries on the live document or on a clone
-        // before discarding its open transaction. Either mistake turns speculative
-        // UI state into a synthetic durable history entry.
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "committed").unwrap();
         let committed = doc.commit().unwrap();
@@ -154,8 +151,6 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
     }
     // phase: comparison_switches_between_exact_before_and_after_snapshots
     {
-        // Catches implementing compare as a visual flag over one snapshot rather
-        // than two exact graph frontiers.
         let (doc, _, two) = two_titles();
         let mut history =
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
@@ -206,8 +201,6 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
     }
     // phase: select_before_refresh_updates_projection_without_advancing_the_pinned_preview
     {
-        // Catches select advancing the factual-projection cache key without
-        // rebuilding its entries, which makes a later refresh skip the new row.
         let (mut doc, one, _) = two_titles();
         let mut history =
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
@@ -236,8 +229,6 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
 fn restore_review_is_scoped_to_a_preview_and_refuses_effect_receipts() {
     // phase: restore_review_is_scoped_and_invalidated_by_selection_or_live_changes
     {
-        // Catches replaying a review token in another account/workspace, after a
-        // selection change, or against a different current live frontier.
         let (mut doc, one, two) = two_titles();
         let original_heads = doc.get_heads();
         let mut history =

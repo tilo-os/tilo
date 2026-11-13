@@ -1,15 +1,12 @@
 use super::*;
-/// Private ACEs, ancestor rights, raw Unicode and path boundary.
 #[test]
 fn windows_aces_and_names_are_strict_lossless_and_bounded() {
-    // Phase `private_aces_refuse_every_untrusted_grant_and_unknown_mask`.
     {
         assert!(!allowed_ace(false, 1, true));
         assert!(!allowed_ace(true, 0x8000_0000, true));
         assert!(allowed_ace(true, 0x001f_01ff, true));
     }
 
-    // Phase `ancestors_allow_read_and_add_directory_but_not_replacement`.
     {
         assert!(allowed_ace(false, 0x0012_0089, false));
         assert!(allowed_ace(false, 4, false));
@@ -18,7 +15,6 @@ fn windows_aces_and_names_are_strict_lossless_and_bounded() {
         }
     }
 
-    // Phase `raw_unicode_and_surrogates_are_lossless_but_aliases_refuse`.
     {
         let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
         raw.push(0xd800);
@@ -44,7 +40,6 @@ fn windows_aces_and_names_are_strict_lossless_and_bounded() {
         assert!(windows_directory_path(std::iter::repeat_n(65, 4097)).is_err());
     }
 
-    // Phase `cache_suffix_must_still_fit_the_verifier_path_boundary`.
     {
         let okay = format!("C:\\{}", vec!["x"; 61].join("\\"));
         assert!(windows_cache_path(okay.encode_utf16()).is_ok());
@@ -55,7 +50,6 @@ fn windows_aces_and_names_are_strict_lossless_and_bounded() {
         assert!(windows_cache_path(near_limit.encode_utf16()).is_err());
     }
 }
-// Native Windows fixtures: UNRUN until explicit platform qualification authorization.
 #[cfg(windows)]
 mod native {
     use super::super::{native::fixture_acquire, *};
@@ -80,8 +74,6 @@ mod native {
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
     fn directory() -> tempfile::TempDir {
-        // No /tmp fallback: native fixtures need the qualified current-user
-        // cache filesystem and safe ancestry, just like the production provider.
         tempfile::tempdir_in(tilo_paths::cache_dir().unwrap()).unwrap()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
@@ -161,7 +153,6 @@ mod native {
             )
             .unwrap();
     }
-    /// Failed preparation, session revocation, fresh settlement and zero-record cancellation.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -183,9 +174,6 @@ mod native {
                     entries.sort();
                     entries
                 }
-                // Each case has a genuine authenticated full component. Native bootstrap
-                // and record decoding succeed; only common history/prefix validation
-                // distinguishes the independently valid control from the two failures.
                 for case in 0..3 {
                     let dir = directory();
                     let s = selected();
@@ -345,7 +333,6 @@ mod native {
             },
         );
     }
-    /// Process lock, raw Unicode ancestry, handle sharing and reparse refusal.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -379,7 +366,6 @@ mod native {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // libtest exits 0 when `--exact` selects nothing; require the child ran.
                 assert!(
                     stdout.contains("test result: ok. 1 passed"),
                     "the child ran no test: {stdout}"
@@ -504,7 +490,6 @@ mod native {
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
-    /// Flush faults, crash boundaries, reset fences and zero-record residue.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -642,7 +627,6 @@ mod native {
             },
         );
     }
-    /// Cancellation, visitor errors, collisions, sharing failure and reopen substitution.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -781,9 +765,6 @@ mod native {
             },
         );
     }
-    // These independent SDK observations deliberately do not call production
-    // security(), trusted(), descriptor(), current_user(), or allowed_ace().
-    // They inspect owner/group/DACL (not privileged SACL state).
     mod security_observation {
         use std::{
             ffi::c_void,
@@ -815,8 +796,6 @@ mod native {
         fn success(value: i32) {
             assert_ne!(value, 0, "{}", std::io::Error::last_os_error());
         }
-        // SID comes from a live OS-owned descriptor/ACE or the bounded token
-        // allocation. Check its fixed header and complete subauthority extent.
         unsafe fn sid_text(sid: PSID, start: usize, end: usize) -> String {
             let p = sid as usize;
             assert!(p >= start && p.checked_add(8).is_some_and(|n| n <= end));
@@ -1027,7 +1006,6 @@ mod native {
             );
         }
         pub(super) fn trusted_only(facts: &Facts, user: &str) {
-            // Literal independent expected principals/rights; no production predicate.
             assert_eq!(facts.aces.len(), 3);
             for sid in [user, "S-1-5-18", "S-1-5-32-544"] {
                 let matches: Vec<_> = facts.aces.iter().filter(|a| a.sid == sid).collect();
@@ -1045,8 +1023,6 @@ mod native {
             trusted_only(&facts, user);
         }
     }
-    // Descriptor, full native identity, object type, names and file bytes all
-    // survive a refusal. Ignore access timestamps, which inspection can update.
     fn security_tree(
         path: &std::path::Path,
     ) -> Vec<(
@@ -1127,7 +1103,6 @@ mod native {
             );
         }
     }
-    /// Protected creation, ancestry replacement grants and permissive ACLs.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1153,8 +1128,6 @@ mod native {
                     && u32::from(a.flags)
                         & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)
                         == OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE));
-                // An ordinary child positively demonstrates that this parent really
-                // transmits an effective Everyone grant; it is outside the cache namespace.
                 let ordinary = dir.path().join("inheritance-control");
                 fs::create_dir(&ordinary).unwrap();
                 fs::write(ordinary.join("sentinel"), b"inherited").unwrap();
@@ -1288,7 +1261,6 @@ mod native {
     #[test]
     #[ignore = "Requires an externally provisioned quota-limited NTFS/ReFS cache; never fill a host volume"]
     fn disk_full_does_not_acknowledge_or_delete_residue() {
-        // Provision enough space for acquisition, but less than the 4096-byte payload.
         let path = std::env::var_os("TILO_WINDOWS_QUOTA_CACHE").expect("qualified quota fixture");
         let s = selected();
         let [mut a, mut b] = parts(std::path::Path::new(&path), &s);

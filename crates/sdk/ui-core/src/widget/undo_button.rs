@@ -32,10 +32,6 @@ use crate::widget::Widget;
 use crate::widget::button::FaceSizer;
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 
-/// An Undo or Redo button wired to the host's history.
-///
-/// Disabled — dimmed, unfocusable, and reported `disabled` to assistive
-/// technology — exactly when the corresponding shortcut would do nothing.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent pointer, focus, availability, and repaint states"
@@ -46,21 +42,15 @@ use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 )]
 pub struct UndoButton {
     kind: UndoRequest,
-    /// Visible label. Empty by default: the control is icon-only, and its
-    /// meaning reaches a screen reader through the accessible name instead.
     label: String,
-    /// Hover tooltip, which also names the shortcut so the control teaches it
-    /// rather than replacing it.
     tooltip: String,
     role: ButtonRole,
     control_size: ControlSize,
-    /// The face geometry seen in `build_layout`, for `measure`.
     sizer: FaceSizer,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
-    /// The host-published status plus this control's pending request.
     access: UndoAccess,
     /// Visual state the last paint was emitted from, so a status change (an
     /// action arriving on an empty stack) repaints instead of leaving a dimmed
@@ -88,38 +78,30 @@ impl UndoButton {
         }
     }
 
-    /// An icon-only Undo button.
     pub fn undo() -> Self {
         Self::new(UndoRequest::Undo)
     }
 
-    /// An icon-only Redo button.
     pub fn redo() -> Self {
         Self::new(UndoRequest::Redo)
     }
 
-    /// Which verb this control performs.
     pub fn kind(&self) -> UndoRequest {
         self.kind
     }
 
-    /// Show a visible label beside the icon (`"Undo"`). Pass a fluent key to
-    /// localise it; the accessible name follows the same string.
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
         self
     }
 
-    /// What the control does. Defaults to [`ButtonRole::Plain`]: a history
-    /// control belongs in a toolbar, not competing with the primary action.
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
         self
     }
 
-    /// Its height and label role.
     #[must_use]
     pub fn control_size(mut self, size: ControlSize) -> Self {
         self.control_size = size;
@@ -133,7 +115,6 @@ impl UndoButton {
         self.access.can(self.kind)
     }
 
-    /// The status this control last received from the host.
     pub fn status(&self) -> &UndoStatus {
         self.access.status()
     }
@@ -185,8 +166,6 @@ impl Widget for UndoButton {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // An icon-only control is a square of its size's height; a labelled
-        // one is measured (`measure`) to hold its label.
         self.sizer = FaceSizer::of(self.control_size, theme);
         #[allow(
             clippy::cast_possible_truncation,
@@ -264,8 +243,6 @@ impl Widget for UndoButton {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Unavailable: reject input outright, matching every other disabled
-        // widget. No hover feedback, no request, not consumed.
         if !self.is_available() {
             if self.is_hovered || self.is_pressed {
                 self.is_hovered = false;
@@ -297,7 +274,6 @@ impl Widget for UndoButton {
                         if pressed {
                             *ctx.focus_target = Some(ctx.node_id);
                         } else {
-                            // Fires on release-while-hovered, like `Button`.
                             self.activate();
                         }
                     }
@@ -353,18 +329,10 @@ impl Widget for UndoButton {
         self.is_focused
     }
 
-    /// Disabled precisely when the verb is unavailable. This is what keeps
-    /// keyboard focus off a dead control and, through
-    /// [`accessibility`](Widget::accessibility), what an AT is told.
     fn is_enabled(&self) -> bool {
         self.is_available()
     }
 
-    /// Keyboard (Enter / Space) and assistive-technology activation.
-    ///
-    /// [`perform_action`](Widget::perform_action) defaults to forwarding
-    /// here with the empty key path, so an AT operating the node lands on the
-    /// same request a mouse release makes.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -414,11 +382,6 @@ impl Widget for UndoButton {
 impl crate::undo::UndoControl for UndoButton {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.access.publish(&status());
-        // Surrender focus when the verb goes away. Undoing the last action
-        // with the keyboard empties the stack under the control the user is
-        // standing on: it drops out of `focusable_order` the same instant, so
-        // keeping the ring would leave a focus indicator on something Tab can
-        // no longer reach and an AT told it was focused.
         if !self.is_available() && self.is_focused {
             self.is_focused = false;
             self.dirty = true;
@@ -458,8 +421,6 @@ mod tests {
         }
     }
 
-    /// Hover, press, release over the control's centre — the real pointer
-    /// path, not a shortcut into `activate`.
     fn click(b: &mut UndoButton) {
         let device = winit::event::DeviceId::dummy();
         let centre = b.rect.center();
@@ -525,10 +486,6 @@ mod tests {
             );
         }
 
-        // Case `a_status_change_marks_the_control_for_repaint`.
-        // A status arriving on a control that painted dimmed has to repaint it,
-        // or the first undoable action leaves a live history behind a dead-looking
-        // button until something else happens to invalidate the frame.
         {
             let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
             b.last_paint_state = b.paint_state();
@@ -557,7 +514,6 @@ mod tests {
                 "a live, focused control reports focus"
             );
 
-            // The action is undone; the stack is empty.
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
             assert!(!b.is_focused(), "focus is surrendered with the verb");
             let node = Widget::accessibility(&b).unwrap();
@@ -568,9 +524,6 @@ mod tests {
 
     #[test]
     fn undo_requests_share_one_route_for_pointer_and_assistive_activation() {
-        // Case `clicking_requests_the_verb_only_when_it_is_available`.
-        // The pointer path produces a request the host can drain — and only when
-        // the verb is available.
         {
             let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
             click(&mut b);
@@ -593,9 +546,6 @@ mod tests {
             );
         }
 
-        // Case `assistive_activation_takes_the_same_route_as_a_click`.
-        // Assistive technology reaches the same request as a mouse release —
-        // `perform_action` forwards the empty key path here.
         {
             let mut doc = AutoCommit::new();
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));

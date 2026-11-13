@@ -1,14 +1,10 @@
-//! `tilo-app-package` — CLI driver for the `tilo-app-package` format crate.
+//! `tilo-app-package`: CLI driver for the `tilo-app-package` format crate.
 //!
-//! A `.tapp` is a plain (uncompressed) tar archive; see
-//! [`tilo_app_package::tapp`] for the layout. `pack` writes the full form,
-//! which carries every payload blob for offline transfer; `pack --thin` and
-//! `thin` write the thin form (signed root, manifest and collection only),
-//! whose payload an installer fetches from whoever holds the bytes.
-//!
-//! Uncompressed because each blob is already content-addressed and,
-//! deployed, lives in a content store doing dedup/streaming — gzip would
-//! only waste CPU.
+//! A `.tapp` is a plain, uncompressed tar archive; see [`tilo_app_package::tapp`] for the layout.
+//! `pack` writes the full form, carrying every payload blob for offline transfer, and `pack --thin`
+//! or `thin` the thin form (signed root, manifest and collection only), whose payload an installer
+//! fetches from whoever holds the bytes. Uncompressed because each blob is already content-addressed
+//! and lives in a content store once deployed, so gzip would only cost CPU.
 
 use std::collections::BTreeMap;
 use std::fs::File;

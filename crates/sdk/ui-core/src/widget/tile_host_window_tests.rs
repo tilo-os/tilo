@@ -7,8 +7,6 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-/// An app whose page is one open dialog; it reports where the dialog
-/// stood after each layout and top-layer paint.
 struct DialogApp {
     dialog: crate::widget::ModalDialog<crate::widget::Text>,
     seen: std::rc::Rc<std::cell::Cell<Rect>>,
@@ -91,8 +89,6 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
         dialog,
         seen: seen.clone(),
     })));
-    // The screen, with the window standing in its left two-thirds below
-    // a top bar, as a window does in the strip.
     let screen = Rect::new(0.0, 0.0, 1440.0, 900.0);
     let mut tree = TaffyTree::new();
     let mut nodes = std::collections::HashMap::new();
@@ -139,7 +135,6 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
     };
     inside(seen.get(), "before its first paint");
 
-    // The top layer is drawn over the whole screen.
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(screen));
     host.draw_overlay(
@@ -157,8 +152,6 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
     );
 }
 
-/// An app that notes which window was current whenever the host reached
-/// it to run its callbacks or a wake.
 struct WindowProbe {
     reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>,
 }

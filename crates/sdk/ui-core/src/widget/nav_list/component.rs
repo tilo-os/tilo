@@ -5,12 +5,11 @@ use crate::icons::Icon;
 
 use super::{NavItem, NavList, NavSection};
 
-/// The places of an app, in its sidebar: choosing one shows it. Selection follows the person's
-/// choice and is reported, never kept by the app beside it.
+/// A sidebar of places whose choice is reported to the app: choosing one shows it.
 #[derive(Component, Default)]
 #[component(name = "NavList", role = "Tree", label = "title")]
 pub struct NavListProps {
-    /// What the places are, as a heading over them.
+    /// The heading over the places.
     pub title: Option<String>,
     /// The key of the place shown now.
     #[component(data)]
@@ -18,33 +17,32 @@ pub struct NavListProps {
     pub selected: Option<String>,
     /// A compact rail of icons that fits beside the content at every width.
     pub rail: bool,
-    /// The places, in order: places, and sections of them under a heading.
+    /// The places, in order, and sections of them under a heading.
     #[component(slot(default))]
     pub items: Vec<NavEntry>,
-    /// A place was chosen; carries its key.
+    /// A place was chosen: its key is the value.
     #[component(event(value = String))]
     pub select: Event,
 }
 
-/// A group of places under a heading in a navigation list: a category of channels, a folder
-/// of notebooks. A collapsible one folds away under its heading.
+/// A group of places under a heading (a category of channels, a folder of notebooks); a
+/// collapsible one folds away.
 #[derive(Clone, Component, Debug, Default)]
 #[component(name = "NavSection", role = "Group", label = "title")]
 pub struct NavSectionProps {
-    /// What the places are, as the heading over them.
+    /// The heading over the places.
     #[component(required, positional)]
     pub title: String,
     /// Whether its heading folds it away.
     pub collapsible: bool,
-    /// The action that makes another of the places in the group ("New project"), drawn at the
-    /// end of the heading and run when the person presses it.
+    /// The action that makes another place in the group ("New project"), drawn at the end of
+    /// the heading.
     pub add: Option<OfferedAction>,
     /// The places, in order.
     #[component(slot(default))]
     pub items: Vec<NavItemProps>,
 }
 
-/// What a navigation list holds: a place, or a section of them under a heading.
 #[derive(Clone, Debug)]
 pub enum NavEntry {
     Item(NavItemProps),
@@ -52,7 +50,6 @@ pub enum NavEntry {
 }
 
 impl NavEntry {
-    /// The places it holds: itself, or the section's.
     fn places(&self) -> &[NavItemProps] {
         match self {
             Self::Item(item) => std::slice::from_ref(item),
@@ -65,7 +62,7 @@ impl NavEntry {
 #[derive(Clone, Component, Debug, Default)]
 #[component(name = "NavItem", role = "TreeItem", label = "label")]
 pub struct NavItemProps {
-    /// What names the place across changes: what selection reports.
+    /// What names the place across changes, and what its selection reports.
     #[component(required, positional)]
     #[component(data)]
     #[component(identity)]
@@ -75,25 +72,23 @@ pub struct NavItemProps {
     pub label: String,
     /// Its glyph.
     pub icon: Option<Icon>,
-    /// How many things it holds: a quiet count in tertiary ink.
+    /// How many things it has: a quiet count in tertiary ink.
     pub count: Option<i64>,
-    /// How many things wait for attention (unread, mentions): the list's one filled badge,
-    /// in the person's colour; zero shows nothing.
+    /// How many things wait for attention (unread, mentions): the list's one filled badge in
+    /// the person's colour, nothing at zero.
     pub live: Option<i64>,
     /// Something new waits behind the place: its label stands out at rest.
     pub unread: bool,
-    /// How many things behind the place name the person (mentions): more specific than the
-    /// place's unread count, so it takes the badge's place while there are any, as Slack's one
-    /// badge counts what names you rather than everything new.
+    /// How many things behind the place name the person: more specific than the unread count,
+    /// it replaces the badge while there are any.
     pub mentions: Option<i64>,
-    /// The resource the place stands for, when it is one (a channel): the host says how much
-    /// of it the person has not seen, in `live`, and lifts the label while anything is.
+    /// The resource the place shows, when it is one (a channel): the host says in `live` how
+    /// much of it is unseen, and the label lifts while anything is.
     pub item: Option<ResourceId>,
-    /// The person the place stands for, when it is one (a direct conversation): their avatar
-    /// in the icon's place, ringed in their presence colour, and their presence badge. The
-    /// icon and the avatar never both show: the person takes the icon's place.
+    /// The person the place shows, when it is one (a direct conversation): their avatar and
+    /// presence ring in the icon's place.
     pub person: Option<Person>,
-    /// The place was chosen: what choosing it does, beside the list's own `select`.
+    /// The place was chosen: what choosing it does, beside the list's `select`.
     #[component(event(press))]
     pub select: Event,
 }
@@ -101,22 +96,16 @@ pub struct NavItemProps {
 impl From<NavItemProps> for NavItem {
     fn from(props: NavItemProps) -> Self {
         let mut item = Self::new(props.key, props.label);
-        // The resource the place shows: the list chooses the place of the resource a window
-        // shows, whatever the app calls the place.
         if let Some(item_of) = props.item {
             item = item.resource(item_of.0);
         }
         if let Some(icon) = props.icon {
             item = item.icon(icon);
         }
-        // A person takes the icon's place: their face says who the place is, ringed in the
-        // presence colour their identity carries.
         if let Some(person) = props.person {
             item = item.person(&person.identity, None, false);
             item = item.person_face(person.name, None);
         }
-        // What names the person is what the badge counts: a mention count is more specific
-        // than the place's unread count, and the label lifts either way.
         if let Some(mentions) = props.mentions.filter(|mentions| *mentions > 0) {
             item = item
                 .live_count(u32::try_from(mentions).unwrap_or(u32::MAX))
@@ -176,18 +165,12 @@ impl Described for NavList {
     }
 }
 
-/// A list's places as they stand, and what choosing one or pressing a section's add does.
 struct Placed {
     sections: Vec<NavSection>,
-    /// What choosing a place does beside the place's own event: the list's selection.
     select: Event,
-    /// What each place's own selection does, by its key.
     chosen: std::collections::HashMap<String, Event>,
-    /// The places whose selection is an action: choosing one runs it, by its key.
     bound: std::collections::HashMap<String, Event>,
-    /// What each section's add does, by the section's id.
     adds: std::collections::HashMap<String, Event>,
-    /// The sections whose add is an action: pressing it runs it, by the section's id.
     bound_adds: std::collections::HashMap<String, Event>,
 }
 
@@ -290,7 +273,6 @@ impl NavList {
             .iter()
             .filter_map(|(key, event)| Some((key.clone(), event.clone().handler()?)))
             .collect();
-        // The list's own selection reports what each place's event says, then the list's.
         let select = placed.select.clone();
         self.set_on_view(key, move |id| {
             if let Some(run) = runs.get_mut(&id) {
@@ -301,7 +283,6 @@ impl NavList {
     }
 }
 
-/// The parts a navigation list holds.
 const NAV_PARTS: [&str; 2] = ["NavItem", "NavSection"];
 
 /// A navigation list's places and sections, in order.
@@ -343,7 +324,6 @@ impl crate::component::SlotType for Vec<NavEntry> {
     }
 }
 
-/// [`NavItemProps`] in a slot of any number of them.
 impl crate::component::SlotType for Vec<NavItemProps> {
     const MANY: bool = true;
 

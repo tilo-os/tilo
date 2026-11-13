@@ -10,32 +10,19 @@ use crate::widget::Decorator;
 const GROWN_EPSILON: f64 = 0.5;
 
 impl<M: ListModel> VirtualList<M> {
-    /// Whether choosing the row at `index` opens the item where the row stands: an item with
-    /// a document of its own, in a list with the room to hold it under the row. A list in a
-    /// window too narrow for that ([`VirtualList::in_place`]) opens the item in front instead,
-    /// where the window's back leads to the list again.
     pub(super) fn opens_here(&self, index: usize) -> bool {
         self.in_place && self.model.opens_in_place(index)
     }
 
-    /// Whether the item at `index` opens when its row is chosen at all, where it stands or in
-    /// front of the list.
     pub(super) fn opens_item(&self, index: usize) -> bool {
         self.model.opens_in_place(index)
     }
 
-    /// The row standing open into its item, if one does: the item the person is reading
-    /// where it stands, which the row builder draws its document into.
     #[must_use]
     pub fn open_row(&self) -> Option<&M::Key> {
         self.open.as_ref()
     }
 
-    /// Open `key` into its item where it stands, or close it when it is the row standing open:
-    /// the list's own answer to choosing a row that
-    /// [`opens in place`](ListModel::opens_in_place), and how a host opens an item from
-    /// elsewhere in the window. The two rows it changes build anew, so the one that opens
-    /// grows into its document and the one that closes shuts it away.
     pub fn set_open(&mut self, key: Option<M::Key>) {
         if self.open == key {
             return;
@@ -80,16 +67,12 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The item held open waiting for its row ([`Self::hold_open`]), asked again as rows arrive.
     pub(super) fn open_held(&mut self) {
         if let Some(item) = self.held_open.take() {
             self.hold_open(Some(&item));
         }
     }
 
-    /// The person opened `key` where it stands, or closed it when it was the row standing open:
-    /// the row grows into its document, and a host keeping which item is open hears it as
-    /// [`VirtualList::on_opened`].
     pub(super) fn open_where_it_stands(&mut self, key: M::Key) {
         self.held_open = None;
         let closing = self.open.as_ref() == Some(&key);
@@ -97,8 +80,6 @@ impl<M: ListModel> VirtualList<M> {
         self.report_open();
     }
 
-    /// The person closed the row standing open (Escape, or a press beside it), if one stands
-    /// open. Whether it did.
     pub(super) fn close_open(&mut self) -> bool {
         self.held_open = None;
         if self.open.is_none() {
@@ -109,8 +90,6 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    /// Tell the host what the person made of the row standing open: the item it opened, or
-    /// that it closed.
     pub(super) fn report_open(&mut self) {
         match self.open.clone() {
             Some(key) => {
@@ -192,13 +171,8 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-/// The row a list opened into its item where it stands: the item's document takes the row's
-/// place, so the words the document titles itself with stand once, and this carries them as the
-/// row's own name. A reader hears the item the row opened, and the list still shows one row
-/// where the person pressed, with the document under it.
 pub(crate) struct RowOpen {
     inner: Element,
-    /// The row stands in a tree list, and is a tree item of it.
     tree: bool,
 }
 
@@ -227,8 +201,6 @@ impl Decorator for RowOpen {
         true
     }
 
-    /// The row the document stands in for, named by the title the document itself states. A
-    /// document that says no title of its own is the row's own name already.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let document = self.inner.as_ref();
         let name = first_page_title(document)
@@ -245,8 +217,6 @@ impl Decorator for RowOpen {
     }
 }
 
-/// The title the document `widget` states: the words of the heading it writes, or of the field
-/// it opens with where the person types the title there, found through the whole it holds.
 pub(super) fn first_page_title(widget: &dyn Widget) -> Option<String> {
     Widget::own_page_title(widget).or_else(|| {
         let mut found = None;

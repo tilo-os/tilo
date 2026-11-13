@@ -1,21 +1,5 @@
-//! A passing acknowledgement: "Link copied", said once in a small pill
-//! near the bottom of the surface, then gone.
-//!
-//! Some actions leave nothing to see. A copy changes the clipboard, which
-//! is out of sight, so the person cannot tell whether anything happened.
-//! That needs an answer, but not a notification: a notification waits to be
-//! read, stacks with its peers and is kept in the centre. This answer is
-//! only about the moment it confirms, the way a phone shows "Copied" for a
-//! moment.
-//!
-//! - It never takes focus and has no controls.
-//! - A new one replaces the one showing, so a burst of copies shows one
-//!   pill.
-//! - It is a polite live region, so a screen reader says it once, after
-//!   what it is already saying.
-//! - It holds for [`ACKNOWLEDGEMENT_HOLD`], the end of that fading out on
-//!   the standard confirmation's exit (`motion::Transient::CONFIRMATION`).
-//!   With reduced motion it disappears without the fade.
+//! A passing acknowledgement: "Link copied", said once in a small pill near the bottom of the surface,
+//! then gone.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -33,16 +17,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-/// How long an acknowledgement stays: enough to read two or three words
-/// after the action, short enough to be gone before the next one.
 pub const ACKNOWLEDGEMENT_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The motion a host allows, from its reduced-motion setting.
 fn motion_for(reduce_motion: bool) -> crate::tokens::EffectiveMotion {
     crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), reduce_motion)
 }
 
-/// One acknowledgement and when it was raised.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Acknowledgement {
     text: String,
@@ -61,7 +41,6 @@ impl Acknowledgement {
         &self.text
     }
 
-    /// Whether it still shows at `now`.
     pub fn is_live(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.raised_at) < ACKNOWLEDGEMENT_HOLD
     }
@@ -87,7 +66,6 @@ impl Acknowledgement {
         )
     }
 
-    /// When it shows and when it is gone.
     fn span(&self) -> (Instant, Instant) {
         (self.raised_at, self.raised_at + ACKNOWLEDGEMENT_HOLD)
     }
@@ -110,8 +88,6 @@ impl Acknowledgement {
         }
     }
 
-    /// The pill for a `text_width` by `text_height` row, centred near the bottom of
-    /// `viewport`.
     fn rect_in(viewport: Rect, text_width: f64, text_height: f64, theme: &Theme) -> Rect {
         let pad_x = f64::from(theme.tokens.spacing.s4);
         let pad_y = f64::from(theme.tokens.spacing.s2);
@@ -128,7 +104,6 @@ impl Acknowledgement {
         )
     }
 
-    /// Paint it at `alpha` near the bottom of `viewport`.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -170,8 +145,6 @@ impl Acknowledgement {
             radius,
             &theme.tokens.elevation.floating,
         );
-        // A floating surface: the floating level with its inner hairline,
-        // over the shadow above; the check is the success status.
         let colors = &theme.tokens.colors;
         scene.fill(
             Fill::NonZero,
@@ -211,7 +184,6 @@ impl Acknowledgement {
         }
     }
 
-    /// A polite status: said once, without moving focus.
     pub fn accessibility(&self) -> AccessNode {
         AccessNode::new(Role::Label)
             .with_live(Politeness::Polite)
@@ -219,8 +191,6 @@ impl Acknowledgement {
     }
 }
 
-/// Where acknowledgements are raised from: cheap to clone, handed to
-/// whatever confirms an action (a host's page, a search action).
 #[derive(Clone, Debug, Default)]
 pub struct Acknowledger {
     current: Rc<RefCell<Option<Acknowledgement>>>,
@@ -228,13 +198,11 @@ pub struct Acknowledger {
 }
 
 impl Acknowledger {
-    /// Say `text` now, in place of whatever was showing.
     pub fn say(&self, text: impl Into<String>) {
         *self.current.borrow_mut() = Some(Acknowledgement::new(text, crate::time::now()));
         self.raised.set(self.raised.get().wrapping_add(1));
     }
 
-    /// What shows at `now`, if anything.
     pub fn current(&self, now: Instant) -> Option<Acknowledgement> {
         self.current
             .borrow()
@@ -244,8 +212,6 @@ impl Acknowledger {
     }
 }
 
-/// The layer that shows an [`Acknowledger`]'s words over a surface: lay it
-/// out over the whole surface, draw it above everything else.
 #[crate::component::not_a_component(framework, "the framework's acknowledgement of an input")]
 pub struct AcknowledgementLayer {
     acknowledger: Acknowledger,
@@ -347,8 +313,6 @@ impl Widget for AcknowledgementLayer {
             .and_then(|ack| ack.next_wake_at(now, self.reduce_motion))
     }
 
-    /// Always present, empty while nothing shows: screen readers announce
-    /// a live region whose words change, not one that appears with them.
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.acknowledger.current(crate::time::now()).map_or_else(
             || Acknowledgement::new("", crate::time::now()).accessibility(),

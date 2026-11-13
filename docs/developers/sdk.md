@@ -8,7 +8,9 @@ history and undo. There is no second API.
 
 Both SDKs are published as `tilo-sdk` (`uv add tilo-sdk`, `bun add tilo-sdk`). The Python module
 is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribution is
-`tilo-sdk`. A release tag publishes both, at that tag's version.
+`tilo-sdk`. A release tag publishes both, at that tag's version ([Publishing the
+SDKs](../publishing.md#publishing-the-sdks) has the tag, the credentials and what the native
+packages will publish as).
 
 ## One model, four ways in
 
@@ -17,7 +19,15 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
 | SDK (Python, TypeScript) | your code | the same calls | typed values (JSON on the wire) |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
-| CLI (`tilo do`, `tilo files`, `tilo account …`) | shells | the same calls | text, or `--json` |
+| CLI (`tilo do`, `tilo files`, `tilo account …`) | shells | the API's `/v1` routes | text, or `--json` |
+
+The CLI calls [`/v1`](api.md): `POST
+/v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
+`POST /v1/workspaces` for one more workspace. It reaches the API through an
+API server with `TILO_API_KEY`, or with no server at all: as this computer's
+own key, in process (`tilo keys export` writes that key as a file, which
+`tilo --key-file` acts with and which holds nothing but the key, its
+certificate and the host it reaches).
 
 Every resource has a **path**, `app/resource#action`, as MCP's `tilo_do` takes it:
 `pdf-viewer/application.pdf#read-form-fields`. The account is a resource too:
@@ -103,9 +113,11 @@ and carries no secret: invite the person first (`ws.members.invite`).
 
 ## Errors
 
-A refusal is an exception carrying the host's reason and its next steps (`Refused`,
+A refusal is an exception carrying the API's reason and its next steps (`Refused`,
 `.next_steps`). An action that asks the person first raises `AskPending` with a link to
-the ask. A wrong path or argument names what's valid, as tilolang's errors do.
+the ask. A wrong path or argument names what's valid, as tilolang's errors do. A call the API
+will not run because the workspace's app publishes another surface than the generated types were
+written for raises `SurfaceChanged`, which says to run `tilo sdk gen`.
 
 ## Keys
 
@@ -116,12 +128,13 @@ the caller's. Revoking a key ends every key minted from it.
 
 ## Wire
 
-The SDK talks to the same endpoints as MCP: `https://mcp.tilo.sh/mcp` for the account and
-`https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace. It makes the same calls, gets
-structured answers instead of agent text, and has a watch stream on top. Each tool's request
-and answer shapes, the `_meta` keys, run grouping and watch are in
-[`sdk-wire.md`](sdk-wire.md). File bytes go through content upload, then the Files app's
-actions.
+The SDKs speak Tilo's `/v1` JSON API, [`api.md`](api.md): an action is
+`POST …/resources/{path}/actions/{action}`, a run is followed at `…/runs/{run}`, and a
+watch is the workspace's event stream (`…/events`, resumed with `Last-Event-ID`). Each call
+carries an `Idempotency-Key`, so a retry runs nothing twice, and a run's calls carry
+`Tilo-Run` and `Tilo-Run-Title`. They can also reach a Tilo host in process, through the same
+Rust client the API server runs: no second implementation, no socket. File bytes go through
+`…/uploads`, then the Files app's actions.
 
 ## tilolang
 

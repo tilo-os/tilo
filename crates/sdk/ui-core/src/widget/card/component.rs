@@ -7,7 +7,6 @@ use crate::widget::{Element, SectionHeader};
 use super::{Activation, Card};
 
 /// A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview.
-/// Pressing it opens what it stands for.
 #[derive(Component, Default)]
 #[component(name = "Card", role = "Group", label = "title", presents = "item")]
 pub struct CardProps {
@@ -31,7 +30,6 @@ pub struct CardProps {
 impl Described for Card {
     type Props = CardProps;
 
-    /// The body is a column whose views change by key.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         if slot != "body" {
             return None;
@@ -82,9 +80,6 @@ impl Described for Card {
         }
     }
 
-    /// What the card is called, how many it holds, whether it is the chosen one and what a press
-    /// on it does change where the card stands: its body, and where the person has scrolled it,
-    /// stay.
     fn set_props(&mut self, props: CardProps) -> bool {
         let CardProps {
             title,

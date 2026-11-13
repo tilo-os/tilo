@@ -1,27 +1,17 @@
 //! The search engines: how each is asked, and how its answer page is read.
 //!
-//! Every engine here works without an account or key. Bing, Brave,
-//! `DuckDuckGo` and Marginalia are read from the same result page a browser
-//! gets. The Bing, Brave and Marginalia scrapers are ported from metasearch2's
-//! `src/engines/search/` and its `src/parse.rs` (CC0-1.0); `DuckDuckGo` is
-//! Tilo's own. Google is asked through the search element sites embed, a
-//! technique taken from `SearXNG` (AGPL-3.0-or-later). `PROVENANCE.md` records
-//! both.
+//! Every engine works without an account or key, reading the same result page a
+//! browser gets. The Bing, Brave and Marginalia scrapers come from metasearch2
+//! (CC0-1.0), `DuckDuckGo` is Tilo's own, and Google is asked the way `SearXNG`
+//! does (AGPL-3.0-or-later); `PROVENANCE.md` records both.
 //!
-//! A search may ask for filtered results ([`SafeMode::Strict`]). Every
-//! engine that offers a filter is asked with its own parameter; one that
-//! does not is reported as skipped and named, never asked unfiltered in a
-//! filtered search.
-//!
-//! An answer is never trusted to have the expected shape:
-//!
-//! - An engine that shows a challenge it shows every client like this one is
-//!   [`EngineError::Blocked`].
-//! - One that says it is getting too many requests is
-//!   [`EngineError::RateLimited`], and the search leaves it alone for a while.
-//! - An answer with no result list where one belongs is
-//!   [`EngineError::Layout`]. That is how a change to an engine's markup
-//!   surfaces, instead of as silently empty results.
+//! A search may ask for filtered results ([`SafeMode::Strict`]): an engine without
+//! a filter is reported as skipped and named, never asked unfiltered. An answer is
+//! never trusted to have the expected shape: an engine showing a challenge is
+//! [`EngineError::Blocked`], one asking for fewer requests is
+//! [`EngineError::RateLimited`] and is left alone for a while, and an answer with no
+//! result list where one belongs is [`EngineError::Layout`], so a change to an
+//! engine's markup surfaces instead of as silently empty results.
 
 mod bing;
 mod brave;
@@ -36,17 +26,13 @@ use url::Url;
 
 use crate::html::{Document, NodeId, Selector, collapse_whitespace};
 
-/// What a search asks the engines to leave out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SafeMode {
-    /// No filter.
     Off,
-    /// Filtered results: adult content is left out.
     Strict,
 }
 
 impl SafeMode {
-    /// The value as the service's parameter names it.
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
@@ -55,7 +41,6 @@ impl SafeMode {
         }
     }
 
-    /// The choice named `id`.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
         [Self::Off, Self::Strict]
@@ -64,7 +49,6 @@ impl SafeMode {
     }
 }
 
-/// One search engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
@@ -76,7 +60,6 @@ pub enum Engine {
 }
 
 impl Engine {
-    /// Every engine, in the order results are reported.
     pub const ALL: [Self; 5] = [
         Self::Google,
         Self::Brave,
@@ -93,7 +76,6 @@ impl Engine {
     /// wait.
     pub const DEFAULT: [Self; 3] = [Self::Google, Self::Brave, Self::Bing];
 
-    /// The engine's stable name, as callers name it.
     pub const fn id(self) -> &'static str {
         match self {
             Self::Bing => "bing",
@@ -104,7 +86,6 @@ impl Engine {
         }
     }
 
-    /// The engine named `id`.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|engine| engine.id() == id)
     }
@@ -143,16 +124,7 @@ impl Engine {
         }
     }
 
-    /// Read this engine's answer.
-    ///
-    /// # Errors
-    ///
-    /// [`EngineError::Blocked`] or [`EngineError::RateLimited`] when the
-    /// answer is a challenge rather than results, [`EngineError::Refused`]
-    /// when the engine refused the request, and [`EngineError::Layout`] when
-    /// it has no result list.
     pub fn parse(self, body: &str) -> Result<Vec<EngineResult>, EngineError> {
-        // Google answers with JSON, not a page.
         if self == Self::Google {
             return google::parse(body);
         }
@@ -176,14 +148,10 @@ impl fmt::Display for Engine {
     }
 }
 
-/// One request to an engine: a `GET` of `url`, or a `POST` of `form` to it,
-/// with these extra headers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineRequest {
     pub url: Url,
     pub headers: Vec<(&'static str, String)>,
-    /// Form fields to `POST`, for an engine whose result page answers a
-    /// submitted form rather than a link.
     pub form: Option<Vec<(&'static str, String)>>,
 }
 
@@ -242,9 +210,7 @@ pub enum EngineError {
     /// The engine says it is getting too many requests. Asking again soon
     /// only makes that worse.
     RateLimited(String),
-    /// The engine refused the request itself, for example an expired token.
     Refused(String),
-    /// The page had no result list where one belongs.
     Layout(String),
 }
 
@@ -259,7 +225,6 @@ impl fmt::Display for EngineError {
     }
 }
 
-/// Text a challenge page carries and a results page does not, per engine.
 fn blocked_reason(engine: Engine, doc: &Document, body: &str) -> Option<String> {
     let title = page_title(doc).to_ascii_lowercase();
     if title.contains("captcha") || title.contains("are you a robot") {
@@ -295,13 +260,9 @@ fn page_title(doc: &Document) -> String {
         .unwrap_or_default()
 }
 
-/// How one part of a result is read.
 enum Query {
-    /// The collapsed text of the first match of a selector.
     Text(&'static str),
-    /// The `href` of the first match of a selector, or its text.
     Href(&'static str),
-    /// Code of the engine's own.
     Manual(fn(&Document, NodeId) -> Option<String>),
 }
 
@@ -338,7 +299,6 @@ struct Layout {
     title: Query,
     href: Query,
     snippet: Query,
-    /// Turns the address an engine links to into the page's own.
     clean_href: fn(&str) -> Option<String>,
 }
 
@@ -376,12 +336,8 @@ impl Layout {
     }
 }
 
-/// The longest snippet kept, in characters: enough to judge a result by,
-/// short enough that a page of results stays readable.
 const MAX_SNIPPET_CHARS: usize = 200;
 
-/// `text` cut to at most `max` characters, at a word boundary where there is
-/// one, marked with an ellipsis when cut.
 fn shorten(text: &str, max: usize) -> String {
     let Some((cut, _)) = text.char_indices().nth(max) else {
         return text.to_owned();
@@ -394,12 +350,10 @@ fn shorten(text: &str, max: usize) -> String {
     format!("{}…", head.trim_end())
 }
 
-/// The address as linked, made absolute and cleaned.
 fn plain_href(href: &str) -> Option<String> {
     crate::urls::clean(href)
 }
 
-/// The value of query parameter `key` in `url`.
 fn query_param(url: &Url, key: &str) -> Option<String> {
     url.query_pairs()
         .find(|(k, _)| k == key)

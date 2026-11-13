@@ -34,11 +34,18 @@ pub struct ReleaseHandler(Box<dyn Fn() + Send + Sync>);
 /// One buffer: destroyed when dropped.
 pub struct ClientBuffer {
     buffer: WlBuffer,
+    /// Its width and height in pixels.
+    size: (u32, u32),
 }
 
 impl ClientBuffer {
     pub fn wl_buffer(&self) -> &WlBuffer {
         &self.buffer
+    }
+
+    /// Its width and height in pixels: the size of the frame drawn in it.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
     }
 }
 
@@ -100,6 +107,11 @@ impl ClientBuffers {
         on_release: Box<dyn Fn() + Send + Sync>,
     ) -> Option<ClientBuffer> {
         let handler = ReleaseHandler(on_release);
+        let (width, height) = match source {
+            ClientBufferSource::Dmabuf { width, height, .. }
+            | ClientBufferSource::Shm { width, height, .. } => (width, height),
+        };
+        let pixels = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
         match source {
             ClientBufferSource::Dmabuf {
                 fd,
@@ -132,7 +144,10 @@ impl ClientBuffers {
                     handler,
                 );
                 params.destroy();
-                Some(ClientBuffer { buffer })
+                Some(ClientBuffer {
+                    buffer,
+                    size: pixels,
+                })
             }
             ClientBufferSource::Shm {
                 fd,
@@ -154,7 +169,10 @@ impl ClientBuffers {
                 let buffer =
                     pool.create_buffer(offset, width, height, stride, format, &self.queue, handler);
                 pool.destroy();
-                Some(ClientBuffer { buffer })
+                Some(ClientBuffer {
+                    buffer,
+                    size: pixels,
+                })
             }
         }
     }

@@ -1,5 +1,5 @@
-//! [`Appearing`] — one surface's [`Appear`] and dismiss, as the toolkit's
-//! popovers, menus, dropdowns, tooltips, sheets and dialogs keep it.
+//! [`Appearing`] — one surface's [`Appear`] and dismiss, as the toolkit's popovers, menus, dropdowns,
+//! tooltips, sheets and dialogs keep it.
 
 use super::named::Appear;
 use super::pose::Pose;
@@ -9,20 +9,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
-/// The coming and going of one surface on the standard [`Appear`] motion.
-///
-/// The owner keeps its own open state, which input acts on at once; this
-/// only says how the surface is drawn. [`Self::follow`] (once a frame, from
-/// the draw, and wherever the owner opens or closes it) picks up a change
-/// and starts the motion from where it is drawn: a reopen mid-exit reverses,
-/// repeated toggles never queue. What asked for the change is the input the
-/// toolkit handled last ([`super::input_source`]): a key lands it at once, a
-/// click moves it. A closing surface keeps being drawn until it has gone,
-/// but takes no input (a click goes to whatever is under it).
-///
-/// Every motion it starts asks the frame pump for frames until it settles
-/// ([`super::want_frames_until`]), so a menu an owner draws outside the
-/// polled tree still moves, and nothing asks once it rests.
+/// The coming and going of one surface on the standard [`Appear`] motion. [`Self::follow`] (once a
+/// frame, from the draw, and wherever the owner opens or closes it) picks up a change and starts the
+/// motion from where it is drawn: a reopen mid-exit reverses, repeated toggles never queue.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Appearing {
     presence: Presence,
@@ -39,8 +28,8 @@ impl Appearing {
         }
     }
 
-    /// Shown, at rest: a surface that is open from its first paint (first
-    /// paint shows the resting state; motion explains changes).
+    /// Shown, at rest: a surface that is open from its first paint (first paint shows the resting
+    /// state; motion explains changes).
     #[must_use]
     pub fn opened() -> Self {
         Self {
@@ -49,33 +38,32 @@ impl Appearing {
         }
     }
 
-    /// Follow the owner's `open` state with the motion the person allows
-    /// (`theme.motion()`), as the last input asked for it.
+    /// Follow the owner's `open` state with the motion the person allows (`theme.motion()`), as the
+    /// last input asked for it.
     #[track_caller]
     pub fn follow(&mut self, open: bool, motion: EffectiveMotion) {
         self.follow_from(open, motion, super::source::input_source());
     }
 
-    /// Open or close it with the motion it last drew with, as the last input
-    /// asked for it: what an owner's `open` and `close` call, so a surface
-    /// whose owner stops drawing it once closed still arrives the next time.
+    /// Open or close it with the motion it last drew with, as the last input asked for it: what an
+    /// owner's `open` and `close` call, so a surface whose owner stops drawing it once closed still
+    /// arrives the next time.
     #[track_caller]
     pub fn show(&mut self, open: bool) {
         let motion = self.motion;
         self.follow(open, motion);
     }
 
-    /// [`Self::show`] for a change `source` asked for: a host that opens and
-    /// closes a surface of its own says what asked, since no input of the
-    /// app did.
+    /// [`Self::show`] for a change `source` asked for: a host that opens and closes a surface of its
+    /// own says what asked, since no input of the app did.
     #[track_caller]
     pub fn show_from(&mut self, open: bool, source: MotionSource) {
         let motion = self.motion;
         self.follow_from(open, motion, source);
     }
 
-    /// [`Self::follow`] for a change `source` asked for (a hover dwell is the
-    /// pointer's, whatever was pressed last).
+    /// [`Self::follow`] for a change `source` asked for (a hover dwell is the pointer's, whatever was
+    /// pressed last).
     #[track_caller]
     pub fn follow_from(&mut self, open: bool, motion: EffectiveMotion, source: MotionSource) {
         self.motion = motion;
@@ -123,12 +111,10 @@ impl Appearing {
         self.presence.progress(crate::motion::frame_now())
     }
 
-    /// The pose of `surface` now, coming from `anchor`: the summoning
-    /// control's centre, the caret, the pointer of a context menu, or the
-    /// surface's own centre for a centred dialog. It comes from — or goes
-    /// back to — the point of the surface nearest the anchor, at 92 % and 8
-    /// px toward it arriving, 97 % and 8 px leaving ([`Appearing`] says which
-    /// of the two it is doing).
+    /// The pose of `surface` now, coming from `anchor`: the summoning control's centre, the caret, the
+    /// pointer of a context menu, or the surface's own centre for a centred dialog. It comes from — or
+    /// goes back to — the point of the surface nearest the anchor, at 92 % and 8 px toward it arriving,
+    /// 97 % and 8 px leaving ([`Appearing`] says which of the two it is doing).
     #[must_use]
     pub fn pose(&self, surface: Rect, anchor: Point) -> Pose {
         Appear::pose(
@@ -141,18 +127,12 @@ impl Appearing {
     }
 }
 
-/// One [`Appearing`] a surface and the host that draws it share.
-///
-/// A dialog belongs to the tree its app builds, and an app builds a new tree
-/// whenever its state changes: a dialog built open would arrive again on
-/// every rebuild, so it is built at rest instead — and then it never arrives
-/// at all. A host that builds the app's tree per state hands every rebuild
-/// the same handle ([`Self::shared`]), so the surface arrives once, leaves
-/// once, and reverses from where it is drawn like any other motion.
+/// One [`Appearing`] a surface and the host that draws it share. A dialog belongs to the tree its app
+/// builds, and an app builds a new tree whenever its state changes: a dialog built open would arrive
+/// again on every rebuild, so it is built at rest instead — and then it never arrives at all.
 #[derive(Clone, Debug)]
 pub enum Appearance {
-    /// The surface keeps its own: built open, it is drawn at rest from its
-    /// first paint.
+    /// The surface keeps its own: built open, it is drawn at rest from its first paint.
     Owned(Appearing),
     /// Kept by the host that rebuilds the surface's tree.
     Shared(Rc<Cell<Appearing>>),
@@ -165,15 +145,15 @@ impl Default for Appearance {
 }
 
 impl Appearance {
-    /// An appearance a host shares with every rebuild of a surface it draws,
-    /// starting closed: the first paint of a surface built open arrives.
+    /// An appearance a host shares with every rebuild of a surface it draws, starting closed: the first
+    /// paint of a surface built open arrives.
     #[must_use]
     pub fn shared() -> Self {
         Self::Shared(Rc::new(Cell::new(Appearing::closed())))
     }
 
-    /// Whether the surface keeps this appearance itself: one built open is
-    /// drawn at rest, since a rebuild would otherwise replay its arrival.
+    /// Whether the surface keeps this appearance itself: one built open is drawn at rest, since a
+    /// rebuild would otherwise replay its arrival.
     #[must_use]
     pub const fn is_owned(&self) -> bool {
         matches!(self, Self::Owned(_))

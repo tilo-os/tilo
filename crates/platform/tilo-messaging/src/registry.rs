@@ -15,12 +15,8 @@ struct Observer {
     changed: Arc<dyn Fn() + Send + Sync>,
     guards: Mutex<Vec<Guard>>,
 }
-/// Native host control, separate from the app-lent client. Registering metadata
-/// is insufficient: each client retains its original runtime authority checks.
 pub trait MessagingRegistry: Send + Sync {
     fn client(self: Arc<Self>) -> MessagingClient;
-    /// # Errors
-    /// Refuses another principal or an already registered exact service/account.
     fn register(
         &self,
         identity: ServiceAccount,
@@ -83,11 +79,9 @@ impl MessagingRegistry for Registry {
         services.insert(identity, client.clone());
         drop(services);
         drop(observed);
-        // Foreign host callbacks and observer notifications run outside registry
-        // locks. Keep observer admission locked through account publication:
-        // an observer either joins this notification set or reads the new
-        // registry snapshot. Concurrent attachment can duplicate a wake,
-        // but cannot leave an open account without its history observer.
+        // Foreign host callbacks and observer notifications run outside registry locks,
+        // so observer admission stays locked through account publication: an observer
+        // either joins this notification set or reads the new snapshot.
         for observer in observers {
             if let Some(guard) = client.history().observe(observer.changed.clone())
                 && let Ok(mut guards) = observer.guards.lock()

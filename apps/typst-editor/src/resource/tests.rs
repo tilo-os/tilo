@@ -10,7 +10,6 @@ fn file_resource_id(id: &Id) -> String {
     item_resource_id::<Workspace>("files", id)
 }
 
-/// A `.typ` file in a fresh directory.
 fn typ_file(name: &str, source: &str) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(name);
@@ -26,7 +25,6 @@ fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<()
         .map_err(|error| error.to_string())
 }
 
-/// The id of the only file, or the first.
 fn first(files: &Workspace) -> Id {
     files.files.ids().next().unwrap().clone()
 }
@@ -37,8 +35,6 @@ fn only(app: &TestApp<TypstEditorShell>) -> TypstFile {
     state.files.values().next().unwrap().clone()
 }
 
-/// Creating, renaming, typing, saving, loading and closing: plain fields
-/// through field edits, the rest through verbs.
 #[test]
 fn verbs_and_field_edits_change_one_file() {
     let mut workspace = Replica::<Workspace>::new();
@@ -122,8 +118,6 @@ fn verbs_and_field_edits_change_one_file() {
     );
 }
 
-/// Two people typing in one file at once converge character by character;
-/// a rename is written whole.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Workspace>::new();
@@ -159,8 +153,6 @@ fn a_launched_file_opens_its_own_workspace_once() {
     assert_eq!(app.state().files.len(), 1, "a reopen adds nothing");
 }
 
-/// A window edits one document: it starts blank, and Open loads a file
-/// into it rather than beside it.
 #[test]
 fn a_window_edits_one_document_that_open_replaces() {
     let mut app = TestApp::<TypstEditorShell>::new().unwrap();
@@ -244,8 +236,6 @@ fn typing_splices_the_open_file_and_undoes_a_word_at_a_time() {
     assert_eq!(only(&app).source, "hello ", "a viewer types nothing");
 }
 
-/// An agent reaches each file and the app's operations through the one
-/// published tree: each change is one call.
 #[test]
 fn an_agent_edits_the_workspace_one_call_each() {
     let (_dir, path) = typ_file("notes.typ", "= Notes\n");
@@ -297,9 +287,6 @@ fn an_agent_edits_the_workspace_one_call_each() {
     assert_eq!(only(&app).name.0, "appendix.typ");
 }
 
-/// What an agent does for a person is history the person reads: the
-/// app's sentence for each field and verb, naming the file as it was
-/// called.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

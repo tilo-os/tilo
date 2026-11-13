@@ -477,13 +477,15 @@ pub(super) fn merge_sealed(
             }
             // One pass is the fast path, and a refused one is answered by the
             // write-by-write merge below.
-            // ignored-failure: the merge below reports a refusal that is real.
             Err(refused) => {
-                tracing::debug!(error = ?refused, "a sealed history does not merge in one pass");
+                tilo_failure::ignored!(
+                    "the merge below reports a refusal that is real",
+                    tracing::debug!(error = ?refused, "a sealed history does not merge in one pass")
+                );
             }
         }
     }
-    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly)?;
+    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly, None)?;
     Ok(merged.save())
 }
 
@@ -523,6 +525,13 @@ pub enum UnmergedReason {
         /// The first missing change hash of each path back, hex.
         missing: Vec<String>,
     },
+    /// It builds on a change its own writer never sent, and that no write still on its way can
+    /// carry: its writer lost that change before signing it, and every write its writer signed
+    /// before this one is held. It is that writer's follow-up to a lost change, and is lost too.
+    BehindUnsent {
+        /// The first missing change hash of each path back, hex.
+        missing: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for UnmergedReason {
@@ -536,6 +545,11 @@ impl std::fmt::Display for UnmergedReason {
             UnmergedReason::MissingDependencies { missing } => write!(
                 f,
                 "waits for changes the record lacks: {}",
+                missing.join(", ")
+            ),
+            UnmergedReason::BehindUnsent { missing } => write!(
+                f,
+                "builds on a change its writer never sent: {}",
                 missing.join(", ")
             ),
         }
@@ -624,20 +638,39 @@ pub(super) enum LeftOut {
     ForkOnly,
 }
 
+/// A write of a sealed history a merge leaves out: where it is in the history, why, and what it
+/// writes.
+pub(super) type LeftWrite = (usize, UnmergedReason, DocumentMutation);
+
+/// Who signed each write of a history, by its place in it, and how far each signer's sequence is
+/// held: what tells a write stuck behind a change its writer never sent
+/// ([`super::unsent_bases`]) from one whose base is still on its way.
+pub(super) struct Signers<'a> {
+    pub(super) of: &'a dyn Fn(usize) -> Option<super::unsent_bases::Signed>,
+    pub(super) held: &'a dyn Fn() -> super::unsent_bases::HeldThrough,
+}
+
 /// Merge the writes of a sealed history, each decided on its own
 /// ([`merge_write`]), over `base`; the writes that wait for changes not here yet
 /// are tried again once the rest are in.
 ///
 /// Returns the record and every write it leaves out with why, sorted in history
 /// order. `policy` decides whether a write left out for any reason other than a
-/// fork aborts.
+/// fork aborts. With `signers`, a write still waiting at the end that is stuck behind a change its
+/// writer never sent is named so ([`UnmergedReason::BehindUnsent`]).
 pub(super) fn merge_writes(
     mut merged: AutoCommit,
     writes: Vec<(usize, DocumentMutation)>,
     policy: LeftOut,
-) -> Result<(AutoCommit, Vec<(usize, UnmergedReason)>), String> {
+    signers: Option<&Signers<'_>>,
+) -> Result<(AutoCommit, Vec<LeftWrite>), String> {
     let mut left = Vec::new();
     let mut waiting = writes;
+    let mut stuck = Vec::new();
+    // Writes refused for writing a sequence the record holds that also wait for a change it
+    // lacks: a writer that lost a change and wrote again from the record as it read without it
+    // numbered its next change as the lost one. Decided below with the writes still waiting.
+    let mut forks = Vec::new();
     while !waiting.is_empty() {
         let before = waiting.len();
         let mut next = Vec::with_capacity(before);
@@ -649,6 +682,10 @@ pub(super) fn merge_writes(
                     continue;
                 }
                 WriteMerge::AlreadyHeld { actor, seq } => {
+                    if signers.is_some() && waits_for_a_missing_change(&merged, &mutation) {
+                        forks.push((index, actor, seq, mutation));
+                        continue;
+                    }
                     UnmergedReason::AlreadyHeld { actor, seq }
                 }
                 WriteMerge::Refused(why) => UnmergedReason::Unreadable(why),
@@ -659,27 +696,96 @@ pub(super) fn merge_writes(
                     "a write of the sealed history does not merge: {reason}"
                 ));
             }
-            left.push((index, reason));
+            left.push((index, reason, mutation));
         }
         if next.len() == before {
-            let missing = missing_dependencies(&merged, &next)?;
-            for (index, _) in next {
-                let reason = UnmergedReason::MissingDependencies {
-                    missing: missing.clone(),
-                };
-                if policy == LeftOut::ForkOnly {
-                    return Err(format!(
-                        "a write of the sealed history does not merge: {reason}"
-                    ));
-                }
-                left.push((index, reason));
-            }
+            stuck = next;
             break;
         }
         waiting = next;
     }
-    left.sort_by_key(|(index, _)| *index);
+    if stuck.is_empty() && forks.is_empty() {
+        left.sort_by_key(|(index, _, _)| *index);
+        return Ok((merged, left));
+    }
+    let missing = if stuck.is_empty() {
+        Vec::new()
+    } else {
+        missing_dependencies(&merged, &stuck)?
+    };
+    let unsent = match signers {
+        Some(signers) => {
+            let waiting: Vec<_> = stuck
+                .iter()
+                .map(|(index, mutation)| (*index, mutation))
+                .chain(
+                    forks
+                        .iter()
+                        .map(|(index, _, _, mutation)| (*index, mutation)),
+                )
+                .map(|(index, mutation)| ((signers.of)(index), mutation))
+                .collect();
+            super::unsent_bases::behind_unsent(&merged, &waiting, &(signers.held)())
+        }
+        None => vec![false; stuck.len().saturating_add(forks.len())],
+    };
+    let (stuck_unsent, forks_unsent) = unsent.split_at(stuck.len().min(unsent.len()));
+    for ((index, mutation), unsent) in stuck.into_iter().zip(stuck_unsent) {
+        let missing = missing.clone();
+        let reason = if *unsent {
+            UnmergedReason::BehindUnsent { missing }
+        } else {
+            UnmergedReason::MissingDependencies { missing }
+        };
+        if policy == LeftOut::ForkOnly {
+            return Err(format!(
+                "a write of the sealed history does not merge: {reason}"
+            ));
+        }
+        left.push((index, reason, mutation));
+    }
+    for ((index, actor, seq, mutation), unsent) in forks.into_iter().zip(forks_unsent) {
+        let reason = if *unsent {
+            UnmergedReason::BehindUnsent {
+                missing: missing_of(&merged, &mutation),
+            }
+        } else {
+            UnmergedReason::AlreadyHeld { actor, seq }
+        };
+        left.push((index, reason, mutation));
+    }
+    left.sort_by_key(|(index, _, _)| *index);
     Ok((merged, left))
+}
+
+/// The changes `mutation`'s changes build on that are in neither `record` nor `mutation` itself,
+/// hex.
+fn missing_of(record: &AutoCommit, mutation: &DocumentMutation) -> Vec<String> {
+    let DocumentMutation::Incremental(bytes) = mutation else {
+        return Vec::new();
+    };
+    let changes = tilo_failure::ignored!(
+        "a write whose changes do not parse waits for nothing this names",
+        automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+    );
+    let own: std::collections::HashSet<automerge::ChangeHash> =
+        changes.iter().map(automerge::Change::hash).collect();
+    let document = record.committed_document();
+    let mut missing: Vec<String> = changes
+        .iter()
+        .flat_map(|change| change.deps().iter().copied())
+        .filter(|dep| {
+            !own.contains(dep) && automerge::ReadDoc::get_change_by_hash(document, dep).is_none()
+        })
+        .map(|dep| dep.to_string())
+        .collect();
+    missing.dedup();
+    missing
+}
+
+/// Whether `mutation` builds on a change in neither `record` nor itself.
+fn waits_for_a_missing_change(record: &AutoCommit, mutation: &DocumentMutation) -> bool {
+    !missing_of(record, mutation).is_empty()
 }
 
 /// The changes the writes left waiting build on that neither the record nor the
@@ -731,8 +837,24 @@ pub(super) fn open_sealed(
             Err(why) => unmerged.push((index, UnmergedReason::Unreadable(why))),
         }
     }
-    let (mut merged, left) = merge_writes((*document.doc).clone(), writes, LeftOut::Named)?;
-    unmerged.extend(left);
+    let signed: Vec<super::unsent_bases::Signed> = sealed
+        .iter()
+        .map(|op| super::unsent_bases::Signed {
+            author: *op.author.as_bytes(),
+            seq: op.seq,
+        })
+        .collect();
+    let signers = Signers {
+        of: &|index| signed.get(index).copied(),
+        held: &|| super::unsent_bases::HeldThrough::of(document),
+    };
+    let (mut merged, left) = merge_writes(
+        (*document.doc).clone(),
+        writes,
+        LeftOut::Named,
+        Some(&signers),
+    )?;
+    unmerged.extend(left.into_iter().map(|(index, reason, _)| (index, reason)));
     unmerged.sort_by_key(|(index, _)| *index);
     Ok(OpenedRecord {
         document: merged.save_with_options(automerge::SaveOptions {

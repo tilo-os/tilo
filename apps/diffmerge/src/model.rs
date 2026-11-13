@@ -1,28 +1,10 @@
-//! Pure diff & merge model — no rendering, no IO.
-//!
-//! Two layers live here:
-//!
-//! * [`DiffModel`] — a two-way, line-aligned comparison of a *left* and a
-//!   *right* text. The alignment produces a flat list of [`AlignedRow`]s so the
-//!   side-by-side view can paint left and right gutters that line up: an inserted
-//!   line on the right has an empty cell on the left, a deletion the reverse, and
-//!   a modification pairs the two changed lines on the same row.
-//!
-//! * [`MergeModel`] — a three-way merge of a common *base* against *ours* and
-//!   *theirs*. Regions where only one side changed auto-resolve; regions where
-//!   both sides changed the same base lines become `Conflict` hunks the user
-//!   resolves per-hunk (take ours / theirs / both). The resolved output is a
-//!   sequence of lines the app mirrors into an Automerge `Text` so the merged
-//!   buffer is collaboratively editable.
-//!
-//! All hunking is built on the `similar` crate's Myers/patience diff.
+//! The diff and merge model: a two-way line alignment for the side-by-side view, and
+//! a three-way merge whose conflicts the person resolves per hunk. No rendering, no IO;
+//! hunking is the `similar` crate's Myers/patience diff.
 
 use similar::{Algorithm, ChangeTag, TextDiff};
 
 thread_local! {
-    // Resource publication and the retained view ask for the same comparison.
-    // Share immutable alignment rather than rerunning the full algorithm on
-    // every local Next/Previous action. Two entries bound retained input memory.
     static COMPARISONS: std::cell::RefCell<std::collections::VecDeque<ComparisonCache>> =
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
@@ -42,9 +24,8 @@ struct ComparisonCache {
     model: std::sync::Arc<DiffModel>,
 }
 
-/// The exact content's alignment, shared by resources and their retained view.
-/// Labels do not affect alignment; both source digests do. Editing either
-/// source therefore cannot reuse the previous comparison's blocks.
+/// The alignment of this exact content, shared by the resource and its view: both
+/// source digests are part of it, so an edit cannot reuse the previous comparison.
 pub(crate) fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
     #[cfg(test)]
     DIGEST_PASSES.set(DIGEST_PASSES.get().saturating_add(1));
@@ -69,33 +50,28 @@ pub(crate) fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
     })
 }
 
-/// The kind of change a single aligned row represents in a two-way diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The kind of change one aligned row is.
 pub enum RowKind {
-    /// Both sides carry the same line.
     Equal,
-    /// Line present only on the right (added).
     Insert,
-    /// Line present only on the left (removed).
     Delete,
-    /// Both sides carry a line but they differ.
     Modify,
 }
 
-/// One visual row of a side-by-side diff. `left`/`right` hold the line text
-/// for that side, or `None` when that side has no line on this row (so the
-/// gutter paints a "phantom" empty cell and the two columns stay aligned).
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// One row of a side-by-side diff: each side's line, or `None` where it has none,
+/// so both columns stay aligned.
 pub struct AlignedRow {
+    /// The row's kind.
     pub kind: RowKind,
-    /// 1-based line number on the left, if this row occupies a left line.
+    /// The 1-based line number on the left, when the row occupies one.
     pub left_no: Option<usize>,
-    /// 1-based line number on the right, if this row occupies a right line.
+    /// The 1-based line number on the right, when the row occupies one.
     pub right_no: Option<usize>,
     pub left: Option<String>,
     pub right: Option<String>,
-    /// Index of the change-block this row belongs to (used for prev/next-change
-    /// navigation and the minimap). `None` for unchanged rows.
+    /// The change block the row belongs to; `None` for an unchanged row.
     pub block: Option<usize>,
 }
 
@@ -105,26 +81,27 @@ impl AlignedRow {
     }
 }
 
-/// A contiguous run of changed rows — the unit prev/next navigation jumps
-/// between and the minimap renders as a single marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A contiguous run of changed rows: what prev/next navigation jumps between and the
+/// minimap marks.
 pub struct ChangeBlock {
-    /// Inclusive first row index in [`DiffModel::rows`].
+    /// The first row, inclusive.
     pub first_row: usize,
-    /// Inclusive last row index.
+    /// The last row, inclusive.
     pub last_row: usize,
     pub kind: BlockKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What kind of change a block is.
 pub enum BlockKind {
     Added,
     Removed,
     Modified,
 }
 
-/// A complete two-way comparison ready to render.
 #[derive(Clone, Debug, Default)]
+/// A two-way comparison, ready to render.
 pub struct DiffModel {
     pub rows: Vec<AlignedRow>,
     pub blocks: Vec<ChangeBlock>,
@@ -135,8 +112,6 @@ pub struct DiffModel {
     pub modified: usize,
 }
 
-/// One line from the underlying `similar` diff, stripped of the trailing
-/// newline `similar` keeps on each line so the renderer measures clean text.
 #[derive(Clone)]
 struct DiffChange {
     tag: ChangeTag,
@@ -145,7 +120,6 @@ struct DiffChange {
     new: Option<usize>,
 }
 
-/// Run the line-level diff and collect its change stream.
 fn collect_changes(left: &str, right: &str) -> Vec<DiffChange> {
     let diff = TextDiff::configure()
         .algorithm(Algorithm::Patience)
@@ -161,10 +135,6 @@ fn collect_changes(left: &str, right: &str) -> Vec<DiffChange> {
         .collect()
 }
 
-/// Walk the change stream and pair adjacent Delete/Insert runs into `Modify`
-/// rows so a changed line shows old-vs-new side by side instead of as two
-/// separate add/remove rows. Leftover deletes/inserts become single-sided
-/// rows.
 fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
     let mut rows: Vec<AlignedRow> = Vec::new();
     let mut i = 0usize;
@@ -182,8 +152,6 @@ fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
                 i += 1;
             }
             ChangeTag::Delete => {
-                // Gather the full delete run, then the immediately following
-                // insert run; zip them into Modify rows.
                 let del_start = i;
                 while matches!(changes.get(i), Some(next) if next.tag == ChangeTag::Delete) {
                     i += 1;
@@ -245,8 +213,6 @@ fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
     rows
 }
 
-/// Group contiguous change-rows into blocks and stamp the block index back
-/// onto each row.
 fn group_blocks(rows: &mut [AlignedRow]) -> Vec<ChangeBlock> {
     let mut blocks: Vec<ChangeBlock> = Vec::new();
     let mut r = 0usize;
@@ -293,7 +259,6 @@ fn group_blocks(rows: &mut [AlignedRow]) -> Vec<ChangeBlock> {
 }
 
 impl DiffModel {
-    /// Compute a line-aligned diff of `left` vs `right`.
     pub fn compute(left: &str, right: &str) -> Self {
         let changes = collect_changes(left, right);
         let mut rows = align_rows(&changes);
@@ -319,26 +284,16 @@ impl DiffModel {
     }
 }
 
-// ===========================================================================
-// Three-way merge
-// ===========================================================================
-
-/// Which side a resolved merge region took.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a merge region was resolved.
 pub enum Resolution {
-    /// Region is unchanged from base (both sides equal here).
     Unchanged,
-    /// Auto-resolved: only `ours` changed this base region.
     Ours,
-    /// Auto-resolved: only `theirs` changed this base region.
     Theirs,
     TookOurs,
     TookTheirs,
-    /// A conflict the user has resolved by taking both (ours then theirs).
     TookBoth,
-    /// A change resolved with text of its own ([`MergeHunk::written`]).
     Written,
-    /// A still-open conflict.
     Conflict,
 }
 
@@ -348,7 +303,6 @@ impl Resolution {
     }
 }
 
-/// A file's prevailing line ending.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Ending {
     #[default]
@@ -365,21 +319,11 @@ impl Ending {
     }
 }
 
-/// How one line ends, relative to the file it came from: a line that ends
-/// the way its file mostly does follows the merged file's ending, a line
-/// that ends otherwise keeps its own. A file converted wholesale therefore
-/// merges as one change to the ending, while a deliberate odd line in a
-/// mixed file survives the merge byte for byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Term {
-    /// The file's prevailing ending. A last line without an ending is one
-    /// too: whether the merged file ends in a newline is decided once, for
-    /// the whole file ([`MergeModel::final_newline`]).
     #[default]
     Native,
-    /// `\n` in a file that mostly ends lines with `\r\n`.
     Lf,
-    /// `\r\n` in a file that mostly ends lines with `\n`.
     CrLf,
 }
 
@@ -393,14 +337,10 @@ impl Term {
     }
 }
 
-/// The value both sides agree on, or the one a side changed from base; ours
-/// when both changed it differently.
 fn merge3<T: PartialEq + Copy>(base: T, ours: T, theirs: T) -> T {
     if ours == base { theirs } else { ours }
 }
 
-/// [`merge3`] over what each file says, where a file with nothing to say
-/// (no line endings, no lines) agrees with the others.
 fn merge_said<T: PartialEq + Copy>(
     base: Option<T>,
     ours: Option<T>,
@@ -411,19 +351,12 @@ fn merge_said<T: PartialEq + Copy>(
     merge3(b, ours.unwrap_or(b), theirs.unwrap_or(b))
 }
 
-/// One input of a merge split into lines: the text the merge compares and,
-/// beside it, how each line ended.
+/// One input of a merge: its lines, and how each of them ends.
 struct Parsed {
     lines: Vec<String>,
-    /// How each line ends, `None` for a last line without a newline.
     raw: Vec<Option<Ending>>,
-    /// How each line ends relative to `ending`.
     terms: Vec<Term>,
-    /// The ending the file speaks for, `None` when no line ends: its
-    /// prevailing ending, or for a side of a merge the one
-    /// [`Parsed::ending_against`] finds.
     ending: Option<Ending>,
-    /// Whether the last line ends, `None` for an empty file.
     final_newline: Option<bool>,
 }
 
@@ -460,7 +393,6 @@ impl Parsed {
         parsed
     }
 
-    /// Speak for `ending`: a line that ends otherwise keeps its own ending.
     fn relate_to(&mut self, ending: Option<Ending>) {
         self.ending = ending;
         self.terms = self
@@ -476,12 +408,6 @@ impl Parsed {
             .collect();
     }
 
-    /// The ending this side gives the file it shares with `base`, aligned by
-    /// `ops`: base's, unless most of the lines it keeps from base now end
-    /// differently, so the side converted the file. Lines a side adds or
-    /// removes never change it, so pasting a few Windows lines into a Unix
-    /// file leaves the other side's lines alone. A side that keeps no
-    /// ended line of base speaks for its own prevailing ending.
     fn ending_against(&self, base: &Parsed, ops: &[similar::DiffOp]) -> Option<Ending> {
         let (mut kept, mut converted) = (0usize, 0usize);
         for op in ops {
@@ -509,34 +435,30 @@ impl Parsed {
     }
 }
 
-/// One merge region: either a clean run carried straight through, or a hunk
-/// where ours and/or theirs diverged from base.
 #[derive(Clone, Debug)]
+/// One region of a merge: a clean run carried through, or a place where ours and/or
+/// theirs diverged from base.
 pub struct MergeHunk {
     pub base: Vec<String>,
     pub ours: Vec<String>,
     pub theirs: Vec<String>,
     pub resolution: Resolution,
-    /// True when this hunk is a real divergence (vs. a passthrough equal run).
+    /// Whether this hunk is a real divergence rather than a clean run.
     pub is_change: bool,
     /// The lines a [`Resolution::Written`] hunk contributes.
     pub written: Vec<String>,
-    /// How each line of `base`, `ours` and `theirs` ends. A clean run carries
-    /// the endings merged line by line on all three.
     terms: [Vec<Term>; 3],
 }
 
 impl MergeHunk {
-    /// The lines this hunk contributes to the merged output given its current
-    /// resolution. Conflicts contribute their `ours` side as a provisional
-    /// best-effort (so the buffer is always renderable) but report unresolved.
+    /// The lines this hunk contributes given its resolution. A conflict contributes its
+    /// ours side provisionally, so the buffer is always renderable.
     pub fn resolved_lines(&self) -> Vec<String> {
         let mut out = Vec::new();
         self.contribute(self.resolution, &self.written, &mut out);
         out.into_iter().map(|(line, _)| line.to_owned()).collect()
     }
 
-    /// Append the lines `resolution` takes, with how each ends, to `out`.
     fn contribute<'a>(
         &'a self,
         resolution: Resolution,
@@ -554,7 +476,6 @@ impl MergeHunk {
         };
         match resolution {
             Resolution::Unchanged => side(&self.base, base),
-            // Conflict is provisional: show ours until the user decides.
             Resolution::Ours | Resolution::TookOurs | Resolution::Conflict => {
                 side(&self.ours, ours);
             }
@@ -563,13 +484,11 @@ impl MergeHunk {
                 side(&self.ours, ours);
                 side(&self.theirs, theirs);
             }
-            // Text of one's own ends lines the way the merged file does.
             Resolution::Written => side(written, &[]),
         }
     }
 }
 
-/// Lines with how each ends, as one side contributes them.
 #[derive(Clone, Debug, Default)]
 struct Run {
     lines: Vec<String>,
@@ -608,17 +527,12 @@ impl Run {
     }
 }
 
-/// What one side did with a base line.
 #[derive(Clone, Copy)]
 enum SideAt<'a> {
-    /// Carried it through, ending it this way.
     Kept(Term),
-    /// Replaced it with these lines (none for a deletion).
     Replaced(&'a Run),
 }
 
-/// Mutable state threaded through the base/gap sweep in [`MergeModel::compute`]
-/// that accumulates clean runs and divergent segments into hunks.
 #[derive(Default)]
 struct MergeBuilder {
     hunks: Vec<MergeHunk>,
@@ -636,7 +550,6 @@ impl MergeBuilder {
         Self::default()
     }
 
-    /// Flush an accumulated run of clean base lines as a passthrough hunk.
     fn flush_clean(&mut self) {
         if self.clean_run.is_empty() {
             return;
@@ -653,9 +566,8 @@ impl MergeBuilder {
         });
     }
 
-    /// Close the currently-open divergent segment (if any) into a hunk,
-    /// classifying it as an auto-resolve or a real conflict. Only the text
-    /// decides: two sides that differ in how lines end agree.
+    /// Close the open divergent segment into a hunk. Only the text decides: two sides
+    /// that differ in how lines end agree.
     fn close_segment(&mut self) {
         if !self.seg_open {
             return;
@@ -688,8 +600,6 @@ impl MergeBuilder {
         self.seg_open = false;
     }
 
-    /// Fold in the insertions (if any) sitting in the gap before a base line
-    /// (or the trailing gap when called for the tail).
     fn push_gap(&mut self, ours_ins: &Run, theirs_ins: &Run) {
         if ours_ins.is_empty() && theirs_ins.is_empty() {
             return;
@@ -702,9 +612,6 @@ impl MergeBuilder {
         self.seg_any_theirs |= !theirs_ins.is_empty();
     }
 
-    /// Fold in one base line: either it passes through clean, its ending
-    /// merged from the three, or it (and its per-side replacements) join the
-    /// open divergent segment.
     fn push_line(&mut self, (line, term): (&str, Term), ours: SideAt<'_>, theirs: SideAt<'_>) {
         if let (SideAt::Kept(o), SideAt::Kept(t)) = (ours, theirs) {
             self.close_segment();
@@ -728,8 +635,6 @@ impl MergeBuilder {
         }
     }
 
-    /// Finish the sweep: flush any still-open segment/run and return the
-    /// resulting hunks.
     fn finish(mut self) -> Vec<MergeHunk> {
         self.close_segment();
         self.flush_clean();
@@ -737,29 +642,19 @@ impl MergeBuilder {
     }
 }
 
-/// A three-way merge: the hunk list plus convenience counters.
 #[derive(Clone, Debug, Default)]
+/// A three-way merge: its hunks, and how the merged file ends its lines.
 pub struct MergeModel {
+    /// The hunks, in file order.
     pub hunks: Vec<MergeHunk>,
-    /// How the merged file mostly ends its lines.
     ending: Ending,
-    /// Whether the merged file ends in a newline.
     final_newline: bool,
 }
 
 impl MergeModel {
-    /// Compute a three-way merge. The algorithm diffs base→ours and base→theirs
-    /// into per-side `SideAlign` structures (a replacement slot per base line
-    /// plus an insertion slot at every gap, including the trailing gap), then
-    /// sweeps the base — and the gaps between base lines — grouping regions that
-    /// either side touched into hunks. Keeping replacements and insertions in
-    /// separate slots is what prevents trailing/boundary inserts from being
-    /// double-counted.
-    ///
-    /// Lines compare by their text alone. How they end is merged beside it:
-    /// the file's prevailing ending and whether it ends in a newline are each
-    /// taken from the side that changed them, and every line keeps its own
-    /// ending where it differs from its file's.
+    /// Merge `base` against `ours` and `theirs`: base is diffed against each side, and
+    /// the base with the gaps between its lines is swept into hunks. Lines compare by
+    /// text alone; how they end is merged beside them.
     pub fn compute(base: &str, ours: &str, theirs: &str) -> Self {
         let base = Parsed::new(base);
         let (ours, ours_align) = SideAlign::of(&base, ours);
@@ -769,10 +664,6 @@ impl MergeModel {
         let mut builder = MergeBuilder::new();
         let empty = Run::default();
 
-        // Interleave gaps and base lines: gap(0), line(0), gap(1), line(1),
-        // …, line(n-1), gap(n). A "unit" is either a gap insertion region or a
-        // base line. The builder classifies each unit as clean or divergent,
-        // and coalesces consecutive divergent units into a single hunk.
         for i in 0..=n {
             builder.push_gap(
                 ours_align.inserts_before.get(i).unwrap_or(&empty),
@@ -798,7 +689,6 @@ impl MergeModel {
         }
     }
 
-    /// Indices of hunks that are real changes (conflicts or auto-resolves).
     pub fn change_indices(&self) -> Vec<usize> {
         self.hunks
             .iter()
@@ -830,15 +720,10 @@ impl MergeModel {
         self.conflict_count() == 0
     }
 
-    /// The merged output, each line ending as merged and the file ending in
-    /// a newline when the merge says it does.
     pub fn merged_text(&self) -> String {
         self.text(None)
     }
 
-    /// The merged output with `hunk` resolved as `resolution` (and, for
-    /// [`Resolution::Written`], with `written`), every other hunk keeping
-    /// its current resolution.
     pub fn merged_text_with(
         &self,
         hunk: usize,
@@ -870,7 +755,6 @@ impl MergeModel {
         out
     }
 
-    /// The merged output as a flat line list (no terminators).
     pub fn merged_lines(&self) -> Vec<String> {
         self.hunks
             .iter()
@@ -879,15 +763,8 @@ impl MergeModel {
     }
 }
 
-/// One side of the merge aligned against base.
-///
-/// * `replace[i]` — `Some(run)` when base line `i` was modified or deleted on
-///   this side (`run` is the replacement, possibly empty for a deletion);
-///   `None` when base line `i` is carried through unchanged, ending as
-///   `kept[i]` says.
-/// * `inserts_before[g]` — lines this side inserts in gap `g`, where gap `g`
-///   sits *before* base line `g` (and gap `n` is the trailing append region).
-///   Length is `base.len() + 1`.
+/// One side aligned against base: `replace[i]` is the run that replaced or deleted base
+/// line `i`, and `inserts_before[g]` the lines inserted before base line `g`.
 struct SideAlign {
     replace: Vec<Option<Run>>,
     kept: Vec<Term>,
@@ -895,13 +772,8 @@ struct SideAlign {
 }
 
 impl SideAlign {
-    /// `text` parsed as a side of a merge with `base`, its endings related
-    /// to the ending it gives the merged file, and aligned against base.
     fn of(base: &Parsed, text: &str) -> (Parsed, Self) {
         let mut side = Parsed::new(text);
-        // Diff the split lines themselves, so an op's indices are the
-        // indices of `base.lines` and `side.lines`: re-splitting a joined
-        // text would also break at a lone `\r` inside a line.
         let ops = similar::capture_diff_slices(Algorithm::Patience, &base.lines, &side.lines);
         side.relate_to(side.ending_against(base, &ops));
         let align = Self::build(base.lines.len(), &side, &ops);
@@ -913,8 +785,6 @@ impl SideAlign {
         let mut kept: Vec<Term> = vec![Term::Native; n];
         let mut inserts_before: Vec<Run> = vec![Run::default(); n + 1];
 
-        // Walk the structured ops. Each op carries a base (old) range and a
-        // side (new) range.
         for op in ops {
             use similar::DiffOp::{Delete, Equal, Insert, Replace};
             match *op {
@@ -944,7 +814,6 @@ impl SideAlign {
                     new_index,
                     new_len,
                 } => {
-                    // Insertion attaches to the gap before base line old_index.
                     if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
                         slot.extend(&Run::of(side, new_index, new_len));
                     }
@@ -956,9 +825,6 @@ impl SideAlign {
                     new_len,
                 } => {
                     let run = Run::of(side, new_index, new_len);
-                    // The whole replacement maps onto the first replaced base
-                    // line; the remaining replaced base lines become deletions
-                    // so the segment spans the entire base range.
                     if old_len == 0 {
                         if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
                             slot.extend(&run);
@@ -984,7 +850,6 @@ impl SideAlign {
         }
     }
 
-    /// What this side did with base line `i`.
     fn at(&self, i: usize) -> SideAt<'_> {
         match self.replace.get(i).and_then(Option::as_ref) {
             Some(run) => SideAt::Replaced(run),
@@ -997,7 +862,6 @@ impl SideAlign {
 mod tests {
     use super::*;
 
-    /// One two-way diff input pair and every property the case pins down.
     struct DiffCase {
         name: &'static str,
         left: &'static str,
@@ -1006,15 +870,11 @@ mod tests {
         added: Option<usize>,
         removed: Option<usize>,
         modified: Option<usize>,
-        /// A row of this kind exists and carries exactly these sides.
         row: Option<(RowKind, Option<&'static str>, Option<&'static str>)>,
         /// The exact change blocks, in order.
         blocks: Option<Vec<BlockKind>>,
     }
 
-    /// Two-way diff classification: identical inputs have no blocks, pure
-    /// insertions/deletions have one empty side, a modification pairs old and
-    /// new, and contiguous changes group into one block.
     #[test]
     fn diff_classifies_rows_counts_and_blocks() {
         let cases = [
@@ -1030,7 +890,6 @@ mod tests {
                 blocks: None,
             },
             DiffCase {
-                // The inserted row has no left, a right.
                 name: "pure insertion",
                 left: "a\nc\n",
                 right: "a\nb\nc\n",
@@ -1064,7 +923,6 @@ mod tests {
                 blocks: None,
             },
             DiffCase {
-                // b,c modified to X,Y form one block.
                 name: "blocks group contiguous changes",
                 left: "a\nb\nc\nd\n",
                 right: "a\nX\nY\nd\n",
@@ -1114,8 +972,6 @@ mod tests {
         }
     }
 
-    /// A resolution applied to the (single) conflict hunk of a case, with what
-    /// the merge then reports.
     struct Take {
         resolution: Resolution,
         fully_resolved: Option<bool>,
@@ -1130,15 +986,10 @@ mod tests {
         conflicts: usize,
         fully_resolved: Option<bool>,
         merged: Option<Vec<&'static str>>,
-        /// The conflict hunk carries both candidate sides.
         conflict_sides: Option<(Vec<&'static str>, Vec<&'static str>)>,
-        /// Each applied to a freshly computed model.
         takes: Vec<Take>,
     }
 
-    /// Three-way merge: one-sided changes auto-resolve to the changed side,
-    /// identical edits are not conflicts, divergent edits (including trailing
-    /// inserts) conflict, and taking theirs / both rewrites the output.
     #[allow(
         clippy::too_many_lines,
         reason = "case table: every row is one original merge case, kept verbatim"
@@ -1192,7 +1043,6 @@ mod tests {
                 ],
             },
             MergeCase {
-                // Both sides made the SAME edit — not a conflict.
                 name: "identical sides are no conflict",
                 base: "a\nb\nc\n",
                 ours: "a\nSAME\nc\n",
@@ -1394,7 +1244,6 @@ mod line_ending_tests {
         let written = ["W1".to_owned(), "W2".to_owned()];
         assert_eq!(take(Resolution::Written, &written), "a\r\nW1\r\nW2\r\nc");
 
-        // Ours ends without a newline; taking both puts a line after it.
         let tail = MergeModel::compute("a\n", "a\nb", "a\nc");
         let conflict = tail
             .hunks

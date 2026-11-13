@@ -1,23 +1,5 @@
 //! Payload objects: how the payload blobs of a thin `.tapp` are hosted as
 //! plain files.
-//!
-//! A thin package carries only metadata; its payload blobs live elsewhere as
-//! *objects*, each a file named by a BLAKE3 hash:
-//!
-//! - `<blob>.blob` holds a whole payload blob, or one chunk of a large one.
-//! - `<blob>.chunks` describes a blob larger than [`CHUNK_BYTES`] as a
-//!   [`ChunkList`]: the blob is cut into fixed-size slices (the last one
-//!   shorter), each stored as `<chunk>.blob`. Chunks are content addressed,
-//!   so identical slices are stored once.
-//!
-//! A publisher hosts the objects beside the thin `.tapp` (same URL
-//! directory); a registry keeps the ones it reviewed and serves them as
-//! `/blobs/<hash>` and `/blobs/<hash>.chunks`. No object is trusted:
-//! [`Reassembly`] checks every chunk against its name and the joined stream
-//! against the whole-blob hash from the signed collection before the last
-//! byte is released, so a chunk list can only ever fail a download, never
-//! change what it delivers. [`split`] turns a full `.tapp` into its thin form
-//! plus these objects with bounded memory.
 
 use std::collections::BTreeSet;
 use std::io::{self, Read};
@@ -31,11 +13,8 @@ use crate::blobs::{BlobHash, BlobSink, BlobSource, HashingReader, OpenBlob};
 use crate::package::PackageMeta;
 use crate::tapp::TappError;
 
-/// Size of every chunk but the last of a chunked blob. Blobs up to this size
-/// are hosted whole.
 pub const CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Largest single object (whole blob or chunk) a reader accepts.
 pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Largest chunk list a reader accepts. A list entry is about 100 bytes, so
@@ -45,10 +24,8 @@ pub const MAX_CHUNK_LIST_BYTES: u64 = 1024 * 1024;
 /// Version of the [`ChunkList`] encoding: the package format's.
 pub const CHUNK_LIST_FORMAT: u32 = crate::tapp::TAPP_FORMAT_VERSION;
 
-/// File-name suffix of a whole blob or a chunk.
 pub const BLOB_SUFFIX: &str = ".blob";
 
-/// File-name suffix of a chunk list.
 pub const CHUNKS_SUFFIX: &str = ".chunks";
 
 /// `<hash>.blob`: the object holding the bytes named `hash`.
@@ -56,12 +33,10 @@ pub fn blob_object_name(hash: &BlobHash) -> String {
     format!("{hash}{BLOB_SUFFIX}")
 }
 
-/// `<hash>.chunks`: the chunk list of the blob named `hash`.
 pub fn chunk_list_name(hash: &BlobHash) -> String {
     format!("{hash}{CHUNKS_SUFFIX}")
 }
 
-/// One slice of a chunked blob.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkRef {
     #[serde(with = "hex_hash")]
@@ -122,18 +97,11 @@ impl ChunkList {
         }
     }
 
-    /// Canonical JSON encoding.
     pub fn encode(&self) -> Vec<u8> {
         // Serializing plain integers, strings and vectors cannot fail.
         serde_json::to_vec(self).unwrap_or_default()
     }
 
-    /// Decode a list fetched for `blob` and check its shape.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChunkError::BadList`] for an oversized, malformed or
-    /// inconsistent list, or one describing another blob.
     pub fn decode(bytes: &[u8], blob: &BlobHash) -> Result<Self, ChunkError> {
         let bad = |reason: String| ChunkError::BadList {
             blob: *blob,
@@ -199,13 +167,6 @@ impl ChunkList {
 }
 
 /// Verifies a chunked blob as its chunks stream in, in list order.
-///
-/// Feed each chunk's bytes through [`Self::update`], then call
-/// [`Self::finish_chunk`], which checks the chunk against its name and, for
-/// the last one, the joined bytes against the blob hash. A caller that holds
-/// each chunk back until `finish_chunk` succeeds never releases a byte that
-/// does not belong to the blob, and never releases the final byte of a blob
-/// that does not verify.
 pub struct Reassembly {
     list: ChunkList,
     next: usize,
@@ -227,7 +188,6 @@ impl Reassembly {
         }
     }
 
-    /// The list being verified.
     pub fn list(&self) -> &ChunkList {
         &self.list
     }
@@ -294,7 +254,6 @@ impl Reassembly {
         Ok(true)
     }
 
-    /// Whether every chunk has been verified, and with it the blob.
     pub fn is_complete(&self) -> bool {
         self.next >= self.list.chunks.len()
     }
@@ -357,14 +316,11 @@ where
     }
 }
 
-/// What [`split`] wrote.
 #[derive(Clone, Debug)]
 pub struct Split {
-    /// The package's metadata; its thin form is what the objects complete.
     pub meta: PackageMeta,
     pub whole_blobs: usize,
     pub chunked_blobs: usize,
-    /// Distinct chunk objects written for the chunked blobs.
     pub chunks: usize,
     /// Distinct payload bytes.
     pub payload_bytes: u64,
@@ -428,7 +384,6 @@ pub fn split_with_chunk_bytes(
 struct ObjectWriter<'a> {
     dir: &'a Path,
     chunk_bytes: u64,
-    /// Objects written by this run, so a repeated chunk is written once.
     written: BTreeSet<BlobHash>,
     whole_blobs: usize,
     chunked_blobs: usize,
@@ -511,9 +466,6 @@ impl BlobSink for ObjectWriter<'_> {
     }
 }
 
-/// A directory of payload objects, as [`split`] writes it, read as
-/// a [`BlobSource`]: a whole `<blob>.blob`, or a `<blob>.chunks` list whose
-/// chunks are joined and verified one at a time.
 #[derive(Clone, Debug)]
 pub struct ObjectDir {
     dir: PathBuf,

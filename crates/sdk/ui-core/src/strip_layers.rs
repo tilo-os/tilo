@@ -1,26 +1,8 @@
-//! A frame drawn as retained layers, and strip pans composited from them.
-//!
-//! A frame producer whose content holds horizontally panned strips (a wide
-//! canvas seen through a viewport) can draw the frame as layers
-//! ([`FrameLayers`]): what is behind every strip, each strip on its own in
-//! canvas coordinates, and everything above them, all in scene (device)
-//! pixels. A pan then changes only where each strip reads its canvas
-//! ([`StripBlit::scroll_x`]); the layers' scenes stay byte for byte the same.
-//!
-//! `StripLayers` keeps the backdrop, the strips and the chrome rasterised in
-//! textures of the output's size. The strips texture holds the strips as the
-//! screen shows them ([`append_panned`]). On a pure pan, a pixel whose strips all moved by the
-//! same distance is copied from where it was, and only the rest is
-//! rasterised: the columns the pan uncovered, and the bands where a moving
-//! strip's drawing meets a strip that moved otherwise (each strip draws its
-//! shadows past its row, into its neighbour's). The output is then composited
-//! from the three textures (source over, premultiplied, as vello blends), over
-//! what changed. The backdrop and the chrome are rasterised again only when
-//! their scenes change.
-//!
-//! The composite stores straight alpha, as vello's fine stage does, so a
-//! composited output matches a single render of the same frame within a
-//! channel step of rounding.
+//! A frame drawn as retained layers, and strip pans composited from them. A frame
+//! producer whose content holds horizontally panned strips (a wide canvas seen through a
+//! viewport) can draw the frame as layers ([`FrameLayers`]): what is behind every strip,
+//! each strip on its own in canvas coordinates, and everything above them, all in scene
+//! (device) pixels.
 
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
@@ -33,9 +15,7 @@ mod recording;
 pub use present::{LayerPresenter, LayerRaster, QueuedRaster};
 pub use recording::{LayerRecording, draw_strip, put_under, take_panned, tiles};
 
-/// A strip drawn in canvas coordinates. The presenter shows the strips
-/// layer `scroll_x` pixels to the right of and `scroll_y` pixels below
-/// `dest_*`, in scene pixels.
+/// A strip drawn in canvas coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StripBlit {
     pub dest_x: u32,
@@ -49,60 +29,38 @@ pub struct StripBlit {
 /// A frame as layers a presenter retains between frames.
 #[derive(Clone)]
 pub struct FrameCache {
-    /// Width of the widest strip's canvas in scene pixels: wider than the
-    /// screen when a strip's content is wider than its viewport.
+    /// Width of the widest strip's canvas in scene pixels: wider than the screen when a
+    /// strip's content is wider than its viewport.
     pub width: u32,
-    /// Where each strip of [`FrameLayers::strips`] is shown, and how far it
-    /// is panned, in the same order.
     pub strips: Vec<StripBlit>,
     pub layers: FrameLayers,
-    /// Tells this drawing as layers apart from every other one its producer
-    /// made, so a presenter knows which drawing each of its layer textures
-    /// holds.
     pub generation: u64,
-    /// Where [`FrameLayers::chrome`] differs from an earlier drawing's
-    /// chrome; `None` when that is not known.
     pub chrome_damage: Option<ChromeDamage>,
 }
 
-/// Where the chrome of a drawing as layers differs from the chrome of the
-/// drawing `since` ([`FrameCache::generation`]), in scene pixels and whole
-/// 16-pixel tiles: a presenter whose chrome texture still holds that
-/// drawing's chrome brings it up to date by rasterising only these rects,
-/// so a clock tick rasterises a few tiles, not the whole layer.
+/// Where the chrome of a drawing as layers differs from the chrome of the drawing `since`
+/// ([`FrameCache::generation`]), in scene pixels and whole 16-pixel tiles: a presenter
+/// whose chrome texture still holds that drawing's chrome brings it up to date by
+/// rasterising only these rects, so a clock tick rasterises a few tiles, not the whole
+/// layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChromeDamage {
     pub since: u64,
     pub rects: Vec<FineDamageRect>,
 }
 
-/// A frame's sections as layers, bottom to top, in scene pixels. Drawing
-/// them over each other in order (source over) gives the frame's scene
-/// ([`compose`]), so a presenter can rasterize each into its own retained
-/// buffer and composite the buffers: a strip's pan then moves that strip's
-/// pixels over a backdrop and chrome that stay put, without drawing any of
-/// them again.
+/// A frame's sections as layers, bottom to top, in scene pixels.
 #[derive(Clone)]
 pub struct FrameLayers {
-    /// Anything drawn behind every strip.
     pub backdrop: Scene,
-    /// What no strip carries, in place, below the strips.
     pub workspace: Scene,
-    /// Each strip on screen, top to bottom, drawn on its own in canvas
-    /// coordinates: shown inside its [`FrameCache::strips`] destination,
-    /// read at its pan. Strips whose drawings meet (each draws its shadows
-    /// past its row) each draw over the other there, as on screen.
     pub strips: Vec<Scene>,
-    /// The damage parts each of `strips` marked, in the same order, so a
-    /// presenter rasterises only where a part's drawing changed. `None` for
-    /// a strip drawn without well-nested parts.
+    /// The damage parts each of `strips` marked, in the same order, so a presenter
+    /// rasterises only where a part's drawing changed.
     pub strip_parts: Vec<Option<crate::scene_parts::SectionParts>>,
-    /// Everything above the strips.
     pub chrome: Scene,
 }
 
-/// More uncovered bands than this and the strips layer is rasterised whole:
-/// a sparse render of that many rects costs about what a whole one does.
 const MAX_BANDS: usize = 32;
 
 /// `strip`'s destination as a rect in scene pixels.
@@ -115,9 +73,9 @@ fn dest_rect(strip: &StripBlit) -> Rect {
     )
 }
 
-/// The strips layer as the screen shows it: what no strip carries in place,
-/// then each strip, top to bottom, inside its destination read `scroll_x`
-/// pixels to the right of and `scroll_y` pixels below it.
+/// The strips layer as the screen shows it: what no strip carries in place, then each
+/// strip, top to bottom, inside its destination read `scroll_x` pixels to the right of
+/// and `scroll_y` pixels below it.
 pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBlit]) {
     scene.append(&layers.workspace, None);
     for (strip, drawn) in strips.iter().zip(&layers.strips) {
@@ -133,8 +91,8 @@ pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBli
     }
 }
 
-/// The frame `cache` holds as one scene: its layers over each other, as
-/// `StripLayers` composites them.
+/// The frame `cache` holds as one scene: its layers over each other, as `StripLayers`
+/// composites them.
 pub fn compose(cache: &FrameCache) -> Scene {
     let mut scene = cache.layers.backdrop.clone();
     append_panned(&mut scene, &cache.layers, &cache.strips);
@@ -142,27 +100,18 @@ pub fn compose(cache: &FrameCache) -> Scene {
     scene
 }
 
-/// What a set of layer textures shows: the layers of the frame last
-/// composited from them, or warmed into them at rest
-/// (a presenter warming its textures between pans). A
-/// layer is `None` while its texture holds nothing known: a warm stopped
-/// while drawing it.
+/// What a set of layer textures shows: the layers of the frame last composited from them,
+/// or warmed into them at rest (a presenter warming its textures between pans).
 pub struct Shown {
     backdrop: Option<Scene>,
-    /// The chrome, and the [`FrameCache::generation`] of the drawing it is
-    /// of.
     chrome: Option<(Scene, u64)>,
     strips: Option<ShownStrips>,
-    /// The frame whose composite the output target was last given; `None`
-    /// when the output was not composited from what the textures hold.
     pub revision: Option<u64>,
 }
 
-/// What the strips texture shows.
 struct ShownStrips {
     workspace: Scene,
     drawn: Vec<Scene>,
-    /// The damage parts of `drawn`, in the same order.
     parts: Vec<Option<crate::scene_parts::SectionParts>>,
     width: u32,
     strips: Vec<StripBlit>,
@@ -181,8 +130,7 @@ impl ShownStrips {
 }
 
 impl Shown {
-    /// Textures holding every layer of `cache`, composited into the output
-    /// as `revision`.
+    /// Textures holding every layer of `cache`, composited into the output as `revision`.
     pub fn of(cache: &FrameCache, revision: u64) -> Self {
         Self {
             backdrop: Some(cache.layers.backdrop.clone()),
@@ -202,19 +150,17 @@ impl Shown {
         }
     }
 
-    /// Every texture holds a known layer.
     fn complete(&self) -> bool {
         self.backdrop.is_some() && self.chrome.is_some() && self.strips.is_some()
     }
 
-    /// Which drawing's chrome the chrome texture holds
-    /// ([`FrameCache::generation`]), when it holds a known one.
+    /// Which drawing's chrome the chrome texture holds ([`FrameCache::generation`]), when
+    /// it holds a known one.
     pub fn chrome_generation(&self) -> Option<u64> {
         self.chrome.as_ref().map(|(_, generation)| *generation)
     }
 
-    /// `layer`'s texture is about to be drawn: until it is done it holds
-    /// nothing known.
+    /// `layer`'s texture is about to be drawn: until it is done it holds nothing known.
     pub fn forget(&mut self, layer: Layer) {
         match layer {
             Layer::Backdrop => self.backdrop = None,
@@ -233,8 +179,8 @@ impl Shown {
     }
 }
 
-/// Part of the strips layer that a pan moves: `width × height` pixels at
-/// `(src_x, src_y)` go to `(dst_x, dst_y)`.
+/// Part of the strips layer that a pan moves: `width × height` pixels at `(src_x, src_y)`
+/// go to `(dst_x, dst_y)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BandCopy {
     pub src_x: u32,
@@ -266,20 +212,17 @@ impl BandCopy {
 /// What the strips layer needs for a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceWork {
-    /// It already shows the frame.
     Unchanged,
-    /// The strips only panned, or one changed: copy what stays on screen,
-    /// then rasterise what the pans uncovered and what changed.
+    /// The strips only panned, or one changed: copy what stays on screen, then rasterise
+    /// what the pans uncovered and what changed.
     Pan {
         copies: Vec<BandCopy>,
         uncovered: Vec<FineDamageRect>,
     },
-    /// Rasterise it whole.
     Whole,
 }
 
-/// The work a frame takes: which layers to rasterise, and where to
-/// composite the output.
+/// The work a frame takes: which layers to rasterise, and where to composite the output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayerWork {
     pub backdrop: bool,
@@ -288,8 +231,6 @@ pub struct LayerWork {
     /// ([`chrome_damage`]), or the whole layer with `None`.
     pub chrome_tiles: Option<Vec<FineDamageRect>>,
     pub workspace: WorkspaceWork,
-    /// The output rect to composite again; `None` when the output already
-    /// shows the frame.
     pub composite: Option<FineDamageRect>,
 }
 
@@ -348,19 +289,14 @@ fn full_rect(size: (u32, u32)) -> FineDamageRect {
     }
 }
 
-/// Most pixels a warm at rest rasterises in one render: a frame that comes
-/// while the layers warm waits for one band, not for a whole layer. A band
-/// of a million pixels is a fifth of the 2944x1840 panel, a few
-/// milliseconds of raster on its GPU, so a keystroke arriving mid-warm
-/// waits that long rather than for half a dense frame.
+/// Most pixels a warm at rest rasterises in one render: a frame that comes while the
+/// layers warm waits for one band, not for a whole layer.
 const WARM_BAND_PIXELS: u64 = 1 << 20;
 
-/// Rows of a warm band are a multiple of vello's tile height, so no tile is
-/// drawn by two bands.
 const WARM_BAND_ROWS: u32 = 16;
 
-/// The bands a warm rasterises a whole layer of an output of `size` in, top
-/// to bottom; `None` when one render takes the whole layer.
+/// The bands a warm rasterises a whole layer of an output of `size` in, top to bottom;
+/// `None` when one render takes the whole layer.
 pub fn warm_bands(size: (u32, u32)) -> Option<Vec<FineDamageRect>> {
     let count = area(full_rect(size)).div_ceil(WARM_BAND_PIXELS);
     if count <= 1 {
@@ -388,10 +324,9 @@ pub fn warm_bands(size: (u32, u32)) -> Option<Vec<FineDamageRect>> {
     Some(bands)
 }
 
-/// Where the chrome texture, holding `shown`'s chrome, must be rasterised
-/// again to hold `cache`'s, on an output of `size`: the rects
-/// [`FrameCache::chrome_damage`] names, when the texture holds the drawing
-/// they were measured from. `None` when that is not known: the whole layer.
+/// Where the chrome texture, holding `shown`'s chrome, must be rasterised again to hold
+/// `cache`'s, on an output of `size`: the rects [`FrameCache::chrome_damage`] names, when
+/// the texture holds the drawing they were measured from.
 pub fn chrome_damage(
     shown: &Shown,
     cache: &FrameCache,
@@ -428,9 +363,8 @@ fn band(strip: &StripBlit, size: (u32, u32)) -> (u32, u32, u32, u32) {
     (x0, y0, x1, y1)
 }
 
-/// The work that brings layer textures showing `shown` to `cache`, on an
-/// output of `size`. `output_current` says the output target still holds
-/// `shown`'s composite, so only what changed needs compositing again.
+/// The work that brings layer textures showing `shown` to `cache`, on an output of
+/// `size`.
 pub fn plan(
     shown: Option<&Shown>,
     cache: &FrameCache,
@@ -453,11 +387,10 @@ pub fn plan(
         .map_or(WorkspaceWork::Whole, |strips| {
             workspace_work(strips, cache, size)
         });
-    // A chrome texture holding the drawing the chrome changed from takes
-    // only the tiles that changed.
+    // A chrome texture holding the drawing the chrome changed from takes only the tiles
+    // that changed.
     let chrome_tiles = chrome.then(|| chrome_damage(shown, cache, size)).flatten();
-    // A texture that holds nothing known was never composited into the
-    // output.
+    // A texture that holds nothing known was never composited into the output.
     let output_current = output_current && shown.complete();
     let composite = if backdrop
         || (chrome && chrome_tiles.is_none())
@@ -491,9 +424,6 @@ pub fn plan(
     }
 }
 
-/// One strip as the planner sees it: where it is shown, how far it moved
-/// since the shown frame (positive: its content moved left, or up), and how
-/// its drawing changed.
 #[derive(Clone)]
 struct Piece {
     band: (u32, u32, u32, u32),
@@ -501,32 +431,26 @@ struct Piece {
     change: Change,
 }
 
-/// How far inside an output's edges a changed window group's columns are
-/// looked for ([`cover_lane`]): the columns a change can round onto a tile
-/// just past the group it belongs to, where the output's own edge is not.
+/// How far inside an output's edges a changed window group's columns are looked for
+/// ([`cover_lane`]): the columns a change can round onto a tile just past the group it
+/// belongs to, where the output's own edge is not.
 const COLUMN_EDGE: u32 = 16;
 
-/// How a strip's drawing changed since the shown frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Change {
     Unchanged,
-    /// Only inside these output rects, where the strip shows them now: the
-    /// old and new bounds of the window groups whose drawing changed, in
-    /// whole 16-pixel tiles, within the strip's band. Empty when what
-    /// changed is nowhere on screen.
+    /// Only inside these output rects, where the strip shows them now: the old and new
+    /// bounds of the window groups whose drawing changed, in whole 16-pixel tiles, within
+    /// the strip's band.
     Within(Vec<FineDamageRect>),
-    /// Anywhere: the change is not bounded by the strip's damage parts.
     Anywhere,
 }
 
 /// Vello rasterises in tiles of this many device pixels a side
-/// (`TILE_WIDTH`/`TILE_HEIGHT` in `vello_encoding`'s config); a changed edge can
-/// round its tile's other pixels by a unit, so a change is repaired in whole
-/// tiles. A raster unit, not a spacing.
+/// (`TILE_WIDTH`/`TILE_HEIGHT` in `vello_encoding`'s config); a changed edge can round
+/// its tile's other pixels by a unit, so a change is repaired in whole tiles.
 const TILE_EDGE: u32 = 16;
 
-/// How `new_drawn` (with `new_parts`), shown through `blit` on an output of
-/// `size`, changed from `old_drawn` (with `old_parts`).
 fn strip_change(
     (old_drawn, old_parts): (&Scene, Option<&crate::scene_parts::SectionParts>),
     (new_drawn, new_parts): (&Scene, Option<&crate::scene_parts::SectionParts>),
@@ -546,8 +470,8 @@ fn strip_change(
     let scroll = f64::from(blit.scroll_x);
     let scroll_y = f64::from(blit.scroll_y);
     let mut within = Vec::new();
-    // The strip is drawn in canvas coordinates and shown `scroll_x` pixels to
-    // the left and `scroll_y` up ([`append_panned`]), clipped to its band.
+    // The strip is drawn in canvas coordinates and shown `scroll_x` pixels to the left
+    // and `scroll_y` up ([`append_panned`]), clipped to its band.
     let edge = f64::from(TILE_EDGE);
     let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
     let clamp = |value: f64, low: u32, high: u32| -> u32 {
@@ -574,7 +498,6 @@ fn strip_change(
     }
 }
 
-/// `rect` cut to the run `x0..x1` of rows `y0..y1`, if any of it is there.
 fn clipped(
     rect: &FineDamageRect,
     (x0, y0, x1, y1): (u32, u32, u32, u32),
@@ -631,8 +554,8 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
             }
         })
         .collect();
-    // What no strip carries is drawn in place under the strips: where it
-    // draws, a strip's pixels cannot be moved without it.
+    // What no strip carries is drawn in place under the strips: where it draws, a strip's
+    // pixels cannot be moved without it.
     let in_place_drawn = !cache.layers.workspace.encoding().is_empty();
     let (copies, uncovered) = pan_work(&pieces, in_place_drawn, cache.width);
     if uncovered.len() > MAX_BANDS {
@@ -645,19 +568,6 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
 }
 
 /// What a frame copies and what it rasterises on the strips layer.
-///
-/// The screen is cut into rows at every strip's top and bottom edge, and
-/// each row into runs of pixels covered by the same strips. A run whose
-/// strips all moved by `d` shows what the pixels `d` to its right showed,
-/// which the same strips covered: those are copied, the `d` columns the move
-/// uncovered are rasterised. A run whose strips moved by different distances
-/// (where two strips' drawings meet) is rasterised whole, and so is a run a
-/// strip changed in anywhere but its drawing; a run nothing moved in and
-/// nothing changed in is left as it is.
-///
-/// A pan moves what the strips drew; what changed is drawn where it stands,
-/// not where the move would have brought it. So a run that moved is copied
-/// whole, and the tiles a change stands on are rasterised over the copy.
 fn pan_work(
     pieces: &[Piece],
     in_place_drawn: bool,
@@ -684,7 +594,6 @@ fn pan_work(
             let delta = first.delta;
             let uniform = rest.iter().all(|piece| piece.delta == delta);
             let anywhere = cover.iter().any(|piece| piece.change == Change::Anywhere);
-            // What changed within the run, where the strips show it now.
             let within: Vec<FineDamageRect> = cover
                 .iter()
                 .filter_map(|piece| match &piece.change {
@@ -705,14 +614,11 @@ fn pan_work(
                 push_rect(&mut uncovered, x0, y0, width, height);
                 continue;
             }
-            // A row the strips did not move in and did not change shows as it
-            // shows: nothing to copy, nothing to draw.
             if !moved && within.is_empty() {
                 continue;
             }
-            // The pixels whose content was on screen in the run before stay,
-            // one delta away; the columns and rows the move uncovered are
-            // rasterised.
+            // The pixels whose content was on screen in the run before stay, one delta
+            // away; the columns and rows the move uncovered are rasterised.
             let (src_x, dst_x, gap_x) = if dx > 0 {
                 (x0.saturating_add(shift), x0, x1.saturating_sub(shift))
             } else {
@@ -731,9 +637,9 @@ fn pan_work(
                 width: width.saturating_sub(shift),
                 height: height.saturating_sub(lift),
             };
-            // What a strip shows here and where the pan puts it are the same
-            // pixels, so the run is copied where it moves to; a change drawn
-            // on top of them is not moved with them, and is drawn again.
+            // What a strip shows here and where the pan puts it are the same pixels, so
+            // the run is copied where it moves to; a change drawn on top of them is not
+            // moved with them, and is drawn again.
             push_copy(&mut copies, kept);
             push_rect(&mut uncovered, gap_x, y0, shift, height);
             push_rect(&mut uncovered, dst_x, gap_y, kept.width, lift);
@@ -745,14 +651,7 @@ fn pan_work(
     (copies, uncovered)
 }
 
-/// The strips that show in the row `y0..y1`: every strip whose band holds
-/// the row. Each strip between two others is drawn over the ones before it
-/// ([`append_panned`]), so only the last of them shows; several strips over
-/// the same row are told apart by the widths of their bands, which the
-/// planner cuts into runs at. A change inside [`COLUMN_EDGE`] of an output's
-/// own edge is left out: it was rounded onto a tile just past the group it
-/// belongs to, and rasterising it costs that edge the cut the output makes
-/// there anyway.
+/// The strips that show in the row `y0..y1`: every strip whose band holds the row.
 fn cover_lane(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
     pieces
         .iter()
@@ -775,10 +674,6 @@ fn cover_lane(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<Piece> {
         .collect()
 }
 
-/// The runs of the row `y0..y1` covered by the same strips, left to right,
-/// with those strips: cut at every strip's edges, and at the columns an
-/// output's edges are near, so a run there is decided apart from the run the
-/// pan really moves. Pixels no strip covers are left out.
 fn runs(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<(u32, u32, Vec<Piece>)> {
     let in_row = cover_lane(pieces, y0, y1, width);
     let mut xs: Vec<u32> = in_row
@@ -815,7 +710,6 @@ fn runs(pieces: &[Piece], y0: u32, y1: u32, width: u32) -> Vec<(u32, u32, Vec<Pi
         .collect()
 }
 
-/// Add a rect to rasterise, joining it to the one above when they line up.
 fn push_rect(rects: &mut Vec<FineDamageRect>, x: u32, y: u32, width: u32, height: u32) {
     if width == 0 || height == 0 {
         return;
@@ -834,7 +728,6 @@ fn push_rect(rects: &mut Vec<FineDamageRect>, x: u32, y: u32, width: u32, height
     });
 }
 
-/// Add a band copy, joining it to the one above when they line up.
 fn push_copy(copies: &mut Vec<BandCopy>, copy: BandCopy) {
     if copy.width == 0 || copy.height == 0 {
         return;
@@ -901,10 +794,8 @@ pub struct StripLayers {
     backdrop: LayerTexture,
     workspace: LayerTexture,
     chrome: LayerTexture,
-    /// Where a moving band is staged: a texture cannot be copied onto itself.
     scratch: crate::scroll_copy::CopyScratch,
     composite: CompositePass,
-    /// The composite has run once ([`Self::prime_composite`]).
     primed: bool,
     pub shown: Option<Shown>,
 }
@@ -931,9 +822,9 @@ impl StripLayers {
         }
     }
 
-    /// Run the composite once, over one pixel of a throwaway target: a
-    /// driver that compiles a pipeline on its first dispatch (lavapipe)
-    /// then does so while the desktop rests, not in a pan's first frame.
+    /// Run the composite once, over one pixel of a throwaway target: a driver that
+    /// compiles a pipeline on its first dispatch (lavapipe) then does so while the
+    /// desktop rests, not in a pan's first frame.
     pub fn prime_composite(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if std::mem::replace(&mut self.primed, true) {
             return;
@@ -959,10 +850,9 @@ impl StripLayers {
         queue.submit([encoder.finish()]);
     }
 
-    /// Move the strips layer's bands `copies` names, as a scroll within a
-    /// retained target moves ([`crate::scroll_copy::encode_copies`]).
-    /// Returns `false`, recording nothing, when a copy would leave the
-    /// layer: the caller then rasterises the layer whole.
+    /// Move the strips layer's bands `copies` names, as a scroll within a retained target
+    /// moves ([`crate::scroll_copy::encode_copies`]). Returns `false`, recording nothing,
+    /// when a copy would leave the layer: the caller then rasterises the layer whole.
     #[must_use]
     pub fn encode_copies(
         &mut self,
@@ -1025,14 +915,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let above = premultiplied(textureLoad(chrome, p, 0));
     let under = strips + below * (1.0 - strips.a);
     let out = above + under * (1.0 - above.a);
-    // Straight alpha, as vello's fine stage stores it.
     let a_inv = 1.0 / max(out.a, 1e-6);
     textureStore(output, p, vec4<f32>(out.rgb * a_inv, out.a));
 }
 ";
 
-/// Bytes of the composite shader's `Params` uniform: two `vec2<u32>`, a
-/// whole 16-byte uniform block.
+/// Bytes of the composite shader's `Params` uniform: two `vec2<u32>`, a whole 16-byte
+/// uniform block.
 const PARAMS_BYTES: u64 = 16;
 
 struct CompositePass {

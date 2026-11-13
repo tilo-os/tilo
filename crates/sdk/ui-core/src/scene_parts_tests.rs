@@ -10,8 +10,6 @@ fn fill(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
 }
 
-/// A section drawn the way the producer draws one: tracked under an active
-/// recording. `draw` receives the section and paints it.
 fn section(draw: impl FnOnce(&mut Scene)) -> (Box<Scene>, SectionParts) {
     let recording = Recording::begin();
     let mut scene = Box::new(Scene::new());
@@ -25,14 +23,12 @@ fn section(draw: impl FnOnce(&mut Scene)) -> (Box<Scene>, SectionParts) {
 }
 
 thread_local! {
-    // One renderer for every frame: fonts compare by blob identity, and the
-    // same desktop draws its text from the same fonts.
     static TEXT: RefCell<crate::text_render::TextRenderer> =
         RefCell::new(crate::text_render::TextRenderer::new());
 }
 
-/// Background, a part at `A` drawn by `a`, chrome between, a part at `B`
-/// with a gradient and text that never changes, then more chrome.
+/// Background, a part at `A` drawn by `a`, chrome between, a part at `B` with a gradient
+/// and text that never changes, then more chrome.
 fn desktop(a: impl FnOnce(&mut Scene), chrome: Color) -> (Box<Scene>, SectionParts) {
     section(|scene| {
         fill(
@@ -99,8 +95,8 @@ fn a_change_inside_a_part_damages_only_that_part() {
 
 #[test]
 fn a_part_that_grows_leaves_later_text_gradients_and_chrome_proven_equal() {
-    // More commands in the first part shift every stream offset, glyph run
-    // and patch after it: the rest must still compare equal.
+    // More commands in the first part shift every stream offset, glyph run and patch
+    // after it: the rest must still compare equal.
     let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
     let (new, new_parts) = desktop(
         |scene| {
@@ -138,9 +134,6 @@ fn a_change_outside_every_part_is_not_proven() {
 
 #[test]
 fn what_follows_a_part_does_not_depend_on_the_parts_last_transform() {
-    // The encoder skips a transform equal to the last one encoded. Without
-    // the boundary forcing it, chrome drawn after the part would encode
-    // differently depending on the transform the part ended with.
     let shifted = Affine::translate((1.0, 0.0));
     let frame = |inner: Affine| {
         section(move |scene| {
@@ -269,8 +262,6 @@ fn a_part_left_open_gives_the_section_no_parts() {
     assert!(recording.finish().of(&scene).is_none());
 }
 
-/// An app's retained scene with a caret part, appended into a tile part of
-/// a section at `offset`, as an embedded app is.
 fn embedded(caret_color: Color, offset: f64) -> (Box<Scene>, SectionParts) {
     let mut app = Scene::new();
     let ((), app_parts) = record(&mut app, |scene| {
@@ -351,8 +342,8 @@ fn appending_into_an_untracked_scene_is_a_plain_append() {
     assert!(appended.encoding_eq(&plain));
 }
 
-/// An overlay part that is always there, opening a menu with a part of its
-/// own inside: the parts nested in it differ between the frames.
+/// An overlay part that is always there, opening a menu with a part of its own inside:
+/// the parts nested in it differ between the frames.
 fn overlay(open: bool, chrome: Color) -> (Box<Scene>, SectionParts) {
     section(move |scene| {
         fill(
@@ -403,9 +394,6 @@ fn comparing_outermost_parts_still_refuses_a_change_outside_them() {
     );
 }
 
-/// A lane part holding a window part, whose menu, when `open`, is a part of
-/// its own; `shown` leaves the window out altogether, as a row does for a
-/// window another surface draws.
 fn lane(shown: bool, open: bool) -> (Box<Scene>, SectionParts) {
     const LANE: Rect = Rect::new(0.0, 0.0, 200.0, 50.0);
     section(move |scene| {
@@ -491,14 +479,11 @@ fn a_hint_cannot_vouch_for_parts_that_came_inside_it() {
     };
     let (old, old_parts) = frame(false, 0, 1);
     let (new, new_parts) = frame(true, 1, 2);
-    // The app's hint follows on, but names only its caret: the menu that
-    // came is inside the tile, which is repainted whole.
+    // The app's hint follows on, but names only its caret: the menu that came is inside
+    // the tile, which is repainted whole.
     assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![tile]));
 }
 
-/// An embedded app's content placed at `offset` inside a tile part, its
-/// caret painted in `color`, with a hint from `source` that generation
-/// `from` → `to` changed the caret.
 fn hinted_app(
     color: Color,
     offset: f64,
@@ -544,7 +529,6 @@ fn a_hint_that_follows_on_damages_what_it_says_changed() {
 fn a_hint_that_does_not_follow_on_damages_the_enclosing_part() {
     let tile = Rect::new(100.0, 0.0, 140.0, 40.0);
     let (old, old_parts) = hinted_app(Color::WHITE, 100.0, Some((7, 0, 1)));
-    // A generation was skipped, another source painted, or there is no hint.
     for hint in [Some((7, 2, 3)), Some((8, 1, 2)), None] {
         let (new, new_parts) = hinted_app(Color::BLACK, 100.0, hint);
         assert_eq!(
@@ -592,7 +576,6 @@ fn a_hinted_part_outside_every_bounded_part_is_not_proven_without_its_hint() {
         damage(&old, &old_parts, &new, &new_parts),
         Err(Unproven::Section)
     );
-    // A hint that says nothing changed cannot vouch for a change.
     let mut empty = hint(1, 2);
     empty.rects.clear();
     let (new, new_parts) = frame(Color::BLACK, Some(empty));
@@ -634,8 +617,6 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
     );
 }
 
-/// Background, a layer around a clipped part at `A` and a part at `B` with
-/// a gradient and text, then a part at `C` whose layer the section pops.
 fn layered_desktop() -> (Box<Scene>, SectionParts) {
     section(|scene| {
         let all = Rect::new(0.0, 0.0, 200.0, 50.0);
@@ -720,7 +701,6 @@ fn a_scene_culled_to_a_damage_leaves_out_only_parts_it_can_leave_out() {
     let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
     let encoding = culled.encoding();
     assert!(encoding.n_paths < scene.encoding().n_paths);
-    // The part whose layer the section pops stays, and its layer with it.
     assert_eq!(encoding.n_clips, scene.encoding().n_clips - 2);
     assert_eq!(encoding.n_open_clips, 0);
 }

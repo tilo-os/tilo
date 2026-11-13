@@ -41,10 +41,9 @@ pub fn key_stamp(event: &WindowEvent) -> Option<(u32, u32)> {
     None
 }
 
-/// What the desktop said about the window's frame: `Some(true)` where the
-/// desktop draws it (KDE, X11 window managers), `Some(false)` where it asks
-/// the app to (GNOME on Wayland), and `None` until it says, or on a target
-/// whose desktops always draw it.
+/// What the desktop said about the window's frame: `Some(true)` where it draws
+/// it (KDE, X11 window managers), `Some(false)` where it asks the app to (GNOME
+/// on Wayland), `None` until it says or where desktops always draw it.
 pub fn desktop_draws_frame(window: &Window) -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -58,39 +57,47 @@ pub fn desktop_draws_frame(window: &Window) -> Option<bool> {
     }
 }
 
+/// Present a frame of `size` pixels that `present` commits, at the size it was drawn for, and
+/// report its presentation to `observer` when one is given. Returns whether it is observed.
 pub fn present(
     window: &Window,
-    observer: Box<dyn FnOnce(Feedback) + Send>,
+    size: (u32, u32),
+    observer: Option<Box<dyn FnOnce(Feedback) + Send>>,
     present: impl FnOnce(),
 ) -> bool {
     #[cfg(target_os = "linux")]
     {
         use winit::platform::wayland::{WaylandPresentation, WindowExtWayland};
-        window.present_with_feedback(
-            Box::new(move |result| {
-                observer(match result {
-                    WaylandPresentation::Presented {
-                        clock_id,
-                        timestamp,
-                        refresh,
-                        sequence,
-                        flags,
-                    } => Feedback::Presented {
-                        clock_id,
-                        timestamp,
-                        refresh,
-                        sequence,
-                        flags,
-                    },
-                    WaylandPresentation::Discarded => Feedback::Discarded,
-                });
-            }),
+        window.present_frame(
+            winit::dpi::PhysicalSize::new(size.0, size.1),
+            observer.map(
+                |observer| -> winit::platform::wayland::WaylandPresentationObserver {
+                    Box::new(move |result| {
+                        observer(match result {
+                            WaylandPresentation::Presented {
+                                clock_id,
+                                timestamp,
+                                refresh,
+                                sequence,
+                                flags,
+                            } => Feedback::Presented {
+                                clock_id,
+                                timestamp,
+                                refresh,
+                                sequence,
+                                flags,
+                            },
+                            WaylandPresentation::Discarded => Feedback::Discarded,
+                        });
+                    })
+                },
+            ),
             present,
         )
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (window, observer);
+        let _ = (window, size, observer);
         present();
         false
     }

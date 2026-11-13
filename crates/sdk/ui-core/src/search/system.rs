@@ -9,42 +9,30 @@ mod tests;
 pub const PALETTE_ROW_BUDGET: usize = 8;
 use crate::search::Scope;
 
-/// One well-known category a result can belong to — the domain vocabulary
-/// the chip strip and grouping use. Providers pick from it or, via
-/// [`ResourceKind::Custom`], mint a new one.
+/// One well-known category a result can belong to — the domain vocabulary the chip strip
+/// and grouping use.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
-    /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
-    /// An app the person has: a Tilo app, a Flatpak, a downloaded program or
-    /// one of the system's. Enter starts it in the workspace you are
-    /// looking at. Apps they only could have belong to their source's own
-    /// kind ([`Self::Custom`]), so a name finds what is here first.
+    /// An app the person has: a Tilo app, a Flatpak, a downloaded program or one of the
+    /// system's.
     Application,
-    /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
-    /// A record an app made, collected or imported. Enter brings it into
-    /// the current workspace (a reference, not a copy) and opens it if openable.
     Record,
     File,
     Folder,
-    /// A creator/channel-style entity — pre-declared so a future provider
-    /// plugs into the same registry without teaching the palette a new kind.
     Creator,
     Video,
     Playlist,
-    /// An open tab on the desktop, as a target for window actions.
     Tab,
-    /// Tabs sharing one window frame.
     WindowGroup,
-    /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
     Custom(String),
 }
 
 impl ResourceKind {
-    /// Stable English name, independent of the desktop's language: the
-    /// source of the chip strip's scriptable `palette:filter:*` address and
-    /// the control socket's `kind` field. `Custom` variants carry their own.
+    /// Stable English name, independent of the desktop's language: the source of the chip
+    /// strip's scriptable `palette:filter:*` address and the control socket's `kind`
+    /// field.
     pub fn id(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
@@ -62,15 +50,13 @@ impl ResourceKind {
         }
     }
 
-    /// The kind's own label, as [`Self::id`], for scripted addresses and
-    /// comparisons.
+    /// The kind's own label, as [`Self::id`], for scripted addresses and comparisons.
     pub fn label(&self) -> &str {
         self.id()
     }
 
-    /// What the group header and the chip strip say this kind is, in the
-    /// desktop's language. A kind a provider minted carries the words the
-    /// provider wrote, which are already the person's.
+    /// What the group header and the chip strip say this kind is, in the desktop's
+    /// language.
     #[must_use]
     pub fn display_label(&self) -> String {
         let key = match self {
@@ -90,10 +76,10 @@ impl ResourceKind {
         crate::i18n::widget_format(key, &[])
     }
 
-    /// Stable sort key pinning the well-known kinds to a fixed palette
-    /// order. Applications rank above content kinds because Enter
-    /// activates the top row — a typed app name must launch the app, not
-    /// surface a source file that merely contains the word.
+    /// Stable sort key pinning the well-known kinds to a fixed palette order.
+    /// Applications rank above content kinds because Enter activates the top row — a
+    /// typed app name must launch the app, not surface a source file that merely contains
+    /// the word.
     pub fn sort_key(&self) -> (u8, String) {
         match self {
             ResourceKind::Action => (0, String::new()),
@@ -112,32 +98,19 @@ impl ResourceKind {
     }
 }
 
-/// How far a hit is from the person: what they have, an app Tilo opens at
-/// once, or an app they would first have to install. A property of the hit,
-/// set by the provider that knows it, and read by the merge
-/// ([`order_hits`]): what the person has ranks by match quality; the Store's
-/// offers follow it, however well their names match, the Tilo apps that just
-/// open before the third-party apps whose Store page they would first
-/// install. Each band is ordered among its own kind by match quality and
-/// still listed.
+/// How far a hit is from the person: what they have, an app Tilo opens at once, or an app
+/// they would first have to install.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Availability {
-    /// On this device or the person's own: an installed app, a file, a
-    /// message, an action, a setting.
     #[default]
     OnDevice,
-    /// A Tilo app from the catalogue, its documents and actions: not on this
-    /// device, but Enter downloads and opens it, with no install step.
     TiloCatalogue,
-    /// An app from a third-party catalogue (Flathub) the person does not
-    /// have: Enter shows its Store page, where they decide to install it.
     ThirdPartyCatalogue,
 }
 
 impl Availability {
-    /// The band the merge orders the hit in, before match quality: every
-    /// hit the person can open now leads every app they would have to
-    /// install first.
+    /// The band the merge orders the hit in, before match quality: every hit the person
+    /// can open now leads every app they would have to install first.
     #[must_use]
     pub const fn band(self) -> u8 {
         match self {
@@ -148,10 +121,8 @@ impl Availability {
     }
 }
 
-/// Hard ceilings for one provider page.  These are deliberately expressed in
-/// the protocol rather than as palette constants: the same limits protect the
-/// visual palette, headless agents, and a future remote directory source.
-/// A provider may stop sooner, but must never exceed any non-zero ceiling.
+/// Hard ceilings for one provider page. A provider may stop sooner, but must never exceed
+/// any non-zero ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchBudget {
     pub max_results: usize,
@@ -167,19 +138,18 @@ impl SearchBudget {
     };
 }
 
-/// An opaque provider-owned continuation.  The revision is carried alongside
-/// the provider-local payload, so a result page can never silently advance
-/// across a changed ordering.
+/// An opaque provider-owned continuation. The revision is carried alongside the
+/// provider-local payload, so a result page can never silently advance across a changed
+/// ordering.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SearchCursor {
     pub revision: String,
     pub token: String,
 }
 
-/// One bounded answer from a [`Provider`].  `stale_cursor` is a
-/// protocol outcome rather than an empty page: callers restart explicitly,
-/// preserving the distinction between "there are no more hits" and "the
-/// source changed while you were paging".
+/// One bounded answer from a [`Provider`]. `stale_cursor` is a protocol outcome rather
+/// than an empty page: callers restart explicitly, preserving the distinction between
+/// "there are no more hits" and "the source changed while you were paging".
 #[derive(Clone)]
 pub struct SearchPage<Row> {
     pub revision: String,
@@ -215,8 +185,8 @@ impl<Row> SearchPage<Row> {
         }
     }
 
-    /// The last page when `next_token` is `None`; otherwise a page its budget
-    /// cut short, continuing at that token.
+    /// The last page when `next_token` is `None`; otherwise a page its budget cut short,
+    /// continuing at that token.
     pub fn continuing(
         revision: impl Into<String>,
         results: Vec<Row>,
@@ -263,14 +233,12 @@ pub trait SearchRow {
         Availability::OnDevice
     }
 }
-/// One contiguous run of same-kind results, as [`group_by_kind`] arranges
-/// them.
+/// One contiguous run of same-kind results, as [`group_by_kind`] arranges them.
 #[derive(Clone, Debug)]
 pub struct KindGroup<Row> {
     pub kind: ResourceKind,
     /// The rows to render — at most the cap the caller asked for.
     pub results: Vec<Row>,
-    /// How many results this kind actually had, before the cap.
     pub total: usize,
 }
 pub fn query_input_is_bounded(needle: &str) -> bool {
@@ -280,10 +248,8 @@ pub fn query_input_is_bounded(needle: &str) -> bool {
         .count()
         <= super::MAX_SEARCH_QUERY_SCALARS
 }
-/// Whether a search of `scope` asks the provider `provider_id`: only a
-/// search of one app narrows, to that app's own providers and the ones that
-/// keep to the app in front. Nothing focused widens it to every provider
-/// rather than emptying it.
+/// Whether a search of `scope` asks the provider `provider_id`: only a search of one app
+/// narrows, to that app's own providers and the ones that keep to the app in front.
 pub fn scope_allows(
     scope: &Scope,
     provider_id: &str,
@@ -297,20 +263,14 @@ pub fn scope_allows(
         Scope::WindowGroup(_) | Scope::Workspace | Scope::Everywhere => true,
     }
 }
-/// The package id in full names exactly one app, so an exact id is as
-/// strong as the name; a shared id prefix names a publisher and stays below
-/// an exact name.
+/// The package id in full names exactly one app, so an exact id is as strong as the name;
+/// a shared id prefix names a publisher and stays below an exact name.
 pub const PACKAGE_ID_WEIGHT: super::FieldWeight = super::FieldWeight::new(88);
 
-/// An app's searchable fields: its name, the words it is known by and what
-/// kind of app it is. The package id in full, or its last segment,
-/// identifies exactly one app and weighs as its name — `hex-editor` typed
-/// for `so.tilo.hex-editor` is the app's identity and must outrank an
-/// incidental substring. Category ranks below the id because it's a bucket,
-/// not an identity, but is still a name for the app ("office" is Notes).
-/// Prose an app says of itself — a tagline, a description, what it runs on —
-/// is not: a person typing a word has it in mind, and an app's blurb holds
-/// most words at once.
+/// An app's searchable fields: its name, the words it is known by and what kind of app it
+/// is. The package id in full, or its last segment, identifies exactly one app and weighs
+/// as its name — `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and
+/// must outrank an incidental substring.
 #[must_use]
 pub fn application_fields<'a>(
     name: &'a str,
@@ -327,12 +287,9 @@ pub fn application_fields<'a>(
     ]
 }
 
-/// What an app-published action is found by, as every search ranks it: its
-/// label names it, the other words its declaration gives name it as people
-/// say it ("mkdir" for New folder), and the resource it acts on narrows it.
-/// Its id and its resource's kind are names for code: an item's kind is the
-/// collection's field (`so.tilo.chat.messages`), so matching it would offer
-/// every action on every message for "messages".
+/// What an app-published action is found by, as every search ranks it: its label names
+/// it, the other words its declaration gives name it as people say it ("mkdir" for New
+/// folder), and the resource it acts on narrows it.
 #[must_use]
 pub fn action_search_fields<'a>(
     action_label: &'a str,
@@ -352,15 +309,11 @@ pub fn action_search_fields<'a>(
     fields
 }
 
-/// Words a query is never required to match: possessives and filler ("my
-/// mails", "all the notes", "videos of <channel>"). The published resources
-/// on a person's search are theirs to read, so "my" narrows nothing further;
-/// it is dropped with the rest.
+/// Words a query is never required to match: possessives and filler ("my mails", "all the
+/// notes", "videos of <channel>").
 pub const FILLER_WORDS: &[&str] = &["my", "mine", "our", "the", "all", "of"];
 
-/// `needle` without its [`FILLER_WORDS`]: what every source is asked. A
-/// query of filler alone is asked as typed ("the" may be all the person
-/// remembers of a title).
+/// `needle` without its [`FILLER_WORDS`]: what every source is asked.
 #[must_use]
 pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
     let filler = |word: &str| {
@@ -380,28 +333,16 @@ pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
     )
 }
 
-/// What a query naming a resource's type rather than its title scores on the
-/// provider scale, by how it named it and whether the resource is its app's
-/// root. Above a loose match (a typo, words spread over fields) and below
-/// any real match of a title, so "Groceries" finds the note called that
-/// before the grocery lists, and "my mails" finds Mail's root (drawn as its
-/// inbox) before a conversation that only resembles the word.
+/// What a query naming a resource's type rather than its title scores on the provider
+/// scale, by how it named it and whether the resource is its app's root.
 const TYPE_MATCH_SCORE: i32 = 20;
 
-/// What naming a resource's type rather than its app adds: "mailboxes" is
-/// closer to a mailbox than "mail" is.
 const TYPE_NOUN_BONUS: i32 = 1;
 
-/// What being the app's root adds: a query naming the app means its root,
-/// which its app draws as it chooses (Mail's as the inbox).
 const ROOT_BONUS: i32 = 3;
 
-/// What a query that names a type and matches the rest by text adds to the
-/// text's own score: "mail inbox" is the inbox more surely than "inbox".
 const TYPE_AND_TEXT_BONUS: i32 = 5;
 
-/// The positions of the words of `words` (folded) that `name` is, one word or
-/// several standing together ("todo list").
 fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
     let name: Vec<String> = super::fold_search_text(name)
         .split_whitespace()
@@ -420,22 +361,94 @@ fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
     found
 }
 
-/// How well `needle` names a resource by what it is ([`tilo_actions::ResourceType`]):
-/// a word naming its type's noun or plural, or its app's name, matches it
-/// whatever it is called, and the rest of the query must match its text,
-/// which `text` ranks (on the provider scale). A word naming another type of
-/// its app (`kin`, each type's noun) is about the app's things and need not
-/// match either: "videos of <channel>" finds the channel by its name. `None`
-/// when no word names what it is, or the rest names nothing of it.
-///
-/// [`app_keywords`](Self::app_keywords) says the other words its app is known
-/// by (the registry's, "youtube" for Tube), which name the app as its title
-/// does.
-///
-/// What only names a type scores below any title match, the app's root
-/// first: "my mails" is Mail's root, "notes" the notebook. A query that
-/// names the type and matches the rest by text ("mail inbox") scores a
-/// little above the text alone.
+/// The words of `needle` that name what a resource is rather than what it is called: the
+/// ones a [`type_match_score_with`] over `ty` (with its kindred types' nouns, `kin`, and
+/// its app's names, `keywords`) leaves out. The rest is the text the resource itself must
+/// match — and what an outside origin is asked for what the query names (search.md §4,
+/// §7).
+#[must_use]
+pub fn type_words_rest<'k>(
+    needle: &str,
+    ty: &tilo_actions::ResourceType,
+    kin: impl IntoIterator<Item = &'k tilo_actions::Noun>,
+    keywords: &[&str],
+) -> Option<String> {
+    let words = split_words(needle);
+    let kin: Vec<&tilo_actions::Noun> = kin.into_iter().collect();
+    let covered = type_coverage(&words, ty, &kin, keywords)?;
+    let rest: Vec<&str> = words
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !covered.contains(at))
+        .map(|(_, word)| word.as_str())
+        .collect();
+    Some(rest.join(" "))
+}
+
+/// Whether `needle` names `ty` by its own noun rather than only by its app's name or a
+/// kindred type's noun: "videos" names a `Video` so, while "videos of <channel>" names a
+/// `Channel` only through its kindred type.
+#[must_use]
+pub fn named_by_own_noun(needle: &str, ty: &tilo_actions::ResourceType) -> bool {
+    let words = split_words(needle);
+    let mut at = Vec::new();
+    named_at(&words, &ty.noun.one, &mut at) | named_at(&words, &ty.noun.many, &mut at)
+}
+
+fn split_words(needle: &str) -> Vec<String> {
+    super::fold_search_text(needle)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn type_coverage(
+    words: &[String],
+    ty: &tilo_actions::ResourceType,
+    kin: &[&tilo_actions::Noun],
+    keywords: &[&str],
+) -> Option<Vec<usize>> {
+    let type_names: Vec<String> = std::iter::once(ty.noun.clone())
+        .chain(kin.iter().map(|noun| (*noun).clone()))
+        .flat_map(|noun| [noun.one, noun.many])
+        .map(|name| super::fold_search_text(&name))
+        .collect();
+    let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .chain(
+            keywords
+                .iter()
+                .map(|keyword| super::fold_search_text(keyword))
+                .filter(|keyword| !type_names.contains(keyword)),
+        )
+        .collect();
+    let mut own = Vec::new();
+    for name in [&ty.noun.one, &ty.noun.many] {
+        named_at(words, name, &mut own);
+    }
+    for name in &app_names {
+        named_at(words, name, &mut own);
+    }
+    let mut covered = own;
+    let title: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .collect();
+    for noun in kin {
+        for name in [&noun.one, &noun.many] {
+            if !title.contains(&super::fold_search_text(name)) {
+                named_at(words, name, &mut covered);
+            }
+        }
+    }
+    (!covered.is_empty()).then_some(covered)
+}
+
+/// How well `needle` names a resource by what it is ([`tilo_actions::ResourceType`]): a
+/// word naming its type's noun or plural, or its app's name, matches it whatever it is
+/// called, and the rest of the query must match its text, which `text` ranks (on the
+/// provider scale).
 pub fn type_match_score<'k>(
     needle: &str,
     ty: &tilo_actions::ResourceType,
@@ -446,11 +459,7 @@ pub fn type_match_score<'k>(
 }
 
 /// [`type_match_score`], with the words its app is known by besides its title
-/// (`keywords`: the registry's "youtube", "channel", "subscription" for
-/// Tube). A word naming one of them names the app: "youtube videos of mkbhd"
-/// is a `Channel` of the YouTube client, whose title as published is Tube.
-/// What only names an app (by its title or a keyword) without naming the
-/// type scores as the app's name does.
+/// (`keywords`: the registry's "youtube", "channel", "subscription" for Tube).
 pub fn type_match_score_with<'k>(
     needle: &str,
     ty: &tilo_actions::ResourceType,
@@ -463,16 +472,14 @@ pub fn type_match_score_with<'k>(
         .map(str::to_owned)
         .collect();
     let kin: Vec<&tilo_actions::Noun> = kin.into_iter().collect();
-    // A word that is one of the app's types' nouns names that type, not the
-    // app: the registry's "videos" for Tube is its `Video` type's plural, so
-    // "youtube videos" are the client's videos, never every thing of it.
+    // A word that is one of the app's types' nouns names that type, not the app: the
+    // registry's "videos" for Tube is its `Video` type's plural, so "youtube videos" are
+    // the client's videos, never every thing of it.
     let type_names: Vec<String> = std::iter::once(ty.noun.clone())
         .chain(kin.iter().map(|noun| (*noun).clone()))
         .flat_map(|noun| [noun.one, noun.many])
         .map(|name| super::fold_search_text(&name))
         .collect();
-    // The app's name: its title and the registry's other words for it, less
-    // those that name one of its types.
     let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
         .map(|name| super::fold_search_text(name))
@@ -493,8 +500,6 @@ pub fn type_match_score_with<'k>(
     }
     let mut covered = own.clone();
     let mut kin_named = false;
-    // A type called as its app is ("Mail" in Mail) names the app, not
-    // another type of it.
     let title: Vec<String> = [&ty.app.one, &ty.app.many]
         .into_iter()
         .map(|name| super::fold_search_text(name))
@@ -516,8 +521,6 @@ pub fn type_match_score_with<'k>(
         .map(|(_, word)| word.as_str())
         .collect();
     if rest.is_empty() {
-        // Another type of its app is named and its own is not: "youtube
-        // videos" are not its channels.
         if own.is_empty() || (kin_named && !by_noun) {
             return None;
         }
@@ -535,8 +538,8 @@ pub fn type_match_score_with<'k>(
     )
 }
 
-/// How well `needle` names an action by its fields, on [`action_ranks`]:
-/// [`rank_fields`] for an action.
+/// How well `needle` names an action by its fields, on [`action_ranks`]: [`rank_fields`]
+/// for an action.
 #[must_use]
 pub fn rank_action_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
     rank_actions_fields(needle, [fields.iter().copied()])
@@ -546,8 +549,8 @@ pub fn rank_action_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32>
 }
 
 /// [`rank_action_fields`] for every action of a list at once, row for row: the list is
-/// indexed once, so ranking a session's hundreds of published actions costs one index, not
-/// one per action.
+/// indexed once, so ranking a session's hundreds of published actions costs one index,
+/// not one per action.
 pub fn rank_actions_fields<'a, R>(
     needle: &str,
     rows: impl IntoIterator<Item = R>,
@@ -563,9 +566,9 @@ where
         .collect()
 }
 
-/// The actions of `actions` a search for `query` finds, best first,
-/// on [`action_search_fields`]: what an app's test asserts to pin the words
-/// people use for its actions ("mkdir") to the action they mean.
+/// The actions of `actions` a search for `query` finds, best first, on
+/// [`action_search_fields`]: what an app's test asserts to pin the words people use for
+/// its actions ("mkdir") to the action they mean.
 #[must_use]
 pub fn actions_found_by<'a>(
     query: &str,
@@ -585,10 +588,10 @@ pub fn actions_found_by<'a>(
     found.into_iter().map(|(_, action)| action).collect()
 }
 
-/// An app's [`application_fields`] plus what else people call it: each of
-/// its `keywords` (aliases, synonyms, the products it stands in for, in
-/// every language its manifest gives), its names in other languages as the
-/// name itself, and the initials of its name (`wp` for `Word Processor`).
+/// An app's [`application_fields`] plus what else people call it: each of its `keywords`
+/// (aliases, synonyms, the products it stands in for, in every language its manifest
+/// gives), its names in other languages as the name itself, and the initials of its name
+/// (`wp` for `Word Processor`).
 #[must_use]
 pub fn application_search_fields<'a>(
     name: &'a str,
@@ -616,15 +619,8 @@ pub fn application_search_fields<'a>(
     fields
 }
 
-/// What a tier earns in an app's fields: an app is found by the words that
-/// name it begun, never by a word that merely holds them. A typo, words
-/// spread over its fields, or the query inside a longer word each find half
-/// the catalogue ("nodes", "note pad", "footnotes"), so an app row needs a
-/// word it is named by to start with what was typed — its name, an alias,
-/// its kind. Inside those fields an app's keywords are its other names
-/// (Finder and Explorer are Files, Task Manager is System Monitor), so a
-/// keyword typed whole or begun ranks like the start of its name: "explo" is
-/// already Files, ahead of every file that merely starts with it.
+/// What a tier earns in an app's fields: an app is found by the words that name it begun,
+/// never by a word that merely holds them.
 #[must_use]
 pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
     use super::MatchTier;
@@ -636,12 +632,9 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
     }
     if weight == super::FieldWeight::KEYWORD {
         match tier {
-            // Typed whole: the app's other name, as its name's start.
             MatchTier::Exact | MatchTier::PrefixWord => {
                 return MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
             }
-            // Begun: a step below, so "memo", Notes' whole word, leads
-            // Monitor's "memory" begun.
             MatchTier::Prefix => return MatchTier::Word.rank_in(super::FieldWeight::TITLE),
             _ => {}
         }
@@ -649,17 +642,14 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
     tier.rank_in(weight)
 }
 
-/// What a tier earns in an action's fields: the usual ranks, except that
-/// an action's keywords are the other words people use for it ("power off"
-/// for Shut down, "mkdir" for New folder), so a keyword typed whole ranks
-/// as the start of the action's title, as an app's other names rank as its
-/// name ([`application_ranks`]). A keyword only begun keeps a keyword's
-/// rank: "bat" is not yet "battery saver".
+/// What a tier earns in an action's fields: the usual ranks, except that an action's
+/// keywords are the other words people use for it ("power off" for Shut down, "mkdir" for
+/// New folder), so a keyword typed whole ranks as the start of the action's title, as an
+/// app's other names rank as its name ([`application_ranks`]).
 #[must_use]
 pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
-    // An action is found by a word of it begun, never by letters a longer
-    // word hides it in: "shut" is not the incomplete items a command's
-    // sentence happens to hold.
+    // An action is found by a word of it begun, never by letters a longer word hides it
+    // in: "shut" is not the incomplete items a command's sentence happens to hold.
     if tier == super::MatchTier::Contains {
         return None;
     }
@@ -669,18 +659,16 @@ pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Optio
     tier.rank_in(weight)
 }
 
-/// How much more an application hit is worth at the merge than its field
-/// rank says, because a person who types what an app is called, or a word it
-/// is known by, wants to open it: a perfect name match is launch intent; an
-/// exact alias or keyword ("youtube" for a video app) is the same intent
-/// reached by another word and must still lead the notes and files that
-/// merely contain it; a keyword or name that only begins or contains the
-/// query is weaker and ranks by its score alone.
+/// How much more an application hit is worth at the merge than its field rank says,
+/// because a person who types what an app is called, or a word it is known by, wants to
+/// open it: a perfect name match is launch intent; an exact alias or keyword ("youtube"
+/// for a video app) is the same intent reached by another word and must still lead the
+/// notes and files that merely contain it; a keyword or name that only begins or contains
+/// the query is weaker and ranks by its score alone.
 #[must_use]
 pub fn application_intent_boost(score: i32, top: i32) -> f32 {
     let top = top.max(1);
     if score >= top {
-        // A name, or a word the app is known by, typed whole.
         4.5
     } else if score.saturating_mul(100) >= top.saturating_mul(90) {
         3.0
@@ -691,14 +679,9 @@ pub fn application_intent_boost(score: i32, top: i32) -> f32 {
     }
 }
 
-/// Product-owned ordering for the empty Applications palette. Search queries
-/// continue to rank purely by match quality; this only prevents a fresh system
-/// from presenting forty alphabetised tools as though they were equally likely
-/// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers. Higher first.
+/// Product-owned ordering for the empty Applications palette.
 #[must_use]
 pub fn starting_point_rank(package_id: &str) -> i32 {
-    // A local build publishes the same apps under `dev.tilo.`.
     let canonical = package_id
         .strip_prefix("dev.tilo.")
         .map(|name| format!("so.tilo.{name}"));
@@ -753,13 +736,9 @@ pub const MAX_PROVIDER_SCORE: i32 = 100;
 /// One searchable field and its weight, as the shared ranker takes it.
 pub type RankField<'a> = (&'a str, super::FieldWeight);
 
-/// A field rank on the provider scale. A title prefix is already a perfect
-/// hit for a provider — it is what a person types to launch or open
-/// something — so the scale tops out there; [`lexical_strength`] still
-/// separates an exact title from a prefix across providers.
+/// A field rank on the provider scale.
 #[must_use]
 pub fn provider_score(rank: i32) -> i32 {
-    // A full-weight field ranks a tier at its whole percentage.
     let perfect = super::MatchTier::Prefix.percent();
     rank.clamp(0, perfect)
         .saturating_mul(MAX_PROVIDER_SCORE)
@@ -777,10 +756,9 @@ pub fn rank_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
         .map(provider_score)
 }
 
-/// Provider-independent lexical fit used at the global merge boundary. A
-/// provider still contributes domain knowledge through its normalized score,
-/// but an exact visible title must beat a weak metadata/fuzzy match from a
-/// different source.
+/// Provider-independent lexical fit used at the global merge boundary. A provider still
+/// contributes domain knowledge through its normalized score, but an exact visible title
+/// must beat a weak metadata/fuzzy match from a different source.
 pub fn lexical_strength(
     needle: &str,
     kind: &ResourceKind,
@@ -793,8 +771,6 @@ pub fn lexical_strength(
         return 0.0;
     }
     let title = fold_search_text(title);
-    // Application providers decorate the app name with the launch verb.
-    // Compare its name on the same basis as a file or note title.
     let title = if matches!(kind, ResourceKind::Application) {
         title.strip_prefix("open ").unwrap_or(&title)
     } else {
@@ -816,12 +792,12 @@ pub fn lexical_strength(
     }
 }
 
-/// A deliberately small contextual preference: proximity should settle close
-/// matches, never make a weak metadata hit beat an exact visible title.
+/// A deliberately small contextual preference: proximity should settle close matches,
+/// never make a weak metadata hit beat an exact visible title.
 pub const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
 
-/// One hit's strength against every other provider's: its lexical fit, its
-/// provider's normalized score, launch intent for an application match
+/// One hit's strength against every other provider's: its lexical fit, its provider's
+/// normalized score, launch intent for an application match
 /// ([`application_intent_boost`]), and the caller's contextual `proximity` boost.
 #[allow(
     clippy::cast_precision_loss,
@@ -837,7 +813,6 @@ pub fn merged_strength(
     proximity: f32,
 ) -> f32 {
     let top = top.max(1);
-    // Launch intent is a reading of what was typed; an empty query has none.
     let application_intent =
         if !needle.trim().is_empty() && matches!(kind, ResourceKind::Application) {
             application_intent_boost(score, top)
@@ -845,9 +820,9 @@ pub fn merged_strength(
             0.0
         };
     let lexical = lexical_strength(needle, kind, title, subtitle);
-    // An action's provider gives its top score only to its title begun or
-    // to a word it is known by typed whole ([`action_ranks`]): "power off"
-    // names Shut down as well as "shut" does, though its title says neither.
+    // An action's provider gives its top score only to its title begun or to a word it is
+    // known by typed whole ([`action_ranks`]): "power off" names Shut down as well as
+    // "shut" does, though its title says neither.
     let lexical =
         if score >= top && !needle.trim().is_empty() && matches!(kind, ResourceKind::Action) {
             lexical.max(TITLE_BEGUN_FIT)
@@ -857,22 +832,18 @@ pub fn merged_strength(
     lexical + score as f32 / top as f32 + application_intent + proximity
 }
 
-/// [`lexical_strength`] of a title the query begins.
 const TITLE_BEGUN_FIT: f32 = 2.5;
 
-/// Order merged hits: groups by how well their best member matched, then
-/// the fixed kind order, then strength within a group. Enter activates the
-/// top row, so an app's name must not open an action that merely mentions
-/// the word. The sort is stable: equally strong hits keep their provider's
-/// own order rather than being re-alphabetised by title.
+/// Order merged hits: groups by how well their best member matched, then the fixed kind
+/// order, then strength within a group. Enter activates the top row, so an app's name
+/// must not open an action that merely mentions the word.
 pub fn order_by_kind<T>(merged: &mut [(T, f32)], kind: impl Fn(&T) -> &ResourceKind) {
     order_hits(merged, |hit| (kind(hit), Availability::OnDevice));
 }
 
-/// [`order_by_kind`] within each [`Availability::band`]: every hit the
-/// person can open now, ordered as [`order_by_kind`] orders them, then the
-/// apps they would have to install first, ordered the same way among
-/// themselves. Hits of one kind in different bands are separate groups.
+/// [`order_by_kind`] within each [`Availability::band`]: every hit the person can open
+/// now, ordered as [`order_by_kind`] orders them, then the apps they would have to
+/// install first, ordered the same way among themselves.
 pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKind, Availability)) {
     let key = |hit: &T| {
         let (kind, availability) = class(hit);
@@ -887,12 +858,10 @@ pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKi
         let (a_key, b_key) = (key(a), key(b));
         let a_group = best.get(&a_key).copied().unwrap_or(f32::MIN);
         let b_group = best.get(&b_key).copied().unwrap_or(f32::MIN);
-        // What the person has leads what they would have to install.
         a_key
             .0
             .cmp(&b_key.0)
             .then_with(|| b_group.partial_cmp(&a_group).unwrap_or(Ordering::Equal))
-            // Equally strong groups fall back to the fixed kind order.
             .then_with(|| a_key.1.cmp(&b_key.1))
             .then_with(|| {
                 b_strength
@@ -902,8 +871,6 @@ pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKi
     });
 }
 
-/// Rows from providers with their declared top score, ordered by their
-/// normalized score on [`order_by_kind`].
 #[allow(
     clippy::cast_precision_loss,
     reason = "Ranking normalizes integer priorities into approximate floating-point scores, not durable identifiers."
@@ -929,11 +896,9 @@ pub fn group<Row: SearchRow>(ranked: Vec<Row>, row_budget: usize) -> Vec<KindGro
     group_by_kind(ranked, SearchRow::kind, row_budget)
 }
 
-/// Ranked hits arranged into contiguous per-kind groups and trimmed to a
-/// `row_budget` shared round-robin ([`trim_groups`]): a palette paints ~10
-/// rows, and an outscoring kind (forty file hits) can otherwise push a
-/// correctly-ranked app off the bottom. A lone group is exempt — narrowing
-/// to one kind means "show me all of these". A zero budget keeps everything.
+/// Ranked hits arranged into contiguous per-kind groups and trimmed to a `row_budget`
+/// shared round-robin ([`trim_groups`]): a palette paints ~10 rows, and an outscoring
+/// kind (forty file hits) can otherwise push a correctly-ranked app off the bottom.
 pub fn group_by_kind<T>(
     ranked: Vec<T>,
     kind: impl Fn(&T) -> &ResourceKind,
@@ -956,16 +921,8 @@ pub fn group_by_kind<T>(
     trim_groups(groups, row_budget, &[])
 }
 
-/// Keep each group to a fair share of `row_budget` rows, round-robin from
-/// the front, except the kinds in `expanded`, which keep every row. A group
-/// that lost rows keeps its `total`, so its header and its
-/// [`show_all_entry`] can say how many there are. A lone group, or a zero
-/// budget, keeps everything.
-///
-/// The row offering a cut group's rest is drawn in the same list as the
-/// rows, so `row_budget` is what stays for rows once those rows are paid for:
-/// cutting to the whole budget would push the last group's rows — and the
-/// row that offers them — off the card.
+/// Keep each group to a fair share of `row_budget` rows, round-robin from the front,
+/// except the kinds in `expanded`, which keep every row.
 pub fn trim_groups<T>(
     groups: Vec<KindGroup<T>>,
     row_budget: usize,
@@ -988,9 +945,9 @@ pub fn trim_groups<T>(
     }
 }
 
-/// One row each, round-robin from the front, until `budget` rows are kept:
-/// every group is seen before any group is seen twice, so a group cannot
-/// reach the top of the list and starve the ones behind it.
+/// One row each, round-robin from the front, until `budget` rows are kept: every group is
+/// seen before any group is seen twice, so a group cannot reach the top of the list and
+/// starve the ones behind it.
 fn keep_each_group<T>(
     mut groups: Vec<KindGroup<T>>,
     budget: usize,
@@ -1004,8 +961,6 @@ fn keep_each_group<T>(
             left = left.saturating_sub(*kept);
         }
     }
-    // A group the person did not ask to see whole still gets its first row:
-    // seeing one group whole does not hide the others.
     let rest = groups
         .iter()
         .filter(|group| !expanded.contains(&group.kind))
@@ -1035,19 +990,16 @@ fn keep_each_group<T>(
 }
 
 impl<Row> KindGroup<Row> {
-    /// Whether the budget left out some of this group's rows, which a
-    /// [`show_all_entry`] under it then offers.
+    /// Whether the budget left out some of this group's rows, which a [`show_all_entry`]
+    /// under it then offers.
     #[must_use]
     pub fn is_capped(&self) -> bool {
         self.results.len() < self.total
     }
 }
 
-/// The row under a group [`trim_groups`] cut short that lists the rest of
-/// it in place: "Show all 59". Its host handles choosing it by `id`, by
-/// expanding the group's kind. Without it a palette says "Applications 59"
-/// and offers four, and the rest are only reachable by already knowing
-/// their names.
+/// The row under a group [`trim_groups`] cut short that lists the rest of it in place:
+/// "Show all 59".
 #[must_use]
 pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> CommandEntry {
     CommandEntry::new(
@@ -1078,15 +1030,11 @@ pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<Command
     entries
 }
 
-/// Whether a person may take `spec` from a palette row now: offered to
-/// people, available in the window's state, and asking no more than a row can
-/// collect ([`tilo_actions::ActionSpec::takes_a_row_answer`]).
-///
-/// The one rule every palette lists by, so the desktop's window search and a
-/// window's own palette offer the same commands; an action that fails it is
-/// not listed at all rather than listed disabled. What a row cannot collect
-/// (a record, a person, several arguments) is picked where it lives, by the
-/// surface that owns that pick.
+/// Whether a person may take `spec` from a palette row now: offered to people, available
+/// in the window's state, and asking no more than a row can collect
+/// ([`tilo_actions::ActionSpec::takes_a_row_answer`]). What a row cannot collect (a
+/// record, a person, several arguments) is picked where it lives, by the surface that
+/// owns that pick.
 #[must_use]
 pub fn a_row_a_person_can_take(spec: &tilo_actions::ActionSpec) -> bool {
     spec.reaches_people() && spec.contract.availability.is_available() && spec.takes_a_row_answer()
@@ -1099,9 +1047,9 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
         K::Note => Icon::FileText,
-        // A record is one document several workspaces can reach — the stacked
-        // plates say "this is the same thing in more than one place",
-        // which is exactly what a reference is.
+        // A record is one document several workspaces can reach — the stacked plates say
+        // "this is the same thing in more than one place", which is exactly what a
+        // reference is.
         K::Record => Icon::Layers,
         K::File => Icon::File,
         K::Folder => Icon::Folder,
@@ -1119,17 +1067,14 @@ pub struct Query<'a> {
     pub active_provider_id: Option<&'a str>,
     pub wanted_kinds: &'a [ResourceKind],
 }
-/// Typed fanout boundary. The host supplies retained providers and activation payloads.
 pub trait Provider<Host, Row: SearchRow> {
     fn id(&self) -> &str;
     fn resource_kinds(&self) -> &[ResourceKind];
     fn max_score(&self) -> i32 {
         MAX_PROVIDER_SCORE
     }
-    /// Whether this provider keeps to the focused app under a
-    /// [`Scope::InApp`] search, answering only with that app's own rows.
-    /// A search scoped to an app shows that app and nothing else: system
-    /// actions and other apps come back only when the scope is cleared.
+    /// Whether this provider keeps to the focused app under a [`Scope::InApp`] search,
+    /// answering only with that app's own rows.
     fn narrows_to_active_app(&self) -> bool {
         false
     }
@@ -1145,8 +1090,7 @@ pub trait Provider<Host, Row: SearchRow> {
     ) -> SearchPage<Row>;
     fn resolve(&self, host: &Host, id: &str, query: &Query<'_>) -> Option<Row>;
 }
-/// Registration order survives equal-strength ties. Borrowed registrations also support
-/// query-scoped native adapters without transferring retained provider ownership.
+/// Registration order survives equal-strength ties.
 pub struct Registry<'a, Host, Row: SearchRow> {
     providers: Vec<&'a dyn Provider<Host, Row>>,
 }

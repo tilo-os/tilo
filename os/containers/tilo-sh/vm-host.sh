@@ -60,10 +60,6 @@
 #                                       the relay's own state, where the
 #                                       device key it answers as is
 #   TILO_SH_RELAY_IROH=127.0.0.1:24104  where the relay's endpoint listens
-#   TILO_SH_TRUST_BUNDLE=<state>/trust-bundle.pem
-#                                       the certificate authority this host's
-#                                       member trusts, as its relay's home
-#                                       relay is the stack's own TLS origin
 #
 # Root, /dev/kvm and a loop device are what a VM host needs: without them
 # there is nothing to run, and `up` says so and stops.
@@ -81,11 +77,6 @@ place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
 status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
 member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
 relay_iroh=${TILO_SH_RELAY_IROH:-127.0.0.1:24104}
-# The stack's own certificate authority, where Tilo's programs read the bundle
-# they trust: this host's member device joins the workspace at the relay, and
-# the relay's home relay is the stack's own TLS origin, which that authority
-# signed.
-trust_bundle=${TILO_SH_TRUST_BUNDLE:-}
 relay_root=${TILO_SH_RELAY_ROOT:-$secrets/room-root-lounge}
 relay_state=${TILO_SH_RELAY_STATE:-$state/rooms/lounge/relay}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
@@ -346,16 +337,11 @@ up() {
   # it. TILO_VM_RELAY_ENDPOINT is where a workspace's browser session reaches
   # the relay, the one address besides the internet a VM may reach.
   podman rm -f "$host_container" >/dev/null 2>&1 || true
-  local trust=()
-  if [ -n "$trust_bundle" ] && [ -f "$trust_bundle" ]; then
-    trust=(-v "$trust_bundle:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z")
-  fi
   podman run -d --name "$host_container" --hostname "$pod" --network host --privileged \
     --log-driver k8s-file \
     --device "$loop:$state_device" \
     -v "$vm/member-identities:/etc/tilo/member:ro" \
     -v "$plans_file:/etc/tilo/plans/plans.json:ro" \
-    "${trust[@]}" \
     -e TILO_VM_STATE_DEVICE="$state_device" \
     -e TILO_VM_PLANS=/etc/tilo/plans/plans.json \
     -e TILO_VM_MEMBER_IDENTITIES=/etc/tilo/member \

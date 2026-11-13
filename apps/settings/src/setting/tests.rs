@@ -1,5 +1,5 @@
-//! A setting found by Settings' search is its row: toggling it there
-//! applies it, the same control as in its pane.
+//! A setting found by Settings' search is its row: toggling it there applies
+//! it, the same control as in its pane.
 
 use settings_store::index;
 use ui::framework::testing::TestApp;
@@ -12,8 +12,6 @@ use crate::prefs::AppearancePrefs;
 
 const VIEWPORT: (u32, u32) = (1472, 920);
 
-/// The rect of the first control of `setting` at or right of `left`, and
-/// whether it is checked where it is a switch.
 fn control(root: &dyn Widget, setting: &index::Setting, left: f64) -> Option<(Rect, Option<bool>)> {
     let rect = root.get_rect();
     if root.test_id().is_some_and(|id| setting.is_control(id))
@@ -27,8 +25,6 @@ fn control(root: &dyn Widget, setting: &index::Setting, left: f64) -> Option<(Re
         .find_map(|child| control(child, setting, left))
 }
 
-/// Whether the switch in `widget` is on, as it tells assistive technology;
-/// `None` where it holds no switch.
 fn switched(widget: &dyn Widget) -> Option<bool> {
     match widget.accessibility() {
         Some(node) if node.role == ui::a11y::Role::Switch => node.state.checked,
@@ -43,7 +39,6 @@ fn settle(app: &mut TestApp<SettingsShell>) {
     }
 }
 
-/// Settings, wide, with `query` typed into the window bar's search.
 fn searching(query: &str) -> TestApp<SettingsShell> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
@@ -55,7 +50,6 @@ fn searching(query: &str) -> TestApp<SettingsShell> {
     app
 }
 
-/// Where the content starts, right of the sidebar.
 fn content_left() -> f64 {
     crate::sidebar::width_for_text_scale(1.0) - 1.0
 }
@@ -109,7 +103,6 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
     }
 }
 
-/// The widget `id` in `root`.
 fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
     if root.test_id() == Some(id) {
         return Some(root);
@@ -119,7 +112,6 @@ fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| widget(child, id))
 }
 
-/// What `widget` tells assistive technology it shows.
 fn spoken(widget: &dyn Widget) -> Option<String> {
     widget
         .accessibility()
@@ -127,8 +119,6 @@ fn spoken(widget: &dyn Widget) -> Option<String> {
         .or_else(|| widget.children().into_iter().find_map(spoken))
 }
 
-/// A setting search lists by name says what it is set to: what its pane's
-/// control shows, following a change made anywhere.
 #[test]
 fn a_setting_listed_by_name_says_what_its_pane_shows() {
     let setting = index::setting("power.lock_after").expect("indexed");
@@ -196,7 +186,6 @@ fn toggling_a_setting_found_by_search_applies_it_as_its_pane_does() {
     let (_, checked) = control(app.harness().root_widget(), setting, left).expect("still found");
     assert_eq!(checked, Some(!before), "the switch shows what it changed");
 
-    // The same control in its pane shows the change, and changes it back.
     app.call(
         "open",
         serde_json::json!({ "anchor": format!("{}{}", crate::effects::SETTING_ANCHOR, setting.id) }),
@@ -226,9 +215,6 @@ fn toggling_a_setting_found_by_search_applies_it_as_its_pane_does() {
     );
 }
 
-/// A yes-or-no its pane switches only where the device lets it is a switch
-/// where search finds it once the window knows it can be switched, and
-/// flipping it runs the pane's own action.
 #[test]
 fn a_device_switch_found_by_search_runs_its_panes_action() {
     use crate::accessibility_settings::AccessibilitySettings;
@@ -251,9 +237,6 @@ fn a_device_switch_found_by_search_runs_its_panes_action() {
     assert_eq!(checked, Some(!before), "the switch shows what it changed");
 }
 
-/// The palette flips a yes-or-no setting through the section field the
-/// index names for it ([`index::Switch`]): the field its row in Settings
-/// shows and changes.
 #[test]
 fn every_indexed_switch_names_the_field_its_row_shows() {
     for setting in index::SETTINGS {
@@ -277,8 +260,6 @@ fn every_indexed_switch_names_the_field_its_row_shows() {
             .path()
             .map(|field| serde_json::json!({ "field": field }))
             .collect();
-        // As the palette flips it, with the person's confirmation where the
-        // change makes the device less private.
         app.call_confirmed_on(
             &format!("settings:{}", switch.section),
             "field-edit",
@@ -297,8 +278,6 @@ fn every_indexed_switch_names_the_field_its_row_shows() {
     }
 }
 
-/// What `widget` tells assistive technology it holds: whether it is
-/// checked, its value and which of its parts are selected.
 fn held(widget: &dyn Widget) -> String {
     fn walk(node: &ui::a11y::AccessNode, out: &mut String) {
         use std::fmt::Write as _;
@@ -325,7 +304,6 @@ fn held(widget: &dyn Widget) -> String {
     out
 }
 
-/// The control of `setting` at or right of `left`.
 fn control_widget<'a>(
     root: &'a dyn Widget,
     setting: &index::Setting,
@@ -343,10 +321,6 @@ fn control_widget<'a>(
         .find_map(|child| control_widget(child, setting, left))
 }
 
-/// The palette and agents set a choice to each of its values through the
-/// section field the index names for it ([`index::Choice`]): the field its
-/// row in Settings shows, whatever control draws it (a switch, pictures, a
-/// menu).
 #[test]
 fn every_indexed_choice_names_the_field_its_row_shows() {
     for setting in index::SETTINGS {
@@ -374,7 +348,6 @@ fn every_indexed_choice_names_the_field_its_row_shows() {
             .unwrap_or_else(|error| panic!("{} = {}: {error}", setting.id, option.value));
             settle(&mut app);
             let holds = match super::entry(setting.id).map(|entry| &entry.shown) {
-                // Listed by name with what it is set to, as its pane reads it.
                 Some(super::Shown::Value(read)) => app
                     .with_widget::<crate::window::Inspected, _>(|settings| {
                         read(settings, &super::Follows::default())

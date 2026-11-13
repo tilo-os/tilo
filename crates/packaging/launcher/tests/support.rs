@@ -25,11 +25,8 @@ pub fn capture_worker_payload() -> &'static Path {
     built_once(&PAYLOAD, "capture-worker", "2024")
 }
 
-/// The build runs `rustc` from `PATH`, which the sandbox-environment tests
-/// replace while they hold the environment lock, so it runs under that lock
-/// too. The lock is taken *before* the `OnceLock`: a test that already holds
-/// it and asks for a payload then finds either a finished build or an idle
-/// initialiser, never one blocked on the lock it holds.
+/// The build runs `rustc` from `PATH`, which the sandbox-environment tests replace while they hold the
+/// environment lock, so it runs under that lock too.
 fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'static Path {
     if let Some(payload) = cell.get() {
         return payload;
@@ -38,9 +35,7 @@ fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'
     cell.get_or_init(|| build_payload(name, edition))
 }
 
-/// `bwrap`, resolved on `PATH` rather than at a fixed path, since the distro
-/// decides where it lives. A host without it cannot run a Tilo app at all, so
-/// a miss is a broken environment and not a reason to skip a test.
+/// `bwrap`, resolved on `PATH` rather than at a fixed path, since the distro decides where it lives.
 pub fn bwrap() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let missing = format!(
@@ -54,9 +49,7 @@ pub fn bwrap() -> PathBuf {
         .expect(&missing)
 }
 
-/// A GUI package manifest naming one entrypoint and one network mode. Every
-/// field a launch fixture leaves alone keeps the shipped default — a fixture
-/// pinning its own copy would stop tracking what an installed app gets.
+/// A GUI package manifest naming one entrypoint and one network mode.
 pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
     ManifestView {
         package_id: package_id.to_string(),
@@ -97,8 +90,8 @@ pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
     }
 }
 
-/// Launch options that touch nothing of the invoking user's: no identity is
-/// brokered and the per-workspace app directories live under `data_home`.
+/// Launch options that touch nothing of the invoking user's: no identity is brokered and the
+/// per-workspace app directories live under `data_home`.
 pub fn isolated_options(data_home: &Path) -> RunOptions {
     RunOptions {
         identity: IdentitySource::None,
@@ -107,15 +100,8 @@ pub fn isolated_options(data_home: &Path) -> RunOptions {
     }
 }
 
-/// Compile `tests/fixtures/<name>/src/main.rs` with `rustc` into a payload
-/// root under `CARGO_TARGET_TMPDIR`, once per source revision.
-///
-/// The fixture lives outside the workspace, so it is built with a single
-/// `rustc` call rather than `cargo`. The result is keyed by a hash of the
-/// source and reused by every test and every later test process; a process
-/// running tests one per process (nextest) finds it already built. A binary
-/// written by the `rustc` child is never held open for writing by this
-/// process, so executing it cannot fail with `ETXTBSY`.
+/// Compile `tests/fixtures/<name>/src/main.rs` with `rustc` into a payload root under
+/// `CARGO_TARGET_TMPDIR`, once per source revision.
 fn build_payload(name: &str, edition: &str) -> PathBuf {
     let src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -148,8 +134,8 @@ fn build_payload(name: &str, edition: &str) -> PathBuf {
         .status_locked()
         .expect("invoke rustc");
     assert!(status.success(), "rustc failed to build the {name} fixture");
-    // Another process may have finished the same build first; either copy
-    // is complete, so losing the race is fine.
+    // Another process may have finished the same build first; either copy is complete, so losing the
+    // race is fine.
     let staged = staging.keep();
     if std::fs::rename(&staged, &payload).is_err() {
         let _ = std::fs::remove_dir_all(&staged);
@@ -161,9 +147,9 @@ fn build_payload(name: &str, edition: &str) -> PathBuf {
     payload
 }
 
-/// The compiler of the toolchain running these tests: `$RUSTC` when set, else
-/// the `rustc` beside the `cargo` that launched the test binary, so a test
-/// environment whose `PATH` omits the toolchain still finds it.
+/// The compiler of the toolchain running these tests: `$RUSTC` when set, else the `rustc` beside the
+/// `cargo` that launched the test binary, so a test environment whose `PATH` omits the toolchain still
+/// finds it.
 fn rustc() -> std::path::PathBuf {
     if let Some(rustc) = std::env::var_os("RUSTC") {
         return rustc.into();

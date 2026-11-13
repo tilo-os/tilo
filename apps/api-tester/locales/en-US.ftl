@@ -143,7 +143,6 @@ api-tester-waiting-response = Waiting for the server to respond.
 
 ## Actions
 
-api-tester-effects-import-legacy = Import an old workspace
 api-tester-effects-send = Send request
 api-tester-effects-send-saved = Send saved request
 api-tester-effects-cancel-send = Cancel request
@@ -155,7 +154,6 @@ api-tester-effects-rename-collection = Rename collection…
 api-tester-effects-request-menu = Request actions
 api-tester-effects-environment-menu = Environment actions
 api-tester-workspace = API workspace
-api-tester-workspace-import-workspace = Apply a legacy import
 api-tester-workspace-new-request = New request
 api-tester-workspace-new-collection = New collection
 api-tester-workspace-delete-collection = Delete collection
@@ -171,3 +169,6 @@ api-tester-workspace-open-sent = Reopen sent request
 api-tester-workspace-save-sent = Save sent request
 api-tester-workspace-delete-sent = Forget sent request
 api-tester-workspace-record-sent = Record a sent request
+
+## What the app is called in a window and in the launcher
+api-tester-app-title = API Tester

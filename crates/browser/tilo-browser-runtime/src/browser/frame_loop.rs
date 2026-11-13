@@ -216,14 +216,29 @@ impl ApplicationHandler<u64> for Runner {
         }
         // Owner model work shows in the frame it asks for, which judges it.
         let result = with_mount_quietly(id, |m| {
-            m.service_owner_models();
+            // A wake the mounted app's component sent: its owner's service, or
+            // its model's wake, which its frame schedule says. Every other
+            // sender asks for the frame itself.
+            let component = m
+                .component_wakes
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |sent| sent.checked_sub(1),
+                )
+                .is_ok();
+            let shows = m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
                 m.frame_failed(id, failure);
             } else {
                 // What asked for this frame waits for the desk's next pass: the pump that takes it
                 // runs in the frame asked for here, so a redraw that found nothing else to do would
-                // leave it waiting for the next unrelated wake.
-                m.pending = true;
+                // leave it waiting for the next unrelated wake. A component's save that landed in
+                // time shows nothing: its frame asks only when its schedule has work, and a key's
+                // write landing draws no second frame after the key's.
+                if shows || !component {
+                    m.pending = true;
+                }
                 m.window.request_redraw();
             }
             Ok(())

@@ -1,13 +1,5 @@
 //! Live frames: one stream's frames sealed under a key every session of its
 //! sender derives alike, so no counter can be the nonce.
-//!
-//! A live key is derived from a channel epoch, a sender and a stream, so a
-//! device's second session (a restart, a second tab) and its other tracks of
-//! one stream (camera layers, windows) seal under the same key while each
-//! counts its own frames from the start. Each frame therefore carries a fresh
-//! 192-bit random XChaCha20-Poly1305 nonce: `nonce (24) ‖ ciphertext ‖ tag
-//! (16)`. Ordering and position stay the caller's, authenticated through the
-//! associated data.
 
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -20,7 +12,6 @@ pub const NONCE_LEN: usize = 24;
 /// Bytes sealing adds to a body: the nonce and the authentication tag.
 pub const OVERHEAD: usize = NONCE_LEN + 16;
 
-/// Seals and opens one stream's live frames under its derived key.
 pub struct FrameCipher(Box<XChaCha20Poly1305>);
 
 impl std::fmt::Debug for FrameCipher {

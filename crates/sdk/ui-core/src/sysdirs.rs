@@ -1,19 +1,12 @@
-//! Localized XDG user directories.
-//!
-//! Resolves the user's real, localized home + standard folders (via `tilo-paths`,
-//! honouring `~/.config/user-dirs.dirs`) so a German desktop yields `~/Dokumente`,
-//! not hard-coded English names. Shared by every "Places" list so they don't each
-//! re-hardcode English strings. Key any persisted identity off [`UserDir`] *kind*,
-//! not the localized label — the label doesn't survive a path-only round-trip.
+//! Localized XDG user directories. Resolves the user's real, localized home + standard
+//! folders (via `tilo-paths`, honouring `~/.config/user-dirs.dirs`) so a German desktop
+//! yields `~/Dokumente`, not hard-coded English names.
 
 use std::path::{Path, PathBuf};
 
-/// The host's [`crate::host::HostPaths::user_home`]. The launcher sets it only
-/// when the capability plan bound a path containing it — presence means "you
-/// can read this", not merely "this is where it would be".
+/// The host's [`crate::host::HostPaths::user_home`].
 pub fn user_home_override() -> Option<PathBuf> {
     let path = crate::host::environment().paths.user_home.clone()?;
-    // Fall through to `HOME` rather than open on a directory that doesn't exist.
     path.is_dir().then_some(path)
 }
 
@@ -38,8 +31,8 @@ impl UserDir {
         UserDir::Videos,
     ];
 
-    /// Used only when `user-dirs.dirs` doesn't define this directory; the
-    /// resolved localized path is always preferred over this.
+    /// Used only when `user-dirs.dirs` doesn't define this directory; the resolved
+    /// localized path is always preferred over this.
     pub fn fallback_name(self) -> &'static str {
         match self {
             UserDir::Home => "Home",
@@ -53,8 +46,8 @@ impl UserDir {
     }
 }
 
-/// Resolve once at startup via [`UserDirs::from_system`]; tests inject an explicit
-/// set so classification + labels are deterministic regardless of build-machine locale.
+/// Resolve once at startup via [`UserDirs::from_system`]; tests inject an explicit set so
+/// classification + labels are deterministic regardless of build-machine locale.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UserDirs {
     pub home: Option<PathBuf>,
@@ -68,8 +61,6 @@ pub struct UserDirs {
 
 impl UserDirs {
     pub fn from_system() -> Self {
-        // A confined app's `HOME` is its own per-app directory with none of the
-        // user's files, so prefer `TILO_USER_HOME` when the launcher bound it.
         if let Some(home) = user_home_override() {
             return Self::under(home);
         }
@@ -84,10 +75,9 @@ impl UserDirs {
         }
     }
 
-    /// Used when `home` is not this process's `HOME`. Names are conventional
-    /// English, not localized: `user-dirs.dirs` lives in the user's own config
-    /// directory, which a confined app cannot read. A folder is listed only if
-    /// it exists.
+    /// Used when `home` is not this process's `HOME`. Names are conventional English, not
+    /// localized: `user-dirs.dirs` lives in the user's own config directory, which a
+    /// confined app cannot read.
     fn under(home: PathBuf) -> Self {
         let sub = |name: &str| {
             let p = home.join(name);
@@ -140,9 +130,9 @@ impl UserDirs {
         .find(|&kind| self.path(kind) == Some(path))
     }
 
-    /// `(kind, localized label, path)`, falling back to `home/<English>` so the
-    /// list is never missing a standard entry. Home/Desktop are excluded — a
-    /// caller adds those explicitly.
+    /// `(kind, localized label, path)`, falling back to `home/<English>` so the list is
+    /// never missing a standard entry. Home/Desktop are excluded — a caller adds those
+    /// explicitly.
     pub fn content_places(&self, home: &Path) -> Vec<(UserDir, String, PathBuf)> {
         UserDir::CONTENT
             .iter()

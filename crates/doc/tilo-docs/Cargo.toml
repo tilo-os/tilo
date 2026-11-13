@@ -1,0 +1,30 @@
+[package]
+name = "tilo-docs"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Documentation books as pages with front matter, rendered to a static site with search, Markdown copies and llms.txt"
+
+[[bin]]
+name = "tilo-docs"
+path = "src/main.rs"
+
+[dependencies]
+pulldown-cmark = { version = "0.12", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+# Content-named asset files, cached as immutable.
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -6,13 +6,8 @@
 use std::io::Write as _;
 use std::path::Path;
 
-/// Write `contents` to `path` as an executable a test then runs.
-///
-/// The file is written by a short-lived child process, never through a file
-/// descriptor of this one. Tests share a process and spawn children from
-/// many threads: a child forked by another test while this process held the
-/// file open for writing would carry that descriptor until it execs, and
-/// running the file in that window fails with "Text file busy" (`ETXTBSY`).
+/// Write `contents` to `path` as an executable a test then runs. The file is written by a
+/// short-lived child process, never through a file descriptor of this one.
 pub fn write_executable(path: &Path, contents: &str) {
     let mut writer = std::process::Command::new("/bin/sh")
         .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])

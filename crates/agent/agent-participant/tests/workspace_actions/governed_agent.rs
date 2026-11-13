@@ -240,7 +240,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let host = enrol(
         &owner,
         "node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let laptop = enrol(&owner, "laptop", DeviceCapabilities::primary());
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());

@@ -93,13 +93,9 @@ fn rect(node: &InspectionNode) -> Rect {
 }
 
 fn find<'a>(node: &'a InspectionNode, widget: &str) -> &'a InspectionNode {
-    fn walk<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
-        if node.widget == widget {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| walk(child, widget))
-    }
-    walk(node, widget).unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
+    (node.nodes().into_iter())
+        .find(|node| node.widget == widget)
+        .unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
 }
 
 fn luma(p: [u8; 4]) -> f64 {
@@ -404,7 +400,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             // The row a tree draws is a list row standing at the tree's own row token, shorter
             // than a list's row of the same theme.
             // Measured the way the row measures itself: at the theme's own text scale.
-            let row_h = tilo_ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let row_h = tilo_ui::text_render::with_layout_renderer(&theme, |text| {
                 ListRowFace::new("crates")
                     .row_height(TREE_ROW_HEIGHT)
                     .height(text, &theme)

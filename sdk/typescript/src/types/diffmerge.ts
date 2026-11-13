@@ -17,13 +17,37 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.diffmerge@6e3e0e40ba1c3ff2";
+
+export interface Comparison {
+  left_label: string;
+  left: string;
+  right_label: string;
+  right: string;
+}
+
+/** One of "ours", "theirs", "both". */
+export type HunkChoice = "ours" | "theirs" | "both";
+
+export interface MergeInputs {
+  base_label: string;
+  base: string;
+  ours_label: string;
+  ours: string;
+  theirs_label: string;
+  theirs: string;
+}
+
 /** Diff & Merge — `diffmerge.session`. */
 export interface Session extends tilo.Resource {
-  readonly comparison: unknown;
-  readonly merge: unknown;
-  merged: unknown;
-  readonly resolutions: unknown;
-  readonly written: unknown;
+  readonly comparison: Comparison | null;
+  readonly merge: MergeInputs | null;
+  merged: string;
+  readonly resolutions: Record<string, HunkChoice>;
+  readonly written: Record<string, string>;
   openComparison(args: {
     left_label: string;
     left: string;
@@ -55,6 +79,6 @@ export interface Session extends tilo.Resource {
 
 /** The `diffmerge.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {
-  return resourceProxy(ws, path) as unknown as Session;
+  return resourceProxy(ws, path, SURFACE) as unknown as Session;
 }
 

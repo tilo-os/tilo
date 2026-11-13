@@ -1,23 +1,4 @@
 //! `StatTile`: one number and what it measures, on the content ground.
-//!
-//! A statistic is not a card: tiles sit on the ground and are separated by
-//! space ([`StatGroup`] lays out a set and reflows 4 → 2 → 1 columns). A tile
-//! reads top to bottom:
-//!
-//! - the label (`Caption`, secondary ink, sentence case),
-//! - the value in tabular figures (`Title`, or `Display` for the one hero
-//!   number of a screen) with an optional unit (`Caption`), elided to the
-//!   tile's width,
-//! - an optional note: a neutral qualifier read with the value ("of 2 TB",
-//!   "estimated"), in `Caption`,
-//! - an optional change line: a [`Trend`] arrow and its text,
-//! - an optional live [`Sparkline`](crate::widget::Sparkline) footer.
-//!
-//! A [`Tone`] adds a ticker down the tile's leading edge: what state the
-//! measured thing is in (a failed backup, a healthy tunnel). A tile that
-//! opens a detail view is pressable and can be the selected one.
-//!
-//! [`StatTileFace`] paints the same geometry for immediate-mode callers.
 
 use std::collections::HashMap;
 
@@ -107,13 +88,11 @@ impl TileMetrics {
         f64::from(text.measure_style("Ag", None, style).1)
     }
 
-    /// The sparkline's height: two caption lines.
     fn sparkline(&self, text: &mut TextRenderer) -> f64 {
         2.0 * Self::line(text, &self.label)
     }
 }
 
-/// Immediate-mode stat tile.
 #[derive(Clone, Copy, Debug)]
 pub struct StatTileFace<'a> {
     label: &'a str,
@@ -169,7 +148,6 @@ impl<'a> StatTileFace<'a> {
         self
     }
 
-    /// The measured thing's state, as a ticker down the leading edge.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = Some(tone);
@@ -183,14 +161,12 @@ impl<'a> StatTileFace<'a> {
         self
     }
 
-    /// Recent samples, oldest first, drawn as a live footer.
     #[must_use]
     pub fn sparkline(mut self, samples: &'a [f32]) -> Self {
         self.sparkline = Some(samples);
         self
     }
 
-    /// The tile opens a detail view (and may be the selected one).
     #[must_use]
     pub fn pressable(mut self, selected: bool) -> Self {
         self.pressable = true;
@@ -209,8 +185,6 @@ impl<'a> StatTileFace<'a> {
     }
 
     /// How far the text stands in from the content edge: past the ticker.
-    /// A pressable tile's lift bleeds past the edge instead, so its label
-    /// starts where a plain tile's does (HIG §9.3, one content edge).
     fn inset(&self, m: &TileMetrics) -> f64 {
         if self.tone.is_some() {
             m.ticker + m.ticker_gap
@@ -219,7 +193,6 @@ impl<'a> StatTileFace<'a> {
         }
     }
 
-    /// The tile's height at this text scale.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let m = TileMetrics::new(theme);
         self.content_height(text, &m) + if self.pressable { 2.0 * m.pad } else { 0.0 }
@@ -241,7 +214,6 @@ impl<'a> StatTileFace<'a> {
         h.ceil()
     }
 
-    /// Paint the tile into `rect` (its height from [`Self::height`]).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -433,7 +405,6 @@ impl<'a> StatTileFace<'a> {
     }
 }
 
-/// A retained stat tile. See the module docs.
 pub struct StatTile {
     label: String,
     value: String,
@@ -448,7 +419,6 @@ pub struct StatTile {
     metrics: Option<TileMetrics>,
     rect: Rect,
     dirty: bool,
-    /// A line came or went: the tile's height changes.
     layout_dirty: bool,
 }
 
@@ -478,14 +448,12 @@ impl StatTile {
         }
     }
 
-    /// See [`StatTileFace::note`].
     #[must_use]
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
     }
 
-    /// Replace the value (a refreshed reading).
     pub fn set_value(&mut self, value: impl Into<String>) {
         let value = value.into();
         if value != self.value {
@@ -494,7 +462,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the note.
     pub fn set_note(&mut self, note: Option<String>) {
         if note != self.note {
             self.layout_dirty |= note.is_some() != self.note.is_some();
@@ -503,7 +470,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the change line.
     pub fn set_change(&mut self, change: Option<(String, Trend)>) {
         if change != self.change {
             self.layout_dirty |= change.is_some() != self.change.is_some();
@@ -512,42 +478,36 @@ impl StatTile {
         }
     }
 
-    /// See [`StatTileFace::unit`].
     #[must_use]
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = Some(unit.into());
         self
     }
 
-    /// See [`StatTileFace::change`].
     #[must_use]
     pub fn change(mut self, text: impl Into<String>, trend: Trend) -> Self {
         self.change = Some((text.into(), trend));
         self
     }
 
-    /// See [`StatTileFace::tone`].
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = Some(tone);
         self
     }
 
-    /// See [`StatTileFace::hero`].
     #[must_use]
     pub fn hero(mut self) -> Self {
         self.hero = true;
         self
     }
 
-    /// See [`StatTileFace::sparkline`].
     #[must_use]
     pub fn sparkline(mut self, samples: Vec<f32>) -> Self {
         self.sparkline = Some(samples);
         self
     }
 
-    /// Replace the live samples and value without rebuilding the tile.
     pub fn set_live(&mut self, value: impl Into<String>, samples: Vec<f32>) {
         self.value = value.into();
         self.sparkline = Some(samples);
@@ -563,7 +523,6 @@ impl StatTile {
         self
     }
 
-    /// Publish opening this tile's detail as a transient presentation action.
     #[must_use]
     pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
         self.activation = Activation::new(id);
@@ -636,11 +595,10 @@ impl Widget for StatTile {
                 width: length(0.0_f32),
                 height: auto(),
             },
-            flex_grow: 1.0,
-            flex_basis: length(0.0_f32),
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -773,7 +731,6 @@ pub struct StatGroup {
     column_gap: f64,
     row_gap: f64,
     rect: Rect,
-    /// The tiles were replaced: the host rebuilds the layout.
     structure_dirty: bool,
 }
 
@@ -798,7 +755,6 @@ impl StatGroup {
             .and_then(|tile| tile.downcast_mut::<StatTile>())
     }
 
-    /// Replace the tiles (a different set of readings).
     pub fn set_tiles(&mut self, tiles: Vec<Element>) {
         self.tiles = tiles;
         self.structure_dirty = true;
@@ -995,7 +951,6 @@ mod tests {
 
     #[test]
     fn a_tile_is_not_a_card() {
-        // At rest a plain tile paints text only: no surface, no edge.
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();

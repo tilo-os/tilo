@@ -10,7 +10,10 @@
 //! An action is named the same way: what it declares is a [`Word`], a key of
 //! the catalogue beside the crate that declares it, its source text read
 //! from that catalogue when the crate was built. It is read in the person's
-//! language each time the action is published ([`Word::read`]).
+//! language each time the action is published ([`Word::read`]), its
+//! placeables filled with the [`Argument`]s it carries — so an action bound
+//! to what a person is looking at ("Rename “report.pdf”") names it in every
+//! language too.
 //!
 //! A host that keeps a catalogue installs the lookup with
 //! [`install`]; until it does, every kind is named by its declaration text.
@@ -19,10 +22,10 @@
 
 use std::sync::RwLock;
 
-/// How a host resolves a key in the language the person reads, joining the
-/// [`Catalogue`] that holds it first when one is named; `None` when none of
-/// their catalogues holds it.
-pub type Resolver = fn(Option<&'static Catalogue>, &str) -> Option<String>;
+/// How a host resolves a key in the language the person reads, its
+/// placeables filled with `arguments`, joining the [`Catalogue`] that holds
+/// it first when one is named; `None` when none of their catalogues holds it.
+pub type Resolver = fn(Option<&'static Catalogue>, &str, &[(&str, Argument)]) -> Option<String>;
 
 /// The catalogue beside a crate, as a declaration of it names its words by:
 /// its source language embedded, its other languages read where language
@@ -41,42 +44,121 @@ pub struct Catalogue {
 
 /// A declared word: a key of its crate's [`Catalogue`] and the text the
 /// catalogue's source language gives it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Word {
     pub key: &'static str,
     /// What the source language says: the text where no catalogue of the
     /// person's holds the key.
     pub source: &'static str,
     pub catalogue: Option<&'static Catalogue>,
+    /// What the placeables of the message show (`name = …`), by the names
+    /// the message calls them: a word naming what a person looks at
+    /// ("Rename “report.pdf”") carries it here rather than in text no
+    /// catalogue can translate.
+    pub arguments: Vec<(&'static str, Argument)>,
 }
 
 impl Word {
-    /// A word no catalogue holds: `source` in every language.
-    #[must_use]
-    pub const fn plain(source: &'static str) -> Self {
-        Self {
-            key: "",
-            source,
-            catalogue: None,
-        }
-    }
-
-    /// The word in the person's language.
+    /// The word in the person's language, its placeables filled — and its
+    /// declared text where no catalogue of theirs holds the key, or where no
+    /// host installed one ([`install`], which every host that draws words
+    /// does).
     #[must_use]
     pub fn read(&self) -> String {
-        if self.key.is_empty() {
-            return self.source.to_owned();
-        }
-        resolve(self.catalogue, self.key).unwrap_or_else(|| self.source.to_owned())
+        resolve(self.catalogue, self.key, &self.arguments).unwrap_or_else(|| self.source.to_owned())
     }
 }
 
+/// One argument of a [`Word`]: what one of its placeables (`{ $name }`)
+/// shows in every language.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Argument {
+    /// Words as they are, in no catalogue: the name of a file, a marker.
+    Text(String),
+    /// A number, which a message with count forms (`{ $count -> [one] … }`)
+    /// selects its form by.
+    Number(f64),
+}
+
+impl From<&str> for Argument {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_owned())
+    }
+}
+
+impl From<&String> for Argument {
+    fn from(text: &String) -> Self {
+        Self::Text(text.clone())
+    }
+}
+
+impl From<String> for Argument {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<std::borrow::Cow<'_, str>> for Argument {
+    fn from(text: std::borrow::Cow<'_, str>) -> Self {
+        Self::Text(text.into_owned())
+    }
+}
+
+/// A count a message shows, as the number its forms select by: a selection of
+/// one entry, or of several, that is never near what `f64` holds exactly.
+macro_rules! argument_from_count {
+    ($($t:ty),*) => {$(
+        impl From<$t> for Argument {
+            fn from(count: $t) -> Self {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_lossless,
+                    reason = "a count a message shows is far below what f64 holds exactly"
+                )]
+                let count = count as f64;
+                Self::Number(count)
+            }
+        }
+    )*};
+}
+
+argument_from_count!(usize, u32, i64, f64);
+
+/// `params`, each called what the catalogue of `word` calls it where it
+/// holds a word for it: the action's own (`<action key>-<param>`), else the
+/// one every action of `scope` (an operation or a kind) shares
+/// (`<scope>-<param>`). A parameter neither names keeps its schema as it is.
+#[must_use]
+pub fn titled(
+    word: &Word,
+    scope: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> Vec<tilo_actions::ActionParam> {
+    let scope = message_key(scope);
+    params
+        .into_iter()
+        .map(|param| {
+            let name = message_key(param.name.as_ref());
+            let title = resolve(word.catalogue, &format!("{}-{name}", word.key), &[])
+                .or_else(|| resolve(word.catalogue, &format!("{scope}-{name}"), &[]));
+            match title {
+                Some(title) => param.titled(title),
+                None => param,
+            }
+        })
+        .collect()
+}
+
 /// `key` through the installed resolver, `None` without one.
-fn resolve(catalogue: Option<&'static Catalogue>, key: &str) -> Option<String> {
+fn resolve(
+    catalogue: Option<&'static Catalogue>,
+    key: &str,
+    arguments: &[(&str, Argument)],
+) -> Option<String> {
     let resolver = *RESOLVER
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    resolver.and_then(|(resolve, _)| resolve(catalogue, key))
+    resolver.and_then(|(resolve, _)| resolve(catalogue, key, arguments))
 }
 
 /// How a host resolves [`noun_key`] with the count `1` (one of it) or `2`
@@ -164,7 +246,7 @@ macro_rules! declared_catalogue {
 /// otherwise.
 #[must_use]
 pub fn localized(kind: &str, source: &str, catalogue: Option<&'static Catalogue>) -> String {
-    resolve(catalogue, &message_key(kind)).unwrap_or_else(|| source.to_owned())
+    resolve(catalogue, &message_key(kind), &[]).unwrap_or_else(|| source.to_owned())
 }
 
 /// [`localized`] of a resource that is being published under `label`: its
@@ -217,7 +299,7 @@ pub fn localized_noun(kind: &str, derived: tilo_actions::Noun) -> tilo_actions::
 mod tests {
     use super::*;
 
-    fn german(_: Option<&'static Catalogue>, key: &str) -> Option<String> {
+    fn german(_: Option<&'static Catalogue>, key: &str, _: &[(&str, Argument)]) -> Option<String> {
         (key == "add-app-question").then(|| "Zu den Apps hinzufügen".to_owned())
     }
 
@@ -241,6 +323,32 @@ mod tests {
     }
 
     #[test]
+    fn a_words_placeables_are_filled_in_the_language_it_is_read_in() {
+        fn naming(
+            _: Option<&'static Catalogue>,
+            key: &str,
+            arguments: &[(&str, Argument)],
+        ) -> Option<String> {
+            if key != "files-folder-rename-selected" {
+                return None;
+            }
+            let named = arguments.iter().find_map(|(name, value)| match value {
+                Argument::Text(text) if *name == "name" => Some(text.as_str()),
+                _ => None,
+            });
+            Some(format!("„{}“ umbenennen", named.unwrap_or_default()))
+        }
+        install(naming, || 0);
+        let word = Word {
+            key: "files-folder-rename-selected",
+            source: "Rename \u{201c}{ $name }\u{201d}",
+            catalogue: None,
+            arguments: vec![("name", Argument::from("Bericht.pdf"))],
+        };
+        assert_eq!(word.read(), "„Bericht.pdf“ umbenennen");
+    }
+
+    #[test]
     fn a_resource_named_by_its_publisher_keeps_that_name() {
         install(german, || 0);
         assert_eq!(
@@ -256,15 +364,15 @@ mod tests {
     #[test]
     fn a_kind_refines_its_noun_from_its_entry_and_keeps_the_derived_one_without_it() {
         install_noun(|key, count| match (key, count) {
-            ("people-person-noun", 1) => Some("person".to_owned()),
-            ("people-person-noun", 2) => Some("people".to_owned()),
+            ("notes-note-noun", 1) => Some("notebook".to_owned()),
+            ("notes-note-noun", 2) => Some("notebooks".to_owned()),
             _ => None,
         });
-        assert_eq!(noun_key("people.person"), "people-person-noun");
+        assert_eq!(noun_key("notes.note"), "notes-note-noun");
         assert_eq!(
-            localized_noun("people.person", tilo_actions::Noun::of_type("Person")),
-            tilo_actions::Noun::new("person", "people"),
-            "the catalogue says what several are"
+            localized_noun("notes.note", tilo_actions::Noun::of_type("Note")),
+            tilo_actions::Noun::new("notebook", "notebooks"),
+            "the catalogue says what the app calls it"
         );
         assert_eq!(
             localized_noun("lock.screen", tilo_actions::Noun::of_type("Screen")),

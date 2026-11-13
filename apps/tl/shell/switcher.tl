@@ -36,9 +36,7 @@ view switcher(d: Desk) {
     let this_app = if d.switcher_scope == "app" {
         if let p = pick { p.origin_app } else { "" }
     } else { "" }
-    let caption = if this_app != "" {
-        "{this_app} · {at} of {count}"
-    } else if count > per_page { "{at} of {count}" } else { "" }
+    let paged = if count > per_page { "{at} of {count}" } else { "" }
     row(fill, align: .center, distribute: .center, padding: .related) {
         ui.FloatingPanel {
             body: {
@@ -59,8 +57,11 @@ view switcher(d: Desk) {
                         }
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {
                             key_hints_switcher(this_app)
-                            if caption != "" {
-                                ui.Text(caption, role: .caption, secondary: true)
+                            if this_app != "" {
+                                ui.Text(this_app, role: .caption, secondary: true)
+                            }
+                            if paged != "" {
+                                ui.Text(paged, role: .caption, secondary: true)
                             }
                         }
                     }

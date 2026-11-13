@@ -15,7 +15,7 @@ search-ask-copy = Copy the answer
 search-ask-failed = { $provider } could not answer: { $reason }
 search-ask-setup = Set up an AI provider
 search-ask-setup-detail = Ask questions here, without leaving the search
-search-ask-no-gateway = No model service is running
+search-ask-no-gateway = No AI provider is running.
 search-answer-sum = { $expression } =
 search-answer-money-stale = { $amount } at rates from { $age }
 search-answer-open-address = Open { $address }
@@ -67,7 +67,6 @@ search-job-reported-counts = { $phase } ({ $completed } of { $total })
 search-job-reported-completed = { $phase } ({ $completed } done)
 search-job-reported-total = { $phase } (of { $total })
 search-job-cancel = Cancel { $name }
-search-job-cancel-detail = Asks the app to stop
 search-scope-workspace = Workspace
 search-launcher-widen = Search every workspace
 search-source-switches = Search sources
@@ -88,6 +87,9 @@ search-source-app-content = What apps hold
 search-source-recent = Recent
 search-source-store = Store
 search-source-host-apps = Apps on this device
+# Where a machine's own app came from, said on its row.
+search-host-app-flatpak = Flatpak
+search-host-app-system = System
 search-source-files = Files
 search-source-records = Records
 search-source-jobs = Running tasks

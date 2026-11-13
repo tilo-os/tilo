@@ -1,31 +1,20 @@
-//! Display-scale plumbing shared by the render loop.
-//!
-//! Tilo separates **two** scale factors, multiplied at composite time:
-//! **device scale** — the per-output fractional factor the compositor
-//! reports via `wp_fractional_scale_v1` (a true fraction, not rounded to an
-//! integer) — and **user UI scale**, the "make everything bigger"
+//! Display-scale plumbing shared by the render loop. Tilo separates **two** scale
+//! factors, multiplied at composite time: **device scale** — the per-output fractional
+//! factor the compositor reports via `wp_fractional_scale_v1` (a true fraction, not
+//! rounded to an integer) — and **user UI scale**, the "make everything bigger"
 //! preference already baked into [`crate::theme::Theme`]'s tokens.
-//!
-//! Widgets lay out in **logical pixels** (already grown by the user scale
-//! via the theme); [`composite_transform`] applies only the **device**
-//! scale when drawing into the Vello scene. Because Vello rasterises vector
-//! geometry at the *transformed* resolution, the result is crisp at any
-//! fractional device scale — no intermediate low-res raster gets blurrily
-//! upscaled.
 
 use vello::kurbo::Affine;
 
-/// Uniform scale by the **device** factor only — widget rects live in
-/// logical space, and Vello rasterises at the transformed (physical)
-/// resolution.
+/// Uniform scale by the **device** factor only — widget rects live in logical space, and
+/// Vello rasterises at the transformed (physical) resolution.
 #[inline]
 pub fn composite_transform(device_scale: f64) -> Affine {
     Affine::scale(device_scale)
 }
 
-/// The available space handed to the layout solver: widgets size
-/// themselves in logical px, so the physical window is divided by the
-/// device scale before layout.
+/// The available space handed to the layout solver: widgets size themselves in logical
+/// px, so the physical window is divided by the device scale before layout.
 #[inline]
 pub fn logical_size(physical: (u32, u32), device_scale: f64) -> (f64, f64) {
     let s = if device_scale > 0.0 {
@@ -36,8 +25,8 @@ pub fn logical_size(physical: (u32, u32), device_scale: f64) -> (f64, f64) {
     (f64::from(physical.0) / s, f64::from(physical.1) / s)
 }
 
-/// The pixels a window's frame is drawn in, and the scale that draws its
-/// logical layout into them.
+/// The pixels a window's frame is drawn in, and the scale that draws its logical layout
+/// into them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderExtent {
     pub width: u32,
@@ -45,17 +34,12 @@ pub struct RenderExtent {
     pub scale: f64,
 }
 
-/// A window of `physical` pixels at `device_scale`, drawn into a texture
-/// no edge of which may exceed `limit` (the device's
-/// `max_texture_dimension_2d`).
-///
-/// A window that fits is drawn as it is. A larger one (a kiosk stretched
-/// over several displays: 2944 + 1920 logical pixels at scale 2 is 9728
-/// wide, past the 8192 every device here is opened with) keeps its logical
-/// size and is drawn at the lower scale that fits; the compositor stretches
-/// the smaller buffer over the window, so it is softer, never missing or
-/// failing. Layout divides the extent by its scale and lands on the same
-/// logical size, within a pixel.
+/// A window of `physical` pixels at `device_scale`, drawn into a texture no edge of which
+/// may exceed `limit` (the device's `max_texture_dimension_2d`). A larger one (a kiosk
+/// stretched over several displays: 2944 + 1920 logical pixels at scale 2 is 9728 wide,
+/// past the 8192 every device here is opened with) keeps its logical size and is drawn at
+/// the lower scale that fits; the compositor stretches the smaller buffer over the
+/// window, so it is softer, never missing or failing.
 #[must_use]
 pub fn fit_to_texture_limit(physical: (u32, u32), device_scale: f64, limit: u32) -> RenderExtent {
     let (width, height) = (physical.0.max(1), physical.1.max(1));
@@ -73,8 +57,8 @@ pub fn fit_to_texture_limit(physical: (u32, u32), device_scale: f64, limit: u32)
         };
     }
     let factor = (f64::from(limit) / f64::from(width)).min(f64::from(limit) / f64::from(height));
-    // Without fractional scaling a Wayland window keeps its integer buffer
-    // scale, and a buffer whose size it does not divide is a protocol error.
+    // Without fractional scaling a Wayland window keeps its integer buffer scale, and a
+    // buffer whose size it does not divide is a protocol error.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -107,25 +91,22 @@ pub fn physical_len(logical: f64, device_scale: f64) -> f64 {
     logical * device_scale
 }
 
-/// Inverse of the layout division in [`logical_size`]. Used by tests and
-/// hit-testing to reason about where logical geometry lands physically.
+/// Inverse of the layout division in [`logical_size`].
 #[inline]
 pub fn physical_point(logical: (f64, f64), device_scale: f64) -> (f64, f64) {
     (logical.0 * device_scale, logical.1 * device_scale)
 }
 
-/// `ui_scale`/`text_scale` are accepted separately so a caller starting
-/// from an *unscaled* base size can compute the whole chain in one
-/// explicit, testable call.
+/// `ui_scale`/`text_scale` are accepted separately so a caller starting from an
+/// *unscaled* base size can compute the whole chain in one explicit, testable call.
 #[inline]
 pub fn physical_font_px(base_font: f32, ui_scale: f32, text_scale: f32, device_scale: f32) -> f32 {
     base_font * ui_scale * text_scale * device_scale
 }
 
-/// The part of the window that system chrome drawn over it (status and
-/// navigation bars, a display cutout, a soft keyboard) leaves visible, as
-/// logical-pixel insets from each edge. Zero wherever the platform keeps its
-/// chrome outside the window.
+/// The part of the window that system chrome drawn over it (status and navigation bars, a
+/// display cutout, a soft keyboard) leaves visible, as logical-pixel insets from each
+/// edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SafeArea {
     pub left: f64,
@@ -151,9 +132,7 @@ impl SafeArea {
         }
     }
 
-    /// Where content goes in a `viewport` of logical size: its origin and
-    /// size. Insets wider than the viewport leave an empty box, not a negative
-    /// one.
+    /// Where content goes in a `viewport` of logical size: its origin and size.
     pub fn content(&self, viewport: (f64, f64)) -> (vello::kurbo::Point, (f64, f64)) {
         let left = self.left.min(viewport.0);
         let top = self.top.min(viewport.1);
@@ -176,10 +155,9 @@ mod tests {
     use vello::kurbo::Rect;
     use vello::peniko::{Color, Fill};
 
-    /// A login kiosk stretched over a 2944x1840 panel and a 1920x1080
-    /// monitor side by side (4864x1840 logical) at scale 2 asked for a
-    /// 9728-wide texture on a device that allows 8192, and the window exited
-    /// instead of drawing.
+    /// A login kiosk stretched over a 2944x1840 panel and a 1920x1080 monitor side by
+    /// side (4864x1840 logical) at scale 2 asked for a 9728-wide texture on a device that
+    /// allows 8192, and the window exited instead of drawing.
     #[test]
     fn a_window_past_the_texture_limit_draws_at_the_scale_that_fits() {
         let limit = 8192;
@@ -195,8 +173,8 @@ mod tests {
             "the layout keeps the window's logical size: {logical_w}x{logical_h}"
         );
         assert!(extent.scale < 2.0 && extent.scale > 1.6, "{extent:?}");
-        // The window keeps buffer scale 2 where the compositor has no
-        // fractional scaling; the buffer must stay divisible by it.
+        // The window keeps buffer scale 2 where the compositor has no fractional scaling;
+        // the buffer must stay divisible by it.
         assert_eq!((extent.width % 2, extent.height % 2), (0, 0), "{extent:?}");
 
         let tall = fit_to_texture_limit((2000, 20000), 1.0, limit);
@@ -227,7 +205,6 @@ mod tests {
                 let p = t * vello::kurbo::Point::new(40.0, 30.0);
                 assert!((p.x - 40.0 * scale).abs() < 1e-9);
                 assert!((p.y - 30.0 * scale).abs() < 1e-9);
-                // Matrix carries no translation/shear — pure scale.
                 let c = t.as_coeffs();
                 assert!((c[0] - scale).abs() < 1e-9 && (c[3] - scale).abs() < 1e-9);
                 assert!(c[1].abs() < 1e-12 && c[2].abs() < 1e-12);
@@ -275,7 +252,6 @@ mod tests {
 
     #[test]
     fn safe_area_insets_the_content_box_in_logical_pixels() {
-        // A phone in portrait: status bar on top, gesture bar at the bottom.
         let area = SafeArea::from_physical([0, 128, 0, 63], 2.625);
         assert!((area.top - 128.0 / 2.625).abs() < 1e-9);
         let (origin, size) = area.content((411.0, 914.0));
@@ -288,13 +264,12 @@ mod tests {
         assert_eq!((origin.x, origin.y), (64.0, 0.0));
         assert_eq!(size, (936.0, 368.5));
 
-        // No chrome over the window: content is the whole viewport.
         assert_eq!(
             SafeArea::default().content((800.0, 600.0)),
             (vello::kurbo::Point::ORIGIN, (800.0, 600.0))
         );
-        // Negative reports and a zero scale are clamped, and insets larger
-        // than the viewport never produce a negative box.
+        // Negative reports and a zero scale are clamped, and insets larger than the
+        // viewport never produce a negative box.
         let odd = SafeArea::from_physical([-4, 900, 0, 900], 0.0);
         assert_eq!(odd.left, 0.0);
         let (origin, size) = odd.content((300.0, 500.0));
@@ -363,10 +338,10 @@ mod tests {
             }
         }
 
-        // Case `native_fractional_render_is_crisper_than_upscaling`:
-        // Native render at device scale 2.0 must carry strictly MORE
-        // anti-aliased luminance levels than nearest-upscaling the scale-1
-        // raster to the same size (which invents no new detail).
+        // Case `native_fractional_render_is_crisper_than_upscaling`: Native render at
+        // device scale 2.0 must carry strictly MORE anti-aliased luminance levels than
+        // nearest-upscaling the scale-1 raster to the same size (which invents no new
+        // detail).
         {
             let (lw, lh) = (140u32, 44u32);
             let mut tr = TextRenderer::new();
@@ -434,8 +409,6 @@ mod tests {
         out
     }
 
-    /// Distinct red-channel levels on a grey scene — a proxy for how many
-    /// anti-aliased edge gradations a raster carries.
     fn distinct_luma_levels(buf: &[u8], w: u32, h: u32) -> usize {
         let mut seen = [false; 256];
         for i in 0..w.saturating_mul(h) as usize {

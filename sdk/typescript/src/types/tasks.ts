@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.tasks@1af478b177cd7ffc";
+
 export interface Area {
   resource: string;
   app: string;
@@ -117,6 +122,10 @@ export interface Tracker extends tilo.Resource {
     name: string;
     kind?: Kind;
   }): Promise<tilo.Run | void>;
+  rename(args: {
+    issue: string;
+    title: string;
+  }): Promise<tilo.Run | void>;
   renameArea(args: {
     area: string;
     name: string;
@@ -184,6 +193,6 @@ export interface Tracker extends tilo.Resource {
 
 /** The `tasks.tracker` kind at `path`. */
 export function tracker(ws: tilo.Workspace, path: string): Tracker {
-  return resourceProxy(ws, path) as unknown as Tracker;
+  return resourceProxy(ws, path, SURFACE) as unknown as Tracker;
 }
 

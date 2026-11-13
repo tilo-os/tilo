@@ -1,10 +1,8 @@
-//! A real app launch under the generated Seatbelt profile.
-//!
-//! A tiny C probe (`fixtures/probe.c`) is compiled and ad-hoc signed per
-//! test, installed into a payload directory, and started through
-//! [`launcher_macos::launch`] — the production path, profile preflight,
-//! `sandbox-exec` and descriptor inheritance included. Each run performs one
-//! operation; exit 0 means it succeeded, 1 that the sandbox refused it.
+//! A real app launch under the generated Seatbelt profile. A tiny C probe (`fixtures/probe.c`) is
+//! compiled and ad-hoc signed per test, installed into a payload directory, and started through
+//! [`launcher_macos::launch`], the production path with profile preflight, `sandbox-exec` and
+//! descriptor inheritance. Each run performs one operation; exit 0 means it succeeded, 1 that the
+//! sandbox refused it.
 
 use std::ffi::OsString;
 use std::io::Read as _;

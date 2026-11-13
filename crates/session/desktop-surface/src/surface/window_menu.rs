@@ -553,7 +553,7 @@ fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
                 .map(|(index, strip)| {
                     Row::offered(
                         move_to_strip_id(strip.id),
-                        strip_shown_name(&strip.name, index),
+                        crate::names::strip_named(&strip.name, index),
                     )
                 })
                 .collect()
@@ -569,7 +569,12 @@ fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
         .workspaces
         .iter()
         .filter(|workspace| workspace.slot != route.workspace)
-        .map(|workspace| Row::offered(move_to_workspace_id(workspace.slot), workspace.name.clone()))
+        .map(|workspace| {
+            Row::offered(
+                move_to_workspace_id(workspace.slot),
+                crate::names::workspace(&workspace.name),
+            )
+        })
         .collect();
     if !workspaces.is_empty() {
         rows.push(
@@ -610,19 +615,6 @@ fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
 /// `index` as the number a person counts from, one on.
 fn place_number_of(index: usize) -> i64 {
     i64::try_from(index.saturating_add(1)).unwrap_or(i64::MAX)
-}
-
-/// A strip's name as the strip switcher shows it: "Strip 2" for one nobody named, by its place in
-/// the workspace.
-fn strip_shown_name(name: &str, index: usize) -> String {
-    if name.trim().is_empty() {
-        t_args(
-            "strip-switcher-unnamed",
-            &[("number", place_number_of(index).into())],
-        )
-    } else {
-        name.to_owned()
-    }
 }
 
 /// The verb row `id` of the window at `route` means; `name` is what the person typed for

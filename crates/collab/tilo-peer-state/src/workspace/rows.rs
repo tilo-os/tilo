@@ -30,13 +30,12 @@ const CHECKPOINT_KEYS: [&str; 4] = [
 pub enum GovernanceRow {
     /// The structural owner: never a change anyone writes.
     Owner,
-    /// Members, roles, grants, admission times, sandbox capabilities,
-    /// invitation receipts and the invitation parts they share: what the
-    /// membership log projects.
+    /// Invitation receipts and the invitation parts they share: what the
+    /// membership log's admissions read.
     Membership,
     /// Device rows and the display names beside them.
     Identities,
-    /// The workspace's name and its saved grant sets.
+    /// The workspace's name, its saved grant sets and its door.
     Settings,
     /// The media policy.
     Media,
@@ -50,10 +49,12 @@ pub enum GovernanceRow {
     Hosts,
     /// The operation log itself: its growth is [`crate::members::growth`]'s.
     Log,
+    /// The capabilities the workspace gives its apps' sandboxes.
+    Sandbox,
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
@@ -64,6 +65,7 @@ impl GovernanceRow {
         Self::Checkpoints,
         Self::Hosts,
         Self::Log,
+        Self::Sandbox,
     ];
 
     /// The digest of this part of `doc`: every value it holds, whatever shape
@@ -99,16 +101,10 @@ impl GovernanceRow {
     fn keys(self) -> &'static [&'static str] {
         match self {
             Self::Owner => &["owner"],
-            Self::Membership => &[
-                "members",
-                "members_joined_v1",
-                "grants",
-                "sandbox",
-                "invitation_receipts_v1",
-                "invitation_parts_v1",
-            ],
+            Self::Membership => &["invitation_receipts_v1", "invitation_parts_v1"],
+            Self::Sandbox => &["sandbox"],
             Self::Identities => &["peers", "peer_identities_v1"],
-            Self::Settings => &["name", "presets_v1"],
+            Self::Settings => &["name", "presets_v1", "door_v1"],
             Self::Media => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
             Self::Bots => &BOT_KEYS,
@@ -127,7 +123,12 @@ impl GovernanceRow {
             Self::Bots => Some(governance::GRANT),
             Self::Media | Self::Checkpoints | Self::Hosts => Some(governance::SETTINGS),
             Self::Versions => Some(governance::INSTALL_APP),
-            Self::Owner | Self::Membership | Self::Identities | Self::Settings | Self::Log => None,
+            Self::Owner
+            | Self::Membership
+            | Self::Identities
+            | Self::Settings
+            | Self::Log
+            | Self::Sandbox => None,
         }
     }
 }

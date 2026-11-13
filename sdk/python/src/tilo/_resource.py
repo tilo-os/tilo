@@ -1,17 +1,22 @@
 """A resource as a typed object: its fields, its actions, and its edits.
 
-Attribute reads come from `tilo_read`'s `fields`; a method call is the
+Attribute reads come from the resource's read; a method call is the
 resource's action (`read_form_fields()` runs `read-form-fields`); assigning a
 name is a field edit, through the generic `field-edit` action every resource
 publishes. `form.form_values["surname"] = "Doe"` is the same edit one level
 down.
+
+A generated class names the app surface it was written for (`__surface__`);
+an action or edit run through one says so, and a workspace whose app
+publishes another surface refuses it as `SurfaceChanged`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
-from typing import Any, AsyncIterator, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any
 
 from ._errors import ProtocolError
 from ._models import Event
@@ -117,14 +122,17 @@ class Resource:
 
     @property
     def kind(self) -> str:
+        """The resource's kind, as its app names it."""
         return str((self._answer or {}).get("kind") or "")
 
     @property
     def raw(self) -> Mapping[str, Any]:
+        """The whole answer the last read got, as the API sent it."""
         return self._answer or {}
 
     @property
     def fields(self) -> Mapping[str, Any]:
+        """The read fields, each wrapped so assigning to one edits it."""
         fields = (self._answer or {}).get("fields")
         if not isinstance(fields, Mapping):
             return {}
@@ -134,10 +142,12 @@ class Resource:
 
     @property
     def children(self) -> Sequence[Mapping[str, Any]]:
+        """The child resources the last read listed."""
         return self._children
 
     @property
     def cursor(self) -> str | None:
+        """The cursor the last read stopped at, when it stopped before the end."""
         cursor = (self._answer or {}).get("cursor")
         return cursor if isinstance(cursor, str) else None
 
@@ -147,7 +157,7 @@ class Resource:
 
     async def _load(self) -> Resource:
         await self._flush()
-        answer = await self._workspace._call("tilo_read", {"path": self.path})
+        answer = await self._workspace._read(self.path)
         object.__setattr__(self, "_answer", answer)
         children = answer.get("children")
         object.__setattr__(
@@ -158,6 +168,11 @@ class Resource:
     def refresh(self) -> Any:
         """Read it again, keeping no field of the earlier read."""
         return self.load()
+
+    def _surface(self) -> str | None:
+        """The `<app>@<digest>` the generated class was written for, if it says."""
+        sent = getattr(type(self), "__surface__", None)
+        return sent if isinstance(sent, str) else None
 
     # -- fields ----------------------------------------------------------
 
@@ -197,7 +212,9 @@ class Resource:
     def action(self, name: str, **args: Any) -> Any:
         """Run one of the resource's actions by name."""
         return self._workspace.client.handoff(
-            self._workspace._outcome(f"{self.path}#{kebab(name)}", args)
+            self._workspace._outcome(
+                f"{self.path}#{kebab(name)}", args, surface=self._surface()
+            )
         )
 
     def do(self, name: str, **args: Any) -> Any:
@@ -210,6 +227,7 @@ class Resource:
             self._workspace._outcome(
                 f"{self.path}#field-edit",
                 {"edit": {"path": segments(steps), "op": op, "value": value}},
+                surface=self._surface(),
             )
         )
 
@@ -221,16 +239,17 @@ class Resource:
         coroutine = self._workspace._outcome(
             f"{self.path}#field-edit",
             {"edit": {"path": segments(steps), "op": op, "value": value}},
+            surface=self._surface(),
         )
-        transport = self._workspace.client.transport
-        if transport.sync:
-            transport.handoff(coroutine)
+        client = self._workspace.client
+        if client.sync:
+            client.handoff(coroutine)
             return
         self._edits.append(asyncio.ensure_future(coroutine))
 
     def flush(self) -> Any:
         """Await the edits that are on their way, raising the first refusal."""
-        if self._workspace.client.transport.sync:
+        if self._workspace.client.sync:
             return None
         return self._flush()
 
@@ -244,9 +263,9 @@ class Resource:
 
     # -- watching --------------------------------------------------------
 
-    def watch(self, wait_ms: int | None = None) -> AsyncIterator[Event]:
+    def watch(self) -> AsyncIterator[Event]:
         """Each change to this resource, as it happens."""
-        return self._workspace.watch(self.path, wait_ms=wait_ms)
+        return self._workspace.watch(self.path)
 
     def __repr__(self) -> str:
         return f"Resource({self.path!r})"

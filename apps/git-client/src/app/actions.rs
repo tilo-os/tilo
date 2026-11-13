@@ -1,4 +1,5 @@
-//! What a press, a key or an assistive action does: the one `Hit` path they share, the confirmation and sheet answers, the screen switch and the branch switch.
+//! What a press, a key or an assistive action does: the one `Hit` path they share,
+//! the confirmation and sheet answers, the screen switch and the branch switch.
 
 use super::{
     BranchAction, ChangesHit, Confirm, ConfirmChoice, DiffHit, Field, GitClientState, Hit,
@@ -6,17 +7,16 @@ use super::{
 };
 
 impl GitClientState {
-    /// Apply a branch action (checkout / create / delete) or a stash apply
-    /// against the live repo, then re-read. Sample-backed apps ignore these
-    /// (the panels' branch buttons only appear for real repos).
+    /// Apply a branch action or a stash apply against the live repository, then re-read; a
+    /// sample-backed app ignores these.
     pub(super) fn apply_branch_action(&mut self, action: BranchAction) {
         if self.repository_busy() {
             return;
         }
         let Some(path) = self.repo() else { return };
         let res = match action {
-            // Switching branches with work in the tree asks first: the work
-            // either comes along or is parked, and the person decides which.
+            // Switching branches with work in the tree asks first: the work either comes along or
+            // is parked, and the person decides which.
             BranchAction::Checkout(name) => {
                 if self.model.change_count() > 0 {
                     self.confirm = Some(Confirm::SwitchBranch { name });
@@ -37,8 +37,8 @@ impl GitClientState {
             .map(|f| f.path.clone())
     }
 
-    /// Whether an open drawer covers the window: everything under its scrim
-    /// is inert until it closes.
+    /// Whether an open drawer covers the window: everything under its scrim is inert until it
+    /// closes.
     pub(super) fn drawer_is_modal(&self) -> bool {
         self.screen.has_list() && self.drawer.is_overlay() && self.drawer.is_open()
     }
@@ -53,8 +53,7 @@ impl GitClientState {
         }
     }
 
-    /// Do what `hit` names: the one path pointer presses, keys and
-    /// assistive actions share.
+    /// Do what `hit` names: the one path pointer presses, keys and assistive actions share.
     pub(super) fn activate(&mut self, hit: Hit, _doc: &mut ui::widget::Edits<'_>) {
         if let (Some(dispatcher), Some((row, effect))) =
             (&self.dispatcher, self.effect_for_hit(&hit))
@@ -98,9 +97,8 @@ impl GitClientState {
                 self.diff_hscroll = 0.0;
             }
             Hit::ResolveConflict(side) => self.resolve_conflict(side),
-            // Read or asked, never pressed: the conflict's own sentence, the
-            // question a sheet puts, and the repository chooser, which is
-            // dispatched as its effect.
+            // Read or asked, never pressed: the conflict's own sentence, the question a sheet puts,
+            // and the repository chooser, which is dispatched as its effect.
             Hit::ConflictNote | Hit::ConfirmQuestion | Hit::ChooseRepository => {}
             // The sheet's answers, reached by a press or by assistive
             // technology activating the button it names.
@@ -108,8 +106,7 @@ impl GitClientState {
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
-            // Dispatched as its effect (`effect_for_hit`); a direct press
-            // without the published action does nothing.
+            // Dispatched as its effect; a direct press without the published action does nothing.
         }
     }
 
@@ -200,8 +197,8 @@ impl GitClientState {
         }
     }
 
-    /// Switch to `name`, deciding what happens to uncommitted work through
-    /// `plan`, and say what became of it.
+    /// Switch to `name`, deciding what happens to uncommitted work through `plan`, and say what
+    /// became of it.
     pub(super) fn switch_branch(&mut self, name: &str, plan: crate::repo::CheckoutPlan) {
         let Some(path) = self.repo() else { return };
         match crate::repo::checkout_branch_planned(&path, name, plan) {
@@ -220,9 +217,8 @@ impl GitClientState {
         }
     }
 
-    /// Answer the sheet with its action `index`: Cancel (0) puts the
-    /// question away, and the rest are its own answers in the order it
-    /// offered them.
+    /// Answer the sheet with its action `index`: Cancel puts the question away, and the rest are
+    /// its own answers in the order it offered them.
     pub(super) fn answer_confirm(&mut self, index: usize) {
         let choice = match index {
             0 => None,
@@ -235,17 +231,15 @@ impl GitClientState {
         };
         self.confirm_sheet.reset();
         match choice {
-            // `perform_confirmed` takes the question; leaving it standing
-            // where no answer was found puts it away instead of asking
-            // forever.
+            // `perform_confirmed` takes the question; leaving it standing where no answer was found
+            // puts it away instead of asking forever.
             Some(choice) => self.perform_confirmed(choice),
             None => self.confirm = None,
         }
     }
 
-    /// A press, a key or an assistive activation while the sheet is up: the
-    /// sheet's own answers, its close control and its scrim; nothing under
-    /// it.
+    /// A press, a key or an assistive activation while the sheet is up: the sheet's own answers,
+    /// its close control and its scrim; nothing under it.
     pub(super) fn answer_sheet(&mut self, response: ui::widget::SheetResponse) {
         match response {
             ui::widget::SheetResponse::Action(index) => self.answer_confirm(index),

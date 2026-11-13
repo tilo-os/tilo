@@ -58,8 +58,8 @@ fn field_ty(c: &tilolang::Compiled, ty: &str, field: &str) -> String {
         .clone()
 }
 
-/// Every use of `File` in the package is the package's own type: a field, a parameter, a
-/// collection's item, an option, a view's loop, and the metadata the host reads.
+/// Every use of `File` in the package is the package's own type: a field, a parameter, a collection's item,
+/// an option, a view's loop, and the metadata the host reads.
 #[test]
 fn a_declared_type_shadows_the_language_type_of_its_name() {
     let c = compile(SHADOWED);
@@ -69,8 +69,8 @@ fn a_declared_type_shadows_the_language_type_of_its_name() {
     assert_eq!(field_ty(&c, "File", "title"), "Text");
 }
 
-/// The language's own type of a shadowed name stays reachable as `std.`'s, so nothing the
-/// language provides is out of a package's reach.
+/// The language's own type of a shadowed name stays reachable as `std.`'s, so nothing the language provides
+/// is out of a package's reach.
 #[test]
 fn the_language_type_is_reachable_through_std() {
     let c = compile(SHADOWED);
@@ -83,8 +83,8 @@ fn the_language_type_is_reachable_through_std() {
     assert_eq!(field_ty(&c, "T", "u"), "Text");
 }
 
-/// A name a package declares out of the language's own list is no error at all: the declaration
-/// is the type from then on, in a field, a parameter, a view, an enum or an alias alike.
+/// A name a package declares out of the language's own list is no error at all: the declaration is the type
+/// from then on, in a field, a parameter, a view, an enum or an alias alike.
 #[test]
 fn a_declaration_of_a_language_type_name_is_no_diagnostic() {
     for body in [
@@ -100,8 +100,8 @@ fn a_declaration_of_a_language_type_name_is_no_diagnostic() {
     }
 }
 
-/// Declaring one of the names the grammar writes a type with is refused where it is written, by
-/// one message that says what to do instead.
+/// Declaring one of the names the grammar writes a type with is refused where it is written, by one message
+/// that says what to do instead.
 #[test]
 fn a_name_the_grammar_writes_a_type_with_is_refused() {
     for decl in [

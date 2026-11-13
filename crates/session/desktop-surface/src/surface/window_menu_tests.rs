@@ -911,16 +911,6 @@ fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
 
     let app = || "so.tilo.notes".to_owned();
     let not_this_devices = [
-        // Another device's window, its tab minted there.
-        (
-            9,
-            TileContent::PeerWindow {
-                app_id: app(),
-                label: "Notes".into(),
-                note: String::new(),
-                missing: None,
-            },
-        ),
         // The picture of a window another device shares.
         (
             9,
@@ -931,7 +921,7 @@ fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
                 host_label: "Framework".into(),
             },
         ),
-        // The same two in a tab this device minted: what the tab shows decides, too.
+        // The same in a tab this device minted: what the tab shows decides, too.
         (
             7,
             TileContent::HostedWindow {

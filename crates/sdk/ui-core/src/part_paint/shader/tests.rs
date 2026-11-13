@@ -1,6 +1,5 @@
-//! The interpreter over the documented input set: a checked shader draws
-//! what its arithmetic says, per texel; one the interpreter cannot run is
-//! its fallback, never a blank part or a panic.
+//! The interpreter over the documented input set: a checked shader draws what its arithmetic says, per
+//! texel; one the interpreter cannot run is its fallback, never a blank part or a panic.
 
 use super::*;
 use crate::part_paint::ShaderSource;
@@ -47,13 +46,12 @@ fn a_part_is_its_own_fill_where_the_shader_says_so() {
     assert!(probe.is_ok(), "{:?}", probe.err());
     let image = evaluate(&source(SOLID), rect, &tokens(), Color::BLACK);
     assert_eq!((image.width, image.height), (4, 2), "one texel per pixel");
-    // The fill is linear; the image is sRGB8.
     assert_eq!(image.data.data().get(..3), Some(&[56, 63, 69][..]));
     assert_eq!(image.data.data().get(3), Some(&255));
 }
 
-/// The pixel grid comes from `position` and `size`; a shader that steps
-/// across them paints blocks, which is the point of a cell shader.
+/// The pixel grid comes from `position` and `size`; a shader that steps across them paints blocks,
+/// which is the point of a cell shader.
 #[test]
 fn a_shader_reads_position_and_size_per_texel() {
     let blocky = r"
@@ -134,8 +132,8 @@ fn a_huge_part_is_bounded_and_a_tiny_one_has_a_texel() {
     assert_eq!(rail(40.0, 20.0), (40, 20));
 }
 
-/// The documented check refuses what the interpreter would choke on, so a
-/// theme learns at load, not from a fallback in production.
+/// The documented check refuses what the interpreter would choke on, so a theme learns at load, not
+/// from a fallback in production.
 #[test]
 fn the_documented_check_refuses_control_flow() {
     let looping = SOLID.replace("return fill;", "var x = 0.0;\n    loop {\n        x = x + 1.0;\n        if x > 2.0 { break; }\n    }\n    return fill;");
@@ -154,8 +152,8 @@ fn the_documented_check_refuses_control_flow() {
     assert_eq!(admitted.validate(), Ok(()));
 }
 
-/// A settled part in a shader finish is evaluated once and replayed: an
-/// idle surface runs no shader, and another program is another picture.
+/// A settled part in a shader finish is evaluated once and replayed: an idle surface runs no shader,
+/// and another program is another picture.
 #[test]
 fn a_settled_shader_part_is_evaluated_once_and_replayed() {
     use crate::part_paint::{Moment, Part, States, paint_part, part_tokens};
@@ -216,8 +214,8 @@ fn a_settled_shader_part_is_evaluated_once_and_replayed() {
     );
 }
 
-/// Functions of scalars alone are one lane: `smoothstep`, `clamp`, `mix`,
-/// `min` and `step` over `f32` draw, they are not refused as a shape.
+/// Functions of scalars alone are one lane: `smoothstep`, `clamp`, `mix`, `min` and `step` over `f32`
+/// draw, they are not refused as a shape.
 #[test]
 fn scalar_only_functions_run() {
     let scalar = SOLID.replace(

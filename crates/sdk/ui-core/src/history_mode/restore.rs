@@ -15,9 +15,7 @@ pub use projection::ContentProjection;
 pub enum RestoreValueType {
     Object(ObjType),
     Scalar(ScalarType),
-    /// Whatever the property holds. For content whose stored representation
-    /// may vary (text written as a scalar by an older schema, an integer read
-    /// as a float); the schema's `validate` functions own its shape.
+    /// Whatever the property holds.
     Any,
 }
 
@@ -49,10 +47,9 @@ pub struct HistoryRestoreRoot {
     pub expected_type: RestoreValueType,
 }
 
-/// Declarative family captures are nonempty UTF-8 strings without control characters.
-/// Their byte length is in `1..=max_capture_bytes` (maximum 256). Affixes
-/// are ASCII, at most 256 bytes each; the nonempty prefix contains `.` or `:`.
-/// Keys with the fixed affixes but invalid captures fail content validation.
+/// Declarative family captures are nonempty UTF-8 strings without control characters. Their byte length
+/// is in `1..=max_capture_bytes` (maximum 256). Affixes are ASCII, at most 256 bytes each; the nonempty
+/// prefix contains `.` or `:`.
 #[derive(Clone, Copy, Debug)]
 pub enum HistoryRootPattern {
     Exact(&'static str),
@@ -74,15 +71,13 @@ pub enum HistoryRestoreNode {
     Whole {
         expected_type: RestoreValueType,
     },
-    /// Author every immediate Map property except 1..=64 exact retained names.
-    /// Names are case-sensitive, nonempty, unique, and at most 1024 UTF-8
-    /// bytes. They are literal properties, not paths. Optional structural
-    /// absence normalizes to an empty authored Map.
+    /// Author every immediate Map property except 1..=64 exact retained names. Names are
+    /// case-sensitive, nonempty, unique, and at most 1024 UTF-8 bytes.
     MapContentExcept {
         preserved_fields: &'static [&'static str],
     },
-    /// Retain the current container and reconcile only declared map children.
-    /// Lists/text must be selected whole; positional overlays are not supported.
+    /// Retain the current container and reconcile only declared map children. Lists/text must be
+    /// selected whole; positional overlays are not supported.
     MapOverlay(&'static HistoryMapOverlay),
 }
 #[derive(Debug)]
@@ -107,14 +102,13 @@ pub struct HistoryMapEntries {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum HistoryMembership {
-    /// Deleting an identity deletes its complete subtree, including protected
-    /// descendants. Retained identities keep current unselected descendants.
+    /// Deleting an identity deletes its complete subtree, including protected descendants.
     TargetAuthoritative,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreservedOnCreate {
-    /// Copy selected fields only; the combined result validator must accept
-    /// missing operational fields. Historical operational values never return.
+    /// Copy selected fields only; the combined result validator must accept missing operational fields.
+    /// Historical operational values never return.
     Omit,
     /// Refuse any target identity missing from the current keyed map.
     Reject,
@@ -123,11 +117,10 @@ pub enum PreservedOnCreate {
 #[derive(Debug)]
 pub struct HistoryRestoreSchema {
     pub id: &'static str,
-    /// The stored schema version this registration's selectors, validators
-    /// and restore writer read. A version written at another one is refused
-    /// loudly rather than read through a shape meant for this one: an older
-    /// version is restored only after the document has been brought up to it
-    /// (the resource's migration), never by this restore.
+    /// The stored schema version this registration's selectors, validators and restore writer read. A
+    /// version written at another one is refused loudly rather than read through a shape meant for this
+    /// one: an older version is restored only after the document has been brought up to it (the
+    /// resource's migration), never by this restore.
     pub version: u32,
     /// Convenience exact whole-node selectors; checked together with `selectors`.
     pub roots: &'static [HistoryRestoreRoot],
@@ -166,12 +159,9 @@ impl PreparedContentRestore {
     }
 }
 
-/// Check a restore schema on its own, before a record exists: a schema that
-/// names no content selector, or that would rewrite the record's own
-/// bookkeeping, is refused at registration rather than at the first restore.
-///
-/// # Errors
-/// Returns the failure a person could act on.
+/// Check a restore schema on its own, before a record exists: a schema that names no content selector,
+/// or that would rewrite the record's own bookkeeping, is refused at registration rather than at the
+/// first restore.
 pub fn check_schema(schema: &'static HistoryRestoreSchema) -> Result<(), RestoreError> {
     schema::validate(schema)
 }
@@ -242,18 +232,10 @@ impl RestoreError {
     }
 }
 
-/// Prepare exact content restoration without mutating or committing the input.
-///
-/// Both current and historical content must satisfy the registered schema.
-/// Targets with content conflicts or rich-text blocks are unsupported, as is
-/// any record whose history created a Table object. All
-/// replayed sequence marks use `ExpandMark::None` for their current ranges.
-/// Whole Map values at map-addressed properties retain their current
-/// object identities when the current and target kinds match, recursively for
-/// map-addressed descendants. Other changed whole values may be recreated.
-/// Mixed structural ancestors and retained entities keep current identities.
-/// This value grants no authority: the host must check the reviewed resource,
-/// lifetime and current permission inside its exclusive record action frame.
+/// Prepare exact content restoration without mutating or committing the input. Both current and
+/// historical content must satisfy the registered schema. This value grants no authority: the host must
+/// check the reviewed resource, lifetime and current permission inside its exclusive record action
+/// frame.
 pub fn prepare_content_restore(
     doc: &AutoCommit,
     schema: &'static HistoryRestoreSchema,
@@ -310,14 +292,9 @@ pub fn prepare_content_restore(
     Ok(prepared)
 }
 
-/// Apply to the live document's pending transaction; the caller commits once.
-/// An unchanged target leaves no pending operations and needs no action entry.
-/// The host must refresh cached content object handles after a changed result.
-///
-/// # Errors
-/// Returns an error without changing the document if review/preconditions fail.
-/// Any writer, validator or postcondition error rolls back the entire newly
-/// opened transaction. Existing pending transactions are refused, never rolled back.
+/// Apply to the live document's pending transaction; the caller commits once. The host must refresh
+/// cached content object handles after a changed result. Existing pending transactions are refused,
+/// never rolled back.
 pub fn apply_prepared_content_restore(
     doc: &mut AutoCommit,
     prepared: &PreparedContentRestore,
@@ -361,10 +338,9 @@ fn committed_heads(doc: &AutoCommit) -> Result<Vec<ChangeHash>, RestoreError> {
     Ok(visible)
 }
 
-/// Refuse a record whose history ever created a Table object. Stock automerge
-/// 0.12 cannot address or apply populated Tables (writes fail and applying
-/// such changes can panic), and no Tilo app creates them. The check reads the
-/// encoded history only, so it runs before any fork, merge or re-encoding.
+/// Refuse a record whose history ever created a Table object. Stock automerge 0.12 cannot address or
+/// apply populated Tables (writes fail and applying such changes can panic), and no Tilo app creates
+/// them.
 fn refuse_tables(doc: &mut AutoCommit) -> Result<(), RestoreError> {
     let creates_table = doc.get_changes(&[]).iter().any(|change| {
         change

@@ -157,9 +157,14 @@ impl Readiness {
             if client.set_nonblocking(true).is_err() {
                 continue;
             }
-            let _ = client.write_all(answer);
-            // ignored-failure: a readiness client that left needs no answer
-            let _ = client.flush();
+            let _ = tilo_failure::ignored!(
+                "a readiness client that left needs no answer",
+                client.write_all(answer)
+            );
+            let _ = tilo_failure::ignored!(
+                "a readiness client that left needs no answer",
+                client.flush()
+            );
         }
     }
 }

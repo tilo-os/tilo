@@ -1,14 +1,4 @@
 //! The Logs window's widgets.
-//!
-//! The window is one [`ui::widget::NavShell`]: the journal table with its
-//! filters is the content, the selected entry is the inspector, and the
-//! content header holds the journal's commands. The shell holds the
-//! window's filter field; [`JournalPane`] is what it filters and owns the
-//! facet dropdowns and the table; the window's journal
-//! owns what was read and the shared view state. The two meet in
-//! a [`Bridge`]: the app publishes what the pane shows, the pane queues what
-//! the person asked for, and the app turns each request into a document
-//! action.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,7 +30,6 @@ use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::Logs;
 use ui::widget::DrawChild;
 
-/// The dropdown value that means "no constraint" on a facet.
 const ALL: &str = "all";
 
 /// One row of the journal table: what the list shows of an entry.
@@ -94,26 +83,17 @@ pub(crate) enum Placeholder {
 /// The state the app and the journal pane share.
 #[derive(Default)]
 pub(crate) struct Bridge {
-    /// Bumped whenever anything below changes.
     pub revision: u64,
-    /// Bumped when `rows` changes.
     pub rows_revision: u64,
     pub rows: Vec<JournalRow>,
-    /// The selected row, as an index into `rows`.
     pub selected: Option<usize>,
     pub filter: Filter,
     pub units: Vec<String>,
-    /// `(boot id, label)`, newest first.
     pub boots: Vec<(String, String)>,
     pub placeholder: Option<Placeholder>,
-    /// The journal holds entries at all (the filters have something to
-    /// narrow).
     pub has_entries: bool,
-    /// How many entries the journal holds, filtered or not.
     pub total: usize,
-    /// Live tail is on: new rows keep the newest one in view.
     pub follow: bool,
-    /// The journal's refresh action, offered by the unavailable state.
     pub refresh: Option<ActionBinding<()>>,
     requests: Vec<Request>,
 }
@@ -140,7 +120,6 @@ fn severity_options() -> Vec<(String, String)> {
 }
 
 /// Paint a row's severity badge, leading in its cell and centred on the row.
-/// The badge style a severity is shown in.
 pub(crate) fn severity_style(priority: Priority) -> ChipStyle {
     match priority.tone() {
         ui::widget::Tone::Neutral => ChipStyle::Neutral,
@@ -148,8 +127,7 @@ pub(crate) fn severity_style(priority: Priority) -> ChipStyle {
     }
 }
 
-/// The journal table. The unit column gives way first in a narrow window;
-/// the unit stays in the inspector and in each row's spoken value.
+/// The journal table.
 fn journal_table() -> DataTable<JournalRow> {
     let columns = vec![
         ColumnDef::new("time", "Time", ColumnWidth::Auto)
@@ -183,9 +161,6 @@ struct Nodes {
     body_child: Option<NodeId>,
 }
 
-/// The journal: the facet dropdowns over the entry table, or one empty state
-/// when there is nothing to list. The shell's filter field narrows it
-/// ([`Filterable`]).
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout, structure and selection flags"
@@ -200,10 +175,7 @@ pub(crate) struct JournalPane {
     table: DataTable<JournalRow>,
     placeholder: Option<(Placeholder, EmptyState)>,
     has_entries: bool,
-    /// The row index the table's selection was last synchronised to.
     shown_selection: Option<usize>,
-    /// The selection the app last published, and whether the table still
-    /// has to scroll it into view.
     adopted_selection: Option<usize>,
     reveal_selection: bool,
     rect: Rect,
@@ -211,14 +183,12 @@ pub(crate) struct JournalPane {
     layout_dirty: bool,
     structure_dirty: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
 impl JournalPane {
-    /// The pane over `shared`, its filters bound to the journal's field
-    /// edits through `actions`.
+    /// The pane over `shared`, its filters bound to the journal's field edits through
+    /// `actions`.
     pub(crate) fn new(shared: Shared, actions: &Actions<Logs>) -> Self {
         let paths = Logs::paths();
         let unit = Self::facet(
@@ -296,8 +266,6 @@ impl JournalPane {
             let last = bridge.rows.len().saturating_sub(1);
             self.table.set_rows(bridge.rows.clone());
             self.shown_selection = None;
-            // Follow means follow: when new records arrive, the newest row
-            // stays in view instead of being pushed below the fold.
             if follow {
                 self.table.reveal_row(last);
             }
@@ -345,8 +313,8 @@ impl JournalPane {
         self.shown_selection = selected;
     }
 
-    /// Queue the row the table's own selection moved to (a click, the
-    /// arrow keys), as the shared selection.
+    /// Queue the row the table's own selection moved to (a click, the arrow keys), as the
+    /// shared selection.
     fn queue_selection(&mut self) {
         let primary = self.table.selection().primary();
         if primary == self.shown_selection {
@@ -515,8 +483,6 @@ impl Widget for JournalPane {
                     width: percent(1.0_f32),
                     height: Dimension::auto(),
                 },
-                // The columns' text stands on the filter field's edges; the
-                // selection lift bleeds into this padding.
                 padding: taffy::Rect {
                     left: length(theme.tokens.spacing.s3),
                     right: length(theme.tokens.spacing.s3),
@@ -572,9 +538,6 @@ impl Widget for JournalPane {
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
             let body_origin = layout_rect(taffy, body, inner).origin();
-            // The table fills the body and scrolls its own rows; a selection
-            // the app moved (a search result, a restored view) is brought
-            // into sight by the nearest edge once the table has its height.
             self.body_mut().apply_layout(taffy, child, body_origin);
             if self.placeholder.is_none()
                 && std::mem::take(&mut self.reveal_selection)
@@ -584,8 +547,6 @@ impl Widget for JournalPane {
             }
         }
         if width_changed {
-            // The arrangement of the bands and the table's columns follow
-            // the width; the next layout re-decides them.
             self.layout_dirty = true;
         }
     }
@@ -613,7 +574,6 @@ impl Widget for JournalPane {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.shows_filters() {
-            // An open list floats over the table: the dropdowns go first.
             for (dropdown, node) in [
                 (&mut self.unit, self.nodes.unit),
                 (&mut self.boot, self.nodes.boot),
@@ -707,14 +667,13 @@ impl Widget for JournalPane {
     }
 }
 
-/// The inspector: the selected entry's severity, time, message and every
-/// field, or one empty state when nothing is selected.
+/// The inspector: the selected entry's severity, time, message and every field, or one
+/// empty state when nothing is selected.
 pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Element {
     use ui::widget::{Badge, Column, Property, PropertyList, Row, Scrollable, Text};
     let Some(entry) = entry else {
         return Box::new(EmptyState::new("No entry selected"));
     };
-    // The unit is the inspector's title.
     let mut properties = vec![
         Property::new(CATALOG.t("logs-program"), entry.identifier.clone())
             .with_kind(TextKind::Identifier),
@@ -738,9 +697,8 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
         }
     }
 
-    // An entry leaves the window the way any selected thing does: copied, in
-    // the words a report needs. The message alone, and the whole entry with
-    // the fields that say where it came from (`APP-logs-01`).
+    // The message alone, and the whole entry with the fields that say where it came from
+    // (`APP-logs-01`).
     let message = entry.message.clone();
     let whole = entry_copy(entry);
     let heading = Row::new()
@@ -778,8 +736,6 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
                 let _ = ui::try_clipboard_copy(&whole);
             }),
         ));
-    // The severity, time, message and the property labels all start on the
-    // region's gutter, under the inspector's title.
     let gutter = spacing.s6;
     let summary = Column::new()
         .with_no_padding()
@@ -800,8 +756,8 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
     )
 }
 
-/// One entry as text a bug report can carry: when it happened, where from,
-/// and what it said.
+/// One entry as text a bug report can carry: when it happened, where from, and what it
+/// said.
 fn entry_copy(entry: &LogEntry) -> String {
     use std::fmt::Write as _;
     let mut text = format!(
@@ -822,17 +778,13 @@ fn entry_copy(entry: &LogEntry) -> String {
     text
 }
 
-/// Words of journal field names that are abbreviations, as they are
-/// written.
 const ABBREVIATIONS: &[&str] = &[
     "BT", "CPU", "DRM", "GID", "GPU", "ID", "IP", "NM", "PCI", "PID", "SSH", "TID", "TTL", "UID",
     "USB", "UUID",
 ];
 
-/// A journal field name in sentence case: `SYSLOG_FACILITY` reads
-/// "Syslog facility", `_KERNEL_DEVICE` "Kernel device", `BT_ADAPTER`
-/// "BT adapter". Journal field names are upper case, so the first letter
-/// already is.
+/// A journal field name in sentence case: `SYSLOG_FACILITY` reads "Syslog facility",
+/// `_KERNEL_DEVICE` "Kernel device", `BT_ADAPTER` "BT adapter".
 pub(crate) fn field_label(key: &str) -> String {
     key.trim_start_matches('_')
         .split('_')
@@ -863,8 +815,8 @@ pub(crate) fn field_label(key: &str) -> String {
 mod tests {
     use super::*;
 
-    /// An entry copied into a bug report says when, where from and what, so
-    /// two lines of a failed unit leave the app with their provenance.
+    /// An entry copied into a bug report says when, where from and what, so two lines of a
+    /// failed unit leave the app with their provenance.
     #[test]
     fn a_copied_entry_carries_its_provenance_and_message() {
         let entry = crate::journal::sample_entries()

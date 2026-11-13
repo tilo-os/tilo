@@ -10,7 +10,6 @@ use crate::services::{
     WorkspaceMemberships,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_action_policy::Subject;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
 };
@@ -20,6 +19,8 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 mod closed_app;
 #[path = "native_task_confirmation_tests.rs"]
 mod confirmation;
+#[path = "conversation_ask_tests.rs"]
+mod conversation_ask;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
 #[path = "native_store_witness_tests.rs"]
@@ -73,7 +74,7 @@ impl crate::services::AgentRoster for Native {
                 && held.policy.grants.iter().any(|grant| {
                     grant.node == held.node()
                         && grant.answer == Answer::Allow
-                        && matches!(&grant.subject, Subject::Agent(named) if named == agent)
+                        && grant.grantee.agent_id() == Some(agent)
                 })
             {
                 kept = held.owner().cloned();
@@ -109,10 +110,8 @@ impl WorkspaceAuthority for Native {
                 workspace_id(),
                 "Native execution",
             );
-            workspace.policy = tilo_desktop_model::projection::workspace_policy_of(
-                doc,
-                &workspace_id().to_string(),
-            );
+            workspace.policy =
+                tilo_peer_state::workspace::policy_of(doc, &workspace_id().to_string());
             workspace
                 .policy
                 .grants
@@ -286,7 +285,7 @@ impl TrackerRuns for Native {
                 .turn
                 .as_ref()
                 .and_then(|turn| self.looked.lock().unwrap().get(&turn.message).cloned());
-            let mut policy = tilo_desktop_model::projection::workspace_policy_of(
+            let mut policy = tilo_peer_state::workspace::policy_of(
                 view.peer()
                     .admitted_workspace()
                     .ok_or("native document unavailable")?,
@@ -420,11 +419,11 @@ impl Fixture {
                 command: WorkspaceMembershipCommand::Grant {
                     grant: tilo_action_policy::Grant::new(
                         AGENT_GRANT,
-                        tilo_action_policy::Subject::agent("scribe"),
+                        tilo_action_policy::Grantee::agent("scribe"),
                         tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
                         tilo_action_policy::KindSet::READ,
                         tilo_action_policy::Answer::Allow,
-                        tilo_action_policy::Subject::person(hex::encode(
+                        tilo_action_policy::Grantee::person(hex::encode(
                             native.certificate.user_public_key,
                         )),
                     ),
@@ -720,7 +719,7 @@ fn grant_notes(f: &Fixture) {
     set_notes_permission(f, true);
 }
 fn set_notes_permission(f: &Fixture, may_write: bool) {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let workspace_id = workspace_id().to_string();
     let append = tilo_actions::action_node(
         &TreePath::workspace(&workspace_id),
@@ -733,20 +732,20 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
     let grant = if may_write {
         Grant::new(
             "fixture-notes-append",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             append,
             KindSet::UNDOABLE,
             Answer::Allow,
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         )
     } else {
         Grant::new(
             "fixture-notes-restrict",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             append,
             KindSet::ALL,
             Answer::Deny,
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         )
     };
     put_grant(f, grant);
@@ -816,7 +815,7 @@ async fn invoke(
 
 #[tokio::test(flavor = "current_thread")]
 async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -831,11 +830,11 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                 &f,
                 Grant::new(
                     "other-task-denies-append",
-                    Subject::Task(other.clone()),
+                    Grantee::task(other.clone()),
                     TreePath::workspace(workspace_id().to_string()).app("so.tilo.notes"),
                     KindSet::UNDOABLE,
                     Answer::Deny,
-                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                    Grantee::person(hex::encode(f.native.certificate.user_public_key)),
                 ),
             );
             let invocation = uuid::Uuid::new_v4();
@@ -854,7 +853,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -881,11 +880,11 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                     &f,
                     Grant::new(
                         id,
-                        Subject::Task(f.task.clone()),
+                        Grantee::task(f.task.clone()),
                         append(resource),
                         KindSet::UNDOABLE,
                         answer,
-                        Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                        Grantee::person(hex::encode(f.native.certificate.user_public_key)),
                     ),
                 );
             }
@@ -987,7 +986,7 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
 /// it at the same node: Deny wins, and the run may not.
 #[tokio::test(flavor = "current_thread")]
 async fn a_native_run_is_held_to_its_issues_grants() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -1000,7 +999,7 @@ async fn a_native_run_is_held_to_its_issues_grants() {
                 &f,
                 Grant::new(
                     "task-no-append",
-                    Subject::Task(f.task.clone()),
+                    Grantee::task(f.task.clone()),
                     tilo_actions::action_node(
                         &TreePath::workspace(workspace_id().to_string()),
                         "so.tilo.notes",
@@ -1011,7 +1010,7 @@ async fn a_native_run_is_held_to_its_issues_grants() {
                     ),
                     KindSet::UNDOABLE,
                     Answer::Deny,
-                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                    Grantee::person(hex::encode(f.native.certificate.user_public_key)),
                 ),
             );
             assert!(
@@ -1120,7 +1119,7 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
                         tilo_action_policy::ActionKind::Undoable,
                     ),
                     answer,
-                    tilo_action_policy::Subject::person(hex::encode(
+                    tilo_action_policy::Grantee::person(hex::encode(
                         f.native.certificate.user_public_key,
                     )),
                 )
@@ -1835,7 +1834,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
 /// Let the turn's agent `place` on the session's arrangement, or refuse it, as the person who
 /// started the turn.
 fn grant_the_arrangement(f: &Fixture, may: bool) {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let node = tilo_actions::action_node(
         &TreePath::workspace(workspace_id().to_string()),
         tilo_actions::remote::session_actions::PROVIDER,
@@ -1852,11 +1851,11 @@ fn grant_the_arrangement(f: &Fixture, may: bool) {
             } else {
                 "fixture-arrangement-deny"
             },
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             node,
             if may { KindSet::UNDOABLE } else { KindSet::ALL },
             if may { Answer::Allow } else { Answer::Deny },
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
 }

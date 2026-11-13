@@ -1,13 +1,7 @@
-//! Integration tests exercising `tilo-install runtime …` via the built
-//! CLI binary.
+//! `tilo-install runtime …` through the built binary, each test with its own `XDG_DATA_HOME`.
 //!
-//! Each test uses an isolated `XDG_DATA_HOME` bundle store, with no side
-//! effects on the user's
-//! `$XDG_DATA_HOME/tilo-runtime/`.
-//!
-//! `--from` points the bundle producer at a fixture host root we
-//! populate with stub loader / libc files so the tests don't depend on
-//! the runner's actual `/lib64` layout.
+//! `--from` points the bundle producer at a fixture host root, so the tests do not depend on the
+//! runner's `/lib64` layout.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,8 +15,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::support::install_bin;
 
-/// The CLI's output for `args`, against a bundle store of its own under
-/// `xdg`.
+/// The CLI's output for `args`, with the bundle store under `xdg`.
 fn cli(xdg: &Path, args: &[&str]) -> std::process::Output {
     Command::new(install_bin())
         .args(args)
@@ -32,7 +25,6 @@ fn cli(xdg: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
-/// The CLI's output for `args`, producing the bundle from `host`.
 fn cli_from(xdg: &Path, host: &Path, args: &[&str]) -> std::process::Output {
     Command::new(install_bin())
         .args(args)
@@ -64,13 +56,11 @@ fn fake_host(root: &Path) {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
-    // Phase `runtime_install_refuses_overwrite_without_force`.
     {
         let xdg = tempfile::tempdir().unwrap();
         let host = tempfile::tempdir().unwrap();
         fake_host(host.path());
 
-        // First install: succeeds.
         let out = cli_from(
             xdg.path(),
             host.path(),
@@ -78,7 +68,6 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         );
         assert!(out.status.success());
 
-        // Second install without --force: fails.
         let out = cli_from(
             xdg.path(),
             host.path(),
@@ -88,7 +77,6 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("already installed"), "stderr: {stderr}");
 
-        // With --force: succeeds.
         let out = cli_from(
             xdg.path(),
             host.path(),
@@ -96,7 +84,6 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         );
         assert!(out.status.success());
     }
-    // Phase `runtime_install_list_verify_remove_roundtrip`.
     {
         let xdg = tempfile::tempdir().unwrap();
         let host = tempfile::tempdir().unwrap();
@@ -150,7 +137,6 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
                 .exists()
         );
     }
-    // Phase `runtime_verify_detects_tampering`.
     {
         let xdg = tempfile::tempdir().unwrap();
         let host = tempfile::tempdir().unwrap();

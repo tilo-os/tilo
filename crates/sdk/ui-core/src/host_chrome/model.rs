@@ -1,8 +1,6 @@
-//! One command model for every host chrome.
-//!
-//! A command is only a view of an action that already exists: its binding
-//! addresses a resource the host serves, its enabled state is that action's
-//! availability, and invoking it opens the same door the palette uses.
+//! One command model for every host chrome. A command is only a view of an action that already exists:
+//! its binding addresses a resource the host serves, its enabled state is that action's availability,
+//! and invoking it opens the same door the palette uses.
 
 use crate::time::SystemTime;
 
@@ -19,8 +17,7 @@ use crate::widget::HistoryEntryId;
 /// How many recent changes a History menu lists.
 pub(crate) const RECENT_CHANGES: usize = 8;
 
-/// Where a command sits. Hosts map groups onto their own menus and
-/// separate adjacent groups.
+/// Where a command sits. Hosts map groups onto their own menus and separate adjacent groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandGroup {
     Undo,
@@ -103,9 +100,7 @@ impl RecentChange {
     }
 }
 
-/// The commands a host chrome presents, in display order. `resources` are
-/// the host's own (History, Search, Undo) followed by the app's declared
-/// ones; only nullary, person-facing app actions become commands.
+/// The commands a host chrome presents, in display order.
 pub(crate) fn host_commands(
     resources: &[ResourceSpec],
     recent: &[RecentChange],
@@ -192,7 +187,6 @@ fn action<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ActionSpec> {
     resource.actions.iter().find(|action| action.id == id)
 }
 
-/// The host's own resources are presented by their own commands above.
 fn is_app_resource(resource: &ResourceSpec) -> bool {
     let id = resource.id.as_str();
     !id.starts_with("tilo.host")

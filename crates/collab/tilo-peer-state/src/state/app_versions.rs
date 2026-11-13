@@ -91,11 +91,10 @@ impl StatePeer {
     /// The person behind `caller`, when the workspace lets them install apps.
     fn check_app_governance(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(),
                 governance::INSTALL_APP,
                 &tilo_action_policy::Context::at_time(now),
                 false,
@@ -181,10 +180,12 @@ fn read_version(
 ) -> Option<InstalledApp> {
     match doc.get(versions, app).ok()?? {
         (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            // ignored-failure: a row that does not decode names no installed app
-            automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<InstalledApp>(bytes)
-                .ok()
-                .filter(|row| row.release.app == app && row.release.validate().is_ok()),
+            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                "a row that does not decode names no installed app",
+                serde_json::from_slice::<InstalledApp>(bytes)
+                    .ok()
+                    .filter(|row| row.release.app == app && row.release.validate().is_ok())
+            ),
             _ => None,
         },
         _ => None,

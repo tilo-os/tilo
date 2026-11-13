@@ -85,7 +85,6 @@ pub trait SignalAuthority: Send + Sync {
     fn check_account(&self) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
-    /// Bind a verified provider self identity to this frozen current account.
     fn check_account_scope(&self, _scope: &str) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
@@ -145,7 +144,6 @@ impl SignalBroker {
             observers: Arc::default(),
         })
     }
-    /// Assemble from a supervisor's verified handle and existing OS custody.
     pub fn open_system(
         root: &std::path::Path,
         owner: crate::journal::Owner,
@@ -183,7 +181,6 @@ impl SignalBroker {
     pub fn client(&self) -> MessagingClient {
         MessagingClient::new(self.principal.clone(), Arc::new(self.clone()))
     }
-    /// Self scope verified on this broker's actual owned provider stream.
     pub fn scope(&self) -> &str {
         &self.scope
     }
@@ -244,7 +241,6 @@ impl SignalBroker {
         worker
             .history
             .reserve(&request.route, &request.operation, &request.text)?;
-        // Revalidate after durable reservation, immediately before the adapter.
         let auth = self.authorized(&request.route)?;
         let result = worker.runtime.send(
             &auth.accounts,
@@ -477,7 +473,6 @@ impl HistoryHost for SignalBroker {
     }
 }
 
-/// Supervisor-owned lifetime and health of one inbound worker.
 pub struct ReceiveGuard {
     control: std::os::unix::net::UnixStream,
     stopped: Arc<std::sync::atomic::AtomicBool>,

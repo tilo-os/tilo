@@ -10,7 +10,9 @@ wait for a pipeline's start-up with the shared test bound only under
 test-support, so its runs enable all five (the job image carries GStreamer).
 A cargo family's build of named packages gets them through workspace-unify
 (tools/ci/workspace_unify.py), so every package is built with them, the
-gateway's client dependents too: what ships without them is checked by
+gateway's client dependents too; a family without a unify package names its
+packages' features in its own t.toml args (tools/tests/test_nextest_policy.py
+holds them to this table). What ships without them is checked by
 DEFAULT_BUILDS_ALSO_CHECKED. Keep package argument strings separate from
 feature flags.
 """

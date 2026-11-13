@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use collab_types::{
     ArtifactId, ArtifactKind, ChannelEvent, ChannelId, ChannelState, Ed25519PublicKey, Identity,
-    OpKind, Role, Signature, SignedOp, SpaceId, canonical_bytes, verify_event,
+    OpKind, Role, Signature, SignedOp, canonical_bytes, verify_event,
 };
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -89,7 +89,6 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
     let (a, b) = dkg_two();
     let mut genesis = ChannelEvent::Genesis {
         channel_id: ChannelId::new(),
-        space: SpaceId(uuid::Uuid::new_v4()),
         name: "engineering".into(),
         owner: a.group_public_key,
         created_at: SystemTime::UNIX_EPOCH,
@@ -147,7 +146,6 @@ fn threshold_signed_op_passes_inbound_validator() {
     // channel creator differs from the identity whose ops are validated.
     let (owner_sk, owner_pk) = generate_keypair();
     let channel_id = ChannelId::new();
-    let space = SpaceId(uuid::Uuid::new_v4());
 
     // Build a RoleAttestation: the channel owner attests that
     // the threshold identity (`a.group_public_key`) has the
@@ -159,7 +157,7 @@ fn threshold_signed_op_passes_inbound_validator() {
         id: attestation_id,
         issued_by: owner_pk,
         subject: a.group_public_key,
-        claims: vec![Claim::MemberOf { space }],
+        claims: vec![Claim::EmployeeOf("Tilo".into())],
         valid_from: now,
         valid_until: later,
         signature: Signature::from_bytes([0u8; 64]),

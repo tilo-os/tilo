@@ -515,7 +515,7 @@ impl Workspaces {
         if !self.inner.memberships.holds_any(&person)
             && !self.let_in(&person, tilo_clock::unix_now_ns()).await
         {
-            return Err(refused(&self.not_let_in().to_reason()));
+            return Err(refused(&self.not_let_in().await.to_reason()));
         }
         let kept = self
             .keep_personal(device, list)
@@ -631,13 +631,17 @@ impl Workspaces {
         request_id: [u8; 32],
         now: u64,
     ) -> Result<Value, ActionHostError> {
-        let own = self.own().ok_or(ActionHostError::UnknownAction)?;
         let person = device.user_public_key;
         let name = args.text("name")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
+        let Some(own) = self.own() else {
+            return self
+                .enter_host_persons(device, name, moving, request_id, expiry(now, seconds))
+                .await;
+        };
         // A grant for one workspace enters that one, already made: it makes no other.
         let makes = device
             .capabilities
@@ -692,7 +696,7 @@ impl Workspaces {
             // A new workspace is for a person the site let in. Anyone can
             // make a root, so a certificate alone is nobody's way past the
             // door: they hear the door's own refusal, with its wait list.
-            return Err(refused(&self.not_let_in().to_reason()));
+            return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
             // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);
@@ -717,6 +721,34 @@ impl Workspaces {
             MemberRole::Editor,
             request_id,
             expiry(now, seconds),
+        )
+        .await
+    }
+
+    /// Invite the host's own person (`device` is theirs) into the workspace
+    /// `room` governed here, as a host that keeps no workspaces of anyone
+    /// else's answers `room.create-own`: every workspace it governs is
+    /// theirs, so another device of theirs, or a key of theirs whose scope
+    /// reaches it, enters it as them. It makes none: that is `room.create`.
+    async fn enter_host_persons(
+        &self,
+        device: &DeviceCert,
+        name: Option<&str>,
+        room: Option<&str>,
+        request_id: [u8; 32],
+        expires_at_ns: u64,
+    ) -> Result<Value, ActionHostError> {
+        let room = match (name, room) {
+            (None, Some(room)) if self.lists_to(device, room) => room,
+            _ => return Err(refused(&NOT_YOUR_OWN)),
+        };
+        let summary = self.summary(room).await.map_err(|error| refused(&error))?;
+        self.invite_own_person(
+            summary,
+            device.user_public_key,
+            MemberRole::Editor,
+            request_id,
+            expires_at_ns,
         )
         .await
     }

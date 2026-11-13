@@ -1,65 +1,12 @@
 //! Live system updates: the staged image's changed components, applied now.
 //!
-//! ```text
-//! tilo-extension live:system    apply what needs no desktop restart
-//! tilo-extension live:session   apply everything a desktop restart can,
-//!                               then restart the desktops in place
-//! tilo-extension live:status    print the state the desktop reads
-//! ```
-//!
-//! The update service stages the newest image at least daily
-//! (`bootc-fetch-apply-updates.timer`). bootc has then verified it (the
-//! containers policy's Cosign gate and, when armed, the owner's endorsement)
-//! and laid it down as a deployment, which normally applies at the next boot.
-//! This applies it now instead, component by component, with the same
-//! machinery a developer's `tilo-vm swap` uses: one system extension over
-//! `/usr` and the restarts each component's scope asks for
-//! (`/usr/share/tilo/components.toml`).
-//!
-//! 1. The staged and the booted deployments are opened read-only: on the
-//!    sealed composefs layout each is mounted from its composefs image once
-//!    the image's fs-verity digest is the one bootc reports, so what is read
-//!    is exactly the verified image; on the ostree layout each is its deployment checkout.
-//! 2. Their `/usr` trees are compared, and every difference is classified by
-//!    the staged image's component manifest: a system component (`vm` scope:
-//!    system services, the greeter), a session component (the compositor,
-//!    the launcher, the user services), the image's apps and runtime, the
-//!    base OS, or what only a boot changes (kernel, modules, firmware,
-//!    bootloader, initramfs).
-//! 3. `live:system` builds a layer of everything but the session components
-//!    (and the apps, when the interface versions the image serves changed,
-//!    since those apps speak the new ones), merges it through
-//!    [`crate::activate`], and try-restarts the changed system components'
-//!    units, in the system manager and in every logged-in user's. The greeter
-//!    is never restarted under a login; it runs the new build next time it
-//!    starts. Apps and the runtime need no restart: they are new at their
-//!    next start.
-//! 4. `live:session` builds the whole layer, merges it, restarts the changed
-//!    session components' user units and restarts every Tilo desktop in place
-//!    (`tilo-session` restarts the compositor on SIGUSR1; the login stays and
-//!    its windows reopen). The desktop asks for it only when the person is
-//!    idle or the screen is locked, and at most as often as it asks for
-//!    restarts (`tilo_system_service::update`).
-//!    A newer image staged over one already applied this boot is compared
-//!    with what is live too ([`Plan::settle`]): a component whose files are
-//!    already live as the newer image has them does not restart again, and
-//!    what the desktop already runs stays in the system phase's layer.
-//! 5. A unit that fails after its restart, or a desktop that does not come
-//!    back, rolls the layer back to the one before, restarts the same parts
-//!    again, and records the update as failed: it then applies with the next
-//!    restart of the machine, which the desktop asks for.
-//!
-//! What only a boot can change never enters a layer; the state says a restart
-//! is needed, and the desktop asks for one. `/usr/etc` and the rpm database
-//! stay as booted until then too: `/etc` is merged at deployment, and the
-//! rpm database names the base the downloaded extensions were built for.
-//!
-//! The layer lives on disk (`/var/lib/tilo/live-update/layers`), linked into
-//! the sysext search path from `/run/extensions`, so it lasts exactly until
-//! the next boot, which boots the staged deployment that holds it all
-//! anyway. Every boot deletes the layers (tmpfiles), and every apply rebuilds
-//! its layer from the mounted, verified image; nothing written earlier is
-//! trusted.
+//! The update service stages and verifies the newest image at least daily, and
+//! bootc lays it down as a deployment that normally applies at the next boot.
+//! This applies it now instead, component by component, with the same machinery
+//! a developer's `tilo-vm swap` uses: one system extension over `/usr` and the
+//! restarts each component's scope asks for. `live:system` applies what needs no
+//! desktop restart, `live:session` applies the rest and restarts the desktops in
+//! place, and `live:status` prints the state the desktop reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -76,31 +23,17 @@ use crate::host::{Host, run};
 use crate::machine::Layout;
 use crate::{At, Error, Result};
 
-/// The extension's name in the sysext search path.
 pub const LIVE_NAME: &str = "tilo-live-update";
-/// The image's interface declaration: what apps speak with the desktop.
 const INTERFACES: &str = "/usr/share/tilo/system-interfaces.toml";
-/// The component manifest the image carries.
 const COMPONENTS: &str = "usr/share/tilo/components.toml";
-/// The greeter: restarting it would end the login it serves.
 const GREETER_UNIT: &str = "greetd.service";
-/// The sandbox's view of the system, bound from `/usr` when it starts.
 const SANDBOX_VIEW_UNIT: &str = "tilo-sandbox-view.service";
-/// How long a restarted unit must stay up before the update counts.
 const SETTLE: Duration = Duration::from_secs(5);
-/// How long a restarted desktop must stay up before the update counts.
 const DESKTOP_STABLE: Duration = Duration::from_secs(20);
-/// How long an old compositor may take to exit after SIGTERM.
 const DESKTOP_EXIT: Duration = Duration::from_secs(30);
-/// The process that runs a login's compositor and restarts it on SIGUSR1.
 const LOGIN_WRAPPER: &str = "tilo-session";
-/// The compositor's process name. The login wrapper has the same name and is
-/// the shell script that runs the compositor, so the executable each process
-/// runs tells them apart: the compositor is a binary of this name.
 const COMPOSITOR: &str = "tilo-session";
 
-/// Paths only a boot changes: the kernel and its modules, firmware the
-/// kernel loads, the bootloader and the initramfs.
 const BOOT_PREFIXES: [&str; 7] = [
     "/usr/lib/modules/",
     "/usr/lib/firmware/",
@@ -110,34 +43,21 @@ const BOOT_PREFIXES: [&str; 7] = [
     "/usr/lib/dracut/",
     "/usr/lib/ostree-boot/",
 ];
-/// Paths that stay as booted until the next boot without needing one:
-/// `/etc` is merged at deployment, os-release names the base systemd matches
-/// extensions against, and the rpm database the base the downloaded
-/// extensions were built for.
 const NEXT_BOOT_PREFIXES: [&str; 3] =
     ["/usr/etc/", "/usr/lib/sysimage/rpm/", "/usr/lib/os-release"];
 
-// ---------------------------------------------------------------------------
-// Paths
-// ---------------------------------------------------------------------------
-
-/// Where the layer is linked into the sysext search path.
 pub fn link(layout: &Layout) -> PathBuf {
     layout.at("/run/extensions").join(LIVE_NAME)
 }
 
-/// Where layers are built.
 pub fn layers(layout: &Layout) -> PathBuf {
     layout.at("/var/lib/tilo/live-update/layers")
 }
 
-/// The state the desktop reads.
 pub fn state_path(layout: &Layout) -> PathBuf {
     layout.at("/run/tilo/live-update/state.json")
 }
 
-/// Present while a merge includes the layer: the next activation must
-/// merge again even when nothing else is there, to take it off.
 pub fn merged_marker(layout: &Layout) -> PathBuf {
     layout.at("/run/tilo/live-update/merged")
 }
@@ -146,29 +66,19 @@ fn mounts(layout: &Layout) -> PathBuf {
     layout.at("/run/tilo/live-update/mnt")
 }
 
-/// Whether the layer is linked, from where this helper builds layers: the
-/// one entry of the sysext search path it may merge besides its own parts.
 pub fn linked(layout: &Layout) -> bool {
     let link = link(layout);
     fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink())
         && fs::read_link(&link).is_ok_and(|target| target.starts_with(layers(layout)))
 }
 
-// ---------------------------------------------------------------------------
-// The command
-// ---------------------------------------------------------------------------
-
-/// Which part of an update a run applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Phase {
-    /// Everything that needs no desktop restart.
     System,
-    /// Everything, with the desktops restarted in place.
     Session,
 }
 
 impl Phase {
-    /// The phase a `live:<phase>` argument names.
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "system" => Some(Self::System),
@@ -185,24 +95,15 @@ impl Phase {
     }
 }
 
-/// `live:status`: the state, or that there is none.
 pub fn status(layout: &Layout) -> i32 {
     let state = fs::read_to_string(state_path(layout)).unwrap_or_else(|_| "{}".to_owned());
     println!("{}", state.trim());
     0
 }
 
-/// Apply `phase` of the staged update. Returns the exit status: 0 applied
-/// (or nothing to apply), 1 failed (and rolled back).
-///
-/// # Errors
-/// A failure before anything changed: no layer was merged, and the state
-/// records the update as failed.
 pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase) -> Result<i32> {
     let (booted, staged) = deployments(&live.bootc_status()?)?;
     let Some(staged) = staged else {
-        // Nothing staged: what is booted is current. A layer of an image that
-        // is no longer staged would be stale; take it off.
         if linked(layout) {
             remove_link(layout)?;
             crate::activate(host, layout)?;
@@ -225,9 +126,6 @@ pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase
         .is_some_and(|state| state.applied == Some(Phase::System));
     let outcome = open_and_apply(host, live, layout, phase, booted, &staged, system_applied);
     if let Err(error) = &outcome {
-        // Nothing changed, but the image cannot apply live: it waits for the
-        // next restart of the machine, which the desktop then asks for (or an
-        // always-on host takes when nobody is at it).
         write_state(
             layout,
             &State {
@@ -242,7 +140,6 @@ pub fn apply(host: &dyn Host, live: &dyn LiveHost, layout: &Layout, phase: Phase
     outcome
 }
 
-/// [`apply`] of the staged deployment over the booted one.
 fn open_and_apply(
     host: &dyn Host,
     live: &dyn LiveHost,
@@ -279,16 +176,13 @@ fn open_and_apply(
     outcome
 }
 
-/// What one run applies.
 #[derive(Clone, Copy)]
 struct Target<'a> {
     phase: Phase,
     staged: &'a Deployment,
-    /// The system phase of the same image already ran.
     system_applied: bool,
 }
 
-/// [`apply`] with both deployments open.
 fn apply_from(
     host: &dyn Host,
     live: &dyn LiveHost,
@@ -372,8 +266,6 @@ fn apply_from(
     }
 }
 
-/// Restart `restarts`; a greeter under a login is deferred. Every restarted
-/// unit must still be up after [`SETTLE`].
 fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>) -> Result<()> {
     live.daemon_reload()?;
     let logins = live.logins();
@@ -416,7 +308,6 @@ fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>)
     }
 }
 
-/// Restart every Tilo desktop in place, and wait until each is back.
 fn restart_desktops(live: &dyn LiveHost) -> Result<()> {
     let logins = live.logins();
     for login in &logins {
@@ -433,8 +324,6 @@ fn restart_desktops(live: &dyn LiveHost) -> Result<()> {
     Ok(())
 }
 
-/// Put back the layer that was linked before, or none, merge that, and
-/// restart the same parts again.
 fn roll_back(
     host: &dyn Host,
     live: &dyn LiveHost,
@@ -462,16 +351,12 @@ fn roll_back(
     live.start_no_block(SANDBOX_VIEW_UNIT);
 }
 
-// ---------------------------------------------------------------------------
-// Deployments
-// ---------------------------------------------------------------------------
-
-/// A deployment's root, as bootc reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Deployment {
-    /// The sealed layout: a composefs image named by its fs-verity digest.
-    Composefs { image: String, verity: String },
-    /// The ostree layout: a deployment checkout.
+    Composefs {
+        image: String,
+        verity: String,
+    },
     Ostree {
         image: String,
         stateroot: String,
@@ -481,7 +366,6 @@ pub enum Deployment {
 }
 
 impl Deployment {
-    /// The image digest it was deployed from.
     pub fn image(&self) -> &str {
         match self {
             Self::Composefs { image, .. } | Self::Ostree { image, .. } => image,
@@ -489,7 +373,6 @@ impl Deployment {
     }
 }
 
-/// The booted and the staged deployment in `bootc status --format json`.
 pub fn deployments(json: &str) -> Result<(Option<Deployment>, Option<Deployment>)> {
     let status: Value = serde_json::from_str(json)
         .map_err(|error| Error::Pack(format!("malformed bootc status: {error}")))?;
@@ -563,27 +446,19 @@ fn is_digest(text: &str, prefix: &str, len: usize) -> bool {
         .is_some_and(|hex| is_hex(hex, len))
 }
 
-// ---------------------------------------------------------------------------
-// The component manifest
-// ---------------------------------------------------------------------------
-
-/// What the plan needs of one `[[component]]` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Component {
     pub name: String,
     pub scope: String,
     pub units: Vec<String>,
     pub user_units: Vec<String>,
-    /// Absolute paths; one ending in `/` is a directory tree.
     pub files: Vec<String>,
 }
 
-/// The image's component manifest (`os/components.toml`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Components(pub Vec<Component>);
 
 impl Components {
-    /// Read the manifest.
     pub fn parse(text: &str) -> Result<Self> {
         let table: toml::Table = text
             .parse()
@@ -649,32 +524,18 @@ impl Components {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The plan
-// ---------------------------------------------------------------------------
-
-/// What a changed path is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// Only a boot changes it: a restart of the machine is needed.
     Boot,
-    /// Stays as booted until the next boot, which needs no asking.
     NextBoot,
-    /// A system component's: its units restart.
     System,
-    /// The base OS: new for what starts after the merge.
     Base,
-    /// The image's apps and runtime: new at their next start.
     Apps,
-    /// A session component's, or the interface declaration: the desktop
-    /// restarts.
     Session,
 }
 
-/// One difference between the booted and the staged `/usr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
-    /// Absolute, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     pub kind: ChangeKind,
 }
@@ -682,11 +543,9 @@ pub struct Change {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     Written,
-    /// Gone from the staged image.
     Removed,
 }
 
-/// Every change, classified, and what each phase restarts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -694,23 +553,15 @@ pub enum ChangeKind {
 )]
 pub struct Plan {
     pub changes: Vec<(Change, Class)>,
-    /// A restart of the machine is needed for part of the update.
     pub reboot: bool,
-    /// The interface versions the image serves changed.
     pub interfaces_changed: bool,
-    /// Changed components, by name, with their restarts.
     pub system: BTreeMap<String, Restarts>,
     pub session: BTreeMap<String, Restarts>,
     pub apps_changed: bool,
-    /// Changes an earlier live update of this boot already applied: their
-    /// paths are live as the staged image has them ([`Plan::settle`]).
     pub held: BTreeSet<String>,
-    /// A session component's path an earlier live update changed and this
-    /// one puts back as booted: the desktop restarts for it.
     pub session_undone: bool,
 }
 
-/// Units a change restarts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restarts {
     pub units: Vec<String>,
@@ -732,7 +583,6 @@ impl Restarts {
     }
 }
 
-/// How `path` is applied, given the component that installs it.
 pub fn classify(path: &str, owner: Option<&Component>) -> Class {
     if BOOT_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
         return Class::Boot;
@@ -755,7 +605,6 @@ pub fn classify(path: &str, owner: Option<&Component>) -> Class {
 }
 
 impl Plan {
-    /// Classify `changes` by `components`.
     pub fn new(changes: Vec<Change>, components: &Components) -> Self {
         let mut plan = Self::default();
         for change in changes {
@@ -788,12 +637,6 @@ impl Plan {
         plan
     }
 
-    /// Account for the live update of an earlier image this boot already
-    /// applied (`before`: its layer over the booted tree): a component
-    /// whose every change it already holds does not restart again, a change
-    /// it holds goes into either phase's layer (so the system phase does not
-    /// take back what the desktop already runs), and a component whose path
-    /// it changed but the staged image has as booted restarts.
     pub fn settle(
         &mut self,
         components: &Components,
@@ -863,26 +706,20 @@ impl Plan {
         Ok(())
     }
 
-    /// Whether `change`, of `class`, goes into `phase`'s layer: what the
-    /// phase takes, and what an earlier live update already made live.
     pub fn takes(&self, change: &Change, class: Class, phase: Phase) -> bool {
         self.in_layer(class, phase)
             || (!matches!(class, Class::Boot | Class::NextBoot) && self.held.contains(&change.path))
     }
 
-    /// Whether a change of `class` goes into `phase`'s layer.
     pub fn in_layer(&self, class: Class, phase: Phase) -> bool {
         match class {
             Class::Boot | Class::NextBoot => false,
             Class::System | Class::Base => true,
-            // Apps built for new interface versions wait for the desktop
-            // that speaks them.
             Class::Apps => phase == Phase::Session || !self.interfaces_changed,
             Class::Session => phase == Phase::Session,
         }
     }
 
-    /// Whether part of the update waits for a desktop restart.
     pub fn desktop_pending(&self) -> bool {
         self.session_undone
             || self.changes.iter().any(|(change, class)| {
@@ -891,8 +728,6 @@ impl Plan {
             })
     }
 
-    /// What `phase` restarts besides the desktop; `system_applied` when
-    /// the system phase already restarted the system components.
     pub fn restarts(&self, phase: Phase, system_applied: bool) -> Restarts {
         let mut restarts = Restarts::default();
         if !system_applied {
@@ -909,12 +744,6 @@ impl Plan {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Comparing the trees
-// ---------------------------------------------------------------------------
-
-/// Every difference between `base/usr` and `new/usr`, in path order. A
-/// directory gone from `new` is one removal; its contents are not listed.
 pub fn diff(base: &Path, new: &Path) -> io::Result<Vec<Change>> {
     let mut changes = Vec::new();
     walk_new(&base.join("usr"), &new.join("usr"), "/usr", &mut changes)?;
@@ -942,9 +771,6 @@ fn walk_new(base: &Path, new: &Path, at: &str, changes: &mut Vec<Change>) -> io:
         let (base_path, new_path) = (base.join(&name), new.join(&name));
         let before = fs::symlink_metadata(&base_path).ok();
         if meta.is_dir() {
-            // A directory that is new (or replaces a file, which an upper
-            // directory shadows) is listed whole: nothing below it exists in
-            // `base`.
             walk_new(&base_path, &new_path, &path, changes)?;
             continue;
         }
@@ -985,8 +811,6 @@ fn walk_removed(base: &Path, new: &Path, at: &str, changes: &mut Vec<Change>) ->
     Ok(())
 }
 
-/// Whether two files or links are the same: kind, mode, owner, size and
-/// bytes (or link target).
 fn same_entry(
     old_path: &Path,
     old: &fs::Metadata,
@@ -1028,7 +852,6 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
     }
 }
 
-/// The live `/usr`: a layer merged over the booted tree.
 pub struct LiveTree<'a> {
     pub layer: Option<&'a Path>,
     pub base: &'a Path,
@@ -1036,8 +859,6 @@ pub struct LiveTree<'a> {
 }
 
 impl LiveTree<'_> {
-    /// What is live at `relative` (e.g. `usr/bin/fs`): the layer's entry,
-    /// nothing under a whiteout, or else the booted tree's.
     pub fn entry(&self, relative: &str) -> Option<PathBuf> {
         if let Some(layer) = self.layer {
             let parts: Vec<&str> = relative.split('/').collect();
@@ -1064,7 +885,6 @@ impl LiveTree<'_> {
     }
 }
 
-/// Whether two live entries (`None`: absent) are the same.
 fn same_live(a: Option<&Path>, b: Option<&Path>) -> io::Result<bool> {
     match (a, b) {
         (None, None) => Ok(true),
@@ -1079,8 +899,6 @@ fn same_live(a: Option<&Path>, b: Option<&Path>) -> io::Result<bool> {
     }
 }
 
-/// Every file, link and whiteout `layer` holds, as absolute paths
-/// (`/usr/...`), but its extension-release.
 fn layer_paths(layer: &Path) -> io::Result<Vec<String>> {
     fn walk(dir: &Path, at: &str, out: &mut Vec<String>) -> io::Result<()> {
         for (name, meta) in entries(dir)? {
@@ -1103,23 +921,12 @@ fn layer_paths(layer: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// The layer
-// ---------------------------------------------------------------------------
-
 fn layer_name(image: &str, phase: Phase) -> String {
     let digest = image.strip_prefix("sha256:").unwrap_or(image);
     let short: String = digest.chars().take(16).collect();
     format!("{short}-{}", phase.name())
 }
 
-/// Build `phase`'s layer at `layer` from `new_root`: every change the phase
-/// takes, copied with its mode, owner and extended attributes, a whiteout
-/// for every removal, an extension-release naming it, and the `SELinux`
-/// labels its files get under `/`.
-///
-/// # Errors
-/// A file that cannot be copied; nothing is left at `layer` then.
 pub fn build_layer(
     host: &dyn Host,
     live: &dyn LiveHost,
@@ -1172,7 +979,6 @@ pub fn build_layer(
     fs::rename(&staging, layer).at(layer)
 }
 
-/// Copy one file or link with everything `cp --archive` keeps.
 fn copy_entry(from: &Path, to: &Path) -> Result<()> {
     let _ = fs::remove_file(to);
     run(
@@ -1197,8 +1003,6 @@ fn remove_tree(path: &Path) -> Result<()> {
     }
 }
 
-/// Link `layer` into the sysext search path, replacing what was linked in
-/// one rename.
 fn swap_link(layout: &Layout, layer: &Path) -> Result<()> {
     let link = link(layout);
     let dir = link
@@ -1221,7 +1025,6 @@ fn remove_link(layout: &Layout) -> Result<()> {
     }
 }
 
-/// Delete every layer but `keep`.
 fn prune_layers(layout: &Layout, keep: &Path) {
     let Ok(entries) = fs::read_dir(layers(layout)) else {
         return;
@@ -1234,29 +1037,18 @@ fn prune_layers(layout: &Layout, keep: &Path) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-/// What the desktop reads (`tilo_system_service::update`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
-    /// The staged image this describes; empty when nothing is staged.
     pub image: String,
-    /// The last phase applied; `None` before any, or after a failure.
     pub applied: Option<Phase>,
     pub desktop_pending: bool,
-    /// Part of the update waits for a restart of the machine.
     pub reboot_required: bool,
-    /// The update could not be applied live; it applies with the next boot.
     pub failed: bool,
-    /// Units that run their new build the next time they start.
     pub deferred: Vec<String>,
     pub detail: String,
 }
 
 impl State {
-    /// Nothing staged: the booted image is current.
     fn current() -> Self {
         Self {
             image: String::new(),
@@ -1325,49 +1117,29 @@ fn write_state(layout: &Layout, state: &State) -> Result<()> {
     crate::machine::write_json(&state_path(layout), &state.to_json(), 0o644)
 }
 
-// ---------------------------------------------------------------------------
-// The machine
-// ---------------------------------------------------------------------------
-
-/// A Tilo desktop login: its `tilo-session` wrapper and whose it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Login {
     pub wrapper: u32,
     pub user: String,
 }
 
-/// What a live update asks of the machine beyond [`Host`]. [`crate::System`]
-/// is the production behaviour; tests stand in for it.
 #[expect(
     clippy::missing_errors_doc,
     reason = "every method reports a failed side effect the same way"
 )]
 pub trait LiveHost {
-    /// `bootc status --format json`.
     fn bootc_status(&self) -> Result<String>;
-    /// Open `deployment` read-only; returns the root its `usr/` is under.
     fn open(&self, layout: &Layout, deployment: &Deployment, at: &Path) -> Result<PathBuf>;
-    /// Close what [`Self::open`] mounted at `at`.
     fn close(&self, at: &Path);
-    /// A whiteout at `path`: the file below it is gone.
     fn whiteout(&self, path: &Path) -> Result<()>;
-    /// Whether `path` in a layer is a whiteout [`Self::whiteout`] made.
     fn is_whiteout(&self, path: &Path) -> bool;
-    /// Reload the system manager and create new system accounts and paths.
     fn daemon_reload(&self) -> Result<()>;
-    /// Reload `user`'s manager.
     fn reload_user(&self, user: &str) -> Result<()>;
-    /// Restart `unit` if it runs, in `user`'s manager or the system's.
     fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()>;
     fn unit_failed(&self, user: Option<&str>, unit: &str) -> bool;
-    /// Start `unit` without waiting for it.
     fn start_no_block(&self, unit: &str);
-    /// Every Tilo desktop login.
     fn logins(&self) -> Vec<Login>;
-    /// Ask `login`'s wrapper to restart its compositor, and wait until the
-    /// old one has exited.
     fn restart_desktop(&self, login: &Login) -> Result<()>;
-    /// Whether `login`'s new compositor runs and stays up for `stable`.
     fn desktop_back(&self, login: &Login, stable: Duration) -> bool;
     fn sleep(&self, duration: Duration);
 }
@@ -1405,9 +1177,6 @@ fn zombie(pid: u32) -> bool {
         .unwrap_or(true)
 }
 
-/// Whether `pid` runs the compositor: a process of that name running the
-/// compositor's own binary, not the login wrapper's shell, whose script has
-/// the same name.
 fn is_compositor(pid: u32) -> bool {
     comm(pid).as_deref() == Some(COMPOSITOR)
         && fs::read_link(format!("/proc/{pid}/exe"))
@@ -1415,15 +1184,12 @@ fn is_compositor(pid: u32) -> bool {
             .and_then(|exe| {
                 exe.file_name().map(|name| {
                     let name = name.to_string_lossy();
-                    // A run from before an update replaced the binary is
-                    // this same compositor.
                     name.strip_suffix(" (deleted)").unwrap_or(&name) == COMPOSITOR
                 })
             })
             .unwrap_or(false)
 }
 
-/// The parent `pid` reports, from `/proc/<pid>/status`.
 fn parent(pid: u32) -> Option<u32> {
     let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     status
@@ -1432,11 +1198,6 @@ fn parent(pid: u32) -> Option<u32> {
         .and_then(|parent| parent.trim().parse().ok())
 }
 
-/// The processes `wrapper` started.
-///
-/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
-/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
-/// them here.
 fn children_of(wrapper: u32) -> Vec<u32> {
     let Ok(processes) = fs::read_dir("/proc") else {
         return Vec::new();
@@ -1465,10 +1226,6 @@ fn user_name(uid: u32) -> Option<String> {
     (output.success && !name.is_empty()).then_some(name)
 }
 
-/// `mount.composefs` of `image` at `at`, every file it names fs-verity
-/// checked, as bootc mounts the root at boot. No `digest=`: libcomposefs
-/// measures only SHA-256 fs-verity and refuses bootc's SHA-512 images, so
-/// the caller checks the image's digest itself ([`verity_matches`]).
 fn composefs_mount(objects: &Path, image: &Path, at: &Path) -> Vec<OsString> {
     let mut options = OsString::from("ro,verity,basedir=");
     options.push(objects);
@@ -1481,8 +1238,6 @@ fn composefs_mount(objects: &Path, image: &Path, at: &Path) -> Vec<OsString> {
     ]
 }
 
-/// Whether a measured fs-verity digest is `expected`, the hex digest bootc
-/// reports: SHA-512 for 128 digits, SHA-256 for 64.
 fn verity_matches(algorithm: u16, digest: &[u8], expected: &str) -> bool {
     let wanted = match expected.len() {
         64 => FS_VERITY_HASH_ALG_SHA256,
@@ -1492,17 +1247,11 @@ fn verity_matches(algorithm: u16, digest: &[u8], expected: &str) -> bool {
     algorithm == wanted && hex::encode(digest).eq_ignore_ascii_case(expected)
 }
 
-/// `FS_VERITY_HASH_ALG_SHA256`.
 const FS_VERITY_HASH_ALG_SHA256: u16 = 1;
-/// `FS_VERITY_HASH_ALG_SHA512`.
 const FS_VERITY_HASH_ALG_SHA512: u16 = 2;
 
-/// The fs-verity digest of `file` as the kernel holds it: its algorithm and
-/// bytes. Reads no file data.
 fn measure_verity(file: &fs::File) -> io::Result<(u16, Vec<u8>)> {
-    /// `_IOWR('f', 134, struct fsverity_digest)`.
     const FS_IOC_MEASURE_VERITY: libc::Ioctl = 0xC004_6686;
-    /// `struct fsverity_digest` followed by room for the largest digest.
     #[repr(C)]
     struct Measure {
         digest_algorithm: u16,
@@ -1514,9 +1263,6 @@ fn measure_verity(file: &fs::File) -> io::Result<(u16, Vec<u8>)> {
         digest_size: 64,
         digest: [0; 64],
     };
-    // SAFETY: the descriptor is live for the call; `arg` is a
-    // `struct fsverity_digest` whose `digest_size` announces the 64 bytes of
-    // `digest` after it, which is all the kernel writes.
     let result = unsafe {
         libc::ioctl(
             file.as_raw_fd(),
@@ -1589,9 +1335,6 @@ impl LiveHost for crate::System {
                         path.display()
                     )));
                 }
-                // The measured file itself, through the descriptor held open
-                // here: nothing can swap the image between the check and the
-                // mount.
                 let held = PathBuf::from(format!(
                     "/proc/{}/fd/{}",
                     std::process::id(),
@@ -1718,7 +1461,6 @@ impl LiveHost for crate::System {
         let mut up_since: Option<(u32, Instant)> = None;
         while started.elapsed() < stable.saturating_mul(3) {
             if comm(login.wrapper).as_deref() != Some(LOGIN_WRAPPER) {
-                // The login ended: the compositor did not start.
                 return false;
             }
             match (compositor_of(login.wrapper), up_since) {

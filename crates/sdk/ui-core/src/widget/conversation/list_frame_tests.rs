@@ -1,25 +1,13 @@
 //! What a frame of a conversation costs.
-//!
-//! A frame of the list is the measure taffy asks a leaf for and the draw that
-//! follows it. Both used to lay out and shape every line the conversation held,
-//! so a thread of a few hundred messages was a thread that stuttered on frames
-//! no line had changed — a caret blink, a presence change, one arriving message.
-//! The layout is kept now ([`ListCache`]) and only the rows in view are shaped,
-//! and these tests hold the list to both: the work a frame reports is the work
-//! it did, and it is the work of the screen, not of the conversation.
 
 use super::*;
 use crate::time::Duration;
 use crate::widget::Widget;
 
-/// 2026-06-30T14:05:00Z.
 const NOONISH: i64 = 1_782_828_300;
 
-/// An ordinary window's conversation: the reading column, as tall as a window.
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 900.0, 800.0);
 
-/// A list driven through the passes one frame gives it, with a scrolling
-/// ancestor's viewport pushed, as a scrolled conversation has.
 struct Frames {
     list: ConversationList,
     text: TextRenderer,
@@ -32,8 +20,6 @@ struct Frames {
 }
 
 impl Frames {
-    /// A list of `lines`, laid out and read at its newest message: the content's
-    /// top is above the window, as it is while you read the bottom of a thread.
     fn of(lines: Vec<ConversationLine>) -> Self {
         let theme = Theme::dark();
         let mut list = ConversationList::new(lines);
@@ -87,7 +73,6 @@ impl Frames {
     }
 }
 
-/// `count` messages from two people over several days, long enough to wrap.
 fn thread(count: usize) -> Vec<ConversationLine> {
     (0..count)
         .map(|index| {
@@ -148,8 +133,6 @@ fn a_steady_frame_measures_nothing_and_paints_only_what_is_in_view() {
     }
 }
 
-/// The cost of a frame is the cost of the screen: a thread ten times longer
-/// measures nothing more and paints nothing more.
 #[test]
 fn a_ten_times_longer_thread_costs_the_same_frame() {
     let mut short = Frames::of(thread(40));

@@ -100,6 +100,10 @@ pub(crate) enum HostRequest {
     /// the page's root signs the revocation and every session of theirs
     /// announces it (`onHostAction('revoke-device', {key, reason})`).
     Revoke(Revoking),
+    /// Fetch the profiles of these people (root keys, hex), who are not here to say their names:
+    /// the page hands each name back (`desktop_set_person_name`), an empty one for a profile that
+    /// keeps none, so the invite sheet names them as they chose.
+    Profiles(Vec<String>),
 }
 
 /// One key the person took back: an agent's grant at their door, or one of
@@ -671,20 +675,7 @@ impl BrowserShell {
         if chrome.shared.feedback.borrow().is_some() {
             tilo_menu = tilo_menu.with_feedback();
         }
-        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
-        // The page has one window and no compositor to give an app's card one
-        // of its own: the desk hosts the cards itself, at the place its
-        // floating column gives them.
-        let desk = DeskLayer::new(
-            Box::new(surface),
-            handle.clone(),
-            launchpad,
-            // The page has no widget layer of its own under the desk, so the
-            // layer keeps the asks to itself; `follow_asks` reads them back.
-            Rc::default(),
-            Vec::new(),
-        )
-        .with_cards();
+        let desk = page_desk(surface, &handle);
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
         let mut top = DesktopChrome::new(
@@ -1356,6 +1347,18 @@ impl BrowserShell {
                 | DesktopAsk::Music(_)
                 | DesktopAsk::WaitWindow(_)
                 | DesktopAsk::ForceQuitApp(_) => {}
+                // Settings at the page the link names opens in this page, as
+                // the account's own page does above.
+                DesktopAsk::OpenSettings(link) => {
+                    let resource = match link.strip_prefix("settings://") {
+                        Some(slug) => format!("settings.section:{slug}"),
+                        None => link.clone(),
+                    };
+                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                        app: "so.tilo.settings".into(),
+                        resource,
+                    });
+                }
                 DesktopAsk::Switcher(ask) => self.walk.ask(ask),
             }
         }
@@ -1513,7 +1516,7 @@ impl BrowserShell {
             ProfileChoice::Action(id) if id == DEVICES_ACCESS => {
                 self.requests.borrow_mut().push(HostRequest::ShowInApp {
                     app: SETTINGS_APP.into(),
-                    resource: "settings.section:devices_sync".into(),
+                    resource: "settings.section:devices_access".into(),
                 });
                 return;
             }
@@ -2187,6 +2190,30 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
     !page.is_zero_area()
         && !own_avatar.is_zero_area()
         && own_name.is_some_and(|name| !name.trim().is_empty())
+}
+
+/// The page's desk: its one window hosts the cards itself, since no compositor gives an app's card
+/// a window of its own.
+fn page_desk(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
+    let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
+    DeskLayer::new(
+        Box::new(surface),
+        handle.clone(),
+        launchpad,
+        // The page offers the verbs whose apps it carries: a card for an
+        // app this page does not have would open nothing.
+        Rc::new(|| {
+            LaunchpadAction::ALL
+                .into_iter()
+                .filter(|card| card.offered(|app| crate::desktop::known_application(app).is_some()))
+                .collect()
+        }),
+        // The page has no widget layer of its own under the desk, so the
+        // layer keeps the asks to itself; `follow_asks` reads them back.
+        Rc::default(),
+        Vec::new(),
+    )
+    .with_cards()
 }
 
 #[cfg(test)]

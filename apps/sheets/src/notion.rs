@@ -1,14 +1,4 @@
-//! A Notion export read into sheets.
-//!
-//! Notion exports a database as one CSV file per view beside the pages, and
-//! hands its API's rows over as blocks. Both are read here into the tables
-//! the workbook's import takes, so a Notion import lands as every other
-//! spreadsheet does: one `import-sheets`, one undo, and no collaborator
-//! seeing half of it.
-//!
-//! A block listing carries its table as a `table` block; its rows follow as
-//! `table_row` children, and a `child_database` names the table it stands
-//! for.
+//! Import of a Notion export: each database becomes a sheet.
 
 use crate::resource::CATALOG;
 use std::collections::BTreeMap;
@@ -16,24 +6,15 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use tilo_doc_codecs::safety::{ZipLimits, read_zip_parts};
 
-/// The most pages, databases or views one export may bring in.
 pub const MAX_IMPORTED_TABLES: usize = 64;
-/// The largest export read, before anything is parsed.
 pub const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// A table a Notion export holds: its name, and its CSV text as the export
-/// wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportedTable {
     pub name: String,
     pub csv: String,
 }
 
-/// Every table `bytes` holds, named as the export named them.
-///
-/// `bytes` is a Notion export archive (its `.zip`) or a page listing from the
-/// API (`results` blocks). Nothing is read from the network: a listing is
-/// what the caller already fetched.
 pub fn tables(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_EXPORT_BYTES {
         return Err(CATALOG.t("sheets-notion-too-big"));
@@ -58,18 +39,13 @@ pub fn tables(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     Ok(tables)
 }
 
-/// Whether `bytes` starts with a zip archive's signature.
 fn looks_like_archive(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04")
 }
 
-/// The CSV files of an export archive, in name order.
 fn tables_from_archive(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     let mut parts = read_zip_parts(bytes, &archive_limits())
         .map_err(|_| CATALOG.t("sheets-notion-archive-invalid"))?;
-    // A view's name is its file's, so the order a reader meets them in is
-    // the order the tables arrive: sorted, the same archive always lands as
-    // the same sheets.
     parts.sort_by(|(left, _), (right, _)| left.cmp(right));
     let mut tables = Vec::new();
     for (name, part) in parts {
@@ -95,7 +71,6 @@ fn archive_limits() -> ZipLimits {
     }
 }
 
-/// A JSON scalar as its cell text.
 fn scalar_text(value: &Value) -> String {
     value.as_str().map_or_else(
         || match value {
@@ -113,8 +88,6 @@ fn has_extension(name: &str, extension: &str) -> bool {
         .is_some_and(|held| held.eq_ignore_ascii_case(extension))
 }
 
-/// A CSV file's name as the table's: its file name, and, for a view Notion
-/// marked as such, what is left once the marker is gone.
 fn table_name(name: &str) -> String {
     let stem = std::path::Path::new(name)
         .file_stem()
@@ -135,8 +108,6 @@ fn table_name(name: &str) -> String {
     }
 }
 
-/// The tables a page listing holds: each `table` block with its rows, and
-/// each `child_database` with the rows a sibling hands it.
 fn tables_from_listing(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| CATALOG.t("sheets-notion-unreadable"))?;
@@ -167,7 +138,6 @@ fn tables_from_listing(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     Ok(tables)
 }
 
-/// A `table` block, its `table_row` children becoming the rows.
 fn table_of(block: &Value) -> Option<ImportedTable> {
     let rows: Vec<&Value> = block.get("children")?.as_array()?.iter().collect();
     let mut csv = String::new();
@@ -186,8 +156,6 @@ fn table_of(block: &Value) -> Option<ImportedTable> {
     })
 }
 
-/// A `child_database` block: its title, and the rows the listing gives it
-/// under `rows` (what a fetch of the database returns).
 fn database_of(block: &Value) -> Option<ImportedTable> {
     let body = block.get("child_database")?;
     let rows = body
@@ -197,8 +165,6 @@ fn database_of(block: &Value) -> Option<ImportedTable> {
     if rows.is_empty() {
         return None;
     }
-    // The database's rows are records keyed by their properties, so the
-    // columns are every property any row fills, in first-seen order.
     let mut columns: Vec<String> = Vec::new();
     for row in rows {
         for property in property_names(row) {
@@ -238,7 +204,6 @@ fn database_of(block: &Value) -> Option<ImportedTable> {
     })
 }
 
-/// The title a block or database carries, if the listing names it.
 fn table_name_of(block: &Value) -> Option<String> {
     let body = block
         .get("child_database")
@@ -255,7 +220,6 @@ fn table_name_of(block: &Value) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// The properties of `row`'s record, in the order the export wrote them.
 fn property_names(row: &Value) -> Vec<String> {
     row.get("properties")
         .and_then(Value::as_object)
@@ -263,7 +227,6 @@ fn property_names(row: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A row's properties, keyed by name.
 fn properties_of(row: &Value) -> BTreeMap<String, Value> {
     row.get("properties")
         .and_then(Value::as_object)
@@ -293,8 +256,6 @@ fn rich_text(value: &Value) -> Option<String> {
     Some(out)
 }
 
-/// A property as the cell's text: rich text, a title, a number, a date, a
-/// selection — what the person reading the sheet would see.
 fn property_text(property: &Value) -> String {
     let kind = property
         .get("type")
@@ -362,8 +323,6 @@ fn property_text(property: &Value) -> String {
                         .unwrap_or_default()
                 })
         }
-        // A relation, a rollup, a file: the listing gives a list, which the
-        // cell shows as its names.
         _ => body
             .and_then(Value::as_array)
             .map(|items| {
@@ -381,8 +340,6 @@ fn property_text(property: &Value) -> String {
     }
 }
 
-/// `text` as a CSV field: quoted when it holds a comma, a quote or a line
-/// break, its own quotes doubled.
 fn csv_field_of(text: &str) -> String {
     if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))

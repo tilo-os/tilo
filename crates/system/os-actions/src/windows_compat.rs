@@ -1,48 +1,26 @@
-//! Windows compatibility on demand, as the desktop sees it.
-//!
-//! The Windows payload (the FEX emulator and x86 guest root on ARM, Proton, the
-//! Steam runtime and the virtio-win media, about 3 GB) is not part of the OS
-//! image. It is the Tilo-signed system extension [`ID`], which overlays the
-//! same `/usr` paths the compatibility service and the Windows VM already name,
-//! and is installed by the generic extension helper ([`crate::extension`]).
-//!
-//! This module is the one place that decides what "Windows support" means to
-//! the rest of the desktop:
-//!
-//! * [`payload_present`] says whether the files are there (merged), which is
-//!   the only thing a launch cares about;
-//! * [`SizeDisclosure`] is the figure a person is told before the first
-//!   download. An install is never started without one being shown
-//!   ([`Consent`] cannot be built without it);
-//! * [`Readiness`] folds the files, the helper's status and the image's
-//!   catalogue into the single state a UI, `tilo-control` or an error message
-//!   reports: ready, needs installing, installing, waiting for the network,
-//!   failed, or not offered on this system.
+//! Windows compatibility on demand, as the desktop sees it: the payload (FEX with an
+//! x86 guest root on ARM, Proton) is a downloaded system extension like any other.
 
 use std::path::Path;
 
 use crate::extension::{self, ExtensionAction, ExtensionId, ExtensionState};
 pub use crate::extension::{ExtensionStatus, Progress};
 
-/// The catalogue id of the Windows compatibility extension.
 pub const ID: &str = "windows-compat";
 /// The one sysext part of the extension.
 pub const PART: &str = "tilo-windows-compat";
-/// Files whose presence means the merged payload is there. Both are named by
-/// the compatibility service and the Windows VM definition.
+/// Files whose presence means the merged payload is there; the compatibility service and the Windows VM
+/// definition both name them.
 pub const PAYLOAD_MARKERS: [&str; 2] = [
     "/usr/lib/tilo/windows-runners/proton",
     "/usr/share/virtio-win/virtio-win.iso",
 ];
 
-/// The Windows compatibility extension's id.
 #[must_use]
 pub fn id() -> ExtensionId {
     ExtensionId::known(ID)
 }
 
-/// What a control offers for Windows support once the figure has been shown;
-/// the same three verbs every downloaded extension has.
 pub use crate::extension::ExtensionAction as WindowsSupportAction;
 
 /// Whether the payload is merged under `root` (`/` on a device).
@@ -53,14 +31,12 @@ pub fn payload_present_under(root: &Path) -> bool {
         .all(|marker| root.join(marker.trim_start_matches('/')).exists())
 }
 
-/// Whether the payload is merged on this system.
 #[must_use]
 pub fn payload_present() -> bool {
     payload_present_under(Path::new("/"))
 }
 
-/// What a person is told before the first download. Read from the image's
-/// own catalogue entry, so it is the size that image's publisher declared.
+/// What a person is told before the first download, read from the image's own catalogue entry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SizeDisclosure {
     pub download_bytes: u64,
@@ -68,7 +44,6 @@ pub struct SizeDisclosure {
 }
 
 impl SizeDisclosure {
-    /// Parse a catalogue entry (`sysext.d/windows-compat.json`).
     #[must_use]
     pub fn parse(catalogue: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(catalogue).ok()?;
@@ -81,20 +56,16 @@ impl SizeDisclosure {
         (disclosure.download_bytes > 0 && disclosure.installed_bytes > 0).then_some(disclosure)
     }
 
-    /// The disclosure of this image.
     #[must_use]
     pub fn read() -> Option<Self> {
         Self::parse(&std::fs::read_to_string(id().catalogue_path()).ok()?)
     }
 
-    /// Gigabytes with one decimal, rounded up so the figure is never an
-    /// understatement.
     fn gigabytes(bytes: u64) -> String {
         let tenths = bytes.div_ceil(100_000_000);
         format!("{}.{}", tenths / 10, tenths % 10)
     }
 
-    /// The sentence shown with the install button.
     #[must_use]
     pub fn sentence(&self) -> String {
         format!(
@@ -107,34 +78,29 @@ impl SizeDisclosure {
     }
 }
 
-/// Proof that the disclosure was put in front of the person before they chose
-/// to install. [`install`] takes one, so no code path downloads three
-/// gigabytes without having had the figure to show.
+/// Proof that the disclosure was put in front of the person before they chose to install. [`install`]
+/// takes one, so nothing downloads without it.
 #[derive(Debug)]
 pub struct Consent(());
 
 impl Consent {}
 
-/// Where Windows support stands on this system.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
-    /// Merged and usable.
     Ready,
     /// Not installed; installing needs the person's consent and this figure.
     NeedsInstall(SizeDisclosure),
-    /// The helper is downloading or merging.
     Installing(Option<Progress>),
     /// The person opted in while offline; it installs once online.
     WaitingForNetwork,
-    /// The last attempt failed; installing again is offered.
     Failed(String, SizeDisclosure),
-    /// This system cannot install it (a host session, or an image whose
-    /// catalogue does not carry the extension).
+    /// This system cannot install it (a host session, or an image whose catalogue does not carry the
+    /// extension).
     NotOffered,
 }
 
 impl Readiness {
-    /// Fold the facts. Pure, so every state is testable.
+    /// Pure, so every state is testable.
     #[must_use]
     pub fn from_facts(
         payload_present: bool,
@@ -161,7 +127,6 @@ impl Readiness {
         }
     }
 
-    /// The readiness on this system now.
     #[must_use]
     pub fn read() -> Self {
         let offered = extension::available(&id())
@@ -170,8 +135,7 @@ impl Readiness {
         Self::from_facts(payload_present(), offered, &ExtensionStatus::read(&id()))
     }
 
-    /// The one line a UI or an error shows. For the states that need the
-    /// person to act it names the action.
+    /// For the states that need the person to act, it names the action.
     #[must_use]
     pub fn message(&self) -> String {
         match self {
@@ -196,7 +160,6 @@ impl Readiness {
         }
     }
 
-    /// Whether a start of [`install`] is the right next step.
     #[must_use]
     pub fn can_install(&self) -> bool {
         matches!(self, Self::NeedsInstall(_) | Self::Failed(..))
@@ -204,22 +167,20 @@ impl Readiness {
 }
 
 impl Readiness {
-    /// The actions a control offers in this state, primary first. Empty while
-    /// the helper works and on a system that cannot install it at all.
+    /// Primary first; empty while the helper works and where nothing can be installed.
     #[must_use]
     pub fn offered_actions(&self) -> Vec<WindowsSupportAction> {
         match self {
             Self::Installing(_) | Self::NotOffered => Vec::new(),
-            // Installed, or opted in on a network and waiting for it:
-            // withdrawing it is the only thing left to offer.
+            // Installed, or opted in and waiting for a network: withdrawing it is all that is left to
+            // offer.
             Self::WaitingForNetwork | Self::Ready => vec![WindowsSupportAction::Remove],
             Self::Failed(..) => vec![WindowsSupportAction::Install, WindowsSupportAction::Remove],
             Self::NeedsInstall(_) => vec![WindowsSupportAction::Install],
         }
     }
 
-    /// How far an install has got, for a progress bar. An install that was
-    /// asked for but not yet picked up by the helper fills an empty bar.
+    /// An install asked for but not yet picked up by the helper fills an empty bar.
     #[must_use]
     pub fn progress_fraction(&self) -> Option<f32> {
         match self {
@@ -228,7 +189,6 @@ impl Readiness {
         }
     }
 
-    /// What a person is told while the helper works, with the step it is on.
     #[must_use]
     pub fn progress_label(&self) -> Option<(String, u32, u32)> {
         match self {
@@ -239,8 +199,6 @@ impl Readiness {
         }
     }
 
-    /// The bytes downloaded so far and in total, while the helper reports
-    /// them.
     #[must_use]
     pub fn progress_megabytes(&self) -> Option<(u64, u64)> {
         match self {
@@ -250,42 +208,26 @@ impl Readiness {
     }
 }
 
-/// Whether this system can install Windows support at all.
 #[must_use]
 pub fn available() -> bool {
     extension::available(&id())
 }
 
-/// Download, verify and merge the Windows support extension.
-///
-/// # Errors
-/// As [`extension::run`].
+/// Downloads, verifies and merges the extension.
 pub fn install(_consent: &Consent) -> Result<(), String> {
     extension::run(ExtensionAction::Install, &id())
 }
 
-/// Remove the extension and everything it added; Windows capsules and VM
-/// disks are not touched.
-///
-/// # Errors
-/// As [`extension::run`].
+/// Removes the extension and everything it added; Windows capsules and VM disks are not touched.
 pub fn remove() -> Result<(), String> {
     extension::run(ExtensionAction::Remove, &id())
 }
 
-/// Do what `action` says to the Windows support extension.
-///
-/// # Errors
-/// As [`extension::run`].
 pub fn run(action: WindowsSupportAction) -> Result<(), String> {
     extension::run(action, &id())
 }
 
-/// Call `on_change` whenever the helper rewrites the extension's status,
-/// until the returned watch is dropped.
-///
-/// # Errors
-/// As [`extension::watch`].
+/// Calls `on_change` whenever the helper rewrites the extension's status, until the watch is dropped.
 pub fn watch(
     on_change: impl Fn() + Send + 'static,
 ) -> Result<tilo_files::native::ChangeWatch, String> {

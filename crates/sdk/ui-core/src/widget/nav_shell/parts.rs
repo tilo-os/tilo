@@ -157,12 +157,9 @@ impl NavShell {
         self.part(part)
     }
 
-    /// The parts the host walks: those in the host tree once it is built,
-    /// in its order (the host pairs them with the tree's nodes), and every
-    /// owned part before the first build, when there is no tree for their
-    /// order to disagree with. A part of a screen not in front answers as an
-    /// [`InertPart`]; an action in the More menu stays, so its door is still
-    /// published.
+    /// The parts the host walks: those in the host tree once it is built, in its order (the
+    /// host pairs them with the tree's nodes), and every owned part before the first build,
+    /// when there is no tree for their order to disagree with.
     pub(super) fn exposed_parts(&self) -> Vec<Part> {
         if self.built {
             self.host_parts.clone()

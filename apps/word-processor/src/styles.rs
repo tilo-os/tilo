@@ -1,8 +1,5 @@
-//! The document's **style system** — a small set of named styles (Body,
-//! Heading 1–3, List Item, Quote, plus user-defined ones) that every block
-//! resolves against. Editing a style updates *every* block of that style: the
-//! component-instance model, not per-instance formatting. Persisted in the
-//! document (tilo-doc meta) so it round-trips and survives reopen.
+//! The document's named styles, which every block resolves against: editing one changes
+//! every block of it. Stored in the document's meta, so it survives a save and reopen.
 
 use crate::num;
 use serde::{Deserialize, Serialize};
@@ -13,12 +10,10 @@ use tilo_doc::schema::{
     STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
 };
 
-/// `[r,g,b]` → `#rrggbb`.
 pub fn color_to_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-/// `#rrggbb` (or `rrggbb`, `#rgb`) → `[r,g,b]`; non-hex falls back to black.
 pub fn hex_to_color(s: &str) -> [u8; 3] {
     ui::color::parse_hex(s).map_or([0, 0, 0], ui::color::to_rgb8)
 }
@@ -43,17 +38,14 @@ fn attr_bool(props: &BTreeMap<String, AttrVal>, key: &str) -> bool {
     props.get(key).and_then(AttrVal::as_bool) == Some(true)
 }
 
-/// Every visual property of a style.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct StyleProps {
     pub name: String,
-    /// "sans" | "serif" | "mono".
     pub font: String,
     pub size: f32,
     pub bold: bool,
     pub italic: bool,
     pub color: [u8; 3],
-    /// Default alignment ("left" | "center" | "right"); an instance `align` attr overrides.
     pub align: String,
     pub space_before: f32,
     pub space_after: f32,
@@ -62,9 +54,6 @@ pub struct StyleProps {
 }
 
 impl StyleProps {
-    /// Serialize into the CRDT styles container's scalar shape (the
-    /// `tilo_doc::schema::STYLE_*` keys). Color is a `#rrggbb` hex string; sizes /
-    /// spacing are floats.
     pub fn to_attrs(&self) -> BTreeMap<String, AttrVal> {
         let mut m = BTreeMap::new();
         m.insert(STYLE_NAME.into(), AttrVal::Str(self.name.clone()));
@@ -86,8 +75,6 @@ impl StyleProps {
         m
     }
 
-    /// Rebuild from the CRDT styles container's scalar shape. Missing properties
-    /// fall back to the `StyleProps::default()` values.
     pub fn from_attrs(props: &BTreeMap<String, AttrVal>) -> Self {
         let d = StyleProps::default();
         StyleProps {
@@ -116,7 +103,6 @@ impl StyleProps {
     }
 }
 
-/// The document's full set of styles.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StyleSheet {
     pub styles: BTreeMap<String, StyleProps>,
@@ -185,12 +171,9 @@ impl Default for StyleSheet {
     }
 }
 
-/// The built-in style ids. Everything else in a document's sheet is a
-/// user-defined ("custom") style, which — unlike a built-in — can be deleted.
 pub use tilo_document::BUILTIN_STYLES;
 
 impl StyleSheet {
-    /// Resolve a style, falling back to Body for unknown ids.
     pub fn get(&self, key: &str) -> StyleProps {
         self.styles
             .get(key)
@@ -199,17 +182,13 @@ impl StyleSheet {
             .unwrap_or_default()
     }
 
-    /// Whether `key` names a built-in style. Built-ins are permanent (the style
-    /// panel offers *Duplicate* on them but never *Delete*); custom styles can
-    /// be deleted.
+    /// Whether `key` names a built-in style, which never leaves the sheet.
     pub fn is_builtin(key: &str) -> bool {
         BUILTIN_STYLES.contains(&key)
     }
 
-    /// Remove the custom style `key` from the sheet, returning `true` when it was
-    /// present and removable. Built-in styles are never removed (they are the
-    /// document's baseline component set). Callers are responsible for reassigning
-    /// any block that still references the removed style.
+    /// Remove the custom style `key`, answering whether it was there to remove; a
+    /// built-in never goes. The caller reassigns the blocks that referenced it.
     pub fn remove(&mut self, key: &str) -> bool {
         if Self::is_builtin(key) {
             return false;
@@ -217,12 +196,8 @@ impl StyleSheet {
         self.styles.remove(key).is_some()
     }
 
-    /// Allocate a fresh, unused `customN` style id (never colliding with an
-    /// existing entry). Used by the Duplicate / New-style flows.
     pub fn fresh_custom_id(&self) -> String {
-        // Pigeonhole: at most `len()` of the `len() + 1` candidates can be
-        // taken, so the range always contains a free id. The fallback keeps
-        // the search bounded rather than looping on a counter that could wrap.
+        // At most `len()` of the `len() + 1` candidates are taken, so one is free.
         let limit = self.styles.len().saturating_add(1);
         (1..=limit)
             .map(|n| format!("custom{n}"))
@@ -230,7 +205,6 @@ impl StyleSheet {
             .unwrap_or_else(|| format!("custom{}", limit.saturating_add(1)))
     }
 
-    /// Style ids in a stable presentation order (built-ins first, then custom).
     pub fn order(&self) -> Vec<String> {
         let mut out: Vec<String> = BUILTIN_STYLES
             .iter()
@@ -246,10 +220,6 @@ impl StyleSheet {
     }
 }
 
-/// The localized, user-facing display name for a style. Built-in styles carry
-/// an English name in the document so exports stay interoperable, but the
-/// panel/pickers show the active locale (German "Body" → "Fließtext") via a
-/// Fluent key per built-in id; custom styles keep their stored name verbatim.
 pub fn style_display_name(id: &str, props: &StyleProps) -> String {
     let key = match id {
         "body" => "style-body",
@@ -258,17 +228,11 @@ pub fn style_display_name(id: &str, props: &StyleProps) -> String {
         "heading3" => "style-heading3",
         "list" => "style-list",
         "quote" => "style-quote",
-        // Custom styles are named by the user; show their name as authored.
         _ => return props.name.clone(),
     };
     crate::i18n::t(key)
 }
 
-/// The block `kind` (+ heading `level`) a built-in style implies, so applying a
-/// paragraph style from the panel also makes the block *structurally* correct —
-/// picking "Heading 1" yields a real heading (present in the outline / TOC), not
-/// merely heading-looking body text. Custom styles imply no structural kind
-/// (they are visual presets), so this returns `None` for them.
 pub fn structural_kind_for(style_id: &str) -> Option<(&'static str, Option<i64>, Option<bool>)> {
     match style_id {
         "body" | "quote" => Some(("paragraph", None, None)),
@@ -280,9 +244,6 @@ pub fn structural_kind_for(style_id: &str) -> Option<(&'static str, Option<i64>,
     }
 }
 
-/// The style id a block resolves to: an explicit `style` attr if set, otherwise
-/// derived from the block kind (+ heading level). This keeps existing documents
-/// working while letting blocks opt into custom styles.
 pub fn style_key_for(kind: &str, level: Option<i64>, explicit: Option<&str>) -> String {
     if let Some(s) = explicit
         && !s.is_empty()
@@ -300,11 +261,8 @@ pub fn style_key_for(kind: &str, level: Option<i64>, explicit: Option<&str>) -> 
 mod tests {
     use super::*;
 
-    /// Defaults cover builtin kinds, JSON round-trips, display names localise builtins and pass custom
-    /// names through, and structural kinds map builtins only.
     #[test]
     fn stylesheets_cover_builtins_round_trip_and_localise() {
-        // Phase: defaults_cover_builtin_kinds.
         {
             let sheet = StyleSheet::default();
             assert_eq!(
@@ -323,15 +281,9 @@ mod tests {
                 sheet.get(&style_key_for("paragraph", None, None)).name,
                 "Body"
             );
-            // explicit override wins
             assert_eq!(style_key_for("paragraph", None, Some("quote")), "quote");
         }
 
-        // Phase: display_name_localizes_builtins_and_passes_custom_through.
-        // Built-in styles resolve a localized display name through Fluent (non-empty
-        // in the ambient locale); a custom style shows its stored, user-authored name
-        // verbatim (never a Fluent key). Locale-independent: only asserts the mapping
-        // and the custom passthrough, not a specific translation.
         {
             let sheet = StyleSheet::default();
             for id in BUILTIN_STYLES {
@@ -352,10 +304,6 @@ mod tests {
             );
         }
 
-        // Phase: structural_kind_maps_builtins_only.
-        // The built-in style → structural kind map: applying a built-in from the
-        // panel picker also switches the block kind (so "Heading 1" is a real
-        // heading). Custom styles imply no kind.
         {
             assert_eq!(structural_kind_for("body"), Some(("paragraph", None, None)));
             assert_eq!(

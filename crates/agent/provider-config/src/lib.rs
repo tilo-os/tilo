@@ -342,6 +342,12 @@ pub struct ModelDescriptor {
     pub label: String,
     /// Best known input-context size. `None` means unknown, not unlimited.
     pub context_window: Option<u32>,
+    /// The model's own declared output limit: the most tokens one answer may
+    /// take, its reasoning included. `None` means its list said nothing, not
+    /// unlimited; a caller then asks for
+    /// [`ModelDescriptor::DEFAULT_OUTPUT_TOKENS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
     /// Optional Settings-owned request policy. Runtime context is a configured
     /// deployment limit, separate from this model's source context capacity.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -408,6 +414,7 @@ impl Default for ModelDescriptor {
             id: String::new(),
             label: String::new(),
             context_window: None,
+            max_output_tokens: None,
             request_limits: None,
             revision: None,
             vision: false,
@@ -458,6 +465,12 @@ impl ModelRequestLimits {
 }
 
 impl ModelDescriptor {
+    /// What one answer may take when nothing declared the model's limit: one
+    /// whole turn of a task — a plan with full arguments, or an answer — and
+    /// a reasoning model's thinking before it, which counts against the same
+    /// bound. A metered endpoint reserves credit for all of it.
+    pub const DEFAULT_OUTPUT_TOKENS: u32 = 16_384;
+
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
         Self {
@@ -486,6 +499,19 @@ impl ModelDescriptor {
         } else {
             &self.label
         }
+    }
+
+    /// The most tokens one answer may take: the model's own declared limit,
+    /// else [`Self::DEFAULT_OUTPUT_TOKENS`]. Never more than its context
+    /// leaves room for after its input, when both are known, so a small local
+    /// context never makes a request the server must refuse.
+    #[must_use]
+    pub fn output_tokens(&self) -> u32 {
+        let declared = self
+            .max_output_tokens
+            .unwrap_or(Self::DEFAULT_OUTPUT_TOKENS);
+        self.context_window
+            .map_or(declared, |context| declared.min(context))
     }
 }
 

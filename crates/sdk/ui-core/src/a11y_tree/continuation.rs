@@ -1,5 +1,5 @@
-//! Inert identity of a generated SetValue request and its current UI route.
-//! This does not identify a document target or a future hit-tested recipient.
+//! Inert identity of a generated SetValue request and its current UI route. This does not identify a
+//! document target or a future hit-tested recipient.
 use super::{Action, SemanticAction, SemanticNode};
 use tilo_actions::{
     ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
@@ -24,7 +24,6 @@ impl Route {
         alias.checked_add(1)?;
         let target = node.semantic_target.as_deref()?;
         if target.starts_with("ordinary-confirmation:") {
-            // That branch uses separate palette state and clears admissions.
             return None;
         }
         let handler_route = match target

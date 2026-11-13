@@ -1,49 +1,26 @@
 //! Domain-separation labels.
-//!
-//! Every sealed value is bound to exactly one [`Label`]: the HPKE `info`
-//! string for public-key sealing, and part of the authenticated data for
-//! at-rest envelopes. A ciphertext produced for one purpose therefore never
-//! opens under another, even with the same key. The registry is closed on
-//! purpose: a new use of sealing adds a variant here, where it is reviewed
-//! next to every other use.
 
-/// Registered purposes for sealed data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Label {
-    /// A relay enrollment offer sealed to the soliciting device.
     RelayEnrollOffer,
-    /// A relay enrollment request (bearer token) sealed to the issuer.
     RelayEnrollRequest,
     /// A relay enrollment response (certificate, configuration) sealed to
     /// the joining device.
     RelayEnrollResponse,
-    /// A secret sealed to one device of the personal device fabric.
     DeviceFabricSecret,
     IdentityBackup,
-    /// A password-protected installer migration package and its content chunks.
     MigrationPackage,
-    /// A delegation secret held by the invite-redemption authority.
     InviteRedemption,
-    /// A sealed local secret vault (accounts, authenticator, ...).
     SecretVault,
-    /// The desktop portal's per-application secret store.
     PortalSecretStore,
-    /// The password manager's encrypted export.
     PasswordBackup,
-    /// Persisted `OpenMLS` group state of one channel member.
     ChannelMlsState,
-    /// A collaboration op or snapshot encrypted under a channel content key.
     ChannelContent,
-    /// Channel content-key history handed to a joining member.
     ChannelKeyHistory,
-    /// A symmetric key wrapped under a key-encryption key.
     KeyWrap,
-    /// A Cloud host's signing secret, sealed to its machine.
     CloudHostSecret,
-    /// A user root key wrapped in a browser (passkey PRF or recovery key).
     UserRootWrap,
-    /// One app's secret in a machine's file-backed secret store.
     FileSecretStore,
     /// A disk-unlock sibling half held for a device, sealed to the person's
     /// secret-sync key.
@@ -51,7 +28,6 @@ pub enum Label {
     /// A sibling half released to one boot-time unlock request, sealed to
     /// that request's ephemeral key.
     UnlockRelease,
-    /// The person's Secret Service store (`org.freedesktop.secrets`).
     SecretService,
     /// The key a process proves to that store that it holds the device
     /// identity with, when the store cannot read its executable.
@@ -60,7 +36,6 @@ pub enum Label {
     /// network: the key sealed to each device asked, and the asking
     /// device's certificate under that key.
     LanDiscoveryProbe,
-    /// An answer to a LAN discovery probe, sealed to the asking device.
     LanDiscoveryReply,
     /// A person's user key wrapped under a key stretched from their
     /// passphrase, on a machine without a TPM.
@@ -77,11 +52,13 @@ pub enum Label {
     /// Content a record references, sealed under the key its reference
     /// carries.
     RecordContent,
+    /// One sender's media keys, sealed to the device that may publish with
+    /// them and to no other.
+    SenderMediaKeys,
 }
 
 impl Label {
-    /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -110,6 +87,7 @@ impl Label {
         Self::TpmLockoutAuth,
         Self::SealedInvitation,
         Self::RecordContent,
+        Self::SenderMediaKeys,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -144,6 +122,7 @@ impl Label {
             Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
             Self::RecordContent => "tilo-seal/v1/record-content",
+            Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
         }
     }
 

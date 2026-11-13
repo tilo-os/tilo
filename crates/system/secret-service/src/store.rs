@@ -1,8 +1,6 @@
 //! The store: the vault, sealed at rest under a key the device identity
 //! releases, and every operation on it gated by the caller's identity.
 //!
-//! # Locked and open
-//!
 //! The store is **locked** until its key can be derived. The key comes from
 //! the machine's device identity (see [`DeviceIdentityKey`]), which the
 //! session can read however the person signed in: with a password, a
@@ -13,12 +11,6 @@
 //! A vault that exists but cannot be opened (another device identity, or
 //! damage) is never replaced: the store stays locked with the reason, and
 //! the file is left as it is.
-//!
-//! # Attribution
-//!
-//! Every operation names its caller. The store records each identity in a
-//! ledger on first use, refuses a revoked one, and lets an identity see
-//! only the items [`Owner::admits`] it.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -32,15 +24,13 @@ use tilo_user_identity::branch::{Resealed, SealedStore, SigningKey};
 use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use zeroize::Zeroizing;
 
-use crate::app::AppId;
+use crate::app::CallerId;
 use crate::vault::{
     Access, AppRecord, Collection, Item, LOGIN_COLLECTION, Migration, Owner, SESSION_COLLECTION,
     SecretBytes, VAULT_VERSION, Vault,
 };
 
-/// The record a vault envelope is bound to.
 const RECORD: &[u8] = b"vault-v1";
-/// A ledger entry's `last_used` is written to disk at most this often.
 const FLUSH_SECONDS: u64 = 300;
 const MAX_LABEL: usize = 1024;
 const MAX_ATTRIBUTES: usize = 64;
@@ -48,19 +38,15 @@ const MAX_ATTRIBUTE_TEXT: usize = 1024;
 const MAX_SECRET: usize = 1 << 20;
 const MAX_ITEMS: usize = 50_000;
 const MAX_COLLECTIONS: usize = 256;
-/// The length of a portal master secret.
 pub const SANDBOX_SECRET_LEN: usize = 32;
 
-/// Why the store is locked.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Locked {
     /// The device has no identity yet, or this session cannot read it.
     #[error("the device identity is not available")]
     NoIdentity,
-    /// The vault was sealed under another device identity.
     #[error("the vault belongs to another device identity")]
     KeyChanged,
-    /// The vault file does not authenticate.
     #[error("the vault is damaged")]
     Corrupt,
     #[error("the vault cannot be read: {0}")]
@@ -84,7 +70,6 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-/// Where the store's key comes from.
 pub trait KeySource: Send + Sync {
     /// The key, or why it cannot be released now.
     fn release(&self) -> std::result::Result<SymmetricKey, Locked>;
@@ -154,7 +139,6 @@ pub struct DeviceVault {
 }
 
 impl DeviceVault {
-    /// The vault of the person running this process, where `serve` keeps it.
     #[must_use]
     pub fn of_this_person(data_dir: &Path, uid: u32) -> Self {
         Self {
@@ -180,7 +164,6 @@ impl SealedStore for DeviceVault {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Resealed::Absent),
             Err(error) => return Err(format!("{}: {error}", self.vault.display())),
         };
-        // No salt, no key opens the vault: it is nothing this machine sealed.
         let salt = match read_salt(&self.salt) {
             Ok(salt) => salt,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -240,7 +223,6 @@ fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     tilo_files::native::private::directory(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
     let mut fresh = Zeroizing::new([0_u8; 32]);
     tilo_seal::fill_random(fresh.as_mut()).map_err(io::Error::other)?;
-    // `false`: a concurrent starter published first; use theirs.
     tilo_files::native::private::create_atomic(path, fresh.as_ref())?;
     read(path)
 }
@@ -251,7 +233,6 @@ fn now() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// An item's place in the vault.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ItemRef {
     pub collection: String,
@@ -274,10 +255,9 @@ pub struct NewItem {
     pub content_type: String,
 }
 
-/// One row of the ledger as Settings lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppInfo {
-    pub id: AppId,
+    pub id: CallerId,
     pub name: String,
     pub access: Access,
     pub first_seen: u64,
@@ -286,7 +266,6 @@ pub struct AppInfo {
     pub items: u32,
 }
 
-/// An item of an older keyring, to be imported.
 pub struct LegacyItem {
     pub label: String,
     pub attributes: BTreeMap<String, String>,
@@ -329,12 +308,10 @@ impl Store {
         }
     }
 
-    /// The key callers prove they hold the device identity with.
     pub fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
         self.keys.caller_key()
     }
 
-    /// Why the store is locked, or `None` when it is open. Tries to open it.
     pub fn locked(&self) -> Option<Locked> {
         self.with_open(|_| Ok(()))
             .err()
@@ -415,7 +392,7 @@ impl Store {
     }
 
     /// Record `caller` in the ledger and refuse it if it was revoked.
-    fn admit(open: &mut Open, caller: &AppId) -> Result<()> {
+    fn admit(open: &mut Open, caller: &CallerId) -> Result<()> {
         let now = open.now;
         let record = open.vault.apps.entry(caller.clone()).or_insert_with(|| {
             open.dirty = true;
@@ -475,7 +452,7 @@ impl Store {
     ///
     /// [`StoreError::NoSuchObject`] for an unknown collection;
     /// [`StoreError::Invalid`] for a bad alias.
-    pub fn set_alias(&self, caller: &AppId, alias: &str, collection: &str) -> Result<()> {
+    pub fn set_alias(&self, caller: &CallerId, alias: &str, collection: &str) -> Result<()> {
         valid_name(alias)?;
         self.with_open(|open| {
             Self::admit(open, caller)?;
@@ -498,7 +475,7 @@ impl Store {
     /// collections.
     pub fn create_collection(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         label: &str,
         alias: Option<&str>,
     ) -> Result<String> {
@@ -542,7 +519,7 @@ impl Store {
     ///
     /// [`StoreError::Invalid`] for a built-in collection or one holding
     /// items the caller may not see.
-    pub fn delete_collection(&self, caller: &AppId, name: &str) -> Result<()> {
+    pub fn delete_collection(&self, caller: &CallerId, name: &str) -> Result<()> {
         if name == LOGIN_COLLECTION || name == SESSION_COLLECTION {
             return Err(StoreError::Invalid(
                 "built-in collections cannot be deleted",
@@ -579,7 +556,7 @@ impl Store {
     /// [`StoreError::Locked`] or [`StoreError::Revoked`].
     pub fn search(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         collection: Option<&str>,
         query: &BTreeMap<String, String>,
     ) -> Result<Vec<ItemRef>> {
@@ -615,7 +592,7 @@ impl Store {
     /// [`StoreError::Invalid`] for oversized input.
     pub fn create_item(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         collection: &str,
         new: NewItem,
         replace: bool,
@@ -677,7 +654,7 @@ impl Store {
     ///
     /// [`StoreError::NoSuchObject`] for an item that does not exist or that
     /// the caller may not see (the two are not told apart).
-    pub fn read_secret(&self, caller: &AppId, item: &ItemRef) -> Result<(SecretBytes, String)> {
+    pub fn read_secret(&self, caller: &CallerId, item: &ItemRef) -> Result<(SecretBytes, String)> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             let found = visible(&open.vault, caller, item)?;
@@ -692,7 +669,7 @@ impl Store {
     /// As [`Store::read_secret`].
     pub fn write_secret(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         item: &ItemRef,
         secret: Vec<u8>,
         content_type: String,
@@ -718,7 +695,6 @@ impl Store {
             found.secret = SecretBytes::new(secret);
             found.content_type = content_type;
             found.modified = now;
-            // The writer now vouches for the value.
             found.owner = Owner::App(caller.clone());
             open.dirty = open.dirty || !transient;
             Ok(())
@@ -730,7 +706,7 @@ impl Store {
     /// # Errors
     ///
     /// As [`Store::read_secret`].
-    pub fn delete_item(&self, caller: &AppId, item: &ItemRef) -> Result<()> {
+    pub fn delete_item(&self, caller: &CallerId, item: &ItemRef) -> Result<()> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             visible(&open.vault, caller, item)?;
@@ -754,7 +730,7 @@ impl Store {
     /// [`StoreError::NoSuchObject`] for an item that does not exist or that
     /// the caller may not see (the two are not told apart);
     /// [`StoreError::Revoked`] for a revoked caller.
-    pub fn item_info(&self, caller: &AppId, item: &ItemRef) -> Result<ItemInfo> {
+    pub fn item_info(&self, caller: &CallerId, item: &ItemRef) -> Result<ItemInfo> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             let found = visible(&open.vault, caller, item)?;
@@ -843,7 +819,7 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
-    pub fn set_access(&self, id: &AppId, access: Access) -> Result<()> {
+    pub fn set_access(&self, id: &CallerId, access: Access) -> Result<()> {
         self.with_open(|open| {
             open.vault
                 .apps
@@ -861,7 +837,7 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
-    pub fn forget_app(&self, id: &AppId) -> Result<()> {
+    pub fn forget_app(&self, id: &CallerId) -> Result<()> {
         self.with_open(|open| {
             open.vault.apps.remove(id).ok_or(StoreError::NoSuchObject)?;
             let owner = Owner::App(id.clone());
@@ -894,7 +870,7 @@ impl Store {
         app: &str,
         legacy: Option<&[u8]>,
     ) -> Result<Zeroizing<[u8; SANDBOX_SECRET_LEN]>> {
-        let id = AppId::sandbox(app).ok_or(StoreError::Invalid("application id"))?;
+        let id = CallerId::sandbox(app).ok_or(StoreError::Invalid("application id"))?;
         if app.is_empty() || app.len() > 255 || app.contains('/') {
             return Err(StoreError::Invalid("application id"));
         }
@@ -990,7 +966,7 @@ impl Store {
     }
 }
 
-fn visible<'a>(vault: &'a Vault, caller: &AppId, item: &ItemRef) -> Result<&'a Item> {
+fn visible<'a>(vault: &'a Vault, caller: &CallerId, item: &ItemRef) -> Result<&'a Item> {
     vault
         .collections
         .get(&item.collection)

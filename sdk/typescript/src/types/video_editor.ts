@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.video-editor@c1e632de27d6ebcf";
+
 export interface ChromaKey {
   enabled: boolean;
   color: number[];
@@ -361,6 +366,6 @@ export interface Project extends tilo.Resource {
 
 /** The `video-editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
-  return resourceProxy(ws, path) as unknown as Project;
+  return resourceProxy(ws, path, SURFACE) as unknown as Project;
 }
 

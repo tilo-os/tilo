@@ -1,35 +1,16 @@
 //! The root widget of the Typst editor.
 //!
-//! `TypstApp` is a single full-bleed [`Widget`]. It hosts the library controls
-//! of [`Chrome`] above two content panes it paints itself (the source editor
-//! and the rendered preview, which are genuine content drawing), and lays them
-//! out in plain rects computed in `TypstApp::layout_in`:
+//! `TypstApp` is a single full-bleed [`Widget`]: the library controls of
+//! [`Chrome`] above two panes it paints itself, the source editor and the
+//! rendered preview, laid out in rects computed by `TypstApp::layout_in`. The
+//! editor opens on the window's region and the preview on the inspector's; the
+//! caret position, pages and zoom are the status bar, and a change worth
+//! noticing once is said in the window's bar for a while.
 //!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │ ‹ document ▾ ›  Compile Save Open Export   − + Fit  Problems │
-//! ├───────────────────────────┬──────────────────────────────┤
-//! │ source editor             │      rendered preview         │
-//! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
-//! │  syntax highlight)        │                               │
-//! ├───────────────────────────┤                               │
-//! │ Problems panel            │                               │
-//! ├───────────────────────────┴──────────────────────────────┤
-//! │ Ln 4, Col 28                          2 pages, fit width │
-//! └──────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! The editor stands on the window ground and the preview on the inspector
-//! region; neither fills a ground of its own. What a person reads while
-//! working (caret position, pages, zoom) is the status bar, which reserves its
-//! band; a change worth noticing once ("Compiled in 42 ms") is said in the
-//! window's bar for a while.
-//!
-//! The workspace's files — names, paths and sources — are the resource's
-//! state ([`crate::resource::Workspace`]); every edit is a field edit or one
-//! of its verbs, so undo/redo and live collaboration come for free. Which file is open,
-//! the caret, scroll, zoom, the split ratio and cached page bitmaps are view
-//! state.
+//! The workspace's files — names, paths and sources — are the resource's state
+//! ([`crate::resource::Workspace`]), so undo/redo and collaboration come from
+//! its field edits and verbs. Which file is open, the caret, scroll, zoom, the
+//! split ratio and cached page bitmaps are view state.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -59,8 +40,6 @@ mod store;
 pub(crate) use store::window;
 use store::{Shared, Store};
 
-/// An Open, Save or Export in flight: its chooser, then for a save or an
-/// export the write to where the person chose.
 enum PendingIo {
     OpenTyp(ui::portal::ContentsChannel),
     SaveTyp(ui::portal::DestinationChannel),
@@ -111,40 +90,27 @@ use crate::preview::PreviewPane;
 use crate::resource::TypstFilePaths;
 use crate::worker::CompileWorker;
 
-/// Which single pane the compact (narrow-window) layout is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompactPane {
     Editor,
     Preview,
 }
 
-/// A document whose final line is very long, used only by the `scrolled`
-/// capture to show the source editor scrolled sideways with the caret kept in
-/// view at the end of the line. The long line is last (no trailing newline)
-/// so placing the caret at the document end lands it there.
 #[cfg(feature = "samples")]
 pub(crate) const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This is a single very long line of source text that runs well past the right edge of the editor pane, so the view must scroll sideways to keep the caret in view as you type toward the end.\"";
 
-/// The sizes of the window's own chrome, measured in the theme at paint: the
-/// band holding the controls, the status bar and the width under which one
-/// pane shows at a time.
 #[derive(Clone, Copy, PartialEq)]
 struct Frame {
-    /// The height of one control, which the Problems panel keeps as the
-    /// least worth opening for.
     control_h: f64,
     status_h: f64,
     compact_w: f64,
 }
 
 impl Frame {
-    /// `control_h` is the height of one control and `status_line_h` of one
-    /// line of status text, both measured at the current text scale.
     fn of(theme: &Theme, control_h: f64, status_line_h: f64) -> Self {
         let metrics = &theme.tokens.metrics;
         Self {
             control_h: control_h + 2.0 * f64::from(theme.tokens.spacing.s1),
-            // The bar grows with the text, so its readouts are never clipped.
             status_h: ui::chrome::status_bar::height(theme)
                 .max(status_line_h + 2.0 * f64::from(theme.tokens.spacing.s2)),
             compact_w: f64::from(metrics.compact_breakpoint),
@@ -160,135 +126,67 @@ impl Frame {
               sites like `self.dragging_editor`"
 )]
 pub struct TypstApp {
-    // --- compilation backend ---
     parts: Arc<WorldParts>,
     worker: Option<CompileWorker>,
-    /// Sequence number of the freshest compile result we've applied. Stale
-    /// (lower-numbered) results from the worker are ignored.
     applied_seq: u64,
 
-    // --- panes ---
     editor: SourceEditor,
     preview: PreviewPane,
     diagnostics: DiagnosticsPanel,
-    /// The open document's headings, in a drawer beside the source.
     outline: crate::outline::Outline,
 
-    // --- workspace ---
-    /// The workspace as last presented.
     files: Rc<crate::resource::Workspace>,
     current: Option<Id>,
-    /// Where each file was saved when that place has no path here (a
-    /// browser page's Save dialog file): every later Save writes there
-    /// without asking, and only Save As asks again.
     kept: std::collections::HashMap<Id, ui::portal::SaveDestination>,
-    /// This window added a file to an empty workspace: it opens once it
-    /// lands.
     pending_open: bool,
-    /// The files the workspace held when last presented, to tell a file
-    /// that just arrived from one that was there.
     known_files: Vec<Id>,
     actions: Option<ui::framework::Dispatcher<crate::resource::Workspace>>,
-    /// An in-flight host file dialog or the write that follows it, drained
-    /// once per frame in [`Self::drain_io`]. `None` when no Open / Save /
-    /// Export is under way.
     io: Option<PendingIo>,
     background_poll_deadline: Cell<Option<Instant>>,
-    /// What the window shares with the view's effect handler: the effects
-    /// it asks, the file effect's caller and the rows it publishes.
     store: Shared,
-    /// The workspace as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<ui::framework::Live<crate::resource::Workspace>>,
-    /// The `(revision, loads)` of the workspace last shown.
     presented: Option<(u64, u64)>,
-    /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
-    /// Last source text we highlighted / compiled — drives change detection.
     last_source: String,
-    /// Mirror of the source read each `sync`, used by `draw` (which has no
-    /// doc access) for the caret readout and change detection. The editor body
-    /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
-    /// The source last written to disk (or read from it) and the file it
-    /// belongs to. The source differing from it is unsaved work, which the
-    /// window's bar says in words beside the document's name.
     saved: Option<(Id, String)>,
 
-    // --- view state ---
     show_diagnostics: bool,
     err_count: usize,
     warn_count: usize,
     elapsed_ms: u128,
-    /// Whether the current width put us in the single-pane compact layout.
-    /// Recomputed every `layout_in` from the live width — never cached from
-    /// the first frame.
     compact: bool,
-    /// Which pane the compact layout is showing (ignored while `compact` is
-    /// false).
     compact_view: CompactPane,
-    /// The renderer's accessibility text scale; width breakpoints designed at
-    /// 1× are compared against `width / text_k`.
     text_k: f64,
-    /// Capture only: on the next layout pass, drop the caret at the end of
-    /// the source and scroll it into view. Never set in a live window.
     demo_scroll_caret_end: bool,
-    /// Screenshot harness only: select a couple of editor lines for the capture.
     demo_editor_select: bool,
-    /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
-    /// it so the capture proves cursor-zoom + scroll-when-zoomed.
     demo_preview_zoom: bool,
-    /// Screenshot-only: on the next layout pass, zoom the preview past fit-width
-    /// and pan it on both axes so the capture proves drag/wheel panning.
     demo_preview_pan: bool,
-    /// Screenshot-only: on the next layout pass, select a run of preview text so
-    /// the capture proves rendered-text selection.
     demo_preview_select: bool,
-    /// Screenshot-only: after the first render, break the source so the
-    /// capture shows the stale-render banner over the last good pages.
     demo_stale: bool,
 
-    // --- chrome ---
     chrome: Chrome,
     frame: Frame,
-    /// A change worth noticing once, said in the window's bar for a while: a
-    /// compile result, an export.
     status: ui::widget::toast::Transient<String>,
-    /// The window's report of this window's file saves: the framework says
-    /// nothing while they land and offers "Try again" when one fails.
     saves: ui::framework::Saves,
-    /// Where the last save went, so a failed save can be tried again.
     save_path: Option<std::path::PathBuf>,
-    /// The next compile result is feedback for an explicit Compile.
     compile_feedback: bool,
 
-    // --- layout rects (filled by layout_in) ---
     rect: Rect,
     editor_rect: Rect,
     preview_rect: Rect,
     diag_rect: Rect,
     status_rect: Rect,
 
-    // --- interaction ---
     mouse: Point,
     dragging_editor: bool,
-    /// A preview interaction (text-selection drag or scrollbar drag) is live, so
-    /// subsequent moves route back to the preview.
     dragging_preview: bool,
-    /// The divider between the editor and the preview, and the share of
-    /// the width the editor takes.
     splitter: SplitHandle,
-    /// Set when a pointer *move* changed something visible (hover, live drag)
-    /// so `needs_redraw` asks the host to repaint — moves are otherwise gated.
     dirty: bool,
-    /// What the frame being drawn shows around the panes, and what the frame
-    /// on screen showed.
     window_shown: ui::scroll_copy::ShownFrames<damage::WindowShown>,
 }
 
 impl TypstApp {
-    /// The editor over the workspace it is presented; it shows the first
-    /// file until another is chosen.
     pub fn new() -> Self {
         let editor = SourceEditor::new();
         let theme = Theme::dark();
@@ -371,12 +269,10 @@ impl TypstApp {
         self.follow_current();
     }
 
-    /// What the window shares with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// Show the workspace when the document changed since it was last shown.
     fn follow_document(&mut self) {
         let Some(shown) = self
             .live
@@ -388,7 +284,6 @@ impl TypstApp {
         self.present_state(&shown);
     }
 
-    /// Do what the effects asked and a capture staged.
     fn answer_asks(&mut self) {
         let (asks, staged) = {
             let mut state = self.state();
@@ -418,8 +313,6 @@ impl TypstApp {
         self.state().rows = rows;
     }
 
-    /// Show the workspace as it is now: the file shown stays open unless it
-    /// left the workspace; a file this window added opens once it lands.
     pub(crate) fn present_state(&mut self, state: &Rc<crate::resource::Workspace>) {
         // A file that arrives (written by an action, an agent, the palette)
         // while the window shows a blank, never-saved one opens: there is
@@ -493,12 +386,10 @@ impl TypstApp {
         self.chrome.declare();
     }
 
-    /// The file shown, if the workspace has one.
     pub(crate) fn current_file(&self) -> Option<&crate::resource::TypstFile> {
         self.files.file(self.current.as_ref()?)
     }
 
-    /// The paths of the file shown's fields.
     fn current_paths(&self) -> Option<TypstFilePaths<crate::resource::Workspace>> {
         let id = self.current.as_ref()?;
         Some(crate::resource::Workspace::paths().files.item(id))
@@ -512,7 +403,6 @@ impl TypstApp {
         }
     }
 
-    /// Show file `id`, with the caret at its start.
     fn open_file(&mut self, id: &Id) {
         self.current = Some(id.clone());
         // A document that lives in a file is as its file has it; one that
@@ -534,22 +424,18 @@ impl TypstApp {
         self.dirty = true;
     }
 
-    /// Submit a field edit or a verb to the workspace.
     fn submit(&self, submit: impl ui::framework::Submit<crate::resource::Workspace>) {
         if let Some(actions) = &self.actions {
             actions.submit(submit);
         }
     }
 
-    /// Replace the source of the file shown with `text`, as one edit.
     fn replace_source(&self, text: &str) {
         if let Some(paths) = self.current_paths() {
             self.submit(paths.source.replace(text));
         }
     }
 
-    /// Stage a capture: the view state each scenario shows once its files
-    /// are laid out.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("preview") => self.compact_view = CompactPane::Preview,
@@ -578,8 +464,6 @@ impl TypstApp {
         }
     }
 
-    /// Live Problems rows and preview pages, published beneath the
-    /// workspace.
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
         crate::actions::live_extras(&crate::actions::TypstResourceCtx {
             diagnostics: self.diagnostics.diags(),
@@ -590,9 +474,8 @@ impl TypstApp {
         .collect()
     }
 
-    /// Poll the background worker; apply the freshest result if any arrived.
-    /// Called from `draw` so async results are consumed even on frames where
-    /// `sync` doesn't run (the App only re-syncs after input).
+    /// Apply the freshest compile result, if any arrived. Called from `draw`, since
+    /// the app only re-syncs after input.
     fn pump_worker(&mut self) {
         let Some(w) = self.worker.as_mut() else {
             return;
@@ -646,11 +529,8 @@ impl TypstApp {
         }
     }
 
-    /// Queue a fresh compile of the current source. (Syntax highlighting now
-    /// lives in the shared editor widget, so there is nothing to re-tokenize
-    /// here.)
-    /// Compile `source` on the worker, or here when no worker could start
-    /// (the browser has no threads for it).
+    /// Compile `source` on the worker, or here when no worker could start (the
+    /// browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
         // What the results that arrive from now on are for.
         self.last_source = source.to_string();
@@ -668,15 +548,13 @@ impl TypstApp {
         self.compile_feedback = true;
     }
 
-    /// The name of the file shown, for a picker's suggestion.
     fn current_name(&self) -> String {
         self.current_file()
             .map_or_else(|| "untitled.typ".into(), |file| file.name.0.clone())
     }
 
-    /// Save the file shown: where it was opened from or last saved, else to
-    /// a path the host Save dialog asks for (unless a chooser is already in
-    /// flight). The chosen path is handled in [`Self::drain_io`].
+    /// Save the file shown where it was opened from or last saved, else to a path
+    /// the host's dialog asks for. The chosen path is handled in [`Self::drain_io`].
     fn save(&mut self) -> Result<bool, String> {
         if let Some(path) = self.current_file().and_then(|file| file.path.clone()) {
             return self
@@ -775,7 +653,6 @@ impl TypstApp {
             .map_err(|e| e.to_string())
     }
 
-    /// The source shown, compiled to a PDF; why not on a compile failure.
     fn compiled_pdf(&self) -> Result<Vec<u8>, String> {
         // File effects run before the editor pulls the latest document in
         // sync. Export the live resource, not the previous frame's cache.
@@ -793,8 +670,6 @@ impl TypstApp {
         })
     }
 
-    /// Open the host chooser to pick a `.typ` file to load (unless a chooser is
-    /// already in flight). The chosen path is handled in [`Self::drain_io`].
     fn open(&mut self) {
         if self.io.is_some() {
             return;
@@ -803,9 +678,6 @@ impl TypstApp {
         self.set_flash("Choose a .typ file to open");
     }
 
-    /// Core: add the `.typ` file at `path` to the workspace and show it, or
-    /// show the workspace's copy of it again with what the file holds now.
-    /// Split out so the portal drain and tests drive it against a real file.
     fn open_typ_from(&mut self, path: &std::path::Path) -> Result<(), String> {
         let src = match read_text(path) {
             Ok(s) => s,
@@ -819,8 +691,6 @@ impl TypstApp {
         Ok(())
     }
 
-    /// Show a file the chooser delivered: its source, under its name, living
-    /// at its path where files have one.
     fn open_typ_picked(&mut self, file: ui::portal::PickedContents) -> Result<(), String> {
         let Ok(src) = String::from_utf8(file.bytes) else {
             let reason = "the file is not UTF-8 text".to_owned();
@@ -864,9 +734,8 @@ impl TypstApp {
         self.submit(crate::resource::new_file(&name, path.as_deref(), &src));
     }
 
-    /// Drain a finished Open / Save / Export file dialog, if one landed since
-    /// the last frame, and run it against the chosen path. The UI thread never
-    /// blocks: the portal round-trip lives on its own worker.
+    /// Run a finished Open, Save or Export dialog against the chosen path. The UI
+    /// thread never blocks: the portal round-trip runs in a worker thread.
     fn drain_io(&mut self) {
         let Some(io) = self.io.take() else { return };
         let result = match io {
@@ -1008,7 +877,6 @@ impl TypstApp {
         Ok(())
     }
 
-    /// The chooser could not be shown: say so in the person's words.
     fn chooser_failed(&mut self, reason: String) -> Result<(), String> {
         self.set_flash(format!("Couldn\u{2019}t choose a file: {reason}"));
         Err(reason)
@@ -1104,8 +972,6 @@ impl TypstApp {
         self.layout_in(self.rect);
     }
 
-    /// Announce something worth noticing once: the window's bar says it for
-    /// a while.
     fn set_flash(&mut self, msg: impl AsRef<str>) {
         self.status.show(msg.as_ref().to_owned());
     }
@@ -1138,10 +1004,8 @@ impl TypstApp {
             .is_some_and(super::worker::CompileWorker::in_flight)
     }
 
-    /// Compute every pane rect from the window rect. Split out from
-    /// [`Widget::apply_layout`] so resize reflow is unit-testable without a
-    /// taffy pass. The layout mode is re-derived from `rect`'s width every call
-    /// — never cached from the first frame.
+    /// Compute every pane rect from the window rect, split out of
+    /// [`Widget::apply_layout`] so a resize is testable without a taffy pass.
     fn layout_in(&mut self, rect: Rect) {
         self.rect = rect;
         let r = self.rect;
@@ -1154,10 +1018,9 @@ impl TypstApp {
         let body = self.outline.layout(Rect::new(r.x0, r.y0, r.x1, status_top));
         let content_w = body.width();
 
-        // Derive the layout mode from the *current* width every pass, so a
-        // resize across the threshold reflows without any cached-on-launch mode.
-        // The breakpoint was designed at 1×: a window holds as much 2× text as
-        // a half-width 1× window, so compare in 1× space.
+        // The layout mode comes from the current width every pass, so a resize across
+        // the threshold reflows. The breakpoint is in 1× text: a window holds as much
+        // 2× text as a half-width 1× window.
         self.compact = content_w / self.text_k.max(f64::from(f32::EPSILON)) < frame.compact_w;
 
         if self.compact {
@@ -1190,9 +1053,8 @@ impl TypstApp {
         self.stage_views();
     }
 
-    /// Screenshot harness only: now that the panes have real rects (and the
-    /// preview has pages), arrange the caret, zoom, scroll or selection the
-    /// capture is meant to show.
+    /// Screenshot harness only: arrange the caret, zoom, scroll or selection the
+    /// capture shows, once the panes have rects and the preview has pages.
     fn stage_views(&mut self) {
         if self.demo_scroll_caret_end && !self.source_cache.is_empty() {
             self.demo_scroll_caret_end = false;
@@ -1239,8 +1101,8 @@ impl TypstApp {
         )
     }
 
-    /// Measure the chrome in `theme` and re-fit everything that follows from
-    /// it: the panes, the panel's rows, and where each control sits.
+    /// Measure the chrome in `theme` and re-fit what follows: the panes, the
+    /// panel's rows and where each control sits.
     fn refresh_frame(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let status_line = tr
             .measure_style("Ag", None, &theme.text(ui::tokens::TextRole::Caption))
@@ -1269,16 +1131,14 @@ impl TypstApp {
         self.chrome.place_close(close);
     }
 
-    /// What the person reads while working, left: where the caret is.
     fn status_left_label(&self) -> String {
         let (ln, col) = self.caret_line_col();
         format!("Ln {ln}, Col {col}")
     }
 
-    /// What the person reads while working, right: the document's pages and
-    /// the preview's zoom. Pages that follow the pane's width say so: a
-    /// percentage of the fitted width read "100%" over a page too small to
-    /// read in a narrow pane, as if the page were at its actual size.
+    /// What the person reads while working, right: the document's pages and the
+    /// preview's zoom. Pages that follow the pane's width say so: a percentage of
+    /// the fitted width reads "100%" over a page too small to read.
     fn status_right_label(&self) -> String {
         let pages = self.preview.page_count();
         if self.preview.is_blank() {
@@ -1304,7 +1164,6 @@ impl Default for TypstApp {
     }
 }
 
-/// Format a count with the grammatically correct noun: `1 page`, `2 pages`.
 pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
     if n == 1 {
         format!("{n} {singular}")
@@ -1313,11 +1172,8 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
     }
 }
 
-/// The window's search finds in the source. The editor is drawn by the app
-/// rather than being a widget in its tree, so the offer the bar looks for is
-/// made here, over the editor: until it was, `Findable` existed and nothing
-/// could reach it, and Ctrl+F opened the platform search over a file it could
-/// not read (`APP-typst-01`).
+/// The window's search finds in the source: the editor is drawn by the app, not
+/// a widget in its tree, so the offer the bar looks for is made here over it.
 impl ui::widget::Findable for TypstApp {
     fn find(
         &mut self,
@@ -1365,7 +1221,6 @@ impl Widget for TypstApp {
         self.follow_document();
         self.answer_asks();
         self.sync_workspace(doc, path);
-        // The bar's slots say what the sync just learned: the name, whether
         // the source is unsaved, the problems, the open panels.
         self.declare_window_slots();
         self.status.expire();
@@ -1395,7 +1250,6 @@ impl Widget for TypstApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Replaced controls may be dropped now: this pass rebuilds the tree
         // (and `node_map`) without them.
         self.chrome.layout_rebuilt();
         // One taffy node per hosted control, in the order `children` returns
@@ -1407,8 +1261,6 @@ impl Widget for TypstApp {
             .into_iter()
             .map(|child| child.build_layout(taffy, theme, node_map))
             .collect();
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; every entry in `child_nodes` was just built in this one above.
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
@@ -1454,8 +1306,7 @@ impl Widget for TypstApp {
         self.refresh_frame(tr, theme);
         self.declare_window_slots();
 
-        // The window ground is the framework's. The preview stands on the
-        // inspector region; the editor on the ground itself.
+        // The preview paints into the inspector region, the editor into the window's.
         if self.preview_rect.area() > 0.0 {
             ui::surface::region(scene, t, self.preview_rect, Region::Inspector, theme);
         }
@@ -1490,8 +1341,6 @@ impl Widget for TypstApp {
 
         self.note_window(theme);
 
-        // This frame reflects the latest interaction state; clear the move-dirty
-        // flag so idle hover doesn't spin the render loop.
         self.dirty = false;
     }
 
@@ -1503,8 +1352,6 @@ impl Widget for TypstApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The diagnostic's hover card and the controls' open lists float
-        // above both panes.
         let window = presence.viewport.get().unwrap_or(self.rect);
         self.editor
             .draw_tooltip(scene, transform, text_renderer, theme, window);
@@ -1713,7 +1560,6 @@ impl ui::widget::controls::ActionControls for TypstApp {
 }
 
 impl TypstApp {
-    /// Answer the file effect's caller, if one is waiting.
     fn finish_file_effect(&self, result: Result<(), String>) {
         let reply = self.state().file_reply.take();
         if let Some(reply) = reply {
@@ -1937,7 +1783,6 @@ impl TypstApp {
         self.dirty = true;
     }
 
-    /// Go to the heading chosen in the outline, through its published effect.
     fn take_outline_choice(&mut self) {
         if let Some(effect) = self.outline.take_chosen() {
             match &self.actions {
@@ -1950,7 +1795,6 @@ impl TypstApp {
         }
     }
 
-    /// Give the pane splitter the event and apply the split it asks for.
     fn route_to_splitter(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let (hovered, dragging) = (self.splitter.is_hovered(), self.splitter.is_dragging());
         if self.splitter.handle_event(event, ctx) {
@@ -2049,7 +1893,6 @@ impl TypstApp {
     }
 }
 
-/// A text file a chooser or the command line named.
 pub(crate) fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     String::from_utf8(tilo_files::blocking::read(&dir, &name)?)
@@ -2064,7 +1907,6 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 }
 
 impl TypstApp {
-    /// The workspace and its compile, followed on every sync.
     fn sync_workspace(&mut self, doc: &AppModel, path: &ModelPath) {
         // Retained controls settle their admitted operations on sync (notably
         // opening the toolbar overflow); Chrome's presentation sync only
@@ -2136,7 +1978,6 @@ impl TypstApp {
         self.pump_worker();
     }
 
-    /// When background work is next polled, while there is any.
     fn background_wake(&self) -> Option<Instant> {
         if self.io.is_none() && !self.store.borrow().waiting() && !self.compiling() {
             return None;

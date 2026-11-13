@@ -1,25 +1,13 @@
-//! Where every setting lives: Settings' pages in sidebar order and the
-//! settings people look for by name, each on its page, with the words people
-//! use for them in every language Tilo speaks.
+//! Where every setting lives: Settings' pages in sidebar order and the settings people look for by
+//! name, each on its page, with the words people use for them in every language Tilo speaks.
 //!
-//! This is the one list behind every way of finding a setting. Settings'
-//! sidebar filter, its own search entries and the desktop palette (which
-//! finds them while Settings is closed) all read it, so a page or a setting
-//! is named the same everywhere and found by the same words.
-//!
-//! The copy is Fluent ([`CATALOGUES`]), resolved by whoever shows it in
-//! their own language. A setting opens through its link,
-//! `settings://<page>#<setting>` ([`Setting::link`]): Settings opens the
-//! page, scrolls to the setting's control and puts the keyboard on it.
-//! A setting that can be changed where it stands is published as a resource
-//! of its own, named by [`PUBLISHED_PREFIX`]; [`setting_of_resource`] reads
-//! that name back, so the one list also says which setting an action the
-//! settings service publishes changes.
+//! This is the one list behind every way of finding a setting. A setting opens through its link,
+//! `settings://<page>#<setting>` ([`Setting::link`]); a setting that can be changed where it stands
+//! is published as a resource of its own, named by [`PUBLISHED_PREFIX`], which
+//! [`setting_of_resource`] reads back.
 
-/// The prefix of the resource a setting people look for by name is published under.
 pub const PUBLISHED_PREFIX: &str = "setting:";
 
-/// Between a setting's id and the name of one of its values, in the resource of that value.
 const OPTION_SEPARATOR: char = '=';
 
 /// The id of the setting the resource `resource` is published for: the setting itself
@@ -32,7 +20,6 @@ pub fn setting_of_resource(resource: &str) -> Option<&str> {
     Some(id.split_once(OPTION_SEPARATOR).map_or(id, |(id, _)| id))
 }
 
-/// One page of Settings, by the slug its links and its sidebar row use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
     pub slug: &'static str,
@@ -60,10 +47,8 @@ impl Page {
     }
 }
 
-/// One setting, findable by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Setting {
-    /// Stable name, as links and search hits address the setting.
     pub id: &'static str,
     pub page: &'static str,
     /// The widget id of the control that changes it. One `*` stands for any
@@ -71,41 +56,20 @@ pub struct Setting {
     /// ids of the controls the page may show instead (one layout's chooser
     /// or the list of several).
     pub control: &'static str,
-    /// The switch it is, where it is one: a yes-or-no field of a settings
-    /// section the session keeps. Search then offers the switch itself,
-    /// flipped through the section's field edit as its control in Settings
-    /// flips it.
     pub switch: Option<Switch>,
-    /// The choice it is, where it is one: a field of a settings section the
-    /// session keeps that holds one of a few named values. Search then
-    /// offers each value by its name, set through the section's field edit
-    /// as its control in Settings sets it.
     pub choice: Option<Choice>,
-    /// The value it is, where search sets it to one typed or picked (a
-    /// timer, the keyboard layout): through a field edit of the section,
-    /// the value one the field declares it may hold, or a verb of the
-    /// section taking it.
     pub value: Option<Value>,
 }
 
-/// A setting set to a value typed or picked, as the section that holds it
-/// changes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Value {
-    /// The section's kind (`settings.power`).
     pub section: &'static str,
     pub change: Change,
 }
 
-/// How a [`Value`] is changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
-    /// The section's field edit of this field (its path, names joined by
-    /// dots), which declares the values it may hold.
     Field(&'static str),
-    /// The section's verb of this id, whose one parameter is the value: a
-    /// change that keeps other fields in step (the layout typed with is one
-    /// of the layouts).
     Verb(&'static str),
 }
 
@@ -113,69 +77,53 @@ pub enum Change {
 /// publishes it: a yes-or-no shown as two choices is one too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Choice {
-    /// The section's kind (`settings.input`).
     pub section: &'static str,
-    /// The field's path in the section, its names joined by dots.
     pub field: &'static str,
     pub options: &'static [ChoiceOption],
 }
 
-/// One value of a [`Choice`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChoiceOption {
-    /// The value as the field stores it, as JSON (`"edge"`, `true`).
     pub value: &'static str,
-    /// The value's name in the catalogue, under its setting's
-    /// ([`Setting::option_key`]).
     pub name: &'static str,
 }
 
 impl Choice {
-    /// The names of the field's path, outermost first.
     pub fn path(self) -> impl Iterator<Item = &'static str> {
         self.field.split('.')
     }
 }
 
 impl ChoiceOption {
-    /// The value as JSON.
     #[must_use]
     pub fn json(self) -> serde_json::Value {
         serde_json::from_str(self.value).unwrap_or(serde_json::Value::Null)
     }
 }
 
-/// A yes-or-no setting, as the section that holds it publishes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switch {
-    /// The section's kind (`settings.appearance`).
     pub section: &'static str,
-    /// The field's path in the section, its names joined by dots
-    /// (`focus.enabled`).
     pub field: &'static str,
 }
 
 impl Switch {
-    /// The names of the field's path, outermost first.
     pub fn path(self) -> impl Iterator<Item = &'static str> {
         self.field.split('.')
     }
 }
 
 impl Page {
-    /// The catalogue key of the page's name.
     #[must_use]
     pub fn title_key(self) -> String {
         format!("settings-index-page-{}", key(self.slug))
     }
 
-    /// The catalogue key of the line that says what the page holds.
     #[must_use]
     pub fn subtitle_key(self) -> String {
         format!("settings-index-page-{}-subtitle", key(self.slug))
     }
 
-    /// The catalogue key of the other words people use for the page.
     #[must_use]
     pub fn words_key(self) -> String {
         format!("settings-index-page-{}-words", key(self.slug))
@@ -186,7 +134,6 @@ impl Page {
         format!("settings://{}", self.slug)
     }
 
-    /// The settings on this page, in index order.
     pub fn settings(self) -> impl Iterator<Item = &'static Setting> {
         SETTINGS
             .iter()
@@ -200,13 +147,11 @@ impl Setting {
         format!("settings-index-setting-{}", key(self.id))
     }
 
-    /// The catalogue key of the other words people use for the setting.
     #[must_use]
     pub fn words_key(self) -> String {
         format!("settings-index-setting-{}-words", key(self.id))
     }
 
-    /// The catalogue key of the name of its choice `option`.
     #[must_use]
     pub fn option_key(self, option: ChoiceOption) -> String {
         format!(
@@ -216,16 +161,11 @@ impl Setting {
         )
     }
 
-    /// The link that opens the setting's page at the setting.
     #[must_use]
     pub fn link(self) -> String {
         format!("settings://{}#{}", self.page, self.id)
     }
 
-    /// Every word the setting is found by, in every language, lowercased:
-    /// its names, the other words people use for it and the names of the
-    /// values it may hold. Settings' own search
-    /// and the desktop palette rank a setting by these alike.
     #[must_use]
     pub fn search_words(self) -> Vec<String> {
         let mut words = names_in_every_locale(&self.name_key());
@@ -245,7 +185,6 @@ impl Setting {
         words
     }
 
-    /// Whether `widget_id` is the id of a control that changes this setting.
     #[must_use]
     pub fn is_control(self, widget_id: &str) -> bool {
         self.control
@@ -254,13 +193,10 @@ impl Setting {
     }
 }
 
-/// A catalogue key for `id`: words joined by hyphens.
 fn key(id: &str) -> String {
     id.replace(['_', '.'], "-")
 }
 
-/// Whether `text` matches `pattern`, where one `*` stands for any
-/// non-empty run.
 fn glob_matches(pattern: &str, text: &str) -> bool {
     match pattern.split_once('*') {
         None => pattern == text,
@@ -276,21 +212,16 @@ pub fn page(slug: &str) -> Option<Page> {
     PAGES.iter().copied().find(|page| page.slug == slug)
 }
 
-/// The setting named `id`.
 #[must_use]
 pub fn setting(id: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|setting| setting.id == id)
 }
 
-/// The index's copy, by locale tag: page names and summaries, setting names,
-/// and the comma-separated words each is also found by.
 pub const CATALOGUES: &[(&str, &str)] = &[
     ("en-US", include_str!("../locales/en-US.ftl")),
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-/// Every message of every catalogue, by key: each language's value, in
-/// [`CATALOGUES`] order. Parsed once; search asks for them per keystroke.
 fn messages() -> &'static std::collections::HashMap<&'static str, Vec<&'static str>> {
     static MESSAGES: std::sync::OnceLock<
         std::collections::HashMap<&'static str, Vec<&'static str>>,
@@ -312,8 +243,6 @@ fn messages() -> &'static std::collections::HashMap<&'static str, Vec<&'static s
     })
 }
 
-/// What the words message `key` lists in every language, lowercased: a
-/// German desktop still finds "wifi" typed, and an English one "wlan".
 #[must_use]
 pub fn words_in_every_locale(key: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -328,9 +257,6 @@ pub fn words_in_every_locale(key: &str) -> Vec<String> {
     words
 }
 
-/// What message `key` says in every language, lowercased: a page's or a
-/// setting's name, which is found in any language ("zeitzone" on an English
-/// desktop).
 #[must_use]
 pub fn names_in_every_locale(key: &str) -> Vec<String> {
     let mut names = Vec::new();
@@ -343,7 +269,6 @@ pub fn names_in_every_locale(key: &str) -> Vec<String> {
     names
 }
 
-/// Every page, in sidebar order.
 pub const PAGES: &[Page] = &[
     Page { slug: "network" },
     Page { slug: "bluetooth" },
@@ -365,14 +290,14 @@ pub const PAGES: &[Page] = &[
         slug: "region_formats",
     },
     Page { slug: "time_date" },
+    Page {
+        slug: "keyboard_shortcuts",
+    },
     Page { slug: "displays" },
     Page { slug: "sound" },
     Page { slug: "speakers" },
     Page { slug: "keyboard" },
     Page { slug: "pointing" },
-    Page {
-        slug: "keyboard_shortcuts",
-    },
     Page { slug: "printers" },
     Page { slug: "power" },
     Page {
@@ -406,8 +331,6 @@ const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setti
 }
 
 impl Setting {
-    /// The setting is the field `field` of the section `section`, holding
-    /// one of `options`.
     const fn choice(
         self,
         section: &'static str,
@@ -424,8 +347,6 @@ impl Setting {
         }
     }
 
-    /// The setting is set to a value through the section `section`, as
-    /// `change` changes it.
     const fn value(self, section: &'static str, change: Change) -> Self {
         Self {
             value: Some(Value { section, change }),
@@ -433,7 +354,6 @@ impl Setting {
         }
     }
 
-    /// The setting is the yes-or-no field `field` of the section `section`.
     const fn switch(self, section: &'static str, field: &'static str) -> Self {
         Self {
             switch: Some(Switch { section, field }),
@@ -442,17 +362,13 @@ impl Setting {
     }
 }
 
-/// The settings people look for by name, page by page.
 pub const SETTINGS: &[Setting] = &[
-    // Network
     s("network.wifi", "network", "network.wifi"),
     s("network.wired", "network", "network.wired"),
     s("network.airplane", "network", "network.airplane"),
     s("network.hotspot", "network", "network.hotspot"),
     s("network.mobile", "network", "network.mobile"),
-    // Bluetooth
     s("bluetooth.enabled", "bluetooth", "bluetooth.toggle"),
-    // Displays
     s("display.arrangement", "displays", "display.arrangement"),
     s("display.brightness", "displays", "display.brightness"),
     s(
@@ -487,7 +403,6 @@ pub const SETTINGS: &[Setting] = &[
         "displays",
         "display.output.*.color_profile",
     ),
-    // Sound
     s("sound.volume", "sound", "audio.volume"),
     s("sound.output_device", "sound", "audio.output.*"),
     s("sound.input_device", "sound", "audio.input.*"),
@@ -497,7 +412,6 @@ pub const SETTINGS: &[Setting] = &[
     s("sound.mono", "sound", "audio.mono"),
     s("sound.echo", "sound", "audio.echo_cancellation"),
     s("sound.system_sounds", "sound", "audio.system_sounds"),
-    // Keyboard
     s(
         "keyboard.layout",
         "keyboard",
@@ -507,7 +421,6 @@ pub const SETTINGS: &[Setting] = &[
     s("keyboard.key_repeat", "keyboard", "input.key_repeat"),
     s("keyboard.compose", "keyboard", "input.compose_key"),
     s("keyboard.caps_lock", "keyboard", "input.caps_lock"),
-    // Mouse & touchpad
     s("pointing.touchpad", "pointing", "input.touchpad_enabled"),
     s(
         "pointing.touchpad_speed",
@@ -586,9 +499,7 @@ pub const SETTINGS: &[Setting] = &[
         "pointing",
         "input.middle_emulation",
     ),
-    // Keyboard shortcuts
     s("shortcuts.vim", "keyboard_shortcuts", "shortcuts.vim_mode"),
-    // Power
     s("power.profile", "power", "power.profile"),
     s("power.charge_limit", "power", "power.charge_limit"),
     s("power.auto_suspend", "power", "power.auto_suspend").switch("settings.power", "auto_suspend"),
@@ -606,7 +517,6 @@ pub const SETTINGS: &[Setting] = &[
     s("power.lid", "power", "power.lid"),
     s("power.power_key", "power", "power.power_key"),
     s("power.critical", "power", "power.critical"),
-    // Appearance
     s("appearance.style", "appearance", "appearance.theme").choice(
         "settings.appearance",
         "mode",
@@ -637,8 +547,6 @@ pub const SETTINGS: &[Setting] = &[
         "appearance",
         "appearance.hide_top_bar",
     ),
-    // Accessibility. High contrast, reduce motion and text size are set in
-    // Accessibility alone; their ids keep the `appearance.` names links use.
     s("appearance.text_size", "accessibility", "a11y.text_size"),
     s(
         "appearance.high_contrast",
@@ -685,7 +593,6 @@ pub const SETTINGS: &[Setting] = &[
         "accessibility",
         "a11y.dictation_language",
     ),
-    // Notifications
     s("notifications.dnd", "notifications", "notifications.dnd")
         .switch("settings.notifications", "do_not_disturb"),
     s(
@@ -737,14 +644,12 @@ pub const SETTINGS: &[Setting] = &[
         "notifications.focus.enabled",
     )
     .switch("settings.notifications", "focus.enabled"),
-    // Spelling & dictionary
     s("spelling.check", "spelling", "text.check_spelling")
         .switch("settings.text-assistance", "check_spelling"),
     s("spelling.autocorrect", "spelling", "text.auto_correct")
         .switch("settings.text-assistance", "auto_correct"),
     s("spelling.language", "spelling", "text.spelling_language"),
     s("spelling.dictionary", "spelling", "dictionary.word"),
-    // Region & formats
     s("region.language", "region_formats", "region.language"),
     s("region.currency", "region_formats", "region.currency"),
     s("region.date", "region_formats", "region.date"),
@@ -752,13 +657,10 @@ pub const SETTINGS: &[Setting] = &[
     s("region.first_day", "region_formats", "region.first_day"),
     s("region.measurement", "region_formats", "region.measurement"),
     s("region.numbers", "region_formats", "region.number_style"),
-    // Time & date
     s("time.automatic", "time_date", "time.auto"),
     s("time.zone", "time_date", "time.timezone"),
-    // Storage
     s("storage.cache", "storage", "storage.cache-size"),
     s("storage.clean", "storage", "storage.clean"),
-    // Updates
     s("updates.automatic", "updates", "updates.auto"),
     s("updates.metered", "updates", "updates.metered"),
 ];
@@ -776,8 +678,6 @@ mod tests {
             .collect()
     }
 
-    /// Every page and setting is named, summarised and worded in every
-    /// language, and the catalogues hold nothing else.
     #[test]
     fn every_page_and_setting_is_named_in_every_language() {
         let mut wanted = BTreeSet::new();
@@ -803,8 +703,6 @@ mod tests {
         }
     }
 
-    /// A choice's values are JSON, each named once, and a setting is a
-    /// switch or a choice, not both.
     #[test]
     fn every_choice_names_values_its_field_can_hold() {
         for setting in SETTINGS {

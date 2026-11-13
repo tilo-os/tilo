@@ -1,5 +1,5 @@
-//! Connect: the one line that connects an MCP client to the person's
-//! workspaces, and every agent the door let in, with Revoke.
+//! Connect: the one line that connects an MCP client to the person's workspaces, and every
+//! agent the door let in, with Revoke.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -104,9 +104,8 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
             doors.door(door::REVOKE, &door::GrantRef { grant: id.clone() });
         })
     };
-    // What the agent may reach says on a line of its own that wraps: it is
-    // the whole of what the person let in, and a narrow window must not cut
-    // it short.
+    // What the agent may reach says on a line of its own that wraps: it is the whole of
+    // what the person let in, and a narrow window must not cut it short.
     let mut row = faced(
         ListRow::new(format!("console-grant-{index}"), grant.agent.clone()),
         &agent,
@@ -115,8 +114,6 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
     .secondary_lines(2)
     .meta(status)
     .trailing(Box::new(revoke));
-    // The key operating web pages in Browser without asking is a fact of its
-    // own beside the reach, not a clause of it.
     if grant.browser_pages {
         row = row.tags(&[(
             tr("console-grant-browser-pages").as_str(),

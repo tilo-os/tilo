@@ -92,18 +92,14 @@ pub(super) struct Refresh {
     active: Vec<ActiveRead>,
     queued: VecDeque<Source>,
     installed: Option<Vec<InstalledPackage>>,
-    /// What each installed package's own manifest says about it, by id.
     about: HashMap<String, PackageAbout>,
     registries: Option<Vec<RegistryConfig>>,
     native: HashMap<String, Vec<crate::registry_client::VerifiedEntry>>,
     /// Repositories that answered this refresh; their catalogue replaces the
     /// last verified one and is never replaced by it.
     answered: HashSet<String>,
-    /// Repositories whose catalogue this refresh found authentic but expired.
     expired: Vec<String>,
     flatpak: HashMap<String, Vec<StoreItem>>,
-    /// Flathub's catalogue: the one the last refresh read until this one's
-    /// read answers.
     feed: Option<FlathubFeed>,
     cached: Vec<StoreItem>,
     errors: Vec<(u8, String)>,
@@ -205,7 +201,6 @@ impl Refresh {
         refreshed
     }
 
-    /// Whether a snapshot changed, and whether every source has settled.
     pub(super) fn poll(&mut self, state: &mut State) -> (bool, bool) {
         self.locale.apply();
         let Some(host) = state.host.as_ref() else {
@@ -241,8 +236,6 @@ impl Refresh {
             return (false, self.active.is_empty());
         }
         let changed = !responses.is_empty();
-        // Explicit browsing uses the same authoritative catalogue. Preserve
-        // those discoveries when an independent source completes later.
         if changed {
             self.cached.clone_from(&state.base_items);
         }
@@ -358,8 +351,6 @@ impl Refresh {
         });
         match parsed {
             Ok(file) => {
-                // The directory publishes from the list kept here instead of
-                // asking the host again.
                 state.registries.clone_from(&file.registries);
                 // The stored catalogues are local reads: ask for them first,
                 // so a slow repository is already described while it answers.
@@ -375,9 +366,6 @@ impl Refresh {
         }
     }
 
-    /// The host's last verified catalogue stands in until the repository
-    /// answers. Without one (none accepted yet, expired, or a host that
-    /// predates it) the fresh read alone decides, so this reports nothing.
     fn last_verified(&mut self, registry: RegistryConfig, result: Result<String, CatalogueError>) {
         if self.answered.contains(&registry.name) {
             return;
@@ -590,8 +578,6 @@ impl Refresh {
     }
 }
 
-/// A catalogue read the Store stopped waiting for: timed out, as typed as
-/// the host's own deadline.
 fn timed_out(detail: String) -> CatalogueError {
     CatalogueError::Refused {
         refusal: Refusal::TimedOut,
@@ -640,8 +626,6 @@ mod tests {
         }
     }
 
-    /// The bundled Mail app as app-host lists it: the system store row and
-    /// its signed manifest's name and category.
     fn bundled_mail() -> ListedPackage {
         let mut package = crate::sources::tests::installed_package(
             "so.tilo.mail",
@@ -662,14 +646,12 @@ mod tests {
         }
     }
 
-    /// A verified catalogue listing Mail, as the host serialises one.
     fn catalogue_with_mail(version: &str) -> String {
         let mut entry = crate::sources::tests::tilo_entry("so.tilo.mail", "Mail", version, [3; 32]);
         entry.description = "Read and write email.".into();
         serde_json::to_string(&[crate::sources::tests::verified(entry)]).unwrap()
     }
 
-    /// A refresh that has read this device's apps and repositories.
     fn refresh_with_bundled_mail() -> (State, Refresh) {
         let mut state = super::super::tests::state_with_items(
             Vec::new(),
@@ -725,7 +707,6 @@ mod tests {
         );
         let opened = super::super::open_reference(Some(path), None, &mut state).unwrap();
         let mut refresh = Refresh::start(&state, None);
-        // Responses are supplied below rather than read through a host connection.
         refresh.errors.clear();
         let record = serde_json::from_value(serde_json::json!({
             "flatpakAppId": "org.example.Editor", "name": "Editor",
@@ -785,7 +766,6 @@ mod tests {
         state.remotes.push(remote.clone());
         for version in ["1.0", "2.0"] {
             let mut refresh = Refresh::start(&state, None);
-            // Responses are supplied below rather than read through a host connection.
             refresh.errors.clear();
             refresh.apply(
                 &mut state,
@@ -896,7 +876,6 @@ mod tests {
             .catalogue_error
             .as_deref()
             .expect("reported, not silent");
-        // The fixture has no host connection, which reports its own line.
         let says = crate::resource::CATALOG.t_args(
             "store-system-update-needed",
             &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],

@@ -1,8 +1,7 @@
-//! Asserts the sidebar advertises one entry per category.
-//!
-//! Opens Settings as a host does at a wide size (so the two-pane layout with
-//! the full sidebar is built), then reads the navigation list's rows. Each
-//! category is a row named by its display label, so the count is exact.
+//! Asserts the sidebar advertises one entry per category. Opens Settings as a
+//! host does at a wide size (so the two-pane layout with the full sidebar is
+//! built), then reads the navigation list's rows. Each category is a row named
+//! by its display label, so the count is exact.
 
 use settings::categories::Category;
 
@@ -12,10 +11,6 @@ fn sidebar_has_one_entry_per_category() {
     // in view.
     let mut app = crate::support::window((1200, 1800));
 
-    // Each category is one row of the navigation list, named by its full
-    // display label. Collect the rows and assert exactly one per category,
-    // with the *complete* (untruncated) label; the section headers are the
-    // list's other rows.
     let labels: Vec<String> = crate::support::nav_rows(app.harness().root_widget())
         .into_iter()
         .map(|row| row.label)

@@ -1,19 +1,12 @@
 //! What this crate provides on each target, as data an app can query.
 
 pub use tilo_platform_caps::{Availability, availability, available};
-/// One capability of this crate, for [`availability`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Named OS threads: [`spawn_thread`](crate::spawn_thread) and the
-    /// [`ThreadPool`](crate::background::ThreadPool) executor.
     Threads,
-    /// Waiting on a future synchronously: [`block_on`](crate::block_on) and
-    /// [`AppRuntime::block_on`](crate::AppRuntime::block_on).
     BlockOn,
-    /// Multi-threaded service runtimes: `daemon()`.
     DaemonRuntime,
-    /// The file-I/O pool: [`io`](crate::io).
     Io,
 }
 

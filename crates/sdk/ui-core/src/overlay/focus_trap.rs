@@ -1,7 +1,4 @@
-/// A ring of focusable ids that keyboard focus cycles within while a modal is
-/// up. `next_from`/`prev_from` wrap at the ends so Tab from the last member
-/// returns to the first (and Shift+Tab from the first wraps to the last),
-/// keeping focus inside the modal rather than escaping to the content behind.
+/// A ring of focusable ids that keyboard focus cycles within while a modal is up.
 #[derive(Clone, Debug)]
 pub struct FocusTrap {
     members: Vec<u64>,
@@ -12,8 +9,8 @@ impl FocusTrap {
         Self { members }
     }
 
-    /// The id Tab should move to from `id`, wrapping past the end back to the
-    /// start. Returns `None` only when the trap is empty (nothing to focus).
+    /// The id Tab should move to from `id`, wrapping past the end back to the start. Returns `None`
+    /// only when the trap is empty (nothing to focus).
     pub fn next_from(&self, id: u64) -> Option<u64> {
         if self.members.is_empty() {
             return None;
@@ -24,8 +21,8 @@ impl FocusTrap {
         self.members.get(if next < len { next } else { 0 }).copied()
     }
 
-    /// The id Shift+Tab should move to from `id`, wrapping past the start back
-    /// to the end. Returns `None` only when the trap is empty.
+    /// The id Shift+Tab should move to from `id`, wrapping past the start back to the end. Returns
+    /// `None` only when the trap is empty.
     pub fn prev_from(&self, id: u64) -> Option<u64> {
         if self.members.is_empty() {
             return None;
@@ -56,15 +53,11 @@ mod tests {
     #[test]
     fn tab_and_shift_tab_wrap_inside_the_trap() {
         let t = FocusTrap::new(vec![1, 2, 3]);
-        // (case, got, want)
         let cases = [
             ("next inside", t.next_from(1), Some(2)),
-            // Tab from last member returns to first.
             ("next wraps at the end", t.next_from(3), Some(1)),
             ("prev inside", t.prev_from(2), Some(1)),
-            // Shift+Tab from first wraps to last.
             ("prev wraps at the start", t.prev_from(1), Some(3)),
-            // An unknown id starts from the first member.
             (
                 "unknown id",
                 FocusTrap::new(vec![10, 20]).next_from(999),

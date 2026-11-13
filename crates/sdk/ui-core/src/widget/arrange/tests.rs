@@ -14,8 +14,6 @@ fn solve(root: &mut dyn Widget, theme: &Theme, width: f32) {
     solve_in(root, theme, width, taffy::AvailableSpace::MaxContent);
 }
 
-/// Solve `root` at `width`, its height under `height`: a column that shrinks what it holds to
-/// its minimum lays it out under a min-content constraint.
 fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::AvailableSpace) {
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
@@ -115,7 +113,6 @@ fn a_container_that_leads_stands_what_it_holds_under_the_text_a_control_leads_to
         root.set_interaction_environment(environment);
         solve(&mut root, &theme, 600.0);
         let r = rects(&root);
-        // The heading's text begins past the control that leads it.
         let text = r[0].x0 + target + gap(&theme, Rhythm::Related);
         let held = held_in(&root);
         assert!(
@@ -127,7 +124,6 @@ fn a_container_that_leads_stands_what_it_holds_under_the_text_a_control_leads_to
             (held.x0 - (r[1].x0 + target + gap(&theme, Rhythm::Related))).abs() < 0.5,
             "{environment:?}: one lead in: {held:?}"
         );
-        // A container without a lead keeps its content at its edge.
         let mut plain = Stack::stack().fill_width().push(boxed(100.0));
         solve(&mut plain, &theme, 600.0);
         assert!(rects(&plain)[0].x0.abs() < 0.5);
@@ -161,8 +157,6 @@ fn a_container_that_keeps_a_padding_insets_what_it_holds() {
         .padding(Rhythm::Section)
         .push(boxed(100.0));
     led.set_lead(1);
-    // A column with the room for a lead: on a phone's screen it keeps none, and this is the
-    // padding's own test.
     solve(&mut led, &theme, 600.0);
     let held = rects(&led)[0];
     assert!(
@@ -205,7 +199,6 @@ fn a_phone_screen_keeps_no_lead_where_a_column_does() {
     }
 }
 
-/// Where the body of `root` — its second child, which leads — holds what is written in it.
 fn held_in(root: &Stack) -> vello::kurbo::Rect {
     root.children()[1]
         .children()
@@ -643,15 +636,11 @@ fn a_child_replaced_inserted_removed_or_moved_in_place_is_a_described_change() {
         vec![30.0, 20.0]
     );
 
-    // Children replaced wholesale say nothing of what changed.
     let slots = stack.take_slots();
     stack.set_slots(slots);
     assert_eq!(stack.take_structure_change(), StructureChange::Rebuild);
 }
 
-/// A layout its parent places stays where it is placed when it settles what it shows: a page a
-/// virtual list puts at an inset lays its columns out again for the width it was given without
-/// taking itself out of the place its parent put it.
 #[test]
 fn a_container_its_parent_places_stays_where_it_is_placed_when_it_settles() {
     use taffy::style_helpers::length;
@@ -664,7 +653,6 @@ fn a_container_its_parent_places_stays_where_it_is_placed_when_it_settles() {
         page = page.push(boxed(20.0));
     }
     let node = page.build_layout(&mut tree, &theme, &mut nodes);
-    // Placed as a virtual list places a row.
     let mut placed = tree.style(node).expect("styled").clone();
     placed.position = taffy::Position::Absolute;
     placed.inset.top = length(100.0_f32);
@@ -698,7 +686,6 @@ fn a_container_its_parent_places_stays_where_it_is_placed_when_it_settles() {
     assert!((laid.size.width - 880.0).abs() < 0.5, "{laid:?}");
 }
 
-/// A leaf that repaints its box while `dirty`.
 struct Repaints {
     inner: Spacer,
     dirty: bool,
@@ -765,7 +752,6 @@ fn a_stack_repaints_what_its_children_repaint_not_its_box() {
     );
 }
 
-/// Every widget's box under `widget`, outermost first.
 fn boxes(widget: &dyn Widget, out: &mut Vec<(String, vello::kurbo::Rect)>) {
     out.push((widget.name().to_owned(), widget.get_rect()));
     for child in widget.children() {
@@ -777,8 +763,6 @@ fn boxes(widget: &dyn Widget, out: &mut Vec<(String, vello::kurbo::Rect)>) {
 fn every_edge_lands_on_a_device_pixel_at_the_display_scale() {
     use crate::widget::{Manual, Text};
     use vello::kurbo::Rect;
-    // Sizes no whole number of pixels, in a manual region (a window's shell is one) placed at
-    // a fraction of a pixel, in text at a size whose lines are no whole number of pixels.
     let content = Page::new().push(Box::new(
         Stack::stack()
             .push(boxed(10.3))
@@ -872,7 +856,6 @@ fn a_spacer_takes_the_leftover_room_and_no_gap_of_its_own() {
                 .push_slot(spacer)
                 .push(boxed(100.0))
         };
-        // Exactly room for both and one gap.
         #[allow(clippy::cast_possible_truncation, reason = "a small test width")]
         let tight = (200.0 + between) as f32;
         let mut short = row();
@@ -941,7 +924,6 @@ fn every_text_field_in_a_wrapping_row_stands_at_least_its_own_width() {
     }
 }
 
-/// A view that fills the slot it is in on both axes, by its stable id: the video box.
 const SUBJECT: &str = "aspect-subject";
 
 fn filling_view() -> crate::widget::Element {
@@ -982,8 +964,6 @@ fn a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_column() {
     );
 }
 
-/// The same in a row, where the ratio takes the width the row gives the slot and the row's
-/// height follows it.
 #[test]
 fn a_child_that_fills_at_an_aspect_keeps_its_ratio_in_a_row() {
     let theme = Theme::dark();
@@ -1143,7 +1123,6 @@ fn a_canvas_page_that_does_not_fill_keeps_its_side_gutter() {
 fn a_layer_that_fills_at_an_aspect_keeps_its_ratio() {
     let theme = Theme::dark();
     let layers = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
-    // The layers stand in a page's column, which gives them the width they lay out in.
     let mut page = Stack::stack()
         .fill_width()
         .fill_height()

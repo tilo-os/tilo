@@ -883,8 +883,9 @@ view suggestions<R>(of: R) {
 /// beside it. What they did is what its last change says (`version_said`), worked out from the
 /// fields the change wrote, the person looking as "You". What the sentence leaves out stands
 /// under it, muted (`version_notes`): each field the change wrote, what it held before beside
-/// what it holds now, each as the field's type shows it. Steps of one hand, moments apart, group
-/// under the face of the step that opens them.
+/// what it holds now, each as the field's type shows it. Steps of one hand, within the hour,
+/// group under the face of the step that opens them; each step says where it stands among the
+/// visits, so an entry reads nothing of the steps around it.
 ///
 /// A change is taken back where a person means it. The newest step is the change the page shows
 /// the result of, so it offers its undo where it stands, as quiet as the words around it, a
@@ -902,11 +903,11 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 // The step above this one: where it is the same hand's a moment before, this
-                // one joins the visit that step's face opened.
-                let prev = steps.previous(s)
-                let joined = if let p = prev { p.who == s.who and s.at - p.at < 1h } else { false }
+                // one joins the visit that step's face opened. Where it stands among the visits
+                // is the step's own, so an entry reads nothing of the steps around it.
+                let joined = not s.opens
                 // The newest step, whose result is what the page shows.
-                let newest = prev == .none
+                let newest = s.latest
                 // The step's first change made the resource: the step holds its making, and
                 // nothing of it is taken back from the page of the thing it made. A step's
                 // versions run oldest first, so its newest is what its sentence says.

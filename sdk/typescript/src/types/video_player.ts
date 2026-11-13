@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.video-player@4f05d77ea6c7a710";
+
 export interface Playlist {
   name: string;
 }
@@ -84,7 +89,7 @@ export interface Library extends tilo.Resource {
 
 /** The `video-player.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE) as unknown as Library;
 }
 
 /** Recent videos — `video-player.recent`. */
@@ -103,6 +108,6 @@ export interface Recent extends tilo.Resource {
 
 /** The `video-player.recent` kind at `path`. */
 export function recent(ws: tilo.Workspace, path: string): Recent {
-  return resourceProxy(ws, path) as unknown as Recent;
+  return resourceProxy(ws, path, SURFACE) as unknown as Recent;
 }
 

@@ -1,12 +1,10 @@
-//! Physical outlines of the PC keyboard models `pc104`, `pc105`, `jp106` and
-//! `kr106`, for drawing a keyboard with its layout's legends.
+//! Physical outlines of the PC keyboard models `pc104`, `pc105`, `jp106` and `kr106`,
+//! for drawing a keyboard with its layout's legends.
 //!
-//! The outlines are derived from xkeyboard-config's `geometry/pc` (The Open
-//! Group 1996/1998; provenance and license in `data/`), in millimetres. They
-//! say where each key is and what shape it has, never what it types: the
-//! symbols come from the native XKB compiler of the layout shown. Reading
-//! them is a parse of about 130 KB of JSON, done once, the first time a
-//! keyboard is drawn.
+//! The outlines are derived from xkeyboard-config's `geometry/pc` (The Open Group
+//! 1996/1998; provenance and license in `data/`), in millimetres. They say where each
+//! key is and what shape it has, never what it types: the symbols come from the XKB
+//! compiler of the layout shown.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -16,7 +14,6 @@ use serde::Deserialize;
 /// The outlines as published, a JSON object of models.
 pub const SOURCE: &str = include_str!("../data/pc-keyboard-geometry.json");
 
-/// One keyboard model's keys.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Geometry {
     // The published drawing's `width` and `height` are not read: a drawing
@@ -24,16 +21,12 @@ pub struct Geometry {
     pub keys: Vec<Key>,
 }
 
-/// One physical key.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Key {
-    /// Its XKB name (`AE01`, `SPCE`, `LSGT`).
     pub name: String,
-    /// Its outline, points in millimetres.
     pub outline: Vec<[f64; 2]>,
 }
 
-/// Every model, by name.
 pub fn models() -> Result<&'static BTreeMap<String, Geometry>, &'static str> {
     static MODELS: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
         LazyLock::new(|| serde_json::from_str(SOURCE));

@@ -4,43 +4,29 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
 
-/// The largest theme file the importer reads.
 const MAX_THEME_BYTES: usize = 1_048_576;
 
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "themes.effect")]
 pub enum ThemesEffect {
-    /// Apply as system theme.
-    ///
-    /// The person's own appearance on their own device: nothing shared, so
-    /// a guest applies one as the workspace's owner does.
     #[effect(job, cancellable, own_device)]
     ApplyTheme {
         #[param("Id of the preset or written theme")]
         theme: String,
     },
-    /// Export theme JSON.
     #[effect(returns, kind = "read")]
     Export {
         #[param("Id of the preset or written theme")]
         theme: String,
     },
-    /// Import a theme file through the host's consented file chooser.
     #[effect(attended, job, cancellable, label = "themes-import")]
     Import,
-    /// Duplicate a theme
-    ///
-    /// Open a draft of `theme` (a preset or a written theme), which its
-    /// first edit writes.
     #[effect(view)]
     DuplicateTheme {
         #[param("Id of the preset or written theme")]
         theme: String,
     },
-    /// Delete a theme
-    ///
-    /// Delete `theme` from the studio and show the presets. Nothing to delete
-    /// where the studio never wrote it.
+    /// Nothing to delete where the studio never wrote it.
     #[effect(view, label = "themes-delete-button")]
     DeleteTheme {
         #[param("Id of the preset or written theme")]
@@ -50,8 +36,8 @@ pub enum ThemesEffect {
     },
 }
 
-/// What the theme's own edits from the window's bar do: open a draft of a
-/// theme, or delete one and show the presets. `None` for every other effect.
+/// What the theme's own edits from the window's bar do: open a draft of a theme, or delete
+/// one and show the presets.
 fn theme_edit(
     effect: &ThemesEffect,
     cx: &EffectCx<Studio>,
@@ -65,13 +51,10 @@ fn theme_edit(
             Some(Ok(Effected::done()))
         }
         ThemesEffect::DeleteTheme { theme, sent } => {
-            // A draft never written has nothing to delete: leaving it is
-            // enough.
+            // A draft never written has nothing to delete: leaving it is enough.
             if *sent {
                 cx.submit(Studio::DELETE.with(Id::from_raw(theme.clone())));
             }
-            // The window leaves the theme it was showing; one deleted from
-            // the list stays where the person is.
             if page.get().theme() == Some(theme.as_str()) {
                 crate::view::open(page, nav_pane, notice, crate::view::Page::Gallery);
             }

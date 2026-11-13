@@ -1,6 +1,6 @@
 //! Read-only resolved layout decisions for retained widgets.
 
-/// Coordinated spacing within a form region. Does not shrink control targets.
+/// Coordinated spacing within a form region.
 #[derive(serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Density {
     Compact,
@@ -81,21 +81,12 @@ pub struct PageLayout {
 /// room.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct RowLayout {
-    /// How many rows over it the row stands: each step indents its content one disclosure gutter.
     pub depth: u32,
-    /// Where the row's own content starts: its leading control stands here, or its title when it
-    /// has none. A nesting step indents it one disclosure gutter.
     pub content_left: f32,
-    /// Where the title starts, after the row's leading control.
     pub text_x: f32,
-    /// Where the title's room ends: the facts column narrows it.
     pub text_right: f32,
-    /// The left edge of what stands in the facts column, or the row's content edge when nothing
-    /// does.
     pub facts_left: f32,
-    /// The right edge of the row's content, where the facts end.
     pub content_right: f32,
-    /// The left edge of the marks a row shows on its edge, when it shows any.
     pub marks_left: Option<f32>,
 }
 
@@ -107,18 +98,11 @@ pub struct RowLayout {
 /// place in the row for the menu's door — and the app's primary action never leaves the row.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct HeaderRowLayout {
-    /// The column the row heads: `sidebar`, `overview`, `content` or `inspector`.
     pub column: &'static str,
-    /// How wide the title says it is.
     pub title_needs: f32,
-    /// How wide the row gave it.
     pub title_has: f32,
-    /// How much room stood empty beyond it, before the next thing in the row.
     pub free_beside_title: f32,
-    /// Whether an action standing in the row kept a label it could have shown as its icon.
     pub labelled_action: bool,
-    /// Whether the column's primary action stands in the row: a column without one answers
-    /// `true`.
     pub primary_shown: bool,
 }
 
@@ -128,87 +112,51 @@ pub struct HeaderRows {
     pub rows: [Option<HeaderRowLayout>; 4],
 }
 
-/// Where a window's shell stood its sidebar against the content (`layout.md`, "Responding to
-/// space").
+/// Where a window's shell stood its sidebar against the content (`layout.md`, "Responding
+/// to space").
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarStanding {
-    /// The window shows no sidebar.
     None,
-    /// Beside the content, as a column of the window's own.
     Docked,
-    /// Over the content, as a drawer the bar's toggle brings forward.
     Over,
-    /// As a screen of the window's own, taking turns with the content.
     Alone,
 }
 
 /// One window's shell as its last layout left it: where its sidebar stood, the class of the
 /// content beside it, and how the shell held each column's header row.
-///
-/// An audit reads this to hold the shell to the rule that decides it: a sidebar stands beside a
-/// pane of the class the content asks for there ([`ShellLayout::needs`]) and folds behind the bar's
-/// toggle where the pane beside it would be a phone's screen instead.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ShellLayout {
-    /// How the sidebar stood.
     pub sidebar: SidebarStanding,
-    /// The class of the pane standing beside the sidebar, by its own width.
     pub beside: crate::widget::arrange::WidthClass,
-    /// The class that pane is in at the least: a column of text asks for a column, a grid of
-    /// tiles or a surface drawn on for less.
     pub needs: crate::widget::arrange::WidthClass,
-    /// That pane's width in logical pixels; zero where the window shows none.
     pub beside_width: f32,
-    /// Each column's header row, `[sidebar, overview, content, inspector]`.
     pub rows: HeaderRows,
 }
 
-/// Where a field's text stands in it, as the field paints it: the band its first line occupies
-/// (in window coordinates, scrolled in), how tall that line is, how many rows the text takes,
-/// and how many rows the field asked to stand of its own.
-///
-/// An audit reads this to hold a field to what a person reads: one that follows the line it
-/// holds stands that line in the middle of the control, however much room the band around it
-/// takes, while a document's own text and a box given rows of its own start at the top inset
-/// and grow down.
+/// Where a field's text stands in it, as the field paints it: the band its first line
+/// occupies (in window coordinates, scrolled in), how tall that line is, how many rows the
+/// text takes, and how many rows the field asked to stand of its own.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct TextLayout {
-    /// The top of the first line's band.
     pub top: f32,
-    /// The line's height.
     pub line: f32,
     /// The rows the text takes, never less than one.
     pub rows: u32,
-    /// The rows the field was given of its own: none for a field that follows its text.
     pub lines: u32,
-    /// The height a single-line field of this size stands at: the control's band, grown to the
-    /// target a coarse pointer reaches. One line stands centred in a field that tall, and starts
-    /// at its inset in a field given more room than a band's.
     pub band: f32,
-    /// The text is a document's own, written as prose is: a note's page, a block editor's line.
     pub document: bool,
 }
 
 /// A list as its last layout left it: whether its first row names a group, and the room the
 /// list keeps over the first band it draws.
-///
-/// An audit reads this to hold a list to the rule its groups lay it out by: a list whose rows
-/// name groups starts its first band — the heading over the first run, or the first row where
-/// the list leaves that heading out, saying what the title above already says — on the column's
-/// content gutter, where a page's first block stands, rather than against the box over the list.
-/// A list whose rows name no group is one block and leads with its rows.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ListLayout {
-    /// Whether the list's first row names a group, so a heading or the first of the rows leads
-    /// it.
     pub heads_rows: bool,
-    /// The room the list keeps over the first band it draws, in logical pixels: over the heading
-    /// over its first row, or over that row where the list leaves the heading out.
     pub lead: f32,
 }
 
-/// Concrete layout policies. Manual layout information can extend this enum.
+/// Concrete layout policies.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
     Page(PageLayout),
@@ -226,16 +174,13 @@ pub enum LayoutInfo {
 /// Which way a scroll view lets its content go on past its own box.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollDirection {
-    /// Down: content taller than the view (a column's body).
     Vertical,
-    /// Sideways: content wider than the view (a board's lanes).
     Horizontal,
-    /// Both ways (a canvas).
     Both,
 }
 
-/// A scroll view's axis, so a layout audit tells content that scrolls by
-/// design from content that overflows.
+/// A scroll view's axis, so a layout audit tells content that scrolls by design from
+/// content that overflows.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrollLayout {
     pub direction: ScrollDirection,

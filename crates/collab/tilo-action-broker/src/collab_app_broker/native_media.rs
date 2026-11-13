@@ -287,15 +287,23 @@ impl LocalAppConnection {
         let pinned = info.ok().and_then(|info| {
             info.lines().find_map(|line| {
                 line.strip_prefix("Pid:")
-                    // ignored-failure: a probe of /proc; an unreadable field means not the pinned process, which refuses
-                    .and_then(|value| value.trim().parse::<u32>().ok())
+                    .and_then(|value| {
+                        tilo_failure::ignored!(
+                            "a probe of /proc: an unreadable field is not the pinned process, which refuses",
+                            value.trim().parse::<u32>().ok()
+                        )
+                    })
             })
         });
         let current_start = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|stat| stat.rsplit_once(") ").map(|(_, fields)| fields.to_owned()))
-            // ignored-failure: a probe of /proc; an unreadable start time means not the pinned process, which refuses
-            .and_then(|fields| fields.split_whitespace().nth(19)?.parse::<u64>().ok());
+            .and_then(|fields| {
+                tilo_failure::ignored!(
+                    "a probe of /proc: an unreadable start time is not the pinned process, which refuses",
+                    fields.split_whitespace().nth(19)?.parse::<u64>().ok()
+                )
+            });
         pinned == Some(pid) && current_start == Some(start) && self.current()
     }
     #[cfg(not(target_os = "linux"))]

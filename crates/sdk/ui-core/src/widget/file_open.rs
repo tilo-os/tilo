@@ -1,18 +1,9 @@
-//! `FileOpenSurface`: how an app that opens files invites one, and opens a
-//! file dropped anywhere on its window.
+//! `FileOpenSurface`: how an app that opens files invites one, and opens a file dropped
+//! anywhere on its window.
 //!
-//! Feed window events through [`FileOpenSurface::handle_event`] before the
-//! app's own controls see them, and paint the app's empty state through
-//! [`FileOpenSurface::paint`]. A drop opens wherever it lands: it does not
-//! depend on the pointer position or on a preceding hover (Wayland may
-//! deliver the path only when the transfer finishes). While a file hovers the
-//! window, the empty state becomes a lit [`DropZoneFace`]; the drop hint that
-//! names the gesture is painted only where a file can be dragged in
-//! ([`InteractionEnvironment::drags_files`]).
-//!
-//! Opening stays the app's: a dropped path goes to the same importer as its
-//! Open action and file chooser, which reports a file it cannot read. The
-//! surface reads nothing and grants no access.
+//! Opening stays the app's: a dropped path goes to the same importer as its Open action and
+//! file chooser, which reports a file it cannot read. The surface reads nothing and grants
+//! no access.
 
 use crate::i18n::widget_text;
 use std::path::PathBuf;
@@ -27,14 +18,11 @@ use crate::widget::{DropZoneFace, EmptyState, EmptyStateContent};
 /// A file event the surface took.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FileOpenEvent {
-    /// A file started or stopped hovering the window: repaint.
     HoverChanged,
-    /// Open this file the way the app's Open action does.
     Open(PathBuf),
 }
 
-/// Window-wide file drops and the "open a file" empty state. See the module
-/// docs.
+/// Window-wide file drops and the "open a file" empty state.
 #[derive(Debug, Default)]
 pub struct FileOpenSurface {
     hovering: bool,
@@ -138,7 +126,6 @@ mod tests {
             surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
             Some(FileOpenEvent::HoverChanged)
         );
-        // Every hovered file of a multi-file drag reports; one repaint does.
         assert_eq!(
             surface.handle_event(&WindowEvent::HoveredFile(path.clone())),
             None
@@ -187,8 +174,6 @@ mod tests {
             )
             .action
             .expect("the action");
-        // The stack is centred, so a line under the action moves the action
-        // up by half that line: the hint is below the button, not over it.
         let moved = alone.y0 - hinted.y0;
         assert!(
             moved > 4.0,

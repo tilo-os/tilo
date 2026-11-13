@@ -1,15 +1,12 @@
-//! What a person keeps in Clocks: the cities they compare, their alarms,
-//! their timers and the stopwatch. It is the app's resource, so it follows
-//! them to every device and every edit is an action: the palette, an agent
-//! or a script sets an alarm exactly as the buttons do. Names, alarm times
-//! and repeat days are field edits at their paths; everything that runs
-//! against the clock (turning an alarm on, starting and pausing timers and
-//! the stopwatch) is a verb, which reads the action's own time, and the
-//! instants those verbs keep are read-only to field edits.
+//! What a person keeps in Clocks: the cities they compare, their alarms, their
+//! timers and the stopwatch. It is the app's resource, so it follows them to
+//! every device and every edit is an action: the palette, an agent or a script
+//! sets an alarm exactly as the buttons do. Names, times and repeat days are
+//! field edits; anything that runs against the clock is a verb, and the instants
+//! those verbs keep are read-only to field edits.
 //!
-//! Running clocks are stored as absolute instants (when a timer ends, when
-//! the stopwatch started), taken from the action's own time, so a timer
-//! started on one device counts down to the same moment on every other.
+//! Running clocks are absolute instants taken from the action's own time, so a
+//! timer started on one device counts down to the same moment on every other.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -18,11 +15,9 @@ use chrono::{DateTime, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 
-/// A city whose time is shown beside the local one.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = WorldClock::valid)]
 pub struct WorldClock {
-    /// City
     #[model(label)]
     pub city: String,
     /// The IANA time zone, such as `Asia/Tokyo`.
@@ -30,16 +25,12 @@ pub struct WorldClock {
     pub timezone: Atom,
 }
 
-/// An alarm at a time of day, once or on chosen weekdays.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Alarm::valid)]
 pub struct Alarm {
-    /// Label
     #[model(label)]
     pub label: String,
-    /// Hour
     pub hour: u8,
-    /// Minute
     pub minute: u8,
     /// The weekdays it repeats on, Monday as bit 0; none rings once.
     pub repeat: u8,
@@ -57,7 +48,6 @@ pub struct Alarm {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Timer::valid)]
 pub struct Timer {
-    /// Label
     #[model(label)]
     pub label: String,
     #[model(readonly)]
@@ -68,8 +58,6 @@ pub struct Timer {
     pub paused_remaining_ms: Option<u64>,
 }
 
-/// The stopwatch: time accumulated before the current run, when the current
-/// run started, and the laps recorded (each the total elapsed time).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Stopwatch {
     pub accumulated_ms: u64,
@@ -77,7 +65,6 @@ pub struct Stopwatch {
     pub laps_ms: Vec<u64>,
 }
 
-/// Everything Clocks keeps for a person.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Clocks {
     pub world_clocks: Collection<WorldClock>,
@@ -88,7 +75,6 @@ pub struct Clocks {
     pub stopwatch: Stopwatch,
 }
 
-/// A label shows on one line: it is not blank and at most 80 characters.
 fn valid_label(label: &str) -> Result<(), Refusal> {
     if label.trim().is_empty() || label.chars().count() > 80 {
         return Err(Refusal::from("a label has 1 to 80 characters"));
@@ -116,7 +102,6 @@ impl Timer {
 }
 
 impl Alarm {
-    /// A time of day from 00:00 to 23:59, repeating on weekdays only.
     fn valid(&self) -> Result<(), Refusal> {
         valid_label(&self.label)?;
         if self.hour > 23 || self.minute > 59 {
@@ -129,7 +114,6 @@ impl Alarm {
     }
 }
 
-/// A weekday an alarm repeats on.
 #[derive(
     Clone,
     Copy,
@@ -153,7 +137,6 @@ pub enum WeekdayKey {
 }
 
 impl WeekdayKey {
-    /// Every weekday, Monday first.
     pub const ALL: [Self; 7] = [
         Self::Mon,
         Self::Tue,
@@ -168,7 +151,6 @@ impl WeekdayKey {
         1 << (self as u8)
     }
 
-    /// The same day as `chrono` names it.
     pub fn weekday(self) -> Weekday {
         match self {
             Self::Mon => Weekday::Mon,
@@ -196,13 +178,11 @@ impl From<Weekday> for WeekdayKey {
     }
 }
 
-/// The repeat mask of `days`.
 #[must_use]
 pub fn repeat_mask(days: &BTreeSet<WeekdayKey>) -> u8 {
     days.iter().fold(0, |mask, day| mask | day.bit())
 }
 
-/// The instant `ms` milliseconds after the Unix epoch.
 #[must_use]
 pub fn instant(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap_or_default()
@@ -217,7 +197,6 @@ fn after(now_ms: i64, ms: u64) -> i64 {
 }
 
 impl Alarm {
-    /// The time of day it rings.
     #[must_use]
     pub fn local_time(&self) -> NaiveTime {
         NaiveTime::from_hms_opt(self.hour.into(), self.minute.into(), 0).unwrap_or_default()
@@ -234,21 +213,18 @@ impl Alarm {
 }
 
 impl Timer {
-    /// Whether it is counting down at `now`.
     #[must_use]
     pub fn is_running(&self, now: DateTime<Utc>) -> bool {
         self.ends_at_ms
             .is_some_and(|end| end > now.timestamp_millis())
     }
 
-    /// Whether its deadline has passed.
     #[must_use]
     pub fn is_finished(&self, now: DateTime<Utc>) -> bool {
         self.ends_at_ms
             .is_some_and(|end| end <= now.timestamp_millis())
     }
 
-    /// What is left at `now`.
     #[must_use]
     pub fn remaining(&self, now: DateTime<Utc>) -> Duration {
         if let Some(ms) = self.paused_remaining_ms {
@@ -259,7 +235,6 @@ impl Timer {
             .unwrap_or_default()
     }
 
-    /// When it ends, while it has a deadline.
     #[must_use]
     pub fn ends_at(&self) -> Option<DateTime<Utc>> {
         self.ends_at_ms.map(instant)
@@ -272,7 +247,6 @@ impl Timer {
 }
 
 impl Stopwatch {
-    /// The time elapsed at `now`.
     #[must_use]
     pub fn elapsed(&self, now: DateTime<Utc>) -> Duration {
         let running = self
@@ -282,7 +256,6 @@ impl Stopwatch {
         Duration::from_millis(self.accumulated_ms).saturating_add(running)
     }
 
-    /// Whether it is running.
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.started_at_ms.is_some()
@@ -303,7 +276,6 @@ fn alarm_mut<'a>(clocks: &'a mut Clocks, alarm: &Id) -> Result<&'a mut Alarm, Re
         .ok_or_else(|| Refusal::from("there is no such alarm"))
 }
 
-/// A label of at most 80 characters, or `fallback` when it is blank.
 #[must_use]
 pub fn bounded_label(input: &str, fallback: &str) -> String {
     let label = input.trim();
@@ -315,12 +287,6 @@ pub fn bounded_label(input: &str, fallback: &str) -> String {
 }
 
 impl Clocks {
-    /// What the record holds: the world clocks, alarms, timers and stopwatch.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -342,7 +308,6 @@ impl Clocks {
         #[param("City name")] city: String,
         #[param("IANA time zone, such as Asia/Tokyo")] timezone: String,
     ) -> Result<(), Refusal> {
-        // A city already shown stays where it is.
         if self
             .world_clocks
             .values()
@@ -414,9 +379,8 @@ impl Clocks {
 
     /// Change an alarm's label, time and repeat days without recreating it.
     ///
-    /// Its on/off state and the moment it was turned on stay as they were,
-    /// so moving an alarm from 07:30 to 08:00 adjusts the existing alarm
-    /// rather than replacing it and losing them.
+    /// Its on/off state and the moment it was turned on stay as they were, so
+    /// moving an alarm from 07:30 to 08:00 adjusts it rather than losing them.
     #[action(item = alarms)]
     pub fn edit_alarm(
         &mut self,

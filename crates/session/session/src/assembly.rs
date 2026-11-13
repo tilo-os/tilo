@@ -49,6 +49,10 @@ pub(crate) struct Shared {
     /// The apps the person opens, when this session starts them.
     #[cfg(target_os = "linux")]
     pub(crate) launch: Option<Rc<crate::apps::Apps>>,
+    /// This device's app lists, as last read: what the desk offers a card for, and what opening
+    /// one of its verbs finds.
+    #[cfg(target_os = "linux")]
+    pub(crate) lists: crate::lists::Lists,
     /// The windows this device left open, asked for again one at a time into
     /// the tabs they were in.
     #[cfg(target_os = "linux")]
@@ -108,6 +112,11 @@ pub(crate) struct Shared {
     /// Chords pressed that run a saved shortcut, waiting for the automation
     /// host.
     pub(crate) triggered: crate::keys::PressedChords,
+    /// Super alone, as the compositor reads it: the search a tap opens and
+    /// the keys a hold shows, which the pass answers.
+    pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
+    /// The keys a hold shows, which the chrome draws over the desk.
+    pub(crate) super_peek: tilo_desktop::super_peek::SuperPeek,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,
@@ -451,6 +460,10 @@ pub struct Session {
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
     #[cfg(target_os = "linux")]
     pub(crate) published_steps: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
+    /// The person's settings, as the broker's steps of Settings' own provider: what each pass
+    /// hands the settings the session's service published.
+    #[cfg(target_os = "linux")]
+    pub(crate) settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
     /// When the desk's own bookkeeping last read it.
     pub(crate) kept_at: Instant,
     /// What the desk's input a tool handed the loop cost this pass, read with
@@ -552,6 +565,10 @@ pub struct Session {
     /// surface stands: the person works it from the keys that opened it.
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_keyboard: crate::quick_settings::PanelKeys,
+    /// The ask for the page an opening panel shows, until its app answers it: the panel shows from
+    /// the first frame its app draws after that answer.
+    #[cfg(target_os = "linux")]
+    pub(crate) quick_settings_asked: Option<u64>,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

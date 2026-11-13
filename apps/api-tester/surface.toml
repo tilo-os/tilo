@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "api-tester.workspace"
 label = "API workspace"
@@ -70,13 +72,6 @@ fields = [
   { path = "history.*.duration_ms", type = "int" },
   { path = "history.*.at_ms", type = "int" },
   { path = "history.*.replay", type = "text" },
-]
-
-[[resources.verbs]]
-id = "import-workspace"
-kind = "undoable"
-params = [
-  { name = "workspace", required = true, schema = {} },
 ]
 
 [[resources.verbs]]

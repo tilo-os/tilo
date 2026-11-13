@@ -22,7 +22,6 @@ pub(super) fn import_page_layout_columns(styles_xml: &[u8], doc: &mut DocMut) {
     doc.set_columns(count, gap);
 }
 
-/// Scan `styles.xml` for the first `style:columns` element and read its count/gap.
 fn parse_columns(styles_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     let s = std::str::from_utf8(styles_xml).ok()?;
     let mut reader = Reader::from_str(s);
@@ -64,7 +63,6 @@ fn px_to_cm(px: f64) -> String {
     format!("{s}cm")
 }
 
-/// The `style:columns` element XML for a `count`/`gap`, or `None` for a single column.
 fn columns_xml(count: u32, gap: Option<f64>) -> Option<String> {
     if count <= 1 {
         return None;
@@ -87,17 +85,13 @@ pub(super) fn export_page_layout_columns(doc: &DocRef, styles_xml: &[u8]) -> Opt
     Some(splice_into_page_layout(styles_xml, &cols))
 }
 
-/// Splice `cols` into the first `style:page-layout`'s `style:page-layout-properties`,
-/// replacing any existing `style:columns`, synthesising the page-layout/properties if absent.
 fn splice_into_page_layout(styles_xml: &[u8], cols: &str) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
 
-    // Case 1: a `style:page-layout-properties` element already exists — drop any existing `style:columns` and inject the new one at its end.
     if let Some(props) = find_element_span(&s, "style:page-layout-properties") {
         return splice_into_props(&s, &props, cols).into_bytes();
     }
 
-    // Case 2: a `style:page-layout` exists with no properties element — inject a fresh one (carrying just the columns) at its start.
     if let Some(pl) = find_open_tag_end(&s, "<style:page-layout") {
         let props = format!("<style:page-layout-properties>{cols}</style:page-layout-properties>");
         if let (Some(head), Some(tail)) = (s.get(..pl), s.get(pl..)) {
@@ -110,16 +104,12 @@ fn splice_into_page_layout(styles_xml: &[u8], cols: &str) -> Vec<u8> {
         return s.into_bytes();
     }
 
-    // Case 3: no page-layout at all — synthesise an automatic-styles section with a `pm1`
-    // page-layout (matching the name the headers master-page references).
     let section = format!(
         r#"<office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties>{cols}</style:page-layout-properties></style:page-layout></office:automatic-styles>"#
     );
     inject_section(&s, &section).into_bytes()
 }
 
-/// Replace/insert `cols` inside a known `style:page-layout-properties` span; a self-closing
-/// properties element has `inner_start == inner_end == open_tag_end`.
 fn splice_into_props(s: &str, span: &ElementSpan, cols: &str) -> String {
     let ElementSpan {
         open_start,
@@ -128,10 +118,8 @@ fn splice_into_props(s: &str, span: &ElementSpan, cols: &str) -> String {
         self_closing,
     } = *span;
     match inner {
-        // Self-closing — expand to a paired element holding the columns, preserving the original attributes.
         None => {
             debug_assert!(self_closing);
-            // `open_start..open_end` covers `<...props.../>`; rewrite the trailing `/>` into `>{cols}</...>`.
             let tag = s.get(open_start..open_end).unwrap_or_default();
             let body = tag.strip_suffix("/>").unwrap_or(tag);
             let mut out =
@@ -164,12 +152,10 @@ struct ElementSpan {
     open_start: usize,
     /// Byte index just past the opening tag's `>`.
     open_end: usize,
-    /// `(inner_start, inner_end)` for a paired element, or `None` if self-closing.
     inner: Option<(usize, usize)>,
     self_closing: bool,
 }
 
-/// Locate the first `<{name} …>`(…)`</{name}>` (or self-closing) element in `s`.
 fn find_element_span(s: &str, name: &str) -> Option<ElementSpan> {
     let open_start = find_tag_start(s, name)?;
     let gt = s.get(open_start..)?.find('>')?.checked_add(open_start)?;
@@ -220,7 +206,6 @@ fn find_open_tag_end(s: &str, open_prefix: &str) -> Option<usize> {
     gt.checked_add(1)
 }
 
-/// Drop any `style:columns` element (paired or self-closing) from a properties element's inner XML.
 fn strip_columns(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut reader = Reader::from_str(inner);

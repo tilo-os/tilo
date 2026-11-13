@@ -1,18 +1,6 @@
 //! Offscreen render of the **profiling HUD** overlaid on a real app scene, so
 //! the HUD can be inspected without opening a window.
-//!
-//! `TILO_PROFILE=1` draws the HUD live, but the live path needs a display. This
-//! example reproduces exactly what `tilo_ui::App` does — run the real five passes,
-//! record each into a [`tilo_ui::profiling::FrameProfiler`], commit a per-frame
-//! sample — for a rolling window of frames, then composites the production
-//! [`FrameProfiler::draw_hud`] over the final frame and rasterises a PNG. The
-//! HUD you see here is pixel-for-pixel the one the live app paints; only the
-//! surface is offscreen.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- perf_hud_shot`
-//! Out:  `$PERF_HUD_OUT` (default `/tmp/perf_hud/hud.png`)
-//!
-//! `PERF_HUD_FRAMES=N` sets how many real frames feed the rolling graph.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

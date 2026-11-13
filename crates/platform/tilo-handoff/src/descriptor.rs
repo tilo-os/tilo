@@ -1,8 +1,8 @@
 //! Reading the public descriptor from the account's private state directory.
 //!
-//! The descriptor is public content, but its location is not: a same-name
-//! symlink, a directory, a file owned by another account or a world-writable
-//! carrier must not be treated as the handoff this login will connect to.
+//! The descriptor is public content, its location is not: a same-name symlink, a
+//! directory, a file owned by another account or a world-writable carrier must not
+//! be taken as the handoff this login will use.
 
 use super::{DESCRIPTOR_FILE, MAX_DESCRIPTOR, PublicHandoff, invalid};
 use std::{
@@ -49,9 +49,6 @@ fn owned_directory(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Read `home/.local/state/tilo/other-device.json` through held directory
-/// descriptors. A missing descriptor is `None`; a malformed, linked,
-/// outer-owned or public object is an error.
 pub fn read_descriptor(home: &Path) -> io::Result<Option<PublicHandoff>> {
     if !home.is_absolute() {
         return Err(invalid("The other-computer handoff location is invalid"));

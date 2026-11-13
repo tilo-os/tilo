@@ -1,16 +1,5 @@
-//! The staging ESP handoff: what Tilo Imager leaves at
-//! `/EFI/tilo-staging/handoff.json` for the live installer it staged beside
-//! the retained OS. Both sides use these types and rules, so the Imager never
-//! writes a handoff the installer would refuse.
-//!
-//! On the ESP the file is a fixed-size placeholder: compact JSON followed by
-//! ASCII spaces up to the file's size. Any JSON parser that permits trailing
-//! whitespace (e.g. `serde_json::from_slice`, Python `json.loads`) reads it
-//! unchanged.
-//!
-//! The handoff is a hint, never authority. The installer uses it to preselect
-//! the one safe plan on the one disk it applies to and to prefill profile
-//! fields, then re-derives every fact from the live disk before it writes.
+//! The staging ESP handoff: what Tilo Imager leaves at `/EFI/tilo-staging/handoff.json` for
+//! the live installer it staged beside the retained OS.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,14 +7,10 @@ mod migration;
 pub use migration::Migration;
 pub mod prepared;
 
-/// The handoff's file name in the staging ESP's `/EFI/tilo-staging`.
 pub const HANDOFF_FILE: &str = "handoff.json";
 pub const SCHEMA: u32 = 1;
-/// The largest handoff a reader accepts.
 pub const MAX_BYTES: usize = 64 * 1024;
-/// LBAs beyond this are not a disk the installer can describe.
 const MAX_LBA: u64 = 1 << 62;
-/// The most firmware boot entries a handoff may name.
 const MAX_BOOT_ORDER: usize = 128;
 
 /// A partition the Imager staged, by identity and extent.
@@ -55,12 +40,10 @@ pub struct Handoff {
     pub disk_size_bytes: u64,
     pub staging_esp: StagedIdentity,
     pub staging_root: StagedIdentity,
-    /// The space the installer installs into, directly before the staging ESP.
     pub target_extent: Extent,
-    /// Four uppercase hex digits, e.g. `0004`.
+    /// `0004`.
     pub owned_boot_entry: String,
     pub original_boot_order: Vec<String>,
-    /// Secret-free fields accepted by the installer's media profile.
     #[serde(deserialize_with = "deserialize_profile")]
     pub profile: serde_json::Map<String, serde_json::Value>,
     /// Optional secret-free retained-source hint; never source access authority.
@@ -68,8 +51,8 @@ pub struct Handoff {
     pub migration: Option<Migration>,
 }
 
-/// The operating system the Imager ran on, which the person returns to when
-/// they cancel the installation.
+/// The operating system the Imager ran on, which the person returns to when they cancel the
+/// installation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostOs {
@@ -127,11 +110,8 @@ pub fn is_guid(value: &str) -> bool {
             .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// An operation, attempt or request id: the canonical lowercase text of a
-/// non-nil UUID, as `uuid::Uuid::new_v4().to_string()` writes it. Every id
-/// the setup records, passes to a helper or names a directory with is
-/// checked with this one rule. It lives here so the privileged helpers that
-/// share this model check ids without linking the installer backend.
+/// An operation, attempt or request id: the canonical lowercase text of a non-nil UUID, as
+/// `uuid::Uuid::new_v4().to_string()` writes it.
 pub fn is_operation_id(value: &str) -> bool {
     is_guid(value)
         && !value.bytes().any(|byte| byte.is_ascii_uppercase())
@@ -147,13 +127,12 @@ fn is_boot_id(value: &str) -> bool {
 }
 
 impl Handoff {
-    /// The handoff's own consistency. It deliberately says nothing about the
-    /// disk, which only the installer can see. Profile metadata is shape-checked;
-    /// the installer independently validates individual setup choices.
+    /// The handoff's own consistency: its version, its identities, its sizes and its boot
+    /// entry.
     ///
     /// # Errors
     ///
-    /// A human-readable reason for the first violated rule.
+    /// Why the record is not a handoff this version accepts.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err("unsupported staged installation version".into());
@@ -208,8 +187,7 @@ impl Handoff {
     ///
     /// # Errors
     ///
-    /// Oversized input, malformed JSON, duplicate or unknown fields, or any
-    /// rule [`Self::validate`] checks.
+    /// Why the bytes are too large, malformed or inconsistent.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_BYTES {
             return Err("staged installation record is unexpectedly large".into());
@@ -224,7 +202,7 @@ impl Handoff {
     ///
     /// # Errors
     ///
-    /// Any rule [`Self::validate`] checks, or JSON that does not fit `len`.
+    /// Why the record is inconsistent, cannot be serialized, or does not fit `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)

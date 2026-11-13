@@ -11,17 +11,11 @@ use std::collections::HashMap;
 
 use crate::model::{Folder, Mailbox, Message};
 
-/// Where one account's server keeps each folder: Gmail's Sent is
-/// `[Gmail]/Sent Mail`, Outlook's Trash is `Deleted Items`. Found from the
-/// server's folder list, by the special use the server marks a folder with
-/// (RFC 6154) and otherwise by the names servers commonly give it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Places {
     names: HashMap<Folder, String>,
 }
 
-/// The names a server commonly gives a folder that is not marked with its
-/// use, compared without case against the whole name and its last part.
 fn common_names(folder: Folder) -> &'static [&'static str] {
     match folder {
         Folder::Sent => &["sent", "sent items", "sent messages", "sent mail"],
@@ -33,12 +27,10 @@ fn common_names(folder: Folder) -> &'static [&'static str] {
     }
 }
 
-/// The special use (RFC 6154) that marks a folder, as a server lists it.
 fn special_use(folder: Folder) -> &'static [&'static str] {
     match folder {
         Folder::Sent => &["Sent"],
         Folder::Drafts => &["Drafts"],
-        // Archiving into "All Mail" is how Gmail archives.
         Folder::Archive => &["Archive", "All"],
         Folder::Trash => &["Trash"],
         Folder::Junk => &["Junk"],
@@ -47,8 +39,6 @@ fn special_use(folder: Folder) -> &'static [&'static str] {
 }
 
 impl Places {
-    /// The places a server's folder list gives: each listed folder's name
-    /// and the special uses it is marked with (`"Sent"`, `"All"`, …).
     pub fn from_list(listed: &[(String, Vec<String>)]) -> Self {
         let mut names = HashMap::new();
         for folder in [
@@ -90,9 +80,6 @@ impl Places {
     }
 }
 
-/// `text` as an IMAP quoted string, for a search: `None` for text the
-/// quoted form cannot carry (anything but printable ASCII), which only the
-/// local search then looks for.
 pub fn imap_quoted(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() || !text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
@@ -110,14 +97,10 @@ pub fn imap_quoted(text: &str) -> Option<String> {
     Some(quoted)
 }
 
-/// How many messages one page brings.
 pub const PAGE: u32 = 50;
 
-/// More new messages than this since the last sync, and the folder starts
-/// over from its newest page instead of fetching them all.
 pub const CATCH_UP_LIMIT: u32 = 500;
 
-/// The part of a folder this device holds, as its server numbers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
     pub uid_validity: u32,
@@ -126,9 +109,6 @@ pub struct Window {
 }
 
 impl Window {
-    /// The window of `account`'s `folder` in `mailbox`: the UIDs its fetched
-    /// messages carry. `None` before the folder was fetched, or when the
-    /// messages disagree on the numbering (the server renumbered it).
     pub fn of(mailbox: &Mailbox, account: &str, folder: Folder) -> Option<Self> {
         let mut window: Option<Self> = None;
         for message in mailbox.messages.values() {
@@ -156,8 +136,6 @@ impl Window {
         window
     }
 
-    /// This window and `other` together, when the server numbers both the
-    /// same way; else this one.
     #[must_use]
     pub fn with(self, other: Option<Self>) -> Self {
         match other {
@@ -170,8 +148,6 @@ impl Window {
         }
     }
 
-    /// The window the UIDs of `messages` in `folder` take, when they agree
-    /// on the numbering.
     #[must_use]
     pub fn of_messages<'a>(
         messages: impl IntoIterator<Item = &'a Message>,
@@ -197,44 +173,25 @@ impl Window {
     }
 }
 
-/// What to fetch of a folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Want {
-    /// What is new since `known` (or the newest page, when nothing is
-    /// known or the server renumbered the folder), and the flags of
-    /// `known`'s window.
     Latest { known: Option<Window> },
-    /// The page before the oldest message of `known`.
     Older { known: Window },
 }
 
-/// What a folder sync brought back.
 #[derive(Clone, Debug, Default)]
 pub struct Synced {
-    /// The numbering the folder has now.
     pub uid_validity: u32,
-    /// Whatever the device held of this folder is out of date: drop every
-    /// message of it not in `messages`.
     pub reset: bool,
-    /// Messages new to the device, with their UIDs.
     pub messages: Vec<Message>,
-    /// `(uid, seen, flagged)` of every message of the known window still on
-    /// the server; a UID of the window missing here was removed.
     pub flags: Vec<(u32, bool, bool)>,
-    /// The window `flags` covers.
     pub window: Option<(u32, u32)>,
     /// Whether the server has messages older than the oldest one held now;
-    /// `None` when this sync did not find out.
     pub has_older: Option<bool>,
-    /// The bytes the server sent for each of `messages`, by its id: what the
-    /// person's other devices are handed so they need not ask the server
-    /// for it again ([`crate::copies`]).
     pub originals: Vec<(crate::model::MessageId, Vec<u8>)>,
 }
 
 impl Synced {
-    /// Take `fetched` as messages new to the device, each beside the bytes
-    /// its server sent.
     pub fn receive(&mut self, fetched: Vec<(Message, Vec<u8>)>) {
         for (message, original) in fetched {
             self.originals.push((message.id, original));

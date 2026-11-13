@@ -177,21 +177,13 @@ these boundaries:
    directory. Keep the same root-ownership, canonical-path, signature and
    payload-preservation checks as the existing interface. Do not add a bypass
    for those checks or let an untrusted artifact select its own verifier key.
-   The rootful provider below implements this interface; connecting final image
-   sealing to the signed disk/VM pipeline remains separate work.
+   The rootful provider below implements this interface.
 6. Before any VM boot test, use a unique cycle with disposable QCOW2 disks,
    software TPM state and a private firmware variable store. Never pass through
    a host block device, physical TPM, or efivarfs. Enrollment is permitted only
-   in that VM's variable store. This VM procedure is planned; the development
-   build and enrollment integration described here is not implemented yet.
+   in that VM's variable store.
 
-The planned path needs tests proving both acceptance of the correct development
-identity and rejection of substituted keys, mismatched measurements, unsigned
-images and production publication of development artifacts. There is no
-end-to-end development-signing command yet; implement these boundaries before
-presenting one as usable.
-
-### Existing signer invocation, once the development image boundary exists
+### Signer invocation
 
 The wrapper must implement exactly:
 

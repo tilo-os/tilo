@@ -53,7 +53,6 @@ pub struct TreemapMarks {
     frame: PlotFrame<usize>,
 }
 
-/// Nested rectangles whose areas show each item's share.
 pub type Treemap = Plot<TreemapMarks>;
 
 impl Treemap {

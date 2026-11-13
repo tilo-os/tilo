@@ -1,4 +1,4 @@
-//! The desktop's own surface apps, prepared in memory and private.
+//! The desktop surface apps, prepared in memory and private.
 
 use std::rc::Rc;
 
@@ -9,7 +9,7 @@ use crate::application_view::InstanceViewStore;
 use crate::launch::LaunchError;
 use crate::permissions::{PermissionContext, SharedPermissions, UserId};
 
-/// Prepare `definition` as one of the desktop's own surface apps (the
+/// Prepare `definition` as one of the desktop surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its
 /// record and view kept in memory under `workspace`, its window private, so
 /// nothing of it is written to disk or offered beyond this device. `lend`

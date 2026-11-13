@@ -1,24 +1,12 @@
 //! The wire encryption of the freedesktop Secret Service API
 //! (`org.freedesktop.Secret.Session`).
 //!
-//! A client and the service agree on a session algorithm before any secret
-//! crosses the bus. Besides `plain`, which this crate does not implement
-//! because it has nothing to compute, libsecret speaks
-//! [`DH_ALGORITHM`]:
-//!
 //! - key agreement: Diffie-Hellman in the 1024-bit Oakley group 2 (RFC 2409,
 //!   generator 2); public values travel as big-endian byte strings;
 //! - key derivation: `HKDF-SHA256(ikm = shared secret padded to 128 bytes,
 //!   salt = none, info = empty)`, 128 bits;
 //! - encryption: AES-128-CBC with PKCS#7 padding and a fresh 16-byte IV per
 //!   secret, carried in the secret's `parameters`.
-//!
-//! This is a transport format fixed by the specification, not a construction
-//! Tilo chose. CBC is unauthenticated, and the 1024-bit group is weak by
-//! modern standards; the bus it protects is the person's private session bus,
-//! and at-rest storage uses [`crate::envelope`] instead. The modular
-//! exponentiation is not constant-time; the private exponent lives for one
-//! session and is never reused.
 
 use aes::Aes128;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
@@ -33,11 +21,8 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::error::{Error, Result};
 use crate::keys::{SymmetricKey, fill_random};
 
-/// The session algorithm identifier libsecret negotiates.
 pub const DH_ALGORITHM: &str = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
-/// Length of a CBC initialisation vector, the secret's `parameters`.
 pub const IV_LEN: usize = 16;
-/// Length of a public value and of the padded shared secret.
 pub const GROUP_LEN: usize = 128;
 const KEY_LEN: usize = 16;
 /// The largest ciphertext [`TransportKey::decrypt`] accepts. Secrets are
@@ -74,7 +59,6 @@ pub fn store_key(
     Ok(SymmetricKey::from_bytes(*out))
 }
 
-/// Length of a [`CallerKey`] proof.
 pub const CALLER_PROOF_LEN: usize = 32;
 
 /// What a process that holds the device identity proves it with, to the
@@ -204,7 +188,6 @@ impl Handshake {
         Ok(Self { private, public })
     }
 
-    /// A handshake with a chosen exponent, for known-answer tests.
     #[cfg(test)]
     fn from_exponent(bytes: &[u8]) -> Self {
         let private = BigUint::from_bytes_be(bytes);
@@ -252,7 +235,6 @@ impl Drop for Handshake {
     }
 }
 
-/// The AES-128 key one session derived.
 pub struct TransportKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl TransportKey {
@@ -295,7 +277,6 @@ impl TransportKey {
         Ok(plaintext)
     }
 
-    /// The raw key, for known-answer tests.
     #[cfg(test)]
     fn bytes(&self) -> [u8; KEY_LEN] {
         *self.0
@@ -322,7 +303,6 @@ mod tests {
             server_key.decrypt(&iv, &ciphertext).unwrap().as_slice(),
             b"hunter2"
         );
-        // A fresh IV per secret.
         assert_ne!(iv, client_key.encrypt(b"hunter2").unwrap().0);
     }
 
@@ -354,7 +334,6 @@ mod tests {
         assert!(!key.verify(&[9; 32], ":1.42/", b"usr/bin/shell", &proof));
         assert!(!key.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof[..31]));
         assert!(CallerKey::derive(&[7; 15]).is_err());
-        // The key is not the store's key under another name.
         let salt = [0_u8; 32];
         let store = store_key(&[7; 32], &salt, b"").unwrap();
         assert_ne!(store.expose_secret(), &*key.0);
@@ -419,7 +398,6 @@ mod tests {
                 .unwrap();
             assert_eq!(key.bytes(), plain.bytes(), "{zeros} leading zero bytes");
         }
-        // Zeros do not hide a value that is too large.
         let mut oversized = vec![0_u8; 2];
         oversized.extend_from_slice(&[0xff; GROUP_LEN + 1]);
         assert!(Handshake::new().unwrap().finish(&oversized).is_err());

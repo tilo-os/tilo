@@ -1,9 +1,8 @@
-//! List markers, list spacing and callouts as the Notes editor lays them
-//! out and paints them: wrapping lines, compact prose spacing.
+//! List markers, list spacing and callouts as the Notes editor lays them out and paints them: wrapping
+//! lines, compact prose spacing.
 
 use super::*;
 
-/// An editor configured as Notes configures its page.
 fn page(blocks: Vec<Block>) -> BlockEditor {
     let mut editor = BlockEditor::new()
         .with_wrap_lines(true)
@@ -38,9 +37,8 @@ fn lay_out_and_draw(editor: &mut BlockEditor, theme: &Theme) -> (Scene, TextRend
             height: taffy::AvailableSpace::MaxContent,
         },
         |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |widget| {
-                // The pointers are the stable widget leaves build_layout registered.
-                unsafe { (**widget).measure(known, available, &mut renderer) }
+            nodes.get(&node).map_or(Size::ZERO, |widget| unsafe {
+                (**widget).measure(known, available, &mut renderer)
             })
         },
     )
@@ -57,8 +55,6 @@ fn lay_out_and_draw(editor: &mut BlockEditor, theme: &Theme) -> (Scene, TextRend
     (scene, renderer)
 }
 
-/// Where block `index`'s text starts, and the content edge its prefix
-/// column starts at.
 fn text_start_and_edge(editor: &BlockEditor, index: usize) -> (f64, f64) {
     let block = &editor.blocks[index];
     let line = block.line.get_rect();
@@ -67,7 +63,6 @@ fn text_start_and_edge(editor: &BlockEditor, index: usize) -> (f64, f64) {
     (line.x0 + pad, content_edge(line, gutter, pad))
 }
 
-/// Whether `scene` fills anything in exactly `color`.
 fn scene_fills(scene: &Scene, color: vello::peniko::Color) -> bool {
     use vello_encoding::{DrawMonoid, DrawTag, Monoid};
     let expected = vello_encoding::DrawColor::from(color).rgba;
@@ -92,7 +87,6 @@ fn access_names(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
     }
 }
 
-/// Every block row's kind, in its own words, from the document's tree.
 fn role_descriptions(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
     if node.role == crate::a11y::Role::ListItem
         && let Some(description) = &node.role_description
@@ -163,8 +157,6 @@ fn bullets_numbers_and_boxes_share_one_marker_column() {
             "a bullet is a typographic bullet's size: {} at {font_px} px",
             disc.radius * 2.0
         );
-        // On the first row's x-height: below the row's centre, above its
-        // baseline, though the item wraps onto further rows.
         let (top, row) = bullet_line.first_row_band();
         assert!(
             bullet_line.get_rect().height() > row * 1.5,
@@ -197,7 +189,6 @@ fn bullets_numbers_and_boxes_share_one_marker_column() {
             (number_text - number_right - (bullet_text - bullet_right)).abs() < 0.01,
             "the text starts the same gap after every marker"
         );
-        // The ordinal shares the item's first row.
         assert!((origin.y - editor.blocks[1].line.first_row_band().0).abs() < 0.01);
     }
 }
@@ -215,7 +206,6 @@ fn consecutive_list_items_sit_closer_than_paragraphs() {
         Block::paragraph("After the list"),
     ]);
     lay_out_and_draw(&mut editor, &theme);
-    // From the bottom of one block's text to the top of the next's.
     let gap = |index: usize| {
         let (above_top, above_row) = editor.blocks[index - 1].line.first_row_band();
         let (below_top, _) = editor.blocks[index].line.first_row_band();
@@ -256,8 +246,6 @@ fn nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown() {
         .map(|(block, ordinal)| list_marker::ordinal_label(*ordinal, block.indent()))
         .collect();
     assert_eq!(labels, ["1.", "(a)", "i.", "ii.", "(b)"]);
-    // The row says what the block says, and the kind's own words — the
-    // ordinal as the page shows it — are what it is described as.
     let mut names = Vec::new();
     access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
     for expected in ["Top", "Letter", "Roman", "Letter two"] {
@@ -279,7 +267,6 @@ fn nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown() {
             "{expected}: {described:?}"
         );
     }
-    // Markdown keeps the digits.
     assert_eq!(
         editor.to_markdown(),
         "1. Top\n\n  1. Letter\n\n    1. Roman\n\n    2. Roman two\n\n  2. Letter two\n"
@@ -295,8 +282,6 @@ fn a_paragraph_nested_under_an_item_starts_at_the_item_text() {
         Block::numbered(1, "Deeper"),
         Block::paragraph("More about the deeper item"),
     ]);
-    // Tab on the prose below an item nests it under that item (its
-    // outline children move with it).
     editor.focus_block(1, CursorPlacement::End);
     assert!(editor.try_indent(1, 1));
     assert_eq!(editor.blocks[1].indent(), 1);
@@ -340,7 +325,6 @@ fn a_callout_paints_its_wash_under_its_header_and_text() {
         "its icon and name in the status ink"
     );
 
-    // The header band holds the icon and name above the text.
     let line = editor.blocks[1].line.get_rect();
     let painted = editor.block_paint_rect(1).unwrap();
     assert!(
@@ -359,7 +343,6 @@ fn a_callout_paints_its_wash_under_its_header_and_text() {
         "{described:?}"
     );
 
-    // Without a callout, no wash.
     let mut plain = page(vec![Block::paragraph("Mind the gap")]);
     let (scene, _) = lay_out_and_draw(&mut plain, &theme);
     assert!(!scene_fills(&scene, wash.fill));
@@ -399,7 +382,6 @@ fn backspace_at_a_callouts_start_and_enter_in_an_empty_one_leave_it() {
     assert_eq!(editor.blocks[0].text(), "Keep me");
 }
 
-/// The space above block `index`, in theme pixels.
 fn above(editor: &BlockEditor, index: usize, theme: &Theme) -> f32 {
     editor.stack_boxes[index].margin_top / theme.text_scale
 }
@@ -420,8 +402,6 @@ fn a_block_that_paints_a_surface_clears_the_prose_around_it() {
         Block::paragraph("End"),
     ]);
     lay_out_and_draw(&mut editor, &theme);
-    // A code ground reaches past its box and its header sits inside the block: one surface gap
-    // on either side of it, and of a second fence beside it.
     assert_eq!(above(&editor, 1, &theme), spacing.s4, "above the fence");
     assert_eq!(above(&editor, 2, &theme), spacing.s4, "between fences");
     assert_eq!(above(&editor, 3, &theme), spacing.s4, "below the fence");

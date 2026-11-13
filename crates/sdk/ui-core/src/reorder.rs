@@ -64,8 +64,7 @@ struct DragState<K> {
     hover_emitted: bool,
 }
 
-/// Gesture controller shared by list and tree widgets. Widgets retain model
-/// mutation authority and supply their own hit-tested, validated candidates.
+/// Gesture controller shared by list and tree widgets.
 pub struct ReorderController<K> {
     drag: Option<DragState<K>>,
     drag_threshold: f64,

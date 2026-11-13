@@ -89,8 +89,6 @@ const MAX_RESPOND_TOKENS: u32 = 1024;
 /// How much of a rejected answer is shown back to the model when repairing.
 const REPAIR_ECHO_CHARS: usize = 4000;
 
-const CONTENT_PREFIX: &str = "tilo.content:";
-
 /// Why a transform produced no value. The codes are stable; callers branch
 /// on them.
 pub mod code {
@@ -135,7 +133,7 @@ fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
 
 const INPUT_DOC: &str =
     "The text to transform. Give this or `resource`, not both; at most 128 KiB.";
-const RESOURCE_DOC: &str = "A `tilo.content:<hash>` address of UTF-8 text to transform, as an \
+const RESOURCE_DOC: &str = "A `tilo.content:<reference>` address of UTF-8 text to transform, as an \
      earlier action returned it. Give this or `input`, not both.";
 
 fn input_params() -> [ActionParam; 2] {
@@ -726,11 +724,9 @@ fn check_schema(schema: &Value) -> Result<(), Failure> {
 }
 
 fn read_content(address: &str, content: &ui::content::ContentStore) -> Result<String, Failure> {
-    let hash = address
-        .strip_prefix(CONTENT_PREFIX)
-        .filter(|hash| ui::content::valid_hash(hash))
-        .ok_or_else(|| invalid("`resource` must be a `tilo.content:<hash>` address"))?;
-    let bytes = content.read(hash).ok_or_else(|| {
+    let reference = ui::tilo_resource::content::named(address)
+        .ok_or_else(|| invalid("`resource` must be a `tilo.content:<reference>` address"))?;
+    let bytes = content.read(&reference).ok_or_else(|| {
         failure(
             code::CONTENT_UNAVAILABLE,
             "the agent cannot read that content",
@@ -1495,6 +1491,25 @@ mod tests {
         .unwrap();
         assert_eq!(call.input.as_deref(), Some("The launch moved to Friday."));
         assert_eq!(call.transform, Transform::Summarise { max_chars: 280 });
+        // What a member kept sealed is read by the reference its record
+        // carries, as an address or as the kept value's stored form.
+        let sealed = ui::content::ContentStore::memory().sealing();
+        let text = b"The review is on Monday.";
+        let reference = sealed.put(text).unwrap();
+        let stored = format!(
+            "blake3:{}:{}:{reference}",
+            blake3::hash(text).to_hex(),
+            text.len()
+        );
+        for resource in [format!("tilo.content:{reference}"), stored] {
+            let call = bind(
+                AGENT_SUMMARISE_ACTION,
+                &args(json!({"resource": resource})),
+                &sealed,
+            )
+            .unwrap();
+            assert_eq!(call.input.as_deref(), Some("The review is on Monday."));
+        }
         let missing = bind(
             AGENT_SUMMARISE_ACTION,
             &args(json!({"resource": format!("tilo.content:{}", "0".repeat(64))})),

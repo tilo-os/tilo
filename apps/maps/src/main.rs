@@ -1,8 +1,7 @@
-//! Maps — thin binary entry point. All logic lives in the library.
+//! Maps: OpenStreetMap places, search, routes and public transport.
 //!
-//! The binary runs [`maps::MapsShell`]: the live window, or a `--shots`
-//! capture of one of its scenarios (`--scenario NAME`, every one with
-//! `--shots-dir DIR`).
+//! The binary runs [`maps::MapsShell`]: the live window, or a `--shots` capture of a scenario
+//! (`--scenario NAME`, `--shots-dir DIR`).
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;

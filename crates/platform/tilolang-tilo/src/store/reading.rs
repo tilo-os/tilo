@@ -25,7 +25,7 @@ pub(super) fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
                         && let ScalarValue::Str(ty) = scalar.as_ref()
                         && (own || !out.contains_key(&id))
                     {
-                        out.insert(id, (app.clone(), ty.to_string()));
+                        out.insert(id, (AppId::from(app.as_str()), ty.to_string()));
                     }
                 }
             }

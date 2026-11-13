@@ -1,22 +1,11 @@
 //! Keyed parts of a shell scene section, so a small change inside a section damages that
-//! change's bounds instead of the whole display.
-//!
-//! The retained-damage producer proves a frame sparse by comparing each scene section with the
-//! previous frame's; without parts, any difference inside the workspace (a caret, a peer's
-//! cursor, a hover) made the whole section opaque to that proof. A part marks a stretch of a
-//! section's draw commands with a key and the bounds those commands can paint, and every part
-//! boundary splits the section's encoded streams into pieces, each belonging to the innermost
-//! part open across it. Comparing piece by piece then gives: every piece equal, the section is
-//! unchanged; only pieces of parts differ, damage is each changed part's old and new bounds;
-//! a piece of the section itself differs, or the proof cannot be made, and the frame is dense.
-//!
-//! Correctness rests on two facts: pixels outside every changed part's bounds come from
-//! byte-identical commands in both frames (the sparse renderer re-renders the whole scene inside
-//! the damage, so blend layers above a part compose correctly), and a part's commands are
-//! independent of what precedes them — the encoder dedups a transform or style against the last
-//! one encoded, so each boundary forces the next transform and style to be encoded again.
-//!
-//! Only sections the producer registered ([`track`]) are split.
+//! change's bounds instead of the whole display. The retained-damage producer proves a
+//! frame sparse by comparing each scene section with the previous frame's; without parts,
+//! any difference inside the workspace (a caret, a peer's cursor, a hover) made the whole
+//! section opaque to that proof. Comparing piece by piece then gives: every piece equal,
+//! the section is unchanged; only pieces of parts differ, damage is each changed part's
+//! old and new bounds; a piece of the section itself differs, or the proof cannot be
+//! made, and the frame is dense.
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -32,18 +21,16 @@ pub use widget_keys::{
     keys_widgets, native_field, painted_key, picture, retain_shown, scroll_widget, skip_widget,
 };
 
-/// Bounds what a section draws outside its parts ([`damage_with_copies`],
-/// [`drawn_bounds`]); keep one across frames.
 pub use tilo_cpu_raster::DrawBounds;
 
-/// Identifies one part among the parts of a section. Two frames' parts are
-/// matched by key and position, so a key must name the same thing in both.
+/// Identifies one part among the parts of a section. Two frames' parts are matched by key
+/// and position, so a key must name the same thing in both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PartKey(u64);
 
 impl PartKey {
-    /// A key for `kind` (a fixed name for the draw site) and `id`, which tells
-    /// apart several parts of the same kind (a window's id, a peer's index).
+    /// A key for `kind` (a fixed name for the draw site) and `id`, which tells apart
+    /// several parts of the same kind (a window's id, a peer's index).
     pub fn new(kind: &'static str, id: impl Hash) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         kind.hash(&mut hasher);
@@ -52,7 +39,6 @@ impl PartKey {
     }
 }
 
-/// Lengths of every encoded stream and resource list at one boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Marks {
     path_tags: usize,
@@ -85,7 +71,6 @@ impl Marks {
         }
     }
 
-    /// `marks` of a scene appended where `self` was the length so far.
     fn offset(self, marks: Self) -> Self {
         Self {
             path_tags: self.path_tags.saturating_add(marks.path_tags),
@@ -108,47 +93,35 @@ impl Marks {
 #[derive(Clone, Debug)]
 enum Boundary {
     Begin(PartKey),
-    /// The bounds, in section coordinates, of everything the part drew.
     End(Vec<Rect>),
-    /// The end of a part with no bounds of its own ([`hinted`]): a change
-    /// inside it damages what its hint says changed when the hint follows
-    /// on from the compared frame's, and its enclosing part otherwise.
+    /// The end of a part with no bounds of its own ([`hinted`]): a change inside it
+    /// damages what its hint says changed when the hint follows on from the compared
+    /// frame's, and its enclosing part otherwise.
     EndHinted(Option<DamageHint>),
 }
 
-/// What changed in a part's content between two generations of it, as the
-/// one who painted it knows: an embedded app's own widget damage.
+/// What changed in a part's content between two generations of it, as the one who painted
+/// it knows: an embedded app's own widget damage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamageHint {
-    /// Who painted the content. A hint follows on only within one source.
+    /// Who painted the content.
     pub source: u64,
     pub from: u64,
-    /// The generation painted.
     pub to: u64,
-    /// Where the content is placed: content placed elsewhere has moved.
     pub placement: vello::kurbo::Affine,
-    /// Every pixel that differs between generations `from` and `to`, in the
-    /// section's coordinates, antialiasing, shadows and overhang included,
-    /// except where `copies` land.
+    /// Every pixel that differs between generations `from` and `to`, in the section's
+    /// coordinates, antialiasing, shadows and overhang included, except where `copies`
+    /// land.
     pub rects: Vec<Rect>,
-    /// What of generation `from` generation `to` shows moved, in the
-    /// section's coordinates ([`crate::scroll_copy`]): a host that keeps the
-    /// pixels it presented may move them instead of repainting where they
-    /// land ([`damage_with_copies`]). Any other host repaints there.
+    /// What of generation `from` generation `to` shows moved, in the section's
+    /// coordinates ([`crate::scroll_copy`]): a host that keeps the pixels it presented
+    /// may move them instead of repainting where they land ([`damage_with_copies`]).
     pub copies: Vec<crate::scroll_copy::MovedRegion>,
-    /// What differs between each earlier generation still known and `to`,
-    /// as `rects` does for `from`: a host that presented an older
-    /// generation (the content was drawn more than once between two of its
-    /// frames) repaints these instead of the whole part.
     pub earlier: Vec<(u64, Vec<Rect>)>,
 }
 
 impl DamageHint {
-    /// `self`'s damage when it describes the change from `previous`'s
-    /// content: the same source placed in the same place, painting the
-    /// generation that follows the one `previous` painted.
     fn follows(&self, previous: &Self) -> bool {
-        // The generation this one was measured from is the one painted then.
         let next_generation = previous.to == self.from;
         next_generation
             && self.source == previous.source
@@ -156,8 +129,6 @@ impl DamageHint {
             && !(self.rects.is_empty() && self.copies.is_empty())
     }
 
-    /// `self`'s damage since `previous` when that painted an earlier
-    /// generation of the same source in the same place.
     fn reaches(&self, previous: &Self) -> Option<&[Rect]> {
         if self.source != previous.source || self.placement != previous.placement {
             return None;
@@ -168,8 +139,6 @@ impl DamageHint {
             .map(|(_, rects)| rects.as_slice())
     }
 
-    /// What changed for a host that makes no copy: the rects, and where
-    /// every copy lands.
     fn repainted(&self) -> Vec<Rect> {
         self.rects
             .iter()
@@ -191,7 +160,6 @@ impl DamageHint {
         for copy in &self.copies {
             match copy.transformed(transform) {
                 Some(moved) => copies.push(moved),
-                // Moved under a rotation, the copy is repainted.
                 None => rects.push(transform.transform_rect_bbox(copy.destination()).expand()),
             }
         }
@@ -216,27 +184,22 @@ impl DamageHint {
     }
 }
 
-/// A copy a hinted part's content made ([`DamageHint::copies`]), as a host
-/// presenting the section over its last frame must check it: what it moves,
-/// what the section draws over that content, and how it composites.
+/// A copy a hinted part's content made ([`DamageHint::copies`]), as a host presenting the
+/// section over its last frame must check it: what it moves, what the section draws over
+/// that content, and how it composites.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SectionCopy {
-    /// What moved, in section coordinates.
     pub moved: crate::scroll_copy::MovedRegion,
-    /// Where the section draws after the content the copy moves, over it:
-    /// bounded parts' bounds and the draw bounds of everything else. `None`
-    /// when some of it cannot be bounded.
     pub above: Option<Vec<Rect>>,
-    /// Whether every layer open around the content is a plain clip or a
-    /// source-over group at full opacity, so its pixels are its own.
+    /// Whether every layer open around the content is a plain clip or a source-over group
+    /// at full opacity, so its pixels are its own.
     pub plain_layers: bool,
 }
 
-/// [`damage_with_copies`] — where a section changed, and the copies that
-/// explain the rest.
+/// [`damage_with_copies`] — where a section changed, and the copies that explain the
+/// rest.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SectionDamage {
-    /// Where the section changed, except where the copies land.
     pub rects: Vec<Rect>,
     pub copies: Vec<SectionCopy>,
 }
@@ -255,20 +218,17 @@ impl SectionDamage {
     }
 }
 
-/// How a host presents a frame over the pixels of the one before:
-/// [`present_copies`].
+/// How a host presents a frame over the pixels of the one before: [`present_copies`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presented {
-    /// The copies to make within the target, in order, before anything is
-    /// repainted.
     pub copies: Vec<crate::scroll_copy::DeviceCopy>,
     /// What to repaint after them, in device pixels.
     pub raster: Vec<Rect>,
 }
 
 impl Presented {
-    /// Every pixel the frame changes: what is repainted and where the
-    /// copies land, in device pixels.
+    /// Every pixel the frame changes: what is repainted and where the copies land, in
+    /// device pixels.
     pub fn changed(&self) -> Vec<Rect> {
         self.raster
             .iter()
@@ -282,19 +242,8 @@ impl Presented {
     }
 }
 
-/// Decide which of a frame's section copies ([`damage_with_copies`]) a host
-/// that keeps its target makes, and what it repaints around them. `damage`
-/// is every other change of the frame, in device pixels; `above` is where
-/// the scene draws over the section after it (later sections), in section
-/// coordinates; `to_device` maps section coordinates into the `size`
-/// target.
-///
-/// A copy is made only when its content composites on its own (plain layers
-/// around it), everything drawn over it is bounded, its delta is a whole
-/// number of device pixels and it meets no earlier copy. What is drawn over
-/// it (in the section or above) is repainted where it is and, carried, where
-/// the copy took its pixels ([`crate::scroll_copy::carry`]), as is every
-/// other change a copy reads; a copy not made repaints where it lands.
+/// Decide which of a frame's section copies ([`damage_with_copies`]) a host that keeps
+/// its target makes, and what it repaints around them.
 pub fn present_copies(
     copies: &[SectionCopy],
     mut damage: Vec<Rect>,
@@ -404,8 +353,8 @@ impl Drop for Recording {
 pub struct Recorded(Vec<Log>);
 
 impl Recorded {
-    /// The parts of `scene`, or `None` when it was not tracked or its parts
-    /// were not well nested (a part left open, an end without a begin).
+    /// The parts of `scene`, or `None` when it was not tracked or its parts were not well
+    /// nested (a part left open, an end without a begin).
     pub fn of(&self, scene: &Scene) -> Option<SectionParts> {
         let log = self.0.iter().find(|log| std::ptr::eq(log.scene, scene))?;
         (!log.broken && log.open == 0).then(|| SectionParts {
@@ -414,8 +363,8 @@ impl Recorded {
     }
 }
 
-/// Split `scene` at its parts' boundaries for the active recording. The
-/// section must stay at its address until the recording finishes.
+/// Split `scene` at its parts' boundaries for the active recording. The section must stay
+/// at its address until the recording finishes.
 pub fn track(scene: &Scene) {
     RECORDING.with(|slot| {
         if let Some(logs) = slot.borrow_mut().as_mut()
@@ -454,16 +403,13 @@ fn boundary(scene: &mut Scene, boundary: Boundary) {
         true
     });
     if tracked {
-        // Neither side of a boundary may depend on the other's last
-        // transform or style.
         scene.encoding_mut().force_next_transform_and_style();
     }
 }
 
-/// Draw one part of a section: `bounds`, in the section's coordinates (the
-/// draw transform already applied), must cover every pixel `draw` can paint,
-/// shadows and antialiasing included. An empty `bounds` claims `draw` paints
-/// nothing; a part that then draws anything is treated as unbounded.
+/// Draw one part of a section: `bounds`, in the section's coordinates (the draw transform
+/// already applied), must cover every pixel `draw` can paint, shadows and antialiasing
+/// included.
 pub fn part<R>(
     scene: &mut Scene,
     key: PartKey,
@@ -485,9 +431,8 @@ pub fn is_tracked(scene: &Scene) -> bool {
     })
 }
 
-/// Begin a part keyed `key` around draws too long to pass to [`part`] as one
-/// closure; [`end`] closes it, under the same contract. A part left open
-/// gives the section no parts.
+/// Begin a part keyed `key` around draws too long to pass to [`part`] as one closure;
+/// [`end`] closes it, under the same contract.
 pub fn begin(scene: &mut Scene, key: PartKey) {
     boundary(scene, Boundary::Begin(key));
 }
@@ -497,20 +442,16 @@ pub fn end(scene: &mut Scene, bounds: Vec<Rect>) {
     boundary(scene, Boundary::End(bounds));
 }
 
-/// [`part`] for a draw that knows what it painted only once it has: `draw`
-/// returns the bounds, under the same contract.
+/// [`part`] for a draw that knows what it painted only once it has: `draw` returns the
+/// bounds, under the same contract.
 pub fn part_drawn(scene: &mut Scene, key: PartKey, draw: impl FnOnce(&mut Scene) -> Vec<Rect>) {
     boundary(scene, Boundary::Begin(key));
     let bounds = draw(scene);
     boundary(scene, Boundary::End(bounds));
 }
 
-/// Draw one part of a section with no bounds of its own: `draw` paints
-/// content whose change since an earlier frame `hint` describes. A change
-/// inside the part damages the hint's rects when the hint follows on from
-/// the compared frame's (same source and placement, the next generation).
-/// Otherwise, or with no hint, the change belongs to the enclosing part, and
-/// outside every bounded part it is not proven.
+/// Draw one part of a section with no bounds of its own: `draw` paints content whose
+/// change since an earlier frame `hint` describes.
 pub fn hinted<R>(
     scene: &mut Scene,
     key: PartKey,
@@ -523,17 +464,16 @@ pub fn hinted<R>(
     result
 }
 
-/// Close the part [`begin`] opened as a [`hinted`] part: for a draw that
-/// knows what changed only once it has drawn (a widget notes its damage
-/// while drawing).
+/// Close the part [`begin`] opened as a [`hinted`] part: for a draw that knows what
+/// changed only once it has drawn (a widget notes its damage while drawing).
 pub fn end_hinted(scene: &mut Scene, hint: Option<DamageHint>) {
     boundary(scene, Boundary::EndHinted(hint));
 }
 
-/// Record the parts of a scene drawn on its own (a retained scene a widget
-/// re-records only when it changes): the parts `draw` marks in `scene`, or
-/// `None` when they are not well nested. Any recording around this one is
-/// suspended while `draw` runs, so `draw` must paint only into `scene`.
+/// Record the parts of a scene drawn on its own (a retained scene a widget re-records
+/// only when it changes): the parts `draw` marks in `scene`, or `None` when they are not
+/// well nested. Any recording around this one is suspended while `draw` runs, so `draw`
+/// must paint only into `scene`.
 pub fn record<R>(
     scene: &mut Scene,
     draw: impl FnOnce(&mut Scene) -> R,
@@ -545,10 +485,9 @@ pub fn record<R>(
     (result, parts)
 }
 
-/// Append `other`, whose parts were recorded as `parts` ([`record`]), so
-/// that a tracked `scene` keeps them: each becomes a part of `scene` at the
-/// same place, its bounds carried through `transform`. Without `parts`
-/// everything `other` draws belongs to whatever part this append is in.
+/// Append `other`, whose parts were recorded as `parts` ([`record`]), so that a tracked
+/// `scene` keeps them: each becomes a part of `scene` at the same place, its bounds
+/// carried through `transform`.
 pub fn append(
     scene: &mut Scene,
     other: &Scene,
@@ -561,8 +500,8 @@ pub fn append(
 }
 
 /// [`append`] for a caller that appends the recorded scene itself (with
-/// [`crate::backdrop::append_nested`], say): `append` must append exactly
-/// that scene at `transform`.
+/// [`crate::backdrop::append_nested`], say): `append` must append exactly that scene at
+/// `transform`.
 pub fn append_with<R>(
     scene: &mut Scene,
     parts: Option<&SectionParts>,
@@ -600,8 +539,7 @@ pub fn append_with<R>(
         true
     });
     if tracked {
-        // What follows must not depend on the last transform or style
-        // `other` encoded.
+        // What follows must not depend on the last transform or style `other` encoded.
         scene.encoding_mut().force_next_transform_and_style();
     }
     result
@@ -610,27 +548,15 @@ pub fn append_with<R>(
 /// Why two frames of a section cannot be compared piece by piece.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unproven {
-    /// The parts differ in number, kind or key.
     Structure,
-    /// Commands outside every part differ.
     Section,
-    /// A changed part has bounds that are missing, empty while it draws, or
-    /// not finite.
     Unbounded,
-    /// The recorded boundaries do not fit the encoding.
     Corrupt,
 }
 
-/// Damage, in section coordinates, between two frames of a section drawn
-/// with parts: the old and new bounds of every part whose commands changed
-/// (or what a [`hinted`] part's hint says changed). `Ok` with no rects means
-/// the section is unchanged.
-///
-/// When the parts nested inside some part differ between the frames (a menu
-/// that opened inside an overlay drew a part of its own), the parts down to
-/// the deepest nesting both frames still have alike are compared instead,
-/// each part at that depth as a whole: a window's menu damages its window,
-/// a window a lane draws again damages that lane.
+/// Damage, in section coordinates, between two frames of a section drawn with parts: the
+/// old and new bounds of every part whose commands changed (or what a [`hinted`] part's
+/// hint says changed).
 pub fn damage(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -653,16 +579,12 @@ pub fn damage(
     proven.map(|(rects, _)| rects)
 }
 
-/// [`damage`] for a host that presents the section over the pixels of the
-/// frame it compares with and can move them: a hinted part whose hint
-/// follows on and carries copies ([`DamageHint::copies`]) damages its rects
-/// only, and each copy comes with what the section draws over it and how
-/// its content composites, which the host must check before making it
-/// (and otherwise repaint where it lands, [`SectionDamage::without_copies`]).
-/// `bounds` bounds the draws of the section outside every bounded part.
-///
-/// # Errors
-/// As [`damage`].
+/// [`damage`] for a host that presents the section over the pixels of the frame it
+/// compares with and can move them: a hinted part whose hint follows on and carries
+/// copies ([`DamageHint::copies`]) damages its rects only, and each copy comes with what
+/// the section draws over it and how its content composites, which the host must check
+/// before making it (and otherwise repaint where it lands,
+/// [`SectionDamage::without_copies`]). As [`damage`].
 pub fn damage_with_copies(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -672,7 +594,6 @@ pub fn damage_with_copies(
 ) -> Result<SectionDamage, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
     let (rects, copied) = match compare(previous, old_events, current, new_events, true) {
-        // Compared as wholes at a shallower depth, hints say nothing.
         Err(Unproven::Structure) => (
             damage(previous, previous_parts, current, current_parts)?,
             Vec::new(),
@@ -701,9 +622,9 @@ pub fn damage_with_copies(
     Ok(SectionDamage { rects, copies })
 }
 
-/// Where `scene`, drawn with `parts` (if it was), paints anything: inside a
-/// bounded part by that part's bounds, anywhere else by its draw bounds.
-/// `None` when some of it cannot be bounded.
+/// Where `scene`, drawn with `parts` (if it was), paints anything: inside a bounded part
+/// by that part's bounds, anywhere else by its draw bounds. `None` when some of it cannot
+/// be bounded.
 pub fn drawn_bounds(
     scene: &Scene,
     parts: Option<&SectionParts>,
@@ -734,12 +655,11 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     None
 }
 
-/// Where `scene` paints in its pieces from `first` on: a piece inside a
-/// bounded part by that part's bounds, any other by its draw bounds. The
-/// parts still open at `first` (those around the part that ended there)
-/// cover that part too, so their bounds would say everything after it is
-/// over it: a piece only they bound counts by its draw bounds, and by
-/// theirs only where those cannot bound it.
+/// Where `scene` paints in its pieces from `first` on: a piece inside a bounded part by
+/// that part's bounds, any other by its draw bounds. The parts still open at `first`
+/// (those around the part that ended there) cover that part too, so their bounds would
+/// say everything after it is over it: a piece only they bound counts by its draw bounds,
+/// and by theirs only where those cannot bound it.
 fn drawn_from(
     scene: &Scene,
     events: &[Event],
@@ -790,14 +710,8 @@ fn drawn_from(
     drawn.iter().all(Rect::is_finite).then_some(drawn)
 }
 
-/// `scene`, drawn with `parts`, without every bounded part whose bounds
-/// `wanted` refuses, or `None` when no part is left out. Where the parts
-/// left out paint nothing, the result paints what `scene` does: a part's
-/// commands depend on nothing before them ([`boundary`]), and only a part
-/// whose layers it pops itself is left out, so every layer around the rest
-/// is the same. A renderer's work grows with every path a scene holds,
-/// wherever it lands, so a frame repainting a small damage renders only
-/// what can reach it.
+/// `scene`, drawn with `parts`, without every bounded part whose bounds `wanted` refuses,
+/// or `None` when no part is left out.
 pub fn culled(
     scene: &Scene,
     parts: &SectionParts,
@@ -850,8 +764,8 @@ pub fn culled(
     Some(out)
 }
 
-/// Whether the draw tags from `start` to `end` close every layer they open,
-/// and only those.
+/// Whether the draw tags from `start` to `end` close every layer they open, and only
+/// those.
 fn pops_own_layers(encoding: &Encoding, start: usize, end: usize) -> bool {
     use vello_encoding::DrawTag;
     let Some(tags) = encoding.draw_tags.get(start..end) else {
@@ -871,8 +785,6 @@ fn pops_own_layers(encoding: &Encoding, start: usize, end: usize) -> bool {
     open == 0
 }
 
-/// The path, segment and layer counts of `encoding`, as encoding its
-/// commands one by one counts them: slices ([`slice`]) carry none.
 fn count_streams(encoding: &mut Encoding) {
     use vello_encoding::{DrawTag, PathTag};
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
@@ -904,10 +816,6 @@ fn count_streams(encoding: &mut Encoding) {
     encoding.n_open_clips = count(begins.saturating_sub(ends));
 }
 
-/// [`damage`] for one list of boundaries per frame, compared piece by piece.
-/// With `copies`, a hinted part whose hint carries copies damages its rects
-/// alone and is listed, by the index of its begin, beside the damage;
-/// without, it damages where its copies land too.
 fn compare(
     previous: &Scene,
     old_events: &[Event],
@@ -923,7 +831,6 @@ fn compare(
     {
         return Err(Unproven::Structure);
     }
-    // How each part ends, found at its end, by the index of its begin.
     let (old_ends, new_ends) = (part_ends(old_events)?, part_ends(new_events)?);
     let mut open: Vec<usize> = Vec::new();
     let mut damage = Vec::new();
@@ -951,7 +858,6 @@ fn compare(
                 if copying {
                     copied.push(owner);
                 }
-                // A part that changed in place has the same bounds twice.
                 for rect in rects {
                     if !damage.contains(&rect) {
                         damage.push(rect);
@@ -976,10 +882,6 @@ fn compare(
     Ok((damage, copied))
 }
 
-/// The part a change inside the `open` parts (innermost last) damages, and
-/// what it damages: the innermost part with bounds, its old and new bounds,
-/// unless a hinted part inside it has a hint that follows on, whose rects
-/// it damages instead.
 fn changed_owner(
     open: &[usize],
     old_ends: &[PartEnd<'_>],
@@ -1023,14 +925,12 @@ fn same_boundary_kind(old: &Boundary, new: &Boundary) -> bool {
     }
 }
 
-/// How a part ends: with its bounds, or with a damage hint ([`hinted`]).
 #[derive(Clone, Copy)]
 enum PartEnd<'a> {
     Bounds(&'a [Rect]),
     Hint(Option<&'a DamageHint>),
 }
 
-/// How every part ends, indexed by the event that begins it.
 fn part_ends(events: &[Event]) -> Result<Vec<PartEnd<'_>>, Unproven> {
     let mut ends = vec![PartEnd::Bounds(&[]); events.len()];
     let mut open = Vec::new();
@@ -1053,8 +953,7 @@ fn part_ends(events: &[Event]) -> Result<Vec<PartEnd<'_>>, Unproven> {
     }
 }
 
-/// How deep the parts of a section nest: 1 when none is inside another, 0
-/// with no parts.
+/// How deep the parts of a section nest: 1 when none is inside another, 0 with no parts.
 fn nesting(events: &[Event]) -> usize {
     let (mut depth, mut deepest) = (0_usize, 0_usize);
     for event in events {
@@ -1069,13 +968,8 @@ fn nesting(events: &[Event]) -> usize {
     deepest
 }
 
-/// The boundaries of the parts nested at most `max` deep (1: the outermost
-/// parts only): each part at that depth compares as a whole, whatever parts
-/// it draws inside. Below the outermost depth a kept hinted part keeps no
-/// hint: a hint says what changed in content drawn alike, and parts inside
-/// it may have come or gone, so a change in it belongs to the bounded part
-/// around it. An outermost hinted part has no bounded part around it and
-/// keeps its hint, as the outermost comparison always has.
+/// The boundaries of the parts nested at most `max` deep (1: the outermost parts only):
+/// each part at that depth compares as a whole, whatever parts it draws inside.
 fn to_depth(events: &[Event], max: usize) -> Result<Vec<Event>, Unproven> {
     let mut depth = 0_usize;
     let mut kept = Vec::new();
@@ -1115,8 +1009,6 @@ fn to_depth(events: &[Event], max: usize) -> Result<Vec<Event>, Unproven> {
     }
 }
 
-/// The marks bounding piece `piece`: from the boundary before it (or the
-/// start) to the boundary after it (or the end).
 fn piece_range(encoding: &Encoding, events: &[Event], piece: usize) -> (Marks, Marks) {
     let start = piece
         .checked_sub(1)
@@ -1128,8 +1020,6 @@ fn piece_range(encoding: &Encoding, events: &[Event], piece: usize) -> (Marks, M
     (start, end)
 }
 
-/// One piece of an encoding as an encoding of its own, every offset into the
-/// parent rebased onto the piece, so pieces at different positions compare.
 fn slice(encoding: &Encoding, (start, end): (Marks, Marks)) -> Option<Scene> {
     fn range<T: Clone>(items: &[T], start: usize, end: usize) -> Option<Vec<T>> {
         items.get(start..end).map(<[T]>::to_vec)

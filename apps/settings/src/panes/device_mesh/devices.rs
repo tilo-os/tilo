@@ -18,13 +18,9 @@ use provider_settings_ui::widgets::{
     semantic_status_pill, setting_row_described, value_row,
 };
 
-/// The entry this device has in the list before the device list answers.
 const THIS_DEVICE_KEY: &str = "this-device";
 
-/// One device of the person's, as the list shows it once: from the device
-/// list, the home servers, or both.
 struct DeviceEntry<'a> {
-    /// The row's stable key: the device's key or node id, in hex.
     key: String,
     label: String,
     personal: Option<&'a crate::device_fleet::DeviceView>,
@@ -33,9 +29,6 @@ struct DeviceEntry<'a> {
 }
 
 impl Page<'_> {
-    /// The person's devices, each once: this device first, then the others
-    /// with their home servers among them, then the ones whose access
-    /// ended. A home server the device list also names is one entry.
     fn device_entries(&self) -> Vec<DeviceEntry<'_>> {
         let peer_of = |device: &crate::device_fleet::DeviceView| {
             let key = hex::encode(device.key);
@@ -106,8 +99,6 @@ impl Page<'_> {
         entries
     }
 
-    /// "Your devices": one list, each device opening its settings in place
-    /// under its own row; adding a device or a home server below it.
     pub(super) fn devices_section(&self) -> SettingsSection {
         let pairing = self.pairing_call.is_some();
         let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
@@ -193,8 +184,6 @@ impl Page<'_> {
         section_with(&t("mesh-trusted-title"), add_device, rows(items))
     }
 
-    /// A device's line under its name: what it is to the others and, for a
-    /// home server, how it is doing.
     fn device_state(&self, entry: &DeviceEntry<'_>) -> String {
         if entry.this {
             return t("mesh-status-this-device");
@@ -225,7 +214,6 @@ impl Page<'_> {
         }
     }
 
-    /// The selected device's settings, in one place under its row.
     fn device_details(&self, entry: &DeviceEntry<'_>) -> Box<dyn Widget> {
         let mut items = Vec::new();
         if let Some(device) = entry.personal {
@@ -248,8 +236,6 @@ impl Page<'_> {
         ))])
     }
 
-    /// This device's own settings: how available it is, what it keeps,
-    /// which workspaces, and the services a serving device offers.
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
         let role_shown_value = role_shown(self.config.device_role);
         let role_state = ui::LocalState::new(role_shown_value.clone());
@@ -304,7 +290,6 @@ impl Page<'_> {
         out
     }
 
-    /// What this device keeps of the workspaces it syncs.
     fn files_row(&self) -> provider_settings_ui::widgets::Item {
         let files = t("mesh-files");
         if !self.config.device_role.can_serve() {
@@ -333,7 +318,6 @@ impl Page<'_> {
         )
     }
 
-    /// The services a serving device offers, each a switch.
     fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
         [
             self.service_row(
@@ -367,8 +351,6 @@ impl Page<'_> {
         ]
     }
 
-    /// A home server's name, changed in place (Enter or clicking away
-    /// commits it), and how it is doing.
     fn home_peer_rows(
         &self,
         peer: &tilo_relay_protocol::HomePeerRegistration,
@@ -401,10 +383,6 @@ impl Page<'_> {
         ]
     }
 
-    /// Removing a device. A home server asks first, in place, and offers
-    /// Remove beside Cancel. A personal device's access ends where every
-    /// key acting as the person is managed: its button opens Devices and
-    /// access, which revokes it with the reason the person gives.
     fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<provider_settings_ui::widgets::Item> {
         let Some(peer) = entry.peer else {
             if entry.personal.is_none() {

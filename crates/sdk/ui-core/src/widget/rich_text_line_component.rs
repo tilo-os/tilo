@@ -1,8 +1,4 @@
 //! [`RichTextLine`] as a described component: one editable line of text.
-//!
-//! The line is a field of its own: a view that writes several lines, or a host composing a
-//! block editor, gets each line's typed text through its bound value, and its keys that would
-//! leave the line through events.
 
 use crate::component::{Bound, Component, Described, Event, Value};
 use crate::tokens::TextRole;
@@ -11,10 +7,8 @@ use super::{LineSignal, RichTextLine};
 use crate::widget::DrawChild;
 use crate::widget::TextInput;
 
-/// One line of text, edited in place: a block editor's cell, a composer's message. It carries
-/// its text and its inline marks, and reports the keys that would carry the edit out of the
-/// line itself (Enter, Shift+Enter, Backspace at the start), so a host composing several lines
-/// can split or join them.
+/// One line of text edited in place (a block editor's cell, a composer's message), with its
+/// inline marks, reporting the keys that end or break it so a host can split or join lines.
 #[derive(Component)]
 #[component(name = "RichTextLine", role = "TextInput", label = "placeholder")]
 pub struct RichTextLineProps {
@@ -27,7 +21,7 @@ pub struct RichTextLineProps {
     pub role: Option<TextRole>,
     /// The text is monospace (code).
     pub mono: bool,
-    /// The line wraps to its width rather than scrolling across.
+    /// The line wraps to its width instead of scrolling.
     pub wrap: bool,
     /// Enter was pressed: the line ends at this byte.
     #[component(event(value = i64))]
@@ -87,14 +81,12 @@ impl DeclaredLine {
         }
     }
 
-    /// The line, for a host to lay out.
     #[must_use]
     pub fn line(&mut self) -> &mut RichTextLine {
         &mut self.line
     }
 }
 
-/// The line the props describe: its text the bound value's, each edit reported to it.
 fn build(
     value: &Bound<String>,
     placeholder: Option<&str>,
@@ -217,8 +209,6 @@ impl DeclaredLine {
             LineSignal::Enter { split_at } => self.enter.fire(at(split_at)),
             LineSignal::SoftNewline { split_at } => self.soft_enter.fire(at(split_at)),
             LineSignal::BackspaceAtStart => self.backspace.fire(None),
-            // The arrows at the ends leave the caret's line to the host's own block editor; a
-            // view composing lines reports only what it can act on.
             _ => return false,
         }
         true
@@ -232,7 +222,6 @@ impl Described for DeclaredLine {
         Self::new(props)
     }
 
-    /// Changed text or a changed reading takes in place, the caret kept.
     fn set_props(&mut self, props: RichTextLineProps) -> bool {
         let RichTextLineProps {
             value,

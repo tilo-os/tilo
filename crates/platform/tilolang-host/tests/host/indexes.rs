@@ -3,26 +3,6 @@
 
 use super::*;
 
-/// [`settle`], every window of `windows` taken: two windows of one app in one host both wait for
-/// their instance's frames.
-fn settle_all(host: &mut TilolangHost, windows: &mut [Window]) {
-    let mut quiet_since = std::time::Instant::now();
-    loop {
-        let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
-        let changed = host.turn();
-        for window in &mut *windows {
-            window.take();
-        }
-        if changed || woken {
-            quiet_since = std::time::Instant::now();
-        } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
-            return;
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    }
-}
-
 /// Two windows of one app in one host share the record's index and both read it: the second reads
 /// what the first built rather than building it again, and nothing is kept per window. Copies an
 /// earlier build kept per window are removed.
@@ -53,7 +33,10 @@ fn two_windows_of_one_app_in_a_host_share_one_index_and_both_read_it() {
             automerge::AutoCommit::new(),
         );
         windows.push(window);
-        settle_all(&mut host, &mut windows);
+        // Both windows' frames, until the host owes none: the second instance opens while the
+        // first runs.
+        let mut shown: Vec<&mut Window> = windows.iter_mut().collect();
+        settle_all(&mut host, &mut shown, |_| false);
     }
     let instances: Vec<&Hosted> = host.instances().collect();
     assert_eq!(

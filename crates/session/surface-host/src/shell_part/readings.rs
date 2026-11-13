@@ -11,7 +11,11 @@ use tilolang_tilo::origin::OriginCx;
 use tilolang_tilo::records_service::{app_of, placed_records};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
-use super::{ArrangementReading, Ask, SessionLink, SessionOrigin};
+use super::{
+    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
+    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, SessionLink,
+    SessionOrigin,
+};
 
 impl SessionLink {
     /// The session published `reading` of the resource `id`, of the type `ty` (`<app>#<Type>`):
@@ -25,6 +29,22 @@ impl SessionLink {
         self.readings.borrow_mut().insert(id.to_owned(), fresh);
         self.readings_fresh.borrow_mut().insert(id.to_owned());
         true
+    }
+
+    /// The address the session published the resource `reference` under, when it published it:
+    /// the shell's runtime names another app's resource as its document and item
+    /// (`chat.workspace/c_general`), while the session's catalogue names the same resource by its
+    /// own address (`chat.workspace/channels/c_general`). A menu, a sheet or a press the shell
+    /// sends back to the session's door must name it as the session published it, or the door
+    /// finds no such action.
+    #[must_use]
+    pub fn published_address(&self, reference: &str) -> Option<String> {
+        let reference = tilolang_tilo::runtime::value::flat_id(reference);
+        let readings = self.readings.borrow();
+        readings
+            .iter()
+            .find(|(id, _)| tilolang_tilo::runtime::value::flat_id(id) == reference)
+            .map(|(id, _)| id.clone())
     }
 
     /// The verbs the session's resources publish that no loaded package declares, by resource
@@ -181,6 +201,71 @@ impl SessionLink {
     }
 }
 
+/// Each app of `packages`, the apps a place shows and the session serves, with the apps whose
+/// packages they use (`use app.id as x`), closed over uses to any depth: a view of a placed app
+/// that calls another app's `fn` (`discussion.said_about(t)`) runs that app's code, so its
+/// package has to stand loaded here as the placed app's does. An app `module` answers nothing
+/// for is left out, and the place waits for it as it waits for any package the session has not
+/// served. So is an app this shell's runtime already holds as a package of its own
+/// (`held_here`): every module lists `tilo.std` among the apps it uses (`PackageMeta::uses`),
+/// and the session serves its module, but it is no app of the workspace and loading it as one
+/// puts a package on the shell no place shows.
+#[must_use]
+pub fn with_uses(
+    packages: impl IntoIterator<Item = (String, std::sync::Arc<[u8]>)>,
+    module: impl Fn(&str) -> Option<std::sync::Arc<[u8]>>,
+) -> BTreeMap<String, std::sync::Arc<[u8]>> {
+    let mut out: BTreeMap<String, std::sync::Arc<[u8]>> = BTreeMap::new();
+    let mut queue: Vec<String> = Vec::new();
+    for (app, wasm) in packages {
+        if out.insert(app.clone(), wasm).is_none() {
+            queue.push(app);
+        }
+    }
+    while let Some(app) = queue.pop() {
+        let Some(wasm) = out.get(&app).cloned() else {
+            continue;
+        };
+        let Some(meta) = tilolang_tilo::runtime::Meta::from_wasm(&wasm) else {
+            continue;
+        };
+        for used in meta.uses {
+            if used == app || out.contains_key(&used) || held_here(&used) {
+                continue;
+            }
+            if let Some(module) = module(&used)
+                && out.insert(used.clone(), module).is_none()
+            {
+                queue.push(used);
+            }
+        }
+    }
+    out
+}
+
+/// Whether the shell's runtime already holds what `app` is as a package, so a place's apps must
+/// not bring it in again as another app's code:
+///
+/// * the platform's packages (`tilolang_tilo::platform_apps::platform_packages`: the device,
+///   Settings and the session), which the runtime loads for itself as descriptions the session's
+///   door answers (`ShellPlatform::load`), so a used one stands here already and loading it
+///   again would redeclare its ids;
+/// * the standard library (`tilo.std`), which every module lists among its uses but which shows
+///   nothing itself: its views are templates the compiler expands into their callers, so no
+///   call runs its code and the runtime holds no package of it and needs none.
+fn held_here(app: &str) -> bool {
+    if app == tilolang_tilo::tilolang::stdlib::APP {
+        return true;
+    }
+    match tilolang_tilo::platform_apps::platform_packages() {
+        Ok(packages) => packages.iter().any(|meta| meta.app == app),
+        Err(why) => {
+            tracing::error!(%why, "the platform's packages do not read");
+            false
+        }
+    }
+}
+
 impl SessionOrigin {
     /// Hand the runtime the readings the session published since the last poll: the views
     /// composed over those resources run again. Whether any reading was new.
@@ -308,13 +393,14 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         use tilolang_tilo::runtime::delegate::{Invocation, Invoked};
         let ask = match invocation {
             Invocation::Action {
-                action,
+                name,
                 subject: Some(subject),
                 from,
                 ..
             } => Ask {
                 resource: subject.id_string(),
-                action: action.clone(),
+                // As the resource's app publishes it.
+                action: name.clone(),
                 arguments: invocation.door_arguments().into_iter().collect(),
                 from: from
                     .as_ref()
@@ -346,7 +432,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
             }
             Invocation::Edit {
                 target,
-                field_id,
+                field,
                 value,
                 ..
             } => {
@@ -355,10 +441,14 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
                 };
                 Ask {
-                    resource: target.id_string(),
+                    // As a press: the session's own address, never the flattened reference.
+                    resource: self
+                        .link
+                        .published_address(&target.id_string())
+                        .unwrap_or_else(|| target.id_string()),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
-                        ("field".to_owned(), field_id.clone().into()),
+                        ("field".to_owned(), field.clone().into()),
                         (
                             "value".to_owned(),
                             tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default(),
@@ -385,5 +475,214 @@ fn session_arguments(
             .into_iter()
             .collect(),
         None => given.into_iter().collect(),
+    }
+}
+
+/// The fields of a canvas query, as it is written into the shell's record. Its refs are the
+/// `refs` collection's, each naming its query by key.
+pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(q.key.clone())),
+        ("text", Value::Text(q.text.clone())),
+        ("in_app", Value::Text(q.app.clone())),
+        ("kind", Value::Text(q.kind.clone())),
+        ("state", Value::Text(q.state.clone())),
+        ("reason", Value::Text(q.reason.clone())),
+    ]
+}
+
+/// The fields of a resource a query found, as it is written into the shell's record: its query by
+/// key, its address, its title and its kind.
+pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(r.key.clone())),
+        ("query", Value::Text(query_of_ref_key(&r.key))),
+        ("address", Value::Text(r.address.clone())),
+        ("title", Value::Text(r.title.clone())),
+        ("kind", Value::Text(r.kind.clone())),
+    ]
+}
+
+/// The query a ref belongs to, from its key (`<query>/<number>`).
+fn query_of_ref_key(key: &str) -> String {
+    key.split('/').next().unwrap_or_default().to_owned()
+}
+
+/// The field value a text is, in the shell's record.
+fn text(s: &str) -> Value {
+    Value::Text(s.to_owned())
+}
+
+/// The fields of an arrangement workspace, as it is written into the shell's record.
+pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&w.key)),
+        ("name", text(&w.name)),
+        ("current", Value::Bool(w.current)),
+    ]
+}
+
+/// The fields of a row, as it is written into the shell's record.
+pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&r.key)),
+        ("workspace", text(&r.workspace)),
+        ("name", text(&r.name)),
+        ("shell", text(&r.shell)),
+    ]
+}
+
+/// The fields of a strip, as it is written into the shell's record.
+pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&s.key)),
+        ("workspace", text(&s.workspace)),
+        ("row", text(&s.row)),
+        ("width", Value::Int(s.width)),
+        ("maximized", Value::Bool(s.maximized)),
+        ("active", text(&s.active)),
+        ("placed", Value::Bool(s.placed)),
+        ("canvas_x", Value::Int(s.canvas_x)),
+        ("canvas_y", Value::Int(s.canvas_y)),
+        ("canvas_width", Value::Int(s.canvas_width)),
+        ("canvas_height", Value::Int(s.canvas_height)),
+        ("shell", text(&s.shell)),
+    ]
+}
+
+/// The fields of a place, as it is written into the shell's record.
+pub(super) fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", text(&p.key)),
+        ("strip", text(&p.strip)),
+        ("shows", text(&p.shows)),
+        ("shown_as", text(&p.shown_as)),
+        ("record", text(&p.record)),
+        ("title", text(&p.title)),
+        ("name", text(&p.name)),
+        ("pinned", Value::Bool(p.pinned)),
+        ("shell", text(&p.shell)),
+    ]
+}
+
+#[cfg(test)]
+mod with_uses_tests {
+    use std::sync::Arc;
+
+    use super::with_uses;
+
+    /// A compiled app, its module carrying its metadata as an installed app's does, made against
+    /// the packages it uses as a build is: each app here declares one root type and a view of it,
+    /// and `uses` names the apps it imports.
+    fn package(
+        app: &str,
+        uses: &[&str],
+        imports: &[tilolang_tilo::tilolang::PackageMeta],
+    ) -> tilolang_tilo::tilolang::Compiled {
+        let mut imports_written = String::new();
+        for app in uses {
+            imports_written.push_str("use ");
+            imports_written.push_str(app);
+            imports_written.push_str(" as u");
+            imports_written.push_str(&app.replace('.', "_"));
+            imports_written.push('\n');
+        }
+        let source = format!(
+            "app {app} \"Test\"\n\n{imports_written}\ntype Bag {{\n    n: Int\n}}\n\nroot Bag\n\ndefault view card for Bag\n\nview card(b: Bag) {{\n    text(\"{app}\")\n}}\n"
+        );
+        tilolang_tilo::tilolang::compile_package(
+            &source,
+            &tilolang_tilo::tilolang::IdsLock::default(),
+            imports,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{app} compiles: {diagnostics:?}"))
+    }
+
+    fn wasm(of: &tilolang_tilo::tilolang::Compiled) -> Arc<[u8]> {
+        Arc::from(of.wasm.clone())
+    }
+
+    /// A placed app's own package stands with the packages of the apps it uses, to any depth:
+    /// its views call their `fn`s (`discussion.said_about(t)`), so their code runs here, and a
+    /// place that drew the app without them drew a failed state in every row.
+    #[test]
+    fn the_apps_a_placed_app_uses_are_loaded_with_it() {
+        let lib = package("me.lib", &[], &[]);
+        let mid = package("me.mid", &["me.lib"], std::slice::from_ref(&lib.meta));
+        let top = package("me.top", &["me.mid"], &[lib.meta.clone(), mid.meta.clone()]);
+        let modules = std::collections::BTreeMap::from([
+            ("me.top".to_owned(), wasm(&top)),
+            ("me.mid".to_owned(), wasm(&mid)),
+            ("me.lib".to_owned(), wasm(&lib)),
+        ]);
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            modules.get(app).cloned()
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.lib", "me.mid", "me.top"],
+            "every app used, to any depth, is published beside the app that uses it"
+        );
+    }
+
+    /// An app whose package the session serves none of is left out: the place waits for it as it
+    /// waits for any package a view read and the session has not served.
+    #[test]
+    fn a_used_app_the_session_serves_nothing_of_is_left_out() {
+        let mid = package("me.mid", &[], &[]);
+        let top = package("me.top", &["me.mid"], std::slice::from_ref(&mid.meta));
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |_| None);
+        assert_eq!(loaded.len(), 1, "only the app the place shows stands");
+    }
+
+    /// Every module lists the standard library among the apps it uses, and the session serves its
+    /// module, but the runtime needs no package of it: its views are templates the compiler
+    /// expands into their callers, so no call into it runs (its test proves it declares nothing
+    /// else). Loaded as one, it stands on the shell as an app of the workspace no place shows.
+    #[test]
+    fn the_standard_library_an_app_uses_is_not_loaded_as_an_app() {
+        let top = package("me.top", &[], &[]);
+        assert!(
+            top.meta.uses.iter().any(|used| used == "tilo.std"),
+            "every module lists the library among its uses: {:?}",
+            top.meta.uses
+        );
+        let library = tilolang_tilo::tilolang::stdlib::compiled();
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            (app == "tilo.std").then(|| wasm(library))
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.top"],
+            "the library is no app of the workspace, though the session serves its module"
+        );
+    }
+
+    /// A platform package the shell's runtime already holds as a description is no app a place
+    /// brings in either: the platform loads it for itself, and loading it again as another app's
+    /// code would declare its ids twice. The session is asked for no module of it.
+    #[test]
+    fn a_platform_package_an_app_uses_is_not_loaded_again() {
+        let device = tilolang_tilo::platform_apps::platform_packages()
+            .expect("the platform's packages read")
+            .into_iter()
+            .find(|meta| meta.app == tilolang_tilo::platform_apps::DEVICE_APP)
+            .expect("the device is one of the platform's packages");
+        let top = package("me.top", &["so.tilo.device"], std::slice::from_ref(&device));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let loaded = with_uses([("me.top".to_owned(), wasm(&top))], |app| {
+            asked.borrow_mut().push(app.to_owned());
+            None
+        });
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["me.top"],
+            "the device's package stands on the runtime already"
+        );
+        assert_eq!(
+            *asked.borrow(),
+            Vec::<String>::new(),
+            "the device's package is not even looked up: the runtime holds it"
+        );
     }
 }

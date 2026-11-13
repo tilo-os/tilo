@@ -22,7 +22,6 @@ tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
-tilolang-embed-source = Block
 # What a change reads as in history, worked out from the field it wrote and what it held before
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
 # is the field's name in a sentence ("due", "priority").
@@ -97,7 +96,6 @@ tilolang-selected = { $count ->
 }
 tilolang-clear-selection = Clear selection
 tilolang-sort = Sort
-tilolang-order-default = Default
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
 tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
@@ -112,7 +110,7 @@ tilolang-from = From
 tilolang-linked = Made from this
 
 app-activate-window = Show this window
-app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+app-activate-window-description = Bring this app's window to the front.
 tilolang-form-cancel = Cancel
 tilolang-none-value = None
 tilolang-empty-value = Empty

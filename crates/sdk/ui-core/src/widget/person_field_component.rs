@@ -4,18 +4,15 @@ use crate::component::{Bound, Component, Described, Person};
 
 use super::PersonField;
 
-/// A form's person: who is doing it, shown as their avatar and name, and picked from the
-/// workspace's members and agents. "Me" picks the person the view is shown to, "No one" clears
-/// it.
+/// A form's person, shown as an avatar and name and picked from the workspace's members and
+/// agents; "Me" is the person the view is shown to, "No one" clears it.
 #[derive(Component, Default)]
 #[component(name = "PersonField", role = "ComboBox")]
 pub struct PersonFieldProps {
-    /// The person's identity, as the person a component binds (its identity text, empty for
-    /// nobody), and where a pick goes.
+    /// The person's identity and the binding a pick writes (empty for nobody).
     #[component(bind(ty = Person))]
     pub value: Bound<String>,
-    /// The people to offer, after "Me" and "No one": the workspace's members and agents, as
-    /// the platform's membership names them.
+    /// The people offered after "Me" and "No one": the workspace's members and agents.
     pub people: Option<Vec<Person>>,
     /// The person the view is shown to: the list's "Me".
     pub me: Option<Person>,

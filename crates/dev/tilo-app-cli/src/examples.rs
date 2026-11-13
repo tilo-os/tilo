@@ -9,14 +9,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-/// One example app.
 #[derive(Debug)]
 pub struct Example {
     /// The name `--from-example` takes, and the directory under `examples/apps/`.
     pub name: &'static str,
-    /// The one idea the example teaches.
     pub concept: &'static str,
-    /// What the app does, in a sentence.
     pub summary: &'static str,
     /// Whether the example uses only what `tilo-app build --platform web`
     /// supports. An example that runs work on a `std::thread` is native-only;
@@ -49,7 +46,6 @@ macro_rules! example_files_with_common {
     };
 }
 
-/// Every example, simplest first.
 pub const ALL: &[Example] = &[
     Example {
         name: "counter",
@@ -138,19 +134,16 @@ impl Example {
         ALL.iter().find(|example| example.name == name)
     }
 
-    /// The package name the example has in the Tilo workspace.
     #[must_use]
     pub fn package_name(&self) -> String {
         format!("example-{}", self.name)
     }
 
-    /// The crate name the example's tests import.
     #[must_use]
     pub fn crate_name(&self) -> String {
         format!("example_{}", self.name.replace('-', "_"))
     }
 
-    /// The example's directory, relative to the checkout root.
     #[must_use]
     pub fn path(&self) -> String {
         format!("examples/apps/{}", self.name)
@@ -167,7 +160,6 @@ impl Example {
     }
 }
 
-/// An unknown example name, with the names there are.
 pub fn find(name: &str) -> Result<&'static Example> {
     Example::named(name).with_context(|| {
         let names = ALL

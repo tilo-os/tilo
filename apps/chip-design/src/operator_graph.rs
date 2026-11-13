@@ -1,15 +1,10 @@
-//! Structural operator design. Connections do not qualify an executable netlist.
-//!
-//! The nodes and connections are fields of the project
-//! ([`crate::resource::Project`]); this module holds their types, the rules a
-//! node keeps and how the stored connections resolve into the graph shown.
+//! Structural operator design.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ui::graph_editor::{ConnectError, Edge, Graph, GraphNode, GraphPoint, Port};
 use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Refusal};
 
-/// The id the operator graph is published under.
 pub const RESOURCE_ID: &str = "chip_design.project/derived/operator-graph";
 pub const MAX_NODES: usize = 64;
 pub const MAX_EDGES: usize = 256;
@@ -122,15 +117,14 @@ pub struct OperatorNode {
     /// Operator
     #[model(readonly)]
     pub kind: OperatorKind,
-    /// F32 tensor shape, up to four positive dimensions; its last axis is the
-    /// normalization width.
+    /// F32 tensor shape, up to four positive dimensions; its last axis is the normalization
+    /// width.
     #[model(readonly)]
     pub shape: Vec<u16>,
     /// Last-axis normalization width.
     #[model(readonly)]
     pub normalization_width: u16,
-    /// Structural matrix output width; no matrix payload is held in the
-    /// document.
+    /// Structural matrix output width; no matrix payload is held in the document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_width: Option<u32>,
     /// Horizontal position
@@ -145,9 +139,6 @@ impl Identified for OperatorNode {
     }
 }
 
-/// One stored connection from an output port to an input port. Concurrent
-/// connections merge per connection; the graph shown resolves them
-/// (`OperatorState::resolve`) and reports the ones that conflict.
 #[derive(
     Model, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -232,8 +223,8 @@ impl OperatorState {
         graph
     }
 
-    /// The graph the stored `nodes` and `connections` make: every
-    /// connection that still connects, and the ones that conflict with why.
+    /// The graph the stored `nodes` and `connections` make: every connection that still
+    /// connects, and the ones that conflict with why.
     pub fn of<'a>(
         nodes: impl IntoIterator<Item = &'a OperatorNode>,
         connections: impl IntoIterator<Item = &'a Connection>,
@@ -327,8 +318,8 @@ fn valid_matrix(node: &OperatorNode) -> bool {
 }
 
 impl OperatorNode {
-    /// A node keeps a stable identity, a position on the canvas and a shape
-    /// its operator can take.
+    /// A node keeps a stable identity, a position on the canvas and a shape its operator
+    /// can take.
     fn valid(&self) -> Result<(), Refusal> {
         if valid_node(self) {
             Ok(())
@@ -339,8 +330,8 @@ impl OperatorNode {
         }
     }
 
-    /// This node with the input shape `shape`, whose last axis sets the
-    /// normalization width.
+    /// This node with the input shape `shape`, whose last axis sets the normalization
+    /// width.
     #[must_use]
     pub fn with_shape(&self, shape: Vec<u16>) -> Self {
         Self {

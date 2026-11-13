@@ -1,11 +1,5 @@
 //! `EnumField`: a value among an enum's cases, shown as one fact and picked in its menu.
 //!
-//! The field reads as a chip, as a day's or a person's does: the glyph of the case it holds,
-//! the case's label, in the tone the case reads in, and the chevron every choice control
-//! wears. Pressing it opens the cases under it; picking one writes it into the field it is
-//! bound to. It is what a page shows for a field of an enum type without the app drawing
-//! anything: the case names itself, and the picker is the cases it declares.
-//!
 //! The field never holds the authoritative value: what it shows is the case its binding
 //! holds (a described component's field follows the value the host keeps in step), and an
 //! edit goes back through the binding as the case's name.
@@ -21,9 +15,7 @@ pub use component::{EnumFieldProps, EnumOptionProps};
 /// The case the bound value took while the menu was open: shown once it closes, so a case set
 /// elsewhere never moves the menu from under the person picking.
 enum Waiting {
-    /// The binding took no other case since the field last showed one.
     Nothing,
-    /// The case to show now, by its name.
     Case(String),
 }
 
@@ -31,24 +23,18 @@ enum Waiting {
 pub struct EnumField {
     inner: MenuButton,
     id: String,
-    /// The state the field follows, when a view binds it: another state, and it follows that.
     source: Option<crate::LocalState<String>>,
-    /// The cases the menu offers, in the enum's order.
     cases: Vec<EnumOptionProps>,
-    /// What the field is for ("Priority"), when the app names it.
     label: Option<String>,
-    /// The case it holds, by the case's name.
     value: String,
-    /// Where a picked case goes.
     edits: Bound<String>,
-    /// The case the binding holds, when a view binds it.
     bound: Option<BoxedBinding<String>>,
     waiting: Waiting,
 }
 
 impl EnumField {
-    /// A field holding `chosen` (a case's name), offering `cases`, named `label`, and sending
-    /// a picked case through `edits`.
+    /// A field holding `chosen` (a case's name), offering `cases`, named `label`, and
+    /// sending a picked case through `edits`.
     #[must_use]
     pub fn new(
         id: &str,
@@ -92,7 +78,7 @@ impl EnumField {
         &self.value
     }
 
-    /// Show `chosen`, the case set elsewhere. An open menu stays open on what it shows.
+    /// Show `chosen`, the case set elsewhere.
     pub fn set_value(&mut self, chosen: &str) {
         if chosen == self.value || self.inner.is_open() {
             return;
@@ -107,7 +93,6 @@ impl EnumField {
         );
     }
 
-    /// Show the case the bound value took while the menu was open, now that it closed.
     fn show_waiting(&mut self) -> bool {
         if self.inner.is_open() {
             return false;
@@ -123,7 +108,6 @@ impl EnumField {
     }
 }
 
-/// The field's chip and its menu: the case it holds, then every case to pick.
 fn field(
     id: &str,
     chosen: &str,
@@ -152,7 +136,6 @@ fn field(
             }
         })
         .collect();
-    // The chip says the case it holds in the case's own glyph and tone.
     let mut chip = Button::new(id, &shown.label)
         .showing_choice()
         .tone(shown.tone);
@@ -176,8 +159,6 @@ impl Decorator for EnumField {
         &mut self.inner
     }
 
-    /// The case the bound value took shows in place; one the person is picking is not taken
-    /// from under the menu.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(bound) = &mut self.bound
             && let Pulled::Value(chosen) = bound.pull(state, path)
@@ -241,7 +222,6 @@ mod tests {
         state.set("high".to_owned());
         Decorator::sync(&mut field, &(), &());
         assert_eq!(field.value(), "high", "a case set elsewhere shows in place");
-        // The person is picking: the menu stays on what they are looking at.
         field.inner_mut().open(true);
         state.set("none".to_owned());
         Decorator::sync(&mut field, &(), &());

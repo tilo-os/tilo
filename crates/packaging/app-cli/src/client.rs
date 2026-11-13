@@ -1,27 +1,13 @@
-//! HTTP client for a Tilo registry.
+//! HTTP client for a Tilo registry: `GET /registry` for informational metadata, and `GET /entries`
+//! for an owner-signed catalogue snapshot, compact when the registry has that form.
 //!
-//! Two endpoints, both blocking — every caller runs these on a worker
-//! thread, never on a frame thread:
+//! Every entry is signature-checked against its declared publisher key, and a separately allowed
+//! publisher is checked against the registry owner's allowlist. Nothing here decides whether bytes
+//! are safe to install: a registry describes what exists, and `tilo-install` re-verifies the bytes
+//! fail-closed. An entry that fails its signature is [`TrustLevel::Untrusted`]; callers that put
+//! software in front of a user drop those rather than rank them ([`crate::available`]).
 //!
-//!   * `GET {base_url}/registry` — informational metadata, accepted only
-//!     when it names the already-pinned owner key.
-//!   * `GET {base_url}/entries?format=compact` — an owner-signed catalogue
-//!     snapshot. A registry that has a compact form answers with it: per
-//!     entry only the newest versions, and the hash of a version index
-//!     (`GET {base_url}/indexes/<blake3>.json`) holding the rest. Any other
-//!     registry answers with the full snapshot; both verify the same way.
-//!
-//! Every fetched entry is signature-checked against its own declared
-//! publisher pubkey via [`registry_types::verify_entry_signature`]. A
-//! separate allowlist check compares the entry's publisher pubkey
-//! against the registry *owner's* allowlisted publishers.
-//!
-//! Nothing here is a trust decision about *installing*. A registry
-//! describes what exists; `tilo-install` re-verifies the actual bytes
-//! fail-closed before it extracts one of them. An entry that fails its
-//! signature check is [`TrustLevel::Untrusted`], and callers that put
-//! software in front of a user are expected to drop those rather than
-//! rank them — see [`crate::available`].
+//! Both endpoints block, so every caller runs them on a worker thread, never a frame thread.
 
 use std::io::Read as _;
 use std::time::Duration;
@@ -58,13 +44,9 @@ pub enum RegistryError {
     Decode(String),
     #[error("empty response")]
     Empty,
-    /// The snapshot did not verify. A snapshot at another package format
-    /// says so in its own words: it is a version skew to act on, not a
-    /// forged catalogue.
+    /// The snapshot did not verify; a snapshot at another package format says what to do.
     #[error("{}", proof_message(.0))]
     Proof(#[from] registry_types::SnapshotError),
-    /// The registry's owner-signed catalogue is authentic but past its
-    /// expiry: the registry has not renewed it. Nothing in it is offered.
     #[error(
         "the registry's catalogue expired at {expired_at_unix} (Unix time) and has not been renewed"
     )]
@@ -75,9 +57,7 @@ pub enum RegistryError {
         "registry serves a catalogue signed with sequence {served_sequence}, behind the sequence {held_sequence} this device already accepted from it"
     )]
     BehindAccepted {
-        /// The sequence this device's checkpoint holds.
         held_sequence: u64,
-        /// The sequence the registry just served.
         served_sequence: u64,
     },
     #[error("registry snapshot checkpoint could not be persisted: {0}")]
@@ -104,8 +84,7 @@ fn proof_message(error: &registry_types::SnapshotError) -> String {
 }
 
 impl RegistryError {
-    /// The regression a registry that came back behind this device's own
-    /// checkpoint is, as opposed to any other fetch failure.
+    /// The regression a registry that came back behind this device's own checkpoint shows.
     #[must_use]
     pub fn behind_accepted(&self) -> Option<BehindAccepted> {
         match self {
@@ -121,25 +100,18 @@ impl RegistryError {
     }
 }
 
-/// A registry answered with a catalogue older than the one this device
-/// already accepted from it — the signature and the identity check out, only
-/// the sequence went backwards, which is what a host rebuilt from a backup
-/// serves until it publishes past what it lost.
+/// A registry answered with a catalogue older than the one this device accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BehindAccepted {
-    /// The sequence this device's checkpoint holds.
     pub held_sequence: u64,
-    /// The sequence the registry just served.
     pub served_sequence: u64,
 }
 
-/// Trust classification for a fetched entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TrustLevel {
     /// The publisher signature and the pinned registry owner's exact snapshot
     /// signature and authorization policy all verified.
     PublisherSigned,
-    /// The publisher signature failed to verify.
     Untrusted,
 }
 
@@ -157,7 +129,6 @@ impl TrustLevel {
     }
 }
 
-/// One entry plus its trust state.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VerifiedEntry {
     pub entry: RegistryEntry,
@@ -168,7 +139,6 @@ pub struct VerifiedEntry {
     pub version_index: Option<VersionIndexRef>,
 }
 
-/// Last accepted proof for one pinned registry identity.
 #[derive(Debug, Deserialize, Serialize)]
 struct SnapshotCheckpoint {
     sequence: u64,
@@ -221,7 +191,6 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
     Ok(handshake)
 }
 
-/// Fetch `/entries` and classify each result.
 pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
     let now = tilo_clock::unix_now();
@@ -242,8 +211,6 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
     let Some(bytes) =
         fetch_revalidated(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot", etag.as_deref())?
     else {
-        // Not modified: the held snapshot is the registry's, and is verified
-        // again against the pinned key and the clock as a download would be.
         let held = held.ok_or(RegistryError::NotStored)?;
         if let Err(error) = classify_snapshot(&held, &reg.owner_pubkey_hex, now) {
             return Err(expired_or(error, &held, &reg.owner_pubkey_hex, now));
@@ -259,9 +226,6 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
     Ok(snapshot)
 }
 
-/// `error`, unless `snapshot` failed only by having expired: then
-/// [`RegistryError::Expired`], so a device can say the catalogue expired
-/// rather than that the registry is unreachable.
 fn expired_or(
     error: RegistryError,
     snapshot: &CatalogueSnapshot,
@@ -276,12 +240,8 @@ fn expired_or(
     }
 }
 
-/// What [`fetch_snapshot_answer`] found: the catalogue to read, and whether
-/// it came from the registry just now or from this device's own checkpoint
-/// because the registry answered behind it.
 #[derive(Clone, Debug)]
 pub enum SnapshotAnswer {
-    /// The registry's catalogue is the newest this device has seen.
     Advanced,
     /// The registry served one signed catalogue older than the last accepted
     /// from it, so the last accepted one is what stays in force.
@@ -289,8 +249,6 @@ pub enum SnapshotAnswer {
 }
 
 impl SnapshotAnswer {
-    /// Whether the catalogue is the one this device keeps rather than the one
-    /// the registry just served.
     #[must_use]
     pub fn held(&self) -> bool {
         matches!(self, SnapshotAnswer::BehindAccepted(_))
@@ -376,22 +334,15 @@ fn last_verified_snapshot_at(
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
     let snapshot = CatalogueSnapshot::from_json(&read(&snapshot_path(path))?)
         .map_err(|error| RegistryError::Decode(error.to_string()))?;
-    // Anything but the checkpointed snapshot is an older (or foreign) one.
     if snapshot.sequence() != checkpoint.sequence
         || snapshot.checkpoint_hash()? != checkpoint.snapshot_hash_hex
     {
         return Err(RegistryError::Rollback);
     }
-    // Verified against the pinned owner key and the current time here too, so
-    // a stored catalogue that expired while it sat on disk is refused rather
-    // than handed out.
     let _ = classify_snapshot(&snapshot, owner_pubkey_hex, now_unix)?;
     Ok(snapshot)
 }
 
-/// The snapshot this device accepted last from the registry whose
-/// checkpoint is `path`, when its bytes are the ones the checkpoint names.
-/// Not verified: it names what to revalidate, and is verified before use.
 fn held_snapshot(path: &std::path::Path) -> Option<CatalogueSnapshot> {
     if path.parent().is_some_and(|parent| !parent.is_dir()) {
         return None;
@@ -405,7 +356,6 @@ fn held_snapshot(path: &std::path::Path) -> Option<CatalogueSnapshot> {
         .then_some(snapshot)
 }
 
-/// The hash the registry names this form of a snapshot by, its `ETag`.
 fn form_hash(snapshot: &CatalogueSnapshot) -> Option<String> {
     match snapshot {
         CatalogueSnapshot::Full(full) => registry_types::snapshot_hash(full).ok(),
@@ -463,7 +413,6 @@ pub fn all_versions_in(
     })
 }
 
-/// GET `url`, refusing a body over `limit` bytes or an empty one.
 pub(crate) fn fetch_bounded(
     url: &reqwest::Url,
     limit: u64,
@@ -549,7 +498,6 @@ fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, Regi
     Ok(url)
 }
 
-/// Pure proof verification used by HTTP and fixture tests.
 pub fn classify_snapshot(
     snapshot: &CatalogueSnapshot,
     owner_pubkey_hex: &str,
@@ -576,8 +524,6 @@ pub const CHECKPOINT_DIR: &str = "registry-checkpoints";
 
 fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
     let mut hasher = blake3::Hasher::new();
-    // The owner key is the registry identity. Transport aliases may change,
-    // but must not reset anti-rollback history.
     hasher.update(reg.owner_pubkey_hex.as_bytes());
     Some(
         config_dir()?
@@ -586,7 +532,6 @@ fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
     )
 }
 
-/// The accepted snapshot's bytes, beside the checkpoint that names them.
 fn snapshot_path(checkpoint: &std::path::Path) -> std::path::PathBuf {
     checkpoint.with_extension("snapshot.json")
 }
@@ -611,8 +556,6 @@ fn persist_checkpoint_at(
     snapshot: &CatalogueSnapshot,
     bytes: &[u8],
 ) -> Result<(), RegistryError> {
-    // Both forms of one snapshot share this identity, so switching form is
-    // neither a rollback nor a fork.
     let hash = snapshot.checkpoint_hash()?;
     #[cfg(unix)]
     let _lock = checkpoint_lock(path)?;
@@ -622,7 +565,6 @@ fn persist_checkpoint_at(
             let old: SnapshotCheckpoint = serde_json::from_slice(&old)
                 .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
             validate_checkpoint(&old, snapshot.sequence(), &hash)?;
-            // The same sequence passed validation, so it is this snapshot.
             old.sequence == snapshot.sequence() && stored.is_file()
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -660,10 +602,6 @@ fn validate_checkpoint(
     hash: &str,
 ) -> Result<(), RegistryError> {
     if sequence < old.sequence {
-        // Signed, and for this registry identity — only older than what this
-        // device accepted. Callers distinguish it so they can keep serving
-        // the catalogue they hold instead of reporting the registry as
-        // failed.
         return Err(RegistryError::BehindAccepted {
             held_sequence: old.sequence,
             served_sequence: sequence,
@@ -684,8 +622,6 @@ mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     pub(crate) fn signed_entry() -> RegistryEntry {
-        // Deterministic key so signing is reproducible under `cargo
-        // test`; cryptographic hygiene is not what this asserts.
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
@@ -768,7 +704,6 @@ mod tests {
                 .map(|_| ())
                 .map_err(|error| expired_or(error, snapshot, &owner_hex, now))
         };
-        // Issued at 100, valid until 200.
         let genuine = snapshot(&owner);
         assert!(classified(&genuine, 150).is_ok());
         assert!(matches!(
@@ -777,7 +712,6 @@ mod tests {
                 expired_at_unix: 200
             })
         ));
-        // Another owner's expired snapshot is a proof failure, not "expired".
         let stranger = SigningKey::from_bytes(&[9; 32]);
         assert!(matches!(
             classified(&snapshot(&stranger), 250),
@@ -805,7 +739,6 @@ mod tests {
         let message = refused.to_string();
         assert!(!message.contains("proof failed"), "{message}");
         assert!(message.contains("package format"), "{message}");
-        // Any other failure still reads as the failed proof it is.
         let stranger = SigningKey::from_bytes(&[9; 32]);
         let forged = classify_snapshot(
             &CatalogueSnapshot::Full(signed_snapshot(&stranger, 1)),
@@ -839,14 +772,12 @@ mod tests {
         assert_eq!(entries[0].entry.name.resolve("en"), Some("Editor"));
         assert_eq!(entries[0].trust, TrustLevel::PublisherSigned);
 
-        // Expired metadata is refused, exactly as a fresh fetch of it would be.
         assert!(matches!(
             last_verified_at(&checkpoint, &owner_hex, 250),
             Err(RegistryError::Proof(
                 registry_types::SnapshotError::Freshness
             ))
         ));
-        // The pinned owner key, not the stored bytes, decides.
         let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
         assert!(last_verified_at(&checkpoint, &stranger, 150).is_err());
 
@@ -928,8 +859,6 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).contains("1 passed"),
             "the confined half did not run"
         );
-        // Nothing of the checkpoint's was made: not its directory, its lock
-        // or the record itself.
         assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
     }
 

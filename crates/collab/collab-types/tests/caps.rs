@@ -23,11 +23,11 @@ use std::sync::Arc;
 use collab_types::claim::ClaimedAction;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    DEFAULT_ROOM, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
+    DEFAULT_WORKSPACE, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
     RoleAttestation, Signature, SignedOp, SurfaceSource, Surfaces, UnitPath, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
-use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Subject, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath, roles};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall};
 
 const APP: &str = "notes";
@@ -101,7 +101,7 @@ fn change_payload(change: Change, seq: u64) -> Vec<u8> {
 
 /// The node a comment on `artifact` is decided at.
 fn comments_of(artifact: ArtifactId) -> TreePath {
-    TreePath::workspace(DEFAULT_ROOM)
+    TreePath::workspace(DEFAULT_WORKSPACE)
         .app(APP)
         .kind(KIND)
         .resource(artifact.0.to_string())
@@ -112,14 +112,14 @@ fn not_granted(result: Result<(), ValidationError>) -> bool {
     result.is_err_and(|error| matches!(error, ValidationError::NotGranted(_)))
 }
 
-fn grant(id: &str, subject: Subject, node: TreePath, answer: Answer) -> Grant {
+fn grant(id: &str, subject: Grantee, node: TreePath, answer: Answer) -> Grant {
     Grant::new(
         id,
         subject,
         node,
         KindSet::UNDOABLE,
         answer,
-        Subject::Role(Role::Owner),
+        Grantee::role(Role::Owner),
     )
 }
 
@@ -324,17 +324,17 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     );
 
     let finance = TreePath::root()
-        .push(tilo_action_policy::Level::Workspace, DEFAULT_ROOM)
+        .push(tilo_action_policy::Level::Workspace, DEFAULT_WORKSPACE)
         .app(APP);
     state.grants.push(grant(
         "finance",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         finance.clone(),
         Answer::Deny,
     ));
     state.grants.push(grant(
         "finance-comments",
-        Subject::Role(Role::Editor),
+        Grantee::role(Role::Editor),
         finance
             .rest()
             .push(tilo_action_policy::Level::Field, roles::COMMENTS_FIELD),
@@ -369,7 +369,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
 
     state.grants.push(grant(
         "share",
-        Subject::Person(hex::encode(author_pub.0)),
+        Grantee::person(hex::encode(author_pub.0)),
         comments_of(artifact),
         Answer::Allow,
     ));
@@ -393,14 +393,14 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
 
     // Phase: a blocked member is not rescued by a broader grant.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
-    let person = Subject::Person(hex::encode(author_pub.0));
+    let person = Grantee::person(hex::encode(author_pub.0));
     state.grants.push(Grant::new(
         "blocked",
         person.clone(),
-        TreePath::workspace(DEFAULT_ROOM),
+        TreePath::workspace(DEFAULT_WORKSPACE),
         KindSet::ALL,
         Answer::Deny,
-        Subject::Role(Role::Owner),
+        Grantee::role(Role::Owner),
     ));
     state.grants.push(Grant::new(
         "everything",
@@ -408,7 +408,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
         TreePath::root(),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Role(Role::Owner),
+        Grantee::role(Role::Owner),
     ));
     let comment = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(

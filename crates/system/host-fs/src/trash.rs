@@ -1,25 +1,10 @@
 //! The user's trash, where the host lets apps manage it.
-//!
-//! On Unix hosts, macOS included, the home Trash (the XDG trash spec's
-//! `Trash` in the data directory: `$XDG_DATA_HOME/Trash`, or
-//! `~/Library/Application Support/Trash` on macOS) is managed here directly
-//! (`freedesktop`): moving an item in, restoring it and purging it need
-//! nothing but the item, the Trash directories and a rename. In particular
-//! they need no mount table, which a sandboxed app cannot read (`/proc` is
-//! closed to it), and every item moved in can be listed, restored and purged
-//! again, which the macOS system Trash does not let an app do. Only an item
-//! on another filesystem than every Trash this process can reach goes to the
-//! `trash` crate, which finds that mount's own Trash (on macOS through
-//! `NSFileManager`, without Finder). On Windows moving items to the trash
-//! goes through the `trash` crate; restoring and purging single items report
-//! that they are unavailable there.
 
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 mod freedesktop;
 
-/// Move files to the host Trash ([`trash()`] each).
 pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
     paths.iter().try_for_each(|path| trash(path).map(drop))
 }
@@ -64,7 +49,6 @@ pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Move `path` to the Trash of its own mount, through the `trash` crate.
 #[cfg(unix)]
 fn mount_trash(path: &Path) -> Result<(), ::trash::Error> {
     #[cfg(target_os = "macos")]
@@ -93,7 +77,6 @@ pub fn ensure_trash_dir() -> std::io::Result<PathBuf> {
     ensure_private_trash(&files)
 }
 
-/// [`ensure_trash_dir`] for the Trash whose files directory is `files`.
 fn ensure_private_trash(files: &Path) -> std::io::Result<PathBuf> {
     let files = files.to_path_buf();
     let trash = files.parent().ok_or_else(|| {
@@ -223,7 +206,6 @@ pub fn purge(entries: &[PathBuf]) -> Result<usize, String> {
     }
 }
 
-/// Whether `path` is the home-trash files directory.
 #[must_use]
 pub fn is_trash_dir(path: &Path) -> bool {
     trash_dir().is_some_and(|t| path == t)

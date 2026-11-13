@@ -1,15 +1,12 @@
 use ui::prelude::*;
 
-/// One item. Its title is collaborative text.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Item {
-    /// Names the item in history, search and the palette.
     #[model(label)]
     pub title: String,
     pub done: bool,
 }
 
-/// The app's state: the items, in the order they were added.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Items {
     pub items: Collection<Item>,
@@ -20,9 +17,8 @@ pub struct Items {
 /// are item verbs: the palette and agents see each item as a resource of its
 /// own with them on it, and a row's context menu (right-click, the Menu key,
 /// Shift+F10) offers them.
-#[resource(kind = "generated.items", label = "Items")]
+#[resource(kind = "generated.items")]
 impl Items {
-    /// Add an item.
     #[action]
     pub fn add(
         &mut self,
@@ -37,7 +33,6 @@ impl Items {
         Ok(())
     }
 
-    /// Remove an item. Undo brings it back.
     #[action]
     pub fn remove(&mut self, item: &Id) -> Result<(), &'static str> {
         self.items.remove(item).map(drop).ok_or("no such item")

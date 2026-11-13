@@ -1,28 +1,18 @@
-//! A [`SeatbeltPolicy`] rendered as an SBPL profile.
+//! A [`SeatbeltPolicy`] rendered as an SBPL profile, deny by default. The profile text depends only
+//! on the policy's shape (how many grants, which network mode); every path reaches it as a
+//! parameter (`(param "PAYLOAD_DIR")`, passed with `sandbox-exec -D`), so no path is spliced into
+//! SBPL and none needs escaping.
 //!
-//! Deny by default. The profile text depends only on the policy's *shape*
-//! (how many grants, which network mode); every path reaches it as a
-//! parameter (`(param "PAYLOAD_DIR")`, passed with `sandbox-exec -D`), so no
-//! path is ever spliced into SBPL and none needs escaping.
+//! Baseline: Apple's `system.sb` (the dyld shared cache, `/System`, `/usr/lib`, `/usr/share`,
+//! `/dev/null`, logging and `cfprefsd`: what every process needs and no user content) plus its
+//! `(system-graphics)` macro for Metal. On top of that, the Mach services a winit/`AppKit` window
+//! needs to reach `WindowServer`, fonts, pasteboard and input methods, under the Linux read
+//! profile's two rules: no user content, and every GUI app needs it.
 //!
-//! Baseline: Apple's `system.sb` — the dyld shared cache, `/System`,
-//! `/usr/lib`, `/usr/share`, `/dev/null`/`urandom`, logging and
-//! `cfprefsd`, i.e. what every process needs and no user content — plus its
-//! `(system-graphics)` macro for Metal (`IOAccelerator` and `IOSurface` user
-//! clients, `CoreAnimation`, `CoreDisplay`). On top of that, a fixed set of
-//! Mach services a winit/`AppKit` window needs to reach `WindowServer`, fonts,
-//! pasteboard and input methods; the same two rules as the Linux read
-//! profile (`launcher::profile`) govern it: no user content, and every GUI
-//! app needs it.
-//!
-//! Write-xor-execute holds at the path level: code may be mapped and exec'd
-//! from the payload and the runtime directory only, and writes there are
-//! denied last so that no user grant can re-open them (in SBPL the last
-//! matching rule wins).
-//!
-//! Tilo's private stores are denied the same way, after every grant: no
-//! access at all to the store, and no write to any directory or symlink on
-//! its way ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
+//! Write-xor-execute holds at the path level: code may be mapped and exec'd from the payload and
+//! the runtime directory only, and writes there are denied last so no user grant can re-open them
+//! (in SBPL the last matching rule wins). Tilo's private stores are denied the same way, after
+//! every grant ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -35,8 +25,8 @@ pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
 pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
 pub const GATE_PORT_PARAM: &str = "NET_GATE_PORT";
 pub const READ_PARAM_PREFIX: &str = "READ_";
-/// The sandbox-extension class the runtime's chooser issues for a picked
-/// path (App Sandbox's user-selected read-write).
+/// The sandbox-extension class the runtime's chooser issues for a picked path (App Sandbox's
+/// user-selected read-write).
 pub const USER_SELECTED_EXTENSION: &str = "com.apple.app-sandbox.read-write";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
 /// A private store: denied outright ([`SeatbeltPolicy::hidden`]).
@@ -91,9 +81,8 @@ pub const GUI_PREFERENCE_DOMAINS: &[&str] = &[
 pub const GUI_READ_SUBPATHS: &[&str] = &["/Library/Fonts"];
 pub const GUI_READ_LITERALS: &[&str] = &["/Library/Preferences/com.apple.ViewBridge.plist"];
 
-/// Mach services and files the system resolver and TLS trust evaluation
-/// use, granted only with an unrestricted network — the macOS side of
-/// `launcher::profile::NETWORK_READ_PATHS`.
+/// Mach services and files the system resolver and TLS trust evaluation use, granted only with an
+/// unrestricted network: the macOS side of `launcher::profile::NETWORK_READ_PATHS`.
 pub const NETWORK_MACH_SERVICES: &[&str] = &[
     "com.apple.SystemConfiguration.configd",
     "com.apple.SystemConfiguration.DNSConfiguration",
@@ -107,7 +96,6 @@ pub const NETWORK_READ_LITERALS: &[&str] = &[
 /// `getaddrinfo` asks `mDNSResponder` over this socket.
 pub const RESOLVER_SOCKET: &str = "/private/var/run/mDNSResponder";
 
-/// A rendered profile and the parameters it expects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatbeltProfile {
     pub text: String,
@@ -235,11 +223,10 @@ impl Builder {
         self.text.push_str(")\n");
     }
 
-    /// Deny every access to the [`SeatbeltPolicy::hidden`] stores, and every
-    /// write — rename, removal, a new symlink target — to the
-    /// [`SeatbeltPolicy::pinned`] paths themselves. A `literal` matches the
-    /// path alone, so files may still be created and changed inside a
-    /// pinned directory as its grant allows.
+    /// Deny every access to the [`SeatbeltPolicy::hidden`] stores, and every write (rename,
+    /// removal, a new symlink target) to the [`SeatbeltPolicy::pinned`] paths themselves. A
+    /// `literal` matches the path alone, so files may still be created and changed inside a pinned
+    /// directory as its grant allows.
     fn private_stores(&mut self, policy: &SeatbeltPolicy) {
         if !policy.hidden.is_empty() {
             let mut rule = String::from("(deny file-read* file-write*");
@@ -294,8 +281,8 @@ impl Builder {
     }
 }
 
-/// Quote a compile-time constant as an SBPL string. Only constants reach
-/// this; paths travel as parameters.
+/// Quote a compile-time constant as an SBPL string. Only constants reach this; paths travel as
+/// parameters.
 fn quote(constant: &str) -> String {
     debug_assert!(!constant.contains(['"', '\\', '\n']));
     format!("\"{constant}\"")
@@ -311,7 +298,7 @@ mod tests {
             payload: PathBuf::from("/Apps/so.tilo.notes"),
             runtime: Some(PathBuf::from("/Runtime/1")),
             container: PathBuf::from(
-                "/Users/u/Library/Application Support/Tilo/tilo-rooms/personal/so.tilo.notes",
+                "/Users/u/Library/Application Support/Tilo/tilo-workspaces/personal/so.tilo.notes",
             ),
             darwin_cache: Some(PathBuf::from(
                 "/private/var/folders/xy/abc/C/so.tilo+personal+so.tilo.notes",

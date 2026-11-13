@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crate::workspace_server::{WorkspaceBackend, WorkspaceFileBackend};
 use crate::{DirEntry, EntryKind, FileGrant, FsSession, GrantedEntry, Metadata, OpenMode};
 
-/// Presentation below this private service. This label conveys no authority.
 pub use tilo_fs_client::SELECTED_FILE;
 
 /// Consumes an existing opaque session/grant rather than opening a caller path.
@@ -18,8 +17,6 @@ pub struct SelectedFileBackend {
 }
 
 impl SelectedFileBackend {
-    /// # Errors
-    /// Refuses a stale, foreign, nonregular or unreadable selected file.
     pub fn new(session: FsSession, file: FileGrant) -> Result<Self, crate::FsError> {
         let metadata = session.metadata(&GrantedEntry::File(file.clone()))?;
         if metadata.kind != EntryKind::File {

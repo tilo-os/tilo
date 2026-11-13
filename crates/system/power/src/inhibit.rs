@@ -1,28 +1,7 @@
-//! The **inhibitor registry** — the API the shell and apps use to say "do
-//! not suspend right now" while something important is happening (media
-//! playing, a long task running).
-//!
-//! This is a pure, ref-counted registry: [`InhibitRegistry::acquire`] hands
-//! back an [`InhibitToken`] whose `Drop` releases the hold, so callers never
-//! have to remember to release — the lock lives exactly as long as the value
-//! that represents the reason. While any token is held [`InhibitRegistry::is_inhibited`]
-//! is `true`, and the compositor's idle loop declines to suspend.
-//!
-//! The registry is deliberately independent of D-Bus so it is trivially
-//! testable and usable in headless contexts. The [`super::service::PowerService`]
-//! *mirrors* the registry into a real `systemd-logind` block inhibitor (so
-//! logind's own idle/suspend handling is held off too) by watching the
-//! registry's held-count cross 0↔1 — see [`InhibitRegistry::is_inhibited`].
-//!
-//! A hold may also be a **lease**: [`InhibitRegistry::acquire_until`] takes one
-//! that stops counting at a deadline unless [`InhibitToken::renew_until`]
-//! moves it. A remote admin's hold therefore lapses by itself when the
-//! requests stop, with no timer and nobody having to remember to drop it.
-//!
-//! Whoever mirrors the registry elsewhere waits instead of polling: every
-//! acquire, renewal and release calls the [`InhibitRegistry::on_change`]
-//! listeners, and [`InhibitRegistry::next_lapse_for`] names the one moment a
-//! lease stops counting on its own.
+//! The inhibitor registry the shell and apps use to say "do not suspend right
+//! now" while something important is happening. [`InhibitRegistry::acquire`]
+//! hands back an [`InhibitToken`] whose `Drop` releases the hold, so a hold
+//! lives exactly as long as the value that represents the reason.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,8 +27,8 @@ type ChangeListener = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
 struct RegistryInner {
-    /// `id -> hold`. A `BTreeMap` keeps `active_reasons` deterministic for
-    /// tests and logs.
+    /// `id -> hold`. A `BTreeMap` keeps `active_reasons` deterministic for tests and
+    /// logs.
     held: BTreeMap<u64, Hold>,
     /// Called after every change to `held`, outside the lock.
     listeners: Vec<ChangeListener>,
@@ -64,7 +43,7 @@ impl std::fmt::Debug for RegistryInner {
     }
 }
 
-/// Apply `change` to the holds, then tell every listener — after the lock is
+/// Apply `change` to the holds, then tell every listener after the lock is
 /// released, so a listener may read the registry.
 fn change_holds<R>(
     inner: &Mutex<RegistryInner>,
@@ -87,11 +66,9 @@ pub const INHIBIT_SUSPEND: u32 = 4;
 pub const INHIBIT_IDLE: u32 = 8;
 pub const INHIBIT_POWER: u32 = INHIBIT_SUSPEND | INHIBIT_IDLE;
 
-/// A cloneable handle to the shared set of active suspend inhibitors.
-///
-/// Clone freely — every clone shares the same underlying state (an `Arc`
-/// bump), so the compositor, the media player, and a background task can
-/// each hold their own handle and their holds compose.
+/// A cloneable handle to the shared set of active suspend inhibitors; clones
+/// share the same state, so the compositor, the media player and a background
+/// task each hold their own and their holds compose.
 #[derive(Clone, Debug)]
 pub struct InhibitRegistry {
     inner: Arc<Mutex<RegistryInner>>,
@@ -112,22 +89,21 @@ impl InhibitRegistry {
         }
     }
 
-    /// Take a suspend inhibitor for `reason`. The returned token releases the
-    /// hold when dropped. Hold it for as long as suspend must be blocked
-    /// (e.g. store it in the media player's "is playing" state).
+    /// Take a suspend inhibitor for `reason`. The returned token releases the hold
+    /// when dropped; hold it for as long as suspend must be blocked.
     pub fn acquire(&self, reason: impl Into<String>) -> InhibitToken {
         self.acquire_for(reason, INHIBIT_POWER)
     }
 
-    /// Hold only the named desktop operations. This keeps, for example, a
-    /// logout-only portal inhibitor from accidentally preventing idle sleep.
+    /// Hold only the named desktop operations, so a logout-only portal inhibitor
+    /// cannot accidentally prevent idle sleep.
     pub fn acquire_for(&self, reason: impl Into<String>, flags: u32) -> InhibitToken {
         self.insert(reason.into(), flags, None)
     }
 
-    /// Hold the named operations until `until`, a lease: past it the hold
-    /// stops counting even while the token lives, unless
-    /// [`InhibitToken::renew_until`] moved it.
+    /// Hold the named operations until `until`, a lease: past it the hold stops
+    /// counting even while the token lives, unless [`InhibitToken::renew_until`]
+    /// moved it.
     pub fn acquire_until(
         &self,
         reason: impl Into<String>,
@@ -155,17 +131,15 @@ impl InhibitRegistry {
         }
     }
 
-    /// Call `listener` after every acquire, renewal and release, on the
-    /// thread that made it. Keep it short and non-blocking (wake a task); it
-    /// lives as long as the registry.
+    /// Call `listener` after every acquire, renewal and release, on the thread that
+    /// made it. Keep it short and non-blocking; it lives as long as the registry.
     pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
         self.inner.lock_recover().listeners.push(Arc::new(listener));
     }
 
-    /// The earliest moment after `now` at which a lease holding any of
-    /// `flags` stops counting by itself — the only change to
-    /// [`Self::is_inhibited_for`] that no acquire, renewal or release
-    /// announces. `None` when no such lease is pending.
+    /// The earliest moment after `now` at which a lease holding any of `flags`
+    /// stops counting by itself, the only change to [`Self::is_inhibited_for`] that
+    /// no acquire, renewal or release announces.
     pub fn next_lapse_for(&self, flags: u32, now: Instant) -> Option<Instant> {
         self.inner
             .lock_recover()
@@ -176,8 +150,8 @@ impl InhibitRegistry {
             .min()
     }
 
-    /// Whether any inhibitor is currently held — the signal the idle loop
-    /// consults before suspending.
+    /// Whether any inhibitor is currently held: the signal the idle loop consults
+    /// before suspending.
     pub fn is_inhibited(&self) -> bool {
         self.is_inhibited_for(INHIBIT_POWER)
     }
@@ -186,8 +160,8 @@ impl InhibitRegistry {
         self.is_inhibited_for_at(flags, Instant::now())
     }
 
-    /// [`Self::is_inhibited_for`] as of `now`: a lease past its deadline no
-    /// longer counts.
+    /// [`Self::is_inhibited_for`] as of `now`: a lease past its deadline no longer
+    /// counts.
     pub fn is_inhibited_for_at(&self, flags: u32, now: Instant) -> bool {
         self.inner
             .lock_recover()
@@ -207,8 +181,8 @@ impl InhibitRegistry {
             .count()
     }
 
-    /// The reasons currently holding the machine awake, sorted by acquisition
-    /// order — surfaced in logs and the real logind inhibitor's `why` field.
+    /// The reasons currently holding the machine awake, in acquisition order: logged
+    /// and shown as the real logind inhibitor's `why`.
     pub fn active_reasons(&self) -> Vec<String> {
         self.active_reasons_for(INHIBIT_POWER)
     }
@@ -225,11 +199,9 @@ impl InhibitRegistry {
     }
 }
 
-/// An outstanding suspend inhibitor. Dropping it releases the hold.
-///
-/// Holds only a `Weak` back-reference to the registry, so a token outliving
-/// its registry is harmless (the drop is a no-op) — nothing keeps the
-/// registry alive just because a token exists.
+/// An outstanding suspend inhibitor; dropping it releases the hold. It holds
+/// only a `Weak` back-reference to the registry, so a token outliving its
+/// registry is harmless.
 #[derive(Debug)]
 pub struct InhibitToken {
     id: u64,
@@ -237,13 +209,12 @@ pub struct InhibitToken {
 }
 
 impl InhibitToken {
-    /// The registry-internal id of this hold (for diagnostics/tests).
     pub fn id(&self) -> u64 {
         self.id
     }
 
-    /// Move this hold's deadline to `until` and name it `reason`, making it
-    /// a lease if it was not one. Returns `false` when the registry is gone.
+    /// Move this hold's deadline to `until` and name it `reason`, making it a lease
+    /// if it was not one. Returns `false` when the registry is gone.
     pub fn renew_until(&self, reason: impl Into<String>, until: Instant) -> bool {
         let Some(inner) = self.inner.upgrade() else {
             return false;
@@ -288,7 +259,6 @@ mod tests {
                 assert_eq!(r.count(), 1);
                 assert_eq!(r.active_reasons(), vec!["media playback".to_string()]);
             }
-            // Token dropped at end of scope → released.
             assert!(!r.is_inhibited());
             assert_eq!(r.count(), 0);
         }
@@ -299,7 +269,6 @@ mod tests {
             assert_eq!(r.count(), 2);
             assert!(r.is_inhibited());
             drop(a);
-            // Still inhibited: the backup task holds it.
             assert!(r.is_inhibited());
             assert_eq!(r.active_reasons(), vec!["backup task".to_string()]);
             drop(b);
@@ -309,7 +278,6 @@ mod tests {
             let r = InhibitRegistry::new();
             let r2 = r.clone();
             let _t = r.acquire("x");
-            // The hold taken on `r` is visible through the clone `r2`.
             assert!(r2.is_inhibited());
             assert_eq!(r2.count(), 1);
         }

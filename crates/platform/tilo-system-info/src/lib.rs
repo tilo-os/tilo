@@ -1,41 +1,35 @@
-//! An app's view of the machine it runs on, through one connection on every
-//! desktop platform.
+//! An app's view of the machine it runs on, through one connection on every desktop
+//! platform.
 //!
-//! The vocabulary is the typed system information service's
-//! ([`protocol`], [`client`]): readings pushed per subscription, a process
-//! list cut to what the app was granted, and ending the person's own
-//! processes. Where the readings come from is this crate's choice:
+//! The vocabulary is the typed system information service's ([`protocol`],
+//! [`client`]). Where the readings come from is this crate's choice:
 //!
 //! - on Linux, the Tilo session reads the machine and serves it
-//!   (`tilo_system_stats`): an app's sandbox has a process namespace of its
-//!   own, so it could not read the machine itself. The launcher hands the
-//!   connection over; an unconfined run dials the session's socket under the
-//!   runtime directory ([`tilo_paths::runtime_dir`]);
-//! - elsewhere (macOS), the platform confines an app without hiding the
-//!   process table, and no session serves readings: the same service runs in
-//!   this process over the platform's own interfaces ([`local`]).
+//!   (`tilo_system_stats`): an app's sandbox has a process namespace of its own, so
+//!   it could not read the machine itself. An unconfined run dials the session's
+//!   socket ([`tilo_paths::runtime_dir`]);
+//! - elsewhere (macOS), the platform confines an app without hiding the process
+//!   table and no session serves readings, so the same service runs here ([`local`]).
 
 #[cfg(unix)]
 pub mod local;
 
 pub use tilo_system_stats::protocol;
 
-/// The machine's storage as the session reads it, for replaying a capture.
 pub mod storage {
     pub use tilo_system_stats::storage::from_lsblk;
 }
 pub use tilo_system_stats::{Grant, Grants, SERVICE};
 
-/// The app's side of the service.
 #[cfg(unix)]
 pub mod client {
     pub use tilo_system_stats::client::{Client, ClientSubscription, Notify};
 }
 
-/// This process's connection to the system information service, made on
-/// first use and shared: the one the launcher handed it, the session's for
-/// an unconfined run, or (where no session serves one) a service in this
-/// process. `None` when there is none.
+/// This process's connection to the service, made on first use and shared:
+/// the one the launcher handed it, the session's for an unconfined run, or
+/// (where no session serves one) a service in this process. `None` when there
+/// is none.
 #[cfg(unix)]
 #[must_use]
 pub fn connection(app_id: &str) -> Option<client::Client> {

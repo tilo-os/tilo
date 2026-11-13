@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value as Json;
 use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
+use tilolang_runtime::ids::AppId;
 use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
@@ -169,7 +170,7 @@ pub(crate) struct HostInner {
     store: TiloStore,
     authority: TiloAuthority,
     viewer: Principal,
-    packages: RefCell<Vec<Package>>,
+    packages: RefCell<Vec<Rc<Package>>>,
     /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
@@ -184,6 +185,8 @@ pub(crate) struct HostInner {
     chunks: Rc<RefCell<crate::chunk::Chunks>>,
     /// Whether the store's chunk loader reads [`Self::chunks`].
     chunk_loader: Cell<bool>,
+    /// When the packages' triggers next have something to run.
+    triggers: crate::triggers::Schedule,
 }
 
 thread_local! {
@@ -308,7 +311,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             let owner = if key.app == meta.app {
                 meta.clone()
             } else {
-                host.package_of(&key.app)?.meta
+                host.package_of(&key.app)?.meta.clone()
             };
             let declared = owner
                 .type_named(&key.name)
@@ -567,7 +570,7 @@ impl HostInner {
             .admit_agent(&caller.actor, caller.on_behalf_of.as_deref());
     }
 
-    pub(crate) fn package_of(&self, app: &str) -> Result<Package, String> {
+    pub(crate) fn package_of(&self, app: &str) -> Result<Rc<Package>, String> {
         self.packages
             .borrow()
             .iter()
@@ -596,7 +599,7 @@ impl HostInner {
         value: &Value,
     ) -> Result<Json, String> {
         argument_json(
-            &|app| self.package_of(app).map(|package| package.meta),
+            &|app| self.package_of(app).map(|package| package.meta.clone()),
             meta,
             value,
             &parse_ty(&param.ty, &meta.app)?,
@@ -977,6 +980,7 @@ impl Host {
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let triggers = crate::triggers::Schedule::new(store.watch());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -989,6 +993,7 @@ impl Host {
             returned: RefCell::default(),
             chunks,
             chunk_loader: Cell::new(can_load_chunks),
+            triggers,
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -1164,24 +1169,44 @@ impl Host {
         &self.inner.authority
     }
 
-    /// Whether the action `action` can run on the published resource `resource` now, as its app
-    /// says: the requirements its subject alone decides hold for the person at the window, or the
+    /// Whether the action published as `action` can run on the published resource `resource`
+    /// now, as its app says: the requirements its subject alone decides hold for the person at the window, or the
     /// first that does not and why. `None` when the app keeps no requirement its subject could
     /// decide, and the action is offered as it is.
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.inner.availability(resource, action)
+        let id = self.published_action(resource, action)?.id;
+        self.inner.availability(resource, &id)
     }
 
-    /// What the action `action` offers on the published resource `resource` now, as its app says
-    /// it ([`Offered`]), with what reading the answer read of the workspace: the fields it read,
+    /// What the action published as `action` offers on the published resource `resource` now, as
+    /// its app says it ([`Offered`]), with what reading the answer read of the workspace: the fields it read,
     /// each once, so a caller keeping the answer knows what has to move for it to be read again,
     /// and whether it read beyond the workspace at all ([`Reading`]). `None` when the app
     /// presents nothing of the action and keeps no requirement it can decide, or when one cannot
     /// be read.
     #[must_use]
     pub fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
-        self.inner.offered_reading(resource, action)
+        let id = self.published_action(resource, action)?.id;
+        self.inner.offered_reading(resource, &id)
+    }
+
+    /// The action the door publishes as `action` on `resource`: one of the package whose
+    /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by the name the app publishes it under or
+    /// the id its declaration keeps
+    /// ([`MetaExt::action_published_as`](crate::meta::MetaExt::action_published_as)).
+    #[must_use]
+    pub fn published_action(
+        &self,
+        resource: &str,
+        action: &str,
+    ) -> Option<tilolang_runtime::meta::ActionMeta> {
+        let app = crate::publish::app_of(resource)?;
+        self.find_in_packages(|package| {
+            (package.meta.app == app)
+                .then(|| package.meta.action_published_as(action).cloned())
+                .flatten()
+        })
     }
 
     /// The resource `action` returned when it was last planned here, for whoever invoked it,
@@ -1283,21 +1308,22 @@ impl Host {
         crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
-        let package = Package {
+        let package = Rc::new(Package {
             meta,
             id,
             ids,
             wasm: std::sync::Arc::from(wasm),
-        };
+        });
+        self.inner.triggers.forget();
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()
             .find(|loaded| loaded.meta.app == package.meta.app)
         {
-            Some(loaded) => *loaded = package.clone(),
-            None => packages.push(package.clone()),
+            Some(loaded) => *loaded = Rc::clone(&package),
+            None => packages.push(Rc::clone(&package)),
         }
-        Ok(package)
+        Ok(Package::clone(&package))
     }
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of
@@ -1335,7 +1361,7 @@ impl Host {
 
     /// Every loaded package.
     #[must_use]
-    pub fn packages(&self) -> Vec<Package> {
+    pub fn packages(&self) -> Vec<Rc<Package>> {
         self.inner.packages.borrow().clone()
     }
 
@@ -1354,14 +1380,21 @@ impl Host {
     /// The loaded package `app`.
     #[must_use]
     pub fn package(&self, app: &str) -> Option<Package> {
-        self.inner.package_of(app).ok()
+        self.inner
+            .package_of(app)
+            .ok()
+            .map(|package| Package::clone(&package))
     }
 
     /// The first thing `find` finds in a loaded package, read where the packages are kept: what
     /// a frame looks up (an action's meta, an enum's cases) without copying every package.
     /// `find` must not load or drop a package.
-    pub fn find_in_packages<R>(&self, find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
-        self.inner.packages.borrow().iter().find_map(find)
+    pub fn find_in_packages<R>(&self, mut find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
+        self.inner
+            .packages
+            .borrow()
+            .iter()
+            .find_map(|package| find(package))
     }
 
     /// Bring the runtime's view of the workspace record up to date: its own chunk
@@ -1460,7 +1493,7 @@ impl Host {
         }
         let record = NewRecord {
             ty: ty.to_owned(),
-            app: app.to_owned(),
+            app: AppId::from(app),
             fields: Vec::new(),
         };
         Ok(self.inner.store.create_with_id(&record, &id)?)
@@ -1564,14 +1597,14 @@ impl Host {
     /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
     /// devices missed while all were off runs once when one comes up. Returns how many ran.
     pub fn run_triggers(&self, now: i64) -> usize {
-        crate::triggers::run(self, now)
+        crate::triggers::run_due(self, &self.inner.triggers, now)
     }
 
     /// The next instant strictly after `now` at which a trigger has something to run: what the
     /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
     #[must_use]
     pub fn next_trigger(&self, now: i64) -> Option<i64> {
-        crate::triggers::next(self, now)
+        crate::triggers::next_due(self, &self.inner.triggers, now)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its
@@ -1641,7 +1674,7 @@ impl Host {
 
     /// The published records of the workspace: each resource of a loaded package with its type name.
     #[must_use]
-    pub fn records(&self) -> Vec<(Package, String, String)> {
+    pub fn records(&self) -> Vec<(Rc<Package>, String, String)> {
         let mut out = Vec::new();
         for package in self.packages() {
             for declared in &package.meta.types {
@@ -1650,7 +1683,7 @@ impl Host {
                     .store
                     .resources_of(&package.meta.app, &declared.id)
                 {
-                    out.push((package.clone(), declared.name.clone(), doc));
+                    out.push((Rc::clone(&package), declared.name.clone(), doc));
                 }
             }
         }
@@ -1737,7 +1770,7 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let metas: Vec<Meta> = host
         .packages()
         .into_iter()
-        .map(|package| package.meta)
+        .map(|package| package.meta.clone())
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
     crate::surface::surface_toml(&refs).map_err(|error| error.to_string())

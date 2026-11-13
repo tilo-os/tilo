@@ -22,8 +22,8 @@ pub mod device_grants;
 pub mod enter;
 #[cfg(target_os = "macos")]
 mod i18n;
+pub mod key_runs;
 pub mod mcp;
-pub mod mcp_http;
 pub mod mcp_process;
 pub mod mcp_windows;
 pub mod offload;
@@ -33,7 +33,9 @@ pub mod remote_door;
 pub mod session_door;
 pub mod standalone;
 pub mod unix;
-pub mod viewer;
+
+#[cfg(test)]
+pub(crate) mod mcp_test_hosts;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
@@ -162,14 +164,6 @@ pub trait RuntimeServices: Sized {
     /// them from its own endpoint: what a `--connect --device` client is
     /// carried to. `None` for a host that reaches none.
     fn remote_doors(&self) -> Option<std::sync::Arc<remote_door::Doors>> {
-        None
-    }
-
-    /// The person's devices, as this host's own store of them holds them: who
-    /// a grant certificate must belong to for the MCP endpoint to open a
-    /// session, and whether it still holds. `None` for a host that opens no
-    /// grant-authenticated sessions.
-    fn persons_devices(&self) -> Option<std::sync::Arc<dyn remote_door::PersonsDevices>> {
         None
     }
 }

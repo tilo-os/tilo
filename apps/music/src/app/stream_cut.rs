@@ -4,34 +4,27 @@
 use super::Music;
 use ui::widget::toast::ToastKind;
 
-/// How far short of its known length a stream may end and still count as
-/// having played to the end: container durations and the catalogue's
-/// rounded seconds disagree by a little, never by this much.
+/// How far short of its length a stream may end and still count as played through.
 const STREAM_END_SLACK_MS: u64 = 5_000;
 
-/// How far playback has to get past the last reconnect before a stream cut
-/// short again is reconnected again. A source that keeps dying at one spot
-/// then stops with its error instead of reconnecting forever.
+/// How far past the last reconnect playback must reach before a cut is reconnected again.
 const STREAM_RECOVERY_PROGRESS_MS: u64 = 5_000;
 
 /// How a remote stream stopped before the user asked it to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StreamCut {
-    /// The pipeline reported end of stream.
     Ended,
-    /// The pipeline failed: the CDN refused a range, the connection dropped.
     Failed,
 }
 
 /// What to do about a remote stream that stopped at `position_ms`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StreamCutAction {
-    /// The stream stopped on its own terms: the song is over, or it never
-    /// started, which the start-failure path reports.
+    /// The stream ended on its own terms, or never started.
     Accept,
     /// Resolve a fresh URL and resume at this position.
     Resume(u64),
-    /// It was cut short again at the spot of the last resume: report it.
+    /// Cut short again at the last resume's spot: report it.
     GiveUp,
 }
 
@@ -69,10 +62,8 @@ pub(super) fn stream_cut_action(
 }
 
 impl Music {
-    /// Re-resolve the current remote stream and resume it where it stopped,
-    /// when [`stream_cut_action`] says the source cut it short. Says so in a
-    /// toast and the log, as it does when a stream is cut short again at the
-    /// same spot, so a cut is never silent. Returns whether it resumed.
+    /// Re-resolve the stream and resume it where it stopped; a cut is never silent. Whether it
+    /// resumed.
     pub(super) fn resume_cut_stream(&mut self, cut: StreamCut) -> bool {
         let Some(track_id) = self.pb.current.clone() else {
             return false;

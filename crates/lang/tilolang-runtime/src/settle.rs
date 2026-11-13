@@ -16,7 +16,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ActionOutcome, ExecCtx, InvokeOutcome};
 use crate::handles::QueuedBlock;
 use crate::host_res::to_scalar;
-use crate::ids::{ModuleHash, Principal};
+use crate::ids::{AppId, ModuleHash, Principal};
 use crate::project::{ProjectOptions, project};
 use crate::run::{Resolution, RunOutcome};
 use crate::store::{ChangeNote, Mutation};
@@ -493,7 +493,7 @@ impl Core {
         let class = pkg.action(action)?.class;
         Some(ActionInfo {
             action: action.to_owned(),
-            app: pkg.meta.app.clone(),
+            app: AppId::from(pkg.meta.app.as_str()),
             class,
             own: true,
             module: pkg.hash.clone(),

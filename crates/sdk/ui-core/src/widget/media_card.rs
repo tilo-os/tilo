@@ -1,24 +1,4 @@
 //! `MediaCard` and `MediaGrid`: albums, videos, books, photos, apps.
-//!
-//! A media card is the art (a cover, a thumbnail, a photo) with its title and
-//! up to two meta lines under it. The art sits in the content with a seated
-//! edge and no shadow (only floating things cast one). Overlay badges over
-//! the art (a duration, watched progress, a live mark, a downloaded mark)
-//! use the floating material, the same as all chrome over media. Under the
-//! pointer the card lifts; keyboard focus rings the art in your colour, so
-//! the two never look the same.
-//!
-//! Art that is not loaded yet, or does not exist, is generated: a smooth
-//! neutral gradient with the initials of the title (or of the name an
-//! art-only card is seeded with) sized from the tile, or the app's icon for
-//! an app. Art can also be a mosaic of covers (a playlist), the icon of a
-//! kind of thing (a podcast, a folder), or painted by the app from theme
-//! values. An artist is a circle ([`MediaAspect::Circle`]).
-//!
-//! [`MediaGrid`] reflows cards into columns from the available width, with
-//! every row's text block as tall as its tallest so titles line up, or into
-//! justified rows of photos at their own aspect ratios
-//! ([`MediaGrid::justified`], [`justified_rows`]).
 
 use std::collections::HashMap;
 
@@ -43,16 +23,11 @@ use crate::widget::{Element, TaffyTreeExt, Widget, card_column_width, card_colum
 /// The shape of a card's art.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum MediaAspect {
-    /// Album art, podcasts, app icons.
     #[default]
     Square,
-    /// Video thumbnails (16:9).
     Wide,
-    /// Book covers and posters (2:3).
     Portrait,
-    /// A photo's own width / height.
     Ratio(f64),
-    /// A person or an artist: a disc.
     Circle,
 }
 
@@ -83,21 +58,12 @@ pub type ArtPainter<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 /// What a card's art is.
 #[derive(Clone, Copy)]
 pub enum MediaArt<'a> {
-    /// A decoded picture, cover-fitted.
     Image(&'a peniko::ImageData),
-    /// An app's icon, fitted inside a quiet tile.
     AppIcon(&'a AppImage),
-    /// Up to four covers in a 2×2 mosaic (a playlist, a collection).
     Mosaic(&'a [peniko::ImageData]),
-    /// The icon of a kind of thing (a podcast, a folder) on the neutral tile.
     Kind(Icon),
-    /// Painted by the app into the art's rect, from theme values.
     Paint(ArtPainter<'a>),
-    /// No art (yet): the generated gradient and initials.
     Placeholder,
-    /// Art on its way ([`crate::arriving`]), at its placeholder step: the
-    /// card's ground until the skeleton shows, then the skeleton's tone in
-    /// the art's place, so the card keeps its geometry as the art lands.
     Arriving(crate::arriving::Step),
 }
 
@@ -118,33 +84,20 @@ impl std::fmt::Debug for MediaArt<'_> {
 /// An overlay mark on the art.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MediaBadge<'a> {
-    /// A duration or count at the bottom-trailing corner ("12:04").
     Duration(&'a str),
-    /// Watched / read share, `0.0..=1.0`, along the bottom edge.
     Progress(f64),
-    /// Its content is on its way to this device, since the instant given:
-    /// the shared indeterminate bar along the bottom edge, in place of the
-    /// progress.
     Loading(crate::time::Instant),
-    /// Where its content stands while it is neither here nor on its way
-    /// ("Waiting for a device that has it"): a still line along the bottom
-    /// edge, in place of the progress. `detail`, when given, is what the
-    /// card's accessible value adds to it.
     Status {
         label: &'a str,
         detail: Option<&'a str>,
     },
-    /// Broadcasting now, at the top-leading corner.
     Live,
-    /// Available offline, at the top-trailing corner.
     Downloaded,
-    /// A short tag at the top-leading corner ("New", "Explicit"), a badge
-    /// in its chip style.
     Tag(&'a str, crate::widget::ChipStyle),
 }
 
-/// How large the cards of a grid are, in lines of body text so they grow
-/// with the text scale.
+/// How large the cards of a grid are, in lines of body text so they grow with the text
+/// scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MediaSize {
     Small,
@@ -153,7 +106,6 @@ pub enum MediaSize {
     Large,
 }
 
-// How large the cards of a grid are, as a component's prop.
 crate::component::choice!(MediaSize, "MediaSize", {
     Small => "small",
     Regular => "regular",
@@ -161,8 +113,8 @@ crate::component::choice!(MediaSize, "MediaSize", {
 });
 
 impl MediaSize {
-    /// The minimum column width (or, for justified rows, the target row
-    /// height) under `theme`.
+    /// The minimum column width (or, for justified rows, the target row height) under
+    /// `theme`.
     #[must_use]
     pub fn extent(self, theme: &Theme) -> f64 {
         let line = f64::from(theme.text(TextRole::Body).line_height_px());
@@ -175,7 +127,6 @@ impl MediaSize {
     }
 }
 
-/// The resolved geometry of a media card in `theme`.
 #[derive(Clone, Debug)]
 struct MediaMetrics {
     title: TextStyle,
@@ -228,7 +179,6 @@ pub struct MediaCardFace<'a> {
     /// Seeds the placeholder's initials on an art-only card.
     seed: Option<&'a str>,
     meta: [Option<&'a str>; 2],
-    /// A mark after the first meta line (verified).
     meta_mark: Option<Icon>,
     creator: Option<crate::widget::AvatarFace<'a>>,
     badges: &'a [MediaBadge<'a>],
@@ -263,8 +213,7 @@ impl<'a> MediaCardFace<'a> {
         self
     }
 
-    /// A mark after the first meta line: a verified channel, an explicit
-    /// album.
+    /// See [`MediaCardFace::meta_mark`].
     #[must_use]
     pub fn meta_mark(mut self, icon: Icon) -> Self {
         self.meta_mark = Some(icon);
@@ -337,9 +286,6 @@ impl<'a> MediaCardFace<'a> {
         self.text_block(text, &m, Some(width)).0
     }
 
-    /// The height of the text block at `width` and the height of its title,
-    /// or as tall as they can be (a title of two lines) without a width: a
-    /// grid estimates the cards it has not measured.
     fn text_block(
         &self,
         text: &mut TextRenderer,
@@ -395,7 +341,6 @@ impl<'a> MediaCardFace<'a> {
         let m = MediaMetrics::new(theme);
         let colors = &theme.tokens.colors;
 
-        // Hover and selection are a lift plate behind the whole card.
         let plate = if self.selected || self.interaction.pressed {
             Some(colors.intent.selection)
         } else if self.interaction.hovered && !self.interaction.disabled {
@@ -444,8 +389,6 @@ impl<'a> MediaCardFace<'a> {
         if let Some(title) = self.title {
             let width = crate::num::f32_of_f64(rect.width().max(1.0));
             let mut y = art.y1 + m.text_gap;
-            // A disc is a person: the name and its line stand centred under
-            // it. Every other card starts its text on the art's leading edge.
             let centred = self.aspect == MediaAspect::Circle;
             let start = |ctx: &mut PaintCtx<'_>, line: &str, style: &TextStyle, extra: f64| {
                 if centred {
@@ -494,7 +437,6 @@ impl<'a> MediaCardFace<'a> {
         }
     }
 
-    /// The art's corner radius: a disc for [`MediaAspect::Circle`].
     fn art_radius(&self, m: &MediaMetrics, art: Rect) -> f64 {
         if self.aspect == MediaAspect::Circle {
             art.width().min(art.height()) / 2.0
@@ -503,8 +445,8 @@ impl<'a> MediaCardFace<'a> {
         }
     }
 
-    /// The card's accessibility node: named by its title, valued by its
-    /// meta lines and badges.
+    /// The card's accessibility node: named by its title, valued by its meta lines and
+    /// badges.
     pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let mut value: Vec<String> = self
@@ -517,7 +459,6 @@ impl<'a> MediaCardFace<'a> {
             match badge {
                 MediaBadge::Duration(d) => value.push((*d).to_owned()),
                 MediaBadge::Progress(p) => {
-                    // Neutral words: a book is read, the rest is played.
                     let done = if self.aspect == MediaAspect::Portrait {
                         "read"
                     } else {
@@ -564,12 +505,11 @@ fn seat(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
     );
 }
 
-/// The seated edge's strength: the control hairline (HIG §9.5).
 const SEAT_ALPHA: u8 = 26;
 
-/// Paint `kind` as a small tile of art at `radius` (a list row's leading
-/// thumbnail): a picture cover-fitted, an app icon in its quiet tile, or the
-/// generated placeholder seeded with `title`'s initials.
+/// Paint `kind` as a small tile of art at `radius` (a list row's leading thumbnail): a
+/// picture cover-fitted, an app icon in its quiet tile, or the generated placeholder seeded
+/// with `title`'s initials.
 pub(crate) fn paint_art_tile(
     ctx: &mut PaintCtx<'_>,
     art: Rect,
@@ -677,9 +617,6 @@ fn paint_art(
     }
 }
 
-/// One smooth diagonal gradient (no stacked rects, so no seams) between two
-/// steps of the raised surface, with the title's initials sized from the
-/// tile.
 fn paint_placeholder(
     ctx: &mut PaintCtx<'_>,
     m: &MediaMetrics,
@@ -721,7 +658,6 @@ fn paint_placeholder(
     );
 }
 
-/// The generated art's initials, as a share of the tile's side.
 const PLACEHOLDER_INITIALS_SHARE: f64 = 0.2;
 
 fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: MediaBadge<'_>) {
@@ -823,8 +759,6 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             }
         }
         MediaBadge::Status { label, .. } => {
-            // A still line on the floating material across the art's foot,
-            // wrapping within it.
             let width = (art.width() - 4.0 * pad).max(1.0);
             #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
             let (w, h) = ctx.text.measure_style(label, Some(width as f32), &m.badge);
@@ -851,9 +785,6 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             );
         }
         MediaBadge::Progress(share) => {
-            // No progress draws nothing; some draws the design system's
-            // bar, inset from the art's foot and corners so it reads as a
-            // bar however little is filled.
             let share = share.clamp(0.0, 1.0);
             if share > 0.0 {
                 let bar = progress_rect(art, m, theme);
@@ -869,22 +800,14 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
 /// Where a retained card's art comes from.
 pub enum MediaSource {
     Image(peniko::ImageData),
-    /// Loaded in the background; the placeholder shows until it lands.
-    Url {
-        store: ImageStore,
-        url: String,
-    },
+    Url { store: ImageStore, url: String },
     AppIcon(AppImage),
-    /// Up to four covers in a mosaic.
     Mosaic(Vec<peniko::ImageData>),
-    /// The icon of a kind of thing on the neutral tile.
     Kind(Icon),
-    /// Painted by the app from theme values.
     Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
     Placeholder,
 }
 
-/// Where a card's progress bar sits: inset from the art's foot and corners.
 fn progress_rect(art: Rect, m: &MediaMetrics, theme: &Theme) -> Rect {
     let height = crate::widget::ProgressBarFace::height(theme).min(art.height());
     Rect::new(
@@ -924,15 +847,10 @@ struct MediaCreator {
     image_url: Option<(ImageStore, String)>,
 }
 
-/// The action shown over the art on hover: its glyph, what it is called and
-/// what it runs.
 struct HoverAction {
     icon: Icon,
     label: String,
-    /// The action the press asks the host for.
     emitter: crate::widget::ActionEmitter<()>,
-    /// The card's own view action, when the press is one: the host sends the
-    /// invocation back here and [`Self::run`] runs it.
     native: Option<crate::widget::activation::NativeControl>,
 }
 
@@ -944,7 +862,6 @@ impl HoverAction {
     }
 }
 
-/// A retained media card. See the module docs.
 #[crate::component::not_a_component(
     part,
     "the card of a `ui.MediaGrid`, whose props `ui.MediaCard` gives"
@@ -966,13 +883,8 @@ pub struct MediaCard {
     selected: bool,
     activation: Activation,
     metrics: Option<MediaMetrics>,
-    /// Set by a [`MediaGrid`] so every card of a row shares one text height.
     shared_text_height: Option<f64>,
-    /// Set by a [`MediaGrid`] while the card is too far from the viewport
-    /// for its title to be measured: its text height is an estimate.
     text_estimated: bool,
-    /// Set by a [`MediaGrid`] when an estimated card comes near the
-    /// viewport: the next layout measures it.
     wants_measure: bool,
     rect: Rect,
     dirty: bool,
@@ -983,8 +895,6 @@ impl MediaCard {
         Self::new_owned(id.into(), source)
     }
 
-    /// [`Self::new`] once its text is owned: one copy in the toolkit
-    /// rather than one in every app that calls the generic constructor.
     fn new_owned(id: String, source: MediaSource) -> Self {
         let loaded = match &source {
             MediaSource::Image(image) => Some(image.clone()),
@@ -1050,8 +960,7 @@ impl MediaCard {
         self
     }
 
-    /// A person's attribution below the title. The initials use their stable
-    /// identity, and a picture can be attached with `creator_image_url`.
+    /// A person's attribution below the title.
     #[must_use]
     pub fn creator(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.creator = Some(MediaCreator {
@@ -1097,10 +1006,9 @@ impl MediaCard {
         self
     }
 
-    /// Publish the hover action as the card's own view action, as
-    /// [`Self::on_view`] does for the card: what it shows through `f` (a
-    /// menu, a page) is the window's own state, and the control is
-    /// discoverable and agent-driveable.
+    /// Publish the hover action as the card's own view action, as [`Self::on_view`] does
+    /// for the card: what it shows through `f` (a menu, a page) is the window's own state,
+    /// and the control is discoverable and agent-driveable.
     #[must_use]
     pub fn hover_action_view(
         self,
@@ -1111,10 +1019,9 @@ impl MediaCard {
         self.hover_action_native(icon, label, tilo_actions::OperationKind::View, f)
     }
 
-    /// Publish the hover action as the card's own effect, as
-    /// [`Self::on_effect`] does for the card: what it does through `f` acts
-    /// on the window's resource, and the control is discoverable and
-    /// agent-driveable.
+    /// Publish the hover action as the card's own effect, as [`Self::on_effect`] does for
+    /// the card: what it does through `f` acts on the window's resource, and the control is
+    /// discoverable and agent-driveable.
     #[must_use]
     pub fn hover_action_effect(
         self,
@@ -1161,8 +1068,8 @@ impl MediaCard {
     }
 
     /// Publish activation as a zero-argument effect, as
-    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the
-    /// closure keeps working and the card is discoverable and agent-driveable.
+    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the closure keeps
+    /// working and the card is discoverable and agent-driveable.
     #[must_use]
     pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
         let label = self.title.clone().unwrap_or_default();
@@ -1171,9 +1078,8 @@ impl MediaCard {
         self
     }
 
-    /// Publish activation as a transient view action (opening what the card
-    /// stands for), as [`Button::on_view`](crate::widget::Button::on_view)
-    /// does.
+    /// Publish activation as a transient view action (opening what the card stands for), as
+    /// [`Button::on_view`](crate::widget::Button::on_view) does.
     #[must_use]
     pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
         let label = self.title.clone().unwrap_or_default();
@@ -1227,8 +1133,6 @@ impl MediaCard {
         f(&face)
     }
 
-    /// The card's text block at `width` (estimated without one), placing
-    /// the creator beside the meta under the title it measured.
     fn own_text_height(&mut self, text: &mut TextRenderer, width: Option<f64>) -> f64 {
         let Some(m) = &self.metrics else {
             return 0.0;
@@ -1394,7 +1298,6 @@ impl Widget for MediaCard {
         {
             use crate::pointer_replay::{PressAt, Release};
             let over = target.contains(self.activation.cursor());
-            // The card's id names its hover action across a rebuild.
             let key = if self.activation.id().is_empty() {
                 String::new()
             } else {
@@ -1585,15 +1488,8 @@ impl crate::resources::PublishesResources for MediaCard {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Grid geometry
-// ---------------------------------------------------------------------------
-
-/// Lay `aspects` (width / height) out in justified rows `width` wide: each
-/// row is filled at `target_height`, then scaled so it spans the width
-/// exactly. The last row keeps the target height instead of stretching,
-/// capped at the height of the row above it.
-/// Returns one rect per item, relative to the origin.
+/// Lay `aspects` (width / height) out in justified rows `width` wide: each row is filled at
+/// `target_height`, then scaled so it spans the width exactly.
 #[must_use]
 pub fn justified_rows(aspects: &[f64], width: f64, target_height: f64, gap: f64) -> Vec<Rect> {
     let mut out = Vec::with_capacity(aspects.len());
@@ -1642,7 +1538,7 @@ enum GridMode {
     Justified,
 }
 
-/// A responsive grid of [`MediaCard`]s. See the module docs.
+/// A responsive grid of [`MediaCard`]s.
 pub struct MediaGrid {
     cards: Vec<Element>,
     nodes: Vec<NodeId>,
@@ -1657,15 +1553,12 @@ pub struct MediaGrid {
     /// titles measured; the others are as tall as their text can be.
     window: (f64, f64),
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
 /// The window a grid measures before its first draw: a tall screen.
 const FIRST_WINDOW: (f64, f64) = (0.0, 1200.0);
 
-/// Whether `top..bottom` lies within a viewport's height of `window`.
 fn near(window: (f64, f64), top: f64, bottom: f64) -> bool {
     let margin = window.1 - window.0;
     top < window.1 + margin && bottom > window.0 - margin
@@ -1688,8 +1581,8 @@ impl MediaGrid {
         }
     }
 
-    /// Justified rows at each card's own [`MediaAspect`] (a photo library):
-    /// rows of equal height that span the width exactly.
+    /// Justified rows at each card's own [`MediaAspect`] (a photo library): rows of equal
+    /// height that span the width exactly.
     pub fn justified(cards: Vec<MediaCard>) -> Self {
         Self {
             dirty: true,
@@ -1756,8 +1649,7 @@ impl MediaGrid {
         })
     }
 
-    /// How many columns fit `width`. A short section keeps the columns its
-    /// width chose, so two cards are no wider than two of a full row.
+    /// How many columns fit `width`.
     pub fn columns_for_width(&self, width: f64) -> usize {
         card_columns(width, self.extent, self.column_gap)
     }
@@ -1785,8 +1677,8 @@ impl MediaGrid {
         )
     }
 
-    /// A grid of `cards` that are not all [`MediaCard`]s yet: cards on
-    /// their way, each an [`crate::widget::ArrivingView`] shaped as a card.
+    /// A grid of `cards` that are not all [`MediaCard`]s yet: cards on their way, each an
+    /// [`crate::widget::ArrivingView`] shaped as a card.
     pub fn of(cards: Vec<Element>) -> Self {
         let mut grid = Self::new(Vec::new());
         grid.cards = cards;
@@ -1879,10 +1771,6 @@ impl Widget for MediaGrid {
         match self.mode {
             GridMode::Columns => {
                 let columns = self.columns_for_width(width);
-                // Equal fractional tracks fill the whole row; layout rounding
-                // distributes spare pixels instead of leaving a blank edge.
-                // Measure text at the narrowest rounded width so every card's
-                // title still fits its shared row height.
                 let column = card_column_width(width, columns, self.column_gap).floor();
                 // A bare fraction retains an automatic intrinsic minimum.
                 // MediaCard measures its artwork from the available width,
@@ -2012,8 +1900,6 @@ impl Widget for MediaGrid {
                 .map_or((f64::NEG_INFINITY, f64::INFINITY), |vp| {
                     (vp.y0 - top, vp.y1 - top)
                 });
-            // Cards scrolled near the viewport are measured by the next
-            // layout, a viewport's height before they are shown.
             let window = self.window;
             for card in self.cards_mut() {
                 card.wants_measure |=

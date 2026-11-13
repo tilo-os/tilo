@@ -71,7 +71,7 @@ CHAT_CHANNEL = "c_chat"
 # Chat's composer, as the person's assistive technology names it (chat en-US.ftl chat-composer).
 COMPOSER = "Message composer"
 # An app's own data in a workspace, on this device (launcher appdir.rs).
-APP_ROOMS = ".local/share/tilo-rooms"
+APP_ROOMS = ".local/share/tilo-workspaces"
 
 
 # -- the desk ------------------------------------------------------------------------------

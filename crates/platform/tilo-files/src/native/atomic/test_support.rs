@@ -6,7 +6,6 @@ use std::fs::Metadata;
 use std::io;
 use std::rc::Rc;
 
-/// A production publication checkpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Checkpoint {
     StageCreated,
@@ -22,14 +21,12 @@ pub enum Checkpoint {
     Committed,
 }
 
-/// Owned observations of a retained staging file.
 #[derive(Debug)]
 pub struct StageObservation {
     pub metadata: Metadata,
     pub identity: FileIdentity,
 }
 
-/// An observed production checkpoint.
 #[derive(Debug)]
 pub struct CheckpointEvent {
     pub checkpoint: Checkpoint,
@@ -123,7 +120,6 @@ fn with_scoped_failure<T>(failure: Failure, operation: impl FnOnce() -> T) -> T 
     output
 }
 
-/// Observe production checkpoints for `operation` on this thread.
 pub fn with_observer<T>(
     observer: impl Fn(&CheckpointEvent) + 'static,
     operation: impl FnOnce() -> T,

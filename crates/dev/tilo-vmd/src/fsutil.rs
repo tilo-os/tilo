@@ -7,15 +7,15 @@ use tilo_vm_protocol::layer_hash::walk;
 
 use crate::error::DaemonError;
 
-/// Replace `path` durably, creating its parent when missing, so readers see
-/// the old or the new content and never a torn file.
+/// Replace `path` durably, creating its parent when missing, so readers see the old or the new
+/// content and never a torn file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     tilo_files::native::atomic::write_creating_parent(path, bytes)
         .map_err(DaemonError::io(format!("write {}", path.display())))
 }
 
-/// Recursively copy `source` into the existing directory `dest`, keeping
-/// symlinks as symlinks and preserving permission bits.
+/// Recursively copy `source` into the existing directory `dest`, keeping symlinks as symlinks and
+/// preserving permission bits.
 pub fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -39,9 +39,8 @@ pub fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Bytes a tree occupies on disk (allocated blocks, not apparent size, so
-/// reflinked or sparse files are not double counted as much). Unreadable
-/// entries count as zero.
+/// Bytes a tree occupies on disk: allocated blocks, not apparent size, so reflinked or sparse files
+/// are not double counted. Unreadable entries count as zero.
 pub fn allocated_bytes(root: &Path) -> u64 {
     let mut entries = Vec::new();
     if walk(root, Path::new(""), &mut entries).is_err() {

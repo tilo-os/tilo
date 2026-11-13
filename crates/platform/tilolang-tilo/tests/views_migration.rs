@@ -114,7 +114,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     workspace.save(&mut before.doc).unwrap();
 
     // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
-    let own = tilolang_tilo::member_record_of(ADA).unwrap();
+    let own = tilolang_tilo::member_record_of(VIEWS, ADA).unwrap();
     let key = collaboration::record::RecordId::parse(&own)
         .unwrap()
         .storage_key();

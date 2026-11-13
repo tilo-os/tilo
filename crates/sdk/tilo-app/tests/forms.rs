@@ -15,7 +15,7 @@ pub struct Bookmarks {
     pub bookmarks: Collection<Bookmark>,
 }
 
-#[resource(kind = "test.bookmarks", label = "Bookmarks")]
+#[resource(kind = "test.bookmarks", catalogue = "tests/locales")]
 impl Bookmarks {
     /// Add a bookmark.
     #[action]

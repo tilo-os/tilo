@@ -9,8 +9,6 @@ use vello::kurbo::Affine;
 
 use automerge::{AutoCommit, ROOT};
 
-/// Present `doc`'s library to `app` as the framework does after a change,
-/// then sync it, waiting for any pixels the window asked the decoder for.
 fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
     present(app, doc);
     Widget::sync(app, doc, &ROOT);
@@ -27,8 +25,6 @@ fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
     }
 }
 
-/// Apply what `app` submitted to `doc`, as the host does after a pass,
-/// and show it the result.
 fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
     let Some(dispatch) = app.state().dispatch.clone() else {
         return;
@@ -42,7 +38,6 @@ fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
     }
 }
 
-/// Present `doc`'s library to `app`, as the framework does after a change.
 fn present(app: &PhotosApp, doc: &AutoCommit) {
     let state =
         <PhotoLibrary as ui::tilo_resource::Resource>::read(doc).expect("the library reads");
@@ -59,7 +54,6 @@ fn test_app_on(content: ContentStore) -> PhotosApp {
 fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
     ui::history_source::steps::restore(doc, selected, &[]).unwrap();
 }
-/// Change the document's content: every photograph removed.
 fn empty_library(doc: &mut AutoCommit) {
     let mut library = crate::test_doc::library(doc);
     library.photos.retain(|_, _| false);
@@ -81,11 +75,11 @@ fn thumbnails_follow_photo_identity_and_visibility() {
         let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..80 {
-            let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::new(
+            let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::named(
                 &format!("missing-timeline-{index}.png"),
                 30,
                 20,
-                format!("{index:064x}"),
+                &format!("{index:064x}"),
             ));
             photo.captured_at = Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
             library.add_photo(photo);
@@ -163,7 +157,8 @@ fn thumbnails_follow_photo_identity_and_visibility() {
             .library_thumbnails
             .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
         let mut lib = crate::test_doc::library(&doc);
-        lib.photos.iter_mut().next().unwrap().1.image.content = "a".repeat(64);
+        lib.photos.iter_mut().next().unwrap().1.image.content =
+            crate::model::named_content(&"a".repeat(64));
         crate::test_doc::set_library(&mut doc, &lib);
         sync(&mut app, &mut doc);
         assert!(!app.state().library_thumbnails.contains_key(&id));
@@ -411,7 +406,12 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
         let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open = OpenImage::new("existing.png", 6, 4, store.put(&bytes).unwrap());
+        let open = OpenImage::new(
+            "existing.png",
+            6,
+            4,
+            ui::tilo_resource::Bytes::kept_as(&bytes, &store.put(&bytes).unwrap()),
+        );
         let id = crate::test_doc::put_image(&mut doc, &open);
         let mut app = test_app_on(store);
         app.state().show_photo(&id);
@@ -445,7 +445,12 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let mut doc = crate::test_doc::new_doc();
         let store = ContentStore::memory();
         let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open = OpenImage::new("same.png", 6, 4, store.put(&bytes).unwrap());
+        let open = OpenImage::new(
+            "same.png",
+            6,
+            4,
+            ui::tilo_resource::Bytes::kept_as(&bytes, &store.put(&bytes).unwrap()),
+        );
         let id = crate::test_doc::put_image(&mut doc, &open);
         crate::test_doc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
         let selected = doc.get_heads();
@@ -537,15 +542,14 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
 
 fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
     let mut doc = crate::test_doc::new_doc();
-    // Browse order deliberately differs from lexical identity order.
     let photos: Vec<_> = ["c", "a", "d", "b"]
         .into_iter()
         .map(|label| {
-            LibraryPhoto::from_image(OpenImage::new(
+            LibraryPhoto::from_image(OpenImage::named(
                 &format!("{label}.png"),
                 4,
                 3,
-                label.repeat(64),
+                &label.repeat(64),
             ))
         })
         .collect();
@@ -590,7 +594,6 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
         app.state()
             .album_name_input
             .set_text("Selected photographs");
-        // Select in reverse browse order; toggle a third photograph off again.
         for i in [3, 1, 0, 1] {
             activate_album_control(
                 &mut app,
@@ -696,8 +699,6 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
     }
 }
 
-/// Save in the details sheet stands disabled until the draft differs from
-/// what the sheet opened with, and a press then saves nothing.
 #[test]
 fn details_save_waits_for_a_change() {
     let (mut app, mut doc, id) = setup();

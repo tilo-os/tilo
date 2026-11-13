@@ -1,6 +1,6 @@
-//! The sidecar contract: `install` writes one beside every PATH shim it
-//! places, and the `tilo-cli-shim` binary reads it back. Both sides use these
-//! definitions, so the file layout and TOML shape cannot drift apart.
+//! The sidecar contract: `install` writes one beside every PATH shim it places, and the
+//! `tilo-cli-shim` binary reads it back. Both sides use these definitions, so the file layout and
+//! TOML shape cannot drift apart.
 
 use std::path::{Path, PathBuf};
 
@@ -14,12 +14,11 @@ pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
 pub struct Sidecar {
     /// Reverse-DNS package id (`so.tilo.notes-cli`).
     pub package_id: String,
-    /// Command name as declared in the manifest's `cli`.commands.
-    /// Duplicated here (argv`0` also carries it) so renaming the shim
-    /// doesn't silently rebind to a different command.
+    /// Command name as declared in the manifest's `cli`.commands. Duplicated here (argv`0` also
+    /// carries it) so renaming the shim does not silently rebind to a different command.
     pub command: String,
-    /// Optional override for the launcher binary path, for out-of-tree
-    /// testing; production installs leave it unset.
+    /// Optional override for the launcher binary path, for out-of-tree testing; production installs
+    /// leave it unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher: Option<PathBuf>,
 }
@@ -39,10 +38,9 @@ pub fn sidecar_path_for(exe: &Path) -> PathBuf {
 /// The shim's own file name: the template `install` copies, never run itself.
 pub const TEMPLATE_NAME: &str = "tilo-cli-shim";
 
-/// What running the shim at `exe` without a readable sidecar says. Run under
-/// its own name it is the template, which has no sidecar by design: say what
-/// it is and what to run instead. A copy whose sidecar went missing names
-/// the file it needs.
+/// What running the shim at `exe` without a readable sidecar says. Run under its own name it is the
+/// template, which has no sidecar by design; a copy whose sidecar went missing names the file it
+/// needs.
 #[must_use]
 pub fn missing_sidecar_message(exe: &Path, error: &str) -> String {
     if exe.file_name().is_some_and(|name| name == TEMPLATE_NAME) {

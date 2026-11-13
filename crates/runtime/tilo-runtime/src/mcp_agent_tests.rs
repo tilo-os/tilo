@@ -2011,12 +2011,12 @@ fn find_answers_by_the_desktops_one_search_or_says_there_is_none() {
         )
         .await;
         assert!(failed, "{text}");
-        assert!(text.contains("runs no desktop search"), "{text}");
+        assert!(text.contains("keeps no search of its workspace"), "{text}");
     });
 }
 
 /// [`Notes`] publishing everything it does, and no search of its own: a
-/// standalone runtime, which speaks for no desk.
+/// host that holds no records to search.
 #[derive(Clone)]
 struct NoSearch(Notes);
 

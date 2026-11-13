@@ -4,25 +4,50 @@
 )]
 use super::*;
 
-// ==========================================================================
-// Accessibility
-// ==========================================================================
+/// The three toggles a lane carries, the name the router addresses each by and
+/// the catalogue message a reader hears for it. The written name is the router's
+/// alone, so a route survives the window's language.
+const TRACK_TOGGLES: [(&str, &str); 3] = [
+    ("Mute", "video-editor-toggle-mute"),
+    ("Solo", "video-editor-toggle-solo"),
+    ("Lock", "video-editor-toggle-lock"),
+];
 
-/// Which transport button each index addresses, with the name a reader speaks.
+/// Which transport button each index addresses, the catalogue message a reader hears,
+/// and the name the router addresses it by.
 ///
-/// The glyphs alone do not carry the meaning — two of the five pairs were once
-/// drawn near-identically — so the name is the control's real label, not a
-/// decoration on top of a picture that already says it.
-const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
-    (TransportAction::ToStart, "Jump to start"),
-    (TransportAction::StepBack, "Step back one frame"),
-    (TransportAction::PlayPause, "Play"),
-    (TransportAction::StepFwd, "Step forward one frame"),
-    (TransportAction::ToEnd, "Jump to end"),
+/// The glyphs alone do not carry the meaning, so the spoken name is the control's real
+/// label. The router's name is the English one: a route must not move when the window's
+/// language does.
+const TRANSPORT_NAMES: [(TransportAction, &str, &str); 5] = [
+    (
+        TransportAction::ToStart,
+        "video-editor-transport-jump-start",
+        "jump to start",
+    ),
+    (
+        TransportAction::StepBack,
+        "video-editor-transport-step-back",
+        "step back one frame",
+    ),
+    (
+        TransportAction::PlayPause,
+        "video-editor-transport-play",
+        "play",
+    ),
+    (
+        TransportAction::StepFwd,
+        "video-editor-transport-step-forward",
+        "step forward one frame",
+    ),
+    (
+        TransportAction::ToEnd,
+        "video-editor-transport-jump-end",
+        "jump to end",
+    ),
 ];
 
 impl VideoEditorApp {
-    /// The media rows the bin currently lists, in painted order.
     pub(super) fn a11y_bin_items(&self) -> Vec<MediaId> {
         // `bin_order`, not the project's own order: that is the order the rows
         // are painted in, and a reader walking a differently-ordered list
@@ -32,12 +57,11 @@ impl VideoEditorApp {
         self.bin_order()
     }
 
-    /// The marker rows the inspector lists, in painted order: the reference a
-    /// row addresses, the name it is drawn with, and what a reader is told
-    /// about it beyond that name.
+    /// In painted order: the reference a row addresses, its name, and what a reader is told
+    /// about it beyond that.
     ///
-    /// Built from [`Project::all_markers`] -- the very call `layout_markers`
-    /// makes -- so the spoken list and the drawn list cannot come apart.
+    /// Built from [`Project::all_markers`], the very call `layout_markers` makes, so the
+    /// spoken list and the drawn list cannot come apart.
     pub(super) fn a11y_marker_rows(&self) -> Vec<(MarkerRef, String, String)> {
         self.project
             .all_markers()
@@ -60,8 +84,6 @@ impl VideoEditorApp {
                     value.push_str(", on ");
                     value.push_str(&self.a11y_clip_name(c));
                 }
-                // The note is a second painted line under the name. Leaving
-                // it out here would be the tidier story, not the true one.
                 if !m.note.trim().is_empty() {
                     value.push_str(", note: ");
                     value.push_str(m.note.trim());
@@ -115,8 +137,6 @@ impl VideoEditorApp {
                 out.push(InspectorRow::AddMarker);
                 continue;
             }
-            // The project's format is two preset rows and a button, not a run
-            // of knobs — exactly the stops `layout_project` draws.
             if section == Section::Project {
                 out.extend(
                     (0..FRAME_PRESETS.len()).map(|i| InspectorRow::Pick(PickField::Frame(i))),
@@ -145,14 +165,11 @@ impl VideoEditorApp {
         out
     }
 
-    /// The stops the panel draws above its first section header: the clip's
-    /// level or its grade, its two fades, the transition at its head cut, the
-    /// transition's length when there is one, and the seven label colours.
+    /// The clip's level or its grade, its two fades, the transition at its head cut and
+    /// its length, and the seven label colours.
     ///
-    /// Built from the same `is_video` test the layout makes, so the walk is
-    /// offered exactly the controls that are drawn — an audio clip has a
-    /// volume slider where a video clip has four grade sliders, and neither
-    /// is offered the other's.
+    /// Built from the same `is_video` test the layout makes: an audio clip has a volume
+    /// slider where a video clip has four grade sliders.
     pub(super) fn a11y_top_rows(&self, clip: Option<&Clip>) -> Vec<InspectorRow> {
         let Some(clip) = clip else {
             return Vec::new();
@@ -233,7 +250,6 @@ impl VideoEditorApp {
         v
     }
 
-    /// The numeric knobs inside a section, in painted order.
     pub(super) fn a11y_section_fields(section: Section, clip: Option<&Clip>) -> Vec<NumField> {
         let Some(c) = clip else {
             return Vec::new();
@@ -274,8 +290,6 @@ impl VideoEditorApp {
                 NumField::MaskFeather,
             ],
             Section::Title => vec![NumField::TitleSize, NumField::TitleBackdrop],
-            // `Project` carries no ranged knob: its two controls are preset
-            // rows, which reach the walk as `InspectorRow::Pick`.
             Section::Key
             | Section::Mask
             | Section::Effects
@@ -284,8 +298,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// A clip's accessible name: the media it places, so the reader says
-    /// "Interview" rather than a UUID the user has never seen.
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
         self.project.media(clip.media).map_or_else(
             || crate::resource::CATALOG.t("video-clip-missing-media"),
@@ -303,24 +315,33 @@ impl VideoEditorApp {
             .project
             .track(clip.track)
             .map_or_else(|| "track".into(), |t| t.name.clone());
-        format!(
-            "{} to {}, {} long, on {track}",
-            crate::timecode::timecode(clip.start, fps),
-            crate::timecode::timecode(clip.start + len, fps),
-            crate::timecode::clock(len),
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-clip-value",
+            &[
+                (
+                    "start",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(clip.start, fps)),
+                ),
+                (
+                    "end",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(clip.start + len, fps)),
+                ),
+                (
+                    "length",
+                    ui::i18n::ArgValue::Text(crate::timecode::clock(len)),
+                ),
+                ("track", ui::i18n::ArgValue::Text(track)),
+            ],
         )
     }
 
-    /// Build one pane's group node, marking it focused when the keyboard is in
-    /// it so the export layer can nominate an active descendant inside.
     pub(super) fn a11y_pane(pane: Pane, children: Vec<AccessNode>) -> AccessNode {
         AccessNode::new(Role::Group)
-            .with_name(pane.label())
+            .with_name(crate::resource::CATALOG.t(pane.message()))
             .with_key(pane.key())
             .with_children(children)
     }
 
-    /// The media bin's rows.
     pub(super) fn a11y_bin(&self) -> AccessNode {
         let items = self.a11y_bin_items();
         let n = items.len();
@@ -331,21 +352,22 @@ impl VideoEditorApp {
             .filter_map(|(i, mid)| {
                 let m = self.project.media(*mid)?;
                 let projected = self.projected_media.contains(mid);
-                // The length the row shows: one the file never stated is
-                // said to be unknown, not read out as 0:00.
-                let mut value = format!("{}, {}", m.kind.label(), Self::bin_length(m));
-                if projected {
-                    // A source whose bytes are not here yet is a real, visible
-                    // state; saying so is the difference between "empty" and
-                    // "not fetched".
-                    value.push_str(", not downloaded yet");
-                }
+                let kind = crate::resource::CATALOG.t(m.kind.message());
+                let value = crate::resource::CATALOG.t_args(
+                    if projected {
+                        "video-editor-a11y-bin-downloading"
+                    } else {
+                        "video-editor-a11y-bin-kind-length"
+                    },
+                    &[
+                        ("kind", ui::i18n::ArgValue::Text(kind)),
+                        ("length", ui::i18n::ArgValue::Text(Self::bin_length(m))),
+                    ],
+                );
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_name(m.name.clone())
                         .with_value(value)
-                        // Identity-keyed: a bin row keeps its node across a
-                        // rename, a re-sort, or another import landing above it.
                         .with_hashed_key(m.id)
                         .with_position(i + 1, n)
                         .with_state(
@@ -370,13 +392,12 @@ impl VideoEditorApp {
         VideoEditorApp::a11y_pane(Pane::Bin, rows)
     }
 
-    /// The five transport buttons, named.
     pub(super) fn a11y_transport(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Transport;
         let mut buttons: Vec<AccessNode> = TRANSPORT_NAMES
             .iter()
             .enumerate()
-            .map(|(i, (action, name))| {
+            .map(|(i, (action, message, _))| {
                 // The play button is the one whose name changes with state; a
                 // reader must hear what pressing it will do now. A running
                 // shuttle counts: pressing it there stops the shuttle, so
@@ -384,7 +405,7 @@ impl VideoEditorApp {
                 let name = if *action == TransportAction::PlayPause && self.is_moving() {
                     crate::resource::CATALOG.t("video-editor-pause")
                 } else {
-                    (*name).to_owned()
+                    crate::resource::CATALOG.t(message)
                 };
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -404,10 +425,11 @@ impl VideoEditorApp {
         // and a focus ring left on a dead button is how that reads wrong.
         for (which, _) in self.history_buttons(&self.regions()) {
             let can = self.undo.status().can(which);
+            let (name, description) = self.history_words(which);
             buttons.push(
                 AccessNode::new(Role::Button)
-                    .with_name(which.title())
-                    .with_description(self.undo.status().description(which))
+                    .with_name(name)
+                    .with_description(description)
                     .with_key(ui::a11y::hash_key(&which.verb()))
                     .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
@@ -423,33 +445,64 @@ impl VideoEditorApp {
             );
         }
         let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
-        // The playhead is a live readout: it changes without focus moving, so
-        // it rides on the pane as a value the reader can re-read on demand.
         node = node.with_value(crate::timecode::timecode(self.playhead, self.project.fps));
         node
     }
 
-    /// Tracks as containers, clips as the items inside them, plus each track's
-    /// mute / solo / lock toggles.
+    fn a11y_track_toggles(track: &crate::model::Track) -> Vec<AccessNode> {
+        TRACK_TOGGLES
+            .into_iter()
+            .zip([track.muted, track.solo, track.locked])
+            .map(|((key, message), on)| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-track-toggle",
+                        &[
+                            (
+                                "toggle",
+                                ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(message)),
+                            ),
+                            ("track", ui::i18n::ArgValue::Text(track.name.clone())),
+                        ],
+                    ))
+                    .with_hashed_key((track.id, key))
+                    .with_state(AccessState::new().focusable(true).checked(on))
+            })
+            .collect()
+    }
+
+    fn a11y_track_value(&self, track: &crate::model::Track, clips: usize) -> String {
+        let clipped = self.mix.track(track.id).is_some_and(|l| l.clipped);
+        let kind = crate::resource::CATALOG.t(match track.kind {
+            TrackKind::Video => "video-editor-a11y-track-kind-video",
+            TrackKind::Audio => "video-editor-a11y-track-kind-audio",
+        });
+        crate::resource::CATALOG.t_args(
+            if clipped {
+                "video-editor-a11y-track-value-clipping"
+            } else {
+                "video-editor-a11y-track-value"
+            },
+            &[
+                ("kind", ui::i18n::ArgValue::Text(kind)),
+                ("count", ui::i18n::ArgValue::Number(clips as f64)),
+                (
+                    "plural",
+                    ui::i18n::ArgValue::Text(if clips == 1 { "" } else { "s" }.to_owned()),
+                ),
+                ("gain", ui::i18n::ArgValue::Text(track.gain_words())),
+                ("pan", ui::i18n::ArgValue::Text(track.pan_words())),
+            ],
+        )
+    }
+
     pub(super) fn a11y_timeline(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Timeline;
         let primary = self.selection.primary();
         let mut tracks: Vec<AccessNode> = Vec::new();
         let track_count = self.project.tracks.len();
         for (ti, track) in self.project.tracks.iter().enumerate() {
-            let mut kids: Vec<AccessNode> = Vec::new();
-            for (name, on) in [
-                ("Mute", track.muted),
-                ("Solo", track.solo),
-                ("Lock", track.locked),
-            ] {
-                kids.push(
-                    AccessNode::new(Role::ToggleButton)
-                        .with_name(format!("{name} {}", track.name))
-                        .with_hashed_key((track.id, name))
-                        .with_state(AccessState::new().focusable(true).checked(on)),
-                );
-            }
+            let mut kids: Vec<AccessNode> = Self::a11y_track_toggles(track);
             let clips = self.project.clips_on(track.id);
             let n = clips.len();
             for (i, clip) in clips.iter().enumerate() {
@@ -457,8 +510,6 @@ impl VideoEditorApp {
                     AccessNode::new(Role::ListItem)
                         .with_name(self.a11y_clip_name(clip))
                         .with_value(self.a11y_clip_value(clip))
-                        // Identity-keyed: a clip dragged along its track, or to
-                        // another track, keeps the node an AT is holding.
                         .with_hashed_key(clip.id)
                         .with_position(i + 1, n)
                         .with_state(
@@ -474,29 +525,10 @@ impl VideoEditorApp {
             // picture is the one thing a reader cannot have — so everything
             // the bar says has to be said here too, in the place a reader is
             // already standing when they ask about a track.
-            let level = self.mix.track(track.id);
-            let mix_words = format!(
-                ", gain {}, pan {}{}",
-                track.gain_words(),
-                track.pan_words(),
-                if level.is_some_and(|l| l.clipped) {
-                    ", clipping"
-                } else {
-                    ""
-                }
-            );
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())
-                    .with_value(format!(
-                        "{} track, {} clip{}{mix_words}",
-                        match track.kind {
-                            TrackKind::Video => "video",
-                            TrackKind::Audio => "audio",
-                        },
-                        n,
-                        if n == 1 { "" } else { "s" }
-                    ))
+                    .with_value(self.a11y_track_value(track, n))
                     .with_hashed_key(track.id)
                     .with_position(ti + 1, track_count)
                     .with_children(kids),
@@ -530,12 +562,32 @@ impl VideoEditorApp {
             );
         }
         let mut node = VideoEditorApp::a11y_pane(Pane::Timeline, tracks);
-        node = node.with_value(format!(
-            "playhead at {}, {} of {} clips selected, timeline view starts at {}; Page Up and Page Down scroll the timeline",
-            crate::timecode::timecode(self.playhead, self.project.fps),
-            self.selection.len(),
-            self.project.clips.len(),
-            crate::timecode::timecode(self.scroll, self.project.fps),
+        node = node.with_value(crate::resource::CATALOG.t_args(
+            "video-editor-a11y-timeline-value",
+            &[
+                (
+                    "playhead",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(
+                        self.playhead,
+                        self.project.fps,
+                    )),
+                ),
+                (
+                    "count",
+                    ui::i18n::ArgValue::Number(self.selection.len() as f64),
+                ),
+                (
+                    "total",
+                    ui::i18n::ArgValue::Number(self.project.clips.len() as f64),
+                ),
+                (
+                    "view",
+                    ui::i18n::ArgValue::Text(crate::timecode::timecode(
+                        self.scroll,
+                        self.project.fps,
+                    )),
+                ),
+            ],
         ));
         node
     }
@@ -555,21 +607,14 @@ impl VideoEditorApp {
             .and_then(|id| self.project.clip(id))
             .cloned();
         let markers = self.a11y_marker_rows();
-        // With nothing selected on a project holding no clips at all, the
-        // panel paints its empty state -- and, under it, the marker list,
-        // which belongs to the project rather than to any clip. Returning
-        // only the empty-state line here hid every marker on the screen from
-        // a reader. The line is now a sibling of the sections, which is what
-        // the paint does with it.
+        // The marker list belongs to the project rather than to any clip, so returning
+        // only the empty-state line hid every marker from a reader. The line is a sibling
+        // of the sections, as the paint draws it.
         let empty_state = (clip.is_none() && self.project.clips.is_empty()).then(|| {
-            // The painted empty state's own words, so one state is not
-            // described two ways.
             AccessNode::new(Role::StaticText)
-                .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
+                .with_name(crate::resource::CATALOG.t(INSPECTOR_EMPTY_TITLE))
                 .with_key(0)
         });
-        // Rows are a flat painted list but a nested tree: walk it once, opening
-        // a group at each header and dropping the controls into it.
         let mut groups: Vec<AccessNode> = Vec::new();
         let mut current: Option<(Section, Vec<AccessNode>)> = None;
         for (i, row) in rows.iter().enumerate() {
@@ -594,10 +639,8 @@ impl VideoEditorApp {
                 InspectorRow::Field(f) => {
                     let value = self.num_value(*f);
                     let node = AccessNode::new(Role::Slider)
-                        .with_name(f.label())
+                        .with_name(crate::resource::CATALOG.t(f.message()))
                         .with_optional_value(value.map(|v| f.readout(v)))
-                        // Keyed on the variant, not the label: two rows may
-                        // legitimately read "Rotation" in their own sections.
                         .with_key(f.a11y_key())
                         .with_state(AccessState::new().focusable(true).focused(focused));
                     if let Some((_, kids)) = current.as_mut() {
@@ -644,11 +687,9 @@ impl VideoEditorApp {
         if let Some(line) = empty_state {
             groups.insert(0, line);
         }
-        // Re-mark the focused header now that every group exists: a header's
-        // focus lives on its group node.
         if cursor && let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
             for g in &mut groups {
-                if g.key == Some(ui::a11y::hash_key(&target.label())) {
+                if g.key == Some(ui::a11y::hash_key(&target.tag())) {
                     g.state.focused = true;
                 }
             }
@@ -656,13 +697,10 @@ impl VideoEditorApp {
         VideoEditorApp::a11y_pane(Pane::Inspector, groups)
     }
 
-    /// One inspector section, carrying whether it is folded and — when it is —
-    /// a summary of what is inside, so a reader never has to unfold a section
-    /// to learn its state.
-    /// One marker as a reader meets it: the name on the row, when it is, the
-    /// clip it travels with and the note written on it -- then the row's three
-    /// controls, which the pointer reveals on hover and a reader has no other
-    /// way to reach.
+    /// Carrying whether it is folded and, when it is, a summary of what is inside, so a
+    /// reader never has to unfold it to learn its state.
+    /// One marker as a reader meets it, then the row's three controls, which the pointer
+    /// reveals on hover and a reader has no other way to reach.
     pub(super) fn a11y_marker_node(
         m: &MarkerRef,
         name: &str,
@@ -673,10 +711,13 @@ impl VideoEditorApp {
     ) -> AccessNode {
         let verbs: Vec<AccessNode> = MARKER_VERBS
             .iter()
-            .map(|verb| {
+            .map(|(message, key)| {
                 AccessNode::new(Role::Button)
-                    .with_name(format!("{verb} {name}"))
-                    .with_hashed_key((m.id, *verb))
+                    .with_name(
+                        crate::resource::CATALOG
+                            .t_args(message, &[("marker", ui::i18n::ArgValue::from(name))]),
+                    )
+                    .with_hashed_key((m.id, *key))
                     .with_state(AccessState::new().focusable(true))
             })
             .collect();
@@ -693,8 +734,6 @@ impl VideoEditorApp {
             .with_children(verbs)
     }
 
-    /// The clip the inspector is editing, if there is one. A convenience over
-    /// the `selected()` + `clip()` pair the panel does constantly.
     pub(super) fn selected_clip(&self) -> Option<&Clip> {
         self.selected().and_then(|id| self.project.clip(id))
     }
@@ -763,7 +802,7 @@ impl VideoEditorApp {
                     "video-editor-a11y-mask-shape",
                     &[(
                         "shape",
-                        ui::i18n::ArgValue::Text(shape.label().to_lowercase()),
+                        ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(shape.message())),
                     )],
                 ),
                 Role::RadioButton,
@@ -774,7 +813,7 @@ impl VideoEditorApp {
                     "video-editor-transition-named",
                     &[(
                         "transition",
-                        ui::i18n::ArgValue::Text(t.label().to_lowercase()),
+                        ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(t.message())),
                     )],
                 ),
                 Role::RadioButton,
@@ -799,8 +838,6 @@ impl VideoEditorApp {
                 Role::Button,
                 false,
             ),
-            // Named for the lane it puts back, because a reader standing on it
-            // has no fader in view to tell them which one that is.
             PickField::MixReset => (
                 self.selected_track().map_or_else(
                     || crate::resource::CATALOG.t("video-editor-reset-gain-pan"),
@@ -818,21 +855,29 @@ impl VideoEditorApp {
         Some(semantics)
     }
 
-    /// What a reader hears of a frame or a rate, with a frame's dimensions
-    /// spelt out: "9:16" alone does not say what they are choosing.
     fn preset_semantics(&self, pk: PickField) -> Option<(String, Role, bool)> {
         let (name, selected) = match pk {
             PickField::Frame(i) => {
                 let (label, w, h) = FRAME_PRESETS.get(i)?;
                 (
-                    format!("{label}, {w} by {h}"),
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-preset-size",
+                        &[
+                            ("name", ui::i18n::ArgValue::Text((*label).to_owned())),
+                            ("width", ui::i18n::ArgValue::Number(f64::from(*w))),
+                            ("height", ui::i18n::ArgValue::Number(f64::from(*h))),
+                        ],
+                    ),
                     *w == self.project.width && *h == self.project.height,
                 )
             }
             PickField::Rate(i) => {
                 let rate = RATE_PRESETS.get(i)?;
                 (
-                    format!("{} fps", rate_words(*rate)),
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-fps-shown",
+                        &[("rate", ui::i18n::ArgValue::Text(rate_words(*rate)))],
+                    ),
                     (rate - self.project.fps).abs() < 1e-6,
                 )
             }
@@ -841,8 +886,6 @@ impl VideoEditorApp {
         Some((name, Role::RadioButton, selected))
     }
 
-    /// Run whatever a pick row does — the same call the pointer runs on that
-    /// control, so a reader and a mouse cannot do two different things.
     pub(super) fn a11y_activate_pick(&mut self, pk: PickField) -> bool {
         match pk {
             PickField::Frame(i) => {
@@ -902,9 +945,6 @@ impl VideoEditorApp {
                 self.toggle_link_selected();
                 true
             }
-            // Refused when the lane is already at unity and centre, which is
-            // exactly when the panel draws no button: activating a control
-            // that is not on screen would be a route only a reader has.
             PickField::MixReset => {
                 if !self
                     .selected_track()
@@ -926,9 +966,9 @@ impl VideoEditorApp {
     ) -> AccessNode {
         let folded = self.collapsed.contains(&section);
         AccessNode::new(Role::Group)
-            .with_name(section.label())
+            .with_name(crate::resource::CATALOG.t(section.message()))
             .with_optional_value(folded.then(|| self.a11y_section_summary(section)))
-            .with_hashed_key(section.label())
+            .with_hashed_key(section.tag())
             .with_state(
                 AccessState::new()
                     .focusable(true)
@@ -938,13 +978,11 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
-    /// A clip's geometry as it is at the playhead: every channel read through
-    /// `param_at`, so an animated one gives the value the compositor is
-    /// actually placing the picture with.
+    /// Every channel read through `param_at`, so an animated one gives the value the
+    /// compositor places the picture with.
     ///
-    /// Cropping and the anchor are absent because the model does not animate
-    /// them — they frame the shot rather than move it — so their constants
-    /// really are their values, and a caller reads them off `clip.transform`.
+    /// Cropping and the anchor are absent because the model does not animate them, so
+    /// their constants are their values.
     pub(super) fn geometry_at_playhead(&self, clip: &Clip) -> GeometryNow {
         let at = self.playhead;
         GeometryNow {
@@ -956,12 +994,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Whether any of the geometry channels carries a curve.
-    ///
-    /// A fact about the section in its own right, not merely a way of reading
-    /// its numbers: keying a parameter from its default leaves the constant at
-    /// exactly the aspect-fit, so a summary gated on the constants alone
-    /// reported nothing at all about a clip whose picture crosses the frame.
+    /// A fact about the section in its own right: keying a parameter from its default
+    /// leaves the constant at the aspect-fit, so a summary gated on the constants reported
+    /// nothing about a clip whose picture crosses the frame.
     pub(super) fn transform_is_animated(clip: &Clip) -> bool {
         [
             Param::ScaleX,
@@ -974,123 +1009,151 @@ impl VideoEditorApp {
         .any(|p| clip.anim.is_animated(p))
     }
 
-    /// What a folded section says about itself.
-    ///
-    /// Every animatable number here is read through `param_at` at the playhead
-    /// — the one door every other reader (compositor, mixer, export, the
-    /// sliders themselves) already goes through. Read as raw fields they told a
-    /// reader the value the clip is *not* playing: a keyframe supersedes the
-    /// constant, so a clip pushing in reported "scale 1.00×" and a key ramping
-    /// on reported that it was keying nothing.
+    fn a11y_transform_summary(&self, c: &Clip) -> String {
+        let g = self.geometry_at_playhead(c);
+        let geometry = crate::resource::CATALOG.t_args(
+            "video-editor-a11y-geometry",
+            &[
+                (
+                    "scale",
+                    ui::i18n::ArgValue::Text(format!("{:.2}", g.scale_x)),
+                ),
+                ("x", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_x))),
+                ("y", ui::i18n::ArgValue::Text(format!("{:+.2}", g.pos_y))),
+                (
+                    "rotation",
+                    ui::i18n::ArgValue::Text(format!("{:.0}", g.rotation)),
+                ),
+            ],
+        );
+        // Whether those numbers are going anywhere. Without it a reader hears
+        // one still frame's worth of a moving picture and has no way to know
+        // the section is animated at all.
+        if Self::transform_is_animated(c) {
+            crate::resource::CATALOG.t_args(
+                "video-editor-a11y-animated",
+                &[("geometry", ui::i18n::ArgValue::Text(geometry))],
+            )
+        } else {
+            geometry
+        }
+    }
+
+    fn a11y_key_summary(c: &Clip, at: f64) -> String {
+        let tolerance = c.param_at(Param::KeyTolerance, at);
+        if !c.key.enabled {
+            return crate::resource::CATALOG.t("video-editor-summary-off");
+        }
+        if tolerance <= 1e-6 {
+            return crate::resource::CATALOG.t("video-editor-a11y-key-nothing");
+        }
+        let percent = |value: f64| ui::i18n::ArgValue::Text(format!("{:.0}", value * 100.0));
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-key-values",
+            &[
+                ("tolerance", percent(tolerance)),
+                ("softness", percent(c.param_at(Param::KeySoftness, at))),
+                ("spill", percent(c.param_at(Param::KeySpill, at))),
+            ],
+        )
+    }
+
+    fn a11y_mask_summary(c: &Clip, at: f64) -> String {
+        if !c.mask.is_active() {
+            return crate::resource::CATALOG.t("video-editor-summary-off");
+        }
+        crate::resource::CATALOG.t_args(
+            "video-editor-a11y-mask-values",
+            &[
+                (
+                    "shape",
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(c.mask.shape.message())),
+                ),
+                (
+                    "width",
+                    ui::i18n::ArgValue::Text(format!(
+                        "{:.0}",
+                        c.param_at(Param::MaskW, at) * 100.0
+                    )),
+                ),
+                (
+                    "height",
+                    ui::i18n::ArgValue::Text(format!(
+                        "{:.0}",
+                        c.param_at(Param::MaskH, at) * 100.0
+                    )),
+                ),
+                (
+                    "side",
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(if c.mask.invert {
+                        "video-editor-a11y-mask-outside"
+                    } else {
+                        "video-editor-a11y-mask-inside"
+                    })),
+                ),
+            ],
+        )
+    }
+
+    /// Every animatable number here is read through `param_at` at the playhead. Read as raw
+    /// fields they told a reader the value the clip is *not* playing: a clip pushing in
+    /// reported "scale 1.00×" and a key ramping on reported that it was keying nothing.
     pub(super) fn a11y_section_summary(&self, section: Section) -> String {
         let clip = self.selected().and_then(|id| self.project.clip(id));
         let at = self.playhead;
         match (section, clip) {
-            (Section::Transform, Some(c)) => {
-                let g = self.geometry_at_playhead(c);
-                let mut s = format!(
-                    "scale {:.2}×, position {:+.2}, {:+.2}, rotation {:.0}°",
-                    g.scale_x, g.pos_x, g.pos_y, g.rotation
-                );
-                // Whether those numbers are going anywhere. Without it a
-                // reader hears one still frame's worth of a moving picture and
-                // has no way to know the section is animated at all.
-                if Self::transform_is_animated(c) {
-                    s.push_str(", animated");
-                }
-                s
-            }
+            (Section::Transform, Some(c)) => self.a11y_transform_summary(c),
             (Section::Speed, Some(c)) => c.speed.label(),
             (Section::Mix, Some(c)) => match self.project.track(c.track) {
                 Some(t) => {
                     let level = self.mix.track(t.id);
-                    format!(
-                        "{}, gain {}, pan {}{}",
-                        t.name,
-                        t.gain_words(),
-                        t.pan_words(),
-                        if level.is_some_and(|l| l.clipped) {
-                            ", clipping"
-                        } else {
-                            ""
-                        }
-                    )
+                    let lane = format!("{} {}", t.gain_words(), t.pan_words());
+                    if level.is_some_and(|l| l.clipped) {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-summary-clipping",
+                            &[("level", ui::i18n::ArgValue::Text(lane))],
+                        )
+                    } else {
+                        format!("{}, {lane}", t.name)
+                    }
                 }
-                None => "no lane".into(),
+                None => crate::resource::CATALOG.t("video-editor-a11y-no-lane"),
             },
-            // Worded from the same fields the visible summary reads, so a
-            // reader is never told a tidier story than the screen tells.
-            (Section::Key, Some(c)) => {
-                let tolerance = c.param_at(Param::KeyTolerance, at);
-                if !c.key.enabled {
-                    "off".into()
-                } else if tolerance <= 1e-6 {
-                    "on, but the tolerance keys nothing".into()
-                } else {
-                    format!(
-                        "keying {:.0}% tolerance, {:.0}% softness, {:.0}% spill removal",
-                        tolerance * 100.0,
-                        c.param_at(Param::KeySoftness, at) * 100.0,
-                        c.param_at(Param::KeySpill, at) * 100.0
-                    )
-                }
-            }
-            (Section::Mask, Some(c)) => {
-                if c.mask.is_active() {
-                    format!(
-                        "{} {:.0}% by {:.0}%, {}",
-                        c.mask.shape.label().to_lowercase(),
-                        c.param_at(Param::MaskW, at) * 100.0,
-                        c.param_at(Param::MaskH, at) * 100.0,
-                        if c.mask.invert {
-                            "keeping the outside"
-                        } else {
-                            "keeping the inside"
-                        }
-                    )
-                } else {
-                    "off".into()
-                }
-            }
-            (Section::Effects, Some(c)) => {
-                let n = c.effects.len();
-                format!("{n} effect{}", if n == 1 { "" } else { "s" })
-            }
+            (Section::Key, Some(c)) => Self::a11y_key_summary(c, at),
+            (Section::Mask, Some(c)) => Self::a11y_mask_summary(c, at),
+            (Section::Effects, Some(c)) => crate::resource::CATALOG.t_args(
+                "video-editor-summary-effects",
+                &[("count", ui::i18n::ArgValue::Number(c.effects.len() as f64))],
+            ),
             (Section::Markers, _) => {
                 // Every marked instant the list shows -- the project's own and
                 // each clip's, which is what `layout_markers` walks and what
                 // the painted summary counts. Counting only the project's told
                 // a reader a smaller number than the panel had rows for.
                 let n = self.project.all_markers().len();
-                format!("{n} marker{}", if n == 1 { "" } else { "s" })
+                crate::resource::CATALOG.t_args(
+                    "video-editor-summary-markers",
+                    &[("count", ui::i18n::ArgValue::Number(n as f64))],
+                )
             }
-            // The same words the folded header shows, so a reader is never
-            // told a tidier story than the panel tells.
-            (Section::Curves, Some(c)) => {
-                curve_summary(c, self.playhead).unwrap_or_else(|| "unchanged".into())
+            (Section::Curves, Some(c)) => curve_summary(c, self.playhead)
+                .unwrap_or_else(|| crate::resource::CATALOG.t("video-editor-summary-unchanged")),
+            (Section::Title, Some(_)) => {
+                crate::resource::CATALOG.t("video-editor-a11y-title-properties")
             }
-            (Section::Title, Some(_)) => "title properties".into(),
-            // Worded, not counted: the frame is the fact a reader needs from
-            // this header whether or not it is folded.
             (Section::Project, _) => {
                 format_words(self.project.width, self.project.height, self.project.fps)
             }
-            _ => "collapsed".into(),
+            _ => crate::resource::CATALOG.t("video-editor-summary-collapsed"),
         }
     }
 
-    /// The render's state as a node of its own, outside the dialog's subtree.
-    ///
-    /// `export_status` was read in exactly two places and both were inside the
-    /// `show_export` gate, so an assistive technology whose user had dismissed
-    /// the dialog was told nothing at all about a render that was still going:
-    /// no progress, no outcome, no failure. This is the same live region in
-    /// the tree whenever the dialog is not there to carry it — so a running
-    /// export is announced exactly once at any moment, and never zero times.
+    /// `export_status` was read only inside the `show_export` gate, so an assistive
+    /// technology whose user had dismissed the dialog was told nothing about a render still
+    /// going. This is the same live region whenever the dialog is not there to carry it, so
+    /// a running export is announced exactly once and never zero times.
     pub(super) fn a11y_export_status(&self) -> Option<AccessNode> {
         if self.presentation.export_open {
-            // The dialog carries its own progress node; two live regions
-            // reporting one render would narrate it twice.
             return None;
         }
         let key = ui::a11y::hash_key(&"export-status");
@@ -1104,8 +1167,6 @@ impl VideoEditorApp {
                     .with_live(ui::a11y::Politeness::Polite)
                     .with_state(AccessState::new().busy(true)),
             ),
-            // Finished: operable, because activating it opens the dialog that
-            // holds the whole path and the settings that produced it.
             ExportStatus::Done { path } => Some(
                 AccessNode::new(Role::Button)
                     .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-finished"))
@@ -1114,8 +1175,6 @@ impl VideoEditorApp {
                     .with_live(ui::a11y::Politeness::Polite)
                     .with_state(AccessState::new().focusable(true)),
             ),
-            // A render that did not happen interrupts: the user is very
-            // likely to act on the next thing believing a file exists.
             ExportStatus::Failed { reason } => Some(
                 AccessNode::new(Role::Button)
                     .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-failed"))
@@ -1143,8 +1202,6 @@ impl VideoEditorApp {
                 ))
                 .with_key(0),
         ];
-        // The same actions the card paints: while a render runs, only its
-        // Cancel; otherwise Export and Close.
         if self.export_running() {
             kids.push(
                 AccessNode::new(Role::Button)
@@ -1176,8 +1233,6 @@ impl VideoEditorApp {
                     .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-progress"))
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(3)
-                    // A render's progress changes with no focus movement, so it
-                    // must announce itself or the user is left guessing.
                     .with_live(ui::a11y::Politeness::Polite)
                     .with_state(AccessState::new().busy(true)),
             );
@@ -1230,8 +1285,6 @@ fn keys_as_read(keys: &[&str]) -> String {
 }
 
 impl VideoEditorApp {
-    /// The shortcut sheet as accessible content — every binding readable in
-    /// order, so the sheet is as useful to a reader as it is to the eye.
     pub(super) fn a11y_help_sheet() -> AccessNode {
         let mut kids: Vec<AccessNode> = Vec::new();
         let mut key = 0u64;
@@ -1246,8 +1299,6 @@ impl VideoEditorApp {
                 kids.push(
                     AccessNode::new(Role::StaticText)
                         .with_name(shortcut.what)
-                        // Spelled for this platform, as the sheet paints it;
-                        // alternatives are a list, which a reader reads out.
                         .with_value(keys_as_read(shortcut.keys))
                         .with_key(key),
                 );
@@ -1267,8 +1318,6 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
-    /// Move to the next / previous pane, clamping each pane's cursor to what it
-    /// currently holds so Tab never lands on a row that has since been deleted.
     pub(super) fn focus_pane(&mut self, back: bool) {
         if self.bin_overlay_is_open() {
             self.focus.pane = Pane::Bin;
@@ -1279,30 +1328,16 @@ impl VideoEditorApp {
         self.clamp_pane_cursor();
     }
 
-    /// Whether `pane` should paint the keyboard cursor right now.
-    ///
-    /// Gated on the host having actually given this widget the keyboard: a ring
-    /// drawn while the focus is somewhere else entirely would point at a
-    /// control the next key will not reach, which is the opposite of what a
-    /// focus indicator is for. Only the pane holding the cursor paints one —
-    /// the other three keep their cursors so Tab returns to them, but they are
-    /// not where the keyboard is.
+    /// Gated on the host having given this widget the keyboard: a ring pointing at a control
+    /// the next key will not reach is the opposite of a focus indicator. The other panes keep
+    /// their cursors so Tab returns to them, but they paint no ring.
     pub(super) fn shows_focus_cursor(&self, pane: Pane) -> bool {
         self.presentation.keyboard_focus && self.focus.pane == pane
     }
 
-    /// Move the keyboard cursor to whatever a press landed on.
-    ///
-    /// A press claims the keyboard, but until now it left the cursor wherever
-    /// it already was — so clicking a bin row and then pressing Down carried
-    /// on from some other row entirely, and the ring appeared somewhere the
-    /// user had not been looking. The pointer and the keyboard address the
-    /// same controls; a click is the plainest possible statement of which one
-    /// you mean next.
-    ///
-    /// Resolved through the same geometry the ring and the hit test read, and
-    /// the bin is matched by media id rather than by position so the painted
-    /// order and the walked order cannot drift into disagreeing.
+    /// A press claims the keyboard, and the cursor follows it: otherwise clicking a bin row
+    /// and pressing Down carried on from some other row. The bin is matched by media id
+    /// rather than position, so the painted order and the walked order cannot disagree.
     pub(super) fn place_cursor_at(&mut self, r: &Regions, p: Point) {
         if let Some((mid, _)) = self
             .bin_item_rects(r)
@@ -1335,17 +1370,11 @@ impl VideoEditorApp {
         }
     }
 
-    /// The box the keyboard cursor's ring is drawn in for one inspector row,
-    /// resolved through the very layout the renderer and the hit test read.
+    /// Through the very layout the renderer and the hit test read.
     ///
-    /// A slider row is more than its 9px track — the label above it and the key
-    /// control at its head belong to the same stop — so a `Field`'s ring is
-    /// grown up over them, which is also what keeps the ring inside the 34px
-    /// row pitch instead of hugging a bar the eye reads as the value. Every
-    /// other row is its own painted box already.
-    ///
-    /// `None` means the panel is not drawing that control right now, in which
-    /// case there is nothing to ring.
+    /// A slider row is more than its track — the label above it and the key control at its
+    /// head belong to the same stop — so a field's ring grows over them, which keeps it
+    /// inside the row pitch. `None` means the panel is not drawing that control.
     pub(super) fn inspector_focus_band(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
         let rect = Self::inspector_row_rect(l, row)?;
         if matches!(row, InspectorRow::Field(_)) {
@@ -1473,8 +1502,6 @@ impl VideoEditorApp {
                 self.reveal_inspector_focus();
                 true
             }
-            // Up/Down walk the clips across tracks; Left/Right stay editing
-            // keys, which is what an editor's arrows mean.
             Pane::Timeline if vertical => self.step_clip_across_tracks(up),
             _ => false,
         }
@@ -1510,8 +1537,6 @@ impl VideoEditorApp {
             return false;
         };
         let n = self.project.tracks.len();
-        // Walk outward until a track with any clip is found, so an empty track
-        // between two full ones is stepped over rather than swallowing the key.
         for hop in 1..=n {
             let idx = if up {
                 cur_track.checked_sub(hop)
@@ -1564,17 +1589,12 @@ impl VideoEditorApp {
                 vec![hash_key(&clip.track), hash_key(&clip.id)]
             }
             Pane::Inspector => match self.a11y_inspector_rows().get(self.focus.inspector) {
-                Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.label())],
-                // A marker's path runs through the MARKERS section, the same
-                // shape a control's does.
+                Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.tag())],
                 Some(InspectorRow::Marker(m)) => {
-                    vec![hash_key(&Section::Markers.label()), hash_key(&m.id)]
+                    vec![hash_key(&Section::Markers.tag()), hash_key(&m.id)]
                 }
                 Some(InspectorRow::AddMarker) => {
-                    vec![
-                        hash_key(&Section::Markers.label()),
-                        hash_key(&ADD_MARKER_KEY),
-                    ]
+                    vec![hash_key(&Section::Markers.tag()), hash_key(&ADD_MARKER_KEY)]
                 }
                 Some(InspectorRow::Field(f)) => {
                     let key = f.a11y_key();
@@ -1593,24 +1613,53 @@ impl VideoEditorApp {
         self.perform_action(&Action::Activate, &path, state, &root)
     }
 
-    /// The hover label for whatever icon-only control sits under `p`, or
-    /// `None` over anything that already carries its own words.
-    pub(super) fn tooltip_at(&self, p: Point) -> Option<&str> {
+    pub(super) fn history_words(&self, which: ui::UndoRequest) -> (String, String) {
+        let name = crate::resource::CATALOG.t(match which {
+            ui::UndoRequest::Undo => "video-editor-undo",
+            ui::UndoRequest::Redo => "video-editor-redo",
+        });
+        let status = self.undo.status();
+        let description = match status.summary(which) {
+            Some(summary) => crate::resource::CATALOG.t_args(
+                "video-editor-undo-command",
+                &[
+                    ("verb", ui::i18n::ArgValue::Text(name.clone())),
+                    ("summary", ui::i18n::ArgValue::Text(summary.to_owned())),
+                ],
+            ),
+            None if !status.can(which) => crate::resource::CATALOG.t(match which {
+                ui::UndoRequest::Undo => "video-editor-nothing-to-undo",
+                ui::UndoRequest::Redo => "video-editor-nothing-to-redo",
+            }),
+            None => name.clone(),
+        };
+        (name, description)
+    }
+
+    pub(super) fn tooltip_at(&self, p: Point) -> Option<String> {
         let r = self.regions();
         for (action, rect) in self.transport_buttons(&r) {
             if rect.contains(p) {
                 return Some(match action {
-                    TransportAction::ToStart => "Jump to start",
-                    TransportAction::StepBack => "Step back one frame",
+                    TransportAction::ToStart => {
+                        crate::resource::CATALOG.t("video-editor-transport-jump-start")
+                    }
+                    TransportAction::StepBack => {
+                        crate::resource::CATALOG.t("video-editor-transport-step-back")
+                    }
                     TransportAction::PlayPause => {
                         if self.is_moving() {
-                            "Pause"
+                            crate::resource::CATALOG.t("video-editor-pause")
                         } else {
-                            "Play"
+                            crate::resource::CATALOG.t("video-editor-transport-play")
                         }
                     }
-                    TransportAction::StepFwd => "Step forward one frame",
-                    TransportAction::ToEnd => "Jump to end",
+                    TransportAction::StepFwd => {
+                        crate::resource::CATALOG.t("video-editor-transport-step-forward")
+                    }
+                    TransportAction::ToEnd => {
+                        crate::resource::CATALOG.t("video-editor-transport-jump-end")
+                    }
                 });
             }
         }
@@ -1627,8 +1676,6 @@ impl VideoEditorApp {
             return false;
         };
         let items = self.a11y_bin_items();
-        // A row an AT is holding can be gone; match nothing rather than acting
-        // on whichever import now occupies that slot.
         let Some(i) = items.iter().position(|m| hash_key(m) == key) else {
             return false;
         };
@@ -1668,8 +1715,6 @@ impl VideoEditorApp {
                 _ => false,
             };
         }
-        // History first: its keys are hashed from the verb, so they cannot
-        // collide with the transport's positional ones.
         for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {
             if hash_key(&which.verb()) != key {
                 continue;
@@ -1762,8 +1807,6 @@ impl VideoEditorApp {
                 true
             }
             Action::Activate => {
-                // Activating a clip selects it alone and parks the playhead at
-                // its head — what double-clicking it does.
                 self.selection.select_only(clip);
                 if let Some(c) = self.project.clip(clip) {
                     self.playhead = c.start;
@@ -1792,7 +1835,7 @@ impl VideoEditorApp {
         let key = rest.get(1).copied().unwrap_or(section_key);
         for (i, row) in rows.iter().enumerate() {
             match row {
-                InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.label()) == key => {
+                InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.tag()) == key => {
                     self.focus.inspector = i;
                     self.reveal_inspector_focus();
                     return match action {
@@ -1865,17 +1908,12 @@ impl VideoEditorApp {
         false
     }
 
-    /// One of a marker row's three buttons, addressed by an assistive
-    /// technology. Each runs the same call the pointer runs on that button,
-    /// so a reader and a mouse cannot do two different things to a marker.
+    /// Each runs the same call the pointer runs on that button, so a reader and a mouse
+    /// cannot do two different things to a marker.
     ///
-    /// `Activate` opens the inline editor the pointer opens, for a user
-    /// driving the real keyboard through the row. `SetValue` writes the text
-    /// outright, through the same commit the inline editor ends at -- an
-    /// assistive technology has no caret to type into an `EditableLabel`
-    /// with, so an editor it cannot reach would be an affordance in name
-    /// only. It reports the commit's own verdict, so the refusal of an empty
-    /// name reaches the caller as a refusal rather than a silent no-op.
+    /// `SetValue` writes the text through the same commit the inline editor ends at: an
+    /// assistive technology has no caret to type into the field with. It reports the commit's
+    /// verdict, so a refused empty name reaches the caller as a refusal.
     pub(super) fn a11y_marker_verb(
         &mut self,
         m: MarkerRef,
@@ -1883,11 +1921,11 @@ impl VideoEditorApp {
         action: &ui::a11y::Action,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
-        let field = if hash_key(&(m.id, MARKER_VERBS[0])) == verb {
+        let field = if hash_key(&(m.id, MARKER_VERBS[0].1)) == verb {
             MarkerField::Note
-        } else if hash_key(&(m.id, MARKER_VERBS[1])) == verb {
+        } else if hash_key(&(m.id, MARKER_VERBS[1].1)) == verb {
             MarkerField::Name
-        } else if hash_key(&(m.id, MARKER_VERBS[2])) == verb {
+        } else if hash_key(&(m.id, MARKER_VERBS[2].1)) == verb {
             return match action {
                 Action::Focus => true,
                 Action::Activate => {
@@ -1913,12 +1951,9 @@ impl VideoEditorApp {
         }
     }
 
-    /// Step a numeric control one twentieth of its span — the same grain a
-    /// keyboard arrow gives a slider elsewhere in the toolkit — through the
-    /// same `set_num` a mouse drag writes, then commit it the way releasing a
-    /// drag does. An adjustment an assistive technology makes must land in the
-    /// document exactly like a dragged one, or the two disagree about what the
-    /// clip is.
+    /// Through the same `set_num` a mouse drag writes, then committed as releasing a drag
+    /// does: an adjustment an assistive technology makes must land in the document like a
+    /// dragged one.
     pub(super) fn a11y_nudge_field(&mut self, f: NumField, dir: f64) -> bool {
         let Some(v) = self.num_value(f) else {
             return false;
@@ -1992,13 +2027,9 @@ impl VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    /// The path a control's key hangs off: through its section header when it
-    /// has one, and directly off the pane when it does not.
-    ///
-    /// Not every inspector control lives inside a section — the panel draws
-    /// its level, grade, fade, transition and label controls **above** the
-    /// first header — and the old lookup returned "no path" for those, which
-    /// is one of the reasons pressing Enter on them did nothing.
+    /// Not every inspector control lives inside a section — the level, grade, fade,
+    /// transition and label controls sit above the first header — and returning "no path"
+    /// for those is why pressing Enter on them did nothing.
     pub(super) fn a11y_row_path(rows: &[InspectorRow], i: usize, key: u64) -> Vec<u64> {
         let section = rows
             .get(..=i)
@@ -2010,7 +2041,7 @@ impl VideoEditorApp {
                 _ => None,
             });
         match section {
-            Some(sec) => vec![ui::a11y::hash_key(&sec.label()), key],
+            Some(sec) => vec![ui::a11y::hash_key(&sec.tag()), key],
             None => vec![key],
         }
     }
@@ -2030,7 +2061,6 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     }
 }
 
-/// What an empty timeline says, as the one node the pane carries.
 fn timeline_empty_node() -> AccessNode {
     use ui::a11y::Role;
     AccessNode::new(Role::StaticText)

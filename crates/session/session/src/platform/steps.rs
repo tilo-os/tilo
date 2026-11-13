@@ -14,11 +14,16 @@ pub(crate) trait SessionSteps: Send + Sync {
     /// as a step of `run` when its invocation names one:
     /// completed on the session's pass, which is where the arrangement and the windows are. The
     /// answer is `None` for a step the session accepted and carries on with.
+    ///
+    /// `beside` is the place the ask is in, by the resource that place shows — the conversation
+    /// of the turn an agent asks in — or empty for the place in front. A step that opens a place
+    /// stands it there (`docs/designs/app-language/one-app-model.md` §3).
     fn invoke_step(
         &self,
         actor: String,
         address: ActionAddress,
         slot: Option<String>,
+        beside: String,
         run: Option<tilo_actions::WorkGroup>,
         done: Completer<Result<Option<tilo_actions::ActionOutput>, ActionHostError>>,
     );

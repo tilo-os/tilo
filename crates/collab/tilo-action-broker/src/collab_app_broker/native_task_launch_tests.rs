@@ -117,16 +117,16 @@ fn fixture() -> (
 }
 
 fn permission(f: &Fixture, allow: bool) {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     put_grant(
         f,
         Grant::new(
             format!("cold-writer-{}", if allow { "allow" } else { "deny" }),
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(workspace_id().to_string()).app(WRITER),
             KindSet::READ.union(KindSet::UNDOABLE),
             if allow { Answer::Allow } else { Answer::Deny },
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
 }
@@ -136,11 +136,11 @@ fn once_permission(f: &Fixture) {
         f,
         tilo_action_policy::Grant::new(
             "cold-writer-allow",
-            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe"),
             tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::READ.union(tilo_action_policy::KindSet::UNDOABLE),
             tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         )
         .with_lifetime(tilo_action_policy::Lifetime::Once),
     );
@@ -634,19 +634,6 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
-            put_grant(
-                &f,
-                tilo_action_policy::Grant::new(
-                    "foreign-writer-denied",
-                    tilo_action_policy::Subject::ForeignDevice,
-                    tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
-                    tilo_action_policy::KindSet::UNDOABLE,
-                    tilo_action_policy::Answer::Deny,
-                    tilo_action_policy::Subject::person(hex::encode(
-                        f.native.certificate.user_public_key,
-                    )),
-                ),
-            );
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
@@ -713,11 +700,11 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
                 &f,
                 tilo_action_policy::Grant::new(
                     "cold-writer-workspace-held",
-                    tilo_action_policy::Subject::agent("scribe"),
+                    tilo_action_policy::Grantee::agent("scribe"),
                     tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
                     tilo_action_policy::KindSet::UNDOABLE,
                     tilo_action_policy::Answer::Deny,
-                    tilo_action_policy::Subject::person(hex::encode(
+                    tilo_action_policy::Grantee::person(hex::encode(
                         f.native.certificate.user_public_key,
                     )),
                 ),
@@ -837,10 +824,10 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
         f.state.invocation_subscribers.lock().unwrap().remove(&210);
         drop(writer);
         put_grant(&f, tilo_action_policy::Grant::new(
-            "foreign-writer-denied-after-close", tilo_action_policy::Subject::ForeignDevice,
+            "foreign-writer-denied-after-close", tilo_action_policy::Grantee::agent("scribe"),
             tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::UNDOABLE, tilo_action_policy::Answer::Deny,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ));
         f.cap_connection();
         assert!(invoke_provider_id(&agent, &run, &provider, &resource, "open", serde_json::json!({}), id)
@@ -863,20 +850,6 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
         .run_until(Box::pin(async {
             for change in ["connection", "policy", "workspace", "broker", "run"] {
                 let (f, mut launches) = fixture();
-                put_grant(
-                    &f,
-                    tilo_action_policy::Grant::new(
-                        "foreign-writer-barrier-denied",
-                        tilo_action_policy::Subject::ForeignDevice,
-                        tilo_action_policy::TreePath::workspace(workspace_id().to_string())
-                            .app(WRITER),
-                        tilo_action_policy::KindSet::UNDOABLE,
-                        tilo_action_policy::Answer::Deny,
-                        tilo_action_policy::Subject::person(hex::encode(
-                            f.native.certificate.user_public_key,
-                        )),
-                    ),
-                );
                 f.approve();
                 let agent = f.channel(100, true);
                 let run = delivered(&agent).await;
@@ -914,14 +887,14 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                                     tree.workspaces[0].policy.grants.push(
                                         tilo_action_policy::Grant::new(
                                             "writer-denied-after-custody",
-                                            tilo_action_policy::Subject::agent("scribe"),
+                                            tilo_action_policy::Grantee::agent("scribe"),
                                             tilo_action_policy::TreePath::workspace(
                                                 workspace_id().to_string(),
                                             )
                                             .app(WRITER),
                                             tilo_action_policy::KindSet::UNDOABLE,
                                             tilo_action_policy::Answer::Deny,
-                                            tilo_action_policy::Subject::person(hex::encode(
+                                            tilo_action_policy::Grantee::person(hex::encode(
                                                 native.certificate.user_public_key,
                                             )),
                                         ),
@@ -1047,11 +1020,11 @@ fn ask_first_for_writer(f: &Fixture) {
         f,
         tilo_action_policy::Grant::new(
             "cold-writer-ask",
-            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe"),
             tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::UNDOABLE,
             tilo_action_policy::Answer::Ask,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
 }

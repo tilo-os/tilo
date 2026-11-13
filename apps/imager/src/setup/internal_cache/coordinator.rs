@@ -1,6 +1,5 @@
 //! Private retained download worker. No staging, UI, or support route is enabled.
-//! Selection authority and all leased handles stay on this worker. Only bounded,
-//! owned descriptions cross the control boundary; Ready is deliberately private.
+
 use super::HeldReadSeek;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::Session;
@@ -15,6 +14,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(all(target_os = "linux", not(test)))]
 use super::linux as platform;
@@ -34,16 +34,12 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
         .map_err(|_| "Operation identifier exhausted".into())
 }
 
-/// Read-only cooperative stop view for a scoped consumer. The transfer latch
-/// cannot be reset or retained beyond the borrowed consumption scope.
 #[allow(
     dead_code,
     reason = "the live download flow does not consume verified cache entries yet"
 )]
 pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
-    /// Borrow the same owned worker cancellation flag for blocking native I/O.
-    /// The flag remains read-only and cannot outlive this consumption scope.
     pub(in crate::setup) fn signal(&self) -> &AtomicBool {
         self.0
     }
@@ -81,7 +77,6 @@ pub(in crate::setup) enum Phase {
 pub(in crate::setup) struct Status {
     pub token: Token,
     pub phase: Phase,
-    /// Last positively acknowledged prefix per role (not bytes merely received).
     pub committed: [u64; 2],
     pub progress: Option<Progress>,
     pub finals: [bool; 2],
@@ -138,13 +133,6 @@ struct Shared {
     wake: Condvar,
 }
 
-/// One latest request, one Ready action and one coalesced status. Replacing a
-/// request cancels the old operation out of band, even during blocked transport.
-/// Dropping the only controller requests cancellation and joins the worker.
-/// Network operations are bounded by transport timeouts; filesystem operations
-/// and the scoped consumer remain cooperative and must return. Consumers receive
-/// the cancellation latch and must check it during their own bounded work. The
-/// callback grants read access only; it is not permission to stage or install.
 pub(in crate::setup) struct Worker {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -191,8 +179,6 @@ impl Worker {
     pub(in crate::setup) fn start(&self, release: InternalRelease) -> Result<Token, String> {
         self.submit(release, None)
     }
-    /// A new authenticated cleanup operation and a NEW cancellation flag. The
-    /// transfer's cancellation latch is never cleared. Verified finals remain.
     pub(in crate::setup) fn discard(
         &self,
         target: &Token,
@@ -201,7 +187,7 @@ impl Worker {
         self.submit(release, Some(target))
     }
     fn submit(&self, release: InternalRelease, target: Option<&Token>) -> Result<Token, String> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if m.shutdown {
             return Err("Worker is shut down".into());
         }
@@ -240,7 +226,7 @@ impl Worker {
         self.stop(token, true)
     }
     fn stop(&self, token: &Token, cancel: bool) -> Result<(), String> {
-        let m = self.shared.mailbox.lock().unwrap();
+        let m = self.shared.mailbox.lock_recover();
         if m.status.as_ref().is_none_or(|s| terminal(s.phase)) {
             return Err("Operation is already terminal".into());
         }
@@ -268,7 +254,7 @@ impl Worker {
         self.action(token, Action::Release)
     }
     fn action(&self, token: &Token, action: Action) -> Result<(), String> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if m.shutdown
             || m.active.as_ref().is_none_or(|(t, f)| {
                 t != token || f.cancel.load(Ordering::Acquire) || f.pause.load(Ordering::Acquire)
@@ -285,11 +271,11 @@ impl Worker {
         Ok(())
     }
     pub(in crate::setup) fn status(&self) -> Option<Status> {
-        self.shared.mailbox.lock().unwrap().status.clone()
+        self.shared.mailbox.lock_recover().status.clone()
     }
     pub(in crate::setup) fn shutdown(&mut self) {
         {
-            let mut m = self.shared.mailbox.lock().unwrap();
+            let mut m = self.shared.mailbox.lock_recover();
             m.shutdown = true;
             if let Some((_, flags)) = &m.active {
                 flags.cancel.store(true, Ordering::Release);
@@ -299,7 +285,7 @@ impl Worker {
         }
         if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
-                if let Some(status) = &mut self.shared.mailbox.lock().unwrap().status {
+                if let Some(status) = &mut self.shared.mailbox.lock_recover().status {
                     status.phase = Phase::Failed;
                     status.error = Some("Download worker panicked; cache may be retained".into());
                     status.residue = true;
@@ -307,7 +293,7 @@ impl Worker {
                 }
             }
         }
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.mailbox.lock_recover();
         if let Some(status) = &mut m.status {
             if !terminal(status.phase) {
                 status.phase = Phase::Cancelled;
@@ -333,7 +319,7 @@ fn terminal(phase: Phase) -> bool {
     )
 }
 fn report(shared: &Shared, status: &Status) {
-    let mut m = shared.mailbox.lock().unwrap();
+    let mut m = shared.mailbox.lock_recover();
     if m.active.as_ref().is_some_and(|(t, _)| *t == status.token) {
         m.status = Some(status.clone());
         shared.wake.notify_all();
@@ -360,7 +346,7 @@ fn worker_loop(
 ) {
     loop {
         let request = {
-            let mut m = shared.mailbox.lock().unwrap();
+            let mut m = shared.mailbox.lock_recover();
             while m.pending.is_none() && !m.shutdown {
                 m = shared.wake.wait(m).unwrap();
             }
@@ -370,7 +356,6 @@ fn worker_loop(
             m.pending.take().unwrap()
         };
         let mut status = Status::new(request.token.clone());
-        // selected is external to every borrowed handle/Ready, on this stack.
         let result = (|| {
             stop(&request.flags)?;
             let selected = transport.fetch_manifest(&request.release, &request.flags.cancel)?;
@@ -401,12 +386,9 @@ fn worker_loop(
         if let Err(error) = result {
             status.error.get_or_insert(error);
         }
-        // Scope has ended: no Session, component, Ready or root lease is live.
-        let mut m = shared.mailbox.lock().unwrap();
+        let mut m = shared.mailbox.lock_recover();
         if let Some((token, flags)) = &m.active {
             if *token == status.token {
-                // Same lock as stop admission: an accepted cancel wins even in
-                // the last interval between scoped completion and publication.
                 if flags.cancel.load(Ordering::Acquire) {
                     status.phase = Phase::Cancelled;
                 }
@@ -457,7 +439,6 @@ fn run_selected(
         &mut dyn HeldReadSeek,
     ) -> Result<(), String>,
 ) -> Result<(), String> {
-    // Fail closed even if an internal caller bypasses spawn's preflight.
     imager_backend::cache::unsupported()
 }
 
@@ -479,8 +460,6 @@ fn run_selected<'s>(
     status.phase = Phase::Acquiring;
     report(shared, status);
     stop(flags)?;
-    // Bootstrap owns the one cooperative root lock and creation settlement.
-    // An acquisition error can retain residue, even without a returned handle.
     status.residue = true;
     let components = platform::CacheRoot::acquire(selected)?
         .bootstrap(selected, &flags.cancel)
@@ -511,8 +490,6 @@ fn run_selected<'s>(
     let (mut b, mut bf) = split(second);
     status.phase = Phase::Preparing;
     report(shared, status);
-    // Distinct locals keep both Sessions/prepared prefixes alive before either
-    // transfer. Never carry a preparation receipt across pause/reacquisition.
     let (ap, ax) = a.as_mut().map(|p| (&mut p.provider, &mut p.file)).unzip();
     let (bp, bx) = b.as_mut().map(|p| (&mut p.provider, &mut p.file)).unzip();
     let mut sa = ap
@@ -524,8 +501,6 @@ fn run_selected<'s>(
     let pa = match (&mut sa, ax) {
         (Some(s), Some(file)) => Some(
             s.prepare(selected, file, &flags.cancel)
-                // Preparation may normalize journals or trim/sync a tail before
-                // failing. A string error cannot prove that nothing changed.
                 .inspect_err(|_| status.uncertain = true)?,
         ),
         _ => None,
@@ -536,8 +511,6 @@ fn run_selected<'s>(
     let pb = match (&mut sb, bx) {
         (Some(s), Some(file)) => Some(
             s.prepare(selected, file, &flags.cancel)
-                // Preparation may normalize journals or trim/sync a tail before
-                // failing. A string error cannot prove that nothing changed.
                 .inspect_err(|_| status.uncertain = true)?,
         ),
         _ => None,
@@ -585,7 +558,7 @@ fn run_selected<'s>(
     status.residue = ready.finals.iter().any(|f| f.has_retained_residue());
     report(shared, status);
     let action = {
-        let mut m = shared.mailbox.lock().unwrap();
+        let mut m = shared.mailbox.lock_recover();
         loop {
             stop(flags)?;
             if m.shutdown || m.active.as_ref().is_none_or(|(t, _)| *t != request.token) {
@@ -611,8 +584,6 @@ fn run_selected<'s>(
                 result
             });
             if let Err(error) = consumed {
-                // Verification, cursor restoration and native guards can fail
-                // alongside cancellation. Conservatively retain that uncertainty.
                 status.uncertain = true;
                 if let Some(callback_error) = &mut status.error {
                     if *callback_error != error {

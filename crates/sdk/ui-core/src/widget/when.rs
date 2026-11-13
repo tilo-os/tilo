@@ -1,23 +1,6 @@
-//! Content a host puts around a view: [`When`] shows it on a condition and [`optional`] stands
-//! in for it, and [`Fitted`] carries the fit its arguments asked for into a described
-//! component's slot.
-//!
-//! A `Column` or `Row` spaces its children with one gap between each pair.
-//! A child that is absent must take that gap with it, or a missing caption
-//! leaves a doubled hole. An absent child is not laid out at all
-//! (`Display::None`), so the containers skip it the way they skip a
-//! zero-size spacer, and nothing of it is drawn, focused or read out.
-//!
-//! A `stack`, `row`, `grid` or `page` holds each child in a slot whose [`Fit`] is the child's
-//! arguments: `text(x, fill)` takes its share of the column. A described component's slot is
-//! not a layout the view wrote, though: a card's body, a window's content and a nav shell's
-//! column put what the view gave them where the component decides, and a component that
-//! decides cannot see arguments written on a node it never places. The host wraps each view in
-//! a [`Fitted`] carrying that fit, which [`Slot::new`](super::arrange::Slot::new) takes for the
-//! slot the component puts it in, so a view that says `fill` fills the room the component gives
-//! it rather than hugging its content. `Fitted` is a [`Decorator`]: it builds the view's own
-//! node, forwards input, sync and paint, and changes nothing but the fit.
-
+//! Content a host puts around a view: [`When`] shows it on a condition and [`optional`] stands in
+//! for it, and [`Fitted`] carries the fit its arguments asked for into a described component's
+//! slot.
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -27,7 +10,6 @@ use super::arrange::Fit;
 use super::{AppModel, Decorator, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 use crate::theme::Theme;
 
-/// A placeholder that takes no room: no layout box, no gap, no paint.
 #[derive(Default)]
 #[crate::component::not_a_component(
     framework,
@@ -44,7 +26,6 @@ impl Absent {
     }
 }
 
-/// The style of a node that is removed from its container's flow.
 pub(crate) fn removed_from_flow() -> Style {
     Style {
         display: taffy::Display::None,
@@ -91,12 +72,8 @@ pub fn optional(child: Option<Element>) -> Element {
     child.unwrap_or_else(|| Box::new(Absent::new()))
 }
 
-/// A child shown only while a condition holds. While it does not, the
-/// child is out of its container's flow: no box, no gap around it, no
-/// paint, no focus and no accessibility node. The condition is read on
-/// every synchronization, so state that changes it (a `LocalState`, the
-/// document) shows or hides the child on the next frame; the child keeps
-/// its own state while hidden.
+/// A child shown only while a condition holds; while it does not, the child is out of its
+/// container's flow: no box, no gap, no paint, no focus and no accessibility node.
 #[crate::component::not_a_component(
     framework,
     "content shown on a condition; the language writes `if`"
@@ -110,7 +87,6 @@ pub struct When {
 }
 
 impl When {
-    /// `child` while `visible()` returns true.
     pub fn new(child: Element, mut visible: impl FnMut() -> bool + 'static) -> Self {
         let shown = visible();
         Self {
@@ -122,7 +98,6 @@ impl When {
         }
     }
 
-    /// `child` while `visible(&state)` holds.
     pub fn from_state<T: 'static>(
         state: &crate::LocalState<T>,
         mut visible: impl FnMut(&T) -> bool + 'static,
@@ -132,19 +107,16 @@ impl When {
         Self::new(child, move || state.with(&mut visible))
     }
 
-    /// Whether the child is shown now.
     #[must_use]
     pub fn is_shown(&self) -> bool {
         self.shown
     }
 
-    /// The wrapped child, shown or not.
     #[must_use]
     pub fn child(&self) -> &dyn Widget {
         self.child.as_ref()
     }
 
-    /// The wrapped child, shown or not.
     pub fn child_mut(&mut self) -> &mut dyn Widget {
         self.child.as_mut()
     }
@@ -153,8 +125,6 @@ impl When {
         let shown = (self.visible)();
         if shown != self.shown {
             self.shown = shown;
-            // Showing or hiding changes which nodes exist (and the focus
-            // order), so the host rebuilds the tree rather than re-solving it.
             self.structure_dirty = true;
         }
     }
@@ -223,30 +193,25 @@ pub struct Fitted {
 }
 
 impl Fitted {
-    /// `inner`, carrying `fit`.
     #[must_use]
     pub fn new(inner: Element, fit: Fit) -> Self {
         Self { inner, fit }
     }
 
-    /// What it shows.
     #[must_use]
     pub fn content(&self) -> &Element {
         &self.inner
     }
 
-    /// What it shows, to change in place.
     pub fn content_mut(&mut self) -> &mut Element {
         &mut self.inner
     }
 
-    /// The fit it carries.
     #[must_use]
     pub const fn fit(&self) -> Fit {
         self.fit
     }
 
-    /// Carry `fit` instead.
     pub fn set_fit(&mut self, fit: Fit) {
         self.fit = fit;
     }
@@ -263,7 +228,6 @@ impl Decorator for Fitted {
         self.inner.as_mut()
     }
 
-    // A fit adds no structure of its own: the change is what the view it holds changed.
     fn take_structure_change(&mut self) -> StructureChange {
         self.inner.take_structure_change()
     }
@@ -279,7 +243,7 @@ mod tests {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = root.build_layout(&mut tree, &theme, &mut map);
-        crate::text_render::with_layout_renderer(1.0, |text| {
+        crate::text_render::with_layout_renderer(&theme, |text| {
             tree.compute_layout_with_measure(
                 node,
                 taffy::Size {
@@ -368,7 +332,6 @@ mod tests {
             .push(Box::new(Text::from_state(&caption, Clone::clone)))
             .push(line("b"));
         solve(&mut column, 200.0);
-        // The collapse lands through the layout hook the host runs.
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let theme = Theme::dark();
@@ -380,7 +343,6 @@ mod tests {
         );
         let (a, b) = (rect_of(&column, "a"), rect_of(&column, "b"));
         assert!((b.y0 - a.y1 - 8.0).abs() < 0.01, "got {}", b.y0 - a.y1);
-        // A static empty text stays an (empty) line in the flow.
         let mut tree = TaffyTree::new();
         let mut text = Text::new("");
         let node = text.build_layout(&mut tree, &theme, &mut map);

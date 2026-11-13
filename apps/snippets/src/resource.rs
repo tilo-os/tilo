@@ -1,14 +1,4 @@
 //! The library's verbs, the places derived from it, and the app.
-//!
-//! Plain fields change through the built-in field edits every path offers
-//! (`Snippets::paths().snippets.item(&id).favorite.set(true)`): renaming,
-//! starring, choosing the language, moving to a folder, tagging and typing
-//! in the body. The methods below are the operations that are more than
-//! setting a field. Folders and tags are derived from the snippets and are
-//! published as places that offer the verbs that act on them.
-//!
-//! What the window shows (a tag's snippets, a folder's, the search) are
-//! [`SnippetsView`]s, which change no document.
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -23,11 +13,6 @@ ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 impl Snippets {
     /// What the record holds: the snippets, with their language, folder and tags.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -142,8 +127,7 @@ impl Snippets {
 }
 
 impl Snippets {
-    /// Change every snippet `matches` selects; refused with `missing` when
-    /// none does.
+    /// Change every snippet `matches` selects; refused with `missing` when none does.
     fn each_matching(
         &mut self,
         matches: impl Fn(&Snippet) -> bool,
@@ -164,8 +148,8 @@ impl Snippets {
         }
     }
 
-    /// The snippets `matches` selects, as a read of a folder or tag answers
-    /// them: each by its item, title, language and star.
+    /// The snippets `matches` selects, as a read of a folder or tag answers them: each by
+    /// its item, title, language and star.
     pub fn read_place(
         &self,
         kind: &str,
@@ -189,18 +173,15 @@ impl Snippets {
         })
     }
 
-    /// The places derived from the snippets: each folder reads and reveals
-    /// its snippets, files a new one under itself and renames; each tag
-    /// reads and reveals its snippets, renames or comes off. A place's read
-    /// is what discloses it, so its verbs are offered to whoever may read
-    /// it, an agent too, where revealing it is this window's own view.
+    /// The places derived from the snippets: each folder reads and reveals its snippets,
+    /// files a new one under itself and renames; each tag reads and reveals its snippets,
+    /// renames or comes off.
     fn places(&self) -> Vec<Derived<Self>> {
         let folders = self.folders().into_iter().map(Self::folder_place);
         let tags = self.tags().into_iter().map(|(tag, _)| Self::tag_place(tag));
         folders.chain(tags).collect()
     }
 
-    /// The folder `folder` as a place.
     pub fn folder_place(folder: String) -> Derived<Self> {
         Derived::new(folder.clone())
             .of_kind("folder")
@@ -217,7 +198,6 @@ impl Snippets {
             .with(Self::RENAME_FOLDER.bind(snippets::RenameFolder::paths().folder, folder))
     }
 
-    /// The tag `tag` as a place.
     pub fn tag_place(tag: String) -> Derived<Self> {
         Derived::new(tag.clone())
             .of_kind("tag")
@@ -229,31 +209,19 @@ impl Snippets {
     }
 }
 
-/// What the library shows and answers, which changes no document. Reading
-/// and revealing are offered on the tag or folder they name, never with a
-/// name to type.
+/// What the library shows and answers, which changes no document. Reading and revealing are
+/// offered on the tag or folder they name, never with a name to type.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "snippets.view")]
 pub enum SnippetsView {
-    /// Reveal tagged snippets
     #[effect(view, row)]
     Reveal { tag: String },
-    /// Reveal snippets in a folder
     #[effect(view, row)]
     RevealFolder { folder: String },
-    /// Search snippets
     #[effect(view)]
     Search,
-    /// Read a tag
-    ///
-    /// The snippets that carry the tag, each by its item, title, language
-    /// and star.
     #[effect(view, row, returns, tag = ui::tilo_actions::DOCUMENT_READ_TAG)]
     ReadTag { tag: String },
-    /// Read a folder
-    ///
-    /// The snippets filed under the folder, each by its item, title,
-    /// language and star.
     #[effect(view, row, returns, tag = ui::tilo_actions::DOCUMENT_READ_TAG)]
     ReadFolder { folder: String },
 }
@@ -265,6 +233,7 @@ impl ResourceApp for SnippetsShell {
     type Resource = Snippets;
     const ID: &'static str = "so.tilo.snippets";
     const TITLE: &'static str = "Snippets";
+    const TITLE_KEY: &'static str = "snippets-app-title";
     const ICON: Option<&'static str> = Some("snippets");
 
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
@@ -275,9 +244,9 @@ impl ResourceApp for SnippetsShell {
         Some(&CATALOG)
     }
 
-    /// `narrow` shows the sidebar as an open overlay flap over the content;
-    /// `detail` the single-pane push stack on the opened snippet with its
-    /// Back affordance; `empty` the zero state of a fresh install.
+    /// `narrow` shows the sidebar as an open overlay flap over the content; `detail` the
+    /// single-pane push stack on the opened snippet with its Back affordance; `empty` the
+    /// zero state of a fresh install.
     fn scenarios() -> &'static [&'static str] {
         &["narrow", "detail", "empty"]
     }
@@ -290,8 +259,8 @@ impl ResourceApp for SnippetsShell {
         }
     }
 
-    /// The starter library, so a capture shows the manager doing real work;
-    /// `empty` shows a fresh install, which has none.
+    /// The starter library, so a capture shows the manager doing real work; `empty` shows a
+    /// fresh install, which has none.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Snippets>> {
         if name == Some("empty") {
             return Vec::new();
@@ -317,8 +286,8 @@ mod agent_disclosure_tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::ResourceSpec;
 
-    /// The document read of the first resource of `kind` any scenario
-    /// publishes, invoked as `tilo_read` on it does.
+    /// The document read of the first resource of `kind` any scenario publishes, invoked as
+    /// `tilo_read` on it does.
     fn read_first(kind: &str) -> ui::serde_json::Value {
         for scenario in <super::SnippetsShell as ResourceApp>::scenarios() {
             let mut app = TestApp::<super::SnippetsShell>::drive(scenario)

@@ -1,14 +1,5 @@
-//! A single editable line of text wrapping a local-mode [`TextInput`], the
-//! leaf cell of a block editor. The inner `TextInput` handles cursor
-//! placement, selection, IME, copy/paste; `RichTextLine` adds:
-//!
-//! * Intercepts Enter, Backspace at byte 0, Up at the start, and Down at the
-//!   end before the inner input sees them, queuing [`LineSignal`]s the
-//!   parent ([`crate::widget::block_editor::BlockEditor`]) consumes instead.
-//! * A per-line font size so a block editor can render H1/H2/H3 headings
-//!   without forking the widget.
-//! * A [`MarkSpan`] list (inline bold/italic/code/link) with rendering and
-//!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
+//! A single editable line of text wrapping a local-mode [`TextInput`], the leaf cell of a block
+//! editor.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -73,9 +64,8 @@ pub enum LineSignal {
     SelectBlockDown {
         caret: usize,
     },
-    /// User typed `[[`; parent opens a [`LinkPopover`](crate::widget::link_popover::LinkPopover) anchored at
-    /// `open_at`. Brackets fall through to the inner input — the popover's
-    /// commit-link logic strips them.
+    /// User typed `[[`; parent opens a
+    /// [`LinkPopover`](crate::widget::link_popover::LinkPopover) anchored at `open_at`.
     LinkOpen {
         open_at: usize,
     },
@@ -90,13 +80,11 @@ thread_local! {
     static PAINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// What the lines this thread drew painted and moved, since the last call.
 #[cfg(test)]
 pub(crate) fn take_face_work() -> (usize, usize) {
     FACE_WORK.with(std::cell::Cell::take)
 }
 
-/// The words of every line painted since the last call.
 #[cfg(test)]
 pub(crate) fn take_painted_lines() -> Vec<String> {
     PAINTED.with(|painted| std::mem::take(&mut *painted.borrow_mut()))
@@ -141,7 +129,6 @@ impl ImagePreview {
     }
 }
 
-/// The inputs a stacking host measured a line under, and the result.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct StackMeasure {
     pub(super) width: f32,
@@ -163,11 +150,8 @@ struct RichTextDirty {
     styled_layout: bool,
 }
 
-/// What a line's drawing was made of: the words it shows, the marks over
-/// them, the paint-only colours a fenced run adds, the box it was painted
-/// in, and the theme roles it painted with. A line that still matches is
-/// drawn again by moving what it drew, not by shaping and encoding it anew:
-/// scrolling a note leaves every line that did not change as it was.
+/// What a line's drawing was made of: the words it shows, the marks over them, the paint-only
+/// colours a fenced run adds, the box it was painted in, and the theme roles it painted with.
 #[derive(Clone, PartialEq)]
 struct LineFace {
     text: String,
@@ -178,11 +162,9 @@ struct LineFace {
     theme: LineFaceTheme,
 }
 
-/// The theme roles a line's drawing reads: the inks, a marked run's ground,
-/// the caret and the selection, the palette a fence's colours are resolved
-/// from, and the scale and motion it paints at. A theme change that keeps
-/// the layout (a new palette, an emphasis) repaints the line; one that only
-/// moves it does not.
+/// The theme roles a line's drawing reads: the inks, a marked run's ground, the caret and the
+/// selection, the palette a fence's colours are resolved from, and the scale and motion it
+/// paints at.
 #[derive(Clone, PartialEq)]
 struct LineFaceTheme {
     text_primary: vello::peniko::Color,
@@ -238,16 +220,12 @@ pub struct RichTextLine {
     /// per theme, so preparing an unchanged theme is a pointer comparison.
     measurement_theme: Arc<Theme>,
     /// The heights stacking hosts measured, newest first, one per width: valid while the line
-    /// reports no pending measurement. A host asks for the height at the width it solved and
-    /// applies the layout at that width, but it asks at widths it never applies too, and a
-    /// line answering one of those with its only remembered height is stacked shorter than
-    /// its text needs at the applied width, which clips its last rows.
+    /// reports no pending measurement.
     stack_measures: Vec<StackMeasure>,
     layout_inset: f32,
     layout_header_height: f32,
     table_preview: Option<bool>,
     table_source_height: f32,
-    /// An image attachment uses the leaf's actual Taffy width for its preview.
     image_preview: ImagePreview,
     /// The height a picture's editable source took beside its picture, with the width it was
     /// measured at, newest first: a host measures a line at widths it never applies (a flex
@@ -260,27 +238,22 @@ pub struct RichTextLine {
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
-    /// What the owner derived `transient_colors` from, if it said: an owner
-    /// that derives them (a code run's syntax) compares this rather than
-    /// deriving them again. Any other change of the colours forgets it.
+    /// What the owner derived `transient_colors` from, if it said: an owner that derives them
+    /// (a code run's syntax) compares this rather than deriving them again.
     transient_key: Option<u64>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
-    /// Its paint changed since the last frame drew it.
     paint_dirty: bool,
     /// What the last frame drew, appended again while the line holds and
     /// only moves ([`crate::widget::CachedPaint`]).
     face: crate::widget::CachedPaint,
-    /// What `face` was drawn from, and the model and permission generations
-    /// it was drawn at: a sync hands the tree a changed document without a
-    /// flag of its own, and a permission change alters the field's gate.
-    /// `None` while nothing is kept.
+    /// What `face` was drawn from, and the model and permission generations it was drawn at: a
+    /// sync hands the tree a changed document without a flag of its own, and a permission
+    /// change alters the field's gate.
     face_key: Option<LineFace>,
     face_model: u64,
     face_permissions: u64,
-    /// Cached theme colours used by unwrapped attributed single-line shaping.
     accent_rgb: Option<[u8; 3]>,
-    /// The theme's syntax palette, captured when attributes are prepared.
     syntax: Option<crate::tokens::SyntaxPalette>,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
@@ -310,16 +283,13 @@ pub struct RichTextLine {
 
 impl RichTextLine {
     pub fn new() -> Self {
-        // Block-editor cells render as document copy, not a form field.
-        // `@` is the block editor's own: it writes a mention mark naming the
-        // participant, which the field's inline completion cannot. `:emoji:`
-        // is the field's like anywhere else.
+        // Block-editor cells render as document copy, not a form field. `@` is the block
+        // editor's own: it writes a mention mark naming the participant, which the field's
+        // inline completion cannot.
         let mut inner = TextInput::local()
             .with_plain_chrome()
             .with_completion(crate::widget::TextCompletion::EMOJI);
         inner.keep_document_inset();
-        // The block editor writes an autocorrection after the keystroke
-        // that typed its word boundary, as an undo step of its own.
         inner.set_deferred_autocorrection(true);
         Self {
             inner,
@@ -371,7 +341,6 @@ impl RichTextLine {
         line
     }
 
-    /// Make the line a field of its own (a composer): see the field's docs.
     pub fn set_composer(&mut self, composer: bool) {
         self.paint_dirty = true;
         self.composer = composer;
@@ -384,7 +353,6 @@ impl RichTextLine {
         self.refresh_attributes();
     }
 
-    /// The ink and band of a mention of `id`.
     fn mention_rgb(&self, id: &str) -> (Option<[u8; 3]>, Option<[u8; 3]>) {
         let rgb = |color: vello::peniko::Color| [color.r(), color.g(), color.b()];
         match &self.mention_paint {
@@ -396,7 +364,6 @@ impl RichTextLine {
         }
     }
 
-    /// Dirty flag stays false — this is a programmatic seed.
     #[must_use]
     pub fn with_text(mut self, s: &str) -> Self {
         self.inner = self.inner.with_initial_value(s);
@@ -457,8 +424,6 @@ impl RichTextLine {
         }
     }
 
-    /// Whether the line shows inline marks (prose) rather than plain
-    /// source (code).
     pub fn inline_formatting(&self) -> bool {
         self.inline_formatting
     }
@@ -480,7 +445,6 @@ impl RichTextLine {
                 }))
     }
 
-    /// Whether `event` types the backtick that closes inline code.
     fn closes_inline_code(&self, event: &WindowEvent) -> bool {
         let typed = match event {
             WindowEvent::KeyboardInput {
@@ -587,6 +551,7 @@ impl RichTextLine {
     ) -> Result<(), crate::view::ThawError> {
         self.paint_dirty = true;
         self.inner.adopt_bound_text(state)?;
+        self.inner.clear_authored();
         self.align_bound_projection(state);
         self.refresh_attributes();
         Ok(())
@@ -596,7 +561,7 @@ impl RichTextLine {
         self.prev_text = self.inner.value().to_string();
         self.prev_cursor = self.inner.cursor_pos();
 
-        // Marks are char-indexed; convert to byte ranges for `pixel_x_for_byte`.
+        // Marks are char-indexed; convert to byte ranges for the line's geometry.
         self.author_runs.clear();
         if let Some(obj) = self.inner.bound_obj().cloned() {
             let text = self.inner.value().to_string();
@@ -627,7 +592,6 @@ impl RichTextLine {
         self.inner.set_local_author(author);
     }
 
-    /// Align the line's text within its width.
     pub fn set_align(&mut self, align: crate::richtext::TextAlign) {
         self.paint_dirty = true;
         self.inner.set_align(align);
@@ -648,13 +612,11 @@ impl RichTextLine {
         self.author_runs = runs;
     }
 
-    /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
         self.paint_dirty = true;
         self.closed = None;
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
-        // Doesn't preserve prior marks; parents re-seed via `set_marks`.
         self.dirty.styled_layout |= !self.marks.is_empty();
         self.marks.clear();
         self.dirty.marks = false;
@@ -664,7 +626,6 @@ impl RichTextLine {
         self.refresh_attributes();
     }
 
-    /// A user edit to text or rich spans. Programmatic projection stays clean.
     pub fn take_dirty(&mut self) -> Option<String> {
         let text = self.inner.take_dirty();
         if std::mem::take(&mut self.dirty.marks) {
@@ -683,8 +644,6 @@ impl RichTextLine {
         self.inner.is_disabled()
     }
 
-    /// When losing focus the cursor isn't touched — it stays wherever
-    /// the user last left it.
     pub fn set_focus(&mut self, focused: bool) {
         self.paint_dirty = true;
         self.inner.set_focus(focused);
@@ -702,8 +661,6 @@ impl RichTextLine {
         self.inner.cursor_pos()
     }
 
-    /// Used to broadcast the local selection as presence so peers can
-    /// highlight it.
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         self.inner.selection_range_public()
     }
@@ -766,7 +723,6 @@ impl RichTextLine {
         self.replace_transient_colors(colors);
     }
 
-    /// The key the current transient colours were set with, if any.
     pub fn transient_colors_key(&self) -> Option<u64> {
         self.transient_key
     }
@@ -786,7 +742,6 @@ impl RichTextLine {
         &self.transient_colors
     }
 
-    /// Whether the last typed word boundary left a correction to apply.
     pub fn has_pending_autocorrection(&self) -> bool {
         self.inner.has_pending_autocorrection()
     }
@@ -839,13 +794,10 @@ impl RichTextLine {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
             self.dirty.marks = true;
             self.dirty.styled_layout = true;
+        } else if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
+            self.pending_marks.remove(idx);
         } else {
-            // Pushing the same mark twice cancels it (Notion-style).
-            if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
-                self.pending_marks.remove(idx);
-            } else {
-                self.pending_marks.push(mark);
-            }
+            self.pending_marks.push(mark);
         }
     }
 
@@ -872,20 +824,6 @@ impl RichTextLine {
         self.inner.line_style(text_scale)
     }
 
-    /// Returns 0.0 before the first draw.
-    pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
-        let xs = self.inner.char_x_positions();
-        if xs.is_empty() {
-            return self.inner.get_rect().x0;
-        }
-        let idx = byte.min(xs.len().saturating_sub(1));
-        // The same inset the line's text is laid out at, multiline or not.
-        let pad = self.text_inset(theme);
-        let x = xs.get(idx).copied().unwrap_or(0.0);
-        self.inner.get_rect().x0 + pad + x - self.inner.scroll_x()
-    }
-
-    /// So a peer caret on this line is pixel-identical to the line's own focused caret.
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
         self.inner.caret_rect(theme, byte)
     }
@@ -894,7 +832,7 @@ impl RichTextLine {
         self.inner.selection_rect(theme, start, end)
     }
 
-    /// Inverse of `pixel_x_for_byte`, using the shaped caret stops.
+    /// The byte whose caret stop is nearest `x`, from the shaped caret stops.
     pub fn byte_for_pixel_x(&self, _theme: &Theme, x: f64) -> usize {
         self.inner
             .byte_at_point(Point::new(x, self.inner.get_rect().center().y))
@@ -936,8 +874,6 @@ impl RichTextLine {
         let mut attributes = SingleLineAttributes::default();
         for segment in marks::segments_for(text.len(), &marks) {
             let range = (segment.range.start, segment.range.end);
-            // Split the complete shaped run at paint-only syntax boundaries.
-            // Styling and hit geometry continue to use the same TextInput layout.
             let mut boundaries = vec![segment.range.start, segment.range.end];
             for color in &self.transient_colors {
                 for boundary in [color.range.start, color.range.end] {
@@ -980,7 +916,6 @@ impl RichTextLine {
                     .pill(mention_band.is_some())
                     .background(mention_band);
                 span.kind = mark_kind(&segment);
-                // Prose draws its workspace emoji; code keeps `:name:`.
                 if segment.code || !self.inline_formatting || !slice.contains(':') {
                     attributes.spans.push(span);
                 } else {
@@ -1053,8 +988,6 @@ impl RichTextLine {
             }
         }
 
-        // `[[` right before the caret emits LinkOpen; brackets are stripped
-        // later by the popover commit path, not here.
         let caret = self.inner.cursor_pos();
         if self.inline_formatting
             && inserted > 0
@@ -1066,12 +999,8 @@ impl RichTextLine {
         }
     }
 
-    /// Give the input attributed text before it measures or paints. Overpainting
-    /// plain glyphs cannot preserve wrapping or pointer/caret geometry.
-    ///
-    /// Its paint changed only where the runs it hands over are another set
-    /// than the ones the field held: a line whose words, marks and colours
-    /// hold keeps its drawing.
+    /// Give the input attributed text before it measures or paints. Overpainting plain glyphs
+    /// cannot preserve wrapping or pointer/caret geometry.
     fn sync_wrapped_spans(&mut self, theme: &Theme) {
         if self.wrap && !self.inline_formatting && !self.transient_colors.is_empty() {
             let text = self.value();
@@ -1202,11 +1131,6 @@ impl RichTextLine {
     }
 
     pub fn mark_rects(&self, theme: &Theme, range: std::ops::Range<usize>) -> Vec<Rect> {
-        // Selection geometry is also the painted geometry for a marked run.
-        // In particular it preserves right-to-left ranges (whose logical end
-        // can be left of their start) and disjoint bands in mixed-direction
-        // text. Collapsing those carets into one `x0..x1` interval either
-        // drops the RTL run or makes an unmarked visual gap clickable.
         self.inner.selection_rects(theme, range.start, range.end)
     }
 
@@ -1219,21 +1143,13 @@ impl RichTextLine {
 }
 
 impl RichTextLine {
-    /// Resolve everything layout reads from the theme. A host that lays out
-    /// many lines shares one `Arc` per theme, so an unchanged theme costs a
-    /// pointer comparison instead of re-deriving attributes for every line.
+    /// Resolve everything layout reads from the theme.
     pub(super) fn prepare_layout(&mut self, theme: &Arc<Theme>) {
         if !Arc::ptr_eq(&self.measurement_theme, theme) {
-            // Font overrides remain base values. TextInput's shaped layout
-            // applies the theme scale exactly once; the row height is
-            // resolved by the owner of the surrounding document geometry.
             self.prepare_attributes(theme);
             self.inner.capture_layout_text_scale(theme.text_scale);
             self.measurement_theme = Arc::clone(theme);
             self.forget_stack_heights();
-            // What the line drew was drawn in the theme it no longer paints
-            // with. Its layout moved, so it is drawn again anyway; dropping
-            // the drawing here keeps that so whatever repaints it.
             self.forget_face();
         }
         self.inner.set_base_size(self.font_size);
@@ -1241,8 +1157,6 @@ impl RichTextLine {
         self.sync_wrapped_spans(theme);
     }
 
-    /// Drop the drawing kept from the last frame, so the next one paints the
-    /// line anew.
     fn forget_face(&mut self) {
         self.face = crate::widget::CachedPaint::default();
         self.face_key = None;
@@ -1266,8 +1180,6 @@ impl RichTextLine {
         drop(attributes_probe);
         #[cfg(test)]
         let input_probe = crate::profiling::frame_probe::span("text_input_draw");
-        // TextInput owns glyph shaping and painting. This wrapper supplies
-        // attributes and draws only mark decorations that are not glyphs.
         self.inner
             .draw_child(scene, transform, text_renderer, theme, presence);
         #[cfg(test)]
@@ -1292,7 +1204,6 @@ impl RichTextLine {
         }
     }
 
-    /// What this line's drawing is made of now.
     fn face_of(&self, theme: &Theme) -> LineFace {
         let rect = self.inner.get_rect();
         LineFace {
@@ -1319,15 +1230,9 @@ impl RichTextLine {
         {
             return false;
         }
-        // A changed document, a field the tree updated (a caret, a selection),
-        // and what moves on its own: all reach the drawing from outside the
-        // line's own words.
         if self.inner.paint_changed() || self.inner.needs_animation_frame() {
             return false;
         }
-        // The person's own line blinks, settles its spelling and offers
-        // corrections; someone else's caret, selection or typing comes and
-        // goes without the line changing.
         if self.inner.is_focused() || self.inner.shows_peers(presence) {
             return false;
         }
@@ -1619,8 +1524,6 @@ impl Widget for RichTextLine {
     /// the part only this read computes.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
-        // Realigning the mark-diff snapshot here keeps a remotely-synced edit
-        // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
         let authors = std::mem::take(&mut self.author_runs);
         self.align_bound_projection(state);
@@ -1668,9 +1571,6 @@ impl Widget for RichTextLine {
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
         let size = self.measure_content(known, available, text_renderer);
-        // Acknowledged once the measurement is done: measuring adopts the
-        // theme's field geometry, which marks the input's layout dirty the
-        // first time, yet the size just measured already reflects it.
         self.dirty.styled_layout = false;
         self.inner.acknowledge_layout_measure();
         size
@@ -1684,9 +1584,6 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A line the host's viewport culls paints nothing this frame, and
-        // keeps nothing either: a drawing recorded now would hold nothing but
-        // the clip it was left out of.
         if presence.should_cull(self.inner.paint_bounds()) {
             return;
         }
@@ -1695,10 +1592,6 @@ impl Widget for RichTextLine {
         } else {
             let rect = self.inner.get_rect();
             let mut face = std::mem::take(&mut self.face);
-            // The line draws itself where it stands, in logical pixels; the
-            // frame that appends it places it, under that frame's transform.
-            // So what is kept holds for any transform the line is drawn under
-            // (a page zoom, a slide drawn scaled to a thumbnail).
             self.paint_into(
                 face.repaint(rect),
                 Affine::IDENTITY,
@@ -1731,8 +1624,6 @@ impl Widget for RichTextLine {
         } = event
             && self.inner.is_focused()
         {
-            // Intercepted so the character doesn't get inserted via the
-            // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
             if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
                 && let Key::Character(c) = logical_key
                 && self.handle_mark_shortcut(c)
@@ -1742,7 +1633,6 @@ impl Widget for RichTextLine {
             }
 
             match logical_key {
-                // A composer's keys are its field's.
                 _ if self.composer => {}
                 // Wrapped prose owns real newlines in its Text object. Let
                 // TextInput splice Shift+Enter so marks, undo, and peers see
@@ -1832,15 +1722,11 @@ impl Widget for RichTextLine {
         }
     }
 
-    /// Its paint changed since the last frame drew it, or its inner field's did.
     fn needs_redraw(&self) -> bool {
         self.paint_dirty || (self.inner.needs_redraw() || self.inner.needs_animation_frame())
     }
 
-    /// After a frame drew this line. The block editor calls this for its own
-    /// lines, which are not widgets of the tree: without it, a line that drew
-    /// itself asks to be painted again for the rest of its life, instead of
-    /// only moving until something changes.
+    /// After a frame drew this line.
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
         Widget::mark_drawn(&mut self.inner);
@@ -1921,7 +1807,6 @@ impl Widget for RichTextLine {
     }
 }
 
-/// The revision of the window's workspace emoji, if its host registered any.
 fn window_emoji_revision() -> Option<u64> {
     crate::workspace_emoji::current().map(|source| source.revision())
 }
@@ -1931,7 +1816,7 @@ fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
 }
 
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
-/// offsets `pixel_x_for_byte` uses.
+/// offsets the line's geometry uses.
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
@@ -1945,7 +1830,6 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let oa = old.as_bytes();
     let na = new.as_bytes();
 
-    // Longest common prefix.
     let mut prefix = oa.iter().zip(na.iter()).take_while(|(o, n)| o == n).count();
     while !old.is_char_boundary(prefix) || !new.is_char_boundary(prefix) {
         prefix = prefix.saturating_sub(1);
@@ -1954,9 +1838,7 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let o_rest = oa.len().saturating_sub(prefix);
     let n_rest = na.len().saturating_sub(prefix);
 
-    // Longest common suffix within the bytes past the prefix. `zip` already
-    // stops at the shorter of the two (reversed, prefix-skipped) iterators,
-    // matching the original bound of `min(o_rest, n_rest)`.
+    // Longest common suffix within the bytes past the prefix.
     let mut suffix = oa
         .iter()
         .skip(prefix)
@@ -1990,9 +1872,8 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 }
 
 /// What a marked stretch is: a mention names a person
-/// ([`TextKind::Identifier`](crate::text_render::TextKind::Identifier)) and
-/// an external link is a [`TextKind::Url`](crate::text_render::TextKind::Url),
-/// whatever its label says. Everything else is found in the prose.
+/// ([`TextKind::Identifier`](crate::text_render::TextKind::Identifier)) and an external link is
+/// a [`TextKind::Url`](crate::text_render::TextKind::Url), whatever its label says.
 fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
     if segment.code {
         None
@@ -2115,7 +1996,7 @@ mod tests {
             );
 
             let target = 6;
-            let x = line.pixel_x_for_byte(&large, target);
+            let x = line.caret_rect(&large, target).x0;
             assert_eq!(
                 line.byte_for_pixel_x(&large, x),
                 target,
@@ -2126,7 +2007,6 @@ mod tests {
 
     #[test]
     fn rich_mark_geometry_is_authoritative_for_paint_selection_and_pointer() {
-        // Case `rich_marks_utf8_replacement_keeps_complete_boundaries`.
         {
             assert_eq!(diff_splice("éx", "êx"), (0, 2, 2));
             assert_eq!(diff_splice("xé", "xê"), (1, 2, 2));
@@ -2144,20 +2024,19 @@ mod tests {
                 let theme = Theme::dark().with_text_scale(scale);
                 let mut line = RichTextLine::new().with_text("WWW end");
                 layout_and_draw(&mut line, &theme, 400.0);
-                let plain = line.pixel_x_for_byte(&theme, 3);
+                let plain = line.caret_rect(&theme, 3).x0;
                 line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
                 layout_and_draw(&mut line, &theme, 400.0);
-                let bold = line.pixel_x_for_byte(&theme, 3);
+                let bold = line.caret_rect(&theme, 3).x0;
                 assert!(
                     (bold - plain).abs() > 0.1,
                     "bold must change the authoritative advances"
                 );
-                assert!((line.caret_rect(&theme, 3).x0 - bold).abs() < 0.01);
                 assert!((line.selection_rect(&theme, 0, 3).x1 - bold).abs() < 0.01);
                 assert_eq!(line.byte_for_pixel_x(&theme, bold), 3);
                 line.set_marks(vec![]);
                 layout_and_draw(&mut line, &theme, 400.0);
-                assert!((line.pixel_x_for_byte(&theme, 3) - plain).abs() < 0.01);
+                assert!((line.caret_rect(&theme, 3).x0 - plain).abs() < 0.01);
             }
         }
 
@@ -2170,9 +2049,8 @@ mod tests {
                 line.inner_mut().set_selection(7, 10);
                 layout_and_draw(&mut line, &theme, 80.0);
                 assert!(line.inner().scroll_x() > 0.0);
-                let x = line.pixel_x_for_byte(&theme, 10);
+                let x = line.caret_rect(&theme, 10).x0;
                 assert!(x <= line.get_rect().x1);
-                assert!((line.caret_rect(&theme, 10).x0 - x).abs() < 0.01);
                 assert!((line.selection_rect(&theme, 7, 10).x1 - x).abs() < 0.01);
                 assert_eq!(line.byte_for_pixel_x(&theme, x), 10);
             }
@@ -2202,7 +2080,6 @@ mod tests {
             line.bind_text(tid.clone());
             line.set_focus(true);
 
-            // Type against OUR doc, not the throwaway one `dispatch` would make.
             let mut on_doc = Dispatch::new().doc(&mut doc);
             for c in ["h", "i"] {
                 on_doc.send(&mut line, &char_key(c));
@@ -2361,7 +2238,6 @@ mod tests {
             let mut l = RichTextLine::new();
             l.set_focus(true);
             dispatch(&mut l, &char_key("["));
-            // First `[` shouldn't emit.
             assert!(l.take_signal().is_none());
             dispatch(&mut l, &char_key("["));
             match l.take_signal() {
@@ -2437,8 +2313,6 @@ mod tests {
             let mut l = RichTextLine::new().with_text("hello");
             l.set_focus(true);
             l.inner_mut().set_cursor_pos(0);
-            // TextInput doesn't expose a public select_all, so this asserts
-            // pending-mark behaviour; select-and-toggle is covered below.
             l.toggle_mark(Mark::Bold);
             assert_eq!(l.pending_marks(), &[Mark::Bold]);
             l.toggle_mark(Mark::Bold);

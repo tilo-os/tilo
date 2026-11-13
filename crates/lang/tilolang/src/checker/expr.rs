@@ -26,9 +26,8 @@ impl Checker<'_> {
                 ..ex
             };
         }
-        // A value where an Option of it is expected is the value it holds: `label: title` is
-        // `label: .some(title)`. One level only, so `.some(x)` written is one `some` and never
-        // two, and an Option of an Option says which of its levels it means.
+        // A value where an Option of it is expected is the value it holds: `label: title` is `label:
+        // .some(title)`. One level only, so an Option of an Option says which of its levels it means.
         if let Ty::Option(inner) = want
             && !matches!(**inner, Ty::Option(_))
             && ex.ty.fits(inner)
@@ -68,7 +67,6 @@ impl Checker<'_> {
         Ex::host(imp, vec![conv(c, ex, Ty::Int)], ty.clone())
     }
 
-    /// Reads the value out of an Option handle.
     pub(super) fn unwrap_opt(h: Ex, inner: &Ty) -> Ex {
         let (imp, c) = load_op(inner, Imp::UnwrapI, Imp::UnwrapF, Imp::UnwrapH);
         let raw = Ex::host(
@@ -94,9 +92,8 @@ impl Checker<'_> {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
-            // A length of time, as its number of seconds: a moment or a day moves by it
-            // (`now + 10s`, `today + 3d`), and what two of them are apart is one. In a filter
-            // it is the filter's (`query(T, received: -7d)`).
+            // A length of time, as its number of seconds: a moment or a day moves by it (`now + 10s`),
+            // and what two of them are apart is one. In a filter it is the filter's.
             ExprKind::Duration(n, u) => match crate::duration::seconds(*n, u) {
                 Some(secs) => Ex::new(Ek::Duration(secs), Ty::Duration),
                 None => {
@@ -111,9 +108,8 @@ impl Checker<'_> {
             ExprKind::Calendar(text) => match text.len() {
                 10 => Ex::str(text).typed(Ty::Date),
                 20 => Ex::str(text).typed(Ty::Time),
-                // A time of no zone is the person's own time of day: the instant it names is
-                // read in their zone where the value is built, so seed data says 09:00 and
-                // shows 09:00 wherever it runs.
+                // A time of no zone is the person's own time of day: the instant it names is read in their
+                // zone where the value is built, so seed data says 09:00 and shows 09:00 wherever it runs.
                 19 => {
                     self.reads(crate::effects::Effect::Time, e.span, "a time of no zone");
                     Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time)
@@ -192,8 +188,8 @@ impl Checker<'_> {
                     self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
-                // `Task.today`: a filter the type declares, as the value a query takes; where
-                // a sort is asked (`sorts: [Task.due]`), the order by a field it has.
+                // `Task.today`: a filter the type declares, as the value a query takes; where a sort is
+                // asked (`sorts: [Task.due]`), the order by a field it has.
                 if let Some(Ty::Record(key)) = self.type_named(base)
                     && let Some(ex) = self.type_member(&key, name, exp, e.span)
                 {
@@ -214,8 +210,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `try act(args)`: a `Result` of the action's result (`()` for an action without one) and
-    /// the reason, as Text, when the invocation was denied, declined or failed.
+    /// `try act(args)`: a `Result` of the action's result (`()` for an action without one) and the
+    /// reason, as Text, when the invocation was denied, declined or failed.
     fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         if !matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             let who = self.st.ctx.word();
@@ -248,9 +244,9 @@ impl Checker<'_> {
         ex
     }
 
-    /// `suggest act(args)`: records the action as a proposal that waits on the resource it is
-    /// about, instead of applying it. An action records one where it runs; a block is
-    /// the proposal itself, the action its value says, and records it when the host runs it.
+    /// `suggest act(args)`: records the action as a proposal that waits on the resource it is about,
+    /// instead of applying it. An action records one where it runs; a block is the proposal itself, and
+    /// records it when the host runs it.
     fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         let value = if self.st.ctx == Ctx::Block && self.st.proposes {
             true
@@ -301,8 +297,8 @@ impl Checker<'_> {
             return Ex::local(id, ty);
         }
         if name == "invoker" {
-            // An action's requirement also says, where the action is presented, whether the
-            // person looking may invoke it: there `invoker` is them.
+            // An action's requirement also says, where the action is presented, whether the person looking
+            // may invoke it: there `invoker` is them.
             if self.st.ctx == Ctx::Action || self.st.invoker == super::Invoker::Viewer {
                 return Ex::host(Imp::Invoker, vec![], Ty::Principal);
             }
@@ -325,8 +321,8 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `today`: the day this invocation falls on for the person, read in their zone as the
-        // filter's `today` reads it.
+        // `today`: the day this invocation falls on for the person, read in their zone as the filter's
+        // `today` reads it.
         if name == "today" {
             if self.st.ctx == Ctx::Action || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
@@ -339,8 +335,8 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `me`: the person the session acts for, the agent library's word for them, in scope as
-        // a session's default import (agents.md, "What the agent knows").
+        // `me`: the person the session acts for, the agent library's word for them, in scope as a
+        // session's default import (agents.md, "What the agent knows").
         if name == crate::agent::ME && self.env.session {
             return Self::agent_me();
         }
@@ -436,8 +432,8 @@ impl Checker<'_> {
         Ex::error()
     }
 
-    /// `space.width_class`, `space.compact`, ... (layout.md, "Responding to space"): reads of the
-    /// space the parent offers this view, through `space_i` and `space_f`.
+    /// `space.width_class`, `space.compact`, ... (layout.md, "Responding to space"): reads of the space
+    /// the parent offers this view, through `space_i` and `space_f`.
     fn space_field(&mut self, name: &ast::Ident) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -522,10 +518,9 @@ impl Checker<'_> {
         }
     }
 
-    /// `root T`: the workspace's resource of the root type `T`, of this package or of one it
-    /// uses (`root notes.Notebook`), which the host creates with the id `root-<type id>` and
-    /// which reads as it starts until then. What code may do with it is what it may do with any
-    /// resource of that type.
+    /// `root T`: the workspace's resource of the root type `T`, of this package or of one it uses
+    /// (`root notes.Notebook`), which the host creates with the id `root-<type id>` and which reads as it
+    /// starts until then.
     fn root_of(&mut self, t: &ast::TypeExpr, _span: Span) -> Ex {
         let env = self.env;
         let roots: Vec<&str> = env.roots.iter().map(|k| k.name.as_str()).collect();
@@ -539,8 +534,8 @@ impl Checker<'_> {
                 [name] => env
                     .own_type(&name.name)
                     .filter(|info| env.roots.contains(&info.key)),
-                // `root notes.Notebook`: an imported package's root, which a scenario may fill
-                // through that package's actions (a board's scenario attaches its apps).
+                // `root notes.Notebook`: an imported package's root, which a scenario may fill through that
+                // package's actions.
                 [alias, name] => env.find_import(&alias.name).and_then(|import| {
                     env.types.iter().find(|info| {
                         info.key.app == import.app
@@ -689,8 +684,8 @@ impl Checker<'_> {
 
     /// `list_push_*` of one item.
     pub(super) fn push_item(list: Ex, item: Ex) -> Ex {
-        // An argument a call left out is no value of its type: it goes on the list as the hole
-        // it is, for the invocation to fill.
+        // An argument a call left out is no value of its type: it goes on the list as the hole it is, for
+        // the invocation to fill.
         if matches!(item.kind, Ek::Host(Imp::MissingV, _)) {
             return Ex::host(Imp::ListPushH, vec![list, item], Ty::Unit);
         }
@@ -768,23 +763,23 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether two values of one type are equal: what `==` means, for code that compares values
-    /// it holds itself.
+    /// Whether two values of one type are equal: what `==` means, for code that compares values it holds
+    /// itself.
     pub(super) fn same(&mut self, l: Ex, r: Ex, span: Span) -> Ex {
         match l.ty.clone() {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) | Ty::Duration => {
                 Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
-            // Enums, options, results, tuples and lists compare by value, payloads included;
-            // sorts and the options they are chosen as, by the entry they hold.
+            // Enums, options, results, tuples and lists compare by value, payloads included; sorts and the
+            // options they are chosen as, by the entry they hold.
             Ty::Enum(_)
             | Ty::Option(_)
             | Ty::Result(..)
             | Ty::Tuple(_)
             | Ty::List(_)
             | Ty::Sort(_) => Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool),
-            // Filters compare by the query they ask: the filter `Task.inbox` and the entry
-            // `filters(Task)` lists for it are the same.
+            // Filters compare by the query they ask: the filter `Task.inbox` and the entry `filters(Task)`
+            // lists for it are the same.
             Ty::Filter(_) => Ex::host(
                 Imp::StrEq,
                 vec![Self::filter_query(l), Self::filter_query(r)],
@@ -857,8 +852,8 @@ impl Checker<'_> {
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)
             }
-            // A moment moved by a length of time (`now + 2h`, `now - 30s`): the moment is a
-            // handle, the seconds an `i64`, and `back` an `i32`.
+            // A moment moved by a length of time (`now + 2h`): the moment is a handle, the seconds an `i64`,
+            // and `back` an `i32`.
             (Ty::Time, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
                 let back = Ex::new(Ek::I32(i32::from(op == BinOp::Sub)), Ty::Bool);
                 Ex::host(Imp::TimeShift, vec![l, r, back], Ty::Time)
@@ -893,9 +888,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `day + duration`: a day moves by whole days, so a length of time that is no whole day
-    /// cannot move one. A written length is told here; one code holds is told where it moves
-    /// the day (`day_shift`).
+    /// `day + duration`: a day moves by whole days, so a length of time that is no whole day cannot move
+    /// one. A written length is told here; one code holds is told where it moves the day (`day_shift`).
     fn day_move(&mut self, day: Ex, by: Ex, back: bool, span: Span) -> Ex {
         if let Ek::Duration(secs) = &by.kind
             && secs % crate::calendar::DAY != 0
@@ -907,7 +901,6 @@ impl Checker<'_> {
         Ex::host(Imp::DayShift, vec![day, by, back], Ty::Date)
     }
 
-    /// Reads field `name` of the record value `b`.
     pub(super) fn field_read(&mut self, b: Ex, name: &ast::Ident) -> Ex {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
@@ -932,8 +925,8 @@ impl Checker<'_> {
                 Ex::host(imp, vec![b], ty)
             }
             Ty::Identifier => self.identifier_part(b, name),
-            // A file's parts: what it is called, what it holds, how large it is, where its
-            // bytes are (`.text()` is the method that reads them).
+            // A file's parts: what it is called, what it holds, how large it is, where its bytes are
+            // (`.text()` is the method that reads them).
             Ty::File => self.file_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.
@@ -957,8 +950,8 @@ impl Checker<'_> {
                 {
                     return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
                 }
-                // `.id`: the id the resource is, which every record has and no field holds — what
-                // a map of a notebook's notes is keyed by, as `{n}` in a text says it.
+                // `.id`: the id the resource is, which every record has and no field holds — what a map of
+                // a notebook's notes is keyed by.
                 if name.name == "id" {
                     return Ex::host(Imp::RefId, vec![b], Ty::Text);
                 }
@@ -1050,10 +1043,9 @@ impl Checker<'_> {
         }
     }
 
-    /// `alias.name` read as a value, where the package `alias` declares no value of that name:
-    /// what to write instead. An action is called (`session.show_overview()`), a type's
-    /// resources are values a program has (a reference an answer or a listing showed), and a
-    /// name the package does not declare is told apart from those it does.
+    /// `alias.name` read as a value, where the package `alias` declares no value of that name: what to
+    /// write instead. An action is called (`session.show_overview()`), a type's resources are values a
+    /// program has, and a name the package does not declare is told apart from those it does.
     fn not_a_value_of_import(&mut self, alias: &str, name: &str, span: Span) {
         let env = self.env;
         let Some(import) = env.find_import(alias) else {
@@ -1140,7 +1132,6 @@ impl Checker<'_> {
     }
 }
 
-/// `a.b.c` as `["a", "b", "c"]`.
 pub(super) fn dotted(e: &ast::Expr) -> Option<Vec<String>> {
     match &e.kind {
         ExprKind::Ident(n) => Some(vec![n.clone()]),

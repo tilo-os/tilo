@@ -2,9 +2,10 @@
 """CI counterpart of commit-msg and pre-commit, including commits made with --no-verify.
 
 Every new commit's message, its exact changed blobs (text, LF), the lines it
-adds (credentials, merge-conflict markers, dbg!: tools/policy/added_line_policy.py)
-and its changed wire enums (a variant a parent had, kept in its place:
-tools/policy/check_wire_enums.py).
+adds (credentials, merge-conflict markers, dbg!: tools/policy/added_line_policy.py),
+its changed wire enums (a variant a parent had, kept in its place:
+tools/policy/check_wire_enums.py) and its allowance markers (one goes only with
+the code it covers: tools/policy/check_allowance_markers.py).
 """
 import argparse
 import os
@@ -20,6 +21,7 @@ from comparison_range import comparison_range
 from check_commit_message import EXAMPLES, validate
 from check_public_references import internal_reference
 from check_source_content import content_issues
+from check_allowance_markers import declared_keys, diff_problems as marker_problems, in_scope as marker_scope
 from check_wire_enums import allowed_breaks, diff_problems, in_scope, wire_enums
 from added_line_policy import GUIDANCE, added_line_issues, added_lines
 
@@ -131,6 +133,25 @@ def wire_failures(root, commit, touched, parents_changes, wire_now, read_blob):
     return problems
 
 
+def marker_failures(commit, touched, parents_changes, tree, declared, read_blob):
+    """What `commit`'s ratchet markers lose of every parent's version of the files it touches."""
+    problems = []
+    for path in sorted(touched):
+        name = path.decode(errors="replace")
+        if not marker_scope(name):
+            continue
+        current = tree.get(path)
+        after = read_blob(current).decode(errors="replace") if current else ""
+        for changes in parents_changes:
+            change = changes.get(path)
+            if change is None or change[0] in NOT_A_BLOB:
+                continue
+            before = read_blob(change[2]).decode(errors="replace")
+            problems.extend(commit[:12] + ": " + problem
+                            for problem in marker_problems(name, before, after, declared))
+    return problems
+
+
 def inspect(root, base, head="HEAD"):
     baseline = {}
     for record in git(root, "ls-tree", "-r", "-z", base).split(b"\0"):
@@ -145,6 +166,9 @@ def inspect(root, base, head="HEAD"):
     shallow = set(shallow_path.read_text().splitlines()) if shallow_path.is_file() else set()
     failures = []
     added_line_hit = False
+    # Which patterns the audits declare now: a marker naming none is dead, and
+    # removing a dead marker takes no allowance away.
+    declared = declared_keys(root)
     with blob_reader(root) as read_blob:
         for commit in commits:
             raw = git(root, "cat-file", "commit", commit)
@@ -174,6 +198,7 @@ def inspect(root, base, head="HEAD"):
                     if in_scope(name) and path in tree:
                         wire_now[name] = wire_enums(read_blob(tree[path]).decode(errors="replace"))
                 failures.extend(wire_failures(root, commit, touched, parents_changes, wire_now, read_blob))
+                failures.extend(marker_failures(commit, touched, parents_changes, tree, declared, read_blob))
             for path, change in changes.items():
                 mode, oid = change[1], change[3]
                 if mode == b"000000":

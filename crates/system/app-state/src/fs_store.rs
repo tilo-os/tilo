@@ -3,7 +3,7 @@
 //! Keys map onto the same files the canonical record owner has always used,
 //! so existing profiles open unchanged:
 //!
-//! - a record is `<root>/<package>/rooms/<workspace>/records/<record>/`
+//! - a record is `<root>/<app>/rooms/<workspace>/records/<record>/`
 //!   holding `state.automerge`, the writer identity in `actor` and the
 //!   single-owner gate `canonical.lock`;
 //! - a view is `<root>/instance-views/<hex device>/<hex workspace>/<n>.postcard`.
@@ -32,11 +32,10 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOAD_HINT_FILE, LOCK_FILE,
-    RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, StoreError, WORKSPACES_DIR, acquire_gate,
-    acquire_writer_lock, claim_marker, ensure_state_dir, io_err, open_directory, same_file,
-    sync_directory_ancestors, validate_absolute_directory, validate_package_id,
-    validate_record_key,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, DOCUMENT_SUCCESSOR_CLAIM,
+    DOCUMENTS_DIR, LOAD_HINT_FILE, LOCK_FILE, StoreError, WORKSPACES_DIR, acquire_gate,
+    acquire_writer_lock, checked_app_id, claim_marker, ensure_state_dir, io_err, open_directory,
+    same_file, sync_directory_ancestors, validate_absolute_directory, validate_document_key,
 };
 use prepared::{Access, Preparation, Snapshot};
 use tilo_lock::MutexRecover as _;
@@ -283,23 +282,23 @@ enum Target {
     View(PathBuf),
 }
 
-/// A package's directory below `root`.
-fn package_dir_in(root: &Path, package: &str) -> Result<PathBuf, StoreError> {
-    validate_package_id(package)?;
+/// A app's directory below `root`.
+fn app_dir_in(root: &Path, app: &str) -> Result<PathBuf, StoreError> {
+    checked_app_id(app)?;
     validate_absolute_directory(root)?;
-    Ok(root.join(package))
+    Ok(root.join(app))
 }
 
-/// Where `package`'s index of `workspace` lives under `root`: the directory
+/// Where `app`'s index of `workspace` lives under `root`: the directory
 /// whose entries change with that index, which a watcher arms on to hear of
 /// every record the workspace has taken in or let go. The directory of every
-/// workspace of that package is its parent.
+/// workspace of that app is its parent.
 pub fn workspace_index_directory(
     root: &Path,
-    package: &str,
+    app: &str,
     workspace: &str,
 ) -> Result<PathBuf, SeamError> {
-    let key = StorageKey::workspace_index(package, workspace);
+    let key = StorageKey::workspace_index(app, workspace);
     match target_in(root, &key)? {
         Target::Document(directory) => Ok(directory),
         Target::View(_) => Err(SeamError::InvalidKey {
@@ -309,11 +308,11 @@ pub fn workspace_index_directory(
     }
 }
 
-/// Every workspace index below `root`, as its package and workspace: one
-/// directory per package holding one per workspace, whatever this device
+/// Every workspace index below `root`, as its app and workspace: one
+/// directory per app holding one per workspace, whatever this device
 /// shows of them.
 fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
-    let mut packages = Vec::new();
+    let mut apps = Vec::new();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -322,16 +321,16 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
     for entry in entries {
         let entry = entry.map_err(|e| io_err(format!("listing {}", root.display()), e))?;
         if let Some(name) = entry.file_name().to_str().map(str::to_owned)
-            && validate_package_id(&name).is_ok()
+            && checked_app_id(&name).is_ok()
             && entry.path().is_dir()
         {
-            packages.push(name);
+            apps.push(name);
         }
     }
-    packages.sort();
+    apps.sort();
     let mut indexes = Vec::new();
-    for package in packages {
-        let workspaces = root.join(&package).join(WORKSPACES_DIR);
+    for app in apps {
+        let workspaces = root.join(&app).join(WORKSPACES_DIR);
         let entries = match fs::read_dir(&workspaces) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -343,10 +342,10 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
             let entry =
                 entry.map_err(|e| io_err(format!("listing {}", workspaces.display()), e))?;
             if let Some(workspace) = entry.file_name().to_str().map(str::to_owned)
-                && validate_record_key(&workspace).is_ok()
+                && validate_document_key(&workspace).is_ok()
                 && entry.path().is_dir()
             {
-                indexes.push((package.clone(), workspace));
+                indexes.push((app.clone(), workspace));
             }
         }
     }
@@ -355,26 +354,26 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
 
 fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
     match key {
-        StorageKey::Record {
-            package,
+        StorageKey::Document {
+            app,
             workspace,
-            record,
+            document,
         } => {
-            validate_record_key(workspace)?;
-            validate_record_key(record)?;
+            validate_document_key(workspace)?;
+            validate_document_key(document)?;
             Ok(Target::Document(
-                package_dir_in(root, package)?
+                app_dir_in(root, app.as_str())?
                     .join(WORKSPACES_DIR)
                     .join(workspace)
-                    .join(RECORDS_DIR)
-                    .join(record),
+                    .join(DOCUMENTS_DIR)
+                    .join(document),
             ))
         }
-        StorageKey::Package { package } => Ok(Target::Document(package_dir_in(root, package)?)),
-        StorageKey::WorkspaceIndex { package, workspace } => {
-            validate_record_key(workspace)?;
+        StorageKey::App { app } => Ok(Target::Document(app_dir_in(root, app.as_str())?)),
+        StorageKey::WorkspaceIndex { app, workspace } => {
+            validate_document_key(workspace)?;
             Ok(Target::Document(
-                package_dir_in(root, package)?
+                app_dir_in(root, app.as_str())?
                     .join(WORKSPACES_DIR)
                     .join(workspace),
             ))
@@ -418,7 +417,7 @@ impl From<StoreError> for SeamError {
             StoreError::WriterBusy { path } => Self::Busy(path.display().to_string()),
             StoreError::SourceChanged { path } => Self::SourceChanged(path.display().to_string()),
             StoreError::Opening(key) => Self::Opening(key),
-            StoreError::PackageId(key, reason) | StoreError::RecordKey(key, reason) => {
+            StoreError::AppId(key, reason) | StoreError::DocumentKey(key, reason) => {
                 Self::InvalidKey {
                     key,
                     reason: reason.to_owned(),
@@ -478,9 +477,9 @@ impl FsStore {
         &self.root
     }
 
-    /// A package's directory.
-    fn package_dir(&self, package: &str) -> Result<PathBuf, StoreError> {
-        package_dir_in(&self.root, package)
+    /// A app's directory.
+    fn app_dir(&self, app: &str) -> Result<PathBuf, StoreError> {
+        app_dir_in(&self.root, app)
     }
 
     fn target(&self, key: &StorageKey) -> Result<Target, SeamError> {
@@ -985,12 +984,12 @@ impl DurableStore for FsStore {
     }
 
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
-        validate_record_key(claimant)?;
+        validate_document_key(claimant)?;
         let marker = match key {
             // A workspace record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
-            StorageKey::Record { .. } => match self.target(key)? {
-                Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
+            StorageKey::Document { .. } => match self.target(key)? {
+                Target::Document(directory) => directory.join(DOCUMENT_SUCCESSOR_CLAIM),
                 Target::View(_) => {
                     return Err(SeamError::InvalidKey {
                         key: key.to_string(),
@@ -1014,13 +1013,13 @@ impl DurableStore for FsStore {
 
     /// Records whose document file holds committed bytes. A write still in
     /// its debounce window is not listed until it commits.
-    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
-        validate_record_key(workspace)?;
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
+        validate_document_key(workspace)?;
         let directory = self
-            .package_dir(package)?
+            .app_dir(app)?
             .join(WORKSPACES_DIR)
             .join(workspace)
-            .join(RECORDS_DIR);
+            .join(DOCUMENTS_DIR);
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1034,7 +1033,7 @@ impl DurableStore for FsStore {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if validate_record_key(&name).is_err() {
+            if validate_document_key(&name).is_err() {
                 continue;
             }
             if fs::metadata(entry.path().join(DOCUMENT_FILE)).is_ok_and(|m| m.len() > 0) {
@@ -1331,20 +1330,70 @@ fn keep_hint(directory: &Path, hint: &[u8]) -> Result<(), StoreError> {
 }
 
 fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
+    read_writer_on(path, this_machine())
+}
+
+/// [`read_writer`] on the machine `machine` names (`/etc/machine-id`): a writer identity made on
+/// another machine is not this one's. A disk copied to another machine (a branch of a device)
+/// carries its source's sidecars, and two machines writing a shared record as one actor make
+/// changes no peer can take in ("duplicate seq"): the copy mints its own instead.
+fn read_writer_on(path: &Path, machine: Option<&str>) -> Result<Option<Vec<u8>>, SeamError> {
     match fs::read_to_string(path) {
         Ok(text) => {
-            let parsed = unhex(text.trim());
+            let (actor, made_on) = split_sidecar(&text);
+            let parsed = unhex(actor);
             if parsed.is_none() {
                 tracing::warn!(
                     path = %path.display(),
                     "writer identity sidecar is unreadable; the next owner mints a new one"
                 );
+                return Ok(None);
+            }
+            if let (Some(made_on), Some(machine)) = (made_on, machine)
+                && made_on != machine
+            {
+                tracing::info!(
+                    path = %path.display(),
+                    "the writer identity here was made on another machine, this one copied \
+                     from it: a new one is minted"
+                );
+                return Ok(None);
             }
             Ok(parsed)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_err(format!("reading {}", path.display()), error).into()),
     }
+}
+
+/// A sidecar's actor (hex) and the machine it was made on, when it names one: `<actor>` as
+/// earlier writers left it, or `<actor> <machine-id>`.
+fn split_sidecar(text: &str) -> (&str, Option<&str>) {
+    let mut words = text.split_whitespace();
+    let actor = words.next().unwrap_or_default();
+    (actor, words.next())
+}
+
+/// What a writer identity sidecar holds for `writer`, made on `machine`.
+fn sidecar_text(writer: &[u8], machine: Option<&str>) -> String {
+    match machine {
+        Some(machine) => format!("{} {machine}", hex::encode(writer)),
+        None => hex::encode(writer),
+    }
+}
+
+/// This machine's id (`/etc/machine-id`), which a copy of a disk booted on another machine
+/// renews; `None` where there is none.
+fn this_machine() -> Option<&'static str> {
+    static MACHINE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MACHINE
+        .get_or_init(|| {
+            fs::read_to_string("/etc/machine-id")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty() && !id.contains(char::is_whitespace))
+        })
+        .as_deref()
 }
 
 fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
@@ -1703,8 +1752,11 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &taken.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
-                .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
+            tilo_files::native::atomic::write(
+                &sidecar,
+                sidecar_text(writer, this_machine()).as_bytes(),
+            )
+            .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
         return match &*taken.op {
@@ -1811,7 +1863,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn record(name: &str) -> StorageKey {
-        StorageKey::record("so.tilo.test", "room-a", name)
+        StorageKey::document("so.tilo.test", "room-a", name)
     }
 
     /// An idle frame loop told "not yet" hears when the answer is ready:
@@ -2178,7 +2230,7 @@ mod tests {
     #[test]
     fn a_failed_preparation_is_reported_to_the_next_caller() {
         let tmp = TempDir::new().unwrap();
-        // The package directory cannot be created: a file stands there.
+        // The app directory cannot be created: a file stands there.
         fs::write(tmp.path().join("so.tilo.test"), b"not a directory").unwrap();
         let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         let key = record("blocked");
@@ -2198,14 +2250,19 @@ mod tests {
     fn records_lists_one_workspaces_committed_documents_sorted() {
         let tmp = TempDir::new().unwrap();
         let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-        assert!(store.records("so.tilo.test", "room-a").unwrap().is_empty());
+        assert!(
+            store
+                .documents("so.tilo.test", "room-a")
+                .unwrap()
+                .is_empty()
+        );
         for (workspace, name, bytes) in [
             ("room-a", "b-rec", b"doc".as_slice()),
             ("room-a", "a-rec", b"doc"),
             ("room-a", "empty", b""),
             ("room-b", "elsewhere", b"doc"),
         ] {
-            let key = StorageKey::record("so.tilo.test", workspace, name);
+            let key = StorageKey::document("so.tilo.test", workspace, name);
             let _lease = store.lease(&key).unwrap();
             store
                 .write(&key, WriteOp::Replace(bytes.to_vec()), None)
@@ -2213,10 +2270,10 @@ mod tests {
             store.flush(Some(&key)).unwrap();
         }
         assert_eq!(
-            store.records("so.tilo.test", "room-a").unwrap(),
+            store.documents("so.tilo.test", "room-a").unwrap(),
             ["a-rec", "b-rec"]
         );
-        assert!(store.records("so.tilo.test", "../room-a").is_err());
+        assert!(store.documents("so.tilo.test", "../room-a").is_err());
     }
 
     #[test]
@@ -2289,10 +2346,13 @@ mod tests {
                 .unwrap();
             store.flush(None).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
-            assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
+            assert_eq!(
+                fs::read_to_string(directory.join(ACTOR_FILE)).unwrap(),
+                sidecar_text(&[0xab, 0x01], this_machine())
+            );
             assert!(directory.join(CANONICAL_GATE).is_file());
             assert_eq!(
                 fs::read(tmp.path().join("instance-views/44/41/3.postcard")).unwrap(),
@@ -2310,12 +2370,12 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
-            let package = tmp.path().join("so.tilo.test");
+            let app = tmp.path().join("so.tilo.test");
             for (key, directory) in [
-                (StorageKey::package("so.tilo.test"), package.clone()),
+                (StorageKey::app("so.tilo.test"), app.clone()),
                 (
                     StorageKey::workspace_index("so.tilo.test", "room-a"),
-                    package.join(WORKSPACES_DIR).join("room-a"),
+                    app.join(WORKSPACES_DIR).join("room-a"),
                 ),
             ] {
                 let shared = store.lease_shared(&key).unwrap();
@@ -2351,6 +2411,32 @@ mod tests {
                         None
                     )
                     .is_err()
+            );
+        }
+        // Phase `a_writer_identity_made_on_another_machine_is_not_this_ones`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let sidecar = tmp.path().join(ACTOR_FILE);
+            fs::write(&sidecar, sidecar_text(&[0xab, 0x01], Some("source"))).unwrap();
+            assert_eq!(
+                read_writer_on(&sidecar, Some("source")).unwrap(),
+                Some(vec![0xab, 0x01]),
+                "the machine that made it keeps writing as it"
+            );
+            assert_eq!(
+                read_writer_on(&sidecar, Some("copy")).unwrap(),
+                None,
+                "a machine its disk was copied to mints its own"
+            );
+            assert_eq!(
+                read_writer_on(&sidecar, None).unwrap(),
+                Some(vec![0xab, 0x01])
+            );
+            fs::write(&sidecar, "ab01").unwrap();
+            assert_eq!(
+                read_writer_on(&sidecar, Some("copy")).unwrap(),
+                Some(vec![0xab, 0x01]),
+                "an earlier sidecar names no machine, and stays"
             );
         }
         // Phase `hex_round_trips_and_rejects_malformed_sidecars`.
@@ -2495,7 +2581,7 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
             let revision = store
@@ -2520,7 +2606,7 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
                     .unwrap();
             fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
             fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();

@@ -139,8 +139,6 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
     );
 }
 
-/// Markup from before comment threads were the shared comment model opens
-/// with its annotations; the threads in their old shape are left behind.
 #[test]
 fn older_markup_keeps_its_annotations_and_leaves_old_threads_behind() {
     use ui::tilo_resource::evolution;

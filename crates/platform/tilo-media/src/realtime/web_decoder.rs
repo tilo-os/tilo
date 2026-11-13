@@ -1,11 +1,11 @@
-//! [`RealtimeDecoder`] in a page: the browser's `WebCodecs` decoder, hardware
-//! where it has one (`web/tilo-media.mjs`, `TiloVideoDecoder`).
+//! [`RealtimeDecoder`] in a page: the browser's `WebCodecs` decoder, hardware where it
+//! has one (`web/tilo-media.mjs`, `TiloVideoDecoder`).
 //!
-//! `WebCodecs` decodes on its own schedule: [`RealtimeDecoder::decode`] hands
-//! one access unit over and returns the newest picture decoded since the
-//! last call, if any; [`RealtimeDecoder::take_late_picture`] collects one
-//! that arrived without a newer unit. Pictures come back as RGBA, the same
-//! contract as the native decoder's [`super::DecodeOutput::Rgba`].
+//! `WebCodecs` decodes on its own schedule: [`RealtimeDecoder::decode`] hands one access
+//! unit over and returns the newest picture since the last call, and
+//! [`RealtimeDecoder::take_late_picture`] collects one that arrived without a newer
+//! unit. Pictures come back as RGBA, the native decoder's
+//! [`super::DecodeOutput::Rgba`] contract.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,11 +38,9 @@ extern "C" {
     fn close(this: &TiloVideoDecoder);
 }
 
-/// A real-time decoder in a page; see the [module docs](self).
 pub struct RealtimeDecoder {
     inner: TiloVideoDecoder,
     codec: StreamCodec,
-    /// The stream has given a keyframe: units before one decode to nothing.
     started: bool,
 }
 
@@ -73,12 +71,6 @@ impl Drop for RealtimeDecoder {
 }
 
 impl RealtimeDecoder {
-    /// A `WebCodecs` decoder for `config.codec`.
-    ///
-    /// # Errors
-    ///
-    /// [`RealtimeError::Unavailable`] when the browser has no `WebCodecs` or
-    /// cannot decode the codec.
     pub fn new(config: DecoderConfig) -> Result<Self, RealtimeError> {
         let codec = match config.codec {
             StreamCodec::H264 => "h264",
@@ -122,12 +114,6 @@ impl RealtimeDecoder {
 
     pub fn set_picture_wake(&mut self, _wake: Option<PictureWake>) {}
 
-    /// Hand `unit` to the browser's decoder; the newest picture decoded
-    /// since the last call, if any.
-    ///
-    /// # Errors
-    ///
-    /// [`RealtimeError::Pipeline`] once the browser's decoder failed.
     pub fn decode(
         &mut self,
         unit: &[u8],
@@ -150,11 +136,6 @@ impl RealtimeDecoder {
         self.inner.pending()
     }
 
-    /// A picture the browser decoded since the last call, if any.
-    ///
-    /// # Errors
-    ///
-    /// [`RealtimeError::Pipeline`] once the browser's decoder failed.
     pub fn take_late_picture(&mut self) -> Result<Option<DecodedPicture>, RealtimeError> {
         if self.inner.has_failed() {
             return Err(RealtimeError::Pipeline(

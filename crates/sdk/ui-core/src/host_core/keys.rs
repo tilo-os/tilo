@@ -1,7 +1,6 @@
-//! What a key no widget took does: the host's fallbacks for Tab, arrows,
-//! Enter and Space, range steps and the desktop's tab chords, written once
-//! for the native and headless app hosts. Each host lends its keyboard
-//! state and focus through [`KeyHost`].
+//! What a key no widget took does: the host's fallbacks for Tab, arrows, Enter and Space, range steps
+//! and the desktop's tab chords, written once for the native and headless app hosts. Each host lends
+//! its keyboard state and focus through [`KeyHost`].
 
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -45,7 +44,6 @@ impl RootEvent<'_> {
     }
 }
 
-/// The named key `event` presses, if any.
 fn pressed_named(event: &WindowEvent) -> Option<NamedKey> {
     match event {
         WindowEvent::KeyboardInput {
@@ -87,8 +85,8 @@ pub(crate) trait KeyHost: HostCore {
             .is_some_and(|history| history.captures_input())
     }
 
-    /// Whether the host's own focus order goes on past the app, so Tab from
-    /// its last control (Shift+Tab from its first) leaves it.
+    /// Whether the host's own focus order goes on past the app, so Tab from its last control (Shift+Tab
+    /// from its first) leaves it.
     fn tab_order_continues_in_host(&self) -> bool {
         false
     }
@@ -96,18 +94,16 @@ pub(crate) trait KeyHost: HostCore {
     /// The controls that may take the keyboard when the window takes it.
     fn keyboard_entry_order(&self) -> Vec<NodeId>;
 
-    /// Whether the window took the keyboard before its tree showed the app's entry, which takes
-    /// it once a tree shows one ([`Self::hand_owed_keyboard`]).
+    /// Whether the window took the keyboard before its tree showed the app's entry, which takes it once
+    /// a tree shows one ([`Self::hand_owed_keyboard`]).
     fn keyboard_entry_owed(&mut self) -> &mut bool;
 
-    /// Keys the host answers itself, after Enter and Space and before the
-    /// desktop's tab chords. Whether it took `event`.
+    /// Keys the host answers itself, after Enter and Space and before the desktop's tab chords.
     fn handle_unconsumed_host_key(&mut self, _event: &WindowEvent) -> bool {
         false
     }
 
-    /// Move focus to the nearest control in `direction`, or to the first
-    /// one when nothing holds focus.
+    /// Move focus to the nearest control in `direction`, or to the first one when nothing holds focus.
     fn navigate_focus(&mut self, direction: Direction) {
         let order = self.keyboard_travel_order();
         let Some(current) = self.tree().focused else {
@@ -133,8 +129,7 @@ pub(crate) trait KeyHost: HostCore {
         }
     }
 
-    /// Tab (Shift+Tab when `shift`) through the travel order. Whether it
-    /// moved focus inside the app.
+    /// Tab (Shift+Tab when `shift`) through the travel order.
     fn focus_tab(&mut self, shift: bool) -> bool {
         let order = self.keyboard_travel_order();
         let len = order.len();
@@ -158,10 +153,8 @@ pub(crate) trait KeyHost: HostCore {
         true
     }
 
-    /// Tab and Shift+Tab move focus, unless the focused widget takes Tab or
-    /// `navigation` is fenced by a modal or focus trap. Ctrl+Tab a widget
-    /// leaves unhandled is the desktop's next tab (`crate::shell_tabs`),
-    /// and Alt and Super chords are the desktop's too.
+    /// Tab and Shift+Tab move focus, unless the focused widget takes Tab or `navigation` is fenced by a
+    /// modal or focus trap.
     fn handle_tab_navigation(&mut self, event: &WindowEvent, navigation: bool) -> bool {
         if !navigation
             || pressed_named(event) != Some(NamedKey::Tab)
@@ -176,8 +169,7 @@ pub(crate) trait KeyHost: HostCore {
         self.focus_tab(modifiers.shift_key())
     }
 
-    /// Enter or Space no widget consumed activates the focused control, as a
-    /// click would. A terminal root sees the key itself first. Releases
+    /// Enter or Space no widget consumed activates the focused control, as a click would. Releases
     /// never activate.
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         let modifiers = self.modifiers().state();
@@ -213,9 +205,9 @@ pub(crate) trait KeyHost: HostCore {
         }
     }
 
-    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS)
-    /// when no widget consumed the press: tabs are the shell's, so every app
-    /// answers them the same way through [`crate::shell_tabs`].
+    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS) when no widget consumed
+    /// the press: tabs are the shell's, so every app answers them the same way through
+    /// [`crate::shell_tabs`].
     fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
         if *handled {
             return;
@@ -235,7 +227,6 @@ pub(crate) trait KeyHost: HostCore {
         };
         let modifiers = self.modifiers().state();
         let command = self.platform().command_modifier_down(modifiers);
-        // Ctrl and Super together are a different chord on every platform.
         let other = modifiers.alt_key() || (modifiers.control_key() && modifiers.super_key());
         if let Some(request) =
             crate::shell_tabs::chord_request(logical_key, command, modifiers.shift_key(), other)
@@ -245,9 +236,8 @@ pub(crate) trait KeyHost: HostCore {
         }
     }
 
-    /// A focused range control steps on Left and Right no widget consumed:
-    /// one step, four with Shift, to its ends with the command modifier.
-    /// Other widgets ignore the action.
+    /// A focused range control steps on Left and Right no widget consumed: one step, four with Shift,
+    /// to its ends with the command modifier.
     fn handle_unconsumed_range_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         use crate::a11y::Action;
         if *handled {
@@ -279,8 +269,8 @@ pub(crate) trait KeyHost: HostCore {
         }
     }
 
-    /// An arrow no widget consumed moves focus (only with Alt when
-    /// `require_alt`), behind the same modal and trap fence as Tab.
+    /// An arrow no widget consumed moves focus (only with Alt when `require_alt`), behind the same
+    /// modal and trap fence as Tab.
     fn handle_unconsumed_directional_key(
         &mut self,
         event: &WindowEvent,
@@ -299,9 +289,6 @@ pub(crate) trait KeyHost: HostCore {
     }
 
     /// Every fallback, in order, for a key the widgets left unhandled.
-    /// Alt+Arrow runs after widget dispatch, so editors take platform word
-    /// and selection shortcuts first, and before the plain range step.
-    /// `tab_chords` is false where the window itself answers them.
     fn handle_unconsumed_key(
         &mut self,
         event: &WindowEvent,
@@ -321,8 +308,8 @@ pub(crate) trait KeyHost: HostCore {
         self.handle_unconsumed_directional_key(event, navigation, false, handled);
     }
 
-    /// The control of `order` that takes the keyboard when its app does
-    /// without one of its own choosing ([`crate::widget::keyboard_entry_rank`]).
+    /// The control of `order` that takes the keyboard when its app does without one of its own choosing
+    /// ([`crate::widget::keyboard_entry_rank`]).
     fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
         order
             .iter()
@@ -338,10 +325,9 @@ pub(crate) trait KeyHost: HostCore {
             .map(|(_, node)| node)
     }
 
-    /// The window took the keyboard (it opened, was brought forward, or the
-    /// person pressed one of the app's slots in its bar): when nothing in it
-    /// holds the keyboard, the app's keyboard entry takes it, so what is
-    /// typed next reaches the app. Never a button merely for being first.
+    /// The window took the keyboard (it opened, was brought forward, or the person pressed one of the
+    /// app's slots in its bar): when nothing in it holds the keyboard, the app's keyboard entry takes
+    /// it, so what is typed next reaches the app. Never a button merely for being first.
     fn hand_keyboard_to_app(&mut self) {
         *self.keyboard_entry_owed() = false;
         if self.tree().focused.is_some() {
@@ -350,14 +336,12 @@ pub(crate) trait KeyHost: HostCore {
         let order = self.keyboard_entry_order();
         match self.keyboard_entry(&order) {
             Some(target) => self.move_focus(Some(target)),
-            // Content that arrives after the keyboard did (a tilolang window's) shows its entry
-            // later: it takes the keyboard then.
             None => *self.keyboard_entry_owed() = true,
         }
     }
 
-    /// A tree was built while the window owes its entry the keyboard: the entry takes it, if
-    /// nothing in the window took it meanwhile.
+    /// A tree was built while the window owes its entry the keyboard: the entry takes it, if nothing in
+    /// the window took it meanwhile.
     fn hand_owed_keyboard(&mut self) {
         if std::mem::take(self.keyboard_entry_owed()) {
             self.hand_keyboard_to_app();

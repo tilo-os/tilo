@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initialRoute, present, readEntry, scopeHost, shownLink} from './entry.mjs';
+import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initialRoute, present, readEntry, receivingNote, scopeHost, shownLink} from './entry.mjs';
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
@@ -253,7 +253,8 @@ test('the home workspace opens through its host door under its listed name, and 
   });
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
-  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (element, options) => {
+  // The host replays the workspace while the page waits: three records arrive.
+  const peer = {workspace: 'WORKSPACE', whenReady: async ({onProgress} = {}) => { onProgress?.(3); }, mountDesktop: async (element, options) => {
     mounts.push(options);
     options.onNavigation?.(navigation);
     return {navigation};
@@ -282,6 +283,8 @@ test('the home workspace opens through its host door under its listed name, and 
   assert.deepEqual(entered, [home]);
   // Progress while joining, then the loading note again, which the first drawn frame clears.
   assert.ok(shown.includes('Joining…'), shown.join(' | '));
+  // A host still replaying the workspace says how far it got.
+  assert.ok(shown.includes(receivingNote(3)), shown.join(' | '));
   assert.equal(status.text, 'Loading…');
   // The page hears it is joining through the door, then opening once admitted.
   assert.deepEqual([...new Set(steps)], ['join', 'open']);
@@ -290,6 +293,41 @@ test('the home workspace opens through its host door under its listed name, and 
   assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE');
   assert.equal(mounts[0].workspaceName, 'Commons');
   assert.equal(mounts[0].host, 'rooms.example');
+  page.router.stop?.();
+});
+
+test('a workspace no listing of the page names is mounted under the name it answered admission with', async () => {
+  // The person's own workspace on a host, reached by a link that names no
+  // workspace, on a site whose entry lists none: the desk the page starts has
+  // no name of its own to read, so the tab would never say which workspace it
+  // is.
+  const runtime = runtimeFake({
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/OWN',
+    ...entering('door'),
+  });
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const mounts = [];
+  const peer = {workspace: 'OWN', workspaceName: 'Studio', whenReady: async () => {},
+    mountDesktop: async (element, options) => {
+      mounts.push(options);
+      options.onNavigation?.(navigation);
+      return {navigation};
+    }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => peer,
+  };
+  const page = await boot({mode: 'desktop', window, status: null, deps});
+  assert.equal(mounts[0].workspaceName, 'Studio');
   page.router.stop?.();
 });
 
@@ -873,4 +911,13 @@ test('a link to an app’s workspace document nobody wrote yet opens the app; an
   const gone = {...peer, whenRecord: async () => { throw new Error('Shared resource connection closed'); }};
   await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer: gone}),
     /connection closed/);
+});
+
+test('an app whose widgets all render as HTML opens as HTML; any other on the canvas', async () => {
+  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const mountDesktop = async (_surface, options) => ({options});
+  const notes = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.notes'}}, mountDesktop});
+  assert.equal(notes.mount.options.dom, true);
+  const other = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.calculator'}}, mountDesktop});
+  assert.equal(other.mount.options.dom, undefined);
 });

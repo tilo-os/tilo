@@ -17,10 +17,38 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.shortcuts@720723bfb1ff289c";
+
+export interface Draft {
+  name: string;
+  shortcut_id: string;
+  inputs: unknown[];
+  steps: StepNode[];
+  output: unknown | null;
+  triggers: unknown[];
+  step_timeout_secs: number | null;
+  replaces_saved: boolean;
+}
+
+/** One of invoke, if, for_each, set_var, ask, ai, task, read: an object whose case the app tags it with. */
+export type Head = Record<string, unknown>;
+
+export interface StepNode {
+  parent: string;
+  branch: string;
+  id: string;
+  head: Head | null;
+  args: Record<string, unknown>;
+  on_error: unknown;
+}
+
 /** Shortcuts — `shortcuts.workbench`. */
 export interface Workbench extends tilo.Resource {
-  drafts: unknown;
-  ignored: unknown;
+  drafts: Draft[];
+  ignored: string[];
   draftProposal(args: {
     shortcut: unknown;
   }): Promise<tilo.Run | void>;
@@ -107,6 +135,6 @@ export interface Workbench extends tilo.Resource {
 
 /** The `shortcuts.workbench` kind at `path`. */
 export function workbench(ws: tilo.Workspace, path: string): Workbench {
-  return resourceProxy(ws, path) as unknown as Workbench;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workbench;
 }
 

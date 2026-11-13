@@ -1,11 +1,4 @@
 //! The app's side: one connection per process, many subscriptions on it.
-//!
-//! A sandboxed app finds the connection its launcher opened in
-//! `TILO_SVC_SYSTEM-STATS_FD`. An unconfined copy (a development run) dials
-//! the session's socket itself. Either way the process holds one
-//! [`Client`]; a reader thread files each pushed snapshot under its
-//! subscription and wakes whoever subscribed, and requests (end, ask) wait
-//! for their own answer.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -17,7 +10,6 @@ use crate::protocol::{
     write_handoff, write_message,
 };
 
-/// Wakes a subscriber when a snapshot arrived.
 pub type Notify = Box<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
@@ -56,13 +48,11 @@ impl Drop for Inner {
     }
 }
 
-/// One connection to the service.
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
 }
 
-/// Snapshots pushed for one subscription; dropping it unsubscribes.
 pub struct ClientSubscription {
     client: Client,
     id: u64,
@@ -74,7 +64,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ClientSubscription {
-    /// The newest snapshot since the last call, if one arrived.
     #[must_use]
     pub fn take(&self) -> Option<Snapshot> {
         lock(&self.state.latest).take()
@@ -107,13 +96,11 @@ impl ClientSubscription {
         lock(&self.state.refused).clone()
     }
 
-    /// Whether the connection is gone: nothing more will arrive.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.client.is_closed()
     }
 
-    /// The connection this subscription is on.
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
@@ -130,7 +117,6 @@ impl Drop for ClientSubscription {
 }
 
 impl Client {
-    /// Speak the protocol on `stream`, whose handoff was already written.
     pub fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         let mut reader = stream.try_clone()?;
         let client = Self {
@@ -160,14 +146,12 @@ impl Client {
         Ok(client)
     }
 
-    /// The connection the launcher handed this process, if it did.
     #[must_use]
     pub fn inherited() -> Option<Self> {
         let stream = take_inherited()?;
         Self::from_stream(stream).ok()
     }
 
-    /// Dial the session's socket as the unconfined program `app_id`.
     pub fn connect_unconfined(socket: &std::path::Path, app_id: &str) -> std::io::Result<Self> {
         let mut stream = UnixStream::connect(socket)?;
         write_handoff(
@@ -209,12 +193,10 @@ impl Client {
         Some(client)
     }
 
-    /// Make `client` this process's connection (a test's fake service).
     pub fn install_shared(client: Self) {
         *lock(shared_slot()) = Some(client);
     }
 
-    /// Whether the connection is gone.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire)
@@ -280,7 +262,6 @@ impl Client {
         rx.recv().map_err(|_| gone())
     }
 
-    /// End the process `pid` of the lifetime `started_at`.
     pub fn end_process(&self, pid: u32, started_at: u64, force: bool) -> Result<u32, Refusal> {
         ended(self.call(|request| Request::EndProcess {
             request,
@@ -290,7 +271,6 @@ impl Client {
         })?)
     }
 
-    /// End every process of `app` the person may end.
     pub fn end_app(&self, app: &str, force: bool) -> Result<u32, Refusal> {
         ended(self.call(|request| Request::EndApp {
             request,
@@ -358,7 +338,6 @@ fn deliver(inner: &Inner, reply: Reply) {
 
 fn close(inner: &Inner) {
     inner.closed.store(true, Ordering::Release);
-    // Every waiter's sender goes, so each `recv` returns at once.
     lock(&inner.pending).clear();
     let subscriptions: Vec<_> = lock(&inner.subscriptions).values().cloned().collect();
     for state in subscriptions {
@@ -371,7 +350,6 @@ fn shared_slot() -> &'static Mutex<Option<Client>> {
     SHARED.get_or_init(|| Mutex::new(None))
 }
 
-/// The variable the launcher names the descriptor in.
 fn inherited_variable() -> String {
     format!("TILO_SVC_{}_FD", SERVICE.to_uppercase())
 }
@@ -382,7 +360,6 @@ fn inherited_was_offered() -> bool {
     std::env::var_os("TILO_APP_DIR").is_some() || std::env::var_os(inherited_variable()).is_some()
 }
 
-/// Take the launcher's descriptor, once.
 fn take_inherited() -> Option<UnixStream> {
     static TAKEN: AtomicBool = AtomicBool::new(false);
     let fd: i32 = std::env::var(inherited_variable()).ok()?.parse().ok()?;

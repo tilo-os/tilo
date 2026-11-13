@@ -1,13 +1,10 @@
 //! Rows left out for a device that runs no network service, or has no Wi-Fi
-//! radio: the page names what is missing once instead of showing a dead
-//! switch, an unreadable state or a row with nothing behind it, and the
-//! actions only those services can carry out are published unavailable.
+//! radio: the page names what is missing once instead of showing a dead switch,
+//! an unreadable state or a row with nothing behind it, and the actions only
+//! those services can carry out are published unavailable.
 
 use super::*;
 
-/// A device that runs no network service: what only it fills is left out,
-/// as for absent hardware, and the page names it once instead of showing
-/// its rows as unreadable.
 #[test]
 fn without_a_network_service_the_page_leaves_out_what_only_it_fills() {
     ui::i18n::I18nManager::set_locale("en-US");
@@ -40,9 +37,6 @@ fn without_a_network_service_the_page_leaves_out_what_only_it_fills() {
     );
 }
 
-/// A device that runs the network service but has no Wi-Fi radio: no Wi-Fi
-/// card, and one quiet line naming the missing adapter because the page
-/// would otherwise hold no network card at all.
 #[test]
 fn without_a_wifi_adapter_the_page_leaves_out_wifi_and_names_it_once() {
     ui::i18n::I18nManager::set_locale("en-US");
@@ -75,8 +69,6 @@ fn without_a_wifi_adapter_the_page_leaves_out_wifi_and_names_it_once() {
     );
 }
 
-/// A device that runs the network service with a Wi-Fi radio keeps the
-/// Wi-Fi card and airplane mode.
 #[test]
 fn with_a_network_service_and_a_radio_wifi_and_airplane_mode_are_offered() {
     ui::i18n::I18nManager::set_locale("en-US");
@@ -88,8 +80,6 @@ fn with_a_network_service_and_a_radio_wifi_and_airplane_mode_are_offered() {
     }
 }
 
-/// The actions only the network service can carry out are published
-/// unavailable with why, so the palette and agents read the same absence.
 #[test]
 fn without_a_network_service_its_actions_are_unavailable() {
     ui::i18n::I18nManager::set_locale("en-US");

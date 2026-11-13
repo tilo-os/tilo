@@ -1,25 +1,5 @@
-//! `PictureChoice`: a choice among pictures, for a setting whose meaning is
-//! visual (a text size, a pointer size, a colour filter). Each option is a
-//! tile showing its [`Picture`] over its name; the chosen tile carries the
-//! selected edge.
-//!
-//! The tiles fill each line evenly, as many on a line as fit at their
-//! narrowest (`picture_tile_min_width`), rounded down to a count that fills
-//! every line alike, so a narrow window shows two lines of two rather than
-//! three and an orphan. Names are captions, which grow with the text scale.
-//!
-//! A choice binds like a segmented strip: [`PictureChoice::on_action`]
-//! invokes an action with the chosen index (a pane binds it to its
-//! setting's edit), and [`PictureChoice::from_state`] keeps the choice in
-//! view state both ways. While an action is bound the chosen tile follows
-//! the value the action wrote, never the press, so a refused choice is never
-//! shown as made.
-//!
-//! Keyboard: one tab stop; the arrow keys move between tiles (up and down
-//! by a line), Home and End to the ends, Enter or Space chooses. Assistive
-//! technology sees a group of radio buttons, each with its name, whether it
-//! is chosen, its position and where it is drawn, and chooses one with
-//! `Activate`.
+//! `PictureChoice`: a choice among pictures, for a setting whose meaning is visual (a text
+//! size, a pointer size, a colour filter).
 
 use std::collections::HashMap;
 
@@ -46,10 +26,8 @@ pub use component::{PictureChoiceProps, PictureKind, PictureOptionProps};
 
 pub use super::picture::{ColourFilter, Picture, TouchpadGesture};
 
-/// One option of a [`PictureChoice`]: its picture and its name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PictureOption {
-    /// What the tile says under its picture, and its accessible name.
     pub label: String,
     pub picture: Picture,
 }
@@ -65,13 +43,10 @@ impl PictureOption {
 
 /// Two-way storage of the chosen option as the caller's own value.
 struct Choice {
-    /// The index of the value the state holds now, when it changed.
     pull: Box<dyn FnMut() -> Option<usize>>,
-    /// Store the value of a chosen option.
     push: Box<dyn FnMut(usize)>,
 }
 
-/// A tile's height as a share of its width.
 const TILE_ASPECT: f64 = 0.6;
 
 #[allow(
@@ -93,8 +68,6 @@ pub struct PictureChoice {
     choice: Option<Choice>,
     on_change: Option<Box<dyn FnMut(usize)>>,
     rect: Rect,
-    /// The theme's narrowest tile, the gap between tiles and the room for
-    /// a name, from the last layout.
     narrowest: f64,
     /// The tallest a picture grows, however wide its tile: a wide window
     /// or large text widens the tiles without making the pictures loom.
@@ -163,8 +136,6 @@ impl PictureChoice {
         picker
     }
 
-    /// Box this widget in the SDK so thin apps reuse its shared
-    /// implementation.
     #[must_use]
     pub fn into_widget(self) -> Box<dyn Widget> {
         Box::new(self)
@@ -178,7 +149,6 @@ impl PictureChoice {
         self
     }
 
-    /// What the choice is called, in the person's words ("Text size").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
@@ -191,7 +161,6 @@ impl PictureChoice {
         self.enabled = enabled;
     }
 
-    /// How many tiles it offers.
     #[must_use]
     pub fn count(&self) -> usize {
         self.options.len()
@@ -219,7 +188,6 @@ impl PictureChoice {
         self
     }
 
-    /// The chosen option, if any.
     #[must_use]
     pub fn selected(&self) -> Option<usize> {
         self.selected
@@ -374,10 +342,9 @@ impl PictureChoice {
     }
 }
 
-/// How `count` tiles lay out across `width`: as many on a line as fit at
-/// their narrowest, rounded down to a count that fills every line alike,
-/// sharing the line, each picture no taller than `tallest`.
-/// `(columns, tile width, picture height)`.
+/// How `count` tiles lay out across `width`: as many on a line as fit at their narrowest,
+/// rounded down to a count that fills every line alike, sharing the line, each picture no
+/// taller than `tallest`.
 fn geometry(
     width: f64,
     count: usize,
@@ -411,8 +378,6 @@ impl Widget for PictureChoice {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // A tile's name is a caption: the tile grows with the text so its
-        // name still fits.
         self.narrowest =
             f64::from(theme.tokens.metrics.picture_tile_min_width * theme.text_growth());
         self.tallest = f64::from(theme.tokens.metrics.picture_tile_width) * TILE_ASPECT;
@@ -652,8 +617,6 @@ impl crate::widget::controls::ActionControls for PictureChoice {
             Some(action) => (0..self.options.len())
                 .map(|index| action.metadata(self.option_id(index)))
                 .collect(),
-            // A choice kept in view state is made through the tiles' own
-            // semantic actions.
             None if self.choice.is_some() => (0..self.options.len())
                 .map(|index| ControlBindingMetadata {
                     control_id: self.option_id(index),

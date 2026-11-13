@@ -8,7 +8,7 @@
 //! answer is the stricter of the two.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Context, Grant, GrantId, KindSet, Level, Lifetime, Rule, Segment, Subject,
+    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, Rule, Segment,
     TreePath, decide,
 };
 use tilo_actions::ActionKey;
@@ -279,13 +279,13 @@ pub struct StepGrant {
 
 #[must_use]
 pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGrant {
-    let subject = Subject::Shortcut(String::new());
+    let subject = Grantee::shortcut(String::new());
     let grants: Vec<Grant> = grant
         .iter()
         .enumerate()
         .map(|(index, rule)| Grant {
             id: GrantId::new(index.to_string()),
-            subject: subject.clone(),
+            grantee: subject.clone(),
             node: rule.node.clone(),
             kinds: rule.kinds,
             answer: rule.answer,

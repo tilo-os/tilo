@@ -3,8 +3,8 @@
 //! device, an agent, a ban and a restriction still bound them.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, KindSet, Lifetime, Refusal, Role,
-    Subject, TreePath, WorkspacePolicy,
+    Acting, ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Lifetime,
+    Refusal, Role, TreePath, WorkspacePolicy,
     roles::{self, governance},
 };
 
@@ -27,7 +27,7 @@ fn workspace(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
     workspace.grants.push(roles::administrator_grant(
         "r",
         administrator,
-        Subject::person(OWNER),
+        Grantee::person(OWNER),
     ));
     workspace
 }
@@ -119,11 +119,11 @@ fn an_administrator_never_hands_out_or_reaches_above_their_role() {
     // A grant beyond what the administrator holds on its node.
     let wider = Grant::new(
         "wider",
-        Subject::person(BOB),
+        Grantee::person(BOB),
         workspace.node(),
         KindSet::OUTSIDE,
         Answer::Allow,
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
     );
     assert!(matches!(
         workspace.check(CAROL, &carol, &Change::Grant(wider), &cx(), false),
@@ -134,11 +134,10 @@ fn an_administrator_never_hands_out_or_reaches_above_their_role() {
 #[test]
 fn an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent() {
     let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
-    let bound = roles::foreign_device_bound();
-    let foreign = workspace.person_on_device(CAROL, true, &bound);
-    let delegation = roles::agent_turn("r", "scribe", CAROL, &[]);
-    let agent =
-        Authority::person(workspace.party(CAROL)).bounded_by(delegation.party(&workspace.grants));
+    let foreign = workspace.person_on_device(CAROL, true);
+    let delegation = roles::agent_grants("r", "scribe", CAROL, &[]);
+    let acting = Acting::agent("scribe").acting_for(Acting::person(CAROL));
+    let agent = Authority::of_acting(&acting, &workspace, &delegation);
     for action in governance::ALL {
         assert!(
             workspace
@@ -158,7 +157,7 @@ fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
             "r",
             person,
             until,
-            Subject::person(OWNER),
+            Grantee::person(OWNER),
         ));
     }
     let carol = Authority::person(restricted.party(CAROL));
@@ -181,7 +180,7 @@ fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
     let mut banned = workspace(&[(CAROL, Role::Editor)], CAROL);
     banned
         .grants
-        .push(roles::block_grant("r", CAROL, Subject::person(OWNER)));
+        .push(roles::block_grant("r", CAROL, Grantee::person(OWNER)));
     let carol = Authority::person(banned.party(CAROL));
     assert_eq!(
         banned.check_action(&carol, governance::INVITE, &cx(), true),
@@ -200,16 +199,16 @@ fn an_administrator_grant_on_the_workspace_resource_is_outranked_by_the_editor_r
     workspace.members.insert(CAROL.into(), Role::Editor);
     let legacy = Grant::new(
         roles::administrator_grant_id(CAROL).as_str(),
-        Subject::person(CAROL),
+        Grantee::person(CAROL),
         roles::workspace_resource("r"),
         KindSet::ALL,
         Answer::Allow,
-        Subject::person(OWNER),
+        Grantee::person(OWNER),
     );
     assert!(roles::is_legacy_administrator_grant("r", &legacy));
     assert!(!roles::is_legacy_administrator_grant(
         "r",
-        &roles::administrator_grant("r", CAROL, Subject::person(OWNER))
+        &roles::administrator_grant("r", CAROL, Grantee::person(OWNER))
     ));
     let denied = Grant {
         answer: Answer::Deny,

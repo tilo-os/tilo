@@ -5,10 +5,8 @@
 use crate::app::StoreApp;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
-/// How many previews each fixture app lists.
 const PREVIEWS: usize = 3;
 
-/// Where the fixture catalogue's artwork nominally lives.
 const ARTWORK_HOST: &str = "https://artwork.invalid/";
 
 macro_rules! artwork {
@@ -17,7 +15,6 @@ macro_rules! artwork {
     };
 }
 
-/// The bundled artwork of the fixture apps: an icon and previews each.
 const ARTWORK: &[(&str, &[u8])] = artwork![
     "Notes.png" => "notes.png",
     "Terminal.png" => "terminal.png",
@@ -61,14 +58,12 @@ pub fn artwork_store() -> ui::ImageStore {
     store
 }
 
-/// The preview URLs the fixture lists for the app called `name`.
 fn previews(name: &str) -> Vec<String> {
     (1..=PREVIEWS)
         .map(|index| format!("{ARTWORK_HOST}{name}-preview-{index}.png"))
         .collect()
 }
 
-/// The key every first-party Tilo package is signed with in the fixture.
 const TILO_PUBLISHER_KEY: &str = "3f9ac1d27b8e4455a0c6e1f2d93b7a08c4e5f61729ab3d80e7c2145f6a9d0b3e";
 
 /// A hand-written catalogue that shows every card variant:
@@ -95,7 +90,6 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             updated_at_unix: 1_760_000_000,
             ..crate::model::Listing::default()
         },
-        // The real package ids, so each app wears its own desktop glyph.
         id: match name {
             "Files" => "so.tilo.file-explorer".to_owned(),
             _ => format!("so.tilo.{}", name.to_ascii_lowercase()),
@@ -213,7 +207,6 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             "Terminal",
             "A fast terminal for commands, scripts, and development tools.",
             "System",
-            // Cached and kept: Open, Allow cleanup and Remove.
             InstalledState::Installed {
                 version: "0.2.0".into(),
                 available: "0.2.0".into(),
@@ -318,7 +311,6 @@ fn fixture_bot() -> StoreItem {
     }
 }
 
-/// Deterministic catalogue data for capture scenarios and isolated owner review.
 pub(crate) fn capture_catalog(_scenario: Option<&str>) -> Vec<StoreItem> {
     fixture_catalog()
 }
@@ -370,8 +362,6 @@ mod tests {
                 _ => {}
             }
             saw_pin_toggle |= item.pin_action().is_some();
-            // Flatpak removal is a secondary action: the primary on an
-            // installed app is to open it.
             saw_flatpak_remove |= item.remove_action() == Some(ActionKind::FlatpakRemove);
             if let Some(key) = item.publisher_pubkey_hex.as_deref() {
                 assert_eq!(key.len(), 64, "{} has a full ed25519 key", item.name);
@@ -398,8 +388,6 @@ mod tests {
         assert_eq!(seeded_app().state().items().len(), fixture_catalog().len());
     }
 
-    /// The bundled artwork serves every icon and preview the fixture names,
-    /// and nothing else.
     #[test]
     fn artwork_covers_the_fixture_and_nothing_else() {
         for item in fixture_catalog() {

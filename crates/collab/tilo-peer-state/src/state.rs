@@ -6,7 +6,7 @@ use crate::admission::{
 use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, workspace};
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, Subject, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Authority, Grant, GrantId, Grantee, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -33,11 +33,6 @@ use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
 mod covered_records;
-mod durable_before_owner;
-pub(crate) use durable_before_owner::{
-    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
-    durable_base_version,
-};
 mod member_records;
 use member_records::{empty_genesis, empty_genesis_op};
 mod facades;
@@ -54,7 +49,7 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
-pub use delegates::{DelegateInactive, GovernedAgent, GovernedDelegateRow};
+pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;
 mod local_outbox;
@@ -88,6 +83,7 @@ pub use seed::{seed_workspace, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
+mod unsent_bases;
 pub use sealed_compaction::{
     OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
 };
@@ -98,6 +94,11 @@ mod admitting;
 mod authority;
 mod construction;
 mod durable;
+#[cfg(test)]
+pub(crate) use durable::{
+    DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
+    durable_base_version,
+};
 mod receiving;
 mod records;
 mod sealing;
@@ -124,7 +125,7 @@ pub(crate) fn agent_is_member(policy: &WorkspacePolicy, agent: &str, now: System
     let cx = tilo_action_policy::Context::at_time(now);
     let workspace = policy.node();
     policy.grants.iter().any(|grant| {
-        matches!(&grant.subject, Subject::Agent(held) if held == agent)
+        grant.grantee.agent_id() == Some(agent)
             && grant.node == workspace
             && grant.answer != Answer::Deny
             && grant.is_live(&cx)
@@ -154,7 +155,11 @@ pub struct SeedState {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedAccess {
+    /// The devices the workspace admits now: its members' certified,
+    /// unrevoked devices.
     pub member_devices: Vec<[u8; 32]>,
+    /// Its members, by their roots: every person its policy gives a role,
+    /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
 }
 /// Who a Read Deny keeps out of a workspace's record channels; see
@@ -412,10 +417,13 @@ type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp) -> AutoCommit {
     let brings_index = || {
         envelope.encryption.is_none()
-            && collab_types::DocumentMutation::decode(&envelope.payload)
-                .ok() // ignored-failure: change bytes that do not parse bring no index
-                .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
-                .is_some_and(|changes| collab_types::units::brings_index(&changes))
+            && tilo_failure::ignored!(
+                "change bytes that do not parse bring no index",
+                collab_types::DocumentMutation::decode(&envelope.payload)
+                    .ok()
+                    .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
+            )
+            .is_some_and(|changes| collab_types::units::brings_index(&changes))
     };
     if collab_types::units::has_units(&**doc) || brings_index() {
         AutoCommit::clone(doc)
@@ -507,64 +515,6 @@ fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String>
         .ok_or_else(|| format!("governed {key} missing"))
 }
 
-/// Record `user_public_key`'s role in the workspace's `members` map.
-pub(crate) fn put_member(
-    doc: &mut AutoCommit,
-    members: &automerge::ObjId,
-    user_public_key: [u8; 32],
-    role: Role,
-) -> Result<(), String> {
-    doc.put(
-        members,
-        hex::encode(user_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).map_err(err)?),
-    )
-    .map_err(err)
-}
-
-/// The workspace key recording when each member was admitted: person hex →
-/// JSON Unix milliseconds.
-pub(crate) const MEMBERS_JOINED: &str = "members_joined_v1";
-
-/// Record that the workspace admitted `user_public_key` at `at_ms` (Unix
-/// milliseconds), unless it already holds a time for them: a member's
-/// admission time is written once and kept through role changes and later
-/// device admissions.
-pub(crate) fn put_member_joined_once(
-    doc: &mut AutoCommit,
-    user_public_key: [u8; 32],
-    at_ms: u64,
-) -> Result<(), String> {
-    let joined = match doc.get(ROOT, MEMBERS_JOINED).map_err(err)? {
-        Some((automerge::Value::Object(ObjType::Map), id)) => id,
-        Some(_) => return Err(format!("governed {MEMBERS_JOINED} is not a map")),
-        None => doc
-            .put_object(ROOT, MEMBERS_JOINED, ObjType::Map)
-            .map_err(err)?,
-    };
-    let person = hex::encode(user_public_key);
-    if doc.get(&joined, person.as_str()).map_err(err)?.is_some() {
-        return Ok(());
-    }
-    doc.put(
-        &joined,
-        person,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&at_ms).map_err(err)?),
-    )
-    .map_err(err)
-}
-
-/// Forget when `person` was admitted, as they leave the workspace.
-pub(crate) fn delete_member_joined(doc: &mut AutoCommit, person: &str) -> Result<(), String> {
-    let Some((_, joined)) = doc.get(ROOT, MEMBERS_JOINED).map_err(err)? else {
-        return Ok(());
-    };
-    if doc.get(&joined, person).map_err(err)?.is_some() {
-        doc.delete(&joined, person).map_err(err)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "state/delivery_admission_resource_tests.rs"]
 mod delivery_admission_resource_tests;
@@ -583,6 +533,9 @@ mod administrators_tests;
 #[cfg(test)]
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
+#[cfg(test)]
+#[path = "state/durable_tests.rs"]
+mod durable_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;

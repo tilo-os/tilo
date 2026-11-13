@@ -298,7 +298,6 @@ mod tests {
         }
     }
 
-    /// A primary key is not nullable, and the keys table lists the primary key before the foreign keys.
     #[test]
     fn keys_and_nullability_follow_the_catalog() {
         let table = info(Some(3));

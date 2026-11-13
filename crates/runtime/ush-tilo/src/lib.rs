@@ -43,7 +43,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use collab_types::caps::Access;
-/// What [`Environment::grants`] answers: the record's grants.
 pub use collab_types::caps::CapOverride;
 use tilo_environment::files::{
     AppendFileOp, FileAction, MAX_TEXT_BYTES, WriteOp, anchored, cli, normalize, permits,
@@ -56,9 +55,7 @@ use ush_shell::{
 
 pub use native::NativeFiles;
 
-/// The environment the shell runs for: its grants, and its file actions.
 pub trait Environment: Send + Sync {
-    /// The record's grants as they stand now.
     fn grants(&self) -> Vec<CapOverride>;
 
     /// Invoke `action` on the record as part of `run`: checked against its
@@ -76,7 +73,6 @@ pub trait Environment: Send + Sync {
     fn keep(&self) -> io::Result<Box<dyn Keeping>>;
 }
 
-/// Content on its way into the environment's content store.
 pub trait Keeping: Write + Send {
     /// Everything was written: the content as kept.
     ///
@@ -86,7 +82,6 @@ pub trait Keeping: Write + Send {
     fn finish(self: Box<Self>) -> io::Result<Kept>;
 }
 
-/// Content kept in the environment's content store.
 pub struct Kept {
     /// Its hash (BLAKE3, lower-case hex): what an action names it by.
     pub hash: String,
@@ -95,12 +90,10 @@ pub struct Kept {
     pub hold: Option<Box<dyn Send>>,
 }
 
-/// What an action did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Acted {
-    /// The record's entry for it, what History undoes.
+    /// The record entry History undoes.
     pub entry: Option<String>,
-    /// How many operations carrying it out took.
     pub operations: usize,
 }
 
@@ -117,7 +110,7 @@ pub trait Files: Send + Sync {
     fn resolve(&self, path: &Path) -> io::Result<PathBuf>;
 }
 
-/// Where a program that is none of the shell's own runs.
+/// Where programs that are not the shell's own run.
 pub trait Programs: Send + Sync {
     /// Run `argv` with `env` as its whole environment, in `cwd`, on `io`,
     /// until it ends, or until `stop` says to stop it.
@@ -153,10 +146,10 @@ pub trait Programs: Send + Sync {
     }
 }
 
-/// No place to run programs: each says which tier it would need.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPrograms;
 
+/// No place to run programs: each says which tier it would need.
 impl Programs for NoPrograms {
     fn run(
         &self,
@@ -173,7 +166,7 @@ impl Programs for NoPrograms {
 /// What the place running the shell offers besides files and programs. Each
 /// has the answer of a place that offers nothing.
 pub trait Place: Send + Sync {
-    /// Whether the person asked to stop what is running (Ctrl-C).
+    /// Whether the person pressed Ctrl-C.
     fn interrupted(&self) -> bool {
         false
     }
@@ -216,23 +209,20 @@ pub trait Place: Send + Sync {
         false
     }
 
-    /// Switch the session's terminal to taking keys one at a time for the
-    /// line editor, or back ([`Host::edit_mode`]). Answers whether there is
-    /// a terminal to edit on.
+    /// Put the terminal in the line editor's key-at-a-time mode, or back.
+    /// Answers whether there is a terminal to edit on.
     fn edit_mode(&self, on: bool) -> bool {
         let _ = on;
         false
     }
 
-    /// The session's terminal's width in columns.
+    /// The terminal's width in columns.
     fn columns(&self) -> usize {
         80
     }
 
-    /// The person's command history (`terminal.history`), when this place
-    /// holds the record ([`Host::history`]). `None` where the app showing
-    /// the session holds it: the line editor asks it on the session's
-    /// terminal.
+    /// `terminal.history`, when this place holds the record; `None` where
+    /// the app showing the session holds it.
     fn history(&self, query: &HistoryQuery) -> Option<Vec<String>> {
         let _ = query;
         None
@@ -245,7 +235,6 @@ pub trait Place: Send + Sync {
     }
 }
 
-/// A place that offers nothing beyond files and programs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Nowhere;
 
@@ -256,12 +245,11 @@ struct Inner {
     files: Arc<dyn Files>,
     programs: Arc<dyn Programs>,
     place: Arc<dyn Place>,
-    /// Where a write that could not be made after its command ended says
-    /// so: the session's standard error.
+    /// Where a redirect that could not be written says so: the session's
+    /// standard error.
     notices: Output,
 }
 
-/// The shell's host on the Tilo side. Cheap to clone.
 #[derive(Clone)]
 pub struct TiloHost(Arc<Inner>);
 
@@ -317,7 +305,6 @@ impl TiloHost {
     }
 }
 
-/// The refusal of a path no grant covers.
 fn refused(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, ungranted(path))
 }
@@ -517,18 +504,16 @@ impl Host for TiloHost {
     }
 }
 
-/// A redirect's file: what the command writes is gathered, and becomes one
-/// action of the environment's when the redirect closes. Up to
-/// [`MAX_TEXT_BYTES`] it travels inside the action; past that it is
-/// streamed into the environment's content store as it is written, and the
-/// action names it by reference, so a redirect of any size is one action.
+/// A redirect's file: what the command writes becomes one action when the
+/// redirect closes. Past [`MAX_TEXT_BYTES`] it streams into the content
+/// store as it is written and the action names it by reference, so a
+/// redirect of any size is one action.
 struct Redirect {
     host: TiloHost,
     path: PathBuf,
     mode: WriteMode,
     run: Option<Run>,
     bytes: Vec<u8>,
-    /// Where what was written goes once it is too much to carry.
     keeping: Option<Box<dyn Keeping>>,
 }
 
@@ -578,7 +563,6 @@ impl Redirect {
             match self.mode {
                 WriteMode::Truncate => FileAction::Write(WriteOp::of(files, bytes, false)),
                 WriteMode::CreateNew => FileAction::Write(WriteOp::of(files, bytes, true)),
-                // `>>` with nothing written still makes the file, as `touch`.
                 WriteMode::Append if bytes.is_empty() => FileAction::Touch(AppendFileOp {
                     files,
                     ..AppendFileOp::default()
@@ -631,7 +615,6 @@ impl Drop for Redirect {
     }
 }
 
-/// An [`Output`] as a [`Write`].
 struct OutputWriter(Output);
 
 impl Write for OutputWriter {

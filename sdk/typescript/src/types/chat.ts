@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.chat@285e342c43975c1d";
+
 export interface Category {
   name: string;
 }
@@ -242,6 +247,11 @@ export interface WorkspaceFiles {
   member_hourly: number;
 }
 
+export interface Acting {
+  name: string | null;
+  person: string | null;
+}
+
 /** One of "complete", "truncated", "refused", "cancelled", "failed". */
 export type AgentFinish = "complete" | "truncated" | "refused" | "cancelled" | "failed";
 
@@ -296,12 +306,14 @@ export interface Message {
   edited: boolean;
   history: Revision[];
   parent: string | null;
+  quoted: Quote | null;
   reactions: unknown;
   mentions: Mention[];
   attachments: Attached[];
   pinned: boolean;
   work: Work | null;
   appearance: ShownAs | null;
+  acting: Acting | null;
   share: WindowShare | null;
   attempts: number;
 }
@@ -313,6 +325,12 @@ export interface ProviderStream {
   progress: string;
   finish: AgentFinish | null;
   detail: string;
+}
+
+export interface Quote {
+  text: string;
+  start: number;
+  end: number;
 }
 
 export interface ResourceAt {
@@ -373,6 +391,7 @@ export interface Work {
   stream: ProviderStream | null;
   state: Transition | null;
   trace: Step[];
+  failure_detail: string | null;
 }
 
 export interface WorkUpdate {
@@ -381,6 +400,7 @@ export interface WorkUpdate {
   did: string | null;
   about: string | null;
   trace: StepUpdate[];
+  detail: string | null;
 }
 
 export interface Emoji {
@@ -540,7 +560,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The `chat.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
 }
 
 /** Messages — `chat.messages`. */
@@ -632,7 +652,7 @@ export interface Messages extends tilo.Resource {
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
-  return resourceProxy(ws, path) as unknown as Messages;
+  return resourceProxy(ws, path, SURFACE) as unknown as Messages;
 }
 
 /** Chat drafts — `chat.drafts`. */
@@ -645,7 +665,7 @@ export interface Drafts extends tilo.Resource {
 
 /** The `chat.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path) as unknown as Drafts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Drafts;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */
@@ -665,7 +685,7 @@ export interface WorkspaceEmoji extends tilo.Resource {
 
 /** The `tilo.workspace.emoji` kind at `path`. */
 export function workspaceEmoji(ws: tilo.Workspace, path: string): WorkspaceEmoji {
-  return resourceProxy(ws, path) as unknown as WorkspaceEmoji;
+  return resourceProxy(ws, path, SURFACE) as unknown as WorkspaceEmoji;
 }
 
 /** Agents — `chat.agent`. */
@@ -710,6 +730,6 @@ export interface ChatAgent extends tilo.Resource {
 
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {
-  return resourceProxy(ws, path) as unknown as ChatAgent;
+  return resourceProxy(ws, path, SURFACE) as unknown as ChatAgent;
 }
 

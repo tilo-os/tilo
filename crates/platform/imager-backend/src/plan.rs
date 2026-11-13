@@ -1,6 +1,6 @@
-//! Pure placement: host facts + bundle sizes + chosen Tilo size → one reviewed
-//! plan, or a refusal. No I/O. The helper recomputes `basis` from a fresh probe
-//! and refuses when it differs (`plan-stale`).
+//! Pure placement: host facts, bundle sizes and the chosen Tilo size become one reviewed plan, or a
+//! refusal. The helper recomputes `basis` from a fresh probe and refuses when it differs
+//! (`plan-stale`).
 
 use serde::{Deserialize, Serialize};
 
@@ -16,12 +16,11 @@ pub struct FirmwareFacts {
     pub boot_next: Option<String>,
 }
 
-/// Exactly the facts a plan was computed from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Basis {
     pub disk: Disk,
     pub system_volume: Option<SystemVolume>,
-    /// Separate from Windows facts; omitted None preserves legacy plan digests.
+    /// Omitted `None` preserves existing plan digests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linux_btrfs_volume: Option<LinuxBtrfsVolume>,
     pub firmware: FirmwareFacts,
@@ -40,14 +39,13 @@ pub struct Shrink {
 pub struct StagedPartition {
     pub first_lba: u64,
     pub last_lba: u64,
-    /// Pre-generated on Linux; `None` on Windows until creation records it.
+    /// `None` on Windows until creation records it.
     pub partition_guid: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootEntry {
     pub description: String,
-    /// Backslash-separated path inside the staging ESP.
     pub loader_path: String,
 }
 
@@ -61,7 +59,7 @@ pub struct Plan {
     pub boot_entry: BootEntry,
 }
 
-/// Bundle-derived sizes the plan must fit.
+/// Sizes the plan must fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Requirements {
     pub staging_esp_bytes: u64,
@@ -69,7 +67,6 @@ pub struct Requirements {
     pub target_bytes: u64,
 }
 
-/// Bounds the Review stepper may offer for the Tilo size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TargetBounds {
     pub min_bytes: u64,
@@ -83,12 +80,11 @@ pub enum PlanError {
         needed_bytes: u64,
         available_bytes: u64,
     },
-    /// The disk or partition map is outside what this planner supports.
     Unsupported(String),
 }
 
 impl Plan {
-    /// Canonical JSON (serde field order, no whitespace) and its SHA-256.
+    /// Canonical JSON and its SHA-256.
     pub fn digest(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};
         let bytes = serde_json::to_vec(self)?;
@@ -97,7 +93,8 @@ impl Plan {
 }
 
 impl Basis {
-    /// Whether the host can choose a new partition's GUID at creation.
+    /// Only Windows reports `system_volume`: `New-Partition` cannot set a GUID there, `sfdisk`
+    /// can.
     ///
     /// Only Windows reports `system_volume`. Linux Btrfs facts are separate:
     /// Windows `New-Partition` cannot set a GUID; Linux `sfdisk` can.
@@ -105,7 +102,6 @@ impl Basis {
         self.system_volume.is_none()
     }
 
-    /// The host, as written into the handoff.
     pub fn host_os(&self) -> HostOs {
         if self.system_volume.is_some() {
             HostOs::Windows
@@ -124,7 +120,6 @@ impl StagedPartition {
     }
 }
 
-/// Free space the system volume must keep after a shrink:
 /// `max(20 GiB, 15 % of used)`.
 pub fn system_volume_reserve(used_bytes: u64) -> u64 {
     (20_u64 << 30).max(
@@ -134,7 +129,7 @@ pub fn system_volume_reserve(used_bytes: u64) -> u64 {
     )
 }
 
-/// Smallest size the system volume may be shrunk to (1 MiB aligned, up).
+/// 1 MiB aligned, upward.
 pub fn minimum_system_volume_bytes(volume: &SystemVolume) -> u64 {
     let floor = volume.supported_min_bytes.max(
         volume
@@ -144,7 +139,6 @@ pub fn minimum_system_volume_bytes(volume: &SystemVolume) -> u64 {
     floor.div_ceil(ALIGN_BYTES).saturating_mul(ALIGN_BYTES)
 }
 
-/// Supported Btrfs minimum plus explicit retained headroom, rounded upward.
 /// Overflow refuses the plan instead of manufacturing a smaller bound.
 pub fn minimum_linux_btrfs_bytes(volume: &LinuxBtrfsVolume) -> Result<u64, PlanError> {
     volume
@@ -155,7 +149,6 @@ pub fn minimum_linux_btrfs_bytes(volume: &LinuxBtrfsVolume) -> Result<u64, PlanE
         .ok_or_else(|| PlanError::Unsupported("Btrfs shrink bound overflow".into()))
 }
 
-/// Validated sector geometry of the basis disk.
 #[derive(Clone, Copy, Debug)]
 struct Geometry {
     sector: u64,
@@ -225,7 +218,6 @@ impl Geometry {
             .saturating_mul(self.align)
     }
 
-    /// Bytes rounded up to whole alignment units, as LBAs.
     fn lbas(self, bytes: u64) -> u64 {
         bytes.div_ceil(ALIGN_BYTES).saturating_mul(self.align)
     }
@@ -235,8 +227,7 @@ impl Geometry {
     }
 }
 
-/// Reject requirement totals that cannot be represented in bytes. Geometry's
-/// own LBAs are bounded by the validated disk size and cannot overflow.
+/// Geometry's own LBAs are bounded by the validated disk size and cannot overflow.
 fn checked_requirement_sum(g: Geometry, values: &[u64]) -> Result<u64, PlanError> {
     values
         .iter()
@@ -245,7 +236,6 @@ fn checked_requirement_sum(g: Geometry, values: &[u64]) -> Result<u64, PlanError
         .ok_or_else(|| PlanError::Unsupported("layout size overflow".into()))
 }
 
-/// An aligned, clearance-respecting run of free LBAs `[start, end)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Span {
     start: u64,
@@ -258,7 +248,7 @@ impl Span {
     }
 }
 
-/// Aligned free spans between partitions, keeping [`ALIGN_BYTES`] clear of
+/// Aligned free spans between partitions, keeping [`ALIGN_BYTES`] clear of every partition.
 /// every existing partition.
 fn free_spans(disk: &Disk, g: Geometry) -> Vec<Span> {
     let mut sorted: Vec<_> = disk.partitions.iter().collect();
@@ -284,18 +274,15 @@ fn free_spans(disk: &Disk, g: Geometry) -> Vec<Span> {
     spans
 }
 
-/// Where the layout may go on this basis, before sizes are chosen.
 #[derive(Clone, Debug)]
 enum Capacity {
     /// Linux: the largest existing free span.
     Free { span: Span },
-    /// A span after one eligible Windows or Linux Btrfs volume, ending before
-    /// its next partition. The bound comes from the actual filesystem minimum.
+    /// A span after one eligible volume, ending before its next partition; the bound comes from
+    /// the actual filesystem minimum.
     Shrinkable {
         end: u64,
-        /// First LBA usable without shrinking.
         current_start: u64,
-        /// First LBA usable at the maximum safe shrink.
         lowest_start: u64,
         volume_first_lba: u64,
         partition_guid: String,
@@ -404,7 +391,6 @@ impl Capacity {
         })
     }
 
-    /// The largest number of LBAs the layout may occupy.
     fn max_lbas(&self) -> u64 {
         match self {
             Self::Free { span } => span.len(),
@@ -415,16 +401,12 @@ impl Capacity {
     }
 }
 
-/// Place staging + target on `basis`. Pure apart from GUID generation; see
-/// the design spec §2 for rules.
-///
-/// Layout: `target | staging ESP | staging root`, contiguous and 1 MiB
-/// aligned. Linux without shrink facts uses the largest existing free span.
-/// Windows and eligible Linux Btrfs layouts pin it against the end of the
-/// space after the retained volume and shrink by exactly the shortfall.
-/// Partition GUIDs are pre-generated only when [`Basis::sets_partition_guids`]. The loader path defaults to the
-/// fallback path for this build's architecture; callers holding the bundle's
-/// `boot_binding.efi_path` apply it with [`with_loader_path`].
+/// Places staging and target on `basis`. Layout: `target | staging ESP | staging root`, contiguous
+/// and 1 MiB aligned. Without shrink facts the layout uses the largest existing free span; Windows
+/// and eligible Linux Btrfs pin it after the retained volume and shrink by exactly the shortfall.
+/// Partition GUIDs are pre-generated only when [`Basis::sets_partition_guids`]; the loader path
+/// defaults by architecture, and a caller holding `boot_binding.efi_path` applies
+/// [`with_loader_path`].
 pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanError> {
     let g = Geometry::of(&basis.disk)?;
     if requirements.target_bytes < MIN_TARGET_BYTES {
@@ -521,9 +503,7 @@ pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanEr
     })
 }
 
-/// Tilo sizes the Review stepper may offer for `basis`, given staging sizes
-/// (`requirements.target_bytes` is ignored). Both bounds are 1 MiB aligned,
-/// and `compute` accepts every aligned size between them.
+/// Both bounds are 1 MiB aligned, and `compute` accepts every aligned size between them.
 pub fn target_bounds(basis: &Basis, requirements: Requirements) -> Result<TargetBounds, PlanError> {
     let g = Geometry::of(&basis.disk)?;
     let staging = checked_requirement_sum(
@@ -548,8 +528,8 @@ pub fn target_bounds(basis: &Basis, requirements: Requirements) -> Result<Target
     })
 }
 
-/// Rewrite the loader path from the bundle's `boot_binding.efi_path`
-/// (`/EFI/BOOT/BOOTX64.EFI`) into the plan's backslash form.
+/// Rewrites the bundle's `boot_binding.efi_path` (`/EFI/BOOT/BOOTX64.EFI`) into the plan's
+/// backslash form.
 pub fn with_loader_path(mut plan: Plan, efi_path: &str) -> Plan {
     plan.boot_entry.loader_path = efi_path.replace('/', "\\");
     plan
@@ -600,7 +580,6 @@ pub(crate) mod tests {
 
     pub(crate) const C_GUID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-    /// ESP 100 MiB, MSR 16 MiB, C: to `c_end_gib`, optional `WinRE` right after C:.
     pub(crate) fn windows_basis(
         disk_gib: u64,
         c_end_gib: u64,
@@ -679,7 +658,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Every invariant of §2, asserted against any computed plan.
+    /// Every invariant the planner documents, asserted against any computed plan.
     fn assert_layout(plan: &Plan, requirements: Requirements) {
         let disk = &plan.basis.disk;
         let sector = disk.sector_bytes;
@@ -770,7 +749,6 @@ pub(crate) mod tests {
         ));
     }
 
-    /// Linux extent selection, exact fit, alignment and empty disks.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -787,7 +765,6 @@ pub(crate) mod tests {
                     mib,
                     601 * mib - 1,
                 ),
-                // 50 GiB gap, then a partition, then a ~140 GiB tail.
                 part(
                     2,
                     "a0000000-0000-4000-8000-000000000002",
@@ -855,8 +832,6 @@ pub(crate) mod tests {
             let mib = MIB / s;
             let r = req(64 * GIB);
             let need = (64 * GIB + 600 * MIB + 40 * GIB) / s;
-            // Partition 1 at [1 MiB, 2 MiB); 1 MiB clearance; the layout; 1 MiB
-            // clearance; partition 2.
             let make = |short: u64| {
                 let second = 3 * mib + need + mib - short;
                 linux_basis(
@@ -900,13 +875,10 @@ pub(crate) mod tests {
             let r = req(64 * GIB);
             let plan = compute(&basis, r).unwrap();
             assert_layout(&plan, r);
-            // The largest span is the one between the partitions; it starts
-            // 1 MiB after partition 1, rounded up.
             let expected = (1_000_003 + 1 + mib).div_ceil(mib) * mib;
             assert_eq!(plan.target_extent.first_lba, expected);
         }
 
-        // Phase `linux_4kn_sectors_align_to_256_lbas`.
         {
             let s = 4096;
             let lbas_per_mib = MIB / s;
@@ -935,7 +907,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Size rounding, minimums, reserve, bounds and full disks.
     #[test]
     fn plan_sizes_reserves_and_bounds_are_exact() {
         {
@@ -960,7 +931,6 @@ pub(crate) mod tests {
             ));
         }
 
-        // Phase `reserve_is_the_larger_of_20_gib_and_15_percent_of_used`.
         {
             assert_eq!(system_volume_reserve(10 * GIB), 20 * GIB);
             assert_eq!(system_volume_reserve(200 * GIB), 30 * GIB);
@@ -1010,7 +980,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Partition map consistency, system volume, digest and loader path.
     #[test]
     fn plans_require_consistent_maps_and_bind_digest_and_loader() {
         {
@@ -1189,11 +1158,9 @@ pub(crate) mod tests {
         assert!(!decoded.sets_partition_guids());
     }
 
-    /// Windows shrink planning.
     #[test]
     fn windows_plan_shrinks_c_only_by_the_safe_shortfall() {
         {
-            // 512 GiB disk, C: ends at 400 GiB, WinRE right after; tail free.
             let basis = windows_basis(512, 400, 100, true);
             let r = req(64 * GIB);
             let plan = compute(&basis, r).unwrap();
@@ -1205,8 +1172,6 @@ pub(crate) mod tests {
             let volume = basis.system_volume.as_ref().unwrap();
             assert_eq!(shrink.from_bytes, volume.size_bytes);
             let need = 64 * GIB + 600 * MIB + 40 * GIB;
-            // Nothing usable after C: before WinRE, so C: gives up need + 2 MiB
-            // clearance (one each side of the layout).
             assert_eq!(shrink.from_bytes - shrink.to_bytes, need + 2 * MIB);
             assert_eq!(shrink.to_bytes % MIB, 0);
             let winre = &basis.disk.partitions[3];
@@ -1220,7 +1185,6 @@ pub(crate) mod tests {
         }
 
         {
-            // C: ends at 400 GiB; no WinRE; a 112 GiB free tail covers everything.
             let basis = windows_basis(512, 400, 100, false);
             let r = req(64 * GIB);
             let plan = compute(&basis, r).unwrap();
@@ -1233,7 +1197,6 @@ pub(crate) mod tests {
         }
 
         {
-            // 20 GiB free after C:, WinRE after that.
             let s = 512;
             let mib = MIB / s;
             let mut basis = windows_basis(512, 400, 100, false);
@@ -1256,8 +1219,6 @@ pub(crate) mod tests {
         }
 
         {
-            // C: ~400 GiB with 300 GiB used: reserve 45 GiB, so C: keeps 345 GiB
-            // and only ~55 GiB can be carved: less than the ~104.6 GiB needed.
             let basis = windows_basis(512, 400, 300, true);
             let err = compute(&basis, req(64 * GIB)).unwrap_err();
             let PlanError::InsufficientSpace {

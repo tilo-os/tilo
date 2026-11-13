@@ -51,7 +51,20 @@ pub(super) struct Bars {
     declared_targets: Vec<(u64, u64, Vec<WindowTarget>)>,
     /// The controls the person pressed in the windows' content, by connection, waiting for the
     /// session to write them to the app.
-    presses: Vec<(u64, String, String, TargetAction)>,
+    presses: Vec<TargetPress>,
+}
+
+/// A control of a window's content the person pressed, as the session writes it to the app: the
+/// connection that declared it, its name and role, and what it does when the person named it by
+/// that instead of its name — the one a test, an agent or assistive technology looks up without
+/// reading the person's language.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetPress {
+    pub connection: u64,
+    pub name: String,
+    pub role: String,
+    pub identity: Option<String>,
+    pub action: TargetAction,
 }
 
 impl Bars {
@@ -126,12 +139,12 @@ impl DesktopHandle {
         self.queue_bar_ask(|bars| bars.declared_targets.push((tab, connection, targets)));
     }
 
-    /// The controls the windows the desk shows offer by name now, each with where it stands on the
-    /// desk: where a test, a tool or an agent finds them. A window's controls are offered only
-    /// while it is drawn, and its app's coordinates are offset by the tab's content, so where a
-    /// control is and where the person sees it agree.
+    /// The controls the windows the desk shows offer by name and by what they do now, each with
+    /// where it stands on the desk: where a test, a tool or an agent finds them. A window's
+    /// controls are offered only while it is drawn, and its app's coordinates are offset by the
+    /// tab's content, so where a control is and where the person sees it agree.
     #[must_use]
-    pub fn window_controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    pub fn window_controls(&self) -> Vec<ui::window_targets::WindowControl> {
         let shared = self.shared.borrow();
         let mut shown = Vec::new();
         for (tab, content) in shared.shown_tabs.content() {
@@ -139,15 +152,16 @@ impl DesktopHandle {
                 continue;
             };
             for target in targets {
-                shown.push((
-                    target.name.clone(),
-                    (
+                shown.push(ui::window_targets::WindowControl {
+                    name: target.name.clone(),
+                    identity: target.identity.clone(),
+                    rect: (
                         content.x0 + target.rect[0],
                         content.y0 + target.rect[1],
                         target.rect[2] - target.rect[0],
                         target.rect[3] - target.rect[1],
                     ),
-                ));
+                });
             }
         }
         shown
@@ -175,9 +189,14 @@ impl DesktopHandle {
         else {
             return Err(format!("window {tab} shows no control named {name}"));
         };
-        let (name, role) = (target.name.clone(), target.role.clone());
-        let connection = *connection;
-        shared.bars.presses.push((connection, name, role, action));
+        let press = TargetPress {
+            connection: *connection,
+            name: target.name.clone(),
+            role: target.role.clone(),
+            identity: None,
+            action,
+        };
+        shared.bars.presses.push(press);
         shared.changed();
         Ok(())
     }
@@ -232,18 +251,70 @@ impl DesktopHandle {
             else {
                 continue;
             };
-            let (name, role) = (target.name.clone(), target.role.clone());
-            let connection = *connection;
-            shared.bars.presses.push((connection, name, role, action));
+            let press = TargetPress {
+                connection: *connection,
+                name: target.name.clone(),
+                role: target.role.clone(),
+                identity: None,
+                action,
+            };
+            shared.bars.presses.push(press);
             shared.changed();
             return Ok(());
         }
         Err(format!("no window shows a control named {name}"))
     }
 
+    /// Press the control that does `identity` in a window the desk shows, as an assistive
+    /// technology does: the app acts on it through its own accessibility path and answers on the
+    /// connection that declared it. What the control does is where the window composes it and
+    /// what the person's language calls it, so this finds the control a name cannot.
+    ///
+    /// # Errors
+    /// No window the desk draws shows a control doing that, or it answers nothing of `action`.
+    pub fn press_window_control_doing(
+        &self,
+        identity: &str,
+        action: TargetAction,
+    ) -> Result<(), String> {
+        let mut shared = self.shared.borrow_mut();
+        for (tab, _) in shared.shown_tabs.content() {
+            let Some((connection, targets)) = shared.bars.targets.get(&tab) else {
+                continue;
+            };
+            let Some(target) = targets.iter().find(|target| {
+                target.identity.as_deref() == Some(identity) && target.actions.contains(&action)
+            }) else {
+                continue;
+            };
+            let press = TargetPress {
+                connection: *connection,
+                name: target.name.clone(),
+                role: target.role.clone(),
+                identity: target.identity.clone(),
+                action,
+            };
+            shared.bars.presses.push(press);
+            shared.changed();
+            return Ok(());
+        }
+        Err(format!("no window shows a control doing {identity}"))
+    }
+
+    /// Whether the app of `tab` described a control doing `identity` for its window's content.
+    #[must_use]
+    pub fn window_does(&self, tab: TabId, identity: &str) -> bool {
+        let shared = self.shared.borrow();
+        shared.bars.targets.get(&tab).is_some_and(|(_, targets)| {
+            targets
+                .iter()
+                .any(|target| target.identity.as_deref() == Some(identity))
+        })
+    }
+
     /// What the person, a tool or an agent pressed in the windows' content since the last call, by
     /// connection: what the session writes to each app.
-    pub fn take_target_presses(&self) -> Vec<(u64, String, String, TargetAction)> {
+    pub fn take_target_presses(&self) -> Vec<TargetPress> {
         std::mem::take(&mut self.shared.borrow_mut().bars.presses)
     }
 

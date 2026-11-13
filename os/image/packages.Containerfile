@@ -36,10 +36,9 @@ RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-
 # `rpm -qf` reporting that no package owns files it just installed.
 #
 # So this is not a workaround for the corruption; it is not shipping derived
-# state that was never valid to ship. Only this stage needs it: the builder
-# stages are thrown away and nothing in them reads the rpmdb after their one
-# transaction, and touching their dnf layers would invalidate their cached
-# toolchain for nothing.
+# state that was never valid to ship. The OS builder (builder-base) finalizes its
+# one transaction too, for its image's bytes rather than for a reader of its
+# rpmdb: every check compiled in it is keyed by them.
 #
 # What is established, and what is not — because the next person will need to
 # know which half to trust. Two earlier claims here were wrong and are corrected

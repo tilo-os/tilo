@@ -1,6 +1,6 @@
-//! Signing in with Discord (the OAuth 2 authorization code flow): the consent
-//! page a browser is sent to, the token endpoint the room's host trades
-//! the code at, and `/users/@me` for the access token it got.
+//! Signing in with Discord (the OAuth 2 authorization code flow): the consent page a browser is
+//! sent to, the token endpoint the room's host trades the code at, and `/users/@me` for the access
+//! token it got.
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
@@ -68,8 +68,7 @@ pub(super) fn page(state: &mut State, path: &str, query: &[(String, String)]) ->
     }
 }
 
-/// `GET /oauth2/authorize`: who is asking, for what, with Authorize and
-/// Cancel.
+/// `GET /oauth2/authorize`: who is asking, for what, with Authorize and Cancel.
 fn consent_page(state: &State, query: &[(String, String)]) -> Answer {
     if arg(query, "response_type") != "code"
         || arg(query, "client_id").is_empty()
@@ -104,8 +103,7 @@ fn consent_page(state: &State, query: &[(String, String)]) -> Answer {
     )
 }
 
-/// `GET /oauth2/authorize/approve`: back to the redirect address with a
-/// code good once.
+/// `GET /oauth2/authorize/approve`: back to the redirect address with a code good once.
 fn approve(state: &mut State, query: &[(String, String)]) -> Answer {
     let redirect_uri = arg(query, "redirect_uri").to_owned();
     if redirect_uri.is_empty() {
@@ -123,8 +121,7 @@ fn approve(state: &mut State, query: &[(String, String)]) -> Answer {
     ))
 }
 
-/// The token endpoint and the account behind an access token; `None` for
-/// the bot's routes.
+/// The token endpoint and the account behind an access token; `None` for the bot's routes.
 pub(super) fn route(state: &mut State, request: &Recorded, segments: &[&str]) -> Option<Answer> {
     match (request.method.as_str(), segments) {
         ("POST", ["oauth2", "token"]) => Some(token(state, request)),

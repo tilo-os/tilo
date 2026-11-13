@@ -1,39 +1,16 @@
-//! File-picker dialog widget: the system file chooser, which the shell shows for the `FileChooser`
-//! portal and for an app's path request, and any "open / save file from app menu" flow. It draws
-//! and hit-tests itself; the host positions it as a modal sheet and drains
-//! [`FilePicker::take_outcome`].
+//! File-picker dialog widget: the system file chooser, which the shell shows for the
+//! `FileChooser` portal and for an app's path request, and any "open / save file from app
+//! menu" flow. It draws and hit-tests itself; the host positions it as a modal sheet and
+//! drains [`FilePicker::take_outcome`].
 //!
-//! Choosing a file gives the asking app that file, so the sheet says who is asking: the app's icon
-//! and name with what it wants ("TOTP wants to open a file") or the app's own purpose ("Choose a
-//! QR code image") ([`FilePicker::with_requester`]). The primary button stays the outcome (Open,
-//! Save, Choose folder).
-//!
-//! Top to bottom: who is asking; a toolbar with Up, the location and the search field; the places
-//! sidebar beside the file list; a filename field in Save mode, the type filter (only when the app
-//! named more than one type) and Cancel and the primary button.
-//!
-//! * The location is a path bar: the shared [`Breadcrumb`] trail from the place it is in
-//!   ("Home › Projects"), each ancestor a click away. A click on the trail's empty space, or
-//!   Ctrl+L, turns it into a field to type a path into; Enter goes there, Escape puts the trail back.
-//! * The sidebar leads with Recent (what was chosen here before, when the host says what that is)
-//!   and then Home, the usual folders under it and every other place the person can reach.
-//! * The file list is the desktop's one list of files
-//!   ([`crate::widget::file_table::FileTable`]), the same one the file manager shows. Directory
-//!   click navigates in file modes and selects in directory mode; double-click navigates or
-//!   chooses; Ctrl/Shift multi-select when enabled.
-//! * Typing searches. The shared [`SearchField`] narrows the folder in view as the person types
-//!   ("3 of 40"); Enter searches every place the person can reach through the system search the
-//!   host hands in ([`FilePicker::with_search`]). Typing while the list has the keyboard types into
-//!   the search field. The same search is the picker's `search` operation
-//!   ([`semantic::PickerOperation::Search`]), for the keyboard and for agents.
-//!
-//! Keyboard: Tab moves between the controls, Up/Down move the selection, Enter opens/enters,
-//! Backspace goes to the parent, Escape cancels (or clears the search first).
+//! Top to bottom: who is asking; a toolbar with Up, the location and the search field; the
+//! places sidebar beside the file list; a filename field in Save mode, the type filter
+//! (only when the app named more than one type) and Cancel and the primary button.
 //!
 //! Constructed with "accessible roots" — the paths the caller may be given.
-//! [`FilePicker::can_navigate_to`] gates every path mutation against them so the person can't `..`
-//! out of them, and every chosen path is checked against their real paths again before it is
-//! answered.
+//! [`FilePicker::can_navigate_to`] gates every path mutation against them so the person
+//! can't `..` out of them, and every chosen path is checked against their real paths again
+//! before it is answered.
 
 mod places;
 mod reading;
@@ -79,39 +56,26 @@ use std::sync::Arc;
 /// agree at every `ui_scale` and text scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PickerMetrics {
-    /// The dialog's outer padding and the gutter between its regions (`s4`).
     pad: f64,
-    /// Between related controls: buttons, a label and its field (`s2`).
     gap: f64,
-    /// Between the dialog's bands (`s3`).
     section: f64,
-    /// One list or sidebar row (`nav_row_height`).
     row_h: f64,
-    /// A button, field or path bar (`min_pointer_target`).
     control_h: f64,
-    /// The heading's line box.
     title_h: f64,
-    /// The line under the heading that names the asking app.
     subtitle_h: f64,
-    /// The places sidebar (`sidebar_width`, narrowed for a dialog).
     sidebar_w: f64,
-    /// Below this dialog width the sidebar gives way to the list.
     sidebar_min_dialog_w: f64,
     icon_sm: f64,
     icon_md: f64,
     icon_lg: f64,
-    /// Horizontal inset of text inside a field, chip or row (`s2`).
     inset_x: f64,
-    /// The asking app's icon beside the heading.
     app_icon: f64,
-    /// The search field at the toolbar's end.
     search_w: f64,
     /// A footer button is never narrower than this.
     min_button_w: f64,
     name_label_w: f64,
     /// The band under the Save field that says why a name can't be used.
     error_h: f64,
-    /// The type dropdown's width before its labels have been measured.
     filter_w: f64,
 }
 
@@ -148,24 +112,17 @@ impl PickerMetrics {
 }
 
 impl Default for PickerMetrics {
-    /// The unscaled reference values, for a picker laid out before it has
-    /// seen a theme.
     fn default() -> Self {
         Self::from_theme(&Theme::dark())
     }
 }
 
-/// A shortcut in the sidebar: somewhere the person goes often, limited to
-/// what the caller's sandbox allows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Place {
-    /// Translation key of a well-known place; `None` shows `name` as is.
     key: Option<&'static str>,
     name: String,
-    /// Where it goes; empty for Recent, which is a list, not a folder.
     path: PathBuf,
     icon: Icon,
-    /// What was chosen here before.
     recent: bool,
 }
 
@@ -178,19 +135,14 @@ impl Place {
     }
 }
 
-/// The Fluent key of a toolkit message, resolved in the desktop's language.
 fn tr(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
 }
 
-/// Translation keys of the labels the footer buttons draw; a button label is
-/// a key, resolved when it is painted.
 const CANCEL_KEY: &str = "widget-filepicker-cancel";
 const REPLACE_KEY: &str = "widget-filepicker-replace";
-/// The label of [`FileFilter::all`], shown translated.
 const ALL_FILES_LABEL: &str = "All files";
 
-/// A logical size as the text renderer's width argument.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a width of a few hundred logical pixels fits f32 exactly enough for wrapping"
@@ -199,31 +151,21 @@ fn px(width: f64) -> f32 {
     width as f32
 }
 
-/// The file chooser is an immediate-mode modal, so its controls do not each
-/// have a retained Taffy node.  Keep their keyboard order in the toolkit's
-/// standard [`crate::overlay::FocusTrap`] instead of reimplementing wrapping
-/// Tab logic locally.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PickerFocus {
     Up,
-    /// The path bar: the trail, or the field typing a path.
     Location,
-    /// The search field.
     Search,
-    /// The places sidebar.
     Places,
     List,
     Filter,
     Filename,
     Cancel,
     Confirm,
-    /// The replace prompt's Cancel: keep the existing file, back to the name.
     KeepExisting,
-    /// The replace prompt's destructive Replace.
     Replace,
 }
 
-/// Semantic key of the replace prompt that parents its two buttons.
 const REPLACE_PROMPT_KEY: u64 = 9;
 
 impl PickerFocus {
@@ -261,12 +203,10 @@ impl PickerFocus {
     }
 }
 
-/// A named file-type filter. An empty `extensions` list matches every
-/// file (the conventional "All files" entry).
+/// A named file-type filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileFilter {
     pub label: String,
-    /// Lower-cased extensions without the dot (e.g. `["png", "jpg"]`).
     pub extensions: Vec<String>,
 }
 
@@ -300,26 +240,18 @@ impl FileFilter {
 pub struct FilePickerEntry {
     pub name: String,
     pub path: PathBuf,
-    /// Directories navigate on click; files select.
     pub is_dir: bool,
-    /// Bytes; `0` for a folder or when the size could not be read.
     pub size: u64,
-    /// Last change, in seconds since the Unix epoch.
     pub modified: Option<i64>,
-    /// What it really is and whether the chooser may give it, as read
-    /// with the listing; confirming reads it again.
     real: Real,
 }
 
-/// The app that asked for the chooser, as the sheet names it: choosing a
-/// file gives it to this app.
+/// The app that asked for the chooser, as the sheet names it: choosing a file gives it to
+/// this app.
 #[derive(Clone)]
 pub struct Requester {
-    /// What the app is called ("TOTP").
     pub name: String,
-    /// Its symbol, shown when it has no artwork of its own.
     pub glyph: Icon,
-    /// Its own artwork, when it has some.
     pub image: Option<crate::icons::AppImage>,
 }
 
@@ -329,53 +261,35 @@ pub struct Requester {
 /// checks a chosen one again before answering.
 pub type PickerSearch = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
 
-/// A listing being read on the worker, for the listing and folder that
-/// asked.
 struct Lookup {
     asked: (Listing, PathBuf),
     pending: reading::Pending<reading::Listed>,
 }
 
-/// A path about to be given or gone to, being checked on the worker; the
-/// chooser does what `intent` says once it knows.
 struct Check {
     intent: Intent,
     pending: reading::Pending<Vec<Real>>,
 }
 
-/// What a check is for, with the paths it was asked about in the order
-/// they were checked.
 enum Intent {
-    /// Open the selected files.
     Open(Vec<PathBuf>),
-    /// Choose the selected folders, or the folder in view.
     Directory(Vec<PathBuf>),
-    /// Save over the selected file: checks the file.
     SaveSelected(PathBuf),
-    /// Save under a typed name: checks its folder, then the file.
     SaveName(SaveName),
-    /// Go where the typed location says: checks the path.
     Location(PathBuf),
 }
 
-/// Most rows a search across places shows.
 pub const SEARCH_LIMIT: usize = 200;
 
-/// What the list shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Listing {
-    /// The folder in view (`current_dir`).
     Folder,
-    /// What was chosen here before.
     Recent,
-    /// What the system search found for this query across reachable places.
     Search(String),
 }
 
 struct PickerRow {
     entry: FilePickerEntry,
-    /// The folder it is in, for a row that is not in the folder in view (a
-    /// recent file, a search result).
     location: Option<String>,
 }
 
@@ -407,8 +321,6 @@ impl FileRow for PickerRow {
             .map(|utc| utc.with_timezone(&chrono::Local))
     }
 
-    /// The icon and the name, then, for a row from elsewhere, the folder it
-    /// is in, in the quieter ink.
     fn paint_name(
         &self,
         scene: &mut Scene,
@@ -454,17 +366,16 @@ impl FileRow for PickerRow {
     }
 }
 
-/// Drained by the host via [`FilePicker::take_outcome`] once per frame;
-/// `None` means "user hasn't decided yet". The terminal variants resolve
-/// the host's `oneshot::Sender<Option<Vec<PathBuf>>>`.
+/// Drained by the host via [`FilePicker::take_outcome`] once per frame; `None` means "user
+/// hasn't decided yet".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FilePickerOutcome {
     Selected(Vec<PathBuf>),
     Cancelled,
 }
 
-/// Open picks existing files; Save adds a filename field whose contents
-/// resolve to `current_dir/<name>`; Directory picks existing folders.
+/// Open picks existing files; Save adds a filename field whose contents resolve to
+/// `current_dir/<name>`; Directory picks existing folders.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FilePickerMode {
     #[default]
@@ -473,130 +384,85 @@ pub enum FilePickerMode {
     Directory,
 }
 
-/// Where a typed Save name points.
 #[derive(Debug, PartialEq, Eq)]
 enum SaveName {
-    /// A folder to open (the name ended in `/`).
     Folder(PathBuf),
-    /// A file `name` in `folder`.
     File { folder: PathBuf, name: String },
 }
 
 /// Why a typed Save name can't be used.
 #[derive(Debug, PartialEq, Eq)]
 enum SaveNameError {
-    /// Not a file name (`..`, `/`, `~` without a home).
     Invalid,
-    /// The folder it names doesn't exist.
     NoFolder(PathBuf),
-    /// The folder is outside what the asking app may write.
     NotAllowed(PathBuf),
 }
 
 #[crate::component::not_a_component(system, "files open through the system's file door")]
 pub struct FilePicker {
     rect: Rect,
-    /// The app's own purpose ("Choose a QR code image"); empty when it gave
-    /// none, and the heading says what the app wants instead.
     title: String,
-    /// Who asked, when the host knows.
     requester: Option<Requester>,
     mode: FilePickerMode,
     multiple: bool,
     accept_label: Option<String>,
 
     current_dir: PathBuf,
-    /// What the list shows: the folder in view, Recent or a search.
     listing: Listing,
-    /// Everything the listing holds, before the search field narrows it.
     listed: Vec<FilePickerEntry>,
-    /// What the list shows, in display order.
     entries: Vec<FilePickerEntry>,
-    /// File indices in Open/Save mode; directory indices in Directory mode.
     selection: SelectionModel,
-    /// The column the list is sorted by, and which way.
     sort: FileColumn,
     ascending: bool,
 
-    /// Paths the host has marked as accessible. Navigation outside every
-    /// root is silently ignored.
     accessible_roots: Vec<PathBuf>,
-    /// What was chosen here before, newest first: the Recent place.
     recent: Vec<PathBuf>,
-    /// The system search across the places the person can reach.
     search: Option<PickerSearch>,
-    /// Wakes the host when a lookup finishes, to show it before the next input.
     waker: Option<std::task::Waker>,
-    /// The listing being read, while it is.
     lookup: Option<Lookup>,
     read: Vec<reading::Row>,
-    /// What the folder in view is, as last read.
     here: Option<Real>,
-    /// What to select once the listing being read is in.
     then_select: Option<PathBuf>,
-    /// A path being checked before the chooser acts on it.
     check: Option<Check>,
-    /// The usual folders under home that exist, and the check reading them.
     present: Vec<PathBuf>,
     places_check: Option<reading::Pending<Vec<Real>>>,
 
     filters: Vec<FileFilter>,
     active_filter: usize,
 
-    /// The Save-mode filename: the shared text field, so caret, selection,
-    /// clipboard and input methods behave as in every other field.
     filename: TextInput,
-    /// The search field: the shared one, narrowing the list as it is typed.
     query: SearchField,
-    /// The file list: the desktop's one list of files.
     table: FileTable<PickerRow>,
-    /// The rows changed since the table last took them.
     rows_dirty: bool,
-    /// The path bar's trail, rebuilt when the place changes.
     crumbs: Breadcrumb,
-    /// Where each trail segment goes, in trail order.
     crumb_targets: Vec<PathBuf>,
     crumb_clicked: Rc<Cell<Option<usize>>>,
-    /// The person clicked the trail's empty space to type a path.
     crumb_edit: Rc<Cell<bool>>,
-    /// The path being typed, while the path bar is a field.
     location: Option<TextInput>,
-    /// The typed path goes nowhere the picker may go.
     location_invalid: bool,
-    /// The theme of the latest layout, for the parts that lay themselves
-    /// out on a tree of their own from event handlers.
     theme: Theme,
 
-    /// Set on Open / Cancel. `None` until resolved.
     pending_outcome: Option<FilePickerOutcome>,
     /// Why the typed Save name can't be used, shown under the field until
     /// the name changes. Save never closes the dialog on a name it refuses.
     name_error: Option<String>,
-    /// The person's home folder, for a typed `~/…` name.
     home: Option<PathBuf>,
     /// A Save target that already exists, waiting for the person to say
     /// whether to replace it. While set, the prompt is the only thing on the
     /// picker that takes input.
     replace_prompt: Option<PathBuf>,
 
-    /// The sidebar's shortcuts, limited to what the sandbox allows.
     places: Vec<Place>,
-    /// The sidebar row under the keyboard cursor.
     place_cursor: Option<usize>,
     hover_place: Option<usize>,
-    /// The type menu is open over its chip.
     filter_open: bool,
     filter_hover: Option<usize>,
 
-    // Hit-test rects, recomputed on each `apply_layout` / `draw`.
     place_rects: Vec<Rect>,
     filter_menu_rect: Rect,
     filter_rows: Vec<Rect>,
-    /// Cancel, confirm and Replace button widths, measured at paint.
     button_w: [f64; 3],
-    /// The type dropdown chip's width, measured at paint.
     filter_w: f64,
-    /// The "File type" label before it, measured at paint.
     filter_label_w: f64,
     open_rect: Rect,
     cancel_rect: Rect,
@@ -607,30 +473,17 @@ pub struct FilePicker {
     replace_card_rect: Rect,
     keep_existing_rect: Rect,
     replace_rect: Rect,
-    /// `(entry_index, rect)` for the rows the list shows now.
     entry_rows: Vec<(usize, Rect)>,
-    /// Token-derived insets from the theme of the latest layout build, so
-    /// the renderer-less layout pass and the draw pass read the same
-    /// `ui_scale`d values. `PickerMetrics::default()` until a theme is seen.
     metrics: PickerMetrics,
 
-    /// `MouseInput` carries no position payload, so this tracks the cursor
-    /// for click resolution.
     last_cursor: Point,
-    /// Last entry pressed + when, for double-click open/navigation detection.
     last_click: Option<(usize, crate::time::Instant)>,
 
-    /// `0` = Cancel, `1` = the mode-specific confirmation action.
     hover_button: Option<u8>,
-    /// The replace prompt button under the pointer.
     hover_prompt: Option<PickerFocus>,
-    /// The active control inside this immediate-mode modal.  It is reflected
-    /// in both paint and accessibility semantics.
     focus: Option<PickerFocus>,
     has_keyboard_focus: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -649,8 +502,6 @@ impl FilePicker {
         } else {
             accessible_roots
         };
-        // Nothing can be opened or saved outside the roots, so a folder
-        // there would refuse every confirmation.
         let initial = if roots.iter().any(|root| asked.starts_with(root)) {
             asked
         } else {
@@ -675,8 +526,6 @@ impl FilePicker {
             title: title.into(),
             requester: None,
             mode: FilePickerMode::default(),
-            // Preserve the historical direct-widget Open behavior. Portal
-            // callers explicitly hand their single/multiple intent through.
             multiple: true,
             accept_label: None,
             current_dir: initial,
@@ -751,8 +600,7 @@ impl FilePicker {
         self
     }
 
-    /// What was chosen here before, newest first. Recent leads the sidebar
-    /// when there is any.
+    /// What was chosen here before, newest first.
     #[must_use]
     pub fn with_recent(mut self, recent: Vec<PathBuf>) -> Self {
         self.recent = recent;
@@ -760,18 +608,16 @@ impl FilePicker {
         self
     }
 
-    /// The system search across the places the person can reach: Enter in
-    /// the search field, and the `search` operation, list what it finds.
+    /// The system search across the places the person can reach: Enter in the search field,
+    /// and the `search` operation, list what it finds.
     #[must_use]
     pub fn with_search(mut self, search: Option<PickerSearch>) -> Self {
         self.search = search;
         self
     }
 
-    /// What wakes the host when the worker answers (a listing, a check,
-    /// the usual folders); without one the answer shows at the next frame.
-    /// What the chooser already asked for is asked again, so that answer
-    /// wakes this host too.
+    /// What wakes the host when the worker answers (a listing, a check, the usual folders);
+    /// without one the answer shows at the next frame.
     #[must_use]
     pub fn with_waker(mut self, waker: Option<std::task::Waker>) -> Self {
         self.waker = waker;
@@ -827,7 +673,6 @@ impl FilePicker {
         self
     }
 
-    /// The usual folders under home the sidebar shows when they exist.
     fn usual_folders(&self) -> Vec<PathBuf> {
         let Some(home) = self.home.as_deref().filter(|home| home.is_absolute()) else {
             return Vec::new();
@@ -919,8 +764,6 @@ impl FilePicker {
             .map_or(ALL_FILES_LABEL, |f| f.label.as_str())
     }
 
-    /// Put `name` in the filename field with the name selected but not its
-    /// extension, so typing replaces the name and keeps the type.
     fn set_filename(&mut self, name: &str) {
         self.dirty = true;
         self.name_error = None;
@@ -970,14 +813,12 @@ impl FilePicker {
         self.pending_outcome = Some(FilePickerOutcome::Cancelled);
     }
 
-    /// The existing file a Save is waiting to replace, while the picker asks
-    /// whether to.
+    /// The existing file a Save is waiting to replace, while the picker asks whether to.
     pub fn replace_prompt(&self) -> Option<&Path> {
         self.replace_prompt.as_deref()
     }
 
-    /// Answer the replace prompt with Replace: the Save resolves to the
-    /// existing file.
+    /// Answer the replace prompt with Replace: the Save resolves to the existing file.
     pub fn confirm_replace(&mut self) {
         if let Some(target) = self.replace_prompt.take() {
             self.hover_prompt = None;
@@ -985,8 +826,8 @@ impl FilePicker {
         }
     }
 
-    /// Answer the replace prompt with Cancel: nothing is chosen, and the
-    /// name is back in front of the person to change.
+    /// Answer the replace prompt with Cancel: nothing is chosen, and the name is back in
+    /// front of the person to change.
     pub fn keep_existing(&mut self) {
         if self.replace_prompt.take().is_some() {
             self.hover_prompt = None;
@@ -1043,8 +884,7 @@ impl FilePicker {
             .any(|root| cand.starts_with(root))
     }
 
-    /// Up goes to the parent of the folder in view; Recent and a search
-    /// have no parent.
+    /// Up goes to the parent of the folder in view; Recent and a search have no parent.
     pub fn can_go_up(&self) -> bool {
         self.listing == Listing::Folder
             && self
@@ -1090,9 +930,8 @@ impl FilePicker {
         self.list_anew();
     }
 
-    /// Search every place the person can reach for `query` with the system
-    /// search, and list what it finds. Without a system search, the folder
-    /// in view narrows to `query` instead.
+    /// Search every place the person can reach for `query` with the system search, and list
+    /// what it finds.
     pub fn search_for(&mut self, query: &str) {
         let query = query.trim().to_owned();
         if self.query.value() != query {
@@ -1110,12 +949,10 @@ impl FilePicker {
             self.listing = Listing::Search(query);
             self.list_anew();
         } else {
-            // Without a system search the folder in view narrows instead.
             self.narrow();
         }
     }
 
-    /// Empty the search field and go back to the folder it searched from.
     fn end_search(&mut self) {
         self.leave_search();
         self.selection.clear();
@@ -1127,7 +964,6 @@ impl FilePicker {
         }
     }
 
-    /// Empty the search field, for a listing of somewhere new.
     fn leave_search(&mut self) {
         if !self.query.is_empty() {
             self.query.set_query("");
@@ -1136,10 +972,8 @@ impl FilePicker {
         self.query.set_count(None);
     }
 
-    /// What the search field holds now narrows the listing.
     fn on_query_typed(&mut self) {
         if matches!(self.listing, Listing::Search(_)) {
-            // Typing again narrows the folder the search started from.
             self.listing = Listing::Folder;
             self.list_anew();
             return;
@@ -1148,7 +982,6 @@ impl FilePicker {
         self.narrow();
         self.reselect(&selected);
         self.table.reset_scroll();
-        // Type-to-find: the first match is the one Enter or Open takes.
         if self.selection.selected().is_empty() && !self.query.is_empty() {
             self.set_selection(0);
         }
@@ -1156,11 +989,6 @@ impl FilePicker {
 
     pub fn cycle_filter(&mut self) {
         if self.filters.len() > 1 {
-            // wrapping_add is exactly the right operator for cyclic index
-            // arithmetic: even in the unreachable case where active_filter
-            // is usize::MAX, wrapping to 0 before the modulo still yields a
-            // valid index rather than panicking. `filters.len() > 1` above
-            // guards the `checked_rem` divisor.
             self.active_filter = self
                 .active_filter
                 .wrapping_add(1)
@@ -1225,7 +1053,6 @@ impl FilePicker {
         self.show_listed();
     }
 
-    /// Whether the listing in view is still being read.
     fn looking_up(&self) -> bool {
         self.lookup.is_some()
     }
@@ -1238,9 +1065,8 @@ impl FilePicker {
         self.lookup.is_some() || self.check.is_some() || self.places_check.is_some()
     }
 
-    /// Take what the worker has answered: show a listing, act on a check,
-    /// show the usual folders. Answers whether anything changed; the host
-    /// calls it each frame it is woken.
+    /// Take what the worker has answered: show a listing, act on a check, show the usual
+    /// folders.
     pub fn poll_lookups(&mut self) -> bool {
         let mut changed = false;
         if let Some(answer) = self
@@ -1271,7 +1097,6 @@ impl FilePicker {
                         .unwrap_or_default();
                     self.set_filename(&name);
                 }
-                // The rows came after the last layout; place them where they hit-test.
                 self.apply_layout_helper();
                 changed = true;
             }
@@ -1323,14 +1148,12 @@ impl FilePicker {
         self.relist();
     }
 
-    /// List somewhere new: nothing is listed until its rows are in.
     fn list_anew(&mut self) {
         self.read.clear();
         self.then_select = None;
         self.refresh_entries();
     }
 
-    /// Sort, narrow and label what is listed.
     fn show_listed(&mut self) {
         self.sort_listed();
         self.narrow();
@@ -1338,11 +1161,8 @@ impl FilePicker {
         self.ensure_valid_focus();
     }
 
-    /// Folders first, then files, each in the column's order.
     fn sort_listed(&mut self) {
         let (column, ascending) = (self.sort, self.ascending);
-        // Search results and Recent come in the order found or chosen,
-        // until the person sorts by a column.
         let keep_order = self.listing != Listing::Folder && column == FileColumn::Name && ascending;
         let by_column = |a: &FilePickerEntry, b: &FilePickerEntry| {
             let order = match column {
@@ -1361,8 +1181,6 @@ impl FilePicker {
             });
     }
 
-    /// Show the listing narrowed to what the search field holds (all of it
-    /// when the field is empty), and say how many of how many in the field.
     fn narrow(&mut self) {
         let query = self.query.value().trim().to_lowercase();
         let narrowing = !query.is_empty() && !matches!(self.listing, Listing::Search(_));
@@ -1399,7 +1217,6 @@ impl FilePicker {
             .collect()
     }
 
-    /// Select the rows at `paths` again, after the rows moved.
     fn reselect(&mut self, paths: &[PathBuf]) {
         self.selection.clear();
         for path in paths {
@@ -1409,7 +1226,6 @@ impl FilePicker {
         }
     }
 
-    /// Sort by `column`: a second press on the same column turns it round.
     fn sort_by(&mut self, column: FileColumn) {
         if self.sort == column {
             self.ascending = !self.ascending;
@@ -1423,8 +1239,6 @@ impl FilePicker {
         self.reselect(&selected);
     }
 
-    /// The path bar's trail for the place in view: each ancestor the person
-    /// may enter, Home named as Home; Recent and a search are one segment.
     fn rebuild_crumbs(&mut self) {
         let (labels, targets, icon) = match &self.listing {
             Listing::Recent => (
@@ -1491,8 +1305,6 @@ impl FilePicker {
         self.crumb_targets = targets;
     }
 
-    /// What the path bar shows as text while it is a field: the folder in
-    /// view, from home as `~/…`.
     fn location_text(&self) -> String {
         if let Some(home) = self.home.as_deref()
             && let Ok(rest) = self.current_dir.strip_prefix(home)
@@ -1508,8 +1320,8 @@ impl FilePicker {
         )
     }
 
-    /// Turn the path bar into a field holding the folder in view, all of it
-    /// selected, so typing replaces it.
+    /// Turn the path bar into a field holding the folder in view, all of it selected, so
+    /// typing replaces it.
     pub fn edit_location(&mut self) {
         let mut field = TextInput::local()
             .with_kind(crate::widget::TextInputKind::Name)
@@ -1525,7 +1337,6 @@ impl FilePicker {
         self.apply_layout_helper();
     }
 
-    /// Put the trail back.
     fn stop_editing_location(&mut self) {
         self.location = None;
         self.location_invalid = false;
@@ -1548,10 +1359,6 @@ impl FilePicker {
         self.ask(Intent::Location(target.clone()), vec![target]);
     }
 
-    /// Go to the typed `target`, now that it is known what it really is:
-    /// into a folder, or, for a file, into its folder with the file
-    /// selected. A path the picker may not go to keeps the field up,
-    /// marked.
     fn go_to_location(&mut self, target: PathBuf, real: Real) {
         if self.location.is_none() {
             return;
@@ -1580,8 +1387,6 @@ impl FilePicker {
         });
     }
 
-    /// A typed path, lexically: from home (`~/`), absolute, or relative to
-    /// the folder in view. The real path is checked by the caller.
     fn typed_path(&self, typed: &str) -> Option<PathBuf> {
         use std::path::Component;
         if typed.is_empty() {
@@ -1611,14 +1416,10 @@ impl FilePicker {
         Some(path)
     }
 
-    /// The heading names the app and what it wants, or gives the app's own
-    /// purpose; then the app's name sits under it.
     fn has_subtitle(&self) -> bool {
         self.requester.is_some() && !self.title.trim().is_empty()
     }
 
-    /// The heading: the app's own purpose when it gave one, else what the
-    /// app wants ("TOTP wants to open a file").
     fn heading(&self) -> String {
         let purpose = self.title.trim();
         if !purpose.is_empty() {
@@ -1650,8 +1451,6 @@ impl FilePicker {
         }
     }
 
-    /// The heading's band: the app's icon beside the heading (and the app's
-    /// name under it when the heading is the app's own purpose).
     fn heading_h(&self) -> f64 {
         let m = self.metrics;
         let text = m.title_h
@@ -1667,13 +1466,11 @@ impl FilePicker {
         }
     }
 
-    /// The heading, then the toolbar, in the dialog's top band.
     fn header_h(&self) -> f64 {
         let m = self.metrics;
         m.pad + self.heading_h() + m.gap + m.control_h + m.section
     }
 
-    /// The Save name row (when there is one) and the button row.
     fn footer_h(&self) -> f64 {
         let m = self.metrics;
         let buttons = 2.0 * m.pad + m.control_h;
@@ -1689,8 +1486,6 @@ impl FilePicker {
         }
     }
 
-    /// Whether the places sidebar is drawn: there is somewhere to go and the
-    /// dialog is wide enough to keep a readable list beside it.
     fn has_sidebar(&self) -> bool {
         !self.places.is_empty() && self.rect.width() >= self.metrics.sidebar_min_dialog_w
     }
@@ -1717,7 +1512,6 @@ impl FilePicker {
         }
     }
 
-    /// The file list, with its column header, beside the sidebar.
     fn list_rect(&self) -> Rect {
         let top = self.rect.y0 + self.header_h();
         Rect::new(
@@ -1728,14 +1522,11 @@ impl FilePicker {
         )
     }
 
-    /// The toolbar row: Up, the path bar and the search field.
     fn toolbar_y0(&self) -> f64 {
         let m = self.metrics;
         self.rect.y0 + m.pad + self.heading_h() + m.gap
     }
 
-    /// The path bar: the trail, or the field typing a path, in a well
-    /// between Up and the search field.
     fn path_rect(&self) -> Rect {
         let m = self.metrics;
         let y0 = self.toolbar_y0();
@@ -1747,7 +1538,6 @@ impl FilePicker {
         )
     }
 
-    /// The trail or field inside the path bar's well.
     fn path_inner(&self) -> Rect {
         let bar = self.path_rect();
         let inset = self.metrics.inset_x;
@@ -1759,14 +1549,12 @@ impl FilePicker {
         )
     }
 
-    /// Scroll the list so the row of entry `i` shows.
     fn scroll_to(&mut self, i: usize) {
         self.sync_table();
         self.table.reveal_row(i);
         self.place_table();
     }
 
-    /// Hand the table the rows, when they changed, and the selection.
     fn sync_table(&mut self) {
         self.dirty = true;
         if self.rows_dirty {
@@ -1793,8 +1581,6 @@ impl FilePicker {
         }
     }
 
-    /// Lay the table out in the list's rect and read back where its rows
-    /// are. A width that wants other columns builds them and lays out again.
     fn place_table(&mut self) {
         let list = self.list_rect();
         if self.table.place(list, &self.theme) {
@@ -1805,7 +1591,6 @@ impl FilePicker {
         self.entry_rows = self.table.row_rects();
     }
 
-    /// The folder a row from elsewhere is in, as the sidebar would name it.
     fn folder_label(&self, path: &Path) -> String {
         let Some(folder) = path.parent() else {
             return String::new();
@@ -1819,8 +1604,6 @@ impl FilePicker {
         )
     }
 
-    /// Put a part that lays itself out on a tree into `rect`, on a tree of
-    /// its own: the picker places its parts by hand.
     fn place_part(part: &mut dyn Widget, rect: Rect, theme: &Theme) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -1850,8 +1633,6 @@ impl FilePicker {
         let m = self.metrics;
         let footer_top = self.rect.y1 - self.footer_h();
 
-        // Buttons: Cancel then the primary action, right-aligned, sized to
-        // their labels.
         let row_y1 = self.rect.y1 - m.pad;
         let row_y0 = row_y1 - m.control_h;
         let open_x1 = self.rect.x1 - m.pad;
@@ -1897,7 +1678,8 @@ impl FilePicker {
             self.rect.x1 - m.pad,
             toolbar_y0 + m.control_h,
         );
-        self.query.apply_layout_external(self.search_rect);
+        let theme = self.theme.clone();
+        self.query.apply_layout_external(self.search_rect, &theme);
         let inner = self.path_inner();
         match self.location.as_mut() {
             Some(field) => field.apply_layout_external(inner),
@@ -1911,7 +1693,6 @@ impl FilePicker {
         self.ensure_valid_focus();
     }
 
-    /// One sidebar row per place, top to bottom, as many as fit.
     fn layout_places(&mut self) {
         self.place_rects.clear();
         if !self.has_sidebar() {
@@ -1930,7 +1711,6 @@ impl FilePicker {
         }
     }
 
-    /// The type menu opens upward from its chip: one row per filter.
     fn layout_filter_menu(&mut self) {
         let m = self.metrics;
         self.filter_rows.clear();
@@ -1952,8 +1732,6 @@ impl FilePicker {
         }
     }
 
-    /// The replace prompt: a card centred on the picker, its buttons in the
-    /// footer's order (Cancel, then the action) at its bottom edge.
     fn layout_replace_prompt(&mut self) {
         let m = self.metrics;
         let w = (m.icon_lg * 20.0)
@@ -1991,8 +1769,6 @@ impl FilePicker {
         if self.has_sidebar() {
             targets.push(PickerFocus::Places);
         }
-        // The list holds focus while its rows are being read, so the
-        // chooser opens on it rather than moving there when they arrive.
         if !self.entries.is_empty() || self.looking_up() {
             targets.push(PickerFocus::List);
         }
@@ -2026,8 +1802,6 @@ impl FilePicker {
     fn ensure_valid_focus(&mut self) {
         let targets = self.focus_targets();
         if self.focus.is_none_or(|focused| !targets.contains(&focused)) {
-            // Save dialogs start where text entry is expected; Open dialogs
-            // start on the listbox so arrows and typing work immediately.
             self.focus = if self.mode == FilePickerMode::Save {
                 targets
                     .iter()
@@ -2073,8 +1847,6 @@ impl FilePicker {
         self.sync_text_focus();
     }
 
-    /// Each text field holds the caret exactly while it is the focused
-    /// control of a focused picker.
     fn sync_text_focus(&mut self) {
         self.dirty = true;
         let on = |control| self.has_keyboard_focus && self.focus == Some(control);
@@ -2094,8 +1866,6 @@ impl FilePicker {
         }
     }
 
-    /// The text field `event` is typing into, if it is typing rather than
-    /// the picker's own navigation (Tab, Escape, Enter).
     fn typing_into(&self, event: &WindowEvent) -> Option<PickerFocus> {
         use winit::keyboard::{Key, NamedKey};
         if self.replace_prompt.is_some() {
@@ -2116,7 +1886,6 @@ impl FilePicker {
                     event.logical_key,
                     Key::Named(NamedKey::Tab | NamedKey::Escape | NamedKey::Enter)
                 );
-                // Down from the search field goes to the list it narrowed.
                 let into_list = field == PickerFocus::Search
                     && matches!(event.logical_key, Key::Named(NamedKey::ArrowDown));
                 !navigation && !into_list
@@ -2126,8 +1895,6 @@ impl FilePicker {
         typing.then_some(field)
     }
 
-    /// The text field holding the caret, if one does: what an input method
-    /// composes into.
     fn focused_text(&self) -> Option<&dyn Widget> {
         if !self.has_keyboard_focus {
             return None;
@@ -2179,8 +1946,6 @@ impl FilePicker {
         controls
     }
 
-    /// The place the list shows: Recent, or the place the folder in view is
-    /// inside, the deepest if several.
     fn active_place(&self) -> Option<usize> {
         match self.listing {
             Listing::Recent => self.places.iter().position(|place| place.recent),
@@ -2208,7 +1973,6 @@ impl FilePicker {
         }
     }
 
-    /// Arrow keys in the sidebar move through the places, entering each.
     fn move_place(&mut self, delta: isize) {
         let count = self.places.len();
         if count == 0 {
@@ -2240,7 +2004,6 @@ impl FilePicker {
         self.filter_hover = self.filter_open.then_some(self.active_filter);
     }
 
-    /// Keys while the type menu is open: it owns the keyboard until it closes.
     fn on_filter_menu_key(&mut self, key: &winit::keyboard::Key) {
         use winit::keyboard::{Key, NamedKey};
         let last = self.filters.len().saturating_sub(1);
@@ -2312,11 +2075,6 @@ impl FilePicker {
         }
     }
 
-    /// Measure what has no size until text is shaped — the button labels
-    /// and the type menu's widest entry — with the renderer the frame draws
-    /// with, and re-lay the picker out from those widths. Hit rects
-    /// therefore match the painted glyphs, and stay matched when an event
-    /// handler rebuilds the layout without a renderer. Runs once per paint.
     fn measure_text(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
         let m = self.metrics;
         let mut changed = false;
@@ -2366,7 +2124,6 @@ impl FilePicker {
         }
     }
 
-    /// The translation key (or the app's own wording) of the confirm button.
     fn confirm_key(&self) -> String {
         self.accept_label.clone().unwrap_or_else(|| {
             match self.mode {
@@ -2378,8 +2135,6 @@ impl FilePicker {
         })
     }
 
-    /// A filter's name as shown: the built-in "All files" follows the
-    /// desktop's language, a caller's own label is shown as given.
     fn filter_display(&self, filter: &FileFilter) -> String {
         if filter.extensions.is_empty() && filter.label == ALL_FILES_LABEL {
             tr("widget-filepicker-all-files")
@@ -2388,7 +2143,6 @@ impl FilePicker {
         }
     }
 
-    /// Adopt `theme`'s insets; re-lay the picker out when they moved.
     fn adopt_theme(&mut self, theme: &Theme) {
         let metrics = PickerMetrics::from_theme(theme);
         #[allow(
@@ -2404,9 +2158,6 @@ impl FilePicker {
         }
     }
 
-    /// Confirm: what is about to be given (the selection, or the typed
-    /// Save name's folder and file) is checked again on the worker, and
-    /// the chooser acts on the answer ([`Self::act`]).
     fn commit_open(&mut self) {
         if self.check.is_some() {
             return;
@@ -2445,18 +2196,13 @@ impl FilePicker {
         }
     }
 
-    /// Check `paths` on the worker for `intent`.
     fn ask(&mut self, intent: Intent, paths: Vec<PathBuf>) {
         self.check = reading::check(paths, self.accessible_roots.clone(), self.waker.clone())
             .map(|pending| Check { intent, pending });
     }
 
-    /// Do what a check was for, now that the worker says what each path
-    /// really is. A path that vanished, changed kind or turned into a link
-    /// out of the roots since it was listed is refused.
     fn act(&mut self, intent: Intent, reals: &[Real]) {
         if self.pending_outcome.is_some() {
-            // Cancelled while the check was out: nothing more to do.
             return;
         }
         let real = |i: usize| reals.get(i).copied().unwrap_or_default();
@@ -2488,8 +2234,6 @@ impl FilePicker {
                     return;
                 }
                 if folder != self.current_dir {
-                    // Show where the file goes, so a replace prompt (or the
-                    // next Save) is about the folder in view.
                     self.navigate_to(&folder);
                     self.set_filename(&name);
                 }
@@ -2524,7 +2268,6 @@ impl FilePicker {
                     self.focus_control(PickerFocus::Filename);
                 }
             }
-            // A dangling link is still a name taken in this folder.
             Kind::File | Kind::Other | Kind::Dangling => {
                 self.replace_prompt = Some(target);
                 self.hover_prompt = None;
@@ -2540,11 +2283,6 @@ impl FilePicker {
         }
     }
 
-    /// Resolve a typed Save name, lexically: a plain name in the folder in
-    /// view, or a path to another folder — relative to this one, from home
-    /// (`~/`) or absolute — with the file's name as its last part. A name
-    /// ending in `/` is a folder to open. Whether the folder exists and may
-    /// be written is checked on confirming ([`Self::save_folder_allowed`]).
     fn resolve_save_name(&self, typed: &str) -> Result<SaveName, SaveNameError> {
         use std::path::Component;
         let wants_folder = typed.ends_with('/');
@@ -2555,8 +2293,6 @@ impl FilePicker {
             }
             _ => PathBuf::from(typed),
         };
-        // Lexical, so the folder shown is the one the person named; the real
-        // path is checked against the roots on confirming.
         let mut path = if expanded.is_absolute() {
             PathBuf::new()
         } else {
@@ -2572,8 +2308,6 @@ impl FilePicker {
                 Component::Normal(part) => path.push(part),
             }
         }
-        // A folder outside the roots is refused as typed; one inside them
-        // is checked for what it really is on confirming.
         if wants_folder {
             return if self.can_navigate_to(&path) {
                 Ok(SaveName::Folder(path))
@@ -2626,7 +2360,6 @@ impl FilePicker {
         self.name_error.as_deref()
     }
 
-    /// The first selected file, as listed, if the chooser may give it.
     fn first_selected_file(&self) -> Option<PathBuf> {
         self.selection
             .selected()
@@ -2637,8 +2370,6 @@ impl FilePicker {
             .map(|e| e.path.clone())
     }
 
-    /// The selected files, as listed, if every one is a file the chooser
-    /// may give.
     fn validated_selected_files(&self) -> Option<Vec<PathBuf>> {
         let entries = self
             .selection
@@ -2655,8 +2386,6 @@ impl FilePicker {
             .collect()
     }
 
-    /// The selected folders, as listed, or the folder in view when none is
-    /// selected, if each is a folder the chooser may give.
     fn validated_directory_choice(&self) -> Option<Vec<PathBuf>> {
         let selected = self.selection.selected();
         if selected.is_empty() {
@@ -2674,7 +2403,6 @@ impl FilePicker {
             .collect()
     }
 
-    /// Whether `entry`, as listed, is something the chooser may give.
     fn within_scope(entry: &FilePickerEntry) -> bool {
         if entry.is_dir {
             entry.real.is_folder_inside()
@@ -2683,8 +2411,6 @@ impl FilePicker {
         }
     }
 
-    /// Resolve a click on entry `i`: file modes navigate through directories;
-    /// directory mode selects on one click and navigates on a double click.
     fn activate_entry(&mut self, i: usize, ctrl: bool, shift: bool) {
         let Some(entry) = self.entries.get(i).cloned() else {
             return;
@@ -2703,7 +2429,6 @@ impl FilePicker {
         } else {
             self.selection.select_only(i);
         }
-        // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
             let name = entry.name.clone();
             self.set_filename(&name);
@@ -2752,9 +2477,9 @@ impl Widget for FilePicker {
         self.adopt_theme(theme);
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
-            flex_grow: 1.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -2775,10 +2500,6 @@ impl Widget for FilePicker {
         self.poll_lookups();
         self.apply_layout_helper();
         self.measure_text(text_renderer, theme);
-        // The system sheet: the one floating card, on its opaque ground
-        // rather than the translucent panel material, since a file list
-        // stands on it; its controls lift off that ground, so a secondary
-        // button and a field read the same in light and dark.
         crate::widget::floating_surface::paint_card(scene, transform, self.rect, theme);
         let sheet = theme.on_ground(crate::widget::floating_surface::card_ground(theme));
         let theme = &sheet;
@@ -2798,7 +2519,6 @@ impl Widget for FilePicker {
             self.on_replace_prompt_event(event, ctx);
             return;
         }
-        // Text typed while the list has the keyboard searches.
         if self.focus == Some(PickerFocus::List)
             && matches!(event, WindowEvent::Ime(winit::event::Ime::Commit(_)))
         {
@@ -2835,8 +2555,6 @@ impl Widget for FilePicker {
                 state: ElementState::Released,
                 ..
             } => {
-                // A drag on the scrollbar or a column's edge ends wherever
-                // the pointer is.
                 let outcome = self.table.handle_event(event, ctx);
                 if let Some(column) = outcome.sort {
                     self.sort_by(column);
@@ -2856,8 +2574,6 @@ impl Widget for FilePicker {
                 WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
             )
         {
-            // The field places its caret and drags its selection itself; the
-            // picker still sees the press to move focus onto the field.
             let mut field_handled = false;
             self.filename.handle_event(
                 event,
@@ -2875,8 +2591,6 @@ impl Widget for FilePicker {
         "FilePicker"
     }
 
-    /// Reports the modal and every currently visible interactive target. The
-    /// same `focus` field drives the painted ring and these semantics.
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive accessibility projection keeps focus, bounds, and actions aligned"
@@ -3085,7 +2799,6 @@ impl Widget for FilePicker {
                     .focused(self.has_keyboard_focus),
             )
             .with_children(controls);
-        // The app the chosen file goes to.
         Some(match &self.requester {
             Some(requester) => dialog.with_description(requester.name.clone()),
             None => dialog,
@@ -3302,8 +3015,6 @@ impl FilePicker {
         ))
     }
 
-    /// The replace prompt as assistive technology and agents read it: a
-    /// modal dialog that asks the question, with Cancel and Replace.
     fn replace_prompt_accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let name = self.replace_prompt_name()?;
@@ -3344,7 +3055,6 @@ impl FilePicker {
         )
     }
 
-    /// Paint the replace prompt over the dimmed picker.
     fn draw_replace_prompt(
         &self,
         scene: &mut Scene,
@@ -3427,8 +3137,6 @@ impl FilePicker {
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
     }
 
-    /// Who is asking: the app's icon, the heading (what the app wants, or
-    /// its own purpose) and, under a purpose, the app's name.
     fn draw_header(
         &self,
         scene: &mut Scene,
@@ -3499,8 +3207,6 @@ impl FilePicker {
         }
     }
 
-    /// Up, the path bar (the trail, or the field typing a path) and the
-    /// search field.
     fn draw_toolbar(
         &mut self,
         scene: &mut Scene,
@@ -3518,10 +3224,6 @@ impl FilePicker {
             .disabled(!self.can_go_up());
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &up);
 
-        // The path bar is a field in the same row as the search field, so
-        // it is the same raised well with no edge, and the trail reads as a
-        // place rather than as loose text. Forced colours and a refused
-        // path draw its outline.
         let bar = self.path_rect();
         let well = RoundedRect::from_rect(bar, f64::from(tokens.radii.control));
         let fill = tokens.colors.surfaces.raised;
@@ -3564,7 +3266,6 @@ impl FilePicker {
             .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
-    /// The places sidebar: a quiet wash beside the list, one row per place.
     fn draw_sidebar(
         &self,
         scene: &mut Scene,
@@ -3661,8 +3362,6 @@ impl FilePicker {
         }
     }
 
-    /// The file list, or what it says when there is nothing to show, with
-    /// the keyboard's ring on the row it is on.
     fn draw_list(
         &mut self,
         scene: &mut Scene,
@@ -3717,8 +3416,6 @@ impl FilePicker {
         }
     }
 
-    /// The footer: Save's name row, the type dropdown and the Cancel and
-    /// confirm buttons. Split out of `draw` to keep that function readable.
     fn draw_footer(
         &mut self,
         scene: &mut Scene,
@@ -3769,8 +3466,6 @@ impl FilePicker {
             }
         }
         if self.shows_filter() {
-            // The type menu says what it filters: a "File type" label, then
-            // the type ("Documents", "Images", "All files").
             let label = tr("widget-filepicker-file-type");
             let style = theme.text(TextRole::Label);
             let (_, th) = text_renderer.measure_style(&label, None, &style);
@@ -3809,7 +3504,6 @@ impl FilePicker {
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
-    /// The open type menu, floating above its chip like any other menu.
     fn draw_filter_menu(
         &self,
         scene: &mut Scene,
@@ -3889,8 +3583,6 @@ impl FilePicker {
         }
     }
 
-    /// Save-mode filename text field. Split out of `draw_footer` to keep
-    /// that under the line cap.
     fn draw_filename_field(
         &mut self,
         scene: &mut Scene,
@@ -3909,8 +3601,6 @@ impl FilePicker {
             None,
             &s,
         );
-        // Rest edge derived from the field fill (HIG §9.5); focus keeps
-        // `border_focus`.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -3943,9 +3633,6 @@ impl FilePicker {
         );
     }
 
-    /// Hand `event` to the text field it types into, and act on what it
-    /// typed: a new search narrows the list, a typed path is no longer
-    /// marked, a changed name clears its error.
     fn type_into(
         &mut self,
         field: PickerFocus,
@@ -3980,8 +3667,6 @@ impl FilePicker {
         }
     }
 
-    /// Pointer input the text fields follow wherever it lands: a drag
-    /// selecting text, a release ending it.
     fn forward_to_fields(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let mut handled = false;
         let mut inner = crate::widget::EventCtx {
@@ -3997,8 +3682,6 @@ impl FilePicker {
         }
     }
 
-    /// `WindowEvent::CursorMoved` handling. Split out of `handle_event` to
-    /// keep that function readable.
     fn on_cursor_moved(&mut self, p: Point, ctx: &mut crate::widget::EventCtx<'_>) {
         self.last_cursor = p;
         let new_button = if self.cancel_rect.contains(p) {
@@ -4021,8 +3704,6 @@ impl FilePicker {
             self.hover_place = new_place;
             *ctx.handled = true;
         }
-        // The parts follow the pointer themselves: the list's hover and its
-        // scrollbar or column drags, the trail's hover, a field's selection.
         let moved =
             crate::synthetic_input::cursor_moved(p.x * ctx.scale_factor, p.y * ctx.scale_factor);
         let _ = self.table.handle_event(&moved, ctx);
@@ -4032,8 +3713,6 @@ impl FilePicker {
         self.forward_to_fields(&moved, ctx);
     }
 
-    /// Left-button `WindowEvent::MouseInput` handling. Split out of
-    /// `handle_event` to keep that function readable.
     #[allow(
         clippy::too_many_lines,
         reason = "one press dispatch over every part of the sheet, in hit order"
@@ -4048,7 +3727,6 @@ impl FilePicker {
                 *ctx.handled = true;
                 return;
             }
-            // A press on the chip that opened the menu closes it.
             if self.filter_rect.contains(p) {
                 *ctx.handled = true;
                 return;
@@ -4113,9 +3791,6 @@ impl FilePicker {
             *ctx.handled = true;
             return;
         }
-        // A press on a row is the picker's (it selects, enters a folder or
-        // chooses on a double click); the header and the scrollbar are the
-        // list's own.
         if let Some((i, _)) = self.entry_rows.iter().find(|(_, r)| r.contains(p)).copied()
             && !self.table.in_scrollbar(p)
         {
@@ -4137,8 +3812,6 @@ impl FilePicker {
         }
     }
 
-    /// `WindowEvent::KeyboardInput` handling. Split out of `handle_event`
-    /// to keep that function readable.
     #[allow(
         clippy::too_many_lines,
         reason = "one key dispatch over the sheet's controls, in focus order"
@@ -4252,8 +3925,6 @@ impl FilePicker {
                     self.end_search();
                 }
             }
-            // Typing while the list has the keyboard searches: the text
-            // goes into the search field, which narrows the list.
             Key::Character(_) if self.focus == Some(PickerFocus::List) && !command => {
                 self.focus_control(PickerFocus::Search);
                 self.type_into(PickerFocus::Search, event, ctx);
@@ -4321,8 +3992,6 @@ impl FilePicker {
 
     fn activate_selected_entry(&mut self) {
         if let Some(i) = self.selection.primary() {
-            // Capture what we need before calling into &mut self methods, so
-            // the immutable borrow of `self.entries` ends before the action.
             let dir_target = self
                 .entries
                 .get(i)
@@ -4336,9 +4005,6 @@ impl FilePicker {
     }
 }
 
-/// A footer button in the canonical immediate-mode button face, so the
-/// picker footer stays visually locked to the retained widget and every
-/// converted app. Callers add the hover, focus and disabled state.
 fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::ButtonFace<'_> {
     crate::widget::ButtonFace::new(rect, label).role(if is_primary {
         ButtonRole::Primary

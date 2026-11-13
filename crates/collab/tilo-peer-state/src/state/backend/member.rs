@@ -2,7 +2,7 @@
 use super::{GovernedIdentity, PeerCore, Role, SystemTime};
 use crate::state::MembershipError;
 use std::collections::BTreeMap;
-use tilo_action_policy::{Bound, Grant, Subject};
+use tilo_action_policy::{Grant, Grantee, MemberId};
 use tilo_workspace_join::delegation::Delegate;
 
 trait Policy {
@@ -10,8 +10,6 @@ trait Policy {
     fn members(&self) -> &BTreeMap<String, Role>;
     fn grants(&self) -> &[Grant];
     fn identity(&self) -> &GovernedIdentity;
-    /// The rows of this policy that did not decode.
-    fn damaged(&self) -> &crate::workspace::policy::Damaged;
     /// The role `person` acts with in `workspace`: none for a stranger or a
     /// blocked member.
     fn role(&self, workspace: &str, person: &str) -> Option<Role> {
@@ -19,10 +17,10 @@ trait Policy {
             return Some(Role::Owner);
         }
         let role = self.members().get(person).copied()?;
-        let subject = Subject::Person(person.to_owned());
+        let subject = Grantee::person(person.to_owned());
         let node = tilo_action_policy::TreePath::workspace(workspace);
         let blocked = self.grants().iter().any(|grant| {
-            grant.subject == subject
+            grant.grantee == subject
                 && grant.node == node
                 && grant.answer == tilo_action_policy::Answer::Deny
                 && grant.kinds == tilo_action_policy::KindSet::ALL
@@ -33,15 +31,6 @@ trait Policy {
 fn key_text(key: &[u8; 32]) -> String {
     hex::encode(key)
 }
-/// Why `person` holds no role here: a row of their access that did not read
-/// back, which is theirs to know, or none at all.
-fn absence(damaged: &crate::workspace::policy::Damaged, person: &str) -> MembershipError {
-    if damaged.hides(person) {
-        MembershipError::UnreadableAccess
-    } else {
-        MembershipError::NoMembership
-    }
-}
 /// A current member's role, and the bound on it when its device is a
 /// delegate.
 fn current<'peer, P: Policy>(
@@ -49,7 +38,7 @@ fn current<'peer, P: Policy>(
     source: &[u8; 32],
     now: SystemTime,
     collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, MembershipError>,
-) -> Result<(Role, Option<Bound>), MembershipError> {
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
     let cert = peer
         .certificate_typed(source, now)
         .map_err(MembershipError::from)?;
@@ -82,7 +71,7 @@ fn current<'peer, P: Policy>(
     let person = key_text(&cert.user_public_key);
     let role = policy
         .role(&peer.workspace, person.as_str())
-        .ok_or_else(|| absence(policy.damaged(), person.as_str()))?;
+        .ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
     // agent by the agent preset, a bot by its derived grant in the workspace's
     // policy. Neither governs the workspace, and neither rises above an Editor.
@@ -90,13 +79,19 @@ fn current<'peer, P: Policy>(
         .delegate
         .as_ref()
         .map(|row| match &row.delegation.delegate {
-            Delegate::Agent { agent_id } => tilo_action_policy::roles::agent_turn(
-                &peer.workspace,
-                agent_id,
-                person.as_str(),
-                &[],
-            ),
-            Delegate::Bot { installation } => tilo_action_policy::bot::bound(installation),
+            Delegate::Agent { agent_id } => crate::state::ActingAs {
+                actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.clone())),
+                grants: tilo_action_policy::roles::agent_grants(
+                    &peer.workspace,
+                    agent_id,
+                    person.as_str(),
+                    &[],
+                ),
+            },
+            Delegate::Bot { installation } => crate::state::ActingAs {
+                actor: tilo_action_policy::Actor::Member(MemberId::bot(installation.clone())),
+                grants: Vec::new(),
+            },
         });
     let role = if delegate.is_some() {
         crate::state::delegates::agent_role(role)
@@ -112,7 +107,7 @@ pub(in crate::state) fn foreign(cert: &tilo_user_identity::DeviceCert, origin: &
     cert.capabilities.foreign && cert.device_public_key != *origin
 }
 struct LegacyPolicy<'a> {
-    data: &'a crate::cached_document::PolicyData,
+    data: &'a tilo_action_policy::WorkspacePolicy,
     identity: &'a GovernedIdentity,
 }
 impl Policy for LegacyPolicy<'_> {
@@ -128,17 +123,14 @@ impl Policy for LegacyPolicy<'_> {
     fn identity(&self) -> &GovernedIdentity {
         self.identity
     }
-    fn damaged(&self) -> &crate::workspace::policy::Damaged {
-        &self.data.damaged
-    }
 }
 pub(in crate::state) fn legacy(
     peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
-) -> Result<(Role, Option<Bound>), MembershipError> {
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
     current(peer, source, now, |workspace| {
-        let data = workspace.policy();
+        let data = workspace.workspace_policy(&peer.workspace);
         let key = key_text(source);
         // Decoded once per document state, not on every lookup.
         let identity = workspace

@@ -322,9 +322,16 @@ pub trait Effect: Sized + 'static {
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
+    ///
+    /// Read where the effect runs, as an action's arguments are read where
+    /// it is invoked: an effect is never replayed, so content its arguments
+    /// name — a reference, or the data inline — is read from this window's
+    /// store and kept, sealed, in it ([`crate::content::invoking`]).
     fn from_payload(payload: &[u8]) -> Result<Self, EffectDecodeError> {
-        let Payload { effect, args } = decode_payload(payload)?;
-        Self::decode(&effect, &args)
+        crate::content::invoking(|| {
+            let Payload { effect, args } = decode_payload(payload)?;
+            Self::decode(&effect, &args)
+        })
     }
 }
 
@@ -835,7 +842,7 @@ impl EffectDecl {
     pub fn of_row(row: &EffectRow) -> Self {
         Self {
             id: row.id,
-            label: row.label,
+            label: row.label.clone(),
             keywords: row.keywords,
             icon: row.icon,
             description: row.description,
@@ -904,6 +911,7 @@ impl EffectDecl {
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();
+        let params = crate::label::titled(&self.label, operation, params);
         let mut spec = ActionSpec::typed_operation_on(
             self.id,
             label.clone(),
@@ -1174,7 +1182,7 @@ mod tests {
 
     /// What the derive must produce, checked through the spec a caller sees.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.effects")]
+    #[effect(operation = "test.effects", catalogue = "tests/locales")]
     enum Sample {
         /// Reload everything.
         Reload,
@@ -1187,7 +1195,7 @@ mod tests {
             thing: String,
             label: Option<String>,
         },
-        #[effect(label = "Wipe", job, cancellable, destructive)]
+        #[effect(job, cancellable, destructive)]
         Wipe { passes: u32 },
         /// Copy a thing's key.
         #[effect(privileged, kind = "read")]
@@ -1217,7 +1225,7 @@ mod tests {
 
     /// A content transform declared offloadable.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.transforms")]
+    #[effect(operation = "test.transforms", catalogue = "tests/locales")]
     enum Transforms {
         /// Shrink images.
         #[effect(
@@ -1413,7 +1421,7 @@ mod tests {
     /// A vocabulary with presentation-only effects and effects offered only
     /// on the items they act on.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.rows")]
+    #[effect(operation = "test.rows", catalogue = "tests/locales")]
     enum Rows {
         /// Open an item.
         #[effect(view, row)]
@@ -1486,7 +1494,7 @@ mod tests {
     /// A copy of private data leaving the app asks first, without being a
     /// credential or a deletion.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.exports")]
+    #[effect(operation = "test.exports", catalogue = "tests/locales")]
     enum Exports {
         /// Export the address book.
         #[effect(job, sensitive)]
@@ -1502,7 +1510,7 @@ mod tests {
 
     /// A secret argument is published as one, and still reaches the handler.
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.secrets")]
+    #[effect(operation = "test.secrets", catalogue = "tests/locales")]
     enum Pairing {
         /// Pair a device.
         Pair {
@@ -1530,7 +1538,7 @@ mod tests {
     }
 
     #[derive(Clone, Debug, PartialEq, Effect)]
-    #[effect(operation = "test.files")]
+    #[effect(operation = "test.files", catalogue = "tests/locales")]
     enum Files {
         /// Save a copy.
         SaveCopy {
@@ -1584,5 +1592,57 @@ mod tests {
             }
             .arguments()
         );
+    }
+
+    /// A content transform whose inputs are the bytes themselves.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.readers", catalogue = "tests/locales")]
+    enum Readers {
+        /// Open documents.
+        #[effect(kind = "read")]
+        Open {
+            #[param(content, "The documents")]
+            documents: Vec<crate::Bytes>,
+        },
+    }
+
+    /// An effect is never replayed: the content its arguments name is read
+    /// where the effect runs. A caller's address — a `tilo.content:<hash>`
+    /// an operation collecting content answers, or the reference alone, as
+    /// requests named it before content was sealed — decodes into the
+    /// reference that opens exactly those bytes.
+    #[test]
+    fn an_effects_content_argument_is_read_where_the_effect_runs() {
+        let window = tilo_wake::WakeScope::new();
+        let workspace = tilo_content::ContentStore::memory_in_workspace().sealing();
+        crate::content::register(&window.handle(), workspace.clone());
+        let _entered = window.enter();
+        let documents: Vec<Vec<u8>> = [7_u8, 8].into_iter().map(|byte| vec![byte; 4096]).collect();
+        let references: Vec<String> = documents
+            .iter()
+            .map(|bytes| workspace.put(bytes).expect("kept"))
+            .collect();
+        let arguments = serde_json::Map::from_iter([(
+            "documents".to_owned(),
+            serde_json::json!([
+                tilo_actions::content_resource(&references[0]).expect("an address"),
+                references[1].clone(),
+            ]),
+        )]);
+        let spec = Readers::specs().remove(0);
+        assert!(spec.params()[0].is_content_list());
+        let encoded = crate::content::invoking(|| spec.build_json(&arguments).unwrap());
+
+        let Readers::Open { documents: read } =
+            Readers::from_payload(&encoded.payload).expect("read where it runs");
+        assert_eq!(read.len(), 2);
+        for (read, kept) in read.iter().zip(&references) {
+            assert_eq!(
+                read.reference().as_deref(),
+                Some(kept.as_str()),
+                "the reference that opens exactly those bytes"
+            );
+            assert!(read.read(&workspace).is_some(), "and the bytes themselves");
+        }
     }
 }

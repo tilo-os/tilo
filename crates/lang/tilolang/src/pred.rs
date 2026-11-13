@@ -1,21 +1,16 @@
-//! Predicates over the fields of a resource, which a store answers itself: from its index's
-//! filter columns where it keeps one (search.md, "Who indexes").
+//! Predicates over the fields of a resource, which a store answers itself from its index's filter
+//! columns where it keeps one (search.md, "Who indexes").
 //!
-//! `items.filter(x -> not x.done)` and `items.count(x -> x.pinned)` over a collection field,
-//! with a lambda that reads only fields of the item and literals, compile to a [`Pred`] as well
-//! as to their loop. So do a type's named filters (`filter "Open" = not done`) and the query
-//! a `query(T, ...)` or a typed search asks (`due: today()..`, `tags: "urgent"`,
-//! `from: "*@x.com"`). In a view the host hands the predicate to the store, which
-//! lists the matching items (and keeps that listing up to date as items change) without the
-//! view building a reference per item or running the lambda once per item. Elsewhere, or where
-//! the host cannot answer it, the loop runs.
+//! `items.filter(x -> not x.done)` and `items.count(x -> x.pinned)` over a collection field, a
+//! type's named filters (`filter "Open" = not done`) and the query a `query(T, ...)` asks compile to
+//! a [`Pred`] as well as to their loop. In a view the host hands the predicate to the store, which
+//! lists the matching items without the loop running; elsewhere the loop runs.
 //!
 //! The compiler writes field operands as field ids ([`Pred<String>`]); the host resolves them to
-//! what the store reads (how the field merges, what an unwritten one holds).
+//! what the store reads.
 
 use serde::{Deserialize, Serialize};
 
-/// A predicate over one item; `F` names a field of it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Pred<F> {
@@ -24,22 +19,17 @@ pub enum Pred<F> {
     And(Vec<Self>),
     Or(Vec<Self>),
     Cmp(CmpOp, Operand<F>, Operand<F>),
-    /// The field (a set, or one value) holds the value: `tags.contains("urgent")`.
     Has(F, Lit),
-    /// The field (an identifier, or a set of them) holds one that matches the pattern, `*`
-    /// standing for any text (see [`crate::identifier::matches`]).
+    /// The field (an identifier, or a set of them) holds one that matches the pattern, `*` standing
+    /// for any text (see [`crate::identifier::matches`]).
     Like(F, String),
-    /// The field holds text a person searched for by a word of it: a case-insensitive substring
-    /// match anywhere inside it, so `launch` finds "The launch plan" and "autumn release". This
-    /// is free text as search reads it (`some words`), where [`Like`](Self::Like) is an
-    /// identifier pattern written with `*`.
+    /// The field holds text a person searched for by a word of it: a case-insensitive match
+    /// anywhere inside it. Free text as search reads it, where [`Like`](Self::Like) is a pattern
+    /// written with `*`.
     Text(F, String),
-    /// The field holds a value: an option that is some, a set with members.
     Present(F),
 }
 
-/// How a comparison compares. Text and identifiers compare by equality alone; dates and times
-/// by order too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CmpOp {
@@ -51,39 +41,33 @@ pub enum CmpOp {
     Ge,
 }
 
-/// One side of a comparison: a field of the item, a literal, or how many a field holds (the
-/// members of a set, the items of a collection, the characters of a text).
+/// One side of a comparison: a field of the item, a literal, or how many a field holds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operand<F> {
     Field(F),
     Lit(Lit),
     Len(F),
-    /// The `n`th value the code that asked holds (`c -> c.column == col`, `col` a local):
-    /// what it holds is bound when the predicate is asked ([`Pred::bind`]), and a store
-    /// answers it as the literal.
+    /// The `n`th value the code that asked holds (`c -> c.column == col`): bound when the predicate
+    /// is asked ([`Pred::bind`]), and a store answers it as the literal.
     Arg(u32),
-    /// The time the predicate is asked at, `offset` seconds on: the day (`today + 1d`, a
-    /// Date) when `day`, else the instant (`now - 7d`, a Time). It is read when the predicate is
-    /// asked ([`Pred::at`]), so a named filter on it ("Today": `due <= today`) is answered from
-    /// the field's column then, never kept as a column of its own.
+    /// The time the predicate is asked at, `offset` seconds on: the day (`today + 1d`) when `day`,
+    /// else the instant (`now - 7d`). Read when the predicate is asked ([`Pred::at`]), so a named
+    /// filter on it ("Today": `due <= today`) is answered from the field's column then.
     Clock {
         day: bool,
         offset: i64,
     },
-    /// The person the predicate is asked for (`workspace.me` in a named filter, as a `Principal`
-    /// literal is written for a query's `assignee:me`). It is read when the predicate is asked
-    /// ([`Pred::viewer`]), so a filter naming them ("Assigned to me": `assignee ==
-    /// workspace.me`) reads differently for each of the people a workspace is shared with, and
-    /// is never kept as a column of its own.
+    /// The person the predicate is asked for (`workspace.me` in a named filter). Read when the
+    /// predicate is asked ([`Pred::viewer`]), so a filter naming them ("Assigned to me") reads
+    /// differently for each of the people a workspace is shared with.
     Viewer,
 }
 
-/// What of the time a predicate is asked at it reads ([`Pred::clock_reads`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClockReads {
-    /// The person's day (`today`, `today + 7d`): read at their day, it reads the same until
-    /// their next midnight, whatever the offset (a day operand counts whole days).
+    /// The person's day (`today`, `today + 7d`): read at their day, it reads the same until their
+    /// next midnight.
     pub day: bool,
     /// The instant (`now - 7d`): it reads differently as the clock runs.
     pub instant: bool,
@@ -96,23 +80,16 @@ pub enum Lit {
     Bool(bool),
     Int(i64),
     Text(String),
-    /// A Float, by its bits (see [`Float`]).
     Float(Float),
-    /// A calendar day, ISO text.
     Date(String),
-    /// An instant, ISO-8601 UTC text.
     Time(String),
-    /// A case of an enum, by its id.
     Variant(String),
-    /// A resource, by its id.
     Ref(String),
     /// An identifier as it is held, `scheme:value`.
     Ident(String),
     /// No value: an option that is none.
     Absent,
-    /// The members of a set, as a field holds them.
     Set(Vec<Lit>),
-    /// A person or agent of the workspace, by the id the host names them with.
     Principal(String),
 }
 
@@ -148,8 +125,8 @@ impl std::hash::Hash for Float {
 }
 
 impl Lit {
-    /// The value a register holds as JSON (the runtime's stored form of an option, an enum, a
-    /// reference or a scalar), as a predicate compares it; `None` for one it does not.
+    /// The value a register holds as JSON (an option, an enum, a reference or a scalar), as a
+    /// predicate compares it; `None` for one it does not.
     #[must_use]
     pub fn of_json(json: &serde_json::Value) -> Option<Self> {
         use serde_json::Value as J;
@@ -192,7 +169,6 @@ impl Lit {
         }
     }
 
-    /// The value as one member of a set holds it: its text form.
     #[must_use]
     pub fn member_text(&self) -> Option<String> {
         match self {
@@ -204,8 +180,8 @@ impl Lit {
         }
     }
 
-    /// How `self` and `other` compare under `op`: `None` when values of their kinds do not
-    /// compare that way. An absent value is equal only to another and orders with nothing.
+    /// How `self` and `other` compare under `op`: `None` when values of their kinds do not compare
+    /// that way. An absent value is equal only to another and orders with nothing.
     #[must_use]
     pub fn compare(&self, op: CmpOp, other: &Self) -> Option<bool> {
         use std::cmp::Ordering;
@@ -233,8 +209,8 @@ impl Lit {
             }
             (x, y) => {
                 let (a, b) = (x.as_text()?, y.as_text()?);
-                // Dates and times order chronologically as ISO text; a time against a day
-                // compares by the day.
+                // Dates and times order chronologically as ISO text; a time against a day compares by
+                // the day.
                 let dated = matches!(x, Self::Date(_) | Self::Time(_))
                     || matches!(y, Self::Date(_) | Self::Time(_));
                 if ordered && !dated {
@@ -276,8 +252,8 @@ impl<F> Pred<F> {
         })
     }
 
-    /// The same predicate with each value the asking code holds ([`Operand::Arg`]) as the
-    /// literal `args` holds at its place; `None` when `args` holds none there.
+    /// The same predicate with each value the asking code holds ([`Operand::Arg`]) as `args` holds
+    /// at its place.
     #[must_use]
     pub fn bind(&self, args: &[Lit]) -> Option<Self>
     where
@@ -292,8 +268,8 @@ impl<F> Pred<F> {
         })
     }
 
-    /// The same predicate with each [`Operand::Clock`] read at `now`, seconds since 1970 (UTC),
-    /// by someone whose clock is `zone` seconds ahead of UTC: whose today it is.
+    /// The same predicate with each [`Operand::Clock`] read at `now`, seconds since 1970 (UTC), by
+    /// someone whose clock is `zone` seconds ahead of UTC.
     #[must_use]
     pub fn at(&self, now: i64, zone: i64) -> Self
     where
@@ -308,9 +284,8 @@ impl<F> Pred<F> {
         }
     }
 
-    /// The fields it compares with the clock ([`Operand::Clock`]), each with whether it reads
-    /// the person's day or the instant, and by how much it offsets the clock: the values that
-    /// turning the clock over changes what it answers.
+    /// The fields it compares with the clock ([`Operand::Clock`]), each with whether it reads the
+    /// day or the instant, and by how much it offsets the clock.
     #[must_use]
     pub fn clock_fields(&self) -> Vec<(&F, bool, i64)> {
         let mut out = Vec::new();
@@ -337,15 +312,13 @@ impl<F> Pred<F> {
         }
     }
 
-    /// Whether it reads the time it is asked at ([`Operand::Clock`]).
     #[must_use]
     pub fn reads_clock(&self) -> bool {
         let reads = self.clock_reads();
         reads.day || reads.instant
     }
 
-    /// The same predicate with each [`Operand::Viewer`] as the person `who` names: whose list it
-    /// is.
+    /// The same predicate with each [`Operand::Viewer`] as the person `who` names: whose list it is.
     #[must_use]
     pub fn viewer(&self, who: &str) -> Self
     where
@@ -360,7 +333,6 @@ impl<F> Pred<F> {
         }
     }
 
-    /// Whether it reads the person it is asked for ([`Operand::Viewer`]).
     #[must_use]
     pub fn reads_viewer(&self) -> bool {
         let mut reads = false;
@@ -383,8 +355,8 @@ impl<F> Pred<F> {
         }
     }
 
-    /// What of the time it is asked at it reads: what [`Self::at`] makes of it changes only
-    /// when that does.
+    /// What of the time it is asked at it reads: what [`Self::at`] makes of it changes only when
+    /// that does.
     #[must_use]
     pub fn clock_reads(&self) -> ClockReads {
         let mut reads = ClockReads::default();
@@ -413,7 +385,6 @@ impl<F> Pred<F> {
         }
     }
 
-    /// Every field it reads.
     pub fn fields(&self) -> Vec<&F> {
         let mut out = Vec::new();
         self.each_field(&mut |f| out.push(f));
@@ -454,8 +425,8 @@ impl<F> Pred<F> {
     ///
     /// # Errors
     ///
-    /// The first error `value` returns; a comparison of values of different kinds, or of text
-    /// by order, as a message.
+    /// The first error `value` returns; a comparison of values of different kinds, or of text by
+    /// order, as a message.
     pub fn eval<E: From<String>>(
         &self,
         value: &mut impl FnMut(&F) -> Result<Lit, E>,
@@ -580,8 +551,8 @@ impl<F> Operand<F> {
                     i64::try_from(crate::text::len(t)).unwrap_or(i64::MAX)
                 }),
             })),
-            // Bound before it is asked ([`Pred::bind`], [`Pred::at`], [`Pred::viewer`]): one
-            // that is not holds nothing.
+            // Bound before it is asked ([`Pred::bind`], [`Pred::at`], [`Pred::viewer`]): one that is
+            // not holds nothing.
             Self::Arg(_) | Self::Clock { .. } | Self::Viewer => Ok(Lit::Absent),
         }
     }

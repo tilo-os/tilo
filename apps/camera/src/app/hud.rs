@@ -30,15 +30,10 @@ use ui::theme::Theme;
 /// Geometry every floating control shares, read from the theme.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HudMetrics {
-    /// Inset of floating chrome from the window edge.
     pub edge: f64,
-    /// Inset of controls inside their panel. It keeps the radii
-    /// concentric: a control's radius plus this inset is the panel's.
     pub pad: f64,
-    /// Height of one control.
     pub control: f64,
     pub gap: f64,
-    /// Between two controls of one cluster.
     pub item_gap: f64,
 }
 
@@ -55,7 +50,6 @@ impl HudMetrics {
         }
     }
 
-    /// Height of a panel holding one row of controls.
     pub(super) fn bar(&self) -> f64 {
         self.control + 2.0 * self.pad
     }
@@ -64,12 +58,9 @@ impl HudMetrics {
 /// One control in a floating cluster.
 #[derive(Clone, Debug)]
 pub(super) struct HudItem<'a> {
-    /// Visible label; empty for an icon-only control.
     pub label: &'a str,
     pub icon: Option<Icon>,
-    /// The accessible name and tooltip of an icon-only control.
     pub name: &'a str,
-    /// `Some` for a control that is on or off.
     pub on: Option<bool>,
     pub action: Action,
 }
@@ -100,12 +91,10 @@ impl HudItem<'_> {
     }
 }
 
-/// The theme for what stands on a floating panel.
 pub(super) fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(panel_ground(theme))
 }
 
-/// The width a cluster of `items` takes, panel padding included.
 pub(super) fn cluster_width(items: &[HudItem<'_>], tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let m = HudMetrics::of(theme);
     let gaps = items.len().saturating_sub(1) as f64 * m.item_gap;
@@ -481,7 +470,6 @@ impl CameraApp {
         self.push_region(panel, Action::OpenRecentCapture);
     }
 
-    /// Switch camera beside the shutter, with an accessible name and tooltip.
     fn draw_lens_switch(
         &mut self,
         scene: &mut Scene,
@@ -507,7 +495,6 @@ impl CameraApp {
         self.draw_cluster(scene, t, tr, theme, origin, &items);
     }
 
-    /// "Recording" and the elapsed time, top centre, while a clip records.
     fn draw_recording_badge(
         &self,
         scene: &mut Scene,
@@ -528,7 +515,6 @@ impl CameraApp {
             .paint(scene, t, tr, theme);
     }
 
-    /// The running self-timer, top centre: how long is left, and how to stop it.
     fn draw_countdown(
         &self,
         scene: &mut Scene,
@@ -651,7 +637,6 @@ impl CameraApp {
         Some(slot)
     }
 
-    /// The one recovery a no-feed state offers.
     pub(super) fn recovery_action(&self) -> (&'static str, Action) {
         // A page's camera permission lives in the browser, which no
         // `settings://` link reaches: there the person allows it and refreshes.
@@ -687,7 +672,6 @@ impl CameraApp {
         }
     }
 
-    /// The recent-capture preview, decoded once per capture.
     pub(super) fn ensure_thumb(&mut self, cap: &crate::model::Capture) {
         if self.thumbs.contains_key(&cap.id) && !self.thumb_pending.contains_key(&cap.id) {
             return;

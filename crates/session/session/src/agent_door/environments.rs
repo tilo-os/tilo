@@ -568,15 +568,19 @@ fn stat_fields(pid: u32) -> Option<Vec<String>> {
 
 /// The process that started `pid`.
 fn parent_of(pid: u32) -> Option<u32> {
-    // ignored-failure: a stat field that is no number names no parent
-    stat_fields(pid)?.get(1)?.parse().ok()
+    tilo_failure::ignored!(
+        "a stat field that is no number names no parent",
+        stat_fields(pid)?.get(1)?.parse().ok()
+    )
 }
 
 /// When `pid` started, in clock ticks since boot: what tells it from a later
 /// process given the same number.
 fn start_time(pid: u32) -> Option<u64> {
-    // ignored-failure: a stat field that is no number names no process start
-    stat_fields(pid)?.get(19)?.parse().ok()
+    tilo_failure::ignored!(
+        "a stat field that is no number names no process start",
+        stat_fields(pid)?.get(19)?.parse().ok()
+    )
 }
 
 #[cfg(test)]

@@ -1,7 +1,6 @@
-//! A job with host ids of its own (`IdBlock`): it runs as a host user no
-//! other job is, while the files it is given stay their owner's. Root only
-//! (mapping a block and idmapping mounts take it); elsewhere each test says
-//! why it skipped and passes.
+//! A job with host ids of its own (`IdBlock`): it runs as a host user no other job is, while the
+//! files it is given stay their owner's. Root only (mapping a block and idmapping mounts take it);
+//! elsewhere each test says why it skipped and passes.
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -11,8 +10,8 @@ use tilo_sandbox::job::{IdBlock, JobSpec, Launch, Mount, MountKind, Root};
 use crate::needs_sandbox;
 use crate::support::{pipe, run, shell};
 
-/// The files' owner on the host: not the test's own uid, so a write that
-/// keeps it was translated, not just made as root.
+/// The files' owner on the host: not the test's own uid, so a write that keeps it was translated,
+/// not just made as root.
 const OWNER: u32 = 4242;
 
 /// A block far from any user on a test machine.
@@ -32,11 +31,10 @@ macro_rules! needs_root {
     };
 }
 
-/// A directory for a job's files on a filesystem that takes idmapped mounts,
-/// or why this host has none. A test environment's temporary root need not
-/// take them (a container's overlay does not), so the files are kept in
-/// memory: tmpfs takes them from Linux 6.3. A path that cannot be idmapped is
-/// bound as it is and named, as the test of a ramfs shows.
+/// A directory for a job's files on a filesystem that takes idmapped mounts, or why this host has
+/// none. A test environment's temporary root need not take them (a container's overlay does not),
+/// so the files are kept in memory: tmpfs takes them from Linux 6.3. A path that cannot be idmapped
+/// is bound as it is and named, as the test of a ramfs shows.
 fn idmappable_dir() -> Result<tempfile::TempDir, String> {
     let dir =
         tilo_test_env::memory_tempdir().map_err(|e| format!("no directory in memory: {e}"))?;
@@ -74,7 +72,6 @@ macro_rules! idmappable_dir {
     };
 }
 
-/// A directory of `OWNER`'s, with one file of theirs in it.
 fn owned_dir(root: &Path, name: &str) -> std::path::PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -291,8 +288,7 @@ fn a_job_with_a_block_connects_to_a_socket_made_for_it() {
     }
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    // As passt makes its socket: by root, mode 0755 under the umask, so only its owner may
-    // connect.
+    // As passt makes its socket: by root, mode 0755 under the umask, so only its owner may connect.
     let sock = dir.path().join("sock");
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -313,7 +309,6 @@ fn a_job_with_a_block_connects_to_a_socket_made_for_it() {
     assert!(status.success() && out.contains("hello"), "{out}");
 }
 
-/// A ramfs mounted on a fresh directory, unmounted when dropped.
 struct Ramfs {
     dir: std::path::PathBuf,
     _parent: tempfile::TempDir,
@@ -404,10 +399,9 @@ fn a_job_with_a_block_names_other_users_on_its_directories() {
     assert_eq!(owner(&work.join("nobodys")), (65534, 65534));
 }
 
-/// A nested job's system files as a root worker shows them: an image and
-/// the host's `/usr` whose files are root's on disk, as the worker's own
-/// files are. They stay root's in the job, not the job's own, so a program
-/// that trusts only root's files (ush's loader check) trusts them; and the
+/// A nested job's system files as a root worker shows them: an image and the host's `/usr` whose
+/// files are root's on disk, as the worker's own files are. They stay root's in the job, not the
+/// job's own, so a program that trusts only root's files (ush's loader check) trusts them; and the
 /// job, unknown to the image, finds an entry for itself.
 #[test]
 fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
@@ -463,8 +457,8 @@ fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
     assert_eq!(lines.len(), 8, "{out}");
 }
 
-/// The same for a job in the host's own root, whose `/usr` is root's: it
-/// never shows as the job's own.
+/// The same for a job in the host's own root, whose `/usr` is root's: it never shows as the job's
+/// own.
 #[test]
 fn a_nested_job_in_the_host_root_sees_its_usr_as_roots() {
     needs_root!();
@@ -481,8 +475,8 @@ fn a_nested_job_in_the_host_root_sees_its_usr_as_roots() {
     assert!(status.success(), "{out}");
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.first(), Some(&"1000"), "{out}");
-    // Root's where the host's /usr takes an idmapped mount; `nobody` where
-    // it can't (a micro-VM's root) and is bound as it is. Never the job's.
+    // Root's where the host's /usr takes an idmapped mount; `nobody` where it can't (a micro-VM's
+    // root) and is bound as it is. Never the job's.
     assert!(matches!(lines.get(1), Some(&("0" | "65534"))), "{out}");
     assert_eq!(lines.get(2), Some(&"known"), "{out}");
 }

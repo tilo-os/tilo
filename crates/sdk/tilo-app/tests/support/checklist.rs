@@ -6,13 +6,21 @@
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 
-/// The app's labels: the field a task's title is typed into, and its box.
+/// The app's labels: the field a task's title is typed into, its box, and
+/// what the app is called in a window.
 pub static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
-    &[(
-        "en-US",
-        "checklist-draft = Next task\nchecklist-done = Completed\n",
-    )],
+    &[
+        (
+            "en-US",
+            "checklist-draft = Next task\nchecklist-done = Completed\nchecklist-title = Checklist\n",
+        ),
+        (
+            "de-DE",
+            "checklist-draft = Nächste Aufgabe\nchecklist-done = Erledigt\nchecklist-title = \
+             Prüfliste\n",
+        ),
+    ],
 );
 
 /// The label of a row's checkbox.
@@ -32,7 +40,7 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "test.checklist", label = "Checklist")]
+#[resource(kind = "test.checklist", catalogue = "tests/locales")]
 impl Checklist {
     /// Set the next task's title.
     #[action]

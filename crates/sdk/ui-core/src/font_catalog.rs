@@ -26,7 +26,7 @@ mod windows;
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
 
-/// What a process does when no root in [`catalog_roots`] holds a catalog it
+/// What a process does when no root in [`catalog_roots`] has a catalog it
 /// accepts: say so in the log, and, where the run was promised one
 /// (`TILO_REQUIRE_FONTS=1`, [`crate::host::RunnerDiagnostics::fonts_required`]),
 /// stop. Text falls back to the host's faces either way, which is nearly right
@@ -53,11 +53,11 @@ fn no_catalog(errors: &[FontCatalogError]) {
 }
 
 /// The product catalog with the system's fonts behind it, for every process
-/// that is not handed a host font database or Android's own catalog. The
+/// that is not handed a host font database or Android catalog. The
 /// catalog is verified and the system fonts discovered once per process; each
-/// renderer gets its own copy of the database, so its shaping caches stay its
+/// renderer gets its copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
-/// [`catalog_roots`] holds a catalog this build accepts.
+/// [`catalog_roots`] has a catalog this build accepts.
 ///
 /// The database is read from the font index the last launch recorded
 /// ([`index`]) when everything it was built from is unchanged, so a launch
@@ -66,7 +66,6 @@ fn no_catalog(errors: &[FontCatalogError]) {
 /// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
-    // A test binary of another crate links this one without `cfg(test)`.
     if cfg!(feature = "test-support") {
         return Some(fixture_font_system());
     }
@@ -96,9 +95,6 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     database.as_ref().map(|db| system_over(locale, db.clone()))
 }
 
-/// The product catalog read whole into memory, with no host fonts behind
-/// it: for a process about to lose the filesystem (a confined app worker)
-/// whose views still lay out text. `None` when no catalog loads.
 #[cfg_attr(
     test,
     allow(dead_code, reason = "unit tests build the fixture font system instead")
@@ -131,13 +127,11 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
     Some(system_over(locale, held))
 }
 
-/// Where a native process looks for the product catalog, in order: a
-/// `fonts/` directory next to the executable (an installed app bundle), the
-/// catalog mounted from the selected signed SDK in a Tilo app sandbox,
-/// the catalog the Tilo image installs (absent on other systems), the immutable
-/// catalog named by this build's manifest digest, then this
-/// build's verified artifact catalog, so a binary run from a checkout sets text in
-/// the faces the product ships.
+/// Where a native process looks for the product catalog, in order: a `fonts/` directory next to the
+/// executable (an installed app bundle), the catalog mounted from the selected signed SDK in a Tilo app
+/// sandbox, the catalog the Tilo image installs (absent on other systems), the immutable catalog named
+/// by this build's manifest digest, then this build's verified artifact catalog, so a binary run from a
+/// checkout sets text in the faces the product ships.
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = crate::host::environment()
         .paths
@@ -151,18 +145,12 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
             .and_then(|exe| exe.parent().map(|dir| dir.join("fonts"))),
     );
     // Launcher owns this fixed read-only mount in the app's private namespace.
-    // Each retained SDK can carry its own catalog without replacing OS fonts.
+    // Each retained SDK can carry its catalog without replacing OS fonts.
     roots.push(PathBuf::from("/run/tilo-fonts"));
     roots.push(PathBuf::from("/usr/share/fonts/tilo"));
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
-    // A build prepared its catalog beside its own profile directory and baked *that* path in. A
-    // binary built on another machine therefore names a directory this one does not have, and
-    // every frame it renders is set in the host's faces — nearly right, and wrong in a way only a
-    // screenshot review notices. Catalogs are published under the name of what they were
-    // prepared from, so any prepared catalog whose manifest is this build's is the catalog this
-    // build expects, wherever on this machine it was materialized (`tools/font-catalog.py`).
     let paths = &crate::host::environment().paths;
     for cache in paths.font_artifact_cache.iter().cloned().chain(
         paths
@@ -175,28 +163,19 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// The root a capture would set text from, without reading a font: the roots
-/// [`bundled_font_system`] tries, checked for a manifest this build pins. A
-/// run whose answer is `None` would render every frame in the host's faces,
-/// which is not the product, so a capture asks this before it draws anything.
-///
-/// A program that starts another build's binary and has it draw — a test
-/// running the app beside it, which was built beside a different build
-/// directory — names this as [`OVERRIDE_ENV`] in the child, so the child sets
-/// text in the catalog this process verified rather than the one its own build
-/// path names.
+/// The root a capture would set text from, without reading a font: the roots [`bundled_font_system`]
+/// tries, checked for a manifest this build pins.
 #[cfg(feature = "native")]
 pub fn catalog_root() -> Option<PathBuf> {
     tilo_font_catalog::find_root(catalog_roots())
 }
 
-/// `TILO_FONT_CATALOG`: the variable that names the catalog a build reads
-/// instead of the one its compiled-in path names.
+/// `TILO_FONT_CATALOG`: the variable that names the catalog a build reads instead of the one its
+/// compiled-in path names.
 pub use tilo_font_catalog::OVERRIDE_ENV;
 
-/// Why no root holds this build's catalog, naming the places that were
-/// tried: the message a capture fails with, so the answer is one line away
-/// rather than a review of frames set in the wrong typeface.
+/// Why no root has this build's catalog, naming the places that were tried: the message a capture
+/// fails with, so the answer is one line away rather than a review of frames set in the wrong typeface.
 #[cfg(feature = "native")]
 pub(crate) fn catalog_missing_message() -> String {
     let roots: Vec<String> = catalog_roots()
@@ -213,10 +192,8 @@ pub(crate) fn catalog_missing_message() -> String {
     )
 }
 
-/// Load the product catalog from the first of `roots` that holds one this
-/// build accepts, with `discover` adding the host's fonts behind it. A root
-/// whose manifest is from another Tilo build (an older image under a newer
-/// checkout) is passed over for the next one.
+/// Load the product catalog from the first of `roots` that has one this build accepts, with `discover`
+/// adding the host's fonts behind it.
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -226,10 +203,6 @@ pub(crate) fn load_first_catalog(
 }
 
 /// [`load_first_catalog`], with the canonical root it loaded from.
-///
-/// # Errors
-///
-/// As [`load_first_catalog`].
 pub(crate) fn load_first_catalog_at(
     roots: &[PathBuf],
     locale: &str,
@@ -299,10 +272,7 @@ pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
     out
 }
 
-/// Keep one face per family, style, weight and stretch. A system can install
-/// the same face twice (Fedora ships Noto Sans both static and variable), and
-/// a query takes whichever was discovered first, which is directory order.
-/// The face with the lowest source path stays.
+/// Keep one face per family, style, weight and stretch.
 pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
     let mut kept: HashMap<_, (fontdb::ID, PathBuf, u32)> = HashMap::new();
     let mut remove = Vec::new();
@@ -382,8 +352,8 @@ pub fn catalog_manifest_sha256() -> String {
     tilo_font_catalog::manifest_sha256()
 }
 
-/// The families of the fonts Tilo ships, in catalog order: the faces that
-/// look the same on every machine, which a document that syncs can name.
+/// The families of the fonts Tilo ships, in catalog order: the faces that look the same on every
+/// machine, which a document that syncs can name.
 pub fn shipped_families() -> Vec<String> {
     let mut families: Vec<String> = Vec::new();
     let assets = tilo_font_catalog::manifest().map_or(&[][..], |manifest| manifest.font.as_slice());
@@ -397,8 +367,7 @@ pub fn shipped_families() -> Vec<String> {
     families
 }
 
-/// The catalog every test lays its text out in: this build's pinned faces,
-/// none of the machine's.
+/// The catalog every test lays its text out in: this build's pinned faces, none of the machine's.
 #[cfg(any(test, feature = "test-support"))]
 pub fn fixture_catalog() -> FontCatalog {
     fixture_catalog_in("en-US")
@@ -410,8 +379,6 @@ pub fn fixture_catalog_in(locale: impl Into<String>) -> FontCatalog {
     FontCatalog::controlled_fixture(fixture_root(), locale)
 }
 
-/// The roots the product reads: a build directory carried from another machine
-/// still finds the catalog its test environment prepared.
 fn fixture_root() -> PathBuf {
     #[cfg(feature = "native")]
     if let Some(root) = catalog_root() {
@@ -420,7 +387,6 @@ fn fixture_root() -> PathBuf {
     checkout_root()
 }
 
-/// [`fixture_catalog`] loaded: what a test's renderer is built from.
 #[allow(
     clippy::expect_used,
     reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
@@ -431,8 +397,8 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("prepared canonical font fixture")
 }
 
-/// The product catalog at `root` with no host fonts behind it: what a test
-/// loads to see exactly what one catalog directory sets text in.
+/// The product catalog at `root` with no host fonts behind it: what a test loads to see exactly what
+/// one catalog directory sets text in.
 #[cfg(test)]
 pub(crate) fn catalog_font_system(root: &Path) -> Result<FontSystem, FontCatalogError> {
     FontCatalog::product(root, "en-US").load_with_system(|_| {})
@@ -479,7 +445,6 @@ impl FontCatalog {
         self.load_with_system(fontdb::Database::load_system_fonts)
     }
 
-    // Injection is private, synchronous, and per-call: no test changes a global.
     fn load_with_system(
         &self,
         discover: impl FnOnce(&mut fontdb::Database),
@@ -496,7 +461,7 @@ impl FontCatalog {
             tilo_startup_metrics::span("font-system-discover", || discover(&mut db));
             // Host copies of catalog families go before duplicates are
             // weighed: deduplication keeps the lowest path, and a system copy
-            // under /usr would otherwise displace the catalog's own face.
+            // under /usr would otherwise displace the catalog face.
             let remove: Vec<_> = db
                 .faces()
                 .filter(|face| {
@@ -540,9 +505,6 @@ impl FontCatalog {
     }
 
     /// Load canonical assets from host-provided bytes, with no filesystem or ambient fonts.
-    /// Every asset is size/hash/face validated before a font system is returned.
-    /// # Errors
-    /// Rejects missing, corrupt, or mismatched assets.
     pub fn load_bytes(
         &self,
         mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
@@ -637,8 +599,6 @@ impl FontCatalog {
         Ok(true)
     }
 
-    /// Build a portable font system from host-supplied, already verified
-    /// asset sources. No ambient/system fonts are ever discovered here.
     fn build_from_bytes(
         &self,
         root: &Path,
@@ -651,8 +611,6 @@ impl FontCatalog {
         let mut canonical = HashSet::new();
         let mut required = Vec::new();
         for asset in &manifest.font {
-            // Hosts that hand over bytes (the browser) serve the standalone
-            // catalog.
             if !(asset.scope.standalone() || self.fixtures) || !include(asset) {
                 continue;
             }
@@ -686,8 +644,6 @@ impl FontCatalog {
     }
 }
 
-/// The families Tilo sets `face` under: the manifest's `tilo_families`, or
-/// the file's own family.
 fn tilo_families(face: &Face) -> Vec<&str> {
     if face.tilo_families.is_empty() {
         vec![face.family.as_str()]
@@ -711,9 +667,8 @@ pub(crate) fn browser_startup_files() -> Vec<&'static str> {
     )
 }
 
-/// The product files that set `families` upright or `italic`, in bold only
-/// when `bold`: what a host that loads faces on demand fetches for text
-/// named in one of them.
+/// The product files that set `families` upright or `italic`, in bold only when `bold`: what a host
+/// that loads faces on demand fetches for text named in one of them.
 pub(crate) fn product_files_for(families: &[&str], italic: bool, bold: bool) -> Vec<&'static str> {
     let Ok(manifest) = tilo_font_catalog::manifest() else {
         return Vec::new();
@@ -796,7 +751,6 @@ fn face_style(face: &Face) -> fontdb::Style {
     }
 }
 
-/// The compiled-in catalog manifest, reported against `path` on failure.
 fn parse_manifest(path: &Path) -> Result<&'static Manifest, FontCatalogError> {
     tilo_font_catalog::manifest().map_err(|error| FontCatalogError::at(path, error.problem))
 }
@@ -810,8 +764,8 @@ pub fn test_sha256(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
-/// Reads browser font files under `root` with the digest a page would
-/// report, for [`FontCatalog::load_browser_startup_bytes`] in tests.
+/// Reads browser font files under `root` with the digest a page would report, for
+/// [`FontCatalog::load_browser_startup_bytes`] in tests.
 #[cfg(test)]
 pub(crate) fn test_font_files(root: &Path) -> impl FnMut(&str) -> Option<(Vec<u8>, String)> + '_ {
     |name| {
@@ -860,8 +814,6 @@ fn validate_faces(
     Ok(())
 }
 
-/// The catalog's own faces after their manifest, sizes, hashes and face
-/// metadata have been checked, before any host font is added.
 struct VerifiedBundle {
     db: fontdb::Database,
     canonical: HashSet<fontdb::ID>,
@@ -887,8 +839,6 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
     if let Some(bundle) = verified.get(&key) {
         return Ok(Arc::clone(bundle));
     }
-    // The image's catalog records its faces when it is built
-    // (`tilo_font_catalog::faces`): read from it, no font is parsed here.
     let trust = Trust::of_root(root);
     let shipped = tilo_font_catalog::faces::FaceIndex::read_trusted(root, trust);
     let bundle = Arc::new(verify_bundle(root, fixtures, trust, shipped.as_ref())?);
@@ -908,9 +858,6 @@ fn verify_bundle(
 ) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
-    // The image's catalog is root-owned on a read-only mount, so its bytes
-    // are the image's (composefs/fs-verity) and need no hashing here; a
-    // checkout, a per-user runtime's or any writable catalog is hashed.
     tracing::debug!(root = %root.display(), ?trust, "verifying Tilo font catalog");
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
@@ -920,17 +867,11 @@ fn verify_bundle(
         if asset.scope == Scope::Fixture && !fixtures {
             continue;
         }
-        // A catalog without the OS-only files is the SDK's standalone one
-        // (`Scope`); one that has them verifies them like any other.
         if asset.scope == Scope::Os && !fixtures && !asset.path_in(root)?.exists() {
             continue;
         }
-        // Only this catalog's canonical faces reserve names. Product mode
-        // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
         let path = verify_asset(root, asset, trust)?;
-        // The faces the catalog's build recorded for this file are the ones
-        // fontdb reads from it; a file without a record is parsed.
         let ids: Vec<fontdb::ID> = match shipped.and_then(|index| index.faces(&asset.file)) {
             Some(faces) => faces
                 .iter()
@@ -994,8 +935,6 @@ fn verify_asset(
     Ok(asset.verify_with(root, trust)?)
 }
 
-/// Windows hashes through the platform provider (see [`windows::digest`]);
-/// no Windows root is ever [`Trust::Immutable`].
 #[cfg(windows)]
 fn verify_asset(
     root: &Path,
@@ -1018,10 +957,6 @@ fn verify_asset(
     Ok(path)
 }
 
-///
-/// # Errors
-///
-/// Propagates the [`FontCatalogError`] returned by [`FontCatalog::load`].
 pub fn configured_font_system_with_catalog(
     catalog: &FontCatalog,
 ) -> Result<FontSystem, FontCatalogError> {

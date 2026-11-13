@@ -1,11 +1,11 @@
-//! Shared harness for tests that need a real Btrfs volume and, for
-//! fanotify, `CAP_SYS_ADMIN`.
+//! Shared harness for tests that need a real Btrfs volume and, for fanotify,
+//! `CAP_SYS_ADMIN`.
 //!
-//! `TILO_FS_NATIVE_STORE` names the root of a dedicated Btrfs store volume.
-//! Without it, capture tests fall back to the target directory when that is
-//! on Btrfs. Tests that need fanotify filesystem marks or pre-content events
-//! skip with a message unless `TILO_REQUIRE_FANOTIFY=1`, which turns every
-//! skip into a failure.
+//! `TILO_FS_NATIVE_STORE` names the root of a dedicated Btrfs store volume;
+//! without it, capture tests fall back to the target directory when that is on
+//! Btrfs. Tests that need fanotify filesystem marks or pre-content events skip
+//! with a message unless `TILO_REQUIRE_FANOTIFY=1`, which turns every skip into
+//! a failure.
 
 #![allow(dead_code, reason = "each test module uses a different subset")]
 
@@ -31,8 +31,8 @@ fn skip(test: &str, why: &str) -> Option<Scratch> {
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// A per-test directory on the store, with a `live` subvolume and an
-/// `epochs` directory. Everything is removed on drop.
+/// A per-test directory on the store, with a `live` subvolume and an `epochs`
+/// directory; everything is removed on drop.
 pub struct Scratch {
     pub store: PathBuf,
     pub dir: PathBuf,
@@ -110,7 +110,6 @@ pub fn fanotify_scratch(test: &str) -> Option<Scratch> {
     }
 }
 
-/// Deterministic content: the byte at `offset` of the body named `seed`.
 pub fn pattern_byte(seed: u8, offset: u64) -> u8 {
     let x = offset.wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ u64::from(seed).wrapping_mul(0xD6E8_FEB8_6659_FD93);

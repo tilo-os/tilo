@@ -1,5 +1,5 @@
-//! The launcher as a person meets it: where the card, its field, its chips
-//! and its rows sit in each scenario, as a capture stages it.
+//! The launcher as a person meets it: where the card, its field, its chips and its rows sit
+//! in each scenario, as a capture stages it.
 
 #![allow(
     clippy::unwrap_used,

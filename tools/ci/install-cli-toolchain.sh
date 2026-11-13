@@ -35,6 +35,17 @@ esac
 arch=${target%%-*}
 machine=$(uname -m)
 
+# The packages this needs from Fedora, from the release repository of the image's own version
+# alone, at one host: a released repository never changes (its updates go to another one), and dnf
+# checks every package's signature and the checksum its metadata gives, so the same image gets
+# the same packages on every run, and the checks' setup is served from t's cache (t.toml).
+install_released() {
+  dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= \
+    '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' \
+    "$@"
+  dnf clean all
+}
+
 install_zig() {
   local zig_version=0.15.2
   local zig_asset=zig-x86_64-linux-$zig_version.tar.xz
@@ -67,8 +78,7 @@ case $target in
     if [[ $arch == "$machine" ]]; then
       # The distribution's musl-gcc, for the machine's own architecture: a gcc wrapper that
       # compiles against its musl and links statically. Its Rust target is the image's.
-      dnf install -y --setopt=install_weak_deps=False musl-gcc
-      dnf clean all
+      install_released musl-gcc
       command -v musl-gcc >/dev/null
       exit 0
     fi
@@ -77,8 +87,7 @@ case $target in
     install_zig
     # The program's own architecture, emulated: `--help` runs where the build runs, so the cross
     # archive is checked the way the native one is.
-    dnf install -y --setopt=install_weak_deps=False "qemu-user-static-$arch"
-    dnf clean all
+    install_released "qemu-user-static-$arch"
     command -v "qemu-$arch-static" >/dev/null
     add_rust_target
     ;;
@@ -92,8 +101,7 @@ case $target in
     # The check reads the Mach-O the build leaves (tools/ci/publish/cli-release.sh); llvm-otool
     # and llvm-objdump read it here, as a Mac's otool would there.
     if ! command -v llvm-otool >/dev/null || ! command -v llvm-objdump >/dev/null; then
-      dnf install -y --setopt=install_weak_deps=False llvm
-      dnf clean all
+      install_released llvm
     fi
     command -v llvm-otool >/dev/null
     command -v llvm-objdump >/dev/null

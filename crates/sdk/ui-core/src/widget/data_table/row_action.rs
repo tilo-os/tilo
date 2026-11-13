@@ -1,17 +1,10 @@
-//! A table's own row actions: a check box turned, a row clicked. Each is
-//! published as the table's view action and answered by the table itself,
-//! so a caller speaks to the table the same way whether the press happened
-//! on this device or came from another participant.
+//! A table's own row actions: a check box turned, a row clicked. Each is published as the table's view
+//! action and answered by the table itself, so a caller speaks to the table the same way whether the
+//! press happened on this device or came from another participant.
 
-/// The operation type of turning a row's check box.
 pub(super) const CHECK_ROW: &str = "tilo.ui.table.check";
-/// The operation type of clicking a row.
 pub(super) const CLICK_ROW: &str = "tilo.ui.table.row_click";
 
-/// A table's own row action — a check box turned, a row clicked — published
-/// as the table's view action, and the app's handler for it. The argument
-/// is the row, by its index in the rows the host set, with what the person
-/// did to it.
 pub(super) struct RowAction<A> {
     pub(super) id: String,
     pub(super) resource: crate::tilo_actions::ResourceSpec,
@@ -19,7 +12,6 @@ pub(super) struct RowAction<A> {
     pub(super) handler: Box<dyn FnMut(A)>,
 }
 
-/// What a `tilo.ui.table.check` operation carries.
 #[derive(serde::Deserialize)]
 struct CheckPayload {
     control: String,
@@ -27,7 +19,6 @@ struct CheckPayload {
     checked: bool,
 }
 
-/// What a `tilo.ui.table.row_click` operation carries.
 #[derive(serde::Deserialize)]
 struct ClickPayload {
     control: String,
@@ -39,8 +30,6 @@ struct ClickPayload {
 }
 
 impl RowAction<(usize, bool)> {
-    /// The box a `check` operation addressed to this table turns, when it is
-    /// for it.
     pub(super) fn start(
         &self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -59,8 +48,6 @@ impl RowAction<(usize, bool)> {
 }
 
 impl RowAction<(usize, bool, bool)> {
-    /// The row a `click` operation addressed to this table clicks, when it is
-    /// for it.
     pub(super) fn start(
         &self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -78,8 +65,6 @@ impl RowAction<(usize, bool, bool)> {
     }
 }
 
-/// The row actions a table answers itself, indexed by the mask of those it
-/// publishes (a choice, a check, a click) and whether it keeps its own edits.
 pub(super) const ROW_OPERATION_HANDLERS: [&[&str]; 16] = {
     const C: &str = super::super::view_choice::CHOICE_SELECT;
     const K: &str = CHECK_ROW;
@@ -125,8 +110,6 @@ impl crate::widget::ResourceOperations for DataTableCore {
         ROW_OPERATION_HANDLERS[mask]
     }
 
-    /// Answer a `select` or an `open` addressed to this table: select the
-    /// row and report it, or open it, whoever chose it.
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -186,7 +169,6 @@ impl crate::widget::ResourceOperations for DataTableCore {
             .ok()
             .filter(|row| *row < self.row_total())
             .ok_or_else(|| format!("no row `{entry}`"))?;
-        // A person's click selected it already, perhaps beside others.
         if !self.selected_rows().contains(&row) {
             self.select_row(row);
         }

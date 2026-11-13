@@ -1,20 +1,6 @@
-//! The forecast (detail) pane: what [`Core`] paints for the selected place,
-//! the geometry it is laid out from, and the input it answers.
-//!
-//! The pane is one scrolling column on the window ground, sections separated
-//! by space and a `Heading` each, never boxed (a statistic is not a card):
-//!
-//! - a notice when the forecast on screen is out of date (`Banner`),
-//! - the hero: the condition glyph, the temperature as the screen's one
-//!   `Display` number, the condition, the day's range and the place, with
-//!   the sun's arc beside it when there is room,
-//! - the current readings as stat tiles,
-//! - the next 24 hours as a scrolling strip ([`crate::chart`]),
-//! - the 7-day forecast as rows,
-//! - air quality as stat tiles.
-//!
-//! The glyphs, the strip, the arc and the temperature bars are content
-//! drawing; every size and gap is a measured role line or a theme token.
+//! The forecast pane: the sections of one place's forecast, the geometry they
+//! are laid out from, and the input they answer. One scrolling column of
+//! sections separated by space and a heading each, never boxed.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -43,11 +29,6 @@ use crate::units::{self, Units};
 use crate::wxcode::Sky;
 
 impl Core {
-    /// Semantic summary of the currently painted forecast: the hero's key
-    /// reading, the forecast's age, the current readings, and every hourly
-    /// and daily forecast as a row carrying the reading the paint shows.
-    /// Assistive technology reads the forecast itself instead of being told
-    /// that 24 readings exist behind a picture it cannot enter.
     pub fn detail_accessibility(&self, rect: Rect) -> AccessNode {
         let node = AccessNode::new(Role::Group)
             .with_name(crate::i18n::t("weather-forecast"))
@@ -129,7 +110,6 @@ impl Core {
             .with_children(children)
     }
 
-    /// Fetch the selected place's forecast again after a failed update.
     pub fn retry(&mut self) {
         self.refresh_selected();
     }
@@ -154,8 +134,8 @@ impl Core {
             self.max_scroll = 0.0;
             self.hourly_max_scroll = 0.0;
             self.hourly_viewport = Rect::ZERO;
-            // With no places at all, the empty state takes this wide column
-            // while the list stands beside it; the narrow list shows it alone.
+            // With no places at all, this wide column shows the empty state
+            // while the list sits beside it; narrow, the list shows it alone.
             if self.model.locations.is_empty() {
                 if self.side_by_side {
                     self.empty_action = if self.search.is_editing() {
@@ -200,7 +180,6 @@ impl Core {
         }
     }
 
-    /// Paint every section of `page` from `origin` down.
     fn paint_page(&mut self, ctx: &mut PaintCtx<'_>, page: &DetailPage<'_>, origin: Point) {
         let w = page.width;
         let mut y = origin.y;
@@ -244,8 +223,6 @@ impl Core {
         page.air.paint(ctx, r, page.header_h + page.header_gap);
     }
 
-    /// The next 24 hours: the section heading, then the strip in its band
-    /// with the shared horizontal scroll bar under it.
     fn paint_hourly(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -270,9 +247,7 @@ impl Core {
                 is_now: i == 0,
             })
             .collect();
-        // Each hour gets at least the strip's minimum column; the strip
-        // scrolls when the 24 columns are wider than the band rather than
-        // squeezing them.
+        // Each hour keeps the strip's minimum column, so the band scrolls.
         let n = cols.len().max(1);
         let col_w = (band.width() / n as f64).max(page.min_hour_w);
         let content_w = col_w * n as f64;
@@ -317,21 +292,17 @@ impl Core {
         ScrollMetrics::new(self.body_content_h, self.body_rect.height(), self.scroll)
     }
 
-    /// Handle an event routed to the detail pane. Returns true if consumed.
     pub fn handle_detail_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         use winit::event::{ElementState, MouseButton};
 
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
-        // While the city list holds the input (a place being added, its
-        // menu, a drag), the forecast stays out of the way.
         if self.overview_owns_input() {
             return false;
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                // A live scrollbar drag tracks the cursor.
                 if let Some(off) = self.hourly_bar.drag_to(
                     self.hourly_track,
                     self.hourly_metrics(),
@@ -381,9 +352,8 @@ impl Core {
     fn handle_detail_wheel(&mut self, delta: winit::event::MouseScrollDelta) -> bool {
         let dy = wheel_dy(delta, self.wheel_step);
         let dx = wheel_dx(delta, self.wheel_step);
-        // Over the strip: scroll it horizontally. A horizontal delta maps
-        // directly; a vertical wheel nudges it too, falling through to the
-        // page scroll once it reaches an end.
+        // Over the strip, scroll it sideways; at an end the wheel falls through to the
+        // page.
         if self.hourly_viewport.contains(self.last_mouse) && self.hourly_max_scroll > 0.0 {
             let want = if dx.abs() > f64::EPSILON { -dx } else { -dy };
             let before = self.hourly_scroll_x;
@@ -485,23 +455,15 @@ impl Core {
             .then_some("Use Left and Right Arrow to scroll the hours")
     }
 
-    /// Park the forecast scrolled to the bottom for a short-window shot.
     pub fn seed_scrolled(&mut self) {
         self.scroll = f64::MAX;
     }
 }
 
-// =====================================================================
-// The page: every section measured once per frame
-// =====================================================================
-
-/// The forecast page for one paint: every section's content and height,
-/// measured once so the scroll extent and the painters agree.
 struct DetailPage<'a> {
     width: f64,
     section_gap: f64,
     header_gap: f64,
-    /// One `Heading` line: every section's title row.
     header_h: f64,
     notice: Option<Notice>,
     snapshot: Option<&'a WeatherSnapshot>,
@@ -573,28 +535,20 @@ impl<'a> DetailPage<'a> {
     }
 }
 
-/// A section's title, in `Heading`, sentence case.
 fn section_heading(ctx: &mut PaintCtx<'_>, title: &str, at: Point) {
     ctx.text_role(title, TextRole::Heading, ctx.theme.text_primary, at, None);
 }
 
-/// The lasting problem with the forecast on screen, above it: a banner
-/// that holds the Retry action when trying again can fix it.
 struct Notice {
     kind: ForecastNotice,
     height: f64,
 }
 
-/// The catalogue message naming the action that fetches the forecast again.
 const RETRY: &str = "weather-retry";
 
-/// The Retry action's key among the forecast's accessible children.
 pub const RETRY_KEY: &str = "weather.retry";
-/// The forecast's age line's key among the forecast's accessible children.
 pub const UPDATED_KEY: &str = "weather.updated";
-/// The hourly strip's key among the forecast's accessible children.
 pub const HOURS_KEY: &str = "weather.hours";
-/// The 7-day forecast's key among the forecast's accessible children.
 pub const DAYS_KEY: &str = "weather.days";
 
 impl Notice {
@@ -616,24 +570,19 @@ impl Notice {
         }
     }
 
-    /// Paint the banner into `r`. Returns where its Retry action takes a
-    /// pointer, when it offers one.
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, pointer: Point) -> Option<Rect> {
         let retry = crate::i18n::t(RETRY);
         Banner::paint(ctx, r, &Self::content_for(self.kind, &retry), pointer).action
     }
 }
 
-/// The hero: the condition glyph, the temperature, the condition, the
-/// day's range and the place; the sun's arc beside it on a wide pane.
 struct Hero {
     sky: Option<(Sky, bool)>,
     temperature: String,
     condition: String,
     range: String,
     place: String,
-    /// When the forecast on screen was fetched, and whether it is still
-    /// current (see [`crate::freshness`]).
+    /// When the forecast was fetched, and whether it is still current.
     updated: Option<Updated>,
     sun: Option<SunArc>,
     glyph: f64,
@@ -651,8 +600,6 @@ impl Hero {
         let theme = ctx.theme;
         let sp = &theme.tokens.spacing;
         let s1 = f64::from(sp.s1);
-        // The glyph stands as tall as the temperature and the condition
-        // beside it.
         let glyph = (ctx.line_box(TextRole::Display) + ctx.line_box(TextRole::Heading)).round();
 
         let (sky, temperature, condition, range) = snapshot.map_or_else(
@@ -669,14 +616,12 @@ impl Hero {
                 (
                     Some((Sky::from_code(cur.weather_code), cur.is_day)),
                     format!("{}°", snap.temp_in(cur.temperature, units).round() as i64),
-                    Sky::label(cur.weather_code).to_string(),
+                    Sky::label(cur.weather_code),
                     range,
                 )
             },
         );
-        // The forecast's age is a caption of the reading above it: read the
-        // wall clock the whole app reads, so a capture and a live window
-        // agree.
+        // The age line reads the app's clock, so a capture and a live window agree.
         let updated = snapshot.and_then(|snap| {
             freshness::updated(snap.fetched_at, ui::clock::local_now().naive_local())
         });
@@ -688,8 +633,7 @@ impl Hero {
         if updated.is_some() {
             text_h += ctx.line_box(TextRole::Caption) + s1;
         }
-        // The arc stands beside the hero only where the pane leaves the
-        // text its own room: wider than a detail column's minimum.
+        // The arc shows only where the pane leaves the text room.
         let sun = snapshot
             .filter(|_| width >= f64::from(theme.tokens.metrics.detail_min_width) + glyph * 2.0)
             .and_then(|snap| {
@@ -719,8 +663,6 @@ impl Hero {
         self.sun.is_some()
     }
 
-    /// Paint the hero into `area`, returning where the forecast's age line
-    /// landed when it has one.
     fn paint(&self, ctx: &mut PaintCtx<'_>, area: Rect) -> Option<Rect> {
         let theme = ctx.theme;
         let sp = &theme.tokens.spacing;
@@ -756,10 +698,7 @@ impl Hero {
             ctx.text_role(text, role, ink, Point::new(left, top), None);
             top += ctx.line_box(role) + gap;
         }
-        // The forecast's age last, quiet while it is still current and in the
-        // theme's warning ink once it is not: the same information and the
-        // same treatment the notice above the page uses for a lasting
-        // problem.
+        // The age line last: quiet while current, in the warning ink once not.
         let updated_rect = self.updated.as_ref().map(|updated| {
             let line = ctx.line_box(TextRole::Caption);
             let ink = if updated.stale {
@@ -786,12 +725,10 @@ impl Hero {
     }
 }
 
-/// One stat tile's content.
 struct Tile {
     label: &'static str,
     value: String,
     unit: Option<String>,
-    /// A word that qualifies the value ("High", "WSW"), under it.
     note: Option<String>,
 }
 
@@ -815,8 +752,6 @@ impl Tile {
         self
     }
 
-    /// The tile as a screen reader hears it: the label, then the value with
-    /// its unit and qualifier ("Wind: 18 km/h, WSW").
     fn access_node(&self) -> AccessNode {
         let mut value = self.value.clone();
         if let Some(unit) = &self.unit {
@@ -842,8 +777,6 @@ impl Tile {
     }
 }
 
-/// A set of stat tiles laid out like the toolkit's `StatGroup`: as many
-/// equal columns as fit and divide the count evenly, rows a section apart.
 struct Tiles {
     items: Vec<Tile>,
     cols: usize,
@@ -852,7 +785,6 @@ struct Tiles {
     row_gap: f64,
     width: f64,
     height: f64,
-    /// Space above the tiles (a section heading), inside `height`.
     lead: f64,
 }
 
@@ -887,8 +819,6 @@ impl Tiles {
         }
     }
 
-    /// The current readings: feels like, wind, humidity, precipitation,
-    /// pressure and UV; sunrise and sunset too when the hero has no arc.
     fn readings(
         ctx: &mut PaintCtx<'_>,
         width: f64,
@@ -912,8 +842,6 @@ impl Tiles {
     }
 }
 
-/// The current readings: feels like, wind, humidity, precipitation,
-/// pressure and UV; sunrise and sunset too when `with_sun`.
 fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Tile> {
     let cur = &snap.current;
     let mut tiles = vec![
@@ -928,9 +856,7 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
         .unit(units.wind_suffix())
         .note(units::compass(cur.wind_direction)),
         Tile::new("Humidity", format!("{}", cur.humidity.round() as i64)).unit("%"),
-        // A rainfall depth follows the person's measurement system, like the
-        // temperature and the wind above it; there is no request parameter
-        // for it, so the snapshot's own unit is converted here.
+        // Rain has no request parameter, so its unit is converted here.
         Tile::new(
             "Precipitation",
             snap.precip_reading(cur.precipitation, units),
@@ -947,15 +873,12 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
     tiles
 }
 
-/// The chance of precipitation as both the strip and the words give it.
 fn chance(probability: f64) -> String {
     format!("{}%", probability.round() as i64)
 }
 
-/// The 24-hour strip as a list of readings: the strip paints 24 columns that
-/// no screen reader can enter, so each hour is a row with the same reading
-/// the column shows — its hour, the temperature, the sky, and the chance of
-/// precipitation where the strip paints one.
+/// The strip as a list: a screen reader cannot enter the painted columns, so each
+/// hour is a row with its reading.
 fn hours_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
     let total = snap.hourly.len();
     let rows = snap
@@ -998,10 +921,7 @@ fn hours_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
         .with_children(rows)
 }
 
-/// The 7-day forecast as a list of readings: one row per day with the range
-/// the row's bar spans, the sky, the chance of precipitation, and the UV and
-/// wind the wide row adds — the same reading the painted row carries, which a
-/// narrow window hides rather than a screen reader losing.
+/// The 7-day forecast as a list: what a narrow window hides, a screen reader keeps.
 fn days_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
     let total = snap.daily.len();
     let rows = snap
@@ -1052,7 +972,6 @@ fn days_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
         .with_children(rows)
 }
 
-/// The 7-day forecast: its heading, then one row per day.
 struct Days<'a> {
     snapshot: Option<&'a WeatherSnapshot>,
     units: Units,
@@ -1112,13 +1031,10 @@ impl<'a> Days<'a> {
     }
 }
 
-/// The measured widths of a day row's columns: each the widest text that
-/// column paints this frame, in the role it paints it in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct DayColumns {
     pub(super) label_w: f64,
     pub(super) icon_edge: f64,
-    /// The edge of the raindrop beside a chance of precipitation.
     pub(super) drop: f64,
     pub(super) cond_min_w: f64,
     pub(super) precip_w: f64,
@@ -1134,21 +1050,19 @@ impl DayColumns {
         let numeric = theme.text(TextRole::Body).numeric();
         let strong = theme.text(TextRole::Body).numeric().strong();
         let caption = theme.text(TextRole::Caption).numeric();
-        // The glyph is two caption lines tall and the drop three quarters of
-        // one, so both grow with the text beside them.
+        // The glyph is two caption lines and the drop three quarters of one.
         let caption_h = f64::from(ctx.text.measure_style("Ag", None, &caption).1);
         let drop = (caption_h * 0.75).round();
         let mut width =
             |text: &str, style: &TextStyle| f64::from(ctx.text.measure_style(text, None, style).0);
         let mut label_w = width("Tomorrow", &body);
         let mut temp_w: f64 = 0.0;
-        // The condition column shows only where the week's longest condition
-        // fits whole, so no day's condition is cut short.
+        // The condition column shows only where the week's longest condition fits whole.
         let mut cond_w = width("Mainly clear", &body);
         if let Some(snap) = snapshot {
             for (i, d) in snap.daily.iter().enumerate() {
                 label_w = label_w.max(width(&day_label(i, d), &body));
-                cond_w = cond_w.max(width(Sky::label(d.weather_code), &body));
+                cond_w = cond_w.max(width(&Sky::label(d.weather_code), &body));
                 let lo = snap.temp_in(d.temp_min, units).round() as i64;
                 let hi = snap.temp_in(d.temp_max, units).round() as i64;
                 temp_w = temp_w
@@ -1169,7 +1083,6 @@ impl DayColumns {
     }
 }
 
-/// "Today", "Tomorrow", then the weekday.
 fn day_label(i: usize, d: &DayForecast) -> String {
     match i {
         0 => ui::format::near_day(0).unwrap_or_default(),
@@ -1178,9 +1091,6 @@ fn day_label(i: usize, d: &DayForecast) -> String {
     }
 }
 
-/// Precomputed x-geometry for one row of the 7-day forecast, shared by every
-/// row so they align and agree on which optional columns (condition label,
-/// UV/wind extras, precipitation) fit.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DayRowGeometry {
     pub(super) inner_l: f64,
@@ -1201,11 +1111,8 @@ pub(super) struct DayRowGeometry {
 }
 
 impl DayRowGeometry {
-    /// One column grid for every row between `x0` and `x1`, with the
-    /// theme's steps between neighbours: `s4` between the day and its glyph,
-    /// `s3` between the other siblings (glyph, extras, precipitation,
-    /// temperatures), `s2` between a value and its own bar. Optional columns
-    /// show only when they keep that gap.
+    /// One grid for every row between `x0` and `x1`, with the theme's steps between
+    /// neighbours; an optional column shows only where it keeps that gap.
     pub(super) fn new(
         x0: f64,
         x1: f64,
@@ -1230,9 +1137,7 @@ impl DayRowGeometry {
         let icon_x1 = icon_x0 + c.icon_edge;
         let cond_x = icon_x1 + s3;
         let show_precip = precip_left >= icon_x1 + s3;
-        // Per-day extras (UV-index max + wind max) take a column to the left
-        // of the precipitation/low cluster, shown only when the row is wide
-        // enough to fit them without crowding the condition text.
+        // The UV and wind column sits left of the rain and the low, when it fits.
         let wind_right = if show_precip {
             precip_left - s3
         } else {
@@ -1266,8 +1171,6 @@ impl DayRowGeometry {
     }
 }
 
-/// The 7-day row painter: the shared column geometry, the forecast and units
-/// its labels read, and the week's temperature range each day's bar spans.
 struct ForecastRows<'a> {
     geo: DayRowGeometry,
     snap: &'a WeatherSnapshot,
@@ -1276,16 +1179,12 @@ struct ForecastRows<'a> {
 }
 
 impl ForecastRows<'_> {
-    /// One row of the 7-day forecast: day label, condition glyph (+ label
-    /// when there's room), UV/wind extras and precipitation (when there's
-    /// room), and the low/high temperature bar.
     fn draw_row(&self, ctx: &mut PaintCtx<'_>, i: usize, d: &DayForecast, row: Rect) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let geo = &self.geo;
         let cy = row.center().y;
         if i > 0 {
-            // Rows are separated by a hairline on the ground they stand on.
             ui::surface::separator(
                 ctx.scene,
                 ctx.transform,
@@ -1321,7 +1220,7 @@ impl ForecastRows<'_> {
             };
             let style = theme.text(TextRole::Body);
             let label = ctx.text.elide_to_width_style(
-                Sky::label(d.weather_code),
+                &Sky::label(d.weather_code),
                 (limit - geo.cond_x).max(1.0) as f32,
                 &style,
             );
@@ -1381,9 +1280,7 @@ impl ForecastRows<'_> {
         self.draw_temps(ctx, d, row);
     }
 
-    /// The low and high readings and the day's span of the week's range
-    /// between them: one cool-to-warm wash spans the whole track and each
-    /// day shows its slice of it.
+    /// The low and high, and the day's slice of the week's range.
     fn draw_temps(&self, ctx: &mut PaintCtx<'_>, d: &DayForecast, row: Rect) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
@@ -1437,8 +1334,6 @@ impl ForecastRows<'_> {
     }
 }
 
-/// Air quality: its heading, then the indices and pollutants as stat tiles,
-/// or one line saying why there are none.
 struct Air {
     tiles: Option<Tiles>,
     message: &'static str,
@@ -1490,8 +1385,6 @@ impl Air {
     }
 }
 
-/// The air-quality readings: the two indices, the European one with its
-/// band, then the pollutants.
 fn air_tiles(aq: &AirQuality) -> Vec<Tile> {
     let value =
         |v: Option<f64>| v.map_or_else(|| "—".to_string(), |v| format!("{}", v.round() as i64));
@@ -1509,16 +1402,11 @@ fn air_tiles(aq: &AirQuality) -> Vec<Tile> {
     ]
 }
 
-// =====================================================================
-// Pure helpers
-// =====================================================================
-
 pub(super) fn hhmm(iso: &str) -> String {
     iso.get(11..16).unwrap_or("--:--").to_string()
 }
 
-/// The unit a precipitation reading is given in, in the person's language
-/// (`mm`, `in`, `Zoll`).
+/// The rain unit in the person's language (`mm`, `in`, `Zoll`).
 fn precip_unit(units: Units) -> String {
     t(match units.precip {
         crate::units::PrecipUnit::Millimetres => "weather-unit-millimetres",
@@ -1526,8 +1414,7 @@ fn precip_unit(units: Units) -> String {
     })
 }
 
-/// An ISO local time ("2026-06-30T07:40") as the person's clock shows it:
-/// "07:40" or "7:40 AM", like every other time on the desktop.
+/// An ISO local time ("2026-06-30T07:40") in the person's clock ("7:40 AM").
 pub(crate) fn clock_label(iso: &str) -> String {
     iso.get(11..16)
         .and_then(|clock| chrono::NaiveTime::parse_from_str(clock, "%H:%M").ok())
@@ -1535,7 +1422,6 @@ pub(crate) fn clock_label(iso: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Parse an "HH:MM" clock string into minutes since local midnight.
 fn hhmm_to_minutes(s: &str) -> Option<i64> {
     let (h, m) = s.split_once(':')?;
     let h: i64 = h.trim().parse().ok()?;
@@ -1546,11 +1432,8 @@ fn hhmm_to_minutes(s: &str) -> Option<i64> {
     Some(h * 60 + m)
 }
 
-/// Fraction along the daytime arc for the sun's current position: 0 at
-/// sunrise (left horizon), 0.5 at solar noon (apex), 1 at sunset (right
-/// horizon). Clamps to the nearest horizon before sunrise / after sunset.
-/// Returns `None` when any clock string is unparseable or the day has no
-/// length, so the caller can fall back rather than divide by zero.
+/// The sun between sunrise (0), noon (0.5) and sunset (1), clamped; `None` when a
+/// clock is unparseable or the day has no length.
 pub(super) fn sun_arc_fraction(
     now_hhmm: &str,
     sunrise_hhmm: &str,
@@ -1565,9 +1448,6 @@ pub(super) fn sun_arc_fraction(
     Some(((now - sr) as f64 / (ss - sr) as f64).clamp(0.0, 1.0))
 }
 
-/// The per-day "extras" labels shown at the right of a wide 7-day row: the
-/// UV-index max and the wind max converted to the display units. Kept pure so
-/// the exact strings the row renders are unit-testable.
 fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (String, String) {
     let uv = d.uv_index_max.round().max(0.0) as i64;
     let wind = snap.wind_in(d.wind_max, units).round() as i64;
@@ -1615,8 +1495,7 @@ mod day_row_geometry_tests {
 
     #[test]
     fn day_row_columns_keep_token_gaps_and_clear_the_glyph() {
-        // Every neighbouring pair in a 7-day row keeps a token-step gap at
-        // every width the app lays out (HIG §7 "nothing touches").
+        // Every neighbouring pair keeps a token-step gap at every width.
         let sp = Spacing::default();
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         for (w, temp_w) in [
@@ -1674,7 +1553,7 @@ mod helper_tests {
         assert_eq!(sun_arc_fraction("12:00", "06:00", "18:00"), Some(0.5));
         assert_eq!(sun_arc_fraction("18:00", "06:00", "18:00"), Some(1.0));
         assert_eq!(sun_arc_fraction("09:00", "06:00", "18:00"), Some(0.25));
-        // Before sunrise pins to the left horizon, after sunset to the right.
+        // Before sunrise pins left, after sunset right.
         assert_eq!(sun_arc_fraction("03:00", "06:00", "18:00"), Some(0.0));
         assert_eq!(sun_arc_fraction("23:30", "06:00", "18:00"), Some(1.0));
         assert_eq!(sun_arc_fraction("--:--", "06:00", "18:00"), None);
@@ -1718,7 +1597,6 @@ mod precipitation_tests {
 
     #[test]
     fn a_rainfall_reading_follows_the_measurement_system() {
-        // Metric: millimetres, one decimal, in the app's own words.
         assert_eq!(tile(Units::METRIC, 0.0), ("0.0".into(), Some("mm".into())));
         assert_eq!(tile(Units::METRIC, 2.44), ("2.4".into(), Some("mm".into())));
         assert_eq!(
@@ -1795,7 +1673,6 @@ mod page_tests {
         assert!(large > normal * 1.4, "{large} vs {normal}");
         assert!(large_tile > normal_tile);
         assert!(large_cols < wide_cols);
-        // Tiles always divide evenly into their columns.
         let (_, narrow_cols, _) = page_height(380.0, 1.0);
         assert_eq!(
             8 % narrow_cols,
@@ -1811,8 +1688,6 @@ mod accessibility_tests {
     use super::*;
     use crate::core::Core;
 
-    /// The bundled forecast for the selected place, stamped as just fetched so
-    /// the page has an age line to show.
     fn core(units: Units) -> (Core, WeatherSnapshot) {
         let mut model = crate::sample::sample_model();
         let location = model.selected_location().expect("a bundled place").clone();
@@ -1832,8 +1707,7 @@ mod accessibility_tests {
             .unwrap_or_else(|| panic!("the forecast exposes a {name:?} group"))
     }
 
-    /// A staged age is measured against the clock the page reads it back
-    /// with, so a capture says "4 minutes ago" or "out of date" as asked.
+    /// The staged age is measured against the clock the page reads it back with.
     #[test]
     fn a_staged_forecast_age_is_measured_against_the_clock_the_page_reads() {
         let ages = |core: &Core| {
@@ -1880,15 +1754,12 @@ mod accessibility_tests {
             "every painted column is a row"
         );
         assert!(hours.children.iter().all(|row| row.role == Role::ListItem));
-        // The current hour reads as the strip's own "Now", and the next column
-        // names the clock time the strip prints.
         assert_eq!(hours.children[0].name.as_deref(), Some("Now"));
         assert_eq!(
             hours.children[1].name.as_deref(),
             Some(snapshot.hourly[1].hour_label().as_str())
         );
-        // The reading is the column's: the temperature in the person's unit,
-        // the sky, and the chance of precipitation the strip paints.
+        // The reading is the column's: temperature, sky and chance of rain.
         let second = &snapshot.hourly[1];
         let degrees = format!(
             "{}°",
@@ -1899,7 +1770,7 @@ mod accessibility_tests {
         let reading = hours.children[1].description.clone().unwrap_or_default();
         assert!(reading.starts_with(&degrees), "{reading}");
         assert!(
-            reading.contains(Sky::label(second.weather_code)),
+            reading.contains(Sky::label(second.weather_code).as_str()),
             "{reading}"
         );
         if second.precip_probability >= 5.0 {
@@ -1925,7 +1796,10 @@ mod accessibility_tests {
             Some(format!("{high} to {low}").as_str()),
             "{reading}"
         );
-        assert!(reading.contains(Sky::label(day.weather_code)), "{reading}");
+        assert!(
+            reading.contains(Sky::label(day.weather_code).as_str()),
+            "{reading}"
+        );
         assert!(reading.contains("UV index"), "{reading}");
     }
 
@@ -1951,8 +1825,7 @@ mod accessibility_tests {
 
     #[test]
     fn a_forecast_nothing_was_fetched_for_makes_no_claim_about_its_age() {
-        // The bundled capture fixtures carry no fetch time, so the page says
-        // nothing it cannot know.
+        // The fixtures carry no fetch time, so the page says nothing it cannot know.
         let model = crate::sample::sample_model();
         let core = Core::new(model, Units::METRIC);
         let tree = core.detail_accessibility(Rect::new(0.0, 0.0, 892.0, 700.0));

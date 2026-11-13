@@ -23,9 +23,10 @@ __all__ = [
 
 class Profile(Resource):
     """App Publisher — `publisher.profile`."""
-    registry: Any
-    domain: Any
-    forge_account: Any
-    contact: Any
+    __surface__ = "so.tilo.publisher@a369a701e1193f6d"
+    registry: str
+    domain: str
+    forge_account: str
+    contact: str
 
 

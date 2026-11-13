@@ -1,15 +1,6 @@
-//! Lucide-icon glyphs, stroked to match the concept's 1.5 px aesthetic.
-//!
-//! Each [`Icon`] variant resolves to one or more [`BezPath`] subpaths
-//! traced from upstream lucide-react (v0.546.0, ISC licensed) in the
-//! lucide 24×24 viewBox, scaled at draw time. Icons are *stroked*, not
-//! filled — [`draw_icon`] mirrors that. Deliberately just a data table +
-//! one draw function — no trait hierarchy, icon-theme system, or
-//! per-icon caching.
-//!
-//! To add an icon: pull the `__iconNode` entries from
-//! `tilo-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
-//! add a variant to [`Icon`], and map it in `icon_subpaths`.
+//! Lucide-icon glyphs, stroked to match the concept's 1.5 px aesthetic. Each [`Icon`] variant resolves
+//! to one or more [`BezPath`] subpaths traced from upstream lucide-react (v0.546.0, ISC licensed) in
+//! the lucide 24×24 viewBox, scaled at draw time.
 
 mod app_glyph;
 mod app_image;
@@ -27,12 +18,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 
-/// Declares [`Icon`] from one table of variants and their lucide kebab
-/// names, so the enum, [`Icon::ALL`] and [`Icon::name`] cannot disagree.
+/// Declares [`Icon`] from one table of variants and their lucide kebab names, so the enum,
+/// [`Icon::ALL`] and [`Icon::name`] cannot disagree.
 macro_rules! icons {
     ($($(#[$doc:meta])* $icon:ident => $name:literal,)*) => {
-        /// Stable identifier for a lucide glyph. New entries map 1:1 to lucide
-        /// icon kebab names (e.g. `Icon::LayoutGrid` → `layout-grid`).
+        /// Stable identifier for a lucide glyph.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Icon {
             $($(#[$doc])* $icon,)*
@@ -42,9 +32,8 @@ macro_rules! icons {
             /// Every icon, in declaration order.
             pub const ALL: [Self; [$(stringify!($icon)),*].len()] = [$(Self::$icon),*];
 
-            /// The icon's lucide kebab name (`Icon::LayoutGrid` → `layout-grid`):
-            /// how data that cannot name the enum (a resource's search row, a
-            /// manifest) names an icon.
+            /// The icon's lucide kebab name (`Icon::LayoutGrid` → `layout-grid`): how data that cannot
+            /// name the enum (a resource's search row, a manifest) names an icon.
             #[must_use]
             pub const fn name(self) -> &'static str {
                 match self {
@@ -66,6 +55,12 @@ icons! {
     Wifi => "wifi",
     Bluetooth => "bluetooth",
     Monitor => "monitor",
+    /// A phone of the person's, as its own device.
+    Smartphone => "smartphone",
+    /// A tablet of the person's. Lucide `tablet`.
+    Tablet => "tablet",
+    /// A laptop of the person's. Lucide `laptop`.
+    Laptop => "laptop",
     Battery => "battery",
     Shield => "shield",
     Maximize2 => "maximize-2",
@@ -90,7 +85,6 @@ icons! {
     Home => "home",
     Camera => "camera",
     Power => "power",
-    // --- File-manager set (file types) ---
     Folder => "folder",
     FolderOpen => "folder-open",
     File => "file",
@@ -99,7 +93,6 @@ icons! {
     Film => "film",
     Archive => "archive",
     FileCode => "file-code",
-    // --- File-manager set (actions / chrome) ---
     ArrowLeft => "arrow-left",
     ArrowRight => "arrow-right",
     ArrowUp => "arrow-up",
@@ -128,7 +121,6 @@ icons! {
     Pin => "pin",
     HardDrive => "hard-drive",
     Check => "check",
-    // --- Video / media-navigation set ---
     Flame => "flame",
     GalleryVerticalEnd => "gallery-vertical-end",
     History => "history",
@@ -144,7 +136,6 @@ icons! {
     Info => "info",
     CloudDownload => "cloud-download",
     ArrowUpDown => "arrow-up-down",
-    // --- Extended core set ---
     Bell => "bell",
     BellOff => "bell-off",
     Play => "play",
@@ -153,7 +144,6 @@ icons! {
     ExternalLink => "external-link",
     Trash => "trash",
     MoreHorizontal => "more-horizontal",
-    // --- Mail set (folders / actions) ---
     Inbox => "inbox",
     Send => "send",
     Reply => "reply",
@@ -162,42 +152,34 @@ icons! {
     Calendar => "calendar",
     Ban => "ban",
     Download => "download",
-    // --- Quick-settings set ---
     Sun => "sun",
     Volume2 => "volume-2",
     VolumeX => "volume-x",
     WifiOff => "wifi-off",
-    /// Lucide `ethernet-port` — the RJ45 socket outline reads as
-    /// "cable" at 14 px where a plug icon does not.
+    /// Lucide `ethernet-port` — the RJ45 socket outline reads as "cable" at 14 px where a plug icon
+    /// does not.
     EthernetPort => "ethernet-port",
     Mic => "mic",
     MicOff => "mic-off",
-    /// A song's lyrics: lines in a frame. Lucide `captions`.
+    /// A song's lyrics: lines in a frame.
     Captions => "captions",
     SkipForward => "skip-forward",
     SkipBack => "skip-back",
-    // --- On-screen-keyboard set (action keys) ---
-    /// The Shift key. Rendered filled for a latched Caps-Lock (see
-    /// [`Icon::draw_filled`]).
+    /// The Shift key. Rendered filled for a latched Caps-Lock (see [`Icon::draw_filled`]).
     ArrowBigUp => "arrow-big-up",
     Delete => "delete",
     CornerDownLeft => "corner-down-left",
-    // --- History set ---
-    /// Undo — a leftward arrow curving back on itself. Lucide `undo-2`.
+    /// Undo — a leftward arrow curving back on itself.
     Undo2 => "undo-2",
-    /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
+    /// Redo — the mirror of [`Icon::Undo2`].
     Redo2 => "redo-2",
-    // --- Status set ---
     /// A warning: Lucide `triangle-alert`.
     TriangleAlert => "triangle-alert",
-    // --- Window navigation set ---
-    /// Show or hide the sidebar: a window with a rule near its leading
-    /// edge. Lucide `panel-left`.
+    /// Show or hide the sidebar: a window with a rule near its leading edge.
     PanelLeft => "panel-left",
     /// Show or hide the inspector: the mirror of [`Icon::PanelLeft`].
     PanelRight => "panel-right",
-    /// Show or hide a bottom panel (problems, a terminal): a window with a
-    /// rule near its bottom edge. Lucide `panel-bottom`.
+    /// Show or hide a bottom panel (problems, a terminal): a window with a rule near its bottom edge.
     PanelBottom => "panel-bottom",
     // --- Everyday set: people, places, media, text and status (Lucide v0.546.0) ---
     EyeOff => "eye-off",
@@ -300,59 +282,53 @@ icons! {
     Lightbulb => "lightbulb",
     /// An SD card: Lucide `sd-card` as it shipped before the set dropped it.
     SdCard => "sd-card",
-    // --- Drawing set: Canvas's tools, layers and history ---
     /// A paint brush. Lucide `brush`.
     Brush => "brush",
-    /// A circle, for an ellipse tool. Lucide `circle`.
+    /// A circle, for an ellipse tool.
     Circle => "circle",
     /// A diagonal line. Lucide `slash`.
     Slash => "slash",
-    /// An eyedropper that picks a colour. Lucide `pipette`.
+    /// An eyedropper that picks a colour.
     Pipette => "pipette",
     /// An eraser. Lucide `eraser`.
     Eraser => "eraser",
     /// Unlocked. Lucide `lock-open`.
     LockOpen => "lock-open",
-    /// Linked: moves with what it belongs to. Lucide `link`.
-    /// Unlinked: stays put on its own. Lucide `unlink`.
+    /// Linked: moves with what it belongs to.
     Unlink => "unlink",
     /// An agent. Lucide `bot`.
     Bot => "bot",
-    /// Discord's mark, for linking a Discord account. Not Lucide: drawn
-    /// filled ([`Icon::is_brand`]), its eyes left open.
+    /// Discord's mark, for linking a Discord account.
     Discord => "discord",
-    /// The Tilo mark, which leads the system's own menu. Not Lucide: drawn in the brand's
-    /// colours, whatever the ink ([`paint_tilo_mark`]).
+    /// The Tilo mark, which leads the system's own menu.
     Tilo => "tilo",
-    /// A rectangle of an area being selected. Lucide `square-dashed`.
+    /// A rectangle of an area being selected.
     SquareDashed => "square-dashed",
-    /// An ellipse of an area being selected. Lucide `circle-dashed`.
+    /// An ellipse of an area being selected.
     CircleDashed => "circle-dashed",
     /// A freehand selection. Lucide `lasso`.
     Lasso => "lasso",
-    /// Selecting by colour, a magic wand. Lucide `wand-sparkles`.
+    /// Selecting by colour, a magic wand.
     WandSparkles => "wand-sparkles",
     /// Filling an area with colour. Lucide `paint-bucket`.
     PaintBucket => "paint-bucket",
     /// Shapes united into one. Lucide `squares-unite`.
     SquaresUnite => "squares-unite",
-    /// One shape taken out of another. Lucide `squares-subtract`.
+    /// One shape taken out of another.
     SquaresSubtract => "squares-subtract",
     /// Only where shapes overlap. Lucide `squares-intersect`.
     SquaresIntersect => "squares-intersect",
-    /// Where either shape is, but not both. Lucide `squares-exclude`.
+    /// Where either shape is, but not both.
     SquaresExclude => "squares-exclude",
-    /// A shell on another machine (SSH). Lucide `square-terminal`.
+    /// A shell on another machine (SSH).
     SquareTerminal => "square-terminal",
-    /// Another machine's screen, shared (VNC). Lucide `screen-share`.
+    /// Another machine's screen, shared (VNC).
     ScreenShare => "screen-share",
-    /// A desktop session in a window (RDP). Lucide `app-window`.
+    /// A desktop session in a window (RDP).
     AppWindow => "app-window",
-    // --- Capture set: what a screenshot, recording or picture in picture takes ---
-    /// Recording: a dot inside a ring, the record button. Lucide `circle-dot`.
+    /// Recording: a dot inside a ring, the record button.
     CircleDot => "circle-dot",
-    /// A strip of windows side by side, the neighbours cut off at both
-    /// edges. Lucide `gallery-horizontal`.
+    /// A strip of windows side by side, the neighbours cut off at both edges.
     GalleryHorizontal => "gallery-horizontal",
     /// One of your own devices. Lucide `monitor-smartphone`.
     MonitorSmartphone => "monitor-smartphone",
@@ -385,19 +361,15 @@ impl Icon {
         Self::ALL.into_iter().find(|icon| icon.name() == name)
     }
 
-    /// A service's mark rather than a Lucide glyph: always drawn filled,
-    /// as the service draws it.
+    /// A service's mark rather than a Lucide glyph: always drawn filled, as the service draws it.
     #[must_use]
     pub const fn is_brand(self) -> bool {
         matches!(self, Self::Discord)
     }
 }
 
-/// `icon` as an app's icon artwork: the glyph stroked in white on a rounded
-/// tile of the accent gradient, as a standalone SVG document. A package that
-/// names a platform glyph as its icon (a tilolang app's `icon: .note`)
-/// ships this as its signed icon file, so the launcher grid, search and the
-/// window chrome show the same artwork as any app with its own.
+/// `icon` as an app's icon artwork: the glyph stroked in white on a rounded tile of the accent
+/// gradient, as a standalone SVG document.
 #[must_use]
 pub fn icon_svg(icon: Icon) -> String {
     let paths: String = icon_subpaths(icon)
@@ -415,21 +387,15 @@ pub fn icon_svg(icon: Icon) -> String {
     )
 }
 
-/// Lucide's fixed viewBox. Every stored path assumes this coordinate
-/// system; [`draw_icon`] scales to the requested rect.
+/// Lucide's fixed viewBox. Every stored path assumes this coordinate system; [`draw_icon`] scales to
+/// the requested rect.
 pub const LUCIDE_VIEWBOX: f64 = 24.0;
 
-/// Lucide's default stroke width (in viewBox units) — 2.0 maps to
-/// 1.5 px after the concept's Tailwind tweaks, so we scale by 0.75
-/// when translating viewBox stroke width to output pixels. Call sites
-/// can still override via the `stroke_px` argument of [`draw_icon`].
+/// Lucide's default stroke width (in viewBox units) — 2.0 maps to 1.5 px after the concept's Tailwind
+/// tweaks, so we scale by 0.75 when translating viewBox stroke width to output pixels.
 pub const LUCIDE_DEFAULT_STROKE_PX: f64 = 1.5;
 
 /// Parse a lucide `d="…"` string into a [`BezPath`].
-///
-/// Panics if the supplied string is malformed. All paths shipped in
-/// this module are unit-tested to parse into non-empty bez paths, so a
-/// panic here flags a bad hand-edit rather than a runtime bug.
 fn path_from_d(d: &str) -> BezPath {
     #[allow(
         clippy::expect_used,
@@ -438,7 +404,6 @@ fn path_from_d(d: &str) -> BezPath {
     BezPath::from_svg(d).expect("lucide path literal must parse")
 }
 
-/// Build the stroked outline of a lucide `<rect>`, with optional corner radius.
 fn rect_path(left: f64, top: f64, width: f64, height: f64, radius: f64) -> BezPath {
     let rect = Rect::new(left, top, left + width, top + height);
     if radius > 0.0 {
@@ -469,8 +434,8 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
         .collect()
 }
 
-/// Discord's mark in the 24×24 viewBox: its outline and its two eyes as
-/// inner loops of one path, which an even-odd fill leaves open.
+/// Discord's mark in the 24×24 viewBox: its outline and its two eyes as inner loops of one path, which
+/// an even-odd fill leaves open.
 fn discord_mark() -> BezPath {
     let mut mark = path_from_d(
         "M20.32 4.37C18.8 3.67 17.15 3.16 15.43 2.86C15.22 3.24 14.98 3.73 14.82 4.12C12.98 3.84 11.15 3.84 9.34 4.12C9.17 3.73 8.93 3.24 8.71 2.86C7 3.16 5.35 3.67 3.82 4.37C0.53 9.05 -0.32 13.58 0.1 18.06C2.15 19.56 4.14 20.48 6.09 21.08C6.57 20.43 7 19.73 7.37 19.01C6.67 18.75 6.01 18.43 5.39 18.06C5.55 17.94 5.71 17.82 5.87 17.7C9.8 19.49 14.06 19.49 17.94 17.7C18.1 17.82 18.26 17.94 18.42 18.06C17.8 18.43 17.13 18.75 16.44 19.01C16.81 19.73 17.24 20.43 17.71 21.08C19.67 20.48 21.66 19.56 23.71 18.06C24.21 12.88 22.87 8.38 20.32 4.37Z",
@@ -483,8 +448,6 @@ fn discord_mark() -> BezPath {
 }
 
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
-/// `pub(crate)` so unit tests can poke at the raw shapes without
-/// duplicating the data table; widgets call [`draw_icon`] instead.
 #[allow(
     clippy::too_many_lines,
     reason = "the exhaustive Lucide icon-to-static-path table is intentionally kept in one match"
@@ -648,6 +611,17 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             line_path(8.0, 21.0, 16.0, 21.0),
             line_path(12.0, 17.0, 12.0, 21.0),
         ],
+        Icon::Smartphone => vec![
+            rect_path(5.0, 2.0, 14.0, 20.0, 2.0),
+            path_from_d("M12 18h.01"),
+        ],
+        Icon::Tablet => vec![
+            rect_path(4.0, 2.0, 16.0, 20.0, 2.0),
+            path_from_d("M12 18h.01"),
+        ],
+        Icon::Laptop => vec![path_from_d(
+            "M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16",
+        )],
         Icon::Battery => vec![
             path_from_d("M 22 14 L 22 10"),
             rect_path(2.0, 6.0, 16.0, 12.0, 2.0),
@@ -1133,12 +1107,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
         ],
-        // Undo2: the left-pointing arrowhead + the loop that doubles back.
         Icon::Undo2 => vec![
             path_from_d("M9 14 4 9l5-5"),
             path_from_d("M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"),
         ],
-        // Redo2: Undo2 mirrored — arrowhead on the right, loop to the left.
         Icon::Redo2 => vec![
             path_from_d("m15 14 5-5-5-5"),
             path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
@@ -1904,12 +1876,8 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     }
 }
 
-/// Map a filesystem entry to the most appropriate [`Icon`]. Directories
-/// always resolve to [`Icon::Folder`]; files are classified by
-/// (lower-cased) extension, falling back to [`Icon::File`].
-///
-/// Single source of truth for "what glyph represents this path" across
-/// the toolkit, so every consumer renders a consistent set.
+/// Map a filesystem entry to the most appropriate [`Icon`]. Directories always resolve to
+/// [`Icon::Folder`]; files are classified by (lower-cased) extension, falling back to [`Icon::File`].
 pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
     if is_dir {
         return Icon::Folder;
@@ -1945,10 +1913,8 @@ pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
 }
 
 impl Icon {
-    /// Paint this glyph centred inside `rect`, stroked in `color` at the
-    /// concept's default 1.5 px lucide width — equivalent to [`draw_icon`]
-    /// with `self` and [`LUCIDE_DEFAULT_STROKE_PX`]. Pass `Affine::IDENTITY`
-    /// for `transform` when `rect` is already in scene space.
+    /// Paint this glyph centred inside `rect`, stroked in `color` at the concept's default 1.5 px
+    /// lucide width — equivalent to [`draw_icon`] with `self` and [`LUCIDE_DEFAULT_STROKE_PX`].
     pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
         draw_icon(
             scene,
@@ -1960,10 +1926,8 @@ impl Icon {
         );
     }
 
-    /// Paint the icon as a **solid fill** rather than a stroked outline —
-    /// for glyphs that read as filled when "on" (starred, a selected pin).
-    /// Only closed sub-paths fill meaningfully; `Star` and similar
-    /// single-loop glyphs are authored closed for exactly this.
+    /// Paint the icon as a **solid fill** rather than a stroked outline — for glyphs that read as
+    /// filled when "on" (starred, a selected pin). Only closed sub-paths fill meaningfully.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
@@ -1995,9 +1959,8 @@ impl Icon {
         }
     }
 
-    /// Same as [`Icon::draw`] but with an explicit output stroke width in
-    /// pixels — use when a call site needs a heavier or lighter glyph than
-    /// the 1.5 px default (e.g. a large hero icon).
+    /// Same as [`Icon::draw`] but with an explicit output stroke width in pixels — use when a call site
+    /// needs a heavier or lighter glyph than the 1.5 px default (e.g.
     pub fn draw_with_stroke(
         self,
         scene: &mut Scene,
@@ -2010,13 +1973,29 @@ impl Icon {
     }
 }
 
-/// Paint `icon` stroked in `color` into `scene`, centred within `rect`.
-/// The icon is scaled from `rect.size().min() / LUCIDE_VIEWBOX` so it
-/// always fits the shorter dimension, padding the longer axis.
-///
-/// `stroke_px` is the **output** width in pixels — lucide renders at
-/// 2 px on a 24-unit viewBox, trimmed here to 1.5 px by default
-/// ([`LUCIDE_DEFAULT_STROKE_PX`]); it's divided by the icon's scale
+impl Icon {
+    /// The icon as a page shows it: its outlines as SVG path data in the 24 × 24 box, in `color`,
+    /// `size` pixels on a side.
+    #[must_use]
+    pub fn glyph(self, size: f64, color: Color, filled: bool) -> Option<crate::composition::Glyph> {
+        if self == Self::Tilo || self.is_brand() {
+            return None;
+        }
+        Some(crate::composition::Glyph {
+            name: self.name(),
+            paths: icon_subpaths(self).iter().map(BezPath::to_svg).collect(),
+            size,
+            stroke: LUCIDE_DEFAULT_STROKE_PX,
+            color: crate::composition::rgba8(color),
+            filled,
+        })
+    }
+}
+
+/// Paint `icon` stroked in `color` into `scene`, centred within `rect`. The icon is scaled from
+/// `rect.size().min() / LUCIDE_VIEWBOX` so it always fits the shorter dimension, padding the longer
+/// axis. `stroke_px` is the **output** width in pixels — lucide renders at 2 px on a 24-unit viewBox,
+/// trimmed here to 1.5 px by default ([`LUCIDE_DEFAULT_STROKE_PX`]); it's divided by the icon's scale
 /// before handing to vello so stroke width stays consistent across sizes.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -2056,15 +2035,10 @@ pub fn draw_icon(
     }
 }
 
-/// [`draw_icon`] with a per-subpath colour. Exists for glyphs whose
-/// subpaths mean different things — the Wi-Fi arcs are a *scale*, not a
-/// picture, so a two-bar signal should paint two arcs lit and two dim
-/// rather than the whole glyph at one alpha (drawing four nested icons
-/// at four sizes would not line up; they must come from one path table).
-///
-/// `color_for` receives the subpath index in the order
-/// `icon_subpaths` returns them (for [`Icon::Wifi`]: base dot, outer
-/// arc, middle arc, inner arc).
+/// [`draw_icon`] with a per-subpath colour. Exists for glyphs whose subpaths mean different things —
+/// the Wi-Fi arcs are a *scale*, not a picture, so a two-bar signal should paint two arcs lit and two
+/// dim rather than the whole glyph at one alpha (drawing four nested icons at four sizes would not line
+/// up; they must come from one path table).
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
@@ -2249,14 +2223,12 @@ mod tests {
         assert_eq!(Icon::from_name("no-such-glyph"), None);
     }
 
-    /// Walk a path's elements; returns the count so tests can assert
-    /// "non-empty" without matching against internal enum shapes.
+    /// Walk a path's elements; returns the count so tests can assert "non-empty" without matching
+    /// against internal enum shapes.
     fn element_count(p: &BezPath) -> usize {
         p.elements().iter().count()
     }
 
-    /// `ALL` lists every variant (the enum's source is the census), and
-    /// every name finds its icon again.
     #[test]
     fn the_drawing_set_draws() {
         for icon in [
@@ -2296,7 +2268,6 @@ mod tests {
 
     #[test]
     fn individual_icons_parse_to_their_expected_non_empty_subpaths() {
-        // (icon, subpath count, minimum path elements per subpath, why)
         let cases = [
             (
                 Icon::LayoutGrid,
@@ -2871,6 +2842,9 @@ mod tests {
             (Icon::Trophy, 6),
             (Icon::Lightbulb, 3),
             (Icon::SdCard, 4),
+            (Icon::Smartphone, 2),
+            (Icon::Tablet, 2),
+            (Icon::Laptop, 1),
         ];
         for (icon, count) in cases {
             let sub = icon_subpaths(icon);
@@ -2884,7 +2858,6 @@ mod tests {
     #[test]
     fn icon_for_path_classifies_by_extension() {
         use std::path::Path;
-        // Directories always fold to the folder glyph regardless of name.
         assert_eq!(
             icon_for_path(Path::new("/home/user/Pictures"), true),
             Icon::Folder
@@ -2910,7 +2883,6 @@ mod tests {
             icon_for_path(Path::new("report.docx"), false),
             Icon::FileText
         );
-        // Unknown / extension-less → generic file.
         assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
         assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);
     }

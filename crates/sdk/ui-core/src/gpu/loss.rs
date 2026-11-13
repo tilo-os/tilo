@@ -1,22 +1,7 @@
-//! A GPU that stops working under a renderer, and what the renderer opens next.
-//!
-//! A GPU dies in one of two ways, and a renderer must notice both:
-//!
-//! - **The driver says so.** A reset that failed, or a kernel that fails the
-//!   fences of a GPU it cannot bring back: wgpu runs the device-lost callback,
-//!   which [`DeviceLossMonitor`] records.
-//! - **Nothing is said.** The firmware stops answering and nothing submitted
-//!   ever completes; every fence wait just runs out. [`LossWatch`] notices work
-//!   that has not finished [`NOT_PROGRESSING_AFTER`] after it was found
-//!   unfinished, and declares the device lost on the monitor, so both cases
-//!   reach the renderer through the one question, `reason()`.
-//!
-//! What comes next is [`recover`]'s call, the same for the compositor, the
-//! render service and an app: a device that finished frames before it was lost
-//! was reset and is opened again on the same adapter; one that was lost before
-//! it finished a single frame is on a GPU that cannot be brought back, and the
-//! process renders in software from then on ([`software_fallback`], which
-//! [`super::RenderContext`] honours when it picks an adapter).
+//! A GPU that stops working under a renderer, and what the renderer opens next. A GPU dies in one of
+//! two ways, and a renderer must notice both: - **The driver says so.** A reset that failed, or a
+//! kernel that fails the fences of a GPU it cannot bring back: wgpu runs the device-lost callback,
+//! which [`DeviceLossMonitor`] records.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,11 +14,8 @@ use wgpu::{AdapterInfo, Device, DeviceType, Queue};
 
 use super::DeviceLossMonitor;
 
-/// How long work found unfinished may stay unfinished before the GPU counts as
-/// no longer making progress. A frame takes a hardware GPU milliseconds; a
-/// kernel resets a GPU stuck on one job within seconds and fails its fence; a
-/// software rasteriser takes seconds for a large frame at worst. Work still
-/// pending this long after a renderer stopped waiting for it will not finish.
+/// How long work found unfinished may stay unfinished before the GPU counts as no longer making
+/// progress.
 pub const NOT_PROGRESSING_AFTER: Duration = Duration::from_secs(8);
 
 impl DeviceLossMonitor {
@@ -81,9 +63,8 @@ impl LossWatch {
         }
     }
 
-    /// The renderer stopped waiting for what it submitted to `queue` before it
-    /// finished (a frame ran out of its completion allowance, or the renderer
-    /// does not wait at all). Work already watched keeps its earlier start.
+    /// The renderer stopped waiting for what it submitted to `queue` before it finished (a frame ran
+    /// out of its completion allowance, or the renderer does not wait at all).
     pub fn unfinished(&mut self, queue: &Queue) {
         self.unfinished_at(queue, crate::time::now());
     }
@@ -149,7 +130,6 @@ pub enum Recovery {
     Software,
 }
 
-/// Why this process renders in software although it has a GPU, once it does.
 static SOFTWARE_FALLBACK: Mutex<Option<String>> = Mutex::new(None);
 
 /// Decide what follows the loss of a device on `adapter`. `finished_frames`
@@ -184,8 +164,8 @@ pub fn reset_software_fallback_for_test() {
     *SOFTWARE_FALLBACK.lock_recover() = None;
 }
 
-/// The software adapter `instance` offers, preferring Vulkan (lavapipe) to
-/// OpenGL (llvmpipe), or `None` when it offers none.
+/// The software adapter `instance` offers, preferring Vulkan (lavapipe) to OpenGL (llvmpipe), or `None`
+/// when it offers none.
 pub(super) async fn software_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
     let mut software: Vec<wgpu::Adapter> = instance
         .enumerate_adapters(wgpu::Backends::all())
@@ -295,8 +275,6 @@ mod tests {
         );
     }
 
-    /// The GPU of the Yoga that froze its session: its firmware stopped
-    /// answering and nothing submitted ever completed, with no error at all.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_gpu_that_stops_finishing_work_is_declared_lost() {

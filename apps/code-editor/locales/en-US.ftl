@@ -42,6 +42,18 @@ code-editor-a11y-code = Code: { $project }
 code-editor-open-failed = Could not open { $path }: { $detail }
 code-editor-cursor = Ln { $line }, Col { $column }
 
+## What a note says after a command
+code-editor-edit-refused-no-file = The edit wasn't applied: no file is open
+code-editor-edit-refused = The edit wasn't applied: { $detail }
+code-editor-create-failed = { $name } wasn't created: { $detail }
+code-editor-no-formatter = No formatter is set up for this file
+code-editor-theme-in-system-settings = Choose the appearance in your system's settings
+code-editor-go-to-line-needs-file = Open a file to jump to a line
+code-editor-search-needs-folder = Open a project folder to search it
+code-editor-replaced-one = Replaced 1 match
+code-editor-replaced = Replaced { $count } matches
+code-editor-definition-on-another-computer = The definition is on another computer: { $uri }
+
 ## What the search panel reports
 code-search-running = Searching…
 code-search-none = No results for “{ $query }”
@@ -107,3 +119,6 @@ code-editor-project-rerun = Rerun in terminal
 code-editor-project-rerun-test = Rerun test in terminal
 code-editor-project-stop = Stop in terminal
 code-editor-project-record-run = Record terminal run
+
+## What the app is called in a window and in the launcher
+code-editor-app-title = Code Editor

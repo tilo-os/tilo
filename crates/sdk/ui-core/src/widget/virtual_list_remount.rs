@@ -1,9 +1,7 @@
-//! The rows of a [`super::VirtualList`] laid out where they stand, and the
-//! rows a scroll brings near mounted in place: each entering row's layout is
-//! built alone and the rows already there keep theirs, so a row coming into
-//! view costs its own layout, not the list's
+//! The rows of a [`super::VirtualList`] laid out where they stand, and the rows a scroll brings
+//! near mounted in place: each entering row's layout is built alone and the rows already there keep
+//! theirs, so a row coming into view costs its own layout, not the list's
 //! ([`crate::widget::Widget::remount_children`]).
-
 use std::ops::Range;
 
 use taffy::style_helpers::length;
@@ -18,12 +16,6 @@ use crate::widget::Remount;
 const REPLACE_AFTER_PX: f64 = 16_384.0;
 
 impl<M: ListModel> VirtualList<M> {
-    /// The rows to mount: those the view and its overscan reach, and, while a scroll carries
-    /// on from the rows mounted, a view more of them ahead of it. Every mount lays the list out
-    /// again, so a glide mounts the rows of a whole screen every few frames rather than one row
-    /// every frame, and a notch of a wheel lands inside the rows already announced to the app
-    /// that renders them rather than asking it again ([`ListModel::request_range`]): a scroll
-    /// step costs one ask, or none. A jump mounts only what it shows.
     pub(super) fn mount_window(&self) -> Range<usize> {
         let near = self.rows_to_hold();
         let mounted = self.mounted_range.clone();
@@ -43,7 +35,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether the mounted rows hold every row in `near`.
     pub(super) fn mounted_covers(&self, near: &Range<usize>) -> bool {
         if near.is_empty() {
             return self.mounted_range.is_empty();
@@ -51,9 +42,6 @@ impl<M: ListModel> VirtualList<M> {
         self.mounted_range.start <= near.start && near.end <= self.mounted_range.end
     }
 
-    /// The mounted rows that may paint inside the list's box, where the
-    /// view stands now: what is placed, walked and drawn of a scroll's
-    /// frame. The others are clipped away.
     pub(super) fn mounted_near(&self) -> Range<usize> {
         let reach = crate::scroll_copy::EFFECT_REACH + self.give().abs();
         let height = self.rect.height();
@@ -72,8 +60,6 @@ impl<M: ListModel> VirtualList<M> {
         start..end.max(start)
     }
 
-    /// What the mounted rows near the box repaint, inside it: the rows away
-    /// from the box are clipped away.
     pub(super) fn collect_row_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         let first = regions.len();
         for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
@@ -91,7 +77,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// The mounted rows standing where the list stands now, near its box.
     pub(super) fn placed_near(&self) -> Range<usize> {
         let near = self.mounted_near();
         let Some(placed) = &self.placed else {
@@ -103,11 +88,6 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> VirtualList<M> {
-    /// Stand each mounted row one bleed in from the list's edges (so its
-    /// lift fills the list; beside the bar it leaves the bar's gutter, see
-    /// [`Self::trailing_inset`]), at
-    /// its top in the list less [`Self::layout_offset`]. Only a row whose
-    /// place changed is touched, so taffy keeps every other row's layout.
     pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
         self.rows_beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
         let left = length(px(self.lead));
@@ -121,8 +101,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
                 (row.index, top, row.node)
             })
             .collect::<Vec<_>>();
-        // The bands of the groups in view stand where their first row's place is, folded ones
-        // too: their rows take no room, and the band stands where the row would.
         self.place_bands(places.iter().map(|(index, _, _)| *index));
         for (index, top, node) in places {
             let Some(child) = node else {
@@ -144,10 +122,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
         }
     }
 
-    /// [`crate::widget::Widget::remount_children`] — mount the rows now near the view and
-    /// let go of the others, building only the new rows' layouts, and
-    /// place the rows; the rows that stay carry out their own changes.
-    /// `false` when the list has no node of the last build to mount under.
     pub(super) fn remount_rows(&mut self, remount: &mut Remount<'_>) -> bool {
         let Some(node) = self.layout_node else {
             return false;
@@ -159,7 +133,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .chain(self.letting_go.iter().map(|(_, row)| row.node))
             .collect();
         self.reconcile_mounted();
-        // The rows it built are the ones laid out here.
         self.structure_dirty = false;
         self.remount = false;
         let mut carried = true;
@@ -185,8 +158,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
         for gone in before.into_iter().filter(|gone| !children.contains(gone)) {
             remount.unmount(gone);
         }
-        // The rows replaced, and the rows the list let go of, are out of
-        // the layout: they go.
         for row in &mut self.mounted {
             row.replacing = None;
         }
@@ -196,8 +167,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
 }
 
 impl<M: ListModel> VirtualList<M> {
-    /// The shape a pending row draws: the kind of row the list's ready rows
-    /// are; with none ready yet, a line in the row's slot.
     pub(super) fn pending_shape(&self) -> crate::widget::SkeletonShape {
         self.mounted
             .iter()
@@ -228,11 +197,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Where the copy of the frame being drawn lands, for its rows to be
-    /// left out there ([`crate::draw_cull`]). Only a scroll moves the rows
-    /// by a copy; any other change to the list repaints it
-    /// (`collect_damage`). Rows arriving or moving repaint, as does a frame
-    /// with an arrival on its way.
     pub(super) fn draw_keep(
         &self,
         opacity: f32,

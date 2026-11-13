@@ -1,7 +1,6 @@
-//! A sort the person clicks and rows they add or remove move on the
-//! standard list change (`motion::ListChange`), as a list's do: only rows
-//! shown in the body move, rows coming from off-screen fade in at their
-//! slot, and a key, a sync and reduced motion land.
+//! A sort the person clicks and rows they add or remove move on the standard list change
+//! (`motion::ListChange`), as a list's do: only rows shown in the body move, rows coming from
+//! off-screen fade in at their slot, and a key, a sync and reduced motion land.
 
 use super::{DataTableCore, RowIdentity, TableModelChange};
 use crate::presence::PresenceCtx;
@@ -19,10 +18,7 @@ use vello::kurbo::Affine;
 /// puts in its place (`motion::keep`), which goes on from there.
 #[derive(Default)]
 pub(super) struct Moving {
-    /// Shown rows on their way (`motion::ListChange`).
     pub(super) rows: crate::collection_transition::RowMotions<RowIdentity>,
-    /// The rows the last frame showed and their tops: where a change the
-    /// person makes moves them from.
     pub(super) drawn: Vec<(RowIdentity, f64)>,
     /// Laid out, so it took up what the table it replaces left, and leaves
     /// its own when dropped.
@@ -30,8 +26,6 @@ pub(super) struct Moving {
 }
 
 impl DataTableCore {
-    /// At its first layout, go on from the rows the table with its id
-    /// left when a rebuild dropped it.
     pub(super) fn take_up_row_motion(&mut self) {
         if std::mem::replace(&mut self.moving.bound, true) || self.test_id.is_empty() {
             return;
@@ -106,9 +100,6 @@ impl DataTableCore {
             .capture(self.moving.drawn.iter().copied(), true, source);
     }
 
-    /// Start the motion of a change made since the last frame, from where
-    /// the rows were drawn to where they are now, then draw the rows and
-    /// their cell controls where they are on their way.
     pub(super) fn draw_moving_rows(
         &mut self,
         scene: &mut Scene,
@@ -126,8 +117,6 @@ impl DataTableCore {
             .start(shown.iter().copied(), theme.motion(), now);
         self.moving.drawn = shown;
         let offset = self.viewport.offset();
-        // Past an end, fingers pull the rows through the rubber band: they
-        // land that much further, drawn as they are.
         let give = self.give();
         #[allow(
             clippy::arithmetic_side_effects,
@@ -140,7 +129,6 @@ impl DataTableCore {
             scene.append(&part.paint.0, Some(scrolled));
         }
         for cell in &mut self.mounted_cells {
-            // A cell control travels and fades with its row.
             let (dy, alpha) = self.moving.rows.pose(&cell.row_key, now);
             let cell_transform = transform * Affine::translate((0.0, dy - give));
             let faded = alpha < 1.0;
@@ -163,8 +151,6 @@ impl DataTableCore {
     }
 }
 
-/// A table a rebuild drops leaves its rows' motion for the one put in its
-/// place.
 impl Drop for DataTableCore {
     fn drop(&mut self) {
         if self.moving.bound && !self.test_id.is_empty() {

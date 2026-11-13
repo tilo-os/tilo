@@ -1,12 +1,10 @@
 //! A source's sound as interleaved `f32` samples, decoded through
-//! `uridecodebin ! audioconvert ! audioresample ! appsink`.
+//! `uridecodebin ! audioconvert ! audioresample ! appsink`, and [`Playback`] for
+//! mixed samples out to the speakers.
 //!
-//! The one native audio decode: an editor's mixer collects the whole stream,
-//! a waveform reduces it to peaks as it arrives. Either way the caller picks
-//! the rate and channel count, so the samples are directly usable whatever
-//! the file held.
-//!
-//! [`Playback`] is the other direction: mixed samples out to the speakers.
+//! The caller picks the rate and channel count, so the samples are usable whatever
+//! the file held: an editor's mixer collects the whole stream, a waveform reduces it
+//! to peaks as it arrives.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,15 +16,11 @@ use gstreamer_app as gst_app;
 
 use crate::source::Source;
 
-/// How a [`decode`] ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PcmEnd {
-    /// The whole stream was decoded.
     Finished,
     /// The source has no audio stream. A silent video is not an error.
     NoAudio,
-    /// The pipeline failed: unreadable bytes, an unknown container, no
-    /// decoder for the codec.
     Failed,
     /// The budget ran out with the stream still going.
     TimedOut,
@@ -104,8 +98,6 @@ fn build(uri: &str, rate: u32, channels: u32) -> Option<Built> {
         .ok()?;
     gst::Element::link_many([&convert, &resample, sink.upcast_ref()]).ok()?;
 
-    // `uridecodebin` exposes pads once it knows the streams; take the first
-    // audio one and leave video alone.
     let linked = Arc::new(AtomicBool::new(false));
     let convert_weak = convert.downgrade();
     let linked_in = Arc::clone(&linked);
@@ -218,7 +210,6 @@ enum Out {
 }
 
 impl Playback {
-    /// The output, or `None` on a machine with none.
     #[must_use]
     pub fn open() -> Option<Self> {
         if crate::audio_output::is_governed() {
@@ -264,8 +255,6 @@ impl Playback {
         })
     }
 
-    /// Play `samples` after what was pushed before. `false` once the output
-    /// has gone away.
     pub fn push(&mut self, samples: &[f32]) -> bool {
         match &mut self.out {
             Out::Host(out) => samples
@@ -304,8 +293,6 @@ impl Drop for Playback {
     }
 }
 
-/// `f32` samples as signed 16-bit, clamped. 32767 rather than 32768: scaling
-/// by the negative limit lets +1.0 overflow to -32768, a full-scale click.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "clamped to -1..1 first, so the scaled value fits i16"
@@ -327,7 +314,6 @@ mod tests {
         // is a statement about the clock, not the file. A loaded machine
         // produces exactly this.
         assert!(!no_audio_concluded(false, false));
-        // Every pad is in and none was audio: now the silence is the file's.
         assert!(no_audio_concluded(true, false));
         // An audio pad is linked, so quiet means it has not got going yet.
         assert!(!no_audio_concluded(true, true));

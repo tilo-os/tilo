@@ -5,7 +5,7 @@
 //! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
 //! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
-//! its application ([`Subject::App`]); code a person or an agent wrote (an embedded block) is
+//! its application ([`Grantee::app`]); code a person or an agent wrote (an embedded block) is
 //! that person or agent. Built-in and installed packages are trusted, an agent's code as far as
 //! its person admitted the agent; a stranger's code asks.
 //!
@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use tilo_action_policy::{
-    Answer, Authority as Policy, Context, Grant, Party, Standing, Subject, TreePath, authorship,
+    Answer, Authority as Policy, Context, Grant, Grantee, Party, Standing, TreePath, authorship,
     roles,
 };
 use tilolang_runtime::meta::Meta;
@@ -224,10 +224,10 @@ pub fn trigger_of(id: &str) -> Option<&str> {
 }
 
 /// The subject a principal is in the workspace's policy: an agent by its id, a person by theirs.
-fn principal_subject(id: &str) -> Subject {
+fn principal_subject(id: &str) -> Grantee {
     match id.strip_prefix("agent:") {
-        Some(agent) => Subject::agent(agent),
-        None => Subject::person(id),
+        Some(agent) => Grantee::agent(agent),
+        None => Grantee::person(id),
     }
 }
 
@@ -265,13 +265,17 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::workspace(workspace).app(&action.app).kind(kind);
+        let node = TreePath::workspace(workspace)
+            .app(action.app.to_string())
+            .kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
         let own = standing
             .as_ref()
-            .filter(|_| state.own.contains(&action.app))
-            .and_then(|standing| crate::member_record_of(&standing.person));
+            .filter(|_| state.own.contains(action.app.as_str()))
+            .and_then(|standing| {
+                crate::member_record_of(&action.app, standing.person_id().unwrap_or_default())
+            });
         let node = match own {
             Some(record) => node.resource(record),
             None => node,
@@ -285,7 +289,7 @@ impl Authority for TiloAuthority {
             None => Some(invoker.0.as_str()),
         };
         let person = person.map(|person| match &standing {
-            Some(standing) if person == self.viewer.0 => standing.person.as_str(),
+            Some(standing) if person == self.viewer.0 => standing.person_id().unwrap_or_default(),
             _ => person,
         });
         // A migration is the platform running the package's own update of its records, and a
@@ -298,12 +302,12 @@ impl Authority for TiloAuthority {
             // An agent nobody delegated: only what the workspace grants it.
             (Some(standing), None, _) => standing
                 .policy
-                .party_of(Subject::agent(agent_id(&invoker.0))),
+                .party_of(Grantee::agent(agent_id(&invoker.0))),
             // No standing here: the door decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => Some(roles::agent_turn(
+            (Some(_), Some(person)) => Some(roles::agent_grants(
                 workspace,
                 agent_id(&invoker.0),
                 person,
@@ -312,7 +316,7 @@ impl Authority for TiloAuthority {
             _ => None,
         };
         // Each author of the code that led here, once, with what it holds of its own.
-        let mut authors: Vec<(Subject, Vec<Grant>, bool)> = Vec::new();
+        let mut authors: Vec<(Grantee, Vec<Grant>, bool)> = Vec::new();
         for module in chain {
             let (subject, of_app) = if let Some(id) = module.0.strip_prefix("principal:") {
                 (principal_subject(id), None)
@@ -322,7 +326,7 @@ impl Authority for TiloAuthority {
                     .get(module)
                     .cloned()
                     .unwrap_or_else(|| format!("tl-module:{}", module.0));
-                (Subject::app(app.clone()), Some(app))
+                (Grantee::app(app.clone()), Some(app))
             };
             let trusted = state.trusted.contains(module);
             let mut own = authorship::code_grants(workspace, &subject, trusted);
@@ -343,7 +347,10 @@ impl Authority for TiloAuthority {
         let earlier = crate::schema::earlier_ids();
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
-            policy = policy.bounded_by(delegation.party(workspace_grants));
+            policy = policy.bounded_by(
+                Party::new(vec![Grantee::agent(agent_id(&invoker.0))], workspace_grants)
+                    .with_grants(delegation),
+            );
         }
         for (subject, own, of_app) in &authors {
             // The workspace's grants bound an application's code; a block's author holds only what
@@ -363,6 +370,8 @@ impl Authority for TiloAuthority {
 
 #[cfg(test)]
 mod tests {
+    use tilolang_runtime::ids::AppId;
+
     use super::*;
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{ActionKind, WorkspacePolicy};
@@ -379,7 +388,7 @@ mod tests {
     fn info(class: EffectClass, own: bool) -> ActionInfo {
         ActionInfo {
             action: "remove".to_owned(),
-            app: APP.to_owned(),
+            app: AppId::from(APP),
             class,
             own,
             module: module(),
@@ -448,7 +457,7 @@ mod tests {
             "helper",
             (&AnswerScope::app(APP), ActionKind::Undoable),
             Answer::Deny,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         let authority = authority(vec![answer]);
         authority.admit_agent("agent:helper", Some(PERSON));
@@ -528,11 +537,11 @@ mod tests {
         // A denial of the app's code holds for the owner too.
         let denied = Grant::new(
             "deny-todo",
-            Subject::app(APP),
+            Grantee::app(APP),
             TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         let authority = self::authority(vec![denied]);
         let me = Principal::new(PERSON);
@@ -547,7 +556,7 @@ mod tests {
         let tasks = ModuleHash("tasks-v2".to_owned());
         let action = |class| ActionInfo {
             action: "remove".to_owned(),
-            app: TASKS.to_owned(),
+            app: AppId::from(TASKS),
             class,
             own: true,
             module: tasks.clone(),
@@ -570,11 +579,11 @@ mod tests {
         // The workspace's denial of Todo's code holds for Tasks' code.
         let app_denied = Grant::new(
             "deny-todo",
-            Subject::app(APP),
+            Grantee::app(APP),
             TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         assert_eq!(
             renamed(vec![app_denied.clone()]).decide(&me, std::slice::from_ref(&tasks), &own),
@@ -586,7 +595,7 @@ mod tests {
             "helper",
             (&AnswerScope::app(APP), ActionKind::Undoable),
             Answer::Deny,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         let authority = renamed(vec![answer]);
         authority.admit_agent("agent:helper", Some(PERSON));
@@ -600,19 +609,19 @@ mod tests {
         let mut policy = WorkspacePolicy::new(WORKSPACE, PERSON);
         let node_denied = Grant::new(
             "no-todo-for-bob",
-            Subject::person("bob"),
+            Grantee::person("bob"),
             TreePath::workspace(WORKSPACE).app(APP).rest(),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         let editor = Grant::new(
             "bob-edits",
-            Subject::person("bob"),
+            Grantee::person("bob"),
             TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Allow,
-            Subject::person(PERSON),
+            Grantee::person(PERSON),
         );
         policy.grants.extend([node_denied.clone(), editor.clone()]);
         let stored = policy.grants.clone();
@@ -625,7 +634,7 @@ mod tests {
         );
         // Another app of the workspace is not Todo's.
         let notes = ActionInfo {
-            app: "so.tilo.lang.notes".to_owned(),
+            app: AppId::from("so.tilo.lang.notes"),
             ..action(EffectClass::Undoable)
         };
         assert_eq!(
@@ -635,7 +644,7 @@ mod tests {
         // Nothing stored was rewritten: the grants name Todo as they did.
         assert_eq!(policy.grants, stored);
         assert!(stored.contains(&node_denied) && stored.contains(&editor));
-        assert_eq!(app_denied.subject, Subject::app(APP));
+        assert_eq!(app_denied.grantee, Grantee::app(APP));
     }
 
     #[test]

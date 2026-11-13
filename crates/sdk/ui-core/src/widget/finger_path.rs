@@ -1,29 +1,18 @@
-//! The path a direct-manipulation gesture's fingers took along one axis:
-//! what a strip pan (sideways) and the strip deck (up and down) follow
-//! frame by frame, and read their throw from when the fingers lift.
+//! The path a direct-manipulation gesture's fingers took along one axis: what a strip pan
+//! (sideways) and the strip deck (up and down) follow frame by frame, and read their throw
+//! from when the fingers lift.
 
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 
-/// How far behind the frame a direct pan reads the fingers. A touchpad
-/// reports at its own rate (about 125 Hz) and the display refreshes at
-/// another (60, 90 or 120 Hz), so showing the newest report moves the
-/// surface by one report on some frames and by two on others: a steady swipe
-/// judders at the beat of the two clocks. Reading the finger path a little in
-/// the past, interpolated between the reports around that moment, gives every
-/// frame the distance the fingers covered in one frame.
 const RESAMPLE_LATENCY: Duration = Duration::from_millis(5);
 /// Furthest a direct pan extrapolates past the newest report, when the next
 /// one is late; never more than half the last report interval either.
 const MAX_PREDICTION: Duration = Duration::from_millis(8);
-/// Reports further apart than this are not a steady motion to extrapolate:
-/// the fingers paused, and the newest report is where they are.
 const MAX_REPORT_GAP: Duration = Duration::from_millis(20);
 /// Shortest time a report is taken to span when reading a release velocity:
 /// a burst of reports drained together must not read as an instant throw.
 const MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
-/// Finger history a direct pan keeps: enough to resample between reports
-/// and to read the release velocity over.
 pub(crate) const SAMPLE_WINDOW: Duration = Duration::from_millis(100);
 /// Release velocity (px/s) below which lifted fingers throw nothing.
 const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
@@ -44,8 +33,7 @@ impl FingerPath {
         self.reports.clear();
     }
 
-    /// Record the fingers' total `travel` reported `at`. Reports arrive in
-    /// order; a clock that steps back does not fold the path over itself.
+    /// Record the fingers' total `travel` reported `at`.
     pub(crate) fn push(&mut self, at: Instant, travel: f64) {
         let at = self.reports.back().map_or(at, |&(last, _)| at.max(last));
         self.reports.push_back((at, travel));
@@ -101,8 +89,8 @@ impl FingerPath {
         Some(later.1)
     }
 
-    /// Whether a frame at `now` reads the fingers ahead of their newest report: a later frame
-    /// still has to bring the path back to it should they have stopped.
+    /// Whether a frame at `now` reads the fingers ahead of their newest report: a later
+    /// frame still has to bring the path back to it should they have stopped.
     pub(crate) fn predicting(&self, now: Instant) -> bool {
         let newest = self.reports.back().map(|&(_, travel)| travel);
         self.resampled(now) != newest

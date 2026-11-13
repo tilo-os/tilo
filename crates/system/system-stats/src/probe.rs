@@ -1,11 +1,4 @@
 //! Reading the kernel's reporting interfaces: `/proc` and `/sys`.
-//!
-//! A [`Probe`] reads cumulative counters; [`crate::collect`] turns two
-//! readings into rates. Everything is read under a root directory, so a test
-//! can lay out a machine of its own. What is read, per process, is exactly
-//! `stat`, `status` and `cgroup`, and `cmdline` only when a subscriber holds
-//! the command-line grant. `environ`, `fd`, `maps`, `mem` and every other
-//! per-process file are never opened.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -21,10 +14,8 @@ use std::path::{Path, PathBuf};
 /// tick rate.
 pub const USER_HZ: u64 = 100;
 
-/// `PF_KTHREAD` in a process's `stat` flags.
 const PF_KTHREAD: u64 = 0x0020_0000;
 
-/// What one reading should include.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Want {
     pub system: bool,
@@ -32,22 +23,18 @@ pub struct Want {
     pub command_lines: bool,
 }
 
-/// Cumulative counters and instant values, as read.
 #[derive(Clone, Debug, Default)]
 pub struct RawSample {
     pub system: Option<RawSystem>,
-    /// `None` when the reading did not include processes.
     pub processes: Option<Vec<RawProcess>>,
 }
 
-/// Machine-wide counters.
 #[derive(Clone, Debug, Default)]
 pub struct RawSystem {
     pub hostname: String,
     pub kernel: String,
     pub cpu_model: Option<String>,
     pub uptime_secs: u64,
-    /// The aggregate `cpu` line, then one per core.
     pub cpu_total: Option<CpuTicks>,
     pub cpu_cores: Vec<CpuTicks>,
     pub load_average: [f32; 3],
@@ -60,14 +47,12 @@ pub struct RawSystem {
     pub thermal: Vec<crate::protocol::ThermalZone>,
 }
 
-/// One `cpu` line of `/proc/stat`, in ticks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuTicks {
     pub busy: u64,
     pub total: u64,
 }
 
-/// One whole disk: its I/O counters and, when mounted, its space.
 #[derive(Clone, Debug, Default)]
 pub struct RawDisk {
     pub device: String,
@@ -86,7 +71,6 @@ pub struct RawInterface {
     pub tx_bytes: u64,
 }
 
-/// One process, as read.
 #[derive(Clone, Debug, Default)]
 pub struct RawProcess {
     pub pid: u32,
@@ -94,7 +78,6 @@ pub struct RawProcess {
     pub started_at: u64,
     pub name: String,
     pub state: char,
-    /// User plus system time, in ticks.
     pub cpu_ticks: u64,
     pub virtual_bytes: u64,
     pub resident_bytes: u64,
@@ -105,16 +88,13 @@ pub struct RawProcess {
     pub command: Option<String>,
 }
 
-/// Where readings come from.
 pub trait Probe: Send {
-    /// Read what `want` asks for.
     fn read(&mut self, want: Want) -> RawSample;
 
     /// Read one process's identity, owner and cgroup again, right before
     /// ending it; `None` when it is gone.
     fn process(&mut self, pid: u32) -> Option<RawProcess>;
 
-    /// Every process, for finding an app's processes to end.
     fn processes(&mut self) -> Vec<RawProcess>;
 
     /// The boot time in seconds since the epoch, for run times.
@@ -123,7 +103,6 @@ pub trait Probe: Send {
     fn user_name(&mut self, uid: u32) -> String;
 }
 
-/// The machine under `root` (`/` in production).
 pub struct KernelProbe {
     root: PathBuf,
     users: Option<HashMap<u32, String>>,
@@ -131,13 +110,11 @@ pub struct KernelProbe {
 }
 
 impl KernelProbe {
-    /// The running machine.
     #[must_use]
     pub fn new() -> Self {
         Self::at("/")
     }
 
-    /// A machine laid out under `root`.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let boot_time = read(&root, "proc/stat").and_then(|stat| {
@@ -359,7 +336,6 @@ impl KernelProbe {
                 continue;
             };
             let celsius = milli as f32 / 1000.0;
-            // A broken sensor reports absolute zero or a nonsense value.
             if !(-40.0..=150.0).contains(&celsius) {
                 continue;
             }
@@ -575,7 +551,6 @@ fn parse_net_dev(text: &str) -> Vec<RawInterface> {
         .collect()
 }
 
-/// `(source, mount point)` of every mount in a `mountinfo`.
 fn parse_mounts(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
@@ -587,7 +562,6 @@ fn parse_mounts(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `mountinfo` escapes space, tab, newline and backslash as octal.
 fn unescape_mount(path: &str) -> String {
     path.replace("\\040", " ")
         .replace("\\011", "\t")
@@ -595,7 +569,6 @@ fn unescape_mount(path: &str) -> String {
         .replace("\\134", "\\")
 }
 
-/// `nvme0n1p2` of `nvme0n1`, `sda1` of `sda`, `mmcblk0p1` of `mmcblk0`.
 fn is_partition_of(device: &str, disk: &str) -> bool {
     device.strip_prefix(disk).is_some_and(|rest| {
         let digits = rest.strip_prefix('p').unwrap_or(rest);
@@ -614,7 +587,6 @@ pub fn parse_stat(pid: u32, stat: &str) -> Option<RawProcess> {
         .get(close.saturating_add(1)..)?
         .split_whitespace()
         .collect();
-    // `rest[0]` is field 3 (state); field n is `rest[n - 3]`.
     let field = |n: usize| rest.get(n.saturating_sub(3)).copied();
     let number = |n: usize| field(n).and_then(|v| v.parse::<u64>().ok());
     let state = field(3)?.chars().next()?;
@@ -641,7 +613,6 @@ pub fn parse_stat(pid: u32, stat: &str) -> Option<RawProcess> {
     })
 }
 
-/// The owner and resident memory from `/proc/<pid>/status`.
 fn apply_status(process: &mut RawProcess, status: &str) {
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("Uid:") {

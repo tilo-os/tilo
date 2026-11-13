@@ -1,4 +1,4 @@
-//! Optional presentation hints. Unsupported backends keep full presentation.
+//! Optional presentation hints; a backend without them presents whole surfaces.
 
 /// An outward-rounded rectangle in framebuffer pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

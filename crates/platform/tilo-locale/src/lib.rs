@@ -1,6 +1,5 @@
-//! The person's **region & formats**: the `locale` section of their
-//! settings, which every app follows and the Settings app's "Region &
-//! Formats" panel edits.
+//! The person's **region & formats**: the `locale` section of their settings, which
+//! every app follows and the Settings app's "Region & Formats" panel edits.
 //!
 //! ```json
 //! "locale": {
@@ -11,15 +10,14 @@
 //! }
 //! ```
 //!
-//! The string values are the serde variant names of the enums below and of
-//! [`TimeStyle`], which the toolkit owns so every clock display follows it. Reads
-//! are forgiving: a missing section or an unknown value falls back to the
-//! built-in default, key by key.
+//! The strings are the serde variant names of the enums below and of [`TimeStyle`],
+//! which the toolkit owns so every clock display follows it. A missing section or an
+//! unknown value falls back to the default, key by key.
 
 use serde::{Deserialize, Serialize};
 use ui::clock::TimeStyle;
-/// The formats every app shows dates and numbers in are the toolkit's
-/// ([`ui::format::region`]), so the formatter and this section share them.
+/// The date, number and week formats are the toolkit's
+/// ([`ui::format::region`]), so formatters and this section share them.
 pub use ui::format::{DateStyle, FirstDayOfWeek, NumberStyle};
 use ui::tilo_resource;
 
@@ -62,7 +60,6 @@ impl Currency {
         }
     }
 
-    /// ISO-4217 code — the stable serialised form.
     pub fn code(self) -> &'static str {
         match self {
             Currency::USD => "USD",
@@ -92,7 +89,6 @@ impl Currency {
         })
     }
 
-    /// Conventional minor-unit digits: 2 for most, 0 for yen.
     pub fn decimals(self) -> usize {
         match self {
             Currency::JPY => 0,
@@ -100,13 +96,12 @@ impl Currency {
         }
     }
 
-    /// Whether the symbol leads the amount (`$5`) or trails it (`5 €`).
     pub fn symbol_leads(self) -> bool {
         !matches!(self, Currency::EUR | Currency::CHF)
     }
 
-    /// Map a bare currency *symbol* (as typed) to a currency. Ambiguous
-    /// symbols (`$`, `¥`) resolve to the most common owner.
+    /// Map a bare currency *symbol* (as typed) to a currency; an ambiguous
+    /// one (`$`, `¥`) resolves to its most common owner.
     pub fn from_symbol(sym: &str) -> Option<Currency> {
         Some(match sym {
             "$" => Currency::USD,
@@ -133,7 +128,6 @@ impl Currency {
     ];
 }
 
-/// Measurement system.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model,
 )]
@@ -154,8 +148,8 @@ impl Measurement {
     }
 }
 
-/// The `locale` section of the shared store. Every field has a sensible
-/// default so a brand-new install needs no file at all.
+/// The `locale` section of the shared store: every field has a default, so a
+/// new install needs no file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 #[model(defaults)]
@@ -191,15 +185,13 @@ impl ui::storage::SettingsSchema for Locale {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("locale");
 }
 
-#[ui::tilo_resource::resource(kind = "settings.locale", label = "Region and language")]
+#[ui::tilo_resource::resource(kind = "settings.locale")]
 impl Locale {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The section's exact strings are what every reader parses; renaming a
-    /// variant would silently reset their setting.
     #[test]
     fn the_locale_section_keeps_the_cross_app_shape() {
         let locale = Locale::default();
@@ -246,8 +238,6 @@ mod tests {
         assert_eq!(serde_json::from_value::<Locale>(section).unwrap(), locale);
     }
 
-    /// A key that does not read keeps its default while the others keep
-    /// their stored values.
     #[test]
     fn an_unreadable_key_reads_as_its_default() {
         let profile = tempfile::tempdir().unwrap();

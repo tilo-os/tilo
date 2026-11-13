@@ -20,8 +20,6 @@ pub struct DirectoryCapability {
     cursor: Mutex<(u64, Option<(u64, PageCursor)>)>,
 }
 impl DirectoryCapability {
-    /// # Errors
-    /// Refuses a stale, foreign or non-enumerable actual directory grant.
     pub fn new(session: FsSession, root: DirectoryGrant) -> Result<Self, FsError> {
         session.check_directory(&root)?;
         Ok(Self {
@@ -105,8 +103,6 @@ impl DirectoryCapability {
         })
     }
 
-    /// # Errors
-    /// Requires current enumerable parent and its actual protected native owner.
     pub fn recoveries(
         &self,
         after: &[u8],
@@ -136,10 +132,6 @@ impl DirectoryCapability {
             },
         )
     }
-    /// Raw retained-directory removal remains unsupported; selected temporary
-    /// cleanup uses its separate genuine created-temporary capability.
-    /// # Errors
-    /// Always refuses without admitting a namespace effect or Purge authority.
     pub fn remove(
         &self,
         _name: &EntryName,
@@ -444,8 +436,6 @@ impl WorkspaceJobBackend for NativeJob {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        // Bounded actual-source record of Item+Finished observed while the daemon
-        // drains this exact job. No success is synthesized from signed labels.
         self.terminal
             .lock()
             .map_err(|_| "Native terminal lock poisoned")?
@@ -466,8 +456,6 @@ impl WorkspaceJobBackend for NativeJob {
     }
 }
 
-/// Existing workspace bootstrap for independently admitted directory custody.
-/// Text-path operations are refused; consumers use the raw-component capability.
 pub struct DirectoryWorkspaceBackend(Arc<DirectoryCapability>);
 impl DirectoryWorkspaceBackend {
     pub fn new(session: FsSession, root: DirectoryGrant) -> Result<Self, FsError> {
@@ -523,8 +511,6 @@ mod terminal_receipt_tests {
     use super::*;
     #[test]
     fn caches_only_actual_durable_native_item_and_finished() {
-        // Genuine native grant, owner/journal and effect. No signed ownership or
-        // positive root ACK authority is manufactured by this primitive test.
         let fixture = crate::operations::tests::Fixture::new();
         let directory =
             DirectoryCapability::new(fixture.session.clone(), fixture.src.clone()).unwrap();

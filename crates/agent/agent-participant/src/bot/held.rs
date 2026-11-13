@@ -397,9 +397,9 @@ mod tests {
     /// and its installer's standing reach.
     #[test]
     fn a_bot_reads_what_it_holds_inside_its_grant() {
-        use policy::{Answer, Grant, KindSet, Level, Rule, Standing, Subject, TreePath};
+        use policy::{Answer, Grant, Grantee, KindSet, Level, Rule, Standing, TreePath};
         let workspace = "workspace-1";
-        let bot = Subject::bot("b1");
+        let bot = Grantee::bot("b1");
         let chat = Rule::new(
             TreePath::root()
                 .any(Level::Workspace)
@@ -410,14 +410,14 @@ mod tests {
         );
         let grants = vec![Grant::new(
             "bot:b1:0",
-            bot.clone(),
+            bot,
             chat.node,
             chat.kinds,
             chat.answer,
-            Subject::person("ada"),
+            Grantee::person("ada"),
         )];
         let standing = Standing::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
-            .bounded_by(bot, grants);
+            .acting_as(policy::Actor::Member(policy::MemberId::bot("b1")), grants);
         let mut held = HeldRecords::new(
             AppCatalogue::native(),
             workspace.into(),

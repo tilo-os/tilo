@@ -1,23 +1,18 @@
 //! Does this machine also boot Windows?
 //!
-//! The TPM's dictionary-attack state — the reset authorisation and the
-//! `maxTries`/`recoveryTime`/`lockoutRecovery` parameters — is global to the chip, not
-//! per operating system. Windows provisions it itself: whenever it starts and finds the
-//! reset authorisation empty, it sets one and keeps it. If Tilo got there first (Tilo
-//! booted before Windows after a TPM clear), Windows can no longer provision its TPM or
-//! reset a lockout, and the only remedy it offers is "Clear TPM", which also destroys
-//! Tilo's sealed keyslots and rollback floor. So on a machine that boots Windows,
-//! [`crate::lockout`]'s global settings are Windows' to manage.
+//! The TPM's dictionary-attack state (reset authorisation, `maxTries`/`recoveryTime`/
+//! `lockoutRecovery`) is global to the chip. Windows provisions it on start whenever the reset
+//! authorisation is empty; if Tilo got there first, Windows can no longer provision its TPM or
+//! reset a lockout, and its only remedy, "Clear TPM", also destroys Tilo's keyslots and rollback
+//! floor. So on a machine that boots Windows, [`crate::lockout`]'s global settings belong to
+//! Windows.
 //!
-//! Discovery is by content: Windows registers its boot manager with the firmware as a
-//! `Boot####` load option, and that entry's file path is fixed. The load options are
-//! parsed as the UEFI specification lays them out (§3.1.3 `EFI_LOAD_OPTION`, §10.3
-//! device path nodes) rather than searched for a string, so a description or optional
-//! data that merely mentions the path does not count.
+//! Discovery is by content: the load options are parsed as the UEFI `EFI_LOAD_OPTION` structure
+//! (spec 3.1.3, device path nodes 10.3), so a description or optional data that merely mentions
+//! `bootmgfw.efi` does not count.
 
 use std::path::Path;
 
-/// Where efivarfs exposes the firmware's variables.
 pub const EFIVARS: &str = "/sys/firmware/efi/efivars";
 
 /// `EFI_GLOBAL_VARIABLE`, the vendor GUID of every `Boot####` variable.
@@ -28,8 +23,8 @@ const WINDOWS_BOOT_MANAGER: &str = "\\efi\\microsoft\\boot\\bootmgfw.efi";
 
 /// Is any firmware boot entry Windows' boot manager?
 ///
-/// A machine without efivarfs (BIOS boot, or a container) reports `false`: there is no
-/// firmware boot entry to find, and nothing else Tilo can read says Windows is there.
+/// A machine without efivarfs (BIOS boot, a container) reports `false`: there is no firmware
+/// boot entry to look at.
 pub fn windows_is_installed(efivars: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(efivars) else {
         return false;
@@ -46,7 +41,6 @@ pub fn windows_is_installed(efivars: &Path) -> bool {
     })
 }
 
-/// `Boot` followed by four hex digits, in the global variable namespace.
 fn is_boot_option_name(name: &str) -> bool {
     name.strip_suffix(GLOBAL_VARIABLE_GUID)
         .and_then(|n| n.strip_suffix('-'))
@@ -58,13 +52,12 @@ fn is_windows_boot_manager(path: &str) -> bool {
     path.replace('/', "\\").to_ascii_lowercase() == WINDOWS_BOOT_MANAGER
 }
 
-/// The file path an `EFI_LOAD_OPTION` loads, or `None` when it has none (firmware entries
-/// for a whole disk, network boot, or a firmware application) or is malformed.
+/// The file path an `EFI_LOAD_OPTION` loads, or `None` when it has none (a whole-disk or network
+/// entry, a firmware application) or is malformed.
 ///
-/// Layout: `u32` attributes, `u16` length of the device path list, a NUL-terminated
-/// UTF-16 description, then the device path list. Only the first device path instance
-/// is the one the firmware boots; its media file path nodes (type 4, subtype 4) are
-/// concatenated, as the specification allows a path to be split across several.
+/// Layout: `u32` attributes, `u16` length of the device path list, a NUL-terminated UTF-16
+/// description, then the device path list. Only the first instance is booted; its media file
+/// path nodes (type 4, subtype 4) are concatenated, since a path may be split across nodes.
 pub fn load_option_file_path(option: &[u8]) -> Option<String> {
     let (_attributes, rest) = option.split_at_checked(4)?;
     let (list_len, mut rest) = rest.split_first_chunk::<2>()?;
@@ -82,8 +75,7 @@ pub fn load_option_file_path(option: &[u8]) -> Option<String> {
         let (node, after) = list.split_at_checked(usize::from(u16::from_le_bytes([l0, l1])))?;
         let body = node.get(4..)?;
         if kind == 0x7f {
-            // End of this instance (0x01) or of the whole path (0xff): either way the
-            // first instance is complete.
+            // End of this instance (0x01) or of the whole path (0xff): the first is complete.
             break;
         }
         if kind == 0x04 && subtype == 0x04 {
@@ -119,7 +111,7 @@ mod tests {
         n
     }
 
-    /// A GPT hard-drive media node; its contents do not matter here.
+    /// A GPT hard-drive media node.
     fn hd() -> Vec<u8> {
         node(0x04, 0x01, &[0u8; 38])
     }
@@ -162,11 +154,9 @@ mod tests {
             &load_option_file_path(&tilo).unwrap()
         ));
 
-        // A firmware entry for a whole disk carries no file path.
         let disk = load_option("EFI Hard Drive", &[hd(), end()], b"RC");
         assert_eq!(load_option_file_path(&disk), None);
 
-        // Mentioning the path in the description or optional data is not a loader.
         let mention = load_option(
             "\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
             &[hd(), end()],
@@ -174,7 +164,6 @@ mod tests {
         );
         assert_eq!(load_option_file_path(&mention), None);
 
-        // A path split across nodes is one path; a second instance is not booted.
         let split = load_option(
             "split",
             &[
@@ -191,7 +180,6 @@ mod tests {
             &load_option_file_path(&split).unwrap()
         ));
 
-        // Truncated or malformed options are not misread.
         assert_eq!(load_option_file_path(windows.get(..40).unwrap()), None);
         let mut bad = windows;
         let list_start = 6 + utf16z("Windows Boot Manager").len();
@@ -210,7 +198,6 @@ mod tests {
         );
         let with_attributes = [7u32.to_le_bytes().to_vec(), windows].concat();
 
-        // The same bytes under a name that is not a boot option do not count.
         std::fs::write(
             dir.path().join(format!("BootOrder-{GLOBAL_VARIABLE_GUID}")),
             &with_attributes,

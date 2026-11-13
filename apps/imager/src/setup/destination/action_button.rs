@@ -1,18 +1,5 @@
-//! [`ActionButton`] — a wizard action, composed from the toolkit's own
-//! controls.
-//!
-//! A wizard's action is a `ui::Button` in the role the step gives it (the
-//! step's main action is primary, Back and the alternatives are secondary,
-//! a low-key way past is plain), or a `ui::Checkbox` for a promise the
-//! person makes. The toolkit draws it, sizes it and moves its focus; what
-//! this adds is what the installer needs from every control:
-//!
-//!   * using it fires its [`Control`]: the published action the
-//!     [`crate::setup::destination::installer_app::InstallerApp`] runs
-//!     through its action door;
-//!   * its inventory entry names that action, not an anonymous callback;
-//!   * a disabled action leaves the focus order, so keyboard navigation
-//!     skips what cannot be used.
+//! One step's deliberate action: its label, icon, test id, and whether it is checked or
+//! disabled.
 
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
@@ -21,31 +8,20 @@ use ui::widget::{Button, ButtonRole, Checkbox, ControlSize, Element, Widget};
 use crate::setup::destination::control::{Control, is_activation_key};
 
 pub struct ActionButton {
-    /// The catalogue message that names this action.
     key: String,
-    /// What that message's placeables hold (`Return to { $host }`).
     args: Vec<(String, ArgValue)>,
-    /// `key` resolved in the window's language, which is what it shows.
     label: String,
-    /// The published action the control runs when used.
     control: Control,
-    /// Stable E2E `test_id`. Defaults to the label, but the label can change,
-    /// so it can be pinned via [`ActionButton::with_test_id`] to stay
-    /// addressable across rebuilds.
     test_id: Option<String>,
-    /// `Some` makes the action a checkbox with this checked state.
     checked: Option<bool>,
     role: ButtonRole,
     size: ControlSize,
     icon: Option<Icon>,
     enabled: bool,
-    /// The toolkit control showing all of the above.
     inner: Element,
 }
 
 impl ActionButton {
-    /// A secondary button firing `control` when used. `key` is the catalogue
-    /// message naming it, so a German window shows a German button.
     pub fn new(key: &str, control: Control) -> Self {
         let mut button = Self {
             key: key.to_string(),
@@ -64,7 +40,6 @@ impl ActionButton {
         button
     }
 
-    /// What the message's placeables hold.
     #[must_use]
     pub fn with_args(mut self, args: &[(&str, ArgValue)]) -> Self {
         self.args = args
@@ -75,7 +50,6 @@ impl ActionButton {
         self
     }
 
-    /// The step's main action.
     #[must_use]
     pub fn primary(mut self) -> Self {
         self.role = ButtonRole::Primary;
@@ -83,7 +57,6 @@ impl ActionButton {
         self
     }
 
-    /// A low-key alternative: a plain button, still a full-size target.
     #[must_use]
     pub fn quiet(mut self) -> Self {
         self.role = ButtonRole::Plain;
@@ -91,7 +64,6 @@ impl ActionButton {
         self
     }
 
-    /// A step's one deliberate action, at the prominent control size.
     #[must_use]
     pub fn large(mut self) -> Self {
         self.size = ControlSize::Large;
@@ -99,7 +71,6 @@ impl ActionButton {
         self
     }
 
-    /// Lead the label with `icon` (Back's chevron).
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
@@ -107,7 +78,6 @@ impl ActionButton {
         self
     }
 
-    /// Pin a stable E2E `test_id` (defaults to the label otherwise).
     #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
@@ -115,7 +85,6 @@ impl ActionButton {
         self
     }
 
-    /// Show the action as a checkbox in this checked state.
     #[must_use]
     pub fn checkbox(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
@@ -123,7 +92,6 @@ impl ActionButton {
         self
     }
 
-    /// Disabled: dimmed, inert, and out of the focus order.
     #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.enabled = !disabled;
@@ -135,7 +103,6 @@ impl ActionButton {
         self.test_id.as_deref().unwrap_or(self.key.as_str())
     }
 
-    /// Build the toolkit control for the current settings.
     fn compose(&mut self) {
         let control = self.control.clone();
         self.label = if self.args.is_empty() {
@@ -189,9 +156,6 @@ impl ui::widget::Decorator for ActionButton {
         self.enabled && self.inner.is_focusable()
     }
 
-    /// A focused action consumes its Enter and Space, so the wizard's own
-    /// Enter (advance the step) never acts past it: Enter on a focused Back
-    /// goes back.
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -205,7 +169,6 @@ impl ui::widget::Decorator for ActionButton {
         self.inner.handle_event(event, ctx);
     }
 
-    /// A disabled action is announced as out of the focus order, as it is.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.inner.accessibility().map(|mut node| {
             node.state.focusable = self.enabled && self.inner.is_focusable();
@@ -219,8 +182,6 @@ impl ui::widget::Decorator for ActionButton {
 }
 
 impl ui::widget::controls::ActionControls for ActionButton {
-    /// The press the control queued: the button's own published action, which a decorator's
-    /// default walk skips (it forwards to the widget's children).
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         ui::widget::controls::take_control_invocation(&mut *self.inner)
     }
@@ -264,12 +225,10 @@ mod tests {
 
     #[test]
     fn action_buttons_are_named_activatable_native_controls() {
-        // Phase `enter_and_space_fire_the_focused_action`.
         {
             assert_key_fires(NamedKey::Enter);
             assert_key_fires(NamedKey::Space);
         }
-        // Phase `button_semantics_are_named_focusable_and_activatable`.
         {
             let (control, presses) = Control::detached(DestinationEffect::Reboot);
             let mut button =
@@ -287,7 +246,6 @@ mod tests {
             assert!(presses.take().map(|press| press.effect) == Some(DestinationEffect::Reboot));
             assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
-            // A disabled button runs nothing and leaves the focus order.
             let mut disabled = button.disabled(true);
             assert!(!disabled.is_focusable());
             assert!(!disabled.perform_action(
@@ -298,7 +256,6 @@ mod tests {
             ));
             assert!(presses.take().is_none());
         }
-        // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
         {
             let (control, presses) = Control::detached(DestinationEffect::SetRecoveryPromise {
                 acknowledged: false,
@@ -321,7 +278,6 @@ mod tests {
             );
             assert_eq!(doc.length(ROOT), 0);
         }
-        // Phase `the_inventory_names_the_published_action`.
         {
             let (control, _) = Control::detached(DestinationEffect::Reboot);
             let button =

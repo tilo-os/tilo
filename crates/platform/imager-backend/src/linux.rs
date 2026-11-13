@@ -1,10 +1,9 @@
-//! Linux [`Platform`]: `sfdisk`/`partx` for the partition map, raw
-//! `O_DIRECT|O_EXCL` I/O through `/dev/disk/by-partuuid/<guid>`, and
-//! efivarfs for firmware variables. Plus the unprivileged Linux probe.
+//! Linux [`Platform`]: `sfdisk`/`partx` for the partition map, raw `O_DIRECT|O_EXCL` I/O through
+//! `/dev/disk/by-partuuid/<guid>`, and efivarfs for firmware variables.
 //!
-//! Test harnesses (loop disk, fake efivarfs directory) may point the adapter
-//! elsewhere with `TILO_STAGING_TEST_DISK` and `TILO_STAGING_TEST_EFIVARS`,
-//! honoured only when [`super::firmware::test_overrides_allowed`].
+//! Test harnesses may point the adapter at a loop disk and a fake efivarfs directory through
+//! `TILO_STAGING_TEST_DISK` and `TILO_STAGING_TEST_EFIVARS`, honoured only when
+//! [`super::firmware::test_overrides_allowed`].
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -25,7 +24,6 @@ mod btrfs;
 const EFIVARS: &str = "/sys/firmware/efi/efivars";
 /// `_IO(0x12, 97)`: flush and invalidate the block device buffer cache.
 const BLKFLSBUF: libc::c_ulong = 0x1261;
-/// `_IOR(0x12, 114, size_t)`.
 const BLKGETSIZE64: libc::c_ulong = 0x8008_1272;
 const FS_IMMUTABLE_FL: libc::c_int = 0x10;
 const DIRECT_ALIGN: usize = 4096;
@@ -37,7 +35,6 @@ pub struct LinuxPlatform {
     efivars: PathBuf,
     /// Partitions are looked up by PARTUUID below this directory.
     by_partuuid: PathBuf,
-    /// Where block nodes are made when neither udev nor devtmpfs provides one.
     private_nodes: PathBuf,
 }
 
@@ -68,7 +65,6 @@ fn read_trimmed(path: &Path) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Kernel name (`nvme0n1p3`, `dm-0`) of a mount source.
 fn source_name(source: &MountSource) -> Option<String> {
     let link = match source {
         MountSource::Path(p) => std::fs::canonicalize(p).ok()?,
@@ -79,9 +75,6 @@ fn source_name(source: &MountSource) -> Option<String> {
     Some(link.file_name()?.to_string_lossy().into_owned())
 }
 
-/// The whole disk holding the running OS: every one of `/sysroot`, `/`,
-/// `/boot` and `/boot/efi` that is a block mount must resolve (through
-/// LUKS, LVM or other dm layers) to the same single disk.
 pub fn resolve_system_disk() -> Result<PathBuf, Blocker> {
     let info =
         std::fs::read_to_string("/proc/self/mountinfo").map_err(|_| Blocker::DiskUnsupported)?;
@@ -110,9 +103,8 @@ pub fn resolve_system_disk() -> Result<PathBuf, Blocker> {
 }
 
 impl LinuxPlatform {
-    /// The adapter for this host's system disk.
-    /// # Errors
-    /// Returns an error if the system disk or retained filesystem cannot be opened.
+    /// The adapter for this host's system disk: errors when the disk or retained filesystem cannot
+    /// be opened.
     pub fn open() -> Result<Self, String> {
         let overrides = super::firmware::test_overrides_allowed();
         let env = |k: &str| {
@@ -131,7 +123,6 @@ impl LinuxPlatform {
             disk,
             efivars: env("TILO_STAGING_TEST_EFIVARS").unwrap_or_else(|| PathBuf::from(EFIVARS)),
             by_partuuid: PathBuf::from("/dev/disk/by-partuuid"),
-            // Below /dev: temporary filesystems are often mounted nodev.
             private_nodes: PathBuf::from(format!("/dev/.tilo-staging-{}", std::process::id())),
         };
         platform.btrfs = btrfs::Held::discover(&platform)?;
@@ -166,7 +157,6 @@ impl LinuxPlatform {
         .ok_or_else(|| "logical sector size unreadable".into())
     }
 
-    /// Unprivileged fallback: lsblk (udev database) plus sysfs extents.
     fn lsblk_disk(&self) -> IoResult<Disk> {
         let json = run(Command::new("lsblk")
             .args([
@@ -205,10 +195,8 @@ impl LinuxPlatform {
             .status();
     }
 
-    /// The node for partition `number` of our disk: udev's by-partuuid link
-    /// when present, else `/dev/<name>` found through sysfs, else a node made
-    /// from sysfs `dev` in a private directory (containers without udev or a
-    /// live devtmpfs). `open_partition` proves the identity either way.
+    /// udev's by-partuuid link, else `/dev/<name>` from sysfs, else a node made in a private
+    /// directory; `open_partition` proves the identity either way.
     fn partition_node(&self, guid: &str, number: u32) -> IoResult<PathBuf> {
         let link = self.by_partuuid.join(guid.to_ascii_lowercase());
         if link.exists() {
@@ -243,7 +231,6 @@ impl LinuxPlatform {
             let _ = std::fs::remove_file(&node);
             let c_node = std::ffi::CString::new(node.as_os_str().as_encoded_bytes())
                 .map_err(|e| e.to_string())?;
-            // SAFETY: valid NUL-terminated path; makedev is pure arithmetic.
             let rc = unsafe {
                 libc::mknod(
                     c_node.as_ptr(),
@@ -265,8 +252,7 @@ impl LinuxPlatform {
         ))
     }
 
-    /// Open a staging partition's node and prove it is the expected
-    /// partition of our disk before any byte moves.
+    /// Proves it is the expected partition of our disk before any byte moves.
     fn open_partition(&self, disk: &Disk, guid: &str, write: bool) -> IoResult<File> {
         let p = disk
             .partitions
@@ -332,7 +318,6 @@ impl LinuxPlatform {
         // SAFETY: GETFLAGS/SETFLAGS read and write one int through valid pointers.
         unsafe {
             if libc::ioctl(file.as_raw_fd(), libc::FS_IOC_GETFLAGS as _, &mut flags) != 0 {
-                // Plain directories (test doubles) do not support flags.
                 return Ok(());
             }
             if flags & FS_IMMUTABLE_FL != 0 {
@@ -346,7 +331,6 @@ impl LinuxPlatform {
     }
 }
 
-/// A heap buffer aligned for `O_DIRECT`.
 struct Aligned {
     storage: Vec<u8>,
     at: usize,
@@ -377,8 +361,6 @@ impl Platform for LinuxPlatform {
     fn system_disk(&self) -> IoResult<Disk> {
         let size = self.size_bytes()?;
         let sector = self.logical_sector()?;
-        // Root (and `disk` group members) read the real GPT header;
-        // everyone else gets the udev view with standard usable bounds.
         let mut disk = match run(Command::new("sfdisk").arg("--json").arg(&self.disk)) {
             Ok(json) => linux_parse::disk_from_sfdisk(&json, size, sector)?,
             Err(_) => self.lsblk_disk()?,
@@ -506,9 +488,6 @@ impl Platform for LinuxPlatform {
             .iter()
             .find(|p| super::same_guid(&p.guid, partition_guid))
             .ok_or("partition already gone")?;
-        // An exclusive open fails with EBUSY while anything mounts or holds
-        // the partition; deleting its GPT entry then would leave a live
-        // filesystem over unallocated space.
         drop(
             self.open_partition(&current, partition_guid, false)
                 .map_err(|e| format!("staging partition is in use; unmount it first ({e})"))?,
@@ -561,7 +540,6 @@ impl Platform for LinuxPlatform {
         // SAFETY: BLKFLSBUF takes no argument beyond the descriptor.
         if unsafe { libc::ioctl(file.as_raw_fd(), BLKFLSBUF as _, 0) } != 0 {
             let error = std::io::Error::last_os_error();
-            // A regular-file test disk has no buffer cache ioctl.
             if error.raw_os_error() != Some(libc::ENOTTY) {
                 return Err(error.to_string());
             }
@@ -606,7 +584,6 @@ impl Platform for LinuxPlatform {
         if written != bytes.len() {
             return Err(format!("{name}: short efivarfs write"));
         }
-        // A regular test directory keeps stale tail bytes on overwrite.
         let _ = file.set_len(bytes.len() as u64);
         Ok(())
     }
@@ -651,7 +628,7 @@ fn removable(disk: &Path) -> bool {
         == Some("1")
 }
 
-/// The unprivileged Linux probe (spec §5).
+/// The unprivileged Linux probe.
 pub fn probe_facts() -> HostFacts {
     let platform = match LinuxPlatform::open() {
         Ok(p) => p,
@@ -660,8 +637,6 @@ pub fn probe_facts() -> HostFacts {
         }
         Err(_) => return HostFacts::unsupported(Blocker::DiskUnsupported),
     };
-    // Disk geometry is useful for preparation even when this host cannot
-    // boot the installer. Firmware remains an explicit independent blocker.
     if removable(&platform.disk) {
         return HostFacts::unsupported(Blocker::DiskUnsupported);
     }

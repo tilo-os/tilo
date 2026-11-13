@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.word-processor@d6a33f5b43133b78";
+
 /** One of bool, int, str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
 
@@ -161,6 +166,6 @@ export interface Document extends tilo.Resource {
 
 /** The `word-processor.document` kind at `path`. */
 export function wordProcessorDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE) as unknown as Document;
 }
 

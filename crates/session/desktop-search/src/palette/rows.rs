@@ -237,11 +237,14 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     // that names the row twice (a page whose subtitle is its own name, a
     // window whose place is the tab's label) says nothing new.
     let (subtitle, facts) = under_title(hit);
-    if let Some(subtitle) = subtitle {
-        entry.description = Some(subtitle);
-    }
-    if !facts.is_empty() {
-        entry = entry.facts(facts);
+    match subtitle {
+        // The subtitle leads the facts it stands beside.
+        Some(subtitle) if !facts.is_empty() => {
+            entry = entry.facts(std::iter::once(subtitle).chain(facts).collect());
+        }
+        Some(subtitle) => entry.description = Some(subtitle),
+        None if !facts.is_empty() => entry = entry.facts(facts),
+        None => {}
     }
     if !hit.faces.is_empty() {
         entry = entry.faces(hit.faces.clone());
@@ -388,5 +391,39 @@ pub(super) fn pressed_hit(search: &super::DesktopSearch, id: &str) -> Option<Hit
             .find(|hit| hit.thing() == *thing)
             .cloned(),
         Some(ShownRow::ShowAll(_)) | None => search.hit(id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::host_apps::launch;
+
+    /// A row says what its source says under the name and, beside that, what
+    /// it is: a host app's comment does not stop being said because the row
+    /// also says the app is a Flatpak.
+    #[test]
+    fn a_row_says_its_subtitle_and_its_facts() {
+        let hit = Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ResourceKind::Application,
+            provider: crate::providers::host_apps::HOST_APPS_SOURCE.into(),
+            id: "org.chromium.Chromium.desktop".into(),
+            title: "Chromium Web Browser".into(),
+            subtitle: Some("Access the Internet".into()),
+            facts: vec!["Flatpak".into()],
+            score: 90,
+            icon: None,
+            target: launch("org.chromium.Chromium.desktop"),
+        };
+        let entry = entry_for(&hit, "hit:0".into());
+        assert_eq!(entry.description_facts, ["Access the Internet", "Flatpak"]);
+        assert_eq!(
+            entry.description.as_deref(),
+            Some("Access the Internet, Flatpak")
+        );
     }
 }

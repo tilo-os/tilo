@@ -1,15 +1,11 @@
-//! The page's clipboard where the engine has none of its own (Linux, where
-//! every page renders offscreen): what a page copies (a site's copy button,
-//! a script's copy, the person's Ctrl+C, an extension's offscreen document)
-//! goes on the system clipboard here, and what a page pastes or reads comes
-//! from it (`apps/browser/chromium/README.md`, "Page clipboard").
+//! The page's clipboard where the engine has none of its own (Linux, where pages render
+//! offscreen): what a page copies goes on the system clipboard here, and what a page pastes
+//! or reads comes from it (`apps/browser/chromium/README.md`, "Page clipboard").
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use ui::clipboard::ClipboardTarget;
 use ui::webview::{WebViewCommand, WebViewEngine};
 
-/// How long a password a page copied stays on the clipboard, as long as
-/// Passwords keeps one there.
 const SECRET_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The page's reads of the system clipboard still waiting on it.
@@ -19,9 +15,9 @@ pub(super) struct PageClipboard {
 }
 
 impl PageClipboard {
-    /// Put what the page copied on the system clipboard: with its formatting
-    /// when it has any, and as a secret (kept out of the clipboard history
-    /// and device sync) when it came from a password field.
+    /// Put what the page copied on the system clipboard: with its formatting when it has
+    /// any, and as a secret, kept out of the clipboard history and device sync, when it came
+    /// from a password field.
     pub(super) fn copied(text: &str, html: Option<&str>, secret: bool) {
         if secret {
             let _ = ui::try_clipboard_copy_secret(text, SECRET_ON_CLIPBOARD_FOR);
@@ -32,8 +28,8 @@ impl PageClipboard {
         }
     }
 
-    /// The page pastes or reads: ask for the system clipboard's text without
-    /// waiting on it, and answer once it comes ([`Self::answer_ready`]).
+    /// The page pastes or reads: ask for the system clipboard's text without waiting on it,
+    /// and answer once it comes ([`Self::answer_ready`]).
     pub(super) fn read(&mut self, request_id: u32) {
         let reply = ui::host::current()
             .clipboard
@@ -41,7 +37,6 @@ impl PageClipboard {
         self.reads.push((request_id, reply));
     }
 
-    /// Answer each read whose text has come, in the order they were asked.
     pub(super) fn answer_ready(&mut self, engine: &dyn WebViewEngine) {
         self.reads.retain(|(request_id, reply)| {
             let text = match reply.try_recv() {
@@ -66,8 +61,8 @@ mod tests {
     use ui::webview::WebViewEvent;
     use ui::webview::test_engine::TestEngine;
 
-    /// A system clipboard that keeps each copy as it was offered, and answers
-    /// a read when the test says.
+    /// A system clipboard that keeps each copy as it was offered, and answers a read when
+    /// the test says.
     #[derive(Default)]
     struct Recorded {
         copies: Mutex<Vec<(String, Option<String>, bool)>>,

@@ -28,13 +28,13 @@
 //! ```
 //!
 //! The verdict's source is the host or the platform ([`Authority::resolve`]): an app its host
-//! gives a verdict holds a [`Door`], a capture or test holds one built directly, so neither
+//! gives a verdict has a [`Door`], a capture or test has one built directly, so neither
 //! needs an environment variable to say what it can do.
 
 use std::fmt;
 
-/// A privileged capability an app may be granted, named by the thing it
-/// reaches (`network.firewall`, `storage.format`, `session.remote`).
+/// A privileged capability an app may be granted, named by the thing it reaches (`network.firewall`,
+/// `storage.format`, `session.remote`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Capability(&'static str);
 
@@ -74,14 +74,11 @@ impl fmt::Display for Capability {
 /// What the platform says about a capability right now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resolution {
-    /// The app holds it; the real control may be drawn.
+    /// The app has it; the real control may be drawn.
     Granted,
-    /// The app may ask this person for it, once, explicitly. `words` are the
-    /// person's words for what is being granted.
+    /// The app may ask this person for it, once, explicitly.
     Grantable { words: String },
-    /// Nothing the app can do right now reaches the capability. `reason`
-    /// says why; `remedy` is what would make it available, when there is
-    /// something to do.
+    /// Nothing the app can do right now reaches the capability.
     Unavailable {
         reason: String,
         remedy: Option<String>,
@@ -122,8 +119,7 @@ impl Resolution {
     }
 }
 
-/// A capability and its resolution: the one thing a view asks before drawing
-/// a privileged control.
+/// A capability and its resolution: the one thing a view asks before drawing a privileged control.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Door {
     capability: Capability,
@@ -140,7 +136,7 @@ impl Door {
         }
     }
 
-    /// A capability the app holds.
+    /// A capability the app has.
     #[must_use]
     pub fn granted(capability: Capability) -> Self {
         Self::new(capability, Resolution::Granted)
@@ -225,10 +221,7 @@ impl Door {
         }
     }
 
-    /// The control when — and only when — the capability is granted. The
-    /// grantable and unavailable faces draw no control through this
-    /// shorthand; they need their own sentence or grant step, so use
-    /// [`face`](Self::face) for them.
+    /// The control when — and only when — the capability is granted.
     #[must_use]
     pub fn control<T>(&self, build: impl FnOnce() -> T) -> Option<T> {
         self.is_granted().then(build)

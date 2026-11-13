@@ -1,21 +1,12 @@
-//! `AddressSuggestions` — the address field's suggestions, when the window
-//! draws its own address field (outside a Tilo session).
+//! `AddressSuggestions`: the address field's suggestions, when the window draws its
+//! own field (outside a Tilo session; in one the window bar lists them, so this list
+//! stays empty and there is only ever one).
 //!
-//! In a Tilo session the address is the window bar's location and the bar
-//! lists the suggestions (`browser_widget::window_bar`); this list then stays
-//! empty, so there is only ever one. Both are the design
-//! system's [`SuggestionList`]: a floating panel under the field, as wide as it, each
-//! row the kind's icon, its title and the line under it (a visited page's
-//! address, which engine a search goes to).
-//!
-//! The chrome owns the address field's keys, so it calls
-//! [`AddressSuggestions::move_selection`] on Up/Down and lets the widget's
-//! [`Widget::handle_event`] take Enter (a chosen row, drained through
-//! [`AddressSuggestions::take_chosen`]), Escape, the pointer and touch. With
-//! no row chosen Enter is the field's: it opens what was typed.
-//!
-//! The panel paints in [`Widget::draw_overlay`] so it composites above the
-//! page surface regardless of sibling order. `draw` itself is a no-op.
+//! Both are the design system's [`SuggestionList`]: a floating panel under the field,
+//! as wide as it, each row the kind's icon, its title and the line under it. The
+//! chrome owns the field's keys and calls [`AddressSuggestions::move_selection`] on
+//! Up and Down; the widget takes Enter, Escape, the pointer and touch. The panel
+//! paints in [`Widget::draw_overlay`], above the page whatever the sibling order.
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -33,24 +24,16 @@ use ui::widget::{Suggestion, SuggestionList, Widget};
 
 use crate::omnibox::{Row, RowKind};
 
-/// Address-field suggestion list. See the module docs.
 pub struct AddressSuggestions {
-    /// Ranked suggestions, best first.
     items: Vec<Row>,
-    /// The shared list that lays out, paints and hit-tests them.
     list: SuggestionList,
-    /// The search engine's name, for the line under a search row.
     engine: String,
-    /// Entry the person committed via Enter, a click or a tap, drained by
-    /// [`Self::take_chosen`].
+    /// The row the person committed, drained by [`Self::take_chosen`].
     chosen: Option<Row>,
-    /// Last cursor position (mouse-move carries it; mouse-press doesn't).
     last_cursor: Point,
-    /// The row a touch went down on: lifting on it chooses it.
     touched: Option<(u64, usize)>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
+    /// Input or a new document value changed what this widget paints.
     dirty: bool,
 }
 
@@ -61,7 +44,6 @@ impl Default for AddressSuggestions {
 }
 
 impl AddressSuggestions {
-    /// An empty, hidden suggestion list.
     pub fn new() -> Self {
         Self {
             dirty: true,
@@ -74,8 +56,7 @@ impl AddressSuggestions {
         }
     }
 
-    /// Replace the suggestion list. Nothing is chosen in a new list: Enter
-    /// opens what was typed until an arrow chooses a row.
+    /// Replace the list; nothing is chosen in a new one.
     pub fn set_suggestions(&mut self, items: Vec<Row>) {
         let rows = items
             .iter()
@@ -87,7 +68,6 @@ impl AddressSuggestions {
         self.touched = None;
     }
 
-    /// The search engine a search row runs on, by name.
     pub fn set_search_engine(&mut self, name: &str) {
         if self.engine != name {
             name.clone_into(&mut self.engine);
@@ -96,44 +76,37 @@ impl AddressSuggestions {
         }
     }
 
-    /// Clear all suggestions — the list becomes hidden.
     pub fn clear(&mut self) {
         self.items.clear();
         self.list.clear();
         self.touched = None;
     }
 
-    /// Whether the list currently has anything to show.
     pub fn is_visible(&self) -> bool {
         !self.items.is_empty()
     }
 
-    /// The suggestions currently displayed, best first.
     pub fn items(&self) -> &[Row] {
         &self.items
     }
 
-    /// Index of the chosen row, if an arrow chose one.
     pub fn selected_index(&self) -> Option<usize> {
         self.list.highlight()
     }
 
-    /// The chosen entry, if an arrow chose one.
     pub fn selected(&self) -> Option<&Row> {
         self.selected_index()
             .and_then(|index| self.items.get(index))
     }
 
-    /// Choose the next row (`delta > 0`) or the previous one, wrapping at
-    /// both ends. No-op when there are no suggestions.
+    /// Choose the next row (`delta > 0`) or the previous one, wrapping at both ends.
     pub fn move_selection(&mut self, delta: i32) {
         if delta != 0 {
             self.list.move_highlight(delta > 0);
         }
     }
 
-    /// Hang the list under `field` (the address field), as wide as it,
-    /// inside `window`.
+    /// Hang the list under `field`, as wide as it, inside `window`.
     pub fn set_anchor(&mut self, field: Rect, window: Rect) {
         self.list.set_anchor(field);
         if window.area() > 0.0 {
@@ -141,8 +114,7 @@ impl AddressSuggestions {
         }
     }
 
-    /// Take the entry the person committed, if any. Returns `Some` exactly
-    /// once per commit, then `None`.
+    /// Take the row the person committed, once per commit.
     pub fn take_chosen(&mut self) -> Option<Row> {
         self.chosen.take()
     }
@@ -158,10 +130,9 @@ impl AddressSuggestions {
 
     /// Route an accessibility action addressed to a virtual suggestion row.
     ///
-    /// The list is painted above Browser's retained content tree, so the
-    /// Browser root owns the final dispatch. Keeping target resolution here
-    /// makes that bridge use the same stable URL hash that this widget exports
-    /// to AT-SPI, rather than trusting a stale visible-row index.
+    /// The list paints above Browser's retained tree, so the Browser root owns the
+    /// final dispatch; resolving the target here uses the hash this widget exports to
+    /// AT-SPI rather than a stale visible-row index.
     pub fn perform_accessibility_action(
         &mut self,
         target: &str,
@@ -187,7 +158,6 @@ impl AddressSuggestions {
         }
     }
 
-    /// The panel, while it shows.
     fn panel(&self) -> Option<Rect> {
         if self.items.is_empty() {
             None
@@ -196,7 +166,6 @@ impl AddressSuggestions {
         }
     }
 
-    /// Row index under a logical `point`, if it lands on a row.
     fn row_at(&self, point: Point) -> Option<usize> {
         if self.items.is_empty() {
             return None;
@@ -209,15 +178,15 @@ impl AddressSuggestions {
     }
 }
 
-/// One omnibox row as the list shows it: the kind's icon, the title, and
-/// the line under it where it says something the title does not.
+/// One omnibox row as the list shows it: the kind's icon, the title, and the line
+/// under it where that says something the title does not.
 fn list_row(row: &Row, engine: &str) -> Suggestion {
     use ui::icons::Icon;
     let (icon, subtitle) = match row.kind {
         RowKind::Go => (Icon::Globe, None),
         RowKind::History => (Icon::History, Some(row.detail.clone())),
-        // The star is the toolbar's mark for a saved page; the line under the
-        // title names that source and the address it opens.
+        // The star is the toolbar's mark for a saved page; the line names that source
+        // and the address it opens.
         RowKind::Bookmark => (Icon::Star, Some(bookmark_detail(row))),
         RowKind::Search => (
             Icon::Search,
@@ -229,7 +198,6 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
             }),
         ),
         RowKind::Suggestion => (Icon::Search, None),
-        // Which extension it goes to.
         RowKind::Extension => (Icon::Box, Some(row.detail.clone())),
     };
     let suggestion = Suggestion::labelled(row.url.clone(), row.title.clone()).with_icon(icon);
@@ -239,8 +207,8 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
     }
 }
 
-/// What marks a saved page's row as one, in the person's language: its source
-/// (a bookmark) and the address it opens.
+/// What marks a saved page's row as one, in the person's language: its source and the
+/// address it opens.
 fn bookmark_detail(row: &Row) -> String {
     crate::resource::CATALOG.t_args(
         "browser-suggestion-bookmark",
@@ -248,7 +216,7 @@ fn bookmark_detail(row: &Row) -> String {
     )
 }
 
-/// Stable identity of a row across relayouts: what it is and what it opens.
+/// A row's identity across relayouts: what it is and what it opens.
 fn row_key(row: &Row) -> String {
     match row.kind {
         RowKind::History | RowKind::Bookmark => row.url.clone(),
@@ -341,8 +309,8 @@ impl Widget for AddressSuggestions {
                     TouchPhase::Ended => {
                         if let Some((id, index)) = self.touched.take() {
                             if id == touch.id {
-                                // A tap lifts where it went down; a drag off
-                                // the row lets it go.
+                                // A tap lifts where it went down; a drag off the row
+                                // lets it go.
                                 if self.row_at(p) == Some(index) {
                                     self.choose(index);
                                 } else {
@@ -371,8 +339,6 @@ impl Widget for AddressSuggestions {
                         self.move_selection(-1);
                         *ctx.handled = true;
                     }
-                    // A chosen row opens; with none chosen the field opens
-                    // what was typed.
                     Key::Named(NamedKey::Enter) => {
                         if let Some(index) = self.selected_index() {
                             self.choose(index);
@@ -483,9 +449,8 @@ impl Widget for AddressSuggestions {
         true
     }
 
-    /// While the list is up it behaves like a transient popover anchored
-    /// over the page, so it reports its rect as a modal capture — matching
-    /// the toolkit's other dropdown-style overlays.
+    /// While the list is up it reports its rect as a modal capture, like the
+    /// toolkit's other dropdown overlays.
     fn modal_capture(&self) -> Option<Rect> {
         self.panel()
     }
@@ -512,7 +477,6 @@ mod tests {
         ]
     }
 
-    /// The field the list hangs from, and the window around it.
     const FIELD: Rect = Rect::new(50.0, 60.0, 450.0, 92.0);
     const WINDOW: Rect = Rect::new(0.0, 0.0, 900.0, 700.0);
 
@@ -571,7 +535,6 @@ mod tests {
         assert_eq!(empty.selected(), None);
     }
 
-    /// Placement, painting, rows and accessibility.
     #[test]
     fn suggestions_hang_under_the_field_and_expose_stable_rows() {
         let w = shown();
@@ -675,7 +638,6 @@ mod tests {
         ));
         assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
 
-        // A tap on a row opens it; a touch that slides off lets it go.
         let mut w = shown();
         let (_, row) = w.test_rects()[2].clone();
         let touch = |phase, p: Point| {

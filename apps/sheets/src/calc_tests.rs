@@ -52,7 +52,6 @@ fn in_book(sheets: &[(String, HashMap<Addr, String>)], own: usize) -> HashMap<Ad
     calc.values(own)
 }
 
-/// TRIM drops the outer spaces and collapses inner runs to one space.
 #[test]
 fn trim_collapses_inner_spaces() {
     let m = run(&[
@@ -67,14 +66,12 @@ fn trim_collapses_inner_spaces() {
     assert_eq!(val(&m, "A4"), CellValue::Number(5.0));
 }
 
-/// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.
 #[test]
 fn arithmetic_references_conditionals_and_errors() {
     {
         let m = run(&[("A1", "=2+3*4"), ("A2", "=(2+3)*4"), ("A3", "=2^3^2")]);
         assert_eq!(val(&m, "A1"), CellValue::Number(14.0));
         assert_eq!(val(&m, "A2"), CellValue::Number(20.0));
-        // `^` is left-associative, as in Excel: (2^3)^2 = 64
         assert_eq!(val(&m, "A3"), CellValue::Number(64.0));
     }
 
@@ -110,9 +107,6 @@ fn arithmetic_references_conditionals_and_errors() {
 
     {
         use crate::model::{CellFormat, format_value};
-        // Each formula triggers one specific cause. Assert both the typed
-        // error kind *and* the exact canonical string the grid renders
-        // (through the real `recalculate` + `format_value` path).
         let m = run(&[
             ("A1", "=1/0"),                // division by zero        → #DIV/0!
             ("A2", "=FOOBAR()"),           // unknown function        → #NAME?
@@ -216,9 +210,6 @@ fn math_statistics_and_logical_functions() {
         assert_eq!(val(&m, "B2"), CellValue::Number(40.0));
     }
 
-    // Case `math_functions`.
-    // ROUND(PI(),2) is expected to be 3.14; that is the assertion, not an
-    // approximation of the constant.
     {
         let m = run(&[
             ("A1", "=POWER(2,10)"),
@@ -235,8 +226,6 @@ fn math_statistics_and_logical_functions() {
         assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
         assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
         assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
-        // Halves round away from zero at the digits typed, as in Excel,
-        // although 0.285 and 1.005 sit just below their halves in binary.
         for (formula, rounded) in [
             ("=ROUND(0.285,2)", 0.29),
             ("=ROUND(1.005,2)", 1.01),
@@ -252,7 +241,6 @@ fn math_statistics_and_logical_functions() {
         assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
         assert_eq!(val(&m, "A7"), CellValue::Number(24.0));
         assert_eq!(val(&m, "A8"), CellValue::Number(9.0));
-        // LOG(1000) is 3 up to floating-point rounding.
         match val(&m, "A9") {
             CellValue::Number(n) => assert!((n - 3.0).abs() < 1e-9, "LOG(1000)={n}"),
             other => panic!("expected a number, got {other:?}"),
@@ -274,13 +262,9 @@ fn math_statistics_and_logical_functions() {
             ("C3", "=COUNTIFS(A1:A4,\">=20\",B1:B4,\"y\")"),
             ("C4", "=AVERAGEIFS(A1:A4,B1:B4,\"y\")"),
         ]);
-        // Average of 20,30,40 = 30.
         assert_eq!(val(&m, "C1"), CellValue::Number(30.0));
-        // Sum of A where B="x": 10 + 30 = 40.
         assert_eq!(val(&m, "C2"), CellValue::Number(40.0));
-        // A>=20 AND B="y": A2(20,y) and A4(40,y) → 2.
         assert_eq!(val(&m, "C3"), CellValue::Number(2.0));
-        // Average of A where B="y": (20+40)/2 = 30.
         assert_eq!(val(&m, "C4"), CellValue::Number(30.0));
     }
 
@@ -303,7 +287,6 @@ fn math_statistics_and_logical_functions() {
 #[test]
 fn lookup_and_date_time_functions() {
     {
-        // A small table: A=key, B=payload.
         let m = run(&[
             ("A1", "1"),
             ("B1", "one"),
@@ -340,7 +323,6 @@ fn lookup_and_date_time_functions() {
         assert_eq!(val(&m, "A2"), CellValue::Number(2023.0));
         assert_eq!(val(&m, "A3"), CellValue::Number(3.0));
         assert_eq!(val(&m, "A4"), CellValue::Number(15.0));
-        // 2023-03-15 is a Wednesday → 4 in Excel's Sunday-first numbering.
         assert_eq!(val(&m, "A5"), CellValue::Number(4.0));
         assert_eq!(val(&m, "A6"), CellValue::Number(14.0));
         assert_eq!(val(&m, "A7"), CellValue::Number(5.0));
@@ -348,7 +330,6 @@ fn lookup_and_date_time_functions() {
 
     {
         let m = run(&[("A1", "=TODAY()"), ("A2", "=NOW()")]);
-        // A serial well past 2020-01-01 (43831) and before 2100.
         match val(&m, "A1") {
             CellValue::Number(n) => assert!(n > 43831.0 && n < 73415.0, "today serial {n}"),
             other => panic!("TODAY must be a number, got {other:?}"),
@@ -360,7 +341,6 @@ fn lookup_and_date_time_functions() {
     }
 }
 
-/// Currency, percent, duration and unitless result formats.
 #[test]
 fn result_formats_propagate_through_arithmetic() {
     {
@@ -370,12 +350,10 @@ fn result_formats_propagate_through_arithmetic() {
             infer_result_format("5*B2", &f),
             Some(CellFormat::Currency(Currency::USD))
         );
-        // order doesn't matter
         assert_eq!(
             infer_result_format("B2*5", &f),
             Some(CellFormat::Currency(Currency::USD))
         );
-        // division by a scalar keeps the currency
         assert_eq!(
             infer_result_format("B2/2", &f),
             Some(CellFormat::Currency(Currency::USD))
@@ -398,7 +376,6 @@ fn result_formats_propagate_through_arithmetic() {
             ("A1", CellFormat::Currency(Currency::USD)),
             ("A2", CellFormat::Currency(Currency::EUR)),
         ]);
-        // USD + EUR is unclear → plain number (None).
         assert_eq!(infer_result_format("A1+A2", &f), None);
         assert_eq!(infer_result_format("A1*A2", &f), None);
     }
@@ -430,7 +407,6 @@ fn result_formats_propagate_through_arithmetic() {
             ("A1", CellFormat::Date(DateStyle::Iso)),
             ("A2", CellFormat::Date(DateStyle::Iso)),
         ]);
-        // Difference of two dates is a number of days → plain (None).
         assert_eq!(infer_result_format("A1-A2", &f), None);
         assert_eq!(
             infer_result_format("A1+7", &f),
@@ -450,17 +426,14 @@ fn result_formats_propagate_through_arithmetic() {
     }
 
     {
-        // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
         let f = fmts(&[
             ("E2", CellFormat::Currency(Currency::USD)),
             ("B2", CellFormat::Currency(Currency::USD)),
         ]);
-        // (currency - currency) = currency; currency / currency = Mixed→None.
         assert_eq!(infer_result_format("(E2-B2)/B2", &f), None);
     }
 }
 
-/// Formulas evaluate as Excel evaluates them.
 #[test]
 fn formulas_follow_excel() {
     let data = [
@@ -512,7 +485,6 @@ fn formulas_follow_excel() {
     }
 }
 
-/// A formula reading itself, directly or round a loop, shows `#CYCLE!`.
 #[test]
 fn a_cycle_shows_cycle() {
     let m = run(&[
@@ -565,8 +537,6 @@ fn literals_reach_the_engine_as_read() {
     assert_eq!(val(&m, "B6"), CellValue::Bool(true));
 }
 
-/// A formula reads cells and ranges of other sheets, by any spelling of
-/// their names; a sheet the workbook lacks is `#REF!`.
 #[test]
 fn a_formula_reads_cells_and_ranges_of_another_sheet() {
     let book = vec![
@@ -622,8 +592,6 @@ fn a_cycle_across_sheets_is_found() {
     );
 }
 
-/// The calculator keeps its workbook: each update writes what changed,
-/// clears what went, and the values follow.
 #[test]
 fn updates_rewrite_only_what_changed() {
     let mut calc = Calc::new();
@@ -666,7 +634,6 @@ fn updates_rewrite_only_what_changed() {
         "spills again"
     );
 
-    // A renamed sheet: the workbook is built anew under the new name.
     let other = sheet("T", &[("A1", "=S!A3")]).1;
     let (raw, other) = (Arc::new(raw), Arc::new(other));
     calc.update([("S2", &raw), ("T", &other)]);
@@ -678,8 +645,6 @@ fn updates_rewrite_only_what_changed() {
     assert_eq!(calc.values(1).get(&(0, 0)), Some(&CellValue::Number(40.0)));
 }
 
-/// A column of formulas each reading the one above (a running total) is as
-/// deep as the sheet is long, and evaluates without exhausting the stack.
 #[test]
 fn a_long_chain_evaluates() {
     const ROWS: u32 = 50_000;
@@ -695,9 +660,6 @@ fn a_long_chain_evaluates() {
     );
 }
 
-/// `parse_error` names what does not parse, with the error the cell shows,
-/// and passes formulas that parse and input that is no formula; the cell
-/// shows the error rather than a repaired formula's value.
 #[test]
 fn parse_errors_say_what_is_wrong() {
     let problem = |raw: &str| parse_error(raw).map(|e| (e.error.text(), e.problem));
@@ -734,8 +696,6 @@ fn parse_errors_say_what_is_wrong() {
     assert_eq!(val(&m, "C1"), CellValue::Error(FormulaError::Error));
 }
 
-/// Formulas filled down share the parse of the one above; each still reads
-/// its own row, and one that only looks like a copy reads what it names.
 #[test]
 fn formulas_filled_down_read_their_own_rows() {
     let m = run(&[
@@ -765,9 +725,6 @@ fn formulas_filled_down_read_their_own_rows() {
     assert_eq!(val(&m, "E3"), CellValue::Number(6.0));
 }
 
-/// Every sheet evaluates in one workbook kept across states: showing
-/// another sheet reads what is computed, and a change re-reads only the
-/// sheet it touched.
 #[test]
 fn a_workbook_calc_rereads_only_the_sheets_a_change_touched() {
     use crate::resource::CellWrite;
@@ -817,8 +774,6 @@ fn a_workbook_calc_rereads_only_the_sheets_a_change_touched() {
 fn large_workbook_timings() {
     use std::time::Instant;
 
-    // A number column and three formula columns filled down: `D` adds two
-    // cells of its row, or, chained, the running total above it.
     let sheet = |rows: u32, chain: bool| -> HashMap<Addr, String> {
         let mut raw = HashMap::new();
         for r in 1..=rows {

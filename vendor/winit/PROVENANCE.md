@@ -12,8 +12,8 @@
 Local changes: synthetic key events, Wayland drag sources, pointer gestures,
 pen tablets, presentation-time frame announcements, focused keyboard layout
 snapshots and the `tilo_text_input_v1` acknowledgement on Wayland, a macOS
-quit request, web animation-frame and resize fixes. Example images are stored
-as `.hex` text and decoded by `build.rs` (`fixture_build.rs`); the manifest
+quit request, web animation-frame and resize fixes. The archive's examples are
+omitted: they did not build against the fork's events and dependencies; the manifest
 carries the `tilo-winit` publication identity and a cargo-machete note; the
 archive's `Cargo.lock`, `Cargo.toml.orig` and `.cargo_vcs_info.json` are
 omitted. `vendor/PATCHES.md` is the change log ("Published forks",

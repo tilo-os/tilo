@@ -1,27 +1,5 @@
-//! `WebView` — a leaf widget that displays the live output of a
-//! [`crate::webview::WebViewEngine`] and forwards pointer, scroll and keyboard input into it.
-//!
-//! The widget is deliberately chrome-free: address bar, navigation buttons, progress and
-//! permission prompts belong to the host app or the OS chrome. It paints whatever frame the
-//! engine last produced (scaled to its layout rect), shows a neutral placeholder until the
-//! first frame arrives, and translates toolkit-space input into engine commands (physical
-//! pixels relative to the view's origin). Navigation state (URL, title, progress) does not flow
-//! through it: the host app drains [`crate::webview::WebViewEvent`]s during `sync` and owns
-//! that state in its CRDT.
-//!
-//! # Device scale
-//!
-//! The page is rendered at the device scale of the surface it is shown on, so one frame pixel
-//! is one physical pixel. That scale has one source at a time: a live host's surface, told on
-//! mount and when the scale changes ([`crate::widget::NativeViewLifecycle`]), or without a live
-//! host the scale the view lands on screen with, read through every cache being recorded around
-//! it ([`crate::scroll_copy::on_screen`]) — a container that caches its children draws them at
-//! the identity and scales the cache, so the draw's own transform says 1 on any display.
-//!
-//! Input never changes it: an event's scale is the scale of the surface that delivered it, and
-//! the engine re-renders the whole page at every new scale, briefly showing the old frame
-//! stretched or the new one at the old size.
-
+//! `WebView` — a leaf widget that displays the live output of a [`crate::webview::WebViewEngine`]
+//! and forwards pointer, scroll and keyboard input into it.
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
@@ -82,7 +60,6 @@ fn frame_quantization_slack(scale_factor: f32) -> u32 {
 const MAX_FRAME_SIDE: f64 = 8192.0 - 16.0;
 const MAX_FRAME_PIXELS: f64 = 16.0 * 1024.0 * 1024.0 * 0.99;
 
-/// See module docs.
 pub struct WebView {
     text_input: crate::webview::text_input::Guard,
     history_operation: Option<(
@@ -95,17 +72,10 @@ pub struct WebView {
     /// (see the module docs, "Device scale"); the engine renders at it unless
     /// that passes its limits ([`Self::engine_scale`]).
     scale_factor: f32,
-    /// `scale_factor` is the live host surface's: draws leave it alone.
     host_scaled: bool,
-    /// `scale_factor` is the seed [`Self::with_scale_factor`] gave and no
-    /// host has replaced yet.
     preseeded: bool,
     focused: bool,
-    /// An input method is composing in the page's focused field.
     composing: bool,
-    /// The input method emptied its composition. Whether that withdraws it
-    /// or makes way for its commit is known only from what follows in the
-    /// same batch of events ([`Self::settle_composition`]).
     composition_emptied: bool,
     /// How much of a focused field's top the input method is told the caret
     /// takes, in logical pixels, when the engine knows the field but not its
@@ -116,10 +86,7 @@ pub struct WebView {
     /// The buttons pressed on the page and not yet released: the page keeps
     /// the pointer until they are, wherever it goes, as a drag does.
     held: Vec<MouseButton>,
-    /// The pointer was over the page at its last move: leaving it ends the
-    /// page's hover, so the page hears where it went.
     pointer_inside: bool,
-    /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
     last_sent_scale: f32,
     /// Last expected/observed mismatch for which we requested a repaint.
@@ -127,39 +94,24 @@ pub struct WebView {
     /// redraw-command loop on every UI frame.
     stale_resize_retry: Option<((u32, u32), (u32, u32))>,
     native_mounted: bool,
-    /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
-    /// What the cached frame changed from the frames before it.
     cached_damage: Option<crate::webview::FrameDamage>,
-    /// What the last draw put on screen, and what the last frame that
-    /// reached the screen showed ([`Widget::mark_drawn`]).
     drawing: Option<Drawn>,
     submitted: Option<Drawn>,
-    /// Where the last draw differs from `submitted`, in layout coordinates;
-    /// `None` for the whole view.
     damage: Option<Vec<Rect>>,
-    /// The frames the view may show ([`Self::accept_frames`]); `None`
-    /// shows every frame that fits.
     accepts: Option<fn(&crate::webview::Frame) -> bool>,
-    /// Draws the engine's display list when it has one (the paint stream).
     page: crate::webview::paint::PageRenderer,
-    /// The display list's sequence number the last draw painted: the page
-    /// shows the frame after it only when it moved
-    /// (`WebViewEngine::paint_seq`).
     painted_seq: u64,
     test_id: String,
     accessible_name: String,
 }
 
-/// What one draw of the view put on screen of a page frame, to tell where
-/// the next draw differs from it.
 #[derive(Clone)]
 struct Drawn {
     rect: Rect,
     transform: Affine,
-    /// The colour around and under the frame.
     backing: vello::peniko::Color,
     /// The frame's pixels, held so their allocation is not another frame's.
     frame: Blob<u8>,
@@ -289,7 +241,6 @@ impl WebView {
         }
     }
 
-    /// Seed the window DPI before the first layout of a rebuilt view.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
         if scale_factor.is_finite() && scale_factor > 0.0 {
@@ -299,8 +250,6 @@ impl WebView {
         self
     }
 
-    /// Override the e2e test identifier (default `"webview"`), for a tree
-    /// hosting several web views.
     #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
@@ -313,8 +262,6 @@ impl WebView {
         self
     }
 
-    /// What the page is called changes where the view stands: a window that shows another
-    /// document.
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
         self.accessible_name = name.into();
     }
@@ -345,8 +292,6 @@ impl WebView {
         self.send_resize_if_needed();
     }
 
-    /// Whether the engine's latest frame fits the view as placed: drawn,
-    /// it shows the page rather than a placeholder waiting for a resize.
     #[must_use]
     pub fn has_fitting_frame(&self) -> bool {
         let expected = (
@@ -364,12 +309,6 @@ impl WebView {
         })
     }
 
-    /// The view lands on screen through `transform`. Without a live host,
-    /// the page renders at the scale it lands on screen with: through any
-    /// cache a container records it into, which draws it at the identity
-    /// (module docs, "Device scale"). [`Widget::draw`] says so itself; a
-    /// host that holds the view back until its page has painted says so
-    /// while it does, so the page paints at that scale before it is shown.
     pub fn lands_at(&mut self, transform: Affine) {
         if !self.host_scaled {
             let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
@@ -387,17 +326,11 @@ impl WebView {
         self.accepts = Some(accepts);
     }
 
-    /// Take the engine's latest frame to draw, if the view may show it, and
-    /// say whether the view has a frame to draw: what [`Widget::draw`]
-    /// would put on screen now, beyond its placeholder.
     pub fn refresh_frame(&mut self) -> bool {
         self.adopt_frame();
         self.cached_image.is_some()
     }
 
-    /// Take the engine's latest frame as the one to draw if it fits the
-    /// view (and passes [`Self::accept_frames`]). A view without that
-    /// filter drops its frame for a stale one, and returns the stale size.
     fn adopt_frame(&mut self) -> Option<(u32, u32)> {
         let latest = {
             let slot = self.engine.frames();
@@ -445,7 +378,6 @@ impl WebView {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<Drawn> {
-        // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -528,9 +460,6 @@ impl WebView {
         None
     }
 
-    /// Tell the renderer that `image`, the frame about to replace the cached
-    /// one, differs from it only where `damage` says, so the renderer that
-    /// holds the cached frame uploads just those rects of the new one.
     fn note_image_delta(&self, image: &PenikoImage, damage: Option<&crate::webview::FrameDamage>) {
         let Some(previous) = self
             .cached_image
@@ -566,7 +495,6 @@ impl WebView {
         self.cached_key = (0, 0, 0);
     }
 
-    /// The device scale the page is rendered at.
     #[must_use]
     pub fn device_scale(&self) -> f32 {
         self.scale_factor
@@ -590,7 +518,6 @@ impl WebView {
         }
     }
 
-    /// Render the page at `scale` from now on: once, and only when it is new.
     fn rescale(&mut self, scale: f32) {
         if !scale.is_finite() || scale <= 0.0 || scale.to_bits() == self.scale_factor.to_bits() {
             return;
@@ -600,9 +527,6 @@ impl WebView {
         self.send_resize_if_needed();
     }
 
-    /// The engine handle this view drives, so a host can send it commands
-    /// (Navigate to an email's sandboxed `data:` document, install a
-    /// content filter) directly.
     pub fn engine(&self) -> &SharedEngine {
         &self.engine
     }
@@ -646,9 +570,6 @@ impl WebView {
             self.stale_resize_retry = None;
             return true;
         }
-        // This shared check rejects stale density/viewport frames without
-        // requiring every engine to use CEF's exact allocation geometry.
-        // Chromium additionally enforces its exact paint size in the host.
         let slack = frame_quantization_slack(scale);
         let matches =
             observed.0.abs_diff(expected.0) <= slack && observed.1.abs_diff(expected.1) <= slack;
@@ -669,13 +590,10 @@ impl WebView {
         false
     }
 
-    /// The page's focused field holds a lease for deferred text (dictation).
     fn deferred_ready(&self) -> bool {
         self.focused && self.engine.supports_text_input() && self.text_input.ready()
     }
 
-    /// The page's focused field while this view has the keyboard and its
-    /// engine takes compositions.
     fn page_field(&self) -> Option<crate::webview::TextField> {
         (self.focused && self.engine.supports_composition())
             .then(|| self.engine.text_field())
@@ -698,9 +616,6 @@ impl WebView {
         (placed.height() > 0.0 && (placed.width() > 0.0 || page.width() <= 0.0)).then_some(placed)
     }
 
-    /// An emptied composition nothing committed in the same batch was
-    /// withdrawn: the page drops its text. Runs before anything else
-    /// reaches the page, and on every frame.
     fn settle_composition(&mut self) {
         if std::mem::take(&mut self.composition_emptied) && self.composing {
             self.composing = false;
@@ -708,16 +623,12 @@ impl WebView {
         }
     }
 
-    /// The platform input method's preedit and commits, into the page's
-    /// focused field as a composition, the way a native field takes them.
     fn input_method(&mut self, ime: &winit::event::Ime) {
         match ime {
             winit::event::Ime::Preedit(text, _) if text.is_empty() => {
                 self.composition_emptied = self.composing;
             }
             winit::event::Ime::Preedit(text, cursor) => {
-                // Composing edits the page: an original-field speech
-                // reservation retires as it does for a key press.
                 self.text_input.invalidate(&self.engine);
                 self.composing = true;
                 self.composition_emptied = false;
@@ -783,13 +694,6 @@ impl crate::widget::NativeViewLifecycle for WebView {
         let first_mount = !self.native_mounted;
         self.native_mounted = true;
         let host_scale = f32_of_f64(host.scale_factor());
-        // A freshly rebuilt Browser WebView is seeded from the device-scale
-        // draw that requested the rebuild. Some macOS startup windows still
-        // report 1 here until their first visible frame. Preserve the larger
-        // preseed only on that first mount; later mounts (including an actual
-        // ScaleFactorChanged event, and a mount after an unmount, when the
-        // window may have moved to another display) take the host value in
-        // either direction.
         let scale_factor = if std::mem::take(&mut self.preseeded) {
             self.scale_factor.max(host_scale)
         } else {
@@ -803,7 +707,6 @@ impl crate::widget::NativeViewLifecycle for WebView {
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
         }
-        // The surface's scale is the page's from now on (module docs).
         self.host_scaled = true;
     }
 
@@ -844,7 +747,6 @@ impl crate::undo::LocalUndo for WebView {
         if !self.focused || !self.engine.handle_undo_request(request) {
             return false;
         }
-        // Editing the page retires any original-field speech reservation.
         self.text_input.invalidate(&self.engine);
         true
     }
@@ -904,8 +806,6 @@ impl Widget for WebView {
             .and_then(|page| self.engine_to_view(page));
         let line = field.and_then(|field| field.bounds).and_then(|page| {
             let placed = self.engine_to_view(page)?;
-            // A tall field (a text area, an editable document) is placed by
-            // its first line, not below its whole box.
             Some(Rect::new(
                 placed.x0,
                 placed.y0,
@@ -922,8 +822,6 @@ impl Widget for WebView {
         )))
     }
 
-    /// Only a field leased for deferred text has a stamp: the input method
-    /// may serve a page field without one, but dictation needs the lease.
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_content()?;
         self.deferred_ready()
@@ -935,9 +833,6 @@ impl Widget for WebView {
         true
     }
 
-    /// A page that takes compositions takes an input method's commits as
-    /// a native field does; one that does not takes text only through
-    /// deferred receipts.
     fn ime_refuses_ordinary_commits(&self) -> bool {
         !self.engine.supports_composition()
     }
@@ -1025,8 +920,6 @@ impl Widget for WebView {
             return;
         }
         self.settle_composition();
-        // Someone is using the page: it is on screen, whether or not a frame
-        // has been drawn since it came back.
         if matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -1062,10 +955,6 @@ impl Widget for WebView {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical = ctx.logical(position);
                 self.last_mouse = logical;
-                // A drag that began on the page goes on outside it: a text
-                // selection or a slider follows, and the page scrolls. The
-                // first move out of it is the page's too, so what it shows
-                // under the pointer (a menu, a highlight) lets go.
                 let inside = self.rect.contains(logical);
                 if inside || !self.held.is_empty() || self.pointer_inside {
                     let (x, y) = self.to_engine(logical);
@@ -1129,7 +1018,6 @@ impl Widget for WebView {
                         });
                         *ctx.handled = true;
                     }
-                    // Mouse side buttons drive history, as in every desktop browser.
                     winit::event::MouseButton::Back => {
                         if down {
                             self.engine.send(WebViewCommand::GoBack);
@@ -1146,8 +1034,6 @@ impl Widget for WebView {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Ctrl+scroll zooms the window (`crate::content_zoom`); a
-                // page with a zoom of its own is the Browser's to offer.
                 if !self.rect.contains(self.last_mouse)
                     || crate::content_zoom::is_zoom_scroll(event, ctx.modifiers)
                 {
@@ -1175,9 +1061,6 @@ impl Widget for WebView {
                 crate::webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *ctx.handled = true;
-                // The page scrolls in its engine: nothing the app publishes
-                // moved. What the page reports back reaches the app as its
-                // own events.
                 crate::widget::note_view_only_pan();
             }
             WindowEvent::KeyboardInput {
@@ -1187,11 +1070,6 @@ impl Widget for WebView {
                     return;
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
-                    // A host shortcut consumes its press but its release still
-                    // reaches the page. Retiring here canceled queued Undo/Redo
-                    // before the next sync could send it to the original editor.
-                    // Release handlers remain subject to the renderer's field
-                    // and selection checks before deferred history is applied.
                     if key_event.state == ElementState::Pressed {
                         self.text_input.invalidate(&self.engine);
                     }
@@ -1223,8 +1101,6 @@ impl Widget for WebView {
         !self.held.is_empty()
     }
 
-    /// The shape the page asks for over itself: a hand on its links, an
-    /// I-beam on its text.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.rect
             .contains(point)
@@ -1252,9 +1128,6 @@ impl Widget for WebView {
         )
     }
 
-    /// A frame the engine exported since the last draw, or a page whose
-    /// display list moved since it was painted: what the view shows is
-    /// stale exactly then, and nothing in the tree marks it.
     fn needs_redraw(&self) -> bool {
         self.needs_animation_frame() || self.painted_seq != self.engine.paint_seq()
     }
@@ -1271,9 +1144,6 @@ impl Widget for WebView {
         }
     }
 
-    /// Two-finger swipe / edge-pull → browser-style history navigation.
-    /// Overriding this here makes every embedder of `WebView`
-    /// swipe-navigable, not just the browser app.
     fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
@@ -1289,7 +1159,6 @@ impl Widget for WebView {
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
             self.settle_composition();
-            // The page ends a composition its field loses the focus with.
             self.composing = false;
             self.text_input.invalidate(&self.engine);
             self.focused = focused;
@@ -1732,9 +1601,7 @@ mod tests {
         );
         assert!(width.max(height) <= 8192);
         assert_eq!(view.device_scale(), 2.0, "the device is still 2x");
-        // The engine's frame at that size is the page, not a stale one.
         assert!(view.retry_resize_for_stale_frame((width, height)));
-        // Input lands where the engine drew: its far corner is the frame's.
         let (x, y) = view.to_engine(Point::new(3840.0, 2160.0));
         assert!((x - width as f32).abs() <= 1.0 && (y - height as f32).abs() <= 1.0);
         view.set_viewport(Rect::new(0.0, 0.0, 1920.0, 1080.0), 2.0);
@@ -1943,8 +1810,6 @@ mod tests {
         scene
     }
 
-    /// Draw `view` as a `Column` or `Row` does: at the identity into its
-    /// subtree cache, which lands on screen through `screen`.
     fn draw_through_cache(view: &mut WebView, screen: Affine) -> Scene {
         crate::scroll_copy::drawing_into_cache(screen, || draw_at(view, Affine::IDENTITY))
     }
@@ -1977,8 +1842,6 @@ mod tests {
             })
         );
         for step in 0..12 {
-            // Events from surfaces at other scales, draws through a cache
-            // (the identity), under an opening animation's scale, and plain.
             hover(
                 &mut view,
                 &tree,
@@ -2001,7 +1864,6 @@ mod tests {
         );
         assert!((view.device_scale() - 2.0).abs() < f32::EPSILON);
 
-        // Moved to the external monitor: its surface scale arrives once.
         mount_at(&mut view, 1.0);
         for step in 0..6 {
             hover(&mut view, &tree, node, 2.0, 30.0 + f64::from(step));
@@ -2340,7 +2202,6 @@ mod tests {
                 );
             }
 
-            // A frame that says nothing of what changed is uploaded whole.
             let whole = show(
                 &mut view,
                 &mut renderer,
@@ -2350,8 +2211,6 @@ mod tests {
             assert_eq!(pixel(&whole, 20, 10), (128, 128, 128, 255));
         }
 
-        // What a caret blink costs the renderer on a 2560x1600 page, drawn
-        // small so the upload, not the raster, is what is measured.
         let engine = TestEngine::new();
         let mut view = WebView::new(engine.clone());
         view.set_viewport(Rect::new(0.0, 0.0, 1280.0, 800.0), 2.0);
@@ -2586,8 +2445,6 @@ mod tests {
                         .draw_tags
                         .contains(&vello_encoding::DrawTag::IMAGE)
                 );
-                // Only a frame that arrived is drawn: pass 1 exports none, and
-                // the image the drawing it replays already holds stays.
                 let expected = match pass {
                     1 => vec![],
                     2 => vec![202],
@@ -2765,8 +2622,6 @@ mod tests {
             assert_eq!(engine.commands().len(), count);
         }
 
-        // The page hears the pointer leave once, past its edge, so its
-        // hover ends; then nothing until the pointer comes back.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -2790,7 +2645,6 @@ mod tests {
                     WebViewCommand::MouseMove { x: 50.0, y: -20.0 },
                 ]
             );
-            // And out of the window from over the page.
             dispatch(&mut w, &tree, node, &to(50.0, 60.0));
             dispatch(
                 &mut w,
@@ -2908,8 +2762,6 @@ mod tests {
     }
 }
 
-/// A web view is a window of its own where a page is all there is to show:
-/// a browser tab a host streams to this desktop. It keeps no record here.
 impl crate::widget::AppWidget for WebView {
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Browser

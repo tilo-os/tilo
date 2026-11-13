@@ -1,11 +1,4 @@
 //! The channels Settings' background work answers on, compiled once.
-//!
-//! `std::sync::mpsc` is generic over what it carries: every payload type
-//! compiles the channel's send, receive and disconnect code for all three of
-//! its flavours again, and Settings' areas each answer with a type of their
-//! own. These channels carry every payload as one boxed [`Erased`] value;
-//! only their typed edges ([`Sender::send`], [`Receiver::try_recv`]) know
-//! `T`. The interface follows `std::sync::mpsc`.
 
 use std::any::Any;
 use std::marker::PhantomData;
@@ -21,20 +14,16 @@ pub type Erased = Box<dyn Any + Send>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Disconnected;
 
-/// An unbounded channel, as [`std::sync::mpsc::channel`].
 pub fn channel<T: Send + 'static>() -> (Sender<T>, Receiver<T>) {
     let (sender, receiver) = mpsc::channel();
     (Sender::new(sender), Receiver::new(receiver))
 }
 
-/// A channel holding at most `bound` values, as
-/// [`std::sync::mpsc::sync_channel`].
 pub fn sync_channel<T: Send + 'static>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
     let (sender, receiver) = mpsc::sync_channel(bound);
     (SyncSender::new(sender), Receiver::new(receiver))
 }
 
-/// The sending half of [`channel`].
 pub struct Sender<T> {
     inner: mpsc::Sender<Erased>,
     of: PhantomData<fn(T)>,
@@ -62,7 +51,6 @@ impl<T: Send + 'static> Sender<T> {
     }
 }
 
-/// The sending half of [`sync_channel`].
 pub struct SyncSender<T> {
     inner: mpsc::SyncSender<Erased>,
     of: PhantomData<fn(T)>,
@@ -91,7 +79,6 @@ impl<T: Send + 'static> SyncSender<T> {
     }
 }
 
-/// The receiving half of [`channel`] or [`sync_channel`].
 pub struct Receiver<T> {
     inner: mpsc::Receiver<Erased>,
     of: PhantomData<fn() -> T>,
@@ -118,12 +105,10 @@ impl<T: 'static> Receiver<T> {
         open(self.inner.try_recv()?).ok_or(TryRecvError::Disconnected)
     }
 
-    /// The next value, waiting for it.
     pub fn recv(&self) -> Result<T, RecvError> {
         open(self.inner.recv()?).ok_or(RecvError)
     }
 
-    /// The next value, waiting at most `timeout` for it.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
         open(self.inner.recv_timeout(timeout)?).ok_or(RecvTimeoutError::Disconnected)
     }

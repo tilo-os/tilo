@@ -26,8 +26,8 @@ fn every_package_in_apps_tl_checks_clean() {
     let mut dirs: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        // A tilolang package is a directory of `.tl` files; a native app beside them (the
-        // session's committed `surface.toml`) is what packages `use`, not one to check.
+        // A tilolang package is a directory of `.tl` files; a native app beside them (the session's
+        // committed `surface.toml`) is what packages `use`, not one to check.
         .filter(|path| tilolang::source::source_paths(path).is_ok_and(|files| !files.is_empty()))
         .collect();
     dirs.sort();
@@ -51,26 +51,15 @@ fn every_package_in_apps_tl_checks_clean() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// A message leaves the catalogue when its declaration leaves the source, so writing the
-/// catalogue has to prune it: what `--write-ids` writes is what a check calls current, and the
-/// id of what went is retired, never reused.
+/// A message leaves the catalogue when its declaration leaves the source, so writing the catalogue
+/// has to prune it: what `--write-ids` writes is what a check calls current, and the id of what
+/// went is retired, never reused.
 #[test]
 fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &dir);
-    let source = dir.join("app.tl");
-    let text = std::fs::read_to_string(&source).unwrap();
-    // The counter loses its decrement: the action, and the button that ran it.
-    let action = "/// Take one away from the counter.\naction decrement(c: Counter) (icon: .minus) {\n    c.value -= 1\n}\n\n";
-    assert!(
-        text.contains(action),
-        "the counter declares decrement:\n{text}"
-    );
-    let text = text.replacen(action, "", 1);
-    let button = "        button(decrement(c)) as minus\n";
-    assert!(text.contains(button), "a button runs decrement:\n{text}");
-    std::fs::write(&source, text.replacen(button, "", 1)).unwrap();
+    drop_decrement(&dir);
     let key = format!("d-{}", id_of(&dir, "decrement"));
     let catalogue = dir.join("locales/en-US.ftl");
     let stale = std::fs::read_to_string(&catalogue).unwrap();
@@ -99,17 +88,42 @@ fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
         written.contains(&format!("d-{}", id_of(&dir, "increment"))),
         "{written}"
     );
+
+    // A translation has every word of its source and no more, so writing the source catalogue drops
+    // the word the source stopped saying from the German one, and keeps the German words of the
+    // messages the source still has.
+    let german = dir.join("locales/de-DE.ftl");
+    let translated = std::fs::read_to_string(&german).unwrap();
+    assert!(
+        !translated.contains(&key),
+        "writing prunes it:\n{translated}"
+    );
+    assert!(
+        !translated.contains("Verringern"),
+        "writing prunes it:\n{translated}"
+    );
+    assert!(
+        translated.contains("# Zähler auf Deutsch"),
+        "the translator's own words stay:\n{translated}"
+    );
+    assert!(
+        translated.contains(&format!("d-{} = Erhöhen", id_of(&dir, "increment"))),
+        "the messages the source still has stay translated:\n{translated}"
+    );
+
     let (passed, stderr) = check(&dir, false);
     assert!(passed, "what writing leaves is current:\n{stderr}");
 }
 
-/// A translation is the author's, so writing the source catalogue cannot prune it: a word the
-/// source no longer has is still reported, and goes when its translator removes it.
+/// A word no message of the source has ever had is its translator's own mistake, not one the source
+/// dropped, so writing the catalogue cannot take it away: it stays reported until its translator
+/// removes it.
 #[test]
-fn writing_the_source_catalogue_keeps_a_translations_stale_words_reported() {
+fn writing_the_source_catalogue_keeps_a_translations_own_word_reported() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &dir);
+    drop_decrement(&dir);
     let translation = dir.join("locales/de-DE.ftl");
     let increment = format!("d-{} = Erhöhen\n", id_of(&dir, "increment"));
     std::fs::write(
@@ -121,12 +135,18 @@ fn writing_the_source_catalogue_keeps_a_translations_stale_words_reported() {
     let (passed, stderr) = check(&dir, true);
     assert!(
         !passed,
-        "a translation of a gone word is an error:\n{stderr}"
+        "a translation of a word no message has is an error:\n{stderr}"
     );
     assert!(
-        stderr.contains("locales/de-DE.ftl translates words the source no longer has: d-zzzzzzzz"),
+        stderr.contains("locales/de-DE.ftl translates words the source does not have: d-zzzzzzzz"),
         "{stderr}"
     );
+    let written = std::fs::read_to_string(&translation).unwrap();
+    assert!(
+        written.contains("d-zzzzzzzz = Verringern"),
+        "writing keeps the translator's own word:\n{written}"
+    );
+    assert!(written.contains(&increment), "{written}");
 
     std::fs::write(&translation, increment).unwrap();
     let (passed, stderr) = check(&dir, true);
@@ -158,10 +178,6 @@ fn a_native_app_read_action_answers_with_its_published_type() {
 
 /// Compile the package at `dir` against the PDF viewer's published surface, as `tilolang check`
 /// compiles against a native app beside a package.
-///
-/// The app answers under an id a package names: an app id is dotted identifiers, so the real
-/// one's hyphen (`so.tilo.pdf-viewer`) is no `use` a program writes. The surface is the app's
-/// own, committed file.
 fn compile_against_apps(dir: &Path) -> Result<(), String> {
     let scratch = dir.parent().expect("the package has a directory");
     let app = scratch.join("pdf");
@@ -182,8 +198,8 @@ fn compile_against_apps(dir: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what
-/// it said.
+/// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what it
+/// said.
 fn check(dir: &Path, write: bool) -> (bool, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
     command.arg("check").arg(dir);
@@ -195,6 +211,21 @@ fn check(dir: &Path, write: bool) -> (bool, String) {
         output.status.success(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+/// The counter at `dir` without its decrement: the action, and the button that ran it.
+fn drop_decrement(dir: &Path) {
+    let source = dir.join("app.tl");
+    let text = std::fs::read_to_string(&source).unwrap();
+    let action = "/// Take one away from the counter.\naction decrement(c: Counter) (icon: .minus) {\n    c.value -= 1\n}\n\n";
+    assert!(
+        text.contains(action),
+        "the counter declares decrement:\n{text}"
+    );
+    let text = text.replacen(action, "", 1);
+    let button = "        button(decrement(c)) as minus\n";
+    assert!(text.contains(button), "a button runs decrement:\n{text}");
+    std::fs::write(&source, text.replacen(button, "", 1)).unwrap();
 }
 
 /// The id the package's lock gives the declaration `name`.

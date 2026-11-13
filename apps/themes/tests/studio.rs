@@ -1,6 +1,6 @@
-//! The studio as a person and an agent meet it: the gallery previews every
-//! preset, the editor follows every edit with live contrast findings, and a
-//! theme that misses a floor cannot be applied.
+//! The studio as a person and an agent meet it: the gallery previews every preset, the
+//! editor follows every edit with live contrast findings, and a theme that misses a floor
+//! cannot be applied.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -69,8 +69,8 @@ fn gallery_at(width: u32) -> TestApp<App> {
         .expect("the scenario stages")
 }
 
-/// Each preset is one card: its preview, its name and its actions are all
-/// inside it, and inside no other card.
+/// Each preset is one card: its preview, its name and its actions are all inside it, and
+/// inside no other card.
 #[test]
 fn a_preset_is_one_card_holding_its_preview_name_and_actions() {
     let mut app = gallery_at(1680);
@@ -341,7 +341,6 @@ fn bar_enabled(app: &mut TestApp<App>, name: &str) -> Option<bool> {
         .map(|action| action.enabled)
 }
 
-/// Open the navigation list's Presets destination.
 #[allow(
     clippy::expect_used,
     reason = "a test fixture: a sidebar without its Presets row fails the test"
@@ -362,9 +361,9 @@ fn leave_for_presets(app: &mut TestApp<App>) {
         .expect("the presets are shown");
 }
 
-/// Customizing a preset opens an editor showing its copy, but only an edit
-/// writes the theme: one opened and left untouched leaves nothing under
-/// "Your themes", and the first edit writes exactly one, carrying that edit.
+/// Customizing a preset opens an editor showing its copy, but only an edit writes the
+/// theme: one opened and left untouched leaves nothing under "Your themes", and the first
+/// edit writes exactly one, carrying that edit.
 #[test]
 fn customizing_writes_the_theme_on_its_first_edit() {
     let mut app = gallery_at(1680);
@@ -404,8 +403,8 @@ fn customizing_writes_the_theme_on_its_first_edit() {
     assert_eq!(app.state().themes.len(), 1, "a written theme stays");
 }
 
-/// The bar's Duplicate opens a copy that its first edit writes beside the
-/// theme, and its Delete theme deletes the theme the editor shows.
+/// The bar's Duplicate opens a copy that its first edit writes beside the theme, and its
+/// Delete theme deletes the theme the editor shows.
 #[test]
 fn the_bars_theme_commands_duplicate_and_delete() {
     let id = Id::from_raw(SCENARIO_THEME);
@@ -443,8 +442,8 @@ fn the_bars_theme_commands_duplicate_and_delete() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The window bar's sidebar button flips the sidebar on every click, in a window wide
+/// enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

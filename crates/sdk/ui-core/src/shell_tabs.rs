@@ -1,25 +1,7 @@
-//! Tabs belong to the desktop, never to an application.
-//!
-//! A Tilo app shows one thing: a page, a file, a conversation. Several of
-//! them side by side are several app instances, and the shell groups them
-//! as tabs of a window group (`Workspace → Strip → WindowGroup → Tab`). An
-//! app that wants "another one of these next to me" — a link opened in a
-//! new tab, Ctrl+T, a file opened beside the current one — asks the shell
-//! for it here instead of growing a tab strip of its own.
-//!
-//! Requests are queued on the UI thread and the app runner hands them to
-//! the session shell over the app's authenticated `shell-ui` connection,
-//! which knows the asking app and its tab. Outside a Tilo session there is
-//! no desktop tab model: the runner opens a new window of the same app
-//! instead (another process given the same target), so "beside me" still
-//! means "another instance", never a tab inside this window.
-//!
-//! The keyboard is the same everywhere: Ctrl+T, Ctrl+W and Ctrl+Shift+T
-//! (Cmd on macOS), Ctrl+Tab and Ctrl+Shift+Tab reach these requests when the
-//! focused widget leaves the chord unhandled, so every app gets the desktop's
-//! tab chords without implementing them, and an app (or a widget in it) that
-//! does use one of those chords keeps it. The desktop's Super chords for the
-//! same moves never reach an app at all.
+//! Tabs belong to the desktop, never to an application. A Tilo app shows one thing: a
+//! page, a file, a conversation. Requests are queued on the UI thread and the app runner
+//! hands them to the session shell over the app's authenticated `shell-ui` connection,
+//! which knows the asking app and its tab.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -27,35 +9,26 @@ use std::collections::VecDeque;
 /// What an app may ask of the desktop's tab model about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabRequest {
-    /// Open another instance of this app as a tab right after this app's
-    /// own tab. `target` is what the new instance opens — a URI the app
-    /// declares in its manifest — or `None` for a fresh, empty instance.
-    /// A `background` tab does not take focus from this one.
     OpenBeside {
         target: Option<String>,
         background: bool,
     },
-    /// Close this app's own tab through the desktop's tab lifecycle, so it
-    /// can be reopened like any other closed tab.
     CloseThis,
-    /// Reopen the most recently closed tab of this workspace.
     ReopenClosed,
-    /// Show the next (`forward`) or previous tab of the window group this
-    /// app's tab is in.
-    CycleTab { forward: bool },
-    /// The next window this app maps is another tab right after this one.
-    /// For a window the app starts itself (a process it spawned), where the
-    /// shell launches nothing.
-    PlaceNextWindowBeside { background: bool },
-    /// Open another window of this app as a window of the desk, floating
-    /// over it where this window's send-to box last sent from, showing
-    /// `anchor`: the item that send landed in.
-    OpenFloated { anchor: String },
+    CycleTab {
+        forward: bool,
+    },
+    PlaceNextWindowBeside {
+        background: bool,
+    },
+    OpenFloated {
+        anchor: String,
+    },
 }
 
 impl TabRequest {
-    /// The `shell-ui` message that carries this request for the app the
-    /// shell launched as record `instance`.
+    /// The `shell-ui` message that carries this request for the app the shell launched as
+    /// record `instance`.
     #[must_use]
     pub fn message(
         self,
@@ -80,8 +53,8 @@ impl TabRequest {
     }
 }
 
-/// Upper bound on undelivered requests. A held key repeating faster than
-/// frames are drawn must not queue unbounded launches.
+/// Upper bound on undelivered requests. A held key repeating faster than frames are drawn
+/// must not queue unbounded launches.
 const MAX_PENDING: usize = 16;
 
 thread_local! {
@@ -97,8 +70,8 @@ fn push(request: TabRequest) {
     });
 }
 
-/// Ask the desktop for another instance of this app in a new tab right
-/// after this one, opening `target` (a URI) when given.
+/// Ask the desktop for another instance of this app in a new tab right after this one,
+/// opening `target` (a URI) when given.
 pub fn open_beside(target: Option<String>, background: bool) {
     push(TabRequest::OpenBeside { target, background });
 }
@@ -118,9 +91,8 @@ pub fn place_next_window_beside(background: bool) {
     push(TabRequest::PlaceNextWindowBeside { background });
 }
 
-/// Ask the desk for another window of this app, floating where this window's
-/// send-to box last sent from, showing `anchor`: the item that send landed
-/// in.
+/// Ask the desk for another window of this app, floating where this window's send-to box
+/// last sent from, showing `anchor`: the item that send landed in.
 pub fn open_floated(anchor: String) {
     push(TabRequest::OpenFloated { anchor });
 }
@@ -130,8 +102,8 @@ pub fn take_requests() -> Vec<TabRequest> {
     PENDING.with(|pending| pending.borrow_mut().drain(..).collect())
 }
 
-/// The record instance the shell launched this process for, which is how it
-/// finds this app's own tab. `None` outside a shell launch.
+/// The record instance the shell launched this process for, which is how it finds this
+/// app's own tab.
 pub fn launch_instance() -> Option<u64> {
     crate::host::environment()
         .identity
@@ -141,11 +113,11 @@ pub fn launch_instance() -> Option<u64> {
         .filter(|instance| *instance != 0)
 }
 
-/// The desktop tab chord a key press names, if any: Ctrl+T opens a new tab
-/// of this app, Ctrl+Shift+T reopens the last closed tab, Ctrl+W closes this
-/// tab, Ctrl+Tab and Ctrl+Shift+Tab show the next and previous tab of the
-/// group. `command` is the platform's command modifier (Ctrl, or Cmd on
-/// macOS); Alt and Super chords are never these.
+/// The desktop tab chord a key press names, if any: Ctrl+T opens a new tab of this app,
+/// Ctrl+Shift+T reopens the last closed tab, Ctrl+W closes this tab, Ctrl+Tab and
+/// Ctrl+Shift+Tab show the next and previous tab of the group. `command` is the
+/// platform's command modifier (Ctrl, or Cmd on macOS); Alt and Super chords are never
+/// these.
 #[must_use]
 pub fn chord_request(
     key: &winit::keyboard::Key,

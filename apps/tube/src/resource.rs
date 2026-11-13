@@ -1,11 +1,6 @@
-//! Tube's shared library as a resource: likes, the shared watch queue,
-//! subscriptions, and comment likes and replies. What the catalogue
-//! fetched, the screen on show, and the person's watch history and
-//! playback preferences are not part of it.
-//!
-//! Liking, queueing and subscribing are field edits of the library's sets
-//! (`Library::paths().likes.insert(&video)`), so concurrent adds and
-//! removes merge per video. Replying to a comment is the one verb.
+//! Tube's shared library as a resource: likes, the shared watch queue, subscriptions, and comment
+//! likes and replies. What the catalogue fetched, the screen on show, and the person's watch
+//! history and playback preferences are not part of it.
 
 use ui::framework::{ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -17,10 +12,6 @@ use crate::app::TubeApp;
 
 pub use tube_model::{Library, Reply};
 
-/// The screenshot scenarios, each over the bundled sample catalogue: Home,
-/// its empty and loading states, device sync, a playing watch
-/// page, the narrow window with its rail summoned, the sidebar widened
-/// into a list, and every screen.
 #[cfg(feature = "samples")]
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
@@ -39,15 +30,10 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "watch",
 ];
 
-/// Framework app: the Tube window is the view of [`Library`].
 pub struct TubeShell;
 
-/// What the binary runs instead of opening a window.
-///
-/// `--probe-youtube-engine VALUE` (the value is ignored) runs the `YouTube`
-/// client's self-check without a network. It needs `runtime-engine`, the
-/// release build, where that code is in `libtilo_youtube_engine.so`; the
-/// check proves Tube loads that library and runs it.
+/// What the binary runs instead of opening a window. `--probe-youtube-engine VALUE` (the value is
+/// ignored) runs the `YouTube` client's self-check without a network.
 const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
     option: "--probe-youtube-engine",
     run: probe_youtube_engine,
@@ -69,6 +55,7 @@ impl ResourceApp for TubeShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
+    const TITLE_KEY: &'static str = "tube-app-title";
     const ICON: Option<&'static str> = Some("tube");
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
@@ -81,8 +68,6 @@ impl ResourceApp for TubeShell {
         COMMANDS
     }
 
-    /// The narrow scenario draws a phone-sized window, below the width at
-    /// which the navigation rail docks.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some("narrow") {
             (340, 800)
@@ -91,7 +76,6 @@ impl ResourceApp for TubeShell {
         }
     }
 
-    /// The sample library: the creators the sample catalogue subscribes to.
     #[cfg(feature = "samples")]
     fn scenario(_name: Option<&str>) -> Vec<Invoke<Library>> {
         crate::sample::model()
@@ -102,8 +86,6 @@ impl ResourceApp for TubeShell {
     }
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        // A search hit, or an agent's `open`, opens the video, creator or
-        // playlist it names.
         let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
@@ -115,8 +97,6 @@ impl ResourceApp for TubeShell {
             },
         );
         let window = Self::window(cx.mode());
-        // A live window launched to search ("Search YouTube for cats" in
-        // desktop search) opens on those results.
         let window = match crate::search_type::launch_search(cx.launch_arguments()) {
             Some(query) if cx.mode().is_live() => window.searching(&query),
             _ => window,
@@ -130,10 +110,6 @@ impl ResourceApp for TubeShell {
 }
 
 impl TubeShell {
-    /// The window the view lays out: in a live window the online app,
-    /// which fetches the real catalogue and runs device sync; in a capture
-    /// the bundled sample catalogue, offline, where the build has it; for a
-    /// past version the library alone.
     pub(crate) fn window(mode: RunMode) -> TubeApp {
         match mode {
             RunMode::Live => TubeApp::new().online(),
@@ -220,7 +196,6 @@ mod tests {
     #[test]
     fn the_settings_controls_change_the_persons_preferences_not_the_library() {
         use crate::model::{Category, Settings, SkipMode};
-        // A live window: a capture's controls start no effects.
         let mut app = TestApp::<TubeShell>::for_person(&"ad".repeat(32)).unwrap();
         app.effect(&TubeEffect::ShowScreen {
             screen: "settings".into(),
@@ -298,7 +273,6 @@ mod tests {
             video: "vid_tea".into(),
         })
         .unwrap();
-        // Watched in the same millisecond or not, both are kept.
         let watched = |history: &ui::framework::PersonRecord<WatchHistory>| {
             let mut videos = history.with(WatchHistory::videos);
             videos.sort();
@@ -321,7 +295,6 @@ mod tests {
             "the shared library holds nothing of what the person watched"
         );
 
-        // Forgetting is the person's edit: their undo brings the video back.
         app.effect(&TubeEffect::ForgetWatched {
             video: "vid_donut".into(),
         })
@@ -330,7 +303,6 @@ mod tests {
         assert!(history.undo());
         assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
 
-        // It is the same history after a relaunch.
         drop(history);
         let mut app = app.reopen().unwrap();
         let history = app.person::<WatchHistory>().unwrap();
@@ -361,8 +333,6 @@ mod tests {
         );
     }
 
-    /// Liking a comment, queueing a video and replying are the library's
-    /// own: field edits of its sets and the reply verb, each one call.
     #[test]
     fn comments_are_liked_and_answered_through_the_library() {
         let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
@@ -438,7 +408,6 @@ mod tests {
         for edit in ["reply-to-comment", "field-edit"] {
             assert_eq!(at(&root, edit), Some(OperationKind::Document), "{edit}");
         }
-        // Rows the catalogue fetched carry no document edit.
         for prefix in [
             "tube.current:",
             "tube.video:",
@@ -473,15 +442,12 @@ mod tests {
         }
     }
 
-    /// Whether a resource whose id starts with `prefix` is published.
     fn resources_have(resources: &[ui::tilo_actions::ResourceSpec], prefix: &str) -> bool {
         resources.iter().any(|resource| {
             resource.id.0.starts_with(prefix) || resources_have(&resource.children, prefix)
         })
     }
 
-    /// Two people sharing a library at once converge: likes, the queue and
-    /// subscriptions merge per entry, replies per reply.
     #[test]
     fn concurrent_edits_converge() {
         let mut ours = Replica::<Library>::new();
@@ -517,7 +483,6 @@ mod tests {
         assert_eq!(merged.replies.len(), 1);
     }
 
-    /// What an agent does in the library reads as Tube's sentences.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};

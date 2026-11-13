@@ -1,6 +1,5 @@
-//! The cards a block editor draws for what its text projects: a page of its host's own, or a
-//! record any app keeps, each shown as the thing's title and the start of its content, opening
-//! what it names. One card for both, so a record reads as a page embed does.
+//! The cards a block editor draws for what its text projects: a page of its host's own, or a record any
+//! app keeps, each shown as the thing's title and the start of its content, opening what it names.
 
 use crate::i18n::widget_text;
 use std::collections::HashMap;
@@ -15,9 +14,6 @@ use crate::widget::Block;
 use crate::widget::marks::{Mark, PageId};
 use crate::widget::{BlockEditor, TransclusionPreview};
 
-/// What a block projecting something else shows as a card of: a page of the host's own, by its
-/// id, or a record any app keeps, by the catalogue's reference to it
-/// ([`tilo_reference::embed`]), the same address a `mention` run carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Card {
     Page(PageId),
@@ -25,7 +21,6 @@ pub(super) enum Card {
 }
 
 impl Card {
-    /// What activating the card asks the accessibility tree for.
     pub(super) fn action_target(&self) -> String {
         match self {
             Self::Page(id) => format!("notes.transclusion:{id}"),
@@ -34,8 +29,6 @@ impl Card {
     }
 }
 
-/// What the whole of `block` projects, when it projects something: a paragraph that is one
-/// live projection (an embed) and nothing else.
 pub(super) fn transclusion_target(block: &Block) -> Option<Card> {
     let text_len = block.text().len();
     block.line.marks().iter().find_map(|span| match &span.mark {
@@ -53,21 +46,14 @@ pub(super) fn transclusion_target(block: &Block) -> Option<Card> {
     })
 }
 
-/// What a card shows below its title: the content of what it projects, a line of runs, the
-/// ones naming something drawn as a link.
 pub(super) type CardBody<'a> = &'a [tilo_ui_graph::rich::Run];
 
-/// The most lines of what a card projects it shows under its title: a readable excerpt, then
-/// the last line gives way to the card's edge.
 pub(super) const CARD_BODY_LINES: usize = 3;
 
 /// One line of a card's content: the words it is made of, each with what it names when it names
 /// something. A word is never cut in two by a wrap, so a link inside the excerpt reads whole.
 type CardLine = Vec<(String, Option<String>)>;
 
-/// Whether a card this wide shows anything below its title, and how tall it stands: the card's
-/// own padding, the title's line, the gap under it, and the lines of content it shows wrapped to
-/// the width its content has across.
 pub(super) fn card_height(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -92,8 +78,6 @@ pub(super) fn card_height(
     height + pad
 }
 
-/// The width a card's content has across in a card `width` wide: its padding on either side, the
-/// glyph its title follows and the gap after it.
 pub(super) fn card_body_width(theme: &Theme, width: f64) -> f64 {
     let tokens = &theme.tokens;
     let pad = f64::from(tokens.spacing.s4);
@@ -102,7 +86,6 @@ pub(super) fn card_body_width(theme: &Theme, width: f64) -> f64 {
     (width - 2.0 * pad - icon_side - gap).max(1.0)
 }
 
-/// What a card sets its title and its content in.
 fn card_styles(theme: &Theme) -> (TextStyle, TextStyle) {
     (
         theme.text(crate::tokens::TextRole::Subheading),
@@ -189,8 +172,6 @@ fn paragraphs(body: CardBody<'_>) -> Vec<Vec<(String, Option<String>)>> {
     out
 }
 
-/// What a card is painted with: the scene, where in it, and the renderer the theme sets its
-/// text with.
 pub(super) struct CardPaint<'a> {
     pub scene: &'a mut Scene,
     pub transform: Affine,
@@ -230,10 +211,6 @@ pub(super) fn draw_embed_card(
         None,
         &card,
     );
-    // An embedded note is an object you open: a note glyph and its title on
-    // the first line with a trailing chevron (the whole card opens it), then
-    // the start of its content as a few lines under it. No "Embedded note ·
-    // Open" chain.
     let pad = f64::from(tokens.spacing.s4);
     let gap = f64::from(tokens.spacing.s2);
     let icon_side = f64::from(tokens.metrics.icon_sm * paint.theme.text_scale);
@@ -351,12 +328,10 @@ impl BlockEditor {
             self.transclusion_previews = previews;
             self.dirty = true;
             self.structure_dirty = true;
-            // A card shows what its page says now: it takes the room that says.
             self.stack.width = None;
         }
     }
 
-    /// The page whose card a person activated since the last frame, when one did.
     pub fn take_transclusion_open(&mut self) -> Option<PageId> {
         self.pending_transclusion_opens.pop()
     }
@@ -402,8 +377,6 @@ impl BlockEditor {
         }
     }
 
-    /// Activate the card a click landed on: a link inside it opens what it names, one painted
-    /// under it in front of the thing the card itself projects. `true` when it did.
     pub(super) fn activate_card(&mut self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseInput {
             state: ElementState::Released,
@@ -414,7 +387,6 @@ impl BlockEditor {
             return false;
         };
         let point = self.last_mouse_pos;
-        // A link inside a card stands in front of the card it is painted on.
         if let Some(reference) = self
             .card_links
             .iter()
@@ -501,7 +473,6 @@ mod tests {
             "the card says what it shows is the start: {last:?}"
         );
 
-        // A note of two short lines shows the two, and no ellipsis: nothing is left out.
         let two = body(&["Oat milk, eggs.", "Bread and cheese."]);
         let lines = card_lines(&mut renderer, &style, &two, 400.0);
         assert_eq!(lines.len(), 2, "a line per paragraph: {lines:?}");

@@ -1,13 +1,11 @@
-//! A movable + resizable in-app overlay window: draggable title bar,
-//! edge/corner resize grips, on-screen clamping that keeps the title bar
-//! reachable. Modal while open via
-//! [`crate::widget::Widget::modal_capture`] — it consumes every event
-//! inside its rect and swallows out-of-rect clicks without closing (use the
-//! title-bar close affordance or an explicit host action to dismiss).
+//! A movable + resizable in-app overlay window: draggable title bar, edge/corner resize
+//! grips, on-screen clamping that keeps the title bar reachable. Modal while open via
+//! [`crate::widget::Widget::modal_capture`] — it consumes every event inside its rect and
+//! swallows out-of-rect clicks without closing (use the title-bar close affordance or an
+//! explicit host action to dismiss).
 //!
-//! It does NOT draw a close button or toolbar — that's the host's concern,
-//! drawn into the content. It owns only the frame chrome and the
-//! move/resize/clamp mechanics.
+//! It does NOT draw a close button or toolbar — that's the host's concern, drawn into the
+//! content. It owns only the frame chrome and the move/resize/clamp mechanics.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -47,19 +45,12 @@ use crate::widget::edge_resize::{RectEdge, WindowEdge};
 /// need the reference value in a `const` context.
 pub const TITLE_BAR_HEIGHT: f64 = Metrics::BASE.bar_height as f64;
 pub const RESIZE_GRIP: f64 = Layout::BASE.window_grip as f64;
-/// A finger is a wider target than a pointer: the band along an edge that
-/// starts a resize under a touch.
 const TOUCH_GRIP: f64 = Layout::BASE.window_touch_grip as f64;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
-/// The smallest a resize leaves the window, on each axis.
 const MINIMUM: vello::kurbo::Size = vello::kurbo::Size::new(MIN_WIDTH, MIN_HEIGHT);
 const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
 
-/// How the floating window moves, from the standard motions: it appears in
-/// place (`motion::Appear`), or out of the pixels it was made from
-/// (`motion::Zoom`); a drag's squish relaxes as a let-go surface settles
-/// (`motion::Snap`); its chrome cross-fades (`motion::CROSS_FADE`).
 fn progress(spec: crate::motion::MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
     spec.progress_after(
         direction,
@@ -91,9 +82,9 @@ fn overlay_chrome_fade() -> Duration {
 
 #[derive(Clone, Copy, Debug)]
 enum Drag {
-    /// `grab` = cursor offset from window origin.
-    Move { grab: Point },
-    /// `start` = window rect at press, `from` = cursor at press.
+    Move {
+        grab: Point,
+    },
     Resize {
         edge: RectEdge,
         start: Rect,
@@ -113,28 +104,16 @@ pub struct FloatingWindow<C: Widget> {
     title: String,
     content: C,
     open: bool,
-    /// Screen coords — the source of truth for placement.
     rect: Rect,
-    /// Typically the app content area.
     bounds: Rect,
-    /// `true` once positioned this open, so a re-layout doesn't recentre
-    /// the window after the user has moved it.
     placed: bool,
     drag: Option<Drag>,
-    /// Finger which currently owns a move/resize gesture. Keeping this
-    /// separate from mouse capture prevents a second finger from stealing a
-    /// surface midway through a drag.
     touch_drag_id: Option<u64>,
-    /// Close is activated on release-inside, matching ordinary touch buttons
-    /// and allowing a person to slide away to cancel an accidental press.
     touch_close_id: Option<u64>,
     focused: bool,
     last_cursor: Point,
-    /// Retained so `handle_event` can forward events into the content
-    /// with a live node.
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
-    /// Used on first placement, before any user resize.
     initial_size: (f64, f64),
     /// Motion is deliberately paint-only: hit testing stays stable while the
     /// soft shell surface catches up with a quick drag.
@@ -150,25 +129,13 @@ pub struct FloatingWindow<C: Widget> {
     squish: f64,
     squish_axis: Vec2,
     last_motion_at: Option<Instant>,
-    /// Dialogs are modal; desktop `PiP`/live-activity surfaces are not.
     modal: bool,
-    /// Shell-owned mirrors opt into a close affordance. App-owned surfaces
-    /// can keep supplying their own controls.
     closable: bool,
-    /// `PiP` payloads keep their pixels edge-to-edge and place small controls
-    /// over the image. Dialog-like floats reserve a conventional title row.
     overlay_chrome: bool,
-    /// Media and capture `PiP` preserve their source shape through every resize
-    /// instead of trading useful pixels for letterboxing after the first drag.
     aspect_ratio: Option<f64>,
-    /// Overlay controls are present for discovery on landing, then yield the
-    /// pixels until pointer proximity asks for them again.
     overlay_chrome_hovered: bool,
     overlay_chrome_changed_at: Option<Instant>,
     overlay_chrome_from_alpha: f64,
-    /// The chrome's presence opacity as last drawn: under reduced motion
-    /// its hide is one step, painted when the hold's deadline finds the
-    /// opacity changed.
     drawn_chrome_alpha: f64,
     /// The theme from the latest layout build. Floating content is laid out
     /// outside the host's taffy tree, so it must retain the same theme instead
@@ -176,8 +143,6 @@ pub struct FloatingWindow<C: Widget> {
     /// rendering or while a drag triggers a local relayout.
     layout_theme: Theme,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -253,8 +218,8 @@ impl<C: Widget> FloatingWindow<C> {
         self
     }
 
-    /// Make the first presentation frame occupy the selected source rect,
-    /// then morph into the final floating-window geometry.
+    /// Make the first presentation frame occupy the selected source rect, then morph into
+    /// the final floating-window geometry.
     #[must_use]
     pub fn spawn_from(mut self, source: Option<Rect>) -> Self {
         self.spawn_from = source.filter(|rect| rect.width() > 1.0 && rect.height() > 1.0);
@@ -309,10 +274,8 @@ impl<C: Widget> FloatingWindow<C> {
         self
     }
 
-    /// Draw the drag/title/close controls as small translucent affordances
-    /// over edge-to-edge content. Intended for media and captured-region `PiP`,
-    /// where permanently sacrificing a title row makes the payload needlessly
-    /// small. The complete top strip remains a generous drag target.
+    /// Draw the drag/title/close controls as small translucent affordances over edge-to-
+    /// edge content.
     #[must_use]
     pub fn overlay_chrome(mut self, overlay: bool) -> Self {
         self.overlay_chrome = overlay;
@@ -382,8 +345,6 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     /// Update proximity without forwarding an event into the `PiP` payload.
-    /// The shell calls this for every mirror, including the one the pointer
-    /// just left, so hidden chrome can fade instead of sticking.
     pub fn update_pointer_position(&mut self, point: Point) {
         self.last_cursor = point;
         self.update_pointer_presence(point);
@@ -418,8 +379,8 @@ impl<C: Widget> FloatingWindow<C> {
         self.clamp_into_bounds();
     }
 
-    /// Place a newly opened non-modal surface at a shell-chosen origin rather
-    /// than always centering it. Subsequent layout calls preserve the result.
+    /// Place a newly opened non-modal surface at a shell-chosen origin rather than always
+    /// centering it.
     pub fn place_at_within(&mut self, bounds: Rect, origin: Point) {
         self.bounds = bounds;
         let (mut w, mut h) = self.initial_size;
@@ -472,7 +433,6 @@ impl<C: Widget> FloatingWindow<C> {
         };
         let mut x0 = r.x0.clamp(b.x0, (b.x1 - w).max(b.x0));
         let mut y0 = r.y0.clamp(b.y0, (b.y1 - h).max(b.y0));
-        // Always keep ≥80px of the title bar horizontally reachable.
         x0 = x0.min(b.x1 - 80.0);
         y0 = y0.max(b.y0);
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
@@ -494,10 +454,6 @@ impl<C: Widget> FloatingWindow<C> {
         )
     }
 
-    /// The close control: a bar control (`metrics.bar_control_height`
-    /// square) centred in the title bar, inset from the trailing edge by the
-    /// same margin it has above and below — so the bar and its control scale
-    /// together instead of the control drifting inside a taller bar.
     fn close_rect(&self) -> Rect {
         let bar = self.title_bar_height();
         let size = f64::from(self.layout_theme.tokens.metrics.bar_control_height).min(bar);
@@ -561,9 +517,6 @@ impl<C: Widget> FloatingWindow<C> {
         }
     }
 
-    /// Presentation transform plus eased source-handoff progress. The latter
-    /// lets content emerge from selected pixels before desktop chrome fades
-    /// in, avoiding a giant transient title/close affordance.
     fn visual_transform(&mut self, transform: Affine, reduce_motion: bool) -> (Affine, f64) {
         if reduce_motion {
             self.squish = 0.0;
@@ -601,11 +554,7 @@ impl<C: Widget> FloatingWindow<C> {
                 );
             }
         }
-        // It appears in place (`motion::Appear`): no overshoot, a soft
-        // landing rather than a bouncing dialog.
         let eased = open_t;
-        // The squish relaxes on time since the last drag sample, from the
-        // amount that sample set: the same curve at any frame rate.
         let mut squish = self.squish;
         if let Some(last) = self.last_motion_at {
             let settle = progress(
@@ -644,8 +593,6 @@ impl<C: Widget> FloatingWindow<C> {
         )
     }
 
-    /// Isolated taffy tree, retained so events can route in. Mirrors
-    /// `ModalDialog`.
     fn place_content(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let inner = self.content_area();
         if inner.width() <= 0.0 || inner.height() <= 0.0 {
@@ -654,8 +601,6 @@ impl<C: Widget> FloatingWindow<C> {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.content.build_layout(&mut taffy, theme, &mut map);
-        // The content area is a window-sized rect in logical pixels, orders of
-        // magnitude below f32's range.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel content size; f32 precision is sufficient"
@@ -762,7 +707,7 @@ impl<C: Widget> FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    crate::text_render::with_layout_renderer(1.0, |tr| {
+                    crate::text_render::with_layout_renderer(&theme, |tr| {
                         self.place_content(&theme, tr)
                     });
                 }
@@ -807,7 +752,7 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect = Rect::from_origin_size(origin, self.rect.size());
         self.clamp_into_bounds();
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(1.0, |tr| self.place_content(&theme, tr));
+        crate::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
         true
     }
 }
@@ -826,14 +771,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let viewport = crate::widget::layout_rect(taffy, node, origin);
-        // Default when the host hasn't supplied tighter bounds via `layout_within`.
         if self.bounds.width() <= 0.0 {
             self.bounds = viewport;
         }
         let bounds = self.bounds;
         self.layout_within(bounds);
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(1.0, |tr| self.place_content(&theme, tr));
+        crate::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
     }
 
     #[allow(
@@ -854,9 +798,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         let pinned_handoff = self.source_handoff_progress_override.is_some();
         let release_finished_handoff = self.source_handoff_progress_override == Some(1.0);
         let (visual, spawn_progress) = self.visual_transform(transform, theme.reduce_motion);
-        // The selected pixels already have visual weight. Let the floating
-        // shadow grow as they leave the desktop instead of casting a huge
-        // final-window shadow on the first handoff frame.
         let material_alpha = handoff_material_alpha(spawn_progress);
         if material_alpha > 0.001 {
             scene.push_layer(
@@ -885,11 +826,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             None,
             &body,
         );
-        // Object role (HIG §9.1): a floating window is a silhouette over the
-        // desktop, so its rim is `Colors::window_edge()` — the hairline the
-        // shell paints around every window card — fading with the material.
-        // The declared `border_standard` sat within rounding distance of
-        // `raised` on the dark preset and read as no edge at all.
         scene.stroke(
             &Stroke::new(1.0),
             visual,
@@ -1024,7 +960,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 } else {
                     f64::from(theme.tokens.spacing.s4)
                 };
-            // Centre on the measured line, not the font size.
             let (_, title_h) = text_renderer.measure_style(&self.title, None, &title_style);
             let ty = self.rect.y0 + (self.title_bar_height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_style(
@@ -1063,8 +998,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             }
             scene.pop_layer();
         }
-        // A pinned 100% frame is exact for the visual harness, then yields to
-        // normal hover/idle behavior on the following frame.
         if release_finished_handoff {
             self.source_handoff_progress_override = None;
         }
@@ -1087,7 +1020,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    crate::text_render::with_layout_renderer(1.0, |tr| {
+                    crate::text_render::with_layout_renderer(&theme, |tr| {
                         self.place_content(&theme, tr)
                     });
                     *ctx.handled = true;
@@ -1113,9 +1046,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 ..
             } => {
                 let pt = self.last_cursor;
-                // Tested first so a press exactly on the (half-open) border
-                // — which `Rect::contains` reports as outside — still
-                // starts a resize.
                 if let Some(edge) = self.edge_at(pt, RESIZE_GRIP) {
                     self.drag = Some(Drag::Resize {
                         edge,
@@ -1142,8 +1072,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     return;
                 }
                 if !self.rect.contains(pt) {
-                    // A desktop PiP is click-through outside its own shape;
-                    // dialogs retain the historical modal swallow.
                     *ctx.handled = self.modal;
                     return;
                 }
@@ -1331,8 +1259,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if self.closable {
             children.push(
                 AccessNode::new(Role::Button)
-                    // A titled close reads the same for a window as for a tab: the shared message
-                    // names both, in the desktop's language.
                     .with_name(crate::i18n::widget_format(
                         "tab-close-named",
                         &[("title", self.title.clone().into())],
@@ -1411,7 +1337,6 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        // The chrome's discovery hold ends on a deadline, not on frames.
         let hold_ends = (self.open
             && self.overlay_chrome
             && !self.overlay_chrome_hovered
@@ -1505,9 +1430,6 @@ mod tests {
             window.rect = Rect::new(900.0, 540.0, 1320.0, 800.0);
             window.set_source_handoff_progress(500);
 
-            // `visual_transform` exposes its eased presentation progress. The
-            // override remains exact no matter how much real time the PNG render
-            // or debugger consumes after this call.
             let (_, first) = window.visual_transform(Affine::IDENTITY, false);
             let (_, later) = crate::time::testing::with_monotonic_time(
                 crate::time::now() + Duration::from_secs(5),
@@ -1541,9 +1463,6 @@ mod tests {
             );
         }
 
-        /// The title bar is a Bar: `metrics.bar_height` from the layout theme,
-        /// so it follows `ui_scale`; the close control is a bar control centred
-        /// in it, inset from the trailing edge by the same margin it has above.
         fn title_bar_is_the_bar_height_token_and_scales_with_ui_scale() {
             let (w, _e) = laid_out(true);
             let base = Theme::dark();
@@ -1675,7 +1594,6 @@ mod tests {
         draws_chrome_when_open();
     }
 
-    /// A leaf content widget that records forwarded events.
     #[derive(Default)]
     struct Probe {
         events: std::rc::Rc<std::cell::Cell<usize>>,
@@ -1860,7 +1778,6 @@ mod tests {
         }
 
         fn off_screen_drag_is_clamped_to_stay_reachable() {
-            // Viewport bounds are 0..1000 x 0..800 (see `laid_out`).
             let (mut w, _e) = laid_out(true);
             let start = w.window_rect();
 
@@ -1890,7 +1807,6 @@ mod tests {
                 "the window is clamped inside the viewport, not off the bottom-right: {r:?}"
             );
 
-            // Fling it far past the top-left (negative) corner.
             let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab2));
             dispatch(&mut w, &mouse_press());
@@ -1944,8 +1860,6 @@ mod tests {
         fn touch_resize_uses_a_finger_sized_edge_target() {
             let (mut w, _e) = laid_out(true);
             let start = w.window_rect();
-            // Fourteen pixels inside the edge is deliberately outside the precise
-            // mouse grip but inside the forgiving touch target.
             let grab = Point::new(start.x1 - 14.0, start.y1 - 14.0);
             assert_eq!(w.edge_at(grab, RESIZE_GRIP), None);
             assert!(dispatch(
@@ -2047,10 +1961,8 @@ mod tests {
             use winit::window::CursorIcon;
             let (w, _e) = laid_out(true);
             let r = w.window_rect();
-            // Over the title bar → a grab hand (the window is draggable).
             let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
             assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
-            // Right / bottom edges + bottom-right corner → the matching resize cursors.
             assert_eq!(
                 Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)),
                 Some(CursorIcon::EwResize)
@@ -2063,7 +1975,6 @@ mod tests {
                 Widget::cursor_shape(&w, Point::new(r.x1, r.y1)),
                 Some(CursorIcon::NwseResize)
             );
-            // Deep in the content body → no claim (defers to the default arrow).
             assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
         }
 
@@ -2093,7 +2004,6 @@ mod tests {
 
         fn inbox_content_press_forwards_to_content() {
             let (mut w, events) = laid_out(true);
-            // Press inside the content area (below the title bar, away from grips).
             let c = w.content_area().center();
             dispatch(&mut w, &cursor_at(c));
             let before = events.get();
@@ -2119,8 +2029,6 @@ mod tests {
         modal_capture_reflects_open();
     }
 
-    /// A German desktop names a floating window's close in German, and says what the window does
-    /// in German: both come from the catalogue, like every other window control.
     #[test]
     fn a_german_desktop_names_the_close_and_the_move_hint_in_german() {
         use crate::i18n::I18nManager;
@@ -2146,8 +2054,6 @@ mod tests {
             "the window says how it moves in German too"
         );
 
-        // Back to the source copy: the manager is thread-local, and the window's other tests read
-        // it.
         I18nManager::init("en-US");
     }
 }

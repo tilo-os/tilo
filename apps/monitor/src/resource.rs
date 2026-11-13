@@ -1,9 +1,6 @@
-//! System Monitor as a resource: the shared table layout (sort, tree or
-//! flat) is the [`Monitor`] model, edited at its paths; this machine's
-//! processes are live rows the view publishes, and everything Monitor
-//! does to them (refresh, inspect, copy a PID, end a process or a whole
-//! app) is its typed effect vocabulary [`MonitorEffect`], answered by the
-//! view.
+//! Monitor as a resource: the table layout (sort, direction, tree or flat) is the
+//! [`Monitor`] document; this machine's processes are live rows, and everything
+//! done to them is the [`MonitorEffect`] vocabulary, answered by the view.
 
 use ui::framework::{Fixture, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -15,31 +12,20 @@ use crate::model::MonitorModel;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// How the process table is laid out, shared with everyone who sees it.
-/// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the
-/// tab, the filter and the selection are each window's own.
+/// The process table's layout, shared with everyone who sees it. The tab, the
+/// filter and the selection are each window's own.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Monitor {
     /// Sort column
     pub sort: SortKey,
     /// Ascending
-    ///
-    /// The smallest value, or A, first.
     pub ascending: bool,
     /// Flat list
-    ///
-    /// Every process in one sorted list rather than the process tree.
     pub flat: bool,
 }
 
 impl Monitor {
-    /// What the record holds: the shared table layout — the column sorted by, its direction, and
-    /// tree or flat.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the shared table layout.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -54,59 +40,47 @@ impl Monitor {
 )]
 impl Monitor {}
 
-/// What Monitor does on this machine: work with no document delta, invoked
-/// from its own controls, the palette, an agent or a script alike. A
-/// `process` is a live process row's id, which names one process lifetime
-/// (its PID with its kernel start time), so a delayed invocation never
-/// reaches a process that reused the PID.
+/// What Monitor does on this machine: work with no document delta, from its own
+/// controls, the palette, an agent or a script. A `process` names one process
+/// lifetime (its PID with its kernel start time), so a delayed call never reaches
+/// a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
-    /// Refresh processes.
     #[effect(kind = "read", label = "monitor-effect-refresh")]
     Refresh,
-    /// Show tab.
     #[effect(kind = "read")]
     ShowTab {
         #[param("processes | resources")]
         tab: String,
     },
-    /// Filter processes.
     #[effect(kind = "read")]
     Filter {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
-    /// Show process details.
     #[effect(kind = "read")]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
-    /// Copy PID.
     #[effect(kind = "read")]
     CopyPid {
         #[param("The process row's id")]
         process: String,
     },
-    /// End process.
-    ///
-    /// Asks the process to close, as quitting it would. Only the person's
-    /// own apps and the programs they started can be ended, never the
-    /// system's services.
+    /// Asks the process to close, as quitting it would. Only the person's own apps
+    /// and programs can be ended, never the system's services.
     #[effect(destructive)]
     EndProcess {
         #[param("The process row's id")]
         process: String,
     },
-    /// Force kill.
     #[effect(destructive)]
     Kill {
         #[param("The process row's id")]
         process: String,
     },
-    /// End app.
-    ///
     /// Asks every process of the app to close.
     #[effect(destructive)]
     EndApp {
@@ -115,7 +89,6 @@ pub enum MonitorEffect {
     },
 }
 
-/// The screenshot scenarios: the sample machine, staged.
 const SCENARIOS: &[&str] = &[
     "detail",
     "resources",
@@ -132,7 +105,6 @@ const SCENARIOS: &[&str] = &[
     "interval",
 ];
 
-/// Framework app.
 pub struct MonitorShell;
 
 impl ResourceApp for MonitorShell {
@@ -140,18 +112,17 @@ impl ResourceApp for MonitorShell {
     const ID: &'static str = "so.tilo.monitor";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "System Monitor";
+    const TITLE_KEY: &'static str = "monitor-app-title";
     const ICON: Option<&'static str> = Some("monitor");
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
 
-    /// A capture shows the sample machine instead of this one.
     fn fixture(fixture: &mut Fixture<Monitor>) {
         fixture.provide(MonitorModel::scenario(fixture.scenario()));
     }
 
-    /// The flat list is the shared table layout, set as a person sets it.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Monitor>> {
         match name {
             Some("flat" | "kernel-threads") => Invoke::edit(&Monitor::paths().flat.set(true))
@@ -166,8 +137,8 @@ impl ResourceApp for MonitorShell {
     }
 
     fn view(cx: &mut ViewCx<Monitor>) -> Element {
-        // Only a live window samples this machine; a capture shows its
-        // fixture, and a past version shows the layout with no processes.
+        // Only a live window samples this machine; a capture shows its fixture, and
+        // a past version the layout with no processes.
         let app = match cx.mode() {
             RunMode::Live => MonitorApp::new_live(),
             RunMode::Capture => MonitorApp::sample(
@@ -188,8 +159,6 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
 
-    /// Whether the inspector shows the process `pid`: its PID property, not
-    /// the table's cell.
     fn inspected(app: &mut TestApp<MonitorShell>, pid: u32) -> bool {
         fn find(node: &serde_json::Value, pid: &str) -> bool {
             if node.get("name").and_then(serde_json::Value::as_str) == Some("PID")
@@ -209,31 +178,26 @@ mod tests {
         find(&inspection, &pid.to_string())
     }
 
-    /// The window bar's slots as the window declares them now.
     fn bar(app: &mut TestApp<MonitorShell>) -> ui::window_toolbar::WindowToolbar {
         app.settle();
         ui::window_toolbar::declared().expect("the window declares its slots")
     }
 
-    /// Whether the bar's view `index` (0 Processes, 1 Resources) is chosen.
     fn tab_shown(app: &mut TestApp<MonitorShell>, index: usize) -> Option<bool> {
         bar(app)
             .views
             .map(|views| views.chosen_index() == Some(index))
     }
 
-    /// Press the window bar's slot `id`, as the desktop's bar does.
     fn press(app: &mut TestApp<MonitorShell>, id: &str) {
         app.harness()
             .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
-    /// Press the window bar's entry named `name`.
     fn press_named(app: &mut TestApp<MonitorShell>, name: &str) {
         app.harness().press_window_action(name).unwrap();
     }
 
-    /// The update frequency the window bar's menu button names.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
         bar(app)
             .actions
@@ -320,8 +284,7 @@ mod tests {
             );
         }
 
-        // Sorting is an edit of the shared layout, one call and one undo
-        // step each.
+        // Sorting is an edit of the shared layout, one undo step each.
         let versions = app.versions().len();
         let paths = Monitor::paths();
         for edit in [paths.sort.set(SortKey::Name), paths.ascending.set(true)] {
@@ -365,10 +328,9 @@ mod tests {
         assert_eq!(app.versions().len(), versions);
     }
 
-    /// The process row id of `pid`, a process this test started.
     fn row_id(pid: u32) -> String {
-        // On Linux a lifetime is the kernel's start tick, as the session's
-        // service reports it.
+        // On Linux a lifetime is the kernel's start tick, as the session's service
+        // reports it.
         #[cfg(target_os = "linux")]
         let started_at = {
             let stat =
@@ -464,7 +426,6 @@ mod tests {
         );
         assert!(inspected(&mut app, child.id()), "and the child in them");
 
-        // Killing it asks first, then signals exactly that process.
         assert!(
             app.call_on(&id, "kill", serde_json::json!({})).is_err(),
             "a kill needs confirmation"
@@ -514,7 +475,6 @@ mod tests {
         );
     }
 
-    /// The process rows a capture publishes.
     fn process_rows(app: &mut TestApp<MonitorShell>) -> usize {
         app.harness()
             .resources()
@@ -561,8 +521,8 @@ mod tests {
         }
         for viewport in [(1280, 800), (390, 844)] {
             let mut app = TestApp::<MonitorShell>::capture_at(None, viewport).unwrap();
-            // Observe startup before any explicit extra relayout or theme
-            // change can repair a lost retained layout.
+            // Observe startup before any extra relayout or theme change can repair a
+            // lost retained layout.
             assert_painted(&mut app, viewport);
             app.harness().set_theme(ui::Theme::light());
             assert_painted(&mut app, viewport);
@@ -584,8 +544,6 @@ mod tests {
         );
     }
 
-    /// The real summary, shared layout and window-local tabs all enter
-    /// through admitted controls in a live process window.
     #[test]
     fn live_monitor_controls_are_certified() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
@@ -612,8 +570,7 @@ mod tests {
         palette: ["Refresh processes", "Show process details", "Copy PID", "End process"],
     }
 
-    /// Two people changing the layout at once converge: each part is its
-    /// own field, so a sort and a switch to the flat list both land.
+    /// Two people changing the layout at once converge: each part is its own field.
     #[test]
     fn concurrent_layout_edits_converge() {
         use ui::tilo_resource::Replica;
@@ -637,7 +594,6 @@ mod tests {
         );
     }
 
-    /// A fresh layout is the process tree by CPU, busiest first.
     #[test]
     fn a_new_layout_is_the_tree_by_cpu() {
         let app = TestApp::<MonitorShell>::new().unwrap();
@@ -645,8 +601,6 @@ mod tests {
         assert_eq!(Monitor::default().sort, SortKey::Cpu);
     }
 
-    /// What an agent changes in the shared layout is history a person
-    /// reads as Monitor's own sentences, with who did it for whom.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -699,14 +653,12 @@ mod tests {
     }
 }
 
-// The scenarios show a sample table, which no signal reaches; the app
-// someone opens lists this machine's processes, and walking its Kill
-// would signal every one of them, the test's own among them.
+// The scenarios show a sample table, which no signal reaches; the app someone
+// opens lists this machine's processes, and walking its Kill would signal every
+// one of them, the test's own among them.
 ui::reach_tests!(MonitorShell);
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
+/// German copy comes from `locales/de-DE.ftl`, not the English catalogue.
 #[cfg(test)]
 mod german_window {
     use ui::i18n::ArgValue;

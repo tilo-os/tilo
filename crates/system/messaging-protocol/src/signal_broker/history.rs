@@ -471,7 +471,6 @@ impl History {
         self.persist().map_err(|_| SendError::Uncertain)?;
         Ok(true)
     }
-    /// The newest page of `route`.
     #[cfg(test)]
     pub(crate) fn page(&self, route: Route, limit: usize) -> Result<HistoryPage, SendError> {
         self.page_before(route, None, limit)

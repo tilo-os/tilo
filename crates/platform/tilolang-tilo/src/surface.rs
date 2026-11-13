@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::action::{CREATE_ACTION, DIRECT_EDITS};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -71,8 +71,10 @@ fn plain_cases(
 pub fn field_type_of_type(meta: &Meta, ty: &str, types: &mut TypeSet) -> FieldType {
     // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
     // loaded); one that does not is published as any value.
-    // ignored-failure: checked where the package is loaded
-    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
+    match tilo_failure::ignored!(
+        "a type checked where the package is loaded",
+        tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app)
+    ) {
         Ok(parsed) => field_type_of(meta, &parsed, types),
         Err(_) => FieldType::Any,
     }
@@ -186,7 +188,7 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     }
 }
 
-/// The schema of a workspace subject as `tilo_action_policy::Subject` writes it: a person by
+/// The schema of a workspace subject as `tilo_action_policy::Grantee` writes it: a person by
 /// their key, an agent by its id.
 fn subject_schema() -> Json {
     let one = |tag: &str| {
@@ -204,8 +206,10 @@ fn subject_schema() -> Json {
 /// binds, a palette offers and the generated surface describes, one declaration for all three.
 #[must_use]
 pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
-    // ignored-failure: a loaded package's parameter types all parse (`meta::unreadable_types`).
-    let parsed = tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok();
+    let parsed = tilo_failure::ignored!(
+        "a loaded package's parameter types all parse, as `meta::unreadable_types` checked",
+        tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok()
+    );
     // What the parameter takes when it is given: an `Option` is its value, left out.
     let present = match &parsed {
         Some(Ty::Option(inner)) => Some(inner.as_ref()),
@@ -251,7 +255,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
                 .with_labelled_choices(cases),
             None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
         },
-        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Subject),
+        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Grantee),
         // Rich text is given as its text, or encoded whole when it holds more than text
         // (`host::argument_json`).
         Some(Ty::RichText) => built.with_schema(json!({"oneOf": [
@@ -260,15 +264,6 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
         ]})),
         Some(present) => built.with_schema(schema_of(meta, present)),
         None => built.with_schema(json!({})),
-    }
-}
-
-/// The parameters of an action beyond its subject resource, which the address carries.
-#[must_use]
-pub fn arguments<'a>(meta: &Meta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
-    match (meta.subject_of(params), params.split_first()) {
-        (Some(_), Some((_, rest))) => rest,
-        _ => params,
     }
 }
 
@@ -287,17 +282,17 @@ pub fn is_primary(action: &ActionMeta) -> bool {
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
+        // The action as the record names it, which is what a change's claim names too
+        // ([`crate::action::DynAction::describe`]): its id, the one its words keep
+        // ([`crate::publish::action_type`]'s `label_of`), not the name the door offers it by.
         id: action.id.clone(),
-        label: if action.label.is_empty() {
-            action.name.clone()
-        } else {
-            action.label.clone()
-        },
+        label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
         destructive: is_destructive(action),
         incoming_message: false,
-        params: arguments(meta, &action.params)
+        params: meta
+            .arguments(&action.params)
             .iter()
             .map(|param| {
                 let published = published_param(meta, param);
@@ -322,34 +317,50 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 /// The record unit, where an action writes unless it says otherwise.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
-fn edit_verbs() -> Vec<VerbSurface> {
-    let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        description: Some("A bound control changes the field it shows.".to_owned()),
-        kind: ActionKind::Undoable,
-        destructive: false,
-        incoming_message: false,
-        params: vec![
-            ParamSurface {
-                name: "field".to_owned(),
-                required: true,
-                schema: json!({"type": "string"}),
-                ty: FieldType::Text,
-                within: None,
-            },
-            ParamSurface {
-                name: "value".to_owned(),
-                required: true,
-                schema: value,
-                ty,
-                within: None,
-            },
-        ],
-        returns: None,
-        writes: vec![RECORD_UNIT.to_owned()],
-        field: None,
-    };
+/// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
+/// metadata: a text (or rich-text) field the first, a flag field the second, in declaration
+/// order. The edit verbs take these names, never the internal field ids the document stores
+/// them under — an agent, and anyone reading a surface, chooses a field by the name the app
+/// and its views use, and `edit_action` maps that name back to the id.
+pub(crate) fn editable_field_names(ty: &TypeMeta, merge: Merge) -> Vec<String> {
+    ty.fields
+        .iter()
+        .filter(|field| match merge {
+            Merge::Text => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Text | Ty::RichText)
+            ),
+            Merge::Flag => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Bool)
+            ),
+        })
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// Which kinds of field an [`edit_verbs`] verb may set: a text (plain or rich), or a flag.
+#[derive(Clone, Copy)]
+pub(crate) enum Merge {
+    Text,
+    Flag,
+}
+
+/// The surface's reading of a direct edit's value: its type, and the schema a caller reads it by.
+fn direct_edit_value(ty: ParamType) -> (FieldType, Json) {
+    match ty {
+        ParamType::Text => (FieldType::Text, json!({"type": "string"})),
+        ParamType::Boolean => (FieldType::Bool, json!({"type": "boolean"})),
+        _ => (FieldType::Any, json!({})),
+    }
+}
+
+/// The verbs a bound control's edit of a field names, and the one that creates the resource:
+/// [`DIRECT_EDITS`]', with the arguments a change of it carries. A text edit names the field
+/// alone — what a person typed is the change itself — and a caller may name the value it sets,
+/// so the value is one it may give. The field is chosen by name, from the type's fields that edit
+/// sets ([`editable_field_names`]).
+fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     // The host creates a package's root resource on its own the first time a window wants it,
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
@@ -364,21 +375,47 @@ fn edit_verbs() -> Vec<VerbSurface> {
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
-    vec![
-        create,
-        verb(
-            EDIT_TEXT_ACTION,
-            "Edit a text field",
-            json!({"type": "string"}),
-            FieldType::Text,
-        ),
-        verb(
-            EDIT_FLAG_ACTION,
-            "Set a flag field",
-            json!({"type": "boolean"}),
-            FieldType::Bool,
-        ),
-    ]
+    let mut verbs = vec![create];
+    verbs.extend(DIRECT_EDITS.iter().map(|direct| {
+        let (ty, schema) = direct_edit_value(direct.value);
+        VerbSurface {
+            id: direct.id.to_owned(),
+            label: direct.label.to_owned(),
+            description: Some("A bound control changes the field it shows.".to_owned()),
+            kind: ActionKind::Undoable,
+            destructive: false,
+            incoming_message: false,
+            params: vec![
+                ParamSurface {
+                    name: "field".to_owned(),
+                    required: true,
+                    // The choices are the field names, so a caller reads the one it wants from
+                    // the list instead of guessing at an internal id.
+                    schema: json!({
+                        "type": "string",
+                        "description": "The name of the field to set.",
+                        "enum": editable_field_names(
+                            declared,
+                            if direct.value == ParamType::Boolean { Merge::Flag } else { Merge::Text },
+                        ),
+                    }),
+                    ty: FieldType::Text,
+                    within: None,
+                },
+                ParamSurface {
+                    name: "value".to_owned(),
+                    required: direct.names_value,
+                    schema,
+                    ty,
+                    within: None,
+                },
+            ],
+            returns: None,
+            writes: vec![RECORD_UNIT.to_owned()],
+            field: None,
+        }
+    }));
+    verbs
 }
 
 fn field_surfaces(
@@ -435,7 +472,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
         let mut types = TypeSet::new();
-        let mut verbs = edit_verbs();
+        let mut verbs = edit_verbs(ty);
         verbs.extend(
             meta.offered_actions()
                 .filter(|action| {

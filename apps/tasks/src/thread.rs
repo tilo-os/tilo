@@ -26,11 +26,7 @@ struct Row {
 impl Row {
     fn of(issue: &Issue, people: &ui::framework::People) -> Option<Self> {
         let (_, last) = issue.comments.iter().last()?;
-        let speaker = if last.by_agent {
-            last.author.trim_start_matches("agent:").to_owned()
-        } else {
-            people.name(&last.author)
-        };
+        let speaker = people.actor(&last.author).name;
         Some(Self {
             number: issue.number,
             title: format!("{}  {}", reference(issue.number), issue.title),

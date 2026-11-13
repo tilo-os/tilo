@@ -1,11 +1,8 @@
-//! The dialer side: a stdio bridge to one device's tilo-vmd over the route.
-//!
-//! `tilo-vm` runs `tilo-device-admin dial` in place of `ssh <device> tilo-vmd
-//! rpc`. Before the request lines, stdout carries one line of JSON that names
-//! the device and the route ([`Preamble`]). When the connection drops between
-//! requests (a link cut, a roam the path could not follow), the bridge dials
-//! again by itself, repeats the session's `hello` and goes on; only a
-//! connection lost in the middle of a request ends the session.
+//! The dialer side: a stdio bridge to one device's tilo-vmd over the route. `tilo-vm` runs
+//! `tilo-device-admin dial` in place of `ssh <device> tilo-vmd rpc`; before the request lines,
+//! stdout carries one line of JSON naming the device and the route ([`Preamble`]). When the
+//! connection drops between requests, the bridge dials again, repeats the session's `hello` and
+//! goes on; only a connection lost in the middle of a request ends the session.
 
 use std::io::BufRead as _;
 use std::io::Write as _;
@@ -26,8 +23,8 @@ pub struct Options {
     pub identity_root: PathBuf,
     /// The device's admin endpoint.
     pub endpoint: EndpointId,
-    /// The device id the answer must prove; `None` accepts any device of
-    /// the identity at that endpoint.
+    /// The device id the answer must prove; `None` accepts any device of the identity at that
+    /// endpoint.
     pub device: Option<[u8; 32]>,
     pub relays: Relays,
     /// The relay the device was last seen on, when it uses the public ones.

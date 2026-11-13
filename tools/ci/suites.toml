@@ -68,9 +68,9 @@ inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "too
 suites = ["tools/android/test_sticky_entry.py"]
 
 [[group]]
-name = "headless-launch-preflight"
-inputs = ["scripts/headless-examples/spawn-headless.sh"]
-suites = ["scripts/headless-examples/test_spawn_headless.py"]
+name = "headless-check-window-read"
+inputs = ["scripts/headless-examples/tilolang-e2e.py"]
+suites = ["scripts/headless-examples/test_tilolang_e2e.py"]
 
 [[group]]
 name = "runtime-dependency-closure"
@@ -265,6 +265,14 @@ inputs = ["os/containers/tilo-lounge/integration/"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
 
 [[group]]
+name = "tilo-sh-owner-link"
+# The page `stack.sh owner` prints: the token it serves under, the key it keeps
+# and the content type that keeps another origin's page out. Driven against the
+# helper alone, so it needs no stack, no image and no browser.
+inputs = ["os/containers/tilo-sh/owner-link.mjs"]
+suites = ["os/containers/tilo-sh/owner-link.test.mjs"]
+
+[[group]]
 name = "native-store-autoclear"
 inputs = ["tools/ci/native-store-autoclear.py"]
 suites = ["tools/ci/test_native_store_autoclear.py"]
@@ -275,7 +283,6 @@ inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
-  "os/containers/tilo-agent-host/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
@@ -465,6 +472,7 @@ suites = [
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
+  "dist/dev/tests/build-provenance-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/local-models/u2net-subject/contract-test.sh",
   "dist/rpm/test-app-collection.sh",
@@ -535,11 +543,11 @@ name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/app-launch-sweep.py",
   "scripts/headless-examples/",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
+  "scripts/runtime-mcp-proof.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
-  "scripts/tests/test_tilo_mcp_server.py",
+  "scripts/tests/test_real_apps.py",
 ]
 
 [[group]]
@@ -633,6 +641,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
   "crates/browser/tilo-browser-runtime/web/sealed-link.test.mjs",
   "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/failure-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
@@ -747,8 +756,8 @@ package = "tilolang-app"
 inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
 readers = [
   "apps/tilolang/src/packages.rs",
-  "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
+  "apps/tilolang/tests/narrow.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
   "apps/tilolang/tests/tasks_board.rs",
@@ -905,6 +914,13 @@ readers = [
   "crates/session/surface-host/src/shell_part/places.rs",
   "crates/session/surface-host/src/shell_part/tests.rs",
 ]
+
+[[cargo]]
+package = "tilo-local"
+# The launcher runs the development session's scripts, the web bundle's build and the local
+# hosting stack from the checkout it is built in.
+inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/dev/tilo-local/src/main.rs"]
 
 [[cargo]]
 package = "onboarding-walk"
@@ -1130,7 +1146,7 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml",
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
-  "scripts/headless-examples/_control.py",
+  "scripts/headless-examples/real_apps.py",
   # The one place that picks a session's private runtime directory, which the
   # timeline asks for where its sockets go.
   "dist/dev/nested-session.sh",
@@ -1429,8 +1445,7 @@ readers = ["apps/pdf-viewer/build.rs"]
 [[cargo]]
 package = "tilo-agent-participant"
 # The session tests mount apps against the controlled font fixture and share
-# the browser peer's relay test support; the campaign benchmark runs its
-# confined workers inside the test environment script.
+# the browser peer's relay test support.
 inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
@@ -1440,8 +1455,7 @@ inputs = [
 # examples reuse the workspace-actions one.
 readers = [
   "crates/agent/agent-participant/tests/it.rs",
-  "crates/agent/agent-participant/tests/campaign_bench.rs",
-  "crates/agent/agent-participant/examples/door-on-relay.rs",
+  "crates/agent/agent-participant/examples/api-on-relay.rs",
   "crates/agent/agent-participant/examples/mounted-resource.rs",
 ]
 
@@ -1544,8 +1558,8 @@ package = "tilo-session-client"
 # door and the page read it. The page tests' driver serves the runtime module
 # built beside the page's sources: a run that is handed none builds it with the
 # script the CI setup uses, so that script and the build it runs are read too.
-inputs = ["crates/session/fixtures/", "crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/client/src/channels/vault.rs", "crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
@@ -1650,7 +1664,7 @@ reason = "needs the built web desktop bundle, headless Chromium and the built re
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-onboarding.sh"
-reason = "one flow of the e2e check, on a host of its own whose door takes people by invitation and whose mails go to a sink it runs: it needs the built web desktop bundle, headless Chromium, the built relay, crypto and tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
+reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose door takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"
@@ -1669,8 +1683,8 @@ suite = "os/containers/tilo-vm-host/test-image.sh"
 reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
 
 [[unrequired]]
-suite = "os/containers/tilo-front-door/test-image.sh"
-reason = "starts the built front door image with buildah as root in a loopback network, so it needs the archive image-front-door writes and a micro-VM step"
+suite = "os/containers/tilo-api/test-image.sh"
+reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -2031,10 +2045,6 @@ suite = "os/verify-test.sh"
 reason = "boots the test image in a VM"
 
 [[unrequired]]
-suite = "scripts/test-local.sh"
-reason = "developer entry point for the Rust suite, which CI runs with nextest's ci profile"
-
-[[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
 reason = "manual smoke test across two hosts on a LAN"
 
@@ -2159,7 +2169,11 @@ readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
-# gated with it and skips unless a front door is named by TILO_TEST_DOOR and TILO_TEST_KEY.
+# gated with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
+[[covered]]
+suite = "sdk/python/tests/test_host.py"
+check = "sdk-python"
+
 [[covered]]
 suite = "sdk/python/tests/test_integration.py"
 check = "sdk-python"
@@ -2167,6 +2181,12 @@ check = "sdk-python"
 [[covered]]
 suite = "sdk/python/tests/test_keys.py"
 check = "sdk-python"
+
+# The native part's test skips in the suite above and runs in sdk-native, under the api-on-relay
+# harness, which hands it a key file (TILO_KEY_FILE).
+[[covered]]
+suite = "sdk/python/tests/test_native.py"
+check = "sdk-native"
 
 [[covered]]
 suite = "sdk/python/tests/test_session.py"

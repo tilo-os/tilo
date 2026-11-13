@@ -1,9 +1,8 @@
-//! Domain math used by the canonical effect worker: measured transfer rates
-//! and median latency with variation between real samples.
+//! Domain math used by the canonical effect worker: measured transfer rates and median
+//! latency with variation between real samples.
 
 use ui::time::Duration;
 
-/// Megabits per second for `bytes` moved in `elapsed`.
 #[allow(
     clippy::cast_precision_loss,
     reason = "byte counts of a few megabytes are exact in f64"
@@ -16,8 +15,6 @@ pub(crate) fn mbps(bytes: u64, elapsed: Duration) -> f64 {
     bytes as f64 * 8.0 / seconds / 1_000_000.0
 }
 
-/// The median latency of `samples` and its jitter: the mean absolute
-/// difference between consecutive samples.
 #[allow(
     clippy::cast_precision_loss,
     clippy::indexing_slicing,

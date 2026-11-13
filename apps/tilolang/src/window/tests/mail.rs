@@ -1376,6 +1376,20 @@ fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::t
         .expect("the clock reaches it")
 }
 
+/// The wall clock at `hour:minute:second` on `day` of 2026, in UTC: what a record names, such as
+/// the moment a conversation is snoozed until.
+fn utc(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
+    use chrono::TimeZone as _;
+    let at = chrono::Utc
+        .with_ymd_and_hms(2026, month, day, hour, minute, second)
+        .earliest()
+        .expect("the time exists");
+    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    ui::time::UNIX_EPOCH
+        .checked_add(ui::time::Duration::from_millis(ms))
+        .expect("the clock reaches it")
+}
+
 /// A mail window pinned to a fixed wall clock, as a test reads a snooze's moment.
 fn workspace_at(at: ui::time::SystemTime, servers: &Servers) -> Workspace {
     ui::time::testing::with_wall(at, || {
@@ -1415,16 +1429,18 @@ fn snoozing_takes_a_conversation_out_of_the_inbox_until_its_moment() {
         Some(before - 1),
         "a snoozed conversation leaves the inbox"
     );
-    // The inbox reads the clock (the snooze), so the window wakes at the next minute and the
-    // conversation comes back on its own, with no window open.
-    let wait = workspace
-        .window
-        .instance()
-        .wakes_in()
-        .expect("a snoozed conversation sets the window's next wake");
-    assert!(
-        wait <= std::time::Duration::from_secs(60),
-        "the window re-reads the time within a minute: {wait:?}"
+    // The inbox reads the clock (the snooze), so the window waits for the moment the conversation
+    // comes back, and for no minute in between: it comes back on its own, with no window open.
+    let wait = with_wall(local(6, 30, (10, 0, 0)), || {
+        workspace.window.instance().wakes_in()
+    })
+    .expect("a snoozed conversation sets the window's next wake");
+    let moment = utc(6, 30, (10, 30, 0))
+        .duration_since(local(6, 30, (10, 0, 0)))
+        .expect("after the moment the window reads the time at");
+    assert_eq!(
+        wait, moment,
+        "the window waits for the snooze's moment: {wait:?}"
     );
     // The moment passes with no window open: the conversation is in the inbox again.
     let shown = with_wall(local(6, 30, (10, 31, 0)), || {

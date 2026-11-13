@@ -5,9 +5,9 @@ use crate::icons::Icon;
 
 use super::{Fact, FactMark, Facts};
 
-/// Separate facts in one row, each an optional glyph and its text, with space between them and
-/// no separator glyph: "12 files", "3 MB", "Edited today" are three facts. Where the row is too
-/// narrow, the facts that matter least give way first.
+/// Facts in one row, each an optional glyph and its text, spaced apart with no separator ("12
+/// files", "3 MB", "Edited today"); when the row is too narrow the least important give way
+/// first.
 #[derive(Component, Default)]
 #[component(name = "Facts", role = "List")]
 pub struct FactsProps {
@@ -16,7 +16,7 @@ pub struct FactsProps {
     pub facts: Vec<FactProps>,
 }
 
-/// One fact of a row of facts: its text, and a glyph before it.
+/// One fact of a row: its text, and a glyph before it.
 #[derive(Component, Default)]
 #[component(name = "Fact", role = "ListItem", label = "text")]
 pub struct FactProps {
@@ -25,8 +25,8 @@ pub struct FactProps {
     pub text: String,
     /// A glyph before it, from the icon set.
     pub icon: Option<Icon>,
-    /// How long it stays where the row is narrow: higher stays longer, and of equal ones the
-    /// last gives way first.
+    /// How long it stays where the row is narrow: a higher one stays longer, and of equal ones
+    /// the last gives way first.
     pub priority: i64,
 }
 
@@ -49,7 +49,6 @@ impl Described for Facts {
         Self::new(props.facts.into_iter().map(Fact::from).collect())
     }
 
-    /// What the facts say changes where the row stands.
     fn set_props(&mut self, props: FactsProps) -> bool {
         self.set_facts(props.facts.into_iter().map(Fact::from).collect());
         true

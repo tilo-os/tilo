@@ -1,5 +1,5 @@
-//! The keys the editor answers itself, before the focused line sees them: Tab and the
-//! command brackets for a list's depth, and the format menu's heading chords.
+//! The keys the editor answers itself, before the focused line sees them: Tab and the command brackets
+//! for a list's depth, and the format menu's heading chords.
 
 use super::{BlockEditor, BlockKind, EventCtx};
 use winit::event::WindowEvent;

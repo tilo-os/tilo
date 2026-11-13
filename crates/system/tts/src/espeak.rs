@@ -1,10 +1,6 @@
 //! Direct `espeak-ng` subprocess backend — the low-latency fallback used when
 //! speech-dispatcher isn't running.
 //!
-//! espeak-ng is GPL-3.0, but we reach it as a **separate process** (we `spawn`
-//! the `espeak-ng` binary and pipe text to its stdin), so its GPL imposes no
-//! licensing constraint on this crate. See the crate-level license note.
-//!
 //! Interrupt semantics: each utterance is its own process. [`EspeakSpeaker::stop`]
 //! and any interrupting [`speak`] kill the currently-running child before
 //! spawning the next, giving the "stop and speak the new thing" behaviour the
@@ -30,22 +26,16 @@ use crate::speaker::{Speaker, Utterance};
 const ESPEAK_BIN: &str = "espeak-ng";
 const ESPEAK_FALLBACK_BIN: &str = "espeak";
 
-/// A [`Speaker`] backed by spawning `espeak-ng` once per utterance.
 #[derive(Debug)]
 pub struct EspeakSpeaker {
-    /// Which binary name actually exists on this system.
     bin: &'static str,
     /// espeak-ng words-per-minute. Default voice speed is ~175 wpm.
     wpm: u32,
-    /// `-v` voice argument (e.g. `"en-us"`), if set.
     voice: Option<String>,
-    /// The thread that speaks, started with the first utterance.
     player: Option<Player>,
 }
 
-/// What the player thread is asked to do.
 enum Job {
-    /// Speak `text` with `args`; `interrupt` drops what is speaking or queued.
     Speak {
         args: Vec<String>,
         text: String,
@@ -54,15 +44,12 @@ enum Job {
     Stop,
 }
 
-/// The handle on the thread that runs one `espeak-ng` at a time.
 #[derive(Debug)]
 struct Player {
     jobs: mpsc::Sender<Job>,
-    /// Whether a child runs or an utterance waits for one.
     speaking: Arc<AtomicBool>,
 }
 
-/// How often the player looks whether the speaking child has finished.
 const REAP_INTERVAL: Duration = Duration::from_millis(20);
 
 impl Player {
@@ -135,7 +122,6 @@ fn play(bin: &'static str, inbox: &mpsc::Receiver<Job>, speaking: &AtomicBool) {
     speaking.store(false, Ordering::Release);
 }
 
-/// Kill and reap the child, if any, with its process group.
 fn kill(current: &mut Option<Child>) {
     if let Some(mut child) = current.take() {
         #[cfg(unix)]
@@ -150,7 +136,6 @@ fn kill(current: &mut Option<Child>) {
     }
 }
 
-/// Start `bin` with `args` speaking `text`, read from its stdin.
 fn spawn(bin: &str, args: &[String], text: &str) -> Result<Child, TtsError> {
     let mut cmd = Command::new(bin);
     cmd.args(args);
@@ -229,7 +214,6 @@ impl EspeakSpeaker {
         })
     }
 
-    /// The arguments before `--stdin`: rate and voice.
     fn args(&self) -> Vec<String> {
         let mut args = vec!["-s".to_owned(), self.wpm.to_string()];
         if let Some(v) = &self.voice {
@@ -238,7 +222,6 @@ impl EspeakSpeaker {
         args
     }
 
-    /// Hand `job` to the player, starting it first if need be.
     fn send(&mut self, job: Job) {
         if self.player.is_none() {
             if matches!(job, Job::Stop) {
@@ -258,7 +241,6 @@ impl EspeakSpeaker {
     }
 }
 
-/// Probe whether `bin --version` runs (i.e. the binary exists & is executable).
 fn probe(bin: &str) -> bool {
     bounded_command::run(bin, &["--version"], None, 64 * 1024, Duration::from_secs(2))
         // Spawning at all proves the binary exists & is executable; the exit
@@ -380,7 +362,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn speech_queues_and_stops_on_its_own_thread() {
-        // `sh -c 'sleep 5' --stdin` stands in for a voice that takes a while.
         let player = Player::start("sh").expect("a thread to speak on");
         let long = || Job::Speak {
             args: vec!["-c".into(), "sleep 5".into()],

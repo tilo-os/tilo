@@ -1,19 +1,11 @@
 //! What a frame paints, and what it leaves alone.
-//!
-//! A conversation longer than its window shows a few rows; the rest lie above and
-//! below the viewport, out of sight and — because a row is only ever shaped when
-//! it is painted — out of the frame's work. These tests hold the list to that: the
-//! rows a frame paints are the rows that meet the viewport, and a row outside it
-//! is not shaped.
 
 use super::*;
 
-/// 2026-06-30T14:05:00Z.
 const NOONISH: i64 = 1_782_828_300;
 
 const WIDTH: f64 = 900.0;
 
-/// A conversation long enough that its window shows a fraction of it.
 fn thread(count: usize) -> Vec<ConversationLine> {
     (0..count)
         .map(|index| {
@@ -42,7 +34,6 @@ fn a_frame_paints_the_rows_that_meet_its_viewport() {
     let rows = cache.layout.rows.len();
     let mut scene = Scene::new();
 
-    // Nothing scrolled yet: the window is the conversation's top.
     let top = Rect::new(0.0, 0.0, WIDTH, 800.0);
     {
         let mut paint = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
@@ -55,7 +46,6 @@ fn a_frame_paints_the_rows_that_meet_its_viewport() {
         rows,
         "every row is accounted for"
     );
-    // The rows painted are exactly the rows in the window.
     let in_view = cache
         .layout
         .rows
@@ -67,8 +57,6 @@ fn a_frame_paints_the_rows_that_meet_its_viewport() {
         "the painted rows are the ones in view"
     );
 
-    // Scrolled a long way down, the same window paints the same number of rows
-    // out of a conversation ten times longer.
     let mut longer = ListCache::default();
     let longer_lines = thread(2_000);
     let longer_face = ListFace::new(&longer_lines, ConversationClock::at(0, NOONISH));
@@ -95,8 +83,6 @@ fn a_frame_paints_the_rows_that_meet_its_viewport() {
     );
 }
 
-/// The rows outside the window are not shaped at all: the frame's text work is
-/// the work of the screen.
 #[test]
 fn rows_outside_the_viewport_are_not_shaped() {
     let mut text = crate::font_catalog::fixture_renderer();

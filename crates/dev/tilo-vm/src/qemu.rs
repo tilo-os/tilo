@@ -1,13 +1,7 @@
-//! The one place a QEMU command line is built (`tilo-vm qemu`).
-//!
-//! Every headless boot of a Tilo disk goes through here: os/dev/vm.sh and the
-//! release gates on top of it, the qemu adapter of `vm create`, the composefs
-//! harness and the boot-timing checks. The machine, firmware, TPM, display,
-//! input, network and console choices therefore live in one table, with the
-//! reasons beside them, instead of drifting apart in each launcher.
-//!
-//! A VM's runtime files sit in one directory (see [`RunDir`]); os/dev/vm.sh
-//! drives the monitor, console and serial log it finds there.
+//! The one place a QEMU command line is built (`tilo-vm qemu`): every headless
+//! boot of a Tilo disk goes through here. The machine, firmware, TPM, display,
+//! input, network and console choices live in one table, with the reasons beside
+//! them.
 
 pub mod firmware;
 pub mod serial;
@@ -286,8 +280,6 @@ impl Disk {
         if self.readonly {
             drive.push_str(",readonly=on");
         }
-        // The serial belongs to the virtio block device: QEMU rejects
-        // serial= on -drive.
         let mut device = format!("virtio-blk-pci,drive={}", self.id);
         if let Some(serial) = &self.serial {
             device.push_str(",serial=");
@@ -742,9 +734,6 @@ impl Machine {
             ""
         };
         if smm {
-            // SMM is what the Secure-Boot firmware's protected store needs;
-            // the store and S3 resume do not coexist in OVMF, and leaving S3
-            // on makes the firmware complain and fall back.
             vec![
                 "-machine".into(),
                 format!("q35,smm=on{keyboard}"),
@@ -769,9 +758,6 @@ impl Machine {
         let (width, height) = self.resolution;
         let mode = format!("xres={width},yres={height}");
         let (plain, gl) = match self.arch {
-            // QEMU's VGA-compatible virtio device is specific to PC machines.
-            // ARM's virt board uses the PCI virtio-gpu, which AAVMF exposes
-            // through GOP and the installer modesets the same way.
             Arch::X86_64 => ("virtio-vga", "virtio-vga-gl"),
             Arch::Aarch64 => ("virtio-gpu-pci", "virtio-gpu-gl-pci"),
         };
@@ -825,8 +811,6 @@ impl Machine {
     fn input_args(&self, run: &RunDir) -> Vec<String> {
         let mut args: Vec<String> = match (self.input, self.arch) {
             (Input::Touch, _) => vec!["-device".into(), "virtio-multitouch-pci".into()],
-            // ARM virt has no implicit PC keyboard; monitor sendkey needs a
-            // guest device.
             (Input::Keyboard, Arch::Aarch64) => [
                 "-device",
                 "qemu-xhci",
@@ -972,8 +956,6 @@ impl Machine {
             Accel::Tcg => (tcg(), None),
             Accel::Hvf => (["-accel", "hvf", "-cpu", "host"].map(String::from).to_vec(), None),
             Accel::Auto if kvm_usable() => (kvm(), None),
-            // Emulated CPU: boot and frame timings from this VM say nothing
-            // about a KVM guest or hardware. Do not compare them.
             Accel::Auto => (
                 tcg(),
                 Some("no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware".into()),
@@ -1767,7 +1749,6 @@ mod tests {
             text.contains("-device qemu-xhci -device usb-tablet -device usb-kbd"),
             "{text}"
         );
-        // No machine string picks an accelerator of its own.
         assert!(!text.contains("accel=kvm"));
     }
 
@@ -1803,7 +1784,6 @@ mod tests {
             "-device virtio-blk-pci,drive=tilo-install-target,serial=tilo-install-target"
         ));
         assert!(text.contains("-drive file=/v/validation.raw,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"));
-        // QEMU rejects serial= on -drive.
         assert!(
             !text
                 .split(" -device ")
@@ -1904,7 +1884,6 @@ mod tests {
 
     #[test]
     fn paths_with_commas_are_escaped_and_bad_settings_refused() {
-        // A literal comma cannot be expressed in a --disk spec; it is refused.
         assert!(Disk::parse("/a,,b.qcow2", 0).is_err());
         assert_eq!(escape("/x,y"), "/x,,y");
         let args = Probe::parse_from(["probe", "--arch", "aarch64", "--s3"]).machine;

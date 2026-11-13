@@ -1,6 +1,6 @@
 //! The native session: `tilo-session [--backend drm|headless|nested] [--size WxH]
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
-//! [--shell screen] [--host-desktop] [--admit-repl PATH]...
+//! [--shell screen] [--host-desktop] [--admit-repl PATH]... [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the agent door it serves,
@@ -203,6 +203,8 @@ struct CommandLine {
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
     admit_repl: Vec<std::path::PathBuf>,
+    /// The agent key the person starts the session with (`--agent-key FILE`).
+    agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens, when the command line named one and this
     /// build opens it.
     test_control: Option<std::path::PathBuf>,
@@ -352,7 +354,8 @@ mod tests {
 #[cfg(target_os = "linux")]
 struct Output {
     backend: Backend,
-    /// The panel's size across and down, in logical pixels.
+    /// The panel's size across and down: a headless output's mode in physical pixels (its logical
+    /// size is that over its scale), a nested window's size in the host's logical pixels.
     size: (u16, u16),
     /// The density a headless output draws at.
     headless: HeadlessPanel,
@@ -569,6 +572,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         shell: output.shell,
         reach: reach(ours, output.backend),
         admit_repl: admit_repl(ours),
+        agent_key: value(ours, "--agent-key").map(std::path::PathBuf::from),
         test_control: test_control(ours),
         admin_control: admin_control(ours, output.backend),
         seed_apps: seed_apps(ours),
@@ -601,6 +605,7 @@ fn start(
         reach,
         shell,
         admit_repl,
+        agent_key,
         test_control,
         admin_control,
         seed_apps,
@@ -676,6 +681,9 @@ fn start(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
+    if let Some(documents) = desktop.as_ref().and_then(|desktop| desktop.documents()) {
+        launch.hand_documents(documents.clone());
+    }
     // A drive the person plugs in is announced like any other news, and the eject the notice offers
     // goes over the system bus the desktop services already hold.
     let drives = drives(backend, desktop.as_ref(), &wake);
@@ -700,11 +708,18 @@ fn start(
         machine,
         shell,
         admit_repl,
+        agent_key,
         test_control,
         admin_control,
         hosted_browser,
         ..device_options(machine, config)
     };
+    // A session in another desktop's window serves no agent door of its own, unless the person
+    // started it naming a program they admit to act as them there (`--admit-repl`): that program
+    // reaches it only through a door, and the window's private runtime directory holds it.
+    if options.agent_door.is_none() && !options.admit_repl.is_empty() {
+        options.agent_door = tilo_session::agent_door::path();
+    }
     // The person's files: the login's files daemon serves them as the Files app's windowless
     // endpoint, so the session records its process before the daemon's connections to the broker
     // arrive. A session in another desktop's window serves no files daemon of its own.
@@ -835,8 +850,14 @@ fn start_session(
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(
             options,
+            // The window's size is in the host's logical pixels, the same apparent size on a
+            // desktop at any scale, and the output draws at the desktop's own scale: the nested
+            // backend reads it from the window (`wp_fractional_scale_v1` or `wl_surface`'s
+            // preferred scale, as the desktop moved it between screens) rather than asking that
+            // desktop's session bus. The shell is as crisp as the panel it shows on.
             &NestedConfig {
                 size,
+                logical: true,
                 ..NestedConfig::default()
             },
         ),
@@ -1060,9 +1081,6 @@ fn device_options(
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
-        // The desk the shell this session replaces kept here, brought over on the first start that
-        // has no desk of its own.
-        old_desk: tilo_session::shell_state_path(),
         // A session in a window of another desktop leaves the machine's traffic to the session that
         // owns it.
         vpn: owned.then(Vpn::machine),
@@ -1256,6 +1274,8 @@ fn search_options(
         // The records the workspaces on this device hold, read now and followed as the apps of
         // those workspaces name more.
         records: Some(tilo_session::Records::of(cli::data_home())),
+        // No test source is mounted on a device: its search is over its own sources alone.
+        extra_sources: Vec::new(),
     }
 }
 

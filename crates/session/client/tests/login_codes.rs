@@ -73,8 +73,25 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let made = login_code::create(&*https, Some(link.clone()))
         .await
         .unwrap();
-    let waiting = login_code::follow(&*https, &made.follow).await.unwrap();
-    assert!(!waiting.resolved);
+    // Only offered: the host keeps it once the tab follows it with the offer, as it does when
+    // its person copies the prompt.
+    let unkept = login_code::resolve(&*https, &made.code).await.unwrap_err();
+    assert_eq!(unkept.code(), "unknown", "{unkept:?}");
+    let offer = |made: &tilo_relay_protocol::login_code::Created, link: Option<String>| {
+        tilo_relay_protocol::login_code::Offer {
+            code: made.code.clone(),
+            expires_at_ms: made.expires_at_ms,
+            link,
+        }
+    };
+    let waiting = login_code::follow(
+        &*https,
+        &made.follow,
+        Some(offer(&made, Some(link.clone()))),
+    )
+    .await
+    .unwrap();
+    assert!(!waiting.resolved && !waiting.expired);
     let resolved = login_code::resolve(&*https, &made.code).await.unwrap();
     assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
     login_code::report(
@@ -88,7 +105,9 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     )
     .await
     .unwrap();
-    let polled = login_code::follow(&*https, &made.follow).await.unwrap();
+    let polled = login_code::follow(&*https, &made.follow, None)
+        .await
+        .unwrap();
     assert!(polled.resolved);
     assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
     assert!(polled.steps.contains(&Step::LoggedIn), "{polled:?}");
@@ -108,6 +127,9 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
 
     // Signing in: a device of Bob's claims the code the fresh tab made.
     let asking = login_code::create(&*https, None).await.unwrap();
+    login_code::follow(&*https, &asking.follow, Some(offer(&asking, None)))
+        .await
+        .unwrap();
     let resolved = login_code::resolve(&*https, &asking.code).await.unwrap();
     assert!(resolved.link.is_none());
     let laptop = new_key();
@@ -129,7 +151,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     )
     .await
     .unwrap();
-    let claimed = login_code::follow(&*https, &asking.follow)
+    let claimed = login_code::follow(&*https, &asking.follow, None)
         .await
         .unwrap()
         .claimed
@@ -139,6 +161,9 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
 
     // A claim signed by another key than the certificate's is refused.
     let again = login_code::create(&*https, None).await.unwrap();
+    login_code::follow(&*https, &again.follow, Some(offer(&again, None)))
+        .await
+        .unwrap();
     let resolved = login_code::resolve(&*https, &again.code).await.unwrap();
     let forged = login_code::claim(
         &*https,

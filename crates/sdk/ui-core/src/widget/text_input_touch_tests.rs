@@ -101,9 +101,6 @@ fn a_tap_on_a_fields_clear_button_clears_it() {
     );
 }
 
-/// The control reads its own finger, and the window's touch emulation also
-/// makes a click of the same tap: the two together used to show the
-/// password and hide it again in one tap.
 #[test]
 fn a_tap_on_a_secret_fields_show_control_shows_it() {
     let _settled = crate::motion::testing::settled();

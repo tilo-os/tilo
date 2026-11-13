@@ -15,7 +15,7 @@ pub struct Visits {
     pub starred: Vec<String>,
 }
 
-#[resource(kind = "test.visits", label = "Visits")]
+#[resource(kind = "test.visits", catalogue = "tests/locales")]
 impl Visits {
     /// Note a visit.
     #[action(housekeeping, by_app)]

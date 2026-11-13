@@ -1,5 +1,4 @@
-//! The waiting stack and the ledger: one place for a decision, one for a
-//! record, and no third.
+//! The waiting stack and the ledger: one place for a decision, one for a record, and no third.
 
 use super::{
     Action, Item, Notice, Owner, Published, State, Target, Urgency, act, clear, defer, deferred,
@@ -11,8 +10,6 @@ fn owner(app: &str) -> Owner {
     Owner::new(app, "Store").with_icon(Icon::Download)
 }
 
-/// An item carries its owner's name as well as its icon, what it is about,
-/// why, and exactly one action.
 #[test]
 fn an_item_says_who_asks_what_about_and_what_to_do() {
     let _serial = crate::jobs::test_lock();
@@ -42,8 +39,6 @@ fn an_item_says_who_asks_what_about_and_what_to_do() {
     assert!(item.since_ms() > 0);
 }
 
-/// The stack is ordered by what it costs to leave: blocking first, then the
-/// oldest.
 #[test]
 fn the_stack_is_ordered_by_cost_then_age() {
     let _serial = crate::jobs::test_lock();
@@ -70,8 +65,6 @@ fn the_stack_is_ordered_by_cost_then_age() {
     assert_eq!(order, vec![blocking, later, earlier]);
 }
 
-/// Seeing is not dismissing: the count falls, the rows stay. Deferring keeps
-/// the row out of the way and still counted.
 #[test]
 fn seeing_does_not_dismiss_and_deferring_still_counts() {
     let _serial = crate::jobs::test_lock();
@@ -101,8 +94,6 @@ fn seeing_does_not_dismiss_and_deferring_still_counts() {
     assert!(items().is_empty());
 }
 
-/// Raising the same news again does not stack rows, and makes it count
-/// again: something that happened twice is news again.
 #[test]
 fn the_same_news_twice_is_one_row() {
     let _serial = crate::jobs::test_lock();
@@ -124,7 +115,6 @@ fn the_same_news_twice_is_one_row() {
     assert_eq!(unseen(), 1);
 }
 
-/// Acting takes the row away and reports the one verb it waited on.
 #[test]
 fn acting_reports_the_verb_and_takes_the_row() {
     let _serial = crate::jobs::test_lock();
@@ -141,8 +131,6 @@ fn acting_reports_the_verb_and_takes_the_row() {
     assert_eq!(act(item), None, "an item is acted on once");
 }
 
-/// An app can take back what it raised: the thing it was about was answered
-/// somewhere else.
 #[test]
 fn an_app_takes_back_what_it_raised() {
     let _serial = crate::jobs::test_lock();
@@ -166,8 +154,6 @@ fn an_app_takes_back_what_it_raised() {
     assert_eq!(waiting[0].title(), "Update available");
 }
 
-/// An outcome that needs a person waits; one that does not is recorded. The
-/// same call decides, so no app has to choose a channel.
 #[test]
 fn publish_sends_a_decision_to_the_stack_and_a_record_to_the_ledger() {
     let _serial = crate::jobs::test_lock();
@@ -197,14 +183,11 @@ fn attention_ledger_clear() {
 #[test]
 fn an_item_without_an_action_does_not_compile() {
     let _serial = crate::jobs::test_lock();
-    // This is the compile-time half; the test pins that the only constructors
-    // take an action.
     let item = Item::new(owner("so.tilo.store"), "x", Action::new("v", "Do it"));
     assert_eq!(item.action().verb, "v");
     assert_eq!(item.state(), State::Unseen);
 }
 
-/// A window's bar can show the count without opening anything.
 #[test]
 fn the_bar_can_say_how_many_are_unseen() {
     let _serial = crate::jobs::test_lock();
@@ -224,8 +207,6 @@ fn the_bar_can_say_how_many_are_unseen() {
     assert_eq!(super::pane::pill().as_deref(), Some("2 waiting"));
 }
 
-/// The stack and the Jobs surface are asked for by name: a host resolves the
-/// request once.
 #[test]
 fn the_surface_can_be_asked_for_from_anywhere() {
     let _serial = crate::jobs::test_lock();

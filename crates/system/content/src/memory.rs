@@ -8,7 +8,6 @@ use crate::{
     Collected, ContentBackend, ContentError, ContentLimits, ContentReader, Stored, hash_bytes,
 };
 
-/// Content that lives as long as the backend.
 pub struct MemoryBackend {
     limits: ContentLimits,
     inner: RwLock<State>,
@@ -87,10 +86,13 @@ impl ContentBackend for MemoryBackend {
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.remove_where(|kept| kept == hash)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
 }
 
 impl MemoryBackend {
-    /// Remove every item whose address `gone` names.
     fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut state = self
             .inner

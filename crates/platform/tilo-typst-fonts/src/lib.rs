@@ -1,10 +1,9 @@
 //! The fonts `typst-assets` bundles, on every target.
 //!
-//! Native builds embed them ([`embedded`]). A page cannot afford megabytes of
-//! font tables in its module, so the browser bundle ships the same files as
-//! host data, which an app requests by the names in [`HOST_FONTS`]
-//! (`ui::host_data`). [`EMBEDDED`] says which of the two this build does, so
-//! an app needs no target code of its own.
+//! Native builds embed them ([`embedded`]); a page cannot afford megabytes of font
+//! tables, so the browser bundle ships the same files as host data, which an app
+//! requests by the names in [`HOST_FONTS`] (`ui::host_data`). [`EMBEDDED`] says
+//! which this build does, so an app needs no target code.
 
 /// Whether this build carries the fonts. When `false`, request each of
 /// [`HOST_FONTS`] from the host instead.
@@ -38,7 +37,6 @@ pub const HOST_FONTS: [&str; 17] = [
 /// can use).
 pub const BORROW_SYSTEM_EMOJI: bool = cfg!(target_os = "windows");
 
-/// The embedded font files; empty where [`EMBEDDED`] is `false`.
 #[must_use]
 pub fn embedded() -> Vec<&'static [u8]> {
     imp::embedded()

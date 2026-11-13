@@ -38,8 +38,13 @@ mod link;
 mod record;
 #[path = "mcp_render.rs"]
 mod render;
+#[path = "mcp_status.rs"]
+mod status;
 #[path = "mcp_tilo.rs"]
 mod tilo;
+#[path = "mcp_undo_run.rs"]
+mod undo_run;
+pub(super) use undo_run::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, outcome, text_result};
@@ -161,8 +166,8 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_status",
-            "How a pending invocation went (cancel: true stops it).",
-            json!({"invocation_id":string,"cancel":{"type":"boolean"}}),
+            "How an invocation went (cancel: stop it, undo: take its run back).",
+            json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),
             json!(["invocation_id"]),
             json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
         ),
@@ -231,14 +236,6 @@ struct FindArgs {
     query: String,
     app: Option<String>,
     limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AgentStatusArgs {
-    invocation_id: String,
-    #[serde(default)]
-    cancel: bool,
 }
 
 /// What an agent tool answers: the text and whether it reports a failure.
@@ -1090,7 +1087,8 @@ fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
 
 impl Resolved {
     /// Where a change of the target is taken back: its record's own history, on the nearest
-    /// resource that holds the target (or the target itself) and offers `undo`.
+    /// resource that holds the target (or the target itself) and offers `undo`; for an app
+    /// named itself (a record whose root is the app's), where its root actions offer it.
     fn history(&self) -> Option<String> {
         let offers = |node: &&Node| {
             node.actions
@@ -1098,7 +1096,17 @@ impl Resolved {
                 .any(|action| action.address.action == "undo")
         };
         let nearest = self.node.iter().chain(self.chain.iter().rev()).find(offers);
-        nearest.map(|node| node.id.clone())
+        nearest.map(|node| node.id.clone()).or_else(|| {
+            self.node
+                .is_none()
+                .then(|| {
+                    self.actions
+                        .iter()
+                        .find(|action| action.address.action == "undo")
+                        .map(|action| action.address.resource.clone())
+                })
+                .flatten()
+        })
     }
 }
 
@@ -2491,16 +2499,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     }
                     reply.structured = Some(typed);
                 }
-                // A call naming the run it is a step of makes that run's step:
-                // `undo task` takes it back in every app it changed, as it
-                // takes back a program's.
-                if !reply.failed
-                    && descriptor.contract.kind != tilo_actions::ActionKind::Read
-                    && let Some((gesture, label)) = Self::grouped_run()
-                {
-                    self.programs
-                        .lock_recover()
-                        .note_run(gesture, &label, &app, history);
+                if !reply.failed && descriptor.contract.kind != tilo_actions::ActionKind::Read {
+                    self.note_change(&value, &path, (&provider, &app), history);
                 }
                 Ok(reply)
             }
@@ -2864,27 +2864,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .ok_or_else(|| format!("{app_id} started, but named no instance of it"))
             }
         }
-    }
-
-    async fn agent_status(
-        &self,
-        args: &AgentStatusArgs,
-        structured: bool,
-    ) -> Result<Reply, String> {
-        let invocation = invocation_id(&args.invocation_id)?;
-        if args.cancel {
-            self.host()
-                .cancel(&self.caller(), &invocation)
-                .await
-                .ok_or("the host dropped the request")?
-                .map_err(|error| error.to_string())?;
-        }
-        let value = self.status(invocation).await?;
-        let mut reply = outcome(&value);
-        let link = self.changed_link_of(&args.invocation_id, &value).await;
-        let typed = structured.then(|| answer_of(&value));
-        reply.structured = link::linked(&mut reply, typed, link);
-        Ok(reply)
     }
 }
 

@@ -76,8 +76,7 @@ pub(crate) fn reported_check_work(
     }))
 }
 
-/// Inert delivered inputs. Only the registered host can associate these with
-/// an original admitted caller, contract and exact worker connection.
+/// Inert delivered inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedInvocationRequest {
     pub wire_id: u64,
@@ -85,15 +84,13 @@ pub struct PublishedInvocationRequest {
     pub address: tilo_actions::ActionAddress,
     pub argument: Option<String>,
     pub actor: String,
-    /// Whose view this invocation resolves against. Set only by the host that
-    /// admitted `actor` (for an agent task, derived from the admitted task),
-    /// never taken from a caller's envelope. It routes to view state and is
-    /// never authority. Part of the exact request both ends compare.
+    /// Whose view this invocation resolves against. Set only by the host that admitted `actor` (for an
+    /// agent task, derived from the admitted task), never taken from a caller's envelope. It routes to
+    /// view state and is never authority.
     pub participant: Option<tilo_actions::ParticipantId>,
 }
 impl PublishedInvocationRequest {
-    /// The invoker this request resolves for: the admitted actor plus the
-    /// host-set participant.
+    /// The invoker this request resolves for: the admitted actor plus the host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
         let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
         match &self.participant {
@@ -108,10 +105,8 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The participant a published tree is being built for while it lives:
-/// what a surface offers bound to where someone is (their caret, their
-/// Find hits) is that participant's, not the window's. It grants nothing:
-/// an invocation still runs for its own invoker.
+/// The participant a published tree is being built for while it lives: what a surface offers bound to
+/// where someone is (their caret, their Find hits) is that participant's, not the window's.
 pub struct ViewerScope(());
 impl ViewerScope {
     pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
@@ -127,29 +122,27 @@ impl Drop for ViewerScope {
     }
 }
 
-/// Whose view what is being built or resolved now is: the participant of
-/// the delivered invocation, else the participant a tree is published for.
-/// `None` for the window's own person.
+/// Whose view what is being built or resolved now is: the participant of the delivered invocation, else
+/// the participant a tree is published for.
 pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
     current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
 }
 
-/// Who an effect invocation runs for, kept while it runs: what its handler
-/// and completion submit is applied for the same invoker, in the same
-/// context, and only as far as the invoker was admitted.
+/// Who an effect invocation runs for, kept while it runs: what its handler and completion submit is
+/// applied for the same invoker, in the same context, and only as far as the invoker was admitted.
 #[derive(Clone, Debug)]
 pub(crate) struct Continuation {
     pub(crate) invoker: tilo_actions::ActionInvoker,
     pub(crate) context: Option<tilo_actions::ActionContext>,
-    /// What the invoker was admitted for: the effect's own kind, which the
-    /// admitting host checked the invoker may perform.
+    /// What the invoker was admitted for: the effect's own kind, which the admitting host checked the
+    /// invoker may perform.
     pub(crate) admitted: tilo_actions::ActionKind,
     /// Why an edit the effect submitted was refused: the effect then fails.
     pub(crate) refused: Option<tilo_actions::ActionFailure>,
     /// The edits it submitted that the host is still admitting, by request.
     pub(crate) outstanding: std::collections::HashSet<u64>,
-    /// The effect's answer, held until those edits are admitted or refused:
-    /// the wire id to send it under, and the answer.
+    /// The effect's answer, held until those edits are admitted or refused: the wire id to send it
+    /// under, and the answer.
     pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
 }
 
@@ -162,8 +155,8 @@ impl Continuation {
         )
     }
 
-    /// Why the effect fails when the edit it submitted was refused with
-    /// `error`: a refusal keeps its own code.
+    /// Why the effect fails when the edit it submitted was refused with `error`: a refusal keeps its
+    /// own code.
     pub(crate) fn failure(error: &tilo_actions::DoorError) -> tilo_actions::ActionFailure {
         let (code, message) = match error {
             tilo_actions::DoorError::Unavailable { code, reason } => (code.clone(), reason.clone()),
@@ -180,8 +173,7 @@ impl Continuation {
         }
     }
 
-    /// The effect's terminal `update`, failed when an edit it submitted was
-    /// refused.
+    /// The effect's terminal `update`, failed when an edit it submitted was refused.
     pub(crate) fn settle(
         &self,
         update: tilo_actions::InvocationUpdate,
@@ -203,8 +195,8 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// An edit an effect submitted on its invoker's behalf is being applied on
-/// this thread: it may need no more than the invoker was admitted for.
+/// An edit an effect submitted on its invoker's behalf is being applied on this thread: it may need no
+/// more than the invoker was admitted for.
 #[must_use = "the bound applies only while the guard is alive"]
 pub(crate) struct ContinuationScope(());
 impl ContinuationScope {
@@ -221,12 +213,9 @@ impl Drop for ContinuationScope {
     }
 }
 
-/// Refuse an edit of kind `needed` while applying an effect's edit for an
-/// invoker admitted for less (a read never lends a change, a change never an
-/// outside effect): an effect never lends its invoker more than they hold.
-///
-/// # Errors
-/// [`tilo_actions::DoorError::Unavailable`] with code `permission_denied`.
+/// Refuse an edit of kind `needed` while applying an effect's edit for an invoker admitted for less (a
+/// read never lends a change, a change never an outside effect): an effect never lends its invoker more
+/// than they hold.
 pub(crate) fn check_continuation(
     spec: &tilo_actions::ActionSpec,
     needed: tilo_actions::ActionKind,
@@ -241,17 +230,7 @@ pub(crate) fn check_continuation(
     }
 }
 
-/// Whether `actor` may invoke the View operation `contract` here. The local
-/// person always may. A remote actor may only when it is the current host-set
-/// invoker, it has its own participant view, and the operation declares that
-/// it changes only the invoking participant's view
-/// ([`tilo_actions::PARTICIPANT_VIEW_TAG`]). A read of the document
-/// ([`tilo_actions::DOCUMENT_READ_TAG`]), or another read of the record
-/// ([`tilo_actions::RECORD_READ_TAG`]), moves nothing, so any actor the
-/// broker admitted may run it: it is a View operation only because it
-/// changes no document, and refusing it as "somebody else's view" left an
-/// agent that may read a note unable to read it. Every other View operation
-/// would move somebody else's private view and stays refused.
+/// Whether `actor` may invoke the View operation `contract` here. The local person always may.
 pub fn view_operation_permitted(
     actor: &str,
     local_author: &str,
@@ -264,8 +243,8 @@ pub fn view_operation_permitted(
                 .is_some_and(|invoker| invoker.actor == actor && invoker.participant.is_some()))
 }
 
-/// Inert declaration retained by the actual host at original admission. This
-/// is not authority, and is never decoded from a caller's wire request.
+/// Inert declaration retained by the actual host at original admission. This is not authority, and is
+/// never decoded from a caller's wire request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedInvocationSpec {
     pub kind: tilo_actions::OperationKind,
@@ -275,9 +254,9 @@ pub struct PublishedInvocationSpec {
     pub directory_revision: Option<String>,
 }
 
-/// An opaque check minted by the actual host for this exact invocation.
-/// Hosts must retain original caller authority and resample their registered
-/// policy time on every check. A positive result is never a reusable decision.
+/// An opaque check minted by the actual host for this exact invocation. Hosts must retain original
+/// caller authority and resample their registered policy time on every check. A positive result is
+/// never a reusable decision.
 #[derive(Clone)]
 pub struct PublishedInvocationLease {
     request: PublishedInvocationRequest,
@@ -301,7 +280,6 @@ impl PublishedInvocationLease {
         }
     }
     /// Attach once from the host's immutable original offered declaration.
-    /// The worker separately compares its current resolved handler contract.
     pub fn with_dispatch_spec(mut self, spec: PublishedInvocationSpec) -> Result<Self, String> {
         if self.dispatch_spec.is_some() {
             return Err("original invocation dispatch spec cannot be replaced".into());
@@ -309,9 +287,9 @@ impl PublishedInvocationLease {
         self.dispatch_spec = Some(spec);
         Ok(self)
     }
-    /// Attach the concrete host's privately constructed immutable original
-    /// invocation facts. Presence is not authorization: the final owner must
-    /// validate its own private type against already-held current authority.
+    /// Attach the concrete host's privately constructed immutable original invocation facts. Presence
+    /// is not authorization: the final owner must validate its own private type against already-held
+    /// current authority.
     pub fn with_owner_token(
         mut self,
         token: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -378,13 +356,9 @@ use std::{
     },
 };
 
-/// Local evidence of the target resolved at dispatch, before encoding/execution.
-///
-/// The SDK captures this from the original caller's scope and actual record
-/// loan. It contains no action arguments, result, anchor or pixels. It is not
-/// a receipt of completion, portable authentication, or permission to execute.
-/// A consumer must separately qualify any anchor and successful presentation
-/// against these committed heads and the current owner.
+/// Local evidence of the target resolved at dispatch, before encoding/execution. It contains no action
+/// arguments, result, anchor or pixels. A consumer must separately qualify any anchor and successful
+/// presentation against these committed heads and the current owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationLocusBasis {
     invocation: tilo_actions::InvocationId,
@@ -446,8 +420,8 @@ const MAX_LOCUS_HEADS: usize = 128;
 const MAX_LOCUS_FIELD_BYTES: usize = 4096;
 const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
 
-/// Immutable job custody, constructed only from an actual admitted invocation
-/// and the exact mounted record owner. InvocationId alone cannot construct it.
+/// Immutable job custody, constructed only from an actual admitted invocation and the exact mounted
+/// record owner. InvocationId alone cannot construct it.
 #[derive(Clone)]
 pub struct ResourceInvocationScope {
     owner: HistoryOwner,
@@ -495,8 +469,8 @@ impl ResourceInvocationScope {
         })
     }
 
-    /// Retain the exact target while the SDK still holds its original alias
-    /// resolution. Later dispatch cannot qualify a different same-owner action.
+    /// Retain the exact target while the SDK still holds its original alias resolution. Later dispatch
+    /// cannot qualify a different same-owner action.
     pub(crate) fn for_bound_target(
         target: crate::bound_dispatch::BoundActionTarget,
         lease: PublishedInvocationLease,
@@ -515,9 +489,8 @@ impl ResourceInvocationScope {
         Ok(scope)
     }
 
-    /// Read the immutable pre-execution observation while original custody is
-    /// live. No basis means this invocation could not be observed truthfully.
-    /// This never commits, borrows a document, refreshes timestamps or executes.
+    /// Read the immutable pre-execution observation while original custody is live. This never commits,
+    /// borrows a document, refreshes timestamps or executes.
     pub fn locus_basis(&self) -> Result<Option<InvocationLocusBasis>, String> {
         self.check()?;
         Ok(match &*self.locus_basis.borrow() {
@@ -526,8 +499,8 @@ impl ResourceInvocationScope {
         })
     }
 
-    /// Best-effort metadata at actual bound dispatch; failure never changes the
-    /// action result. Once unavailable it cannot be repaired by a later event.
+    /// Best-effort metadata at actual bound dispatch; failure never changes the action result. Once
+    /// unavailable it cannot be repaired by a later event.
     pub(crate) fn capture_locus_basis(
         &self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -599,7 +572,6 @@ impl ResourceInvocationScope {
     }
 
     /// Compare inert original admission facts with this exact current handler.
-    /// This does not invoke a policy callback or acquire an owner/store lock.
     pub(crate) fn check_dispatch_spec(
         &self,
         current: &tilo_actions::ActionSpec,
@@ -650,9 +622,6 @@ impl ResourceInvocationScope {
     }
 
     /// Submit only the exact operation retained by this original invocation.
-    ///
-    /// # Errors
-    /// Refuses changed action parameters, retired custody or unavailable transport.
     pub fn external_moderation(
         &self,
         operation: registry_types::ExternalModerationOperation,
@@ -692,15 +661,8 @@ impl ResourceInvocationScope {
         }
     }
 
-    /// Name the paths this invocation is about to write (absolute paths; a
-    /// folder covers what is under it), so the host can record the agent
-    /// behind them. The host takes who acted from its own custody of this
-    /// invocation and names only an agent acting for the session's person;
-    /// `None` when this invocation is not an agent's, which spares a
-    /// person's writes the round trip. It grants nothing.
-    ///
-    /// # Errors
-    /// Refuses retired custody, invalid paths or an unavailable lane.
+    /// Name the paths this invocation is about to write (absolute paths; a folder covers what is under
+    /// it), so the host can record the agent behind them.
     pub fn attribute_writes(
         &self,
         paths: Vec<String>,
@@ -726,10 +688,6 @@ impl ResourceInvocationScope {
     }
 
     /// Queue only a check ID under this exact admitted effect's record route.
-    /// The host resolves commands and execution bounds and rechecks custody.
-    ///
-    /// # Errors
-    /// Refuses absent transport, changed custody, malformed IDs or a full lane.
     pub fn approved_check(&self, check_id: &str) -> Result<ApprovedCheckFuture, String> {
         self.check()?;
         #[cfg(feature = "broker-transport")]
@@ -759,9 +717,6 @@ impl ResourceInvocationScope {
     }
 
     /// Queue reported observations on the same admitted check and record channel.
-    ///
-    /// # Errors
-    /// Refuses changed custody, unavailable transport, malformed IDs or a full lane.
     pub fn approved_check_reported(
         &self,
         check_id: &str,
@@ -791,8 +746,8 @@ impl ResourceInvocationScope {
         &self.lease.route
     }
 
-    /// Irreversibly retire this job and all derived worker-effect custody.
-    /// Cancellation grants no authority and cannot affect another job.
+    /// Irreversibly retire this job and all derived worker-effect custody. Cancellation grants no
+    /// authority and cannot affect another job.
     pub fn cancel(&self) {
         self.retired.store(true, Ordering::Release);
     }
@@ -824,9 +779,8 @@ impl ResourceInvocationScope {
         effect()
     }
 
-    /// Derive worker-thread effect custody from this actual admitted scope.
-    /// The host's original lease checks exact worker/origin liveness and current
-    /// caller permission. This carries no record loan and cannot mutate a Doc.
+    /// Derive worker-thread effect custody from this actual admitted scope. This carries no record loan
+    /// and cannot mutate a Doc.
     pub fn effect_scope(&self) -> Result<ResourceEffectScope, String> {
         self.check()?;
         Ok(ResourceEffectScope {
@@ -835,8 +789,8 @@ impl ResourceInvocationScope {
         })
     }
 
-    /// Verify the original caller and that `document` is the record store's
-    /// current loan of this scope's exact record.
+    /// Verify the original caller and that `document` is the record store's current loan of this
+    /// scope's exact record.
     pub(crate) fn check_read_loan(&self, document: &AutoCommit) -> Result<(), String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();
@@ -848,9 +802,7 @@ impl ResourceInvocationScope {
         Ok(())
     }
 
-    /// Mutate only the actual currently borrowed canonical record. The loan
-    /// witness identifies storage; this explicit scope supplies caller custody.
-    /// Partial changes on an Err retain their original contribution as well.
+    /// Mutate only the actual currently borrowed canonical record.
     pub fn with_document_mutation<R>(
         &self,
         document: &mut AutoCommit,
@@ -870,7 +822,6 @@ impl ResourceInvocationScope {
         self.provenance
             .borrow_mut()
             .end_mutation(document, &self.lease)?;
-        // Retain metadata even if authority elapsed inside the callback.
         result.and_then(|value| self.check().map(|()| value))
     }
 }
@@ -888,8 +839,6 @@ pub struct ResourceEffectScope {
 }
 impl ResourceEffectScope {
     /// Recheck immediately before the actual delayed worker-side effect.
-    /// Call without holding the final owner's Store guard; this callback may
-    /// acquire that owner to evaluate the original caller's current permission.
     pub fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
         if self.retired.load(Ordering::Acquire) {
             return Err("original invocation scope has retired".into());
@@ -898,8 +847,6 @@ impl ResourceEffectScope {
             self.retired.store(true, Ordering::Release);
             return Err(error);
         }
-        // Admission linearizes at this final observation after the callback.
-        // Cancellation does not interrupt an effect already admitted here.
         if self.retired.load(Ordering::Acquire) {
             return Err("original invocation scope has retired".into());
         }
@@ -907,8 +854,8 @@ impl ResourceEffectScope {
     }
 }
 
-/// Record-owned metadata. Required mode is installed before the app factory,
-/// from the actual admitted record; it can never reset its trusted baseline.
+/// Record-owned metadata. Required mode is installed before the app factory, from the actual admitted
+/// record; it can never reset its trusted baseline.
 #[derive(Default)]
 pub(crate) struct InvocationProvenance {
     route: Option<RouteSpec>,
@@ -1079,9 +1026,6 @@ impl InvocationProvenance {
             return Err("publication has unfinished changes".into());
         }
         self.validate_existing(document)?;
-        // The changes the exact body carries, not an ancestry range: what
-        // arrived from the route is left out of the publication, and the
-        // authorization names what went out with it.
         let exported: BTreeSet<ChangeHash> = match mutation {
             collab_types::DocumentMutation::Snapshot(_) => document
                 .get_changes(&[])
@@ -1151,8 +1095,7 @@ struct DocumentAuthorizationInner {
     acknowledgements: Vec<Arc<AtomicBool>>,
 }
 
-/// Immutable local publication evidence. It is never serialized or minted from
-/// wire fields. Captured original guards outlive terminal invocation tracking.
+/// Immutable local publication evidence. It is never serialized or minted from wire fields.
 #[derive(Clone)]
 pub struct DocumentAuthorization(Arc<DocumentAuthorizationInner>);
 impl std::fmt::Debug for DocumentAuthorization {
@@ -1174,13 +1117,12 @@ impl ::collaboration::DocumentCustody for DocumentAuthorization {
 }
 impl DocumentAuthorization {
     /// Inert captured frontiers for the concrete bounded body/range evaluator.
-    /// These are not a substitute for its actual parsed causal-coverage proof.
     pub fn frontiers(&self) -> (&[ChangeHash], &[ChangeHash]) {
         (&self.0.from, &self.0.to)
     }
-    /// This verifies body binding and current contributors, not graph coverage.
-    /// The concrete owner must ALSO call validate_owner_base with the actual
-    /// bounded admission/parser's complete mutation range under its owner turn.
+    /// This verifies body binding and current contributors, not graph coverage. The concrete owner must
+    /// ALSO call validate_owner_base with the actual bounded admission/parser's complete mutation range
+    /// under its owner turn.
     pub fn check(
         &self,
         route: &RouteSpec,
@@ -1196,8 +1138,8 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    /// Structural binding only: safe under the concrete owner's existing lock.
-    /// This never invokes a lifecycle callback or opens authority/storage.
+    /// Structural binding only: safe under the concrete owner's existing lock. This never invokes a
+    /// lifecycle callback or opens authority/storage.
     pub fn check_binding(
         &self,
         route: &RouteSpec,
@@ -1212,9 +1154,8 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    /// `actual` comes from the bounded parser/admission of the exact body, not
-    /// these metadata fields. Unattributed changes must already exist in the
-    /// actual committed owner history. An omitted or invented range refuses.
+    /// `actual` comes from the bounded parser/admission of the exact body, not these metadata fields.
+    /// Unattributed changes must already exist in the actual committed owner history.
     pub fn validate_owner_base(
         &self,
         actual: &[ChangeHash],
@@ -1239,10 +1180,9 @@ impl DocumentAuthorization {
         Ok(())
     }
 
-    /// The final owner validates each ORIGINAL private token against its
-    /// already-held peer/ledger/time, including these exact delivery inputs and
-    /// route. A successful downcast alone must never return authorization.
-    /// This method invokes no ordinary lifecycle/Store-reopening callback.
+    /// The final owner validates each ORIGINAL private token against its already-held peer/ledger/time,
+    /// including these exact delivery inputs and route. A successful downcast alone must never return
+    /// authorization.
     pub fn validate_owner_contributors(
         &self,
         mut validate: impl FnMut(
@@ -1383,8 +1323,6 @@ impl Drop for MountedLoan {
 }
 
 /// Lend `document` to `callback`, identified as the record `stamp` names.
-/// Without a stamp the document is lent unidentified, and nothing may
-/// disclose it as a record.
 fn with_identified_document<R>(
     stamp: Option<RecordStamp>,
     document: &mut AutoCommit,
@@ -1400,9 +1338,8 @@ fn with_identified_document<R>(
     callback(document)
 }
 
-/// Lend the app's mounted primary document to `callback`, identified as the
-/// canonical record on `route`. Without a current primary route the document
-/// is lent unidentified.
+/// Lend the app's mounted primary document to `callback`, identified as the canonical record on
+/// `route`.
 pub(crate) fn with_mounted_document<R>(
     route: Option<RouteSpec>,
     document: &mut AutoCommit,
@@ -1411,9 +1348,9 @@ pub(crate) fn with_mounted_document<R>(
     with_identified_document(route.as_ref().map(RecordStamp::from), document, callback)
 }
 
-/// Lend a component's record document to `callback`, identified only when it
-/// is the record store's current loan of exactly `checkout`'s document: on
-/// its canonical `route` when it has one, else as `app_id`'s local record.
+/// Lend a component's record document to `callback`, identified only when it is the record store's
+/// current loan of exactly `checkout`'s document: on its canonical `route` when it has one, else as
+/// `app_id`'s local record.
 pub(crate) fn with_loaned_record<R>(
     store: &RecordStore,
     checkout: &RecordCheckout,
@@ -1435,8 +1372,7 @@ pub(crate) fn with_loaned_record<R>(
     with_identified_document(stamp, document, callback)
 }
 
-/// The record the innermost identified document names, when it is exactly
-/// `document`.
+/// The record the innermost identified document names, when it is exactly `document`.
 pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
     MOUNTED_DOCUMENTS.with_borrow(|mounted| {
         mounted
@@ -1446,8 +1382,8 @@ pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
     })
 }
 
-/// A scoped chooser or URI request rechecks this admitted caller on the host's
-/// worker immediately before the effect.
+/// A scoped chooser or URI request rechecks this admitted caller on the host's worker immediately
+/// before the effect.
 impl crate::portal::EffectGate for ResourceEffectScope {
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
         ResourceEffectScope::with_effect(self, effect)

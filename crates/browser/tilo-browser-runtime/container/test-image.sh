@@ -159,6 +159,23 @@ installer=$root/srv/tilo-install/install.sh
 grep -q '<!doctype html>' <<<"$(get / -A 'Mozilla/5.0')" || fail "a browser at / must get the entry page"
 grep -q '^content-type: text/x-shellscript' <<<"$(head_of /install.sh)" || fail "the installer must be served as a shell script"
 
+# The developer docs: the pages revalidate, their assets are kept, each page has its Markdown
+# beside it, and agents find llms.txt at the site's root too.
+docs=$root/srv/tilo-web/docs
+[[ -f $docs/index.html && -f $docs/index.md && -f $docs/llms.txt ]] || fail "the image carries no developer docs"
+docs_page=$(get /docs/)
+grep -q '<!doctype html>' <<<"$docs_page" || fail "/docs/ must be the docs' first page"
+grep -q '^cache-control: no-cache' <<<"$(head_of /docs/)" || fail "the docs' pages must revalidate"
+grep -q '^content-type: text/markdown' <<<"$(head_of /docs/index.md)" || fail "a page's Markdown must be served as Markdown"
+[[ $(get /llms.txt | sha256sum) == "$(sha256sum <"$docs/llms.txt")" ]] || fail "/llms.txt must be the docs' llms.txt"
+grep -q '^content-type: text/plain' <<<"$(head_of /llms.txt)" || fail "llms.txt must be served as text"
+grep -q '^HTTP/[0-9.]* 404' <<<"$(head_of /docs/no-such-page/)" || fail "a docs address that names no page must be not found"
+grep -q 'No page here' <<<"$(get /docs/no-such-page/)" || fail "a docs address that names no page must get the docs' own page"
+stylesheet=$(grep -o '/docs/assets/docs\.[0-9a-f]*\.css' <<<"$docs_page" | head -1)
+[[ -n $stylesheet ]] || fail "the docs' first page names no stylesheet"
+grep -q '^cache-control: public, max-age=31536000, immutable$' <<<"$(head_of "$stylesheet")" \
+  || fail "the docs' assets are named by their content and must be kept: $stylesheet"
+
 # The releases the installer downloads, from the store they are kept in (here a stand-in on the
 # loopback that sets a cookie and its own caching, and records what it was asked with).
 for bad in http://releases.example/tilo-cli https://releases.example https://releases.example/tilo-cli/; do

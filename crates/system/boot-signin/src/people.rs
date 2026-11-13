@@ -14,7 +14,6 @@ pub enum SecretKind {
 }
 
 impl SecretKind {
-    /// The word the screen uses for this secret.
     pub fn label(self) -> &'static str {
         match self {
             Self::Pin => "PIN",
@@ -22,7 +21,6 @@ impl SecretKind {
         }
     }
 
-    /// The same word inside a sentence.
     pub fn noun(self) -> &'static str {
         match self {
             Self::Pin => "PIN",

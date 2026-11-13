@@ -54,3 +54,11 @@ d-vp5uwkal = Kürzlich
 d-3666szuv = Kommentarseite
 
 d-jxt3set4 = Bemerkung
+
+# What each argument is called where a person gives it.
+
+d-l7s2czjp-text = Text
+
+d-iae4o5k3-text = Text
+
+d-l3wyj42h-c = C

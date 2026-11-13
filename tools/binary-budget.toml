@@ -29,7 +29,6 @@
 "feeds" = 30   # 25.4 MB
 "file-explorer" = 25   # 21.6 MB
 "firewall" = 22   # 19.0 MB
-"flatpak-share-demo" = 4   # 2.9 MB
 "fs" = 21   # 17.8 MB
 "git-client" = 24   # 20.1 MB
 "hex-editor" = 24   # 20.8 MB

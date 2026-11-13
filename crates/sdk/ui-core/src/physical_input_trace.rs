@@ -1,6 +1,6 @@
-//! Content-free evidence from ordinary native platform input and drawn frames.
-//! A drawn frame is not display completion: only matching presentation feedback
-//! can close the timeline. Missing IDs/state/feedback never qualify a measurement.
+//! Content-free evidence from ordinary native platform input and drawn frames. A drawn frame is not
+//! display completion: only matching presentation feedback can close the timeline. Missing
+//! IDs/state/feedback never qualify a measurement.
 use crate::time::{Duration, Instant};
 use serde_json::Value;
 use winit::event::{ElementState, Ime, WindowEvent};
@@ -92,8 +92,6 @@ impl Trace {
     pub fn drawn(&mut self, cpu_frame_id: Option<u64>, snapshot: Option<Value>) -> Option<Value> {
         if !self.pending.is_empty() {
             self.drawn_inputs = std::mem::take(&mut self.pending);
-            // A submitted buffer can be discarded before display. Preserve
-            // a bounded content-free witness on subsequent actual draws.
             self.redraws_remaining = 32;
             self.redraw_until = crate::time::now().checked_add(Duration::from_secs(2));
         }

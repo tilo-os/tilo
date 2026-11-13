@@ -1,6 +1,6 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
-use tilo_action_policy::{Answer, Context, Grant, KindSet, Party, Subject, roles};
+use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, Party, roles};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
 
 use super::*;
@@ -83,11 +83,11 @@ fn claim(byte: u8, action: ClaimedAction, units: Vec<UnitPath>) -> ChangeClaim {
 
 /// Ada edits the room; Cleo only comments.
 fn grants() -> Vec<Grant> {
-    let room = Subject::person("room-owner");
+    let room = Grantee::person("room-owner");
     vec![
         Grant::new(
             "ada-edits",
-            Subject::person("ada"),
+            Grantee::person("ada"),
             TreePath::workspace(ROOM),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -95,7 +95,7 @@ fn grants() -> Vec<Grant> {
         ),
         Grant::new(
             "cleo-comments",
-            Subject::person("cleo"),
+            Grantee::person("cleo"),
             roles::comments(ROOM),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -106,7 +106,7 @@ fn grants() -> Vec<Grant> {
 
 fn decide(person: &str, claims: &[ChangeClaim]) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
-    let party = Party::new(vec![Subject::person(person)], grants.iter());
+    let party = Party::new(vec![Grantee::person(person)], grants.iter());
     let allows = |node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
@@ -186,7 +186,7 @@ fn the_relay_refuses_a_granted_action_that_writes_another_unit() {
 #[test]
 fn claims_name_exactly_the_changes_and_a_missing_surface_holds() {
     let grants = grants();
-    let party = Party::new(vec![Subject::person("ada")], grants.iter());
+    let party = Party::new(vec![Grantee::person("ada")], grants.iter());
     let allows = |node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
@@ -284,7 +284,7 @@ fn claims_derived_from_real_changes_pass_the_relay() {
     let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
     let grants = grants();
     for (person, expected) in [("ada", true), ("cleo", false)] {
-        let party = Party::new(vec![Subject::person(person)], grants.iter());
+        let party = Party::new(vec![Grantee::person(person)], grants.iter());
         let allows = |node: &TreePath, kind: ActionKind| {
             party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
         };
@@ -410,7 +410,7 @@ fn calendar_read(
     wrote: Option<Wrote<'_>>,
 ) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
-    let party = Party::new(vec![Subject::person("ada")], grants.iter());
+    let party = Party::new(vec![Grantee::person("ada")], grants.iter());
     let allows = |node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };

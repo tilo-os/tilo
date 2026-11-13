@@ -31,13 +31,10 @@ use std::time::{Duration, Instant};
 use runtime_fs::blobs::{BlobClient, BlobPrincipal, BlobScope, ReadOutcome, write_handoff};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// The shipped `fs` binary, which serves a session's document media.
 fn fs_binary() -> PathBuf {
     tilo_test_env::package_binary!("fs")
 }
 
-/// A session's media server at `socket`, keeping content in `store`, as a session started from
-/// a build under test serves one.
 struct Server {
     child: Child,
     socket: PathBuf,
@@ -57,9 +54,6 @@ impl Server {
             .stderr(Stdio::null())
             .spawn_locked()
             .expect("the session's document media starts");
-        // Readiness is a connection the server answers, not the file it leaves: a session
-        // killed outright leaves a socket behind that no one listens on, and a later start of
-        // the same path binds over it.
         let started = Instant::now();
         loop {
             if UnixStream::connect(&socket).is_ok() {
@@ -79,7 +73,6 @@ impl Server {
         Self { child, socket }
     }
 
-    /// A connection in `app`'s scope in `workspace`, as the launcher hands one into a sandbox.
     fn app(&self, workspace: &str, app: &str) -> BlobClient {
         let mut stream = UnixStream::connect(&self.socket).expect("the media socket answers");
         write_handoff(
@@ -98,7 +91,6 @@ impl Drop for Server {
     }
 }
 
-/// A picture, as the connector fetched it from `YouTube`'s CDN.
 const PICTURE: &[u8] = b"\x89PNG\r\n\x1a\n a still, as the connector fetched it";
 
 #[test]
@@ -106,14 +98,11 @@ fn a_session_s_media_server_keeps_what_the_connector_puts_for_the_window_to_read
     let dir = tempfile::tempdir().expect("a scratch directory");
     let server = Server::start(dir.path());
 
-    // The connector: the app's own scope, as the launcher fixes it on the connection.
     let connector = server.app("workspace-1", "so.tilo.lang.tube");
     let kept = connector
         .put(PICTURE, "image/png")
         .expect("the connector keeps a picture as this device's content");
 
-    // The window: a connection of its own in the same app's scope, which the answer's
-    // `tilo-blob://<hash>` address is read through.
     let window = server.app("workspace-1", "so.tilo.lang.tube");
     assert_eq!(
         window
@@ -127,25 +116,16 @@ fn a_session_s_media_server_keeps_what_the_connector_puts_for_the_window_to_read
     );
 }
 
-/// The session's own process draws a place over an app's record without any app window, and the
-/// launcher hands no app's capability to it: its store is the daemon's, opened as the session
-/// itself and scoped to the workspaces it draws (`tilo_content_device::session`). A still the
-/// app's connector kept under its own scope in that workspace is read through it, which is what
-/// fills a place's cards — without it every still stayed a placeholder though the bytes were
-/// kept.
 #[test]
 fn the_session_reads_what_the_connector_kept_through_its_own_store() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let server = Server::start(dir.path());
 
-    // The connector, in the app's own scope: the still goes into the workspace's reachability
-    // index, which is per workspace and not per app.
     let connector = server.app("workspace-1", "so.tilo.lang.tube");
     let kept = connector
         .put(PICTURE, "image/png")
         .expect("the connector keeps a still");
 
-    // The session's process: a plain store over the daemon's socket, as the shell part's is.
     let session = session_store(&server.socket, "workspace-1")
         .expect("the session reads the workspace's content through its own media");
     assert_eq!(
@@ -154,8 +134,6 @@ fn the_session_reads_what_the_connector_kept_through_its_own_store() {
         "a place of that workspace draws the still the connector kept"
     );
 
-    // A workspace the still was never put in holds none of it: the session's store serves what
-    // each workspace references, never another's.
     let elsewhere =
         session_store(&server.socket, "workspace-2").expect("a second workspace's media");
     assert_eq!(
@@ -165,12 +143,7 @@ fn the_session_reads_what_the_connector_kept_through_its_own_store() {
     );
 }
 
-/// The store a session's own process reads a workspace's pictures through: the daemon at
-/// `socket`, with `workspace` one of the workspaces it draws. This is exactly what the shell part
-/// is lent (`ui::content::lend_content`).
 fn session_store(socket: &Path, workspace: &str) -> Option<tilo_content::ContentStore> {
-    // The session's socket is read once, when the store is made, so the variable is set for
-    // exactly that call and put back from the scope.
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_FS_BLOB_SOCKET", socket);
     tilo_content_device::set_session_workspaces(vec![workspace.to_owned()]);
@@ -182,7 +155,6 @@ fn a_server_replaces_a_socket_a_killed_session_left_behind() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let socket = dir.path().join("fs-blobs.sock");
     {
-        // A session killed outright leaves its socket file, and nothing listens behind it.
         let server = Server::start(dir.path());
         drop(server);
     }

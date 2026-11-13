@@ -75,28 +75,64 @@ fn youtube_connector_child() {
 /// The scripted `YouTube` service: one search's answer.
 fn scripted() -> tilolang_youtube::Scripted {
     tilolang_youtube::Scripted {
-        searches: [(
-            "compositor".to_owned(),
-            tilolang_youtube::SearchPage {
-                query: "compositor".to_owned(),
-                channels: vec![tilolang_youtube::ChannelItem {
-                    key: "UC-lowlevel".to_owned(),
-                    name: NAME.to_owned(),
-                    ..tilolang_youtube::ChannelItem::default()
-                }],
-                playlists: Vec::new(),
-                videos: vec![tilolang_youtube::VideoItem {
-                    key: "v-compositor".to_owned(),
-                    title: VIDEO.to_owned(),
-                    channel_key: "UC-lowlevel".to_owned(),
-                    channel_name: NAME.to_owned(),
-                    published: "2026-11-01T12:00:00Z".to_owned(),
-                    duration: 900,
-                    views: 12_000,
-                    ..tilolang_youtube::VideoItem::default()
-                }],
-            },
-        )]
+        searches: [
+            (
+                "compositor".to_owned(),
+                tilolang_youtube::SearchPage {
+                    query: "compositor".to_owned(),
+                    channels: vec![tilolang_youtube::ChannelItem {
+                        key: "UC-lowlevel".to_owned(),
+                        name: NAME.to_owned(),
+                        ..tilolang_youtube::ChannelItem::default()
+                    }],
+                    playlists: Vec::new(),
+                    videos: vec![tilolang_youtube::VideoItem {
+                        key: "v-compositor".to_owned(),
+                        title: VIDEO.to_owned(),
+                        channel_key: "UC-lowlevel".to_owned(),
+                        channel_name: NAME.to_owned(),
+                        published: "2026-11-01T12:00:00Z".to_owned(),
+                        duration: 900,
+                        views: 12_000,
+                        ..tilolang_youtube::VideoItem::default()
+                    }],
+                },
+            ),
+            // Two channels for a creator two of them share a name with: the canvas shows the rows and
+            // the person picks (`several`), rather than guessing.
+            (
+                "shared".to_owned(),
+                tilolang_youtube::SearchPage {
+                    query: "shared".to_owned(),
+                    channels: vec![
+                        tilolang_youtube::ChannelItem {
+                            key: "UC-one".to_owned(),
+                            name: "Shared Name".to_owned(),
+                            ..tilolang_youtube::ChannelItem::default()
+                        },
+                        tilolang_youtube::ChannelItem {
+                            key: "UC-two".to_owned(),
+                            name: "Shared Name II".to_owned(),
+                            ..tilolang_youtube::ChannelItem::default()
+                        },
+                    ],
+                    playlists: Vec::new(),
+                    videos: Vec::new(),
+                },
+            ),
+            // The origin answers an empty page: a search that finishes and finds nothing.
+            (
+                "empty".to_owned(),
+                tilolang_youtube::SearchPage {
+                    query: "empty".to_owned(),
+                    channels: Vec::new(),
+                    playlists: Vec::new(),
+                    videos: Vec::new(),
+                },
+            ),
+            // "broken" is scripted to fail: the scripted service answers nothing for it, and the
+            // origin settles the search as `failed` with its reason.
+        ]
         .into_iter()
         .collect(),
         ..tilolang_youtube::Scripted::default()
@@ -105,7 +141,7 @@ fn scripted() -> tilolang_youtube::Scripted {
 
 /// Write the launcher the session starts the apps' connectors through: the stand-in runs this test
 /// binary as the connector process, on the gate the launcher is handed. The apps are the ones
-/// installed in `home` 's own store ([`common::install_apps_in`]), the `YouTube` client's signed
+/// installed in `home` 's own store ([`crate::common::install_apps_in`]), the `YouTube` client's signed
 /// package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the connector
@@ -275,6 +311,80 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     items
 }
 
+/// "youtube videos of <creator>" typed on the canvas places that creator's channel, live: the
+/// channel is not in the client's records when the person types, and the client's own search
+/// action asks its origin (here a **scripted test origin**, not `YouTube`), whose answer becomes
+/// the channel's record and then the place. Nothing here is special-cased for `YouTube`: the query
+/// names the client by its app and the channel by its type, and the app's own search action
+/// answers it (search.md §4, §7; shell.md §8 "Finding what to place").
+#[test]
+fn a_live_canvas_query_places_a_channel_the_client_never_held() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = connector_launcher(&home);
+    let root = private_home();
+    let mut session = session(&home, root.path(), &launcher);
+
+    // The channel the scripted test origin answers for "compositor" is not held before the query:
+    // only the client's own scenario channels are.
+    crate::common::until(&mut session, "the client's root", |session| {
+        session
+            .resources()
+            .iter()
+            .any(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
+    });
+    assert!(
+        !record_says(&session, NAME),
+        "the channel the scripted test origin answers with is not in the record before the query"
+    );
+
+    // The person types `youtube videos of <creator>` on the canvas, as the canvas entry's own
+    // `place-found` action receives it.
+    session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            serde_json::json!({"text": "youtube videos of compositor", "x": 80, "y": 60})
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the arranging action runs");
+
+    // The client's own search action asked its origin, and the answer became the channel's
+    // record: the channel the scripted test origin named, held now by the client.
+    crate::common::until(
+        &mut session,
+        "the answered channel in the record",
+        |session| record_says(session, NAME),
+    );
+    // And that channel's page is the place, not the client's feed.
+    crate::common::until(&mut session, "the answered channel placed", |session| {
+        placed(session)
+            .iter()
+            .any(|(kind, label)| kind == &format!("tl.{TUBE}.Channel") && label == NAME)
+    });
+    let held = placed(&session);
+    assert!(
+        held.iter()
+            .any(|(kind, label)| kind == &format!("tl.{TUBE}.Channel") && label == NAME),
+        "the query places the answered channel's page: {held:?}"
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|(kind, _)| kind == &format!("tl.{TUBE}.YouTube")),
+        "the client's front page is not the place: {held:?}"
+    );
+}
+
+/// What stands on the canvas, by the kind and label of the resource each place shows.
+fn placed(session: &Session) -> Vec<(String, String)> {
+    crate::common::placed_resources(session)
+}
+
 /// Whether any of the client's records holds `text` in a text field, as the session's door reads
 /// them.
 fn record_says(session: &Session, text: &str) -> bool {
@@ -283,4 +393,144 @@ fn record_says(session: &Session, text: &str) -> bool {
             .iter()
             .any(|(_, held)| held == text)
     })
+}
+
+/// The query a place of `session` shows, by the place whose record is that query: the session's
+/// own arrangement reading, which the shell draws it from.
+fn query_shown(session: &Session) -> Option<tilo_session::arrangement::ArrangementQueryReading> {
+    let arrangement = session.arrangement().borrow();
+    let reading = arrangement.reading();
+    // The place a query stands in shows the query's own resource (`shell:query:<place>`).
+    reading
+        .places
+        .iter()
+        .find(|place| place.record.starts_with("shell:query:"))
+        .and_then(|place| arrangement.query_of(place.key.parse().ok()?))
+}
+
+/// Type `text` on the canvas at the desk, as the canvas entry's own `place-found` receives it.
+fn type_on_canvas(session: &mut Session, text: &str) {
+    session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            serde_json::json!({"text": text, "x": 80, "y": 60})
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the arranging action runs");
+}
+
+/// A headless session over the scripted test origin, with the client's root published and nothing
+/// the scripted service answers held yet.
+fn live_session(
+    home: &tilo_test_env::TestHome,
+    root: &Path,
+    launcher: &tilo_test_env::StandIn,
+) -> Session {
+    let mut session = session(home, root, launcher);
+    crate::common::until(&mut session, "the client's root", |session| {
+        session
+            .resources()
+            .iter()
+            .any(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
+    });
+    session
+}
+
+/// "youtube videos of <creator>" that the origin answers with two channels of the same name leaves
+/// the query standing with its rows, not a guessed place: a press on a row shows that channel in
+/// the same place (search.md §4, §7; shell.md §8 "Finding what to place").
+#[test]
+fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = connector_launcher(&home);
+    let root = private_home();
+    let mut session = live_session(&home, root.path(), &launcher);
+
+    type_on_canvas(&mut session, "youtube videos of shared");
+
+    // Two channels came back, so the place stands as a query with two rows, not a channel.
+    crate::common::until(&mut session, "the query settles with several", |session| {
+        query_shown(session).is_some_and(|query| query.state == "several")
+    });
+    let query = query_shown(&session).expect("the place shows its query");
+    assert_eq!(
+        query.matches.len(),
+        2,
+        "the two channels it found: {query:?}"
+    );
+    assert!(
+        query
+            .matches
+            .iter()
+            .all(|found| found.kind == format!("tl.{TUBE}.Channel")),
+        "each row is a channel of the client's: {:?}",
+        query.matches
+    );
+    let rows: Vec<String> = query
+        .matches
+        .iter()
+        .map(|found| found.title.clone())
+        .collect();
+    assert!(
+        rows.contains(&"Shared Name".to_owned()) && rows.contains(&"Shared Name II".to_owned()),
+        "the rows are the channels it found: {rows:?}"
+    );
+
+    // A press on a row shows that channel in the same place: the query's own `show-match` action.
+    let place = query.key.clone();
+    let address = query.matches[0].address.clone();
+    session
+        .invoke(
+            &format!("shell:query:{place}"),
+            "show-match",
+            serde_json::json!({ "resource": address })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the row places its channel");
+    crate::common::until(&mut session, "the row's channel placed", |session| {
+        placed(session)
+            .iter()
+            .any(|(kind, _)| kind == &format!("tl.{TUBE}.Channel"))
+    });
+}
+
+/// The origin answers an empty page: the search finishes and no channel of the kind it named came
+/// in, so the query settles `.none` — "Nothing matched", with Retry — and nothing is placed
+/// (shell.md §8, search.md §7).
+#[test]
+fn a_live_canvas_query_the_origin_answers_empty_settles_matched_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = connector_launcher(&home);
+    let root = private_home();
+    let mut session = live_session(&home, root.path(), &launcher);
+
+    type_on_canvas(&mut session, "youtube videos of empty");
+
+    crate::common::until(&mut session, "the query matches nothing", |session| {
+        query_shown(session).is_some_and(|query| query.state == "none")
+    });
+    let query = query_shown(&session).expect("the place shows its query");
+    assert!(
+        query.matches.is_empty(),
+        "it found nothing to list: {:?}",
+        query.matches
+    );
+    assert!(
+        !placed(&session)
+            .iter()
+            .any(|(kind, _)| kind == &format!("tl.{TUBE}.Channel")),
+        "no channel is placed: {:?}",
+        placed(&session)
+    );
 }

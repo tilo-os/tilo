@@ -29,7 +29,7 @@ use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
 use crate::handles::{ActionState, FrameKind, Invocation, QueuedBlock, RunState};
 use crate::host_res::unboxed;
-use crate::ids::{ModuleHash, Principal, RunId};
+use crate::ids::{AppId, ModuleHash, Principal, RunId};
 use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
@@ -330,7 +330,7 @@ impl Core {
             .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
         let info = ActionInfo {
             action: aref.action.clone(),
-            app: pkg.meta.app.clone(),
+            app: AppId::from(pkg.meta.app.as_str()),
             class: meta.class,
             own: aref.author.as_ref().is_none_or(|a| *a == pkg.hash),
             module: pkg.hash.clone(),
@@ -989,7 +989,7 @@ impl Core {
             .zip(aref.args.iter().skip(1).cloned())
             .collect();
         Some(Ok(crate::delegate::Invocation::Action {
-            app: verb.app.clone(),
+            app: AppId::from(verb.app.as_str()),
             action: aref.action.clone(),
             name: aref.action.clone(),
             args,
@@ -1789,9 +1789,15 @@ impl Core {
             .action(&aref.action)
             .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
         Ok(crate::delegate::Invocation::Action {
-            app: pkg.meta.app.clone(),
+            app: AppId::from(pkg.meta.app.as_str()),
             action: aref.action.clone(),
-            name: meta.name.clone(),
+            // What the app's door takes it by: a compiled package's action by its name, an
+            // action of a description of an app's surface (no module) by the verb it describes.
+            name: if pkg.meta.module_hash.is_empty() {
+                meta.id.clone()
+            } else {
+                meta.name.clone()
+            },
             // A flag travels as the integer the guest boxed it as; the invocation carries it
             // as the flag its parameter declares, so the app it goes to reads a flag.
             args: meta
@@ -1899,7 +1905,7 @@ impl Core {
             let Some(field) = info.fields.iter().find(|f| f.id == field_id) else {
                 return trap(format!("{} has no field {field_id}", info.name));
             };
-            (pkg.meta.app.clone(), field.clone())
+            (AppId::from(pkg.meta.app.as_str()), field.clone())
         };
         // A flag travels as the integer the guest boxed it as.
         let value = match (&field.ty, value) {

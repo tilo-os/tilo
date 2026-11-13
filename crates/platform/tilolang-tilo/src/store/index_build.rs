@@ -133,7 +133,7 @@ impl TiloStore {
             },
             readable: heads.is_some(),
         };
-        inner.apps.insert(app.to_owned(), held);
+        inner.apps.insert(AppId::from(app), held);
         if inner.chunks.has_record() {
             // The records under ids the app had before are its own from now on.
             if !crate::schema::previously(app).is_empty() {
@@ -736,7 +736,7 @@ impl Inner {
             }
         };
         self.apps.insert(
-            app.to_owned(),
+            AppId::from(app),
             AppIndex {
                 index,
                 snapshot,
@@ -864,7 +864,7 @@ impl Inner {
             .docs()
             .unwrap_or_default()
             .into_iter()
-            .map(|(doc, ty, _chunk)| (doc, (app.to_owned(), ty)))
+            .map(|(doc, ty, _chunk)| (doc, (AppId::from(app), ty)))
             .collect();
         let docs = self.index.clone();
         let chunks = self.chunks.clone();
@@ -970,7 +970,7 @@ impl Inner {
         // Named against the records the index held: a record made since is derived whole.
         let mut before: BTreeMap<DocId, (AppId, TypeId)> = BTreeMap::new();
         for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
-            before.insert(doc, (app.to_owned(), ty));
+            before.insert(doc, (AppId::from(app), ty));
         }
         let index = Arc::clone(&*held.index);
         let docs = self.index.clone();

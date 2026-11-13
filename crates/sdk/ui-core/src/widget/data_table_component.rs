@@ -1,13 +1,6 @@
-//! [`DataTable`] as a described component: columns and rows as parts, each row holding its
-//! cells' text by the column it belongs to, and selecting or activating a row reported with the
-//! resource it stands for.
-//!
-//! The rows are [`DataTableRowProps`], one per line, each holding what each column reads in it
-//! by the column's key: a column declares how it reads (its width, its figures, whether it sorts
-//! the table), and a row says what it holds in it. The table changes in place: changed rows and
-//! a changed selection go in through [`Described`]'s `set_props`, so the scroll, the row under
-//! the pointer, the column a person dragged wider and the order they sorted by stay where they
-//! are. A changed column, or a changed shape, is a new table.
+//! [`DataTable`] as a described component: columns and rows as parts, each row holding its cells' text
+//! by the column it belongs to, and selecting or activating a row reported with the resource it stands
+//! for.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,15 +21,11 @@ crate::component::choice!(crate::text_render::TextKind, "TextKind", {
     Code => "code",
 });
 
-/// How wide a column is before anyone drags its edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TableColumnWidth {
-    /// As wide as its header and its visible cells say.
     #[default]
     Auto,
-    /// One share of the room the other flexible columns leave.
     Flex,
-    /// Exactly [`DataTableColumnProps::pixels`] wide.
     Fixed,
 }
 
@@ -57,15 +46,14 @@ pub struct DataTableColumnProps {
     pub width: Option<TableColumnWidth>,
     /// Its width in pixels, when `width` is `fixed`.
     pub pixels: Option<f64>,
-    /// How its cells read: prose unless said. Figures line up, and a numeric column sorts as
-    /// numbers.
+    /// How its cells read: prose unless said.
     pub kind: Option<TextKind>,
     /// How many lines a cell's text wraps to before it is elided; the row grows to hold them.
     pub lines: Option<i64>,
     /// Whether pressing its header sorts the table by it.
     pub sortable: bool,
-    /// Which columns give way first when the table is narrow: `0` never hides, higher numbers
-    /// hide before lower ones.
+    /// Which columns give way first when the table is narrow: `0` never hides, higher numbers hide before
+    /// lower ones.
     pub priority: i64,
     /// What an empty cell reads as, dimmed.
     pub absent: Option<String>,
@@ -86,17 +74,15 @@ pub struct DataTableCellProps {
 #[derive(Clone, Component, Default)]
 #[component(name = "DataTableRow", role = "Row", presents = "item")]
 pub struct DataTableRowProps {
-    /// The resource the row stands for: its stable key, and what selecting or activating it
-    /// reports.
+    /// The resource the row stands for: its stable key, and what selecting or activating it reports.
     #[component(required, positional)]
     pub item: ResourceId,
-    /// The cells, in the order of the table's columns. A column with no cell reads as absent.
+    /// The cells, in the order of the table's columns.
     #[component(slot(default))]
     pub cells: Vec<DataTableCellProps>,
 }
 
 impl DataTableRowProps {
-    /// What the column `header` reads in the row.
     #[must_use]
     pub fn cell(&self, header: &str) -> Option<&str> {
         self.cells
@@ -116,17 +102,15 @@ crate::component::part_slot!(DataTableColumnProps);
 crate::component::part_slot!(DataTableRowProps);
 crate::component::part_slot!(DataTableCellProps);
 
-/// A table of resources as columns and rows: the attributes of a device, the songs in a
-/// library, the rules of a firewall. Each row is the resource it stands for and says what its
-/// columns read in it; pressing a header sorts by that column, and selecting or activating a
-/// row reports the row's resource.
+/// A table of resources as columns and rows: the attributes of a device, the songs in a library, the
+/// rules of a firewall.
 #[derive(Component, Default)]
 #[component(name = "DataTable", role = "Table", label = "name")]
 pub struct DataTableProps {
     /// What the table is, for assistive technology.
     pub name: Option<String>,
-    /// The table takes the height its parent gives it and scrolls inside itself, rather than
-    /// being as tall as its rows inside another scroll.
+    /// The table takes the height its parent gives it and scrolls inside itself, rather than being as tall
+    /// as its rows inside another scroll.
     pub fill: bool,
     /// Rows a finger's target tall, rather than a pointer target and a step.
     pub roomy: bool,
@@ -144,18 +128,16 @@ pub struct DataTableProps {
     /// A row was selected: carries the resource it shows.
     #[component(event(value = ResourceId))]
     pub select: Event,
-    /// A row was activated (a double click, Enter, an assistive technology): carries the
-    /// resource it shows.
+    /// A row was activated (a double click, Enter, an assistive technology): carries the resource it shows.
     #[component(event(value = ResourceId))]
     pub activate: Event,
 }
 
-/// The rows a table shows now, as its events read them: the closures a built table keeps find
-/// the row a press landed on by its index among the rows the view gives, so a changed list
-/// keeps reporting the right resource.
+/// The rows a table shows now, as its events read them: the closures a built table keeps find the
+/// row a press landed on by its index among the rows the view gives, so a changed list keeps
+/// reporting the right resource.
 type SharedRows = Rc<RefCell<Rc<Vec<DataTableRowProps>>>>;
 
-/// How a column is declared, as the table takes a change of it.
 #[derive(Clone, Debug, PartialEq)]
 struct ColumnFace {
     header: String,
@@ -183,8 +165,6 @@ impl ColumnFace {
     }
 }
 
-/// What a table was made with, but its rows and its selection: the same again is taken in
-/// place, anything else builds the table again.
 #[derive(Clone, Debug, PartialEq)]
 struct Face {
     name: Option<String>,
@@ -194,7 +174,6 @@ struct Face {
     columns: Vec<ColumnFace>,
 }
 
-/// A described table: its table, and the rows its events read.
 pub struct DescribedTable {
     table: DataTable<DataTableRowProps>,
     rows: SharedRows,
@@ -202,13 +181,11 @@ pub struct DescribedTable {
 }
 
 impl DescribedTable {
-    /// The table, for a test of what it shows and keeps.
     #[must_use]
     pub fn table(&self) -> &DataTable<DataTableRowProps> {
         &self.table
     }
 
-    /// The table, to change.
     pub fn table_mut(&mut self) -> &mut DataTable<DataTableRowProps> {
         &mut self.table
     }
@@ -272,8 +249,6 @@ fn selection_indices(
     (indices, primary)
 }
 
-/// A row's stable identity in the table, from the resource it stands for: scroll anchoring and
-/// the selection keep their rows as the list changes.
 fn row_key(row: &DataTableRowProps) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -281,7 +256,6 @@ fn row_key(row: &DataTableRowProps) -> u64 {
     hasher.finish()
 }
 
-/// The resource the row at `index` stands for, as an event carries it.
 fn item_at(rows: &SharedRows, index: usize) -> Option<Value> {
     let rows = Rc::clone(&*rows.borrow());
     rows.get(index)
@@ -356,9 +330,9 @@ impl Described for DescribedTable {
         }
     }
 
-    /// Changed rows, a changed selection and a changed name are taken in place, so the scroll,
-    /// the row under the pointer and the column widths a person set stay; the sort the table
-    /// keeps re-applies to the new rows. A changed column, or a changed shape, builds it again.
+    /// Changed rows, a changed selection and a changed name are taken in place, so the scroll, the row
+    /// under the pointer and the column widths a person set stay; the sort the table keeps re-applies
+    /// to the new rows.
     fn set_props(&mut self, props: DataTableProps) -> bool {
         let DataTableProps {
             name,
@@ -412,7 +386,6 @@ impl Described for DescribedTable {
     }
 }
 
-/// A described table is its table.
 impl crate::widget::Decorator for DescribedTable {
     type Inner = dyn Widget;
 
@@ -428,7 +401,6 @@ impl crate::widget::Decorator for DescribedTable {
         "DataTable"
     }
 
-    /// The table's change is the described table's: it adds no structure of its own.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         self.table.take_structure_change()
     }

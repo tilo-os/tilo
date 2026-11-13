@@ -1,20 +1,13 @@
 //! `SlashMenu` — the popover `/` opens inside a
-//! [`BlockEditor`](crate::widget::block_editor::BlockEditor) block: a
-//! [`FilterMenu`] over every block kind the editor makes, plus the commands
-//! its host answers (a picture, a link to another page, a page inside this
-//! one). Filtering matches keywords as well as labels, so `/h2` finds
-//! "Heading 2"; each row shows the Markdown that makes the same block.
-//!
-//! Not the [`ActionPalette`](crate::ActionPalette): that is the search
-//! card a shortcut opens over the whole app; this is a compact popover
-//! anchored at the caret.
+//! [`BlockEditor`](crate::widget::block_editor::BlockEditor) block: a [`FilterMenu`] over every
+//! block kind the editor makes, plus the commands its host answers (a picture, a link to
+//! another page, a page inside this one).
 
 use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::widget::block_editor::{BlockKind, CalloutKind};
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
-/// What a row of the slash menu does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
     Block(BlockKind),
@@ -28,9 +21,7 @@ pub enum SlashCommand {
     Host(SlashHostCommand),
 }
 
-/// A slash command only the editor's host can carry out. A host offers the
-/// ones it answers with
-/// [`BlockEditor::set_slash_commands`](crate::widget::block_editor::BlockEditor::set_slash_commands).
+/// A slash command only the editor's host can carry out.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SlashHostCommand {
     /// Choose a picture and put it after the block.
@@ -47,10 +38,7 @@ pub enum SlashHostCommand {
 pub type SlashMenu = FilterMenu<SlashCommand>;
 
 static SPEC: MenuSpec = MenuSpec {
-    // Room for an icon, "Numbered list" and its Markdown hint.
     width: 248.0,
-    // Eight rows fit under a caret in the lower half of most windows; the
-    // rest scroll with the highlight.
     max_rows: 8,
     placeholder: "slash-menu-filter",
     access_name: "slash-menu-name",
@@ -196,7 +184,6 @@ fn entries(link_pages: bool, host: &[SlashHostCommand]) -> Vec<MenuEntry<SlashCo
             continue;
         };
         rows.push(MenuEntry {
-            // The view's own label is the row's, not a message of the platform's catalogue.
             label: label.clone(),
             keywords: &[],
             value: SlashCommand::Host(SlashHostCommand::Named(label.clone())),
@@ -287,7 +274,6 @@ impl Default for FilterMenu<SlashCommand> {
 }
 
 impl FilterMenu<SlashCommand> {
-    /// New menu seeded with every block kind. Starts closed.
     pub fn new() -> Self {
         Self::with_spec(&SPEC, entries(false, &[]))
     }
@@ -319,7 +305,6 @@ mod tests {
 
     #[test]
     fn visibility_resets_filter_and_invisible_menu_ignores_keys() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let m = SlashMenu::new();
@@ -347,7 +332,6 @@ mod tests {
 
     #[test]
     fn filter_narrows_rows_from_typing_ime_and_backspace() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let mut m = SlashMenu::new();
@@ -365,11 +349,9 @@ mod tests {
             assert!(any_h1);
         }
 
-        // Case `filter_h2_isolates_heading_2`.
         {
             let mut m = SlashMenu::new();
             m.set_filter("Heading 2");
-            // The exact-substring filter should match exactly one row.
             assert_eq!(m.visible_len(), 1);
             assert_eq!(
                 m.highlighted(),
@@ -436,8 +418,6 @@ mod tests {
             let mut m = SlashMenu::new();
             m.set_visible(true);
             let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
-            // Returns false so the parent can interpret as "menu closed,
-            // fall through to delete the `/` glyph".
             assert!(!consumed);
             assert!(!m.is_visible());
         }
@@ -445,7 +425,6 @@ mod tests {
 
     #[test]
     fn keyboard_moves_the_cursor_and_commits_or_escapes() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let mut m = SlashMenu::new();
@@ -538,7 +517,6 @@ mod tests {
             );
         }
 
-        // Case `filter_h2_then_enter_commits_heading_2`.
         {
             // Type `/h2`, Enter → Heading(2). The leading `/` is consumed by
             // the editor before the menu opens, so the menu only sees `h2`.
@@ -557,7 +535,6 @@ mod tests {
 
     #[test]
     fn pointer_and_semantic_activation_commit_the_exact_row() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
             let mut menu = SlashMenu::new();
@@ -641,7 +618,6 @@ mod tests {
 
     #[test]
     fn labels_that_start_with_the_query_come_first() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_filter("c");
@@ -663,7 +639,6 @@ mod tests {
 
     #[test]
     fn an_inline_menu_leaves_typing_to_the_document_and_gives_back_a_dead_enter() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_inline(true);
@@ -694,7 +669,6 @@ mod tests {
 
     #[test]
     fn a_menu_at_the_bottom_of_the_view_opens_above_the_caret_and_stays_inside() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_inline(true);
@@ -719,7 +693,6 @@ mod tests {
 
     #[test]
     fn host_commands_are_offered_only_by_a_host_that_answers_them() {
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_filter("image");

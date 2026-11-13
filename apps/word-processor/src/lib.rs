@@ -1,18 +1,9 @@
-//! `editor` — binds a `tilo-doc` canonical rich-text document into a host automerge
-//! doc (e.g. `ui::State.doc`) so the document reuses the UI toolkit's
-//! undo / incremental-sync / presence machinery without a message layer.
-//!
-//! The interactive GUI widget (draw/layout/keyboard over winit) is intentionally
-//! deferred — it is app polish, not part of CRDT-native file-format support. This
-//! crate currently provides the binding and its integration with `ui::State`.
+//! Binds a `tilo-doc` rich-text document into a host automerge doc, so the document
+//! reuses the toolkit's undo, incremental sync and presence machinery.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs sandboxed, so an integer that wraps here costs one app rather than the
+// desktop, and a third-party app author would pay the same tax. The lints that produce a
+// crash stay denied: indexing, string slicing, unwrap, expect and panic.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -56,18 +47,14 @@ pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::{WordProcessorWidget, WriterLayout};
 
-/// The kind of a Writer document record, which the native app, the
-/// workspace host and the browser all open.
+/// The record kind of a Writer document.
 pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND;
 
-/// Initialize a new record as an empty Writer document: the document
-/// resource's genesis, for hosts that reserve a record outside the app.
 pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
     <framework::Document as tilo_resource::Resource>::initialize(doc)
         .map_err(|error| error.to_string())
 }
 
-/// A UI state holding a new Writer record, as a host hands an editor one.
 #[cfg(test)]
 pub(crate) fn initialized_state() -> ui::State {
     let mut state = ui::State::new();
@@ -77,8 +64,6 @@ pub(crate) fn initialized_state() -> ui::State {
     state
 }
 
-/// The word processor as every host mounts it: the framework app over the
-/// document's rich-text record.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(framework::WordProcessorApp)
 }
@@ -89,29 +74,22 @@ use automerge::AutoCommit;
 
 use std::path::Path;
 
-/// The file formats the word processor can open and save.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WpFormat {
     Odt,
     Docx,
     Markdown,
-    /// Plain text: each line is a paragraph, and nothing is markup.
     Text,
-    /// PDF — **export only** (rendered via the `tilo-doc-pdf` crate). Importing PDF is
-    /// not supported and returns a clear error.
+    /// Export only, rendered by `tilo-doc-pdf`; importing PDF is refused.
     Pdf,
-    /// HTML — export via `tilo_doc_codecs::export_html`; **import** via `tilo_doc_codecs::HtmlCodec` (so
-    /// `.html`/`.htm` files can be opened as well as saved).
+    /// Imported and exported by `tilo_doc_codecs::HtmlCodec`.
     Html,
-    /// RTF — export via `tilo_doc_codecs::export_rtf`; **import** via `tilo_doc_codecs::RtfCodec` (so
-    /// `.rtf` files can be opened as well as saved).
+    /// Imported and exported by `tilo_doc_codecs::RtfCodec`.
     Rtf,
-    /// EPUB — **export only** (rendered via `tilo_doc_codecs::export_epub`). Importing EPUB
-    /// is not supported and returns a clear error.
+    /// Export only, rendered by `tilo_doc_codecs::export_epub`.
     Epub,
 }
 
-/// Why `name`, whose contents are `bytes`, is not imported here.
 fn not_imported(name: &str, bytes: &[u8]) -> String {
     format!(
         "{name} is not a document Writer imports: {}",
@@ -120,7 +98,6 @@ fn not_imported(name: &str, bytes: &[u8]) -> String {
 }
 
 impl WpFormat {
-    /// Pick a format from a path extension (defaults to Markdown).
     pub fn from_path(path: &Path) -> Self {
         match path
             .extension()
@@ -139,10 +116,8 @@ impl WpFormat {
         }
     }
 
-    /// The format to import the document `bytes`, kept as content under
-    /// `name`, as: the one the bytes hold, whatever the name says (content
-    /// travels under any name, "Sofia details" for a Word file); the name's
-    /// only for text, whose kinds only a name tells apart.
+    /// The format of `bytes` kept as content under `name`: the one the bytes hold,
+    /// whatever the name says; only text kinds need the name.
     pub fn of_content(name: &str, bytes: &[u8]) -> Result<Self, String> {
         if let Some(format) = tilo_content::document_format(bytes) {
             return match format.extension {
@@ -157,7 +132,6 @@ impl WpFormat {
             return Err(not_imported(name, bytes));
         }
         Ok(match WpFormat::from_path(Path::new(name)) {
-            // Text that a name calls a document is imported as what it is.
             WpFormat::Docx | WpFormat::Odt | WpFormat::Rtf | WpFormat::Pdf | WpFormat::Epub => {
                 WpFormat::Markdown
             }
@@ -165,8 +139,6 @@ impl WpFormat {
         })
     }
 
-    /// The format [`actions::RichTextAction::ReplaceFormatted`] imports this
-    /// one as; `None` for the export-only formats.
     pub fn import_format(self) -> Option<actions::ImportFormat> {
         match self {
             WpFormat::Markdown => Some(actions::ImportFormat::Markdown),
@@ -179,7 +151,6 @@ impl WpFormat {
         }
     }
 
-    /// Project `dr` into this format, embedding the images it references from `content`.
     pub(crate) fn export(
         self,
         dr: tilo_doc::DocRef,
@@ -199,16 +170,13 @@ impl WpFormat {
                     .collect();
                 Ok(format!("{}\n", lines.join("\n")).into_bytes())
             }
-            // PDF isn't a `FormatProvider` codec — it renders from the materialized
-            // snapshot via `tilo-doc-pdf`. Map its error into the shared `CodecError`.
+            // PDF renders from the snapshot through tilo-doc-pdf, not a FormatProvider codec.
             WpFormat::Pdf => {
                 let snap = dr.materialize();
                 tilo_doc_pdf::render_pdf(&snap, content)
                     .map_err(|e| tilo_doc_codecs::CodecError::Export(e.to_string()))
             }
-            // HTML/RTF aren't `FormatProvider` codecs either — they render from
-            // the materialized snapshot via `tilo_doc_codecs::export_html`/`tilo_doc_codecs::export_rtf`,
-            // returning UTF-8 bytes.
+            // HTML and RTF render from the snapshot, not through a FormatProvider codec.
             WpFormat::Html => {
                 let snap = dr.materialize();
                 let rendered = tilo_doc_codecs::export_html::render_html(
@@ -223,9 +191,7 @@ impl WpFormat {
                 let rendered = tilo_doc_codecs::export_rtf::render_rtf(&snap);
                 Ok(rendered.into_bytes())
             }
-            // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
-            // ZIP container from the materialized snapshot via `tilo_doc_codecs::export_epub`.
-            // Map its error into the shared `CodecError`.
+            // EPUB assembles an OCF ZIP container from the snapshot.
             WpFormat::Epub => {
                 let snap = dr.materialize();
                 let rendered = tilo_doc_codecs::export_epub::render_epub(&snap, content);
@@ -235,16 +201,9 @@ impl WpFormat {
     }
 }
 
-/// The action that replaces a document's body with `bytes` read as
-/// `format`: the import a launch on a file takes, and Open in place. The
-/// file is read here, once; the images it embeds are kept in `content`
-/// first (sealed, in a store that seals), and the action names each by the
-/// reference it is kept under.
-///
 /// # Errors
-///
-/// Returns why the bytes cannot be imported: an export-only format, a codec
-/// rejection, or images that could not be kept.
+/// Why the bytes cannot be imported: an export-only format, a codec rejection, or
+/// images that could not be kept.
 pub fn import_action(
     bytes: &[u8],
     format: WpFormat,
@@ -260,25 +219,16 @@ pub fn import_action(
     Ok(staged.action(kept))
 }
 
-/// A bundled starter document. The content is embedded at compile time
-/// (`include_str!`) so there is no runtime file dependency — a template is just
-/// Markdown that seeds a fresh, untitled document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
-    /// An (almost) empty document — a single heading and a prompt to start.
     Blank,
-    /// A formal letter scaffold (sender/recipient blocks, salutation, body).
     Letter,
-    /// A structured report (summary, background, findings, recommendations).
     Report,
-    /// A résumé / CV scaffold (summary, experience, education, skills).
     Resume,
-    /// Meeting notes (attendees, agenda, decisions, action items).
     MeetingNotes,
 }
 
 impl Template {
-    /// Every template variant, in menu order.
     pub fn all() -> &'static [Template] {
         &[
             Template::Blank,
@@ -289,9 +239,6 @@ impl Template {
         ]
     }
 
-    /// A short, **stable English** identifier for the template. Used as a
-    /// canonical name in code and tests; the user-facing menu label comes from
-    /// [`Self::display_title`] (which localizes via Fluent).
     pub fn title(self) -> &'static str {
         match self {
             Template::Blank => "Blank",
@@ -302,8 +249,6 @@ impl Template {
         }
     }
 
-    /// The localized, user-facing title shown in the "New" template picker.
-    /// Resolves through Fluent; under `en-US` it matches [`Self::title`].
     pub fn display_title(self) -> String {
         let key = match self {
             Template::Blank => "template-blank",
@@ -315,7 +260,6 @@ impl Template {
         crate::i18n::t(key)
     }
 
-    /// The template's Markdown source, embedded at compile time.
     pub fn content(self) -> &'static str {
         match self {
             Template::Blank => include_str!("../templates/blank.md"),
@@ -327,12 +271,8 @@ impl Template {
     }
 }
 
-/// Export `doc` to `path` using `format`.
-///
 /// # Errors
-///
-/// Fails if `doc` does not hold a well-formed document, if the codec cannot
-/// render it (an import-only format), or if `path` cannot be written.
+/// Why the document cannot be exported, or the file cannot be written.
 pub fn save_document(
     doc: &AutoCommit,
     path: &Path,
@@ -353,8 +293,6 @@ pub fn save_document(
 mod tests {
     use super::*;
 
-    /// A new document with `bytes` imported as `format`, as a launch on a
-    /// file of that format starts its record.
     fn imported(bytes: &[u8], format: WpFormat) -> AutoCommit {
         let mut doc = AutoCommit::new();
         initialize_empty_document(&mut doc).unwrap();
@@ -368,7 +306,6 @@ mod tests {
         tilo_doc::model::materialize(doc, &containers).blocks
     }
 
-    /// Export `doc` as `format` to a scratch file and read the bytes back.
     fn exported(doc: &AutoCommit, format: WpFormat, extension: &str) -> Vec<u8> {
         let path = std::env::temp_dir().join(format!(
             "editor-export-test-{}-{extension}.{extension}",
@@ -381,7 +318,6 @@ mod tests {
         bytes
     }
 
-    /// Save to PDF, HTML, RTF and EPUB write valid files; PDF and EPUB import are unsupported.
     #[test]
     fn export_formats_write_valid_files_and_refuse_unsupported_imports() {
         let doc = imported(b"# Title\n\nHello world\n", WpFormat::Markdown);
@@ -400,8 +336,6 @@ mod tests {
         let rtf = exported(&doc, WpFormat::Rtf, "rtf");
         assert!(rtf.starts_with(b"{\\rtf"), "{:?}", &rtf[..rtf.len().min(8)]);
 
-        // Every EPUB is an OCF ZIP container whose first entry is the literal
-        // `mimetype` member; its file name starts at offset 30.
         let epub = exported(&doc, WpFormat::Epub, "epub");
         assert!(epub.starts_with(b"PK"));
         assert!(epub.len() >= 38);
@@ -418,8 +352,6 @@ mod tests {
         }
     }
 
-    /// A `.txt` file opens with one paragraph per line, markup characters
-    /// kept as text, and saves back to the same lines.
     #[test]
     fn plain_text_opens_one_paragraph_per_line_and_saves_back() {
         let lines = [
@@ -450,9 +382,6 @@ mod tests {
         );
     }
 
-    /// `from_path` maps html, htm and rtf; HTML import opens the first
-    /// heading; RTF import opens a paragraph and an RTF export then import
-    /// round-trips text and bold.
     #[test]
     fn imports_map_extensions_and_round_trip_text_and_bold() {
         for (name, format) in [
@@ -493,8 +422,6 @@ mod tests {
         assert_eq!(p.text.get(strong.start..strong.end), Some("world"));
     }
 
-    /// Every template is listed once, in menu order, and imports real
-    /// content; the report opens with its heading.
     #[test]
     fn templates_list_every_variant_and_seed_real_content() {
         assert_eq!(

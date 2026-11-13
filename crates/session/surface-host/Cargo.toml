@@ -41,7 +41,6 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
-tilo-topbar = { path = "../topbar" }
 # What a tab holds, as the desk's own tree keeps it.
 tilo-desktop-model = { path = "../desktop-model" }
 # A room's records as the session publishes them, for the places that compose their views.

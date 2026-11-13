@@ -1,58 +1,58 @@
 desktop:chrome desktop (Desktop)
-  about Open or close the About sheet
-  activity Show a workspace's history
-  branch-workspace Branch a workspace
-  close-activity Close the workspace's history
+  about About Tilo
+  activity Workspace history
+  branch-workspace Branch the workspace
+  close-activity Close the history
   close-window Close a window
   delete-workspace Delete a workspace
-  equalize Equalize widths
-  fixed-shortcut Run a fixed desktop shortcut
-  float Lift a window out of its strip, or put it back
-  fullscreen Fill the display with a window
-  history Move through a window's own history
-  join-workspace Show the workspaces this computer may join
+  equalize Equal widths
+  fixed-shortcut Run a fixed shortcut
+  float Float the window
+  fullscreen Full screen
+  history Window history
+  join-workspace Join a workspace
   leave-workspace Leave a workspace
   maximize Maximize a window
   move-strip Move a strip
-  move-tab Move a tab elsewhere
+  move-tab Move a tab
   new-group New group
   new-strip New strip
   new-workspace New workspace
-  notifications Open or close the notification centre
+  notifications Notification centre
   open-app Open an app
-  overview Open or close the overview
+  overview Overview
   pan Pan a strip
-  quick-settings Open or close quick settings
-  rename Rename something
-  reopen-closed Reopen what was closed last
-  reveal-top-bar Show the top bar over a full screen window
+  quick-settings Quick Settings
+  rename Rename
+  reopen-closed Reopen the closed window
+  reveal-top-bar Show the top bar
   scroll Scroll a window
-  set-width Set width
+  set-width Set the width
   share-window Share a window
-  shortcut Run a desktop shortcut
+  shortcut Run a shortcut
   show-app Show an app
   show-person Show a person
   show-strip Show a strip
   show-strips Show the strips
   split-right Split right
   step-strip Step through the strips
-  stop-desktop-control Take back the desktop control a window holds
+  stop-desktop-control Stop the remote control
   switch-workspace Switch workspace
-  tilo-menu Open or close the Tilo menu
-  toggle-collaborators Open or close who is here
-  workspace-menu Open or close the workspace menu
-  workspace-settings Open the workspace's settings
+  tilo-menu Tilo menu
+  toggle-collaborators Who is here
+  workspace-menu Workspace menu
+  workspace-settings Workspace settings
 desktop:desk desktop (Windows)
-  choose-search-row Choose a search row
-  close-tab Close its window
-  focus Bring its window to the front
+  choose-search-row Choose a search result
+  close-tab Close a window
+  focus Focus a window
   focus-display Focus a display
-  force-quit-app Force quit its app
-  launchpad Choose a launchpad card
-  move-to-display Move the window in front to another display
+  force-quit-app Force quit the app
+  launchpad Choose a card
+  move-to-display Move to another display
   search Search the desktop
   step-focus Step through the windows
-  wait-window Keep waiting for its app
+  wait-window Keep waiting
   desktop:tab:7 desktop.window (Notes)
     close-tab Close Notes
     focus Focus Notes

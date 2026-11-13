@@ -1,34 +1,23 @@
-//! A band on its way in or out (`motion::Disclosure`) and what follows it:
-//! a column lays the band out of its flow while it moves, draws the widgets
-//! after it shifted by transform, and hits them where they are drawn.
+//! A band on its way in or out (`motion::Disclosure`) and what follows it: a column lays
+//! the band out of its flow while it moves, draws the widgets after it shifted by
+//! transform, and hits them where they are drawn.
 
 use super::{EventCtx, Widget, route_to_children};
 use taffy::NodeId;
 use winit::event::WindowEvent;
 
-/// A band on its way in or out (`motion::Disclosure`), as the container it
-/// stands in moves what follows it ([`Widget::disclosing`]).
-///
-/// While a band moves it stands out of its container's layout: what
-/// follows it is laid out once where it stands without the band (the larger
-/// extent, so nothing below it is left bare), the container puts the band
-/// in its slot ([`Widget::place_disclosing`]) and draws what follows it
-/// shifted by transform. The layout takes the band in once, at rest.
+/// A band on its way in or out (`motion::Disclosure`), as the container it stands in moves
+/// what follows it ([`Widget::disclosing`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Disclosing {
-    /// A band out of the layout while it moves: `extent` is its full
-    /// height, `drawn` how much of it shows now.
     Band { extent: f64, drawn: f64 },
-    /// A content-sized container a band inside is moving in: it is drawn
-    /// this much taller than it is laid out, and what follows it moves as
-    /// far.
     Grows(f64),
 }
 
 impl Disclosing {
-    /// How far below their laid-out places the widgets after it are drawn,
-    /// with `gap` between it and the next: a band's gap opens and closes
-    /// with it, so nothing jumps by it when the band rests.
+    /// How far below their laid-out places the widgets after it are drawn, with `gap`
+    /// between it and the next: a band's gap opens and closes with it, so nothing jumps by
+    /// it when the band rests.
     #[must_use]
     pub fn follower_offset(self, gap: f64) -> f64 {
         match self {
@@ -121,9 +110,8 @@ pub(crate) fn content_box(
     )
 }
 
-/// [`route_to_children`] for a column whose children may be drawn shifted
-/// (`shifts`, from [`follower_shifts`]): each child is hit where it is
-/// drawn.
+/// [`route_to_children`] for a column whose children may be drawn shifted (`shifts`, from
+/// [`follower_shifts`]): each child is hit where it is drawn.
 pub(crate) fn route_to_shifted_children(
     children: &mut [Box<dyn Widget>],
     nodes: &[NodeId],
@@ -159,11 +147,10 @@ pub(crate) fn route_to_shifted_children(
     }
 }
 
-/// `event` as a widget drawn `offset` (logical pixels) from where it is
-/// laid out meets it: a pointer or touch position moved back by `offset`,
-/// so content on its way (a band disclosing above it, a pane gliding) is
-/// hit-tested where it is drawn (`motion::Pose::to_local`). Every other
-/// event, and any event at a zero offset, passes through untouched.
+/// `event` as a widget drawn `offset` (logical pixels) from where it is laid out meets it:
+/// a pointer or touch position moved back by `offset`, so content on its way (a band
+/// disclosing above it, a pane gliding) is hit-tested where it is drawn
+/// (`motion::Pose::to_local`).
 #[must_use]
 pub fn event_offset(
     event: &WindowEvent,
@@ -197,10 +184,10 @@ pub fn event_offset(
     }
 }
 
-/// Where a band stands in its container, as the container a rebuild makes
-/// in its place can recognise it: the container (its kind, its width and
-/// the kinds of the other widgets in it, in order), how many of those come
-/// before the band, and the space the container keeps above it.
+/// Where a band stands in its container, as the container a rebuild makes in its place can
+/// recognise it: the container (its kind, its width and the kinds of the other widgets in
+/// it, in order), how many of those come before the band, and the space the container keeps
+/// above it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     pub parent: u64,
@@ -213,28 +200,19 @@ pub struct Placement {
 /// container to draw it leaving.
 pub(crate) struct KeptBand {
     pub disclosure: crate::motion::Disclosure,
-    /// Where it was laid out or drawn, at its full height.
     pub laid_rect: vello::kurbo::Rect,
-    /// Where it stood in its container, if a container placed it.
     pub placement: Option<Placement>,
     /// Its last paint at its full height (at rest, or on its way and
     /// clipped as it was drawn), where it was laid out; `None` when it was
     /// never drawn. Content that draws nothing still paints.
     pub painted: Option<vello::Scene>,
-    /// It was shown when dropped (or already leaving).
     pub shown: bool,
 }
 
-/// How far a band is in taking up the motion of the band a rebuild dropped
-/// where it stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Carry {
-    /// Not laid out yet.
     Fresh,
-    /// Its identity matched nothing: its place is looked up once it is
-    /// laid out.
     Placing,
-    /// Settled: it leaves its motion when dropped.
     Bound,
 }
 
@@ -246,28 +224,16 @@ enum Carry {
 /// `visible` is whether the band's owner shows it now; a band that is only
 /// there while it shows passes `true`.
 pub(crate) struct BandMotion {
-    /// How much of the band is drawn while it arrives or leaves: its box
-    /// opens or closes from the top, what follows moving with its edge.
     pub disclosure: crate::motion::Disclosure,
-    /// The motion the person allows, from the last theme seen.
     pub motion: crate::tokens::EffectiveMotion,
-    /// Where the band is drawn while it moves, and was last laid out at
-    /// rest: its slot and full height.
     pub laid_rect: vello::kurbo::Rect,
-    /// Whether the layout gives the band its place: shown and at rest. On
-    /// its way in or out it stands out of the layout, which keeps what
-    /// follows where it is.
     pub laid_in_flow: bool,
     carry: Carry,
-    /// On its way out of the layout with no container to place it: it lands.
     pub unplaced: bool,
     /// Its layout must be built again: it took up a band on its way, or
     /// arrived, after its first layout.
     pub structure_dirty: bool,
-    /// Its last paint at its full height: what its column draws leaving
-    /// when its view stops building it; `None` until it is drawn.
     painted: Option<vello::Scene>,
-    /// Where it stands in its column.
     placement: Option<Placement>,
 }
 
@@ -292,9 +258,7 @@ impl BandMotion {
         }
     }
 
-    /// Whether the layout gives the band its place: shown and not on its
-    /// way. A moving band stands out of the layout, in the slot its
-    /// container gives it ([`Widget::place_disclosing`]).
+    /// Whether the layout gives the band its place: shown and not on its way.
     pub fn in_flow(&self, visible: bool) -> bool {
         visible && !self.disclosure.is_sliding()
     }
@@ -304,13 +268,12 @@ impl BandMotion {
         self.disclosure.is_moving()
     }
 
-    /// Whether the band should join or leave the layout: it came to rest,
-    /// or set off.
+    /// Whether the band should join or leave the layout: it came to rest, or set off.
     pub fn layout_moved(&self, visible: bool) -> bool {
         self.laid_in_flow != self.in_flow(visible)
     }
 
-    /// Show or hide the band's `node` with it. True when the style changed.
+    /// Show or hide the band's `node` with it.
     pub fn style_display(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -387,9 +350,6 @@ impl BandMotion {
         }
     }
 
-    /// Go on from where the band a rebuild dropped was: shown at rest
-    /// stays at rest, opening goes on opening, and a change of shown
-    /// against it moves from there.
     fn take_up(&mut self, kept: KeptBand, visible: bool) {
         self.disclosure = kept.disclosure;
         self.laid_rect = kept.laid_rect;
@@ -407,8 +367,7 @@ impl BandMotion {
         }
     }
 
-    /// Frames while it moves, and one more to take it into the layout at
-    /// rest.
+    /// Frames while it moves, and one more to take it into the layout at rest.
     pub fn needs_frame(&self, visible: bool) -> bool {
         self.in_motion() || self.layout_moved(visible)
     }
@@ -417,16 +376,16 @@ impl BandMotion {
         self.placement = Some(placement);
     }
 
-    /// Its slot, where its container puts it while it is out of the
-    /// layout: the full height it was last measured at stays.
+    /// Its slot, where its container puts it while it is out of the layout: the full height
+    /// it was last measured at stays.
     pub fn place(&mut self, slot: vello::kurbo::Rect) {
         self.unplaced = false;
         let height = self.laid_rect.height();
         self.laid_rect = vello::kurbo::Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
     }
 
-    /// Where it paints: while it moves it has no box of its own (`rect`),
-    /// but is drawn in its slot.
+    /// Where it paints: while it moves it has no box of its own (`rect`), but is drawn in
+    /// its slot.
     pub fn paint_bounds(&self, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
         if self.in_motion() {
             self.laid_rect
@@ -447,9 +406,8 @@ impl BandMotion {
         })
     }
 
-    /// On its way out of the layout with no container to put it in its
-    /// slot, it lands at `visible`, for the next layout to take in. True
-    /// when it did.
+    /// On its way out of the layout with no container to put it in its slot, it lands at
+    /// `visible`, for the next layout to take in.
     pub fn land_unplaced(&mut self, visible: bool) -> bool {
         if !self.unplaced || self.laid_in_flow {
             return false;
@@ -458,16 +416,16 @@ impl BandMotion {
         true
     }
 
-    /// The scene to paint the band's contents into this frame, at its full
-    /// height and where it is laid out or placed.
+    /// The scene to paint the band's contents into this frame, at its full height and where
+    /// it is laid out or placed.
     pub fn take_painted(&mut self) -> vello::Scene {
         let mut painted = self.painted.take().unwrap_or_default();
         painted.reset();
         painted
     }
 
-    /// Show `painted` (from [`Self::take_painted`]) at rest, and keep it,
-    /// so its column can draw it leaving when its view stops building it.
+    /// Show `painted` (from [`Self::take_painted`]) at rest, and keep it, so its column can
+    /// draw it leaving when its view stops building it.
     pub fn show_at_rest(
         &mut self,
         painted: vello::Scene,
@@ -531,20 +489,13 @@ impl BandMotion {
     }
 }
 
-/// A band its view stopped building, leaving: its last paint collapsing
-/// from the top with `motion::Disclose`'s exit (from where it was drawn)
-/// while what follows moves up by transform. It takes no input and is drawn
-/// until it has gone.
 struct Ghost {
-    /// The container's child it stands before (its followers start here).
     index: usize,
     kept: KeptBand,
-    /// Where it is drawn: its slot, at its full height.
     rect: vello::kurbo::Rect,
 }
 
 impl Ghost {
-    /// How far the widgets after it are drawn below their laid-out places.
     fn offset(&self) -> f64 {
         if !self.kept.disclosure.is_sliding() {
             return 0.0;
@@ -558,7 +509,6 @@ impl Ghost {
         .follower_offset(gap)
     }
 
-    /// Draw what is left of it, `dy` below its slot.
     fn draw(&self, scene: &mut vello::Scene, transform: vello::kurbo::Affine, dy: f64) {
         let Some(painted) = &self.kept.painted else {
             return;
@@ -595,9 +545,7 @@ impl Ghost {
     }
 }
 
-/// The bands a container's view stopped building, drawn leaving. Dropped
-/// with its container, they are left for the container a rebuild puts in
-/// its place.
+/// The bands a container's view stopped building, drawn leaving.
 #[derive(Default)]
 pub(crate) struct Ghosts(Vec<Ghost>);
 
@@ -659,8 +607,6 @@ impl Ghosts {
             if !kept.disclosure.is_drawn() || kept.painted.is_none() {
                 continue;
             }
-            // Its slot: before the widget that followed it, under the one
-            // before it.
             let mut others = 0;
             let mut at = children.len();
             let mut bottom: Option<f64> = None;
@@ -688,8 +634,8 @@ impl Ghosts {
         }
     }
 
-    /// `shifts` (a container's [`follower_shifts`] over `count` children)
-    /// with the ghosts' followers moving up with their edges.
+    /// `shifts` (a container's [`follower_shifts`] over `count` children) with the ghosts'
+    /// followers moving up with their edges.
     pub fn shift(&self, shifts: Option<Vec<f64>>, count: usize) -> Option<Vec<f64>> {
         if self.0.is_empty() {
             return shifts;
@@ -742,8 +688,6 @@ impl Drop for Ghosts {
     }
 }
 
-/// A container's identity across rebuilds, for the bands in it: its kind,
-/// its content box and the kinds of its widgets other than bands, in order.
 fn placement_parent<'a>(
     kind: &str,
     content: vello::kurbo::Rect,

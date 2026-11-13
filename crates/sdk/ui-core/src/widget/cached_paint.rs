@@ -9,12 +9,10 @@ use vello::kurbo::{Affine, Rect, Vec2};
 #[derive(Default)]
 pub struct CachedPaint {
     scene: Scene,
-    /// Where the face was painted; [`Rect::ZERO`] before the first paint.
     rect: Rect,
 }
 
 impl CachedPaint {
-    /// Whether nothing is painted yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rect == Rect::ZERO
@@ -29,21 +27,15 @@ impl CachedPaint {
             || rect.height().to_bits() != self.rect.height().to_bits()
     }
 
-    /// Append the face to `out` for a widget now at `rect`, translated from
-    /// where it was painted.
     pub fn append(&self, out: &mut Scene, transform: Affine, rect: Rect) {
         let moved = Vec2::new(rect.x0 - self.rect.x0, rect.y0 - self.rect.y0);
         out.append(&self.scene, Some(transform.pre_translate(moved)));
     }
 
-    /// The scene last [`Self::repaint`]ed, to paint more of the face into, in the same
-    /// coordinates.
     pub fn scene_mut(&mut self) -> &mut Scene {
         &mut self.scene
     }
 
-    /// The emptied scene to paint the face into, in the coordinates of
-    /// `rect`, which later [`Self::append`]s translate from.
     pub fn repaint(&mut self, rect: Rect) -> &mut Scene {
         self.scene.reset();
         self.rect = rect;

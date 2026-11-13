@@ -2,18 +2,6 @@
 //! driven through the production [`Session`] path (`add_connection` opens the
 //! real engine, `run_query` runs real SQL, and the schema is introspected from
 //! the live catalog).
-//!
-//! These require reachable servers and are explicitly ignored by ordinary test
-//! runs. `tests/run-live.sh` starts disposable rootless-Podman `PostgreSQL` and
-//! `MariaDB` containers and selects the ignored tests. Everything the driver
-//! layer does with no server (connection-param building, row/column mapping)
-//! is proven unconditionally in the crate's unit tests.
-//!
-//! Connection overrides (all optional):
-//!   Postgres: `TILO_DB_TEST_PG_HOST` (default 127.0.0.1),
-//!             `_PORT` (5432), `_USER` (postgres), `_PASS` (""), `_DB` (postgres)
-//!   `MySQL`:    `TILO_DB_TEST_MYSQL_HOST` (127.0.0.1),
-//!             `_PORT` (3306), `_USER` (root), `_PASS` (""), `_DB` (mysql)
 
 #![allow(
     clippy::unwrap_used,
@@ -53,7 +41,6 @@ fn mysql_profile(name: &str) -> ConnectionProfile {
     profile
 }
 
-/// A real `PostgreSQL` round-trip through the production session, and cancellation stops the active generation.
 #[allow(
     clippy::too_many_lines,
     reason = "the live fixture intentionally keeps setup, value assertions, bounds, and cleanup in one transaction-shaped proof"
@@ -61,7 +48,6 @@ fn mysql_profile(name: &str) -> ConnectionProfile {
 #[test]
 #[ignore = "requires PostgreSQL; run apps/db-client/tests/run-live.sh"]
 fn postgres_real_round_trip_and_cancellation() {
-    // --- phase: postgres_real_round_trip ---
     {
         let mut s = Session::new();
         s.add_connection_blocking(postgres_profile("live-pg"));
@@ -135,8 +121,6 @@ fn postgres_real_round_trip_and_cancellation() {
         assert_eq!(arrays.rows[0][3].display(), r#"[{"x":1}, NULL]"#);
         assert_eq!(arrays.rows[0][4].display(), "[]");
 
-        // The re-introspected live catalog now carries the new table with its PK
-        // and a real row count.
         let t = s
             .schema
             .find_table(&table)
@@ -170,13 +154,11 @@ fn postgres_real_round_trip_and_cancellation() {
             MAX_QUERY_ROWS.to_string()
         );
 
-        // Clean up so repeat runs against a persistent server stay green.
         s.run_query(&format!("DROP TABLE {table}"));
         s.block_until_idle();
         assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
     }
 
-    // --- phase: postgres_real_cancellation_stops_the_active_generation ---
     {
         let mut s = Session::new();
         s.add_connection_blocking(postgres_profile("live-pg-cancel"));
@@ -198,11 +180,9 @@ fn postgres_real_round_trip_and_cancellation() {
     }
 }
 
-/// A real `MariaDB` round-trip through the production session, and cancellation stops the active generation.
 #[test]
 #[ignore = "requires MariaDB; run apps/db-client/tests/run-live.sh"]
 fn mysql_real_round_trip_and_cancellation() {
-    // --- phase: mysql_real_round_trip ---
     {
         let mut s = Session::new();
         s.add_connection_blocking(mysql_profile("live-mysql"));
@@ -236,7 +216,6 @@ fn mysql_real_round_trip_and_cancellation() {
         assert_eq!(sel.rows[0][0].display(), "1");
         assert_eq!(sel.rows[0][1].display(), "alice");
         assert_eq!(sel.rows[1][1].display(), "bob");
-        // MySQL integers map to a typed integer cell (not text).
         assert!(sel.rows[0][0].is_numeric(), "id is a typed integer cell");
 
         let t = s
@@ -254,7 +233,6 @@ fn mysql_real_round_trip_and_cancellation() {
         assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
     }
 
-    // --- phase: mysql_real_cancellation_stops_the_active_generation ---
     {
         let mut s = Session::new();
         s.add_connection_blocking(mysql_profile("live-mysql-cancel"));

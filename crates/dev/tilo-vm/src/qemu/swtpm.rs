@@ -19,8 +19,6 @@ impl Swtpm {
         self.dir.join("swtpm-ctrl.sock")
     }
 
-    /// The QEMU arguments attaching it to the guest: a TIS interface on the
-    /// PC's LPC bus, or on the ARM virt machine its sysbus device.
     #[must_use]
     pub fn qemu_args(&self, arch: Arch) -> Vec<String> {
         vec![
@@ -49,10 +47,6 @@ impl Swtpm {
             ));
         }
         std::fs::create_dir_all(&self.dir).map_err(QemuError::io(&self.dir))?;
-        // A listening emulator is not enough: swtpm enters permanent failure
-        // mode when its NVRAM backend cannot persist state. Catch full or
-        // quota-limited storage before the firmware boots into a misleading
-        // PCR-service reboot loop.
         let probe = self.dir.join(".write-test");
         std::fs::write(&probe, b"Tilo TPM state preflight\n")
             .and_then(|()| std::fs::File::open(&probe)?.sync_all())
@@ -67,9 +61,6 @@ impl Swtpm {
                 )
             })?;
         let socket = self.socket();
-        // A leftover swtpm without startup-clear would be reused silently and
-        // put the unstarted TPM back: check what is listening rather than
-        // trusting the socket's existence.
         if socket.exists() {
             let serving = processes(&socket);
             if serving.is_empty()
@@ -87,11 +78,6 @@ impl Swtpm {
             }
         }
         if !socket.exists() {
-            // --flags not-need-init,startup-clear is what makes this a
-            // *started* TPM. Without it swtpm answers every command with
-            // TPM_RC_INITIALIZE (256): the firmware measures nothing, every
-            // PCR reads zero, and Linux issues TPM2_Startup itself, far too
-            // late for the boot to have been measured.
             let log = std::fs::File::create(self.dir.join("swtpm.log"))
                 .map_err(QemuError::io(self.dir.join("swtpm.log")))?;
             let mut command = Command::new("swtpm");
@@ -123,7 +109,6 @@ impl Swtpm {
                 "if it rejected '--flags not-need-init,startup-clear', this swtpm is too old to start the TPM itself and the firmware cannot measure; update swtpm and swtpm-tools",
             ));
         }
-        // Prove the emulator answers, rather than reading a socket as a TPM.
         if super::on_path("swtpm_ioctl") {
             let answered = Command::new("swtpm_ioctl")
                 .args(["-c", "--unix"])
@@ -151,7 +136,6 @@ impl Swtpm {
         Ok(())
     }
 
-    /// Stop every swtpm serving this socket.
     pub fn stop(&self) {
         for (pid, _) in processes(&self.socket()) {
             super::terminate(pid);
@@ -159,9 +143,6 @@ impl Swtpm {
     }
 }
 
-/// The swtpm processes serving `socket`: their pids and command lines.
-/// Matched on the command line's first word, so a shell whose own command
-/// line mentions swtpm and the socket is never taken for one.
 fn processes(socket: &Path) -> Vec<(u32, String)> {
     let socket = socket.display().to_string();
     let Ok(entries) = std::fs::read_dir("/proc") else {

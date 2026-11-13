@@ -1,5 +1,5 @@
-//! Default-off native Vello samples, attributed to their originating recording.
-//! No GPU waits: the render worker drives existing map callbacks with Poll.
+//! Default-off native Vello samples, attributed to their originating recording. No GPU waits: the
+//! render worker drives existing map callbacks with Poll.
 use std::collections::VecDeque;
 
 use serde_json::{Value, json};
@@ -72,8 +72,8 @@ struct Ledger {
     owners: VecDeque<(u64, Frame)>,
 }
 
-/// One recorder belongs to one render worker / renderer lifetime. IDs from a
-/// resumed or replaced renderer are never compared with another recorder.
+/// One recorder belongs to one render worker / renderer lifetime. IDs from a resumed or replaced
+/// renderer are never compared with another recorder.
 pub(crate) struct Observer {
     ledgers: [Ledger; 2],
     rows_left: usize,
@@ -116,7 +116,6 @@ impl Observer {
     }
 
     /// Drain BEFORE the next Vello begin_recording can discard a ready sample.
-    /// After rendering, `frame` registers changed recording IDs before draining.
     pub(crate) fn observe(&mut self, renderer: &mut Renderer, frame: Option<Frame>) {
         if self.rows_left == 0 {
             return;

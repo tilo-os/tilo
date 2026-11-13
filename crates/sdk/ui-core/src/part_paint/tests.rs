@@ -11,8 +11,8 @@ use crate::text_render::TextRenderer;
 use crate::time::Duration;
 use crate::widget::{Button, Widget};
 
-/// A painter set that draws a button as a triangle pointing up, counts
-/// its calls, springs between states and leaves every other part alone.
+/// A painter set that draws a button as a triangle pointing up, counts its calls, springs between
+/// states and leaves every other part alone.
 struct Triangles {
     calls: AtomicUsize,
 }
@@ -25,8 +25,8 @@ impl Triangles {
         (PainterSet::new("test.triangles", painter.clone()), painter)
     }
 
-    /// A triangle on the rect's foot, a tenth of its width in from each
-    /// side, its apex at the top centre.
+    /// A triangle on the rect's foot, a tenth of its width in from each side, its apex at the top
+    /// centre.
     fn triangle(size: Size) -> BezPath {
         let mut path = BezPath::new();
         path.move_to((size.width / 2.0, 0.0));
@@ -112,19 +112,15 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     });
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     draw(&mut button, &theme);
-    // The apex column and the foot of the triangle take it; the rect's top
-    // corners, outside the triangle, do not.
     assert!(moved_to(&mut button, (160.0, 60.0)));
     assert!(moved_to(&mut button, (116.0, 88.0)));
     assert!(!moved_to(&mut button, (104.0, 88.0)));
-    // It is spoken where it is drawn.
     let spoken = Widget::accessibility(&button)
         .and_then(|node| node.bounds)
         .expect("bounds");
     assert_eq!(spoken, Rect::new(112.0, 50.0, 208.0, 90.0).into());
     assert!(!moved_to(&mut button, (104.0, 54.0)));
     assert!(!moved_to(&mut button, (216.0, 54.0)));
-    // A press in a corner does nothing; one inside the triangle clicks.
     let mut click = |at: (f64, f64)| {
         moved_to(&mut button, at);
         let mut dispatch = crate::testing::Dispatch::new();
@@ -143,11 +139,9 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     assert_eq!(fired.load(Ordering::Relaxed), 0);
     click((160.0, 80.0));
     assert_eq!(fired.load(Ordering::Relaxed), 1);
-    // An immediate-mode face takes it in the same shape.
     let face = crate::widget::ButtonFace::new(Rect::new(100.0, 50.0, 220.0, 90.0), "Go");
     assert!(face.contains(&theme, Point::new(160.0, 60.0)));
     assert!(!face.contains(&theme, Point::new(104.0, 54.0)));
-    // Without a painter set the whole rect takes it, as before.
     let mut plain = Button::new("go", "Go");
     plain.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     draw(&mut plain, &Theme::dark());
@@ -180,7 +174,6 @@ fn a_settled_part_is_painted_once_and_replayed() {
             &theme,
         )
         .expect("painted");
-        // The hit shape comes back where the part was placed.
         let hit = painted.hit.expect("a shape");
         assert!(hit_contains(&hit, Point::new(at.0 + 40.0, at.1 + 20.0)));
     }
@@ -189,7 +182,6 @@ fn a_settled_part_is_painted_once_and_replayed() {
         first.encoding().draw_tags.len(),
         second.encoding().draw_tags.len()
     );
-    // A moving part is painted every frame, and not kept.
     for progress in [0.25, 0.5] {
         paint_part(
             &mut Scene::new(),
@@ -209,7 +201,6 @@ fn a_settled_part_is_painted_once_and_replayed() {
         );
     }
     assert_eq!(painter.calls.load(Ordering::Relaxed), 3);
-    // A part the set leaves alone is the toolkit's, and asked once.
     for _ in 0..2 {
         assert!(
             paint_part(
@@ -243,7 +234,6 @@ fn the_toolkit_runs_the_painters_transition_on_its_clock() {
     assert_eq!(begun.state.was, States::REST);
     assert_eq!(begun.state.now, States::PRESSED);
     assert!(begun.progress.abs() < 1e-6);
-    // An underdamped spring passes its end on the way.
     let peak = (1..40)
         .map(|ms| motion.at(start + Duration::from_millis(ms * 5)).progress)
         .fold(0.0_f32, f32::max);
@@ -253,7 +243,6 @@ fn the_toolkit_runs_the_painters_transition_on_its_clock() {
         motion.at(start + Duration::from_secs(5)),
         Moment::settled(States::PRESSED)
     );
-    // The set inherits the release: the toolkit's own motion, here none.
     motion.go(
         States::REST,
         (Some(&set), Part::ButtonContainer),
@@ -262,7 +251,6 @@ fn the_toolkit_runs_the_painters_transition_on_its_clock() {
         start,
     );
     assert_eq!(motion.at(start), Moment::settled(States::REST));
-    // Reduce motion lands every change at once.
     motion.go(
         States::PRESSED,
         (Some(&set), Part::ButtonContainer),
@@ -337,7 +325,6 @@ fn a_registered_set_is_found_by_name_and_replaced_by_a_newer_one() {
     assert_eq!(painter_set("test.registry"), Some(newer));
     assert_ne!(painter_set("test.registry"), Some(older));
     assert_eq!(painter_set("test.nothing"), None);
-    // The toolkit's own names are not a theme's to take.
     assert!(!register_painter_set(PainterSet::new(
         builtin::GLASS,
         first.painter.clone()
@@ -395,7 +382,6 @@ fn the_glass_sheen_and_rim_take_the_themes_light() {
         .collect();
     assert!(!stops.is_empty(), "a glass bar catches light");
     assert!(stops.iter().all(lit), "every lit stop is the theme's light");
-    // And it moves with the theme: another light is another drawing.
     let other = PartTokens {
         light: Color::from_rgb8(0xff, 0xe0, 0xb0),
         ..tokens.clone()
@@ -413,7 +399,6 @@ fn the_glass_sheen_and_rim_take_the_themes_light() {
     );
 }
 
-/// The strokes a painted part draws.
 fn strokes(painted: &PaintedPart) -> Vec<(vello::kurbo::BezPath, f32)> {
     painted
         .scene
@@ -426,7 +411,6 @@ fn strokes(painted: &PaintedPart) -> Vec<(vello::kurbo::BezPath, f32)> {
         .collect()
 }
 
-/// Whether `path` runs along the side `side` of `rect`, within half a pixel.
 fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: crate::part_paint::Sides) -> bool {
     use vello::kurbo::PathEl;
     let half = 0.51;
@@ -469,13 +453,10 @@ fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: crate::part_paint:
     false
 }
 
-/// A bar flush with the display draws no lit rim along the screen's own
-/// edges, and keeps its rim on the side that faces what it covers.
-///
-/// The theme's glass lights its outline. On a bar edge to edge with the
-/// screen its top row and end columns are the display's own, so a rim there
-/// is a line of light a pixel in from the bezel: the bar reads as floating
-/// rather than as reaching the edge.
+/// A bar flush with the display draws no lit rim along the screen's own edges, and keeps its rim on the
+/// side that faces what it covers. On a bar edge to edge with the screen its top row and end columns
+/// are the display's own, so a rim there is a line of light a pixel in from the bezel: the bar reads as
+/// floating rather than as reaching the edge.
 #[test]
 fn a_flush_bar_lights_no_rim_on_the_display_edges() {
     use crate::part_paint::Sides;
@@ -486,8 +467,6 @@ fn a_flush_bar_lights_no_rim_on_the_display_edges() {
     let paint = |flush: Sides| {
         let mut tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
         tokens.flush = flush;
-        // A bar edge to edge with the display is square, which is what makes
-        // its rim four straight edges to leave off a flush side.
         tokens.radius = 0.0;
         let tokens = tokens;
         builtin::glass_set()
@@ -501,8 +480,6 @@ fn a_flush_bar_lights_no_rim_on_the_display_edges() {
             )
             .expect("glass draws a bar body")
     };
-    // A bar that is not flush keeps its rim all round; every side is drawn,
-    // one path.
     let all = strokes(&paint(Sides::NONE));
     assert_eq!(all.len(), 1, "a body not flush lights one rim path");
     for side in [Sides::TOP, Sides::BOTTOM, Sides::LEADING, Sides::TRAILING] {
@@ -537,7 +514,6 @@ fn forced_colours_draw_with_the_toolkits_own_painters() {
     assert_eq!(theme.painter(SurfaceRole::Control), builtin::default_set());
 }
 
-/// `tokens` with `name` stated at `value`, replacing what it stated before.
 fn with_param(tokens: &PartTokens, name: &str, value: f32) -> PartTokens {
     let mut params: Vec<Param> = tokens.params.iter().cloned().collect();
     params.retain(|param| param.name != name);
@@ -551,9 +527,8 @@ fn with_param(tokens: &PartTokens, name: &str, value: f32) -> PartTokens {
     }
 }
 
-/// The straight stretches of the Liquid rim on a 200×100 floating panel lit
-/// from `light_angle`: each solid fill in the theme's light, by its bounds
-/// and opacity.
+/// The straight stretches of the Liquid rim on a 200×100 floating panel lit from `light_angle`: each
+/// solid fill in the theme's light, by its bounds and opacity.
 fn liquid_rim_stretches(light_angle: f32) -> Vec<(Rect, f32)> {
     let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
     let color = Color::from_rgb8(0x30, 0x34, 0x40);
@@ -588,13 +563,11 @@ fn liquid_rim_stretches(light_angle: f32) -> Vec<(Rect, f32)> {
         .collect()
 }
 
-/// The Liquid rim is a thin edge lit from the theme's light angle: the
-/// stretch facing the light at the full `edge_highlight`, the far one
-/// faintly, the two side on dark; turning the light turns the rim.
+/// The Liquid rim is a thin edge lit from the theme's light angle: the stretch facing the light at the
+/// full `edge_highlight`, the far one faintly, the two side on dark; turning the light turns the rim.
 #[test]
 fn the_liquid_rim_is_lit_from_the_light_angle() {
     use vello::kurbo::Vec2;
-    // The light on a normal facing it, side on and facing away.
     let up = Vec2::new(0.0, -1.0);
     assert!((builtin::rim_light(up, up) - 1.0).abs() < 1e-6);
     assert!(builtin::rim_light(Vec2::new(1.0, 0.0), up).abs() < 1e-6);
@@ -621,7 +594,6 @@ fn the_liquid_rim_is_lit_from_the_light_angle() {
         "light leaves through the far side"
     );
     assert!(edge(&above, left) < 1e-4);
-    // The rim is thin: a stretch is one and a half pixels deep.
     let top_rect = above.iter().find(|(rect, _)| top(rect)).expect("top").0;
     assert!((top_rect.height() - 1.5).abs() < 1e-9);
     // Light from the left (180°): the left stretch takes it.
@@ -630,7 +602,6 @@ fn the_liquid_rim_is_lit_from_the_light_angle() {
     assert!(edge(&beside, top) < 1e-4);
 }
 
-/// The Liquid set, counting the faces it is asked to draw.
 struct CountedLiquid {
     calls: AtomicUsize,
 }
@@ -651,9 +622,9 @@ impl PartPainter for CountedLiquid {
     }
 }
 
-/// A settled Liquid face is cached under every parameter the set reads:
-/// drawn again with the same tokens it is replayed, and one whose band,
-/// light angle, dispersion or refraction differs is drawn anew.
+/// A settled Liquid face is cached under every parameter the set reads: drawn again with the same
+/// tokens it is replayed, and one whose band, light angle, dispersion or refraction differs is drawn
+/// anew.
 #[test]
 fn the_part_cache_keys_on_every_liquid_parameter() {
     let painter = Arc::new(CountedLiquid {
@@ -695,7 +666,6 @@ fn the_part_cache_keys_on_every_liquid_parameter() {
     }
 }
 
-/// The parts Pixelated draws a pattern fill in: the cell grid's texels.
 fn pixelated_patterns(tokens: &PartTokens, part: Part) -> Vec<f32> {
     let painted = builtin::pixelated_set()
         .painter()
@@ -727,11 +697,8 @@ fn pixelated_patterns(tokens: &PartTokens, part: Part) -> Vec<f32> {
         .collect()
 }
 
-/// Pixelated draws its cell grid as its own ops: a pattern fill of the
-/// body in the fill stepped towards the ink, one texel per cell. The look
-/// read as a flat box before, because a ground that varies nowhere left the
-/// cells nothing to quantise, so the finish showed only its corners and its
-/// border.
+/// Pixelated draws its cell grid as its own ops: a pattern fill of the body in the fill stepped towards
+/// the ink, one texel per cell.
 #[test]
 fn the_pixelated_set_draws_its_cell_grid() {
     let theme = Theme::preset(crate::theme::Preset::Pixelated);
@@ -763,16 +730,14 @@ fn the_pixelated_set_draws_its_cell_grid() {
     );
 }
 
-/// The grid's pattern paints cells on the frame: a 4 by 4 dither tile drawn
-/// at `cell` logical pixels per texel, so a row of the body steps in a
-/// Bayer order rather than shading evenly.
+/// The grid's pattern paints cells on the frame: a 4 by 4 dither tile drawn at `cell` logical pixels
+/// per texel, so a row of the body steps in a Bayer order rather than shading evenly.
 #[test]
 fn the_cell_grid_paints_cells_on_the_frame() {
     use crate::offscreen::OffscreenRenderer;
     let (width, height) = (160, 120);
     let theme = Theme::preset(crate::theme::Preset::Pixelated);
     let color = Color::from_rgb8(0x20, 0x28, 0x34);
-    // The ink the grid steps towards: what a surface measures its text on.
     let ink = Color::from_rgb8(0xf0, 0xf2, 0xf6);
     let tokens = part_tokens(
         &theme,

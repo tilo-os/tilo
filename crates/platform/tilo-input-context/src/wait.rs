@@ -1,18 +1,16 @@
 //! Sleep until an input-method connection has something to read.
 //!
-//! An input method shares its Wayland client between the thread that follows
-//! focus and the thread that commits typed text, behind a lock, so neither
-//! can block inside the client. [`ConnectionWait`] waits on a duplicate of the
-//! connection's socket instead, outside the lock, and on a [`Nudge`] from the
-//! committing thread: that thread's roundtrips read the socket themselves and
-//! can leave events queued in the client while the socket reads empty.
+//! An input method shares its Wayland client between the thread that follows focus
+//! and the thread that commits typed text, behind a lock, so neither can block
+//! inside the client. [`ConnectionWait`] waits outside the lock on a duplicate of
+//! the socket, and on a [`Nudge`] from the committing thread, whose roundtrips read
+//! the socket themselves and can leave events queued while the socket reads empty.
 
 use std::cell::Cell;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
-/// Why [`ConnectionWait::wait`] returned.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Woken {
     /// The socket is readable, or the other thread read it and nudged.
@@ -42,7 +40,6 @@ impl Nudge {
 }
 
 impl ConnectionWait {
-    /// Wait on `connection`'s socket.
     #[cfg(feature = "client")]
     pub fn for_connection(
         connection: &wayland_client::Connection,
@@ -50,7 +47,6 @@ impl ConnectionWait {
         Self::for_socket(connection.backend().poll_fd().try_clone_to_owned()?)
     }
 
-    /// Wait on `socket`, a connection's descriptor this wait owns.
     pub fn for_socket(socket: OwnedFd) -> std::io::Result<(Self, Nudge)> {
         let (nudged, nudge) = UnixStream::pair()?;
         nudged.set_nonblocking(true)?;
@@ -133,8 +129,6 @@ mod tests {
         (compositor, wait, nudge)
     }
 
-    /// Run `wait` on a thread; fail if it is still asleep after the shared
-    /// hang bound.
     fn woken_within(wait: ConnectionWait) -> (Woken, ConnectionWait) {
         let (send, receive) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
@@ -152,7 +146,6 @@ mod tests {
         (&compositor).write_all(&[7]).expect("write");
         let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready);
-        // Phase `nudge`: drains it, so the next wait would sleep again.
         let mut byte = [0u8; 1];
         (&wait
             .socket

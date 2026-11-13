@@ -1,31 +1,5 @@
-//! The emoji picker every app opens: to react to something, to put an emoji
-//! in what it writes.
-//!
-//! A compact panel: the search field (focused), Unicode's groups as tabs,
-//! and a grid that lists the workspace's own emoji first, with an "Add
-//! emoji" tile for whoever may add them ([`crate::workspace_emoji`]), then
-//! the person's recently used emoji, then the chosen group; while a query
-//! is typed, the matches (the workspace's first). Everything is reachable
-//! from the keyboard: typing searches, the arrows move the highlight, Tab
-//! changes the group, Enter picks, Shift+Enter (a right click, a long press)
-//! offers the skin tones of an emoji that takes them, Escape closes.
-//!
-//! A pick is [`PickerEvent::Picked`]: the emoji itself, or a workspace
-//! emoji written `:name:`; it joins the recents
-//! ([`crate::emoji_catalogue::record_recent`]). The Unicode emoji come from
-//! the toolkit's own catalogue ([`crate::emoji_catalogue`]); the workspace's
-//! emoji are added to it, and the person's recents come first.
-//!
-//! Hosts: a retained view puts it in a [`super::Popover`]
-//! ([`EmojiPicker::new`] lays out at its own size); a canvas that paints by
-//! hand frames it ([`EmojiPicker::framed`], or [`EmojiPicker::sheet`] for the
-//! desk's own wider card), places it with [`EmojiPicker::open_at`], paints it
-//! with [`Widget::draw`] and routes the window's events to
-//! [`Widget::handle_event`] while it is open. A framed card is sized by the
-//! viewport it is placed in: on a small display it is narrower, its grid
-//! shorter and its group tabs over several rows, and a display too short for
-//! all of its chrome drops the hint line and then the tabs, so the card
-//! always fits.
+//! The emoji picker every app opens: to react to something, to put an emoji in what it
+//! writes.
 
 use std::collections::HashMap;
 
@@ -54,31 +28,24 @@ use crate::workspace_emoji::Adding;
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
-/// A press held this long offers the skin tones instead of picking.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 /// Rows of the grid shown at once.
 const GRID_ROWS: usize = 6;
-/// Columns of a popover's grid.
 const COLUMNS: usize = 8;
 
 /// What the picker asks of its host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerEvent {
-    /// The person picked this emoji (a workspace emoji as `:name:`).
     Picked(String),
-    /// The person closed it (Escape, a press outside it) without a pick.
     Dismissed,
 }
 
-/// One cell of the grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Item {
     Emoji(String),
-    /// "Add emoji": choose a picture to add to the workspace's emoji.
     AddCustom,
 }
 
-/// What a point on the panel is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
     Field,
@@ -89,7 +56,6 @@ enum Hit {
     Outside,
 }
 
-/// A run of the grid under a heading.
 #[derive(Clone, Debug)]
 struct Section {
     heading: Option<String>,
@@ -97,57 +63,42 @@ struct Section {
     end: usize,
 }
 
-/// The skin tones of one emoji, over the grid.
 #[derive(Clone, Debug)]
 struct Tones {
     forms: Vec<String>,
     selected: usize,
-    /// Tones to a row: the arrow keys walk them as they are drawn.
     columns: usize,
     rect: Rect,
     cells: Vec<Rect>,
 }
 
-/// The picker's geometry in one theme, with the panel's top-left at the
-/// origin.
 #[derive(Clone, Debug, Default)]
 struct Geometry {
     size: (f64, f64),
     field: Rect,
-    /// The row the group tabs share, and each tab in it.
     tab_strip: Rect,
     tabs: Vec<Rect>,
     grid: Rect,
     footer: Rect,
     cell: f64,
-    /// Columns of the grid.
     columns: usize,
-    /// Tabs that share a row of the group strip, and a tab's height.
     tab_columns: usize,
     tab_height: f64,
-    /// Each item's cell and each heading's top, in grid content
-    /// coordinates.
     cells: Vec<Rect>,
     headings: Vec<(String, f64)>,
     content_height: f64,
 }
 
-/// The shared emoji picker. See the [module docs](self).
 #[crate::component::not_a_component(
     part,
     "the panel of the `ui.EmojiPicker` button, which opens it in its popover"
 )]
 pub struct EmojiPicker {
     framed: bool,
-    /// Whether a framed card takes a sheet's width instead of a utility
-    /// panel's.
     sheet: bool,
     open: bool,
-    /// The panel, in the host's coordinates.
     rect: Rect,
-    /// The room a framed card is sized and placed in.
     viewport: Rect,
-    /// The caret a framed card stands beside, when the field reported one.
     anchor: Option<Rect>,
     search: SearchField,
     query: String,
@@ -163,14 +114,10 @@ pub struct EmojiPicker {
     geometry: Geometry,
     scroll: ScrollRegion,
     theme: Theme,
-    /// What the grid was built from: the catalogue's arrival, the
-    /// workspace's emoji and the last picture added to them.
     built_from: (u64, u64, u64),
     /// Why the last picture chosen with "Add emoji" was not added, in
     /// place of the footer's name until the person does something else.
     notice: Option<String>,
-    /// The count of pictures added ([`crate::workspace_emoji::EmojiSource::last_added`])
-    /// last shown.
     shown_added: u64,
     cursor: Point,
     dirty: bool,
@@ -217,8 +164,8 @@ impl EmojiPicker {
         picker
     }
 
-    /// A picker that paints its own floating panel and is placed by its
-    /// host ([`Self::open_at`]); it starts closed.
+    /// A picker that paints its own floating panel and is placed by its host
+    /// ([`Self::open_at`]); it starts closed.
     #[must_use]
     pub fn framed() -> Self {
         let mut picker = Self::new();
@@ -228,8 +175,8 @@ impl EmojiPicker {
     }
 
     /// A framed picker at a sheet's width ([`crate::tokens::Metrics::BASE`]'s
-    /// `panel_width_sheet`): the desk's own card over a whole session, where
-    /// a wider grid shows more emoji before it scrolls.
+    /// `panel_width_sheet`): the desk's own card over a whole session, where a wider grid
+    /// shows more emoji before it scrolls.
     #[must_use]
     pub fn sheet() -> Self {
         let mut picker = Self::framed();
@@ -270,9 +217,8 @@ impl EmojiPicker {
         self.reset();
     }
 
-    /// Move beside `anchor` inside `viewport`, in `theme`, keeping what is
-    /// typed and chosen: a host placing an open picker on every frame, as
-    /// its window resizes.
+    /// Move beside `anchor` inside `viewport`, in `theme`, keeping what is typed and
+    /// chosen: a host placing an open picker on every frame, as its window resizes.
     pub fn place_at(&mut self, anchor: Option<Rect>, viewport: Rect, theme: &Theme) {
         let moved = self.anchor != anchor || self.viewport != viewport || self.theme != *theme;
         self.anchor = anchor;
@@ -413,7 +359,6 @@ impl EmojiPicker {
         self.notice = None;
         self.scroll.set_offset(Vec2::ZERO);
         self.rebuild();
-        // What was added before it opened is not news.
         self.shown_added = self.built_from.2;
     }
 
@@ -421,8 +366,6 @@ impl EmojiPicker {
         rect + self.rect.origin().to_vec2()
     }
 
-    /// What the grid is built from now: moves when the catalogue arrives,
-    /// the workspace's emoji change or a picture chosen to add settled.
     fn sources() -> (u64, u64, u64) {
         let source = crate::workspace_emoji::current();
         (
@@ -537,8 +480,6 @@ impl EmojiPicker {
                 .collect();
             section(&mut self.items, None, found);
         }
-        // The first emoji, not the add tile: Enter right after opening picks
-        // an emoji rather than asking for a file.
         self.selected = self
             .items
             .iter()
@@ -559,9 +500,6 @@ impl EmojiPicker {
             self.groups.len(),
         );
         if self.framed {
-            // A framed card is its host's to place: beside the caret, and
-            // inside the viewport even when it is taller than either side of
-            // it.
             self.rect = framed_card(
                 self.anchor,
                 geometry.size,
@@ -586,8 +524,6 @@ impl EmojiPicker {
                 })
                 .collect()
         } else {
-            // A card too short for the tabs keeps none: the keys still walk
-            // the groups.
             Vec::new()
         };
         let (cells, headings, height) =
@@ -598,8 +534,9 @@ impl EmojiPicker {
         let grid = self.on_screen(geometry.grid);
         self.scroll.set_viewport(grid, &self.theme);
         self.scroll.set_content_size(grid.width(), height);
-        self.search
-            .apply_layout_external(self.on_screen(geometry.field));
+        let field = self.on_screen(geometry.field);
+        let theme = self.theme.clone();
+        self.search.apply_layout_external(field, &theme);
         self.geometry = geometry;
         self.dirty = true;
     }
@@ -637,7 +574,6 @@ impl EmojiPicker {
         (cells, headings, y)
     }
 
-    /// Item `index`'s cell on screen, scrolled.
     fn screen_cell(&self, index: usize) -> Option<Rect> {
         let cell = self.geometry.cells.get(index)?;
         let shown = self.scroll.content_rect();
@@ -649,7 +585,6 @@ impl EmojiPicker {
         let Some(cell) = self.geometry.cells.get(self.selected).copied() else {
             return;
         };
-        // A section's first row keeps its heading in view.
         let heading = self
             .sections
             .iter()
@@ -663,8 +598,7 @@ impl EmojiPicker {
             .scroll_into_view(Rect::new(cell.x0, top, cell.x1, cell.y1));
     }
 
-    /// Show catalogue group `group` (an index into its groups), as its tab
-    /// does.
+    /// Show catalogue group `group` (an index into its groups), as its tab does.
     pub fn select_group(&mut self, group: usize) {
         let count = self.groups.len();
         if count == 0 {
@@ -676,7 +610,6 @@ impl EmojiPicker {
             self.search.set_query("");
         }
         self.rebuild();
-        // The group's own section, below the workspace's and the recents.
         if let Some(section) = self.sections.last() {
             self.selected = section.start;
             let top = self.geometry.headings.last().map_or(0.0, |(_, y)| *y);
@@ -714,8 +647,6 @@ impl EmojiPicker {
         Hit::Panel
     }
 
-    /// The item in the row above or below the highlight whose centre is
-    /// nearest.
     fn vertical_neighbour(&self, from: usize, down: bool) -> Option<usize> {
         let cells = &self.geometry.cells;
         let current = cells.get(from)?;
@@ -798,8 +729,6 @@ impl EmojiPicker {
         let cell = self.geometry.cell;
         let pad = f64::from(self.theme.tokens.spacing.s1);
         let card = self.rect;
-        // The tones wrap inside the card: on a narrow one they take two rows
-        // rather than running over its edge.
         let room = (card.width() - pad * 2.0).max(cell);
         let columns = usize_of_f64((room / cell).floor()).clamp(1, forms.len());
         let rows = forms.len().div_ceil(columns);
@@ -813,7 +742,6 @@ impl EmojiPicker {
         } else {
             anchor.y1
         };
-        // Above the cell, else below it, and kept on the card either way.
         let y0 = y0.min(card.y1 - height).max(card.y0);
         let cells = (0..forms.len())
             .map(|i| {
@@ -884,7 +812,6 @@ impl EmojiPicker {
                 Key::Named(NamedKey::ArrowRight | NamedKey::Tab) => {
                     tones.selected = (tones.selected + 1).min(last);
                 }
-                // The tones are drawn in rows, so up and down follow them.
                 Key::Named(NamedKey::ArrowUp) => {
                     tones.selected = tones.selected.saturating_sub(tones.columns);
                 }
@@ -932,7 +859,6 @@ impl EmojiPicker {
             (ElementState::Pressed, MouseButton::Left) => {
                 self.notice = None;
                 if hit == Hit::Outside {
-                    // A popover around an unframed picker closes it itself.
                     if self.framed {
                         self.dismiss();
                     }
@@ -980,8 +906,6 @@ impl EmojiPicker {
         true
     }
 
-    /// The name of what item `index` is: an emoji's (with its tone), or
-    /// "Add emoji".
     fn item_name(&self, index: usize) -> String {
         match self.items.get(index) {
             Some(Item::Emoji(text)) => emoji_catalogue::emoji_name(text),
@@ -992,8 +916,6 @@ impl EmojiPicker {
 
     fn paint_footer(&self, ctx: &mut PaintCtx<'_>, footer: Rect) {
         if let Some(notice) = &self.notice {
-            // Wrapped: a reason may take a second line, which the footer's
-            // margin holds.
             let style = ctx.theme.text(TextRole::Caption);
             let width = f32_of_f64(footer.width());
             let (_, h) = ctx.text.measure_style(notice, Some(width), &style);
@@ -1014,8 +936,6 @@ impl EmojiPicker {
             .map(String::as_str)
             .or_else(|| self.selected());
         let name = match announced {
-            // A workspace emoji's name as text: written `:name:`, the line
-            // would draw its picture a second time.
             Some(text) => tilo_resource::custom_emoji_name(text)
                 .map_or_else(|| emoji_catalogue::emoji_name(text), str::to_owned),
             None if self.items.get(self.selected) == Some(&Item::AddCustom) => {
@@ -1115,8 +1035,6 @@ impl EmojiPicker {
             }
             let shape = RoundedRect::from_rect(cell.inset(-2.0), radius);
             if i == self.selected {
-                // The armed cell is the panel's overlay lift, like a menu's
-                // armed row (HIG 9.3).
                 let (lift, _) = crate::widget::floating_surface::armed_row(theme);
                 ctx.scene.fill(Fill::NonZero, content, lift, None, &shape);
             } else if self.hover == Some(Hit::Item(i)) {
@@ -1137,7 +1055,6 @@ impl EmojiPicker {
                             .and_then(|emoji| crate::workspace_emoji::emoji().image(&emoji.name))
                             .is_none()
                     {
-                        // No picture yet: its name, as much as the cell holds.
                         let shown = c.text.elide_to_width_style(
                             text,
                             f32_of_f64(cell.width() - 4.0),
@@ -1249,9 +1166,6 @@ impl EmojiPicker {
         }
     }
 
-    /// The picker as assistive technology sees it: a dialog with the
-    /// search field, the group tabs, a group per grid section (its items in
-    /// view) and the skin tones when offered; the highlight is announced.
     fn access_tree(&self) -> AccessNode {
         let t = |key: &str| crate::i18n::widget_format(key, &[]);
         let mut dialog = AccessNode::new(Role::Dialog)
@@ -1366,10 +1280,6 @@ impl EmojiPicker {
     }
 }
 
-/// The picker's geometry in `theme`, before its items are laid out: a popover
-/// at its own size, or a framed card fitted to `viewport` — narrower than its
-/// width class when the viewport is, and with a shorter grid when the height
-/// is, so the card always fits the display it opens on.
 fn geometry_of(
     theme: &Theme,
     framed: bool,
@@ -1420,8 +1330,6 @@ fn geometry_of(
     let mut tabs_h = tab_height * f64_of_usize(groups.max(1).div_ceil(tab_columns).max(1));
     let grid_w = cell * f64_of_usize(columns);
     let chrome = |tabs: f64, footer: f64| pad * 2.0 + field_h + gap + tabs + gap + gap + footer;
-    // A display too short for all of the card's chrome still holds the field
-    // and a row of emoji: the hint line goes first, then the group tabs.
     let mut footer_h = hint_h;
     if chrome(tabs_h, footer_h) + cell > available {
         footer_h = 0.0;
@@ -1469,8 +1377,6 @@ fn geometry_of(
     }
 }
 
-/// How many tabs share a row: all of them while the strip fits the card's
-/// width class, else as many as fit with the rows kept even.
 fn group_columns(room: f64, groups: usize, tab_width: f64, strip_width: f64) -> usize {
     if room >= strip_width {
         return groups;
@@ -1481,11 +1387,6 @@ fn group_columns(room: f64, groups: usize, tab_width: f64, strip_width: f64) -> 
     groups.div_ceil(groups.div_ceil(fits))
 }
 
-/// Where a framed card of `size` stands: its leading edge on `anchor`'s,
-/// `gap` below the caret, or `gap` above it where the viewport ends first;
-/// with no anchor, centred a fifth of the way down the viewport. Either way
-/// the card stays `edge` inside `viewport`, sliding rather than running off
-/// it.
 fn framed_card(
     anchor: Option<Rect>,
     (width, height): (f64, f64),
@@ -1589,7 +1490,6 @@ impl Widget for EmojiPicker {
         self.search
             .draw_child(scene, transform, text, theme, presence);
 
-        // The group tabs.
         let g = self.geometry.clone();
         if !g.tabs.is_empty() {
             let icons: Vec<&str> = self.groups.iter().map(|group| group.icon).collect();
@@ -1678,7 +1578,6 @@ impl Widget for EmojiPicker {
                 self.search.handle_event(event, ctx);
                 *ctx.handled = true;
             }
-            // A touchscreen presses and picks where a mouse does.
             WindowEvent::Touch(touch) => {
                 self.cursor = Point::new(
                     touch.location.x / ctx.scale_factor,
@@ -1703,7 +1602,6 @@ impl Widget for EmojiPicker {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
             }
-            // A press held when the window lost the keyboard is no press.
             WindowEvent::Focused(false) => {
                 self.press = None;
                 self.hover = None;
@@ -1718,9 +1616,6 @@ impl Widget for EmojiPicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        // A closed picker paints nothing: what it owes is the frame that takes it down, and
-        // neither its field nor what its grid is built from shows until it opens again, which
-        // rebuilds the grid.
         self.dirty
             || (self.open
                 && (self.search.needs_redraw()
@@ -1739,7 +1634,6 @@ impl Widget for EmojiPicker {
                 || self.search.needs_animation_frame())
     }
 
-    /// A glide after a flick scrolls the grid as the wheel does.
     fn update(&mut self, _state: &crate::widget::AppModel, _path: &ModelPath) -> bool {
         self.advance_scroll()
     }

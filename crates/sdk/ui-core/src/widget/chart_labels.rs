@@ -1,12 +1,4 @@
 //! Collision-free label layout shared by the charts.
-//!
-//! A chart label is placed where it reads (outside a ring, beside a node,
-//! inside a sector), shortened with an ellipsis to the room it has there,
-//! and dropped when even a short form does not fit or it would collide with
-//! a label already placed. A dropped label is never lost: every chart names
-//! the item in its tooltip and its accessibility node. Labels are placed in
-//! priority order (largest item first), so the labels that survive at a
-//! small size are the ones that matter most.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -22,7 +14,6 @@ use crate::tokens::TextRole;
 pub(crate) struct LabelPlacer {
     bounds: Rect,
     placed: Vec<Rect>,
-    /// Air kept between two labels and between a label and an obstacle.
     air: f64,
 }
 
@@ -40,7 +31,6 @@ impl LabelPlacer {
         self.placed.push(rect);
     }
 
-    /// Whether `rect` is inside the bounds and clear of everything placed.
     pub(crate) fn fits(&self, rect: Rect) -> bool {
         let inside = rect.x0 >= self.bounds.x0 - 0.5
             && rect.x1 <= self.bounds.x1 + 0.5
@@ -54,7 +44,6 @@ impl LabelPlacer {
             })
     }
 
-    /// Place `rect` if it [`fits`](Self::fits); returns whether it did.
     pub(crate) fn place(&mut self, rect: Rect) -> bool {
         if self.fits(rect) {
             self.placed.push(rect);
@@ -98,9 +87,6 @@ pub(crate) fn radial_label_rect(center: Point, radius: f64, angle: f64, size: (f
     let (w, h) = size;
     let (sin, cos) = angle.sin_cos();
     let anchor = Point::new(center.x + radius * cos, center.y + radius * sin);
-    // The box's corner nearest the centre sits on the anchor: start-aligned
-    // on the right, end-aligned on the left, centred straight above and
-    // below; likewise vertically.
     let x0 = if cos > AXIS {
         anchor.x
     } else if cos < -AXIS {
@@ -118,10 +104,8 @@ pub(crate) fn radial_label_rect(center: Point, radius: f64, angle: f64, size: (f
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
-/// How close to an axis a radial label's angle counts as on it.
 const AXIS: f64 = 0.15;
 
-/// The room a radial label has at `angle` before it leaves `bounds`.
 pub(crate) fn radial_room(center: Point, radius: f64, angle: f64, bounds: Rect) -> f64 {
     let cos = angle.cos();
     let x = center.x + radius * cos;
@@ -134,8 +118,6 @@ pub(crate) fn radial_room(center: Point, radius: f64, angle: f64, bounds: Rect) 
     }
 }
 
-/// The half-width a line spanning `y0..y1` (relative to the centre) has
-/// inside a circle of `radius`.
 fn half_chord(radius: f64, y0: f64, y1: f64) -> f64 {
     let y = y0.abs().max(y1.abs());
     (radius * radius - y * y).max(0.0).sqrt()
@@ -184,8 +166,6 @@ pub(crate) fn paint_centre_label(
     Some(covered)
 }
 
-/// Where [`paint_centre_label`] puts the value (with the role it is set in)
-/// and the caption; `None` when the value does not fit the hole.
 pub(crate) fn centre_label_layout(
     tr: &mut TextRenderer,
     theme: &Theme,
@@ -197,7 +177,6 @@ pub(crate) fn centre_label_layout(
     if title.is_empty() || radius <= 0.0 {
         return None;
     }
-    // Keep the copy off the ring: a step of air inside the hole.
     let radius = radius - f64::from(theme.tokens.spacing.s1);
     let caption = theme.text(TextRole::Caption);
     let (sw, sh) = if subtitle.is_empty() {
@@ -210,7 +189,6 @@ pub(crate) fn centre_label_layout(
         let style = theme.text(role).strong();
         let (tw, th) = tr.measure_style(title, None, &style);
         let (tw, th) = (f64::from(tw), f64::from(th));
-        // With the caption: the pair is centred as one block.
         if sh > 0.0 {
             let top = -(th + sh) / 2.0;
             if tw / 2.0 <= half_chord(radius, top, top + th)
@@ -226,7 +204,6 @@ pub(crate) fn centre_label_layout(
                 return Some(((role, t), Some(s)));
             }
         }
-        // The value alone.
         if tw / 2.0 <= half_chord(radius, -th / 2.0, th / 2.0) {
             let t = Rect::new(
                 center.x - tw / 2.0,
@@ -271,8 +248,6 @@ mod tests {
         for step in 0..16 {
             let angle = f64::from(step) * std::f64::consts::TAU / 16.0;
             let rect = radial_label_rect(center, radius, angle, (60.0, 16.0));
-            // The box's nearest point to the centre is at or outside the ring
-            // (within rounding of the blended corner).
             let nearest = Point::new(
                 center.x.clamp(rect.x0, rect.x1),
                 center.y.clamp(rect.y0, rect.y1),

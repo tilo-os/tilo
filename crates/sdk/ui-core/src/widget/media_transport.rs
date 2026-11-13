@@ -63,15 +63,10 @@ use winit::keyboard::{Key, NamedKey};
 /// The song's art in the transport.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum TransportArt {
-    /// No song: no art.
     #[default]
     None,
-    /// A song without a picture (yet): the generated cover seeded with
-    /// [`TransportState::art_name`].
     Placeholder,
-    /// The cover.
     Image(ImageData),
-    /// A cover by its address, loaded as it arrives: the placeholder shows until it does.
     Picture(crate::widget::PictureSource),
 }
 
@@ -84,7 +79,6 @@ pub enum TransportRepeat {
     One,
 }
 
-// What a repeat control repeats, as a component's prop.
 crate::component::choice!(TransportRepeat, "TransportRepeat", {
     Off => "off",
     All => "all",
@@ -94,40 +88,29 @@ crate::component::choice!(TransportRepeat, "TransportRepeat", {
 /// What plays, as the app's player has it: everything the transport shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TransportState {
-    /// The song's name, or what the transport says with nothing playing.
     pub title: String,
     /// Who it is by, or why it can't play.
     pub subtitle: String,
     /// The subtitle says why it can't play: it reads as an error.
     pub error: bool,
     pub art: TransportArt,
-    /// The name the placeholder cover takes its initials and colour from
-    /// (the album).
     pub art_name: String,
-    /// What a press on the art opens ("Open album", "Show lyrics"), as it
-    /// is announced; `None` leaves the art a picture
-    /// ([`TransportEvent::OpenPlaying`]).
     pub opens: Option<String>,
     pub playing: bool,
-    /// Nothing can play: every control rests disabled.
     pub idle: bool,
     pub position_ms: f64,
     pub duration_ms: f64,
-    /// The volume, `0..=1`; zero is muted.
     pub volume: f64,
-    /// Each optional control is left out while `None`, and shown on or off.
     pub shuffle: Option<bool>,
     pub repeat: Option<TransportRepeat>,
     pub liked: Option<bool>,
     pub lyrics: Option<bool>,
     pub queue: Option<bool>,
-    /// The compact form has a More button, which the app answers with a
-    /// menu ([`TransportEvent::More`]).
     pub more: bool,
 }
 
-/// The app's actions the transport's controls invoke, each through the
-/// resource/action door. A control whose action is `None` is left out.
+/// The app's actions the transport's controls invoke, each through the resource/action
+/// door.
 #[derive(Clone, Default)]
 pub struct TransportActions {
     pub play_pause: Option<ActionBinding<()>>,
@@ -135,45 +118,34 @@ pub struct TransportActions {
     pub next: Option<ActionBinding<()>>,
     pub shuffle: Option<ActionBinding<()>>,
     pub repeat: Option<ActionBinding<()>>,
-    /// Like or unlike what plays.
     pub like: Option<ActionBinding<()>>,
     pub mute: Option<ActionBinding<()>>,
     /// Go to a fraction (`0..=1`) of the song, once the scrubber is let go.
     pub seek: Option<ActionBinding<f64>>,
-    /// Set the volume, `0..=1`.
     pub volume: Option<ActionBinding<f64>>,
 }
 
-/// What the person asked for that changes what the window shows, rather
-/// than what plays ([`TransportActions`]), and the swipe across the band.
+/// What the person asked for that changes what the window shows, rather than what plays
+/// ([`TransportActions`]), and the swipe across the band.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransportEvent {
-    /// A swipe across the band, towards the previous song.
     Previous,
-    /// A swipe across the band, towards the next song.
     Next,
     Lyrics,
     Queue,
-    /// Open the More menu under the button, at this rect in window
-    /// coordinates.
     More(Rect),
-    /// Open what plays: the art was pressed ([`TransportState::opens`]).
     OpenPlaying,
 }
 
-/// Which form the transport takes at its width.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Form {
     Compact,
     /// Wide, with the volume a mute toggle only.
     #[default]
     Wide,
-    /// Wide, with the volume slider beside the mute toggle.
     WideWithVolume,
 }
 
-/// The sizes a layout of the transport is made of, from the theme and the
-/// text measured in it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
     control: f64,
@@ -189,8 +161,6 @@ struct Metrics {
     sibling: f64,
     related: f64,
     tight: f64,
-    /// How far a drag across the band travels before it skips a song: two
-    /// pointer targets.
     swipe: f64,
 }
 
@@ -246,7 +216,6 @@ impl Metrics {
     }
 }
 
-/// What the app and the transport's controls share.
 #[derive(Default)]
 struct Shared {
     state: RefCell<TransportState>,
@@ -254,23 +223,12 @@ struct Shared {
     events: RefCell<Vec<TransportEvent>>,
     metrics: Cell<Metrics>,
     form: Cell<Form>,
-    /// The More button, in the transport's own coordinates.
     more: Cell<Rect>,
-    /// The transport's origin in the window at its last layout.
     origin: Cell<Point>,
-    /// Where each child stands (zero while it isn't there), in the
-    /// transport's own coordinates.
     placed: Cell<[Rect; CHILDREN]>,
-    /// Which children have what they invoke: an action the app handed in,
-    /// or a request of the window's own.
     handed: Cell<[bool; CHILDREN]>,
-    /// The song as the art and the lines show it, cross-fading to the next.
     song: RefCell<SongFace>,
-    /// Where the scrubber's knob is held (`0..=1`), while a finger or the
-    /// pointer holds it.
     scrub: Cell<Option<f64>>,
-    /// A page showing the song large has the cover in flight: the band
-    /// leaves its place empty until it lands back.
     art_lent: Cell<bool>,
 }
 
@@ -279,7 +237,6 @@ impl Shared {
         self.events.borrow_mut().push(event);
     }
 
-    /// Show the declared song from the frame at `now`.
     fn follow_song(&self, theme: &Theme, now: crate::time::Instant) {
         let song = song_of(&self.state.borrow());
         self.song.borrow_mut().show(&song, theme.motion(), now);
@@ -289,8 +246,6 @@ impl Shared {
         self.song.borrow().is_moving(crate::time::now())
     }
 
-    /// Take the cover's bytes once they are here, from the window's pictures: `true` when that
-    /// changed what the band shows, so a frame paints it.
     fn follow_art(&self) -> bool {
         let picture = match &self.state.borrow().art {
             TransportArt::Picture(picture) => picture.clone(),
@@ -305,7 +260,6 @@ impl Shared {
         true
     }
 
-    /// The time a caption shows: the knob's while it is held.
     fn caption(&self, side: Caption) -> String {
         let state = self.state.borrow();
         if state.idle {
@@ -322,7 +276,6 @@ impl Shared {
     }
 }
 
-/// The song `state` declares, as the art and the lines show it.
 fn song_of(state: &TransportState) -> Song {
     Song {
         title: state.title.clone(),
@@ -334,7 +287,6 @@ fn song_of(state: &TransportState) -> Song {
     }
 }
 
-/// Which of the scrubber's times a caption shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Caption {
     Elapsed,
@@ -342,7 +294,6 @@ enum Caption {
 }
 
 /// Where an app declares what plays and takes what the person asked for.
-/// Clones share one transport.
 #[derive(Clone, Default)]
 pub struct TransportFeed(Rc<Shared>);
 
@@ -352,7 +303,7 @@ impl TransportFeed {
         Self::default()
     }
 
-    /// Show `state`. Cheap when it is what the transport shows already.
+    /// Show `state`.
     pub fn show(&self, state: TransportState) {
         if *self.0.state.borrow() == state {
             return;
@@ -373,8 +324,8 @@ impl TransportFeed {
         std::mem::take(&mut *self.0.events.borrow_mut())
     }
 
-    /// Where the art stands in the window, while it is there: what a page
-    /// showing the song large zooms from and back to.
+    /// Where the art stands in the window, while it is there: what a page showing the song
+    /// large zooms from and back to.
     #[must_use]
     pub fn art_rect(&self) -> Option<Rect> {
         let art = self.0.placed.get()[ART];
@@ -393,8 +344,8 @@ impl TransportFeed {
         song_of(&self.0.state.borrow())
     }
 
-    /// Whether a page has the cover in flight to or from it: while it does,
-    /// the band leaves the art's place empty, so one cover moves, not two.
+    /// Whether a page has the cover in flight to or from it: while it does, the band leaves
+    /// the art's place empty, so one cover moves, not two.
     pub fn lend_art(&self, lent: bool) {
         if self.0.art_lent.replace(lent) != lent {
             self.0.revision.set(self.0.revision.get().wrapping_add(1));
@@ -402,9 +353,6 @@ impl TransportFeed {
     }
 }
 
-/// A control whose look follows the declared state: `apply` sets it from
-/// the state whenever the state changes, and says whether that changed
-/// what it paints beyond what the control marks itself.
 struct Follow<W> {
     widget: W,
     shared: Rc<Shared>,
@@ -468,11 +416,8 @@ impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
     }
 }
 
-/// The song's art: the cover, or its generated placeholder. While the app
-/// says what it opens, a press (or Enter on it) asks for that.
 struct Art {
     shared: Rc<Shared>,
-    /// What the view reports when the art is pressed, beside the band's own `OpenPlaying`.
     report: Option<Rc<dyn Fn()>>,
     seen: Option<u64>,
     rect: Rect,
@@ -661,7 +606,6 @@ impl Widget for Art {
     }
 }
 
-/// The song's lines, cross-fading with the art when the song changes.
 struct SongLines {
     shared: Rc<Shared>,
     seen: Option<u64>,
@@ -751,15 +695,12 @@ impl Widget for SongLines {
     }
 }
 
-/// The band's controls, each running the view's own `trigger` instead of an app action: what
-/// the person pressed reaches the view's action, and the app's player does the rest.
 fn triggered_children(
     shared: &Rc<Shared>,
     triggers: &TransportTriggers,
     open: Option<Event>,
 ) -> Vec<Element> {
     let mut parts: Vec<Element> = children(shared, &TransportActions::default());
-    // Each control that changed what it does is built again, running the view's event.
     parts[ART] = Box::new(Art {
         shared: shared.clone(),
         report: open.map(event_report),
@@ -988,8 +929,6 @@ fn triggered_children(
         .collect()
 }
 
-/// An event as the report of a press: run it. The runner is interior-mutable so a button's
-/// handler (an `Fn`) can run what is a `FnMut` at its heart.
 fn event_report(event: Event) -> Rc<dyn Fn()> {
     let run: std::cell::RefCell<Box<dyn FnMut()>> = std::cell::RefCell::new(match event {
         Event::Action(binding) => {
@@ -1013,8 +952,6 @@ fn event_report(event: Event) -> Rc<dyn Fn()> {
     })
 }
 
-/// One of the scrubber's times: the elapsed one follows the knob while it
-/// is held, so the time under the finger reads beside the bar too.
 struct TimeLabel {
     shared: Rc<Shared>,
     side: Caption,
@@ -1088,8 +1025,6 @@ impl Widget for TimeLabel {
     }
 }
 
-/// The scrubber: the position slider, telling the transport where its knob
-/// is held so the elapsed time follows it.
 struct Scrubber {
     slider: Follow<Slider>,
 }
@@ -1115,7 +1050,6 @@ impl crate::widget::Decorator for Scrubber {
     }
 }
 
-// The transport's children, in placement order.
 const ART: usize = 0;
 const SONG: usize = 1;
 const LIKE: usize = 2;
@@ -1132,12 +1066,9 @@ const QUEUE: usize = 12;
 const MUTE: usize = 13;
 const VOLUME: usize = 14;
 const MORE: usize = 15;
-/// The speaker whose popover holds the volume, where the slider doesn't
-/// fit inline.
 const VOLUME_MENU: usize = 16;
 const CHILDREN: usize = 17;
 
-/// Which children have what they invoke, given the app's `actions`.
 fn handed(actions: &TransportActions) -> [bool; CHILDREN] {
     std::array::from_fn(|index| match index {
         PLAY => actions.play_pause.is_some(),
@@ -1153,8 +1084,6 @@ fn handed(actions: &TransportActions) -> [bool; CHILDREN] {
     })
 }
 
-/// Whether child `index` is there in `form` for `state`, with what it
-/// invokes `handed`.
 fn present(index: usize, state: &TransportState, form: Form, handed: &[bool; CHILDREN]) -> bool {
     if !handed[index] {
         return false;
@@ -1174,7 +1103,6 @@ fn present(index: usize, state: &TransportState, form: Form, handed: &[bool; CHI
     }
 }
 
-/// A song this long or longer counts its time in hours.
 const HOUR_MS: f64 = 3_600_000.0;
 
 fn time(ms: f64) -> String {
@@ -1187,8 +1115,6 @@ fn time(ms: f64) -> String {
     crate::format::timecode(seconds)
 }
 
-/// A button that invokes the app's `action`; one the app handed none for
-/// invokes nothing and is left out ([`present`]).
 fn bound(button: Button, action: Option<&ActionBinding<()>>) -> Button {
     match action {
         Some(action) => button.on_action(action.clone()),
@@ -1203,8 +1129,6 @@ fn button(id: &str, icon: Icon, name: &str, action: Option<&ActionBinding<()>>) 
     )
 }
 
-/// A button that changes what the window shows: a view action of its own,
-/// which the app answers with `event`.
 fn view_button(
     id: &str,
     icon: Icon,
@@ -1218,8 +1142,6 @@ fn view_button(
         .on_view(move || shared.push(event))
 }
 
-/// A button running the view's `event`, beside the app action one: what the person pressed
-/// reaches the view's action, as an `UiOn` event of its node would.
 fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Button {
     let button = Button::icon_only(id, icon, name).control_size(ControlSize::Regular);
     match event {
@@ -1231,7 +1153,6 @@ fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Butt
     }
 }
 
-/// A transport-glyph button running the view's `event`.
 fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -> Button {
     match event {
         Some(event) => {
@@ -1242,7 +1163,6 @@ fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -
     }
 }
 
-/// A slider reporting its value to the view's `event`, once the person lets it go.
 fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
     match event {
         Some(event) => {
@@ -1255,7 +1175,6 @@ fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
     }
 }
 
-/// A slider that invokes the app's `action` with its value.
 fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
     match action {
         Some(action) => slider.on_action(action.clone()),
@@ -1286,7 +1205,6 @@ fn toggle(button: &mut Button, on: Option<bool>, idle: bool) -> bool {
     false
 }
 
-/// The volume slider in the speaker's popover, a comfortable width.
 struct VolumePanel {
     slider: Slider,
 }
@@ -1328,7 +1246,6 @@ fn follow_volume(slider: &mut Slider, state: &TransportState) -> bool {
     (before - slider.value()).abs() > f64::EPSILON
 }
 
-/// The speaker icon and name for `volume`.
 fn speaker(volume: f64) -> Icon {
     if volume <= 0.0 {
         Icon::VolumeX
@@ -1337,8 +1254,8 @@ fn speaker(volume: f64) -> Icon {
     }
 }
 
-/// What each of a band's controls does, as a view gives them: the band reports what the person
-/// pressed, and the view's action does the rest. A control the view gives `None` is left out.
+/// What each of a band's controls does, as a view gives them: the band reports what the
+/// person pressed, and the view's action does the rest.
 #[derive(Clone, Default)]
 pub struct TransportTriggers {
     pub play_pause: Option<Event>,
@@ -1348,15 +1265,10 @@ pub struct TransportTriggers {
     pub repeat: Option<Event>,
     pub like: Option<Event>,
     pub mute: Option<Event>,
-    /// Carries the place in the song, `0..=1`.
     pub seek: Option<Event>,
-    /// Carries the volume, `0..=1`.
     pub volume: Option<Event>,
-    /// The lyrics were asked for.
     pub lyrics: Option<Event>,
-    /// The queue was asked for.
     pub queue: Option<Event>,
-    /// The art was pressed.
     pub open: Option<Event>,
 }
 
@@ -1608,13 +1520,10 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
         .collect()
 }
 
-/// A square of `side` centred on `mid` vertically, from `x`.
 fn square(x: f64, mid: f64, side: f64) -> Rect {
     Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0)
 }
 
-/// Lay controls out from `x` towards the start (`leftwards`) or the end,
-/// skipping the ones that aren't there.
 struct Run<'a> {
     rects: &'a mut [Rect; CHILDREN],
     on: [bool; CHILDREN],
@@ -1623,7 +1532,6 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    /// Put `index` (a square of `side`) after the run, then `gap`.
     fn push(&mut self, index: usize, side: f64, gap: f64) {
         if self.on[index] {
             self.rects[index] = square(self.x, self.mid, side);
@@ -1631,7 +1539,6 @@ impl Run<'_> {
         }
     }
 
-    /// Put `index` before the run (it grows leftwards), then `gap`.
     fn push_back(&mut self, index: usize, width: f64, side: f64, gap: f64) {
         if self.on[index] {
             self.rects[index] = Rect::new(
@@ -1645,7 +1552,6 @@ impl Run<'_> {
     }
 }
 
-/// Place the song (art and lines) from `x0` to `x1` around `mid`.
 fn place_song(
     rects: &mut [Rect; CHILDREN],
     on: [bool; CHILDREN],
@@ -1662,7 +1568,6 @@ fn place_song(
     rects[SONG] = Rect::new(x0, mid - m.song / 2.0, x1.max(x0), mid + m.song / 2.0);
 }
 
-/// The scrubber's row from `x0` to `x1` at `y`: elapsed, the knob, total.
 fn place_scrub(rects: &mut [Rect; CHILDREN], m: &Metrics, x0: f64, x1: f64, y: f64) {
     let row = Rect::new(x0, y, x1, y + m.scrub());
     let text = |a: f64, b: f64| {
@@ -1675,8 +1580,6 @@ fn place_scrub(rects: &mut [Rect; CHILDREN], m: &Metrics, x0: f64, x1: f64, y: f
     };
     rects[ELAPSED] = text(row.x0, row.x0 + m.time);
     rects[TOTAL] = text(row.x1 - m.time, row.x1);
-    // The held knob reaches past the track's ends: the gap keeps it off
-    // the times at either end.
     let gap = m.related + SliderFace::overhang();
     let knob0 = row.x0 + m.time + gap;
     let knob1 = (row.x1 - m.time - gap).max(knob0);
@@ -1717,7 +1620,6 @@ fn layout(
     }
     let inner = x1 - x0;
     let middle = (y0 + height - m.sibling) / 2.0;
-    // The song: art and lines, then like and lyrics at the column's end.
     let left = x0 + (inner * 0.36).min(m.large);
     let mut run = Run {
         rects: &mut rects,
@@ -1729,7 +1631,6 @@ fn layout(
     run.push_back(LIKE, m.control, m.control, m.related);
     let song_end = run.x;
     place_song(&mut rects, on, m, (x0, song_end), m.play, middle);
-    // The queue and the volume.
     let mut run = Run {
         rects: &mut rects,
         on,
@@ -1741,7 +1642,6 @@ fn layout(
     run.push_back(VOLUME_MENU, m.control, m.control, m.related);
     run.push_back(QUEUE, m.control, m.control, m.related);
     let right = run.x + m.related;
-    // The transport, centred over the scrubber between the two.
     let (c0, c1) = (left + m.group, (right - m.group).max(left + m.group));
     let flank = |index: usize| {
         if on[index] {
@@ -1792,7 +1692,6 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
     })
 }
 
-/// The media transport: see the [module docs](self).
 #[crate::component::not_a_component(
     part,
     "the band `ui.MediaTransport` is built from, its controls reporting the view's events"
@@ -1801,17 +1700,13 @@ pub struct MediaTransport {
     content: Manual,
     shared: Rc<Shared>,
     theme: Option<Theme>,
-    /// The form the children's presence was last built for.
     built_form: Form,
     structure_dirty: bool,
-    /// Where a press that may become a swipe began, in window coordinates.
     swipe: Option<Point>,
     cursor: Point,
 }
 
 impl MediaTransport {
-    /// Whether a drag from `point` (window coordinates) swipes the band:
-    /// it lands on the band, but on no control other than the song.
     fn swipes_from(&self, point: Point) -> bool {
         let rect = self.content.get_rect();
         if !rect.contains(point) || self.shared.state.borrow().idle {
@@ -1827,7 +1722,6 @@ impl MediaTransport {
             .any(|(index, placed)| index != ART && index != SONG && placed.contains(local))
     }
 
-    /// End a press: a long enough drag across the band skips a song.
     fn end_swipe(&mut self) -> bool {
         let Some(start) = self.swipe.take() else {
             return false;
@@ -1843,8 +1737,8 @@ impl MediaTransport {
         });
         true
     }
-    /// The transport showing what `feed` declares, its controls invoking
-    /// the app's `actions`.
+    /// The transport showing what `feed` declares, its controls invoking the app's
+    /// `actions`.
     #[must_use]
     pub fn new(feed: &TransportFeed, actions: TransportActions) -> Self {
         let shared = feed.0.clone();
@@ -1867,7 +1761,7 @@ impl MediaTransport {
 
     /// The transport showing what `feed` declares, its controls reporting the view's
     /// `triggers`: what the person pressed reaches the view's action, which changes what
-    /// plays or what the window shows. A control the view gives `None` is left out.
+    /// plays or what the window shows.
     #[must_use]
     pub fn triggered(feed: &TransportFeed, triggers: TransportTriggers) -> Self {
         let shared = feed.0.clone();
@@ -1942,8 +1836,6 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
         let mut changed = Widget::adjust_layout_style(&mut self.content, taffy, node, text);
         if let Some(theme) = &self.theme {
             let style = theme.text(TextRole::Caption).numeric();
-            // As wide as the song's longest time, so the bar keeps its
-            // length through the song.
             let widest = if self.shared.state.borrow().duration_ms >= HOUR_MS {
                 "00:00:00"
             } else {
@@ -1963,8 +1855,6 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         Widget::apply_layout(&mut self.content, taffy, node, origin);
         self.shared.origin.set(self.content.get_rect().origin());
-        // A width that crosses into the other form changes which controls
-        // are there: the children follow at the next structure pass.
         if self.shared.form.get() != self.built_form {
             self.built_form = self.shared.form.get();
             self.structure_dirty = true;
@@ -1984,7 +1874,6 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
                 button: MouseButton::Left,
                 ..
             } if self.end_swipe() => {
-                // The swipe was the gesture: the art under it opens nothing.
                 *ctx.handled = true;
                 return;
             }
@@ -1993,7 +1882,6 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
         Widget::handle_event(&mut self.content, event, ctx);
     }
 
-    /// A finger dragged across the band swipes it, as the pointer does.
     fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
         if self.swipes_from(point) {
             crate::interaction::TouchClaim::Drag

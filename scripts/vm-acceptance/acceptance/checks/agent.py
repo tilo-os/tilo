@@ -4,8 +4,8 @@ Inside the booted session, `tilo-runtime-mcp --connect` (no profile) must relay 
 desktop's own agent socket: the person is asked in trusted chrome, an admitted client is an
 agent member of the workspace, and `tilo_ls` lists the desktop's running apps, not the
 empty catalogue of a second, standalone runtime. The door serves the path-addressed agent
-tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which answer in text. The headless proofs
-(`scripts/headless-examples/mcp-live-proof.py`) covers the protocol
+tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which answer in text. The headless proof
+(`scripts/headless-examples/agent-seats-proof.py`) covers the protocol and its refusals
 against a compositor with no session around it; only a session has the door.
 
 The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the

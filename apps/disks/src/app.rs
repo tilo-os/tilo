@@ -1,12 +1,6 @@
-//! Root of the Disks app.
-//!
-//! [`DisksApp`] is a [`NavShell`] window: the drive list is the sidebar and the
-//! selected drive is the content (see [`crate::view`]). Its [`Store`], which
-//! the view's effect handler shares, owns what the shell cannot: this
-//! machine's probed [`Topology`], the selection, the tab and the result
-//! status. The selection, the tab and the status are this
-//! window's own; the devices are live state, published as rows whose
-//! effects the app answers ([`crate::resource::DisksEffect`]).
+//! Root of the Disks app. Its [`Store`], which the view's effect handler shares, owns what
+//! the shell cannot: this machine's probed [`Topology`], the selection, the tab and the
+//! result status.
 
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::BTreeMap;
@@ -34,7 +28,6 @@ use crate::resource::{Disks, DisksEffect};
 use crate::view::{self, DetailModel, Intent, Intents};
 
 impl ActionKind {
-    /// The real operation this action maps to.
     fn op(self) -> Op {
         match self {
             ActionKind::Mount => Op::Mount,
@@ -54,7 +47,6 @@ impl ActionKind {
             ActionKind::Eject => "Ejecting",
         }
     }
-    /// The action's name, for a status.
     pub(crate) fn title(self) -> String {
         self.label().trim_end_matches('…').to_owned()
     }
@@ -76,7 +68,6 @@ impl ActionKind {
             ActionKind::Eject => format!("Sample machine: would power off {dev} via udisks2"),
         }
     }
-    /// Does completing this action change the mount/partition topology?
     fn changes_topology(self) -> bool {
         matches!(
             self,
@@ -85,7 +76,6 @@ impl ActionKind {
     }
 }
 
-/// The detail tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Overview,
@@ -104,7 +94,6 @@ impl Tab {
             Tab::Partitions => "partitions",
         }
     }
-    /// The view's id in the window bar's switcher.
     pub(crate) fn view_id(self) -> &'static str {
         match self {
             Tab::Overview => "disks.view.overview",
@@ -170,23 +159,21 @@ impl ActionKind {
             ActionKind::Eject => "Power down and safely remove the whole device",
         }
     }
-    /// Whether taking it destroys what the drive holds. Named apart from
-    /// `destructive`, which an action spec that Undo cannot take back answers.
+    /// Named apart from `destructive`, which an action Undo cannot take back answers.
     pub(crate) fn is_delete(self) -> bool {
         matches!(self, ActionKind::Format)
     }
 }
 
-/// Where a mounted filesystem opens: beside it, in Files, or in the analyzer
-/// that says how much room its files take.
+/// Where a mounted filesystem opens: beside it, in Files, or in the analyzer that says how
+/// much room its files take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Open {
     Files,
     Usage,
 }
 
-/// What a transient result means. The toast takes its colour from this, so
-/// nothing reads meaning out of the message text.
+/// What a transient result means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StatusTone {
     Info,
@@ -204,7 +191,6 @@ impl StatusTone {
     }
 }
 
-/// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ViewKey {
     loading: bool,
@@ -221,67 +207,43 @@ type Probed = Result<Topology, String>;
 /// Where a [`Store`]'s devices come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
-    /// This machine: described by the session's system information service,
-    /// operated through udisks2.
     System,
-    /// A fixed sample machine: operations report what they would run.
     Sample,
 }
 
-/// The devices a window shows and what it does to them, shared by the
-/// window and the view's effect handler.
+/// The devices a window shows and what it does to them, shared by the window and the view's
+/// effect handler.
 pub(crate) struct Store {
     intents: Intents,
-    /// This machine's block devices, as last probed (or the sample machine).
     topo: Topology,
-    /// Why the last probe found nothing, when it could not read the machine.
     unreadable: Option<String>,
-    /// No reading of this machine has arrived yet, asked then: the window
-    /// shows the page the drives will fill.
     loading: Option<ui::time::Instant>,
-    /// The reading taken when the window opened, on a worker.
     opening: Option<mpsc::Receiver<Probed>>,
-    /// Bumped whenever `topo` is replaced.
     topo_rev: u64,
-    /// Where the topology comes from and where operations run.
     backend: Backend,
-    /// Drive names from the document, by serial number.
     names: BTreeMap<String, String>,
-    /// Bumped whenever `names` changes.
     names_rev: u64,
-    /// Where effects and invocations go once hosted.
     dispatcher: Option<Dispatcher<Disks>>,
-    /// The device operation running now, if any: one at a time.
     running: Option<ActionKind>,
     selected: usize,
-    /// Selected partition within the current drive, or `None` for the whole
-    /// disk. Drives every partition-scoped action + detail highlight.
     selected_part: Option<usize>,
     tab: Tab,
     status: String,
     dirty: bool,
-    /// The detail page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
-    /// What the window says in a toast next.
     toasts: Vec<(String, ToastKind)>,
-    /// A capture shows the drive list open over the page.
     open_drawer: bool,
 }
 
-/// The [`Store`] as the window and the effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 /// The window: the drives in a [`NavShell`].
 pub struct DisksApp {
     store: Shared,
-    /// The drive names as the document holds them, shown as they change;
-    /// `None` for a window outside the framework.
     document: Option<Live<Disks>>,
     presented: Option<(u64, u64)>,
     shell: NavShell,
     built: Option<ViewKey>,
-    /// The slots last declared to the bar, and the window they were declared
-    /// on ([`ui::window_toolbar::current_window`]).
     declared_bar: Option<(Option<u64>, ui::window_toolbar::WindowToolbar)>,
 }
 
@@ -291,8 +253,7 @@ impl Store {
         Self::with_backend(Backend::System, Topology::default())
     }
 
-    /// The sample machine: fully populated, and operations only report what
-    /// they would run.
+    /// The sample machine: fully populated, and operations only report what they would run.
     #[cfg(test)]
     pub(crate) fn sample() -> Self {
         Self::with_backend(Backend::Sample, Topology::sample())
@@ -322,10 +283,7 @@ impl Store {
         }
     }
 
-    /// Hosted: edits and effects go through `dispatcher`. Only a live window
-    /// reads this machine, on a worker that wakes the window with the
-    /// result; a capture shows `fixture` (or the sample machine) and a past
-    /// version shows no devices.
+    /// Hosted: edits and effects go through `dispatcher`.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Disks>,
@@ -378,8 +336,7 @@ impl Store {
             .collect()
     }
 
-    /// Show `topo`, keeping the selection on a drive and partition that
-    /// still exist.
+    /// Show `topo`, keeping the selection on a drive and partition that still exist.
     fn replace_topology(&mut self, topo: Topology) {
         self.topo = topo;
         self.topo_rev += 1;
@@ -392,32 +349,29 @@ impl Store {
         self.topo.drives.get(self.selected)
     }
 
-    /// The selected partition index, validated against the current drive so a
-    /// stale index (after switching drives) never points out of bounds.
+    /// The selected partition index, validated against the current drive so a stale index
+    /// (after switching drives) never points out of bounds.
     fn part_index(&self) -> Option<usize> {
         let n = self.drive()?.partitions.len();
         self.selected_part.filter(|&i| i < n)
     }
 
-    /// The selected partition of `drive`, or `None` for the whole drive.
     fn selected_partition<'a>(&self, drive: &'a Drive) -> Option<&'a Partition> {
         self.part_index().and_then(|i| drive.partitions.get(i))
     }
 
-    /// What `action` can do for the current selection.
     #[cfg(test)]
     fn offer(&self, drive: &Drive, action: ActionKind) -> Offer {
         offer::offer(drive, self.selected_partition(drive), action)
     }
 
-    /// Whether an action can run on the current selection now.
     #[cfg(test)]
     fn action_enabled(&self, drive: &Drive, action: ActionKind) -> bool {
         self.offer(drive, action).is_available()
     }
 
-    /// What the window shows as where it is: the drive, and the partition
-    /// when one is chosen.
+    /// What the window shows as where it is: the drive, and the partition when one is
+    /// chosen.
     fn location(&self, drive: &Drive) -> view::Location {
         view::Location {
             drive: self.display_name(drive).to_owned(),
@@ -425,7 +379,6 @@ impl Store {
         }
     }
 
-    /// Apply what the window's controls asked for.
     fn drain_intents(&mut self) {
         for intent in self.intents.take() {
             match intent {
@@ -439,8 +392,8 @@ impl Store {
         }
     }
 
-    /// Open partition `partition` of the selected drive (`None`: the
-    /// filesystem holding the most) in Files or in the Disk Usage analyzer.
+    /// Open partition `partition` of the selected drive (`None`: the filesystem holding the
+    /// most) in Files or in the Disk Usage analyzer.
     fn open_partition(&self, partition: Option<usize>, how: Open) {
         let Some(device) = self
             .drive()
@@ -464,26 +417,22 @@ impl Store {
         }
     }
 
-    /// Record a result: the status the window announces and the toast that
-    /// shows it once.
+    /// Record a result: the status the window announces and the toast that shows it once.
     fn report(&mut self, text: String, tone: StatusTone) {
         self.status.clone_from(&text);
         self.toasts.push((text, tone.kind()));
         self.dirty = true;
     }
 
-    /// An action from the bar, a header button or a row's menu: invoke the
-    /// operation on partition `partition` of the selected drive (`None`: the
-    /// whole drive), as that row offers it. Formatting asks for the device's
-    /// name before anything runs.
+    /// An action from the bar, a header button or a row's menu: invoke the operation on
+    /// partition `partition` of the selected drive (`None`: the whole drive), as that row
+    /// offers it.
     fn trigger_action(&mut self, action: ActionKind, partition: Option<usize>) {
         let Some(drive) = self.drive() else { return };
         let chosen = partition.and_then(|i| drive.partitions.get(i));
         if !offer::offer(drive, chosen, action).is_available() {
             return; // unavailable actions are inert
         }
-        // Resolve what the action targets: Mount/Unmount snap to a filesystem;
-        // Eject always the whole device; Format/Benchmark follow the choice.
         let part = match action {
             ActionKind::Mount | ActionKind::Unmount => offer::mount_target(drive, chosen),
             ActionKind::Eject => None,
@@ -509,8 +458,8 @@ impl Store {
         if idx < self.topo.drives.len() {
             let changed = idx != self.selected;
             self.selected = idx;
-            // A new drive resets the partition focus to the whole disk so the
-            // detail and its actions can never point at a stale partition.
+            // A new drive resets the partition focus to the whole disk so the detail and
+            // its actions can never point at a stale partition.
             if changed {
                 self.selected_part = None;
                 self.scroll.set((0.0, 0.0));
@@ -519,8 +468,6 @@ impl Store {
         }
     }
 
-    /// Select a partition within the current drive, or the whole disk (`None`).
-    /// Choosing the already-selected partition goes back to the whole disk.
     fn select_part(&mut self, part: Option<usize>) {
         let next = match part {
             Some(i) if self.selected_part == Some(i) => None,
@@ -535,8 +482,7 @@ impl Store {
         self.scroll.set((0.0, 0.0));
     }
 
-    /// Stage a screenshot scenario over the sample machine. A phone-sized
-    /// capture stages the same state as its wide twin.
+    /// Stage a screenshot scenario over the sample machine.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let base = scenario.map(|name| name.strip_prefix("phone-").unwrap_or(name));
         match base {
@@ -556,13 +502,9 @@ impl Store {
                 self.set_tab(Tab::Smart);
             }
             Some("laptop-partitions") => {
-                // The LUKS2 home, unlocked.
                 self.set_tab(Tab::Partitions);
                 self.select_part(Some(3));
             }
-            // The window as it opens on a slow read of this machine's
-            // storage: past its frame budget, so the page the drives will
-            // fill stands in.
             Some("loading") => {
                 self.loading = ui::time::now().checked_sub(ui::time::Duration::from_millis(500));
             }
@@ -612,9 +554,9 @@ impl Store {
         self.run_operation(operation.0, &operation.1, me, cx)
     }
 
-    /// Open the mounted filesystem `device` where it lives, in Files: the
-    /// mount point the probe reported, through the host's own path opener,
-    /// so the files are reachable from the row that named them.
+    /// Open the mounted filesystem `device` where it lives, in Files: the mount point the
+    /// probe reported, through the host's own path opener, so the files are reachable from
+    /// the row that named them.
     fn open_folder(&mut self, device: &str, me: &Shared, cx: &mut EffectCx<Disks>) -> EffectAnswer {
         let Some(mount) = crate::resource::mount_point(&self.topo, device) else {
             return Err(format!("/dev/{device} is not mounted"));
@@ -652,12 +594,8 @@ impl Store {
         ))
     }
 
-    /// Show how much room the mounted filesystem `device`'s files take up:
-    /// the Disk Usage analyzer, opened where this window is.
-    ///
-    /// The analyzer is a job of its own, not a tab of this one; the link is
-    /// the session's own (`tilo://open`), so it lands in the workspace the
-    /// person is in.
+    /// Show how much room the mounted filesystem `device`'s files take up: the Disk Usage
+    /// analyzer, opened where this window is.
     fn open_usage(&mut self, device: &str, me: &Shared, cx: &mut EffectCx<Disks>) -> EffectAnswer {
         let Some(mount) = crate::resource::mount_point(&self.topo, device) else {
             return Err(format!("/dev/{device} is not mounted"));
@@ -708,8 +646,8 @@ impl Store {
         Err(format!("/dev/{device} is not present"))
     }
 
-    /// Run `kind` on `device`: checked against the latest probe, then on
-    /// this machine in the background, or described on the sample machine.
+    /// Run `kind` on `device`: checked against the latest probe, then on this machine in
+    /// the background, or described on the sample machine.
     fn run_operation(
         &mut self,
         kind: ActionKind,
@@ -720,8 +658,6 @@ impl Store {
         if self.running.is_some() {
             return Err("another disk operation is still running".into());
         }
-        // A caller's device name is no authority to touch an arbitrary
-        // `/dev` node, and the filesystem type comes from the probe.
         let (device, fstype) = self.revalidate_operation_target(kind, device)?;
         let dev = format!("/dev/{device}");
         if self.backend == Backend::Sample {
@@ -734,7 +670,6 @@ impl Store {
         Ok(cx.thread(
             move |_| {
                 let result = ops::run(kind.op(), &device, fstype.as_deref());
-                // What changed is read again here, on the worker.
                 let probed = kind.changes_topology().then(crate::probe::probe);
                 (result, probed)
             },
@@ -761,9 +696,8 @@ impl Store {
         ))
     }
 
-    /// Read this machine's storage on a worker, which wakes the window
-    /// with the result; until it arrives the window shows the page the
-    /// drives will fill.
+    /// Read this machine's storage on a worker, which wakes the window with the result;
+    /// until it arrives the window shows the page the drives will fill.
     fn start_reading(&mut self, waker: ui::WakeHandle) {
         let (sender, receiver) = mpsc::channel();
         drop(ui::rt::app().spawn_blocking(move || {
@@ -775,7 +709,6 @@ impl Store {
         self.dirty = true;
     }
 
-    /// Show the opening reading, if it arrived.
     fn take_opening_reading(&mut self) {
         let Some(receiver) = &self.opening else {
             return;
@@ -793,9 +726,7 @@ impl Store {
         }
     }
 
-    /// Show a reading of this machine, keeping the selection where it still
-    /// exists. It is newer than one still being taken at opening, which is
-    /// dropped.
+    /// Show a reading of this machine, keeping the selection where it still exists.
     fn show_reading(&mut self, probed: Probed) {
         self.opening = None;
         self.loading = None;
@@ -803,9 +734,7 @@ impl Store {
         self.replace_topology(probed.unwrap_or_default());
     }
 
-    /// Rescan storage devices: the Rescan button, `r`, and the bar. This
-    /// machine is read again through the Rescan effect, on a worker; the
-    /// sample machine has nothing to read again.
+    /// Rescan storage devices: the Rescan button, `r`, and the bar.
     fn rescan(&mut self) {
         match (&self.dispatcher, self.backend) {
             (Some(dispatcher), Backend::System) => dispatcher.effect(&DisksEffect::Rescan),
@@ -813,8 +742,8 @@ impl Store {
         }
     }
 
-    /// The Rescan effect: read this machine again on a worker, then show
-    /// and report what it found.
+    /// The Rescan effect: read this machine again on a worker, then show and report what it
+    /// found.
     fn read_again(&mut self, me: &Shared, cx: &mut EffectCx<Disks>) -> Effected {
         if self.backend != Backend::System {
             self.report_scan();
@@ -832,7 +761,6 @@ impl Store {
         )
     }
 
-    /// Report what the last reading found.
     fn report_scan(&mut self) {
         match self.unreadable.clone() {
             Some(reason) => self.report(reason, StatusTone::Danger),
@@ -840,14 +768,12 @@ impl Store {
         }
     }
 
-    /// Resolve an operation's target against the latest locally-probed
-    /// topology. An invocation may arrive after a search result or an
-    /// agent's view has gone stale, so a device name is never authority to
-    /// touch an arbitrary `/dev/*` node.
+    /// Resolve an operation's target against the latest probe: a stale search result or an
+    /// agent's view is no authority to touch an arbitrary `/dev/*` node.
     ///
-    /// The return value is the device the operation runs on (an unlocked
-    /// encrypted partition mounts and unmounts through its mapping) and the
-    /// filesystem type from the current probe, never the caller's word.
+    /// The return value is the device the operation runs on, an unlocked encrypted
+    /// partition through its mapping, and the filesystem type from that probe, never the
+    /// caller's word.
     fn revalidate_operation_target(
         &self,
         action: ActionKind,
@@ -872,8 +798,8 @@ impl Store {
                 if part.name != leaf {
                     continue;
                 }
-                // What the running system stands on is never formatted or
-                // detached, whoever asks.
+                // What the running system stands on is never formatted or detached, whoever
+                // asks.
                 if let (ActionKind::Format | ActionKind::Unmount, Some(reason)) =
                     (action, drive.partition_use(part))
                 {
@@ -895,9 +821,6 @@ impl Store {
                     }
                     (ActionKind::Mount, _) => Err(format!("/dev/{leaf} is already mounted")),
                     (ActionKind::Unmount, _) => Err(format!("/dev/{leaf} is not mounted")),
-                    // Formatting re-creates the filesystem the probe found;
-                    // on an encrypted partition that would silently drop its
-                    // encryption, so it is not offered there.
                     (ActionKind::Format, _) if part.encryption.is_some() => Err(format!(
                         "/dev/{leaf} is encrypted; formatting it here would remove its encryption"
                     )),
@@ -922,7 +845,6 @@ fn found_message(n: usize) -> String {
 }
 
 impl DisksApp {
-    /// A window over `store`, following the drive names `document` holds.
     pub(crate) fn new(store: Store, document: Option<Live<Disks>>) -> Self {
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
@@ -946,17 +868,14 @@ impl DisksApp {
         Self::new(Store::sample(), None)
     }
 
-    /// The store the window shares with the view's effect handler.
     pub(crate) fn shared(&self) -> &Shared {
         &self.store
     }
 
-    /// What the window shows, to read or change.
     pub(crate) fn state(&self) -> RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// Show the drive names the document holds when they changed.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -968,8 +887,8 @@ impl DisksApp {
         self.state().adopt_names(&names);
     }
 
-    /// Bring the window in step with the store: what it asked to say and
-    /// a drive list a capture opens.
+    /// Bring the window in step with the store: what it asked to say and a drive list a
+    /// capture opens.
     fn show_store(&mut self) {
         let (toasts, open_drawer) = {
             let mut store = self.state();
@@ -1040,9 +959,8 @@ impl DisksApp {
         self.shell.set_content(content);
     }
 
-    /// Apply what the person did in the window's bar: the shell's own
-    /// slots, the location's drive level, Rescan and the selection's
-    /// operations. Returns whether anything changed.
+    /// Apply what the person did in the window's bar: the shell's own slots, the location's
+    /// drive level, Rescan and the selection's operations.
     fn take_window_toolbar_events(&mut self) -> bool {
         let mut changed = false;
         for event in ui::window_toolbar::take_events() {
@@ -1052,7 +970,6 @@ impl DisksApp {
             }
             let mut store = self.state();
             match event {
-                // The location's drive level: back to the whole drive.
                 ui::window_toolbar::ToolbarEvent::Commit { text } if text == view::WHOLE_DRIVE => {
                     store.select_part(None);
                 }
@@ -1077,9 +994,9 @@ impl DisksApp {
         changed
     }
 
-    /// Declare the window bar's slots: the shell's own, where the window
-    /// is (the drive, and the partition when one is chosen), and the
-    /// selection's operations followed by Rescan.
+    /// Declare the window bar's slots: the shell's own, where the window is (the drive, and
+    /// the partition when one is chosen), and the selection's operations followed by
+    /// Rescan.
     fn declare_window_toolbar(&mut self) {
         let bar = {
             let store = self.store.borrow();
@@ -1101,9 +1018,8 @@ impl DisksApp {
         }
     }
 
-    /// Everything the window does before it lays out: the opening reading,
-    /// the bar's and the controls' input, the store's news and the views.
-    /// Returns whether the bar changed anything.
+    /// Everything the window does before it lays out: the opening reading, the bar's and
+    /// the controls' input, the store's news and the views.
     fn catch_up(&mut self) -> bool {
         self.follow_document();
         self.state().take_opening_reading();
@@ -1369,8 +1285,8 @@ mod tests {
                 .contains("no longer present")
         );
 
-        // What the running system stands on is refused whoever asks: an
-        // agent's invocation reaches this check as the window's buttons do.
+        // What the running system stands on is refused whoever asks: an agent's invocation
+        // reaches this check as the window's buttons do.
         let mut app = Store::sample();
         let yoga = crate::probe::captured::yoga().unwrap();
         app.replace_topology(yoga.clone());
@@ -1385,8 +1301,8 @@ mod tests {
             assert!(refusal.contains(reason), "{action:?} {leaf}: {refusal}");
         }
 
-        // An unlocked LUKS2 volume that serves no running system unmounts
-        // through its mapping, and is never formatted out of its encryption.
+        // An unlocked LUKS2 volume that serves no running system unmounts through its
+        // mapping, and is never formatted out of its encryption.
         let mut data = yoga;
         data.drives[0].partitions[3].mountpoint = Some("/mnt/data".into());
         app.replace_topology(data);
@@ -1425,9 +1341,8 @@ mod tests {
         );
     }
 
-    /// A mounted filesystem's files are reachable from the drive page, and
-    /// from the row's own menu: the two ways on are there without opening
-    /// anything else.
+    /// A mounted filesystem's files are reachable from the drive page, and from the row's
+    /// own menu: the two ways on are there without opening anything else.
     #[test]
     fn a_mounted_filesystem_offers_its_files_from_the_drive_page() {
         let mut app = framed(sample_app(), 1280.0, 800.0);
@@ -1439,7 +1354,6 @@ mod tests {
                 "the drive page offers {label}: {inspection}"
             );
         }
-        // Both are real controls on the page, laid out and pressable.
         for id in ["disks-open-in-files", "disks-space-left"] {
             let button = target(&app, id);
             assert!(
@@ -1449,8 +1363,8 @@ mod tests {
         }
     }
 
-    /// A filesystem with no mount point has nowhere to go, so the drive page
-    /// offers neither way on.
+    /// A filesystem with no mount point has nowhere to go, so the drive page offers neither
+    /// way on.
     #[test]
     fn an_unmounted_drive_page_offers_no_way_on() {
         let mut topology = crate::model::Topology::sample();
@@ -1467,8 +1381,8 @@ mod tests {
         );
     }
 
-    /// The drive list docks beside the detail while the detail keeps its
-    /// minimum width, and is a screen of its own when narrower.
+    /// The drive list docks beside the detail while the detail keeps its minimum width, and
+    /// is a screen of its own when narrower.
     #[test]
     fn the_drive_list_docks_when_wide_and_is_a_screen_when_narrow() {
         let wide = at_width(1280.0);
@@ -1480,13 +1394,9 @@ mod tests {
     }
 
     /// Choosing a drive or a tab from the window's controls repoints the detail.
-    /// The window opens before this machine's storage is read (that reading
-    /// is a worker's), on the detail page's own layout, and nothing moves
-    /// when the drives arrive.
     #[test]
     fn the_opening_page_is_the_layout_the_drives_fill() {
         let opening = DisksApp::new(Store::system(), None);
-        // A read that missed its frame budget: the page stands in.
         opening.state().loading = ui::time::now().checked_sub(ui::time::Duration::from_millis(500));
         let mut app = framed(opening, 1280.0, 800.0);
         Framed::harness_mut(&mut app).poll_frame().unwrap();
@@ -1549,9 +1459,9 @@ mod tests {
         }
     }
 
-    /// The drive's views are the window bar's switcher: the bar shows
-    /// Overview, Health and Partitions with the open one chosen, choosing
-    /// one there shows it, and the page draws no tabs of its own.
+    /// The drive's views are the window bar's switcher: the bar shows Overview, Health and
+    /// Partitions with the open one chosen, choosing one there shows it, and the page draws
+    /// no tabs of its own.
     #[test]
     fn the_drives_views_are_the_window_bars_switcher() {
         let mut app = at_width(1280.0);
@@ -1654,7 +1564,8 @@ mod tests {
         }
     }
 
-    /// A real machine's storage drives the app end to end; an empty probe shows an honest empty state rather than a sample.
+    /// A real machine's storage drives the app end to end; an empty probe shows an honest
+    /// empty state rather than a sample.
     #[test]
     fn probed_topology_drives_the_app_or_an_honest_empty_state() {
         // --- phase: drives_real_or_sample_topology_end_to_end ---
@@ -1674,8 +1585,6 @@ mod tests {
                     window.refresh_view();
                 }
                 let app = window.state();
-                // Mount/Unmount enablement mirrors the real mount state, and
-                // Eject only applies where the device is removable.
                 if d.partitions.len() == 1 {
                     let mounted = d.partitions[0].mountpoint.is_some();
                     let dr = app.drive().unwrap();

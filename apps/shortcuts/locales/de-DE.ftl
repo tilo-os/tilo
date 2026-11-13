@@ -1,13 +1,11 @@
 shortcuts-runs = Letzte Ausführungen
-shortcuts-runs-empty = Gestartete Ausführungen erscheinen hier.
 shortcuts-edit = Bearbeiten
 shortcuts-duplicate = Duplizieren
 shortcuts-run = Ausführen
 shortcuts-delete = Löschen
 shortcuts-library-unavailable = Gespeicherte Kurzbefehle sind hier nicht verfügbar
 shortcuts-saved-empty = Noch keine Kurzbefehle
-shortcuts-saved-empty-draft = Beschreibe oben einen, und der Agent entwirft ihn für dich.
-shortcuts-saved-empty-blank = Gespeicherte Kurzbefehle erscheinen hier.
+shortcuts-saved-empty-draft = Beschreibe einen, und der Agent entwirft ihn für dich.
 shortcuts-last-run = Letzte Ausführung
 shortcuts-input-placeholder = Wert eingeben
 shortcuts-blocks = Bausteine
@@ -173,3 +171,6 @@ shortcuts-workbench-set-nested = Schritt in anderen Block verschieben
 shortcuts-workbench-set-output = Ergebnis des Kurzbefehls festlegen
 shortcuts-workbench-add-input = Eingabe hinzufügen
 shortcuts-workbench-remove-input = Eingabe entfernen
+
+## What the app is called in a window and in the launcher
+shortcuts-app-title = Tastenkürzel

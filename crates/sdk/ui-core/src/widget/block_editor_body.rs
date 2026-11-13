@@ -1,12 +1,4 @@
 //! A document's body: what [`BlockEditor`] edits when a view binds it to a field.
-//!
-//! A body holds a document, in either form the language gives it: a `Text` field holds it as
-//! Markdown, so it stays readable text to every other view and to agents; a `RichText` field
-//! holds it as its paragraphs, each with its kind and marks. The editor shows either as blocks,
-//! and each edit the person makes is written back as the value now reads — Markdown for the
-//! one, the document for the other — through the binding's own merge (text is spliced). A
-//! change from elsewhere (a collaborator, an agent, undo) is shown when the person is not typing
-//! in it.
 
 use std::rc::Rc;
 
@@ -18,12 +10,9 @@ use crate::widget::block_editor::FindReplace;
 use crate::widget::rich_doc;
 use crate::widget::{Block, BlockContent, BlockEditor, PresenceKeyFn};
 
-/// What the field a body edits holds.
 #[derive(Clone)]
 pub(super) enum Stored {
-    /// A document written as Markdown, as a `Text` field holds it.
     Markdown(Bound<String>),
-    /// A document written as its paragraphs, as a `RichText` field holds it.
     Rich(Bound<RichText>),
 }
 
@@ -43,15 +32,12 @@ impl Stored {
     }
 }
 
-/// A document as one moment holds it: what the editor shows and what was last written.
 #[derive(Clone, PartialEq)]
 enum Held {
     Markdown(String),
     Rich(RichText),
 }
 
-/// The document a body editor shows and edits: the field it is bound to, what it showed when
-/// it last read it, and the revision it read.
 pub(super) struct BodyBinding {
     field: Stored,
     shown: Held,
@@ -65,8 +51,6 @@ impl BodyBinding {
         rich.edits.is_some() || markdown.edits.is_some()
     }
 
-    /// The body bound to `rich` or `markdown`, whichever the view bound, and the hint shown
-    /// while it is empty.
     pub(super) fn of(
         rich: Bound<RichText>,
         markdown: Bound<String>,
@@ -81,7 +65,6 @@ impl BodyBinding {
         (Self { field, shown, seen }, placeholder.unwrap_or_default())
     }
 
-    /// The field is now the props' binding (`set_props`): what it showed stays as it was.
     pub(super) fn rebind(&mut self, rich: Bound<RichText>, markdown: Bound<String>) {
         self.field = match &self.field {
             Stored::Markdown(_) => Stored::Markdown(markdown),
@@ -89,7 +72,6 @@ impl BodyBinding {
         };
     }
 
-    /// Where the body's blocks are for presence: the resource and the field they edit.
     pub(super) fn presence_path(&self) -> &[PathSegment] {
         match &self.field {
             Stored::Markdown(value) => &value.path,
@@ -97,7 +79,6 @@ impl BodyBinding {
         }
     }
 
-    /// Report what the person changed since the last look, as the value the blocks now are.
     fn take_edits(&mut self, editor: &mut BlockEditor) -> bool {
         if editor.take_edit_ops().is_empty() {
             return false;
@@ -136,16 +117,12 @@ impl BodyBinding {
         true
     }
 
-    /// Apply what the window's search asked to replace, as the value the blocks now read:
-    /// one edit of the field, recorded and undone as the person's own typing is. `false` when
-    /// nothing waited, or what the search found moved on since it found it.
     fn take_find_replace(&mut self, editor: &mut BlockEditor) -> bool {
         let Some(request) = editor.take_find_replace() else {
             return false;
         };
         let (matches, replacement) = match request {
             FindReplace::One(target, with) => {
-                // The block the search found, as the editor holds it now.
                 let block = editor
                     .blocks()
                     .iter()
@@ -211,8 +188,6 @@ impl BodyBinding {
 }
 
 impl Held {
-    /// [`BlockEditor::show_references`] of what it holds: a bound document's chips and cards
-    /// read as they read for the person now, whichever way the field keeps it.
     fn show_references(&self, editor: &mut BlockEditor) {
         if let Held::Rich(rich) = self {
             editor.show_references(rich);
@@ -220,7 +195,6 @@ impl Held {
     }
 }
 
-/// `held` as the editor's blocks.
 fn blocks_of(held: &Held) -> Vec<Block> {
     match held {
         Held::Markdown(markdown) => {
@@ -234,8 +208,6 @@ fn blocks_of(held: &Held) -> Vec<Block> {
 }
 
 impl BlockEditor {
-    /// Show the document the body is bound to, its blocks keyed for presence where the field
-    /// lives: a collaborator's caret in the same body shows here.
     pub(super) fn show_body(&mut self, body: &BodyBinding) {
         body.shown.show_references(self);
         self.set_blocks(blocks_of(&body.shown));
@@ -268,8 +240,6 @@ impl BlockEditor {
         true
     }
 
-    /// Report what the person changed in the document it is bound to, as the value the field
-    /// now holds: what they typed, and what the window's search replaced.
     pub(super) fn take_body_edits(&mut self) -> bool {
         let Some(mut body) = self.body.take() else {
             return false;
@@ -310,7 +280,6 @@ fn replaced_blocks(
     true
 }
 
-/// [`replaced_blocks`] over a document's paragraphs.
 fn replaced_paragraphs(
     blocks: &mut [BlockContent],
     matches: &[(usize, std::ops::Range<usize>)],

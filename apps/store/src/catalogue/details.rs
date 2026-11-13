@@ -11,18 +11,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The most screenshots a page shows.
 const MAX_SCREENSHOTS: usize = 8;
-/// The most releases a page lists under what's new.
 const MAX_RELEASES: usize = 6;
-/// The longest description kept, in characters.
 const MAX_DESCRIPTION_CHARS: usize = 8_000;
 /// A details file larger than this is not read.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
-/// How long kept details stand in before the page fetches them again.
 pub const FRESH_FOR_SECONDS: u64 = 24 * 60 * 60;
 
-/// One release, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     pub version: String,
@@ -32,8 +27,6 @@ pub struct Release {
     pub notes: Vec<String>,
 }
 
-/// What an app may do on this device, in the words a person reads on its
-/// page. Each has one fluent message (`store-permission-*`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Permission {
     /// It can run programs outside its sandbox: a Flatpak that talks to
@@ -41,7 +34,6 @@ pub enum Permission {
     LeavesSandbox,
     AllFiles,
     HomeFolder,
-    /// Folders by their well-known name (`Downloads`, `Music`, ...).
     Folder(String),
     ChosenFiles,
     Internet,
@@ -64,7 +56,6 @@ pub enum Permission {
 }
 
 impl Permission {
-    /// The fluent message that says this permission in plain words.
     #[must_use]
     pub fn message(&self) -> &'static str {
         match self {
@@ -93,7 +84,6 @@ impl Permission {
         }
     }
 
-    /// The sentence for this permission in the current language.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -105,8 +95,6 @@ impl Permission {
         }
     }
 
-    /// Whether the permission reaches past what a person handed the app:
-    /// such rows are listed before the rest.
     #[must_use]
     pub fn is_broad(&self) -> bool {
         matches!(
@@ -150,8 +138,6 @@ pub fn tilo_permissions(capabilities: &[String]) -> Vec<Permission> {
     permissions
 }
 
-/// What a Flathub app's sandbox lets it do, from the `permissions` object
-/// of its build summary (Flatpak's finish arguments).
 #[must_use]
 pub fn flatpak_permissions(permissions: &serde_json::Value) -> Vec<Permission> {
     fn strings(value: Option<&serde_json::Value>) -> Vec<&str> {
@@ -165,8 +151,6 @@ pub fn flatpak_permissions(permissions: &serde_json::Value) -> Vec<Permission> {
             })
             .unwrap_or_default()
     }
-    /// The bus names a policy object (`{"talk": [...]}`) or map
-    /// (`{"org.x": "talk"}`) lets the app reach.
     fn bus_names(value: Option<&serde_json::Value>) -> Vec<String> {
         let Some(value) = value else {
             return Vec::new();
@@ -244,7 +228,6 @@ pub fn flatpak_permissions(permissions: &serde_json::Value) -> Vec<Permission> {
     out
 }
 
-/// The folder a Flatpak `xdg-*` filesystem names, as the person knows it.
 fn well_known_folder(place: &str) -> Option<String> {
     let key = match place.split('/').next().unwrap_or(place) {
         "xdg-download" => "store-folder-downloads",
@@ -260,28 +243,22 @@ fn well_known_folder(place: &str) -> Option<String> {
     Some(crate::resource::CATALOG.t(key))
 }
 
-/// What an app's page shows beyond its catalogue row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppDetails {
     pub id: String,
-    /// The language the localized fields are in (BCP 47).
     pub locale: String,
     /// The description as paragraphs and list items, in reading order.
     pub paragraphs: Vec<String>,
     pub developer: String,
-    /// SPDX licence expression.
     pub license: String,
     /// Screenshot URLs, in the order the app lists them.
     pub screenshots: Vec<String>,
-    /// Newest first.
     pub releases: Vec<Release>,
     /// Bytes downloaded to install it; 0 when unknown.
     pub download_bytes: u64,
     /// Bytes it takes once installed; 0 when unknown.
     pub installed_bytes: u64,
     pub permissions: Vec<Permission>,
-    /// Whether `permissions` is known: an empty list then means it asks for
-    /// nothing, rather than that nobody said.
     pub permissions_known: bool,
     pub homepage: Option<String>,
     /// When these were fetched, Unix seconds.
@@ -289,15 +266,11 @@ pub struct AppDetails {
 }
 
 impl AppDetails {
-    /// Whether these were fetched recently enough to show without asking
-    /// again.
     #[must_use]
     pub fn is_fresh(&self, now_unix: u64) -> bool {
         now_unix.saturating_sub(self.fetched_unix) < FRESH_FOR_SECONDS
     }
 
-    /// A Flathub app's details from its `AppStream` document and its build
-    /// summary (either may be missing).
     #[must_use]
     pub fn from_flathub(
         id: &str,
@@ -357,7 +330,6 @@ impl AppDetails {
     }
 }
 
-/// A size that is one number, or one per architecture.
 fn size_field(value: Option<&serde_json::Value>) -> u64 {
     let Some(value) = value else {
         return 0;
@@ -381,7 +353,6 @@ fn screenshot_urls(value: Option<&serde_json::Value>) -> Vec<String> {
         .iter()
         .filter_map(|shot| {
             if let Some(sizes) = shot.get("sizes") {
-                // Either a list of {src, width} or a map of "WxH" → URL.
                 if let Some(list) = sizes.as_array() {
                     return list
                         .iter()
@@ -525,7 +496,6 @@ pub fn paragraphs(markup: &str) -> Vec<String> {
     blocks
 }
 
-/// Where kept details live: one file per app under the Store's cache.
 fn path(id: &str) -> Option<PathBuf> {
     if !crate::reports::valid_app_id(id) {
         return None;
@@ -533,8 +503,6 @@ fn path(id: &str) -> Option<PathBuf> {
     crate::config::cache_dir().map(|dir| dir.join("details").join(format!("{id}.json")))
 }
 
-/// The details kept for `id` in `locale`, however old; `None` when there are
-/// none or they are in another language.
 #[must_use]
 pub fn load(id: &str, locale: &str) -> Option<AppDetails> {
     let path = path(id)?;

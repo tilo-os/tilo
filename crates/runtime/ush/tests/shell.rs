@@ -53,12 +53,9 @@ fn the_shell_runs_tilos_commands_and_falls_back_to_the_machine() {
     assert_eq!(text(&out.stdout), "3\n2\n", "{}", text(&out.stderr));
     assert!(out.status.success());
 
-    // `uname` is none of Tilo's own commands: on a Linux device it runs
-    // there, and its output pipes into one of them.
     let out = sh(dir, data.path(), "uname -s | tr a-z A-Z");
     assert_eq!(text(&out.stdout), "LINUX\n", "{}", text(&out.stderr));
 
-    // Outside a guest a file command keeps what it replaces aside.
     let out = sh(
         dir,
         data.path(),

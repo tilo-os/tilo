@@ -1,10 +1,8 @@
 //! The key an X11 or Wayland keysym names.
 //!
 //! A host that reads the keyboard itself (X11, Wayland, a KMS session through
-//! libinput and xkbcommon) delivers a press as a keysym, and the shortcut it
-//! answers is the key that keysym names. The vocabulary is winit's own, so
-//! such a host names keys exactly as winit does; a build that runs no such
-//! host has no keysyms.
+//! libinput and xkbcommon) delivers a press as a keysym; the vocabulary is
+//! winit's own, and a build that runs no such host has no keysyms.
 
 use winit::keyboard::{Key, KeyLocation};
 
@@ -19,8 +17,6 @@ pub fn keysym_key(keysym: u32) -> Option<(Key, KeyLocation)> {
     Some(winit::platform::scancode::keysym_to_key(keysym))
 }
 
-/// No X11 or Wayland host to read keysyms from: no keysym names a key, so the
-/// caller takes the key's text instead.
 #[cfg(not(target_os = "linux"))]
 #[must_use]
 pub const fn keysym_key(_keysym: u32) -> Option<(Key, KeyLocation)> {
@@ -40,8 +36,6 @@ mod tests {
 
     #[test]
     fn a_typed_character_is_no_named_key() {
-        // A character reaches a press as its text, which the caller takes when
-        // the vocabulary names no key for it.
         let (key, _) = keysym_key(u32::from('с')).expect("no host lacks keysyms here");
         assert!(matches!(key, Key::Unidentified(_)), "{key:?}");
     }

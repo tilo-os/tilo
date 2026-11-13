@@ -1,43 +1,36 @@
-//! The installed half of the catalogue: the applications this device can
-//! launch, with the signed manifest each was admitted with.
-//!
-//! Every installed package ([`package_store::Catalog`]) read through the
-//! view of its manifest ([`tilo_app_package::view`]), and what each declared
-//! it may do on the action door under its own identity. The desktop session,
-//! the per-user runtime and app-host launch from this one answer.
+//! The installed half of the catalogue: the applications this device can launch, with the signed
+//! manifest each was admitted with. Every installed package ([`package_store::Catalog`]) read
+//! through the view of its manifest ([`tilo_app_package::view`]), and what each declared it may do
+//! on the action door under its own identity. The desktop session, the per-user runtime and
+//! app-host launch from this one answer.
 
 use std::path::PathBuf;
 
 use package_store::{Catalog, CatalogError, InstalledPackage};
+use tilo_app_id::AppId;
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledApp {
-    /// Reverse-DNS package id — the identity `tilo-install` records.
-    pub package_id: String,
-    /// Human-facing name — the manifest's `[package].name`, or derived
-    /// from the package id's trailing component when unset.
+    pub app_id: AppId,
+    /// `[package].name`, or derived from the package id's trailing component when unset.
     pub display_name: String,
-    /// The manifest's `[package.names]`: the name in other languages, by
-    /// BCP 47 tag. Search matches these alongside `display_name`.
+    /// `[package.names]`: the name in other languages, by BCP 47 tag. Search matches these alongside
+    /// `display_name`.
     pub localized_names: std::collections::BTreeMap<String, String>,
-    /// The manifest's `[package.keywords]`, every language's together: the
-    /// other words the app is known by. Search matches these alongside the
-    /// name ("youtube" finds a video app).
+    /// `[package.keywords]`, every language's together: search matches these alongside the name
+    /// ("youtube" finds a video app).
     pub keywords: Vec<String>,
-    /// The manifest's `[package].category`, when declared; matched by
-    /// the Applications search provider.
+    /// `[package].category`, when declared; matched by the Applications search provider.
     pub category: Option<String>,
     pub version: String,
     pub manifest_path: PathBuf,
     pub payload_root: PathBuf,
-    /// Whether the package declares a GUI entrypoint; CLI-only packages
-    /// have no window, so the applications list hides them.
+    /// Whether the package declares a GUI entrypoint; CLI-only packages have no window, so the
+    /// applications list hides them.
     pub has_gui: bool,
-    /// The manifest's `[providers].ext` — file extensions this package
-    /// opens (lowercased, no leading dot). The desktop's only answer to
-    /// "which app owns `.odt`": installing an app is what teaches the
-    /// desktop its file types.
+    /// `[providers].ext`: file extensions this package opens (lowercased, no leading dot). Installing
+    /// an app is what teaches the desktop its file types.
     pub opens_extensions: Vec<String>,
     /// Concrete normalized MIME claims from `[providers].mime`.
     pub opens_mime_types: Vec<String>,
@@ -48,12 +41,11 @@ pub struct InstalledApp {
     /// The resource kinds `[providers].resources` says the app opens
     /// (`mail.message`): an address of one opens in this app.
     pub opens_resource_kinds: Vec<String>,
-    /// The signed manifest's `[[offers]]`: actions the app offers while it
-    /// is not running, which the action catalogue lists for it.
+    /// `[[offers]]`: actions the app offers while it is not running, which the action catalogue lists
+    /// for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
-    /// The signed manifest as it was decoded when the app was read: what a
-    /// host answers questions about the app from, without reading the file
-    /// again. The fields above are its normalized view.
+    /// The signed manifest as it was decoded when the app was read, which the fields above are a
+    /// normalized view of.
     pub manifest: tilo_app_package::manifest::Manifest,
 }
 
@@ -71,9 +63,8 @@ impl InstalledApp {
             .collect()
     }
 
-    /// The application `entry` installs, read through its manifest. `None`
-    /// when the manifest is missing (the payload was deleted behind the
-    /// registry's back) or unreadable.
+    /// The application `entry` installs, read through its manifest. `None` when the manifest is
+    /// missing (the payload was deleted behind the registry's back) or unreadable.
     fn from_package(entry: &InstalledPackage) -> Option<Self> {
         // One decode of the signed manifest: the view and the offers are
         // both read from it.
@@ -82,7 +73,7 @@ impl InstalledApp {
         let offers = signed.offers.clone();
         let opens_resource_kinds = signed.providers.resources.clone();
         let manifest = tilo_app_package::view::ManifestView::try_from(signed.clone()).ok()?;
-        let package_id = if manifest.package_id.is_empty() {
+        let app_id = if manifest.package_id.is_empty() {
             entry.id.clone()
         } else {
             manifest.package_id.clone()
@@ -92,11 +83,11 @@ impl InstalledApp {
                 .name
                 .clone()
                 .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
+                .unwrap_or_else(|| package_store::display_name_for_package_id(&app_id)),
             localized_names: manifest.localized_names.clone(),
             keywords: manifest.keywords.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
-            package_id,
+            app_id: AppId::new(app_id),
             version: manifest.version.clone(),
             manifest_path: entry.manifest_path.clone(),
             payload_root: entry.payload_root.clone(),
@@ -115,24 +106,14 @@ impl InstalledApp {
         })
     }
 
-    /// The name to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else `display_name`.
+    /// The name to show in `locale`: [`collab_types::history::localized_name`], else `display_name`.
     pub fn name_for(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        self.localized_names
-            .iter()
-            .find(|(tag, _)| tag.eq_ignore_ascii_case(locale))
-            .or_else(|| {
-                self.localized_names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(language))
-            })
-            .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
+        collab_types::history::localized_name(&self.localized_names, locale)
+            .unwrap_or(self.display_name.as_str())
     }
 
-    /// The name to show to a person whose interface prefers `locales`, in
-    /// that order: the first language the manifest names this app in, else
-    /// `display_name`.
+    /// The name to show to a person whose interface prefers `locales`, in that order: the first
+    /// language the manifest names this app in, else `display_name`.
     #[must_use]
     pub fn name_in(&self, locales: &[String]) -> &str {
         locales
@@ -290,7 +271,7 @@ pub fn successor_of(catalog: &Catalog, old: &str) -> Result<Option<InstalledApp>
         .iter()
         .find(|row| row.id == app)
         .and_then(InstalledApp::from_package)
-        .filter(|found| found.package_id == app))
+        .filter(|found| found.app_id == app))
 }
 
 /// Read one visible registry row and its manifest. Other installed packages'
@@ -304,7 +285,7 @@ pub fn successor_of(catalog: &Catalog, old: &str) -> Result<Option<InstalledApp>
 /// Returns a catalogue error when either installed store cannot be read.
 pub fn read_one(catalog: &Catalog, app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
     match catalog.find(app_id)? {
-        Some(row) => Ok(InstalledApp::from_package(&row).filter(|app| app.package_id == app_id)),
+        Some(row) => Ok(InstalledApp::from_package(&row).filter(|app| app.app_id == app_id)),
         None => successor_of(catalog, app_id),
     }
 }
@@ -334,7 +315,7 @@ pub fn read_exact(
             return None;
         }
         let app = InstalledApp::from_package(entry)?;
-        (app.package_id == app_id).then_some(app)
+        (app.app_id == app_id).then_some(app)
     }))
 }
 
@@ -342,7 +323,7 @@ pub fn read_exact(
 /// the bytes its signed package ships ([`package_store::integrity::signed_surface`]), for each
 /// app that publishes one. What a task's programs may name of the native apps this device has.
 #[must_use]
-pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
+pub fn signed_surfaces(catalog: &Catalog) -> Vec<(AppId, String, Vec<u8>)> {
     let Ok(rows) = catalog.list() else {
         return Vec::new();
     };
@@ -354,7 +335,7 @@ pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
         let Some(app) = InstalledApp::from_package(row) else {
             continue;
         };
-        out.push((app.package_id, app.display_name, surface));
+        out.push((app.app_id, app.display_name, surface));
     }
     out
 }
@@ -364,7 +345,7 @@ pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
 /// # Errors
 ///
 /// See [`Catalog::from_env`].
-pub fn signed_surfaces_from_env() -> Result<Vec<(String, String, Vec<u8>)>, CatalogError> {
+pub fn signed_surfaces_from_env() -> Result<Vec<(AppId, String, Vec<u8>)>, CatalogError> {
     Ok(signed_surfaces(&Catalog::from_env()?))
 }
 
@@ -509,7 +490,7 @@ mod tests {
         assert_eq!(apps.len(), 2, "{apps:?}");
         let viewer = apps
             .iter()
-            .find(|app| app.package_id == "so.tilo.viewer")
+            .find(|app| app.app_id == "so.tilo.viewer")
             .unwrap();
         assert_eq!(viewer.display_name, "Viewer");
         assert_eq!(viewer.version, "2.0.0");
@@ -526,7 +507,7 @@ mod tests {
         );
         let tool = apps
             .iter()
-            .find(|app| app.package_id == "so.tilo.tool")
+            .find(|app| app.app_id == "so.tilo.tool")
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
@@ -574,7 +555,7 @@ mod tests {
         )
         .unwrap();
         let found = read_one(&catalog, "so.tilo.lang.todo").unwrap().unwrap();
-        assert_eq!(found.package_id, "so.tilo.lang.tasks");
+        assert_eq!(found.app_id, "so.tilo.lang.tasks");
         assert_eq!(found.previously(), ["so.tilo.lang.todo"]);
         assert_eq!(
             earlier_ids(&catalog)
@@ -601,7 +582,7 @@ mod tests {
         let ids: Vec<String> = read(&catalog)
             .unwrap()
             .into_iter()
-            .map(|app| app.package_id)
+            .map(|app| app.app_id.to_string())
             .collect();
         assert_eq!(ids, ["so.tilo.lang.tasks"]);
         std::fs::write(
@@ -615,7 +596,7 @@ mod tests {
             read_one(&catalog, "so.tilo.lang.todo")
                 .unwrap()
                 .unwrap()
-                .package_id,
+                .app_id,
             "so.tilo.lang.todo"
         );
     }
@@ -706,7 +687,7 @@ mod tests {
 
         std::fs::write(&registry, format!("{}{}", row(&forged), row(&canonical))).unwrap();
         let osk = read_one(&catalog, "so.tilo.osk").unwrap().unwrap();
-        assert_eq!(osk.package_id, "so.tilo.osk");
+        assert_eq!(osk.app_id, "so.tilo.osk");
         assert_eq!(osk.version, "1.0.0");
         assert_eq!(osk.manifest_path, canonical.manifest_path);
 
@@ -810,7 +791,7 @@ mod tests {
         );
         std::fs::write(package_store::Layout::new(&user).registry(), row).unwrap();
         let apps = read(&Catalog::at(&user, None)).unwrap();
-        let ids: Vec<&str> = apps.iter().map(|app| app.package_id.as_str()).collect();
+        let ids: Vec<&str> = apps.iter().map(|app| app.app_id.as_str()).collect();
         assert_eq!(ids, ["com.evil.app"]);
     }
 
@@ -839,6 +820,29 @@ mod tests {
         assert_eq!(app.name_in(&locales(&["es", "de"])), "Notizen");
         assert_eq!(app.name_in(&locales(&["en-US", "en"])), "Notes");
         assert_eq!(app.name_in(&[]), "Notes");
+    }
+
+    /// A package that names itself by region (`de-DE`, as a tilolang app's catalogue does) reads
+    /// in that language on a machine whose locale says `de_DE.UTF-8`, which the session asks in
+    /// as `de_DE` and `de`.
+    #[test]
+    fn a_name_given_by_region_reads_in_a_posix_locale_of_its_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = app_of(
+            tmp.path(),
+            &manifest(
+                "id = \"so.tilo.lang.tasks\"\nname = \"Tasks\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+                 [package.names]\nde-DE = \"Aufgaben\"",
+                "[entrypoint]\nbin = \"bin/tasks\"\ntype = \"gui\"\n",
+            ),
+        );
+        assert_eq!(
+            app.name_in(&["de_DE".to_owned(), "de".to_owned()]),
+            "Aufgaben"
+        );
+        assert_eq!(app.name_in(&["de".to_owned()]), "Aufgaben");
+        assert_eq!(app.name_in(&["de-AT".to_owned()]), "Aufgaben");
+        assert_eq!(app.name_in(&["en_US".to_owned(), "en".to_owned()]), "Tasks");
     }
 
     #[test]

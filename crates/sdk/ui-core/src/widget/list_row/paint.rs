@@ -1,6 +1,6 @@
-//! Painting a list row: its face (ground, lift, leading slot, text, trailing columns and the
-//! strike-through of a removed item) and the short classifying code a leading pill shows, which a
-//! navigation row shares.
+//! Painting a list row: its face (ground, lift, leading slot, text, trailing columns and
+//! the strike-through of a removed item) and the short classifying code a leading pill
+//! shows, which a navigation row shares.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -21,9 +21,9 @@ pub(super) fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect,
     paint_code_badge(ctx.scene, ctx.transform, ctx.text, ctx.theme, column, badge);
 }
 
-/// A short classifying code (`GET`, `.rs`) on its quiet pill at the leading
-/// edge of `column`, centred on the column's line: the one badge a list
-/// row and a navigation row share.
+/// A short classifying code (`GET`, `.rs`) on its quiet pill at the leading edge of
+/// `column`, centred on the column's line: the one badge a list row and a navigation row
+/// share.
 pub(crate) fn paint_code_badge(
     scene: &mut Scene,
     transform: Affine,
@@ -104,15 +104,11 @@ impl ListRowFace<'_> {
         let row = rect - shift;
         let frame_row = frame - shift;
         if offset > 0.0 {
-            // The sliding row stays opaque over what it reveals.
             ctx.scene
                 .fill(Fill::NonZero, ctx.transform, ground, None, &frame_row);
         }
 
         let (ground, under) = if self.card {
-            // A card is its own quiet surface over the board's ground: half a lift under the
-            // pointer, a whole one pressed, the accent's edge when it is the chosen one. What
-            // it holds reads against that surface.
             crate::widget::card::paint_surface(
                 ctx,
                 frame_row,
@@ -135,7 +131,6 @@ impl ListRowFace<'_> {
         } else {
             let lifted = self.selected || self.interaction.pressed;
             let hovered = self.interaction.hovered && !self.interaction.disabled;
-            // Selected takes the accent's tint; a press is the neutral lift.
             let pressed = self.interaction.pressed && !self.selected;
             paint_row_selection_joined(
                 ctx.scene,
@@ -173,15 +168,9 @@ impl ListRowFace<'_> {
         let lines =
             ctx.text
                 .clamp_to_lines(&title, &title_style, room, usize::from(self.title_lines));
-        // The row keeps the height of every title line it allows, so rows
-        // do not jump as titles change; the text it draws is centred in it,
-        // beside the leading icon, however many lines the title takes.
         let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
         let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
         let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
-        // A card's text starts under its own padding — centred in the card where the
-        // target a finger needs made it taller than its content; a row's is centred in
-        // it beside the leading column.
         let text_top = if self.card {
             self.card_content_top(row, &m, ctx.text, theme)
         } else {
@@ -198,7 +187,6 @@ impl ListRowFace<'_> {
 
         self.paint_leading(ctx, &m, geo.leading, under);
 
-        // Trailing columns, from the far edge in.
         if let Some(r) = geo.disclosure {
             let centre = r.center();
             let turned = ctx.transform
@@ -220,8 +208,6 @@ impl ListRowFace<'_> {
                 &Circle::new(Point::new(x, cy), m.dot / 2.0),
             );
         }
-        // The facts stand in one column on the row's trailing edge, in the fixed order when,
-        // who, how far, how important: the hover actions take their place while they show.
         if self.shows_actions() {
             let rects = self.action_rects_with(row, &m, ctx.text, theme);
             for (index, (action, r)) in self.actions.iter().zip(&rects).enumerate() {
@@ -279,10 +265,7 @@ impl ListRowFace<'_> {
             self.paint_marks(ctx, &m, &geo, facts_cy);
         }
 
-        // Title (with its tags), subtitle and secondary text.
         let text_x = geo.text_x;
-        // A quiet word before the title shares its line, in the weaker ink, and takes its room
-        // from the title.
         if let Some(prefix) = &self.prefix {
             ctx.text(
                 prefix,
@@ -307,8 +290,6 @@ impl ListRowFace<'_> {
                 let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
                 crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
             }
-            // A removed item's title is struck through, in the weaker ink, as an item nobody
-            // has named yet shows its placeholder; a quiet row reads in the weaker ink alone.
             let ink = if self.struck || self.untitled() {
                 theme.text_dim
             } else if self.faint {
@@ -387,8 +368,6 @@ impl ListRowFace<'_> {
                 );
             }
         } else if !self.facts.is_empty() {
-            // Facts are separate components on the line under the title: each says itself, and
-            // the one that no longer fits elides rather than the row joining them into one string.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let right = if self.subtitle.is_some() {
                 geo.text_right
@@ -403,8 +382,6 @@ impl ListRowFace<'_> {
         if let (Some(change), Some(face)) = (self.change, geo.change)
             && !change.said.is_empty()
         {
-            // What someone else did stands under the title in the quietest ink, led by their
-            // face: who did it, then what they did, then the row's other lines.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let y = if self.has_secondary_line() {
                 y + f64::from(self.secondary_lines) * secondary_line
@@ -428,8 +405,6 @@ impl ListRowFace<'_> {
                 .paint(ctx, face);
         }
         if let Some(note) = self.note {
-            // What waits on the item stands under its text, in the quieter ink: a proposal is
-            // not the item's own content.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let y = if self.has_secondary_line() {
                 y + f64::from(self.secondary_lines) * secondary_line
@@ -469,8 +444,6 @@ impl ListRowFace<'_> {
             && self.hovered_action.is_none()
             && !self.card
         {
-            // Inside the row: rows stack edge to edge, so a ring outside one
-            // would sit on its neighbours.
             crate::widget::activation::paint_focus_ring(
                 ctx.scene,
                 ctx.transform,
@@ -508,7 +481,6 @@ impl ListRowFace<'_> {
         }
     }
 
-    /// The marks, in the facts column, on the column's edge: the last fact of a row.
     fn paint_marks(&self, ctx: &mut PaintCtx<'_>, m: &RowMetrics, geo: &RowGeometry, cy: f64) {
         let Some(right) = geo.marks_right else {
             return;
@@ -528,8 +500,6 @@ impl ListRowFace<'_> {
                 }
                 RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, ink),
                 RowMark::Swatch(color) => {
-                    // The swatch sits inside the mark's box, as an icon's glyph does, with its
-                    // own derived edge.
                     let swatch = r.inset(-(m.mark * 0.1));
                     let radius = swatch.width() * 0.25;
                     let shape = RoundedRect::from_rect(swatch, radius);
@@ -549,7 +519,6 @@ impl ListRowFace<'_> {
     }
 
     /// Whether the title, painted in `rect`, is cut short with an ellipsis.
-    /// A row shows such a title in full in its tooltip.
     #[must_use]
     pub fn title_elided(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> bool {
         if self.title.is_empty() {
@@ -585,8 +554,6 @@ impl ListRowFace<'_> {
         grounds: &[Color],
     ) {
         let theme = ctx.theme;
-        // The room the layout gave the meta: what the text claims from here is its own, so a
-        // long fact elides rather than reaching into the title.
         let cap = (geo.meta_right - geo.meta_left).max(0.0);
         if !self.meta_spans.is_empty() {
             let mut x = geo.meta_left;
@@ -681,8 +648,6 @@ impl ListRowFace<'_> {
                 );
             }
             RowLeading::Checkbox { checked, icon } => {
-                // The box stands first in the slot, a glyph after it where the row says what
-                // kind of thing it is.
                 let boxed = super::geometry::checkbox_box(slot, icon, m);
                 if let Some(icon) = icon {
                     let at = slot.x0 + m.icon + m.column_gap + m.icon / 2.0;
@@ -716,8 +681,6 @@ impl ListRowFace<'_> {
                 let circle = Circle::new(r.center(), r.width() / 2.0);
                 ctx.scene
                     .fill(Fill::NonZero, ctx.transform, colour, None, &circle);
-                // The swatch is content colour: a derived edge closes it on a
-                // ground of nearly the same lightness.
                 ctx.scene.stroke(
                     &Stroke::new(1.0),
                     ctx.transform,

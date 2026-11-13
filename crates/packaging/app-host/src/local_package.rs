@@ -1,8 +1,6 @@
-//! Trusted local files through the existing Store capability and installer.
-//!
-//! The Store reads an archive ([`review_archive`]) and holds a host review;
-//! reviewing against host trust and installing ([`review`], [`install()`]) run
-//! in the daemon and need the `service` feature.
+//! Trusted local files through the existing Store capability and installer. The Store reads an
+//! archive ([`review_archive`]) and holds a host review; reviewing against host trust and
+//! installing ([`review`], [`install()`]) run in the daemon and need the `service` feature.
 #[cfg(feature = "service")]
 use std::io::Write;
 
@@ -15,7 +13,7 @@ use tilo_app_package::{DiscardBlobs, Kind, Manifest, Verification};
 
 pub const MAX_LOCAL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Host-verified identity of immutable handed bytes; contains no trust grant.
+/// Host-verified identity of handed bytes; grants no trust.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalReview {
     pub root: String,
@@ -46,8 +44,8 @@ pub enum ArchiveReviewError {
 /// Read immutable archive bytes through the canonical package decoder.
 ///
 /// # Errors
-/// Refuses malformed, oversized or non-application archives. A structurally
-/// checked archive still requires an independently authenticated catalogue offer.
+/// A malformed, oversized or non-application archive. A structurally checked archive still requires
+/// an independently authenticated catalogue offer.
 pub fn review_archive(bytes: &[u8]) -> Result<CatalogueArchive, ArchiveReviewError> {
     if bytes.is_empty() || bytes.len() > MAX_LOCAL_BYTES {
         return Err(ArchiveReviewError::Invalid);
@@ -61,15 +59,13 @@ pub fn review_archive(bytes: &[u8]) -> Result<CatalogueArchive, ArchiveReviewErr
 }
 
 impl CatalogueArchive {
-    /// The structurally checked application identity.
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.meta.manifest.package.id
     }
 
-    /// Verify every independently supplied identity and the publisher signature.
-    /// Full and thin forms share a root; the offer's size describes its canonical
-    /// download and is deliberately independent of the handed representation.
+    /// Verify every supplied identity and the publisher signature. Full and thin forms share a
+    /// root; the offer's size describes its canonical download, not the handed representation.
     #[must_use]
     pub fn accepts_offer(&self, expected: &crate::install::InstallExpectation) -> bool {
         let package = &self.meta.manifest.package;
@@ -88,7 +84,7 @@ impl CatalogueArchive {
 /// Retain the host-reviewed identity for the ordinary install operation.
 ///
 /// # Errors
-/// Refuses malformed host review identities; it grants no publisher trust.
+/// A malformed host review identity. It grants no publisher trust.
 pub fn local_expectation(
     review: &LocalReview,
     size_bytes: u64,

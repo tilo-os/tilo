@@ -2,7 +2,7 @@
 
 A14 opens Files as the session's first Files launch and times it from the app's own
 startup marks (process start to `first-frame-presented`, written by every Tilo app to
-`<data home>/tilo-rooms/<workspace>/<package>/.local/state/startup-<N>.json`). A frame alone
+`<data home>/tilo-workspaces/<workspace>/<package>/.local/state/startup-<N>.json`). A frame alone
 is not a working window, so it also reads the folder listing off the app's AT-SPI tree
 with the checkout's external AT-SPI client (tools/atspi_external_client.py), copied into
 the guest for the check: it is test tooling and the image does not ship it.
@@ -296,7 +296,7 @@ def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S, l
     if log_from is not None:
         core.wait_log_line(ctx, SESSION_LOG, log_from + 1, wait_s, f"APP-STARTUP app={re.escape(app)} ",
                            f"first frame presented .*package_id={re.escape(app)} ")
-    script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{app}/.local/state/startup-*.json; '
+    script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-workspaces/*/{app}/.local/state/startup-*.json; '
               'do [ -f "$f" ] || continue; printf "%s\\t" "$f"; tr -d "\\n" < "$f"; echo; done')
 
     def probe():

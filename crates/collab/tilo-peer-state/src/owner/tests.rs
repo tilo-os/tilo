@@ -82,9 +82,13 @@ fn enrolled_with(
     }
 }
 
-/// The file one workspace's record is in, as this device holds it.
+/// The file one workspace's record is in, as this device holds it: the
+/// snapshot the index names (`<workspace>.<revision>.json`), not the journal
+/// beside it (`<workspace>.<revision>.log`) nor a run of its outgoing custody
+/// (`<workspace>.custody.<hash>`), whose names begin the same way and hold
+/// bytes that are no document.
 fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
-    let name = workspace.to_string();
+    let name = format!("{workspace}.");
     std::fs::read_dir(crate::owner::file_store::parts_of(path))
         .unwrap()
         .flatten()
@@ -93,6 +97,9 @@ fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
             file.file_name()
                 .and_then(|file| file.to_str())
                 .is_some_and(|file| file.starts_with(&name))
+                && file
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
         })
         .expect("the record holds the workspace's file")
 }

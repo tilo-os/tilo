@@ -23,7 +23,6 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-/// One release of the bundle, as the feed describes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Release {
@@ -36,8 +35,8 @@ pub struct Release {
 }
 
 impl Release {
-    /// Parse `feed` after verifying `signature_hex` over its exact bytes with
-    /// `public_key_hex`. Nothing in an unverified feed is looked at.
+    /// Parse `feed` after verifying `signature_hex` over its exact bytes with `public_key_hex`.
+    /// Nothing in an unverified feed is looked at.
     pub fn verify(feed: &[u8], signature_hex: &str, public_key_hex: &str) -> Result<Self, Error> {
         let key: [u8; 32] = decode_hex(public_key_hex).ok_or(Error::Malformed("public key"))?;
         let key = VerifyingKey::from_bytes(&key).map_err(|_| Error::Malformed("public key"))?;
@@ -55,8 +54,8 @@ impl Release {
         Ok(release)
     }
 
-    /// Whether this release is newer than `current`. A version that is not
-    /// dotted numbers is never newer.
+    /// Whether this release is newer than `current`. A version that is not dotted numbers is never
+    /// newer.
     #[must_use]
     pub fn is_newer_than(&self, current: &str) -> bool {
         match (numeric_version(&self.version), numeric_version(current)) {
@@ -94,8 +93,7 @@ pub fn sign(feed: &[u8], key: &SigningKey) -> String {
     hex::encode(key.sign(feed).to_bytes())
 }
 
-/// The signing key in a publisher key file's contents
-/// ([`registry_types::key_file`]).
+/// The signing key in a publisher key file's contents ([`registry_types::key_file`]).
 pub fn parse_signing_key(text: &str) -> Result<SigningKey, Error> {
     registry_types::key_file::parse(text).map_err(|_| Error::Malformed("signing key file"))
 }

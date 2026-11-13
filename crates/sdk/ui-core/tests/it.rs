@@ -64,6 +64,8 @@ mod diagnostics_outlive_a_closed_log_pipe;
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
 mod filled_control_labels_are_readable;
+#[path = "filling_child_keeps_its_share.rs"]
+mod filling_child_keeps_its_share;
 #[path = "fractional_scale_render.rs"]
 mod fractional_scale_render;
 #[path = "ghost_cursor_render_test.rs"]
@@ -121,6 +123,8 @@ mod real_socket_n_peer;
 #[cfg(unix)]
 #[path = "real_socket_two_peer.rs"]
 mod real_socket_two_peer;
+#[path = "record_content_route.rs"]
+mod record_content_route;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
 #[path = "resize_reflow_test.rs"]

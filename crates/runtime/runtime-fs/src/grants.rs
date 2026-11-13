@@ -4,7 +4,6 @@ pub use tilo_fs_client::{EntryName, FsOwner, FsRight};
 
 use crate::native::GrantLease;
 
-/// A reference to an owned directory descriptor and its live ancestor lineage.
 #[derive(Clone, Debug)]
 pub struct DirectoryGrant {
     pub(super) lease: GrantLease,
@@ -47,9 +46,6 @@ pub enum FsError {
     Cancelled,
     LimitExceeded,
     StoreUnavailable,
-    /// Owns the original receipt-publication failure and any commit obligation.
-    /// Retrying its commit requires retaining the `OperationOwner`'s writer
-    /// exclusion; it neither unpoisons the owner nor resumes job bookkeeping.
     Publication(tilo_files::native::atomic::PublicationError),
     Transport(runtime_portal::NotAvailable),
     Io(std::io::Error),
@@ -90,7 +86,6 @@ pub struct FsEntry {
     pub metadata: crate::Metadata,
 }
 
-/// Opaque continuation of a retained snapshot, bound to one session and directory.
 #[derive(Clone, Debug)]
 pub struct PageCursor {
     pub(super) generation: u64,

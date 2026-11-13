@@ -1,8 +1,6 @@
-//! A window arriving, maximizing and leaving: its place opens at once (its
-//! content's arrival inside it is `window_group_arrival_tests`), a new tab
-//! keeps the tab before it until it has drawn, a springing window is moved
-//! and clipped but never stretched, and a key closes at once.
-
+//! A window arriving, maximizing and leaving: its place opens at once (its content's arrival inside
+//! it is `window_group_arrival_tests`), a new tab keeps the tab before it until it has drawn, a
+//! springing window is moved and clipped but never stretched, and a key closes at once.
 use super::tests::make_group;
 use super::*;
 use crate::widget::{AppKind, TabDescriptor, TileContent};
@@ -27,7 +25,6 @@ fn a_window_asked_for_opens_its_slot_and_its_content_arrives_inside_its_frame() 
             );
         }
         {
-            // A shortcut lands: no slot opening.
             let mut g = make_group();
             g.set_motion_source(crate::tokens::MotionSource::Keyboard);
             g.start_spawn_animation();
@@ -39,7 +36,6 @@ fn a_window_asked_for_opens_its_slot_and_its_content_arrives_inside_its_frame() 
     });
 }
 
-/// An app whose first frame arrives when the test says so.
 struct Arrives {
     drawn: std::rc::Rc<std::cell::Cell<bool>>,
 }
@@ -190,8 +186,6 @@ fn a_springing_window_is_moved_and_clipped_and_never_stretched() {
     });
 }
 
-/// Super+W closes a window in the frame it is pressed: nothing of it
-/// lingers. A click on its close button lets it go once its fade is over.
 #[test]
 fn a_key_closes_a_window_at_once_and_a_click_after_its_fade() {
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
@@ -211,9 +205,6 @@ fn a_key_closes_a_window_at_once_and_a_click_after_its_fade() {
     });
 }
 
-/// A spring let go mid-way (a shortcut landing a maximize or a resize it
-/// started, a close completing) is drawn no more, so it asks the motion
-/// clock for no more frames; a spring still in flight keeps asking.
 #[test]
 fn a_spring_let_go_mid_way_asks_the_clock_for_no_frames() {
     let now = crate::motion::frame_now();

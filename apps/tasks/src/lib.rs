@@ -129,6 +129,7 @@ impl ResourceApp for App {
     type Resource = Tracker;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "tasks-app-title";
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }

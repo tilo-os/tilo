@@ -5,8 +5,8 @@ use crate::widget::Tone;
 
 use super::Sparkline;
 
-/// A tiny trend line, with no axis, grid, title or legend: a recent history inside a table
-/// cell or a stat card. Fewer than two samples draw nothing.
+/// A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a
+/// stat card.
 #[derive(Component, Default)]
 #[component(name = "Sparkline", role = "Image", label = "label")]
 pub struct SparklineProps {
@@ -15,18 +15,17 @@ pub struct SparklineProps {
     pub samples: Vec<f64>,
     /// What the trend is of, as assistive technology announces it: "Requests per second".
     pub label: Option<String>,
-    /// The vertical maximum, which may be more than the samples reach; without one it is the
-    /// highest sample.
+    /// The vertical maximum, which may be more than the samples reach; without one it is the highest
+    /// sample.
     pub max: Option<f64>,
-    /// The area under the line filled in the same colour, which a sparkline draws unless it is
-    /// told not to: `true` unless said.
+    /// The area under the line filled in the same colour, which a sparkline draws unless it is told not to:
+    /// `true` unless said.
     pub filled: Option<bool>,
     /// The line's shape between samples: the smooth curve rather than straight segments.
     pub smooth: bool,
     /// A dot of this radius on the newest sample: the live edge of a streaming series.
     pub leading_dot: Option<f64>,
-    /// What its line means, when it means something: a status, a person. Without one it is the
-    /// theme's accent.
+    /// What its line means, when it means something: a status, a person.
     pub tone: Option<Tone>,
 }
 
@@ -58,8 +57,8 @@ impl Described for Sparkline {
         spark
     }
 
-    /// A changed sample set changes the line; a changed tone is painted with the theme, so the
-    /// widget stays and only what it wears changes.
+    /// A changed sample set changes the line; a changed tone is painted with the theme, so the widget
+    /// stays and only what it wears changes.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "a trend sample, well inside f32"

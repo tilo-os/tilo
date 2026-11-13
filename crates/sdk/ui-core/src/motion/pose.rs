@@ -1,15 +1,14 @@
-//! [`Pose`] — how a moving surface is drawn this frame: an opacity and a
-//! transform in its own coordinates.
+//! [`Pose`] — how a moving surface is drawn this frame: an opacity and a transform in its own
+//! coordinates.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-/// Below this opacity a surface is not drawn at all.
 const INVISIBLE: f32 = 1.0 / 512.0;
 
-/// An opacity and a transform (in the surface's own coordinates, applied
-/// before the surface's placement).
+/// An opacity and a transform (in the surface's own coordinates, applied before the surface's
+/// placement).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub opacity: f32,
@@ -58,9 +57,8 @@ impl Pose {
         placement * self.transform
     }
 
-    /// Where a point drawn at `point` lies in the surface's resting layout:
-    /// what hit testing uses while the surface moves, so the control under
-    /// the pointer is the one drawn under it.
+    /// Where a point drawn at `point` lies in the surface's resting layout: what hit testing uses while
+    /// the surface moves, so the control under the pointer is the one drawn under it.
     #[must_use]
     #[allow(
         clippy::arithmetic_side_effects,
@@ -88,10 +86,8 @@ impl Pose {
         self.transform.transform_rect_bbox(rect)
     }
 
-    /// [`Self::paint`] for a caller that paints in steps: pushes the
-    /// opacity layer when one is needed and returns the transform to draw
-    /// with, or `None` (pushing nothing) when nothing of it shows. Every
-    /// `Some` is closed by [`Self::end`].
+    /// [`Self::paint`] for a caller that paints in steps: pushes the opacity layer when one is needed
+    /// and returns the transform to draw with, or `None` (pushing nothing) when nothing of it shows.
     #[must_use]
     pub fn begin(&self, scene: &mut Scene, placement: Affine, bounds: Rect) -> Option<Affine> {
         if !self.is_visible() {
@@ -117,11 +113,7 @@ impl Pose {
         }
     }
 
-    /// Draw a surface in this pose. `placement` is where the caller would draw
-    /// it at rest; `bounds` (in the surface's coordinates) is everything it
-    /// paints, shadows included, which the opacity layer clips to. `paint`
-    /// gets the transform to draw with. Nothing is drawn when invisible, and
-    /// no layer is pushed at full opacity.
+    /// Draw a surface in this pose.
     pub fn paint(
         &self,
         scene: &mut Scene,

@@ -8,8 +8,6 @@ use crate::{
     is_unsafe, link_stays_inside, list, read_member, safe_relative, stem,
 };
 
-/// The tree every format packs: a folder with a text file, an executable
-/// and a nested file.
 fn tree(at: &Path) -> PathBuf {
     let top = at.join("top");
     fs::create_dir_all(top.join("sub")).unwrap();
@@ -36,7 +34,6 @@ fn write_archive(at: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
-/// `top` packed in `format`, written beside it.
 fn archive_of(at: &Path, top: &Path, format: Format) -> PathBuf {
     let name = format!("bundle.{}", format.extension());
     match format {
@@ -47,10 +44,9 @@ fn archive_of(at: &Path, top: &Path, format: Format) -> PathBuf {
             encoder.write_all(&tar_bytes(top)).unwrap();
             write_archive(at, &name, &encoder.finish().unwrap())
         }
-        // xz and 7z archives as the xz and 7z tools make them, what people
-        // download: `tree`'s files under `top/` (directories 0755), made
-        // with `tar --format=gnu -cf bundle.tar top && xz -1 bundle.tar`
-        // and `7z a -mx=1 bundle.7z top`.
+        // xz and 7z archives as those tools make them, what people download: `tree`'s
+        // files under `top/`, made with `tar --format=gnu -cf bundle.tar top && xz -1
+        // bundle.tar` and `7z a -mx=1 bundle.7z top`.
         Format::Tar(Compression::Xz) | Format::SevenZ => write_archive(at, &name, &fixture(&name)),
         Format::Tar(Compression::Zstd) => {
             let compressed = ruzstd::encoding::compress_to_vec(
@@ -168,7 +164,6 @@ fn every_format_lists_extracts_and_reads_a_member() {
     }
 }
 
-/// A file named without its extension is still read by its first bytes.
 #[test]
 fn an_archive_without_its_extension_is_read_by_its_contents() {
     let temp = tempfile::tempdir().unwrap();
@@ -184,8 +179,6 @@ fn an_archive_without_its_extension_is_read_by_its_contents() {
     );
 }
 
-/// A tar header naming `name` (bypassing the tar crate's own checks, as a
-/// crafted archive would), of `kind`, with `link` and `data`.
 fn raw_entry(
     builder: &mut tar::Builder<Vec<u8>>,
     name: &[u8],
@@ -203,7 +196,6 @@ fn raw_entry(
     builder.append(&header, data).unwrap();
 }
 
-/// A crafted entry: its name, kind, link target and data.
 type Crafted<'a> = (&'a [u8], tar::EntryType, &'a [u8], &'a [u8]);
 
 fn crafted_tar(at: &Path, entries: &[Crafted<'_>]) -> PathBuf {
@@ -214,8 +206,6 @@ fn crafted_tar(at: &Path, entries: &[Crafted<'_>]) -> PathBuf {
     write_archive(at, "crafted.tar", &builder.into_inner().unwrap())
 }
 
-/// Names that climb out, absolute names and links pointing out are refused
-/// before anything of them is written; nothing lands beside the folder.
 #[test]
 fn traversal_is_refused() {
     let cases: [&[Crafted<'_>]; 5] = [
@@ -248,7 +238,6 @@ fn traversal_is_refused() {
         );
     }
 
-    // The same in a zip.
     let temp = tempfile::tempdir().unwrap();
     let mut bytes = io::Cursor::new(Vec::new());
     {
@@ -270,8 +259,6 @@ fn traversal_is_refused() {
     );
 }
 
-/// A symlink pointing inside is made, after the files; one below another
-/// symlink is refused, since its target was checked from the wrong place.
 #[cfg(unix)]
 #[test]
 fn links_inside_are_made_and_links_through_links_are_refused() {
@@ -308,8 +295,6 @@ fn links_inside_are_made_and_links_through_links_are_refused() {
     assert!(fs::symlink_metadata(out.join("out")).is_err());
 }
 
-/// Device nodes and pipes are never made, setuid and setgid never kept,
-/// and permissions never exceed rwxr-xr-x.
 #[cfg(unix)]
 #[test]
 fn devices_are_skipped_and_permissions_capped() {
@@ -362,7 +347,6 @@ impl Observer for StopAfter {
     }
 }
 
-/// Cancelling stops extraction and packing with a cancel, not a failure.
 #[test]
 fn cancel_stops_with_cancelled() {
     let temp = tempfile::tempdir().unwrap();
@@ -396,7 +380,6 @@ fn cancel_stops_with_cancelled() {
     }
 }
 
-/// A tar.zst made here reads back with everything in it.
 #[test]
 fn tar_zst_round_trips() {
     let temp = tempfile::tempdir().unwrap();
@@ -418,7 +401,6 @@ fn tar_zst_round_trips() {
     );
 }
 
-/// `./` entries name the folder itself and are left out, not refused.
 #[test]
 fn the_folder_itself_is_left_out() {
     let temp = tempfile::tempdir().unwrap();
@@ -469,7 +451,6 @@ fn names_paths_and_links() {
 
 #[test]
 fn a_folder_named_only_by_its_contents_gets_a_row() {
-    // It was last changed when the newest thing inside it was.
     let at = |seconds: u64| Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
     let entry = |path: &str, modified| crate::Entry {
         path: PathBuf::from(path),

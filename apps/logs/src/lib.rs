@@ -1,26 +1,7 @@
-//! Logs — a graphical systemd-journal viewer, built on the Tilo `ui`
-//! toolkit (CRDT-native, retained-mode).
-//!
-//! The viewer is one window shell: the journal table
-//! with its filters (a filter field, unit, boot and a syslog-priority
-//! threshold) as the content, every field of the selected record in the
-//! inspector, and refresh, live tail, export and History in the header. Shared filter and selection preferences sync as document
-//! actions on [`resource::Logs`]. Live tail is a process-local Effect (it
-//! starts this process's journal poller); journal entries themselves are an
-//! external render cache. The resource catalogue also exposes refresh,
-//! follow/pause, and an explicit-path JSON Lines export; it publishes
-//! metadata and stable entry identities, never raw log payloads.
-//!
-//! Data sources:
-//! - **Live**: parses `journalctl -o json` ([`journal::load_live`]) off the
-//!   UI thread.
-//! - **Screenshots**: a bundled, realistic sample journal
-//!   ([`journal::sample_entries`]) provided as the capture's fixture, so a
-//!   capture is populated without systemd access.
+//! Logs — a graphical systemd-journal viewer, built on the Tilo `ui` toolkit (CRDT-native,
+//! retained-mode).
 
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

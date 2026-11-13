@@ -409,6 +409,8 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
+    /// The person each agent here acts for, as presence knows it.
+    pub(crate) agent_people: HashMap<Id, String>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
     pub(crate) workspace_files: crate::record::WorkspaceFiles,
@@ -803,6 +805,7 @@ impl ChatApp {
             motion_reduced: false,
             input_floating_surface: None,
             agent_authors: HashMap::new(),
+            agent_people: HashMap::new(),
             workspace_files: crate::record::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
@@ -2652,7 +2655,7 @@ impl ChatApp {
         let selection = menu.widget.take_selection();
         let selected = selection.and_then(|index| menu.items.get(index).copied());
         let menu_target = menu.target.clone();
-        if menu.widget.is_showing() {
+        if menu.widget.is_open() {
             self.menu = Some(menu);
         }
         if let Some(selected) = selected {

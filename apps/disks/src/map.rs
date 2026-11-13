@@ -1,13 +1,4 @@
 //! The partition map: one drive drawn as a proportional bar.
-//!
-//! Genuine content drawing. The bar is the data (each partition's share of the
-//! device), so it paints itself; everything around it is the toolkit's: the
-//! "Whole disk" chip is a [`ChipFace`], the legend is the charts' shared
-//! legend (a swatch per block, measured and wrapped), and every colour, radius
-//! and gap comes from the theme. Like any chart, each partition takes a series
-//! colour, the same as its legend swatch: a block whose use is known is a wash
-//! of it with the part in use in the full colour, a block whose use is
-//! unknown is the full colour, and the unallocated tail is an outline.
 
 use std::collections::HashMap;
 
@@ -30,29 +21,21 @@ use ui::widget::{ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
 
-/// The legend a pending map measures: a few partitions' names and sizes,
-/// one line of it on any window wide enough for a sidebar.
 const PENDING_LEGEND: [&str; 3] = ["System 000.0 MB", "Partition 000.0 GB", "Home 000.0 GB"];
 
-/// Opacity of the outline that marks space no partition claims.
 const OUTLINE_ALPHA: u8 = 0x59;
 
 /// One block of the bar: a partition, or the unallocated tail.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapEntry {
-    /// Index into the drive's partitions; `None` for the unallocated tail.
     pub partition: Option<usize>,
-    /// Kernel name (`nvme0n1p2`), for the accessible name and the action target.
     pub device: String,
     /// What the legend calls it (`system 214.7 GB`).
     pub label: String,
-    /// Bytes the block spans.
     pub size: u64,
-    /// Share of the block's filesystem in use, when it is known.
     pub used: Option<f64>,
 }
 
-/// What the pointer is over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hover {
     Whole,
@@ -60,25 +43,19 @@ enum Hover {
     Legend(usize),
 }
 
-/// Where everything landed for one width, relative to the widget's own origin.
+/// Where a block landed for one width, from the widget's origin.
 #[derive(Clone, Debug, Default)]
 struct Geometry {
     chip: Rect,
-    /// The whole bar the blocks tile.
     track: Rect,
     segments: Vec<Rect>,
     legend: Vec<Rect>,
     height: f64,
 }
 
-/// The partition map widget. Selecting a block (or the chip, which means "no
-/// partition") reports through `on_select`.
 pub struct PartitionMap {
     entries: Vec<MapEntry>,
-    /// The drive is still being read, since then: the map's shape stands
-    /// in, stepping through the framework's placeholder.
     pending: Option<ui::arriving::ArrivalClock>,
-    /// The placeholder step the last frame painted.
     drawn_step: Option<ui::arriving::Step>,
     selected: Option<usize>,
     on_select: Box<dyn FnMut(Option<usize>)>,
@@ -109,9 +86,8 @@ impl PartitionMap {
         }
     }
 
-    /// The map of a drive this device began reading at `since`: its space
-    /// at the size the map will take, empty while the read is inside its
-    /// frame budget, then its chip, its bar and a line of legend in the
+    /// The map of a drive this device began reading at `since`: its space at the size the
+    /// map will take, empty inside the frame budget, then its chip, bar and legend in the
     /// skeleton tone ([`ui::arriving`]).
     pub fn pending(since: ui::time::Instant) -> Self {
         Self {
@@ -127,7 +103,6 @@ impl PartitionMap {
         entry.partition.is_some() && entry.partition == self.selected
     }
 
-    /// Lay everything out for `width`, relative to the widget's origin.
     fn lay_out(&self, width: f64, text: &mut TextRenderer, theme: &Theme) -> Geometry {
         let spacing = &theme.tokens.spacing;
         let gap = f64::from(spacing.rhythm.sibling);
@@ -144,8 +119,6 @@ impl PartitionMap {
         let track_h = f64::from(spacing.s12);
         let track = Rect::new(0.0, chip.y1 + gap, width, chip.y1 + gap + track_h);
 
-        // Proportional widths with a floor so a sliver stays visible and
-        // clickable, then squeezed back into the track if the floors overflow.
         let seam = f64::from(spacing.s1) / 2.0;
         let floor = f64::from(spacing.s2);
         let total: f64 = self
@@ -193,9 +166,8 @@ impl PartitionMap {
         }
     }
 
-    /// One entry per block: its swatch and label, measured by the renderer
-    /// and wrapped before the trailing edge so a long label never overlaps its
-    /// neighbour.
+    /// One entry per block: its swatch and label, measured by the renderer and wrapped
+    /// before the trailing edge so a long label never overlaps its neighbour.
     fn lay_out_legend(
         &self,
         width: f64,
@@ -207,7 +179,6 @@ impl PartitionMap {
         legend::wrap(&entries, 0.0, width, top, theme)
     }
 
-    /// The block's series colour; the unallocated tail is the outline's ink.
     fn colour(entry: &MapEntry, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match entry.partition {
@@ -216,8 +187,8 @@ impl PartitionMap {
         }
     }
 
-    /// Paint one block: a wash of its colour with the used share in full,
-    /// or, for the unallocated tail, an outline.
+    /// Paint one block: its colour wash with the used share in full, or an outline for the
+    /// unallocated tail.
     fn paint_block(ctx: &mut PaintCtx<'_>, rect: Rect, entry: &MapEntry, hovered: bool) {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
@@ -230,13 +201,8 @@ impl PartitionMap {
             return;
         }
         let colour = Self::colour(entry, theme);
-        // A block whose use is unknown is its colour, as its legend swatch
-        // is; one whose use is known washes the free part, so the full
-        // colour is what is in use.
         let Some(used) = entry.used else {
             ctx.fill_round(rect, radius, colour);
-            // Hover is the theme's state veneer over the colour, as on any
-            // control: it reads on a light and on a dark block alike.
             if hovered {
                 ctx.fill_round(rect, radius, colors.overlay_medium);
             }
@@ -251,7 +217,6 @@ impl PartitionMap {
         }
     }
 
-    /// Paint the pending map's shapes in the skeleton tone.
     fn paint_pending(ctx: &mut PaintCtx<'_>, geometry: &Geometry, origin: ui::vello::kurbo::Vec2) {
         let theme = ctx.theme;
         let tone = ui::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
@@ -263,7 +228,6 @@ impl PartitionMap {
             tone,
         );
         for line in &geometry.legend {
-            // A legend line's x-height band, as a skeleton's text is.
             let line = *line + origin;
             let bar = (line.height() * 0.6).round();
             let top = line.y0 + (line.height() - bar) / 2.0;
@@ -350,8 +314,6 @@ impl Widget for PartitionMap {
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let now = ui::time::now();
         let clock = self.pending.as_ref()?;
-        // A read inside its budget holds the frame until then; past it,
-        // the placeholder steps on at its deadlines.
         clock
             .holds_frame_until(now)
             .or_else(|| clock.next_step_at(now))
@@ -391,14 +353,12 @@ impl Widget for PartitionMap {
             return;
         }
 
-        // "Whole disk": a chip, lifted while it is what the actions target.
         ChipFace::new(at(geometry.chip), "Whole disk")
             .lead(ChipLead::Glyph(Icon::HardDrive))
             .selected(self.selected.is_none())
             .hovered(self.hover == Some(Hover::Whole))
             .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 
-        // The device: each block's share of it.
         let radii = &theme.tokens.radii;
         for (i, (entry, segment)) in self.entries.iter().zip(&geometry.segments).enumerate() {
             let hovered =
@@ -411,7 +371,6 @@ impl Widget for PartitionMap {
             }
         }
 
-        // The legend names every block, including the ones too thin to label.
         for (i, (entry, rect)) in self.entries.iter().zip(&geometry.legend).enumerate() {
             let hovered =
                 matches!(self.hover, Some(Hover::Segment(h) | Hover::Legend(h)) if h == i);
@@ -578,7 +537,8 @@ mod tests {
         Point::new(map.rect.x0 + c.x, map.rect.y0 + c.y)
     }
 
-    /// The bar's blocks tile the track in order, never overflowing it, and a sliver stays a target.
+    /// The bar's blocks tile the track in order, never overflowing it, and a sliver stays a
+    /// target.
     #[test]
     fn blocks_tile_the_track_and_slivers_stay_clickable() {
         let (app, _) = map(None, 900.0);
@@ -627,7 +587,8 @@ mod tests {
         assert!(narrow.geometry.height > wide.geometry.height);
     }
 
-    /// Choosing a block, its legend entry or the chip reports the partition, or none for the whole disk.
+    /// Choosing a block, its legend entry or the chip reports the partition, or none for
+    /// the whole disk.
     #[test]
     fn blocks_legend_entries_and_the_chip_report_the_choice() {
         let (mut app, picks) = map(Some(1), 900.0);
@@ -637,7 +598,6 @@ mod tests {
         Framed::harness_mut(&mut app).click_at(legend.x, legend.y);
         let chip = absolute(&app, app.geometry.chip);
         Framed::harness_mut(&mut app).click_at(chip.x, chip.y);
-        // The unallocated tail is not a partition: choosing it selects nothing.
         let tail = absolute(&app, app.geometry.segments[3]);
         Framed::harness_mut(&mut app).click_at(tail.x, tail.y);
         assert_eq!(*picks.borrow(), vec![Some(2), Some(0), None]);

@@ -1,48 +1,8 @@
 //! The host side of the fetch proxy (feature `proxy-host`): wire protocol v1
 //! as a workspace host serves it to the pages of its members.
 //!
-//! [`FetchProxy::serve`] takes one request the host already authenticated
-//! (the [`Caller`] is the device whose session it carries) and answers the
-//! target's response or a [`ProxyFailure`]. The host does the rest: which
-//! path it serves the proxy at, who may call it, and the CORS headers for a
-//! page on another origin. `tilo-relay` serves it to its browser sessions;
-//! the `tilo-fetch-proxy` program serves it unauthenticated on loopback for
-//! the development server.
-//!
-//! What it enforces, whoever hosts it:
-//!
-//! - **Destinations:** `http` and `https` on a port browsers allow
-//!   ([`BAD_PORTS`] are refused). Every name is resolved once, every address
-//!   it resolves to must be public ([`is_public`]), and the connection goes
-//!   to those checked addresses, never to a second lookup that a rebinding
-//!   name could answer differently. Redirects are followed here, each hop
-//!   checked again; `Authorization` and `Cookie` are dropped when a hop
-//!   changes origin.
-//! - **Methods:** the HTTP and `WebDAV` methods apps use; never `CONNECT` or
-//!   `TRACE`. A `GET` or `HEAD` may carry the marker in the query instead
-//!   ([`super::media_url`]), for a media element; an open-ended byte range
-//!   it asks for is answered [`MEDIA_PIECE`] bytes at a time, so a stream
-//!   that plays for minutes is many short exchanges, each within the
-//!   bounds.
-//! - **Credentials:** the page's own cookies and session never leave; the
-//!   caller's address and the ingress's forwarding headers are not passed on.
-//!   Response headers that the host's origin would act on (cookies,
-//!   authentication prompts, caching, security policies, site data) reach
-//!   the page renamed, so only the app reads them.
-//! - **Bounds:** request and response bodies, and one deadline for the
-//!   whole exchange, body included ([`Config`]).
-//! - **Rates:** per device, requests and response bytes; per destination
-//!   host, requests from everyone together; requests in flight, per device
-//!   and in total ([`RateLimits`]).
-//! - **Budgets:** response bytes relayed per visitor and per workspace over
-//!   a window, a day by default ([`Budgets`]). Rates smooth a burst out; a
-//!   budget caps what one visitor, or everyone in a workspace together,
-//!   streams through the host in a day. Spent, the proxy answers
-//!   [`ProxyFailure::OverBudget`] until the window turns over, and a
-//!   response it is relaying ends there with an error.
-//! - **Logs:** one line per refusal under the `fetch_proxy` target, naming
-//!   the device and the destination's origin only. Neither bodies, headers,
-//!   paths nor queries are logged: they carry people's credentials.
+//! [`FetchProxy::serve`] takes one request the host already authenticated and
+//! answers the target's response or a [`ProxyFailure`].
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -70,22 +30,14 @@ use super::{
 };
 use crate::NetError;
 
-/// Bounds of one proxied exchange, and who may reach what.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Largest request body the proxy reads.
     pub max_request_bytes: usize,
-    /// Largest response body it relays, after decompression.
     pub max_response_bytes: u64,
-    /// The whole exchange, redirects and the response body included.
     pub deadline: Duration,
-    /// Redirects followed before the proxy gives up.
     pub max_redirects: usize,
-    /// Which addresses it may connect to.
     pub destinations: Destinations,
-    /// How much each device, and everyone, may ask of it.
     pub limits: RateLimits,
-    /// How much it relays per visitor and per workspace over a window.
     pub budgets: Budgets,
 }
 
@@ -103,22 +55,19 @@ impl Default for Config {
     }
 }
 
-/// Which addresses the proxy connects to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destinations {
     /// Public addresses only: never the proxy's own network.
     Public,
-    /// Any address, loopback and private ones included: a development
-    /// proxy reaching a local test server.
+    /// Any address, loopback and private ones included: a development proxy
+    /// reaching a local test server.
     Any,
 }
 
 /// A token bucket: `burst` at once, refilled at `per_minute`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rate {
-    /// What may be spent at once.
     pub burst: f64,
-    /// What comes back per minute.
     pub per_minute: f64,
 }
 
@@ -128,23 +77,14 @@ impl Rate {
     }
 }
 
-/// What the proxy allows each device, each destination and everyone.
-///
-/// The defaults suit a public workspace on a busy day: a person scrolling a
-/// feed reader or a video list (a list and its thumbnails is some sixty
-/// requests) never meets them, while a script using the host as an open
-/// proxy runs out within a minute.
+/// What the proxy allows each device, each destination and everyone. The
+/// defaults suit a public workspace on a busy day.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RateLimits {
-    /// Requests per device.
     pub device_requests: Rate,
-    /// Response bytes per device.
     pub device_bytes: Rate,
-    /// Requests per destination host, from every device together, so the
-    /// host cannot be turned on one site.
     pub destination_requests: Rate,
     pub device_in_flight: usize,
-    /// Requests in flight at once, in total.
     pub in_flight: usize,
 }
 
@@ -169,23 +109,17 @@ impl Default for RateLimits {
     }
 }
 
-/// Response bytes the proxy relays over [`Budgets::window`], per visitor
-/// and per workspace; `None` is no budget.
-///
-/// The defaults let a person watch a few hours of video a day through the
-/// host (a 360p stream is some 300 MiB an hour) and a workspace's people
-/// together a few days' worth, so one busy workspace cannot spend a host's
-/// transfer allowance on its own.
+/// Response bytes the proxy relays over [`Budgets::window`], per visitor and
+/// per workspace; `None` is no budget. The defaults let a person watch a few
+/// hours of video a day and a workspace's people a few days' worth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budgets {
-    /// How long a budget lasts, from the first byte spent in it.
     pub window: Duration,
-    /// Bytes one visitor (a [`Caller`]) may receive per window.
     pub visitor_bytes: Option<u64>,
     /// Bytes everyone in one workspace together may receive per window.
     ///
-    /// Spelled `room_bytes` after the [`Room`] identifier it counts
-    /// against, which is published API.
+    /// Spelled `room_bytes` after the [`Room`] identifier it counts against,
+    /// which is published API.
     pub room_bytes: Option<u64>,
 }
 
@@ -199,26 +133,20 @@ impl Default for Budgets {
     }
 }
 
-/// A workspace on the host that a request's visitor belongs to, by the
-/// host's own identifier for it; its people share one budget.
-///
-/// The name is published API, so it stays: hosts outside this crate import
-/// the type under it.
+/// A workspace on the host, by the host's own identifier for it; its people
+/// share one budget. Hosts outside this crate import the type under this
+/// name, so the name stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Room(pub u64);
 
 /// The device a request is made for: the key the host authenticated its
-/// session with. A development host, which authenticates nobody, uses
-/// [`Caller::LOCAL`].
+/// session with. A development host uses [`Caller::LOCAL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Caller(pub [u8; 32]);
 
 impl Caller {
-    /// Everyone, on a development host.
     pub const LOCAL: Self = Self([0; 32]);
 
-    /// The first bytes of the device key, enough to tell devices apart in a
-    /// log line.
     fn short(self) -> String {
         let [a, b, c, d, ..] = self.0;
         format!("{a:02x}{b:02x}{c:02x}{d:02x}")
@@ -233,7 +161,6 @@ pub type Lookup = Arc<
         + Sync,
 >;
 
-/// The system's resolver.
 #[must_use]
 pub fn system_lookup() -> Lookup {
     Arc::new(|name: String| {
@@ -342,7 +269,6 @@ fn public_v6(address: Ipv6Addr) -> bool {
     !reserved && (s0 & 0xe000) == 0x2000
 }
 
-/// A name that resolved to an address on the proxy's own network.
 #[derive(Debug)]
 struct BlockedAddress {
     name: String,
@@ -396,7 +322,6 @@ impl reqwest::dns::Resolve for CheckedResolver {
     }
 }
 
-/// Why the proxy answered instead of the target.
 #[derive(Debug)]
 struct Refused {
     failure: ProxyFailure,
@@ -469,7 +394,6 @@ impl<K: Eq + Hash + Clone> Buckets<K> {
         bucket
     }
 
-    /// Spend `amount` now, or say how long until there is enough.
     fn take(&mut self, key: &K, amount: f64, now: Instant) -> Result<(), Duration> {
         let rate = self.rate;
         let bucket = self.bucket(key, now);
@@ -480,14 +404,12 @@ impl<K: Eq + Hash + Clone> Buckets<K> {
         Err(wait(rate, amount - bucket.tokens))
     }
 
-    /// How long until the bucket holds anything at all.
     fn empty_for(&mut self, key: &K, now: Instant) -> Option<Duration> {
         let rate = self.rate;
         let bucket = self.bucket(key, now);
         (bucket.tokens <= 0.0).then(|| wait(rate, 1.0 - bucket.tokens))
     }
 
-    /// Spend `amount` after the fact; the bucket may go below empty.
     fn debit(&mut self, key: &K, amount: f64, now: Instant) {
         self.bucket(key, now).tokens -= amount;
     }
@@ -514,7 +436,6 @@ fn wait(rate: Rate, missing: f64) -> Duration {
     Duration::from_secs_f64((missing / per_second).clamp(1.0, 3600.0).ceil())
 }
 
-/// What one key spent in its current window.
 struct Window {
     spent: u64,
     since: Instant,
@@ -537,7 +458,6 @@ impl<K: Eq + Hash + Clone> Spent<K> {
         }
     }
 
-    /// The key's window, started now when it has none or its last ended.
     fn current(&mut self, key: &K, now: Instant) -> &mut Window {
         if self.windows.len() >= SWEEP_AT && !self.windows.contains_key(key) {
             let window = self.window;
@@ -556,7 +476,6 @@ impl<K: Eq + Hash + Clone> Spent<K> {
         current
     }
 
-    /// How long until the key may receive again, when it spent its budget.
     fn exhausted(&mut self, key: &K, now: Instant) -> Option<Duration> {
         let limit = self.limit?;
         let window = self.window;
@@ -568,7 +487,6 @@ impl<K: Eq + Hash + Clone> Spent<K> {
         })
     }
 
-    /// Count `bytes` against the key; whether that spent its budget.
     fn spend(&mut self, key: &K, bytes: u64, now: Instant) -> bool {
         let Some(limit) = self.limit else {
             return false;
@@ -589,7 +507,6 @@ struct Limiter {
     in_flight: usize,
 }
 
-/// Counters for a host's metrics page.
 #[derive(Default)]
 struct Metrics {
     answered: AtomicU64,
@@ -621,20 +538,14 @@ impl Metrics {
     }
 }
 
-/// The proxy's counters at one moment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetricsSnapshot {
-    /// Requests answered with the target's response.
     pub answered: u64,
     /// Requests refused or failed, by [`ProxyFailure::code`].
     pub failed: Vec<(&'static str, u64)>,
-    /// Request body bytes sent on to targets.
     pub request_bytes: u64,
-    /// Response body bytes relayed to pages.
     pub response_bytes: u64,
-    /// Requests in flight now.
     pub in_flight: u64,
-    /// Devices whose request budget is being tracked (used it lately).
     pub devices: u64,
 }
 
@@ -645,28 +556,18 @@ struct Inner {
     metrics: Metrics,
 }
 
-/// The fetch proxy a host serves. Cheap to clone; clones share their
-/// connections, budgets and counters.
+/// The fetch proxy a host serves. Clones share their connections, budgets
+/// and counters.
 #[derive(Clone)]
 pub struct FetchProxy {
     inner: Arc<Inner>,
 }
 
 impl FetchProxy {
-    /// A proxy on the system's resolver.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Protocol`] when the HTTP client cannot be built.
     pub fn new(config: Config) -> Result<Self, NetError> {
         Self::with_lookup(config, system_lookup())
     }
 
-    /// A proxy that resolves names with `lookup`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Protocol`] when the HTTP client cannot be built.
     pub fn with_lookup(config: Config, lookup: Lookup) -> Result<Self, NetError> {
         let client = crate::http::client()
             // Bodies arrive decompressed, as a page's `fetch` reads them;
@@ -704,8 +605,8 @@ impl FetchProxy {
         })
     }
 
-    /// Relay `request` for `caller`, whom the host authenticated: the
-    /// target's response, or the proxy's failure.
+    /// Relays `request` for `caller`, whom the host authenticated: the target's
+    /// response, or the proxy's failure.
     pub async fn serve<B>(&self, caller: Caller, request: Request<B>) -> Response<ProxyBody>
     where
         B: http_body::Body<Data = Bytes> + Send,
@@ -714,9 +615,9 @@ impl FetchProxy {
         self.serve_in(caller, &[], request).await
     }
 
-    /// [`Self::serve`] for a caller who belongs to `rooms` on the host: what
-    /// it receives counts against each workspace's budget too, and a
-    /// workspace that spent its budget is refused.
+    /// [`Self::serve`] for a caller who belongs to `rooms` on the host: what it
+    /// receives counts against each workspace's budget too, and a workspace that
+    /// spent its budget is refused.
     pub async fn serve_in<B>(
         &self,
         caller: Caller,
@@ -744,8 +645,7 @@ impl FetchProxy {
     }
 
     /// The proxy's answer when the host refuses a request itself, such as
-    /// [`ProxyFailure::Unauthorized`] for a page without a session; counted
-    /// like the proxy's own refusals.
+    /// [`ProxyFailure::Unauthorized`] for a page without a session.
     #[must_use]
     pub fn refuse(&self, failure: ProxyFailure, message: &str) -> Response<ProxyBody> {
         self.refusal(&Refused::new(failure, message))
@@ -756,7 +656,6 @@ impl FetchProxy {
         failure_response(refused)
     }
 
-    /// The proxy's counters now.
     #[must_use]
     pub fn metrics(&self) -> MetricsSnapshot {
         let metrics = &self.inner.metrics;
@@ -784,7 +683,6 @@ impl FetchProxy {
         }
     }
 
-    /// The counters as Prometheus text, each name starting with `prefix`.
     #[must_use]
     pub fn prometheus(&self, prefix: &str) -> String {
         let snapshot = self.metrics();
@@ -835,8 +733,6 @@ impl FetchProxy {
         out
     }
 
-    /// The exchange; a refusal comes back with the destination's origin,
-    /// when it got that far, for the log.
     async fn relay<B>(
         &self,
         caller: Caller,
@@ -932,7 +828,6 @@ impl FetchProxy {
         streamed(answer, &url, relayed).map_err(|refused| (refused, origin(&url)))
     }
 
-    /// Take one request from `caller`'s budget and one place in flight.
     fn admit(&self, caller: Caller, rooms: &[Room]) -> Result<Permit, Refused> {
         let limits = self.inner.config.limits;
         let now = Instant::now();
@@ -990,9 +885,9 @@ impl FetchProxy {
         })
     }
 
-    /// Whether the proxy may go to `url` now: scheme, port, a literal
-    /// address, and the destination's budget. A name's addresses are
-    /// checked as it is resolved.
+    /// Whether the proxy may go to `url` now: scheme, port, a literal address,
+    /// and the destination's budget. A name's addresses are checked as it is
+    /// resolved.
     fn check_hop(&self, url: &Url, now: Instant) -> Result<(), Refused> {
         check_target(url, self.inner.config.destinations)?;
         let host = host_of(url);
@@ -1004,8 +899,6 @@ impl FetchProxy {
             .map_err(|wait| Refused::limited(format!("too many requests to {host} lately"), wait))
     }
 
-    /// Count `bytes` relayed to `caller` in `rooms`; whether a budget they
-    /// count against is spent now.
     fn received(&self, caller: Caller, rooms: &[Room], bytes: usize) -> bool {
         let bytes_u64 = u64::try_from(bytes).unwrap_or(u64::MAX);
         self.inner
@@ -1052,9 +945,6 @@ impl Drop for Permit {
     }
 }
 
-/// The method and target of a proxy request, or why it is refused.
-/// The request's body, whole, or `None` when it is empty: at most `limit`
-/// bytes, arrived by `deadline`.
 async fn request_body<B>(body: B, limit: usize, deadline: Instant) -> Result<Option<Bytes>, Refused>
 where
     B: http_body::Body<Data = Bytes> + Send,
@@ -1081,21 +971,15 @@ where
     }
 }
 
-/// Whether a redirect with `status` turns `method` into a `GET` without a
-/// body, as browsers follow it.
 fn redirect_becomes_get(status: StatusCode, method: &Method) -> bool {
     (status == StatusCode::SEE_OTHER && method != Method::HEAD)
         || (matches!(status, StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND)
             && method == Method::POST)
 }
 
-/// How a request named itself a proxy request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
-    /// [`MARKER_HEADER`], as `tilo_net` sends every request.
     Header,
-    /// [`MARKER_PARAM`] in the query: a `GET` or `HEAD` from a page element
-    /// that cannot send headers.
     Query,
 }
 
@@ -1103,7 +987,7 @@ enum Form {
 /// in the query form; the element asks for the rest as it plays.
 pub const MEDIA_PIECE: u64 = 2 * 1024 * 1024;
 
-/// Turn an open-ended `Range: bytes=N-` into `bytes=N-(N+MEDIA_PIECE-1)`: a
+/// Turns an open-ended `Range: bytes=N-` into `bytes=N-(N+MEDIA_PIECE-1)`: a
 /// range-capable target answers that piece with `206` and the whole length,
 /// and the media element asks for the next piece itself.
 fn piece_of_range(headers: &mut HeaderMap) {
@@ -1121,15 +1005,12 @@ fn piece_of_range(headers: &mut HeaderMap) {
     }
 }
 
-/// The value of query parameter `name` in `uri`.
 fn query_param(uri: &::http::Uri, name: &str) -> Option<String> {
     url::form_urlencoded::parse(uri.query()?.as_bytes())
         .find(|(key, _)| key == name)
         .map(|(_, value)| value.into_owned())
 }
 
-/// The session a request in the query form carries ([`SESSION_PARAM`]):
-/// only a `GET` or `HEAD`, as the marker.
 #[must_use]
 pub fn query_session(method: &Method, uri: &::http::Uri) -> Option<String> {
     matches!(*method, Method::GET | Method::HEAD)
@@ -1178,7 +1059,6 @@ fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url, Form), 
     Ok((parts.method.clone(), target, form))
 }
 
-/// Scheme, port and a literal address of `url`.
 fn check_target(url: &Url, destinations: Destinations) -> Result<(), Refused> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Refused::new(
@@ -1210,7 +1090,6 @@ fn check_target(url: &Url, destinations: Destinations) -> Result<(), Refused> {
     Ok(())
 }
 
-/// `host[:port]` of `url`, as logs and messages name a destination.
 fn host_of(url: &Url) -> String {
     match (url.host_str(), url.port()) {
         (Some(host), Some(port)) => format!("{host}:{port}"),
@@ -1219,7 +1098,6 @@ fn host_of(url: &Url) -> String {
     }
 }
 
-/// A failed exchange with the target, as the page is told.
 fn classify(error: &reqwest::Error, url: &Url) -> Refused {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(cause) = source {
@@ -1272,8 +1150,8 @@ fn withheld(name: &str) -> bool {
         || name.starts_with("cf-")
 }
 
-/// The headers to send the target: the page's, without its credentials at
-/// the host, with the ones the browser would not send restored from
+/// The headers to send the target: the page's, without its credentials at the
+/// host, with the ones the browser would not send restored from
 /// [`FORWARD_PREFIX`]. A restored header replaces the browser's own of that
 /// name (its `User-Agent`, say).
 fn outgoing_headers(incoming: &HeaderMap) -> HeaderMap {
@@ -1319,8 +1197,8 @@ fn dropped_response(name: &str) -> bool {
     )
 }
 
-/// Response headers the browser would apply to the host's origin, not to
-/// the target's: they reach the app renamed under [`FORWARD_PREFIX`].
+/// Response headers the browser would apply to the host's origin, not to the
+/// target's: they reach the app renamed under [`FORWARD_PREFIX`].
 fn renamed_response(name: &str) -> bool {
     const NAMES: &[&str] = &[
         "age",
@@ -1435,9 +1313,9 @@ fn answer_is_notable(status: StatusCode) -> bool {
     status.is_client_error() || status.is_server_error()
 }
 
-/// One line per relayed request: who asked, the destination's host (never
-/// its path, query, cookies or body), the target's status and how many
-/// redirects led there.
+/// One line per relayed request: who asked, the destination's host (never its
+/// path, query, cookies or body), the target's status and how many redirects
+/// led there.
 fn log_answer(caller: Caller, method: &Method, url: &Url, status: StatusCode, redirects: usize) {
     let device = caller.short();
     let destination = host_of(url);
@@ -1450,9 +1328,9 @@ fn log_answer(caller: Caller, method: &Method, url: &Url, status: StatusCode, re
     }
 }
 
-/// The target's `answer` from `url` as the page's response, its body
-/// streamed through `relayed` (bounded, on the clock and on the budgets);
-/// refused when it declares a body over the limit.
+/// The target's `answer` from `url` as the page's response, its body streamed
+/// through `relayed` (bounded, on the clock and on the budgets); refused when
+/// it declares a body over the limit.
 fn streamed(
     answer: reqwest::Response,
     url: &Url,
@@ -1476,7 +1354,6 @@ fn streamed(
     Ok(response)
 }
 
-/// A relayed response body as it streams: bounded, and on the clock.
 struct Relayed {
     answer: Option<reqwest::Response>,
     deadline: Instant,
@@ -1485,8 +1362,8 @@ struct Relayed {
     proxy: FetchProxy,
     caller: Caller,
     rooms: Arc<[Room]>,
-    /// A budget this response counts against was spent by its last chunk:
-    /// it ends here, with an error if more was coming.
+    /// A budget this response counts against was spent by its last chunk: it ends
+    /// here, with an error if more was coming.
     over_budget: bool,
     _permit: Permit,
 }
@@ -1508,13 +1385,10 @@ type Chunks = Pin<Box<dyn Stream<Item = Result<Bytes, ProxyBodyError>> + Send>>;
 
 enum Kind {
     Full(Option<Bytes>),
-    /// The relay state until the first poll turns it into the stream.
     Pending(Option<Box<Relayed>>),
     Stream(Chunks),
 }
 
-/// The body of a proxy answer: the target's, streamed, or the proxy's own
-/// failure text.
 pub struct ProxyBody {
     kind: Kind,
 }

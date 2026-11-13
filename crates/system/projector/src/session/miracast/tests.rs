@@ -321,7 +321,6 @@ impl Active {
     }
 }
 
-/// The group's address: loopback, where the test sink runs.
 struct Ip4;
 
 #[zbus::interface(name = "org.freedesktop.NetworkManager.IP4Config")]

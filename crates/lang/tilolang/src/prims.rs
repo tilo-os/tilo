@@ -1,21 +1,16 @@
-//! The UI primitives a view can build (layout.md, "Primitives"), the sizing arguments every node
-//! takes, the built-in enums of their options, and the built-in free functions. A primitive that
-//! is a toolkit component (`text`, `input`, `toggle`) is only its shorter name: its arguments,
-//! slots, events and bindings are the component's description's.
+//! The UI primitives a view can build (layout.md, "Primitives"): their arguments, the built-in enums
+//! of their options, and the built-in free functions.
 
-/// A UI primitive: its positional properties, the named properties it accepts and the bare
-/// flags it accepts.
+/// A UI primitive: its positional and named properties and its bare flags.
 pub struct Prim {
     pub name: &'static str,
     pub positional: &'static [&'static str],
     pub named: &'static [&'static str],
     pub flags: &'static [&'static str],
-    /// The toolkit component this primitive is a shorter name for, when it is one: its call is
-    /// that component's call, checked and lowered from the component's description, and adds
-    /// nothing of its own.
+    /// The toolkit component this primitive is a shorter name for: its call is that component's
+    /// call.
     pub component: Option<&'static str>,
-    /// The toolkit component whose kind this primitive builds, when that is not its own name:
-    /// `button` builds a `ui.Button`, each with arguments of its own.
+    /// The toolkit component whose kind this primitive builds, when that is not its own name.
     pub builds: Option<&'static str>,
 }
 
@@ -34,7 +29,6 @@ const fn prim_of(
     }
 }
 
-/// A primitive that takes arguments of its own and builds the toolkit component `component`.
 const fn prim_as(
     name: &'static str,
     component: &'static str,
@@ -51,8 +45,6 @@ const fn prim_as(
     }
 }
 
-/// A primitive that is the toolkit component `component` under a shorter name (`text` is
-/// `ui.Text`): it takes exactly the component's arguments, slots, events and bindings.
 const fn shorthand(name: &'static str, component: &'static str) -> Prim {
     Prim {
         name,
@@ -65,8 +57,7 @@ const fn shorthand(name: &'static str, component: &'static str) -> Prim {
 }
 
 pub const PRIMS: &[Prim] = &[
-    // The toolkit's components, under the names a view writes most: each is that component's
-    // call and nothing more.
+    // The toolkit's components under the names a view writes most.
     shorthand("text", "Text"),
     shorthand("rich_text", "BlockEditor"),
     shorthand("section", "Section"),
@@ -75,13 +66,11 @@ pub const PRIMS: &[Prim] = &[
     shorthand("toggle", "Toggle"),
     shorthand("checkbox", "Checkbox"),
     shorthand("input", "TextInput"),
-    // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
-    // (`ui.RichInput`). A document's own running text is `ui.BlockEditor`, which a view places
-    // and binds to the field itself.
+    // Rich text bound to a `RichText`; a document's running text is `ui.BlockEditor`.
     shorthand("rich_input", "RichInput"),
     shorthand("image", "Image"),
-    // A list of resources in the content (a window's own list is `std.list`), and a page:
-    // content at the readable measure, or the column's full width with `full`.
+    // A list of resources in the content (a window's own list is `std.list`); with `full`, the
+    // column's width.
     prim_of("list", &["items"], &[]),
     Prim {
         name: "page",
@@ -91,25 +80,21 @@ pub const PRIMS: &[Prim] = &[
         component: None,
         builds: None,
     },
-    // A resource's facts as one row of chips, each from the field it shows, with the view's own
-    // chips in its block.
+    // A resource's facts as one row of chips, each from the field it shows.
     prim_of("facts", &["of"], &[]),
-    // Native controls that are no component: a form's fields, and the control for a view state
-    // of an enum's cases.
+    // A form's fields, and the control for a view state of an enum's cases.
     prim_of("form", &[], &[]),
     prim_of("field", &["label"], &[]),
     prim_of("choice", &[], &["bind"]),
-    // Layout for content.
     prim_of("stack", &[], &["gap", "padding", "align"]),
-    // With a block, a layout row; with a title and no block, a list row (`ListRow`).
+    // With a block, a layout row; with a title and no block, a list row.
     prim_of("row", &[], LAYOUT_ROW_ARGS),
     prim_of("grid", &[], &["min", "columns", "gap"]),
     prim_of("split", &[], &["side", "ratio", "collapse", "gap"]),
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &[]),
-    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways (`axis: .both`,
-    // a 2D surface such as a desk of strips).
+    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways.
     prim_of("scroll", &[], &["axis", "across", "both"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
@@ -117,47 +102,36 @@ pub const PRIMS: &[Prim] = &[
     // button with its own label and `on:`.
     prim_as("button", "Button", &["label"], &["on", "enabled"]),
     prim_of("divider", &[], &[]),
-    // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
-    // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
+    // A block's source rendered inline. `source` is `Text`, `author` a `Principal`, `invocation`
+    // the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
     // What waits to be proposed of a resource (`suggest`), each as the card a person accepts or
-    // dismisses it with: the action's `proposal` view where it declares one, else what the
-    // action would do in words. `of` is a resource the proposals are about.
+    // dismisses it with.
     prim_of("proposals", &["of"], &[]),
-    // A resource drawn through its type's default view, as its own package draws it, whatever
-    // its type: what a shell composes a place from when it knows the resource by id alone
-    // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
-    // (`meta(r).opens`). `view` (`Text`, a view's id or name, as an arrangement keeps it) draws
-    // it through another of its package's views that takes it alone; empty for the default.
-    // `row` draws it as a list of its type draws each item, through the row its type declares.
+    // A resource drawn through its type's default view, whatever its type (`show(r)`); its type
+    // must have a default view (`meta(r).opens`).
     prim_of("show", &["of"], &["view", "row"]),
 ];
 
-/// How many rows a `list` inside a `ui.Card` shows: a card is a summary of its resource, which it
-/// opens for the whole list. The list node carries it as its `preview` property.
+/// How many rows a `list` inside a `ui.Card` shows: a card is a summary, which it opens for the
+/// whole list.
 pub const PREVIEW_ROWS: i64 = 5;
 
-/// The named arguments of a layout row: `row(gap: ...) { ... }`.
 pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];
 
-/// Sizing and placement arguments accepted by every UI call, including view calls.
-///
-/// `lead` counts row leads — the gutter a row's leading control stands in, its cell and the
-/// gap after it: a container that says `lead: 1` stands its content one lead in, under the
-/// text a heading's control leads to.
+/// Sizing and placement arguments every UI call takes. `lead` counts row leads: a container that
+/// says `lead: 1` stands its content one lead in, under the text a heading's control leads to.
 pub const NODE_ARGS: &[&str] = &[
     "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
 ];
 
-/// Bare flags accepted by every UI call: `truncate`, `fill`.
+/// Bare flags every UI call takes.
 pub const NODE_FLAGS: &[&str] = &["fill", "truncate"];
 
-/// A built-in enum of the platform: the options of UI primitives and the enums of `space`.
-/// Its values are written as dot literals (`gap: .section`); in wasm a value is the index of
-/// its variant, and a UI property receives the variant's name.
+/// A built-in enum of the platform. Values are dot literals (`gap: .section`); in wasm a value is
+/// the index of its variant.
 pub struct Choice {
     pub kind: &'static str,
-    /// The name errors use.
     pub name: &'static str,
     pub variants: &'static [&'static str],
 }
@@ -218,14 +192,11 @@ pub const CHOICES: &[Choice] = &[
         name: "Orientation",
         variants: &["portrait", "landscape", "ultrawide"],
     },
-    // What a principal is (`p.kind()`): a person, or software acting in the workspace.
     Choice {
         kind: "principal_kind",
         name: "PrincipalKind",
         variants: &["person", "agent"],
     },
-    // The day of the week a day is (`d.weekday()`), Monday first, as a date library counts
-    // them; `d.start_of_week()` is the one a region starts its week on.
     Choice {
         kind: "weekday",
         name: "Weekday",
@@ -245,7 +216,6 @@ pub fn choice(kind: &str) -> Option<&'static Choice> {
     CHOICES.iter().find(|c| c.kind == kind)
 }
 
-/// The name of a built-in enum, for messages.
 pub fn choice_name(kind: &str) -> &'static str {
     choice(kind).map_or("?", |c| c.name)
 }
@@ -264,8 +234,9 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
     })
 }
 
-/// Free functions of the language itself; `open` and `set` are the platform's actions on the
-/// workspace and on view state.
+/// Free functions of the language itself, written as a bare name; `open` and `set` are the
+/// platform's actions. The words marker is `std.say`, so a chat app's `say` action keeps the bare
+/// name.
 pub const BUILTINS: &[&str] = &[
     "outside",
     "model_call",
@@ -278,7 +249,6 @@ pub const BUILTINS: &[&str] = &[
     "set",
     "resource",
     "preview_rows",
-    "say",
 ];
 
 /// The fields of `workspace`.
@@ -295,8 +265,8 @@ pub fn prim_names() -> String {
     PRIMS.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
 }
 
-/// The icons a declaration or a row can name: the platform's icon set (`ui::icons`), in its
-/// kebab-case names. Source writes them as dot literals in snake case (`.more_horizontal`).
+/// The platform's icon set (`ui::icons`), in its kebab-case names. Source writes them as dot
+/// literals in snake case (`.more_horizontal`).
 pub const ICONS: &[&str] = &[
     "a-arrow-down",
     "a-arrow-up",
@@ -541,14 +511,12 @@ pub const ICONS: &[&str] = &[
     "x",
 ];
 
-/// The kebab-case icon a dot literal names (`more_horizontal` is `more-horizontal`), when the
-/// platform has it.
+/// The kebab-case icon a dot literal names (`more_horizontal` is `more-horizontal`).
 pub fn icon(snake: &str) -> Option<&'static str> {
     let kebab = snake.replace('_', "-");
     ICONS.iter().find(|i| **i == kebab).copied()
 }
 
-/// The error for the unknown icon `.snake`, with close ones when there are.
 pub fn unknown_icon(snake: &str) -> String {
     let close = icon_suggestions(snake);
     let hint = if close.is_empty() {
@@ -559,7 +527,6 @@ pub fn unknown_icon(snake: &str) -> String {
     format!("there is no icon `.{snake}`{hint}")
 }
 
-/// Up to three known icons whose names share a word with `snake`, for messages.
 fn icon_suggestions(snake: &str) -> Vec<String> {
     let words: Vec<&str> = snake.split('_').filter(|w| w.len() > 2).collect();
     let mut out: Vec<String> = ICONS

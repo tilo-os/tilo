@@ -15,7 +15,7 @@ d-acqkumvl = Title
 d-6hfpfyn7 = Notes
 
 d-4oqrwuyr = Column
-    .doc = The column it was in, before cards were kept in their columns.
+    .doc = The column it was in, in a board whose cards were not yet kept in their columns.
 
 d-s7oqe7sc-filter-column = Column
 
@@ -40,10 +40,10 @@ d-skl3ywy2 = Board
 d-hpfol33z = Columns
 
 d-tuoyjxa6 = Cards
-    .doc = Every card, before cards were kept in their columns.
+    .doc = Every card, in a board whose cards were not yet kept in their columns.
 
 d-pf6eoju5 = Place cards
-    .doc = Puts each card of a board from before cards were kept in their columns into its column, in the order the board showed them.
+    .doc = Puts each card of a board kept before cards stood in their columns into the column it was in, in the order the board showed them.
 
 d-2lxgfocl = New column
     .doc = Adds a column at the right of the board.
@@ -52,17 +52,29 @@ d-2lxgfocl = New column
 d-dw7khkq2 = New card
     .doc = Adds a card at the foot of a column, under the title typed in the entry that adds there: a card is named where it is made, not left "Untitled".
 
+d-dw7khkq2-title = Title
+
 d-yp6qgach = Move to
     .doc = Moves a card to the foot of a column.
+
+d-yp6qgach-col = Col
 
 d-xsmkgxl2 = Move before
     .doc = Moves a card to just above another, in that card's column.
 
+d-xsmkgxl2-card = Card
+
+d-xsmkgxl2-next = Next
+
 d-jx22rl4l = Delete
     .doc = Deletes a card.
 
+d-jx22rl4l-card = Card
+
 d-yjwm6mjf = Rename column
     .doc = Renames a column.
+
+d-yjwm6mjf-title = Title
 
 d-t5kjcxjq = Board
 

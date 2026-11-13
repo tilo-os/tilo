@@ -1,15 +1,10 @@
 //! CRX3 package verification.
 //!
-//! A CRX3 file is `Cr24`, a little-endian version (3), a little-endian header
-//! length, a protobuf `CrxFileHeader`, then the zip archive. The header lists
-//! public keys with signatures over
-//! `"CRX3 SignedData\0" || len(signed_header_data) || signed_header_data || zip`
-//! and carries `signed_header_data`, whose `crx_id` is the first sixteen bytes
-//! of the SHA-256 of the extension's public key. A package verifies when every
-//! proof is valid and one of the proofs belongs to the key the `crx_id` names.
-//! The extension identifier is that `crx_id` written with the letters a-p, the
-//! same identifier Chromium shows, so installing from a package preserves the
-//! identity the Web Store and the extension's own allow-lists expect.
+//! A CRX3 file is `Cr24`, a little-endian version (3), a little-endian header length, a
+//! protobuf `CrxFileHeader`, then the zip archive. The header lists public keys with
+//! signatures over `"CRX3 SignedData\0" || len(signed_header_data) ||
+//! signed_header_data || zip`, and `signed_header_data` carries the `crx_id`. A package
+//! verifies when every proof is valid and one belongs to the key the `crx_id` names.
 
 use ring::signature::{ECDSA_P256_SHA256_ASN1, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 use sha2::{Digest, Sha256};
@@ -52,10 +47,9 @@ impl std::error::Error for CrxError {}
 pub struct VerifiedCrx<'a> {
     /// The Chromium extension identifier, thirty-two letters a-p.
     pub id: String,
-    /// The extension's public key (DER `SubjectPublicKeyInfo`), the manifest
-    /// `key` that makes an unpacked copy keep this identifier.
+    /// The extension's public key (DER `SubjectPublicKeyInfo`): the manifest `key` that
+    /// makes an unpacked copy keep this identifier.
     pub public_key: Vec<u8>,
-    /// The zip archive behind the header.
     pub archive: &'a [u8],
 }
 
@@ -71,12 +65,10 @@ struct Proof<'a> {
     signature: &'a [u8],
 }
 
-/// Whether `bytes` begins like a CRX package.
 pub fn is_crx(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-/// The identifier Chromium derives from a public key (DER SPKI).
 pub fn extension_id(public_key: &[u8]) -> String {
     id_from_crx_id(Sha256::digest(public_key).split_at(16).0)
 }
@@ -93,7 +85,6 @@ fn id_from_crx_id(crx_id: &[u8]) -> String {
         .collect()
 }
 
-/// Whether `id` is a well-formed extension identifier.
 pub fn is_extension_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
 }
@@ -102,8 +93,8 @@ pub fn is_extension_id(id: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error when the package is not CRX3, its header is malformed, a
-/// signature fails, or no proof belongs to the key that the `crx_id` names.
+/// When the package is not CRX3, its header is malformed, a signature fails, or no proof
+/// belongs to the key the `crx_id` names.
 pub fn verify(bytes: &[u8]) -> Result<VerifiedCrx<'_>, CrxError> {
     if !is_crx(bytes) {
         return Err(CrxError::NotCrx);
@@ -164,7 +155,7 @@ fn verify_proof(proof: &Proof<'_>, message: &[u8]) -> Result<(), CrxError> {
     result.map_err(|_| CrxError::BadSignature)
 }
 
-/// Read one DER element with the given tag; returns its contents and the rest.
+/// Read one DER element with the given tag; its contents and the rest.
 fn der(tag: u8, input: &[u8]) -> Option<(&[u8], &[u8])> {
     let (&found, rest) = input.split_first()?;
     if found != tag {
@@ -370,7 +361,6 @@ pub mod fixtures {
 
     /// DER SPKI for an uncompressed P-256 point.
     pub fn p256_spki(point: &[u8]) -> Vec<u8> {
-        // id-ecPublicKey + prime256v1
         let algorithm: &[u8] = &[
             0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
             0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
@@ -414,7 +404,6 @@ pub mod fixtures {
         }
     }
 
-    /// A CRX3 whose `crx_id` names `identity`, with each of `signers` proving.
     pub fn crx(identity: &Signer, signers: &[&Signer], archive: &[u8]) -> Vec<u8> {
         let crx_id = &Sha256::digest(&identity.spki)[..16];
         let signed_data = field(1, crx_id);
@@ -449,7 +438,6 @@ mod tests {
         let publisher = Signer::new();
         let archive = b"PK-pretend-zip-bytes".to_vec();
 
-        // phase: signed_package_verifies_and_names_the_extension
         let package = crx(&key, &[&key, &publisher], &archive);
         let verified = verify(&package).unwrap();
         assert_eq!(verified.archive, &archive[..]);
@@ -457,16 +445,13 @@ mod tests {
         assert!(is_extension_id(&verified.id));
         assert_eq!(verified.public_key, key.spki);
 
-        // phase: tampered_archive_fails
         let mut tampered = package.clone();
         *tampered.last_mut().unwrap() ^= 1;
         assert_eq!(verify(&tampered).unwrap_err(), CrxError::BadSignature);
 
-        // phase: identity_must_be_proven_by_its_own_key
         let impostor = crx(&key, &[&publisher], &archive);
         assert_eq!(verify(&impostor).unwrap_err(), CrxError::IdentityNotProven);
 
-        // phase: malformed_headers_are_rejected
         assert_eq!(verify(b"PK\x03\x04").unwrap_err(), CrxError::NotCrx);
         assert_eq!(verify(&package[..10]).unwrap_err(), CrxError::Truncated);
         let mut v2 = package.clone();
@@ -482,14 +467,12 @@ mod tests {
 
     #[test]
     fn extension_ids_use_letters_a_to_p() {
-        // The identifier of a known key hash prefix: 0x00..0x0f map to a..p.
         assert_eq!(id_from_crx_id(&[0x01, 0x23, 0xef, 0xff]), "abcdoppp");
         assert!(!is_extension_id("short"));
         assert!(!is_extension_id(&"q".repeat(32)));
         assert!(is_extension_id(&"a".repeat(32)));
     }
 
-    /// Real Web Store packages verify; set `TILO_TEST_CRX` to one.
     #[test]
     #[ignore = "needs a downloaded Web Store package"]
     fn real_web_store_package_verifies() {

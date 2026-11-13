@@ -1,10 +1,9 @@
 //! The page backend: the browser's own media element decodes and plays.
 //!
-//! Pictures come back as RGBA ([`VideoFrame`]), exactly what the synthesized
-//! and `GStreamer` backends hand the toolkit, so the `VideoPlayer` widget and
-//! every app paint them unchanged. The element also drives the page's Media
-//! Session: media keys and the system's now-playing controls act on it
-//! directly, and the engine's next poll reports the result.
+//! Pictures come back as RGBA, what the synthesized and `GStreamer` backends hand the
+//! toolkit, so the `VideoPlayer` widget and every app paint them unchanged. The element
+//! also drives the page's Media Session, and the engine's next poll reports the
+//! result.
 
 use std::sync::Arc;
 
@@ -79,7 +78,6 @@ extern "C" {
     fn media_elements_available() -> bool;
 }
 
-/// A page-local `blob:` URL over `bytes`, playable by a media element.
 pub(crate) fn blob_url(bytes: &[u8], mime: &str) -> String {
     object_url(bytes, mime)
 }
@@ -93,13 +91,9 @@ fn to_ms(value: f64) -> Option<u64> {
     (value.is_finite() && value >= 0.0).then_some(value as u64)
 }
 
-/// How the element's pictures reach the engine's consumer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pictures {
-    /// Read back as RGBA ([`WebState::latest_frame`]).
     ReadBack,
-    /// Left in the element for a renderer to copy on the GPU
-    /// ([`WebState::take_element_picture`]).
     InElement,
 }
 
@@ -110,16 +104,13 @@ pub(crate) struct WebState {
     last_position: Option<u64>,
     last_buffering: Option<u8>,
     ended_reported: bool,
-    /// A seek was issued and no picture has been read since.
     seek_pending: bool,
     latest: Option<VideoFrame>,
     latest_native: Option<Frame>,
     pictures: Pictures,
-    /// Pictures the element showed since it was made.
     picture_serial: u64,
     /// The newest picture, until taken.
     picture: Option<crate::ElementPicture>,
-    /// `picture_serial` when the source opened: a larger one showed it.
     serial_at_open: u64,
     actions: Vec<crate::NowPlayingAction>,
 }
@@ -235,9 +226,6 @@ impl WebState {
         (self.latest.is_some() || self.picture_serial > self.serial_at_open) && !self.seek_pending
     }
 
-    /// From now on, pictures stay in the element for a renderer to copy on
-    /// the GPU: reading each one back costs the page's main thread a
-    /// colour conversion and a copy of every pixel, per picture.
     pub(crate) fn prefer_element_pictures(&mut self) {
         if self.pictures == Pictures::ReadBack {
             self.pictures = Pictures::InElement;

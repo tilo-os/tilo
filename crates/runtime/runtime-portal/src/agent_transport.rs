@@ -17,9 +17,6 @@ pub fn claim_managed_agent_fd() -> io::Result<RawFd> {
     imp::claim_managed_agent_fd()
 }
 
-/// Connect to an explicit collaboration endpoint socket, for headless
-/// diagnostics that run outside the launcher but exercise the production
-/// protocol.
 pub fn connect_endpoint(path: &Path) -> io::Result<RawFd> {
     imp::connect_endpoint(path)
 }

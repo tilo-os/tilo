@@ -6,7 +6,7 @@
 //! on the action itself lifts that, and those exceptions are listed here to take back.
 
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Subject, decide};
+use tilo_action_policy::{ActionKind, Answer, Grantee, decide};
 use tilo_desktop_model::{UserId, Workspace};
 use tilo_sort::CompactSort as _;
 
@@ -81,7 +81,7 @@ pub struct AgentException {
 }
 
 /// The answer `agent` holds for `kind` at `scope` : the turn's own grants (`admission`,
-/// [`tilo_action_policy::roles::agent_turn`]) and the workspace's grants naming it alone, so a
+/// [`tilo_action_policy::roles::agent_grants`]) and the workspace's grants naming it alone, so a
 /// narrower answer the person set here wins over what the admission says.
 #[must_use]
 pub fn answer_at(
@@ -91,7 +91,7 @@ pub fn answer_at(
     scope: &AnswerScope,
     kind: ActionKind,
 ) -> AnswerCell {
-    let subject = [Subject::agent(agent)];
+    let subject = [Grantee::agent(agent)];
     let cx = tilo_desktop_model::context_at(tilo_clock::unix_now());
     let decision = decide(
         admission.iter().chain(ws.policy.grants.iter()),
@@ -117,7 +117,7 @@ pub fn agent_access_rows(
     admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
-    let subject = Subject::agent(agent);
+    let subject = Grantee::agent(agent);
     let mut ids: Vec<String> = grant_subjects(ws)
         .into_iter()
         .filter(|candidate| candidate.kind == super::SubjectKind::App)
@@ -127,7 +127,7 @@ pub fn agent_access_rows(
         ws.policy
             .grants
             .iter()
-            .filter(|grant| grant.subject == subject && agent_answers::is_answer(grant))
+            .filter(|grant| grant.grantee == subject && agent_answers::is_answer(grant))
             .filter_map(|grant| match AnswerScope::of_node(&grant.node)? {
                 AnswerScope::App { app }
                 | AnswerScope::Kind { app, .. }
@@ -159,13 +159,13 @@ pub fn agent_exceptions(
     agent: &str,
     apps: &dyn AppDirectory,
 ) -> Vec<AgentException> {
-    let subject = Subject::agent(agent);
+    let subject = Grantee::agent(agent);
     let mut out: Vec<AgentException> = ws
         .policy
         .grants
         .iter()
         .filter(|grant| {
-            grant.subject == subject
+            grant.grantee == subject
                 && agent_answers::is_answer(grant)
                 && grant.answer == Answer::Allow
         })
@@ -198,7 +198,7 @@ pub fn set_agent_answers(
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
 ) -> PolicyEdit {
     let root = ws.policy.workspace.clone();
-    let by = Subject::Person(actor.clone());
+    let by = Grantee::person(actor.clone());
     let changes: Vec<_> = answers
         .iter()
         .flat_map(|(scope, kind, answer)| {
@@ -356,7 +356,7 @@ mod tests {
 
     /// The grants the agent's admission gives it: the editor cap, unbounded by its record.
     fn admission(ws: &Workspace) -> Vec<tilo_action_policy::Grant> {
-        tilo_action_policy::roles::agent_turn(&ws.policy.workspace, AGENT, OWNER, &[]).grants
+        tilo_action_policy::roles::agent_grants(&ws.policy.workspace, AGENT, OWNER, &[])
     }
 
     #[test]

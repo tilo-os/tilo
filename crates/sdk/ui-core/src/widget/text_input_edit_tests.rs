@@ -15,9 +15,7 @@ use winit::event::TouchPhase;
 
 #[test]
 fn editing_primitives_splice_replace_filter_and_repeat() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `delete_selection_removes_range_and_collapses`.
     {
         let mut ti = TextInput::local();
         ti.text = "hello world".to_string();
@@ -33,7 +31,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         assert!(!ti.has_selection());
     }
 
-    // Case `insert_at_cursor_splices_and_marks_dirty`.
     {
         let mut ti = TextInput::local().with_initial_value("hi world");
         ti.set_cursor_pos(2); // just after "hi"
@@ -51,7 +48,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         );
     }
 
-    // Case `character_filter_applies_before_replacing_the_selection`.
     {
         let mut ti = TextInput::local()
             .with_initial_value("A1")
@@ -63,8 +59,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
     }
 
-    // Case `insert_str_replaces_selection`.
-    // The path Ctrl+V uses when pasting over selected text.
     {
         let mut ti = TextInput::local();
         ti.text = "hello world".to_string();
@@ -80,7 +74,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         assert!(!ti.has_selection());
     }
 
-    // Case `typing_replaces_selection_via_handle_event`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.set_focus(true);
@@ -90,7 +83,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
     }
 
-    // Case `key_text_preserves_shift_and_german_layout_characters`.
     {
         let mut ti = TextInput::local();
         ti.set_focus(true);
@@ -105,7 +97,6 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         assert_eq!(ti.value(), "AÄ@?");
     }
 
-    // Case `repeated_backspace_and_delete_press_events_keep_editing`.
     {
         let mut doc = AutoCommit::new();
         let mut backspace = TextInput::local().with_initial_value("abcd");
@@ -139,10 +130,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
 
 #[test]
 fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `secret_input_masks_glyphs_but_keeps_value`.
-    // Proven end-to-end through a real Automerge `Text` object.
     {
         let mut ti = TextInput::local().with_secret(true);
 
@@ -166,7 +154,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert_eq!(plain.display_prefix(3), "hun");
     }
 
-    // Case `local_secret_mirrors_without_entering_the_document`.
     {
         let buffer = Arc::new(Mutex::new(String::new()));
         let mut input = TextInput::local()
@@ -174,7 +161,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             .with_secret(true);
         input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         input.text = "correct horse battery staple".into();
-        // An edit not yet measured nor published.
         input.dirty = true;
         input.layout_dirty = true;
         let document = AutoCommit::new();
@@ -203,7 +189,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert!(document.keys(&automerge::ROOT).next().is_none());
     }
 
-    // Case `accessibility_secret_input_masks_value_and_sets_protected`.
     {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
         ti.text = "hunter2".to_string();
@@ -219,7 +204,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         );
     }
 
-    // Case `password_and_key_kinds_never_leak_to_a11y_even_unmasked`.
     for kind in [TextInputKind::Password, TextInputKind::Secret] {
         let mut ti = TextInput::new(Vec::new()).with_kind(kind);
         ti.text = "JBSWY3DPEHPK3PXP".to_string();
@@ -234,7 +218,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         );
     }
 
-    // Case `secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y`.
     {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
         ti.text = "hunter2".to_string();
@@ -261,7 +244,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
     }
 
-    // Case `secret_caret_moves_over_the_real_value`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -282,7 +264,6 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
 
 #[test]
 fn a_secret_never_reaches_the_clipboard() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let services = crate::host::HostServices::null();
     let _host = crate::host::enter(&services);
@@ -356,9 +337,7 @@ fn a_secret_never_reaches_the_clipboard() {
 fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
     use crate::a11y::{Action, Role};
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `secret_is_hidden_by_default_with_a_named_show_control`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -394,7 +373,6 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         );
     }
 
-    // Case `activating_the_control_toggles_glyphs_and_its_name_only`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -441,7 +419,6 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         assert!(!ti.is_revealed(), "a second activation hides it again");
     }
 
-    // Case `pointer_toggle_keeps_focus_and_caret_in_the_field`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -486,7 +463,6 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         assert!(!ti.is_revealed(), "a tap hides it again");
     }
 
-    // Case `tab_moves_from_field_to_field_past_the_control`.
     {
         let mut ti = TextInput::local().with_secret(true);
         let mut taffy = TaffyTree::new();
@@ -497,7 +473,6 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         assert_eq!(order, [root], "the field alone, not its show/hide control");
     }
 
-    // Case `only_single_line_secrets_carry_the_control`.
     {
         let plain = TextInput::local();
         assert!(!plain.has_reveal_control());
@@ -506,7 +481,6 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         assert!(!multiline.has_reveal_control());
     }
 
-    // Case `a_disabled_secret_offers_no_reachable_control`.
     {
         let mut ti = TextInput::local().with_secret(true).disabled(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
@@ -518,9 +492,7 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
 
 #[test]
 fn accessibility_exposes_role_name_value_and_grapheme_actions() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `accessibility_reports_text_input_role_and_value`.
     {
         use crate::a11y::{AccessibleTextSelection, Role};
         let mut ti = TextInput::new(Vec::new());
@@ -541,7 +513,6 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         );
     }
 
-    // Case `accessibility_uses_explicit_name_not_placeholder`.
     {
         let input = TextInput::local()
             .with_placeholder("name@example.com")
@@ -551,7 +522,6 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert_ne!(node.name.as_deref(), Some(input.placeholder()));
     }
 
-    // Case `accessibility_actions_use_extended_grapheme_indices_and_leave_the_document_to_the_owner`.
     {
         use crate::a11y::Action;
 
@@ -594,7 +564,6 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert_eq!(ti.take_dirty().as_deref(), Some("new value"));
     }
 
-    // Case `multiline_sets_accessibility_flag`.
     {
         let ml = TextInput::local().multiline(true);
         assert!(
@@ -610,7 +579,6 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
 fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     use crate::a11y::Action;
 
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut document = AutoCommit::new();
     let title = document
@@ -653,11 +621,54 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
 }
 
+/// A field bound to a document's text shows who wrote each run of it, as a note's body does: the
+/// writer's own runs are read from the text's `author` marks, neighbouring runs of one author
+/// merged into one, in byte ranges the field's geometry uses.
+#[test]
+fn a_bound_text_reads_who_wrote_each_run() {
+    use automerge::marks::{ExpandMark, Mark};
+
+    let _settled = crate::motion::testing::settled();
+    let mut document = AutoCommit::new();
+    let title = document
+        .put_object(&automerge::ROOT, "title", ObjType::Text)
+        .unwrap();
+    document.splice_text(&title, 0, 0, "héllo there").unwrap();
+    document
+        .mark(
+            &title,
+            Mark::new("author".to_owned(), ScalarValue::Str("ada".into()), 0, 5),
+            ExpandMark::None,
+        )
+        .unwrap();
+    document
+        .mark(
+            &title,
+            Mark::new(
+                "author".to_owned(),
+                ScalarValue::Str("agent:helper".into()),
+                6,
+                11,
+            ),
+            ExpandMark::None,
+        )
+        .unwrap();
+    let mut input = TextInput::local();
+    input.bind_text(title);
+    input.sync(&document, &automerge::ROOT);
+    assert_eq!(
+        input.authored,
+        vec![
+            (0..6, "ada".to_string()),
+            (7..12, "agent:helper".to_string())
+        ],
+        "each run is its author's, in bytes of what the field shows",
+    );
+}
+
 #[test]
 fn touch_owns_text_selection_until_release() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `touch_places_caret_drags_selection_and_releases_ownership`.
     {
         let mut input = TextInput::local().with_initial_value("abcdef");
         input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
@@ -690,7 +701,6 @@ fn touch_owns_text_selection_until_release() {
         assert!(!input.is_dragging);
     }
 
-    // Case `secondary_touch_cannot_steal_text_selection`.
     {
         let mut input = TextInput::local().with_initial_value("abcdef");
         input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));

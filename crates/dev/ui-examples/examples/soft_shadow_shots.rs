@@ -1,20 +1,12 @@
-//! Offscreen renders of [`tilo_ui::surface::soft_shadow`] at every geometry the
-//! toolkit and the shell chrome actually ask for, so the primitive can be
-//! inspected without hunting for a scene that happens to contain the
-//! shape you changed.
+//! Offscreen renders of [`tilo_ui::surface::soft_shadow`] at the geometries the toolkit and the
+//! shell chrome ask for.
 //!
-//! The point of the sheet is *aspect ratio*: the same `spread` has to
-//! produce the same falloff under a 1022×235 overview card, a 360×68
-//! toast, a 44×44 wheel spoke and a 22×26 close pill. Anything that ties
-//! the falloff to the rect's own dimensions shows up here immediately as
-//! a shadow that is fat on one surface and invisible on the next.
+//! The sheet is about aspect ratio: the same `spread` has to give the same falloff under a
+//! 1022×235 overview card, a 360×68 toast, a 44×44 wheel spoke and a 22×26 close pill, so a
+//! falloff tied to the rect's own size shows up at once.
 //!
-//! Run:  `cargo run -p ui-examples --example ui-shots -- soft_shadow_shots`
-//! Out:  `$SOFT_SHADOW_SHOTS_OUT` (default `/tmp/soft_shadow_shots`) —
-//!       shadow-sheet.png, plus one shadow-<name>.png per case.
-//! Theme: `TILO_SHOTS_THEME=dark|light` (dark by default) — the sheet paints
-//!       on that theme's base surface, so a shadow that only registers on a
-//!       dark ground shows up here as a light-theme sheet with no shadows.
+//! Run: `cargo run -p ui-examples --example ui-shots -- soft_shadow_shots`. `TILO_SHOTS_THEME` picks
+//! the palette (`dark` by default, `light`, or any other `Theme::named` preset).
 
 use std::path::PathBuf;
 

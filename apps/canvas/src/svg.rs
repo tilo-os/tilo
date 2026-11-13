@@ -47,7 +47,6 @@ pub struct ImportSvg {
     pub fit: Option<[f64; 4]>,
 }
 
-/// The id export gives the ground, which import leaves to the artwork.
 const GROUND_ID: &str = "tilo-canvas-ground";
 
 /// The largest SVG an import reads, in bytes.
@@ -60,7 +59,6 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// `#rrggbb` and the alpha of a colour.
 fn hex(colour: Color) -> (String, f64) {
     let rgba = colour.to_rgba8();
     (
@@ -69,7 +67,6 @@ fn hex(colour: Color) -> (String, f64) {
     )
 }
 
-/// ` name="#rrggbb"` and, when translucent, ` name-opacity="a"`.
 fn paint_attr(name: &str, colour: Color) -> String {
     let (hex, alpha) = hex(colour);
     if alpha < 1.0 {
@@ -187,7 +184,6 @@ pub fn export(
     svg
 }
 
-/// A picture embedded in the document: its bytes and their type.
 pub struct Embedded {
     pub bytes: Vec<u8>,
     /// `image/png` or `image/jpeg`.
@@ -199,20 +195,15 @@ struct Writer {
     defs: String,
     body: String,
     clips: BTreeSet<String>,
-    /// Text marks written as their letters' outlines, by id.
     outlines: BTreeMap<String, BezPath>,
-    /// Image marks' pictures as shown, by id.
     pictures: BTreeMap<String, Embedded>,
-    /// How many paths text has been set along.
     text_paths: usize,
     /// Strokes laid in dabs (pencil, charcoal, airbrush, a soft eraser) as
     /// PNG pictures and the area they cover in the mark's units, by id.
     dabbed: BTreeMap<String, (Vec<u8>, Rect)>,
-    /// The groups the next element is written in, outermost first.
     open: Vec<String>,
 }
 
-/// An `<image>` of `png` laid over `area`, with `attrs`.
 fn image_element(attrs: &str, png: &[u8], area: Rect) -> String {
     format!(
         r#"<image{attrs} x="{}" y="{}" width="{}" height="{}" href="data:image/png;base64,{}"/>"#,
@@ -456,7 +447,6 @@ impl Writer {
         filters
     }
 
-    /// An image mark: its picture as shown, in its frame, and its border.
     fn picture(
         &mut self,
         mark: &Mark,
@@ -759,7 +749,6 @@ impl Writer {
     }
 }
 
-/// The SVG an import names: markup itself, a file, or stored content.
 pub fn source(svg: &str) -> Result<String, String> {
     let trimmed = svg.trim_start();
     if trimmed.starts_with('<') {
@@ -841,7 +830,6 @@ pub fn import(request: &ImportSvg) -> Result<Draw, String> {
     })
 }
 
-/// Move an imported mark by `fit`, a uniform `scale` and a shift.
 fn refit(mark: &mut NewMark, fit: Affine, scale: f64) {
     match &mut mark.shape {
         Shape::Path { d } => {
@@ -866,7 +854,6 @@ fn refit(mark: &mut NewMark, fit: Affine, scale: f64) {
     }
 }
 
-/// What a group passes down to its members.
 #[derive(Clone, Default)]
 struct Context {
     clip: Option<String>,
@@ -877,7 +864,6 @@ struct Context {
 struct Importer {
     marks: Vec<NewMark>,
     prefix: String,
-    /// The group path of each element with an id: see [`group_paths`].
     groups: std::collections::BTreeMap<String, String>,
 }
 
@@ -998,7 +984,6 @@ fn rgba(colour: usvg::Color, alpha: f64) -> String {
     }
 }
 
-/// A uniform scale's size: how much `transform` grows lengths.
 fn growth(transform: Affine) -> f64 {
     transform.determinant().abs().sqrt()
 }
@@ -1231,7 +1216,6 @@ impl Importer {
     }
 }
 
-/// A `<text>`'s words, one line per `<tspan>`, spaces collapsed.
 fn text_words(node: roxmltree::Node<'_, '_>) -> String {
     let spans: Vec<String> = node
         .children()
@@ -1260,7 +1244,6 @@ fn text_words(node: roxmltree::Node<'_, '_>) -> String {
         .join("\n")
 }
 
-/// A text's `letter-spacing` as tracking, thousandths of its size.
 fn tracking_of(node: roxmltree::Node<'_, '_>, size: f64) -> Option<f64> {
     let spacing = inherited(node, "letter-spacing")?;
     let amount = leading_number(&spacing)?;
@@ -1272,7 +1255,6 @@ fn tracking_of(node: roxmltree::Node<'_, '_>, size: f64) -> Option<f64> {
     Some((em * 1000.0).clamp(-300.0, 1000.0)).filter(|tracking| *tracking != 0.0)
 }
 
-/// The path a text's `<textPath>` sets it along, in artwork units.
 fn text_path(
     node: roxmltree::Node<'_, '_>,
     document: &roxmltree::Document<'_>,
@@ -1295,7 +1277,6 @@ fn text_path(
     Some(path_data(&path))
 }
 
-/// The first family a text names, as the canvas names it.
 fn font_family(node: roxmltree::Node<'_, '_>) -> Option<String> {
     inherited(node, "font-family").map(|family| {
         let first = family
@@ -1314,7 +1295,6 @@ fn font_family(node: roxmltree::Node<'_, '_>) -> Option<String> {
     })
 }
 
-/// A text's fill as `#rrggbb[aa]`; black when it is not a hex colour.
 fn text_fill(node: roxmltree::Node<'_, '_>) -> String {
     let fill = inherited(node, "fill").unwrap_or_default();
     if fill.starts_with('#') && (fill.len() == 7 || fill.len() == 9) {
@@ -1373,7 +1353,6 @@ fn inherited(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
         })
 }
 
-/// The number a length starts with (`24px` is 24).
 fn leading_number(value: &str) -> Option<f64> {
     let value = value.trim();
     let end = value
@@ -1385,7 +1364,6 @@ fn leading_number(value: &str) -> Option<f64> {
     value.get(..end)?.parse().ok()
 }
 
-/// An SVG `transform` list: matrix, translate, scale and rotate.
 fn parse_transform(value: &str) -> Affine {
     let mut result = Affine::IDENTITY;
     for part in value.split(')') {

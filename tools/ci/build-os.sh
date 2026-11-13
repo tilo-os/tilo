@@ -31,10 +31,10 @@
 # The steps, in the order they run; each step's script names its own inputs:
 #   1. The pinned external assets (os/dev/cache-github-assets.sh) and the cosign the image's
 #      actions unpack from them.
-#   2. The RPM snapshot every layer installs from: the published one for this package set when
-#      there is one (os/dev/resolve-rpm-snapshot.sh), else this run's
-#      (tools/ci/publish/rpms-build.sh, in the buildah image of
-#      tools/ci/publish/mirrored-images.tsv), into DIR/publish/rpms.
+#   2. The RPM snapshot every layer installs from (tools/ci/publish/rpms-build.sh, in the buildah
+#      image of tools/ci/publish/mirrored-images.tsv), into DIR/publish/rpms: the published one
+#      for this package set copied when there is one (os/dev/resolve-rpm-snapshot.sh), else this
+#      run's; which one, verified, in DIR/publish/rpm-snapshot (rpm-snapshot-ref.sh).
 #   3. The OS image: the assembler image (os/image/assembler.sh), the base, the images of
 #      os/image/layers.toml (the OS builder and its tools), the compile and the browser's engine
 #      built apart (os/image/compile.sh), every layer of os/image/layers.toml and the composed
@@ -232,10 +232,10 @@ tool_build() {
     --entrypoint bash "$(builder_image)" -eo pipefail -c "$1"
 }
 
-# The RPM snapshot the layers install from when the registry has none published for this package
-# set (tools/ci/publish/rpms-build.sh), in the buildah image. It dates what it builds by the
-# tree's date, which is this machine's: oci-build.sh takes it from the environment, and reads
-# Git only where there is none.
+# The RPM snapshot the layers install from (tools/ci/publish/rpms-build.sh), in the buildah image:
+# the published one for this package set, copied, or, where the registry has none, built here.
+# It dates what it builds by the tree's date, which is this machine's: oci-build.sh takes it from
+# the environment, and reads Git only where there is none.
 build_rpms() {
   say "the RPM snapshot"
   mirrored buildah "bash tools/ci/publish/rpms-build.sh $arch /target/publish/rpms/$arch" \
@@ -253,18 +253,16 @@ build_os_image() {
   say "cosign"
   step env TILO_GITHUB_ASSET_CACHE="$target/signing-tools" TILO_ASSET_STORE= \
     bash os/dev/cache-github-assets.sh "${cosign_assets[@]}"
-  # The RPM snapshot the layers install from, unless the published one for this package set
-  # serves them: then every action takes that, as an action resolves it (build-layer.sh).
-  if published rpm-snapshot; then
-    say "the published RPM snapshot serves this package set"
-  else
-    build_rpms
-  fi
+  build_rpms
   say "the assembler image"
   container "$(builder_image)" "bash os/image/assembler.sh $arch /target/os/$arch/assembler" \
     -v "$target/podman-store:/var/lib/containers" \
     -v "$storage_conf:/run/tilo/storage.conf:ro" -e CONTAINERS_STORAGE_CONF=/run/tilo/storage.conf \
     -e HOME=/root
+  # Which snapshot that is, verified, as t's rpm-snapshot-ARCH says it: the actions install from
+  # the copy only as the snapshot this names (build-layer.sh rpms_snapshot).
+  say "the RPM snapshot's reference"
+  assembler "bash tools/ci/publish/rpm-snapshot-ref.sh $arch /target/publish/rpm-snapshot/$arch"
   say "the base and the images the layers are built with: $images"
   local script="set -e -o pipefail
     bash os/image/build-layer.sh base $arch /target/os/$arch/base"
@@ -346,7 +344,6 @@ build_env_runtime() {
     return 0
   fi
   say "the environment runtime"
-  assembler "bash tools/ci/publish/rpm-snapshot-ref.sh $arch /target/publish/rpm-snapshot/$arch"
   mirrored buildah "bash tools/ci/publish/env-runtime.sh tree $arch /target/publish/rpm-snapshot/$arch /target/publish/rpms/$arch $trees"
   compile compile/target "bash tools/ci/publish/env-runtime.sh dev $arch $trees /target/os/$arch/compiled $out"
 }

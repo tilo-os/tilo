@@ -1,27 +1,20 @@
 //! Chunked mbox framing shared by folder inspection and the streamed import.
 //!
-//! A mailbox is never read whole. The splitter reads fixed chunks and hands
-//! back one complete message at a time, so memory follows the largest single
-//! message rather than the folder. A message larger than the per-message bound
-//! is reported instead of being buffered without limit, and the splitter then
-//! continues at the next message, so a caller that only counts can say the
-//! folder was not fully counted without silently skipping anything.
+//! A mailbox is never read whole: memory follows the largest single message. A message over the
+//! per-message bound is reported and the splitter continues at the next one, so a counter can say the
+//! folder was not fully counted.
 
 use std::fmt;
 use std::io::{self, Read};
 
-/// Bytes appended to the frame buffer per read.
 pub(crate) const CHUNK: usize = 64 * 1024;
 
-/// The line-start marker that separates two messages in an mbox.
 const BOUNDARY: &[u8] = b"From ";
 
-/// Bytes of a possible boundary kept back between chunks, so a marker that
-/// straddles two reads is still recognized.
+/// Kept back between chunks, so a marker that straddles two reads is still recognized.
 const KEEP: usize = 4;
 
-/// A message that does not fit the per-message bound. Callers distinguish this
-/// from an I/O failure and report it in their own terms.
+/// Callers distinguish this from an I/O failure and report it in their own terms.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MessageTooLarge {
     pub limit: usize,
@@ -39,8 +32,6 @@ impl fmt::Display for MessageTooLarge {
 
 impl std::error::Error for MessageTooLarge {}
 
-/// Whether an error from [`MboxMessages`] is a per-message bound rather than a
-/// failure to read the file.
 pub(crate) fn is_too_large(error: &io::Error) -> bool {
     match error.get_ref() {
         Some(inner) => inner.is::<MessageTooLarge>(),
@@ -48,18 +39,13 @@ pub(crate) fn is_too_large(error: &io::Error) -> bool {
     }
 }
 
-/// The bytes of each message in order, exactly as the file holds them.
 pub(crate) struct MboxMessages<R> {
     reader: R,
-    /// Read bytes that are not yet classified. Never larger than one chunk
-    /// plus the retained line context.
+    /// Never larger than one chunk plus the retained line context.
     buffer: Vec<u8>,
-    /// First unconsumed byte in `buffer`. The byte before it is kept as the
-    /// line context a boundary check needs.
+    /// The byte before it is kept as the line context a boundary check needs.
     offset: usize,
-    /// Where to resume searching for the next boundary.
     scan: usize,
-    /// The message under assembly.
     current: Vec<u8>,
     in_message: bool,
     discarding: bool,
@@ -90,11 +76,8 @@ impl<R: Read> MboxMessages<R> {
         }
     }
 
-    /// The next complete message. `None` once the file is exhausted.
-    ///
-    /// # Errors
-    /// Refuses a message beyond the per-message bound, or a read failure. The
-    /// splitter stays on the next message after a bound refusal.
+    /// `None` once the file is exhausted. Refuses a message beyond the bound or a read failure, and
+    /// stays on the next message after a bound refusal.
     pub(crate) fn next_message(&mut self) -> io::Result<Option<Vec<u8>>> {
         loop {
             if let Some(found) = self.boundary() {
@@ -108,8 +91,7 @@ impl<R: Read> MboxMessages<R> {
                 self.offset = found;
                 self.scan = found.saturating_add(BOUNDARY.len());
                 if self.discarding {
-                    // The oversized message ended here; the boundary starts
-                    // the next one.
+                    // The oversized message ended here; the boundary starts the next one.
                     self.discarding = false;
                     continue;
                 }
@@ -127,14 +109,12 @@ impl<R: Read> MboxMessages<R> {
                 self.scan = self.scan.max(self.offset);
             }
             if self.eof {
-                // The retained boundary prefix is the end of the last message,
-                // so it belongs to the frame.
+                // The retained boundary prefix ends the last message, so it belongs to the frame.
                 let tail = self.piece(self.offset, self.buffer.len());
                 self.offset = self.buffer.len();
                 if self.in_message && !self.discarding {
                     self.append(&tail)?;
                     self.messages = self.messages.saturating_add(1);
-                    // Nothing follows: a further call must not repeat it.
                     self.in_message = false;
                     return Ok(Some(std::mem::take(&mut self.current)));
                 }
@@ -146,13 +126,10 @@ impl<R: Read> MboxMessages<R> {
         }
     }
 
-    /// Largest message body held at once, for a caller that reports the cost
-    /// of an import it just made.
     pub(crate) fn max_message_bytes(&self) -> usize {
         self.peak
     }
 
-    /// Largest unconsumed read buffer held at once.
     pub(crate) fn max_buffered(&self) -> usize {
         self.max_buffered
     }
@@ -163,8 +140,7 @@ impl<R: Read> MboxMessages<R> {
             .map_or_else(Vec::new, <[u8]>::to_vec)
     }
 
-    /// The next message boundary at or after the scan cursor. Position zero is
-    /// a boundary only at the true start of the file; afterwards the trim in
+    /// Position zero is a boundary only at the true start of the file; afterwards the trim in
     /// [`Self::fill`] keeps the preceding byte so the line check always works.
     fn boundary(&self) -> Option<usize> {
         let from = self.scan.max(self.offset);

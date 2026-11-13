@@ -1,7 +1,6 @@
 //! App-local observer tests; these do not claim native presentation coverage.
 use super::*;
 
-/// The editor launched on a fresh fixture file, as `code-editor FILE`.
 fn loaded_fixture() -> (
     tempfile::TempDir,
     ui::framework::testing::TestApp<crate::CodeEditorShell>,
@@ -78,7 +77,6 @@ fn dictation_ime_final_uses_native_code_actions_and_system_undo() {
 
 #[test]
 fn native_snapshot_reports_readiness_durable_edits_and_wheel_input() {
-    // Each phase builds a fresh app/fixture: edits and scroll must not leak.
     native_snapshot_of_unopened_editor_is_not_ready();
     native_snapshot_tracks_durable_edits_and_caret_without_source_text();
     native_snapshot_observes_real_wheel_input_with_explicit_units();
@@ -102,8 +100,6 @@ fn native_snapshot_tracks_durable_edits_and_caret_without_source_text() {
             .unwrap();
         app.editor.set_focus(true);
         app.editor.set_caret_for_test(0, 0);
-        // Existing editor editing method emits the real action request; the
-        // app's production dispatcher is what updates the durable text.
         app.editor.insert_for_test(doc, "x");
         let unsent = app
             .native_input_snapshot(doc.doc(), &automerge::ROOT)
@@ -209,7 +205,6 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
         "view metadata grants no focus"
     );
 
-    // Both actual app dispatchers edit their shared resource while disconnected.
     crate::test_support::with_doc(&mut source, |app, doc| {
         app.editor.set_caret_for_test(0, 0);
         app.editor.insert_for_test(doc, "prefix\n");
@@ -379,8 +374,6 @@ fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
 fn independent_cold_editors_keep_one_text_object_and_both_offline_edits() {
     let (directory, mut source, manifest) = loaded_fixture();
     let path = directory.path().join("fixture.rs");
-    // No checked install or source snapshot: both actual apps create the same
-    // file's record independently in their own fresh profile.
     let mut target = ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&[path
         .to_str()
         .unwrap()])
@@ -406,8 +399,6 @@ fn independent_cold_editors_keep_one_text_object_and_both_offline_edits() {
             app.dispatch_editor_text_edits(doc);
         });
     }
-    // Local typing may focus the editor; explicitly leave it before the
-    // network merge so the merge's lack of a focus grant is observable.
     crate::test_support::with_doc(&mut target, |app, _| app.editor.set_focus(false));
     assert_eq!(cold_editor_snapshot(&mut target)["editor_focused"], false);
     source_document = source.peer_document();
@@ -470,8 +461,6 @@ fn stage_continuation_view(app: &mut CodeApp, doc: &mut ui::widget::Edits<'_>) {
     app.editor
         .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 8.0);
     app.editor.set_selection_lc((20, 3), (22, 5));
-    // Fingers scroll the view 9.75 lines down and rest there: a notch
-    // would glide the lines on past where it put them.
     let line_h = app.editor.pixel_for_test(1, 0).y - app.editor.pixel_for_test(0, 0).y;
     for event in [
         ui::synthetic_input::cursor_moved(300.0, 100.0),

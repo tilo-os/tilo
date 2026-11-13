@@ -25,3 +25,6 @@ so-tilo-launcher-search-answer = Schritt beantworten
 so-tilo-launcher-search-back = Zurück
 so-tilo-launcher-search-dismiss = Suche schließen
 launcher-search = Suche
+
+## What the app is called in a window and in the launcher
+launcher-app-title = Suche

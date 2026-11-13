@@ -50,7 +50,6 @@ impl Default for ChordStyle {
     }
 }
 
-/// What a chord diagram inspects and reports on activation.
 pub type ChordSelection = crate::widget::chart_data::GraphSelection;
 #[derive(Clone)]
 struct NodeGeom {
@@ -75,11 +74,9 @@ pub struct ChordMarks {
     frame: PlotFrame<ChordSelection>,
     node_geometry: Vec<NodeGeom>,
     link_geometry: Vec<LinkGeom>,
-    /// The room the arc labels need beside the ring, measured at paint.
     label_room: f64,
 }
 
-/// Weighted links between nodes on a ring, as ribbons across it.
 pub type ChordChart = Plot<ChordMarks>;
 
 impl ChordChart {
@@ -130,8 +127,6 @@ impl ChordMarks {
             self.frame.rect.x1 - 12.0,
             self.frame.rect.y1 - 12.0,
         );
-        // The ring leaves the labels their measured room at the sides and a
-        // line above and below.
         let side = self.label_room.max(self.style.label_offset + 16.0);
         let outer = (area.width() / 2.0 - side)
             .min(area.height() / 2.0 - self.style.label_offset - 16.0)

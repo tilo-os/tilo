@@ -1,8 +1,10 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "photos.library"
-label = "Photos"
+label = "Library"
 version = 2
 fields = [
   { path = "photos", type = { collection = { named = "LibraryPhoto" } }, stored = "collection" },
@@ -12,7 +14,7 @@ fields = [
   { path = "photos.*.image.name", type = "text" },
   { path = "photos.*.image.width", type = "int" },
   { path = "photos.*.image.height", type = "int" },
-  { path = "photos.*.image.content", type = "text" },
+  { path = "photos.*.image.content", type = "any" },
   { path = "photos.*.favorite", type = "bool" },
   { path = "photos.*.folder", type = { option = "text" } },
   { path = "photos.*.people", type = { set = "text" } },
@@ -34,7 +36,7 @@ fields = [
 id = "import-photo"
 kind = "undoable"
 params = [
-  { name = "image", type = { named = "OpenImage" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, content = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["name", "width", "height", "content"] } },
+  { name = "image", type = { named = "OpenImage" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, content = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["name", "width", "height", "content"] } },
   { name = "captured_at", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "location", type = { option = { named = "PhotoLocation" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { label = { type = ["string", "null"] }, latitude = { type = "number" }, longitude = { type = "number" }, provenance = { type = "object", additionalProperties = false, properties = { scope = { type = "string" }, source = { type = "string" } } } }, required = ["latitude", "longitude"] } },
 ]
@@ -122,7 +124,7 @@ params = [
 id = "make-thumbnails"
 kind = "read"
 params = [
-  { name = "photos", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string", content = true } } },
+  { name = "photos", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "string", content = true } } },
 ]
 
 [[resources.types]]
@@ -194,7 +196,7 @@ fields = [
   { name = "name", type = "text" },
   { name = "width", type = "int" },
   { name = "height", type = "int" },
-  { name = "content", type = "text" },
+  { name = "content", type = "any" },
 ]
 
 [[resources.types]]

@@ -173,6 +173,40 @@
 		}
 	}
 
+	# The developer docs (tools/docs/build-site.sh), built from the same
+	# commit as this image. Their assets are named by their content and never
+	# change; the pages, each page's Markdown beside it (/docs/<page>.md) and
+	# the index for agents are revalidated on every visit. Agents look for
+	# llms.txt at a site's root, so the root has the docs' too.
+	@llms path /llms.txt /llms-full.txt
+	handle @llms {
+		rewrite * /docs{path}
+		root * /srv/tilo-web
+		header Content-Type "text/plain; charset=utf-8"
+		header Cache-Control "no-cache"
+		file_server {
+			precompressed br zstd
+		}
+	}
+	handle /docs/assets/* {
+		root * /srv/tilo-web
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed br zstd
+		}
+	}
+	handle /docs* {
+		root * /srv/tilo-web
+		header Cache-Control "no-cache"
+		@markdown path *.md
+		header @markdown Content-Type "text/markdown; charset=utf-8"
+		@text path *.txt
+		header @text Content-Type "text/plain; charset=utf-8"
+		file_server {
+			precompressed br zstd
+		}
+	}
+
 	# The entry pages and what they name by relative path, revalidated on
 	# every visit by the ETag of the encoding served (test-image.sh).
 	handle {
@@ -189,6 +223,21 @@
 	# files, and a cached 404 would outlive the rollout at that edge.
 	handle_errors {
 		header Cache-Control "no-store"
-		respond "{err.status_code} {err.status_text}" {err.status_code}
+		# An address under /docs/ that names no page gets the docs' own page
+		# saying so, with their navigation and search.
+		@docs_missing {
+			path /docs/*
+			expression {err.status_code} == 404
+		}
+		handle @docs_missing {
+			root * /srv/tilo-web
+			rewrite * /docs/404.html
+			file_server {
+				status 404
+			}
+		}
+		handle {
+			respond "{err.status_code} {err.status_text}" {err.status_code}
+		}
 	}
 }

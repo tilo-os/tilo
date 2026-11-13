@@ -1,17 +1,6 @@
-//! One Chromium host per profile, shared by every process that opens it.
-//!
-//! A host needs its profile directory to itself, yet every Browser process
-//! browsing with a profile needs that profile's cookies and logins. So the
-//! first process to open a profile becomes its owner: it holds
-//! `<profile>.lock` for as long as its host runs, starts the host and serves
-//! `<profile>.sock`, both beside the profile directory. Every other process
-//! connects to that socket and drives its own pages through the owner's host.
-//!
-//! The socket speaks the host's packet protocol. A client writes exactly the
-//! commands it would write to a host, plus `shared_create_tab`, for which the
-//! owner allocates a tab from the host's one tab counter and capacity. The
-//! owner forwards to a client only the events and frames of the tabs that
-//! client created, plus the process-wide download and readiness events.
+//! One Chromium host per profile, shared by every process that opens it. A host needs its
+//! profile directory to itself, yet every Browser process browsing with a profile needs
+//! that profile's cookies and logins.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, BufReader, BufWriter};
@@ -31,11 +20,8 @@ use crate::time::Duration;
 use crate::webview::WebViewEvent;
 use tilo_lock::MutexRecover as _;
 
-/// Events a client has not read yet. Beyond this, a slow client loses its
-/// oldest replaceable state first.
 const OUTBOX_EVENTS: usize = 1024;
 
-/// Per-tab state events: a newer one replaces the queued older one.
 const SUPERSEDED: &[&str] = &[
     "uri",
     "title",
@@ -49,7 +35,6 @@ const SUPERSEDED: &[&str] = &[
     "download_runtime",
 ];
 
-/// Page audio packets a client may be behind by before the oldest is dropped.
 const AUDIO_PACKETS: usize = 16;
 
 fn is_audio_packet(value: &Value) -> bool {
@@ -63,9 +48,9 @@ fn superseded(value: &Value) -> bool {
         .is_some_and(|event| SUPERSEDED.contains(&event))
 }
 
-/// What the owner still has to send one client: its events in order, and
-/// only the newest frame of each of its tabs (the frame whole, or what
-/// changed since the frame the client has).
+/// What the owner still has to send one client: its events in order, and only the newest
+/// frame of each of its tabs (the frame whole, or what changed since the frame the client
+/// has).
 #[derive(Default)]
 pub(super) struct Outbox {
     state: Mutex<OutboxState>,
@@ -76,10 +61,7 @@ pub(super) struct Outbox {
 struct OutboxState {
     events: VecDeque<Value>,
     frames: BTreeMap<u32, Queued>,
-    /// Tabs whose frame the host was asked for whole: what changed of them
-    /// waits for it.
     awaiting: BTreeSet<u32>,
-    /// The tab whose frame went last.
     last_frame_tab: u32,
     closed: bool,
 }
@@ -90,10 +72,9 @@ enum Queued {
 }
 
 impl OutboxState {
-    /// The next tab's queued frame or changes. Tabs take turns, so a tab
-    /// painting every frame cannot starve another: always serving the
-    /// lowest-numbered tab first sent a busy first tab's frames and none of
-    /// the rest.
+    /// The next tab's queued frame or changes. Tabs take turns, so a tab painting every
+    /// frame cannot starve another: always serving the lowest-numbered tab first sent a
+    /// busy first tab's frames and none of the rest.
     fn next_frame(&mut self) -> Option<(u32, Queued)> {
         let tab = self
             .frames
@@ -124,8 +105,8 @@ impl Outbox {
             });
         }
         if is_audio_packet(&value) {
-            // PCM is real time: past 16 queued packets (~160 ms) the oldest
-            // goes, so a slow client hears a gap rather than lagging behind.
+            // PCM is real time: past 16 queued packets (~160 ms) the oldest goes, so a
+            // slow client hears a gap rather than lagging behind.
             let queued = state
                 .events
                 .iter()
@@ -157,10 +138,9 @@ impl Outbox {
         self.ready.notify_one();
     }
 
-    /// Queues what changed of a tab's frame, folded into what is queued for
-    /// it already. Returns `false` when the client cannot be given it (it
-    /// changes no frame the client will have): the host is to send the frame
-    /// whole.
+    /// Queues what changed of a tab's frame, folded into what is queued for it already.
+    /// Returns `false` when the client cannot be given it (it changes no frame the client
+    /// will have): the host is to send the frame whole.
     pub(super) fn damage(&self, tab: u32, damage: damage::WireDamage) -> bool {
         let mut state = self.state.lock_recover();
         if state.closed {
@@ -279,29 +259,21 @@ impl Hub {
     }
 }
 
-/// Blocks while other Browser processes still use a Chromium host this
-/// process runs, then stops serving them; a host none of this process's
-/// engines still uses shuts down before this returns.
-///
-/// Call it once the UI event loop has exited and the app has dropped its
-/// engines: the process that started a profile's host must outlive every
-/// process browsing through it. Returns at once when nothing is shared.
+/// Blocks while other Browser processes still use a Chromium host this process runs, then
+/// stops serving them; a host none of this process's engines still uses shuts down before
+/// this returns. Call it once the UI event loop has exited and the app has dropped its
+/// engines: the process that started a profile's host must outlive every process browsing
+/// through it.
 pub fn serve_shared_until_idle() {
     for server in servers() {
         server.serve_until_idle();
     }
 }
 
-/// How long a process waits for the profile's current owner: it may be
-/// starting its host or waiting for its previous host to exit.
 const CLAIM_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a client waits for the owner to answer a new tab.
 const TAB_TIMEOUT: Duration = Duration::from_secs(20);
-/// How often the accept loop looks for a stop.
 const ACCEPT_POLL: Duration = Duration::from_millis(250);
 
-/// Commands that act on the whole profile rather than on one page. A client
-/// may send them without naming a tab it owns.
 const PROFILE_OPS: &[&str] = &[
     "filter_rules",
     "scripts",
@@ -332,30 +304,19 @@ fn servers() -> Vec<Arc<Server>> {
 
 /// The outcome of opening a profile.
 pub(super) enum Role {
-    /// No host runs this profile: start one and serve it.
     Owner(Claim),
     /// This platform cannot share a host: start one for this process only.
     Alone,
-    /// Another process's host runs this profile.
     Client(Connection),
-    /// The profile's owner did not let this process in.
     Busy(String),
 }
 
 /// The right to run the profile's host: held until that host exits.
-///
-/// The host itself holds the lock too ([`Claim::hold_with`]), so the profile
-/// stays owned by a Browser process that dies while its host is still
-/// shutting down.
 pub(super) struct Claim(Ownership);
 
-/// Becomes the owner of the (canonical, existing) `profile`, or connects to
-/// its owner.
-///
-/// # Errors
-///
-/// Returns an error when the profile's socket path is too long to bind:
-/// starting a second host on the same profile is never the fallback.
+/// Becomes the owner of the (canonical, existing) `profile`, or connects to its owner.
+/// Returns an error when the profile's socket path is too long to bind: starting a second
+/// host on the same profile is never the fallback.
 pub(super) fn claim(profile: &Path) -> Result<Role, String> {
     let rendezvous = match Rendezvous::beside(profile) {
         Ok(rendezvous) => rendezvous,
@@ -373,7 +334,6 @@ pub(super) fn claim(profile: &Path) -> Result<Role, String> {
 
 fn handshake(mut connection: &Connection) -> io::Result<()> {
     connection.set_read_timeout(Some(Duration::from_secs(10)))?;
-    // Unbuffered, so nothing after the greeting is consumed here.
     match protocol::read_packet(&mut connection)? {
         Some(protocol::Packet::Json(value))
             if value.get("event").and_then(Value::as_str) == Some("shared_hello") => {}
@@ -387,10 +347,9 @@ fn handshake(mut connection: &Connection) -> io::Result<()> {
 }
 
 impl Claim {
-    /// Lets `command`'s program keep the profile for as long as it runs: the
-    /// host outlives the Browser process that started it, and a successor
-    /// must not start a second host on a profile the old one is still
-    /// shutting down.
+    /// Lets `command`'s program keep the profile for as long as it runs: the host
+    /// outlives the Browser process that started it, and a successor must not start a
+    /// second host on a profile the old one is still shutting down.
     pub(super) fn hold_with(&self, command: &mut std::process::Command) {
         self.0.hold_with(command);
     }
@@ -413,8 +372,6 @@ impl Claim {
             state: Mutex::default(),
             changed: Condvar::new(),
         });
-        // Published before the first client is admitted: a client that has
-        // connected finds its owner's server on the owner's runtime.
         let _ = published.set(server.clone());
         let weak = Arc::downgrade(&server);
         if let Err(error) = spawn_named("chromium-share", move || accept_loop(&weak)) {
@@ -428,30 +385,25 @@ impl Claim {
         Ok(server)
     }
 
-    /// Gives the profile up once its host has exited. Until then no other
-    /// process may start a host on it.
+    /// Gives the profile up once its host has exited.
     pub(super) fn release_after_exit(self, server: Option<&Arc<Server>>) {
         if let Some(server) = server {
             server.stop();
         }
-        // Giving the claim up here, not at the end of the scope, frees the
-        // profile before the host is marked exited.
         self.give_up();
         if let Some(server) = server {
             server.mark_host_exited();
         }
     }
 
-    /// Ends this claim. A page holds nothing to free: there is no local
-    /// socket, so `Ownership` carries nothing there.
     fn give_up(self) {}
 
-    /// Keeps the profile claimed for the rest of this process's life: its
-    /// host never confirmed its exit, so a second host on the profile could
-    /// still meet the first one.
+    /// Keeps the profile claimed for the rest of this process's life: its host never
+    /// confirmed its exit, so a second host on the profile could still meet the first
+    /// one.
     pub(super) fn keep_while_host_may_run(self) {
-        // Unlocking here would release the profile while the host holds it, so
-        // the claim is never dropped.
+        // Unlocking here would release the profile while the host holds it, so the claim
+        // is never dropped.
         let _kept = std::mem::ManuallyDrop::new(self);
     }
 }
@@ -460,7 +412,6 @@ impl Claim {
 struct ServerState {
     clients: usize,
     next_client: u64,
-    /// Keeps the host running while any client is connected.
     keepalive: Option<Arc<Runtime>>,
     serving: bool,
     stopped: bool,
@@ -531,7 +482,6 @@ impl Server {
                 _ => None,
             }
         };
-        // A temporary reference may be the last one: drop it unlocked.
         drop(runtime);
         let Some((id, outbox)) = admitted else {
             refuse(&connection, "the Chromium engine is shutting down");
@@ -568,7 +518,6 @@ impl Server {
                 None
             }
         };
-        // When the owner's engines are gone too, this shuts the host down.
         drop(keepalive);
     }
 
@@ -589,8 +538,7 @@ impl Server {
         self.changed.notify_all();
     }
 
-    /// Blocks until no client is connected, then stops serving. When nothing
-    /// in this process still uses the host, waits for it to exit.
+    /// Blocks until no client is connected, then stops serving.
     pub(super) fn serve_until_idle(&self) {
         let keepalive = {
             let mut state = self.lock_state();
@@ -607,7 +555,6 @@ impl Server {
         self.close_listener();
         drop(keepalive);
         if self.runtime.strong_count() > 0 {
-            // The app still holds engines; dropping them shuts the host down.
             return;
         }
         let deadline = crate::time::now() + Duration::from_secs(40);
@@ -643,7 +590,6 @@ fn send_to_client(outbox: &Outbox, connection: &Connection) {
     connection.close();
 }
 
-/// A client's tab on the owner. `closing` once the client closed it.
 struct ClientTab {
     shared: Arc<Shared>,
     closing: bool,
@@ -690,7 +636,6 @@ fn client_command(
         let Some(request) = command.get("request").and_then(Value::as_u64) else {
             return;
         };
-        // Tabs the host already closed no longer belong to anyone.
         tabs.retain(|tab, entry| owns_route(&runtime.routes, *tab, &entry.shared));
         let shared = Arc::new(Shared {
             remote: Some(outbox.clone()),
@@ -747,9 +692,6 @@ fn client_command(
     }
 }
 
-/// A popup of one of the client's tabs is the client's: its events already
-/// go where the tab's go, and its commands are taken like the tab's. It
-/// closes with the client.
 fn adopt_client_popup(
     runtime: &Runtime,
     tab: u32,
@@ -780,8 +722,6 @@ fn adopt_client_popup(
     }
 }
 
-/// Closes the tabs of a client that disconnected. Their routes keep
-/// reserving capacity until the host acknowledges each close.
 fn close_client_tabs(runtime: &Runtime, tabs: HashMap<u32, ClientTab>) {
     for (tab, entry) in tabs {
         let retire = {
@@ -835,8 +775,6 @@ impl ClientLink {
             Ok(result) => result,
             Err(RecvTimeoutError::Disconnected) => Err("Chromium engine disconnected".into()),
             Err(RecvTimeoutError::Timeout) => {
-                // The reader answers while holding the pending lock, so an
-                // answer is either still pending or already sent.
                 if self.forget(request) {
                     Err(
                         "The Browser process running this profile's Chromium engine did not answer"
@@ -861,8 +799,7 @@ impl ClientLink {
     }
 }
 
-/// Opens a client engine over an accepted owner connection. Its first
-/// endpoint is a new tab: tab 1 always belongs to the owner.
+/// Opens a client engine over an accepted owner connection.
 pub(super) fn connect(connection: Connection) -> Result<Arc<ChromiumEngine>, String> {
     let tx = Arc::new(CommandQueue::default());
     let routes: Routes = Arc::default();
@@ -1003,7 +940,6 @@ fn answer_tab(value: &Value, routes: &Routes, pending: &Pending, tx: &CommandQue
                 .unwrap_or("The Chromium engine could not open a tab");
             let _ = waiting.reply.send(Err(error.to_owned()));
         }
-        // Nobody waits for this tab any more: give it back.
         (None, Some(tab)) => {
             let _ = tx.push(json!({"op":"close_tab","tab":tab}));
         }

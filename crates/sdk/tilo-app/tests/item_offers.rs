@@ -25,7 +25,7 @@ fn channel_views(field: &str, _: &Id) -> Vec<tilo_actions::ResourceViewSpec> {
     }
 }
 
-#[resource(kind = "test.channels", label = "Channels", item_views = channel_views)]
+#[resource(kind = "test.channels", item_views = channel_views, catalogue = "tests/locales")]
 impl Channels {
     /// Add a channel.
     #[action]

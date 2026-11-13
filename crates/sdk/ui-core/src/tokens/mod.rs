@@ -37,9 +37,9 @@ pub use radii::Radii;
 pub use response::{Response, ResponseStep};
 pub use shader::Source as SurfaceShader;
 
-/// A theme document's surface shader as the wire carries it: its WGSL and
-/// its static time in hundredths of a second (an exact integer, so the value
-/// a document states is the value a shader reads).
+/// A theme document's surface shader as the wire carries it: its WGSL and its static time
+/// in hundredths of a second (an exact integer, so the value a document states is the
+/// value a shader reads).
 #[must_use]
 pub(crate) fn shader_source(source: &SurfaceShader) -> tilo_theme_sdk::ShaderSource {
     let centis = (source.time.max(0.0) * 100.0).round();
@@ -70,49 +70,28 @@ pub struct Tokens {
     pub radii: Radii,
     pub elevation: Elevation,
     pub motion: Motion,
-    /// Canonical monospace font handle. Derived from `typography.mono_family`
-    /// on construction; consumers should prefer this over the raw string so
-    /// future fallback lists/weights can be added without breaking call sites.
     pub font_mono: FontFamily,
     /// Palette for terminal-style widgets (fg/bg defaults + ANSI 0..=15).
     pub terminal_palette: TerminalPalette,
-    /// The one syntax-highlighting palette every code surface paints with.
     pub syntax: SyntaxPalette,
-    /// Authored UI-spring character. `1` is stock. Stored beside the springs
-    /// it produces, because calm and lively are not separable from stiffness
-    /// alone.
+    /// Authored UI-spring character.
     pub motion_character: f32,
-    /// What a docked selector strip stands on and how its items are lit
-    /// (`crate::chrome::paint_selector`).
     pub selector: SelectorFinish,
-    /// The density these tokens are at; [`crate::Theme::with_density`]
-    /// moves it.
     pub density: Density,
-    /// What each surface role is made of, as authored (the painters ask
-    /// [`crate::Theme::finish`], which applies reduced transparency).
     pub finishes: RoleFinishes,
-    /// How surfaces are outlined.
     pub border: Border,
-    /// The colour the border is drawn in, resolved from its ink by the
-    /// theme; `None` where surfaces keep the design language's hairlines.
     pub border_color: Option<vello::peniko::Color>,
-    /// How surfaces stand off what is below them; the elevation above is
-    /// already this depth's.
     pub depth: Depth,
-    /// How the shared components answer the pointer: hover and press
-    /// ([`Response`]).
     pub response: Response,
-    /// How wide an icon's outline is drawn, in logical pixels: the theme's
-    /// `icons` role (`docs/architecture/theming.md`, "Icons"). 1.5 at
-    /// stock, Lucide's own weight; a look with pixels wants a whole-pixel
-    /// stroke it can land on.
+    /// How wide an icon's outline is drawn, in logical pixels: the theme's `icons` role
+    /// (`docs/architecture/theming.md`, "Icons"). 1.5 at stock, Lucide's own weight; a
+    /// look with pixels wants a whole-pixel stroke it can land on.
     pub icon_stroke_px: f32,
 }
 
 impl Tokens {
-    /// The stock token set around `colors`: the design language's type,
-    /// spacing, metrics, radii and motion, with the elevation of the
-    /// palette's polarity.
+    /// The stock token set around `colors`: the design language's type, spacing, metrics,
+    /// radii and motion, with the elevation of the palette's polarity.
     pub fn around(colors: Colors) -> Self {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());

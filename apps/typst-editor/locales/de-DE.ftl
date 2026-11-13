@@ -4,7 +4,7 @@ typst-editor-typst-file-name = { $old } in { $new } umbenannt
 typst-editor-typst-file-source = { $item } bearbeitet
 typst-editor-new-file = { $name } angelegt
 typst-editor-saved-at = { $item } als { $path } gespeichert
-typst-editor-load = { $path } in { $item } geöffnet
+typst-editor-load = { $path } geöffnet
 typst-editor-close-file = { $item } geschlossen
 
 ## Die Fensterleiste: wo das Fenster ist, was es hält und was es kann
@@ -67,3 +67,6 @@ typst-editor-workspace-new-file = Neue Typst-Datei
 typst-editor-workspace-saved-at = Speicherort erfassen
 typst-editor-workspace-load = Datei laden
 typst-editor-workspace-close-file = Datei schließen
+
+## What the app is called in a window and in the launcher
+typst-editor-app-title = Typst

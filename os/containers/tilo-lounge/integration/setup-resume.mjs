@@ -26,21 +26,20 @@
 //   9. an agent that runs `tilo login` the moment the prompt shows, before the
 //      Lounge let the tab in, is waited for, never refused, and gets in.
 //
-// usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR
+// usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
 //
 // Saves a capture of each resumed state and a JSON report to OUT_DIR; exits
 // non-zero when any case lands on the wrong screen.
 import {execFile} from 'node:child_process';
 import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 import {clock} from './timing.mjs';
 
-const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !siteCa || !out) {
-  console.error('usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR');
+const [site, relay, tiloBin, out] = process.argv.slice(2);
+if (!site || !relay || !tiloBin || !out) {
+  console.error('usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -71,10 +70,15 @@ const check = (ok, what, detail = '') => {
   return Boolean(ok);
 };
 
+// The flow drives two tabs of one browser and reads the one behind: a setup
+// is one, whichever tab shows it, and a tab that went back says so to the
+// other through storage. A browser throttles or freezes a tab nobody looks
+// at, and a starved machine does it at once, so the step it answers would
+// never come: every tab here answers as the front one does.
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
 const finish = async () => {
@@ -168,14 +172,29 @@ const firstFrame = tab => until(tab, 'globalThis.__firstFrame && JSON.stringify(
   .then(text => { mark(`case ${caseNo ?? 1}: a page's first frame`); return JSON.parse(text ?? '{}'); });
 const setup = tab => tab.evaluate(`localStorage.getItem('tilo-setup')`).then(text => JSON.parse(text ?? 'null')).catch(() => null);
 const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400)`).catch(() => '');
-// Where the tab is: the first screen's step, or the workspace it is titled after.
-const where = tab => tab.evaluate(`JSON.stringify({step: document.documentElement.dataset.firstRun ?? null,
-  screen: document.documentElement.dataset.firstRun !== undefined, title: document.title, entry: document.documentElement.dataset.entry ?? null})`)
+// Where the tab is: the first screen's step, the workspace it is titled after,
+// and what its page is doing (the mount's own phase, frames and the name the
+// workspace answered admission with), so a wait that runs out says which of
+// them it was waiting on.
+const where = tab => tab.evaluate(`(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  return JSON.stringify({step: document.documentElement.dataset.firstRun ?? null,
+    screen: document.documentElement.dataset.firstRun !== undefined, title: document.title,
+    entry: document.documentElement.dataset.entry ?? null, phase: state?.phase ?? null,
+    frames: state?.frames ?? null, workspace: state?.workspaceName ?? null});
+})()`)
   .then(JSON.parse).catch(() => ({}));
 const inLounge = async tab => {
   const at = await where(tab);
   return !at.screen && /lounge/i.test(at.title);
 };
+// The person's own workspace, as the page says it: the first screen gone, the
+// desk the workspace names drawn, and the tab titled after it. A page waits on
+// its host admitting it and replaying what it made before that desk draws, and
+// gives a host that says nothing two minutes before it calls it unanswered
+// (`whenReady` in peer.mjs): this step is given as long, never a stopwatch on
+// a frame, and what the page was doing is said when it never comes.
+const OWN_WORKSPACE_STEPS = 8;
 const forget = tab => tab.evaluate('delete globalThis.__firstFrame').catch(() => {});
 const reload = async tab => { await forget(tab); await tab.reload(); await sleep(50); };
 // Back one entry in the tab's history, as the browser's Back button goes.
@@ -213,23 +232,13 @@ const copy = async (tab, id) => {
   const before = await clipboardText(tab);
   await click(tab, id);
   return until(tab, `navigator.clipboard.readText().then(text =>
-    text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`, stepLimit(1));
+    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`, stepLimit(1));
 };
-const codeOf = prompt => prompt?.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
+const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, a
-// `claude` that records how it was asked, Claude Code's marker, and the
-// test certificates trusted only through TILO_TEST_CA_FILE.
-const relayPem = await new Promise((resolve, reject) => {
-  const {hostname, port} = new URL(relay);
-  const socket = connect({host: hostname, port: Number(port || 443), rejectUnauthorized: false}, () => {
-    const der = socket.getPeerCertificate(false).raw;
-    socket.end();
-    resolve(`-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
+// `claude` that records how it was asked, and Claude Code's marker.
 const computer = name => {
   const home = join(out, `computer-${name}`);
   mkdirSync(join(home, 'bin'), {recursive: true});
@@ -254,9 +263,8 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
 `);
   chmodSync(join(home, 'bin', 'claude'), 0o755);
-  writeFileSync(join(home, 'relay.pem'), relayPem);
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
-    XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1', TILO_TEST_CA_FILE: `${siteCa}:${join(home, 'relay.pem')}`};
+    XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1'};
 };
 // `tilo login CODE` on that computer: a promise of how it ended, and `asked`,
 // which resolves once it says it waits for the person's tab, the moment the
@@ -313,14 +321,21 @@ await second.navigate(site);
 frame = await firstFrame(second);
 check(frame.step === 'waiting' && frame.prompt === prompt, '2. a second tab: the same step and prompt, no competing setup', JSON.stringify(frame));
 shot(second, 'resume-2-second-tab');
-// Back in the second tab: the first follows it back to the start.
+// Back in the second tab: the first follows it back to the start. The first
+// tab hears it through storage and draws again, which is two steps of its own
+// after the press (the write reaching it, and its screen showing the start);
+// a starved machine takes a third, so the wait is that long rather than the
+// one a tab presses in.
 check(await click(second, 'first-run-back') && await until(second, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)),
   '2. back in the second tab: it is back at the start', await pageText(second));
-check(await until(tab, `document.documentElement.dataset.firstRun === ''`, stepLimit(1)), '2. back in the second tab: the first tab is back at the start too',
+check(await until(tab, `document.documentElement.dataset.firstRun === ''`, stepLimit(3)), '2. back in the second tab: the first tab is back at the start too',
   JSON.stringify({first: await tab.evaluate(`({screen: document.documentElement.dataset.firstRun ?? null, kept: localStorage.getItem('tilo-setup')})`).catch(() => null)}));
 await close(second);
-// Copy again in the first tab (a fresh code), then close it and reopen.
-await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
+// Copy again in the first tab (a fresh code), then close it and reopen. It
+// offers the prompt again at the start, which is the state the copy is made
+// on: a tab still on the step it was at copies that step's code.
+check(await until(tab, `document.documentElement.dataset.firstRun === '' && document.getElementById('first-run')?.dataset.setup === 'ready'`, stepLimit(3)),
+  '2. the first tab offers the start again, which the next copy is made on', JSON.stringify(await where(tab)));
 // What the person pastes: the clipboard, or (where this browser will not
 // read it back to the harness in a tab that was behind another) the prompt
 // the page shows once it says it copied it; case 2 proved those are one.
@@ -358,20 +373,20 @@ const ran = await agent;
 mark('case 4: tilo login finished');
 check(ran.code === 0, '3. tilo login finished', `${ran.stderr}${ran.stdout}`.slice(-600));
 // 5. Entered: the person's own workspace.
-const own = await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`, stepLimit(3));
+const own = await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`, stepLimit(OWN_WORKSPACE_STEPS));
 check(own, '5. entered: the tab lands in the person\'s own workspace', JSON.stringify(await where(tab)));
 shot(tab, 'resume-5-entered');
 check((await setup(tab))?.step === 'done', '5. the setup is kept as done');
 await reload(tab);
 frame = await firstFrame(tab);
 check(frame.step === null, '5. reloaded: no first screen', JSON.stringify(frame));
-check(await until(tab, `/^Tilo · /.test(document.title) && document.title === ${JSON.stringify(own)}`, stepLimit(3)), '5. reloaded: the own workspace again, not the Lounge',
+check(await until(tab, `/^Tilo · /.test(document.title) && document.title === ${JSON.stringify(own)}`, stepLimit(OWN_WORKSPACE_STEPS)), '5. reloaded: the own workspace again, not the Lounge',
   JSON.stringify(await where(tab)));
 // Back to the bare entry the person first opened, from which their own
 // workspace was opened.
 await goBack(tab);
 await until(tab, `document.readyState !== 'loading'`, stepLimit(2));
-check(await until(tab, `document.title === ${JSON.stringify(own)}`, stepLimit(3)), '5. back to the bare entry: the own workspace, not the Lounge',
+check(await until(tab, `document.title === ${JSON.stringify(own)}`, stepLimit(OWN_WORKSPACE_STEPS)), '5. back to the bare entry: the own workspace, not the Lounge',
   JSON.stringify(await where(tab)));
 shot(tab, 'resume-5-back');
 await close(tab);
@@ -396,7 +411,7 @@ check(['waiting', 'connected'].includes(frame.step), '6. reopened: the setup it 
 const said = await until(tab, `document.documentElement.dataset.firstRun === 'connected' && document.getElementById('first-run-connected').textContent`, stepLimit(2));
 check(said === 'Claude Code is in your workspace', '6. reopened: "Claude Code is in your workspace"', said ?? await pageText(tab));
 shot(tab, 'resume-6-agent-done-while-closed');
-check(await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`, stepLimit(3)),
+check(await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`, stepLimit(OWN_WORKSPACE_STEPS)),
   '6. reopened: the own workspace opens', JSON.stringify(await where(tab)));
 await close(tab);
 

@@ -262,10 +262,7 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
         matches!(app.message_author(&message, &name, &initiator, None),
         ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
     );
-    assert!(
-        app.message_author_label(&message)
-            .contains("model output, requested by")
-    );
+    assert!(app.message_author_label(&message).contains("requested by"));
     message.appearance = None;
     assert_eq!(app.message_author_name(&message), "Assistant");
     message.appearance = Some(tilo_actions::Appearance {
@@ -342,10 +339,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         is_agent: false,
     });
     let label = app.model_message_label(&message);
-    assert!(
-        label.starts_with("Dana · Discord, from Discord: "),
-        "{label}"
-    );
+    assert!(label.starts_with("Dana, via Discord: "), "{label}");
     if let Some(persona) = message
         .appearance
         .as_mut()
@@ -630,7 +624,7 @@ fn assert_mounted_model_attribution(
                 if person == initiator
         ));
         let label = surface.model_message_label(message);
-        assert!(label.starts_with("Assistant (model output, requested by "));
+        assert!(label.starts_with("Assistant, requested by "));
         assert!(label.contains(&initiator));
         assert!(label.contains(&crate::i18n::t("chat-agent-complete")));
         assert!(
@@ -665,10 +659,7 @@ fn assert_mounted_model_attribution(
             .find(|row| row.id() == crate::testing::item("messages", reply))
             .unwrap()
             .into_resource();
-        assert!(
-            live.label
-                .starts_with("Assistant (model output, requested by ")
-        );
+        assert!(live.label.starts_with("Assistant, requested by "));
     })
     .unwrap();
     let presentation = row.presentation.as_ref().unwrap();
@@ -706,7 +697,7 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
             surface.model_message_label(message)
         })
         .unwrap();
-    assert!(label.starts_with("Assistant (model output, requested by "));
+    assert!(label.starts_with("Assistant, requested by "));
     assert!(capture.harness().a11y_node_named(&label).is_some());
 }
 

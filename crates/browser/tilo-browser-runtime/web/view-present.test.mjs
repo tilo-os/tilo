@@ -39,7 +39,7 @@ class Node {
   contains(node) { return node === this || this.children.some(child => child.contains(node)); }
   getContext() { return {putImageData: (...args) => { this.drawn = args; }}; }
 }
-globalThis.document = {createElement: tag => new Node(tag), createTextNode: data => new Text(data), activeElement: null};
+globalThis.document = {createElement: tag => new Node(tag), createElementNS: (_, tag) => new Node(tag), createTextNode: data => new Text(data), activeElement: null};
 globalThis.ImageData = class { constructor(pixels, width, height) { Object.assign(this, {pixels, width, height}); } };
 
 const all = node => [node, ...(node.children ?? []).filter(child => child instanceof Node).flatMap(all)];
@@ -124,13 +124,17 @@ test('a field is an input whose typing goes to the widget as its value', () => {
 test("a document's blocks are paragraphs, headings and list items with their marks and caret", () => {
   const layer = new Node('div');
   const presenter = createViewPresenter(layer);
-  const block = (id, kind, text, extra = {}) => ({id, kind, level: 0, done: false, ordinal: null, tag: null, soft_break: false, text, marks: [], selection: null, editable: true, ...extra});
+  const block = (id, kind, text, extra = {}) => ({id, kind, level: 0, done: false, ordinal: null, tag: null, soft_break: false, text, marks: [], selection: null, editable: true, gap: 6, size: 15, line_height: 1.4, weight: 400, ...extra});
   show(presenter, widget('BlockEditor[0]', [0, 0, 400, 200], {own: {kind: 'blocks', blocks: [
-    block('h', 'heading', 'Trip', {level: 1}),
+    block('h', 'heading', 'Trip', {level: 1, gap: 0, size: 28, line_height: 1.2, weight: 700}),
     block('p', 'paragraph', 'Pack light, é', {marks: [{start: 0, end: 4, mark: 'bold'}], selection: [15, 15]}),
     block('b', 'bullet', 'Passport'),
-  ]}}));
-  const items = byPath(layer, 'BlockEditor[0]#blocks').children;
+  ], edges: {text: 22, list: 28, indent: 28, quote: 16}}}));
+  const body = byPath(layer, 'BlockEditor[0]#blocks');
+  // A paragraph's text starts at the editor's text edge, where the title
+  // above it starts.
+  assert.match(body.style.cssText, /padding-left:22px;/);
+  const items = body.children;
   assert.deepEqual(items.map(item => item.localName), ['h1', 'p', 'li']);
   assert.equal(items[1].textContent, 'Pack light, é');
   assert.equal(items[1].children[0].localName, 'strong', 'the bold run');
@@ -138,6 +142,9 @@ test("a document's blocks are paragraphs, headings and list items with their mar
   // two-byte é.
   assert.equal(items[1].children.at(-1).className, 'tilo-caret');
   assert.equal(items[2].className, 'tilo-block tilo-bullet');
+  // Each block is set as the editor sets it, not in sizes of the page's own.
+  assert.match(items[0].style.cssText, /margin-top:0px;font-size:28px;line-height:1.2;font-weight:700;/);
+  assert.match(items[1].style.cssText, /margin-top:6px;font-size:15px;line-height:1.4;font-weight:400;/);
 });
 
 test('a scroller is native: the page scrolls it to the widget\'s offset, and the person\'s scroll goes back once', () => {
@@ -158,4 +165,22 @@ test('a scroller is native: the page scrolls it to the widget\'s offset, and the
   assert.deepEqual(scrolled, [['List[0]', 90]]);
   // The row stands in the content where it is, not where it shows now.
   assert.match(byPath(layer, 'List[0]/Row[0]').style.cssText, /top:0px;/);
+});
+
+test("a button's face is its icon and words on its ground, not a picture", () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const look = {text: 'Share', size: 13, line_height: 1.3, weight: 500, italic: false, color: [20, 20, 20, 255], align: 'start', max_lines: 1, mono: false};
+  const icon = {name: 'plus', paths: ['M5 12h14', 'M12 5v14'], size: 16, stroke: 1.5, color: [20, 20, 20, 255], filled: false};
+  show(presenter, widget('Button[0]', [0, 0, 96, 32], {tag: 'button', semantics: {role: 'Button', name: 'Share'},
+    own: {kind: 'face', icon, label: look, fill: [230, 230, 235, 255], radius: 8, pad: 12, gap: 6, spread: false}}));
+  const button = byPath(layer, 'Button[0]');
+  assert.equal(button.localName, 'button');
+  assert.match(button.style.cssText, /background:rgba\(230,230,235,1.000\)/);
+  assert.equal(button.getAttribute('aria-label'), null, 'its words name it');
+  const svg = byPath(layer, 'Button[0]#icon').children[0];
+  assert.equal(svg.localName, 'svg');
+  assert.deepEqual(svg.children.map(path => path.getAttribute('d')), icon.paths);
+  assert.equal(byPath(layer, 'Button[0]#label').textContent, 'Share');
+  assert.equal(all(layer).some(node => node.localName === 'canvas'), false, 'no picture of its paint');
 });

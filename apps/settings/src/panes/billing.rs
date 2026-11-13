@@ -1,17 +1,4 @@
 //! Billing: the person's account with the host that runs their workspaces.
-//!
-//! What it shows is the host's live answer for the account
-//! ([`host_account::ACCOUNT`]): the plan, whether a card is on file, the
-//! Linux machine time used this month against what the plan includes,
-//! credit and invoices. Nothing is kept here but that answer, followed for
-//! as long as the window lives, so a card added on the provider's page shows
-//! here the moment the host knows it.
-//!
-//! A card, a plan and an invoice are the provider's to manage: each opens
-//! the provider's own page, at the address the host answered. Settings draws
-//! no card form and decides nothing about what is charged. A host that runs
-//! the workspaces itself, this device or the person's own server, sells
-//! nothing, and the page says so instead of showing plans.
 
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
@@ -35,7 +22,6 @@ use provider_settings_ui::widgets::{
 
 crate::effects::effect_family!(BillingEffect => answer);
 
-/// What Billing offers: the provider's own pages.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum BillingEffect {
@@ -50,7 +36,6 @@ pub enum BillingEffect {
     },
 }
 
-/// Answer `effect` by opening the provider's page the host answered for it.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: BillingEffect,
@@ -88,16 +73,12 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`BillingArea`].
 pub fn area(app: &SettingsApp) -> Option<&BillingArea> {
     app.areas().find()
 }
 
-/// Billing in a window: the model, made when the page is first shown, and
-/// what the page is keyed by.
 pub struct BillingArea {
     remote: ui::RemoteActions,
-    /// A screenshot's account in place of the host's.
     scene: Option<HostAccount>,
     model: OnceCell<Rc<RefCell<BillingModel>>>,
     shown: LocalState<u64>,
@@ -113,8 +94,6 @@ impl BillingArea {
         }
     }
 
-    /// The model, following the host's answer for the account from when it
-    /// is made.
     pub fn model(&self) -> &Rc<RefCell<BillingModel>> {
         self.model.get_or_init(|| {
             Rc::new(RefCell::new(match &self.scene {
@@ -124,8 +103,6 @@ impl BillingArea {
         })
     }
 
-    /// Take in the host's latest answer, if the model exists, and move what
-    /// the page is keyed by when it changed.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get()
             && let Ok(mut model) = model.try_borrow_mut()
@@ -136,11 +113,8 @@ impl BillingArea {
     }
 }
 
-/// What Billing knows of the account: the host's last answer.
 pub struct BillingModel {
-    /// The live answer, while it is followed.
     following: Option<ui::Followed>,
-    /// The answer's revision last taken in.
     seen: u64,
     account: Option<HostAccount>,
     error: Option<String>,
@@ -168,7 +142,6 @@ impl BillingModel {
         }
     }
 
-    /// Take in the host's latest answer; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         use ui::tilo_actions::InvocationUpdate;
         let Some(following) = &self.following else {
@@ -232,7 +205,6 @@ impl BillingModel {
     }
 }
 
-/// How long Linux machines ran: minutes under an hour, then whole hours, the unit a plan includes.
 fn vm_time(seconds: u64) -> String {
     const HOUR: u64 = 3600;
     if seconds < HOUR {
@@ -244,7 +216,6 @@ fn vm_time(seconds: u64) -> String {
     )
 }
 
-/// What the page says of the account, as `(label, value)`: its plan, card, usage and credit.
 fn facts(account: &HostAccount) -> Vec<(String, String)> {
     let standing = account.standing.as_ref();
     let plan = match account.plan() {
@@ -297,7 +268,6 @@ fn has_card(account: &HostAccount) -> bool {
     card(account).is_some()
 }
 
-/// The card on file as the provider describes it, "Visa ·· 4242", or as much of that as it says.
 fn card_line(account: &HostAccount) -> String {
     let Some(card) = card(account) else {
         return t("settings-billing-card-none");
@@ -319,8 +289,6 @@ fn card_line(account: &HostAccount) -> String {
     }
 }
 
-/// The account with the provider: what [`facts`] says, and the provider's page, which is where a
-/// card is added while there is none.
 fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSection {
     let card = has_card(account);
     let mut items: Vec<_> = facts(account)
@@ -348,7 +316,6 @@ fn account_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSect
     )
 }
 
-/// Every invoice, newest first as the host lists them, each opening on the provider's page.
 fn invoices_section(cx: &ViewCx<Settings>, account: &HostAccount) -> SettingsSection {
     let invoices = account
         .standing

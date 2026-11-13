@@ -33,14 +33,10 @@ use crate::upstream::{
 const LIST_BASE: &str = "856f4a83ae6ec86200760101aa0127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc2060102030213022302400256020b01040204130415052102230234024203560357018001027f007f017f027f007f007f0700017f0000017f0100017f007f016c00010200020101017e02017e001401020000";
 /// On `LIST_BASE`: a put on element 99@aa, which the list never held.
 const UPDATE_OF_UNKNOWN: &str = "856f4a836ecbd837014f0127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc202f001010300000101aa090102020211021303340142025602570170027f017f017f017fe300017f017f14057f00";
-/// On `LIST_BASE`: an insert after element 99@aa.
 const INSERT_AFTER_UNKNOWN: &str = "856f4a83d8e9acbb01500127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc202f001010300000101aa090102020211021303340242025602570170027f017f017f017fe30000017f017f14057f00";
 /// A text `"ab"` by actor `aa`: the text is op 1, `a` op 2, `b` op 3.
 const TEXT_BASE: &str = "856f4a83ac2187e60080010101aa011a190725c9e01787574caaf60bf64d2dcea17d67eac3bb9aa2c9ca1318e3c015060102030213022302400256020c010402041104130515052102230234024204560457028001027f007f017f037f007f007f07000102000001020100027f0000017e00027f017400020300030101027f0402017f0002166162030000";
-/// On `TEXT_BASE`: a second value `"Q"` on `a`, overwriting nothing.
 const FORGED_VALUE: &str = "856f4a837108c8fa014e011a190725c9e01787574caaf60bf64d2dcea17d67eac3bb9aa2c9ca1318e3c01502f001010400000101aa090102020211021302340142025602570170027f017f017f017f02017f017f16517f00";
-/// On `TEXT_BASE`: a delete of `a`, as a peer that has not seen
-/// `FORGED_VALUE` makes it.
 const HONEST_DELETE: &str = "856f4a838cdee0860153011a190725c9e01787574caaf60bf64d2dcea17d67eac3bb9aa2c9ca1318e3c01502f002010400000101aa0a01020202110213023401420256027002710273027f017f017f017f02017f037f007f017f017f02";
 
 fn hex(text: &str) -> Vec<u8> {
@@ -83,7 +79,6 @@ fn put(obj: ObjectId, key: Key, pred: Vec<OpId>) -> Op {
     op(obj, key, OpType::Put(ScalarValue::Int(5)), pred, false)
 }
 
-/// A change by `actor`, the `seq`th of that actor, on top of `doc`.
 fn change_at(doc: &mut AutoCommit, actor: &[u8], seq: u64, start: u64, ops: Vec<Op>) -> Vec<u8> {
     Change::from(ExpandedChange {
         operations: ops,
@@ -157,7 +152,6 @@ fn an_insert_after_an_unknown_element_is_refused() {
     }
     let own = elem(OpId(3, ActorId::from(&[0xf0, 1][..])));
     refused(&base, &change(&mut doc, 1, 3, vec![insert_after(own)]));
-    // An insert after one the same change makes later.
     let later = elem(OpId(4, ActorId::from(&[0xf0, 1][..])));
     let head = op(
         list.clone(),
@@ -178,7 +172,6 @@ fn an_update_of_an_unknown_element_is_refused() {
     refused(&base, &hex(UPDATE_OF_UNKNOWN));
     let (mut doc, list) = list_doc();
     let ghost = put(list.clone(), elem(id(99)), vec![]);
-    // Alone, and beside a put on the list's real item in the same change.
     let item = put(list.clone(), elem(id(2)), vec![id(2)]);
     refused(&base, &change(&mut doc, 1, 3, vec![item, ghost]));
     for key in [Key::Seq(ElementId::Head), elem(id(1))] {
@@ -215,8 +208,6 @@ fn utf16(base: &[u8]) -> AutoCommit {
     AutoCommit::load_with_options(base, options).unwrap()
 }
 
-/// A peer puts `value` as a second value on the `a` of `"ab"`, overwriting
-/// nothing, and another, who has not seen it, deletes the `a`.
 fn forged_value_then_delete(value: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut doc = AutoCommit::new().with_actor(aa());
     let text = doc.put_object(ROOT, "t", ObjType::Text).unwrap();
@@ -245,7 +236,6 @@ fn a_concurrent_delete_after_a_forged_text_value_applies() {
     let reproduced = (hex(TEXT_BASE), hex(FORGED_VALUE), hex(HONEST_DELETE));
     let built = ["Q", "😀"].map(forged_value_then_delete);
     for (base, forged, honest) in std::iter::once(reproduced).chain(built) {
-        // The other order, in which upstream applies both.
         let mut fresh = utf16(&base);
         fresh.load_incoming(&honest).unwrap();
         fresh.load_incoming(&forged).unwrap();
@@ -378,8 +368,6 @@ fn a_change_numbered_out_of_its_actor_s_order_is_refused() {
     );
 }
 
-/// A peer's honest edit of `base` and a refused change, delivered together:
-/// neither is applied. The honest one, delivered alone, then is.
 #[test]
 fn a_refused_change_takes_its_whole_delivery_with_it() {
     let base = hex(LIST_BASE);
@@ -398,10 +386,6 @@ fn a_refused_change_takes_its_whole_delivery_with_it() {
     assert_eq!(doc.save(), peer.save());
 }
 
-/// A refused change that arrived before its dependency waits in the queue:
-/// once the dependency arrives it is dropped, with whatever depends on it,
-/// and the dependency is applied. One that arrives with the dependency
-/// refuses the delivery and leaves the queue as it was.
 #[test]
 fn a_refused_change_waiting_for_its_dependency_holds_back_nothing() {
     let base = hex(LIST_BASE);
@@ -431,12 +415,10 @@ fn a_refused_change_waiting_for_its_dependency_holds_back_nothing() {
     let mut together = doc.clone();
     let delivery = [dependency, hex(INSERT_AFTER_UNKNOWN)].concat();
     assert!(together.load_incoming(&delivery).is_err());
-    // A save carries the changes still waiting.
     assert_eq!(together.save(), doc.save());
     assert_eq!(together.get_missing_deps(&[]), missing);
 }
 
-/// Three actors edit a map, a list and a text, merging now and then.
 fn small_history(seed: u64) -> (Vec<u8>, Vec<Change>) {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut base = AutoCommit::new().with_actor(aa());
@@ -483,8 +465,6 @@ fn small_history(seed: u64) -> (Vec<u8>, Vec<Change>) {
     (base_bytes, changes)
 }
 
-/// Every op id `changes` make, every actor they come from, and a few of
-/// neither.
 fn names(changes: &[Change]) -> (Vec<OpId>, Vec<ActorId>) {
     let mut ids = vec![id(1), id(2), id(3)];
     let mut actors = vec![aa(), ActorId::from(&[0xf0, 9][..])];
@@ -499,7 +479,6 @@ fn names(changes: &[Change]) -> (Vec<OpId>, Vec<ActorId>) {
     (ids, actors)
 }
 
-/// One or two random edits of a change's fields.
 fn mutate(c: &mut ExpandedChange, rng: &mut Rng, ids: &[OpId], actors: &[ActorId]) {
     for _ in 0..=rng.below(2) {
         let n = c.operations.len();
@@ -565,7 +544,6 @@ fn mutated(seed: u64, changes: &[Change], count: usize) -> Vec<(usize, Vec<u8>)>
         let mut expanded = changes[k].decode();
         mutate(&mut expanded, &mut rng, &ids, &actors);
         expanded.hash = None;
-        // Some edits make a change the encoder itself cannot write.
         if let Ok(change) = catch_unwind(AssertUnwindSafe(|| Change::from(expanded))) {
             out.push((k, change.raw_bytes().to_vec()));
         }
@@ -573,13 +551,6 @@ fn mutated(seed: u64, changes: &[Change], count: usize) -> Vec<(usize, Vec<u8>)>
     out
 }
 
-/// Valid changes with a field or two changed at random. The valid ones are
-/// applied as upstream applies them. Each mutated one, delivered to the
-/// replica that has everything before the change it was made from, with
-/// and without a diff cursor, never panics the fork, and leaves a document
-/// that saves and loads; without a cursor, the fork takes it as upstream
-/// does, or refuses it and keeps its document byte for byte, where upstream
-/// panics or takes it into a document that no longer loads.
 #[test]
 fn a_mutated_change_never_panics_or_corrupts_the_document() {
     let (mut refused, mut total) = (0, 0);

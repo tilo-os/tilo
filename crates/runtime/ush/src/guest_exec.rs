@@ -1,37 +1,20 @@
-//! Programs a Tilo-side shell runs in its session's guest, one command at a
-//! time (tier 3).
+//! Programs a Tilo-side shell runs in its session's guest, one command at a time.
 //!
-//! The shell runs outside every guest ([`crate::tilo_side`]). When a command
-//! is none of its own, it hands exactly that command to the session's guest:
-//! the guest's first process is `tilo-ush exec-serve`, holding one end of a
-//! socket pair at [`CONTROL_FD`]. For each command the shell sends, on that
-//! control socket, a fresh socket of the command's own; on it, the
-//! [`Request`] with the command's three standard streams as descriptors, and
-//! the server answers once, when the program ended ([`Answer`]). Several
-//! commands run at once (`a | b`, both programs), each on its own socket.
+//! The shell runs outside every guest ([`crate::tilo_side`]) and hands a command that is
+//! none of its own to the guest's `tilo-ush exec-serve`, holding one end of a socket pair
+//! at [`CONTROL_FD`]. For each command it sends a fresh socket of the command's own, on
+//! which the [`Request`] and the three standard streams travel; the server answers once,
+//! when the program ended ([`Answer`]).
 //!
-//! The streams are what the shell's are: the session's terminal itself
-//! where the command's stream is the terminal (an editor needs it), else a
-//! pipe the shell feeds or drains. A program reading the terminal gets it in
-//! the foreground: the server makes the program's process group the
-//! terminal's, so Ctrl-C and Ctrl-Z reach the program, and the shell takes
-//! the terminal back when it ends. Otherwise Ctrl-C reaches the shell, which
-//! passes it on as a [`Signal`].
+//! A program reading the terminal gets it in the foreground: the server makes the
+//! program's process group the terminal's, so Ctrl-C and Ctrl-Z reach it, and the shell
+//! takes the terminal back when it ends. Otherwise Ctrl-C reaches the shell, which passes
+//! it on as a [`Signal`]. A program that is part of one of the shell's jobs joins the
+//! job's process group ([`InJob`]), and a stopped program is reported
+//! ([`Answer::Stopped`]) before the final answer.
 //!
-//! # Jobs
-//!
-//! A program that is part of one of the shell's jobs says so ([`InJob`]):
-//! it joins the job's process group (the first one makes it, and the server
-//! answers [`Answer::Started`] with it), takes the terminal while the job is
-//! in the foreground, whichever of its streams the terminal is, and the
-//! shell stops, continues and ends the group with a [`Signal`]. When the
-//! program stops (Ctrl+Z reached it), the server says [`Answer::Stopped`]
-//! before its final answer, so the shell gives the prompt back.
-//!
-//! What a program writes in the guest lands on disk directly, through the
-//! guest's binds of the granted directories, as it did under bash: folding
-//! those writes into the environment's actions is the mount's work, still to
-//! come.
+//! What a program writes lands on disk through the guest's binds, as it did under bash;
+//! folding those writes into the environment's actions is the mount's work.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
@@ -43,61 +26,45 @@ use runtime_portal::fd_transport::{recv_with_fds, send_with_fd, send_with_fds};
 
 use crate::broker::{poll_fds, pollfd};
 
-/// Where the guest's first process holds the control socket.
 pub const CONTROL_FD: RawFd = 4;
 
-/// The argument that names [`CONTROL_FD`] to `exec-serve`.
 pub const CONTROL_FD_ARG: &str = "--control-fd";
 
-/// One command, as the shell asks for it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     pub argv: Vec<String>,
-    /// The program's whole environment.
     pub env: Vec<(String, String)>,
     pub cwd: PathBuf,
-    /// The shell's job the program is part of, if it runs as one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<InJob>,
 }
 
-/// A program run as part of one of the shell's jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InJob {
-    /// The job's process group, as an earlier [`Answer::Started`] named it;
-    /// `None` for the job's first program, which makes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<i32>,
     /// The job has the terminal: so does the program's group.
     pub foreground: bool,
 }
 
-/// What the server says about a command. Every command ends with exactly
-/// one of [`Answer::Exited`], [`Answer::NotFound`] and [`Answer::Failed`];
-/// one run as part of a job is first [`Answer::Started`], and may be
-/// [`Answer::Stopped`] any number of times before it ends.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "answer", rename_all = "kebab-case")]
 pub enum Answer {
     Exited {
         status: i32,
     },
-    /// The guest has no such program.
     NotFound,
     /// It could not be started.
     Failed {
         reason: String,
     },
-    /// It started, in this process group (the guest's own number for it).
     Started {
         group: i32,
     },
-    /// It stopped (Ctrl+Z reached it, or a [`Signal::Stop`]).
     Stopped,
 }
 
 impl Answer {
-    /// Whether this is the command's last answer.
     pub const fn is_final(&self) -> bool {
         matches!(
             self,
@@ -106,20 +73,17 @@ impl Answer {
     }
 }
 
-/// What the shell passes on to a running program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "signal", rename_all = "kebab-case")]
 pub enum Signal {
-    /// Ctrl-C.
     Interrupt,
-    /// `timeout` ran out, or `kill -9`.
     Kill,
-    /// `kill`: end.
     Terminate,
     /// Stop the program's group until it is continued.
     Stop,
-    /// Let it go on, with the terminal when `foreground`.
-    Continue { foreground: bool },
+    Continue {
+        foreground: bool,
+    },
 }
 
 impl Signal {
@@ -134,8 +98,6 @@ impl Signal {
     }
 }
 
-// The server: the guest's first process.
-
 /// `tilo-ush exec-serve --control-fd 4`: run each command the control socket
 /// hands over, until it closes. Answers the exit status.
 pub fn serve_main(args: &[String]) -> i32 {
@@ -147,9 +109,7 @@ pub fn serve_main(args: &[String]) -> i32 {
         eprintln!("exec-serve: needs {CONTROL_FD_ARG} with an open descriptor");
         return 2;
     };
-    // SAFETY: the descriptor was handed to this process to own, and is open.
     let control = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: sets a flag on the descriptor just adopted.
     unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
     ignore_terminal_signals();
     serve(&control);
@@ -164,7 +124,6 @@ fn valid_fd(fd: RawFd) -> bool {
 /// The server answers to nothing the terminal sends: it is never the
 /// terminal's foreground, and gives the terminal to the programs it starts.
 fn ignore_terminal_signals() {
-    // SAFETY: setting dispositions to SIG_IGN is always sound.
     unsafe {
         for signal in [
             libc::SIGINT,
@@ -215,7 +174,6 @@ fn is_terminal(fd: &OwnedFd) -> bool {
 /// Give the terminal `fd` is to the process group `group`. SIGTTOU is
 /// ignored, so asking from the background is allowed.
 fn give_terminal(fd: &OwnedFd, group: i32) {
-    // SAFETY: a plain call on our own descriptor.
     unsafe { libc::tcsetpgrp(fd.as_raw_fd(), group) };
 }
 
@@ -273,8 +231,6 @@ fn start_program(
     let Some((name, operands)) = request.argv.split_first() else {
         return Err(Answer::Exited { status: 0 });
     };
-    // The terminal the program may hold: its input's, or for a job's
-    // program any of its streams'.
     let terminal = {
         let streams: &[&OwnedFd] = if request.job.is_some() {
             &[&stdin, &stdout, &stderr]
@@ -320,8 +276,6 @@ fn start_program(
         }
     }
     let spawned = match command.spawn() {
-        // The job's first program is gone, and its group with it: this one
-        // starts the group anew.
         Err(error) if joined.is_some() && error.raw_os_error() == Some(libc::EPERM) => {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
@@ -369,7 +323,6 @@ fn pass_signals(socket: &UnixStream, group: i32, terminal: Option<OwnedFd>) {
                     if let (Signal::Continue { foreground: true }, Some(fd)) = (signal, &terminal) {
                         give_terminal(fd, group);
                     }
-                    // SAFETY: signals the program's own process group.
                     unsafe { libc::kill(group.saturating_neg(), signal.number()) };
                 }
             });
@@ -391,7 +344,6 @@ fn wait_in_job(pid: i32, socket: &UnixStream) -> i32 {
         }
         if libc::WIFSTOPPED(status) {
             let mut again: libc::c_int = 0;
-            // SAFETY: as above; WNOHANG returns at once.
             let changed =
                 unsafe { libc::waitpid(pid, &raw mut again, libc::WCONTINUED | libc::WNOHANG) }
                     == pid;
@@ -415,8 +367,6 @@ fn wait_in_job(pid: i32, socket: &UnixStream) -> i32 {
     }
 }
 
-/// A program's exit status as a shell reports it: 128 plus the signal that
-/// ended it.
 pub fn exit_status(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt as _;
     status
@@ -425,24 +375,18 @@ pub fn exit_status(status: std::process::ExitStatus) -> i32 {
         .unwrap_or(1)
 }
 
-// The client: the Tilo-side shell's half.
-
 /// One command handed to the guest, until its final answer.
 pub struct Command {
     socket: UnixStream,
     reader: BufReader<UnixStream>,
 }
 
-/// What [`Command::next`] came back with.
 #[derive(Debug, Default)]
 pub struct Woke {
-    /// What the server said, if it said something.
     pub answer: Option<Answer>,
-    /// Which of the descriptors waited on became readable, by position.
     pub ready: Vec<bool>,
 }
 
-/// Passes signals on to one command, from any thread.
 pub struct Signaller(UnixStream);
 
 impl Signaller {
@@ -455,8 +399,6 @@ impl Signaller {
 }
 
 impl Command {
-    /// Hand `request` to the guest whose control socket is `control`, with
-    /// `streams` as its standard input, output and error.
     pub fn start(
         control: &UnixStream,
         request: &Request,
@@ -471,7 +413,6 @@ impl Command {
             &payload,
             &[streams[0].as_fd(), streams[1].as_fd(), streams[2].as_fd()],
         )?;
-        // The program holds them now; ours would keep its pipes open.
         drop(streams);
         let reader = BufReader::new(ours.try_clone()?);
         Ok(Self {
@@ -480,7 +421,6 @@ impl Command {
         })
     }
 
-    /// What passes signals on to the command.
     pub fn signaller(&self) -> std::io::Result<Signaller> {
         Ok(Signaller(self.socket.try_clone()?))
     }
@@ -584,9 +524,6 @@ mod tests {
         (reader.into(), writer.into())
     }
 
-    /// The server on a thread, the client asking it: a command runs with the
-    /// streams it was handed, a missing one is not found, and `timeout`'s
-    /// stop kills one that would run on.
     #[test]
     fn a_command_runs_on_the_streams_it_was_handed() {
         let (control, served) = UnixStream::pair().unwrap();

@@ -8,9 +8,7 @@ use std::collections::HashSet;
 use ui::notify::{Notification, Notifier, Scheduled};
 use ui::time::SystemTime;
 
-/// What a click on a timer's notification opens.
 pub(crate) const TIMERS_URI: &str = "tilo-clocks:timers";
-/// What a click on an alarm's notification opens.
 pub(crate) const ALARMS_URI: &str = "tilo-clocks:alarms";
 
 pub(crate) trait Scheduler {
@@ -103,8 +101,6 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
     })
 }
 
-/// The record an activation names: the workspace's own, where Clocks keeps
-/// its alarms unless a window opened another.
 fn activation_record_id(record: &str) -> Option<ui::record::RecordId> {
     let primary = ui::record::RecordId::package_primary();
     if record == primary.as_str() {
@@ -117,11 +113,9 @@ pub(crate) fn alarm_id(id: &str) -> String {
     format!("a{}", id.chars().take(14).collect::<String>())
 }
 
-/// Bring the platform's scheduled notifications in line with the running
-/// timers and alarms of `clocks`, recording in `delivery` what this device owns and
-/// what the platform accepted. `persist` stores `delivery`; it runs before
-/// the platform is touched, so deleting a timer or crashing after a
-/// submission never loses the ability to cancel its notification.
+/// Bring the platform's scheduled notifications in line with the running timers
+/// and alarms, recording in `delivery` what this device owns. `persist` runs
+/// before the platform is touched, so a crash never loses a cancellation.
 pub(crate) fn reconcile(
     record: Option<&ui::record::RecordId>,
     clocks: &Clocks,
@@ -198,8 +192,8 @@ pub(crate) fn reconcile(
     result
 }
 
-/// Restore service-adjusted deadlines before the app ticks: the calendar
-/// may have followed a timezone change or rung while this process was closed.
+/// Restore service-adjusted deadlines before the app ticks: the calendar may have
+/// followed a timezone change or rung while this process was closed.
 pub(crate) fn restore_alarms(
     clocks: &Clocks,
     delivery: &mut Delivery,
@@ -595,7 +589,6 @@ mod tests {
                 ..
             }]
         ));
-        // The app's existing automatic completion edit follows the tick.
         clocks.alarms.get_mut(&id).unwrap().enabled = false;
         let encoded = serde_json::to_vec(&delivery).unwrap();
         let mut restarted: Delivery = serde_json::from_slice(&encoded).unwrap();
@@ -747,7 +740,6 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host() {
-        // Case: opening an empty profile preserves another profile's timer.
         {
             let host = TestScheduler::default();
             let foreign_id = timer_id("0123456789abcdef");
@@ -772,8 +764,6 @@ mod tests {
             );
         }
 
-        // Case: a deleted timer's cancellation survives failure and restart
-        // without touching another profile.
         {
             let host = TestScheduler::default();
             let stored = RefCell::new(Delivery::default());
@@ -835,7 +825,6 @@ mod tests {
             );
         }
 
-        // Case: a storage failure prevents native submission.
         {
             let host = TestScheduler::default();
             let clocks = running("Owned timer");
@@ -857,7 +846,6 @@ mod tests {
             );
         }
 
-        // Case: an elapsed notification is retained until Windows delivers it.
         {
             let host = TestScheduler::default();
             let id = "fedcba9876543210".to_owned();

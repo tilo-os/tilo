@@ -5,9 +5,6 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-/// A command invocation represented without a shell.
-///
-/// `stdin` may contain credentials and is intentionally omitted from `Debug`.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CommandRequest {
     pub program: OsString,
@@ -18,7 +15,6 @@ pub struct CommandRequest {
     pub environment: Vec<(OsString, OsString)>,
     /// Maximum bytes captured independently from stdout and stderr.
     pub output_limit: usize,
-    /// Hard lifetime for this invocation, including inherited pipe holders.
     pub timeout: Duration,
 }
 
@@ -203,8 +199,6 @@ mod tests {
                 })
             ));
 
-            // The command would run for an hour: the run returning at all
-            // shows the timeout ended it.
             let timeout = CommandRequest::new("sh")
                 .args(["-c", "sleep 3600"])
                 .timeout(Duration::from_millis(25));

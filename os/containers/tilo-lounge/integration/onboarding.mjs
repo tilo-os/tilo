@@ -5,51 +5,53 @@
 //
 // The story this drives, one step per mark below:
 //
-//   0. the person who runs the host is in it and the host says so (the
-//      deployment declares them an owner) and its door closes behind them:
-//      from here nobody walks in, and the browser that stayed open is still
-//      the operator's;
+//   0. the person who runs the host arrives, and the operator declares them an
+//      owner through the workspace's operator socket — how a fresh
+//      invitation-only Lounge gets its first member; the door lets them in,
+//      and the workspace makes them an owner once they are;
 //   1. a stranger arrives: the door's wait list, not the setup screen, and an
 //      address left on it is confirmed through the mail the door sends;
-//   2. the operator invites that address from the workspace's own wait list,
-//      and the invitation is mailed to it;
-//   3. the stranger follows the invitation's link, joins, and sets Tilo up
-//      through their agent (`tilo login`, which adds Tilo's MCP server) — and
-//      lands in their own workspace, not in the Lounge they joined;
+//   2. the operator hands an invite link over in one press, and invites that
+//      address from the workspace's own wait list, which mails the invitation;
+//   3. the stranger follows the invitation's link and joins; a person not set
+//      up here is handed to the site, whose first screen sets Tilo up through
+//      their agent (`tilo login`, which adds Tilo's MCP server) and opens a
+//      workspace of their own, not the shared desktop they landed in;
 //   4. they keep themselves with a passkey, their browser forgets the site,
 //      and the passkey brings them back to that same workspace;
 //   5. they make a second workspace and are in it;
 //   6. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
 //
-// The mails are the door's own, kept by the mail sink this run points the
-// door at: the run reads each one's link out of the file it landed in, so
-// what the flow proves is the mail a person would get.
+// The mails are the door's own, kept by the mail sink the stack points it at:
+// the run reads each one's link out of the file it landed in, so what the flow
+// proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN SITE_CA ROLES
+// usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET
 //
-// SITE is the web entry's origin, RELAY the workspace host's, WORK the run's
-// own directory (the mail sink's OUT_DIR and the relay restart handshake live
-// there), TILO_BIN the `tilo` command an agent runs, SITE_CA the site's test
-// certificate, and ROLES the roles file the deployment mounts: the driver
-// declares the operator an owner in it, as the deployment does.
-//
-// Prints a JSON report and keeps every page's screenshot and console in WORK;
-// exits non-zero when a step did not happen.
-import {execFile, spawn} from 'node:child_process';
-import {chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
+// SITE is the web entry's origin (the site people visit), RELAY the workspace
+// host's, WORK the run's directory (the stack's state, the mail sink's files
+// and every page's screenshots and console live there), TILO_BIN the `tilo`
+// command an agent runs, and OWNER_SOCKET the running Lounge's operator socket:
+// the driver declares the operator an owner through it, as the deployment
+// does. The stack is plain http on this machine, so no certificate stands
+// between the browsers, the agent's command and it.
+import {execFile, execFileSync, spawn} from 'node:child_process';
+import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
-const [site, relay, work, tiloBin, siteCa, rolesFile] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !siteCa || !rolesFile) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN SITE_CA ROLES');
+const [site, relay, work, tiloBin, ownerSocket] = process.argv.slice(2);
+if (!site || !relay || !work || !tiloBin || !ownerSocket) {
+  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET');
   process.exit(2);
 }
-const mailDir = join(work, 'mail');
+// The mail sink the stack points the door at (`stack.sh mail` reads the same).
+const mailDir = join(work, 'state', 'mail');
+const computer = join(work, 'computer');
 mkdirSync(mailDir, {recursive: true});
 const mark = clock();
 const report = {site, relay, at: new Date().toISOString(), steps: []};
@@ -61,10 +63,14 @@ const hostOrigin = new URL(relay).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 
+// A person's tabs share one browser and the flow reads the one behind: the
+// second tab must be let in without the first losing the workspace. A
+// browser freezes or throttles a tab nobody looks at, and a starved machine
+// does it at once, so every tab here answers as the front one does.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 
@@ -77,7 +83,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
   title: document.title,
-})`).then(JSON.parse).catch(() => ({}));
+})`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
 
 const dump = async (tab, name) => {
   const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
@@ -93,10 +99,13 @@ const fail = async message => {
     const lines = (tab.log ?? []).slice(-40);
     if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
   }
+  // A tab that stopped answering (its renderer gone, a dialog up) answers
+  // none of these: each is given a step's time, not the flow's.
+  const bounded = (work, otherwise) => Promise.race([work.catch(() => otherwise), sleep(stepLimit(1)).then(() => otherwise)]);
   for (const {name, tab} of said) {
-    await dump(tab, `failed-${name}`).catch(() => {});
-    report[`${name}Text`] = await pageText(tab);
-    report[`${name}State`] = await state(tab);
+    await bounded(dump(tab, `failed-${name}`), undefined);
+    report[`${name}Text`] = await bounded(pageText(tab), '(the tab did not answer)');
+    report[`${name}State`] = await bounded(state(tab), {});
   }
   writeFileSync(join(work, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
@@ -134,10 +143,16 @@ const poll = async (tab, expression, timeout = stepLimit(4)) => {
 /** Wait until the page answers `expression` true, or say what it was doing. */
 const until = async (tab, expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
+  const answered = work => Promise.race([work, sleep(stepLimit(1)).then(() => null)]);
   for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
+    const value = await answered(tab.evaluate(expression).catch(() => false));
     if (value) return value;
-    if (Date.now() > deadline) await fail(`${what} never happened: ${JSON.stringify(await state(tab))} — "${(await pageText(tab)).slice(0, 400)}"`);
+    if (Date.now() > deadline) {
+      const seen = await answered(state(tab));
+      const text = await answered(pageText(tab));
+      const cards = await answered(tab.evaluate(`[...document.querySelectorAll('.tilo-entry-card, [data-card]')].map(card => card.innerText.trim()).filter(Boolean).join(' | ')`).catch(() => ''));
+      await fail(`${what} never happened: ${seen === null ? 'the tab did not answer' : JSON.stringify(seen)} — "${(text ?? '').slice(0, 400)}"${cards ? ` — on screen: ${cards.slice(0, 600)}` : ''}`);
+    }
     await sleep(200);
   }
 };
@@ -153,6 +168,8 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
   if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN});
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
+  await tab.send('Page.enable', {}).catch(() => {});
+  await tab.send('Inspector.enable', {}).catch(() => {});
   const asked = new Map();
   browser.on(({sessionId, method, params}) => {
     if (sessionId !== tab.sessionId) return;
@@ -160,6 +177,11 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
     else if (method === 'Network.loadingFailed') tab.log.push(`NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}`);
     else if (method === 'Network.responseReceived' && params.response.status >= 400) tab.log.push(`HTTP ${params.response.status} ${params.response.url}`);
     else if (method === 'Log.entryAdded') tab.log.push(`LOG ${params.entry.level} ${params.entry.text}`);
+    // Where the tab went, and why it stopped answering: a page that never
+    // came after a navigation names one of these.
+    else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`PAGE now at ${params.frame.url.replace(/#.*/, '#…')}`);
+    else if (method === 'Page.javascriptDialogOpening') tab.log.push(`PAGE dialog ${params.type}: ${params.message}`);
+    else if (method === 'Inspector.targetCrashed') tab.log.push(`PAGE the renderer crashed; the browser said: ${browser.crashLines?.() || '(nothing)'}`);
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 500));
     }
@@ -181,24 +203,6 @@ const authenticator = async tab => {
 /** The page's own identity module: the one it holds its person in. */
 const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
   || document.querySelector('script[type="module"][src]').src))).href)`;
-/** The same person in a new tab of the same browser: what a person does
- * after a host starts again, whose page's live connection went down with
- * it. */
-const freshTab = async page => {
-  // The old tab goes first: this browser holds the person's device key in a
-  // Web Lock for the life of its page, and a second tab would wait for it.
-  await page.tab.close().catch(() => {});
-  const tab = await page.browser.tab();
-  tab.log ??= [];
-  await tab.send('Network.enable', {}).catch(() => {});
-  await tab.send('Log.enable', {}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
-  page.tab = tab;
-  // What the run keeps of this page is the tab it is using now.
-  const kept = said.find(entry => entry.name === page.name);
-  if (kept) kept.tab = tab; else said.push({name: page.name, tab});
-  return tab;
-};
 /** Who this page is, and which workspace it holds. */
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey ?? null; } catch { return null; } })(),
@@ -207,6 +211,19 @@ const person = tab => tab.evaluate(`JSON.stringify({
 })`).then(JSON.parse).catch(() => ({}));
 /** The person's own workspace, as the page titles it: never the Lounge's. */
 const ownWorkspace = tab => tab.evaluate(`/^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`).catch(() => '');
+/** What the page is doing while it is not there yet: the mount's own phase,
+ * the frames it drew and the name the workspace answered admission with, so a
+ * wait that runs out says which of them it was waiting on. A page waits on its
+ * host admitting it and replaying what it made before its desk draws, and
+ * gives a host that says nothing two minutes before it calls it unanswered
+ * (`whenReady` in peer.mjs): the waits below on the person's own workspace are
+ * given as long, never a stopwatch on a frame. */
+const ownProgress = tab => tab.evaluate(`(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  return JSON.stringify({title: document.title, phase: state?.phase ?? null, frames: state?.frames ?? null,
+    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
+})()`).catch(() => '{}');
+const OWN_WORKSPACE_STEPS = 8;
 
 // -- the desktop -------------------------------------------------------------
 const canvasBox = tab => tab.evaluate(`(() => {
@@ -332,32 +349,47 @@ const mailLink = (mail, marker) => {
   return text.match(new RegExp(`https?://[^\\s"'<>]*${marker}[=:][0-9a-zA-Z-]+`))?.[0] ?? null;
 };
 
+/** Whether the first screen is in front of the person. Its element is in every
+ * page the entry serves (`#first-run`), so what shows is whether the page set
+ * `data-first-run` and displayed it. */
+const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefined
+  && getComputedStyle(document.getElementById('first-run')).display !== 'none')`;
+
 // -- tilo.sh as a person meets it --------------------------------------------
-/** A person arriving at the site, in a tab that has not been here before. */
+/** A person arriving at the site, in a tab that has not been here before.
+ * `expected: 'let in'` tries again while the door refuses: the door that let
+ * the declaration in holds it, so a person declared an owner just now may meet
+ * the closed door once more before it opens for them, and comes back — as the
+ * operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
-  await page.tab.navigate(site);
-  await until(page.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${page.name} arriving`, stepLimit(6));
-  const seen = await state(page.tab);
-  report.steps.push({step: `${page.name} arrived`, ...seen});
-  if (seen.arrival !== 'done' && expected !== 'refused') await fail(`${page.name} did not arrive: ${JSON.stringify(seen)} — "${(await pageText(page.tab)).slice(0, 300)}"`);
-  return seen;
+  const deadline = Date.now() + stepLimit(6);
+  for (;;) {
+    await page.tab.navigate(site);
+    await until(page.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${page.name} arriving`, stepLimit(6));
+    const seen = await state(page.tab);
+    report.steps.push({step: `${page.name} arrived`, ...seen});
+    if (seen.arrival === 'done' || expected === 'refused') return seen;
+    if (Date.now() > deadline) await fail(`${page.name} did not arrive: ${JSON.stringify(seen)} — "${(await pageText(page.tab)).slice(0, 300)}"`);
+    await sleep(500);
+  }
 };
 
-// -- the operator's browser, kept across the door closing --------------------
-const closeTheDoor = async () => {
-  writeFileSync(join(work, 'close-the-door'), '');
-  const deadline = Date.now() + 180_000;
-  while (!existsSync(join(work, 'door-closed'))) {
-    if (Date.now() > deadline) await fail('the deployment never closed the door');
-    await sleep(200);
-  }
-  mark('the deployment closed the door and turned on the wait list');
+// -- the deployment's declaration of its people -------------------------------
+/** Declare `user` (hex) an owner of the Lounge, as the deployment does: the
+ * operator asks the running workspace over its operator socket, and the
+ * workspace's door lets them in and its governance makes them an owner the
+ * moment they are a member. */
+const declareOwner = async user => {
+  execFileSync(
+    'python3',
+    ['-I', fileURLToPath(new URL('../declare-owner', import.meta.url)), ownerSocket, user],
+    {stdio: ['ignore', 'inherit', 'inherit']},
+  );
 };
 
 // The agent's computer: its own home, a `claude` that records what the command
 // asked it and writes the server where a real one would, and the test
 // certificate the command trusts for this run's site.
-const computer = join(work, 'computer');
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const claudeCalls = join(computer, 'claude-calls.txt');
 writeFileSync(join(computer, 'bin', 'claude'), `#!/bin/sh
@@ -380,22 +412,12 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
 `);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
-const relayCertificate = () => new Promise((resolve, reject) => {
-  const socket = connect({host: new URL(relay).hostname, port: Number(new URL(relay).port || 443), servername: new URL(relay).hostname,
-    rejectUnauthorized: false}, () => {
-    const body = (socket.getPeerCertificate().raw ?? Buffer.alloc(0)).toString('base64').match(/.{1,64}/g)?.join('\n') ?? '';
-    socket.end();
-    resolve(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
 const agentEnv = async () => ({
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
   CLAUDECODE: '1',
-  TILO_TEST_CA_FILE: `${siteCa}:${join(computer, 'relay.pem')}`,
 });
 const tilo = async (env, args) => new Promise(resolve => {
   execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20},
@@ -405,42 +427,39 @@ const tilo = async (env, args) => new Promise(resolve => {
  * writes it inside the gesture, and the browser lands the write a moment
  * later, so a prompt an earlier copy left there is not this one. */
 const copied = async (tab, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
+  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
   'the prompt on the clipboard', stepLimit(4));
 const commandOf = prompt => {
-  const match = prompt.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
+  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
   return match ? {code: match[1], site: match[2] ?? null} : null;
 };
 
 try {
-  // -- 0. the operator is in the host, and the deployment closes its door -----
+  // -- 0. the operator, declared by the deployment, is let in --------------
+  // A fresh invitation-only Lounge has nobody in it: the people the operator
+  // declares are the ones its door lets in, so the person who runs it arrives
+  // first, and this run declares their key through the operator socket the way
+  // `stack.sh owner` does.
   const operator = await visit('operator', {setupDone: true});
-  await arrive(operator, {expected: 'desktop'});
+  await arrive(operator, {expected: 'refused'});
+  const operatorPerson = await operator.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    return (await id.browserIdentity()).userPublicKey;
+  })()`).catch(() => null);
+  if (!operatorPerson) await fail('the operator\'s tab made no person to declare');
+  await declareOwner(operatorPerson);
+  report.operator = {user: operatorPerson};
+  await arrive(operator, {expected: 'let in'});
   await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.room`,
-    'the operator joining the workspace', stepLimit(8));
-  const operatorPerson = await person(operator.tab);
-  if (!operatorPerson.user) await fail(`the operator joined nothing: ${JSON.stringify(operatorPerson)}`);
-  report.operator = operatorPerson;
-  // The deployment declares them an owner, as it declares its people in its
-  // roles file: from here the workspace lets them invite.
-  writeFileSync(rolesFile, JSON.stringify({owners: [operatorPerson.user], moderators: []}));
-  mark('the operator is in the Lounge, and the deployment declares them an owner');
-  closeTheDoor();
-  // The host started again with its door closed: the operator opens the site
-  // again, in this browser (the same person, the same membership), and the
-  // closed door lets them in as the member they are.
-  await freshTab(operator);
-  await arrive(operator, {expected: 'desktop'});
-  await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.room`,
-    'the operator let back into the workspace by the closed door', stepLimit(8));
-  mark('the operator is still in, through the door that just closed');
+    'the door letting in the person the deployment declared', stepLimit(8));
+  mark('the operator the deployment declares is let in by the closed door');
 
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});
   await arrive(stranger, {expected: 'refused'});
   await until(stranger.tab, `document.documentElement.dataset.door === 'wait-list'`, "the door showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
-  await until(stranger.tab, `!document.getElementById('first-run')`, 'the setup screen leaving the door');
+  await until(stranger.tab, `!${firstScreenShown}`, 'the setup screen leaving the door');
   report.waitList = await stranger.tab.evaluate(`({
     heading: document.getElementById('arrival-door-heading')?.textContent?.trim() ?? null,
     body: document.getElementById('arrival-door-body')?.textContent?.trim() ?? null,
@@ -492,7 +511,7 @@ try {
       if (shared && shared !== ${JSON.stringify(clipboardBefore)}) return 'shared:' + shared;
       return navigator.clipboard.readText().then(text => text.includes('/i/') && text !== ${JSON.stringify(clipboardBefore)} ? 'copied:' + text : '', () => '');
     })()`, stepLimit(8));
-  if (!handed) await fail('one press did not hand over an invite link, on the clipboard or in a card');
+  if (!handed) await fail(`one press did not hand over an invite link, on the clipboard or in a card: ${JSON.stringify(await state(operator.tab))} — "${(await pageText(operator.tab)).slice(0, 300)}"`);
   report.copiedLink = String(handed).replace(/#.*/, '#…');
   if (!String(handed).startsWith('copied:')) await fail(`the link was not on the clipboard: ${handed}`);
   console.log(`ok: one press put an invite link on the operator's clipboard (${report.copiedLink})`);
@@ -500,10 +519,17 @@ try {
 
   const cardSeen = async () => {
     for (const deadline = Date.now() + stepLimit(6); Date.now() < deadline;) {
+      // The card is on the page before its list is: read it once it has
+      // answered with rows, with nobody on it, or with what went wrong.
       const shown = await operator.tab.evaluate(`(() => {
         const card = document.querySelector('.tilo-waiting');
         if (!card) return '';
-        return JSON.stringify({contacts: [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim()),
+        const error = card.querySelector('.tilo-entry-error');
+        const rows = [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim());
+        const empty = card.querySelector('.tilo-waiting-none');
+        if (!rows.length && !empty && !(error && !error.hidden)) return '';
+        return JSON.stringify({contacts: rows,
+          said: error && !error.hidden ? error.textContent.trim() : null,
           buttons: [...card.querySelectorAll('li button')].map(node => node.textContent.trim())});
       })()`).catch(() => '');
       if (shown) return JSON.parse(shown);
@@ -521,7 +547,7 @@ try {
   }
   if (!card) await fail(`the operator's search offered no wait list: ${(await pageText(operator.tab)).slice(0, 400)}`);
   report.waitingCard = card;
-  if (!card.contacts.includes(address)) await fail(`the wait list shows ${JSON.stringify(card.contacts)}, not the address left there`);
+  if (!card.contacts.includes(address)) await fail(`the wait list shows ${JSON.stringify(card.contacts)} (${card.said ?? 'nothing said'}), not the address left there`);
   await dump(operator.tab, '3-waiting-card');
   console.log(`ok: the operator's wait list shows the address (${card.contacts.join(', ')})`);
   const invited = await pressText(operator.tab, 'Invite', '.tilo-waiting');
@@ -544,7 +570,7 @@ try {
   report.sent = await operator.tab.evaluate(`document.querySelector('.tilo-waiting-sent')?.textContent?.trim() ?? null`);
   const invitation = await waitForMail('the invitation mail', 2);
   report.invitationMail = {to: invitation.to, from: invitation.from, subject: invitation.subject};
-  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
+  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
   if (!inviteLink) await fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
   report.inviteLink = inviteLink.replace(/#.*/, '#…');
   await pressText(operator.tab, 'Close', '.tilo-waiting');
@@ -569,12 +595,14 @@ try {
   console.log(`ok: the invitation brought the stranger in (${report.joined.room})`);
   mark('the invitation brought the stranger into the workspace');
 
-  // The person opens Tilo itself, as someone who has just been let in does:
-  // the first screen of their first visit, where an agent sets Tilo up or
+  // The page hands a person it let in by a link, and who is not set up here,
+  // to the site itself, where the first screen is: an agent sets Tilo up, or
   // they skip it. This person has an agent.
-  await stranger.tab.navigate(site);
-  await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the site opening for the person', stepLimit(6));
-  await until(stranger.tab, `!!document.getElementById('first-run-agent')`, 'the first screen offering its agent prompt', stepLimit(6));
+  await until(stranger.tab, firstScreenShown,
+    'the first screen of a person who is not set up yet', stepLimit(8));
+  report.firstScreenShown = await stranger.tab.evaluate(firstScreenShown);
+  if (!report.firstScreenShown) await fail('the first screen is in the page but not shown');
+  await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the site arriving behind the first screen', stepLimit(6));
   report.firstScreen = await stranger.tab.evaluate(`({
     heading: document.getElementById('first-run-heading')?.textContent?.trim() ?? null,
     prompt: document.getElementById('first-run-offer')?.textContent?.trim() ?? null,
@@ -591,7 +619,6 @@ try {
   report.prompt = prompt;
   const setup = commandOf(prompt);
   if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-  writeFileSync(join(computer, 'relay.pem'), await relayCertificate().catch(error => fail(`the relay's certificate: ${error.message}`)));
   const env = await agentEnv();
   const login = await tilo(env, ['login', setup.code, '--site', setup.site ?? site]);
   report.login = login;
@@ -600,9 +627,9 @@ try {
   report.claude = registered;
   if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to the agent: ${registered || 'never asked'}`);
   console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
-  await until(stranger.tab, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(4));
-  for (const deadline = Date.now() + stepLimit(3); !await ownWorkspace(stranger.tab).catch(() => '');) {
-    if (Date.now() > deadline) await fail(`the tab is titled "${await stranger.tab.evaluate('document.title')}", not after the person's own workspace`);
+  await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
+  for (const deadline = Date.now() + stepLimit(OWN_WORKSPACE_STEPS); !await ownWorkspace(stranger.tab).catch(() => '');) {
+    if (Date.now() > deadline) await fail(`the tab is titled ${await ownProgress(stranger.tab)}, not after the person's own workspace`);
     await sleep(250);
   }
   report.workspace = await ownWorkspace(stranger.tab);
@@ -611,8 +638,37 @@ try {
   mark('tilo login ran and the tab is in the person\'s own workspace');
   console.log(`ok: the person is in their own workspace (${report.workspace})`);
 
+  // Let in, not only named: no failure screen over the workspace. Then a
+  // second tab of the same browser, which holds a device key of its own (one
+  // per tab), opens the person's workspace as theirs, and the first tab
+  // stays in: the agent's entry never takes the person's own tabs out.
+  const failureOf = tab => tab.evaluate(`document.documentElement.dataset.failure
+    ? document.documentElement.dataset.failure + ': ' + (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300) : ''`).catch(() => '');
+  const refusedFirst = await failureOf(stranger.tab);
+  if (refusedFirst) await fail(`the person's own workspace refused the tab after the agent entered it: ${refusedFirst}`);
+  const second = await stranger.browser.tab();
+  second.log ??= [];
+  said.push({name: 'stranger-second-tab', tab: second});
+  await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await second.navigate(site);
+  await until(second, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
+    'a second tab of the person arriving', stepLimit(8));
+  const refusedSecond = await failureOf(second);
+  if (refusedSecond) await fail(`a second tab of the person was not let into their own workspace: ${refusedSecond}`);
+  await until(second, `!!(${JSON.stringify(report.workspace)} === document.title)`,
+    'the second tab in the person\'s own workspace', stepLimit(4));
+  await dump(second, '5-own-workspace-second-tab');
+  const refusedAfter = await failureOf(stranger.tab);
+  if (refusedAfter) await fail(`the first tab lost the person's own workspace when the second came: ${refusedAfter}`);
+  await second.close();
+  mark('a second tab of the person entered their own workspace, and the first stayed in');
+  console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
+
   // -- 4. a passkey brings the same person back to that workspace ------------
-  // Kept from the person's own desktop, as "Keep with passkey" does.
+  // Kept from the person's own desktop, as "Keep with passkey" does. A
+  // passkey is made in the tab a person is looking at: the second tab opened
+  // above closed, and this one is in front again before the browser is asked.
+  await stranger.tab.send('Page.bringToFront').catch(() => {});
   const kept = await stranger.tab.evaluate(`(async () => {
     const id = ${identityModule};
     const person = await id.browserIdentity();
@@ -642,7 +698,7 @@ try {
   report.returned = returned;
   if (returned.user !== kept.person) await fail(`the passkey signed in ${returned.user}, not ${kept.person}`);
   await until(stranger.tab, `(() => { const t = document.title; return /^Tilo · /.test(t) && !/lounge/i.test(t); })()`,
-    "the person back in their own workspace", stepLimit(6));
+    'the person back in their own workspace', stepLimit(OWN_WORKSPACE_STEPS));
   report.returnedTo = await ownWorkspace(stranger.tab);
   await dump(stranger.tab, '6-passkey-back');
   console.log(`ok: a passkey signed the same person back in, to ${report.returnedTo}`);
@@ -657,11 +713,25 @@ try {
     input.value = ${JSON.stringify(named)};
     input.dispatchEvent(new Event('input', {bubbles: true}));
   })()`);
+  // The workspace the page opens, and the one this browser remembers by that
+  // name: the tab's title names the space in front on the workspace's
+  // desktop, not the workspace, so it is not what says where the page is.
+  const opened = `(() => {
+    const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
+    const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
+    const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.room === chosen?.room);
+    const open = document.documentElement.dataset.entry === 'open'
+      && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
+    return open && kept?.name === ${JSON.stringify(named)} ? chosen.room : '';
+  })()`;
+  const before = await stranger.tab.evaluate(opened).catch(() => '');
+  if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
-  await until(stranger.tab, `document.title.includes(${JSON.stringify(named)})`, 'the second workspace opening', stepLimit(10));
-  report.secondWorkspace = await stranger.tab.evaluate(`document.title`);
+  const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
+  if (made === report.returned?.room) await fail(`the second workspace is the first one again: ${made}`);
+  report.secondWorkspace = {room: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
-  console.log(`ok: the person made and opened a second workspace (${report.secondWorkspace})`);
+  console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');
 
   // -- 6. a visitor with no invitation is still out --------------------------

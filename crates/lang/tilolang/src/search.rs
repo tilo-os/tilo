@@ -1,16 +1,13 @@
 //! A type's search (search.md, "What a type declares"): the filters its `search` block declares, in
-//! order, its default order and the fields it keeps out of filters; or, with no block, the
-//! defaults: every Bool, enum, Date, Time, number, reference, identifier and Set field a filter, in
-//! field order, and the first Time the default order, newest first.
+//! order, its default order and the fields it keeps out of filters; or, with no block, the defaults:
+//! a filter on every Bool, enum, Date, Time, number, reference, identifier and Set field, in field
+//! order, and the first Time the default order, newest first.
 //!
-//! A named filter (`filter "Open" = not done`) is a predicate over the resource's own fields,
-//! checked here to be one the index can keep: it reads only the resource's own fields and
-//! literals and calls nothing, so a change to one field changes it and nothing else does. One
-//! may compare a field with the time it is asked at (`due <= today`, `due <= today + 7d`): that
-//! is read when the filter is asked, and the index answers it from the field's column. One may
-//! compare a field with the person it is asked for (`assignee == workspace.me`): that is read
-//! when the filter is asked too, for each of them. Lambdas of `filter` and `count` over a
-//! collection lower the same way, without the time.
+//! A named filter (`filter "Open" = not done`) is a predicate over the resource's own fields, checked
+//! here to be one the index can keep: it reads only those fields and literals and calls nothing. It
+//! may compare a field with the time it is asked at (`due <= today`) or with the person it is asked
+//! for (`assignee == workspace.me`), both read when the filter is asked. Lambdas of `filter` and
+//! `count` over a collection lower the same way, without the time.
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
@@ -19,12 +16,11 @@ use crate::pred::{CmpOp, Float, Lit, Operand, Pred};
 use crate::resolve::{Env, FieldInfo, TypeInfo, sentence_case};
 use crate::types::Ty;
 
-/// The words of a typed search that a filter's key cannot be: `is:done`, `sort:-due`,
-/// `in:list`.
+/// The words of a typed search that a filter's key cannot be: `is:done`, `sort:-due`, `in:list`.
 pub const RESERVED_KEYS: &[&str] = &["is", "sort", "in", "text"];
 
-/// What a filter on a field of type `ty` is: its kind, whether it may hold no value (an option
-/// or a set) and whether it holds several (a set). `None` for a type no filter compares.
+/// What a filter on a field of type `ty` is: its kind, whether it may hold no value (an option or a
+/// set) and whether it holds several (a set). `None` for a type no filter compares.
 #[must_use]
 pub fn filter_kind(ty: &Ty) -> Option<(FilterKind, bool, bool)> {
     match ty {
@@ -80,7 +76,6 @@ fn about(info: &TypeInfo) -> String {
     }
 }
 
-/// The fields of `info` a filter can be on, as the errors list them.
 fn filterable(info: &TypeInfo) -> String {
     let names: Vec<&str> = info
         .fields
@@ -107,7 +102,6 @@ impl Ctx<'_> {
         self.diags.push(Diagnostic::new(code, span, msg));
     }
 
-    /// A filter's options: `(icon: .x)` as an enum case's icon is written.
     fn options(&mut self, opts: &[ast::ActionOpt]) -> Option<String> {
         let mut icon = None;
         for opt in opts {
@@ -373,8 +367,8 @@ pub fn resolve(
         }
     }
     // A field naming who a resource belongs to is a filter whether the block lists it or not:
-    // `assignee:me` reads the same in every app that has one. `hide` keeps it out, as it keeps
-    // any field.
+    // `assignee:me` reads the same in every app that has one. `hide` keeps it out, as it keeps any
+    // field.
     let person: Vec<FilterMeta> = info
         .fields
         .iter()
@@ -434,7 +428,6 @@ fn push_filter(ctx: &mut Ctx<'_>, out: &mut SearchMeta, filter: FilterMeta, span
     out.filters.push(filter);
 }
 
-/// The defaults of a type with no `search` block.
 #[must_use]
 pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
     let mut out = SearchMeta::default();
@@ -479,19 +472,17 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
 /// How the fields of the resource a predicate is over are written.
 #[derive(Clone, Copy)]
 enum Fields<'a> {
-    /// By name: a named filter's `not done`.
     Own,
     /// Through a lambda's parameter: `t -> not t.done`.
     Param(&'a str),
 }
 
-/// A predicate's lowering over the fields of one type.
 struct Lower<'a> {
     info: &'a TypeInfo,
     env: &'a Env,
     fields: Fields<'a>,
-    /// The type of a name the asking code holds (a local, a parameter), which a lambda's
-    /// predicate may compare a field with: `None` for none.
+    /// The type of a name the asking code holds (a local, a parameter), which a lambda's predicate may
+    /// compare a field with: `None` for none.
     outer: Option<&'a Outer<'a>>,
     /// The names it compares, in the order of their [`Operand::Arg`]s.
     captured: std::cell::RefCell<Vec<String>>,
@@ -499,11 +490,10 @@ struct Lower<'a> {
 
 type Lowered<T> = Result<T, (Span, String)>;
 
-/// The type of a name the code asking a predicate holds, `None` for one it does not.
 type Outer<'a> = dyn Fn(&str) -> Option<Ty> + 'a;
 
-/// `param -> body` as a predicate over the fields of `info`, when it is one the store can
-/// answer: it reads only the item's fields and literals.
+/// `param -> body` as a predicate over the fields of `info`, when it is one the store can answer: it
+/// reads only the item's fields and literals.
 #[must_use]
 pub fn lambda_pred(info: &TypeInfo, env: &Env, param: &str, body: &Expr) -> Option<Pred<String>> {
     Lower {
@@ -518,8 +508,8 @@ pub fn lambda_pred(info: &TypeInfo, env: &Env, param: &str, body: &Expr) -> Opti
 }
 
 /// As [`lambda_pred`], the predicate also comparing fields with names the asking code holds
-/// (`c -> c.column == col`), each of the type `outer` gives: the predicate and the names, in
-/// the order of its [`Operand::Arg`]s, whose values are bound when it is asked.
+/// (`c -> c.column == col`), each of the type `outer` gives: the predicate and the names, in the order
+/// of its [`Operand::Arg`]s, whose values are bound when it is asked.
 #[must_use]
 pub fn lambda_pred_with(
     info: &TypeInfo,
@@ -540,7 +530,6 @@ pub fn lambda_pred_with(
 }
 
 impl Lower<'_> {
-    /// The field `e` names, when it names one of the resource's own.
     fn own_field(&self, e: &Expr) -> Option<&FieldInfo> {
         match (&e.kind, self.fields) {
             (ExprKind::Ident(name), Fields::Own) => self.info.field(name),
@@ -715,9 +704,8 @@ impl Lower<'_> {
         {
             return Ok((Operand::Len(field.id.clone()), Ty::Int));
         }
-        // `.some(v)`: an option holding a value compares as the value it holds. An item whose
-        // field holds none equals none and equals no value, so `x.parent == .some(t)` keeps the
-        // items whose parent is `t`, and the field's column answers it like `x.parent == t`.
+        // `.some(v)`: an option holding a value compares as the value it holds, so `x.parent == .some(t)`
+        // keeps the items whose parent is `t`, and the field's column answers it like `x.parent == t`.
         if let ExprKind::Variant { name, args } = &e.kind
             && name.name == "some"
             && let Some([arg]) = args.as_deref()
@@ -762,9 +750,8 @@ impl Lower<'_> {
         Ok((Operand::Lit(lit), ty))
     }
 
-    /// `workspace.me`, in a named filter: the person the filter is asked for
-    /// ([`Operand::Viewer`]), so what they hold reads differently for each of them. A lambda's
-    /// predicate is answered where it is written, so there it stays the view's own value.
+    /// `workspace.me`, in a named filter: the person the filter is asked for ([`Operand::Viewer`]). A
+    /// lambda's predicate is answered where it is written, so there it stays the view's own value.
     fn viewer(&self, e: &Expr) -> Option<(Operand<String>, Ty)> {
         if !matches!(self.fields, Fields::Own) {
             return None;
@@ -780,9 +767,9 @@ impl Lower<'_> {
         }
     }
 
-    /// `today`, `now`, either plus or minus a duration (`today + 1d`, `now - 7d`), in a named
-    /// filter: the time the filter is asked at ([`Operand::Clock`]). A lambda's predicate is
-    /// answered where it is written, so there they stay a query's (`query(T, due: ..today)`).
+    /// `today`, `now`, either plus or minus a duration (`today + 1d`), in a named filter: the time the
+    /// filter is asked at ([`Operand::Clock`]). A lambda's predicate is answered where it is written, so
+    /// there they stay a query's.
     fn clock(&self, e: &Expr) -> Option<Lowered<(Operand<String>, Ty)>> {
         if !matches!(self.fields, Fields::Own) {
             return None;

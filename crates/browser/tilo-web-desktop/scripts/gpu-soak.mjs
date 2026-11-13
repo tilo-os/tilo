@@ -13,6 +13,10 @@ import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 //            page that mounts host.mjs (its existing room is soaked)
 //   WINDOWS  windows to open on the desktop page (default 60)
 //   MINUTES  soak time after the windows are open (default 3)
+//   LOSE=1   halfway through the soak, destroy the page's GPU device, as a
+//            driver reset or the browser does: the desktop must draw again on
+//            a new device, whose resources stay at what the first held (a
+//            leak across the loss doubles them), and keep drawing there
 //   VIEWPORT logical page size (default 3008x1692: a 6K Retina display) at
 //            DPR (default 2), emulated. Emulation does not scale the canvas's
 //            device-pixel box; NOEMU=1 keeps a Chromium started with
@@ -37,24 +41,43 @@ const instrument = `(() => {
     dispatch: {count: 0, indirect: 0, largestWorkgroups: 0, largestDims: [0, 0, 0]},
     submits: 0, queueMs: [], memories: [], adapters: 0,
   };
-  const track = (kind, object, bytes) => {
+  // A lost device's memory is the browser's to free, all of it: what it
+  // held stops counting then, released by the page or not.
+  const held = new Map();
+  const track = (device, kind, object, bytes) => {
     const k = s[kind]; k.live++; k.liveBytes += bytes; k.created++; k.largest = Math.max(k.largest, bytes);
     let gone = false;
-    const release = () => { if (gone) return; gone = true; k.live--; k.liveBytes -= bytes; };
+    const release = () => { if (gone) return; gone = true; k.live--; k.liveBytes -= bytes; held.get(device)?.delete(release); };
+    if (!held.has(device)) held.set(device, new Set());
+    held.get(device).add(release);
     const destroy = object.destroy;
     object.destroy = function () { release(); return destroy.call(this); };
     registry.register(object, release);
   };
+  s.devices = [];
+  s.losses = [];
+  const requestDevice = GPUAdapter.prototype.requestDevice;
+  GPUAdapter.prototype.requestDevice = async function (...args) {
+    const device = await requestDevice.apply(this, args);
+    s.devices.push(device);
+    device.lost.then(info => {
+      s.losses.push(info.message);
+      for (const release of [...(held.get(device) ?? [])]) release();
+    });
+    return device;
+  };
+  // Lose the device the page draws with now.
+  s.lose = () => { s.devices.at(-1)?.destroy(); return s.devices.length; };
   const registry = new FinalizationRegistry(release => release());
   const requestAdapter = GPU.prototype.requestAdapter;
   GPU.prototype.requestAdapter = function (...args) { s.adapters++; return requestAdapter.apply(this, args); };
   const createBuffer = GPUDevice.prototype.createBuffer;
-  GPUDevice.prototype.createBuffer = function (d) { const b = createBuffer.call(this, d); track('buffers', b, Number(d.size)); return b; };
+  GPUDevice.prototype.createBuffer = function (d) { const b = createBuffer.call(this, d); track(this, 'buffers', b, Number(d.size)); return b; };
   const createTexture = GPUDevice.prototype.createTexture;
   GPUDevice.prototype.createTexture = function (d) {
     const t = createTexture.call(this, d);
     const size = Array.isArray(d.size) ? d.size : [d.size.width, d.size.height ?? 1, d.size.depthOrArrayLayers ?? 1];
-    track('textures', t, size.reduce((a, b) => a * (b ?? 1), 1) * 4 * (d.mipLevelCount ?? 1));
+    track(this, 'textures', t, size.reduce((a, b) => a * (b ?? 1), 1) * 4 * (d.mipLevelCount ?? 1));
     return t;
   };
   const dispatch = GPUComputePassEncoder.prototype.dispatchWorkgroups;
@@ -95,6 +118,7 @@ const sample = `(() => {
     phase: host?.dataset.phase ?? null, frames: Number(host?.dataset.frames ?? 0),
     alert: document.querySelector('[role=alert]')?.textContent ?? null,
     buffers: {...s.buffers}, textures: {...s.textures}, dispatch: {...s.dispatch}, submits: s.submits, adapters: s.adapters,
+    devices: s.devices.length, losses: s.losses.length,
     queueMs: {p50: pct(0.5), p95: pct(0.95), max: pct(0.999)},
     wasmBytes: s.memories.reduce((a, m) => a + m.buffer.byteLength, 0),
     jsHeap: performance.memory?.usedJSHeapSize ?? null,
@@ -170,8 +194,20 @@ if (s.windows !== null) {
 await sleep(10_000);
 const warm = await record('warm');
 const deadline = Date.now() + minutes * 60_000;
+const loseAt = process.env.LOSE ? Date.now() + minutes * 30_000 : Infinity;
+let lost = null;
 let step = 0;
 while (Date.now() < deadline) {
+  if (!lost && Date.now() >= loseAt) {
+    const devices = await evaluate('globalThis.__gpuSoak.lose()');
+    for (let i = 0; i < 60; i++) {
+      await sleep(500);
+      const now = await evaluate(sample);
+      if (now.devices > devices && now.phase === 'presented' && now.frames > warm.frames) break;
+    }
+    await sleep(5_000);
+    lost = await record('after the loss');
+  }
   // Keep the renderer drawing: select the windows in turn when the page offers navigation.
   await evaluate(`(() => { const n = globalThis.tiloMount?.navigation; if (!n) return; const e = n.getSnapshot().entries ?? []; if (!e.length) return; return n.dispatch({effect: 'focus', args: {tab: e[${step} % e.length].route.tab}}); })()`).catch(error => log.push(`select: ${error.message}`));
   step++;
@@ -187,6 +223,7 @@ const summary = {
   textures: {warm: warm.textures, last: last.textures, peakLive: peak(x => x.textures.live)},
   wasmBytes: [warm.wasmBytes, last.wasmBytes], jsHeap: [warm.jsHeap, last.jsHeap],
   dispatch: last.dispatch, queueMs: last.queueMs, submits: last.submits,
+  ...(lost ? {afterLoss: {devices: lost.devices, losses: lost.losses, buffers: lost.buffers, textures: lost.textures}} : {}),
   log: log.slice(0, 12),
 };
 console.log(JSON.stringify({summary}));
@@ -201,5 +238,16 @@ if (last.buffers.liveBytes > Math.max(warm.buffers.liveBytes * 1.5, warm.buffers
 if (last.textures.live > warm.textures.live + 8) problems.push(`live GPU textures grew from ${warm.textures.live} to ${last.textures.live}`);
 if (last.wasmBytes > warm.wasmBytes + 256 * MiB) problems.push(`wasm memory grew from ${warm.wasmBytes} to ${last.wasmBytes} bytes`);
 if (log.some(l => l.startsWith('EXC') || /panic/i.test(l))) problems.push('the page threw or panicked');
+if (process.env.LOSE) {
+  if (!lost) problems.push('the soak ended before the device was lost: give it more MINUTES');
+  else {
+    if (lost.devices <= warm.devices || lost.losses <= warm.losses) problems.push(`no new device after the loss (${lost.devices} devices, ${lost.losses} losses)`);
+    if (lost.frames <= warm.frames) problems.push('nothing was drawn after the loss');
+    if (lost.buffers.liveBytes > Math.max(warm.buffers.liveBytes * 1.5, warm.buffers.liveBytes + 64 * MiB)) problems.push(`the device after the loss holds ${lost.buffers.liveBytes} bytes of buffers, the one before ${warm.buffers.liveBytes}`);
+    if (lost.textures.live > warm.textures.live + 8) problems.push(`the device after the loss holds ${lost.textures.live} textures, the one before ${warm.textures.live}`);
+    const settled = samples.filter(x => x.t > lost.t);
+    if (settled.length && last.buffers.liveBytes > Math.max(lost.buffers.liveBytes * 1.5, lost.buffers.liveBytes + 64 * MiB)) problems.push(`live GPU buffers grew after the loss from ${lost.buffers.liveBytes} to ${last.buffers.liveBytes} bytes`);
+  }
+}
 for (const p of problems) console.error(`FAIL ${p}`);
 process.exit(problems.length ? 1 : 0);

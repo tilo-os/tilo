@@ -1,16 +1,5 @@
-//! Durable host transaction record: every mutation is recorded `intended`
-//! before it is attempted and `done` after it is read back.
-//!
-//! Storage: the authoritative record lives in a directory only the elevated
-//! helper can write or read (Linux `/var/lib/tilo-imager/staging/`, 0700 root,
-//! records 0600; Windows `%ProgramData%\Tilo\staging`, protected DACL for
-//! SYSTEM + Administrators). The unprivileged UI cannot read that, so the
-//! helper also mirrors every save into a world-readable status directory
-//! (`/var/lib/tilo-imager/staging-status/`, 0755 root, files 0644; Windows
-//! `%ProgramData%\Tilo\staging-status`, Users read-only). Records hold no
-//! secrets (the installer profile lives only in the handoff). The mirror is
-//! display-only: the helper never reads it back, it always re-reads the
-//! private record.
+//! The host-side record of an install's staging: which step was attempted, what
+//! holds, and where a resume starts.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,8 +14,6 @@ pub const SCHEMA: u32 = 1;
 
 pub use imager_backend::staging::protocol::{Step, StepRecord, StepState};
 
-/// Nested retained-filesystem checkpoint in the existing authoritative step.
-/// This is journal evidence only; native binding/readback remains mandatory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ResizeCheckpoint {
@@ -45,9 +32,6 @@ pub struct ReleaseRef {
 pub struct OriginalFirmware {
     pub boot_order: Vec<String>,
     pub boot_next: Option<String>,
-    /// Hex load options of every `BootOrder` entry at first mutation, for
-    /// audit. Never written back: `BootOrder` and foreign entries are only
-    /// ever read.
     #[serde(default)]
     pub entries: BTreeMap<String, String>,
 }
@@ -68,19 +52,14 @@ pub struct Record {
     pub steps: Vec<StepRecord>,
     pub original_firmware: OriginalFirmware,
     pub owned_boot_entry: Option<OwnedBootEntry>,
-    /// Component sizes and digests verified at `stage`, so `arm` can
-    /// re-verify the partitions after the download is gone.
     #[serde(default)]
     pub bundle: Option<RecordedBundle>,
-    /// Immutable source consent, kept only in the private authoritative record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<serde_json::Value>,
     #[serde(default)]
     pub profile: serde_json::Map<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_setup: Option<crate::model::PreparedSetupExpectation>,
-    /// The browser profile the prepared medium carries (only Linux media
-    /// carry one; elsewhere the type has no value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_browser: Option<imager_backend::staging::browser::HostExpectation>,
 }
@@ -89,8 +68,6 @@ pub struct Record {
 pub struct RecordedComponent {
     pub byte_size: u64,
     pub sha256: String,
-    /// Filesystem identity bound by the manifest, so `arm` can recognise the
-    /// staging root after the installer has booted (and grown) it once.
     #[serde(default)]
     pub filesystem_uuid: Option<String>,
 }
@@ -101,14 +78,10 @@ pub struct RecordedBundle {
     pub root: RecordedComponent,
 }
 
-/// Where a record stands, for the resume card and the pending-operation rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordStatus {
-    /// Some stage or remove step is not done: an interrupted operation.
     InProgress,
-    /// Every stage step is done and nothing has been removed.
     Staged,
-    /// Every remove step is done; nothing of this operation remains.
     Removed,
 }
 
@@ -186,8 +159,6 @@ impl Record {
             .transpose()
     }
 
-    /// The helper saves this private record before calling the native mutation.
-    /// Retry may preserve a Done checkpoint; it may never change its target.
     pub(super) fn resize_intent(
         &mut self,
         phase: imager_backend::staging::btrfs_resize::Phase,
@@ -325,13 +296,10 @@ impl Record {
         }
     }
 
-    /// Record that `step` is about to be attempted. Detail merges into any
-    /// earlier attempt's, so identities recorded before a crash survive.
     pub fn intend(&mut self, step: Step, detail: serde_json::Map<String, serde_json::Value>) {
         self.set(step, StepState::Intended, detail);
     }
 
-    /// Record that `step` holds, as read back.
     pub fn done(&mut self, step: Step, detail: serde_json::Map<String, serde_json::Value>) {
         self.set(step, StepState::Done, detail);
     }
@@ -342,12 +310,10 @@ impl Record {
         self.set(step, StepState::Failed, detail);
     }
 
-    /// Some mutation may have happened without being confirmed.
     pub fn has_intended(&self) -> bool {
         self.steps.iter().any(|s| s.state == StepState::Intended)
     }
 
-    /// The first step of `order` that is not done, where resume continues.
     pub fn resume_point(&self, order: &[Step]) -> Option<Step> {
         order.iter().copied().find(|s| !self.is_done(*s))
     }
@@ -364,7 +330,6 @@ impl Record {
         }
     }
 
-    /// Structural checks for a record read from disk.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err("unsupported staging record schema".into());
@@ -417,13 +382,10 @@ impl Record {
     }
 }
 
-/// Record storage: the private authoritative directory plus the public
-/// status mirror.
 #[derive(Clone, Debug)]
 pub struct RecordStore {
     pub dir: PathBuf,
     pub public_dir: Option<PathBuf>,
-    /// Refuse records not owned by root/Administrators (production).
     pub require_privileged_owner: bool,
 }
 
@@ -516,11 +478,7 @@ impl RecordStore {
         artifact.read(owner).map_err(|error| error.to_string())
     }
 
-    /// Persist atomically, then mirror. A failed mirror is an error too: the
-    /// UI must learn of every record that might need a Remove.
     pub fn save(&self, record: &Record) -> Result<(), String> {
-        // Reject an out-of-order nested resize before either durable private
-        // state or its public mirror can replace the last recoverable journal.
         record.validate_resize_checkpoints()?;
         let name = Self::file_name(&record.operation_id)?;
         let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
@@ -530,8 +488,6 @@ impl RecordStore {
             secure::ensure_dir(public, true)?;
             let mut display = record.clone();
             display.migration = None;
-            // The TPM sidecar is public but its receiver identity and sealed
-            // blobs need not be mirrored to the world-readable status file.
             display.profile.remove("tpm_handoff");
             let display_bytes =
                 serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
@@ -559,8 +515,6 @@ impl RecordStore {
         Ok(Some(record))
     }
 
-    /// Every valid private record; unreadable or invalid files are errors so
-    /// the pending-operation rule cannot be bypassed by a corrupt file.
     pub fn list(&self) -> Result<Vec<Record>, String> {
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -585,8 +539,6 @@ impl RecordStore {
     }
 }
 
-/// Unfinished records from the public status mirror in `dir`, skipping
-/// anything unreadable. Display-only: authority stays with the helper.
 pub fn pending_in(dir: &Path) -> Vec<Record> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -767,7 +719,6 @@ mod tests {
         store.save(&loaded).unwrap();
     }
 
-    /// Record state machine, store round trip, removal/corruption and ownership.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -871,8 +822,6 @@ mod tests {
             let r = sample_record("op-user");
             store.save(&r).unwrap();
             store.require_privileged_owner = true;
-            // Temp dirs are not root-only (0700 but owned by the test user, or
-            // under a world-writable parent when run as root): refuse either way.
             let mut parent_open = store.clone();
             parent_open.dir = tmp.path().to_path_buf();
             std::fs::copy(

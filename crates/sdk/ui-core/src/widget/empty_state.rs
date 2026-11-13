@@ -1,19 +1,8 @@
-//! `EmptyState` — the centered "there's nothing here yet" placeholder almost every list-shaped
-//! app hand-rolled (Inbox with no mail, a feed with no articles): one theme-driven widget for an
-//! optional large [`Icon`] in tertiary ink (or an illustration the app paints in the same slot),
-//! a **title** in the `Title` role, an optional one-sentence **message** in secondary ink s3
-//! under it, and an optional primary **action** s4 under the text.
-//!
-//! An error state ([`EmptyState::error`]) tints its icon with the danger status colour, and its
-//! message wraps to its full text: what went wrong and what to do about it is never cut off.
-//! What went wrong technically (an error code, what a service answered) is not the person's
-//! message: [`EmptyState::with_details`] keeps it behind a "Details" disclosure, closed until
-//! someone opens it.
-//!
-//! The content is centered on both axes inside whatever space the parent gives, so dropping it
-//! as the sole child of a content pane just works; the action is surfaced through the toolkit's
-//! drain channel ([`EmptyState::take_action`]) rather than a callback, matching the CRDT-native
-//! input model of [`super::ContextMenu`].
+//! `EmptyState` — the centered "there's nothing here yet" placeholder almost every list-
+//! shaped app hand-rolled (Inbox with no mail, a feed with no articles): one theme-driven
+//! widget for an optional large [`Icon`] in tertiary ink (or an illustration the app paints
+//! in the same slot), a **title** in the `Title` role, an optional one-sentence **message**
+//! in secondary ink s3 under it, and an optional primary **action** s4 under the text.
 
 use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
@@ -38,7 +27,6 @@ use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::{Scrollable, TaffyTreeExt, Widget};
 
-/// Which elements a caller asked for.
 #[derive(Clone, Copy, Debug)]
 struct Parts {
     icon: bool,
@@ -48,7 +36,6 @@ struct Parts {
     hint: bool,
 }
 
-/// Measured heights the stack is built from.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     title_h: f64,
@@ -64,7 +51,6 @@ struct Metrics {
     hero: f64,
 }
 
-/// Which elements actually fit, and how tall the result is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Fit {
     icon: bool,
@@ -76,25 +62,19 @@ struct Fit {
 
 pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 
-/// What an empty state shows: optional icon or illustration, title,
-/// optional message, the documents the workspace holds, and optional action
-/// label.
+/// What an empty state shows: optional icon or illustration, title, optional message, the
+/// documents the workspace holds, and optional action label.
 #[derive(Clone, Copy)]
 pub struct EmptyStateContent<'a> {
     pub icon: Option<Icon>,
-    /// Painted in place of the icon, in a larger square.
     pub illustration: Option<Illustration<'a>>,
     pub title: &'a str,
     pub message: Option<&'a str>,
-    /// The documents a person can open from here, under the message and
-    /// above the action: what an app whose windows each show a document of
-    /// their own offers. Empty for every other state.
     pub documents: &'a [crate::widget::DocumentOffer<'a>],
     pub action_label: Option<&'a str>,
     /// A quiet line under the action: the other way in ("Or drop a file
     /// here"), never a step of its own.
     pub hint: Option<&'a str>,
-    /// Something failed: the icon takes the danger colour.
     pub error: bool,
 }
 
@@ -173,7 +153,6 @@ impl<'a> EmptyStateContent<'a> {
     }
 }
 
-/// The typography and spacing an empty-state stack is measured with.
 #[derive(Clone, Debug)]
 struct StackStyle {
     title: TextStyle,
@@ -182,21 +161,16 @@ struct StackStyle {
     hint: TextStyle,
     gap: f64,
     text_gap: f64,
-    /// The longest line the title and message run to.
     measure: f64,
     pad_y: f64,
     min_button: f64,
     glyph: f64,
     details: TextStyle,
-    /// The height of the "Details" disclosure control.
     details_toggle: f64,
-    /// The gap between the disclosure and the text it opens.
     details_gap: f64,
 }
 
 impl StackStyle {
-    /// The theme's roles, as the retained widget lays out. An inline empty
-    /// state is a section's: a `Heading` title and a smaller hero.
     fn layout(theme: &Theme, inline: bool) -> Self {
         let wrapped = |role| theme.text(role).with_wrap_mode(TextWrapMode::WordOrGlyph);
         let glyph = f64::from(theme.tokens.metrics.icon_lg);
@@ -224,9 +198,6 @@ impl StackStyle {
         }
     }
 
-    /// How tall the "Details" disclosure is under the stack at `width`:
-    /// nothing without details, the control while closed, and the control
-    /// with the wrapped detail while open.
     fn details_height(
         &self,
         text_renderer: &mut TextRenderer,
@@ -249,7 +220,6 @@ impl StackStyle {
         height
     }
 
-    /// The same roles centred, for painting.
     fn resolved(theme: &Theme, inline: bool) -> Self {
         let layout = Self::layout(theme, inline);
         let centered = |style: TextStyle| style.with_align(ParagraphAlign::Center);
@@ -263,9 +233,6 @@ impl StackStyle {
         }
     }
 
-    /// The stack's measurements at `width`, with `documents_h` the height the
-    /// documents' list takes (measured by [`Self::measure_with`], which knows
-    /// the theme the list is drawn in).
     fn measure(
         &self,
         text_renderer: &mut TextRenderer,
@@ -315,9 +282,6 @@ impl StackStyle {
         }
     }
 
-    /// [`Self::measure`], with the documents' list measured in `theme`: the
-    /// rows are the toolkit's list rows, so their height comes from the theme
-    /// they are drawn in.
     fn measure_with(
         &self,
         text_renderer: &mut TextRenderer,
@@ -336,8 +300,6 @@ impl StackStyle {
     }
 }
 
-/// The measure the technical detail wraps at: the stack's inner width,
-/// kept to a readable line.
 fn details_width(width: f64, gap: f64) -> f32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -345,6 +307,34 @@ fn details_width(width: f64, gap: f64) -> f32 {
     )]
     let width = (width - gap * 2.0).clamp(1.0, 520.0) as f32;
     width
+}
+
+fn details_face(toggle: Rect, open: bool) -> crate::widget::ButtonFace<'static> {
+    crate::widget::ButtonFace::new(toggle, "empty-state-details")
+        .role(crate::widget::ButtonRole::Plain)
+        .control_size(crate::widget::ControlSize::Small)
+        .icon(if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        })
+}
+
+fn details_toggle(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    bottom: f64,
+    inline: bool,
+    open: bool,
+) -> Rect {
+    let style = StackStyle::resolved(theme, inline);
+    let width = details_face(Rect::ZERO, open)
+        .intrinsic_width(text, theme)
+        .min(rect.width());
+    let x0 = rect.center().x - width / 2.0;
+    let y0 = bottom + style.gap;
+    Rect::new(x0, y0, x0 + width, y0 + style.details_toggle)
 }
 
 impl Fit {
@@ -400,33 +390,25 @@ impl Fit {
     }
 }
 
-/// Where everything in an empty state goes inside a rect: what
-/// [`EmptyState::paint`] draws, and what [`EmptyState::layout`] hands back
-/// without painting.
+/// Where everything in an empty state goes inside a rect: what [`EmptyState::paint`] draws,
+/// and what [`EmptyState::layout`] hands back without painting.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EmptyStateLayout {
-    /// The height the stack needs at this width with everything shown.
     pub natural_height: f64,
-    /// The hero slot (icon, illustration or spinner), when it fits.
     pub hero: Option<Rect>,
-    /// The action button, when there is one and it is on screen.
     pub action: Option<Rect>,
 }
 
-/// The resolved stack: styles, measurements and positions.
 struct Placed {
     style: StackStyle,
     metrics: Metrics,
     hero: Option<Rect>,
     title_y: f64,
     message_y: Option<f64>,
-    /// The column the documents' rows stand in, when the state lists any.
     documents: Option<Rect>,
     action: Option<Rect>,
-    /// The quiet line under the action, when the state has one.
     hint: Option<Rect>,
     natural: f64,
-    /// Where the stack ends: under the action, else under the text.
     bottom: f64,
 }
 
@@ -542,19 +524,37 @@ fn place(
     }
 }
 
-/// What one paint of an empty state drew that a press answers: the action's
-/// rect when `action_label` is `Some` and it is on screen, and one row per
-/// document the state listed, in the order the documents came.
+/// What one paint of an empty state drew that a press answers: the action's rect when
+/// `action_label` is `Some` and it is on screen, and one row per document the state listed,
+/// in the order the documents came.
 #[derive(Clone, Debug, Default)]
 pub struct PaintedStack {
     pub action: Option<Rect>,
     pub documents: Vec<Rect>,
 }
 
-/// Shared paint for the empty state, centered inside `rect`. Used by both
-/// [`EmptyState`]'s [`Widget::draw`] and the immediate-mode
-/// [`EmptyState::paint`]. `hover` is the pointer position for the action's
-/// and the documents' hover state.
+fn shown_content<'a>(
+    content: &EmptyStateContent<'a>,
+    waiting: Option<&'a crate::workspace_sync::Waiting>,
+) -> EmptyStateContent<'a> {
+    let Some(waiting) = waiting else {
+        return *content;
+    };
+    EmptyStateContent {
+        icon: Some(waiting.icon),
+        illustration: None,
+        title: &waiting.title,
+        message: waiting.message.as_deref(),
+        // While the host cannot be reached, the person works on what this
+        // device has: the app's action, and the documents kept here, stay.
+        // The other way in stays too: it goes to this device's files.
+        documents: content.documents,
+        action_label: content.action_label.filter(|_| waiting.keeps_action()),
+        hint: content.hint,
+        error: false,
+    }
+}
+
 fn paint_empty_state(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -568,48 +568,29 @@ fn paint_empty_state(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return painted;
     }
-    // A workspace that has not synced with its host is not empty: whatever
-    // the app would say about nothing being here, say what is going on
-    // instead (`crate::workspace_sync`).
     let waiting = crate::workspace_sync::waiting();
     let mut waiting_spinner = None;
     let mut waiting_step = None;
-    let replaced;
-    let (content, spinner) = match &waiting {
-        Some(waiting) => {
-            replaced = EmptyStateContent {
-                // The spinner takes the hero slot; the slot is still sized.
-                icon: Some(waiting.icon),
-                illustration: None,
-                title: &waiting.title,
-                message: waiting.message.as_deref(),
-                // While the host cannot be reached, the person works on what
-                // this device has: the app's action, and the documents kept
-                // here, stay.
-                documents: content.documents,
-                action_label: content.action_label.filter(|_| waiting.keeps_action()),
-                // The other way in stays while the host is out of reach: it
-                // goes to this device's files.
-                hint: content.hint,
-                error: false,
-            };
-            if let Some(since) = waiting.spinner_since {
-                let turning = ctx.theme.motion().loops();
-                let now = crate::time::now();
-                let (step, next) = if turning {
-                    (
-                        crate::animation::indicator_step(since, now),
-                        Some(crate::animation::next_indicator_step(since, now)),
-                    )
-                } else {
-                    (0, None)
-                };
-                waiting_step = Some((step, next));
-                waiting_spinner = Some(crate::widget::Spinner::started_at(since));
-            }
-            (&replaced, waiting_spinner.as_mut())
-        }
-        None => (content, spinner),
+    if let Some(since) = waiting.as_ref().and_then(|waiting| waiting.spinner_since) {
+        let turning = ctx.theme.motion().loops();
+        let now = crate::time::now();
+        let (step, next) = if turning {
+            (
+                crate::animation::indicator_step(since, now),
+                Some(crate::animation::next_indicator_step(since, now)),
+            )
+        } else {
+            (0, None)
+        };
+        waiting_step = Some((step, next));
+        waiting_spinner = Some(crate::widget::Spinner::started_at(since));
+    }
+    let content = shown_content(content, waiting.as_ref());
+    let content = &content;
+    let spinner = if waiting.is_some() {
+        waiting_spinner.as_mut()
+    } else {
+        spinner
     };
     let theme = ctx.theme;
     let transform = ctx.transform;
@@ -712,7 +693,6 @@ fn paint_empty_state(
 }
 
 thread_local! {
-    /// One list per open [`record_painted_actions`], innermost last.
     static PAINTED: RefCell<Vec<Vec<PaintedAction>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -720,20 +700,14 @@ thread_local! {
 /// stays bounded.
 const MAX_PAINTED: usize = 256;
 
-/// An empty-state action as it was painted with [`EmptyState::paint`]:
-/// the state it belongs to and where both stand, through the paint
-/// transform they were drawn with.
+/// An empty-state action as it was painted with [`EmptyState::paint`]: the state it belongs
+/// to and where both stand, through the paint transform they were drawn with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaintedAction {
-    /// The action button's label.
     pub label: String,
-    /// The action button.
     pub rect: Rect,
-    /// The empty state's title.
     pub title: String,
-    /// The empty state's message, when it has one.
     pub message: Option<String>,
-    /// The whole empty state.
     pub area: Rect,
 }
 
@@ -749,8 +723,8 @@ pub fn record_painted_actions() {
     PAINTED.with(|painted| painted.borrow_mut().push(Vec::new()));
 }
 
-/// The empty-state actions painted since the matching
-/// [`record_painted_actions`], ending that recording.
+/// The empty-state actions painted since the matching [`record_painted_actions`], ending
+/// that recording.
 #[must_use]
 pub fn take_painted_actions() -> Vec<PaintedAction> {
     PAINTED.with(|painted| {
@@ -781,13 +755,10 @@ fn note_painted_action(content: &EmptyStateContent<'_>, area: Rect, rect: Rect) 
     });
 }
 
-/// The prefix of a painted empty-state action's target in the
-/// accessibility tree; the rest is its place in [`PaintedEmptyStates`].
 const PAINTED_TARGET: &str = "tilo.painted-empty-state:";
 
-/// Whether `target` names a painted empty state's action
-/// ([`PaintedEmptyStates`]): no widget handles it, an activation presses
-/// where it is drawn.
+/// Whether `target` names a painted empty state's action ([`PaintedEmptyStates`]): no
+/// widget handles it, an activation presses where it is drawn.
 pub(crate) fn is_painted_target(target: &str) -> bool {
     target.starts_with(PAINTED_TARGET)
 }
@@ -808,15 +779,15 @@ pub struct PaintedEmptyStates {
 }
 
 impl PaintedEmptyStates {
-    /// Whether the last draw painted no empty state: [`Self::describe`]
-    /// then returns the content's node as it is.
+    /// Whether the last draw painted no empty state: [`Self::describe`] then returns the
+    /// content's node as it is.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.painted.is_empty()
     }
 
-    /// Run `draw`, keeping the empty-state actions it paints in the space
-    /// `transform` maps from: the content's own coordinates.
+    /// Run `draw`, keeping the empty-state actions it paints in the space `transform` maps
+    /// from: the content's own coordinates.
     pub fn draw(&mut self, transform: Affine, draw: impl FnOnce()) {
         record_painted_actions();
         draw();
@@ -832,8 +803,8 @@ impl PaintedEmptyStates {
             .collect();
     }
 
-    /// `node`, the content's own accessibility, with each painted state
-    /// whose action neither it nor a widget inside `content` describes.
+    /// `node`, the content's own accessibility, with each painted state whose action
+    /// neither it nor a widget inside `content` describes.
     #[must_use]
     pub fn describe(
         &self,
@@ -845,9 +816,6 @@ impl PaintedEmptyStates {
             return node;
         }
         let mut node = node;
-        // A content that names a painted action's button without saying
-        // where it is gets the place it is drawn, so the button stands
-        // there in the tree and not over the whole content.
         if let Some(node) = &mut node {
             self.place_unplaced_buttons(node);
         }
@@ -898,8 +866,6 @@ impl PaintedEmptyStates {
         Some(node)
     }
 
-    /// Give each button in `node` that is named like a painted action and
-    /// has no bounds of its own the place that action is drawn.
     fn place_unplaced_buttons(&self, node: &mut crate::a11y::AccessNode) {
         if node.role == crate::a11y::Role::Button
             && node.bounds.is_none()
@@ -913,8 +879,8 @@ impl PaintedEmptyStates {
         }
     }
 
-    /// Where the painted action at `path` beneath `described` (what
-    /// [`Self::describe`] returned) is drawn; `None` for any other node.
+    /// Where the painted action at `path` beneath `described` (what [`Self::describe`]
+    /// returned) is drawn; `None` for any other node.
     #[must_use]
     pub fn action_rect(&self, described: &crate::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
         let mut node = described;
@@ -931,7 +897,6 @@ impl PaintedEmptyStates {
     }
 }
 
-/// The buttons `node` and its synthetic children describe.
 fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect>)>) {
     if node.role == crate::a11y::Role::Button
         && let Some(name) = &node.name
@@ -946,7 +911,6 @@ fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect
     }
 }
 
-/// The buttons `widget` and every widget inside it describe.
 fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Option<Rect>)>) {
     if let Some(node) = widget.accessibility() {
         buttons_in(&node, out);
@@ -954,7 +918,6 @@ fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Opti
     widget.for_each_child(&mut |child| buttons_under(child, out));
 }
 
-/// What the action does when it is activated.
 #[derive(Clone)]
 enum Handler {
     Binding(tilo_actions::ActionBinding<()>),
@@ -973,48 +936,32 @@ pub struct EmptyState {
     action_label: Option<String>,
     action_id: Option<String>,
     action_enabled: bool,
-    /// What the action is bound to. When set, the action is a published
-    /// [`Button`](crate::widget::Button) (`engine`) and every activation path
-    /// goes through it, like [`super::Button::on_action`].
     handler: Option<Handler>,
     engine: Option<crate::widget::Button>,
-    /// Drained flag set when the action is clicked.
     action_fired: bool,
     rect: Rect,
     action_rect: Rect,
     /// What the action's target must reach to be pressed.
     input: InteractionEnvironment,
     last_cursor: Point,
-    /// The action is immediate-mode, but still participates in the normal
-    /// Tab / Enter contract through this owning widget.
     action_focused: bool,
     layout_style: StackStyle,
+    layout_theme: Theme,
     scroll_content: bool,
-    /// An empty section inside a page: hugs its content.
     inline: bool,
-    /// Something is on its way: a spinner in the hero slot.
     spinner: Option<crate::widget::Spinner>,
-    /// Whether the spinner shows (kept apart from it while it paints).
     busy: bool,
-    /// The title, message and action label through the i18n layer.
     resolved: (String, Option<String>, Option<String>),
     i18n_revision: u64,
     layout_dirty: bool,
-    /// The technical detail behind the "Details" disclosure.
     details: Option<String>,
     details_open: bool,
-    /// Where the disclosure control was drawn (empty without details).
     details_rect: Rect,
-    /// Keyboard focus is on the disclosure: the state has no action.
     details_focused: bool,
-    /// What a state without an action is addressed and tested by.
     id: Option<String>,
-    /// What the last draw showed; while it still holds there is nothing to
-    /// redraw.
     drawn: Option<Painted>,
 }
 
-/// What one draw of an empty state showed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Painted {
     rect: Rect,
@@ -1036,8 +983,6 @@ impl EmptyState {
         Self::new_owned(title.into())
     }
 
-    /// [`Self::new`] once its text is owned: one copy in the toolkit
-    /// rather than one in every app that calls the generic constructor.
     fn new_owned(title: String) -> Self {
         let mut state = Self {
             icon: None,
@@ -1057,6 +1002,7 @@ impl EmptyState {
             last_cursor: Point::ZERO,
             action_focused: false,
             layout_style: StackStyle::layout(&Theme::default(), false),
+            layout_theme: Theme::default(),
             scroll_content: false,
             inline: false,
             spinner: None,
@@ -1075,8 +1021,6 @@ impl EmptyState {
         state
     }
 
-    /// The state a draw paints: where, whether the action and the details
-    /// disclosure are hovered or focused, and whether they are on.
     fn painted_state(&self) -> Painted {
         Painted {
             rect: self.rect,
@@ -1090,10 +1034,8 @@ impl EmptyState {
         }
     }
 
-    /// Keep `details`, the technical side of a failure (what a service
-    /// answered, an error code), behind a "Details" disclosure under the
-    /// stack. The title and message say what happened and what to do in
-    /// the person's words; the disclosure is closed until someone opens it.
+    /// Keep `details`, the technical side of a failure (what a service answered, an error
+    /// code), behind a "Details" disclosure under the stack.
     #[must_use]
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.set_details(Some(details.into()));
@@ -1128,41 +1070,67 @@ impl EmptyState {
         }
     }
 
-    /// The disclosure's control id: the action's, with `:details`.
     fn details_control_id(&self) -> String {
         format!("{}:details", self.action_control_id())
     }
 
-    /// The action's target: its face, reaching the smallest target the input needs.
     fn action_target(&self) -> Rect {
         self.input.minimum_target_rect(self.action_rect)
     }
 
-    /// Paint the "Details" disclosure under a stack that ends at `bottom`,
-    /// and answer the control's rect.
-    fn paint_details(&self, ctx: &mut PaintCtx<'_>, rect: Rect, bottom: f64) -> Rect {
+    /// Place the controls where the layout puts them: the action's face and
+    /// the "Details" disclosure. Where a control stands is the layout's, never
+    /// a paint's, so a frame read before it is drawn — a test, assistive
+    /// technology, a press on a window that has laid out and has not yet
+    /// painted — finds them inside the state rather than at the window's
+    /// origin, where a control nothing placed stands.
+    fn place_controls(&mut self) {
+        let rect = self.rect;
+        let theme = self.layout_theme.clone();
+        let inline = self.inline;
+        let details = self.details.clone();
+        let open = self.details_open;
+        let content = self.content();
+        let (action, disclosure) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            (Rect::ZERO, Rect::ZERO)
+        } else {
+            let waiting = crate::workspace_sync::waiting();
+            let content = shown_content(&content, waiting.as_ref());
+            crate::text_render::with_layout_renderer(&theme, |text| {
+                let details_h = StackStyle::resolved(&theme, inline).details_height(
+                    text,
+                    rect.width(),
+                    details.as_deref(),
+                    open,
+                );
+                let stack = Rect::new(
+                    rect.x0,
+                    rect.y0,
+                    rect.x1,
+                    (rect.y1 - details_h).max(rect.y0),
+                );
+                let placed = place(text, &theme, stack, &content, inline);
+                let disclosure = details.as_deref().map_or(Rect::ZERO, |_| {
+                    details_toggle(text, &theme, rect, placed.bottom, inline, open)
+                });
+                (placed.action.unwrap_or(Rect::ZERO), disclosure)
+            })
+        };
+        self.action_rect = action;
+        self.details_rect = disclosure;
+        if let Some(engine) = &mut self.engine {
+            engine.apply_layout_external(self.action_rect);
+        }
+    }
+
+    fn paint_details(&self, ctx: &mut PaintCtx<'_>) {
         let Some(details) = self.details.as_deref() else {
-            return Rect::ZERO;
+            return;
         };
         let theme = ctx.theme;
         let style = StackStyle::resolved(theme, self.inline);
-        let icon = if self.details_open {
-            Icon::ChevronDown
-        } else {
-            Icon::ChevronRight
-        };
-        let probe = crate::widget::ButtonFace::new(Rect::ZERO, "empty-state-details")
-            .role(crate::widget::ButtonRole::Plain)
-            .control_size(crate::widget::ControlSize::Small)
-            .icon(icon);
-        let width = probe.intrinsic_width(ctx.text, theme).min(rect.width());
-        let x0 = rect.center().x - width / 2.0;
-        let y0 = bottom + style.gap;
-        let toggle = Rect::new(x0, y0, x0 + width, y0 + style.details_toggle);
-        let face = crate::widget::ButtonFace::new(toggle, "empty-state-details")
-            .role(crate::widget::ButtonRole::Plain)
-            .control_size(crate::widget::ControlSize::Small)
-            .icon(icon)
+        let toggle = self.details_rect;
+        let face = details_face(toggle, self.details_open)
             .hovered(toggle.contains(self.last_cursor))
             .focused(self.details_focused);
         crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
@@ -1176,8 +1144,8 @@ impl EmptyState {
             );
         }
         if self.details_open {
-            let width = details_width(rect.width(), style.gap);
-            let x = rect.center().x - f64::from(width) / 2.0;
+            let width = details_width(self.rect.width(), style.gap);
+            let x = self.rect.center().x - f64::from(width) / 2.0;
             ctx.text(
                 details,
                 &style.details,
@@ -1186,7 +1154,6 @@ impl EmptyState {
                 Some(width),
             );
         }
-        toggle
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -1198,9 +1165,8 @@ impl EmptyState {
         state
     }
 
-    /// An empty section inside a page ("No servers yet" under a heading):
-    /// the title is a `Heading`, the stack hugs its content and claims no
-    /// full-pane height.
+    /// An empty section inside a page ("No servers yet" under a heading): the title is a
+    /// `Heading`, the stack hugs its content and claims no full-pane height.
     #[must_use]
     pub fn inline(mut self) -> Self {
         self.inline = true;
@@ -1208,8 +1174,8 @@ impl EmptyState {
         self
     }
 
-    /// Something is on its way ("Scanning your disk"): a spinner in the hero
-    /// slot that keeps itself moving.
+    /// Something is on its way ("Scanning your disk"): a spinner in the hero slot that
+    /// keeps itself moving.
     #[must_use]
     pub fn busy(mut self) -> Self {
         self.spinner = Some(crate::widget::Spinner::new());
@@ -1263,16 +1229,15 @@ impl EmptyState {
         self
     }
 
-    /// What a state without an action is addressed by (a scenario's
-    /// expectation, a test); a state with one is addressed by its action.
+    /// What a state without an action is addressed by (a scenario's expectation, a test); a
+    /// state with one is addressed by its action.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// Stable identity for the optional call-to-action. Supplying it makes the
-    /// action automatically available to accessibility, search, and agents.
+    /// Stable identity for the optional call-to-action.
     #[must_use]
     pub fn with_action_id(mut self, id: impl Into<String>) -> Self {
         self.action_id = Some(id.into());
@@ -1280,10 +1245,8 @@ impl EmptyState {
         self
     }
 
-    /// Route pointer, keyboard and accessibility activation through an
-    /// exported resource action. The host revalidates the binding against the
-    /// current resource tree before dispatch, so empty-state recovery controls
-    /// follow the same policy/history path as ordinary buttons.
+    /// Route pointer, keyboard and accessibility activation through an exported resource
+    /// action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.handler = Some(Handler::Binding(binding));
@@ -1292,8 +1255,8 @@ impl EmptyState {
         self
     }
 
-    /// Publish the action as a transient presentation action that runs `f`,
-    /// like [`super::Button::on_view`].
+    /// Publish the action as a transient presentation action that runs `f`, like
+    /// [`super::Button::on_view`].
     #[must_use]
     pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
         self.handler = Some(Handler::View(Rc::new(RefCell::new(Box::new(f)))));
@@ -1301,8 +1264,7 @@ impl EmptyState {
         self
     }
 
-    /// Publish the action as an effect that runs `f`, like
-    /// [`super::Button::on_effect`].
+    /// Publish the action as an effect that runs `f`, like [`super::Button::on_effect`].
     #[must_use]
     pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
         self.handler = Some(Handler::Effect(Rc::new(RefCell::new(Box::new(f)))));
@@ -1310,8 +1272,8 @@ impl EmptyState {
         self
     }
 
-    /// Publish the action as an effect on the person's own device alone
-    /// that runs `f`, like [`super::Button::on_own_device_effect`].
+    /// Publish the action as an effect on the person's own device alone that runs `f`, like
+    /// [`super::Button::on_own_device_effect`].
     #[must_use]
     pub fn on_own_device_effect(mut self, f: impl FnMut() + 'static) -> Self {
         self.handler = Some(Handler::OwnDeviceEffect(Rc::new(RefCell::new(Box::new(f)))));
@@ -1327,7 +1289,6 @@ impl EmptyState {
             .unwrap_or_else(|| format!("empty-state:{}", self.title))
     }
 
-    /// Build the published button the action runs through.
     fn rebuild_engine(&mut self) {
         let (Some(handler), Some(label)) = (self.handler.clone(), self.action_label.clone()) else {
             self.engine = None;
@@ -1345,7 +1306,6 @@ impl EmptyState {
         });
     }
 
-    /// Re-read the title, message and action label through the i18n layer.
     fn resolve(&mut self) {
         let resolved = (
             widget_text(&self.title),
@@ -1373,7 +1333,7 @@ impl EmptyState {
         std::mem::take(&mut self.action_fired)
     }
 
-    /// The resolved bounds of the action (empty until laid out + drawn).
+    /// The resolved bounds of the action (empty until laid out).
     /// Exposed so tests can assert the hit target without rendering to pixels.
     pub fn action_rect(&self) -> Rect {
         self.action_rect
@@ -1409,8 +1369,8 @@ impl EmptyState {
         metrics.title_h + action_label.map_or(0.0, |_| metrics.gap + metrics.btn_h)
     }
 
-    /// Where [`Self::paint`] puts the stack in `rect`, without painting: its
-    /// natural height at this width, the hero slot and the action's rect.
+    /// Where [`Self::paint`] puts the stack in `rect`, without painting: its natural height
+    /// at this width, the hero slot and the action's rect.
     pub fn layout(
         text_renderer: &mut TextRenderer,
         theme: &Theme,
@@ -1434,10 +1394,11 @@ impl EmptyState {
     /// without forcing those shells to duplicate its paint and hit-testing.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
+        self.place_controls();
     }
 
-    /// Where [`Self::paint`] draws `content`'s action inside `rect`, for
-    /// hit-testing it between paints; `None` with no action or no room.
+    /// Where [`Self::paint`] draws `content`'s action inside `rect`, for hit-testing it
+    /// between paints; `None` with no action or no room.
     #[must_use]
     pub fn action_rect_in(
         text: &mut TextRenderer,
@@ -1472,8 +1433,8 @@ impl EmptyState {
         Self::paint_with_documents(ctx, rect, content, hover).0
     }
 
-    /// [`Self::paint`], and where it put each of `content.documents`: what a
-    /// press on one opens.
+    /// [`Self::paint`], and where it put each of `content.documents`: what a press on one
+    /// opens.
     pub fn paint_with_documents(
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
@@ -1517,7 +1478,6 @@ impl EmptyState {
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: if self.busy {
-                // The spinner takes the hero slot; the slot is still sized.
                 self.icon.or(Some(Icon::Info))
             } else {
                 self.icon
@@ -1529,8 +1489,6 @@ impl EmptyState {
                 .map(|paint| paint as Illustration<'_>),
             title: &self.resolved.0,
             message: self.resolved.1.as_deref(),
-            // The documents a state lists come from the view that paints it;
-            // a retained empty state offers none of its own.
             documents: &[],
             action_label: self.resolved.2.as_deref(),
             hint: None,
@@ -1569,11 +1527,8 @@ impl Widget for EmptyState {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_style = StackStyle::layout(theme, self.inline);
-        // A rebuild may bring a new theme or text scale.
+        self.layout_theme = theme.clone();
         self.drawn = None;
-        // Auto height contributes wrapped content to a Scrollable's extent;
-        // the percentage minimum still fills a normal definite-height pane.
-        // An inline empty state hugs its content.
         let style = Style {
             flex_grow: if self.inline { 0.0 } else { 1.0 },
             flex_shrink: if self.inline { 0.0 } else { 1.0 },
@@ -1605,9 +1560,6 @@ impl Widget for EmptyState {
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
         });
         let measured_width = width.unwrap_or(240.0).max(1.0);
-        // A retained empty state lists no documents: an app offering its
-        // workspace's documents paints its state itself
-        // ([`EmptyState::paint_with_documents`]).
         let metrics = self.layout_style.measure(
             text_renderer,
             f64::from(measured_width),
@@ -1647,6 +1599,7 @@ impl Widget for EmptyState {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.place_controls();
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1671,12 +1624,17 @@ impl Widget for EmptyState {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // A host that draws this state in a theme of its own (a zoomed
+        // editor) draws it at a text scale the layout never saw: adopt it, so
+        // the controls move with the words they stand in.
+        if (theme.text_scale - self.layout_theme.text_scale).abs() > f32::EPSILON {
+            self.layout_theme = theme.clone();
+            self.place_controls();
+        }
         let rect = self.rect;
         let hover = self.last_cursor;
         let focused = self.action_focused;
         let inline = self.inline;
-        // The disclosure sits under the stack, and the two are centred
-        // together: the stack is laid out in what the disclosure leaves.
         let details_h = StackStyle::resolved(theme, inline).details_height(
             text_renderer,
             rect.width(),
@@ -1691,7 +1649,7 @@ impl Widget for EmptyState {
         );
         let mut spinner = self.spinner.take();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        self.action_rect = paint_empty_state(
+        paint_empty_state(
             &mut ctx,
             stack,
             &self.content(),
@@ -1699,19 +1657,9 @@ impl Widget for EmptyState {
             focused,
             inline,
             spinner.as_mut(),
-        )
-        .action
-        .unwrap_or(Rect::ZERO);
+        );
         self.spinner = spinner;
-        self.details_rect = if self.details.is_some() && stack.width() > 0.0 {
-            let bottom = place(ctx.text, theme, stack, &self.content(), inline).bottom;
-            self.paint_details(&mut ctx, rect, bottom)
-        } else {
-            Rect::ZERO
-        };
-        if let Some(engine) = &mut self.engine {
-            engine.apply_layout_external(self.action_rect);
-        }
+        self.paint_details(&mut ctx);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1763,7 +1711,6 @@ impl Widget for EmptyState {
 
     fn set_focus(&mut self, focused: bool) {
         self.action_focused = focused && self.action_label.is_some();
-        // Without an action the keyboard lands on the disclosure.
         self.details_focused = focused && self.action_label.is_none() && self.details.is_some();
     }
 
@@ -1772,7 +1719,6 @@ impl Widget for EmptyState {
     }
 
     fn needs_redraw(&self) -> bool {
-        // A spinner moves every frame; new words repaint too.
         self.drawn != Some(self.painted_state())
             || self.layout_dirty
             || self.needs_animation_frame()
@@ -1837,8 +1783,6 @@ impl Widget for EmptyState {
         }
     }
 
-    /// The action's id, when it has one: the empty state is addressed by
-    /// the control it holds.
     fn test_id(&self) -> Option<&str> {
         match &self.action_label {
             Some(_) => self.action_id.as_deref(),
@@ -1852,11 +1796,6 @@ impl Widget for EmptyState {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
-        // The empty state is a labelled group; the title is its accessible
-        // name and the message its description so a screen reader announces
-        // both without the caller wiring anything.
-        // A workspace that has not synced says what the screen says in its
-        // place, without the app's action (`crate::workspace_sync`).
         let waiting = crate::workspace_sync::waiting();
         let (title, message, busy) = waiting.as_ref().map_or(
             (
@@ -1879,7 +1818,6 @@ impl Widget for EmptyState {
         if busy {
             node = node.with_state(AccessState::new().busy(true));
         }
-        // A failure is announced at once; a wait when the reader is free.
         if self.error {
             node = node.with_live(Politeness::Assertive);
         } else if self.spinner.is_some() {
@@ -1911,8 +1849,6 @@ impl Widget for EmptyState {
             );
         }
         if let Some(details) = &self.details {
-            // The detail is the disclosure's description, so it is read
-            // whether or not the disclosure is open.
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(widget_text("empty-state-details"))

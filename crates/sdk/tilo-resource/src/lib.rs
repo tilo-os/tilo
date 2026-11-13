@@ -22,7 +22,7 @@
 //!     pub done: bool,
 //! }
 //!
-//! #[resource(kind = "example.todo", label = "Todo list")]
+//! #[resource(kind = "example.todo")]
 //! impl Todo {
 //!     /// Add an item.
 //!     #[action]
@@ -167,7 +167,7 @@ pub mod words;
 
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
-    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
+    Acting, ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
     minted_keys, reverting_type, take_minted,
 };
@@ -220,6 +220,25 @@ pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, res
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
+/// A word of the catalogue beside the crate that names it,
+/// `word!("files-rename-here")`: a [`label::Word`] read in the person's
+/// language whenever what carries it is published. A key the crate's
+/// `locales/en-US.ftl` does not hold does not build;
+/// `word!("key", catalogue = "tests/locales")` reads another catalogue.
+///
+/// A word that names what a person is looking at carries it as an argument —
+/// `word!("files-folder-rename-selected", name = file.0)` — which the
+/// catalogue's message shows with its placeable (`Rename “{ $name }”`) in
+/// every language the crate translates it into, and a count by its forms
+/// (`{ $count -> [one] … }`). An argument the message has no placeable for,
+/// or a placeable with no argument, does not build.
+#[macro_export]
+macro_rules! word {
+    ($($input:tt)*) => {
+        $crate::__private::word!($crate, $($input)*)
+    };
+}
+
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
@@ -229,8 +248,9 @@ pub mod __private {
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
-        RiskLevel, picked_resource_schema,
+        RiskLevel, StepKind, picked_resource_schema,
     };
+    pub use tilo_resource_macros::word;
 
     pub use crate::apply_cache::forget_all;
 
@@ -321,7 +341,7 @@ pub mod __private {
     }
 
     /// What `#[resource]` declares of one verb, besides how it is built.
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     #[allow(
         clippy::struct_excessive_bools,
         reason = "one independent `#[action(...)]` flag each, as the macro reads them"
@@ -358,6 +378,11 @@ pub mod __private {
         pub content: Option<&'static str>,
         pub item_field: Option<&'static str>,
         pub writes: &'static [&'static str],
+        /// The kind of step it takes (`#[action(step = "create")]`): what
+        /// presence and the activity card say of it
+        /// ([`tilo_actions::StepKind`]). `None` for a verb whose declaration
+        /// names none, whose step reads as the part of the record it acts on.
+        pub step: Option<tilo_actions::StepKind>,
         pub shape: crate::Shape,
         pub params: &'static [ParamDecl],
     }
@@ -477,10 +502,11 @@ pub mod __private {
         verb: VerbDecl,
         build: crate::vocabulary::Builds,
     ) -> crate::Declaration {
+        let written = verb.label.source;
         let mut decl = crate::Declaration::new(
             vocabulary,
             verb.id,
-            verb.label.source.to_owned(),
+            written.to_owned(),
             params_of(verb.params),
             build,
         );
@@ -503,7 +529,7 @@ pub mod __private {
         // What the description says beyond its first line, the label.
         let description = verb
             .description
-            .strip_prefix(verb.label.source)
+            .strip_prefix(written)
             .map_or(verb.description, |rest| {
                 rest.trim_start_matches('.').trim_start()
             });
@@ -512,6 +538,14 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        decl.step = verb
+            .step
+            .or_else(|| verb.destructive.then_some(tilo_actions::StepKind::Delete));
+        // A create that declares the collection it adds to makes one of them:
+        // its step says that collection's noun ("an issue").
+        decl.creates = (decl.step == Some(tilo_actions::StepKind::Create))
+            .then(|| verb.writes.first().copied())
+            .flatten();
         if verb.irreversible {
             decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
         }
@@ -1021,25 +1055,6 @@ pub mod __private {
             .map(|field| (field.key.to_owned(), (field.schema)()))
             .collect();
         serde_json::json!({"type": "object", "properties": properties})
-    }
-
-    /// The label an item is offered under: its `#[model(label)]`, else its
-    /// first text, else its id.
-    pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
-        if let Some(label) = item.label()
-            && !label.is_empty()
-        {
-            return label;
-        }
-        let mut text = Vec::new();
-        item.collect_text(&mut text);
-        text_or_id(text, id)
-    }
-
-    /// The first line of `text`, else the id.
-    #[inline(never)]
-    fn text_or_id(text: Vec<String>, id: &crate::Id) -> String {
-        first_line_of(text).unwrap_or_else(|| id.to_string())
     }
 
     /// The first non-empty line among `text`.

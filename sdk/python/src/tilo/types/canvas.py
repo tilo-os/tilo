@@ -114,6 +114,7 @@ class Recent(TypedDict):
 
 class Artwork(Resource):
     """Artwork — `canvas.artwork`."""
+    __surface__ = "so.tilo.canvas@3af12d4a81695ba4"
     title: str
     width: float
     height: float
@@ -756,6 +757,7 @@ class Artwork(Resource):
 
 class RecentArtworks(Resource):
     """Recent artworks — `canvas.recent-artworks`."""
+    __surface__ = "so.tilo.canvas@3af12d4a81695ba4"
     devices: dict[str, Any]
 
     def remember(self,

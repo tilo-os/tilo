@@ -606,7 +606,6 @@ fn label_face_geometry_follows_the_theme_scale() {
                 font_size(&retained)
             );
 
-            // Positioned by a canvas host: no taffy pass at all.
             let mut external = Button::new("save", "Save");
             external.apply_layout_external(rect);
             let mut external_scene = Scene::new();
@@ -835,9 +834,6 @@ fn a_host_placed_button_never_asks_the_solver_for_a_measure() {
     );
 }
 
-/// The keyboard focus ring reads as a ring on every face: where it meets
-/// a fill it does not contrast with (a primary face is your colour, as
-/// the ring is), a line of the ground parts the two.
 #[test]
 fn the_focus_ring_stands_apart_from_every_face() {
     use crate::offscreen::OffscreenRenderer;
@@ -921,9 +917,6 @@ fn face_colors_per_role_track_state_and_stay_readable() {
         assert_eq!(press_ink, ink);
         assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
 
-        // Secondary is the raised control; the raised level has no edge,
-        // its step off the ground separates it (design language,
-        // "Surfaces").
         let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
         assert_eq!(fill, raised);
         assert_eq!(edge, None);
@@ -937,7 +930,6 @@ fn face_colors_per_role_track_state_and_stay_readable() {
             colors.lift_on(raised, 1.0)
         );
 
-        // Destructive is the same neutral control lettered in danger ink.
         for interact in [rest, hover, press] {
             let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
             assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
@@ -1342,7 +1334,6 @@ fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
 
 #[test]
 fn the_intrinsic_footprint_follows_the_label_and_never_moves_it() {
-    /// A short label stands at the labelled minimum, twice the height.
     fn a_short_label_is_at_the_labelled_minimum() {
         let rect = measured_button_rect(Button::new("save", "Save"), 1.0);
         assert_eq!((rect.width(), rect.height()), (64.0, 32.0), "{rect:?}");
@@ -1850,8 +1841,6 @@ fn a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone() {
         "and finds nothing to change again"
     );
 
-    // The bar's own control: the badge hangs off the bell's corner and still stands wholly
-    // inside the button, whose top edge is the bar's inner edge.
     let mut button = counted();
     let mut tree = TaffyTree::new();
     let mut map = std::collections::HashMap::new();
@@ -1905,7 +1894,6 @@ fn a_button_the_solver_placed_answers_its_measure() {
         (400, 100),
     );
     harness.relayout();
-    // The person reaches for the mouse, then for the keyboard: the face is the same size.
     let keyboard = harness.interaction_environment().with_keyboard_modality();
     harness.set_interaction_environment(keyboard);
     assert!(

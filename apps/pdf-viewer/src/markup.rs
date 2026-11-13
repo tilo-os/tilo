@@ -1,38 +1,8 @@
-//! The markup of one PDF: what is stored, and what the reader reads of it.
-//!
-//! [`PdfMarkup`] is the record — the markup a launch derives from the file
-//! being read — so page numbers, which only mean anything within one file,
-//! are only ever read against the file they came from. What is
-//! *collaborative* lives here: the page plan, annotations, threaded
-//! comments, signatures and form values. The PDF itself is an immutable blob
-//! the record names by content ([`PdfMarkup::source`]); every annotation is
-//! relative to those bytes.
-//!
-//! **Anchors are stable.** Markup names its page by durable occurrence id,
-//! never by position, so reordering pages, deleting them and annotating
-//! concurrently compose. Geometry is stored in the page's PDF user space,
-//! which does not change however the page is displayed or rotated; text
-//! markup also keeps the engine character range it covers.
-//!
-//! **Concurrency.** Pages are items with stable ids and order keys: a page
-//! deleted while someone moves it stays deleted. Annotations, comments and
-//! signatures are items under their own ids; their fields merge one by one.
-//! Comment threads are a storage unit of their own, so the right to comment
-//! is the right to write them.
-//!
-//! **Markup already in the PDF is taken over.** The first time a record
-//! meets its source bytes, the file's highlights, notes and their reply
-//! threads, free text, ink and form values become records like any other;
-//! [`PdfMarkup::adopted`] remembers where each came from, so an export
-//! keeps, replaces or removes the originals instead of adding copies — see
-//! [`crate::adopt`].
-//!
-//! The reading position is here as a resume hint — the page occurrence,
-//! how far down it the reader was, and the zoom — so reopening a document
-//! returns to where it was left. It is a hint, not live view state: each
-//! window scrolls on its own, and a peer's last position is simply the one
-//! a fresh window starts from. The active tool, selection and panels remain
-//! per-peer and are never written here.
+//! The markup of one PDF: the page plan, annotations, comment threads, signatures and
+//! form values, against the immutable bytes the record names. Markup names its page by
+//! durable occurrence id, never by position, and stores geometry in the page's PDF user
+//! space, so reordering, deleting and annotating concurrently compose. The reading
+//! position is a resume hint only; the tool, selection and panels stay per window.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -46,14 +16,14 @@ use crate::model::{
     AnnoKind, Annotation, Comment, FormEntry, GeomSpace, PtRect, Signature, SignatureInk, Thread,
 };
 
-/// The most pages one import brings in.
 pub const MAX_IMPORTED_PAGES: usize = 512;
 
-/// A page occurrence from an imported payload. Dimensions are captured at
-/// authoring time so a peer can reserve an honest page-shaped placeholder
-/// before it has downloaded the blob.
+/// A page occurrence from an imported payload, with its dimensions captured at
+/// authoring time so a peer can reserve a page-shaped placeholder before the blob arrives.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImportedPage {
+    /// The payload's content reference: the address it is kept under, and the
+    /// key that opens it when the workspace keeps content sealed.
     pub hash: String,
     pub kind: String,
     pub page: usize,
@@ -63,8 +33,7 @@ pub struct ImportedPage {
 
 impl ImportedPage {
     pub fn valid(&self) -> bool {
-        self.hash.len() == 64
-            && self.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        tilo_content::valid_reference(&self.hash)
             && matches!(self.kind.as_str(), "pdf" | "image")
             && self.page > 0
             && self.width_milli > 0
@@ -83,8 +52,6 @@ tilo_resource::json_model!(
     AdoptedEntry
 );
 
-/// A durable page-plan entry, as the reader works with it: the occurrence
-/// `id`, the immutable source page it shows, and its turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PagePlanEntry {
     pub id: String,
@@ -97,8 +64,6 @@ pub struct PagePlanEntry {
     pub rotation: i32,
 }
 
-/// One page of the plan, as stored: an item of [`PdfMarkup::pages`] under
-/// its occurrence id.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = PageOccurrence::valid)]
 pub struct PageOccurrence {
@@ -126,7 +91,6 @@ impl PageOccurrence {
     }
 }
 
-/// One placed signature as stored.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = StoredSignature::valid)]
 pub struct StoredSignature {
@@ -166,7 +130,6 @@ impl StoredSignature {
     }
 }
 
-/// The markup of one PDF. See the module docs.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = PdfMarkup::valid)]
 pub struct PdfMarkup {
@@ -211,10 +174,25 @@ pub struct PdfMarkup {
 /// The PDF bytes a record's markup is made against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinnedSource {
-    pub hash: String,
-    pub len: u64,
+    /// The bytes, kept where this window keeps content: its hash and the
+    /// reference that opens it.
+    pub source: Bytes,
     /// The file name it was opened under; empty when it was not named.
     pub name: String,
+}
+
+impl PinnedSource {
+    /// The bytes as `store` holds them; `None` while they are not here.
+    #[must_use]
+    pub fn bytes(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+        self.source.read(store)
+    }
+
+    /// The bytes' content hash, which names them the same everywhere.
+    #[must_use]
+    pub fn hash(&self) -> String {
+        hex::encode(self.source.hash())
+    }
 }
 
 impl PdfMarkup {
@@ -274,14 +252,10 @@ impl PdfMarkup {
     /// The PDF bytes the markup is made against, once pinned.
     #[must_use]
     pub fn pinned_source(&self) -> Option<PinnedSource> {
-        match &self.source {
-            Bytes::Blob { hash, len, .. } => Some(PinnedSource {
-                hash: hex::encode(hash),
-                len: *len,
-                name: self.source_name.clone(),
-            }),
-            _ => None,
-        }
+        (!self.source.is_empty()).then(|| PinnedSource {
+            source: self.source.clone(),
+            name: self.source_name.clone(),
+        })
     }
 
     /// The source whose markup has been taken over.
@@ -408,13 +382,6 @@ impl PdfMarkup {
     pub fn adopted_entries(&self) -> Vec<AdoptedEntry> {
         self.adopted.values().cloned().collect()
     }
-}
-
-/// The 32 bytes a 64-digit hex hash names.
-pub(crate) fn unhex(hash: &str) -> Option<[u8; 32]> {
-    let mut out = [0u8; 32];
-    hex::decode_to_slice(hash, &mut out).ok()?;
-    Some(out)
 }
 
 #[cfg(test)]

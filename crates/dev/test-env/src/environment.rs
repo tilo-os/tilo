@@ -1,22 +1,15 @@
-//! One test environment: a fixture tree, the wall clock and the network a
-//! test drives code through, instead of a temporary directory and the
-//! developer's machine.
+//! One test environment: a fixture tree, the wall clock and the network a test drives code through,
+//! instead of a temporary directory and the developer's machine.
 //!
-//! [`crate::TestHome`] already points `HOME` and every XDG base directory at
-//! a fresh temporary tree. [`TestEnv`] keeps that home and adds the two other
-//! things a test otherwise reaches for and gets at random:
+//! [`crate::TestHome`] points `HOME` and every XDG base directory at a fresh temporary tree;
+//! [`TestEnv`] keeps that home and adds the two other things a test otherwise reaches for and gets
+//! at random. [`Clock`] starts at [`CAPTURE_LOCAL_TIME`] (30 June 2026, 10:42 local), the moment a
+//! `--shots` capture shows, so a fixture and its screenshots agree, and moves only when the test
+//! moves it. [`Network`] is off: a test that needs the internet says so with
+//! [`Network::allow_external`], and every other test fails loudly instead of quietly depending on
+//! what the developer's machine can reach.
 //!
-//! - [`Clock`], the wall clock. A test that asserts on a timestamp, a
-//!   deadline or an ordering reads it here, and it starts at
-//!   [`CAPTURE_LOCAL_TIME`] (30 June 2026, 10:42 local) — the moment a
-//!   `--shots` capture shows — so a fixture and its screenshots agree.
-//! - [`Network`], whether anything may leave the process. It is off: a test
-//!   that needs the internet says so with
-//!   [`Network::allow_external`], and every other test fails loudly instead of
-//!   quietly depending on what the developer's machine can reach.
-//!
-//! Files are the fixture tree itself: [`TestEnv::with_files`] writes the files
-//! a test starts from, as it would write them in the home it built.
+//! Files are the fixture tree itself: [`TestEnv::with_files`] writes the files a test starts from.
 //!
 //! ```no_run
 //! let env = tilo_test_env::TestEnv::new().unwrap();
@@ -35,33 +28,30 @@ use crate::TestHome;
 
 /// The local date and time every test environment starts at.
 ///
-/// The same reading `--shots` pins for its captures (30 June 2026, 10:42
-/// local): a fixture a test drives and a screenshot of it show one clock.
+/// The same reading `--shots` pins for its captures (30 June 2026, 10:42 local): a fixture a test
+/// drives and a screenshot of it show one clock.
 pub const CAPTURE_LOCAL_TIME: (i32, u32, u32, u32, u32) = (2026, 6, 30, 10, 42);
 
 /// The wall clock a test reads.
 ///
-/// It starts at [`CAPTURE_LOCAL_TIME`] and moves only when the test moves it,
-/// so two runs of one test see the same instants in the same order. Read it
-/// instead of the system clock: code under test that reaches for the real
-/// clock is what makes a test pass at noon and fail at midnight.
+/// It starts at [`CAPTURE_LOCAL_TIME`] and moves only when the test moves it, so two runs of one
+/// test see the same instants in the same order. Read it instead of the system clock: code under
+/// test that reaches for the real clock is what makes a test pass at noon and fail at midnight.
 #[derive(Debug)]
 pub struct Clock {
     millis: std::sync::Mutex<i64>,
 }
 
 impl Clock {
-    /// A clock reading [`CAPTURE_LOCAL_TIME`] in the local time zone.
     fn capture_local() -> Self {
         Self {
-            // A local time zone `chrono` cannot resolve leaves the clock at
-            // the epoch: a test's instant is still ordered and still moves
-            // only when the test moves it, which is what it asserts on.
+            // A local time zone `chrono` cannot resolve leaves the clock at the epoch: a test's
+            // instant is still ordered and still moves only when the test moves it, which is what
+            // it asserts on.
             millis: std::sync::Mutex::new(capture_millis().unwrap_or(0)),
         }
     }
 
-    /// The instant this clock reads, as milliseconds since the Unix epoch.
     #[must_use]
     pub fn millis(&self) -> i64 {
         *self
@@ -70,7 +60,6 @@ impl Clock {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The instant this clock reads, in UTC.
     #[must_use]
     pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(self.millis()).unwrap_or_else(|| {
@@ -78,15 +67,13 @@ impl Clock {
         })
     }
 
-    /// The instant this clock reads, in the local time zone.
     #[must_use]
     pub fn local(&self) -> chrono::DateTime<chrono::Local> {
         chrono::DateTime::<chrono::Local>::from(self.now())
     }
 
-    /// Move the clock in time: forward for `duration`, back for a negative
-    /// one. A test advances to the moment a deadline is due rather than
-    /// sleeping until it is.
+    /// Move the clock in time: forward for `duration`, back for a negative one. A test advances to
+    /// the moment a deadline is due rather than sleeping until it is.
     pub fn advance(&self, duration: Duration) {
         let delta = i64::try_from(duration.as_millis()).unwrap_or(i64::MAX);
         let mut millis = self
@@ -96,7 +83,6 @@ impl Clock {
         *millis = millis.saturating_add(delta);
     }
 
-    /// Set the clock to an instant, as milliseconds since the Unix epoch.
     pub fn set_millis(&self, millis: i64) {
         *self
             .millis
@@ -111,8 +97,6 @@ impl Default for Clock {
     }
 }
 
-/// [`CAPTURE_LOCAL_TIME`] in the local time zone, as milliseconds since the
-/// Unix epoch.
 pub(crate) fn capture_millis() -> Option<i64> {
     use chrono::TimeZone as _;
     let (year, month, day, hour, minute) = CAPTURE_LOCAL_TIME;
@@ -125,9 +109,8 @@ pub(crate) fn capture_millis() -> Option<i64> {
 
 /// Whether a test may reach the network.
 ///
-/// Off by default. A test whose subject is a request says
-/// [`allow_external`](Self::allow_external) first, so the dependency is
-/// written down where it is taken, and a lane that requires it
+/// Off by default. A test whose subject is a request says [`allow_external`](Self::allow_external)
+/// first, so the dependency is written down where it is taken, and a lane that requires it
 /// (`crate::capability`) can still prove the host has it.
 #[derive(Debug, Clone, Default)]
 pub struct Network {
@@ -141,24 +124,21 @@ impl Network {
         Self { external: false }
     }
 
-    /// Allow the test to reach hosts beyond this machine.
     pub fn allow_external(&mut self) {
         self.external = true;
     }
 
-    /// Whether the test may reach hosts beyond this machine.
     #[must_use]
     pub fn external_allowed(&self) -> bool {
         self.external
     }
 }
 
-/// One test environment: a temporary home with every XDG base directory
-/// pointed into it, a clock the test moves, and a network that starts closed.
+/// One test environment: a temporary home with every XDG base directory pointed into it, a clock
+/// the test moves, and a network that starts closed.
 ///
-/// Holds the process-wide environment lock ([`crate::lock`]) for its whole
-/// life, as [`TestHome`] does, and restores every variable it set when
-/// dropped.
+/// Holds the process-wide environment lock ([`crate::lock`]) for its whole life, as [`TestHome`]
+/// does, and restores every variable it set when dropped.
 pub struct TestEnv {
     home: TestHome,
     clock: Clock,
@@ -175,11 +155,11 @@ impl TestEnv {
         })
     }
 
-    /// Write the files a test starts from — `(path, contents)`, relative to
-    /// the home — and return the environment.
+    /// Write the files a test starts from — `(path, contents)`, relative to the home — and return
+    /// the environment.
     ///
-    /// Parent directories are created. A path that is absolute is written
-    /// where it names, for a fixture a caller placed itself.
+    /// Parent directories are created. A path that is absolute is written where it names, for a
+    /// fixture a caller placed itself.
     pub fn with_files(self, tree: &[(impl AsRef<Path>, &[u8])]) -> io::Result<Self> {
         for (path, contents) in tree {
             let path = self.home.home().join(path.as_ref());
@@ -203,55 +183,45 @@ impl TestEnv {
         &self.network
     }
 
-    /// Let the test reach hosts beyond this machine
-    /// ([`Network::allow_external`]).
     pub fn allow_external(&mut self) {
         self.network.allow_external();
     }
 
-    /// The fixture tree: `HOME` and every XDG base directory below it.
     #[must_use]
     pub fn home(&self) -> &TestHome {
         &self.home
     }
 
-    /// The temporary directory holding the home and runtime trees.
     #[must_use]
     pub fn root(&self) -> &Path {
         self.home.root()
     }
 
-    /// `$HOME`.
     #[must_use]
     pub fn path(&self) -> &Path {
         self.home.home()
     }
 
-    /// `$XDG_DATA_HOME`.
     #[must_use]
     pub fn data(&self) -> &Path {
         self.home.data()
     }
 
-    /// `$XDG_CONFIG_HOME`.
     #[must_use]
     pub fn config(&self) -> &Path {
         self.home.config()
     }
 
-    /// `$XDG_STATE_HOME`.
     #[must_use]
     pub fn state(&self) -> &Path {
         self.home.state()
     }
 
-    /// `$XDG_CACHE_HOME`.
     #[must_use]
     pub fn cache(&self) -> &Path {
         self.home.cache()
     }
 
-    /// `$XDG_RUNTIME_DIR`.
     #[must_use]
     pub fn runtime(&self) -> &Path {
         self.home.runtime()
@@ -269,8 +239,8 @@ impl TestEnv {
         self.home.home().join(path)
     }
 
-    /// The scope holding the process environment; more changes made through
-    /// it are undone with the environment.
+    /// The scope holding the process environment; more changes made through it are undone with the
+    /// environment.
     pub fn env(&mut self) -> &mut crate::ScopedEnv {
         self.home.env()
     }
@@ -284,7 +254,6 @@ mod tests {
 
     #[test]
     fn a_clock_starts_at_the_capture_moment_and_moves_only_when_the_test_moves_it() {
-        // Phase: a_clock_reads_the_capture_moment_of_its_own_time_zone.
         {
             let clock = Clock::default();
             let at = clock.local();
@@ -297,7 +266,6 @@ mod tests {
             assert_eq!(clock.local(), at, "reading it does not move it");
         }
 
-        // Phase: advancing_moves_the_reading_and_keeps_the_order.
         {
             let clock = Clock::default();
             let start = clock.millis();
@@ -314,7 +282,6 @@ mod tests {
 
     #[test]
     fn a_fixture_tree_is_written_into_the_environment_and_read_back() {
-        // Phase: files_are_written_under_the_home_and_its_directories_exist.
         {
             let env = TestEnv::new()
                 .unwrap()
@@ -335,7 +302,6 @@ mod tests {
             assert!(env.path().is_dir(), "the home exists");
         }
 
-        // Phase: dropping_the_environment_removes_the_tree.
         {
             let root;
             {
@@ -346,7 +312,6 @@ mod tests {
             assert!(!root.exists(), "the fixture tree is removed on drop");
         }
 
-        // Phase: the_environment_starts_sealed_and_says_when_it_is_not.
         {
             let mut env = TestEnv::new().unwrap();
             assert!(!env.network().external_allowed(), "nothing leaves at first");

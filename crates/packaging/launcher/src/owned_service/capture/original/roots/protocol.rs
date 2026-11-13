@@ -32,13 +32,12 @@ struct Root {
     source: OriginalMountedIdentity,
     mount: u64,
 }
-/// Root-authenticated native projection, constructed only by reading the exact
-/// sealed root-authored shim receipt and checking every actual confined entry.
+/// Root-authenticated native projection, constructed only by reading the exact sealed root-authored
+/// shim receipt and checking every actual confined entry.
 pub struct VerifiedOriginalMountedRoots {
     roots: Vec<Root>,
     files: Vec<File>,
 }
-/// # Errors
 /// Rejects unbounded, overlapping, noncanonical or unsupported root identities.
 pub fn original_mounted_table_sha256(roots: &[OriginalMountedIdentity]) -> io::Result<[u8; 32]> {
     if roots.is_empty() || roots.len() > LIMIT {
@@ -113,7 +112,6 @@ pub(in crate::owned_service::capture::original) fn observe(
 }
 
 /// Native observations minted only under the original caller filesystem scope.
-/// No request/JSON constructor can manufacture the root publication authority.
 pub(in crate::owned_service::capture::original) struct Observed {
     receipt: Receipt,
 }
@@ -158,8 +156,7 @@ pub(in crate::owned_service::capture::original) fn publish(
     }
     Ok(())
 }
-/// Signed original worker only; named/unsealed files and ordinary request JSON
-/// cannot mint this type. The caller must already verify its canonical FD50 claim.
+/// Signed original worker only; named/unsealed files and ordinary request JSON cannot mint this type.
 pub fn verify_original_mounted_roots(
     binding: Option<&OriginalMountedBinding>,
 ) -> io::Result<Option<VerifiedOriginalMountedRoots>> {
@@ -212,7 +209,6 @@ pub fn verify_original_mounted_roots(
     }))
 }
 impl VerifiedOriginalMountedRoots {
-    /// # Errors
     /// Refuses changed path, inode, mount or readonly projection custody.
     pub fn check(&self) -> io::Result<()> {
         for (root, file) in self.roots.iter().zip(&self.files) {

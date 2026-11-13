@@ -13,7 +13,6 @@ use tilo_clock::unix_now_ms;
 
 use crate::hardware::{DisplayOutputSnapshot, MonitorIdentity, OutputDescriptor};
 
-/// How long each display shows its number.
 pub const IDENTIFY_MS: u64 = 3_000;
 /// How old a request may be when the compositor first sees it and still
 /// answer it. The request is stamped before its write, which a loaded disk
@@ -33,9 +32,6 @@ crate::read_through_json_value!(IdentifyRequest);
 impl IdentifyRequest {
     const SECTION: &'static str = "display_identify";
 
-    /// # Errors
-    ///
-    /// Returns an error if the settings section can't be written.
     pub fn request() -> std::io::Result<Self> {
         let request = Self {
             requested_unix_ms: unix_now_ms(),
@@ -48,7 +44,6 @@ impl IdentifyRequest {
         Ok(request)
     }
 
-    /// Write the same identify handshake through the session-owned source.
     pub fn request_in(source: &dyn crate::SettingsSource, request: Self) -> std::io::Result<Self> {
         let value = serde_json::to_value(&request).map_err(std::io::Error::other)?;
         source.update_section(
@@ -66,14 +61,11 @@ impl IdentifyRequest {
         serde_json::from_value(serde_json::Value::Object(section)).ok()
     }
 
-    /// Whether a compositor seeing this request first at `now_unix_ms`
-    /// should still answer it (for its whole [`IDENTIFY_MS`]).
     pub fn is_fresh(&self, now_unix_ms: u64) -> bool {
         now_unix_ms >= self.requested_unix_ms
             && now_unix_ms.saturating_sub(self.requested_unix_ms) <= IDENTIFY_FRESH_MS
     }
 
-    /// Milliseconds of the identify window left at `now_unix_ms`, if any.
     pub fn remaining_ms(&self, now_unix_ms: u64) -> Option<u64> {
         let end = self.requested_unix_ms.saturating_add(IDENTIFY_MS);
         (now_unix_ms >= self.requested_unix_ms && now_unix_ms < end)
@@ -99,10 +91,6 @@ pub fn display_name(descriptor: &OutputDescriptor, builtin: bool) -> String {
     }
 }
 
-/// The names of `outputs`, the same in Settings and on the displays
-/// themselves, in the same order: [`display_name`], and where two connected
-/// displays would share one, each followed by the number Identify shows on
-/// it (`Dell U2724DE (2)`), so every name is one display's.
 pub fn display_names(outputs: &[DisplayOutputSnapshot]) -> Vec<String> {
     let names: Vec<String> = outputs
         .iter()
@@ -141,8 +129,6 @@ pub fn display_numbers(outputs: &[DisplayOutputSnapshot]) -> Vec<usize> {
     }))
 }
 
-/// [`display_numbers`] over `(built-in, connector label, connector key)`
-/// triples, for callers that hold their own view of the outputs.
 pub fn number_displays<'a>(
     outputs: impl IntoIterator<Item = (bool, &'a str, &'a str)>,
 ) -> Vec<usize> {
@@ -240,7 +226,6 @@ mod tests {
             ["Built-in display", "Dell U2724DE (3)", "Dell U2724DE (2)"],
             "the same numbers Identify shows"
         );
-        // Identical monitors on two cards' same-named ports: still by number.
         twins[1].descriptor.connector = "pci:0000:03:00.0/DP-1".into();
         twins[1].descriptor.connector_label = "DP-1".into();
         twins[2].descriptor.connector = "pci:0000:01:00.0/DP-1".into();

@@ -293,10 +293,12 @@ fn focused(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
 pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
     // A file's name is a machine form, and dots where the ISO form has
     // colons: colons are not a name every filesystem accepts.
-    // format: machine — a file name
-    let name = format!(
-        "{kind} {}",
-        chrono::Local::now().format("%Y-%m-%d %H.%M.%S")
+    let name = ui::format::machine!(
+        "a file name, which every filesystem accepts and search finds",
+        format!(
+            "{kind} {}",
+            chrono::Local::now().format("%Y-%m-%d %H.%M.%S")
+        )
     );
     let mut path = directory.join(format!("{name}.{extension}"));
     let mut next = 2_u32;

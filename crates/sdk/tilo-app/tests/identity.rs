@@ -31,7 +31,11 @@ pub struct Note {
     pub author: String,
 }
 
-#[resource(kind = "test.board", label = "Board", app = "so.tilo.test-board")]
+#[resource(
+    kind = "test.board",
+    app = "so.tilo.test-board",
+    catalogue = "tests/locales"
+)]
 impl Board {
     /// Make whoever invokes this the board's owner.
     #[action]

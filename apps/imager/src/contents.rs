@@ -1,16 +1,9 @@
-//! What a drive holds, in words: the line every drive row stands on.
-//!
-//! The count and the names are data — a partition's label and a filesystem's
-//! name read the same in every language — while the sentence around them is
-//! the catalogue's, so a German window says "2 Partitionen (ext4, btrfs)".
+//! What a drive contains, in words, for its row.
 
 use ui::i18n::ArgValue;
 
 use crate::resource::CATALOG;
 
-/// What lives on a drive with `count` partitions, named by `names` (a
-/// partition without a name adds none): "Empty disk", "1 partition",
-/// "2 partitions (ext4, btrfs)".
 pub(crate) fn drive_contents(count: usize, names: &[&str]) -> String {
     if count == 0 {
         return CATALOG.t("imager-drive-empty");
@@ -31,8 +24,6 @@ pub(crate) fn drive_contents(count: usize, names: &[&str]) -> String {
     )
 }
 
-/// A drive's line: its device or capacity, then what it holds, joined the way
-/// this language writes a list.
 #[cfg(feature = "destination")]
 pub(crate) fn drive_line(first: &str, count: usize, names: &[&str]) -> String {
     ui::format::list(&[first.to_owned(), drive_contents(count, names)])

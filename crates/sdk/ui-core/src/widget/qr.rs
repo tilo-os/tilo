@@ -1,18 +1,5 @@
-//! QR-code widget.
-//!
-//! Wraps the `qrcode` crate and paints the resulting module matrix as a
-//! grid of square Vello fills.
-//!
-//! - A configurable "quiet zone" of empty modules wraps the matrix so any
-//!   consumer scanner accepts the result. Defaults to four modules per
-//!   the QR spec.
-//! - No animation, no caching layer. Encoding is a few hundred
-//!   microseconds for the payload sizes we care about (~200-400 bytes),
-//!   so re-encoding on every paint keeps the widget declarative ("show
-//!   this payload").
-//!
-//! The identity-flow ceremony uses this widget to encode both the
-//! pairing-channel handshake payload and the `tilo://invite/...` URL.
+//! QR-code widget. Wraps the `qrcode` crate and paints the resulting module matrix as a grid of
+//! square Vello fills.
 
 use std::collections::HashMap;
 use zeroize::Zeroizing;
@@ -74,9 +61,7 @@ pub fn svg(payload: &str) -> Result<String, String> {
     ))
 }
 
-/// Holds the source bytes plus the cached encoded matrix. Re-encodes when
-/// the payload changes via `set_payload` — the pairing-channel screen
-/// calls it every few seconds as the broker rotates the nonce.
+/// Holds the source bytes plus the cached encoded matrix.
 pub struct QrWidget {
     rect: Rect,
     test_id: String,
@@ -85,8 +70,6 @@ pub struct QrWidget {
     secret: bool,
     /// Width × Width row-major matrix. `true` = dark module.
     matrix: Zeroizing<Vec<bool>>,
-    /// Number of modules along one side of the encoded matrix (not
-    /// counting the quiet zone).
     matrix_size: usize,
     quiet_modules: usize,
     error_correction: EcLevel,
@@ -130,45 +113,38 @@ impl QrWidget {
         w
     }
 
-    /// Mark pairing material as private. A nonempty code participates in the
-    /// host's existing screenshot, recording and screen-sharing exclusion.
-    /// Its accessible name should describe the operation without the payload.
+    /// Mark pairing material as private. A nonempty code participates in the host's existing
+    /// screenshot, recording and screen-sharing exclusion.
     #[must_use]
     pub fn with_secret(mut self) -> Self {
         self.secret = true;
         self
     }
 
-    /// [`Self::with_secret`] after construction.
     pub fn set_secret(&mut self, secret: bool) {
         self.dirty = true;
         self.secret = secret;
     }
 
-    /// Whether it marks private pairing material.
     #[must_use]
     pub fn is_secret(&self) -> bool {
         self.secret
     }
 
-    /// [`Self::with_alt`] after construction.
     pub fn set_alt(&mut self, alt: impl Into<String>) {
         self.dirty = true;
         self.alt = alt.into();
     }
 
-    /// Give the generated image a stable address for accessibility,
-    /// inspection, and headless scenarios.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = id.into();
         self
     }
 
-    /// Draw each module `px` pixels across, and make the box as large as the
-    /// payload needs: what a code carries can run to a kilobyte, and a
-    /// kilobyte's modules in a fixed box are too small to tell apart on a
-    /// screen. A code that fits the usual box keeps it without asking.
+    /// Draw each module `px` pixels across, and make the box as large as the payload needs:
+    /// what a code carries can run to a kilobyte, and a kilobyte's modules in a fixed box are
+    /// too small to tell apart on a screen.
     #[must_use]
     pub fn with_module_px(mut self, px: u32) -> Self {
         self.dirty = true;
@@ -189,16 +165,13 @@ impl QrWidget {
         self.rect = rect;
     }
 
-    /// Describe what scanning the code represents. A generic "QR code" name
-    /// is supplied by default; applications should provide the useful payload
-    /// meaning rather than forcing a screen-reader user to infer it visually.
+    /// Describe what scanning the code represents.
     #[must_use]
     pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
         self.alt = alt.into();
         self
     }
 
-    /// The accessible description of the generated code.
     #[must_use]
     pub fn alt(&self) -> &str {
         &self.alt
@@ -239,10 +212,7 @@ impl QrWidget {
         self.quiet_modules
     }
 
-    /// Matrix + 2× quiet zone. The QR spec caps `matrix_size` at 177
-    /// (version 40) and `quiet_modules` is a widget-construction constant, so
-    /// this can never realistically overflow; `saturating_*` keeps it
-    /// panic-free even so.
+    /// Matrix + 2× quiet zone.
     pub fn total_modules(&self) -> usize {
         self.matrix_size
             .saturating_add(self.quiet_modules.saturating_mul(2))
@@ -276,10 +246,8 @@ impl Widget for QrWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // 240x240 unless the caller named a module size: then the box is as
-        // large as the modules the code carries need, and a card gives it the
-        // line that room takes. A code that could not be made keeps the usual
-        // box, which is where its error is written.
+        // 240x240 unless the caller named a module size: then the box is as large as the
+        // modules the code carries need, and a card gives it the line that room takes.
         let side = if self.error.is_some() {
             240.0
         } else {
@@ -362,14 +330,9 @@ impl Widget for QrWidget {
         if module <= 0.0 {
             return;
         }
-        // The code is square; centre it in a non-square allocation so the
-        // white surround stays symmetric instead of piling up on one side.
         let drawn = module * total;
         let origin_x = self.rect.x0 + (self.rect.width() - drawn) / 2.0;
         let origin_y = self.rect.y0 + (self.rect.height() - drawn) / 2.0;
-        // The white is the code's own ground, as wide as the code: a slot
-        // wider or taller than the code then shows it centred on the surface
-        // rather than as a pale band around it.
         let ground = Rect::new(origin_x, origin_y, origin_x + drawn, origin_y + drawn);
         scene.fill(Fill::NonZero, transform, light, None, &ground);
         let quiet = self.quiet_modules as f64 * module;
@@ -575,7 +538,6 @@ mod tests {
         assert_eq!(laid.width, want);
         assert_eq!(laid.height, want);
 
-        // A code that fits the usual box keeps it without asking.
         let mut small = QrWidget::new(b"hello".to_vec());
         let node = small.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
         let laid = taffy.style(node).expect("the code is laid out").size;

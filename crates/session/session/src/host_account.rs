@@ -78,12 +78,14 @@ impl HostAccountDoor {
 
 /// This device's name, as its host name gives it.
 fn device_name() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        // ignored-failure: a device without a host name is still this device, said plainly.
-        .ok()
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "This device".to_owned())
+    tilo_failure::ignored!(
+        "a device without a host name is still this device, said plainly",
+        std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "This device".to_owned())
+    )
 }
 
 fn descriptor() -> ActionDescriptor {

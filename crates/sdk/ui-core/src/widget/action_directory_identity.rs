@@ -4,12 +4,8 @@
 /// This never authorizes invocation, disclosure, or document publication.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActionDirectoryInvocationDomain {
-    /// The provider has not established complete continuity evidence.
     #[default]
     Unsupported,
-    /// All addresses, handlers and target semantics owned by this surface are
-    /// represented by the newly materialized resources and their effective
-    /// invocation evidence. There is no omitted lazy dispatch domain.
     MaterializedOnly,
     /// Versions the complete omitted domain: addresses/order/cursors, targets,
     /// encodings, argument resolution, handlers and captured state. A recreated

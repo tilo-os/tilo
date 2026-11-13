@@ -87,9 +87,9 @@ fn press(app: &mut GitClientState, pos: Point, doc: &mut AutoCommit) {
     draw_frame(app);
 }
 
-/// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
-/// the breakpoint boundary is inclusive, Panels never collapses, and crossing the
-/// breakpoint restores the mode default. Each phase is a former test with its own fresh fixture.
+/// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed, the breakpoint
+/// boundary is inclusive, the branches page never collapses, and crossing the breakpoint restores
+/// the mode default.
 #[test]
 fn screen_mode_follows_the_breakpoint_and_preset() {
     wide_changes_screen_is_docked();
@@ -127,10 +127,8 @@ fn panels_screen_never_collapses() {
     assert!(!app.drawer_is_modal());
 }
 
-/// The overlay flap: the bar's sidebar toggle opens and closes it, a scrim
-/// click dismisses it, a click inside keeps it open, and while open it
-/// hides and blocks background controls. Each phase is a former test with
-/// its own fresh fixture.
+/// The overlay list column: the bar's sidebar toggle opens and closes it, a scrim click dismisses
+/// it, a click inside keeps it open, and while open it hides and blocks background controls.
 #[test]
 fn overlay_flap_toggles_dismisses_and_blocks_the_background() {
     bar_toggle_opens_and_closes_overlay_flap();
@@ -212,9 +210,8 @@ fn crossing_breakpoint_restores_mode_default() {
     );
 }
 
-/// Semantic parity: semantic open-repository and text edits reach their
-/// inputs, and synthetic accessibility controls sit at their drawn rects.
-/// Each phase is a former test with its own fresh fixture.
+/// Semantic parity: semantic open-repository and text edits reach their inputs, and synthetic
+/// accessibility controls sit at their drawn rects.
 #[test]
 fn affordances_and_semantic_controls_reach_the_production_actions() {
     semantic_open_repository_binds_the_entered_repository();

@@ -325,6 +325,9 @@ pub(crate) struct Doing {
     /// The action's own name in the catalogue, which says what it is doing ("Replace text at a
     /// place"); the action's id where the catalogue names none.
     pub(crate) action: String,
+    /// The kind of step the action's own declaration names, so the line beside its face is the
+    /// catalogue's words for it rather than an English verb read off the title.
+    pub(crate) step: Option<tilo_actions::StepKind>,
     /// The app it acts in, when its provider says which one.
     pub(crate) app: Option<String>,
 }

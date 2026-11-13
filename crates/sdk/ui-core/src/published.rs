@@ -1,27 +1,14 @@
-//! A published resource tree whose unchanged subtrees are shared between
-//! versions.
-//!
-//! [`tilo_actions::ResourceSpec`] owns its children inline, so two versions of a
-//! tree cannot share an item and nothing reading them can tell an unchanged
-//! item from a changed one without comparing it. A keystroke in a field no
-//! item depends on then rebuilt, copied, filtered and re-mirrored every item
-//! of a long list. A [`SharedResource`] holds the same tree with
-//! its children behind [`Rc`]s: a publisher hands over the very nodes of
-//! the last version where nothing changed, and every consumer — permission
-//! filtering, control availability, the accessibility tree — skips a subtree
-//! it has seen by pointer. [`SharedResource::to_resource`] gives the
-//! ordinary tree back, exactly as published, for consumers of the whole
-//! surface (the palette, agents, search).
+//! A published resource tree whose unchanged subtrees are shared between versions.
+//! [`tilo_actions::ResourceSpec`] owns its children inline, so two versions of a tree cannot share an
+//! item and nothing reading them can tell an unchanged item from a changed one without comparing it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_actions::ResourceSpec;
 
-/// What filtering one node or one list of children for one permission
-/// context (`token`) gave, kept on the input so the same input is filtered
-/// once. `Same` keeps no pointer to the input itself, so no node holds
-/// itself alive.
+/// What filtering one node or one list of children for one permission context (`token`) gave, kept on
+/// the input so the same input is filtered once.
 pub(crate) enum Filtered<T> {
     /// Every action is permitted; the input stands as it is.
     Same,
@@ -41,8 +28,8 @@ impl<T: Clone> Clone for Filtered<T> {
     }
 }
 
-/// A published resource: its own part (identity, actions, views) and its
-/// children, shared with every version that did not change them.
+/// A published resource: its own part (identity, actions, views) and its children, shared with every
+/// version that did not change them.
 #[derive(Clone)]
 pub struct SharedResource(Rc<Node>);
 
@@ -52,8 +39,7 @@ struct Node {
     filtered: RefCell<Option<(u64, Filtered<SharedResource>)>>,
 }
 
-/// The children of a [`SharedResource`], shared as a whole while none of
-/// them changed.
+/// The children of a [`SharedResource`], shared as a whole while none of them changed.
 #[derive(Clone)]
 pub struct SharedChildren(Rc<Children>);
 
@@ -100,8 +86,7 @@ impl SharedChildren {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    /// What filtering these children for `token` gave last, if it was for
-    /// `token`.
+    /// What filtering these children for `token` gave last, if it was for `token`.
     pub(crate) fn filtered(&self, token: u64) -> Option<Filtered<SharedChildren>> {
         self.0
             .filtered
@@ -156,8 +141,7 @@ impl SharedResource {
         resource
     }
 
-    /// The resource without its children: its id, kind, label,
-    /// presentation, actions and views.
+    /// The resource without its children: its id, kind, label, presentation, actions and views.
     pub fn head(&self) -> &ResourceSpec {
         &self.0.head
     }
@@ -180,8 +164,7 @@ impl SharedResource {
         Rc::as_ptr(&self.0).cast()
     }
 
-    /// What filtering this node for `token` gave last, if it was for
-    /// `token`.
+    /// What filtering this node for `token` gave last, if it was for `token`.
     pub(crate) fn filtered(&self, token: u64) -> Option<Filtered<SharedResource>> {
         self.0
             .filtered
@@ -207,22 +190,17 @@ pub(crate) enum Change<'a> {
     Removed(&'a SharedResource),
     /// A subtree only the next forest has.
     Added(&'a SharedResource),
-    /// A node both have under the same id whose own part may differ; its
-    /// children are diffed on their own, before this is reported.
+    /// A node both have under the same id whose own part may differ; its children are diffed on their
+    /// own, before this is reported.
     Head {
         last: &'a SharedResource,
         next: &'a SharedResource,
     },
-    /// The list of roots differs: a root was added, removed or moved. (A
-    /// node's own list of children changing is reported as its
-    /// [`Change::Head`].)
+    /// The list of roots differs: a root was added, removed or moved.
     Roots,
 }
 
-/// Walk what differs from `last` to `next`, skipping every subtree both
-/// share by pointer. Nodes are paired by id: a node whose own part changed
-/// is reported as [`Change::Head`] (with its children diffed first), one
-/// without a partner as removed or added.
+/// Walk what differs from `last` to `next`, skipping every subtree both share by pointer.
 pub(crate) fn diff<'a>(
     last: &'a [SharedResource],
     next: &'a [SharedResource],
@@ -324,8 +302,8 @@ thread_local! {
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
 }
 
-/// A permission context's token no other context had: the key a filtered
-/// result is kept under on its input (see [`SharedResource::filtered`]).
+/// A permission context's token no other context had: the key a filtered result is kept under on its
+/// input (see [`SharedResource::filtered`]).
 pub(crate) fn fresh_token() -> u64 {
     NEXT_TOKEN.with(|next| {
         let token = next.get();

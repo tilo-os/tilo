@@ -1,47 +1,23 @@
-//! What a Seatbelt-confined app may touch, from the Linux launcher's policy
-//! inputs.
+//! What a Seatbelt-confined app may touch, from the Linux launcher's policy inputs: the app's one
+//! writable directory ([`launcher::appdir`], per workspace and package), the user's grants as a
+//! [`launcher::capabilities::CapabilityPlan`], and the network outcome as a
+//! [`launcher::netgate::EgressDecision`].
 //!
-//! Nothing here is a macOS-specific policy decision. The inputs are the ones
-//! `tilo-launcher` confines with on Linux:
+//! Seatbelt matches the resolved path of every access (`/tmp` is `/private/tmp`, `/var` is
+//! `/private/var`), so every path is canonicalised here; an unresolved alias in a profile silently
+//! grants nothing, or denies nothing.
 //!
-//! - the app's one writable directory, located by [`launcher::appdir`] (per
-//!   workspace, per package) under `~/Library/Application Support/Tilo`, beside the
-//!   runtime profile;
-//! - the user's grants, already evaluated into a
-//!   [`launcher::capabilities::CapabilityPlan`];
-//! - the network outcome, already resolved into a
-//!   [`launcher::netgate::EgressDecision`].
+//! What does not map, recorded per launch in [`SeatbeltPolicy::not_enforced`]: device grants, since
+//! cameras and microphones sit behind TCC and not device nodes (the app is denied, never widened),
+//! and filtered egress without a gate, since there is no network namespace to hide the host network
+//! behind (with no gate the launch is offline).
 //!
-//! Seatbelt matches the *resolved* path of every access (`/tmp` is
-//! `/private/tmp`, `/var` is `/private/var`), so every path is canonicalised
-//! here; an unresolved alias in a profile silently grants nothing, or denies
-//! nothing.
-//!
-//! ## What does not map
-//!
-//! Recorded per launch in [`SeatbeltPolicy::not_enforced`]:
-//!
-//! - **Device grants.** Cameras and microphones sit behind TCC on macOS, not
-//!   device nodes; the profile grants no TCC service, so a device grant is
-//!   not honoured (the app is denied, never widened).
-//! - **Filtered egress without a gate.** There is no network namespace to
-//!   hide the host network behind, so a host allowlist is only reachable
-//!   through the gate's loopback port
-//!   ([`launcher::netgate::LoopbackGate`]). With no gate, the launch is
-//!   offline.
-//!
-//! ## Tilo's private stores
-//!
-//! The identity secrets, vault keys, trust and revocation lists and the
-//! workspace tree live in [`launcher::capabilities::private_store_roots`].
-//! Linux hides them behind a read-only tmpfs mounted after every grant
-//! (`launcher::capabilities`, "Tilo's private stores are never inside a
-//! grant"). Seatbelt has no mount namespace, but its last matching rule
-//! wins: every store is denied outright after every grant — a home folder
-//! grant or a path picked in the chooser alike — and every directory and
-//! symlink its path resolves through is denied writes. An app can neither
-//! read a store nor rename an ancestor aside and plant a substitute at the
-//! old path ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
+//! The identity secrets, vault keys, trust and revocation lists and the workspace tree live in
+//! [`launcher::capabilities::private_store_roots`]. Seatbelt has no mount namespace, but its last
+//! matching rule wins: every store is denied outright after every grant, and every directory and
+//! symlink its path resolves through is denied writes, so an app can neither read a store nor
+//! rename an ancestor aside and plant a substitute at the old path
+//! ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -50,12 +26,12 @@ use launcher::appdir;
 use launcher::capabilities::CapabilityPlan;
 use launcher::netgate::EgressDecision;
 
-/// Symlinks followed while resolving one private store's path before the
-/// resolution gives up — the kernel's own limit.
+/// Symlinks followed while resolving one private store's path before the resolution gives up: the
+/// kernel's own limit.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-/// Where Tilo keeps per-user state on macOS, relative to `HOME`. The runtime
-/// profile is `<this>/runtime`; app containers are `<this>/tilo-rooms/…`.
+/// Where Tilo keeps per-user state on macOS, relative to `HOME`. The runtime profile is
+/// `<this>/runtime`; app containers are `<this>/tilo-workspaces/…`.
 pub const TILO_SUPPORT_DIR: &str = "Library/Application Support/Tilo";
 
 /// Subdirectory of the container used as `TMPDIR`: the per-user temporary
@@ -63,9 +39,8 @@ pub const TILO_SUPPORT_DIR: &str = "Library/Application Support/Tilo";
 pub const CONTAINER_TMP: &str = "tmp";
 
 /// What `libsystem` appends to the per-user cache and temporary directories
-/// (`confstr(_CS_DARWIN_USER_CACHE_DIR)`), as launchd does for XPC services.
-/// Metal keeps its compiled shaders below the cache directory, so this gives
-/// each app its own shader cache.
+/// (`confstr(_CS_DARWIN_USER_CACHE_DIR)`), as launchd does for XPC services. Metal keeps its
+/// compiled shaders below the cache directory, so this gives each app its own shader cache.
 pub const DARWIN_DIR_SUFFIX_ENV: &str = "DIRHELPER_USER_DIR_SUFFIX";
 
 pub fn data_home(home: &Path) -> PathBuf {
@@ -76,7 +51,6 @@ pub fn container_dir(data_home: &Path, workspace_id: Option<&str>, package_id: &
     appdir::host_app_dir(data_home, &appdir::workspace_slug(workspace_id), package_id)
 }
 
-/// Create the container (and its XDG tree and `tmp`) and return its path.
 pub fn prepare_container(
     data_home: &Path,
     workspace_id: Option<&str>,
@@ -87,24 +61,22 @@ pub fn prepare_container(
     Ok(dir)
 }
 
-/// The [`DARWIN_DIR_SUFFIX_ENV`] of the app whose container is `container`:
-/// one path component per workspace and package. `libsystem` accepts no `/` in
-/// it, and `+` is outside the alphabet of both components, so two containers
-/// never share a suffix.
+/// The [`DARWIN_DIR_SUFFIX_ENV`] of the app whose container is `container`: one path component per
+/// workspace and package. `libsystem` accepts no `/` in it, and `+` is outside the alphabet of both
+/// components, so two containers never share a suffix.
 pub fn darwin_dir_suffix(container: &Path) -> Option<String> {
     let package = container.file_name()?.to_str()?;
     let workspace = container.parent()?.file_name()?.to_str()?;
     Some(format!("so.tilo+{workspace}+{package}"))
 }
 
-/// The app's own directory below the per-user cache directory `user_cache`,
-/// created private to the user: where Metal caches the app's compiled
-/// shaders across launches.
+/// The app's own directory below the per-user cache directory `user_cache`, created private to the
+/// user: where Metal caches the app's compiled shaders across launches.
 ///
 /// # Errors
 ///
-/// Returns the error of creating it; `InvalidInput` when `container` has no
-/// workspace and package to name it after.
+/// The error of creating it; `InvalidInput` when `container` has no workspace and package to name
+/// it after.
 pub fn prepare_darwin_cache(user_cache: &Path, container: &Path) -> io::Result<DarwinCache> {
     use std::os::unix::fs::DirBuilderExt as _;
     let suffix = darwin_dir_suffix(container).ok_or_else(|| {
@@ -129,18 +101,16 @@ pub fn prepare_darwin_cache(user_cache: &Path, container: &Path) -> io::Result<D
     Ok(DarwinCache { suffix, dir })
 }
 
-/// An app's own per-user cache directory: [`DARWIN_DIR_SUFFIX_ENV`] and
-/// where it resolves.
+/// An app's own per-user cache directory: [`DARWIN_DIR_SUFFIX_ENV`] and where it resolves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DarwinCache {
     pub suffix: String,
     pub dir: PathBuf,
 }
 
-/// The environment a Seatbelt-confined app gets: the Linux launcher's
-/// `HOME`/`XDG_*` contract ([`appdir::sandbox_env`]) pointed at the host
-/// container, since there is no mount namespace to hide it behind, plus
-/// `TMPDIR`.
+/// The environment a Seatbelt-confined app gets: the Linux launcher's `HOME`/`XDG_*` contract
+/// ([`appdir::sandbox_env`]) pointed at the host container, since there is no mount namespace to
+/// hide it behind, plus `TMPDIR`.
 pub fn app_environment(container: &Path) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = appdir::sandbox_env()
         .into_iter()
@@ -171,12 +141,11 @@ pub enum SeatbeltNetwork {
     Denied,
     /// Only this loopback TCP port — the egress gate — may be connected.
     Gate(u16),
-    /// IP traffic in and out, and the system resolver. Filesystem sockets
-    /// stay denied: a shared host network is not the user's `ssh-agent`.
+    /// IP traffic in and out, and the system resolver. Filesystem sockets stay denied: a shared host
+    /// network is not the user's `ssh-agent`.
     Unrestricted,
 }
 
-/// The inputs of one launch, before resolution.
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyInputs<'a> {
     /// The installed package: readable and executable, never writable.
@@ -192,13 +161,11 @@ pub struct PolicyInputs<'a> {
     pub gate_port: Option<u16>,
     /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
     pub darwin_cache: Option<&'a Path>,
-    /// Tilo's private stores, as
-    /// [`launcher::capabilities::private_store_roots`] names them: kept out
-    /// of [`Self::capabilities`] and hidden whatever else is granted.
+    /// Tilo's private stores, as [`launcher::capabilities::private_store_roots`] names them: kept
+    /// out of [`Self::capabilities`] and hidden whatever else is granted.
     pub private_stores: &'a [PathBuf],
 }
 
-/// Every grant of one launch, as resolved paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatbeltPolicy {
     pub payload: PathBuf,
@@ -211,13 +178,12 @@ pub struct SeatbeltPolicy {
     /// User-granted read-write paths.
     pub read_write: Vec<PathBuf>,
     pub network: SeatbeltNetwork,
-    /// Tilo's private stores, resolved: neither readable nor writable, nor
-    /// even visible to `stat`, whatever else is granted.
+    /// Tilo's private stores, resolved: neither readable nor writable, nor even visible to `stat`,
+    /// whatever else is granted.
     pub hidden: Vec<PathBuf>,
-    /// Every directory and symlink a [`Self::hidden`] store's path resolves
-    /// through: none may be written, so none can be renamed, removed or
-    /// repointed to move the store aside and plant a substitute where Tilo
-    /// looks. What is inside them stays as granted.
+    /// Every directory and symlink a [`Self::hidden`] store's path resolves through: none may be
+    /// written, so none can be renamed, removed or repointed to move the store aside and plant a
+    /// substitute where Tilo looks. What is inside them stays as granted.
     pub pinned: Vec<PathBuf>,
     /// Grants the profile could not express. Each is denied, never widened.
     pub not_enforced: Vec<String>,
@@ -249,25 +215,19 @@ pub enum PolicyError {
 }
 
 impl SeatbeltPolicy {
-    /// Resolve `inputs` into the policy a profile is rendered from.
+    /// Resolve `inputs` into the policy a profile is rendered from. A user-granted path that does not
+    /// exist is left out, as on Linux: it cannot be granted, and an unresolvable path in a profile
+    /// would match nothing anyway.
     ///
-    /// A user-granted path that does not exist is left out, as on Linux: it
-    /// cannot be granted, and an unresolvable path in a profile would match
-    /// nothing anyway.
-    ///
-    /// The grants are first confined against [`PolicyInputs::private_stores`]
-    /// by the Linux launcher's own
-    /// [`CapabilityPlan::confine_private_stores`] (a no-op for a plan that
-    /// [`CapabilityPlan::for_app`] already confined): a grant inside a store
-    /// is dropped, a store a grant reaches is created so that the app cannot
-    /// create it first, and a writable grant holding a symlink on a store's
-    /// way is made read-only.
+    /// The grants are first confined against [`PolicyInputs::private_stores`] by the Linux
+    /// launcher's own [`CapabilityPlan::confine_private_stores`]: a grant inside a store is dropped,
+    /// a store a grant reaches is created so the app cannot create it first, and a writable grant
+    /// holding a symlink on a store's way is made read-only.
     ///
     /// # Errors
     ///
-    /// Returns [`PolicyError`] when the payload, runtime or container
-    /// directory cannot be resolved, is the root, or when the container
-    /// overlaps a directory the app may execute from, or when a private
+    /// [`PolicyError`] when the payload, runtime or container directory cannot be resolved or is the
+    /// root, when the container overlaps a directory the app may execute from, or when a private
     /// store's path loops through symlinks.
     pub fn resolve(inputs: &PolicyInputs<'_>) -> Result<Self, PolicyError> {
         let payload = resolve_dir("payload", inputs.payload_dir)?;
@@ -348,12 +308,9 @@ impl SeatbeltPolicy {
     }
 }
 
-/// Resolve every private store into the paths to hide and the paths to pin
-/// (see [`SeatbeltPolicy::hidden`] and [`SeatbeltPolicy::pinned`]).
-///
-/// A store that does not exist yet is still hidden, at the path it would be
-/// created at. A relative store path names nothing to find and is skipped,
-/// as on Linux.
+/// Resolve every private store into the paths to hide and the paths to pin. A store that does not
+/// exist yet is still hidden, at the path it would be created at; a relative store path names
+/// nothing to find and is skipped, as on Linux.
 fn resolve_private_stores<'p>(
     stores: impl Iterator<Item = &'p PathBuf>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PolicyError> {
@@ -385,16 +342,14 @@ fn resolve_private_stores<'p>(
     Ok((hidden, pinned))
 }
 
-/// Where `store` resolves, followed one component at a time, and every path
-/// that resolution passed through: each directory on the way and each
-/// symlink, where it lives. Renaming, removing or repointing any of them
-/// would change what the store's path names.
+/// Where `store` resolves, followed one component at a time, and every path that resolution passed
+/// through: each directory on the way and each symlink, where it lives. Renaming, removing or
+/// repointing any of them would change what the store's path names.
 ///
-/// Every existing component is spelled as the disk spells it: the default
-/// macOS volume ignores case, and Seatbelt matches the stored name, so a
-/// store named in another case would otherwise be denied under a name no
-/// access ever uses. Components from the first one that does not exist
-/// onwards are kept as written. `None` when the path loops through symlinks.
+/// Every existing component is spelled as the disk spells it: the default macOS volume ignores case
+/// and Seatbelt matches the stored name, so a store named in another case would otherwise be denied
+/// under a name no access ever uses. Components from the first one that does not exist onwards are
+/// kept as written. `None` when the path loops through symlinks.
 fn store_route(store: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
     use std::collections::VecDeque;
 
@@ -445,8 +400,8 @@ fn store_route(store: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
     Some((real, route))
 }
 
-/// Queue `path`'s normal and parent components, at the front (a symlink's
-/// target, resolved before whatever followed the link) or at the back.
+/// Queue `path`'s normal and parent components, at the front (a symlink's target, resolved before
+/// whatever followed the link) or at the back.
 fn queue_components(pending: &mut std::collections::VecDeque<PathBuf>, path: &Path, front: bool) {
     use std::path::Component;
 
@@ -467,8 +422,9 @@ fn queue_components(pending: &mut std::collections::VecDeque<PathBuf>, path: &Pa
     }
 }
 
-/// The path the kernel reports for `path` itself, a symlink not followed:
-/// each component as the disk spells it.
+/// The path the kernel reports for `path` itself, a symlink not followed: each component as the disk
+/// spells it.
+
 #[cfg(target_os = "macos")]
 fn on_disk(path: &Path) -> Option<PathBuf> {
     use std::ffi::{CString, OsStr};
@@ -711,7 +667,7 @@ mod tests {
 
     #[test]
     fn the_environment_is_the_linux_contract_pointed_at_the_container() {
-        let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-rooms/r/p");
+        let container = Path::new("/Users/u/Library/Application Support/Tilo/tilo-workspaces/r/p");
         let env = app_environment(container);
         let linux: Vec<String> = appdir::sandbox_env().into_iter().map(|(k, _)| k).collect();
         for key in &linux {
@@ -932,14 +888,15 @@ mod tests {
         assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));
         assert_eq!(
             container_dir(&data, None, "so.tilo.notes"),
-            data.join("tilo-rooms/personal/so.tilo.notes")
+            data.join("tilo-workspaces/personal/so.tilo.notes")
         );
         assert_ne!(
             container_dir(&data, Some("a"), "so.tilo.notes"),
             container_dir(&data, Some("b"), "so.tilo.notes")
         );
         assert!(
-            container_dir(&data, Some("../../x"), "../..").starts_with(data.join("tilo-rooms"))
+            container_dir(&data, Some("../../x"), "../..")
+                .starts_with(data.join("tilo-workspaces"))
         );
 
         let tmp = tempfile::tempdir().unwrap();

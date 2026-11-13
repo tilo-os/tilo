@@ -11,7 +11,7 @@ use video_editor::seed::sample_project;
 use video_editor::timecode::timecode;
 use video_editor::{Project, VideoEditor};
 
-const PANES: [&str; 4] = ["Media bin", "Transport", "Timeline", "Inspector"];
+const PANES: [&str; 4] = ["Media bin", "Playback", "Timeline", "Inspector"];
 
 /// The demo project with the editor holding the keyboard.
 fn editor() -> HeadlessApp<VideoEditor> {
@@ -75,7 +75,7 @@ fn playhead(app: &mut HeadlessApp<VideoEditor>) -> String {
     app.harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, n)| n.label() == Some("Transport"))
+        .find(|(_, n)| n.label() == Some("Playback"))
         .and_then(|(_, n)| n.value().map(ToString::to_string))
         .unwrap()
 }
@@ -111,9 +111,9 @@ fn tab_walks_every_pane_and_shift_tab_walks_back() {
         app.harness().key("Tab");
         seen.push(pane(&mut app));
     }
-    assert_eq!(seen, ["Inspector", "Media bin", "Transport", "Timeline"]);
+    assert_eq!(seen, ["Inspector", "Media bin", "Playback", "Timeline"]);
     with_modifier(&mut app, "shift", "Tab");
-    assert_eq!(pane(&mut app), "Transport");
+    assert_eq!(pane(&mut app), "Playback");
 }
 
 /// Put the keyboard cursor on the control `name`, as a reader focusing it does.

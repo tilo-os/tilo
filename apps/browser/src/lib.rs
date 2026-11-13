@@ -4,19 +4,8 @@
     clippy::too_many_lines,
     reason = "migration stack lint debt is scoped to this target"
 )]
-
-//! Browser library root: the [`BrowserShell`] framework app, whose surface
-//! is a [`BrowserWindow`] showing one [`BrowserWidget`] page. Other pages are
-//! other Browser instances in the desktop's tabs.
-//!
-//! The browser is deliberately small: it is chrome (address bar,
-//! navigation, progress, filter loading) around the `ui` toolkit's
-//! `WebView` widget. The web engine itself lives behind
-//! `ui::webview::WebViewEngine`; retained tabs share one native runtime.
-
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+//! Browser: address bar, navigation and tab chrome around the toolkit's `WebView`.
+// Apps run in isolated processes; shared crates keep the full lint set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -33,8 +22,7 @@
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
-// Their items are public for Browser's own modules and tests, not as an
-// API: errors and panics are documented where Browser handles them.
+// Public for Browser's modules and tests, not as an API.
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
@@ -71,7 +59,6 @@ pub mod history;
 pub mod imported_folders;
 pub mod library;
 pub mod native_blocker;
-pub mod notice;
 pub mod omnibox;
 pub mod page_dialogs;
 pub mod page_files;
@@ -97,7 +84,6 @@ pub mod storage;
 pub mod web_store;
 pub use service_sessions::service_session_capability;
 
-// Browser's copy.
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 pub use browser_widget::BrowserWidget;

@@ -8,10 +8,8 @@ use ui::widget::Widget;
 
 use super::{EPSILON, Kind, Problem, has_area, size};
 
-/// Text whose widget needs more room than layout gave it: taller at its width than its box, or
-/// with a word wider than its box. Each widget measures itself as layout measures it; a column
-/// header's title, which the shell elides as it paints, is held to its row's rule by
-/// [`header_row_problem`].
+/// Text whose widget needs more room than layout gave it: taller at its width than its box, or with
+/// a word wider than its box.
 pub fn clipped_text(
     root: &mut dyn Widget,
     text: &mut ui::TextRenderer,
@@ -27,15 +25,16 @@ pub fn clipped_text(
 /// neighbours in a header keep from each other.
 const TITLE_ROOM: f64 = 24.0;
 
-/// Whether a title that says `needs` wide is cut off in `has`, while `free` stands empty
-/// beside it in its row.
+/// Whether a title that says `needs` wide is cut off in
+/// `has`, while `free` stands empty beside it in its
+/// row.
 pub(super) fn title_cut_with_room(needs: f64, has: f64, free: f64) -> bool {
     needs > has + EPSILON && free > TITLE_ROOM
 }
 
-/// What is wrong with one header row, as the shell laid it out: a title cut off while an action
-/// in the row kept a label it could have shown as its icon, a title cut off with room standing
-/// empty beside it, or a row that kept its menu but not the app's primary action.
+/// What is wrong with one header row, as the shell laid it out: a title cut off while an action in
+/// the row kept a label it could have shown as its icon, a title cut off with room standing empty
+/// beside it, or a row that kept its menu but not the app's primary action.
 pub(super) fn header_row_problem(row: &ui::widget::HeaderRowLayout) -> Option<String> {
     let needs = f64::from(row.title_needs);
     let has = f64::from(row.title_has);
@@ -124,8 +123,8 @@ fn measure_one(
             },
             text,
         );
-        // The narrowest the text can be laid out at: a word longer than its line breaks
-        // anywhere, so only text that cannot break (one line) needs more than a glyph.
+        // The narrowest the text can be laid out at: a word longer than its line breaks anywhere,
+        // so only text that cannot break (one line) needs more than a glyph.
         let narrowest = widget.measure(
             Size {
                 width: None,
@@ -193,9 +192,9 @@ fn cut_text(
     });
 }
 
-/// A lift a list painted past the row it selects: it stands around what the row shows, grown by
-/// the bleed a row grows its own face by ([`ui::widget::RowLift`]), so a lift reaching further
-/// fills the gutters beside the row with the person's choice.
+/// A lift a list painted past the row it selects: it stands around what the row shows, grown by the
+/// bleed a row grows its own face by ([`ui::widget::RowLift`]), so a lift reaching further fills
+/// the gutters beside the row with the person's choice.
 fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
     let Some(lifts) = ui::widget::capability::capability::<dyn ui::widget::PaintedRowLifts>(widget)
         .map(ui::widget::PaintedRowLifts::painted_row_lifts)
@@ -221,9 +220,8 @@ fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>)
 }
 
 /// A chevron a list painted off the line of the row it folds: the box a tree's chevron takes holds
-/// the step in front of its row's words, so the two share one centre ([`ui::widget::virtual_list::RowChevron`]).
-/// A chevron riding a taller slot than its row — the room a finger's row takes, a row's own height
-/// under enlarged text — hangs under the words it folds.
+/// the step in front of its row's words, so the two share one centre
+/// ([`ui::widget::virtual_list::RowChevron`]).
 fn chevrons_on_their_lines(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
     let Some(chevrons) = ui::widget::capability::capability::<
         dyn ui::widget::virtual_list::PaintedRowChevrons,

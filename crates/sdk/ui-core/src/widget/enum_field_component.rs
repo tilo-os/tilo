@@ -25,8 +25,8 @@ pub struct EnumOptionProps {
     pub tone: Tone,
 }
 
-/// A value among an enum's cases: the case it holds, as a chip in the case's glyph and tone,
-/// opening the cases to pick another.
+/// A value among an enum's cases: the case it holds, as a chip in the case's glyph and
+/// tone, opening the cases to pick another.
 #[derive(Component, Default)]
 #[component(name = "EnumField", role = "Button", label = "label")]
 pub struct EnumFieldProps {
@@ -56,8 +56,8 @@ impl Described for EnumField {
         Self::from_state(key, &state, cases, label, value)
     }
 
-    /// The value it holds, the cases it offers and the name it is given change where the field
-    /// stands: an open menu stays open on what it shows.
+    /// The value it holds, the cases it offers and the name it is given change where the
+    /// field stands: an open menu stays open on what it shows.
     fn set_props(&mut self, props: EnumFieldProps) -> bool {
         let EnumFieldProps {
             value,

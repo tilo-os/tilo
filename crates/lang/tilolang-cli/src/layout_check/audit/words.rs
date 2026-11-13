@@ -10,34 +10,24 @@ use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
 use ui::window_toolbar::BarLabel;
 
-/// How much of a label a finding quotes: enough for a person to know which words they are
-/// looking at, without a paragraph in a report line.
+/// How much of a label a finding quotes: enough for a person to know which words they are looking
+/// at, without a paragraph in a report line.
 const QUOTE: usize = 24;
 
-/// One word a window shows, with the grounds it stands on.
 struct Word {
-    /// What it says, one line of words.
     text: String,
-    /// Where its ink stands, in the window's own coordinates.
     at: Rect,
-    /// The keys of the widgets at and above it that a view's nodes made, innermost first.
     keys: Vec<String>,
-    /// The widget that draws it.
     widget: String,
-    /// That widget's own test id, if it has one.
     id: Option<String>,
-    /// The grounds drawn under it, outermost first: their identity and their box. A word
-    /// standing on a ground of its own is read against that ground, not against what the ground
-    /// covers.
     grounds: Vec<(usize, Rect)>,
-    /// Where it stands in the order the window paints it: a word covers what stood under it.
     order: usize,
 }
 
-/// Every word `root` shows and the words the window's bar painted, drawn on the same window:
-/// `root` is laid out `top` below the window's top edge, under the bar, so its words are read
-/// where the window shows them. Returns one problem per pair of words whose ink stands on each
-/// other and that no ground of their own parts.
+/// Every word `root` shows and the words the window's bar painted, drawn
+/// on the same window: `root` is laid out `top` below the window's top
+/// edge, under the bar, so its words are read where the window shows
+/// them.
 pub fn text_on_text(
     root: &InspectionNode,
     viewport: (u32, u32),
@@ -69,9 +59,9 @@ pub fn text_on_text(
     for (order, word) in found.iter_mut().enumerate() {
         word.order = order;
     }
-    // Two words are only read against each other where their ink stands in the same rows, so
-    // the words are read top to bottom and each is held against those that follow it while they
-    // can still meet it.
+    // Two words are only read against each other where their ink stands
+    // in the same rows, so the words are read top to bottom and each is
+    // held against those that follow it while they can still meet it.
     let mut rows: Vec<&Word> = found.iter().collect();
     rows.sort_by(|a, b| a.at.y0.total_cmp(&b.at.y0));
     let mut problems = Vec::new();
@@ -81,8 +71,8 @@ pub fn text_on_text(
             .skip(position.saturating_add(1))
             .take_while(|next| next.at.y0 < first.at.y1 - EPSILON);
         for second in below {
-            // Words stand in the order the window paints them, so a pair is read top last: what
-            // a word covers is what already stood under it.
+            // Words stand in the order the window paints them, so a pair is read top last: what a
+            // word covers is what already stood under it.
             let (under, over) = if first.order < second.order {
                 (first, second)
             } else {
@@ -111,8 +101,8 @@ pub fn text_on_text(
     problems
 }
 
-/// Whether a ground of one word's own stands between the two: a surface that carries one word
-/// and not the other, drawn over the place where their ink meets.
+/// Whether a ground of one word's own stands between the two: a surface that carries one word and
+/// not the other, drawn over the place where their ink meets.
 fn parted(a: &Word, b: &Word, meet: Rect) -> bool {
     let carries = |mine: &Word, theirs: &Word| {
         mine.grounds.iter().any(|(id, ground)| {
@@ -136,31 +126,27 @@ fn ground(widget: &str) -> bool {
     paints_surface(widget) || floats_in_window(widget) || widget.contains("Overlay")
 }
 
-/// One walk of a frame, gathering its words.
 struct Collecting<'a> {
     window: Rect,
-    /// Where the frame stands below the window's top edge, under the bar.
     top: f64,
-    /// The grounds the walk stands in, outermost first.
     grounds: Vec<(usize, Rect)>,
-    /// The test ids of the widgets at and above the node being read, outermost first.
     keys: Vec<String>,
-    /// The next ground's identity.
     next: usize,
     out: &'a mut Vec<Word>,
 }
 
 impl Collecting<'_> {
-    /// Gather the words `node` shows, its own and what it holds, as much of each as the window
-    /// can show in `clip`.
+    /// Gather the words `node` shows, its own and what it
+    /// holds, as much of each as the window can show in
+    /// `clip`.
     fn node(&mut self, node: &InspectionNode, clip: Rect) {
-        // What floats on the pointer (a row's hover toolbar) is shown for the moment a person
-        // is on it, and leaves the geometry it stands for alone.
+        // What floats on the pointer (a row's hover toolbar) is shown for the moment a person is on
+        // it, and leaves the geometry it stands for alone.
         if floats(&node.widget) {
             return;
         }
-        // A menu, a tooltip or a popover stands against the window it floats in, not the box
-        // that opened it.
+        // A menu, a tooltip or a popover stands against the
+        // window it floats in, not the box that opened it.
         let clip = if floats_in_window(&node.widget) {
             self.window
         } else {

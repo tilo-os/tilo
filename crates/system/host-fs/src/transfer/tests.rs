@@ -404,7 +404,6 @@ fn tmp() -> tempfile::TempDir {
 
 #[test]
 fn copies_and_moves_never_overwrite_or_leave_staging() {
-    // --- a copy of a folder keeps its tree and the source, numbered next time ---
     {
         let d = tmp();
         let src = d.path().join("dir");
@@ -422,7 +421,6 @@ fn copies_and_moves_never_overwrite_or_leave_staging() {
         assert_no_transfer_staging(&destdir);
     }
 
-    // --- a move relocates and leaves nothing behind ---
     {
         let d = tmp();
         let f = d.path().join("move-me.txt");
@@ -510,7 +508,6 @@ fn copies_and_moves_never_overwrite_or_leave_staging() {
 )]
 #[test]
 fn copies_and_moves_publish_atomically_under_races() {
-    // --- phase: copy_and_move_publish_after_a_racing_root_without_replacing_it ---
     {
         for remove_source in [false, true] {
             let directory = tmp();
@@ -547,7 +544,6 @@ fn copies_and_moves_publish_atomically_under_races() {
         }
     }
 
-    // --- phase: direct_move_retries_when_the_selected_name_is_claimed ---
     {
         let directory = tmp();
         let source = directory.path().join("report.txt");
@@ -578,7 +574,6 @@ fn copies_and_moves_publish_atomically_under_races() {
         assert!(!source.exists());
     }
 
-    // --- phase: racing_descendants_are_never_overwritten_by_directory_publication ---
     {
         let directory = tmp();
         let source = directory.path().join("project");
@@ -627,7 +622,6 @@ fn copies_and_moves_publish_atomically_under_races() {
         assert_no_transfer_staging(&destination);
     }
 
-    // --- phase: failed_recursive_copy_publishes_nothing_and_cleans_private_staging ---
     {
         let directory = tmp();
         let source = directory.path().join("project");
@@ -661,7 +655,6 @@ fn copies_and_moves_publish_atomically_under_races() {
         assert_no_transfer_staging(&destination);
     }
 
-    // --- phase: failed_cut_source_deletion_publishes_nothing_and_cleans_staging ---
     {
         let directory = tmp();
         let source = directory.path().join("project");
@@ -713,7 +706,6 @@ fn copies_and_moves_publish_atomically_under_races() {
 #[cfg(unix)]
 #[test]
 fn symlinks_and_metadata_failures_are_handled_without_following_links() {
-    // --- phase: source_swap_to_symlink_is_refused_without_reading_its_target ---
     {
         use std::os::unix::fs::symlink;
 
@@ -749,7 +741,6 @@ fn symlinks_and_metadata_failures_are_handled_without_following_links() {
         assert_no_transfer_staging(&destination);
     }
 
-    // --- phase: source_directory_swap_to_symlink_is_refused_without_traversal ---
     {
         use std::os::unix::fs::symlink;
 
@@ -791,7 +782,6 @@ fn symlinks_and_metadata_failures_are_handled_without_following_links() {
         assert_no_transfer_staging(&destination);
     }
 
-    // --- phase: copy_preserves_symlinks_without_reading_their_targets ---
     {
         use std::os::unix::fs::symlink;
 
@@ -830,7 +820,6 @@ fn symlinks_and_metadata_failures_are_handled_without_following_links() {
         );
     }
 
-    // --- phase: copy_and_move_propagate_destination_metadata_failure ---
     {
         use std::os::unix::fs::symlink;
         let directory = tempfile::tempdir().unwrap();
@@ -853,7 +842,6 @@ fn symlinks_and_metadata_failures_are_handled_without_following_links() {
         }
     }
 
-    // --- phase: copy_and_move_preserve_dangling_destination_entries ---
     {
         use std::os::unix::fs::symlink;
 

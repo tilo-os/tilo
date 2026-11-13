@@ -1133,14 +1133,16 @@ impl PersonalStore {
     /// this build reads.
     #[must_use]
     pub fn kept_by(bytes: &[u8]) -> Option<[u8; 32]> {
-        // ignored-failure: bytes this build cannot read name no device; `restore` reports why
-        postcard::from_bytes::<Durable>(bytes)
-            .map(|durable| durable.device.device_public_key)
-            .or_else(|_| {
-                postcard::from_bytes::<DurablePlain>(bytes)
-                    .map(|plain| plain.device.device_public_key)
-            })
-            .ok()
+        tilo_failure::ignored!(
+            "bytes this build cannot read name no device, and `restore` reports why",
+            postcard::from_bytes::<Durable>(bytes)
+                .map(|durable| durable.device.device_public_key)
+                .or_else(|_| {
+                    postcard::from_bytes::<DurablePlain>(bytes)
+                        .map(|plain| plain.device.device_public_key)
+                })
+                .ok()
+        )
     }
 
     /// Open the store `bytes` holds, as `device`, which must be the device
@@ -1248,13 +1250,14 @@ pub(super) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
     let bytes = match mutation {
         DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
     };
-    // ignored-failure: a payload that is not automerge bytes names no changes this device lacks
-    collab_types::parse_changes(&bytes)
-        .unwrap_or_default()
-        .iter()
-        .map(automerge::Change::hash)
-        .map(|hash| hash.0)
-        .collect()
+    tilo_failure::ignored!(
+        "a payload that is not automerge bytes names no changes this device lacks",
+        collab_types::parse_changes(&bytes).unwrap_or_default()
+    )
+    .iter()
+    .map(automerge::Change::hash)
+    .map(|hash| hash.0)
+    .collect()
 }
 
 /// A device's certificate as the store admits it: one this store's root

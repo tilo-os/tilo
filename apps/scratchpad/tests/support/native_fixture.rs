@@ -17,12 +17,10 @@ pub struct NativeFixtureManifest {
     pub prefixed_x_bytes: usize,
 }
 
-/// Seed a fresh isolated `--data-dir` profile with 1,000 ASCII lines for
-/// native diagnostics. The note is written by the body's own field edit,
-/// through the same runtime and storage the app opens.
+/// Seed a fresh isolated `--data-dir` profile with 1,000 ASCII lines for native
+/// diagnostics.
 ///
 /// This refuses every existing path, including an empty directory or symlink.
-/// Body hashes are deterministic BLAKE3; document serialization need not be.
 pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureManifest> {
     let (parent, name) = tilo_files::file_at(directory)?;
     match tilo_files::blocking::metadata(&parent, &name) {

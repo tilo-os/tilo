@@ -1,5 +1,5 @@
-//! Prepared-driver tests: a launched component restores, syncs and publishes
-//! in the order an edit needs, observed through the headless harness.
+//! Prepared-driver tests: a launched component restores, syncs and publishes in the order an edit
+//! needs, observed through the headless harness.
 
 use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
 use crate::application_test_support::*;
@@ -184,7 +184,6 @@ fn prepared_driver_publishes_undo_status_and_guards_wakes() {
     {
         let (host, mut driver, bound, checkout) = prepared();
         let outer = Observations::default();
-        // Preserve the owned bound adapter as a child; this test adds ordinary host chrome.
         let component_root =
             std::mem::replace(&mut driver.root, Box::new(crate::widget::Column::new()));
         driver.root = Box::new(

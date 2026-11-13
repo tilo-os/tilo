@@ -13,8 +13,8 @@ pub enum HistogramNormalization {
     Density,
 }
 
-/// Fluent builder that bins raw samples and returns a normal
-/// [`CartesianPlot`], retaining all of its axis, tooltip and activation APIs.
+/// Fluent builder that bins raw samples and returns a normal [`CartesianPlot`], retaining
+/// all of its axis, tooltip and activation APIs.
 pub struct Histogram {
     samples: Vec<f64>,
     bins: usize,
@@ -122,9 +122,7 @@ impl Histogram {
                     .with_detail(format!("{count} observations"))
             })
             .collect();
-        // Cartesian bars are sized in logical pixels. Use a representative
-        // 720 px plot width; the plot remains responsive and the explicit gap
-        // stays visually stable instead of changing with the sample domain.
+        // Bars are sized in logical pixels against a representative 720 px width.
         let bar_width = (720.0 / f64::from(bin_count) - self.bar_gap).max(2.0);
         let series = PlotSeries::new("histogram", self.series_name, self.color, data)
             .kind(SeriesKind::Bar { width: bar_width });

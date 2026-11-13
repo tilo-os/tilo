@@ -1,10 +1,5 @@
-//! The content column: the open snippet's language, folder and tags, what it
-//! is for, its main action, and its body in the code editor. Its favorite,
-//! duplicate and delete are the window bar's (`app::window_bar`).
-//!
-//! Every control is the toolkit's retained widget, so focus, keyboard
-//! activation, pressed states and tooltips are the toolkit's. The column is
-//! rebuilt (through `NavShell::set_content`) when what it shows changes.
+//! The content column: the open snippet's language, folder and tags, what it is for, its
+//! main action, and its body in the code editor.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -35,11 +30,8 @@ use crate::tr;
 use ui::tilo_actions::ActionBinding;
 use ui::tilo_resource::{Atom, Derived, Edit, Effect, Path};
 
-/// What the content column shows. A change rebuilds the column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DetailKey {
-    /// The open snippet's id, language, folder, tags, description and
-    /// whether its body has variables.
     snippet: Option<(SnippetId, Language, String, Vec<String>, String, bool)>,
     library_empty: bool,
 }
@@ -63,7 +55,6 @@ impl DetailKey {
     }
 }
 
-/// Build the content column for what `core` has open.
 pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     let key = DetailKey::of(&core.borrow());
     if key.library_empty {
@@ -79,9 +70,6 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         .with_intrinsic_height()
         .push(Box::new(name_field(core, &id)))
         .push(Box::new(facts))
-        // What the snippet is for, and which folder it is filed under: both
-        // are the library's organising model, so both are editable where the
-        // snippet is read rather than only when it is created.
         .push(Box::new(field(
             &id,
             "description",
@@ -95,9 +83,6 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
                 |field, text: String| Ok(field.set(text)),
             ),
         )))
-        // The name is what the sidebar lists, so it is trimmed and a blank
-        // name files the snippet nowhere: the rule the record holds a folder
-        // name to.
         .push(Box::new(field(
             &id,
             "folder",
@@ -114,8 +99,6 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         .push(Box::new(tag_editor(core, requests, &id, &tags)));
     let about = about.with_rhythm(Rhythm::Sibling);
 
-    // The main action: copy, through the fill-in dialog when the body has
-    // variables.
     let copy = {
         let requests = Rc::clone(requests);
         let copied = id.clone();
@@ -144,8 +127,8 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     )
 }
 
-/// The snippet's facts: its language (a picker over every language), then
-/// its folder and tags, each revealing the snippets filed there.
+/// The snippet's facts: its language (a picker over every language), then its folder and
+/// tags, each revealing the snippets filed there.
 fn facts_row(
     core: &Shared,
     id: &SnippetId,
@@ -180,8 +163,6 @@ fn facts_row(
         dropdown: picker,
         core: Rc::clone(core),
     }));
-    // The folder and each tag reveal their snippets, as the place each is
-    // published as does.
     let reveal = |place: Derived<Snippets>, view: SnippetsView| {
         ActionBinding::unit_for(&place.publish(), view.id()).ok()
     };
@@ -220,8 +201,7 @@ fn facts_row(
     facts
 }
 
-/// A fresh library: what a snippet is for, and the one thing to do, create
-/// one.
+/// A fresh library: what a snippet is for, and the one thing to do, create one.
 fn empty_library(requests: &Requests) -> Element {
     Box::new(EmptyAction {
         state: EmptyState::new(tr("snippets-empty-library"))
@@ -233,9 +213,8 @@ fn empty_library(requests: &Requests) -> Element {
     })
 }
 
-/// The binding of the open snippet `id`'s field `field` (of `paths`) for a
-/// control with input `I`, through `make`; none before the framework
-/// attaches the view.
+/// The binding of the open snippet `id`'s field `field` (of `paths`) for a control with
+/// input `I`, through `make`; none before the framework attaches the view.
 fn edit<V: 'static, I: 'static>(
     core: &Shared,
     id: &SnippetId,
@@ -254,9 +233,7 @@ fn bound(input: TextInput, binding: Option<ActionBinding<String>>) -> TextInput 
     }
 }
 
-/// The open snippet's name, edited in place: a new snippet starts
-/// untitled, and nothing else renames it. A cleared field keeps the old
-/// name until something is typed.
+/// The open snippet's name, edited in place.
 fn name_field(core: &Shared, id: &SnippetId) -> TextInput {
     let title = core
         .borrow()
@@ -286,8 +263,8 @@ fn name_field(core: &Shared, id: &SnippetId) -> TextInput {
     )
 }
 
-/// A single-line field of the snippet's own facts, committing on every
-/// change: the title's editor, for the fields that are not the title.
+/// A single-line field of the snippet's own facts, committing on every change: the title's
+/// editor, for the fields that are not the title.
 fn field(
     id: &SnippetId,
     name: &str,
@@ -306,8 +283,8 @@ fn field(
     )
 }
 
-/// The snippet's tags, each removable, and a field to add one: the sidebar
-/// groups the library by these, so they are the snippet's to change.
+/// The snippet's tags, each removable, and a field to add one: the sidebar groups the
+/// library by these, so they are the snippet's to change.
 fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String]) -> Column {
     let mut row = Column::new()
         .with_no_padding()
@@ -339,8 +316,6 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
                 .push(Box::new(remove)),
         ));
     }
-    // Committed as the field is typed into and cleared once the tag is in,
-    // the way a tag entry field behaves: blank and padded tags are nothing.
     let add = bound(
         TextInput::local()
             .with_id(&format!("snippets.snippet:{id}.new-tag"))
@@ -362,8 +337,8 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
     row.push(Box::new(add))
 }
 
-/// The language picker; it opens when the core asks for it (the palette's
-/// or a capture's "pick a language").
+/// The language picker; it opens when the core asks for it (the palette's or a capture's
+/// "pick a language").
 struct LanguagePicker {
     dropdown: Dropdown,
     core: Shared,
@@ -413,7 +388,6 @@ impl ui::widget::Decorator for LanguagePicker {
     }
 }
 
-/// The empty library's call to action, routed to the app's "New snippet".
 struct EmptyAction {
     state: EmptyState,
     requests: Requests,
@@ -476,8 +450,6 @@ impl ui::widget::Decorator for EmptyAction {
     }
 }
 
-/// The body: the code editor in a raised well that takes the rest of the
-/// column. The editor lives in the core, which routes its input.
 struct BodyWell {
     core: Shared,
     rect: Rect,
@@ -533,7 +505,6 @@ impl Widget for BodyWell {
     }
 
     fn needs_redraw(&self) -> bool {
-        // The editor's caret, selection and text change without a layout.
         true
     }
 

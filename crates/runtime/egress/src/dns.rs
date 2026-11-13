@@ -1,10 +1,5 @@
-//! The little of the DNS wire format the stub needs: the question a query
-//! asks, the addresses an answer carries, and the refusal it sends instead
-//! of an answer.
-//!
-//! Answers pass through byte-for-byte; the stub only reads them. A message
-//! this parser does not understand is never admitted from — the worst a
-//! parsing gap can do is make an allowed name unreachable.
+//! The little of the DNS wire format the stub needs: the question a query asks,
+//! the addresses an answer carries, and the refusal it sends.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -19,7 +14,6 @@ pub const TYPE_AAAA: u16 = 28;
 pub const TYPE_SVCB: u16 = 64;
 pub const TYPE_HTTPS: u16 = 65;
 
-/// Response codes the stub sends itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rcode {
     /// The name was not granted: it does not exist, as far as the sandbox
@@ -45,14 +39,11 @@ impl Rcode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
     pub id: u16,
-    /// Lower-case, dot-separated, no trailing dot; empty for the root.
     pub name: String,
     pub qtype: u16,
-    /// Where the question section ends in the query.
     end: usize,
 }
 
-/// One address an answer carries, and the TTL it came with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Answered {
     pub addr: IpAddr,
@@ -90,7 +81,6 @@ impl<'a> Reader<'a> {
         Some(u32::from_be_bytes(b.try_into().ok()?))
     }
 
-    /// Read a possibly compressed name; the reader moves past it in place.
     fn name(&mut self) -> Option<String> {
         let mut out = String::new();
         let mut at = self.at;
@@ -137,7 +127,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The header fields the stub reads.
 struct Header {
     id: u16,
     flags: u16,
@@ -185,13 +174,10 @@ pub fn parse_query(message: &[u8]) -> Option<Question> {
     })
 }
 
-/// The id of a query, if it has a header at all — enough to refuse it.
 pub fn query_id(message: &[u8]) -> Option<u16> {
     header(message).map(|h| h.id)
 }
 
-/// A response with `rcode` and no records, echoing the question when there
-/// is one.
 pub fn refusal(query: &[u8], question: Option<&Question>, rcode: Rcode) -> Vec<u8> {
     let rd = header(query).map_or(0, |h| h.flags & FLAG_RD);
     let id = question
@@ -211,13 +197,10 @@ pub fn refusal(query: &[u8], question: Option<&Question>, rcode: Rcode) -> Vec<u
     out
 }
 
-/// Whether a response was truncated (the client should ask over TCP).
 pub fn truncated(response: &[u8]) -> bool {
     header(response).is_some_and(|h| h.flags & FLAG_TC != 0)
 }
 
-/// Whether `response` answers `question`: same id, a response, and the same
-/// question.
 pub fn answers(response: &[u8], question: &Question) -> bool {
     let Some(h) = header(response) else {
         return false;
@@ -337,7 +320,6 @@ fn svcb_hints(record: &Record<'_>, out: &mut Vec<Answered>) {
     }
 }
 
-/// A query for `name` of `qtype` — what `guard status` and the tests ask.
 pub fn query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
     out.extend_from_slice(&id.to_be_bytes());
@@ -369,8 +351,6 @@ pub fn rcode(response: &[u8]) -> Option<u8> {
 pub(crate) mod tests {
     use super::*;
 
-    /// A response to `query` with the given answer records, each
-    /// `(type, ttl, rdata)`, the owner name compressed to the question.
     pub(crate) fn response(query: &[u8], records: &[(u16, u32, Vec<u8>)]) -> Vec<u8> {
         let q = parse_query(query).unwrap();
         let mut out = query[..q.end].to_vec();

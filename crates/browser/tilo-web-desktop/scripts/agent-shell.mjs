@@ -1670,7 +1670,7 @@ try {
           prompt = `Sign me in to Tilo: run tilo login ${created.code}, then do what it tells you.`;
         }
         log(`${combo}: the tab copied “${prompt}”`);
-        const code = (prompt.match(/tilo login ([A-Za-z0-9-]{4,})/) ?? [])[1];
+        const code = (prompt.match(/(?:tilo|sh -s) login ([A-Za-z0-9-]{4,})/) ?? [])[1];
         if (!code) throw new Error(`the prompt carried no code: ${prompt}`);
         if (offered) {
           const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null),

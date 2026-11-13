@@ -28,13 +28,10 @@ struct TypingFixture {
     input_at: ui::time::Instant,
     pending_work_at_boundary: Option<bool>,
     pending_input_at_boundary: Option<bool>,
-    // Keep the input file and private profile alive until after verification.
     _directory: tempfile::TempDir,
     _home: tilo_test_env::TestHome,
 }
 
-/// Where in the file the measured key lands: the end of its first line, or the
-/// end of the file, where every walk from the start of the text is longest.
 #[derive(Clone, Copy)]
 enum Caret {
     FirstLine,
@@ -90,7 +87,6 @@ fn setup_at(functions: usize, input_at: ui::time::Instant, caret: Caret) -> Box<
     app.harness().key("End");
     app.harness().set_modifiers(&[]);
     app.settle();
-    // Finish opening/focus transitions before the measured interaction.
     ui::time::testing::with_monotonic_time(input_at, || {
         app.idle();
         let file = app
@@ -135,7 +131,6 @@ fn verify(fixture: Box<TypingFixture>) {
 }
 
 fn verify_at(fixture: Box<TypingFixture>) {
-    // The settlement case still requires every queued host update to drain.
     assert_eq!(fixture.pending_work_at_boundary, Some(false));
     verify_state(fixture);
 }
@@ -189,7 +184,6 @@ fn verify_state(mut fixture: Box<TypingFixture>) {
 fn single_character_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixture> {
     ui::time::testing::with_monotonic_time(fixture.input_at, || {
         fixture.app.harness().key("x");
-        // Match the live event loop without forcing frames or advancing idle timers.
         fixture.app.idle();
         // Drain queued work, not conservative dirtiness of otherwise idle leaves.
         // Failure to drain remains a verification failure, not a timing result.
@@ -224,8 +218,6 @@ fn single_key_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixture> {
 
 library_benchmark_group!(name = typing; benchmarks = single_character_to_scene, single_key_to_scene);
 
-/// The entry point iai-callgrind expects: it either runs the benchmarks
-/// through its runner, or is re-entered by that runner to measure one of them.
 mod entry {
     use iai_callgrind::{Callgrind, EntryPoint, LibraryBenchmarkConfig, main};
 
@@ -240,8 +232,6 @@ mod entry {
                 "D1=32768,8,64",
                 "LL=8388608,16,64",
             ])
-            // The default trailing wildcard also matches non-inlined closures:
-            // entering one would toggle collection OFF around the actual edit.
             .entry_point(EntryPoint::Custom(
                 "*::__iai_callgrind_wrapper_mod::*_to_scene".into(),
             )));
@@ -254,8 +244,6 @@ mod entry {
 }
 
 fn main() {
-    // A test runner lists and runs every target by executing it. Only a
-    // benchmark run, or the callgrind runner re-entering this binary, measures.
     if !std::env::args()
         .skip(1)
         .any(|arg| arg == "--bench" || arg == "--iai-run")

@@ -47,8 +47,10 @@ pub struct ViewReadPolicy {
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
-            ui::permissions::Actor::person(self.standing.person.clone())
-                .in_workspace(self.workspace.clone()),
+            ui::permissions::Actor::person(
+                self.standing.person_id().unwrap_or_default().to_owned(),
+            )
+            .in_workspace(self.workspace.clone()),
             self.sandbox.clone(),
             self.standing.clone(),
         )

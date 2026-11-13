@@ -16,14 +16,14 @@ use tilo_actions::{
     ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
-use crate::action::DynAction;
+use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
 use crate::background::{Pending, Poll, Waker};
-use tilolang_runtime::meta::{ActionMeta, Meta};
+use tilolang_runtime::meta::{ActionMeta, Meta, TypeMeta};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{arguments, is_destructive, published_param};
+use crate::surface::{Merge, editable_field_names, is_destructive, published_param};
 
 /// What the declaration `id` is called in the reader's language: `source`, its words in the
 /// package's own, when no catalogue of theirs holds it.
@@ -123,6 +123,14 @@ pub fn resource_id(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")
 }
 
+/// The app whose published resource `resource` is: a record's or item's (`tl:<app>:<id>`,
+/// [`resource_id`]) or its package's own (`tl:<app>`, [`package_resource_id`]).
+#[must_use]
+pub fn app_of(resource: &str) -> Option<&str> {
+    let rest = resource.strip_prefix("tl:")?;
+    Some(rest.split_once(':').map_or(rest, |(app, _)| app))
+}
+
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
 /// package's root by the app's title ("Notes"), anything else by its type ("Todo list").
@@ -177,13 +185,36 @@ pub fn action_type(
     planner: &Arc<dyn Planner>,
     words: &dyn Words,
 ) -> Arc<ActionType> {
-    let params: Vec<ActionParam> = arguments(meta, &action.params)
+    let params = published_params(meta, action, words);
+    let build = build_of(meta, kind, action, planner);
+    let (label, placeholder) = naming_of(action, params.len(), words);
+    let spec = spec_of(meta, action, label, placeholder, params, build);
+    Arc::clone(described(spec, action, words).action_type())
+}
+
+/// The action's parameters, each with what it is called where a person gives it (a form, a
+/// consent sheet) in the reader's language.
+fn published_params(meta: &Meta, action: &ActionMeta, words: &dyn Words) -> Vec<ActionParam> {
+    meta.arguments(&action.params)
         .iter()
-        .map(|param| published_param(meta, param))
-        .collect();
+        .map(|param| {
+            let key = tilolang::messages::param_key(&action.id, &param.name);
+            published_param(meta, param).titled(words.word(&key, &[], &param.words()))
+        })
+        .collect()
+}
+
+/// The build of the action's type: it runs `planner` on the subject its spec is bound to, as the
+/// caller named the invocation with the arguments, and encodes what it planned.
+fn build_of(
+    meta: &Meta,
+    kind: &str,
+    action: &ActionMeta,
+    planner: &Arc<dyn Planner>,
+) -> impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static {
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
-    let build = move |subject: &Target, args: &ActionArgs| {
+    move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
         // What the invocation is made from, as the caller named it with the arguments.
@@ -206,15 +237,18 @@ pub fn action_type(
                 type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
                 payload: message.into_bytes(),
             })
-    };
-    // What the platform calls the action, as the compiler derived it; a package compiled before
-    // labels existed is named by its action.
-    let label = if action.label.is_empty() {
-        action.name.clone()
-    } else {
-        action.label.clone()
-    };
-    let label = label_of(words, &action.id, &label);
+    }
+}
+
+/// What the action is called and what its form asks for, in the reader's language. `given` is
+/// how many parameters it publishes: the rest of the declared ones are the form's.
+fn naming_of(action: &ActionMeta, given: usize, words: &dyn Words) -> (String, String) {
+    // What the platform calls the action, as the compiler derived it, in the reader's words.
+    let mut label = label_of(
+        words,
+        &action.id,
+        &tilolang_runtime::platform::label_of(action),
+    );
     let placeholder = if action.doc.is_empty() {
         label.clone()
     } else {
@@ -224,21 +258,36 @@ pub fn action_type(
     // so with "…", as the runtime's own surfaces say it. What the spec is given is what it does
     // not ask for — the subject, the resource it runs against — and the parameters after it are
     // the form's. The form's own placeholder names the command without the dots, which ask.
-    let mut label = label;
     if action
-        .unbound(action.params.len().saturating_sub(params.len()))
+        .unbound(action.params.len().saturating_sub(given))
         .next()
         .is_some()
         && !label.ends_with('…')
     {
         label.push('…');
     }
+    (label, placeholder)
+}
+
+/// The action's spec, under the name its declaration keeps: planned when it runs when it takes
+/// no parameters, else typed with the form its parameters make.
+fn spec_of(
+    meta: &Meta,
+    action: &ActionMeta,
+    label: String,
+    placeholder: String,
+    params: Vec<ActionParam>,
+    build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
+    // Published by its name, as a native verb is: what an agent at the door lists and calls. The
+    // build above plans it by the id the declaration keeps, which is also what a change of it
+    // says in the record (and its words are keyed by).
     let spec = if no_params {
         ActionSpec::deferred_on(
-            action.id.clone(),
+            action.name.clone(),
             label,
             ExecutionLocus::ClientLocal,
             crate::action::ACTION_TYPE,
@@ -246,7 +295,7 @@ pub fn action_type(
         )
     } else {
         ActionSpec::typed_on(
-            action.id.clone(),
+            action.name.clone(),
             label,
             placeholder,
             ExecutionLocus::ClientLocal,
@@ -256,16 +305,20 @@ pub fn action_type(
     };
     // Every argument has a default (a checkbox's `check(item, done: Bool = not item.done)`): a
     // person choosing it is asked nothing, and an agent may still pass `done:`.
-    let defaulted = arguments(meta, &action.params)
+    let defaulted = meta
+        .arguments(&action.params)
         .iter()
         .all(|param| param.default.is_some());
-    let spec = if defaulted && !no_params {
+    if defaulted && !no_params {
         spec.with_immediate_per_target()
     } else {
         spec
-    };
-    // In the order a native verb's declaration is made into its spec: its kind, description,
-    // icon, then whether it is destructive, which settles its confirmation.
+    }
+}
+
+/// `spec` made into its type in the order a native verb's declaration is made into it: its kind,
+/// description, icon, then whether it is destructive, which settles its confirmation.
+fn described(spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> ActionSpec {
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
         spec = spec.with_description(said_of(words, &action.id, "doc", None, &action.doc));
@@ -276,13 +329,29 @@ pub fn action_type(
     if is_destructive(action) {
         spec = spec.destructive();
     }
+    // What a change of it says it by: the id the declaration keeps, which is not the name it is
+    // published under.
+    action.id.clone_into(&mut spec.type_mut().declared);
     // `key: "e"`: the plain key that runs it while its window has the keyboard, shown at the
     // action's row as the keyboard in use spells it.
     if let Some(key) = &action.key {
         spec.type_mut().state.shortcut = Some(key.clone());
     }
+    // What it asks the service for: the capabilities its body's `outside(...)` calls name, so a
+    // query naming a kind of an outside service finds the app's own action that asks its origin
+    // (`outside:youtube.search`). The tag is the compiler's reading of the code, never a name a
+    // host invented.
+    {
+        let contract = &mut spec.type_mut().contract;
+        for capability in &action.outside {
+            let tag = format!("{}{capability}", tilo_actions::OUTSIDE_CAPABILITY_PREFIX);
+            if !contract.tags.contains(&tag) {
+                contract.tags.push(tag);
+            }
+        }
+    }
     spec.type_mut().contract.settle_confirmation();
-    Arc::clone(spec.action_type())
+    spec
 }
 
 /// The action types a package's resources offer, built once per package and shared by every
@@ -451,12 +520,12 @@ fn views_of(
     meta.views_showing(type_name)
         .into_iter()
         .map(|view| {
-            let label = if view.name.is_empty() {
+            let name = if view.name.is_empty() {
                 view.id.clone()
             } else {
                 view.name.clone()
             };
-            let label = label_of(words, &view.id, &label);
+            let label = label_of(words, &view.id, &name);
             let description = view
                 .doc
                 .lines()
@@ -464,8 +533,8 @@ fn views_of(
                 .find(|line| !line.is_empty())
                 .map(|line| said_of(words, &view.id, "doc", None, line));
             let is_primary = primary == Some(view.id.as_str());
-            let opens =
-                (!is_primary).then(|| open_with_type(&view.id, &label, description.as_deref()));
+            let opens = (!is_primary)
+                .then(|| open_with_type(&view.id, &name, &label, description.as_deref()));
             let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
             let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
             if let Some(line) = description {
@@ -476,17 +545,23 @@ fn views_of(
         .collect()
 }
 
-/// The id of the action that opens a resource through the view `view` (an id).
+/// The id of the action that opens a resource through the view named `view`: published by its
+/// name, as an action is ([`action_type`]).
 #[must_use]
 pub fn open_with_id(view: &str) -> String {
     format!("open-{view}")
 }
 
 /// The action type that opens a resource through the view `view`, labelled as the view is: the
-/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect under an id of the
-/// view's own, so each view's open action is its alone. Built once per type and view; each
-/// resource binds it ([`open_with_spec`]).
-fn open_with_type(view: &str, label: &str, description: Option<&str>) -> Arc<ActionType> {
+/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect of the view `view` (an
+/// id) under its name `name`, so each view's open action is its alone. Built once per type and
+/// view; each resource binds it ([`open_with_spec`]).
+fn open_with_type(
+    view: &str,
+    name: &str,
+    label: &str,
+    description: Option<&str>,
+) -> Arc<ActionType> {
     use tilo_resource::Effect as _;
     let mut spec = crate::effects::OpenEffect::OpenWith {
         anchor: String::new(),
@@ -495,7 +570,7 @@ fn open_with_type(view: &str, label: &str, description: Option<&str>) -> Arc<Act
     .bound();
     let ty = spec.type_mut();
     // The payload names the effect by its own id, so the action's id is free to be the view's.
-    ty.id = open_with_id(view);
+    ty.id = open_with_id(name);
     label.clone_into(&mut ty.label);
     ty.description = description.map(str::to_owned);
     Arc::clone(spec.action_type())
@@ -620,32 +695,61 @@ type Field = (String, String);
 
 /// What the updates since a revision changed, as a reader of an action's availability needs it.
 pub enum Moved {
-    /// These fields changed, by published resource id and field: a record's own, and every
-    /// item's under it.
-    These(Vec<Field>),
+    /// These fields changed, by published resource id: a record's own, and every item's under
+    /// it.
+    These(std::collections::BTreeMap<String, std::collections::BTreeSet<String>>),
     /// Every resource: an update since read them all again, and what it changed is every one.
     Everything,
 }
 
-/// Whether a change to `changed` moves what a read of `read` saw.
-///
-/// The same resource and field, either read or changed whole, is the same thing read and changed
-/// again. A requirement that read a resource whole sees everything published under it, so a
-/// change to one of its items reads it again. A change to a resource above what was read does
-/// not: what an item's own fields are is what a requirement of the item reads, and a collection
-/// changing around it is a change to the collection.
-#[must_use]
-pub fn reached(changed: &Field, read: &Field) -> bool {
-    const WHOLE: &str = tilolang_runtime::ANY_FIELD;
-    let above = |outer: &str, inner: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if changed.0 == read.0 {
-        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+impl Moved {
+    /// Whether what changed moves what a read of `read` saw, found by the resources read rather
+    /// than by comparing every change with every read.
+    ///
+    /// The same resource and field, either read or changed whole, is the same thing read and
+    /// changed again. A requirement that read a resource whole sees everything published under
+    /// it, so a change to one of its items reads it again. A change to a resource above what was
+    /// read does not, unless it changed whole: what an item's own fields are is what a
+    /// requirement of the item reads, and a collection changing around it is a change to the
+    /// collection.
+    #[must_use]
+    pub fn reaches(&self, (resource, field): &Field) -> bool {
+        const WHOLE: &str = tilolang_runtime::ANY_FIELD;
+        let changed = match self {
+            Self::Everything => return true,
+            Self::These(changed) if changed.is_empty() => return false,
+            Self::These(changed) => changed,
+        };
+        if changed.get(resource).is_some_and(|fields| {
+            fields.contains(field) || fields.contains(WHOLE) || field == WHOLE
+        }) {
+            return true;
+        }
+        // The ids that start with the resource's stand together in the order, its items'
+        // among them.
+        if changed
+            .range::<str, _>((
+                std::ops::Bound::Excluded(resource.as_str()),
+                std::ops::Bound::Unbounded,
+            ))
+            .map(|(inner, _)| inner)
+            .take_while(|inner| inner.starts_with(resource.as_str()))
+            .any(|inner| inner.as_bytes().get(resource.len()) == Some(&b'/'))
+        {
+            return true;
+        }
+        let mut at = resource.as_str();
+        while let Some((outer, _)) = at.rsplit_once('/') {
+            if changed
+                .get(outer)
+                .is_some_and(|fields| fields.contains(WHOLE))
+            {
+                return true;
+            }
+            at = outer;
+        }
+        false
     }
-    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
 }
 
 /// What the updates since a revision moved of the records' text, as a reader that keeps one
@@ -993,7 +1097,7 @@ impl Publications {
     fn declared(host: &crate::host::Host, doc: &str) -> Option<(String, String, String)> {
         let (app, type_id) = host.store().resource_of(doc)?;
         host.find_in_packages(|package| {
-            if package.meta.app != app {
+            if *package.meta.app != *app {
                 return None;
             }
             package
@@ -1001,7 +1105,7 @@ impl Publications {
                 .types
                 .iter()
                 .find(|t| t.id == type_id)
-                .map(|t| (app.clone(), t.name.clone(), type_id.clone()))
+                .map(|t| (app.to_string(), t.name.clone(), type_id.clone()))
         })
     }
 
@@ -1253,7 +1357,7 @@ impl Publications {
     #[must_use]
     pub fn changed_since(&self, since: u64) -> Option<Moved> {
         if since == self.moved {
-            return Some(Moved::These(Vec::new()));
+            return Some(Moved::These(std::collections::BTreeMap::new()));
         }
         if since > self.moved {
             return None;
@@ -1271,11 +1375,19 @@ impl Publications {
         {
             return Some(Moved::Everything);
         }
-        let mut out: std::collections::BTreeSet<Field> = std::collections::BTreeSet::new();
-        for (_, moved) in self.motions.iter().skip(first) {
-            out.extend(moved.iter().flatten().cloned());
+        let mut out: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (resource, field) in self
+            .motions
+            .iter()
+            .skip(first)
+            .flat_map(|(_, moved)| moved.iter().flatten())
+        {
+            out.entry(resource.clone())
+                .or_default()
+                .insert(field.clone());
         }
-        Some(Moved::These(out.into_iter().collect()))
+        Some(Moved::These(out))
     }
 
     /// What the updates since `since` moved of the records' text, each once: the entries a
@@ -2014,6 +2126,10 @@ impl Published<'_> {
         ) else {
             return;
         };
+        if self.partial {
+            self.reached_members(node, &at, path, nodes);
+            return;
+        }
         let mut held: std::collections::BTreeMap<String, ResourceSpec> =
             std::mem::take(&mut node.children)
                 .into_iter()
@@ -2041,19 +2157,66 @@ impl Published<'_> {
                         nodes.remove(&item);
                         ordered.extend(self.item(&item));
                     }
-                    // A whole record's tree holds every item of its collections. One a window
-                    // reaches holds what it reached of them, and grows by the items a change
-                    // names rather than by all ten thousand a collection has.
-                    None if self.partial => {
-                        if nodes.remove(&item) {
-                            ordered.extend(self.item(&item));
-                        }
-                    }
+                    // A whole record's tree holds every item of its collections; one a window
+                    // reaches is [`Self::reached_members`]'.
                     None => ordered.extend(self.item(&item)),
                 }
             }
         }
         node.children = ordered;
+    }
+
+    /// [`Self::membership`] of a tree that holds what a window reached of the record: the items
+    /// it holds keep their order, those `nodes` names are read again (and leave once they are
+    /// gone), and one it did not hold joins where its collection's listing puts it, found among
+    /// the held ones by their places. The collection is not read whole: adding a task to ten
+    /// thousand reads where the new one and a few held ones stand.
+    fn reached_members(
+        &self,
+        node: &mut ResourceSpec,
+        at: &tilolang_runtime::value::ResourceRef,
+        path: &str,
+        nodes: &mut std::collections::BTreeSet<String>,
+    ) {
+        let published = resource_id(&self.types.meta().app, "");
+        let item_at = |child: &ResourceSpec| -> Option<String> {
+            child
+                .id
+                .as_str()
+                .strip_prefix(published.as_str())
+                .map(str::to_owned)
+        };
+        let place = |item: &str| -> Option<usize> {
+            let (_, field) = self.holder(item).filter(|(holder, _)| holder == path)?;
+            let (before, _, _) = self.members(at, self.schema_at(path)?, &field)?;
+            let id = crate::index::derive::id_of(item)?;
+            before.checked_add(self.store.position(at, &field, id)?)
+        };
+        let mut children = Vec::with_capacity(node.children.len());
+        for child in std::mem::take(&mut node.children) {
+            match item_at(&child) {
+                Some(item) if nodes.remove(&item) => children.extend(self.item(&item)),
+                _ => children.push(child),
+            }
+        }
+        let joining: Vec<String> = nodes
+            .iter()
+            .filter(|item| self.holder(item).is_some_and(|(holder, _)| holder == path))
+            .cloned()
+            .collect();
+        for item in joining {
+            nodes.remove(&item);
+            let (Some(now), Some(spec)) = (place(&item), self.item(&item)) else {
+                continue;
+            };
+            let at = children.partition_point(|child| {
+                item_at(child)
+                    .and_then(|held| place(&held))
+                    .is_some_and(|held| held < now)
+            });
+            children.insert(at, spec);
+        }
+        node.children = children;
     }
 
     /// Rebuild the items at `paths` in place, each with its own items; drop those gone. An item
@@ -2438,6 +2601,11 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource
 /// `id` of the type `type_name`. It needs no planner, since it is not module code.
+///
+/// `field` is the field's **name**, as the app declares it (`title`, `body`), which the edit
+/// verbs publish as their `field` choices; the internal id the document stores it under is
+/// mapped here. An id is still accepted where a caller read one from a record, so a bound
+/// control and an older caller keep working.
 pub fn edit_action(
     meta: &Meta,
     type_name: &str,
@@ -2453,9 +2621,26 @@ pub fn edit_action(
         .ok_or_else(|| format!("the package declares no type `{type_name}`"))?;
     let schema =
         lookup(&declared.id).ok_or_else(|| format!("the type `{type_name}` is not registered"))?;
-    let schema_field = schema
-        .field(field)
-        .ok_or_else(|| format!("the type `{type_name}` has no field `{field}`"))?;
+    // The field as the type declares it: by its name, the spelling the edit verbs offer, or
+    // by its id, the spelling a record stores and a bound control hands back.
+    let declared_field = declared
+        .fields
+        .iter()
+        .find(|known| known.name == field)
+        .or_else(|| declared.fields.iter().find(|known| known.id == field));
+    let declared_field = declared_field.ok_or_else(|| {
+        format!(
+            "the type `{type_name}` has no field `{field}`; its fields are: {}",
+            field_names(declared)
+        )
+    })?;
+    let field_id = &declared_field.id;
+    let schema_field = schema.field(field_id).ok_or_else(|| {
+        format!(
+            "the type `{type_name}` has no field `{field}`; its fields are: {}",
+            field_names(declared)
+        )
+    })?;
     let op = match (schema_field.kind, value) {
         (MergeKind::Text, Json::String(text)) => EditOp::Replace { text: text.clone() },
         (MergeKind::Register, value) => EditOp::Set {
@@ -2473,7 +2658,8 @@ pub fn edit_action(
                     _ => return Err(format!("the field `{field}` takes a rich text")),
                 },
             };
-            crate::store::rich_edit(&rich).map_err(|error| error.to_string())?
+            let blocks = rich.blocks.iter().map(tilo_document::ClipBlock::from_view);
+            crate::store::rich_edit(blocks.collect(), None, 0).map_err(|error| error.to_string())?
         }
         _ => return Err(format!("the field `{field}` cannot be set to that value")),
     };
@@ -2486,7 +2672,7 @@ pub fn edit_action(
         app: meta.app.clone(),
         kind: meta.kind_of(type_name),
         action_id: action_id.to_owned(),
-        args: serde_json::json!({"field": field, "value": value}),
+        args: serde_json::json!({"field": field_id, "value": value}),
         authorship: crate::action::Authorship {
             module: meta.module_hash.clone(),
             ..crate::action::Authorship::default()
@@ -2498,33 +2684,63 @@ pub fn edit_action(
                 edit: Edit::new(
                     vec![
                         Segment::Item(tilo_resource::Id::from_raw(item)),
-                        Segment::Field(field.to_owned()),
+                        Segment::Field(field_id.clone()),
                     ],
                     op,
                 ),
             },
             None => crate::action::DynEdit::Edit {
                 id: id.to_owned(),
-                edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+                edit: Edit::new(vec![Segment::Field(field_id.clone())], op),
             },
         }],
     })
 }
 
+/// The names of `declared`'s fields, comma-separated, as a refusal that names a field the
+/// type lacks lists them: what an [`edit_action`] refusal says a caller may choose instead.
+fn field_names(declared: &TypeMeta) -> String {
+    declared
+        .fields
+        .iter()
+        .map(|known| known.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The two direct edit actions of a resource, whose target is its id: a bound text input and
-/// a bound checkbox.
+/// a bound checkbox. The verbs and their arguments are [`DIRECT_EDITS`]'.
 fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<ActionType>; 2] {
-    let make = |action: &'static str, label: &'static str, ty: ParamType| {
+    // The fields `edit-text` and `edit-flag` may set, by their names: a caller reads the list
+    // in the parameter's description rather than guessing at an internal id. The parameter is
+    // not restricted to them, though: a bound control's `$edit` hands the field's internal id
+    // back (and a nested field path still names a field), and `edit_action` takes either,
+    // mapping a name or an id to the field it names and refusing the ones the type lacks with
+    // the names it offers. Binding either keeps a control's own edits working.
+    let names = |flag: bool| -> Vec<String> {
+        let merge = if flag { Merge::Flag } else { Merge::Text };
+        meta.type_named(type_name)
+            .map(|declared| editable_field_names(declared, merge))
+            .unwrap_or_default()
+    };
+    let make = |direct: DirectEdit| {
+        let fields = names(direct.value == ParamType::Boolean);
         let (meta, type_name) = (meta.clone(), type_name.to_owned());
         let planner = Arc::clone(planner);
+        let description = if fields.is_empty() {
+            "The field's name".to_owned()
+        } else {
+            format!("The field's name, one of: {}", fields.join(", "))
+        };
+        let field = ActionParam::required_owned("field", ParamType::Text, description);
         let spec = ActionSpec::typed_on(
-            action,
-            label,
-            label,
+            direct.id,
+            direct.label,
+            direct.label,
             ExecutionLocus::ClientLocal,
             vec![
-                ActionParam::required("field", ParamType::Text, "The field id"),
-                ActionParam::required("value", ty, "The new value"),
+                field,
+                ActionParam::required("value", direct.value, "The new value"),
             ],
             move |target: &Target, args: &ActionArgs| {
                 let json = args.to_json();
@@ -2552,16 +2768,5 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
         .for_audience(tilo_actions::Audience::Agents);
         Arc::clone(spec.action_type())
     };
-    [
-        make(
-            crate::action::EDIT_TEXT_ACTION,
-            "Edit a text field",
-            ParamType::Text,
-        ),
-        make(
-            crate::action::EDIT_FLAG_ACTION,
-            "Set a flag field",
-            ParamType::Boolean,
-        ),
-    ]
+    DIRECT_EDITS.map(make)
 }

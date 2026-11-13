@@ -1,43 +1,22 @@
-//! Where the Chromium engine lives.
-//!
-//! On Linux the engine — the `tilo-chromium-host` process and the Chromium
-//! Embedded Framework it loads — is its own signed Tilo runtime bundle,
-//! [`RUNTIME_REF`]. It is installed the way every runtime bundle is: by the
-//! image at `/usr/lib/tilo-runtime/<version>`, or for one user under the
-//! per-user runtime directory. An app that embeds the engine requires the
-//! bundle in its manifest (`[package].optional-runtimes`, the key of the
-//! runtimes an app requires): installing or updating the app installs it in
-//! the same step, and the launcher verifies the bundle's signature, mounts it
-//! read-only at `/run/tilo-runtime/<version>` inside the app's sandbox and
-//! refuses to start the app without it. Outside the launcher the installed
-//! bundle is used directly.
-//!
-//! On macOS the packaged app carries the engine as a nested application in
-//! its `Contents/Frameworks` directory.
-//!
-//! Under the launcher a missing engine means a broken install; outside it (a
-//! developer run) it is ordinary. Either way [`locate`] reports it as
-//! [`RuntimeMissing`], which an app shows as [`NOT_INSTALLED_MESSAGE`] and
-//! logs with [`RuntimeMissing::developer_hint`].
+//! Where the Chromium engine lives. On Linux the engine — the `tilo-chromium-host`
+//! process and the Chromium Embedded Framework it loads — is its own signed Tilo runtime
+//! bundle, [`RUNTIME_REF`].
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// The engine runtime's version: the directory name of its bundle and of its
-/// mount. Bump it whenever the host's protocol or its pinned CEF build
-/// changes. The apps that embed the engine require this version, so it
-/// installs and updates with them.
+/// The engine runtime's version: the directory name of its bundle and of its mount.
 pub const RUNTIME_VERSION: &str = "2026.10.23-chromium";
 
-/// The runtime reference an app that embeds the engine requires in its
-/// manifest's `[package].optional-runtimes`.
+/// The runtime reference an app that embeds the engine requires in its manifest's
+/// `[package].optional-runtimes`.
 pub const RUNTIME_REF: &str = "tilo-runtime/2026.10.23-chromium";
 
 /// The host executable, relative to the bundle root.
 pub const HOST_IN_BUNDLE: &str = "lib/chromium/tilo-chromium-host";
 
-/// Names a host executable directly, for a developer running a locally
-/// built engine. Release images never set it.
+/// Names a host executable directly, for a developer running a locally built engine.
+/// Release images never set it.
 pub const HOST_OVERRIDE_ENV: &str = "TILO_CHROMIUM_HOST";
 
 /// Overrides the per-user runtime root, as it does for every runtime bundle.
@@ -52,13 +31,11 @@ pub const SYSTEM_ROOT: &str = "/usr/lib/tilo-runtime";
 /// No engine runtime was found in any place it is installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeMissing {
-    /// Every host path that was checked, in order.
     pub searched: Vec<PathBuf>,
 }
 
 impl RuntimeMissing {
-    /// What a developer can do about it. For logs only; users see
-    /// [`NOT_INSTALLED_MESSAGE`].
+    /// What a developer can do about it.
     #[must_use]
     pub fn developer_hint(&self) -> String {
         let searched = self
@@ -76,26 +53,19 @@ impl RuntimeMissing {
     }
 }
 
-/// What a person sees when the engine is missing. The app requires it, so
-/// this is a broken install: updating or reinstalling the app repairs it.
+/// What a person sees when the engine is missing.
 pub const NOT_INSTALLED_MESSAGE: &str = "The browser engine is missing.";
 
-/// What a person sees when an installed engine fails to start. The cause goes
-/// to the log.
+/// What a person sees when an installed engine fails to start.
 pub const FAILED_MESSAGE: &str = "The browser engine couldn’t start.";
 
 /// The places the engine is looked for, in order.
 #[derive(Debug, Clone, Default)]
 pub struct SearchRoots {
-    /// [`HOST_OVERRIDE_ENV`].
     pub host_override: Option<PathBuf>,
-    /// The launcher's mount root ([`MOUNT_ROOT`]).
     pub mount_root: Option<PathBuf>,
-    /// The per-user runtime root.
     pub user_root: Option<PathBuf>,
-    /// The image's runtime root ([`SYSTEM_ROOT`]).
     pub system_root: Option<PathBuf>,
-    /// The running executable, for the macOS app layout.
     pub executable: Option<PathBuf>,
 }
 
@@ -131,7 +101,6 @@ impl SearchRoots {
         candidates
     }
 
-    /// The first installed host.
     pub fn locate(&self) -> Result<PathBuf, RuntimeMissing> {
         let candidates = self.candidates();
         candidates

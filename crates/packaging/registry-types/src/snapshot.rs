@@ -55,7 +55,6 @@ pub struct SignedRegistrySnapshot {
     pub previous_snapshot_hash_hex: String,
     pub moderation_head_hex: String,
     pub publishers: Vec<PublisherAuthorization>,
-    /// App and bot entries.
     pub entries: Vec<RegistryEntry>,
     pub owner_signature_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -323,7 +322,6 @@ pub fn verify_snapshot(
     Ok(())
 }
 
-/// The signed fields every snapshot format shares, borrowed for verification.
 #[derive(Clone, Copy)]
 pub(crate) struct SignedHeader<'a> {
     pub sequence: u64,
@@ -338,7 +336,6 @@ pub(crate) struct SignedHeader<'a> {
 }
 
 impl SignedHeader<'_> {
-    /// Sequence shape, freshness and size bounds.
     pub(crate) fn check_window(&self, now_unix: u64) -> Result<(), SnapshotError> {
         if self.sequence == 0
             || (self.sequence == 1 && !self.previous_snapshot_hash_hex.is_empty())
@@ -422,7 +419,6 @@ impl SignedHeader<'_> {
     }
 }
 
-/// A unique, bounded package id from an authorized publisher.
 pub(crate) fn check_entry_identity(
     entry: &RegistryEntry,
     packages: &mut HashSet<String>,
@@ -440,7 +436,6 @@ pub(crate) fn check_entry_identity(
     Ok(())
 }
 
-/// What a channel authorization bounds.
 struct Scope<'a> {
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -662,12 +657,10 @@ mod tests {
         let mut mixed = with_bot(&plain);
         sign_snapshot(&mut mixed, &owner).unwrap();
         assert_eq!(verify_snapshot(&mixed, &owner_hex, 15), Ok(()));
-        // phase: bots_change_the_signature_and_the_identity
         {
             assert_ne!(mixed.owner_signature_hex, plain.owner_signature_hex);
             assert_ne!(snapshot_hash(&mixed), snapshot_hash(&plain));
         }
-        // phase: wire_round_trip_keeps_both_kinds
         {
             let json = serde_json::to_value(&mixed).unwrap();
             assert_eq!(json["entries"].as_array().unwrap().len(), 2);
@@ -675,7 +668,6 @@ mod tests {
             assert_eq!(read, mixed);
             assert_eq!(verify_snapshot(&read, &owner_hex, 15), Ok(()));
         }
-        // phase: a_dropped_or_added_bot_breaks_the_signature
         {
             let mut dropped = mixed.clone();
             dropped.entries.retain(|entry| entry.kind == EntryKind::App);
@@ -698,7 +690,6 @@ mod tests {
         reason = "one fail-closed test in phases, each tampering with a fresh snapshot"
     )]
     fn snapshot_verification_fails_closed() {
-        // phase: exact_snapshot_verifies_and_tamper_fails
         {
             let (mut snapshot, owner) = fixture();
             verify_snapshot(
@@ -722,7 +713,6 @@ mod tests {
                 Err(SnapshotError::OwnerSignature)
             );
         }
-        // phase: another_package_format_version_is_refused
         {
             let (mut snapshot, owner) = fixture();
             let owner_hex = hex::encode(owner.verifying_key().to_bytes());
@@ -758,12 +748,10 @@ mod tests {
                     );
                 }
             }
-            // phase: the_format_this_build_reads_is_accepted
             snapshot.protocol = PACKAGE_FORMAT_VERSION;
             sign_snapshot(&mut snapshot, &owner).unwrap();
             assert_eq!(verify_snapshot(&snapshot, &owner_hex, 15), Ok(()));
         }
-        // phase: expired_and_unauthorized_snapshots_fail_closed
         {
             let (mut snapshot, owner) = fixture();
             let owner_hex = hex::encode(owner.verifying_key().to_bytes());
@@ -778,7 +766,6 @@ mod tests {
                 Err(SnapshotError::UnauthorizedPublisher)
             );
         }
-        // phase: oversized_authorization_set_fails_even_with_valid_owner_signature
         {
             let (mut snapshot, owner) = fixture();
             snapshot.publishers = (0..=MAX_SNAPSHOT_PUBLISHERS)
@@ -797,7 +784,6 @@ mod tests {
                 Err(SnapshotError::Oversize)
             );
         }
-        // phase: delegated_snapshot_is_root_scoped_and_time_bounded
         {
             let (mut snapshot, owner) = fixture();
             let channel = SigningKey::from_bytes(&[9; 32]);

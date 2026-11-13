@@ -39,6 +39,34 @@ pub(crate) enum Unopened {
     Records(RecordOpenError),
 }
 
+/// Why a window's app was not built on the record it shows.
+#[derive(Debug)]
+pub(crate) enum Unbuilt {
+    /// The record is still on its way from the workspace (a window saved on it, or one a shared
+    /// desk names): the window shows it loading, and is built again once it is here. Not a
+    /// failure, so the person never reads one.
+    Arriving,
+    /// What the window says instead.
+    Failed(String),
+}
+
+impl Unbuilt {
+    /// What preparing or building the app answered, as the window shows it.
+    pub(crate) fn of(error: ui::launch::LaunchError) -> Self {
+        match error {
+            ui::launch::LaunchError::Record(RecordOpenError::Arriving) => Self::Arriving,
+            ui::launch::LaunchError::Record(error) => Self::Failed(error.to_string()),
+            other => Self::Failed(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for Unbuilt {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
+}
+
 /// The store a page showing `definition` reads, opened once into `stores` so
 /// what the workspace answered about a record stays known while the window it
 /// opened is built. A page in a workspace whose host sends a device a record

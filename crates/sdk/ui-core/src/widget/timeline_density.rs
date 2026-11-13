@@ -1,19 +1,9 @@
-//! How much a time grid (a calendar's week, a schedule) shows of each item,
-//! decided from the width of one day column and the theme's type, so every
-//! app that lays out days in columns follows one rule.
-//!
-//! A day column that holds a short title on one line is **regular**: a
-//! half-hour block is one title line, chips lead with their colour marker
-//! and the start time. Narrower than [`TimelineDensity::narrow_below`] it is
-//! **narrow**: the hour grows so a half-hour block holds two title lines,
-//! an all-day chip wraps over two, and chips give their marker's room to the
-//! title (their tint already carries the colour). The text scale grows the
-//! hour with the type it holds.
-
+//! How much a time grid (a calendar's week, a schedule) shows of each item, decided from the width
+//! of one day column and the theme's type, so every app that lays out days in columns follows one
+//! rule.
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// See the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TimelineDensity {
     #[default]
@@ -22,14 +12,11 @@ pub enum TimelineDensity {
 }
 
 impl TimelineDensity {
-    /// The column width below which a time grid is narrow: ten `Caption`
-    /// ems, fewer than about sixteen characters of a title on a line.
     #[must_use]
     pub fn narrow_below(theme: &Theme) -> f64 {
         10.0 * f64::from(theme.text(TextRole::Caption).size)
     }
 
-    /// The density of a time grid whose day columns are `column_width` wide.
     #[must_use]
     pub fn of(column_width: f64, theme: &Theme) -> Self {
         if column_width < Self::narrow_below(theme) {
@@ -39,7 +26,6 @@ impl TimelineDensity {
         }
     }
 
-    /// Title lines a half-hour block holds.
     #[must_use]
     pub const fn short_block_lines(self) -> usize {
         match self {
@@ -48,13 +34,11 @@ impl TimelineDensity {
         }
     }
 
-    /// Title lines an all-day chip may wrap over.
     #[must_use]
     pub const fn chip_lines(self) -> usize {
         self.short_block_lines()
     }
 
-    /// Whether a chip leads with its colour marker and start time.
     #[must_use]
     pub const fn chip_marker(self) -> bool {
         matches!(self, Self::Regular)

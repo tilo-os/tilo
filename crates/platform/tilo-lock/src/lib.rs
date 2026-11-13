@@ -1,18 +1,11 @@
-//! Locking that outlives a panicking holder.
+//! Locking that outlives a panicking holder: a poisoned lock hands back its guard
+//! instead of an error.
 //!
-//! A std lock is poisoned when a thread panics while holding it, and every
-//! later `lock()` returns an error carrying the guard. These traits take the
-//! guard regardless, once instead of `.unwrap_or_else(PoisonError::into_inner)`
-//! at every call.
-//!
-//! That hides no half-written state in a release build: a process that starts
-//! its runtime or threads through `tilo_rt` aborts on the first panic outside
-//! `tilo_rt::panic_boundary::isolate`, so no other thread ever sees a lock it
-//! poisoned. Only state shared across such a
-//! boundary needs more, and its owner must treat a poisoned lock as
-//! unavailable rather than recover the guard. Debug and test builds unwind
-//! everywhere, where recovering keeps one failed test from cascading into
-//! every later lock of the same state.
+//! A release build aborts on a panic outside `tilo_rt::panic_boundary::isolate`, so
+//! no thread meets a lock another poisoned, and state shared across such a boundary
+//! must treat a poisoned lock as unavailable. Debug and test builds unwind
+//! everywhere, where recovering keeps one failed test from cascading into every
+//! later lock of the same state.
 
 pub mod deferred;
 pub mod lazy;

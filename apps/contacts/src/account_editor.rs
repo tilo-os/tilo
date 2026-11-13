@@ -738,7 +738,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The account review the window publishes.
     fn review_row(
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Option<ui::tilo_actions::ResourceSpec> {

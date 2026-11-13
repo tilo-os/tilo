@@ -31,7 +31,7 @@ fn cross_app_person_records_read_current_original_writer_without_replica_or_file
         })
         .unwrap();
     let messages = PersonRecords::open(&mut owners, "so.tilo.messages", author.clone()).unwrap();
-    let shared = messages.of_package("so.tilo.settings").unwrap();
+    let shared = messages.of_app("so.tilo.settings").unwrap();
     let read = shared
         .open_original_record(kind.clone(), |_| Err("must reuse original document".into()))
         .unwrap();
@@ -56,7 +56,7 @@ fn cross_app_person_records_read_current_original_writer_without_replica_or_file
     let mut other_profile = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     let separate = PersonRecords::open(&mut other_profile, "so.tilo.messages", author)
         .unwrap()
-        .of_package("so.tilo.settings")
+        .of_app("so.tilo.settings")
         .unwrap()
         .open_record(kind, &|doc| {
             doc.put(automerge::ROOT, "enabled", false)

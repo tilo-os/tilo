@@ -1,4 +1,5 @@
 //! Real disposable mount qualification, never a fake inventory or skipped test.
+
 use super::*;
 use imager_backend::migration::PinnedDirectory;
 use std::{
@@ -112,8 +113,6 @@ impl Binding {
             retired: false,
         }
     }
-    /// Explicit fixture topology change while reviewed descriptors still pin
-    /// the detached mount; ordinary teardown remains non-lazy below.
     fn retire(mut self) {
         assert_eq!(
             target_mount(&self.target),

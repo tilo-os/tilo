@@ -370,9 +370,9 @@ no run and no transcript; it places the channel like any resource.
   person who asked, and undone like any change.
 - **What the agent shows.** What the agent wants to show is a resource it attaches to its
   reply (a message carries attachments). Pressing an attachment places it beside the
-  conversation (§3). What opens unasked follows §5's "What opens" setting: by default what
-  the turn created, and a view it answered with (`plan.view`), placed beside the
-  conversation with `place_near`.
+  conversation (§3), and dragging it onto the canvas places it where it was let go. What opens
+  unasked follows §5's "What opens" setting: by default what the turn created, and a view it
+  answered with (`plan.view`), placed beside the conversation with `place_near`.
 - **The REPL.** `tilolang repl` reaches the person's door and calls the same actions by the
   same names the agent's `invoke` does, so the person types what the agent would. Its
   results are references that place the same way.

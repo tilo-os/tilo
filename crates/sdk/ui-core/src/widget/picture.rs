@@ -1,11 +1,6 @@
-//! The stock pictures a [`super::PictureChoice`] shows: what a visual
-//! setting looks like, drawn by the toolkit from the live theme, so an app
-//! names the picture a value stands for and never paints one itself.
-//!
-//! Each picture is drawn into the tile it is given, scaled to the tile but
-//! never invented: a text sample is drawn at the size it names, a pointer at
-//! the size the cursor theme draws it, a colour filter with the blend the
-//! compositor applies to the whole screen.
+//! The stock pictures a [`super::PictureChoice`] shows: what a visual setting looks like, drawn
+//! by the toolkit from the live theme, so an app names the picture a value stands for and never
+//! paints one itself.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -15,7 +10,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// A whole-screen colour transform, as the compositor applies it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColourFilter {
     /// The screen as it is.
@@ -33,7 +27,8 @@ impl ColourFilter {
     /// Apply the filter to what `scene` drew under `rect` so far: the blend
     /// the compositor uses for the whole screen, here for one area.
     pub fn paint(self, scene: &mut Scene, transform: Affine, rect: Rect) {
-        // ratchet-allow(white_or_black): the colour and difference blends take pure white as their operand; no theme colour is one
+        // ratchet-allow(white_or_black): the colour and difference blends take pure white as
+        // their operand; no theme colour is one.
         let white = Color::WHITE;
         let mut overlay = |mix: Mix| {
             scene.push_layer(
@@ -47,19 +42,14 @@ impl ColourFilter {
             scene.pop_layer();
         };
         if matches!(self, Self::Grayscale | Self::GrayscaleInverted) {
-            // The W3C `color` blend with an achromatic source keeps the
-            // backdrop's luminosity and drops its hue: true grey, not a
-            // grey veil.
             overlay(Mix::Color);
         }
         if matches!(self, Self::Inverted | Self::GrayscaleInverted) {
-            // Difference against white is the exact inverse of each channel.
             overlay(Mix::Difference);
         }
     }
 }
 
-/// What a touchpad picture shows the fingers doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TouchpadGesture {
     /// One finger pressing the middle: a click as the device does it.
@@ -75,7 +65,6 @@ pub enum TouchpadGesture {
     EdgeScroll,
 }
 
-/// What a choice's tile shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Picture {
     /// "Aa" at this multiple of the theme's own text size, as a text-size
@@ -144,8 +133,6 @@ fn paint_text_size(
     text: &mut TextRenderer,
 ) {
     let mut style = theme.text(TextRole::Title);
-    // The role already carries the person's current text scale; the sample
-    // shows each size against the theme's own, whatever is chosen now.
     style.size = style.size / theme.text_scale.max(f32::EPSILON) * scale;
     let sample = "Aa";
     let (width, height) = text.measure_style(sample, None, &style);
@@ -207,13 +194,10 @@ fn paint_pointer(scene: &mut Scene, transform: Affine, area: Rect, size: f64, th
     );
 }
 
-/// A miniature of a screen in the live theme: a heading and a line of
-/// text, a bar chart in the chart series' colours, an accent button and a
-/// switch that is on. The colours a filter changes, side by side.
+/// A miniature of a screen in the live theme: a heading and a line of text, a bar chart in the
+/// chart series' colours, an accent button and a switch that is on.
 fn paint_screen_sample(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
     let colors = &theme.tokens.colors;
-    // The screen's own ground, so a filter or a warmth blends over a
-    // window rather than over nothing.
     scene.fill(
         Fill::NonZero,
         transform,
@@ -247,7 +231,6 @@ fn paint_screen_sample(scene: &mut Scene, transform: Affine, area: Rect, theme: 
         content.width() * 0.8,
         theme.text_dim,
     );
-    // The chart: four bars of rising height in the series colours.
     let chart = Rect::new(
         content.x0,
         content.y0 + unit * 2.4,
@@ -273,7 +256,6 @@ fn paint_screen_sample(scene: &mut Scene, transform: Affine, area: Rect, theme: 
             ),
         );
     }
-    // An accent button over a switch that is on, beside the chart.
     let side = Rect::new(chart.x1 + unit, chart.y0, content.x1, content.y1);
     let control = (side.height() / 2.0 - unit * 0.3).max(1.0);
     scene.fill(
@@ -485,12 +467,8 @@ fn paint_motion(
     scene.fill(Fill::NonZero, transform, color, None, &tip);
 }
 
-/// Which way content follows a scroll. Left, a window whose content has
-/// moved: a faint outline where a block was, the block where it went, and
-/// a bold arrow between them. Right, the fingers on a touchpad (or a
-/// mouse's wheel) pushing up, with the same arrow. Natural: both arrows
-/// point up, the content goes with the fingers. Traditional: the content's
-/// arrow points down, against them.
+/// Which way content follows a scroll. Left, a window whose content has moved: a faint outline
+/// where a block was, the block where it went, and a bold arrow between them.
 fn paint_scroll_direction(
     scene: &mut Scene,
     transform: Affine,
@@ -503,7 +481,6 @@ fn paint_scroll_direction(
     let unit = height / 10.0;
     let stroke = (unit * 0.45).max(1.5);
     let ground = colors.surfaces.content;
-    // The window, its content clipped to it.
     let window = Rect::from_center_size(
         Point::new(area.x0 + area.width() * 0.3, area.center().y),
         (height * 0.85, height),
@@ -525,7 +502,6 @@ fn paint_scroll_direction(
         window.x1 - unit * 3.2,
         window.center().y + unit * 1.3,
     );
-    // Where the block was, faint.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
@@ -533,7 +509,6 @@ fn paint_scroll_direction(
         None,
         &RoundedRect::from_rect(block, unit * 0.4),
     );
-    // The content where it went: the block and the lines around it.
     let moved = block + vello::kurbo::Vec2::new(0.0, shift);
     scene.fill(
         Fill::NonZero,
@@ -569,7 +544,6 @@ fn paint_scroll_direction(
         stroke,
         theme,
     );
-    // The hand: fingers on a pad, or a wheel, pushed up.
     let centre = Point::new(area.x0 + area.width() * 0.72, area.center().y);
     let lift = unit * 2.6;
     if wheel {
@@ -616,7 +590,6 @@ fn paint_scroll_direction(
     let top = pad.center().y - unit * 1.6;
     for dx in [-1.5, 1.5] {
         let x = pad.center().x - unit * 1.2 + dx * finger;
-        // Where the fingers came from, faint, and where they are.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -644,7 +617,6 @@ fn paint_density(scene: &mut Scene, transform: Affine, area: Rect, density: f32,
     let density = f64::from(density);
     let inset = (area.height() * 0.14).round();
     let content = area.inset(-inset);
-    // A regular row is a quarter of the tile; the others scale from it.
     let row = content.height() / 3.6 * density;
     let mark = row * 0.36;
     let edge = crate::surface::edge_on(theme.tokens.colors.surfaces.raised);

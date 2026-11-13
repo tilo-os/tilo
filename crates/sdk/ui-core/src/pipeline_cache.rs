@@ -1,22 +1,7 @@
-//! The app's own vello pipelines, kept across launches.
-//!
-//! [`crate::pipeline_seed`] hands every app the pipelines the session's
-//! compositor compiled. That covers an app only when the compositor runs the
-//! same vello on the same GPU and driver; a compositor from another build, a
-//! desktop without one, or a shader the compositor never builds leaves the
-//! app compiling from nothing on every launch. So an app also keeps what it
-//! compiled, in a `wgpu::PipelineCache` blob under its **own** cache
-//! directory (`$XDG_CACHE_HOME`, `/run/tilo/app/.cache` in a sandbox), and
-//! starts from that on its next launch.
-//!
-//! The file is private to the app: only this app writes it (mode 0600 in a
-//! 0700 directory) and only this app reads it, so nothing crosses a sandbox.
-//! It is keyed by the adapter, the driver and the shaders' identity
-//! ([`vello::SHADER_FINGERPRINT`]): the shaders live in the shared runtime,
-//! not the app binary, so they are the version of what is cached. A file for
-//! another key, a truncated one or one whose checksum fails is ignored, and
-//! the app falls back to the session's seed, else to compiling. wgpu and the
-//! driver check their own headers again before using the blob.
+//! The app's own vello pipelines, kept across launches. [`crate::pipeline_seed`] hands every app the
+//! pipelines the session's compositor compiled. That covers an app only when the compositor runs the
+//! same vello on the same GPU and driver; a compositor from another build, a desktop without one, or a
+//! shader the compositor never builds leaves the app compiling from nothing on every launch.
 
 use std::path::{Path, PathBuf};
 use tilo_lock::MutexRecover as _;
@@ -25,10 +10,9 @@ use tilo_lock::MutexRecover as _;
 /// blob, then the blob `wgpu::PipelineCache::get_data` returned.
 const MAGIC: &[u8; 8] = b"TILOPLC1";
 const HEADER_LEN: usize = MAGIC.len() + 32 + 32;
-/// Far above vello's few dozen pipelines on any driver; a larger file is not
-/// one this module wrote, and is never read whole.
+/// Far above vello's few dozen pipelines on any driver; a larger file is not one this module wrote, and
+/// is never read whole.
 const LIMIT: usize = 64 * 1024 * 1024;
-/// Bump whenever the meaning of the identity or the blob changes.
 const ABI: &[u8] = b"tilo-pipeline-cache-v1/wgpu-29";
 
 /// Which cache the renderer started from; a startup mark records it.
@@ -42,8 +26,7 @@ pub(crate) enum Origin {
     Empty,
 }
 
-/// The identity a cache file must carry to be used on this adapter, driver
-/// and shader set.
+/// The identity a cache file must carry to be used on this adapter, driver and shader set.
 pub(crate) fn identity(adapter: &wgpu::AdapterInfo, shaders: u64) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     let mut part = |bytes: &[u8]| {
@@ -74,8 +57,7 @@ pub(crate) fn encode(identity: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// The blob in `bytes`, if they are a whole file of this format for
-/// `identity`.
+/// The blob in `bytes`, if they are a whole file of this format for `identity`.
 pub(crate) fn decode<'a>(bytes: &'a [u8], identity: &[u8; 32]) -> Option<&'a [u8]> {
     if bytes.len() > LIMIT {
         return None;
@@ -90,12 +72,9 @@ pub(crate) fn decode<'a>(bytes: &'a [u8], identity: &[u8; 32]) -> Option<&'a [u8
     .then_some(blob)
 }
 
-/// Caches whose renderer is still building pipelines (see
-/// [`AppPipelineCache::keep_until_built`]).
 static UNSAVED: std::sync::Mutex<Vec<AppPipelineCache>> = std::sync::Mutex::new(Vec::new());
 
-/// Keep every cache held by [`AppPipelineCache::keep_until_built`]: a
-/// renderer has built all it will. Each is written on a background thread.
+/// Keep every cache held by [`AppPipelineCache::keep_until_built`]: a renderer has built all it will.
 pub(crate) fn persist_unsaved() {
     let unsaved = std::mem::take(&mut *UNSAVED.lock_recover());
     for cache in unsaved {
@@ -114,15 +93,14 @@ pub(crate) struct AppPipelineCache {
     file: PathBuf,
     identity: [u8; 32],
     origin: Origin,
-    /// The length of the blob this launch read from its own file: a cache
-    /// that did not grow compiled nothing new and is not written again.
+    /// The length of the blob this launch read from its own file: a cache that did not grow compiled
+    /// nothing new and is not written again.
     loaded_len: Option<usize>,
 }
 
 impl AppPipelineCache {
-    /// This app's cache file if it is valid for the device, else the
-    /// session's seed, else an empty cache. `None` when the backend has no
-    /// pipeline caches or the process has no cache directory.
+    /// This app's cache file if it is valid for the device, else the session's seed, else an empty
+    /// cache.
     pub(crate) fn open(device: &crate::gpu::DeviceHandle) -> Option<Self> {
         if !crate::pipeline_seed::supported(device) {
             return None;
@@ -178,15 +156,14 @@ impl AppPipelineCache {
         self.origin
     }
 
-    /// Hold this cache until the renderer it feeds has built the pipelines
-    /// it deferred past the first frame; [`persist_unsaved`] then keeps it.
+    /// Hold this cache until the renderer it feeds has built the pipelines it deferred past the first
+    /// frame; [`persist_unsaved`] then keeps it.
     pub(crate) fn keep_until_built(self) {
         UNSAVED.lock_recover().push(self);
     }
 
-    /// Keep what this launch compiled, off the first frame's path: on a
-    /// background thread, and only when the cache did not come whole from
-    /// this app's own file.
+    /// Keep what this launch compiled, off the first frame's path: on a background thread, and only
+    /// when the cache did not come whole from this app's own file.
     pub(crate) fn persist(self) {
         let spawned = crate::background::Background::current().spawn("pipeline-cache-save", move || {
             if let Err(error) = self.save() {
@@ -198,8 +175,7 @@ impl AppPipelineCache {
         }
     }
 
-    /// Write the cache to its file. `Ok(false)` when there was nothing new to
-    /// keep.
+    /// Write the cache to its file. `Ok(false)` when there was nothing new to keep.
     pub(crate) fn save(&self) -> std::io::Result<bool> {
         let Some(blob) = self.cache.get_data() else {
             return Ok(false);
@@ -215,17 +191,10 @@ impl AppPipelineCache {
     }
 }
 
-/// Whether this app's first frame draws a backdrop blur, as its last launch
-/// found, kept beside its pipeline cache under the same rules (its own cache
-/// directory, written only by this app, mode 0600).
-///
-/// On a software adapter every frame is rasterized on the CPU except a
-/// backdrop blur, which vello draws, so only an app whose first frame blurs
-/// a backdrop waits on vello's pipelines. Such an app starts building them as
-/// soon as it has a device; any other app leaves that build until after its
-/// first present, so its startup does not share the CPU with LLVM compiling
-/// pipelines it is not about to use. A wrong or missing hint costs time,
-/// never a pipeline: a frame that needs one still builds or waits for it.
+/// Whether this app's first frame draws a backdrop blur, as its last launch found, kept beside its
+/// pipeline cache under the same rules (its own cache directory, written only by this app, mode 0600).
+/// A wrong or missing hint costs time, never a pipeline: a frame that needs one still builds or waits
+/// for it.
 pub(crate) mod first_frame_backdrop {
     use std::path::{Path, PathBuf};
 
@@ -258,8 +227,8 @@ pub(crate) mod first_frame_backdrop {
             .map(|bytes| bytes == b"1")
     }
 
-    /// Record what this launch's first frame did, on a background thread and
-    /// only when it differs from what the last launch recorded.
+    /// Record what this launch's first frame did, on a background thread and only when it differs from
+    /// what the last launch recorded.
     pub(crate) fn record(drew: bool) {
         let Some(dir) = dir() else {
             return;
@@ -396,9 +365,9 @@ mod tests {
         }
     }
 
-    /// The real thing, where a device with pipeline caches is available:
-    /// a first launch starts from nothing (no seed here) and keeps what
-    /// vello compiled; the next starts from that file and writes nothing.
+    /// The real thing, where a device with pipeline caches is available: a first launch starts from
+    /// nothing (no seed here) and keeps what vello compiled; the next starts from that file and writes
+    /// nothing.
     #[test]
     fn a_second_launch_starts_from_the_first_launch_s_pipelines() {
         let mut context = crate::gpu::RenderContext::new();

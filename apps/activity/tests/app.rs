@@ -22,8 +22,7 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
-/// Whether the window says `text`, as a name, value or description a screen
-/// reader reads.
+/// Whether the window says `text`, as a name, value or description a screen reader reads.
 fn says(app: &mut TestApp<App>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         [node.label(), node.value(), node.description()]
@@ -71,8 +70,8 @@ fn every_scenario_shows_its_place_built_from_components() {
         for target in targets {
             assert!(shows(&mut app, target), "{scenario} shows {target}");
         }
-        // Facts are parts of a row, never joined with a glyph: where the
-        // person left off names its app and its time apart.
+        // Facts are parts of a row, never joined with a glyph: where the person left off
+        // names its app and its time apart.
         assert!(!says(&mut app, "·"), "{scenario} joins facts with a dot");
     }
 }
@@ -92,8 +91,8 @@ fn asked(app: &mut TestApp<App>) -> Vec<InvokeRequest> {
         .collect()
 }
 
-/// The read of `action` among `requests`; a missing one fails where the
-/// test names the action.
+/// The read of `action` among `requests`; a missing one fails where the test names the
+/// action.
 #[track_caller]
 fn read<'a>(requests: &'a [InvokeRequest], action: &str) -> &'a InvokeRequest {
     requests
@@ -152,7 +151,6 @@ fn whats_new_follows_the_session_and_marks_what_it_showed_as_viewed() {
     answer(&mut app, summary, 1, serde_json::to_value(&first).unwrap());
     assert!(shows(&mut app, "activity-brief-0"));
 
-    // The history moved: the session sends the summary again, unasked.
     let second = wire::Summary {
         briefs: vec![
             brief("Grace moved the venue", &["ac"]),
@@ -210,14 +208,14 @@ fn a_refused_read_says_so_instead_of_showing_history() {
     assert!(!shows(&mut app, "activity-brief-0"));
 }
 
-/// A change one device will not take says so on its own row: where it is not,
-/// and why, beside where it is.
+/// A change one device will not take says so on the row's own line: where it is not, and
+/// why.
 #[test]
 fn a_change_a_device_refused_says_where_it_is_not() {
     english();
     let mut app = TestApp::<App>::capture(Some("history")).expect("capture");
     assert!(
-        says(&mut app, "not on Ada's laptop: no permission"),
+        says(&mut app, "Not on Ada's laptop: no permission"),
         "the row of the refused change says where it is not"
     );
 }
@@ -284,7 +282,7 @@ fn a_view_asked_for_outside_opens_that_place() {
     read(&requests, wire::FOCUSED);
 }
 
-/// Whether the window offers "Mark as viewed" as an action to take: its button stands in the
+/// Whether the window offers "Mark as viewed" as an action to take: its button sits in the
 /// header row of the column it acts on, the window's bar hosting the window or not.
 fn mark_viewed_offered(scenario: &str) -> bool {
     fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
@@ -313,8 +311,8 @@ fn mark_viewed_offered(scenario: &str) -> bool {
         .is_some_and(|access| access.state.disabled)
 }
 
-/// Mark as viewed acts while there is something new, and is
-/// disabled once What's new is caught up.
+/// Mark as viewed acts while there is something new, and is disabled once What's new is
+/// caught up.
 #[test]
 fn mark_as_viewed_is_offered_only_while_there_is_something_new() {
     english();
@@ -322,15 +320,13 @@ fn mark_as_viewed_is_offered_only_while_there_is_something_new() {
     assert!(!mark_viewed_offered("caught-up"));
 }
 
-/// The name of the row the history lists for the `n`th change of the
-/// scenario's workspace.
+/// The name of the row the history lists for the `n`th change of the scenario's workspace.
 fn change(n: u8) -> String {
     format!("activity-entry-{}", wire::entry_hex(&[n; 16]))
 }
 
-/// The window bar's search is History's: what is typed narrows the feed
-/// through the filter the app already keeps, and the bar counts what the
-/// filter left of the page it read. Closing it shows every change again.
+/// The window bar's search is History's: what is typed narrows the feed through the filter
+/// the app already keeps, and the bar counts what the filter left of the page it read.
 #[test]
 fn the_window_bars_search_narrows_history_and_the_bar_counts_what_it_kept() {
     english();
@@ -371,8 +367,8 @@ fn the_window_bars_search_narrows_history_and_the_bar_counts_what_it_kept() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The window bar's sidebar button flips the sidebar on every click, in a window wide
+/// enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {
@@ -400,9 +396,9 @@ fn removing_a_morning_source_asks_the_session_through_the_published_effect() {
     assert_eq!(request.command, wire::SourceCommand::Remove);
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// name of the app and its copy come from `locales/de-DE.ftl`, never from the
-/// English source catalogue beside it.
+/// German is one of the languages the app ships, and it reads in German: the name of the
+/// app and its copy come from `locales/de-DE.ftl`, never from the English source catalogue
+/// beside it.
 #[test]
 fn a_german_window_reads_the_activity_catalogue() {
     let catalogue = &activity::locales::CATALOG;

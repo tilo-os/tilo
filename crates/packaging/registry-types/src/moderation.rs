@@ -589,7 +589,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn moderation_records_bind_their_signatures_and_chain() {
-        // phase: signature_binds_role_expiry_and_body
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let mut request = sign(
@@ -612,7 +611,6 @@ mod tests {
                 Err(ModerationWireError::InvalidSignature)
             );
         }
-        // phase: transparency_chain_detects_edit
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let request = sign(
@@ -652,7 +650,6 @@ mod tests {
             event.package_id.push_str(".evil");
             assert!(verify_transparency_chain(&[event], "").is_err());
         }
-        // phase: verified_case_derives_status_and_rejects_forged_reviewer
         {
             let reporter = SigningKey::from_bytes(&[1; 32]);
             let owner = SigningKey::from_bytes(&[2; 32]);

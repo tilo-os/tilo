@@ -60,7 +60,7 @@ pub struct Review {
     pub opened: Vec<u64>,
 }
 
-#[resource(kind = "example.review", label = "Results")]
+#[resource(kind = "example.review")]
 impl Review {
     /// Open a row.
     #[action]

@@ -1,11 +1,6 @@
-//! Calls of the toolkit's components, the package `ui`: `ui.ListRow(title: n.title) { ... }`.
-//!
-//! Each call is checked against the component's description, which the toolkit generates from
-//! the widget's Rust definition: its props by name or position and type, its bindings, its
-//! slots and what they accept, and its events. A mistake is reported with the component's own
-//! doc text. The call lowers to one node of kind `ui.<Name>` whose props are named as the
-//! description names them; a named slot is a child `slot` node, and the block's other content
-//! fills the default slot as the node's own children.
+//! Calls of the toolkit's components, the package `ui`: `ui.ListRow(title: n.title) { ... }`. Each
+//! call is checked against the component's description, which the toolkit generates from the
+//! widget's Rust definition, and lowers to one node of kind `ui.<Name>`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,12 +17,10 @@ fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
 }
 
-/// `ui.ListRow`.
 fn shown(d: &Description) -> String {
     format!("`{}{}`", toolkit::KIND_PREFIX, d.name)
 }
 
-/// A part's doc text in a message: `: <first line>` or nothing.
 fn doc_of(doc: &str) -> String {
     let line = tilo_ui_graph::component::first_line(doc);
     if line.is_empty() {
@@ -37,7 +30,6 @@ fn doc_of(doc: &str) -> String {
     }
 }
 
-/// The names of a description's arguments, for messages.
 fn arguments(d: &Description) -> String {
     listed(
         d.props
@@ -57,16 +49,13 @@ fn listed(names: impl Iterator<Item = String>) -> String {
     }
 }
 
-/// The components whose actions a view places itself: what an item shows of them (its menu and
-/// its swipe) on an item's node, and the window's bar on its shell. The host puts what the view
-/// names where it names it, in that order, and everything else behind its own "More"; the
-/// palette, an agent and a program still offer every action however a view places them.
+/// The components whose actions a view places itself, and the order the host puts them in;
+/// everything else goes behind its own "More".
 const PLACES: [&str; 4] = ["ListItem", "TreeViewNode", "BoardCard", "NavShell"];
 
-/// The argument a view places actions with.
 const ACTIONS: &str = "actions";
 
-/// The toolkit's component a UI call names, when it names one: `ui.ListRow`.
+/// The toolkit's component a UI call names, when it names one.
 pub(super) fn component_of(c: &UiCall) -> Option<(&ast::Expr, &str)> {
     let callee = match &c.call.kind {
         ExprKind::Call { callee, .. } => callee,
@@ -79,7 +68,6 @@ pub(super) fn component_of(c: &UiCall) -> Option<(&ast::Expr, &str)> {
 }
 
 impl Checker<'_> {
-    /// The description a UI call of `ui.<name>` names, when `base` names the toolkit.
     pub(super) fn described(&self, base: &ast::Expr, name: &str) -> Option<&'static Description> {
         if !self.names_import(base) {
             return None;
@@ -88,7 +76,6 @@ impl Checker<'_> {
         self.env.component(&path, name)
     }
 
-    /// Whether `base` names the toolkit's package.
     pub(super) fn names_toolkit(&self, base: &ast::Expr) -> bool {
         self.names_import(base)
             && super::expr::dotted(base)
@@ -96,7 +83,6 @@ impl Checker<'_> {
                 .is_some_and(|import| import.app == toolkit::UI_APP)
     }
 
-    /// `ui.<name>` that the toolkit does not describe.
     pub(super) fn unknown_component(
         &mut self,
         name: &str,
@@ -119,8 +105,8 @@ impl Checker<'_> {
         self.dead_node()
     }
 
-    /// A primitive that is a component of the toolkit under a shorter name (`text` is
-    /// `ui.Text`): its call is that component's call, exactly.
+    /// A primitive that is a component of the toolkit under a shorter name (`text` is `ui.Text`): its
+    /// call is that component's call.
     pub(super) fn component_prim(
         &mut self,
         component: &str,
@@ -143,7 +129,6 @@ impl Checker<'_> {
         }
     }
 
-    /// A call of the component `d`: its node, with its props, bindings, slots and events.
     pub(super) fn component(
         &mut self,
         d: &'static Description,
@@ -157,7 +142,7 @@ impl Checker<'_> {
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
         // The actions a view places itself (`actions:`): read once the item they stand on is
-        // lowered, as what that item is is what the names are checked against.
+        // lowered.
         let places = PLACES.iter().any(|kind| *kind == d.name);
         let mut placement: Option<&ast::Expr> = None;
         for a in args {
@@ -218,8 +203,8 @@ impl Checker<'_> {
                 );
             }
         }
-        // A rich input's `@` drawer offers who can read what a mention names, however it is
-        // written; the conversation's own people it offers are the view's to give.
+        // A rich input's `@` drawer offers who can read what a mention names; the conversation's own
+        // people it offers are the view's to give.
         if d.name == "RichInput" && !given.contains("people") {
             self.drawer_props(n);
         }
@@ -229,11 +214,9 @@ impl Checker<'_> {
         n
     }
 
-    /// `actions:` on a node that places actions: the view names, in its order, the actions it
-    /// puts on what it shows — an item's menu and swipe, or the window's bar. The host puts each
-    /// where the view names it, in that order, with the group and the primacy the view gives it,
-    /// and everything else behind its own "More". A name the app does not declare, or one that
-    /// does not apply to what the node shows, is reported here, where the type is known.
+    /// `actions:` on a node that places actions: the view names, in order, the actions it puts on
+    /// what it shows. A name the app does not declare, or one that does not apply, is reported here,
+    /// where the type is known.
     fn placement_prop(
         &mut self,
         n: LocalId,
@@ -268,8 +251,7 @@ impl Checker<'_> {
     }
 
     /// What a node that places actions shows: the item of a row, a card or a tree node, or the
-    /// resource the view is of for a window's bar. `None` when it is not a local this can read
-    /// the type of, which places the actions by name alone.
+    /// resource the view is of.
     fn placed_item(&self, d: &Description, args: &[ast::Arg]) -> Option<Ty> {
         if d.name == "NavShell" {
             return self.st.subject.as_ref().map(|(_, ty)| ty.clone());
@@ -289,8 +271,8 @@ impl Checker<'_> {
         }
     }
 
-    /// One action a view places: the name it writes, with what it says of the action
-    /// (`group: "Due"`, `primary: true`), as the id the host matches its offers by.
+    /// One action a view places: the name it writes, with what it says of the action (`group: "Due"`,
+    /// `primary: true`).
     fn placed_entry(
         &mut self,
         at: &ast::Expr,
@@ -395,14 +377,11 @@ impl Checker<'_> {
         Some((id, group, primary))
     }
 
-    /// The names of the actions that apply to what `item` holds, for a message: the ones the
-    /// view could have placed.
     fn placing(&self, item: Option<&Ty>) -> String {
         listed(self.applicable(item).map(|c| c.name.clone()))
     }
 
-    /// The app's actions that apply to what `item` holds: the ones the view could have placed,
-    /// in the order the app declares them.
+    /// The app's actions that apply to what `item` holds, in the order the app declares them.
     fn applicable<'a>(
         &'a self,
         item: Option<&'a Ty>,
@@ -422,13 +401,12 @@ impl Checker<'_> {
         })
     }
 
-    /// `; did you mean `check`?` for a name that is not an action.
     fn near_action(&self, name: &str, item: Option<&Ty>) -> String {
         crate::diag::suggestion(name, self.applicable(item).map(|c| c.name.as_str()))
     }
 
-    /// The placement as the node holds it: each action's id, the group the view puts it in (none
-    /// for the action's own), and whether the view makes it the primary one.
+    /// The placement as the node holds it: each action's id, its group and whether the view makes it
+    /// primary.
     fn placed_list(&mut self, entries: Vec<(String, Option<String>, bool)>) -> Ex {
         let opt = Ty::Option(Box::new(Ty::Text));
         let entry = Ty::Tuple(vec![Ty::Text, opt.clone(), Ty::Bool]);
@@ -485,9 +463,8 @@ impl Checker<'_> {
         )
     }
 
-    /// One argument of a component call: a prop, a value the control shows given to it, a piece
-    /// of state, or a sizing argument of the node. The place a control edits is the `bind:` of
-    /// the call, never an argument of its own name.
+    /// One argument of a component call: a prop, a value the control shows, a piece of state, or a
+    /// sizing argument. The place a control edits is the `bind:` of the call.
     fn component_arg(
         &mut self,
         n: LocalId,
@@ -500,9 +477,8 @@ impl Checker<'_> {
             self.err("E096", value.span, msg);
             return;
         }
-        // `bind:` names the component's bindable value whatever it is called: the binding is the
-        // description's, its type and its merge. A component with several offers the one whose
-        // type the bound place has.
+        // `bind:` names the component's bindable value whatever it is called: its type and its merge
+        // are the description's.
         if name == "bind" && d.binding(name).is_none() {
             if d.bindings.is_empty() {
                 self.err(
@@ -519,16 +495,15 @@ impl Checker<'_> {
             return;
         }
         if let Some(p) = d.prop(name) {
-            // The literals a prop of words shows are the view's messages (i18n.md §2).
+            // The literals a prop of words shows are the view's messages.
             if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
                 self.mark_shown(value);
             }
             self.typed_prop(n, d, name, &p.ty, &p.doc, value, p.identity);
         } else if let Some(b) = d.binding(name) {
-            // A value the view does not hold (a device's volume, read from its reading) is
-            // given, not bound: the control shows it, and the person's change goes to the
-            // view's `on change(v)`, which asks whoever holds the value to change it. A place
-            // is never an argument: a control edits it through `bind:`, the one spelling.
+            // A value the view does not hold is given, not bound: the control shows it, and a change
+            // goes to the view's `on change(v)`. A place is never an argument: a control edits it
+            // through `bind:`.
             if d.event("change").is_some() && !self.is_place(value) {
                 self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
             } else {
@@ -569,9 +544,8 @@ impl Checker<'_> {
         }
     }
 
-    /// `bind:` of the component, bound to what `value` names: checked against its bindings' own
-    /// types, and the node carries the name of the one the bound place fits, which the host
-    /// merges under.
+    /// `bind:` bound to what `value` names, checked against the binding's types; the node carries the
+    /// name of the one the bound place fits.
     pub(super) fn binding_prop(
         &mut self,
         n: LocalId,
@@ -583,9 +557,8 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
         let enum_case = bindings.iter().any(|b| b.ty == Type::Enum);
-        // A control that declares `title` draws the resource's title when it edits it, as a
-        // document's large title is drawn; one that shows a placeholder takes it from the type
-        // when the call gives none.
+        // A control that declares `title` draws the resource's title when it edits it; one that shows
+        // a placeholder takes it from the type when the call gives none.
         let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
         let placeholder = !given.contains("placeholder")
             && d.prop("placeholder").is_some_and(|p| {
@@ -603,8 +576,8 @@ impl Checker<'_> {
         ));
     }
 
-    /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
-    /// view's state. Anything else is a value computed for the control to show.
+    /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the view's
+    /// state.
     fn is_place(&self, value: &ast::Expr) -> bool {
         match &value.kind {
             ExprKind::Ident(name) => self.state_named(name).is_some(),
@@ -613,7 +586,6 @@ impl Checker<'_> {
         }
     }
 
-    /// A value of type `ty` as the prop `name` of `n`.
     fn typed_prop(
         &mut self,
         n: LocalId,
@@ -625,8 +597,7 @@ impl Checker<'_> {
         identity: bool,
     ) {
         let node = Ex::local(n, Ty::View);
-        // A filter names the item it is: the host compares the prop's text with its siblings'
-        // keys, so the query the filter asks is what it is given.
+        // A filter names the item it is: the host compares the prop's text with its siblings' keys.
         let keyed =
             matches!(ty, Type::Text) || matches!(ty, Type::Option(inner) if **inner == Type::Text);
         if identity
@@ -702,14 +673,13 @@ impl Checker<'_> {
                 }
             }
             Type::List(_) | Type::Set(_) | Type::Map { .. } => {
-                // Cases are written `.arc(...)`: the elements are told their enum.
                 let want = names_cases(ty).then(|| lang_type(ty));
                 let v = self.expr(value, want.as_ref());
                 if v.ty.is_error() {
                     return;
                 }
-                // A list of records the view names is handed the collection itself, which the
-                // component offers record by record; every other list is a value of its own.
+                // A list of records the view names is handed the collection itself; every other list is
+                // a value of its own.
                 if let Ty::Collection(item) = &v.ty
                     && let Type::List(listed) | Type::Set(listed) = ty
                     && fits(listed, item)
@@ -720,8 +690,6 @@ impl Checker<'_> {
                     return;
                 }
                 if matches!(v.ty, Ty::Collection(_)) {
-                    // Not copied whole on every change, and not yet followed by the host
-                    // item by item: a view takes it live instead.
                     let t = self.show(&v.ty);
                     self.err(
                         "E020",
@@ -735,7 +703,6 @@ impl Checker<'_> {
                 } else if !fits(ty, &v.ty) {
                     mismatch(self, &v.ty);
                 } else if offers_actions(ty) {
-                    // Each action is shown by the component and run by an event of its node.
                     self.emit(host(Imp::UiActions, vec![node, Ex::str(name), v]));
                 } else {
                     self.arg_prop(node, name, v);
@@ -756,8 +723,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The collection `v`'s items as one list: what a prop of many takes, built item by item so
-    /// a collection is never copied where it stands.
+    /// The collection `v`'s items as one list, built item by item so a collection is never copied
+    /// where it stands.
     fn list_from(&mut self, v: Ex, item: Ty) -> Ex {
         let ty = Ty::List(Box::new(item.clone()));
         let out = self.fresh(ty.clone());
@@ -779,8 +746,7 @@ impl Checker<'_> {
         )
     }
 
-    /// The value of an identity prop, when it is a filter: `selected: place`, `ui.NavItem(Task.today)`.
-    /// A filter typed by name, or one a view state or a parameter holds. A value that is not one
+    /// The value of an identity prop, when it is a filter (`selected: place`). A value that is not one
     /// takes the prop's own path, unchanged.
     fn filter_shaped(&mut self, value: &ast::Expr) -> Option<Ex> {
         let named = |this: &Self, base: &ast::Expr, name: &ast::Ident| {
@@ -806,8 +772,8 @@ impl Checker<'_> {
         filters.then(|| self.expr(value, None))
     }
 
-    /// A prop that is one action offered to the person (`ui.NavSection(add: g.add)`): the node
-    /// holds it as its control shows it, and the node's event `name` runs it.
+    /// A prop that is one action offered to the person (`ui.NavSection(add: g.add)`): the node's event
+    /// `name` runs it.
     fn action_prop(
         &mut self,
         node: LocalId,
@@ -835,8 +801,7 @@ impl Checker<'_> {
         self.emit(host(Imp::UiAction, vec![n, Ex::str(name), v]));
     }
 
-    /// `image: "tilo-blob://<hash>"` or `image: a.photo`: a picture by where its bytes are, as
-    /// the node's prop of that name.
+    /// `image: "tilo-blob://<hash>"`: a picture by where its bytes are.
     fn picture_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
         let v = self.expr_as(e, &Ty::Text);
         if v.ty.is_error() {
@@ -848,8 +813,7 @@ impl Checker<'_> {
         ));
     }
 
-    /// Set the prop `name` to what the Option `v` holds, and leave it unset while it holds
-    /// nothing.
+    /// Set the prop `name` to what the Option `v` holds, and leave it unset while it holds nothing.
     pub(super) fn set_when_some(&mut self, node: &Ex, name: &str, v: Ex, held: &Ty, span: Span) {
         let ty = v.ty.clone();
         let tmp = self.fresh(ty.clone());
@@ -863,8 +827,8 @@ impl Checker<'_> {
         self.emit(Stmt::If(test, then, Vec::new()));
     }
 
-    /// `role: .title` or `role: if c { .title } else { .body }`: one of `cases`, held by the
-    /// prop as its name.
+    /// `role: .title` or `role: if c { .title } else { .body }`: one of `cases`, held by the prop as
+    /// its name.
     pub(super) fn case_value(
         &mut self,
         n: LocalId,
@@ -931,9 +895,6 @@ impl Checker<'_> {
                 }
             }
             _ => {
-                // A tone the view states is the tone its case's declaration gives it
-                // (`high (icon: .flag, tone: .warning)`): an enum value names the tone it
-                // holds, as a row's mark does.
                 let given = self.expr(e, None);
                 if choice == "Tone"
                     && matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
@@ -954,8 +915,7 @@ impl Checker<'_> {
         }
     }
 
-    /// The block of a component call: its named slots, its events, and the content of its
-    /// default slot.
+    /// The block of a component call: its named slots, its events, and the content of its default slot.
     fn component_block(
         &mut self,
         n: LocalId,
@@ -995,8 +955,8 @@ impl Checker<'_> {
             return;
         };
         self.slot_accepts(d, slot, &content);
-        // A component whose block gives a slot that only shows while the row stands open says so
-        // where it stands: the row offers to open into its document, which comes when it does.
+        // A component whose block gives a slot that only shows while the row stands open says so where
+        // it stands.
         if opens {
             self.emit(host(
                 Imp::UiPropI,
@@ -1007,17 +967,14 @@ impl Checker<'_> {
                 ],
             ));
         }
-        // A list inside a card is the card's summary of its resource: it shows the first rows.
         let outer = self.st.ui.in_card;
         self.st.ui.in_card |= d.name == "Card";
         self.child_block("slot", &content, n);
         self.st.ui.in_card = outer;
     }
 
-    /// `on <event>: <action>` in the block of the component `d`, whose node is `n`: the action
-    /// runs when the event fires. A primitive that is a component (`rich_input`) or builds one
-    /// (`button`) takes its events the same way: `ui.*` written out and the shorter name share
-    /// one contract.
+    /// `on <event>: <action>` in the block of the component `d`: the action runs when the event fires.
+    /// A shorter name that is a component shares one contract with `ui.*`.
     pub(super) fn component_event(
         &mut self,
         n: LocalId,
@@ -1053,11 +1010,8 @@ impl Checker<'_> {
         }
     }
 
-    /// What an event does: an action reference. An event that carries a value names it
-    /// (`on select(x: Note): open(x)`), and the action takes it as one of its arguments as it
-    /// is: the reference holds its place, and the host puts the value there when the event
-    /// happens. An event that also says where the value lands names that second (`on
-    /// drop(moved: Task, at: Int): place(moved, at)`). It is data still, never a closure.
+    /// What an event does: an action reference, which holds the value's place until the host puts it
+    /// there. An event that says where the value lands names that second. It is data, never a closure.
     fn event_action(
         &mut self,
         d: &Description,
@@ -1097,8 +1051,8 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // An event that says where its value lands carries `[value, at]`: each name takes
-        // its part. One that does not carries the value alone.
+        // An event that says where its value lands carries `[value, at]`; one that does not carries the
+        // value alone.
         let mut named = vec![(param, carried)];
         if let (Some(at), Some(where_)) = (at, &e.at) {
             named.push((at, where_));
@@ -1122,10 +1076,8 @@ impl Checker<'_> {
                 self.pop_sink();
                 return Ex::error();
             }
-            // A scalar is boxed until the event puts it in place, as view state read at the
-            // event is (`Self::arg_at_press`): the placeholder stands inside the box, so what
-            // the event carries lands where the box holds it and a slot that keeps it keeps it
-            // as it is read (`set(linking, open)` on a `Bool` state).
+            // A scalar is boxed until the event puts it in place, as view state read at the event is
+            // ([`Self::arg_at_press`]).
             let scalar = ty.is_scalar();
             let ty = if scalar { Ty::Option(Box::new(ty)) } else { ty };
             let local = self.declare(&p.name.name, ty.clone());
@@ -1154,8 +1106,6 @@ impl Checker<'_> {
         Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
     }
 
-    /// The type of the value `p` names, of the type `carried` the event gives: as written,
-    /// or the event's own; `None` once an error is reported.
     fn event_param_ty(
         &mut self,
         d: &Description,
@@ -1202,8 +1152,8 @@ impl Checker<'_> {
         Some(ty)
     }
 
-    /// `name: { ... }`: a `slot` node of `n`, named, holding the content. Whether the slot holds
-    /// the document a row opens into where it stands, which is rendered only while that row does.
+    /// `name: { ... }`: a named `slot` node of `n` holding the content; the document a row opens into
+    /// is rendered only while that row does.
     fn slot_content(
         &mut self,
         n: LocalId,
@@ -1238,8 +1188,8 @@ impl Checker<'_> {
             vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
         ));
         if slot.when_open {
-            // The document a row opens into is the row's only while it stands open: a closed
-            // row runs none of it, so a list of rows on screen costs the rows, not a page each.
+            // The document a row opens into is the row's only while it stands open: a list of rows costs
+            // the rows, not a page each.
             self.push_sink();
             self.child_block_of("slot", body, s, true);
             let document = self.pop_sink();
@@ -1255,8 +1205,7 @@ impl Checker<'_> {
         slot.when_open
     }
 
-    /// Check that `body` fits the slot: only the component it accepts, and one at most where
-    /// it holds one.
+    /// Checks that `body` fits the slot: only the component it accepts, and one at most.
     fn slot_accepts(
         &mut self,
         d: &Description,
@@ -1296,7 +1245,6 @@ impl Checker<'_> {
                     if !slot.accepts.reads_components() {
                         continue;
                     }
-                    // A view of this package whose body is the component is one too.
                     let own_view = match &c.call.kind {
                         ExprKind::Call { callee, .. } => match &callee.kind {
                             ExprKind::Ident(v) => self
@@ -1308,8 +1256,6 @@ impl Checker<'_> {
                         },
                         _ => false,
                     };
-                    // What the caller of a template gives the slot — its block or a view of
-                    // its own — is the component where it is written.
                     let from_caller = match &c.call.kind {
                         ExprKind::Call { callee, .. } => match &callee.kind {
                             ExprKind::Ident(v) => self.macro_slot(d, slot, v, calls),
@@ -1317,7 +1263,6 @@ impl Checker<'_> {
                         },
                         _ => false,
                     };
-                    // A template expanded here is the component its body makes, as a view is.
                     let from_template = match &c.call.kind {
                         ExprKind::Call { callee, .. } => match &callee.kind {
                             ExprKind::Field { base, name } => self
@@ -1365,8 +1310,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether `name`, a parameter of the template being expanded, fills `slot`: its block is
-    /// checked against the slot as if it stood there, and a view by what its body makes.
+    /// Whether `name`, a parameter of the template being expanded, fills `slot`: its block is checked
+    /// against the slot as if it stood there.
     fn macro_slot(
         &mut self,
         d: &Description,
@@ -1394,8 +1339,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether the caller's block fills `slot`: its body is written in the caller's scope, so
-    /// it is read there, as [`Self::apply_ui`] reads it.
+    /// Whether the caller's block fills `slot`: its body is written in the caller's scope, so it is
+    /// read there.
     fn slot_block(
         &mut self,
         d: &Description,
@@ -1417,8 +1362,8 @@ fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
         return false;
     };
     let names = [name];
-    // `open(x).then(read(x))`: each step passes the value as it is, or does not use it, and
-    // one of them passes it; the host puts it in every step's place.
+    // `open(x).then(read(x))`: each step passes the value as it is, or does not use it, and one of
+    // them passes it.
     if let ExprKind::Field { base, name: then } = &callee.kind
         && then.name == "then"
         && let [next] = args.as_slice()
@@ -1461,7 +1406,6 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
-/// Whether a value of `ty` shows text: text, or an option or list of it.
 pub(super) fn shows_text(ty: &Ty) -> bool {
     match ty {
         Ty::Text => true,
@@ -1470,7 +1414,6 @@ pub(super) fn shows_text(ty: &Ty) -> bool {
     }
 }
 
-/// Whether a prop of `ty` shows text: text, or an option or list of it.
 pub(super) fn shows_words(ty: &Type) -> bool {
     match ty {
         Type::Text => true,
@@ -1489,8 +1432,8 @@ fn names_cases(ty: &Type) -> bool {
     }
 }
 
-/// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time,
-/// or one that may be none.
+/// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time, or one
+/// that may be none.
 pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     match ty {
         Type::Text => vec![Ty::Text],
@@ -1510,8 +1453,8 @@ pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     }
 }
 
-/// Whether a binding described as `ty` takes a field of the language type `field`: a case
-/// binding takes a field of whichever enum the app declares, whose cases are the field's.
+/// Whether a binding described as `ty` takes a field of the language type `field`: a case binding
+/// takes a field of whichever enum the app declares.
 fn binds(ty: &Type, field: &Ty) -> bool {
     match ty {
         Type::Enum => matches!(field, Ty::Enum(_)),
@@ -1519,7 +1462,7 @@ fn binds(ty: &Type, field: &Ty) -> bool {
     }
 }
 
-/// The language's type of a description's scalar type, for checking literals against it.
+/// The language's type of a description's scalar type.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
         // A picture is named by where its bytes are, which is text.
@@ -1534,20 +1477,18 @@ fn lang_type(ty: &Type) -> Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
-        // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
+        // A `Cases` set is the `ui` package's enum of that name.
         Type::Cases { name } => Ty::Enum(toolkit::key(name)),
-        // A case is whichever enum the bound field declares, which a description does not name;
-        // a record is any of the app's types, which a description does not name either.
+        // A case is whichever enum the bound field declares; a record is any of the app's types.
         Type::Resource | Type::Link | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
     }
 }
 
-/// Whether a value of the language's type `found` fits a description's `ty`. Text takes a Date
-/// or a Time too, which the host shows the person's way.
+/// Whether a value of the language's type `found` fits a description's `ty`. Text takes a Date or a
+/// Time too, which the host shows the person's way.
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
-        // An option prop takes an optional value of its own too: the item a window holds open,
-        // or the selection it keeps.
+        // An option prop takes an optional value of its own too: the item a window holds open.
         (Type::Option(inner), Ty::Option(held)) => fits(inner, held),
         (Type::Option(inner), found) => fits(inner, found),
         // A list or a set takes either of the language's.

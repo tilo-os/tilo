@@ -16,3 +16,8 @@ localized-hint = Stelle die Systemsprache um, um diese App auf Englisch zu sehen
 localized-add-book = Ein Buch ins Regal gestellt
 localized-remove-book = Ein Buch aus dem Regal genommen
 localized-shelf-reader = Den Namen des Lesers geändert
+
+## What the record and its actions are called
+example-shelf = Regal
+example-shelf-add-book = Buch ins Regal stellen
+example-shelf-remove-book = Buch aus dem Regal nehmen

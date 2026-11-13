@@ -3,27 +3,26 @@
 //! Every change records the action it ran ([`crate::ActionContext::action`])
 //! so a receiver can replay it. An action whose payload is larger than the
 //! history budget (a paste with images inline) still records it: each long
-//! text or byte run of its payload is kept, sealed, in the content store the
-//! host lends ([`keep_content_in`]) on the device that invokes the action, and
-//! the recorded payload names it by the reference that store answered. Only
-//! the record's readers hold the key a reference carries; whoever stores or
-//! carries the part holds ciphertext.
-//! A receiver resolves those references from its content store before it
-//! replays; until the content arrives the change is held, as a change whose
-//! app surface has not arrived is. A receiver that applies the action itself
-//! (its envelope carries it whole) keeps each part exactly as its writer
-//! sealed it: the reference carries the key, so the same bytes seal to the
-//! same address.
+//! text or byte run of its payload is kept, sealed, in the content store of
+//! the window whose code records the action ([`register`]), and the recorded
+//! payload names it by the reference that store answered. Only the record's
+//! readers hold the key a reference carries; whoever stores or carries the
+//! part holds ciphertext. Where no store would keep a part, the action is
+//! refused rather than recorded naming content nothing holds.
+//!
+//! A receiver resolves those references from its own content store before it
+//! replays: the record's ([`crate::ActionRegistry`] keeps it), which asks the
+//! record's route and holds the change until the part arrives, as it holds
+//! one whose app surface has not.
 //!
 //! A reference is the JSON object `{"tilo.content/1": "<reference>", "as":
 //! "text" | "bytes" | "json"}` in place of the string, byte array, or
 //! array or object (a long list of small parts: a pasted book's
 //! paragraphs) it stands for.
 
-use std::collections::BTreeMap;
-
 use serde_json::{Map, Value};
 use tilo_content::ContentStore;
+use tilo_wake::WakeHandle;
 
 use crate::{ActionError, EncodedAction};
 
@@ -44,116 +43,109 @@ pub struct MissingContent(pub String);
 
 /// The parts of a recorded action kept as content: each part's bytes, by the
 /// reference the recorded action names it by.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ContentParts {
-    entries: BTreeMap<String, Vec<u8>>,
-}
-
-impl ContentParts {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn get(&self, reference: &str) -> Option<&[u8]> {
-        self.entries.get(reference).map(Vec::as_slice)
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl IntoIterator for ContentParts {
-    type Item = (String, Vec<u8>);
-    type IntoIter = std::collections::btree_map::IntoIter<String, Vec<u8>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.entries.into_iter()
-    }
-}
+pub type ContentParts = Vec<(String, Vec<u8>)>;
 
 thread_local! {
-    static STORE: std::cell::RefCell<Option<ContentStore>> = const { std::cell::RefCell::new(None) };
+    /// The content stores of this process's windows, by the wake scope their
+    /// code runs in.
+    static WINDOW_STORES: std::cell::RefCell<Vec<(WakeHandle, ContentStore)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Keep the large parts of the actions this thread records in `store` (the
-/// window's content store, which seals what it keeps), and read the parts a
-/// received change names from it, so recorded actions replay wherever their
-/// content reaches. The host sets it once per thread that runs actions.
-pub fn keep_content_in(store: ContentStore) {
-    STORE.with(|current| *current.borrow_mut() = Some(store));
+/// Keep `store` as the content store of the window whose wake scope `window`
+/// names: where the large parts of the actions its code records are kept,
+/// sealed, and where a recorded action's parts are read from, so recorded
+/// actions replay wherever their content reaches. The host sets it once per
+/// window, with the store it lent the window
+/// ([`crate::ActionRegistry::connect_content`]); windows that closed are
+/// forgotten.
+pub fn register(window: &WakeHandle, store: ContentStore) {
+    WINDOW_STORES.with(|stores| {
+        let mut stores = stores.borrow_mut();
+        stores.retain(|(handle, _)| handle.is_active() && !handle.same_open_scope(window));
+        stores.push((window.clone(), store));
+    });
 }
 
-/// The content `reference` names, from this thread's store.
-pub(crate) fn read_here(reference: &str) -> Option<Vec<u8>> {
-    STORE.with(|store| {
-        store
+/// The content store of the window whose code is running: the one registered
+/// for the wake scope entered now. `None` outside a window, or for one whose
+/// host lent no store.
+#[must_use]
+pub fn current() -> Option<ContentStore> {
+    let here = WakeHandle::new();
+    WINDOW_STORES.with(|stores| {
+        stores
             .borrow()
-            .as_ref()
-            .and_then(|store| store.read(reference))
+            .iter()
+            .find(|(handle, _)| handle.same_open_scope(&here))
+            .map(|(_, store)| store.clone())
     })
 }
 
-/// Keep `bytes` in this thread's store, answering the reference the
-/// recorded action names them by: sealed under a key of their own when the
-/// store seals. Without a store, their plain address, and nothing keeps them.
+/// The store this thread's window records its actions in: the entered scope's
+/// ([`current`]), else the last one this thread registered for a window. A
+/// window's callback runs on its own thread and may dispatch an action
+/// outside the scope its toolkit enters for a pass; what it records is still
+/// that window's.
+pub(crate) fn recording_store() -> Option<ContentStore> {
+    current().or_else(|| {
+        WINDOW_STORES.with(|stores| stores.borrow().last().map(|(_, store)| store.clone()))
+    })
+}
+
+/// Keep `bytes` in the content store of the window whose code records them,
+/// answering the reference the recorded action names them by: sealed under a
+/// key of their own when the store seals. Where no store keeps content, the
+/// action is refused rather than recorded with a reference nothing holds.
 fn put_here(bytes: &[u8]) -> Result<String, ActionError> {
-    STORE.with(|store| match store.borrow().as_ref() {
-        Some(store) => store.put(bytes).map_err(|error| {
-            ActionError::Refused(format!(
-                "a large part of the action could not be kept: {error}"
-            ))
-        }),
-        None => Ok(tilo_content::hash_bytes(bytes)),
+    let Some(store) = recording_store() else {
+        return Err(ActionError::Refused(format!(
+            "a large part of the action ({} bytes) would be lost: no content store keeps content \
+             where the action is recorded",
+            bytes.len()
+        )));
+    };
+    store.put(bytes).map_err(|error| {
+        ActionError::Refused(format!(
+            "a large part of the action could not be kept: {error}"
+        ))
     })
 }
 
-/// Keep, in this thread's store, the parts `env`'s recorded action names,
-/// sealed exactly as its writer sealed them: what a device that applies a
-/// received action holds of it afterwards.
-pub(crate) fn keep(env: &crate::ActionEnvelope) {
+/// Keep, in `store` — the content store of the record whose action `env`
+/// applies, or the running window's when none is named — the parts `env`'s
+/// recorded action names, sealed exactly as its writer sealed them: what a
+/// device that applies a received action holds of it afterwards.
+pub(crate) fn keep(env: &crate::ActionEnvelope, store: Option<&ContentStore>) {
     let Ok(content) = env.recorded_content() else {
         return;
     };
-    STORE.with(|store| {
-        let Some(store) = store.borrow().clone() else {
-            return;
-        };
-        for (reference, bytes) in content {
-            if store.has(&reference) {
-                continue;
-            }
-            if let Err(error) = store.put_as(&reference, &bytes) {
-                tracing::warn!(%error, "an action's content could not be kept");
-            }
+    let Some(store) = store.cloned().or_else(recording_store) else {
+        return;
+    };
+    for (reference, bytes) in content {
+        if store.has(&reference) {
+            continue;
         }
-    });
+        if let Err(error) = store.put_as(&reference, &bytes) {
+            tracing::warn!(%error, "an action's content could not be kept");
+        }
+    }
 }
 
 impl EncodedAction {
     /// This action as its change records it: every text or byte run of at
     /// least `threshold` bytes, and every long list of small parts, kept as
-    /// content in this thread's store ([`keep_content_in`]) and named by the
-    /// reference it answered. Run once, where the action is invoked: a
-    /// sealing store draws a fresh key for each part.
+    /// content in the store of the window whose code records it
+    /// ([`register`]) and named by the reference it answered. Run once,
+    /// where the action is invoked: a sealing store draws a fresh key for
+    /// each part.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::Refused`] when a part has nowhere to be kept: a
+    /// reference nothing holds would lose it.
     pub(crate) fn with_content_parts(&self, threshold: usize) -> Result<Self, ActionError> {
-        self.with_content_parts_in(threshold, &mut put_here)
-    }
-
-    /// [`Self::with_content_parts`], each part kept by `put`.
-    pub fn with_content_parts_in(
-        &self,
-        threshold: usize,
-        put: &mut dyn FnMut(&[u8]) -> Result<String, ActionError>,
-    ) -> Result<Self, ActionError> {
         let mut value = self.payload_value()?;
         if holds_reserved(&value) {
             return Err(reserved());
@@ -162,15 +154,17 @@ impl EncodedAction {
         match &mut value {
             Value::Object(object) => {
                 for item in object.values_mut() {
-                    externalize(item, threshold, put)?;
+                    externalize(item, threshold)?;
                 }
             }
             Value::Array(items) => {
                 for item in items {
-                    externalize(item, threshold, put)?;
+                    externalize(item, threshold)?;
                 }
             }
-            other => externalize(other, threshold, put)?,
+            other => {
+                externalize(other, threshold)?;
+            }
         }
         let payload = serde_json::to_vec(&value).map_err(ActionError::Encode)?;
         Ok(Self {
@@ -206,7 +200,6 @@ impl EncodedAction {
         let mut parts = ContentParts::new();
         pair(&recorded, &ran, &mut parts).then_some(())?;
         parts
-            .entries
             .iter()
             .all(|(reference, bytes)| tilo_content::names(reference, bytes))
             .then_some(parts)
@@ -268,56 +261,46 @@ fn holds_reserved(value: &Value) -> bool {
     }
 }
 
-/// Whether `value` holds a text or byte run kept on its own.
-fn holds_run(value: &Value, threshold: usize) -> bool {
-    match value {
-        Value::String(text) => text.len() >= threshold,
-        Value::Array(items) => {
-            (items.len() >= threshold && byte_run(items).is_some())
-                || items.iter().any(|item| holds_run(item, threshold))
-        }
-        Value::Object(object) => object.values().any(|item| holds_run(item, threshold)),
-        _ => false,
-    }
-}
-
-fn externalize(
-    value: &mut Value,
-    threshold: usize,
-    put: &mut dyn FnMut(&[u8]) -> Result<String, ActionError>,
-) -> Result<(), ActionError> {
+/// Keep each text or byte run of `value` that is at least `threshold` bytes
+/// as content, answering whether it kept one here or below.
+fn externalize(value: &mut Value, threshold: usize) -> Result<bool, ActionError> {
     match value {
         Value::String(text) if text.len() >= threshold => {
-            *value = reference(put(text.as_bytes())?, TEXT);
+            *value = reference(put_here(text.as_bytes())?, TEXT);
+            return Ok(true);
         }
-        Value::Array(items) if items.len() >= threshold && byte_run(items).is_some() => {
-            let bytes = byte_run(items).unwrap_or_default();
-            *value = reference(put(&bytes)?, BYTES);
-        }
-        Value::Array(_) | Value::Object(_) if holds_run(value, threshold) => match value {
-            Value::Array(items) => {
-                for item in items {
-                    externalize(item, threshold, put)?;
-                }
+        Value::Array(items) => {
+            if let Some(bytes) = byte_run(items).filter(|bytes| bytes.len() >= threshold) {
+                *value = reference(put_here(&bytes)?, BYTES);
+                return Ok(true);
             }
-            Value::Object(object) => {
-                for item in object.values_mut() {
-                    externalize(item, threshold, put)?;
-                }
+            let mut kept = false;
+            for item in items {
+                kept |= externalize(item, threshold)?;
             }
-            _ => {}
-        },
-        // A long list of small parts is long all the same: kept whole, as
-        // it is, so its bytes follow from the action alone.
-        Value::Array(_) | Value::Object(_) => {
-            let encoded = serde_json::to_vec(value).map_err(ActionError::Encode)?;
-            if encoded.len() >= threshold {
-                *value = reference(put(&encoded)?, JSON);
+            if kept {
+                return Ok(true);
             }
         }
-        _ => {}
+        Value::Object(object) => {
+            let mut kept = false;
+            for item in object.values_mut() {
+                kept |= externalize(item, threshold)?;
+            }
+            if kept {
+                return Ok(true);
+            }
+        }
+        _ => return Ok(false),
     }
-    Ok(())
+    // A long list of small parts is long all the same: kept whole, as it is,
+    // so its bytes follow from the action alone.
+    let encoded = serde_json::to_vec(value).map_err(ActionError::Encode)?;
+    if encoded.len() >= threshold {
+        *value = reference(put_here(&encoded)?, JSON);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The reference and kind of a content reference.
@@ -362,7 +345,7 @@ fn pair(recorded: &Value, ran: &Value, parts: &mut ContentParts) -> bool {
                 },
                 _ => return false,
             };
-            parts.entries.insert(reference.to_owned(), bytes);
+            parts.push((reference.to_owned(), bytes));
             true
         }
         (Value::Object(recorded), Value::Object(ran)) => {
@@ -432,13 +415,13 @@ mod tests {
         }
     }
 
-    /// `action` recorded with its parts kept, sealed, in `store`.
+    /// `action` as a window whose content store is `store` records it: its
+    /// parts kept, sealed, in that store.
     fn recorded(action: &EncodedAction, store: &ContentStore) -> EncodedAction {
-        action
-            .with_content_parts_in(CONTENT_PART_THRESHOLD, &mut |bytes| {
-                Ok(store.put(bytes).unwrap())
-            })
-            .unwrap()
+        let window = tilo_wake::WakeScope::new();
+        register(&window.handle(), store.clone());
+        let _in_the_window = window.enter();
+        action.with_content_parts(CONTENT_PART_THRESHOLD).unwrap()
     }
 
     fn read(store: &ContentStore) -> impl Fn(&str) -> Option<Vec<u8>> + '_ {

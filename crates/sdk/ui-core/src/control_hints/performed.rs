@@ -1,18 +1,13 @@
-//! What the person just did with the desktop's own controls, as the
-//! widgets that carried it out report it.
-//!
-//! The control that performs a gesture says so once, where it commits
-//! (a window's bar let go at its new place, an edge let go at its new
-//! width, the canvas let go after a drag): every host then reads the same
-//! account, whichever of them drew the control. Only what the person did
-//! by hand is noted, never a sync, a script or a shortcut's result.
+//! What the person just did with the desktop controls, as the widgets that carried it out report it.
+//! The control that performs a gesture says so once, where it commits (a window's bar let go at its new
+//! place, an edge let go at its new width, the canvas let go after a drag): every host then reads the
+//! same account, whichever of them drew the control.
 
 use std::cell::RefCell;
 
 /// A control the person used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Performed {
-    /// Opened search.
     OpenedSearch,
     /// Opened a window (an app) from search or a launcher.
     OpenedWindow,
@@ -34,7 +29,6 @@ thread_local! {
 pub fn note(what: Performed) {
     PERFORMED.with(|log| {
         let mut log = log.borrow_mut();
-        // A host that reads rarely still hears each kind once.
         if !log.contains(&what) {
             log.push(what);
         }

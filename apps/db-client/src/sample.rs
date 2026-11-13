@@ -1,17 +1,10 @@
 //! The sample database — a compact music-catalog schema in the spirit of
 //! the well-known "chinook" example — that the screenshot scenarios and
 //! tests open, and the starter queries the editor's snippets menu offers.
-//!
-//! The schema deliberately exercises every feature of the UI: primary keys,
-//! foreign keys, secondary indexes, `NULLable` columns, a view, and a mix of
-//! integer / text / real / datetime types so the type icons and NULL styling
-//! have something to show.
 
 #[cfg(feature = "samples")]
 use rusqlite::Connection;
 
-/// Create the sample schema and populate it. Idempotent enough for an
-/// in-memory handle (it assumes a fresh, empty database).
 #[cfg(feature = "samples")]
 pub fn seed(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
@@ -148,7 +141,6 @@ INSERT INTO invoices (invoice_id, customer_id, invoice_date, total) VALUES
 ";
 
 /// A few starter queries surfaced in the editor's "snippets" menu so a
-/// first-time user can run something interesting immediately.
 pub fn starter_queries() -> &'static [(&'static str, &'static str)] {
     &[
         (

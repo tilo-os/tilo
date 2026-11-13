@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::webview::WebViewEvent;
 
-/// Extension `id`'s sign-in, when its page is a web page of a bounded
-/// length and the host numbered it as it numbers tabs' requests.
+/// Extension `id`'s sign-in, when its page is a web page of a bounded length and the host
+/// numbered it as it numbers tabs' requests.
 pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
     let url = value["url"].as_str().filter(|url| {
         url.len() <= 8192

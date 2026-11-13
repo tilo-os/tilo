@@ -1,10 +1,5 @@
 //! The dialogs the workspace presents: the new-connection form and the
 //! confirmation before a statement that changes data runs.
-//!
-//! Both are the toolkit's [`ModalDialog`]. The form's fields are local state
-//! the dialog's actions read, so the field set can change with the engine (a
-//! file for `SQLite`; host, port, database, user and password for the network
-//! engines) without the dialog keeping hold of any of them.
 
 use ui::LocalState;
 use ui::TextRole;
@@ -25,7 +20,6 @@ fn engine_at(index: usize) -> Engine {
     ENGINES.get(index).copied().unwrap_or(Engine::Postgres)
 }
 
-/// What the person typed. Clones share the same values.
 #[derive(Clone)]
 pub struct Fields {
     engine: LocalState<usize>,
@@ -72,7 +66,6 @@ impl Fields {
     }
 
     /// Switch engine. A network engine keeps the port the person typed and
-    /// otherwise takes its own usual one.
     fn choose(&self, engine: Engine) {
         let previous = self.engine();
         let index = ENGINES.iter().position(|candidate| *candidate == engine);
@@ -244,7 +237,6 @@ impl Decorator for ConnectForm {
 }
 
 /// The new-connection dialog, open on a blank connection, and the values it
-/// reads. A dialog lasts as long as it is open: the next one starts blank.
 fn connect_dialog_with_fields(link: &Link) -> (ModalDialog<ConnectForm>, Fields) {
     let fields = Fields::new();
     let save = fields.clone();
@@ -327,7 +319,6 @@ pub(crate) mod tests {
         unreachable!("no field named {label} took the keyboard");
     }
 
-    /// Tab moves typing from field to field, and the values the fields hold become the profile.
     #[test]
     fn the_form_takes_typing_in_the_focused_field() {
         let link = Link::new();

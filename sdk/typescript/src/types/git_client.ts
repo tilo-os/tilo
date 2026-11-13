@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.git-client@34cdca9d43811cee";
+
 export interface Branch {
   name: string;
   is_head: boolean;
@@ -110,6 +115,6 @@ export interface Repo extends tilo.Resource {
 
 /** The `git_client.repo` kind at `path`. */
 export function repo(ws: tilo.Workspace, path: string): Repo {
-  return resourceProxy(ws, path) as unknown as Repo;
+  return resourceProxy(ws, path, SURFACE) as unknown as Repo;
 }
 

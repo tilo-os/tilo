@@ -7,8 +7,8 @@ use crate::widget::{AvatarProps, Element};
 use super::{Leading, ListRow};
 use crate::widget::Tone;
 
-/// A row of a list: what an item is, in one line, with the start of its content under it and a
-/// quiet fact on its trailing edge. Pressing it activates it: a list opens what it shows.
+/// A row of a list: what an item is, in one line, with the start of its content under it
+/// and a quiet fact on its trailing edge.
 #[derive(Component, Default)]
 #[component(
     name = "ListRow",
@@ -23,22 +23,20 @@ pub struct ListRowProps {
     /// What the item is: its title. A row that names none shows its item's.
     #[component(positional)]
     pub title: String,
-    /// A quiet word before the title, on the same line and in the weaker ink: where an item came
-    /// from, what it answers. The title shares its line, so a row that says one takes the room
-    /// left after it.
+    /// A quiet word before the title, on the same line and in the weaker ink: where an item
+    /// came from, what it answers.
     pub prefix: Option<String>,
     /// The resource the row shows, which activating the row opens.
     pub item: Option<ResourceId>,
     /// The line under the title: the start of the item's content, the last message.
     pub secondary: Option<String>,
-    /// A line of the row's own under its text: what waits on the item and is not its content,
-    /// as a proposal about it reads ("Suggested: move this to the end"). One line, elided;
-    /// empty shows nothing.
+    /// A line of the row's own under its text: what waits on the item and is not its
+    /// content, as a proposal about it reads ("Suggested: move this to the end").
     pub note: Option<String>,
     /// When it happened or is due: the first fact of the row's facts column.
     pub meta: Option<String>,
     /// The tone the trailing fact reads in, where the item it states has one: a day gone by
-    /// is overdue. The UI host reads it off the day itself, as the one presenter gives it.
+    /// is overdue.
     pub meta_tone: Tone,
     /// The item's figure among its facts, as a setting shows it.
     pub value: Option<String>,
@@ -47,7 +45,7 @@ pub struct ListRowProps {
     /// A mark on the row's edge, after every other fact: pinned, starred, an item's priority.
     pub mark: Option<Icon>,
     /// The tone the mark and the row's checkbox ring read in: the item's priority, a theme
-    /// role rather than a colour. `Neutral` draws them as the row's quiet ink.
+    /// role rather than a colour.
     pub tone: Tone,
     /// A glyph in the leading column: what kind of item it is.
     pub icon: Option<Icon>,
@@ -60,25 +58,24 @@ pub struct ListRowProps {
     /// A control on the trailing edge, which moves under the text when the row is narrow.
     #[component(slot)]
     pub trailing: Option<Element>,
-    /// A checkbox in the leading column, bound to whether the item is done. A press on it asks
-    /// the row's `check`, when it names one, instead of changing what it is bound to.
+    /// A checkbox in the leading column, bound to whether the item is done.
     #[component(bind)]
     pub checkbox: Option<Bound<bool>>,
-    /// The checkbox was pressed: what a check is, in the app's words. A task and every step
-    /// under it are done in one thing to undo; with no `check`, a press changes the bound value.
+    /// The checkbox was pressed: what a check is, in the app's words.
     #[component(event(press))]
     pub check: Event,
-    /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
-    /// leaving and changing places in its list. Unset, the theme's.
+    /// The pace the row's own motion plays at: its mark coming and going, and the row
+    /// arriving, leaving and changing places in its list.
     pub motion: Option<crate::motion::Feel>,
-    /// The row stands dense: one quiet line at the caption's size with the small glyph, as tall
-    /// as that line and its inset, for a reference under content rather than a list of items.
+    /// The row stands dense: one quiet line at the caption's size with the small glyph, as
+    /// tall as that line and its inset, for a reference under content rather than a list of
+    /// items.
     pub dense: bool,
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
     #[component(event(press))]
     pub activate: Event,
-    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as an
-    /// outline's quieter branch does.
+    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as
+    /// an outline's quieter branch does.
     pub quiet: bool,
 }
 
@@ -126,8 +123,8 @@ impl Described for ListRow {
         row
     }
 
-    /// The texts, marks and selection change in place; a row whose leading column or trailing
-    /// control changes shape is built again.
+    /// The texts, marks and selection change in place; a row whose leading column or
+    /// trailing control changes shape is built again.
     fn set_props(&mut self, props: ListRowProps) -> bool {
         if props.trailing.is_some()
             || self.trailing.is_some()
@@ -178,9 +175,7 @@ fn props_kind(props: &ListRowProps) -> Kind {
 }
 
 impl ListRow {
-    /// Take every described part of `props`. The leading column shows one of them, in this
-    /// order of precedence: the checkbox, the badge, the icon. The avatar is a fact of the
-    /// facts column, and its room is kept there.
+    /// Take every described part of `props`.
     #[allow(
         clippy::too_many_lines,
         reason = "the props of a row are taken into the row in one place, in their own order"
@@ -286,8 +281,8 @@ pub struct SwipeActionProps {
     /// What it does, in a word or two.
     #[component(required, positional)]
     pub label: String,
-    /// The glyph the swipe uncovers: a bin for a destructive command and a check for another,
-    /// unless said.
+    /// The glyph the swipe uncovers: a bin for a destructive command and a check for
+    /// another, unless said.
     pub icon: Option<Icon>,
     /// It takes something away: drawn as destructive, and undone rather than confirmed.
     pub destructive: bool,

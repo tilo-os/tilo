@@ -234,6 +234,10 @@ struct Opened {
     document: AutoCommit,
     /// The bytes the last whole capture of `document` handed out, and the heads they stand at.
     captured: Option<(Vec<u8>, Vec<ChangeHash>)>,
+    /// Writes opened and read without, each stuck behind a change its writer never sent, by their
+    /// place in the history: tried again on every read, so one whose base turns up after all is
+    /// taken in.
+    stuck: Vec<(usize, collab_types::DocumentMutation)>,
 }
 
 impl Opened {
@@ -326,9 +330,8 @@ impl StatePeer {
         let member = self
             .permissions(reader, now)
             .map_err(PeerDocumentReadError::Membership)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         if !super::backend::access::document_read(
-            &member.authority(&bound),
+            &member.authority(),
             &self.core.workspace,
             app,
             record,
@@ -424,6 +427,7 @@ fn open_history<'a>(
             size: base,
             transfers: crate::document_frame::Transfers::default(),
             captured: None,
+            stuck: Vec::new(),
             document: match &document.covered_snapshot {
                 Some(base) => base
                     .decoded()
@@ -459,16 +463,49 @@ fn open_history<'a>(
     // Admission order may differ from causal order on a keyless replica. A
     // write whose sequences the record already holds is folded away: the
     // record cannot carry both changes of one writer's sequence, and the
-    // capture carries the change that reached it first.
-    let (merged, left) = super::sealed_compaction::merge_writes(
+    // capture carries the change that reached it first. A write stuck behind
+    // a change its own writer never sent is read without: no device will ever
+    // send what it waits for, and refusing the record for it refused every
+    // reader the whole record for good.
+    let signed: Vec<super::unsent_bases::Signed> = document
+        .sealed
+        .iter()
+        .map(|op| super::unsent_bases::Signed {
+            author: *op.author.as_bytes(),
+            seq: op.seq,
+        })
+        .collect();
+    let signers = super::sealed_compaction::Signers {
+        of: &|index| signed.get(index).copied(),
+        held: &|| super::unsent_bases::HeldThrough::of(document),
+    };
+    let (mut merged, left) = super::sealed_compaction::merge_writes(
         opened.document,
         writes,
         super::sealed_compaction::LeftOut::Named,
+        Some(&signers),
     )
     .map_err(PeerDocumentReadError::Opening)?;
-    for (_, reason) in left {
+    // A write read without before stays so until what it builds on is here: only its arrival
+    // changes that, and the merge tells it.
+    let mut stuck = Vec::new();
+    for (index, mutation) in std::mem::take(&mut opened.stuck) {
+        match super::sealed_compaction::merge_write(&mut merged, &mutation) {
+            super::sealed_compaction::WriteMerge::Waiting => stuck.push((index, mutation)),
+            super::sealed_compaction::WriteMerge::Applied
+            | super::sealed_compaction::WriteMerge::AlreadyHeld { .. } => {}
+            super::sealed_compaction::WriteMerge::Refused(why) => {
+                return Err(PeerDocumentReadError::Opening(why));
+            }
+        }
+    }
+    opened.stuck = stuck;
+    for (index, reason, mutation) in left {
         match reason {
             super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
+            super::sealed_compaction::UnmergedReason::BehindUnsent { .. } => {
+                opened.stuck.push((index, mutation));
+            }
             super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
                 return Err(PeerDocumentReadError::Incomplete);
             }

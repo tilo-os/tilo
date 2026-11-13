@@ -23,6 +23,7 @@ __all__ = [
 
 class Defaults(Resource):
     """Print Centre — `print-centre.defaults`."""
+    __surface__ = "so.tilo.print-centre@6466f33654445572"
     two_sided: bool
     scan_resolution: int
     scan_color: str

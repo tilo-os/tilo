@@ -1,6 +1,5 @@
-//! The hint's card: lit in the person's own colour, a soft glow of it
-//! around, the gesture's picture, a few words and the keys, and a notch
-//! pointing at where the gesture is done.
+//! The hint's card: lit in the person colour, a soft glow of it around, the gesture's picture, a few
+//! words and the keys, and a notch pointing at where the gesture is done.
 
 use super::Gesture;
 use super::art::{self, Ink};
@@ -15,16 +14,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill, Gradient};
 
-/// The picture's tile.
 const TILE_W: f64 = 60.0;
 const TILE_H: f64 = 40.0;
 /// Around the tile, and the card's corner: concentric with the tile's.
 pub(super) const PAD: f64 = 8.0;
 const TILE_RADIUS: f64 = 9.0;
 pub(super) const RADIUS: f64 = PAD + TILE_RADIUS;
-/// Between the tile and the words, and the words and the keys.
 const GAP: f64 = 12.0;
-/// After the last thing on the card.
 const END: f64 = 16.0;
 /// The notch pointing at the anchor: its width at the card and its depth.
 pub(super) const NOTCH_W: f64 = 16.0;
@@ -32,15 +28,12 @@ pub(super) const NOTCH_D: f64 = 7.0;
 /// Below this contrast against its ink the card's colour moves in
 /// lightness until it reads (body text, WCAG AA).
 const INK_CONTRAST: f64 = 4.5;
-/// How far the glow reaches past the card.
 const GLOW_BLUR: f32 = 26.0;
 
-/// The colours one card is drawn in, from the person's colour and the
-/// theme.
+/// The colours one card is drawn in, from the person's colour and the theme.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Look {
-    /// The card's colour: the person's, moved in lightness only as far as
-    /// its words need.
+    /// The card's colour: the person's, moved in lightness only as far as its words need.
     pub fill: Color,
     /// Lighter, toward the card's top, where it is lit from.
     pub lit: Color,
@@ -53,13 +46,9 @@ pub(super) struct Look {
 }
 
 impl Look {
-    /// The card for a person whose colour is `person` (as the theme's
-    /// presence palette paints it).
+    /// The card for a person whose colour is `person` (as the theme's presence palette paints it).
     pub fn of(person: Color, theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
-        // The card reads as the inverse of the ground it stands on: dark
-        // words on a bright card over a dark desktop, light words on a deep
-        // card over a light one.
         let ink = colors.surfaces.content;
         let source = Oklch::from_color(person);
         let ink_l = Oklch::from_color(ink).l;
@@ -102,8 +91,6 @@ fn words_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).with_weight(TextWeight::Semibold)
 }
 
-/// The bar's pill keeps this far from its ends, and from its top and foot: a line tall, with the
-/// words and the keys alone and no picture, that fits the bar beside its clock.
 const BAR_PAD_X: f64 = 12.0;
 const BAR_PAD_Y: f64 = 3.0;
 
@@ -130,7 +117,7 @@ pub(super) fn size(
     (PAD + TILE_W + GAP + words + END, TILE_H + 2.0 * PAD)
 }
 
-/// The corner a card of `rect` is drawn with: the card's own, but never more than half its height
+/// The corner a card of `rect` is drawn with: the card, but never more than half its height
 /// (a card a line tall is a pill), nor than half its width.
 pub(super) fn radius(rect: Rect) -> f64 {
     RADIUS.min(rect.width() / 2.0).min(rect.height() / 2.0)
@@ -147,12 +134,12 @@ pub(super) fn dot_centre(rect: Rect, in_bar: bool) -> Point {
 /// One painted frame of a card.
 pub(super) struct Frame<'a> {
     pub rect: Rect,
-    /// The side of the card its anchor is on, and where along that side
-    /// the notch points, `None` for no notch.
+    /// The side of the card its anchor is on, and where along that side the notch points, `None` for no
+    /// notch.
     pub notch: Option<(PopoverSide, f64)>,
     pub look: Look,
     pub contents: Contents<'a>,
-    /// The card stands in the bar beside its clock: a pill holding the words and keys alone.
+    /// The card is in the bar beside its clock: a pill holding the words and keys alone.
     pub in_bar: bool,
     /// Where the picture is in its loop.
     pub phase: f64,
@@ -166,12 +153,11 @@ pub(super) struct Frame<'a> {
     pub pulse: Option<(f64, f32)>,
 }
 
-/// The card's outline with its notch, one closed path: the notch grows out
-/// of the edge it stands on, so the outline's stroke runs round it.
+/// The card's outline with its notch, one closed path: the notch grows out of the edge it sits on, so
+/// the outline's stroke runs round it.
 pub(super) fn outline(rect: Rect, notch: Option<(PopoverSide, f64)>) -> BezPath {
     let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
     let r = radius(rect);
-    // A circular quarter as a cubic.
     let k = 0.552_284_8 * r;
     let half = NOTCH_W / 2.0;
     let along_x = |at: f64| at.clamp(x0 + r + half, (x1 - r - half).max(x0 + r + half));
@@ -238,10 +224,6 @@ pub(super) fn paint(
         transform,
         &rect.inflate(80.0, 80.0),
     );
-    // The halo in the person's colour, and a contact shadow at the foot
-    // that holds the card off light grounds. A card standing in the bar holds
-    // neither: it is part of the bar, and its halo would spill over the clock
-    // and the controls it stands beside.
     if !frame.in_bar {
         scene.draw_blurred_rounded_rect(
             transform,
@@ -272,7 +254,6 @@ pub(super) fn paint(
     let gradient = Gradient::new_linear((rect.x0, rect.y0), (rect.x0, rect.y1))
         .with_stops([look.lit, look.fill, look.deep].as_slice());
     scene.fill(Fill::NonZero, transform, &gradient, None, &shape);
-    // A hairline just inside the top, where the light catches the edge.
     scene.push_clip_layer(Fill::NonZero, transform, &shape);
     scene.stroke(
         &Stroke::new(1.0),
@@ -303,7 +284,6 @@ pub(super) fn paint(
     scene.pop_layer();
 }
 
-/// The picture (or the check it becomes), the words and the keys.
 fn paint_contents(
     scene: &mut Scene,
     transform: Affine,
@@ -313,8 +293,6 @@ fn paint_contents(
 ) {
     let rect = frame.rect;
     let look = frame.look;
-    // The bar's pill holds the words and the keys alone: it says what the chord is, beside the
-    // clock, without the picture a card beside a control carries.
     let x = if frame.in_bar {
         rect.x0 + BAR_PAD_X
     } else {
@@ -324,7 +302,6 @@ fn paint_contents(
             rect.x0 + PAD + TILE_W,
             rect.center().y + TILE_H / 2.0,
         );
-        // The tile becomes a disc of ink holding the check.
         let morph = stage(frame.check, 0.0, 0.55);
         let disc = Rect::from_center_size(tile.center(), (TILE_H - 4.0, TILE_H - 4.0));
         let shown_tile = Rect::new(
@@ -381,7 +358,6 @@ fn paint_contents(
     );
     if !frame.contents.keys.is_empty() {
         let height = InputHint::keycap_height(theme);
-        // The keys go down and up once as the picture's hand presses them.
         let press = crate::motion::Beckon::stroke(frame.phase, 0.02, 0.06)
             - crate::motion::Beckon::stroke(frame.phase, 0.12, 0.16);
         let origin = Point::new(
@@ -399,7 +375,6 @@ fn paint_contents(
     }
 }
 
-/// The check, drawn `drawn` of the way along its stroke, in `disc`.
 fn check(scene: &mut Scene, transform: Affine, disc: Rect, drawn: f64, ink: Color) {
     let r = disc.height() / 2.0;
     let c = disc.center();

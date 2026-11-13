@@ -12,6 +12,8 @@
 #[path = "headless/harness.rs"]
 mod harness;
 
+#[path = "buffer_formats.rs"]
+mod buffer_formats;
 #[path = "capture.rs"]
 mod capture;
 #[path = "clipboard.rs"]

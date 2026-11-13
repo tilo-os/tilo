@@ -1,14 +1,5 @@
-//! Files' toolbar as slots in the window's bar ([`ui::window_toolbar`]).
-//!
-//! While the desktop's bar hosts them, the content header (the nav cluster,
-//! the path bar and the view controls) leaves the window and the bar shows:
-//! the places list's toggle, back and forward; the folder as the location, its levels as a breadcrumb
-//! with drawn chevrons (a click on one goes there) and its path editable,
-//! with the folders and files the typed path completes to listed under the
-//! field; and the actions, the view and New folder (and Sort in a grid)
-//! in the row, and Up, New file, the terminal and hidden files in the
-//! bar's overflow menu. Outside a Tilo
-//! session the header stays in the window, as before.
+//! Files' toolbar as slots in the window's bar: the path, the folder's actions,
+//! the view and what it makes.
 
 use std::path::PathBuf;
 
@@ -23,25 +14,16 @@ use crate::command::FileCommand;
 use crate::i18n::t;
 use crate::model::ViewMode;
 
-/// What one of Files' slots runs.
 #[derive(Clone, PartialEq)]
 pub(super) enum BarCommand {
-    /// The command the header's control runs.
     Run(FileCommand),
-    /// Open the New file menu under the bar.
     NewFile,
 }
 
-/// The bar's entries.
 pub(super) type BarEntries = BarCommands<BarCommand>;
-/// What the cloud account's level of the location commits: its top folder.
 const CLOUD_ROOT: &str = "tilo-files-cloud-root";
-/// What the cloud folder's own level commits: nothing, it is open.
 const CLOUD_FOLDER: &str = "tilo-files-cloud-folder";
 
-/// Everything the slots are made from that is cheap to read: the window
-/// declares them again, reading the folder's templates and completions,
-/// only when one of these changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -55,14 +37,10 @@ pub(super) struct BarKey {
     hidden: bool,
     query: Option<String>,
     sidebar: bool,
-    /// The cloud account and folder browsed, which the bar names instead.
     cloud: Option<(String, Option<String>)>,
 }
 
 impl FilesState {
-    /// Move the content header into the window's bar while the bar hosts
-    /// the slots, and back into the window when it no longer does. Returns
-    /// whether the window's layout changed.
     pub(super) fn place_header(&mut self, chrome: &mut Chrome) -> bool {
         let hosted = ui::window_toolbar::is_hosted();
         if hosted == self.header_in_bar {
@@ -78,31 +56,29 @@ impl FilesState {
             chrome.nav.set_content_header("", Vec::new());
             self.toolbar.set_bar_anchor(self.bar_menu_anchor());
         } else {
-            // The controls come back into the window, built afresh.
             let (path_widget, actions_widget, toolbar) =
                 crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
-            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
-            chrome
-                .nav
-                .set_content_header("", vec![Box::new(actions_widget)]);
-            // window-bar: fallback, the bar shows the path while it hosts the window
-            chrome
-                .nav
-                .set_content_header_leading(Some(Box::new(path_widget)));
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header("", vec![Box::new(actions_widget)]);
+            });
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(Box::new(path_widget)));
+            });
             ui::window_toolbar::declare(None);
         }
         true
     }
 
-    /// Where the menus of the bar's actions hang from: the top trailing
-    /// corner of the window's content, under the bar.
     fn bar_menu_anchor(&self) -> vello::kurbo::Rect {
         let r = self.rect;
         vello::kurbo::Rect::new(r.x0, r.y0, (r.x1 - 8.0).max(r.x0), r.y0 + 4.0)
     }
 
-    /// The slots this window shows in its bar.
     pub(super) fn window_toolbar(&self, chrome: &Chrome) -> WindowToolbar {
         if let Some((account, folder)) = self.cloud_title() {
             return Self::cloud_window_toolbar(chrome, account, folder);
@@ -155,9 +131,6 @@ impl FilesState {
         }
     }
 
-    /// The slots while the window browses a cloud account: the account and
-    /// the folder open in it as the location's levels. The folder actions
-    /// act on folders on this device, so the bar offers none of them here.
     fn cloud_window_toolbar(
         chrome: &Chrome,
         account: String,
@@ -185,10 +158,6 @@ impl FilesState {
         }
     }
 
-    /// The bar's actions: up, the view, what the folder offers to make
-    /// (or an archive to extract), sort in a grid, the terminal, and
-    /// hidden files. The row keeps the view and what the folder makes (and
-    /// sorting a grid); the rest is a press away in More.
     fn bar_actions(&self, recent: bool) -> Vec<ToolbarAction> {
         let entries = &self.bar_entries;
         let run = |icon: &str, name: String, command: FileCommand| {
@@ -266,7 +235,6 @@ impl FilesState {
         actions
     }
 
-    /// The folders and files the path typed in the bar completes to.
     fn bar_suggestions(&self) -> Vec<LocationSuggestion> {
         let Some(query) = self.bar_query.as_deref() else {
             return Vec::new();
@@ -300,8 +268,6 @@ impl FilesState {
         }
     }
 
-    /// Tell the bar the slots, when what they are made from changed, or the
-    /// app is shown in another window than the one they were declared on.
     fn declare_window_toolbar(&mut self, chrome: &Chrome) {
         let key = (ui::window_toolbar::current_window(), self.bar_key(chrome));
         if self.declared_bar.as_ref() != Some(&key) {
@@ -310,9 +276,6 @@ impl FilesState {
         }
     }
 
-    /// Tell the bar the slots as they are now and run what the person did
-    /// with them: the same commands the header's controls run. Returns
-    /// whether anything ran.
     pub(super) fn sync_window_toolbar(&mut self, chrome: &mut Chrome) -> bool {
         let moved = self.place_header(chrome);
         if !self.header_in_bar {
@@ -325,12 +288,10 @@ impl FilesState {
         for event in events {
             self.run_window_toolbar_event(chrome, event);
         }
-        // A changed query or folder changes the slots.
         self.declare_window_toolbar(chrome);
         moved || ran
     }
 
-    /// Run one thing the person did in the bar.
     fn run_window_toolbar_event(&mut self, chrome: &mut Chrome, event: ToolbarEvent) {
         let command = match event {
             ToolbarEvent::ToggleSidebar => {
@@ -339,18 +300,13 @@ impl FilesState {
             }
             ToolbarEvent::Back => Some(FileCommand::Back),
             ToolbarEvent::Forward => Some(FileCommand::Forward),
-            ToolbarEvent::Commit { text } if self.cloud.active => {
-                // The account's level opens its top folder.
-                (text == CLOUD_ROOT).then(|| {
-                    FileCommand::Cloud(crate::effects::FilesEffect::BrowseCloud {
-                        account: self.cloud.account.clone(),
-                        folder: None,
-                    })
+            ToolbarEvent::Commit { text } if self.cloud.active => (text == CLOUD_ROOT).then(|| {
+                FileCommand::Cloud(crate::effects::FilesEffect::BrowseCloud {
+                    account: self.cloud.account.clone(),
+                    folder: None,
                 })
-            }
+            }),
             ToolbarEvent::Commit { text } => {
-                // A typed path, a chosen completion or a breadcrumb level:
-                // a folder opens in the window, a file in its app.
                 self.bar_query = None;
                 let path: PathBuf = crate::path_bar::resolve_location(
                     &text,
@@ -372,9 +328,6 @@ impl FilesState {
                 }
                 None => None,
             },
-            // The bar's own search and History control are run by the
-            // framework on the app's widgets, and whether the window floats
-            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose

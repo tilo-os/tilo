@@ -1,8 +1,6 @@
-//! Credential-free cloud Files access. Credentials remain in the storage service.
-//!
-//! Native imports retain directory descriptors and output identities through
-//! publication and compensation. No pathname fallback is used on unsupported
-//! targets: those targets return an explicit unsupported error.
+//! Credential-free cloud Files access: credentials stay in the storage service.
+//! Unsupported targets return an explicit error rather than falling back to a
+//! pathname.
 use std::path::{Path, PathBuf};
 
 mod consent;
@@ -18,18 +16,14 @@ mod native;
 #[cfg(unix)]
 pub use native::{compensate, execute, execute_at, pin_destination, restore};
 
-/// The directory admitted for an import, not merely its mutable pathname.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DestinationIdentity {
     device: u64,
     inode: u64,
-    /// Output metadata distinguishes reused inodes and changed copies. Directory
-    /// admission deliberately excludes it: importing changes directory metadata.
     #[serde(default)]
     modified: Option<(i64, i64, u64)>,
 }
 
-/// Cumulative progress, delivered on the worker thread, not the UI thread.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransferProgress {
     pub phase: String,
@@ -38,8 +32,6 @@ pub struct TransferProgress {
     pub failed: Vec<String>,
 }
 
-/// A verified import or compensation receipt, independent of any app document.
-/// Files maps these fields to its existing persisted change variants.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TransferReceipt {
     CloudImported {
@@ -66,12 +58,8 @@ pub enum TransferOutcome {
     },
 }
 
-/// The caller's shared copy/cut algorithm, also used outside cloud imports.
-/// Compensation supplies descriptor-rooted paths and checks identities around
-/// each invocation. This callback grants no additional filesystem authority.
 pub type MoveInto = fn(&Path, &Path) -> Result<PathBuf, String>;
 
-/// Validate a portable local leaf name before any staging is created.
 pub fn valid_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name == "."

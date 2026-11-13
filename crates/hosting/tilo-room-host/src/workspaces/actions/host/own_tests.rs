@@ -1622,3 +1622,173 @@ async fn an_invited_collaborator_enters_what_they_were_invited_into() {
     // A workspace of their own is still the door's to give.
     waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
 }
+
+/// A device of the person whose root is `root`, certified now for an hour, as
+/// a page's root certifies a tab.
+fn tab_of(root: &SigningKey, label: &str) -> DeviceCert {
+    let key = SigningKey::from_bytes(&rand::random());
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now.saturating_sub(1_000_000_000),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+/// How `workspace` on `workspaces`' relay answers `device` subscribing, as a
+/// page's join does: admitted (enrolled first where the workspace enrols it),
+/// or refused and why.
+async fn subscribe(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+) -> Result<(), crate::workspace_access::DenyReason> {
+    let id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
+    let runtime = workspaces
+        .inner
+        .host
+        .workspaces
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .unwrap();
+    let revocations = std::sync::RwLock::new(RevocationList::new());
+    let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
+    let agents = crate::peer::AgentRegistry::default();
+    let environments = crate::environment::EnvironmentRegistry::default();
+    let own_user = workspaces.serving_certificate().user_public_key;
+    let trust = crate::workspace_access::RelayTrust {
+        revocations: &revocations,
+        policy: &policy,
+        own_user: &own_user,
+        agents: &agents,
+        environments: &environments,
+    };
+    let peer = crate::auth::AuthenticatedPeer {
+        cert: device.clone(),
+        user_public_key: device.user_public_key,
+        device_public_key: device.device_public_key,
+    };
+    crate::workspace_io::admit_for(
+        &runtime,
+        &trust,
+        &peer,
+        crate::workspace_access::WorkspaceOperation::Subscribe,
+    )
+    .await
+    .unwrap()
+}
+
+/// A person's browser keeps one device key per tab: the tab that set them up
+/// redeemed the invitation into their own workspace, and a tab that comes
+/// later on another key (a second tab, the same tab after its key slot was
+/// taken) is a further device of theirs. It joins their workspace as theirs,
+/// the way the door lets a member's further device in, and the first tab
+/// stays in; a stranger's device is still no member.
+#[tokio::test]
+async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_stays_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let home = open(workspaces).await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
+
+    let first = tab_of(&root, "Firefox on Linux");
+    let created = create_own(&host, &first, json!({})).await.unwrap();
+    join(workspaces, &created, &first).await;
+    let workspace = created.workspace.workspace.clone();
+    assert_eq!(subscribe(workspaces, &workspace, &first).await, Ok(()));
+
+    let later = tab_of(&root, "Firefox on Linux");
+    assert_eq!(
+        subscribe(workspaces, &workspace, &later).await,
+        Ok(()),
+        "a further tab of the person joins their own workspace"
+    );
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert_eq!(
+        members
+            .iter()
+            .filter(|member| member.user_public_key == later.user_public_key)
+            .count(),
+        1,
+        "one person, on both tabs"
+    );
+    assert_eq!(
+        subscribe(workspaces, &workspace, &first).await,
+        Ok(()),
+        "the first tab stays in"
+    );
+
+    let (_, stranger) = guest_device();
+    assert_eq!(
+        subscribe(workspaces, &workspace, &stranger).await,
+        Err(crate::workspace_access::DenyReason::NotAMember),
+        "a stranger's device is no member"
+    );
+    relay.shutdown().await;
+}
+
+/// Someone the operator declares an owner of the home workspace holds it by
+/// their root from that moment: a server key of theirs lists the workspace,
+/// enters it, and invites the next person in, with no device of theirs ever
+/// having joined it.
+#[tokio::test]
+async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device_joined() {
+    use tilo_action_policy::roles::governance;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let home = open(workspaces).await;
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    let ada = SigningKey::from_bytes(&rand::random());
+    let ada_person = ada.verifying_key().to_bytes();
+    workspaces
+        .set_member_administrator(
+            &home,
+            workspaces.serving_certificate(),
+            rand::random(),
+            ada_person,
+        )
+        .await
+        .unwrap();
+
+    let backend_key = SigningKey::from_bytes(&rand::random());
+    let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
+    let listed = listed_for(&host, &backend).await;
+    let lounge = listed
+        .iter()
+        .find(|listed| listed.workspace == home)
+        .unwrap_or_else(|| panic!("the declared owner's key lists the home: {listed:?}"))
+        .clone();
+
+    let entering = own_as_key(&host, &backend, json!({"room": home})).await;
+    assert_eq!(entering.workspace.workspace, home);
+    join(workspaces, &entering, &backend).await;
+    let issued = govern(
+        &host,
+        &lounge,
+        &backend,
+        governance::INVITE,
+        json!({"role": "editor"}),
+    )
+    .await
+    .unwrap();
+    assert!(issued["invitation"].is_string(), "{issued}");
+    relay.shutdown().await;
+}

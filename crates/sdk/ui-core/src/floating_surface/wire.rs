@@ -1,14 +1,13 @@
-//! What an app and the session shell say to each other on the shell-ui
-//! connection: the protocol's one version, its messages and the plain types
-//! they carry.
+//! What an app and the session shell say to each other on the shell-ui connection: the protocol's one
+//! version, its messages and the plain types they carry.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "placement math is bounded logical-pixel geometry using kurbo operators"
 )]
 use serde::{Deserialize, Serialize};
 
-/// What a recipient of a sent message is: someone the search found, or the
-/// agent the person is making by sending.
+/// What a recipient of a sent message is: someone the search found, or the agent the person is making
+/// by sending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecipientKind {
@@ -22,7 +21,7 @@ pub enum RecipientKind {
     Conversation,
     /// The one place a report about Tilo itself goes, which the session names
     /// when it opens the box there: the search never finds it, and it never
-    /// stands beside another recipient.
+    /// sits beside another recipient.
     Feedback,
 }
 
@@ -40,18 +39,17 @@ impl RecipientKind {
     }
 }
 
-/// One recipient of a message sent from a window: who it goes to, and what
-/// the person reads on its chip.
+/// One recipient of a message sent from a window: who it goes to, and what the person reads on its
+/// chip.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recipient {
     pub kind: RecipientKind,
-    /// The agent's id, the person's root identity or the conversation's id;
-    /// empty for [`RecipientKind::NewAgent`], which the shell makes.
+    /// The agent's id, the person's root identity or the conversation's id; empty for
+    /// [`RecipientKind::NewAgent`], which the shell makes.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
-    /// The name the chip shows: the agent's or the person's, the
-    /// conversation's, or the name the new agent takes — empty for a new
-    /// agent nobody named, which the shell names by what it is asked.
+    /// The name the chip shows: the agent's or the person's, the conversation's, or the name the new
+    /// agent takes — empty for a new agent nobody named, which the shell names by what it is asked.
     pub name: String,
     /// A line under the name in the search's rows (who keeps an agent, who
     /// is in a conversation); never on the chip.
@@ -92,7 +90,7 @@ impl Recipient {
 }
 
 /// What a model may know about one change it is asked to describe: the
-/// change's id as History lists it (32 lowercase hex characters), its own
+/// change's id as History lists it (32 lowercase hex characters), its
 /// summary, the action and resource it named, and what it wrote. Never who
 /// made it: History shows that beside the description.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,8 +105,7 @@ pub struct HistoryChangeFacts {
     pub wrote: String,
 }
 
-/// One change described: its id, the sentence, and which provider and model
-/// wrote it.
+/// One change described: its id, the sentence, and which provider and model wrote it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryChangeDescription {
     pub change: String,
@@ -119,8 +116,7 @@ pub struct HistoryChangeDescription {
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 pub(crate) const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
-/// Backpressure bound for a non-reading shell peer. Frames are normally
-/// flushed immediately; this only limits the exceptional `WouldBlock` queue.
+/// Backpressure bound for a non-reading shell peer.
 #[cfg(unix)]
 pub(crate) const MAX_OUTGOING_QUEUE_BYTES: usize = 4 * MAX_PROTOCOL_FRAME_BYTES;
 
@@ -158,8 +154,8 @@ pub enum FloatingSurfaceProtocolRole {
 }
 
 impl FloatingSurfaceProtocolRole {
-    /// Whether interactive content stays rendered by its owning app rather
-    /// than becoming a compositor-owned capture mirror.
+    /// Whether interactive content stays rendered by its owning app rather than becoming a
+    /// compositor-owned capture mirror.
     #[must_use]
     pub const fn uses_app_owned_host(self) -> bool {
         match self {
@@ -198,7 +194,6 @@ pub struct FloatingSurfaceProtocolRequest {
     pub preferred_size: [f64; 2],
     pub aspect_ratio: Option<f64>,
     /// Desktop-space transfer rectangle for an app-owned native surface.
-    /// Absent for ordinary media `PiP`.
     #[serde(default)]
     pub initial_rect: Option<[f64; 4]>,
     /// Full transparent native-window bounds, including app-drawn shadows.
@@ -206,10 +201,7 @@ pub struct FloatingSurfaceProtocolRequest {
     pub presentation_rect: Option<[f64; 4]>,
 }
 
-/// App → shell lifecycle. `Suspend` is the reversible half of an attached
-/// ↔ desktop handoff: the authenticated native surface and its renderer stay
-/// warm while its pixels return to the app. `Dismiss` is deliberately
-/// permanent and reserved for hang-up, navigation-end, or an explicit close.
+/// App → shell lifecycle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
@@ -219,8 +211,7 @@ pub enum FloatingSurfaceClientMessage {
     Hello {
         version: u16,
     },
-    /// Complete primary-surface marker inventory from a successfully presented
-    /// SDK frame. The host resolves surface and workspace from launch custody.
+    /// Complete primary-surface marker inventory from a successfully presented SDK frame.
     ActionMarkers {
         markers: Vec<crate::PaintedActionMarker>,
     },
@@ -236,10 +227,7 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Terminal asks for the existing host-shell permission prompt.
     AllowHostShell,
-    /// Ask the trusted session shell to show its ordinary user-confirmed
-    /// chooser. This shares the same authenticated channel as floating
-    /// surfaces so a separately hosted app and an embedded app have identical
-    /// `PiP` UX.
+    /// Ask the trusted session shell to show its ordinary user-confirmed chooser.
     OpenCaptureStudio {
         mode: CaptureStudioProtocolMode,
     },
@@ -262,9 +250,7 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input_rect: Option<[f64; 4]>,
     },
-    /// The primary window has presented a frame with the transferred pixels
-    /// removed. The shell may now move its proxy/native surface away from the
-    /// source rect without ever exposing two copies.
+    /// The primary window has presented a frame with the transferred pixels removed.
     SourceCleared {
         id: String,
     },
@@ -303,64 +289,53 @@ pub enum FloatingSurfaceClientMessage {
         page: [f64; 4],
         scale: f64,
     },
-    /// This app can stream its window's page (sent once): the shell may ask
-    /// it to with [`FloatingSurfaceHostMessage::PaintKeyframe`].
+    /// This app can stream its window's page (sent once): the shell may ask it to with
+    /// [`FloatingSurfaceHostMessage::PaintKeyframe`].
     PaintCapable,
-    /// Open another instance of this app as a desktop tab right after this
-    /// app's own tab (see [`crate::shell_tabs`]). `target` is a URI the app's
-    /// manifest declares, or `None` for an empty instance. `instance` is the
-    /// record instance the shell launched this process for; the shell only
-    /// uses it to find a tab that already shows this same app.
+    /// Open another instance of this app as a desktop tab right after this app tab (see
+    /// [`crate::shell_tabs`]).
     OpenTabBeside {
         target: Option<String>,
         background: bool,
         instance: Option<u64>,
     },
-    /// Close this app's own tab through the desktop's tab lifecycle.
+    /// Close this app tab through the desktop's tab lifecycle.
     CloseTab {
         instance: Option<u64>,
     },
     /// Reopen the workspace's most recently closed tab.
     ReopenClosedTab,
-    /// Show the next (`forward`) or previous tab of the window group this
-    /// app's tab is in: Ctrl+Tab or Ctrl+Shift+Tab that no widget of the app
-    /// used. The shell steps only while that tab is the focused one.
+    /// Show the next (`forward`) or previous tab of the window group this app's tab is in: Ctrl+Tab or
+    /// Ctrl+Shift+Tab that no widget of the app used.
     CycleTab {
         forward: bool,
         instance: Option<u64>,
     },
-    /// The next window this app maps lands as a tab right after this one.
+    /// The next window this app maps opens as a tab right after this one.
     PlaceNextWindowBeside {
         background: bool,
         instance: Option<u64>,
     },
-    /// Open another window of this app as a window of the desk, floating
-    /// over it where the box of this window last sent from stood
-    /// ([`Self::SendTo`]), showing `anchor`: the item that send landed in. A
-    /// window of the desk, not a card of the app's: the desk's record keeps
-    /// it where it stands, so every member's desk shows it there.
+    /// Open another window of this app as a window of the desk, floating over it where the box of this
+    /// window last sent from stood ([`Self::SendTo`]), showing `anchor`: the item that send landed in.
     OpenFloated {
         /// The item the window opens on, as the resource that names it.
         anchor: String,
         instance: Option<u64>,
     },
-    /// The slots this app shows in its window's bar
-    /// ([`crate::window_toolbar`]), or none: sent whenever they change.
-    /// `instance` is the record instance the shell launched this process
-    /// for, which names the tab, as for [`Self::OpenTabBeside`].
+    /// The slots this app shows in its window's bar ([`crate::window_toolbar`]), or none: sent whenever
+    /// they change.
     Toolbar {
         toolbar: Option<crate::window_toolbar::WindowToolbar>,
         instance: Option<u64>,
     },
-    /// Turn this app's editable location in its window's bar into a field,
-    /// as a click on it does (the app's Ctrl+L).
+    /// Turn this app's editable location in its window's bar into a field, as a click on it does (the
+    /// app's Ctrl+L).
     EditLocation {
         instance: Option<u64>,
     },
-    /// What this app's window offers its bar's own controls: what the
-    /// search acts on in place and the open search's count, and the History
-    /// control ([`crate::window_toolbar::WindowOffer`]). Sent whenever it
-    /// changes; the bar answers with [`FloatingSurfaceHostMessage::ToolbarEvent`].
+    /// What this app's window offers its bar controls: what the search acts on in place and the open
+    /// search's count, and the History control ([`crate::window_toolbar::WindowOffer`]).
     WindowOffer {
         offer: crate::window_toolbar::WindowOffer,
         instance: Option<u64>,
@@ -373,18 +348,14 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default)]
         opening: crate::window_toolbar::SearchOpening,
     },
-    /// Open the session's search on this app, the way the app asked
-    /// ([`crate::search::SearchRequest`]): Ctrl+K, a search button, or one
-    /// of its actions whose arguments the search asks for. Inside a session
-    /// there is one search, the shell's; the app opens none of its own.
+    /// Open the session's search on this app, the way the app asked ([`crate::search::SearchRequest`]):
+    /// Ctrl+K, a search button, or one of its actions whose arguments the search asks for.
     OpenAppSearch {
         instance: Option<u64>,
         request: crate::search::SearchRequest,
     },
-    /// Describe these changes of the resource whose History is open: the
-    /// shell asks the model on this device and answers with
-    /// [`FloatingSurfaceHostMessage::HistoryDescriptions`]. The app holds no
-    /// model and needs none.
+    /// Describe these changes of the resource whose History is open: the shell asks the model on this
+    /// device and answers with [`FloatingSurfaceHostMessage::HistoryDescriptions`].
     DescribeHistory {
         changes: Vec<HistoryChangeFacts>,
     },
@@ -399,40 +370,37 @@ pub enum FloatingSurfaceClientMessage {
     /// The app's identity is the launcher's, never the message's.
     SendTo {
         to: Vec<Recipient>,
-        /// What the message carries besides its words, as the chips named it.
+        /// What the message has besides its words, as the chips named it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attached: Vec<tilo_reference::Attached>,
         text: String,
     },
-    /// The person typed `query` into the box's recipient field: the shell
-    /// answers with [`FloatingSurfaceHostMessage::Recipients`], from the one
-    /// search every part of the desk shares.
+    /// The person typed `query` into the box's recipient field: the shell answers with
+    /// [`FloatingSurfaceHostMessage::Recipients`], from the one search every part of the desk shares.
     SearchRecipients {
         request: u64,
         query: String,
     },
-    /// The resource this window shows (the first it publishes), sent when it
-    /// changes: the desktop's own menus for the window (its window menu)
-    /// attach it, as the app's own menus do. `None` when it publishes none.
+    /// The resource this window shows (the first it publishes), sent when it changes: the desktop menus
+    /// for the window (its window menu) attach it, as the app menus do.
     WindowResource {
         resource: Option<tilo_actions::ActionResource>,
     },
-    /// The answer to [`FloatingSurfaceHostMessage::PointAt`] `request`: the
-    /// control at that point, `None` where there is none.
+    /// The answer to [`FloatingSurfaceHostMessage::PointAt`] `request`: the control at that point,
+    /// `None` where there is none.
     Pointed {
         request: u64,
         control: Option<PointedControl>,
     },
-    /// The answer to [`FloatingSurfaceHostMessage::Pick`] `request`, read
-    /// from this window's retained tree ([`crate::pick_wire::answer`]).
+    /// The answer to [`FloatingSurfaceHostMessage::Pick`] `request`, read from this window's retained
+    /// tree ([`crate::pick_wire::answer`]).
     PickAnswered {
         request: u64,
         answer: crate::pick_wire::PickAnswer,
     },
-    /// The record this window shows, as its route names it (empty for the
-    /// app's own record of the workspace), and the kind of resource it
-    /// keeps: the desktop lists the window among those a person may share
-    /// ([`crate::window_share`]). Sent once per connection.
+    /// The record this window shows, as its route names it (empty for the app record of the workspace),
+    /// and the kind of resource it keeps: the desktop lists the window among those a person may share
+    /// ([`crate::window_share`]).
     WindowRecord {
         record: String,
         kind: String,
@@ -447,13 +415,12 @@ pub enum FloatingSurfaceClientMessage {
         embeds: Vec<crate::window_share::DeclaredEmbed>,
         instance: Option<u64>,
     },
-    /// The windows this app shares (`crate::window_share::publish_shared`),
-    /// sent whenever they change, so the desktop offers "Stop sharing" on
-    /// them. Only the sharing app's are taken.
+    /// The windows this app shares (`crate::window_share::publish_shared`), sent whenever they change,
+    /// so the desktop offers "Stop sharing" on them.
     SharedWindows {
         shared: Vec<crate::window_share::SharedWindow>,
     },
-    /// The controls of this window's own content, as the app's accessibility
+    /// The controls of this window content, as the app's accessibility
     /// tree exports them (`crate::window_targets`), at
     /// most [`crate::window_targets::MAX_TARGETS`]: what a session, a test or an
     /// agent finds them by name and presses
@@ -467,7 +434,7 @@ pub enum FloatingSurfaceClientMessage {
     /// The app under the pointer could not scroll sideways with this wheel
     /// event: the shell pans the window strip under it by `travel` logical
     /// pixels, positive toward later windows, by the same rules it applies
-    /// to a wheel over its own canvas. Sent for every event of a gesture the
+    /// to a wheel over its canvas. Sent for every event of a gesture the
     /// app left to the shell, and never for one it took, so a gesture is
     /// never split between app and strip. An app outside a session's shell
     /// has no such connection and keeps every wheel.
@@ -478,7 +445,7 @@ pub enum FloatingSurfaceClientMessage {
 
 /// One control of an app's window as the shell names it when a person
 /// points at it: its semantic id, its role and its accessible name. What a
-/// field holds is never part of it.
+/// field has is never part of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PointedControl {
     pub id: String,
@@ -488,7 +455,6 @@ pub struct PointedControl {
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.
-/// Every input/read operation is bound to the exact currently open local session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceShellOperation {
@@ -498,8 +464,7 @@ pub enum DeviceShellOperation {
     Read { session: String },
 }
 
-/// Sanitized host network hints. Unknown is distinct from known unmetered;
-/// this carries no connection name, device, address or network permission.
+/// Sanitized host network hints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostNetworkStatus {
     pub available: Option<bool>,
@@ -525,7 +490,6 @@ pub enum FloatingSurfaceHostMessage {
         result: Result<(), String>,
     },
     /// The authenticated device owner selected Terminal's device-shell target.
-    /// This requests its ordinary permission flow; it is not a grant.
     DeviceShellOperation {
         request: u64,
         operation: DeviceShellOperation,
@@ -542,44 +506,34 @@ pub enum FloatingSurfaceHostMessage {
     DesktopBounds {
         bounds: [f64; 4],
     },
-    /// Someone started watching this app's window: send its page as a paint
-    /// stream, starting from a whole frame.
+    /// Someone started watching this app's window: send its page as a paint stream, starting from a
+    /// whole frame.
     PaintKeyframe,
     /// Nobody watches the window any more: stop capturing the page.
     PaintStop,
-    /// The person pressed the desktop's "ask an agent" chord over this
-    /// app's focused window: answer with
-    /// [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or
-    /// nothing when it shows none. Sent only to an app that announced
-    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
-    ///
-    /// `to` is whom the box opens to when the session names it — the one
-    /// place a report goes — and empty when the person names whom it goes to.
+    /// The person pressed the desktop's "ask an agent" chord over this app's focused window: answer
+    /// with [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or nothing when it shows
+    /// none.
     ShareSelection {
         #[serde(default)]
         to: Vec<Recipient>,
     },
-    /// What the one search finds for
-    /// [`FloatingSurfaceClientMessage::SearchRecipients`] `request`:
-    /// agents, people and conversations to send to, the people and
-    /// conversations this window is already in first.
+    /// What the one search finds for [`FloatingSurfaceClientMessage::SearchRecipients`] `request`:
+    /// agents, people and conversations to send to, the people and conversations this window is already
+    /// in first.
     Recipients {
         request: u64,
         rows: Vec<Recipient>,
     },
-    /// The person pointed at `point` of this app's focused window, in its
-    /// logical coordinates, to say what something is about (feedback on one
-    /// control): answer with [`FloatingSurfaceClientMessage::Pointed`].
-    /// Sent only to an app that announced
-    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
+    /// The person pointed at `point` of this app's focused window, in its logical coordinates, to say
+    /// what something is about (feedback on one control): answer with
+    /// [`FloatingSurfaceClientMessage::Pointed`].
     PointAt {
         request: u64,
         point: [f64; 2],
     },
-    /// The person is picking parts of the screen to report a problem with
-    /// them, over this app's window: answer `query` with
-    /// [`FloatingSurfaceClientMessage::PickAnswered`]. Sent only to an app
-    /// that announced [`FloatingSurfaceClientMessage::SelectionCapable`].
+    /// The person is picking parts of the screen to report a problem with them, over this app's window:
+    /// answer `query` with [`FloatingSurfaceClientMessage::PickAnswered`].
     Pick {
         request: u64,
         query: crate::pick_wire::PickQuery,
@@ -593,22 +547,15 @@ pub enum FloatingSurfaceHostMessage {
         test_id: String,
     },
     /// The person used this app's slots in its window's bar
-    /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or
-    /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).
-    ///
-    /// `after_input` is the serial of the last input event (a key, a pointer button, a touch
-    /// going down or up) the shell had sent this app's process on its Wayland connection when
-    /// the person used the bar: the app runs the event once it has handled that input, and
-    /// before any input that came after it, so the two ways input reaches it keep the order
-    /// the person used them in. `None`: the app had been sent no input.
+    /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or History control on its
+    /// window ([`FloatingSurfaceClientMessage::WindowOffer`]).
     ToolbarEvent {
         event: crate::window_toolbar::ToolbarEvent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_input: Option<u32>,
     },
-    /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`]
-    /// did, as the model on this device described them. A change it could
-    /// not describe is left out.
+    /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`] did, as the model on
+    /// this device described them.
     HistoryDescriptions {
         described: Vec<HistoryChangeDescription>,
     },
@@ -625,9 +572,8 @@ pub enum FloatingSurfaceHostMessage {
         /// copy immediately in that case; if capture failed it keeps drawing
         /// until the native surface acknowledges its first buffer.
         transfer_covered: bool,
-        /// App-local → desktop pointer-coordinate translation. Kept
-        /// separate from clamped window geometry so a live drag can rebase
-        /// without treating compositor clamping as pointer motion.
+        /// App-local → desktop pointer-coordinate translation. Kept separate from clamped window
+        /// geometry so a live drag can rebase without treating compositor clamping as pointer motion.
         coordinate_offset: [f64; 2],
     },
     Adopted {
@@ -635,8 +581,6 @@ pub enum FloatingSurfaceHostMessage {
         rect: [f64; 4],
     },
     /// The shell has hidden, but retained, the authenticated native surface.
-    /// A later `Present` for the same connection/id resumes that exact
-    /// surface instead of issuing a new capability or renderer.
     Suspended {
         id: String,
     },
@@ -646,12 +590,8 @@ pub enum FloatingSurfaceHostMessage {
     Closed {
         id: String,
     },
-    /// Where and for whom the app's window is shown
-    /// ([`crate::theme::WindowAppearance`]): the temperature of the
-    /// workspace holding it and the person's colour. Sent when the app
-    /// connects and again whenever either changes — a workspace switch, a
-    /// new wallpaper, a window moved to another workspace, a colour chosen
-    /// in Settings.
+    /// Where and for whom the app's window is shown ([`crate::theme::WindowAppearance`]): the
+    /// temperature of the workspace holding it and the person's colour.
     Appearance {
         /// The host's configured palette; apps cannot read its settings file
         /// through their private sandbox configuration directory.
@@ -666,9 +606,8 @@ pub enum FloatingSurfaceHostMessage {
         /// A presence hue by its stored name (`PresenceHue::id`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         your_colour: Option<String>,
-        /// Whether the workspace the window is in has synced with its host
-        /// ([`crate::workspace_sync`]); absent for a workspace that syncs
-        /// with no host, and from older shells.
+        /// Whether the workspace the window is in has synced with its host ([`crate::workspace_sync`]);
+        /// absent for a workspace that syncs with no host, and from older shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_sync: Option<crate::workspace_sync::WorkspaceSync>,
         /// How round the shell draws the window's corners, in logical
@@ -679,21 +618,20 @@ pub enum FloatingSurfaceHostMessage {
         corner_radius: Option<f32>,
     },
     /// This shell draws the views windows embed of other apps' resources
-    /// ([`FloatingSurfaceClientMessage::Embeds`]): sent when the app
-    /// connects, so the app draws no stand-in for them.
+    /// ([`FloatingSurfaceClientMessage::Embeds`]): sent when the app connects, so the app draws no
+    /// stand-in for them.
     DrawsEmbeds,
-    /// How each embed of this app's window is coming along, every one the
-    /// shell draws: sent whenever one changes.
+    /// How each embed of this app's window is coming along, every one the shell draws: sent whenever
+    /// one changes.
     EmbedStates {
         states: Vec<crate::window_share::KeyedEmbedState>,
     },
-    /// The windows the person has open on a record, for the sharing app's
-    /// picker: sent to the sharing app alone, whenever they change.
+    /// The windows the person has open on a record, for the sharing app's picker: sent to the sharing
+    /// app alone, whenever they change.
     OpenWindows {
         windows: Vec<crate::window_share::OpenWindow>,
     },
-    /// A window's menu asked the sharing app to share it, or to stop
-    /// sharing it.
+    /// A window's menu asked the sharing app to share it, or to stop sharing it.
     WindowShareAsk {
         ask: crate::window_share::Ask,
     },
@@ -704,14 +642,17 @@ pub enum FloatingSurfaceHostMessage {
         message: String,
         reason: String,
     },
-    /// The person, an agent or a test pressed the control `name` of `role`
-    /// in this window's content, which the app described in
-    /// [`FloatingSurfaceClientMessage::WindowTargets`]. The app answers it as
-    /// an assistive technology does on that control, through the same path; a
-    /// control its window no longer shows presses nothing.
+    /// The person, an agent or a test pressed the control `name` of `role` in this window's content,
+    /// which the app described in [`FloatingSurfaceClientMessage::WindowTargets`].
     PressTarget {
+        /// The control's name, in the person's language.
         name: String,
+        /// Its role as the listing named it (`Button`, `Document`).
         role: String,
+        /// What it does, when the shell names it by that instead of its name: the identity a window's
+        /// app publishes for a control that runs its action or edits its record.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<String>,
         action: crate::window_targets::TargetAction,
     },
 }
@@ -758,9 +699,7 @@ impl FloatingSurfaceHostMessage {
         crate::Theme::from_document(document)
     }
 
-    /// What an [`Self::Appearance`] message says, `None` for any other. A
-    /// colour this build does not name, or a hue that is not a number,
-    /// counts as unsaid.
+    /// What an [`Self::Appearance`] message says, `None` for any other.
     #[must_use]
     pub fn window_appearance(&self) -> Option<crate::theme::WindowAppearance> {
         let Self::Appearance {

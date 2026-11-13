@@ -1,5 +1,5 @@
-//! How a widget takes part in document History: the capabilities an app root
-//! or a document owner provides, and the walks the runner uses to reach them.
+//! How a widget takes part in document History: the capabilities an app root or a document owner
+//! provides, and the walks the runner uses to reach them.
 
 use automerge::{AutoCommit, ObjId};
 
@@ -7,38 +7,29 @@ use crate::application_view::ApplicationViewState;
 use crate::widget::Widget;
 use crate::widget::capability::{capability, capability_mut};
 
-/// A widget that owns a document's History: its registration, restore
-/// readiness and presentation.
+/// A widget that owns a document's History: its registration, restore readiness and presentation.
 pub trait DocumentHistory {
-    /// Explicit root-owned History custody, including selected external
-    /// resources. Runners consume this bundle; preview renderers never
-    /// receive the root.
-    ///
-    /// # Errors
-    /// Returns a registration error when the root cannot provide valid
-    /// History custody.
+    /// Explicit root-owned History custody, including selected external resources. Runners consume this
+    /// bundle; preview renderers never receive the root. # Errors Returns a registration error when the
+    /// root cannot provide valid History custody.
     fn history_registration(
         &self,
     ) -> Result<Option<super::HistoryRegistration>, super::HistoryRegistrationError> {
         Ok(None)
     }
 
-    /// Additional read-only veto for uncommitted app-local drafts in this
-    /// scope. This does not confer authority or recursively consult
-    /// independent owners.
+    /// Additional read-only veto for uncommitted app-local drafts in this scope.
     fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
         Ok(())
     }
 
     /// Presentation declaration for the record this widget's owner checks out.
-    /// Grants no authority; the owner resolves custody.
     fn document_history_definition(&self) -> Option<&'static super::HistoryDefinition> {
         None
     }
 
-    /// Pure policy for physical text emitted by this owner. The host alone
-    /// decides whether the exact author, instance and frontier may continue.
-    /// Programmatic and agent document actions never consult this policy.
+    /// Pure policy for physical text emitted by this owner. Programmatic and agent document actions
+    /// never consult this policy.
     fn physical_text_policy(
         &self,
         _previous: Option<&tilo_actions::EncodedAction>,
@@ -47,10 +38,7 @@ pub trait DocumentHistory {
         (false, false)
     }
 
-    /// A successful, locally applied resource Document action on this exact
-    /// owner. Immutable document access permits cache reconciliation only.
-    /// Not called for submissions, failed execution, replay, remote merge,
-    /// or History restore.
+    /// A successful, locally applied resource Document action on this exact owner.
     fn document_action_applied(
         &mut self,
         _action: &tilo_actions::EncodedAction,
@@ -61,8 +49,8 @@ pub trait DocumentHistory {
     }
 }
 
-/// Framework History lifecycle traversal for owners whose History surfaces
-/// differ from their visible presentation children.
+/// Framework History lifecycle traversal for owners whose History surfaces differ from their visible
+/// presentation children.
 pub(crate) trait FrameworkHistoryTopology {
     fn visit_framework_history(
         &self,
@@ -137,29 +125,25 @@ pub(crate) fn visit_framework_history_mut(
     }
 }
 
-/// A live widget that presents its document's changes in the shared History
-/// view: the app says how each of its changes shows
-/// ([`crate::widget::HistoryEntryPresenter`]) and takes up the ones a person
-/// chooses to open. History stays the one service; this is only the app's
-/// word on what its changes look like.
+/// A live widget that presents its document's changes in the shared History view: the app says how each
+/// of its changes shows ([`crate::widget::HistoryEntryPresenter`]) and takes up the ones a person
+/// chooses to open.
 pub trait PresentsHistoryEntries {
     /// How this app's changes show in History.
     fn history_entry_presenter(
         &self,
     ) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>>;
 
-    /// A person chose `entry` in History and its face opens it
-    /// ([`crate::widget::EntryFace::opens`]): History has closed, the app is
-    /// live again, and takes the change up (a calculation goes back into the
-    /// calculator). Returns whether it did.
+    /// A person chose `entry` in History and its face opens it ([`crate::widget::EntryFace::opens`]):
+    /// History has closed, the app is live again, and takes the change up (a calculation goes back into
+    /// the calculator). Returns whether it did.
     fn open_history_entry(&mut self, entry: &crate::widget::HistoryEntry) -> bool {
         let _ = entry;
         false
     }
 }
 
-/// The presenter of the first widget in `widget`'s tree that presents its
-/// History entries.
+/// The presenter of the first widget in `widget`'s tree that presents its History entries.
 pub fn history_entry_presenter(
     widget: &dyn Widget,
 ) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>> {
@@ -172,9 +156,9 @@ pub fn history_entry_presenter(
         .find_map(history_entry_presenter)
 }
 
-/// The presentation of the first widget in `widget`'s tree that keeps one
-/// ([`ApplicationViewState`]): how the window shows its record (a mode, the
-/// open item), so History opens a past version as the window shows it.
+/// The presentation of the first widget in `widget`'s tree that keeps one ([`ApplicationViewState`]):
+/// how the window shows its record (a mode, the open item), so History opens a past version as the
+/// window shows it.
 pub fn live_presentation(
     widget: &dyn Widget,
 ) -> Option<crate::application_view::ApplicationLocalView> {
@@ -184,9 +168,8 @@ pub fn live_presentation(
     widget.children().into_iter().find_map(live_presentation)
 }
 
-/// Show `local`, a live window's presentation, in the first widget in
-/// `widget`'s tree that keeps one, over the document `doc` it draws.
-/// Returns whether one took it.
+/// Show `local`, a live window's presentation, in the first widget in `widget`'s tree that keeps one,
+/// over the document `doc` it draws. Returns whether one took it.
 pub fn adopt_presentation(
     widget: &mut dyn Widget,
     local: &crate::application_view::ApplicationLocalView,
@@ -202,8 +185,8 @@ pub fn adopt_presentation(
         .any(|child| adopt_presentation(child, local, doc))
 }
 
-/// Hand `entry` to the first widget in `widget`'s tree that presents History
-/// entries. Returns whether it took it up.
+/// Hand `entry` to the first widget in `widget`'s tree that presents History entries. Returns whether
+/// it took it up.
 pub fn open_history_entry(widget: &mut dyn Widget, entry: &crate::widget::HistoryEntry) -> bool {
     if let Some(presents) = capability_mut::<dyn PresentsHistoryEntries>(&mut *widget) {
         return presents.open_history_entry(entry);

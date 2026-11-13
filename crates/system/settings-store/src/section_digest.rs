@@ -1,26 +1,18 @@
 //! Which top-level sections of the settings document changed.
 //!
-//! Every writer replaces the whole file, so a reader that follows the file's
-//! modification time learns only that *something* changed. A long-lived
-//! reader that does different work per section (the compositor re-probes
-//! displays for `display`, reconfigures input devices for `input`, re-themes
-//! for `appearance`) fingerprints each section and compares, so a write to
-//! one section never pays for the others.
+//! Every writer replaces the whole file, so a reader following its modification time learns only
+//! that something changed. A long-lived reader that does different work per section fingerprints
+//! each section and compares, so a write to one section never pays for the others.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash as _, Hasher as _};
 
 use serde_json::{Map, Value};
 
-/// Per-top-level-section fingerprints of the settings document.
-///
-/// Fingerprints ignore object key order, so a writer that serialises the
-/// same values in another order is not a change.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SectionDigest(BTreeMap<String, u64>);
 
 impl SectionDigest {
-    /// Fingerprint every top-level section of `doc`.
     pub fn of(doc: &Map<String, Value>) -> Self {
         Self(
             doc.iter()
@@ -33,8 +25,6 @@ impl SectionDigest {
         )
     }
 
-    /// Sections whose fingerprint differs from `previous`: added, removed or
-    /// changed.
     pub fn changed_since(&self, previous: &Self) -> BTreeSet<String> {
         let added_or_changed = self
             .0
@@ -108,7 +98,6 @@ mod tests {
             "input": {"tap_to_click": true, "mouse_natural_scroll": false},
         })));
 
-        // Only `notifications` moved.
         let dnd = SectionDigest::of(&doc(&json!({
             "notifications": {"do_not_disturb": true},
             "display": {"scale": 1.5},
@@ -126,7 +115,6 @@ mod tests {
             names(&["appearance", "display"])
         );
 
-        // Reordered keys inside a section, at any depth, are no change.
         let reordered = SectionDigest::of(&doc(&json!({
             "input": {"mouse_natural_scroll": false, "tap_to_click": true},
             "display": {"scale": 1.5},
@@ -137,11 +125,9 @@ mod tests {
         let nested_b = SectionDigest::of(&doc(&json!({"display": {"o": {"b": [1, 2], "a": 1}}})));
         assert!(nested_b.changed_since(&nested_a).is_empty());
 
-        // But reordered array members are.
         let swapped = SectionDigest::of(&doc(&json!({"display": {"o": {"a": 1, "b": [2, 1]}}})));
         assert_eq!(swapped.changed_since(&nested_a), names(&["display"]));
 
-        // The first document against nothing reports every section.
         assert_eq!(
             before.changed_since(&SectionDigest::default()),
             names(&["display", "input", "notifications"])

@@ -3,36 +3,27 @@
 //! hearing and vision assists Settings edits and the compositor applies, is
 //! the `accessibility-settings` crate's model; it reads these keys through
 //! the definitions here, so the two cannot disagree about a default or a range.
+
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::ops::RangeInclusive;
 
 pub const SECTION: &str = "accessibility";
 
-/// This device's accessibility choices: whether the person's comforts reach
-/// its login screens ([`crate::sign_in_comforts::APPLY_TO_SIGN_IN`]).
 pub const DEVICE_SECTION: &str = "accessibility_device";
 
-/// Whether the screen reader is on: what Settings, the screen reader chord
-/// (Ctrl+Super+Enter) and every app's narrator read and write.
 pub const SCREEN_READER: crate::Key<bool> = crate::Key::new(SECTION, "screen_reader", || false);
 
 /// Normalised speech rate, where 100 is the engine default.
 pub const DEFAULT_SCREEN_READER_RATE: u16 = 100;
-/// The speech rates reading clamps to.
 pub const SCREEN_READER_RATE_RANGE: RangeInclusive<u16> = 50..=200;
 
-/// A persisted choice Settings offers by name: every value, each with its
-/// label.
 pub trait Labelled: Copy + PartialEq + 'static {
-    /// Every value, in the order Settings offers them.
     const CHOICES: &'static [Self];
 
-    /// The label Settings shows for the value.
     fn label(self) -> &'static str;
 }
 
-/// Generates a persisted choice with the labels Settings offers for it.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! labelled_choice {
@@ -84,7 +75,6 @@ labelled_choice!(
 );
 
 impl ScreenReaderVoice {
-    /// The speech engine's voice id; `None` keeps the engine's own default.
     pub fn engine_voice(self) -> Option<&'static str> {
         match self {
             Self::System => None,
@@ -97,7 +87,6 @@ impl ScreenReaderVoice {
     }
 }
 
-/// What the screen reader should do, as the person configured it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenReaderSettings {
     pub enabled: bool,
@@ -111,8 +100,6 @@ impl ScreenReaderSettings {
         Self::from_section(&super::load_section(SECTION))
     }
 
-    /// The screen-reader keys of `section`; a missing or malformed key keeps
-    /// its own default.
     pub fn from_section(section: &Map<String, Value>) -> Self {
         fn key<T: for<'de> Deserialize<'de>>(
             section: &Map<String, Value>,
@@ -129,7 +116,6 @@ impl ScreenReaderSettings {
         )
     }
 
-    /// The settings for a stored rate percentage, clamped to the offered range.
     pub fn new(enabled: bool, rate_percent: u16, voice: ScreenReaderVoice) -> Self {
         Self {
             enabled,
@@ -139,7 +125,6 @@ impl ScreenReaderSettings {
     }
 }
 
-/// `rate_percent` within [`SCREEN_READER_RATE_RANGE`].
 pub fn clamped_rate(rate_percent: u16) -> u16 {
     rate_percent.clamp(
         *SCREEN_READER_RATE_RANGE.start(),

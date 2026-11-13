@@ -7,19 +7,12 @@
 use crate::Key;
 use crate::day_schedule::{MODE_KEY, SECTION};
 
-/// This device's appearance: the defaults its OS image ships
-/// (`ui::theme_layers::DISTRIBUTION_DEFAULTS_KEY`).
 pub const DEVICE_SECTION: &str = "appearance_device";
 
-/// `"dark"`, `"light"` or [`crate::day_schedule::AUTOMATIC_MODE`]. Unset
-/// leaves the polarity to the distribution's theme.
 pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);
 
-/// High contrast in the current mode's polarity. Choosing a mode leaves it.
 pub const HIGH_CONTRAST: Key<bool> = Key::new(SECTION, "high_contrast", || false);
 
-/// The band of type scales the theme applies (`appearance.text_scale`); a
-/// stored scale outside it is clamped.
 pub const TEXT_SCALE_MIN: f32 = 0.5;
 pub const TEXT_SCALE_MAX: f32 = 4.0;
 
@@ -28,8 +21,8 @@ pub const TEXT_SCALE_MAX: f32 = 4.0;
 /// which the compositor keeps per device. Unset shows the default picture.
 pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || None);
 
-/// The interface language as a BCP 47 tag (`de-DE`). Unset follows the
-/// system locale.
+/// The interface language, named as its language pack is (`de`; see
+/// [`tilo_paths::language_of`]). Unset follows the device's locale.
 pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
 
 /// The interface language: the one the person chose ([`LANGUAGE`]), else the
@@ -73,9 +66,7 @@ pub const ACCENT: Key<Option<String>> = Key::new(SECTION, "accent", || None);
 /// still wins over this.
 pub const TRANSLUCENCY: Key<Option<f32>> = Key::new(SECTION, "translucency", || None);
 
-/// The band a stored translucency is clamped to.
 pub const TRANSLUCENCY_MIN: f32 = 0.0;
-/// See [`TRANSLUCENCY_MIN`].
 pub const TRANSLUCENCY_MAX: f32 = 1.0;
 
 #[cfg(test)]
@@ -125,9 +116,6 @@ mod tests {
         assert_eq!(TRANSLUCENCY.from_document(&empty), None);
     }
 
-    /// The person's choice is the interface language, in one form whichever
-    /// way it was written; the system locale is the default behind it, and a
-    /// value that names no language (`C`) leaves the next source to decide.
     #[test]
     fn the_chosen_language_wins_and_the_system_locale_is_only_the_default() {
         assert_eq!(

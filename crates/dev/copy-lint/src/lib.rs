@@ -1,11 +1,9 @@
-//! Keeps English prose out of a crate's copy builders.
-//!
-//! Every user-visible string comes from a Fluent catalogue. [`CopyLint`] walks
-//! a crate's sources, finds string literals handed straight to the builders
-//! that put text on screen (notifications, access names, labels, tooltips,
-//! painted text) or to the struct fields that carry it, in non-test code, and
-//! fails on any that reads as English. Ids, brand names and other values that
-//! are not prose go in the crate's allow-list, with the file they live in.
+//! Keeps English prose out of a crate's copy builders. Every user-visible string comes from a
+//! Fluent catalogue: [`CopyLint`] walks a crate's sources, finds string literals handed straight to
+//! the builders that put text on screen (notifications, access names, labels, tooltips, painted
+//! text) or to the struct fields that carry it, and fails on any that reads as English. Ids, brand
+//! names and other values that are not prose go in the crate's allow-list, with the file they live
+//! in.
 //!
 //! Each crate calls it from one test:
 //!
@@ -32,8 +30,8 @@ pub mod catalog;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Calls whose first string argument (after optional leading identifiers,
-/// as in `draw_text(scene, "…")`) is shown to people.
+/// Calls whose first string argument (after optional leading identifiers, as in
+/// `draw_text(scene, "…")`) is shown to people.
 const BUILDER_CALLS: &[&str] = &[
     "Notification::new(",
     ".with_name(",
@@ -56,9 +54,8 @@ const BUILDER_CALLS: &[&str] = &[
     "draw_more_row(",
 ];
 
-/// Calls whose argument is a sentence for people even though it is not
-/// painted by the call itself: an error that carries the catalogue text a
-/// surface shows.
+/// Calls whose argument is a sentence for people without painting it: an error that carries the
+/// catalogue text a surface shows.
 const USER_TEXT_CALLS: &[&str] = &["Explained("];
 
 /// Struct fields that carry copy.
@@ -78,8 +75,7 @@ const COPY_FIELDS: &[&str] = &[
     "reason",
 ];
 
-/// One crate's scan: where its sources live, what to skip and which
-/// literals only look like prose.
+/// One crate's scan: where its sources live, what to skip, and which literals only look like prose.
 #[derive(Clone, Debug)]
 pub struct CopyLint<'a> {
     root: PathBuf,
@@ -90,8 +86,7 @@ pub struct CopyLint<'a> {
 }
 
 impl<'a> CopyLint<'a> {
-    /// Scan every `.rs` file under `root` except test modules: `tests.rs`
-    /// and `*_tests.rs`.
+    /// Scan every `.rs` file under `root` except test modules: `tests.rs` and `*_tests.rs`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -102,9 +97,8 @@ impl<'a> CopyLint<'a> {
         }
     }
 
-    /// Literals that look like prose but are not copy, as
-    /// `(path under root, literal)`. An entry that no longer matches fails
-    /// the scan, so the list never outlives its reason.
+    /// Literals that look like prose but are not copy, as `(path under root, literal)`. An entry that
+    /// no longer matches fails the scan, so the list never outlives its reason.
     #[must_use]
     pub fn allow(mut self, allowed: &'a [(&'a str, &'a str)]) -> Self {
         self.allowed = allowed;
@@ -118,16 +112,15 @@ impl<'a> CopyLint<'a> {
         self
     }
 
-    /// File names that are test fixtures or speak to tools rather than
-    /// people.
+    /// File names that are test fixtures or speak to tools rather than people.
     #[must_use]
     pub fn skip_files(mut self, names: &'a [&'a str]) -> Self {
         self.skip_files = names;
         self
     }
 
-    /// Fail unless the walk finds more than `count` files, so a moved
-    /// source tree cannot pass vacuously.
+    /// Fail unless the walk finds more than `count` files, so a moved source tree cannot pass
+    /// vacuously.
     #[must_use]
     pub fn min_files(mut self, count: usize) -> Self {
         self.min_files = count;
@@ -138,8 +131,8 @@ impl<'a> CopyLint<'a> {
     ///
     /// # Panics
     ///
-    /// On any English copy literal the allow-list does not name, on a stale
-    /// allowance, on too few files, or when the source tree cannot be read.
+    /// On any English copy literal the allow-list does not name, a stale allowance, too few files, or
+    /// an unreadable source tree.
     pub fn check(&self) {
         let mut files = Vec::new();
         self.sources(&self.root, &mut files);
@@ -216,8 +209,7 @@ impl<'a> CopyLint<'a> {
     }
 }
 
-/// Every copy literal in `source`'s non-test code that reads as English,
-/// with its 1-based line.
+/// Every copy literal in `source`'s non-test code that reads as English, with its 1-based line.
 #[must_use]
 pub fn english_copy(source: &str) -> Vec<(usize, String)> {
     copy_literals(&without_test_items(source))
@@ -226,9 +218,8 @@ pub fn english_copy(source: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// The 1-based lines in `source`'s non-test code where a copy builder, a
-/// copy field or a user-text call is given a `format!` that uses Debug
-/// formatting: `{:?}` prints type names, field names and quotes
+/// The 1-based lines in `source`'s non-test code where a copy builder, copy field or user-text call
+/// is given a `format!` with Debug formatting: `{:?}` prints type names, field names and quotes
 /// (`NoHandler { scheme: "settings" }`), never words a person reads.
 #[must_use]
 pub fn debug_formatted_copy(source: &str) -> Vec<usize> {
@@ -273,8 +264,7 @@ pub fn debug_formatted_copy(source: &str) -> Vec<usize> {
     lines
 }
 
-/// Whether a format string has a `{…:?}` or `{…:#?}` placeholder (`{{` is
-/// an escaped brace, not a placeholder).
+/// Whether a format string has a `{…:?}` or `{…:#?}` placeholder; `{{` is an escaped brace, not one.
 fn uses_debug_format(format: &str) -> bool {
     let mut rest = format;
     while let Some(open) = rest.find('{') {
@@ -352,7 +342,7 @@ fn without_test_items(source: &str) -> String {
     kept
 }
 
-/// The string literal starting at `text` (just past its opening quote).
+/// The string literal starting at `text`, just past its opening quote.
 fn literal_body(text: &str) -> Option<&str> {
     let mut escaped = false;
     for (offset, c) in text.char_indices() {
@@ -371,8 +361,7 @@ fn copy_literals(source: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
     for call in BUILDER_CALLS {
         for (start, _) in source.match_indices(call) {
-            // `draw_more_row(` also matches inside `self.draw_more_row(`;
-            // the argument shape decides, not the receiver.
+            // `draw_more_row(` also matches inside `self.draw_more_row(`; the argument shape decides.
             let mut rest = source[start + call.len()..].trim_start();
             // Leading plain identifier arguments (`scene, transform, tr,`).
             loop {
@@ -394,8 +383,8 @@ fn copy_literals(source: &str) -> Vec<(usize, String)> {
     for field in COPY_FIELDS {
         let pattern = format!("{field}:");
         for (start, _) in source.match_indices(&pattern) {
-            // A field starts a line or follows `{`, `(` or `,`; anything else
-            // (an identifier, a path, the inside of a literal) is not one.
+            // A field starts a line or follows `{`, `(` or `,`; an identifier, a path or the inside of
+            // a literal is not one.
             let starts_field = source[..start]
                 .chars()
                 .next_back()

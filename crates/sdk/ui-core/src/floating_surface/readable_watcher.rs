@@ -1,5 +1,5 @@
-//! The thread that wakes an app when the shell has written to its floating
-//! surface connection, and the rearm the app gives it once it has read.
+//! The thread that wakes an app when the shell has written to its floating surface connection, and the
+//! rearm the app gives it once it has read.
 
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -21,7 +21,7 @@ impl Rearm {
         if !self.parked.swap(false, std::sync::atomic::Ordering::AcqRel) {
             return;
         }
-        // A full pipe already holds a rearm the watcher has not taken.
+        // A full pipe already has a rearm the watcher has not taken.
         // SAFETY: one byte from a live buffer to a descriptor this owns.
         let _ = unsafe { libc::write(self.pipe.as_raw_fd(), [1_u8].as_ptr().cast(), 1) };
     }
@@ -94,7 +94,7 @@ pub(super) fn spawn_readable_watcher(
             if fds[1].revents != 0 {
                 let mut drained = [0_u8; 64];
                 loop {
-                    // SAFETY: reads into a live buffer of its own length.
+                    // SAFETY: reads into a live buffer of it length.
                     let read = unsafe {
                         libc::read(
                             rearms.as_raw_fd(),

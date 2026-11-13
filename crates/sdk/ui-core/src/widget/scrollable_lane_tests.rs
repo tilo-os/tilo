@@ -39,9 +39,7 @@ fn pass(
     scroll.adjust_layout_style(taffy, node, &mut text)
 }
 
-/// A parent sizing itself to its content lays the view out in a box other
-/// than the one it gets. Content that overflowed that box, but fits the
-/// real one, keeps no lane, so the layout settles at the full width.
+/// A parent sizing itself to its content lays the view out in a box other than the one it gets.
 #[test]
 fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
     let mut lines = Column::new().with_intrinsic_height();
@@ -64,13 +62,9 @@ fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
     );
 }
 
-/// A page in a navigation shell, as Clocks shows its timers: the
-/// shell's first solve gives the scroll view no width, where the
-/// wrapped page is far taller than the window, and the next gives it
-/// its place, where the page fits. That early overflow does not keep
-/// the bar's lane at the real size, or each layout would end with the
-/// lane the one before it dropped, and the window would never settle
-/// on any width.
+/// A page in a navigation shell, as Clocks shows its timers: the shell's first solve gives the
+/// scroll view no width, where the wrapped page is far taller than the window, and the next
+/// gives it its place, where the page fits.
 #[test]
 fn content_that_overflowed_before_the_view_had_its_place_keeps_no_lane() {
     let page = || -> crate::widget::Element {

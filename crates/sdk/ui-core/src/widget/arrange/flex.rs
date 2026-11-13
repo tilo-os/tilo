@@ -1,4 +1,4 @@
-//! `stack` and `row`: Taffy flex containers (layout design 3).
+//! `stack` and `row`: Taffy flex containers.
 
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
@@ -8,7 +8,6 @@ use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
 use super::units::{Align, Axis, Direction, Distribute};
 use crate::tokens::Rhythm;
 
-/// How a flex container runs.
 pub struct FlexLayout {
     axis: Axis,
     gap: Rhythm,
@@ -31,9 +30,6 @@ impl Layout for FlexLayout {
 
     fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gap = length(resolved.gap(self.gap));
-        // The room the container keeps between its own edge and what it holds is the same on
-        // every side; a `lead` stands what it holds further in from the side it leads on, over
-        // that room.
         let pad = resolved.gap(self.padding);
         let lead = if lead > 0.0 { lead } else { 0.0 };
         let (left, right) = match self.leading() {
@@ -83,7 +79,6 @@ impl Layout for FlexLayout {
         }
     }
 
-    /// A row written right to left leads on the right.
     fn leading(&self) -> Side {
         match self.direction {
             Direction::Rtl => Side::Trailing,
@@ -110,7 +105,6 @@ impl Layout for FlexLayout {
         // short of room lays out as if it held none (a card's title and its menu keep their
         // one gap), and a row with room sends what follows it to the far end.
         if along.is_some() && slot.element.name() == "Spacer" {
-            // The gap before it, or after it when it comes first.
             let back = length(-resolved.gap(self.gap));
             let before = index > 0;
             match (self.axis, before == (self.direction == Direction::Ltr)) {
@@ -124,14 +118,10 @@ impl Layout for FlexLayout {
     }
 }
 
-/// Children top to bottom. `gap` defaults to `sibling`, `align` to stretch.
 pub type Stack = Arranged<FlexLayout>;
-/// Children along the inline direction, mirrored in right-to-left. `gap` defaults to `related`,
-/// `align` to center.
 pub type Row = Arranged<FlexLayout>;
 
 impl Arranged<FlexLayout> {
-    /// A [`Stack`].
     #[must_use]
     pub fn stack() -> Self {
         Self::with_layout(FlexLayout {
@@ -147,7 +137,6 @@ impl Arranged<FlexLayout> {
         })
     }
 
-    /// A [`Row`].
     #[must_use]
     pub fn row() -> Self {
         Self::with_layout(FlexLayout {
@@ -169,8 +158,6 @@ impl Arranged<FlexLayout> {
         self
     }
 
-    /// The room the container keeps between its edge and what it holds, on every side: a
-    /// panel's body asking to be inset from its own surface.
     #[must_use]
     pub const fn padding(mut self, padding: Rhythm) -> Self {
         self.layout.padding = padding;
@@ -189,7 +176,6 @@ impl Arranged<FlexLayout> {
         self
     }
 
-    /// A flowing row, for chips and tags.
     #[must_use]
     pub const fn wrap(mut self) -> Self {
         self.layout.wrap = true;
@@ -203,15 +189,12 @@ impl Arranged<FlexLayout> {
         self
     }
 
-    /// Take the whole height offered too: the root of a window, whose children can then share
-    /// the height by weight.
     #[must_use]
     pub const fn fill_height(mut self) -> Self {
         self.layout.full_height = true;
         self
     }
 
-    /// The inline direction of a row.
     #[must_use]
     pub const fn direction(mut self, direction: Direction) -> Self {
         self.layout.direction = direction;

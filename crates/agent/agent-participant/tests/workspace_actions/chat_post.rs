@@ -1,7 +1,7 @@
 //! A chat post costs what a post costs, however long the chat has run.
 //!
 //! A member's agent posts into the workspace's chat through the door a page
-//! and the front door take: the action is addressed to the chat record's
+//! and the API server take: the action is addressed to the chat record's
 //! provider, the host starts the chain's part for it and runs it for the
 //! caller. What the host does for one post is its own work — the record it
 //! acts on stays open, one action is resolved by address, what it wrote is
@@ -145,7 +145,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let host = enrol(
         &owner,
         "pace-node",
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
+        tilo_user_identity::DeviceCapabilities::host(),
     );
     let owner_device = enrol(&owner, "pace-owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "pace-guest-browser", DeviceCapabilities::member());

@@ -1,7 +1,5 @@
-//! The vault window's controls on its items, bound to what the vault
-//! publishes: a press, a screen reader, the palette and an agent reach the
-//! same effect under the same contract. The vault is this device's, so every
-//! one of them is an effect; none writes a document.
+//! The vault window's controls on its items, bound to what the vault publishes: a press, a
+//! screen reader, the palette and an agent reach the same effect under the same contract.
 
 use std::sync::LazyLock;
 
@@ -11,8 +9,6 @@ use ui::tilo_resource::{Effect, Resource};
 use crate::actions::PasswordsEffect;
 use crate::resource::Passwords;
 
-/// The vault as the palette, an agent and a control see it: what the vault
-/// publishes, with its effects beside it.
 static VAULT: LazyLock<ResourceSpec> = LazyLock::new(|| {
     let mut vault = ui::tilo_resource::publish::<Passwords>(
         Passwords::KIND,
@@ -34,9 +30,8 @@ mod tests {
     use super::*;
     use ui::tilo_actions::{ConfirmationPolicy, OperationKind};
 
-    /// The item's controls are bound to effects the vault publishes: none is
-    /// a document change, and the two that hand out or destroy a secret ask
-    /// the person first.
+    /// The item's controls are bound to effects the vault publishes: none is a document
+    /// change, and the two that hand out or destroy a secret ask the person first.
     #[test]
     fn item_controls_bind_published_effects() {
         let item = "the-item".to_owned();

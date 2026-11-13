@@ -2,30 +2,18 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// HTTP requests with streaming bodies: [`Client`](crate::Client).
     Http,
-    /// Reading responses from any site. A page reads only the responses a
-    /// site allows it to (CORS), unless the host provides a
-    /// [`proxy`](crate::proxy).
     CrossOriginHttp,
-    /// WebSocket clients: `ws`.
     WebSocket,
-    /// WebTransport sessions: `webtransport`.
     WebTransport,
-    /// Raw TCP, UDP and TLS over TCP: `sockets`.
     Sockets,
-    /// Endpoints peers dial by ticket (the `tilo-net-p2p` crate).
     PeerToPeer,
-    /// Whether the device is online: [`status`](crate::status).
     Status,
-    /// Whether the connection is metered: [`NetStatus::metered`](crate::status::NetStatus::metered).
     Metered,
 }
 
@@ -37,9 +25,7 @@ pub(crate) const NO_WEBTRANSPORT: &str = "This browser has no WebTransport.";
 pub(crate) const NOT_YET: &str = "Tilo cannot do this yet.";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux, macOS and the web, in that
-    /// order. WebTransport is listed for the web, but a browser without it
-    /// answers [`Unsupported`] from [`availability`] and from `connect`.
+    /// Availability on Linux, macOS and web, in that order.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {
@@ -54,8 +40,6 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 
-    /// Whether the feature can be used on this target (and, for
-    /// WebTransport in a page, in this browser).
     fn availability(self) -> Availability {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if self == Self::WebTransport && !crate::web::has_global("WebTransport") {

@@ -1,22 +1,7 @@
-//! Legacy VMs: software that needs a whole system, in one VM per user and
-//! guest OS.
-//!
-//! The Linux VM is an unprivileged libvirt domain in the user's own
-//! `qemu:///session`, created from a signed guest image ([`image`]). The
-//! first launch wakes it and an idle VM is saved to disk ([`lifecycle`]); the
-//! [`supervisor`] carries that out, grows the balloon under pressure
-//! ([`memory`]), shares the user's granted directories at the same paths
-//! ([`grants`], [`virtiofs`]) and forwards windows to the compositor
-//! (`waypipe` over vsock, see [`legacy_agent_protocol::waypipe`]). Installed
-//! apps get search entries and environment shims ([`apps`]).
-//!
-//! Hosted workspaces run their Linux programs in a VM of their own, a
-//! sibling of the legacy VM with the same agent and lifecycle on
-//! Firecracker, metered per second ([`hosted`]).
-//!
-//! Windows is not a legacy VM: the Windows appliance in `windows-vm` is a
-//! separate VM type (one owner-managed system domain, `RemoteApp` windows and
-//! an HTTPS guest bridge). The two share only [`libvirt_domain`].
+//! Legacy VMs: software that needs a whole system, in one VM per user and guest OS.
+//! The Linux VM is an unprivileged libvirt domain in the user's `qemu:///session`;
+//! hosted workspaces run their Linux programs in a Firecracker VM with the same
+//! agent and lifecycle ([`hosted`]).
 
 #![allow(
     clippy::missing_errors_doc,

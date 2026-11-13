@@ -1,20 +1,4 @@
-//! Headless request builder for harnesses and development:
-//!
-//! ```text
-//! imager --tilo-staging-request --manifest PATH \
-//!     --component staging-esp=PATH --component staging-root=PATH \
-//!     --target-bytes N [--profile-json PATH] --out REQUEST.json
-//! imager --tilo-staging-request --action arm    --record OPERATION_ID \
-//!     --manifest PATH --out REQUEST.json
-//! imager --tilo-staging-request --action remove --record OPERATION_ID --out REQUEST.json
-//! ```
-//!
-//! Unprivileged and read-only: it probes, plans and writes a
-//! [`helper::Request`] (mode 0600, never overwriting), then prints a JSON
-//! summary on stdout. It grants nothing: the elevated helper still resolves
-//! the release against the compiled-in catalog and re-probes the host.
-//! `arm`/`remove` rebuild the request from the helper's public status
-//! record. Exit codes: 0 ok, 2 host blockers, 3 plan refused, 1 other errors.
+//! Headless request builder for harnesses and development.
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -237,7 +221,6 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
     Ok((request, summary))
 }
 
-/// Run the request builder when `args` asks for it; `Ok(None)` otherwise.
 pub fn maybe_run_staging_request(args: &[String]) -> Result<Option<i32>, String> {
     if args.get(1).map(String::as_str) != Some(STAGING_REQUEST_ARG) {
         return Ok(None);

@@ -1,5 +1,5 @@
-//! An emulated TPM for mechanism tests: one `swtpm` per caller, so tests that
-//! drive dictionary-attack lockout cannot leak it into each other.
+//! An emulated TPM for mechanism tests: one `swtpm` per caller, so tests that drive
+//! dictionary-attack lockout cannot leak it into each other.
 //!
 //! Needs `swtpm`, `tpm2-tools` and `cryptsetup`; probe with
 //! [`require_capability!`](crate::require_capability)`(Swtpm, Swtpm::start(), ..)`.
@@ -31,11 +31,10 @@ fn missing_tools() -> Vec<&'static str> {
         .collect()
 }
 
-/// A running `swtpm`, killed on drop.
 pub struct Swtpm {
     _state: tempfile::TempDir,
-    /// The data channel's socket under the state directory, its own and no
-    /// one else's: no port is picked, so none can be taken.
+    /// The data channel's socket under the state directory, its own and no one else's: no port is
+    /// picked, so none can be taken.
     socket: PathBuf,
     child: Child,
     /// swtpm's log of every command and response, when it keeps one.
@@ -43,14 +42,12 @@ pub struct Swtpm {
 }
 
 impl Swtpm {
-    /// A fresh emulated TPM on its own socket. `Err` names the tools this
-    /// host lacks; a TPM that will not start once they are there panics.
+    /// A fresh emulated TPM on its own socket. `Err` names the tools this host lacks; a TPM that
+    /// will not start once they are there panics.
     pub fn start() -> Result<Self, String> {
         Self::start_with(false)
     }
 
-    /// Like [`Swtpm::start`], and the TPM keeps every command and response it
-    /// exchanges, for tests of what crosses the bus: [`Swtpm::wire`].
     pub fn start_recording() -> Result<Self, String> {
         Self::start_with(true)
     }
@@ -67,12 +64,12 @@ impl Swtpm {
 
     fn start_on(record: bool) -> Result<Self, String> {
         let state = tempfile::tempdir().expect("tempdir");
-        // A data channel and the control channel tpm2-tools' `swtpm:` TCTI looks
-        // for beside it, both sockets under this TPM's own state directory.
+        // A data channel and the control channel tpm2-tools' `swtpm:` TCTI looks for beside it,
+        // both sockets under this TPM's own state directory.
         let socket = state.path().join("tpm.sock");
         let ctrl = state.path().join("tpm.sock.ctrl");
-        // No `--create-ek-cert`: minting one needs swtpm_localca, which fails in a test sandbox
-        // and is not needed here.
+        // No `--create-ek-cert`: minting one needs swtpm_localca, which fails in a test sandbox and
+        // is not needed here.
         let setup_log = state.path().join("setup.log");
         let _ = Command::new("swtpm_setup")
             .args(["--tpm2", "--tpmstate"])
@@ -148,8 +145,8 @@ impl Swtpm {
         ))
     }
 
-    /// Every command and response this TPM exchanged so far, in order, as
-    /// one byte string. Only a TPM from [`Swtpm::start_recording`] keeps them.
+    /// Every command and response this TPM exchanged so far, in order, as one byte string. Only a
+    /// TPM from [`Swtpm::start_recording`] keeps them.
     #[must_use]
     pub fn wire(&self) -> Vec<u8> {
         let path = self
@@ -159,7 +156,6 @@ impl Swtpm {
         parse_wire(&std::fs::read_to_string(path).expect("swtpm's wire log"))
     }
 
-    /// The `TPM2TOOLS_TCTI` value that reaches this TPM.
     #[must_use]
     pub fn tcti(&self) -> String {
         format!("swtpm:path={}", self.socket.display())
@@ -197,7 +193,6 @@ fn parse_wire(log: &str) -> Vec<u8> {
     wire
 }
 
-/// Whether `needle` occurs in `haystack`.
 #[must_use]
 pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)

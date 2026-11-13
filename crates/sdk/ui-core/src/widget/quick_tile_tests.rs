@@ -37,7 +37,6 @@ fn lay_out(tile: &mut QuickTile, theme: &Theme, width: f32) {
     tile.apply_layout(&taffy, node, Point::ZERO);
 }
 
-/// Two tiles in one row, as Quick Settings stands them: each claims half.
 fn lay_out_row(left: &mut QuickTile, right: &mut QuickTile, theme: &Theme, width: f32) {
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -145,7 +144,6 @@ fn a_tile_fills_its_width_at_the_height_its_state_line_needs() {
     );
     assert_eq!(right.get_rect().height(), metrics.height);
 
-    // The same row with a state lines that fit: the tiles stay one line tall.
     let (mut left, mut right) = (wifi().share(0.5), wifi().share(0.5));
     lay_out_row(&mut left, &mut right, &theme, 600.0);
     assert_eq!(left.get_rect().height(), metrics.height_one);

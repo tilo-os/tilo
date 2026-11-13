@@ -12,20 +12,36 @@
 // is new here (no host let it in, no workspace entered) and opens the site
 // itself (no route), and its setup starts now. A link with secrets (an
 // invitation, a pairing) and a page inside another site never show it.
-// Without storage the page opens as it always did.
+// A newcomer who arrives by an invitation joins that workspace first, with
+// nothing in their way: their own setup is kept for later (`later`), and
+// shows the next time they open the site itself, never over a workspace's
+// address (the workspace also offers it once they have used it a while,
+// identity-actions.mjs). Without storage the page opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
-if(Object.keys(secrets).length)return;
+var fresh=function(){
+ var kept=['tilo-host-memberships','tilo-entered-workspaces'];
+ for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return false;
+ return true;
+};
+var bare=!(location.hash.length>1&&location.hash!=='#/');
+if(Object.keys(secrets).length){
+ try{if(secrets.invite&&!localStorage.getItem('tilo-setup')&&fresh())localStorage.setItem('tilo-setup',JSON.stringify({step:'later',at:Date.now()}));}catch(e){}
+ return;
+}
 if(/[?&](embed|workspace|room|invite)(=|&|$)/.test(location.search))return;
 var setup=null;
 try{
  setup=JSON.parse(localStorage.getItem('tilo-setup')||'null');
  if(!setup||typeof setup!=='object'||typeof setup.step!=='string'){
   setup=null;
-  if(location.hash.length>1&&location.hash!=='#/')return;
-  var kept=['tilo-host-memberships','tilo-entered-workspaces'];
-  for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
+  if(!bare||!fresh())return;
   setup={step:'start',at:Date.now()};
   localStorage.setItem('tilo-setup',JSON.stringify(setup));
+ }else if(setup.step==='later'){
+  // Shown on the site itself, and kept for later still: until they take
+  // it up, a workspace's address opens the workspace.
+  if(!bare)return;
+  setup={step:'start',at:setup.at};
  }
 }catch(e){return;}
 if(setup.step==='done')return;

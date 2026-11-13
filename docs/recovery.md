@@ -20,7 +20,7 @@ to what the previous deployment contained. That is the whole of what an image is
 **`/var` does not.** Everything you would call *your* machine lives there and is
 shared by every deployment on the disk:
 
-- `~/.config/tilo/state.json` — your workspaces, strips, groups and tabs
+- `~/.local/state/tilo/desk.automerge` — your workspaces, strips, groups and tabs
 - every app's `state.automerge` under `~/.local/share/<package>/`
 - the device identity keys under `/var/lib/tilo`
 - the content store the collaborative filesystem hydrates from
@@ -378,11 +378,11 @@ An older binary can meet state a newer one wrote. This is expected after a
 rollback across a schema change. Both places Tilo keeps state carry a
 schema version and **refuse** rather than guess:
 
-- `~/.config/tilo/state.json` — the compositor's workspace tree. A file from a
-  newer schema is left untouched, the session starts from a default tree, and a
+- `~/.local/state/tilo/desk.automerge` — the desktop's workspace tree. A file from
+  a newer schema is left untouched, the session starts from a default tree, and a
   notification that does not auto-dismiss says so with the path. Silently
-  replacing your workspaces with a demo tree is indistinguishable from having lost
-  them, which is what used to happen.
+  replacing your workspaces with a demo tree would be indistinguishable from
+  losing them.
 - `state.automerge` — every app's document. Same rule: refuse, preserve, say so.
 
 So the honest sequence after rolling back across a schema change is: the older

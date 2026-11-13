@@ -1,8 +1,4 @@
 //! Narrow cryptographic operations needed by privileged OS tooling.
-//!
-//! Keeping these operations in Rust removes password material from subprocess
-//! pipes and prevents general-purpose OpenSSL parsing from becoming part of an
-//! application's privilege boundary.
 
 use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
@@ -252,7 +248,6 @@ fn attribute_value_text(value: &der::Any) -> String {
     }
 }
 
-/// Render an X.509 time as `Mon DD HH:MM:SS YYYY +00:00`.
 fn display_time(time: x509_cert::time::Time) -> String {
     let format = time::macros::format_description!(
         "[month repr:short] [day padding:space] [hour]:[minute]:[second] [year padding:none] [offset_hour sign:mandatory]:[offset_minute]"
@@ -288,13 +283,11 @@ pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
     })
 }
 
-/// Return the lowercase SHA-256 digest of a certificate's canonical DER.
 pub fn certificate_sha256(bytes: &[u8]) -> Result<String, String> {
     let (der, _) = decode_single_certificate(bytes)?;
     Ok(hex::encode(Sha256::digest(&der)))
 }
 
-/// Decode one PEM or DER X.509 certificate to its canonical DER form.
 pub fn certificate_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use x509_cert::der::{Decode, DecodePem, Encode};
 
@@ -362,7 +355,6 @@ fn inspect_efi_signature_list(
 ) -> Result<(bool, usize), String> {
     const LIST_HEADER_BYTES: usize = 16 + 4 + 4 + 4;
     const SIGNATURE_OWNER_BYTES: usize = 16;
-    // EFI_CERT_X509_GUID, encoded using EFI GUID byte order.
     const EFI_CERT_X509_GUID: [u8; 16] = [
         0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0,
         0x72,
@@ -513,7 +505,6 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
     })
 }
 
-/// Generate an RSA-2048 key pair suitable for TPM policy authorization.
 pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use rsa::{
@@ -540,7 +531,6 @@ pub fn sign_rsa_sha256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>,
     sign_rsa_pkcs1_ring(private_key_pem, message, &ring::signature::RSA_PKCS1_SHA256)
 }
 
-/// Derive a PKCS#8 PEM public key from a PKCS#1 or PKCS#8 RSA private key.
 pub fn rsa_public_key_pem(private_key_pem: &str) -> Result<String, String> {
     use rsa::{
         RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey,
@@ -555,7 +545,6 @@ pub fn rsa_public_key_pem(private_key_pem: &str) -> Result<String, String> {
         .map_err(|error| format!("cannot encode RSA public key: {error}"))
 }
 
-/// Verify that an RSA private key is the private half of an X.509 certificate.
 pub fn rsa_private_key_matches_certificate(
     private_key_pem: &str,
     certificate_bytes: &[u8],
@@ -789,7 +778,6 @@ pub fn sign_kernel_module(
     Ok(output)
 }
 
-/// Create the detached PKCS#7 `SignedData` used by authenticated UEFI variable updates.
 pub fn sign_efi_variable_payload(
     private_key_pem: &str,
     certificate_bytes: &[u8],
@@ -1004,7 +992,6 @@ const SPC_OBSOLETE_FILE_LINK: [u8; 32] = [
     0x00, 0x65, 0x00, 0x74, 0x00, 0x65, 0x00, 0x3e, 0x00, 0x3e, 0x00, 0x3e,
 ];
 
-/// DER `SpcPeImageData { flags includeResources, file <<<Obsolete>>> }`.
 fn spc_pe_image_data() -> Vec<u8> {
     let mut encoded = vec![
         0x30, 0x26, // SEQUENCE
@@ -1015,7 +1002,6 @@ fn spc_pe_image_data() -> Vec<u8> {
     encoded
 }
 
-/// DER `SpcSpOpusInfo { moreInfo <<<Obsolete>>> }` without a program name.
 fn spc_sp_opus_info() -> Vec<u8> {
     let mut encoded = vec![
         0x30, 0x22, // SEQUENCE
@@ -1210,25 +1196,21 @@ fn efi_authenticode_entry(
 fn authenticode_signed_attributes_der(envelope: &[u8]) -> Result<Vec<u8>, der::Error> {
     use der::{AnyRef, Decode, Reader, SliceReader, Tag, TagNumber};
 
-    // ContentInfo; trailing WIN_CERTIFICATE padding is not part of it.
     let content_info = AnyRef::decode(&mut SliceReader::new(envelope)?)?;
     let mut reader = SliceReader::new(content_info.value())?;
     const_oid::ObjectIdentifier::decode(&mut reader)?;
     let explicit = AnyRef::decode(&mut reader)?;
     let signed_data = AnyRef::from_der(explicit.value())?;
     let mut reader = SliceReader::new(signed_data.value())?;
-    // version, digestAlgorithms, encapContentInfo
     for _ in 0..3 {
         AnyRef::decode(&mut reader)?;
     }
-    // certificates [0] and crls [1] are optional.
     while matches!(reader.peek_tag()?, Tag::ContextSpecific { .. }) {
         AnyRef::decode(&mut reader)?;
     }
     let signer_infos = AnyRef::decode(&mut reader)?;
     let signer_info = AnyRef::decode(&mut SliceReader::new(signer_infos.value())?)?;
     let mut reader = SliceReader::new(signer_info.value())?;
-    // version, sid, digestAlgorithm
     for _ in 0..3 {
         AnyRef::decode(&mut reader)?;
     }

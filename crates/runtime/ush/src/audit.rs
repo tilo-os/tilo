@@ -1,34 +1,20 @@
-//! The broker's audit log.
+//! The broker's audit log: append-only JSON Lines under `audit/`, one file per day.
 //!
-//! Append-only JSON Lines under `audit/`, one file per day. Every request a
-//! guest makes of the broker is recorded with its outcome, allowed or
-//! refused — a log that only records grants can't answer "what did that
-//! shell try to do".
-//!
-//! A *file*, not the compositor's in-memory ring
-//! (`crates/session/session/src/plane.rs`): that ring records collaboration
-//! ops keyed by `ArtifactId`, not a `trust-dir` request, and doesn't
-//! survive a restart — the wrong property for what you consult after the
-//! fact. What broker decisions share with it is only the vocabulary:
-//! `decide_capability` on a `CapOverride` (see [`crate::policy`]).
-//!
-//! The log lives in the store, never bound into a guest, so nothing inside
-//! can read or rewrite its own history.
+//! Every request a guest makes of the broker is recorded with its outcome, allowed or
+//! refused — a log of grants alone cannot answer what a shell tried to do. The log
+//! lives in the store, never bound into a guest, so nothing inside can read or rewrite
+//! its own history.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tilo_clock::unix_now;
 
-/// One line of the log.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuditRecord {
-    /// Seconds since the Unix epoch.
     pub at: u64,
     pub session: String,
     pub environment: String,
-    /// What was asked: `trust-dir`, `pkg-install`, `open-session`, …
     pub request: String,
-    /// What it was asked about: a path, a package name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     pub allowed: bool,
@@ -133,7 +119,6 @@ impl AuditLog {
         out
     }
 
-    /// The most recent `n` records, newest last.
     pub fn tail(&self, n: usize) -> Vec<AuditRecord> {
         let all = self.read_all();
         let skip = all.len().saturating_sub(n);
@@ -147,7 +132,6 @@ mod tests {
 
     #[test]
     fn the_log_keeps_every_grant_and_refusal_it_is_given() {
-        // phase: records_round_trip_through_the_log
         {
             let dir = tempfile::tempdir().unwrap();
             let log = AuditLog::at(dir.path().join("audit"));
@@ -183,7 +167,6 @@ mod tests {
             assert!(!all[0].allowed);
             assert_eq!(all[0].request, "pkg-install");
         }
-        // phase: the_log_appends_rather_than_replaces
         {
             let dir = tempfile::tempdir().unwrap();
             let log = AuditLog::at(dir.path().join("audit"));
@@ -193,11 +176,9 @@ mod tests {
                 );
             }
             assert_eq!(log.read_all().len(), 5);
-            // A second handle to the same directory sees everything the first wrote.
             let reopened = AuditLog::at(dir.path().join("audit"));
             assert_eq!(reopened.read_all().len(), 5);
         }
-        // phase: a_malformed_line_does_not_hide_the_rest
         {
             let dir = tempfile::tempdir().unwrap();
             let audit = dir.path().join("audit");
@@ -216,7 +197,6 @@ mod tests {
 
     #[test]
     fn the_log_tails_the_newest_records_and_rotates_by_day() {
-        // phase: tail_returns_the_newest_records
         {
             let dir = tempfile::tempdir().unwrap();
             let log = AuditLog::at(dir.path().join("audit"));
@@ -230,7 +210,6 @@ mod tests {
             assert_eq!(tail.len(), 3);
             assert_eq!(tail[2].subject.as_deref(), Some("p9"));
         }
-        // phase: the_log_rotates_by_day
         {
             let dir = tempfile::tempdir().unwrap();
             let log = AuditLog::at(dir.path().join("audit"));

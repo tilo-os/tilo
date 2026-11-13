@@ -1,17 +1,4 @@
-//! Pure data model for the firewall manager.
-//!
-//! The shapes here mirror firewalld's mental model: a set of **zones**,
-//! each with a default **target** (the action taken when no rule matches),
-//! a list of bound network **interfaces**, a set of enabled named
-//! **services**, and a list of **rules** (port openings + rich,
-//! source-scoped accept/reject entries).
-//!
-//! Everything is plain data + small pure helpers — no IO, no rendering.
-//! [`Firewall`] is the stored record (`#[derive(Model)]`): zones keyed by
-//! name, each with its membership sets and an ordered collection of rules.
-//! [`FirewallConfig`] is the configuration as the window and firewalld read
-//! it, made from the record. The live `firewall-cmd`/`nft` apply path lives
-//! in `backend.rs`.
+//! The stored configuration, its zones and rules, and the messages that name them.
 
 use std::collections::BTreeMap;
 
@@ -19,10 +6,8 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, ModelError, Refusal, Set};
 use uuid::Uuid;
 
-/// Stable identifier for a single rule. Backs selection + edit/delete.
 pub type RuleId = Uuid;
 
-/// The nine stock firewalld zones. `Public` is the conventional default.
 #[derive(
     Model, JsonSchema, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize,
 )]
@@ -41,8 +26,6 @@ pub enum ZoneKind {
 }
 
 impl ZoneKind {
-    /// Display order in the rail — least-trusted at the top, most-trusted
-    /// at the bottom, matching how firewalld documents the spectrum.
     pub const ALL: [ZoneKind; 9] = [
         ZoneKind::Drop,
         ZoneKind::Block,
@@ -69,17 +52,13 @@ impl ZoneKind {
         }
     }
 
-    /// Resolve a firewalld zone name back to a [`ZoneKind`]. Returns `None`
-    /// for custom zones the model doesn't represent (only the nine stock
-    /// zones are modelled), so an import skips anything non-standard rather
-    /// than mislabelling it.
+    /// Resolve a firewalld zone name back to a [`ZoneKind`].
     pub fn from_name(name: &str) -> Option<ZoneKind> {
         ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
     }
 
-    /// The message that names this zone as people read it: sentence case,
-    /// with the acronym kept. The zone's own name stays what firewalld calls
-    /// it, so the catalogue carries it and a window paints the translation.
+    /// The message that names this zone as people read it: sentence case, with the acronym
+    /// kept.
     pub fn title_message(self) -> &'static str {
         match self {
             ZoneKind::Drop => "firewall-zone-drop-title",
@@ -94,8 +73,7 @@ impl ZoneKind {
         }
     }
 
-    /// The catalogue message describing this zone, shown under its title in
-    /// the summary.
+    /// The catalogue message describing this zone, shown under its title in the summary.
     pub fn description_message(self) -> &'static str {
         match self {
             ZoneKind::Drop => "firewall-zone-drop-description",
@@ -129,14 +107,11 @@ impl ZoneKind {
 /// A zone's default target — what happens to traffic no rule matched.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Target {
-    /// firewalld `default` — reject with an ICMP error.
     #[default]
     Default,
     /// Accept everything not otherwise denied (trusted zone).
     Accept,
-    /// Reject with an ICMP error.
     Reject,
-    /// Silently drop.
     Drop,
 }
 
@@ -159,8 +134,8 @@ impl Target {
         }
     }
 
-    /// The message naming what happens to traffic no rule matched, as a
-    /// sentence-case value.
+    /// The message naming what happens to traffic no rule matched, as a sentence-case
+    /// value.
     pub fn outcome_message(self) -> &'static str {
         match self {
             Target::Default | Target::Reject => "firewall-target-rejected",
@@ -241,14 +216,14 @@ impl Action {
 }
 
 /// What a rule matches: a named service, or an explicit port + protocol.
-/// Stored as the variant and its fields: concurrent edits of one variant's
-/// fields merge, a change of variant is one value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum Matcher {
-    /// A named service from the catalog (e.g. `https`).
     Service(String),
     /// An explicit port (or port range like `8000-8080`) + protocol.
-    Port { port: String, proto: Proto },
+    Port {
+        port: String,
+        proto: Proto,
+    },
 }
 
 impl Default for Matcher {
@@ -258,7 +233,6 @@ impl Default for Matcher {
 }
 
 impl Matcher {
-    /// Short, human label for the first table column.
     pub fn label(&self) -> String {
         match self {
             Matcher::Service(s) => s.clone(),
@@ -266,8 +240,8 @@ impl Matcher {
         }
     }
 
-    /// What the rule matches as people read it: the service's name, or
-    /// the port (range); the protocol has a column of its own.
+    /// What the rule matches as people read it: the service's name, or the port (range);
+    /// the protocol has a column of its own.
     pub fn title(&self) -> String {
         match self {
             Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
@@ -287,15 +261,13 @@ impl Matcher {
     }
 }
 
-/// A single firewall rule inside a zone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
     pub id: RuleId,
     pub matcher: Matcher,
     pub action: Action,
-    /// Source CIDR / address. Empty == "anywhere" (`0.0.0.0/0`).
+    /// Empty == "anywhere" (`0.0.0.0/0`).
     pub source: String,
-    /// Disabled rules stay in the list but are not applied.
     pub enabled: bool,
 }
 
@@ -321,16 +293,13 @@ impl Rule {
     }
 }
 
-/// A configured zone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Zone {
     pub kind: ZoneKind,
     pub target: Target,
     pub interfaces: Vec<String>,
-    /// Enabled named services (the services panel toggles membership).
     pub services: Vec<String>,
     pub rules: Vec<Rule>,
-    /// firewalld "masquerade" (source NAT) flag — meaningful on external.
     pub masquerade: bool,
 }
 
@@ -362,22 +331,17 @@ impl Zone {
     }
 }
 
-/// Top-level firewall configuration — the document root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirewallConfig {
-    /// Master switch — whether the firewall is running at all.
     pub enabled: bool,
     /// firewalld panic mode: drop ALL traffic in + out.
     pub panic_mode: bool,
-    /// The active (default) zone — new interfaces land here.
     pub default_zone: ZoneKind,
     pub zones: Vec<Zone>,
 }
 
 impl FirewallConfig {
-    /// An empty configuration — no zones, firewall reported as stopped.
-    /// Used as the honest fallback when firewalld cannot be read, so the
-    /// live app never displays a fabricated ruleset.
+    /// An empty configuration when firewalld cannot be read, never a fabricated ruleset.
     pub fn empty() -> Self {
         FirewallConfig {
             enabled: false,
@@ -395,9 +359,8 @@ impl FirewallConfig {
         self.zones.iter_mut().find(|z| z.kind == kind)
     }
 
-    /// This configuration as the document reads it back once written whole:
-    /// zones in their stock order, membership sets sorted without repeats,
-    /// rules in their order. The form two devices compare a configuration in.
+    /// This configuration as the document reads it back once written whole: zones in their
+    /// stock order, membership sets sorted without repeats, rules in their order.
     #[must_use]
     pub fn canonical(&self) -> Self {
         let mut zones = Vec::new();
@@ -422,13 +385,12 @@ impl FirewallConfig {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Verify that this is a configuration the app can safely represent and
-    /// hand to firewalld. This is deliberately independent of the UI: remote
-    /// collaborators and action replay are untrusted input too.
+    /// Verify that this is a configuration the app can safely represent and hand to
+    /// firewalld.
     ///
     /// # Errors
     ///
-    /// Returns the first malformed zone, service, port, or source constraint.
+    /// The first malformed zone, service, port or source constraint.
     pub fn validate(&self) -> Result<(), String> {
         if self.zones.is_empty() {
             return Err("configuration has no zones".into());
@@ -462,7 +424,6 @@ impl FirewallConfig {
 pub struct StoredRule {
     /// What it matches
     pub matcher: Matcher,
-    /// What it does
     pub action: Action,
     /// Source address
     pub source: String,
@@ -483,19 +444,19 @@ pub struct StoredZone {
     pub rules: Collection<StoredRule>,
     /// Masquerade
     pub masquerade: bool,
-    /// Rules deleted from this zone: a deletion wins over a concurrent edit
-    /// and an import never brings the rule back.
+    /// Rules deleted from this zone: a deletion wins over a concurrent edit and an import
+    /// never brings the rule back.
     #[model(readonly)]
     pub deleted_rules: Set<String>,
 }
 
-/// Bring a firewall configuration of an older version up to this one.
-/// Version 1 stored a rule's match as one JSON string; it is its variant and
-/// fields now. Versions 1 and 2 stored a match's fields flat, beside its
-/// variant's name; they are stored by their variant now.
+/// Bring a configuration of an older version up to this one: version 1 stored a rule's
+/// match as one JSON string, and versions 1 and 2 kept its fields beside the variant's
+/// name.
 ///
 /// # Errors
-/// Returns why a stored match does not read as one.
+///
+/// Why a stored match does not read as one.
 pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     use tilo_resource::evolution::{
         collection_items, map_values, retype_json, retype_variant_fields,
@@ -514,8 +475,8 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
     Ok(())
 }
 
-/// The stored firewall configuration: what every device running the app
-/// projects onto its own firewalld.
+/// The stored firewall configuration: what every device running the app projects onto its
+/// own firewalld.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Firewall::valid)]
 pub struct Firewall {
@@ -525,8 +486,6 @@ pub struct Firewall {
     /// Panic mode: entered and left by verbs.
     #[model(readonly)]
     pub panic_mode: bool,
-    /// Active zone. A more trusted zone ([`ZoneKind::ALL`]'s order) lets
-    /// more in, so switching to one weakens the firewall.
     #[model(weaker = [
         "drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"
     ])]
@@ -544,13 +503,12 @@ impl Firewall {
         self.config().validate().map_err(Refusal::new)
     }
 
-    /// The item id of rule `id`.
     pub fn rule(id: RuleId) -> Id {
         Id::from_raw(id.to_string())
     }
 
-    /// The configuration the record holds: stock zones in order, each
-    /// membership sorted, rules in order without the deleted ones.
+    /// The configuration the record holds: stock zones in order, each membership sorted,
+    /// rules in order without the deleted ones.
     pub fn config(&self) -> FirewallConfig {
         let zones = ZoneKind::ALL
             .into_iter()
@@ -588,9 +546,8 @@ impl Firewall {
         }
     }
 
-    /// Take in what firewalld reported: members it lacks turn off, rules it
-    /// lacks are deleted, a deleted rule stays deleted, and the rest is
-    /// written where it differs.
+    /// Take in what firewalld reported: members it lacks turn off, rules it lacks are
+    /// deleted, a deleted rule stays deleted, and the rest is written where it differs.
     pub fn take_in(&mut self, config: &FirewallConfig) {
         self.enabled = config.enabled;
         self.panic_mode = config.panic_mode;
@@ -645,9 +602,7 @@ impl Firewall {
     }
 }
 
-/// Validate a user-authored port or inclusive port range. Firewalld itself is
-/// still authoritative, but rejecting malformed values here keeps invalid
-/// shared state and misleading dry-run plans out of the system.
+/// Validate a user-authored port or inclusive port range.
 pub fn validate_port(port: &str) -> Result<(), String> {
     let value = port.trim();
     if value.is_empty() {
@@ -671,14 +626,12 @@ pub fn validate_port(port: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate an optional IPv4 source address or CIDR. The backend emits IPv4
-/// rich rules, so accepting IPv6 here would silently create a rule with the
-/// wrong family.
+/// Validate an optional IPv4 source address or CIDR.
 ///
 /// # Errors
 ///
-/// Returns a human-readable reason when `source` is not an IPv4 address or a
-/// CIDR with a `/0` through `/32` prefix.
+/// Returns a human-readable reason when `source` is not an IPv4 address or a CIDR with a
+/// `/0` through `/32` prefix.
 pub fn validate_source(source: &str) -> Result<(), String> {
     let value = source.trim();
     if value.is_empty() {
@@ -720,9 +673,8 @@ fn validate_rule(rule: &Rule) -> Result<(), String> {
     validate_source(&rule.source)
 }
 
-/// A catalog entry describing a well-known service: stable id, display
-/// name, the ports it opens, and a one-line description. The services
-/// panel renders a toggle per entry.
+/// A catalog entry describing a well-known service: stable id, display name, the ports it
+/// opens, and a one-line description.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceDef {
     pub id: &'static str,
@@ -893,7 +845,8 @@ mod tests {
         }
     }
 
-    /// Matcher labels are stable, an empty source reads as anywhere, and unsafe input is rejected.
+    /// Matcher labels are stable, an empty source reads as anywhere, and unsafe input is
+    /// rejected.
     #[test]
     fn rule_matchers_label_stably_and_inputs_validate() {
         // --- phase: matcher_labels_are_stable ---

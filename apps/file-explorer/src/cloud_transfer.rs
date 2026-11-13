@@ -1,4 +1,4 @@
-//! Maps platform transfer receipts into the unchanged Files document schema.
+//! The platform's transfer receipts, mapped into the changes Files records.
 use crate::file_ops::{Change, Outcome};
 #[cfg(test)]
 use std::path::Path;
@@ -117,8 +117,6 @@ fn execute_at(
     ))
 }
 
-/// Retry only top-level entries without a committed receipt. Descendant
-/// progress never means that a partially staged root was published.
 pub(crate) fn retain_uncommitted(
     account: &str,
     entries: &mut Vec<ImportEntry>,
@@ -134,10 +132,6 @@ pub(crate) fn retain_uncommitted(
 
 #[cfg(test)]
 mod tests {
-    //! Importing publishes through a private stage reached by descriptor-relative
-    //! paths, which only Linux provides today; elsewhere every import entry is
-    //! refused before any provider read. Tests that need a published copy run
-    //! on Linux only, and the refusal itself is checked everywhere else.
     use super::*;
     #[cfg(target_os = "linux")]
     use std::os::unix::fs::MetadataExt;
@@ -161,8 +155,6 @@ mod tests {
         }
     }
 
-    /// The service's socket, in a runtime directory of its own: a temporary
-    /// directory can be too long a path for a local socket address.
     struct ServiceSocket {
         path: PathBuf,
         _runtime: tempfile::TempDir,
@@ -495,7 +487,6 @@ mod tests {
             );
             server.join().unwrap();
             assert!(outcome.is_done(), "{outcome:?}");
-            // Exercise the serialized document receipt, not an in-memory helper.
             let changes: Vec<Change> =
                 serde_json::from_slice(&serde_json::to_vec(outcome.result()).unwrap()).unwrap();
             match replacement {
@@ -824,8 +815,6 @@ mod tests {
         assert_eq!(outcome.result().len(), 1);
         assert_eq!(std::fs::read(dest.join("good")).unwrap(), b"export");
         assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);
-        // The retry surface filters committed top-level IDs, not descendant
-        // progress. Thus a partially copied folder restarts exactly once.
         let mut remaining = entries.to_vec();
         retain_uncommitted("account", &mut remaining, outcome.result());
         assert_eq!(remaining.len(), 1);

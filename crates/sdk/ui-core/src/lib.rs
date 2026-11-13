@@ -109,8 +109,8 @@ pub mod a11y_tree;
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 mod action_locus;
-/// The document action host behind the framework's dispatcher. Apps submit
-/// edits through the framework, never through this host.
+/// The document action host behind the framework's dispatcher. Apps submit edits through the framework,
+/// never through this host.
 #[doc(hidden)]
 pub mod local_dispatch;
 pub mod local_document_action;
@@ -120,22 +120,19 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
-/// What wants a person: the waiting stack, and the ledger an outcome goes to
-/// when it does not. Replaces the transient notice as a category.
+/// What wants a person: the waiting stack, and the ledger an outcome goes to when it does not.
 pub mod attention;
 pub mod author;
 pub mod capability_door;
 pub mod content_zoom;
 pub mod control_hints;
 pub mod control_notice;
-/// The actions the host publishes itself, named for apps to call through
-/// `ui`.
+/// The actions the host publishes itself, named for apps to call through `ui`.
 pub mod desktop;
-/// What is running: one cancellable job with a body, which the whole system
-/// can see and which outlives the window that started it.
+/// What is running: one cancellable job with a body, which the whole system can see and which outlives
+/// the window that started it.
 pub mod jobs;
 pub mod motion;
-// The derives of this crate (`#[derive(Component)]`) name it by its own name.
 extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
@@ -147,8 +144,8 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
-/// The app surface an app's changes are decided against, kept with the collab
-/// client that names it on every signed op.
+/// The app surface an app's changes are decided against, kept with the collab client that names it on
+/// every signed op.
 pub use ::collaboration::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
@@ -176,8 +173,6 @@ pub mod date;
 pub mod device_local_door;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
-/// Shared by the WebView's page buffers and the video decoder's hardware
-/// frames.
 #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
 pub mod dmabuf_import;
 pub mod dnd;
@@ -197,10 +192,8 @@ pub mod format;
 pub mod fullscreen;
 pub mod gesture;
 pub mod gpu;
-/// Painting decoded video on the GPU: uploading a hardware decoder's planar
-/// output and converting YUV to RGB in a shader. Plain wgpu, so every target
-/// (WebGPU included) has it; `gpu-video` adds the zero-copy dmabuf import,
-/// which `media::availability(Feature::ZeroCopyVideo)` reports.
+/// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
+/// to RGB in a shader.
 pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
@@ -271,18 +264,18 @@ pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod storage;
 pub mod workspace_sync;
-/// The desktop's keyboard shortcut table (actions, their chords and the
-/// defaults) as the settings document keeps it: what every desktop host
-/// resolves a key press through, the native shell and a browser page alike.
+/// The desktop's keyboard shortcut table (actions, their chords and the defaults) as the settings
+/// document keeps it: what every desktop host resolves a key press through, the native shell and a
+/// browser page alike.
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
     pub use settings_store::keyboard_shortcuts::{
         FixedAction, ShortcutHome, fixed_action, fixed_shortcut,
     };
 }
-/// The desk widgets and the screen edges things kept at the screen's edges
-/// wait at, as the settings document keeps them: what every desktop host
-/// places them by, the native shell and a browser page alike.
+/// The desk widgets and the screen edges things kept at the screen's edges wait at, as the settings
+/// document keeps them: what every desktop host places them by, the native shell and a browser page
+/// alike.
 pub mod desk_widgets {
     pub use settings_store::desk_widgets::{
         DeskWidgetPrefs, DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, prefs_key,
@@ -297,12 +290,10 @@ pub mod text_break;
 pub mod text_detect;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
-/// The raw operation protocol between a host and the toolkit's widgets: the
-/// operation the host admits, how a widget starts it, and the routing to a
-/// widget's children. For the toolkit's hosts (the app framework, the shell,
-/// the browser runtime, the installer); an app answers operations as a typed
-/// effect vocabulary and never names these
-/// (`tools/policy/check_app_resource_action_contract.py`).
+/// The raw operation protocol between a host and the toolkit's widgets: the operation the host admits,
+/// how a widget starts it, and the routing to a widget's children. For the toolkit's hosts (the app
+/// framework, the shell, the browser runtime, the installer); an app answers operations as a typed
+/// effect vocabulary and never names these (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
         OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
@@ -330,8 +321,8 @@ pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
 pub mod richtext;
-/// Rich text as a component shows it: paragraphs with their marks, and how each reference in
-/// them reads (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
+/// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
+/// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
 pub mod save_status;
 pub mod scale;
@@ -349,11 +340,11 @@ pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
 pub mod state;
+pub mod step;
 pub mod strip_layers;
 pub mod surface;
-/// The actions socket a session hands a surface app is a descriptor of a
-/// native process: a browser page is no surface, and no session places its
-/// window.
+/// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
+/// is no surface, and no session places its window.
 #[cfg(feature = "native")]
 pub mod surface_peer;
 pub mod surface_services;
@@ -387,7 +378,6 @@ pub mod workspace_emoji;
 #[cfg(feature = "native")]
 pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.
-/// These types grant no access to an embedded browser or its engine.
 pub mod text_input {
     pub use crate::webview::text_input::{Failure, Receipt, Resolver};
 }
@@ -395,28 +385,22 @@ pub mod webview;
 pub mod widget;
 pub mod window_icon;
 
-// Host services — the clock, background work, clipboard, file choosers, URI
-// handlers, notifications, media sessions, location and screen capture — are
-// their own crate below the toolkit. They keep their toolkit paths
-// (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
     background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
     secrets, shell_choosers, time, wake,
 };
 
-// `kurbo` and `peniko` come through `vello`, where the geometry and paint
-// types in every `draw` signature live.
-/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back,
-/// re-exported so an app crate can name them (`tilo_ui::accesskit::Role`) without
-/// taking its own dependency on a version that must match this one exactly.
+/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back, re-exported so an app crate
+/// can name them (`tilo_ui::accesskit::Role`) without taking its own dependency on a version that must
+/// match this one exactly.
 pub use accesskit;
 pub use automerge;
 pub use taffy;
 /// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
 pub use tilo_lock as lock;
-/// The async runtime model: the app runtime off the UI thread, the CPU pool,
-/// the file-I/O pool and `block_on` for synchronous entry points.
+/// The async runtime model: the app runtime off the UI thread, the CPU pool, the file-I/O pool and
+/// `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};
@@ -447,14 +431,9 @@ pub use local_state::{
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
-pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
-/// The one image codec: sniff, decode, encode and transform pixels, with the
-/// browser's own codecs on the web. Apps decode and encode only through it.
-pub use tilo_image_codec as image_codec;
-// What a session lends the windows it draws its content addresses with: a process that draws no
-// native window (`native` off) holds none.
 #[cfg(feature = "native")]
 pub use pictures::lend_content;
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
     spell_shortcut_keycaps,
@@ -487,6 +466,9 @@ pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
     workspace_hue,
 };
+/// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
+/// the web.
+pub use tilo_image_codec as image_codec;
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
     UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
@@ -511,15 +493,13 @@ pub use a11y_tree::{
     SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta,
 };
 
-// `describe` is the pure phrase-builder; `ScreenReader` the imperative
-// narrator the `App` holds when `A11ySettings.screen_reader` is on.
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
 
-/// The word-boundary corrections every text field applies, for an input
-/// method that commits whole words itself (the on-screen keyboard).
+/// The word-boundary corrections every text field applies, for an input method that commits whole words
+/// itself (the on-screen keyboard).
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
@@ -556,7 +536,7 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
-pub use history_source::sentence::{author_line, wire_author_line};
+pub use history_source::sentence::{acting_line, author_line, wire_author_line};
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
@@ -611,16 +591,13 @@ pub use tokens::{ReadingFace, TextRole, UiFace};
 
 pub use animation::Lerp;
 
-pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
-pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
-// The capability model (`collab_types::caps`), reached through the
-// toolkit. These are re-exports, not toolkit-local copies — see
-// `permissions/mod.rs`.
 pub use collaboration::PresencePayload;
 pub use permissions::{
     Access, ActionKind, Actor, CapDecision, CapOverride, PermissionContext, PermissionScope,
     ResourceRef, Role, Scope as CapScope, Subject, UserId,
 };
+pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 pub use widget::ParticipantPresence;
 
 pub mod application;

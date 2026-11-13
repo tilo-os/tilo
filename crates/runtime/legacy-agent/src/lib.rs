@@ -1,12 +1,10 @@
-//! The agent inside a legacy VM guest.
+//! The agent inside a legacy VM guest: a root system service on vsock
+//! [`AGENT_PORT`](legacy_agent_protocol::AGENT_PORT) that starts apps as the
+//! guest's one ordinary user, relays their stdio, mounts the host's shares at
+//! the paths it names, and reports what runs and what is installed.
 //!
-//! Runs as root in the guest (a systemd system service) and listens on
-//! vsock [`AGENT_PORT`](legacy_agent_protocol::AGENT_PORT). It starts apps as
-//! the guest's one ordinary user, relays their stdio, mounts the host's
-//! shares at the paths the host names (virtio-fs, or FUSE over vsock in a
-//! VM without virtio-fs, see [`remote_fs`]), and reports what runs and what
-//! is installed. It decides nothing about the host: which directories
-//! are shared, and when the VM sleeps, are the host's decisions.
+//! It decides nothing about the host: which directories are shared, and when
+//! the VM sleeps, are the host's decisions.
 
 #![allow(
     clippy::missing_errors_doc,

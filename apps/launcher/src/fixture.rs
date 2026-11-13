@@ -1,12 +1,5 @@
-//! A fixed desktop to search: what the launcher shows in a capture, a test
-//! and its own window, where no shell lends it the real one.
-//!
-//! It answers the way the shell's source does, over a handful of apps,
-//! windows, files and actions: the launcher's sections before anything is
-//! typed, results grouped by kind as the person types, the filter chips
-//! for the kinds found, an action's arguments asked one step at a time, a
-//! file's other actions, a value stepped in place, and one scope widened
-//! to the next.
+//! A fixed desktop to search: what the launcher shows in a capture, a test and its own
+//! window, where no shell lends it the real one.
 
 use ui::icons::Icon;
 
@@ -15,9 +8,7 @@ use crate::source::{
     Scope, Search,
 };
 
-/// Row id of a value an argument step offers.
 const CHOICE: &str = "choice:";
-/// Row id of one of a row's other actions.
 const OTHER: &str = "other:";
 
 /// One row of the fixed desktop.
@@ -27,18 +18,14 @@ struct Row {
     title: &'static str,
     detail: &'static str,
     icon: Icon,
-    /// The launcher section it shows in before anything is typed.
     section: Option<&'static str>,
-    /// What choosing it asks first.
     asks: Asks,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Asks {
     Nothing,
-    /// A field of this prompt.
     Field(&'static str),
-    /// One of these values.
     Choices(&'static [&'static str]),
 }
 
@@ -183,8 +170,8 @@ fn kind_rank(kind: &ResourceKind) -> usize {
     }
 }
 
-/// A step collecting an argument: the query the results showed, given back
-/// when the step is left.
+/// A step collecting an argument: the query the results showed, given back when the step is
+/// left.
 struct Steps {
     query: String,
 }
@@ -195,7 +182,6 @@ pub struct FixtureSource {
     scope: Scope,
     volume: u8,
     steps: Option<Steps>,
-    /// The row whose other actions are listed, and the query to give back.
     others: Option<(&'static str, String)>,
     field_only: bool,
 }
@@ -253,7 +239,6 @@ impl FixtureSource {
 
     fn scoped(&self, row: &Row) -> bool {
         match self.scope {
-            // Notes is the app in front: its own windows and actions.
             Scope::InApp(_) => {
                 row.detail.starts_with("Notes") || row.id.starts_with("action:new-note")
             }
@@ -488,7 +473,6 @@ impl LauncherSource for FixtureSource {
                 }
             }
             Ask::Back => self.back(answer),
-            // The surface keeps the person's choice itself.
             Ask::Select { .. } => {}
             Ask::Dismissed => {
                 self.steps = None;

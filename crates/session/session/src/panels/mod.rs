@@ -212,7 +212,7 @@ impl Published for Banners {
 
     /// The controls a banner on screen shows by name, where they stand on the desk, and the press
     /// of one: a banner's buttons answer the control socket as any window's do.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         Published::controls(&mut self.host)
     }
 
@@ -521,7 +521,7 @@ impl Published for ActivityLayer {
 
     /// The controls a card on screen shows by name, where they stand on the desk, and the press of
     /// one: a card's buttons answer the control socket as any window's do.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         Published::controls(&mut self.host)
     }
 

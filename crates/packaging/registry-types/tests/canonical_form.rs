@@ -1,7 +1,5 @@
-//! Integration tests that pin down the canonical signing form —
-//! the property publishers rely on for a signature they generated
-//! yesterday to still verify after any client re-encodes the
-//! entry.
+//! The canonical signing form: a signature made yesterday still verifies after any client re-encodes
+//! the entry.
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -51,7 +49,6 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
 
 #[test]
 fn signed_json_is_canonical_and_survives_reencoding() {
-    // phase: entry_json_roundtrip_preserves_signature
     {
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
@@ -66,7 +63,6 @@ fn signed_json_is_canonical_and_survives_reencoding() {
          is used for the signing form, not JSON"
         );
     }
-    // phase: change_request_json_roundtrip_still_verifies
     {
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
@@ -77,32 +73,25 @@ fn signed_json_is_canonical_and_survives_reencoding() {
         let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
         assert_eq!(verify_change_request(&back, &allow), Ok(()));
     }
-    // phase: canonical_form_is_deterministic_across_two_processes_worth_of_encoders
     {
-        // Same value → identical signing bytes. This is what makes
-        // a detached signature portable across implementations.
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
         let m1 = entry.signing_message();
         let m2 = entry.signing_message();
         assert_eq!(m1, m2);
 
-        // Different entry → different signing bytes (sanity check).
         let mut other = entry;
         other.name = "Something Else".into();
         assert_ne!(other.signing_message(), m1);
     }
-    // phase: signature_survives_field_reorder_in_json
     {
-        // JSON key order is defined by the encoder; the signing form
-        // is postcard so a client parsing JSON and re-serialising it
-        // with a different key order must still verify.
+        // The signing form is postcard, so a client that parses JSON and re-serialises it with another
+        // key order must still verify.
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
         sign_entry(&mut entry, &key);
 
-        // Deserialise into a HashMap-backed serde_json::Value, then
-        // re-serialise — that re-ordering happens naturally.
+        // Deserialising into a `serde_json::Value` re-orders the keys.
         let v: serde_json::Value = serde_json::to_value(&entry).unwrap();
         let s = serde_json::to_string(&v).unwrap();
         let reread: RegistryEntry = serde_json::from_str(&s).unwrap();

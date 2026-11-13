@@ -66,7 +66,8 @@ pub struct SubvolumeIdentity {
     pub readonly: bool,
 }
 
-/// Attests the containing subvolume of a held directory without resolving a path.
+/// Attests the containing subvolume of a held directory without resolving a
+/// path.
 pub fn subvolume_identity(directory: BorrowedFd<'_>) -> io::Result<SubvolumeIdentity> {
     // SAFETY: both argument structures are zero-initialized kernel output buffers.
     let mut filesystem: FsInfoArgs = unsafe { std::mem::zeroed() };
@@ -100,8 +101,9 @@ fn entry_name(name: &OsStr) -> io::Result<&[u8]> {
     Ok(bytes)
 }
 
-/// Creates a readonly snapshot through held source and private broker-parent handles.
-/// The caller retains custody of the parent; this does not grant an app access to it.
+/// Creates a readonly snapshot through held source and private broker-parent
+/// handles. The caller retains custody of the parent; this does not grant an
+/// app access to it.
 pub fn snapshot_readonly_at(
     source: BorrowedFd<'_>,
     parent: BorrowedFd<'_>,
@@ -120,8 +122,8 @@ pub fn snapshot_readonly_at(
     Ok(())
 }
 
-/// Deletes exactly the attested snapshot id. Never clears readonly flags or
-/// recursively removes paths. Requires the broker's native deletion authority.
+/// Deletes exactly the attested snapshot id, never clearing readonly flags or
+/// recursively removing paths. Needs the broker's native deletion authority.
 pub fn destroy_snapshot_id(
     parent: BorrowedFd<'_>,
     snapshot: BorrowedFd<'_>,
@@ -185,7 +187,6 @@ fn invalid(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
-/// Splits `path` into its parent directory and a single, valid entry name.
 fn parent_and_name(path: &Path) -> io::Result<(&Path, &[u8])> {
     let parent = path
         .parent()
@@ -221,9 +222,9 @@ pub fn is_subvolume(path: &Path) -> io::Result<bool> {
     Ok(is_btrfs(path)? && fs::symlink_metadata(path)?.ino() == SUBVOL_ROOT_INO)
 }
 
-/// The filesystem UUID of the Btrfs volume holding `path`. Every subvolume
-/// of one filesystem reports the same UUID, which is how a dedicated store
-/// volume is told apart from a subvolume of the root filesystem.
+/// The filesystem UUID of the Btrfs volume holding `path`. Every subvolume of
+/// one filesystem reports the same UUID, which is how a dedicated store volume
+/// is told apart from a subvolume of the root filesystem.
 pub fn filesystem_uuid(path: &Path) -> io::Result<[u8; 16]> {
     let dir = sys::open_dir(path)?;
     // SAFETY: an all-zero `FsInfoArgs` is valid input for BTRFS_IOC_FS_INFO.
@@ -233,7 +234,6 @@ pub fn filesystem_uuid(path: &Path) -> io::Result<[u8; 16]> {
     Ok(args.fsid)
 }
 
-/// Creates an empty subvolume at `path`.
 pub fn create_subvolume(path: &Path) -> io::Result<()> {
     let (parent, name) = parent_and_name(path)?;
     let dir = sys::open_dir(parent)?;
@@ -245,11 +245,10 @@ pub fn create_subvolume(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Snapshots the subvolume at `source` to `dest` in one atomic step.
-///
-/// Btrfs flushes the source's delayed allocation first, so every write that
-/// completed before the call is in the snapshot and none after it is. This
-/// is the crash image that a capture epoch publishes.
+/// Snapshots the subvolume at `source` to `dest` in one atomic step. Btrfs
+/// flushes the source's delayed allocation first, so every write that completed
+/// before the call is in the snapshot and none after it is: the crash image a
+/// capture epoch publishes.
 pub fn snapshot(source: &Path, dest: &Path, readonly: bool) -> io::Result<()> {
     let src = sys::open_dir(source)?;
     let (parent, name) = parent_and_name(dest)?;
@@ -266,7 +265,6 @@ pub fn snapshot(source: &Path, dest: &Path, readonly: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Sets or clears the read-only flag of a subvolume. Allowed for the owner.
 pub fn set_readonly(path: &Path, readonly: bool) -> io::Result<()> {
     let dir = sys::open_dir(path)?;
     let mut flags: u64 = 0;
@@ -293,14 +291,12 @@ fn destroy(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Deletes the subvolume at `path`.
-///
-/// `BTRFS_IOC_SNAP_DESTROY` needs `CAP_SYS_ADMIN`, or a volume mounted with
-/// `user_subvol_rm_allowed` and a writable subvolume (a read-only snapshot
-/// gives `EROFS` until its flag is cleared). Without either, the owner can
-/// still make the subvolume writable, empty it and `rmdir` it, which is
-/// what the last fallback does. That is slow for large trees, so the store
-/// volume is mounted with `user_subvol_rm_allowed`.
+/// Deletes the subvolume at `path`. `BTRFS_IOC_SNAP_DESTROY` needs
+/// `CAP_SYS_ADMIN`, or a volume mounted with `user_subvol_rm_allowed` and a
+/// writable subvolume (a read-only snapshot gives `EROFS` until its flag is
+/// cleared). Without either, the owner can still make the subvolume writable,
+/// empty it and `rmdir` it; that is slow for large trees, so the store volume
+/// is mounted with `user_subvol_rm_allowed`.
 pub fn delete_subvolume(path: &Path) -> io::Result<()> {
     match destroy(path) {
         Ok(()) => Ok(()),

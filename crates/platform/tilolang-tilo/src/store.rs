@@ -125,6 +125,8 @@ struct TxnState {
     /// One action's transaction writes one kind or the other, never both.
     saved: usize,
     derived: usize,
+    /// Whether a write of it gives a text a structure rather than words ([`burst`]).
+    reshapes: bool,
 }
 
 /// What the record moved on from, when known: the heads of each chunk before, the versions its
@@ -150,25 +152,26 @@ pub const DEFAULT_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_mi
 /// The action a committed change is published as: what the runtime named it, except a bound
 /// control's edit, which the runtime names `$edit` with the arguments `[field, value]`. Every
 /// receiver, and the identity service that signs the change, decides it against the package's
-/// surface, which publishes such an edit as `edit-flag` (a checkbox) or `edit-text` (anything
-/// else) with the arguments `{field, value}`, as the door plans an edit of a field. The
-/// keystrokes of one typing burst are one gesture of that action, so history lists them as one
-/// entry and undo takes them back as one step.
+/// surface, which publishes such an edit as `edit-flag` (a checkbox, with the arguments
+/// `{field, value}`) or `edit-text` (anything else, with `{field}`: what was typed is the edit
+/// the change records, never the text it leaves). The keystrokes of one typing burst are one
+/// gesture of that action, so history lists them as one entry and undo takes them back as one
+/// step.
 fn published_name(note: &ChangeNote) -> (String, Json) {
     if note.action != RUNTIME_EDIT {
         return (note.action.clone(), note.args.clone());
     }
     let field = note.args.get(0).cloned().unwrap_or(Json::Null);
-    let value = note.args.get(1).cloned().unwrap_or(Json::Null);
-    let action = if value.is_boolean() {
-        crate::action::EDIT_FLAG_ACTION
-    } else {
-        crate::action::EDIT_TEXT_ACTION
-    };
-    (
-        action.to_owned(),
-        serde_json::json!({"field": field, "value": value}),
-    )
+    match note.args.get(1) {
+        Some(Json::Bool(value)) => (
+            crate::action::EDIT_FLAG_ACTION.to_owned(),
+            serde_json::json!({"field": field, "value": value}),
+        ),
+        _ => (
+            crate::action::EDIT_TEXT_ACTION.to_owned(),
+            serde_json::json!({"field": field}),
+        ),
+    }
 }
 
 /// Add `splices` to the steps of the collection `key` in `out`: none at all says that it did
@@ -254,6 +257,8 @@ struct Planned {
     touched: Vec<FieldKey>,
     items: Vec<(FieldKey, String)>,
     placed: Vec<(DocId, String, bool)>,
+    /// Whether it gives a text a structure rather than words ([`burst`]).
+    reshapes: bool,
 }
 
 /// What a write did ([`Inner::write`]): the steps each collection's listing took, per document,
@@ -328,6 +333,9 @@ pub struct ReadStats {
     /// The changes those derivations read: the log of the chunks holding a history that was
     /// asked for, never the workspace's.
     pub version_changes: u64,
+    /// Versions the store handed out: what asking for a record's history costs, which a
+    /// catch-up reads a page of rather than the whole of a record's log.
+    pub versions_read: u64,
 }
 
 mod listed;
@@ -415,6 +423,8 @@ struct Inner {
     versions_built: std::cell::Cell<u64>,
     /// The changes those derivations read.
     version_changes: std::cell::Cell<u64>,
+    /// Versions handed out.
+    versions_read: std::cell::Cell<u64>,
     /// How `now` reads and where the person is, as the host names them: the time the columns that
     /// read the clock are written at ([`crate::index::Clock`]).
     clock: ClockSource,
@@ -749,6 +759,7 @@ impl TiloStore {
                 evaluated: std::cell::Cell::new(0),
                 versions_built: std::cell::Cell::new(0),
                 version_changes: std::cell::Cell::new(0),
+                versions_read: std::cell::Cell::new(0),
                 clock: ClockSource::default(),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
@@ -845,6 +856,14 @@ impl TiloStore {
         self.held().stats
     }
 
+    /// Count `count` versions the store handed out.
+    pub(super) fn count_versions_read(&self, count: usize) {
+        let held = self.held();
+        let read = held.versions_read.get();
+        held.versions_read
+            .set(read.saturating_add(u64::try_from(count).unwrap_or(u64::MAX)));
+    }
+
     /// How much the store read so far.
     #[must_use]
     pub fn read_stats(&self) -> ReadStats {
@@ -860,6 +879,7 @@ impl TiloStore {
             evaluated: inner.evaluated.get(),
             versions: inner.versions_built.get(),
             version_changes: inner.version_changes.get(),
+            versions_read: inner.versions_read.get(),
         }
     }
 
@@ -1182,7 +1202,7 @@ impl TiloStore {
         let seed = inner.fresh("migrated:").into_bytes();
         inner.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
         let action = DynAction {
-            app: app.clone(),
+            app: app.to_string(),
             kind: format!("tl.{app}.{}", schema.name),
             action_id: migration.to_owned(),
             args: Json::String(doc.to_owned()),
@@ -1238,7 +1258,7 @@ impl TiloStore {
         let seed = inner.fresh("seen:").into_bytes();
         inner.write(&app, edits.clone(), &seed, &touched, (items, placed))?;
         let action = DynAction {
-            app: app.clone(),
+            app: app.to_string(),
             kind: format!("tl.{app}.{}", schema.name),
             action_id: crate::notices::SEEN_ACTION.to_owned(),
             args: Json::Object(
@@ -1509,7 +1529,7 @@ impl TiloStore {
         // and gone at the next start, when the origin writes it again.
         if !schema.derived() {
             let action = DynAction {
-                app: record.app.clone(),
+                app: record.app.to_string(),
                 kind: format!("tl.{}.{}", record.app, schema.name),
                 action_id: crate::action::CREATE_ACTION.to_owned(),
                 args: Json::String(id.to_owned()),
@@ -1819,7 +1839,7 @@ impl Inner {
                     // The index is built anew from the record: what the failed derivation read
                     // of the index it replaces is not what the new one holds, so every resource
                     // of the package is derived again whole, and what a window read of it again.
-                    tracing::warn!(app, %error, "the index of a change was not derived");
+                    tracing::warn!(app = %app, %error, "the index of a change was not derived");
                     wholes.extend(
                         self.index
                             .iter()
@@ -1909,9 +1929,8 @@ impl Inner {
         Ok((listings, reached))
     }
 
-    /// One of the edits of a write, into the chunk it is addressed to: the run's manifest into
-    /// the record itself, and an item into the chunk the run it joins is in, so one write reaches
-    /// one document. Returns the fields it reached, derivation included.
+    /// One of the edits of a write, into the chunk it is written in ([`Chunks::chunk_of`]), so
+    /// one write reaches one document. Returns the fields it reached, derivation included.
     fn write_one(
         &mut self,
         app: &str,
@@ -1921,9 +1940,7 @@ impl Inner {
         (items, placed): Moves,
     ) -> Result<Vec<FieldKey>, StoreError> {
         let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
-        let chunk = edit
-            .chunk()
-            .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
+        let chunk = self.chunks.chunk_of(&edit);
         if chunk == chunk::FIRST && !self.chunks.has_record() {
             return Err(StoreError::Backend(
                 "the workspace record is not loaded".into(),
@@ -1949,7 +1966,7 @@ impl Inner {
             self.chunks.reread_placement();
         }
         let mut write = LocalWrite {
-            app: app.to_owned(),
+            app: AppId::from(app),
             chunk,
             edit,
             seed: seed.to_vec(),

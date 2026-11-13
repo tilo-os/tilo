@@ -1,12 +1,9 @@
 //! An `AppImage`'s own name and icon, read from the image without running,
-//! mounting or extracting it.
-//!
-//! A type 2 `AppImage` is an ELF executable (the runtime) marked `AI\x02` in
-//! its identification padding, with a squashfs image appended right after
-//! the ELF's last section header. That image's root holds one `.desktop`
-//! file and the icon it names, as the `AppImage` specification requires.
-//! Reading that image needs the `appimage` feature, which brings the
-//! codecs; recognising the file does not.
+//! mounting or extracting it. A type 2 `AppImage` is an ELF executable marked
+//! `AI\x02` in its identification padding, with a squashfs image appended
+//! right after the ELF's last section header; that image's root holds one
+//! `.desktop` file and the icon it names. Reading it needs the `appimage`
+//! feature.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -17,7 +14,6 @@ use super::squashfs::Image;
 #[cfg(feature = "appimage")]
 use super::{Found, Icon, MAX_ICON_BYTES};
 
-/// Largest embedded `.desktop` file read.
 #[cfg(feature = "appimage")]
 const MAX_DESKTOP_BYTES: usize = 256 * 1024;
 
@@ -63,15 +59,14 @@ fn header(file: &mut File) -> io::Result<Option<u64>> {
     Ok(end)
 }
 
-/// Whether `path` is a type 2 `AppImage`.
 pub fn is_appimage(path: &Path) -> bool {
     File::open(path)
         .and_then(|mut file| header(&mut file))
         .is_ok_and(|end| end.is_some())
 }
 
-/// The image's embedded `.desktop` entry and icon; `None` when `path` is
-/// not an `AppImage` or carries no entry.
+/// The image's embedded `.desktop` entry and icon; `None` when `path` is not
+/// an `AppImage` or carries no entry.
 #[cfg(feature = "appimage")]
 pub(crate) fn read_identity(path: &Path, locales: &[String]) -> io::Result<Option<Found>> {
     let mut file = File::open(path)?;

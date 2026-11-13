@@ -26,8 +26,7 @@ impl Observer {
         Some(self.worker_id)
     }
 
-    /// Emitted only under the native timing gate. The caller brackets complete
-    /// row construction and this emission, reporting that cost one frame later.
+    /// Emitted only under the native timing gate.
     pub(crate) fn log_native_handoff(&self, row: serde_json::Value) {
         let Some(row) = handoff_row(row, self.worker_id()) else {
             eprintln!("tilo-display-error handoff row is not an object");
@@ -168,6 +167,7 @@ impl Observer {
         &self,
         worker_frame_ix: u64,
         cpu_frame_id: Option<u64>,
+        size: (u32, u32),
         present: impl FnOnce(),
     ) {
         if !tilo_presentation::supported() {
@@ -185,7 +185,8 @@ impl Observer {
         };
         let accepted = tilo_presentation::present(
             window,
-            Box::new(move |result| {
+            size,
+            Some(Box::new(move |result| {
                 let row = match result {
                     Feedback::Presented {
                         clock_id,
@@ -208,7 +209,7 @@ impl Observer {
                     }),
                 };
                 crate::native_scenario::log::emit_json("tilo-display-frame", row);
-            }),
+            })),
             present,
         );
         if !accepted {

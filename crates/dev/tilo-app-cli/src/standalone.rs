@@ -12,10 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// The public repository a scaffold outside any checkout builds against.
 pub const DEFAULT_SDK_GIT: &str = "https://code.tilo.so/tilo/tilo.git";
 
-/// Everything a developer with rustup runs to get this CLI.
 pub const INSTALL_COMMAND: &str =
     "cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli";
 
@@ -28,7 +26,6 @@ const EMBEDDED_TOOLCHAIN: &str = include_str!("../../../../rust-toolchain.toml")
 const EMBEDDED_CARGO_CONFIG: &str = include_str!("../../../../.cargo/config.toml");
 const EMBEDDED_SDK_MANIFEST: &str = include_str!("../../../sdk/tilo-app/Cargo.toml");
 
-/// The crates an app links: the SDK and the shared toolkit a thin build uses.
 const SDK_ROOTS: [&str; 2] = ["tilo-app", "runtime-dylib"];
 /// Profiles an app build selects. `thin-app` inherits `release`.
 const APP_PROFILES: [&str; 4] = ["dev", "test", "release", "thin-app"];
@@ -41,16 +38,19 @@ const UNPATCHED: [&str; 1] = ["workspace-hack"];
 /// their engines), which no app links.
 const TEST_ONLY: [&str; 1] = ["test-relay"];
 
-/// Where a standalone app gets the SDK.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdkSource {
-    /// A Tilo checkout, as the path from the app directory to its root.
     Checkout(PathBuf),
     /// A Tilo repository, pinned to `rev` or following its default branch.
-    Git { url: String, rev: Option<String> },
+    Git {
+        url: String,
+        rev: Option<String>,
+    },
     /// The published SDK: `tilo-app` from crates.io, or whatever registry
     /// Cargo's source replacement names, at this version requirement.
-    Registry { version: String },
+    Registry {
+        version: String,
+    },
 }
 
 impl SdkSource {
@@ -74,7 +74,6 @@ impl SdkSource {
         matches!(self, Self::Registry { .. })
     }
 
-    /// One line for humans: where the SDK comes from.
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
@@ -89,7 +88,6 @@ impl SdkSource {
     }
 }
 
-/// The SDK workspace files a standalone app mirrors.
 #[derive(Debug, Clone)]
 pub struct Baseline {
     manifest: toml::Table,
@@ -100,7 +98,6 @@ pub struct Baseline {
 }
 
 impl Baseline {
-    /// The files of the commit this CLI was built from.
     pub fn embedded() -> Result<Self> {
         Self::parse(
             EMBEDDED_MANIFEST,
@@ -192,7 +189,6 @@ impl Baseline {
     }
 }
 
-/// A scaffold outside the Tilo workspace.
 #[derive(Debug, Clone)]
 pub struct Standalone {
     pub source: SdkSource,
@@ -289,7 +285,6 @@ impl Standalone {
         profiles
     }
 
-    /// The files a standalone app carries besides its sources.
     pub fn files(&self) -> Result<Vec<(PathBuf, String)>> {
         let mut files = vec![
             (PathBuf::from("rust-toolchain.toml"), self.toolchain()?),

@@ -17,11 +17,61 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.poker@ea2ab76e43cec872";
+
+export interface Award {
+  player: string;
+  amount: number;
+  category: string;
+}
+
+export interface Hand {
+  number: number;
+  street: Street;
+  players: InHand[];
+  button: number;
+  deck: number[];
+  board: number[];
+  to_act: number | null;
+  current_bet: number;
+  min_raise: number;
+  since_ms: number;
+  awards: Award[];
+}
+
+export interface InHand {
+  player: string;
+  seat: number;
+  stack: number;
+  bet: number;
+  committed: number;
+  cards: number[];
+  folded: boolean;
+  acted: boolean;
+  shown: boolean;
+  last: Move;
+}
+
+/** One of "none", "small_blind", "big_blind", "check", "call", "bet", "raise", "all_in", "fold". */
+export type Move = "none" | "small_blind" | "big_blind" | "check" | "call" | "bet" | "raise" | "all_in" | "fold";
+
+export interface Player {
+  seat: number;
+  chips: number;
+  joined_ms: number;
+}
+
+/** One of "idle", "preflop", "flop", "turn", "river", "done". */
+export type Street = "idle" | "preflop" | "flop" | "turn" | "river" | "done";
+
 /** Poker table — `so.tilo.poker.table`. */
 export interface Table extends tilo.Resource {
-  players: unknown;
-  hand: unknown;
-  button_seat: unknown;
+  players: Record<string, Player>;
+  hand: Hand;
+  button_seat: number;
   sit(args: {
     seat: number;
   }): Promise<tilo.Run | void>;
@@ -40,6 +90,6 @@ export interface Table extends tilo.Resource {
 
 /** The `so.tilo.poker.table` kind at `path`. */
 export function table(ws: tilo.Workspace, path: string): Table {
-  return resourceProxy(ws, path) as unknown as Table;
+  return resourceProxy(ws, path, SURFACE) as unknown as Table;
 }
 

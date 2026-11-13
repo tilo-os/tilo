@@ -24,7 +24,6 @@ fn key(byte: u8) -> VaultKey {
 
 #[test]
 fn vault_seals_round_trip_under_their_own_format_only() {
-    // Phase `seal_open_round_trips_and_rejects_tampering`.
     {
         let key = key(7);
         let plaintext = b"secret vault bytes";
@@ -43,7 +42,6 @@ fn vault_seals_round_trip_under_their_own_format_only() {
         bumped[5] = bumped[5].wrapping_add(1);
         assert!(FORMAT.open(&key, &bumped).is_none());
     }
-    // Phase `a_vault_never_opens_under_another_format`.
     {
         let key = key(7);
         let blob = FORMAT.seal(&key, b"format-bound").unwrap();
@@ -56,13 +54,11 @@ fn vault_seals_round_trip_under_their_own_format_only() {
         assert!(renamed.open(&key, &blob).is_none());
         assert!(FORMAT.open(&key, &blob).is_some());
     }
-    // Phase `vault_key_debug_never_shows_key_bytes`.
     {
         let rendered = format!("{:?}", key(0xab));
         assert!(!rendered.contains("abab"), "{rendered}");
         assert!(!rendered.contains("171, 171"), "{rendered}");
     }
-    // Phase `fresh_seals_use_distinct_nonces`.
     {
         let key = key(7);
         let first = FORMAT.seal(&key, b"same").unwrap();
@@ -73,14 +69,12 @@ fn vault_seals_round_trip_under_their_own_format_only() {
 
 #[test]
 fn secret_service_keys_encode_canonically() {
-    // Phase `secret_service_key_encoding_round_trips_and_rejects_bad_material`.
     {
         let key = [0xa5; KEY_LEN];
         assert_eq!(decode_key(&encode_key(&key)).unwrap().expose_secret(), &key);
         assert!(decode_key("too-short").is_err());
         assert!(decode_key(&"z".repeat(KEY_LEN * 2)).is_err());
     }
-    // Phase `secret_service_key_encoding_is_lowercase_and_decoding_accepts_either_case`.
     {
         let mut key = [0u8; KEY_LEN];
         for (byte, value) in key.iter_mut().zip(0xe0_u8..=0xff) {
@@ -117,7 +111,6 @@ fn secret_service_keys_encode_canonically() {
 
 #[test]
 fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
-    // Phase `local_key_is_created_once_and_reloaded`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("vault");
@@ -126,7 +119,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         let reloaded = FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap();
         assert_eq!(reloaded, created);
     }
-    // Phase `simultaneous_creators_converge_on_the_one_persisted_key`.
     {
         for _ in 0..8 {
             let root = tempfile::tempdir().unwrap();
@@ -156,7 +148,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
             assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         }
     }
-    // Phase `an_existing_key_is_never_replaced_by_a_creator`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
@@ -165,7 +156,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         assert_eq!(key.expose_secret(), &[0x11; KEY_LEN]);
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), [0x11; KEY_LEN]);
     }
-    // Phase `missing_key_beside_an_existing_vault_is_never_minted`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
@@ -175,7 +165,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         assert!(!dir.join(KEY_FILE).exists());
         assert_eq!(std::fs::read(dir.join(VAULT_FILE)).unwrap(), sealed);
     }
-    // Phase `malformed_key_is_never_overwritten`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
@@ -183,7 +172,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), b"short");
     }
-    // Phase `a_key_path_that_is_not_a_file_is_never_replaced`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
@@ -196,7 +184,6 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
 #[cfg(unix)]
 #[test]
 fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
-    // Phase `a_key_that_is_not_private_is_never_replaced`.
     {
         use std::os::unix::fs::PermissionsExt;
         // A readable-but-not-private key exists and cannot be used, so it must
@@ -223,7 +210,6 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
         let entries: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
         assert_eq!(entries.len(), 2, "no replacement key was staged");
     }
-    // Phase `created_key_is_owner_only`.
     {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
@@ -236,7 +222,6 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
-    // Phase `local_custody_is_named_for_what_it_is`.
     // The local key is the raw key in a file beside the vault: whoever can
     // read the directory can open the vault. Its label must not promise the
     // protection the keyring gives.
@@ -267,7 +252,6 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
 #[cfg(windows)]
 #[test]
 fn windows_dpapi_keys_converge_and_bind_to_their_format() {
-    // Phase `windows_dpapi_concurrent_creation_returns_one_persisted_key`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().to_path_buf();
@@ -293,7 +277,6 @@ fn windows_dpapi_keys_converge_and_bind_to_their_format() {
         assert!(!dir.join(KEY_FILE).exists());
         assert!(tilo_files::native::private::read(&dir.join("vault.key.dpapi")).is_ok());
     }
-    // Phase `windows_dpapi_entropy_binds_the_protected_key_to_its_format`.
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();

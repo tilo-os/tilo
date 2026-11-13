@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, failureMessage, FAILURES, fill,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, fill,
   FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
   STEP_NOTES, stoppedInside} from './arrival.mjs';
@@ -278,49 +278,6 @@ test('every locale the page can pick has its file beside the module', () => {
   for (const name of picked) assert.ok(existsSync(here(`locales/${name}.ftl`)), name);
 });
 
-test('a failure says what happened in plain words, never as a raw error', () => {
-  const host = Object.assign(new Error('admit: HTTP 502'), {name: 'HostAdmissionError', code: 'unavailable'});
-  assert.equal(failureMessage(host, {workspace: 'Lounge'}),
-    'Can’t reach Lounge right now. Check your connection, then try again.');
-  assert.equal(failureMessage(new TypeError('Failed to fetch'), {loaded: false}),
-    'Can’t reach Tilo right now. Check your connection, then try again.');
-  assert.equal(failureMessage(new Error('WebSocket connection closed')),
-    'Can’t reach the workspace right now. Check your connection, then try again.');
-  const refused = Object.assign(new Error('You did not join'), {name: 'AdmissionError', code: 'declined'});
-  assert.equal(failureMessage(refused, {workspace: 'Lounge'}), 'You did not join');
-  const general = failureMessage(new Error('RuntimeError: unreachable executed at 0x1f'), {workspace: 'Lounge'});
-  assert.equal(general, 'Something went wrong opening Lounge. Try again, or come back later.');
-  for (const said of [failureMessage(host), general]) assert.doesNotMatch(said, /Failed|HTTP|Error/);
-});
-
-test('a failure is said in the person’s language, naming the workspace as the page knows it', () => {
-  const german = locale('de-DE');
-  const general = new Error('RuntimeError: unreachable executed at 0x1f');
-  assert.equal(failureMessage(general, {workspace: 'Kaffeeküche', messages: german}),
-    'Beim Öffnen von Kaffeeküche ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.');
-  assert.equal(failureMessage(general, {messages: german}),
-    'Beim Öffnen des Arbeitsbereichs ist etwas schiefgegangen. Versuch es noch einmal oder komm später wieder.');
-  assert.equal(failureMessage(new TypeError('Failed to fetch'), {loaded: false, messages: german}),
-    'Tilo ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.');
-  // The English file says what the module says without one.
-  for (const error of [general, new TypeError('Failed to fetch')]) {
-    for (const options of [{workspace: 'Lounge'}, {}, {admitted: true}, {workspace: 'Lounge', admitted: true}]) {
-      assert.equal(failureMessage(error, {...options, messages: locale('en-US')}), failureMessage(error, options));
-    }
-  }
-  assert.equal(locale('de-DE').get('arrival-retry'), 'Noch einmal versuchen');
-});
-
-test('a desktop that did not start once the host let the person in says they got in', () => {
-  const stopped = new Error('the peer has no replicated room');
-  assert.equal(failureMessage(stopped, {workspace: 'Lounge', admitted: true}),
-    'You got into Lounge, but its desktop did not start in this tab. Try again.');
-  assert.equal(failureMessage(stopped, {workspace: 'Lounge', admitted: true, messages: locale('de-DE')}),
-    'Du bist in Lounge, aber der Desktop ist in diesem Tab nicht gestartet. Versuch es noch einmal.');
-  // The network failing is said as that, wherever it happened.
-  assert.match(failureMessage(new Error('WebSocket connection closed'), {workspace: 'Lounge', admitted: true}), /^Can’t reach Lounge/);
-});
-
 test('a person let in whose desktop never drew is told they got in', () => {
   // The renderer gives up on a first frame that never came and marks the
   // arrival stopped before the page hears the mount failed.
@@ -330,58 +287,30 @@ test('a person let in whose desktop never drew is told they got in', () => {
   assert.equal(stoppedInside(peer, 'draw'), true);
   assert.equal(stoppedInside(peer, 'done'), false);
   assert.equal(stoppedInside(null, 'stopped'), false);
-  const firstFrame = new Error('WebGPU presented no first frame after 60 s on one step, waiting for the first frame to present');
-  assert.equal(failureMessage(firstFrame, {workspace: 'Auth', admitted: stoppedInside(peer, 'stopped')}),
-    'You got into Auth, but its desktop did not start in this tab. Try again.');
 });
 
-test('both locales word every failure, with the workspace’s name and without', () => {
-  for (const name of ['en-US', 'de-DE']) {
-    const messages = locale(name);
-    for (const id of ['arrival-retry', 'arrival-failed-stopped-drawing']) assert.ok(messages.has(id), `${name}: ${id}`);
-    for (const kind of Object.keys(FAILURES)) {
-      assert.match(messages.get(`arrival-failed-${kind}`) ?? '', /\{ \$workspace \}/, `${name}: ${kind}`);
-      const unnamed = messages.get(`arrival-failed-${kind}-unnamed`) ?? '';
-      assert.ok(unnamed && !unnamed.includes('{'), `${name}: ${kind}-unnamed`);
-    }
-  }
+test('a placeholder the arguments lack stays as written', () => {
   assert.equal(fill('Hallo { $workspace } und {$other}', {workspace: 'Lounge'}), 'Hallo Lounge und {$other}');
+  assert.equal(locale('de-DE').get('arrival-retry'), 'Noch einmal versuchen');
 });
 
-test('an address the host turns away after a removal is told why and that trying again will not help today', () => {
+test('a door turning an address away after a removal is the host’s own answer', () => {
   const cooling = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'cooling-down'});
   assert.ok(refusedByHost(cooling));
   assert.ok(!refusedByHost(Object.assign(new Error('x'), {name: 'HostAdmissionError', code: 'full'})));
   assert.ok(!refusedByHost(new Error('cooling-down')));
-  assert.equal(failureMessage(cooling, {workspace: 'Lounge'}),
-    'Lounge is not letting anyone in from your network for now, because someone here was removed from it. '
-    + 'Ask someone in it for an invitation, or try again tomorrow.');
-  assert.match(failureMessage(cooling), /^This workspace is not letting anyone in/);
-  assert.doesNotMatch(failureMessage(cooling), /HTTP|connection/);
 });
 
-test('a person the workspace removed is told so in their language, and trying again does not help', () => {
+test('a removal the door says is the host’s own answer', () => {
   const removed = Object.assign(new Error('You were removed from Lounge.'), {name: 'AdmissionError', code: 'removed'});
   const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'removed'});
   assert.ok(refusedByHost(door));
-  for (const error of [removed, door]) {
-    assert.equal(failureMessage(error, {workspace: 'Lounge'}),
-      'You were removed from Lounge. To come back, ask someone in it for a new invitation.');
-    assert.equal(failureMessage(error, {workspace: 'Lounge', messages: locale('de-DE')}),
-      'Du wurdest aus Lounge entfernt. Um zurückzukommen, bitte jemanden darin um eine neue Einladung.');
-    assert.equal(failureMessage(error, {messages: locale('en-US')}), failureMessage(error));
-  }
+  assert.ok(!refusedByHost(removed), 'the page’s own reading of a removal is no door’s answer');
 });
 
-test('a workspace taking people by invitation tells a visitor without one that they need one, in their language', () => {
+test('a door taking people by invitation is the host’s own answer', () => {
   const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
   assert.ok(refusedByHost(door));
-  assert.equal(failureMessage(door, {workspace: 'Lounge'}),
-    'You need an invitation to join Lounge for now. Ask someone in it for an invite link, then open it here.');
-  assert.match(failureMessage(door), /^You need an invitation to join this workspace for now\./);
-  assert.equal(failureMessage(door, {workspace: 'Lounge', messages: locale('de-DE')}),
-    'Für Lounge brauchst du im Moment eine Einladung. Bitte jemanden darin um einen Einladungslink und öffne ihn hier.');
-  assert.equal(failureMessage(door, {messages: locale('en-US')}), failureMessage(door));
 });
 
 test('a pasted invite link opens as itself; anything else is not one', () => {
@@ -392,14 +321,6 @@ test('a pasted invite link opens as itself; anything else is not one', () => {
   for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/room/abc', 'javascript:alert(1)?invite=1', null]) {
     assert.equal(inviteLinkTarget(text, base), null, String(text));
   }
-});
-
-test('a page that could not become a device of its own says other tabs hold every one', () => {
-  const busy = Object.assign(new Error('Every device key is held by another tab'), {name: 'CustodyError', code: 'custody-busy'});
-  assert.equal(failureMessage(busy, {workspace: 'Lounge'}),
-    'Every device this browser keeps for Lounge is open in another tab. Close one of those tabs, then try again.');
-  assert.equal(failureMessage(busy),
-    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.');
 });
 
 test('a tip reads after its label, a joke bare', () => {

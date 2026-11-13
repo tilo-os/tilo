@@ -1,18 +1,4 @@
 //! A host's content, one store per workspace it serves.
-//!
-//! A host that serves workspaces keeps the bytes their records reference
-//! and do not carry: a file a caller uploaded, what an app made in a record
-//! the host runs, the files the workspace's members wrote, what a bot fetched
-//! from outside. [`WorkspaceStores`] is the one place a host keeps them: a
-//! directory per workspace, each a [`ContentStore`] bounded by the same
-//! [`ContentLimits`], so one workspace's store never answers for another's.
-//!
-//! What bounds them all is the disk. A write is refused, with its reason
-//! ([`ContentError::DiskLow`]), while the disk holding the stores has less
-//! free than [`keep_free`] of its size: the host's own state (its records,
-//! journals and keys) needs that room, and refusing new content keeps them
-//! writable. Nothing kept is dropped for room. The host logs an error the
-//! moment its disk runs low, and again when it has room once more.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -29,7 +15,6 @@ use crate::{
 /// The most a host keeps free on a small disk for its own state: a tenth of
 /// the disk, up to this.
 const KEEP_FREE_SMALL_DISK: u64 = 1024 * 1024 * 1024;
-/// The share of the disk, in hundredths, a host keeps free when that is more.
 const KEEP_FREE_PERCENT: u64 = 2;
 
 /// Each workspace's content store under one directory, by the workspace's
@@ -105,7 +90,6 @@ impl WorkspaceStores {
         }
     }
 
-    /// The workspaces this host keeps content of, by id.
     #[must_use]
     pub fn workspaces(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
@@ -152,7 +136,6 @@ impl WorkspaceStores {
     }
 }
 
-/// One workspace's store, and the directory it keeps its content in.
 #[derive(Clone)]
 struct Kept {
     store: ContentStore,
@@ -190,10 +173,8 @@ fn room_at(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
-/// A workspace's store that keeps nothing new while the disk is low.
 struct RoomChecked {
     inner: Arc<DirBackend>,
-    /// Where the stores are: the disk whose room counts.
     disk: PathBuf,
     low: Arc<AtomicBool>,
 }
@@ -255,6 +236,14 @@ impl ContentBackend for RoomChecked {
 
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.inner.release(hash)
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.inner.max_item_bytes()
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        self.inner.scratch_dir()
     }
 }
 

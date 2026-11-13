@@ -8,7 +8,6 @@ use tilo_fs_client::wire::FsReply;
 
 use super::*;
 
-/// What one served capability answers with.
 type Dispatch = Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 
 /// Scope-checked in-memory backend: the protocol's contract, not the
@@ -18,13 +17,10 @@ struct MemoryBackend {
     bytes: Mutex<HashMap<String, Vec<u8>>>,
     refs: Mutex<HashSet<(String, String)>>,
     pending: Mutex<HashSet<String>>,
-    /// Every ranged read served, as `(offset, max_len)`.
     reads: Mutex<Vec<(u64, u32)>>,
-    /// The length of every piece a streamed put received.
     pieces: Mutex<Vec<usize>>,
     /// Streamed puts that ended without finishing, so stored nothing.
     abandoned: std::sync::atomic::AtomicUsize,
-    /// Held by a test to keep streamed puts from reading their pieces.
     stall: tokio::sync::Mutex<()>,
 }
 
@@ -427,8 +423,6 @@ fn blob_reader_fetches_ranges_as_it_is_read() {
 
 type Shared<T> = Arc<Mutex<T>>;
 
-/// A `DocumentBlobs` that keeps content in memory and logs every upload
-/// write as it arrives: what the daemon sees of a streamed put.
 struct Recording {
     content: Shared<HashMap<String, Vec<u8>>>,
     writes: Shared<Vec<usize>>,
@@ -670,7 +664,6 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
             Err(BlobError::Input(_))
         ));
         assert!(store.lock().unwrap().is_empty());
-        // The connection stays usable after the abandoned upload.
         assert!(client.put(b"after", "").is_ok());
     }
 }

@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK,
-    NIGHT_LIGHT, NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
+    NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -144,7 +144,7 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         }
         QsEffect::OpenPlaying { app } => {
             put(&mut arguments, "app", app);
-            (CHROME, "show-app")
+            (DESK, "show-app")
         }
         QsEffect::SetInputVolume { level } => {
             put(&mut arguments, "level", level);
@@ -211,8 +211,8 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         // The notification centre: the panel's row opens the one list, on
         // the desk, rather than a page of its own.
         QsEffect::ShowCentre => {
-            put(&mut arguments, "open", &true);
-            (CHROME, "notifications")
+            put(&mut arguments, "surface", "centre");
+            (DESK, "show-surface")
         }
         QsEffect::SetDoNotDisturb { on } => {
             put(&mut arguments, "on", on);
@@ -263,14 +263,11 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             (SLEEP, "set-profile")
         }
         QsEffect::OpenSettings { link } => {
-            // Settings opens from the desk's search, on the page the link
-            // names: its row is the one the person presses there.
-            let query = link
-                .strip_prefix("settings://")
-                .unwrap_or(link)
-                .replace(['_', '-'], " ");
-            put(&mut arguments, "query", &query);
-            (DESK, "search")
+            // Settings opens at the page the link names: the desk owns that
+            // search, and the panel's app has no workspace of its own to
+            // search in.
+            put(&mut arguments, "link", link);
+            (DESK, "open-settings")
         }
         // What the panel shows, which is this device's own setting: the
         // session keeps it, so it is the same arrangement whether the panel
@@ -444,20 +441,32 @@ mod tests {
     fn the_notifications_row_opens_the_desks_own_centre() {
         assert_eq!(
             said(&QsEffect::ShowCentre).as_deref(),
-            Some("desktop:chrome notifications open=true"),
-            "one list, in the desk's own centre"
+            Some("session:desk show-surface surface=centre"),
+            "one list, on the desk every app of the session reaches"
         );
     }
 
     #[test]
-    fn settings_opens_from_the_desks_search_on_the_page_it_names() {
+    fn settings_opens_on_the_page_the_link_names() {
         assert_eq!(
             said(&QsEffect::OpenSettings {
                 link: "settings://devices_sync".into(),
             })
             .as_deref(),
-            Some("desktop:desk search query=devices sync"),
-            "a link is searched for, in the words a person would use"
+            Some("session:desk open-settings link=settings://devices_sync"),
+            "the desk opens Settings at the page, as its own search does"
+        );
+    }
+
+    #[test]
+    fn the_card_that_plays_opens_its_app_on_the_desk() {
+        assert_eq!(
+            said(&QsEffect::OpenPlaying {
+                app: "so.tilo.music".into(),
+            })
+            .as_deref(),
+            Some("session:desk show-app app=so.tilo.music"),
+            "the desk shows the app the music comes from"
         );
     }
 

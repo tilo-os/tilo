@@ -43,8 +43,7 @@ fn a_package_split_over_files_is_the_same_module_as_one_file() {
     .unwrap();
     let split = compile(&split_counter()).unwrap_or_else(|d| panic!("{d:#?}"));
     assert_eq!(split.meta, whole.meta);
-    // The code is the same module; the lines beside it name the files each declaration is
-    // written in, which one written in a single file does not have.
+    // The code is the same module; the lines beside it name the files each declaration is written in.
     assert_eq!(
         tilolang::meta::without_section(&split.wasm, tilolang::meta::LINES_SECTION),
         tilolang::meta::without_section(&whole.wasm, tilolang::meta::LINES_SECTION)
@@ -192,8 +191,6 @@ fn check_package_agrees_with_compile() {
     assert!(tilolang::check_package(&split_counter(), &IdsLock::new(), &[]).is_empty());
 }
 
-// ---- fmt ------------------------------------------------------------------------------------
-
 #[test]
 fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
     let messy = files(&[
@@ -216,7 +213,6 @@ fn fmt_prints_each_file_on_its_own_and_keeps_the_header_in_its_file() {
     assert!(b.starts_with("action increment(c: Counter) {\n"), "{b}");
     assert!(b.contains("}\n\naction decrement"), "{b}");
     assert!(!b.contains("app "), "{b}");
-    // Canonical text formats to itself.
     let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
     for (_, old, new) in &again.files {
         assert_eq!(old, new);
@@ -246,7 +242,6 @@ fn fmt_keeps_plain_comments_above_what_they_explain() {
         b,
         "action increment(c: Counter) {\n    // why: counters merge\n    c.value += 1\n    // and here the action ends\n}\n\nview show(c: Counter) {\n    let maybe = .some(c.value)\n    match maybe {\n        // one value, said\n        .some(x) => text(\"{x}\"),\n        .none => text(\"none\"),\n    }\n}\n"
     );
-    // Canonical text formats to itself.
     let again = format_package(&files(&[("a.tl", a), ("b.tl", b)])).unwrap();
     for (_, old, new) in &again.files {
         assert_eq!(old, new);
@@ -265,7 +260,6 @@ fn fmt_keeps_a_comment_above_the_require_it_explains() {
         a,
         "app so.tilo.counter \"Counter\"\n\naction increment(c: Counter) {\n    // only upward, so a counter never goes back\n    // and the reason says why\n    require c.value >= 0 \"The counter cannot go back\"\n    c.value += 1\n}\n"
     );
-    // Canonical text formats to itself.
     let again = format_package(&files(&[("a.tl", a)])).unwrap();
     assert_eq!(&again.files[0].2, a);
 }
@@ -282,7 +276,6 @@ fn fmt_keeps_a_paragraph_break_in_a_doc_comment() {
         a,
         "app so.tilo.counter \"Counter\"\n\n/// The counter.\n///\n/// It counts up.\n/// A blank line\n///\n/// between paragraphs is a break.\ntype Counter {\n    value: Int merge counter\n}\n"
     );
-    // Canonical text formats to itself.
     let again = format_package(&files(&[("a.tl", a)])).unwrap();
     assert_eq!(&again.files[0].2, a);
 }
@@ -351,15 +344,14 @@ fn the_example_packages_are_in_canonical_form() {
     }
 }
 
-/// The packages written against a native app's published types (`use so.tilo.session as
-/// session`): the compiler alone has none to compile against. `tilolang check`, which finds
-/// them, checks these.
+/// The packages written against a native app's published types (`use so.tilo.session as session`): the
+/// compiler alone has none to compile against. `tilolang-cli`'s tests, which have them, check that what
+/// these write is what is committed beside them.
 const NEEDS_PUBLISHED_APPS: &[&str] = &["shell"];
 
-/// The files a package's sources derive — its ids lock and its source catalogue — are what the
-/// ones committed beside them say. A change to how they are derived (a description's first
-/// sentence, a name in words, the words a view shows) changes every package that has them, so
-/// it fails here, in the crate the derivation lives in, and not on main once it has landed.
+/// The files a package's sources derive — its ids lock and its source catalogue — are what the ones
+/// committed beside them say. A change to how they are derived fails here, in the crate the derivation
+/// lives in, and not on main once it has landed.
 #[test]
 fn the_example_packages_hold_the_files_their_sources_write() {
     let dirs = example_dirs();
@@ -397,8 +389,6 @@ fn the_example_packages_hold_the_files_their_sources_write() {
         "every package is checked or named above: {checked:?}"
     );
 }
-
-// ---- package directories --------------------------------------------------------------------
 
 fn apps_tl() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
@@ -463,10 +453,9 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
     );
 }
 
-// Every example package building from its directory with its committed ids is
-// `tilolang-cli`'s `native_types::every_example_package_builds_from_its_directory_with_its_committed_ids`:
-// a package may `use` a native app (the shell calls the session's actions), whose described
-// package only the catalogue reads.
+// Every example package building from its directory is `tilolang-cli`'s test rather than this one: a
+// package may `use` a native app (the shell calls the session's actions), and the native app's described
+// package, which only the catalogue reads, is what compiling it needs.
 
 #[test]
 fn a_missing_import_names_the_app_and_where_it_looked() {
@@ -544,7 +533,6 @@ fn a_use_of_an_earlier_id_imports_the_renamed_package() {
         "imported under the id it has now, and the library every module compiles with"
     );
     assert_eq!(main.views[0].name, "item");
-    // The importer's source stays as written.
     assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
 }
 
@@ -618,8 +606,8 @@ fn the_stamp_changes_with_a_source_file_and_not_with_the_ids_lock() {
     assert_ne!(Stamp::of(&dirs), before);
 }
 
-/// A library: a record type of its own, an enum, a function over its resource type, the action
-/// that writes its records, and the view of its root.
+/// A library: a record type of its own, an enum, a function over its resource type, the action that writes
+/// its records, and the view of its root.
 const LIBRARY_PACKAGE: &str = r#"app test.marks "Marks"
 
 /// How much a mark matters.
@@ -665,8 +653,8 @@ view board(m: Marks) {
 }
 "#;
 
-/// The package that uses it: its own root and its own view, the library's action applied from a
-/// action and its function called from the view.
+/// The package that uses it: its own root and its own view, the library's action applied from an action
+/// and its function called from the view.
 const LIBRARY_USER: &str = r#"app test.notes "Notes"
 
 use test.marks as marks
@@ -702,14 +690,13 @@ view main(n: Notebook) {
 }
 "#;
 
-/// Names of the declarations of `meta`'s kind, in order.
 fn names<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
     items.collect()
 }
 
-/// A library package's declarations are as much a package's as any other's: a type, an enum, an
-/// action, a function and a resource type, all of them under the library's app id, and a package
-/// that uses it reaches them as `marks.*`.
+/// A library package's declarations are as much a package's as any other's: a type, an enum, an action, a
+/// function and a resource type, all of them under the library's app id, and a package that uses it
+/// reaches them as `marks.*`.
 #[test]
 fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     let scratch = Scratch::new("library");
@@ -720,7 +707,6 @@ fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     let (lib, user) = (&built[0].compiled, &built[1].compiled);
 
-    // The library is a package: its declarations are its own, with ids locked in its `app.ids`.
     assert_eq!(lib.meta.app, "test.marks");
     assert_eq!(
         names(lib.meta.types.iter().map(|t| t.name.as_str())),
@@ -745,7 +731,6 @@ fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     assert!(lib.ids.get("Mark.title").is_some());
     assert!(lib.ids.get("Importance.high").is_some());
 
-    // The package that uses it reaches the same declarations, owned by the library.
     assert_eq!(user.meta.app, "test.notes");
     assert_eq!(user.meta.uses, ["test.marks", "tilo.std"]);
     assert_eq!(
@@ -760,7 +745,6 @@ fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     for name in ["Mark", "Importance", "add", "count"] {
         assert!(user.ids.get(name).is_none(), "`{name}` stays the library's");
     }
-    // Its own view and action compile against the library's names.
     assert_eq!(
         names(user.meta.offered_views().map(|v| v.name.as_str())),
         ["main"]

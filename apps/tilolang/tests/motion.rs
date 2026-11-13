@@ -115,13 +115,6 @@ fn frame_at(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (bool, Vec<u8>) 
     })
 }
 
-fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 /// The rows the list shows, by the name each says, and where each is. A tree draws rows of its
 /// own for the branches it holds, which the list does not list.
 fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
@@ -158,8 +151,7 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
         node.children.iter().find_map(|child| place(child, label))
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let bounds = all
         .iter()
         .filter_map(|node| node.semantics.as_ref())
@@ -220,8 +212,7 @@ fn moving(app: &mut TestApp<TlApp>) -> bool {
 /// list's foot, which the window also offers as a button of its own.
 fn field(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .find(|node| {
             node.widget == "TextInput"
@@ -247,8 +238,7 @@ enum Delete {
 /// has no room for it and keeps it behind the header's menu instead.
 fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .find(|node| {
             node.widget == "Button"
@@ -314,8 +304,7 @@ fn press_delete(app: &mut TestApp<TlApp>, remove: &Delete, at: ui::time::Instant
 /// Whether the row titled `title` is drawn marked.
 fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
         .filter(|node| {
@@ -439,8 +428,7 @@ fn open_task(app: &mut TestApp<TlApp>, title: &str) {
 /// not have (a row draws its box), and whether it holds.
 fn page_box(app: &mut TestApp<TlApp>) -> ([f64; 4], bool) {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.iter()
         .filter(|node| node.widget == "Checkbox")
         .filter(|node| node.rect[2] > 0.0 && node.rect[3] > 0.0)
@@ -710,8 +698,7 @@ fn renders(app: &mut TestApp<TlApp>) -> u64 {
 /// The box of the opened task's done toggle: the change mark a person sees fill.
 fn the_mark_box(app: &mut TestApp<TlApp>) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .find(|node| node.widget == "Checkbox")
         .map(|node| node.rect)

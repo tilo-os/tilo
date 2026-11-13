@@ -1,14 +1,4 @@
 //! The installation's frontend, and what the image writer shares with it.
-//!
-//! Most of this tree is the guided installation of Tilo from another
-//! operating system (`installation`, see apps/imager/Cargo.toml): the
-//! installer journey, the guided setup, the folder imports, the capture and
-//! transfer of the old system's data and the helpers they start. The Tilo
-//! app leaves it out. The image writer itself (`crate::app`) only shares the
-//! consumer admissions, the internal-bundle and staging contracts the release
-//! catalog validates, the media facades its write job calls and the strings,
-//! and sees the prepared installer medium through `journey::prepared_media`,
-//! which without `installation` is the empty seam in `journey_absent.rs`.
 
 #[cfg(feature = "installation")]
 pub mod actions;
@@ -60,8 +50,6 @@ mod internal_download_flow;
 mod internal_install_flow;
 #[cfg(feature = "installation")]
 pub mod journey;
-/// The image writer's view of the prepared installer medium when the
-/// installation is not built: no medium can be prepared, so none is pending.
 #[cfg(not(feature = "installation"))]
 #[path = "journey_absent.rs"]
 pub mod journey;

@@ -10,21 +10,21 @@ authority and no second action model.
 
 ## API keys are grants
 
-A grant is a key the front door made, certified by the person's root as an
+A grant is a key the API server made, certified by the person's root as an
 agent's grant (`AgentScope::AllWorkspaces` or one workspace) and kept by the
 door. An agent reaches it through OAuth today: it registers, the person
 approves in their own Tilo, and the agent redeems a code for tokens.
 
 An API key is the same grant with the OAuth client taken out. The person
-asks for one (the grants page, or `tilo keys create`), the door makes the key,
+asks for one (the grants page, or `tilo keys create`), the API server makes the key,
 and the person's own Tilo signs them in and certifies the key exactly as it
 does for an agent (`/sign-in`, the same proof and certificate). The person's
 device is still the only thing that certifies. What changes is what comes
-back. Instead of a code for a client, the door issues one bearer token,
+back. Instead of a code for a client, the API server issues one bearer token,
 `tilo_sk_…`, that lasts as long as the certificate does. That token resolves
 to the grant, so every existing rule applies unchanged:
 
-- the scope check at the door and the relay;
+- the scope check at the API server and the relay;
 - the certificate's expiry, where it has one;
 - the person's revocations, checked at every handshake;
 - the History attribution of each run;
@@ -41,7 +41,7 @@ SDKs' `keys.create(..., expires_in)`, or the expiry menu on the grants page.
 
 The certificate says it is a server key itself
 (`DeviceCapabilities::server_key`, an extended capability bit under the
-grant's signature), because hosts verify it without the door's records.
+grant's signature), because hosts verify it without the API server's records.
 `verify_device_cert` takes a grant without an expiry, or one longer than 90
 days, only with that marker and only reaching all workspaces. Older verifiers
 refuse the bit. A grant an agent gets through OAuth consent never carries it
@@ -52,13 +52,13 @@ handshake and which ends everything it minted. Leaks are made cheap to find
 and end:
 
 - the `tilo_sk_` prefix lets secret scanners recognise the token;
-- the token is shown exactly once (the door keeps only its digest);
-- the keys list (`/grants`, `account/keys#list`, `tilo keys ls`) shows when
+- the token is shown exactly once (the API server keeps only its digest);
+- the keys list (`/grants`, `GET /v1/keys`, `account/keys#list`, `tilo keys ls`) shows when
   each key was last used and which of the person's devices approved it;
-- revoking is one click on `/grants`, or `tilo keys revoke <grant>`.
+- revoking is one click on `/grants`, `DELETE /v1/keys/<grant>`, or `tilo keys revoke <grant>`.
 
 `tilo keys create` cannot open a browser on a server, so it follows the
-device-authorization pattern. It asks the door for an approval link and a poll
+device-authorization pattern. It asks the API server for an approval link and a poll
 secret, prints the link, and polls until the person approves. The key goes
 only to the poller; the browser shows "approved". A key created from the
 grants page itself is shown on the page once.
@@ -94,9 +94,9 @@ admits it only to its own workspace.
 
 There are two places a grant ends, and both cascade:
 
-- **At the door**: revoking a grant (at `/grants`, `account/keys#revoke`,
+- **At the API server**: revoking a grant (at `/grants`, `account/keys#revoke`,
   or `tilo keys revoke`) revokes every grant it minted, forgets their keys,
-  invalidates their tokens and ends their sessions. The door holds the keys,
+  invalidates their tokens and ends their sessions. The API server holds the keys,
   so nothing can act with them afterwards.
 - **In the identity**: a revocation the person's root signs for the parent
   key refuses every certificate that key issued, at any time
@@ -110,15 +110,18 @@ There are two places a grant ends, and both cascade:
 
 Making workspaces and keys are actions on the account, reached through the
 same tools as everything else (see [the SDK design](../developers/sdk.md)).
-An agent, the SDK and the CLI all use them the same way. In a session at the
+The API's own routes name them ([`api.md`](../developers/api.md)):
+`GET`/`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `GET`/`POST /v1/keys`
+and `DELETE /v1/keys/<grant>`, which `tilo account` and `tilo keys` call. Every route is
+the same call an agent makes. In a session at the
 door's root (`/mcp`) with a grant reaching all workspaces, a call that names
-no `workspace` and whose path is under `account` is answered by the door:
+no `workspace` and whose path is under `account` is answered by the API server:
 
 | Path | What it is |
 |---|---|
 | `account/workspaces#list` | the relay's `room.list` as the grant: the workspaces of the person's own there |
 | `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
-| `account/workspaces#delete {workspace}` | the relay's `room.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the door then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
+| `account/workspaces#delete {workspace}` | the relay's `room.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the API server then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
@@ -128,7 +131,7 @@ Answers are the agent surface's text (`ok`, `failed: …`, `pending <id>`) and
 the same answer typed in `structuredContent`, so programs get JSON.
 
 Everything else is the agent surface `tilo mcp` serves
-(`tilo_runtime::mcp::McpServer`), which the door runs for each session over
+(`tilo_runtime::mcp::McpServer`), which the API server runs for each session over
 the grant's own session with the relay: `tilo_ls`, `tilo_read`, `tilo_find`,
 `tilo_do`, `tilo_status` and `tilo`. Its actions are asked of the relay's own
 device, whose app workers run them with no tab open. File bytes go into the
@@ -140,7 +143,7 @@ After that, files go through the apps' own actions, which take the
 
 ## How a grant gets into a workspace
 
-The door holds no device of anyone. The grant's own key is the device: it
+The API server holds no device of anyone. The grant's own key is the device: it
 dials the relay's iroh endpoint with the grant's certificate, as a `tilo
 login` computer dials with its own, and enters the way that computer does
 (`tilo_session_client::device`).
@@ -181,8 +184,8 @@ workspace only for its own person, a member of the home workspace (its door or
 an invitation admitted them), a person an invitation into it still names, or a
 person who already keeps workspaces of their own there. Every key and agent of
 that person is the person, within its scope. Anyone else, a fresh root or any
-key it certified, is refused with the door's own refusal (`DoorRefused`, read
-back as `HostRefusal::door`), which offers the wait list when the door takes
+key it certified, is refused with the API server's own refusal (`DoorRefused`, read
+back as `HostRefusal::door`), which offers the wait list when the API server takes
 people by invitation. Entering a workspace a person was invited into stays
 theirs either way, and so does keeping their workspace list once they are a
 member of any workspace there.

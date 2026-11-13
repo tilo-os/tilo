@@ -26,7 +26,6 @@ pub(super) fn ssh_key_bytes(
         Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
         Key::Character(s) => {
             if mods.control_key() {
-                // Ctrl+letter → the corresponding control byte (^A=1…^Z=26).
                 let c = s.chars().next()?;
                 let up = c.to_ascii_uppercase();
                 if up.is_ascii_alphabetic() {
@@ -45,12 +44,6 @@ pub(super) fn ssh_key_bytes(
 pub(super) const VNC_WHEEL_BURST: usize = 10;
 
 /// The wheel buttons to click on a VNC desktop for `delta`, carrying what is
-/// short of a whole click in `pending`. RFB's buttons 4 to 7 (mask bits 3 to
-/// 6) scroll up, down, left and right; winit's positive deltas move the
-/// content right and down, which is scrolling left and up.
-///
-/// A trackpad's pixels make a click every `wheel_line` logical pixels, the
-/// theme's distance for one notch of a line-stepping wheel.
 pub(super) fn vnc_wheel_clicks(
     pending: &mut (f64, f64),
     delta: &MouseScrollDelta,
@@ -88,14 +81,9 @@ pub(super) fn vnc_wheel_clicks(
 }
 
 /// The X11 keysym a VNC `KeyEvent` sends for a logical key: a character,
-/// or a named key from editing, navigation, the modifiers and F1 to F12.
 pub(super) fn vnc_keysym(key: &Key) -> Option<u32> {
     let named = match key {
         Key::Named(named) => named,
-        // A character's keysym is its Latin-1 code, or the Unicode keysym
-        // for anything past it (RFB 6143 §7.5.4, X11 keysym encoding). The
-        // logical key, not the text: Ctrl+C has the text of a control
-        // character but is the C key held with Ctrl.
         Key::Character(text) => {
             let mut chars = text.chars();
             let c = u32::from(chars.next()?);

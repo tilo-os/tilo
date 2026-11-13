@@ -10,10 +10,7 @@
 use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{
-    Context, Grant, GrantId, WorkspacePolicy, bot,
-    roles::{self, governance},
-};
+use tilo_action_policy::{Context, Grant, GrantId, WorkspacePolicy, bot, roles::governance};
 use tilo_automation::program::{parse_program, program_hash};
 use tilo_user_identity::DeviceCert;
 
@@ -170,7 +167,6 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let cx = Context::at_time(now);
-        let bound = roles::foreign_device_bound();
         let id = install.installation.id.as_str().to_owned();
         let workspace = self.core.workspace.clone();
         let grants = program_grants(&workspace, install, &member.policy, &cx)?;
@@ -181,7 +177,7 @@ impl StatePeer {
                 if install.installation.installed_by != member.person {
                     return Err("a bot is installed by the person installing it".into());
                 }
-                let authority = member.authority(&bound);
+                let authority = member.authority();
                 member
                     .policy
                     .check_action(&authority, governance::INSTALL_BOT, &cx, false)
@@ -222,7 +218,7 @@ impl StatePeer {
                 } else {
                     governance::INSTALL_BOT
                 };
-                let authority = member.authority(&bound);
+                let authority = member.authority();
                 member
                     .policy
                     .check_action(&authority, action, &cx, false)
@@ -355,7 +351,6 @@ impl StatePeer {
         let before = doc.get_heads();
         let identities = governed_map(&doc, "peer_identities_v1")?;
         let names = governed_map(&doc, "peers")?;
-        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(self.workspace_actor_of(key));
         for identity in &write.identities {
             let id = hex::encode(identity.device_cert.device_public_key);
@@ -368,21 +363,25 @@ impl StatePeer {
             doc.put(&names, &id, identity.device_cert.device_label.as_str())
                 .map_err(err)?;
         }
-        for id in &write.revoke {
-            if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&grants, id.as_str()).map_err(err)?;
-            }
-        }
+        let held = doc.workspace_policy(&self.core.workspace).grants.clone();
+        let mut changes: Vec<tilo_action_policy::Change> = write
+            .revoke
+            .iter()
+            .filter(|id| held.iter().any(|grant| grant.id == **id))
+            .map(|id| tilo_action_policy::Change::Revoke(id.clone()))
+            .collect();
         for grant in &write.grant {
             if grant.node.workspace_id() != Some(self.core.workspace.as_str()) {
                 return Err(format!("grant {:?} names another workspace", grant.id));
             }
-            doc.put(
-                &grants,
-                grant.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
+            match held.iter().find(|kept| kept.id == grant.id) {
+                Some(kept) if kept == grant => continue,
+                Some(_) if !write.revoke.contains(&grant.id) => {
+                    changes.push(tilo_action_policy::Change::Revoke(grant.id.clone()));
+                }
+                _ => {}
+            }
+            changes.push(tilo_action_policy::Change::Grant(grant.clone()));
         }
         if write.program.is_some() || write.drop_program.is_some() {
             let programs = match doc.get(ROOT, PROGRAMS).map_err(err)? {
@@ -404,7 +403,9 @@ impl StatePeer {
             }
         }
         doc.commit();
-        self.write_governance(doc, &before, key, now)
+        let membership = (!changes.is_empty())
+            .then_some(crate::members::MembershipOpCommand::Project { changes });
+        self.write_membership(doc, &before, key, now, membership)
     }
 }
 impl StatePeer {
@@ -544,8 +545,10 @@ impl PeerGovernance<'_> {
         let (_, programs) = doc.get(ROOT, PROGRAMS).ok()??;
         match doc.get(&programs, hash).ok()?? {
             (automerge::Value::Scalar(value), _) => match value.as_ref() {
-                // ignored-failure: a program hash that is not text names no program
-                automerge::ScalarValue::Bytes(bytes) => String::from_utf8(bytes.clone()).ok(),
+                automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                    "a program hash that is not text names no program",
+                    String::from_utf8(bytes.clone()).ok()
+                ),
                 _ => None,
             },
             _ => None,
@@ -605,15 +608,9 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<super::MemberAuthority, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
         member
             .policy
-            .check_action(
-                &member.authority(&bound),
-                action,
-                &Context::at_time(now),
-                false,
-            )
+            .check_action(&member.authority(), action, &Context::at_time(now), false)
             .map_err(|refusal| refusal.to_string())?;
         Ok(member)
     }
@@ -719,13 +716,12 @@ impl StatePeer {
             .map_err(|error| error.to_string())?
             .user_public_key;
         let cx = Context::at_time(now);
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority();
         let old = self.bot_grants(id, now)?;
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {
             let mut next = grant.clone();
-            next.granted_by = tilo_action_policy::Subject::person(hex::encode(signer));
+            next.granted_by = tilo_action_policy::Grantee::person(hex::encode(signer));
             WorkspacePolicy::check_within(&authority, &next, &cx)
                 .map_err(|refusal| refusal.to_string())?;
             reissued.push(next);
@@ -814,10 +810,12 @@ fn read_request(
 ) -> Option<RequestedBot> {
     match doc.get(requests, entry).ok()?? {
         (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            // ignored-failure: a request that does not decode names no requested bot
-            automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<RequestedBot>(bytes)
-                .ok()
-                .filter(|row| row.request.entry == entry && row.request.validate().is_ok()),
+            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                "a request that does not decode names no requested bot",
+                serde_json::from_slice::<RequestedBot>(bytes)
+                    .ok()
+                    .filter(|row| row.request.entry == entry && row.request.validate().is_ok())
+            ),
             _ => None,
         },
         _ => None,

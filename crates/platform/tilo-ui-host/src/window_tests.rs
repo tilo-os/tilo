@@ -23,7 +23,6 @@ fn a_splice_is_where_the_texts_differ() {
     }
 }
 
-/// An app and the window that holds its end.
 fn window() -> (local::End, AppWindow) {
     let (app, end) = local::pair();
     (app, AppWindow::new(Box::new(end), Vec::new()))
@@ -42,7 +41,6 @@ fn sent(app: &mut local::End) -> Vec<ToApp> {
     out
 }
 
-/// The actions a press asked the page to run.
 fn fired(app: &mut local::End) -> Vec<ToApp> {
     sent(app)
         .into_iter()
@@ -50,7 +48,6 @@ fn fired(app: &mut local::End) -> Vec<ToApp> {
         .collect()
 }
 
-/// The note the page shows.
 fn doc() -> ResourceRef {
     ResourceRef {
         id: "doc".to_owned(),
@@ -58,11 +55,11 @@ fn doc() -> ResourceRef {
     }
 }
 
-/// A page with one text field bound to a note's title.
 fn titled_page() -> Vec<ToUi> {
     let mut input = UiNode::empty("ui.TextInput", "title");
     input.binding = Some(crate::Binding {
         field: Some(("doc/notes:a".to_owned(), "title".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Title".to_owned(),
     });
     let mut page = UiNode::empty("stack", "page");
@@ -83,7 +80,6 @@ fn titled_page() -> Vec<ToUi> {
     ]
 }
 
-/// The spaces the window told the app, as (lane, width, height) in rem.
 fn spaces(app: &mut local::End) -> Vec<(Lane, f32, f32)> {
     sent(app)
         .into_iter()
@@ -143,8 +139,8 @@ fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_sho
     send(&mut app, &titled_page());
     window.receive();
     assert_eq!(window.bound_value("title"), Some(Value::text("Q3")));
-    // The person types: the field shows it at once (it is the toolkit's), and the app hears
-    // of it as a splice of what the field showed.
+    // The person types: the field shows it at once (it is the toolkit's), and the app hears of it
+    // as a splice of what the field showed.
     window.act(UiEvent::Edit("title".to_owned(), "Q3 plan".to_owned()));
     window.flush();
     assert_eq!(
@@ -211,8 +207,8 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     window.act(UiEvent::Edit("title".to_owned(), "Q3 xy".to_owned()));
     window.flush();
     assert!(sent(&mut app).is_empty(), "still waiting for the press");
-    // The press opened another note into the field, and the app says it ran it: what was
-    // typed goes to that note's title, at its end.
+    // The press opened another note into the field, and the app says it ran it: what was typed goes
+    // to that note's title, at its end.
     let mut opened = titled_page();
     opened[1] = ToUi::Bound {
         lane: Lane::Root,
@@ -248,7 +244,6 @@ fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_
     );
 }
 
-/// The note `id`.
 fn note(id: &str) -> ResourceRef {
     ResourceRef {
         id: id.to_owned(),
@@ -256,11 +251,11 @@ fn note(id: &str) -> ResourceRef {
     }
 }
 
-/// The note `id` opened beside the page, its title showing `title`.
 fn opened_note(id: &str, title: &str) -> Vec<ToUi> {
     let mut input = UiNode::empty("ui.TextInput", "title");
     input.binding = Some(crate::Binding {
         field: Some((format!("{id}/notes:a"), "title".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Title".to_owned(),
     });
     let mut page = UiNode::empty("stack", "note");
@@ -288,8 +283,8 @@ fn typing_into_a_field_put_the_keyboard_in_while_a_press_runs_stays_with_its_not
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
     let title = format!("{DETAIL}title");
-    // The person presses New, clicks into note a's title and types there before the app
-    // ran the press.
+    // The person presses New, clicks into note a's title and types there before the app ran the
+    // press.
     window.act(UiEvent::Press("new".to_owned()));
     window.flush();
     assert!(
@@ -333,8 +328,8 @@ fn typing_after_a_press_in_the_field_that_still_had_the_keyboard_follows_into_wh
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
     let title = format!("{DETAIL}title");
-    // The person presses New (in the window's bar, which leaves the keyboard in note a's
-    // title) and types on at once, before the app ran the press.
+    // The person presses New (in the window's bar, which leaves the keyboard in note a's title) and
+    // types on at once, before the app ran the press.
     window.act(UiEvent::Press("new".to_owned()));
     window.act(UiEvent::Edit(title.clone(), "AlphaEcho".to_owned()));
     window.flush();
@@ -377,8 +372,8 @@ fn typing_between_what_a_press_opened_and_its_took_follows_into_the_opened_field
     window.act(UiEvent::Press("new".to_owned()));
     window.flush();
     let _ = sent(&mut app);
-    // The note the press opened arrives in one batch, the app's Took in the next; the
-    // person types in between, in the field that had the keyboard, which shows note b now.
+    // The note the press opened arrives in one batch, the app's Took in the next; the person types
+    // in between, in the field that had the keyboard, which shows note b now.
     send(&mut app, &opened_note("b", ""));
     window.receive();
     window.act(UiEvent::Edit(title, "Echo".to_owned()));
@@ -414,9 +409,12 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
     assert!(window.receive(), "a scribble is refused, not a panic");
 }
 
-/// What the app published for the window: a resource with one action, as the catalogue
-/// carries it.
 fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
+    catalogue_on("tasks:1", label, shortcut)
+}
+
+/// [`catalogue_of`], on the resource `resource`.
+fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> {
     use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
     let mut spec = ActionSpec::operation(
         "new",
@@ -427,15 +425,34 @@ fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
     )
     .unwrap();
     spec.type_mut().state.shortcut = shortcut.map(str::to_owned);
-    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+    let resource = ResourceSpec::new(resource, "test.tasks", "Tasks").with_action(spec);
     serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes")
 }
 
-/// The window offers the actions its app publishes, and a catalogue of labels that moved
-/// replaces the action it holds where it sits, with the key the app gives it now.
+/// The window offers the actions its app publishes. A change replaces the actions of the
+/// resources it names, with the key the app gives them now, adds those of a resource that
+/// joined, drops those of one the app no longer offers, and holds them in the app's order; a
+/// relabeling from an app of an earlier build replaces an action where it sits.
 #[test]
 fn a_published_catalogue_is_what_the_windows_palette_offers() {
     let (mut app, mut window) = window();
+    let offered = |window: &AppWindow| {
+        window
+            .actions()
+            .iter()
+            .map(|action| {
+                (
+                    action.address.resource.clone(),
+                    action.action_label.clone(),
+                    action.state.shortcut.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let one = |resource: &str, label: &str, key: &str| {
+        (resource.to_owned(), label.to_owned(), Some(key.to_owned()))
+    };
+    let resources = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
@@ -444,13 +461,7 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
         )))],
     );
     window.receive();
-    assert_eq!(
-        window.actions().first().map(|action| (
-            action.action_label.as_str(),
-            action.state.shortcut.as_deref()
-        )),
-        Some(("New task", Some("Ctrl+n")))
-    );
+    assert_eq!(offered(&window), [one("tasks:1", "New task", "Ctrl+n")]);
     send(
         &mut app,
         &[ToUi::Actions(wire::ActionCatalogue::Relabeled(
@@ -459,17 +470,43 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     );
     window.receive();
     assert_eq!(
-        window.actions().first().map(|action| (
-            action.action_label.as_str(),
-            action.state.shortcut.as_deref()
-        )),
-        Some(("Create task", Some("Ctrl+enter"))),
+        offered(&window),
+        [one("tasks:1", "Create task", "Ctrl+enter")],
         "one action, relabeled in place"
+    );
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::Changed {
+            actions: catalogue_on("tasks:2", "Add", Some("Ctrl+a")),
+            resources: resources(&["tasks:2", "tasks:1"]),
+        })],
+    );
+    window.receive();
+    assert_eq!(
+        offered(&window),
+        [
+            one("tasks:2", "Add", "Ctrl+a"),
+            one("tasks:1", "Create task", "Ctrl+enter"),
+        ],
+        "a resource that joined is offered where the app offers it"
+    );
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::Changed {
+            actions: catalogue_of("New task", Some("Ctrl+n")),
+            resources: resources(&["tasks:1"]),
+        })],
+    );
+    window.receive();
+    assert_eq!(
+        offered(&window),
+        [one("tasks:1", "New task", "Ctrl+n")],
+        "a resource the app no longer offers takes its actions with it"
     );
 }
 
-/// The window declares each published action as the app declared it — what it takes, and
-/// whether it can run now — because that is what its palette lists by.
+/// The window declares each published action as the app declared it — what it takes, and whether it
+/// can run now — because that is what its palette lists by.
 #[test]
 fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     use tilo_actions::{ActionParam, ActionSpec, ExecutionLocus, ParamType, Pick, ResourceSpec};
@@ -515,8 +552,6 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     );
 }
 
-/// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds
-/// it for an action with that shortcut: the `key` prop and the button's `press`.
 fn keyed_menu(key: &str) -> Vec<ToUi> {
     let mut button = UiNode::empty("ui.Button", "archive");
     button
@@ -563,8 +598,8 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
     );
     let mut harness =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
-    // The action's own `key:` names its shortcut: its modifiers with its key, and neither
-    // half on its own, nor another modifier held with it.
+    // The action's own `key:` names its shortcut: its modifiers with its key, and neither half on
+    // its own, nor another modifier held with it.
     press(&mut harness, &["command"], "Enter");
     assert_eq!(
         fired(&mut app),
@@ -644,10 +679,10 @@ fn a_plain_declared_key_runs_it_alone() {
     assert!(fired.is_empty(), "`q` declares nothing: {fired:?}");
 }
 
-/// The window's primary action is where a person comes to add a list's next item: run from the
-/// bar with nothing typed, it puts the keyboard in the list's entry, which declares the action's
-/// key, rather than making an item nobody typed — whether it is chosen from the window's
-/// catalogue or pressed where it stands.
+/// The window's primary action is where a person comes to add a list's next item: run from the bar
+/// with nothing typed, it puts the keyboard in the list's entry, which declares the action's key,
+/// instead of making an item nobody typed, whether it is chosen from the window's catalogue or
+/// pressed where it is.
 #[test]
 fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
     use wire::Event;
@@ -710,7 +745,6 @@ fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
     );
 }
 
-/// Press `key` with `modifiers` held, as a person does, and let the window send what it did.
 fn press(harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str) {
     let modifiers: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
     harness.set_modifiers(&modifiers);
@@ -719,7 +753,6 @@ fn press(harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str
     drawn_window(harness).flush();
 }
 
-/// What the control called `name` shows, as assistive technology reads it.
 fn shown_value(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
     let named = node_named(harness, name);
     harness
@@ -729,9 +762,8 @@ fn shown_value(harness: &ui::headless::FrameHarness, name: &str) -> Option<Strin
         .and_then(|(_, node)| node.value().map(str::to_owned))
 }
 
-/// The entry a list's next item is typed in declares the primary action's key: pressed there,
-/// the key commits what was typed through the entry's own submit, rather than making an empty
-/// item.
+/// The entry a list's next item is typed in declares the primary action's key: pressed there, the
+/// key commits what was typed through the entry's own submit, instead of making an empty item.
 #[test]
 fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
     use wire::Event;
@@ -790,8 +822,8 @@ fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
     );
 }
 
-/// Two items of a list each declare the key that completes them: the press completes the item
-/// the keyboard is on, not the first one the window shows.
+/// Two items of a list each declare the key that completes them: the press completes the item the
+/// keyboard is on, not the first one the window shows.
 #[test]
 fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
     use wire::Event;
@@ -810,6 +842,7 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         let mut title = UiNode::empty("ui.TextInput", &format!("{key}#title"));
         title.binding = Some(crate::Binding {
             field: Some((format!("doc/tasks:{key}"), "title".to_owned())),
+            kind: Some("tasks.Task".to_owned()),
             name: name.to_owned(),
         });
         title
@@ -936,12 +969,11 @@ fn a_fields_select_all_stays_in_the_field() {
     assert!(fired(&mut app).is_empty(), "the keys ran no action");
 }
 
-/// A page whose one described control `kind` is bound to a note's field and shows `value`,
-/// with `props` as the view set them.
 fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
     let mut control = UiNode::empty(kind, "field");
     control.binding = Some(crate::Binding {
         field: Some(("doc/notes:a".to_owned(), "field".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Field".to_owned(),
     });
     control
@@ -968,7 +1000,6 @@ fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
     ]
 }
 
-/// A window showing `page`, drawn once.
 fn drawn(page: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
     let (mut app, mut window) = window();
     send(&mut app, page);
@@ -979,7 +1010,6 @@ fn drawn(page: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
     (app, harness)
 }
 
-/// The window the harness draws.
 fn drawn_window(harness: &mut ui::headless::FrameHarness) -> &mut AppWindow {
     harness
         .root_widget_mut()
@@ -988,7 +1018,6 @@ fn drawn_window(harness: &mut ui::headless::FrameHarness) -> &mut AppWindow {
         .expect("the window")
 }
 
-/// What the window told the app, apart from the space it is drawn in.
 fn told(app: &mut local::End) -> Vec<ToApp> {
     sent(app)
         .into_iter()
@@ -996,14 +1025,13 @@ fn told(app: &mut local::End) -> Vec<ToApp> {
         .collect()
 }
 
-/// Run `test` with the clock at the day a capture shows (30 June 2026), so a day's fact reads
-/// the same on every run rather than as "Overdue" once the day has gone by.
+/// Run `test` with the clock at the day a capture shows (30 June 2026), so a day's fact reads the
+/// same on every run, not as "Overdue" once the day has gone by.
 fn at_capture_day<T>(test: impl FnOnce() -> T) -> T {
     let at = ui::clock::capture_wall().expect("the capture day exists in the local zone");
     ui::time::testing::with_wall(at, test)
 }
 
-/// The accessibility node of the control named `name`.
 fn node_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
     harness.a11y_node_named(name).unwrap_or_else(|| {
         panic!(
@@ -1045,8 +1073,8 @@ fn a_bound_control_shows_the_value_the_app_bound() {
                 .map(|(_, node)| node)
                 .expect("the node is in the tree")
         };
-        // What the field is for, and the day the app bound as the day's own fact ("Due,
-        // Today") — never as the "Add date" a field that holds no day offers.
+        // What the field is for, and the day the app bound as the day's own fact ("Due, Today"),
+        // never as the "Add date" a field that holds no day offers.
         let today = ui::clock::today();
         let bound = ui::widget::DateField::spoken(Some("Due"), Some(today), None);
         assert_ne!(
@@ -1107,8 +1135,8 @@ fn a_bound_control_shows_the_value_the_app_bound() {
     });
 }
 
-/// A day picked in the calendar reaches the app as the value the field now holds, not as a
-/// splice of the text it reads as. A field its app gives no label reads as the day it holds.
+/// A day picked in the calendar reaches the app as the value the field now holds, not as a splice
+/// of the text it reads as. A field its app gives no label reads as the day it holds.
 #[test]
 fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
     at_capture_day(|| {
@@ -1234,13 +1262,10 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     );
 }
 
-/// A page whose overview is one list over the rows the app renders, as `std.list` builds it:
-/// the list inside the page an app docks its composer or bar under.
 fn list_page() -> Vec<ToUi> {
     list_page_keyed("shell")
 }
 
-/// [`list_page`], its shell under `key`: a new key is a shell the window builds anew.
 fn list_page_keyed(key: &str) -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
     list.props.insert("in_column".to_owned(), Value::Bool(true));
@@ -1261,8 +1286,8 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
     }]
 }
 
-/// A shell built anew opens on the screen a new window opens on; the window remembers the
-/// column the person is looking at, and hands it to the shell it builds.
+/// A shell built anew opens on the screen a new window opens on; the window remembers the column
+/// the person is looking at, and hands it to the shell it builds.
 #[test]
 fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
     let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
@@ -1287,8 +1312,8 @@ fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
         Some(NavPane::Content),
         "the new shell shows the column the person is looking at, not the one a window opens on"
     );
-    // Back closes the note: the list stands alone again, and the app saying a row opened brings
-    // no column forward until one stands beside the list.
+    // Back closes the note: the list is alone again, and the app saying a row opened brings no
+    // column forward until one is beside the list.
     send(
         &mut app,
         &[
@@ -1304,7 +1329,6 @@ fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
     assert_eq!(front(&mut window), Some(NavPane::Overview));
 }
 
-/// The list of the view's overview.
 fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
     window
         .shell_mut()
@@ -1316,8 +1340,8 @@ fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
 fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
     let (mut app, mut window) = window();
     send(&mut app, &list_page());
-    // The view beside the list opens before the app has rendered any of the list's rows: the
-    // list cannot name the row of the view it shows until they come.
+    // The view beside the list opens before the app has rendered any of the list's rows: the list
+    // cannot name the row of the view it shows until they come.
     send(&mut app, &opened_note("a", "Alpha"));
     window.receive();
     assert!(
@@ -1356,7 +1380,6 @@ fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
     assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
 }
 
-/// A shell node with `slots`, each `(name, children)`, as a view's tree is.
 fn shell_node(key: &str, props: &[(&str, Value)], slots: Vec<(&str, Vec<UiNode>)>) -> UiNode {
     let mut shell = UiNode::empty(&kind("NavShell"), key);
     for (name, value) in props {
@@ -1371,7 +1394,6 @@ fn shell_node(key: &str, props: &[(&str, Value)], slots: Vec<(&str, Vec<UiNode>)
     shell
 }
 
-/// A button node of a header.
 fn header_button(key: &str, label: &str, role: &str) -> UiNode {
     let mut button = UiNode::empty(&kind("Button"), key);
     button.props.insert("label".to_owned(), Value::text(label));
@@ -1386,12 +1408,10 @@ fn header_button(key: &str, label: &str, role: &str) -> UiNode {
     button
 }
 
-/// A list node, as a view draws the column of what it shows.
 fn list_node(key: &str) -> UiNode {
     UiNode::empty(&kind("VirtualList"), key)
 }
 
-/// Where the thing a person sees as `name` is drawn, in window coordinates.
 fn bounds_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::kurbo::Rect {
     harness
         .a11y_nodes()
@@ -1415,8 +1435,8 @@ fn bounds_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::kurbo::
 }
 
 /// The window after the root's that draws a list of its own moves the window there: its list's
-/// actions stand in the window's one bar from the frame that shows them, placed where a person
-/// presses them, and the list's title is the window's.
+/// actions are in the window's one bar from the frame that shows them, where a person presses them,
+/// and the list's title is the window's.
 #[test]
 fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
     let root = shell_node(
@@ -1487,7 +1507,6 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         "the project's other action stands in the bar, placed: {section:?}"
     );
 }
-/// The node of `kind` in `tree`, to change.
 fn node_of<'a>(tree: &'a mut UiNode, kind: &str) -> Option<&'a mut UiNode> {
     if tree.kind == kind {
         return Some(tree);
@@ -1497,8 +1516,6 @@ fn node_of<'a>(tree: &'a mut UiNode, kind: &str) -> Option<&'a mut UiNode> {
         .find_map(|child| node_of(child, kind))
 }
 
-/// The rows of a list the app renders, each showing the item `id` under `title`, as a loop
-/// over the items of a resource sends them.
 fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
     let mut keys = Vec::new();
     let mut rows = Vec::new();
@@ -1527,9 +1544,9 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
     }]
 }
 
-/// A window whose own list shows an item as its page is named by the item, as its row names it
-/// — a task opened from search reads "Pay rent" in the desktop's tab — and by its page again once
-/// the list shows none.
+/// A window whose own list shows an item as its page is named by the item, as its row names it (a
+/// task opened from search reads "Pay rent" in the desktop's tab), and by its page again once the
+/// list shows none.
 #[test]
 fn a_window_showing_an_item_as_its_page_is_named_by_the_item() {
     let (mut app, mut window) = window();
@@ -1593,8 +1610,8 @@ fn a_window_showing_an_item_as_its_page_is_named_by_the_item() {
     );
 }
 
-/// A choice of several rows is the person's own while it holds: the rows the app sends again
-/// after a press leave it as it is, and only the host's own putting away of the choice ends it.
+/// A choice of several rows is the person's own while it holds: the rows the app sends again after
+/// a press leave it as it is, and only the host's own putting away of the choice ends it.
 #[test]
 fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
     use ui::widget::ListModel;
@@ -1654,8 +1671,8 @@ fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
         "the choice of several rows outlasts the rows the app sends again"
     );
 
-    // What the host kept of the choice gone — an action over the rows ran — the list puts its
-    // own away with it.
+    // What the host kept of the choice gone — an action over the rows ran — the list puts its own
+    // away with it.
     send(
         &mut app,
         &[ToUi::Patch {
@@ -1688,8 +1705,6 @@ fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
     );
 }
 
-/// A page whose overview list lets a person choose several rows, as `std.list` declares
-/// it, reporting every change of the choice to the app.
 fn choose_several_page() -> Vec<ToUi> {
     let mut page = list_page();
     if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
@@ -1702,7 +1717,6 @@ fn choose_several_page() -> Vec<ToUi> {
     page
 }
 
-/// The choices the app was told of, in order: what each report of the list's selection held.
 fn choices(app: &mut local::End) -> Vec<Option<Value>> {
     sent(app)
         .into_iter()
@@ -1713,7 +1727,6 @@ fn choices(app: &mut local::End) -> Vec<Option<Value>> {
         .collect()
 }
 
-/// The rows a report of the list's choice holds, as the keys of the rows it names.
 fn chosen_rows(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::List(items)) => items
@@ -1727,7 +1740,6 @@ fn chosen_rows(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-/// Where the row `key` stands once the frames so far have laid it out.
 fn centre_of(harness: &mut ui::headless::FrameHarness, key: &str) -> Option<(f64, f64)> {
     let centre = drawn_window(harness)
         .shell_mut()
@@ -1739,8 +1751,8 @@ fn centre_of(harness: &mut ui::headless::FrameHarness, key: &str) -> Option<(f64
 }
 
 /// A row clicked plainly, another added with Control held, then Shift and the arrow: the walk
-/// extends the choice the person gathered and the window reports it, so the bar standing for
-/// the choice grows with it.
+/// extends the choice the person gathered and the window reports it, so the bar for the choice
+/// grows with it.
 #[test]
 fn a_ctrl_click_then_shift_down_extends_the_choice() {
     let (mut app, mut window) = window();
@@ -1753,8 +1765,8 @@ fn a_ctrl_click_then_shift_down_extends_the_choice() {
     ];
     let mut harness =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
-    // The window asks its app for the rows it shows, as it does over a socket: the app reads
-    // the list's children anew (`RowsChanged` with a `Reset`), then renders the rows.
+    // The window asks its app for the rows it shows, as it does over a socket: the app reads the
+    // list's children anew (`RowsChanged` with a `Reset`), then renders the rows.
     for _ in 0..8 {
         harness.recompose().expect("a frame");
         drawn_window(&mut harness).flush();
@@ -1806,8 +1818,6 @@ fn a_ctrl_click_then_shift_down_extends_the_choice() {
     );
 }
 
-/// Answer what the window asked its app for with `items`, as an app renders them: whether it
-/// asked for rows at all.
 fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
     let mut asked = false;
     for message in sent(app) {
@@ -1828,6 +1838,94 @@ fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
         send(app, &listed_rows(items));
     }
     asked
+}
+
+/// An entry bound to view state (`ui.TextInput(entry: true, bind: draft)`, Chat's composer) sends
+/// what it holds, lets go of it, and takes the very next typing without a click to put the
+/// keyboard back: what the person types after a send is the next message, never the sent words
+/// with more typed after them. The app's `bound` value for the emptied draft — its own reading of
+/// what the send left — never takes the person's new words away, either.
+#[test]
+fn a_bound_entry_takes_the_next_typing_after_it_sends() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("placeholder", Value::text("Message #general")),
+            ("entry", Value::Bool(true)),
+        ],
+        Value::text("hello"),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children[0]
+            .events
+            .insert("submit".to_owned(), Event::default());
+    }
+    let (mut app, mut harness) = drawn(&page);
+    harness.click_named("field").expect("the composer is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the click put the keyboard in the composer"
+    );
+    // Enter submits what the field holds; the entry clears itself and the app hears both.
+    harness.key("Enter");
+    drawn_window(&mut harness).flush();
+    harness.relayout();
+    let heard = sent(&mut app);
+    assert!(
+        heard.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { key, event, value: Some(Value::Text(text)), .. }
+                if key == "field" && event == "submit" && text == "hello"
+        )),
+        "the send carried the words the field held: {heard:?}"
+    );
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the entry kept the keyboard after it submitted"
+    );
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some(""),
+        "the entry let go of what it sent"
+    );
+    // The app reads its draft back as empty, as the cleared field told it: the field keeps
+    // holding nothing, never the sent words pushed back on it.
+    send(
+        &mut app,
+        &[ToUi::Bound {
+            lane: Lane::Root,
+            key: "field".to_owned(),
+            value: Value::text(""),
+            acked: 1,
+        }],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    // The next words land in the field at once, with no click to bring the keyboard back.
+    harness.type_text("and then");
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some("and then"),
+        "the entry took the next typing without being clicked into again"
+    );
+    // What the person typed after the send is a fresh draft, sent as its own message: the second
+    // send carries the new words alone, never the words already sent.
+    harness.key("Enter");
+    drawn_window(&mut harness).flush();
+    let second = sent(&mut app);
+    assert!(
+        second.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { key, event, value: Some(Value::Text(text)), .. }
+                if key == "field" && event == "submit" && text == "and then"
+        )),
+        "the second send carried the new words alone: {second:?}"
+    );
 }
 
 /// A list window: a shell whose overview lists rows, declaring where the window's search goes.
@@ -1902,8 +2000,8 @@ fn the_window_s_search_narrows_the_list_its_frame_declares() {
     };
     assert_eq!((event.as_str(), key.as_str()), ("search", "shell"));
     assert_eq!(value, Value::text("pla"));
-    // The app answers with the rows the search left, and the window counts them of the rows
-    // the list had before anything was typed.
+    // The app answers with the rows the search left, and the window counts them of the rows the
+    // list had before anything was typed.
     send(
         &mut app,
         &[ToUi::RowsChanged {
@@ -1941,4 +2039,126 @@ fn the_window_s_search_narrows_the_list_its_frame_declares() {
         InPlace::Query,
         "the search closes, the frame stays"
     );
+}
+
+fn action_shell(listing: bool) -> Vec<ToUi> {
+    use wire::Event;
+    let slot = |name: &str| {
+        let mut node = UiNode::empty(SLOT, &format!("shell#{name}"));
+        node.props.insert("name".to_owned(), Value::text(name));
+        node
+    };
+    let mut button = UiNode::empty(&kind("Button"), "shell#new");
+    button
+        .props
+        .insert("label".to_owned(), Value::text("New note"));
+    button.events.insert(
+        "press".to_owned(),
+        Event {
+            invokes: Some(crate::Invocation {
+                resource: "1".to_owned(),
+                action: "new".to_owned(),
+                declared: "abc123".to_owned(),
+            }),
+            ..Event::default()
+        },
+    );
+    let mut actions = slot("actions");
+    actions.children.push(button);
+    let mut overview = slot("overview");
+    if listing {
+        let mut row = UiNode::empty(&kind("ListRow"), "shell#row");
+        row.props.insert("title".to_owned(), Value::text("First"));
+        overview.children.push(row);
+    } else {
+        let mut state = UiNode::empty(&kind("EmptyState"), "shell#none");
+        state
+            .props
+            .insert("title".to_owned(), Value::text("No notes yet"));
+        overview.children.push(state);
+    }
+    let mut content = slot("content");
+    let mut unopened = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    unopened
+        .props
+        .insert("title".to_owned(), Value::text("No note open"));
+    content.children.push(unopened);
+    let mut shell = UiNode::empty(&kind("NavShell"), "shell");
+    shell.children.extend([overview, content, actions]);
+    let mut target = doc();
+    target.id = "1".to_owned();
+    target.ty = "test.tasks".to_owned();
+    vec![
+        ToUi::Open {
+            lane: Lane::Root,
+            target,
+            tree: shell,
+            front: None,
+        },
+        ToUi::Actions(wire::ActionCatalogue::All(catalogue_of("New note", None))),
+    ]
+}
+
+fn identity_named(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+        .and_then(|(_, node)| node.author_id().map(str::to_owned))
+}
+
+fn named_node(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
+    harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the window draws {name:?}"))
+}
+
+#[test]
+fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
+    let (mut app, mut window) = window();
+    send(&mut app, &action_shell(false));
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.relayout();
+    // The record kind it acts on, then the action as the app declares it: not the name the window
+    // publishes it under, which a rename changes.
+    let identity = "test.tasks\u{1f}abc123";
+    assert_eq!(
+        identity_named(&harness, "New note").as_deref(),
+        Some(identity),
+        "the bar's button says what it does: {:?}",
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| Some((node.label()?.to_owned(), node.author_id()?.to_owned())))
+            .collect::<Vec<_>>()
+    );
+    let in_the_bar = named_node(&harness, "New note");
+
+    // The first note: the window's columns come back, and the action stands in their header row.
+    send(&mut app, &action_shell(true));
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    let in_the_columns = named_node(&harness, "New note");
+    assert_ne!(
+        in_the_bar, in_the_columns,
+        "the window drew the control again, so the node id found before it is gone"
+    );
+    assert_eq!(
+        identity_named(&harness, "New note").as_deref(),
+        Some(identity),
+        "and what it does is where it was, whatever the window composed around it"
+    );
+    // One control of one action drawn in two places keeps a node each, so no two nodes of the tree
+    // share an id.
+    let ids: Vec<u64> = harness
+        .a11y_nodes()
+        .into_iter()
+        .map(|(id, _)| id.0)
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(ids.len(), unique.len(), "every node keeps an id of its own");
 }

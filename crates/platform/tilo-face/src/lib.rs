@@ -1,17 +1,14 @@
-//! A person's face before any picture: their initials and the presence hue
-//! their identity derives, and how a colour reads as a presence hue
-//! ([`decode_srgb`], [`linear_to_oklab`]). Every surface that draws a person (the toolkit's
-//! avatars, the login screen, the boot sign-in screen before the system
-//! volume is open) takes both from here, so one person looks the same on
-//! each.
+//! A person's face before any picture: their initials, the presence hue their
+//! identity derives, and how a colour reads as a presence hue ([`decode_srgb`],
+//! [`linear_to_oklab`]). Every surface that draws a person (the toolkit's
+//! avatars, the login screen, the boot sign-in screen before the system volume
+//! is open) takes both from here, so one person looks the same on each.
 
-/// How many presence hues there are.
 pub const PRESENCE_LEN: usize = 12;
 
 /// The first letters of the first and the last word, upper-cased:
-/// `"Ada Lovelace"` gives `"AL"`, `"Grace Brewster Hopper"` gives `"GH"`,
-/// `"ada"` gives `"A"`. Words without a letter are skipped, so `"Tilo 4"`
-/// gives `"T"`, never `"T4"`.
+/// `"Grace Brewster Hopper"` gives `"GH"`. Words without a letter are skipped,
+/// so `"Tilo 4"` gives `"T"`, never `"T4"`.
 #[must_use]
 pub fn initials(name: &str) -> String {
     let letters: Vec<char> = name
@@ -28,9 +25,8 @@ pub fn initials(name: &str) -> String {
 
 /// The presence slot, `0..PRESENCE_LEN`, someone wears until they choose a
 /// colour: a pure function of their identity, so every host paints them the
-/// same without asking. The fixture names `me`, `alice`, `bob` and `charlie`
-/// are pinned (blue, pink, orange, green) so demos and tests stay
-/// recognisable.
+/// same. The fixture names `me`, `alice`, `bob` and `charlie` are pinned (blue,
+/// pink, orange, green) so demos and tests stay recognisable.
 #[must_use]
 pub fn presence_slot(identity: &str) -> usize {
     match identity {
@@ -51,7 +47,6 @@ pub fn presence_slot(identity: &str) -> usize {
     }
 }
 
-/// An sRGB channel as linear light.
 #[must_use]
 pub fn decode_srgb(v: u8) -> f64 {
     let s = f64::from(v) / 255.0;

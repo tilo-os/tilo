@@ -156,24 +156,46 @@ fn write(
     sequence: u64,
     desktop: &SharedDesktop,
 ) -> NeighbourMsg {
-    let mut doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_RECORD).unwrap()).unwrap();
+    write_of(peer, key, sequence, DESKTOP_RECORD, |doc| {
+        shared_record::write(doc, desktop).unwrap();
+    })
+}
+
+/// `key`'s signed write of `record` in the workspace, as `change` makes it: a record nobody wrote
+/// yet is founded by the whole document.
+fn write_of(
+    peer: &StatePeer,
+    key: &SigningKey,
+    sequence: u64,
+    record: &str,
+    change: impl FnOnce(&mut AutoCommit),
+) -> NeighbourMsg {
+    let held = peer.document(DESKTOP_APP, record);
+    let mut doc = match &held {
+        Some(bytes) => AutoCommit::load(bytes).unwrap(),
+        None => AutoCommit::new(),
+    };
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let heads = doc.get_heads();
-    shared_record::write(&mut doc, desktop).unwrap();
+    change(&mut doc);
     let person = hex::encode(key.verifying_key().to_bytes());
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(shared_record::change_message(Some(&person))),
     );
-    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+    let mutation = if held.is_some() {
+        collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
+    } else {
+        collab_types::DocumentMutation::Snapshot(doc.save())
+    };
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(DESKTOP_APP, WORKSPACE, DESKTOP_RECORD),
+        collab_types::document_artifact_id(DESKTOP_APP, WORKSPACE, record),
         author,
-        collab_types::document_attestation_id(DESKTOP_APP, WORKSPACE, DESKTOP_RECORD),
+        collab_types::document_attestation_id(DESKTOP_APP, WORKSPACE, record),
         collab_types::OpKind::Change,
         now(),
         sequence,
@@ -183,9 +205,32 @@ fn write(
         peer: crate::peer_handle(author.as_bytes()),
         app_id: DESKTOP_APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: DESKTOP_RECORD.into(),
+        record_id: record.into(),
         envelope: Box::new(envelope),
     }
+}
+
+/// A person's view of the workspace's layout is theirs to write: another member reads it and may
+/// not write it, whatever the workspace lets them do to the layout itself.
+#[test]
+fn a_view_of_the_layout_is_its_persons_to_write() {
+    use tilo_desktop_model::person_view::{PersonView, record_of};
+
+    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
+    let view = PersonView {
+        front_strip: Some(StripId(10)),
+        ..PersonView::default()
+    };
+    let theirs = record_of(&owner);
+    let intrudes = write_of(&peer, &key, 1, &theirs, |doc| {
+        view.write(doc).unwrap();
+    });
+    let refused = receive(&mut peer, &guest, intrudes).unwrap_err();
+    assert!(refused.contains("may not write"), "{refused}");
+    assert!(
+        peer.document(DESKTOP_APP, &theirs).is_none(),
+        "nothing of the refused write is taken in"
+    );
 }
 
 fn windows(peer: &StatePeer) -> Vec<u64> {

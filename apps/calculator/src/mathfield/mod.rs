@@ -1,14 +1,8 @@
-//! A GeoGebra-class 2D math input field, built locally for the calculator's
-//! Calculator display and Graph 2D / Graph 3D function editors.
-//!
-//! The formula is a tree of math atoms ([`model`]), the caret is an insertion
-//! point in that tree ([`edit`]), it lays out as stacked 2D notation
-//! ([`layout`]) and renders a caret bar + selection band into the Vello scene
-//! ([`render`]).
-//!
-//! The field serializes to the flat ASCII string the existing
-//! [`crate::engine`] parses, so graphing keeps working unchanged, and the
-//! caller persists that string in the CRDT exactly as before.
+//! A 2D math input field for the calculator's display and the graph formula
+//! editors: the formula is a tree of atoms ([`model`]), the caret an insertion
+//! point in it ([`edit`]), laid out as stacked notation ([`layout`]) and drawn
+//! into the Vello scene ([`render`]). It serializes to the flat ASCII string
+//! [`crate::engine`] parses.
 
 pub mod edit;
 pub mod layout;
@@ -28,47 +22,34 @@ use edit::Editor;
 use layout::Layout;
 use model::{Node, Row};
 
-/// The size a formula is set at in `theme`: the `Title` role's resolved size.
-///
-/// A theme role is already resolved against the reader's text and UI scale, and
-/// the math layout paints at exactly the size it is given, so this is the size
-/// the formula actually appears at — never divided by, or multiplied by, the
-/// renderer's text scale.
+/// The `Title` role's resolved size. A role already carries the reader's text
+/// and UI scale, and the math layout paints at exactly the size it is given, so
+/// never divide by the renderer's text scale.
 pub fn formula_size(theme: &Theme) -> f32 {
     theme.tokens.typography.size(ui::tokens::TextRole::Title)
 }
 
-/// A controller wrapping one editable formula. Calculator mode and the graph
-/// screens feed it the linear string from the model; the history tape uses
-/// the same layout without a caret.
+/// One editable formula. Calculator mode and the graph screens feed it the
+/// model's linear string; History uses the same layout without a caret.
 pub struct MathField {
     editor: Editor,
-    /// Source linear string the editor was last built from; used to detect
-    /// external (CRDT) changes and avoid clobbering local edits.
+    /// The string the editor was last built from, so an external change is
+    /// detected and a local edit is not clobbered.
     source: String,
-    /// On-screen content rect (set each layout pass).
     rect: Rect,
-    /// Cached layout from the last draw, in content-local coords.
     layout: Option<Layout>,
-    /// Signature `(linear form, base size)` the cached [`Self::layout`] was
-    /// built from. Layout is rect-independent (content-local coords), so it
-    /// only needs rebuilding when the formula content or the font size
-    /// changes — not on every frame, pan, hover, or caret move. This is what
-    /// keeps typing from re-shaping the whole formula each frame.
+    /// `(linear form, base size)` the cached [`Self::layout`] was built from.
+    /// Layout is content-local, so it is rebuilt only when the content or the
+    /// size changes, not on a pan, hover or caret move.
     layout_sig: Option<(String, f32)>,
     base_size: f32,
-    /// Whether a drag-select is in progress.
     dragging: bool,
-    /// Content-local pixels scrolled off the top-left. Keeps a long or tall
-    /// formula scrolling *within* the fixed field rect instead of overflowing
-    /// it (which used to make the formula appear to resize the row). Updated to
-    /// keep the caret in view while typing, and by the mouse wheel.
+    /// Content-local pixels scrolled off the top-left, so a long or tall
+    /// formula scrolls within the fixed rect. Moved to keep the caret in view,
+    /// and by the wheel.
     scroll: Vec2,
-    /// Whether this field is the focused one and so keeps its caret in view
-    /// on every layout pass. Tracked from `draw`'s `focused` flag; on the
-    /// frame focus is lost the scroll snaps back to the formula's start, and
-    /// an unfocused field then only clamps its scroll (so wheel scrolling an
-    /// inactive row still sticks) instead of chasing a parked caret.
+    /// The focused field keeps its caret in view; an unfocused one only clamps
+    /// its scroll, from [`MathField::draw`]'s `focused`.
     follows_caret: bool,
 }
 
@@ -93,17 +74,15 @@ impl MathField {
         self
     }
 
-    /// Set the size the formula is set at, resolved from the theme (which
-    /// already carries the text scale). Changing it invalidates the cached
-    /// glyph geometry via the effective-size layout signature below.
+    /// The theme's resolved size; changing it invalidates the cached glyphs
+    /// through the layout signature.
     pub fn set_size(&mut self, size: f32) {
         self.base_size = size;
     }
 
-    /// Sync the editor to an external linear string (e.g. loaded from the
-    /// CRDT). Only rebuilds when the string actually differs from what this
-    /// field last produced, so it never stomps an in-progress edit. The
-    /// stored form is the engine form (`*`); the editor uses `·` internally.
+    /// Rebuilds only when the string differs from what this field last
+    /// produced, so it never stomps an edit in progress. The stored form is the
+    /// engine's (`*`); the editor uses `·` internally.
     pub fn set_source(&mut self, linear: &str) {
         if linear != self.source {
             self.editor = Editor::from_linear(&editor_linear(linear));
@@ -111,18 +90,17 @@ impl MathField {
         }
     }
 
-    /// Leave the editor showing `linear` (the default, [`MathField::new`]): the
-    /// caller feeds the current formula in through
-    /// [`MathField::set_source`] on every pass, so a read-only field tracks a
-    /// value that changes elsewhere instead of holding the first one it saw.
+    /// The caller feeds the current formula in through
+    /// [`MathField::set_source`] every pass, so a read-only field tracks a value
+    /// that changes elsewhere.
     #[must_use]
     pub fn follow_source(mut self) -> Self {
         self.source.clear();
         self
     }
 
-    /// The current content as a linear string the engine parses. The editor
-    /// stores `·` for multiplication (`GeoGebra` style); the engine wants `*`.
+    /// As the engine parses it: the editor stores `·` for multiplication, the
+    /// engine wants `*`.
     pub fn linear(&self) -> String {
         engine_linear(&self.editor.to_linear())
     }
@@ -131,22 +109,20 @@ impl MathField {
         self.editor.expr.is_empty()
     }
 
-    /// Park the caret at the very end of the formula, so a field that keeps
-    /// its caret in view scrolls to the formula's tail.
+    /// A field that keeps its caret in view then scrolls to the tail.
     pub fn park_caret_at_end(&mut self) {
         self.editor.end(false);
     }
 
-    /// Set the content rect for this frame and (re)build the layout.
+    /// Sets the content rect and (re)builds the layout.
     pub fn set_rect(&mut self, rect: Rect, tr: &mut TextRenderer) {
         self.rect = rect;
         self.relayout(tr);
     }
 
     fn relayout(&mut self, tr: &mut TextRenderer) {
-        // Rebuild only when the content or size actually changed. The linear
-        // form is a faithful signature of the (canonical) tree the editor
-        // builds, and is far cheaper to compute than a full measure+box pass.
+        // The linear form is a faithful signature of the tree and far cheaper
+        // than a full measure pass.
         let size = self.base_size;
         let sig = (self.editor.to_linear(), size);
         if self.layout.is_none() || self.layout_sig.as_ref() != Some(&sig) {
@@ -154,10 +130,8 @@ impl MathField {
             self.layout = Some(layout::layout(&shown, tr, size));
             self.layout_sig = Some(sig);
         }
-        // Track the caret every pass (a caret move doesn't change the content
-        // signature, but must still bring the caret back into view) — but only
-        // in the focused field; an inactive row keeps whatever the user
-        // scrolled it to, clamped to its content.
+        // A caret move does not change the signature but must still bring the
+        // caret into view; an inactive row keeps the user's scroll.
         if self.follows_caret {
             self.ensure_caret_visible();
         } else {
@@ -165,20 +139,16 @@ impl MathField {
         }
     }
 
-    /// Keep both scroll axes inside the content extent.
     fn clamp_scroll(&mut self) {
         let (max_x, max_y) = self.scroll_bounds();
         self.scroll.x = self.scroll.x.clamp(0.0, max_x);
         self.scroll.y = self.scroll.y.clamp(0.0, max_y);
     }
 
-    /// Left padding between the field edge and the content.
     const PAD_X: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
-    /// Origin (top-left) where content is drawn. Horizontally the content is
-    /// left-padded and shifted by the horizontal scroll; vertically it is
-    /// centered when it fits and top-aligned + scrolled when it is taller than
-    /// the field, so the field never grows with the formula.
+    /// Left-padded and scrolled horizontally; centred when it fits, top-aligned
+    /// and scrolled when taller, so the field never grows with the formula.
     fn content_origin(&self) -> Point {
         let h = self.layout.as_ref().map_or(0.0, |l| l.height);
         let view_h = self.rect.height();
@@ -190,12 +160,10 @@ impl MathField {
         Point::new(self.rect.x0 + Self::PAD_X - self.scroll.x, y)
     }
 
-    /// Visible content width (field width minus the left pad).
     fn view_w(&self) -> f64 {
         (self.rect.width() - Self::PAD_X).max(1.0)
     }
 
-    /// Maximum scroll offsets for the current content + field size.
     fn scroll_bounds(&self) -> (f64, f64) {
         match self.layout.as_ref() {
             Some(l) => (
@@ -206,11 +174,8 @@ impl MathField {
         }
     }
 
-    /// Nudge the scroll so the caret stays inside the field, then clamp both
-    /// axes to the content. Called every layout pass.
+    /// Called every layout pass.
     fn ensure_caret_visible(&mut self) {
-        // Read what we need out of the (immutably borrowed) layout first, so we
-        // can mutate `self.scroll` afterwards without a borrow conflict.
         let caret = {
             let Some(layout) = self.layout.as_ref() else {
                 return;
@@ -241,22 +206,19 @@ impl MathField {
         self.scroll.y = self.scroll.y.clamp(0.0, max_y);
     }
 
-    /// Scroll the content by `(dx, dy)` content pixels (e.g. from the wheel),
-    /// clamped to the content extent.
+    /// Clamped to the content extent.
     pub fn scroll_by(&mut self, dx: f64, dy: f64) {
         let (max_x, max_y) = self.scroll_bounds();
         self.scroll.x = (self.scroll.x + dx).clamp(0.0, max_x);
         self.scroll.y = (self.scroll.y + dy).clamp(0.0, max_y);
     }
 
-    /// Whether the content currently overflows the field on either axis (so it
-    /// is scrolled rather than fully visible).
+    /// The content is scrolled rather than fully visible.
     pub fn overflows(&self) -> bool {
         let (mx, my) = self.scroll_bounds();
         mx > 0.0 || my > 0.0
     }
 
-    /// Draw the field. `focused` controls caret visibility.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -269,10 +231,8 @@ impl MathField {
         if self.follows_caret != focused {
             self.follows_caret = focused;
             if !focused {
-                // Only the focused field follows its caret. A row that just
-                // lost focus reads from its start again, so a long neighbouring
-                // formula is never shown as a left-clipped tail
-                // (`)·05 · (x² + y²) − 3`).
+                // A row that just lost focus reads from its start again, so a
+                // long neighbouring formula is never shown as a clipped tail.
                 self.scroll = Vec2::ZERO;
             }
         }
@@ -286,8 +246,6 @@ impl MathField {
         let sel = self.editor.selection();
         let sel_gaps = render::row_gaps(layout, steps);
         let sel_gaps_ref: Vec<(usize, &layout::Gap)> = sel_gaps;
-        // Clip to the field rect so a long/tall formula scrolls within a
-        // bounded box instead of spilling over neighbouring rows.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if let Some(sel) = sel.as_ref() {
@@ -297,8 +255,7 @@ impl MathField {
         if focused && let Some(g) = caret {
             render::draw_caret(&mut ctx, origin, g);
         }
-        // A formula wider than its field says so: it fades out where it runs
-        // on past an edge instead of being cut off.
+        // A formula wider than its field fades out where it runs past an edge.
         let (max_x, _) = self.scroll_bounds();
         let ground = theme.tokens.colors.surfaces.content;
         if self.scroll.x > 0.5 {
@@ -322,11 +279,8 @@ impl MathField {
         scene.pop_layer();
     }
 
-    /// Map remote collaborators' scene-space cursor positions onto this field's
-    /// 2D glyph layout, returning a caret-bar rect + colour for each cursor that
-    /// lands within the field. This is what turns a peer's `RemoteCursorMoved`
-    /// event into a caret drawn *inside* the structured formula (snapped to the
-    /// nearest insertion gap), rather than only a floating pointer over the
+    /// Maps a peer's scene-space cursor onto the glyph layout, so its caret is
+    /// drawn inside the formula at the nearest gap, not as a pointer over the
     /// window.
     pub fn remote_caret_bars(&self, cursors: &[(Point, Color)]) -> Vec<(Rect, Color)> {
         let Some(layout) = self.layout.as_ref() else {
@@ -349,8 +303,6 @@ impl MathField {
         out
     }
 
-    /// Draw remote collaborators' carets into this field (clipped to its rect),
-    /// each in the peer's colour. Call after [`MathField::draw`].
     pub fn draw_remote_carets(&self, scene: &mut Scene, t: Affine, cursors: &[(Point, Color)]) {
         let bars = self.remote_caret_bars(cursors);
         if bars.is_empty() {
@@ -363,22 +315,22 @@ impl MathField {
         scene.pop_layer();
     }
 
-    /// The engine-ready linear form after an edit, recording it as the new
-    /// source so a subsequent `set_source` with the same value is a no-op.
-    /// Whether the caret holds a text selection, so Ctrl+C copies the
-    /// selection rather than the calculator's displayed result.
+    /// Whether the caret holds a selection, so Ctrl+C copies that rather than
+    /// the calculator's displayed result.
     pub fn has_selection(&self) -> bool {
         self.editor.selected_linear().is_some()
     }
 
+    /// The engine-ready linear form after an edit, recorded as the new source so
+    /// a later `set_source` with the same value is a no-op.
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
         self.source.clone_from(&s);
         s
     }
 
-    /// Handle a key press. Returns `true` if it changed the content (so the
-    /// caller can persist + re-plot). Caret-only moves return `false`.
+    /// `true` when it changed the content, so the caller persists and
+    /// re-plots; a caret-only move returns `false`.
     pub fn handle_key(&mut self, key: &WKey, modifiers: &Modifiers) -> bool {
         let m = modifiers.state();
         let shift = m.shift_key();
@@ -425,8 +377,6 @@ impl MathField {
                 true
             }
             WKey::Named(NamedKey::Space) => {
-                // Space exits the current box (GeoGebra) when inside one,
-                // else is ignored (expressions have no literal spaces).
                 self.editor.move_right(false);
                 false
             }
@@ -475,9 +425,8 @@ impl MathField {
         }
     }
 
-    /// Press at scene point `p`, hit-testing against the layout cached by the
-    /// last [`draw`](crate::draw)/`set_rect`. Places the caret at the nearest gap, or
-    /// selects a token on a double click. No-op if no layout is cached yet.
+    /// Places the caret at the nearest gap against the cached layout, or
+    /// selects a token on a double click; a no-op before the first layout.
     pub fn on_press_cached(&mut self, p: Point, double: bool) {
         let origin = self.content_origin();
         let lx = p.x - origin.x;
@@ -499,9 +448,7 @@ impl MathField {
         }
     }
 
-    /// Drag to scene point `p` while the button is held: extend the selection
-    /// to the nearest gap in the caret's current row, against the cached
-    /// layout.
+    /// Extends the selection to the nearest gap in the caret's row.
     pub fn on_drag_cached(&mut self, p: Point) {
         if !self.dragging {
             return;
@@ -534,42 +481,29 @@ impl MathField {
         self.dragging = false;
     }
 
-    /// Height the laid-out content needs, measured against `tr` (rebuilding the
-    /// layout if the content changed). Callers use this to GROW the hosting card
-    /// to fit the formula up to [`CARD_MAX_H`] before handing the field its rect,
-    /// so a taller formula makes its card taller instead of being clipped.
+    /// Height the content needs, rebuilding the layout if the content changed.
+    /// Callers grow the hosting card to it before handing the field its rect.
     pub fn content_height(&mut self, tr: &mut TextRenderer) -> f64 {
         self.relayout(tr);
         self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 }
 
-/// Smallest inner (content-viewport) height a formula card uses. A short,
-/// single-line formula (`x + 1`, `sin(x)`) sits in a card of this height so the
-/// common case looks unchanged.
+/// Smallest inner height a formula card uses: where a single-line formula sits.
 pub const CARD_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 
-/// Largest inner height a formula card grows to. It is generous on purpose: a
-/// single fraction (`(x²+1)/(x−3)` ≈ 67 px) and a stacked `√` over superscripts
-/// (the 3D default `sin(√(x²+y²))` ≈ 39 px) are shown *in full* — the card grows
-/// to fit them rather than clipping. Only genuinely oversized content (a
-/// fraction-over-fraction and deeper nesting) exceeds this height, at which point
-/// the card stops growing and the formula becomes vertically scrollable within
-/// it — never clipped behind the card edge.
+/// Largest inner height a card grows to: a single fraction or a stacked root
+/// shows in full, and only a fraction over a fraction scrolls within it.
 pub const CARD_MAX_H: f64 = 2.0 * ui::tokens::Metrics::BASE.panel_row_height as f64;
 
-/// The inner (content-viewport) height a card should use for a formula whose
-/// laid-out content is `content_h` tall: grow to fit, clamped to
-/// `[CARD_MIN_H, CARD_MAX_H]`. When `content_h` exceeds [`CARD_MAX_H`] the
-/// returned height is the max, and the field will report [`MathField::overflows`]
-/// so the caller knows the formula scrolls within the card.
+/// Grows to fit, clamped to `[CARD_MIN_H, CARD_MAX_H]`; past the maximum the
+/// field reports [`MathField::overflows`] and scrolls.
 pub fn card_view_height(content_h: f64) -> f64 {
     content_h.clamp(CARD_MIN_H, CARD_MAX_H)
 }
 
-/// The formula as it is drawn: the engine's ASCII hyphen reads as the true
-/// minus sign. Only the characters change, so the tree (and with it every
-/// caret path and gap) is the editor's own.
+/// The engine's ASCII hyphen reads as the true minus sign. Only the characters
+/// change, so the tree and every caret path stay the editor's own.
 fn display_row(row: &Row) -> Row {
     row.iter().map(display_node).collect()
 }
@@ -628,13 +562,12 @@ fn display_node(node: &Node) -> Node {
     }
 }
 
-/// Editor `·` (middle dot) → engine `*`.
 fn engine_linear(s: &str) -> String {
     s.replace('·', "*")
 }
 
-/// Engine `*` → editor `·`, so a string loaded from the CRDT renders with the
-/// proper multiplication glyph.
+/// Engine `*` → editor `·`, so a loaded formula shows the multiplication
+/// glyph.
 fn editor_linear(s: &str) -> String {
     s.replace('*', "·")
 }
@@ -650,7 +583,6 @@ fn gap_cost(g: &layout::Gap, px: f64, py: f64) -> f64 {
     dy * 4.0 + (g.x - px).abs()
 }
 
-/// Characters the field accepts as input.
 fn accept(ch: char) -> bool {
     ch.is_ascii_alphanumeric()
         || "+-*/^(),. %!·π√∫".contains(ch)
@@ -659,7 +591,6 @@ fn accept(ch: char) -> bool {
         || ch == '−'
 }
 
-/// Normalize a few unicode inputs to the editor's canonical glyphs.
 fn normalize(ch: char) -> char {
     match ch {
         '×' => '·',

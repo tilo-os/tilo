@@ -1,4 +1,5 @@
-//! The map's frame: its layers and markers, the top row and footer, the overflow menu, what it says while no imagery shows, and the traffic status it reports.
+//! The map's frame: its layers and markers, the top row and footer, the overflow menu, and the
+//! traffic key.
 
 use super::{
     Affine, Button, ButtonFace, ButtonRole, ColumnMetrics, Congestion, Hit, Icon, MapMenu,
@@ -7,12 +8,10 @@ use super::{
 };
 
 impl MapsApp {
-    /// Whether the pointer rests on `rect` (and is not panning the map).
     pub(super) fn hovered(&self, rect: Rect) -> bool {
         !self.dragging && rect.contains(self.last_mouse)
     }
 
-    /// Paint an icon-only button and record what it does.
     pub(super) fn icon_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -30,7 +29,6 @@ impl MapsApp {
         self.click_targets.push((face.hit_rect(ctx.theme), hit));
     }
 
-    /// Paint a labelled button and record what it does.
     pub(super) fn text_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -66,18 +64,12 @@ impl MapsApp {
         {
             self.center_on(pos);
         }
-        // Point the raster layer at the basemap style for the active theme (dark
-        // tiles under a dark theme, light under light) before any tile is drawn,
-        // so imagery and the drawn cartography never mix tones. A no-op on the
-        // steady state; on a theme change it re-points the worker's decode.
+        // Point the raster layer at the theme's basemap style before any tile is drawn, so imagery
+        // and cartography never mix tones.
         self.tiles.set_style(TileStyle::from_theme(theme));
         let pal = MapPalette::from_theme(theme);
         let overlay = self.overlay_mode();
 
-        // The chrome is laid out and painted first, into its own scene, so
-        // the map knows what floats over it: the camera can bring a place
-        // clear of its card, and a pin or a name that would reach under the
-        // panel, a card or a control is left out rather than cut at its edge.
         let mut chrome = Scene::new();
         self.chrome_rects.clear();
         self.poi_card_rect = Rect::ZERO;
@@ -108,26 +100,17 @@ impl MapsApp {
                 ..view
             },
         );
-        // Loading / offline affordance while the substrate grid is showing —
-        // above the map but below the chrome, and skipped while the drawer
-        // covers the map (the drawer is the focus then).
         if !painted_tiles && self.basemap.is_empty() && !(overlay && self.nav_open) {
             self.draw_imagery_hint(scene, t, tr, theme);
         }
         scene.append(&chrome, None);
     }
 
-    /// The base map: real tiles or their vector/grid fallback, traffic, the
-    /// route and the transit journey. Returns whether real imagery painted,
-    /// which the caller needs to decide whether the offline/loading hint is due.
     pub(super) fn draw_map_layers(&mut self, ctx: &mut PaintCtx<'_>, view: MapView<'_>) -> bool {
         let MapView {
             proj, pal, clip, ..
         } = view;
         let theme = ctx.theme;
-        // Map layers. Real OSM raster tiles paint first (non-blocking); the
-        // stylised vector basemap is the fallback shown only until imagery is
-        // available (an offline capture, or the very first offline frame).
         let view_center = self.view_center();
         let painted_tiles = canvas::draw_tiles(
             ctx.scene,
@@ -140,9 +123,6 @@ impl MapsApp {
         );
         if !painted_tiles {
             if self.basemap.is_empty() {
-                // Live first-run / offline gap: no imagery and no vector
-                // cartography yet. Draw a reference grid so the map reads as a
-                // map rather than a black void, with a loading affordance.
                 canvas::draw_grid_substrate(
                     ctx.scene,
                     ctx.transform,
@@ -155,18 +135,12 @@ impl MapsApp {
                 canvas::draw_basemap(ctx.scene, ctx.transform, clip, proj, &self.basemap, pal);
             }
         }
-        // Traffic overlay: coloured congestion over the roads, under the active
-        // route + markers so navigation stays legible. Empty data draws
-        // nothing here — the honest "No traffic data" note is chrome.
         if self.map_controls.traffic_enabled() {
             canvas::draw_traffic(ctx.scene, ctx.transform, proj, &self.traffic, pal);
         }
         if let Some(route) = &self.model.route {
             canvas::draw_route(ctx.scene, ctx.transform, proj, route, pal);
         }
-        // Public-transport itinerary: the selected journey's legs draw on the
-        // map (mode-coloured lines + transfer pucks) when Transit is the active
-        // mode. Only the highlighted option is drawn to keep the map legible.
         if self.model.mode.is_transit()
             && let Some(j) = self.model.transit.get(self.model.transit_choice)
         {
@@ -175,9 +149,6 @@ impl MapsApp {
         painted_tiles
     }
 
-    /// The markers: the live POI layer (Overpass) — our own themed category
-    /// markers, decluttered — under the person's own places and the selected
-    /// pin. `view.chrome` holds what floats over the map.
     pub(super) fn draw_markers(&self, ctx: &mut PaintCtx<'_>, view: MapView<'_>) {
         let visible_pois = self.visible_poi_indices();
         canvas::draw_pois(
@@ -191,19 +162,12 @@ impl MapsApp {
         canvas::draw_markers(ctx, view, &self.model);
     }
 
-    /// Note a floating surface drawn over the map this frame, which the
-    /// markers keep clear of.
     pub(super) fn floats(&mut self, rect: Rect) {
         if rect.area() > 0.0 {
             self.chrome_rects.push(rect);
         }
     }
 
-    /// Chrome over the map: the places panel (docked, or a drawer over a
-    /// scrim when narrow), the control column, the floating cards, the
-    /// footer with the scale and the credit, the overflow menu, and the
-    /// tooltip on top. Modal sheets paint in
-    /// the window's top layer (`draw_overlay`).
     pub(super) fn draw_chrome(
         &mut self,
         scene: &mut Scene,
@@ -213,8 +177,6 @@ impl MapsApp {
         overlay: bool,
     ) {
         let drawer_open = overlay && self.nav_open;
-        // The chrome that belongs to the map: under the drawer's scrim when
-        // the drawer is open.
         self.map_controls.draw(scene, t, tr, theme);
         let controls: Vec<Rect> = self.map_controls.rects().collect();
         for rect in controls {
@@ -227,19 +189,15 @@ impl MapsApp {
         if drawer_open {
             ui::overlay::scrim::modal(scene, t, self.rect, 1.0, theme);
             self.click_targets.push((self.rect, Hit::CloseNav));
-            // The footer row stays above the scrim, under the drawer's end:
-            // the map's credit and scale never hide behind the drawer.
             self.draw_map_footer(scene, t, tr, theme);
             self.draw_overflow(scene, t, tr, theme);
-            // Stale hit and accessibility geometry must not outlive the turn
-            // card the open drawer hides.
+            // Stale hit and accessibility geometry must not outlive the turn card the open drawer
+            // hides.
             self.navigation_drag_handle = Rect::ZERO;
             self.navigation_end_rect = Rect::ZERO;
             self.navigation_end_hovered = false;
         } else {
             self.draw_traffic_status(scene, t, tr, theme);
-            // The place card floats over the map, its actions above the
-            // controls in the hit-test.
             self.draw_poi_card(scene, t, tr, theme);
             let uncovered_desktop_copy = self.model.route.is_some()
                 && matches!(
@@ -253,8 +211,6 @@ impl MapsApp {
         }
         if self.panel_visible() {
             self.draw_panel(scene, t, tr, theme);
-            // The Directions From/To suggestions float under the focused
-            // field so the panel below never reflows.
             if matches!(self.model.panel, Panel::Directions) {
                 self.endpoints.draw_overlay(scene, t, tr, theme);
             }
@@ -266,8 +222,6 @@ impl MapsApp {
         self.map_controls.draw_tooltip(scene, t, tr, theme);
     }
 
-    /// The overflow button (attribution, offline maps, licences) in the
-    /// bottom-trailing corner; pressed while its menu is open.
     pub(super) fn draw_overflow(
         &mut self,
         scene: &mut Scene,
@@ -288,9 +242,6 @@ impl MapsApp {
         );
     }
 
-    /// The narrow window's top row: the button that shows and hides the
-    /// places drawer, and the search button beside it. A docked panel
-    /// carries search in its own header instead.
     pub(super) fn draw_top_row(
         &mut self,
         scene: &mut Scene,
@@ -326,10 +277,6 @@ impl MapsApp {
         }
     }
 
-    /// The scale and the tile credit, on one floating pill left of the
-    /// overflow button: the credit, then the scale's label with its bar a
-    /// token gap after it, so the label never sits on the line. When the map
-    /// is too narrow for both, the credit floats on its own pill above.
     pub(super) fn draw_map_footer(
         &mut self,
         scene: &mut Scene,
@@ -370,8 +317,6 @@ impl MapsApp {
         }
         draw::text(&mut ctx, &label, Point::new(x, top), &numeric, ink.text_dim);
         x += label_w + s2;
-        // The bar itself is map content: a line the length of the labelled
-        // distance with a tick at each end.
         let cy = pill.center().y;
         let tick = f64::from(sp.s1);
         let stroke = f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5;
@@ -415,8 +360,6 @@ impl MapsApp {
         }
     }
 
-    /// The model's status in the window's bar: a new line is news; one
-    /// that ends in "…" is work under way and stays while it is the status.
     pub(super) fn publish_status(&mut self) {
         if self.model.status != self.status_said {
             self.status_said.clone_from(&self.model.status);
@@ -436,10 +379,7 @@ impl MapsApp {
         });
     }
 
-    /// Text over the substrate grid telling the person the imagery is
-    /// loading (or unreachable), so a first-run / offline map is never a
-    /// silent void. Text only, centred low in the visible map area: the
-    /// centre is where the chosen place and its pin are drawn.
+    /// Say the imagery is loading, so a first-run or offline map is never a silent void.
     pub(super) fn draw_imagery_hint(
         &self,
         scene: &mut Scene,
@@ -463,9 +403,6 @@ impl MapsApp {
         );
     }
 
-    /// The traffic key, bottom-leading in the map area: with data, the
-    /// congestion levels with their counts; without, the honest "No traffic
-    /// data". Nothing while the overlay is off.
     #[allow(
         clippy::many_single_char_names,
         reason = "the shared drawing names (t: transform, x/y: the pen, s1–s4: spacing steps) \
@@ -481,8 +418,6 @@ impl MapsApp {
         if !self.map_controls.traffic_enabled() {
             return;
         }
-        // While the narrow drawer is open the map is dimmed and the drawer is
-        // the focus — don't stack a key over it.
         if self.overlay_mode() && self.nav_open {
             return;
         }

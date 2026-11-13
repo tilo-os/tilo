@@ -127,3 +127,6 @@ remote-issue-rdp-auth = RDP profiles support password authentication only.
 remote-issue-tilo-auth = Tilo device profiles must use Tilo device identity.
 remote-issue-tilo-endpoint = Tilo device node must be the device's exact endpoint id.
 remote-rdp-unsupported-title = Remote can't open RDP connections
+
+## What the app is called in a window and in the launcher
+remote-app-title = Remote Desktop

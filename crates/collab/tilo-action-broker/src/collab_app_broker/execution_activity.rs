@@ -124,6 +124,8 @@ pub(super) struct ActivityTarget {
 pub(super) struct ShownActor {
     pub(super) actor: tilo_actions::InteractionActor,
     pub(super) action: tilo_actions::InteractionAction,
+    /// What it acts in, named as the step's line says it: the item's own label
+    /// where the invocation names one, else the record's.
     pub(super) resource: tilo_actions::ActionResource,
     /// The narrowest target the invocation names, as far as its published
     /// action and the caller's own argument say: the record or item it acts on,
@@ -146,6 +148,71 @@ fn text_region(action: &PublishedAction) -> String {
         .filter(|param| param.is_place())
         .find_map(|param| param.place_field().map(str::to_owned))
         .unwrap_or_else(|| "text".to_owned())
+}
+
+/// The characters a field edit writes into a text: the field's region, the
+/// block holding them and the range it leaves there — what it inserts where a
+/// caret was, or the characters it replaces. A rich text's block is the
+/// paragraph it splices; a text field's is the item holding the field (empty
+/// for the record's own), and a whole new text is written from its start.
+/// `None` for a field edit of anything else.
+fn written_text(
+    argument: &serde_json::Map<String, serde_json::Value>,
+) -> Option<(String, String, u64, u64)> {
+    let edit = argument.get("edit")?.as_object()?;
+    let path = edit.get("path")?.as_array()?;
+    let chars = |text: Option<&serde_json::Value>| {
+        text.and_then(serde_json::Value::as_str)
+            .map_or(0, |text| text.chars().count() as u64)
+    };
+    let offset = |splice: &serde_json::Map<String, serde_json::Value>, key: &str| {
+        splice.get(key).and_then(serde_json::Value::as_u64)
+    };
+    let item = || {
+        path.iter()
+            .rev()
+            .find_map(|segment| segment.get("item")?.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (block, at, del, inserted) = match edit.get("op")?.as_str()? {
+        "rich" => {
+            let splice = edit
+                .get("rich")?
+                .as_object()?
+                .get("SpliceText")?
+                .as_object()?;
+            let block = splice.get("block")?.as_str()?.to_owned();
+            (
+                block,
+                offset(splice, "at")?,
+                offset(splice, "del").unwrap_or(0),
+                chars(splice.get("ins")),
+            )
+        }
+        "splice" => (
+            item(),
+            offset(edit, "at")?,
+            offset(edit, "delete").unwrap_or(0),
+            chars(edit.get("insert")),
+        ),
+        "replace" => (item(), 0, 0, chars(edit.get("text"))),
+        _ => return None,
+    };
+    // The region the field names: the last field of the edit's path (`body`).
+    let region = path
+        .iter()
+        .rev()
+        .find_map(|segment| segment.get("field")?.as_str())?
+        .to_owned();
+    // Past the end of the text is clamped by the reader; saturating keeps a
+    // nonsensical offset from wrapping into the start of it.
+    let end = if inserted == 0 {
+        at.saturating_add(del)
+    } else {
+        at.saturating_add(inserted)
+    };
+    Some((region, block, at, end))
 }
 
 /// How many characters of a text an invocation writes: what its parameter of
@@ -175,6 +242,47 @@ fn anchor_of(
     argument: Option<&str>,
 ) -> tilo_actions::InteractionAnchor {
     use tilo_actions::InteractionAnchor;
+    let parsed = tilo_actions::remote::InvokeArgument::from_slot(argument);
+    // A field edit that splices a rich text names the characters it writes,
+    // whatever it is addressed to: the editor showing that text draws them as
+    // the writer's, and their caret where the write ends.
+    if let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
+        && let Some((region, block, start, end)) = written_text(argument)
+    {
+        return InteractionAnchor::Text {
+            region,
+            ranges: vec![tilo_actions::InteractionTextRange { block, start, end }],
+        };
+    }
+    // A verb on an item that writes one of its text fields from its parameter
+    // of that name (a rename's `title`) names the text it writes there: the
+    // field showing it draws it as the writer's, with its caret at its end.
+    // The item is the item resource it is offered on, or, offered on the
+    // record, its first parameter's id.
+    if let Some(field) = action.contract.field.as_deref()
+        && let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
+        && let Some(item) = item_of_resource(&resource.id, &resource.kind).or_else(|| {
+            let first = action
+                .params
+                .first()
+                .filter(|param| param.name.as_ref() != field)?;
+            Some(argument.get(first.name.as_ref())?.as_str()?.to_owned())
+        })
+        && action
+            .params
+            .iter()
+            .any(|param| param.ty == tilo_actions::ParamType::Text && param.name.as_ref() == field)
+        && let Some(text) = argument.get(field).and_then(serde_json::Value::as_str)
+    {
+        return InteractionAnchor::Text {
+            region: field.to_owned(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: item,
+                start: 0,
+                end: text.chars().count() as u64,
+            }],
+        };
+    }
     // An item published as its own resource (`<kind>/<field>/<item>`) is what
     // its actions act on, and the view draws it as a row.
     if let Some(item) = item_of_resource(&resource.id, &resource.kind)
@@ -185,9 +293,7 @@ fn anchor_of(
     {
         return InteractionAnchor::ListItems { ids: vec![item] };
     }
-    let tilo_actions::remote::InvokeArgument::Json(argument) =
-        tilo_actions::remote::InvokeArgument::from_slot(argument)
-    else {
+    let tilo_actions::remote::InvokeArgument::Json(argument) = parsed else {
         return InteractionAnchor::Resource;
     };
     let Some(place) = action
@@ -249,6 +355,47 @@ fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
     (named == field && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
 }
 
+/// The name the surface published for the item `argument` names of the record
+/// `action` acts in, in words its app chose ("Book room 4 for Friday"): the
+/// label the item's own published resource carries.
+///
+/// An item's actions are published on the item's own resource and again on the
+/// record, the record's copy addressing the item by its id: the one parameter
+/// the item's copy leaves out, its method's first. That is what says which id
+/// in the argument names the item — an action can name another item beside it
+/// (`move-under` takes the new parent) without that being the one it acts on.
+/// `None` where the argument names no item: the step then says the record.
+fn item_named<'a>(
+    action: &PublishedAction,
+    surface: &'a PublishedSurface,
+    argument: Option<&str>,
+) -> Option<&'a str> {
+    let tilo_actions::remote::InvokeArgument::Json(argument) =
+        tilo_actions::remote::InvokeArgument::from_slot(argument)
+    else {
+        return None;
+    };
+    surface.actions.iter().find_map(|descriptor| {
+        // The same verb on an item of this record, by the item resource the app
+        // published for it: what a person reads it by.
+        if descriptor.action != action.action
+            || descriptor.resource_kind.rsplit_once('.')?.0 != action.resource_kind
+        {
+            return None;
+        }
+        let names_the_item = action
+            .params
+            .iter()
+            .find(|param| !descriptor.params.iter().any(|own| own.name == param.name))?;
+        let item = item_of_resource(&descriptor.resource, &descriptor.resource_kind)?;
+        (argument
+            .get(names_the_item.name.as_ref())
+            .and_then(serde_json::Value::as_str)
+            == Some(item.as_str()))
+        .then_some(descriptor.resource_label.as_str())
+    })
+}
+
 impl ShownActor {
     /// How `caller`, admitted as `actor`, appears in the view it acts in;
     /// `None` for a person acting for themselves on this device, whose own
@@ -261,27 +408,16 @@ impl ShownActor {
         action: &PublishedAction,
         argument: Option<&str>,
     ) -> Option<Self> {
-        let shown = caller.map_or_else(
-            || {
-                tilo_actions::InteractionActor::new(
-                    actor.id.clone(),
-                    if actor.is_agent {
-                        tilo_actions::ActorKind::Agent
-                    } else {
-                        tilo_actions::ActorKind::Person
-                    },
-                )
-            },
-            Caller::actor,
-        );
+        let shown = caller.map_or_else(|| actor.shown(), Caller::actor);
         let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());
         if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
             return None;
         }
+        let label = item_named(action, surface, argument).unwrap_or(&action.resource_label);
         let resource = tilo_actions::ActionResource {
             id: action.resource.clone(),
             kind: action.resource_kind.clone(),
-            label: action.resource_label.clone(),
+            label: label.to_owned(),
         };
         Some(Self {
             actor: shown,
@@ -292,6 +428,11 @@ impl ShownActor {
                     id: surface.app_id.clone(),
                     label: surface.app_id.clone(),
                 }),
+                // What the app declared this action does, so the line beside
+                // the actor's face says it in the reader's language, and what
+                // a create makes, so it says that too.
+                step: action.contract.step,
+                creates: action.contract.creates.clone(),
             },
             anchor: anchor_of(action, &resource, argument),
             resource,
@@ -502,6 +643,125 @@ mod anchor_tests {
         .expect("a typed argument has a slot")
     }
 
+    /// A surface of the tracker `tasks.tracker`, publishing one issue as its
+    /// own resource so the app's label for it travels with its actions.
+    fn tracker() -> (PublishedSurface, PublishedAction) {
+        let mut record = published(
+            "tasks.tracker",
+            "tasks.tracker",
+            "rename",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Which issue"),
+                ActionParam::required_owned("title", ParamType::Text, "Its new title"),
+            ],
+        );
+        record.0.resource_label = "Tasks".into();
+        let (mut issue, _) = published(
+            "tasks.tracker/issues/7d2b",
+            "tasks.tracker.issues",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Its new title",
+            )],
+        );
+        issue.resource_label = "Book room 4 for Friday".into();
+        let surface = PublishedSurface {
+            peer_id: 1,
+            app_id: "so.tilo.tasks".into(),
+            route: CrdtRoute::app("so.tilo.tasks", "workspace"),
+            actions: vec![record.0.clone(), issue],
+            live: true,
+        };
+        (surface, record.0)
+    }
+
+    /// A step on one of a collection's items names that item, by the label its
+    /// app published for it: a rename of an issue by its id reads "Editing Book
+    /// room 4 for Friday", never only "Editing Tasks". A step naming no item
+    /// says the record.
+    #[test]
+    fn a_step_on_an_item_names_the_item_its_app_labelled() {
+        let (surface, rename) = tracker();
+        let named = slot(&serde_json::json!({
+            "issue": "7d2b",
+            "title": "Book room four for Friday"
+        }));
+        assert_eq!(
+            item_named(&rename, &surface, Some(&named)),
+            Some("Book room 4 for Friday"),
+        );
+        // A title that merely looks like an id names no item: only an item of
+        // this record, addressed by its id, is the one the step acts on.
+        assert_eq!(
+            item_named(
+                &rename,
+                &surface,
+                Some(&slot(&serde_json::json!({
+                    "issue": "nothing",
+                    "title": "Book room four for Friday"
+                })))
+            ),
+            None
+        );
+        assert_eq!(item_named(&rename, &surface, None), None);
+        // An action names another item beside the one it acts on — moving an
+        // issue under another — and the step still says the issue it moves.
+        let under = |item: &str, label: &str| PublishedAction {
+            resource: format!("tasks.tracker/issues/{item}"),
+            resource_kind: "tasks.tracker.issues".into(),
+            resource_label: label.into(),
+            params: vec![ActionParam::required_owned(
+                "parent",
+                ParamType::Text,
+                "Which issue it goes under",
+            )],
+            ..published("", "tasks.tracker", "move-under", Vec::new()).0
+        };
+        let (mover, _) = published(
+            "tasks.tracker",
+            "tasks.tracker",
+            "move-under",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Which issue to move"),
+                ActionParam::required_owned("parent", ParamType::Text, "Which issue it goes under"),
+            ],
+        );
+        let moving_surface = PublishedSurface {
+            actions: vec![
+                mover.clone(),
+                under("7d2b", "Book room 4 for Friday"),
+                under("9c1e", "Draft the launch plan"),
+            ],
+            ..surface.clone()
+        };
+        let moving = slot(&serde_json::json!({ "issue": "7d2b", "parent": "9c1e" }));
+        assert_eq!(
+            item_named(&mover, &moving_surface, Some(&moving)),
+            Some("Book room 4 for Friday"),
+            "the issue it moves, not the one it moves it under",
+        );
+        // The same verb on another record's item is another step's item.
+        let elsewhere = slot(&serde_json::json!({ "issue": "7d2b" }));
+        let (mut other, _) = published(
+            "notes.notebook/pages/7d2b",
+            "notes.notebook.pages",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Its new title",
+            )],
+        );
+        other.resource_label = "Trip plan".into();
+        let surface = PublishedSurface {
+            actions: vec![rename.clone(), other],
+            ..surface
+        };
+        assert_eq!(item_named(&rename, &surface, Some(&elsewhere)), None);
+    }
+
     fn text_range(anchor: &tilo_actions::InteractionAnchor) -> (String, String, u64, u64) {
         let tilo_actions::InteractionAnchor::Text { region, ranges } = anchor else {
             panic!("a text edit names a text range, not {anchor:?}");
@@ -546,6 +806,144 @@ mod anchor_tests {
         assert_eq!(
             anchor_of(&action, &resource, None),
             tilo_actions::InteractionAnchor::Resource
+        );
+    }
+
+    /// A field edit of rich text names the characters it writes, so the editor showing that
+    /// text draws them as the writer's and its caret where the write ends — the same mark a
+    /// note's body shows of an agent's write, in Tasks' descriptions as in Notes.
+    #[test]
+    fn a_rich_text_field_edit_names_the_characters_it_writes() {
+        let (action, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "field-edit",
+            vec![ActionParam::required_owned(
+                "edit",
+                ParamType::Object,
+                "The field and what to do to it",
+            )],
+        );
+        let spliced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 4, "del": 0, "ins": "héllo"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&spliced))),
+            ("body".into(), "b3".into(), 4, 9),
+            "the characters it wrote, counted as the block counts them",
+        );
+        // Replacing a range leaves the range it wrote: what it inserts there.
+        let replaced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 2, "del": 6, "ins": "new"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("body".into(), "b3".into(), 2, 5),
+        );
+        // A field edit that writes no characters (a whole value set) names the
+        // record, not a run.
+        let set = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
+                "op": "set",
+                "value": "Book room four"
+            }
+        }));
+        assert_eq!(
+            anchor_of(&action, &resource, Some(&set)),
+            tilo_actions::InteractionAnchor::Resource,
+        );
+    }
+
+    /// A text field's own edit names the characters it writes in the item holding the field,
+    /// so the field draws them as the writer's with its caret; a verb setting an item's text
+    /// field from its parameter of that name (a rename) names the whole text it writes there.
+    #[test]
+    fn a_text_field_edit_and_a_rename_name_the_characters_they_write() {
+        let (action, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "field-edit",
+            vec![ActionParam::required_owned(
+                "edit",
+                ParamType::Object,
+                "The field and what to do to it",
+            )],
+        );
+        let typed = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
+                "op": "splice", "at": 5, "delete": 0, "insert": "rôom"
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&typed))),
+            ("title".into(), "7d2b".into(), 5, 9),
+        );
+        let replaced = slot(&serde_json::json!({
+            "edit": {"path": [{"field": "name"}], "op": "replace", "text": "Mixer"}
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("name".into(), String::new(), 0, 5),
+        );
+        let (mut action, resource) = published(
+            "so.tilo.tasks/issues/7d2b",
+            "so.tilo.tasks.issues",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Title",
+            )],
+        );
+        action.contract.field = Some("title".into());
+        let renamed = slot(&serde_json::json!({ "title": "Book room four" }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&renamed))),
+            ("title".into(), "7d2b".into(), 0, 14),
+        );
+        // Offered on the record, the item is its first parameter's id.
+        let (mut on_record, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "rename",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Issue"),
+                ActionParam::required_owned("title", ParamType::Text, "Title"),
+            ],
+        );
+        on_record.contract.field = Some("title".into());
+        let renamed_by_id = slot(&serde_json::json!({ "issue": "7d2b", "title": "Book" }));
+        assert_eq!(
+            text_range(&anchor_of(&on_record, &resource, Some(&renamed_by_id))),
+            ("title".into(), "7d2b".into(), 0, 4),
+        );
+        let resource = tilo_actions::ActionResource {
+            id: "so.tilo.tasks/issues/7d2b".into(),
+            kind: "so.tilo.tasks.issues".into(),
+            label: "Label".into(),
+        };
+        // A verb under a field whose text parameter is something else (a comment under
+        // `comments`) acts on the item.
+        action.contract.field = Some("comments".into());
+        assert_eq!(
+            anchor_of(&action, &resource, Some(&renamed)),
+            tilo_actions::InteractionAnchor::ListItems {
+                ids: vec!["7d2b".into()]
+            },
         );
     }
 

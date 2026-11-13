@@ -45,7 +45,6 @@ pub use secret_vault::Custody as SecretCustody;
 /// only ever lives in the sealed vault (or in memory while an app is connecting).
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Secret {
-    /// The password / app-password for password-auth accounts.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
     /// An `OAuth2` token bundle (serialised by the owning type) for accounts that sign in instead
@@ -61,7 +60,6 @@ impl std::fmt::Debug for Secret {
 }
 
 impl Secret {
-    /// A password-only secret.
     pub fn password(password: impl Into<String>) -> Self {
         Self {
             password: password.into(),
@@ -69,7 +67,6 @@ impl Secret {
         }
     }
 
-    /// Whether this secret carries nothing worth persisting.
     pub fn is_empty(&self) -> bool {
         self.password.is_empty() && self.token.is_none()
     }
@@ -79,27 +76,23 @@ impl Secret {
 /// the on-disk format and of where its key is held.
 const FORMAT: VaultFormat = VaultFormat {
     name: "accounts",
-    // Tilo Accounts Secret Vault.
     magic: b"QASV",
     secret_service_label: "Tilo account credentials",
     secret_service_attributes: &[("application", "Tilo"), ("purpose", "account-vault")],
     dpapi_entropy: b"Tilo Accounts vault key v1",
 };
 
-/// Original and staged replacement per credential, for conflict-checked saves.
 type PendingEdits = BTreeMap<String, (Option<Secret>, Option<Secret>)>;
 
 /// The encrypted, per-[`AccountId`] credential store. Held in memory after
 /// [`SecretVault::open`]; mutations are staged and written by [`SecretVault::save`].
 #[derive(Debug)]
 pub struct SecretVault {
-    /// The vault directory (`.../tilo/accounts/vault`).
     dir: PathBuf,
     /// Set where there is no native config directory (a browser page): the
     /// vault lives in the shared config location's storage instead, its key
     /// in the platform's secret store.
     page: Option<tilo_files::Dir>,
-    /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
     // Explicit edits merge into the latest inventory while the write lock is held.
     pending: std::sync::Mutex<PendingEdits>,
@@ -347,7 +340,6 @@ impl SecretVault {
         change.1 = Some(secret.clone());
     }
 
-    /// Fetch the secret for `id`, if the vault holds one.
     pub fn get(&self, id: &AccountId) -> Option<Secret> {
         self.entries.get(id.as_str()).cloned()
     }
@@ -380,7 +372,6 @@ impl SecretVault {
         existed
     }
 
-    /// Whether the vault currently holds no secrets.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -520,7 +511,6 @@ fn settle_edits(pending: &mut PendingEdits, submitted: PendingEdits) {
     }
 }
 
-/// A native vault write under way on its own thread, and the edits it writes.
 struct NativeWrite {
     submitted: PendingEdits,
     thread: std::thread::JoinHandle<Result<(), String>>,
@@ -556,7 +546,6 @@ fn write_native(dir: &Path, custody: SecretCustody, edits: &PendingEdits) -> Res
 /// Why [`SecretVault::try_save`] refuses while a browser write is in flight.
 const SAVE_PENDING: &str = "credential save pending; retry after browser storage completes";
 
-/// How far a save got, in the detail [`SecretVault::try_save`] reports.
 #[derive(Clone, Copy)]
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
@@ -564,18 +553,13 @@ const SAVE_PENDING: &str = "credential save pending; retry after browser storage
 )]
 enum Written {
     Durable,
-    /// The browser is still writing the edits.
     InFlight,
-    /// A write landed, and edits made meanwhile are written next.
     Remaining,
 }
 
-/// How far a [`SecretVault::commit`] got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Saved {
-    /// On disk, or in the browser's storage.
     Durable,
-    /// The browser is still writing it; save again to learn how it ended.
     Pending,
 }
 
@@ -656,7 +640,6 @@ impl SecretVault {
         if pending.is_empty() {
             Ok(Written::Durable)
         } else {
-            // Edits made while that write was in flight: written next.
             Ok(Written::Remaining)
         }
     }
@@ -752,7 +735,6 @@ fn merge_edits(
     Ok(entries)
 }
 
-/// Read and authenticate existing entries, distinguishing absence from damage.
 fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, Secret>, String> {
     let blob = match std::fs::read(dir.join("vault.enc")) {
         Ok(blob) => blob,
@@ -1405,7 +1387,6 @@ mod tests {
         passwords.refresh();
         assert_eq!(passwords.get(&key), Some(Secret::password("prepared")));
         assert_eq!(passwords.get(&draft), Some(Secret::password("unsaved")));
-        // Passwords revokes; the other view honours it once it looks again.
         passwords.remove(&grant);
         passwords.try_save().unwrap();
         messaging.refresh();
@@ -1453,7 +1434,6 @@ mod tests {
             let key = VaultKey::from_bytes([7u8; KEY_LEN]);
             let plaintext = b"secret vault bytes";
             let blob = seal(&key, plaintext).expect("seal");
-            // The sealed blob is not the plaintext.
             assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
             assert!(blob.starts_with(b"TSEAL"));
             assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
@@ -1477,7 +1457,6 @@ mod tests {
                 v.put(&id, &Secret::password("hunter2"));
                 v.save();
             }
-            // A fresh open decrypts the persisted secret.
             let v = SecretVault::open_in(&root);
             assert_eq!(v.get(&id).unwrap().password, "hunter2");
             std::fs::remove_dir_all(&root).ok();

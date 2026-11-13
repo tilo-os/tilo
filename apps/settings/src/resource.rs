@@ -1,11 +1,5 @@
 //! Settings as a [`tilo_resource::Resource`]: the door Settings' effects and
-//! live rows are published on.
-//!
-//! Settings edits no document of its own. The person's and the device's
-//! preferences are the session's settings sections, records of their own
-//! that the panes bind; this device's hardware and services are its own,
-//! changed through a [`SettingsEffect`]. So the resource holds nothing: it
-//! names Settings to the palette, agents and scripts.
+//! live rows are published on. Settings edits no document of its own.
 
 use ui::application::ComponentBehaviour;
 use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
@@ -17,19 +11,10 @@ use crate::effects::{NavigationEffect, SettingsEffect};
 use crate::settings_app::SettingsApp;
 use ui::tilo_resource::Effect as _;
 
-/// The Settings resource: the door its effects and live rows are published
-/// on. It holds nothing (see the module docs).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Settings {}
 
 impl Settings {
-    /// What the record holds: nothing — the person's and the device's preferences are the
-    /// session's settings sections, records of their own.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -46,20 +31,11 @@ impl Settings {
 impl Settings {}
 
 impl Settings {
-    /// Every pane, found by its name, summary and the words people use for
-    /// it.
     fn panes(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::search::pane_entries()
     }
 }
 
-/// Decode a `settings://` link: `settings://models/<model-id>` shows that
-/// local model's card and `settings://<pane>[/…]` opens a pane. The launcher
-/// already checked the scheme; this keeps a malformed value from becoming a
-/// model or pane id.
-///
-/// # Errors
-/// Returns why `uri` is not a Settings link this version understands.
 /// The effect a system tool's intent opens Settings with: VPN's list, a
 /// profile's page or its import. Network's pane when the VPN effects are not
 /// in this build.
@@ -124,8 +100,6 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         .into());
     }
-    // Camera and other apps link to the privacy controls by their common
-    // name; the pane is Permissions.
     let pane = pane_alias(pane);
     let category = Category::from_slug(pane).ok_or("unknown Settings pane in link")?;
     Ok(NavigationEffect::OpenPane {
@@ -134,8 +108,6 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
     .into())
 }
 
-/// The pane a link names by its common name: Camera and other apps link to
-/// the privacy controls as `privacy`.
 fn pane_alias(pane: &str) -> &str {
     match pane {
         "privacy" => "permissions",
@@ -144,26 +116,22 @@ fn pane_alias(pane: &str) -> &str {
     }
 }
 
-/// Framework app: the Settings window is the view of [`Settings`].
 pub struct SettingsShell;
 
 impl ResourceApp for SettingsShell {
     type Resource = Settings;
     const ID: &'static str = settings_sections::APP_ID;
     const TITLE: &'static str = "Settings";
+    const TITLE_KEY: &'static str = "settings-app-title";
     const ICON: Option<&'static str> = Some("settings");
-    // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
-    // scale, theme, contrast and motion apply live.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
         ..ComponentBehaviour::DEFAULT
     };
-    /// A `settings://` link.
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        // Private host profiles also own their account stores and mutation journal.
         let app = match cx.storage().settings_document() {
             ui::storage::SettingsDocument::Session => SettingsApp::new(),
             ui::storage::SettingsDocument::Profile(root) => SettingsApp::with_config_root(root),
@@ -171,12 +139,9 @@ impl ResourceApp for SettingsShell {
         crate::window::window(cx, app)
     }
 
-    /// `settings://models/<id>` opens Agent Models at that model's card and
-    /// `settings://<pane>` opens the pane. Neither changes anything.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Settings>> {
         let parsed = match input.argument() {
             Some(argument) => parse_settings_uri(argument),
-            // Opened as a system tool (VPN): where the tool's intent says.
             #[cfg(feature = "tilo-os")]
             None => match os_actions::tool_intent_from_env() {
                 Some(intent) => tool_effect(&intent),
@@ -215,8 +180,6 @@ impl ResourceApp for SettingsShell {
         );
     }
 
-    /// The accounts every app of the person's reads: theirs, kept by
-    /// Settings in their own scope.
     const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
         &[ui::framework::PersonKind::shared::<
             accounts::person::PersonAccounts,
@@ -347,8 +310,6 @@ mod tests {
         );
     }
 
-    /// Settings shows every page of the index, in its order: the sidebar and
-    /// the desktop palette list the same pages.
     #[test]
     fn the_sidebar_lists_the_index_pages_in_order() {
         let slugs: Vec<&str> = Category::ALL
@@ -362,8 +323,6 @@ mod tests {
         assert_eq!(slugs, index);
     }
 
-    /// Model links name a validated model id, pane links a known pane, and
-    /// anything else is refused rather than guessed.
     #[test]
     fn settings_links_decode_to_what_they_show() {
         assert_eq!(

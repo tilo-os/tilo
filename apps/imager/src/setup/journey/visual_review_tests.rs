@@ -1,4 +1,5 @@
 //! Development-only raster evidence from the production renderer and action path.
+
 use super::*;
 use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
@@ -15,8 +16,6 @@ pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
         "ui_scale={} text_scale={}\n",
         theme.ui_scale, theme.text_scale
     );
-    // Save the actual emitted font bytes, not the requested family. Review
-    // tooling can decode their name tables without guessing the host's font.
     for (index, run) in harness
         .scene()
         .encoding()
@@ -160,8 +159,6 @@ fn current_personal_and_review_raster_matrix() {
                 .unwrap();
                 evidence(app.harness(), &format!("name-computer-{tag}"));
                 app.with_widget::<InstallerPreview, _>(|preview| {
-                    // Observe the normal build's actual admission gates. No
-                    // source, custody, package or preparation approval is injected.
                     preview.live = true;
                     preview.journey.page = Page::Review;
                     preview.dirty = true;
@@ -273,8 +270,6 @@ fn current_belongings_71_rows_raster_matrix() {
                         (last.y1 - body.y1).max(0.0) / 2.0
                     })
                     .unwrap();
-                // Wheel input, not a second layout or painter. Stop near the
-                // midpoint using observed production row geometry.
                 let first_top = app
                     .with_widget::<InstallerPreview, _>(|preview| {
                         visual_tests::control(preview, "installer.flatpak.app.0")

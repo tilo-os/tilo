@@ -1,7 +1,6 @@
 //! Working with areas: selecting part of the artwork, using the selection
 //! (fill it, outline it, mask a layer to it, clear it), layer masks, and
 //! shapes combined into one.
-//!
 //! The selection is kept with the artwork like the reference picture: it
 //! syncs and undoes, and is never drawn into the artwork. What is made from
 //! it is ordinary data: a fill or outline is a path mark, a mask is a layer
@@ -144,8 +143,8 @@ fn check_box(value: [f64; 4], what: &str) -> Result<Rect, Refusal> {
 }
 
 impl Select {
-    /// Whether it only changes the selection there is (grow, feather,
-    /// invert) rather than naming a new area.
+    /// Whether it changes the selection there is (grow, feather, invert)
+    /// instead of naming a new area.
     fn looks_unchanged(&self) -> bool {
         self.rect.is_none()
             && self.ellipse.is_none()
@@ -227,9 +226,8 @@ impl Select {
                 )));
             }
         };
-        // Invert first: grow and feather refine the area that ends up
-        // selected, so `invert, grow -3` keeps a subject clear of its old
-        // background's edge.
+        // Invert first: grow and feather refine the area that ends up selected,
+        // so `invert, grow -3` keeps a subject clear of its old background's edge.
         if self.invert == Some(true) {
             region = region.inverted(art.bounds());
         }
@@ -251,8 +249,8 @@ impl Select {
                 current.map_or(0.0, |selection| selection.feather)
             }
         });
-        // A soft edge found for this area goes with it while it is the
-        // area it was found for: a new selection, not inverted or grown.
+        // A soft edge found for this area goes with it while it is that area:
+        // a new selection, not inverted or grown.
         let matte = self
             .matte
             .clone()
@@ -344,9 +342,8 @@ impl UseSelection {
                     feather: feathered,
                     ..Style::default()
                 };
-                // A refined edge is drawn as it is, soft where the subject
-                // is partly there: white for what shows, its inverse black
-                // for what is cleared.
+                // A refined edge is drawn as it is, soft where the subject is partly
+                // there: white for what shows, its inverse black for what is cleared.
                 let matte = art
                     .selection
                     .as_ref()
@@ -411,8 +408,8 @@ fn give_pictures(
     Ok(())
 }
 
-/// The ordinary layer `id` names, or the one it masks when it names a
-/// mask: a mask is part of its layer, as the layers panel shows it.
+/// The ordinary layer `id` names, or the one it masks when it names a mask:
+/// a mask is part of its layer.
 fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, Refusal> {
     let layer = art
         .layer(id)

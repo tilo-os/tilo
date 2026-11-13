@@ -220,9 +220,8 @@ fn layout_image_editor(editor: &mut BlockEditor, width: f32, renderer: &mut Text
             height: taffy::AvailableSpace::MaxContent,
         },
         |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |widget| {
-                // The pointers are the stable widget leaves registered by build_layout.
-                unsafe { (**widget).measure(known, available, renderer) }
+            nodes.get(&node).map_or(Size::ZERO, |widget| unsafe {
+                (**widget).measure(known, available, renderer)
             })
         },
     )
@@ -255,8 +254,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             for _ in 0..3 {
                 layout_image_editor(&mut editor, width, &mut renderer);
                 let preview = editor.image_preview_rects[0].unwrap();
-                // The image stands on the content edge: inside the line's
-                // text inset on both sides.
                 let inner = f64::from(width) - editor.handle_column() - 2.0 * editor.text_pad;
                 assert!((preview.width() - inner).abs() < 0.01, "{preview:?}");
                 assert!(
@@ -537,7 +534,6 @@ fn enter_on_empty_list_outdents_then_exits_and_numbered_lists_continue() {
         editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
         assert!(matches!(editor.blocks()[1].kind, BlockKind::Paragraph));
         assert_eq!(editor.blocks()[1].indent(), 1, "a line inside item 1");
-        // Written, it continues the item; the next item still counts on.
         editor.blocks_mut()[1].line.set_text("more about first");
         editor.blocks_mut().push(Block::numbered(0, "second"));
         assert_eq!(numbered_ordinals(editor.blocks()), vec![1, 0, 2]);
@@ -788,7 +784,6 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     slash_query_is_typed_into_the_block_including_through_the_ime();
 }
 
-/// Seed a canonical block list the way an action owner stores it.
 fn seed_canonical_blocks(doc: &mut AutoCommit, blocks: &[(&str, &str)]) -> (ObjId, Vec<String>) {
     use automerge::transaction::Transactable;
     let list = doc
@@ -876,7 +871,6 @@ fn editor_adopts_canonical_blocks_and_reports_structure_edits_as_ops() {
         let mut a = BlockEditor::new();
         a.bind_existing_blocks(&a_doc, a_list).unwrap();
 
-        // Peer B joins from A's full state (the late-join handshake).
         let b_doc = AutoCommit::load(&a_doc.save()).unwrap();
         let Ok(Some((Value::Object(ObjType::List), b_list))) = b_doc.get(&ROOT, "blocks") else {
             panic!("blocks list should exist in B's adopted doc");
@@ -968,7 +962,6 @@ fn presence_payload_reports_caret_selection_or_nothing() {
     fn presence_payload_none_when_unfocused() {
         let mut ed = BlockEditor::new();
         ed.set_blocks(vec![Block::paragraph("hi")]);
-        // set_blocks leaves the editor unfocused.
         assert!(crate::presence::capability::presence_payload(&ed).is_none());
     }
 
@@ -1317,7 +1310,7 @@ fn rich_link_hits_track_drawn_shaped_and_bidi_ranges() {
             let theme = Theme::dark().with_text_scale(scale);
             layout_and_draw_editor(&mut editor, &theme);
             let line = &editor.blocks[0].line;
-            let right = line.pixel_x_for_byte(&theme, 3);
+            let right = line.caret_rect(&theme, 3).x0;
             let y = line.get_rect().center().y;
             assert_eq!(
                 editor.link_at_point(Point::new(right - 0.1, y)),
@@ -1607,7 +1600,6 @@ fn deleting_empty_blocks_shifts_focus_and_keeps_one_block() {
         assert_eq!(e.blocks()[0].text(), "first");
         assert_eq!(e.blocks()[1].text(), "third");
         assert_eq!(e.focused_index(), Some(0));
-        // ...with the caret at the end of "first".
         assert_eq!(e.blocks()[0].line.cursor_pos(), 5);
     }
 
@@ -1688,8 +1680,6 @@ fn markdown_prefix_promotion_converts_only_prefixed_paragraphs() {
     fn promote_does_nothing_on_existing_heading() {
         let mut e = BlockEditor::new();
         e.blocks[0] = Block::heading(1, "# hi");
-        // Even though the text starts with "# ", we don't double-
-        // promote a heading.
         assert!(!e.try_promote_to_heading(0));
     }
 
@@ -1752,7 +1742,6 @@ fn try_convert_changes_kind_preserving_text() {
         e.is_focused = true;
         assert!(e.try_convert_to(0, BlockKind::Divider));
         assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
-        // Focus moved to the new paragraph spliced after the divider.
         assert_eq!(e.blocks().len(), 2);
         assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
         assert_eq!(e.focused_index(), Some(1));
@@ -1845,7 +1834,6 @@ fn try_indent_steps_clamps_and_respects_block_kind() {
     fn try_indent_clamps_at_max_and_zero() {
         let mut e = BlockEditor::new();
         e.blocks[0] = Block::bullet(MAX_LIST_INDENT, "deep");
-        // +1 is clamped, returns false (no change).
         assert!(!e.try_indent(0, 1));
         assert_eq!(e.blocks()[0].kind.indent(), MAX_LIST_INDENT);
 
@@ -1943,7 +1931,6 @@ fn try_toggle_check_flips_only_checklists() {
 
 #[test]
 fn canonical_existing_list_restore_and_empty_baseline() {
-    // Catches replacing live local state before malformed canonical shape is rejected.
     fn canonical_readonly_restore_rejects_shape_before_installing_editor() {
         let mut doc = AutoCommit::new();
         let list = doc
@@ -2240,9 +2227,6 @@ fn presence_paths(editor: &mut BlockEditor, presence: &PresenceCtx) -> usize {
     scene.encoding().path_tags.len()
 }
 
-/// A remote caret names its block by the stable block id: after a block
-/// is inserted above it (locally or by a merge), the caret still lands on
-/// the same block, and an id this editor does not have draws nothing.
 #[test]
 fn remote_caret_follows_its_block_id_across_inserted_blocks() {
     let mut ed = BlockEditor::new();
@@ -2256,7 +2240,6 @@ fn remote_caret_follows_its_block_id_across_inserted_blocks() {
         panic!("focused block publishes a caret");
     };
     assert_eq!(published, block_presence_key(&target));
-    // The receiver has an extra block above the target.
     let mut receiver = BlockEditor::new();
     let mut blocks = vec![Block::paragraph("inserted above")];
     for block in &ed.blocks {
@@ -2302,7 +2285,6 @@ fn remote_document_selection_resolves_from_its_start_block_id() {
     let resolved = ed.resolve_document_selections(&presence);
     assert_eq!(resolved.len(), 1);
     assert_eq!((resolved[0].0, resolved[0].1), (1, 2));
-    // A block inserted above shifts the indices, not the anchor.
     ed.blocks.insert(0, Block::paragraph("new"));
     let resolved = ed.resolve_document_selections(&presence);
     assert_eq!((resolved[0].0, resolved[0].1), (2, 3));
@@ -2382,13 +2364,11 @@ fn toolbar_commands_format_the_focused_block() {
     e.focus_block(0, CursorPlacement::End);
     assert_eq!(e.focused_kind(), Some(&BlockKind::Paragraph));
 
-    // With nothing selected, a mark waits for the text typed next.
     assert!(e.toggle_mark(Mark::Bold));
     assert_eq!(e.active_marks(), [Mark::Bold]);
     assert!(e.toggle_mark(Mark::Bold));
     assert!(e.active_marks().is_empty());
 
-    // Over a selection, it marks the selection.
     e.blocks[0].line.inner_mut().set_selection(0, 5);
     assert!(e.toggle_mark(Mark::Italic));
     assert_eq!(
@@ -2397,7 +2377,6 @@ fn toolbar_commands_format_the_focused_block() {
     );
     assert_eq!(e.active_marks(), [Mark::Italic]);
 
-    // A link over the selection, then one inserted at the caret.
     assert!(e.insert_link("https://example.test"));
     assert!(e.blocks[0].line.marks().contains(&MarkSpan::new(
         0..5,
@@ -2497,16 +2476,12 @@ fn a_block_fields_suggestion_timer_wakes_the_editor() {
     field.set_cursor_pos("so beautifull".len());
     field.refresh_suggestion_at(now);
 
-    // Block lines are not widget children; their timers still reach the host.
     assert_eq!(
         Widget::next_wake_deadline(&editor),
         Some(now + crate::text_edit::SUGGESTION_SETTLE)
     );
 }
 
-/// Resting at the end of a misspelled word, or coming back to one, offers
-/// its correction with no further input: the wake its line asked for brings
-/// a frame, and that frame repaints the line with the chip on it.
 #[test]
 fn a_word_settling_under_the_caret_repaints_its_line_with_the_suggestion() {
     let mut editor = BlockEditor::new();
@@ -2565,9 +2540,6 @@ fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_rea
     assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
 }
 
-/// The editing keys every text field has, in the rich-text editor too: word
-/// deletion with Ctrl, word-wise selection with Ctrl+Shift, and deleting a
-/// selection.
 #[test]
 fn ctrl_backspace_and_word_selection_edit_by_words() {
     use winit::event::ElementState;
@@ -2595,7 +2567,6 @@ fn ctrl_backspace_and_word_selection_edit_by_words() {
     Dispatch::new()
         .modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT)
         .send(&mut editor, &named(NamedKey::ArrowLeft));
-    // A selection inside one paragraph is that line's; Delete shows its extent.
     dispatch(&mut editor, &named(NamedKey::Delete));
     assert_eq!(
         editor.blocks()[0].text(),
@@ -2645,7 +2616,6 @@ fn a_selection_for_an_agent_is_drawn_across_every_block_it_spans() {
     );
 }
 
-/// Type `text` key by key into the editor, as a keyboard does.
 fn type_keys(editor: &mut BlockEditor, text: &str) {
     use crate::synthetic_input::{char_key, key_press};
     for ch in text.chars() {
@@ -2676,7 +2646,6 @@ fn slash_commands_keep_what_was_written_and_the_query_stays_text() {
             .collect::<Vec<_>>()
     };
 
-    // After text, a block kind starts a new block; the sentence stays.
     let mut editor = focused_editor("Groceries for Monday");
     type_keys(&mut editor, " /todo");
     assert!(editor.slash_menu().is_visible());
@@ -2701,7 +2670,6 @@ fn slash_commands_keep_what_was_written_and_the_query_stays_text() {
         "the caret is in the new item"
     );
 
-    // A divider after text goes under it and deletes nothing.
     let mut editor = focused_editor("Section one");
     type_keys(&mut editor, " /divider");
     dispatch(&mut editor, &named_key(NamedKey::Enter));
@@ -2709,27 +2677,22 @@ fn slash_commands_keep_what_was_written_and_the_query_stays_text() {
     assert!(matches!(editor.blocks()[1].kind, BlockKind::Divider));
     assert_eq!(editor.blocks().len(), 3, "and leaves a line to write on");
 
-    // At the start of a block, the block itself turns, its text kept.
     let mut editor = focused_editor("Plan");
     editor.focus_block(0, CursorPlacement::Start);
     type_keys(&mut editor, "/h2");
     dispatch(&mut editor, &named_key(NamedKey::Enter));
     assert_eq!(texts(&editor), [(BlockKind::Heading(2), "Plan".to_owned())]);
 
-    // "A / B": a space right after the slash is prose; the menu goes and
-    // everything typed is in the note.
     let mut editor = focused_editor("A");
     type_keys(&mut editor, " / B means either");
     assert!(!editor.slash_menu().is_visible());
     assert_eq!(editor.blocks()[0].text(), "A / B means either");
 
-    // "/xyz " matches nothing: the space ends the query and the menu.
     let mut editor = focused_editor("");
     type_keys(&mut editor, "/xyz and more");
     assert!(!editor.slash_menu().is_visible());
     assert_eq!(editor.blocks()[0].text(), "/xyz and more");
 
-    // Enter with nothing to choose ends the line.
     let mut editor = focused_editor("");
     type_keys(&mut editor, "/xyz");
     assert!(editor.slash_menu().is_visible());
@@ -2743,7 +2706,6 @@ fn slash_commands_keep_what_was_written_and_the_query_stays_text() {
         ]
     );
 
-    // Backspacing over the slash closes the menu; Escape keeps the text.
     let mut editor = focused_editor("");
     type_keys(&mut editor, "/h");
     dispatch(&mut editor, &named_key(NamedKey::Backspace));
@@ -2782,7 +2744,6 @@ fn host_slash_commands_hand_the_block_to_the_host() {
             .any(|span| span.mark == Mark::Link(Uuid::from_u128(7)) && span.range == (0..10))
     );
 
-    // Link to note opens the link picker where the slash was.
     let mut editor = BlockEditor::new();
     editor.set_slash_commands(true, &[]);
     editor.set_link_pages(vec![page.clone()]);
@@ -2904,8 +2865,6 @@ fn a_link_to_a_resource_offers_opening_it_where_it_lives() {
             .is_some_and(|bounds| bounds.to_rect().height() > 0.0)
     );
 
-    // A click on the label, and assistive technology's activate, both ask
-    // the host to open the resource the address names.
     editor.draw(
         &mut Scene::new(),
         Affine::IDENTITY,

@@ -40,8 +40,6 @@ pub const MAX_DECODED_PIXELS: u64 = 32 * 1024 * 1024;
 /// Reject implausibly large compressed inputs before handing them to a codec.
 pub const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
-/// Read an encoded input without ever allocating past its declared budget.
-/// One sentinel byte distinguishes an exact-limit input from a truncated one.
 pub fn read_bounded(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
     let limit = u64::try_from(max_bytes).ok()?.saturating_add(1);
     let mut bytes = Vec::new();
@@ -49,7 +47,6 @@ pub fn read_bounded(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
     (bytes.len() <= max_bytes).then_some(bytes)
 }
 
-/// A decoded image: RGBA8, tightly packed, `w * h * 4` bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Rgba {
     pub w: u32,
@@ -58,15 +55,12 @@ pub struct Rgba {
 }
 
 impl std::fmt::Debug for Rgba {
-    /// Deliberately does not print the buffer: a failing assertion on a
-    /// megapixel image would otherwise emit megabytes into the test log.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Rgba({}x{}, {} bytes)", self.w, self.h, self.bytes.len())
     }
 }
 
 impl Rgba {
-    /// Wrap a buffer, checking the length matches the dimensions.
     pub fn new(w: u32, h: u32, bytes: Vec<u8>) -> Option<Self> {
         if w == 0 || h == 0 || bytes.len() != (w as usize) * (h as usize) * 4 {
             return None;
@@ -74,8 +68,6 @@ impl Rgba {
         Some(Self { w, h, bytes })
     }
 
-    /// The pixel at `(x, y)` as `[r, g, b, a]`. `None` when out of bounds —
-    /// used by tests to sample a region rather than compare whole buffers.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.w || y >= self.h {
             return None;
@@ -85,15 +77,7 @@ impl Rgba {
     }
 }
 
-/// Decode any format the build enabled (PNG, JPEG, WebP) into RGBA8, off the
-/// frame: the browser's own decoder on the web, which never runs inside a
-/// frame and so never blocks one.
-///
-/// Returns `None` for bytes that are not a decodable image, rather than
-/// panicking: this runs on whatever the file chooser handed back, and a user
-/// picking a text file must produce an honest error, not a crash.
 pub async fn decode_async(bytes: &[u8]) -> Option<Rgba> {
-    // The header's size is checked before any pixel is allocated.
     size(bytes)?;
     let orientation = encoded_exif_orientation(bytes);
     let decoded = ui::image_codec::decode(bytes, None).await.ok()?;
@@ -101,10 +85,6 @@ pub async fn decode_async(bytes: &[u8]) -> Option<Rgba> {
     Some(normalize_exif_orientation(decoded, orientation))
 }
 
-/// [`decode_async`] at once on the calling thread, with the codec's own
-/// decoders: for an import, a local analysis or a content-producing effect,
-/// whose answer is made in one step and cannot wait for a decoder. The
-/// window's own decode is [`decode_async`].
 pub fn decode(bytes: &[u8]) -> Option<Rgba> {
     size(bytes)?;
     let orientation = encoded_exif_orientation(bytes);
@@ -113,23 +93,14 @@ pub fn decode(bytes: &[u8]) -> Option<Rgba> {
     Some(normalize_exif_orientation(decoded, orientation))
 }
 
-/// The size of the image in `bytes`, read from its header, when it is one
-/// Photos reads within its bounds: the answer a caller that only needs the
-/// picture's shape asks for, without decoding a pixel of it.
 pub fn size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() > MAX_ENCODED_BYTES {
         return None;
     }
-    // Read dimensions from the header before decoding pixels, so a decode
-    // never allocates past Photos' own limit.
     let (w, h) = ui::image_codec::dimensions(bytes)?;
     within_decode_limits(w, h).then_some((w, h))
 }
 
-/// Read the standard EXIF orientation without making metadata availability a
-/// precondition for decoding. Containers without EXIF, malformed metadata and
-/// values outside the specified 1–8 range all mean the stored pixels are
-/// already upright.
 fn encoded_exif_orientation(bytes: &[u8]) -> Option<u16> {
     let mut cursor = Cursor::new(bytes);
     let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
@@ -142,9 +113,6 @@ fn encoded_exif_orientation(bytes: &[u8]) -> Option<u16> {
         .filter(|orientation| (1..=8).contains(orientation))
 }
 
-/// Apply the eight TIFF/EXIF orientation transforms and return canonical,
-/// upright pixels. Doing this at decode time makes thumbnails, OCR, vision,
-/// the editor and export share exactly one interpretation of the source.
 #[expect(
     clippy::indexing_slicing,
     clippy::expect_used,
@@ -173,7 +141,6 @@ fn normalize_exif_orientation(src: Rgba, orientation: Option<u16>) -> Rgba {
                 6 => (y, src.h - 1 - x),
                 7 => (src.w - 1 - y, src.h - 1 - x),
                 8 => (src.w - 1 - y, x),
-                // Orientation 1 and out-of-range values returned early.
                 _ => return src,
             };
             let source = (u64::from(source_y) * u64::from(src.w) + u64::from(source_x)) * 4;
@@ -184,8 +151,6 @@ fn normalize_exif_orientation(src: Rgba, orientation: Option<u16>) -> Rgba {
             bytes[destination..destination + 4].copy_from_slice(&src.bytes[source..source + 4]);
         }
     }
-    // Orientation preserves pixel count and only swaps the axes, so the
-    // validated source guarantees this constructor succeeds.
     Rgba::new(w, h, bytes).expect("EXIF orientation preserves a valid RGBA buffer")
 }
 
@@ -193,18 +158,10 @@ fn within_decode_limits(w: u32, h: u32) -> bool {
     w != 0 && h != 0 && u64::from(w).saturating_mul(u64::from(h)) <= MAX_DECODED_PIXELS
 }
 
-/// Encode RGBA8 as a PNG. This is what reaches the clipboard consumer that
-/// wants a file rather than a raw buffer, and what `Save` writes.
 pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
     ui::png::encode_rgba8(img.w, img.h, &img.bytes).ok()
 }
 
-/// Crop to `rect`, expressed in normalized `0..1` coordinates of `src`.
-///
-/// The rect is clamped into the unit square and the resulting pixel rect is
-/// forced to at least one pixel in each axis, so a degenerate drag can never
-/// produce a zero-sized image (which would then fail to encode and read to the
-/// user as "the crop deleted my photo").
 pub fn crop(src: &Rgba, rect: Rect01) -> Rgba {
     let rect = rect.clamped();
     let x0 = ((rect.x * f64::from(src.w)).floor() as u32).min(src.w - 1);
@@ -217,7 +174,6 @@ pub fn crop(src: &Rgba, rect: Rect01) -> Rgba {
         let row = ((y0 + y) as usize) * (src.w as usize) * 4;
         let start = row + (x0 as usize) * 4;
         let end = start + (w as usize) * 4;
-        // In bounds: x0/w and y0/h are clamped above to stay within src.
         if let Some(slice) = src.bytes.get(start..end) {
             bytes.extend_from_slice(slice);
         }
@@ -225,8 +181,6 @@ pub fn crop(src: &Rgba, rect: Rect01) -> Rgba {
     Rgba { w, h, bytes }
 }
 
-/// Rotate by `quarters` × 90° clockwise. `quarters` is taken modulo 4, so a
-/// caller may pass an ever-increasing counter.
 pub fn rotate(src: &Rgba, quarters: u8) -> Rgba {
     match quarters % 4 {
         0 => src.clone(),
@@ -236,8 +190,6 @@ pub fn rotate(src: &Rgba, quarters: u8) -> Rgba {
     }
 }
 
-/// One 90° clockwise turn. Destination `(x, y)` reads source
-/// `(y, src.h - 1 - x)`.
 fn rotate_cw(src: &Rgba) -> Rgba {
     let (sw, sh) = (src.w as usize, src.h as usize);
     let (dw, dh) = (sh, sw);
@@ -248,8 +200,6 @@ fn rotate_cw(src: &Rgba) -> Rgba {
             let sy = sh - 1 - dx;
             let si = (sy * sw + sx) * 4;
             let di = (dy * dw + dx) * 4;
-            // In bounds: si/di are derived from the loop bounds above, each
-            // strictly less than the source/destination buffer length.
             if let (Some(dst), Some(src_px)) =
                 (bytes.get_mut(di..di + 4), src.bytes.get(si..si + 4))
             {
@@ -264,7 +214,6 @@ fn rotate_cw(src: &Rgba) -> Rgba {
     }
 }
 
-/// Run the whole pipeline: crop in original coordinates, then rotate.
 pub fn render(original: &Rgba, crop_rect: Rect01, quarters: u8) -> Rgba {
     let cropped = if crop_rect.is_full() {
         original.clone()
@@ -274,11 +223,6 @@ pub fn render(original: &Rgba, crop_rect: Rect01, quarters: u8) -> Rgba {
     rotate(&cropped, quarters)
 }
 
-/// Map a rect taken from the *rotated* view back into the un-rotated frame.
-///
-/// The inverse of one clockwise turn sends a unit-square point `(x, y)` to
-/// `(y, 1 - x)`; applied to a rect's corners and re-normalised, that is the
-/// transform below, iterated `quarters` times.
 pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
     let mut r = rect.clamped();
     for _ in 0..(quarters % 4) {
@@ -292,7 +236,6 @@ pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
     r.clamped()
 }
 
-/// Wrap prepared pixels for the shared live/history painters.
 pub fn to_peniko(img: &Rgba) -> vello::peniko::ImageData {
     ui::raster::rgba8(img.bytes.clone(), img.w, img.h)
 }
@@ -309,7 +252,6 @@ mod tests {
         );
         assert_eq!(read_bounded(Cursor::new([1, 2, 3, 4, 5]), 4), None);
 
-        // Dimensions that would need an unbounded RGBA buffer are refused.
         for (w, h, ok) in [
             (8_000, 4_000, true),
             (8_193, 4_096, false),
@@ -330,10 +272,6 @@ mod tests {
         assert!(decode(&[]).is_none());
     }
 
-    /// A 4x2 image whose every pixel is distinguishable: red channel encodes
-    /// the column, green the row. Any transform that loses or mirrors a pixel
-    /// shows up as a wrong `[r, g]` pair rather than as a size that happens to
-    /// match.
     fn ramp(w: u32, h: u32) -> Rgba {
         let mut bytes = Vec::new();
         for y in 0..h {
@@ -425,7 +363,6 @@ mod tests {
                 "orientation {orientation}"
             );
         }
-        // ... and ignores an invalid one without rejecting the photo.
         for orientation in [0, 9, u16::MAX] {
             let jpeg = jpeg_with_orientation(orientation);
             assert_eq!(
@@ -451,7 +388,6 @@ mod tests {
             .expect("encode test JPEG");
         assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
 
-        // Minimal little-endian TIFF IFD carried by a JPEG APP1 Exif segment.
         let mut payload = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0".to_vec();
         payload.extend_from_slice(&[
             0x12,
@@ -493,14 +429,10 @@ mod tests {
     #[test]
     fn crops_take_exactly_their_bounded_region() {
         let src = ramp(4, 4);
-        // The bottom-right quadrant: columns 2..4, rows 2..4.
         let out = crop(&src, rect(0.5, 0.5, 0.5, 0.5));
         assert_eq!((out.w, out.h), (2, 2));
-        // Pixel (0,0) of the crop must be pixel (2,2) of the source.
         assert_eq!(out.pixel(0, 0).unwrap()[0..2], [2, 2]);
         assert_eq!(out.pixel(1, 1).unwrap()[0..2], [3, 3]);
-        // And the byte count must match the new size exactly — a crop that
-        // kept the original buffer would still pass a dimension check.
         assert_eq!(out.bytes.len(), 2 * 2 * 4);
 
         let out = crop(&src, rect(0.5, 0.5, 0.0, 0.0));
@@ -510,26 +442,19 @@ mod tests {
 
     #[test]
     fn rotation_moves_pixels_and_unrotate_inverts_the_view() {
-        // (case, source, output dimensions, [(x, y) -> expected [r, g]])
         let cases = [
-            // 90 degrees swaps width and height; the source's bottom-left
-            // pixel (0, 1) becomes the top-left, its top-left lands top-right.
             (
                 "quarter turn",
                 rotate(&ramp(4, 2), 1),
                 (2, 4),
                 vec![((0, 0), [0, 1]), ((1, 0), [0, 0])],
             ),
-            // The dimension check cannot catch a broken square rotation, so
-            // assert the content moved.
             (
                 "square quarter turn",
                 rotate(&ramp(3, 3), 1),
                 (3, 3),
                 vec![((0, 0), [0, 2])],
             ),
-            // Crop to the left half (2x2), then a quarter turn keeps it 2x2
-            // but moves the corner.
             (
                 "render crops then rotates",
                 render(&ramp(4, 2), rect(0.0, 0.0, 0.5, 1.0), 1),
@@ -556,15 +481,11 @@ mod tests {
         assert_eq!(rotate(&src, 4), src, "four quarter turns are the identity");
         assert_eq!(rotate(&src, 0), src);
 
-        // Take the top-left quarter of a view that has been turned once, map
-        // it back, and it must name the region that *is* top-left once the
-        // image is turned — the bottom-left quarter of the original.
         let back = unrotate_rect(rect(0.0, 0.0, 0.5, 0.5), 1);
         assert!((back.x - 0.0).abs() < 1e-9, "got {back:?}");
         assert!((back.y - 0.5).abs() < 1e-9, "got {back:?}");
         assert!((back.w - 0.5).abs() < 1e-9, "got {back:?}");
         assert!((back.h - 0.5).abs() < 1e-9, "got {back:?}");
-        // Undoing q turns and then undoing (4 - q) more is a full circle.
         let r = rect(0.25, 0.125, 0.5, 0.25);
         for q in 0..4u8 {
             let back = unrotate_rect(unrotate_rect(r, q), 4 - q);

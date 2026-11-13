@@ -4,12 +4,8 @@
 
 This is the product specification for installing Tilo OS on the current computer,
 preparing it for another computer, and adding Tilo Desktop to an existing Linux
-installation. It specifies the intended experience, not delivered capabilities.
-Where older walkthroughs differ on screen order, terminology or
-Desktop migration, this document takes precedence for the intended experience.
-Existing security and installation safety contracts still apply.
-[Installer and migration model](installer-migration-model.md) describes how the
-code is organised to meet this contract.
+installation. It specifies the experience, not what a release has shipped yet.
+[`apps/imager`](../apps/imager) meets it.
 
 The installer does the technical work. The person chooses the destination,
 identity, data and storage allocation, then approves the concrete result.

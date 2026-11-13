@@ -1,5 +1,5 @@
-//! Another window of a native app outside the desktop's tab model: another
-//! process of the same executable.
+//! Another window of a native app outside the desktop's tab model: another process of the same
+//! executable.
 
 /// Start another process of this executable showing `target`.
 pub(crate) fn open(target: Option<&str>) -> Result<(), String> {
@@ -17,8 +17,8 @@ pub(crate) fn open(target: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `name` hands this process one of its runtime connections: an
-/// inherited descriptor number, or the record of which process received them.
+/// Whether `name` hands this process one of its runtime connections: an inherited descriptor number, or
+/// the record of which process received them.
 fn names_runtime_connection(name: &std::ffi::OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
@@ -28,12 +28,10 @@ fn names_runtime_connection(name: &std::ffi::OsStr) -> bool {
         || name == "TILO_RUNTIME_RESUME_LIVE"
 }
 
-/// The command for another process of `executable` showing `target`.
-///
-/// This process's runtime connections are descriptors it holds and closes
-/// across exec, so their names in `environment` never reach the new process:
-/// a child inheriting them would find the numbers naming nothing (or
-/// something else) and refuse to start. Without them it attaches on its own.
+/// The command for another process of `executable` showing `target`. This process's runtime connections
+/// are descriptors it holds and closes across exec, so their names in `environment` never reach the new
+/// process: a child inheriting them would find the numbers naming nothing (or something else) and
+/// refuse to start.
 fn instance_command(
     executable: &std::path::Path,
     target: Option<&str>,

@@ -659,7 +659,6 @@ mod tests {
     /// The bundled sample and real files parse; junk is rejected and detailed imports keep the parser reason.
     #[test]
     fn epub_sources_parse_or_report_a_plain_reason() {
-        // --- phase: bundled_sample_parses_into_a_real_book ---
         {
             let b = bundled_sample().expect("the embedded starter epub parses");
             assert!(!b.title.is_empty(), "has a title");
@@ -667,7 +666,6 @@ mod tests {
             assert!(b.block_count() > 0, "has readable content");
         }
 
-        // --- phase: open_epub_path_reads_a_real_file_and_rejects_junk ---
         {
             let tmp = tempfile::tempdir().unwrap();
             let good = tmp.path().join("book.epub");
@@ -688,7 +686,6 @@ mod tests {
             );
         }
 
-        // --- phase: detailed_import_keeps_a_plain_reason_for_the_visible_error_state ---
         {
             let tmp = tempfile::tempdir().unwrap();
             let bad = tmp.path().join("damaged.epub");
@@ -706,7 +703,6 @@ mod tests {
     #[test]
     #[serial]
     fn local_library_imports_and_watches_paths() {
-        // --- phase: a_fresh_library_is_empty ---
         {
             // No recorded books and nothing watched → a genuinely empty shelf. The
             // app never fabricates a starter book.
@@ -719,7 +715,6 @@ mod tests {
             assert!(hydrate_library(&[], &HashMap::new(), None).is_empty());
         }
 
-        // --- phase: watched_path_list_preserves_native_paths ---
         {
             let first = tempfile::tempdir().unwrap();
             let second = tempfile::tempdir().unwrap();
@@ -739,7 +734,6 @@ mod tests {
             assert!(paths.contains(&b));
         }
 
-        // --- phase: importing_a_path_adds_one_recorded_book ---
         {
             let workspace = tempfile::tempdir().unwrap();
             let _workspace = workspace_env(workspace.path());
@@ -773,7 +767,6 @@ mod tests {
             assert_eq!(shelf(&doc).len(), 1, "same file → one entry");
         }
 
-        // --- phase: device_local_source_rehydrates_a_one_off_import_after_restart ---
         {
             // A regular file cannot contain a `Books` directory, deterministically
             // modelling a host without the collaborative-workspace capability.
@@ -793,7 +786,6 @@ mod tests {
             assert_eq!(restored[0].path, path);
         }
 
-        // --- phase: a_watched_folder_auto_imports_new_books ---
         {
             let watched = tempfile::tempdir().unwrap();
             std::fs::write(watched.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
@@ -839,7 +831,6 @@ mod tests {
     #[test]
     #[serial]
     fn workspace_sharing_keeps_identity_and_never_overwrites() {
-        // --- phase: a_book_on_the_workspace_is_shared_others_are_local ---
         {
             let ws = tempfile::tempdir().unwrap();
             let _workspace = workspace_env(ws.path());
@@ -859,7 +850,6 @@ mod tests {
             );
         }
 
-        // --- phase: shared_parse_materialises_content_before_the_library_row_is_written ---
         {
             let ws = tempfile::tempdir().unwrap();
             let _workspace = workspace_env(ws.path());
@@ -891,7 +881,6 @@ mod tests {
             );
         }
 
-        // --- phase: sharing_copies_the_book_onto_the_workspace_keeping_its_identity ---
         {
             let ws = tempfile::tempdir().unwrap();
             let _workspace = workspace_env(ws.path());
@@ -921,7 +910,6 @@ mod tests {
             assert!(entries[0].shared, "the shared copy is discoverable by id");
         }
 
-        // --- phase: sharing_never_overwrites_an_unrelated_same_named_workspace_file ---
         {
             let ws = tempfile::tempdir().unwrap();
             let _workspace = workspace_env(ws.path());

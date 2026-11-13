@@ -1,0 +1,17 @@
+[package]
+name = "tilo-local"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "One command for each way to run Tilo from a checkout: the desktop in a window, the session headless, the web desktop on the local hosting stack (cargo desktop, cargo headless, cargo web)"
+
+# Standard library only, and outside workspace-hack (.config/hakari.toml), so
+# `cargo desktop` compiles this launcher in seconds before the real build.
+
+[[bin]]
+name = "tilo-local"
+path = "src/main.rs"
+
+[lints]
+workspace = true

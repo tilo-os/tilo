@@ -1,14 +1,8 @@
-//! Devices & Sync's home relay section: per workspace this device hosts, a
-//! switch for whether the person's home relay hosts it too.
-//!
+//! The Sync between devices page's home relay section: per workspace this
+//! device hosts, a switch for whether the person's home relay hosts it too.
 //! What each switch shows is the workspace's own list of hosts, as the host
-//! answers it through its `tilo.hosting` actions; flipping one asks the host
-//! to add the relay as a host of that workspace or take it off. Nothing is kept
-//! here but the host's last answer.
-//!
-//! Each workspace is a live row offering the switch's effect, so the
-//! palette, agents and scripts find it by the workspace's name and flip it
-//! through the same door as the switch.
+//! answers it through its `tilo.hosting` actions; flipping one asks the host to
+//! add the relay as a host of that workspace or take it off.
 
 use ui::framework::{EffectReply, LiveRow};
 use ui::tilo_actions::ResourcePresentation;
@@ -21,14 +15,10 @@ use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{SettingsSection, error_caption, note, row, rows, section};
 
-/// What the section knows of the host's home-relay hosting.
 #[derive(Default)]
 pub(super) struct HomeRelay {
-    /// The host's last answer; `None` before it answered.
     pub(super) hosting: Option<HomeRelayHosting>,
-    /// The host's answer to the list, while it is asked.
     listing: Option<ui::InvocationCall>,
-    /// A choice the host carries out, and who waits for its answer.
     choosing: Option<(ui::InvocationCall, Option<EffectReply>)>,
     /// Why the last ask failed.
     error: Option<String>,
@@ -40,8 +30,6 @@ impl HomeRelay {
         self.listing.is_some() || self.choosing.is_some()
     }
 
-    /// The host's answer and the person's home relay, once the host
-    /// answered that they have one: the section shows nothing without.
     pub(super) fn relay(&self) -> Option<(&HomeRelayHosting, &str)> {
         let hosting = self.hosting.as_ref()?;
         Some((hosting, hosting.relay.as_deref()?))
@@ -49,7 +37,6 @@ impl HomeRelay {
 }
 
 impl DeviceMeshModel {
-    /// Ask the host which workspaces its home relay hosts.
     pub(super) fn refresh_home_relay(&mut self) {
         if self.home_relay.listing.is_none() {
             self.home_relay.listing = Some(self.remote.invoke(
@@ -60,9 +47,6 @@ impl DeviceMeshModel {
         }
     }
 
-    /// Ask the host to have the home relay host `workspace` as well, or no
-    /// longer. The switch shows the choice at once; the host's answer
-    /// confirms it or puts it back, and is `reply`'s.
     pub(super) fn choose_home_relay(
         &mut self,
         workspace: &str,
@@ -98,8 +82,6 @@ impl DeviceMeshModel {
         Ok(())
     }
 
-    /// Take in the host's answers to the list and to a choice, once each
-    /// settled.
     pub(super) fn poll_home_relay(&mut self) {
         if let Some(answer) = self
             .home_relay
@@ -135,7 +117,6 @@ impl DeviceMeshModel {
             if let Some(reply) = reply {
                 reply.finish(answer);
             }
-            // What the workspace's hosts are now, either way.
             self.refresh_home_relay();
             self.changed = true;
         }
@@ -143,8 +124,6 @@ impl DeviceMeshModel {
 }
 
 impl DeviceMeshModel {
-    /// One row per workspace the home relay may host, once the host
-    /// answered that the person has one, offering its switch.
     pub(super) fn home_relay_rows(&self) -> Vec<LiveRow> {
         let Some((hosting, relay)) = self.home_relay.relay() else {
             return Vec::new();
@@ -158,8 +137,6 @@ impl DeviceMeshModel {
 }
 
 impl Page<'_> {
-    /// The section, once the host answered that the person has a home
-    /// relay; nothing to show without one.
     pub(super) fn home_relay_section(&self) -> Option<SettingsSection> {
         let (hosting, relay) = self.home_relay.relay()?;
         let mut items: Vec<_> = hosting
@@ -189,13 +166,10 @@ impl Page<'_> {
     }
 }
 
-/// The live row of a workspace the home relay may host.
 pub(super) fn home_relay_row_id(workspace: &str) -> String {
     format!("settings.home-relay-workspace:{workspace}")
 }
 
-/// `hosted`'s row, offering to have the home relay `relay` host it as
-/// well (`on`, which its caller gives), or no longer.
 fn home_relay_row(hosted: &HostedWorkspace, relay: &str) -> LiveRow {
     let switch = SettingsEffect::from(DeviceMeshEffect::SetHomeRelayHosting {
         workspace: hosted.workspace.clone(),

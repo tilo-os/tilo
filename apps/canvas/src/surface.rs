@@ -1,4 +1,4 @@
-//! The canvas as the person sees it: the artwork in a zoomable viewport,
+//! The canvas as a window shows it: the artwork in a zoomable viewport,
 //! drawn on with the pointer. Every finished gesture is one of the
 //! artwork's actions (a drag is one, however long), made by [`crate::gesture`];
 //! the surface itself never writes the document.
@@ -141,7 +141,6 @@ enum Drag {
     Area,
 }
 
-/// A path's points being edited: its outline in the mark's own coordinates.
 struct PointEdit {
     id: String,
     shape: Shape,
@@ -178,17 +177,15 @@ pub struct CanvasSurface {
     /// view follows them until the person zooms or pans.
     fitted_to: Option<(f64, f64, f64, f64)>,
     moved_by_hand: bool,
-    /// Mouse-wheel notches use the shared motion driver; trackpad input
-    /// follows the hand directly. This is view state, never document history.
-    /// A wheel zoom gliding on the log scale (`ui::motion::Snap::WHEEL`),
-    /// about its focal point.
+    // Mouse-wheel notches glide on the shared motion driver; a trackpad
+    // follows the hand directly. A wheel zoom glides on the log scale about
+    // its focal point.
     zoom_motion: Option<(ui::motion::MotionValue<f64>, Point)>,
     motion_reduced: bool,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
     pictures: crate::background::Pictures,
     finding: Rc<Cell<bool>>,
-    /// What a click is reading off a picture of the artwork.
     sampling: Option<Sampling>,
     /// What this frame writes, taken up between frames (a click's reading, a
     /// chooser's picture, a view's answer): applied by the frame's
@@ -196,7 +193,6 @@ pub struct CanvasSurface {
     /// before the frame reads the document again and never after the frame
     /// decided it was quiet.
     writes: Vec<Invoke<Artwork>>,
-    /// Views whose pictures the frame loop is rendering, answered once
     /// they came.
     due: Vec<views::Due>,
     tools: Tools,
@@ -207,7 +203,6 @@ pub struct CanvasSurface {
     /// Marks just made or pasted, selected before the artwork has them.
     expected: Vec<String>,
     pen: Option<PenDraft>,
-    /// An area being selected.
     area: AreaGesture,
     points: Option<PointEdit>,
     text: Option<TextSession>,
@@ -374,7 +369,6 @@ impl CanvasSurface {
         self.selection = ids;
     }
 
-    /// The frame around the selected marks.
     fn frame(&self) -> Option<SelectionHandles> {
         if self.points.is_some() {
             return None;
@@ -417,7 +411,6 @@ impl CanvasSurface {
         self.painted(Some(&mark.layer))
     }
 
-    /// End whatever the last tool left open when the tool changes.
     fn follow_tool(&mut self) {
         let tool = self.current_tool();
         if tool == self.tool {
@@ -515,13 +508,9 @@ impl CanvasSurface {
     }
 
     /// A picture the chooser answered with: the artwork, when the sheet is
-    /// empty; else placed on it, fitted inside and selected.
-    ///
-    /// What it answers with is a write, so it is not made here: the frame
-    /// that takes the answer up writes it in its [`settle`](Widget::settle)
-    /// pass, so the picture reaches the artwork in the frame it arrived in.
-    /// Answers whether it took an answer up, so the frame that did syncs and
-    /// shows it.
+    /// empty; else placed on it, fitted inside and selected. The write itself is
+    /// made in the frame's [`settle`](Widget::settle) pass; answers whether it
+    /// took an answer up, so the frame that did syncs and shows it.
     fn take_picked(&mut self) -> bool {
         let answer = {
             let picking = self.tools.picking.borrow();
@@ -620,7 +609,6 @@ impl CanvasSurface {
         }
     }
 
-    /// Crop mode ends when its picture is no longer the one selected.
     fn follow_crop(&self) {
         if self.cropping().is_none() && self.tools.crop.with(|on| *on) {
             self.tools.crop.set(false);
@@ -780,8 +768,8 @@ impl CanvasSurface {
         };
     }
 
-    /// The eyedropper's click: the brush takes the colour the canvas shows
-    /// at `at`, after masks and erasers, as the eye sees it.
+    /// The eyedropper's click: the brush takes the colour the canvas shows at
+    /// `at`, after masks and erasers, as the eye sees it.
     fn pick_colour(&mut self, at: Point) {
         if !self.art.bounds().contains(at) {
             return;
@@ -796,16 +784,12 @@ impl CanvasSurface {
         self.take_sampled();
     }
 
-    /// Carry out what a click read, once its picture came: the brush takes
-    /// the colour, the wand selects the area, the bucket fills it. A canvas
-    /// that cannot draw a picture of itself says why beside the title
-    /// rather than ignoring the click.
+    /// Carry out what a click read, once its picture came: the brush takes the
+    /// colour, the wand selects the area, the bucket fills it. A canvas that
+    /// cannot draw a picture of itself says why beside the title.
     ///
-    /// What it reads is a write, so it is not made here: the frame that
-    /// takes the reading up writes it in its
-    /// [`settle`](Widget::settle) pass, before it reads the document again.
-    /// Answers whether it took a reading up, so the frame that did syncs and
-    /// shows what came of it.
+    /// The reading becomes a write in the frame's [`settle`](Widget::settle)
+    /// pass; answers whether it took one up.
     fn take_sampled(&mut self) -> bool {
         let Some(sampling) = self.sampling.as_mut() else {
             return false;
@@ -843,7 +827,6 @@ impl CanvasSurface {
         true
     }
 
-    /// How a new area meets the selection, from the held keys.
     fn area_mode(&self) -> Option<String> {
         area::mode(self.modifiers.shift_key(), self.modifiers.alt_key())
     }
@@ -929,7 +912,6 @@ impl CanvasSurface {
         }
     }
 
-    /// The selected stroke whose end `at` lands on, to carry it on.
     fn extendable(&self, at: Point) -> Option<String> {
         let [id] = self.selection.as_slice() else {
             return None;
@@ -1268,9 +1250,8 @@ impl CanvasSurface {
         }
     }
 
-    /// The pressure the pen behind the pointer reports, when it reports
-    /// one: a pen without a pressure sensor, like a mouse, leaves the hand's
-    /// speed to stand in for it.
+    /// The pressure the pen behind the pointer reports, when it reports one: a
+    /// pen without a pressure sensor leaves the hand's speed to stand in for it.
     fn pressure(&self) -> Option<f64> {
         self.stylus
             .map(|pen| pen.pressure)
@@ -1351,7 +1332,6 @@ impl CanvasSurface {
         }
     }
 
-    /// An area tool let go: the area it selected, if any.
     fn release_area(&mut self) {
         let slop = self.units(self.click_slop());
         let mode = self.area_mode();
@@ -1427,7 +1407,6 @@ impl CanvasSurface {
         }
     }
 
-    /// The stroke the brush or eraser laid, as `paint` takes it.
     fn new_stroke(&self, id: String, points: Vec<Vec<f64>>, ink: &Ink, erase: bool) -> NewStroke {
         let layer = ink
             .layer
@@ -1633,8 +1612,6 @@ impl CanvasSurface {
         }
     }
 
-    /// Carry out a change of view asked for by the zoom buttons, and tell
-    /// them how far the canvas is zoomed now.
     /// Carry out the canvas's keys pressed while something else had the
     /// focus.
     fn follow_keys(&mut self) {
@@ -1745,14 +1722,11 @@ impl CanvasSurface {
         }
     }
 
-    /// The view keys: zoom in and out, to fit, to 100 %, to the selection,
-    /// and the overview of the keys.
-    ///
+    /// The view keys: zoom in and out, to fit, to 100 %, to the selection, and
+    /// the overview of the keys.
     /// `Ctrl+=`, `Ctrl+-` and `Ctrl+0` zoom the artwork, as they zoom any
-    /// content with a size of its own (`ui::content_zoom`), and the bare keys
-    /// do the same. Alt keeps its own meaning throughout, and a chord the
-    /// system reserves for something else is not a zoom: the artwork is not
-    /// the only thing on the screen that a key can speak to.
+    /// content with a size of its own, and the bare keys do the same. Alt keeps
+    /// its own meaning throughout, and a system chord is not a zoom.
     fn view_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
         let Key::Character(ch) = key else {
             return false;
@@ -2370,13 +2344,12 @@ impl CanvasSurface {
         }
     }
 
-    /// Collaborators' selections, in their own colours and with their names,
-    /// where the presence they published says they are: a range over the
-    /// artwork's marks, resolved here against this screen's copy of them.
+    /// Collaborators' selections, in their colours and with their names, where
+    /// the presence they published says they are.
     ///
     /// Read from `presence`, never from anything this window remembers about
-    /// them, so a wash left by a peer whose frame stopped arriving fades with
-    /// their presence instead of sitting on the artwork for good.
+    /// them, so a wash left by a peer whose frames stopped fades with their
+    /// presence.
     fn paint_peers(
         &self,
         scene: &mut Scene,
@@ -2556,7 +2529,6 @@ impl CanvasSurface {
         ui::widget::selection_handles::ToolFeedback::Footprint.draw(scene, &path, theme);
     }
 
-    /// What is hovered and picked: outlines, the frame and its guides.
     fn overlay_selection(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         let accent = theme.tokens.colors.intent.you;
         let zoom = self.zoom();
@@ -2906,8 +2878,6 @@ impl CanvasSurface {
     }
 }
 
-/// An anchor of a path being drawn or edited, and its handles when
-/// `handles`; `active` fills it.
 /// An image mark's picture as it shows in its frame, untransformed and
 /// unclipped (the document does that), for an SVG to embed: cropped,
 /// turned and graded, at the picture's own resolution, drawn for
@@ -3371,11 +3341,9 @@ impl Widget for CanvasSurface {
         })
     }
 
-    /// Between frames: take up what a surface answered since the last one — a
-    /// click's reading, a chooser's picture, a view's answer. The frame that
-    /// does syncs and writes it, so the reading, the picture or the area
-    /// reaches the artwork in the frame it arrived in, never a frame after it
-    /// and never after the frame decided to rest.
+    /// Between frames: take up what a surface answered since the last one (a
+    /// click's reading, a chooser's picture, a view's answer). The frame that
+    /// does syncs and writes it, so it reaches the artwork in the frame it came in.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // A reading taken up here, or one the click already had because the
         // thread could wait for its picture, is this frame's to write.
@@ -3388,10 +3356,8 @@ impl Widget for CanvasSurface {
         !self.writes.is_empty() || sampled || picked || answered || waiting
     }
 
-    /// Write what the frame's update took up, through the one door every
-    /// canvas edit goes through, before this frame reads the document again:
-    /// what the person's click, chooser or view answered with reaches the
-    /// artwork in one frame.
+    /// Write what the frame's update took up, through the one door every canvas
+    /// edit goes through, before this frame reads the document again.
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ui::automerge::ObjId) {
         let writes = std::mem::take(&mut self.writes);
         if writes.is_empty() || self.read_only {

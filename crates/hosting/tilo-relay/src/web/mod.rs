@@ -206,13 +206,12 @@ fn checked_origins(config: &WebConfig) -> Result<(), String> {
             "the plain HTTP listener must be a loopback address unless a proxy publishes it".into(),
         );
     }
-    if config
-        .public_origin
-        .as_ref()
-        .is_some_and(|origin| !origin.starts_with("https://") || config.plain_listen.is_none())
-    {
+    if config.public_origin.as_ref().is_some_and(|origin| {
+        !tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url))
+            || config.plain_listen.is_none()
+    }) {
         return Err(
-            "a public origin is an https:// origin published for the plain listener".into(),
+            "a public origin is an https:// origin (or an http:// one on this machine) published for the plain listener".into(),
         );
     }
     Ok(())
@@ -355,7 +354,7 @@ impl Relay {
                 self.state_root().join("invitations"),
                 tilo_clock::unix_now_ns(),
             ),
-            login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
+            login_codes: Arc::new(kept_login_codes(self.state_root(), public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             door: config.door.clone(),
         });
@@ -890,12 +889,24 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
     response
 }
 
+/// This host's login codes, kept under `state_root`: every deploy restarts
+/// the host, and a code a tab shows, or an agent was handed, outlives that.
+fn kept_login_codes(
+    state_root: &std::path::Path,
+    public_origin: Option<String>,
+) -> login_codes::LoginCodes {
+    login_codes::LoginCodes::kept(
+        public_origin,
+        state_root.join("login-codes.json"),
+        tilo_clock::unix_now_ms(),
+    )
+}
+
 fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
     let code = match refusal {
         login_codes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
         login_codes::Refusal::Unknown => StatusCode::NOT_FOUND,
         login_codes::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-        login_codes::Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
         login_codes::Refusal::Conflict(_) => StatusCode::CONFLICT,
     };
     refused(code, refusal.message())
@@ -926,7 +937,7 @@ fn login_route(
     let codes = &web.login_codes;
     Some(match route {
         wire::CREATE_ROUTE => match json_body::<wire::CreateCode>(bytes) {
-            Ok(create) => answered(codes.create(create.link, client, now_ms)),
+            Ok(create) => answered(codes.create(create.link.as_deref(), now_ms)),
             Err(refusal) => refusal,
         },
         wire::RESOLVE_ROUTE => match json_body::<wire::Resolve>(bytes) {
@@ -945,20 +956,22 @@ fn login_route(
             Err(refusal) => refusal,
         },
         wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
-            Ok(follow) => answered(codes.follow(&follow.follow, now_ms)),
+            Ok(follow) => {
+                answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
+            }
             Err(refusal) => refusal,
         },
         wire::STAND_IN_ROUTE => match json_body::<wire::StandInRequest>(bytes) {
             Ok(request) => web
                 .stand_ins
-                .answer(request, tilo_clock::unix_now_ns())
+                .answer(request, client, tilo_clock::unix_now_ns())
                 .map_or_else(
                     |refusal| {
                         let code = match refusal {
                             stand_in::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
                             stand_in::Refusal::Forbidden(_) => StatusCode::FORBIDDEN,
                             stand_in::Refusal::Unknown => StatusCode::NOT_FOUND,
-                            stand_in::Refusal::Full => StatusCode::SERVICE_UNAVAILABLE,
+                            stand_in::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
                             stand_in::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
                         };
                         refused(code, refusal.message())

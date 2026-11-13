@@ -1,15 +1,8 @@
 //! The window's reactions at the row's end: the shared reaction strip
-//! ([`crate::widget::reaction_strip`]), a pill per emoji and the add button,
-//! after the app's slots and before the window's own controls. They are the
-//! window's, not the app's ([`crate::window_toolbar::show_reactions`]): a
-//! press on a pill, or a pick in the shared emoji picker the add button
-//! opens, goes back as [`crate::window_toolbar::reaction_action`].
-//!
-//! They never crowd the app out: the strip takes at most a third of the
-//! row, its last pills giving way first, and a compact window shows one
-//! pill at most. The add button stays while the person may react, so any
-//! emoji, a pill that gave way included, is a pick away.
-
+//! ([`crate::widget::reaction_strip`]), a pill per emoji and the add button, after the app's slots
+//! and before the window's own controls. They are the window's, not the app's
+//! ([`crate::window_toolbar::show_reactions`]): a press on a pill, or a pick in the shared emoji
+//! picker the add button opens, goes back as [`crate::window_toolbar::reaction_action`].
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -24,36 +17,24 @@ use crate::widget::emoji_picker::{EmojiPicker, PickerEvent};
 use crate::widget::reaction_strip::{self, ReactionStrip, StripMetrics};
 use crate::window_toolbar::{ToolbarEvent, ToolbarReaction, WindowToolbar, reaction_action};
 
-/// The target that runs the reaction with an emoji, as assistive technology
-/// and automation address it: `window-toolbar-reaction:👍`.
 pub const REACTION_TARGET_PREFIX: &str = "window-toolbar-reaction:";
-/// The target of the reactions' add button.
 pub const REACTION_ADD_TARGET: &str = "window-toolbar-reaction-add";
 
-/// What the row's reactions were measured for: each pill's emoji, count and
-/// whether it is the person's, whether they may react, and the text scale.
 type MeasureKey = (Vec<(String, u32, bool)>, bool, u32);
 
-/// The reactions' pills and add button as the theme draws them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct ReactionsMeasure {
     key: Option<MeasureKey>,
-    /// Each pill's width.
     pills: Vec<f64>,
-    /// The add button's width (none: the person may not react).
     add: Option<f64>,
     gap: f64,
     height: f64,
 }
 
-/// The row's reactions: their sizes, the strip that draws them and the
-/// emoji picker their add button opens.
 pub(super) struct RowReactions {
     measure: ReactionsMeasure,
     strip: ReactionStrip,
     picker: Box<EmojiPicker>,
-    /// The add button was pressed here: the picker opens at the next paint
-    /// of the row's popups, which knows the theme.
     opening: Option<Rect>,
 }
 
@@ -68,13 +49,8 @@ impl Default for RowReactions {
     }
 }
 
-/// Who the bar's strip takes the person to be: a pill
-/// [`ToolbarReaction::mine`] is theirs, said as "You".
 const REACTION_SHOWER: &str = "\u{1}you";
 
-/// `pill` as the shared reaction strip shows it: the person first when
-/// they reacted, then everyone named, then as many more, unnamed, as the
-/// count says.
 fn group(pill: &ToolbarReaction) -> tilo_resource::ReactionGroup {
     let named = |by: &str, name: Option<&str>| tilo_resource::Reactor {
         by: by.to_owned(),
@@ -99,7 +75,6 @@ fn group(pill: &ToolbarReaction) -> tilo_resource::ReactionGroup {
     }
 }
 
-/// `toolbar`'s reactions as the strip takes them, its first `count` pills.
 fn groups(toolbar: &WindowToolbar, count: usize) -> Vec<tilo_resource::ReactionGroup> {
     toolbar
         .reactions
@@ -160,8 +135,6 @@ pub(super) fn place(
 }
 
 impl ToolbarRow {
-    /// Measure the window's reactions as `theme` draws them. Returns whether
-    /// their sizes changed.
     pub(super) fn measure_reactions(&mut self, theme: &Theme) -> bool {
         let reactions = self
             .toolbar()
@@ -187,7 +160,7 @@ impl ToolbarRow {
                     usize::MAX,
                 );
                 let metrics = StripMetrics::of(theme);
-                let laid = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                let laid = crate::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
                         REACTION_SHOWER,
@@ -212,20 +185,16 @@ impl ToolbarRow {
         changed
     }
 
-    /// Stand the reactions at the end of `row`, the room the row has.
-    /// Returns the row left before them.
     pub(super) fn place_reactions(&self, row: Rect) -> (Rect, Vec<Rect>, Rect) {
         place(&self.reactions.measure, row, self.compact)
     }
 
-    /// Whether the person may react here.
     pub(super) fn may_react(&self) -> bool {
         self.toolbar()
             .and_then(|toolbar| toolbar.reactions.as_ref())
             .is_some_and(|reactions| reactions.can_react)
     }
 
-    /// Pill `index`'s emoji.
     fn pill_emoji(&self, index: usize) -> Option<String> {
         self.toolbar()?
             .reactions
@@ -235,7 +204,6 @@ impl ToolbarRow {
             .map(|pill| pill.emoji.clone())
     }
 
-    /// React with `emoji`, or take the reaction back: the window hears it.
     pub(super) fn react(&mut self, emoji: &str) -> bool {
         if !self.may_react() {
             return false;
@@ -253,7 +221,6 @@ impl ToolbarRow {
         true
     }
 
-    /// Run a reaction slot as a press on it does.
     pub(super) fn activate_reaction(&mut self, slot: &Slot) -> bool {
         match slot {
             Slot::Reaction(i) => match self.pill_emoji(*i) {
@@ -265,7 +232,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Open the emoji picker at the add button.
     pub(super) fn open_picker(&mut self) -> bool {
         let anchor = self.slots.reaction_add;
         if !self.may_react() || anchor.area() <= 0.0 {
@@ -276,19 +242,15 @@ impl ToolbarRow {
         true
     }
 
-    /// Whether the emoji picker is open, or opening.
     pub(super) fn picking(&self) -> bool {
         self.reactions.opening.is_some() || self.reactions.picker.is_open()
     }
 
-    /// Close the emoji picker, open or opening.
     pub(super) fn close_picker(&mut self) {
         self.reactions.opening = None;
         self.reactions.picker.close();
     }
 
-    /// The picker takes `event` while it is open: a pick reacts, Escape or
-    /// a press off it closes it. Returns whether it took the event.
     pub(super) fn picker_event(
         &mut self,
         event: &WindowEvent,
@@ -321,8 +283,6 @@ impl ToolbarRow {
                 PickerEvent::Dismissed => self.reactions.picker.close(),
             }
         }
-        // The picker is modal while it is up: the keyboard is its, and so
-        // is the press that closes it.
         if handled || !pointer {
             *ctx.handled = true;
             return true;
@@ -330,8 +290,6 @@ impl ToolbarRow {
         false
     }
 
-    /// Paint the emoji picker, in the window's top layer, opening it first
-    /// where the add button was just pressed.
     pub(super) fn paint_picker(
         &mut self,
         scene: &mut Scene,
@@ -358,7 +316,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Paint the reactions where they stand.
     pub(super) fn paint_reactions(
         &mut self,
         scene: &mut Scene,
@@ -401,15 +358,12 @@ impl ToolbarRow {
         self.reactions.strip.paint(&mut ctx, hover, None);
     }
 
-    /// Who reacted with the pill at `p`, or what the add button does.
     pub(super) fn reaction_tooltip(&self, p: Point) -> Option<(Rect, String)> {
         self.reactions
             .strip
             .tooltip_at(p, &|reactor| reactor.name.clone().unwrap_or_default())
     }
 
-    /// The reactions as assistive technology and automation reach them: a
-    /// toggle per pill, the add button, and the picker while it is open.
     pub(super) fn reaction_nodes(&self) -> Vec<crate::a11y::AccessNode> {
         let mut nodes: Vec<crate::a11y::AccessNode> = self
             .reactions
@@ -436,8 +390,6 @@ impl ToolbarRow {
         nodes
     }
 
-    /// Run the reaction `target` names, as assistive technology does:
-    /// `None` where it names none.
     pub(super) fn perform_reaction(&mut self, target: &str) -> Option<bool> {
         if target == REACTION_ADD_TARGET {
             return Some(self.open_picker());
@@ -446,7 +398,6 @@ impl ToolbarRow {
         Some(!emoji.is_empty() && self.react(emoji))
     }
 
-    /// Whether the reactions or their picker still move.
     pub(super) fn reactions_moving(&self) -> bool {
         self.reactions.strip.is_moving()
             || self.picking() && self.reactions.picker.needs_animation_frame()

@@ -252,7 +252,6 @@ fn native_office_exports_are_read_only_but_can_be_renamed_and_deleted() {
         volume.upload_pending().unwrap();
         assert_eq!(volume.resolve(&renamed).unwrap(), attr.ino);
         assert_eq!(volume.resolve(&name), Err(libc::ENOENT));
-        // The provider name stays suffix-free; projection adds it exactly once.
         let provider = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
         assert_eq!(
             provider.stat(&cloud_source::ItemId::new(&id)).unwrap().name,
@@ -296,8 +295,6 @@ fn listing_mirrors_the_server_tree() {
         Some(&MountHealth::Healthy)
     );
 
-    // Remote changes show up on the next sync; unchanged subtrees are not
-    // listed again (Nextcloud folder ETags are recursive).
     server.put("Notes/todo.md", b"- ship");
     server.remove("readme.txt");
     let _ = server.requests();
@@ -345,7 +342,6 @@ fn cold_and_ranged_reads_hydrate_only_what_is_read() {
         stats.bytes_served
     );
 
-    // Cached ranges are served locally.
     let fetched_before = server.stats().bytes_served;
     assert_eq!(
         mount.volume.read_ino(ino, offset + 100, 100).unwrap(),
@@ -353,7 +349,6 @@ fn cold_and_ranged_reads_hydrate_only_what_is_read() {
     );
     assert_eq!(server.stats().bytes_served, fetched_before);
 
-    // A sequential reader through a handle gets the whole file right.
     let fh = mount.volume.open_file(ino, false, false).unwrap();
     let mut got = Vec::new();
     while got.len() < big.len() {
@@ -391,7 +386,6 @@ fn local_writes_upload_with_revision_preconditions() {
         .expect("an upload");
     assert!(put.header("if-match").is_some(), "uploads are conditional");
 
-    // Creating, making folders, renaming and deleting all write back.
     let root = ROOT_INO;
     mount.volume.mkdir(root, "Reports").unwrap();
     write_file(&mount.volume, "Reports/q3.txt", b"numbers");
@@ -413,7 +407,6 @@ fn local_writes_upload_with_revision_preconditions() {
     assert!(server.get("doc.txt").is_none());
     assert!(server.get("Reports/q3.txt").is_none());
 
-    // The server's view and the local one agree after a sync.
     mount.volume.sync_once().unwrap();
     assert_eq!(names(&mount.volume, "Reports"), ["big.bin", "q3-final.txt"]);
     assert_eq!(read_all(&mount.volume, "Reports/big.bin"), big);
@@ -486,7 +479,6 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
 
     server.set_offline(true);
     let mount = mount_volume(&server, dir.path());
-    // Metadata and cached bytes survive the restart without the server.
     assert!(mount.volume.sync_once().is_err());
     assert_eq!(
         mount.health.lock().unwrap().last(),
@@ -506,7 +498,6 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
     mount.volume.shutdown();
     drop(mount);
 
-    // Queued writes survive a restart and go out once the server is back.
     server.set_offline(false);
     let mount = mount_volume(&server, dir.path());
     assert_eq!(mount.volume.pending(), 1);
@@ -518,8 +509,6 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
     assert_eq!(server.get("offline-note.txt").unwrap(), b"written offline");
 }
 
-/// The identity of the `tree.json` on disk: every write replaces it with a
-/// new file (temp + rename), so an unchanged inode means it was not written.
 fn tree_json(dir: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(dir.join("tree.json"))
@@ -529,7 +518,6 @@ fn tree_json(dir: &Path) -> Option<u64> {
 
 #[test]
 fn idle_sync_does_not_rewrite_tree_json() {
-    // A walking provider (generic WebDAV) and a cursor feed (sync-collection).
     for server in [FakeDav::generic(), FakeDav::generic_with_sync_collection()] {
         server.put("Notes/plan.md", b"# plan");
         server.put("readme.txt", b"hello");
@@ -599,7 +587,6 @@ fn idle_polls_back_off_and_reset_on_activity() {
     let dir = tempfile::tempdir().unwrap();
     let mount = mount_polling(&server, dir.path(), POLL, Duration::from_secs(60));
     mount.volume.sync_once().unwrap();
-    // What one pass costs, so passes can be counted from the server side.
     let before = server.stats().propfinds;
     mount.volume.sync_once().unwrap();
     let per_pass = server.stats().propfinds.saturating_sub(before);
@@ -627,9 +614,6 @@ fn idle_polls_back_off_and_reset_on_activity() {
 
     let started = std::time::Instant::now();
     let workers = mount.volume.spawn_workers();
-    // Nothing changes: after pass k the loop waits POLL * 2^k (±10 %), so
-    // seven passes take at least 0.9 * (20 + 40 + … + 640) ms. Without the
-    // back-off they would take about 70 ms.
     wait_for_passes(7);
     let elapsed = started.elapsed();
     assert!(
@@ -637,8 +621,6 @@ fn idle_polls_back_off_and_reset_on_activity() {
         "seven idle passes ran in {elapsed:?}: the poll did not back off"
     );
 
-    // The loop now waits at least 0.9 * 1280 ms. Listing the mount cuts
-    // that wait to the poll interval.
     let cut = mount.volume.idle_waits_cut();
     mount.volume.readdir(ROOT_INO).unwrap();
     wait_for_passes(8);
@@ -653,8 +635,6 @@ fn idle_polls_back_off_and_reset_on_activity() {
     }
 }
 
-/// Settings publishing the account's handoff credential, the way custody
-/// does after a sign-in or a password change.
 fn publish(root: &Path, id: &str, password: &str) {
     accounts::HandoffStore::open_in(root)
         .publish(
@@ -667,8 +647,6 @@ fn publish(root: &Path, id: &str, password: &str) {
         .unwrap();
 }
 
-/// Stands in for Settings' credential helper: whatever Settings published
-/// is current; without an entry the account needs sign-in.
 struct Published(accounts::HandoffStore);
 
 impl accounts::CredentialRefresher for Published {
@@ -714,8 +692,6 @@ fn account_of_type(root: &Path, type_id: &str, config: serde_json::Value, enable
     store.save_in(root).unwrap();
 }
 
-/// A service with `server`'s account mounted in this process, its volume
-/// synced once.
 struct Served {
     service: CloudService,
     launcher: InProcessLauncher,
@@ -756,7 +732,6 @@ fn no_reply() -> Arc<dyn Fn(MountReply) + Send + Sync> {
     Arc::new(|_| {})
 }
 
-/// Wait until `done` holds, failing after the hang bound.
 fn wait_until(what: &str, done: impl Fn() -> bool) {
     let started = std::time::Instant::now();
     while !done() {
@@ -773,8 +748,6 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     let server = FakeDav::generic();
     server.put("readme.txt", b"hello");
     let dir = tempfile::tempdir().unwrap();
-    // A 300 s poll: after a failure the loop waits its 300 s cap, longer
-    // than any test waits, so only a cut back-off syncs within the test.
     let mount = mount_polling(
         &server,
         dir.path(),
@@ -786,8 +759,6 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     wait_until("the first failed pass", || {
         mount.health.lock().unwrap().contains(&MountHealth::Offline)
     });
-    // A second failure, from a sync asked for while still offline: the
-    // loop backs off again.
     let _ = server.requests();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
     wait_until("the second failed pass", || !server.requests().is_empty());
@@ -817,11 +788,9 @@ fn pause_stops_uploads_until_resume() {
     dispatch(&mount.volume, ToMount::Pause, &no_reply());
     assert!(mount.volume.is_paused());
     write_file(&mount.volume, "new.txt", b"written while paused");
-    // Background write-back uploads only through this.
     assert_eq!(mount.volume.upload_pending_unless_paused().unwrap(), 0);
     assert_eq!(server.get("new.txt"), None, "a paused mount uploaded");
     assert_eq!(mount.volume.pending(), 1, "the edit is queued, not lost");
-    // Reads still work while paused.
     assert_eq!(read_all(&mount.volume, "readme.txt"), b"hello");
 
     dispatch(&mount.volume, ToMount::Resume, &no_reply());
@@ -835,8 +804,6 @@ fn pause_stops_uploads_until_resume() {
     }
 }
 
-/// The server, with something done to the volume the moment an upload
-/// begins: what a user or Settings can do while one is on the wire.
 struct DuringUpload {
     dav: DavSource,
     hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -929,8 +896,6 @@ fn a_pause_during_a_new_files_upload_leaves_the_volume_synced() {
     write_file(&volume, "new.txt", b"written by a POSIX tool");
     let paused = Arc::downgrade(&volume);
     source.once(move || paused.upgrade().unwrap().pause());
-    // The upload began before the pause, so it lands; the file then has its
-    // server id and nothing of it is left to send.
     assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
     assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
     assert_eq!(volume.pending(), 0, "the sent change is still queued");
@@ -1006,7 +971,6 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
     assert_eq!(server.get("Notes/plan.md").unwrap(), b"first draft");
     assert_eq!(read_all(&account.volume, "Notes/plan.md"), b"first draft");
 
-    // Nextcloud has no share links here: the request is refused, not sent.
     let link = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
@@ -1020,7 +984,6 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
         matches!(&link, CloudResponse::Error(error) if error.contains("not supported")),
         "{link:?}"
     );
-    // A path the mount does not know is refused.
     let missing = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
@@ -1097,7 +1060,6 @@ fn pause_is_remembered_and_sync_now_reaches_the_mount() {
     );
     assert!(matches!(unknown, CloudResponse::Error(_)));
 
-    // A restarted service pauses the account's new mount again.
     account.service.shutdown();
     let mut service = CloudService::new(
         service_config(account.config_root.path(), account.home.path()),
@@ -1165,8 +1127,6 @@ fn the_control_socket_lists_mounts_without_credentials() {
                 account: "files-1".into(),
             })
             .unwrap();
-        // The account socket, which Settings' sandbox is granted, never
-        // reads, restores or shares a file.
         let refused = [
             FileRequest::Revisions {
                 path: "a.txt".into(),
@@ -1261,7 +1221,6 @@ fn accounts_mount_and_unmount_with_the_account_store() {
         "mount health reaches the status store Settings and Files read"
     );
 
-    // Disabling unmounts but keeps the account's cache.
     account_store(root, server.root_url().as_str(), false);
     service.reconcile();
     assert!(service.mounted().is_empty());
@@ -1276,7 +1235,6 @@ fn accounts_mount_and_unmount_with_the_account_store() {
             .is_some()
     );
 
-    // Removing the account drops its state too.
     account_store(root, server.root_url().as_str(), true);
     service.reconcile();
     assert_eq!(service.mounted().len(), 1);
@@ -1314,7 +1272,6 @@ fn a_rejected_password_asks_the_service_for_a_fresh_one() {
     service.reconcile();
     let volume = launcher.volume("files-1").unwrap();
     assert!(volume.sync_once().is_err());
-    // Settings publishes the new password; the service hands it over.
     publish(root, "files-1", PASSWORD);
     service.pump();
     volume.sync_once().unwrap();
@@ -1358,7 +1315,6 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     let mount = home.path().join("Remote/Cloud");
     assert_eq!(service.mounted(), [("cloud-1".to_owned(), mount.clone())]);
 
-    // The first sync runs in the mount's worker; it reports health when done.
     assert!(service.wait_for_health("cloud-1", MountHealth::Healthy, tilo_test_env::hang_bound()));
     assert_eq!(
         std::fs::read_to_string(mount.join("Docs/hello.txt")).unwrap(),
@@ -1371,8 +1327,6 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         b"written by a POSIX tool"
     );
 
-    // Control reaches the mount process down its stdin, and its answers
-    // come back on stdout.
     let CloudResponse::Mounts(mounts) =
         service.request(CloudRequest::List, tilo_test_env::hang_bound())
     else {

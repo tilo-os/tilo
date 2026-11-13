@@ -1,10 +1,9 @@
 //! Import the canonical cards a same-computer handoff left for this app.
 //!
-//! The installer retains the source address book byte for byte, and publishes
-//! the cards it actually holds in this app's own data area. Opening the app
-//! parses them through the same bounded vCard reader as a chosen file and adds
-//! only cards the book does not already hold, so reopening a record is
-//! idempotent and a deleted contact is never revived.
+//! The installer publishes the cards it holds in this app's own data area;
+//! opening the app parses them through the same bounded vCard reader as a chosen
+//! file and adds only cards the book does not already hold, so reopening a
+//! record is idempotent and a deleted contact is never revived.
 
 use ui::application::HostContext;
 use ui::tilo_resource::Replica;
@@ -15,7 +14,6 @@ use crate::resource::Contacts;
 const INBOX: &str = "personal-data-incoming/contacts";
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
-/// Add the cards waiting in this app's import inbox.
 pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     let files = context.files();
     let data = files.data().map_err(|error| error.to_string())?;

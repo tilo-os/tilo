@@ -1,22 +1,4 @@
 //! The service's hands on a real Linux machine.
-//!
-//! - Discovery reads sysfs, udev's database and each candidate's boot
-//!   sector; nothing here loads or uses a file-system driver.
-//! - The preflight runs in confined helpers: this program's `check-volume`
-//!   for the disk-check flag, then `ntfs-3g.probe` for hibernation, Fast
-//!   Startup and an unfinished journal.
-//! - "Open" loads `ntfs3` explicitly (filesystem autoloading of it is
-//!   blacklisted) and mounts it here.
-//! - "Open safely" mounts a FUSE connection here and gives it to `ntfs-3g`,
-//!   which runs confined (see [`super::sandbox`]). `ntfs-3g` always mounts
-//!   for itself, which a confined process cannot do, so a small preloaded
-//!   library answers its `mount` call: it reports that the volume opened,
-//!   waits for this service to mount the connection, and puts that
-//!   connection where `ntfs-3g` expects its own. Nothing is mounted for a
-//!   volume `ntfs-3g` could not open.
-//!
-//! Every mount is `nosuid,nodev,noexec` and reachable only by the person who
-//! opened it.
 
 use std::collections::BTreeSet;
 use std::ffi::{CString, OsString};
@@ -47,19 +29,14 @@ use crate::topology;
 pub const HANDOFF_FUSE_FD: i32 = 4;
 pub const HANDOFF_SOCKET_FD: i32 = 5;
 
-/// How long `ntfs-3g` may take to open a volume before it is given up on.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a preflight helper may run.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long the driver may take to flush and exit after its unmount.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Exit codes of `check-volume`.
 pub const CHECK_CLEAN: i32 = 0;
 pub const CHECK_DIRTY: i32 = 10;
 pub const CHECK_MALFORMED: i32 = 11;
 
-/// Where everything is.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub sys_root: PathBuf,
@@ -101,7 +78,6 @@ impl Default for Config {
     }
 }
 
-/// What an open drive keeps alive.
 pub enum Mount {
     Kernel,
     Safe { driver: Child },
@@ -226,7 +202,6 @@ pub fn directory_name(label: &str) -> String {
     }
 }
 
-/// What `ntfs-3g`'s exit code says about the volume.
 fn driver_refusal(code: Option<i32>) -> String {
     match code {
         Some(14) => "Windows is hibernated or uses Fast Startup on this drive".into(),
@@ -327,7 +302,6 @@ impl LinuxBackend {
         })
     }
 
-    /// Open `/dev/<name>` and check it is the device sysfs reports.
     fn open_device(&self, name: &str, major_minor: &str, writable: bool) -> io::Result<File> {
         let file = OpenOptions::new()
             .read(true)
@@ -374,7 +348,6 @@ impl LinuxBackend {
         }
     }
 
-    /// Make `/run/media/<user>/<name>` for `uid`, readable only by them.
     fn mount_point(&self, uid: u32, label: &str) -> io::Result<PathBuf> {
         let (name, gid) = user(uid)?;
         fs::create_dir_all(&self.config.media_root)?;

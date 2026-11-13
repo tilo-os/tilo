@@ -68,20 +68,19 @@ impl TopBarChrome {
         self.ask.answer
     }
 
-    /// The open ask in the bar's band, ending at `right_x`: left of the avatar and of everything
+    /// Where the open ask stands in the bar's band, ending at `right_x`: left of the avatar and of everything
     /// else the bar draws on its right, so it never stands over them.
-    pub(super) fn draw_avatar_ask(
+    pub(super) fn place_avatar_ask(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
         right_x: f64,
     ) {
-        use ui::widget::{ChipFace, ChipStyle};
+        use ui::widget::ChipFace;
 
         self.ask = AskRects::default();
+        self.ask_words = None;
         let Some(ask) = self.chrome_avatar_ask().filter(|ask| ask.open) else {
             return;
         };
@@ -151,6 +150,49 @@ impl TopBarChrome {
         let top = (center_y - BAR_CONTROL_PX / 2.0).max(self.rect.y0);
         let bottom = (center_y + BAR_CONTROL_PX / 2.0).min(self.rect.y1);
         let pill = Rect::new(right_x - width, top, right_x, bottom);
+        let chip_h = ChipFace::height(theme).min(pill.height() - 2.0);
+        let chip_top = center_y - chip_h / 2.0;
+        let answer = Rect::new(
+            pill.x1 - pad / 2.0 - words.answer_w,
+            chip_top,
+            pill.x1 - pad / 2.0,
+            chip_top + chip_h,
+        );
+        let later = words.later.as_ref().map_or(Rect::ZERO, |_| {
+            Rect::new(
+                answer.x0 - gap - words.later_w,
+                chip_top,
+                answer.x0 - gap,
+                chip_top + chip_h,
+            )
+        });
+        self.ask = AskRects {
+            pill,
+            answer,
+            later,
+        };
+        self.ask_words = Some((words, ask.answer));
+    }
+
+    /// Paint the open ask where [`Self::place_avatar_ask`] stood it: the pill a floating panel's
+    /// body, the question's words, "Not now" and the answer.
+    pub(super) fn paint_avatar_ask(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        use ui::widget::{ChipFace, ChipStyle};
+        let Some((words, answer_label)) = self.ask_words.as_ref() else {
+            return;
+        };
+        let AskRects {
+            pill,
+            answer,
+            later,
+        } = self.ask;
+        let pad = f64::from(theme.tokens.spacing.s2);
         // The pill is a floating panel's body: the overlay ground and its inner hairline, from the
         // shared painter, on the bar.
         ui::widget::FloatingPanelFace::new()
@@ -161,39 +203,18 @@ impl TopBarChrome {
             transform,
             theme,
             text_renderer,
-            (pill.x0 + pad, center_y),
+            (pill.x0 + pad, self.placed.center_y),
         );
-        let chip_h = ChipFace::height(theme).min(pill.height() - 2.0);
-        let chip_top = center_y - chip_h / 2.0;
-        let answer = Rect::new(
-            pill.x1 - pad / 2.0 - words.answer_w,
-            chip_top,
-            pill.x1 - pad / 2.0,
-            chip_top + chip_h,
-        );
-        let later = words.later.as_ref().map_or(Rect::ZERO, |later| {
-            let rect = Rect::new(
-                answer.x0 - gap - words.later_w,
-                chip_top,
-                answer.x0 - gap,
-                chip_top + chip_h,
-            );
-            let hovered = self.hovered_control();
-            ChipFace::new(rect, later)
+        let hovered = self.hovered_control();
+        if let Some(later_label) = words.later.as_ref() {
+            ChipFace::new(later, later_label)
                 .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_LATER))
                 .paint(scene, transform, text_renderer, theme);
-            rect
-        });
-        let hovered = self.hovered_control();
-        ChipFace::new(answer, &ask.answer)
+        }
+        ChipFace::new(answer, answer_label)
             .style(ChipStyle::Live)
             .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_ANSWER))
             .paint(scene, transform, text_renderer, theme);
-        self.ask = AskRects {
-            pill,
-            answer,
-            later,
-        };
     }
 
     /// The dot on the avatar while an ask waits there folded: put off by the person, or one the bar
@@ -343,7 +364,7 @@ impl Room {
 }
 
 /// The open ask's words, fitted to the room the bar leaves it.
-struct AskWords {
+pub(super) struct AskWords {
     question: String,
     question_w: f64,
     /// What answering brings, where there is room beside the question.

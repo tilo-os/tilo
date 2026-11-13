@@ -1,5 +1,5 @@
-//! The palette's facet chips: one row of each facet's name and its values, as many as fit,
-//! drawn selected where the query filters by them.
+//! The palette's facet chips: one row of each facet's name and its values, as many as fit, drawn
+//! selected where the query filters by them.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -28,7 +28,6 @@ impl ActionPalette {
         let label_style = theme.text(crate::tokens::TextRole::Caption);
         let mut x = x0;
         for facet in &self.facets {
-            // The group's name, then its values.
             let (label_w, label_h) = text.measure_style(&facet.label, None, &label_style);
             let label_w = f64::from(label_w);
             if x + label_w > x0 + width {

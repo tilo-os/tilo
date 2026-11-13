@@ -1,25 +1,7 @@
-//! Scrolling a view to show something: a find hit, a search result opened in
-//! place, a row a click revealed, the item a key moved to off screen.
-//!
-//! - A jump of up to [`ScrollTo::GLIDE_VIEWPORTS`] viewports glides there on
-//!   a `fast` spring, retargeted by the next jump from where it is drawn and
-//!   how fast it moves, so pressing Enter in a find field five times is one
-//!   motion.
-//! - A longer jump does not scroll through the pages between: the content
-//!   lands at the target and fades in there (`fast`).
-//! - A key that walks focus, a reveal nobody's hand just asked for (a sync,
-//!   a restored view) and an agent's action land at once
-//!   ([`ScrollTo::land`], or no recent input in [`ScrollTo::go`]).
-//! - The wheel, a finger or a bar drag takes over from where the content is
-//!   drawn ([`ScrollTo::take_over`]): the motion stops there and the hand
-//!   moves it on.
-//! - Reduced motion: it lands; a long jump still fades in, so the change of
-//!   what is shown stays legible.
-//!
-//! The scroller samples [`ScrollTo::offset`] once per frame and lays its
-//! content out there, in whole device pixels, so a host that copies what a
-//! scroll keeps on screen (`crate::scroll_copy`) copies every frame of the
-//! glide too.
+//! Scrolling a view to show something: a find hit, a search result opened in place, a row a click
+//! revealed, the item a key moved to off screen. A jump of up to [`ScrollTo::GLIDE_VIEWPORTS`]
+//! viewports glides there on a `fast` spring, retargeted by the next jump from where it is drawn and
+//! how fast it moves, so pressing Enter in a find field five times is one motion.
 
 use vello::kurbo::Vec2;
 
@@ -43,7 +25,6 @@ pub enum ScrollJump {
 /// A scroll view's motion toward what it was asked to show.
 #[derive(Clone, Copy, Debug)]
 pub struct ScrollTo {
-    /// The offset the content is drawn at, while it glides.
     offset: MotionValue<Vec2>,
     gliding: bool,
     /// The content's opacity after a long jump: 1 at rest.
@@ -61,8 +42,8 @@ impl Default for ScrollTo {
 }
 
 impl ScrollTo {
-    /// The glide: `fast` both ways; a key's jump still glides (spatial
-    /// context, `fast` at most); reduced motion lands.
+    /// The glide: `fast` both ways; a key's jump still glides (spatial context, `fast` at most);
+    /// reduced motion lands.
     pub const SPEC: MotionSpec = MotionSpec {
         enter: Pace::Fast,
         exit: Pace::Fast,
@@ -70,8 +51,7 @@ impl ScrollTo {
         shortcut: Shortcut::Context,
     };
 
-    /// The fade-in after a long jump: `fast`, also under reduced motion and
-    /// for a key's jump.
+    /// The fade-in after a long jump: `fast`, also under reduced motion and for a key's jump.
     pub const FADE: MotionSpec = MotionSpec {
         enter: Pace::Fast,
         exit: Pace::Fast,
@@ -79,11 +59,10 @@ impl ScrollTo {
         shortcut: Shortcut::Context,
     };
 
-    /// The longest jump, in viewports along either axis, that glides; a
-    /// longer one fades in at the target.
+    /// The longest jump, in viewports along either axis, that glides; a longer one fades in at the
+    /// target.
     pub const GLIDE_VIEWPORTS: f64 = 3.0;
 
-    /// The opacity the content fades in from after a long jump.
     const FADE_FROM: f64 = 0.0;
 
     #[must_use]
@@ -91,13 +70,8 @@ impl ScrollTo {
         Self::default()
     }
 
-    /// Move the content from `drawn`, the offset it is drawn at now, to
-    /// `target`, in a view `viewport` large. The input the person just
-    /// made decides how ([`super::recent_input`]): a click, a finger or a key
-    /// glides a short jump and fades in a long one; with no recent input (a
-    /// sync, a restored view, a script) or for an agent's action, it lands.
-    /// A jump while gliding retargets from where the content is drawn and
-    /// how fast it moves there.
+    /// Move the content from `drawn`, the offset it is drawn at now, to `target`, in a view `viewport`
+    /// large.
     #[track_caller]
     pub fn go(
         &mut self,
@@ -164,11 +138,9 @@ impl ScrollTo {
         ScrollJump::Glide
     }
 
-    /// Settle on `target`, the way a scroll view whose content offers
-    /// detents comes to rest on one ([`super::Snap`]): a gesture's release
-    /// hands its `velocity` to the settle, so a fling coasts on into the
-    /// detent without turning back; anything else takes the paged-strip
-    /// settle (`base`). Reduced motion lands on it.
+    /// Settle on `target`, the way a scroll view whose content offers detents comes to rest on one
+    /// ([`super::Snap`]): a gesture's release hands its `velocity` to the settle, so a fling coasts on
+    /// into the detent without turning back; anything else takes the paged-strip settle (`base`).
     #[track_caller]
     pub fn settle(
         &mut self,
@@ -197,16 +169,14 @@ impl ScrollTo {
         ScrollJump::Glide
     }
 
-    /// Show `target` on the next frame: keyboard focus moving to a control
-    /// off screen while tabbing.
+    /// Show `target` on the next frame: keyboard focus moving to a control off screen while tabbing.
     pub fn land(&mut self, target: Vec2) {
         self.offset.snap(target);
         self.gliding = false;
     }
 
-    /// The hand takes over (a wheel, a finger, a bar drag): the motion stops
-    /// where the content is drawn. Returns that offset when a glide was
-    /// under way.
+    /// The hand takes over (a wheel, a finger, a bar drag): the motion stops where the content is
+    /// drawn. Returns that offset when a glide was under way.
     #[track_caller]
     pub fn take_over(&mut self, now: Instant) -> Option<Vec2> {
         let drawn = self.offset(now);
@@ -218,16 +188,16 @@ impl ScrollTo {
         drawn
     }
 
-    /// Where the content is drawn at `now` while it glides; `None` when the
-    /// scroller's own offset is where it is.
+    /// Where the content is drawn at `now` while it glides; `None` when the scroller's own offset is
+    /// where it is.
     #[track_caller]
     #[must_use]
     pub fn offset(&self, now: Instant) -> Option<Vec2> {
         self.gliding.then(|| self.offset.get(now))
     }
 
-    /// [`Self::offset`] in whole pixels of a display with `device_per_unit`
-    /// device pixels per logical pixel; the target itself where it rests.
+    /// [`Self::offset`] in whole pixels of a display with `device_per_unit` device pixels per logical
+    /// pixel; the target itself where it rests.
     #[track_caller]
     #[must_use]
     pub fn offset_in_device_pixels(&self, now: Instant, device_per_unit: f64) -> Option<Vec2> {
@@ -252,16 +222,15 @@ impl ScrollTo {
         self.gliding.then(|| self.offset.target())
     }
 
-    /// The content's opacity at `now`: below 1 while it fades in after a
-    /// long jump.
+    /// The content's opacity at `now`: below 1 while it fades in after a long jump.
     #[track_caller]
     #[must_use]
     pub fn opacity(&self, now: Instant) -> f32 {
         unit_opacity(self.fade.get(now))
     }
 
-    /// Whether the content still glides at `now`; once it arrives, the
-    /// scroller's offset is the target and the motion asks for nothing.
+    /// Whether the content still glides at `now`; once it arrives, the scroller's offset is the target
+    /// and the motion asks for nothing.
     #[track_caller]
     #[must_use]
     pub fn is_gliding(&self, now: Instant) -> bool {
@@ -282,8 +251,8 @@ impl ScrollTo {
         glide.into_iter().chain(self.fade.settles_at()).max()
     }
 
-    /// Once the glide has arrived, forget it: the scroller's own offset is
-    /// the target from then on. Returns the target it arrived at.
+    /// Once the glide has arrived, forget it: the scroller's own offset is the target from then on.
+    /// Returns the target it arrived at.
     #[track_caller]
     pub fn arrived(&mut self, now: Instant) -> Option<Vec2> {
         if self.gliding && !self.offset.is_moving(now) {

@@ -1,10 +1,6 @@
-//! Self-contained From/To editor for the Directions panel.
-//!
-//! Each endpoint is the toolkit's [`Autocomplete`]: its own field, its own
-//! suggestion list, keyboard navigation (arrows, Enter, Escape) and pointer
-//! picking. This component owns which field is being edited, the typed
-//! drafts, the debounce before a live geocode, and the places each field
-//! suggests; the app owns the route and the geocoder.
+//! Self-contained From/To editor for the Directions panel: the toolkit's [`Autocomplete`] per
+//! endpoint, which field is being edited, the drafts, the debounce, and the suggested places. The
+//! app owns the route and the geocoder.
 
 use ui::time::{Duration, Instant};
 
@@ -54,25 +50,20 @@ pub(super) struct EndpointFrame<'a> {
     pub destination: Option<&'a str>,
 }
 
-/// One endpoint: its field, its draft and the places it suggests.
 struct Field {
     input: Autocomplete,
     query: String,
     results: Vec<Place>,
     rect: Option<Rect>,
-    /// Whether the geocoder has answered the current draft.
     searched: bool,
-    /// Since when the places for the current draft are on their way: the
-    /// keystroke that made it.
     asked: Option<Instant>,
 }
 
 impl Field {
     fn new(id: &str, placeholder: &str) -> Self {
         Self {
-            // A route endpoint is a structured place/address vocabulary: the
-            // autocomplete's field is a search field, never prose to
-            // spellcheck or autocorrect.
+            // An endpoint is a place, not prose: its field is a search field, never an
+            // autocorrected text box.
             input: Autocomplete::new()
                 .with_id(id)
                 .with_placeholder(placeholder)
@@ -86,8 +77,6 @@ impl Field {
         }
     }
 
-    /// Show the places for the current draft, or the state of the search
-    /// for them.
     fn show_results(&mut self, editing: bool) {
         let suggestions = self
             .results
@@ -104,8 +93,6 @@ impl Field {
             .collect();
         self.input.set_suggestions_open(suggestions);
         let waiting = self.results.is_empty() && !self.query.trim().is_empty();
-        // The geocoder's places on their way: the list's placeholder
-        // stands where the first will be, and says where they come from.
         self.input.set_arriving(
             self.asked
                 .filter(|_| waiting && !self.searched)
@@ -127,7 +114,6 @@ pub(super) struct EndpointEditor {
     focused: Option<Endpoint>,
     deadline: Option<Instant>,
     swap_rect: Option<Rect>,
-    /// The pointer, for the hover state of the swap button.
     pointer: Point,
 }
 
@@ -160,9 +146,6 @@ impl EndpointEditor {
         }
     }
 
-    /// Adopt persisted/external query state. The host mirrors every Changed
-    /// effect immediately, so this is idempotent during ordinary local edits
-    /// and authoritative after a document reload.
     pub(super) fn sync_queries(&mut self, origin: &str, destination: &str) {
         for (endpoint, query) in [
             (Endpoint::Origin, origin),
@@ -179,8 +162,6 @@ impl EndpointEditor {
         }
     }
 
-    /// The places the field suggests for its draft: local matches at once,
-    /// then the geocoder's.
     pub(super) fn set_results(&mut self, endpoint: Endpoint, results: Vec<Place>) {
         let editing = self.focused == Some(endpoint);
         let field = self.field_mut(endpoint);
@@ -188,8 +169,6 @@ impl EndpointEditor {
         field.show_results(editing);
     }
 
-    /// The geocoder's answer for the field's draft (empty when it found
-    /// nothing or failed).
     pub(super) fn finish_search(&mut self, endpoint: Endpoint, results: Vec<Place>) {
         self.field_mut(endpoint).searched = true;
         self.set_results(endpoint, results);
@@ -223,7 +202,6 @@ impl EndpointEditor {
         self.deadline
     }
 
-    /// When a field's placeholder for places on their way steps on next.
     pub(super) fn arriving_deadline(&self) -> Option<Instant> {
         [&self.origin, &self.destination]
             .into_iter()
@@ -248,7 +226,6 @@ impl EndpointEditor {
         (!query.is_empty()).then_some(EndpointEffect::Search { endpoint, query })
     }
 
-    /// Route a key to the field being edited.
     pub(super) fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -267,7 +244,6 @@ impl EndpointEditor {
         self.reconcile(endpoint).or(Some(EndpointEffect::Handled))
     }
 
-    /// Keep both fields' hover state current.
     pub(super) fn forward_pointer(
         &mut self,
         event: &WindowEvent,
@@ -282,9 +258,6 @@ impl EndpointEditor {
         drive(&mut self.destination.input, event, scale, modifiers, doc);
     }
 
-    /// A press: the swap button, a field taking focus, or the field being
-    /// edited picking a suggestion (or letting go when the press is
-    /// elsewhere, which the caller then handles).
     pub(super) fn pointer_press(
         &mut self,
         point: Point,
@@ -340,8 +313,6 @@ impl EndpointEditor {
         None
     }
 
-    /// Fold the field's state into an effect: a changed draft, an accepted
-    /// suggestion (or a typed query to search), or a cancelled edit.
     fn reconcile(&mut self, endpoint: Endpoint) -> Option<EndpointEffect> {
         let field = self.field_mut(endpoint);
         let text = field.input.text().to_string();
@@ -368,8 +339,6 @@ impl EndpointEditor {
         Some(EndpointEffect::Changed { endpoint, text })
     }
 
-    /// The field accepted `value`: a suggested place picks it; anything else
-    /// is a query to search for now.
     fn accept(&mut self, endpoint: Endpoint, value: &str) -> Option<EndpointEffect> {
         let field = self.field_mut(endpoint);
         if let Some(place) = field.results.iter().find(|p| p.name == value).cloned() {
@@ -426,15 +395,10 @@ impl EndpointEditor {
         field.input.begin_edit();
     }
 
-    /// How far the fields stand in from the content's leading edge: past
-    /// the endpoint markers, so what refines a field lines up with it.
     pub(super) fn field_inset(theme: &Theme) -> f64 {
         f64::from(theme.tokens.metrics.icon_md) + f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Paint the From and To fields — the toolkit's own fields, each after
-    /// the marker it has on the map — and the swap button beside them.
-    /// Returns the y below them.
     pub(super) fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -470,13 +434,9 @@ impl EndpointEditor {
             let editing = self.focused == Some(endpoint);
             let field = self.field_mut(endpoint);
             field.rect = Some(rect);
-            // A field shows its endpoint's name until it is being edited.
             if !editing && field.input.text() != label.unwrap_or("") {
                 field.input.set_text(label.unwrap_or(""));
             }
-            // This field is placed outside the retained layout tree. Give it
-            // the resolved theme role so its type follows whole-UI scaling,
-            // just like the measured field band and the suggestions do.
             field
                 .input
                 .input_mut()
@@ -506,8 +466,6 @@ impl EndpointEditor {
         destination_rect.y1 + s3
     }
 
-    /// The suggestions of the field being edited, in the toolkit's own list
-    /// under it.
     pub(super) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -526,9 +484,6 @@ impl EndpointEditor {
     }
 }
 
-/// Drive one event through a hand-placed field: a press inside a field that
-/// is not being edited starts the edit first, so the caret lands where the
-/// press was.
 fn drive(
     input: &mut Autocomplete,
     event: &WindowEvent,

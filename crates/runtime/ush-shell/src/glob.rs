@@ -24,7 +24,6 @@ pub(crate) fn glob(shell: &Shell, pattern: &[PatChar]) -> Vec<String> {
             last.push(pc);
         }
     }
-    // (the text as written so far, the path on the host)
     let start_text = if absolute {
         String::from("/")
     } else {

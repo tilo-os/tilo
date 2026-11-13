@@ -1,11 +1,4 @@
 //! Pure data model for the calendar/todo app.
-//!
-//! This is the in-memory source of truth. It is mirrored into the
-//! Automerge document by [`crate::resource`] (events / tasks / projects as
-//! CRDT objects), and each event/task's rich-text **notes** live in the
-//! CRDT as rich text edited in the SDK rich-text editor.
-//!
-//! No rendering, no IO — just types, filters, and recurrence expansion.
 
 use std::collections::BTreeMap;
 
@@ -19,15 +12,10 @@ use vello::peniko::Color;
 use ui::theme::Theme;
 use ui::tokens::colors::PresenceHue;
 
-/// How an event repeats: the closed preset set a picker cycles through, under
-/// Calendar's own name. The variants are already the names documents store,
-/// and [`tilo_recurrence`] expands them.
 pub use tilo_recurrence::Repeat as Recurrence;
 
 pub type Id = Uuid;
 
-/// The five top-level screens. `Agenda` is the flat "upcoming" list of
-/// events; `Tasks` lists the sidebar's selected task list in full.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Month,
@@ -47,7 +35,6 @@ impl View {
             View::Tasks => "Tasks",
         }
     }
-    /// The visible label; `label` remains the stable action identifier.
     pub(crate) fn display_label(self) -> String {
         crate::resource::t(match self {
             Self::Month => "calendar-view-month",
@@ -66,8 +53,6 @@ impl View {
     ];
 }
 
-/// Which "smart list" or project the sidebar has chosen. Drives the
-/// Tasks screen and the sidebar list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListSel {
     Inbox,
@@ -77,7 +62,6 @@ pub enum ListSel {
     Project(Id),
 }
 
-/// Task priority — Planify-style P1..P4 (P1 == most urgent).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Model)]
 pub enum Priority {
     #[default]
@@ -88,13 +72,13 @@ pub enum Priority {
 }
 
 impl Priority {
-    pub fn label(self) -> &'static str {
-        match self {
-            Priority::None => "No priority",
-            Priority::Low => "Low priority",
-            Priority::Medium => "Medium priority",
-            Priority::High => "High priority",
-        }
+    pub fn display_label(self) -> String {
+        crate::resource::t(match self {
+            Priority::None => "calendar-tasks-priority-none",
+            Priority::Low => "calendar-tasks-priority-low",
+            Priority::Medium => "calendar-tasks-priority-medium",
+            Priority::High => "calendar-tasks-priority-high",
+        })
     }
     pub fn flag(self) -> &'static str {
         match self {
@@ -104,7 +88,6 @@ impl Priority {
             Priority::High => "P1",
         }
     }
-    /// Flag colour, read from the theme's semantic ramp.
     pub fn color(self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self {
@@ -170,9 +153,6 @@ impl Palette {
         Palette::Slate,
     ];
 
-    /// The colour an item of this calendar colour is painted in: a hue of
-    /// the theme's presence palette (calendar colours are user content), or
-    /// the quiet ink tier for the colourless slate.
     pub fn color(self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         let hue = match self {
@@ -199,16 +179,12 @@ impl Palette {
         }
     }
 
-    /// The colour called `name` (any case).
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|palette| palette.name().eq_ignore_ascii_case(name))
     }
 
-    /// The colour for something new beside things already in `taken`: the
-    /// first colour none of them has, or, with every colour taken, the one
-    /// fewest have.
     pub fn next_after(taken: impl IntoIterator<Item = Palette>) -> Self {
         let taken: Vec<Palette> = taken.into_iter().collect();
         Self::ALL
@@ -218,8 +194,6 @@ impl Palette {
     }
 
     pub fn from_index(i: usize) -> Self {
-        // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
-        // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.
         Self::ALL
             .get(i % Self::ALL.len())
             .copied()
@@ -301,8 +275,6 @@ impl InviteStatus {
     }
 }
 
-/// An absolute edit to one generated recurrence instance. `original_date` is
-/// the stable occurrence identity even when this override moves the instance.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Model)]
 #[model(check = OccurrenceOverride::valid)]
 pub struct OccurrenceOverride {
@@ -327,7 +299,6 @@ pub struct OccurrenceOverride {
 }
 
 impl OccurrenceOverride {
-    /// The key this change is stored under: the occurrence it changes.
     pub fn key_of(date: NaiveDate) -> tilo_resource::Id {
         tilo_resource::Id::from_raw(date.format("%Y-%m-%d").to_string())
     }
@@ -349,7 +320,6 @@ impl Identified for OccurrenceOverride {
     }
 }
 
-/// A task project: a named, coloured list tasks and events file under.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 #[model(check = Project::valid)]
 pub struct Project {
@@ -374,7 +344,6 @@ impl Project {
     }
 }
 
-/// Projects list in the order they were arranged in.
 impl Identified for Project {
     fn id(&self) -> tilo_resource::Id {
         key(self.id)
@@ -384,12 +353,10 @@ impl Identified for Project {
     }
 }
 
-/// The key an event, task, project or attendee is stored under: its id.
 pub fn key(id: Id) -> tilo_resource::Id {
     tilo_resource::Id::from_raw(id.to_string())
 }
 
-/// An event: a time, maybe repeating, with who comes and where.
 #[derive(Clone, Debug, PartialEq, Model)]
 #[model(check = Event::valid)]
 pub struct Event {
@@ -444,8 +411,6 @@ pub struct Event {
     pub calendar_id: Option<String>,
 }
 
-/// An event at midnight of no day, an instant long, on the local calendar:
-/// not repeating, floating time, no reminder, nobody invited.
 impl Default for Event {
     fn default() -> Self {
         Self {
@@ -473,7 +438,6 @@ impl Default for Event {
     }
 }
 
-/// Events list by when they start.
 impl Identified for Event {
     fn id(&self) -> tilo_resource::Id {
         key(self.id)
@@ -483,8 +447,6 @@ impl Identified for Event {
     }
 }
 
-/// How many minutes before an event its reminder may ring: the alerts the
-/// editor offers, from the start itself to a day before.
 pub const REMINDERS: [i64; 7] = [0, 5, 10, 15, 30, 60, 1440];
 
 impl Event {
@@ -532,8 +494,6 @@ impl Event {
     }
 }
 
-/// What the window calls an event nobody has named yet: the title its views
-/// show and the hint its empty title field carries.
 pub fn untitled_event() -> String {
     crate::resource::t("calendar-a11y-new-event")
 }
@@ -551,11 +511,6 @@ impl Event {
         }
     }
 
-    /// The last date an all-day event occupies in Calendar's editor and
-    /// views.  RFC 5545 represents all-day `DTEND` as an *exclusive* date,
-    /// while people naturally choose an inclusive final day.  Older local
-    /// documents used `23:59` on that final day, so accept both shapes at the
-    /// model boundary instead of making existing events appear a day longer.
     pub fn all_day_last_date(&self) -> NaiveDate {
         if !self.all_day {
             return self.end.date();
@@ -567,9 +522,6 @@ impl Event {
         }
     }
 
-    /// The RFC 5545 exclusive end date for this all-day event.  This keeps
-    /// CalDAV/ICS interchange honest while allowing pre-existing local data
-    /// that stored `23:59` on the final day to round-trip correctly.
     pub fn all_day_end_exclusive(&self) -> NaiveDate {
         self.all_day_last_date() + Duration::days(1)
     }
@@ -583,9 +535,6 @@ impl Event {
             .max(1)
     }
 
-    /// Whether this should be shown given the set of currently-hidden
-    /// remote calendar ids. Local events (no `calendar_id`) are always visible;
-    /// a synced event is hidden exactly when its source calendar is unchecked.
     pub fn visible_under(&self, hidden: &std::collections::HashSet<String>) -> bool {
         match &self.calendar_id {
             Some(id) => !hidden.contains(id),
@@ -593,8 +542,6 @@ impl Event {
         }
     }
 
-    /// This event's expansion rule with its limits, or `None` when it does not
-    /// repeat.
     pub(crate) fn rule(&self) -> Option<Rule> {
         let exdates: Vec<NaiveDate> = self.recurrence_exdates.iter().copied().collect();
         self.recurrence.rule(
@@ -605,14 +552,8 @@ impl Event {
         )
     }
 
-    /// Dates on which this event occurs within `[from, to]` (inclusive),
-    /// honouring its recurrence rule. Anchored on `start.date()`.
     pub fn occurrences_in(&self, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
         let seed = self.start.date();
-        // The window covers the requested dates, widened to the original
-        // dates of occurrences moved into it: an occurrence keeps its seed
-        // date as its identity however far an edit moves it. The rule charges
-        // the window, not the years before it, for a counted series.
         let moved_originals = || {
             self.occurrence_overrides
                 .iter()
@@ -626,8 +567,6 @@ impl Event {
         let window_start = moved_originals().min().unwrap_or(from).min(from).max(seed);
         let originals = match self.rule() {
             Some(rule) => rule.occurrences(seed, window_start, last_original),
-            // A single occurrence is its seed alone, bounded by the same
-            // limits an authored rule would carry.
             None if window_start <= seed
                 && seed <= last_original
                 && !self.recurrence_exdates.contains(&seed)
@@ -656,8 +595,6 @@ impl Event {
         out
     }
 
-    /// How many original occurrences the rule generates before `day`, from
-    /// the seed on: exclusions and edits aside, as COUNT counts them.
     pub(crate) fn occurrences_before(&self, day: NaiveDate) -> u64 {
         self.rule().map_or_else(
             || u64::from(self.start.date() < day),
@@ -678,7 +615,6 @@ impl Event {
         !self.occurrences_in(date, date).is_empty()
     }
 
-    /// Absolute end, including a duration-derived later-fold endpoint.
     pub fn end_instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         crate::timezone::endpoint_utc(&self.timezone, self.end, self.end_later_fold)
     }
@@ -690,8 +626,6 @@ impl Event {
             .map_or(self.end - self.start, |((start, _), end)| end - start)
     }
 
-    /// End of a generated occurrence. A later-fold seed carries its exact
-    /// elapsed interval forward without changing the series' wall-time anchor.
     pub fn occurrence_end(&self, start: NaiveDateTime) -> NaiveDateTime {
         if self.end_later_fold
             && let Some((instant, _)) = crate::timezone::wall_to_utc(&self.timezone, start)
@@ -709,7 +643,6 @@ impl Event {
     }
 }
 
-/// A task: something to do, maybe by a date, maybe beneath another.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 #[model(check = Task::valid)]
 pub struct Task {
@@ -748,9 +681,6 @@ impl Identified for Task {
 }
 
 impl Task {
-    /// The order tasks list in: open before done, then by priority, then by
-    /// due date, then by title, so the same tasks always list the same way
-    /// whatever order the document holds them in.
     pub fn list_order(a: &Task, b: &Task) -> std::cmp::Ordering {
         a.done
             .cmp(&b.done)
@@ -761,11 +691,6 @@ impl Task {
     }
 }
 
-/// What a `CalDAV` server last confirmed holding of one event or task: where
-/// it keeps it, its version there and what it holds. An event whose content
-/// differs from what its server holds is queued for upload; a copy whose
-/// event is gone, or on another calendar, is queued for deletion (see
-/// `crate::outbox`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct RemoteCopy {
     /// The remote calendar it is in
@@ -781,8 +706,6 @@ pub struct RemoteCopy {
     pub task: bool,
 }
 
-/// The calendar: its events, tasks and projects, their notes, and what the
-/// `CalDAV` servers of its remote calendars last confirmed.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Calendar {
     /// The task projects
@@ -805,8 +728,6 @@ pub struct Calendar {
     pub deletes: Outbox<Removal>,
 }
 
-/// An event to upload to the server of its remote calendar: whatever
-/// version it has when the device holding the account sends it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct Upload {
     /// The event
@@ -815,8 +736,6 @@ pub struct Upload {
     pub calendar: String,
 }
 
-/// A copy a server holds of an event no longer on that calendar here, to
-/// delete there.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct Removal {
     /// The event
@@ -830,8 +749,6 @@ pub struct Removal {
 }
 
 impl Calendar {
-    /// The text of the notes of the event or task `id`, a paragraph per
-    /// line; empty when it has none.
     pub fn notes_text(&self, id: Id) -> String {
         self.notes
             .get(&id.to_string())
@@ -846,9 +763,6 @@ impl Calendar {
     pub fn event(&self, id: Id) -> Option<&Event> {
         self.events.iter().find(|e| e.id == id)
     }
-    /// The event `id`, to change. Found through [`tilo_resource::Keyed::find_mut`],
-    /// so a copy of the calendar remembers which event changed and saving it
-    /// writes that event, not every one.
     pub fn event_mut(&mut self, id: Id) -> Option<&mut Event> {
         self.events.find_mut(&key(id))
     }
@@ -856,13 +770,10 @@ impl Calendar {
     pub fn task(&self, id: Id) -> Option<&Task> {
         self.tasks.iter().find(|t| t.id == id)
     }
-    /// The task `id`, to change, found as [`Self::event_mut`] finds an event.
     pub fn task_mut(&mut self, id: Id) -> Option<&mut Task> {
         self.tasks.find_mut(&key(id))
     }
 
-    /// Top-level tasks (no parent) matching a smart list / project,
-    /// sorted by completion, then priority, then due date.
     pub fn tasks_for(&self, sel: &ListSel, today: NaiveDate) -> Vec<&Task> {
         let mut out: Vec<&Task> = self
             .tasks
@@ -880,9 +791,6 @@ impl Calendar {
         out
     }
 
-    /// The name a smart list or project is shown under.
-    /// The list's name as a person reads it: the smart lists are the app's
-    /// own words, a project is called what the person called it.
     pub fn list_title(&self, sel: &ListSel) -> String {
         match sel {
             ListSel::Inbox => crate::resource::t("calendar-tasks-inbox"),
@@ -903,8 +811,6 @@ impl Calendar {
             .collect()
     }
 
-    /// Count of open (not done) tasks matching a smart list — used for
-    /// the sidebar badges.
     pub fn open_count(&self, sel: &ListSel, today: NaiveDate) -> usize {
         self.tasks_for(sel, today)
             .iter()
@@ -912,7 +818,6 @@ impl Calendar {
             .count()
     }
 
-    /// Events occurring on `date`, sorted all-day first then by start.
     pub fn events_on(&self, date: NaiveDate) -> Vec<&Event> {
         let mut out: Vec<&Event> = self.events.iter().filter(|e| e.occurs_on(date)).collect();
         out.sort_by(|a, b| {
@@ -923,8 +828,6 @@ impl Calendar {
         out
     }
 
-    /// Flat upcoming agenda: every (date, event) pair in `[from, to]`,
-    /// chronologically. Used by the Agenda view.
     pub fn agenda(&self, from: NaiveDate, to: NaiveDate) -> Vec<(NaiveDate, &Event)> {
         let mut out: Vec<(NaiveDate, &Event)> = Vec::new();
         for e in &self.events {
@@ -945,8 +848,6 @@ impl Calendar {
     }
 }
 
-/// Build a populated demo model anchored on `today` so the seeded screenshot
-/// always lands inside the visible month with a spread of work.
 pub fn seed_demo(today: NaiveDate) -> Calendar {
     let pid_work = Uuid::new_v4();
     let pid_personal = Uuid::new_v4();
@@ -960,7 +861,6 @@ pub fn seed_demo(today: NaiveDate) -> Calendar {
     }
 }
 
-/// The three demo projects `seed_demo`'s events and tasks file under.
 fn seed_demo_projects(pid_work: Id, pid_personal: Id, pid_health: Id) -> Vec<Project> {
     vec![
         Project {
@@ -984,15 +884,12 @@ fn seed_demo_projects(pid_work: Id, pid_personal: Id, pid_health: Id) -> Vec<Pro
     ]
 }
 
-/// A literal (h, m) is always in range, so the fallback to midnight only
-/// matters if that ever stops being true — and even then a wrong demo time
-/// beats panicking the whole seed.
+/// A literal (h, m) is always in range, so the fallback only matters if that stops being true; a wrong
+/// demo time beats panicking the whole seed.
 fn seed_demo_at(date: NaiveDate, h: u32, m: u32) -> NaiveDateTime {
     date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
 }
 
-/// The demo's full event list, in stable start-time display order. Split
-/// into two halves purely to keep each builder short.
 fn seed_demo_events(
     today: NaiveDate,
     pid_work: Id,
@@ -1001,12 +898,10 @@ fn seed_demo_events(
 ) -> Vec<Event> {
     let mut events = seed_demo_events_early(today, pid_work, pid_personal, pid_health);
     events.extend(seed_demo_events_later(today, pid_work, pid_personal));
-    // Stable display order: by start time within the model vector.
     events.sort_by_key(|e| e.start);
     events
 }
 
-/// Today's events: standup through quarterly planning.
 fn seed_demo_events_early(
     today: NaiveDate,
     pid_work: Id,
@@ -1097,11 +992,9 @@ fn seed_demo_events_early(
     ]
 }
 
-/// The rest of the week's events: dentist through payday rent.
 fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
     vec![
-        // Overlaps the quarterly planning: the two share the column.
         Event {
             id: Uuid::new_v4(),
             title: "Interview: Lena".into(),
@@ -1113,7 +1006,6 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             project: Some(pid_work),
             ..Event::default()
         },
-        // Authored in New York: a morning there, an afternoon in Berlin.
         Event {
             id: Uuid::new_v4(),
             title: "Call with the New York team".into(),
@@ -1182,20 +1074,13 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
     ]
 }
 
-/// The demo's full task list: the top-level tasks plus the offsite-flights
-/// subtasks appended after them.
 fn seed_demo_tasks(today: NaiveDate, pid_personal: Id, pid_health: Id, pid_work: Id) -> Vec<Task> {
-    // Captured so the offsite-flights task can own a few subtasks — this
-    // exercises the parent/child rendering + toggle path in the detail panel
-    // with real seeded data.
     let flights = Uuid::new_v4();
     let mut tasks = seed_demo_top_level_tasks(today, pid_work, pid_personal, pid_health, flights);
     tasks.extend(seed_demo_flight_subtasks(today, pid_personal, flights));
     tasks
 }
 
-/// The seven top-level demo tasks (one of which, "Book flights for
-/// offsite", owns the subtasks `seed_demo_flight_subtasks` returns).
 fn seed_demo_top_level_tasks(
     today: NaiveDate,
     pid_work: Id,
@@ -1271,8 +1156,6 @@ fn seed_demo_top_level_tasks(
     ]
 }
 
-/// Subtasks of "Book flights for offsite" — completing one strikes it
-/// through; the parent shows them in its detail panel.
 fn seed_demo_flight_subtasks(today: NaiveDate, pid_personal: Id, flights: Id) -> Vec<Task> {
     let d = |delta: i64| today + Duration::days(delta);
     vec![
@@ -1403,7 +1286,6 @@ mod tests {
         {
             let model = seed_demo(date(2026, 6, 15));
             let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
-            // Every "Today" task is open and due on/before today.
             assert!(
                 today
                     .iter()
@@ -1414,11 +1296,7 @@ mod tests {
 
     #[test]
     fn demo_seed_keeps_a_realistic_spread_without_developer_todo_titles() {
-        // Case `demo_seed_has_no_developer_todo_titles`.
         {
-            // The demo/sample seed must read as a realistic person's calendar, not
-            // leak the app's own backlog. Guard every event/task title (and the
-            // curated project names) against known developer-TODO fragments.
             let model = seed_demo(date(2026, 6, 15));
             let markers = [
                 "ICS",
@@ -1448,8 +1326,6 @@ mod tests {
             }
         }
         {
-            // Sanity that the neutral replacements are actually present, so a future
-            // edit can't silently gut the sample into an empty/placeholder set.
             let model = seed_demo(date(2026, 6, 15));
             let has = |t: &str| {
                 model.events.iter().any(|e| e.title == t)
@@ -1471,9 +1347,6 @@ mod tests {
         }
     }
 
-    /// Every rule the editor offers, at every interval, bounded or not and
-    /// with an exclusion, expands to the dates RFC 5545 gives the RRULE it
-    /// exports, as the `rrule` crate expands it.
     #[test]
     fn expansion_matches_the_exported_rrule() {
         use std::fmt::Write as _;
@@ -1551,8 +1424,6 @@ mod tests {
         }
     }
 
-    /// The ordinal COUNT needs is the number of days the rule matches from
-    /// the seed on, for every rule, interval and awkward seed day.
     #[test]
     fn occurrences_before_counts_what_the_rule_matches() {
         let seeds = [
@@ -1593,10 +1464,6 @@ mod tests {
         }
     }
 
-    /// Month view asks every shown day whether a series occurs; a counted
-    /// series begun decades ago shows what one begun this month does. That it
-    /// also costs the window rather than its age is the shared rule's own
-    /// test, where the walk lives.
     #[test]
     fn a_counted_series_shows_its_window_not_its_age() {
         let grid: Vec<NaiveDate> = (0..42)
@@ -1614,12 +1481,10 @@ mod tests {
             event.recurrence_count = Some(count);
             event
         };
-        // Mondays both: 1 June 2026 and 3 June 1996.
         let young = shown(&weekly(date(2026, 6, 1), 10_000));
         let old = shown(&weekly(date(1996, 6, 3), 10_000));
         assert_eq!(young.len(), 6);
         assert_eq!(old, young);
-        // Its 1584th Monday is 5 October 2026: COUNT still ends it there.
         let ended = shown(&weekly(date(1996, 6, 3), 1584));
         assert_eq!(ended, vec![date(2026, 9, 28), date(2026, 10, 5)]);
     }

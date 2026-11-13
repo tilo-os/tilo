@@ -1,13 +1,8 @@
-//! The pixels of a scene, for an app that reads them: the colour under an
-//! eyedropper, a picture being exported.
-//!
-//! Where the thread can wait for the GPU, a [`request`] is rendered and read
-//! back at once. A browser page cannot wait: there the host's frame loop
-//! owns a [`PixelsHost`], which renders each request, has the GPU copy it
-//! out and hands the pixels over once the copy has arrived, a few frames
-//! later. Callers keep the [`PixelsRequest`], ask for frames while it
-//! [`is_pending`](PixelsRequest::is_pending) and [`take`](PixelsRequest::take)
-//! the answer when it is there, which works the same on every host.
+//! The pixels of a scene, for an app that reads them: the colour under an eyedropper, a picture being
+//! exported. Where the thread can wait for the GPU, a [`request`] is rendered and read back at once. A
+//! browser page cannot wait: there the host's frame loop owns a [`PixelsHost`], which renders each
+//! request, has the GPU copy it out and hands the pixels over once the copy has arrived, a few frames
+//! later.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -31,8 +26,8 @@ pub struct Pixels {
 /// Why a scene's pixels did not come.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PixelsError {
-    /// This host renders no pixels for apps: it has no GPU, or its thread
-    /// cannot wait and no frame loop renders them.
+    /// This host renders no pixels for apps: it has no GPU, or its thread cannot wait and no frame loop
+    /// renders them.
     Unavailable,
     /// The GPU cannot hold a picture this size; `max` is its longest side.
     TooLarge { width: u32, height: u32, max: u32 },
@@ -64,7 +59,7 @@ enum Slot {
     Taken,
 }
 
-/// The pixels of one scene, on their way. Dropping it gives the request up.
+/// The pixels of one scene, on their way.
 pub struct PixelsRequest {
     slot: Arc<Mutex<Slot>>,
 }
@@ -84,8 +79,8 @@ impl PixelsRequest {
         }
     }
 
-    /// Whether the answer has yet to come; the caller asks for frames
-    /// meanwhile, as the host renders the request between them.
+    /// Whether the answer has yet to come; the caller asks for frames meanwhile, as the host renders
+    /// the request between them.
     #[must_use]
     pub fn is_pending(&self) -> bool {
         matches!(*self.slot.lock_recover(), Slot::Pending)
@@ -105,10 +100,9 @@ impl PixelsRequest {
     }
 }
 
-/// A request waiting for this thread's [`PixelsHost`]: no GPU resources,
-/// so it may live in a thread-local queue (dropping wgpu resources from a
-/// thread-local's destructor aborts the process; see the module docs of
-/// [`super`]).
+/// A request waiting for this thread's [`PixelsHost`]: no GPU resources, so it may live in a
+/// thread-local queue (dropping wgpu resources from a thread-local's destructor aborts the process; see
+/// the module docs of [`super`]).
 struct Wanted {
     scene: Scene,
     width: u32,
@@ -129,28 +123,19 @@ impl Wanted {
 }
 
 thread_local! {
-    /// How many [`PixelsHost`]s render this thread's requests (one, in a
-    /// browser page).
     static HOSTS: Cell<usize> = const { Cell::new(0) };
-    /// Requests no host has picked up yet.
     static WANTED: RefCell<VecDeque<Wanted>> = const { RefCell::new(VecDeque::new()) };
 }
 
-/// Whether a frame loop on this thread renders the requests made here (it
-/// holds a [`PixelsHost`]): a caller that would render on a thread of its
-/// own asks it instead, as the frame loop holds the page's GPU.
+/// Whether a frame loop on this thread renders the requests made here (it holds a [`PixelsHost`]): a
+/// caller that would render on a thread of its own asks it instead, as the frame loop holds the page's
+/// GPU.
 #[must_use]
 pub fn frame_loop_renders() -> bool {
     HOSTS.get() > 0
 }
 
-/// Ask for the pixels of `scene`, `width` x `height` (at least one each),
-/// over `background`.
-///
-/// Answered at once where the thread can wait for the GPU and no frame loop
-/// renders requests; otherwise the thread's [`PixelsHost`] answers it a few
-/// frames later, and with no host either it is answered
-/// [`PixelsError::Unavailable`].
+/// Ask for the pixels of `scene`, `width` x `height` (at least one each), over `background`.
 #[must_use]
 pub fn request(scene: Scene, width: u32, height: u32, background: Color) -> PixelsRequest {
     let (width, height) = (width.max(1), height.max(1));
@@ -174,12 +159,8 @@ pub fn request(scene: Scene, width: u32, height: u32, background: Color) -> Pixe
 }
 
 /// The offscreen renderers of the last sizes asked for, the newest last.
-/// Each has learned how much memory a scene this busy needs, so the next
-/// request fits at once, and an eyedropper's tiny picture does not cost a
-/// larger one its renderer.
 static KEPT: Mutex<Vec<((u32, u32), OffscreenRenderer)>> = Mutex::new(Vec::new());
 
-/// How many sizes keep a renderer.
 const KEPT_RENDERERS: usize = 2;
 
 fn render_now(scene: &Scene, width: u32, height: u32, background: Color) -> PixelsAnswer {
@@ -227,13 +208,10 @@ fn render_now(scene: &Scene, width: u32, height: u32, background: Color) -> Pixe
     })
 }
 
-/// Renders the requests made on its thread, for a frame loop whose thread
-/// cannot wait for the GPU: [`drive`](Self::drive) it every frame while it
-/// is [`waiting`](Self::waiting). Requests made while one exists go to it.
-///
-/// It draws with a renderer of its own rather than the frame's: one-shot
-/// pixels must know whether their render dropped geometry (a scene busier
-/// than the reserved memory), and the frame's renderer reports that for
+/// Renders the requests made on its thread, for a frame loop whose thread cannot wait for the GPU:
+/// [`drive`](Self::drive) it every frame while it is [`waiting`](Self::waiting). It draws with a
+/// renderer of its own rather than the frame's: one-shot pixels must know whether their render dropped
+/// geometry (a scene busier than the reserved memory), and the frame's renderer reports that for
 /// whichever of its frames it last measured.
 pub struct PixelsHost {
     gpu: Option<HostGpu>,
@@ -259,8 +237,8 @@ impl Drop for PixelsHost {
 }
 
 impl PixelsHost {
-    /// A host for this thread's requests, with no GPU yet: requests wait
-    /// for [`set_gpu`](Self::set_gpu).
+    /// A host for this thread's requests, with no GPU yet: requests wait for
+    /// [`set_gpu`](Self::set_gpu).
     #[must_use]
     pub fn new() -> Self {
         HOSTS.set(HOSTS.get().saturating_add(1));
@@ -275,15 +253,15 @@ impl PixelsHost {
         self.current.is_some() || WANTED.with_borrow(|wanted| !wanted.is_empty())
     }
 
-    /// Whether requests wait for a renderer: the host creates one (on the
-    /// web, asynchronously) and hands it over with [`set_gpu`](Self::set_gpu).
+    /// Whether requests wait for a renderer: the host creates one (on the web, asynchronously) and
+    /// hands it over with [`set_gpu`](Self::set_gpu).
     #[must_use]
     pub fn needs_gpu(&self) -> bool {
         self.gpu.is_none() && self.waiting()
     }
 
-    /// Whether it renders on `device`; a host whose device was lost and
-    /// replaced hands it a renderer on the new one.
+    /// Whether it renders on `device`; a host whose device was lost and replaced hands it a renderer on
+    /// the new one.
     #[must_use]
     pub fn draws_on(&self, device: &wgpu::Device) -> bool {
         self.gpu.as_ref().is_some_and(|gpu| gpu.device == *device)
@@ -291,7 +269,6 @@ impl PixelsHost {
 
     /// Render from now on with `renderer` on `device`.
     pub fn set_gpu(&mut self, device: wgpu::Device, queue: wgpu::Queue, renderer: Renderer) {
-        // A request half way on the old device starts again on the new one.
         if let Some(job) = self.current.take() {
             WANTED.with_borrow_mut(|wanted| wanted.push_front(job.wanted));
         }
@@ -302,8 +279,7 @@ impl PixelsHost {
         });
     }
 
-    /// Answer every waiting request with `why`: the host could not create
-    /// its renderer.
+    /// Answer every waiting request with `why`: the host could not create its renderer.
     pub fn refuse(&mut self, why: &str) {
         let mut refused: Vec<Wanted> = WANTED.with_borrow_mut(|wanted| wanted.drain(..).collect());
         refused.extend(self.current.take().map(|job| job.wanted));
@@ -312,11 +288,8 @@ impl PixelsHost {
         }
     }
 
-    /// Move the requests on without waiting: start the next one, or look
-    /// whether the GPU has copied the current one out and answer it. One
-    /// request at a time, so the renderer's memory report is that request's.
-    /// Whether it answered one: what asked for it reads it on the next
-    /// frame, so the caller draws one.
+    /// Move the requests on without waiting: start the next one, or look whether the GPU has copied the
+    /// current one out and answer it.
     pub fn drive(&mut self) -> bool {
         let Some(gpu) = self.gpu.as_mut() else {
             return false;
@@ -347,24 +320,19 @@ impl PixelsHost {
     }
 }
 
-/// A request the host is rendering.
 struct Job {
     wanted: Wanted,
     stage: Stage,
-    /// A clean render has been read back; the next clean one is accepted
-    /// (the first may still have been filling the renderer's atlas).
+    /// A clean render has been read back; the next clean one is accepted (the first may still have been
+    /// filling the renderer's atlas).
     confirmed: bool,
     attempts: ResilientAttempts,
-    /// The renderer's memory reservation when the current render began.
     reserved: u64,
 }
 
 enum Stage {
-    /// Nothing submitted.
     Idle,
-    /// Rendered; the GPU is copying the picture out.
     Copying(Readback),
-    /// Read back; the renderer has yet to report whether the render fit.
     Settling(Vec<u8>),
 }
 
@@ -401,8 +369,6 @@ impl Job {
                     Err(error) => return Step::Done(Err(error)),
                 },
                 Stage::Copying(readback) => {
-                    // Gives finished callbacks their turn natively; the web
-                    // runs them from its event loop.
                     let _ = gpu.device.poll(wgpu::PollType::Poll);
                     match readback.mapped.load(Ordering::Acquire) {
                         0 => {
@@ -464,7 +430,6 @@ impl Job {
         }
     }
 
-    /// Render the scene and have the GPU copy it into a buffer to map.
     fn submit(&mut self, gpu: &mut HostGpu) -> Result<Readback, PixelsError> {
         let Wanted {
             width,
@@ -554,7 +519,6 @@ impl Job {
         })
     }
 
-    /// The mapped picture without the rows' padding.
     fn read(&self, readback: &Readback) -> Vec<u8> {
         let row = (self.wanted.width as usize).saturating_mul(4);
         let padded = readback.padded_bytes_per_row as usize;
@@ -589,7 +553,6 @@ mod tests {
         scene
     }
 
-    /// A host as a browser page's frame loop has one, on this device.
     fn host() -> PixelsHost {
         let gpu = super::super::shared_gpu().unwrap();
         let renderer = Renderer::new(
@@ -605,8 +568,7 @@ mod tests {
         host
     }
 
-    /// Drive `host` as frames would, until nothing waits: whether a frame
-    /// said it answered a request.
+    /// Drive `host` as frames would, until nothing waits: whether a frame said it answered a request.
     fn frames(host: &mut PixelsHost) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let mut answered = false;
@@ -638,12 +600,11 @@ mod tests {
         assert!(asked.take().is_none(), "an answer is taken once");
     }
 
-    /// The browser's way: the request waits for the frame loop's host, which
-    /// renders it without blocking and answers once the copy came back.
+    /// The browser's way: the request waits for the frame loop's host, which renders it without
+    /// blocking and answers once the copy came back.
     #[test]
     fn a_frame_loop_answers_requests_between_frames() {
         let mut host = PixelsHost::new();
-        // A width the GPU's row alignment pads.
         let asked = request(red_square(), 10, 3, Color::WHITE);
         assert!(asked.is_pending());
         assert!(
@@ -668,7 +629,6 @@ mod tests {
             pixels.rgba.get(9 * 4..10 * 4),
             Some(&[255, 255, 255, 255][..])
         );
-        // The last row is the picture's, not padding.
         assert_eq!(
             pixels.rgba.get(2 * 40..2 * 40 + 4),
             Some(&[220, 30, 30, 255][..])

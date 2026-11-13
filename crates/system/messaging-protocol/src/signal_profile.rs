@@ -1,10 +1,4 @@
 //! Sealed host-owned Signal profile images, outside shared records.
-//!
-//! The host supplies its existing key and original account authority. Beginning
-//! use leaves a durable marker before any profile bytes are returned. An
-//! interrupted lease never restores an older image. Checkpoints accept only
-//! the private image issued by that same live store; no key is generated here.
-//! This is the storage boundary, not a provider process or quiescence proof.
 use crate::{Service, journal::Owner, supervisor::AccountAuthority};
 use advisory_lock::FileLock;
 use secret_vault::{VaultFormat, VaultKey};

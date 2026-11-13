@@ -25,8 +25,6 @@ fn window(id: &str, visible: Rect, virtual_rect: Rect) -> CaptureTarget {
     }
 }
 
-/// Two windows side by side on the strip: Notes on screen and focused,
-/// Files half past the right edge.
 fn two_windows() -> Vec<CaptureTarget> {
     let mut notes = window(
         "notes",
@@ -42,7 +40,6 @@ fn two_windows() -> Vec<CaptureTarget> {
     vec![notes, files]
 }
 
-/// A press at `from`, the pointer to `to`, and the release.
 fn drag(s: &mut CaptureStudio, from: Point, to: Point, shift: bool) {
     s.click(from, shift);
     if let Some(drag) = s.drag.as_mut() {
@@ -99,7 +96,6 @@ fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
         false,
     );
     assert_eq!(s.regions().len(), 1);
-    // A plain drag elsewhere replaces the selection.
     drag(
         &mut s,
         Point::new(600.0, 500.0),
@@ -145,7 +141,6 @@ fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
     s.cursor = remove;
     s.click(remove, false);
     assert_eq!(s.regions().len(), 2);
-    // And a plain drag on empty canvas replaces them all.
     drag(
         &mut s,
         Point::new(1200.0, 100.0),
@@ -172,7 +167,6 @@ fn the_window_picker_is_only_there_while_window_is_chosen() {
     s.set_source_mode(SourceMode::Window);
     let shown = names(&s);
     assert!(shown.iter().any(|n| n == "capture.window-pick"));
-    // No list of windows, off screen or not, anywhere in the tool.
     assert!(
         !shown
             .iter()
@@ -187,7 +181,6 @@ fn a_window_capture_is_the_whole_window_with_what_is_off_screen() {
     let windows = two_windows();
     s.set_candidates(windows.clone());
     s.set_source_mode(SourceMode::Window);
-    // Files is half off screen; pick it by clicking it.
     s.click(Point::new(1200.0, 500.0), false);
     assert_eq!(s.take_window_pick().as_deref(), Some("files"));
     let intent = the_intent(&mut s);
@@ -200,7 +193,6 @@ fn a_window_capture_is_the_whole_window_with_what_is_off_screen() {
     assert!(intent.anchors.is_empty());
     assert_eq!(intent.destination, CaptureDestination::FileAndClipboard);
 
-    // A window wholly off screen is still captured whole.
     let mut s = studio();
     let mut away = window("away", Rect::ZERO, Rect::new(1700.0, 40.0, 2600.0, 1000.0));
     away.focused = true;
@@ -222,7 +214,6 @@ fn the_picked_window_follows_focus_moved_the_usual_way() {
         s.lets_desktop_navigation_through(),
         "the keys and the strip move focus while a window is chosen"
     );
-    // Focus moved to Files with the keyboard.
     windows[0].focused = false;
     windows[1].focused = true;
     s.set_candidates(windows);
@@ -253,7 +244,6 @@ fn a_selection_inside_a_window_is_anchored_to_it_and_one_across_windows_is_a_scr
     );
     assert_eq!(intent.targets, vec![windows[0].clone()]);
 
-    // A selection spanning both windows is a region of the screen.
     let mut s = studio();
     s.set_candidates(two_windows());
     drag(
@@ -307,8 +297,6 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
             "{item:?} inside the bar"
         );
     }
-    // No shortcut helpers anywhere in the tool: a labelled button has no
-    // tooltip, and the shutter's names it alone, without a keycap.
     s.cursor = s.bar_item(BarItem::Output(1)).center();
     assert_eq!(s.bar_tip(), None, "the Recording button carries its label");
     s.cursor = s.bar_item(BarItem::Target(2)).center();
@@ -324,7 +312,6 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
     let (_, tip) = s.bar_tip().expect("the unlabelled shutter is named");
     assert_eq!(tip, s.shutter_name(), "the name alone, no shortcut");
     assert!(names(&s).iter().all(|n| !n.contains("hint")));
-    // Enter and Space are the shutter.
     s.set_source_mode(SourceMode::Display);
     assert!(s.key(&Key::Named(NamedKey::Space), false));
     assert_eq!(s.take_intents().len(), 1);
@@ -392,7 +379,6 @@ fn rare_settings_live_in_the_options_popover() {
     assert!(shot.contains(&OptionChoice::Delay(3)));
     assert!(shot.contains(&OptionChoice::Pointer));
     assert!(!shot.contains(&OptionChoice::Microphone));
-    // Combining selections is offered once there are several to combine.
     let combine = |s: &CaptureStudio| choices(s).contains(&OptionChoice::Layout(PipLayout::Auto));
     assert!(!combine(&s));
     drag(
@@ -441,7 +427,6 @@ fn while_recording_the_bar_is_the_stop_shutter_and_the_time() {
     let items: Vec<BarItem> = s.bar_items().into_iter().map(|(item, _)| item).collect();
     assert_eq!(items, vec![BarItem::Time, BarItem::Shutter]);
     assert_eq!(s.shutter_kind(), CaptureKind::Recording);
-    // The bar can be moved out of the way.
     let before = s.status_bar();
     s.cursor = Point::new(before.x0 + 4.0, before.center().y);
     s.press_status(s.cursor);
@@ -451,7 +436,6 @@ fn while_recording_the_bar_is_the_stop_shutter_and_the_time() {
         position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
     }));
     assert!((s.status_bar().y0 - (before.y0 - 300.0)).abs() < 1e-6);
-    // The shutter stops it.
     let stop = s.bar_item(BarItem::Shutter).center();
     s.press_status(stop);
     let stop_intent = s.take_intents().pop().expect("stop");
@@ -506,13 +490,11 @@ fn a_recording_that_skipped_frames_says_so_while_it_runs_and_after() {
         "the chip stands between the time and the shutter: {chip:?}"
     );
 
-    // What it says: the count, and why the frames are missing.
     s.cursor = chip.center();
     let (_, tip) = s.bar_tip().expect("the chip says what happened");
     assert_eq!(tip, skipped_sentence(12));
     assert!(tip.contains("12"), "{tip}");
 
-    // The finished recording keeps saying it.
     s.set_recording_finished(12);
     assert!(!s.shows_status(), "the bar gives way to the receipt");
     assert_eq!(s.recording_status(), skipped_sentence(12));
@@ -557,8 +539,6 @@ fn a_recording_that_could_not_be_finished_says_why_and_shows_what_it_kept() {
         "what was written is shown in Files: {shown:?}"
     );
 
-    // Nothing was written: the receipt still says why, and there is nothing
-    // to open.
     s.set_recording_active(true);
     s.set_recording_failed(reason.to_owned(), false);
     assert_eq!(s.recording_status(), failed_sentence(reason, false));
@@ -568,7 +548,6 @@ fn a_recording_that_could_not_be_finished_says_why_and_shows_what_it_kept() {
         names(&s)
     );
 
-    // A recording that follows is about itself, not the one that failed.
     s.set_recording_active(true);
     s.set_recording_finished(0);
     assert_eq!(s.recording_status(), studio_text("widget-recording-saved"));

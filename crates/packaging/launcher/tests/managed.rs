@@ -1,5 +1,5 @@
-//! Explicit Linux prerequisite/kernel checks. They fail on missing facilities;
-//! passing these alone does not qualify actual tilo-agent/model/provider work.
+//! Explicit Linux prerequisite/kernel checks. They fail on missing facilities; passing
+//! these alone does not qualify actual tilo-agent/model/provider work.
 
 #[cfg(target_os = "linux")]
 use tilo_test_env::SpawnUnderEnvLock as _;

@@ -4,8 +4,6 @@ use super::super::{TabBar, TabDescriptor};
 use super::tests::lay_out_at_width_with;
 use crate::widget::Widget;
 
-/// A tab names the whole of its title in a tooltip: the pill cuts it to fit
-/// the row.
 #[test]
 fn a_tab_names_its_whole_title_in_a_tooltip() {
     let _settled = crate::motion::testing::settled();

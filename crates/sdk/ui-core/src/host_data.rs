@@ -1,10 +1,8 @@
-//! Named data a host supplies on request, for builds that ship large
-//! application data (fonts, archives) beside the program instead of inside
-//! it. An application asks for a name each time it needs the bytes; a host
-//! that can fetch drains the requests, fetches each, installs the bytes or a
-//! failure, and relayouts its surfaces so the application asks again.
-//! Builds that embed their data never ask, and a host that never drains
-//! leaves every request pending.
+//! Named data a host supplies on request, for builds that ship large application data (fonts, archives)
+//! beside the program instead of inside it. An application asks for a name each time it needs the
+//! bytes; a host that can fetch drains the requests, fetches each, installs the bytes or a failure, and
+//! relayouts its surfaces so the application asks again. Builds that embed their data never ask, and a
+//! host that never drains leaves every request pending.
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tilo_lock::MutexRecover as _;
@@ -31,8 +29,8 @@ fn with<R>(f: impl FnOnce(&mut BTreeMap<String, Entry>) -> R) -> R {
     f(&mut DATA.lock_recover())
 }
 
-/// The bytes for `name` if the host supplied them; otherwise records the
-/// request (once) and reports it pending or failed.
+/// The bytes for `name` if the host supplied them; otherwise records the request (once) and reports it
+/// pending or failed.
 pub fn request(name: &str) -> Status {
     with(|data| match data.get(name) {
         Some(Entry::Answered(status)) => status.clone(),

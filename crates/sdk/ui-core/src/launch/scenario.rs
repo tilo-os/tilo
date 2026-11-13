@@ -1,13 +1,9 @@
-//! Which scenario a launch is built from, and the refusal of a capture of
-//! what the machine it runs on holds.
-//!
-//! An app that shows the machine's own state (its journal, its processes,
-//! its drives, the person's real files) declares so ([`LaunchSpec::reads_host`]).
-//! A headless drive that captures such an app must name one of its
-//! scenarios: the app is then built from that scenario's fixtures, never
-//! from the machine, so no picture of it shows the journal, the home folder
-//! or the source tree of whoever took it. `--shots` is always built from
-//! fixtures (`None`, the plain capture, is the app's own default fixture).
+//! Which scenario a launch is built from, and the refusal of a capture of what the machine it runs on
+//! holds. An app that shows the machine's own state (its journal, its processes, its drives, the
+//! person's real files) declares so ([`LaunchSpec::reads_host`]). A headless drive that captures such
+//! an app must name one of its scenarios: the app is then built from that scenario's fixtures, never
+//! from the machine, so no picture of it shows the journal, the home folder or the source tree of
+//! whoever took it.
 
 use super::{LaunchArgs, LaunchError, LaunchSpec};
 
@@ -44,9 +40,8 @@ impl HostSource {
 }
 
 impl LaunchSpec {
-    /// The app shows `sources` of the machine it runs on: a headless drive
-    /// that captures it must name a scenario, and is then built from that
-    /// scenario's fixtures.
+    /// The app shows `sources` of the machine it runs on: a headless drive that captures it must name a
+    /// scenario, and is then built from that scenario's fixtures.
     #[must_use]
     pub fn reads_host(mut self, sources: &'static [HostSource]) -> Self {
         self.host_sources = sources;
@@ -54,8 +49,7 @@ impl LaunchSpec {
     }
 }
 
-/// Refuse an undeclared scenario, and a capture of a host-reading app that
-/// names none.
+/// Refuse an undeclared scenario, and a capture of a host-reading app that names none.
 pub(super) fn check(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
@@ -75,8 +69,8 @@ pub(super) fn check(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchEr
     Ok(())
 }
 
-/// The refusal of a drive capturing a host-reading app with no scenario,
-/// naming the app, what it would show and the scenarios to choose from.
+/// The refusal of a drive capturing a host-reading app with no scenario, naming the app, what it would
+/// show and the scenarios to choose from.
 fn live_capture(spec: &LaunchSpec) -> String {
     let shows: Vec<&str> = spec
         .host_sources
@@ -153,10 +147,8 @@ mod tests {
         )
     }
 
-    /// A drive that would picture an app showing the machine's journal with
-    /// no scenario is refused before the app is built, naming the app and
-    /// the scenarios to choose from; naming one builds it from that
-    /// scenario's fixtures, and the capture is written.
+    /// A drive that would picture an app showing the machine's journal with no scenario is refused
+    /// before the app is built, naming the app and the scenarios to choose from.
     #[test]
     fn a_host_reading_app_renders_only_from_a_scenario() {
         let temp = tempfile::tempdir().unwrap();

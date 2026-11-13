@@ -53,6 +53,7 @@ __all__ = [
     "Triage",
     "TriageUpdate",
     "WorkspaceFiles",
+    "Acting",
     "AgentFinish",
     "AgentStepOutcome",
     "AgentWorkState",
@@ -65,6 +66,7 @@ __all__ = [
     "Mention",
     "Message",
     "ProviderStream",
+    "Quote",
     "ResourceAt",
     "Revision",
     "ShareAccess",
@@ -279,6 +281,10 @@ class WorkspaceFiles(TypedDict):
     largest: int
     member_hourly: int
 
+class Acting(TypedDict):
+    name: str | None
+    person: str | None
+
 AgentFinish = Literal["complete", "truncated", "refused", "cancelled", "failed"]
 
 AgentStepOutcome = dict[str, Any]
@@ -329,12 +335,14 @@ class Message(TypedDict):
     edited: bool
     history: list[Revision]
     parent: str | None
+    quoted: Quote | None
     reactions: Any
     mentions: list[Mention]
     attachments: list[Attached]
     pinned: bool
     work: Work | None
     appearance: ShownAs | None
+    acting: Acting | None
     share: WindowShare | None
     attempts: int
 
@@ -345,6 +353,11 @@ class ProviderStream(TypedDict):
     progress: str
     finish: AgentFinish | None
     detail: str
+
+class Quote(TypedDict):
+    text: str
+    start: int
+    end: int
 
 class ResourceAt(TypedDict):
     app: str
@@ -395,6 +408,7 @@ class Work(TypedDict):
     stream: ProviderStream | None
     state: Transition | None
     trace: list[Step]
+    failure_detail: str | None
 
 class WorkUpdate(TypedDict):
     state: str
@@ -402,6 +416,7 @@ class WorkUpdate(TypedDict):
     did: str | None
     about: str | None
     trace: list[StepUpdate]
+    detail: str | None
 
 class Emoji(TypedDict):
     image: Any
@@ -433,6 +448,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -685,6 +701,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -893,6 +910,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -902,6 +920,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -923,6 +942,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     agents: list[Agent]
 
     def create_agent(self,

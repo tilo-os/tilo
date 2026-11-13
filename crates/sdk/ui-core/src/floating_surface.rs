@@ -3,10 +3,6 @@
     clippy::arithmetic_side_effects,
     reason = "placement math is bounded logical-pixel geometry using kurbo operators"
 )]
-//!
-//! Apps describe *what* should float; this module owns *how* it moves.  The
-//! same state machine is used while a surface is attached to its app and after
-//! the shell adopts it as desktop `PiP`, avoiding a second set of drag/snap rules.
 
 use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect, Size, Vec2};
@@ -20,8 +16,6 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-/// A surface let go settles on its place (`motion::Snap`); the stretch a
-/// change of owner gives it relaxes on the same motion.
 fn settle_progress(elapsed: crate::time::Duration) -> f64 {
     crate::motion::Snap::SPEC.progress_after(
         crate::motion::Direction::Enter,
@@ -31,7 +25,6 @@ fn settle_progress(elapsed: crate::time::Duration) -> f64 {
     )
 }
 
-/// How long [`settle_progress`] runs.
 fn settle_time() -> crate::time::Duration {
     crate::motion::Snap::SPEC.settle_time(
         crate::motion::Direction::Enter,
@@ -43,10 +36,7 @@ fn settle_time() -> crate::time::Duration {
 /// Stable identity of content that can survive an app → desktop hand-off.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FloatingSource {
-    /// A semantically stable app element plus its current app-local fallback
-    /// box. Identity lets the app keep updating the same source as its layout
-    /// changes; the region lets the compositor present the first frame
-    /// immediately without querying private app internals.
+    /// A semantically stable app element plus its current app-local fallback box.
     AppElement {
         app_id: String,
         element_id: String,
@@ -74,8 +64,8 @@ pub enum FloatingRole {
 }
 
 impl FloatingRole {
-    /// Whether interactive content stays rendered by its owning app rather
-    /// than becoming a compositor-owned capture mirror.
+    /// Whether interactive content stays rendered by its owning app rather than becoming a
+    /// compositor-owned capture mirror.
     pub const fn uses_app_owned_host(self) -> bool {
         match self {
             Self::ActiveCall | Self::Navigation | Self::Conversation => true,
@@ -127,7 +117,7 @@ pub fn paint_material(
 /// at another number answers [`FloatingSurfaceHostMessage::VersionMismatch`]
 /// and closes, and updates whichever side is behind
 /// (docs/architecture/compatibility.md). There is no negotiation and nothing
-/// kept for an older number. `interface.toml` beside this crate holds the
+/// kept for an older number. `interface.toml` beside this crate has the
 /// schema, and the repository policy fails a change to it that keeps the
 /// number.
 ///
@@ -140,11 +130,7 @@ pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 mod wire;
 pub use wire::*;
 
-/// Non-blocking app-side connection to the session shell. The launcher hands
-/// the already-connected socket into the sandbox as
-/// `TILO_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
-/// protocol inspectable and lets the compositor service evolve independently
-/// of app/widget releases.
+/// Non-blocking app-side connection to the session shell.
 #[cfg(unix)]
 pub struct FloatingSurfaceServiceClient {
     stream: UnixStream,
@@ -156,9 +142,8 @@ pub struct FloatingSurfaceServiceClient {
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
     rearm_wake: Option<readable_watcher::Rearm>,
-    /// The last appearance the shell told: the shell says it once per
-    /// change, so a window this connection is handed to next
-    /// ([`Self::hand_to_next_window`]) hears it from here.
+    /// The last appearance the shell told: the shell says it once per change, so a window this
+    /// connection is handed to next ([`Self::hand_to_next_window`]) hears it from here.
     appearance: Option<FloatingSurfaceHostMessage>,
     /// Messages the next [`Self::pump`] answers before reading.
     replay: Vec<FloatingSurfaceHostMessage>,
@@ -191,12 +176,9 @@ impl FloatingSurfaceServiceClient {
         Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
     }
 
-    /// The connection a new window takes: the one the window before it
-    /// handed over ([`Self::hand_over`]), else the one the launcher handed
-    /// this process ([`Self::discover`]).
+    /// The connection a new window takes: the one the window before it handed over
+    /// ([`Self::hand_over`]), else the one the launcher handed this process ([`Self::discover`]).
     pub(crate) fn for_window() -> Option<Self> {
-        // A window the shell opened in this running process has a
-        // connection of its own (`crate::window_door`).
         #[cfg(feature = "local-daemons")]
         if crate::window_door::is_building() {
             let connection = crate::window_door::take_shell_ui()?;
@@ -212,10 +194,6 @@ impl FloatingSurfaceServiceClient {
         Self::discover()
     }
 
-    /// Keep this connection for the next window the process opens, instead
-    /// of closing it with this one: the launcher hands each process one
-    /// connection, and a window that gives its place to the next
-    /// (`crate::window_door`) gives it its connection too.
     #[cfg(feature = "local-daemons")]
     #[cfg_attr(
         not(feature = "native"),
@@ -225,11 +203,6 @@ impl FloatingSurfaceServiceClient {
         HANDED_OVER.with(|slot| *slot.borrow_mut() = Some(self));
     }
 
-    /// Hand this connection to the next window of the process: the window a
-    /// launch opens in place of one that held its place (`crate::window_door`).
-    /// The connection, and the version it
-    /// said, carry over; the shell's unprompted messages wake the window in
-    /// front from now on, and it hears the appearance the last one was told.
     #[cfg(feature = "local-daemons")]
     fn hand_to_next_window(&mut self) {
         let wake = crate::wake::WakeHandle::new();
@@ -254,8 +227,6 @@ impl FloatingSurfaceServiceClient {
         Self::from_stream_watched(stream, wake, || {})
     }
 
-    /// [`Self::from_stream_waking`], also calling `parked` each time the
-    /// watcher, having woken the app, waits for it to read.
     #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream_watched(
         stream: UnixStream,
@@ -430,21 +401,16 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
-    /// No connection exists to keep for the next window.
     #[cfg_attr(
         not(feature = "native"),
         expect(dead_code, reason = "only a native window gives its place to the next")
     )]
     pub(crate) fn hand_over(self) {}
 
-    /// # Errors
-    /// Always returns an error because this host has no session-service transport.
     pub fn send(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
         Err("floating-surface service is unavailable on this platform".into())
     }
 
-    /// # Errors
-    /// Always returns an error because this host has no session-service transport.
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         Err("floating-surface service is unavailable on this platform".into())
     }
@@ -467,9 +433,7 @@ pub struct FloatingSurfaceRequest {
     pub tracking_source: Option<FloatingSource>,
 }
 
-/// App-owned presentation currently living in desktop coordinates. The UI
-/// runtime uses this one read-only description both to render the secondary
-/// window and to stream placement changes to the compositor.
+/// App-owned presentation currently living in desktop coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloatingSurfacePresentation {
     pub id: String,
@@ -663,8 +627,7 @@ pub fn translate_input_rect(input: Option<Rect>, from: Point, to: Point) -> Opti
 /// Where the floating surface currently belongs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Attachment {
-    /// Moves with its application. `offset` is from the app's top-right
-    /// floating inset, so resizing/moving the app retains the relationship.
+    /// Moves with its application.
     App { offset: Vec2 },
     /// Independent desktop coordinates, owned by shell chrome.
     Desktop { rect: Rect },
@@ -707,8 +670,7 @@ struct SettleMotion {
     to: Rect,
 }
 
-/// Placement + drag state shared by call, navigation, browser `PiP` and
-/// arbitrary captured regions.
+/// Placement + drag state shared by call, navigation, browser `PiP` and arbitrary captured regions.
 #[derive(Clone, Debug)]
 pub struct FloatingPlacement {
     attachment: Attachment,
@@ -716,14 +678,9 @@ pub struct FloatingPlacement {
     /// Until this flips, the app may keep painting its clipped in-window copy
     /// so a detach never contains a transparent handoff frame.
     desktop_adopted: bool,
-    /// The shell is already drawing either the frozen transfer frame or the
-    /// live native surface. Kept separate from `desktop_adopted` so a valid
-    /// proxy can remove the clipped app copy without pretending the client
-    /// window has committed yet.
+    /// The shell is already drawing either the frozen transfer frame or the live native surface.
     desktop_covered: bool,
-    /// Shell → app is a handshake, not an instantaneous enum flip. While
-    /// true, app-local drawing stays suppressed and the runtime publishes one
-    /// final geometry before requesting suspension.
+    /// Shell → app is a handshake, not an instantaneous enum flip.
     return_pending: bool,
     /// App-local rect published by the exact boundary-crossing event. A
     /// shell Prepare reply refers to this snapshot; later pointer motion must
@@ -731,35 +688,28 @@ pub struct FloatingPlacement {
     handoff_rect: Option<Rect>,
     drag: Option<Drag>,
     preferred_size: Size,
-    /// Inline app elements may fill their ordinary layout region before
-    /// detaching; activity overlays leave this unset and use the inset home.
+    /// Inline app elements may fill their ordinary layout region before detaching; activity overlays
+    /// leave this unset and use the inset home.
     attached_region: Option<Rect>,
     /// Visual chrome surrounding the content rect while it belongs to an app.
-    /// Keeping this here makes the *complete* soft surface stay inside its
-    /// parent, while desktop geometry can continue to identify the stable
-    /// content region used by the native-surface protocol.
     attached_chrome: [f64; 4],
-    /// Bands of the app the surface keeps clear of while attached (the
-    /// window's header row), as `[left, top, right, bottom]`.
+    /// Bands of the app the surface keeps clear of while attached (the window's header row), as `[left,
+    /// top, right, bottom]`.
     safe_insets: [f64; 4],
-    /// Translation between the app's local widget space and the shell's
-    /// desktop space while a native surface owns presentation.
+    /// Translation between the app's local widget space and the shell's desktop space while a native
+    /// surface owns presentation.
     desktop_coordinate_offset: Vec2,
     handoff_motion: Option<HandoffMotion>,
     /// Exact render-only handoff phase used by deterministic visual review.
-    /// Production interaction always leaves this unset and follows the clock.
     handoff_progress_override: Option<f64>,
     settle_motion: Option<SettleMotion>,
-    /// Reduced motion: a return lands home at once and the ownership
-    /// flourish is not played ([`Self::set_reduce_motion`]).
+    /// Reduced motion: a return comes home at once and the ownership flourish is not played
+    /// ([`Self::set_reduce_motion`]).
     reduce_motion: bool,
 }
 
 impl FloatingPlacement {
     /// Whether an attached surface has crossed the shared detach boundary.
-    ///
-    /// Hosts can use this before constructing a retained surface so the
-    /// pre-creation gesture follows the same threshold as [`Self::update_drag`].
     pub fn is_beyond_detach_boundary(pointer: Point, app: Rect) -> bool {
         !app.inflate(28.0, 28.0).contains(pointer)
     }
@@ -784,10 +734,7 @@ impl FloatingPlacement {
         }
     }
 
-    /// Apply the person's reduced-motion setting (`Theme::motion`). The
-    /// owner forwards it from `Widget::set_motion_reduced`; under it a
-    /// return to the app lands home at once and any motion in flight
-    /// settles now.
+    /// Apply the person's reduced-motion setting (`Theme::motion`).
     pub fn set_reduce_motion(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
         if reduced {
@@ -816,8 +763,8 @@ impl FloatingPlacement {
         self.return_pending
     }
 
-    /// Ask the host to return an adopted surface without painting a second
-    /// source copy before its `Suspended` acknowledgement.
+    /// Ask the host to return an adopted surface without painting a second source copy before its
+    /// `Suspended` acknowledgement.
     pub fn request_app_return(&mut self) {
         if self.desktop_adopted && matches!(self.attachment, Attachment::Desktop { .. }) {
             self.return_pending = true;
@@ -829,8 +776,7 @@ impl FloatingPlacement {
         self.preferred_size = size;
     }
 
-    /// Bind placement to the exact current app-local region of an inline
-    /// element. This is lifecycle geometry, not an independent layout system.
+    /// Bind placement to the exact current app-local region of an inline element.
     pub fn set_attached_region(&mut self, region: Option<Rect>) {
         match region {
             None => self.attached_region = None,
@@ -841,8 +787,8 @@ impl FloatingPlacement {
         }
     }
 
-    /// Declare app-owned decoration around the placement's content rect as
-    /// `[left, top, right, bottom]` logical pixels.
+    /// Declare app-owned decoration around the placement's content rect as `[left, top, right, bottom]`
+    /// logical pixels.
     pub fn set_attached_chrome(&mut self, chrome: [f64; 4]) {
         self.attached_chrome = chrome.map(|value| value.max(0.0));
     }
@@ -851,12 +797,11 @@ impl FloatingPlacement {
     /// right, bottom]` logical pixels: its home sits inside them and a drag
     /// inside the app does not slide it under them. A host with a header
     /// row passes `[0.0, header_height, 0.0, 0.0]`. Separate from
-    /// [`Self::set_attached_chrome`], which is the surface's own decoration.
+    /// [`Self::set_attached_chrome`], which is the surface decoration.
     pub fn set_safe_insets(&mut self, insets: [f64; 4]) {
         self.safe_insets = insets.map(|value| value.max(0.0));
     }
 
-    /// The part of `app` an attached surface may stand in.
     fn safe_area(&self, app: Rect) -> Rect {
         let [left, top, right, bottom] = self.safe_insets;
         let x0 = (app.x0 + left).min(app.x1);
@@ -917,8 +862,7 @@ impl FloatingPlacement {
         });
     }
 
-    /// Programmatic counterpart to crossing the app edge (for a “Float” menu
-    /// action). The supplied rect is already in desktop coordinates.
+    /// Programmatic counterpart to crossing the app edge (for a “Float” menu action).
     pub fn detach_to_desktop(&mut self, rect: Rect) {
         self.attachment = Attachment::Desktop { rect };
         self.desktop_adopted = false;
@@ -973,16 +917,13 @@ impl FloatingPlacement {
         self.settle_motion = None;
     }
 
-    /// Tell placement whether the shell can already cover the old app-local
-    /// pixels during native-surface startup.
+    /// Tell placement whether the shell can already cover the old app-local pixels during
+    /// native-surface startup.
     pub fn set_desktop_transfer_covered(&mut self, covered: bool) {
         self.desktop_covered = covered;
     }
 
-    /// Confirm that the native surface has committed a visible buffer. This
-    /// deliberately does not replay the acknowledgement's geometry: while
-    /// the surface was preparing, pointer motion may already have advanced
-    /// beyond that earlier rectangle.
+    /// Confirm that the native surface has committed a visible buffer.
     pub fn confirm_desktop_adoption(&mut self) {
         if matches!(self.attachment, Attachment::Desktop { .. }) {
             self.desktop_adopted = true;
@@ -990,9 +931,7 @@ impl FloatingPlacement {
         }
     }
 
-    /// Complete the shell → app half of the ownership handshake. The shell
-    /// has hidden the native/proxy surface, so the attached copy may now be
-    /// included in the next primary frame.
+    /// Complete the shell → app half of the ownership handshake.
     pub fn confirm_app_adoption(&mut self, app: Rect) {
         let Attachment::Desktop { rect } = self.attachment else {
             return;
@@ -1029,9 +968,7 @@ impl FloatingPlacement {
             })
     }
 
-    /// Pin the subtle ownership-transfer deformation to an exact phase for
-    /// screenshot review. This does not alter geometry, hit testing, or the
-    /// production animation timeline.
+    /// Pin the subtle ownership-transfer deformation to an exact phase for screenshot review.
     #[doc(hidden)]
     pub fn pin_handoff_for_visual_review(&mut self, permille: u16) {
         if self.handoff_motion.is_some() {
@@ -1074,8 +1011,8 @@ impl FloatingPlacement {
             .pre_translate((-center.x, -center.y).into())
     }
 
-    /// Resolve the live rect. Attached overlays follow `app`; detached ones
-    /// retain screen coordinates and only clamp to the desktop.
+    /// Resolve the live rect. Attached overlays follow `app`; detached ones retain screen coordinates
+    /// and only clamp to the desktop.
     pub fn rect(&self, app: Rect, desktop: Rect) -> Rect {
         let resolved = match self.attachment {
             Attachment::App { offset } => self.attached_home_rect(app) + offset,
@@ -1134,7 +1071,7 @@ impl FloatingPlacement {
     }
 
     /// Detaches after crossing the app by a deliberate 28px, and reattaches
-    /// when the pointer returns well inside it. The asymmetric thresholds stop
+    /// when the pointer returns inside it. The asymmetric thresholds stop
     /// the surface flickering between owners along the border.
     pub fn update_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) -> Handoff {
         let Some(mut drag) = self.drag else {
@@ -1274,7 +1211,7 @@ fn clamp_rect(rect: Rect, bounds: Rect, reachable: f64) -> Rect {
     rect + Vec2::new(dx, dy)
 }
 
-/// `rect` moved onto an edge of `bounds` it stands within 32 px of, `gap` in
+/// `rect` moved onto an edge of `bounds` it is within 32 px of, `gap` in
 /// from it: the settle every floating thing uses, cards and windows alike.
 #[must_use]
 pub fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
@@ -1403,7 +1340,6 @@ mod tests {
             assert!(!p.is_return_pending());
         }
 
-        // Case `safe_insets_keep_the_home_and_a_drag_below_the_header_row`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -1950,7 +1886,6 @@ mod tests {
             );
             let request_rect = placement.rect(app, desk);
 
-            // A fast lateral move lands before the shell replies to Present.
             let pre_prepare_pointer = Point::new(738.0, -64.0);
             assert_eq!(
                 placement.update_drag(pre_prepare_pointer, app, desk),
@@ -1986,10 +1921,6 @@ mod tests {
             let local_detached = placement.rect(app, desktop);
             placement.prepare_desktop_rect_with_offset(local_detached + app_origin, app_origin);
 
-            // The native renderer is still warming, so compositor pointer focus
-            // remains on the primary window and reports app-local coordinates.
-            // The runtime translates that event before the shared placement sees
-            // it; ownership can then return without losing the app origin.
             let returned_desktop = Point::new(1_376.0, 180.0);
             let returned_primary_local = returned_desktop - app_origin;
             assert_eq!(
@@ -2063,7 +1994,6 @@ mod tests {
             });
             assert_eq!(received, vec![inbound]);
 
-            // A shell at another version says so, and the connection is over.
             let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
                 shell: FLOATING_SURFACE_PROTOCOL_VERSION + 1,
             })
@@ -2155,8 +2085,6 @@ mod tests {
         let tid = tilo_test_env::wait_for("the watcher wakes the app", || {
             watcher.lock().unwrap().clone()
         });
-        // Two windows back to back outlast any poll interval a watcher could
-        // hide in one of them.
         for _ in 0..2 {
             tilo_test_env::idle::assert_stays_asleep(&tid, "watcher parked over unread bytes");
         }
@@ -2164,8 +2092,6 @@ mod tests {
         for _ in 0..2 {
             tilo_test_env::idle::assert_stays_asleep(&tid, "armed watcher with nothing to read");
         }
-        // Every frame pumps the connection; reading while the watcher is
-        // armed does not wake it.
         let settled = tilo_test_env::idle::asleep_runs(&tid);
         for _ in 0..10 {
             assert!(client.pump().unwrap().is_empty());

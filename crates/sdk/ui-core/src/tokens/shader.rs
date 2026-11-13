@@ -1,35 +1,23 @@
-//! A theme's own surface shader: a short WGSL function a finish names, validated when the theme is
-//! read (`docs/architecture/theming.md`, "A surface shader").
-//!
-//! A theme may paint a surface role with its own colour arithmetic instead of choosing from the
-//! built-in painter sets: ordered dithering, pixelation, a hatch, a gradient the palette roles
-//! cannot express. The shader is **one pure function** over a fixed, documented set of inputs
-//! ([`INPUTS`]), declaring no entry point and no bindings of its own — the toolkit writes the
-//! pipeline around it — so it cannot sample anything but what the toolkit samples for it, cannot
-//! read the person's data or the window's content, and has no clock: `time` is the static value the
-//! theme states.
-//!
-//! It runs **once per settled frame**: the toolkit evaluates it into the surface's image when the
-//! surface, its theme or what the surface samples changes, and replays that image until then, so an
-//! idle surface draws no frame.
-//!
-//! The source is checked when the theme is read ([`Source::validate`]): it must parse as WGSL,
-//! declare exactly one function `fs_surface` whose parameters and result are exactly [`INPUTS`],
-//! and declare no entry point and no global. A theme that fails is refused, with the reason, and
-//! the theme it sits on does not apply.
+//! A theme's own surface shader: a short WGSL function a finish names, validated when the
+//! theme is read (`docs/architecture/theming.md`, "A surface shader"). A theme may paint
+//! a surface role with its own colour arithmetic instead of choosing from the built-in
+//! painter sets: ordered dithering, pixelation, a hatch, a gradient the palette roles
+//! cannot express. The shader is **one pure function** over a fixed, documented set of
+//! inputs ([`INPUTS`]), declaring no entry point and no bindings of its own — the toolkit
+//! writes the pipeline around it — so it cannot sample anything but what the toolkit
+//! samples for it, cannot read the person's data or the window's content, and has no
+//! clock: `time` is the static value the theme states.
 
 use serde::{Deserialize, Serialize};
 
-/// The most source a theme may carry, bytes. A surface shader is a few
-/// dozen lines; anything longer is a program, not a look.
+/// The most source a theme may carry, bytes.
 pub const MAX_SOURCE: usize = 16 * 1024;
 
 /// The function a surface shader must declare.
 pub const ENTRY: &str = "fs_surface";
 
-/// What a surface shader may read, in the order it must take them: the
-/// parameter's name and type in WGSL, and what it holds. Every colour is
-/// linear sRGB with alpha last.
+/// What a surface shader may read, in the order it must take them: the parameter's name
+/// and type in WGSL, and what it holds.
 pub const INPUTS: &[(&str, &str, &str)] = &[
     (
         "backdrop",
@@ -72,20 +60,18 @@ pub const INPUTS: &[(&str, &str, &str)] = &[
 /// The finish parameters a shader may read, as `params.xyzw`.
 pub const FINISH_PARAMS: [&str; 4] = ["tint", "saturation", "scale", "phase"];
 
-/// The result every surface shader returns: an opaque or translucent colour
-/// for the fragment (alpha last). The toolkit holds what it paints inside
-/// the material's legibility band, so a shader cannot break ink's contrast.
+/// The result every surface shader returns: an opaque or translucent colour for the
+/// fragment (alpha last). The toolkit holds what it paints inside the material's
+/// legibility band, so a shader cannot break ink's contrast.
 pub const RESULT: &str = "vec4<f32>";
 
 /// A surface shader as a theme document states it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
-    /// The WGSL, declaring `fs_surface` and nothing the toolkit does not
-    /// hand it.
     pub wgsl: String,
-    /// The `time` input, seconds. `0` for a still surface; a value the theme
-    /// states, never the wall clock.
+    /// The `time` input, seconds. `0` for a still surface; a value the theme states,
+    /// never the wall clock.
     #[serde(default)]
     pub time: f32,
 }
@@ -103,11 +89,9 @@ impl Source {
         self.wgsl.trim().is_empty()
     }
 
-    /// Whether a document may apply this source: a non-empty, bounded,
-    /// finite-time WGSL program of the shape [`check`] describes.
-    ///
-    /// # Errors
-    /// What is wrong with it, as the theme's author reads it.
+    /// Whether a document may apply this source: a non-empty, bounded, finite-time WGSL
+    /// program of the shape [`check`] describes. What is wrong with it, as the theme's
+    /// author reads it.
     pub fn validate(&self) -> Result<(), String> {
         if self.is_empty() {
             return Err("surface shader is empty".to_owned());
@@ -118,25 +102,18 @@ impl Source {
         if !self.time.is_finite() {
             return Err("surface shader time is not a number".to_owned());
         }
-        // Its program is checked once the code is in; the theme is read
-        // again then (`part_paint::SURFACE_SHADER`).
         crate::part_paint::SURFACE_SHADER
             .get()
             .map_or(Ok(()), |code| (code.admit)(&self.wgsl))
     }
 }
 
-/// Check that `wgsl` is a surface shader of the documented shape, and name
-/// what is wrong when it is not.
-///
-/// It must parse; declare exactly one function, [`ENTRY`]; that function
-/// must take [`INPUTS`] in order and return [`RESULT`]; and the module must
-/// declare no entry point and no global variable (no binding, no texture,
-/// no sampler, no override): the toolkit owns every input.
-///
-/// # Errors
-/// The first thing wrong with it, with the line and column where the
-/// grammar refused it.
+/// Check that `wgsl` is a surface shader of the documented shape, and name what is wrong
+/// when it is not. It must parse; declare exactly one function, [`ENTRY`]; that function
+/// must take [`INPUTS`] in order and return [`RESULT`]; and the module must declare no
+/// entry point and no global variable (no binding, no texture, no sampler, no override):
+/// the toolkit owns every input. The first thing wrong with it, with the line and column
+/// where the grammar refused it.
 pub fn check(wgsl: &str) -> Result<(), String> {
     let module =
         naga::front::wgsl::parse_str(wgsl).map_err(|error| match error.location(wgsl) {
@@ -211,8 +188,6 @@ pub fn check(wgsl: &str) -> Result<(), String> {
     }
 }
 
-/// `ty` as the WGSL a document reads (`vec4<f32>`, `f32`), or `None` for a
-/// type a plain input cannot be.
 fn scalar_or_vector(module: &naga::Module, ty: naga::Handle<naga::Type>) -> Option<String> {
     Some(match module.types[ty].inner {
         naga::TypeInner::Scalar(scalar) => scalar_word(scalar)?.to_owned(),
@@ -228,18 +203,12 @@ fn scalar_or_vector(module: &naga::Module, ty: naga::Handle<naga::Type>) -> Opti
     })
 }
 
-/// The WGSL name of `scalar`'s type, where it is an `f32`.
 fn scalar_word(scalar: naga::Scalar) -> Option<&'static str> {
     matches!((scalar.kind, scalar.width), (naga::ScalarKind::Float, 4)).then_some("f32")
 }
 
-/// The complete WGSL module the toolkit compiles: the pipeline around the
-/// theme's `fs_surface`.
-///
-/// The documented inputs are function arguments here rather than a struct,
-/// so a shader declares no types of its own and the toolkit binds
-/// everything: the sampled backdrop, the theme's colours for the part, the
-/// uniforms and the static time.
+/// The complete WGSL module the toolkit compiles: the pipeline around the theme's
+/// `fs_surface`.
 #[must_use]
 pub fn wrap(shader: &Source) -> String {
     format!(
@@ -327,8 +296,6 @@ fn fs_surface(
 }
 ";
 
-    /// A shader over the documented set is admitted, and the module the
-    /// toolkit compiles around it is itself valid WGSL.
     #[test]
     fn a_shader_of_the_documented_shape_is_admitted_and_wraps() {
         check(GOOD).expect("the documented shape is admitted");
@@ -343,7 +310,6 @@ fn fs_surface(
         assert!(module.contains(ENTRY));
     }
 
-    /// What a theme author writes wrong is named, not swallowed.
     #[test]
     fn a_shader_of_another_shape_is_refused_with_the_reason() {
         let cases: [(&str, &str); 6] = [

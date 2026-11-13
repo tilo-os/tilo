@@ -1,15 +1,13 @@
-//! Opening the platform search from inside the app, as the window host does
-//! (`App::open_search`): a search launcher's invocation, `--search` on a
-//! capture, or a test opens this window's action palette narrowed to the
-//! request's scope with its query typed, over the app's own search
-//! providers and open resources.
+//! Opening the platform search from inside the app, as the window host does (`App::open_search`): a
+//! search launcher's invocation, `--search` on a capture, or a test opens this window's action palette
+//! narrowed to the request's scope with its query typed, over the app's own search providers and open
+//! resources.
 
 use super::FrameHarness;
 use crate::search::SearchRequest;
 
 impl FrameHarness {
-    /// Open search the way `request` asks: this app or one part of it, with
-    /// the query already typed.
+    /// Open search the way `request` asks: this app or one part of it, with the query already typed.
     pub fn open_search(&mut self, request: &SearchRequest) -> Result<(), String> {
         self.invalidate_local();
         if self.action_palette.is_some()
@@ -27,15 +25,12 @@ impl FrameHarness {
             &mut resources,
         );
         let Some(mut palette) = self.new_action_palette() else {
-            // Search opens as asked once the palette's code is in.
             self.palette_waiting.search = Some(request.clone());
             return Ok(());
         };
         let mut providers = crate::bound_dispatch::search_providers(self.root.as_ref());
         providers.push(Box::new(crate::search::OpenResourceSearch::new(&resources)));
         palette.load_open_resources(&resources);
-        // The app's own actions, as the window host's palette lists them
-        // (`App::open_action_palette`): search leads with what the app does.
         palette.load_bound_resources(
             crate::bound_dispatch::discover_bound_resources(
                 self.root.as_ref(),
@@ -54,8 +49,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Continue one bounded provider page per frame, as the window host's
-    /// redraw does. Returns whether more pages remain.
+    /// Continue one bounded provider page per frame, as the window host's redraw does. Returns whether
+    /// more pages remain.
     pub(super) fn advance_search(&mut self) -> bool {
         self.action_palette
             .as_deref_mut()

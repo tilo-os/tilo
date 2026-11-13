@@ -404,7 +404,15 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         )
         .expect("the arranging action runs");
 
-    // The entry that stands is the one the search found, at the caret.
+    // The entry that stands is the one the search found, at the caret. The action is accepted and
+    // the place lands a pass later, once the search's sources answer: the canvas never waits for
+    // one (a source reading a disk, a mailbox or a service on a slow machine would freeze it).
+    settle(&mut session, |session| {
+        arrangement(session)
+            .places
+            .iter()
+            .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
+    });
     let placed = arrangement(&session)
         .places
         .into_iter()
@@ -718,4 +726,242 @@ fn the_system_open_stands_a_new_place() {
         .expect("a step of the history");
     assert_eq!(who, ADA);
     assert_eq!(verb, "place", "opening is one arranging step");
+}
+
+/// The live run's failure (shell.md §3, "a place next to where it came from"): an agent that
+/// opened tasks, mail and notes beside its conversation saw every place stand over the
+/// conversation or below it, and some off the screen. Three places opened beside one anchor stand
+/// clear of it and of each other, each to its right or below it: the place beside the conversation
+/// first, then down.
+#[test]
+fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
+    // The app: a conversation and three things opened beside it, each a published resource.
+    struct Things;
+    impl Published for Things {
+        fn resources(&mut self) -> Vec<ResourceSpec> {
+            ["conversation", "tasks", "mail", "notes"]
+                .into_iter()
+                .map(|id| {
+                    let mut resource =
+                        ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
+                            .with_action(view_action("open-thing"))
+                            .with_view(
+                                ResourceViewSpec::new("page", "Page", "open-thing")
+                                    .with_primary(true),
+                            );
+                    // An app's resource: the arrangement places what an app publishes, the way
+                    // every app's own resources are.
+                    resource.app_id = Some("test.anchor".to_owned());
+                    resource
+                })
+                .collect()
+        }
+
+        fn invoke(
+            &mut self,
+            _: &ActionAddress,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: &mut tilo_session_core::door::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ))
+        }
+
+        fn accessible_labels(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    session.publish(Rc::new(std::cell::RefCell::new(Things)));
+    step(&mut session);
+    step(&mut session);
+    let open = |session: &mut Session, resource: &str, beside: &str| {
+        session
+            .invoke(
+                "shell:arrangement",
+                "open",
+                serde_json::json!({ "resource": resource, "beside": beside })
+                    .as_object()
+                    .expect("arguments"),
+            )
+            .expect("the open runs");
+    };
+    open(&mut session, "tl:test.anchor:conversation", "");
+    settle(&mut session, |session| {
+        arrangement(session)
+            .places
+            .iter()
+            .any(|held| held.record == "tl:test.anchor:conversation")
+    });
+    for opened in [
+        "tl:test.anchor:tasks",
+        "tl:test.anchor:mail",
+        "tl:test.anchor:notes",
+    ] {
+        open(&mut session, opened, "tl:test.anchor:conversation");
+        settle(&mut session, |session| {
+            arrangement(session)
+                .places
+                .iter()
+                .any(|held| held.record == opened)
+        });
+    }
+    // Every place's canvas rectangle, as the desk holds it.
+    let boxes: Vec<(String, i64, i64, i64, i64)> = arrangement(&session)
+        .places
+        .iter()
+        .filter_map(|held| {
+            let strip = strip_of(&session, number(&held.strip))?;
+            Some((
+                held.record.clone(),
+                strip.canvas_x,
+                strip.canvas_y,
+                strip.canvas_width,
+                strip.canvas_height,
+            ))
+        })
+        .collect();
+    assert_eq!(
+        boxes.len(),
+        4,
+        "the conversation and three opened beside it: {boxes:?}"
+    );
+    let conversation = boxes
+        .iter()
+        .find(|(record, ..)| record == "tl:test.anchor:conversation")
+        .expect("the conversation stands")
+        .clone();
+    for (index, (a, ax, ay, aw, ah)) in boxes.iter().enumerate() {
+        for (b, bx, by, bw, bh) in boxes.iter().skip(index + 1) {
+            let overlaps = ax < &(bx + bw) && bx < &(ax + aw) && ay < &(by + bh) && by < &(ay + ah);
+            assert!(!overlaps, "{a} and {b} stand over each other: {boxes:?}");
+        }
+    }
+    for (record, x, y, ..) in &boxes {
+        if *record == conversation.0 {
+            continue;
+        }
+        assert!(
+            *x >= conversation.1 && *y >= conversation.2,
+            "{record} stands to the conversation's right or below it, never above or to its left: \
+             ({x},{y}) against {conversation:?}"
+        );
+        assert!(
+            (*x, *y) != (conversation.1, conversation.2),
+            "{record} stands over the conversation: {boxes:?}"
+        );
+    }
+}
+
+// (8) The live run's failure: an agent asked to show the person their mails stood one Mail place of
+// the mailbox (the `Inbox` tab) and a second of a thread in it (the `sam@rivera.example` tab), so
+// the person had two windows of one mailbox. Opening a resource of a root already standing — the
+// root itself, or a view inside it — brings what stands forward, as activating what is shown does
+// (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
+#[test]
+fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_second() {
+    // The app: a mailbox root and a thread inside it, as an app publishes its record.
+    struct Mail;
+    impl Published for Mail {
+        fn resources(&mut self) -> Vec<ResourceSpec> {
+            let mut root =
+                ResourceSpec::new("tl:so.tilo.lang.mail:root-a1b2c3", "mail.mail", "Mail")
+                    .with_action(view_action("open-mailbox"))
+                    .with_view(
+                        ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox")
+                            .with_primary(true),
+                    );
+            root.app_id = Some("so.tilo.lang.mail".to_owned());
+            let mut thread = ResourceSpec::new(
+                "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+                "mail.thread",
+                "sam@rivera.example",
+            )
+            .with_action(view_action("open-thread"))
+            .with_view(ResourceViewSpec::new("thread", "Thread", "open-thread").with_primary(true));
+            thread.app_id = Some("so.tilo.lang.mail".to_owned());
+            let mut other = ResourceSpec::new(
+                "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01",
+                "mail.thread",
+                "news@example",
+            )
+            .with_action(view_action("open-news"))
+            .with_view(ResourceViewSpec::new("thread", "Thread", "open-news").with_primary(true));
+            other.app_id = Some("so.tilo.lang.mail".to_owned());
+            vec![root.with_child(thread), other]
+        }
+
+        fn invoke(
+            &mut self,
+            _: &ActionAddress,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: &mut tilo_session_core::door::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ))
+        }
+
+        fn accessible_labels(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    session.publish(Rc::new(std::cell::RefCell::new(Mail)));
+    step(&mut session);
+    step(&mut session);
+    let open = |session: &mut Session, resource: &str| {
+        session
+            .invoke(
+                "shell:arrangement",
+                "open",
+                serde_json::json!({ "resource": resource })
+                    .as_object()
+                    .expect("arguments"),
+            )
+            .expect("the open runs");
+    };
+    let places_of = |session: &Session, prefix: &str| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .filter(|held| held.record.starts_with(prefix))
+            .count()
+    };
+
+    // The mailbox opens once, and a thread in it brings that place forward rather than a second.
+    open(&mut session, "tl:so.tilo.lang.mail:root-a1b2c3");
+    settle(&mut session, |session| {
+        places_of(session, "tl:so.tilo.lang.mail:root-a1b2c3") == 1
+    });
+    open(
+        &mut session,
+        "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+    );
+    step(&mut session);
+    step(&mut session);
+    assert_eq!(
+        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        1,
+        "one mailbox is open: {:?}",
+        arrangement(&session).places
+    );
+
+    // A thread of another root of the same app is the other mailbox, and opens in its own place.
+    open(&mut session, "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01");
+    settle(&mut session, |session| {
+        places_of(session, "tl:so.tilo.lang.mail:root-z9y8x7") == 1
+    });
+    assert_eq!(
+        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        1,
+        "the other root's thread stands beside the first mailbox, not over it"
+    );
 }

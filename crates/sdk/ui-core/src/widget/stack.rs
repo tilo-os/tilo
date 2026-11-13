@@ -11,14 +11,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
-/// Children painted on top of one another, each `position: Absolute` and
-/// anchored at the stack's top-left. There is deliberately no alignment
-/// option: a child that wants a corner or the centre positions itself (a
-/// `Column`/`Row` with its own insets and justify, or a `Container` with
-/// `with_centered_max_width`), so the stack stays a pure z-order primitive
-/// and the layer's geometry is owned by the layer. If a caller needs the
-/// stack itself to anchor, add an opt-in that maps to `inset` on the child
-/// node rather than changing this default.
+/// Children painted on top of one another, each `position: Absolute` and anchored at the
+/// stack's top-left.
 #[crate::component::not_a_component(layout, "the language's `stack`")]
 pub struct Stack {
     children: Vec<Box<dyn Widget>>,
@@ -63,7 +57,6 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    /// Its children, as its layout node stacks them.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -73,8 +66,6 @@ impl Widget for Stack {
         dyn crate::presence::capability::PublishesPresence
     );
 
-    /// Not short-circuited — a child that skipped its pass would miss a
-    /// frame of state.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
@@ -95,7 +86,6 @@ impl Widget for Stack {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        // Absolute so all children overlap.
         for &node in &child_nodes {
             let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
@@ -106,13 +96,10 @@ impl Widget for Stack {
             display: taffy::Display::Flex,
             size: taffy::Size {
                 width: percent(1.0_f32),
-                // With every child `position: Absolute`, the stack
-                // contributes zero to intrinsic size, so `Dimension::auto()`
-                // here made the parent ration percent-based descendant
-                // heights from 0 rather than the viewport — a Column's
-                // bottom-padding got silently dropped. Pinning to the
-                // parent's height makes the viewport size flow through
-                // to absolute children correctly.
+                // With every child `position: Absolute`, the stack contributes zero to
+                // intrinsic size, so `Dimension::auto()` here made the parent ration
+                // percent-based descendant heights from 0 rather than the viewport — a Column's
+                // bottom-padding got silently dropped.
                 height: percent(1.0_f32),
             },
             ..Default::default()
@@ -164,9 +151,7 @@ impl Widget for Stack {
         }
     }
 
-    /// What its children changed. A stack with a permission gate or a
-    /// presence path paints over its whole box and keeps its conservative
-    /// bounds, as a `Container` does; a plain stack paints nothing of its own.
+    /// What its children changed.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         if self.permission_scope.is_some() || !self.presence_path.is_empty() {
             if self.needs_redraw() || self.needs_animation_frame() {
@@ -217,9 +202,6 @@ impl Widget for Stack {
         "Stack"
     }
 
-    // `.any` would short-circuit and skip `take_structure_dirty()` on later
-    // children once one reports dirty, leaving their flags uncleared --
-    // the non-short-circuiting `.fold` below is required, not incidental.
     #[allow(
         clippy::unnecessary_fold,
         reason = "the fold visits every child to clear every dirty flag; any would stop after the first dirty child"
@@ -231,8 +213,6 @@ impl Widget for Stack {
             .fold(false, |acc, d| acc || d)
     }
 
-    /// A stack adds no structure of its own: a layer's change carried out
-    /// in place stays in place.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         crate::widget::StructureChange::of_children(self.children_mut())
     }

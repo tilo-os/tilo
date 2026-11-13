@@ -1,10 +1,6 @@
-//! The window's slots in its bar ([`ui::window_toolbar`]): the shell's own
-//! sidebar toggle and Back, and what the window shows — a place, or the agent
-//! whose card stands open — as its location ([`ui::framework::WindowBar`]).
-//!
-//! The window draws no header row of its own: the title on screen is the one in
-//! its bar, and its bar names the window for the desktop too (a tab, the
-//! overview and search read the same words).
+//! The window's slots in its bar ([`ui::window_toolbar`]): the shell's own sidebar toggle
+//! and Back, and what the window shows, a place or the agent whose card is open, as its
+//! location ([`ui::framework::WindowBar`]).
 
 use ui::framework::{Dispatcher, WindowBar};
 use ui::prelude::*;
@@ -14,16 +10,10 @@ use crate::Console;
 
 /// The window, with its slots in the window's bar.
 pub(crate) struct ConsoleWindow {
-    /// The window's page: the shell, with the sidebar and the place shown.
     page: Element,
-    /// The shell inside that page: the bar's slots come from it.
     link: WindowBarLink,
-    /// What the window shows, as its bar names it.
     location: String,
-    /// The record's actions, for the bar's own slots.
     dispatcher: Dispatcher<Console>,
-    /// The bar as it was declared last: the press heard now names one of its
-    /// slots, then the window declares the bar for what it shows.
     bar: WindowBar<Console>,
 }
 

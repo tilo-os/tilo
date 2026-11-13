@@ -1,7 +1,6 @@
-//! Remote Desktop as a resource: the saved connections are the [`Remote`]
-//! model, their fields edited at their paths (renaming, pinning, the form's
-//! Save); connect / disconnect / SSH host-key prompts are effects of the
-//! window, and a connection's credentials stay in this device's secret store.
+//! Remote as a resource: the saved connections are the [`Remote`] model, their fields edited
+//! at their paths; connecting and the SSH host-key prompts are effects of the window, and a
+//! credential stays in this device's secret store.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -17,23 +16,16 @@ use crate::app::RemoteApp;
 pub use crate::model::Remote;
 use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
 
-/// The app's id, which its settings are kept under.
 pub const REMOTE_APP_ID: &str = "so.tilo.remote";
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The published id of a saved connection.
 pub fn connection_resource_id(id: ConnectionId) -> String {
     item_resource_id::<Remote>("connections", &Remote::item(id))
 }
 
 impl Remote {
     /// What the record holds: the saved connections.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -47,8 +39,7 @@ impl Remote {
     read_content = Remote::read_document
 )]
 impl Remote {
-    /// Save a new connection to another machine. It signs in the
-    /// protocol's first way; its authentication and group are field edits.
+    /// Save a new connection, signing in the protocol's first way.
     #[action]
     pub fn add_connection(
         &mut self,
@@ -83,10 +74,8 @@ impl Remote {
         Ok(())
     }
 
-    /// Remove a saved connection from every device, and the passwords each
-    /// device saved for it.
-    // Undo brings the connection back but not the passwords every device
-    // forgot, so people confirm it.
+    /// Remove a saved connection from every device, and the passwords each device saved for
+    /// it.
     #[action(destructive, irreversible, item = connections, label = "remote-delete-connection-button")]
     pub fn delete_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
@@ -95,9 +84,8 @@ impl Remote {
             .ok_or_else(|| Refusal::new("no such connection"))
     }
 
-    /// Record that a session to the connection was opened at `at_ms`
-    /// (milliseconds since the Unix epoch). The later of two concurrent
-    /// records wins on every replica; nobody takes it back.
+    /// Record that a session was opened at `at_ms`. The later of two concurrent records wins
+    /// on every replica.
     #[action(housekeeping, item = connections)]
     pub fn mark_used(
         &mut self,
@@ -115,10 +103,8 @@ impl Remote {
     }
 }
 
-/// Framework app: the remote widget over [`Remote`].
 pub struct RemoteShell;
 
-/// The screenshot scenarios; a plain `--shots` is the saved-connection list.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "empty",
@@ -144,6 +130,7 @@ impl ResourceApp for RemoteShell {
     type Resource = Remote;
     const ID: &'static str = REMOTE_APP_ID;
     const TITLE: &'static str = "Remote Desktop";
+    const TITLE_KEY: &'static str = "remote-app-title";
     const ICON: Option<&'static str> = Some("remote");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -169,17 +156,15 @@ impl ResourceApp for RemoteShell {
             .unwrap_or((1280, 800))
     }
 
-    /// What a capture shows that the document does not hold: the time "last
-    /// used" is read against, which machines answered, the Tilo devices
-    /// nearby.
+    /// What a capture shows that the document does not hold: the time last use is read
+    /// against, which machines answered, and the Tilo devices nearby.
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Remote>) {
         fixture.provide(crate::app::Sample::new());
     }
 
-    /// Every scenario but `empty` shows a lived-in list of saved machines,
-    /// written through the same actions the form, the pin control and an
-    /// opened session use.
+    /// Every scenario but `empty` shows a lived-in list of saved machines, written through
+    /// the same actions the form, the pin control and an opened session use.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Remote>> {
         if name == Some("empty") {
@@ -241,8 +226,6 @@ mod tests {
         list.into_iter().next().unwrap()
     }
 
-    /// Every field round-trips; an edit writes only what it changes, so a
-    /// pin and a recorded use survive the form's Save.
     #[test]
     fn connections_round_trip_and_edits_write_only_their_fields() {
         for kind in ConnectionKind::all() {

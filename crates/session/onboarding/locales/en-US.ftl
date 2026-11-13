@@ -1,7 +1,7 @@
 ## Setup
 
 onboarding-intro-title = Set up your Tilo identity
-onboarding-intro-body = You get a cryptographic identity that belongs to you, and this device gets its own key. Collaboration and invitations rely on it. Not every edit in apps is signed yet.
+onboarding-intro-body = You get an identity that belongs to you, and this device gets its own key. Collaboration and invitations rely on it. Not every edit in apps is signed yet.
 onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it vouches for each of your devices.
 onboarding-intro-point-local = It is created on this computer. Nothing is uploaded and no server keeps a copy.
 onboarding-intro-point-not-account = It is not an account and has no password. There is nothing to sign in to.
@@ -10,7 +10,7 @@ onboarding-choice-create-detail = Start fresh on this computer
 onboarding-choice-existing = Use my existing Tilo identity
 onboarding-choice-existing-detail = Bring it over from another device or a backup
 onboarding-host-intro-title = Set up your Tilo identity
-onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
+onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local identity for collaboration and for invitations between devices. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
 onboarding-no-recovery-title = If you lose this device without a backup, this identity is gone
 onboarding-no-recovery-point-no-service = There is no recovery service. Nobody, including Tilo, can reset or recreate this identity for you.
 onboarding-no-recovery-point-backup = Next, write down a recovery key or save an encrypted backup. Either one brings this identity back. Without one, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.
@@ -87,7 +87,7 @@ onboarding-picker-import-title = Choose a Tilo identity
 onboarding-picker-import-filter = Tilo identity
 onboarding-nearby-title = Connect a nearby device
 onboarding-nearby-body = This computer is waiting for your other device to approve it. Keep both devices close together.
-onboarding-nearby-step-open = On your other device, open Settings and go to Devices & Sync.
+onboarding-nearby-step-open = On your other device, open Settings and go to Sync between devices.
 onboarding-nearby-step-add = Under Add a personal device, choose Add device.
 onboarding-nearby-step-compare = Compare the six-digit code on both screens, then approve it on your other device.
 onboarding-nearby-waiting = Waiting for your other device.
@@ -110,7 +110,7 @@ onboarding-backup-verified-earlier = The verified backup was saved before setup 
 onboarding-picker-backup-title = Save encrypted identity backup
 onboarding-picker-backup-filter = Encrypted Tilo identity
 onboarding-done-title = Your identity is ready
-onboarding-done-body = This fingerprint identifies your local cryptographic root. Tilo can present it in collaboration flows that support verification; you do not need to type it.
+onboarding-done-body = This fingerprint identifies this computer's copy of your identity. People can use it to check that it is yours; you never have to type it.
 onboarding-done-ready = Identity stored on this device
 onboarding-host-done-title = Your Tilo identity is ready
 onboarding-host-done-body = You use this local identity when you collaborate or invite people. It is separate from your Linux login and is not an online account.
@@ -237,9 +237,6 @@ onboarding-migration-cleanup-running = Your things are ready in Tilo. Removing t
 
 ## Actions setup offers
 
-onboarding-backup-save-action = Save an encrypted backup
-onboarding-tour-take = Take a quick tour
-onboarding-existing-files-use = Use my existing files
 
 # Pairing with a nearby device: what failed and what to do next
 onboarding-nearby-failed-title = Pairing did not finish
@@ -288,7 +285,6 @@ onboarding-portable-home-unavailable = Your transfer is not available on this co
 onboarding-migration-resume-unavailable = There is no deferred file migration available for your current identity.
 onboarding-portable-applications-unavailable = Your apps could not be restored. You can retry without replacing your existing files.
 onboarding-browser-unavailable = Your browser data is still waiting. Try again or continue for now.
-onboarding-backup-unavailable = A personal identity backup can’t be created on this device.
 
 ## A sample recovery key shown by a review render
 onboarding-sample-recovery-words = abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual

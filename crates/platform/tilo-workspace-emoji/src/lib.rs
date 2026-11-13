@@ -1,18 +1,12 @@
-//! A workspace's own emoji: a name and a small picture each, kept in one
-//! record of the workspace's room that every app of the workspace opens, so
-//! `:name:` draws the same picture in a reaction, a chat message or a note.
+//! A workspace's emoji: a name and a small picture each, in one record that
+//! every app of the workspace opens, so `:name:` draws the same picture in a
+//! reaction, a chat message or a note.
 //!
-//! The record is Chat's ([`OWNER`]): its actions are decided against Chat's
-//! committed surface, by the room's grants, wherever they are invoked. Any
-//! member who may make undoable changes (an Editor) adds emoji and removes
-//! their own; removing someone else's is moderation, as removing someone
-//! else's message is.
-//!
-//! The picture lives inside the record rather than in a content store:
-//! content is kept per room *and app*, so an emoji added from Notes would be
-//! unreadable to Chat. That bounds it: [`MAX_IMAGE_BYTES`] keeps the picture,
-//! and the action that adds it, below the size at which an action's payload
-//! moves to the adding app's content store.
+//! The record is Chat's ([`OWNER`]): any Editor adds emoji and removes their
+//! own, removing someone else's is moderation. The picture is kept inside the
+//! record, not in a content store, because content is kept per room *and app*:
+//! an emoji added from Notes would be unreadable to Chat. [`MAX_IMAGE_BYTES`]
+//! keeps it below the size at which an action's payload moves to content.
 
 use base64::Engine as _;
 use tilo_resource::{ActionCx, Doc, Map, Model, ModelError, Refusal, Settable, Slot, resource};
@@ -20,48 +14,37 @@ use tilo_resource::{ActionCx, Doc, Map, Model, ModelError, Refusal, Settable, Sl
 #[cfg(test)]
 mod tests;
 
-/// The app whose record this is, and whose surface decides its changes:
-/// Chat ships wherever a workspace is used, natively and in the browser.
+/// The app that owns the record and decides its changes: Chat ships wherever a workspace is used.
 pub const OWNER: &str = "so.tilo.chat";
 
-/// The record's resource kind.
 pub const KIND: &str = "tilo.workspace.emoji";
 
 /// The largest picture an emoji keeps, in bytes. An action's text or byte
 /// runs of 16 KiB or more are kept apart as content of the app invoking it
-/// (`tilo_actions::CONTENT_PART_THRESHOLD`), which other apps of the room
-/// cannot read; the picture travels as base64, so it stays below 12 KiB.
+/// (`tilo_actions::CONTENT_PART_THRESHOLD`), unreadable to other apps of the
+/// room; the picture travels as base64, so it stays below 12 KiB.
 pub const MAX_IMAGE_BYTES: usize = 12_000;
 
-/// The most emoji a workspace keeps.
 pub const MAX_EMOJI: usize = 250;
 
-/// The longest a person id stored with an emoji may be.
 const MAX_AUTHOR: usize = 4096;
 
 /// An emoji's picture, PNG or WebP, kept inside the record as one bytes
-/// value: written whole, last writer wins. Its JSON form (an action's
-/// argument, an agent's read) is the base64 of the bytes.
+/// value: written whole, last writer wins. Its JSON form is base64.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmojiImage(pub Vec<u8>);
 
 impl EmojiImage {
-    /// The picture's bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.0
     }
 
-    /// The picture as an action's argument carries it.
     #[must_use]
     pub fn to_base64(&self) -> String {
         base64::engine::general_purpose::STANDARD.encode(&self.0)
     }
 
-    /// A picture an action's argument carries.
-    ///
-    /// # Errors
-    /// The text is not base64.
     pub fn from_base64(text: &str) -> Result<Self, Refusal> {
         base64::engine::general_purpose::STANDARD
             .decode(text)
@@ -77,7 +60,6 @@ impl EmojiImage {
     }
 }
 
-/// Whether `bytes` start as a PNG or a WebP file does.
 #[must_use]
 pub fn is_png_or_webp(bytes: &[u8]) -> bool {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -145,13 +127,8 @@ pub struct WorkspaceEmoji {
 }
 
 impl WorkspaceEmoji {
-    /// What the record holds: the emoji the workspace keeps, by name: each one's picture and
-    /// who added it, and when.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// The record's emoji, by name, read through
+    /// [`fields`](tilo_resource::read::fields).
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -230,8 +207,7 @@ impl WorkspaceEmoji {
 
     /// Remove anyone's emoji.
     ///
-    /// Someone else's emoji, as a moderator: the room's roles decide who may
-    /// (Moderators, administrators and the owner).
+    /// Someone else's emoji: the room's roles decide who may.
     #[action(moderation)]
     pub fn remove_any_emoji(
         &mut self,
@@ -267,14 +243,12 @@ impl WorkspaceEmoji {
         Ok(())
     }
 
-    /// The emoji's names, sorted: what a bridge maps to the other side's
-    /// emoji, and what `:name:` may name here.
+    /// The names, sorted: what a bridge maps and what `:name:` may name.
     #[must_use]
     pub fn names(&self) -> Vec<&str> {
         self.emoji.iter().map(|(name, _)| name.as_str()).collect()
     }
 
-    /// The emoji called `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Emoji> {
         self.emoji.get(name)
@@ -326,7 +300,6 @@ fn no_such(name: &str) -> Refusal {
     Refusal::new(format!("there is no emoji :{name}:"))
 }
 
-/// Who the action is by: an emoji is always someone's.
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .filter(|author| !author.is_empty() && author.len() <= MAX_AUTHOR)

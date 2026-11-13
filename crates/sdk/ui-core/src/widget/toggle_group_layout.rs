@@ -5,8 +5,6 @@ use vello::kurbo::Rect;
 
 use crate::num::f64_of_usize;
 
-/// `rect` stacked into `n` square segments as wide as it is, the gaps
-/// between them sharing the height left over.
 pub(super) fn stack(rect: Rect, n: usize) -> Vec<Rect> {
     let side = rect.width();
     let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
@@ -19,8 +17,6 @@ pub(super) fn stack(rect: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
-/// `rect` split into `n` equal segments, the last one anchored to the right
-/// edge so accumulated rounding leaves no hairline gap.
 pub(super) fn partition(rect: Rect, n: usize) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
@@ -40,12 +36,6 @@ pub(super) fn partition(rect: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
-/// Tabs packed from the leading edge, each as wide as its label needs,
-/// shifted left by `scroll`.
-/// Page tabs in `room`, as `(width, width)` pairs [`packed`] lays out:
-/// each as wide as its full label while they all fit, else as wide as its
-/// short label where it has one, before the strip scrolls. Also returns,
-/// per tab, whether it shows its short label.
 pub(super) fn tab_fit(room: f64, naturals: &[(f64, f64)]) -> (Vec<(f64, f64)>, Vec<bool>) {
     let content: f64 = naturals.iter().map(|(full, _)| full).sum();
     let shorten = content > room + 0.5;
@@ -73,8 +63,6 @@ pub(super) fn packed(rect: Rect, naturals: &[(f64, f64)], scroll: f64) -> Vec<Re
         .collect()
 }
 
-/// Segments of a multi-select strip, each its natural width, `gap` apart,
-/// wrapping onto rows `height` tall. Returns the rects and the row count.
 pub(super) fn flow(
     rect: Rect,
     naturals: &[(f64, f64)],

@@ -1,14 +1,4 @@
 //! Telling the servers of this device's accounts what changed.
-//!
-//! Each remote item carries what its server last confirmed holding
-//! ([`Calendar::remote`]). After every change — a click, the palette, an
-//! agent, a collaborator, an undo — the calendar queues the upload of each
-//! remote event its server does not hold as it is, and the delete of each
-//! copy a server holds of an event gone from that calendar here
-//! ([`Calendar::uploads`], [`Calendar::deletes`]). The device holding the
-//! account carries each entry out, records what the server confirmed
-//! (`server-applied`, `server-removed`) and settles it; one that fails stays
-//! pending and is tried again when the calendar next changes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,19 +10,14 @@ use crate::caldav::{self, MutationResult, RemoveJob, UploadJob};
 use crate::model::{Calendar, Id, RemoteCopy};
 use crate::resource::{RemoteAt, calendar, fingerprint};
 
-/// The accounts configured on this device, as the drains read them.
 pub(crate) type DeviceAccounts = Rc<RefCell<AccountStore>>;
 
-/// Whether an account on this device holds the remote calendar `id`.
 fn holds(accounts: &AccountStore, id: &str) -> bool {
     accounts
         .all_calendars()
         .any(|(_, calendar)| calendar.id == id)
 }
 
-/// The upload of `event` to the calendar `calendar_id`, as this device
-/// sends it: the event as it is now, guarded by the version the server
-/// last confirmed.
 fn upload_job(
     state: &Calendar,
     accounts: &AccountStore,
@@ -61,7 +46,6 @@ fn upload_job(
     })
 }
 
-/// Each queued upload this device carries out.
 #[cfg(test)]
 pub(crate) fn uploads(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, UploadJob)> {
     state
@@ -74,7 +58,6 @@ pub(crate) fn uploads(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, Upl
         .collect()
 }
 
-/// Each queued delete this device carries out.
 #[cfg(test)]
 pub(crate) fn deletes(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, RemoveJob)> {
     state
@@ -98,8 +81,6 @@ pub(crate) fn deletes(state: &Calendar, accounts: &AccountStore) -> Vec<(Id, Rem
         .collect()
 }
 
-/// The copies on servers an upload waits to replace: what protects the
-/// local version from what the server sends meanwhile.
 pub(crate) fn pending_copies(state: &Calendar) -> Vec<&RemoteCopy> {
     state
         .uploads
@@ -113,8 +94,6 @@ pub(crate) fn pending_copies(state: &Calendar) -> Vec<&RemoteCopy> {
         .collect()
 }
 
-/// Carry out the queued uploads and deletes of the calendars `accounts`
-/// holds for as long as the surface lives.
 pub(crate) fn drain(cx: &RecordEnv<Calendar>, accounts: &DeviceAccounts) {
     let owner = Rc::clone(accounts);
     let held = Rc::clone(accounts);
@@ -125,7 +104,6 @@ pub(crate) fn drain(cx: &RecordEnv<Calendar>, accounts: &DeviceAccounts) {
             let state = cx.live().get();
             let Some(job) = upload_job(&state, &held.borrow(), upload.event, &upload.calendar)
             else {
-                // Gone, or moved off that calendar since: nothing to send.
                 return Ok(Effected::done());
             };
             let holds = fingerprint(&job.event);
@@ -186,7 +164,6 @@ pub(crate) fn drain(cx: &RecordEnv<Calendar>, accounts: &DeviceAccounts) {
     );
 }
 
-/// What one upload or delete came to: done, or why it is tried again.
 fn outcome(result: &MutationResult) -> EffectAnswer {
     if let Some((_, href)) = result.conflicts.first() {
         return Err(format!(

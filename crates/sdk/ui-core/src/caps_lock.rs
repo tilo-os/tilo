@@ -1,26 +1,7 @@
-//! Heuristic Caps-Lock detection.
-//!
-//! winit's `ModifiersState` reports only held modifiers (SHIFT/CONTROL/ALT/
-//! SUPER) — no lock-state bit, so Caps Lock can't be read directly. We infer
-//! it from each typed letter and the Shift state that produced it:
-//!
-//! | typed letter | Shift held | conclusion      |
-//! |--------------|------------|-----------------|
-//! | UPPER (`A`)  | no         | Caps Lock **on**  |
-//! | UPPER (`A`)  | yes        | Caps Lock **off** |
-//! | lower (`a`)  | yes        | Caps Lock **on**  (Shift inverts the lock) |
-//! | lower (`a`)  | no         | Caps Lock **off** |
-//!
-//! Non-alphabetic input leaves the estimate unchanged. Standard approach for
-//! login screens; correct from the user's first typed letter.
+//! Heuristic Caps-Lock detection. winit's `ModifiersState` reports only held modifiers
+//! (SHIFT/CONTROL/ALT/ SUPER) — no lock-state bit, so Caps Lock can't be read directly.
 
-/// A running estimate of whether Caps Lock is engaged, inferred from typed
-/// letters. Cheap to copy and to keep alive; update it by feeding each typed
-/// character (and the Shift state that produced it) through [`observe`] /
-/// [`observe_text`].
-///
-/// [`observe`]: CapsLockEstimate::observe
-/// [`observe_text`]: CapsLockEstimate::observe_text
+/// A running estimate of whether Caps Lock is engaged, inferred from typed letters.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapsLockEstimate {
     on: bool,
@@ -32,8 +13,8 @@ impl CapsLockEstimate {
         Self { on: false }
     }
 
-    /// The current best guess: `true` iff the most recent alphabetic
-    /// keystroke implied Caps Lock is engaged.
+    /// The current best guess: `true` iff the most recent alphabetic keystroke implied Caps Lock is
+    /// engaged.
     pub fn on(&self) -> bool {
         self.on
     }
@@ -42,7 +23,6 @@ impl CapsLockEstimate {
     /// characters leave it unchanged. Result is order-independent for a
     /// run typed under one Shift state, so callers may pass every char.
     pub fn observe(&mut self, ch: char, shift: bool) -> bool {
-        // See the module-level truth table.
         if ch.is_ascii_uppercase() {
             self.on = !shift;
         } else if ch.is_ascii_lowercase() {
@@ -51,8 +31,8 @@ impl CapsLockEstimate {
         self.on
     }
 
-    /// Fold every character of a typed `text` run (all produced under the
-    /// same `shift` state — as winit delivers a single `KeyEvent`).
+    /// Fold every character of a typed `text` run (all produced under the same `shift` state — as winit
+    /// delivers a single `KeyEvent`).
     pub fn observe_text(&mut self, text: &str, shift: bool) {
         for ch in text.chars() {
             self.observe(ch, shift);
@@ -94,7 +74,6 @@ mod tests {
         }
         assert!(c.on(), "still on after non-alpha input");
 
-        // `observe_text` folds a run.
         let mut c = CapsLockEstimate::new();
         c.observe_text("HELLO", false);
         assert!(c.on());

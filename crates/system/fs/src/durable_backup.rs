@@ -1,10 +1,7 @@
-//! Bounded, crash-safe generations for durable collaborative workspace files.
-//!
-//! This module is intentionally not used for identity keys, ACLs, or share
-//! authority: rolling those stores backwards can revive an identity or grant.
-//! It is for replicated or reconstructable workspace state. A damaged primary
-//! is never discarded: recovery copies its exact bytes to an evidence file and
-//! writes a receipt naming both hashes before returning the recovered bytes.
+//! Bounded, crash-safe generations for durable workspace files. Never for
+//! identity keys, ACLs or share authority: rolling those back can revive an
+//! identity or a grant. A damaged primary is copied to an evidence file with a
+//! receipt naming both hashes before anything replaces it.
 
 use std::fs;
 use std::io;
@@ -31,14 +28,7 @@ pub struct ReadOutcome {
     pub recovery: Option<RecoveryEvidence>,
 }
 
-/// Read a primary under the same allocation bound used by recovery. Callers
-/// that expose format-specific errors can validate this first, then invoke
-/// [`read_or_recover`] only after validation fails.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read or exceeds the durable-state
-/// byte bound.
+/// Read a primary under the same allocation bound used by recovery.
 pub fn read_primary(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match read_bounded(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -59,11 +49,9 @@ struct RecoveryReceiptV1 {
     evidence_file: String,
 }
 
-/// Read and validate a primary file, recovering the newest valid retained
-/// generation when (and only when) a present primary is invalid.
-///
-/// A missing primary remains missing. An invalid primary with no valid backup
-/// fails closed and is left byte-for-byte untouched.
+/// Read and validate a primary, recovering the newest valid generation when a
+/// present primary is invalid. A missing primary stays missing; an invalid one
+/// with no valid backup fails closed and is left untouched.
 pub fn read_or_recover(
     path: &Path,
     validate: impl Fn(&[u8]) -> bool,
@@ -118,15 +106,14 @@ pub fn read_or_recover(
     };
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(io::Error::other)?;
     tilo_files::native::atomic::write(&receipt_path, &receipt_bytes)?;
-    // Do not route this through `write`: that deliberately refuses to replace
-    // an invalid primary. The exact bad bytes and recovery intent are durable.
+    // Not `write`: that refuses to replace an invalid primary. The bad bytes and
+    // the recovery intent are made durable first.
     tilo_files::native::atomic::write(path, &recovered)?;
     receipt.completed = true;
     if let Ok(receipt_bytes) = serde_json::to_vec_pretty(&receipt) {
-        // If this final annotation cannot be written (for example, the device
-        // became full after the primary rename), the durable `completed:false`
-        // receipt remains. That is conservative and still identifies every
-        // byte involved; startup can compare the named recovered hash.
+        // If this final annotation cannot be written (a full device after the
+        // primary rename), the durable `completed:false` receipt still names every
+        // byte involved.
         if let Err(error) = tilo_files::native::atomic::write(&receipt_path, &receipt_bytes) {
             eprintln!(
                 "workspace state recovered but completion receipt update failed at {}: {error}",
@@ -148,7 +135,7 @@ pub fn read_or_recover(
 
 /// Validate and atomically replace a primary, retaining its previous valid
 /// contents as one bounded generation. A concurrently damaged primary is not
-/// overwritten and is not promoted into the backup set.
+/// overwritten and not promoted into the backup set.
 pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io::Result<()> {
     if !validate(bytes) {
         return Err(io::Error::new(

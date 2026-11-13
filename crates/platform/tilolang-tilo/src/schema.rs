@@ -566,8 +566,9 @@ pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
 
 /// Record that `app` was published under the ids `before` earlier: the records the workspace holds
 /// under them are `app`'s, where they are and under the ids they have, and grants written under
-/// them are its (the process's one table, `tilo_action_policy::earlier`). That the same publisher
-/// signed both is checked where the package is installed; a package loaded here is trusted.
+/// them are its (the process's one table, `tilo_action_policy::earlier`). Only what the installed
+/// catalogue believes is registered (the same publisher signed both): a package's own
+/// `previously:` is a claim, and loading it registers nothing.
 pub fn register_previously(app: &str, before: &[String]) {
     tilo_action_policy::earlier::register(app, before.iter().cloned());
 }

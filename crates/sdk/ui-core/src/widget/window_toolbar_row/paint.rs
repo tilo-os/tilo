@@ -10,7 +10,6 @@ use super::{
 use crate::widget::DrawChild;
 
 impl ToolbarRow {
-    /// Paint the row's menus, in the window's top layer.
     pub(crate) fn paint_popups(
         &mut self,
         scene: &mut Scene,
@@ -37,7 +36,6 @@ impl ToolbarRow {
         if self.measure_views(theme) {
             self.measured = true;
         }
-        // The words this paint lays down replace those of the paint before it.
         let mut words = std::mem::take(&mut self.labels);
         words.clear();
         let now = crate::motion::frame_now();
@@ -46,8 +44,6 @@ impl ToolbarRow {
             && outgoing.is_some()
             && let Some((toolbar, slots)) = self.outgoing.as_ref()
         {
-            // The slots leaving say nothing of their own any more: they fade under the ones
-            // that come in, whose words are the row's.
             let mut leaving = Vec::new();
             layered(scene, transform, self.row, opacity, |scene| {
                 let _ = paint_slots(
@@ -115,7 +111,6 @@ impl ToolbarRow {
                 },
             ),
         );
-        // A compact window's notice says itself in its own strip under the row.
         if let Some(notice) = self.strip.notice() {
             words.push(crate::window_toolbar::BarLabel::new(
                 "BarStripNotice",
@@ -128,8 +123,6 @@ impl ToolbarRow {
         self.labels = words;
     }
 
-    /// Start moving the slots the app changed since the last paint, now
-    /// that they are laid out and measured where they go.
     pub(super) fn start_slot_change(&mut self, theme: &Theme) {
         let now = crate::motion::frame_now();
         if let Some(before) = self.changed_from.take()
@@ -145,8 +138,6 @@ impl ToolbarRow {
         self.slot_changes.prune(now);
     }
 
-    /// The slots the app took away, fading out where they stood: each
-    /// painted from the row it stood in, cut to its place.
     fn paint_leaving(
         &self,
         scene: &mut Scene,
@@ -183,20 +174,14 @@ impl ToolbarRow {
     }
 }
 
-/// What the person is doing with the row, for its paint.
 pub(super) struct Interaction {
-    /// The slots arriving and moving after the app changed them, by who
-    /// they are; empty at rest.
     pub(super) poses: std::collections::HashMap<SlotKey, Pose>,
     pub(super) hover: Option<Slot>,
     pub(super) pressed: Option<Slot>,
     pub(super) editing: bool,
-    /// The button whose menu is open (the location, for its picker): it
-    /// stays lifted.
     pub(super) menu_open: Option<Slot>,
 }
 
-/// Paint `paint` at `opacity`, in a layer only while it is part-way.
 pub(super) fn layered(
     scene: &mut Scene,
     transform: Affine,
@@ -223,8 +208,6 @@ pub(super) fn layered(
     }
 }
 
-/// Whether `slot` is drawn on: the sidebar's toggle while the sidebar is
-/// open, a toggle while it is on (a panel's, while the panel is open).
 pub(super) fn shows_on(toolbar: &WindowToolbar, slot: &Slot) -> bool {
     match slot {
         Slot::Sidebar => toolbar.sidebar == Some(true),
@@ -234,11 +217,8 @@ pub(super) fn shows_on(toolbar: &WindowToolbar, slot: &Slot) -> bool {
     }
 }
 
-/// The slots in motion of a row's paint, by who they are (`None`: at rest).
 type Poses<'a> = Option<&'a std::collections::HashMap<SlotKey, Pose>>;
 
-/// Paint one slot as it is posed: at its opacity and moved by its offset
-/// while it arrives or glides ([`super::slot_change`]), else as it stands.
 fn posed(
     scene: &mut Scene,
     transform: Affine,
@@ -255,9 +235,6 @@ fn posed(
     layered(scene, at, rect, *opacity, |scene| paint(scene, at));
 }
 
-/// Paint `toolbar`'s slots. Returns where a location with choices painted
-/// its picker, which its menu hangs from; the words they stand as are
-/// added to `words`, where a reader of the bar reads them.
 pub(super) fn paint_slots(
     scene: &mut Scene,
     transform: Affine,
@@ -279,7 +256,6 @@ pub(super) fn paint_slots(
         .map(|i| &i.poses)
         .filter(|poses| !poses.is_empty());
     let pose = (poses, toolbar);
-    // A button the row has no room for is in the overflow menu, not here.
     if toolbar.sidebar.is_some() && slots.sidebar.area() > 0.0 {
         let lifted = face(
             Slot::Sidebar,
@@ -397,7 +373,6 @@ pub(super) fn paint_slots(
             pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
             focused: false,
         };
-        // As the views' picker the location names its period, not the view.
         let picker = match toolbar.location.as_ref() {
             Some(location) if slots.views_in_location() => {
                 let (shown, ink) = location_shown(location, slots.form, theme);
@@ -433,8 +408,6 @@ pub(super) fn paint_slots(
         lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
         lifted.destructive = action.destructive;
         lifted.primary = action.primary;
-        // A command that names itself stands as words where the row has room for them, its
-        // icon beside them; its icon alone where not.
         if action.labelled && slots.actions_labelled {
             let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
@@ -528,21 +501,13 @@ pub(super) fn paint_slots(
     trigger
 }
 
-/// How the pointer stands on a picker: the location, or the views menu.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LocationLift {
     pub(crate) hovered: bool,
-    /// Pressed, or its menu is open.
     pub(crate) pressed: bool,
-    /// Holds keyboard focus with the ring shown.
     pub(crate) focused: bool,
 }
 
-/// The location at rest: its icon, then its label in form `form`
-/// ([`Slots::form`]), elided at the end. An
-/// editable one stands in a field's frame, so it reads as one to click; one
-/// with choices reads as a picker, its label and a chevron on the bar's
-/// plain button face, and returns where it painted that.
 pub(super) fn paint_location(
     scene: &mut Scene,
     transform: Affine,
@@ -574,11 +539,13 @@ pub(super) fn paint_location(
         text_rect = face.text_rect(theme);
     }
     if let Some(avatar) = &location.avatar {
-        // Who the location is: their face, and whether they are here, in place of an icon.
         let side = crate::widget::AvatarSize::Small.side(theme);
         let mut face = crate::widget::AvatarFace::new(&avatar.name, &avatar.identity);
         if avatar.agent {
             face = face.agent();
+        }
+        if let Some(hue) = avatar.hue {
+            face = face.hue(hue);
         }
         if let Some(presence) = avatar.presence {
             face = face.status(presence.status());
@@ -596,7 +563,6 @@ pub(super) fn paint_location(
             transform,
             Rect::from_center_size(c, (LOCATION_ICON_PX, LOCATION_ICON_PX)),
             icon,
-            // A notice's icon says its kind in its kind's colour.
             notice.map_or(theme.tokens.colors.text_dim, |kind| {
                 crate::widget::toast::kind_color(kind, theme)
             }),
@@ -604,7 +570,6 @@ pub(super) fn paint_location(
         );
         text_rect.x0 += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
     }
-    // A location with levels shows them as a breadcrumb.
     if let Some(crumbs) = crumbs
         && !location.segments.is_empty()
     {
@@ -624,7 +589,6 @@ pub(super) fn paint_location(
     label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
     if let Some(words) = words {
         words.push(label.bar_label(
-            // A notice says itself in the location's place until it has a strip of its own.
             if notice.is_some() {
                 "BarNotice"
             } else {
@@ -637,9 +601,6 @@ pub(super) fn paint_location(
     None
 }
 
-/// What the location says, in its ink: form `form` of its label
-/// ([`crate::window_toolbar::ToolbarLocation::form`]), else its
-/// placeholder.
 pub(crate) fn location_shown<'a>(
     location: &'a crate::window_toolbar::ToolbarLocation,
     form: usize,
@@ -654,10 +615,6 @@ pub(crate) fn location_shown<'a>(
     (location.form(form), theme.tokens.colors.text_primary)
 }
 
-/// A labelled action's text button in `rect`, saying `name`
-/// ([`crate::window_toolbar::ToolbarAction::labelled`]), at the size of the bar's icon
-/// buttons: the bar's plain face, or the primary button's accent where it is the app's one
-/// main action ([`crate::window_toolbar::ToolbarAction::primary`]).
 pub(crate) fn labelled_face(
     rect: Rect,
     name: &str,
@@ -672,16 +629,12 @@ pub(crate) fn labelled_face(
         .control_size(crate::widget::ControlSize::Small)
 }
 
-/// How wide a picker ([`paint_picker`]) whose label is `label_w` wide
-/// stands.
 pub(crate) fn picker_width(label_w: f64, theme: &Theme) -> f64 {
     let pad = f64::from(theme.tokens.spacing.s2);
     let gap = f64::from(theme.tokens.spacing.s1);
     pad * 2.0 + label_w.ceil() + gap + LOCATION_ICON_PX
 }
 
-/// What a picker ([`paint_picker`]) says: its label in its ink, and
-/// whether the document it names has unsaved edits.
 #[derive(Clone, Debug)]
 pub(crate) struct PickerText<'a> {
     shown: &'a str,
@@ -698,7 +651,6 @@ impl<'a> PickerText<'a> {
         }
     }
 
-    /// The word that follows the label ([`trailing_word`]).
     pub(crate) fn trailing(mut self, word: Option<String>) -> Self {
         self.word = word;
         self

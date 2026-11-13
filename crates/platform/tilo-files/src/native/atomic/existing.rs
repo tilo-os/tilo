@@ -16,7 +16,7 @@ struct Custody {
     privacy: native::FilePolicy,
 }
 
-/// Failure committing an already existing object. Drop never removes anything.
+/// Drop never removes anything.
 pub struct ExistingCommitError {
     source: io::Error,
     changed: bool,
@@ -32,7 +32,7 @@ impl ExistingCommitError {
     pub fn into_io_error(self) -> io::Error {
         io::Error::new(self.source.kind(), self)
     }
-    /// Revalidate and repeat data/name barriers using retained authority only.
+    /// Revalidates and repeats the data and name barriers using retained authority only.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(custody) = &self.custody else {
             return Err(self);

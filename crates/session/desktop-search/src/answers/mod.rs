@@ -254,8 +254,10 @@ impl Parser {
 /// also rounds away what float arithmetic leaves behind (0.1 + 0.2 is 0.3),
 /// and no trailing zeros.
 pub fn format_number(value: f64) -> String {
-    // ignored-failure: a number formatted from a float parses back unchanged
-    let rounded: f64 = format!("{value:.9e}").parse().unwrap_or(value);
+    let rounded: f64 = tilo_failure::ignored!(
+        "a number formatted from a float parses back unchanged",
+        format!("{value:.9e}").parse().unwrap_or(value)
+    );
     let magnitude = rounded.abs();
     if magnitude >= 1e15 || (magnitude > 0.0 && magnitude < 1e-6) {
         format!("{rounded:e}")

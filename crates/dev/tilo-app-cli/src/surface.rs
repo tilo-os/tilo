@@ -41,10 +41,8 @@ use serde_json::Value;
 
 use crate::contract::{ContractFinding, ContractReport, Level};
 
-/// The committed surface's file name, at the app's root.
 pub const FILE: &str = "surface.toml";
 
-/// The flag that makes a framework app's binary print its report.
 pub const FLAG: &str = "--surface";
 
 const HEADER: &str = "# Written by `tilo-app surface`; review changes like an API change.\n\n";
@@ -67,18 +65,14 @@ pub struct Committed {
     pub resources: Vec<Value>,
 }
 
-/// What an app's binary reports about its surface.
 #[derive(Debug, Default)]
 pub struct SurfaceReport {
-    /// One surface per resource kind, as JSON.
     pub resources: Vec<Value>,
     /// Controls bound to something the resource does not publish.
     pub unbound: Vec<String>,
     /// Why the view could not be built headless, if it could not.
     pub view: Option<String>,
-    /// The ids of the effects the view publishes.
     pub effects: Vec<String>,
-    /// The ids of the resource's named views.
     pub views: Vec<String>,
     /// The ids the framework publishes its own actions under, as the app's
     /// framework reports them.
@@ -294,7 +288,6 @@ pub fn filed(resource: &Value) -> Value {
         .filter_map(Value::as_object_mut)
     {
         named.remove("doc");
-        // A case that reads as its name in words says nothing more.
         for case in named
             .get_mut("cases")
             .and_then(Value::as_array_mut)
@@ -565,7 +558,6 @@ pub fn write(app_dir: &Path, resources: &[Value]) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The committed surface, if the app has one.
 pub fn committed(app_dir: &Path) -> Result<Option<Committed>> {
     let path = app_dir.join(FILE);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -756,7 +748,6 @@ fn rust_text(field: &Value) -> bool {
     })
 }
 
-/// A field's type, for a sentence.
 fn type_text(field: &Value) -> String {
     match field.get("type") {
         Some(Value::String(text)) => text.clone(),
@@ -1241,9 +1232,6 @@ mod tests {
         assert!(found.findings.is_empty(), "{}", found.render());
     }
 
-    /// The file a receiver reads holds what it decides with: verb kinds and
-    /// footprints, field layouts and read-only marks, without the text that
-    /// stays in the code.
     #[test]
     fn a_written_surface_reads_as_what_receivers_decide_with() {
         let mut book = resource(1, "String", &["rename"]);
@@ -1269,8 +1257,6 @@ mod tests {
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 
-    /// What an action answers with is part of the file, its schema without
-    /// the prose the types' doc comments put in it.
     #[test]
     fn an_actions_answer_reads_back_with_its_type() {
         let mut book = resource(1, "String", &["rename"]);
@@ -1300,8 +1286,6 @@ mod tests {
         assert_eq!(surface.types[0].name, "Renamed");
     }
 
-    /// A file written before its app published read actions stays current
-    /// without them; once it has them, a read verb it lacks is drift.
     #[test]
     fn a_file_written_before_read_actions_takes_them_when_written_again() {
         let before = vec![normalized(&resource(1, "String", &["rename"]))];
@@ -1322,7 +1306,6 @@ mod tests {
         let found = findings("so.tilo.notes", &now, Some(&older), None, Level::Warning);
         assert!(found.findings.is_empty(), "{}", found.render());
 
-        // Written, it lists the read action, and the file is what the code is.
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), &now.resources).unwrap();
         let committed = committed(temp.path()).unwrap().unwrap();
@@ -1459,8 +1442,6 @@ mod tests {
         assert!(parsed.view.is_none());
     }
 
-    /// A verb, effect or view under an id the framework publishes its own
-    /// action under is refused, whichever it is; other ids pass.
     #[test]
     fn an_action_with_a_framework_id_is_refused() {
         let mut now = report(&[resource(1, "String", &["rename", "undo"])]);
@@ -1498,12 +1479,6 @@ mod tests {
         assert!(!is_framework_app(temp.path()));
     }
 
-    /// Messages publishes verbs and field edits, so every one of them has to
-    /// read in the app's own words: the live report and the catalogue it is
-    /// checked against are the app's, not a fixture standing in for it. The
-    /// report is the one `messages --surface` prints, taken in this process
-    /// from the app linked into the test rather than by building and running
-    /// its binary here, which made the test as slow as a cold build of the app.
     #[test]
     fn messages_history_reads_in_its_own_words() {
         let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");

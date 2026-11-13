@@ -68,7 +68,6 @@ const failed = async message => {
 
 // SwiftShader's WebGPU, as the Lounge's other browser checks run it.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
@@ -171,10 +170,12 @@ const arrive = async (tab, url, what) => {
   await until(tab, `document.documentElement.dataset.bar === 'shown'`, `${what}'s bar`);
 };
 
-// The workspace's host as a link names it: a loopback host reached over TLS
-// keeps its scheme (`https:127.0.0.1:9781`), every other host is its name.
+// The workspace's host as a link names it: this machine's host reached over
+// TLS keeps its scheme (`https:127.0.0.1:9781`), and every other host — the
+// plain-http stack included — is its authority alone.
 const host = new URL(origin);
-const hostRoute = ['127.0.0.1', 'localhost', '[::1]'].includes(host.hostname) ? `https:${host.host}` : host.host;
+const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(host.hostname) || host.hostname.endsWith('.localhost');
+const hostRoute = loopback && host.protocol === 'https:' ? `https:${host.host}` : host.host;
 const base = site.endsWith('/') ? site : `${site}/`;
 const documentLink = `${base}app/#/@${hostRoute}/w/${workspace}/${APP}/-`;
 report.opened = documentLink;

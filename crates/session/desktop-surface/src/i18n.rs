@@ -120,69 +120,31 @@ mod tests {
 
     #[test]
     fn counts_choose_the_plural_form_in_every_locale() {
-        let changes = |changes: usize, people: usize| {
+        let opened = |windows: usize| {
             t_args(
-                "activity-changes-workspace",
-                &[
-                    ("workspace", "Design".into()),
-                    ("changes", changes.into()),
-                    ("people", people.into()),
-                ],
+                "activity-event-opened-windows",
+                &[("count", windows.into())],
             )
         };
-        let english = (changes(1, 1), changes(3, 2));
+        let english = (opened(1), opened(3));
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = (changes(1, 1), changes(3, 2));
+        let german = (opened(1), opened(3));
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english.0, "Design · 1 change by 1 person");
-        assert_eq!(english.1, "Design · 3 changes by 2 people");
-        assert_eq!(german.0, "Design · 1 Änderung von 1 Person");
-        assert_eq!(german.1, "Design · 3 Änderungen von 2 Personen");
+        assert_eq!(english.0, "Opened 1 window");
+        assert_eq!(english.1, "Opened 3 windows");
+        assert_eq!(german.0, "1 Fenster geöffnet");
+        assert_eq!(german.1, "3 Fenster geöffnet");
     }
 
-    /// A window open on another device names the device in every language, and the name is a
-    /// person's text: what it holds is shown as it is, never read as the catalogue's own syntax.
+    /// The rows a window's menu offers for sharing it with its workspace read the same in every
+    /// language the desktop ships, and the row that shares is never the row that stops.
     #[test]
-    fn a_window_open_elsewhere_names_its_device_in_every_locale() {
-        let on = |device: &str| t_args("peer-window-on-device", &[("device", device.into())]);
-        let english = (on("Ada's laptop"), on("{ $app } { -brand }"));
-        ui::i18n::I18nManager::set_locale("de-DE");
-        let german = (on("Adas Laptop"), t("peer-window-elsewhere"));
-        ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(
-            english.0,
-            "Open on Ada's laptop. Choose “Share with workspace” in the window's menu there to \
-             see it on this one."
-        );
-        assert_eq!(
-            english.1,
-            "Open on { $app } { -brand }. Choose “Share with workspace” in the window's menu \
-             there to see it on this one."
-        );
-        assert_eq!(
-            german.0,
-            "Auf Adas Laptop geöffnet. Wähle dort im Menü des Fensters „Mit dem Arbeitsbereich \
-             teilen“, um es auf diesem Gerät zu sehen."
-        );
-        assert_eq!(
-            german.1,
-            "Auf einem anderen Gerät geöffnet. Wähle dort im Menü des Fensters „Mit dem \
-             Arbeitsbereich teilen“, um es auf diesem zu sehen."
-        );
-    }
-
-    /// What a window open on another device tells the person to choose there is the row that
-    /// window's menu offers, word for word, in every language: the two never name the share
-    /// differently.
-    #[test]
-    fn a_window_open_elsewhere_names_the_menu_row_that_shares_it_in_every_locale() {
+    fn a_windows_menu_names_the_rows_that_share_it_in_every_locale() {
         let words = || {
             (
                 t("window-menu-share-with-workspace"),
                 t("window-menu-stop-sharing-with-workspace"),
                 t_args("window-menu-stop-sharing-watched", &[("viewers", 2.into())]),
-                t("peer-window-elsewhere"),
-                t_args("peer-window-on-device", &[("device", "Framework".into())]),
             )
         };
         let english = words();
@@ -198,14 +160,7 @@ mod tests {
             german.2,
             "Teilen mit dem Arbeitsbereich beenden (2 sehen zu)"
         );
-        for (locale, (share, stop, _, elsewhere, on_device)) in
-            [("en-US", &english), ("de-DE", &german)]
-        {
-            assert!(
-                elsewhere.contains(share.as_str()) && on_device.contains(share.as_str()),
-                "{locale}: the placeholder names the row “{share}”: {elsewhere} / {on_device}"
-            );
-            assert!(on_device.contains("Framework"), "{locale}: {on_device}");
+        for (locale, (share, stop, _)) in [("en-US", &english), ("de-DE", &german)] {
             assert_ne!(share, stop, "{locale}");
         }
     }

@@ -21,6 +21,8 @@
 )]
 
 use serde_json::{Map, Value, json};
+use std::time::Duration;
+use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
 use crate::common::{CANVAS_ENTRY, on_screen, until};
@@ -74,7 +76,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         let (answer, failed) = repl.run(
             session,
             &format!(
-                "shell.show_style(shell.viewing, shown: \"so.tilo.shell:{}\")",
+                "shell.show_style(shell.viewing, style: \"so.tilo.shell:{}\")",
                 preset.to_lowercase()
             ),
         );
@@ -253,6 +255,254 @@ fn root_of(session: &Session, suffix: &str) -> String {
         })
     }
     find(&session.resources(), suffix).unwrap_or_else(|| panic!("the seed holds a {suffix} root"))
+}
+
+/// The middleware's own identifier for the wheel's middle button.
+const BTN_MIDDLE: u32 = 0x112;
+
+/// Every pan gesture pans, every time: a middle drag over empty canvas moves the camera the same
+/// distance on the first drag as on the fifth, Ctrl and a wheel notch zooms, and the arrow keys
+/// pan. The camera is the map's, so the test reads it where the person sees it — the frame the
+/// place stands at on the screen.
+#[test]
+fn every_pan_gesture_pans_every_time() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let (mut session, notes) = session(root.path());
+    until(&mut session, "the bar", |session| {
+        on_screen(session, BELL).is_some()
+    });
+    show(&mut session, root.path(), "Frames");
+    place(&mut session, &notes[0], 40, 40, 480, 360);
+    let titled = crate::common::window_name_of(&session, &notes[0]);
+    until(&mut session, "the frame", |session| {
+        on_screen(session, &titled).is_some()
+    });
+
+    // Where the frame stands on the screen: the camera on the place.
+    let frame_on_screen = |session: &Session| session.shell_controls(&titled).into_iter().next();
+    let start = frame_on_screen(&session).expect("the frame stands on the canvas");
+    let mut seen = start;
+
+    // Five middle drags of the same shape, 120 px left and 90 px up: every one moves the frame
+    // that far on the screen, and the fifth no less than the first. The pointer starts over empty
+    // canvas beside the place, so the press is the map's own and never a place's.
+    for round in 1..=5 {
+        let (from_x, from_y) = (f64::from(crate::common::WIDTH) - 60.0, 700.0);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion {
+                x: from_x,
+                y: from_y,
+            })
+            .expect("the pointer moves");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_MIDDLE,
+                pressed: true,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        for step in 1..=4 {
+            let fraction = f64::from(step) / 4.0;
+            session
+                .compositor()
+                .input(InputEvent::PointerMotion {
+                    x: from_x - 120.0 * fraction,
+                    y: from_y - 90.0 * fraction,
+                })
+                .expect("the pointer moves");
+            session.step(Duration::from_millis(1)).expect("a frame");
+        }
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_MIDDLE,
+                pressed: false,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        crate::common::wait_for(&mut session, "the pan", |session| {
+            (frame_on_screen(session) != Some(seen)).then_some(())
+        });
+        let now = frame_on_screen(&session).expect("the frame still stands");
+        assert!(
+            (now.0 - seen.0 + 120.0).abs() <= 2.0 && (now.1 - seen.1 + 90.0).abs() <= 2.0,
+            "round {round}: the drag moved the frame by (-120, -90) as it did the first time: \
+             {seen:?} became {now:?}"
+        );
+        seen = now;
+    }
+
+    // The arrow keys pan, a line a press, every press: the frame moves the same way each time.
+    for round in 1..=3 {
+        let before = frame_on_screen(&session).expect("the frame still stands");
+        press_key(&mut session, KEY_ARROW_RIGHT);
+        crate::common::wait_for(&mut session, "the arrow key's pan", |session| {
+            (frame_on_screen(session) != Some(before)).then_some(())
+        });
+        let now = frame_on_screen(&session).expect("the frame still stands");
+        assert!(
+            now.0 < before.0 - 1.0 && (now.1 - before.1).abs() <= 1.0,
+            "round {round}: the right arrow pans the canvas right, as it did the first time: \
+             {before:?} became {now:?}"
+        );
+    }
+
+    // Ctrl and a wheel notch zooms about the pointer: the frame grows, at the same middle. Ctrl
+    // is held as the person holds it, a key down until it is let go.
+    let before = frame_on_screen(&session).expect("the frame still stands");
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 640.0, y: 400.0 })
+        .expect("the pointer moves");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    session
+        .compositor()
+        .input(InputEvent::Key {
+            keycode: KEY_CTRL,
+            pressed: true,
+        })
+        .expect("Ctrl is held");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    for _ in 0..3 {
+        session
+            .compositor()
+            .input(InputEvent::PointerAxis {
+                horizontal: 0.0,
+                vertical: -1.0,
+            })
+            .expect("a notch");
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
+    session
+        .compositor()
+        .input(InputEvent::Key {
+            keycode: KEY_CTRL,
+            pressed: false,
+        })
+        .expect("Ctrl is let go");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    crate::common::wait_for(&mut session, "the zoom", |session| {
+        (frame_on_screen(session).is_some_and(|now| now.2 > before.2 + 1.0)).then_some(())
+    });
+}
+
+/// The evdev code of the left Ctrl.
+const KEY_CTRL: u32 = 29;
+
+/// Press and release the named key `code` on the keyboard, as the person does.
+fn press_key(session: &mut Session, code: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: code,
+                pressed,
+            })
+            .expect("the key");
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
+}
+
+/// The evdev code of the right arrow.
+const KEY_ARROW_RIGHT: u32 = 106;
+
+/// How far the desk's own bar reaches down the screen: a control standing below it is the desk's
+/// own content (a place's frame), never the bar naming the window in front.
+const BAR_FOOT: f64 = 40.0;
+
+/// The live run's failure: an agent opened Mail "beside" the conversation and the camera zoomed
+/// everything into the viewport, so the conversation and every place were drawn as a narrow
+/// column. Opening something beside a place brings what opened into view by **panning**, never by
+/// zooming: the camera never changes the person's zoom, so every place keeps the size it was
+/// drawn at and reads at the size the person was reading it at (`shell.md` §3). What opened
+/// stands wholly in view; the conversation keeps its place and its size on the canvas, and when
+/// the two cannot both stand in the viewport at that zoom the person pans back to the rest.
+#[test]
+fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
+    let notes = note_ids(&session);
+    assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
+    // The conversation far down the canvas, past the viewport's foot: the place an agent opens
+    // beside it stands further still, so showing what arrived moves the camera — and the camera
+    // pans to it, never zooming the conversation into a narrow column to fit both.
+    let conversation = place(&mut session, &notes[0], 0, 3000, 720, 520);
+    let inbox = root_of(&session, ".Mail");
+    let titled = crate::common::window_name_of(&session, &notes[0]);
+
+    // Only the frame on the canvas counts: the desk's own bar also names the window in front at
+    // the top, and that one never pans.
+    let on_canvas = |session: &mut Session, name: &str| {
+        session
+            .shell_controls(name)
+            .into_iter()
+            .filter(|&(_, y, _, _)| y >= BAR_FOOT)
+            .collect::<Vec<_>>()
+    };
+    let in_view = |rect: (f64, f64, f64, f64)| {
+        let (x, y, w, h) = rect;
+        w > 0.0
+            && h > 0.0
+            && y >= 0.0
+            && y + h <= f64::from(crate::common::HEIGHT)
+            && x >= 0.0
+            && x + w <= f64::from(crate::common::WIDTH)
+    };
+    let conversation_in_view =
+        |session: &mut Session| on_canvas(session, &titled).into_iter().any(in_view);
+    // The reveal brought the conversation itself into view when it was placed.
+    until(
+        &mut session,
+        "the conversation's frame in view",
+        conversation_in_view,
+    );
+    let _ = conversation;
+    // The conversation's width as it is drawn now: the size the person is reading it at. Opening
+    // a place beside it never shrinks it.
+    let conversation_width = on_canvas(&mut session, &titled)
+        .into_iter()
+        .map(|(_, _, w, _)| w)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        conversation_width > 300.0,
+        "the conversation is drawn at its place's width: {conversation_width}"
+    );
+
+    // Mail opened beside the conversation, as an agent does for "show me my mails".
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            json!({ "resource": inbox, "beside": notes[0] })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the open runs");
+    until(&mut session, "mail beside the conversation", |session| {
+        crate::common::placed(session, &inbox) == 1
+    });
+    // What arrived stands wholly in view: the camera panned to it.
+    let mail_in_view = |session: &mut Session| {
+        let mail = crate::common::window_name_of(session, &inbox);
+        on_canvas(session, &mail).into_iter().any(in_view)
+    };
+    until(&mut session, "mail's frame in view", mail_in_view);
+    // And the conversation keeps the size it was drawn at: the camera panned, it never zoomed the
+    // conversation into a narrow column to fit both on the screen.
+    let after = on_canvas(&mut session, &titled)
+        .into_iter()
+        .map(|(_, _, w, _)| w)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        (after - conversation_width).abs() <= 1.0,
+        "the conversation is drawn at the width it was, {conversation_width}, never shrunk to fit \
+         what opened beside it: {after}"
+    );
 }
 
 /// The top bar lists the focused window's actions, and pressing one runs it: the window in front

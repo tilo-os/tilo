@@ -1,5 +1,5 @@
-//! Real `InnerTube` answers, trimmed to the rows and fields Tube reads (and
-//! with stream URLs and visitor ids replaced), read into the model.
+//! Real `InnerTube` answers, trimmed to the rows and fields Tube reads (and with stream URLs and
+//! visitor ids replaced), read into the model.
 
 use serde_json::Value;
 
@@ -99,15 +99,12 @@ fn the_player_names_its_progressive_stream_or_says_why_not() {
     assert_eq!(stream.quality, "360p");
     assert!(stream.url.contains("itag=18"), "{}", stream.url);
 
-    // The height the person chose decides which stream is served, so a
-    // smaller choice is not silently ignored.
     let capped = super::stream(&fixture(PLAYER), Some(240)).expect("the smallest stream");
     assert_eq!(capped.quality, "360p", "nothing smaller exists than 360p");
 
     let refused = super::stream(&fixture(PLAYER_BOT_CHECK), None).expect_err("a bot check");
     assert!(refused.starts_with("LOGIN_REQUIRED"), "{refused}");
 
-    // What YouTube said is kept, for the watch page to pass on.
     assert_eq!(refusal(&fixture(PLAYER)), None);
     assert_eq!(
         refusal(&fixture(PLAYER_BOT_CHECK)).as_deref(),

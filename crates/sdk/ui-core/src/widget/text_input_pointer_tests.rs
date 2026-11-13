@@ -14,9 +14,6 @@ use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release,
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
-/// What a host showing `input` answers for it: the bound action this test
-/// names, and the field's own published report, which the field's resource
-/// announces beside it.
 fn answered(
     input: &TextInput,
     doc: &AutoCommit,
@@ -36,9 +33,7 @@ fn answered(
 
 #[test]
 fn action_bindings_own_edits_and_accessibility_set_value() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `bound_text_edits_optimistically_without_splicing_document`.
     {
         let mut doc = AutoCommit::new();
         let text = doc
@@ -62,7 +57,6 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert_eq!(doc.text(&text).expect("document text"), "before");
     }
 
-    // Case `action_binding_owns_accessibility_set_value`.
     {
         let mut doc = AutoCommit::new();
         let object = doc
@@ -112,7 +106,6 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert_eq!(changes.borrow().len(), 1, "remote text is not a user edit");
     }
 
-    // Case `change_callback_and_action_both_fire_in_either_order`.
     {
         let mut doc = AutoCommit::new();
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
@@ -142,9 +135,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
 
 #[test]
 fn multiline_measurement_matches_draw_scale_and_invalidation() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `multiline_shaped_editor_scales_font_and_line_metrics_with_theme`.
     {
         let mut normal = TextInput::local()
             .multiline(true)
@@ -177,7 +168,6 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
     }
 
-    // Case `multiline_measure_uses_the_same_scaled_shaped_rows_as_draw`.
     {
         let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
         let mut input = TextInput::local()
@@ -220,7 +210,6 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
     }
 
-    // Case `multiline_trailing_lf_keeps_measure_draw_hit_and_caret_scroll_in_sync`.
     {
         let text = "let value = 1;\n";
         for scale in [1.0, 2.0] {
@@ -300,7 +289,6 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         }
     }
 
-    // Case `multiline_measure_uses_build_layout_theme_scale_when_renderer_is_stale`.
     {
         let text = "The layout theme owns accessibility scale even when a retained renderer still carries its previous frame value.";
         let mut input = TextInput::local().multiline(true).with_initial_value(text);
@@ -358,7 +346,6 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
     }
 
-    // Case `measured_multiline_pointer_geometry_tracks_applied_origin_before_draw`.
     {
         let text = "first wrapped row continues for a while before the second hard line\nsecond";
         let mut input = TextInput::local().multiline(true).with_initial_value(text);
@@ -399,7 +386,6 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
     }
 
-    // Case `crdt_sync_undo_redo_invalidates_multiline_measurement`.
     {
         let short = "short";
         let long = "undo and redo replay real CRDT text through the same widget, including a long line that wraps at large text";
@@ -477,9 +463,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
 #[test]
 fn arrow_keys_move_and_extend_by_char_and_word() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `shift_arrow_extends_selection_by_char`.
     {
         let mut ti = TextInput::local().with_initial_value("abcdef");
         ti.set_focus(true);
@@ -517,7 +501,6 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         );
     }
 
-    // Case `ctrl_arrow_moves_caret_by_word`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world foo");
         ti.set_focus(true);
@@ -552,7 +535,6 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
     }
 
-    // Case `ctrl_arrow_collapses_a_selection_before_moving_by_word`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world foo");
         ti.set_focus(true);
@@ -587,7 +569,6 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         assert_eq!(ti.selection_range(), None);
     }
 
-    // Case `shift_ctrl_arrow_extends_selection_by_word`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world foo");
         ti.set_focus(true);
@@ -621,9 +602,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
 
 #[test]
 fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `home_end_move_and_extend`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.set_focus(true);
@@ -671,7 +650,6 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         );
     }
 
-    // Case `ctrl_home_end_move_and_extend_across_multiline_document`.
     {
         let mut ti = ml_input("first\nsecond\nthird", 400.0, 200.0);
         let mut doc = AutoCommit::new();
@@ -711,7 +689,6 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         );
     }
 
-    // Case `ctrl_a_selects_all_and_ctrl_x_cuts`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.set_focus(true);
@@ -729,7 +706,6 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
     }
 
-    // Case `command_a_selects_all_on_platforms_using_super`.
     {
         let mut ti = TextInput::local().with_initial_value("hello 👋");
         ti.set_focus(true);
@@ -742,9 +718,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
 
 #[test]
 fn pointer_clicks_and_drags_select_word_range_and_all() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `double_click_selects_word_via_handle_event`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -760,7 +734,6 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         );
         drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
-        // Within the multi-click interval → double click.
         drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
 
         assert_eq!(
@@ -771,7 +744,6 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         assert_eq!(ti.selected_str(), Some("world"));
     }
 
-    // Case `drag_selects_range_via_handle_event`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -803,7 +775,6 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         assert!(!ti.is_dragging(), "release ends the drag");
     }
 
-    // Case `triple_click_selects_all_via_handle_event`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -830,9 +801,7 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
 
 #[test]
 fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `mouse_selection_is_eligible_for_primary_publication`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -858,7 +827,6 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         assert_eq!(ti.shareable_selection(), Some("hello"));
     }
 
-    // Case `double_and_triple_click_selections_are_eligible_for_primary_publication`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -880,7 +848,6 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         assert_eq!(ti.shareable_selection(), Some("hello world"));
     }
 
-    // Case `middle_click_pastes_primary_at_clicked_caret_and_applies_filter`.
     {
         let mut ti = TextInput::local()
             .with_initial_value("leftright")
@@ -910,7 +877,6 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         assert_eq!(ti.selection_range(), None);
     }
 
-    // Case `secret_selection_never_publishes_but_middle_paste_is_allowed`.
     {
         let mut secret = TextInput::local()
             .with_secret(true)

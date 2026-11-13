@@ -1,12 +1,4 @@
 //! Spinner — a circular indeterminate-progress indicator.
-//!
-//! Renders four dots orbiting a centre point at constant angular velocity, driven
-//! by wall-clock time captured at construction rather than per-frame mutation, so
-//! the widget is cheap to keep alive. Opts into [`Widget::needs_animation_frame`]
-//! while it moves, but steps at the indicator cadence
-//! ([`crate::animation::indicator`]): it repaints and damages its own box only
-//! when its step changes, so a visible spinner presents 30 times a second, not
-//! at every refresh.
 
 use crate::time::Instant;
 
@@ -50,9 +42,7 @@ pub struct Spinner {
     text_role: Option<crate::tokens::TextRole>,
     start: Instant,
     rect: Rect,
-    /// Captured from the last draw. `Widget::needs_animation_frame` has no
-    /// theme argument, so this is how the shared spinner tells the host that a
-    /// reduced-motion presentation is static and needs no wakeups.
+    /// Captured from the last draw.
     reduce_motion: bool,
     /// The indicator step last drawn; `None` before the first draw.
     drawn_step: Option<u64>,
@@ -65,7 +55,6 @@ pub struct Spinner {
 }
 
 impl Spinner {
-    /// Two spinners instantiated in the same frame will be in phase.
     pub fn new() -> Self {
         Self::with_size(DEFAULT_SIZE_PX)
     }
@@ -176,8 +165,6 @@ impl Widget for Spinner {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // A capture pins the wall clock to draw the same frame every run: the
-        // orbit then rests where it starts, as it does under reduced motion.
         self.reduce_motion = !theme.motion().loops() || crate::time::wall_frozen();
         let now = crate::time::now();
         let step = Some(self.step_at(now));
@@ -200,7 +187,6 @@ impl Widget for Spinner {
 
         let accent = theme.tokens.colors.intent.value_fill;
 
-        // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
             // `i` and `DOT_COUNT` are both < 8 (a hard-coded 4-entry alpha
             // ramp), far below f64's exact-integer range (2^53) — this
@@ -234,11 +220,7 @@ impl Widget for Spinner {
         )
     }
 
-    /// In the normal presentation the default would freeze the orbit at the
-    /// first frame. In a reduced-motion presentation, and on a capture's frozen
-    /// clock, the orbit is deliberately static, so requesting frames would only
-    /// waste power — and a window laid out without a paint, as a capture lays
-    /// it out, would wait on it forever.
+    /// In the normal presentation the default would freeze the orbit at the first frame.
     fn needs_animation_frame(&self) -> bool {
         !self.reduce_motion && !crate::time::wall_frozen()
     }
@@ -277,9 +259,6 @@ mod tests {
 
     #[test]
     fn spinner_contract_size_semantics_and_dots() {
-        // Case `spinner_default_size_is_24_px`.
-        // Pins `DEFAULT_SIZE_PX` against the public contract — a future
-        // change to the default has to touch this deliberately.
         {
             let s = Spinner::new();
             assert_eq!(s.size(), 24.0, "Spinner::new() must default to 24 px");
@@ -298,9 +277,6 @@ mod tests {
             assert_eq!(s.get_rect().height(), 24.0);
         }
 
-        // Case `spinner_for_text_matches_the_line_it_sits_beside`.
-        // An inline spinner is one line of its role tall, and grows with the
-        // text scale instead of staying at the standalone default.
         for text_scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(text_scale);
             let line = theme
@@ -333,10 +309,6 @@ mod tests {
             assert_eq!(node.name, None, "a spinner has no text label");
         }
 
-        // Case `spinner_paints_four_dots`.
-        // Every dot is a single `scene.fill(NonZero, ..., Circle)`, so the exact
-        // `DrawTag::COLOR` count guards against a background ring, a collapsed
-        // chain, or stray text/icon fills.
         {
             let mut s = Spinner::new();
             let mut taffy = TaffyTree::<()>::new();
@@ -392,9 +364,6 @@ mod tests {
 
     #[test]
     fn spinner_animates_only_when_motion_is_enabled() {
-        // Case `spinner_requests_frames_only_when_motion_is_enabled`.
-        // Pin so a future refactor that "cleans up" the override doesn't
-        // remove the only thing that keeps the dots moving in production.
         {
             let s = Spinner::new();
             assert!(
@@ -410,10 +379,6 @@ mod tests {
         }
 
         // Case `reduce_motion_freezes_the_orbit_at_phase_zero`.
-        // A spinner backdated half a rotation must paint the *same* geometry
-        // as a fresh one under reduced motion (proving `draw` ignores elapsed
-        // time), but different geometry with motion on (proving the freeze is
-        // the reduced-motion path, not a no-op).
         {
             use crate::time::Duration;
             let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
@@ -473,9 +438,6 @@ mod tests {
             "reduced motion holds the orbit still"
         );
 
-        // A capture pins the wall clock so every shot shows the same frame; the
-        // orbit then rests where it starts and the spinner stops asking for
-        // frames.
         let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
         crate::time::testing::with_wall(at, || {
             assert!(crate::time::wall_frozen());

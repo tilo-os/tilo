@@ -1,6 +1,6 @@
-//! Sum types: declared enums, the built-in `Option` and `Result`, and the platform's built-in
-//! enums (`space` and the options of UI primitives). Variant literals, `match` (as a value, as
-//! a statement and in a view body) and the tests and reads both share.
+//! Sum types: declared enums, the built-in `Option` and `Result`, and the platform's built-in enums
+//! (`space` and the options of UI primitives). Variant literals, `match` (as a value, as a statement and
+//! in a view body) and the tests and reads both share.
 
 use super::expr::dotted;
 use super::{Checker, Ex, conv, load_op, store_op};
@@ -13,24 +13,17 @@ use crate::prims;
 use crate::resolve::EnumInfo;
 use crate::types::{Ty, TypeKey};
 
-/// How the values of an enum type are held, and so how they are built, tested and read.
 #[derive(Clone, Debug)]
 pub(super) enum Shape {
-    /// `Option<T>`: the host's option values (`some_*`, `none`, `is_some`, `unwrap_*`).
     Option(Ty),
-    /// `Result<T, E>`: a host enum value with the built-in ids.
     Result(Ty, Ty),
-    /// A declared enum: a host enum value with the declaration's ids.
     Enum(EnumInfo),
-    /// A built-in enum of the platform: the variant's index.
     Choice(&'static str),
-    /// `json.Value`: the shape JSON read, as an enum of its six kinds, tested and read like a
-    /// declared enum's cases.
     Json,
 }
 
-/// One variant as the lowering sees it: its name, the id the host knows it by, and its payload
-/// fields (name, id, type).
+/// One variant as the lowering sees it: its name, the id the host knows it by, and its payload fields
+/// (name, id, type).
 pub(super) struct VariantShape {
     pub name: String,
     pub id: String,
@@ -165,8 +158,7 @@ fn names(vs: &[VariantShape]) -> String {
 }
 
 impl Checker<'_> {
-    /// The enum a dotted path names (`Status`, `todo.Status`), when it is one and no variable
-    /// hides it.
+    /// The enum a dotted path names (`Status`, `todo.Status`), when it is one and no variable hides it.
     pub(super) fn enum_path(&self, e: &ast::Expr) -> Option<TypeKey> {
         let path = dotted(e)?;
         if path.first().is_some_and(|f| self.lookup(f).is_some()) {
@@ -226,8 +218,8 @@ impl Checker<'_> {
         self.construct_variant(&shape, want, name, args, span)
     }
 
-    /// A field's default as the literal that writes it: a number, a flag, `.none`, or a
-    /// variant without payload.
+    /// A field's default as the literal that writes it: a number, a flag, `.none`, or a variant without
+    /// payload.
     fn default_literal(
         &self,
         default: &serde_json::Value,
@@ -243,6 +235,7 @@ impl Checker<'_> {
                 name: ast::Ident {
                     name: "none".into(),
                     span,
+                    from_template_of: None,
                 },
                 args: None,
             },
@@ -251,7 +244,11 @@ impl Checker<'_> {
                 let shape = Shape::of(self, ty)?;
                 let name = shape.variants().into_iter().find(|v| v.id == id)?.name;
                 ast::ExprKind::Variant {
-                    name: ast::Ident { name, span },
+                    name: ast::Ident {
+                        name,
+                        span,
+                        from_template_of: None,
+                    },
                     args: None,
                 }
             }
@@ -266,7 +263,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Builds a value of variant `name` of `shape` (whose type is `ty`).
     pub(super) fn construct_variant(
         &mut self,
         shape: &Shape,
@@ -401,7 +397,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Whether the value in `tmp` is variant `v`.
     fn variant_test(shape: &Shape, tmp: LocalId, ty: &Ty, index: usize, v: &VariantShape) -> Ex {
         let value = Ex::local(tmp, ty.clone());
         match shape {
@@ -427,7 +422,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Reads payload field `field` of the value in `tmp`, which is variant `v`.
     fn variant_field(shape: &Shape, tmp: LocalId, ty: &Ty, field: &(String, String, Ty)) -> Ex {
         let value = Ex::local(tmp, ty.clone());
         let fty = &field.2;
@@ -445,9 +439,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks the patterns of a match over a value of type `ty`: each names a variant once, the
-    /// binders fit its payload, and every variant is covered. Returns the shape and, per arm,
-    /// the variant index.
+    /// Checks the patterns of a match over a value of type `ty`: each names a variant once, the binders
+    /// fit its payload, and every variant is covered. Returns the shape and, per arm, the variant index.
     pub(super) fn plan_match(
         &mut self,
         ty: &Ty,
@@ -547,7 +540,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Evaluates the scrutinee into a local.
     fn scrutinee(&mut self, e: &ast::Expr) -> (LocalId, Ty, Stmt) {
         let ex = self.expr(e, None);
         let ty = ex.ty.clone();
@@ -555,7 +547,6 @@ impl Checker<'_> {
         (tmp, ty, Stmt::Set(tmp, ex))
     }
 
-    /// `match` whose value is used.
     pub(super) fn match_value(
         &mut self,
         scrutinee: &ast::Expr,
@@ -653,7 +644,6 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(vec![set], Box::new(value)), want)
     }
 
-    /// `match` as a statement: arms are run for their effects.
     pub(super) fn match_stmt(&mut self, scrutinee: &ast::Expr, arms: &[ast::MatchArm], span: Span) {
         if let Some(held) = self.static_option(scrutinee) {
             let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
@@ -749,8 +739,8 @@ impl Checker<'_> {
         self.st_extend(chain);
     }
 
-    /// `if test(a) { a } else if test(b) { b } else { last }`: the last arm needs no test, as
-    /// the match is exhaustive.
+    /// `if test(a) { a } else if test(b) { b } else { last }`: the last arm needs no test, as the match is
+    /// exhaustive.
     fn chain(
         shape: &Shape,
         tmp: LocalId,
@@ -778,8 +768,8 @@ impl Checker<'_> {
         }
     }
 
-    /// The name of variant `index` of a platform enum, as a UI property takes it: a constant
-    /// when the value is a literal, otherwise chosen at run time.
+    /// The name of variant `index` of a platform enum, as a UI property takes it: a constant when the value
+    /// is a literal, otherwise chosen at run time.
     pub(super) fn choice_text(&mut self, kind: &'static str, v: Ex) -> Ex {
         let variants = prims::choice(kind).map_or(&[][..], |c| c.variants);
         if let Ek::Int(i) = v.kind {

@@ -1,32 +1,7 @@
 //! Service-socket discovery + `SCM_RIGHTS` handoff.
 //!
 //! Each declared service maps to a Unix socket at
-//! `$XDG_RUNTIME_DIR/tilo/services/<name>.sock`. The launcher:
-//!
-//! 1. Looks up the socket per the manifest's service requirements.
-//! 2. For `required@<v>` whose socket is absent → exit 70 with a
-//!    descriptive error.
-//! 3. For `optional@<v>` whose socket is absent — or present but
-//!    refusing connections, which is what a session that died without
-//!    unlinking leaves behind → log a warning, continue.
-//! 4. For sockets that exist → open the socket as a `UnixStream` and
-//!    keep it, owned, for the length of the launch. `run::place_child_fds`
-//!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
-//!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
-//!    the `__sandbox-exec` re-exec at that number. The app reads the
-//!    number from `TILO_SVC_<NAME>_FD`. **The launcher's own copy keeps
-//!    CLOEXEC** — nothing else it starts has any business holding an
-//!    app's connection to a session service — and is released once the
-//!    child has been forked.
-//!
-//! bwrap is deliberately not told about the socket: `--file FD DEST`
-//! looks like the flag for this and isn't — it copies the descriptor's
-//! *contents* into a regular file, so pointing it at a connected socket
-//! makes bwrap block reading for an EOF that never arrives, hanging the
-//! launch before it ever execs the app.
-//!
-//! The launcher receives inherited descriptors directly: this keeps the
-//! handoff local, avoids another daemon, and gives each service a fixed fd.
+//! `$XDG_RUNTIME_DIR/tilo/services/<name>.sock`.
 
 /// Native startup protocol selector; it conveys no authority.
 pub use runtime_portal::process_binding::ENV as COLLAB_EXECUTING_PEER_ENV;
@@ -43,74 +18,43 @@ use wire_frame::Framing;
 
 use crate::manifest::ServiceReq;
 
-/// Exit code for "required service missing" — mirrors `EX_SOFTWARE`
-/// (70) from sysexits.h.
+/// Exit code for "required service missing" — mirrors `EX_SOFTWARE` (70) from sysexits.h.
 pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 
 /// Manifest name of the CRDT fan-out service (`[sandbox.services] collab`).
-///
-/// This constant is the single point that decides where the collab
-/// socket lives, with two owners on opposite sides of a namespace
-/// boundary: the compositor *binds* [`socket_for`] of this name, and
-/// the launcher *connects* it. They were once two independently-written
-/// path expressions, so the compositor bound a socket nobody dialled
-/// and every app quietly ran with collaboration off. Route both sides
-/// through here — see
-/// `collab_service_socket_is_the_path_the_compositor_binds` in the
-/// compositor for the test that fails if they drift apart again.
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
 /// Version of the launcher-written shell-UI authentication envelope.
-/// This names the app before descriptor handoff; it is independent of the
-/// versioned requests the authenticated app subsequently sends.
 pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
-/// The session shell's authenticated file chooser (`tilo_dialogs::shell`),
-/// served alongside any desktop portal. Not declared by manifests: every app
-/// launched into a workspace is handed a connection naming itself and the workspace.
+/// The session shell's authenticated file chooser (`tilo_dialogs::shell`), served alongside any desktop
+/// portal.
 pub const CHOOSER_SERVICE: &str = "chooser";
 const CHOOSER_PROTOCOL: u16 = 1;
 pub const COMPAT_SERVICE: &str = "compat";
-/// The system interface: the image-owned grant through which the device's
-/// control panel reaches the system services it drives
-/// ([`crate::system_authority`]). Declared like a service so a package names
-/// the version it was built against, but it has no socket.
+/// The system interface: the image-owned grant through which the device's control panel reaches the
+/// system services it drives ([`crate::system_authority`]).
 pub const SYSTEM_SERVICE: &str = "system";
-/// Hosted model planning is performed by this per-user, desktop-owned
-/// gateway. The launcher authenticates the consuming package before handing
-/// it the connected descriptor, so a same-UID process cannot manufacture a
-/// Settings credential operation by merely connecting to the socket.
+/// Hosted model planning is performed by this per-user, desktop-owned gateway.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
-/// The person's messaging accounts (`tilo-messaging`). Its connection is
-/// stamped with the app id before the app holds it, as the model gateway's
-/// is: the service serves Messages its accounts and Passwords the
-/// permission requests it makes, and nobody else.
+/// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
-/// The shell runtime's supervisor. Its connection is stamped with the app id
-/// and the workspace the app was launched in before the app holds it, so the
-/// supervisor knows which app is asking — the device's own shell is answered
-/// for Terminal and nobody else — and keeps the app's environments in that
-/// workspace, never letting the app name another.
+/// The shell runtime's supervisor.
 pub const USH_SERVICE: &str = "ush";
 /// Prefix of the `ush` handoff; the supervisor reads it before any request.
 pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 /// After [`USH_LAUNCH_MAGIC`]: a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…","workspace":"…"}`. `workspace` is the
-/// workspace the app was launched in, absent when the launch has none; the
-/// supervisor keeps the app's environments in it and never lets the app name
-/// another.
+/// `{"protocol":1,"app_id":"…","workspace":"…"}`.
 const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
-/// Document media. Not declared by manifests: every app is handed a
-/// capability scoped to itself and its workspace, so a document's images live in
-/// the device content store rather than in the app's sandbox.
+/// Document media.
 pub const BLOB_SERVICE: &str = "blobs";
 /// The filesystem daemon's document-media socket (`runtime_fs::blobs`).
 pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
 /// Overrides [`DEFAULT_BLOB_SOCKET`] for sessions whose daemon runs elsewhere.
 pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
-/// Prefix of the handoff that fixes the connection's scope before the app
-/// holds the descriptor; the daemon reads it before any filesystem request.
+/// Prefix of the handoff that fixes the connection's scope before the app holds the descriptor; the
+/// daemon reads it before any filesystem request.
 pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
 const BLOB_HANDOFF_PROTOCOL: u16 = 1;
 const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
@@ -120,12 +64,9 @@ const BLOB_CHILD_FD: i32 = 30;
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
 const CHOOSER_CHILD_FD: i32 = 32;
-/// Slot of the automatic render broker connection
-/// (`tilo_render_protocol::broker`).
+/// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
 const RENDER_CHILD_FD: i32 = 34;
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
-/// They sit above bwrap's own descriptors and outside the numbers declared
-/// services are handed on, so no service can replace a filter.
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
 /// Synthetic sandbox account file, consumed by bwrap before app execution.
@@ -133,8 +74,6 @@ pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 /// Bwrap private-service namespace information, closed before app execution.
 pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-/// Retained-home workers and views exist only in the Linux sandbox. Keep
-/// portable service discovery independent of those modules.
 pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
@@ -190,48 +129,38 @@ fn child_fd_reserved(fd: i32) -> bool {
     false
 }
 const STORE_APP_ID: &str = "so.tilo.store";
-/// Settings holds `app-host` for the person's languages alone: the host
-/// answers it which language packs are offered and installs one, never the
-/// Store's package-management interface (the host decides by the app id
-/// stamped on the connection).
+/// Settings holds `app-host` for the person's languages alone: the host answers it which language packs
+/// are offered and installs one, never the Store's package-management interface (the host decides by
+/// the app id stamped on the connection).
 const SETTINGS_APP_ID: &str = "so.tilo.settings";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
-/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
-/// handoff.
+/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON handoff.
 const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
-/// The compatibility service's handoff: a little-endian `u32` length, then
-/// JSON.
+/// The compatibility service's handoff: a little-endian `u32` length, then JSON.
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
 const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// The collaboration handoff: what an app says first on the connection to
-/// its session's services, before the wire starts. The broker binds it to
-/// `SO_PEERCRED` and a launch record the session made for that process, and
-/// any app that connects its session's socket itself — a launcher-started
-/// app and a surface app alike — writes the same one.
+/// The collaboration handoff: what an app says first on the connection to its session's services,
+/// before the wire starts.
 pub use runtime_portal::launch_handoff::{
     FRAMING as COLLAB_LAUNCH_FRAMING, MAGIC as COLLAB_LAUNCH_MAGIC,
     PROTOCOL_VERSION as COLLAB_LAUNCH_PROTOCOL_VERSION,
 };
 
-/// One resolved service handoff: the launcher's own end of the
-/// connection, plus the in-sandbox fd number the app should find it at.
+/// One resolved service handoff: the launcher's own end of the connection, plus the in-sandbox fd
+/// number the app should find it at.
 #[derive(Debug)]
 pub struct ResolvedService {
     pub name: String,
-    /// The launcher's end, **owned**, closed when the launch is over. The
-    /// app's descriptor and this one are two descriptors on one socket, and
-    /// the far end can't see the connection end until the last goes.
+    /// The launcher's end, **owned**, closed when the launch is over.
     pub host: OwnedFd,
     /// Where the app is told to look for it.
     pub child_fd: i32,
 }
 
 impl ResolvedService {
-    /// The number to `dup2` onto [`Self::child_fd`] in the child. Borrowed
-    /// for the spawn: the copy that outlives this one is the one `dup2`
-    /// makes on the other side of the fork.
+    /// The number to `dup2` onto [`Self::child_fd`] in the child.
     pub fn host_fd(&self) -> RawFd {
         self.host.as_raw_fd()
     }
@@ -292,9 +221,6 @@ pub fn socket_for(name: &str) -> PathBuf {
 }
 
 /// Where the session's CRDT fan-out broker listens.
-///
-/// The compositor binds this; the launcher dials it. Both call this
-/// function rather than spelling the path out — see [`COLLAB_SERVICE`].
 pub fn collab_socket() -> PathBuf {
     socket_for(COLLAB_SERVICE)
 }
@@ -303,16 +229,7 @@ pub fn identity_socket() -> PathBuf {
     socket_for(IDENTITY_SERVICE)
 }
 
-/// Authenticate the optional shell-UI channel before the child enters its
-/// sandbox. The app cannot forge or race this first frame: the launcher writes
-/// the canonical package/app id on the connected descriptor before `fork`,
-/// and the compositor refuses lifecycle messages until it has consumed it.
-///
-/// # Errors
-///
-/// Returns [`ServiceError`] if the service descriptor cannot be duplicated,
-/// the authentication frame cannot be serialized, or the frame cannot be
-/// written and flushed to the shell-UI socket.
+/// Authenticate the optional shell-UI channel before the child enters its sandbox.
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,
@@ -325,8 +242,8 @@ pub fn authenticate_shell_ui_bind(
         return Ok(());
     };
     let path = socket_for(SHELL_UI_SERVICE);
-    // Duplicate only for a temporary writer; the original descriptor remains
-    // owned by `ResolvedService` for the child handoff.
+    // Duplicate only for a temporary writer; the original descriptor remains owned by
+    // `ResolvedService` for the child handoff.
     let borrowed = unsafe { BorrowedFd::borrow_raw(service.host_fd()) };
     let owned = borrowed
         .try_clone_to_owned()
@@ -351,15 +268,8 @@ pub fn authenticate_shell_ui_bind(
         .map_err(|source| ServiceError::OpenFailed { path, source })
 }
 
-/// Connect the per-session identity broker and authenticate the launch
-/// context before the sandboxed app can write to the stream.
-///
-/// # Errors
-///
-/// Returns [`ServiceError`] if the handshake can't be serialized, if it's
-/// too large to fit a `u32` length prefix, or if writing/flushing it to the
-/// socket fails. A missing service or a refused connection is not an error
-/// — both degrade to `Ok(None)`.
+/// Connect the per-session identity broker and authenticate the launch context before the sandboxed app
+/// can write to the stream.
 pub fn resolve_identity_bind(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -368,8 +278,7 @@ pub fn resolve_identity_bind(
     resolve_identity_bind_for_contract(app_id, workspace_id, no_services, None)
 }
 
-/// Validate a signed service requirement and use the canonical identity
-/// handshake. Profile metadata remains owned by the current identity broker.
+/// Validate a signed service requirement and use the canonical identity handshake.
 pub fn resolve_identity_bind_for_contract(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -402,14 +311,12 @@ pub fn resolve_identity_bind_for_contract(
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
         host: OwnedFd::from(stream),
-        // Normal manifest services start at 17. Keep the automatic service in
-        // a reserved slot so it cannot collide as the manifest evolves.
+        // Normal manifest services start at 17.
         child_fd: IDENTITY_CHILD_FD,
     }))
 }
 
-/// Name the app and workspace an identity connection signs for, as the first
-/// thing on it.
+/// Name the app and workspace an identity connection signs for, as the first thing on it.
 pub fn write_identity_handshake(
     stream: &mut UnixStream,
     app_id: &str,
@@ -444,8 +351,8 @@ fn write_identity_handshake_negotiated(
     stream.flush()
 }
 
-/// The first line the launcher writes on a chooser connection: the app and
-/// the workspace it runs in, read by the shell before anything the app sends.
+/// The first line the launcher writes on a chooser connection: the app and the workspace it runs in,
+/// read by the shell before anything the app sends.
 pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result<Vec<u8>> {
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": CHOOSER_PROTOCOL,
@@ -456,15 +363,8 @@ pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result
     Ok(frame)
 }
 
-/// Connect the session shell's chooser service on the app's behalf and name
-/// the app and its workspace before the sandboxed app can write to it.
-///
-/// A launch outside a workspace, or a session whose shell serves no chooser,
-/// degrades to `Ok(None)`.
-///
-/// # Errors
-///
-/// Returns [`ServiceError::OpenFailed`] if the handshake cannot be written.
+/// Connect the session shell's chooser service on the app's behalf and name the app and its workspace
+/// before the sandboxed app can write to it.
 pub fn resolve_chooser_bind(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -512,19 +412,9 @@ fn resolve_chooser_bind_at(
     }))
 }
 
-/// Connect the session's render broker on the app's behalf and name the app
-/// and its workspace before the sandboxed app can write to it: the broker
-/// picks the render service that draws the app from this, never from the app
-/// (`tilo_render_protocol::broker`). The app finds the connection in
-/// `TILO_SVC_RENDER_FD`.
-///
-/// Only for an app that draws through a render service — one without the
-/// `gpu` capability. A session that serves no broker degrades to `Ok(None)`,
-/// and the app's toolkit draws its frames in its own process.
-///
-/// # Errors
-///
-/// Returns [`ServiceError::OpenFailed`] if the handshake cannot be written.
+/// Connect the session's render broker on the app's behalf and name the app and its workspace before
+/// the sandboxed app can write to it: the broker picks the render service that draws the app from this,
+/// never from the app (`tilo_render_protocol::broker`).
 #[cfg(target_os = "linux")]
 pub fn resolve_render_bind(
     app_id: &str,
@@ -576,17 +466,8 @@ pub fn blob_socket() -> PathBuf {
         .map_or_else(|| PathBuf::from(DEFAULT_BLOB_SOCKET), PathBuf::from)
 }
 
-/// Connect the filesystem daemon's document-media service on the app's
-/// behalf and fix the connection's scope — this app in this workspace — before
-/// the sandboxed app can write to it. The app therefore never names its own
-/// scope, and cannot reach the socket itself.
-///
-/// A missing daemon degrades to `Ok(None)`: the app keeps document media in
-/// memory for the session, as it does outside Tilo.
-///
-/// # Errors
-///
-/// Returns [`ServiceError::OpenFailed`] if the handoff cannot be written.
+/// Connect the filesystem daemon's document-media service on the app's behalf and fix the connection's
+/// scope — this app in this workspace — before the sandboxed app can write to it.
 pub fn resolve_blob_bind(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -613,15 +494,15 @@ fn resolve_blob_bind_at(
     if no_services {
         return Ok(None);
     }
-    // The same partition the app's private directory uses, so a launch with
-    // no workspace lands in the personal workspace.
+    // The same partition the app's private directory uses, so a launch with no workspace lands in the
+    // personal workspace.
     let workspace = crate::appdir::workspace_slug(workspace_id);
     if !blob_scope_component(&workspace) || !blob_scope_component(app_id) {
         tracing::warn!(app_id, workspace, "no document media scope for this launch");
         return Ok(None);
     }
-    // Say which: a missing socket is the media service not running, a
-    // refused lookup is this person not being allowed to reach it.
+    // Say which: a missing socket is the media service not running, a refused lookup is this person
+    // not being allowed to reach it.
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -678,35 +559,20 @@ fn write_blob_handoff(
 }
 
 /// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
-///
-/// Called by whoever binds a service socket — a `bind` into a missing
-/// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
-/// this user's session can reach these live connections.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
     std::fs::create_dir_all(&root)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // Best-effort tighten: an inherited 0755 from an earlier umask would
-        // widen who can reach the session's services.
+        // Best-effort tighten: an inherited 0755 from an earlier umask would widen who can reach the
+        // session's services.
         let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
     }
     Ok(root)
 }
 
-/// Walk the manifest's service requirements + open sockets. Returns the
-/// resolved bindings (skipping absent optional services with a warning).
-///
-/// `no_services` short-circuits the lookup: any required service that
-/// would otherwise fail simply logs a warning and is skipped, and no
-/// fds are opened.
-///
-/// # Errors
-///
-/// Returns [`ServiceError::RequiredMissing`] if a required service's socket
-/// doesn't exist, or [`ServiceError::OpenFailed`] if a required service's
-/// socket exists but refuses the connection.
+/// Walk the manifest's service requirements + open sockets.
 pub fn resolve_service_binds(
     services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
@@ -714,8 +580,8 @@ pub fn resolve_service_binds(
     resolve_service_binds_inner(services, no_services, None)
 }
 
-/// Resolve service descriptors and write the compositor-authenticated
-/// compatibility preamble before the descriptor enters the app sandbox.
+/// Resolve service descriptors and write the compositor-authenticated compatibility preamble before the
+/// descriptor enters the app sandbox.
 pub fn resolve_service_binds_for_launch(
     services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
@@ -872,8 +738,8 @@ fn resolve_service_binds_inner(
     no_services: bool,
     context: Option<ServiceLaunchContext<'_>>,
 ) -> Result<Vec<ResolvedService>, ServiceError> {
-    // Start child fds well above stdio (3) — 17, 18, 19… keeps them out of
-    // the way of bwrap's own fds (allocated from ~10 upwards).
+    // Start child fds well above stdio (3) — 17, 18, 19… keeps them out of the way of bwrap's own fds
+    // (allocated from ~10 upwards).
     let mut next_child_fd: i32 = 17;
     let mut out = Vec::with_capacity(services.len());
 
@@ -913,12 +779,7 @@ fn resolve_service_binds_inner(
             continue;
         }
 
-        // A socket file that exists is not the same as a service that
-        // answers. A session that died without unlinking leaves the inode
-        // behind, and connecting to it gets ECONNREFUSED — the same condition
-        // as an absent socket, so it has to be treated the same way, or a
-        // leftover file from a crash turns every subsequent launch into a
-        // failed one.
+        // A socket file that exists is not the same as a service that answers.
         let mut stream = match UnixStream::connect(&path) {
             Ok(stream) => stream,
             Err(source) => {
@@ -939,12 +800,7 @@ fn resolve_service_binds_inner(
         ) {
             continue;
         }
-        // Owned from here, and deliberately left `FD_CLOEXEC`. The fork+dup2
-        // never sets CLOEXEC on the descriptor it creates, so the app's copy
-        // survives the exec whatever this one says. Clearing the flag here was
-        // described as harmless and was not: it handed this descriptor to
-        // every process started later in the same launch, including the D-Bus
-        // proxy and the egress gate.
+        // Owned from here, and deliberately left `FD_CLOEXEC`.
         let host = OwnedFd::from(stream);
 
         while child_fd_reserved(next_child_fd) {
@@ -963,8 +819,8 @@ fn resolve_service_binds_inner(
     Ok(out)
 }
 
-/// Name the app and workspace a collaboration connection is for, as the first
-/// thing on it: what the broker attests against the session's launch record.
+/// Name the app and workspace a collaboration connection is for, as the first thing on it: what the
+/// broker attests against the session's launch record.
 pub use runtime_portal::launch_handoff::{
     write as write_collab_handoff, write_executing as write_collab_executing_handoff,
     write_window as write_collab_window_handoff,
@@ -996,8 +852,7 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
     stream.flush()
 }
 
-/// Convert resolved services into `ServiceBind`s consumable by the
-/// sandbox argv builder.
+/// Convert resolved services into `ServiceBind`s consumable by the sandbox argv builder.
 #[cfg(target_os = "linux")]
 pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::ServiceBind> {
     resolved
@@ -1014,10 +869,9 @@ pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::Ser
 mod image_interface_tests {
     use super::*;
 
-    /// The image's preinstalled copy of an app is built with the image, so
-    /// it must speak exactly the interface versions the image serves: every
-    /// service every app in the repository names, at the image's version,
-    /// and the declaration serves every service a manifest can be handed.
+    /// The image's preinstalled copy of an app is built with the image, so it must speak exactly the
+    /// interface versions the image serves: every service every app in the repository names, at the
+    /// image's version, and the declaration serves every service a manifest can be handed.
     #[test]
     fn every_shipped_app_fits_the_interfaces_the_image_declares() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1049,8 +903,8 @@ mod image_interface_tests {
             );
         }
 
-        // The examples are copied into new apps (`tilo-app new --from-example`),
-        // so they must fit the image they are scaffolded on as well.
+        // The examples are copied into new apps (`tilo-app new --from-example`), so they must fit the
+        // image they are scaffolded on as well.
         let mut checked = 0;
         for root in ["apps", "examples/apps"] {
             let mut in_root = 0;
@@ -1097,10 +951,8 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A socket file with nothing listening on it — what a session that
-    /// exited without unlinking leaves behind. Binding and dropping the
-    /// listener produces it: `std`'s `UnixListener` doesn't remove the
-    /// inode on drop.
+    /// A socket file with nothing listening on it — what a session that exited without unlinking leaves
+    /// behind.
     fn dead_socket(root: &std::path::Path, name: &str) -> PathBuf {
         let path = root.join(format!("{name}.sock"));
         drop(std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture socket"));
@@ -1171,8 +1023,8 @@ mod tests {
         assert!(ServiceReq::parse(IDENTITY_SERVICE, "required@not-a-version").is_err());
     }
 
-    /// Services are found under `$XDG_RUNTIME_DIR`; point it at `dir` for
-    /// as long as the returned scope lives.
+    /// Services are found under `$XDG_RUNTIME_DIR`; point it at `dir` for as long as the returned scope
+    /// lives.
     fn runtime_dir_env(dir: &std::path::Path) -> tilo_test_env::ScopedEnv {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", dir);
@@ -1211,11 +1063,6 @@ mod tests {
             assert_eq!(handshake["app_id"], "so.tilo.notes");
             assert_eq!(handshake["workspace_id"], "room-7");
         }
-        // Phase `handoff_wire_bytes_are_pinned`.
-        // Each service's handoff bytes. The services on the other end parse
-        // them independently, so the magic, prefix byte order and length must not
-        // drift. JSON key order is not pinned (`serde_json`'s `preserve_order` is
-        // feature-unified), only the value.
         {
             let fields = serde_json::json!({
                 "protocol": 1,
@@ -1505,8 +1352,8 @@ mod tests {
             assert!(resolved.iter().any(|service| service.child_fd > reserved));
             assert!(resolved.iter().all(|service| service.child_fd != reserved));
         }
-        // Assert the Linux view slots directly as well, so accidentally omitting
-        // one from the reservation table cannot make the test pass.
+        // Assert the Linux view slots directly as well, so accidentally omitting one from the
+        // reservation table cannot make the test pass.
         #[cfg(target_os = "linux")]
         {
             for reserved in [
@@ -1623,10 +1470,8 @@ mod tests {
         }
     }
 
-    /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`
-    /// for a connected socket, unique to that connection. Identifying
-    /// descriptors this way rather than counting the process's is the
-    /// difference between a check and a race.
+    /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]` for a connected
+    /// socket, unique to that connection.
     #[cfg(target_os = "linux")]
     fn fd_target(fd: RawFd) -> Option<String> {
         std::fs::read_link(format!("/proc/self/fd/{fd}"))
@@ -1634,9 +1479,7 @@ mod tests {
             .map(|p| p.display().to_string())
     }
 
-    /// Every socket this process still holds a descriptor for. Failing to
-    /// read `/proc/self/fd` fails the test — a check that can't see its
-    /// subject must not report the subject is fine.
+    /// Every socket this process still holds a descriptor for.
     #[cfg(target_os = "linux")]
     fn open_sockets() -> std::collections::BTreeSet<String> {
         std::fs::read_dir("/proc/self/fd")
@@ -1652,11 +1495,6 @@ mod tests {
     }
 
     /// A launch that is over must leave no descriptor behind.
-    ///
-    /// Nothing in this repository notices a leaked descriptor, which is why
-    /// one sat in the launch path unremarked. Stands in for `run_with`'s
-    /// cycle at the only part that touches descriptors: resolve, read the
-    /// numbers the fork will need, let the resolution go.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_finished_launch_leaves_no_descriptor_behind() {
@@ -1684,9 +1522,8 @@ mod tests {
                 "the launch was handed {target}, which is not a connection",
             );
             handed_out.push(target);
-            // What the spawn does with them: read the numbers for the
-            // `pre_exec` dup2 list, fork, and have no further use for this
-            // side of the pair.
+            // What the spawn does with them: read the numbers for the `pre_exec` dup2 list, fork, and
+            // have no further use for this side of the pair.
             let _pairs: Vec<(RawFd, i32)> =
                 resolved.iter().map(|r| (r.host_fd(), r.child_fd)).collect();
             drop(resolved);
@@ -1713,11 +1550,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn handed_over_descriptors_have_the_right_owners_and_lifetimes() {
-        // Phase `the_launchers_end_is_released_when_the_launch_is_over`.
-        // Asserted from the *service's* side of the socket: "we called close"
-        // isn't the claim, "the far end can tell" is. Taken as a raw fd,
-        // nothing owned or closed this descriptor, so every caller held a live
-        // connection nothing would ever release.
         {
             use std::io::Read;
 
@@ -1746,8 +1578,8 @@ mod tests {
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("a bounded wait, so a leak fails the test instead of hanging it");
 
-            // The launch is over: either bwrap was spawned and holds the `dup2`
-            // copy, or the spawn failed and there is no child at all.
+            // The launch is over: either bwrap was spawned and holds the `dup2` copy, or the spawn
+            // failed and there is no child at all.
             drop(resolved);
 
             let mut buf = [0u8; 1];
@@ -1762,11 +1594,6 @@ mod tests {
                 "the read returned data on a connection nobody is on the other end of",
             );
         }
-        // Phase `the_apps_copy_outlives_the_launchers`.
-        // The other order, driven explicitly: a fix that released the
-        // descriptor too early would close the app's connection at the moment
-        // it was handed over, and a test only watching for EOF would call
-        // that a pass.
         {
             use std::io::Read;
             use std::os::fd::FromRawFd;
@@ -1785,8 +1612,8 @@ mod tests {
             let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
             let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
-            // What `place_child_fds` makes on the other side of the fork:
-            // another descriptor on the same socket. It stands in for the app.
+            // What `place_child_fds` makes on the other side of the fork: another descriptor on the
+            // same socket.
             let app_copy = unsafe {
                 let raw = libc::dup(resolved[0].host_fd());
                 assert!(raw >= 0, "dup of the handed-over descriptor failed");
@@ -1794,8 +1621,7 @@ mod tests {
             };
             drop(resolved);
 
-            // A closed connection reads its end at once; an open one with
-            // nothing to read would block.
+            // A closed connection reads its end at once; an open one with nothing to read would block.
             served.set_nonblocking(true).unwrap();
             let mut buf = [0u8; 1];
             match served.read(&mut buf) {
@@ -1808,8 +1634,7 @@ mod tests {
                 other => panic!("unexpected read from a live connection: {other:?}"),
             }
 
-            // Darwin refuses timeout changes after peer disconnect. Establish the
-            // same EOF deadline while the final peer descriptor is still alive.
+            // Darwin refuses timeout changes after peer disconnect.
             served.set_nonblocking(false).unwrap();
             served
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1821,11 +1646,6 @@ mod tests {
                 "every copy is gone and the service still sees a live connection",
             );
         }
-        // Phase `the_launchers_copy_is_not_inherited_by_the_next_child`.
-        // The launcher's copy must not be inheritable — with CLOEXEC cleared,
-        // every process started after the fork (D-Bus proxy, egress gate)
-        // would hold a live connection to a session service opened on an
-        // app's behalf.
         {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1865,7 +1685,7 @@ mod tests {
     }
 }
 
-/// Bounded nonsecret model selection. Credentials/endpoints remain gateway-owned.
+/// Bounded nonsecret model selection.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedProviderSelection {
@@ -1885,7 +1705,6 @@ impl ManagedProviderSelection {
     }
 }
 /// Exactly one connected identity, collaboration and authenticated model handoff.
-/// No ambient service discovery or identity file access occurs on this path.
 #[derive(Debug)]
 pub struct EnrolledServiceContext {
     binding: crate::managed::ManagedBinding,

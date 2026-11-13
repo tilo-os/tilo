@@ -48,6 +48,18 @@ impl ArrangementKind {
     }
 }
 
+/// The least a window stands at wherever the workspace keeps its size (on the
+/// canvas or floating), in logical pixels: as wide as a window in a strip can
+/// get ([`crate::width::WIDTH_FLOOR_PX`]: its tab pill, its controls and a
+/// scrollbar), and as tall as its bar with a few lines under it. Every member,
+/// person or agent, writes the shared record, so a size below it is never
+/// kept: it is raised when written and when read back, and a window laid out
+/// from a place smaller than this (one a build without the floor wrote) still
+/// stands at it.
+pub const WINDOW_MIN_WIDTH: u32 = 160;
+/// See [`WINDOW_MIN_WIDTH`].
+pub const WINDOW_MIN_HEIGHT: u32 = 120;
+
 /// Where a window group stands on the canvas, in canvas pixels: its top-left
 /// corner and its size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,6 +78,18 @@ impl CanvasPlace {
             y,
             width,
             height,
+        }
+    }
+
+    /// This place as a window's: no smaller than [`WINDOW_MIN_WIDTH`] ×
+    /// [`WINDOW_MIN_HEIGHT`], from the same corner. A place that is an area (a
+    /// selection, the bounds of several windows) keeps its own size.
+    #[must_use]
+    pub fn window(self) -> Self {
+        Self {
+            width: self.width.max(WINDOW_MIN_WIDTH),
+            height: self.height.max(WINDOW_MIN_HEIGHT),
+            ..self
         }
     }
 
@@ -146,7 +170,11 @@ pub enum FloatCorner {
 /// Anchoring to a corner rather than to the screen's top-left keeps a float
 /// where the person put it on a display of any size: a window 40 px from the
 /// bottom-right is 40 px from the bottom-right of everyone's work area.
+///
+/// Its size is a window's: never under [`WINDOW_MIN_WIDTH`] ×
+/// [`WINDOW_MIN_HEIGHT`], however it was made or written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "StoredFloat")]
 pub struct FloatPlace {
     #[serde(default)]
     pub corner: FloatCorner,
@@ -158,15 +186,41 @@ pub struct FloatPlace {
     pub height: u32,
 }
 
+/// A [`FloatPlace`] as the record holds it, before its size is a window's.
+#[derive(Deserialize)]
+struct StoredFloat {
+    #[serde(default)]
+    corner: FloatCorner,
+    dx: i32,
+    dy: i32,
+    width: u32,
+    height: u32,
+}
+
+impl From<StoredFloat> for FloatPlace {
+    /// A float read back is a window's size, whoever wrote a smaller one: a
+    /// sliver kept in the record is a window everyone sees again.
+    fn from(stored: StoredFloat) -> Self {
+        Self::new(
+            stored.corner,
+            stored.dx,
+            stored.dy,
+            stored.width,
+            stored.height,
+        )
+    }
+}
+
 impl FloatPlace {
+    /// A float of `width` × `height`, raised to a window's least size.
     #[must_use]
     pub fn new(corner: FloatCorner, dx: i32, dy: i32, width: u32, height: u32) -> Self {
         Self {
             corner,
             dx,
             dy,
-            width,
-            height,
+            width: width.max(WINDOW_MIN_WIDTH),
+            height: height.max(WINDOW_MIN_HEIGHT),
         }
     }
 
@@ -224,8 +278,9 @@ impl FloatPlace {
     /// than the area, at its distance from the corner, kept inside the area.
     #[must_use]
     pub fn resolved(&self, area: CanvasPlace) -> CanvasPlace {
-        let width = self.width.max(1).min(area.width.max(1));
-        let height = self.height.max(1).min(area.height.max(1));
+        // A window's least size, unless the work area itself is smaller.
+        let width = self.width.max(WINDOW_MIN_WIDTH).min(area.width.max(1));
+        let height = self.height.max(WINDOW_MIN_HEIGHT).min(area.height.max(1));
         let room = |total: u32, size: u32| i32::try_from(total.saturating_sub(size)).unwrap_or(0);
         let dx = self.dx.max(0).min(room(area.width, width));
         let dy = self.dy.max(0).min(room(area.height, height));
@@ -319,7 +374,7 @@ pub struct Arrangement {
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::serde_ids::deserialize_id_btree_map"
+        deserialize_with = "deserialize_window_places"
     )]
     pub places: BTreeMap<GroupId, CanvasPlace>,
     /// Where each floated window stands: a window the person lifted off the
@@ -353,9 +408,27 @@ impl Arrangement {
         self.floats.get(&group).copied()
     }
 
+    /// Stand `group` at `(x, y)` on the canvas, keeping its size and every other place where it
+    /// is: what a drag that let a place go on the canvas commits, one arranging action for the
+    /// whole gesture. Nothing placed moves. Whether the place stood somewhere else.
+    pub fn set_position(&mut self, group: GroupId, x: i32, y: i32) -> bool {
+        let Some(place) = self.places.get_mut(&group) else {
+            return false;
+        };
+        if place.x == x && place.y == y {
+            return false;
+        }
+        place.x = x;
+        place.y = y;
+        true
+    }
+
     /// Float `group` where `float` says (`None` snaps it back into the grid).
     /// Returns whether it changed.
     pub fn set_float(&mut self, group: GroupId, float: Option<FloatPlace>) -> bool {
+        let float = float.map(|float| {
+            FloatPlace::new(float.corner, float.dx, float.dy, float.width, float.height)
+        });
         match float {
             Some(float) => self.floats.insert(group, float) != Some(float),
             None => self.floats.remove(&group).is_some(),
@@ -447,6 +520,82 @@ impl Arrangement {
         let gap = i64::from(CANVAS_GAP);
         let x = i32::try_from(subject.right().saturating_add(gap)).unwrap_or(i32::MAX);
         self.free_place_near((x, subject.y), width, height, except)
+    }
+
+    /// The free place next to `subject` for a window of `width` × `height`:
+    /// to its trailing side at its own line, then below it, then below its
+    /// trailing side, and onward in that order down the two columns the anchor
+    /// starts — never above it or to its leading side, so a place opened beside
+    /// what a person is in stands where they look rather than off the top or
+    /// the left of the canvas. Nothing placed moves, and every candidate is
+    /// [`CANVAS_GAP`] clear of everything but `except`.
+    ///
+    /// Deterministic: the same arrangement and anchor give the same place on
+    /// every device. A canvas crowded below both columns continues down the
+    /// trailing column, where the canvas pans.
+    #[must_use]
+    pub fn free_place_next_to(
+        &self,
+        subject: CanvasPlace,
+        width: u32,
+        height: u32,
+        except: Option<GroupId>,
+    ) -> CanvasPlace {
+        let others: Vec<CanvasPlace> = self
+            .places
+            .iter()
+            .filter(|(id, _)| Some(**id) != except)
+            .map(|(_, place)| *place)
+            .collect();
+        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds(o, CANVAS_GAP));
+        let gap = i64::from(CANVAS_GAP);
+        let step_y = i64::from(height).saturating_add(gap);
+        let right = subject.right().saturating_add(gap);
+        let below = subject.bottom().saturating_add(gap);
+        let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        // Past every obstacle's foot both columns are free: the walk stops there.
+        let foot = others
+            .iter()
+            .map(CanvasPlace::bottom)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(gap);
+        // The trailing side at the anchor's own line first: what a person opening something
+        // beside where they are expects to see.
+        for (x, y) in [
+            (right, i64::from(subject.y)),
+            (i64::from(subject.x), below),
+            (right, below),
+        ] {
+            let place = CanvasPlace::new(clamp(x), clamp(y), width, height);
+            if free(&place) {
+                return place;
+            }
+        }
+        // One row down at a time, along the two columns the anchor starts, until both stand past
+        // every obstacle's foot: `step_y` is at least the gap, so the walk always ends.
+        let mut drop = step_y;
+        while drop <= foot.saturating_sub(below) {
+            for (x, y) in [
+                (right, i64::from(subject.y).saturating_add(drop)),
+                (i64::from(subject.x), below.saturating_add(drop)),
+            ] {
+                let place = CanvasPlace::new(clamp(x), clamp(y), width, height);
+                if free(&place) {
+                    return place;
+                }
+            }
+            drop = drop.saturating_add(step_y);
+        }
+        // Every row the obstacles reach is taken: continue down the trailing column.
+        let mut y = below;
+        loop {
+            let place = CanvasPlace::new(clamp(right), clamp(y), width, height);
+            if free(&place) || y == i64::MAX {
+                return place;
+            }
+            y = y.saturating_add(step_y);
+        }
     }
 
     /// The groups standing within `radius` canvas pixels of `point`,
@@ -552,6 +701,18 @@ impl crate::workspace::Workspace {
     }
 }
 
+/// The canvas places of a stored arrangement, each a window's size ([`CanvasPlace::window`]).
+fn deserialize_window_places<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<GroupId, CanvasPlace>, D::Error> {
+    let places: BTreeMap<GroupId, CanvasPlace> =
+        crate::serde_ids::deserialize_id_btree_map(deserializer)?;
+    Ok(places
+        .into_iter()
+        .map(|(group, place)| (group, place.window()))
+        .collect())
+}
+
 /// A canvas coordinate as a place keeps it.
 fn clamp_point(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
@@ -624,6 +785,55 @@ mod tests {
     }
 
     #[test]
+    fn next_to_a_window_walks_right_then_down_and_never_above_it() {
+        // The conversation at the origin: the first place opened beside it stands at its right on
+        // its own line, the second below it, the third below its right — and none above it or to
+        // its left, where a person would not look for what they asked for.
+        let conversation = CanvasPlace::new(0, 0, 720, 520);
+        let mut arrangement = canvas(&[(1, conversation)]);
+        let opened: Vec<CanvasPlace> = (2..=7)
+            .map(|id| {
+                let place = arrangement.free_place_next_to(conversation, 720, 520, None);
+                assert!(!place.crowds(&conversation, CANVAS_GAP), "{place:?}");
+                assert!(
+                    place.y >= conversation.y,
+                    "never above the anchor: {place:?}"
+                );
+                assert!(
+                    place.x >= conversation.x,
+                    "never to the anchor's leading side: {place:?}"
+                );
+                for other in &opened_places(&arrangement) {
+                    assert!(
+                        !place.crowds(other, CANVAS_GAP),
+                        "{place:?} crowds {other:?}"
+                    );
+                }
+                arrangement.places.insert(id, place);
+                place
+            })
+            .collect();
+        assert_eq!(
+            (opened[0].x, opened[0].y),
+            (744, 0),
+            "the first stands beside the conversation, at its line"
+        );
+        assert_eq!((opened[1].x, opened[1].y), (0, 544), "the second below it");
+        assert_eq!(
+            (opened[2].x, opened[2].y),
+            (744, 544),
+            "the third under its right"
+        );
+        let places: Vec<CanvasPlace> = opened_places(&arrangement);
+        assert_eq!(places.len(), 7, "every place stands clear of the rest");
+    }
+
+    /// The places standing in `arrangement`, for saying one crowds none.
+    fn opened_places(arrangement: &Arrangement) -> Vec<CanvasPlace> {
+        arrangement.places.values().copied().collect()
+    }
+
+    #[test]
     fn a_window_being_placed_again_ignores_its_own_old_place() {
         let card = CanvasPlace::new(0, 0, 400, 300);
         let arrangement = canvas(&[(1, card)]);
@@ -651,11 +861,89 @@ mod tests {
         );
     }
 
+    /// A window's place, on the canvas or floating, is never smaller than a window: an agent's
+    /// command or a record that asked for a sliver gets a window, and a sliver some older build
+    /// left still lays out a window wide.
+    #[test]
+    fn a_window_is_never_kept_or_laid_out_a_sliver() {
+        let area = CanvasPlace::new(0, 32, 1280, 768);
+        let sliver = FloatPlace {
+            corner: FloatCorner::TopLeft,
+            dx: 24,
+            dy: 0,
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(
+            sliver.resolved(area),
+            CanvasPlace::new(24, 32, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+            "laid out from the corner it keeps, a window wide"
+        );
+        let made = FloatPlace::new(FloatCorner::TopLeft, 24, 0, 2, 2);
+        assert_eq!(
+            (made.width, made.height),
+            (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        );
+        let read: FloatPlace =
+            serde_json::from_str(r#"{"corner":"top_left","dx":24,"dy":0,"width":2,"height":2}"#)
+                .unwrap();
+        assert_eq!(read, made, "a stored sliver reads back a window");
+        let mut arrangement = Arrangement::default();
+        arrangement.set_float(7, Some(sliver));
+        assert_eq!(arrangement.float_of(7), Some(made));
+        // On a work area smaller than a window, the window fills the area.
+        assert_eq!(
+            made.resolved(CanvasPlace::new(0, 0, 100, 80)),
+            CanvasPlace::new(0, 0, 100, 80)
+        );
+
+        let stored = r#"{"kind":"Canvas","places":{"7":{"x":-40,"y":12,"width":2,"height":0}}}"#;
+        let arrangement: Arrangement = serde_json::from_str(stored).unwrap();
+        assert_eq!(
+            arrangement.place_of(7),
+            Some(CanvasPlace::new(
+                -40,
+                12,
+                WINDOW_MIN_WIDTH,
+                WINDOW_MIN_HEIGHT
+            ))
+        );
+        assert!(
+            (f64::from(WINDOW_MIN_WIDTH) - crate::width::WIDTH_FLOOR_PX).abs() < f64::EPSILON,
+            "a float or a canvas window is as narrow as a strip's window can get, no narrower"
+        );
+    }
+
     #[test]
     fn closing_a_window_frees_its_place() {
         let mut arrangement = canvas(&[(1, CanvasPlace::new(0, 0, 10, 10))]);
         assert!(arrangement.retain_groups(|id| id != 1));
         assert!(arrangement.places.is_empty());
+    }
+
+    #[test]
+    fn a_place_let_go_elsewhere_on_the_canvas_keeps_its_size_and_moves_nothing_else() {
+        // A drag that ended on the canvas: the place stands where it was let go, at the size it
+        // had, and every other place stays exactly where it was.
+        let mut arrangement = canvas(&[
+            (1, CanvasPlace::new(0, 0, 400, 300)),
+            (2, CanvasPlace::new(500, 0, 400, 300)),
+        ]);
+        assert!(arrangement.set_position(2, 900, 640));
+        assert_eq!(
+            arrangement.place_of(2),
+            Some(CanvasPlace::new(900, 640, 400, 300)),
+            "the place stands where it was let go, at its own size"
+        );
+        assert_eq!(
+            arrangement.place_of(1),
+            Some(CanvasPlace::new(0, 0, 400, 300)),
+            "nothing else moved"
+        );
+        assert!(
+            !arrangement.set_position(2, 900, 640),
+            "a place already there is not a change"
+        );
     }
 
     #[test]

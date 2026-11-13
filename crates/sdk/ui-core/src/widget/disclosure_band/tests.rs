@@ -4,7 +4,6 @@ use crate::state::State;
 use crate::time::testing::with_monotonic_time;
 use crate::widget::{Column, Text};
 
-/// A few lines of content, the first named `inside`.
 fn details(key: &str) -> DisclosureBand {
     DisclosureBand::new(
         key,
@@ -25,7 +24,6 @@ fn rooted(column: Column) -> FrameHarness {
     d
 }
 
-/// A view that builds its band anew on every change, as views do.
 fn rebuild(d: &mut FrameHarness, band: Option<DisclosureBand>) {
     let mut children: Vec<Element> = Vec::new();
     if let Some(band) = band {
@@ -36,12 +34,10 @@ fn rebuild(d: &mut FrameHarness, band: Option<DisclosureBand>) {
     d.relayout();
 }
 
-/// The first child of the harness's column, as it moves.
 fn band(d: &FrameHarness) -> Option<crate::widget::Disclosing> {
     d.root_widget().children()[0].disclosing()
 }
 
-/// How far the column's child `index` is drawn below its place.
 fn offset_of(d: &FrameHarness, index: usize) -> f64 {
     d.root::<Column>()
         .drawn_offsets()
@@ -72,7 +68,6 @@ fn a_band_built_after_the_window_has_shown_arrives_over_what_follows() {
     );
     assert!(with_monotonic_time(start, || offset_of(&d, 1)).abs() < 0.5);
 
-    // What follows moves down with its edge, by transform.
     let midway = start + crate::time::Duration::from_millis(90);
     let moved = with_monotonic_time(midway, || {
         d.relayout();

@@ -34,6 +34,11 @@ await tab.send('Page.enable', {});
 await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics);
 
 const failures = () => tab.log.filter(line => /^(EXC|ERROR) /.test(line) || /panic/i.test(line));
+// The first screen of a first visit (`#first-run` in the entry page) stays in
+// the document once it is done with, hidden, so the person's card can show it
+// again: what shows is whether the page set `data-first-run` and displayed it.
+const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefined
+  && getComputedStyle(document.getElementById('first-run')).display !== 'none')`;
 const shot = async name => {
   const png = await tab.screenshot().catch(() => null);
   if (png) writeFileSync(join(out, name), png);
@@ -68,7 +73,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
         door: document.documentElement.dataset.door ?? null,
         waitList: document.documentElement.dataset.waitList ?? null,
         entry: document.documentElement.dataset.entry ?? null,
-        firstScreen: Boolean(document.getElementById('first-run')),
+        firstScreen: ${firstScreenShown},
         status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
       })`).catch(() => 'unreadable');
       await finish(1, `${what} never happened: ${shown}`);
@@ -85,14 +90,14 @@ if (before) {
   await was.send('Emulation.setDeviceMetricsOverride', deskMetrics);
   await was.navigate(before);
   for (let tries = 0; tries < 240; tries += 1) {
-    const shown = await was.evaluate(`!!document.getElementById('first-run')`).catch(() => false);
+    const shown = await was.evaluate(firstScreenShown).catch(() => false);
     if (shown) break;
     await sleep(250);
   }
   const png = await was.screenshot().catch(() => null);
   if (png) writeFileSync(join(out, '0-before-today.png'), png);
   report.before = await was.evaluate(`({
-    firstScreen: !!document.getElementById('first-run'),
+    firstScreen: ${firstScreenShown},
     heading: document.querySelector('#first-run h1')?.textContent?.trim() ?? null,
     door: document.documentElement.dataset.door ?? null,
   })`).catch(() => null);
@@ -104,7 +109,7 @@ if (before) {
 await tab.navigate(site);
 await until(`document.documentElement.dataset.door === 'wait-list'`, 'the door showing its wait list');
 await until(`document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
-await until(`!document.getElementById('first-run')`, 'the setup screen leaving the door');
+await until(`!${firstScreenShown}`, 'the setup screen leaving the door');
 report.heading = await tab.evaluate(`document.getElementById('arrival-door-heading')?.textContent?.trim() ?? null`);
 report.body = await tab.evaluate(`document.getElementById('arrival-door-body')?.textContent?.trim() ?? null`);
 report.note = await tab.evaluate(`document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null`);

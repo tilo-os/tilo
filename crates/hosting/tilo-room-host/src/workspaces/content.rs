@@ -43,14 +43,16 @@ const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 /// member's device alone: the member stops counting on this host for it.
 /// `None` for any other presence.
 pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
-    // ignored-failure: presence carries other formats; only a content want is answered
     let Ok(NeighbourMsg::RecordContentWant {
         requester,
         app_id,
         cluster_id,
         hash,
         ..
-    }) = postcard::from_bytes(body)
+    }) = tilo_failure::ignored!(
+        "presence carries other formats, and only a content want is answered",
+        postcard::from_bytes(body)
+    )
     else {
         return None;
     };
@@ -418,9 +420,10 @@ impl Workspaces {
             .records
             .host_presence(workspace_id, body.clone())
             .await?;
-        // ignored-failure: the body is the host's own request, which it just encoded
-        if let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&body)
-            && let Some(link) = self.inner.direct.link(workspace_id)
+        if let Ok(message) = tilo_failure::ignored!(
+            "the body is the host's own request, which it just encoded",
+            postcard::from_bytes::<NeighbourMsg>(&body)
+        ) && let Some(link) = self.inner.direct.link(workspace_id)
             && let Err(error) = link.send(message)
         {
             tracing::debug!(%workspace, %error, "a workspace's link did not carry the host's request");
@@ -434,14 +437,16 @@ impl Workspaces {
     /// any other presence. What it keeps of app surfaces is the workspace's
     /// content plane, never a registry.
     pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
-        // ignored-failure: presence carries other formats; only a content want is answered
         let Ok(NeighbourMsg::RecordContentWant {
             requester,
             app_id,
             cluster_id,
             hash,
             have,
-        }) = postcard::from_bytes(body)
+        }) = tilo_failure::ignored!(
+            "presence carries other formats, and only a content want is answered",
+            postcard::from_bytes(body)
+        )
         else {
             return Vec::new();
         };

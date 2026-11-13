@@ -1,6 +1,5 @@
-//! The host's palette stands over the window that asked for it, as an app's
-//! own palette stands over its window: in the browser desktop a
-//! confirmation one window asked for was centred on the whole screen,
+//! The host's palette stands over the window that asked for it, as an app's own palette stands over its
+//! window: in the browser desktop a confirmation one window asked for was centred on the whole screen,
 //! across the window beside it.
 
 use super::FrameHarness;
@@ -8,8 +7,8 @@ use crate::host_core::HostCore as _;
 use crate::testing::TwoWindows;
 use vello::kurbo::Rect;
 
-/// A confirmation a press asked for stands over the window pressed in, not
-/// over the whole surface; after a key it no longer follows that press.
+/// A confirmation a press asked for stands over the window pressed in, not over the whole surface;
+/// after a key it no longer follows that press.
 #[test]
 fn a_confirmation_a_press_asked_for_stands_over_the_window_pressed_in() {
     let _settled = crate::motion::testing::settled();

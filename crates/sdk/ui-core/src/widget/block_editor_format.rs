@@ -1,14 +1,10 @@
-//! Formatting a toolbar applies: marks over the selection, across every
-//! paragraph it spans, and lists and headings over the selected paragraphs.
+//! Formatting a toolbar applies: marks over the selection, across every paragraph it spans, and lists
+//! and headings over the selected paragraphs.
 
 use super::{BlockEditor, BlockKind, DocumentPosition, EditScope};
 use crate::widget::marks::{Mark, MarkSpan};
 
 impl BlockEditor {
-    /// Toggle `mark` as a toolbar button does: over the selection, across
-    /// every paragraph it spans, or, with nothing selected, for the text
-    /// typed next. The change is an edit of the blocks it touched, which the
-    /// host writes like a keystroke's. `false` when no block is focused.
     pub fn toggle_mark(&mut self, mark: Mark) -> bool {
         if self.read_only {
             return false;
@@ -149,15 +145,8 @@ impl BlockEditor {
         changed
     }
 
-    /// Make heading levels the editor offers.
     pub const HEADING_LEVELS: std::ops::RangeInclusive<u8> = 1..=3;
 
-    /// Make the selected paragraphs, or the focused one, a heading of
-    /// `level`, or body text when it is `None`: what the format menu's rows
-    /// and their shortcuts do. The text, its marks and its caret stay as
-    /// they are; a code or table block keeps its kind. Unlike the Markdown
-    /// prefix typed at the start of a line, this sets a heading on writing
-    /// that is already there. `false` when nothing changed.
     pub fn set_heading(&mut self, level: Option<u8>) -> bool {
         if self.read_only {
             return false;
@@ -197,9 +186,6 @@ impl BlockEditor {
         changed
     }
 
-    /// The marks a toolbar shows as on: those covering the whole selection
-    /// in the focused block, or the caret, with the ones set for the text
-    /// typed next.
     pub fn active_marks(&self) -> Vec<Mark> {
         let Some(line) = self
             .focused

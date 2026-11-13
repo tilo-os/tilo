@@ -1,28 +1,10 @@
 //! Shapes and safety invariants of the portable continuity semantic schemas.
-//!
-//! A [`ContinuitySemanticSchema`] is declared in a signed manifest and names
-//! what a continuation payload *means*, not which app wrote it. The shapes and
-//! invariants live here, beside the vocabulary, so every runtime that carries
-//! continuations (the shell receiving another device's checkpoint, an app
-//! composing its own) checks the same rules.
-//!
-//! Every schema is JSON with `deny_unknown_fields`: a payload carries exactly
-//! the fields below and nothing an app might add (a path, a token, a member
-//! list). Identifiers are path-free ([`portable_id`]), locations are plain
-//! web URLs without credentials ([`portable_http_url`]).
-//!
-//! Two invariants protect the person on the receiving device. A continuation
-//! must never start audio there unasked, so a [`MediaPosition`] is always
-//! paused; and it must never share that device's audio unasked, so a
-//! [`RealtimeSession`] resumes with the microphone facet on (muting is a
-//! control the person sees) and audio sharing off.
 
 use serde::{Deserialize, Serialize};
 
 pub use crate::manifest::ContinuitySemanticSchema;
 
 impl ContinuitySemanticSchema {
-    /// Every schema the platform understands.
     pub const ALL: [Self; 5] = [
         Self::WebLocationV1,
         Self::PublicationPositionV1,
@@ -31,11 +13,6 @@ impl ContinuitySemanticSchema {
         Self::TextPositionV1,
     ];
 
-    /// The number a continuation payload carries for this schema, so that a
-    /// device which has not installed the app can still tell what the
-    /// payload means. Disjoint from the toolkit's structural and generic
-    /// envelope numbers (`u16::MAX - 1` and `u16::MAX`); apps write it
-    /// through `ui::collaboration::semantic_schema`.
     #[must_use]
     pub const fn wire_tag(self) -> u16 {
         match self {
@@ -61,12 +38,6 @@ impl ContinuitySemanticSchema {
     }
 
     /// Whether `bytes` is a payload of this schema and keeps its invariants.
-    ///
-    /// [`Self::TextPositionV1`] anchors its carets in CRDT cursors, which
-    /// only the document runtime can decode; this crate does not link it, so
-    /// the caller passes that check as `text_position` (in the toolkit,
-    /// `ui::text_position::TextPosition::valid`). It is called only for that
-    /// schema.
     #[must_use]
     pub fn validate(self, bytes: &[u8], text_position: impl FnOnce(&[u8]) -> bool) -> bool {
         match self {
@@ -85,7 +56,6 @@ fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
     serde_json::from_slice(bytes).ok()
 }
 
-/// `web-location-v1`: the page a browser-like view shows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebLocation {
@@ -99,7 +69,6 @@ impl WebLocation {
     }
 }
 
-/// `publication-position-v1`: where a reader is in a publication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicationPosition {
@@ -115,7 +84,6 @@ impl PublicationPosition {
     }
 }
 
-/// `media-position-v1`: a track and an offset into it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPosition {
@@ -132,7 +100,6 @@ impl MediaPosition {
     }
 }
 
-/// `realtime-session-v1`: the call a person was in, and how they were in it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RealtimeSession {
@@ -167,8 +134,6 @@ pub fn portable_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
 }
 
-/// An `http(s)` URL with a host and no credentials, control characters or
-/// backslashes.
 #[must_use]
 pub fn portable_http_url(value: &str) -> bool {
     let Some(rest) = value

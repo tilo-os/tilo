@@ -231,11 +231,13 @@ fn post_in(peer: &StatePeer) -> TreePath {
 fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         id,
-        tilo_action_policy::Subject::person(person_hex()),
+        tilo_action_policy::Grantee::person(person_hex()),
         tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
         KindSet::OUTSIDE,
         Answer::Allow,
-        tilo_action_policy::Subject::person("another-person"),
+        tilo_action_policy::Grantee::person(hex::encode(
+            crate::admission_tests::other_owner().1.user_public_key,
+        )),
     )
 }
 
@@ -496,11 +498,11 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
     // The installer loses posting; the bot loses it with them.
     let deny = tilo_action_policy::Grant::new(
         "no-post",
-        tilo_action_policy::Subject::person(person_hex()),
+        tilo_action_policy::Grantee::person(person_hex()),
         TreePath::workspace(governor.workspace_id()).app("so.tilo.chat"),
         KindSet::UNDOABLE,
         Answer::Deny,
-        tilo_action_policy::Subject::person(person_hex()),
+        tilo_action_policy::Grantee::person(person_hex()),
     );
     governor
         .governance_mut()
@@ -778,14 +780,14 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
     );
     let adopt = tilo_action_policy::Grant::new(
         "adopt:editor",
-        tilo_action_policy::Subject::person(hex::encode(editor_root)),
+        tilo_action_policy::Grantee::person(hex::encode(editor_root)),
         tilo_action_policy::roles::governance_action(
             governor.workspace_id(),
             tilo_action_policy::roles::governance::ADOPT_BOT,
         ),
         KindSet::OUTSIDE,
         Answer::Allow,
-        tilo_action_policy::Subject::person(person_hex()),
+        tilo_action_policy::Grantee::person(person_hex()),
     );
     governor
         .governance_mut()
@@ -805,7 +807,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
     for grant in governor.bot_grants(BOT, now).unwrap() {
         assert_eq!(
             grant.granted_by,
-            tilo_action_policy::Subject::person(owner.clone())
+            tilo_action_policy::Grantee::person(owner.clone())
         );
     }
 }

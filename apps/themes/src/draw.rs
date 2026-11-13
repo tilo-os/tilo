@@ -1,10 +1,5 @@
-//! Content drawing: a miniature desktop in the theme being previewed.
-//!
-//! What it paints is the subject of the app — what a theme document does to
-//! a window: ground, regions, ink tiers, the selection lift, a primary
-//! action, an on switch, your focus ring, presence, status and a floating
-//! panel. Every value comes from the *previewed* theme's tokens, never from
-//! the theme the studio itself is drawn in.
+//! Content drawing: a miniature desktop in the theme being previewed. Every value comes
+//! from the *previewed* theme's tokens, never from the theme the studio itself is drawn in.
 
 use ui::advanced::{Affine, Scene};
 use ui::prelude::*;
@@ -14,7 +9,6 @@ use ui::vello::peniko::{Color, Fill};
 
 use crate::locales::CATALOG;
 
-/// Logical size the miniature is composed at, before it is scaled to fit.
 pub const CANVAS: (f64, f64) = (480.0, 300.0);
 
 struct Painter<'a> {
@@ -35,8 +29,8 @@ impl Painter<'_> {
             .stroke(&Stroke::new(width), self.transform, colour, None, shape);
     }
 
-    /// The previewed desktop's ground over the whole canvas and one window
-    /// tile on it, a gutter in from its edges; returns the tile.
+    /// The previewed desktop's background over the whole canvas and one window tile on it,
+    /// a gutter in from its edges; returns the tile.
     fn desktop_with_window(&mut self) -> Rect {
         let colors = &self.theme.tokens.colors;
         let (ground, content, edge) = (
@@ -72,8 +66,6 @@ fn rounded(rect: Rect, radius: f32) -> RoundedRect {
     RoundedRect::from_rect(rect, f64::from(radius))
 }
 
-/// Paint a list surface in `theme`: a window of rows, one selected, with
-/// names, a quieter second line and presence.
 #[allow(
     clippy::too_many_lines,
     reason = "one composition, read top to bottom like the list it draws"
@@ -105,7 +97,7 @@ pub fn miniature_list(
         Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter),
     );
     paint.label(
-        "12 conversations",
+        &CATALOG.t("themes-preview-conversations"),
         TextRole::Caption,
         colors.text_dim,
         Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter + 32.0),
@@ -114,10 +106,10 @@ pub fn miniature_list(
     let row_height = 44.0;
     let list_top = tile.y0 + gutter + 62.0;
     for (index, (name, subject, unread)) in [
-        ("Ada Lovelace", "The quarterly review", true),
-        ("Bo Chen", "Re: Budget notes", true),
-        ("Design team", "Friday's critique", false),
-        ("Grace Hopper", "A compiler for everyone", false),
+        ("Ada Lovelace", "themes-preview-subject-review", true),
+        ("Bo Chen", "themes-preview-subject-budget", true),
+        ("Design team", "themes-preview-subject-critique", false),
+        ("Grace Hopper", "themes-preview-subject-compiler", false),
     ]
     .into_iter()
     .enumerate()
@@ -142,7 +134,7 @@ pub fn miniature_list(
             Point::new(row.x0 + 42.0, row.y0 + 6.0),
         );
         paint.label(
-            subject,
+            &CATALOG.t(subject),
             TextRole::Caption,
             colors.text_dim,
             Point::new(row.x0 + 42.0, row.y0 + 24.0),
@@ -156,8 +148,6 @@ pub fn miniature_list(
     }
 }
 
-/// Paint a dialog over a window in `theme`: the scrim, a floating panel, its
-/// title and body, and its primary and secondary actions.
 #[allow(
     clippy::too_many_lines,
     reason = "one composition, read top to bottom like the dialog it draws"
@@ -259,8 +249,6 @@ pub fn miniature_dialog(
     );
 }
 
-/// Paint the miniature of `theme` at the origin of `transform`, in
-/// [`CANVAS`] coordinates.
 #[allow(
     clippy::too_many_lines,
     reason = "one composition, read top to bottom like the window it draws"
@@ -278,10 +266,8 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let gutter = f64::from(space.s4);
     let inset = f64::from(space.s2);
 
-    // The desktop ground and one window tile on it.
     let tile = paint.desktop_with_window();
 
-    // The navigation region, with one selected row lifted.
     let sidebar = Rect::new(tile.x0, tile.y0, tile.x0 + 132.0, tile.y1);
     let corner = f64::from(radii.tile);
     paint.fill(
@@ -289,7 +275,14 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         colors.surfaces.sidebar,
     );
     let row_height = 26.0;
-    for (i, name) in ["Inbox", "Drafts", "Shared"].into_iter().enumerate() {
+    for (i, name) in [
+        "themes-preview-inbox",
+        "themes-preview-drafts",
+        "themes-preview-shared-with-me",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         #[allow(clippy::cast_precision_loss, reason = "three rows")]
         let top = sidebar.y0 + gutter + i as f64 * (row_height + 2.0);
         let row = Rect::new(
@@ -308,13 +301,12 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
             colors.text_dim
         };
         paint.label(
-            name,
+            &CATALOG.t(name),
             TextRole::Label,
             ink,
             Point::new(row.x0 + inset, row.y0 + 5.0),
         );
     }
-    // Who else is here, in their colours.
     for (i, hue) in [PresenceHue::Orange, PresenceHue::Teal, PresenceHue::Pink]
         .into_iter()
         .enumerate()
@@ -327,9 +319,6 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         );
     }
 
-    // The content region: a title, a line in each quieter ink tier, a field
-    // with your focus ring and a collaborator's caret, an on switch, a
-    // primary and a secondary action.
     let left = sidebar.x1 + f64::from(space.s6);
     let mut top = tile.y0 + gutter;
     paint.label(
@@ -408,7 +397,6 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         Point::new(secondary.x0 + 22.0, secondary.y0 + 7.0),
     );
 
-    // Status, muted.
     let status_y = primary.y1 + gutter + 6.0;
     for (i, colour) in [
         colors.semantic.success,
@@ -423,8 +411,6 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         paint.fill(&Circle::new((cx, status_y), 5.0), colour);
     }
 
-    // A floating panel: the overlay surface, its shadow and edge, and the
-    // armed row lifted inside it.
     let panel = Rect::new(
         tile.x1 - 150.0,
         tile.y1 - 104.0,
@@ -454,11 +440,18 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         &rounded(armed, radii.concentric(radii.panel, space.s2)),
         colors.lift_on(colors.surfaces.overlay, 1.0),
     );
-    for (i, item) in ["Copy link", "Rename", "Move"].into_iter().enumerate() {
+    for (i, item) in [
+        "themes-preview-copy-link",
+        "themes-preview-rename",
+        "themes-preview-move",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         #[allow(clippy::cast_precision_loss, reason = "three items")]
         let item_y = panel.y0 + 14.0 + i as f64 * 24.0;
         paint.label(
-            item,
+            &CATALOG.t(item),
             TextRole::Label,
             colors.text_primary,
             Point::new(panel.x0 + 18.0, item_y),

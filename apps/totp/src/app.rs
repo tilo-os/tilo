@@ -1,23 +1,7 @@
-//! The Authenticator's window over the [`Totp`] resource: the account list,
-//! its status surfaces and the add sheet.
-//!
-//! The document holds account metadata (names, order and lifecycle
-//! collaborate without credentials entering history); this device's secret
-//! store holds each account's seed (`Seeds`). The [`Store`] the window shares
-//! with the view's effect handler joins the two into the accounts it shows
-//! and submits every metadata change as a field edit or verb through the
-//! framework's dispatcher. The window's header row, with its search and add
-//! buttons, belongs to the framework's navigation shell around this widget
-//! (see [`crate::resource`]); this widget paints what stands under it:
-//!
-//!  * the [`AccountList`] (main screen), with a banner above it when a
-//!    secret could not be saved on this device,
-//!  * a `Notice` for what just happened, which the shell shows as a toast,
-//!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
-//!
-//! The list is painted from the root rect rather than through the taffy tree:
-//! the codes and their countdown rings change every frame and the rows are
-//! faces of the toolkit's list row, ring and button.
+//! The Authenticator's window over the [`Totp`] resource: the account list, the
+//! banner and toast, and the add sheet. The document holds account metadata and
+//! this device's secret store holds the seeds; [`Store`] joins the two and
+//! submits metadata changes through the framework's dispatcher.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -52,15 +36,10 @@ use crate::totp;
 use ui::framework::Submit;
 use ui::tilo_resource::Edit;
 
-/// Seconds into a thirty-second period at which a capture shows its codes: the
-/// rings are about two thirds full.
+/// Where a capture's rings sit: about two thirds through the period.
 const CAPTURE_ELAPSED: u64 = 11;
-/// Seconds into the period at which the expiring capture shows them: the last
-/// few, when the rings turn to their warning tone.
 const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
 
-/// What the window's toast should do next, for the shell around the
-/// window.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Notice {
     Show(String, ToastKind),
@@ -81,69 +60,48 @@ fn qr_image_request() -> PickRequest {
         .all_files()
 }
 
-/// The banner's wording when a secret could not be saved on this device: the
-/// headline, and what the person can do about it.
 const UNSAVED_TITLE: &str = "Changes aren\u{2019}t saved";
 const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, then retry.";
 
-/// What an effect asked of the sheet or the list, which the window does on
-/// its next frame.
+/// What an effect asked of the sheet or the list, done on the next frame.
 enum Asked {
-    /// Open the add sheet.
     Add,
     /// Open the sheet for an account: its details, or its key's setup.
     Account(AccountId),
-    /// Scroll an account's row into view.
     Reveal(AccountId),
 }
 
-/// The accounts the window shows and the view's effects act on: the
-/// document's metadata joined with this device's seeds, the selection, and
-/// what the window should do next.
+/// The accounts the window shows: the document's metadata joined with this
+/// device's seeds, the selection, and what to do next.
 pub(crate) struct Store {
-    /// The vault as the document holds it, followed as it changes; `None`
-    /// for a window outside the framework.
+    /// The vault as the document holds it; `None` outside the framework.
     live: Option<Live<Totp>>,
     presented: Option<(u64, u64)>,
-    /// The accounts as the document holds them: metadata, no secrets.
     accounts: Rc<Vec<Account>>,
     seeds: Seeds,
-    /// The accounts joined with this device's seeds: what the list shows and
-    /// codes are computed from.
     vault: Vault,
     selected: Option<AccountId>,
-    /// Where the window raises its notices; the shell shows them.
     notice: ui::LocalState<Option<Notice>>,
-    /// The exact code string most recently written to the clipboard by a copy
-    /// action. Lets callers (and tests) observe what was copied without
-    /// round-tripping the system clipboard, which is unavailable headless.
+    /// The code the last copy placed on the clipboard, which a headless test
+    /// cannot read back from the system.
     last_copied: Option<String>,
     /// The last copy, whose outcome can arrive after its confirmation.
     copy: ui::CopyWatch,
-    /// The visible (ordered) list must be recomputed — set when the vault
-    /// changes.
     list_dirty: bool,
-    /// A secret this device's store refused or could not read: shown as a
-    /// banner until a retry the user asks for succeeds, never retried in a
-    /// frame loop.
+    /// A secret this device's store refused or could not read, shown until the
+    /// person retries.
     persistence_message: Option<String>,
-    /// Where account metadata changes go.
     dispatch: Option<Dispatcher<Totp>>,
     asked: Vec<Asked>,
-    /// A capture scenario the window stages on its next frame.
     scenario: Option<Staged>,
 }
 
-/// A capture's scenario, by name (`None` for a plain capture).
+/// A capture's scenario by name; `None` for a plain capture.
 struct Staged(Option<String>);
 
-/// The store as the window and the view's effect handler share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
-    /// A store following `live` (none outside the framework) that edits
-    /// through `dispatch`, with the seeds in `seeds` and notices raised
-    /// through `notice`.
     pub(crate) fn shared(
         live: Option<Live<Totp>>,
         dispatch: Option<Dispatcher<Totp>>,
@@ -170,7 +128,6 @@ impl Store {
         Rc::new(RefCell::new(store))
     }
 
-    /// Show the accounts the document holds when it changed.
     pub(crate) fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -182,15 +139,13 @@ impl Store {
         self.present_accounts(&accounts);
     }
 
-    /// Submit one account change through the framework: checked, applied,
-    /// undoable and replicated like the same edit or verb from the palette.
+    /// Submit one account change as the palette's edit or verb would.
     fn submit(&self, submit: impl Submit<Totp>) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(submit);
         }
     }
 
-    /// Show the accounts the document holds now, with this device's seeds.
     fn present_accounts(&mut self, state: &Rc<Vec<Account>>) {
         self.accounts = Rc::clone(state);
         let ids: Vec<AccountId> = state.iter().map(|account| account.id).collect();
@@ -210,7 +165,6 @@ impl Store {
         }
     }
 
-    /// Join the document's accounts with this device's seeds.
     fn join_seeds(&mut self) {
         let accounts = self
             .accounts
@@ -227,25 +181,19 @@ impl Store {
         self.list_dirty = true;
     }
 
-    /// The accounts as the document holds them, without secrets.
     pub(crate) fn accounts(&self) -> &[Account] {
         &self.accounts
     }
 
-    /// Whether a secret change is not saved on this device.
     pub(crate) fn persistence_pending(&self) -> bool {
         self.persistence_message.is_some()
     }
 
     fn describe_persistence_failure(&mut self, message: impl Into<String>) {
         self.persistence_message = Some(message.into());
-        // A durable, actionable banner supersedes the transient toast. Keeping
-        // both is noisy and obscures the account list, especially on narrow
-        // windows.
         self.notice.set(Some(Notice::Clear));
     }
 
-    /// Try this device's secret store again, as the person asked.
     fn retry_persist(&mut self) -> bool {
         if !self.persistence_pending() {
             return true;
@@ -261,8 +209,6 @@ impl Store {
         }
     }
 
-    /// Keep `seed` as the secret of `id` on this device, reporting a store
-    /// that refused it with `failure`.
     fn keep_seed(&mut self, id: AccountId, seed: &str, failure: &str) {
         if !self.seeds.put(id, seed) {
             self.describe_persistence_failure(failure);
@@ -283,9 +229,8 @@ impl Store {
                 return;
             }
             let code = totp::current_code(&acc);
-            // A copied code is useful for exactly the account's own period,
-            // not a fixed thirty seconds: a 60-second code would otherwise be
-            // wiped while still valid.
+            // A copied code is useful for the account's own period, not a fixed
+            // thirty seconds.
             let lifetime = Duration::from_secs(u64::from(acc.period.max(1)));
             if !self
                 .copy
@@ -305,13 +250,10 @@ impl Store {
             .is_some_and(crate::model::Account::secret_is_valid)
     }
 
-    /// Stage `scenario` on the window's next frame.
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {
         self.scenario = Some(Staged(scenario.map(str::to_owned)));
     }
 
-    /// Answer an effect invoked by a control, the palette, an agent or a
-    /// script.
     pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
         self.follow_document();
         match effect {
@@ -352,7 +294,6 @@ impl Store {
         Ok(id)
     }
 
-    /// Select `id` and scroll its row into view.
     fn reveal(&mut self, id: AccountId) {
         self.selected = Some(id);
         self.asked.push(Asked::Reveal(id));
@@ -365,43 +306,31 @@ pub struct AuthenticatorApp {
     store: Shared,
     list: AccountList,
     add_panel: AddAccountPanel,
-    /// An in-flight XDG-portal file-open for QR-image import. When the user
-    /// taps "Scan a QR image" the portal round-trip runs on a worker thread
-    /// and hands the chosen path back over this channel, drained once per
-    /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
-    /// never draws its own picker (HIG §5).
+    /// An in-flight file-open for QR import, drained once per frame in
+    /// [`Widget::sync`].
     portal_rx: Option<ui::portal::ContentsChannel>,
-    /// The chosen QR image being read off the frame: its code, or why none
-    /// was read, drained once per frame as the chooser's answer is.
+    /// The chosen QR image being read off the frame.
     qr_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 
     rect: Rect,
-    /// The readable column the banner and rows stand in, from the last paint.
     column: Rect,
     banner_rect: Rect,
     retry_rect: Rect,
     root_node: Option<NodeId>,
-    /// This tree's node of each of the open sheet's text fields, in tree order.
+    /// This tree's node of each of the open sheet's text fields.
     field_nodes: Vec<NodeId>,
-    /// The open sheet changed the layout tree (it opened or closed).
     structure_dirty: bool,
 
     last_mouse: Point,
-    /// Effective host motion preference. Normal mode uses a smooth countdown;
-    /// reduced motion sleeps between whole-second updates.
+    /// Reduced motion sleeps between whole-second updates instead of ticking every
+    /// frame.
     reduce_motion: bool,
-    /// Whether the list has accounts, for the window's header row to follow.
     has_accounts: Option<ui::LocalState<bool>>,
-    /// How many accounts the list has, for the header row's count.
     account_count: Option<ui::LocalState<usize>>,
-    /// A capture's clock was moved to its scenario's step already.
     clock_staged: bool,
-    /// Why codes may be rejected because this device's clock is not
-    /// synchronised, when the platform can say so.
+    /// Why codes may be rejected because this device's clock is not synchronised.
     clock_warning: Option<&'static str>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -417,8 +346,8 @@ impl AuthenticatorApp {
         &mut self.add_panel
     }
 
-    /// A window outside the framework, which edits nothing and keeps its
-    /// seeds in memory.
+    /// A window outside the framework: it edits nothing and keeps its seeds in
+    /// memory.
     pub fn new() -> Self {
         Self::over(Store::shared(
             None,
@@ -428,7 +357,6 @@ impl AuthenticatorApp {
         ))
     }
 
-    /// The window showing `store`.
     pub(crate) fn over(store: Shared) -> Self {
         crate::i18n::ensure();
         Self {
@@ -454,28 +382,22 @@ impl AuthenticatorApp {
         }
     }
 
-    /// The accounts the window shows, shared with the view's effects.
     pub(crate) fn state(&self) -> RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// Report through `signal` whether the list has accounts, so the header
-    /// row's actions can step aside for the empty state.
     #[must_use]
     pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
         self.has_accounts = Some(signal);
         self
     }
 
-    /// Report through `signal` how many accounts the list has, for the
-    /// header row's count.
     #[must_use]
     pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
         self.account_count = Some(signal);
         self
     }
 
-    /// Recompute the ordered visible set and push it to the list.
     fn refresh_list(&mut self) {
         let store = self.store.borrow();
         self.list.set_selected(store.selected);
@@ -489,22 +411,18 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Recompute the visible set when the vault changed.
     fn refresh_list_if_dirty(&mut self) {
         if std::mem::take(&mut self.state().list_dirty) {
             self.refresh_list();
         }
     }
 
-    /// The exact code string the most recent copy action placed on the
-    /// clipboard, if any. Observability for the copy path (the system
-    /// clipboard can't be read back in a headless test).
+    /// The code the last copy placed on the clipboard, as a headless test observes
+    /// it.
     pub fn last_copied(&self) -> Option<String> {
         self.store.borrow().last_copied.clone()
     }
 
-    /// The account currently selected, if any. Lets a test observe where a
-    /// Ctrl+K activation navigated.
     pub fn selected_account(&self) -> Option<AccountId> {
         self.store.borrow().selected
     }
@@ -513,14 +431,13 @@ impl AuthenticatorApp {
         self.store.borrow().persistence_pending()
     }
 
-    /// Show the add sheet.
     fn open_add(&mut self) {
         self.add_panel.open();
         self.structure_dirty = true;
     }
 
-    /// Open the sheet for `id`: its details when the key is here, the key's
-    /// setup when it is not.
+    /// Open the sheet for `id`: its details when the key is here, its key's setup
+    /// when it is not.
     fn open_for(&mut self, id: AccountId) -> bool {
         let account = {
             let mut store = self.state();
@@ -544,8 +461,6 @@ impl AuthenticatorApp {
         selected.is_some_and(|id| self.open_for(id))
     }
 
-    /// Do what effects asked of the sheet and the list since the last frame;
-    /// whether there was anything.
     fn take_asked(&mut self) -> bool {
         let asked = std::mem::take(&mut self.state().asked);
         let any = !asked.is_empty();
@@ -561,9 +476,8 @@ impl AuthenticatorApp {
         any
     }
 
-    /// Move the selected account through the same ordered list the pointer
-    /// paints. This keeps keyboard selection in step with the list rather
-    /// than introducing a second focus model.
+    /// Move the selection through the ordered list the pointer paints, so keyboard
+    /// and pointer share one order.
     fn move_selection(&mut self, delta: isize) -> bool {
         let mut store = self.store.borrow_mut();
         let visible = store.vault.ordered();
@@ -591,7 +505,6 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Copy the selected account (or the first one) — the Enter shortcut.
     fn copy_focused(&self) {
         let mut store = self.state();
         let target = store
@@ -603,8 +516,8 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Apply one list interaction. Reorder and delete are document mutations,
-    /// submitted as the vault's verbs the published accounts offer; copy and select are presentation and never touch the document.
+    /// Reorder and delete are the vault's verbs; copy and select never touch the
+    /// document.
     fn apply_list_event(&mut self, ev: ListEvent) {
         match ev {
             ListEvent::Copy(id) => {
@@ -629,15 +542,14 @@ impl AuthenticatorApp {
             }
             ListEvent::MoveUp(id) => self.state().submit(Totp::MOVE_UP.with(Totp::item(id))),
             ListEvent::MoveDown(id) => self.state().submit(Totp::MOVE_DOWN.with(Totp::item(id))),
-            // Deleting asks first; the account (and with it this device's
-            // key) goes once the document drops it.
+            // Deleting asks first; the account and this device's key go once the
+            // document drops it.
             ListEvent::Delete(id) => self.state().submit(Totp::DELETE.with(Totp::item(id))),
         }
     }
 
-    /// Act on one outcome drained from the add sheet. The key goes to this
-    /// device's store; only metadata goes to the document, with the colour
-    /// slot and list order pinned at authoring time so replay is
+    /// The key goes to this device's store; only metadata goes to the document,
+    /// with colour and order pinned when the action is written so replay stays
     /// deterministic.
     fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
         self.structure_dirty = true;
@@ -670,8 +582,8 @@ impl AuthenticatorApp {
                     store.list_dirty = true;
                     return;
                 };
-                // The form edits identity, key and code parameters; the list
-                // owns colour and order.
+                // The form edits identity, key and code parameters; the list owns
+                // colour and order.
                 acc.color = before.color;
                 acc.order = before.order;
                 if acc.secret != before.secret {
@@ -698,9 +610,8 @@ impl AuthenticatorApp {
                     store.list_dirty = true;
                     return;
                 }
-                // Only the local key is installed; the shared identity, order
-                // and colour stay as the document has them, and the form
-                // checked the code parameters against them.
+                // Only the local key is installed; the shared identity, order and
+                // colour stay as the document has them.
                 store.keep_seed(
                     acc.id,
                     &acc.secret,
@@ -712,9 +623,7 @@ impl AuthenticatorApp {
         store.list_dirty = true;
     }
 
-    /// Resolve a published canvas target to the existing list/app action.
-    /// Keeping this beside `apply_list_event` ensures assistive activation
-    /// cannot acquire a separate mutation path from pointer input.
+    /// Assistive activation takes the same path as pointer input.
     fn perform_a11y_target(&mut self, target: &str, action: &A11yAction) -> bool {
         let Some((verb, raw_id)) = target.rsplit_once(':') else {
             return false;
@@ -763,11 +672,8 @@ impl AuthenticatorApp {
         true
     }
 
-    /// Keyboard shortcuts available whenever the add sheet isn't open:
-    /// Ctrl/Cmd+N (add), Ctrl/Cmd+E (edit the selected account), the arrow keys
-    /// (move the selection) and Enter (copy the selected code). Searching
-    /// belongs to the platform (Ctrl+K and `/`). Returns `true` when the event
-    /// was fully consumed here.
+    /// Ctrl/Cmd+N adds, Ctrl/Cmd+E edits the selection, the arrows move it and
+    /// Enter copies; `true` when the event was consumed here.
     fn handle_global_shortcut(
         &mut self,
         event: &WindowEvent,
@@ -818,11 +724,8 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Ask the host's file chooser for a QR image. Per HIG §5 the app never
-    /// draws its own picker: the chooser delivers the image's contents, the
-    /// same on every host, a browser page included, over a channel drained
-    /// each frame in [`Self::drain_portal`]. A second request while one is in
-    /// flight is ignored, so a double-tap can't stack two host dialogs.
+    /// Ask the host's file chooser for a QR image; a request while one is in
+    /// flight is ignored, so a double tap cannot stack two dialogs.
     fn request_qr_via_portal(&mut self) {
         if self.portal_rx.is_some() {
             return;
@@ -830,11 +733,8 @@ impl AuthenticatorApp {
         self.portal_rx = Some(qr_image_request().send_contents());
     }
 
-    /// Drain a completed portal request, if any; whether it took one.
-    /// Called every frame from [`Widget::update`]: decodes the chosen image
-    /// into the open add sheet, surfaces a decode/cancel/failure via the
-    /// toast, and clears the in-flight channel. Never blocks — a still
-    /// pending picker leaves the channel installed for the next frame.
+    /// Drain a completed chooser request: decode the image into the open sheet, or
+    /// say why not. Never blocks; a pending chooser stays installed.
     fn drain_portal(&mut self) -> bool {
         let read = self.drain_qr();
         let Some(rx) = self.portal_rx.as_ref() else {
@@ -849,7 +749,6 @@ impl AuthenticatorApp {
                             self.decode_qr_bytes(file.bytes);
                         }
                     }
-                    // A cancel is a no-op — the sheet is left as it was.
                     ContentsOutcome::Cancelled => {}
                     ContentsOutcome::Failed(reason) => {
                         self.state().toast(
@@ -859,7 +758,6 @@ impl AuthenticatorApp {
                     }
                 }
             }
-            // Still waiting on the host dialog, or the worker vanished.
             Err(std::sync::mpsc::TryRecvError::Empty) => return read,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
@@ -868,8 +766,6 @@ impl AuthenticatorApp {
         true
     }
 
-    /// Read a chosen QR image off the frame; [`Self::drain_qr`] puts what
-    /// it says into the open add sheet.
     fn decode_qr_bytes(&mut self, bytes: Vec<u8>) {
         let (answer, read) = std::sync::mpsc::channel();
         let wake = ui::WakeHandle::new();
@@ -880,9 +776,8 @@ impl AuthenticatorApp {
         self.qr_rx = Some(read);
     }
 
-    /// Put the code a chosen QR image held into the open add sheet, or
-    /// surface why it couldn't be read; whether one was read since the last
-    /// frame.
+    /// Put the code a chosen image held into the open sheet, or say why it could
+    /// not be read.
     fn drain_qr(&mut self) -> bool {
         let Some(read) = self.qr_rx.as_ref() else {
             return false;
@@ -909,13 +804,10 @@ impl AuthenticatorApp {
         true
     }
 
-    /// Open the add sheet straight away. Used by captures (and any caller that
-    /// wants to land on the add flow).
     pub fn seed_open_add(&mut self) {
         self.open_add();
     }
 
-    /// Open the add sheet with Advanced options expanded.
     pub fn seed_open_add_advanced(&mut self) {
         self.add_panel.open_with_advanced();
         self.structure_dirty = true;
@@ -929,11 +821,8 @@ impl AuthenticatorApp {
         let _ = self.open_selected_for_edit();
     }
 
-    /// Move a capture's pinned clock into the step of the codes' period the
-    /// scenario shows, so the countdown rings are part-way round (and, for
-    /// the expiring scenario, in their last seconds). The capture pins the
-    /// clock to the top of a minute, where every thirty-second period has just
-    /// begun; a live window and a test run on the real clock and are left alone.
+    /// Move a capture's pinned clock into the step its scenario shows; a live
+    /// window runs on the real clock.
     fn stage_clock(&mut self, scenario: Option<&str>) {
         if !ui::time::wall_frozen() || self.clock_staged {
             return;
@@ -949,10 +838,8 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Stage the view state a capture scenario shows. The scenario's accounts
-    /// reached the document through its actions, and the capture's own store
-    /// holds their keys (all but the first for "provision" and
-    /// "missing-secret"). Never called in a live window.
+    /// Stage the view state a capture scenario shows; never called in a live
+    /// window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.stage_clock(scenario);
         match scenario {
@@ -963,8 +850,6 @@ impl AuthenticatorApp {
             _ => {}
         }
         self.refresh_list();
-        // The states a pointer causes: a hovered row shows its actions, a
-        // hovered code is where a click copies.
         match scenario {
             Some("hover") => self.list.stage_hover(2, false),
             Some("copied") => {
@@ -980,7 +865,6 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Stage the scenario a capture asked for, once.
     fn stage_pending_scenario(&mut self) -> bool {
         let Some(Staged(scenario)) = self.state().scenario.take() else {
             return false;
@@ -989,8 +873,7 @@ impl AuthenticatorApp {
         true
     }
 
-    /// The readable strip the banner and rows stand in: the window less its
-    /// gutters, no wider than a sheet carrying a form, and centred.
+    /// The window less its gutters, no wider than a sheet with a form, centred.
     fn readable_column(rect: Rect, theme: &Theme) -> Rect {
         let gutter = f64::from(theme.tokens.spacing.s6);
         let width = (rect.width() - 2.0 * gutter)
@@ -1000,7 +883,6 @@ impl AuthenticatorApp {
         Rect::new(x0, rect.y0, x0 + width, rect.y1)
     }
 
-    /// Place the banner and the list for this frame, from the theme's tokens.
     fn place(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let spacing = &theme.tokens.spacing;
@@ -1010,8 +892,6 @@ impl AuthenticatorApp {
         self.retry_rect = Rect::ZERO;
         let message = self.store.borrow().persistence_message.clone();
         if message.is_some() || self.clock_warning.is_some() {
-            // The banner spans the column the rows stand in; the unsaved
-            // changes banner holds Retry, the clock warning holds no action.
             let content = self.banner_content(message.as_deref());
             let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
             let y0 = top + f64::from(spacing.s2);
@@ -1027,8 +907,7 @@ impl AuthenticatorApp {
         self.list.set_viewport(list_rect, self.column);
     }
 
-    /// The banner in the window: unsaved changes (`unsaved`) with Retry, or
-    /// the clock warning that explains codes every server may reject.
+    /// The banner: unsaved changes with Retry, or the clock warning.
     fn banner_content<'a>(&'a self, unsaved: Option<&'a str>) -> BannerContent<'a> {
         if let Some(message) = unsaved {
             return BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
@@ -1053,11 +932,9 @@ impl AuthenticatorApp {
     }
 }
 
-/// The banner's retry button.
 const RETRY_LABEL: &str = "Retry";
 
 impl AuthenticatorApp {
-    /// Hand the sheet's outcome, if any, to the app.
     fn drain_add_panel(&mut self) {
         self.add_panel.pump();
         while let Some(event) = self.add_panel.take_event() {
@@ -1072,18 +949,14 @@ impl AuthenticatorApp {
 
 impl Widget for AuthenticatorApp {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // The chooser answers between frames, off the UI thread. A frame
-        // only syncs when something changed, and a browser page's chooser
-        // leaves nothing else changed when it closes, so the answer is
+        // The chooser answers between frames, off the UI thread, and a browser
+        // page's chooser leaves nothing else changed when it closes: the answer is
         // taken here, where every frame looks.
         let answered = self.drain_portal();
-        // The document, an effect or a capture may have changed what the
-        // window shows since the last frame.
         self.state().follow_document();
         let asked = self.take_asked();
         let staged = self.stage_pending_scenario();
-        // A glide moves the list's rows, which the frame repaints; it
-        // changes no model.
+        // A glide moves rows, which the frame repaints; it changes no model.
         self.list.advance_scroll();
         let mut changed = answered | asked | staged;
         for child in self.children_mut() {
@@ -1093,9 +966,8 @@ impl Widget for AuthenticatorApp {
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
-        // Hosted controls can enqueue a local request after event routing.
-        // Settle the retained sheet first, then consume those requests in
-        // the same frame even when no document action changed the vault.
+        // Hosted controls can enqueue a request after event routing: settle the
+        // sheet first, then consume those requests in the same frame.
         if let Some(sheet) = self.add_panel.widget_mut() {
             sheet.settle(edits, path);
         }
@@ -1112,7 +984,6 @@ impl Widget for AuthenticatorApp {
             }
         }
         self.take_asked();
-        // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
         }
@@ -1120,7 +991,6 @@ impl Widget for AuthenticatorApp {
         if let Some(sheet) = self.add_panel.widget_mut() {
             sheet.sync(state, path);
         }
-        // Recompute the visible set only when the vault changed.
         self.refresh_list_if_dirty();
     }
 
@@ -1140,8 +1010,8 @@ impl Widget for AuthenticatorApp {
             let _ = taffy.set_style(layer, style);
             layers.push(layer);
         }
-        // The sheet lays its content out apart from this tree too; keep this
-        // tree's node of each text field to answer a click's focus request.
+        // The sheet lays its content out apart from this tree; keep this tree's
+        // node of each text field to answer a click's focus request.
         self.field_nodes = self.add_panel.host_field_nodes(node_map);
         let node = taffy.parent_node(
             Style {
@@ -1174,7 +1044,6 @@ impl Widget for AuthenticatorApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // The window ground is the framework's; this paints what stands on it.
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.place(&mut ctx);
         self.paint_banner(&mut ctx);
@@ -1187,7 +1056,6 @@ impl Widget for AuthenticatorApp {
             self.last_mouse = ctx.logical(position);
         }
 
-        // The sheet owns all input while it is open.
         if self.add_panel.is_open() {
             let path = ctx.path;
             let node = ctx.node_id;
@@ -1197,8 +1065,8 @@ impl Widget for AuthenticatorApp {
             } else if let Some(sheet) = self.add_panel.widget_mut() {
                 sheet.handle_event(event, &mut ctx.reborrow(path, node));
             }
-            // A press on a text field puts the caret in it: the window owns
-            // focus, so it is asked for the field's node in its own tree.
+            // A press on a text field puts the caret in it: the window owns focus,
+            // so it is asked for the field's node.
             if matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -1235,13 +1103,11 @@ impl Widget for AuthenticatorApp {
             return;
         }
 
-        // Route to the list (hover / click-to-copy / reorder / scroll).
         self.list.handle_event(event, ctx);
         let events = self.list.take_events();
         for ev in events {
             self.apply_list_event(ev);
         }
-        // Keep the list's selection mirror current.
         self.list.set_selected(self.selected_account());
         self.refresh_list_if_dirty();
     }
@@ -1294,9 +1160,9 @@ impl Widget for AuthenticatorApp {
         reason = "the root publishes one coherent semantic tree"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        // Omit the virtual account actions while the sheet owns the window.
-        // This ancestor remains visible so its retained ModalDialog and focus
-        // trap are reachable; hiding it would prune the sheet's fields too.
+        // Omit the account actions while the sheet owns the window. This ancestor
+        // stays visible so its retained dialog and focus trap are reachable; hiding
+        // it would prune the sheet's fields too.
         if self.add_panel.is_open() {
             return Some(
                 AccessNode::new(Role::Group)
@@ -1412,9 +1278,8 @@ impl Widget for AuthenticatorApp {
                             .with_action_target(format!("totp.setup:{id}")),
                     );
                 }
-                // The rotating code is a credential. It is deliberately not
-                // exported as a value/live region; callers opt in by using
-                // the explicit Copy control.
+                // The code is a credential: it is not exported as a value, so callers
+                // opt in through the Copy control.
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_name(name)
@@ -1466,11 +1331,9 @@ impl Widget for AuthenticatorApp {
         self.perform_a11y_target(target, action)
     }
 
-    /// Smooth countdown rings tick every frame. Reduced motion is driven by a
-    /// one-second deadline instead, so the app remains current without a vsync
-    /// loop.
+    /// Smooth countdown rings tick every frame; reduced motion wakes on a
+    /// one-second deadline instead.
     fn needs_animation_frame(&self) -> bool {
-        // A capture keeps frames coming until its scenario is staged.
         !self.reduce_motion
             || self.list.needs_animation_frame()
             || self.store.borrow().scenario.is_some()
@@ -1499,8 +1362,7 @@ impl Widget for AuthenticatorApp {
     }
 }
 
-/// The field edits that turn `before` into `after`: identity, colour and
-/// code parameters, each at its path.
+/// The field edits that turn `before` into `after`.
 fn account_edits(before: &Account, after: &Account) -> Vec<Edit<Totp>> {
     let account = Totp::paths().accounts.item(&Totp::item(after.id));
     let mut edits = Vec::new();
@@ -1535,14 +1397,10 @@ pub(crate) mod tests {
     use ui::a11y::Politeness;
     use ui::headless::Framed;
 
-    /// The window over the demo accounts, every seed on this device, as the
-    /// framework presents them: for tests of layout, input and semantics,
-    /// which change nothing in the document.
     fn app_with_state() -> (AuthenticatorApp, ui::State) {
         app_with_seeds(0)
     }
 
-    /// As [`app_with_state`], without seeds for the first `missing` accounts.
     fn app_with_seeds(missing: usize) -> (AuthenticatorApp, ui::State) {
         let app = AuthenticatorApp::new();
         let mut seeds = Seeds::new(SecretStore::memory("so.tilo.totp"), true);
@@ -1561,8 +1419,7 @@ pub(crate) mod tests {
         (app, ui::State::new())
     }
 
-    /// Mount `app` over `state` in the shared frame harness and run its
-    /// first frame at `w`x`h`: the production sync, layout and draw passes.
+    /// Mount `app` over `state` and run the production sync, layout and draw passes.
     fn framed(
         (app, state): (AuthenticatorApp, ui::State),
         w: u32,
@@ -1571,8 +1428,6 @@ pub(crate) mod tests {
         Framed::new(state, app, (w, h), Theme::dark())
     }
 
-    /// Route one event through the app's real `handle_event`, returning
-    /// whether it was marked handled.
     fn dispatch(
         app: &mut Framed<AuthenticatorApp>,
         ev: &WindowEvent,
@@ -1581,7 +1436,6 @@ pub(crate) mod tests {
         Framed::harness_mut(app).dispatch_to_root_with(ev, &mods)
     }
 
-    /// Reduced motion wakes on second boundaries instead of every frame.
     #[test]
     fn reduced_motion_replaces_vsync_with_a_second_boundary_wake() {
         let mut app = AuthenticatorApp::new();
@@ -1599,7 +1453,6 @@ pub(crate) mod tests {
         assert!(delay <= Duration::from_secs(1));
     }
 
-    /// Accessibility, event and Enter copies share the row's clipboard semantics; toasts distinguish failures.
     #[test]
     fn copy_paths_share_row_semantics_and_toast_severity() {
         let (services, recorder) = ui::host::HostServices::recording();
@@ -1635,10 +1488,8 @@ pub(crate) mod tests {
             };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
-            // The copied string is the account's live TOTP code. It equals the
-            // code at some instant during the copy, so it must match the value
-            // just before or just after — deterministic even across a period
-            // rollover.
+            // The code equals the value just before or just after the copy, which is
+            // deterministic even across a period rollover.
             let copied = app.last_copied().expect("a copy records the copied code");
             assert!(
                 copied == before || copied == after,
@@ -1686,7 +1537,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The accessibility tree names accounts without codes and keeps the add modal protected and complete.
     #[test]
 
     fn accessibility_names_accounts_and_protects_the_modal() {
@@ -1822,7 +1672,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Search filtering, including the contextual empty message.
     #[test]
     fn search_filters_the_visible_accounts() {
         use ui::search::SearchProvider as _;
@@ -1894,7 +1743,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// The persistence banner has its own bounded click and accessibility retry.
     #[test]
     fn persistence_banner_has_its_own_bounded_retry() {
         let (mut app, state) = app_with_state();
@@ -1948,9 +1796,6 @@ pub(crate) mod tests {
         assert!(!app.persistence_pending());
     }
 
-    /// A chooser that answers between frames is heard by the next frame's
-    /// update, the pass every frame runs, not only by a sync that a change
-    /// elsewhere has to ask for; an image without a code says so.
     #[test]
     fn a_chooser_answer_is_taken_up_by_the_next_frame_without_a_sync() {
         let (mut app, state) = app_with_state();
@@ -1973,7 +1818,6 @@ pub(crate) mod tests {
             .unwrap();
         assert!(app.update(&state.doc, &state.root), "the answer is news");
         assert!(app.portal_rx.is_none(), "the chooser is done");
-        // The image is read off the frame; a later frame says what it held.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while app.qr_rx.is_some() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1988,14 +1832,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// QR import: host portal routing, frame drain, cancel and file decoding.
     #[test]
     fn qr_import_routes_through_the_host_portal_and_fills_the_panel() {
-        // Case `qr_cta_routes_to_the_host_portal`.
-        // The primary "Scan a QR image" action must reach the **host** file
-        // chooser (the XDG portal), not an in-app picker or a dead-end toast. A
-        // recording host answers the request so no real dialog opens; the
-        // in-flight guard keeps a second tap from stacking another dialog.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -2035,7 +1873,6 @@ pub(crate) mod tests {
                 app.portal_rx.is_none(),
                 "the portal channel clears after delivering"
             );
-            // The image is read off the frame; a later frame fills the sheet.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while app.qr_rx.is_some() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2089,7 +1926,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Add button, Ctrl+N, Escape and the modal's gating of platform search.
     #[test]
     fn shortcuts_and_clicks_open_the_modal_and_focus_search() {
         let mut app = hosted((1000, 800), None);
@@ -2154,8 +1990,8 @@ pub(crate) mod tests {
         settle(&mut app);
     }
 
-    /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling
-    /// modules up with a quiet zone so the decoder has clean finder patterns.
+    /// Rasterise `data` as a QR code into a greyscale PNG, scaled up with a quiet
+    /// zone so the decoder finds clean finder patterns.
     pub(crate) fn render_qr_png(data: &str, path: &std::path::Path) {
         use image::{GrayImage, Luma};
         use qrcode::{EcLevel, QrCode};

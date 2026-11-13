@@ -8,16 +8,10 @@ use vello::kurbo::Point;
 use winit::keyboard::{Key, NamedKey};
 
 impl<M: ListModel> VirtualList<M> {
-    /// A completed click on the row of `key`: select it by the modifiers, and
-    /// activate it when it is the second click on the same row in time (or
-    /// rename it, where the list renames on a double click).
     pub(super) fn click_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
         let state = modifiers.state();
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
-        // A row open into its item opens with a press, as a disclosure does: one gesture
-        // shows what the row holds, without a second press to activate it. Where the list is
-        // too narrow to hold the item under the row, the press opens it in front instead.
         let opens = self
             .model
             .index_of(&key)
@@ -46,9 +40,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Open `key` as Enter or a second click does: through the published view
-    /// action when the host bound one, else the activation callback. A list whose
-    /// rows open nothing chooses the row instead, as its click does.
     pub(super) fn activate_key(&mut self, key: M::Key) {
         // A row that opens where it stands opens there, whether or not anything else listens:
         // the list holds the item open, the row grows into its document, and the host hears
@@ -62,8 +53,6 @@ impl<M: ListModel> VirtualList<M> {
             self.open_where_it_stands(key);
             return;
         }
-        // Narrower than a compact window's width the item opens in front of the list, through
-        // the host that shows it, as the code below does for a row that holds no document.
         if self.opens.is_none() && self.on_activate.is_none() {
             self.apply_selection(key, false, false, Choosing::ByHand);
             return;
@@ -78,8 +67,6 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether `key`, pressed with `modifiers`, opens the focused row's menu: the
-    /// Menu key, or Shift+F10 on it, as it does on a tree's rows.
     pub(super) fn take_menu_key(
         &mut self,
         key: &Key,
@@ -90,8 +77,6 @@ impl<M: ListModel> VirtualList<M> {
         menu && self.open_menu_from_keyboard()
     }
 
-    /// Open the focused row's menu: the one the keyboard is on, at the middle of its row; or,
-    /// with no row focused, the list's own menu, where its rows start.
     pub(super) fn open_menu_from_keyboard(&mut self) -> bool {
         if !self.menus.offers_row_menu() {
             return false;

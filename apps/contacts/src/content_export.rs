@@ -1,18 +1,17 @@
-//! The address book as vCards kept as content, for whoever acts without a
-//! file chooser: an agent hands the `.vcf` on (attaches it to a mail,
-//! shares it) where a person exports to a file they choose.
+//! The address book as vCards kept as content, for whoever acts without a file
+//! chooser: an agent hands the `.vcf` on where a person exports to a file.
 
 use crate::model::Contact;
 use crate::resource::Contacts;
 use crate::vcard::{VCardVersion, to_vcards};
 
 /// Keep every contact of `book`, or the one `contact` (or `name`, ignoring
-/// case) names, as vCard 4.0 in the window's content store; answer its
-/// address, how many cards it holds and its size.
+/// case) names, as vCard 4.0 in the window's content store; answer its address,
+/// how many cards it holds and its size.
 ///
 /// # Errors
-/// Returns that no contact matches, that the book is empty, or why the
-/// content store refused the file.
+/// No contact matches, the book is empty, or the content store refused the
+/// file.
 pub fn vcards(
     book: &Contacts,
     contact: Option<uuid::Uuid>,
@@ -48,7 +47,6 @@ pub fn vcards(
     }))
 }
 
-/// The one contact whose shown name is `name`, ignoring case.
 fn named<'a>(book: &'a Contacts, name: &str) -> Result<&'a Contact, String> {
     let wanted = name.to_lowercase();
     let mut alike = book

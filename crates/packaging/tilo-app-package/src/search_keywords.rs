@@ -1,29 +1,11 @@
 //! The words an app is also searched by, authored per language next to the
 //! app and joined to its manifest when it is packed.
-//!
-//! `apps/<app>/search/<tag>.ftl` holds one message,
-//!
-//! ```text
-//! search-keywords = youtube, video, videos
-//! ```
-//!
-//! per language tag (`en.ftl`, `de.ftl`). Those files are the only source:
-//! `tilo-app.toml` carries no copy, and the packer fills `[package.keywords]`
-//! from them before it signs, so an installed manifest has them and nothing
-//! committed can disagree with the files. A keyword is a name the app
-//! genuinely stands in for or a task it genuinely does; a word that merely
-//! sits near the app's category does not belong.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The message every file defines.
 pub const MESSAGE: &str = "search-keywords";
 
-/// The message holding the app's tag line in the file's language: one plain
-/// phrase saying what the app does, shown under its name in the Store and in
-/// search. Optional per file; the packer joins every language's into
-/// `[package.taglines]`.
 pub const TAGLINE_MESSAGE: &str = "app-tagline";
 
 /// The words of one file's `search-keywords` message, in order, trimmed and
@@ -71,7 +53,6 @@ pub fn read_taglines(app_dir: &Path) -> Result<BTreeMap<String, String>, String>
     Ok(found)
 }
 
-/// Each `search/<tag>.ftl` of the app in `app_dir` with its language tag.
 fn sources(app_dir: &Path) -> Result<Vec<(String, String)>, String> {
     let dir = app_dir.join("search");
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -132,8 +113,6 @@ mod tests {
         assert_eq!(parse_tagline("app-tagline =   \n"), None);
     }
 
-    /// Every first-party app says what it does in English and German, in
-    /// one line short enough for a row under its name.
     #[test]
     fn every_app_has_an_english_and_german_tagline() {
         let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");

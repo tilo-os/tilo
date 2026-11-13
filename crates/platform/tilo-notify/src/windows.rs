@@ -1,8 +1,8 @@
 //! Native Windows notifications for installed desktop apps.
 //!
-//! The installer must register a Start menu shortcut with the same app ID.
-//! Notification settings remain under Windows/user control. Successful submission
-//! does not imply that Windows displayed a banner (e.g. Do Not Disturb).
+//! The installer must register a Start menu shortcut with the same app ID. Successful
+//! submission does not mean Windows displayed a banner, since notification settings
+//! stay under the person's control.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -40,10 +40,9 @@ struct Apartment {
 
 impl Apartment {
     fn new() -> windows::core::Result<Self> {
-        // windows-core caches agile activation factories for the process lifetime.
-        // Keep the COM runtime alive for that same lifetime, even when the final
-        // thread-local STA guard goes away between notifications. This matches
-        // windows-core's implicit CoIncrementMTAUsage initialization path.
+        // windows-core caches agile activation factories for the process lifetime, so keep
+        // the COM runtime alive just as long, even when the last thread-local STA guard goes
+        // away between notifications.
         static RUNTIME: OnceLock<Result<(), windows::core::HRESULT>> = OnceLock::new();
         let initialized = RUNTIME.get_or_init(|| {
             // SAFETY: once per process. The opaque usage cookie is intentionally
@@ -82,11 +81,9 @@ pub struct HostNotifications {
     notifier: ToastNotifier,
     app_id: HSTRING,
     activation_uri: Option<String>,
-    // Drop COM interfaces before releasing the apartment.
     _apartment: Apartment,
 }
 
-/// A pending notification owned by this application, as reported by Windows.
 #[derive(Debug)]
 pub struct ScheduledNotice {
     pub id: String,
@@ -399,7 +396,6 @@ pub fn register_shortcut(
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         let file: IPersistFile = link.cast()?;
         if existing {
-            // Preserve the installer's working directory, icon and other metadata.
             file.Load(PCWSTR(shortcut.as_ptr()), STGM_READWRITE)?;
         }
         link.SetPath(&executable)?;
@@ -425,7 +421,6 @@ mod tests {
 
     #[test]
     fn notification_hosts_registrations_and_schedules_are_owned_and_exact() {
-        // phase: notification_hosts_can_be_recreated_on_successive_threads
         {
             for _ in 0..4 {
                 std::thread::spawn(|| {
@@ -437,7 +432,6 @@ mod tests {
                 .unwrap();
             }
         }
-        // phase: repeated_shortcut_registration_owns_its_property_string
         {
             let directory = tempfile::tempdir().unwrap();
             let shortcut = directory.path().join("Clocks test.lnk");
@@ -474,7 +468,6 @@ mod tests {
                 }
             }
         }
-        // phase: scheduler_time_conversion_preserves_windows_precision
         {
             let time = UNIX_EPOCH + Duration::new(1_800_000_000, 123_456_700);
             assert_eq!(
@@ -493,7 +486,6 @@ mod tests {
 
     #[test]
     fn notification_content_is_preserved_without_markup_or_xml_injection() {
-        // phase: notification_activation_uri_is_preserved_without_xml_injection
         {
             let uri = "tilo-clocks:open?one=1&two=2";
             let host = HostNotifications::new("so.tilo.clocks")
@@ -521,13 +513,10 @@ mod tests {
                     .unwrap(),
                 2
             );
-            // The failing builder consumes the host and releases its apartment.
-            // Release the test's private COM inspection objects first.
             drop(root);
             drop(xml);
             assert!(host.with_protocol_activation("not a URI").is_err());
         }
-        // phase: notification_text_cannot_add_markup
         {
             let _apartment = Apartment::new().unwrap();
             let value = "Tea & <coffee> \"ready\" 'now'";

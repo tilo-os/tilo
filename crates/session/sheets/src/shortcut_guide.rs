@@ -20,7 +20,9 @@ use ui::input::{
     KeyboardModifier, TouchGesture,
 };
 use ui::prelude::*;
-use ui::widget::{Column, Container, Element, InputHint, ModalDialog, Row, Scrollable, Text};
+use ui::widget::{
+    Column, Container, Element, InputHint, KeyHint, ModalDialog, Row, Scrollable, Text,
+};
 
 use crate::keyboard_shortcuts::chord_text;
 use crate::presentation::{Presentation, Seat, presented};
@@ -1078,6 +1080,236 @@ fn essentials(
     groups
 }
 
+/// What the desk holds where the person is working, which a Super hold reads so it names only
+/// the chords that do something there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PeekDesk {
+    /// The windows of the shown strip.
+    pub windows: usize,
+    /// The tabs of the focused window.
+    pub tabs: usize,
+}
+
+/// What a peek row needs of the desk before its chord does anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Needs {
+    Nothing,
+    /// A focused window.
+    Window,
+    /// A window beside the focused one.
+    Neighbour,
+    /// A tab beside the focused one.
+    Sibling,
+}
+
+impl Needs {
+    fn met(self, desk: PeekDesk) -> bool {
+        match self {
+            Self::Nothing => true,
+            Self::Window => desk.windows >= 1,
+            Self::Neighbour => desk.windows >= 2,
+            Self::Sibling => desk.tabs >= 2,
+        }
+    }
+}
+
+/// How a row's shortcuts read as keys: one chord, a pair going either way, or the first and the
+/// last of a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keys {
+    One(ShortcutAction),
+    Pair(ShortcutAction, ShortcutAction),
+    Run(ShortcutAction, ShortcutAction),
+}
+
+/// A peek group's rows: each a name, the shortcuts it shows and what they need of the desk.
+type PeekRows = &'static [(&'static str, Keys, Needs)];
+
+/// The peek's groups: a title, then rows of a name, the shortcuts and what they need of the desk.
+/// The first row each group can show is the one the glance leads with.
+const PEEK: [(&str, PeekRows); 4] = {
+    use Keys::{One, Pair, Run};
+    use Needs::{Neighbour, Nothing, Sibling, Window};
+    use ShortcutAction as A;
+    [
+        (
+            "guide-row-windows",
+            &[
+                (
+                    "guide-row-move-focus",
+                    Pair(A::FocusPreviousWindow, A::FocusNextWindow),
+                    Neighbour,
+                ),
+                (
+                    "guide-row-maximize",
+                    Pair(A::MaximizeWindow, A::RestoreWindow),
+                    Window,
+                ),
+                (
+                    "guide-row-move-group",
+                    Pair(A::MoveGroupLeft, A::MoveGroupRight),
+                    Neighbour,
+                ),
+                (
+                    "guide-row-resize",
+                    Pair(A::ResizeNarrower, A::ResizeWider),
+                    Window,
+                ),
+                (
+                    "shortcut-name-toggle-fullscreen",
+                    One(A::ToggleFullscreen),
+                    Window,
+                ),
+                (
+                    "guide-row-strips",
+                    Run(A::FocusStrip1, A::FocusStrip9),
+                    Nothing,
+                ),
+                (
+                    "guide-row-workspaces",
+                    Pair(A::PreviousWorkspace, A::NextWorkspace),
+                    Nothing,
+                ),
+            ],
+        ),
+        (
+            "guide-row-tabs",
+            &[
+                ("guide-row-tabs", Pair(A::PreviousTab, A::NextTab), Sibling),
+                (
+                    "guide-row-move-tab",
+                    Pair(A::AttachTabLeft, A::AttachTabRight),
+                    Neighbour,
+                ),
+                ("shortcut-name-detach-tab", One(A::DetachTab), Sibling),
+                (
+                    "shortcut-name-reopen-closed-tab",
+                    One(A::ReopenClosedTab),
+                    Nothing,
+                ),
+            ],
+        ),
+        (
+            "peek-apps",
+            &[
+                (
+                    "shortcut-name-workspace-overview",
+                    One(A::WorkspaceOverview),
+                    Nothing,
+                ),
+                ("shortcut-name-open-files", One(A::OpenFiles), Nothing),
+                (
+                    "shortcut-name-notifications",
+                    One(A::Notifications),
+                    Nothing,
+                ),
+                (
+                    "shortcut-name-quick-settings",
+                    One(A::QuickSettings),
+                    Nothing,
+                ),
+                (
+                    "shortcut-name-clipboard-history",
+                    One(A::ClipboardHistory),
+                    Nothing,
+                ),
+                ("shortcut-name-emoji-picker", One(A::EmojiPicker), Nothing),
+            ],
+        ),
+        (
+            "peek-agent-search",
+            &[
+                ("shortcut-name-search", One(A::Search), Nothing),
+                ("shortcut-name-ask-agent", One(A::AskAgent), Nothing),
+                ("shortcut-name-say-something", One(A::SaySomething), Nothing),
+                (
+                    "shortcut-name-report-problem",
+                    One(A::ReportProblem),
+                    Nothing,
+                ),
+                ("shortcut-name-lock", One(A::Lock), Nothing),
+            ],
+        ),
+    ]
+};
+
+/// The chords a held Super reaches on `desk` , in the peek's groups: each a title and its rows,
+/// every row the keys after Super as the active layout spells them and what they do. The keys are
+/// the table's, the one the desktop's keys resolve against, so a rebound shortcut reads as rebound
+/// here; a shortcut that holds no chord, or one without Super, which a held Super cannot reach, is
+/// left out, as is a row whose chord does nothing on `desk` . The person's own published
+/// shortcuts on Super close it, as they close the guide.
+#[must_use]
+pub fn peek(table: &ShortcutConfig, desk: PeekDesk) -> Vec<(String, Vec<KeyHint>)> {
+    let keys = |action: ShortcutAction| table.bindings.get(&action).and_then(after_super);
+    let mut groups: Vec<(String, Vec<KeyHint>)> = PEEK
+        .iter()
+        .map(|(title, rows)| {
+            let hints = rows
+                .iter()
+                .filter(|(_, _, needs)| needs.met(desk))
+                .filter_map(|(label, shortcuts, _)| {
+                    let keys = match *shortcuts {
+                        Keys::One(action) => keys(action)?,
+                        Keys::Pair(first, second) | Keys::Run(first, second) => {
+                            let (mut held, first_key) = keys(first)?;
+                            let (other, second_key) = keys(second)?;
+                            if held != other {
+                                // Either way under other modifiers: the way forward speaks for
+                                // the pair.
+                                (other, second_key)
+                            } else if matches!(shortcuts, Keys::Run(..)) {
+                                held.push(format!("{first_key}–{second_key}"));
+                                (held, String::new())
+                            } else {
+                                held.push(first_key);
+                                (held, second_key)
+                            }
+                        }
+                    };
+                    Some(peek_hint(keys, t(label)))
+                })
+                .collect();
+            (t(title), hints)
+        })
+        .collect();
+    let published: Vec<KeyHint> = table
+        .actions
+        .iter()
+        .filter_map(|bound| Some(peek_hint(after_super(&bound.chord)?, bound.label.clone())))
+        .collect();
+    if !published.is_empty() {
+        groups.push((t("guide-published-heading"), published));
+    }
+    groups.retain(|(_, hints)| !hints.is_empty());
+    groups
+}
+
+/// `chord` as a held Super leaves it to press: its other modifiers and its key, as the active
+/// layout types them; `None` when Super is no part of it.
+fn after_super(chord: &KeyChord) -> Option<(Vec<String>, String)> {
+    chord.modifiers.contains("Super").then(|| {
+        ui::keycaps::as_typed(
+            chord
+                .modifiers
+                .iter()
+                .map(String::as_str)
+                .filter(|modifier| *modifier != "Super"),
+            &chord.key,
+        )
+    })
+}
+
+/// A peek row: its keys in the person's keyboard legends, and what they do.
+fn peek_hint((held, key): (Vec<String>, String), label: String) -> KeyHint {
+    KeyHint::new(
+        held.iter()
+            .map(String::as_str)
+            .chain((!key.is_empty()).then_some(key.as_str())),
+        label,
+    )
+}
+
 /// The app's definition, which the shell mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(ShortcutGuideApp)
@@ -1149,6 +1381,105 @@ mod tests {
         assert_eq!(
             pair.next.keys,
             keycaps(&table.bindings[&ShortcutAction::NextTab])
+        );
+    }
+
+    /// The peek row called `label`, wherever it stands.
+    fn peek_row(groups: &[(String, Vec<KeyHint>)], label: &str) -> Option<KeyHint> {
+        groups
+            .iter()
+            .flat_map(|(_, hints)| hints)
+            .find(|hint| hint.label == label)
+            .cloned()
+    }
+
+    const DESK: PeekDesk = PeekDesk {
+        windows: 2,
+        tabs: 2,
+    };
+
+    /// The peek reads the table the guide explains: a rebound shortcut reads rebound, and one a
+    /// held Super cannot reach is not offered.
+    #[test]
+    fn the_peek_names_the_keys_after_super_from_the_table() {
+        let search = t("shortcut-name-search");
+        let mut table = ShortcutConfig::default();
+        assert_eq!(
+            peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+            Some(vec![ui::keycaps::active().key("space")]),
+            "Super is held already: the row names only the key after it"
+        );
+        table
+            .set(
+                ShortcutAction::Search,
+                KeyChord::parse("Super+Shift+J").expect("a free chord"),
+            )
+            .expect("no other shortcut holds it");
+        assert_eq!(
+            peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+            Some(KeyHint::new(["Shift", "j"], "").keys)
+        );
+        table
+            .set(
+                ShortcutAction::Search,
+                KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
+            )
+            .expect("no other shortcut holds it");
+        assert_eq!(
+            peek_row(&peek(&table, DESK), &search),
+            None,
+            "a chord without Super is out of a held Super's reach"
+        );
+    }
+
+    /// The peek names what does something where the person works: a window of one tab has no
+    /// tab to go to, and a desk with no window nothing to arrange.
+    #[test]
+    fn the_peek_leaves_out_what_the_desk_gives_nothing_to_do() {
+        let table = ShortcutConfig::default();
+        let tabs = t("guide-row-tabs");
+        let windows = t("guide-row-windows");
+        let both = peek(&table, DESK);
+        assert!(peek_row(&both, &tabs).is_some());
+        let titles: Vec<&str> = both.iter().map(|(title, _)| title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                windows.as_str(),
+                tabs.as_str(),
+                t("peek-apps").as_str(),
+                t("peek-agent-search").as_str()
+            ]
+        );
+
+        let one_tab = peek(
+            &table,
+            PeekDesk {
+                windows: 2,
+                tabs: 1,
+            },
+        );
+        assert_eq!(
+            peek_row(&one_tab, &tabs),
+            None,
+            "one tab: nothing to switch to"
+        );
+        assert!(
+            peek_row(&one_tab, &t("shortcut-name-reopen-closed-tab")).is_some(),
+            "a closed tab still comes back"
+        );
+
+        let empty = peek(&table, PeekDesk::default());
+        assert_eq!(peek_row(&empty, &t("guide-row-move-focus")), None);
+        assert_eq!(
+            peek_row(&empty, &t("guide-row-maximize")),
+            None,
+            "no window: nothing to arrange"
+        );
+        assert_eq!(
+            peek_row(&empty, &t("guide-row-strips")).map(|hint| hint.keys),
+            Some(vec!["1–9".to_owned()]),
+            "the strips are there to go to, the first and last of the run in one key"
         );
     }
 

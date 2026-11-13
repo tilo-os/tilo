@@ -1,8 +1,5 @@
-//! One event sent to a widget under test.
-//!
-//! [`dispatch`] covers the common case: a scratch document, a default-styled
-//! leaf for layout, no modifiers held, scale factor 1. [`Dispatch`] changes
-//! any of those and reports the focus target the widget asked for.
+//! One event sent to a widget under test. [`dispatch`] covers the common case: a scratch
+//! document, a default-styled leaf for layout, no modifiers held, scale factor 1.
 
 use crate::widget::{Edits, EventCtx, TaffyTreeExt, Widget};
 use automerge::{AutoCommit, ObjId};
@@ -14,22 +11,12 @@ pub fn dispatch<W: Widget + ?Sized>(widget: &mut W, event: &WindowEvent) -> bool
     Dispatch::new().send(widget, event).handled
 }
 
-/// Answer the controls `widget`'s subtree queued, the way a host answers the
-/// action a press published: a person's click on a
-/// [`Button::on_view`](crate::widget::Button::on_view) reaches its handler
-/// here, not at the press, and so does the value a field, a picker or a chip
-/// reported through its own verb. Answers how many ran.
-///
-/// For a tree that keeps no resource host of its own: the control that
-/// published the action is the one that answers it, and a press addressed to
-/// one that publishes nothing here answers where it is drawn, exactly as
-/// [`crate::widget::controls::start_pending_control_invocations`] does for
-/// the shell. A test that presses a published control and then asserts what
-/// it did calls this between the two; one that only asserts the press was
-/// handled need not.
+/// Answer the controls `widget`'s subtree queued, the way a host answers the action a
+/// press published: a person's click on a
+/// [`Button::on_view`](crate::widget::Button::on_view) reaches its handler here, not at
+/// the press, and so does the value a field, a picker or a chip reported through its own
+/// verb.
 pub fn answer_controls(widget: &mut dyn Widget) -> usize {
-    // A handler can queue another control (a confirmation, a follow-up);
-    // the bound keeps a tree that keeps queueing from holding the test.
     const MOST: usize = 64;
     let mut doc = AutoCommit::new();
     let mut ran = 0;
@@ -37,15 +24,10 @@ pub fn answer_controls(widget: &mut dyn Widget) -> usize {
         let Some(invocation) = crate::widget::controls::take_control_invocation(widget) else {
             break;
         };
-        // A control's own press and its own verb (the value a field reports,
-        // a chip's flip, the row a table chose) are both actions the tree
-        // publishes: dispatch the one it named, as a resource host does.
         let spec = crate::widget::controls::published_action(widget, &doc, &invocation.address);
         let encoded = spec
             .as_ref()
             .and_then(|spec| spec.build_json(&invocation.arguments).ok());
-        // A press addressed to a control the tree publishes nothing for still
-        // answers where it is drawn, as the shell answers it.
         let control_press = encoded
             .is_none()
             .then(|| {

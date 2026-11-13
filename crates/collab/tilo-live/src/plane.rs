@@ -33,11 +33,10 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
+use crate::frame::{Opener, PlaneKeys, Refusal, Sealer, Stream, TrackName};
 use crate::page::{self, PageObject};
 use crate::roster::Roster;
 use crate::video::{self, Layer, Source, VideoObject};
-use channel_crypto::ChannelContentKeys;
 use moq_net::origin::{Consumer, Producer};
 use tilo_lock::MutexRecover as _;
 
@@ -112,13 +111,15 @@ impl From<Refusal> for PlaneError {
     }
 }
 
-/// What one plane joins: the scope, this device, the scope's keys and who may
-/// send in it.
+/// What one plane joins: the scope, this device, the keys it seals and opens
+/// under, and who may send in it.
 #[derive(Clone)]
 pub struct Join {
     pub scope: Scope,
     pub device: [u8; 32],
-    pub keys: ChannelContentKeys,
+    /// The scope's channel content keys, or — for a device that publishes
+    /// without them — its own media keys ([`PlaneKeys`]).
+    pub keys: PlaneKeys,
     pub roster: Roster,
     /// Whether this device publishes its own broadcast, or only listens.
     pub publish: bool,
@@ -227,7 +228,7 @@ pub(crate) struct Shared {
     opener: Mutex<Opener>,
     /// The keys `publish` seals under: the join's, until the channel's epoch
     /// moves ([`Plane::set_keys`]).
-    keys: Mutex<ChannelContentKeys>,
+    keys: Mutex<PlaneKeys>,
     roster: Mutex<Roster>,
     /// How many readers each device the roster named has running now: a
     /// device is read by exactly one set of them.
@@ -693,7 +694,7 @@ impl Plane {
     /// Audio is carried on the datagram lane: `body` is one `tilo-voice/1`
     /// object and only its payload is sealed, so the relay still forwards a
     /// well-formed voice object and never sees the audio itself. Everything
-    /// else is one sealed object per group.
+    /// else is one sealed object in a group of its own ([`Self::publish_burst`]).
     ///
     /// # Errors
     ///
@@ -703,6 +704,58 @@ impl Plane {
     /// the audio lane carries, and [`PlaneError::Unavailable`] when the
     /// broadcast is gone.
     pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), PlaneError> {
+        if track != Track::Audio {
+            return self.publish_burst(track, &[(sequence, body)]);
+        }
+        let (sealer, mut producer) = self.outlet(track)?;
+        let object = VoiceObject::decode(body).map_err(|_| PlaneError::Invalid)?;
+        let at = object.timestamp;
+        let payload = sealer.seal(sequence, &object.payload)?;
+        let object = VoiceObject { payload, ..object }
+            .encode()
+            .map_err(|_| PlaneError::Invalid)?;
+        // The objects before this one again, as far as one datagram
+        // carries them: a subscriber that lost the previous packet plays
+        // it from this one.
+        let mut sent = self.sent.lock_recover();
+        let mut bundle = object.clone();
+        for earlier in sent.iter().rev() {
+            if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
+                break;
+            }
+            bundle.extend_from_slice(earlier);
+        }
+        sent.push_back(object);
+        while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
+            sent.pop_front();
+        }
+        drop(sent);
+        let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
+            .unwrap_or(moq_net::Timestamp::ZERO);
+        producer
+            .insert_datagram(u64::from(sequence), timestamp, bundle)
+            .map_err(|_| PlaneError::Unavailable)
+    }
+
+    /// Seal `objects` and publish them as one group of `track`, in order: a
+    /// burst a reader takes whole. A reader passes over a group that newer
+    /// ones overtook, so the parts of one burst sent as groups of their own
+    /// could each be lost to the next part; as one group, the newest burst
+    /// always carries all of it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::publish`], for a track other than audio.
+    pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), PlaneError> {
+        if track == Track::Audio {
+            return Err(PlaneError::Invalid);
+        }
+        let (sealer, producer) = self.outlet(track)?;
+        write_group(&producer, &sealer, objects)
+    }
+
+    /// What `track` is sealed with and published on, while the session lasts.
+    fn outlet(&self, track: Track) -> Result<(Sealer, moq_net::track::Producer), PlaneError> {
         if self.shared.ended() {
             return Err(PlaneError::Ended);
         }
@@ -716,53 +769,14 @@ impl Plane {
         )?;
         // One handle out of the map, so the map's lock is not held across the
         // sealing or the cache write.
-        let mut producer = self
+        let producer = self
             .shared
             .published
             .lock_recover()
             .get(name.as_str())
             .cloned()
             .ok_or(PlaneError::Unavailable)?;
-        if track == Track::Audio {
-            let object = VoiceObject::decode(body).map_err(|_| PlaneError::Invalid)?;
-            let at = object.timestamp;
-            let payload = sealer.seal(sequence, &object.payload)?;
-            let object = VoiceObject { payload, ..object }
-                .encode()
-                .map_err(|_| PlaneError::Invalid)?;
-            // The objects before this one again, as far as one datagram
-            // carries them: a subscriber that lost the previous packet plays
-            // it from this one.
-            let mut sent = self.sent.lock_recover();
-            let mut bundle = object.clone();
-            for earlier in sent.iter().rev() {
-                if bundle.len().saturating_add(earlier.len()) > voice::MAX_BUNDLE_BYTES {
-                    break;
-                }
-                bundle.extend_from_slice(earlier);
-            }
-            sent.push_back(object);
-            while sent.len() >= voice::MAX_BUNDLE_OBJECTS {
-                sent.pop_front();
-            }
-            drop(sent);
-            let timestamp = moq_net::Timestamp::from_scale(at, u64::from(voice::SAMPLE_RATE))
-                .unwrap_or(moq_net::Timestamp::ZERO);
-            return producer
-                .insert_datagram(u64::from(sequence), timestamp, bundle)
-                .map_err(|_| PlaneError::Unavailable);
-        }
-        let frame = sealer.seal(sequence, body)?;
-        let mut group = producer
-            .create_group(moq_net::group::Info::from(u64::from(sequence)))
-            .map_err(|_| PlaneError::Unavailable)?;
-        let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
-            .unwrap_or(moq_net::Timestamp::ZERO);
-        group
-            .write_frame(timestamp, frame)
-            .map_err(|_| PlaneError::Unavailable)?;
-        group.finish().map_err(|_| PlaneError::Unavailable)?;
-        Ok(())
+        Ok((sealer, producer))
     }
 
     /// The next object heard from a peer, or `None` when none is queued.
@@ -1099,8 +1113,10 @@ impl Plane {
         read_roster(&self.shared, &mut self.readers.lock_recover());
     }
 
-    /// Seal and open under `keys` from now on: a channel whose epoch moved.
-    pub fn set_keys(&self, keys: ChannelContentKeys) {
+    /// Seal and open under `keys` from now on: a channel whose epoch moved,
+    /// or one sender's media keys where it holds those.
+    pub fn set_keys(&self, keys: impl Into<PlaneKeys>) {
+        let keys = keys.into();
         let roster = self.shared.roster.lock_recover().clone();
         *self.shared.keys.lock_recover() = keys.clone();
         *self.shared.opener.lock_recover() = Opener::new(keys, roster);
@@ -1501,6 +1517,31 @@ fn hear_voice(shared: &Shared, device: [u8; 32], object: &VoiceObject) -> bool {
         body,
     });
     true
+}
+
+/// Seal `objects` and write them as one group of `producer`'s track, numbered
+/// by the last of them: the group a burst is.
+fn write_group(
+    producer: &moq_net::track::Producer,
+    sealer: &Sealer,
+    objects: &[(u32, &[u8])],
+) -> Result<(), PlaneError> {
+    let Some(&(last, _)) = objects.last() else {
+        return Ok(());
+    };
+    let mut group = producer
+        .create_group(moq_net::group::Info::from(u64::from(last)))
+        .map_err(|_| PlaneError::Unavailable)?;
+    for &(sequence, body) in objects {
+        let frame = sealer.seal(sequence, body)?;
+        let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
+            .unwrap_or(moq_net::Timestamp::ZERO);
+        group
+            .write_frame(timestamp, frame)
+            .map_err(|_| PlaneError::Unavailable)?;
+    }
+    group.finish().map_err(|_| PlaneError::Unavailable)?;
+    Ok(())
 }
 
 /// What a plane's reader, or the relay's copy, sees next on a subscribed

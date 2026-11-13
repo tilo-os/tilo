@@ -1,6 +1,6 @@
 //! The editable table's model: the document layout a
 //! [`Table`](crate::widget::table::Table) shows, and the operations its owner
-//! applies inside its own action ([`apply`] with the widget's
+//! applies inside its action ([`apply`] with the widget's
 //! [`TableEdit`]s). The widget itself only reads the document.
 
 use automerge::{
@@ -12,10 +12,6 @@ pub(crate) const DEFAULT_COL_W: f64 = 152.0;
 /// Columns never shrink below this when dragged.
 pub(crate) const MIN_COL_W: f64 = 56.0;
 
-// ---------------------------------------------------------------------------
-// CRDT keys
-// ---------------------------------------------------------------------------
-
 const K_ROWS: &str = "rows";
 const K_COLS: &str = "cols";
 const K_CELLS: &str = "cells";
@@ -23,13 +19,11 @@ const K_WIDTHS: &str = "widths";
 const K_HEADER: &str = "header";
 const K_SEQ: &str = "seq";
 
-// ===========================================================================
-// Model operations — the production path. These are pure functions over the
-// document, so tests exercise exactly what the widget's event handler runs.
-// ===========================================================================
+// =========================================================================== Model
+// operations — the production path.
 
-/// Cell key for `(row_id, col_id)`. Row/col ids are `"{actor}.{n}"`, which
-/// never contain `|`, so this concatenation is unambiguous.
+/// Cell key for `(row_id, col_id)`. Row/col ids are `"{actor}.{n}"`, which never contain
+/// `|`, so this concatenation is unambiguous.
 pub(crate) fn cell_key(rid: &str, cid: &str) -> String {
     format!("{rid}|{cid}")
 }
@@ -54,8 +48,8 @@ fn widths_map(doc: &AutoCommit, t: &ObjId) -> Option<ObjId> {
     child_obj(doc, t, K_WIDTHS, ObjType::Map)
 }
 
-/// Create the `rows` / `cols` / `cells` / `widths` containers if the table has
-/// never been initialised. Idempotent — safe to call every `sync`.
+/// Create the `rows` / `cols` / `cells` / `widths` containers if the table has never been
+/// initialised.
 pub fn ensure(doc: &mut AutoCommit, t: &ObjId) {
     if rows_list(doc, t).is_none() {
         let _ = doc.put_object(t, K_ROWS, ObjType::List);
@@ -84,7 +78,6 @@ fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     out
 }
 
-/// Row ids in display order.
 pub fn row_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
     rows_list(doc, t)
         .map(|l| list_ids(doc, &l))
@@ -106,9 +99,6 @@ pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
     )
 }
 
-/// Mint a globally-unique, stable id: `"{actor_hex}.{seq}"`. The actor prefix
-/// keeps ids distinct across replicas; the counter keeps them distinct within
-/// one.
 fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
     let seq = match doc.get(t, K_SEQ) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -145,8 +135,7 @@ pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
     }
 }
 
-/// Replace the whole content of cell `(row, col)`. Creates the backing
-/// `Text` if it does not exist yet.
+/// Replace the whole content of cell `(row, col)`.
 pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, text: &str) {
     ensure(doc, t);
     let (Some(rid), Some(cid)) = (
@@ -170,7 +159,6 @@ pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, te
 }
 
 /// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).
-/// Every current column gets an empty backing cell.
 pub fn insert_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
     ensure(doc, t);
     let rid = next_id(doc, t);
@@ -257,8 +245,8 @@ pub(crate) fn col_width(doc: &AutoCommit, t: &ObjId, cid: &str) -> f64 {
     match widths_map(doc, t).and_then(|w| doc.get(&w, cid).ok().flatten()) {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
             ScalarValue::F64(v) => *v,
-            // Widen via `i32` first: that conversion to `f64` is always
-            // lossless, unlike a direct `i64 -> f64` cast.
+            // Widen via `i32` first: that conversion to `f64` is always lossless, unlike
+            // a direct `i64 -> f64` cast.
             ScalarValue::Int(v) => {
                 f64::from(i32::try_from(*v).unwrap_or(if *v > 0 { i32::MAX } else { i32::MIN }))
             }
@@ -275,8 +263,8 @@ fn set_col_width(doc: &mut AutoCommit, t: &ObjId, cid: &str, w: f64) {
     }
 }
 
-/// A change the user made to a table, in display coordinates, for its owner
-/// to submit as an action.
+/// A change the user made to a table, in display coordinates, for its owner to submit as
+/// an action.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TableEdit {
     SetCell {
@@ -284,20 +272,27 @@ pub enum TableEdit {
         column: usize,
         text: String,
     },
-    /// A new empty row at `at`.
-    InsertRow { at: usize },
-    /// A new empty column at `at`.
-    InsertColumn { at: usize },
-    /// Row `at` removed.
-    RemoveRow { at: usize },
-    /// Column `at` removed.
-    RemoveColumn { at: usize },
+    InsertRow {
+        at: usize,
+    },
+    InsertColumn {
+        at: usize,
+    },
+    RemoveRow {
+        at: usize,
+    },
+    RemoveColumn {
+        at: usize,
+    },
     /// Column `column` is `width` logical pixels wide.
-    ResizeColumn { column: usize, width: f64 },
+    ResizeColumn {
+        column: usize,
+        width: f64,
+    },
 }
 
-/// Apply `edit` to the table at `t`: what an owner's action does with a
-/// [`TableEdit`] the widget handed it.
+/// Apply `edit` to the table at `t`: what an owner's action does with a [`TableEdit`] the
+/// widget handed it.
 pub fn apply(doc: &mut AutoCommit, t: &ObjId, edit: &TableEdit) {
     match edit {
         TableEdit::SetCell { row, column, text } => set_cell_text(doc, t, *row, *column, text),

@@ -14,13 +14,9 @@ use tokio::net::TcpStream;
 
 use crate::validate::classify_conn_failure;
 
-/// How long one address gets before it counts as dead.
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
-/// How long an attempt runs alone before the next address joins the race.
 const STAGGER: Duration = Duration::from_millis(250);
 
-/// `addrs` ordered IPv6 first, then alternating families, so a dead family
-/// never hides a working one.
 pub(crate) fn interleaved(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     let (mut v6, mut v4): (Vec<_>, Vec<_>) = addrs.into_iter().partition(SocketAddr::is_ipv6);
     v6.reverse();
@@ -33,7 +29,6 @@ pub(crate) fn interleaved(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     ordered
 }
 
-/// Connect to `host:port`, racing its addresses.
 pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     let addrs = tokio::net::lookup_host((host, port))
         .await
@@ -42,13 +37,10 @@ pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     race(addrs).await
 }
 
-/// Connect to the first of `addrs` that accepts, racing them as [`tcp`] does.
 async fn race(addrs: Vec<SocketAddr>) -> Result<TcpStream, String> {
     race_with(addrs, TcpStream::connect).await
 }
 
-/// [`race`] over any `connect`, so the staggering and deadlines can be
-/// checked against connections that never answer.
 async fn race_with<T, F, Fut>(addrs: Vec<SocketAddr>, connect: F) -> Result<T, String>
 where
     F: Fn(SocketAddr) -> Fut + Sync,
@@ -79,14 +71,6 @@ where
     Err(classify_conn_failure(&last))
 }
 
-/// An SMTP session with `host:port` on a connection [`tcp`] raced, greeted
-/// and past `EHLO`: implicit TLS (`implicit`, the system roots) on 465,
-/// otherwise a required STARTTLS upgrade with `starttls`.
-///
-/// `lettre` would connect by itself, but it tries a host's addresses one
-/// after another, each with the whole command timeout, so on a network that
-/// drops one address family an account check or a send waited ten seconds
-/// for every dead address before the SMTP server was even asked.
 pub(crate) async fn smtp(
     host: &str,
     port: u16,
@@ -123,7 +107,6 @@ pub(crate) async fn smtp(
     Ok(connection)
 }
 
-/// A TLS connection `lettre` can run SMTP over.
 #[derive(Debug)]
 struct Tls(tokio_rustls::client::TlsStream<TcpStream>);
 
@@ -203,8 +186,6 @@ mod tests {
         assert!(tcp("127.0.0.1", port).await.is_ok());
     }
 
-    /// An address that never answers does not hold up a live one behind
-    /// it: the live one joins the race one stagger later and wins.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn a_silent_address_does_not_hold_up_a_live_one() {
         let silent = addr("[2001:db8::1]:25");
@@ -222,7 +203,6 @@ mod tests {
         assert_eq!(started.elapsed(), STAGGER);
     }
 
-    /// When every address stays silent, each gives up at its own deadline.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn silent_addresses_time_out_at_their_deadline() {
         let started = tokio::time::Instant::now();

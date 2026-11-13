@@ -1,12 +1,4 @@
 //! Which events a drag on a repeating event changes.
-//!
-//! Dragging an occurrence of a repeating event (moving it, or its end) asks
-//! "Only this event" or "All future events", as Apple Calendar, Fantastical
-//! and Notion Calendar do. Only this event becomes an override of that one
-//! date. All future events splits the series at the occurrence: the old
-//! series ends the day before (its RRULE gains an UNTIL), and a new series
-//! starts at the occurrence's new time, carrying on with what was left of
-//! the old one (its end, its remaining count, its later exceptions).
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use uuid::Uuid;
@@ -23,12 +15,10 @@ pub(super) fn choices() -> [String; 2] {
     ]
 }
 
-/// What the question is called for assistive technology.
 pub(super) fn label() -> String {
     crate::resource::t("calendar-repeat-change")
 }
 
-/// Why the events did not move.
 fn failed(error: &str) -> String {
     crate::resource::t_args(
         "calendar-repeat-failed",
@@ -36,18 +26,12 @@ fn failed(error: &str) -> String {
     )
 }
 
-/// What a drag asked of an occurrence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DragChange {
-    /// Start on `day` at `start_min` on the viewer's clock, keeping the
-    /// length.
     Move { day: NaiveDate, start_min: i64 },
-    /// End at `end` on the viewer's clock.
     Resize { end: NaiveDateTime },
 }
 
-/// A drag on an occurrence of a repeating event, waiting for the person to
-/// say which events it changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PendingRepeatChange {
     pub id: Id,
@@ -56,8 +40,6 @@ pub(super) struct PendingRepeatChange {
 }
 
 impl CalendarApp {
-    /// Apply a drag on the occurrence of `id` on `original`: right away for
-    /// an event that does not repeat, after asking for one that does.
     pub(super) fn change_occurrence(
         &mut self,
         id: Id,
@@ -79,7 +61,6 @@ impl CalendarApp {
             return;
         }
         self.pending_repeat = Some(pending);
-        // The question opens where the occurrence was let go.
         let anchor = Rect::from_center_size(self.last_mouse, (1.0, 1.0));
         self.repeat_scope_menu.set_viewport(self.rect);
         self.repeat_scope_menu.open_at(anchor, None);
@@ -111,8 +92,6 @@ impl CalendarApp {
         }
     }
 
-    /// Input while the question is open: it owns it. Returns whether it was
-    /// open.
     pub(super) fn handle_repeat_scope_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -124,7 +103,6 @@ impl CalendarApp {
         ui::Widget::handle_event(&mut *self.repeat_scope_menu, event, ctx);
         let choice = self.repeat_scope_menu.take_selection();
         if !self.repeat_scope_menu.is_open() {
-            // Answered, or dismissed: a dismissed drag changes nothing.
             if let (Some(pending), Some(choice)) = (self.pending_repeat.take(), choice) {
                 self.apply_repeat_change(pending, choice == 1, &mut ctx.state);
             }
@@ -134,8 +112,6 @@ impl CalendarApp {
         true
     }
 
-    /// The new start and end, on the event's own clock, that `change` gives
-    /// the occurrence of `before` on `original`.
     fn changed_interval(
         &self,
         before: &Event,
@@ -163,7 +139,6 @@ impl CalendarApp {
         }
     }
 
-    /// Apply `change` to the occurrence on `original` and every later one.
     fn change_following(
         &mut self,
         id: Id,
@@ -180,7 +155,6 @@ impl CalendarApp {
         };
         let (old, new) = split_series(&before, original, (start, end, later_fold), Uuid::new_v4());
         let Some(new) = new else {
-            // The first occurrence: all of them are its future.
             if self.submit_event_change(doc, &before, &old) {
                 if let Some(event) = self.model.event_mut(id) {
                     *event = old;
@@ -189,8 +163,6 @@ impl CalendarApp {
             }
             return;
         };
-        // The old series' end and the new series, as one change: one undo
-        // step, and no moment with both or neither.
         let insert = match ui::framework::Submit::<Calendar>::into_invoke(Calendar::NEW_EVENT.with(
             crate::resource::calendar::NewEvent {
                 event: crate::actions::EventData::from_event(&new),
@@ -222,11 +194,6 @@ impl CalendarApp {
     }
 }
 
-/// Split `before` at its occurrence on `original`, which now runs
-/// `start`..`end` (the event's own clock, `end` maybe the later reading of
-/// a repeated hour). Gives the old series as it is to be kept, and the new
-/// series `new_id` from that occurrence on; no new series when `original`
-/// is the first occurrence, as the whole series then changes.
 pub(super) fn split_series(
     before: &Event,
     original: NaiveDate,
@@ -234,7 +201,6 @@ pub(super) fn split_series(
     new_id: Id,
 ) -> (Event, Option<Event>) {
     let seed = before.start.date();
-    // Later occurrences keep their weekday or date relative to this one.
     let shift = start.date() - original;
     let carried = |edit: &OccurrenceOverride| OccurrenceOverride {
         original_date: edit.original_date + shift,
@@ -246,9 +212,6 @@ pub(super) fn split_series(
         whole.start = start;
         whole.end = end;
         whole.end_later_fold = later_fold;
-        // Moved to another day, the exceptions move with the dates they
-        // were for. Only the time changed, they stay as they are: their
-        // dates still name occurrences of the series.
         if shift != Duration::zero() {
             whole.occurrence_overrides = before
                 .occurrence_overrides
@@ -272,8 +235,6 @@ pub(super) fn split_series(
         whole.occurrence_overrides.settle();
         return (whole, None);
     }
-    // How many occurrences the old series keeps, for a series bounded by a
-    // count: the new one takes the rest.
     let kept = before
         .recurrence_count
         .map(|_| u32::try_from(before.occurrences_before(original)).unwrap_or(u32::MAX));
@@ -338,8 +299,6 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, m, d).unwrap()
     }
 
-    /// Weekly on Mondays from 1 June 09:00, ten times; 29 June skipped, 8
-    /// June and 6 July moved by an hour.
     fn weekly() -> Event {
         let moved = |day: NaiveDate| OccurrenceOverride {
             original_date: day,
@@ -366,7 +325,6 @@ mod tests {
     fn all_future_events_split_the_series_at_the_occurrence() {
         let before = weekly();
         let new_id = Uuid::new_v4();
-        // 22 June, dragged to Tuesday 23 June at 11:00.
         let (old, new) = split_series(
             &before,
             date(6, 22),
@@ -375,7 +333,6 @@ mod tests {
         );
         let new = new.expect("a later occurrence starts a new series");
 
-        // The old series ends the day before, by UNTIL alone.
         assert_eq!(old.id, before.id);
         assert_eq!(old.recurrence_until, Some(date(6, 21)));
         assert_eq!(old.recurrence_count, None);
@@ -386,8 +343,6 @@ mod tests {
         );
         assert!(old.recurrence_exdates.is_empty());
 
-        // The new series carries on from there, on Tuesdays at 11:00, with
-        // what was left: seven of ten, the skipped and the moved one.
         assert_eq!(new.id, new_id);
         assert_eq!((new.start, new.end), (at(6, 23, 11), at(6, 23, 12)));
         assert_eq!(new.recurrence, Recurrence::Weekly);

@@ -34,7 +34,6 @@ impl Order {
 struct Key {
     start_field: usize,
     start_char: usize,
-    /// The last field, or none for the end of the line.
     end_field: Option<usize>,
     /// The last character in the end field; 0 for all of it.
     end_char: usize,
@@ -293,7 +292,6 @@ fn is_blank(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
-/// Where each field of `line` starts and ends.
 fn fields(line: &[u8], separator: Option<u8>) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     if let Some(sep) = separator {
@@ -362,7 +360,6 @@ impl Sorter {
         line.get(start..end.max(start)).unwrap_or_default()
     }
 
-    /// Compare by the keys alone, as `-u` decides what is a duplicate.
     fn compare_keys(&self, a: &[u8], b: &[u8]) -> Ordering {
         if self.keys.is_empty() {
             return compare_with(a, b, self.global);

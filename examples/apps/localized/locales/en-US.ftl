@@ -16,3 +16,8 @@ localized-hint = Change the system language to see this app in German.
 localized-add-book = Put a book on the shelf
 localized-remove-book = Took a book off the shelf
 localized-shelf-reader = Changed the reader's name
+
+## What the record and its actions are called
+example-shelf = Shelf
+example-shelf-add-book = Put a book on the shelf
+example-shelf-remove-book = Take a book off the shelf

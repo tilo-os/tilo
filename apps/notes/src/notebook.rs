@@ -18,8 +18,8 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, NonBlank, Reactions, Refusal, Set,
-    resource,
+    self, ActionCx, Atom, Bytes, Collection, Fields, Id, Map, Model, NonBlank, Reactions, Refusal,
+    Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -31,8 +31,10 @@ use crate::model::PageId;
 /// ([`Bytes::to_keep`]).
 pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
-/// The title a note gets when none is given.
-pub const UNTITLED: &str = "Untitled";
+/// The title a note nobody has named holds: none. A title is only ever what a person typed, so a
+/// note that has none reads as the word for an unnamed note in whoever opens it, in their own
+/// language.
+pub const NO_TITLE: &str = "";
 
 /// The notebook.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
@@ -113,13 +115,11 @@ impl Tag {
 }
 
 impl Page {
-    /// A new note titled `title` (the untitled title when blank) under
-    /// `parent`.
+    /// A new note titled `title` (no title at all when blank) under `parent`.
     #[must_use]
     pub fn titled(title: &str, parent: Option<Id>) -> Self {
-        let title = title.trim();
         Self {
-            title: if title.is_empty() { UNTITLED } else { title }.to_owned(),
+            title: title.trim().to_owned(),
             parent,
             ..Self::default()
         }
@@ -205,10 +205,28 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     id.as_str().parse().ok()
 }
 
+/// Bring a notebook stored at version `from` up to this one: a document
+/// already stored as a [`Notebook`] record is only checked. A notebook from
+/// before the record has no migration, and says so rather than opening empty.
+fn migrate_stored(doc: &tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
+    use automerge::ReadDoc as _;
+    if from != 1 {
+        return Err(tilo_resource::ModelError::invalid(format!(
+            "Notes has no migration from storage version {from}"
+        )));
+    }
+    if doc.get(&automerge::ROOT, "notes_schema_version")?.is_some() {
+        return Err(tilo_resource::ModelError::invalid(
+            "this notebook was written before notes were kept as a record, and is not migrated",
+        ));
+    }
+    Notebook::read_fields(doc, &automerge::ROOT).map(|_| ())
+}
+
 #[resource(
     kind = "notes.notebook",
     version = 2,
-    migrate = crate::legacy::migrate,
+    migrate = migrate_stored,
     search = crate::search::entries,
     read_content_in_doc = Notebook::read_note,
     document_child = Notebook::document_projection_child,
@@ -224,7 +242,8 @@ impl Notebook {
     #[action(
         keywords = "new page, create note, add note, memo",
         answers,
-        icon = "file-plus"
+        icon = "file-plus",
+        step = "create"
     )]
     pub fn new_note(
         &mut self,
@@ -310,7 +329,7 @@ impl Notebook {
     }
 
     /// Move note up
-    #[action(item = pages, icon = "arrow-up")]
+    #[action(item = pages, icon = "arrow-up", step = "move")]
     pub fn move_up(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         let above = at
@@ -322,7 +341,7 @@ impl Notebook {
     }
 
     /// Move note down
-    #[action(item = pages, icon = "arrow-down")]
+    #[action(item = pages, icon = "arrow-down", step = "move")]
     pub fn move_down(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         if at.saturating_add(1) >= siblings.len() {
@@ -635,7 +654,7 @@ impl Notebook {
     /// titled `title` (case and spacing aside); with no title, the one note
     /// you made. An agent names notes by the titles it reads, so it need
     /// not look the note's id up first; answers the note's id and resource.
-    #[action(answers, audience = "agents")]
+    #[action(answers, audience = "agents", step = "write")]
     pub fn append_to_note(
         &mut self,
         cx: &mut ActionCx,

@@ -2,8 +2,6 @@ use super::*;
 use crate::hypervisor::CommandLine;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-// Exercise the real stdio transport and normal RPC sequence. Real SDK/TAPP
-// signatures and native closure are independently covered by tilo-vmd cohort tests.
 const PEER: &str = r"
 import base64,json,sys
 case,log=sys.argv[1:3]
@@ -91,10 +89,6 @@ fn imported_cohort_uses_verified_import_and_addressed_slot_readback() {
     }
 }
 
-/// The acceptance consumer runs as an unprivileged user in a detached worktree
-/// of a root-owned CI clone: HEAD resolves, but the commit object in the shared
-/// store need not be readable. Removing the loose commit object models exactly
-/// that as git sees it (the open fails) without depending on who runs the test.
 #[test]
 fn consumer_checkout_accepts_exact_head_without_its_object_and_refuses_another_commit() {
     let dir = tempfile::tempdir().unwrap();

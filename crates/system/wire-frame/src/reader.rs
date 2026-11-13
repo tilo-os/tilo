@@ -25,7 +25,6 @@ pub struct FrameReader<R> {
     partial: Partial,
 }
 
-/// How far the async read is into the current frame.
 #[cfg(feature = "tokio")]
 #[derive(Debug, Default)]
 struct Partial {
@@ -38,7 +37,6 @@ struct Partial {
 }
 
 impl<R> FrameReader<R> {
-    /// Read frames from `inner` as `framing` describes.
     pub const fn new(inner: R, framing: Framing) -> Self {
         Self {
             inner,
@@ -58,7 +56,6 @@ impl<R> FrameReader<R> {
         self.framing
     }
 
-    /// The wrapped reader.
     pub const fn get_ref(&self) -> &R {
         &self.inner
     }
@@ -69,29 +66,17 @@ impl<R> FrameReader<R> {
         &mut self.inner
     }
 
-    /// Consume the reader, returning the wrapped one.
     pub fn into_inner(self) -> R {
         self.inner
     }
 }
 
 impl<R: Read> FrameReader<R> {
-    /// The next frame's payload, or `None` on a clean close before it. The
-    /// slice is valid until the next read.
-    ///
-    /// # Errors
-    ///
-    /// As [`Framing::read`].
     pub fn read_frame(&mut self) -> Result<Option<&[u8]>, FrameError> {
         let framed = self.framing.read_into(&mut self.inner, &mut self.buf)?;
         Ok(framed.then_some(self.buf.as_slice()))
     }
 
-    /// Read and decode the next postcard frame, or `None` on a clean close.
-    ///
-    /// # Errors
-    ///
-    /// As [`Framing::read_value`].
     #[cfg(feature = "postcard")]
     pub fn read_value<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, FrameError> {
         self.read_frame()?.map(crate::decode_value).transpose()
@@ -100,11 +85,6 @@ impl<R: Read> FrameReader<R> {
 
 #[cfg(feature = "tokio")]
 impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
-    /// The next frame's payload, or `None` on a clean close before it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Framing::read_async`].
     pub async fn read_frame_async(&mut self) -> Result<Option<&[u8]>, FrameError> {
         use tokio::io::AsyncReadExt as _;
         let partial = &mut self.partial;
@@ -150,11 +130,6 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
         Ok(Some(self.buf.as_slice()))
     }
 
-    /// Read and decode the next postcard frame, or `None` on a clean close.
-    ///
-    /// # Errors
-    ///
-    /// As [`Framing::read_value_async`].
     #[cfg(feature = "postcard")]
     pub async fn read_value_async<T: serde::de::DeserializeOwned>(
         &mut self,

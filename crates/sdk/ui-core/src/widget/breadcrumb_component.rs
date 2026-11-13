@@ -5,9 +5,8 @@ use crate::icons::Icon;
 
 use super::Breadcrumb;
 
-/// Where a page is, as the path to it: each place it is in, a chevron between them, the page
-/// itself last. Pressing a place goes there. Where the path does not fit, its middle gives way
-/// first, the first place and the page itself staying.
+/// Where a page is, as the path to it: each place it is in, a chevron between them, the page itself
+/// last.
 #[derive(Component, Default)]
 #[component(name = "Breadcrumb", role = "Group")]
 pub struct BreadcrumbProps {
@@ -79,8 +78,6 @@ impl Described for Breadcrumb {
         trail
     }
 
-    /// The path the trail shows, its root glyph and what its places cost change where it
-    /// stands: the trail keeps its place and the view it names.
     fn set_props(&mut self, props: BreadcrumbProps) -> bool {
         let BreadcrumbProps {
             segments,

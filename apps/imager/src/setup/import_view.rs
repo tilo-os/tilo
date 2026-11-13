@@ -1,4 +1,4 @@
-//! Standalone later-folder import UI.
+//! The later-import window: folders copied from a computer whose setup has left.
 
 use crate::page;
 use crate::page::Frame;
@@ -34,14 +34,13 @@ use super::import_rows::{
     operation_state_label, shown_path, state_summary,
 };
 use super::view::system_folder_reason;
+use crate::resource::Imager;
 use imager_backend::migration_store::{
     IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
 };
 use imager_backend::migration_worker::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
 };
-// Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use crate::resource::Imager;
 
 use crate::window_view::{Published, PublishingWindow};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ViewCx};
@@ -49,13 +48,8 @@ use ui::widget::Element;
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
-/// How long a screenshot scenario waits for its migration worker. Durable
-/// copies and journal fsyncs can take many seconds on a loaded disk, so this
-/// only catches a worker that never finishes.
 const SHOT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The links in the posed Documents folder whose copy needs attention: the
-/// shortcuts a person keeps to the folders they use, in sorted order.
 #[allow(
     dead_code,
     reason = "the posed links are symbolic links, which only a unix shot creates"
@@ -156,7 +150,6 @@ struct PendingPrepareInvocation {
     destination_parent: PathBuf,
 }
 
-/// A later-import surface backed by the same real journaled worker as setup.
 pub struct ImportApp {
     continuation: Option<Continuation>,
     identity_ready: bool,
@@ -186,15 +179,10 @@ pub struct ImportApp {
     composed: ui::widget::Composed,
     expanded_details: HashSet<usize>,
     shot_temp: Option<tempfile::TempDir>,
-    /// The caller of the running job, answered when it settles.
     reply: Option<EffectReply>,
-    /// Not opened yet: a live window opens it when its view is built.
     opens_when_live: bool,
-    /// What the window shares with the view it stands in.
     published: Rc<RefCell<Published>>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -205,8 +193,6 @@ impl Default for ImportApp {
 }
 
 impl ImportApp {
-    /// This computer's imports, opened once attached to a live window (or
-    /// by [`Self::open_live`]).
     #[must_use]
     pub fn new() -> Self {
         let mut app = Self::unavailable("they open only in a live window");
@@ -214,8 +200,6 @@ impl ImportApp {
         app
     }
 
-    /// Open this computer's imports: the private journal of earlier copies
-    /// and the folder choices saved during setup.
     pub fn open_live(&mut self) {
         *self = match MigrationStore::open_default().and_then(Self::with_store) {
             Ok(mut app) => {
@@ -271,8 +255,6 @@ impl ImportApp {
         }
     }
 
-    /// Deterministic screenshot state derived from real worker events and
-    /// temporary folders. A preparation failure remains visibly unavailable.
     #[must_use]
     pub fn for_shot(scenario: &str) -> Self {
         match Self::try_for_shot(scenario) {
@@ -853,10 +835,6 @@ impl ImportApp {
         }
     }
 
-    /// A private status response for the local owner. The public resource
-    /// projection and Effect receipts remain path-free. The host refuses
-    /// directed View actions from remote actors (`private_view` in
-    /// `ui-core/src/app/actions.rs`), covered by its directed-view test.
     fn local_status_value(&self) -> serde_json::Value {
         let mut value = self.import_projection().value();
         let source = self.source.as_ref().map(|path| path.display().to_string());
@@ -1656,8 +1634,6 @@ impl ImportApp {
     fn poll_persistence_and_details(&mut self, changed: &mut bool) {
         self.pending_saves.retain(|reply| match reply.try_recv() {
             Ok(Ok(saved)) => {
-                // An older acknowledgement may fill a missing legacy detail
-                // reference, but cannot replace a newer operation state.
                 for (current, persisted) in self.operations.iter_mut().zip(saved) {
                     current.retain_detail_reference(&persisted);
                 }
@@ -1865,7 +1841,6 @@ impl ImportApp {
         };
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
-        // At most one latest progress update and one terminal event per frame.
         for _ in 0..2 {
             let Some((index, worker)) = &mut self.worker else {
                 break;
@@ -2122,8 +2097,6 @@ impl ImportApp {
             .on_effect(move || sink.borrow_mut().push(command))
     }
 
-    /// Copy one more folder: where from, where to, and the review that
-    /// prepares the copy.
     fn journey_choices(&self) -> Section {
         let t = super::strings::t;
         let button = |id: &str, key: &str, effect: ImportEffect| {
@@ -2217,8 +2190,6 @@ impl ImportApp {
         ))
     }
 
-    /// The loaded page of a copy's issues, one row each, then what else
-    /// the copy reports.
     fn page_details(&self, index: usize, operation: &OperationRecord) -> Option<Column> {
         let mut issues: Vec<Box<dyn Widget>> = Vec::new();
         let mut notes = Vec::new();
@@ -2288,8 +2259,6 @@ impl ImportApp {
         .with_enabled(enabled)
     }
 
-    /// One copy: its folder and state, the facts about it, the issues it
-    /// found when they are open, and what can be done with it.
     fn operation_card(&self, index: usize, operation: &OperationRecord) -> Column {
         let state = operation.state();
         let folder = operation
@@ -2365,8 +2334,6 @@ impl ImportApp {
         }
         block = block.push(Box::new(PropertyList::new(facts)));
 
-        // The commands follow the expanded issues they act on, in reading
-        // and Tab order.
         let mut actions = Row::new();
         let mut has_actions = false;
         let has_details = operation.issue_count() > 0
@@ -2457,13 +2424,10 @@ impl ImportApp {
             })
     }
 
-    /// Whether saved folder choices can change right now.
     fn continuation_idle(&self) -> bool {
         self.worker.is_none() && self.review_request.is_none() && self.gate_request.is_none()
     }
 
-    /// The folders saved during Desktop setup, each with how it comes over
-    /// and, for a copy, where it goes.
     fn continuation_card(&self, c: &Continuation) -> Section {
         let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
             Text::new(&if self.identity_ready {
@@ -2517,8 +2481,6 @@ impl ImportApp {
                             | OperationState::Cancelled
                     )
                 });
-            // How the folder comes over and where it goes sit under it, on
-            // the page's edge, so a long path is never cut short.
             let mode = ToggleGroup::new(
                 vec![
                     Segment::new(super::strings::t("imager-import-scope-copy")),
@@ -2620,8 +2582,6 @@ impl ImportApp {
             body = body.push(Box::new(self.journey_choices()));
         }
         body = body.push(Box::new(self.selection_card()));
-        // A copy's own outcome already stands on its row; the notice is for
-        // problems the page shows nowhere else.
         let on_a_row = self.operations.iter().any(|operation| {
             state_summary(operation.state()) == self.status
                 || operation.failure() == Some(self.status.as_str())
@@ -2738,8 +2698,6 @@ impl Widget for ImportApp {
 }
 
 impl ImportApp {
-    /// How the running import job settled, once it has: `None` while it
-    /// still runs. `cancellation_requested` stops it first.
     pub(crate) fn settle(&mut self, cancellation_requested: bool) -> Option<JobOutcome> {
         if self.pending_prepare_invocation.as_ref().is_some() {
             let result = self
@@ -2965,9 +2923,6 @@ impl ImportApp {
 }
 
 impl ImportApp {
-    /// Admit `operation` as its button would, after checking it against
-    /// what is shown now: answered at once, or a job [`Self::settle`]
-    /// answers.
     pub(crate) fn admit(&mut self, operation: ImportEffect) -> Result<Admitted, String> {
         let operation_ids = if operation.background() {
             if self.pending_copy_invocation.is_some()
@@ -3054,16 +3009,12 @@ impl ImportApp {
     }
 }
 
-/// How an admitted import effect answers.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Admitted {
-    /// At once, with the imports' status.
     Done(tilo_actions::ActionOutput),
-    /// When its job settles ([`ImportApp::settle`]).
     Job,
 }
 
-/// How an import job settled.
 #[derive(Debug)]
 pub(crate) enum JobOutcome {
     Succeeded { output: tilo_actions::ActionOutput },
@@ -3072,7 +3023,6 @@ pub(crate) enum JobOutcome {
 }
 
 impl JobOutcome {
-    /// Answer its caller: a failure keeps its code.
     fn answer(self, reply: EffectReply) {
         reply.answer(match self {
             Self::Succeeded { output } => Ok(output),
@@ -3088,8 +3038,6 @@ impl JobOutcome {
 }
 
 impl ImportApp {
-    /// Answer the running job's caller once it settled; stop the job when
-    /// the caller cancelled it.
     fn answer_job(&mut self) {
         let Some(cancelled) = self.reply.as_ref().map(EffectReply::is_cancelled) else {
             return;
@@ -3102,7 +3050,6 @@ impl ImportApp {
     }
 }
 
-/// The screenshot scenarios folder imports stage.
 pub const SCENARIOS: &[&str] = &[
     "import-first-login",
     "import-first-login-waiting",
@@ -3116,8 +3063,6 @@ pub const SCENARIOS: &[&str] = &[
 ];
 
 impl ImportApp {
-    /// Pose the scenario's imports from real worker runs over disposable
-    /// fixture folders; nothing of this computer's own imports is read.
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) {
             let actions = self.actions.take();
@@ -3153,8 +3098,6 @@ impl PublishingWindow for ImportApp {
     }
 }
 
-/// `app` as a view of the imager resource: a live window opens this
-/// computer's imports first.
 pub(crate) fn import_window(cx: &ViewCx<Imager>, mut app: ImportApp) -> Element {
     if cx.mode().is_live() && app.opens_when_live {
         app.open_live();
@@ -3163,20 +3106,10 @@ pub(crate) fn import_window(cx: &ViewCx<Imager>, mut app: ImportApp) -> Element 
     crate::window_view::window_view(cx, app, ImportApp::effect)
 }
 
-/// Folder imports in a view of the imager resource. A live window opens
-/// this computer's imports; a capture or a past version reads nothing of
-/// them.
 pub fn view(cx: &mut ViewCx<Imager>) -> Element {
     import_window(cx, ImportApp::new())
 }
 
-/// A fresh directory for disposable screenshot and test fixtures, in a place
-/// the source guard treats as user data.
-///
-/// Neither the login user's home (CI commonly runs as root, and `/root` is an
-/// OS directory) nor the configured temporary directory will do: `TMPDIR` can
-/// point anywhere, including below `/var`, and macOS resolves its default
-/// beneath `/private`. The guard rightly refuses both.
 fn disposable_fixture_dir() -> std::io::Result<tempfile::TempDir> {
     #[cfg(target_os = "macos")]
     return tempfile::tempdir_in("/Users/Shared");
@@ -3216,8 +3149,6 @@ mod tests {
         )
     }
 
-    /// Waits for the worker, then settles its admitted invocation the way the
-    /// host does, so the next background action is not refused as unsettled.
     fn wait_terminal(app: &mut ImportApp) {
         let deadline = tilo_test_env::hang_deadline();
         while app.worker.is_some() {
@@ -3244,8 +3175,6 @@ mod tests {
         }
     }
 
-    /// The imports as the imager resource publishes them: the live row,
-    /// carrying the effects as callers see them now.
     fn root_resource(app: &ImportApp) -> tilo_actions::ResourceSpec {
         let mut root = app.rows().remove(0).into_resource();
         let blocked = import_actions::blocked(&app.import_projection());
@@ -3263,7 +3192,6 @@ mod tests {
         root
     }
 
-    /// The effect a published action invokes with no further arguments.
     fn effect_of(action: &tilo_actions::ActionSpec) -> Result<ImportEffect, String> {
         effect_with(action, &serde_json::Map::new())
     }
@@ -3297,7 +3225,6 @@ mod tests {
         start_import(app, effect_of(action)?)
     }
 
-    /// [`invoke_action`] with the arguments the action asks for.
     fn invoke_action_with(
         app: &mut ImportApp,
         action: &tilo_actions::ActionSpec,
@@ -3319,8 +3246,6 @@ mod tests {
         start_import(app, operation.clone())
     }
 
-    /// The projection an agent sees: a synchronous result carries it, and a
-    /// background operation's admission is followed by the public status read.
     fn start_import(
         app: &mut ImportApp,
         effect: ImportEffect,
@@ -3359,7 +3284,6 @@ mod tests {
         }
     }
 
-    /// The imager mounting folder imports, as a screenshot captures it.
     struct ImportShots;
 
     impl ui::framework::ResourceApp for ImportShots {
@@ -3448,7 +3372,6 @@ mod tests {
         }
     }
 
-    /// Operation resources, read status, review endpoints, detail order and shot states.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3469,7 +3392,7 @@ mod tests {
             let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
             assert!(!public_error.contains(&source_text));
             assert!(!public_error.contains(&destination_text));
-            assert!(public_error.contains("read-status"), "{public_error}");
+            assert!(public_error.contains("import status"), "{public_error}");
             assert!(app.status.contains(&collision.display().to_string()));
             assert!(
                 observe_import(&mut app).unwrap()["local"]["status"]
@@ -3555,9 +3478,6 @@ mod tests {
             assert!(!public.contains(&expected_destination));
         }
 
-        // Phase `review_uses_the_selected_source_and_destination_parent`.
-        // Catches copying into a suggested setup path before both current native
-        // grants and the exact fresh destination have been reviewed.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             app.source = Some(source.clone());
@@ -3575,11 +3495,6 @@ mod tests {
             assert!(operation.start_job().is_err());
         }
 
-        // Phase `expanded_details_precede_the_operation_commands`.
-        // The expanded issue list precedes the commands that act on it — the
-        // details toggle, the issue paging, the copy action — in reading and Tab
-        // order (the accessibility tree and `collect_focusable` both walk the
-        // widget tree in child order), and the three share one action row.
         {
             let pages = ImportApp::for_shot("import-issue-pages");
             assert!(pages.expanded_details.contains(&0));
@@ -3611,9 +3526,6 @@ mod tests {
             );
         }
 
-        // Phase `screenshot_states_come_from_real_worker_events`.
-        // Catches screenshot fixtures drifting into fabricated success labels that
-        // never passed through the real worker and copy report classifier.
         {
             let progress = ImportApp::for_shot("import-progress");
             assert_eq!(progress.operations[0].state(), OperationState::Running);
@@ -3669,7 +3581,6 @@ mod tests {
         }
     }
 
-    /// Review preparation, identity failure and picker outcomes.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3805,8 +3716,6 @@ mod tests {
             );
 
             assert_eq!(start_action(&mut app, &choose).unwrap(), Admitted::Job);
-            // The identity gate runs on its own thread before the picker opens, so
-            // one poll can observe neither the picker nor its failure yet.
             let deadline = tilo_test_env::hang_deadline();
             let update = loop {
                 app.poll_background();
@@ -4038,7 +3947,6 @@ mod tests {
                 .prepare(0, app.store.as_ref().unwrap(), &[], true)
                 .unwrap()
                 .unwrap();
-            // Either ordering of the two durable writes may survive a crash.
             for (continuation, record) in [(new, old_record), (old, new_record)] {
                 continuation.save(app.store.as_ref().unwrap()).unwrap();
                 app.store.as_ref().unwrap().save(&[record]).unwrap();
@@ -4064,7 +3972,6 @@ mod tests {
         }
     }
 
-    /// Reviewed batches, completion, identity failures, cancellation and refused stops.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4215,7 +4122,6 @@ mod tests {
         }
     }
 
-    /// Semantic cancel/retry, restart retry and partial reports.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4266,9 +4172,6 @@ mod tests {
             assert_eq!(app.operations[0].verified_file_count(), 32);
         }
 
-        // Phase `application_restart_requires_explicit_retry_and_reaches_verified_completion`.
-        // Catches an application restart turning a cancelled operation into a
-        // fresh overwrite attempt instead of an explicit journal resume.
         {
             let (temp, mut app, source, destination_parent) = fixture();
             for index in 0..24 {
@@ -4545,7 +4448,6 @@ mod tests {
         }
     }
 
-    /// Continuation collisions, basename retargeting, reopen and retry.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4791,9 +4693,6 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
-        // The save stays held until this thread releases it. A UI call that
-        // waited for it would only return once the hold timed out, which
-        // drops the release receiver and fails the send below.
         let (entered, release) = imager_backend::migration_store::test_support::hold_save(&root, 1);
         app.start_copy(0).unwrap();
         tilo_test_env::recv("the save hook", &entered);
@@ -4834,14 +4733,9 @@ mod tests {
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = imager_backend::migration_store::test_support::hold_save(&root, 2);
         app.start_copy(0).unwrap();
-        // Native durability includes directory fsyncs; allow slower virtual
-        // disks to reach the terminal checkpoint without weakening the state
-        // assertion that follows.
         tilo_test_env::recv("the save hook", &entered);
         app.poll_background();
         assert_eq!(app.operations[0].state(), OperationState::Running);
-        // Polling must not wait for the held checkpoint: had it waited, the
-        // hold would have timed out and dropped its release receiver.
         release
             .send(())
             .expect("the terminal checkpoint was still held when polling returned");
@@ -4849,7 +4743,6 @@ mod tests {
         assert_eq!(app.operations[0].state(), OperationState::Complete);
     }
 
-    /// Failed terminal and start persistence.
     #[test]
     fn failed_checkpoints_never_report_completion_or_create_output() {
         {
@@ -4864,9 +4757,6 @@ mod tests {
             let (entered, release) =
                 imager_backend::migration_store::test_support::hold_save(&root, 2);
             app.start_copy(0).unwrap();
-            // Native durability includes directory fsyncs; allow slower virtual
-            // disks to reach the terminal checkpoint without weakening the state
-            // assertion that follows.
             tilo_test_env::recv("the save hook", &entered);
             fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
             release.send(()).unwrap();

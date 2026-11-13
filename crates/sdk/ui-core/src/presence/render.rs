@@ -147,13 +147,8 @@ impl PresenceCtx {
 
     /// Draw an authorship "marker": translucent underlay in the author's
     /// colour behind the runs they wrote, at lower alpha than a selection.
-    ///
-    /// Not presence-fed — authorship must survive both peers closing the
-    /// doc, so it's an Automerge mark (`local_author` /
-    /// `RichTextLine::author_runs`). **Silently a no-op if
-    /// `set_local_author` was never called** — looks exactly like a network
-    /// fault. Set by `apps/notes`/`apps/chat`; `tilo-doc` has no per-run author
-    /// field yet.
+    /// What is drawn comes from the text's stored author marks, not from
+    /// presence, so it outlasts everyone closing the document.
     pub fn draw_peer_authorship(
         &self,
         scene: &mut Scene,
@@ -408,31 +403,60 @@ impl PresenceCtx {
         label: &str,
         rect: Rect,
         bounds: Rect,
+        ink: &[Rect],
     ) {
         let gap = f64::from(ctx.theme.tokens.spacing.s1);
         let right = (bounds.x1 - rect.x1 - gap).max(0.0);
         let left = (rect.x0 - bounds.x0 - gap).max(0.0);
         let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
-        let (budget, x, y) = if right >= preferred_w {
-            (right, rect.x1 + gap, rect.y0)
-        } else if left >= preferred_w {
-            (left, rect.x0 - gap - preferred_w, rect.y0)
-        } else if rect.y1 + gap + preferred_h <= bounds.y1 {
-            (bounds.width(), rect.x0, rect.y1 + gap)
-        } else if right >= left && right > 0.0 {
-            (right, rect.x1 + gap, rect.y0)
-        } else if left > 0.0 {
-            (left, bounds.x0, rect.y0)
-        } else {
-            (bounds.width(), rect.x0, rect.y0)
-        };
-        let (label, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
-        if w <= 0.0 || h > bounds.height() {
-            return;
+        // Where the chip may stand, best first: beside the control, then under
+        // it, then squeezed into what room either side leaves.
+        let mut candidates = Vec::with_capacity(4);
+        if right >= preferred_w {
+            candidates.push((right, rect.x1 + gap, rect.y0));
         }
-        let x = x.min(bounds.x1 - w).max(bounds.x0);
-        let y = y.min(bounds.y1 - h).max(bounds.y0);
-        let chip = Rect::new(x, y, x + w, y + h);
+        if left >= preferred_w {
+            candidates.push((left, rect.x0 - gap - preferred_w, rect.y0));
+        }
+        if rect.y1 + gap + preferred_h <= bounds.y1 {
+            candidates.push((bounds.width(), rect.x0, rect.y1 + gap));
+        }
+        if right > 0.0 {
+            candidates.push((right, rect.x1 + gap, rect.y0));
+        }
+        if left > 0.0 {
+            candidates.push((left, bounds.x0, rect.y0));
+        }
+        candidates.push((bounds.width(), rect.x0, rect.y0));
+        let covers = |chip: Rect| {
+            ink.iter().any(|words| {
+                chip.x0 < words.x1 && words.x0 < chip.x1 && chip.y0 < words.y1 && words.y0 < chip.y1
+            })
+        };
+        let mut first: Option<(Rect, String)> = None;
+        let mut free: Option<(Rect, String)> = None;
+        for (budget, x, y) in candidates {
+            let (fitted, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
+            if w <= 0.0 || h > bounds.height() {
+                continue;
+            }
+            let x = x.min(bounds.x1 - w).max(bounds.x0);
+            let y = y.min(bounds.y1 - h).max(bounds.y0);
+            let chip = Rect::new(x, y, x + w, y + h);
+            if first.is_none() {
+                first = Some((chip, fitted.clone()));
+            }
+            // A label never covers the words a frame already shows (a window's
+            // own heading, a notice above the control): a step that fails says so
+            // without hiding what the person is reading.
+            if !covers(chip) {
+                free = Some((chip, fitted));
+                break;
+            }
+        }
+        let Some((chip, label)) = free.or(first) else {
+            return;
+        };
         draw_name_chip_in(ctx, color_for(self, user, ctx.theme), &label, chip);
         self.note_caret_tag(CaretTag {
             user: user.clone(),
@@ -1960,6 +1984,7 @@ mod tests {
                     "Rename (Applying) - Quill",
                     control,
                     viewport,
+                    &[Rect::new(20.0, 20.0, 480.0, 59.0)],
                 );
                 let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);
                 let mut label_pixels = 0;

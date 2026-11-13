@@ -1,13 +1,4 @@
 //! `PersonField`: a form's person, shown as their avatar and name and picked from a list.
-//!
-//! The field reads as a control with the person's avatar and name, or "No one" in the quieter
-//! ink while nobody is picked. Pressing it opens a stack of the people to pick: "Me", "No one"
-//! to clear it, then the workspace's members and agents, each with their avatar.
-//!
-//! The owner learns of a change through [`PersonField::on_change`] and tells the field who it
-//! holds with [`PersonField::set_value`]; the field never holds the authoritative value. A
-//! described component's field follows the identity its binding holds
-//! ([`PersonField::from_state`]) and names it from the people it is given.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -22,7 +13,6 @@ use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverB
 mod component;
 pub use component::PersonFieldProps;
 
-/// What a press in the list asked for: a person, or nobody.
 type Picked = Rc<Cell<Option<Option<Person>>>>;
 
 /// Who the bound value took while the list was open: shown once it closes, so a person set
@@ -35,21 +25,15 @@ enum Waiting {
     Whom(Option<String>),
 }
 
-/// See the [module docs](self).
 pub struct PersonField {
     inner: PopoverButton<Stack>,
     id: String,
-    /// The identity of the person it holds, if any.
     value: Option<String>,
-    /// The workspace's members and agents: who the person may pick, and what they are called.
     people: Vec<Person>,
-    /// The person the view is shown to: the list's first entry, "Me".
     me: Option<Person>,
     picked: Picked,
     on_change: Option<Box<dyn FnMut(Option<Person>)>>,
-    /// The bound identity the field follows, when a view binds it.
     bound: Option<BoxedBinding<Option<String>>>,
-    /// Who the bound value took while the list was open: shown once it closes.
     waiting: Waiting,
 }
 
@@ -94,19 +78,16 @@ impl PersonField {
         self
     }
 
-    /// The identity the field holds.
     #[must_use]
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
     }
 
-    /// The people the list offers.
     #[must_use]
     pub fn people(&self) -> &[Person] {
         &self.people
     }
 
-    /// The person the view is shown to.
     #[must_use]
     pub fn me(&self) -> Option<&Person> {
         self.me.as_ref()
@@ -135,13 +116,10 @@ impl PersonField {
         self.inner = field(&self.id, who, &self.people, self.me.as_ref(), &self.picked);
     }
 
-    /// Take what the person picked: close the list, show it and report it.
     fn take_pick(&mut self) -> bool {
         let Some(picked) = self.picked.take() else {
             return false;
         };
-        // Their pick is the newest person there is: one the bound value took while the list was
-        // open gives way to it.
         self.waiting = Waiting::Nothing;
         self.inner.close();
         let identity = picked.as_ref().map(|who| who.identity.clone());
@@ -161,7 +139,6 @@ impl PersonField {
         true
     }
 
-    /// Show who the bound value took while the list was open, now that it closed.
     fn show_waiting(&mut self) -> bool {
         if self.inner.is_open() {
             return false;
@@ -177,7 +154,6 @@ impl PersonField {
     }
 }
 
-/// The field's chip and its list: "Me", "No one", then the workspace's other people.
 fn field(
     id: &str,
     who: Option<&str>,
@@ -216,7 +192,6 @@ fn field(
             picked,
         )));
     }
-    // The chip shows who it holds, or that nobody is doing it yet.
     let name = who.map_or_else(String::new, |identity| {
         people
             .iter()
@@ -248,8 +223,6 @@ fn field(
                     ),
             )
             .showing_choice(),
-        // Nobody yet: the person icon stands where the avatar would, so the chip is as tall as
-        // one that holds someone and reads as a person either way.
         None => Button::new(id, &label)
             .with_icon(Icon::User)
             .with_placeholder()
@@ -258,7 +231,6 @@ fn field(
     chip.with_popover(content)
 }
 
-/// One person the list offers, led by their avatar.
 fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &Picked) -> Button {
     let on_pick = Rc::clone(chosen);
     Button::new(id, label)
@@ -374,7 +346,6 @@ mod tests {
             Some("scenario:Sam"),
             "a person set elsewhere shows in place"
         );
-        // The person is picking: the list stays on what they are looking at.
         field.inner_mut().open();
         state.set(String::new());
         Decorator::sync(&mut field, &(), &());

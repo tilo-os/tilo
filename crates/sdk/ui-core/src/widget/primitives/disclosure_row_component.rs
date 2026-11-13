@@ -8,9 +8,8 @@ use crate::widget::{Element, SignalLevel};
 
 use super::{DisclosureRow, Leading};
 
-/// A row whose body opens in place under it: a device's details, a run's log, a setting's
-/// options. Its chevron turns as it opens, and what follows moves down with it. A press on the
-/// row, Enter or Space opens and closes it.
+/// A row whose body opens under it (a device's details, a run's log, a setting's options), its
+/// chevron turning as the rows below move down; a press, Enter or Space opens and closes it.
 #[derive(Component, Default)]
 #[component(name = "DisclosureRow", role = "ListItem", label = "title")]
 pub struct DisclosureRowProps {
@@ -23,7 +22,7 @@ pub struct DisclosureRowProps {
     pub side: Option<String>,
     /// A glyph before the title: the kind of thing it is.
     pub icon: Option<Icon>,
-    /// A person before the title, as an avatar: who did the work the row stands for.
+    /// A person before the title, as an avatar: who did the work the row shows.
     pub who: Option<Person>,
     /// How strong a radio network's signal is, before the title, for a row that is a network.
     pub signal: Option<SignalLevel>,
@@ -34,12 +33,11 @@ pub struct DisclosureRowProps {
     /// without opening the row.
     #[component(slot)]
     pub trailing: Option<Element>,
-    /// Whether the row is open. Unless given, the row keeps it.
+    /// Whether the row is open; unless given the row keeps it.
     pub expanded: Option<bool>,
-    /// The pace its body unfolds at, and the pace a view's open or close takes: the theme's
-    /// unless it says otherwise.
+    /// The pace the body unfolds at, and a view's open or close: the theme's unless said.
     pub motion: Option<crate::motion::Feel>,
-    /// The row was opened or closed; carries whether it is open now.
+    /// The row was opened or closed: whether it is open now is the value.
     #[component(event(value = bool))]
     pub toggle: Event,
 }
@@ -63,7 +61,6 @@ fn leading(
 impl Described for DisclosureRow {
     type Props = DisclosureRowProps;
 
-    /// The body is a column whose views change by key.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         if slot != "body" {
             return None;
@@ -135,7 +132,6 @@ impl Described for DisclosureRow {
         self.side = side.unwrap_or_default();
         self.leading = leading(icon, who.as_ref(), signal);
         if let Some(open) = expanded {
-            // The view says where the row is: no toggle is reported back for it.
             self.state.show(open, self.motion);
         }
         self.dirty = true;

@@ -46,7 +46,6 @@ pub enum PhysicalInput {
         state: winit::event::ElementState,
     },
     Focused(bool),
-    /// Immutable configuration from the ordinary focused native event stream.
     Layout(Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>),
 }
 
@@ -85,15 +84,7 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingKind {
     Action(tilo_actions::ActionAddress),
-    /// A framework-owned CRDT edit stream. The host supplies authorship,
-    /// collaboration, history boundaries, undo, and permissions directly;
-    /// this avoids turning every keystroke or slider tick into a heavyweight
-    /// discrete action while retaining the same platform guarantees.
     CollaborativeDocument(String),
-    /// An explicitly declared stable accessibility operation. The host
-    /// projects the semantic verb into the resource catalogue and routes it
-    /// through the normal action door; useful for custom-painted controls and
-    /// process-local editing state that does not belong in document history.
     SemanticAction(String),
 }
 
@@ -130,8 +121,8 @@ pub fn semantic_action_bindings(
     bindings
 }
 
-/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place,
-/// so a widget's kept rows are listed without copying them.
+/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place, so a widget's
+/// kept rows are listed without copying them.
 pub(crate) fn semantic_action_bindings_into(
     node: &crate::a11y::AccessNode,
     out: &mut Vec<ControlBindingMetadata>,
@@ -196,16 +187,9 @@ pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kur
     )
 }
 
-/// How many frames a root may run in one host frame to settle a sync or
-/// layout its previous frame left: a widget that measures itself in one
-/// layout pass (a column centred on the width it was given, a header whose
-/// height insets what follows) reports its structure dirty and is built
-/// again at once, so what is painted is the root at rest. An embedded app
-/// settles this way, and so does a History preview of a past version.
 pub(crate) const SETTLE_FRAMES: usize = 3;
 
-/// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a
-/// leaf's rect. A node missing from the tree is an empty box at `origin`.
+/// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a leaf's rect.
 pub fn layout_rect(
     taffy: &TaffyTree<()>,
     node: NodeId,
@@ -230,14 +214,9 @@ pub fn solve_layout(
     root: NodeId,
     available: taffy::Size<taffy::AvailableSpace>,
 ) -> Result<(), taffy::TaffyError> {
-    // The tree's own method measures every leaf as empty, through a solver
-    // compiled for its own closure; the toolkit's one solver does the same.
     layout::solve_layout(taffy, root, available, &mut |_, _, _| taffy::Size::ZERO)
 }
 
-/// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
-/// that keeps the box layout gives it in `self.rect`; `rect_geometry!(measured)`
-/// also reports and answers its `self.layout_dirty` ([`Widget::layout_measured`]).
 #[macro_export]
 macro_rules! rect_geometry {
     () => {
@@ -254,8 +233,6 @@ macro_rules! rect_geometry {
             self.rect
         }
     };
-    // A leaf whose size follows what it holds: a change sets `self.layout_dirty`, and the
-    // solver that measures it answers that, drawn or not.
     (measured) => {
         $crate::rect_geometry!();
 
@@ -269,10 +246,6 @@ macro_rules! rect_geometry {
     };
 }
 
-/// Implements the [`Widget`] methods of a composite that is one pressable target, from its
-/// `self.activation`: focusable once bound, a pointer cursor over `self.$rect`, and accessibility
-/// `Activate` firing the binding. A focus change sets `self.dirty`, so pair it with
-/// [`redraw_flag!`].
 macro_rules! pressable {
     ($($rect:ident).+) => {
         fn cursor_shape(
@@ -311,8 +284,6 @@ macro_rules! pressable {
 }
 pub(crate) use pressable;
 
-/// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
-/// widget that tracks whether it needs repainting in `self.dirty`.
 #[macro_export]
 macro_rules! redraw_flag {
     () => {
@@ -326,8 +297,8 @@ macro_rules! redraw_flag {
     };
 }
 
-/// Let `node` share its row's main axis with its siblings by `grow`: it
-/// grows and shrinks from a zero basis instead of keeping its own width.
+/// Let `node` share its row's main axis with its siblings by `grow`: it grows and shrinks
+/// from a zero basis instead of keeping its own width.
 pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
     if let Ok(mut style) = taffy.style(node).cloned() {
         style.flex_grow = grow;
@@ -339,16 +310,14 @@ pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
 }
 
 /// Whether `child` holds the pointer for its subtree: it latched a drag, or a menu or modal
-/// is open somewhere in it. A container that hands input to its children asks this before
-/// routing by place, so a press over an open menu reaches the menu wherever the container
-/// stands and whichever sibling lies under it.
+/// is open somewhere in it.
 #[must_use]
 pub fn holds_pointer(child: &dyn Widget) -> bool {
     child.wants_pointer_capture() || child.modal_capture().is_some()
 }
 
-/// Whether `widget` paints this frame: it changed itself, or a child is dirty
-/// or on its way (`needs_animation_frame`) and paints other pixels.
+/// Whether `widget` paints this frame: it changed itself, or a child is dirty or on its way
+/// (`needs_animation_frame`) and paints other pixels.
 #[must_use]
 pub fn redraw_or_children(dirty: bool, widget: &dyn Widget) -> bool {
     let mut dirty = dirty;
@@ -422,7 +391,6 @@ pub fn draw_child_at(
     presence: &PresenceCtx,
 ) {
     if presence.should_cull(child.paint_bounds()) {
-        // Counted all the same, so the siblings after it keep their keys.
         if index.is_none() {
             crate::scene_parts::skip_widget();
         }
@@ -477,7 +445,6 @@ pub fn draw_child_unculled(
 /// presence)` takes the place of calling the child's [`Widget::draw`], and
 /// carries the child's key into the scene for a host that keys widgets.
 pub trait DrawChild {
-    /// Draw this widget as a child of the widget drawing now.
     fn draw_child(
         &mut self,
         scene: &mut Scene,
@@ -514,7 +481,6 @@ impl<W: Widget> DrawChild for W {
     }
 }
 
-/// The widget trait objects a container holds its children as.
 macro_rules! draw_child_of_dyn {
     ($($object:path),* $(,)?) => {$(
         impl DrawChild for dyn $object + '_ {
@@ -646,8 +612,6 @@ pub(crate) fn collect_widget_resources(
         else {
             return;
         };
-        // Boundary adapters expose their real root as a child. Collect each
-        // declaration once, and release its document borrow before descending.
         if boundary.is_none() {
             let found = if let Some(binding) = &binding {
                 binding
@@ -656,7 +620,6 @@ pub(crate) fn collect_widget_resources(
             } else {
                 crate::resources::resources(widget, doc)
             };
-            // Outside every component nothing speaks for a resource.
             if root || binding.is_none() {
                 resources.extend(found);
             } else {
@@ -669,9 +632,9 @@ pub(crate) fn collect_widget_resources(
     visit(widget, doc, None, true, resources);
 }
 
-/// The resource `id` in `widget`'s subtree, resolved by the widget that
-/// publishes it rather than by building every resource the subtree holds:
-/// [`collect_widget_resources`] for one address.
+/// The resource `id` in `widget`'s subtree, resolved by the widget that publishes it rather
+/// than by building every resource the subtree holds: [`collect_widget_resources`] for one
+/// address.
 #[must_use]
 pub fn find_resource(
     widget: &dyn Widget,
@@ -706,8 +669,6 @@ pub fn find_resource(
             } else {
                 crate::resources::resource(widget, doc, id)
             };
-            // Outside every component nothing speaks for a resource, as the
-            // walk over the whole tree reads it.
             if let Some(found) = found {
                 return Some(if root || binding.is_none() {
                     found
@@ -920,8 +881,6 @@ mod test_controls;
 #[cfg(test)]
 pub(crate) use test_controls::{Uncustodied, test_value_action_binding};
 
-/// A control bound to `spec` on the test resource: what a test drives when
-/// the action a control carries is not an app's own.
 #[cfg(test)]
 fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
 where
@@ -986,11 +945,10 @@ pub enum WindowCloseAdmission {
     Defer,
 }
 
-/// What a structural change a subtree reported ([`Widget::take_structure_change`])
-/// asks of its host. Ordered: a change joined with a larger one is the larger.
+/// What a structural change a subtree reported ([`Widget::take_structure_change`]) asks of
+/// its host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum StructureChange {
-    /// Nothing was inserted or removed.
     #[default]
     None,
     /// The widgets that reported it mount and unmount children of their own, and every widget stays
@@ -1002,8 +960,6 @@ pub enum StructureChange {
     /// the widget that reported it replaced only widgets of its own, and its
     /// own damage this frame covers every pixel that changed with them.
     Described,
-    /// The host rebuilds its tree, and any widget may have been replaced:
-    /// the frame repaints whole.
     Rebuild,
 }
 
@@ -1014,8 +970,8 @@ impl StructureChange {
         if dirty { Self::Rebuild } else { Self::None }
     }
 
-    /// Whether the host rebuilds its tree for it, or (for
-    /// [`Self::Children`]) changes it in place.
+    /// Whether the host rebuilds its tree for it, or (for [`Self::Children`]) changes it in
+    /// place.
     #[must_use]
     pub fn rebuilds(self) -> bool {
         self != Self::None
@@ -1027,10 +983,8 @@ impl StructureChange {
         self.max(other)
     }
 
-    /// Every one of `children`'s changes, joined: for a container that adds
-    /// no structure of its own, so a change a child carries out in place
-    /// ([`Self::Children`]) stays one. Each child's change is taken, none
-    /// skipped.
+    /// Every one of `children`'s changes, joined: for a container that adds no structure of
+    /// its own, so a change a child carries out in place ([`Self::Children`]) stays one.
     #[must_use]
     pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
         children.into_iter().fold(Self::None, |change, child| {
@@ -1043,8 +997,6 @@ impl StructureChange {
 /// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
 /// [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
-    /// Return a compact, path-free projection of state that may be resumed on
-    /// another device owned by the same person.
     fn continuation_metadata(
         &self,
         state: &AutoCommit,
@@ -1074,47 +1026,33 @@ pub trait Continuable {
     }
 }
 
-/// Optional session collaboration capability for widgets that own live
-/// broker-backed activity.
+/// Optional session collaboration capability for widgets that own live broker-backed
+/// activity.
 pub trait Collaborative {
-    /// Drain session-local requests for the authenticated collaboration host.
     fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
         Vec::new()
     }
 
-    /// Receive one session-local broker event.
     fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
 }
 
 /// Optional lifecycle for widgets backed by a platform-native child view.
 pub trait NativeViewLifecycle {
-    /// Attach the native child after the host window exists.
     fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
 
-    /// Tear the native child down while its parent window is still alive.
     fn unmount_native_view(&mut self);
 
-    /// Hide the native child at the start of a frame until drawing reveals it.
     fn native_view_frame_start(&mut self);
 }
 
 /// Optional capture and detachable-surface capability.
 pub trait FloatingSurfaceProvider {
-    /// Route native keyboard focus to the exact presentation instance.
     fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
 
-    /// Keep the exact secondary presentation's editor logically focused while the platform
-    /// deliberately retains text-input focus on its source. A host-authenticated input route, not a
-    /// claim by the app; the host clears it when the continuation ends or no longer validates.
     fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
 
-    /// Identify the native surface delivering the current input event. The
-    /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
 
-    /// Deliver one input event aimed at the card `id`, in the desk's
-    /// coordinates: the frame the card's hits were recorded in. Answers
-    /// whether the card took the event.
     fn floating_surface_event(
         &mut self,
         _id: &str,
@@ -1124,7 +1062,6 @@ pub trait FloatingSurfaceProvider {
         false
     }
 
-    /// The retained semantic subtree presented in one secondary window.
     fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
         None
     }
@@ -1140,7 +1077,6 @@ pub trait FloatingSurfaceProvider {
         false
     }
 
-    /// IME content type and desktop-logical caret rect for one secondary window.
     fn floating_surface_ime(
         &self,
         _id: &str,
@@ -1148,26 +1084,20 @@ pub trait FloatingSurfaceProvider {
         None
     }
 
-    /// One-shot request to hand app content to the shared floating-surface
-    /// host. Shell and in-app hosts consume the same description, so `PiP` does
-    /// not require a second rendering/widget API.
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
         None
     }
 
-    /// One-shot request for the session shell's shared capture/`PiP` chooser.
     fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
         None
     }
 
-    /// Rising-edge source-geometry updates for an adopted floating surface.
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
         Vec::new()
     }
 
-    /// Paint app-owned content whose presentation has moved into shell space.
     fn draw_floating_surfaces(
         &mut self,
         _scene: &mut vello::Scene,
@@ -1178,9 +1108,6 @@ pub trait FloatingSurfaceProvider {
     ) {
     }
 
-    /// Paint exactly one app-owned presentation into its native window. Native secondary windows
-    /// are independent buffers: painting the plural overlay pass into each would duplicate sibling
-    /// surfaces and let content escape the window's own clip.
     fn draw_floating_surface(
         &mut self,
         id: &str,
@@ -1196,28 +1123,22 @@ pub trait FloatingSurfaceProvider {
             // Multi-surface providers must implement the exact-id pass.
             return false;
         }
-        // Existing single-surface providers retain their normal paint pass.
-        // Multi-surface providers override this to select the exact owner.
         self.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
         true
     }
 
-    /// Desktop-space presentations that need a native secondary window.
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
         Vec::new()
     }
 
-    /// Stable IDs whose underlying activity still exists.
     fn active_floating_surface_ids(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// Push the shell's authoritative combined-output bounds into the owner.
     fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
 
-    /// Deliver an acknowledged shell lifecycle edge back to the owner.
     fn on_floating_surface_host_message(
         &mut self,
         _message: &crate::floating_surface::FloatingSurfaceHostMessage,
@@ -1227,14 +1148,12 @@ pub trait FloatingSurfaceProvider {
 
 /// Optional second-output presentation capability for app roots.
 pub trait AudiencePresentationProvider {
-    /// Request a real audience toplevel on a different output.
     fn audience_presentation_request(
         &self,
     ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
         None
     }
 
-    /// Report whether the audience toplevel is currently live.
     fn on_audience_presentation_changed(&mut self, _active: bool) {}
 
     /// Paint the audience-only projection of the app's existing state.
@@ -1249,7 +1168,6 @@ pub trait AudiencePresentationProvider {
         false
     }
 
-    /// Route controls originating on the audience surface.
     fn handle_audience_presentation_event(
         &mut self,
         _event: &WindowEvent,
@@ -1259,7 +1177,6 @@ pub trait AudiencePresentationProvider {
         false
     }
 
-    /// Treat closing the audience toplevel as an explicit stop request.
     fn on_audience_presentation_closed(&mut self) {}
 }
 
@@ -1270,21 +1187,17 @@ pub trait FullscreenProvider {
         None
     }
 
-    /// Select the output and mirrored-vs-distinct presentation mode.
     fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
         crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
     }
 
-    /// Report an actual OS fullscreen transition, including compositor exits.
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 }
 
 /// Optional full-document/canvas capture capability.
 pub trait CompleteContentProvider {
-    /// Semantic canvas size available without resizing the live widget.
     fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
 
-    /// Paint the complete semantic content without mutating live view state.
     fn draw_complete_content(
         &mut self,
         scene: &mut vello::Scene,
@@ -1332,8 +1245,8 @@ impl<'a> Edits<'a> {
         }
     }
 
-    /// Apply `action` of the action type `type_id` now, through `host`, under `context`. # Errors
-    /// Returns the action's refusal; nothing is written then.
+    /// Apply `action` of the action type `type_id` now, through `host`, under `context`. #
+    /// Errors Returns the action's refusal; nothing is written then.
     #[doc(hidden)]
     pub fn apply<A>(
         &mut self,
@@ -1348,8 +1261,7 @@ impl<'a> Edits<'a> {
         host.try_dispatch_with_context(self.doc, type_id, action, context)
     }
 
-    /// The lent document, for the hosts that pass it on to a record of
-    /// their own.
+    /// The lent document, for the hosts that pass it on to a record of their own.
     pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
         self.doc
     }
@@ -1469,8 +1381,8 @@ impl EventCtx<'_> {
         crate::pen::current()
     }
 
-    /// `position`, a pointer position in physical pixels, in this event's
-    /// logical coordinates.
+    /// `position`, a pointer position in physical pixels, in this event's logical
+    /// coordinates.
     #[must_use]
     pub fn logical(
         &self,
@@ -1484,15 +1396,11 @@ impl EventCtx<'_> {
     }
 }
 
-/// One remote participant's live presence (caret/selection), published by a
-/// multi-participant widget under that participant's identity. Same key and
-/// payload shape as the local window's own presence (Writer: `wp_block` key,
-/// byte offsets into the caret block).
+/// One remote participant's live presence (caret/selection), published by a multi-
+/// participant widget under that participant's identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParticipantPresence {
     pub participant: tilo_actions::ParticipantId,
-    /// Name to show beside the caret, when the host set one
-    /// ([`crate::collaboration::participants::Participants::set_participant_label`]).
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: crate::collaboration::PresencePayload,
@@ -1906,14 +1814,10 @@ pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
 /// theoretical error here would mean threading a `Result` through the whole
 /// toolkit for a branch that can't be taken.
 pub trait TaffyTreeExt {
-    /// Insert a leaf node for a widget-owned style.
     fn leaf_node(&mut self, style: taffy::Style) -> NodeId;
 
-    /// Insert a parent whose child ids were built in this same tree.
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
 
-    /// Insert a leaf node for `widget` and register it in `node_map`: the
-    /// whole of a leaf widget's `build_layout`.
     fn widget_leaf(
         &mut self,
         style: taffy::Style,
@@ -1925,8 +1829,6 @@ pub trait TaffyTreeExt {
         node
     }
 
-    /// [`Self::widget_leaf`] for a leaf that fills its parent's box: a
-    /// canvas, viewport or overlay that sizes and lays out its own content.
     fn fill_leaf(
         &mut self,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
@@ -1939,8 +1841,6 @@ pub trait TaffyTreeExt {
         self.widget_leaf(style, node_map, widget)
     }
 
-    /// Insert a parent node over `children` for `widget` and register it in
-    /// `node_map`: how a container's `build_layout` ends.
     fn widget_node(
         &mut self,
         style: taffy::Style,
@@ -1953,8 +1853,6 @@ pub trait TaffyTreeExt {
         node
     }
 
-    /// Insert a flex parent that fills its own parent around one child: the
-    /// root node of a window that hosts a single widget tree.
     fn fill_node(&mut self, child: NodeId) -> NodeId {
         self.parent_node(
             taffy::Style {
@@ -1995,9 +1893,11 @@ pub mod decorator;
 mod defaults;
 pub mod document_effects;
 pub mod document_offers;
+pub mod identity;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 pub use document_offers::{DocumentOffer, PaintedOffers};
+pub use identity::Identified;
 
 pub(crate) mod layout;
 pub mod remount;
@@ -2087,8 +1987,6 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
-/// Remember the sidebar widths of the shells this thread builds in an app's
-/// settings on this device (`nav_shell::memory`).
 #[cfg(feature = "native")]
 pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 
@@ -2109,14 +2007,11 @@ pub fn preferred_window_size<W: Widget + ?Sized>(root: &W) -> Option<(f64, f64)>
     })
 }
 
-/// The first answer the widgets of `root` 's tree give, outermost first: `own` asks `root` , `ask`
-/// every widget under it.
 fn first_window_answer<W: Widget + ?Sized, T>(
     root: &W,
     own: impl FnOnce(&W) -> Option<T>,
     ask: &dyn Fn(&dyn Widget) -> Option<T>,
 ) -> Option<T> {
-    // A retained boundary (an app in a tile) answers inside its own scope.
     let _entry = root
         .callback_binding()
         .map(|binding| binding.enter())
@@ -2134,7 +2029,6 @@ fn first_window_answer<W: Widget + ?Sized, T>(
     found
 }
 
-/// [`first_window_answer`] of a widget under the root.
 fn first_answer_under<T>(widget: &dyn Widget, ask: &dyn Fn(&dyn Widget) -> Option<T>) -> Option<T> {
     first_window_answer(widget, |widget| ask(widget), ask)
 }
@@ -2262,10 +2156,14 @@ pub use board::{Board, BoardCardProps, BoardDrop, BoardLaneProps, BoardProps};
 pub use drag_bus::{InFlight, Landed};
 pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
 pub use drag_run_component::{DragItemProps, DragRunProps};
+pub use drag_source::{DragSource, DragSourceProps, RESOURCE_PAYLOAD};
+pub use drop_target::{DropTarget, DropTargetProps};
 pub mod drag;
 pub mod drag_bus;
 pub mod drag_run;
 pub mod drag_run_component;
+pub mod drag_source;
+pub mod drop_target;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
 pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
@@ -2540,18 +2438,14 @@ pub use tree_component::{
 /// an audit looks for them rather than trusting the geometry around them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CutText {
-    /// What the text in that box says, as much of it as a report needs.
     pub said: String,
-    /// The height the text takes at the width of its box.
     pub needs: f32,
-    /// The height the box gives that text.
     pub has: f32,
 }
 
 /// A widget that paints text into boxes of its own: a box that cannot hold its text is asked for
 /// through [`capability`](crate::widget::capability::capability).
 pub trait TextFits {
-    /// The first box of this widget whose text is taller than the box, if any.
     fn cut_text(&mut self, text: &mut crate::text_render::TextRenderer) -> Option<CutText>;
 }
 
@@ -2631,9 +2525,6 @@ pub use view_tabs::ViewTabs;
 pub mod quick_tile;
 pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 
-// EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
-// entry point for apps that render straight to a `Scene` rather than a
-// widget tree.
 pub mod chrome_body;
 pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
 pub mod docked;
@@ -2714,15 +2605,13 @@ pub use activity_timeline::ActivityTimeline;
 pub use activity_timeline_component::{
     ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
 };
+pub use collab_types::ArtifactKind;
 pub use history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
 pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
-// The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
-// caller can build one without naming the collab-types crate directly.
-pub use collab_types::ArtifactKind;
 
 pub mod qr;
 mod qr_component;

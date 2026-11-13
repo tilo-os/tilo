@@ -1,16 +1,13 @@
-//! Ops the connector's outbox queues and the worker performs, and what each
-//! one settles with. Every id is a Discord snowflake as a string, except
-//! `tilo`, which carries the Tilo id the op is about so the bot can map the
-//! result without remembering it between steps.
+//! Ops the connector's outbox queues and the worker performs, and what each one settles
+//! with.
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "resource")]
 use ui::tilo_resource::{self, JsonSchema};
 
-/// One outbox entry: the op, plus the content-store blobs the host must
-/// publish (an author's avatar, served at a public URL) or hand to the
-/// worker (an uploaded attachment) before the worker performs it. The worker
-/// never reads a content store itself.
+/// One outbox entry: the op, plus the content-store blobs the host must publish (an
+/// author's avatar, served at a public URL) or hand to the worker (an uploaded attachment)
+/// before the worker performs it. The worker never reads a content store itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct Queued {
@@ -24,11 +21,8 @@ pub struct Queued {
 #[cfg(feature = "resource")]
 tilo_resource::json_model!(Queued);
 
-/// On the wire an object tagged by `op`, its op's fields beside the tag, as
-/// serde's internally tagged enums are. It is read by hand rather than
-/// derived: a derived internally tagged enum buffers the whole op and reads
-/// it again from the buffer, a second reader compiled for every op type,
-/// while this one reads the object once and each op from it.
+/// On the wire an object tagged by `op`, its op's fields beside the tag, as serde's
+/// internally tagged enums are.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -159,8 +153,8 @@ impl DiscordOp {
         }
     }
 
-    /// Whether the op changes the server rather than messages in one
-    /// channel: its layout, roles, permissions or members.
+    /// Whether the op changes the server rather than messages in one channel: its layout,
+    /// roles, permissions or members.
     #[must_use]
     pub const fn reaches_server(&self) -> bool {
         matches!(
@@ -186,25 +180,18 @@ impl DiscordOp {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct SendOp {
     pub channel: String,
-    /// The channel's webhook id; its token is in the host's secret store.
     pub webhook: String,
-    /// Post into this thread of the channel.
     #[serde(default)]
     pub thread: Option<String>,
     pub username: String,
     #[serde(default)]
     pub avatar_url: Option<String>,
-    /// The content-store blob behind `avatar_url`, which the `send` verb
-    /// names in `Queued::publish` so the host serves it before Discord
-    /// fetches it.
     #[serde(default)]
     pub avatar_blob: Option<String>,
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<OutAttachment>,
-    /// When the entry was queued: the duplicate check looks only after it.
     pub created_ms: i64,
-    /// The Tilo message this posts.
     pub tilo: String,
 }
 
@@ -227,8 +214,8 @@ pub struct EditOp {
     pub content: String,
 }
 
-/// Delete a message: through its webhook when the bridge sent it, as the bot
-/// user otherwise.
+/// Delete a message: through its webhook when the bridge sent it, as the bot user
+/// otherwise.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct DeleteOp {
@@ -245,8 +232,6 @@ pub struct DeleteOp {
 pub struct ReactOp {
     pub channel: String,
     pub message: String,
-    /// A unicode emoji, or one of the guild's custom emoji as `name:id`,
-    /// as Discord's reaction routes name them.
     pub emoji: String,
 }
 
@@ -254,10 +239,8 @@ pub struct ReactOp {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct StartThreadOp {
     pub channel: String,
-    /// The Discord message the thread grows from.
     pub message: String,
     pub name: String,
-    /// The Tilo thread root.
     pub tilo: String,
 }
 
@@ -265,7 +248,6 @@ pub struct StartThreadOp {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct CreateWebhookOp {
     pub channel: String,
-    /// The Tilo channel.
     pub tilo: String,
 }
 
@@ -292,8 +274,8 @@ impl ChannelKind {
         }
     }
 
-    /// The kind of Discord channel type `kind`, threads of every flavour as
-    /// one; `None` for kinds the bridge does not mirror (forums, stages).
+    /// The kind of Discord channel type `kind`, threads of every flavour as one; `None` for
+    /// kinds the bridge does not mirror (forums, stages).
     #[must_use]
     pub const fn from_discord(kind: u8) -> Option<Self> {
         match kind {
@@ -307,14 +289,11 @@ impl ChannelKind {
 }
 
 /// Create (`id: None`) or bring back in line (`id: Some`) one channel.
-/// `parent` and `position` place a channel being created; an existing
-/// channel keeps its place, which only [`ArrangeOp`] changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct ChannelSpec {
     #[serde(default)]
     pub id: Option<String>,
-    /// The Tilo category or channel.
     pub tilo: String,
     pub kind: ChannelKind,
     pub name: String,
@@ -331,10 +310,8 @@ pub struct DeleteChannelOp {
     pub channel: String,
 }
 
-/// Put channels and categories in their places at once (Discord's bulk
-/// position change), so the server lists them in the order Tilo does.
-/// Positions count within what Discord sorts together: the categories,
-/// and each category's (or the top level's) text and voice channels.
+/// Put channels and categories in their places at once (Discord's bulk position change), so
+/// the server lists them in the order Tilo does.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct ArrangeOp {
@@ -352,8 +329,7 @@ pub struct CategoryPlace {
     pub position: i64,
 }
 
-/// Where a channel goes: under `parent` (none for the top level), at
-/// `position`.
+/// Where a channel goes: under `parent` (none for the top level), at `position`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct ChannelPlace {
@@ -364,16 +340,13 @@ pub struct ChannelPlace {
 }
 
 /// Create (`id: None`) or bring back in line one role the bridge manages.
-/// `@everyone` has the guild's id as its role id.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct RoleSpec {
     #[serde(default)]
     pub id: Option<String>,
-    /// The Tilo role name (`viewer` … `owner`, or `everyone`).
     pub tilo: String,
     pub name: String,
-    /// Permission bits as a decimal string, as Discord writes them.
     pub permissions: String,
     pub color: u32,
 }
@@ -419,9 +392,9 @@ pub struct OverwriteOp {
     pub deny: String,
 }
 
-/// Edit the reply to a slash command to what came of it. The worker keeps
-/// the interaction's token (good for fifteen minutes) and never hands it
-/// out, so the op names only the interaction.
+/// Edit the reply to a slash command to what came of it. The worker keeps the interaction's
+/// token (good for fifteen minutes) and never hands it out, so the op names only the
+/// interaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct AnswerInteractionOp {
@@ -429,9 +402,8 @@ pub struct AnswerInteractionOp {
     pub content: String,
 }
 
-/// Upload (`id: None`) or rename (`id: Some`) one of the server's custom
-/// emoji for a workspace emoji of Tilo's. Only emoji the bridge made itself
-/// are ever renamed.
+/// Upload (`id: None`) or rename (`id: Some`) one of the server's custom emoji for a
+/// workspace emoji of Tilo's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct EmojiSpec {
@@ -439,13 +411,8 @@ pub struct EmojiSpec {
     pub id: Option<String>,
     /// The name in Discord: 2 to 32 letters, digits and underscores.
     pub name: String,
-    /// The picture's content-store blob, which the `apply-emoji` verb names
-    /// in `Queued::attach` so the host hands its bytes to the worker. A
-    /// rename carries it too: an emoji deleted in Discord meanwhile is
-    /// uploaded again.
     #[serde(default)]
     pub picture: Option<String>,
-    /// The workspace emoji's name in Tilo.
     pub tilo: String,
 }
 
@@ -454,35 +421,31 @@ pub struct EmojiSpec {
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct DeleteEmojiOp {
     pub emoji: String,
-    /// The workspace emoji's name in Tilo it stood for.
     pub tilo: String,
 }
 
-/// Copy a file from Discord's CDN into the workspace's content store, or answer
-/// a small picture inline.
+/// Copy a file from Discord's CDN into the workspace's content store, or answer a small
+/// picture inline.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct FetchAssetOp {
-    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL, or a path on the worker's own CDN (`avatars/<user>/<hash>.png?size=64`); anything else is refused.
+    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL, or a path
+    /// on the worker's own CDN (`avatars/<user>/<hash>.png?size=64`); anything else is
+    /// refused.
     pub url: String,
     pub max_bytes: u64,
-    /// The Chat attachment this becomes, `blob` filled in by the result.
     #[serde(default)]
     pub attachment: Option<InAttachment>,
-    /// Answer the picture as a `data:` URL (the result's `data_url`)
-    /// instead of keeping it in the content store: one a record holds.
     #[serde(default)]
     pub inline: bool,
 }
 
-/// A file an op imported, as the bridge describes it before posting it: the
-/// same values a Chat message carries, so the bridge hands them on as they
-/// are.
+/// A file an op imported, as the bridge describes it before posting it: the same values a
+/// Chat message carries, so the bridge hands them on as they are.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InAttachment {
-    /// A picture, with the size Discord gave or the bytes did.
     Image {
         name: String,
         #[serde(default)]
@@ -492,7 +455,6 @@ pub enum InAttachment {
         #[serde(alias = "height")]
         h: u32,
     },
-    /// A clip, as wide as Discord says, `size` filled in by the result.
     Video {
         name: String,
         #[serde(default)]
@@ -504,7 +466,6 @@ pub enum InAttachment {
         #[serde(default)]
         size: u64,
     },
-    /// Any other file.
     File {
         name: String,
         #[serde(default)]
@@ -532,9 +493,7 @@ impl InAttachment {
     }
 }
 
-/// What an op settled with. Pointers the bridge program uses:
-/// `/message_id`, `/thread_id`, `/webhook_id`, `/channel_id`, `/role_id`,
-/// `/emoji_id`, `/problem`, `/blob`, `/attachment`, `/tilo`.
+/// What an op settled with.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "result", rename_all = "kebab-case")]
@@ -542,10 +501,7 @@ pub enum DiscordResult {
     Message {
         message_id: String,
         tilo: String,
-        /// The webhook the message went out through, when it is not the
-        /// one the op named: that one was gone from Discord, so the
-        /// worker made the channel a new one, which the bridge maps in
-        /// its place. Null otherwise, so the program can test it.
+        /// Null otherwise, so the program can test it.
         #[serde(default)]
         webhook_id: Option<String>,
     },
@@ -565,10 +521,6 @@ pub enum DiscordResult {
         role_id: String,
         tilo: String,
     },
-    /// An emoji op: the emoji's id once Discord holds it (empty when it
-    /// did not, or after a delete), or why the server would not take it
-    /// (the bot may not create emoji there, the server has no free emoji
-    /// slot), said so a person can do something about it.
     Emoji {
         #[serde(default)]
         emoji_id: String,
@@ -582,7 +534,6 @@ pub enum DiscordResult {
         content_type: String,
         #[serde(default)]
         attachment: Option<InAttachment>,
-        /// The picture as a `data:` URL, for an inline fetch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data_url: Option<String>,
     },
@@ -629,9 +580,9 @@ mod tests {
         assert_eq!(back, queued);
     }
 
-    /// Every op reads back from the form it is written in, from text as
-    /// well as from a value, with the tag anywhere in the object; an op
-    /// without a tag, or with one no op has, is refused.
+    /// Every op reads back from the form it is written in, from text as well as from a
+    /// value, with the tag anywhere in the object; an op without a tag, or with one no op
+    /// has, is refused.
     #[test]
     fn every_op_reads_back_from_its_tagged_form() {
         let ops = [

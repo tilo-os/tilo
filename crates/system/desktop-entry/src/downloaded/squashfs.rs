@@ -1,17 +1,16 @@
 //! Reading a few small files out of a squashfs 4.0 image, without mounting,
 //! extracting or running anything.
 //!
-//! An `AppImage` is an ELF runtime with a squashfs image appended; its name
-//! and icon live in that image. Mounting it means FUSE or running the
+//! An `AppImage` is an ELF runtime with a squashfs image appended, and its
+//! name and icon live in that image; mounting it means FUSE or running the
 //! runtime, and both mean trusting the file first. So this reads the format
 //! directly: the superblock, the inode and directory tables, and the data
-//! blocks (and tail fragment) of the one file asked for. Everything is
-//! bounded, since the image is untrusted: a file larger than the caller's
-//! limit, a directory with absurdly many entries, a symlink chain or a path
-//! deeper than a few levels is refused rather than followed.
+//! blocks of the one file asked for.
 //!
-//! Compression: gzip (zlib), xz and zstd, which are what `AppImage` runtimes
-//! produce. Anything else is reported as unsupported.
+//! The image is untrusted, so every read is bounded: a file past the caller's
+//! limit, a directory with absurdly many entries, a symlink chain or a path
+//! deeper than a few levels is refused rather than followed. The compression
+//! is gzip, xz or zstd, which are what `AppImage` runtimes produce.
 
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -96,7 +95,6 @@ struct Superblock {
     fragment_table: u64,
 }
 
-/// What an inode is, as far as finding a file needs.
 #[derive(Debug, Clone)]
 enum Inode {
     Directory {
@@ -117,7 +115,6 @@ enum Inode {
     Other,
 }
 
-/// One name in a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
@@ -133,11 +130,6 @@ pub struct Image<R> {
 
 impl<R: Read + Seek> Image<R> {
     /// Read the superblock at `base`.
-    ///
-    /// # Errors
-    ///
-    /// Not a squashfs 4.0 image, or one compressed with a codec this reader
-    /// does not decode.
     pub fn open(mut file: R, base: u64) -> io::Result<Self> {
         let mut raw = [0u8; 96];
         file.seek(SeekFrom::Start(base))?;
@@ -230,8 +222,8 @@ impl<R: Read + Seek> Image<R> {
         Ok(out)
     }
 
-    /// One metadata block at absolute `position`: its bytes and where the
-    /// next one starts.
+    /// One metadata block at absolute `position`: its bytes and where the next
+    /// one starts.
     fn metadata_block(&mut self, position: u64) -> io::Result<(Vec<u8>, u64)> {
         let mut header = [0u8; 2];
         self.file.seek(SeekFrom::Start(position))?;
@@ -444,7 +436,6 @@ impl<R: Read + Seek> Image<R> {
         }
     }
 
-    /// The names in the image's top directory.
     pub fn root_names(&mut self) -> io::Result<Vec<String>> {
         let root = self.inode(self.superblock.root_inode)?;
         Ok(self
@@ -454,8 +445,8 @@ impl<R: Read + Seek> Image<R> {
             .collect())
     }
 
-    /// The inode at `path` (relative to the image's root), symlinks inside
-    /// the image followed.
+    /// The inode at `path` (relative to the image's root), symlinks inside the
+    /// image followed.
     fn resolve(&mut self, path: &str) -> io::Result<Option<Inode>> {
         let mut pending: Vec<String> = components(path).into_iter().rev().collect();
         let mut stack: Vec<Inode> = Vec::new();
@@ -541,8 +532,8 @@ impl<R: Read + Seek> Image<R> {
     }
 
     /// The contents of the regular file at `path`, symlinks inside the image
-    /// followed; `None` when there is no such file. A file larger than
-    /// `limit` bytes is an error, never read.
+    /// followed; `None` when there is no such file. A file larger than `limit`
+    /// bytes is an error, never read.
     pub fn read_file(&mut self, path: &str, limit: usize) -> io::Result<Option<Vec<u8>>> {
         let Some(inode) = self.resolve(path)? else {
             return Ok(None);
@@ -604,10 +595,9 @@ fn components(path: &str) -> Vec<String> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Writes a minimal gzip-compressed squashfs 4.0 image of regular files
-    /// and symlinks in one root directory, plus directories one level deep.
-    /// The tests build their `AppImage` fixtures with it, so no image tool
-    /// and no download is needed.
+    /// Writes a minimal gzip-compressed squashfs 4.0 image of regular files and
+    /// symlinks in one root directory, plus directories one level deep. The tests
+    /// build their `AppImage` fixtures with it, so no image tool and no download
     pub(crate) struct Writer {
         entries: Vec<(String, Node)>,
     }
@@ -684,7 +674,7 @@ pub(crate) mod tests {
             sb.extend_from_slice(&0u32.to_le_bytes());
             sb.extend_from_slice(&BLOCK.to_le_bytes());
             sb.extend_from_slice(&1u32.to_le_bytes());
-            sb.extend_from_slice(&1u16.to_le_bytes()); // gzip
+            sb.extend_from_slice(&1u16.to_le_bytes());
             sb.extend_from_slice(&12u16.to_le_bytes());
             sb.extend_from_slice(&0u16.to_le_bytes());
             sb.extend_from_slice(&1u16.to_le_bytes());
@@ -743,7 +733,6 @@ pub(crate) mod tests {
         out
     }
 
-    /// Writes `entries` and returns the directory's inode reference.
     fn write_dir(
         entries: &[(String, Node)],
         data: &mut Vec<u8>,
@@ -834,7 +823,7 @@ pub(crate) mod tests {
         inodes.extend_from_slice(&[0, 0, 0, 0]);
         inodes.extend_from_slice(&0u32.to_le_bytes());
         inodes.extend_from_slice(&number.to_le_bytes());
-        inodes.extend_from_slice(&0u32.to_le_bytes()); // block index
+        inodes.extend_from_slice(&0u32.to_le_bytes());
         inodes.extend_from_slice(&2u32.to_le_bytes());
         inodes.extend_from_slice(&((listing_size + 3) as u16).to_le_bytes());
         inodes.extend_from_slice(&(listing_at as u16).to_le_bytes());

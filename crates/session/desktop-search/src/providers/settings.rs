@@ -365,6 +365,22 @@ mod tests {
         );
     }
 
+    /// A page is found by its name in every language it is known by, never
+    /// by a word merely beginning alike: "hello" is not "hell" (light), so
+    /// it finds neither Appearance nor Brightness.
+    #[test]
+    fn a_word_merely_beginning_alike_finds_no_page() {
+        let settings = Settings::new("workspace");
+        assert!(settings.query("hello").is_empty());
+        assert!(
+            settings
+                .query("theme")
+                .iter()
+                .any(|hit| hit.id == "page:appearance"),
+            "the theme is Appearance"
+        );
+    }
+
     /// A setting the settings service publishes as an action of its own is found as that action,
     /// which is the change itself: a row opening Settings at it would only stand beside it.
     #[test]

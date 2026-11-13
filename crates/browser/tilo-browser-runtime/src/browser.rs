@@ -344,6 +344,9 @@ struct SharedGpu {
     /// The overflows of `renderer`'s bump buffers collected so far: every
     /// mount repaints whole once after its scratch changes.
     overflows: ui::render_bump_recovery::Overflows,
+    /// When the device was made: one lost soon after could not draw the
+    /// page on its GPU at all ([`crate::gpu_recovery::power_after_loss`]).
+    made: ui::time::Instant,
 }
 
 impl SharedGpu {
@@ -476,6 +479,10 @@ pub(crate) struct Mount {
     desktop: Option<Desktop>,
     gpu: Option<Gpu>,
     pending: bool,
+    /// Wakes the mounted app's component sent the loop, not yet taken up:
+    /// one of them is its owner's service, which asks for a frame only when
+    /// it shows something new ([`Mount::service_owner_models`]).
+    component_wakes: Arc<std::sync::atomic::AtomicUsize>,
     background_retry: Option<ui::time::Instant>,
     feedback_retry: Option<ui::time::Instant>,
     viewport: ViewportState,
@@ -528,6 +535,9 @@ pub(crate) struct Mount {
     here_stale: bool,
     /// The workspace the mount's presence board speaks for.
     workspace: String,
+    /// The name the page gave the workspace it mounted ([`Config::workspace_name`]):
+    /// what a tab is titled after while the desk's own space carries no name.
+    workspace_name: Option<String>,
     /// The change of the page's theme this mount draws in
     /// ([`crate::page_theme::generation`]).
     theme_seen: u64,
@@ -876,10 +886,12 @@ impl Mount {
         };
         let wake = proxy().map_err(|failure| failure.as_string().unwrap_or_default())?;
         let id = self.id;
+        let woken = Arc::clone(&self.component_wakes);
         self.frame
             .show_component(
                 *component,
                 Arc::new(move || {
+                    woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = wake.send_event(id);
                 }),
             )
@@ -908,7 +920,10 @@ impl Mount {
         }
     }
 
-    fn service_owner_models(&mut self) {
+    /// Serve what the mount's owner models were woken for. Returns whether
+    /// a frame must show it: a model ran, or an owner shows something new
+    /// (a save that landed in time shows nothing).
+    fn service_owner_models(&mut self) -> bool {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
             && let Some(feedback) = desktop.shared.feedback.borrow().as_ref()
@@ -921,9 +936,11 @@ impl Mount {
             gpu_ready: self.presents(),
         };
         let mut attempted = false;
+        let mut presented = false;
         let result = crate::background_work::run(p, || {
             let report = self.frame.service_pending_owner_models_report();
             attempted = report.attempted;
+            presented = report.presented;
             report.result.map(|()| report.completed)
         });
         if attempted {
@@ -946,6 +963,7 @@ impl Mount {
                     ui::time::now().checked_add(ui::time::Duration::from_millis(50));
             }
         }
+        attempted || presented
     }
 
     fn flush_records(&self) {
@@ -1531,10 +1549,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         SurfaceCaps::STANDARD
     };
     let viewport = observed.bounded_by(caps);
+    let component_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let dpr = viewport.dpr;
     let mut frame = match root {
         Root::Component(component) => {
             let wake = proxy()?;
+            let woken = Arc::clone(&component_wakes);
             let mut frame = FrameHarness::from_component_with_wake_notifier(
                 *component,
                 viewport.logical_size(),
@@ -1543,6 +1563,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                     text_renderer,
                 },
                 move || {
+                    woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = wake.send_event(id);
                 },
             )
@@ -1584,6 +1605,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             )
         }
     };
+    // The page keeps the person's settings, as their session does on a
+    // device: what a window's controls change of them is answered here.
+    crate::kept_settings::serve(
+        &mut frame,
+        &config.author(),
+        ui::storage::SettingsDocument::Session,
+    );
     if let Some(desktop) = &mut desktop {
         frame
             .attach_owner_wake_queue(desktop.shared.owner_wakes.clone())
@@ -1657,6 +1685,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         desktop,
         gpu: None,
         pending: true,
+        component_wakes,
         background_retry: None,
         feedback_retry: None,
         viewport: ViewportState::with_caps(observed, caps),
@@ -1684,6 +1713,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         followed_view: ui::headless::FollowedView::default(),
         here_stale: false,
         workspace: config.workspace.clone(),
+        workspace_name: config
+            .workspace_name
+            .clone()
+            .filter(|name| !name.trim().is_empty()),
         theme_seen: crate::page_theme::generation(),
         peer: config.peer,
         replica_changed,
@@ -1779,6 +1812,7 @@ pub fn prepare_gpu() {
 }
 
 async fn open_device() -> Result<ui::gpu::RenderContext, String> {
+    crate::gpu_recovery::ask_for_power();
     let mut cx = ui::gpu::RenderContext::new();
     GPU_STEP.set(GpuStep::Device);
     cx.device(None).await.ok_or("no WebGPU device")?;
@@ -1855,6 +1889,44 @@ fn compile_deferred_pipelines_later() {
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
+    let code = RENDERER_CODE
+        .wait()
+        .await
+        .ok_or_else(|| "the page could not fetch its renderer's code".to_owned())?;
+    (code.make)(device.clone()).await
+}
+
+/// The renderer's maker: vello's shaders and the code that compiles them.
+///
+/// The first frames rasterize on the CPU while the renderer's pipelines
+/// compile ([`compile_renderer`]), so nothing of it is needed before a first
+/// frame: the browser desktop fetches it as its own module
+/// (`deferred-renderer`), beside that frame, and the start module carries
+/// neither the shaders' sources nor their compiler.
+#[derive(Clone, Copy)]
+pub struct RendererCode {
+    make: fn(wgpu::Device) -> MadeRenderer,
+}
+
+/// A renderer being made: its pipelines compile asynchronously.
+type MadeRenderer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<vello::Renderer, String>>>>;
+
+/// The renderer's maker this build links.
+#[must_use]
+pub fn builtin_renderer_code() -> RendererCode {
+    RendererCode {
+        make: |device| Box::pin(async move { make_renderer(&device).await }),
+    }
+}
+
+ui::lazy_code! {
+    /// The renderer's maker, fetched as the page starts where the bundle
+    /// defers it (`deferred-renderer`).
+    pub static RENDERER_CODE: RendererCode = builtin_renderer_code, feature = "deferred-renderer";
+}
+
+async fn make_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
     let options = vello::RendererOptions {
         antialiasing_support: vello::AaSupport::area_only(),
         ..Default::default()
@@ -1919,6 +1991,7 @@ async fn shared_gpu(
     }
     // A preparation that failed is tried again here, so its error is this
     // surface's.
+    crate::gpu_recovery::ask_for_power();
     let (mut cx, prepared) = match take_prepared_gpu().await {
         Some(Ok(cx)) => (cx, true),
         Some(Err(_)) | None => (ui::gpu::RenderContext::new(), false),
@@ -1979,6 +2052,7 @@ async fn shared_gpu(
         video_pictures: crate::video_pictures::VideoPictures::default(),
         device: surface.dev_id,
         overflows: ui::render_bump_recovery::Overflows::default(),
+        made: ui::time::now(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
     // Apps that composite on the GPU themselves (the video editor) borrow
@@ -2884,11 +2958,30 @@ impl Mount {
     fn frame_failed(&mut self, id: u64, error: String) {
         let gpu_failed = self.gpu.as_ref().and_then(Gpu::failure).is_some();
         if gpu_failed && self.gpu_remakes.admit(ui::time::now()) {
+            let lived = self
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.shared.try_borrow().ok().map(|shared| shared.made))
+                .map_or(ui::time::Duration::ZERO, |made| {
+                    ui::time::now().saturating_duration_since(made)
+                });
+            let other = crate::gpu_recovery::device_lost(lived);
+            let on = if other {
+                "on the other GPU"
+            } else {
+                "on the same GPU"
+            };
             web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "Browser runtime: the GPU failed ({error}); making it again and drawing on"
+                "Browser runtime: the GPU failed ({error}); making it again {on} and drawing on"
             )));
             self.remake_gpu(id);
             return;
+        }
+        if gpu_failed {
+            // The canvas would keep showing the last frame the lost device
+            // presented, which may be half drawn: the page says the desktop
+            // stopped over an empty one instead.
+            unconfigure(&self.canvas);
         }
         self.error = Some(error);
         self.publish(id);
@@ -3068,8 +3161,14 @@ impl Mount {
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
-            // The page titles its tab after it.
-            "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
+            // The page titles its tab after it: the space in front on the
+            // desk, or, while the desk's own space is unnamed (one this page
+            // seeded for a workspace no directory named), the name the
+            // workspace answered this page's admission with.
+            "workspaceName": self.desktop.as_ref()
+                .and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone())))
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| self.workspace_name.clone()),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });

@@ -1,6 +1,5 @@
-//! Captures of a headless frame: the laid-out scene rasterised to a PNG or
-//! to RGBA rows, alone or under the desktop's window bar, at the capture's
-//! device scale.
+//! Captures of a headless frame: the laid-out scene rasterised to a PNG or to RGBA rows, alone or under
+//! the desktop's window bar, at the capture's device scale.
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -8,20 +7,16 @@ use vello::kurbo::Affine;
 use super::FrameHarness;
 
 impl FrameHarness {
-    /// Rasterise the most recently laid-out frame to a PNG over the window
-    /// ground (`surfaces.content`), exactly as a live window clears before
-    /// drawing. `--shots` writes this.
-    ///
-    /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
-    /// this never runs a separate screenshot-only widget pipeline. A browser
+    /// Rasterise the most recently laid-out frame to a PNG over the window ground (`surfaces.content`),
+    /// exactly as a live window clears before drawing. `new`, input delivery, and `set_theme` all
+    /// finish with `relayout`, so this never runs a separate screenshot-only widget pipeline. A browser
     /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
-    /// Rasterise the most recently laid-out frame over the window ground, as
-    /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
-    /// page, which cannot read a frame back synchronously.
+    /// Rasterise the most recently laid-out frame over the window ground, as tightly packed RGBA8 rows
+    /// `viewport.0` pixels wide. Empty in a browser page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
     }
@@ -53,8 +48,8 @@ impl FrameHarness {
         tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
-    /// Rasterise `scene` over the window ground to a PNG as wide as the
-    /// frame and `extra_rows` device pixels taller than it.
+    /// Rasterise `scene` over the window ground to a PNG as wide as the frame and `extra_rows` device
+    /// pixels taller than it.
     #[cfg(not(target_arch = "wasm32"))]
     fn write_scene_png(
         &self,
@@ -109,8 +104,6 @@ impl FrameHarness {
         let transform = self.capture_draw_transform();
         let mut scene = Scene::new();
         if self.row_holds_bar() {
-            // The app's header row is the bar: the frame stands at the window's top, and the
-            // window's controls stand over its row.
             scene.append(&self.scene, None);
             self.paint_window_bar(&mut scene, transform, f64::from(self.viewport.0));
         } else {
@@ -129,20 +122,15 @@ impl FrameHarness {
         );
     }
 
-    /// The transform frames are drawn with: the identity, or the capture's
-    /// device scale ([`crate::offscreen::set_capture_device_scale`]).
+    /// The transform frames are drawn with: the identity, or the capture's device scale
+    /// ([`crate::offscreen::set_capture_device_scale`]).
     pub(crate) fn capture_draw_transform(&self) -> Affine {
         crate::scale::composite_transform(f64::from(crate::offscreen::capture_device_scale()))
     }
 
-    /// The frame's size in device pixels: the viewport at the capture's
-    /// device scale.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a capture's device scale makes the frame larger than
-    /// Vello renders in one pass (256 bins of 256 x 256 px): it would drop
-    /// the bins past that and write a frame with holes.
+    /// The frame's size in device pixels: the viewport at the capture's device scale. # Panics Panics
+    /// when a capture's device scale makes the frame larger than Vello renders in one pass (256 bins of
+    /// 256 x 256 px): it would drop the bins past that and write a frame with holes.
     pub(super) fn device_size(&self) -> (u32, u32) {
         let scale = crate::offscreen::capture_device_scale();
         let size = (
@@ -172,13 +160,10 @@ impl FrameHarness {
         self.render_rgba_with(&mut renderer, background)
     }
 
-    /// Rasterise the recorded frame and its captured backdrop with a caller-owned
-    /// renderer. Pixel oracles can reuse a renderer with stable preprocessing
-    /// without changing process-wide settings or the widget draw pipeline.
-    ///
-    /// # Panics
-    /// Panics if the renderer dimensions differ from the capture's device size,
-    /// or the GPU cannot produce the bounded consecutive valid submissions.
+    /// Rasterise the recorded frame and its captured backdrop with a caller-owned renderer. Pixel
+    /// oracles can reuse a renderer with stable preprocessing without changing process-wide settings or
+    /// the widget draw pipeline. # Panics Panics if the renderer dimensions differ from the capture's
+    /// device size, or the GPU cannot produce the bounded consecutive valid submissions.
     #[must_use]
     pub fn render_rgba_with(
         &self,

@@ -21,7 +21,7 @@ d-b5k7mvka = Trouble
 d-33f3rqw2 = Online
 
 d-hzbwof46 = Fetched
-    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: the epoch when it never was.
+    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: 1970 when it never was.
 
 d-jxc5rufs = Signature
     .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
@@ -192,7 +192,7 @@ d-w26tzvt4 = References
 d-yfyt2cfh = Sent
 
 d-lgrwf5yf = Send at
-    .doc = When it goes, and `Time` is never empty, so a draft not sent yet says the epoch.
+    .doc = When it goes: 1970 for a draft not sent yet.
 
 d-h2nvr2op = Recalled
     .doc = It was taken back before it went: it never leaves, and it is a draft again.
@@ -215,12 +215,14 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-4ow5ydy5 = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
+    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and no wait at all when it is zero.
 
 d-su4h67i5-filter-hold = Hold
 
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
+
+d-ejo2352x-signature = Signature
 
 d-arnkrvgw = Check now
     .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
@@ -229,7 +231,7 @@ d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
 d-ygbvdl5l = New message
-    .doc = Starts a message from the first account, where there is one: a window with no account offers nothing to press and says where an account comes from, rather than a control that cannot run.
+    .doc = Starts a message from the first account.
     .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-hirareiw = Reply
@@ -262,6 +264,8 @@ d-taywgw3n = Move to
     .doc = Moves the conversation to another mailbox of its account.
     .w-it-is-in-already = It is in { $name } already
 
+d-taywgw3n-to = To
+
 d-xytb2lle = Delete
     .doc = Deletes the conversation: its messages go to the trash.
     .w-it-is-in-the-trash = It is in the trash
@@ -271,9 +275,13 @@ d-le4lvs2c = Flag
     .w-unflag = Unflag
     .w-flag = Flag
 
+d-le4lvs2c-flagged = Flagged
+
 d-6bwt463c = Snooze
     .doc = Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open.
     .w-pick-a-moment-still-to-come = Pick a moment still to come
+
+d-6bwt463c-until = Until
 
 d-kl4ikisg = Snooze an hour
     .doc = Puts the conversation away for an hour, the snooze people reach for most.
@@ -288,13 +296,23 @@ d-ck5k6uop = Label
     .doc = Gives the conversation a label, or takes one away: `on` says which.
     .w-a-label-needs-a-name = A label needs a name
 
+d-ck5k6uop-name = Name
+
+d-ck5k6uop-on = On
+
 d-vydc2hnq = Rename label
     .doc = Renames one of the person's labels, all the conversations that carry it with it.
     .w-a-label-needs-a-name = A label needs a name
     .w-you-have-a-label = You have a label { $name }
 
+d-vydc2hnq-l = L
+
+d-vydc2hnq-name = Name
+
 d-phsy7vhs = Delete label
     .doc = Deletes one of the person's labels, and takes it off every conversation that carries it.
+
+d-phsy7vhs-l = L
 
 d-xp4s2kl7 = Cancel scheduled send
     .doc = Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment.
@@ -308,6 +326,8 @@ d-xxxfkczs = Send later
     .w-it-goes-to-nobody-yet = It goes to nobody yet
     .w-pick-a-moment-still-to-come = Pick a moment still to come
 
+d-xxxfkczs-at = At
+
 d-jysss72s = Send tomorrow morning
     .doc = Sends the message at nine tomorrow, the moment people reach for most when they write in the evening and do not want it to arrive then.
 
@@ -319,17 +339,25 @@ d-gkqpzio6 = Mute
     .w-unmute = Unmute
     .w-mute = Mute
 
+d-gkqpzio6-muted = Muted
+
 d-trjwm3gb = Mark as unread
     .doc = Marks the conversation read, or unread again.
     .w-mark-as-read = Mark as read
     .w-mark-as-unread = Mark as unread
 
+d-trjwm3gb-unread = Unread
+
 d-7zk6ua6p = Send from
     .doc = Sends the message from another of the person's accounts.
     .w-this-message-went-already = This message went already
 
+d-7zk6ua6p-a = A
+
 d-qrcwx7a6 = Delete draft
     .doc = Throws a message being written away.
+
+d-qrcwx7a6-d = D
 
 d-qcfc2rhb = Send
     .doc = Sends the message from its account.
@@ -345,6 +373,8 @@ d-twebu5cb = Undo send
 d-a4rv5wm6 = Answer
     .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted.
     .w-say-something-first = Say something first
+
+d-a4rv5wm6-body = Body
 
 d-dqdt6fce = Place title
     .w-all-mail = All mail
@@ -440,7 +470,7 @@ d-n2xgxnbw = Message
 
 d-oqpazwvc = Editor
     .w-sending = Sending
-    .w-it-goes-in-a-moment-take = It goes in a moment. Take it back if you need to.
+    .w-it-goes-in-a-moment = It goes in a moment.
     .w-undo-send = Undo send
     .w-name-example-org = name@example.org
     .w-subject = Subject

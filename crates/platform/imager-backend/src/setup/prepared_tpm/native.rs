@@ -1,8 +1,5 @@
-//! The Linux side of the prepared-setup TPM handoff: TPM commands, the
-//! privileged helper, caller-owned package custody and the local target bundle.
-//!
-//! Everything in the shared wire format comes from the parent module; this file
-//! adds the operations that need this machine.
+//! The Linux side of the prepared-setup TPM handoff: TPM commands, the privileged helper,
+//! caller-owned package custody and the local target bundle.
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -28,28 +25,21 @@ use super::{
     sha256, unb64,
 };
 
-/// The release authority whose signed predictions the target already carries.
-/// Kept for the installed image's own path, but the privileged helper uses the
-/// authority pinned into its binary instead of any caller-supplied file.
+/// The helper uses the authority pinned into its binary instead of this file.
 pub const PUBLIC_KEY_FILE: &str = "/usr/share/tilo/tpm2-pcr-signing.public.pem";
-/// The release authority embedded in the shipped helper. This is the anchor
-/// for every target policy review: a caller cannot substitute a key file.
+/// The anchor for every target policy review; a caller cannot substitute a key file.
 pub const PINNED_RELEASE_AUTHORITY_PEM: &str =
     include_str!("../../../../../../keys/tpm2-pcr-signing.public.pem");
-/// Where the live medium publishes the exact target boot bundle.
 pub const LIVE_TARGET_ROOTS: [&str; 3] = [
     "/boot/tilo-target",
     "/efi/tilo-target",
     "/boot/efi/tilo-target",
 ];
-/// The live image's own generation file. It selects among retained signed
-/// predictions; a downloaded bundle carries exactly one generation instead.
+/// Selects among retained signed predictions; a downloaded bundle carries exactly one.
 const GENERATION_FILE: &str = "/usr/lib/tilo/generation";
 
 pub(crate) const MAX_SEAL_INPUT: usize = 128 * 1024;
-/// The canonical prepared package is at most 32 MiB + 16 KiB. The helper
-/// reads at most this much so an unprivileged caller cannot use it as a root
-/// file oracle for an arbitrary large file.
+/// 32 MiB + 16 KiB, so an unprivileged caller cannot use the helper as a file oracle.
 const MAX_PACKAGE: u64 = 32 * 1024 * 1024 + 16 * 1024;
 const MAX_PREDICTION: u64 = 16 * 1024;
 const MAX_SIGNATURE: u64 = 4 * 1024;
@@ -89,10 +79,9 @@ struct PredictionDocument {
     label: String,
 }
 
-/// Re-verify a target policy against the trusted release authority, not against
-/// a caller-supplied anchor. A helper that accepts a serialized `SignedTarget`
-/// from stdin must call this before sealing: otherwise an unprivileged caller
-/// could keep the real authority digest while choosing another
+/// Re-verifies a target policy against the trusted release authority, not a caller-supplied
+/// anchor. A helper that takes a serialized `SignedTarget` from stdin must call this before
+/// sealing, or a caller could keep the real authority digest while choosing another
 /// approved-policy/signature pair.
 pub fn validate_signed(target: &SignedTarget, public_key_pem: &str) -> io::Result<()> {
     target.validate()?;
@@ -108,9 +97,8 @@ pub fn validate_signed(target: &SignedTarget, public_key_pem: &str) -> io::Resul
     tilo_crypto::verify_pcr_prediction(public_key_pem, &bytes, target.generation).map_err(invalid)
 }
 
-/// Verify one authority-signed sidecar against the exact target UKI and the
-/// release authority. Nothing here contacts or trusts the TPM: this proves what
-/// the future boot will measure, which is what sealing binds.
+/// Verifies one authority-signed sidecar against the exact target UKI and the release authority;
+/// it proves what the coming boot will measure, which is what sealing binds.
 pub fn review(
     prediction_json: &[u8],
     public_key_pem: &[u8],
@@ -162,12 +150,8 @@ pub fn review(
     })
 }
 
-/// The signed prediction these policy fields carry, decoded for the TPM policy
-/// builder.
-///
-/// # Errors
-///
-/// The approved policy or signature is not standard base64 within its bound.
+/// Decodes the policy fields into the prediction the TPM policy builder uses; the policy and
+/// signature must be standard base64 within its bound.
 pub fn prediction(target: &SignedTarget) -> io::Result<Prediction> {
     Ok(Prediction {
         approved_policy: unb64(&target.approved_policy, "approved policy", 64)?,
@@ -197,7 +181,6 @@ fn read_bounded(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Review the exact signed target artifacts under `root`.
 pub fn review_paths(root: &Path, public_key: &Path, generation: u64) -> io::Result<SignedTarget> {
     let prediction_path = root.join(format!("{PREDICTIONS_DIR}/generation-{generation}.json"));
     let signature = root.join(format!(
@@ -212,8 +195,7 @@ pub fn review_paths(root: &Path, public_key: &Path, generation: u64) -> io::Resu
     )
 }
 
-/// Review a target bundle directory by an explicit authority. A bundle is the
-/// same shape the live medium carries: `tilo-target.efi` and exactly one signed
+/// The shape the live medium carries: `tilo-target.efi` and exactly one signed
 /// `predictions/generation-<N>.json` with its `.uki.sig`.
 pub fn review_bundle(root: &Path, authority_pem: &[u8]) -> io::Result<SignedTarget> {
     let directory = std::fs::OpenOptions::new()
@@ -226,9 +208,8 @@ pub fn review_bundle(root: &Path, authority_pem: &[u8]) -> io::Result<SignedTarg
     review_open_bundle(&directory, authority_pem, None, None)
 }
 
-/// Review a live medium's target bundle. Retained signed predictions may name
-/// several generations; the image's generation file selects the one the
-/// running boot will actually measure.
+/// Retained predictions may name several generations; the image's generation file selects the one
+/// the coming boot measures.
 pub fn review_live_bundle(root: &Path, authority_pem: &[u8]) -> io::Result<SignedTarget> {
     let directory = std::fs::OpenOptions::new()
         .read(true)
@@ -240,15 +221,11 @@ pub fn review_live_bundle(root: &Path, authority_pem: &[u8]) -> io::Result<Signe
     review_open_bundle(&directory, authority_pem, None, live_generation())
 }
 
-/// Review a bundle acquired by the release download path. The pinned release
-/// authority, never a caller-selected key file, decides whether the target and
-/// its generation are authentic.
 pub fn review_acquired_bundle(root: &Path) -> io::Result<SignedTarget> {
     review_bundle(root, PINNED_RELEASE_AUTHORITY_PEM.as_bytes())
 }
 
-/// Review a caller-owned downloaded bundle through held, no-follow descriptors.
-/// The helper uses this so the caller cannot swap a file between review and
+/// Through held, no-follow descriptors, so the caller cannot swap a file between review and
 /// sealing.
 pub fn review_held_bundle(
     root: &Path,
@@ -320,16 +297,14 @@ fn review_open_bundle(
     review(&prediction, authority_pem, &target, &signature, *generation)
 }
 
-/// Review the live medium's target boot bundle. `Ok(None)` is the honest
-/// no-useful-policy answer: the caller must use the deferred journal instead of
+/// `Ok(None)` is the honest no-policy answer: the caller must use the deferred journal instead of
 /// inventing a TPM-only blob.
 pub fn review_live_target() -> io::Result<Option<SignedTarget>> {
     review_live_target_bundle().map(|bundle| bundle.map(|(target, _)| target))
 }
 
-/// The live target policy and the directory it was read from, so a privileged
-/// helper can re-review the same bundle instead of trusting a digest sent by
-/// the caller.
+/// The policy and the directory it came from, so a helper re-reviews the same bundle instead of
+/// trusting a digest sent by the caller.
 pub fn review_live_target_bundle() -> io::Result<Option<(SignedTarget, PathBuf)>> {
     let mut found = Vec::new();
     for root in LIVE_TARGET_ROOTS {
@@ -348,9 +323,7 @@ pub fn review_live_target_bundle() -> io::Result<Option<(SignedTarget, PathBuf)>
     }
 }
 
-/// Parse `generation-<N>.json` into its dense generation number. The signed
-/// prediction document must repeat the same number; this is only the filename
-/// that selects the sidecar inside a bundle.
+/// Only the filename selects the sidecar; the signed document repeats the same number.
 fn live_generation() -> Option<u64> {
     std::fs::read_to_string(GENERATION_FILE)
         .ok()?
@@ -371,7 +344,6 @@ fn prediction_generation(name: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Open a directory the original caller owns and nobody else can enter.
 fn open_caller_directory(path: &Path, caller_uid: u32) -> io::Result<File> {
     if !path.is_absolute() {
         return Err(refused(
@@ -391,9 +363,7 @@ fn open_caller_directory(path: &Path, caller_uid: u32) -> io::Result<File> {
     Ok(directory)
 }
 
-/// Read one bounded, no-follow regular file from a directory this process
-/// already holds. With `caller_uid`, the file must stay the original caller's
-/// private single-link file for the whole read.
+/// With `caller_uid`, the file must stay the caller's private single-link file for the whole read.
 fn read_held_file(
     parent: &File,
     name: &OsStr,
@@ -440,10 +410,8 @@ fn read_held_file(
     Ok(bytes)
 }
 
-/// Read a caller-owned prepared package through an owned, no-follow parent
-/// directory. The path is never adopted as authority: its parent and file must
-/// both belong to the original caller, stay private, and keep one link while
-/// the helper reads and hashes the exact bytes.
+/// The path is never authority: its parent and file must belong to the caller, stay private, and
+/// keep one link while the helper reads and hashes them.
 fn read_caller_package(
     path: &Path,
     caller_uid: u32,
@@ -461,20 +429,17 @@ fn read_caller_package(
     Ok((bytes, digest))
 }
 
-/// Write the sidecar beside a package in a private directory.
 pub fn write_sidecar(directory: &Path, sealed: &SealedPreparation) -> io::Result<PathBuf> {
     let path = directory.join(SIDECAR_FILE);
     tilo_files::native::atomic::write_with_mode(&path, &sealed.encode()?, 0o600)?;
     Ok(path)
 }
 
-/// Read a sidecar from a private directory without following links.
 pub fn read_sidecar(directory: &Path) -> io::Result<Option<SealedPreparation>> {
     let path = directory.join(SIDECAR_FILE);
     private_sidecar(&path)
 }
 
-/// Read a sidecar from an explicit path without following links.
 pub fn read_sidecar_file(path: &Path) -> io::Result<Option<SealedPreparation>> {
     private_sidecar(path)
 }
@@ -493,9 +458,8 @@ fn private_sidecar(path: &Path) -> io::Result<Option<SealedPreparation>> {
     SealedPreparation::decode(&read_bounded(path, MAX_SIDECAR)?).map(Some)
 }
 
-/// The unprivileged process that invoked sudo owns the package and directory.
-/// `sudo` is the only supported production caller; a root process has no
-/// original unprivileged UID to bind, so it must use the explicit test path.
+/// `sudo` is the only supported production caller; a root process has no original unprivileged UID
+/// and must use the explicit test path.
 fn original_caller_uid() -> io::Result<u32> {
     let value = std::env::var("SUDO_UID")
         .map_err(|_| refused("the privileged helper requires the original caller's UID"))?;
@@ -508,8 +472,7 @@ fn original_caller_uid() -> io::Result<u32> {
     Ok(uid)
 }
 
-/// Inputs to sealing. The package digest binds the sidecar to the exact
-/// canonical ciphertext that is installed.
+/// The package digest binds the sidecar to the exact ciphertext that is installed.
 pub struct SealRequest<'a> {
     pub target: &'a SignedTarget,
     pub source_public_key: [u8; 32],
@@ -518,9 +481,8 @@ pub struct SealRequest<'a> {
     pub secret: &'a [u8],
 }
 
-/// Read the endorsement key's TPM Name. `Name = nameAlg || H(public area)` is
-/// the stable identity of this TPM's EK; a sidecar copied elsewhere names a
-/// different receiver before any policy session is attempted.
+/// `Name = nameAlg || H(public area)` is the stable identity of this TPM's EK; a sidecar copied
+/// elsewhere names a different receiver before any policy session is attempted.
 fn receiver_name(runner: &dyn Runner, ws: &Workspace) -> io::Result<Vec<u8>> {
     policy::flush(runner);
     let context = ws.path("ek.ctx");
@@ -560,8 +522,7 @@ fn receiver_name(runner: &dyn Runner, ws: &Workspace) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Seal the machine-generated package secret to the verified target policy and
-/// this actual TPM. No PIN and no login password participate.
+/// No PIN and no login password participate.
 pub fn seal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -626,9 +587,8 @@ pub fn seal(
     Ok(sealed)
 }
 
-/// Open a sidecar on the real installed boot. `Ok(None)` means the signed
-/// prediction does not describe this live state; `Err` means the sidecar names
-/// another TPM, another identity/package, or the TPM mechanism failed.
+/// `Ok(None)` means the signed prediction does not describe this live state; `Err` means the
+/// sidecar names another TPM or identity, or the TPM mechanism failed.
 pub fn unseal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -682,11 +642,9 @@ pub fn unseal(
         .map_err(io::Error::other)
 }
 
-/// Seal from the vetted privileged helper's stdin. The input names the exact
-/// caller-owned package, the acquired target bundle and the reviewed
-/// generation/UKI digest, never a serialized boot policy or a public-key path.
-/// The helper re-reviews the bundle against the authority pinned into its
-/// binary, so an unprivileged caller cannot choose the trust anchor.
+/// Names the caller-owned package, the acquired bundle and the reviewed generation and UKI
+/// digest, never a boot policy or a key path. The helper re-reviews the bundle against the
+/// authority pinned into its binary.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SealInput {
@@ -699,8 +657,7 @@ struct SealInput {
     secret: String,
 }
 
-/// Read the helper request through a bound. The unprivileged caller controls
-/// this stream, so the root process never grows its heap to the caller's pipe.
+/// The caller controls this stream, so the root process never grows its heap to the caller's pipe.
 pub fn seal_from_reader(mut input: impl Read, output: &mut impl Write) -> io::Result<()> {
     let mut bytes = Vec::new();
     input
@@ -732,10 +689,8 @@ pub fn seal_from_json(input: &[u8], output: &mut impl Write) -> io::Result<()> {
     )
 }
 
-/// Review the target bundle the request names. The live medium's root-owned
-/// bundle is a fixed image path; every other bundle must be the original
-/// caller's private no-follow directory. Both are verified by the pinned
-/// authority, never by a caller-supplied key.
+/// The live medium's bundle is a fixed image path; every other must be the caller's private
+/// no-follow directory. Both are verified by the pinned authority.
 fn review_request_target(
     path: &Path,
     caller_uid: u32,
@@ -751,10 +706,9 @@ fn review_request_target(
     }
 }
 
-/// Variant with an explicit runner, workspace and authority, so the real TPM
-/// simulator can drive this exact helper path without a process-wide TCTI
-/// override. Production always obtains the authority from
-/// [`PINNED_RELEASE_AUTHORITY_PEM`] and `caller_uid` from `SUDO_UID`.
+/// An explicit runner, workspace and authority let the TPM simulator drive this exact path.
+/// Production takes the authority from [`PINNED_RELEASE_AUTHORITY_PEM`] and `caller_uid` from
+/// `SUDO_UID`.
 pub fn seal_from_json_with(
     input: &[u8],
     output: &mut impl Write,
@@ -812,18 +766,15 @@ pub fn seal_from_json_with(
     output.flush()
 }
 
-/// Run the vetted privileged helper for one prepared package and write the
-/// returned public sidecar beside it.
+/// Runs the privileged helper for one package and writes the public sidecar beside it.
 ///
-/// The unprivileged installer cannot open the TPM. The helper runs under its
-/// own narrow sudo rule, re-reviews the same signed bundle against its pinned
-/// authority, receives the secret on stdin (never argv), and returns only the
-/// public sidecar.
+/// The helper runs under its own narrow sudo rule, re-reviews the signed bundle against its
+/// pinned authority, receives the secret on stdin and returns only the public sidecar.
 ///
 /// # Errors
 ///
-/// The request is cancelled, the package cannot be read, the helper refuses or
-/// answers with another binding, or the sidecar cannot be written.
+/// The request is cancelled, the package cannot be read, the helper refuses or answers with
+/// another binding, or the sidecar cannot be written.
 pub fn seal_prepared_handoff(
     request: &SealPreparationRequest<'_>,
 ) -> io::Result<SealedPreparation> {
@@ -885,18 +836,13 @@ pub fn seal_prepared_handoff(
     Ok(sealed)
 }
 
-/// Verify a sidecar and the exact package it names before first boot. This is
-/// the same canonical parser the sealing side uses, so a sidecar either passes
-/// both or neither. The check is structural and binds the package digest; the
-/// signed target policy is authenticated only by [`unseal`] against its pinned
-/// release authority before any secret is released.
+/// Binds the package digest with the same parser the sealing side uses; the signed target policy
+/// is authenticated only by [`unseal`].
 pub fn preflight_handoff(sidecar_path: &Path, package_path: &Path) -> io::Result<()> {
     tilo_handoff::prepared::preflight_handoff(sidecar_path, package_path)
 }
 
-/// Read and structurally verify the sidecar and its exact package, returning
-/// the decoded sidecar that was checked. The privileged first-boot unsealer
-/// uses this so the policy it authenticates is the one this preflight read.
+/// The first-boot unsealer uses this so the policy it authenticates is the one this read.
 pub fn read_prepared_handoff(
     sidecar_path: &Path,
     package_path: &Path,
@@ -904,10 +850,9 @@ pub fn read_prepared_handoff(
     tilo_handoff::prepared::read_prepared_handoff(sidecar_path, package_path)
 }
 
-/// Resolve the target boot policy for this same-computer preparation: the live
-/// medium's own signed bundle when this process is that image, otherwise the
-/// small bundle published by the release catalog. A host that cannot prove a
-/// signed target keeps the deferred journal instead of claiming a TPM binding.
+/// The live medium's own signed bundle when this process is that image, otherwise the small
+/// bundle the release catalog publishes. A host that cannot prove a signed target keeps the
+/// deferred journal.
 pub fn target_for_preparation(
     request: &super::AcquireRequest<'_>,
 ) -> io::Result<Option<TargetAcquisition>> {
@@ -919,19 +864,16 @@ pub fn target_for_preparation(
     };
     match acquire_target_policy(policy, request.cancel) {
         Ok(acquisition) => Ok(Some(acquisition)),
-        // No verified target is the honest deferred fallback: the retained
-        // journal and public install profile still carry the reviewed choices,
-        // and first boot asks for the canonical approval instead of claiming a
-        // TPM binding this host cannot prove.
+        // Without a verified target, first boot asks for the canonical approval instead of
+        // claiming a TPM binding this host cannot prove.
         Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
         Err(_) => Ok(None),
     }
 }
 
-/// Download, verify and cache the target policy bundle named by the release
-/// catalog. The archive is bounded and digest-checked before any entry is
-/// written; only the target UKI and its signed prediction sidecars are
-/// accepted.
+/// Downloads, verifies and caches the bundle the release catalog names: the archive is bounded and
+/// digest-checked before any entry is written, and only the target UKI and its signed prediction
+/// sidecars are accepted.
 pub fn acquire_target_policy(
     policy: &TargetPolicyBundle,
     cancel: &AtomicBool,

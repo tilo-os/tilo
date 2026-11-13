@@ -21,7 +21,7 @@ use tilo_desktop::desk_edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::profile_card::{
-    OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+    LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
@@ -125,7 +125,7 @@ const SELF_CARD: &str = "";
 /// answers it with the setup its first screen shows (a `tilo login` prompt and Tilo's MCP
 /// address); a desktop has no login code to hand out, so it shows Console's Connect place, where
 /// the commands that add Tilo to an agent are and the agents already let in are listed.
-pub const CONNECT_AGENT: &str = "connect-agent";
+pub const CONNECT_AGENT: &str = tilo_actions::remote::session_actions::CONNECT_AGENT;
 
 /// The own card's action that opens Settings' "Devices and access": everything that acts as the
 /// person, and taking any of it back.
@@ -480,7 +480,7 @@ impl Published for People {
 
     /// The controls the open roster, its card and the pinned roster show, where they stand: what
     /// the host drew.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         match self.layer() {
             Some(layer) if self.open.get() || self.shown.borrow().standing() => layer.controls(),
             _ => Vec::new(),
@@ -593,7 +593,7 @@ pub fn mount(
         intents: given.intents,
         invitable: given.invitable,
         asks: Rc::clone(&asks),
-        profile: ProfileCard::default(),
+        profile: LazyProfileCard::default(),
         card_node: None,
         live_card: Cell::new(false),
         chats: RefCell::default(),
@@ -665,7 +665,7 @@ struct Panel {
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
     /// The one card of a person, as any host of it shows them.
-    profile: ProfileCard,
+    profile: LazyProfileCard,
     /// Where the card stands among this panel's children, while it is open.
     card_node: Option<NodeId>,
     /// Someone else's card no longer says what the rows say of them: the next layout builds it
@@ -792,6 +792,7 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
     ) -> bool {
         if self.profile.is_open() {
+            self.profile.draw_waiting(scene, transform, text, theme);
             self.profile
                 .draw_overlay(scene, transform, text, theme, presence);
         }
@@ -960,7 +961,8 @@ impl Panel {
         match id {
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
-            "pair-device" | DEVICES_ACCESS => Some("settings://devices_sync"),
+            "pair-device" => Some("settings://devices_sync"),
+            DEVICES_ACCESS => Some("settings://devices_access"),
             _ => None,
         }
     }
@@ -1083,10 +1085,10 @@ impl Panel {
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
-        let workspace = tree
-            .active_workspace()
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_default();
+        let workspace = tree.active_workspace().map_or_else(
+            || tilo_desktop_surface::names::workspace(""),
+            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+        );
         let front = tree
             .active_workspace()
             .map(|workspace| workspace.id().to_string());
@@ -1298,6 +1300,7 @@ impl Panel {
             if !members.is_empty() {
                 pointers = tilo_session_core::presence::pointers(
                     &members,
+                    &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
                     presence,

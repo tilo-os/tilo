@@ -319,7 +319,7 @@ impl TaskSession {
             .filter(|s| s.kind == SignatureKind::Type)
             .map(|s| (s.app.clone(), s.name.clone()))
             .collect();
-        // ignored-failure: a session without its description lists its actions by their ids
+        // A session without its description lists its actions by their ids.
         let addresses = crate::platform_apps::session_addresses().unwrap_or_default();
         let mut apps = serde_json::Map::new();
         for signature in signatures {
@@ -630,8 +630,12 @@ fn declared_flag(meta: &Meta, action: &str, name: &str) -> bool {
         .iter()
         .find(|declared| declared.id == action)
         .and_then(|declared| declared.params.iter().find(|param| param.name == name))
-        // ignored-failure: a type this cannot read is no flag; the action still checks the value
-        .and_then(|param| parse_ty(&param.ty, &meta.app).ok())
+        .and_then(|param| {
+            tilo_failure::ignored!(
+                "a type this cannot read is no flag; the action still checks the value",
+                parse_ty(&param.ty, &meta.app).ok()
+            )
+        })
         .is_some_and(|ty| match ty {
             tilolang_runtime::meta::Ty::Bool => true,
             tilolang_runtime::meta::Ty::Option(inner) => {
@@ -870,14 +874,12 @@ fn call_of(
             from,
             ..
         } => {
-            let subject = meta.subject_of(
-                &meta
-                    .actions
-                    .iter()
-                    .find(|declared| declared.id == *action)
-                    .ok_or_else(|| format!("{app} declares no action {action}"))?
-                    .params,
-            );
+            let declared = meta
+                .actions
+                .iter()
+                .find(|declared| declared.id == *action)
+                .ok_or_else(|| format!("{app} declares no action {action}"))?;
+            let subject = meta.subject_of(&declared.params);
             let subject = subject.and_then(|_| args.first());
             let resource = match subject {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
@@ -890,7 +892,8 @@ fn call_of(
             Ok(json!({
                 "app": app,
                 "resource": resource,
-                "action": action,
+                // As the app's door publishes it: by its name.
+                "action": declared.name,
                 "arguments": arguments,
             }))
         }
@@ -898,8 +901,8 @@ fn call_of(
             app,
             target,
             field,
-            field_id,
             value,
+            ..
         } => {
             let (action, value) = match value {
                 Value::Text(text) => (crate::action::EDIT_TEXT_ACTION, json!(text)),
@@ -911,11 +914,14 @@ fn call_of(
                     ));
                 }
             };
+            // The edit verbs take a field by its name, as the surface offers it; the binding
+            // refuses an id the verb does not offer, and the program named the field by name.
             Ok(json!({
                 "app": app,
                 "resource": resource_id(app, &target.id_string()),
                 "action": action,
-                "arguments": {"field": field_id, "value": value},
+                // The field as its type names it, which the door's edit takes.
+                "arguments": {"field": field, "value": value},
             }))
         }
     }
@@ -1470,7 +1476,7 @@ mod tests {
     #[test]
     fn a_native_apps_verb_is_its_own_on_the_record_it_publishes() {
         let meta = chat();
-        let app = meta.app.clone();
+        let app = tilolang_runtime::ids::AppId::from(meta.app.as_str());
         let door = Rc::new(Asked::default());
         let (invoker, steps) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
         let record = ResourceRef {
@@ -1523,7 +1529,7 @@ mod tests {
         let door = Rc::new(Asked::default());
         let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
         let invocation = Invocation::Edit {
-            app: "so.tilo.chat".to_owned(),
+            app: tilolang_runtime::ids::AppId::from("so.tilo.chat"),
             target: ResourceRef {
                 doc: "chat.workspace".to_owned(),
                 item: None,

@@ -63,10 +63,6 @@ slides-colour-amber = Amber
 slides-colour-red = Red
 slides-colour-violet = Violet
 
-## Version history
-slides-history-no-slides = This version has no slides.
-slides-history-no-deck = This version has no presentation to restore.
-
 ## Slide content placeholders
 slides-prompt-title = Add a title
 slides-prompt-text = Add text
@@ -259,3 +255,12 @@ slides-effect-save-as = Save presentation
 slides-effect-read-deck = Read deck as text
 slides-effect-import-pptx-content = Import presentation from content
 slides-effect-export-pptx-content = Export presentation as content
+
+## What the app is called in a window and in the launcher
+slides-app-title = Slides
+
+## Actions bound to what the person is looking at
+
+slides-deck-delete-selection = Delete { $name }
+slides-deck-bring-selection-front = Bring to front: { $name }
+slides-deck-send-selection-back = Send to back: { $name }

@@ -62,7 +62,7 @@
 #                      deriving the path a second time
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
-# (physical pixels) to choose another size. A headless session renders a
+# (logical pixels) to choose another size. A headless session renders a
 # 1280x800 output; set TILO_HEADLESS_SIZE=WxH to choose another size, and
 # TILO_HEADLESS_SCALE=S (or TILO_HEADLESS_PANEL_MM=WxH, the panel's physical
 # size, from which the scale is derived) to have it draw at that density —
@@ -133,7 +133,9 @@ if ((!headless && !print_runtime)); then
     # container is such a namespace, and the host compositor drops the
     # connection ("Connection reset by peer"). The session needs no
     # toolchain, so it runs on the host itself.
-    if [[ -e /run/.containerenv || -e /.dockerenv ]]; then
+    # A check that runs its own host desktop inside the same container says so
+    # (TILO_NESTED_HOST_IN_CONTAINER=1): that desktop shares its namespaces.
+    if [[ -e /run/.containerenv || -e /.dockerenv ]] && [[ ${TILO_NESTED_HOST_IN_CONTAINER:-} != 1 ]]; then
         die "run the windowed session on the host, not inside a container (toolbox): the host desktop refuses Wayland clients from other namespaces; --headless works anywhere"
     fi
 fi
@@ -168,6 +170,24 @@ runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-1
 # tools, no build, no display and no state: a tool that reaches into a session
 # asks here and gets the same path the session itself will use.
 ((print_runtime)) && { printf '%s\n' "$runtime"; exit 0; }
+
+# Nothing from here on reaches the desktop this runs beside: not its session
+# bus, its accessibility bus, its user manager, logind or the system bus. An
+# earlier dev script that did stopped the host's graphical session. Every
+# program below (the build's helpers, the gateway, ush, pipewire, the session
+# and the apps it launches) inherits addresses that lead nowhere, and the
+# session gets a bus of its own (session-bus.sh). The window is the one thing
+# shared with the host desktop, through its Wayland socket alone.
+# `cargo desktop --check` (crates/dev/tilo-local) proves it.
+for name in DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE AT_SPI_BUS_ADDRESS \
+            NOTIFY_SOCKET LISTEN_PID LISTEN_FDS LISTEN_FDNAMES MANAGERPID \
+            XDG_SESSION_ID XDG_SESSION_TYPE XDG_SESSION_CLASS XDG_SESSION_DESKTOP \
+            XDG_CURRENT_DESKTOP XDG_SEAT XDG_VTNR XDG_ACTIVATION_TOKEN DESKTOP_STARTUP_ID \
+            PULSE_SERVER PIPEWIRE_REMOTE PIPEWIRE_RUNTIME_DIR GNOME_KEYRING_CONTROL; do
+    unset "$name"
+done
+export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/no-host-session-bus
+export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/no-system-bus
 
 for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
@@ -212,6 +232,11 @@ if ((build)); then
     "$repo_root/dist/dev/nested-session-build.sh" "$build_out" \
         || die "the nested-session build failed (see above)"
 fi
+# A build another tree made — shared through TILO_NESTED_SESSION_BUILD, left in a copied
+# target/, or made before a source change — is refused by name: running it would run that
+# tree's code as this one's (dist/dev/build-provenance.sh, and the session that read another
+# tree's build as this tree's fixes failing).
+"$repo_root/dist/dev/build-provenance.sh" verify "$build_out" "$thin"
 for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-ush tilo-control; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
@@ -404,6 +429,10 @@ if ((software)); then
     # session never opens /dev/dri to probe one.
     export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
     export TILO_DMABUF_DEVICE=
+    # The window a nested session draws into is GL (EGL on the host's Wayland
+    # socket): Mesa's software rasteriser for it too, handing the host shared
+    # memory rather than a buffer of this machine's GPU.
+    export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 fi
 
 for dir in home config data state cache identity; do mkdir -p "$state/$dir"; done
@@ -798,18 +827,15 @@ WIREPLUMBER
     fi
 fi
 
-# The session's own nested window is 1280x720 physical pixels by default,
-# which a 2x host shows as 640x360: too small for the task centre, which drops
-# a card that does not fit. Ask for 1280x800 logical at the host's scale
-# (GNOME reports it; others get scale 1) unless the caller chose a size.
+# The session's own window is 1280x720 by default, too small for the task
+# centre, which drops a card that does not fit: 1280x800 unless the caller
+# chose a size.
 if ((headless)); then
     export TILO_HEADLESS_SIZE=${TILO_HEADLESS_SIZE:-1280x800}
-elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
-    host_scale=$(busctl --user --json=short call org.gnome.Mutter.DisplayConfig \
-        /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig GetCurrentState \
-        2>/dev/null | jq -r '[.data[2][] | select(.[4]) | .[2]][0] // empty' 2>/dev/null) || true
-    export TILO_WINIT_SIZE=$(awk -v s="${host_scale:-1}" \
-        'BEGIN { if (s + 0 <= 0) s = 1; printf "%dx%d", 1280 * s, 800 * s }')
+else
+    # In the host's logical pixels (the session opens its window so), which
+    # looks the same on a desktop at any scale without asking that desktop.
+    export TILO_WINIT_SIZE=${TILO_WINIT_SIZE:-1280x800}
 fi
 
 # The host desktop reads a Wayland client's namespaces to admit it, which
@@ -834,23 +860,32 @@ else
     backend=(--backend nested --size "$TILO_WINIT_SIZE")
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
-    say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"
+    say "starting the nested session at ${size} logical pixels, at the desktop's scale (log: $logs/session.log)"
 fi
 cat >&2 <<EOF
-    drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
+    drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control $( ((headless)) && echo 'snapshot /tmp/shot.png' || echo windows)
 EOF
 env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
     "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" "${session_args[@]}" > "$logs/session.log" 2>&1 &
 session_pid=$!
 children+=("$session_pid")
 
-# Note once the session answers on its control socket with a frame of its own
-# desktop, which is the first point its loop and the desktop it drew are up.
+# Whether the session answers on its control socket: with a frame of its own
+# desktop where its backend reads frames back (headless), which is the first
+# point its loop and the desktop it drew are up; a window's frames go to the
+# host desktop alone, so a nested session answers with its windows instead.
+session_answers() {
+    if ((headless)); then
+        TILO_TEST_CONTROL=$control "$bin/tilo-control" snapshot "$1" >/dev/null 2>&1
+    else
+        TILO_TEST_CONTROL=$control "$bin/tilo-control" windows >/dev/null 2>&1
+    fi
+}
 confirm_ready() {
     local shot=$state/session-ready.png tries=600
     while ((tries--)); do
         kill -0 "$session_pid" 2>/dev/null || return 0
-        if TILO_TEST_CONTROL=$control "$bin/tilo-control" snapshot "$shot" >/dev/null 2>&1; then
+        if session_answers "$shot"; then
             rm -f "$shot"
             touch "$ready_marker"
             echo "the session answers"
@@ -878,8 +913,8 @@ missing_surfaces() {
 missing_surfaces &
 # Where this session is, for tools that attach to it by its runtime directory
 # or control socket (`tilolang dev --session`): the same JSON as --ready.
-jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \
-    '{control: $control, runtime: $runtime, state: $state}' > "$runtime/session.json"
+jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
+    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
 # Tell whoever drives the session that it answers: the session serves its
 # control socket once it is up.
 if [[ -n $ready_out ]]; then
@@ -888,7 +923,7 @@ if [[ -n $ready_out ]]; then
         wait_for_socket "$control" "$session_pid" || exit 1
         tries=600
         shot=$state/session-ready.png
-        until TILO_TEST_CONTROL=$control "$bin/tilo-control" snapshot "$shot" >/dev/null 2>&1; do
+        until session_answers "$shot"; do
             ((tries--)) && kill -0 "$session_pid" 2>/dev/null || exit 1
             sleep 0.2
         done

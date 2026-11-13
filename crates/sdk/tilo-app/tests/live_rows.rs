@@ -115,7 +115,7 @@ enum Raw {
 /// What the jobs surface does outside the document, each offered on the
 /// row or child it acts on.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.tally.jobs")]
+#[effect(operation = "test.tally.jobs", catalogue = "tests/locales")]
 enum JobEffect {
     /// Stop the job.
     #[effect(row, returns)]

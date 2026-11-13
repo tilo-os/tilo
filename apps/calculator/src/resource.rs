@@ -1,6 +1,5 @@
-//! Calculator as a resource: the evaluated history and the saved graphs
-//! are the [`Calculator`] model; mode, expression and cameras stay local
-//! presentation in the window.
+//! Calculator as a resource: the evaluated history and the saved graphs are the
+//! [`Calculator`] model; mode, expression and cameras are the window's.
 
 use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSelection, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -13,9 +12,8 @@ use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The calculator's record: its evaluated history, newest first, and its
-/// saved graphs, each row with its stable id. A formula merges per
-/// character; showing or hiding a row is written whole.
+/// The evaluated history, newest first, and the saved graphs, each row with its
+/// stable id. A formula merges per character; visibility is written whole.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Calculator {
     /// History
@@ -30,7 +28,6 @@ pub struct Calculator {
 }
 
 impl Calculator {
-    /// The rows of one graph list.
     pub fn graphs(&self, kind: GraphKind) -> &Collection<PlotFn> {
         match kind {
             GraphKind::Curve2d => &self.funcs,
@@ -45,7 +42,6 @@ impl Calculator {
         }
     }
 
-    /// The id of the `index`-th row of one graph list.
     pub fn graph_id(&self, kind: GraphKind, index: usize) -> Option<&Id> {
         self.graphs(kind).ids().nth(index)
     }
@@ -69,12 +65,8 @@ impl Calculator {
 }
 
 impl Calculator {
-    /// What the record holds: the evaluated history and the saved graphs, each row with its id.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// Answers through [`fields`](tilo_resource::read::fields), so a caller with
+    /// no window open reads the record as it reads any app's.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -88,8 +80,7 @@ impl Calculator {
     read_content = Calculator::read_document
 )]
 impl Calculator {
-    /// Add an evaluated calculation to the front of the history, keeping the
-    /// newest [`HISTORY_CAP`].
+    /// Keeps the newest [`HISTORY_CAP`].
     #[action]
     pub fn commit_history(
         &mut self,
@@ -105,7 +96,6 @@ impl Calculator {
         }
     }
 
-    /// Remove one calculation from the history.
     #[action(destructive, item = history)]
     pub fn delete_history_entry(&mut self, entry: &Id) -> Result<(), Refusal> {
         self.history
@@ -114,7 +104,6 @@ impl Calculator {
             .ok_or_else(|| Refusal::new("no such calculation"))
     }
 
-    /// Remove every history entry.
     #[action(destructive)]
     pub fn clear_history(&mut self) -> Result<(), Refusal> {
         if self.history.is_empty() {
@@ -149,18 +138,15 @@ impl Calculator {
     }
 }
 
-/// The published id of a history entry.
 pub fn history_entry_id(id: &Id) -> String {
     item_resource_id::<Calculator>("history", id)
 }
 
-/// The published id of a graph row.
 pub fn graph_row_id(kind: GraphKind, id: &Id) -> String {
     item_resource_id::<Calculator>(kind.field(), id)
 }
 
-/// What a history entry offers beside its verbs: recalling it, merged into
-/// its published item by id.
+/// Recalling the entry, merged into its published item by id.
 pub(crate) fn history_row(id: &Id, entry: &HistoryEntry) -> LiveRow {
     LiveRow::new(
         history_entry_id(id),
@@ -190,12 +176,10 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Framework app: the calculator window is the view of [`Calculator`].
 pub struct CalculatorShell;
 
-/// The screenshot scenarios. A plain `--shots` is the lived-in 2D graph;
-/// every `narrow` one captures at a phone-sized window, where each panel is a
-/// floating drawer.
+/// A plain `--shots` is the lived-in 2D graph; each `narrow` one captures at a
+/// phone-sized window, where the panel is a floating drawer.
 const SCENARIOS: &[&str] = &[
     "calculator",
     "graph2d",
@@ -213,14 +197,14 @@ const SCENARIOS: &[&str] = &[
     "remote-cursor",
 ];
 
-/// A collaborator's pointer in the `remote-cursor` scenario: over the first
-/// function's formula, which draws it as their caret in the math.
+/// Over the first function's formula, which draws it as the caret.
 pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
     const ID: &'static str = "so.tilo.calculator";
     const TITLE: &'static str = "Calculator";
+    const TITLE_KEY: &'static str = "calculator-app-title";
     const ICON: Option<&'static str> = Some("calculator");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -257,8 +241,7 @@ impl ResourceApp for CalculatorShell {
         }
     }
 
-    /// A lived-in calculator: its calculations, curves and surfaces, or one
-    /// long curve for `long-formula`; nothing for `empty`.
+    /// One long curve for `long-formula`; nothing for `empty`.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Calculator>> {
         let model = match name {
             Some("empty") => return Vec::new(),
@@ -275,7 +258,6 @@ impl ResourceApp for CalculatorShell {
     }
 }
 
-/// A formula longer than its field, which scrolls within it.
 const LONG_FORMULA: &str = "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)";
 
 fn scenario_row_id(kind: GraphKind, index: usize) -> Id {
@@ -286,8 +268,7 @@ fn scenario_row_id(kind: GraphKind, index: usize) -> Id {
     Id::from_raw(format!("{slug}-{}", index + 1))
 }
 
-/// The calculations and edits that write `model`'s history and graphs,
-/// the graph rows with fixed ids so a collaborator's pointer finds its row.
+/// The graph rows get fixed ids, so a collaborator's pointer finds its row.
 fn scenario_edits(model: &CalcModel) -> Vec<Invoke<Calculator>> {
     // Each calculation lands at the front: commit the oldest first.
     let history = model.history.iter().rev().map(|entry| {
@@ -363,8 +344,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Committing pushes to the front and keeps the newest `HISTORY_CAP`;
-    /// deleting removes one entry, clearing empties it, and both ask first.
     #[test]
     fn history_commits_capped_deletes_and_clears() {
         let mut calculator = Replica::<Calculator>::new();
@@ -434,8 +413,6 @@ mod tests {
         );
     }
 
-    /// Graph rows are added by verb, edited and shown or hidden at their
-    /// paths, and deleted by verb, the same for curves and surfaces.
     #[test]
     fn graph_rows_add_edit_toggle_and_delete() {
         for kind in [GraphKind::Curve2d, GraphKind::Surface3d] {
@@ -474,8 +451,6 @@ mod tests {
         }
     }
 
-    /// Two people at once converge: formulas merge per character, a row
-    /// one deleted stays deleted whatever the other typed into it.
     #[test]
     fn concurrent_edits_converge_and_delete_wins() {
         let mut ours = Replica::<Calculator>::new();
@@ -501,8 +476,6 @@ mod tests {
         );
     }
 
-    /// Each history entry and graph row is a published item with its
-    /// verbs bound; a history entry also recalls its calculation.
     #[test]
     fn history_and_graph_rows_are_published_items() {
         let mut app = TestApp::<CalculatorShell>::new().unwrap();
@@ -558,8 +531,6 @@ mod tests {
         );
     }
 
-    /// The keystrokes typed into one formula are one undo step; editing
-    /// another row starts another.
     #[test]
     fn formula_keystrokes_coalesce_per_row() {
         let rows = GraphKind::Curve2d.rows();
@@ -578,8 +549,6 @@ mod tests {
         ));
     }
 
-    /// What an agent does in the calculator is history the person reads as
-    /// the app's own sentences.
     #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -642,8 +611,6 @@ mod tests {
         );
     }
 
-    /// Every screenshot is the framework's capture: the scenario's edits
-    /// write the document.
     #[test]
     fn captures_stage_through_edits() {
         let mut graph = TestApp::<CalculatorShell>::capture(None).unwrap();
@@ -668,8 +635,6 @@ mod tests {
 mod scenario_tests {
     use super::*;
 
-    /// Every scenario stages a lived-in calculator through the document's own
-    /// actions, and each narrow one captures at a phone-sized window.
     #[test]
     fn scenarios_stage_lived_in_content_and_declare_narrow_viewports() {
         let full = crate::model::DEMO_HISTORY.len()
@@ -703,9 +668,7 @@ mod scenario_tests {
 
 ui::reach_tests!(CalculatorShell);
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
+/// The copy comes from `locales/de-DE.ftl`, never the English catalogue.
 #[cfg(test)]
 mod german_window {
     #[test]

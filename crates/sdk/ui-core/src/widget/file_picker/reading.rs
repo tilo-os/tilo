@@ -1,9 +1,8 @@
-//! What the chooser asks of the filesystem and the search index, answered
-//! on a worker thread: the UI thread lists, checks and searches nothing
-//! itself. A folder's rows, Recent and a search come back as [`Row`]s; a
-//! path the person is about to give the app (a typed location, a Save name,
-//! the selection on Open) comes back as a [`Real`] for each path, and the
-//! chooser acts on it when it arrives.
+//! What the chooser asks of the filesystem and the search index, answered on a worker
+//! thread: the UI thread lists, checks and searches nothing itself. A folder's rows, Recent
+//! and a search come back as [`Row`]s; a path the person is about to give the app (a typed
+//! location, a Save name, the selection on Open) comes back as a [`Real`] for each path,
+//! and the chooser acts on it when it arrives.
 
 use super::PickerSearch;
 use std::fs;
@@ -16,16 +15,14 @@ use std::task::Waker;
 pub(super) enum Kind {
     #[default]
     Nothing,
-    /// A link to nothing: the name is taken, but there is nothing to open.
     Dangling,
     File,
     Folder,
-    /// A device, socket or pipe.
     Other,
 }
 
-/// What a path is, and whether its real path (links followed, `..` gone)
-/// lies beneath the real path of one of the chooser's roots.
+/// What a path is, and whether its real path (links followed, `..` gone) lies beneath the
+/// real path of one of the chooser's roots.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Real {
     pub(super) kind: Kind,
@@ -50,8 +47,6 @@ impl Real {
 
 pub(super) struct Row {
     pub(super) path: PathBuf,
-    /// A folder to go into. In a folder this is the entry itself (a link
-    /// to a folder is not one); for Recent and a search, links followed.
     pub(super) is_dir: bool,
     pub(super) meta: Option<fs::Metadata>,
     pub(super) real: Real,
@@ -59,11 +54,8 @@ pub(super) struct Row {
 
 /// What a listing reads.
 pub(super) enum Source {
-    /// The folder in view.
     Folder(PathBuf),
-    /// Paths already known: Recent.
     Paths(Vec<PathBuf>),
-    /// A system search for the query.
     Search(PickerSearch, String),
 }
 
@@ -94,9 +86,6 @@ impl<T> Pending<T> {
     }
 }
 
-/// Run `job` on the toolkit's worker and send its answer back, waking the
-/// window's wake scope and the host's own waker when it gave one (a
-/// compositor has no scope). `None` when no worker could take it.
 fn on_worker<T: Send + 'static>(
     name: &'static str,
     waker: Option<Waker>,
@@ -142,8 +131,6 @@ pub(super) fn check(
     })
 }
 
-/// The chooser's roots as given and as their real paths, read once per
-/// question.
 struct Roots {
     given: Vec<PathBuf>,
     real: Vec<PathBuf>,
@@ -166,7 +153,6 @@ impl Roots {
         self.real.iter().any(|root| real.starts_with(root))
     }
 
-    /// What `path` is, links followed, and whether it really lies inside.
     fn real(&self, path: &Path) -> Real {
         let kind = match fs::metadata(path) {
             Ok(meta) if meta.is_dir() => Kind::Folder,

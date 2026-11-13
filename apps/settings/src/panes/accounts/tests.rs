@@ -128,9 +128,6 @@ fn access_nodes(w: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNode>) {
     }
 }
 
-/// A Settings window whose External Accounts area holds `pane`, open on
-/// its page: the page the window builds over it, its controls bound to
-/// the actions the window publishes.
 pub(super) fn window_showing(pane: AccountsPane) -> TestApp<SettingsShell> {
     crate::area::replace_in_next_window(move |context| AccountsArea::holding(context, pane));
     let mut app = TestApp::<SettingsShell>::new().expect("Settings opens headlessly");
@@ -139,14 +136,11 @@ pub(super) fn window_showing(pane: AccountsPane) -> TestApp<SettingsShell> {
     app
 }
 
-/// What `read` finds on the page of a Settings window showing `pane`.
 pub(super) fn on_page<T>(pane: AccountsPane, read: impl FnOnce(&dyn Widget) -> T) -> T {
     let mut app = window_showing(pane);
     read(page_of(app.harness().root_widget()))
 }
 
-/// Change the pane `app`'s External Accounts area holds with `change`;
-/// the page is built again over it.
 pub(super) fn change<T>(
     app: &mut TestApp<SettingsShell>,
     change: impl FnOnce(&mut AccountsPane) -> T,
@@ -166,8 +160,6 @@ pub(super) fn change<T>(
     changed
 }
 
-/// Every action the page of a Settings window showing `pane` offers,
-/// by what it says.
 fn page_actions(pane: AccountsPane) -> Vec<String> {
     on_page(pane, |page| {
         let mut actions = Vec::new();
@@ -176,16 +168,12 @@ fn page_actions(pane: AccountsPane) -> Vec<String> {
     })
 }
 
-/// Every line the page of `app` announces.
 pub(super) fn announced(app: &mut TestApp<SettingsShell>) -> Vec<String> {
     provider_settings_ui::widgets::announced_text(page_of(app.harness().root_widget()))
 }
 
-/// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
 #[test]
 fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
-    /// What the rows say of each account's state: the marks after
-    /// their names.
     fn texts(widget: &dyn Widget) -> Vec<String> {
         let mut result: Vec<String> = widget
             .as_any()
@@ -260,9 +248,6 @@ fn adding_an_account_opens_its_form_where_add_account_was() {
 #[test]
 fn accounts_pane_renders_only_real_accounts_as_removable() {
     {
-        // The sample is illustration: one live Add button per provider kind,
-        // metadata import, and no Remove buttons. A scratch root keeps whatever the runner's
-        // own account stores hold (a browser identity, say) out of the count.
         let (_scratch, root) = scratch_root();
         let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
         let labels = page_actions(pane);
@@ -304,9 +289,6 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         let (_scratch, root) = scratch_root();
         let pane = AccountsPane::from_dir_in(root, dir, false);
         let actions = page_actions(pane);
-        // One Add per kind, metadata import, four maintenance actions
-        // on each of four accounts, and the Nextcloud account's
-        // calendars.
         assert_eq!(
             actions.len(),
             AccountKind::ALL.len() + 1 + 16 + 1,
@@ -357,7 +339,6 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
             pane.directory().is_empty(),
             "an empty store renders empty — no fabricated ada@example.com rows"
         );
-        // And no account of any kind leaked in from the sample.
         for kind in AccountKind::ALL {
             assert!(
                 pane.directory().views_of(kind).is_empty(),
@@ -367,7 +348,6 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
     }
 }
 
-/// Removing an account asks first; a connection check reports later.
 #[test]
 fn removal_asks_first_and_checks_run_as_jobs() {
     let declarations = AccountsEffect::declarations();
@@ -387,7 +367,6 @@ fn removal_asks_first_and_checks_run_as_jobs() {
     ));
 }
 
-/// The inline add form: local drafts, labelled fields, empty-email no-op and rejected adds.
 #[test]
 fn account_form_drafts_are_local_accessible_and_validated() {
     {
@@ -480,8 +459,6 @@ fn account_form_drafts_are_local_accessible_and_validated() {
 
 #[test]
 fn vault_save_failure_preserves_existing_account_metadata() {
-    // Isolate custody selection from an actual session Secret Service, and
-    // isolate ConfigGuard's environment from other tests in this process.
     const CHILD: &str = "TILO_SETTINGS_VAULT_FAILURE_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -548,7 +525,6 @@ fn vault_save_failure_preserves_existing_account_metadata() {
     );
 }
 
-/// Edits keep unknown config and toggles; re-authentication probes before persisting.
 #[test]
 fn account_edits_preserve_config_and_probe_before_persisting() {
     {
@@ -646,8 +622,6 @@ fn account_edits_preserve_config_and_probe_before_persisting() {
     }
 }
 
-/// Sync now and pause or resume ride on exactly the accounts the cloud
-/// service lists as mounted, and the window offers the same controls.
 #[test]
 fn account_actions_include_sync_now_for_mounted_accounts() {
     use runtime_fs::cloud::{CloudCapabilities, CloudMount, MountHealth};
@@ -660,7 +634,6 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
     };
     for paused in [false, true] {
         let (_scratch, root) = scratch_root();
-        // Sample accounts take fresh ids each time: read them back.
         let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
         let files = pane.directory().views_of(AccountKind::Nextcloud)[0]
             .id
@@ -737,7 +710,6 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
     }
 }
 
-/// Wait for a background read to end, as the warm-up's wake would.
 fn until_finished(finished: impl Fn() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while !finished() {
@@ -746,8 +718,6 @@ fn until_finished(finished: impl Fn() -> bool) {
     }
 }
 
-/// The warm-up opens the vault off the UI thread once; the model holds
-/// what it opened, so a saved credential is there.
 #[test]
 fn the_area_builds_its_model_from_the_read_it_started() {
     let (dir, root) = scratch_root();
@@ -781,8 +751,6 @@ fn the_area_builds_its_model_from_the_read_it_started() {
     assert!(!area.start_read(), "a built model is not read again");
 }
 
-/// A mutation whose intent is on disk is recovered before the vault is
-/// opened, so a vault read before it is not used.
 #[test]
 fn a_pending_mutation_is_seen() {
     let (_dir, root) = scratch_root();
@@ -794,10 +762,6 @@ fn a_pending_mutation_is_seen() {
     assert!(root.mutation_pending());
 }
 
-/// A Secret Service that does not answer holds no click: removing an
-/// account and checking its connection answer at once on the window's
-/// thread, the account stays shown until the vault took its removal,
-/// and the removal lands once the vault answers.
 #[test]
 fn a_stalled_vault_never_holds_the_window() {
     use std::sync::Arc;
@@ -811,7 +775,6 @@ fn a_stalled_vault_never_holds_the_window() {
     let mut vault = root.vault();
     vault.put(&id, &accounts::Secret::password("test-only-password"));
     vault.try_save().expect("the vault is saved");
-    // What the window's warm-up opened off the UI thread.
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
     let gate = crate::stall::Stall::new();
@@ -868,9 +831,6 @@ fn a_stalled_vault_never_holds_the_window() {
     assert!(!root.mutation_pending(), "the removal's journal is cleared");
 }
 
-/// Whether custody holds a Mail account's grant is read on a worker:
-/// a vault that does not answer holds no frame of the pane, and the
-/// grant shows once it does.
 #[test]
 fn a_stalled_vault_never_holds_the_mail_grant_status() {
     use std::time::Instant;
@@ -942,7 +902,6 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
     }
 }
 
-/// A workspace bridged to a Discord server, its host answering at once.
 struct Bridged(std::cell::RefCell<ui::linked_accounts::LinkState>);
 
 fn ada() -> ui::linked_accounts::AccountName {
@@ -984,8 +943,6 @@ impl ui::linked_accounts::LinkedAccountsHost for Bridged {
     }
 }
 
-/// Every name, value and description the page of `app` gives assistive
-/// technology, built again over what its area holds now.
 fn said(app: &mut TestApp<SettingsShell>) -> Vec<String> {
     fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
         if let Some(node) = widget.accessibility() {

@@ -1,20 +1,15 @@
-//! A moment written into rich text: a run marked [`MARK`], valued with the moment and how a
-//! reader is shown it (`{"at":"<RFC 3339>","show":"relative"}`). The run is the moment as it
-//! was written, for a reader that shows text as it is; every other reader shows it in their own
-//! zone and language (the toolkit's `rich_doc::time_label`).
+//! A moment written into rich text: a run marked [`MARK`], valued with the moment
+//! and how a reader is shown it (`{"at":"<RFC 3339>","show":"relative"}`). The run
+//! is the moment as written; every other reader shows it in their own zone and
+//! language.
 
-/// The mark a time's run carries.
 pub const MARK: &str = "time";
 
-/// How an inline time reads for the person reading.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Show {
-    /// The date and time of day in the reader's zone and formats.
     #[default]
     Absolute,
-    /// How long ago, or how far ahead: `3 min ago`, `in 2 hr`.
     Relative,
-    /// What is left until it, ticking; once past, how long ago.
     Countdown,
 }
 
@@ -28,7 +23,6 @@ impl Show {
     }
 }
 
-/// A moment in rich text, as its mark names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlineTime {
     /// The moment, in RFC 3339.
@@ -37,7 +31,6 @@ pub struct InlineTime {
 }
 
 impl InlineTime {
-    /// The time a [`MARK`] mark's value names, when it names one.
     #[must_use]
     pub fn of_mark(value: &str) -> Option<Self> {
         let json: serde_json::Value = serde_json::from_str(value).ok()?;
@@ -50,7 +43,6 @@ impl InlineTime {
         Some(Self { at, show })
     }
 
-    /// The [`MARK`] mark's value naming it.
     #[must_use]
     pub fn mark_value(&self) -> String {
         serde_json::json!({ "at": self.at, "show": self.show.name() }).to_string()

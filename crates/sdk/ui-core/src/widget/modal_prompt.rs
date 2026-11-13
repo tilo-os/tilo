@@ -48,17 +48,13 @@ pub struct PromptBody {
     label: String,
     input: TextInput,
     multiline: bool,
-    /// The phrase a confirmation waits for.
     phrase: Option<String>,
     rect: Rect,
     field_rect: Rect,
-    /// The caption's height at the body's width, from the last measure.
     caption_h: f64,
     label_height: f64,
     theme: Theme,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -83,9 +79,8 @@ impl PromptBody {
         }
     }
 
-    /// A confirmation that waits for `phrase` to be typed: `message` says
-    /// what will happen, the field asks for the phrase by name. Gate the
-    /// dialog's primary action on [`Self::confirms`].
+    /// A confirmation that waits for `phrase` to be typed: `message` says what will happen,
+    /// the field asks for the phrase by name.
     pub fn confirm_phrase(message: &str, phrase: &str) -> Self {
         let ask =
             crate::i18n::widget_format("widget-type-to-confirm", &[("phrase", phrase.into())]);
@@ -96,8 +91,8 @@ impl PromptBody {
         body
     }
 
-    /// Whether the typed text is the confirmation's phrase (always `true`
-    /// for a body that asks for no phrase).
+    /// Whether the typed text is the confirmation's phrase (always `true` for a body that
+    /// asks for no phrase).
     pub fn confirms(&self) -> bool {
         self.phrase
             .as_deref()
@@ -110,8 +105,7 @@ impl PromptBody {
         self
     }
 
-    /// Selects the seeded value so the first keystroke replaces it (the
-    /// rename idiom).
+    /// Selects the seeded value so the first keystroke replaces it (the rename idiom).
     #[must_use]
     pub fn with_initial(mut self, initial: &str) -> Self {
         if !initial.is_empty() {
@@ -121,8 +115,8 @@ impl PromptBody {
         self
     }
 
-    /// The field then fills the body's remaining height rather than a fixed
-    /// single-line box.
+    /// The field then fills the body's remaining height rather than a fixed single-line
+    /// box.
     #[must_use]
     pub fn multiline(mut self, on: bool) -> Self {
         self.multiline = on;
@@ -150,7 +144,6 @@ impl PromptBody {
         &mut self.input
     }
 
-    /// The gap between the caption, the label and the field.
     fn gap(theme: &Theme) -> f64 {
         f64::from(theme.tokens.spacing.s2)
     }
@@ -159,8 +152,6 @@ impl PromptBody {
         f64::from(theme.text(TextRole::Label).line_height_px())
     }
 
-    /// The field's height: one Regular control, or three body lines for a
-    /// multiline field before it scrolls.
     fn field_h(&self, theme: &Theme) -> f64 {
         let control = ControlSize::Regular.height(theme);
         if self.multiline {
@@ -170,7 +161,6 @@ impl PromptBody {
         }
     }
 
-    /// The stack's height at the caption height last measured.
     fn height(&self, theme: &Theme) -> f64 {
         let gap = Self::gap(theme);
         let mut h = self.field_h(theme);
@@ -217,7 +207,6 @@ impl Widget for PromptBody {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
-        // Full width; as tall as the stack it shows, so the sheet hugs it.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),

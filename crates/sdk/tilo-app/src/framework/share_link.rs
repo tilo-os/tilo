@@ -327,7 +327,7 @@ fn finish(url: &str, copied: Option<bool>) -> Minted {
 
 /// What `request` links to, from the record `publisher` publishes.
 fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting, String> {
-    let app = AppId::new(publisher.app).map_err(|error| error.to_string())?;
+    let app = AppId::parse(publisher.app).map_err(|error| error.to_string())?;
     let record =
         RecordSegment::new(publisher.record.unwrap_or("")).map_err(|error| error.to_string())?;
     let provider = format!("record:{}:{}", app.as_str(), record.provider_part());

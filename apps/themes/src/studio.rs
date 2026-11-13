@@ -1,14 +1,6 @@
-//! The themes a person is writing: the app's own resource.
-//!
-//! Each theme is one theme document (`ui::theme::ThemeDocument`) stored role
-//! by role, so two people tuning different roles of the same theme merge
-//! instead of overwriting each other. Every role is a field edited at its
-//! path (`Studio::paths().themes.item(&id).density.set(1.2)`), so the
-//! palette, an agent or a script shapes a theme exactly as the controls do.
-//! A change that would take a role outside the band the document admits is
-//! refused by the theme's invariant, whichever way it comes; legibility is
-//! measured on the whole document ([`Theme::findings`]) and gates applying
-//! and exporting, not editing.
+//! The themes a person is writing: the app's own resource. Every role is a field edited at
+//! its path (`Studio::paths().themes.item(&id).density.set(1.2)`), so the palette, an agent
+//! or a script shapes a theme exactly as the controls do.
 
 use ui::prelude::*;
 use ui::theme::{
@@ -135,7 +127,6 @@ pub struct Status {
     pub info: StatusTone,
 }
 
-/// One theme being written.
 #[derive(Model, Debug, Clone, PartialEq)]
 #[model(check = Theme::admitted)]
 #[expect(
@@ -144,65 +135,32 @@ pub struct Status {
               folding them into a state enum would make combinations a person can set unrepresentable"
 )]
 pub struct Theme {
-    /// Name
     #[model(label)]
     pub name: String,
-    /// Ink is light on the surfaces. Switching flips the ladder
-    /// ([`Studio::switch_polarity`]), so it is not set on its own.
     #[model(readonly)]
     pub dark: bool,
-    /// Every text pairing holds AAA.
     pub high_contrast: bool,
-    /// The hue every neutral shares, in degrees; none until something gives
-    /// the material a temperature.
     pub hue: Option<f64>,
-    /// Neutral chroma
     pub chroma: f64,
     pub surfaces: Surfaces,
     pub ink: Ink,
     pub status: Status,
-    /// The accent's hue for primary actions, links, focus and the
-    /// selection; none takes the person's own colour.
     pub tint: Option<f64>,
-    /// No accent at all: primary actions are inverted ink and the selection
-    /// is a colourless lift. A theme written before this choice existed
-    /// keeps its tint, and one without a tint takes the person's colour,
-    /// the new default; picking monochrome brings the old look back.
     #[model(default = false)]
     pub monochrome: bool,
     pub presence: Presence,
-    /// Window radius
     pub window_radius: f64,
-    /// Density
     pub density: f64,
-    /// Typeface
     pub face: String,
-    /// Body size
     pub base_size: f64,
-    /// "Always distinguish similar letters": `Some(true)` always, `None`
-    /// with the typeface (on with Hyperlegible).
     pub distinct_letters: Option<bool>,
-    /// Motion
     pub motion: f64,
-    /// Blur
     pub blur: f64,
-    /// Tint opacity
     pub tint_opacity: f64,
-    /// The window tab strip is made of the blurred material rather than
-    /// a solid ground.
     pub frosted_strip: bool,
-    /// How far down an active tab its lit rim reaches, as a share of its
-    /// height.
     pub rim_span: f64,
-    /// Lit rim opacity
     pub rim_alpha: f64,
-    /// Hover opacity
     pub hover_alpha: f64,
-    /// The document this theme was made from, as JSON: every role the
-    /// studio does not edit (each surface's finish, its border and depth,
-    /// the reading face, the motion curve) comes from it, so a theme keeps
-    /// its look through the studio. None for a theme made before it was
-    /// kept, which takes the stock roles.
     #[model(readonly)]
     #[model(default = None)]
     pub origin: Option<String>,
@@ -258,15 +216,14 @@ impl Theme {
         }
     }
 
-    /// The document this theme was made from, where it was kept and still
-    /// reads.
+    /// The document this theme was made from, where it was kept and still reads.
     fn origin(&self) -> Option<ThemeDocument> {
         serde_json::from_str(self.origin.as_deref()?).ok()
     }
 
-    /// The floating finish: the origin's as it is while the blur and tint
-    /// are its own, else its painter with the edited blur and tint (the
-    /// stock frosted or solid surface where that painter cannot take them).
+    /// The floating finish: the origin's as it is while the blur and tint are its own, else
+    /// its painter with the edited blur and tint (the stock frosted or solid surface where
+    /// that painter cannot take them).
     fn floating(&self, origin: Option<&ui::tokens::Finish>) -> ui::tokens::Finish {
         let (blur, tint) = (narrow(self.blur), narrow(self.tint_opacity));
         if let Some(origin) = origin {
@@ -429,7 +386,6 @@ impl Theme {
     }
 }
 
-/// A role's value as the theme document holds it.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "theme roles are small numbers; f32 holds them exactly enough"
@@ -524,8 +480,8 @@ fn base_document(studio: &Studio, base: &str) -> Result<ThemeDocument, Refusal> 
 }
 
 impl Studio {
-    /// The theme a new one starting from `base` (a preset id or a theme id)
-    /// is before anything changes it: the base's roles, named as its copy.
+    /// The theme a new one starting from `base` (a preset id or a theme id) is before
+    /// anything changes it: the base's roles, named as its copy.
     pub fn draft(&self, base: &str) -> Result<Theme, Refusal> {
         let mut theme = Theme::from_document(&base_document(self, base)?);
         theme.name = format!("{} copy", theme.name);
@@ -535,11 +491,6 @@ impl Studio {
 
 impl Studio {
     /// What the record holds: the themes the person is writing, role by role.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -569,8 +520,8 @@ impl Studio {
         Ok(())
     }
 
-    /// Import a theme document under `id`, after checking it is admitted
-    /// and keeps every contrast floor.
+    /// Import a theme document under `id`, after checking it is admitted and keeps every
+    /// contrast floor.
     #[action]
     pub fn import_theme(
         &mut self,
@@ -631,8 +582,6 @@ impl Studio {
     }
 
     /// Switch a theme between dark (ink light on its surfaces) and light.
-    /// The ladder flips to the stock ladder of that polarity, keeping hue and
-    /// chroma.
     #[action]
     pub fn switch_polarity(
         &mut self,
@@ -723,7 +672,6 @@ mod tests {
         assert_eq!(edited.material.window, document.material.window);
         assert_eq!(edited.depth, document.depth);
         assert_eq!(edited.shape.border, document.shape.border);
-        // A theme kept before its origin was keeps the stock roles.
         let older = Theme {
             origin: None,
             ..Theme::from_document(&document)

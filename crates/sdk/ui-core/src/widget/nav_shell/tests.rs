@@ -20,7 +20,6 @@ mod replan;
 mod sidebar_button;
 mod touch;
 
-/// A pane that fills what it is given and counts the input it receives.
 struct Probe {
     id: &'static str,
     deadline: Option<Instant>,
@@ -85,7 +84,6 @@ impl Widget for Probe {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        // This fixture fills a static rectangle and has no intrinsic state.
         self.rect == Rect::ZERO
     }
 
@@ -122,7 +120,6 @@ fn harness(shell: NavShell, w: u32, h: u32, theme: Theme) -> FrameHarness {
 
 fn settle(h: &mut FrameHarness, w: u32, height: u32) {
     h.root_mut::<NavShell>().snap();
-    // A resize that switches the layout starts its motion; land it.
     h.relayout_at((w, height)).expect("layout settles");
     h.root_mut::<NavShell>().snap();
     h.relayout_at((w, height)).expect("layout settles");
@@ -183,10 +180,9 @@ fn document_shell() -> NavShell {
     notes_shell().content_kind(ContentKind::Document)
 }
 
-/// At any width the shell picks the layout in which everything shown is
-/// usable: docked while the sidebar fits beside a column of content, one
-/// column at a time below that, and a drawer only for a content-primary app.
-/// No automatic width ever darkens the content.
+/// At any width the shell picks the layout in which everything shown is usable: docked while
+/// the sidebar fits beside a column of content, one column at a time below that, and a drawer
+/// only for a content-primary app.
 #[test]
 fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     let theme = Theme::dark();
@@ -230,8 +226,6 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
                 assert!(sidebar.x1 <= content.x0 + 0.5, "side by side");
             } else if narrow == Screen {
                 assert_eq!(g.stack, [NavPane::Sidebar, NavPane::Content]);
-                // A new window opens on the first list of items: Files'
-                // folder, Settings' categories.
                 let (front, shown, away) = if name == "files" {
                     (NavPane::Content, "content", "sidebar")
                 } else {
@@ -245,8 +239,6 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
                 );
                 assert!(child_rect(&h, away).is_none(), "one at a time");
                 if name == "files" {
-                    // The list is the screen the window opened on: a place, left by the
-                    // toggle for the places behind it.
                     assert_eq!(g.back, Rect::ZERO, "{name} {width}: the list is a place");
                     assert!(
                         g.toggle.width() > 0.0,
@@ -260,7 +252,6 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
                     "{name} {width}: the document fills the window"
                 );
             }
-            // No automatic width darkens anything: nothing is modal.
             assert_eq!(g.open_drawer(), None, "{name} {width}");
         }
     }
@@ -314,8 +305,7 @@ fn the_minimum_window_width_is_the_compact_layouts() {
 }
 
 /// A window in a strip is a window of its own: the shell decides from the window's width, never
-/// the display's. Narrower than a column of content beside it, the sidebar folds behind the bar's
-/// toggle and the list takes the window; wider, it docks and leaves the content a column.
+/// the display's.
 #[test]
 fn a_window_in_a_strip_folds_its_sidebar_rather_than_squeeze_the_list() {
     let theme = Theme::dark();
@@ -388,7 +378,6 @@ fn layout_changes_have_hysteresis() {
 /// Never the content, which nothing has chosen.
 #[test]
 fn a_fresh_narrow_window_opens_on_its_list() {
-    // A mail window: mailboxes, the inbox, a message.
     let mut h = harness(mail_shell(), 360, 700, Theme::dark());
     settle(&mut h, 360, 700);
     let g = geometry(&h);
@@ -400,7 +389,6 @@ fn a_fresh_narrow_window_opens_on_its_list() {
         "the inbox fills the screen"
     );
     assert!(g.content_column.width() <= 0.0 || g.content_column.x0 >= 360.0);
-    // A settings window: a list of pages and a page.
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
@@ -431,7 +419,6 @@ fn the_open_page_is_kept_across_docked_push_and_docked() {
         .content_header("Appearance", Vec::new());
     let mut h = harness(shell, 1280, 700, Theme::dark());
     settle(&mut h, 1280, 700);
-    // The person works in the page.
     let point = geometry(&h).content_column.center();
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     h.dispatch_to_root(&crate::synthetic_input::mouse_press());
@@ -455,12 +442,9 @@ fn the_open_page_is_kept_across_docked_push_and_docked() {
     assert_eq!(g.stack, Vec::<NavPane>::new());
 }
 
-/// A resize across the docking threshold lands in the layout its new rect
-/// asks for, on the frame that rect is laid out in: narrowing, the content
-/// fills the window; widening, the sidebar is docked beside it. Nothing is
-/// carried over from the layout the window had at its old size, so the frame
-/// a window narrowed to a phone's width draws is the frame a window opened at
-/// that width draws (`--responsive-matrix` compares the two).
+/// A resize across the docking threshold lands in the layout its new rect asks for, on the
+/// frame that rect is laid out in: narrowing, the content fills the window; widening, the
+/// sidebar is docked beside it.
 #[test]
 fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     let shell = NavShell::new()
@@ -476,7 +460,6 @@ fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     h.dispatch_to_root(&crate::synthetic_input::mouse_press());
     assert!(geometry(&h).content_column.x0 > 0.0);
 
-    // Narrower than the sidebar beside the page's minimum.
     h.relayout_at((400, 700)).expect("narrow");
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Screen);
@@ -617,9 +600,6 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                 assert!((g.sidebar_column.width() - m.sidebar.min(w - beside)).abs() < 0.5);
                 assert_eq!(g.sidebar_column.x0, 0.0);
             } else {
-                // A fresh window has no place to keep: it opens on the
-                // first list, whole screen (the inbox where the content has
-                // its own list, else the sidebar).
                 let list = if g.stack.contains(&NavPane::Overview) {
                     g.overview_column
                 } else {
@@ -641,8 +621,6 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     );
                 }
             }
-            // The toggle is top-leading, one inset in; a pushed screen has Back there instead,
-            // and a screen the window opened on has neither.
             let front = h.root::<NavShell>().front_pane();
             if g.stack.is_empty() || front != NavPane::Sidebar {
                 assert!(
@@ -703,7 +681,6 @@ fn the_sidebar_toggle_moves_and_the_choice_is_remembered_per_size_class() {
     );
     assert_eq!(child_rect(&h, "overview").map(|r| r.x0), Some(0.0));
 
-    // Narrow: one column at a time; the list is a screen of its own.
     settle(&mut h, 560, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     settle(&mut h, 1280, 800);
@@ -711,7 +688,6 @@ fn the_sidebar_toggle_moves_and_the_choice_is_remembered_per_size_class() {
         !h.root::<NavShell>().is_sidebar_open(),
         "the wide window remembers the sidebar was hidden"
     );
-    // Showing it again docks it, and the content reflows.
     h.root_mut::<NavShell>().toggle_sidebar();
     settle(&mut h, 1280, 800);
     assert_eq!(
@@ -726,9 +702,6 @@ fn the_sidebar_toggle_moves_and_the_choice_is_remembered_per_size_class() {
 
 #[test]
 fn a_toolbar_in_a_header_behind_the_drawer_settles() {
-    // The headers under an open drawer are laid out hidden; a toolbar among
-    // their actions takes that placement instead of holding its own height
-    // against it, so the layout settles.
     let toolbar = || -> Element {
         Box::new(
             crate::widget::Toolbar::new(crate::widget::toolbar::Orientation::Horizontal)
@@ -786,7 +759,6 @@ fn an_open_drawer_floats_over_the_content_without_a_scrim() {
         "not modal: the document stays exposed beside the drawer ({ids:?})"
     );
 
-    // A press on the document beside it puts the drawer away, and only that.
     let seen = content_events.get();
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
@@ -821,7 +793,6 @@ fn narrow_windows_push_the_content_over_the_overview() {
     );
     assert!(g.toggle.width() > 0.0, "it holds the way to the mailboxes");
 
-    // The mailboxes are a place the toggle reaches, and they lead back to the list.
     h.root_mut::<NavShell>().show(NavPane::Sidebar);
     settle(&mut h, 560, 800);
     let g = geometry(&h);
@@ -843,7 +814,6 @@ fn narrow_windows_push_the_content_over_the_overview() {
     assert_eq!(g.content_column.x0, 0.0);
     assert_eq!(g.overview_column, Rect::ZERO, "the overview has slid away");
 
-    // Escape goes back.
     let esc =
         crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
     assert!(h.dispatch_to_root(&esc));
@@ -903,12 +873,10 @@ fn push_mode_makes_the_sidebar_the_first_screen() {
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
 
-    // Wide, it docks like any sidebar.
     settle(&mut h, 1280, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
 }
 
-/// Set whether the shell's content probe asks for frames.
 fn set_content_animating(h: &mut FrameHarness, animating: bool) {
     if let Some(probe) = h
         .root_mut::<NavShell>()
@@ -944,7 +912,6 @@ fn a_screen_held_beside_the_window_asks_for_no_frames() {
     );
     assert!(!shell.needs_redraw(), "a culled screen asks for a redraw");
 
-    // Wide, the content stands in the window and asks as it did.
     settle(&mut h, 1280, 800);
     set_content_animating(&mut h, true);
     assert!(h.root::<NavShell>().needs_animation_frame());
@@ -1046,7 +1013,6 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     pump(&mut h, 1280, 800);
     assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
 
-    // A press whose next frame comes after the slide's whole time.
     let _arrived = crate::motion::testing::settled();
     let toggle = geometry(&h).toggle.center();
     h.click_at(toggle.x, toggle.y);
@@ -1208,7 +1174,6 @@ fn an_empty_content_header_holds_no_row_beside_the_sidebars() {
 
 #[test]
 fn history_is_one_glyph_in_the_window_top_trailing_corner() {
-    // Case `only_where_the_host_gives_the_shell_history`.
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -1216,7 +1181,6 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
         assert!(child_rect(&h, "nav-shell-history").is_none());
     }
 
-    // Case `closed_it_stands_at_the_trailing_edge_of_the_row`.
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         h.root_mut::<NavShell>()
@@ -1244,7 +1208,6 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
         );
     }
 
-    // Case `open_it_reads_as_on`.
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         h.root_mut::<NavShell>()
@@ -1260,7 +1223,6 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
         assert_eq!(button.state.checked, Some(true));
     }
 
-    // Case `the_inspector_toggle_stands_just_before_it`.
     {
         let shell = NavShell::new()
             .content(Probe::boxed("content").0)
@@ -1275,7 +1237,6 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
         assert!((g.inspector_toggle.y0 - g.history.y0).abs() < 0.5);
     }
 
-    // Case `a_shell_without_headers_grows_a_row_for_it`.
     {
         let shell = NavShell::new().content(Probe::boxed("content").0);
         let mut h = harness(shell, 1024, 700, Theme::dark());
@@ -1288,7 +1249,6 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
         assert!((g.history.x1 - (1024.0 - m.row.gutter)).abs() < 1e-9);
     }
 
-    // Case `a_narrow_push_stack_keeps_it_on_the_front_screen`.
     {
         let mut h = harness(mail_shell(), 560, 800, Theme::dark());
         h.root_mut::<NavShell>()
@@ -1349,7 +1309,6 @@ fn a_status_the_person_can_act_on_has_its_button_beside_it_in_the_row() {
         "the message {text:?} reads before its button {button:?}"
     );
 
-    // Saying something else with no button takes the button away.
     let offline = crate::widget::WindowStatus::says("Working offline");
     assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
     settle(&mut h, 1280, 800);
@@ -1559,8 +1518,6 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
 
 #[test]
 fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
-    // An app whose content is only a placeholder shows its list: narrowed,
-    // the list stays in front rather than a blank screen pushed over it.
     let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
     settle(&mut h, 1600, 800);
     h.root_mut::<NavShell>().show(NavPane::Overview);
@@ -1568,7 +1525,6 @@ fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
     let list = geometry(&h).overview_column;
     assert!(list.width() > 0.0 && list.x0 >= 0.0, "{list:?}");
-    // A press on the list reaches the list, not a screen in front of it.
     let point = list.center();
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     h.dispatch_to_root(&crate::synthetic_input::mouse_press());
@@ -1716,8 +1672,6 @@ fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer()
     h.recompose().expect("authoritative full measurement");
     assert_eq!(text_rect(&mut h), changed);
 
-    // A replacement already clean at the same scale still invalidates the
-    // retained composition, even though its own intrinsic sizes are known.
     let mut replacement = make(
         scaled,
         (480, 800),
@@ -1774,8 +1728,6 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
             .as_deref(),
         Some("inbox")
     );
-    // Mutable typed access retires the host's raw layout maps, even when
-    // used only to inspect a value. Publish a fresh admitted frame for AT.
     h.relayout_at((360, 800))
         .expect("typed inspection republished");
     let inbox = h
@@ -1809,7 +1761,6 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
     {
         let mut shell = h.root_mut::<NavShell>();
         shell.show(NavPane::Content);
-        // The first animation sample is still wholly on the outgoing page.
         shell.inputs.borrow_mut().push_pos = Some(0.0);
     }
     h.relayout_at((360, 800)).expect("incoming page frame");
@@ -1956,9 +1907,8 @@ fn present_shell(
     (scene, damage)
 }
 
-/// Maximized, the window's controls join the header row at its trailing end:
-/// one bar, the app's header and the window's controls side by side. The
-/// shell's own trailing buttons and the app's actions stand before them.
+/// Maximized, the window's controls join the header row at its trailing end: one bar, the app's
+/// header and the window's controls side by side.
 #[test]
 fn the_window_bar_merges_into_the_header_row() {
     let theme = Theme::dark();
@@ -1999,7 +1949,6 @@ fn the_window_bar_merges_into_the_header_row() {
         "the content stands below a permanent header"
     );
 
-    // Restored: the row gives the room back.
     h.root_mut::<NavShell>().set_window_bar(None);
     settle(&mut h, 1280, 800);
     let g = geometry(&h);
@@ -2043,8 +1992,6 @@ fn a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app() {
         wide,
         "a bar of a regular window's width keeps all of the window's furniture"
     );
-    // What stands in the room a phone's bar keeps: the window's own controls, and neither the
-    // window's search nor its new-tab door, which such a row draws for itself.
     let slot = crate::widget::WindowBarSlot {
         row: Rect::new(0.0, 0.0, phone, f64::from(m.header_height)),
         controls: Rect::new(phone - kept, 0.0, phone, f64::from(m.header_height)),
@@ -2061,8 +2008,6 @@ fn a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app() {
     );
     assert_eq!(furniture.new_tab, Rect::ZERO, "and its own tabs");
 
-    // The row is the bar then: the app's actions stand in it, where a wide bar's reserve would
-    // have folded them into the row's menu.
     let actions: Vec<Element> = vec![
         Box::new(Button::new("new-note", "New note")),
         Box::new(Button::icon_only(
@@ -2110,7 +2055,6 @@ fn notes_shell_with_search() -> NavShell {
 
 #[test]
 fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() {
-    // Case `told_before_the_first_build`.
     {
         let mut shell = notes_shell_with_search();
         assert!(WindowHeader::set_window_presents_search(&mut shell, true));
@@ -2120,7 +2064,6 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
         assert!(has_child(&h, "note-menu"), "the app's other actions stay");
     }
 
-    // Case `told_after_it_was_shown`.
     {
         let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -2137,7 +2080,6 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
         assert!(has_child(&h, "note-menu"));
     }
 
-    // Case `a_header_set_later_has_none_either`.
     {
         let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
         WindowHeader::set_window_presents_search(&mut *h.root_mut::<NavShell>(), true);
@@ -2153,11 +2095,7 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
     }
 }
 
-/// Before any layout the shell builds its tree for the screens a regular
-/// window shows. A first layout whose window shows those same screens needs
-/// no second tree: Settings opened at a regular size built its tree twice
-/// in one layout for nothing. A first layout that lands elsewhere (a narrow
-/// window, one screen at a time) still rebuilds, and opens on its list.
+/// Before any layout the shell builds its tree for the screens a regular window shows.
 #[test]
 fn a_first_layout_on_the_screens_the_shell_planned_keeps_its_tree() {
     let theme = Theme::dark();
@@ -2280,7 +2218,6 @@ const LANDING_FRAMES: usize = 3;
 #[test]
 fn a_push_slides_for_a_click_or_a_tap_and_lands_at_once_otherwise() {
     use crate::tokens::MotionSource;
-    // Nothing the person did: a restore, a sync, a script.
     assert!(
         !slides_after_push(|shell| shell.show(NavPane::Content)),
         "a show nobody caused lands at once"
@@ -2356,7 +2293,6 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
         "the app's own actions are the app's"
     );
 
-    // Narrow: the panes are pushed over one another, and Back is a slot.
     settle(&mut h, 560, 800);
     let front = h.root::<NavShell>().front_pane();
     assert_ne!(front, NavPane::Sidebar, "a pushed pane is in front");
@@ -2382,8 +2318,6 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
     );
 }
 
-/// A content that continues on another device and answers a diagnostic
-/// input with its own state.
 struct ResumableContent(crate::widget::Spacer);
 
 impl crate::widget::Decorator for ResumableContent {
@@ -2467,7 +2401,6 @@ fn the_shell_continues_and_reports_input_as_its_content() {
 
 /// A shown title that says something else (an item's title as it is typed) is the same part,
 /// measured and painted again: the window keeps its tree. A count is drawn in that part too.
-/// A title that comes or goes changes the header row.
 #[test]
 fn a_shown_title_that_changes_keeps_the_tree_and_one_that_goes_rebuilds_it() {
     use crate::widget::StructureChange;
@@ -2604,10 +2537,9 @@ impl Widget for Remounting {
     }
 }
 
-/// A change a part carries out in place is the shell's only where the
-/// shell can have it carried out: in a screen it lays out, in front or not,
-/// it is remounted there; a screen outside the tree is built whole when it
-/// comes back. Either way the frame settles and the window keeps its tree.
+/// A change a part carries out in place is the shell's only where the shell can have it carried
+/// out: in a screen it lays out, in front or not, it is remounted there; a screen outside the
+/// tree is built whole when it comes back.
 #[test]
 fn a_part_changed_in_place_off_screen_keeps_the_tree_and_settles() {
     let armed = SharedRc::new(Cell::new(false));
@@ -2679,7 +2611,6 @@ fn the_overview_grows_to_fit_its_rows_while_the_page_keeps_its_measure() {
     let g = at(1800);
     assert_eq!(g.overview_column.width(), cap, "the cap bounds the list");
     assert!(g.content_column.width() >= reading);
-    // Beside a page that has only its minimum, the list keeps its own width.
     let g = at(1000);
     assert!(g.overview_column.width() <= list + 1.0);
 }

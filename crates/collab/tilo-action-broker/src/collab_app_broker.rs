@@ -143,7 +143,7 @@ use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::Role as CapRole;
 #[cfg(test)]
-use tilo_action_policy::Subject;
+use tilo_action_policy::Grantee;
 use tilo_desktop_model::DesktopTree;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,7 +224,10 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(workspace).ok()) // ignored-failure: a non-uuid workspace is governed by no authority: the stricter bound applies
+        .zip(tilo_failure::ignored!(
+            "a workspace named by anything but a UUID is governed by no authority",
+            uuid::Uuid::parse_str(workspace).ok()
+        ))
         .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
     // A foreign device is held to the bound only in a workspace it does not govern.
     foreign && !governs
@@ -455,8 +458,11 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
-            let invoker = self.broker_actor().invoker(workspace_id);
-            return Ok(decide(&invoker.authority(&policy)));
+            let actor = self.broker_actor();
+            let acting = actor.acting();
+            let granted = actor.granted(workspace_id);
+            let authority = tilo_action_policy::Authority::of_acting(&acting, &policy, &granted);
+            return Ok(decide(&authority));
         }
         let workspace = tree
             .ok_or("the identity has no workspace authority")?
@@ -1268,10 +1274,11 @@ impl PendingInvocation {
 }
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
-mod action_host;
+pub(super) mod action_host;
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
+mod conversation_ask;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -1401,12 +1408,29 @@ impl AppBrokerState {
         caller: &tilo_actions::remote::Caller,
         workspace: &str,
     ) -> BrokerActor {
-        BrokerActor::for_caller(caller).capped(cap_applies_in(
+        let actor = BrokerActor::for_caller(caller).capped(cap_applies_in(
             self.certificate_authority.get().map(AsRef::as_ref),
             workspace,
             caller.is_foreign_device(),
             caller.device_public_key(),
-        ))
+        ));
+        match caller.principal() {
+            tilo_actions::remote::CallerPrincipal::App(app) => match self.app_resource_kinds(app) {
+                Some(kinds) => actor.in_app(app.clone(), kinds),
+                None => actor.through_app(app.clone()),
+            },
+            _ => actor,
+        }
+    }
+
+    /// The resource kinds `app` declared in its signed manifest, when this
+    /// broker reads installed manifests.
+    fn app_resource_kinds(&self, app: &str) -> Option<Vec<String>> {
+        self.app_resource_kinds
+            .read()
+            .ok()?
+            .as_ref()
+            .map(|resolve| resolve(app))
     }
 
     /// The person `cert` certifies, acting in `workspace` from that certificate's device.
@@ -2796,12 +2820,16 @@ pub struct AppBrokerState {
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
+    app_resource_kinds: RwLock<Option<crate::app_actions::AppResourceKindsResolver>>,
     /// Who is asked before an application uses another application's
     /// action it holds no grant for. Nobody, until the host installs its
     /// sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
+    /// A conversation turn's questions, waiting for the person's answer on
+    /// the system's sheet ([`conversation_ask`]).
+    conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
     /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
     /// time for each action an app asks for, so an app cannot bury the person
     /// in sheets, while the two apps one action of it changes are asked about
@@ -3568,8 +3596,12 @@ impl AppBrokerState {
                         .clone()
                         .unwrap_or_else(crate::app_actions::nothing_declared),
                 ),
+                app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
+                conversation_asks: std::sync::Arc::new(
+                    conversation_ask::ConversationAsks::default(),
+                ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
@@ -4051,7 +4083,14 @@ impl AppBrokerState {
                             .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Page)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                    .map_err(|reason| {
+                                        tracing::warn!(
+                                            %reason,
+                                            peer = query.peer_id,
+                                            "an app's action directory page was refused"
+                                        );
+                                        ActionDirectoryBridgeError::Unavailable
+                                    })
                             });
                         reply.send(response);
                     }
@@ -5118,7 +5157,16 @@ impl AppBrokerState {
             }
         }
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        let mut context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        // A door connection's run is the host's own and goes by the name its agent is seated as:
+        // what everything the agent writes is named by, after it left too.
+        if let Some(DurableContext::Task { binding, .. }) = &durable
+            && tilo_broker_core::services::is_door_run(&binding.task_id)
+            && let Some(context) = context.as_mut()
+            && let Some(invoker) = context.invoker.as_mut()
+        {
+            invoker.name = context.group.as_ref().map(|group| group.label.clone());
+        }
         // Where a run's agent works from is what the agent door verified of
         // its connection, kept with the run: an envelope names no device.
         let context = invoker::working_from(
@@ -6287,9 +6335,12 @@ impl AppBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // ignored-failure: a JSON-map probe; other text is evaluated as it is
-                .ok()
-                .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+            tilo_failure::ignored!(
+                "a JSON-map probe: text that is no such map is evaluated as it is",
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                    .ok()
+                    .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+            )
         });
         let consequential = descriptor
             .contract
@@ -7260,7 +7311,14 @@ impl AppBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let mut agents = workspace.agent_members_at(now);
+                let mut agents: Vec<(String, Option<String>)> = workspace
+                    .agent_members_at(now)
+                    .into_iter()
+                    .map(|(agent, _)| {
+                        let keeper = workspace.agent_keeper(&agent).map(str::to_owned);
+                        (agent, keeper)
+                    })
+                    .collect();
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
                 let mut people: Vec<String> = workspace
                     .roster()
@@ -7276,7 +7334,9 @@ impl AppBrokerState {
                     .into_iter()
                     .map(|person| {
                         let row = workspace.collaborators.iter().find(|row| row.id == person);
-                        let name = row.map_or_else(|| person.clone(), |row| row.name.clone());
+                        // Someone presence has not named is unnamed here, never named by their
+                        // key: an app calls them as it calls anyone it has no name for.
+                        let name = row.map_or_else(String::new, |row| row.name.clone());
                         // The colour presence draws them in: the one they
                         // chose, or the one their identity derives, so an app
                         // paints a person as their desk and everyone else's
@@ -7325,13 +7385,14 @@ impl AppBrokerState {
                 joined_at,
             });
         }
-        for (agent, _) in agents {
+        for (agent, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
-            // The colour its face wears everywhere ([`participant_color`] of an agent): an app
-            // draws it as the bar does, one rule for every surface.
-            let colour = ui::presence::participant_hue(&agent, true);
+            // The colour its face wears everywhere ([`participant_color`] of an agent, clear of
+            // the person who admitted it): an app draws it as the bar does, one rule and one key
+            // for every surface.
+            let colour = ui::presence::participant_hue(&agent, true, keeper.as_deref());
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
@@ -9582,8 +9643,10 @@ impl Drop for SocketStage {
         if !self.published
             && let Some(identity) = self.identity
         {
-            // ignored-failure: the next bind proves a stale socket and unlinks it
-            let _ = remove_socket_if_owned(&self.socket, identity);
+            let _ = tilo_failure::ignored!(
+                "the next bind proves a stale socket and unlinks it",
+                remove_socket_if_owned(&self.socket, identity)
+            );
         } else if !self.published
             && self.bound
             && std::fs::symlink_metadata(&self.socket)
@@ -9654,8 +9717,10 @@ struct SocketCustody {
 
 impl Drop for SocketCustody {
     fn drop(&mut self) {
-        // ignored-failure: the next bind proves a stale socket and unlinks it
-        let _ = remove_socket_if_owned(&self.path, self.identity);
+        let _ = tilo_failure::ignored!(
+            "the next bind proves a stale socket and unlinks it",
+            remove_socket_if_owned(&self.path, self.identity)
+        );
     }
 }
 
@@ -12965,16 +13030,11 @@ pub mod tests {
         };
         assert_eq!(changes(&admitted, &tree), Answer::Allow);
 
-        tree.workspaces[0].deny(
-            crate::test_support::Subject::ForeignDevice,
-            &crate::test_support::TreePath::root(),
-            crate::test_support::KindSet::UNDOABLE,
-        );
         let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
         assert_eq!(
             changes(&admitted, &tree),
-            Answer::Deny,
-            "the workspace bounds devices that are not their owner's further"
+            Answer::Allow,
+            "a device that is not the person's still changes the workspace's content"
         );
     }
 
@@ -12992,14 +13052,14 @@ pub mod tests {
         workspace.admit(principal.clone(), Role::Moderator);
         workspace.grant(tilo_action_policy::Grant::new(
             "fixture:launches-agents",
-            crate::test_support::Subject::Person(principal.clone()),
+            crate::test_support::Grantee::person(principal.clone()),
             tilo_action_policy::roles::governance_action(
                 &workspace.id().to_string(),
                 tilo_action_policy::roles::governance::GRANT,
             ),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::test_support::Subject::Person(owner),
+            crate::test_support::Grantee::person(owner),
         ));
         let route = CrdtRoute::cluster(workspace.id().to_string());
         workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
@@ -13086,21 +13146,21 @@ pub mod tests {
         workspace.admit(bob.clone(), Role::Commenter);
         workspace.grant(tilo_action_policy::Grant::new(
             "fixture:bob-launches-agents",
-            crate::test_support::Subject::Person(bob.clone()),
+            crate::test_support::Grantee::person(bob.clone()),
             roles::governance_action(&workspace_id, governance::GRANT),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::test_support::Subject::Person(owner),
+            crate::test_support::Grantee::person(owner),
         ));
         // The bounds the agents' own records keep: scribe may change what is
         // there, reader may only read.
         use crate::test_support::{Grants as _, KindSet, TreePath};
         workspace.allow(
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             &TreePath::root(),
             KindSet::READ_UNDOABLE,
         );
-        workspace.allow(Subject::agent("reader"), &TreePath::root(), KindSet::READ);
+        workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let notes = workspace.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
@@ -13239,14 +13299,14 @@ pub mod tests {
         workspace.admit(other_person, crate::test_support::Role::Viewer);
         workspace.policy.joined.insert(other_person.into(), 7_000);
         workspace.allow_in_workspace(
-            crate::test_support::Subject::person("person-in-other-workspace"),
+            crate::test_support::Grantee::person("person-in-other-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
         let collision = workspace.allow_agent(&person, crate::test_support::KindSet::READ);
         workspace.allow_agent(tide, crate::test_support::KindSet::READ);
         workspace.allow_in_workspace(
-            crate::test_support::Subject::agent("wrong-workspace"),
+            crate::test_support::Grantee::agent("wrong-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
@@ -13325,8 +13385,9 @@ pub mod tests {
                 )
                 .is_err()
         );
-        // An agent wears the colour its face wears everywhere, so the card it
-        // shows in a window is drawn as the bar draws it.
+        // An agent wears the colour its face wears everywhere, clear of the
+        // person who admitted it, so the card it shows in a window is drawn as
+        // the bar draws it.
         for agent in roster.iter().filter(|row| row.is_agent) {
             let key = agent
                 .id
@@ -13334,7 +13395,7 @@ pub mod tests {
                 .expect("an agent's id names its key");
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true)),
+                Some(ui::presence::participant_hue(key, true, Some(&person))),
                 "{key}"
             );
         }

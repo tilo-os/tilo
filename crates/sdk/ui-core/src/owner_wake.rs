@@ -1,5 +1,5 @@
-//! Optional exact-component wake intake. This module does not schedule, service,
-//! freeze, or skip any component. A wake reason is not proof of model purity.
+//! Optional exact-component wake intake. This module does not schedule, service, freeze, or skip any
+//! component.
 use crate::application::AppComponent;
 use crate::bound_dispatch::{BoundDispatchError, CallbackBinding};
 use crate::wake::{WakeEvent, WakeHandle};
@@ -12,14 +12,12 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
-/// Non-authoritative progress from an actual snapshot service. Errors retain
-/// failed/unvisited work; completed owners have returned all ordinary doors.
+/// Non-authoritative progress from an actual snapshot service.
 #[derive(Debug)]
 pub struct OwnerModelServiceReport {
     pub attempted: bool,
-    /// A save-status-only service changed what an owner shows (its window
-    /// bar's notice or unsaved mark): the next frame draws it. A save that
-    /// landed in time shows nothing and asks for no frame.
+    /// A save-status-only service changed what an owner shows (its window bar's notice or unsaved
+    /// mark): the next frame draws it.
     pub presented: bool,
     pub completed: usize,
     pub result: Result<(), BoundDispatchError>,
@@ -47,7 +45,6 @@ struct PendingState {
     entries: HashMap<Uuid, Packet>,
     order: Vec<Uuid>,
 }
-/// The queue, and what a parked host waits on for it to fill.
 #[derive(Default)]
 struct Pending(Mutex<PendingState>, Condvar);
 impl Pending {
@@ -71,7 +68,6 @@ impl Pending {
                 }
                 let packet = slot.get_mut();
                 packet.requires_sync |= requires_sync;
-                // Any other wake asks for the owner's whole service.
                 packet.save_progress_only &= save_progress_only;
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
@@ -96,16 +92,14 @@ struct Entry {
 type Index = RefCell<HashMap<Uuid, Entry>>;
 
 /// UI-affine registration index with a Send-safe, weak pending intake.
-/// Hosts register actual mounted components. Queue presence is only scheduling
-/// metadata; each service re-admits the current physical owner and canonical record.
 #[derive(Clone, Default)]
 pub struct OwnerWakeQueue {
     pending: Arc<Pending>,
     index: Rc<Index>,
 }
 
-/// An opaque index locator. Equality requires the exact registration allocation
-/// as well as the UUID bucket. Neither the locator nor a wake grants authority.
+/// An opaque index locator. Equality requires the exact registration allocation as well as the UUID
+/// bucket.
 #[derive(Clone)]
 pub struct OwnerWakeKey {
     id: Uuid,
@@ -123,8 +117,7 @@ impl Hash for OwnerWakeKey {
     }
 }
 
-/// Weak Send sink for the component's ORIGINAL mount callback. It owns no root,
-/// registry, document, store, callback binding, or component lifetime.
+/// Weak Send sink for the component's ORIGINAL mount callback.
 #[derive(Clone)]
 pub struct OwnerWakeSink {
     token: Weak<Token>,
@@ -132,7 +125,6 @@ pub struct OwnerWakeSink {
 }
 impl OwnerWakeSink {
     /// Queue a signal only if its original scope and registration remain open.
-    /// `true` means queued; it is not a checked document or callback admission.
     pub fn enqueue(&self, event: WakeEvent) -> bool {
         let _profile = tilo_resource::profiling::Phase::start(if event.requires_sync() {
             "ui.owner_wake.enqueue_sync"
@@ -149,7 +141,6 @@ impl OwnerWakeSink {
 }
 
 /// One taken signal with the original checked binding retained privately.
-/// This type deliberately exposes no root, registry, document, or callback door.
 pub struct OwnerWakeRequest {
     key: OwnerWakeKey,
     event: WakeEvent,
@@ -168,16 +159,14 @@ impl OwnerWakeRequest {
     pub const fn requires_sync(&self) -> bool {
         self.requires_sync
     }
-    /// Every wake taken here said only that the owner's record's save moved
-    /// on ([`crate::wake::WakeHandle::wake_save_progress`]): its service
-    /// shows the save status, and runs no model callback.
+    /// Every wake taken here said only that the owner's record's save moved on
+    /// ([`crate::wake::WakeHandle::wake_save_progress`]): its service shows the save status, and runs
+    /// no model callback.
     pub const fn save_progress_only(&self) -> bool {
         self.save_progress_only
     }
-    /// Check current exact component/root/registry custody afresh. This is not a
-    /// document loan, and cannot authorize any later opaque model callback.
-    /// # Errors
-    /// Refuses a retired registration or a different/missing component owner.
+    /// Check current exact component/root/registry custody afresh. This is not a document loan, and
+    /// cannot authorize any later opaque model callback.
     pub fn check_current(&self, component: &mut AppComponent) -> Result<(), BoundDispatchError> {
         let token = self
             .key
@@ -191,8 +180,8 @@ impl OwnerWakeRequest {
     }
 }
 
-/// Registration ownership belongs to the actual AppComponent, not its label,
-/// checkout, container, or a retained root address. Close precedes callbacks.
+/// Registration ownership belongs to the actual AppComponent, not its label, checkout, container, or a
+/// retained root address.
 pub(crate) struct OwnerWakeRegistration {
     token: Arc<Token>,
     pending: Weak<Pending>,
@@ -261,12 +250,8 @@ impl OwnerWakeQueue {
             sink,
         ))
     }
-    /// Take the whole pending collection BEFORE any consumer callback. Return
-    /// owners in first-dirty arrival order; coalescing retains their position.
-    /// Late wakes enter a new collection. Public requeue merges at a late
-    /// owner's existing position or appends after already pending owners.
-    /// Batch Drop instead restores failed and unvisited requests before late owners.
-    /// Work is proportional to queued owners, not registrations.
+    /// Take the whole pending collection BEFORE any consumer callback. Return owners in first-dirty
+    /// arrival order; coalescing retains their position.
     pub fn take_pending(&self) -> Vec<OwnerWakeRequest> {
         let mut packets = {
             let mut pending = self.pending.0.lock_recover();
@@ -298,8 +283,8 @@ impl OwnerWakeQueue {
             })
             .collect()
     }
-    /// Return an unserviced signal without clearing work raised after the take.
-    /// A failed fresh admission never becomes a successful receipt.
+    /// Return an unserviced signal without clearing work raised after the take. A failed fresh
+    /// admission never becomes a successful receipt.
     pub fn requeue(&self, request: OwnerWakeRequest) -> bool {
         let Some(token) = request.key.token.upgrade() else {
             return false;
@@ -324,10 +309,8 @@ impl OwnerWakeQueue {
     pub fn has_pending(&self) -> bool {
         !self.pending.0.lock_recover().entries.is_empty()
     }
-    /// Whether a queued wake asks for an owner's model, not only for its
-    /// save status: what a frame may have to show. A save that moved on
-    /// is serviced without asking for a frame; its service asks for one
-    /// only when the owner shows something new.
+    /// Whether a queued wake asks for an owner's model, not only for its save status: what a frame may
+    /// have to show.
     pub fn has_pending_model_work(&self) -> bool {
         self.pending
             .0
@@ -336,8 +319,8 @@ impl OwnerWakeQueue {
             .values()
             .any(|packet| !packet.save_progress_only)
     }
-    /// Park the calling thread, as an idle host's event loop does, until a
-    /// wake is queued or `deadline` passes. Whether one is queued.
+    /// Park the calling thread, as an idle host's event loop does, until a wake is queued or `deadline`
+    /// passes.
     pub fn wait_pending_until(&self, deadline: crate::time::Instant) -> bool {
         let mut pending = self.pending.0.lock_recover();
         loop {

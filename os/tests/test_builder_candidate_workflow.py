@@ -116,12 +116,16 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
                 tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
                 self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
-        # The agent participant's browser regressions are single tests, so those are named.
-        self.assertEqual(participant[:2], ('tilo-agent-participant', 'host_agents'))
+        # The agent participant's browser regressions are single tests of the `host_agents`
+        # module of its one test binary (`it`), so those are named.
+        self.assertEqual(participant[:2], ('tilo-agent-participant', 'it'))
         names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
                  'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
                  'the_creator_and_a_joined_page_both_see_every_task_live')
-        self.assertEqual(filterset_terms(participant[2]), {('test', f'={name}') for name in names})
+        self.assertEqual(filterset_terms(participant[2]),
+                         {('test', f'=host_agents::{name}') for name in names})
+        binary = (ROOT / 'crates/agent/agent-participant/tests/it.rs').read_text()
+        self.assertIn('#[path = "host_agents.rs"]\nmod host_agents;', binary)
         source = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
         for name in names:
             self.assertIn(f'async fn {name}()', source)

@@ -1,15 +1,7 @@
-//! A segmented control whose labels do not fit folds into a picker: the
-//! chosen segment's label and a chevron, on the same face the window bar's
-//! location and views menu use ([`super::super::window_toolbar_row::paint_picker`]),
-//! and a menu of every segment, the chosen one checked. No segment label is
-//! ever cut short.
-//!
-//! A [`ToggleGroup`] folds on its own. A host that paints a
-//! [`SegmentedFace`] asks [`SegmentedFace::folds`] whether its strip folds,
-//! paints it with [`SegmentedFace::folded`], and opens the shared
-//! [`ContextMenu`] with [`SegmentedFace::menu_items`] when the folded strip
-//! is pressed.
-
+//! A segmented control whose labels do not fit folds into a picker: the chosen segment's label and
+//! a chevron, on the same face the window bar's location and views menu use
+//! ([`super::super::window_toolbar_row::paint_picker`]), and a menu of every segment, the chosen
+//! one checked. No segment label is ever cut short.
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -22,18 +14,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ControlSize, Widget};
 
-/// Whether segments of natural widths `naturals` (full label, short label)
-/// all show a whole label in `width`: their full labels, or their short
-/// forms where they have them.
 pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
     let needed: f64 = naturals.iter().map(|(full, short)| full.min(*short)).sum();
     needed <= width.max(0.0) + 1e-6
 }
 
 impl SegmentedFace<'_> {
-    /// Whether a strip of plain `labels` laid out in `segments` folds into a
-    /// picker: some label, even in its short form, does not fit whole in the
-    /// segment it would paint in.
     #[must_use]
     pub fn folds(
         segments: &[Rect],
@@ -53,8 +39,6 @@ impl SegmentedFace<'_> {
                 .any(|(segment, (full, short))| full.min(*short) > segment.width() + 0.5)
     }
 
-    /// Paint the strip folded, as a picker: `hovered` lifts it, `open` says
-    /// its menu is up.
     #[must_use]
     pub fn folded(mut self, hovered: bool, open: bool) -> Self {
         self.fold = Some(LocationLift {
@@ -65,8 +49,6 @@ impl SegmentedFace<'_> {
         self
     }
 
-    /// The menu a folded strip of `labels` opens: every segment, the
-    /// `selected` one checked. Row `i` chooses segment `i`.
     #[must_use]
     pub fn menu_items(labels: &[&str], selected: usize) -> Vec<MenuItem> {
         labels
@@ -76,7 +58,6 @@ impl SegmentedFace<'_> {
             .collect()
     }
 
-    /// The whole strip: every segment's rect, joined.
     fn strip(&self) -> Option<Rect> {
         let first = self.segments.first()?;
         Some(
@@ -97,7 +78,6 @@ impl SegmentedFace<'_> {
         }
     }
 
-    /// Paint the folded strip, if it is folded; whether it was.
     pub(super) fn paint_folded(
         &self,
         scene: &mut Scene,
@@ -107,7 +87,6 @@ impl SegmentedFace<'_> {
         let (Some(mut lift), Some(strip)) = (self.fold, self.strip()) else {
             return false;
         };
-        // Keyboard focus rings the picker as it rings the whole strip.
         lift.focused = self.focused && !self.disabled;
         let mut ink = theme.tokens.colors.text_primary;
         if self.disabled {
@@ -123,7 +102,6 @@ impl SegmentedFace<'_> {
             PickerText::new(&self.folded_label(), ink),
             strip,
             lift,
-            // A strip in a view paints its own words: the bar reads them where it draws it.
             None,
         );
         true
@@ -131,9 +109,6 @@ impl SegmentedFace<'_> {
 }
 
 impl ToggleGroup {
-    /// Whether this strip may fold: one choice of labelled segments across
-    /// a row. A tab strip scrolls instead; a multi-select strip wraps; a
-    /// rail stacks.
     pub(super) fn can_fold(&self) -> bool {
         self.orientation == Orientation::Horizontal
             && self.chosen.is_none()
@@ -144,7 +119,6 @@ impl ToggleGroup {
                 .any(|segment| !segment.label.is_empty())
     }
 
-    /// Fold or unfold for the room the strip has.
     pub(super) fn refold(&mut self, measured: bool) {
         let folded = self.can_fold() && measured && !labels_fit(self.rect.width(), &self.naturals);
         if folded != self.folded {
@@ -156,20 +130,16 @@ impl ToggleGroup {
         }
     }
 
-    /// Whether the strip is folded into a picker.
     #[must_use]
     pub fn is_folded(&self) -> bool {
         self.folded
     }
 
-    /// Whether the folded strip's menu is open.
     #[must_use]
     pub fn menu_is_open(&self) -> bool {
         self.menu.is_open()
     }
 
-    /// Open the folded strip's menu under it: every segment, the chosen one
-    /// checked, a disabled one disabled.
     pub(super) fn open_fold_menu(&mut self) {
         let items = self
             .segments
@@ -188,8 +158,6 @@ impl ToggleGroup {
         self.cache_dirty = true;
     }
 
-    /// Hand an event to the open menu; a row chosen chooses its segment.
-    /// Whether the menu took the event.
     pub(super) fn fold_menu_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -215,13 +183,10 @@ impl ToggleGroup {
         if !self.menu.is_open() {
             self.cache_dirty = true;
         }
-        // The menu is modal while it is up: the keyboard is its, and so is
-        // the press that closes it.
         *ctx.handled = true;
         true
     }
 
-    /// Paint the open menu above everything after it.
     pub(super) fn draw_fold_menu(
         &mut self,
         scene: &mut Scene,
@@ -229,7 +194,6 @@ impl ToggleGroup {
         (text, theme, presence): (&mut TextRenderer, &Theme, &crate::presence::PresenceCtx),
     ) {
         if let Some(viewport) = presence.viewport.get() {
-            // An open menu stays inside the window as it is now.
             if self.menu.is_open() && self.viewport != Some(viewport) {
                 self.menu.set_viewport(Some(viewport));
             }
@@ -245,7 +209,6 @@ impl ToggleGroup {
         );
     }
 
-    /// A fresh menu for a new strip.
     pub(super) fn fold_menu() -> ContextMenu {
         ContextMenu::new()
     }
@@ -262,7 +225,6 @@ mod tests {
 
     const LABELS: [&str; 5] = ["Cut", "Dissolve", "Fade", "Dip to black", "Wipe"];
 
-    /// A transition chooser laid out `width` wide, as a host lays it out.
     fn chooser(width: f64, chosen: Rc<RefCell<Vec<usize>>>) -> ToggleGroup {
         let mut group = ToggleGroup::new(LABELS.iter().map(|l| Segment::new(*l)).collect(), 1)
             .on_view("choice", move |index| chosen.borrow_mut().push(index));
@@ -273,8 +235,6 @@ mod tests {
         group
     }
 
-    /// One frame of a 640 by 480 window: the strip, then its overlay, as a
-    /// window paints them.
     fn frame(group: &mut ToggleGroup) -> Vec<u32> {
         let mut text = TextRenderer::new();
         let theme = Theme::high_contrast();
@@ -306,8 +266,6 @@ mod tests {
         dispatch(group, &cursor_moved(at.x, at.y));
         dispatch(group, &mouse_press());
         dispatch(group, &mouse_release());
-        // A press reports a choice through the group's published action; the
-        // choice lands when a host answers it.
         crate::testing::answer_controls(group);
     }
 
@@ -379,8 +337,6 @@ mod tests {
         assert!(SegmentedFace::folds(
             &narrow, &LABELS, size, &mut text, &theme
         ));
-        // Equal shares of a strip that holds the labels laid out by need cut
-        // the longest one: the strip folds rather than paint it cut.
         let even: Vec<Rect> = (0..LABELS.len())
             .map(|i| {
                 let x = f64::from(u8::try_from(i).unwrap_or(0)) * 70.0;

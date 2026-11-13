@@ -14,20 +14,17 @@ use std::time::Duration;
 
 use serde_json::{Value as Json, json};
 
-/// The MCP version the REPL asks for.
 const PROTOCOL: &str = "2025-06-18";
 
-/// The client name the person is asked to admit: what the sheet names, and what
-/// `--admit-repl` names the program for.
+/// The client name the person is asked to admit: what the
+/// sheet names, and what `--admit-repl` names the program
+/// for.
 pub const CLIENT: &str = "tilolang repl";
 
-/// How long a door call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// How long the person has to admit the REPL.
 const ADMIT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// One JSON line at a time over a Unix socket.
 struct Lines {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -69,32 +66,26 @@ impl Lines {
     }
 }
 
-/// What a tool answered: its text, and whether it is an error.
 #[derive(Debug, Clone)]
 pub struct Answer {
     pub text: String,
     pub failed: bool,
 }
 
-/// The REPL's connection to the door, admitted.
 pub struct Door {
     lines: Lines,
     next: u64,
-    /// The tools the door serves the REPL.
     pub tools: Vec<String>,
 }
 
 impl Door {
-    /// Connect to the door at `socket` and be admitted: by the person in the session's own
-    /// prompt, or, when they named this program as they started the session
-    /// (`tilo-session --admit-repl PATH`), by their decision made ahead of time. Admitted, it
-    /// works in the task run the session makes for the connection.
+    /// Connect to the door at `socket` and be admitted: by the person in the session's own prompt,
+    /// or, when they named this program as they started the session (`tilo-session --admit-repl
+    /// PATH`), by their decision made ahead of time.
     pub fn open(socket: &Path, say: &dyn Fn(&str)) -> Result<Self, String> {
         let mut lines = Lines::connect(socket)
             .map_err(|error| format!("the session's agent door isn't available: {error}"))?;
-        // The REPL asks to act as the person: its lines are theirs, typed by them. The person
-        // decides it, on the sheet the session shows, or by naming this program when they
-        // start the session (`tilo-session --admit-repl PATH`).
+        // The REPL asks to act as the person: its lines are theirs, typed by them.
         lines.send(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -139,7 +130,6 @@ impl Door {
         loop {
             let reply = self.lines.receive(CALL_TIMEOUT)?;
             if reply.get("id") != Some(&json!(id)) {
-                // A notification, or the answer to a request given up on.
                 continue;
             }
             if let Some(error) = reply.get("error") {

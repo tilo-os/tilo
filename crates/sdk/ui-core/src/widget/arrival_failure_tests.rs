@@ -6,7 +6,6 @@ use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::widget::{Button, Column, Slot, Spacer};
 
-/// A window that did not open, with a retry that counts its presses.
 fn window_failure(retried: &Rc<Cell<u32>>) -> WindowFailure {
     let retry = Rc::clone(retried);
     WindowFailure::new(
@@ -47,7 +46,6 @@ fn a_window_failure_is_the_one_failure_banner_centred_at_the_readable_width() {
     assert_eq!(node.name.as_deref(), Some("This window didn't open"));
     assert_eq!(node.description.as_deref(), Some("Lounge did not answer."));
 
-    // A narrow window gives it its width, less the gutter, still centred.
     h.resize((400, 600)).unwrap();
     let face = h.targets()["failed"];
     assert!(face.width() < 400.0 && face.x0 > 0.0, "{face:?}");
@@ -76,8 +74,6 @@ fn its_retry_answers_the_keyboard_the_pointer_and_assistive_technology() {
 
 #[test]
 fn it_stands_at_rest_from_its_first_frame_where_a_window_brings_it_in() {
-    // The same banner on its own opens where it arrives in a shown window;
-    // the window's face does not.
     for in_window in [false, true] {
         let (slot, handle) = Slot::new(Box::new(Spacer::fixed(10.0)));
         let mut h = harness(Box::new(Column::new().push(Box::new(slot))), (900, 700));

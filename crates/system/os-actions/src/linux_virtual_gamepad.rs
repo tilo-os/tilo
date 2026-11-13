@@ -1,10 +1,5 @@
-//! Linux virtual gamepad implementation for the typed peripheral broker.
-//!
-//! The public device seam accepts only [`ForwardedGamepadEvent`]. It cannot
-//! express raw HID reports, arbitrary evdev codes, descriptors, serials,
-//! keyboards, pointers, storage, or security keys. The production provider
-//! creates one fixed uinput gamepad profile; tests inject an in-memory device
-//! and never require `/dev/uinput`.
+//! The Linux virtual gamepad behind the typed peripheral broker: the public seam
+//! accepts only [`ForwardedGamepadEvent`].
 
 use std::io;
 
@@ -12,34 +7,30 @@ use crate::peripheral_forwarding::{
     ForwardedGamepadEvent, VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 
-/// USB vendor of the fixed virtual gamepad a granted lease creates. Local
-/// discovery uses it to tell that device apart from hardware in the room.
+/// USB vendor of the fixed virtual gamepad a granted lease creates; discovery uses it to tell that
+/// device from hardware.
 pub const FORWARDED_GAMEPAD_VENDOR: u16 = 0x1d6b;
-/// USB product of the fixed virtual gamepad; see [`FORWARDED_GAMEPAD_VENDOR`].
+/// USB product of the same virtual gamepad.
 pub const FORWARDED_GAMEPAD_PRODUCT: u16 = 0x5153;
 
 /// A local Linux device restricted to the broker's sanitized gamepad events.
 pub trait LinuxGamepadDevice: Send {
-    /// Emit one typed gamepad event and synchronize it to local consumers.
+    /// Emits one typed gamepad event and synchronizes it to local consumers.
     fn emit(&mut self, event: ForwardedGamepadEvent) -> io::Result<()>;
 
-    /// Neutralize all fixed axes and hats and release every fixed button.
     fn release_all(&mut self) -> io::Result<()>;
 
-    /// Destroy the local virtual device. Implementations must be idempotent.
+    /// Implementations must be idempotent.
     fn destroy(&mut self) -> io::Result<()>;
 }
 
-/// Opens exactly the fixed Tilo gamepad profile, with no caller-supplied
-/// capabilities or identity strings.
+/// Opens exactly the fixed profile, with no caller-supplied capabilities or identity strings.
 pub trait LinuxGamepadDeviceProvider: Send + Sync {
     type Device: LinuxGamepadDevice + 'static;
 
-    /// Open a fixed-profile local virtual gamepad.
     fn open_fixed_gamepad(&self) -> io::Result<Self::Device>;
 }
 
-/// Adapts a constrained Linux device provider to the privileged broker.
 pub struct LinuxVirtualGamepadFactory<P> {
     provider: P,
 }
@@ -93,17 +84,16 @@ impl<D: LinuxGamepadDevice> Drop for ManagedLinuxGamepad<D> {
         if self.destroyed {
             return;
         }
-        // A failed neutralization must not prevent destruction. The broker
-        // receives release errors during explicit revocation; Drop is the
-        // final best-effort safety net for unwinding and factory consumers.
+        // A failed neutralization must not prevent destruction: the broker gets release errors during
+        // explicit revocation, while `Drop` is the last chance.
         let _ = self.device.release_all();
         let _ = self.device.destroy();
         self.destroyed = true;
     }
 }
 
-/// Production provider for Linux uinput. Opening is deferred until a verified
-/// broker lease is acquired, so constructing this value has no side effects.
+/// Opening is deferred until a verified lease is acquired, so constructing this value has no side
+/// effect.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UinputGamepadDeviceProvider;
 
@@ -166,9 +156,9 @@ mod uinput {
                 set_capability::<UI_SET_ABSBIT>(fd, code)?;
             }
 
-            // SAFETY: `uinput_user_dev` is a C POD whose all-zero bit pattern
-            // is valid. Every field consumed by the kernel is initialized
-            // below before its exact byte representation is written.
+            // SAFETY: `uinput_user_dev` is a C POD whose all-zero bit pattern is valid. Every field
+            // consumed by the kernel is initialized below before its exact byte representation is
+            // written.
             let mut setup: libc::uinput_user_dev = unsafe { std::mem::zeroed() };
             let name = b"Tilo Forwarded Gamepad\0";
             for (target, source) in setup.name.iter_mut().zip(name.iter().copied()) {
@@ -180,8 +170,8 @@ mod uinput {
             setup.id.version = 1;
             configure_axes(&mut setup)?;
 
-            // SAFETY: `setup` remains alive and immutable for this call; the
-            // byte slice covers exactly its initialized C representation.
+            // SAFETY: `setup` remains alive and immutable for this call; the byte slice covers exactly
+            // its initialized C representation.
             let bytes = unsafe {
                 slice::from_raw_parts(
                     std::ptr::from_ref(&setup).cast::<u8>(),
@@ -189,8 +179,8 @@ mod uinput {
                 )
             };
             file.write_all(bytes)?;
-            // SAFETY: fd refers to `/dev/uinput`; this no-argument ioctl is
-            // issued only after the fixed capability/setup payload above.
+            // SAFETY: fd refers to `/dev/uinput`; this no-argument ioctl is issued only after the
+            // fixed capability/setup payload above.
             unsafe { ioctl(&file, NoArg::<UI_DEV_CREATE>::new()) }?;
 
             Ok(Self {
@@ -209,8 +199,8 @@ mod uinput {
                 code,
                 value,
             };
-            // SAFETY: `event` remains alive and immutable while `write_all`
-            // reads exactly the initialized C struct representation.
+            // SAFETY: `event` remains alive and immutable while `write_all` reads exactly the
+            // initialized C struct representation.
             let bytes = unsafe {
                 slice::from_raw_parts(
                     std::ptr::from_ref(&event).cast::<u8>(),
@@ -264,8 +254,8 @@ mod uinput {
             if self.destroyed {
                 return Ok(());
             }
-            // SAFETY: fd is the same `/dev/uinput` file used to create this
-            // device, and the operation carries no user pointer.
+            // SAFETY: fd is the same `/dev/uinput` file used to create this device, and the operation
+            // carries no user pointer.
             unsafe { ioctl(&self.file, NoArg::<UI_DEV_DESTROY>::new()) }?;
             self.destroyed = true;
             Ok(())
@@ -279,9 +269,8 @@ mod uinput {
     }
 
     fn set_capability<const OPCODE: Opcode>(fd: BorrowedFd<'_>, code: u16) -> io::Result<()> {
-        // SAFETY: all callers pass a uinput integer-capability opcode and a
-        // code from the fixed constants above; no arbitrary ioctl or code
-        // enters through the public API.
+        // SAFETY: all callers pass a uinput integer-capability opcode and a code from the fixed
+        // constants above; no arbitrary ioctl or code enters through the public API.
         unsafe { ioctl(fd, IntegerSetter::<OPCODE>::new_usize(usize::from(code))) }?;
         Ok(())
     }
@@ -300,7 +289,6 @@ mod uinput {
         Ok(())
     }
 
-    /// Every absolute axis the device declares: the forwarded axes and the hat.
     fn axis_codes() -> impl Iterator<Item = u16> {
         AXES.into_iter()
             .map(axis_code)

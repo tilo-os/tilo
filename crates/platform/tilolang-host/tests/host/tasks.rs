@@ -584,10 +584,9 @@ impl Desk {
     /// Run the host until it settles, the broker carrying between the two: Tasks' record to
     /// Today, which joined it to read, and what Today asks of Tasks' door to Tasks.
     fn settle(&mut self) {
-        let mut quiet_since = std::time::Instant::now();
+        let began = std::time::Instant::now();
         let mut handed = Vec::new();
         loop {
-            let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
             let mut changed = self.host.turn();
             self.tasks.take();
             self.today.take();
@@ -604,12 +603,19 @@ impl Desk {
                 changed = true;
             }
             changed |= self.carry_asks();
-            if changed || woken {
-                quiet_since = std::time::Instant::now();
-            } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
+            let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
+            if !changed && !woken && !self.host.owes_work() {
                 return;
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                began.elapsed() < SETTLE_LIMIT,
+                "the host owes work after {}s: {} opening, {} running",
+                began.elapsed().as_secs(),
+                self.host.opening(),
+                self.host.instances().count()
+            );
+            if !changed {
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
@@ -797,5 +803,40 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
     assert!(
         today.instance().host().unwrap().root_of(TASKS).is_err(),
         "Today's record holds no root of Tasks"
+    );
+}
+
+/// An agent at the door of a Tasks no one has written in yet finds the list's actions by name:
+/// `new_task` on the list, which the directory publishes at the app's top level.
+#[test]
+fn a_fresh_tasks_offers_its_lists_actions_at_the_door_by_name() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", &app, bundle, Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: "new task".into(),
+            ..query()
+        },
+    );
+    let list = found
+        .rows
+        .iter()
+        .find(|row| row.action.as_deref() == Some("new_task"))
+        .unwrap_or_else(|| panic!("new_task is offered by name: {:?}", found.rows));
+    assert!(
+        list.resource.starts_with(&format!("tl:{app}:root-")),
+        "{list:?}"
+    );
+    let top = page(&mut host, &mut window, &directory, query());
+    assert!(
+        top.rows.iter().any(|row| row.resource == list.resource),
+        "the list is at the app's top level: {:?}",
+        top.rows
     );
 }

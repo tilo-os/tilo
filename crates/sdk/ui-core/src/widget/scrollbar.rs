@@ -1,25 +1,6 @@
-//! Shared scrollbar interaction model — the single source of truth for
-//! thumb geometry, thumb dragging, and track paging used by every
-//! scroll-capable widget in the toolkit ([`Scrollable`], [`DataTable`],
-//! [`DocumentViewport`]).
-//!
-//! Each widget owns its own **track geometry** (bars live on different
-//! edges/insets) and its own **authoritative offset**; this module turns a
-//! `(track, metrics, cursor)` triple into a thumb rect, a drag delta, or a
-//! page step so the *behaviour* stays byte-for-byte identical everywhere —
-//! pressing the thumb anchors `(cursor, offset)` and a subsequent move maps
-//! the cursor delta onto the content range (clamped to `[0, max_scroll]`);
-//! pressing the track pages the view by [`PAGE_FRACTION`] of a viewport;
-//! hover reports whether the pointer is over the thumb so the owner can
-//! brighten it.
-//!
-//! The model holds only ephemeral interaction state (a drag anchor + hover
-//! flag) and is deliberately axis-scoped: a widget that scrolls on both
-//! axes owns two [`Scrollbar`]s.
-//!
-//! [`Scrollable`]: crate::widget::Scrollable
-//! [`DataTable`]: crate::widget::data_table::DataTable
-//! [`DocumentViewport`]: crate::widget::DocumentViewport
+//! Shared scrollbar interaction model — the single source of truth for thumb geometry, thumb
+//! dragging, and track paging used by every scroll-capable widget in the toolkit
+//! ([`Scrollable`], [`DataTable`], [`DocumentViewport`]).
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
@@ -31,7 +12,6 @@ use crate::widget::data_table::tier_on;
 /// leaves a grabbable target.
 pub const MIN_THUMB_LEN: f64 = 24.0;
 
-/// Fraction of a viewport scrolled when paging via a track click.
 pub const PAGE_FRACTION: f64 = 0.9;
 
 /// Content must exceed the viewport by more than this (logical px) on an
@@ -43,12 +23,8 @@ pub const FIT_EPS: f64 = 0.5;
 /// derived tier, so the track reads as a groove and not a second thumb.
 pub const TRACK_ALPHA: u8 = 13;
 
-/// The thumb's fill: the secondary ink while hovered, dragged or focused,
-/// stepped out until it clears the non-text floor (3:1) against the ground
-/// it scrolls over. At rest it is the quiet tertiary ink on a dark ground;
-/// on a light ground the same ink reads as a heavy dark bar, so it rests a
-/// third of the way back toward the ground (it still clears the floor once
-/// the pointer is on it). One answer for every scroll owner.
+/// The thumb's fill: the secondary ink while hovered, dragged or focused, stepped out until it
+/// clears the non-text floor (3:1) against the ground it scrolls over.
 #[must_use]
 pub fn thumb_color(theme: &Theme, active: bool) -> Color {
     let colors = &theme.tokens.colors;
@@ -72,19 +48,14 @@ pub fn thumb_color(theme: &Theme, active: bool) -> Color {
     }
 }
 
-/// Relative luminance from which a ground counts as light for the thumb.
 const LIGHT_GROUND_LUMINANCE: f64 = 0.179;
-/// How far a resting thumb on a light ground steps back toward it.
 const LIGHT_REST_TOWARD_GROUND: f32 = 0.35;
 
-/// How long an overlay bar stays fully visible after the last scroll.
 pub(crate) const BAR_HOLD_MS: u64 = 900;
 
-/// The idle fade of an overlay scroll bar: fully visible for a moment after
-/// scrolling, then fading out, unless something holds it (the pointer near
-/// the bar, a drag, keyboard focus, reduced motion, an always-visible bar).
-/// One timer for `Scrollable` and painted [`super::ScrollRegion`]s, so every
-/// bar in the system appears and fades alike.
+/// The idle fade of an overlay scroll bar: fully visible for a moment after scrolling, then
+/// fading out, unless something holds it (the pointer near the bar, a drag, keyboard focus,
+/// reduced motion, an always-visible bar).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BarFade {
     pub(crate) last_activity: Option<crate::time::Instant>,
@@ -172,7 +143,6 @@ impl BarFade {
 /// track so the person sees where to scroll.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackMark {
-    /// Where the annotated content starts, in content coordinates.
     pub at: f64,
     /// How long it is, in content coordinates (a mark is at least a
     /// hairline long on the track).
@@ -201,7 +171,6 @@ pub fn paint_thumb(
     );
 }
 
-/// The track's fill behind an expanded bar, derived against the base surface.
 #[must_use]
 pub fn track_color(theme: &Theme) -> Color {
     tier_on(theme.tokens.colors.surfaces.base, TRACK_ALPHA)
@@ -236,11 +205,8 @@ pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
     )
 }
 
-/// The rounded corners of the surface a scroll owner sits in (the window),
-/// as the owner sees them in its own coordinates. The theme says the
-/// surface in the coordinates of the scene being drawn
-/// ([`Theme::surface`]); an owner learns where it lands where it draws
-/// ([`Self::seen`]) and passes its tracks through [`Self::clear`].
+/// The rounded corners of the surface a scroll owner sits in (the window), as the owner sees
+/// them in its own coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SurfaceCorners(Option<crate::theme::SurfaceShape>);
 
@@ -271,12 +237,8 @@ impl SurfaceCorners {
     }
 }
 
-/// `track`, a bar's track, with its ends kept out of the rounded corners of
-/// `surface` (in the same coordinates). A vertical track that runs along a
-/// side with a rounded corner stops that corner's radius short of the top
-/// or bottom edge; a horizontal track along the bottom or top stops a
-/// corner's radius short of the side. A square corner, a track away from
-/// the corners, or no surface leaves it as it is, running to the edge.
+/// `track`, a bar's track, with its ends kept out of the rounded corners of `surface` (in the
+/// same coordinates).
 #[must_use]
 pub fn clear_of_corners(
     track: Rect,
@@ -290,7 +252,6 @@ pub fn clear_of_corners(
     let r = surface.radii;
     let mut t = track;
     if vertical {
-        // How far a corner on the track's side reaches along it.
         let reach = |left: f64, right: f64| {
             let left = if t.x0 < b.x0 + left { left } else { 0.0 };
             let right = if t.x1 > b.x1 - right { right } else { 0.0 };
@@ -314,12 +275,9 @@ pub fn clear_of_corners(
     t
 }
 
-/// The scroll geometry along one axis, all lengths in logical px.
-///
-/// `content` is the full scrollable extent, `viewport` the visible
-/// window, and `offset` the current scroll position (`0` = start). The
-/// offset is *not* assumed pre-clamped — every derived quantity clamps
-/// defensively.
+/// The scroll geometry along one axis, all lengths in logical px. `content` is the full
+/// scrollable extent, `viewport` the visible window, and `offset` the current scroll position
+/// (`0` = start).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollMetrics {
     pub content: f64,
@@ -349,7 +307,6 @@ impl ScrollMetrics {
     }
 }
 
-/// Outcome of a press hit-tested against one bar.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PressOutcome {
     /// The press missed this bar (neither thumb nor track).
@@ -367,9 +324,7 @@ pub enum PressOutcome {
 /// offset delta without snapping the thumb centre to the cursor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DragAnchor {
-    /// Cursor coordinate along the drag axis at grab time.
     grab_cursor: f64,
-    /// Offset at grab time.
     grab_offset: f64,
 }
 
@@ -411,12 +366,10 @@ impl Scrollbar {
         }
     }
 
-    /// A vertical bar (thumb travels along Y, lives on the right edge).
     pub fn vertical() -> Self {
         Self::new(true)
     }
 
-    /// A horizontal bar (thumb travels along X, lives on the bottom edge).
     pub fn horizontal() -> Self {
         Self::new(false)
     }
@@ -432,18 +385,14 @@ impl Scrollbar {
         self.vertical
     }
 
-    /// Whether a thumb drag is currently in progress.
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// Whether the pointer is currently over the thumb.
     pub fn is_hovered(&self) -> bool {
         self.hover
     }
 
-    /// Whether the thumb should render in its brightened state (hovered or
-    /// dragging).
     pub fn is_active(&self) -> bool {
         self.hover || self.drag.is_some()
     }
@@ -482,17 +431,14 @@ impl Scrollbar {
         }
     }
 
-    /// The track this bar takes in `lane`, the strip a scroll owner keeps
-    /// free on its trailing (or bottom) edge (`metrics.scrollbar_gutter`
-    /// wide): the thumb thickness (`metrics.scroll_thumb`) centred across
-    /// the lane, inset by the same margin at both ends. Painted hosts use it
-    /// so their bars sit where a `Scrollable`'s do.
+    /// The track this bar takes in `lane`, the strip a scroll owner keeps free on its trailing
+    /// (or bottom) edge (`metrics.scrollbar_gutter` wide): the thumb thickness
+    /// (`metrics.scroll_thumb`) centred across the lane, inset by the same margin at both ends.
     #[must_use]
     pub fn track_in(&self, lane: Rect, theme: &Theme) -> Rect {
         self.track_of_thickness(lane, f64::from(theme.tokens.metrics.scroll_thumb))
     }
 
-    /// [`Self::track_in`] for a thumb `thumb` thick.
     #[must_use]
     pub fn track_of_thickness(&self, lane: Rect, thumb: f64) -> Rect {
         let across = if self.vertical {
@@ -531,11 +477,8 @@ impl Scrollbar {
         if self.vertical { p.y } else { p.x }
     }
 
-    /// The thumb rect within `track` for the given `metrics`, or `None`
-    /// when there's no meaningful content to represent. The owner is
-    /// responsible for only supplying a `track` when the bar is actually
-    /// shown (content overflows); this method does not re-check overflow so
-    /// the thumb stays visible while a drag/clamp settles at an edge.
+    /// The thumb rect within `track` for the given `metrics`, or `None` when there's no
+    /// meaningful content to represent.
     pub fn thumb_rect(&self, track: Rect, m: ScrollMetrics) -> Option<Rect> {
         let track_len = self.axis_len(track);
         if m.content <= 0.0 || track_len <= 0.0 {
@@ -611,11 +554,8 @@ impl Scrollbar {
         PressOutcome::Miss
     }
 
-    /// Map the live cursor to an absolute offset for the active drag, or
-    /// `None` when no drag is in progress. The thumb travels
-    /// `track_len - thumb_len` px across the full content range, so that
-    /// ratio converts a cursor delta into a content delta. The result is
-    /// clamped to `[0, max_scroll]`.
+    /// Map the live cursor to an absolute offset for the active drag, or `None` when no drag is
+    /// in progress.
     pub fn drag_to(&self, track: Rect, m: ScrollMetrics, cursor: Point) -> Option<f64> {
         let anchor = self.drag?;
         let thumb = self.thumb_rect(track, m)?;
@@ -697,12 +637,8 @@ mod tests {
                 horizontal
             );
         }
-        // A bar away from the window's corners (a sidebar's, a list's in
-        // the middle of the window) is not shortened.
         let inner = Rect::new(200.0, 40.0, 208.0, 250.0);
         assert_eq!(clear_of_corners(inner, true, Some(&rounded)), inner);
-        // Only the corners that are rounded count: a window square at the
-        // bottom keeps its bar running to the bottom edge.
         let top_only = SurfaceShape {
             bounds: window,
             radii: vello::kurbo::RoundedRectRadii::new(12.0, 12.0, 0.0, 0.0),
@@ -750,10 +686,9 @@ mod tests {
         Rect::new(92.0, 0.0, 100.0, 300.0)
     }
 
-    /// The thumb clears the non-text floor against the ground it scrolls
-    /// over once the pointer is on it, on every material, and at rest on a
-    /// dark one; a resting thumb on a light ground is lighter but still
-    /// shows. Active is the stronger.
+    /// The thumb clears the non-text floor against the ground it scrolls over once the pointer
+    /// is on it, on every material, and at rest on a dark one; a resting thumb on a light
+    /// ground is lighter but still shows.
     #[test]
     fn the_thumb_clears_the_non_text_floor_on_every_material() {
         use crate::a11y::contrast_ratio;
@@ -896,7 +831,6 @@ mod tests {
             // Already at top → paging up clamps to 0.
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
             let thumb = bar.thumb_rect(v_track(), m).unwrap();
-            // Force a non-zero start so "above" exists; use offset in the middle.
             let m_mid = ScrollMetrics::new(1200.0, 300.0, 450.0);
             let thumb_mid = bar.thumb_rect(v_track(), m_mid).unwrap();
             let above = Point::new(96.0, thumb_mid.y0 - 5.0);
@@ -961,7 +895,6 @@ mod primary_region_tests {
     }
 }
 
-/// The application's explicit primary region. Owners stamp component identity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PrimaryScrollRegion {
     pub key: &'static str,

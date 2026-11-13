@@ -21,14 +21,11 @@ use crate::session::SessionStatus;
 use crate::vnc::VncInput;
 
 /// A connected session: the remote terminal grid or desktop, painted from
-/// the transport's own state, with the pointer and keyboard forwarded to the
-/// remote machine while the pane has focus.
 pub(crate) struct SessionPane {
     session: SharedSession,
     rect: Rect,
     focused: bool,
     /// How far one wheel notch scrolls, from the theme the pane was last
-    /// laid out with: a trackpad clicks a VNC desktop's wheel this often.
     wheel_line: f64,
 }
 
@@ -59,7 +56,6 @@ impl SessionPane {
         let media = &theme.tokens.colors.media;
         scene.fill(Fill::NonZero, transform, media.letterbox, None, &surface);
         let Some(img) = core.fb_image.clone() else {
-            // Connected, but no frame decoded yet.
             let style = theme.text(TextRole::Body);
             let label = crate::resource::CATALOG.t("remote-waiting-first-frame");
             let (w, h) = text_renderer.measure_style(&label, None, &style);
@@ -111,8 +107,6 @@ impl SessionPane {
     }
 
     /// Paint the SSH terminal grid, straight from the remote PTY output held
-    /// in the [`crate::vt::VtGrid`], on the window's content ground in the
-    /// theme's terminal palette.
     fn draw_terminal(
         grid: &crate::vt::VtGrid,
         scene: &mut Scene,
@@ -137,7 +131,6 @@ impl SessionPane {
         let pad = f64::from(theme.tokens.spacing.s4);
         for (row, line) in lines.iter().enumerate() {
             let y = surface.y0 + pad + row as f64 * line_h;
-            // Draw cells run by run (consecutive cells of one style).
             let mut x = surface.x0 + pad;
             let mut i = 0;
             while let Some(cell) = line.cells.get(i) {
@@ -175,7 +168,6 @@ impl SessionPane {
                 x += run.chars().count() as f64 * cell_w;
             }
         }
-        // Block caret at the remote cursor, in the person's own colour.
         let (cx, cy) = cursor;
         let caret = Rect::from_origin_size(
             (
@@ -289,9 +281,6 @@ impl SessionPane {
             return false;
         }
         if core.vnc_session().is_some() {
-            // Down on the press and up on the release, modifiers included,
-            // so a held Ctrl or Shift reaches the remote desktop with the key
-            // it modifies.
             let Some(key) = core.track_key(
                 event.physical_key,
                 pressed.then(|| vnc_keysym(&event.logical_key)).flatten(),
@@ -380,8 +369,6 @@ impl Widget for SessionPane {
             WindowEvent::KeyboardInput { event, .. } if self.focused => {
                 self.handle_key(event, ctx.modifiers.state())
             }
-            // The window lost the keyboard: what is held here is released
-            // somewhere else.
             WindowEvent::Focused(false) => {
                 self.session.borrow_mut().release_held_keys();
                 false

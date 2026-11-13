@@ -180,9 +180,7 @@ impl Core {
     #[must_use]
     pub fn unshared(&self) -> String {
         let id = tilo_reference::embed::UNSHARED_PHRASE;
-        self.words
-            .borrow()
-            .word(id, &[], tilo_reference::embed::UNSHARED)
+        self.word_args(id, &[], tilo_reference::embed::UNSHARED)
     }
 
     fn rich_arg(&self, h: i32) -> HResult<RichValue> {

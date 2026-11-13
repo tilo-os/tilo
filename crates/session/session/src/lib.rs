@@ -53,6 +53,10 @@ pub mod search;
 mod search_agent;
 mod search_ask;
 mod session_actions;
+// The person's settings, which Settings' window drives through the broker as another provider's
+// actions: the session keeps them in its settings service, so the answer is this host's.
+#[cfg(target_os = "linux")]
+mod settings_steps;
 // What a message from another member is, and whether the workspace's policy grants it: the gate
 // table every host asks, named here as the session always has.
 pub use tilo_session_client::gate as workspace_gate;
@@ -114,6 +118,8 @@ mod capture_studio;
 #[cfg(target_os = "linux")]
 mod cards;
 #[cfg(target_os = "linux")]
+mod carets;
+#[cfg(target_os = "linux")]
 mod certification;
 #[cfg(target_os = "linux")]
 mod chrome;
@@ -140,12 +146,12 @@ pub mod controllers;
 #[cfg(target_os = "linux")]
 mod controls;
 #[cfg(target_os = "linux")]
-mod conversations;
+pub mod conversations;
 #[cfg(target_os = "linux")]
 mod desk;
-pub mod desk_doc;
 #[cfg(target_os = "linux")]
-mod desk_migration;
+mod desk_changes;
+pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_resource;
 #[cfg(target_os = "linux")]
@@ -180,6 +186,8 @@ mod display_settings;
 mod display_sheet;
 #[cfg(target_os = "linux")]
 pub mod displays;
+#[cfg(target_os = "linux")]
+mod documents;
 #[cfg(target_os = "linux")]
 mod door_runs;
 #[cfg(target_os = "linux")]
@@ -358,6 +366,8 @@ mod sockets;
 pub mod startup;
 pub mod status;
 #[cfg(target_os = "linux")]
+pub mod style_packages;
+#[cfg(target_os = "linux")]
 pub mod surfaces;
 pub mod switcher;
 pub mod sync;
@@ -374,6 +384,8 @@ pub mod termination;
 pub mod test_control;
 #[cfg(target_os = "linux")]
 mod tools;
+#[cfg(target_os = "linux")]
+pub mod turn_questions;
 #[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]

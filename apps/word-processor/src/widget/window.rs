@@ -23,14 +23,9 @@ use winit::event::WindowEvent;
 use super::Editor;
 use crate::framework::Document;
 
-/// The word processor's window: the editor it shows and the document it
-/// follows.
 pub struct WordProcessorWidget {
     editor: Rc<RefCell<Editor>>,
-    /// The document as the framework keeps it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<Live<Document>>,
-    /// The `(revision, loads)` of the document last shown.
     presented: Option<(u64, u64)>,
 }
 
@@ -45,7 +40,6 @@ impl WordProcessorWidget {
         Self::over(Editor::new())
     }
 
-    /// A window showing `editor`.
     pub(crate) fn over(editor: Editor) -> Self {
         Self {
             editor: Rc::new(RefCell::new(editor)),
@@ -54,7 +48,6 @@ impl WordProcessorWidget {
         }
     }
 
-    /// This window following the document `live` holds, shown at once.
     #[must_use]
     pub(crate) fn following(mut self, live: Live<Document>) -> Self {
         self.live = Some(live);
@@ -62,14 +55,10 @@ impl WordProcessorWidget {
         self
     }
 
-    /// The editor the window shows, shared with the view's effect handler
-    /// and publications.
     pub fn state(&self) -> RefMut<'_, Editor> {
         self.editor.borrow_mut()
     }
 
-    /// The editor of a window nothing else shares it with: one a test
-    /// mounted by itself.
     #[cfg(test)]
     pub(crate) fn editor_mut(&mut self) -> &mut Editor {
         Rc::get_mut(&mut self.editor)
@@ -77,12 +66,10 @@ impl WordProcessorWidget {
             .get_mut()
     }
 
-    /// The editor, for the view's effect handler and publications to hold.
     pub(crate) fn editor(&self) -> Rc<RefCell<Editor>> {
         Rc::clone(&self.editor)
     }
 
-    /// Show the document as it is now, when it changed since.
     fn follow_document(&mut self) {
         if let Some(state) = self
             .live
@@ -94,11 +81,6 @@ impl WordProcessorWidget {
     }
 }
 
-/// The page is this window's content, so the window's zoom gestures are the
-/// page's: Ctrl+Plus, Ctrl+Minus and Ctrl+0, Ctrl+scroll and a pinch scale
-/// the sheet — the words — and the window bar says the level. Without it the
-/// window would grow its own chrome while the page a person is trying to
-/// read stayed the size it was.
 impl ui::content_zoom::ContentZoom for WordProcessorWidget {
     fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
         Some(self.state().zoom_page(step))
@@ -144,7 +126,6 @@ impl Widget for WordProcessorWidget {
         self.state().settle(edits, path);
     }
 
-    /// One self-drawn leaf filling its tile.
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -207,8 +188,6 @@ impl Widget for WordProcessorWidget {
         "WordProcessor"
     }
 
-    // A test, or a host that embeds the editor, reaches the window by its
-    // type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -319,8 +298,6 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
-    // The document is the framework's publication; the editor adds only
-    // what an edit answers its caller with.
     fn document_action_result(
         &self,
         doc: &AutoCommit,
@@ -407,14 +384,8 @@ impl Findable for WordProcessorWidget {
     }
 }
 
-/// Lets the shell host the word processor in a tab directly, the same way
-/// it hosts the terminal and the file explorer, instead of standing a
-/// placeholder card in its place.
 impl ui::widget::AppWidget for WordProcessorWidget {
     fn app_kind(&self) -> ui::widget::AppKind {
-        // The toolkit's app-kind vocabulary has no separate "documents"
-        // variant; a word processor is an editor of text, which is what
-        // `Editor` names and what its tab glyph depicts.
         ui::widget::AppKind::Editor
     }
 
@@ -423,8 +394,6 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 
     fn app_icon(&self) -> ui::widget::IconDescriptor {
-        // Nerd Font document glyph, matching the convention the other
-        // hosted apps use for their tab pill.
         ui::widget::IconDescriptor::Glyph("󰈬")
     }
 

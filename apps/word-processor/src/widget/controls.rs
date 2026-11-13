@@ -1,6 +1,5 @@
 //! The editor's controls: its drawers, formatting tools, panel
 //! fields, pickers and palettes, the context menu and the clipboard.
-
 use super::block_layout::{line_spacing as block_line_spacing, line_spacing_label};
 use super::image_layout::{anchor as image_anchor, wrap as image_wrap};
 use super::text_runs::{char_font_family, char_font_size, char_highlight, parse_hex_rgb};
@@ -35,8 +34,6 @@ impl Editor {
         self.blocks.iter().position(|b| b.id == block)
     }
 
-    /// Selection endpoints in document order, computed from the block cache
-    /// (so it works during `draw`, which has no `state`).
     fn selection_span_cached(&self) -> Option<(Caret, Caret)> {
         crate::word_processor::ordered_selection_span(
             self.inner.selection_anchor.as_ref(),
@@ -45,7 +42,6 @@ impl Editor {
         )
     }
 
-    /// Per-block selected char ranges spanning the selection (cache-based).
     pub(super) fn selection_blocks_cached(&self) -> Vec<(String, usize, usize)> {
         let Some((start, end)) = self.selection_span_cached() else {
             return vec![];
@@ -72,9 +68,6 @@ impl Editor {
         Some((char_to_byte(text, s), char_to_byte(text, e)))
     }
 
-    /// Move the caret one page on, or one page back, to the same place on
-    /// that sheet: the column it stands at, on the sheet above or below.
-    /// `extend` grows the selection instead of moving the caret alone.
     pub(super) fn move_page(&mut self, forward: bool, extend: bool) {
         let page = self.caret_page();
         let target = if forward {
@@ -85,8 +78,6 @@ impl Editor {
         if target == page || target >= self.pages.max(1) {
             return;
         }
-        // The same column, on the target sheet's first line: the page's own
-        // top, inside its text band.
         let column = self.caret_screen_x();
         let Some(top) = self
             .laid
@@ -102,8 +93,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Where the caret draws this frame, on screen: its line's origin plus the
-    /// shaped layout's own caret geometry.
     fn caret_screen_x(&self) -> Option<f64> {
         let caret = &self.inner.caret;
         let laid = self.laid.iter().find(|laid| laid.id == caret.block)?;
@@ -146,10 +135,7 @@ impl Editor {
 
     pub(super) fn apply_tool(&mut self, state: &mut ui::widget::Edits<'_>, action: ToolAction) {
         match action {
-            // Every document-mutating format dispatches its matching
-            // `RichTextAction` through the shared action path (the same
-            // EncodedAction the Ctrl+K palette dispatches), so it replays
-            // byte-identically and lands as one undo boundary.
+            // Every format dispatches the palette's own `RichTextAction`, as one undo boundary.
             ToolAction::Bold => self.dispatch_toggle_mark(state, "strong"),
             ToolAction::Italic => self.dispatch_toggle_mark(state, "em"),
             ToolAction::Underline => self.dispatch_toggle_mark(state, "underline"),
@@ -159,15 +145,12 @@ impl Editor {
                 "color",
                 crate::actions::MarkVal::Str(crate::styles::color_to_hex(c)),
             ),
-            // The neutral swatch clears any per-run colour, reverting to the
-            // block's style ink.
             ToolAction::TextColor(None) => self.dispatch_clear_mark(state, "color"),
             ToolAction::Highlight(Some(c)) => self.dispatch_set_mark_value(
                 state,
                 "highlight",
                 crate::actions::MarkVal::Str(crate::styles::color_to_hex(c)),
             ),
-            // The "no highlight" swatch clears any per-run highlight band.
             ToolAction::Highlight(None) => self.dispatch_clear_mark(state, "highlight"),
             ToolAction::Super => self.dispatch_exclusive_mark(state, "super", "sub"),
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
@@ -258,8 +241,6 @@ impl Editor {
         self.edit_table_via_action(state, edit);
     }
 
-    /// Mutate the focused block's style in the live widget sheet (component-
-    /// instance preview), then optionally persist it to the document.
     fn edit_focused_style(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -278,7 +259,6 @@ impl Editor {
         }
     }
 
-    /// Dispatch a click on a styles-panel target.
     pub(super) fn apply_panel_hit(&mut self, state: &mut ui::widget::Edits<'_>, hit: PanelHit) {
         match hit {
             PanelHit::Close => {
@@ -287,16 +267,10 @@ impl Editor {
                 self.lifecycle.dirty = true;
             }
             PanelHit::Pick(id) => {
-                // A built-in style implies a structural kind, applied together as one
-                // action/undo boundary: picking "Heading 1" yields a *real* heading
-                // (present in outline/TOC), "List Item" a real list item — not merely
-                // styled body text. Custom styles are pure visual presets; kind stays untouched.
                 self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
                 self.lifecycle.dirty = true;
             }
-            // Direct paragraph formatting on the current paragraph(s), not the
-            // named style — only the panel exposes these, not the toolbar.
             PanelHit::ParaAlign(a) => {
                 self.dispatch_block_attr(
                     state,
@@ -329,7 +303,6 @@ impl Editor {
         }
     }
 
-    /// `PanelHit::NewStyle`: duplicate the focused style under a fresh id.
     fn apply_panel_hit_new_style(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(key) = self.focused_style_key() else {
             return;
@@ -345,9 +318,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// `PanelHit::ImageScale`: scale the *current on-screen* size (aspect
-    /// locked) so repeated presses compound predictably, seeding from the
-    /// live doc size when set, else the laid display size.
     fn apply_panel_hit_image_scale(&mut self, state: &mut ui::widget::Edits<'_>, factor: f64) {
         let Some(id) = self.selected_image_id() else {
             return;
@@ -357,9 +327,7 @@ impl Editor {
             .image_size(state, &id)
             .or_else(|| self.selected_image_dims())
             .unwrap_or((240.0, 160.0));
-        // Keep width + height in one action/undo boundary. Direct writes here
-        // used to make a resize invisible to the action catalogue and could
-        // replay as two independently stale attributes.
+        // Width and height change in one action, so a replay cannot stale one attribute.
         let width = num::i64_of_f64((cw * factor).round().clamp(16.0, 4_000.0));
         let height = num::i64_of_f64((ch * factor).round().clamp(16.0, 4_000.0));
         self.perform_action(
@@ -370,8 +338,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// `PanelHit::ImageFlipH`/`ImageFlipV`: mirror the selected image about
-    /// its horizontal (`horizontal`) or vertical axis.
     fn apply_panel_hit_image_flip(&mut self, state: &mut ui::widget::Edits<'_>, horizontal: bool) {
         let Some(id) = self.selected_image_id() else {
             return;
@@ -395,8 +361,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Crop or reset the selected image through one atomic action. The panel and
-    /// Ctrl+K image resource intentionally calculate exactly the same 5% inset.
     fn apply_panel_hit_image_crop(&mut self, state: &mut ui::widget::Edits<'_>, inset: bool) {
         let Some(id) = self.selected_image_id() else {
             return;
@@ -412,8 +376,6 @@ impl Editor {
             edge("crop_bottom"),
         );
         if inset {
-            // Preserve a visible 5% source window; at the limit the control is
-            // a harmless no-op rather than writing an invalid crop.
             if left.saturating_add(right) > 8_500 || top.saturating_add(bottom) > 8_500 {
                 return;
             }
@@ -435,9 +397,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Choose one of the image's canonical placement modes. The free mode is
-    /// page-relative and therefore does not participate in text flow; the two
-    /// wrap modes preserve paragraph-relative flow.
     fn apply_panel_hit_image_placement(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -455,7 +414,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Open the shared [`ColorPicker`] seeded with the focused style's colour.
     pub(super) fn open_color_picker(&mut self) {
         let seed = self
             .focused_style_key()
@@ -464,10 +422,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// While the colour picker is open, route input to it (drag the SV square /
-    /// hue strip / RGB sliders); an outside press or Escape closes it. A committed
-    /// colour is applied live to the focused style. Returns whether the event was
-    /// consumed (so the caller stops further dispatch).
     pub(super) fn pump_color_picker(
         &mut self,
         event: &WindowEvent,
@@ -501,9 +455,6 @@ impl Editor {
         result.consumed
     }
 
-    /// Open the compact toolbar's shared swatch grid. The labels describe the
-    /// *formatting effect* rather than forcing assistive technology users to
-    /// infer it from a hexadecimal value alone.
     pub(super) fn open_compact_swatch_palette(&mut self, kind: PaletteKind) {
         self.context_menu.close();
         self.style_menu.close();
@@ -521,8 +472,6 @@ impl Editor {
             ),
         };
         let labels = swatch_names(kind);
-        // The command is the window bar's, above the editor: the grid opens
-        // at the top of the page, under the bar's trailing actions.
         let anchor = Point::new(self.rect.x1, self.rect.y0);
         let current = match kind {
             PaletteKind::Text => self.current_text_color(),
@@ -542,9 +491,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Route compact swatch-grid input ahead of the page. A picked colour still
-    /// uses the exact `ToolAction` path as the desktop toolbar, preserving one
-    /// mutation/action implementation and one collaboration boundary.
     pub(super) fn pump_compact_swatch_palette(
         &mut self,
         event: &WindowEvent,
@@ -571,8 +517,6 @@ impl Editor {
         true
     }
 
-    /// Commit any compact-palette route through the same canonical formatting
-    /// actions as its pointer, keyboard, and assistive-technology callers.
     pub(super) fn apply_compact_palette_choice(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -592,9 +536,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// The next/previous cell id within the caret cell's table, if any.
-    /// The char position the toolbar reports font state for: just left of the
-    /// caret (so it reflects the run you're typing into), else the caret.
     fn font_probe(&self) -> Option<(&BlockView, usize)> {
         let b = self
             .blocks
@@ -604,8 +545,6 @@ impl Editor {
         Some((b, pos))
     }
 
-    /// The font the selection is set in: its run's `font` mark, else its
-    /// paragraph style's family.
     pub(super) fn current_font(&self) -> FontFamily {
         self.font_probe()
             .and_then(|(b, pos)| char_font_family(pos, &b.marks))
@@ -616,8 +555,6 @@ impl Editor {
             .unwrap_or_default()
     }
 
-    /// Whether the caret's paragraph is a list of the kind `ordered` names
-    /// (numbered, else bulleted): the list buttons show on.
     pub(super) fn list_active(&self, ordered: bool) -> bool {
         self.blocks
             .iter()
@@ -625,9 +562,6 @@ impl Editor {
             .is_some_and(|b| b.kind == "list_item" && b.flag("ordered") == ordered)
     }
 
-    /// The effective font size at the selection: the per-run `size` character
-    /// mark under the caret if present, else the resolved paragraph style's
-    /// size. Seeds the toolbar's A− / A+ nudges (which write a per-run mark).
     pub(super) fn current_font_size(&self) -> f32 {
         if let Some(sz) = self
             .font_probe()
@@ -729,8 +663,6 @@ impl Editor {
             .unwrap_or_else(|| "left".into())
     }
 
-    /// The caret block's line-spacing multiplier (from the cached blocks), or 1.0.
-    /// Drives the toolbar chip label.
     pub(super) fn current_line_spacing(&self) -> f64 {
         self.blocks
             .iter()
@@ -738,8 +670,6 @@ impl Editor {
             .map_or(1.0, |b| f64::from(block_line_spacing(b)))
     }
 
-    /// The per-run `highlight` colour covering the font-probe position (just left
-    /// of the caret), if any — used to ring the active highlight swatch.
     pub(super) fn current_highlight_color(&self) -> Option<[u8; 3]> {
         let (b, pos) = self.font_probe()?;
         char_highlight(pos, &b.marks)
@@ -750,8 +680,7 @@ impl Editor {
             return false;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        // A copy still waiting on the compositor counts as taken: a cut never
-        // waits on it, and undo brings the text back if it fails after all.
+        // A copy still waiting on the compositor counts as taken: undo brings the text back.
         if ui::text_selection::try_clipboard_copy(&plain).outcome() == Some(false) {
             return false;
         }
@@ -759,8 +688,6 @@ impl Editor {
         true
     }
 
-    /// Paste with formatting when the system clipboard still holds our last rich
-    /// copy; otherwise paste the clipboard's plain text (e.g. from another app).
     pub(super) fn clipboard_paste(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(sys) = clipboard_paste() else {
             return;
@@ -777,8 +704,7 @@ impl Editor {
     }
 
     fn paste_plain_text_via_action(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
-        // The published `paste` primitive; a paste beyond its per-call text
-        // bound (an agent limit, not a person's) keeps the direct fragment.
+        // Beyond the primitive's per-call bound (an agent limit) the direct fragment is used.
         let content = crate::actions::editing::PasteContent::Text(text.to_string());
         let view = self.local_edit_view();
         if let Ok((envelopes, next)) = crate::actions::editing::paste(&view, state, &content) {
@@ -804,7 +730,6 @@ impl Editor {
         self.paste_fragment_via_action(state, blocks);
     }
 
-    /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
     pub(super) fn clipboard_paste_plain(&mut self, state: &mut ui::widget::Edits<'_>) {
         if let Some(t) = clipboard_paste() {
             self.paste_plain_text_via_action(state, &t);
@@ -818,9 +743,6 @@ impl Editor {
         self.inner.move_end(state);
     }
 
-    /// Char span `(start, end)` of the word at char-offset `off` in `text`
-    /// (whitespace-delimited, matching `WordProcessor::select_word`). `start ==
-    /// end` means the offset sits on whitespace (no word).
     fn word_span_at(text: &str, off: usize) -> (usize, usize) {
         let chars: Vec<char> = text.chars().collect();
         let off = off.min(chars.len());
@@ -836,10 +758,6 @@ impl Editor {
         (s, e)
     }
 
-    /// If the word at block-char-span `(s, e)` is flagged misspelled, return its
-    /// up-to-`max` spelling suggestions. Empty vec when the word is fine. Uses a
-    /// fresh `check` over just the word so it reflects the **current** dictionary
-    /// (including freshly-added user words), not the stale per-block cache.
     fn suggestions_for_word(&mut self, word: &str) -> Option<Vec<String>> {
         if word.is_empty() {
             return None;
@@ -852,24 +770,17 @@ impl Editor {
         Some(spellcheck::suggestions_for_language(&language, word, 5))
     }
 
-    /// Build + open the right-click context menu at screen `pos`. Selects the word
-    /// under the click when nothing is selected, then assembles rows: misspelled-word
-    /// suggestions + "Add to dictionary" (if flagged) prepended to Cut/Copy/Paste/
-    /// Select All. `context_actions` mirrors the rows for left-click dispatch by index.
     pub(super) fn open_context_menu(
         &mut self,
         state: &AutoCommit,
         content_pt: Point,
         pos: [f32; 2],
     ) {
-        // Place the caret under the click; select the word when there's no
-        // selection so Cut/Copy act on something.
+        // Select the word under the click when nothing is selected, so Cut and Copy act.
         let selected_ranges = self.inner.selection_blocks(state);
         let previous_caret = self.inner.caret.clone();
         let previous_anchor = self.inner.selection_anchor.clone();
         self.caret_from_pointer(content_pt, false);
-        // Raw click char offset (before `select_word` snaps the caret to the word
-        // end) — used to test which tracked-change / comment range was clicked.
         let raw_click_off = self.inner.caret.offset;
         let block = self.inner.caret.block.clone();
         let block_text = self.inner.current_text(state);
@@ -883,7 +794,6 @@ impl Editor {
             self.inner.select_word(state);
         }
 
-        // Identify the clicked word's block + char span for spell-check actions.
         let (wstart, wend) = Self::word_span_at(&block_text, raw_click_off);
         let word: String = block_text
             .chars()
@@ -906,9 +816,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Context-menu rows for the clicked word's spell-check suggestions (up
-    /// to 3) + "Add to dictionary", when spell-check is on and the word is
-    /// currently flagged.
     fn push_spellcheck_rows(
         &mut self,
         menu: &mut ContextMenu,
@@ -939,8 +846,6 @@ impl Editor {
         actions.push(None);
     }
 
-    /// Context-menu rows for Cut/Copy (when there's a selection), Paste
-    /// (when the clipboard holds text) and always Select All.
     fn push_clipboard_rows(&self, menu: &mut ContextMenu, actions: &mut Vec<Option<CtxAction>>) {
         let has_sel = self.inner.has_selection();
         let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
@@ -962,9 +867,6 @@ impl Editor {
         actions.push(Some(CtxAction::SelectAll));
     }
 
-    /// Dispatch the context-menu row at `idx` against the widget, then close the
-    /// menu. Separator / out-of-range rows are ignored. Returns `true` when a
-    /// row ran.
     pub(super) fn dispatch_context_action(
         &mut self,
         idx: usize,
@@ -1002,9 +904,6 @@ impl Editor {
                     self.dict = None;
                     self.spell_cache.clear();
                 } else if self.proofing.personal_words.add(&word) {
-                    // Keep it with the person's settings, then build the
-                    // dictionary again so every block re-checks and the
-                    // squiggle clears on the next draw.
                     self.dict = None;
                     self.spell_cache.clear();
                 }
@@ -1015,13 +914,11 @@ impl Editor {
                 end,
                 replacement,
             } => {
-                // One replayable, attributable envelope through the executor
-                // (the published apply-spelling-suggestion op builds the same
-                // splice), never a direct CRDT write.
+                // One attributable envelope through the executor, as the published operation does.
                 let region = self.inner.region_kind();
                 self.splice_via_action(state, region, &block, start, end, &replacement);
                 self.refresh_blocks(state);
-                // The block text changed; its cache entry is stale.
+                // The block's text changed; its cached spans are stale.
                 self.spell_cache.remove(&block);
             }
             CtxAction::Review(action) => self.dispatch_review_action(action, state),
@@ -1031,9 +928,6 @@ impl Editor {
         true
     }
 
-    /// The style id of the picker chip under `p` in the styles panel, if any.
-    /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
-    /// rects are live at right-click time.
     pub(super) fn style_chip_at(&self, p: Point) -> Option<String> {
         if self.style_pick_rect.contains(p) {
             return self.focused_style_key();
@@ -1044,8 +938,6 @@ impl Editor {
         })
     }
 
-    /// Apply a typed style-menu outcome. The component owns presentation and
-    /// hit-testing; document mutation remains editor policy.
     pub(super) fn dispatch_style_menu(
         &mut self,
         action: StyleMenuAction,
@@ -1064,7 +956,6 @@ impl Editor {
                     properties.name = format!("{} copy", properties.name);
                     self.sheet.styles.insert(new_id.clone(), properties);
                     self.persist_stylesheet_via_actions(state);
-                    // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
                 }
@@ -1073,9 +964,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Carry out a choice from the File menu: the file commands go through
-    /// the document's effects, as their shortcuts do; a template replaces the
-    /// document (the menu has already asked when there were words).
     pub(super) fn apply_file_choice(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1098,25 +986,18 @@ impl Editor {
         }
     }
 
-    /// Whether the document has words a template would replace.
     pub(super) fn has_words(&self) -> bool {
         self.blocks
             .iter()
             .any(|block| !block.text.trim().is_empty())
     }
 
-    /// Where menus and pickers may float: the window less a small margin,
-    /// so a floating panel never runs flush against the window's edge.
     pub(super) fn floating_viewport(&self) -> Rect {
         self.rect
             .inset(-f64::from(self.desk_theme.tokens.spacing.s2))
     }
 
-    /// Replace the open document's content with `template`'s Markdown, **in place**
-    /// on the live `state` (preserving the host `ui::State` and its undo history /
-    /// collaboration session), as a new untitled document. Re-seats the caret, refreshes the view, flags an
-    /// undo point, and counts as a document-modifying edit (so autosave still
-    /// protects the freshly-templated content).
+    /// Replace the content with the template in place, keeping the host state, its undo history
     pub(super) fn apply_template(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1128,15 +1009,12 @@ impl Editor {
         self.format = Some(WpFormat::Markdown);
         self.scroll_y = 0.0;
         self.refresh_blocks(state);
-        // The whole body changed; per-block caches keyed by id/text are stale.
         self.layout_cache.clear();
         self.recent_layout_cache.clear();
         self.spell_cache.clear();
         self.lifecycle.dirty = true;
     }
 
-    /// Test-visible labels of the currently-open context menu's rows
-    /// (separators omitted), in order. Empty when the menu is closed.
     #[cfg(test)]
     pub(super) fn context_menu_labels(&self) -> Vec<String> {
         if !self.context_menu.is_open() {
@@ -1149,7 +1027,6 @@ impl Editor {
             .collect()
     }
 
-    /// The status readouts on the trailing side of the status band.
     pub(super) fn status_readouts(&self) -> Vec<String> {
         let words: usize = self
             .blocks
@@ -1161,10 +1038,7 @@ impl Editor {
             .iter()
             .map(|block| block.text.chars().count())
             .sum();
-        // The page comes last, and the readouts are drawn from the right, so
-        // it is the one that survives a band too narrow for all three: where
-        // you are matters more than how many words got you there, and a
-        // paginating document is the one place the page is the position.
+        // The page readout is drawn last, so it survives a band too narrow for all three.
         vec![
             t_args("status-words", &[arg("words", num::i64_of_usize(words))]),
             t_args("status-chars", &[arg("chars", num::i64_of_usize(chars))]),
@@ -1172,11 +1046,6 @@ impl Editor {
         ]
     }
 
-    /// Route an event to the fields hosted in the inspector and the status
-    /// band (the style property fields, the line-spacing menu and the zoom
-    /// field): hover always, a press on one focuses it, typing goes to the
-    /// focused one. A value they produce is applied here. Returns whether
-    /// one of them took the event.
     pub(super) fn route_hosted_fields(
         &mut self,
         event: &WindowEvent,
@@ -1188,7 +1057,6 @@ impl Editor {
         };
         let mut took = false;
         let panel = self.styles_panel_visible();
-        // An open menu owns every event until it closes.
         let open_menu = [&mut self.style_pick, &mut self.line_spacing]
             .into_iter()
             .find(|menu| panel && menu.is_open())
@@ -1212,7 +1080,6 @@ impl Editor {
                 if *ctx.handled {
                     self.lifecycle.dirty = true;
                 }
-                // Hover is shared with the rest of the editor.
                 *ctx.handled = false;
             }
             WindowEvent::MouseInput {
@@ -1260,8 +1127,6 @@ impl Editor {
         took
     }
 
-    /// A press on a hosted field focuses it and goes to it; returns
-    /// whether one took it.
     fn press_hosted(
         &mut self,
         pointer: Point,
@@ -1295,8 +1160,6 @@ impl Editor {
         true
     }
 
-    /// Hand typing to the hosted field that has the keyboard; returns
-    /// whether one had it.
     fn type_into_hosted(
         &mut self,
         event: &WindowEvent,
@@ -1334,8 +1197,6 @@ impl Editor {
         }
     }
 
-    /// Give keyboard focus to one hosted field (a style property, or the
-    /// zoom field), taking it from the others; `None, false` releases it.
     pub(super) fn focus_hosted(&mut self, field: Option<NumField>, zoom: bool) {
         for slot in &mut self.num_inputs {
             let on = Some(slot.field) == field;
@@ -1349,13 +1210,10 @@ impl Editor {
         self.editing_field = field;
     }
 
-    /// Hand one event to a hosted widget.
     fn forward(widget: &mut dyn Widget, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         widget.handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
     }
 
-    /// Apply what the hosted fields produced: a style property, a line
-    /// spacing, or a zoom level.
     pub(super) fn drain_hosted_fields(&mut self, state: &mut ui::widget::Edits<'_>) {
         let changes: Vec<(NumField, f64)> = self
             .num_inputs
@@ -1365,9 +1223,7 @@ impl Editor {
         for (field, value) in changes {
             self.edit_focused_style(state, true, |st| field.set(st, num::f32_of_f64(value)));
         }
-        // Each menu keeps the value it shows; while closed the panel mirrors
-        // the paragraph's own, so a value there the panel did not put is a
-        // pick the person made.
+        // A value the panel did not put there is a pick the person made.
         let picked = self.line_spacing.selected().to_owned();
         if picked != self.line_spacing_shown {
             let spacing = block_layout::LINE_SPACINGS
@@ -1395,10 +1251,6 @@ impl Editor {
         }
     }
 
-    /// Paint the outline and the inspector on their drawers: the region
-    /// beside the page when docked, the floating material over a scrim when
-    /// a drawer covers the page. The outline is drawn after `self.laid` is
-    /// set so its current heading reflects this frame's pagination.
     pub(super) fn draw_drawers(
         &mut self,
         scene: &mut Scene,
@@ -1421,8 +1273,6 @@ impl Editor {
             self.outline.clear_frame();
         }
         if self.styles_panel_full_window() {
-            // A compact inspector is a page, not floating chrome. Use the
-            // same material and breakpoint as shared full-window dialogs.
             ui::floating_surface::paint_material(
                 scene,
                 transform,
@@ -1448,9 +1298,6 @@ impl Editor {
         }
     }
 
-    /// Bring the outline and inspector drawers in line with what is shown,
-    /// advance their reveal, and lay them out in `below` (everything under
-    /// the toolbar). Returns the page's column.
     pub(super) fn resolve_drawers(&mut self, theme: &Theme, below: Rect) -> Rect {
         for (drawer, open) in [
             (&mut self.outline_drawer, self.outline.is_open()),
@@ -1467,8 +1314,6 @@ impl Editor {
         self.inspector_drawer.resolve(column)
     }
 
-    /// Hosted controls receive input first; the foreground Styles page
-    /// consumes remaining text instead of editing the displaced document.
     pub(super) fn route_styles_page_key(
         &mut self,
         event: &WindowEvent,
@@ -1479,8 +1324,6 @@ impl Editor {
         }
         match event {
             // Only application file commands may leave the foreground page.
-            // Formatting, clipboard and deletion shortcuts belong to its
-            // hosted fields (which have already received the event).
             WindowEvent::KeyboardInput { event: key, .. }
                 if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
                     && matches!(&key.logical_key, Key::Character(key)
@@ -1512,15 +1355,12 @@ impl Editor {
         }
     }
 
-    /// Run a command chosen in the window bar or through its semantic route.
     pub(super) fn tool_clicked(&mut self, state: &mut ui::widget::Edits<'_>, action: ToolAction) {
         self.apply_tool(state, action);
         self.refresh_blocks(state);
         self.lifecycle.dirty = true;
     }
 
-    /// The per-run `color` covering the font-probe position (just left of the
-    /// caret), if any — used to ring the active swatch.
     pub(super) fn current_text_color(&self) -> Option<[u8; 3]> {
         let (b, pos) = self.font_probe()?;
         b.marks
@@ -1531,7 +1371,6 @@ impl Editor {
     }
 }
 
-/// The value a document's `font` mark stores for `family`.
 pub(super) fn font_value(family: FontFamily) -> &'static str {
     match family {
         FontFamily::Sans => "sans",
@@ -1540,7 +1379,6 @@ pub(super) fn font_value(family: FontFamily) -> &'static str {
     }
 }
 
-/// The family a stored font value names; anything else is sans.
 fn font_family_of(value: &str) -> FontFamily {
     match value {
         "serif" => FontFamily::Serif,
@@ -1549,7 +1387,6 @@ fn font_family_of(value: &str) -> FontFamily {
     }
 }
 
-/// What the font picker calls `family`.
 pub(super) fn font_label(family: FontFamily) -> String {
     t(match family {
         FontFamily::Sans => "toolbar-font-sans",

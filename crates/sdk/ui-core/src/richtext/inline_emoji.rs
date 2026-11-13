@@ -1,16 +1,6 @@
-//! A workspace's own emoji inside text: `:name:` drawn as its picture.
-//!
-//! A run that writes the `:name:` of an emoji the window's workspace has
-//! ([`crate::workspace_emoji`]) keeps its bytes, so selection, the caret,
-//! copying, search and hit-testing all read the real `:name:`. It is shaped
-//! to take one emoji square instead of its letters' width: its glyphs are set
-//! at a size too small to see or to measure and spaced out to the square's
-//! advance, so the row keeps its height and wraps as if the picture were one
-//! glyph. The text renderer leaves those glyphs out and paints the picture
-//! into the run's box, centred on the row as the letters around it are.
-//!
-//! Text whose workspace has no such emoji, or whose picture is not decoded
-//! yet, keeps `:name:` as text.
+//! A workspace's own emoji inside text: `:name:` drawn as its picture. A run that writes the `:name:`
+//! of an emoji the window's workspace has ([`crate::workspace_emoji`]) keeps its bytes, so selection,
+//! the caret, copying, search and hit-testing all read the real `:name:`.
 
 use std::ops::Range;
 
@@ -21,18 +11,16 @@ use vello::kurbo::{Affine, Rect};
 use super::{FontFamily, RichSpan, RichTextLayout};
 use crate::workspace_emoji::WorkspaceEmoji;
 
-/// How far an inline emoji advances, in ems of the text it stands in: its
-/// picture and a hair of room either side.
+/// How far an inline emoji advances, in ems of the text it stands in: its picture and a hair of room
+/// either side.
 pub const ADVANCE_EM: f32 = 1.5;
-/// The side of an inline emoji's picture, in ems of its text, at most the
-/// height of its row.
+/// The side of an inline emoji's picture, in ems of its text, at most the height of its row.
 pub const SIDE_EM: f32 = 1.375;
-/// The size an inline emoji's own glyphs are shaped at: so small that their
-/// advances and ink vanish beside the square they are spaced out to.
+/// The size an inline emoji's own glyphs are shaped at: so small that their advances and ink vanish
+/// beside the square they are spaced out to.
 const SHAPE_SIZE: f32 = 1.0 / 128.0;
 
-/// One inline emoji of a layout: the bytes of its `:name:`, and the side its
-/// picture is drawn at.
+/// One inline emoji of a layout: the bytes of its `:name:`, and the side its picture is drawn at.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineEmoji {
     pub(crate) range: Range<usize>,
@@ -40,9 +28,8 @@ pub(crate) struct InlineEmoji {
     pub(crate) side: f32,
 }
 
-/// Where `text` writes the `:name:` of an emoji `emoji` has a picture for,
-/// colons included, in order. A colon that closes one name never opens the
-/// next.
+/// Where `text` writes the `:name:` of an emoji `emoji` has a picture for, colons included, in order. A
+/// colon that closes one name never opens the next.
 #[must_use]
 pub fn emoji_ranges(text: &str, emoji: &WorkspaceEmoji) -> Vec<Range<usize>> {
     let mut found = Vec::new();
@@ -83,9 +70,8 @@ pub fn emoji_ranges(text: &str, emoji: &WorkspaceEmoji) -> Vec<Range<usize>> {
     found
 }
 
-/// `spans` with every `:name:` of an emoji `emoji` has split out as a run of
-/// its own marked [`RichSpan::workspace_emoji`], in the style of the run it
-/// was written in. Code (monospaced runs) stays as written.
+/// `spans` with every `:name:` of an emoji `emoji` has split out as a run of its own marked
+/// [`RichSpan::workspace_emoji`], in the style of the run it was written in.
 #[must_use]
 pub fn split_spans(spans: Vec<RichSpan>, emoji: &WorkspaceEmoji) -> Vec<RichSpan> {
     if emoji.is_empty() {
@@ -138,11 +124,10 @@ pub fn writes_window_emoji(text: &str) -> bool {
     text.contains(':') && !emoji_ranges(text, &crate::workspace_emoji::emoji()).is_empty()
 }
 
-/// The attributes an inline emoji's run of `glyphs` glyphs is shaped with,
-/// from those of its text at `size` with rows `line_height` tall: the
-/// glyphs shrunk to nothing and spaced to one emoji square, the row as tall
-/// as the text's. Ligatures stay off so every byte of the ASCII name is one
-/// glyph and takes its share of the square.
+/// The attributes an inline emoji's run of `glyphs` glyphs is shaped with, from those of its text at
+/// `size` with rows `line_height` tall: the glyphs shrunk to nothing and spaced to one emoji square,
+/// the row as tall as the text's. Ligatures stay off so every byte of the ASCII name is one glyph and
+/// takes its share of the square.
 pub(crate) fn shaped_attrs(
     attrs: Attrs<'_>,
     size: f32,
@@ -161,17 +146,15 @@ pub(crate) fn shaped_attrs(
 }
 
 impl RichTextLayout {
-    /// Whether byte `byte` of the text is drawn as an inline emoji's
-    /// picture rather than as a glyph.
+    /// Whether byte `byte` of the text is drawn as an inline emoji's picture rather than as a glyph.
     pub(crate) fn in_inline_emoji(&self, byte: usize) -> bool {
         self.inline_emoji
             .iter()
             .any(|emoji| emoji.range.contains(&byte))
     }
 
-    /// Every inline emoji of the layout: its name and the square its picture
-    /// fills, in layout coordinates, centred in the box its `:name:` takes
-    /// on its row.
+    /// Every inline emoji of the layout: its name and the square its picture fills, in layout
+    /// coordinates, centred in the box its `:name:` takes on its row.
     #[must_use]
     pub fn inline_emoji_squares(&self) -> Vec<(&str, Rect)> {
         self.inline_emoji_boxes()
@@ -197,8 +180,8 @@ impl RichTextLayout {
             .collect()
     }
 
-    /// Tint, in `tint`, the pictures of the inline emoji `selected` covers:
-    /// a selection is painted under the text, where a picture hides it.
+    /// Tint, in `tint`, the pictures of the inline emoji `selected` covers: a selection is painted
+    /// under the text, where a picture hides it.
     pub(crate) fn tint_selected_emoji(
         &self,
         scene: &mut Scene,
@@ -217,8 +200,8 @@ impl RichTextLayout {
         }
     }
 
-    /// Paint the pictures of the layout's inline emoji, drawn at `transform`
-    /// as its glyphs are, from the window's workspace emoji.
+    /// Paint the pictures of the layout's inline emoji, drawn at `transform` as its glyphs are, from
+    /// the window's workspace emoji.
     pub(crate) fn paint_inline_emoji(&self, scene: &mut Scene, transform: Affine) {
         if self.inline_emoji.is_empty() {
             return;
@@ -233,11 +216,9 @@ impl RichTextLayout {
 }
 
 impl crate::text_render::TextRenderer {
-    /// `text`, a label in `style` (already at the renderer's scale), laid
-    /// out with its workspace emoji when it writes any: such a label is
-    /// shaped as attributed runs, measured and painted from the same
-    /// layout, instead of the cached plain glyph runs every other label
-    /// keeps. `None` for a label that writes none, the usual case.
+    /// `text`, a label in `style` (already at the renderer's scale), laid out with its workspace emoji
+    /// when it writes any: such a label is shaped as attributed runs, measured and painted from the
+    /// same layout, instead of the cached plain glyph runs every other label keeps.
     pub(crate) fn emoji_label(
         &mut self,
         text: &str,

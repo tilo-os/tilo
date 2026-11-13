@@ -1,18 +1,7 @@
 //! This machine's storage, as the session describes it.
 //!
-//! Disks runs in a sandbox with a near-empty `/dev`, no udev database, none of
-//! the host's programs and no system bus: it cannot list the machine's disks
-//! itself, and it must not be widened until it can. The session's system
-//! information service lists them instead (`tilo_system_info::storage`:
-//! `lsblk` for the device tree, `UDisks2` for each drive's health) and answers
-//! [`Client::storage`](tilo_system_info::client::Client::storage) over the
-//! connection the launcher handed Disks, which the image grants `system-info`
-//! without a prompt. Reading changes nothing; operations on a device stay
-//! `UDisks2` calls behind polkit ([`crate::ops`]).
-//!
-//! [`topology_from`] is the one parser from the service's answer to the
-//! [`Topology`] the app draws, and is tested against storage captured from
-//! real machines.
+//! Disks runs in a sandbox with a near-empty `/dev`, no udev database, none of the host's
+//! programs and no system bus, so it reads storage through the session.
 
 use tilo_system_info::protocol::{DriveHealth, Refusal, Storage, StorageDevice};
 
@@ -21,14 +10,14 @@ use crate::model::{
     SmartStatusOpt, Topology,
 };
 
-/// The app this is, when it dials the session itself (an unconfined run).
 const APP_ID: &str = "so.tilo.disks";
 
 /// Ask the session for this machine's storage.
 ///
 /// # Errors
-/// What the person is told when the storage cannot be read. The caller shows
-/// an honest empty state with it and never substitutes devices.
+///
+/// What the person is told when the storage cannot be read; the caller shows an empty state
+/// and never substitutes devices.
 pub fn probe() -> Result<Topology, String> {
     let client = tilo_system_info::connection(APP_ID).ok_or_else(unreadable)?;
     let storage = client.storage().map_err(|refusal| match refusal {
@@ -44,10 +33,8 @@ fn unreadable() -> String {
     "Storage devices can't be read right now".to_owned()
 }
 
-/// The service's storage as the drives Disks shows: every disk with a size,
-/// its partitions (an encrypted one with what it holds once unlocked), and
-/// its health. Physical drives first, virtual ones (loop) after. A zram
-/// device is compressed memory, not storage, and is left out.
+/// The service's storage as the drives Disks shows: every disk with its partitions and
+/// health.
 pub fn topology_from(storage: &Storage) -> Topology {
     let mut drives: Vec<Drive> = storage
         .devices
@@ -56,9 +43,6 @@ pub fn topology_from(storage: &Storage) -> Topology {
         .map(drive_from)
         .filter(|drive| drive.kind != DriveKind::Zram)
         .collect();
-    // Physical media first, virtual devices after, so the default selection
-    // lands on a real disk. Stable, so kernel enumeration order is kept
-    // within each group.
     drives.sort_by_key(|drive| drive.kind.is_virtual());
     Topology { drives }
 }
@@ -72,9 +56,6 @@ fn drive_from(device: &StorageDevice) -> Drive {
         .filter(|child| child.kind == "part")
         .map(partition_from)
         .collect();
-    // A device formatted (or encrypted) whole, with no partition table: a USB
-    // stick as one exfat volume, a zram swap area. It is one span covering the
-    // device rather than a blank, unallocated disk.
     if partitions.is_empty() && device.fstype.is_some() {
         partitions.push(partition_from(device));
     }
@@ -84,8 +65,8 @@ fn drive_from(device: &StorageDevice) -> Drive {
         size: device.size,
         kind,
         tran: device.transport.clone(),
-        // A virtual device is never physically removable, whatever the
-        // kernel's flag says; it is not offered for ejecting.
+        // A virtual device is never physically removable, whatever the kernel's flag says;
+        // it is not offered for ejecting.
         removable: device.removable && !kind.is_virtual(),
         partitions,
         smart: Some(smart_from(device.health.as_ref(), kind)),
@@ -93,7 +74,6 @@ fn drive_from(device: &StorageDevice) -> Drive {
     }
 }
 
-/// The encryption scheme `fstype` names, if it is an encrypted container.
 fn encryption_scheme(device: &StorageDevice) -> Option<String> {
     match device.fstype.as_deref()? {
         "crypto_LUKS" => Some(match device.fs_version.as_deref() {
@@ -105,10 +85,8 @@ fn encryption_scheme(device: &StorageDevice) -> Option<String> {
     }
 }
 
-/// One partition. An encrypted one, once unlocked, shows the filesystem its
-/// mapping holds (an ext4 home at `/var/home`); while locked it shows only
-/// that it is encrypted. Either way it takes its own place on the disk once,
-/// never again for the mapping inside it.
+/// One partition. Either way it takes its own place on the disk once, never again for the
+/// mapping inside it.
 fn partition_from(device: &StorageDevice) -> Partition {
     let size = device.size;
     let encryption = encryption_scheme(device).map(|scheme| {
@@ -141,9 +119,6 @@ fn partition_from(device: &StorageDevice) -> Partition {
             .and_then(|fs| fs.label.clone())
             .or_else(|| device.label.clone()),
         mountpoint,
-        // Usage over the partition's size is a whole-pool figure (one member
-        // of a multi-device btrfs, LVM or RAID), not this partition's share,
-        // so it is dropped rather than drawn as a bogus full bar.
         used: holds
             .and_then(|fs| fs.fs_used)
             .filter(|&used| size > 0 && used <= size),
@@ -154,8 +129,7 @@ fn partition_from(device: &StorageDevice) -> Partition {
     }
 }
 
-/// What a drive's health says, as Disks shows it. A drive that reports
-/// nothing is an honest `Unknown` that says why.
+/// What a drive's health says, as Disks shows it.
 pub fn smart_from(health: Option<&DriveHealth>, kind: DriveKind) -> SmartInfo {
     let unknown = |detail: &str| SmartInfo {
         status: SmartStatusOpt(SmartStatus::Unknown),
@@ -294,8 +268,8 @@ fn self_test_name(status: &str) -> &str {
     }
 }
 
-/// Storage captured from real machines, read the way the session and the app
-/// read it: the screenshots' `laptop` scenario and the tests.
+/// Storage captured from real machines, read the way the session and the app read it: the
+/// screenshots' `laptop` scenario and the tests.
 pub(crate) mod captured {
     use std::collections::BTreeMap;
 
@@ -303,18 +277,16 @@ pub(crate) mod captured {
 
     use crate::model::Topology;
 
-    /// Storage the way the session builds it from `lsblk` output and the
-    /// drives' health (by kernel name): the production path, from the
-    /// captured text on.
+    /// Storage the way the session builds it from `lsblk` output and the drives' health (by
+    /// kernel name): the production path, from the captured text on.
     pub(crate) fn served(lsblk: &str, health: &BTreeMap<String, DriveHealth>) -> Option<Storage> {
         tilo_system_info::storage::from_lsblk(lsblk.as_bytes(), &mut |device| {
             health.get(device).cloned()
         })
     }
 
-    /// The Yoga laptop (2026-10-22): one Samsung `NVMe` drive holding Windows,
-    /// a LUKS2 home and a LUKS2 root with ext4 inside, and a zram swap.
-    /// Serial numbers and UUIDs are replaced; sizes and layout are its own.
+    /// The Yoga laptop (2026-10-22): one Samsung `NVMe` drive holding Windows, a LUKS2 home
+    /// and a LUKS2 root with ext4 inside, and a zram swap.
     pub(crate) fn yoga() -> Option<Topology> {
         let health: BTreeMap<String, DriveHealth> =
             serde_json::from_str(include_str!("../tests/fixtures/yoga-health.json")).ok()?;
@@ -330,7 +302,6 @@ mod tests {
 
     use crate::model::PartRole;
 
-    /// Storage as the session serves it, across the wire as Disks receives it.
     fn served(lsblk: &str, health: &BTreeMap<String, DriveHealth>) -> Storage {
         let storage = captured::served(lsblk, health).expect("an lsblk document");
         serde_json::from_slice(&serde_json::to_vec(&storage).unwrap()).unwrap()
@@ -351,10 +322,9 @@ mod tests {
         topology
     }
 
-    /// Disks lists the laptop's disks and partitions: the Yoga's `NVMe` drive
-    /// with its eight partitions, the two LUKS2 partitions showing the ext4
-    /// filesystems they hold (root at /sysroot, home at /var/home), and its
-    /// health.
+    /// Disks lists the laptop's disks and partitions: the Yoga's `NVMe` drive with its
+    /// eight partitions, the two LUKS2 partitions showing the ext4 filesystems they hold
+    /// (root at /sysroot, home at /var/home), and its health.
     #[test]
     fn disks_lists_the_laptops_disks_and_partitions() {
         let topology = yoga();
@@ -430,8 +400,8 @@ mod tests {
         );
     }
 
-    /// zram is compressed memory: it is not listed among the drives, while a
-    /// loop device (a disk image) still is, after the real drives.
+    /// zram is compressed memory: it is not listed among the drives, while a loop device (a
+    /// disk image) still is, after the real drives.
     #[test]
     fn zram_is_not_a_drive() {
         let lsblk = r#"{"blockdevices":[
@@ -448,8 +418,8 @@ mod tests {
         assert_eq!(names, ["sda", "loop0"]);
     }
 
-    /// A locked LUKS partition says it is encrypted and nothing it cannot
-    /// know; a disk encrypted whole is one encrypted span.
+    /// A locked LUKS partition says it is encrypted and nothing it cannot know; a disk
+    /// encrypted whole is one encrypted span.
     #[test]
     fn a_locked_partition_is_encrypted_and_shows_nothing_inside() {
         let lsblk = r#"{"blockdevices":[
@@ -494,9 +464,9 @@ mod tests {
         assert!(smart.detail.as_deref().is_some_and(|d| d.contains("USB")));
     }
 
-    /// The shapes `lsblk` prints elsewhere still read: pool usage over a
-    /// member is dropped, zero-size devices and non-disks are skipped, and
-    /// the captured inventory gives the drive list it always gave.
+    /// The shapes `lsblk` prints elsewhere still read: pool usage over a member is dropped,
+    /// zero-size devices and non-disks are skipped, and the captured inventory gives the
+    /// drive list it always gave.
     #[test]
     fn other_machines_storage_reads_as_it_always_did() {
         let pool = r#"{"blockdevices":[{"name":"nvme1n1","size":2000398934016,"type":"disk",
@@ -517,8 +487,6 @@ mod tests {
                 .is_empty()
         );
 
-        // Real `lsblk` output, and the drive list Disks derived from it before
-        // the session described storage. Health is not part of that capture.
         let mut drives = topology_from(&served(
             include_str!("../../../crates/system/block-devices/tests/fixtures/disks.json"),
             &BTreeMap::new(),
@@ -527,7 +495,6 @@ mod tests {
         for drive in &mut drives {
             drive.smart = None;
         }
-        // zram is no longer listed: it is memory, not a drive.
         let mut expected: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("../tests/fixtures/lsblk-drives.json")).unwrap();
         expected.retain(|drive| drive["kind"] != "Zram");
@@ -537,9 +504,8 @@ mod tests {
         );
     }
 
-    /// Health the drive reports becomes the verdict: a critical warning
-    /// fails it, low spare needs attention, and a drive that reports nothing
-    /// is unknown with the reason.
+    /// Health the drive reports becomes the verdict: a critical warning fails it, low spare
+    /// needs attention, and a drive that reports nothing is unknown with the reason.
     #[test]
     fn a_drives_own_report_decides_its_health() {
         let read = DriveHealth {

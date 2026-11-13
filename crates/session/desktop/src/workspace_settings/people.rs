@@ -60,12 +60,12 @@ pub fn content(
         .iter()
         .map(|(user, role)| {
             let owns = ws.is_owner(user);
-            let subject = tilo_action_policy::Subject::Person(user.clone());
+            let subject = tilo_action_policy::Grantee::person(user.clone());
             let grants = ws
                 .policy
                 .grants
                 .iter()
-                .filter(|grant| grant.subject == subject)
+                .filter(|grant| grant.grantee == subject)
                 .count();
             let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
             Person {

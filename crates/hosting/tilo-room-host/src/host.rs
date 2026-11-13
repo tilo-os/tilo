@@ -283,10 +283,7 @@ impl HostSessions {
         // before the endpoint routes any session to a host that governs here.
         let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
         #[cfg(any(feature = "agents", feature = "web"))]
-        sessions
-            .handler
-            .compactor
-            .with_participant_keys(Arc::new(workspaces.clone()));
+        take_part(&sessions.handler.compactor, &workspaces);
         Ok((
             sessions,
             Some(Governed {
@@ -435,6 +432,17 @@ impl HostSessions {
         self.membership_watch.stop();
         self.handler.compactor.stop().await;
     }
+}
+
+/// Let `compactor` fold the sealed records `workspaces` take part in with their channels' keys,
+/// and repair the stores they kept from a run before a page's writes waited for their record:
+/// writes stuck behind a change their writer never sent are folded away now, not at whatever
+/// write next brings each record's fold.
+#[cfg(any(feature = "agents", feature = "web"))]
+fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
+    compactor.with_participant_keys(Arc::new(workspaces.clone()));
+    let (repairing, compactor) = (workspaces.clone(), compactor.clone());
+    tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }
 
 /// Say loudly when a host that `governs` workspaces under `cert` takes part in no
@@ -874,6 +882,7 @@ impl GovernedAccessWriter {
             crate::store::GovernedAccessRecord {
                 member_devices,
                 member_user_roots,
+                governed: true,
             },
         )
         .await;

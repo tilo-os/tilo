@@ -1,7 +1,5 @@
-//! Copy for the missing-decoder offer, resolved by the shared Fluent manager.
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-/// The player's Fluent catalogs, source locale first.
 pub(crate) const LOCALES: &[(&str, &str)] = &[
     ("en-US", include_str!("../locales/en-US.ftl")),
     ("de-DE", include_str!("../locales/de-DE.ftl")),
@@ -21,9 +19,7 @@ pub(crate) fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
-/// German is one of the languages the player ships, and it reads in German: a
-/// video's library drawer speaks German on a device set to German, from
-/// `locales/de-DE.ftl` beside the source catalogue.
+/// German copy comes from `locales/de-DE.ftl`, beside the source catalogue.
 #[cfg(test)]
 mod german_catalogue_tests {
     #[test]
@@ -41,9 +37,8 @@ mod german_catalogue_tests {
         assert_eq!(CATALOG.t("video-queue"), "Queue");
     }
 
-    /// What the player's actions are called comes from its catalogue, in the
-    /// window's language: the same label the palette, a shortcut and the
-    /// history read, not words written in the code.
+    /// The actions' names come from the catalogue, in the window's language, not words
+    /// written in the code.
     #[test]
     fn the_actions_are_named_from_the_catalogue() {
         use super::CATALOG;

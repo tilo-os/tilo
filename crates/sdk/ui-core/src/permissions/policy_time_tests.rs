@@ -14,11 +14,11 @@ fn member_with(answer: Answer) -> PermissionContext {
     std::sync::Arc::make_mut(&mut standing.policy).grants.push(
         policy::Grant::new(
             "fixture",
-            policy::Subject::person("member"),
+            policy::Grantee::person("member"),
             TreePath::workspace(LOCAL_WORKSPACE).app("fixture"),
             policy::KindSet::UNDOABLE,
             answer,
-            policy::Subject::person("owner"),
+            policy::Grantee::person("owner"),
         )
         .with_lifetime(policy::Lifetime::Until(100_000)),
     );

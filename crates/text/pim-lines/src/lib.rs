@@ -17,7 +17,6 @@ use std::borrow::Cow;
 /// excluding the CRLF.
 pub const FOLD_OCTETS: usize = 75;
 
-/// One unfolded (logical) line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unfolded {
     Line(String),
@@ -68,9 +67,9 @@ pub fn unfold_bounded(text: &str, max_line_bytes: usize) -> Vec<Unfolded> {
 }
 
 /// Unfold a document that must use CRLF line ends throughout (as MIME
-/// transport of `text/calendar` requires), parsing every logical line.
-/// Returns `None` for a bare CR or LF, a missing final CRLF, or a line that
-/// is not a content line. Blank lines are not content lines either.
+/// transport of `text/calendar` requires), parsing every logical line. `None`
+/// for a bare CR or LF, a missing final CRLF, a line that is not a content
+/// line, or a blank line.
 pub fn parse_strict(text: &str) -> Option<Vec<ContentLine>> {
     let body = text.strip_suffix("\r\n")?;
     let mut logical: Vec<String> = Vec::new();
@@ -93,9 +92,9 @@ pub fn parse_strict(text: &str) -> Option<Vec<ContentLine>> {
         .collect()
 }
 
-/// Append `line` folded to [`FOLD_OCTETS`]-octet physical lines, each ended
-/// by CRLF. Continuations start with one space, which counts towards their
-/// budget, and folds fall only on UTF-8 character boundaries.
+/// Append `line` folded to [`FOLD_OCTETS`]-octet physical lines, each ended by
+/// CRLF. Continuations start with one space, which counts towards their
+/// budget; folds fall only on UTF-8 character boundaries.
 pub fn fold_into(out: &mut String, line: &str) {
     let mut used = 0_usize;
     let mut continuation = false;
@@ -117,9 +116,9 @@ pub fn fold_into(out: &mut String, line: &str) {
     out.push_str("\r\n");
 }
 
-/// Append one property: `name`, then each parameter with its value quoted
-/// and caret-encoded as needed, then `:` and `value` verbatim. The caller
-/// escapes `value` for its type (see [`escape_text`]).
+/// Append one property: `name`, each parameter with its value quoted and
+/// caret-encoded as needed, then `:` and `value` verbatim. The caller escapes
+/// `value` for its type (see [`escape_text`]).
 pub fn write_property(out: &mut String, name: &str, params: &[(&str, &str)], value: &str) {
     let mut line = String::with_capacity(name.len().saturating_add(value.len()).saturating_add(1));
     line.push_str(name);
@@ -135,7 +134,7 @@ pub fn write_property(out: &mut String, name: &str, params: &[(&str, &str)], val
 }
 
 /// Encode a parameter value: RFC 6868 caret encoding for `^`, newline and
-/// `"`, other control characters dropped, and DQUOTE quoting when the value
+/// `"`, other control characters dropped, DQUOTE quoting when the value
 /// contains `,`, `;` or `:`.
 pub fn encode_param_value(value: &str) -> Cow<'_, str> {
     let plain = !value
@@ -208,7 +207,7 @@ pub fn escape_text(value: &str) -> String {
     out
 }
 
-/// Resolve TEXT escapes: `\n`/`\N` → newline and `\x` → `x`. A trailing lone
+/// Resolve TEXT escapes: `\n`/`\N` → newline and `\x` → `x`; a trailing lone
 /// backslash is dropped.
 pub fn unescape_text(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -255,10 +254,8 @@ pub struct Param {
     pub values: Vec<String>,
 }
 
-/// One parsed logical line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentLine {
-    /// vCard group (`item1` in `item1.TEL`), as written.
     pub group: Option<String>,
     /// Upper-cased property name.
     pub name: String,
@@ -325,7 +322,6 @@ impl ContentLine {
         })
     }
 
-    /// The first parameter named `name` (case-insensitive).
     pub fn param(&self, name: &str) -> Option<&Param> {
         self.params
             .iter()
@@ -337,12 +333,10 @@ impl ContentLine {
         self.param(name).map(|param| param.values.join(","))
     }
 
-    /// Whether this is `BEGIN:<component>` (case-insensitive).
     pub fn begins(&self, component: &str) -> bool {
         self.name == "BEGIN" && self.value.trim().eq_ignore_ascii_case(component)
     }
 
-    /// Whether this is `END:<component>` (case-insensitive).
     pub fn ends(&self, component: &str) -> bool {
         self.name == "END" && self.value.trim().eq_ignore_ascii_case(component)
     }
@@ -365,7 +359,6 @@ mod tests {
 
     #[test]
     fn folding_and_unfolding_respect_octet_budgets_and_continuations() {
-        // Phase `folding_respects_the_octet_budget_and_utf8_boundaries`.
         {
             for line in [
                 format!("NOTE:{}", "x".repeat(200)),

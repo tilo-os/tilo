@@ -281,8 +281,6 @@ impl SetupView {
         }
         let state = self.state.get();
         let mut content = Column::new().with_intrinsic_height();
-        // The accounts set up in Settings, one row each: the service is
-        // the row's title, the account its second line.
         let mut rows: Vec<Element> = Vec::new();
         for (id, account) in sources.accounts().accounts.iter().filter(|(_, row)| {
             row.enabled && matches!(row.type_id.as_str(), "signal" | "whatsapp" | "sms")

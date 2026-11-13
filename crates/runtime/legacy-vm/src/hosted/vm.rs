@@ -1,9 +1,6 @@
-//! One hosted VM: woken for a command, snapshotted when idle, metered.
-//!
-//! The [`Lifecycle`] decides, as it does for the legacy VM; this carries
-//! its actions out with Firecracker. A wake is a cold boot when the VM has
-//! no valid snapshot and a restore when it has one. Every moment the
-//! Firecracker process runs is metered, and every snapshot held on disk.
+//! One hosted VM: woken for a command, snapshotted when idle, metered. The
+//! [`Lifecycle`] decides, as it does for the legacy VM, and this carries its
+//! actions out with Firecracker; every moment its process runs is metered.
 
 use std::fs::File;
 use std::os::fd::AsRawFd as _;
@@ -70,7 +67,6 @@ pub enum VmError {
     Io(#[from] std::io::Error),
 }
 
-/// What every VM of a host shares.
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub machine: Machine,
@@ -82,23 +78,19 @@ pub struct Settings {
     /// one ([`super::jail`]). Unjailed VMs (development only) have no
     /// network.
     pub jail: Option<Arc<Jail>>,
-    /// Where the relay is, as the host reaches it: the one destination a
-    /// VM may reach besides the internet, so the browser session in it joins
-    /// its workspace. A relay on the host's own loopback (a local stack) is
-    /// reached through [`super::network::HOST_LOOPBACK`]; anywhere else (a
-    /// cluster address), the VM dials it as it is. `None`: the host serves
-    /// no Browser.
+    /// Where the relay is, as the host reaches it: the one destination a VM may reach besides the
+    /// internet. A relay on the host's own loopback (a local stack) is reached through
+    /// [`super::network::HOST_LOOPBACK`]; anywhere else the VM dials it as it is. `None`: the host
+    /// serves no Browser.
     pub relay: Option<Endpoint>,
-    /// Where the templates a new VM is cloned from are kept, one per size
-    /// ([`firecracker::clone_vm`]). Only jailed VMs are cloned: a jail names
-    /// a VM's disk and sockets at the same path for every VM, which a
-    /// snapshot records. `None`: every new VM boots cold.
+    /// Where the templates a new VM is cloned from are kept, one per size. Only jailed VMs are
+    /// cloned: a jail names a VM's disk and sockets at the same path for every VM, which a snapshot
+    /// records. `None`: every new VM boots cold.
     pub templates: Option<PathBuf>,
 }
 
-/// What a template's guest reads before it is snapshotted: the session's,
-/// Browser's and Chromium's files, so each clone finds them in the page
-/// cache it shares with every other clone.
+/// What a template's guest reads before it is snapshotted: the session's, Browser's and Chromium's
+/// files, so each clone finds them in the page cache it shares with every other clone.
 const WARM: &str = "find /usr/bin/tilo-session /usr/libexec/tilo /usr/lib/tilo-runtime \
     /usr/share/tilo-apps -type f -exec cat {} + >/dev/null 2>&1; sync";
 
@@ -116,14 +108,12 @@ fn template_stamp(settings: &Settings, size: VmSize) -> String {
     )
 }
 
-/// Where `size`'s template is kept, when `settings` keep templates.
 #[must_use]
 pub fn template_dir(settings: &Settings, size: VmSize) -> Option<PathBuf> {
     settings.jail.as_ref()?;
     Some(settings.templates.as_ref()?.join(size.as_str()))
 }
 
-/// `size`'s template, when one was made from this guest image.
 #[must_use]
 pub fn template(settings: &Settings, size: VmSize) -> Option<VmFiles> {
     let state = template_dir(settings, size)?;
@@ -156,7 +146,6 @@ pub fn freeze_template(settings: &Settings, size: VmSize, files: &VmFiles) -> Re
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Wake {
     pub restored: bool,
-    /// From starting Firecracker to the agent's answer.
     pub millis: u64,
 }
 
@@ -169,7 +158,6 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    /// Where its runs are billed.
     ledger: Option<Ledger>,
     clock: Clock,
     meter: Meter,
@@ -184,7 +172,6 @@ pub struct HostedVm {
     /// The next run starts for a Linux action, and is billed from its start.
     bill_next: bool,
     last_wake: Option<Wake>,
-    /// The jail slot the running VM holds.
     slot: Option<u32>,
 }
 
@@ -239,7 +226,6 @@ impl HostedVm {
         &self.meter.identity
     }
 
-    /// How to reach the running VM's agent.
     #[must_use]
     pub fn link(&self) -> Option<AgentLink> {
         self.link.clone()
@@ -265,21 +251,16 @@ impl HostedVm {
         self.meter.snapshot.map(|held| held.bytes)
     }
 
-    /// What the running VM takes of this host's memory, MiB, as its kernel
-    /// accounts it ([`memory::tree_mib`]): its Firecracker process and
-    /// everything below it, which is what closing the VM would free. This is
-    /// what the host counts the VM at, and what it stops admitting new ones
-    /// over. `None` when it is not running.
+    /// What the running VM takes of this host's memory, MiB, as its kernel accounts it: its
+    /// Firecracker process and everything below it, which is what closing the VM would free. `None`
+    /// when it is not running.
     #[must_use]
     pub fn resident_mib(&self) -> Option<u64> {
         memory::tree_mib(self.process.as_ref()?.id())
     }
 
-    /// Ask the running VM's guest to give `target_mib` of its memory back,
-    /// which the host then has: `Ok(true)` when its Firecracker took the
-    /// target, `Ok(false)` when this VM has no balloon device (it booted or
-    /// was restored from a snapshot made without one), which no later call
-    /// changes.
+    /// Ask the guest to give `target_mib` of its memory back: `Ok(true)` when its Firecracker took
+    /// the target, `Ok(false)` when this VM has no balloon device, which no later call changes.
     pub fn balloon(&self, target_mib: u64) -> Result<bool, VmError> {
         match Api::new(self.files.api_socket()).balloon(target_mib) {
             Ok(()) => Ok(true),
@@ -288,11 +269,9 @@ impl HostedVm {
         }
     }
 
-    /// Wake the VM with `shares` mounted, and say how to reach its agent,
-    /// and how the wake went when this call woke it. For a Linux action
-    /// (`linux`), the VM's time is billed from now until it sleeps
-    /// ([`Meter::billed`](super::meter::Meter::billed)); the browser session
-    /// alone bills none.
+    /// Wake the VM with `shares` mounted, and say how to reach its agent and how the wake went. For
+    /// a Linux action (`linux`) the VM's time is billed from now until it sleeps; the browser
+    /// session alone bills none.
     pub fn ensure(
         &mut self,
         shares: &[Served],
@@ -366,7 +345,6 @@ impl HostedVm {
         Ok(())
     }
 
-    /// Suspend now, whatever runs.
     pub fn suspend(&mut self) -> Result<(), VmError> {
         self.reap();
         if let Some(actions) = self.life.suspend_now()
@@ -710,7 +688,6 @@ impl HostedVm {
         Ok(())
     }
 
-    /// The process is gone: close its run.
     fn ended(&mut self, how: RunEnd) -> Result<Option<UsageRecord>, VmError> {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
@@ -775,8 +752,6 @@ impl HostedVm {
         self.run_in_guest(&["sync"], Duration::from_secs(30))
     }
 
-    /// Read the session's, Browser's and Chromium's files into the guest's
-    /// page cache: what a template does before it is snapshotted.
     pub fn warm(&self) -> Result<(), VmError> {
         self.run_in_guest(&["sh", "-c", WARM], Duration::from_secs(300))
     }
@@ -844,7 +819,6 @@ impl Drop for HostedVm {
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
 
-/// Bill `record` to its account, when this VM's runs are billed at all.
 fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
     match (ledger, record) {
         (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
@@ -852,10 +826,9 @@ fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<()
     }
 }
 
-/// `tilo-legacy confine-fs --isolate --hide … --ro … -- tilo-legacy hosted
-/// files-serve …`: Landlock holds the server to its one share (read-only
-/// when the share is) and what it needs to run, and namespaces of its own
-/// keep it from every socket in `hidden` and from the network.
+/// `tilo-legacy confine-fs --isolate --hide … --ro … -- tilo-legacy hosted files-serve …`: Landlock
+/// holds the server to its one share (read-only when the share is), and namespaces of its own keep
+/// it from every socket in `hidden` and from the network.
 #[must_use]
 pub fn files_serve_argv(self_exe: &Path, share: &Served, hidden: &[PathBuf]) -> Vec<String> {
     let exe = self_exe.display().to_string();

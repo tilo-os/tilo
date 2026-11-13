@@ -1,12 +1,12 @@
-//! A device reached as its owner's account: `tilo-vm` registers it, then
-//! creates a slot, swaps a layer into it, takes a picture and rolls back,
-//! every remote command going through `sudo -n` to a real `tilo-vmd rpc`
-//! (the side-effect-free `record` apply backend over a temporary root).
+//! A device reached as its owner's account: `tilo-vm` registers it, then creates a
+//! slot, swaps a layer into it, takes a picture and rolls back, every remote
+//! command going through `sudo -n` to a real `tilo-vmd rpc` (the side-effect-free
+//! `record` apply backend over a temporary root).
 //!
-//! The stand-in `ssh` runs the remote line in a local shell after it checks
-//! the options tilo-vm passes; the stand-in `sudo` accepts only the
-//! non-interactive forms tilo-vm uses (`sudo -n -- CMD`, and the probe's `sudo -n true`), and refuses like sudo without a grant
-//! while a `deny` file exists.
+//! The stand-in `ssh` runs the remote line in a local shell after it checks the
+//! options tilo-vm passes; the stand-in `sudo` accepts only the non-interactive
+//! forms tilo-vm uses (`sudo -n -- CMD`, and the probe's `sudo -n true`), and
+//! refuses like sudo without a grant while a `deny` file exists.
 #![allow(
     clippy::unwrap_used,
     clippy::too_many_lines,
@@ -126,7 +126,6 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         .remove("TILO_VM_CONFIG");
     let endpoint = SshEndpoint::parse("me@device").unwrap();
 
-    // Phase `without_passwordless_sudo_it_is_not_registered`.
     {
         std::fs::write(device.bin.join("deny"), "").unwrap();
         let refused = device
@@ -150,7 +149,6 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         std::fs::remove_file(device.bin.join("deny")).unwrap();
     }
 
-    // Phase `with_it_the_device_is_registered_and_checked`.
     {
         let added = device
             .run(&["vm", "add", "yoga", "--ssh", "me@device"])
@@ -167,7 +165,6 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         assert!(again.text.contains("already registered"), "{}", again.text);
     }
 
-    // Phase `slot_swap_shot_and_rollback_all_go_through_sudo`.
     {
         let created = device
             .run(&["slot", "create", "mine", "--headless"])
@@ -225,8 +222,8 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         );
     }
 
-    // Every login was the owner's, and every remote command but vm add's
-    // probe (which checks sudo itself) ran under sudo -n.
+    // Every login was the owner's, and every remote command but `vm add`'s probe, which checks sudo
+    // itself, ran under `sudo -n`.
     let log = device.log();
     let mut lines = log.lines();
     let mut commands = 0;

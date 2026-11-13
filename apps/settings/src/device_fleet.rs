@@ -1,16 +1,14 @@
-//! The person's trusted devices, as the host's identity actions answer
-//! them.
-//!
-//! The host keeps the root-signed device fleet and the root key a
-//! revocation is signed with. Settings asks it for the list and to revoke
-//! one, through the action door, so neither the fleet file nor any secret
-//! enters this process; the answers never enter widget or Automerge state.
+//! The person's trusted devices, as the host's identity actions answer them.
 
+use ui::icons::Icon;
 use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
-/// One of the person's devices, as the host listed it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the list shows about one key"
+)]
 pub struct DeviceView {
     pub label: String,
     pub key: [u8; 32],
@@ -18,15 +16,60 @@ pub struct DeviceView {
     pub current: bool,
     pub revoked: bool,
     pub can_host: bool,
-    /// A device of the person's, or a key acting for them (an agent's grant,
-    /// a script's key).
     pub kind: KeyKind,
-    /// The browser profile it is a tab of, by the profile's id: a browser
-    /// keeps a key per open tab, and the pane shows them as one entry.
     pub browser: Option<String>,
+    pub agent: Option<String>,
+    pub issued_ms: Option<i64>,
+    pub expires_ms: Option<i64>,
+    pub last_active_ms: Option<i64>,
+    pub online: bool,
+    pub workspace: Option<String>,
 }
 
-/// Ask the host for the devices trusted under the workspace's identity.
+const PHONE_WORDS: &[&str] = &[
+    "phone", "pixel", "android", "galaxy", "mobile", "oneplus", "redmi", "xiaomi", "huawei",
+    "motorola", "moto",
+];
+const TABLET_WORDS: &[&str] = &["ipad", "tablet", "tab"];
+const LAPTOP_WORDS: &[&str] = &[
+    "laptop",
+    "notebook",
+    "macbook",
+    "chromebook",
+    "thinkpad",
+    "ideapad",
+    "ultrabook",
+    "framework",
+    "surface",
+    "xps",
+];
+const DESKTOP_WORDS: &[&str] = &[
+    "desktop",
+    "tower",
+    "workstation",
+    "imac",
+    "mac mini",
+    "mac studio",
+    "server",
+];
+
+#[must_use]
+pub fn device_icon(label: &str) -> Icon {
+    let label = label.to_lowercase();
+    let named = |words: &[&str]| words.iter().any(|word| label.contains(word));
+    if named(TABLET_WORDS) {
+        Icon::Tablet
+    } else if named(LAPTOP_WORDS) {
+        Icon::Laptop
+    } else if named(DESKTOP_WORDS) {
+        Icon::Monitor
+    } else if named(PHONE_WORDS) {
+        Icon::Smartphone
+    } else {
+        Icon::Monitor
+    }
+}
+
 pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
     remote.invoke(
         identity_admin::target(identity_admin::DEVICES),
@@ -35,9 +78,6 @@ pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
     )
 }
 
-/// Ask the host to revoke `device` for `reason` (`lost`, `stolen`,
-/// `retired` or `compromised`). Choosing the destructive row is the
-/// person's confirmation; the host signs the revocation with the root key.
 pub(crate) fn revoke(
     remote: &ui::RemoteActions,
     device: &[u8; 32],
@@ -54,7 +94,6 @@ pub(crate) fn revoke(
     )
 }
 
-/// The devices the host's list answered.
 pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
     let listed: Vec<FleetDevice> =
         serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
@@ -62,7 +101,6 @@ pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView
     views(listed)
 }
 
-/// The devices `listed` names, as the pane shows them.
 pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String> {
     listed
         .into_iter()
@@ -79,6 +117,12 @@ pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String>
                 can_host: device.can_host,
                 kind: device.kind,
                 browser: device.browser,
+                agent: device.agent,
+                issued_ms: device.issued_ms,
+                expires_ms: device.expires_ms,
+                last_active_ms: device.last_active_ms,
+                online: device.online,
+                workspace: device.workspace,
             })
         })
         .collect()
@@ -105,4 +149,30 @@ pub(crate) fn settled(
             Err("the host stopped before it answered".into())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_shows_the_machine_its_label_names() {
+        for (label, icon) in [
+            ("Pixel 9", Icon::Smartphone),
+            ("Chrome on Android", Icon::Smartphone),
+            ("Old phone", Icon::Smartphone),
+            ("iPhone 15", Icon::Smartphone),
+            ("Safari on iPad", Icon::Tablet),
+            ("Galaxy Tab S9", Icon::Tablet),
+            ("Framework 16", Icon::Laptop),
+            ("Ada's laptop", Icon::Laptop),
+            ("MacBook Pro", Icon::Laptop),
+            ("Mac mini", Icon::Monitor),
+            ("Office desktop", Icon::Monitor),
+            ("Chrome on Linux", Icon::Monitor),
+            ("Ada's machine", Icon::Monitor),
+        ] {
+            assert_eq!(device_icon(label), icon, "{label}");
+        }
+    }
 }

@@ -52,11 +52,10 @@ impl Workspaces {
         let mut governed = state.lock().await;
         let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         let device_key = hex::encode(device.device_public_key);
         let grants = share::share_grants(
-            (governed.peer().admitted_workspace(), &member.policy),
-            (&member.person, &device_key, &member.authority(&bound), &cx),
+            &member.policy,
+            (&member.person, &device_key, &member.authority(), &cx),
             share,
             node,
             access,
@@ -105,10 +104,9 @@ impl Workspaces {
         let mut governed = state.lock().await;
         let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         let ids = share::ended_by(
             &member.policy,
-            (&member.person, &member.authority(&bound), &cx),
+            (&member.person, &member.authority(), &cx),
             share,
         );
         if ids.is_empty() {

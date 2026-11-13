@@ -12,8 +12,8 @@ fn began(title: &str) -> super::Running {
     start(Spec::new(title).subject(Subject::new(owner(), title)))
 }
 
-/// A job survives the surface that started it: it is in the registry before
-/// its worker reports anything, and the row is there for whoever looks next.
+/// A job survives the surface that started it: it is in the registry before its worker reports
+/// anything, and the row is there for whoever looks next.
 #[test]
 fn a_job_is_visible_before_its_worker_says_anything() {
     let _serial = crate::jobs::test_lock();
@@ -30,8 +30,8 @@ fn a_job_is_visible_before_its_worker_says_anything() {
     assert!(!super::is_active());
 }
 
-/// What a job is doing, how far, and how it ended read as the person's
-/// sentences, never as a bare number.
+/// What a job is doing, how far, and how it ended read as the person's sentences, never as a bare
+/// number.
 #[test]
 fn a_job_says_what_it_is_doing_and_how_far() {
     let _serial = crate::jobs::test_lock();
@@ -64,9 +64,8 @@ fn a_job_says_what_it_is_doing_and_how_far() {
     assert!(!row.can_stop());
 }
 
-/// Stop is asked of the worker, and a job that can stop says so; a job
-/// without a way out shows no Stop, because a Stop that would not be
-/// honoured is a lie.
+/// Stop is asked of the worker, and a job that can stop says so; a job without a way out shows no Stop,
+/// because a Stop that would not be honoured is a lie.
 #[test]
 fn only_a_job_that_can_be_stopped_is_offered_a_stop() {
     let _serial = crate::jobs::test_lock();
@@ -92,8 +91,8 @@ fn only_a_job_that_can_be_stopped_is_offered_a_stop() {
     assert!(!stop(plain.id()), "a job with no way out is not asked");
 }
 
-/// A failure states why, stays in the list, and waits in Needs you: a failed
-/// job is something a person has to decide about.
+/// A failure states why, stays in the list, and waits in Needs you: a failed job is something a person
+/// has to decide about.
 #[test]
 fn a_failure_says_why_and_waits_for_a_person() {
     let _serial = crate::jobs::test_lock();
@@ -118,13 +117,11 @@ fn a_failure_says_why_and_waits_for_a_person() {
     assert_eq!(waiting[0].action().verb, attention::SHOW_JOB);
     assert_eq!(waiting[0].urgency(), Urgency::Waiting);
 
-    // Reading the row takes the failure away with it.
     dismiss(job.id());
     assert!(rows().is_empty());
     assert!(attention::items().is_empty());
 }
 
-/// The same failure twice is one row that says the latest why, not a stack.
 #[test]
 fn the_same_failure_twice_is_one_waiting_row() {
     let _serial = crate::jobs::test_lock();
@@ -143,8 +140,6 @@ fn the_same_failure_twice_is_one_waiting_row() {
     }
 }
 
-/// What a person chooses to do about a failure is one verb, and acting on it
-/// reports it once.
 #[test]
 fn acting_on_a_failure_reports_the_verb_once() {
     let _serial = crate::jobs::test_lock();
@@ -160,8 +155,8 @@ fn acting_on_a_failure_reports_the_verb_once() {
     assert!(attention::items().is_empty());
 }
 
-/// A recorded outcome is not attention: it is written to the ledger, does
-/// not count on the bar, and does not expire.
+/// A recorded outcome is not attention: it is written to the ledger, does not count on the bar, and
+/// does not expire.
 #[test]
 fn an_outcome_that_needs_nobody_is_recorded_not_shown() {
     let _serial = crate::jobs::test_lock();
@@ -182,8 +177,6 @@ fn an_outcome_that_needs_nobody_is_recorded_not_shown() {
     assert!(attention::search_ledger("nothing at all").is_empty());
 }
 
-/// Reading a finished row is not reading a running one: dismiss leaves what
-/// still runs alone.
 #[test]
 fn a_running_row_cannot_be_read_away() {
     let _serial = crate::jobs::test_lock();
@@ -196,8 +189,6 @@ fn a_running_row_cannot_be_read_away() {
     assert!(rows().is_empty());
 }
 
-/// Two jobs run at once: the store stays usable while an install runs, and
-/// every row is its own.
 #[test]
 fn jobs_are_concurrent_by_construction() {
     let _serial = crate::jobs::test_lock();
@@ -217,8 +208,7 @@ fn jobs_are_concurrent_by_construction() {
     );
 }
 
-/// An owner's name is always there: a row says who is asking, not only its
-/// icon.
+/// An owner's name is always there: a row says who is asking, not only its icon.
 #[test]
 fn a_row_always_names_the_app_that_asks() {
     let _serial = crate::jobs::test_lock();

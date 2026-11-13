@@ -7,7 +7,9 @@ use super::*;
 use crate::services::{TrackerAnswer, TrackerQuestion};
 
 /// Notes' `append`, taking a `text`, published on peer 200.
-async fn append_target(f: &Fixture) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
+pub(super) async fn append_target(
+    f: &Fixture,
+) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
     let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
     let target = wire_channel_rc(Rc::clone(&handle));
     let mut append = notes_append();
@@ -22,7 +24,7 @@ async fn append_target(f: &Fixture) -> (runtime_collab::ChannelHandle, Invocatio
 }
 
 /// The person tells the agent Notes asks first.
-fn ask_first_for_notes(f: &Fixture) {
+pub(super) fn ask_first_for_notes(f: &Fixture) {
     put_grant(f, asks_first_for_notes(f));
 }
 
@@ -37,11 +39,11 @@ fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
             tilo_action_policy::ActionKind::Undoable,
         ),
         tilo_action_policy::Answer::Ask,
-        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
     )
 }
 
-async fn append(
+pub(super) async fn append(
     channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: u128,

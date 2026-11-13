@@ -1,5 +1,5 @@
-//! Kernel interfaces the `libc` crate does not wrap: `clone3`, `mount_setattr`,
-//! `open_tree`, `move_mount`, Landlock, and the few structures they take.
+//! Kernel interfaces the `libc` crate does not wrap: `clone3`, `mount_setattr`, `open_tree`,
+//! `move_mount`, Landlock, and the few structures they take.
 
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
@@ -22,17 +22,14 @@ pub struct CloneArgs {
 
 pub const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
-/// `clone3` with `CLONE_VM | CLONE_VFORK` in `args.flags` and no stack of
-/// its own, as `vfork` is: the child runs `child(arg)` on this thread's
-/// stack, below its frames, while the thread waits for the child's `execve`
-/// or exit. libc wraps `vfork` this way, but not `clone3`, the only call that
-/// takes `CLONE_INTO_CGROUP`. Returns what the parent's `clone3` returned:
-/// the child's pid, or a negative errno.
+/// `clone3` with `CLONE_VM | CLONE_VFORK` in `args.flags` and no stack of its own, as `vfork` is:
+/// the child runs `child(arg)` on this thread's stack, below its frames, while the thread waits for
+/// the child's `execve` or exit. libc wraps `vfork` this way, but not `clone3`, the only call that
+/// takes `CLONE_INTO_CGROUP`. Returns what the parent's `clone3` returned: the child's pid, or a
+/// negative errno.
 ///
-/// # Safety
-/// `args` asks for `CLONE_VM | CLONE_VFORK` and no stack; `child` never
-/// returns, and runs nothing that this thread's state (its locks, its
-/// thread-local storage) may not see.
+/// # Safety `args` asks for `CLONE_VM | CLONE_VFORK` and no stack; `child` never returns, and runs
+/// nothing that this thread's state (its locks, its thread-local storage) may not see.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub unsafe fn clone3_vfork(
     args: &CloneArgs,
@@ -41,11 +38,10 @@ pub unsafe fn clone3_vfork(
 ) -> libc::c_long {
     let size = std::mem::size_of::<CloneArgs>();
     let ret: libc::c_long;
-    // SAFETY: the parent returns from the system call as from any other. The
-    // child starts at the same instruction with the same registers and stack
-    // pointer, calls `child` and so only writes below this frame, never
-    // returning into it: the parent's frames stay as they were. The stack may
-    // be used (no `nostack`), so nothing is kept below the stack pointer.
+    // SAFETY: the parent returns from the system call as from any other. The child starts at the
+    // same instruction with the same registers and stack pointer, calls `child` and so only writes
+    // below this frame, never returning into it: the parent's frames stay as they were. The stack
+    // may be used (no `nostack`), so nothing is kept below the stack pointer.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         std::arch::asm!(
@@ -101,15 +97,13 @@ pub const MOUNT_ATTR_NODEV: u64 = 0x4;
 pub const MOUNT_ATTR_IDMAP: u64 = 0x10_0000;
 pub const AT_RECURSIVE: libc::c_uint = 0x8000;
 
-/// `open_tree` flags.
 pub const OPEN_TREE_CLONE: libc::c_uint = 1;
 pub const OPEN_TREE_CLOEXEC: libc::c_uint = libc::O_CLOEXEC.unsigned_abs();
 
-/// `move_mount` from the mount a descriptor names.
 pub const MOVE_MOUNT_F_EMPTY_PATH: libc::c_uint = 0x4;
 
-/// `struct landlock_ruleset_attr`, the filesystem half only: the kernel
-/// accepts a prefix of the structure, so this works on every ABI.
+/// `struct landlock_ruleset_attr`, the filesystem half only: the kernel accepts a prefix of the
+/// structure, so this works on every ABI.
 #[repr(C)]
 pub struct LandlockRulesetAttr {
     pub handled_access_fs: u64,
@@ -133,7 +127,6 @@ pub const LL_REFER: u64 = 1 << 13;
 pub const LL_TRUNCATE: u64 = 1 << 14;
 pub const LL_IOCTL_DEV: u64 = 1 << 15;
 
-/// Every filesystem right Landlock ABI `abi` knows.
 pub fn landlock_fs_rights(abi: u32) -> u64 {
     let mut rights = (1 << 13) - 1;
     if abi >= 2 {
@@ -148,14 +141,11 @@ pub fn landlock_fs_rights(abi: u32) -> u64 {
     rights
 }
 
-/// The rights a rule on a non-directory may carry.
 pub const LL_FILE_RIGHTS: u64 =
     LL_EXECUTE | LL_WRITE_FILE | LL_READ_FILE | LL_TRUNCATE | LL_IOCTL_DEV;
 
-/// Reading and running: the rights everything outside writable mounts gets.
 pub const LL_READ: u64 = LL_EXECUTE | LL_READ_FILE | LL_READ_DIR;
 
-/// The running kernel's Landlock ABI, or `None` without Landlock.
 pub fn landlock_abi() -> Option<u32> {
     // SAFETY: the version query reads no memory (a null attribute, size 0).
     let abi = unsafe {
@@ -169,7 +159,6 @@ pub fn landlock_abi() -> Option<u32> {
     u32::try_from(abi).ok().filter(|a| *a > 0)
 }
 
-/// A new Landlock ruleset handling `fs` rights.
 pub fn landlock_ruleset(fs: u64) -> std::io::Result<OwnedFd> {
     let attr = LandlockRulesetAttr {
         handled_access_fs: fs,
@@ -208,9 +197,9 @@ pub struct CapData {
 
 pub const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 
-/// `SECBIT_NOROOT | SECBIT_NO_SETUID_FIXUP | SECBIT_NO_CAP_AMBIENT_RAISE`,
-/// each with its lock, and `SECBIT_KEEP_CAPS_LOCKED` (keep-caps off, locked):
-/// an `execve` as uid 0 grants nothing, and no later call can change that.
+/// `SECBIT_NOROOT | SECBIT_NO_SETUID_FIXUP | SECBIT_NO_CAP_AMBIENT_RAISE`, each with its lock, and
+/// `SECBIT_KEEP_CAPS_LOCKED` (keep-caps off, locked): an `execve` as uid 0 grants nothing, and no
+/// later call can change that.
 pub const SECUREBITS_LOCKED_DOWN: libc::c_ulong = 0b1110_1111;
 
 /// `struct ifreq` as `SIOCGIFFLAGS`/`SIOCSIFFLAGS` use it.

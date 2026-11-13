@@ -30,7 +30,7 @@ impl Layer for Quiet {
     fn accessible_labels(&self) -> Vec<String> {
         Vec::new()
     }
-    fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
         Vec::new()
     }
     fn press(&self, name: &str) -> Result<(), String> {

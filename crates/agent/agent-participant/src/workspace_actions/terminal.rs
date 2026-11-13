@@ -94,7 +94,8 @@ pub trait WorkspaceShell: Send + Sync {
     ) -> Result<ShellRan, String>;
 
     /// Keep `output`, a run's output, where the workspace's devices fetch
-    /// its content: its content hash, or `None` when this host keeps none.
+    /// its content, answering the reference that opens it, or `None` when
+    /// this host keeps none.
     fn keep(&self, workspace: &str, output: &[u8]) -> Option<String> {
         let _ = (workspace, output);
         None
@@ -541,6 +542,9 @@ impl Worker {
             retryable: false,
         };
         let ran = ended.ran.clone().map_err(failed)?;
+        // The shell keeps the bytes where the workspace's devices fetch them;
+        // the run names the reference it answered, as the store that kept them
+        // sealed them, which every replica stores as it is.
         let output = (!ran.output.is_empty())
             .then(|| {
                 self.shared
@@ -549,7 +553,8 @@ impl Worker {
                     .and_then(|link| link.shell())
                     .and_then(|shell| shell.keep(&ended.route.cluster_id, &ran.output))
             })
-            .flatten();
+            .flatten()
+            .map(|reference| ui::tilo_resource::Bytes::kept_as(&ran.output, &reference));
         let run = uuid::Uuid::new_v4().simple().to_string();
         let mut finished = Map::new();
         finished.insert("command".into(), json!(ran.command));
@@ -557,17 +562,9 @@ impl Worker {
         finished.insert("started_ms".into(), json!(ran.started_ms));
         finished.insert("ended_ms".into(), json!(ran.ended_ms));
         finished.insert("exit".into(), json!(ran.exit));
-        if let Some(hash) = &output {
-            finished.insert("output".into(), json!(hash));
+        if let Some(output) = &output {
+            finished.insert("output".into(), json!(output));
         }
-        finished.insert(
-            "output_len".into(),
-            json!(if output.is_some() {
-                ran.output.len()
-            } else {
-                0
-            }),
-        );
         finished.insert("truncated".into(), json!(ran.truncated));
         let (tool, items) = parsed(&ran.command, &ran.output);
         finished.insert("tool".into(), json!(tool));

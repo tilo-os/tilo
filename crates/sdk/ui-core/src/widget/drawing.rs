@@ -1,12 +1,5 @@
-//! [`Drawing`] — shapes drawn with the design system (docs/designs/app-language/components.md
-//! §4.1, the custom-widget ladder's second step).
-//!
-//! A drawing is a list of [`Shape`] values over its own box: coordinates are fractions of the
-//! box, colours are theme roles ([`Ink`]), stroke widths are tokens ([`Weight`]). It lowers to
-//! the same `kurbo` paths, fills and strokes [`super::Sparkline`] paints with, resolved against
-//! the theme each frame, so every theme reaches it. It carries a semantic role so assistive
-//! technology and agents read what it means rather than its shapes, and a press reports the
-//! topmost shape under the pointer as data.
+//! [`Drawing`] — shapes drawn with the design system (docs/designs/app-
+//! language/components.md §4.1, the custom-widget ladder's second step).
 
 use std::collections::HashMap;
 
@@ -28,14 +21,10 @@ use crate::widget::{TaffyTreeExt, Tone, Widget};
 /// colour of the app's own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Ink {
-    /// The theme's accent: what the drawing is about.
     #[default]
     Accent,
-    /// Primary text ink.
     Ink,
-    /// Secondary text ink.
     Muted,
-    /// The quiet ground a value stands on: a progress ring's track.
     Track,
     Success,
     Warning,
@@ -98,9 +87,7 @@ crate::component::choice!(Weight, "Weight", {
 pub enum Meaning {
     /// Shows how far something has got; its `value` is the fraction.
     Progress,
-    /// Shows data; its `label` summarises it.
     Chart,
-    /// A picture of something; its `label` says what.
     Picture,
     /// Only looks: nothing to announce.
     #[default]
@@ -111,8 +98,7 @@ crate::component::choice!(Meaning, "Meaning", {
     Progress => "progress", Chart => "chart", Picture => "picture", Decoration => "decoration",
 });
 
-/// One shape of a [`Drawing`]. Coordinates and sizes are fractions of the drawing's box (`0.5`
-/// is its middle); angles of an arc are fractions of a turn, from the top, clockwise.
+/// One shape of a [`Drawing`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// A rectangle, rounded by `round` (a fraction of its shorter side, `0.5` a pill).
@@ -126,7 +112,6 @@ pub enum Shape {
         stroke: Option<Ink>,
         weight: Weight,
     },
-    /// An ellipse around `(cx, cy)`.
     Ellipse {
         cx: f64,
         cy: f64,
@@ -136,7 +121,6 @@ pub enum Shape {
         stroke: Option<Ink>,
         weight: Weight,
     },
-    /// An arc of the circle around `(cx, cy)`, from `from` to `to`.
     Arc {
         cx: f64,
         cy: f64,
@@ -146,7 +130,6 @@ pub enum Shape {
         stroke: Ink,
         weight: Weight,
     },
-    /// A line from `(x1, y1)` to `(x2, y2)`.
     Line {
         x1: f64,
         y1: f64,
@@ -155,8 +138,6 @@ pub enum Shape {
         stroke: Ink,
         weight: Weight,
     },
-    /// A path through `points` (x, y pairs), straight or `smooth`, open or `closed`; `wash`
-    /// fills under it with its ink fading out downward.
     Path {
         points: Vec<f64>,
         smooth: bool,
@@ -168,7 +149,6 @@ pub enum Shape {
     },
 }
 
-/// A [`Shape`] lowered into the drawing's box, in logical pixels.
 enum Lowered {
     Area(BezPath),
     Outline(BezPath),
@@ -281,15 +261,12 @@ impl Shape {
 pub struct Drawing {
     pub(crate) shapes: Vec<Shape>,
     pub(crate) meaning: Meaning,
-    /// What it shows, as assistive technology announces it.
     pub(crate) label: Option<String>,
-    /// How far it has got, for a progress drawing.
     pub(crate) value: Option<f64>,
     pub(crate) width: f32,
     pub(crate) height: f32,
     rect: Rect,
     last_cursor: Point,
-    /// What a press on a shape fires: its index, topmost first.
     pub(crate) on_press: Option<Box<dyn FnMut(usize)>>,
 }
 
@@ -418,7 +395,6 @@ impl Widget for Drawing {
             Meaning::Chart | Meaning::Picture => {
                 AccessNode::new(Role::Image).with_optional_name(self.label.clone())
             }
-            // Decoration is not in the tree at all.
             Meaning::Decoration => return None,
         })
     }

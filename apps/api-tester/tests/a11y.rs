@@ -1,11 +1,6 @@
-//! Accessibility + keyboard proof for the retained API-tester tree.
-//!
-//! These tests drive the **real app** through the framework's test host —
-//! the same resource, event dispatch, layout, and `Widget::accessibility()` the
-//! live app uses, with no display — and assert on the accessibility nodes the
-//! AccessKit bridge exports and on keyboard focus traversal: the focusable
-//! controls exist with the right roles/labels, Tab reaches them, and Enter
-//! runs the real handler.
+//! Accessibility and keyboard proof for the retained API-tester tree: the tests drive the
+//! real app through the framework's test host and assert on the nodes the AccessKit bridge
+//! exports and on keyboard focus traversal.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +16,6 @@ use ui::a11y::Role;
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
-/// The live app at `viewport`, staged for `scenario` as `--shots` stages it.
 fn staged(scenario: Option<&str>, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     app.harness().resize(viewport).unwrap();
@@ -29,19 +23,17 @@ fn staged(scenario: Option<&str>, viewport: (u32, u32)) -> TestApp<ApiTesterShel
     app
 }
 
-/// The live app on the sample workspace: collections, environments,
-/// history and a response, so every control class is present.
+/// The live app on the sample workspace: collections, environments, history and a response,
+/// so every control class is present.
 fn sample() -> TestApp<ApiTesterShell> {
     staged(None, (1280, 800))
 }
 
-/// The app as screenshot scenario `scenario` shows it, at `viewport`.
 fn captured(scenario: &str, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
     staged(Some(scenario), viewport)
 }
 
-/// All published semantic descendants, including shared list rows that do
-/// not each create another Tab stop.
+/// All published semantic descendants, including shared list rows that add no Tab stop.
 fn semantic_nodes(d: &FrameHarness) -> Vec<ui::a11y::AccessNode> {
     fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
         let children = node.children.clone();
@@ -57,7 +49,6 @@ fn semantic_nodes(d: &FrameHarness) -> Vec<ui::a11y::AccessNode> {
     nodes
 }
 
-/// Drive a synthetic retained row action through its published AT owner.
 fn act_named(d: &mut FrameHarness, name: &str, action: &ui::a11y::Action) {
     let node = d
         .a11y_node_named(name)
@@ -80,14 +71,12 @@ fn environment_command(d: &mut FrameHarness, choice: &str) {
         .unwrap();
 }
 
-/// Apply what the last input submitted.
 fn settle(d: &mut FrameHarness) {
     d.wait_until(ui::time::Duration::ZERO, |_| true);
 }
 
-/// Every surface (full demo, empty and error responses, the narrow window,
-/// contextual sheets) exposes its controls as named accessibility nodes; each
-/// case mounts its own `FrameHarness`.
+/// Every surface (the demo, an empty and a failed response, the narrow window, the
+/// contextual sheets) exposes its controls as named accessibility nodes.
 #[test]
 fn every_surface_exposes_named_accessible_controls() {
     every_control_is_a_focusable_accessible_node();
@@ -96,17 +85,15 @@ fn every_surface_exposes_named_accessible_controls() {
     contextual_forms_expose_only_their_named_fields();
 }
 
-/// Every interactive control is a real focusable widget with an accessibility
-/// node carrying the correct role, name, and value — the thing a single
-/// painted canvas could never provide.
-/// Case of `every_surface_exposes_named_accessible_controls`.
+/// Every interactive control is a focusable widget with a node carrying the right role,
+/// name and value.
 fn every_control_is_a_focusable_accessible_node() {
     let mut app = sample();
     let d = app.harness();
     let nodes = d.focus_access_nodes();
     let roles: Vec<Role> = nodes.iter().map(|n| n.role).collect();
 
-    // Method + environment pickers are combo boxes.
+    // Method and environment pickers are combo boxes.
     assert!(
         roles.iter().filter(|r| **r == Role::ComboBox).count() >= 2,
         "method + environment pickers are ComboBoxes, got {roles:?}"
@@ -122,7 +109,7 @@ fn every_control_is_a_focusable_accessible_node() {
         "request tabs and response views are tab lists, got {roles:?}"
     );
 
-    // Labels / values a screen reader announces.
+    // Labels and values a screen reader announces.
     for name in ["Send", "Save request", "New collection", "Hide sidebar"] {
         assert!(
             nodes
@@ -155,8 +142,7 @@ fn every_control_is_a_focusable_accessible_node() {
             .any(|n| n.role == Role::TabBar && n.value.as_deref() == Some("Pretty")),
         "the response tab bar announces the active view"
     );
-    // A saved request is an addressable, labelled row of the requests list
-    // that reports selection, led by its method.
+    // A saved request is a labelled row that reports selection, led by its method.
     let requests = nodes
         .iter()
         .find(|n| n.role == Role::Tree && n.name.as_deref() == Some("Requests"))
@@ -186,7 +172,7 @@ fn every_control_is_a_focusable_accessible_node() {
             .any(|n| n.role == Role::Checkbox && n.name.as_deref() == Some("Use this row")),
         "a parameter has its include checkbox"
     );
-    // The idle UI has no ambiguous generic management fields.
+    // The idle window has no generic management fields.
     assert!(
         !nodes.iter().any(|node| node.role == Role::TextInput
             && matches!(node.name.as_deref(), Some("Name" | "Variable"))),
@@ -194,7 +180,6 @@ fn every_control_is_a_focusable_accessible_node() {
     );
 }
 
-/// Case of `every_surface_exposes_named_accessible_controls`.
 fn empty_and_error_response_surfaces_expose_recovery_actions() {
     let mut empty = captured("empty", (1280, 800));
     let empty = empty.harness();
@@ -226,7 +211,6 @@ fn empty_and_error_response_surfaces_expose_recovery_actions() {
     );
 }
 
-/// Case of `every_surface_exposes_named_accessible_controls`.
 fn narrow_workspace_menu_is_keyboard_accessible() {
     let mut d = captured("empty", (390, 844));
     let d = d.harness();
@@ -238,7 +222,6 @@ fn narrow_workspace_menu_is_keyboard_accessible() {
     );
 }
 
-/// Case of `every_surface_exposes_named_accessible_controls`.
 fn contextual_forms_expose_only_their_named_fields() {
     let mut variable = captured("form-new-variable", (390, 844));
     let nodes = variable.harness().focus_access_nodes();
@@ -272,8 +255,8 @@ fn contextual_forms_expose_only_their_named_fields() {
     );
 }
 
-/// Tab order, Enter activation and Escape dismissal drive the real widget
-/// handlers; each case mounts its own `FrameHarness`.
+/// Tab order, Enter activation and Escape dismissal drive the real handlers; each case
+/// mounts its own `FrameHarness`.
 #[test]
 fn keyboard_focus_traverses_activates_and_dismisses_through_real_handlers() {
     tab_traverses_every_control_in_order();
@@ -282,10 +265,8 @@ fn keyboard_focus_traverses_activates_and_dismisses_through_real_handlers() {
     composition_narrow_escape_paging_and_open_resize_are_reachable();
 }
 
-/// Tab / Shift+Tab move keyboard focus between the real controls in tree
-/// order — the traversal the compositor's `App` performs, exercised here
-/// through the same focus walk.
-/// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
+/// Tab and Shift+Tab move focus between the real controls in tree order, as the
+/// compositor's focus walk does.
 fn tab_traverses_every_control_in_order() {
     let mut app = sample();
     let d = app.harness();
@@ -302,8 +283,8 @@ fn tab_traverses_every_control_in_order() {
         .skip_while(|(role, _)| *role != Role::ComboBox)
         .collect();
 
-    // The builder comes first, top-left to top-right: method picker, URL
-    // field, then the request tabs. Save and Send are the header's.
+    // The builder comes first, top-left to top-right: method picker, URL field, then the
+    // request tabs. Save and Send are the header's.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
     assert_eq!(
         roles.first(),
@@ -345,8 +326,7 @@ fn tab_traverses_every_control_in_order() {
         "one retained request/response divider is reachable"
     );
 
-    // Focus reaches the sidebar's list (arrows move through its rows) and
-    // the table's cells.
+    // Focus reaches the sidebar's list and the table's cells.
     assert!(
         stops
             .iter()
@@ -365,10 +345,8 @@ fn tab_traverses_every_control_in_order() {
     assert!(back.is_some(), "Shift+Tab moves focus backward");
 }
 
-/// The arrow keys move through the saved requests once Tab reaches their
-/// list, and the request chosen loads into the builder, through the list's
-/// real handler — the same path a screen reader's "activate" takes.
-/// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
+/// The arrow keys move through the saved requests once Tab reaches their list, and the
+/// chosen request loads into the builder, through the list's real handler.
 fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut app = sample();
     let d = app.harness();
@@ -411,7 +389,6 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     );
 }
 
-/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
 fn composition_disclosure_hides_maintenance_and_returns_focus() {
     let mut app = sample();
     let d = app.harness();
@@ -419,9 +396,7 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
         !d.targets().contains_key("api.form-name"),
         "maintenance forms are hidden until the row action asks for one"
     );
-    // A row's own actions are behind its More, so a history row is never
-    // offered a rename; the menu's rows are how assistive technology picks
-    // one.
+    // A row's own actions are behind its More, so a history row is never offered a rename.
     act_named(d, "More List users", &ui::a11y::Action::Activate);
     d.key("ArrowDown");
     d.key("Enter");
@@ -440,9 +415,8 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
     );
 }
 
-/// The request divider responds to keyboard and pointer, its manual
-/// preference survives resizes and tab changes, and 2x text keeps every
-/// control on screen; each case mounts its own `FrameHarness`.
+/// The request divider answers keyboard and pointer, its preference survives resizes and
+/// tab changes, and 2x text keeps every control on screen.
 #[test]
 fn request_divider_and_controls_survive_resize_and_text_scale() {
     composition_params_fit_rows_and_divider_adjusts_with_keyboard();
@@ -450,7 +424,6 @@ fn request_divider_and_controls_survive_resize_and_text_scale() {
     composition_real_two_x_retains_all_controls_and_response_space();
 }
 
-/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
 fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let mut app = sample();
     let d = app.harness();
@@ -475,8 +448,8 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     d.resize((1280, 800)).unwrap();
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
     d.click_named("api.reset-request-area").unwrap();
-    // A click asks for the reset, so the divider glides home
-    // (`motion::PanelSlide`); where it comes to rest is where it started.
+    // A click asks for the reset, so the divider glides home; where it comes to rest is
+    // where it started.
     {
         let _arrived = ui::motion::testing::settled();
         d.relayout();
@@ -489,7 +462,6 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     );
 }
 
-/// Whether the header's Reset request area is disabled.
 fn reset_disabled(d: &FrameHarness) -> bool {
     d.controls()
         .into_iter()
@@ -510,7 +482,6 @@ fn move_pointer(d: &mut FrameHarness, x: f64, y: f64) {
     d.send(&ui::synthetic_input::cursor_moved(x, y));
 }
 
-/// Settle the drawer's animation through real redraw ticks.
 fn settle_drawer(d: &mut FrameHarness) {
     assert!(
         d.settle_for_capture(tilo_test_env::hang_bound()),
@@ -518,11 +489,8 @@ fn settle_drawer(d: &mut FrameHarness) {
     );
 }
 
-/// The sidebar's management controls and the request's own (Save in the URL
-/// bar, the header's reset) are on screen, and no two controls of the same
-/// surface overlap. A floating drawer covers the content below it, so a
-/// sidebar control may lie over a content control; within each surface
-/// they must not.
+/// The sidebar's management controls and the request's own are on screen, and no two
+/// controls of the same surface overlap. A floating drawer may lie over a content control.
 fn assert_sidebar_targets(d: &FrameHarness, height: f64) {
     const SIDEBAR: [&str; 2] = ["api.env", "api.new-collection"];
     const CONTENT: [&str; 2] = ["api.save-request", "api.reset-request-area"];
@@ -555,7 +523,6 @@ fn assert_sidebar_targets(d: &FrameHarness, height: f64) {
     }
 }
 
-/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
 #[expect(
     clippy::float_cmp,
     reason = "the divider moves by exactly the dragged whole-pixel distance"

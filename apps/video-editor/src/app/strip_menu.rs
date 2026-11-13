@@ -1,13 +1,9 @@
-//! The editor's segmented strips (a transition, a preset, an export
-//! option) as the toolkit's segmented control paints them: whole labels, or,
-//! where they do not fit, folded into a picker whose menu lists every
-//! segment ([`ui::widget::SegmentedFace::folds`]).
+//! The editor's segmented strips (a transition, a preset, an export option) as the toolkit's
+//! segmented control paints them: whole labels, or, where they do not fit, folded into a
+//! picker ([`ui::widget::SegmentedFace::folds`]).
 //!
-//! A strip is painted where its surface lays it out; each paint notes the
-//! strips that folded, so a press on one opens its menu instead of landing
-//! on a segment too narrow to read. Choosing a row presses that segment
-//! through the surface's own handler, so a strip chosen from its menu and
-//! one clicked whole take the same path.
+//! Choosing a row presses that segment through the surface's own handler, so a strip chosen
+//! from its menu and one clicked whole take the same path.
 
 use std::cell::RefCell;
 
@@ -41,8 +37,6 @@ pub(super) struct FoldedStrip {
     selected: usize,
 }
 
-/// The strips painted folded in the latest frame, and the one whose menu is
-/// open.
 #[derive(Debug, Default)]
 pub(super) struct Strips {
     folded: RefCell<Vec<FoldedStrip>>,
@@ -57,8 +51,6 @@ impl Strips {
 }
 
 impl VideoEditorApp {
-    /// Paint one segmented strip of `labels` in `segments`, `selected` chosen
-    /// (or `usize::MAX`), folded into a picker where the labels do not fit.
     pub(super) fn draw_strip(
         &self,
         scene: &mut Scene,
@@ -96,8 +88,6 @@ impl VideoEditorApp {
         ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
     }
 
-    /// Open the menu of the strip of `host` folded under `p`, if there is
-    /// one; whether it did.
     pub(super) fn open_folded_strip(&mut self, host: StripHost, p: Point) -> bool {
         let strip = self
             .strips
@@ -119,8 +109,6 @@ impl VideoEditorApp {
         true
     }
 
-    /// Row `row` of an open strip's menu: press its segment through the
-    /// surface's own handler.
     pub(super) fn choose_strip_row(&mut self, row: usize) {
         let Some(strip) = self.strips.open.take() else {
             return;

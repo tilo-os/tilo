@@ -1,22 +1,13 @@
-//! Formatted text as HTML, both ways: what a copy from the editor offers as
-//! `text/html`, and what a paste from a browser, an office suite or another
-//! Tilo editor brings in. Paragraphs, headings, lists, checklists, quotes,
-//! callouts, code, tables and rules keep their kind; bold, italic,
-//! underline, strikethrough, inline code and links keep their marks. Any
-//! other markup gives its words and nothing else: no script, style or
-//! attribute survives a paste.
+//! Formatted text as HTML, both ways: what a copy from the editor offers as `text/html`, and what a
+//! paste from a browser, an office suite or another Tilo editor brings in.
 
 use std::fmt::Write as _;
 
 use super::{BlockContent, BlockKind, CalloutKind, MAX_LIST_INDENT};
 use crate::widget::marks::{Mark, MarkSpan, add_mark_to_range};
 
-/// The most blocks one paste brings in. The HTML is already bounded by the
-/// clipboard's transport limit; this bounds what a pathological document of
-/// empty elements makes of it.
 const MAX_PASTED_BLOCKS: usize = 20_000;
 
-/// The scheme a link to a Tilo page is written with.
 const PAGE_SCHEME: &str = "tilo-page:";
 
 /// The scheme a link to a resource of this desktop is written with, the one
@@ -31,11 +22,6 @@ pub fn is_resource_link(target: &str) -> bool {
         .is_some_and(|route| !route.trim().is_empty())
 }
 
-// ===========================================================================
-// Blocks to HTML
-// ===========================================================================
-
-/// `blocks` as an HTML fragment: what a formatted copy offers.
 #[must_use]
 pub fn blocks_to_html(blocks: &[BlockContent]) -> String {
     let mut out = String::from("<meta charset=\"utf-8\">");
@@ -84,7 +70,6 @@ pub fn blocks_to_html(blocks: &[BlockContent]) -> String {
         }
         match &block.kind {
             BlockKind::CodeBlock { lang } => {
-                // The lines of one fence are one `pre`.
                 let mut end = index + 1;
                 while blocks.get(end).is_some_and(|next| {
                     matches!(next.kind, BlockKind::CodeBlock { .. })
@@ -162,8 +147,6 @@ fn push_table(out: &mut String, source: &str) {
     out.push_str("</table>");
 }
 
-/// The tag a mark opens and closes, or `None` for a mark HTML carries no
-/// meaning of (a transclusion).
 fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
     Some(match mark {
         Mark::Bold => ("<strong>".into(), "</strong>"),
@@ -235,12 +218,6 @@ fn escape_attr(text: &str) -> String {
     escape_text(text).replace('"', "&quot;")
 }
 
-// ===========================================================================
-// HTML to blocks
-// ===========================================================================
-
-/// The blocks `html` shows: what a formatted paste brings in. Empty when it
-/// shows no words.
 #[must_use]
 pub fn blocks_from_html(html: &str) -> Vec<BlockContent> {
     let mut builder = Builder::default();
@@ -322,7 +299,6 @@ impl<'a> Tokens<'a> {
             let starts_tag = after.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '/');
             let end = tag_end(self.rest).filter(|_| starts_tag && !name.is_empty());
             let Some(end) = end else {
-                // `a < b` written raw: the `<` is text.
                 self.rest = after;
                 return Some(Token::Text("<"));
             };
@@ -341,7 +317,6 @@ impl<'a> Tokens<'a> {
         }
     }
 
-    /// Skip a raw-text element's content (a script, a style).
     fn skip_past_end(&mut self, name: &str) {
         let close = format!("</{name}");
         let lower = self.rest.to_ascii_lowercase();
@@ -385,7 +360,6 @@ fn is_void(name: &str) -> bool {
     )
 }
 
-/// The value of attribute `key` in a tag's attributes, entities decoded.
 fn attr(attrs: &str, key: &str) -> Option<String> {
     let mut rest = attrs;
     loop {
@@ -425,7 +399,6 @@ fn attr(attrs: &str, key: &str) -> Option<String> {
     }
 }
 
-/// `text` with its character references resolved.
 fn decode_entities(text: &str) -> String {
     if !text.contains('&') {
         return text.to_owned();
@@ -479,15 +452,12 @@ fn decode_entities(text: &str) -> String {
     out
 }
 
-/// An inline element open while the words go in: the mark it gives, and
-/// where in the current block it began.
 struct OpenInline {
     name: String,
     marks: Vec<Mark>,
     start: usize,
 }
 
-/// A table being read: its rows of cells.
 #[derive(Default)]
 struct TableRows {
     rows: Vec<Vec<String>>,
@@ -497,17 +467,14 @@ struct TableRows {
 #[derive(Default)]
 struct Builder {
     blocks: Vec<BlockContent>,
-    /// The block the words are going into.
     current: Option<BlockContent>,
     inline: Vec<OpenInline>,
     /// The lists open: whether each is numbered.
     lists: Vec<bool>,
-    /// How deep in quotes, and the callout the innermost one is.
     quotes: Vec<Option<CalloutKind>>,
     /// Inside a `pre`: its language, and the code read so far.
     pre: Option<(Option<String>, String)>,
     table: Option<TableRows>,
-    /// The kind a new block inside the current list item takes.
     item: Option<BlockKind>,
     heading: Option<u8>,
 }
@@ -562,8 +529,6 @@ impl Builder {
         }
     }
 
-    /// End the current block: its open marks close at its end and reopen
-    /// at the start of the next.
     fn flush(&mut self) {
         let Some(mut block) = self.current.take() else {
             return;
@@ -807,7 +772,6 @@ impl Builder {
     }
 }
 
-/// The language a `pre` or `code` names in its class (`language-rust`).
 fn language(attrs: &str) -> Option<String> {
     attr(attrs, "class")?
         .split_whitespace()
@@ -820,8 +784,6 @@ fn language(attrs: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The marks an inline element gives, by its name and its inline style
-/// (office suites and Google Docs mark their runs with `style`).
 fn inline_marks(name: &str, attrs: &str) -> Vec<Mark> {
     let mut marks = Vec::new();
     let style = attr(attrs, "style")
@@ -936,7 +898,6 @@ mod tests {
             .collect()
     }
 
-    /// What the editor copies, it pastes back unchanged.
     #[test]
     fn the_editors_own_html_round_trips() {
         let group = Some("g".to_owned());
@@ -1033,11 +994,8 @@ mod tests {
         assert_eq!(kinds(&blocks_from_html(&html)), kinds(&[table]));
     }
 
-    /// What browsers and office suites put on the clipboard pastes as the
-    /// words with their formatting, and nothing else.
     #[test]
     fn foreign_html_pastes_its_words_and_formatting_only() {
-        // Google Docs: a non-bold `b` wrapper, weight and slant in styles.
         let docs = r#"<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><p dir="ltr"><span style="font-weight:700;">Bold</span><span style="font-weight:400;"> and </span><span style="font-style:italic;">italic</span></p><ul><li><p><span>item</span></p></li></ul></b>"#;
         let blocks = blocks_from_html(docs);
         assert_eq!(
@@ -1080,8 +1038,6 @@ mod tests {
         );
         assert!(blocks.iter().all(|b| !b.text.contains("alert")));
 
-        // A link to anything but the web or mail keeps its words, not its
-        // target.
         let blocks = blocks_from_html(
             "<a href=\"javascript:alert(1)\">click</a> <a href=\"https://tilo.so\">site</a>",
         );

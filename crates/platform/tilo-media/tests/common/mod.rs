@@ -1,23 +1,12 @@
 //! Shared fixtures for the decode integration tests.
 //!
-//! # These tests do not skip
+//! Nothing here skips: a missing clip, a `GStreamer` that will not initialise or a
+//! pipeline that produces no frame fails with a message saying what was missing.
 //!
-//! A check that quietly passes when it could not observe the thing it claims
-//! to check is worthless — it reads exactly like a real pass. So nothing here
-//! returns "skipped": a missing clip, a `GStreamer` that will not initialise, or
-//! a pipeline that produces no frame all **fail**, with a message saying what
-//! was missing.
-//!
-//! Where the environment genuinely varies — a machine with no hardware decoder
-//! for the fixture's codec is a legitimate configuration — the test still asserts, but it
-//! asserts the *correct outcome for the machine it is on*, having first
-//! interrogated the registry. "There was no hardware decoder available" is a
-//! conclusion the test proves and prints, never an assumption it makes to get
-//! out of asserting.
-//!
-//! That covenant is why this module panics on purpose. `assert!` and `panic!`
-//! here are the check, not a hazard — clippy's exemption for test code only
-//! reaches `#[test]` functions, and every one of these is called from one.
+//! Where the machine varies — no hardware decoder for the fixture's codec is a
+//! legitimate configuration — the test interrogates the registry and then asserts the
+//! correct outcome for that machine. The panics here are the check, not a hazard; every
+//! one is called from a `#[test]`.
 #![allow(
     clippy::panic,
     reason = "a fixture helper that cannot observe its subject must fail loudly; \
@@ -43,7 +32,6 @@ use gstreamer::prelude::*;
 #[cfg(feature = "decode")]
 use tilo_lock::MutexRecover as _;
 
-/// Frames per second of the fixture clip.
 #[cfg(feature = "decode")]
 pub const FIXTURE_FPS: f64 = 30.0;
 
@@ -65,8 +53,6 @@ pub const FIXTURE_HEIGHT: u32 = 216;
 #[cfg(feature = "decode")]
 const FIXTURE_SCROLL_PX: u32 = 2;
 
-/// One frame interval, milliseconds. A seek that lands within this of its
-/// target landed on the right picture.
 #[cfg(feature = "decode")]
 pub const FRAME_MS: u64 = 33;
 
@@ -81,20 +67,15 @@ pub const FRAME_MS: u64 = 33;
 #[cfg(feature = "decode")]
 pub const FIXTURE_GOP_MS: u64 = 8_333;
 
-/// Exactly 250 pictures separate keyframes at 30 fps.
 #[cfg(feature = "decode")]
 pub const FIXTURE_GOP_FRAMES: u32 = 250;
 
-/// Number of pictures in the generated fixture.
 #[cfg(feature = "decode")]
 pub const FIXTURE_FRAMES: u32 = 1_717;
 
-/// Caps of the fixture's video stream, for asking the registry which
-/// decoders can take it.
 #[cfg(feature = "decode")]
 pub const FIXTURE_CAPS: &str = "video/x-vp9";
 
-/// Human name of the fixture's codec, for messages.
 #[cfg(feature = "decode")]
 pub const FIXTURE_CODEC: &str = "VP9";
 
@@ -248,13 +229,11 @@ pub fn require_fixture() -> PathBuf {
     p
 }
 
-/// The fixture as a [`tilo_media::Source`].
 #[cfg(feature = "decode")]
 pub fn fixture_source() -> tilo_media::Source {
     tilo_media::Source::LocalFile(require_fixture())
 }
 
-/// Caps of the H.264 fixture's stream.
 #[cfg(feature = "decode")]
 pub const H264_CAPS: &str = "video/x-h264";
 
@@ -311,8 +290,6 @@ pub fn h264_fixture() -> Result<PathBuf, &'static str> {
     write_h264_clip(encoder, &staging)?;
     match std::fs::rename(&staging, &published) {
         Ok(()) => Ok(published),
-        // Another process test-runner started in parallel published first;
-        // its clip is the same stream from the same encoder.
         Err(_) if h264_fixture_is_ready(&published) => Ok(published),
         Err(_) => {
             std::fs::remove_file(&staging).ok();
@@ -321,7 +298,6 @@ pub fn h264_fixture() -> Result<PathBuf, &'static str> {
     }
 }
 
-/// The H.264 encoders that can write the fixture, in preference order.
 #[cfg(feature = "decode")]
 const H264_ENCODERS: [&str; 2] = ["x264enc", "openh264enc"];
 
@@ -393,9 +369,6 @@ pub fn registry_policy_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock_recover()
 }
 
-/// A one-line description of every video decoder the registry offers, for a
-/// failure message. Printing this is what turns "software was chosen" from an
-/// unexplained result into a diagnosable one.
 #[cfg(feature = "decode")]
 pub fn registry_summary() -> String {
     let all = tilo_media::gst_backend::available_video_decoders();
@@ -416,7 +389,6 @@ pub fn registry_summary() -> String {
     )
 }
 
-/// Whether this machine has any hardware decoder that can take the fixture.
 #[cfg(feature = "decode")]
 pub fn has_hardware_fixture_decoder() -> bool {
     tilo_media::gst_backend::decoders_for(FIXTURE_CAPS)
@@ -451,9 +423,7 @@ pub fn stream_pts_base_ms(engine: &mut tilo_media::MediaEngine) -> u64 {
 #[cfg(feature = "decode")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drift {
-    /// Absolute distance in milliseconds.
     pub ms: u64,
-    /// Whether the picture landed *before* the requested time.
     pub early: bool,
 }
 

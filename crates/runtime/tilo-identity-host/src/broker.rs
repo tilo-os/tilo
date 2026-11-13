@@ -17,7 +17,7 @@ use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_at
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 #[cfg(test)]
-use tilo_action_policy::Subject;
+use tilo_action_policy::Grantee;
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
@@ -799,7 +799,7 @@ mod tests {
     fn signing_grant(workspace: &Workspace) -> Grant {
         Grant::new(
             "notes-sign-save",
-            Subject::App("so.tilo.notes".into()),
+            Grantee::app("so.tilo.notes"),
             workspace
                 .node()
                 .app("so.tilo.notes")
@@ -807,7 +807,7 @@ mod tests {
                 .action("document.save"),
             KindSet::ALL,
             Answer::Allow,
-            Subject::Person(
+            Grantee::person(
                 workspace
                     .owner()
                     .map_or_else(String::new, ToString::to_string),
@@ -1471,7 +1471,7 @@ params = []
         let grant = tilo_action_policy::roles::app_authorship(
             &workspace_id,
             "so.tilo.notes",
-            Subject::Person(profile.principal_id()),
+            Grantee::person(profile.principal_id()),
         );
         tree.write().desktop.workspaces[0].grant(grant);
         assert!(identity.sign_for("document.save", b"saved").is_err());
@@ -1486,11 +1486,11 @@ params = []
         let node = tree.read().desktop.workspaces[0].node();
         tree.write().desktop.workspaces[0].grant(Grant::new(
             "notes-outside",
-            Subject::App("so.tilo.notes".into()),
+            Grantee::app("so.tilo.notes"),
             node,
             KindSet::ALL,
             Answer::Allow,
-            Subject::Person(profile.principal_id()),
+            Grantee::person(profile.principal_id()),
         ));
         for action in [
             "document.save",

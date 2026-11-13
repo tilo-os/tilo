@@ -2,7 +2,6 @@ use super::*;
 use crate::tokens::TextRole;
 use crate::widget::{AppKind, TaffyTreeExt};
 
-/// A page of text that fills what it is given, so a bar over it shows.
 struct Page {
     rect: Rect,
 }
@@ -83,7 +82,6 @@ fn page_group() -> WindowGroup {
     }))))
 }
 
-/// A foreign-like app: no header row to merge with.
 struct PageApp(Page);
 
 impl Widget for PageApp {
@@ -131,7 +129,6 @@ impl crate::widget::app_widget::AppWidget for PageApp {
 /// Lay the group out as the work area under the desktop's top bar, at
 /// `scale` (the layout is logical; the scale only matters for paint).
 fn lay_out(g: &mut WindowGroup, theme: &Theme) {
-    // Twice: a NavShell plans against the size it was last given.
     for _ in 0..2 {
         let _ = g.take_structure_dirty();
         let mut taffy = TaffyTree::<()>::new();
@@ -162,9 +159,6 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     }
 }
 
-/// Maximized, the bar and its search stay the window's children, so a
-/// host's walks (tooltips, accessibility, redraw) reach them as when
-/// restored.
 #[test]
 fn maximized_the_bar_and_search_stay_children() {
     let theme = Theme::dark();
@@ -197,8 +191,6 @@ fn a_maximized_window_keeps_its_bar_above_its_content() {
     );
 }
 
-/// Lay the group out as the strip does: a child of the work area, so an
-/// offset the group asks for applies (the layout root ignores one).
 fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
     let mut taffy = TaffyTree::<()>::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -224,8 +216,6 @@ fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
     g.apply_layout(&taffy, node, Point::new(0.0, TOP));
 }
 
-/// The desktop's bar shown over a window moves the window down rather
-/// than covering the window's own bar, and moves it whole: no resize.
 #[test]
 fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
     let mut theme = Theme::dark();
@@ -252,16 +242,12 @@ fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
     );
 }
 
-/// On a phone the desktop's bar shows over the window under an auto-hiding bar, and its clock reads
-/// across the middle of the display: the window's own bar moves down whole, so its Back and the name
-/// it shows stand below the clock's band and nothing of the window is left under it.
 #[test]
 fn a_phone_window_bar_stands_clear_of_the_bar_shown_over_it() {
     let mut theme = Theme::light();
     theme.reduce_motion = true;
     let mut g = page_group();
     assert!(g.set_tab_toolbar(1, Some(slots())));
-    // The desk's bar over the window, as tall as the band its clock reads in.
     g.set_top_overlay_inset(TOP);
     lay_out_in_strip(&mut g, &theme);
     let bar = g.bar_rect();
@@ -277,8 +263,6 @@ fn a_phone_window_bar_stands_clear_of_the_bar_shown_over_it() {
             "every control on the window's bar stands below the clock's band: {control:?}"
         );
     }
-    // A window bar too low for room beneath the clock gives way: the bar is the desk's, the
-    // window's own follows it down and its content with it.
     let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
     assert!(
         content.y0 >= bar.y1 - 0.5,
@@ -427,7 +411,6 @@ fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
     }
 }
 
-/// The motions of a fullscreen window's bar still asking for frames.
 fn bar_wishes(now: crate::time::Instant) -> Vec<String> {
     crate::motion::frames_wanted_by(now)
         .into_iter()
@@ -435,9 +418,6 @@ fn bar_wishes(now: crate::time::Instant) -> Vec<String> {
         .collect()
 }
 
-/// A key that shows or hides a fullscreen window's bar (entering fullscreen
-/// by Super+F, Super alone) lands it at once: drawn whole on the next frame,
-/// gone on the next, and nothing asks for a frame after.
 #[test]
 fn a_fullscreen_windows_bar_shown_by_a_key_lands_at_once() {
     let theme = Theme::dark();
@@ -461,9 +441,6 @@ fn a_fullscreen_windows_bar_shown_by_a_key_lands_at_once() {
     assert_eq!(bar_wishes(now), Vec::<String>::new());
 }
 
-/// A window's bar wears what the shell told the window of its workspace: two
-/// temperatures paint it differently, and the person's own colour is the
-/// ring on the tab that has the keyboard.
 #[test]
 fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
     use crate::theme::WindowAppearance;
@@ -471,8 +448,6 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
 
     let _settled = crate::motion::testing::settled();
     let colour = |c: vello::peniko::Color| c.premultiply().to_rgba8().to_u32();
-    // The bar alone, at rest but for the keyboard, as the window the shell
-    // dressed it shows it.
     let paint = |appearance: &WindowAppearance| {
         let theme = Theme::light().in_window(appearance);
         let mut g = pages(2);
@@ -506,8 +481,6 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
         "the bar takes the temperature of the workspace it stands in"
     );
 
-    // The person's colour is the ring of the tab with the keyboard, and
-    // another colour rings it in another.
     let (mine, mine_paint) = paint(&room);
     let (theirs, theirs_paint) = paint(&WindowAppearance {
         your_colour: Some(PresenceHue::Green),
@@ -530,9 +503,6 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
     );
 }
 
-/// The bar is part of the window: a pointer resting on a tab's pill names
-/// the whole of its title, which the pill cuts to fit, and a point off the
-/// bar names nothing.
 #[test]
 fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
     let theme = Theme::dark();
@@ -602,10 +572,6 @@ impl crate::widget::app_widget::AppWidget for ShellApp {
     }
 }
 
-/// A window of `shell` laid out the way a desktop lays one out each frame: the app of the
-/// window's one tab is told what the bar hosts and runs against it, and its own window handle
-/// comes back with it, where the desktop reads what its bar shows and hands back what the person
-/// did there.
 fn shell_window(
     shell: crate::widget::NavShell,
 ) -> (
@@ -637,9 +603,6 @@ fn shell_window(
     (frame, window)
 }
 
-/// A frame as a live desktop runs the window it shows: the window lays out (its app declares what
-/// its bar holds), the desktop hands that declaration to the bar of its tab and hands the app
-/// what the person did in it, and the window lays out again with both.
 fn frame_of(
     frame: &mut crate::headless::FrameHarness,
     slots: &mut crate::window_slots::WindowSlots,
@@ -653,7 +616,6 @@ fn frame_of(
     frame.relayout();
 }
 
-/// The header row's height the window's app draws of its own.
 fn row_of(frame: &mut crate::headless::FrameHarness) -> f64 {
     let mut root = frame.root_mut::<WindowGroup>();
     let g: &mut WindowGroup = &mut root;
@@ -744,11 +706,6 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
     );
 }
 
-/// A row that is the window's bar keeps every function the bar has: the window's search and its
-/// new-tab door stand at the row's trailing end beside its close/restore controls (History is the
-/// row's own, the tab row being hidden: `nav_shell::tests::the_window_bar_merges_into_the_header_row`
-/// proves it stands there), and a press on the row's own ground moves the window, as one on the
-/// bar's does.
 #[test]
 fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     let _settled = crate::motion::testing::settled();
@@ -806,8 +763,6 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
             "the {name} stands on the row's centre line: {rect:?} in {row:?}"
         );
     }
-    // The window's controls are the window's, and a press on the row's own ground is the
-    // window's to move it by — the drag the bar's pill gives.
     let g = frame.root_mut::<WindowGroup>();
     assert!(g.bar_grab_hit(grab_ground), "the row moves the window");
     assert!(
@@ -824,7 +779,6 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     );
 }
 
-/// An app whose header row holds a popover: the row is the window's bar.
 fn holding_row_shell() -> crate::widget::NavShell {
     crate::widget::NavShell::new()
         .content(Box::new(crate::widget::Text::new("Body")))
@@ -837,12 +791,10 @@ fn holding_row_shell() -> crate::widget::NavShell {
         )
 }
 
-/// The name assistive technology reads for the window's control named by `key`.
 fn window_control_name(key: &str) -> String {
     crate::i18n::I18nManager::lookup_plain(key)
 }
 
-/// The bounds the tree reports for the node named `name`, when it reads there.
 fn node_bounds(frame: &crate::headless::FrameHarness, name: &str) -> Option<accesskit::Rect> {
     let id = frame.a11y_node_named(name)?;
     frame
@@ -852,7 +804,6 @@ fn node_bounds(frame: &crate::headless::FrameHarness, name: &str) -> Option<acce
         .and_then(|(_, node)| node.bounds())
 }
 
-/// Where the node named `name` stands in the tree, in reading order.
 fn node_order(frame: &crate::headless::FrameHarness, name: &str) -> Option<usize> {
     let id = frame.a11y_node_named(name)?;
     frame.a11y_nodes().iter().position(|(node, _)| *node == id)
@@ -867,10 +818,6 @@ fn tree_names(frame: &crate::headless::FrameHarness) -> Vec<String> {
         .collect()
 }
 
-/// The window's furniture in a row that holds the bar reaches assistive technology as the bar's
-/// own does: the new-tab door, then restore/maximize and close, each where the row draws it, and
-/// each performing what it shows when activated. They read after the app's own header controls, as
-/// the bar's read after its tabs.
 #[test]
 fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     let _settled = crate::motion::testing::settled();
@@ -920,7 +867,6 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
             "{name:?} stands in the row that holds the bar: {rect:?} in {row:?}"
         );
     }
-    // The row's own controls come first: the window's furniture and search follow them.
     let own = node_order(&frame, "Mia changed 3 messages").expect("the row's own control is read");
     for name in [&names.0, &names.1, &names.2, &names.3] {
         let at = node_order(&frame, name).expect("read");
@@ -930,7 +876,6 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
         );
     }
 
-    // Each performs what it shows.
     let activate = |frame: &mut crate::headless::FrameHarness, name: &str| {
         let id = frame
             .a11y_node_named(name)
@@ -1015,17 +960,12 @@ fn a_row_standing_as_slots_keeps_the_windows_functions() {
     );
 }
 
-/// An app whose window's bar holds a menu, declaring its slots itself: the desktop hands what it
-/// declares to the bar of its tab every frame, as it does for an app that runs on its own.
 struct MenuApp {
     content: crate::widget::Column,
-    /// What it declares in the window's bar now.
     toolbar: std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
-    /// What the bar handed it back, as it took it.
     heard: std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
 }
 
-/// The slots an app with a menu declares: its button, listing two orders.
 fn menu_slots() -> crate::window_toolbar::WindowToolbar {
     crate::window_toolbar::WindowToolbar {
         actions: vec![
@@ -1052,7 +992,6 @@ impl crate::widget::app_widget::AppWidget for MenuApp {
     }
 }
 
-/// The app's own sync: it declares its slots, and takes what the bar handed it back.
 impl crate::widget::Decorator for MenuApp {
     type Inner = crate::widget::Column;
 
@@ -1073,8 +1012,6 @@ impl crate::widget::Decorator for MenuApp {
     }
 }
 
-/// A Notes-like window whose app declares `slots` in its bar, with the app's own window handle
-/// and what it hears back.
 fn menu_window() -> (
     crate::headless::FrameHarness,
     crate::hosted_window::HostedWindow,
@@ -1084,7 +1021,6 @@ fn menu_window() -> (
     menu_window_with(menu_slots(), W)
 }
 
-/// The same, in a window `width` wide whose app declares `slots` at first.
 fn menu_window_with(
     slots: crate::window_toolbar::WindowToolbar,
     width: f64,
@@ -1127,7 +1063,6 @@ fn menu_window_with(
     (frame, window, toolbar, heard)
 }
 
-/// The sort menu's button in the bar, where it stands.
 fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     g.bar
@@ -1144,14 +1079,12 @@ fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
         .center()
 }
 
-/// Whether the bar has a menu open, and the rows it lists.
 fn menu(frame: &mut crate::headless::FrameHarness) -> (bool, Vec<String>) {
     let g = frame.root_mut::<WindowGroup>();
     let row = g.bar.toolbar_row();
     (row.popup_open(), row.menu_labels())
 }
 
-/// The row `label` of the open menu, where it stands.
 fn menu_row(frame: &mut crate::headless::FrameHarness, label: &str) -> Rect {
     let g = frame.root_mut::<WindowGroup>();
     g.bar
@@ -1160,9 +1093,6 @@ fn menu_row(frame: &mut crate::headless::FrameHarness, label: &str) -> Rect {
         .unwrap_or_else(|| panic!("the menu lists {label}"))
 }
 
-/// A menu in the bar opens on one click, stays open while the person reads it (and while the app
-/// declares its slots again), closes on a second click on its button, and the row chosen in it
-/// reaches the app as that button's row.
 #[test]
 fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     let _settled = crate::motion::testing::settled();
@@ -1181,8 +1111,6 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
         "opening the menu runs none of its rows"
     );
 
-    // It stays up: the frames after the click leave it alone, and so does the app declaring its
-    // slots again with a command before the menu's button.
     for _ in 0..3 {
         frame_of(&mut frame, &mut slots, &window);
     }
@@ -1197,7 +1125,6 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
         "the menu stays open while it is read and the app declares its slots again"
     );
 
-    // The row chosen runs for the menu it stands in, not for whatever now leads the row.
     let row = menu_row(&mut frame, "Title");
     frame.click_at(row.center().x, row.center().y);
     frame_of(&mut frame, &mut slots, &window);
@@ -1211,7 +1138,6 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     let (open, _) = menu(&mut frame);
     assert!(!open, "choosing a row closes the menu");
 
-    // A click opens it again, and a second click on the button closes it.
     let sort = sort_button(&mut frame);
     frame.click_at(sort.x, sort.y);
     frame_of(&mut frame, &mut slots, &window);
@@ -1224,9 +1150,6 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     );
 }
 
-/// A press on a menu in the bar ends on the command it began on: the app declaring its slots
-/// again while the button is down moves that command to another place of the row without moving
-/// the button, and the click still opens the menu the person pressed.
 #[test]
 fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
     let _settled = crate::motion::testing::settled();
@@ -1252,8 +1175,6 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_slots_again() {
     assert_eq!(labels, ["Everything", "Title"], "the sort menu opened");
 }
 
-/// The slots an app with a menu before the location declares: its visitor button, listing the way
-/// into a window of the person's own.
 fn leading_menu_slots() -> crate::window_toolbar::WindowToolbar {
     crate::window_toolbar::WindowToolbar {
         leading: vec![
@@ -1268,7 +1189,6 @@ fn leading_menu_slots() -> crate::window_toolbar::WindowToolbar {
     }
 }
 
-/// The leading button `id` in the bar, where it stands.
 fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     let row = g.bar.toolbar_row();
@@ -1286,7 +1206,6 @@ fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point 
     rect.center()
 }
 
-/// The bar's overflow button, where it stands.
 fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     let rect = g.bar.toolbar_row().slots().overflow;
@@ -1294,9 +1213,6 @@ fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
     rect.center()
 }
 
-/// A menu before the location opens on one click, stays open while the person reads it (and while
-/// the app declares its slots again), closes on a second click on its button, and the row chosen
-/// in it runs for that button, as one after the location does.
 #[test]
 fn a_menu_before_the_location_opens_like_one_after_it() {
     let _settled = crate::motion::testing::settled();
@@ -1315,8 +1231,6 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
         "opening the menu runs none of its rows"
     );
 
-    // It stays up while it is read, and while the app declares its slots again with another
-    // command before the menu's button.
     for _ in 0..3 {
         frame_of(&mut frame, &mut slots, &window);
     }
@@ -1331,7 +1245,6 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
         "the menu stays open while the app declares its slots again"
     );
 
-    // The row chosen runs for the menu it stands in, not for whatever now leads the row.
     let row = menu_row(&mut frame, "Open in your window");
     frame.click_at(row.center().x, row.center().y);
     frame_of(&mut frame, &mut slots, &window);
@@ -1344,7 +1257,6 @@ fn a_menu_before_the_location_opens_like_one_after_it() {
     );
     assert!(!menu(&mut frame).0, "choosing a row closes the menu");
 
-    // A click opens it again, and a second click on the button closes it.
     let button = leading_button(&mut frame, "custody");
     frame.click_at(button.x, button.y);
     frame_of(&mut frame, &mut slots, &window);
@@ -1405,7 +1317,6 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     );
 }
 
-/// The stop the keyboard is on, as a screen reader names it.
 fn focused_stop(frame: &crate::headless::FrameHarness) -> Option<String> {
     frame.focused_access_node().and_then(|node| node.name)
 }
@@ -1436,10 +1347,6 @@ fn ring_pixels(frame: &crate::headless::FrameHarness, rect: Rect) -> usize {
     found
 }
 
-/// The window's own furniture in a row holding the bar is part of the window's Tab order, after the
-/// app's own header controls: the keyboard reaches the new-tab door, then restore/maximize, then
-/// close, Shift+Tab goes back the same way, the control it is on wears the toolkit's focus ring, and
-/// Enter there does what a pointer press does.
 #[test]
 fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     let _settled = crate::motion::testing::settled();
@@ -1449,7 +1356,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
     ];
-    // The order the keyboard walks: the app's own header controls, then the window's furniture.
     let stops: Vec<Option<String>> = frame
         .focus_access_nodes()
         .into_iter()
@@ -1480,8 +1386,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         let slot = g
             .held_bar_for_tests()
             .expect("the app's row is the window's bar");
-        // Tab travels the window, not the app alone: the row it holds is the window's bar, and
-        // the window's furniture stands in it. The app's own tile leaves travel to the window.
         g.set_focused(true);
         assert!(
             g.active_host().is_some_and(|host| host.focused),
@@ -1499,7 +1403,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         crate::widget::window_controls::WindowControls::lay_out(slot.controls).close
     };
 
-    // Tab from the app's own last header control reaches them one by one.
     let mut reached = false;
     for _ in 0..stops.len() {
         frame.key("Tab");
@@ -1529,7 +1432,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         ring_pixels(&frame, close_rect) > 0,
         "the control the keyboard is on wears the toolkit's focus ring"
     );
-    // Shift+Tab walks back the same way.
     frame.set_modifiers(&["shift".into()]);
     frame.key("Tab");
     frame.set_modifiers(&[]);
@@ -1545,7 +1447,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         "and forward again to close"
     );
 
-    // Enter does on the close what a pointer press there does.
     frame.key("Enter");
     assert!(
         frame.root_mut::<WindowGroup>().has_closing_host(1),
@@ -1553,8 +1454,6 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     );
 }
 
-/// A window that draws its own bar keeps one stop for it: the bar's controls there are its own, not
-/// stops of the window's for each of them.
 #[test]
 fn a_window_with_its_own_band_keeps_one_bar_stop() {
     let _settled = crate::motion::testing::settled();
@@ -1612,9 +1511,6 @@ fn u32_of(v: f64) -> u32 {
     out
 }
 
-/// A window an agent opened names the agent in its bar, and that mark is the keyboard's next stop
-/// after the window's tab list: Tab lands on it, it wears the toolkit's focus ring, and Enter there
-/// hands the host the run that opened the window, as a press does.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {

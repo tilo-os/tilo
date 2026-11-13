@@ -1,9 +1,7 @@
-//! Resources a widget publishes: the tree of open [`tilo_actions::ResourceSpec`]s
-//! with the actions each exports to the palette, agents and scripts, and the
-//! bounded pages the broker's pull directory reads.
-//!
-//! A widget takes part by providing [`PublishesResources`]; the host reaches
-//! every laid-out widget through its node map with the functions below.
+//! Resources a widget publishes: the tree of open [`tilo_actions::ResourceSpec`]s with the actions each
+//! exports to the palette, agents and scripts, and the bounded pages the broker's pull directory reads.
+//! A widget takes part by providing [`PublishesResources`]; the host reaches every laid-out widget
+//! through its node map with the functions below.
 
 use automerge::AutoCommit;
 
@@ -12,25 +10,18 @@ use crate::widget::capability::capability;
 use crate::widget::{ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, Widget};
 
 pub trait PublishesResources: Widget {
-    /// The tree of resources this widget currently has open, each with the
-    /// actions it exports, e.g. a playing video plus its comments. `doc` lets
-    /// a provider enumerate resources living in the document.
+    /// The tree of resources this widget currently has open, each with the actions it exports, e.g.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
 
-    /// Explicit host-local presentation/request controls for the portable
-    /// caller palette. Only View operations are accepted; shared effects
-    /// remain broker-owned.
+    /// Explicit host-local presentation/request controls for the portable caller palette.
     fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
 
-    /// One cursor-addressable page of resource roots safe to expose through
-    /// the broker pull directory. `max_results` is a hard ceiling; a live
-    /// provider must return a non-empty opaque cursor when it has a tail.
-    /// `None` is the default: an unbounded contextual [`Self::resources`]
-    /// snapshot must not be reached from a remote query or revision.
+    /// One cursor-addressable page of resource roots safe to expose through the broker pull directory.
+    /// `max_results` is a hard ceiling.
     fn action_directory_resource_page(
         &self,
         _doc: &AutoCommit,
@@ -40,15 +31,13 @@ pub trait PublishesResources: Widget {
         None
     }
 
-    /// Revision of non-document bounded directory roots; `None` when this
-    /// widget has no independently mutable remote directory state.
+    /// Revision of non-document bounded directory roots; `None` when this widget has no independently
+    /// mutable remote directory state.
     fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
         None
     }
 
-    /// Continuity coverage for this owning subtree's effective invocation
-    /// domain. Returning a value is a semantic promise, not authority;
-    /// unknown coverage stays closed.
+    /// Continuity coverage for this owning subtree's effective invocation domain.
     fn action_directory_invocation_domain(
         &self,
         _doc: &AutoCommit,
@@ -61,18 +50,16 @@ pub trait PublishesResources: Widget {
         None
     }
 
-    /// Whether `id`, which resolves to nothing now, may resolve once what
-    /// the widget is reading off the UI thread lands (a row of a list not
-    /// read yet). A caller resolving it is answered then, never kept waiting
-    /// on a blocking read nor told it is unknown before the read ends.
+    /// Whether `id`, which resolves to nothing now, may resolve once what the widget is reading off the
+    /// UI thread lands (a row of a list not read yet). A caller resolving it is answered then, never
+    /// kept waiting on a blocking read nor told it is unknown before the read ends.
     fn resource_pending(&self, _id: &str) -> bool {
         false
     }
 
-    /// The tree as one participant (an agent task) sees it, built from that
-    /// participant's own view state. `None` is this widget's own view.
-    /// Multi-participant widgets override this and [`Self::resource_for`],
-    /// and never put one participant's selection into another's tree.
+    /// The tree as one participant (an agent task) sees it, built from that participant's own view
+    /// state. Multi-participant widgets override this and [`Self::resource_for`], and never put one
+    /// participant's selection into another's tree.
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
@@ -82,11 +69,9 @@ pub trait PublishesResources: Widget {
         self.resources(doc)
     }
 
-    /// [`Self::resources_for`] as a [`SharedResource`] forest whose
-    /// unchanged subtrees are the very nodes of the last one, so consumers
-    /// skip what they have seen. `None`, the default, has callers
-    /// wrap [`Self::resources_for`]. An answer must equal it exactly once
-    /// materialised ([`SharedResource::to_resource`]).
+    /// [`Self::resources_for`] as a [`SharedResource`] forest whose unchanged subtrees are the very
+    /// nodes of the last one, so consumers skip what they have seen. An answer must equal it exactly
+    /// once materialised ([`SharedResource::to_resource`]).
     fn shared_resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
@@ -107,10 +92,7 @@ pub trait PublishesResources: Widget {
         self.resource(doc, id)
     }
 
-    /// Explicit disclosure authority for an actionless resource container in
-    /// the broker pull directory. `None` means its label and hierarchy are
-    /// not remotely discoverable unless the resource itself has a safe view
-    /// action.
+    /// Explicit disclosure authority for an actionless resource container in the broker pull directory.
     fn action_directory_visibility(
         &self,
         _doc: &AutoCommit,
@@ -119,11 +101,9 @@ pub trait PublishesResources: Widget {
         None
     }
 
-    /// The result of document action `address`, which has just applied to
-    /// `doc` as `changes`: a compact summary of what it produced, so its
-    /// caller needs no second read to see what happened. Asked only for an
-    /// action whose contract declares a JSON result, which this value must
-    /// satisfy.
+    /// The result of document action `address`, which has just applied to `doc` as `changes`: a compact
+    /// summary of what it produced, so its caller needs no second read to see what happened. Asked only
+    /// for an action whose contract declares a JSON result, which this value must satisfy.
     fn document_action_result(
         &self,
         _doc: &AutoCommit,
@@ -134,8 +114,7 @@ pub trait PublishesResources: Widget {
     }
 }
 
-/// The first [`PublishesResources::document_action_result`] in `widget`'s
-/// tree, depth first. A publisher that wraps another forwards to it.
+/// The first [`PublishesResources::document_action_result`] in `widget`'s tree, depth first.
 pub fn document_action_result(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -156,12 +135,8 @@ pub fn document_action_result(
     found
 }
 
-/// Whether `operation` may be published on `on` by a widget below its
-/// component's root: views and effects may, a document mutation never does.
-///
-/// # Panics
-/// In a debug build, on a document mutation: offering one there is a
-/// mistake of the widget's author.
+/// Whether `operation` may be published on `on` by a widget below its component's root: views and
+/// effects may, a document mutation never does.
 pub fn admits_outside_document(operation: &tilo_actions::ActionSpec, on: &str) -> bool {
     let admitted = operation.kind != tilo_actions::OperationKind::Document;
     debug_assert!(
@@ -173,10 +148,8 @@ pub fn admits_outside_document(operation: &tilo_actions::ActionSpec, on: &str) -
     admitted
 }
 
-/// `resource` without document actions, at any depth: what a widget below
-/// its component's root may publish. The root is the one boundary that
-/// speaks for the resource; every host walk publishes and dispatches what
-/// the rest of the tree adds through this.
+/// `resource` without document actions, at any depth: what a widget below its component's root may
+/// publish.
 #[must_use]
 pub fn outside_document(mut resource: tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
     let on = resource.id.as_str().to_owned();
@@ -191,10 +164,7 @@ pub fn outside_document(mut resource: tilo_actions::ResourceSpec) -> tilo_action
     resource
 }
 
-/// `resource`, resolved by id below its component's root, without document
-/// actions. A lookup is asked for ids the root publishes too (an item of its
-/// own), so this drops them without complaint: the root's publication
-/// carries them.
+/// `resource`, resolved by id below its component's root, without document actions.
 #[must_use]
 pub fn resolved_outside_document(
     mut resource: tilo_actions::ResourceSpec,
@@ -217,8 +187,7 @@ pub fn resources(
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
 }
 
-/// The resources `widget` has open, as a shared forest
-/// ([`PublishesResources::shared_resources_for`]).
+/// The resources `widget` has open, as a shared forest ([`PublishesResources::shared_resources_for`]).
 pub fn shared_resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<SharedResource> {
     let Some(publisher) = capability::<dyn PublishesResources>(widget) else {
         return Vec::new();

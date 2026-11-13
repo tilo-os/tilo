@@ -1,13 +1,11 @@
-//! What a program does to decoded pixels: crop, turn, scale and grey them,
-//! in plain Rust on every target, so no app needs an image library for it.
+//! Crop, turn, scale and grey decoded pixels in plain Rust, so no app needs an
+//! image library for it.
 
 use crate::DecodedImage;
 
-/// One pixel's four bytes.
 type Rgba = [u8; 4];
 
 impl DecodedImage {
-    /// `width` by `height` pixels of one colour.
     #[must_use]
     pub fn filled(width: u32, height: u32, rgba: Rgba) -> Self {
         let pixels = (width as usize).saturating_mul(height as usize);
@@ -18,8 +16,6 @@ impl DecodedImage {
         }
     }
 
-    /// `rgba` as an image `width` by `height`; `None` when its length is
-    /// not `width * height * 4`.
     #[must_use]
     pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
         let expected = (width as usize)
@@ -32,14 +28,12 @@ impl DecodedImage {
         })
     }
 
-    /// The pixels, row by row.
     pub fn pixels(&self) -> impl Iterator<Item = Rgba> + '_ {
         self.rgba
             .chunks_exact(4)
             .map(|pixel| <Rgba>::try_from(pixel).unwrap_or_default())
     }
 
-    /// The pixel at `x`, `y`; `None` outside the image.
     #[must_use]
     pub fn pixel(&self, x: u32, y: u32) -> Option<Rgba> {
         if x >= self.width {
@@ -53,7 +47,6 @@ impl DecodedImage {
         <Rgba>::try_from(pixel).ok()
     }
 
-    /// Paint the pixel at `x`, `y`; nothing outside the image.
     pub fn set_pixel(&mut self, x: u32, y: u32, rgba: Rgba) {
         if x >= self.width {
             return;
@@ -70,20 +63,16 @@ impl DecodedImage {
         }
     }
 
-    /// Whether any pixel is not fully opaque.
     #[must_use]
     pub fn has_alpha(&self) -> bool {
         self.pixels().any(|pixel| pixel[3] != u8::MAX)
     }
 
-    /// Rows of `self.width` pixels.
     fn rows(&self) -> impl Iterator<Item = &[u8]> {
         self.rgba
             .chunks_exact((self.width as usize).saturating_mul(4).max(4))
     }
 
-    /// The rectangle `x`, `y`, `width` by `height`, clipped to the image;
-    /// `None` when nothing of it is inside.
     #[must_use]
     pub fn cropped(&self, x: u32, y: u32, width: u32, height: u32) -> Option<Self> {
         let right = x.saturating_add(width).min(self.width);
@@ -109,7 +98,6 @@ impl DecodedImage {
         })
     }
 
-    /// The image turned clockwise by `quarter_turns` quarter turns.
     #[must_use]
     pub fn turned(&self, quarter_turns: u32) -> Self {
         let (w, h) = (self.width, self.height);
@@ -119,7 +107,6 @@ impl DecodedImage {
         } else {
             (h, w)
         };
-        // Each output pixel, row by row, read from where it was.
         let rgba = (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .flat_map(|(x, y)| {
@@ -142,9 +129,8 @@ impl DecodedImage {
         }
     }
 
-    /// The image scaled to `width` by `height` with a triangle filter (each
-    /// output pixel a weighted mean of the source pixels under it), so a
-    /// large reduction keeps its detail rather than aliasing.
+    /// The image scaled to `width` by `height` with a triangle filter, so a large
+    /// reduction keeps its detail.
     #[must_use]
     pub fn resized(&self, width: u32, height: u32) -> Self {
         let (width, height) = (width.max(1), height.max(1));
@@ -156,7 +142,6 @@ impl DecodedImage {
         turned.turned(3)
     }
 
-    /// Each row resampled to `width` pixels.
     fn resampled_rows(&self, width: u32) -> Self {
         let taps = taps(self.width, width);
         let rgba = self
@@ -180,8 +165,8 @@ impl DecodedImage {
         }
     }
 
-    /// The image scaled down, keeping its proportions, so neither side is
-    /// longer than `max_dimension`; as it is when it already fits.
+    /// The image scaled down keeping its proportions, so neither side is longer than
+    /// `max_dimension`.
     #[must_use]
     pub fn fitted(&self, max_dimension: u32) -> Self {
         match fitted_size(self.width, self.height, max_dimension) {
@@ -190,8 +175,7 @@ impl DecodedImage {
         }
     }
 
-    /// Each pixel's luminance (Rec. 709 weights), one byte per pixel, alpha
-    /// ignored.
+    /// Each pixel's luminance (Rec. 709 weights), alpha ignored.
     #[must_use]
     pub fn luma(&self) -> Vec<u8> {
         self.pixels()
@@ -206,8 +190,6 @@ impl DecodedImage {
     }
 }
 
-/// The size `width` by `height` scaled down to fit `max_dimension`, keeping
-/// its proportions; `None` when it already fits.
 #[must_use]
 pub(crate) fn fitted_size(width: u32, height: u32, max_dimension: u32) -> Option<(u32, u32)> {
     let max = max_dimension.max(1);
@@ -226,7 +208,6 @@ pub(crate) fn fitted_size(width: u32, height: u32, max_dimension: u32) -> Option
     Some((side(width), side(height)))
 }
 
-/// A float channel value as a byte, rounded and clamped.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -236,9 +217,6 @@ fn channel_byte(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
-/// For each of `to` output positions along a line of `from` source pixels,
-/// the first source pixel it reads and the triangle filter's weights from
-/// there.
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

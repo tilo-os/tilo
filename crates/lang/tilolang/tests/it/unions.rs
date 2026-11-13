@@ -52,9 +52,8 @@ fn a_union_holds_any_of_its_types_and_a_match_takes_it_apart_by_type() {
 
 #[test]
 fn flat_map_joins_the_lists_a_lambda_gives_into_one() {
-    // The conversations a page lists: a group holds channels, a channel or a conversation
-    // stands for itself, joined in the order the lists and their items keep. A list of one
-    // type is read as the list of the union: items are read, never written back through it.
+    // The conversations a page lists: a group holds channels, a channel or a conversation stands for itself,
+    // joined in the order the lists keep.
     let kinds = "type TextChannel {\n    name: Text\n}\ntype VoiceChannel {\n    name: Text\n}\ntype Channel = TextChannel | VoiceChannel\ntype Group {\n    name: Text\n    channels: Collection<TextChannel>\n}\ntype Node = Group | TextChannel | VoiceChannel\ntype Conversations {\n    nodes: Collection<Node>\n}\nroot Conversations\ndefault view conversations for Conversations\nview conversations(c: Conversations) {\n    text(\"x\")\n}\n";
     ok(&format!(
         "{kinds}fn listed(n: Node) -> List<Channel> {{\n    match n {{\n        g: Group => g.channels.filter(ch -> ch.name != \"\"),\n        t: TextChannel => [t],\n        v: VoiceChannel => [v],\n    }}\n}}\nfn all(c: Conversations) -> List<Channel> {{\n    c.nodes.flat_map(n -> listed(n))\n}}"
@@ -111,9 +110,8 @@ fn a_root_is_a_named_record_holding_its_collection() {
 
 #[test]
 fn a_record_keeps_the_ids_of_the_collection_root_it_replaces() {
-    // A name for a container was one resource whose one field was `Notes.items`. Renaming the
-    // field and then the type in the ids lock (`tilolang ids --rename`) gives the record both
-    // ids: the root `root-<id>` and the field's id are the ones the stored records have.
+    // Renaming the field and then the type in the ids lock (`tilolang ids --rename`) gives the record both
+    // changes.
     let mut lock =
         tilolang::IdsLock::parse("Notes = v7cub7aw\nNotes.items = tmqqtkeb\n").expect("lock");
     lock.rename("Notes.items", "Notebook.notes").expect("field");
@@ -140,8 +138,7 @@ fn a_record_keeps_the_ids_of_the_collection_root_it_replaces() {
 
 #[test]
 fn a_union_draws_its_rows_by_the_row_view_of_each_item_type() {
-    // One page over channels that say different things: each item is drawn by the row view of
-    // the type it is, so the list's rows all stand as rows.
+    // One page over channels that say different things: each item is drawn by the row view of the type it is.
     let rows = "row view text_row for TextChannel\nview text_row(c: TextChannel) {\n    row(c.name)\n}\nrow view voice_row for VoiceChannel\nview voice_row(c: VoiceChannel) {\n    row(c.name, secondary: \"voice\")\n}\n";
     ok(&format!(
         "{CHANNELS}{rows}view listing(s: Server) {{\n    list(s.channels) {{ c ->\n        show(c, row: true)\n    }}\n}}\nview one(c: Channel) {{\n    show(c, row: true)\n}}"

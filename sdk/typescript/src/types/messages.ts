@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.messages@23bf6eb5fe40bef0";
+
 export interface Conversation {
   with: string;
   messages: Message[];
@@ -115,7 +120,7 @@ export interface Messages extends tilo.Resource {
 
 /** The `tilo.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
-  return resourceProxy(ws, path) as unknown as Messages;
+  return resourceProxy(ws, path, SURFACE) as unknown as Messages;
 }
 
 /** Accounts — `tilo.accounts`. */
@@ -145,7 +150,7 @@ export interface Accounts extends tilo.Resource {
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
@@ -208,7 +213,7 @@ export interface Identities extends tilo.Resource {
 
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
 }
 
 /** Message drafts — `messages.drafts`. */
@@ -225,6 +230,6 @@ export interface Drafts extends tilo.Resource {
 
 /** The `messages.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path) as unknown as Drafts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Drafts;
 }
 

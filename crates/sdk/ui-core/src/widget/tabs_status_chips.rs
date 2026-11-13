@@ -1,14 +1,6 @@
-//! The bar's mark of a window an agent opened for its person: the agent, by
-//! its mark and name in its presence colour, which opens the run that opened
-//! the window in History. Pointing at it, or reaching it with the keyboard,
-//! says which run that was.
-//!
-//! The mark is a stop of the window's keyboard order of its own
-//! ([`super::super::window_group`] lays it out right after the bar): a press
-//! from the pointer, the keyboard or assistive technology is reported by
-//! [`TabBar::take_opened_by_press`], and the host opens History, since only
-//! the host knows the runs.
-
+//! The bar's mark of a window an agent opened for its person: the agent, by its mark and name in
+//! its presence colour, which opens the run that opened the window in History. Pointing at it, or
+//! reaching it with the keyboard, says which run that was.
 use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
 use crate::a11y::AccessNode;
 use crate::i18n::widget_format;
@@ -17,12 +9,8 @@ use tilo_desktop_model::ownership::OpenedBy;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-/// The accessibility action target of the agent that opened the window.
 pub(super) const OPENED_BY_TARGET: &str = "tab-opened-by";
 
-/// The bar's part in the mark: the windows agents opened, by tab, where the
-/// mark was last painted, whether the keyboard is on it, and a press waiting
-/// for the host.
 #[derive(Debug, Default)]
 pub(super) struct OpenedByChip {
     runs: std::collections::HashMap<u64, OpenedBy>,
@@ -34,13 +22,10 @@ pub(super) struct OpenedByChip {
 /// The agent's colour, as presence draws the agent everywhere: the run's own id, never its display
 /// name's.
 fn agent_colour(run: &OpenedBy) -> vello::peniko::Color {
-    let (red, green, blue) = crate::presence::participant_color(&run.run, true);
+    let (red, green, blue) = crate::presence::participant_color(&run.run, true, None);
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-/// What the agent's mark says when it is pointed at or focused: the run that
-/// opened the window, as History names it. The mark names the agent already;
-/// a run that goes by nothing else says only that the agent opened it.
 fn opened_by_tip(run: &OpenedBy) -> String {
     let title = run.title.trim();
     if title.is_empty() || title == run.label {
@@ -51,8 +36,6 @@ fn opened_by_tip(run: &OpenedBy) -> String {
 }
 
 impl TabBar {
-    /// Mark `id` as a window the agent run `run` opened for its person, or
-    /// clear the mark. `true` when that changed what the bar shows.
     pub fn set_opened_by(&mut self, id: u64, run: Option<OpenedBy>) -> bool {
         let changed = match run {
             Some(run) => self.opened.runs.insert(id, run.clone()) != Some(run),
@@ -64,25 +47,19 @@ impl TabBar {
         changed
     }
 
-    /// The agent run that opened the window `id`, when one did.
     pub fn opened_by(&self, id: u64) -> Option<&OpenedBy> {
         self.opened.runs.get(&id)
     }
 
-    /// A press on the agent's mark, once: the tab it was on and the run to
-    /// open in History.
     pub fn take_opened_by_press(&mut self) -> Option<(u64, String)> {
         self.opened.pressed.take()
     }
 
-    /// Whether `at` is on the agent's mark, where it was painted.
     pub(super) fn opened_by_hit(&self, at: Point) -> bool {
         self.opened.painted.is_some_and(|rect| rect.contains(at))
             && self.opened_by(self.active_id).is_some()
     }
 
-    /// A press at `at` on the agent's mark: report its run. Whether it was
-    /// on the mark.
     pub(super) fn press_opened_by(&mut self, at: Point) -> bool {
         self.touch();
         if !self.opened_by_hit(at) {
@@ -95,8 +72,6 @@ impl TabBar {
         true
     }
 
-    /// The agent's mark activated without a pointer. Whether the bar shows
-    /// it.
     pub fn activate_opened_by(&mut self) -> bool {
         self.touch();
         match self.opened.painted {
@@ -105,8 +80,6 @@ impl TabBar {
         }
     }
 
-    /// The keyboard came to the agent's mark, or left it: the mark wears the
-    /// toolkit's focus ring while it is there.
     pub(crate) fn set_opened_by_focused(&mut self, focused: bool) {
         if self.opened.focused != focused {
             self.touch();
@@ -114,10 +87,6 @@ impl TabBar {
         }
     }
 
-    /// Where the agent's mark of the window in front was last painted, and
-    /// how assistive technology reads it: a button naming the agent,
-    /// described by its run, that opens the run in History. What the
-    /// window's keyboard stop for the mark stands on.
     pub(crate) fn opened_by_stop(&self) -> Option<(Rect, AccessNode)> {
         let rect = self.opened.painted?;
         let run = self.opened_by(self.active_id)?;
@@ -129,11 +98,6 @@ impl TabBar {
         Some((rect, node))
     }
 
-    /// Say in which run the agent opened the window in front, under the
-    /// agent's mark, while the pointer rests on it or the keyboard is on it:
-    /// in the agent's colour, as the holder of a tab is named. Within `room`,
-    /// the part of the screen the window shows in
-    /// ([`crate::widget::tooltip::on_screen`]).
     pub(crate) fn draw_opened_by_tip(
         &self,
         scene: &mut Scene,
@@ -165,10 +129,6 @@ impl TabBar {
         );
     }
 
-    /// Where the agent's mark of the window in front stands, with its label:
-    /// after the bar's pills, or, where the window's app put its slots in
-    /// the bar, right after its location. `None` when no agent opened the
-    /// window in front, a tab is being dragged, or there is no room for it.
     pub(super) fn opened_by_chip(
         &self,
         tr: &mut TextRenderer,
@@ -202,11 +162,6 @@ impl TabBar {
         })
     }
 
-    /// Where the mark may stand in the window in front whose app put its
-    /// slots in the bar: right after what its location shows, before
-    /// whatever stands after the location, on the location's line. `None`
-    /// without slots, while the location is edited, or with no location to
-    /// follow.
     fn mark_room(&self) -> Option<(f64, f64, f64)> {
         self.active_slots()?;
         if self.toolbar_row.is_editing() {
@@ -231,9 +186,6 @@ impl TabBar {
         ))
     }
 
-    /// Paint the mark where it stands: the agent's face and name alone,
-    /// quieter than the title beside it, and its pill in the agent's colour
-    /// when pointed at or reached with the keyboard, as the button it is.
     pub(super) fn draw_opened_by_chip(
         &mut self,
         scene: &mut Scene,

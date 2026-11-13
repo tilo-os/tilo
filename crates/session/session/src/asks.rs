@@ -130,6 +130,11 @@ impl Shared {
                 DesktopAsk::AccountSettings => {
                     crate::quick_settings::open_settings(self, "settings://billing");
                 }
+                // Settings at the page a panel or a card names: the desk's own
+                // search, run here where the workspaces are.
+                DesktopAsk::OpenSettings(link) => {
+                    crate::quick_settings::open_settings(self, &link);
+                }
                 // The grant is taken back at the person's agent door, as Console takes it back:
                 // whatever this session offers it on answers, and without one the person hears
                 // that it did not happen.
@@ -269,7 +274,7 @@ impl Shared {
                     String::new(),
                     2,
                     crate::i18n::t("profile-name-not-saved"),
-                    error,
+                    String::new(),
                 ));
             }
         }
@@ -524,6 +529,9 @@ impl Shared {
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             REPORT_PROBLEM => self.report_problem(),
+            // How an agent or a computer connects as the person, asked of the desk by an app
+            // (Settings' Devices and access): what their own card's entry opens.
+            people::CONNECT_AGENT => self.invoke_app_action(LaunchpadAppAction::connect_agent()),
             choice => {
                 // A device another of the person's devices found asks here to act as them: the
                 // banner's own buttons are its answer.
@@ -677,24 +685,43 @@ impl Shared {
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
-            let answered = match &ask {
-                crate::tools::Ask::WorkspaceSettings {
-                    workspace, route, ..
-                } => workspace_settings::open_route(
-                    self.workspace_settings.as_ref(),
-                    &self.workspace_settings_feed(),
+            match ask {
+                // Which app opens a file is decided here, where the desk's workspaces and the
+                // person's defaults are read.
+                crate::tools::Ask::Openers {
+                    path,
                     workspace,
-                    *route,
-                ),
-                crate::tools::Ask::Uninstall { app, .. } => {
-                    if self.ask_uninstall(app) {
+                    reply,
+                } => {
+                    let _ = reply.send(crate::documents::openers(
+                        Some(&self.handle),
+                        &workspace,
+                        &self.person,
+                        &path,
+                    ));
+                }
+                crate::tools::Ask::WorkspaceSettings {
+                    workspace,
+                    route,
+                    reply,
+                } => {
+                    let answered = workspace_settings::open_route(
+                        self.workspace_settings.as_ref(),
+                        &self.workspace_settings_feed(),
+                        &workspace,
+                        route,
+                    );
+                    let _ = reply.send(answered);
+                }
+                crate::tools::Ask::Uninstall { app, reply } => {
+                    let answered = if self.ask_uninstall(&app) {
                         Ok(())
                     } else {
                         Err("this session shows no uninstall question".to_owned())
-                    }
+                    };
+                    let _ = reply.send(answered);
                 }
-            };
-            ask.answer(answered);
+            }
         }
     }
 

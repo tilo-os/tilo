@@ -13,7 +13,9 @@ tilo-app package
 tilo-app publish
 ```
 
-To build and publish from your forge's CI instead, see [From CI](#from-ci).
+To build and publish from your forge's CI instead, see [From CI](#from-ci). The two SDKs are
+packages on PyPI and npm rather than apps in the registry: [Publishing the
+SDKs](#publishing-the-sdks).
 
 The registry's owner reviews every application and every release before it
 reaches users. [Decisions](#decisions) lists the choices behind this flow;
@@ -230,6 +232,174 @@ never run the publish job, even if the caller requests it. Publication still
 submits a request for owner review; it does not approve a release.
 
 Forgejo and Gitea keep their existing single-file workflow.
+
+## Publishing the SDKs
+
+The SDKs are not apps and do not go through the registry: they are two packages, both named
+`tilo-sdk`, one on [PyPI](https://pypi.org/project/tilo-sdk/) for Python and one on
+[npm](https://www.npmjs.com/package/tilo-sdk) for TypeScript. The Python *distribution* is
+`tilo-sdk` because plain `tilo` on PyPI belongs to an unrelated project; what it installs is the
+module `import tilo`. npm has no `@tilo` scope to publish under, so the package there is
+unscoped. One release tag publishes both: `v0.4.0` publishes `tilo-sdk` 0.4.0 to each registry,
+and nothing in the tree carries a version — the tag is the one place it is decided. A
+pre-release goes to npm under the `next` dist-tag, so `bun add tilo-sdk` keeps getting the
+newest final release.
+
+The tag's run builds both packages, reads the artifacts back (the name, the version and the
+module the wheel carries) and only then sends them; `tools/ci/publish/sdks.sh` is the whole of
+it. `main` runs the same build with no credentials, on a stand-in version, so a manifest that
+stops being publishable breaks long before a tag does.
+
+Re-running a release's SDK step finishes a release that stopped halfway instead of failing on
+what it already sent: a version already on a registry is skipped, and on PyPI every file is
+checked against the project's index before it is uploaded, so a run that stopped between the
+wheel and the sdist uploads only the sdist. Dispatch it on the tag:
+
+```sh
+t dispatch publish-sdks --ref tag:v0.4.0 --publish
+```
+
+### The two registry credentials
+
+Neither registry can be published to by trusted publishing from here. PyPI's trusted publishing
+takes an OpenID Connect identity from GitHub Actions or GitLab CI, and knows neither Forgejo's
+nor t's own issuer, so the upload is an API token. npm's provenance attestation has the same
+restriction, so these packages carry no provenance from this CI.
+
+| Secret | Registry | What the value is |
+| --- | --- | --- |
+| `PYPI_TOKEN` | PyPI | An API token that may upload `tilo-sdk` |
+| `NPM_TOKEN` | npm | A token npm takes with read and write on `tilo-sdk` that publishes without a second factor: an automation token is the kind made for that, and a granular one only if it carries the same exemption |
+
+The first upload of `tilo-sdk` to PyPI is the special case: a project-scoped token can only be
+made for a project that exists, and a pending publisher only works through trusted publishing, so
+the first release needs an account-scoped token. Narrow it to `tilo-sdk` once the project is up.
+The npm token's package list grows with the native packages below.
+
+Both live in the t server's config, never in this repository: the `t-config` secret in the infra
+repository, file `clusters/prod/apps/t-staging-aws/config.sops.yaml`, in the `config.toml` key of
+its `stringData`, as `[[secret]]` entries:
+
+```toml
+[[secret]]
+name = "NPM_TOKEN"
+value = "…"
+refs = ["tag:v*"]
+repos = ["tilo"]
+
+[[secret]]
+name = "PYPI_TOKEN"
+value = "…"
+refs = ["tag:v*"]
+repos = ["tilo"]
+```
+
+`refs` is what makes them safe to hold: only a trusted run of a release tag is given one, and a
+secret that names no `nodes` reaches `release` nodes alone, which run trusted work only. A run of
+a branch, of a pull request or of someone's working tree publishes nothing, and a check that would
+need the token there is skipped with that as its reason. What a leaked token could do is the
+scope above, so who may publish is who may push a `vX.Y.Z` tag.
+
+### Native packages
+
+Both SDKs will gain a native half over the one Rust client, so a program can reach a Tilo host
+directly instead of through a browser or a relay: Python's `tilo._native`, a PyO3 extension
+module, and the npm package `tilo-sdk-native`, built with napi-rs as one package per platform.
+Neither crate exists yet, so nothing publishes them, and the pure packages above release on their
+own until they do. What follows is the step that switches on, as a check of its own beside
+`publish-sdks`, so that landing the crates is the only change it needs.
+
+The Python wheels join the release `publish-sdks` made: they are files of the same `tilo-sdk`
+project at the same version, and the pure `py3-none-any` wheel stays published for platforms
+without one. `sdk/python/pyproject.toml` gains the crate as the project's native part:
+
+```toml
+[tool.maturin]
+manifest-path = "native/Cargo.toml"
+python-source = "src"
+module-name = "tilo._native"
+```
+
+The wheels are built per platform, then sent with the release's other files:
+
+```sh
+# From sdk/python. manylinux's own images carry the toolchain and the glibc floor; the arm64
+# wheel builds under qemu where no arm64 node runs it.
+podman run --rm -v "$PWD:/io:z" -w /io --platform linux/amd64 \
+  quay.io/pypa/manylinux_2_28_x86_64 bash -ec \
+  'pip install maturin && maturin build --release --compatibility manylinux_2_28 --out dist'
+podman run --rm -v "$PWD:/io:z" -w /io --platform linux/arm64 \
+  quay.io/pypa/manylinux_2_28_aarch64 bash -ec \
+  'pip install maturin && maturin build --release --compatibility manylinux_2_28 --out dist'
+
+# macOS arm64 and x86_64 on a Mac, Windows x86_64 on Windows, once those lanes exist.
+maturin build --release --target aarch64-apple-darwin --out dist
+maturin build --release --target x86_64-apple-darwin --out dist
+maturin build --release --out dist
+
+# Every wheel, with the pure wheel and the sdist of the same version, to PyPI.
+uv publish --trusted-publishing never --check-url https://pypi.org/simple/tilo-sdk/ dist/*
+```
+
+The npm side is one package per platform, laid out by napi-rs, and the package that names them:
+
+```sh
+# From sdk/typescript/native, per platform.
+bunx @napi-rs/cli build --platform --release --target x86_64-unknown-linux-gnu
+bunx @napi-rs/cli build --platform --release --target aarch64-unknown-linux-gnu
+bunx @napi-rs/cli build --platform --release --target aarch64-apple-darwin
+bunx @napi-rs/cli build --platform --release --target x86_64-apple-darwin
+
+# The platform packages first, then tilo-sdk-native, which lists them as optional dependencies.
+(cd npm/linux-x64-gnu && bun publish --ignore-scripts)
+(cd npm/linux-arm64-gnu && bun publish --ignore-scripts)
+(cd npm/darwin-arm64 && bun publish --ignore-scripts)
+(cd npm/darwin-x64 && bun publish --ignore-scripts)
+bun publish --ignore-scripts
+```
+
+The names are `tilo-sdk-native` and `tilo-sdk-native-linux-x64-gnu`,
+`tilo-sdk-native-linux-arm64-gnu`, `tilo-sdk-native-darwin-arm64`,
+`tilo-sdk-native-darwin-x64`, and later `tilo-sdk-native-win32-x64-msvc`; every one of them
+belongs in `NPM_TOKEN`'s package list. `tilo-sdk` loads the native package when it is installed
+(`await import("tilo-sdk-native")` inside a `try`, with the pure client when that fails), and
+Python's `from tilo import _native` does the same, so neither package breaks where the native
+half has not been built.
+
+The check that publishes them, added to `t.toml` when the crates land:
+
+```toml
+[[check]]
+name = "sdk-native-python-{arch}"
+run = "bash tools/ci/publish/sdk-native.sh python {arch} /target/publish/sdk-native/python-{arch}"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/sdk-native/python-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "sdk-native-typescript-{arch}"
+run = "bash tools/ci/publish/sdk-native.sh typescript {arch} /target/publish/sdk-native/typescript-{arch}"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/sdk-native/typescript-{arch}/*"]
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "publish-sdks-native"
+run = "bash tools/ci/publish/sdk-native.sh publish /target/publish/sdk-native"
+needs = ["publish-sdks", "sdk-native-python-x86_64", "sdk-native-python-aarch64", "sdk-native-typescript-x86_64", "sdk-native-typescript-aarch64"]
+requires = ["arch=x86_64"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
+```
+
+It needs `publish-sdks` because it adds files to that release rather than making one, and it
+builds every platform on the x86_64 lane the SDK checks already run on, the arm64 wheel under
+qemu, until there are macOS and Windows lanes for the last two. Like the pure release it skips
+what is already on a registry, so it can be dispatched on a tag on its own.
 
 ## Decisions
 

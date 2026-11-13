@@ -1,8 +1,6 @@
-//! Descriptor-backed Unix provider shared by macOS and Linux.
-//!
-//! Calls are blocking and belong on bounded workers, never in paint/layout.
-//! The authority gate serializes calls with revocation/close. No ambient path is
-//! retained or recovered. Single-component no-follow opens pin row identity;
+//! The descriptor-backed Unix provider macOS and Linux share: calls block, so
+//! they belong on bounded workers, never in paint or layout. The authority gate
+//! serializes calls with revocation and close, no ambient path is retained, and
 //! symlink resolution walks a bounded stack of already-authorized descriptors.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -83,13 +81,11 @@ struct Snapshot {
     entries: Vec<FsEntry>,
 }
 
-/// Trusted-host admission boundary. Construction does no filesystem or environment I/O.
 pub struct NativeGrantAuthority {
     inner: Arc<Authority>,
     workers: Arc<crate::operations::WorkerQueue>,
 }
 
-/// A mount-scoped view of an explicit set of grants. Clones share terminal closure.
 #[derive(Clone)]
 pub struct FsSession {
     inner: Arc<Session>,
@@ -110,7 +106,6 @@ struct Session {
     removal: Mutex<Option<Arc<removal::RemovalCustody>>>,
 }
 
-// A terminal lifetime releases snapshots even when an operation exits early.
 struct SessionCall<'a> {
     table: MutexGuard<'a, Table>,
     session: &'a Session,
@@ -308,7 +303,6 @@ impl NativeGrantAuthority {
         Self::with_limits(limits)
     }
 
-    /// Consume a directory descriptor supplied by the authenticated host.
     pub fn admit_directory(
         &self,
         opened: std::fs::File,
@@ -331,7 +325,7 @@ impl NativeGrantAuthority {
         Ok(DirectoryGrant { lease })
     }
 
-    /// Consume exactly the supplied file descriptor, without acquiring a parent.
+    /// Consume exactly the supplied descriptor, without acquiring a parent.
     pub fn admit_file(
         &self,
         opened: std::fs::File,
@@ -362,7 +356,7 @@ impl NativeGrantAuthority {
         Ok(FileGrant { lease })
     }
 
-    /// Bind only the listed live grants to the caller-supplied mount identity.
+    /// Bind the listed live grants to the caller's mount identity.
     pub fn bind(
         &self,
         owner: FsOwner,
@@ -401,12 +395,10 @@ impl NativeGrantAuthority {
         })
     }
 
-    /// Revoke this directory and every existing descendant without changing disk.
     pub fn revoke_directory(&self, grant: &DirectoryGrant) -> Result<(), FsError> {
         self.revoke(&grant.lease)
     }
 
-    /// Revoke this file and all of its clones without changing disk.
     pub fn revoke_file(&self, grant: &FileGrant) -> Result<(), FsError> {
         self.revoke(&grant.lease)
     }
@@ -509,7 +501,6 @@ impl FsSession {
         self.inner.mount
     }
 
-    /// Terminal for this session and its clones. A fresh bind is independent.
     pub fn close(&self) {
         let table = self.inner.authority.state.lock();
         self.inner.closed.store(true, Ordering::Release);
@@ -520,9 +511,11 @@ impl FsSession {
         }
     }
 
-    /// Attach a fast, in-memory lifetime predicate. Predicates must not call this provider.
+    /// Attach an in-memory lifetime predicate; it must not call this provider.
+    ///
     /// # Errors
-    /// Returns `Closed` once any attached lifetime ends; it cannot be reopened.
+    ///
+    /// `Closed` once an attached lifetime ends.
     pub fn attach_lifetime(&self, is_alive: Lifetime) -> Result<(), FsError> {
         let _call = self.call()?;
         self.check_alive()?;
@@ -570,7 +563,6 @@ impl FsSession {
         Ok(())
     }
 
-    /// Check live directory scope without accessing the filesystem.
     pub fn check_directory(&self, grant: &DirectoryGrant) -> Result<(), FsError> {
         let table = self.call()?;
         self.validate(&table, &grant.lease, Some(FsRight::Enumerate))
@@ -632,7 +624,6 @@ impl FsSession {
         self.validate(&table, &grant.lease, Some(FsRight::Enumerate))?;
         Ok(stats)
     }
-    /// Resolve one native child into a retained descriptor or link object.
     pub fn lookup(&self, dir: &DirectoryGrant, name: &EntryName) -> Result<GrantedEntry, FsError> {
         let mut table = self.call()?;
         self.lookup_locked(&mut table, &dir.lease, name)
@@ -871,8 +862,8 @@ impl FsSession {
     }
 
     fn directory_stack(&self, parent: &GrantLease) -> Result<(Vec<Arc<Dir>>, GrantLease), FsError> {
-        // Allowed roots authorize their union. A redundant child must not narrow
-        // an already-allowed ancestor, while a child-only session stays bounded.
+        // Allowed roots authorize their union: a redundant child must not narrow an
+        // already-allowed ancestor, and a child-only session stays bounded by it.
         let mut scope = None;
         let mut ancestor = Some(parent);
         while let Some(lease) = ancestor {
@@ -911,7 +902,6 @@ impl FsSession {
         while let Some(component) = pending.pop_front() {
             self.validate(table, parent, Some(FsRight::Read))?;
             if component == "." {
-                // A terminal dot preserves the target's directory requirement.
                 continue;
             }
             if component == ".." {
@@ -960,7 +950,6 @@ impl FsSession {
         Err(FsError::Unsupported("directory bytes"))
     }
 
-    /// Return metadata for the retained native object, without retargeting names.
     pub fn metadata(&self, entry: &GrantedEntry) -> Result<Metadata, FsError> {
         let table = self.call()?;
         self.metadata_locked(&table, entry.lease())
@@ -991,7 +980,7 @@ impl FsSession {
         }
     }
 
-    /// Read at most `MAX_READ_CHUNK` bytes, after live-scope and rights validation.
+    /// Read at most `MAX_READ_CHUNK` bytes, after the live-scope and rights check.
     pub fn read_at(&self, file: &FileGrant, offset: u64, max_len: u32) -> Result<Vec<u8>, FsError> {
         let table = self.call()?;
         self.validate(&table, &file.lease, Some(FsRight::Read))?;
@@ -1027,13 +1016,10 @@ impl FsSession {
         Ok(bytes)
     }
 
-    /// Write one bounded chunk into the exact held regular-file inode.
+    /// Write one bounded chunk into the held regular file.
     ///
-    /// The trusted host must admit an already-writable selected descriptor with
-    /// `FsRight::Write`. This call neither acquires a parent nor reopens a name;
-    /// replacing the selected name never redirects this grant. It does not
-    /// truncate, sync, or provide a mutation job/receipt. A partial successful
-    /// syscall returns its byte count; another call must recheck live authority.
+    /// The trusted host must admit an already-writable selected descriptor: this
+    /// method never upgrades the rights of a read-only one.
     pub fn write_at(&self, file: &FileGrant, offset: u64, bytes: &[u8]) -> Result<u32, FsError> {
         let table = self.call()?;
         self.validate(&table, &file.lease, Some(FsRight::Write))?;
@@ -1047,8 +1033,6 @@ impl FsSession {
         let descriptor = self.writable_file(&table, file)?;
         let flags =
             rustix::fs::fcntl_getfl(&*descriptor).map_err(|error| io_error(error.into()))?;
-        // Linux pwrite honors O_APPEND, despite its explicit offset. Refuse it
-        // rather than quietly changing the destination of an admitted write.
         if flags.contains(OFlags::APPEND) {
             return Err(FsError::Unsupported(
                 "append descriptor cannot write at an offset",
@@ -1067,11 +1051,12 @@ impl FsSession {
         result
     }
 
-    /// Change the length of exactly the held regular-file inode.
+    /// Change the length of the held regular file.
+    ///
     /// # Errors
-    /// Returns live-scope/missing-Write errors, `LimitExceeded` above `i64::MAX`,
-    /// `Unsupported` for links/special files, `Denied` for a read-only descriptor,
-    /// and typed host I/O errors. No name or parent is reopened.
+    ///
+    /// Live-scope errors, a missing Write right, and `LimitExceeded` above
+    /// `i64::MAX`.
     pub fn truncate(&self, file: &FileGrant, len: u64) -> Result<(), FsError> {
         let table = self.call()?;
         self.validate(&table, &file.lease, Some(FsRight::Write))?;
@@ -1085,7 +1070,7 @@ impl FsSession {
         result
     }
 
-    /// Sync bytes and metadata of exactly the writable held regular file.
+    /// Sync the bytes and metadata of the writable held file.
     pub fn sync_file(&self, file: &FileGrant) -> Result<(), FsError> {
         let table = self.call()?;
         let descriptor = self.writable_file(&table, file)?;
@@ -1111,9 +1096,10 @@ impl FsSession {
     }
 
     /// Retain a bounded snapshot and return at most 256 rows per page.
+    ///
     /// # Errors
-    /// Returns `Busy` when the fixed snapshot entry budget is exceeded, never a
-    /// complete-looking truncation. Expired/foreign cursors return `StalePage`.
+    ///
+    /// `Busy` when the fixed snapshot entry budget is exceeded.
     pub fn list(
         &self,
         dir: &DirectoryGrant,
@@ -1239,8 +1225,6 @@ fn open_pinned(
         flags |= OFlags::DIRECTORY;
     }
     validate()?;
-    // EntryName proves this is one normal component. Use the kernel's actual
-    // no-follow operation; cap-std's manual resolver can follow raw O_NOFOLLOW.
     let opened = match rustix::fs::openat(dir, name.as_os_str(), flags, rustix::fs::Mode::empty()) {
         Ok(opened) => opened,
         #[cfg(target_os = "linux")]
@@ -1462,7 +1446,6 @@ impl NativeObject {
     }
 }
 impl NativeGrantAuthority {
-    /// Bind the host's durable operation namespace once for its authenticated owner.
     pub fn attach_operations(
         &self,
         owner: Arc<crate::recovery::OperationOwner>,

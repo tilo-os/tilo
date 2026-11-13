@@ -22,10 +22,6 @@ impl A11yTreeNode {
         }
     }
 
-    /// Convert this test-friendly carrier into the synthetic subtree the
-    /// shared AccessKit/AT-SPI bridge actually exports. Without this explicit
-    /// conversion, tests can inspect a rich private tree while the host sees
-    /// only the document root.
     pub(super) fn into_access_node(self) -> ui::a11y::AccessNode {
         self.node.with_children(
             self.children
@@ -36,9 +32,6 @@ impl A11yTreeNode {
     }
 }
 
-/// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
-/// toolbar faces are terse ("B", "x²", an icon) for sighted
-/// users; a screen reader needs the spelled-out verb instead.
 pub(super) fn tool_action_a11y_label(a: ToolAction) -> String {
     let key = match a {
         ToolAction::Bold => "a11y-bold",
@@ -121,8 +114,6 @@ fn review_action_a11y_label(
 }
 
 impl Editor {
-    /// The 1-based heading level for a heading block (defaults to 1 when the
-    /// `level` attr is absent or non-positive).
     fn block_heading_level(b: &BlockView) -> u8 {
         match b.attrs.get("level") {
             Some(AttrVal::Int(n)) if *n >= 1 => num::u8_of_i64((*n).min(255)),
@@ -130,10 +121,6 @@ impl Editor {
         }
     }
 
-    /// The accessible name for an image block: its explicit `alt` attr (set by
-    /// the ODT/DOCX importers, round-tripped through `svg:desc`), falling back to
-    /// the block's own text (a caption), or `None` when neither is present (a
-    /// decorative / unlabelled image).
     fn image_alt(b: &BlockView) -> Option<String> {
         if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
             let alt = alt.trim();
@@ -149,9 +136,6 @@ impl Editor {
         }
     }
 
-    /// The accessibility node for a single document block, or `None` for a block
-    /// kind that carries no standalone semantics here (table cells are emitted as
-    /// children of their table node, not at the top level).
     pub(super) fn block_access_node(b: &BlockView) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         let node = match b.kind.as_str() {
@@ -162,16 +146,12 @@ impl Editor {
             "paragraph" => AccessNode::new(Role::Paragraph).with_value(b.text.clone()),
             "list_item" => AccessNode::new(Role::ListItem).with_value(b.text.clone()),
             "image" => AccessNode::new(Role::Image).with_optional_name(Self::image_alt(b)),
-            // Cells are surfaced under their table; standalone they have no role.
             "cell" => return None,
-            // Unknown / future block kinds degrade to non-editable static text so
-            // their content is still announced rather than dropped.
             _ => AccessNode::new(Role::StaticText).with_value(b.text.clone()),
         };
         Some(node)
     }
 
-    /// The status band's view controls: the zoom field, once it is drawn.
     fn view_controls_access_node(&self) -> Option<A11yTreeNode> {
         use ui::a11y::{AccessNode, Role};
         let zoom = Widget::accessibility(&self.zoom_input)?;
@@ -181,9 +161,8 @@ impl Editor {
         })
     }
 
-    /// Expose the currently painted margin-card controls as real semantic
-    /// buttons. Their bounds and targets are sourced from the same hit list as
-    /// pointer input, so assistive technology never gets a parallel, stale UI.
+    /// The painted margin-card controls as semantic buttons, from the same hit list
+    /// pointer input reads, so assistive technology never sees a stale parallel UI.
     fn review_access_node(&self) -> Option<A11yTreeNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         if !self.review.is_visible() || self.review.hits().is_empty() {
@@ -209,9 +188,6 @@ impl Editor {
         })
     }
 
-    /// Expose the selected image's placement choices from the exact hit list
-    /// painted by the inspector. The full names/descriptions avoid making the
-    /// compact visual labels the only cue for screen-reader and tooltip users.
     fn image_placement_access_node(&self) -> Option<A11yTreeNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let buttons = self
@@ -308,8 +284,6 @@ impl Editor {
         (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
     }
 
-    /// Project the same painted hits and shared fields the foreground inspector
-    /// actually owns. Scrolled-out controls have no actionable UI node.
     fn styles_page_accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children = self
@@ -483,11 +457,6 @@ impl Editor {
         performed
     }
 
-    /// Assemble the full accessibility node tree: a `Role::Document` root holding
-    /// one node per block (headings with level, paragraphs/list items with text,
-    /// images with alt text, tables as `Role::Table`/`Role::Cell`), followed by
-    /// a `Role::Toolbar` group of formatting buttons. [`Widget::accessibility`]
-    /// returns this tree's root so the host's per-widget path surfaces the document.
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -498,8 +467,6 @@ impl Editor {
         let mut i = 0usize;
         while let Some(b) = self.blocks.get(i) {
             if b.kind == "cell" {
-                // Coalesce a run of consecutive cells sharing a `table` id into a
-                // single Table node with the cells as Cell children.
                 let table_id = cell_table(b);
                 let mut cells: Vec<A11yTreeNode> = Vec::new();
                 while let Some(c) = self.blocks.get(i) {

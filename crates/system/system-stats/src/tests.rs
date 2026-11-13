@@ -324,7 +324,6 @@ fn the_monitor_is_served_the_machines_processes_and_stats() {
     assert_eq!(second.window_ms, 1000);
     let system = second.system.as_ref().unwrap();
     let cpu = system.cpu.as_ref().expect("two readings make a load");
-    // Busy 300 of 600 ticks, all on the first core.
     assert_eq!(cpu.total, 50.0);
     assert_eq!(cpu.per_core, vec![50.0, 0.0]);
     assert_eq!(system.disks[0].read_bytes_per_sec, 300.0 * 512.0);
@@ -369,7 +368,6 @@ fn no_environment_ever_and_command_lines_only_with_their_own_grant() {
         "never the environment: {wire}"
     );
 
-    // System information alone carries no process at all.
     let system_only = Grants {
         system_info: true,
         ..Grants::default()
@@ -409,7 +407,6 @@ fn nobody_subscribed_means_no_thread_and_no_reading() {
     );
 }
 
-/// A connection as the launcher hands it: the service end runs `serve`.
 fn connect(hub: &Hub, grants: Grants, prompter: std::sync::Arc<dyn Prompter>) -> UnixStream {
     connect_within(hub, grants, Grants::ALL, prompter)
 }
@@ -762,7 +759,6 @@ fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
         Box::new(PidfdSignaller),
         Box::new(Shared(std::sync::Arc::clone(&storage))),
     );
-    // This thread stands for the compositor's: it starts the service.
     let socket = root.path().join("system-stats.sock");
     let _server =
         crate::server::Server::bind(&socket, hub, std::sync::Arc::new(NoPrompter)).unwrap();
@@ -791,7 +787,6 @@ fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
     };
     write_message(&mut app, &Request::Storage { request: 1 }).unwrap();
     reading_started();
-    // While the reading waits, the connection answers what else the app asks.
     assert_eq!(
         ask(
             &mut app,
@@ -818,7 +813,6 @@ fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
             storage: Box::default(),
         })
     );
-    // A later ask is a fresh reading, again off this thread.
     write_message(&mut app, &Request::Storage { request: 3 }).unwrap();
     reading_started();
     release.send(()).unwrap();
@@ -915,7 +909,6 @@ fn only_the_persons_own_apps_and_processes_can_be_ended() {
     let status = own.wait().unwrap();
     assert!(!status.success(), "ended: {status:?}");
 
-    // Ending the app ends every process of it, and nothing else.
     let (mut first, _) = real_child(root.path(), &app_scope, UID);
     let (mut second, _) = real_child(root.path(), &app_scope, UID);
     // The ended child's entry is still in the fake /proc; it is gone and

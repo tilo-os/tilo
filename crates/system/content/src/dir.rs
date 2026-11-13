@@ -36,10 +36,8 @@ pub struct DirBackend {
     /// layout kept it.
     also_read: Vec<PathBuf>,
     limits: ContentLimits,
-    /// Whether an item is flushed to disk before it is published under its address.
     durable: bool,
     state: Mutex<Index>,
-    /// Items this backend has hashed and found intact, by the identity their file had then.
     verified: Mutex<HashMap<PathBuf, FileSig>>,
     #[cfg(test)]
     probes: Probes,
@@ -92,14 +90,11 @@ impl FileSig {
     }
 }
 
-/// Counts of the expensive operations, so tests can assert they do not happen.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Probes {
-    /// Whole-file hashes of an item already in the store.
     pub(crate) verifications: AtomicUsize,
     pub(crate) scans: AtomicUsize,
-    /// Directory flushes.
     pub(crate) dir_syncs: AtomicUsize,
 }
 
@@ -132,7 +127,6 @@ impl DirBackend {
         &self.probes
     }
 
-    /// Also read content from `dir` (same layout) when it is not under this backend's root.
     #[must_use]
     pub fn reading_also(mut self, dir: impl Into<PathBuf>) -> Self {
         self.also_read.push(dir.into());
@@ -168,7 +162,6 @@ impl DirBackend {
         Some(root.join(prefix).join(&hash))
     }
 
-    /// The file holding `hash`, under the root or a read-only directory, if one is there.
     fn existing(&self, hash: &str) -> Option<PathBuf> {
         std::iter::once(&self.root)
             .chain(&self.also_read)
@@ -197,7 +190,6 @@ impl DirBackend {
     /// the root write lock still held), and bring `index` — already updated for the change — to
     /// the new generation.
     fn bump_generation(&self, index: &mut Index, current: Option<u64>) {
-        // From an unknown generation, start somewhere no other backend can have kept: the clock.
         let next = current.map_or_else(
             || tilo_clock::try_unix_now_ns().unwrap_or(1),
             |current| current.wrapping_add(1),
@@ -241,7 +233,6 @@ impl DirBackend {
     fn load_index(&self, index: &mut Index) -> Result<(), ContentError> {
         #[cfg(test)]
         self.probes.scans.fetch_add(1, Ordering::Relaxed);
-        // Whatever happens below, the kept index is no longer known to match any generation.
         index.generation = None;
         let shards = match std::fs::read_dir(&self.root) {
             Ok(shards) => shards,
@@ -277,7 +268,6 @@ impl DirBackend {
                 let item = item?;
                 count()?;
                 let name = item.file_name();
-                // Canonical lower-case names only: no aliases, and a deterministic index order.
                 let Some(hash) = name.to_str().filter(|hash| {
                     valid_hash(hash) && !hash.bytes().any(|b| b.is_ascii_uppercase())
                 }) else {
@@ -301,7 +291,6 @@ impl DirBackend {
         Ok(())
     }
 
-    /// Copy `reader` into a fresh temporary file under the root, hashing as it goes.
     fn receive(&self, reader: &mut dyn Read) -> Result<(PathBuf, String, usize), ContentError> {
         std::fs::create_dir_all(&self.root)?;
         let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -457,19 +446,16 @@ impl ContentBackend for DirBackend {
             }
             index.bytes = index.bytes.saturating_add(len);
             self.bump_generation(&mut index, generation);
-            // Hashed while it streamed in: `has` need not read it again.
             match std::fs::metadata(&path) {
                 Ok(meta) => self.remember_intact(path.clone(), FileSig::of(&meta)),
                 Err(_) => self.forget_intact(&path),
             }
-            // The rename is durable only once the directory holding the new name is.
             self.sync_dir(dir)?;
             drop(root_lock);
             drop(index);
             Ok(())
         };
         let result = admit();
-        // After a successful rename the temporary name is gone and this is a no-op.
         let _ = std::fs::remove_file(&tmp);
         result.map(|()| stored)
     }
@@ -517,6 +503,14 @@ impl ContentBackend for DirBackend {
     fn release(&self, hash: &str) -> Result<Collected, ContentError> {
         self.remove_where(|kept| kept == hash)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
 }
 
 impl DirBackend {
@@ -540,7 +534,6 @@ impl DirBackend {
         })
     }
 
-    /// Mark the item at `path`, found intact, as written now, still known intact.
     fn written_now(&self, path: &Path) {
         let touched = std::fs::File::options()
             .append(true)
@@ -555,7 +548,6 @@ impl DirBackend {
         }
     }
 
-    /// Remove every item whose address `gone` names.
     fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut index = self
             .state

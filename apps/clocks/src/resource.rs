@@ -12,8 +12,6 @@ use crate::app::{ClocksApp, Controls, Shown, Store, duration, repeat_summary, wa
 use crate::model::Clocks;
 use crate::schedule::{ClocksOnDevices, DeviceChoices};
 
-/// What changes only this device: which clocks float above other windows
-/// on its screen.
 #[derive(Clone, Debug, Effect)]
 #[effect(operation = "clocks.effects")]
 pub enum ClocksEffect {
@@ -50,7 +48,6 @@ pub enum ClocksEffect {
     },
 }
 
-/// The Clocks app.
 pub struct ClocksShell;
 
 /// Every `--shots` scenario; a `-narrow` one is the same scene in a phone
@@ -73,26 +70,20 @@ const SCENARIOS: &[&str] = &[
     "timers-narrow",
 ];
 
-/// The moment a capture's wall clocks show, the same on every run.
 pub(crate) struct ShotNow(pub(crate) chrono::DateTime<Utc>);
 
-/// A Tuesday morning: the time a capture's clocks read.
 fn shot_now() -> chrono::DateTime<Utc> {
     chrono::DateTime::from_timestamp(1_782_806_400, 0).unwrap_or_default()
 }
 
-/// The scene a scenario shows, without its window size.
 fn scene(name: Option<&str>) -> &str {
     let name = name.unwrap_or_default();
     name.strip_suffix("-narrow").unwrap_or(name)
 }
 
-/// What the binary runs instead of opening a window.
-///
-/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
-/// database's self-check. It needs `runtime-engine`, the release build, where
-/// that code is in `libtilo_timezone_engine.so`; the check proves Clocks
-/// loads that library and runs it.
+/// What the binary runs instead of opening a window: `--probe-timezone-engine`
+/// runs the time-zone database's self-check, which proves Clocks loads the
+/// engine library and runs it. It needs `runtime-engine`.
 const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
     option: "--probe-timezone-engine",
     run: probe_timezone_engine,
@@ -114,6 +105,7 @@ impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+    const TITLE_KEY: &'static str = "clocks-app-title";
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
@@ -226,8 +218,6 @@ impl ResourceApp for ClocksShell {
 }
 
 impl Store {
-    /// Stage a capture's scene: its section, and what it shows ringing or
-    /// floating.
     pub(crate) fn stage(&self, scenario: Option<&str>) {
         match scene(scenario) {
             "world" => self.set_mode(crate::app::WORLD),
@@ -262,7 +252,6 @@ impl Store {
         }
     }
 
-    /// Answer `effect`, from a control, the palette, an agent or a script.
     fn answer(&self, effect: ClocksEffect) -> EffectAnswer {
         match effect {
             ClocksEffect::OpenAlarm { alarm } => {
@@ -327,10 +316,7 @@ fn millis(duration: std::time::Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-/// How each clock stands right now, published on its item for the palette
-/// and agents: what a timer has left and whether it floats here, when an
-/// alarm rings, where a city is. Floating a timer is an operation of its
-/// row; the stopwatch has a row of its own.
+/// The state of each clock right now, on its item for the palette and agents.
 fn live_rows(shown: &Shown) -> Vec<LiveRow> {
     let now = crate::app::wall_now();
     let clocks = &shown.clocks;

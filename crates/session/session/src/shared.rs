@@ -43,12 +43,19 @@ impl Shared {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        #[cfg(target_os = "linux")]
+        let before = tree.clone();
         if self.desktops.follow(engine, &device, &mut tree) {
             // The tree this device drew is the tree it shows: what the record holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+            // A window someone else opened in the workspace is one this device shows through its
+            // own instance of the app, on the same record: the app is asked for it as a window
+            // this device left open is.
+            #[cfg(target_os = "linux")]
+            self.restore.borrow_mut().arrived(&before, &tree);
         }
     }
 
@@ -62,6 +69,47 @@ impl Shared {
             && let Err(why) = arrangement.release()
         {
             tracing::warn!(why, "an arranging action that waited could not be made");
+        }
+        // A query the canvas stands asks its app for what it names. When the app's records hold
+        // resources of that kind it did not hold when it asked, that is what it found (one
+        // becomes the place; several show their rows). When the app's own search has finished —
+        // its state left `searching` — and nothing new of the kind came in, it matched nothing.
+        // A failure is never read from the app's records: it comes from the search's own
+        // invocation result, at `place_found` and Retry (shell.md §8).
+        let app_resources = self.services.borrow().resources();
+        let running: Vec<(
+            String,
+            arrangement::ArrangementQueryReading,
+            std::collections::BTreeSet<String>,
+        )> = arrangement
+            .queries_running()
+            .into_iter()
+            .filter_map(|query| {
+                let held = arrangement.held_when_asked(query.key.parse().ok()?)?;
+                Some((query.key.clone(), query, held))
+            })
+            .collect();
+        for (key, query, held) in running {
+            let fresh: Vec<arrangement::AnswerRef> = app_resources
+                .iter()
+                .flat_map(leaves)
+                .filter(|resource| {
+                    resource.kind == query.kind && !held.contains(resource.id.as_str())
+                })
+                .map(|resource| arrangement::AnswerRef {
+                    address: resource.id.as_str().to_owned(),
+                    title: resource.label.clone(),
+                    kind: resource.kind.clone(),
+                })
+                .collect();
+            if !fresh.is_empty() {
+                arrangement.answer_query_of(&key, Ok(fresh), underway);
+                continue;
+            }
+            // The search finished and nothing new of the kind came in: it matched nothing.
+            if search_finished(&self.services, &app_resources, &query.app) {
+                arrangement.answer_query_of(&key, Ok(Vec::new()), underway);
+            }
         }
     }
 
@@ -255,6 +303,43 @@ impl Shared {
             .follow(&self.desktop, self.launch.as_deref(), &awaited);
     }
 
+    /// Stand each place a service's `open` asked for since the last pass: a resource's own `open`
+    /// and the arrangement's `open(resource)` are one act — the system's — so the requests go
+    /// through the arrangement door's `open`, that same code, beside the place the asking turn is
+    /// in and attributed to the actor that asked (`docs/designs/app-language/one-app-model.md`
+    /// §3; shell.md §8, "The canvas composes views; it opens nothing"). A resource already shown
+    /// is brought forward instead of stood a second time.
+    pub(crate) fn open_asked_by_services(&self) {
+        let opens = self.services.borrow_mut().take_open();
+        for (invoker, open) in opens {
+            let arguments = {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("resource".into(), open.resource.clone().into());
+                if !open.view.is_empty() {
+                    arguments.insert("view".into(), open.view.clone().into());
+                }
+                if !open.beside.is_empty() {
+                    arguments.insert("beside".into(), open.beside.clone().into());
+                }
+                arguments
+            };
+            let address = tilo_actions::ActionAddress::new(crate::arrangement::RESOURCE, "open");
+            let run = self.doors.invoke_as(
+                &invoker.actor,
+                &address,
+                &arguments,
+                &mut tilo_session_core::door::Look::none(),
+            );
+            if let Err(error) = run {
+                tracing::warn!(
+                    %error,
+                    resource = %open.resource,
+                    "a service's open was not placed"
+                );
+            }
+        }
+    }
+
     /// Carry out what the person chose in the sheets.
     pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::door::Look<'_>) {
         // What a place can show, as the arrangement published it: an agent's `find` leads with the
@@ -265,13 +350,23 @@ impl Shared {
         if let Some(engine) = &self.engine {
             self.session_doors.keep_awaiting(&self.handle, engine);
         }
-        self.session_doors.answer(
-            &self.doors,
-            &self.services,
-            &self.search,
-            &|resource| catalog.borrow().get(resource).is_some(),
-            look,
-        );
+        // What a place can show, as a find's answer holds it: the borrow ends here, since an
+        // answer is heard on a later pass, off the pass that asked.
+        let shows: std::rc::Rc<dyn Fn(&str) -> bool> = {
+            let catalog = std::rc::Rc::clone(&catalog);
+            std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
+        };
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.search, &shows, look);
+        // A service's `open` changes nothing of its record: opening is the session's arranging
+        // step, and the places the services were asked for are stood through the arrangement's
+        // own `open`, as an agent and a view asking the shell are one act
+        // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
+        // views; it opens nothing").
+        self.open_asked_by_services();
+        // The finds the door asked on an earlier pass whose sources answered since: answered here,
+        // where the catalogue a place reads is, and never by the pass that asked them.
+        self.search.poll_finds();
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -328,4 +423,46 @@ impl Shared {
             self.people.borrow().dismiss();
         }
     }
+}
+
+/// Every resource of `resource` and its children, deepest last: what an app publishes of a kind
+/// is found among these, as a search's answer is read off the app's own records.
+fn leaves(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
+    let mut out = vec![resource];
+    for child in &resource.children {
+        out.extend(leaves(child));
+    }
+    out
+}
+
+/// Whether the search the app `app` ran has finished: its own search state left `searching`. The
+/// state a search passes through is the app's words, not the system's, so this reads only whether
+/// a state word is still `searching` (the client that ships keeps `search_state`, but the fields a
+/// type names are its own, and the app is asked through its action for its result, never its
+/// records, when it fails). `None` while it still searches, or when the app keeps no such state.
+fn search_finished(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    resources: &[tilo_actions::ResourceSpec],
+    app: &str,
+) -> bool {
+    let belongs = |resource: &tilo_actions::ResourceSpec| {
+        resource.id.as_str().starts_with(&format!("tl:{app}:"))
+    };
+    // The app's root: its one resource of the type a query naming the app means.
+    let Some(root) = resources.iter().flat_map(leaves).find(|resource| {
+        belongs(resource) && resource.resource_type.as_ref().is_some_and(|ty| ty.root)
+    }) else {
+        return false;
+    };
+    let Some(reading) = services.borrow().read(root.id.as_str()) else {
+        return false;
+    };
+    // A search has finished when no text of the root's reading is still the word it uses for
+    // searching. That is the one state every search keeps while it runs.
+    !reading
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, value)| value.as_str())
+        .any(|text| text == "searching")
 }

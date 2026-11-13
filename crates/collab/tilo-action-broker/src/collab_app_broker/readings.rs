@@ -15,7 +15,7 @@
 
 use crate::services::{Caller, Granted};
 
-use super::{AppBrokerState, BrokerActor};
+use super::AppBrokerState;
 
 /// What a refused reading says, as a refused action says why it was refused.
 pub(super) const REFUSED: &str = "caller is not granted this reading";
@@ -37,7 +37,7 @@ pub(super) fn admit(
         .as_ref()
         .ok_or_else(|| REFUSED.to_owned())?;
     let now = state.policy_now_ns().map_err(|_| REFUSED.to_owned())? / 1_000_000_000;
-    let actor = BrokerActor::app(&caller.app_id);
+    let subject = tilo_action_policy::Grantee::app(caller.app_id.clone());
     let allowed = membership
         .decide_in_workspace(&caller.workspace, |workspace| {
             workspace.is_some_and(|workspace| {
@@ -47,7 +47,14 @@ pub(super) fn admit(
                     &granted.kind,
                     resource,
                 );
-                actor.may_in(workspace, &node, tilo_action_policy::ActionKind::Read, now)
+                tilo_action_policy::Authority::person(workspace.policy.party_of(subject.clone()))
+                    .decide(
+                        &node,
+                        tilo_action_policy::ActionKind::Read,
+                        &tilo_desktop_model::context_at(now),
+                    )
+                    .answer
+                    == tilo_action_policy::Answer::Allow
             })
         })
         .map_err(|_| REFUSED.to_owned())?;

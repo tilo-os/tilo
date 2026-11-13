@@ -1,16 +1,5 @@
-//! The real source inventory behind **Your data**: recognizable folders, Steam
-//! libraries and the games whose saves live in them.
-//!
-//! This adapts the existing `Belongings` inventory into the backend's typed
-//! source tree and keeps the person's selection beside it. Discovery runs on
-//! the consented belongings worker because it reads a real inventory; toggling
-//! a source only touches the selection, so a click never rebuilds the tree.
-//!
-//! The typed exclusions it produces are the form the Home capture and the
-//! Windows copy accept and revalidate under their own pinned root; the
-//! preparation call site is what hands them to the plan. Nothing here publishes
-//! a filesystem path: the report is the backend's path-free projection, and a
-//! node identity is the backend's own opaque id.
+//! The source inventory behind Your data: what was discovered, and what the person
+//! chose to bring over.
 
 use super::belongings::Belongings;
 use imager_backend::setup::source_tree::{
@@ -18,13 +7,8 @@ use imager_backend::setup::source_tree::{
 };
 use std::path::PathBuf;
 
-/// The discovered inventories the tree is built from. Implemented by the
-/// existing `Belongings` review so discovery stays one path; a caller can
-/// also supply a pre-reviewed set.
 pub trait Sources {
-    /// The Windows sources, when Windows roots were reviewed.
     fn windows_tree(&self, catalog: SteamCatalog) -> Option<Tree>;
-    /// The Home sources of an explicitly granted Home.
     fn home_tree(&self, home: &std::path::Path, catalog: SteamCatalog) -> Result<Tree, String>;
 }
 
@@ -38,20 +22,12 @@ impl Sources for Belongings {
     }
 }
 
-/// Which recognized source set the tree describes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceSet {
-    /// Windows roots the person selected on the earlier review.
     Windows,
-    /// The Home the person granted on the Files page.
     Home(PathBuf),
 }
 
-/// A discovered source tree and the selection made over it.
-///
-/// The selection is the capture authority: the backend's own `Selection`
-/// produces the exclusions the copy producer enforces, so a checkbox cannot be
-/// display-only. Cloning snapshots it for an atomic rollback of one edit.
 #[derive(Clone, Default)]
 pub struct SourceSelection {
     selection: Option<Selection>,
@@ -59,8 +35,6 @@ pub struct SourceSelection {
 }
 
 impl SourceSelection {
-    /// Discover synchronously. Call this from the consented discovery worker,
-    /// never from the UI thread.
     pub fn discover<S: Sources + ?Sized>(sources: &S, set: &SourceSet) -> Self {
         let catalog = SteamCatalog::builtin();
         let tree = match set {
@@ -72,9 +46,6 @@ impl SourceSelection {
         Self::from_tree(tree)
     }
 
-    /// Adopt an already discovered tree, recording an honest failure state when
-    /// discovery refused. The caller never receives the error text: it is an
-    /// operating-system message and may name a private location.
     pub fn from_tree(tree: Result<Tree, String>) -> Self {
         match tree {
             Ok(tree) => Self {
@@ -88,7 +59,6 @@ impl SourceSelection {
         }
     }
 
-    /// Whether the tree and its selection exist.
     pub fn ready(&self) -> bool {
         self.selection.is_some()
     }
@@ -101,17 +71,10 @@ impl SourceSelection {
         }
     }
 
-    /// The discovered nodes, for projection only. The private path side table
-    /// stays inside the backend.
     pub fn tree(&self) -> Option<&Tree> {
         self.selection.as_ref().map(Selection::tree)
     }
 
-    /// Select or exclude one source or child, without re-running discovery.
-    ///
-    /// # Errors
-    /// Refuses unknown nodes, unavailable nodes, unbounded exclusion sets and a
-    /// selection made before discovery finished.
     pub fn set(&mut self, id: &str, decision: Decision) -> Result<(), &'static str> {
         self.selection
             .as_mut()
@@ -120,7 +83,6 @@ impl SourceSelection {
             .map_err(|_| "installer-your-data-changed")
     }
 
-    /// The shared toggle-all, including its mixed state.
     pub fn select_all(&mut self, selected: bool) {
         if let Some(selection) = &mut self.selection {
             selection.select_all(selected);
@@ -131,15 +93,10 @@ impl SourceSelection {
         self.selection.as_ref()?.state(id)
     }
 
-    /// Reachable nodes and their selection state, so the tree can compute its
-    /// own mixed states without a second copy of the authority.
     pub fn node_state(&self, id: &str) -> Option<SelectionState> {
         self.state_of(id)
     }
 
-    /// Whether any selectable top-level source is still part of the copy. The
-    /// Files category follows this, so a parent checkbox and its folders can
-    /// never disagree.
     pub fn any_selected(&self) -> bool {
         let Some(selection) = &self.selection else {
             return false;
@@ -152,28 +109,20 @@ impl SourceSelection {
         })
     }
 
-    /// Totals of the current selection, for the space and review screens.
     pub fn counts(&self) -> Option<Counts> {
         self.selection.as_ref().map(Selection::counts)
     }
 
-    /// The root-relative exclusions the copy producers enforce. `None` until
-    /// discovery has completed, so an empty plan can never be mistaken for an
-    /// explicit "nothing selected".
     pub fn exclusions(&self) -> Option<Exclusions> {
         self.selection.as_ref().map(Selection::exclusions)
     }
 
-    /// Whether the selected entries hold real file content. `Some(false)` only
-    /// when a completed discovery proves the selection empty; `None` before
-    /// discovery completes, which is never an empty Home.
     pub fn selected_files(&self) -> Option<bool> {
         self.selection
             .as_ref()
             .map(|selection| !selection.selected_is_known_empty())
     }
 
-    /// The path-free tree, selection state, totals and unknown counts.
     pub fn report(&self) -> serde_json::Value {
         match &self.selection {
             Some(selection) => selection.report(),
@@ -181,11 +130,6 @@ impl SourceSelection {
         }
     }
 
-    /// Carry the person's decisions into a fresh discovery of the same source
-    /// set. Only node identities bound to the same granted root entry survive;
-    /// the backend owns that rule so a positional or same-named folder cannot
-    /// inherit another folder's exclusion. A changed or replaced root keeps a
-    /// conservative, visible default instead of silently taking in new content.
     pub fn adopt(&mut self, previous: &Self) {
         let (Some(previous), Some(selection)) = (&previous.selection, &mut self.selection) else {
             return;
@@ -256,7 +200,6 @@ mod tests {
             .map(|child| child.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(folders.len(), 2, "both folders are selectable children");
-        // Exclude the whole Documents source, then select one child of it.
         selection.set(&documents, Decision::Exclude).unwrap();
         assert_eq!(
             selection.node_state(&documents),
@@ -267,8 +210,6 @@ mod tests {
             selection.node_state(&documents),
             Some(SelectionState::Mixed)
         );
-        // Selecting one child of an excluded folder keeps its siblings
-        // excluded: the choice never broadens to data the person did not pick.
         let exclusions = selection.exclusions().unwrap();
         assert!(
             exclusions
@@ -286,7 +227,6 @@ mod tests {
                 .iter()
                 .any(|path| path == std::path::Path::new("Documents"))
         );
-        // The report never carries the fixture path or a private file name.
         let text = selection.report().to_string();
         assert!(!text.contains(home.to_string_lossy().as_ref()));
         assert!(!text.contains("Private"));

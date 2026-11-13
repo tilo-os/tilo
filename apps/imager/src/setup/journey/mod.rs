@@ -1,9 +1,8 @@
-//! The guided setup (`--setup`): destination, this or the other computer,
-//! account, your data, space, review and install, with explicitly granted,
-//! device-local data transfers. Routes the host, the build or the release
-//! catalog cannot fulfil are shown unavailable with their reason. The
-//! example data of `--demo` never enters the live setup or its privileged
-//! workers. Every interaction is also an effect.
+//! The guided setup: the steps from destination to a prepared system, and
+//! the effects the pages ask for.
+//!
+//! A route this host, build or catalogue cannot fulfil is shown unavailable with
+//! its reason. `--demo` data never enters the live setup or its workers.
 
 mod accounts;
 #[cfg(test)]
@@ -100,8 +99,8 @@ use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, DrawChild as _,
-    Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer,
-    Text, TextInput, TextInputKind, Widget,
+    Fact, Facts, Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Property, Row,
+    Scrollable, Spacer, Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -213,7 +212,6 @@ pub enum InstallerPreviewEffect {
     /// Ask a nearby Tilo device to approve this named future device.
     #[effect(returns)]
     StartExistingDevicePairing,
-    /// Stop local pairing; this does not revoke remotely approved enrollment.
     #[effect(returns)]
     #[effect(label = "installer-pairing-cancel")]
     CancelExistingDevicePairing,
@@ -250,7 +248,6 @@ pub enum InstallerPreviewEffect {
         #[param("Architecture: x86_64 or aarch64")]
         architecture: String,
     },
-    /// Choose the hardware report produced on the other computer.
     #[effect(attended, returns)]
     #[effect(label = "installer-preview-target-file-title")]
     ChooseTargetHardwareReport,
@@ -373,7 +370,6 @@ pub enum InstallerPreviewEffect {
     /// Expand or collapse the selected apps’ custom access details.
     #[effect(returns)]
     ToggleFlatpakAccessDetails,
-    /// Perform a decision in the account connection flow.
     #[effect(returns)]
     #[effect(label = "installer-accounts-add")]
     AccountStep {
@@ -410,7 +406,6 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     CancelAccountConnection { connection: String },
     /// Review exact source, target home and private journal grants. Does not copy.
-    /// Retained copy receipts are revalidated after restarting the installer.
     #[effect(returns)]
     ReviewUserTransfer {
         source: AbsolutePath,
@@ -443,7 +438,6 @@ pub enum InstallerPreviewEffect {
         operation: String,
     },
     /// Mount the retained Linux source read-only and review exact target/journal grants.
-    /// Retained copy receipts are revalidated after restarting the installer.
     #[effect(returns)]
     ReviewInstalledTransfer {
         private_plans: AbsolutePath,
@@ -549,7 +543,6 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     PrepareBelongings,
     /// Review actual system capacity and bind the prepared selected Apps
-    /// declaration without admitting or starting installation.
     #[effect(returns)]
     ReviewPreparedBelongings { target_gib: u64 },
 
@@ -573,7 +566,6 @@ pub enum InstallerPreviewEffect {
     RestartPreview,
 }
 
-/// Public app names and the actual selected export decision.
 #[derive(serde::Serialize)]
 struct FlatpakAppChoice {
     id: String,
@@ -605,8 +597,6 @@ fn queue_continue(commands: &Commands) {
     }
 }
 
-/// `input` whose Enter invokes the page's published `effect`, given the
-/// text; Enter does nothing where nothing hosts the page.
 pub(super) fn submits(
     actions: Option<&Actions<Imager>>,
     input: TextInput,
@@ -618,12 +608,10 @@ pub(super) fn submits(
     }
 }
 
-/// Continue, as Enter in a field of the page asks for it.
 pub(super) fn continues() -> impl Binds<InstallerPreviewEffect, String> {
     InstallerPreviewEffect::CONTINUE_PREVIEW.map(|_: String| ())
 }
 
-/// [`InstallerPreview::bound`], for the parts of the page built apart from it.
 pub(super) fn bound<I: 'static, C: ActionControl<I>>(
     actions: Option<&Actions<Imager>>,
     control: C,
@@ -687,15 +675,9 @@ pub struct InstallerPreview {
     capabilities: capabilities::GuidedCapabilities,
     commands: Commands,
     composed: Option<Box<dyn Widget>>,
-    // Native handoffs replace the tree before layout, independently of page composition.
     composition_replaced: bool,
-    /// The page composes again at its next layout: what it shows changed
-    /// shape. Paint alone never sets it; children report their own redraw.
     dirty: bool,
     rect: Rect,
-    /// The last pointer position in logical coordinates. A page rebuilt
-    /// between wheel events seeds it into its scroller, because the wheel
-    /// itself carries no position.
     cursor: ui::kurbo::Point,
     error: Option<&'static str>,
     validation_focus: Option<String>,
@@ -712,8 +694,6 @@ pub struct InstallerPreview {
     capture: bool,
     last_frame: Option<Scene>,
     outgoing: Option<Scene>,
-    /// A page push in flight: the direction it came from (`1` forward,
-    /// `-1` back) and its arrival on the drill (`ui::motion::Drill`).
     slide: Option<(f64, ui::motion::Presence)>,
     pending_slide: Option<f64>,
     layout_metrics: Option<(f32, f32, f32)>,
@@ -751,8 +731,6 @@ pub struct InstallerPreview {
     media_preparation: prepared_media::Controller,
     media_return: Option<ui::LocalState<Option<prepared_media::ReturnReason>>>,
     dispatcher: Option<ui::framework::Dispatcher<Imager>>,
-    /// The window's published effects, which the page's controls are bound
-    /// to; `None` where nothing hosts the page.
     actions: Option<Actions<Imager>>,
     migration_selection: migration_selection::Selection,
     portable_source: portable_source::Selection,
@@ -760,15 +738,9 @@ pub struct InstallerPreview {
     belongings: belongings::Belongings,
     belongings_worker: Option<std::sync::mpsc::Receiver<belongings::Belongings>>,
     sessions_review: bool,
-    /// Sources whose children the person opened in Your data. Stable source
-    /// identities, so a refresh keeps the overview where it was.
     your_data_expanded: std::collections::BTreeSet<String>,
-    /// The preparation computer stays available to an approved receiving
-    /// device. The generated preparation password never leaves this struct
-    /// until the receiver proves its identity and a person approves it.
     source_handoff: Option<imager_backend::setup::source_handoff::Handoff>,
     source_state: Option<imager_backend::setup::source_handoff::SourceState>,
-    /// What the window shares with the view it stands in.
     published: Rc<RefCell<Published>>,
 }
 
@@ -866,16 +838,7 @@ impl Default for InstallerPreview {
 }
 
 impl InstallerPreview {
-    /// Interactive preparation cannot attest the destination's installed boot
-    /// policy, so it never exports identity, account or file ciphertext under a
-    /// preparation password. The destination finishes those sensitive
-    /// operations at first boot, after its own login password and protection
-    /// are established. An explicit unattended plan is the only route that may
-    /// carry credentials, and it is not this interactive journey.
     fn sensitive_handoff_deferred(&self) -> bool {
-        // An explicit retained password means this is an older, already
-        // encrypted preparation being resumed. New interactive journeys never
-        // collect one, so they defer sensitive work to the destination.
         self.journey.password.is_empty()
     }
 
@@ -1128,9 +1091,6 @@ impl InstallerPreview {
             )
     }
 
-    // These actions operate on the current guided page. Explicit source grants,
-    // exports and transfer operations remain model-level capabilities; they do
-    // not become unavailable merely because their controls are offscreen.
     fn effect_page_admitted(&self, id: &str) -> bool {
         if recovery::is_recovery_action(id) {
             return self.recovery_admitted();
@@ -1278,8 +1238,6 @@ impl InstallerPreview {
     }
 
     fn apply(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
-        // A choice card chooses and moves on: each step is admitted as if
-        // it had been asked for on its own.
         if let InstallerPreviewEffect::ChooseAndContinuePreview { choice } = effect {
             self.apply(InstallerPreviewEffect::ChoosePreview { choice })?;
             return self.apply(InstallerPreviewEffect::ContinuePreview);
@@ -1311,7 +1269,7 @@ impl InstallerPreview {
                 }
                 _ => {}
             }
-            if self.restart.blocks() && !matches!(effect, InstallerPreviewEffect::ReadPreview) {
+            if self.restart.blocks() && !restart_controller::navigates(&effect) {
                 return Err("installer-restart-unavailable");
             }
         }
@@ -1356,8 +1314,6 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::ContinuePreview
                     | InstallerPreviewEffect::BackInPreview
                     | InstallerPreviewEffect::CheckStorage
-                    // Read-only discovery does not export or grant access to
-                    // the retained preparation being edited.
                     | InstallerPreviewEffect::CheckBelongings
                     | InstallerPreviewEffect::ToggleStorageDetails
                     | InstallerPreviewEffect::SetStorageSize { .. }
@@ -1385,8 +1341,6 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::CancelMediaPreparation
             )
         {
-            // Until this decision is saved, retained preparation belongs to
-            // the original route and must not be used with tentative choices.
             return Err("installer-preview-wrong-page");
         }
         if matches!(
@@ -2098,10 +2052,6 @@ impl InstallerPreview {
                 {
                     return Err("installer-guided-host-unavailable");
                 }
-                // The early check qualifies this disk for direct installation.
-                // A build without direct installation continues to the USB
-                // installer this choice offers, and facts this host already
-                // reported are not re-collected when the choice is revisited.
                 if page == Page::Destination
                     && self.live
                     && self.linux
@@ -2134,8 +2084,6 @@ impl InstallerPreview {
                             InstallerPreviewEffect::PrepareDirectInstallation
                         }
                         Some(Destination::Computer) => {
-                            // A fallback changes how installation starts. Only
-                            // the explicitly named USB action can select it.
                             return Err(if self.usb_backend_available() {
                                 "installer-review-usb-choice-required"
                             } else {
@@ -2180,8 +2128,6 @@ impl InstallerPreview {
                             && self.journey.migrate == Some(true)
                             && (self.journey.categories[0] || self.selected_applications())
                         {
-                            // Changed selections need fresh source consent after
-                            // Save. Tentative choices never replace held grants.
                             while self.journey.page != Page::Belongings {
                                 self.journey.back()?;
                             }
@@ -2251,8 +2197,6 @@ impl InstallerPreview {
                     return Err("installer-accounts-busy");
                 }
                 if page == Page::Target && !self.target.ready() {
-                    // A model name, an architecture or an incomplete report is
-                    // not a destination. Refuse before identity or media work.
                     self.target.mark_submitted();
                     if self.target.blocking() {
                         return Err("installer-preview-target-blocking");
@@ -2397,10 +2341,6 @@ impl InstallerPreview {
                     && self.journey.migrate == Some(true)
                     && (self.journey.categories[0] || self.selected_applications())
                 {
-                    // The changed route needs new source consent: sharing
-                    // local files and packaging them for another device differ.
-                    // Keep the new destination: an edit's own Back would restore
-                    // the snapshot, sending the person back to the old route.
                     self.journey.keep_edit();
                     while self.journey.page != Page::Belongings {
                         self.journey.back()?;
@@ -2631,17 +2571,11 @@ impl InstallerPreview {
                     ) =>
             {
                 if self.journey.destination == Some(Destination::Another) && !self.target.ready() {
-                    // The medium is prepared for a computer this journey has
-                    // not identified. No boot or partition change follows from
-                    // a model name alone.
                     return Err("installer-preview-target-incomplete");
                 }
                 if self.journey.destination == Some(Destination::Another)
                     && self.target.architecture() != std::env::consts::ARCH
                 {
-                    // A medium for another architecture needs that
-                    // architecture's verified payload. Never substitute this
-                    // computer's payload for a medium that must start there.
                     match self.target.payload_available() {
                         Ok(true) => {}
                         Ok(false) => return Err("installer-preview-target-payload-missing"),
@@ -2659,9 +2593,6 @@ impl InstallerPreview {
                     if self.sensitive_handoff_deferred()
                         && self.journey.destination != Some(Destination::Another)
                     {
-                        // The medium carries only the OS and public choices.
-                        // Identity, accounts and file contents are captured by
-                        // the destination after its own first-boot login.
                         let (Some(media), Some(dispatcher)) = (&self.media, &self.dispatcher)
                         else {
                             return Err("installer-preview-storage-unavailable");
@@ -2820,9 +2751,6 @@ impl InstallerPreview {
                         self.flatpak_access_details = false;
                         true
                     } else if self.journey.details && !self.journey.cancels_edit() {
-                        // Details close back to the overview in a review edit
-                        // too, unless the edit opened on the details themselves:
-                        // then Back cancels it like any edit's first page.
                         self.journey.toggle_details();
                         true
                     } else {
@@ -2981,8 +2909,6 @@ impl InstallerPreview {
                 {
                     self.restart.choices_changed(prepared, self.draft_choices());
                 }
-                // Keep the name editor retained while typing, including its caret.
-                // Connect may still change its composition when the name changes.
                 self.dirty |= page != Page::Devices;
                 return Ok(());
             }
@@ -3126,9 +3052,6 @@ impl InstallerPreview {
                     for source in sources {
                         changed |= this.apply_your_data_source(&source, included)?;
                     }
-                    // Account providers that have no visible source row (an
-                    // unchanged discovery, a filtered application profile) still
-                    // follow the same master decision in this one edit.
                     changed |= this
                         .accounts
                         .set_all_source_accounts(&this.belongings.accounts, included);
@@ -3362,27 +3285,14 @@ impl InstallerPreview {
             .count()
     }
 
-    /// The source-oriented Your data tree for the current discovery. Every
-    /// child is a decision an authority below already owns: the folder tree's
-    /// exclusions, the browser plan's reviewed profiles and sign-ins, the mail
-    /// import's accounts, folders, address books and calendars, the Flatpak
-    /// exclusions and the migration categories.
-    ///
-    /// A source the backend cannot inventory stays visible with an honest
-    /// limitation instead of a fabricated count, and its children keep the
-    /// backend's own identities so a toggle reaches the same selection the
-    /// capture reads.
     fn your_data(&self) -> your_data::Inventory {
         let mut sources = Vec::new();
         let desktop = self.journey.destination == Some(Destination::Desktop);
         let checking = self.belongings_worker.is_some();
         if !desktop {
-            // Files: the discovered folders, Steam libraries, games and saves.
             let windows = self.belongings.windows.is_some();
             let files_available = !checking && (windows || self.category_available(0));
             let files_included = if windows {
-                // A Windows review has its own root decisions; the category is
-                // the Home one and must not stand in for them.
                 self.belongings.source_selection.any_selected()
             } else {
                 files_available && self.journey.categories[0]
@@ -3448,22 +3358,14 @@ impl InstallerPreview {
                     included: apps_available && self.journey.categories[1],
                 });
             }
-            // Browsers: reviewed profiles, their saved sign-ins and the two
-            // independent bookmark/history domains.
             sources.extend(your_data::browser_sources(&self.belongings));
         }
-        // Account sources: one row per app identity (GNOME Online Accounts,
-        // Nextcloud, rclone), with each account and each enabled service as its
-        // own decision. The exact rows own the migration selection; the old
-        // aggregate identity stays only as the way to skip the optional step.
         let accounts_included = self.journey.migrate == Some(true) && self.journey.categories[2];
         sources.extend(your_data::account_sources(
             &self.belongings.accounts,
             self.accounts.source_account_selection(),
             accounts_included,
         ));
-        // Mail: one source per discovered Thunderbird profile, with the exact
-        // accounts and folders the mail import takes.
         let mail = your_data::mail_sources(&self.belongings);
         let has_mail = !mail.is_empty();
         sources.extend(mail);
@@ -3529,10 +3431,6 @@ impl InstallerPreview {
         self.your_data().view(&self.your_data_expanded, &bindings)
     }
 
-    /// Apply one tree decision on a snapshot, restoring every selection
-    /// authority if any part of the batch fails its validation. The folder
-    /// tree, the browser profiles, the mail selection and the sign-in pairs are
-    /// independent authorities, so each is restored from its own snapshot.
     fn change_your_data(
         &mut self,
         change: impl FnOnce(&mut Self) -> Result<bool, &'static str>,
@@ -3561,10 +3459,6 @@ impl InstallerPreview {
         }
     }
 
-    /// Keep the Files category in step with the folder selection: any folder
-    /// still selected means the home is copied, none means it is not. The
-    /// category stays the stored authority; this only stops the parent checkbox
-    /// and its children from telling different stories.
     fn sync_files_category(&mut self) -> bool {
         if self.belongings.windows.is_some() || !self.belongings.source_selection.ready() {
             return false;
@@ -3646,9 +3540,6 @@ impl InstallerPreview {
             }
             return self.belongings.sessions.set(source_id, service, included);
         }
-        // A discovered folder, game or loose-files node. The identity is the
-        // backend's own, and setting it produces the exclusions the copy
-        // producer enforces, so the tree cannot drift from the capture.
         if let Some(node) = item.strip_prefix("tree|") {
             let decision = if included {
                 imager_backend::setup::source_tree::Decision::Select
@@ -3661,8 +3552,6 @@ impl InstallerPreview {
             let category = self.sync_files_category();
             return Ok(changed || category);
         }
-        // One service an account turns on. The account identity and the
-        // service are both required, so a stale row cannot widen a selection.
         if let Some(rest) = item.strip_prefix("accountservice|") {
             let (id, service) = rest.rsplit_once('|').ok_or("installer-your-data-changed")?;
             let service =
@@ -3674,8 +3563,6 @@ impl InstallerPreview {
                 included,
             );
         }
-        // One mail folder. The account is part of the identity because a folder
-        // is selected inside exactly one reviewed account.
         if let Some(rest) = item.strip_prefix("mailfolder|") {
             let mut parts = rest.splitn(3, '|');
             let (Some(profile), Some(account), Some(folder)) =
@@ -3740,9 +3627,6 @@ impl InstallerPreview {
         Err("installer-your-data-changed")
     }
 
-    /// One profile is one owned decision: its inclusion covers its bookmarks,
-    /// its history and every website-session source that carries its opaque
-    /// profile identity. Another profile is untouched.
     fn apply_browser_profile(
         &mut self,
         profile: &str,
@@ -3763,9 +3647,6 @@ impl InstallerPreview {
             .sessions
             .detected_sources()
             .filter(|detected| detected.source.browser_profile_id() == Some(profile))
-            // Including only takes the pairs this path can actually carry;
-            // excluding clears every pair, including one that needs a new
-            // sign-in, so an excluded profile has no session left behind.
             .filter(|detected| !included || detected.selectable)
             .map(|detected| (detected.source.id.clone(), detected.service))
             .collect::<Vec<_>>();
@@ -3787,8 +3668,6 @@ impl InstallerPreview {
         included: bool,
     ) -> Result<bool, &'static str> {
         let inventory = self.your_data();
-        // The aggregate account identity has no row of its own when exact app
-        // sources are present; it still means the optional Accounts step.
         if source == "accounts" && inventory.source(source).is_none() {
             let before = self.journey.categories;
             self.set_category("accounts", included)?;
@@ -3799,9 +3678,6 @@ impl InstallerPreview {
             .filter(|view| view.selectable)
             .ok_or("installer-your-data-changed")?;
         match source {
-            // The category decides whether the home is copied; the folder tree
-            // decides what inside it is excluded. The source sets both and the
-            // two stay in step, so a mixed parent resolves in one click.
             "files" if self.belongings.windows.is_some() => {
                 if !self.belongings.source_selection.ready() {
                     return Err("installer-your-data-changed");
@@ -3856,8 +3732,6 @@ impl InstallerPreview {
                 let mut changed = false;
                 for group in &view.groups {
                     if let Some(profile) = group.id.strip_prefix("profile|") {
-                        // A profile without a selectable data class has no
-                        // decision to take.
                         if !group.selectable {
                             continue;
                         }
@@ -3921,10 +3795,6 @@ impl InstallerPreview {
                 || self.flatpak_apps().iter().any(|app| app.with_home))
     }
 
-    /// Whether the Files category selects real content. A completed discovery
-    /// that selects nothing means there is no Home to capture; a refused or
-    /// unfinished discovery is not emptiness. A source without a tree keeps the
-    /// existing capture behaviour for older fixtures and Windows reviews.
     fn selected_files(&self) -> Result<bool, &'static str> {
         if !self.journey.categories[0] {
             return Ok(false);
@@ -3939,10 +3809,6 @@ impl InstallerPreview {
         }
     }
 
-    /// Whether selected mail, browser profiles or accounts need a retained
-    /// source journal even when no files or applications are copied. The
-    /// canonical account/source-only plan then anchors that data without
-    /// claiming any Home content.
     fn selected_source_anchor(&self) -> bool {
         if self.journey.migrate != Some(true) {
             return false;
@@ -3972,8 +3838,6 @@ impl InstallerPreview {
         })
     }
 
-    /// Exactly the reviewed mail children the preparation seals. A profile
-    /// with nothing selected is not an empty artifact; it is simply absent.
     fn selected_mail(&self) -> Result<Option<prepared_media::MailSelection>, &'static str> {
         if self.journey.migrate != Some(true) {
             return Ok(None);
@@ -3998,24 +3862,14 @@ impl InstallerPreview {
         ]
     }
 
-    /// The categories the capture actually claims. A known-empty Files
-    /// selection is left out instead of binding an empty Home; a source whose
-    /// state cannot be known refuses rather than being treated as empty.
     fn capture_categories(&self) -> Result<[bool; 3], &'static str> {
         let files = self.selected_files()?;
         let applications = self.selected_applications();
-        // Mail and browser selections are independent of the Accounts step, so
-        // a source-only anchor can exist with that step switched off. The plan
-        // then needs its one non-file category to describe the journal it
-        // carries, without claiming any Home content.
         let accounts = self.journey.categories[2]
             || (self.selected_source_anchor() && !files && !applications);
         Ok([files, applications, accounts])
     }
 
-    /// The nested Home subtrees the person excluded, in the root-relative form
-    /// both copy producers accept. An unselected Files category copies no Home
-    /// at all, so it carries no exclusion list.
     fn migration_exclusions(&self) -> Result<Vec<std::path::PathBuf>, &'static str> {
         if !self.journey.categories[0] {
             return Ok(Vec::new());
@@ -4188,16 +4042,12 @@ impl InstallerPreview {
         true
     }
 
-    /// The saved selection including the other computer, kept in the same
-    /// private restart record as the rest of the choices.
     fn draft_choices(&self) -> draft::PublicChoices {
         let mut choices = self.journey.draft_choices();
         choices.target = Some(self.target.draft_choices());
         choices
     }
 
-    /// Persist a target change after an identity exists. The target page comes
-    /// before identity, so this is a no-op until the restart record can exist.
     fn persist_target_choices(&mut self) {
         if !self.live {
             return;
@@ -4240,8 +4090,6 @@ impl InstallerPreview {
         self.field_values[2].set(String::new());
         self.field_values[3].set(String::new());
         self.invalidate_migration_preparation();
-        // Choices describe the previous intent; none are renewed source,
-        // account or storage grants. These controllers start with no authority.
         self.belongings = belongings::Belongings::default();
         self.accounts = accounts::Accounts::default();
         self.accounts.require_saved_review();
@@ -4288,8 +4136,6 @@ impl InstallerPreview {
 
     fn drain(&mut self) -> bool {
         let password_focus_changed = self.track_password_focus();
-        // Register the child after the current semantic invocation has finished;
-        // its published effects must not replace the executing surface's door.
         let compatibility_changed = self.drain_compatibility();
         let target_changed = self.target.poll();
         if target_changed {
@@ -4590,9 +4436,6 @@ impl InstallerPreview {
                     let previous_sources = std::mem::take(&mut self.belongings.source_selection);
                     let previous_browser = std::mem::take(&mut self.belongings.browser);
                     self.belongings = belongings;
-                    // A refresh revalidates the exact sources; an explicit
-                    // exclusion or per-profile domain choice survives and a
-                    // disappeared source cannot be recreated from a label.
                     self.belongings.sessions.adopt(&previous_sessions);
                     self.belongings.source_selection.adopt(&previous_sources);
                     self.belongings.browser.adopt(&previous_browser);
@@ -4881,8 +4724,6 @@ impl InstallerPreview {
         }
         self.journey.next()?;
         if !self.live && self.journey.page == Page::Target {
-            // Fixture, demo and screenshot runs describe no real destination,
-            // so they do not stop on its compatibility page.
             self.journey.next()?;
             if self.journey.history.last() == Some(&Page::Target) {
                 self.journey.history.pop();
@@ -4903,7 +4744,6 @@ impl InstallerPreview {
             if self.journey.page == Page::Storage {
                 self.journey.next()?;
             }
-            // Back visits only pages with choices in the current live route.
             self.journey.history.retain(|page| *page != Page::Storage);
         }
         if self.live
@@ -4912,9 +4752,6 @@ impl InstallerPreview {
             && self.belongings.roots.is_none()
             && self.belongings_worker.is_none()
         {
-            // Choosing migration is a direction, not a reason to inspect Home
-            // and account stores before the person finishes their identity.
-            // Resumed choices also need fresh discovery, never restored grants.
             self.apply(InstallerPreviewEffect::CheckBelongings)?;
         }
         Ok(())
@@ -4937,9 +4774,6 @@ impl InstallerPreview {
         }
     }
 
-    /// `control` bound to the page's published `effect`, given the value the
-    /// control commits: a person, a script and an agent take the same
-    /// effect. Inert where nothing hosts the page.
     fn bound<I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -4998,7 +4832,6 @@ impl InstallerPreview {
         let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
             .selected(selected);
-        // Inert where nothing hosts the page.
         match self.actions.as_ref().and_then(|actions| {
             actions.effect(&InstallerPreviewEffect::ChooseAndContinuePreview { choice })
         }) {
@@ -5032,8 +4865,6 @@ impl InstallerPreview {
         self.dirty
     }
 
-    // The shared input's undo state is caret/selection metadata only, never text.
-    // Preserve it when validation changes rebuild the surrounding Field.
     fn password_input_state(root: &dyn Widget) -> Vec<(String, String)> {
         let mut states = Vec::new();
         if matches!(
@@ -5072,16 +4903,12 @@ impl InstallerPreview {
             self.error = None;
             self.validation_focus = None;
         }
-        // Validation copy can change even when Continue remains disabled.
-        // Recomposition preserves the shared input's focus and private state.
         self.dirty = true;
     }
 
     fn show_refusal(&mut self, error: &'static str, submitted: bool) {
         self.error = Some(error);
         self.dirty = true;
-        // Only a refused submission moves focus. Read-only observations and
-        // ordinary edits leave the person's typing and scroll position alone.
         if submitted && let Some((field, _)) = self.password_validation() {
             self.password_touched[usize::from(field == "confirmation")] = true;
             self.validation_focus = Some(format!("installer.{field}"));
@@ -5181,8 +5008,6 @@ impl InstallerPreview {
                 _ => InstallerPreviewEffect::SET_PREVIEW_CONFIRMATION,
             },
         );
-        // Enter in the password moves on to its confirmation, in any other
-        // field it continues.
         let input = if focus_confirmation {
             input.on_submit_view(move |_| {
                 if submit_enabled {
@@ -5192,11 +5017,6 @@ impl InstallerPreview {
         } else if submit_enabled && self.password_continue_enabled() {
             submits(self.actions.as_ref(), input, continues())
         } else if submit_enabled {
-            // The page refuses this form itself, with the copy beside the
-            // field whose correction unblocks it. Enter asks for that answer
-            // rather than invoking Continue: an invocation the page refuses
-            // would be said over the window as a refused action, and the
-            // announcement would take the focus the field needs.
             let commands = self.commands.clone();
             input.on_submit_view(move |_| {
                 commands
@@ -5244,8 +5064,6 @@ impl InstallerPreview {
                 | InstallerPreviewEffect::ChooseAndContinuePreview { .. }
         );
         if let Err(error) = self.apply(effect) {
-            // The semantic door and the button queue share visible feedback
-            // and focus the field whose correction permits progress.
             self.show_refusal(error, submitted);
             return Err(t(error));
         }
@@ -5355,14 +5173,9 @@ impl PublishingWindow for InstallerPreview {
 }
 
 impl InstallerPreview {
-    /// Attach the window to the view it stands in: its published effects,
-    /// and on a live window the controllers and the child windows it
-    /// mounts.
     fn attach_view(&mut self, cx: &ViewCx<Imager>) {
         self.actions = Some(cx.actions());
         if cx.launch_flag("--demo") {
-            // Reuse the capture fixture and production renderer without attaching
-            // any native controllers. The effect door also enforces demo admission.
             self.stage(Some("installer-destination"));
             self.demo = true;
             return;
@@ -5377,7 +5190,6 @@ impl InstallerPreview {
         self.direct.context = Some(cx.mounts());
         self.dispatcher = Some(cx.dispatcher());
         self.journey.categories = [true; 3];
-        // The OS profile is entered explicitly; Desktop never reads a host profile.
         self.journey.name.clear();
         self.dirty = true;
     }
@@ -5578,8 +5390,6 @@ impl Widget for InstallerPreview {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The host has already applied accessibility scaling to the theme.
-        // Window growth changes whitespace, never type or control dimensions.
         let metrics = (
             theme.tokens.metrics.readable_width,
             theme.tokens.metrics.content_min_width,
@@ -5666,8 +5476,6 @@ impl Widget for InstallerPreview {
             self.dirty = true;
         }
         if self.rect != previous_rect {
-            // A cached departing scene belongs to its old layout. Ordinary
-            // page navigation retains snapshots when the viewport is stable.
             self.last_frame = None;
             self.pending_slide = None;
             self.slide = None;
@@ -5694,7 +5502,6 @@ impl Widget for InstallerPreview {
             self.slide = None;
             self.outgoing = None;
         } else if let Some(direction) = self.pending_slide.take() {
-            // Only the new page is live; the departing page is a paint snapshot.
             self.outgoing = self.last_frame.take();
             self.slide = self.outgoing.as_ref().map(|_| {
                 let mut arriving = ui::motion::Presence::closed();
@@ -5728,8 +5535,6 @@ impl Widget for InstallerPreview {
             &self.rect,
         );
         if let Some((direction, slide)) = &self.slide {
-            // A whole-page push: the new page slides in over the old one,
-            // which trails behind (`ui::motion::Drill::screen_pose`).
             let arrived = slide.progress(now);
             let width = self.rect.width();
             let motion = theme.motion();
@@ -5750,7 +5555,6 @@ impl Widget for InstallerPreview {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = cx.logical(position);
         }
-        // Pointer geometry becomes actionable when the new page reaches its position.
         if (self.pending_slide.is_some() || self.slide.is_some())
             && matches!(
                 event,
@@ -5813,8 +5617,6 @@ impl Widget for InstallerPreview {
         self.windows.choosing() || self.avatar_picker.is_some() || self.migration_choosing()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // Poll every child even when this page already needs rebuilding: a
-        // retained native surface can replace controls during sync or polling.
         let child = self
             .composed
             .as_mut()
@@ -5827,8 +5629,6 @@ impl Widget for InstallerPreview {
 #[cfg(test)]
 mod structure_tests;
 
-/// Discovery labels are public product/profile metadata, never source paths or credentials.
-/// Keep review copy bounded even when upstream profile metadata is unusual.
 fn review_source_label(label: &str) -> String {
     label
         .chars()
@@ -5844,8 +5644,6 @@ mod purpose_tests;
 #[cfg(all(test, unix))]
 mod scroll_tests;
 
-// This fixture exercises the Unix identity/restart controller. Windows has
-// its own inventory and recovery journey tests in windows.rs.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -6116,8 +5914,6 @@ mod tests {
                 );
             })
             .unwrap();
-        // The OS profile remains editable without reading the host account.
-        // Entering a name does not prepare identity custody.
         choose(&mut changed, "computer");
         choose(&mut changed, "fresh");
         choose(&mut changed, "new");
@@ -6159,8 +5955,6 @@ mod tests {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
     }
-    /// Another computer is identified on its own page before media review. The
-    /// tests here only need a declared model, which is never component evidence.
     #[cfg(target_os = "linux")]
     fn choose_destination_and_name_target(app: &mut TestApp<ImagerShell>, choice: &str) {
         choose(app, choice);
@@ -6180,8 +5974,6 @@ mod tests {
                 .unwrap();
         }
     }
-    /// Identity Continue refuses while the saved preparation is still being
-    /// written ("please wait"); a person waits for that, and so do the tests.
     fn wait_for_restart_idle(app: &mut TestApp<ImagerShell>) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
@@ -6194,8 +5986,6 @@ mod tests {
         }
     }
     fn retained_password(app: &mut TestApp<ImagerShell>, secret: &str) {
-        // Exercise the retained, already-encrypted preparation path. The new
-        // interactive journey no longer routes through this page.
         app.with_widget::<InstallerPreview, _>(|preview| {
             if preview.journey.page != Page::Password {
                 preview.journey.page = Page::Password;
@@ -6211,9 +6001,6 @@ mod tests {
             value: secret.into(),
         })
         .unwrap();
-        // The retained password has no live unlock to perform here. Return to
-        // Devices so the following production Continue exercises the ordinary
-        // navigation instead of re-minting an already prepared identity.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.journey.page = Page::Devices;
             preview.dirty = true;
@@ -6221,9 +6008,6 @@ mod tests {
         .unwrap();
     }
     fn password(app: &mut TestApp<ImagerShell>) {
-        // Profile Continue creates the prepared identity asynchronously. The
-        // retained password is a legacy handoff question, not the interactive
-        // preparation step, so let custody finish before touching that field.
         #[cfg(unix)]
         if app
             .with_widget::<InstallerPreview, _>(|preview| preview.personal.busy())
@@ -6344,7 +6128,6 @@ mod tests {
             );
             let mut enrolled_review = preview.journey.clone();
             enrolled_review.page = Page::Review;
-            // Keep the actual signed retained identity while testing admission.
             preview.journey = enrolled_review;
             preview.dirty = true;
         })
@@ -6461,13 +6244,9 @@ mod tests {
             preview.journey.page = Page::Review;
             preview.journey.destination = Some(Destination::Computer);
             preview.journey.migrate = Some(true);
-            // Entering Belongings rediscovers sources and turns off categories
-            // with nothing to bring; this fixture has no installed apps, so
-            // its reviewed choices leave Apps off to stay unchanged on Save.
             preview.journey.categories = [true, false, true];
             preview.accounts = accounts;
             preview.belongings.home = Some(root.path().join("source"));
-            // The source fixture contains user app data, with no system refs.
             preview.belongings.flatpak =
                 Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
@@ -6541,9 +6320,6 @@ mod tests {
                 })
                 .unwrap();
                 app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-                // Details are their own navigation stop, in a Review edit too:
-                // the first Back closes them and keeps the edit, its custody
-                // and the persisted consent untouched.
                 assert_eq!(status(&mut app)["page"], "belongings");
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert!(!preview.journey.details);
@@ -6561,8 +6337,6 @@ mod tests {
                     );
                 })
                 .unwrap();
-                // From the edit's overview, Back retreats to where the edit
-                // began; only the next one cancels it.
                 app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
                 assert_eq!(status(&mut app)["page"], "migration");
             }
@@ -6595,7 +6369,6 @@ mod tests {
             };
             assert_eq!(ready.choices(), &original);
         }
-        // Saving an unchanged review is also non-destructive.
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "belongings".into(),
         })
@@ -6660,7 +6433,6 @@ mod tests {
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, true, true];
             preview.belongings.home = Some(root.path().join("source"));
-            // The source fixture contains user app data, with no system refs.
             preview.belongings.flatpak =
                 Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
@@ -6788,7 +6560,6 @@ mod tests {
             preview.journey.categories = [true, true, true];
             preview.accounts = accounts;
             preview.belongings.home = Some(root.path().join("source"));
-            // The source fixture contains user app data, with no system refs.
             preview.belongings.flatpak =
                 Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
@@ -6865,8 +6636,6 @@ mod tests {
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        // Exercise the existing gallery's storage review route. This does not
-        // mint live disk authority or invoke installation.
         environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
@@ -6898,8 +6667,6 @@ mod tests {
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, true, true];
             preview.accounts = accounts;
-            // Anchor the source to the fixture Home, so discovery of the
-            // process Home cannot decide how much this source has to capture.
             preview.belongings_worker = None;
             let source_home = root.path().join("source");
             let roots = imager_backend::account_transfer::SourceRoots {
@@ -6910,7 +6677,6 @@ mod tests {
                 home: Some(source_home.clone()),
                 roots: Some(roots.clone()),
                 accounts: imager_backend::account_transfer::discover(&roots),
-                // The source fixture contains user app data, with no system refs.
                 flatpak: Some(imager_backend::setup::flatpak_transfer::Inventory::default()),
                 ..Default::default()
             };
@@ -6930,9 +6696,6 @@ mod tests {
             section: "destination".into(),
         })
         .unwrap();
-        // Editing the destination re-runs the same read-only compatibility
-        // fact check; feed the production planner fixture rather than waiting
-        // for a desktop surface that is not under test here.
         app.with_widget::<InstallerPreview, _>(|preview| {
             let facts = preview.storage.facts.clone().unwrap();
             let plan = preview
@@ -6969,8 +6732,6 @@ mod tests {
         let reviewed_choices = app
             .with_widget::<InstallerPreview, _>(|preview| preview.journey.clone())
             .unwrap();
-        // Review Continue installs; use the ordinary destination edit to
-        // inspect allocation while retaining the reviewed source and person.
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "destination".into(),
         })
@@ -6997,8 +6758,6 @@ mod tests {
             assert!(visual_tests::control(preview, "installer.prepare-usb").is_none());
             assert!(!preview.direct.active);
             assert!(preview.direct.pending.is_none());
-            // Restore only this test's reviewed choices for the independent
-            // cancel/change branches below; real custody and grants are retained.
             preview.journey = reviewed_choices;
             preview.dirty = true;
         })
@@ -7308,7 +7067,6 @@ mod tests {
         assert!(failed["prepared_identity"]["public_key"].is_null());
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // The failure is said in the passphrase prompt, under its field.
             let prompt = visual_tests::control(preview, "installer.existing.password")
                 .expect("the passphrase prompt")
                 .accessibility()
@@ -7333,7 +7091,6 @@ mod tests {
                     app.harness()
                         .set_theme(theme.clone().with_reduce_motion(true));
                     app.harness().resize(viewport).unwrap();
-                    // The narrow size stands for a phone, used by touch.
                     app.harness()
                         .set_interaction_environment(if viewport.0 < 600 {
                             ui::InteractionEnvironment::TOUCH
@@ -7492,7 +7249,6 @@ mod tests {
             "photo-selected"
         );
         assert_eq!(std::fs::read(&source).unwrap(), original);
-        // A later original edit cannot change the already reviewed pixels.
         std::fs::write(&source, b"changed after selection").unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
             .unwrap();
@@ -7532,8 +7288,6 @@ mod tests {
             Some(&expected)
         );
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        // Selecting the same path again explicitly consumes a new grant and
-        // refuses the now-invalid file, without modifying the accepted identity.
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
             source_file: AbsolutePath::new(&source).unwrap(),
         })
@@ -7763,9 +7517,6 @@ mod tests {
             included: false,
         })
         .unwrap();
-        // The bookmarks and history rows live under the browser's own source
-        // and its reviewed profile; opening both is the same disclosure a
-        // person uses, and only then are the two decisions painted.
         let (source_id, profile_id) = app
             .with_widget::<InstallerPreview, _>(|preview| {
                 let view = preview.your_data();
@@ -7830,8 +7581,6 @@ mod tests {
                 app.harness()
                     .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
                 app.harness().resize(viewport).unwrap();
-                // The profile's two decisions come after the overview, so the
-                // real body scrolls them into reach on a short window.
                 visual_tests::scroll_into_view(&mut app, &history);
                 visual_tests::paint_app(
                     &mut app,
@@ -8075,8 +7824,6 @@ mod tests {
                     viewport,
                     tag,
                 );
-                // Use the ordinary body wheel to reveal all final selections;
-                // a computed offscreen row is not a visible review receipt.
                 app.harness().click_at(body.x0 + 4.0, body.y0 + 4.0);
                 for _ in 0..40 {
                     app.harness().scroll(0.0, -10.0);
@@ -8117,8 +7864,6 @@ mod tests {
                 }
             }
         }
-        // Editing a selected item opens its choices directly, retaining the
-        // same public edit action and cancellation semantics.
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "belongings-details".into(),
         })
@@ -8367,8 +8112,6 @@ mod tests {
             .with_widget::<InstallerPreview, _>(|preview| preview.migration_sources().unwrap())
             .unwrap();
         assert_eq!(refs, vec![selected]);
-        // Actual retained repository/deployment metadata and canonical closed
-        // export review consume precisely the semantic action's selection.
         let source = PortableFlatpakSource::review(&runner, &source_home, refs).unwrap();
         source.validate().unwrap();
     }
@@ -8551,8 +8294,6 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // These are the exact selections passed to original-source and
-            // independent portable capture, not a list reconstructed by the test.
             let (source, selected) = preview.migration_sources().unwrap();
             assert_eq!(source, home.path());
             assert_eq!(selected, vec![reader.clone()]);
@@ -8574,7 +8315,6 @@ mod tests {
             .is_err()
         );
         assert_eq!(status(&mut app)["belongings"]["apps"][0]["with_home"], true);
-        // Category changes suspend inclusion, preserving individual exclusions.
         app.effect(&InstallerPreviewEffect::SetPreviewCategory {
             category: "flatpak".into(),
             included: false,
@@ -8697,8 +8437,6 @@ mod tests {
     #[test]
     fn expanded_flatpak_names_follow_actual_category_actions_and_discovery() {
         use imager_backend::setup::flatpak_transfer::{self, Runner};
-        // Synthetic CLI fixture exercises the production discovery parser and
-        // public action path; the native fixture separately uses real installs.
         struct Discovery;
         impl Runner for Discovery {
             fn run(&self, _: &std::path::Path, args: &[String]) -> Result<String, String> {
@@ -9026,8 +8764,6 @@ mod tests {
                         (next, back)
                     })
                     .unwrap();
-                // A blank part of the real scrolling body establishes pointer
-                // location; ordinary wheel input must reveal the final notice.
                 app.harness().click_at(f64::from(viewport.0) / 2.0, 100.0);
                 for _ in 0..40 {
                     app.harness().scroll(0.0, -10.0);
@@ -9224,9 +8960,6 @@ mod tests {
                     viewport,
                     tag,
                 );
-                // The account choice is the Your data row now, not a
-                // category of its own; the aggregate row is what skips the
-                // optional step when no app identity was discovered.
                 visual_tests::scroll_into_view(&mut app, "installer.your-data.source.accounts");
                 visual_tests::scroll_into_view(&mut app, "installer.details");
             }
@@ -9264,8 +8997,6 @@ mod tests {
             return;
         }
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        // Hold the real capture worker at its input boundary so refusal of
-        // concurrent navigation is deterministic, without inventing its result.
         type Gate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
         static GATE: std::sync::OnceLock<std::sync::Mutex<Option<Gate>>> =
             std::sync::OnceLock::new();
@@ -9279,7 +9010,6 @@ mod tests {
             release
                 .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(std::io::Error::other)?;
-            // Discovery and registration must agree on the actual owned GPT.
             imager_backend::setup::migration_handoff::capture(home, operation, categories)
         }
         let (started, ready) = std::sync::mpsc::channel();
@@ -9478,8 +9208,6 @@ mod tests {
             .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(preview.migration_selection.choosing());
-            // Queue a valid grant immediately before Back; navigation must
-            // retire it before a subsequent drain can create a review worker.
             reply.send(ui::PortalOutcome::Opened(home.clone())).unwrap();
             preview
                 .apply(InstallerPreviewEffect::BackInPreview)
@@ -9528,9 +9256,6 @@ mod tests {
             value: "Portable consent person".into(),
         })
         .unwrap();
-        // A live Profile Continue starts the real prepared identity, which the
-        // source handoff needs before it can seal anything. Waiting on that
-        // preparation is what keeps this test off the order it happens in.
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
             .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -9549,9 +9274,6 @@ mod tests {
             preview.journey.destination = Some(Destination::Another);
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, false, false];
-            // Anchor the source to the fixture Home. The earlier arrive-on-
-            // Belongings check inspected the process Home, and its result must
-            // not decide whether this source has content to capture.
             preview.belongings_worker = None;
             let roots = imager_backend::account_transfer::SourceRoots {
                 home: home.clone(),
@@ -9631,8 +9353,6 @@ mod tests {
                 std::ffi::OsString::from("state")
             ]
         );
-        // A matching semantic grant is retained custody, not permission for a
-        // replacement directory at the same spelling or a completed archive.
         let original = root.path().join("original-home");
         std::fs::rename(&home, &original).unwrap();
         std::fs::create_dir(&home).unwrap();
@@ -9791,8 +9511,6 @@ mod tests {
             std::fs::read_to_string(destination.join(".config/example/settings")).unwrap(),
             "real-settings"
         );
-        // A fresh resource instance represents a restarted installer: normal
-        // Review and Start renew grants and revalidate canonical receipts.
         app = fixture();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
@@ -9868,8 +9586,6 @@ mod tests {
                     ))
                     .unwrap())
         );
-        // The public semantic surface exposes exact retained results without
-        // materializing all imported paths into the resource document.
         let page = app
             .effect(&InstallerPreviewEffect::ReadHomePromotionResults {
                 category: "will_install".into(),
@@ -10025,15 +9741,11 @@ mod tests {
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        // Continue on the retained password enters Purpose, where the real
-        // belongings Controller worker starts; a fast worker may reach Review
-        // before the next semantic read.
         let immediate = status(&mut app);
         if immediate["belongings_preparation"]["pending"] == true {
             assert_eq!(immediate["page"], "purpose");
             assert_eq!(immediate["belongings_preparation"]["prepared"], false);
         } else {
-            // A fast real worker may finish before the next semantic read.
             assert_eq!(immediate["belongings_preparation"]["prepared"], true);
             assert_eq!(immediate["page"], "review");
         }
@@ -10050,15 +9762,11 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        // The closed direct gate means the prepared route has no Storage
-        // choice to make; the ordinary Continue lands on Review.
         assert_eq!(status(&mut app)["page"], "review");
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Review);
             assert!(!preview.direct.active);
             assert!(preview.direct.pending.is_none());
-            // These are the actual outer media handoff bindings; composed
-            // is only the ordinary page's render cache.
             assert!(!preview.media.as_ref().unwrap().get());
             assert!(preview.media_bundle.as_ref().unwrap().get().is_none());
             assert!(!preview.direct.navigation.get());
@@ -10108,8 +9816,6 @@ mod tests {
             serde_json::Value::String(hex::encode(authenticated.manifest().identity_public_key)),
             identity
         );
-        // The normal capacity action cannot manufacture an Apps declaration
-        // from an identity-only preparation or start a delegated installer.
         assert!(
             app.effect(&InstallerPreviewEffect::ReviewPreparedBelongings { target_gib: 35 })
                 .is_err()
@@ -10182,8 +9888,6 @@ mod tests {
         assert_eq!(prepared["page"], "devices");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        // The retained password reaches Purpose, where the real belongings
-        // preparation is already queued; a fast worker may already be at Review.
         let immediate = status(&mut app);
         if immediate["belongings_preparation"]["prepared"] == true {
             assert_eq!(immediate["page"], "review");
@@ -10207,7 +9911,6 @@ mod tests {
                 .unwrap()
                 .contains(&t("installer-review-usb-fallback"))
         );
-        // Generic Continue must not silently choose a different installation route.
         let refused = app
             .effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap_err();
@@ -10350,7 +10053,6 @@ mod tests {
         let original_path = root.join("original.png");
         std::fs::write(&original_path, include!("../fixtures/avatar.rs")).unwrap();
         let changed_path = root.join("changed.png");
-        // A distinct, valid one-pixel synthetic PNG exercises the actual decoder.
         std::fs::write(
             &changed_path,
             [
@@ -10406,7 +10108,6 @@ mod tests {
             identity.metadata().unwrap().profile_photo,
             Some(original_photo.clone())
         );
-        // Cancel must restore already normalized pixels without revisiting this source.
         std::fs::remove_file(&original_path).unwrap();
         for save in [false, true] {
             app.effect(&InstallerPreviewEffect::EditPreview {
@@ -10432,7 +10133,6 @@ mod tests {
             assert_eq!(std::fs::read(&record).unwrap(), original_bytes);
             if save {
                 wait_for_restart_idle(&mut app);
-                // Invoke the same production effect before polling completion.
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     preview
                         .apply(InstallerPreviewEffect::ContinuePreview)
@@ -10480,8 +10180,6 @@ mod tests {
             value: "Unacknowledged".into(),
         })
         .unwrap();
-        // Unsafe canonical metadata makes the actual owned writer refuse. The
-        // framework must retain Profile and its edit snapshot instead of Review.
         std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
         wait_for_restart_idle(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -10506,8 +10204,6 @@ mod tests {
             section: "profile".into(),
         })
         .unwrap();
-        // A pending readonly decoder can be cancelled; no late result may replace
-        // the saved cache or detach a durable identity writer.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview
                 .apply(InstallerPreviewEffect::SelectPreviewAvatar {
@@ -10695,8 +10391,6 @@ mod tests {
             assert!(visual_tests::control(preview, "installer.review.migration").is_some());
         })
         .unwrap();
-        // The row uses the already registered EditPreview action and existing
-        // early Migration page; it cannot grant source access or bypass consent.
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "belongings".into(),
         })
@@ -10908,8 +10602,6 @@ mod tests {
                 .unwrap();
             }
         }
-        // Large accessible text can scroll in a narrow viewport without
-        // reverting to a detached horizontal picture/name arrangement.
         app.harness()
             .set_theme(Theme::dark().with_ui_scale(2.0).with_reduce_motion(true));
         app.harness().resize((480, 900)).unwrap();
@@ -10936,8 +10628,6 @@ mod tests {
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        // The interactive flow now advances to Devices. This test proves the
-        // retained unlock page an older preparation can still show.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.journey.page = Page::Password;
             preview.dirty = true;
@@ -11085,8 +10775,6 @@ mod tests {
     #[test]
     fn desktop_belongings_actions_keep_files_and_apps_in_place_and_select_connections() {
         let mut app = fixture();
-        // Retained legacy preparations can still render their migration choices.
-        // New Desktop choices enter native review instead.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.journey.destination = Some(Destination::Desktop);
             preview.journey.page = Page::Belongings;
@@ -11152,7 +10840,6 @@ mod tests {
     #[test]
     fn desktop_identity_routes_admit_device_without_pairing_and_keep_backup() {
         let mut app = fixture();
-        // Exercise the retained legacy connection surface, not new Desktop navigation.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.journey.destination = Some(Destination::Desktop);
@@ -11388,7 +11075,6 @@ mod tests {
         password(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        // Follow the actual route through Review to completed illustrative setup.
         for _ in 0..4 {
             if status(&mut app)["page"] == "ready" {
                 break;
@@ -11428,8 +11114,6 @@ mod tests {
                 .is_err()
         );
         assert_eq!(status(&mut app)["page"], "review");
-        // Model the canonical retained Full-OS surface while its owner withholds
-        // return navigation; this test starts no installation or host worker.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.direct.active = true;
             preview.direct.navigation.set(false);
@@ -11454,7 +11138,6 @@ mod tests {
         let mut app = fixture();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
-            // Downgrade to the same immutable model used by unsupported hosts.
             preview.capabilities = capabilities::GuidedCapabilities {
                 prepared_installation: false,
             };
@@ -11536,8 +11219,6 @@ mod tests {
             assert_eq!(preview.journey.migrate, Some(true));
         })
         .unwrap();
-        // Desktop setup still reaches the existing account's private-host check;
-        // it must not request new OS identity credentials on this route.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.journey.page = Page::Destination;
             preview.dirty = true;
@@ -11577,7 +11258,6 @@ mod tests {
         }
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         assert_eq!(status(&mut app)["page"], "destination");
-        // The same unsupported capability does not restrict illustrative mode.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.journey.page = Page::Destination;
@@ -11729,9 +11409,6 @@ mod tests {
         let identity_key = prepared["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        // The retained password reaches Purpose, where the real belongings
-        // preparation is already queued; a fast worker may already be at
-        // Storage.
         let immediate = status(&mut app);
         if immediate["belongings_preparation"]["prepared"] == true {
             assert_eq!(immediate["page"], "storage");
@@ -11824,8 +11501,6 @@ mod tests {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(&mut app)["page"], "review");
-        // Desktop setup keeps the existing account and retires a prepared
-        // identity, so only the other-computer route is revisited here.
         assert_live_route_skips_empty_storage(&mut app, "another");
         assert_eq!(
             status(&mut app)["prepared_identity"]["public_key"],
@@ -11894,8 +11569,6 @@ mod tests {
         let capture_inspection = capture.harness().inspection_json().unwrap();
         for migration in ["fresh", "migrate"] {
             let mut route = fixture();
-            // Captures retain the legacy prepared migration surface. New
-            // Desktop navigation is covered by the native-review route test.
             route
                 .with_widget::<InstallerPreview, _>(|preview| {
                     preview.live = true;

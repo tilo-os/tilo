@@ -11,23 +11,17 @@ use crate::lexer::Comment;
 /// A block of one expression whose text is at most this long prints on one line: `{ x }`.
 const INLINE_BLOCK: usize = 40;
 
-/// The widest line the printer makes, the width rustfmt writes this repository's Rust at: a
-/// signature, a call, a chain or a list that does not fit breaks over its lines, one item per
-/// line, so what an author wrapped for reading keeps its shape.
+/// The widest line the printer makes, the width rustfmt writes this repository's Rust at. Something
+/// that does not fit breaks over its lines, one item per line.
 const PAGE: usize = 100;
 
-/// Prints a module in canonical form.
 pub fn print_module(m: &Module) -> String {
     print_file(Some(&m.app), &m.items, &[])
 }
 
-/// Prints one file of a package in canonical form: the `app` header when the file has it, then
-/// its items, a blank line between items (consecutive `use`s stay together).
-///
-/// `comments` are the file's plain `//` comments ([`crate::lexer::plain_comments`]): each prints
-/// just above the declaration, field, statement or match arm it was written over, after that
-/// node's `///` lines, inside an expression's blocks and match arms too. A comment written inside
-/// a declaration's head has no line of its own to keep, so it prints above the next statement.
+/// Prints one file of a package in canonical form: the `app` header, then its items, a blank line
+/// between them (consecutive `use`s stay together). `comments` are the file's plain `//` comments,
+/// each printed above the node it was written over.
 pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Comment]) -> String {
     let mut p = Printer {
         out: String::new(),
@@ -86,12 +80,11 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         prev_use = is_use;
         p.item(item);
     }
-    // Comments after the last item, which belong to no declaration.
+    // Comments after the last item belong to no declaration.
     p.comments_before(usize::MAX);
     p.out
 }
 
-/// Prints one expression in canonical form, on one line.
 pub fn print_expr(e: &Expr) -> String {
     expr_text(e, 0, 0)
 }
@@ -100,25 +93,22 @@ fn indent(level: usize) -> String {
     "    ".repeat(level)
 }
 
-/// The state printing text shares: the file's `//` comments still to place, and the widest line
-/// the text may make.
+/// The state printing text shares: the file's `//` comments still to place, and the widest line the
+/// text may make.
 #[derive(Clone, Copy)]
 struct Ctx<'a> {
-    /// The file's plain `//` comments, in source order.
     comments: &'a [Comment],
-    /// How many of them have been printed: the printer writes nodes in source order, so a
-    /// comment is printed above the first node that starts after it.
+    /// How many comments have been printed: the printer writes nodes in source order, so a comment
+    /// prints above the first node that starts after it.
     seen: usize,
-    /// The widest line text may make, or `None` where it cannot take a newline at all: inside a
-    /// string literal's `{}`, and in a description quoted on one line.
+    /// The widest line text may make, or `None` where it cannot take a newline: inside a string
+    /// literal's `{}`, and in a description quoted on one line.
     page: Option<usize>,
 }
 
 impl Ctx<'_> {
-    /// A copy whose text is one line: what an item's text is, to measure it against the page.
-    ///
-    /// It shares the comments still to place, so what it prints keeps their lines; the printing
-    /// that follows keeps them only if the one-line text is the one taken.
+    /// A copy whose text is one line, to measure against the page. It shares the comments still to
+    /// place, so the printing that follows keeps them only if the one-line text is the one taken.
     fn one_line(&self) -> Self {
         Self {
             comments: self.comments,
@@ -128,13 +118,11 @@ impl Ctx<'_> {
     }
 }
 
-/// Whether `text`, written from column `col`, keeps the page: one line no wider than the page.
+/// Whether `text`, written from column `col`, keeps the page.
 fn fits(text: &str, col: usize, ctx: &Ctx) -> bool {
     !text.contains('\n') && ctx.page.is_none_or(|page| col + text.len() <= page)
 }
 
-/// ` (icon: .x, label: "y")`, the options of an action or an enum variant after its head, or
-/// nothing without options.
 fn opts_text(opts: &[String]) -> String {
     if opts.is_empty() {
         String::new()
@@ -143,8 +131,8 @@ fn opts_text(opts: &[String]) -> String {
     }
 }
 
-/// Writes into `out` the plain `//` comments written above the node that starts at `start`,
-/// each on a line of its own indented to `level`; the context's `seen` moves past them.
+/// Writes the plain `//` comments written above the node that starts at `start`, each on a line of
+/// its own indented to `level`; the context's `seen` moves past them.
 fn comments_into(out: &mut String, level: usize, ctx: &mut Ctx, start: usize) {
     while let Some(text) = ctx
         .comments
@@ -164,7 +152,6 @@ fn comments_into(out: &mut String, level: usize, ctx: &mut Ctx, start: usize) {
     }
 }
 
-/// Whether a comment still to print is written inside `span`.
 fn holds_comment(ctx: &Ctx, span: Span) -> bool {
     ctx.comments
         .get(ctx.seen..)
@@ -175,9 +162,6 @@ fn holds_comment(ctx: &Ctx, span: Span) -> bool {
 
 /// `open`, the `items` separated by commas and `close`: on one line when that fits the page from
 /// `col`, otherwise one item per line, one level deeper than `level`, each with a trailing comma.
-///
-/// `item` prints one item at the column it starts at and the level it is written at; an item too
-/// long for its line breaks its own text the same way.
 fn comma_group<'e, T>(
     items: &'e [T],
     col: usize,
@@ -198,8 +182,7 @@ fn comma_group<'e, T>(
         return one;
     }
     let inner = level + 1;
-    // The comma that follows each item is part of its line: an item is measured one column
-    // shorter, so the line it ends keeps the page.
+    // The comma that follows each item is part of its line: an item is measured one column shorter.
     let page = ctx.page;
     if let Some(p) = page {
         ctx.page = Some(p.saturating_sub(1));
@@ -217,10 +200,9 @@ fn comma_group<'e, T>(
     out
 }
 
-/// A block as text: on one line when it is one short expression, otherwise one statement per
-/// line, indented one level deeper than `level`. A block whose statements carry a `//` comment
-/// prints on several lines, so the comment has a line of its own. `col` is where its `{` goes;
-/// `inline` is off when the block around it takes lines of its own anyway.
+/// A block as text: on one line when it is one short expression, otherwise one statement per line,
+/// one level deeper than `level`. A block whose statements carry a `//` comment takes several lines,
+/// so the comment has a line of its own.
 fn block_text(b: &Block, col: usize, level: usize, ctx: &mut Ctx, inline: bool) -> String {
     if b.stmts.is_empty() && !holds_comment(ctx, b.span) {
         return "{}".to_owned();
@@ -290,6 +272,11 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     if let Some(place) = &p.place {
         head = format!("{head} ({})", place.name);
     }
+    if let Some(label) = &p.label {
+        let mut quoted = String::new();
+        escape_into(label, &mut quoted);
+        head = format!("{head} (label: \"{quoted}\")");
+    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);
@@ -299,7 +286,6 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     }
 }
 
-/// Prints a type in canonical form.
 pub fn print_type(t: &TypeExpr) -> String {
     match &t.kind {
         TypeExprKind::Named(path) => path
@@ -326,7 +312,6 @@ pub fn print_type(t: &TypeExpr) -> String {
     }
 }
 
-/// ` uses web, time`, or nothing for a declaration that uses no effect.
 fn uses_text(uses: &[Ident]) -> String {
     if uses.is_empty() {
         return String::new();
@@ -335,7 +320,6 @@ fn uses_text(uses: &[Ident]) -> String {
     format!(" uses {}", names.join(", "))
 }
 
-/// A string literal with escapes.
 pub fn quote(s: &str) -> String {
     let mut out = String::from("\"");
     escape_into(s, &mut out);
@@ -367,9 +351,9 @@ fn float_text(v: f64) -> String {
     s
 }
 
-/// Whether a long expression may break the line before this operator: the lexer reads a line
-/// that starts with one as the line before it continuing. `-`, `not` and `/` may not, since each
-/// can begin an expression or a literal of its own.
+/// Whether a long expression may break the line before this operator: the lexer reads a line that
+/// starts with one as the line before it continuing. `-`, `not` and `/` may not, since each can begin
+/// an expression or a literal of its own.
 fn leads_line(op: BinOp) -> bool {
     matches!(
         op,
@@ -388,7 +372,7 @@ fn leads_line(op: BinOp) -> bool {
     )
 }
 
-/// Binding strength used to decide parentheses; see the grammar's levels.
+/// Binding strength, which decides the parentheses.
 fn prec_of(e: &Expr) -> u8 {
     match &e.kind {
         ExprKind::Lambda { .. } | ExprKind::Range { .. } => 0,
@@ -399,7 +383,6 @@ fn prec_of(e: &Expr) -> u8 {
     }
 }
 
-/// `let a = x, b = y` of an `if let`.
 fn binds_text(binds: &[crate::ast::LetBind], col: usize, level: usize, ctx: &mut Ctx) -> String {
     let mut probe = ctx.one_line();
     let flat: Vec<String> = binds
@@ -430,7 +413,6 @@ fn binds_text(binds: &[crate::ast::LetBind], col: usize, level: usize, ctx: &mut
     out
 }
 
-/// One `name = value` of an `if let`.
 fn bind_text(b: &crate::ast::LetBind, col: usize, level: usize, ctx: &mut Ctx) -> String {
     let head = format!("{} = ", b.name.name);
     let value = expr_with(&b.value, 0, col + head.len(), level, ctx);
@@ -439,7 +421,6 @@ fn bind_text(b: &crate::ast::LetBind, col: usize, level: usize, ctx: &mut Ctx) -
 
 /// A calendar literal as written: an instant without its seconds when they are zero.
 fn calendar_text(text: &str) -> String {
-    // The canonical text carries the seconds a time may be written without.
     match text.strip_suffix(":00Z") {
         Some(minutes) if text.len() == 20 => format!("{minutes}Z"),
         _ => match text.strip_suffix(":00") {
@@ -449,8 +430,8 @@ fn calendar_text(text: &str) -> String {
     }
 }
 
-/// An expression in its canonical text, on one line where it fits: how a description quotes
-/// what the source wrote (an action parameter's default).
+/// An expression in its canonical text, on one line where it fits: how a description quotes what the
+/// source wrote.
 pub(crate) fn expr_source(e: &Expr) -> String {
     expr_text(e, 0, 0)
 }
@@ -466,13 +447,9 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
 
 /// One step of an access chain: a name after a `.`, or the arguments that follow one.
 enum Seg<'a> {
-    /// `.name`
     Field(&'a Ident),
-    /// `?.name`
     Optional(&'a Ident),
-    /// The `(args)` that follow the step before it.
     Args(&'a [Arg]),
-    /// The `<types>` a call takes before its arguments.
     Types(&'a [TypeExpr]),
 }
 
@@ -488,8 +465,8 @@ fn seg_text(seg: &Seg<'_>, col: usize, level: usize, ctx: &mut Ctx) -> String {
     }
 }
 
-/// The base of an access chain and its steps, outermost last: `a.b(x)?.c` is `a` then `.b`, the
-/// arguments `(x)`, `?.c`.
+/// The base of an access chain and its steps, outermost last: `a.b(x)?.c` is `a` then `.b`, `(x)`,
+/// `?.c`.
 fn chain_of(e: &Expr) -> (&Expr, Vec<Seg<'_>>) {
     let mut segs = Vec::new();
     let mut cur = e;
@@ -525,11 +502,9 @@ fn chain_of(e: &Expr) -> (&Expr, Vec<Seg<'_>>) {
     (cur, segs)
 }
 
-/// A name with its accesses: `a.b`, `f(x).g(y)`, `a?.b(x)`.
-///
-/// On one line when it fits the page. Otherwise a name's arguments go one per line — the call
-/// keeps its name and breaks its `(args)` — and a chain that reads a call's result breaks before
-/// each `.`, the calls inside it breaking only when their own line is still too long.
+/// A name with its accesses: `a.b`, `f(x).g(y)`, `a?.b(x)`. On one line when it fits the page;
+/// otherwise a call breaks its arguments one per line, and a chain that reads a call's result breaks
+/// before each `.`.
 fn postfix(e: &Expr, col: usize, level: usize, ctx: &mut Ctx) -> String {
     let (base, segs) = chain_of(e);
     let mut probe = ctx.one_line();
@@ -542,7 +517,6 @@ fn postfix(e: &Expr, col: usize, level: usize, ctx: &mut Ctx) -> String {
         ctx.seen = probe.seen;
         return one;
     }
-    // A name's call is a call: `.rows(..)` keeps its name and breaks its arguments.
     let last = segs.len().saturating_sub(1);
     if matches!(base.kind, ExprKind::Ident(_))
         && matches!(segs.get(last), Some(Seg::Args(_)))
@@ -557,8 +531,7 @@ fn postfix(e: &Expr, col: usize, level: usize, ctx: &mut Ctx) -> String {
         let args = comma_group(args, open, level, ctx, "(", ")", arg_text);
         return format!("{name}{args}");
     }
-    // A chain over a call's result breaks before each `.`: the leading fields stay on the first
-    // line, the calls after them each take one.
+    // A chain over a call's result breaks before each `.`: the leading fields stay on the first line.
     let inner = level + 1;
     let mut out = expr_with(base, 8, col, level, ctx);
     let mut broken = false;
@@ -585,19 +558,16 @@ fn postfix(e: &Expr, col: usize, level: usize, ctx: &mut Ctx) -> String {
     out
 }
 
-/// How wide a chain step's name is, before the arguments that may follow it.
 fn seg_text_len(seg: &Seg<'_>) -> usize {
     match seg {
         Seg::Field(name) => name.name.len() + 1,
         Seg::Optional(name) => name.name.len() + 2,
-        // The types a call takes fit on the line their arguments do.
         Seg::Args(_) | Seg::Types(_) => 0,
     }
 }
 
 /// An expression in its canonical text from column `col`, printing the `//` comments inside its
-/// blocks and match arms above the statement or arm they were written over, as the printer does
-/// for statements.
+/// blocks and match arms above what they were written over.
 fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> String {
     let body = match &e.kind {
         ExprKind::Int(v) => v.to_string(),
@@ -615,8 +585,7 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
         }
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::Str(parts) => {
-            // A string literal cannot take a newline: what its `{}` prints stays on one line, so
-            // a long call inside one stays long rather than breaking the literal.
+            // A string literal cannot take a newline: what its `{}` prints stays on one line.
             let page = ctx.page.take();
             let mut out = String::from("\"");
             for part in parts {
@@ -740,8 +709,7 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
                 ctx.seen = probe.seen;
                 one
             } else {
-                // Every operator of the chain leads a line of its own, one level in: how a long
-                // condition or fallback reads down the page.
+                // Every operator of the chain leads a line of its own, one level in.
                 let inner = level + 1;
                 let mut spine = vec![(*op, rhs.as_ref())];
                 let mut base = lhs.as_ref();
@@ -794,11 +762,8 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
     }
 }
 
-/// `if` and its branches: `head {..}`, `head {..} else {..}`, `head {..} else if ..`.
-///
-/// The whole branch prints on one line when it fits, its blocks one expression each; otherwise
-/// every block takes lines of its own, so a long condition or a chain of `else if`s reads down
-/// the page rather than across it.
+/// `if` and its branches. The whole branch prints on one line when it fits, its blocks one
+/// expression each; otherwise every block takes lines of its own.
 fn if_text(
     head: &str,
     then: &Block,
@@ -817,8 +782,8 @@ fn if_text(
 }
 
 /// A branch with its blocks on one line (`inline`) or over their lines. The `else` decides for
-/// itself: it lands on a line of its own, so a short one stays one line even beside a block that
-/// took several.
+/// itself: it lands on a line of its own, so a short one stays one line even beside a block that took
+/// several.
 fn branch(
     head: &str,
     then: &Block,
@@ -828,14 +793,12 @@ fn branch(
     ctx: &mut Ctx,
     inline: bool,
 ) -> String {
-    // The block opens after the head's last line, `col` when the head is one line.
     let open = match head.rfind('\n') {
         Some(i) => head.len() - i,
         None => col + head.len() + 1,
     };
     let mut out = format!("{head} {}", block_text(then, open, level, ctx, inline));
     if let Some(els) = els {
-        // The `else` follows the closing `}` on its line, or the one-line block.
         let at = match out.rfind('\n') {
             Some(i) => out.len() - i - 1 + 6,
             None => col + out.len() + 6,
@@ -861,19 +824,17 @@ struct Printer<'a> {
 }
 
 impl Printer<'_> {
-    /// An expression printed at this printer's level, its comments placed as they are written.
     fn ex(&mut self, e: &Expr) -> String {
         let col = self.level * 4;
         expr_with(e, 0, col, self.level, &mut self.ctx)
     }
 
-    /// An expression that starts at column `col` rather than at this level's indentation, as one
-    /// does after `let x = ` or `return `.
+    /// An expression that starts at column `col` rather than at this level's indentation, as one does
+    /// after `let x = ` or `return `.
     fn ex_at(&mut self, e: &Expr, col: usize) -> String {
         expr_with(e, 0, col, self.level, &mut self.ctx)
     }
 
-    /// An expression that must keep `after` more columns free on its last line.
     fn ex_before(&mut self, e: &Expr, after: usize) -> String {
         let page = self.ctx.page;
         if let Some(p) = page {
@@ -884,7 +845,6 @@ impl Printer<'_> {
         text
     }
 
-    /// Whether `text` from column `col` keeps the page.
     fn fits(&self, col: usize, text: &str) -> bool {
         fits(text, col, &self.ctx)
     }
@@ -913,12 +873,8 @@ impl Printer<'_> {
     }
 
     /// A declaration's head: `lead(items)tail` and then the parenthesised `opts` and `close`.
-    ///
-    /// It prints on one line when it fits the page. When it does not, the part too long for the
-    /// page breaks: the `opts` go one per line after the `(` when the items fit, and otherwise
-    /// the `items` go one per line with a trailing comma, indented one level deeper, the line
-    /// that closes them keeping the `tail` — the result type or the proposal — before the
-    /// `opts`, which break that way too when that line is still too wide.
+    /// It prints on one line when it fits the page; otherwise the part too long for the page breaks,
+    /// the `items` or the `opts` one per line.
     fn head<T>(
         &mut self,
         lead: &str,
@@ -957,8 +913,7 @@ impl Printer<'_> {
             self.line(&one);
             return;
         }
-        // Options too long for the page break while the items stay on the head, which is the
-        // shorter of the two.
+        // Options too long for the page break while the items stay on the head.
         let opens = format!("{lead}({}){tail} (", flat.join(", "));
         if !opts.is_empty() && self.fits(col, &opens) {
             self.ctx.seen = probe.seen;
@@ -1049,7 +1004,6 @@ impl Printer<'_> {
                     self.comments_before(v.span.start);
                     let opts = self.opts(&v.opts);
                     if v.fields.is_empty() {
-                        // A variant without fields is its name alone, then its options.
                         let text = format!("{}{}", v.name.name, opts_text(&opts));
                         self.line(&text);
                     } else {
@@ -1173,7 +1127,6 @@ impl Printer<'_> {
         }
     }
 
-    /// `icon: .x, label: "y"`, the options of an action or an enum variant, in canonical text.
     fn opts(&mut self, opts: &[ActionOpt]) -> Vec<String> {
         opts.iter()
             .map(|o| {
@@ -1348,8 +1301,8 @@ impl Printer<'_> {
                         }
                         continue;
                     }
-                    // The arm's body stands after `{pat} => `: what it prints keeps that much
-                    // room free on its first line.
+                    // The arm's body stands after `{pat} => `: what it prints keeps that much room free
+                    // on its first line.
                     let page = self.ctx.page;
                     let mut sub = Printer {
                         out: String::new(),

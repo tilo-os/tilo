@@ -23,12 +23,13 @@ __all__ = [
 
 class Document(Resource):
     """Hex document — `hex-editor.document`."""
+    __surface__ = "so.tilo.hex-editor@232e3b35ec6f1f92"
     @property
-    def name(self) -> Any:
+    def name(self) -> str | None:
         """Read only."""
         return self.fields["name"]
     @property
-    def opened(self) -> Any:
+    def opened(self) -> int:
         """Read only."""
         return self.fields["opened"]
     bytes: Any

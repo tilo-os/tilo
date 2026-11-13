@@ -55,8 +55,6 @@ impl PdfApp {
     }
 }
 
-/// What a caller is told of `field`: `None` for a field no value fills (a
-/// button, a signature field) or one with no name to address it by.
 fn field_row(
     field: &FormField,
     values: &BTreeMap<String, FormEntry>,
@@ -131,9 +129,6 @@ fn field_row(
     })
 }
 
-/// The 1-based page of the document now showing the file's 0-based page
-/// `source`: its first occurrence in the page plan, `None` when it was
-/// deleted, the file's own number before the record has a plan.
 fn shown_page(plan: &[PagePlanEntry], source: usize) -> Option<usize> {
     if plan.is_empty() {
         return Some(source + 1);
@@ -151,9 +146,6 @@ mod tests {
     use crate::PdfViewerShell;
     use crate::actions::PdfEffect;
 
-    /// The engine's form fixture: a text field `name` holding "Ada", a
-    /// checkbox `agree` that is off and a choice `colour` of Red, Green and
-    /// Blue holding Red, all on its one page.
     fn form_pdf() -> std::path::PathBuf {
         std::path::Path::new(env!("OUT_DIR")).join("form.pdf")
     }
@@ -174,7 +166,6 @@ mod tests {
             .unwrap_or_else(|| panic!("no field {name} in {fields:?}"))
     }
 
-    /// A one-page PDF whose form dictionary lists no field.
     fn empty_form_pdf() -> Vec<u8> {
         use std::fmt::Write as _;
         let objects = [
@@ -201,8 +192,6 @@ mod tests {
         pdf.into_bytes()
     }
 
-    /// A caller with no screen learns every field of a PDF's form, fills
-    /// them with the field edit each one names, and reads them back filled.
     #[serial(pdfium)]
     #[test]
     fn an_agent_lists_a_forms_fields_and_fills_them_by_the_edit_they_name() {
@@ -240,8 +229,6 @@ mod tests {
             serde_json::json!({ "kind": "choice", "value": "Red" })
         );
 
-        // Each field is filled by the published field edit, on the path and
-        // in the value shape its row gave.
         for (row, value) in [
             (
                 name,
@@ -284,9 +271,6 @@ mod tests {
         );
     }
 
-    /// A window with no PDF owner (an agent's, on a PDF pinned from content)
-    /// reads a form in process: the same three fields a window showing the
-    /// PDF reads, with no screen involved.
     #[test]
     fn a_window_with_no_pdf_owner_reads_the_form() {
         let content = tilo_content::ContentStore::memory();
@@ -295,8 +279,10 @@ mod tests {
             let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join(fixture))
                 .expect("the fixture");
             app.record_source = Some(crate::markup::PinnedSource {
-                hash: content.put(&bytes).expect("stored"),
-                len: u64::try_from(bytes.len()).expect("small"),
+                source: ui::tilo_resource::Bytes::kept_as(
+                    &bytes,
+                    &content.put(&bytes).expect("stored"),
+                ),
                 name: fixture.into(),
             });
         };
@@ -350,8 +336,10 @@ mod tests {
         let mut app = crate::app::PdfApp::empty_with_content(content.clone());
         let bytes = empty_form_pdf();
         app.record_source = Some(crate::markup::PinnedSource {
-            hash: content.put(&bytes).expect("stored"),
-            len: u64::try_from(bytes.len()).expect("small"),
+            source: ui::tilo_resource::Bytes::kept_as(
+                &bytes,
+                &content.put(&bytes).expect("stored"),
+            ),
             name: "empty-form.pdf".into(),
         });
         let refused = app
@@ -360,8 +348,6 @@ mod tests {
         assert!(refused.contains("names no field"), "{refused}");
     }
 
-    /// A field's page follows its page through the plan: moved later, it is
-    /// on the page it moved to.
     #[test]
     fn a_fields_page_is_where_its_page_now_shows() {
         let entry = |source_page: usize| crate::markup::PagePlanEntry {

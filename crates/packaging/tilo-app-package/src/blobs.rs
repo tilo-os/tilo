@@ -1,12 +1,4 @@
 //! Content addressing for package payloads.
-//!
-//! A payload file is named by the BLAKE3 hash of its bytes, the same hash
-//! the device's content store and iroh-blobs use, so a package's files are
-//! ordinary content wherever they are held. This module owns the naming
-//! ([`BlobHash`]), the signed path index ([`Collection`]), and the two
-//! streaming edges a codec needs: [`BlobSource`] to read payload bytes that
-//! live somewhere else and [`BlobSink`] to hand decoded bytes to whoever
-//! stores them. Nothing here keeps bytes itself.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -28,7 +20,6 @@ impl BlobHash {
         Self(*h.finalize().as_bytes())
     }
 
-    /// Hash everything `reader` yields, returning the hash and the length.
     pub fn of_reader(reader: &mut dyn Read) -> io::Result<(Self, u64)> {
         let mut hashing = HashingReader::new(reader);
         io::copy(&mut hashing, &mut io::sink())?;
@@ -67,7 +58,6 @@ impl std::fmt::Display for BlobHash {
     }
 }
 
-/// A reader that hashes what passes through it.
 pub struct HashingReader<R> {
     inner: R,
     hasher: Hasher,
@@ -83,7 +73,6 @@ impl<R: Read> HashingReader<R> {
         }
     }
 
-    /// The hash and length of everything read so far.
     pub fn finish(&self) -> (BlobHash, u64) {
         (BlobHash(*self.hasher.finalize().as_bytes()), self.len)
     }
@@ -132,14 +121,9 @@ pub trait BlobSink {
 /// from: a peer, a registry, a mirror. Whoever receives the bytes verifies
 /// each against its hash; a fetcher need not be trusted.
 pub trait BlobFetcher: Sync {
-    /// Deliver each of `hashes` to `sink`.
     fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> io::Result<()>;
 }
 
-/// Where a whole package can be fetched by its id: its signed metadata as a
-/// `.tapp` (thin or full), and through [`BlobFetcher`] the payload blobs a
-/// thin one does not carry. Nothing it returns is trusted; the receiver
-/// checks the package hashes to the id it asked for.
 pub trait PackageFetcher: BlobFetcher {
     /// The `.tapp` bytes of `id`, or `Ok(None)` when this source lacks it.
     fn fetch_package(&self, id: &crate::id::PackageId) -> io::Result<Option<Vec<u8>>>;
@@ -163,7 +147,6 @@ impl BlobSink for BTreeMap<BlobHash, Vec<u8>> {
     }
 }
 
-/// A sink that keeps nothing; decoding still verifies every blob.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DiscardBlobs;
 
@@ -174,20 +157,12 @@ impl BlobSink for DiscardBlobs {
 }
 
 /// The payload "collection": payload-relative path → blob hash.
-///
-/// Stands in for iroh-blobs' `Collection` at the wire-stable layer.
-/// Deterministic on-disk encoding (`BTreeMap`, so the hash is
-/// reproducible) as a length-prefixed `Vec<(String, [u8;32])>` blob —
-/// hand-encoded rather than via serde, so the format doesn't depend
-/// on a framework choice at the canonical layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
     pub entries: BTreeMap<String, BlobHash>,
 }
 
 impl Collection {
-    /// Build a collection from an unsorted iterator; entries are stored
-    /// sorted by path so the collection's own hash is stable across iteration orders.
     pub fn from_entries<I: IntoIterator<Item = (String, BlobHash)>>(it: I) -> Self {
         Self {
             entries: it.into_iter().collect(),
@@ -292,7 +267,6 @@ impl Collection {
         Ok(Self { entries: out })
     }
 
-    /// Hash of the encoded form — the "collection root" the signed manifest binds into.
     pub fn root_hash(&self) -> BlobHash {
         BlobHash::of(&self.encode())
     }

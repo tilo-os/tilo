@@ -1,6 +1,6 @@
-//! The menu a secondary click, a long press or the menu key opens on the
-//! words: cut, copy and paste, select all, and the formatting a toolbar
-//! applies, each through the command its shortcut or button runs.
+//! The menu a secondary click, a long press or the menu key opens on the words: cut, copy and paste,
+//! select all, and the formatting a toolbar applies, each through the command its shortcut or button
+//! runs.
 
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -14,21 +14,13 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::marks::Mark;
 use crate::widget::{EventCtx, Widget};
 
-/// The prefix of the text menu's rows' targets in the accessibility tree.
 const TEXT_MENU_TARGET: &str = "editor.text-menu:";
 
-/// What a row of the text menu does.
 #[derive(Clone, Debug, PartialEq)]
 enum TextMenuAction {
-    /// `cut`, `copy`, `paste`, `paste-plain` or `select-all`
-    /// ([`BlockEditor::clipboard_command`]).
     Clipboard(&'static str),
     Mark(Mark),
-    List {
-        ordered: bool,
-    },
-    /// A heading of that level, or body text when it is absent
-    /// ([`BlockEditor::set_heading`]).
+    List { ordered: bool },
     Heading(Option<u8>),
 }
 
@@ -36,7 +28,6 @@ enum TextMenuAction {
 #[derive(Default)]
 pub(super) struct TextMenu {
     menu: ContextMenu,
-    /// Parallel to the menu's rows; separators are `None`.
     actions: Vec<Option<TextMenuAction>>,
 }
 
@@ -49,15 +40,12 @@ impl TextMenu {
         self.menu.needs_animation_frame()
     }
 
-    /// The open menu's box: what is modal while it is open.
     pub(super) fn modal_rect(&self) -> Option<vello::kurbo::Rect> {
         self.menu.modal_capture()
     }
 }
 
 impl BlockEditor {
-    /// The text menu, while it is open: where a host places it or finds
-    /// its rows.
     #[must_use]
     pub fn text_menu(&self) -> Option<&ContextMenu> {
         self.text_menu
@@ -66,9 +54,6 @@ impl BlockEditor {
             .then_some(&self.text_menu.menu)
     }
 
-    /// Open the text menu at `at` (the editor's coordinates) on the words
-    /// there: over the selection when `at` is in it, else over the word
-    /// under it, selected. `false` when no editable words are at `at`.
     pub fn open_text_menu(&mut self, at: Point) -> bool {
         if self.read_only {
             return false;
@@ -98,9 +83,6 @@ impl BlockEditor {
         true
     }
 
-    /// Route `event` to the text menu while it is open (it is modal: every
-    /// pointer and key event is its), or open it on a secondary press over
-    /// the words or on the menu key. `true` when the event was the menu's.
     pub(super) fn handle_text_menu_event(
         &mut self,
         event: &WindowEvent,
@@ -168,8 +150,6 @@ impl BlockEditor {
         opened
     }
 
-    /// Paint the text menu, open or leaving, where it was opened, kept
-    /// inside the editor's popover bounds.
     pub(super) fn paint_text_menu(
         &mut self,
         scene: &mut vello::Scene,
@@ -213,9 +193,6 @@ impl BlockEditor {
         Some(menu)
     }
 
-    /// Run the text menu's row an assistive technology activated
-    /// (`target` from [`Self::text_menu_access_node`]). `None` when `target`
-    /// is not the menu's.
     pub(super) fn perform_text_menu_action(
         &mut self,
         target: &str,
@@ -237,7 +214,6 @@ impl BlockEditor {
         Some(handled)
     }
 
-    /// The menu key's text menu: at the caret, over the selection.
     fn open_text_menu_at_caret(&mut self) -> bool {
         let Some(line) = self
             .focused
@@ -251,8 +227,6 @@ impl BlockEditor {
         true
     }
 
-    /// Whether `at` lies in what is selected: the selection across
-    /// paragraphs, or the focused paragraph's.
     fn selection_holds(&self, at: DocumentPosition) -> bool {
         if let Some(selection) = self.document_selection {
             let (start, end) = selection.ordered();
@@ -266,7 +240,6 @@ impl BlockEditor {
                 .is_some_and(|(start, end)| start < end && start <= at.byte && at.byte <= end)
     }
 
-    /// Whether anything is selected to cut or copy.
     fn has_text_selection(&self) -> bool {
         self.document_selection
             .is_some_and(|selection| selection.anchor != selection.cursor)
@@ -277,7 +250,6 @@ impl BlockEditor {
                 .is_some_and(|(start, end)| start < end)
     }
 
-    /// Build the menu's rows for what is selected and open it at `at`.
     fn show_text_menu(&mut self, at: Point) {
         let label = |key: &str| I18nManager::lookup_plain(key);
         let selected = self.has_text_selection();
@@ -335,8 +307,6 @@ impl BlockEditor {
             rows.push((item, Some(TextMenuAction::Mark(mark))));
         }
         rows.push((MenuItem::separator(), None));
-        // Headings by the level the editor draws, and the way back to body text: what a line is,
-        // as a list row says what a list is.
         let mut headings: Vec<(Option<u8>, &str)> = BlockEditor::HEADING_LEVELS
             .map(|level| {
                 (
@@ -391,8 +361,6 @@ impl BlockEditor {
         self.text_menu.menu.open_at([at.x as f32, at.y as f32]);
     }
 
-    /// Do what row `row` of the text menu does, as its shortcut or the
-    /// toolbar's button does.
     fn run_text_menu_row(&mut self, row: usize) {
         let Some(action) = self.text_menu.actions.get(row).cloned().flatten() else {
             return;

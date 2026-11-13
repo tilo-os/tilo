@@ -47,12 +47,11 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
-use crate::meta::MetaExt;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
     ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
-    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
+    Principal, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use rows::ListRows;
@@ -316,10 +315,9 @@ pub struct Instance {
     )>,
     /// How the policy's people are the runtime's principals, as presence pairs them.
     people: crate::members::People,
-    names_changed: bool,
-    /// The person's formats moved: what a view writes of a time or a day (`.clock()`, a date in a
-    /// sentence) is written again, and what it shows is shown in the new style.
-    formats_changed: bool,
+    /// The person's environment moved: their language, their formats, or what the window calls
+    /// someone. What a view shows of any of them is shown again, and what it sent is sent again.
+    person_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
@@ -433,8 +431,7 @@ impl Instance {
             lenses_changed: false,
             members_from: None,
             people,
-            names_changed: false,
-            formats_changed: false,
+            person_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
@@ -573,10 +570,11 @@ impl Instance {
     }
 
     /// Have the window read in `locale` (`de-DE`), the language the instance's words now come in:
-    /// its own chrome relabels with the next frame it is sent, and every view is drawn again.
+    /// its own chrome relabels with the next frame it is sent, and every view that shows a word
+    /// is drawn again.
     pub fn speak(&mut self, locale: String) {
         self.out.push(ToUi::Speak(locale));
-        self.formats_changed = true;
+        self.person_changed = true;
     }
 
     /// What search hits and agents asked the window to show, until it shows them.
@@ -798,15 +796,11 @@ impl Instance {
         self.moved = true;
     }
 
-    /// The names of the workspace changed: views showing names show them again.
-    pub fn names_changed(&mut self) {
-        self.names_changed = true;
-    }
-
-    /// The person's formats changed: every view that writes a time or a day writes it again in
-    /// the new style, and the window shows what it wrote.
-    pub fn formats_changed(&mut self) {
-        self.formats_changed = true;
+    /// The person's environment changed — the language their window speaks, their formats, or
+    /// the name the window calls someone: every view that shows what only the window knows shows
+    /// it again, and no other boundary runs.
+    pub fn person_changed(&mut self) {
+        self.person_changed = true;
     }
 
     /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
@@ -864,9 +858,12 @@ impl Instance {
             // Without the record, a window opens over the indexes it keeps or not at all.
             (None, _, _) => return None,
         };
+        // The chunks are the host's from here on: a copy kept here would hold the record's
+        // documents as they were, and make every write to them copy the document first.
+        let chunks = self.record_chunks.take();
         let opening = Opening {
             record: doc,
-            chunks: self.record_chunks.as_ref(),
+            chunks: chunks.as_ref(),
             index_dir,
             device: self.device.as_deref(),
         };
@@ -933,7 +930,7 @@ impl Instance {
     fn field_name(host: &Host, binding: &Binding) -> String {
         announced(binding, |target, field| {
             type_of(host, &target.ty)
-                .and_then(|(_, ty)| {
+                .and_then(|ty| {
                     ty.fields
                         .iter()
                         .find(|declared| declared.id == field)
@@ -1467,7 +1464,7 @@ impl Instance {
             ToApp::Composing(composing) => self.composing = composing,
             ToApp::Names { me, others } => {
                 if self.told.tell(me, others) {
-                    self.names_changed = true;
+                    self.person_changed = true;
                 }
             }
             ToApp::Space {
@@ -1689,6 +1686,13 @@ impl Instance {
             return Ok(());
         };
         let value = value.and_then(wire::runtime_value);
+        // What a drag from another view carried reaches this view by its published address and
+        // nothing more (a chip dropped on a composer, a place's handle dropped on the canvas):
+        // its type is read here, from the record this workspace holds or the reading its app
+        // published, so the action the drop runs takes the resource it names. An address
+        // neither knows yet keeps what it arrived as, and an action taking it as any resource
+        // (`host.Resource`) still runs.
+        let value = value.map(|value| self.resolved(value));
         let wanting = view
             .borrow()
             .wanting_arguments(key, name, value.as_ref())
@@ -1714,6 +1718,20 @@ impl Instance {
         }
     }
 
+    /// `value` with every reference in it naming its type: a resource a drag from another view
+    /// carried reached this one by its published address, and its type is read from the
+    /// workspace's record, else from the reading its app published ([`Runtime::resolve_ref`]).
+    /// A resource that already names its type, and a value that holds none, is returned as it
+    /// is.
+    fn resolved(&self, value: Value) -> Value {
+        let Some(host) = self.host() else {
+            return value;
+        };
+        let resolve =
+            |target: &ResourceRef| -> Option<ResourceRef> { host.runtime().resolve_ref(target) };
+        resolved_value(value, &resolve)
+    }
+
     /// Show the form of `aref`, which the control `key` of the view of `lane` ran and which
     /// still needs arguments, instead of running it. Whether it has one: what it needs is
     /// what a form can ask for.
@@ -1730,8 +1748,14 @@ impl Instance {
         let Some(meta) = host
             .packages()
             .into_iter()
-            .map(|package| package.meta)
-            .find(|meta| meta.actions.iter().any(|action| action.id == aref.action))
+            .find(|package| {
+                package
+                    .meta
+                    .actions
+                    .iter()
+                    .any(|action| action.id == aref.action)
+            })
+            .map(|package| package.meta.clone())
         else {
             return false;
         };
@@ -1770,23 +1794,16 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
+        let Some(action) = host.published_action(&address.resource, &address.action) else {
+            return false;
+        };
         let Some(meta) = host
             .packages()
             .into_iter()
-            .map(|package| package.meta)
-            .find(|meta| {
-                meta.actions
-                    .iter()
-                    .any(|action| action.id == address.action)
+            .find(|package| {
+                crate::publish::app_of(&address.resource) == Some(package.meta.app.as_str())
             })
-        else {
-            return false;
-        };
-        let Some(action) = meta
-            .actions
-            .iter()
-            .find(|action| action.id == address.action)
-            .cloned()
+            .map(|package| package.meta.clone())
         else {
             return false;
         };
@@ -2314,22 +2331,16 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        // What the window calls a participant, or how the person writes a day or a time of day,
-        // changed: the boundaries that show one run again, and no other.
-        let named = std::mem::take(&mut self.names_changed);
-        let formatted = std::mem::take(&mut self.formats_changed);
-        if named || formatted {
+        // The person's environment — their language, their formats, what the window calls
+        // someone — changed: the boundaries that show what only the window knows run again, and
+        // no other.
+        let person = std::mem::take(&mut self.person_changed);
+        if person {
             for view in [self.root.as_ref(), self.detail.as_ref()]
                 .into_iter()
                 .flatten()
             {
-                let mut view = view.view.borrow_mut();
-                if named {
-                    view.names_moved();
-                }
-                if formatted {
-                    view.formats_moved();
-                }
+                view.view.borrow_mut().person_moved();
             }
         }
         // Who is at a resource shows wherever a view reads its lenses.
@@ -2337,23 +2348,14 @@ impl Instance {
         let members = self.follow_members();
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
-        let changed = received
-            || door
-            || opened
-            || pulled
-            || settled
-            || lenses
-            || named
-            || formatted
-            || members
-            || timed
-            || self.views_stale();
-        if changed {
-            self.poll_views();
-        }
-        if named || formatted {
-            // A name, and how a day or a time of day reads, go into a node's value when it is
-            // sent: every tree is sent again.
+        let changed =
+            received || door || opened || pulled || settled || lenses || person || members || timed;
+        // A view runs where something reached it: what a change told its store, a state it
+        // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
+        let changed = self.poll_views() || changed;
+        if person {
+            // A name, a word and how a day or a time of day reads go into a node's value when it
+            // is sent: every tree is sent again.
             for lane in [Lane::Root, Lane::Detail] {
                 self.resend(lane);
             }
@@ -2379,7 +2381,9 @@ impl Instance {
             .members_from
             .as_ref()
             .is_some_and(|(person, policy, people)| {
-                *person == standing.person && *policy == *standing.policy && *people == self.people
+                *person == standing.person_id().unwrap_or_default()
+                    && *policy == *standing.policy
+                    && *people == self.people
             });
         if seen {
             return false;
@@ -2389,7 +2393,7 @@ impl Instance {
             Some(crate::members::reads_of(&standing, &self.people, &host)),
         );
         self.members_from = Some((
-            standing.person,
+            standing.person_id().unwrap_or_default().to_owned(),
             std::sync::Arc::unwrap_or_clone(standing.policy),
             self.people.clone(),
         ));
@@ -2686,7 +2690,7 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
 }
 
 /// The other packages of the workspace whose records the package `app` holds references to.
-fn used_packages(host: &Host, app: &str) -> Vec<Package> {
+fn used_packages(host: &Host, app: &str) -> Vec<Rc<Package>> {
     let Some(own) = host.package(app) else {
         return Vec::new();
     };
@@ -2707,17 +2711,16 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
         .collect()
 }
 
-/// The package that declares the type `ty` (an id), with the type.
+/// The type `ty` (an id), as the package that declares it declares it.
 #[must_use]
-pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
+pub fn type_of(host: &Host, ty: &str) -> Option<TypeMeta> {
     host.find_in_packages(|package| {
-        let declared = package
+        package
             .meta
             .types
             .iter()
-            .find(|declared| declared.id == ty)?
-            .clone();
-        Some((package.meta.clone(), declared))
+            .find(|declared| declared.id == ty)
+            .cloned()
     })
 }
 
@@ -2733,6 +2736,48 @@ pub fn announced(binding: &Binding, field: impl FnOnce(&ResourceRef, &str) -> St
             target,
             field: name,
         } => field(target, name),
+    }
+}
+
+/// `value` with every reference in it resolved through `resolve`, which names the type a
+/// reference that arrived by its id alone belongs to: the resource a drop on a view carried,
+/// at every place a value holds one (a list a drop carries `[resource, at]`, a tuple). A
+/// reference already naming its type, and one `resolve` does not know, is left as it is, so a
+/// value never loses what it reached here with.
+fn resolved_value(value: Value, resolve: &dyn Fn(&ResourceRef) -> Option<ResourceRef>) -> Value {
+    match value {
+        Value::Ref(held) => {
+            // Only a reference that came by its id alone is read for its type: one that names it
+            // is what the view gave (and keeps its shared target), and one `resolve` does not
+            // know stays as it arrived, so what the event carried is never lost.
+            let Some(target) = held
+                .target
+                .ty
+                .is_empty()
+                .then(|| resolve(&held.target))
+                .flatten()
+            else {
+                return Value::Ref(held);
+            };
+            Value::Ref(RefValue {
+                target: Rc::new(target),
+                author: held.author,
+            })
+        }
+        Value::List(items) => Value::List(
+            items
+                .into_iter()
+                .map(|item| resolved_value(item, resolve))
+                .collect(),
+        ),
+        Value::Tuple(items) => Value::Tuple(
+            items
+                .into_iter()
+                .map(|item| resolved_value(item, resolve))
+                .collect(),
+        ),
+        Value::Opt(Some(inner)) => Value::Opt(Some(Box::new(resolved_value(*inner, resolve)))),
+        other => other,
     }
 }
 

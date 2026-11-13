@@ -72,9 +72,10 @@ pub struct ActionContext {
     /// The action this change ran, encoded as the executor dispatched it:
     /// what a device that receives the change replays to verify it, and
     /// what redo runs again. The executor records it on every change it
-    /// commits whose action fits [`HISTORY_BUDGET`]; a larger one (content
-    /// carried inline instead of as a blob) commits without it. It
-    /// describes the change; it carries no caller authority.
+    /// commits whose action fits [`HISTORY_BUDGET`]; a larger one records
+    /// its large parts as content ([`crate::content`]) and names them, and
+    /// one too large even then is refused. It describes the change; it
+    /// carries no caller authority.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<crate::EncodedAction>,
     /// The inverse of [`action`](Self::action) at its before state, as the
@@ -103,10 +104,22 @@ read_through_json_value!(ActionContext);
 /// named, under the caller's `group`: one id for every change of that step,
 /// and never one the caller chose.
 fn ambient_gesture(gesture: crate::ActionId, group: Option<&WorkGroup>) -> crate::ActionId {
+    recorded_gesture(
+        gesture,
+        group.map(|group| (group.kind.as_str(), group.id.as_str())),
+    )
+}
+
+/// The gesture history records for the undo step `gesture` a caller named,
+/// under the run (its kind and id, as history lists them) the change was
+/// stamped with: how the caller finds its own step's changes in a record's
+/// history, without it ever naming a gesture someone else's change records.
+#[must_use]
+pub fn recorded_gesture(gesture: crate::ActionId, run: Option<(&str, &str)>) -> crate::ActionId {
     let mut hasher = blake3::Hasher::new_derive_key("tilo ambient gesture v1");
     hasher.update(gesture.0.as_bytes());
-    if let Some(group) = group {
-        for part in [&group.kind, &group.id] {
+    if let Some((kind, id)) = run {
+        for part in [kind, id] {
             hasher.update(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
             hasher.update(part.as_bytes());
         }

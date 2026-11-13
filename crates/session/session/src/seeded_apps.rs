@@ -55,11 +55,11 @@ pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordSe
     // was compiled against.
     let mut scenarios = Vec::new();
     for app in &installed {
-        let bundle = Bundle::read(&app.payload_root)
-            .map_err(|error| format!("{}: {error}", app.package_id))?;
+        let bundle =
+            Bundle::read(&app.payload_root).map_err(|error| format!("{}: {error}", app.app_id))?;
         let package = host
             .load_bundle(&bundle)
-            .map_err(|error| format!("{}: {error}", app.package_id))?;
+            .map_err(|error| format!("{}: {error}", app.app_id))?;
         scenarios.push((
             package.meta.app.clone(),
             package.meta.scenarios.first().cloned(),
@@ -109,7 +109,7 @@ fn installed_apps(catalog: &package_store::Catalog) -> Result<Vec<InstalledApp>,
     for app in APPS {
         let found = installed
             .iter()
-            .find(|installed| installed.package_id == app)
+            .find(|installed| installed.app_id == app)
             .ok_or_else(|| format!("{app} is not installed in this session's app store"))?;
         if !found
             .payload_root

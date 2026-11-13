@@ -5,8 +5,8 @@ use crate::widget::ControlSize;
 
 use super::NumberInput;
 
-/// A number with a step either side: a page size, a margin, a count. Typing in it, its steppers
-/// and the arrow keys all set the value, within its range.
+/// A number with a step either side (a page size, a margin, a count), set by typing, its
+/// steppers and the arrow keys within its range.
 #[derive(Component)]
 #[component(name = "NumberInput", role = "SpinButton", label = "label")]
 pub struct NumberInputProps {
@@ -19,7 +19,7 @@ pub struct NumberInputProps {
     pub min: Option<f64>,
     /// The largest it may be.
     pub max: Option<f64>,
-    /// How much one press of a stepper adds, 1 unless said.
+    /// How much one press of a stepper adds; 1 unless said.
     pub step: Option<f64>,
     /// Decimal places it shows: 0 unless said, for a whole number.
     pub precision: Option<i64>,

@@ -5,9 +5,8 @@ use crate::widget::Element;
 
 use super::{Column, ContentKind, NavPane, NavShell};
 
-/// The one window shell: a sidebar of places, an overview list, the content and an inspector,
-/// side by side while they fit and one at a time, with Back, when they do not. The header of
-/// each column holds its title, its count and its actions.
+/// A window's shell: a sidebar of places, an overview list, the content and an inspector side
+/// by side while they fit, and one at a time with Back when they do not.
 #[derive(Component, Default)]
 #[component(name = "NavShell", role = "Window", label = "title")]
 pub struct NavShellProps {
@@ -23,8 +22,8 @@ pub struct NavShellProps {
     pub overview_count: Option<i64>,
     /// The sidebar's title: what the places are of, the app's root.
     pub sidebar_title: Option<String>,
-    /// The sidebar's own controls, in its header: the action that makes the thing the sidebar
-    /// lists (a "+"), where the thing a person adds then stands.
+    /// The sidebar's controls in its header: the action that makes what it lists (a "+"), and
+    /// where a person's new thing goes.
     #[component(slot)]
     pub sidebar_actions: Vec<Element>,
     /// Whether the content's Back goes back now (a drill-down the app keeps).
@@ -38,8 +37,8 @@ pub struct NavShellProps {
     /// What the window is for.
     #[component(slot(default))]
     pub content: Option<Element>,
-    /// The window has nothing at all to list: what stands in `content` is the window's one empty
-    /// state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).
+    /// Nothing at all to list: what `content` gives is the window's empty state, in place of
+    /// the overview, the content and the inspector.
     pub nothing_listed: bool,
     /// Details of what the content shows, beside it.
     #[component(slot)]
@@ -56,10 +55,8 @@ pub struct NavShellProps {
     /// The content's Back was pressed.
     #[component(event)]
     pub back: Event,
-    /// The window's search holds this text now: the frame narrows what it lists to
-    /// it, the way a place chosen in its sidebar narrows it. Empty when the search
-    /// closed. A view that declares it says what the window's search writes; one
-    /// that does not is searched in place by its document, or not at all.
+    /// The text the window's search holds, narrowing what the frame lists as a chosen place
+    /// does; empty while the search is closed.
     #[component(event(value = String))]
     pub search: Event,
 }
@@ -139,9 +136,6 @@ impl Described for NavShell {
             overview_actions,
             pane,
             back,
-            // The host fires the search's event itself, at the frame the view declared it on
-            // ([`crate::widget::Queryable`] over the window's model): the shell paints
-            // nothing of its own for it.
             search: _,
         } = props;
         let mut shell = Self::new().with_id(key).content_kind(content_kind);
@@ -153,8 +147,6 @@ impl Described for NavShell {
         }
         if let Some(content) = content {
             if nothing_listed {
-                // Nothing at all to list: the window shows the state alone, with its own bar, and
-                // the columns come back when the view lists something again.
                 shell = shell.nothing_listed(content);
             } else {
                 shell = shell.content(content);
@@ -195,8 +187,7 @@ impl Described for NavShell {
     }
 
     /// Titles, counts and whether Back goes back change in place; the columns and header
-    /// actions change through their slots. Another kind of content builds the shell again, and so
-    /// does the window coming to hold nothing at all to list or something again.
+    /// actions change through their slots.
     fn set_props(&mut self, props: NavShellProps) -> bool {
         if self.inputs.borrow().kind != props.content_kind {
             return false;
@@ -261,18 +252,13 @@ pub(super) enum SlotEdit {
     Actions(Column, Vec<Element>, ActionsEdit),
 }
 
-/// Where a header's actions under change came from, and whether the change touched the row.
 #[derive(Clone, Copy)]
 pub(super) struct ActionsEdit {
-    /// They were waiting for the next build, not shown.
     staged: bool,
-    /// An action came, went, moved or was built anew: the row changes.
     changed: bool,
 }
 
 impl NavShell {
-    /// The actions of `column`'s header, out of it: the ones waiting to be shown, or the ones
-    /// shown.
     fn take_header_actions(&mut self, column: Column) -> Vec<Element> {
         if let Some(Some(staged)) = self.pending.actions.get_mut(column.index()) {
             return std::mem::take(staged);
@@ -283,9 +269,7 @@ impl NavShell {
             .unwrap_or_default()
     }
 
-    /// Put the actions of the change under way back. A change that touched the row stages it
-    /// for the next build; one whose actions each took their change in place (a label, whether
-    /// one is enabled) puts them back where they were, and the row stays as it is.
+    /// Put the actions of the change under way back.
     pub(super) fn finish_slot_edit(&mut self) {
         let Some(SlotEdit::Actions(column, actions, edit)) = self.slot_edit.take() else {
             return;
@@ -304,7 +288,6 @@ impl NavShell {
         }
     }
 
-    /// Note that the actions under change touched the row.
     fn actions_changed(&mut self) {
         if let Some(SlotEdit::Actions(_, _, edit)) = &mut self.slot_edit {
             edit.changed = true;
@@ -345,7 +328,6 @@ impl NavShell {
     }
 }
 
-/// The views of the slot the shell is changing: a column's body, or a header's actions.
 impl SlotViews for NavShell {
     fn len(&self) -> usize {
         match &self.slot_edit {

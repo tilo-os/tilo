@@ -190,7 +190,8 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
 }
 
 /// Tell the person the desk this device saved was not opened, and stays until they let it go: it is
-/// untouched on disk, and a desk that is not theirs looks exactly like theirs.
+/// untouched on disk, and a desk that is not theirs looks exactly like theirs. Which file it is and
+/// what it said goes to the record beside it and the log, where whoever fixes it reads it.
 pub(crate) fn tell_desk_not_opened(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
     refusal: &StateNotice,
@@ -200,7 +201,7 @@ pub(crate) fn tell_desk_not_opened(
             t("desk-not-opened-app-name"),
             2,
             refusal.title(),
-            refusal.explains(),
+            t("desk-not-opened-nothing-written"),
         )
         .staying(Some(Duration::ZERO)),
     );
@@ -209,16 +210,16 @@ pub(crate) fn tell_desk_not_opened(
 /// Tell the person the desk style they chose did not load or failed, as `shell.md` §6 has it: the
 /// desk draws the built-in strips while their choice stays as it was.
 pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
+    // What the style's own view said is for whoever fixes it: the person is told what the desk
+    // does instead, and that their choice is kept.
+    tracing::warn!(%style, %reason, "the desk style the person chose did not load");
     Notice::new(
         t("desk-style-failed-app-name"),
         2,
         t("desk-style-failed-title"),
         t_args(
             "desk-style-failed-body",
-            &[
-                ("style", style.to_owned().into()),
-                ("reason", reason.to_owned().into()),
-            ],
+            &[("style", style.to_owned().into())],
         ),
     )
     .here()
@@ -640,7 +641,10 @@ pub(crate) fn tell_desk_not_taken(
         .workspaces
         .iter()
         .find(|workspace| workspace.id() == room)
-        .map_or_else(String::new, |workspace| workspace.name.clone());
+        .map_or_else(
+            || tilo_desktop_surface::names::workspace(""),
+            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+        );
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()

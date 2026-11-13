@@ -17,6 +17,22 @@ enum Answer {
     ChosenNew,
     Checkpoint(ReadyDraft),
 }
+/// Whether `effect` only reads the page, moves through the wizard or edits the
+/// preparation being written, so it asks nothing of the stored preparation a
+/// blocked check holds.
+pub(super) fn navigates(effect: &super::InstallerPreviewEffect) -> bool {
+    use super::InstallerPreviewEffect as Effect;
+    matches!(
+        *effect,
+        Effect::ReadPreview
+            | Effect::BackInPreview
+            | Effect::RestartPreview
+            | Effect::EditPreview { .. }
+            | Effect::SetPreviewName { .. }
+            | Effect::SelectPreviewAvatar { .. }
+    )
+}
+
 #[derive(Default)]
 pub(super) struct Restart {
     store: Option<DraftStore>,

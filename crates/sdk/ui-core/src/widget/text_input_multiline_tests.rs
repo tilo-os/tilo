@@ -13,7 +13,6 @@ use automerge::transaction::Transactable as _;
 
 #[test]
 fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
     input.set_selection(7, 10);
@@ -56,9 +55,7 @@ fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
 
 #[test]
 fn multiline_enter_backspace_and_copy_handle_newlines() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `multiline_enter_inserts_newline`.
     {
         let mut ti = ml_input("ab", 300.0, 120.0);
         ti.set_cursor_pos(1); // between 'a' and 'b'
@@ -77,7 +74,6 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         );
     }
 
-    // Case `enter_submits_signals_without_inserting_and_shift_enter_still_splits`.
     {
         let mut ti = TextInput::local()
             .with_enter_submits(true)
@@ -138,7 +134,6 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         assert_eq!(ti.cursor_pos(), 5);
     }
 
-    // Case `multiline_selection_spans_lines_and_copy_includes_newline`.
     {
         let mut ti = ml_input("hello\nworld", 400.0, 200.0);
         let mut doc = AutoCommit::new();
@@ -166,9 +161,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
 
 #[test]
 fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `multiline_up_down_moves_between_visual_lines`.
     {
         let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
         let mut doc = AutoCommit::new();
@@ -203,7 +196,6 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 2, "Down reached row 2");
     }
 
-    // Case `multiline_vertical_motion_preserves_goal_column`.
     {
         let mut ti = ml_input("abcdefgh\nx\nabcdefgh", 500.0, 200.0);
         let mut doc = AutoCommit::new();
@@ -236,7 +228,6 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         );
     }
 
-    // Case `multiline_home_end_are_per_visual_line`.
     {
         let mut ti = ml_input("hello\nworld", 400.0, 200.0);
         let mut doc = AutoCommit::new();
@@ -268,9 +259,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
 
 #[test]
 fn multiline_wraps_at_unicode_line_breaks() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `multiline_soft_wraps_at_word_boundaries`.
     {
         let text = "the quick brown fox jumps over the lazy dog again and again";
         let mut ti = ml_input(text, 170.0, 220.0); // narrow → must wrap
@@ -306,7 +295,6 @@ fn multiline_wraps_at_unicode_line_breaks() {
         );
     }
 
-    // Case `multiline_row_geometry_uses_unicode_cjk_breaks`.
     {
         let mut ti = TextInput::local()
             .multiline(true)
@@ -330,7 +318,6 @@ fn multiline_wraps_at_unicode_line_breaks() {
 
 #[test]
 fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut doc = AutoCommit::new();
     let stale = doc
@@ -383,7 +370,6 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
 
 #[test]
 fn clearing_without_a_binding_is_a_noop_for_local_users() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut doc = AutoCommit::new();
     let state = crate::LocalState::new(String::from("local"));
@@ -401,7 +387,6 @@ fn clearing_without_a_binding_is_a_noop_for_local_users() {
 
 #[test]
 fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local_with_language("en_US")
         .with_spellcheck(false)
@@ -429,7 +414,6 @@ fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
     assert_eq!(input.text, "teh mispeled words");
 }
 
-/// The height the field stands at when a layout measures it in `width`.
 fn measured_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
@@ -457,13 +441,10 @@ fn measured_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
 
 #[test]
 fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let inset = 8.0;
-    // Case `a_composer_in_a_phone_band_centres_its_one_line`.
     {
-        // The band grows to the target a finger reaches, though the field needs one line.
         let mut composer = TextInput::local().multiline(true);
         composer.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
         let height = measured_height(&mut composer, &theme, 320.0);
@@ -489,10 +470,7 @@ fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
         );
     }
 
-    // Case `a_field_stretched_to_fill_a_pane_keeps_its_line_at_the_inset`.
     {
-        // Room past the band is the pane's, not the line's: the text begins where it grows and
-        // fills down, as a document does.
         let mut filled = TextInput::local().multiline(true);
         filled.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 240.0));
         draw_to_populate(&mut filled);
@@ -503,7 +481,6 @@ fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
         );
     }
 
-    // Case `wrapped_text_starts_at_the_inset`.
     {
         let mut wrapped = TextInput::local().multiline(true).with_initial_value(
             "A sentence with enough words in it that it wraps in a narrow field.",
@@ -517,7 +494,6 @@ fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
         );
     }
 
-    // Case `a_field_given_lines_of_its_own_starts_at_the_inset`.
     {
         let mut notes = TextInput::local().multiline(true).with_min_lines(4);
         notes.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 200.0));
@@ -529,7 +505,6 @@ fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
         );
     }
 
-    // Case `a_document_page_starts_at_the_inset`.
     {
         let mut page = TextInput::local().multiline(true).with_plain_chrome();
         page.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 400.0));

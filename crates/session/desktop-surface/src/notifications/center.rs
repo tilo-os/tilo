@@ -579,10 +579,9 @@ impl CenterLayout {
     /// Measure with the theme the rows are laid out in, when there is one.
     fn measure<R>(&self, f: impl FnOnce(&Theme, &mut TextRenderer) -> R) -> Option<R> {
         let theme = self.actions.theme.as_deref()?;
-        Some(ui::text_render::with_layout_renderer(
-            theme.text_scale,
-            |text| f(theme, text),
-        ))
+        Some(ui::text_render::with_layout_renderer(theme, |text| {
+            f(theme, text)
+        }))
     }
     /// The lines `body` wraps to in a row, at most `BODY_LINES` . Before the panel has a width, or
     /// without a theme, the full preview.

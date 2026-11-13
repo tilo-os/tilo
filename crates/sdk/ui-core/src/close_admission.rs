@@ -1,5 +1,5 @@
-//! Shared, device-local close admission. Saving an external document still
-//! goes through its declared action; host chrome owns only the close decision.
+//! Shared, device-local close admission. Saving an external document still goes through its declared
+//! action; host chrome owns only the close decision.
 use crate::widget::{Button, Column, ModalDialog, Text, Widget};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, ResourceSpec};
@@ -99,8 +99,6 @@ impl Admission {
         let mut content = Column::new()
             .with_intrinsic_height()
             .push(Box::new(Text::new(detail)));
-        // These are the existing retained Buttons, so all choices participate
-        // in the host's focus trap. Keep Editing is the safe initial focus.
         for choice in [
             Choice::KeepEditing,
             Choice::Save,
@@ -117,7 +115,6 @@ impl Admission {
                 ),
             ));
         }
-        // Escape keeps editing, as the safe answer does.
         let mut dialog = ModalDialog::new(crate::i18n::I18nManager::lookup_plain(title), content)
             .open(true)
             .dismiss_action(
@@ -159,9 +156,7 @@ impl Admission {
         self.choices.clear();
     }
 
-    /// Retire the current decision before an explicit choice re-evaluates the
-    /// close request. Ordinary duplicate native close requests leave the
-    /// presentation intact, including its session and focused control.
+    /// Retire the current decision before an explicit choice re-evaluates the close request.
     pub(crate) fn retire_presentation(&mut self) {
         self.dialog = None;
         self.choices.clear();

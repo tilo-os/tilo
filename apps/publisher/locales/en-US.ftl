@@ -4,7 +4,6 @@ publisher-create-key = Create key
 publisher-public-key-label = Public key
 publisher-proof-label = Proof line
 publisher-proof-help = Publish this line where only you can write, to prove a namespace.
-publisher-verbatim = { $text }
 publisher-copy-proof = Copy proof line
 publisher-copy-secret = Copy key for CI
 publisher-check-status = Check application
@@ -60,3 +59,6 @@ so-tilo-publisher-key-export-key = Export key
 so-tilo-publisher-key-apply-for-namespaces = Apply for namespaces
 so-tilo-publisher-key-check-status = Check status
 publisher-profile = App Publisher
+
+## What the app is called in a window and in the launcher
+publisher-app-title = App Publisher

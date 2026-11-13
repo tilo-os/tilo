@@ -1,8 +1,7 @@
 //! The Network page as view code ([`view`], [`Page`]): the first page — the
-//! Wi-Fi list, the wired connection and the controls under them — and the
-//! pages those controls open that are not a network's: the hotspot and the
-//! advanced settings. The modem's card and page are built over its own
-//! model (`network/mobile.rs`).
+//! Wi-Fi list, the wired connection and the controls under them — and the pages
+//! those controls open that are not a network's: the hotspot and the advanced
+//! settings.
 
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -32,22 +31,13 @@ use provider_settings_ui::widgets::{
     note, row, rows, setting_row, setting_row_described, value_row,
 };
 
-/// The Network page as view code over the model the area keeps and this
-/// device's VPN choices (`DeviceVpnPrefs`: the kill switches and the routes
-/// through the person's devices): the page on top of the window's trail,
-/// built again whenever the section changes or what the model shows does
-/// ([`super::NetworkArea::poll`]). The device, and the modems, are followed
-/// while the page is shown.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
-    // The modem's card and page are the network page's.
     if let Some(mobile) = mobile::area(app) {
         model.borrow_mut().host_mobile(mobile.model());
     }
     let following = model.borrow_mut().follow();
-    // What landed meanwhile is taken in before the page is built: the page
-    // shows it.
     model.borrow_mut().poll();
     let (shown, actions, dispatcher) = (held.shown.clone(), cx.actions(), cx.dispatcher());
     cx.record(&cx.settings::<DeviceVpnPrefs>(), move |cx| {
@@ -68,7 +58,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                     dispatcher.clone(),
                 );
                 cx.switch(&shown, move |cx, _| {
-                    // The part keeps the device followed while it is shown.
                     let _followed = &following;
                     Page {
                         model: &model.borrow(),
@@ -83,10 +72,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// One page of Network as the view builds it: the model as it is now, the
-/// view of the VPN choices it is built in, and the app's actions and
-/// dispatcher its controls bind through. It reads the model's state
-/// through [`std::ops::Deref`].
 pub(super) struct Page<'a> {
     model: &'a NetworkModel,
     pub(super) cx: &'a ViewCx<DeviceVpnPrefs>,
@@ -103,7 +88,6 @@ impl std::ops::Deref for Page<'_> {
 }
 
 impl Page<'_> {
-    /// `control`, invoking `effect` with each committed value.
     pub(super) fn bind<I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -112,7 +96,6 @@ impl Page<'_> {
         self.actions.bind_effect(control, effect)
     }
 
-    /// `control` (a button), invoking the fully specified `effect`.
     pub(super) fn bind_invocation<C: ActionControl<()>>(
         &self,
         control: C,
@@ -121,7 +104,6 @@ impl Page<'_> {
         self.actions.bind_effect_invocation(control, &effect.into())
     }
 
-    /// The binding of the fully specified `effect`, for a row's own press.
     pub(super) fn invocation_binding(
         &self,
         effect: impl Into<SettingsEffect>,
@@ -129,8 +111,6 @@ impl Page<'_> {
         self.actions.effect(&effect.into())
     }
 
-    /// `control`, invoking `effect` with each committed value on the live
-    /// row `row` ([`crate::on_row::bind`]).
     pub(super) fn bind_on_row<I: 'static, C: ActionControl<I>>(
         &self,
         row: &ui::tilo_actions::ResourceSpec,
@@ -140,8 +120,6 @@ impl Page<'_> {
         crate::on_row::bind(&self.dispatcher, row, control, effect)
     }
 
-    /// `control` (a button), invoking the fully specified `effect` on the
-    /// live row `row` ([`crate::on_row::bind_invocation`]).
     pub(super) fn bind_row<C: ActionControl<()>>(
         &self,
         control: C,
@@ -151,8 +129,6 @@ impl Page<'_> {
         crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
     }
 
-    /// The binding of the fully specified `effect` on the live row `row`
-    /// ([`crate::on_row::invocation`]).
     pub(super) fn row_invocation(
         &self,
         row: &ui::tilo_actions::ResourceSpec,
@@ -163,7 +139,6 @@ impl Page<'_> {
 }
 
 impl Page<'_> {
-    /// The page on top of the trail.
     pub(super) fn build(&self) -> Element {
         if !self.loaded {
             let mut pending = vec![note(&t("net-pending"))];
@@ -193,7 +168,6 @@ impl Page<'_> {
         provider_settings_ui::widgets::cards(sections)
     }
 
-    /// A button invoking `effect`.
     pub(super) fn button(
         &self,
         id: &str,
@@ -203,7 +177,6 @@ impl Page<'_> {
         self.bind_invocation(Button::new(id, label), effect)
     }
 
-    /// `button`, sized to its label and pushed to the row's start.
     pub(super) fn button_row(
         &self,
         id: &str,
@@ -217,7 +190,6 @@ impl Page<'_> {
         ))
     }
 
-    /// `button_row` acting on the live row `on`, which offers `effect`.
     pub(super) fn row_button_row(
         &self,
         on: &ui::tilo_actions::ResourceSpec,
@@ -232,7 +204,6 @@ impl Page<'_> {
         ))
     }
 
-    /// A switch showing `on`, invoking `set`.
     pub(super) fn switch_control(
         &self,
         id: &str,
@@ -245,7 +216,6 @@ impl Page<'_> {
         )
     }
 
-    /// A row that drills into a page: `effect` opens it.
     pub(super) fn drill_row(
         &self,
         id: &str,
@@ -264,22 +234,18 @@ impl Page<'_> {
         }
     }
 
-    /// The modem's card on the first page, when the device has a modem.
     fn mobile_card(&self) -> Option<Vec<SettingsSection>> {
         let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
         Some(mobile::Page::new(&mobile, self.cx, &self.actions).card())
             .filter(|sections| !sections.is_empty())
     }
 
-    /// The modem's page, when the device has a modem.
     fn mobile_page(&self) -> Option<Vec<SettingsSection>> {
         let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
         Some(mobile::Page::new(&mobile, self.cx, &self.actions).page_sections())
             .filter(|sections| !sections.is_empty())
     }
 
-    /// The first page: each connection (Wi-Fi, mobile data, the cable),
-    /// then the controls. A connection's details are its own page.
     fn first_page(&self) -> Vec<SettingsSection> {
         let mut cards = Vec::new();
         if !self.wifi_unavailable() {
@@ -309,9 +275,6 @@ impl Page<'_> {
         provider_settings_ui::widgets::untitled(rows(vec![note(&line)]))
     }
 
-    /// Wi-Fi: the switch says whether the radio is on (the machine's state,
-    /// read back after every change); under it the short list of networks
-    /// ([`order::shortlist`]) and the way to every other one.
     fn wifi_card(&self) -> SettingsSection {
         let wifi_toggle =
             self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
@@ -382,7 +345,6 @@ impl Page<'_> {
         out
     }
 
-    /// `networks` as one list, held in place while the pointer is over it.
     pub(super) fn network_list(
         &self,
         networks: &[WifiNetworkInfo],
@@ -394,9 +356,6 @@ impl Page<'_> {
         ))
     }
 
-    /// One network in range: how strong it is, its name, whether it is
-    /// secured, and its state. Choosing it joins it (a password it needs is
-    /// asked for in place, under it); the chevron opens its page.
     fn network_row(&self, net: &WifiNetworkInfo) -> El {
         let detail = network_detail(net);
         let level = SignalLevel::from_bars(net.signal);
@@ -449,8 +408,6 @@ impl Page<'_> {
         })
     }
 
-    /// How the network in use stands: connected, or connected but without
-    /// the internet, or waiting for its sign-in page.
     pub(super) fn connected_state(&self) -> String {
         t(match self.connectivity {
             ConnectivityState::Portal => "net-now-portal",
@@ -459,7 +416,6 @@ impl Page<'_> {
         })
     }
 
-    /// The sign-in page of the network in use, while it asks for one.
     pub(super) fn portal_row(&self) -> Option<Item> {
         (self.connectivity == ConnectivityState::Portal).then(|| {
             setting_row(
@@ -476,10 +432,6 @@ impl Page<'_> {
         })
     }
 
-    /// The controls under the connections, each a row of one list: VPN,
-    /// the hotspot, airplane mode, data usage and the advanced settings. A
-    /// row that opens a page has a chevron; a row with a switch also opens
-    /// its page.
     fn controls_card(&self) -> SettingsSection {
         let mut lines: Vec<El> = Vec::new();
         if !self.network_absent() {
@@ -585,7 +537,6 @@ impl Page<'_> {
         )
     }
 
-    /// How the cable stands, in a few words.
     fn wired_status(&self) -> String {
         if !self.wired.connected {
             return t("net-not-connected");
@@ -596,12 +547,9 @@ impl Page<'_> {
         }
     }
 
-    /// The wired connection's page: how it stands, then its profile's
-    /// addresses and waking this machine over it.
     fn wired_page(&self) -> Vec<SettingsSection> {
         let mut status = vec![value_row(&t("net-ethernet"), &self.wired_status())];
         if self.wired.connected {
-            // On the cable, the network's sign-in page is this page's to open.
             if !self
                 .networks
                 .iter()
@@ -646,13 +594,20 @@ impl Page<'_> {
         if wired_profiles.len() > 1 {
             settings.push(setting_row(
                 &t("net-edit-profile"),
-                Box::new(
-                    Dropdown::from_state(
-                        wired_profiles.iter().map(|p| profile_label(p)).collect(),
+                Box::new({
+                    let mut dropdown = Dropdown::from_state(
+                        wired_profiles.iter().map(|p| p.uuid.clone()).collect(),
                         &self.wired_profile,
                     )
-                    .with_placeholder(&profile_label(profile)),
-                ),
+                    .with_placeholder(&profile_label(profile));
+                    dropdown.set_value_options(
+                        wired_profiles
+                            .iter()
+                            .map(|p| (p.uuid.clone(), profile_label(p)))
+                            .collect(),
+                    );
+                    dropdown
+                }),
             ));
         }
         settings.extend(self.ipv4_rows(profile, "settings.network.ipv4"));
@@ -665,15 +620,14 @@ impl Page<'_> {
         profiles: &[&'a SavedNetworkProfile],
         selection: &LocalState<String>,
     ) -> Option<&'a SavedNetworkProfile> {
-        let label = selection.get();
+        let chosen = selection.get();
         profiles
             .iter()
-            .find(|p| profile_label(p) == label)
+            .find(|p| p.uuid == chosen)
             .or_else(|| profiles.first())
             .copied()
     }
 
-    /// The IPv4 form of `profile` and its Apply.
     pub(super) fn ipv4_rows(&self, profile: &SavedNetworkProfile, id: &str) -> Vec<Item> {
         let Some(form) = self.ipv4_forms.get(&profile.uuid) else {
             return vec![note(&t("net-ipv4-unsupported"))];
@@ -705,8 +659,6 @@ impl Page<'_> {
         out
     }
 
-    /// Whether `profile` wakes this machine over the network, where the
-    /// host can tell.
     pub(super) fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
         let label = t_args(
             "net-wake-network",
@@ -774,7 +726,6 @@ impl Page<'_> {
         ))
     }
 
-    /// A text field over `state`.
     pub(super) fn text_field(state: &LocalState<String>, id: &str, placeholder: &str) -> Item {
         field_row(
             placeholder,
@@ -795,8 +746,6 @@ impl Page<'_> {
         ))))
     }
 
-    /// The hotspot's page: its switch, name, password and band, the QR
-    /// code that shares it and (while it runs) the devices on it.
     fn hotspot_card(&self) -> SettingsSection {
         let mut hotspot_rows: Vec<Item> = self.hotspot_error_row().into_iter().collect();
         hotspot_rows.extend([
@@ -872,7 +821,6 @@ impl Page<'_> {
                     .map_or_else(|| t("net-signal-unknown"), |dbm| format!("{dbm} dBm"));
                 hotspot_rows.push(value_row(&client.mac, &signal));
             }
-            hotspot_rows.push(note(&t("net-hotspot-clients-caption")));
         }
         card_with_action(
             &t("net-hotspot"),
@@ -885,8 +833,6 @@ impl Page<'_> {
         )
     }
 
-    /// The advanced settings: work or school networks, diagnostics. The
-    /// work or school network's setup opens in place under its row.
     fn advanced_page(&self) -> Vec<SettingsSection> {
         let setup = ui::widget::Column::new()
             .with_no_padding()
@@ -920,7 +866,7 @@ impl Page<'_> {
             )),
         )];
         if let Some(d) = &self.diagnostics {
-            out.push(value_row("NetworkManager", &d.network_manager_state));
+            out.push(value_row(&t("net-diag-service"), &d.network_manager_state));
             out.push(value_row(
                 &t("net-diag-internet"),
                 &connectivity_shown(d.connectivity),
@@ -943,8 +889,6 @@ impl Page<'_> {
             for recommendation in &d.recommendations {
                 out.push(note(recommendation));
             }
-        } else {
-            out.push(note(&t("net-diag-idle")));
         }
         out
     }

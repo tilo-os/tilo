@@ -107,7 +107,6 @@ fn each_tile_is_a_named_radio_button() {
     assert_eq!(node.children[0].state.checked, Some(false));
 }
 
-/// A disabled choice takes no input and is not a tab stop.
 #[test]
 fn a_disabled_choice_takes_no_input() {
     let mut picker = laid_out(
@@ -121,8 +120,6 @@ fn a_disabled_choice_takes_no_input() {
     assert_eq!(picker.selected(), Some(1));
 }
 
-/// A choice kept in view state writes the chosen value, and follows a value
-/// set elsewhere.
 #[test]
 fn a_choice_kept_in_view_state_follows_it_both_ways() {
     let state = crate::LocalState::new("Default".to_owned());

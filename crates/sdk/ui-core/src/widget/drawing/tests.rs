@@ -26,8 +26,6 @@ fn ring(to: f64) -> Vec<Shape> {
     ]
 }
 
-/// A shape written as a case with fields reads back as the shape: what a tilolang `.arc(...)`
-/// value arrives as.
 #[test]
 fn a_shape_reads_from_its_case() {
     let value = Value::Case {
@@ -53,8 +51,6 @@ fn a_shape_reads_from_its_case() {
     );
 }
 
-/// A press finds the topmost shape under the pointer: a filled shape by its inside, nothing
-/// outside every shape.
 #[test]
 fn a_press_finds_the_topmost_shape() {
     let drawing = Drawing {
@@ -87,7 +83,6 @@ fn a_press_finds_the_topmost_shape() {
     assert_eq!(drawing.shape_at(Point::new(150.0, 5.0), 1.0), None);
 }
 
-/// The description lists every case the type reads, with its fields.
 #[test]
 fn the_shape_description_names_every_case() {
     let described = super::drawing_component::shape_description();

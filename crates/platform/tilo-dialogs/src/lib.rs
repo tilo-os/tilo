@@ -10,21 +10,12 @@
 //! File choosers, opening files with their app, and opening URIs: one API on
 //! Linux, macOS and the web.
 //!
-//! Apps build a [`portal::PickRequest`] or [`portal::LaunchRequest`] and
-//! `send` it, or call [`portal::open_uri`]; the outcome arrives over a channel
-//! the UI thread drains. [`FilePicker`] and [`UriOpener`] are the seams a host
-//! fills (`ui::host::HostServices` holds one of each per app); [`system_picker`]
-//! and [`system_opener`] are this target's backends:
-//!
-//! | Target | Choosers | Open a file / reveal | Open a URI |
-//! |---|---|---|---|
-//! | Linux | XDG Desktop Portal `FileChooser` | portal `OpenURI` (by descriptor) | portal `OpenURI`, else the desktop opener |
-//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime (`confined`) | `NSWorkspace` | `NSWorkspace` |
-//! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
-//! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
-//! | App launched by a Tilo session ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the shell opens it in the app that claims its scheme, else the target's |
-//!
-//! [`availability`] says which [`Feature`]s the target has.
+//! Apps build a [`portal::PickRequest`] or [`portal::LaunchRequest`] and `send`
+//! it, or call [`portal::open_uri`]; the outcome arrives over a channel the UI
+//! thread drains. [`FilePicker`] and [`UriOpener`] are the seams a host fills
+//! (`ui::host::HostServices` holds one of each per app), and [`system_picker`]
+//! and [`system_opener`] are this target's backends. [`availability`] says which
+//! [`Feature`]s the target has.
 
 use std::sync::{Arc, OnceLock};
 
@@ -34,7 +25,6 @@ pub mod conformance;
 pub mod portal;
 #[cfg(unix)]
 pub mod shell;
-/// Where no session shell launches apps, its link is never inherited.
 #[cfg(not(unix))]
 #[path = "shell_absent.rs"]
 pub mod shell;
@@ -60,21 +50,10 @@ use portal::{
     OpenFileChannel, OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome, SaveChannel,
 };
 
-/// Host-provided file choosing and opening.
-///
-/// Every method returns a channel the UI thread drains once per frame, so an
-/// implementation may answer immediately, from a worker thread, or from a
-/// later host callback — it must never block the caller.
 pub trait FilePicker: Send + Sync {
-    /// A single-file Open, Save or folder chooser.
     fn pick(&self, request: PickRequest) -> PortalChannel;
-    /// A multi-select Open chooser.
     fn pick_multiple(&self, request: PickRequest) -> MultiChannel;
-    /// A single-file Open chooser that delivers the already-open descriptor.
     fn open_file(&self, request: PickRequest) -> OpenFileChannel;
-    /// A Save chooser that delivers the chosen destination already open for
-    /// writing, for hosts whose documents have no path the app can write to.
-    /// Hosts that answer Save with a path keep this default refusal.
     fn save_file(&self, request: PickRequest) -> OpenFileChannel {
         let _ = request;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -83,13 +62,7 @@ pub trait FilePicker: Send + Sync {
         ));
         rx
     }
-    /// Open a local path with its default handler, or reveal its folder.
     fn launch(&self, request: LaunchRequest) -> LaunchChannel;
-    /// An Open chooser that delivers the chosen files' contents. The default
-    /// reads what [`pick`](Self::pick) or [`pick_multiple`](Self::pick_multiple)
-    /// answers; a host without local paths (a browser page) implements it
-    /// directly. Implementations must enforce the aggregate
-    /// [`PickRequest::contents_byte_limit`] before reading unbounded contents.
     fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
         use crate::portal::PickedPaths;
         let limit = request.contents_byte_limit();
@@ -102,10 +75,6 @@ pub trait FilePicker: Send + Sync {
         };
         crate::portal::read_picked(paths, limit)
     }
-    /// A Save chooser answering where to save, written later
-    /// ([`portal::SaveDestination::write`]). The default is the path
-    /// [`pick`](Self::pick) answers; a host without local paths (a browser
-    /// page) implements it directly.
     fn save_destination(&self, request: PickRequest) -> portal::DestinationChannel {
         if request.suggested_name().is_none() {
             return portal::DestinationChannel::answered(portal::DestinationOutcome::Failed(
@@ -114,8 +83,6 @@ pub trait FilePicker: Send + Sync {
         }
         portal::DestinationChannel::from_path(self.pick(request))
     }
-    /// A Save chooser that stores `bytes`. The default writes to the path
-    /// [`pick`](Self::pick) answers.
     fn save_contents(&self, request: PickRequest, bytes: Vec<u8>) -> SaveChannel {
         let destination = request
             .suggested_name()
@@ -125,18 +92,10 @@ pub trait FilePicker: Send + Sync {
     }
 }
 
-/// Hands a URI to whatever the host registers as its handler.
 pub trait UriOpener: Send + Sync {
-    /// Open `uri` without waiting for the handler to finish. May block until
-    /// the handler is launched or the request is refused, so the toolkit
-    /// calls it off the UI thread.
     fn open(&self, uri: &str) -> std::io::Result<()>;
 }
 
-/// Choosers for a session nobody sits at ([`portal::SAVE_DIRECTORY_ENV`]): a
-/// Save answers at once with a free path in `directory`, every Open is
-/// refused, and opening a path is `system`'s. `None` unless `directory` is
-/// absolute.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn unattended_picker(
     directory: std::path::PathBuf,
@@ -146,9 +105,6 @@ pub fn unattended_picker(
         .map(|picker| Arc::new(picker) as Arc<dyn FilePicker>)
 }
 
-/// The session shell's own choosers ([`shell`]) when the launcher handed this
-/// process a connection to them, with `unattended` answering the ones nobody
-/// is at the computer for; `None` otherwise.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn inherited_shell_picker(
     unattended: Option<Arc<dyn FilePicker>>,
@@ -156,15 +112,11 @@ pub fn inherited_shell_picker(
     shell::inherited_picker(unattended)
 }
 
-/// Links opened by the session shell when the launcher handed this process a
-/// connection to it ([`shell::ShellLink::opener`]), with `elsewhere` opening
-/// the ones no app the shell knows claims; `None` otherwise.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn inherited_shell_opener(elsewhere: Arc<dyn UriOpener>) -> Option<Arc<dyn UriOpener>> {
     shell::inherited_opener(elsewhere)
 }
 
-/// This target's file choosers.
 pub fn system_picker() -> Arc<dyn FilePicker> {
     #[cfg(target_os = "linux")]
     return Arc::new(xdg::PortalFilePicker);
@@ -181,7 +133,6 @@ pub fn system_picker() -> Arc<dyn FilePicker> {
     unavailable_picker()
 }
 
-/// This target's URI opener.
 pub fn system_opener() -> Arc<dyn UriOpener> {
     Arc::new(SystemOpener)
 }
@@ -190,6 +141,7 @@ struct SystemOpener;
 
 impl UriOpener for SystemOpener {
     fn open(&self, uri: &str) -> std::io::Result<()> {
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         if let Err(error) = url::Url::parse(uri) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -209,12 +161,10 @@ impl UriOpener for SystemOpener {
     }
 }
 
-/// Choosers that fail at once, for hosts that offer none.
 pub fn unavailable_picker() -> Arc<dyn FilePicker> {
     Arc::new(UnavailableFilePicker)
 }
 
-/// An opener that refuses, for hosts that offer none.
 pub fn unavailable_opener() -> Arc<dyn UriOpener> {
     Arc::new(UnavailableOpener)
 }
@@ -272,11 +222,6 @@ impl UriOpener for UnavailableOpener {
     }
 }
 
-/// How `send` finds the current host's picker and opener.
-///
-/// `ui::host` installs one that resolves through its scoped
-/// `HostServices`; without one, requests reach [`unavailable_picker`] and
-/// [`unavailable_opener`], as with a host that offers none.
 #[derive(Clone, Copy)]
 pub struct Resolver {
     pub picker: fn() -> Arc<dyn FilePicker>,
@@ -285,8 +230,6 @@ pub struct Resolver {
 
 static RESOLVER: OnceLock<Resolver> = OnceLock::new();
 
-/// Install how requests find the current host. The first call wins; the host
-/// registry calls it before it answers any request.
 pub fn install_resolver(resolver: Resolver) {
     let _ = RESOLVER.set(resolver);
 }
@@ -303,11 +246,8 @@ pub(crate) fn current_opener() -> Arc<dyn UriOpener> {
         .map_or_else(unavailable_opener, |resolver| (resolver.opener)())
 }
 
-/// A chooser round-trip that did not return URIs.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) enum PortalFailure {
-    /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
-    /// response error, not a bug.
     Cancelled,
     Failed(String),
 }
@@ -352,7 +292,6 @@ mod tests {
 
     #[test]
     fn without_a_resolver_requests_fail_rather_than_hang() {
-        // No host installed a resolver in this test binary.
         let outcome = PickRequest::open("Open", "Open").send().recv().unwrap();
         assert!(matches!(outcome, PortalOutcome::Failed(_)));
         assert!(portal::open_uri("https://example.invalid").is_err());

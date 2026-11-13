@@ -96,9 +96,7 @@ fn assert_balanced(rtf: &str) {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn rtf_export_block_structure() {
-    // Phase `heading_with_bold_run_yields_rtf_header_and_bold`.
     {
-        // A heading whose first word is bold.
         let mut heading = block_attr("heading", "Bold title", &[("level", AttrVal::Int(1))]);
         heading
             .marks
@@ -113,14 +111,11 @@ fn rtf_export_block_structure() {
         assert!(rtf.starts_with("{\\rtf1"), "starts with RTF header:\n{rtf}");
         assert!(rtf.contains("\\ansi"), "ansi declared:\n{rtf}");
         assert!(rtf.contains("\\fonttbl"), "font table present:\n{rtf}");
-        // A bold control word appears (heading paragraph is \b, and the run is \b).
         assert!(rtf.contains("\\b"), "bold control word present:\n{rtf}");
-        // Larger heading font (H1 = 24pt → \fs48).
         assert!(rtf.contains("\\fs48"), "H1 renders at \\fs48:\n{rtf}");
         assert!(rtf.contains("Bold"), "heading text present:\n{rtf}");
         assert_balanced(&rtf);
     }
-    // Phase `three_item_list_yields_three_pars_and_bullets`.
     {
         let snap = DocSnapshot {
             blocks: vec![
@@ -140,7 +135,6 @@ fn rtf_export_block_structure() {
         );
         assert_balanced(&rtf);
     }
-    // Phase `ordered_list_yields_numbered_markers`.
     {
         // Markers are literal text taken from each item's `index` attr (RTF list
         // tables are out of scope); the snapshot supplies the per-item number.
@@ -169,7 +163,6 @@ fn rtf_export_block_structure() {
         };
         let rtf = render_rtf(&snap);
 
-        // Numbered, not bulleted.
         assert_eq!(
             count(&rtf, "\\bullet"),
             0,
@@ -179,7 +172,6 @@ fn rtf_export_block_structure() {
         assert!(rtf.contains("2.\\tab "), "second item numbered:\n{rtf}");
         assert_balanced(&rtf);
     }
-    // Phase `empty_document_is_well_formed`.
     {
         let rtf = render_rtf(&empty_snapshot());
         assert!(rtf.starts_with("{\\rtf1"));
@@ -189,7 +181,6 @@ fn rtf_export_block_structure() {
         );
         assert_balanced(&rtf);
     }
-    // Phase `quote_is_indented`.
     {
         let snap = DocSnapshot {
             blocks: vec![block("quote", "wise words")],
@@ -200,9 +191,7 @@ fn rtf_export_block_structure() {
         assert!(rtf.contains("\\i"), "quote is italic:\n{rtf}");
         assert_balanced(&rtf);
     }
-    // Phase `table_emits_rows_and_cells`.
     {
-        // A 2x2 table as rows-of-cells.
         let mut r1 = block("table_row", "");
         r1.children = vec![block("cell", "A"), block("cell", "B")];
         let mut r2 = block("table_row", "");
@@ -229,7 +218,6 @@ fn rtf_export_block_structure() {
 
 #[test]
 fn rtf_export_escapes_specials_and_non_ascii() {
-    // Phase `rtf_specials_are_escaped`.
     {
         let snap = DocSnapshot {
             blocks: vec![block("paragraph", "a{b}c\\d")],
@@ -238,12 +226,9 @@ fn rtf_export_escapes_specials_and_non_ascii() {
         let rtf = render_rtf(&snap);
 
         assert!(rtf.contains("a\\{b\\}c\\\\d"), "specials escaped:\n{rtf}");
-        // And the document is still balanced (the escaped braces don't count).
         assert_balanced(&rtf);
     }
-    // Phase `non_ascii_emits_unicode_escape`.
     {
-        // "café" → the é is non-ASCII (U+00E9 = 233).
         let snap = DocSnapshot {
             blocks: vec![block("paragraph", "café")],
             ..empty_snapshot()
@@ -253,7 +238,6 @@ fn rtf_export_escapes_specials_and_non_ascii() {
         assert!(rtf.contains("caf"));
         assert_balanced(&rtf);
     }
-    // Phase `multibyte_text_uses_character_mark_offsets`.
     {
         let mut para = block("paragraph", "héllo");
         para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
@@ -272,7 +256,6 @@ fn rtf_export_escapes_specials_and_non_ascii() {
 
 #[test]
 fn rtf_export_marks_map_to_control_words_and_tables() {
-    // Phase `colored_run_registers_color_table_entry_and_cf`.
     {
         let mut para = block("paragraph", "red text");
         para.marks
@@ -296,7 +279,6 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
         );
         assert_balanced(&rtf);
     }
-    // Phase `hyperlink_mark_emits_field`.
     {
         let mut para = block("paragraph", "click here");
         para.marks.push(mark(
@@ -320,7 +302,6 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
         assert!(rtf.contains("click here"), "link text present:\n{rtf}");
         assert_balanced(&rtf);
     }
-    // Phase `font_and_size_marks_map_to_control_words`.
     {
         let mut para = block("paragraph", "mono big");
         para.marks
@@ -333,12 +314,10 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
         };
         let rtf = render_rtf(&snap);
 
-        // mono → \f2 (FONT_MONO); size 18pt → \fs36 (half-points).
         assert!(rtf.contains("\\f2"), "mono font index:\n{rtf}");
         assert!(rtf.contains("\\fs36"), "18pt → \\fs36:\n{rtf}");
         assert_balanced(&rtf);
     }
-    // Phase `distinct_colors_get_distinct_indices`.
     {
         let mut p1 = block("paragraph", "red");
         p1.marks
@@ -365,8 +344,6 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
             rtf.contains("\\red0\\green0\\blue255;"),
             "blue registered:\n{rtf}"
         );
-        // Two distinct colors → exactly two entries in the table (count the `;`
-        // separators after the reserved auto entry by counting color triples).
         assert_eq!(
             count(&rtf, "\\green"),
             2,

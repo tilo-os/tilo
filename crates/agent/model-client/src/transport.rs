@@ -50,10 +50,37 @@ pub fn check_endpoint(endpoint: &str) -> Result<(), String> {
         || url.fragment().is_some()
         || url.path() != "/model/rpc"
     {
-        return Err("model service requires an HTTPS /model/rpc URL without credentials".into());
+        return Err(UNSAFE_ENDPOINT.into());
     }
     Ok(())
 }
+
+/// [`check_endpoint`] in a page, read with the browser's own URL parser (the same standard's):
+/// a page carries no second one.
+///
+/// # Errors
+/// Refuses anything but an HTTPS `/model/rpc` URL without credentials, query or fragment.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn check_endpoint_in_page(endpoint: &str) -> Result<(), String> {
+    let url = web_sys::Url::new(endpoint).map_err(|_| "invalid model service URL")?;
+    // The browser's parser keeps the empty query and fragment a URL ends in (`?`, `#`) apart
+    // from none only in `href`.
+    let href = url.href();
+    if url.protocol() != "https:"
+        || !url.username().is_empty()
+        || !url.password().is_empty()
+        || !url.search().is_empty()
+        || !url.hash().is_empty()
+        || href.contains('?')
+        || href.contains('#')
+        || url.pathname() != "/model/rpc"
+    {
+        return Err(UNSAFE_ENDPOINT.into());
+    }
+    Ok(())
+}
+
+const UNSAFE_ENDPOINT: &str = "model service requires an HTTPS /model/rpc URL without credentials";
 
 impl FetchTransport {
     /// # Errors

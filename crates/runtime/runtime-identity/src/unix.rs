@@ -94,7 +94,6 @@ impl std::fmt::Display for SecretServiceUnavailable {
 #[cfg(not(target_os = "linux"))]
 impl std::error::Error for SecretServiceUnavailable {}
 
-/// Construct the portable marker for an unavailable Secret Service identity item.
 pub fn secret_service_unavailable_error() -> io::Error {
     #[cfg(target_os = "linux")]
     {
@@ -129,7 +128,6 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
         .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
 }
 
-/// Resolve the per-login-user identity directory using XDG rules.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
         return Ok(config.join("tilo").join("identity"));
@@ -486,9 +484,6 @@ fn secure_record_unlocked(
                     None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
                 ) =>
         {
-            // Errors without a publication phase occur before this attempt's
-            // metadata write. Once it may have published, preserve its error:
-            // a fallback could hide that phase or replace a referenced key.
             tracing_warning_for_secret_service(&preferred_error);
             let fallback = secure_store::fallback_provider(dir);
             secure_record_with_provider_unlocked(dir, path, &fallback)
@@ -498,9 +493,6 @@ fn secure_record_unlocked(
 }
 
 fn tracing_warning_for_secret_service(error: &io::Error) {
-    // This crate deliberately has no tracing dependency. Keep the fallback
-    // observable to Settings via KeyProtection rather than writing a possibly
-    // sensitive backend error to stderr from every sign-in.
     let _ = error;
 }
 
@@ -784,8 +776,6 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
     fs::remove_file(path)
 }
 
-/// Wire-format types the loader deserialises from disk, mirroring
-/// `tilo_identity_ceremony::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use std::fmt;
 
@@ -989,10 +979,7 @@ pub struct SigningIdentity {
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
-    /// Key that verifies [`Self::sign_for`]. A broker supplies the enrolled
-    /// device key rather than exposing or using the account/root key.
     signing_public_key: [u8; 32],
-    /// Opaque JSON-encoded root-signed device certificate on the broker path.
     device_certificate: Option<Vec<u8>>,
     threshold: u16,
     total_shares: u16,
@@ -1043,6 +1030,17 @@ impl std::fmt::Debug for SigningIdentity {
     }
 }
 
+impl tilo_user_identity::StatementSigner for SigningIdentity {
+    fn public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn sign_digest(&self, digest: &[u8; 32]) -> Result<[u8; 64], tilo_user_identity::SignError> {
+        self.sign(digest)
+            .map_err(|error| tilo_user_identity::SignError(error.to_string()))
+    }
+}
+
 impl SigningIdentity {
     /// Start one host-coordinated FROST signing round without exporting this
     /// device's share. This succeeds only for a threshold identity loaded by
@@ -1071,8 +1069,6 @@ impl SigningIdentity {
             })
     }
 
-    /// Produce this device's partial after the trusted coordinator has
-    /// collected and human-authorized a quorum of commitments.
     pub fn threshold_sign_round2(
         &self,
         nonces: SigningSessionNonces,
@@ -1124,17 +1120,14 @@ impl SigningIdentity {
             })
     }
 
-    /// Human-picked display name (chrome, presence pills); may be empty.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
-    /// Normalized public photo loaded from canonical identity custody.
     pub fn profile_photo(&self) -> Option<&crate::ProfilePhoto> {
         self.profile_photo.as_ref()
     }
 
-    /// Avatar-accent RGB the user picked at first boot.
     pub fn avatar_color(&self) -> [u8; 3] {
         self.avatar_color
     }
@@ -1145,7 +1138,6 @@ impl SigningIdentity {
         self.group_public_key
     }
 
-    /// Public key that verifies signatures returned by [`Self::sign_for`].
     pub fn signing_public_key(&self) -> [u8; 32] {
         self.signing_public_key
     }
@@ -1782,8 +1774,6 @@ fn identity_from_record_parts(
     } else {
         let mut scalar = Zeroizing::new([0u8; 32]);
         scalar.copy_from_slice(secret);
-        // SigningKey::from_bytes is infallible today; if a future dalek revision
-        // surfaces validation errors, catch them here.
         Some(SigningKey::from_bytes(&scalar))
     };
 
@@ -2406,7 +2396,6 @@ mod tests {
     fn a_local_secret_must_derive_the_recorded_key_to_sign() {
         // phase: single_device_load_then_sign_and_verify
         {
-            // The end-to-end happy path apps will hit.
             use ed25519_dalek::{Verifier, VerifyingKey};
 
             let secret = [7u8; 32];
@@ -2476,8 +2465,6 @@ mod tests {
         // load — silently accepting it would hand apps an identity that can never
         // sign successfully.
         {
-            // The exact shape the old identity ceremony wrote: a digest
-            // over the public key standing in for the secret.
             use sha2::{Digest, Sha512};
             let real = SigningKey::from_bytes(&[9u8; 32]);
             let vk = real.verifying_key();
@@ -2941,7 +2928,6 @@ mod tests {
         assert!(!dir.path().join("secrets").exists());
         assert!(!dir.path().join(LOCK_FILE).exists());
 
-        // Once secured, the same record launches.
         secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
             .unwrap();
         assert!(load_metadata_for_launch(&path).is_ok());
@@ -3127,7 +3113,6 @@ mod tests {
             let path = dir.path().join("identity-joined.json");
             write_private_atomic(&path, &bytes).unwrap();
 
-            // Sign-in and Settings may secure the selected record again.
             for _ in 0..2 {
                 assert_eq!(
                     secure_identity(dir.path(), "identity-joined").unwrap(),

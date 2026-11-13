@@ -1,20 +1,16 @@
-//! The parts of a row a press can land on, and the keys that name them
-//! across rebuilds.
+//! The parts of a row a press can land on, and the keys that name them across rebuilds.
 
 /// One of a row's own pressable controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowPart {
-    /// The hover action at this index.
     Action(usize),
-    /// The leading checkbox.
     Check,
-    /// The face of an unseen change: shows what was done.
     Change,
 }
 
 impl RowPart {
-    /// What names the control across a rebuild: the row's id and which
-    /// control of the row it is.
+    /// What names the control across a rebuild: the row's id and which control of the row
+    /// it is.
     pub(super) fn key(self, row: &str) -> String {
         if row.is_empty() {
             return String::new();

@@ -319,13 +319,13 @@ pub struct ClipboardCopy {
     pub from: Option<String>,
 }
 
-/// The notification centre, as the session publishes it: how many it keeps,
-/// and why fresh ones are held back.
-/// The list itself is the shell's centre, which reads its own log; the panel
-/// shows the count that opens it.
+/// The notification centre, as the session publishes it: how many the person has not read, and why
+/// fresh ones are held back.
+/// The list itself is the shell's centre, which reads its own log; the panel shows the count that
+/// opens it, the same count the bar's bell shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NotificationCentre {
-    /// How many it keeps.
+    /// How many the person has not read.
     pub count: usize,
     /// Why fresh notifications are being held (Do Not Disturb, presenting,
     /// a focus schedule); `None` while they show.

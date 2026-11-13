@@ -1,6 +1,5 @@
-//! What a launch leaves behind about a bundle it verified in full: the next
-//! launch reads the record instead of the payload, and the record answers
-//! only for the exact files that verification proved.
+//! What a launch leaves behind about a bundle it verified in full, so the next launch can trust the
+//! same bytes without reading them.
 
 #![allow(
     clippy::unwrap_used,

@@ -1,17 +1,9 @@
-//! Your devices as a VPN: whether this device lets the person's other
-//! devices route their traffic through it, and which of their devices this
-//! one routes through (docs/device-vpn.md).
+//! Your devices as a VPN: whether this device lets the person's other devices route their traffic
+//! through it, and which of their devices this one routes through (docs/device-vpn.md).
 //!
-//! The same helper holds the kill switch of the person's `NetworkManager` VPN
-//! profiles: which profiles have it ([`PROFILE_KILL_SWITCHES`]), the
-//! profile the person last turned off on purpose ([`PROFILE_RELEASE`]), and
-//! which profiles are set to connect ([`PROFILE_INTENT`]).
-//!
-//! Settings and quick settings write the choices; the session's controller
-//! alone writes [`PROFILE_INTENT`], and
-//! follows them and publishes what it is doing as a [`DeviceVpnStatus`] in
-//! the private runtime directory, which Settings reads back. Every key is
-//! this device's own: another device is elsewhere, on another network.
+//! The same keys hold the kill switch of the person's `NetworkManager` VPN profiles: which profiles
+//! have it, the one the person last turned off on purpose, and which are set to connect. The
+//! session's controller alone writes the intent, and every key is this device's own.
 
 use core::net::IpAddr;
 use std::collections::BTreeMap;
@@ -21,15 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::Key;
 use crate::hardware::publisher_live_in;
 
-/// The section holding this device's VPN choices.
 pub const SECTION: &str = "device_vpn";
 
-/// Whether the person's other devices may route their traffic through this
-/// one. Off until the person turns it on.
 pub const EXIT: Key<bool> = Key::new(SECTION, "exit", || false);
 
-/// Which of the person's devices this one routes through, and how; `None`
-/// routes nothing.
 pub const THROUGH: Key<Option<Through>> = Key::new(SECTION, "through", || None);
 
 /// The last request to stop one of the person's devices routing through
@@ -55,7 +42,6 @@ pub const PROFILE_RELEASE: Key<Option<ProfileRelease>> =
 pub const PROFILE_INTENT: Key<ProfileIntent> =
     Key::new(SECTION, "profile_intent", ProfileIntent::default);
 
-// The person's choices, as the fields of their `device-vpn` section.
 #[cfg(feature = "model")]
 tilo_resource::json_model!(Through);
 #[cfg(feature = "model")]
@@ -65,16 +51,10 @@ tilo_resource::json_model!(ProfileKillSwitch);
 #[cfg(feature = "model")]
 tilo_resource::json_model!(ProfileRelease);
 
-/// The kept intent of the person's VPN profiles ([`PROFILE_INTENT`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfileIntent {
-    /// Each profile set to connect, with its servers' addresses as looked
-    /// up while traffic still flowed: a block taken over lets them through,
-    /// since nothing can be looked up while it holds.
     pub connecting: BTreeMap<String, Vec<IpAddr>>,
-    /// The last [`ProfileRelease`] acted on: one written after it, while no
-    /// session followed, is acted on at the next start.
     pub release_seen: Option<u64>,
 }
 
@@ -99,7 +79,6 @@ pub struct ProfileRelease {
 }
 
 impl ProfileRelease {
-    /// A request to lift `profile`'s block, after `previous`.
     #[must_use]
     pub fn after(previous: Option<&Self>, profile: impl Into<String>) -> Self {
         Self {
@@ -109,19 +88,13 @@ impl ProfileRelease {
     }
 }
 
-/// The block of the person's VPN profiles, as the session holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfileBlockStatus {
-    /// The profiles whose traffic is blocked now: set to connect and not
-    /// connected, with their kill switch on.
     pub blocking: Vec<String>,
-    /// Traffic should be blocked and this device could not block it.
     pub failed: bool,
 }
 
-/// The status file holds a handful of devices; anything larger is not one the
-/// session wrote.
 const MAX_STATUS_BYTES: u64 = 262_144;
 
 /// What this device routes through another.
@@ -165,8 +138,6 @@ impl Default for Through {
 }
 
 impl Through {
-    /// Routing everything through `device`, names included, the way most
-    /// people mean it.
     #[must_use]
     pub fn device(device: impl Into<String>) -> Self {
         Self {
@@ -187,7 +158,6 @@ pub struct StopRequest {
 }
 
 impl StopRequest {
-    /// A request to stop `device`, after `previous`.
     #[must_use]
     pub fn after(previous: Option<&Self>, device: impl Into<String>) -> Self {
         Self {
@@ -197,7 +167,6 @@ impl StopRequest {
     }
 }
 
-/// Where this device's route through another stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ClientState {
@@ -207,54 +176,45 @@ pub enum ClientState {
         /// When the tunnel came up, Unix milliseconds.
         since_unix_ms: u64,
     },
-    /// The tunnel is down; with the kill switch on, nothing goes out until
-    /// it is back.
-    Reconnecting { blocking: bool },
-    /// The other device turned this one away.
-    Refused { reason: Refusal },
-    /// This device could not set the route up.
-    Failed { problem: Problem },
+    Reconnecting {
+        blocking: bool,
+    },
+    Refused {
+        reason: Refusal,
+    },
+    Failed {
+        problem: Problem,
+    },
 }
 
-/// Why this device could not set its route up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Problem {
-    /// The system part that routes traffic is not installed here.
     NotInstalled,
-    /// The system refused the route.
     Setup,
     /// Only the other device's home network was asked for, and it is on
     /// none this device can reach through it.
     NoHomeNetwork,
 }
 
-/// Why another device turned this one away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Refusal {
-    /// It does not count this device as the person's.
     NotYours,
-    /// Its switch to share its connection is off.
     ExitOff,
-    /// It has no room for another device right now.
     Full,
 }
 
-/// This device routing through another, as Settings shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientStatus {
-    /// The other device's endpoint id, hex.
     pub device: String,
-    /// The other device's name, as the person named it.
     pub label: String,
     pub state: ClientState,
     pub routes: Routes,
     pub kill_switch: bool,
 }
 
-/// One of the person's devices routing through this one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExitUser {
@@ -263,8 +223,6 @@ pub struct ExitUser {
     pub since_unix_ms: u64,
 }
 
-/// One of the person's devices this one could route through: it shares its
-/// connection.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OfferedExit {
@@ -272,7 +230,6 @@ pub struct OfferedExit {
     pub label: String,
 }
 
-/// What the session's controller is doing, published for Settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeviceVpnStatus {
@@ -280,23 +237,15 @@ pub struct DeviceVpnStatus {
     /// With the PID it names the publisher's lease, so a file a crashed
     /// session left is never shown as current.
     pub publisher_start_ticks: u64,
-    /// Whether this device can be an exit at all: the helper is installed.
     pub exit_available: bool,
-    /// The person's switch, as the session follows it.
     pub exit_on: bool,
-    /// The person's devices routing through this one now.
     pub exit_users: Vec<ExitUser>,
-    /// The person's devices this one could route through.
     pub offered: Vec<OfferedExit>,
-    /// This device's route through another, while it has one.
     pub client: Option<ClientStatus>,
-    /// The block of the person's VPN profiles.
     pub profile_block: ProfileBlockStatus,
 }
 
 impl DeviceVpnStatus {
-    /// The live session's status, or `None` when no running session
-    /// published one.
     #[must_use]
     pub fn load() -> Option<Self> {
         Self::load_at(&status_path()?)
@@ -315,27 +264,18 @@ impl DeviceVpnStatus {
         .then_some(status)
     }
 
-    /// # Errors
-    ///
-    /// `XDG_RUNTIME_DIR` is unset or relative, or the file can't be written.
     pub fn save(&self) -> std::io::Result<()> {
         let path =
             status_path().ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
         self.save_at(&path)
     }
 
-    /// # Errors
-    ///
-    /// `self` can't be serialised or written to `path`.
     pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
         tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 
-    /// The rows Settings → Network → VPN lists for this feature, after the
-    /// system's own VPN connections: one per device this one routes or could
-    /// route through, the current one first.
     #[must_use]
     pub fn rows(&self) -> Vec<DeviceVpnRow> {
         let mut rows = Vec::new();
@@ -364,19 +304,14 @@ impl DeviceVpnStatus {
     }
 }
 
-/// One entry of the VPN list: routing through one of the person's devices.
-/// Its title is "Through" and the device's name; turning it on writes
-/// [`THROUGH`], off clears it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceVpnRow {
     pub device: String,
     pub label: String,
-    /// `None` while this device does not route through it.
     pub state: Option<ClientState>,
 }
 
 impl DeviceVpnRow {
-    /// Whether this device routes, or is trying to route, through it.
     #[must_use]
     pub const fn is_on(&self) -> bool {
         self.state.is_some()
@@ -412,7 +347,6 @@ mod tests {
         let mut section = serde_json::Map::new();
         section.insert("through".into(), serde_json::to_value(&through).unwrap());
         assert_eq!(THROUGH.from_section(&section), Some(through));
-        // A choice a later version added does not unset the rest.
         let partial = serde_json::json!({ "device": "cd34" });
         section.insert("through".into(), partial);
         assert_eq!(

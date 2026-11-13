@@ -1,25 +1,5 @@
-//! `Autocomplete` — a text field with a suggestion list that floats below
-//! it — and the [`Suggestion`] rows that list shows.
-//!
-//! A real [`TextInput`] (so it inherits selection, clipboard, IME, caret
-//! navigation and theming for free, per `crates/sdk/ui-core/HIG.md` §8) with a suggestion
-//! popover drawn in the overlay pass so it composites above sibling content.
-//!
-//! Any app attaches a suggestion source — a closure via
-//! [`with_suggester`](Autocomplete::with_suggester), or a reactively-computed
-//! list via [`set_suggestions`](Autocomplete::set_suggestions) — and
-//! completions recompute whenever the typed text changes.
-//!
-//! Typing opens the dropdown; Down/Up move the highlight; Enter accepts (the
-//! highlighted suggestion, or the typed text, which Enter then goes on to
-//! the host with, so a form's default action runs); Tab completes to the
-//! highlight without accepting; Esc or an outside click cancels — the
-//! outside click is not consumed, so it still reaches the host. The
-//! outcome is polled once via [`take_outcome`](Autocomplete::take_outcome),
-//! rising-edge like [`TextInput::take_dirty`].
-//!
-//! The editable path bar in the file manager is the canonical consumer, but
-//! the widget knows nothing about paths.
+//! `Autocomplete` — a text field with a suggestion list that floats below it — and the [`Suggestion`]
+//! rows that list shows.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -46,94 +26,63 @@ mod component;
 use crate::widget::{TextInput, TextInputKind, Widget};
 pub use component::{AutocompleteProps, SuggestionProps};
 
-/// The floating list of suggestions under a field: the one list engine
-/// ([`FloatingList`]), its rows [`Suggestion`]s.
 pub type SuggestionList = FloatingList<Suggestion>;
 
-/// How the most recent interaction ended. Returned once by
-/// [`Autocomplete::take_outcome`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AutocompleteOutcome {
-    /// Nothing ended since the last poll.
     None,
-    /// The user accepted this value (Enter, or a click on a row).
     Accepted(String),
-    /// The user cancelled (Esc, or a click outside).
     Cancelled,
 }
 
-/// A suggestion source: given the current text, return the completions to show.
 pub type Suggester = Box<dyn Fn(&str) -> Vec<Suggestion>>;
 
-/// One completion offered in the dropdown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
-    /// The text inserted into the field when this suggestion is accepted.
     pub value: String,
-    /// The label shown in the dropdown row. Defaults to `value` via
-    /// [`Suggestion::new`].
     pub label: String,
-    /// Optional dim secondary text shown right-aligned in the row (e.g. a type
-    /// or a count).
     pub detail: Option<String>,
-    /// Optional dim line under the label (a page's address under its
-    /// title). A list with any such line gives every row two lines.
     pub subtitle: Option<String>,
-    /// Optional leading glyph.
     pub icon: Option<Icon>,
-    /// A participant this row names: painted as their avatar (or, for
-    /// software acting in the workspace, the agent mark) in place of an icon.
     pub person: Option<SuggestionPerson>,
     /// What the row is: a pickable item (the default), a group's header or a
     /// notice ("No matches").
     pub role: RowRole,
     /// Byte ranges of the label the typed query matched, painted bold.
     pub matched: Vec<std::ops::Range<usize>>,
-    /// Dim text right after the label on the same line: a handle, a topic,
-    /// a command's parameters.
     pub aside: Option<String>,
-    /// A state shown in a trailing check column: checked or not. A list
-    /// with any such row keeps the column on every row.
     pub checked: Option<bool>,
-    /// The keys that do what the row does, at its trailing end.
     pub shortcut: Option<String>,
 }
 
-/// What a row of a [`SuggestionList`] is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowRole {
-    /// A suggestion that can be armed and accepted.
     #[default]
     Item,
-    /// The header of the group of rows under it; `busy` while that group is
-    /// on its way, with a progress indicator beside it.
-    Header { busy: bool },
+    Header {
+        busy: bool,
+    },
     /// A line that says something about the list ("No matches"), never
     /// armed.
     Notice,
 }
 
 impl Suggestion {
-    /// Whether the row can be armed and accepted.
     #[must_use]
     pub fn is_pickable(&self) -> bool {
         self.role == RowRole::Item
     }
 }
 
-/// Who a [`Suggestion`] names, for its leading avatar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestionPerson {
-    /// Their stable id.
     pub identity: String,
-    /// The presence hue the workspace gives them.
     pub hue: crate::tokens::PresenceHue,
     /// Software acting in the workspace rather than a person.
     pub agent: bool,
 }
 
 impl Suggestion {
-    /// A suggestion whose visible label is its inserted value.
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         Self {
@@ -151,7 +100,6 @@ impl Suggestion {
         }
     }
 
-    /// A suggestion whose visible label differs from the inserted value.
     pub fn labelled(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -189,28 +137,24 @@ impl Suggestion {
         self
     }
 
-    /// Show `subtitle` as a dim line under the label.
     #[must_use]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
-    /// Lead the row with `person`'s avatar.
     #[must_use]
     pub fn with_person(mut self, person: SuggestionPerson) -> Self {
         self.person = Some(person);
         self
     }
 
-    /// Show `checked` in the trailing check column.
     #[must_use]
     pub fn with_checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self
     }
 
-    /// Show the keys that do what the row does at its end.
     #[must_use]
     pub fn with_shortcut(mut self, keys: impl Into<String>) -> Self {
         self.shortcut = Some(keys.into());
@@ -228,7 +172,6 @@ fn detail_room(free: f64, label_w: f64, spacing: f64) -> f64 {
 /// state, so they all keep the check column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CheckColumn {
-    /// A trailing check column is kept on every row.
     pub check: bool,
 }
 
@@ -306,7 +249,6 @@ impl FloatingRow for Suggestion {
     }
 }
 
-/// Paint one suggestion row: the item, a group's header or a notice.
 fn paint_suggestion(
     ctx: &mut PaintCtx<'_>,
     s: &Suggestion,
@@ -326,8 +268,6 @@ fn paint_suggestion(
     }
 }
 
-/// One row: the armed lift (or the hover veneer), the icon, the label, its
-/// aside and subtitle, and the detail in a trailing column.
 fn paint_item(
     ctx: &mut PaintCtx<'_>,
     s: &Suggestion,
@@ -467,7 +407,6 @@ fn paint_item(
         let (_, sh) = text.measure_style(&shown, None, &detail_style);
         (shown, f64::from(sh))
     });
-    // The label and its subtitle stand as one block, centred in the row.
     let block = f64::from(lh) + subtitle.as_ref().map_or(0.0, |(_, sh)| *sh);
     let top = row.center().y - block / 2.0;
     if s.matched.is_empty() || label != s.label {
@@ -529,8 +468,6 @@ fn paint_item(
     }
 }
 
-/// A group's header: its title small and dim, like a menu's section.
-/// Returns where the title ends, for a progress indicator beside it.
 fn paint_header(
     ctx: &mut PaintCtx<'_>,
     s: &Suggestion,
@@ -600,7 +537,6 @@ fn paint_notice(
 }
 
 impl FloatingList<Suggestion> {
-    /// Accessibility rows for the suggestions in view, keyed by `key`.
     pub(crate) fn access_rows(
         &self,
         key: impl Fn(&Suggestion) -> u64,
@@ -701,21 +637,15 @@ fn matched_runs<'a>(label: &'a str, matched: &[std::ops::Range<usize>]) -> Vec<(
 
 pub struct Autocomplete {
     id: String,
-    /// The real editable field — owns caret / selection / clipboard / IME.
     input: TextInput,
     suggester: Option<Suggester>,
-    /// The floating list of suggestions under the field.
     list: SuggestionList,
     open: bool,
     rect: Rect,
     last_pointer: Point,
     outcome: AutocompleteOutcome,
-    /// The person changed the text, typing or taking a suggestion, since
-    /// [`Self::take_edited`] last ran.
     edited: bool,
-    /// What the field's text is reported to, as a described component's binding path does.
     edits: Option<crate::component::Bound<String>>,
-    /// What taking a suggestion is reported to, as a described component's event.
     accepted: Option<crate::component::Event>,
 }
 
@@ -724,9 +654,6 @@ impl Autocomplete {
         Self::with_input(TextInput::local())
     }
 
-    /// An autocomplete around a field the app configured itself (its role,
-    /// placeholder, size, accessible name); the field becomes a search
-    /// field.
     pub fn with_input(input: TextInput) -> Self {
         Self {
             id: String::new(),
@@ -762,7 +689,6 @@ impl Autocomplete {
         self
     }
 
-    /// Name the field for assistive technology (a Fluent message id).
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.input = self.input.with_accessible_name(name);
@@ -814,22 +740,14 @@ impl Autocomplete {
         self.open = true;
     }
 
-    /// `None` clears it. Pair with [`open`](Autocomplete::open).
     pub fn set_status(&mut self, status: Option<String>) {
         self.list.set_status(status);
     }
 
-    /// Results are on their way, with `clock`'s timing (asked when, from
-    /// where): the framework's placeholder stands where the first row will
-    /// be, and assistive technology hears the list is busy. `None` once
-    /// they are in.
     pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
         self.list.set_arriving(clock);
     }
 
-    /// Opens the dropdown when the field is actively being edited (for
-    /// reactive/async hosts receiving results after a round-trip). Closes
-    /// it when the list is empty.
     pub fn set_suggestions_open(&mut self, suggestions: Vec<Suggestion>) {
         self.set_suggestions(suggestions);
         if self.is_editing() {
@@ -841,7 +759,6 @@ impl Autocomplete {
         self.input.value()
     }
 
-    /// The field itself, for a host that binds its text (a shared draft).
     pub fn input(&self) -> &TextInput {
         &self.input
     }
@@ -850,15 +767,11 @@ impl Autocomplete {
         &mut self.input
     }
 
-    /// The field's text after the person's edits since the last call,
-    /// typed or chosen from the suggestions, if any.
     pub fn take_edited(&mut self) -> Option<String> {
         let typed = self.input.take_dirty().is_some();
         (std::mem::take(&mut self.edited) || typed).then(|| self.input.value().to_owned())
     }
 
-    /// Replace the field text (does not open the dropdown or recompute);
-    /// the caret waits at its end.
     pub fn set_text(&mut self, s: &str) {
         self.input.set_text(s);
     }
@@ -901,7 +814,6 @@ impl Autocomplete {
         self.list.set_highlight(index);
     }
 
-    /// Close the dropdown (keeps the field text + focus).
     pub fn close(&mut self) {
         self.open = false;
         self.list.set_highlight(None);
@@ -923,25 +835,20 @@ impl Autocomplete {
         self
     }
 
-    /// Rising-edge read of how the most recent interaction ended.
     pub fn take_outcome(&mut self) -> AutocompleteOutcome {
         std::mem::replace(&mut self.outcome, AutocompleteOutcome::None)
     }
 
-    /// For hosts embedding the field in their own immediate-mode chrome.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         self.input.apply_layout_external(rect);
         self.list.set_anchor(rect);
     }
 
-    /// The suggestion list's rect while it shows, for a host that keeps
-    /// its own hit-testing or places something beside it.
     pub fn list_rect(&self) -> Option<Rect> {
         self.dropdown_rect()
     }
 
-    /// The suggestion list itself.
     pub fn list(&self) -> &SuggestionList {
         &self.list
     }
@@ -953,7 +860,6 @@ impl Autocomplete {
         }
     }
 
-    /// Accept `value`: emit the outcome, load it into the field, close.
     fn accept(&mut self, value: String) {
         self.input.set_text(&value);
         self.edited = true;
@@ -994,7 +900,6 @@ impl Autocomplete {
         self.list.move_highlight(forward);
     }
 
-    /// `None` when it should not show. Shows for real rows or a status line.
     fn dropdown_rect(&self) -> Option<Rect> {
         if !self.open {
             return None;
@@ -1007,7 +912,6 @@ impl Autocomplete {
         self.list.row_rect(i).unwrap_or(Rect::ZERO)
     }
 
-    /// The dropdown row under a logical point, if any.
     fn row_at(&self, pt: Point) -> Option<usize> {
         if !self.open {
             return None;
@@ -1063,7 +967,6 @@ impl Autocomplete {
                 *ctx.handled = true;
             }
             _ => {
-                // Forward to the field, then recompute if the text changed.
                 self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.edited = true;
@@ -1090,9 +993,6 @@ impl Widget for Autocomplete {
         self.input.sync(state, path);
     }
 
-    /// A glide after a flick scrolls the list as the wheel does, and what the person typed or
-    /// took since the last frame is reported to the component's binding and event, if it has
-    /// them: a text set elsewhere (`set_text`) is not a person's edit.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let inner = crate::widget::Widget::update(&mut self.input, state, path);
         if self.open {
@@ -1115,8 +1015,6 @@ impl Widget for Autocomplete {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The field's own band: its control size, grown with its line, and a finger's target
-        // where input is a finger's.
         let height = f32_of_f64(
             self.input
                 .band_in(theme)
@@ -1149,7 +1047,6 @@ impl Widget for Autocomplete {
         if let Some(viewport) = presence.viewport.get() {
             self.list.set_viewport(viewport);
         }
-        // The field itself; the suggestion list floats in `draw_overlay`.
         self.input.apply_layout_external(self.rect);
         self.input
             .draw_child(scene, transform, text_renderer, theme, presence);
@@ -1178,8 +1075,6 @@ impl Widget for Autocomplete {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        // Rows on their way step their placeholder on at its deadlines;
-        // the rows' arrival wakes the window itself.
         self.open
             .then(|| self.list.next_arriving_step(crate::time::now()))
             .flatten()
@@ -1212,8 +1107,6 @@ impl Widget for Autocomplete {
                     },
                 ..
             } => self.handle_key_while_editing(event, ctx, logical_key),
-            // A wheel over an open list scrolls it; one over its inset, just
-            // outside the rows, steps a row.
             WindowEvent::MouseWheel { delta, .. }
                 if self
                     .dropdown_rect()
@@ -1237,7 +1130,6 @@ impl Widget for Autocomplete {
                 }
                 *ctx.handled = true;
             }
-            // A left press on a dropdown row accepts it.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1296,8 +1188,6 @@ impl Widget for Autocomplete {
         Some(self)
     }
 
-    /// A host that composes the field into a larger form reaches it to
-    /// offer suggestions and read what was accepted.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -1536,7 +1426,6 @@ mod tests {
             ac.begin_edit();
             dispatch(&mut ac, &char_key("a")); // → "alpha","album"
             let panel = ac.dropdown_rect().expect("dropdown open");
-            // Click the second row ("album").
             let row = ac.row_rect(panel, 1);
             let c = row.center();
             dispatch(&mut ac, &cursor_moved(c.x, c.y));
@@ -1552,7 +1441,6 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
             dispatch(&mut ac, &char_key("a")); // "alpha","album"
-            // Tab fills the field with the first suggestion but does not commit.
             assert!(dispatch(&mut ac, &named_key(NamedKey::Tab)));
             assert_eq!(ac.text(), "alpha");
             assert_eq!(
@@ -1567,7 +1455,6 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
             dispatch(&mut ac, &char_key("a"));
-            // Move far away, then press: cancels but is not swallowed.
             dispatch(&mut ac, &cursor_moved(900.0, 900.0));
             let consumed = dispatch(&mut ac, &mouse_press());
             assert!(!consumed, "the outside click still reaches the host");
@@ -1678,8 +1565,6 @@ mod tests {
         }
 
         fn begin_edit_still_selects_a_preseeded_value_for_replace() {
-            // A genuine fresh entry into a pre-filled field (the path bar seeds
-            // the current path) still selects all.
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.set_text("/home/user");
@@ -1716,7 +1601,6 @@ mod tests {
         }
 
         fn status_line_keeps_the_dropdown_open_with_no_rows() {
-            // A reactive host shows a loading line while it has no rows yet.
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();

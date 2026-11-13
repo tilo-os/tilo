@@ -16,7 +16,6 @@ use super::{CompactPane, TypstApp};
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct WindowShown {
     layout: Layout,
-    /// A hover card or an open list floats over the window.
     floating: bool,
     divider: (Rect, bool, bool),
     status: (String, String),
@@ -32,7 +31,6 @@ struct Layout {
 }
 
 impl TypstApp {
-    /// Note what this frame shows around the panes.
     pub(super) fn note_window(&self, theme: &Theme) {
         let colors = &theme.tokens.colors;
         self.window_shown.note(WindowShown {
@@ -64,7 +62,6 @@ impl TypstApp {
         });
     }
 
-    /// The window's damage since the frame on screen.
     pub(super) fn window_damage(&self, regions: &mut Vec<Rect>) {
         let whole = match self.window_shown.frames() {
             Some((drawing, presented)) => {
@@ -100,7 +97,6 @@ impl TypstApp {
         }
     }
 
-    /// From `mark_drawn`: the frame just drawn is on screen.
     pub(super) fn mark_window_shown(&mut self) {
         self.window_shown.present();
         self.editor.mark_shown();

@@ -15,24 +15,23 @@
 // The agent is Claude Code as the `tilo` command finds it: `CLAUDECODE=1` in
 // its environment and a `claude` on PATH that records what it was asked, so
 // the run proves the command registered its tools without touching anyone's
-// real agent. The command trusts the site's and the relay's test certificates
-// only through `TILO_TEST_CA_FILE`, which production never sets.
+// real agent. The stack is plain HTTP on this machine, so the command needs
+// no test certificate to reach it.
 //
-// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR
+// usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR
 //
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
-const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
-if (!site || !relay || !tiloBin || !siteCa || !out) {
-  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR');
+const [site, relay, tiloBin, out] = process.argv.slice(2);
+if (!site || !relay || !tiloBin || !out) {
+  console.error('usage: node agent-setup.mjs SITE_URL RELAY_ORIGIN TILO_BIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -40,10 +39,10 @@ const mark = clock();
 const report = {site, relay, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
-// As the gate's other pages: the test certificates, a software GPU, a job container's small
-// /dev/shm, and no sandbox where the gate runs as root.
+// As the gate's other pages: a software GPU, a job container's small /dev/shm,
+// and no sandbox where the gate runs as root. The stack is plain http on this
+// machine, so no certificate stands in the page's way.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   // Chromium's own log on stderr: why a renderer or the GPU process died is said there.
@@ -138,20 +137,6 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   }
 };
 
-// The relay's own certificate, as its listener presents it: the run hands it
-// to the command as one it trusts exactly, beside the site's test CA.
-const relayCertificate = () => new Promise((resolve, reject) => {
-  const {hostname, port} = new URL(relay);
-  const socket = connect({host: hostname, port: Number(port || 443), servername: hostname === '127.0.0.1' ? undefined : hostname,
-    rejectUnauthorized: false}, () => {
-    const der = socket.getPeerCertificate(false).raw;
-    socket.end();
-    const body = der.toString('base64').match(/.{1,64}/g).join('\n');
-    resolve(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
-
 // The computer the agent runs on: its own home, a `claude` that records how
 // it was asked to add Tilo's tools, and Claude Code's environment marker.
 const computer = join(out, 'computer');
@@ -183,15 +168,12 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
 printf 'wrote %s: %s\n' "$HOME/.claude.json" "$(cat "$HOME/.claude.json")" >> '${claudeCalls}'
 `);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
-const relayPem = join(computer, 'relay.pem');
-writeFileSync(relayPem, await relayCertificate().catch(error => fail(`the relay's certificate: ${error.message}`)));
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
   CLAUDECODE: '1',
-  TILO_TEST_CA_FILE: `${siteCa}:${relayPem}`,
 };
 // Run one `tilo …` as the agent does: its words, as the agent reads them.
 const tilo = (args, {input} = {}) => new Promise(resolve => {
@@ -296,11 +278,11 @@ const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch((
 // left there is not this one, so the read waits for the clipboard to change
 // from what it held before the click (`before`).
 const copied = (tab, what, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
+  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
   `${what} on the clipboard`);
 // The code and site a prompt names.
 const commandOf = prompt => {
-  const match = prompt.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
+  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
   if (!match) return null;
   return {code: match[1], site: match[2] ?? null};
 };
@@ -361,7 +343,7 @@ report.prompt = prompt;
 mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
 if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh && tilo login /.test(prompt) || prompt.length > 200) {
+if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || prompt.length > 200) {
   await fail(`the prompt is not the short one-line setup: ${prompt}`);
 }
 if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);
@@ -413,10 +395,25 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 
 // The screen leaves for the person's own workspace.
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
-// Titled after the person's own workspace once it says its name, never the Lounge's.
-const ownTitle = `/^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`;
-for (const deadline = Date.now() + stepLimit(2); !await first.evaluate(ownTitle).catch(() => false);) {
-  if (Date.now() > deadline) await fail(`the tab is titled "${await first.evaluate('document.title')}", not after the person's own workspace`);
+// Titled after the person's own workspace once it says its name, never the
+// Lounge's: the name is the one the workspace answered this page's admission
+// with, which the desk it starts is given. What the wait is on is the page
+// itself — its host admitting it and its first desk drawing — and the page
+// gives a host that says nothing two minutes before it calls it unanswered
+// (`whenReady` in peer.mjs), so this step is given as long rather than a
+// stopwatch on a frame. What the page was doing is said when it never comes.
+const ownWorkspace = `(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  const title = document.title ?? '';
+  return JSON.stringify({title, own: /^Tilo · /.test(title) && !/lounge/i.test(title),
+    phase: state?.phase ?? null, frames: state?.frames ?? null,
+    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
+})()`;
+let at = {};
+for (const deadline = Date.now() + stepLimit(8); ;) {
+  at = JSON.parse(await first.evaluate(ownWorkspace).catch(() => '{}'));
+  if (at.own) break;
+  if (Date.now() > deadline) await fail(`the tab is titled "${at.title}", not after the person's own workspace: ${JSON.stringify(at)}`);
   await sleep(250);
 }
 report.workspace = await first.evaluate('document.title');

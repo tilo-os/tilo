@@ -47,8 +47,6 @@ fn read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_reco
     assert_eq!(result.failures, [(id, "Calendar is read-only".into())]);
     assert!(result.confirmed.is_empty());
     app.settle();
-    // An ordinary failed attempt is retryable, not a terminal settlement.
-    // Read the host's source document, not CalendarApp's render-state copy.
     let state = state_of(&app);
     assert_eq!(state.uploads.pending().count(), 1);
     assert_eq!(state.uploads.entries().len(), 1);
@@ -71,7 +69,6 @@ fn state_of(app: &TestApp<CalendarShell>) -> Calendar {
     app.read_document(read_doc)
 }
 
-/// A new event on the local calendar, as a verb takes it.
 fn new_event(title: &str, start: &str, end: &str) -> Invoke<Calendar> {
     Calendar::NEW_EVENT.with(calendar::NewEvent {
         event: EventData {
@@ -84,8 +81,6 @@ fn new_event(title: &str, start: &str, end: &str) -> Invoke<Calendar> {
     })
 }
 
-/// Every entry lies in the events' or the tasks' scope, and a project's
-/// tasks also in that project's scope.
 #[test]
 fn entries_nest_under_the_declared_scopes() {
     let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 30).expect("date");
@@ -111,8 +106,6 @@ fn entries_nest_under_the_declared_scopes() {
     }
 }
 
-/// A search hit opens the item it names, one whose item is gone is refused
-/// with the reason, and every item offers to open itself.
 #[test]
 fn a_search_hit_opens_its_item_and_a_gone_one_is_refused() {
     let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
@@ -145,7 +138,6 @@ fn a_search_hit_opens_its_item_and_a_gone_one_is_refused() {
             .is_err()
     );
 
-    // Every task, like every event and project, offers to open itself.
     let task = state_of(&app).tasks[0].id;
     app.call_on(
         &crate::actions::task_resource_id(task),
@@ -160,15 +152,11 @@ fn a_search_hit_opens_its_item_and_a_gone_one_is_refused() {
     assert_eq!(opened, Some(task));
 }
 
-/// Typing in an open event's notes edits them at their path, a word per
-/// undo step, kept when the calendar is opened again.
 #[test]
 fn typing_in_an_events_notes_edits_them_through_the_calendar() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
     app.harness().key("n");
     let event = app.state().events.first().expect("n creates an event").id;
-    // The new event opens with its title focused: Tab moves on to the
-    // location, the invite field, then the notes.
     for _ in 0..3 {
         app.harness().key("Tab");
     }
@@ -182,8 +170,6 @@ fn typing_in_an_events_notes_edits_them_through_the_calendar() {
     assert_eq!(notes_of(&app, event), "Agenda items");
 }
 
-/// The palette, agents and scripts edit an event's notes as the field
-/// edit at their path, and what they do is undone like a person's edit.
 #[test]
 fn an_agent_edits_an_events_notes_at_their_path() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -218,9 +204,6 @@ fn an_agent_edits_an_events_notes_at_their_path() {
     assert_eq!(notes_of(&app, id), "");
 }
 
-/// Creating an event on a remote calendar and undoing it after its server
-/// took the upload leaves the server's copy to delete: undo reaches the
-/// server like any other change.
 #[test]
 fn undo_of_an_uploaded_remote_event_deletes_it_on_the_server() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -246,7 +229,6 @@ fn undo_of_an_uploaded_remote_event_deletes_it_on_the_server() {
     let uploads = crate::outbox::uploads(&state_of(&app), &accounts);
     assert_eq!(uploads.len(), 1, "the new event waits for its upload");
 
-    // The device holding the account uploaded it and recorded that.
     app.invoke(Calendar::SERVER_APPLIED.with(calendar::ServerApplied {
         event: id,
         at: RemoteAt {
@@ -267,8 +249,6 @@ fn undo_of_an_uploaded_remote_event_deletes_it_on_the_server() {
     assert_eq!(deletes[0].1.calendar.id, remote);
 }
 
-/// A calendar file named on the command line is imported as one step,
-/// and opening it again adds nothing the calendar already holds.
 #[test]
 fn a_calendar_file_the_app_is_opened_with_is_imported_once() {
     let directory = tempfile::tempdir().expect("directory");
@@ -299,8 +279,6 @@ fn a_calendar_file_the_app_is_opened_with_is_imported_once() {
     assert_eq!(std::fs::read_to_string(&source).expect("read"), payload);
 }
 
-/// A launch naming a remote URL, a folder or a file that is not
-/// calendar text opens the calendar unchanged.
 #[test]
 fn a_launch_naming_nothing_importable_changes_nothing() {
     let directory = tempfile::tempdir().expect("directory");
@@ -317,8 +295,6 @@ fn a_launch_naming_nothing_importable_changes_nothing() {
     }
 }
 
-/// Every scenario captures: the sample calendar around today, or a first
-/// run for the empty ones, with the view state each one names.
 #[test]
 fn every_scenario_stages_its_calendar_and_view() {
     let sample = crate::model::seed_demo(shot_now().date());
@@ -349,7 +325,6 @@ fn every_scenario_stages_its_calendar_and_view() {
     );
 }
 
-/// The sample events' notes are their curated agendas.
 #[test]
 fn the_sample_calendar_opens_with_its_curated_notes() {
     let app = TestApp::<CalendarShell>::capture(Some("event_editor")).expect("capture");
@@ -365,7 +340,6 @@ fn the_sample_calendar_opens_with_its_curated_notes() {
     assert!(notes.contains("Confirm the launch timeline."), "{notes}");
 }
 
-/// The name of the view the window bar's switcher shows chosen.
 fn bar_view() -> Option<String> {
     let views = ui::window_toolbar::declared().and_then(|toolbar| toolbar.views)?;
     views
@@ -375,8 +349,6 @@ fn bar_view() -> Option<String> {
         .map(|choice| choice.label)
 }
 
-/// Choose `view` in the window bar's switcher, as the desktop hands the
-/// press to the app, and let the app apply it.
 fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View) {
     let name = view.display_label();
     let slot = ui::window_toolbar::declared()
@@ -392,8 +364,6 @@ fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View
     app.settle();
 }
 
-/// The views are the window bar's switcher: choosing one there navigates
-/// the live window at once and is no edit of the shared calendar.
 #[test]
 fn the_bars_view_switcher_navigates_live_and_preserves_document() {
     use crate::model::View;
@@ -408,9 +378,6 @@ fn the_bars_view_switcher_navigates_live_and_preserves_document() {
     assert!(!app.undo(), "view changes create no document undo step");
 }
 
-/// Every verb on the calendar's items, its field edits and its calendars
-/// reach the palette and agents through the one published tree, and
-/// invoking one edits the calendar.
 #[test]
 fn agents_reach_every_item_verb_and_the_calendars() {
     let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
@@ -435,7 +402,6 @@ fn agents_reach_every_item_verb_and_the_calendars() {
     ] {
         assert!(surface.contains(needle), "missing {needle} in {surface}");
     }
-    // A capture runs no row's effect; a drive of the scenario does.
     let mut driven = TestApp::<CalendarShell>::drive("month").expect("drive");
     let local = driven
         .effect_on(
@@ -521,7 +487,6 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
         "each new project has its own colour"
     );
 
-    // A colour a project gave up is the next one handed out.
     let personal = calendar.state().unwrap().projects[1].id;
     calendar
         .apply_confirmed(Calendar::DELETE_PROJECT.with(key(personal)))
@@ -533,7 +498,6 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
         .unwrap();
     assert!(colours(&calendar).contains(&Palette::Emerald));
 
-    // With every colour taken, the next goes round again.
     for index in 0..Palette::ALL.len() - 3 {
         calendar
             .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
@@ -552,8 +516,6 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
     assert_eq!(colours(&calendar).last(), Some(&Palette::Indigo));
 }
 
-/// What is more than setting a field: a task's steps go with it, a deleted
-/// project's tasks stay unfiled, and an event's notes go with the event.
 #[test]
 fn verbs_take_along_what_hangs_off_an_item() {
     let mut calendar = Replica::<Calendar>::new();
@@ -631,8 +593,6 @@ fn verbs_take_along_what_hangs_off_an_item() {
     );
 }
 
-/// What a field can hold is checked whoever edits it: an event's end, its
-/// reminder and organizer; a project's name.
 #[test]
 fn field_edits_are_checked_whoever_makes_them() {
     let mut calendar = Replica::<Calendar>::new();
@@ -680,8 +640,6 @@ fn field_edits_are_checked_whoever_makes_them() {
     assert_eq!(calendar.state().unwrap().events[0].reminder_min, Some(30));
 }
 
-/// Two people changing different fields of one event at once both keep
-/// their change.
 #[test]
 fn concurrent_field_edits_of_one_event_both_land() {
     let mut left = Replica::<Calendar>::new();
@@ -703,8 +661,6 @@ fn concurrent_field_edits_of_one_event_both_land() {
     }
 }
 
-/// What an agent does for a person reads back in the reader's language as
-/// the calendar's sentences.
 #[test]
 fn history_entries_render_as_the_calendars_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -763,8 +719,6 @@ fn history_entries_render_as_the_calendars_sentences() {
     );
 }
 
-/// Hiding a calendar or choosing its colour is this person's setting:
-/// kept beside the document, following them to their other devices.
 #[test]
 fn calendar_display_choices_are_personal_settings() {
     let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
@@ -796,8 +750,6 @@ fn calendar_display_choices_are_personal_settings() {
     );
 }
 
-/// Sync and export say why they cannot run: no account on this device,
-/// nothing to export.
 #[test]
 fn effects_that_cannot_run_are_refused_with_their_reason() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -807,9 +759,6 @@ fn effects_that_cannot_run_are_refused_with_their_reason() {
     assert!(export.contains("export"), "{export}");
 }
 
-/// A `--data-dir`, test or capture profile keeps its own accounts: the
-/// window shows that profile's accounts with that profile's passwords, and
-/// a sync reports its health there, never into the person's session.
 #[test]
 fn a_host_profile_window_uses_that_profiles_accounts_credentials_and_sync_health() {
     let profiles = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
@@ -853,7 +802,6 @@ mod person_accounts {
     use super::*;
     use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
 
-    /// Settings, which keeps the person's accounts.
     pub(super) struct AccountsOwner;
 
     impl ResourceApp for AccountsOwner {
@@ -870,9 +818,6 @@ mod person_accounts {
         "ca".repeat(32)
     }
 
-    /// A `CalDAV` account Settings saved on one device reaches Calendar's
-    /// window through the person's accounts record, and Calendar cannot
-    /// change it.
     #[test]
     fn the_persons_caldav_accounts_reach_the_calendar_from_their_record() {
         let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
@@ -918,8 +863,6 @@ mod tasks_screen {
     use tilo_actions::{ActionKind, OperationKind, RetryPolicy};
     use ui::accesskit::{Node, NodeId, Role};
 
-    /// Effects run only in live mode; captures withhold effect runners.
-    /// Seed the live test record through its published door.
     fn sample_calendar() -> TestApp<CalendarShell> {
         let mut app = TestApp::<CalendarShell>::new().expect("live test app");
         let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
@@ -930,8 +873,6 @@ mod tasks_screen {
         app
     }
 
-    /// The accessible "Task list" region and the names of its items, when
-    /// the Tasks screen is on screen.
     fn task_list(app: &mut TestApp<CalendarShell>) -> Option<Vec<String>> {
         let nodes = app.harness().a11y_nodes();
         let (_, list) = nodes
@@ -946,7 +887,6 @@ mod tasks_screen {
         Some(items)
     }
 
-    /// The accessible node whose name is exactly `name`.
     fn named(app: &mut TestApp<CalendarShell>, name: &str) -> Option<(NodeId, Node)> {
         app.harness()
             .a11y_nodes()
@@ -954,7 +894,6 @@ mod tasks_screen {
             .find(|(_, node)| node.label() == Some(name))
     }
 
-    /// Choose the sidebar's place `name`, as a screen reader does.
     fn choose_place(app: &mut TestApp<CalendarShell>, name: &str) {
         let (id, _) = app
             .harness()
@@ -976,9 +915,6 @@ mod tasks_screen {
         app.settle();
     }
 
-    /// `show-tasks` is the root's typed view action: it reads, so anyone
-    /// who sees the calendar may invoke it, and a launcher card reaches the
-    /// tasks in one step through it.
     #[test]
     fn show_tasks_is_an_idempotent_view_on_the_root() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1011,10 +947,6 @@ mod tasks_screen {
         );
     }
 
-    /// What the package manifest offers while Calendar is closed is what
-    /// the running app publishes, at the same address, with the same label,
-    /// kind and confirmation, so launching it from the catalogue lands on a
-    /// real action.
     #[test]
     fn the_actions_the_manifest_offers_while_closed_are_published() {
         use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
@@ -1079,9 +1011,6 @@ mod tasks_screen {
         assert!(app.state().tasks.is_empty());
     }
 
-    /// Invoked through the published door, `show-tasks` lands on the Tasks
-    /// screen over the Inbox, whichever list the sidebar had chosen; the
-    /// "Task list" region exists only there.
     #[test]
     fn show_tasks_lands_on_the_inbox_task_list() {
         let mut app = sample_calendar();
@@ -1139,8 +1068,6 @@ mod tasks_screen {
         assert!(task_list(&mut app).is_some());
     }
 
-    /// The bar's Tasks tab and the action reach the same screen: choosing
-    /// the Inbox and the tab shows what `show-tasks` shows.
     #[test]
     fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
         let mut by_tab = sample_calendar();
@@ -1154,8 +1081,6 @@ mod tasks_screen {
         assert_eq!(Some(tab), task_list(&mut by_action));
     }
 
-    /// An empty list says so, and the entry field adds a task to it through
-    /// the calendar's `new-task`, as one undo step.
     #[test]
     fn an_empty_task_list_explains_itself_and_its_field_adds_a_task() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1188,8 +1113,6 @@ mod tasks_screen {
         assert!(app.state().tasks.is_empty());
     }
 
-    /// A task the workspace refuses is withdrawn, and the status that said it
-    /// was added says the workspace did not keep it instead.
     #[test]
     fn a_task_the_workspace_refuses_is_not_said_to_be_added() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1230,8 +1153,6 @@ mod tasks_screen {
         );
     }
 
-    /// In a calendar a workspace decides, a new task is said added only once
-    /// the workspace kept it, not when this device applied it.
     #[test]
     fn a_task_is_said_added_once_the_workspace_keeps_it() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1251,7 +1172,6 @@ mod tasks_screen {
         );
     }
 
-    /// In a calendar nobody else decides, a new task is said added at once.
     #[test]
     fn a_task_on_this_device_alone_is_said_added_at_once() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1266,8 +1186,6 @@ mod tasks_screen {
     }
 }
 
-/// A caller with no screen reads the calendar's events through the
-/// framework's `read`, and one event in full with its notes.
 #[test]
 fn the_calendar_reads_its_events_and_one_in_full() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1308,7 +1226,6 @@ fn the_calendar_reads_its_events_and_one_in_full() {
     );
 }
 
-/// Moving an event's start keeps how long it lasts.
 #[test]
 fn set_start_moves_an_event_keeping_its_length() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1331,8 +1248,6 @@ fn set_start_moves_an_event_keeping_its_length() {
     assert_eq!(moved.end, at(day, 15, 30));
 }
 
-/// An agent keeps the calendar, or one event, as an `.ics` in the workspace's
-/// content, without the attended file chooser Export ICS opens.
 #[test]
 fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1372,8 +1287,6 @@ fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {
     assert!(ics.contains("SUMMARY:Review") && !ics.contains("SUMMARY:Standup"));
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(
@@ -1382,8 +1295,6 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A past version reads through the `read` door and draws in the calendar's
-/// own view with the event it held then.
 #[test]
 fn a_past_version_reads_and_shows_its_event() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1423,9 +1334,6 @@ fn a_past_version_reads_and_shows_its_event() {
     );
 }
 
-/// An agent edits the open event's notes through the notes' own resource:
-/// the editor publishes them at their own address, and an action addressed
-/// there applies as the calendar's field edit.
 #[test]
 fn an_agent_edits_the_open_events_notes_through_their_own_resource() {
     let mut app = TestApp::<CalendarShell>::new().expect("test app");

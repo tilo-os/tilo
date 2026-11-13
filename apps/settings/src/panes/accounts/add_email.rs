@@ -1,7 +1,7 @@
-//! Adding an email account with its secret, the published
-//! `add-email-account` effect: the secret goes to the session's account
-//! custody first (outside a session, to an explicit root's own vault), then
-//! the account joins the person's accounts.
+//! Adding an email account with its secret, the published `add-email-account`
+//! effect: the secret goes to the session's account custody first (outside a
+//! session, to an explicit root's own vault), then the account joins the
+//! person's accounts.
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 
@@ -9,15 +9,12 @@ use super::AccountsArea;
 use crate::accounts::AccountRoot;
 use crate::resource::Settings;
 
-/// Where an added email account's secret is on its way.
 pub(super) enum Sealing {
-    /// To the session's custody, which answers on the window's route.
     Custody(ui::collaboration::browser_service_sessions::Pending),
     /// Sealed already, in an explicit root's own vault.
     Done,
 }
 
-/// An email account being added ([`AccountsArea::add_email_account`]).
 pub(super) struct AddingEmail {
     sealing: Sealing,
     root: AccountRoot,
@@ -42,8 +39,6 @@ impl AddingEmail {
         }
     }
 
-    /// With the secret sealed, add the account to the person's accounts and
-    /// answer the effect.
     pub(super) fn finish(mut self, sealed: Result<(), String>) {
         let result = sealed.and_then(|()| self.root.save_email_account(&self.config));
         if let Some(reply) = self.reply.take() {
@@ -55,7 +50,6 @@ impl AddingEmail {
     }
 }
 
-/// Answer `add-email-account`.
 pub(super) fn answer(
     app: &crate::settings_app::SettingsApp,
     effect: super::AccountsEffect,
@@ -143,7 +137,6 @@ impl AccountsArea {
         Ok(Effected::Pending)
     }
 
-    /// Take in custody's answer for an email account being added.
     pub(super) fn poll_adding(&self) {
         let added = self
             .adding

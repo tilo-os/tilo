@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.settings@7656a83c6a7e67b1";
+
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
 
@@ -215,7 +220,7 @@ export interface Root extends tilo.Resource {
 
 /** The `settings.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {
-  return resourceProxy(ws, path) as unknown as Root;
+  return resourceProxy(ws, path, SURFACE) as unknown as Root;
 }
 
 /** Appearance — `settings.appearance`. */
@@ -252,7 +257,7 @@ export interface Appearance extends tilo.Resource {
 
 /** The `settings.appearance` kind at `path`. */
 export function appearance(ws: tilo.Workspace, path: string): Appearance {
-  return resourceProxy(ws, path) as unknown as Appearance;
+  return resourceProxy(ws, path, SURFACE) as unknown as Appearance;
 }
 
 /** Appearance on this device — `settings.appearance-device`. */
@@ -262,7 +267,7 @@ export interface AppearanceDevice extends tilo.Resource {
 
 /** The `settings.appearance-device` kind at `path`. */
 export function appearanceDevice(ws: tilo.Workspace, path: string): AppearanceDevice {
-  return resourceProxy(ws, path) as unknown as AppearanceDevice;
+  return resourceProxy(ws, path, SURFACE) as unknown as AppearanceDevice;
 }
 
 /** Accessibility — `settings.accessibility`. */
@@ -302,7 +307,7 @@ export interface Accessibility extends tilo.Resource {
 
 /** The `settings.accessibility` kind at `path`. */
 export function accessibility(ws: tilo.Workspace, path: string): Accessibility {
-  return resourceProxy(ws, path) as unknown as Accessibility;
+  return resourceProxy(ws, path, SURFACE) as unknown as Accessibility;
 }
 
 /** Accessibility on this device — `settings.accessibility-device`. */
@@ -312,7 +317,7 @@ export interface AccessibilityDevice extends tilo.Resource {
 
 /** The `settings.accessibility-device` kind at `path`. */
 export function accessibilityDevice(ws: tilo.Workspace, path: string): AccessibilityDevice {
-  return resourceProxy(ws, path) as unknown as AccessibilityDevice;
+  return resourceProxy(ws, path, SURFACE) as unknown as AccessibilityDevice;
 }
 
 /** Input — `settings.input`. */
@@ -359,7 +364,7 @@ export interface Input extends tilo.Resource {
 
 /** The `settings.input` kind at `path`. */
 export function input(ws: tilo.Workspace, path: string): Input {
-  return resourceProxy(ws, path) as unknown as Input;
+  return resourceProxy(ws, path, SURFACE) as unknown as Input;
 }
 
 /** Input on this device — `settings.input-device`. */
@@ -432,7 +437,7 @@ export interface InputDevice extends tilo.Resource {
 
 /** The `settings.input-device` kind at `path`. */
 export function inputDevice(ws: tilo.Workspace, path: string): InputDevice {
-  return resourceProxy(ws, path) as unknown as InputDevice;
+  return resourceProxy(ws, path, SURFACE) as unknown as InputDevice;
 }
 
 /** Spelling and text — `settings.text-assistance`. */
@@ -444,7 +449,7 @@ export interface TextAssistance extends tilo.Resource {
 
 /** The `settings.text-assistance` kind at `path`. */
 export function textAssistance(ws: tilo.Workspace, path: string): TextAssistance {
-  return resourceProxy(ws, path) as unknown as TextAssistance;
+  return resourceProxy(ws, path, SURFACE) as unknown as TextAssistance;
 }
 
 /** Power — `settings.power`. */
@@ -473,7 +478,7 @@ export interface Power extends tilo.Resource {
 
 /** The `settings.power` kind at `path`. */
 export function power(ws: tilo.Workspace, path: string): Power {
-  return resourceProxy(ws, path) as unknown as Power;
+  return resourceProxy(ws, path, SURFACE) as unknown as Power;
 }
 
 /** Desk widgets — `settings.desk_widgets`. */
@@ -486,7 +491,7 @@ export interface DeskWidgets extends tilo.Resource {
 
 /** The `settings.desk_widgets` kind at `path`. */
 export function deskWidgets(ws: tilo.Workspace, path: string): DeskWidgets {
-  return resourceProxy(ws, path) as unknown as DeskWidgets;
+  return resourceProxy(ws, path, SURFACE) as unknown as DeskWidgets;
 }
 
 /** Search history — `settings.search_history`. */
@@ -498,7 +503,7 @@ export interface SearchHistory extends tilo.Resource {
 
 /** The `settings.search_history` kind at `path`. */
 export function searchHistory(ws: tilo.Workspace, path: string): SearchHistory {
-  return resourceProxy(ws, path) as unknown as SearchHistory;
+  return resourceProxy(ws, path, SURFACE) as unknown as SearchHistory;
 }
 
 /** Updates — `settings.updates`. */
@@ -515,7 +520,7 @@ export interface Updates extends tilo.Resource {
 
 /** The `settings.updates` kind at `path`. */
 export function updates(ws: tilo.Workspace, path: string): Updates {
-  return resourceProxy(ws, path) as unknown as Updates;
+  return resourceProxy(ws, path, SURFACE) as unknown as Updates;
 }
 
 /** Notifications — `settings.notifications`. */
@@ -539,7 +544,7 @@ export interface Notifications extends tilo.Resource {
 
 /** The `settings.notifications` kind at `path`. */
 export function notifications(ws: tilo.Workspace, path: string): Notifications {
-  return resourceProxy(ws, path) as unknown as Notifications;
+  return resourceProxy(ws, path, SURFACE) as unknown as Notifications;
 }
 
 /** Sound — `settings.audio`. */
@@ -558,7 +563,7 @@ export interface Audio extends tilo.Resource {
 
 /** The `settings.audio` kind at `path`. */
 export function audio(ws: tilo.Workspace, path: string): Audio {
-  return resourceProxy(ws, path) as unknown as Audio;
+  return resourceProxy(ws, path, SURFACE) as unknown as Audio;
 }
 
 /** Sound on this device — `settings.audio-device`. */
@@ -575,7 +580,7 @@ export interface AudioDevice extends tilo.Resource {
 
 /** The `settings.audio-device` kind at `path`. */
 export function audioDevice(ws: tilo.Workspace, path: string): AudioDevice {
-  return resourceProxy(ws, path) as unknown as AudioDevice;
+  return resourceProxy(ws, path, SURFACE) as unknown as AudioDevice;
 }
 
 /** Displays — `settings.display`. */
@@ -593,7 +598,7 @@ export interface Display extends tilo.Resource {
 
 /** The `settings.display` kind at `path`. */
 export function display(ws: tilo.Workspace, path: string): Display {
-  return resourceProxy(ws, path) as unknown as Display;
+  return resourceProxy(ws, path, SURFACE) as unknown as Display;
 }
 
 /** Night light — `settings.night-light`. */
@@ -605,7 +610,7 @@ export interface NightLight extends tilo.Resource {
 
 /** The `settings.night-light` kind at `path`. */
 export function nightLight(ws: tilo.Workspace, path: string): NightLight {
-  return resourceProxy(ws, path) as unknown as NightLight;
+  return resourceProxy(ws, path, SURFACE) as unknown as NightLight;
 }
 
 /** Region and language — `settings.locale`. */
@@ -620,7 +625,7 @@ export interface Locale extends tilo.Resource {
 
 /** The `settings.locale` kind at `path`. */
 export function locale(ws: tilo.Workspace, path: string): Locale {
-  return resourceProxy(ws, path) as unknown as Locale;
+  return resourceProxy(ws, path, SURFACE) as unknown as Locale;
 }
 
 /** Continuity — `settings.continuity`. */
@@ -647,7 +652,7 @@ export interface Continuity extends tilo.Resource {
 
 /** The `settings.continuity` kind at `path`. */
 export function continuity(ws: tilo.Workspace, path: string): Continuity {
-  return resourceProxy(ws, path) as unknown as Continuity;
+  return resourceProxy(ws, path, SURFACE) as unknown as Continuity;
 }
 
 /** Keyboard shortcuts — `settings.shortcuts`. */
@@ -669,7 +674,7 @@ export interface Shortcuts extends tilo.Resource {
 
 /** The `settings.shortcuts` kind at `path`. */
 export function shortcuts(ws: tilo.Workspace, path: string): Shortcuts {
-  return resourceProxy(ws, path) as unknown as Shortcuts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Shortcuts;
 }
 
 /** Shell views — `shell-views`. */
@@ -690,7 +695,7 @@ export interface ShellViews extends tilo.Resource {
 
 /** The `shell-views` kind at `path`. */
 export function shellViews(ws: tilo.Workspace, path: string): ShellViews {
-  return resourceProxy(ws, path) as unknown as ShellViews;
+  return resourceProxy(ws, path, SURFACE) as unknown as ShellViews;
 }
 
 /** Desktop controls — `settings.desktop-controls`. */
@@ -700,7 +705,7 @@ export interface DesktopControls extends tilo.Resource {
 
 /** The `settings.desktop-controls` kind at `path`. */
 export function desktopControls(ws: tilo.Workspace, path: string): DesktopControls {
-  return resourceProxy(ws, path) as unknown as DesktopControls;
+  return resourceProxy(ws, path, SURFACE) as unknown as DesktopControls;
 }
 
 /** Desktop controls on this device — `settings.desktop-controls-device`. */
@@ -710,7 +715,7 @@ export interface DesktopControlsDevice extends tilo.Resource {
 
 /** The `settings.desktop-controls-device` kind at `path`. */
 export function desktopControlsDevice(ws: tilo.Workspace, path: string): DesktopControlsDevice {
-  return resourceProxy(ws, path) as unknown as DesktopControlsDevice;
+  return resourceProxy(ws, path, SURFACE) as unknown as DesktopControlsDevice;
 }
 
 /** Agent model providers — `settings.agent-providers`. */
@@ -726,7 +731,7 @@ export interface AgentProviders extends tilo.Resource {
 
 /** The `settings.agent-providers` kind at `path`. */
 export function agentProviders(ws: tilo.Workspace, path: string): AgentProviders {
-  return resourceProxy(ws, path) as unknown as AgentProviders;
+  return resourceProxy(ws, path, SURFACE) as unknown as AgentProviders;
 }
 
 /** Hosted agent model providers — `settings.hosted-agent-providers`. */
@@ -739,7 +744,7 @@ export interface HostedAgentProviders extends tilo.Resource {
 
 /** The `settings.hosted-agent-providers` kind at `path`. */
 export function hostedAgentProviders(ws: tilo.Workspace, path: string): HostedAgentProviders {
-  return resourceProxy(ws, path) as unknown as HostedAgentProviders;
+  return resourceProxy(ws, path, SURFACE) as unknown as HostedAgentProviders;
 }
 
 /** Default apps — `settings.default-apps`. */
@@ -753,7 +758,7 @@ export interface DefaultApps extends tilo.Resource {
 
 /** The `settings.default-apps` kind at `path`. */
 export function defaultApps(ws: tilo.Workspace, path: string): DefaultApps {
-  return resourceProxy(ws, path) as unknown as DefaultApps;
+  return resourceProxy(ws, path, SURFACE) as unknown as DefaultApps;
 }
 
 /** Clock — `settings.clock`. */
@@ -763,7 +768,7 @@ export interface Clock extends tilo.Resource {
 
 /** The `settings.clock` kind at `path`. */
 export function clock(ws: tilo.Workspace, path: string): Clock {
-  return resourceProxy(ws, path) as unknown as Clock;
+  return resourceProxy(ws, path, SURFACE) as unknown as Clock;
 }
 
 /** Display arrangement — `settings.display-arrangement`. */
@@ -776,7 +781,7 @@ export interface DisplayArrangement extends tilo.Resource {
 
 /** The `settings.display-arrangement` kind at `path`. */
 export function displayArrangement(ws: tilo.Workspace, path: string): DisplayArrangement {
-  return resourceProxy(ws, path) as unknown as DisplayArrangement;
+  return resourceProxy(ws, path, SURFACE) as unknown as DisplayArrangement;
 }
 
 /** Automatic display input — `settings.automatic-display`. */
@@ -789,7 +794,7 @@ export interface AutomaticDisplay extends tilo.Resource {
 
 /** The `settings.automatic-display` kind at `path`. */
 export function automaticDisplay(ws: tilo.Workspace, path: string): AutomaticDisplay {
-  return resourceProxy(ws, path) as unknown as AutomaticDisplay;
+  return resourceProxy(ws, path, SURFACE) as unknown as AutomaticDisplay;
 }
 
 /** Display change — `settings.display-change`. */
@@ -805,7 +810,7 @@ export interface DisplayChange extends tilo.Resource {
 
 /** The `settings.display-change` kind at `path`. */
 export function displayChange(ws: tilo.Workspace, path: string): DisplayChange {
-  return resourceProxy(ws, path) as unknown as DisplayChange;
+  return resourceProxy(ws, path, SURFACE) as unknown as DisplayChange;
 }
 
 /** On-screen keyboard layouts — `settings.osk-sources`. */
@@ -820,7 +825,7 @@ export interface OskSources extends tilo.Resource {
 
 /** The `settings.osk-sources` kind at `path`. */
 export function oskSources(ws: tilo.Workspace, path: string): OskSources {
-  return resourceProxy(ws, path) as unknown as OskSources;
+  return resourceProxy(ws, path, SURFACE) as unknown as OskSources;
 }
 
 /** Your devices as a VPN — `settings.device-vpn`. */
@@ -851,7 +856,7 @@ export interface DeviceVpn extends tilo.Resource {
 
 /** The `settings.device-vpn` kind at `path`. */
 export function deviceVpn(ws: tilo.Workspace, path: string): DeviceVpn {
-  return resourceProxy(ws, path) as unknown as DeviceVpn;
+  return resourceProxy(ws, path, SURFACE) as unknown as DeviceVpn;
 }
 
 /** Your colour — `settings.identity`. */
@@ -861,7 +866,7 @@ export interface Identity extends tilo.Resource {
 
 /** The `settings.identity` kind at `path`. */
 export function identity(ws: tilo.Workspace, path: string): Identity {
-  return resourceProxy(ws, path) as unknown as Identity;
+  return resourceProxy(ws, path, SURFACE) as unknown as Identity;
 }
 
 /** Data usage — `settings.network-usage`. */
@@ -887,7 +892,7 @@ export interface NetworkUsage extends tilo.Resource {
 
 /** The `settings.network-usage` kind at `path`. */
 export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
-  return resourceProxy(ws, path) as unknown as NetworkUsage;
+  return resourceProxy(ws, path, SURFACE) as unknown as NetworkUsage;
 }
 
 /** Agents from your other devices — `settings.agent-door`. */
@@ -900,7 +905,7 @@ export interface AgentDoor extends tilo.Resource {
 
 /** The `settings.agent-door` kind at `path`. */
 export function agentDoor(ws: tilo.Workspace, path: string): AgentDoor {
-  return resourceProxy(ws, path) as unknown as AgentDoor;
+  return resourceProxy(ws, path, SURFACE) as unknown as AgentDoor;
 }
 
 /** Accounts — `tilo.accounts`. */
@@ -930,6 +935,6 @@ export interface Accounts extends tilo.Resource {
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
 }
 

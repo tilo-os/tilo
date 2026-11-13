@@ -2,8 +2,6 @@ use super::*;
 use ui::prelude::TestApp;
 use ui::tilo_resource::{Replica, Settled};
 
-/// A new document holds the standard places, which the window publishes
-/// as rows that open; the filesystem verbs ride the resource.
 #[test]
 fn a_new_document_publishes_the_standard_places() {
     let state = Replica::<FileExplorer>::new().state().unwrap();
@@ -70,10 +68,6 @@ fn a_new_document_publishes_the_standard_places() {
     );
 }
 
-/// What the document publishes reads as a person reads it: each bookmark
-/// by its folder's name, never the form it is stored in (`xdg:home`), and
-/// each action by a short title, never the first line of what it is
-/// written up as for agents.
 #[test]
 fn bookmarks_and_actions_are_named_as_a_person_reads_them() {
     crate::i18n::set_locale("en-US");
@@ -131,8 +125,6 @@ fn pin(place: &str, at: Option<usize>) -> Invoke<FileExplorer> {
     })
 }
 
-/// Bookmarks are edited place by place, so two people pinning at once
-/// both keep their pin, and the same folder pinned twice is one pin.
 #[test]
 fn bookmark_edits_are_granular() {
     let mut laptop = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
@@ -177,8 +169,6 @@ fn bookmark_edits_are_granular() {
     );
 }
 
-/// Pinning a folder in the window is the resource's action: it lands in
-/// the document, undo takes it back, and the sidebar follows.
 #[test]
 fn pinning_a_folder_is_a_bookmark_action() {
     let folder = tempfile::tempdir().unwrap();
@@ -224,7 +214,6 @@ fn pinning_a_folder_is_a_bookmark_action() {
     assert!(shown, "an agent's pin reaches the sidebar");
 }
 
-/// The view preferences are the person's settings, not the document.
 #[test]
 fn view_preferences_are_personal_settings() {
     let mut app = TestApp::<FileExplorerShell>::new().unwrap();
@@ -245,9 +234,6 @@ fn view_preferences_are_personal_settings() {
     assert_eq!(stored.zoom, 1);
 }
 
-/// A capture browses the folders written for its scenario and reads
-/// nothing of the machine it runs on; its view state is staged once laid
-/// out.
 #[test]
 fn captures_browse_their_own_scene() {
     let guard = crate::model::fixture_io_guard::DenyAmbientIo::new();
@@ -277,9 +263,6 @@ fn a_launch_opens_the_folder_it_names() {
     assert!(frame.contains("launched.txt"), "{frame}");
 }
 
-/// Invoke the action `id` of the published resource `on` with `args`
-/// through the door, as an agent does, and let the device carry out
-/// what it queued.
 fn act_on(app: &mut TestApp<FileExplorerShell>, on: &str, id: &str, args: &serde_json::Value) {
     app.harness()
         .call_on_confirmed(on, id, args.clone())
@@ -356,6 +339,50 @@ fn published_selection_capture_observes_the_real_selected_rows() {
 }
 
 #[test]
+fn the_edits_bound_to_a_selection_name_it_in_the_windows_language() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Bericht.pdf"), b"x").unwrap();
+    let launch = [root.path().to_str().unwrap()];
+    let mut app = TestApp::<FileExplorerShell>::launched(&launch).unwrap();
+    app.effect(&FilesEffect::SelectEntries {
+        entries: vec![crate::search_provider::entry_resource_id(
+            &root.path().join("Bericht.pdf"),
+        )],
+    })
+    .unwrap();
+    let labels = |app: &mut TestApp<FileExplorerShell>| -> Vec<String> {
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            files
+                .state()
+                .bound_declarations()
+                .iter()
+                .filter(|decl| matches!(decl.id, "rename-selected" | "trash-selected"))
+                .map(|decl| decl.shown_label())
+                .collect()
+        })
+        .unwrap()
+    };
+    crate::i18n::set_locale("de-DE");
+    let german = labels(&mut app);
+    crate::i18n::set_locale("en-US");
+    let english = labels(&mut app);
+    assert_eq!(
+        german,
+        [
+            "„Bericht.pdf“ umbenennen",
+            "„Bericht.pdf“ in den Papierkorb verschieben"
+        ]
+    );
+    assert_eq!(
+        english,
+        [
+            "Rename \u{201c}Bericht.pdf\u{201d}",
+            "Move \u{201c}Bericht.pdf\u{201d} to Trash"
+        ]
+    );
+}
+
+#[test]
 fn published_selection_changes_stay_in_the_addressed_files_window() {
     let root = tempfile::tempdir().unwrap();
     for name in ["a.txt", "b.txt"] {
@@ -395,13 +422,8 @@ fn published_selection_changes_stay_in_the_addressed_files_window() {
     assert!(other.state().ops.is_empty());
 }
 
-/// Copying and pasting are queued and undoable like every filesystem
-/// change: undo moves a copy to Trash and a cut-and-paste back. A row
-/// offers rename, move and trash on its entry; undoing the trash puts
-/// the file back.
 #[test]
 fn copies_and_row_edits_are_undoable() {
-    // Inside the home, so Trash is the home's and its entries are known.
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap();
@@ -495,16 +517,11 @@ fn copies_and_row_edits_are_undoable() {
     );
 }
 
-/// Undo, as Ctrl+Z does, then run frames until the Files document
-/// records the revert carried out: a keystroke has no caller to answer,
-/// and the device reverts in a later frame, as a job.
 fn undo_settled(app: &mut TestApp<FileExplorerShell>) {
     assert!(app.undo());
     settle_ops(app);
 }
 
-/// Run frames until every queued change settled: a copy, a move, an
-/// extraction or a packing runs on a worker.
 fn settle_ops(app: &mut TestApp<FileExplorerShell>) {
     tilo_test_env::wait_until("every queued change to settle", || {
         app.settle();
@@ -512,8 +529,6 @@ fn settle_ops(app: &mut TestApp<FileExplorerShell>) {
     });
 }
 
-/// Invoke the resource's action `id` with `args` through the door, as
-/// an agent does, and let the device carry out what it queued.
 fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value) {
     app.harness()
         .call_on(
@@ -525,10 +540,6 @@ fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value)
     settle_ops(app);
 }
 
-/// A rename, a move or a trash queued here reaches the disk, so grants
-/// treat it as an outside effect, yet its undo queues the revert: the
-/// contract says it can be taken back, bound to a folder or not, so a
-/// reviewer is not told it sends anything away.
 #[test]
 fn queued_file_changes_declare_that_they_can_be_undone() {
     use ui::tilo_actions::{ActionKind, COMPENSATED_UNDO_TAG};
@@ -558,16 +569,16 @@ fn queued_file_changes_declare_that_they_can_be_undone() {
     let bound = FileExplorer::RENAME
         .bind(file_explorer::Rename::paths().device, "device".to_owned())
         .and(file_explorer::Rename::paths().folder, "/tmp".to_owned())
-        .declaration("rename-here", "Rename an entry here")
+        .declaration(
+            "rename-here",
+            ui::tilo_resource::word!("files-folder-rename-here"),
+        )
         .unwrap();
     assert_eq!(bound.kind, ActionKind::Outside);
     let spec = ui::tilo_resource::declaration_spec(&*bound);
     assert!(spec.contract.can_be_undone());
 }
 
-/// Creating, renaming and moving files are document actions: queued in
-/// the Files document, carried out by this device's drain, settled with
-/// what they changed, and undone by queueing their revert.
 #[test]
 fn filesystem_changes_are_undoable_document_actions() {
     let folder = tempfile::tempdir().unwrap();
@@ -600,7 +611,6 @@ fn filesystem_changes_are_undoable_document_actions() {
             .all(|(_, op)| op.settled.as_ref().is_some_and(Settled::is_done))
     );
 
-    // Undo takes the move back on the filesystem, then the rename.
     assert!(app.undo());
     app.settle();
     assert!(folder.path().join("final.txt").exists(), "moved back");
@@ -619,8 +629,6 @@ fn filesystem_changes_are_undoable_document_actions() {
     assert!(refused.is_err(), "a misspelt entry changes nothing");
 }
 
-/// The window's other work is its effects: copying a row, pasting,
-/// showing a folder, pinning the folder shown.
 #[test]
 fn the_windows_work_is_its_effects() {
     let folder = tempfile::tempdir().unwrap();
@@ -628,7 +636,6 @@ fn the_windows_work_is_its_effects() {
     std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
     let mut app =
         TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
-    // A row's effect, bound to it, as the palette offers it on the row.
     let row = crate::search_provider::entry_resource_id(&folder.path().join("notes.txt"));
     app.effect_on(&row, &FilesEffect::Copy { entry: row.clone() })
         .unwrap();
@@ -654,9 +661,6 @@ fn the_windows_work_is_its_effects() {
     );
 }
 
-/// A caller with no screen reads what the files say, writes a new file
-/// and compresses entries of the folder shown, through the same
-/// published door, and each change undoes like any other.
 #[test]
 fn files_are_read_written_and_compressed_through_actions() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -723,7 +727,6 @@ fn files_are_read_written_and_compressed_through_actions() {
     );
     assert!(folder.path().join("notes.md").exists());
 
-    // Compress to tar.zst and extract it again, through the actions.
     act(
         &mut app,
         "compress-here",
@@ -762,8 +765,6 @@ fn files_are_read_written_and_compressed_through_actions() {
     );
 }
 
-/// A change queued for another device waits for that device: only the
-/// device whose disk it names carries it out, and both see what it did.
 #[test]
 fn only_the_device_a_change_names_carries_it_out() {
     let root = tempfile::tempdir().unwrap();
@@ -810,8 +811,6 @@ fn import_destination(path: &std::path::Path) -> ImportDestination {
     }
 }
 
-// Only for requests whose path intentionally cannot be pinned. This is
-// serializable evidence, not permission to read a private cloud source.
 fn nonexistent_import_destination(path: &std::path::Path) -> ImportDestination {
     ImportDestination {
         path: AbsolutePath::new(path).unwrap(),
@@ -834,8 +833,7 @@ fn import_entry() -> tilo_cloud_files::cloud::ImportEntry {
 #[cfg(target_os = "linux")]
 #[test]
 fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
-    // Keep this real service socket private to the test: other concurrently
-    // running Files tests can also browse the default cloud endpoint.
+    // The service socket is this test's alone: other tests run at the same time.
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
     let root = tempfile::tempdir().unwrap();
@@ -918,9 +916,6 @@ fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
     std::fs::remove_file(socket).unwrap();
 }
 
-/// Exercise the recorded production verb, not a hand-built outbox edit.
-/// A historical import describes what happened even when its destination
-/// has moved and a different device/person is reading it.
 fn assert_cloud_import_history_is_structural(
     app: &TestApp<FileExplorerShell>,
     entry: &str,
@@ -1003,8 +998,6 @@ fn assert_cloud_import_history_is_structural(
     assert!(historical.settled.is_none());
     assert!(ui::bound_dispatch::executing_host_scope().is_none());
     std::fs::rename(displaced, folder).unwrap();
-    // The caller now reopens the already consumed exact entry and checks
-    // that neither replay nor either preview reminted its local approval.
 }
 
 fn assert_forged_cloud_jobs_denied(
@@ -1013,9 +1006,6 @@ fn assert_forged_cloud_jobs_denied(
     root: &std::path::Path,
     listener: &std::os::unix::net::UnixListener,
 ) {
-    // A collaborator can write perfectly valid outbox data without going
-    // through cloud-import. Neither replaying the exact approved job under
-    // another entry nor changing that job may spend the host's consent.
     let mut changed_account = op.clone();
     let FileOp::CloudImport { account, .. } = &mut changed_account else {
         panic!("the admitted job must be a cloud import")
@@ -1038,7 +1028,6 @@ fn assert_forged_cloud_jobs_denied(
         .find(|(_, entry)| entry.value.op == op)
         .map(|(id, _)| id.clone())
         .expect("the original admitted import remains recorded");
-    // Re-opening the original consumed entry must not re-approve it either.
     for (attempt, forged) in [
         op.clone(),
         op,
@@ -1214,8 +1203,6 @@ fn invoke_confirmed_by(
             refusal.to_owned(),
         ));
     }
-    // Discover as the local host, then exercise admission under the
-    // caller's role: discovery is not an authority grant.
     let address = app
         .actions()?
         .into_iter()
@@ -1264,8 +1251,6 @@ fn mounted_import_refuses_guest_public_actions() {
 fn cloud_import_refuses_another_device_before_pinning_the_destination() {
     let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
     let root = tempfile::tempdir().unwrap();
-    // This path does not exist on the sender: a destination lookup would
-    // fail differently, proving the host-device check precedes pinning.
     let folder = root.path().join("receiving-device-folder");
     let error = app
         .invoke(FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
@@ -1330,8 +1315,6 @@ fn cloud_guests_cannot_queue_imports_even_with_workspace_ownership() {
             }),
         )
         .unwrap_err();
-        // Editors and owners pass workspace permission admission, but
-        // neither owns this host's account. Viewers may be denied earlier.
         if role != Role::Viewer {
             assert!(
                 error.to_string().contains("host's person"),
@@ -1412,8 +1395,6 @@ fn cloud_effects_refuse_guest_invocations_before_accessing_accounts() {
                     "{actor}: {effect:?}: {error}"
                 );
             } else {
-                // Private view admission rejects a guest before the
-                // cloud handler can inspect any account or transfer.
                 assert!(
                     matches!(&error, ui::tilo_actions::DoorError::Unavailable { code, .. }
                         if code == "private_view"),
@@ -1437,8 +1418,6 @@ fn cloud_attribution_and_mutable_authority_do_not_grant_personal_account_access(
             .acting_for("local-person"),
     ] {
         let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
-        // Mutable workspace authority may identify a different owner. It
-        // must not replace the immutable person who owns this host.
         app.set_permissions(ui::permissions::PermissionContext::member(
             invoker.actor.clone(),
             ui::permissions::Role::Owner,
@@ -1460,8 +1439,6 @@ fn cloud_attribution_and_mutable_authority_do_not_grant_personal_account_access(
             )
             .unwrap_err();
         assert!(error.to_string().contains("host's person"), "{error}");
-        // A read effect reaches the account guard; a private View
-        // effect would instead be refused earlier by the SDK.
         let effect = FilesEffect::CloudProgress;
         let error = app
             .call_by(
@@ -1616,7 +1593,6 @@ fn cloud_import_refuses_invalid_requests_before_queueing() {
     }
 }
 
-/// What the person did to Files reads as the app's sentences.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     let root = tempfile::tempdir().unwrap();
@@ -1657,9 +1633,6 @@ fn history_entries_render_as_the_apps_sentences() {
         .skip(before)
         .filter_map(|version| version.context)
         .filter(|entry| entry.change != ui::tilo_actions::ChangeKind::External)
-        // A test host names the app after the action type's stem
-        // (`files`), not the app that hosts the record; read the entry
-        // as the app's own host records it.
         .map(|mut entry| {
             if let Some(ui::tilo_actions::entry::Did::Verb(verb)) = &mut entry.what {
                 FileExplorerShell::ID.clone_into(&mut verb.action.app);
@@ -1677,9 +1650,6 @@ fn history_entries_render_as_the_apps_sentences() {
     );
 }
 
-/// Files reads as the document its windows share: the pinned places and
-/// every change asked for, with the device that carries it out, so an agent
-/// finds Files and the device its verbs name in what Files publishes.
 #[test]
 fn a_read_answers_the_places_and_each_change_with_its_device() {
     let root = tempfile::tempdir().unwrap();

@@ -189,7 +189,6 @@ impl WindowPreview {
 
 impl Drop for WindowPreview {
     fn drop(&mut self) {
-        // The preview left the screen: its picture goes with it.
         if self.on_screen {
             forget(&self.window);
         }
@@ -207,7 +206,6 @@ impl Described for WindowPreview {
         if self.window == props.window {
             return true;
         }
-        // The window this preview shows is another one: the one it showed leaves the screen.
         if self.on_screen {
             forget(&self.window);
         }
@@ -227,8 +225,6 @@ impl Widget for WindowPreview {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The shape of a window: as wide as its frame makes it, as tall as that width makes a
-        // window. It holds nothing.
         taffy.widget_leaf(
             Style {
                 size: taffy::Size {
@@ -247,8 +243,6 @@ impl Widget for WindowPreview {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.on_screen = true;
-        // Reported on every layout the preview is placed by, so a host that installed another
-        // handle since it last laid out finds it.
         report(&self.window, self.rect);
     }
 
@@ -260,7 +254,6 @@ impl Widget for WindowPreview {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // The compositor draws the window's picture over the view: the preview paints nothing.
     }
 
     /// A preview paints nothing, so it is never dirty.

@@ -1,8 +1,5 @@
-//! Responsive content-width policies for app surfaces.
-//!
-//! Full-bleed canvases and dense data grids legitimately use the whole window.
-//! Focused CRUD, settings, and collection surfaces usually should not: without
-//! a shared lane, search fields and row content stretch across large monitors.
+//! Responsive content-width policies for app surfaces. Full-bleed canvases and dense data grids
+//! legitimately use the whole window.
 
 use vello::kurbo::Rect;
 
@@ -77,8 +74,7 @@ impl ResponsiveControlBar {
     }
 }
 
-/// A centered, horizontally constrained lane that remains fluid on compact
-/// viewports. Vertical bounds always match the supplied viewport.
+/// A centered, horizontally constrained lane that remains fluid on compact viewports.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FocusedContentLane {
     max_width: f64,

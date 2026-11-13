@@ -145,7 +145,7 @@ fn reading_width(theme: &Theme) -> f64 {
     const SAMPLE: &str = "the quick brown fox jumps over the lazy dog";
     const CHARACTERS: u32 = 70;
     let style = theme.text(TextRole::Body);
-    let sample = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let sample = ui::text_render::with_layout_renderer(theme, |text| {
         f64::from(text.measure_style(SAMPLE, None, &style).0)
     });
     // `SAMPLE` is ASCII, so its byte length is its character count.
@@ -1938,7 +1938,7 @@ impl Widget for MainPanel {
         }
         // Input can arrive before the first paint, including after a resize.
         self.empty_action_rect = if self.page_id.is_none() {
-            ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+            ui::text_render::with_layout_renderer(&self.layout_theme, |text| {
                 EmptyState::layout(
                     text,
                     &self.layout_theme,
@@ -1973,7 +1973,7 @@ impl Widget for MainPanel {
         let gutter = self.metrics.gutter + side;
         let text_edge = self.metrics.text_edge + side;
         let line_width = (self.rect.width() - text_edge - gutter).max(0.0);
-        let fits = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+        let fits = ui::text_render::with_layout_renderer(&self.layout_theme, |text| {
             let style = self.layout_theme.text(TextRole::LargeTitle);
             f64::from(text.measure_style(self.title_label.value(), None, &style).0) <= line_width
         });

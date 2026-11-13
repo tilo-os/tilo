@@ -1,40 +1,30 @@
-//! What a theme document says about colour (`docs/design-language.md`,
-//! "Colour" and "Theming").
-//!
-//! A [`Palette`] is a temperature (one OKLCH hue and a chroma at or below
-//! [`NEUTRAL_MAX_CHROMA`]), a lightness ladder for the six surfaces, three
-//! ink tiers and four muted status tones. [`Emphasis`] decides which hue
-//! the accent takes. [`Tone`] sets the lightness and
-//! chroma of the presence palette, whose twelve hues never move. Everything
-//! else ([`crate::tokens::Colors`]) is derived from these numbers in one
-//! place, so a palette can only say what the design language lets it say.
+//! What a theme document says about colour (`docs/design-language.md`, "Colour" and
+//! "Theming"). A [`Palette`] is a temperature (one OKLCH hue and a chroma at or below
+//! [`NEUTRAL_MAX_CHROMA`]), a lightness ladder for the six surfaces, three ink tiers and
+//! four muted status tones. [`Tone`] sets the lightness and chroma of the presence
+//! palette, whose twelve hues never move.
 
 use serde::{Deserialize, Serialize};
 
-/// Ceiling on the neutral material's chroma. The neutrals carry a
-/// temperature, never a colour.
+/// Ceiling on the neutral material's chroma. The neutrals carry a temperature, never a
+/// colour.
 pub const NEUTRAL_MAX_CHROMA: f32 = 0.010;
 
 /// Ceiling on status chroma: danger, warning and success are muted.
 pub const STATUS_MAX_CHROMA: f32 = 0.13;
 
-/// Status hues, in OKLCH degrees: danger, warning, success, info. A theme
-/// moves their lightness and chroma, never their meaning.
+/// Status hues, in OKLCH degrees: danger, warning, success, info. A theme moves their
+/// lightness and chroma, never their meaning.
 pub const STATUS_HUES: [f32; 4] = [25.0, 75.0, 150.0, 245.0];
 
 /// OKLCH lightness of every surface, `0` black to `1` white.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceLadder {
-    /// The desktop ground behind tiles.
     pub base: f32,
-    /// The window ground every app paints on.
     pub content: f32,
     pub sidebar: f32,
-    /// The detail / inspector region of a window.
     pub inspector: f32,
-    /// Fields, wells and objects inside content.
     pub raised: f32,
-    /// Floating chrome: menus, popovers, the palette, sheets.
     pub overlay: f32,
 }
 
@@ -75,7 +65,6 @@ impl Tone {
     }
 }
 
-/// The four status tones. Their hues are [`STATUS_HUES`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatusTones {
     pub danger: Tone,
@@ -95,43 +84,32 @@ impl StatusTones {
 /// The neutral material and its inks.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Palette {
-    /// Ink is light on these surfaces.
     pub dark: bool,
-    /// Every text pairing holds WCAG AAA, floating chrome is opaque, and
-    /// content surfaces are asked to force their colours.
     #[serde(default)]
     pub high_contrast: bool,
-    /// The OKLCH hue every neutral shares, in degrees. `None` until
-    /// something gives the material a temperature: a palette without a hue
-    /// renders pure grey whatever its chroma, and the workspace it is shown
-    /// in supplies one (`Theme::with_neutral_hue`).
+    /// The OKLCH hue every neutral shares, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<f32>,
-    /// The neutrals' chroma, `0` (pure grey) to [`NEUTRAL_MAX_CHROMA`]: how
-    /// much temperature the material takes once it has a hue. At `0` a
-    /// workspace's temperature has nothing to tint.
+    /// The neutrals' chroma, `0` (pure grey) to [`NEUTRAL_MAX_CHROMA`]: how much
+    /// temperature the material takes once it has a hue.
     pub chroma: f32,
     pub surfaces: SurfaceLadder,
     pub ink: InkLadder,
     pub status: StatusTones,
 }
 
-/// Which hue the accent takes: primary actions, the selected row's lift
-/// tint, links, the focus ring, the caret and the text selection
-/// (`docs/design-language.md`, "Colour roles"). An "on" state is never the
-/// accent; it is the on-state green ([`crate::tokens::Intents::on_state`]).
+/// Which hue the accent takes: primary actions, the selected row's lift tint, links, the
+/// focus ring, the caret and the text selection (`docs/design-language.md`, "Colour
+/// roles"). An "on" state is never the accent; it is the on-state green
+/// ([`crate::tokens::Intents::on_state`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Emphasis {
-    /// The accent is the person's own colour, the one their cursor has for
-    /// collaborators. The default.
     #[default]
     You,
-    /// The accent is one chosen hue (Appearance).
-    Tinted { hue: f32 },
-    /// No accent: a primary action is primary ink with the window ground as
-    /// its label, and a selection is a colourless lift. For people who want
-    /// a monochrome desktop, and for high contrast.
+    Tinted {
+        hue: f32,
+    },
     Inverted,
 }
 
@@ -139,15 +117,10 @@ pub enum Emphasis {
 /// [`Emphasis::Tinted`]).
 pub const TINTED_LIFT_CHROMA: f32 = 0.035;
 
-/// The light a surface catches: the specular sheen across a glass body and
-/// the rim lit along its edge ([`crate::tokens::Colors::light`], read by the
-/// Glass painter set).
-///
-/// Daylight, at no chroma: light is not a shade of what it lands on, so a
-/// theme's or a workspace's temperature never tints it, and it is white on
-/// every polarity. High contrast says white too: its surfaces carry no
-/// finish, so nothing paints it. How strongly a surface catches it is the
-/// theme's, in the role's finish (`specular`, `edge_highlight`).
+/// The light a surface catches: the specular sheen across a glass body and the rim lit
+/// along its edge ([`crate::tokens::Colors::light`], read by the Glass painter set).
+/// Daylight, at no chroma: light is not a shade of what it lands on, so a theme's or a
+/// workspace's temperature never tints it, and it is white on every polarity.
 pub const SURFACE_LIGHT: Tone = Tone::new(1.0, 0.0);
 
 const DARK_STATUS: StatusTones = StatusTones {
@@ -164,10 +137,9 @@ const LIGHT_STATUS: StatusTones = StatusTones {
     info: Tone::new(0.52, 0.11),
 };
 
-/// The five levels of the dark material (`docs/design-language.md`,
-/// "Surfaces"): ground, window, region (recessed, so sidebar and inspector
-/// alike), raised and floating. Each level is a step the eye registers on
-/// its own; a child never paints its parent's level.
+/// The five levels of the dark material (`docs/design-language.md`, "Surfaces"): ground,
+/// window, region (recessed, so sidebar and inspector alike), raised and floating. Each
+/// level is a step the eye registers on its own; a child never paints its parent's level.
 const DARK_LADDER: SurfaceLadder = SurfaceLadder {
     base: 0.14,
     content: 0.19,
@@ -177,9 +149,8 @@ const DARK_LADDER: SurfaceLadder = SurfaceLadder {
     overlay: 0.225,
 };
 
-/// The stock neutral temperature: a cool hue at a whisper of chroma, so
-/// the material reads as considered rather than as sterile grey, never as
-/// grey-blue.
+/// The stock neutral temperature: a cool hue at a whisper of chroma, so the material
+/// reads as considered rather than as sterile grey, never as grey-blue.
 pub const STOCK_HUE: f32 = 260.0;
 /// See [`STOCK_HUE`].
 pub const STOCK_CHROMA: f32 = 0.006;
@@ -205,7 +176,6 @@ impl Palette {
         }
     }
 
-    /// The dark ladder, cool.
     #[must_use]
     pub const fn dark_cool() -> Self {
         Self {
@@ -225,9 +195,8 @@ impl Palette {
         }
     }
 
-    /// A lifted dark ladder, faintly violet: lower contrast between ground
-    /// and ink for long sessions. The tertiary tier rises with the surfaces
-    /// so it still reads as body text on content.
+    /// A lifted dark ladder, faintly violet: lower contrast between ground and ink for
+    /// long sessions.
     #[must_use]
     pub const fn dark_soft() -> Self {
         Self {
@@ -250,9 +219,7 @@ impl Palette {
         }
     }
 
-    /// The light ladder at the stock cool temperature. Raised is a well
-    /// darker than the window (a field, a segmented track, a secondary
-    /// button); floating is the one white surface.
+    /// The light ladder at the stock cool temperature.
     #[must_use]
     pub const fn light() -> Self {
         Self {
@@ -337,8 +304,8 @@ impl Palette {
         }
     }
 
-    /// The hue and chroma the neutrals are painted at: the palette's own
-    /// when it has a hue, pure grey (chroma 0) until it has one.
+    /// The hue and chroma the neutrals are painted at: the palette's own when it has a
+    /// hue, pure grey (chroma 0) until it has one.
     #[must_use]
     pub fn temperature(&self) -> (f32, f32) {
         match self.hue {
@@ -361,12 +328,7 @@ impl Palette {
         }
     }
 
-    /// How strongly a scrim dims what it covers (see
-    /// `chrome::fill_scrim`). A dark theme's grounds have little lightness
-    /// left to give, so its scrim is stronger: it has to move the mid tones
-    /// (rows, roads, raised panels) for a sheet to read as lifted.
-    /// High contrast keeps the light strength, which holds white ink on
-    /// black at 7:1 behind it.
+    /// How strongly a scrim dims what it covers (see `chrome::fill_scrim`).
     pub(crate) fn scrim_strength(&self) -> f32 {
         if self.dark && !self.high_contrast {
             0.6
@@ -396,8 +358,8 @@ impl Palette {
         }
     }
 
-    /// The neutral ramp's ends: `neutral[0]` toward the ground side,
-    /// `neutral[10]` the primary ink.
+    /// The neutral ramp's ends: `neutral[0]` toward the ground side, `neutral[10]` the
+    /// primary ink.
     pub(crate) fn ramp(&self) -> (f32, f32) {
         if self.dark {
             ((self.surfaces.base - 0.06).max(0.0), self.ink.primary)
@@ -406,8 +368,8 @@ impl Palette {
         }
     }
 
-    /// Signed lightness step of a selection lift: one surface step away
-    /// from the ground, lighter on dark palettes and darker on light ones.
+    /// Signed lightness step of a selection lift: one surface step away from the ground,
+    /// lighter on dark palettes and darker on light ones.
     pub(crate) fn lift(&self) -> f32 {
         match (self.dark, self.high_contrast) {
             (true, false) => 0.10,
@@ -417,13 +379,8 @@ impl Palette {
         }
     }
 
-    /// Structural check: finite numbers in range and a ladder whose ink sits
-    /// on the right side of every surface. Legibility is checked on the
-    /// materialized colours (`crate::tokens::contrast::audit`).
-    ///
-    /// # Errors
-    ///
-    /// A static message naming the first field out of range.
+    /// Structural check: finite numbers in range and a ladder whose ink sits on the right
+    /// side of every surface. A static message naming the first field out of range.
     pub fn validate(&self) -> Result<(), &'static str> {
         let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
         if self.hue.is_some_and(|hue| !hue.is_finite()) {
@@ -463,23 +420,20 @@ impl Palette {
 }
 
 impl Default for Palette {
-    /// The default theme's palette: pure neutral dark.
     fn default() -> Self {
         Self::dark()
     }
 }
 
 impl Default for Tone {
-    /// The default theme's presence tone.
     fn default() -> Self {
         Palette::dark().stock_presence()
     }
 }
 
 impl Emphasis {
-    /// The emphasis a palette ships with: the person's colour as the
-    /// accent, except on high contrast, where the accent is primary ink so
-    /// every pairing holds at AAA.
+    /// The emphasis a palette ships with: the person's colour as the accent, except on
+    /// high contrast, where the accent is primary ink so every pairing holds at AAA.
     #[must_use]
     pub const fn stock_for(palette: &Palette) -> Self {
         if palette.high_contrast {
@@ -489,9 +443,6 @@ impl Emphasis {
         }
     }
 
-    /// # Errors
-    ///
-    /// A non-finite tint hue.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::Inverted | Self::You => Ok(()),
@@ -501,18 +452,15 @@ impl Emphasis {
     }
 }
 
-/// The presence palette's usable band: bright enough to read as colour,
-/// never so loud that one participant shouts.
+/// The presence palette's usable band: bright enough to read as colour, never so loud
+/// that one participant shouts.
 pub const PRESENCE_LIGHTNESS: std::ops::RangeInclusive<f32> = 0.35..=0.90;
 /// See [`PRESENCE_LIGHTNESS`].
 pub const PRESENCE_CHROMA: std::ops::RangeInclusive<f32> = 0.04..=0.20;
 
 impl Tone {
-    /// Structural check for a presence tone.
-    ///
-    /// # Errors
-    ///
-    /// A lightness or chroma outside the presence band.
+    /// Structural check for a presence tone. A lightness or chroma outside the presence
+    /// band.
     pub fn validate_presence(&self) -> Result<(), &'static str> {
         if !self.lightness.is_finite() || !PRESENCE_LIGHTNESS.contains(&self.lightness) {
             return Err("presence lightness outside 0.35..=0.90");
@@ -542,8 +490,8 @@ mod tests {
             assert_eq!(palette.validate(), Ok(()), "{palette:?}");
             assert_eq!(palette.stock_presence().validate_presence(), Ok(()));
         }
-        // The stock temperature: cool, a whisper of chroma, on both
-        // polarities; a workspace moves its hue, never its chroma.
+        // The stock temperature: cool, a whisper of chroma, on both polarities; a
+        // workspace moves its hue, never its chroma.
         for stock in [Palette::dark(), Palette::light()] {
             assert_eq!(stock.hue, Some(260.0));
             assert!((stock.chroma - 0.006).abs() < f32::EPSILON);
@@ -564,9 +512,6 @@ mod tests {
             ..Palette::light()
         };
         assert_eq!(warm.temperature(), (40.0, 0.010));
-        // Five levels with real separation: the region recesses below the
-        // window, raised and floating stand above it on dark; on light the
-        // raised well sits below the window and floating is the one white.
         let dark = Palette::dark().surfaces;
         assert_eq!(
             [

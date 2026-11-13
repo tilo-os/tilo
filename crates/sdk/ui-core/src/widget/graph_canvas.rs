@@ -75,7 +75,6 @@ impl GraphCanvas {
     }
 
     /// Arrange real controls in measured rows, preventing overlap as text scales.
-    /// Authored graph coordinates remain available through [`Self::new`].
     #[must_use]
     pub fn grid(
         nodes: Vec<Element>,

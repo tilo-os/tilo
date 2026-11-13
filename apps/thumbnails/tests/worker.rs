@@ -1,22 +1,9 @@
-//! The thumbnails package run by a compute worker, end to end.
-//!
-//! A device with the packed `so.tilo.thumbnails` installed, and the signed
-//! runtime build it names, takes an offloaded `thumbnail-batch` job: the
-//! production `ComputeWorker` resolves the package through the device's
-//! catalogue, snapshots and re-verifies it, stages the inputs, and launches
-//! the entrypoint through `LauncherComputeSandbox`, which is bubblewrap with
-//! the Landlock shim inside it. The thumbnails it returns are the very bytes
-//! the requesting device would have made itself.
-//!
-//! No part of the sandbox is relaxed for the test. The launcher re-enters
-//! the running executable as its in-sandbox shim, as it re-enters the shell
-//! in production, so this target has its own `main`: it answers
-//! `__sandbox-exec` the way the shell does, and otherwise runs its cases
-//! behind the command line `cargo test` and nextest speak to a test binary.
-//!
-//! Bubblewrap and user namespaces are how a package runs at all. A machine
-//! without them cannot observe what these cases check, so the cases fail
-//! there rather than skip.
+//! The thumbnails package run by a compute worker, end to end. The launcher re-enters the
+//! running executable as its in-sandbox shim, as it re-enters the shell in production, so
+//! this target has its own `main`: it answers `__sandbox-exec` the way the shell does, and
+//! otherwise runs its cases behind the command line `cargo test` and nextest speak to a
+//! test binary. A machine without them cannot observe what these cases check, so the cases
+//! fail there rather than skip.
 
 #[cfg(target_os = "linux")]
 #[allow(
@@ -44,20 +31,15 @@ mod cases {
     };
     use tilo_test_env::TestHome;
 
-    /// The manifest Release / apps packs, before it is staged.
     const MANIFEST: &str = include_str!("../tilo-app.toml");
-    /// The publisher placeholder the release pipeline replaces with its key.
     const PLACEHOLDER: &str =
         "\"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"";
-    /// The runtime the authored manifest names a release of, which
-    /// packaging stamps with the exact build the package was linked against.
     const RUNTIME_NAME: &str = "tilo-runtime";
 
     const REQUESTER: [u8; 32] = [1; 32];
     const WORKER: [u8; 32] = [2; 32];
     const WORKSPACE: u64 = 7;
 
-    /// The cases, by the names `cargo test` and nextest select them by.
     const CASES: &[(&str, fn())] = &[
         (
             "an_offloaded_batch_runs_in_the_launcher_sandbox_and_returns_the_local_thumbnails",
@@ -69,8 +51,8 @@ mod cases {
         ),
     ];
 
-    /// Content held in memory, by digest: the requester's inputs on one
-    /// side, the worker's store of outputs on the other.
+    /// Content held in memory, by digest: the requester's inputs on one side, the worker's
+    /// store of outputs on the other.
     #[derive(Clone, Default)]
     struct MemoryContent(Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>);
 
@@ -102,18 +84,13 @@ mod cases {
     type ThumbnailWorker =
         ComputeWorker<MemoryContent, InstalledComputeCatalogue, LauncherComputeSandbox>;
 
-    /// A worker device: its own home, holding a trusted signed runtime build
-    /// and the packed thumbnails package installed in its package store,
-    /// and the production worker over them.
+    /// A worker device: its own home, holding a trusted signed runtime build and the packed
+    /// thumbnails package installed in its package store, and the production worker over
+    /// them.
     struct Device {
         worker: ThumbnailWorker,
-        /// The worker's store, where it persists the outputs it reports.
         outputs: MemoryContent,
-        /// The signed root of the installed package, as its requester's
-        /// registry names it.
         package_digest: [u8; 32],
-        // Last: the environment the worker and launcher read is restored,
-        // and the tree deleted, only once nothing uses them.
         _home: TestHome,
     }
 
@@ -121,8 +98,6 @@ mod cases {
         fn new() -> Self {
             require_bubblewrap();
             let mut home = TestHome::new().expect("temporary home");
-            // Nothing but this home decides which packages and runtimes
-            // exist or are trusted.
             home.env()
                 .remove("TILO_APPS_DATA_DIR")
                 .remove("TILO_APPS_SYSTEM_DIR")
@@ -147,8 +122,8 @@ mod cases {
             }
         }
 
-        /// Run job `job` over `inputs`, staged from the requester's bytes,
-        /// as the worker runs an offloaded job it was handed.
+        /// Run job `job` over `inputs`, staged from the requester's bytes, as the worker
+        /// runs an offloaded job it was handed.
         fn run(&self, job: u8, inputs: &[Vec<u8>]) -> (ComputeJobSpec, ComputeJobResult) {
             let now_ms = u64::try_from(
                 std::time::SystemTime::now()
@@ -194,8 +169,8 @@ mod cases {
         }
     }
 
-    /// Bubblewrap is the package sandbox; without it nothing here can be
-    /// observed, which is a broken environment, not a reason to skip.
+    /// Bubblewrap is the package sandbox; without it nothing here can be observed, which is
+    /// a broken environment, not a reason to skip.
     fn require_bubblewrap() {
         let probe = Command::new("bwrap").arg("--version").output_locked();
         assert!(
@@ -242,11 +217,9 @@ mod cases {
             .to_string()
     }
 
-    /// Bake the declared runtime release from this machine's loader and C
-    /// library, as the release pipeline bakes it from its own, sign it,
-    /// install it where the launcher looks for a per-user runtime, and trust
-    /// its publisher. Returns the exact build,
-    /// `tilo-runtime/<release>+native.<digest>`.
+    /// Bake the declared runtime release from this machine's loader and C library, as the
+    /// release pipeline bakes it from its own, sign it, install it where the launcher looks
+    /// for a per-user runtime, and trust its publisher.
     fn install_runtime(home: &mut TestHome) -> String {
         let identity = runtime_bundle::Identity::generate();
         let identity_file = home.root().join("runtime-publisher.json");
@@ -271,11 +244,10 @@ mod cases {
     }
 
     /// Stage the real manifest and the built `thumbnail-batch` the way
-    /// `dist/apps/package-apps.sh` does (its publisher key, then the runtime
-    /// build stamped over the authored release), pack and sign it, and
-    /// install the `.tapp` into the package store the environment names,
-    /// admitting it only once it verifies against its publisher. Returns
-    /// the installed package's signed root.
+    /// `dist/apps/package-apps.sh` does (its publisher key, then the runtime build stamped
+    /// over the authored release), pack and sign it, and install the `.tapp` into the
+    /// package store the environment names, admitting it only once it verifies against its
+    /// publisher.
     fn install_package(runtime: &str, scratch: &Path) -> [u8; 32] {
         let staging = scratch.join("staging");
         std::fs::create_dir_all(staging.join("bin")).unwrap();
@@ -319,8 +291,8 @@ mod cases {
         *packed.id().as_bytes()
     }
 
-    /// `os/scripts/stamp-runtime.sh`: replace the one line declaring the
-    /// authored release with the exact build.
+    /// `os/scripts/stamp-runtime.sh`: replace the one line declaring the authored release
+    /// with the exact build.
     fn stamp_runtime(manifest: &str, runtime: &str) -> String {
         let release = format!("\"{RUNTIME_NAME}/{}\"", declared_release());
         let mut stamped = 0_usize;
@@ -444,10 +416,10 @@ mod cases {
         );
     }
 
-    /// The parts of the libtest command line `cargo test` and nextest use
-    /// that a custom harness must answer: `--list` (with `--format terse`,
-    /// and with `--ignored` for the ignored cases, of which there are
-    /// none), name filters with or without `--exact`, and `--skip`.
+    /// The parts of the libtest command line `cargo test` and nextest use that a custom
+    /// harness must answer: `--list` (with `--format terse`, and with `--ignored` for the
+    /// ignored cases, of which there are none), name filters with or without `--exact`, and
+    /// `--skip`.
     struct Selection {
         list: bool,
         ignored_only: bool,
@@ -472,7 +444,6 @@ mod cases {
                     "--ignored" => selection.ignored_only = true,
                     "--exact" => selection.exact = true,
                     "--skip" => selection.skips.extend(args.next().cloned()),
-                    // Options with a value this harness has no use for.
                     "--format" | "--test-threads" | "--color" | "--logfile" | "-Z" => {
                         args.next();
                     }
@@ -500,8 +471,6 @@ mod cases {
     /// Answer the launcher's shim, or list or run the selected cases.
     pub(super) fn main() -> ExitCode {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        // The launcher runs this executable inside the sandbox to apply
-        // Landlock before the entrypoint, as it runs the shell in production.
         if let Some((command, rest)) = args.split_first()
             && command == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
         {
@@ -546,7 +515,6 @@ fn main() -> std::process::ExitCode {
     cases::main()
 }
 
-/// The worker's launcher sandbox exists only on Linux; elsewhere this target
-/// has no cases.
+/// The worker's launcher sandbox exists only on Linux; elsewhere this target has no cases.
 #[cfg(not(target_os = "linux"))]
 fn main() {}

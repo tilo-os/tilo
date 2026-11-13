@@ -1,9 +1,8 @@
 use tilo_app_cli::ComponentTemplate;
 
-/// Emit the component sources and the component registry `tilo-app add
-/// component` writes into an app's `src/components/`, one component per
-/// template. The display and form components are graph-compatible, so the
-/// registry registers them with serialized screens as `--mount` does.
+/// Emit the component sources and the component registry `tilo-app add component` writes into an
+/// app's `src/components/`, one component per template. The display and form components are
+/// graph-compatible, so the registry registers them with serialized screens as `--mount` does.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::path::PathBuf::from(
         std::env::var_os("OUT_DIR")

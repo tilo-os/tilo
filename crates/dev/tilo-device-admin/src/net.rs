@@ -10,8 +10,8 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl};
 pub enum Relays {
     /// The public n0 relays, and n0's lookup to find a device by its id.
     Public,
-    /// One relay of the person's own (or a test harness's), and no lookup:
-    /// a device is found through it alone.
+    /// One relay of the person's own (or a test harness's), and no lookup: a device is found through
+    /// it alone.
     Own(RelayUrl),
 }
 
@@ -60,8 +60,8 @@ pub async fn bind(
         .map_err(|error| anyhow!("bind the peer-network endpoint: {error}"))
 }
 
-/// Where to dial a device's admin endpoint: its id, and the relay it was
-/// last known to use, so no lookup is needed to find it.
+/// Where to dial a device's admin endpoint: its id, and the relay it was last known to use, so no
+/// lookup is needed to find it.
 pub fn address(
     endpoint: EndpointId,
     relays: &Relays,
@@ -100,8 +100,7 @@ pub async fn dial(
     }
 }
 
-/// The path a connection sends on now, in words: `relay <url>` or
-/// `direct <address>`.
+/// The path a connection sends on now, in words: `relay <url>` or `direct <address>`.
 pub fn route(connection: &Connection) -> Route {
     let paths = connection.paths();
     let selected = paths

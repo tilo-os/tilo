@@ -169,19 +169,22 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (scroller) css += 'overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;';
     else if (node.clip) css += 'overflow:clip;';
     if (node.own?.kind === 'text') css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own);
+    else if (node.own?.kind === 'face') css += faceCss(node.own);
     else if (node.own?.kind === 'field') css += textStyle(node.own.look) + 'margin:0;padding:0;border:0;outline:none;background:transparent;font-family:inherit;';
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
     // selection and focus.
     const semantics = node.semantics;
     write(element, '@role', role && ARIA_ROLES[role.name] && element.localName !== ARIA_ROLES[role.name] ? ARIA_ROLES[role.name] : null);
-    const visibleText = node.own?.kind === 'text' || node.own?.kind === 'field' || node.own?.kind === 'blocks';
+    const visibleText = node.own?.kind === 'text' || node.own?.kind === 'field' || node.own?.kind === 'blocks' || Boolean(node.own?.label);
     write(element, '@aria-label', !visibleText && semantics?.name ? semantics.name : null);
     write(element, '@aria-selected', semantics?.state?.selected ? 'true' : null);
     write(element, '@aria-pressed', role?.name === 'ToggleButton' ? String(Boolean(semantics?.state?.checked)) : null);
     write(element, '@aria-expanded', semantics?.state?.expanded === undefined || semantics?.state?.expanded === null ? null : String(semantics.state.expanded));
     write(element, '@aria-disabled', semantics?.state?.disabled ? 'true' : null);
     write(element, '@data-widget', node.widget || null);
+    // A notice is read out as it arrives, without moving the keyboard.
+    write(element, '@aria-live', semantics?.live ? String(semantics.live).toLowerCase() : null);
     if (element.localName === 'button') write(element, '@type', 'button');
     if (element.localName === 'button') write(element, '@tabindex', '-1');
 
@@ -196,8 +199,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     });
     if (own?.kind === 'text') showText(element, own);
     else if (own?.kind === 'field') showField(element, node, own);
-    else if (own?.kind === 'blocks') children.push(showBlocks(element, node, own.blocks, next));
+    else if (own?.kind === 'blocks') children.push(showBlocks(element, node, own, next));
     else if (own?.kind === 'painted') children.push(showPicture(element, node, own.version, next));
+    else if (own?.kind === 'face') children.push(...showFace(node, own, next));
 
     const scrollTop = scroller ? node.scroll[0] : 0;
     const context = {flows, scroller, rect: node.rect};
@@ -217,7 +221,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       children.push(sizer);
       scrollers.set(node.path, {element, offset: node.scroll[0]});
     }
-    if (!own || own.kind === 'blocks' || own.kind === 'painted') place(element, children);
+    if (!own || own.kind === 'blocks' || own.kind === 'painted' || own.kind === 'face') place(element, children);
     return element;
   }
 
@@ -286,9 +290,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   // A document's blocks: paragraphs, headings, quotes, list and checklist
   // items, code, each with its inline marks. A press in a block's text puts
   // the caret where the browser laid that text out.
-  function showBlocks(element, node, blocks, next) {
+  function showBlocks(element, node, {blocks, edges}, next) {
     const body = elementFor(`${node.path}#blocks`, 'div', next);
-    write(body, 'css', 'position:relative;display:flex;flex-direction:column;');
+    // Its text stands where the widget lays it: a paragraph at its text
+    // edge, list items and quotes past their gutters.
+    write(body, 'css', `position:relative;display:flex;flex-direction:column;padding-left:${edges.text}px;--tilo-list:${edges.list}px;--tilo-step:${edges.indent}px;--tilo-quote:${edges.quote}px;`);
     body.classList.add('tilo-doc');
     const items = blocks.map(block => {
       const tag = block.kind === 'heading' ? `h${Math.min(Math.max(block.level, 1), 3)}`
@@ -296,7 +302,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         : block.kind === 'divider' ? 'hr' : block.kind === 'bullet' || block.kind === 'numbered' || block.kind === 'check' ? 'li' : 'p';
       const item = elementFor(`${node.path}#block:${block.id}`, tag, next);
       item.className = `tilo-block tilo-${block.kind}${block.soft_break ? ' tilo-soft' : ''}${block.done ? ' tilo-done' : ''}`;
-      write(item, 'css', `--tilo-indent:${block.level};`);
+      // Set as the editor sets it: its gap above, its size, leading and weight.
+      write(item, 'css', `--tilo-indent:${block.level};margin-top:${block.gap}px;font-size:${block.size}px;line-height:${block.line_height};font-weight:${block.weight};`);
       write(item, '@data-ordinal', block.ordinal ?? null);
       item.dataset.block = block.id;
       item.dataset.editor = node.path;
@@ -361,6 +368,78 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     // An empty block still holds a line.
     if (!text) out.push(document.createElement('br'));
     return out;
+  }
+
+  // A control's face: its icon, words and trailing icon in a row on its
+  // ground, laid out by the page.
+  function faceCss(face) {
+    let css = `display:flex;align-items:center;justify-content:${face.spread ? 'space-between' : 'center'};gap:${face.gap}px;padding:0 ${face.pad}px;box-sizing:border-box;border-radius:${face.radius}px;white-space:nowrap;`;
+    if (face.fill) css += `background:${rgba(face.fill)};`;
+    if (face.edge) css += `box-shadow:inset 0 0 0 1px ${rgba(face.edge)};`;
+    const ink = face.label?.color ?? face.icon?.color;
+    if (ink) css += `color:${rgba(ink)};`;
+    return css;
+  }
+
+  function showFace(node, face, next) {
+    const out = [];
+    if (face.icon) out.push(glyph(`${node.path}#icon`, face.icon, next));
+    // The label and what follows it share one run, so the label gives way
+    // first when the face is narrow.
+    if (face.label || face.detail) {
+      const words = elementFor(`${node.path}#words`, 'span', next);
+      write(words, 'css', `display:flex;align-items:baseline;gap:${face.gap * 2}px;min-width:0;${face.spread ? 'flex:1;justify-content:space-between;' : ''}`);
+      const runs = [];
+      if (face.label) {
+        const label = elementFor(`${node.path}#label`, 'span', next);
+        write(label, 'css', textStyle(face.label) + (face.label.max_lines > 1
+          ? `min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${face.label.max_lines};overflow:hidden;white-space:pre-wrap;`
+          : 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;'));
+        write(label, 'text', face.label.text);
+        runs.push(label);
+      }
+      if (face.detail) {
+        const detail = elementFor(`${node.path}#detail`, 'span', next);
+        write(detail, 'css', textStyle(face.detail) + 'flex:none;white-space:pre;');
+        write(detail, 'text', face.detail.text);
+        runs.push(detail);
+      }
+      place(words, runs);
+      out.push(words);
+    }
+    if (face.trailing) out.push(glyph(`${node.path}#trailing`, face.trailing, next));
+    return out;
+  }
+
+  // An icon: its outlines as an inline SVG in its colour.
+  const SVG = 'http://www.w3.org/2000/svg';
+  function glyph(path, icon, next) {
+    const box = elementFor(path, 'span', next);
+    write(box, 'css', `display:block;flex:none;width:${icon.size}px;height:${icon.size}px;color:${rgba(icon.color)};`);
+    write(box, '@aria-hidden', 'true');
+    const key = JSON.stringify([icon.name, icon.paths.length, icon.stroke, icon.size, icon.filled]);
+    if (box.tiloGlyph !== key) {
+      box.tiloGlyph = key;
+      const svg = document.createElementNS(SVG, 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('width', String(icon.size));
+      svg.setAttribute('height', String(icon.size));
+      svg.setAttribute('fill', icon.filled ? 'currentColor' : 'none');
+      svg.setAttribute('stroke', 'currentColor');
+      // The outline is as wide on screen at every size, as the toolkit
+      // strokes it.
+      svg.setAttribute('stroke-width', String(icon.stroke * 24 / icon.size));
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+      for (const d of icon.paths) {
+        const line = document.createElementNS(SVG, 'path');
+        line.setAttribute('d', d);
+        svg.append(line);
+      }
+      box.replaceChildren(svg);
+      stats.writes++;
+    }
+    return box;
   }
 
   // A widget that is its own paint, as its picture at the screen's density.
@@ -467,6 +546,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 export const VIEW_CSS = `
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
+.tilo-view [aria-disabled=true]{opacity:.45;}
+.tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
+.tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
 .tilo-view ul{margin:0;padding:0;list-style:none;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
 .tilo-view li:has(>.tilo-words){display:flex;align-items:center;padding:0 12px;border-radius:var(--tilo-radius,8px);}
@@ -474,19 +556,14 @@ export const VIEW_CSS = `
 .tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
-.tilo-doc{font-size:16px;line-height:1.6;padding:0 0 0 12px;}
-.tilo-doc .tilo-block{margin:0;padding:3px 0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;}
-.tilo-doc .tilo-soft{padding-top:0;}
-.tilo-doc h1.tilo-block{font-size:30px;line-height:1.25;font-weight:700;padding:14px 0 6px;letter-spacing:-0.01em;}
-.tilo-doc h2.tilo-block{font-size:23px;line-height:1.3;font-weight:650;padding:12px 0 4px;}
-.tilo-doc h3.tilo-block{font-size:19px;line-height:1.35;font-weight:600;padding:10px 0 2px;}
-.tilo-doc li.tilo-block{list-style:none;padding-left:calc(26px + var(--tilo-indent,0) * 24px);}
-.tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(9px + var(--tilo-indent,0) * 24px);top:calc(3px + 0.8em - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim,#6e6e73);}
-.tilo-doc li.tilo-numbered::before{content:attr(data-ordinal) ".";position:absolute;left:calc(var(--tilo-indent,0) * 24px);width:20px;text-align:right;color:var(--tilo-text-dim,#6e6e73);font-variant-numeric:tabular-nums;}
-.tilo-doc li.tilo-check .tilo-check{position:absolute;left:calc(4px + var(--tilo-indent,0) * 24px);top:0.45em;margin:0;width:15px;height:15px;accent-color:var(--tilo-accent,#2f6fed);}
+.tilo-doc .tilo-block{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;}
+.tilo-doc li.tilo-block{list-style:none;padding-left:calc(var(--tilo-list,28px) + var(--tilo-indent,0) * var(--tilo-step,28px));}
+.tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(var(--tilo-list,28px) / 2 - 2.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:calc(0.5lh - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim,#6e6e73);}
+.tilo-doc li.tilo-numbered::before{content:attr(data-ordinal) ".";position:absolute;left:calc(var(--tilo-indent,0) * var(--tilo-step,28px));width:calc(var(--tilo-list,28px) - 8px);text-align:right;color:var(--tilo-text-dim,#6e6e73);font-variant-numeric:tabular-nums;}
+.tilo-doc li.tilo-check .tilo-check{position:absolute;left:calc(var(--tilo-list,28px) / 2 - 7.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:0.45em;margin:0;width:15px;height:15px;accent-color:var(--tilo-accent,#2f6fed);}
 .tilo-doc li.tilo-done{color:var(--tilo-text-dim,#6e6e73);text-decoration:line-through;}
-.tilo-doc blockquote.tilo-block{border-left:3px solid var(--tilo-accent,#2f6fed);padding-left:14px;color:var(--tilo-text-dim,#6e6e73);}
-.tilo-doc pre.tilo-block{font-family:var(--tilo-mono);font-size:14px;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:6px;padding:10px 12px;}
+.tilo-doc blockquote.tilo-block{border-left:3px solid var(--tilo-accent,#2f6fed);padding-left:calc(var(--tilo-quote,16px) - 3px);color:var(--tilo-text-dim,#6e6e73);}
+.tilo-doc pre.tilo-block{font-family:var(--tilo-mono);background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:6px;padding:10px 12px;}
 .tilo-doc hr.tilo-block{border:0;border-top:1px solid var(--tilo-line,rgba(127,127,127,.25));margin:12px 0;padding:0;}
 .tilo-doc code{font-family:var(--tilo-mono);font-size:.9em;background:var(--tilo-raised,rgba(127,127,127,.12));border-radius:4px;padding:1px 4px;}
 .tilo-doc a{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;}

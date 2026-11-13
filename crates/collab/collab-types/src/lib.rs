@@ -1,15 +1,13 @@
-//! `collab-types` — the cryptographic foundation for Tilo Spaces,
-//! Channels, and role-based access control.
+//! `collab-types` — the cryptographic foundation of workspaces,
+//! documents and role-based access control.
 //!
 //! Self-contained: pure types, pure functions, no I/O, no async runtime,
 //! no compositor or UI dependencies. Signed-roles wire enforcement, MLS
 //! encryption, and threshold identity all layer on the primitives here.
 //!
 //! - [`identity`] — `Identity`, `Attestation`, `Claim`, `Clearance`: key
-//!   material and signed claims identities carry across spaces.
-//! - [`space`] — `Space`, the social-formation container grouping channels.
-//! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
-//!   `Artifact`: the working-area primitive mapping members to roles.
+//!   material and signed claims identities carry.
+//! - [`channel`] — `ChannelId`, `ArtifactId`: ids carried by a document's ops.
 //! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
 //!   make which change is decided by `tilo-action-policy` grants (step 5).
 //! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
@@ -76,7 +74,6 @@ pub mod redaction;
 pub mod role;
 pub mod scope;
 pub mod signer;
-pub mod space;
 pub mod surface;
 pub mod task_budget;
 pub mod task_presentation;
@@ -98,10 +95,7 @@ pub use caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
     ResourceRef, Scope, Subject, WorkspaceMember, decide_capability, host_covers, path_covers,
 };
-pub use channel::{
-    Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
-    DocumentHandle, MemberRef,
-};
+pub use channel::{ArtifactId, ChannelId};
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
@@ -154,10 +148,9 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
-pub use space::{Space, SpaceId};
 pub use tilo_action_policy::{member_record, member_record_id};
 pub use validator::{
-    ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
+    ChannelState, DEFAULT_WORKSPACE, ValidationError, document_node, named_record_of_channel,
     named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
 };
 pub use workspace_record::{

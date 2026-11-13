@@ -1,8 +1,4 @@
 //! Bounded browser-CSV interchange for the Passwords portal flow.
-//!
-//! This module is deliberately path-free: the host portal owns file
-//! selection; parsing consumes a reader and exporting produces bytes for the
-//! already-selected destination.
 
 use std::io::Read;
 
@@ -17,8 +13,6 @@ pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
 pub const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
 const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
-/// The magic, this byte, then a `tilo-seal` password envelope
-/// that records its Argon2id parameters and salt.
 const BACKUP_V2: u8 = 2;
 const BACKUP_V2_PREFIX: &[u8] = b"TILOPWBACKUP\x02";
 const BACKUP_READ_LIMIT: u64 = MAX_BACKUP_BYTES as u64 + 1;
@@ -71,15 +65,11 @@ pub fn restore_request() -> ui::portal::PickRequest {
         .all_files()
 }
 
-/// A file being chosen to read. Where files have paths the host hands over
-/// an open descriptor, so the app reads only the file the person chose;
-/// where they have none (a browser page) it hands over the contents.
 pub enum Choosing {
     File(ui::portal::OpenFileChannel),
     Contents(ui::portal::ContentsChannel),
 }
 
-/// What a [`Choosing`] answered.
 pub enum Chosen {
     Opened(Box<dyn Read + Send>),
     Cancelled,
@@ -87,8 +77,8 @@ pub enum Chosen {
 }
 
 impl Choosing {
-    /// Open `request`'s chooser the way this host can answer it, reading at
-    /// most `limit` bytes of contents.
+    /// Open `request`'s chooser the way this host can answer it, reading at most `limit`
+    /// bytes of contents.
     pub fn send(request: ui::portal::PickRequest, limit: usize) -> Self {
         if tilo_files::available(tilo_files::Feature::NativePaths) {
             Self::File(request.send_open_file())
@@ -97,7 +87,6 @@ impl Choosing {
         }
     }
 
-    /// The answer, once there is one.
     pub fn try_recv(&self) -> Result<Chosen, std::sync::mpsc::TryRecvError> {
         use ui::portal::{ContentsOutcome, OpenFileOutcome};
         match self {
@@ -118,19 +107,14 @@ impl Choosing {
     }
 }
 
-/// A file being saved where the person chooses. Where files have paths the
-/// chosen path is written privately (readable by its owner only) once
-/// answered; elsewhere (a browser page) the host takes the bytes, made
-/// before asking, and keeps them where the person chose or downloads them.
 pub enum Saving {
     Path(ui::portal::PortalChannel),
-    /// The bytes handed over, and how many items they hold.
     Contents(ui::portal::SaveChannel, usize),
 }
 
 impl Saving {
-    /// Open `request`'s Save chooser; `bytes` makes what is saved, with how
-    /// many items it holds, for a host that takes the bytes up front.
+    /// Open `request`'s Save chooser; `bytes` makes what is saved, with how many items it
+    /// holds, for a host that takes the bytes up front.
     pub fn send(
         request: ui::portal::PickRequest,
         bytes: impl FnOnce() -> Result<(Zeroizing<Vec<u8>>, usize), String>,
@@ -306,9 +290,9 @@ pub fn export_browser_csv(items: &[SecretItem]) -> Zeroizing<String> {
     csv
 }
 
-/// Serialize every vault field into a portable, passphrase-encrypted backup:
-/// a `tilo-seal` Argon2id password envelope (XChaCha20-Poly1305) whose
-/// header, parameters included, is authenticated.
+/// Serialize every vault field into a portable, passphrase-encrypted backup: a `tilo-seal`
+/// Argon2id password envelope (XChaCha20-Poly1305) whose header, parameters included, is
+/// authenticated.
 pub fn export_encrypted_backup(
     items: &[SecretItem],
     passphrase: &str,
@@ -346,9 +330,6 @@ pub fn export_encrypted_backup(
     Ok(out)
 }
 
-/// Open a backup created by [`export_encrypted_backup`]. Authentication is verified before JSON is
-/// parsed, so wrong passwords and modified files yield no partial vault
-/// contents.
 pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<SecretItem>, String> {
     validate_backup_passphrase(passphrase)?;
     if backup.len() > MAX_BACKUP_BYTES {
@@ -373,8 +354,8 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
 }
 
 fn open_v2_backup(body: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, String> {
-    // Stored parameters are bounded before any derivation runs, so a crafted
-    // file cannot demand an unbounded Argon2 workload.
+    // Stored parameters are bounded before any derivation runs, so a crafted file cannot
+    // demand an unbounded Argon2 workload.
     match Envelope::parse(body)
         .map_err(|_| "This is not a valid Passwords backup".to_string())?
         .source
@@ -403,15 +384,12 @@ fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Argon2id v1.3 cost for backup keys. Files store them in the authenticated
-/// header, so new backups can raise them without a format change. The OWASP
-/// baseline profile keeps restores fast on low-end devices.
+/// Argon2id v1.3 cost for backup keys.
 const BACKUP_KDF_PARAMS: PasswordParams = PasswordParams {
     m_cost_kib: 19 * 1024,
     t_cost: 2,
     p_cost: 1,
 };
-/// The most work a backup file may ask a reader to do.
 const BACKUP_MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const BACKUP_MAX_ITERATIONS: u32 = 16;
 const BACKUP_MAX_LANES: u32 = 8;
@@ -552,7 +530,6 @@ mod tests {
         eprintln!("phase every_truncated_backup_header_is_rejected_without_decryption");
         {
             let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
-            // Prefix plus the whole v2 envelope header (magic .. nonce).
             let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + 24;
             for length in 0..=v2_header_len {
                 assert!(

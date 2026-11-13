@@ -22,7 +22,6 @@ use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 pub struct SunburstNode {
     pub id: String,
     pub label: String,
-    /// A non-positive value is derived from the children.
     pub value: f64,
     pub color: Option<Color>,
     pub detail: String,
@@ -129,7 +128,6 @@ pub struct SunburstMarks {
     frame: PlotFrame<String>,
 }
 
-/// A hierarchy as rings of sectors, the root at the centre.
 pub type SunburstChart = Plot<SunburstMarks>;
 
 impl SunburstChart {

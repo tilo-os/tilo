@@ -572,10 +572,10 @@ fn a_day_away_says_on_each_row_what_was_done_to_it() {
     assert_ne!(said(paper), said(survey), "each row says its own change");
 }
 
-/// What the header opens: every step, grouped by the item, newest first, each with who made it
-/// and when.
+/// What the header opens: a row per item someone changed, newest first, each with who made the
+/// newest change of it and when.
 #[test]
-fn a_day_away_opens_a_catch_up_of_a_step_per_change() {
+fn a_day_away_opens_a_catch_up_of_a_row_per_item() {
     let (_away, _tasks, window) = a_day_away_at_today();
     let content = catch_up(&window);
     assert!(
@@ -599,7 +599,7 @@ fn a_day_away_opens_a_catch_up_of_a_step_per_change() {
             "Read the survey responses",
             "Sort the paper mail"
         ],
-        "the catch-up names each item it changed, newest first"
+        "the catch-up names each item it changed, newest first, once"
     );
     let seen_by: Vec<String> = all(&content, "ui.Avatar")
         .into_iter()
@@ -613,8 +613,8 @@ fn a_day_away_opens_a_catch_up_of_a_step_per_change() {
     );
 }
 
-/// Each step reads as a sentence, then when it happened at the line's end, out of its way,
-/// led by the changer's face.
+/// Each row's line reads as a sentence, then when it happened at the line's end, out of its
+/// way, led by the changer's face.
 #[test]
 fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
     let (_away, _tasks, window) = a_day_away_at_today();
@@ -629,7 +629,7 @@ fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
     assert_eq!(
         steps.len(),
         3,
-        "the catch-up lists a step per change: {content:?}"
+        "the catch-up lists one line per item changed: {content:?}"
     );
     for step in &steps {
         let kids = &step.children;
@@ -684,6 +684,111 @@ fn a_day_aways_catch_up_says_each_step_in_historys_words() {
         !joined.contains("done to"),
         "a flag shows no value: {joined}"
     );
+}
+
+/// Ada's milk, seen when she made it and changed `changes` times by Bo since.
+fn a_task_bo_changed(changes: usize) -> (Replica, ResourceRef) {
+    let (mut ada, tasks) = crate::tasks::workspace();
+    ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
+    let milk = match call(
+        &ada,
+        "ada",
+        crate::legibility::TASKS_APP,
+        "new_task",
+        crate::tasks::create(&tasks, "Buy oat milk and eggs"),
+    ) {
+        Value::Ref(at) => (*at.target).clone(),
+        other => panic!("a task: {other:?}"),
+    };
+    ada.commit();
+    assert!(
+        ada.host.runtime().mark_seen("ada", &milk).unwrap(),
+        "she has seen the task she made"
+    );
+    // Bo at their window a moment later, changing it again and again.
+    ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
+    for _ in 0..changes {
+        call(
+            &ada,
+            BO,
+            crate::legibility::TASKS_APP,
+            "check",
+            vec![Value::resource(&milk)],
+        );
+    }
+    ada.commit_as(BO);
+    (ada, milk)
+}
+
+/// A record someone changed many times since the person looked stands as one row: it says who
+/// changed it and what the newest change did, and, as history folds the changes of one hand,
+/// how many it folds. Never a line per change.
+#[test]
+fn a_record_changed_many_times_stands_as_one_row() {
+    let (ada, _) = a_task_bo_changed(4);
+    let window = window_mark(&mut ada.view(crate::legibility::TASKS_APP));
+    assert_eq!(
+        window.props.get("count"),
+        Some(&Value::Int(1)),
+        "one record changed: {window:?}"
+    );
+    let content = catch_up(&window);
+    let mut lines = Vec::new();
+    find_all(&content, "row", &mut lines);
+    lines.retain(|line| {
+        line.children
+            .first()
+            .is_some_and(|child| child.kind == "ui.Avatar")
+    });
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line for the record, however many changes it holds: {content:?}"
+    );
+    assert_eq!(
+        texts(&content, "caption"),
+        ["4 changes"],
+        "the row says how many changes it folds: {content:?}"
+    );
+}
+
+/// A record someone changed a thousand times since the person looked: opening the window reads a
+/// page of the record's history, never the thousand, and still says it once.
+#[test]
+fn a_records_history_costs_a_page_whatever_its_length() {
+    const CHANGES: usize = 1_000;
+    let (ada, _) = a_task_bo_changed(CHANGES);
+    // The window opened once already, so what the second opening reads is the record's history
+    // and nothing the store builds.
+    window_mark(&mut ada.view(crate::legibility::TASKS_APP));
+    let before = ada.host.store().read_stats().versions_read;
+    let mut view = ada.view(crate::legibility::TASKS_APP);
+    let read = ada
+        .host
+        .store()
+        .read_stats()
+        .versions_read
+        .saturating_sub(before);
+    let window = window_mark(&mut view);
+    assert!(
+        read <= 16,
+        "opening read {read} versions of a record of {CHANGES} changes"
+    );
+    assert_eq!(
+        window.props.get("count"),
+        Some(&Value::Int(1)),
+        "one record changed: {window:?}"
+    );
+    let content = catch_up(&window);
+    let mut lines = Vec::new();
+    find_all(&content, "row", &mut lines);
+    lines.retain(|line| {
+        line.children
+            .first()
+            .is_some_and(|child| child.kind == "ui.Avatar")
+    });
+    assert_eq!(lines.len(), 1, "one row, not a thousand: {content:?}");
+    assert_eq!(texts(&content, "caption"), ["1000 changes"], "{content:?}");
 }
 
 /// Opening it marks nothing: only the footer's one action does, and its undo gives the marks

@@ -24,7 +24,7 @@ use automerge::{AutoCommit, ChangeHash, ObjType, Patch, PatchAction, Prop, ReadD
 use tilo_actions::ActionContext;
 /// Whether a version is the schema genesis rather than anyone's step.
 pub use tilo_doc::model::is_schema_genesis;
-use tilo_resource::history::Version;
+use tilo_resource::history::{self, StepFacts, Version};
 
 use crate::history_source::revert::revert_changes;
 use crate::history_source::words::HistoryWords;
@@ -869,15 +869,26 @@ pub fn steps_in_effect(
 /// the gesture `last` belongs to (the keystrokes of a word, the values one
 /// drag of a slider passes through), or of the invocation `last` ran in — one
 /// action and every action it called, which undo takes back together however
-/// many changes it made.
+/// many changes it made. A change that names neither is a step of its own
+/// ([`tilo_resource::history::same_step`], the one rule every store's history
+/// reads).
 pub fn same_step(last: &Version, next: &Version) -> bool {
-    let (Some(last), Some(next)) = (last.context.as_ref(), next.context.as_ref()) else {
-        return false;
+    history::same_step(&step_facts(last), &step_facts(next))
+}
+
+/// What the change `version` records of the act it is one change of: the gesture it is one change
+/// of and the invocation that made it. A record's steps are the gestures and invocations that
+/// made its changes: a run is undone as a scope of its own ([`Scope::Run`]), and a person's
+/// changes beside each other are steps of their own, so neither folds here.
+fn step_facts(version: &Version) -> StepFacts<'_> {
+    let Some(context) = version.context.as_ref() else {
+        return StepFacts::default();
     };
-    let gesture = last.gesture.is_some() && last.gesture == next.gesture;
-    let invocation =
-        last.source_invocation.is_some() && last.source_invocation == next.source_invocation;
-    gesture || invocation
+    StepFacts {
+        gesture: context.gesture.as_ref(),
+        invocation: context.source_invocation.as_ref(),
+        ..StepFacts::default()
+    }
 }
 
 /// What `undo` would take back for `scope` now: its last `limit` steps in
@@ -905,15 +916,6 @@ pub fn undos_in_effect(
     limit: usize,
 ) -> Vec<Version> {
     StepIndex::default().undos(doc, owns, limit)
-}
-
-/// What one undo change took back, by full hash; empty for any other
-/// change.
-pub fn took_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
-    match kind_in(doc.committed_document(), version) {
-        Kind::Undo(hashes) => hashes,
-        _ => Vec::new(),
-    }
 }
 
 /// What one redo change brought back, by full hash; empty for any other

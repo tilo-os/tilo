@@ -1,16 +1,4 @@
 //! When a conversation's day changes, and the clock each line carries.
-//!
-//! One rule, used by both apps: a conversation's lines are ordered by instant;
-//! a **day divider** appears before the first line of each local day, and never
-//! otherwise; and every line can name its own time. A divider carries the day
-//! in the person's language — "Today", "Yesterday", the weekday inside the last
-//! week, then the date — so a line from three days ago never reads as "14:32"
-//! with no day anywhere near it. The divider it is drawn as is the
-//! conversation's one ([`super::band`]), a day's tone of it.
-//!
-//! The local zone is read once ([`ConversationClock::local`]) and threaded
-//! through, so a paint pass cannot straddle two offsets and a test can pin a
-//! zone instead of hoping the machine is in one.
 
 use chrono::Datelike as _;
 
@@ -19,7 +7,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// Seconds in a day: the divisor that turns an instant into a day index.
 const DAY_SECS: i64 = 86_400;
 
 /// How many days back a divider names by its weekday rather than by a date.
@@ -34,20 +21,16 @@ const WEEKDAY_SPAN: i64 = 7;
 pub struct ConversationDay(i64);
 
 impl ConversationDay {
-    /// The local day `ts` falls on, given the zone's offset from UTC in
-    /// seconds east (the value `chrono` reports for "now").
     #[must_use]
     pub fn of(ts: i64, offset: i64) -> Self {
         Self(ts.saturating_add(offset).div_euclid(DAY_SECS))
     }
 
-    /// The day index from the epoch.
     #[must_use]
     pub const fn index(self) -> i64 {
         self.0
     }
 
-    /// The day `days` before this one.
     #[must_use]
     pub fn days_back(self, days: i64) -> Self {
         Self(self.0.saturating_sub(days))
@@ -60,7 +43,6 @@ impl ConversationDay {
     }
 }
 
-/// The local zone and "now", read once per pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConversationClock {
     offset: i64,
@@ -79,31 +61,26 @@ impl ConversationClock {
         }
     }
 
-    /// A pinned clock: `offset` seconds east of UTC, as if it were `now`.
     #[must_use]
     pub fn at(offset: i64, now: i64) -> Self {
         Self { offset, now }
     }
 
-    /// The zone's offset from UTC in seconds east.
     #[must_use]
     pub const fn offset(self) -> i64 {
         self.offset
     }
 
-    /// The instant this clock calls now.
     #[must_use]
     pub const fn now(self) -> i64 {
         self.now
     }
 
-    /// The day `ts` falls on.
     #[must_use]
     pub fn day(self, ts: i64) -> ConversationDay {
         ConversationDay::of(ts, self.offset)
     }
 
-    /// Today, as a day index.
     #[must_use]
     pub fn today(self) -> ConversationDay {
         self.day(self.now)
@@ -120,9 +97,6 @@ impl ConversationClock {
         )
     }
 
-    /// What a day divider says for `day`: "Today", "Yesterday", the weekday
-    /// within the last week, else the date (with the year when it is not this
-    /// year's).
     #[must_use]
     pub fn day_label(self, day: ConversationDay) -> String {
         let age = self.today().days_after(day);
@@ -159,13 +133,11 @@ impl ConversationClock {
     }
 }
 
-/// The calendar date of a local day index.
 fn date_of(day: ConversationDay) -> Option<chrono::NaiveDate> {
     let secs = day.index().checked_mul(DAY_SECS)?;
     chrono::DateTime::from_timestamp(secs, 0).map(|at| at.date_naive())
 }
 
-/// The weekday of a local day index.
 fn weekday_of(day: ConversationDay) -> Option<chrono::Weekday> {
     date_of(day).map(|date| date.weekday())
 }
@@ -194,14 +166,11 @@ impl DayBreaks {
         begins
     }
 
-    /// Forget what came before: the next line starts a day.
     pub fn reset(&mut self) {
         self.previous = None;
     }
 }
 
-/// The indices of `days` whose day differs from the one before (the first is
-/// always included).
 #[must_use]
 pub fn day_break_indices(days: impl IntoIterator<Item = ConversationDay>) -> Vec<usize> {
     let mut breaks = DayBreaks::new();
@@ -211,8 +180,6 @@ pub fn day_break_indices(days: impl IntoIterator<Item = ConversationDay>) -> Vec
         .collect()
 }
 
-/// The height of one line of `role` in `theme` — what a conversation row
-/// reserves for its time or its delivery line.
 #[must_use]
 pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f64 {
     f64::from(text.measure_style("Ag", None, &theme.text(role)).1)

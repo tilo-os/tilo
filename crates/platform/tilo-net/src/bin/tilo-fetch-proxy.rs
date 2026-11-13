@@ -1,16 +1,6 @@
 //! The fetch proxy for development: [`tilo_net::proxy::host`] on loopback,
 //! with nobody to authenticate, behind
 //! `crates/browser/tilo-web-desktop/scripts/serve.mjs --fetch-proxy`.
-//!
-//! usage: `tilo-fetch-proxy [--listen 127.0.0.1:0] [--allow-private]`
-//!
-//! - `--listen` must be a loopback address: the proxy authenticates nobody.
-//! - `--allow-private` lets it reach loopback and private addresses (a local
-//!   test server); refused by default, as on a workspace host.
-//!
-//! It serves wire protocol v1 at [`ENDPOINT`] and prints one JSON line,
-//! `{"listening": "http://127.0.0.1:<port>"}`, once it accepts connections.
-//! Workspace hosts serve the same implementation behind their sessions.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -18,7 +8,6 @@ use std::net::SocketAddr;
 use tilo_net::proxy::ProxyFailure;
 use tilo_net::proxy::host::{Caller, Config, Destinations, FetchProxy};
 
-/// Where the development server's pages find the proxy.
 const ENDPOINT: &str = "/_tilo/net/fetch";
 
 fn main() -> std::process::ExitCode {

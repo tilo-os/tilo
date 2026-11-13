@@ -1,29 +1,15 @@
 //! The workspace an environment belongs to.
 //!
-//! A Terminal is opened in a workspace, and the environments it lists and
-//! opens are that workspace's: their records are kept in the workspace's
-//! room, their home is the workspace's own files
-//! ([`tilo_paths::workspace_tree`]), and an environment of one workspace is
-//! granted nothing of another's files ([`Confinement`]). Two Terminals in two
-//! workspaces open two environments, side by side, neither seeing the
-//! other's files or records.
+//! A Terminal is opened in a workspace, and the environments it lists are that workspace's:
+//! their records kept with it, their home the workspace's own files
+//! ([`tilo_paths::workspace_tree`]), and no grant into another workspace's files. Who says
+//! which workspace a request is for ([`scope_of`]): an app the launcher started names the
+//! one it was launched in, written in the connection's handoff before the app holds it,
+//! while the session's own process may name any. A request that names none is the primary
+//! workspace's ([`WorkspaceId::primary`]), whose home is the device's whole files folder.
 //!
-//! Who says which workspace a request is for ([`scope_of`]):
-//!
-//! - an app the launcher started: the workspace it was launched in, which
-//!   the launcher writes in the connection's handoff before the app holds
-//!   it. The app cannot name another;
-//! - the session's own process (the shell hosting Terminal), which holds
-//!   the person's authority: the workspace its request names.
-//!
-//! A request that names none is the **primary workspace**'s
-//! ([`WorkspaceId::primary`]): the room the launcher calls `personal`, where
-//! every environment made before environments belonged to a workspace is
-//! kept, and whose home is the device's whole files folder, as before.
-//!
-//! Every environment's processes see two variables ([`WORKSPACE_ENV`],
-//! [`ENVIRONMENT_ENV`]); [`environment_workspace`] answers the same question
-//! from the record.
+//! Every environment's processes see two variables ([`WORKSPACE_ENV`], [`ENVIRONMENT_ENV`]);
+//! [`environment_workspace`] answers the same question from the record.
 
 use std::path::{Path, PathBuf};
 
@@ -33,34 +19,21 @@ use tilo_environment::{Environment, is_record_key};
 use crate::records::{RecordError, Records};
 use crate::store::Store;
 
-/// The primary workspace's id: the room an environment is kept in when no
-/// workspace is named, as the launcher names a launch with no workspace.
 pub const PRIMARY: &str = "personal";
 
-/// Set in every environment's shell and guest: the id of the workspace it
-/// belongs to ([`WorkspaceId`]; `personal` for the primary workspace).
 pub const WORKSPACE_ENV: &str = "TILO_WORKSPACE";
 
-/// Set in every environment's shell and guest: the environment's id on
-/// this device, stable across its sessions ([`EnvironmentId`]):
-/// `<workspace>/<record>`.
 pub const ENVIRONMENT_ENV: &str = "TILO_ENVIRONMENT";
 
-/// A workspace, by id: the primary workspace, or one of
-/// [`tilo_paths::is_workspace_tree_id`]'s ids (a session's workspace ids are
-/// UUIDs).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorkspaceId(String);
 
 impl WorkspaceId {
-    /// The primary workspace ([`PRIMARY`]).
     #[must_use]
     pub fn primary() -> Self {
         Self(PRIMARY.to_owned())
     }
 
-    /// The workspace `raw` names: the primary one for none, an empty id or
-    /// `personal`.
     pub fn parse(raw: Option<&str>) -> Result<Self, String> {
         match raw.map(str::trim) {
             None | Some("" | PRIMARY) => Ok(Self::primary()),
@@ -69,8 +42,6 @@ impl WorkspaceId {
         }
     }
 
-    /// The workspace `environment`'s record names: the primary one for a
-    /// record made before environments belonged to a workspace.
     pub fn of_record(environment: &Environment) -> Result<Self, String> {
         Self::parse(Some(&environment.workspace))
     }
@@ -114,7 +85,6 @@ impl EnvironmentId {
         })
     }
 
-    /// The environment `raw` names, as [`ENVIRONMENT_ENV`] spells it.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let (workspace, record) = raw
             .split_once('/')
@@ -147,9 +117,8 @@ impl std::fmt::Display for EnvironmentId {
 /// environment's id ([`ENVIRONMENT_ENV`]) and must know its workspace.
 /// `store` is the runtime's store ([`Store::discover`]).
 ///
-/// The record is read in the room of the workspace the id names, and a
-/// record there that names another workspace is refused, so the answer is
-/// the record's and the id's at once.
+/// The record is read with the workspace the id names, and one there that names
+/// another workspace is refused, so the answer is the record's and the id's at once.
 pub fn environment_workspace(
     store: &Store,
     environment: &EnvironmentId,
@@ -169,11 +138,6 @@ pub fn environment_workspace(
         .map_err(RecordError::Model)
 }
 
-/// The workspace a request is for, from who asks (`caller`), the workspace
-/// the launcher said the app was launched in (`launched`), and the one the
-/// request names (`asked`). An app's is the one it was launched in, and an
-/// app that names another is refused; the session's own process names the
-/// one it wants.
 pub fn scope_of(
     caller: &crate::host::Caller,
     launched: Option<&str>,
@@ -205,9 +169,7 @@ pub fn scope_of(
 /// files folder are granted as before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confinement {
-    /// The device's files folder, as named and as resolved.
     files: Vec<PathBuf>,
-    /// The workspace's own tree, as named and as resolved.
     own: Vec<PathBuf>,
 }
 
@@ -260,7 +222,6 @@ impl Confinement {
         self.admits_path(Path::new(path))
     }
 
-    /// Whether a grant of the directory `path` stays within the confinement.
     #[must_use]
     pub fn admits_path(&self, path: &Path) -> bool {
         let path = normalize(path);
@@ -334,8 +295,6 @@ mod tests {
         }
     }
 
-    /// An app's workspace is the launcher's word, never its own; the
-    /// session's process names the workspace it wants.
     #[test]
     fn an_app_is_held_to_the_workspace_it_was_launched_in() {
         let app = Caller::App("so.tilo.terminal".into());
@@ -377,7 +336,6 @@ mod tests {
         assert!(!confined.admits_path(Path::new("/")));
         assert!(confined.admits_path(&dir.path().join("elsewhere")));
 
-        // Through a link to the files folder, as `perm trust-dir` resolves.
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&files, &link).unwrap();
         let through = Confinement::new(&link, &ws(W1)).unwrap();

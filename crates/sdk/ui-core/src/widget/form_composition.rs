@@ -1,9 +1,4 @@
 //! Content-first forms on the ordinary retained widget tree.
-//!
-//! [`FormPage`] owns scrolling and outer gutters. [`Form`], [`FormSection`] and
-//! [`Field`] hug their content and also work inside manually composed screens.
-//! All optional layout setters accept `None` to restore inheritance. Explicit
-//! dimensions on standard children remain owned by those children.
 use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, fr, length, minmax, percent};
@@ -58,8 +53,6 @@ fn column_style(gap: f32) -> Style {
             width: percent(1.0_f32),
             height: auto(),
         },
-        // An automatic block minimum: inside a scroll view a form keeps its
-        // content height instead of being squeezed to the viewport.
         min_size: Size {
             width: length(0.0_f32),
             height: auto(),
@@ -145,9 +138,7 @@ impl Form {
 )]
 pub struct FormSection {
     parts: Parts,
-    /// Whether `parts.children[0]` is the section's heading.
     has_title: bool,
-    /// Settings rows: label leading, control trailing, inset separators.
     grouped: bool,
     density: Option<Density>,
     field_spacing: Option<f32>,
@@ -155,14 +146,9 @@ pub struct FormSection {
     inherited: Option<FormLayout>,
     inherited_field_spacing: Option<f32>,
     effective: Option<SectionLayout>,
-    /// The label and control needs of every field of the enclosing
-    /// [`Form`], so all its sections share one label column.
     form_needs: Option<(f32, f32)>,
-    /// Whether the section's rows currently stand beside their labels.
     beside: bool,
-    /// The effective field spacing, the gap between stacked grouped rows.
     stacked_gap: f32,
-    /// The width the section's dropdowns share.
     choosers: super::dropdown::ChooserColumn,
 }
 impl FormSection {
@@ -170,8 +156,6 @@ impl FormSection {
         Self::new_owned(title.into())
     }
 
-    /// [`Self::new`] once its text is owned: one copy in the toolkit
-    /// rather than one in every app that calls the generic constructor.
     fn new_owned(title: String) -> Self {
         let mut section = Self::untitled();
         section.parts.children.push(Box::new(
@@ -182,8 +166,8 @@ impl FormSection {
         section.has_title = true;
         section
     }
-    /// A titled section whose heading line also carries `action` (a master
-    /// switch, a status badge, an "Add" button) on its trailing edge.
+    /// A titled section whose heading line also carries `action` (a master switch, a status
+    /// badge, an "Add" button) on its trailing edge.
     pub fn with_action(title: impl Into<String>, action: Element) -> Self {
         let mut section = Self::untitled();
         let header = super::Row::new()
@@ -235,10 +219,8 @@ impl FormSection {
         self.parts.children.push(Box::new(field));
         self
     }
-    /// A row of the section with no label of its own: a `Row` of buttons
-    /// ("Export", "Import"), a full-width control. It spans the label and
-    /// control columns, and in a grouped section it is one of the rows,
-    /// with their height and separators.
+    /// A row of the section with no label of its own: a `Row` of buttons ("Export",
+    /// "Import"), a full-width control.
     #[must_use]
     pub fn control_row(mut self, content: Element) -> Self {
         self.parts.children.push(Box::new(Field::row(content)));
@@ -275,8 +257,6 @@ impl FormSection {
             .filter_map(|child| child.as_any_mut()?.downcast_mut::<Field>())
     }
 
-    /// The widest label and control need of this section's fields that may
-    /// stand beside their labels.
     fn own_needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
         let mut needs = (0.0_f32, 0.0_f32);
         for field in self.fields_mut() {
@@ -291,35 +271,25 @@ impl FormSection {
     }
 }
 
-/// What a [`Field`] labels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldKind {
-    /// A standard control that carries the label as its accessible name.
     Control,
     /// Any element (a read-only value, a row of controls): the label is
     /// announced as a label of its own.
     Custom,
     /// Read-only text: reserve a readable phrase, not only its longest word.
     Value,
-    /// No label: a row that spans both columns.
     Row,
 }
 
-/// One visible label and what it labels: a standard control (which takes
-/// the label as its accessible name, so it is read once), a custom element,
-/// or nothing for a control row. Help copy reads under the label while the
-/// label stands beside the control, and under the control once stacked;
-/// validation copy always stays with the control.
+/// One visible label and what it labels: a standard control (which takes the label as its
+/// accessible name, so it is read once), a custom element, or nothing for a control row.
 #[crate::component::not_a_component(layout, "the language's `field`")]
 pub struct Field {
-    /// `[label, body, help?]`.
     parts: Parts,
     kind: FieldKind,
     has_help: bool,
     label_placement: Option<LabelPlacement>,
-    /// The control keeps its own width while the label is beside it (a
-    /// chooser), instead of filling the control column: on the trailing edge
-    /// of a grouped row, on the column's leading edge in a plain form.
     trailing_control: bool,
     /// The control takes the room the label leaves instead of its own
     /// width, even in a grouped section (a read-only value that wraps only
@@ -439,8 +409,8 @@ impl Field {
     pub fn with_error(self, text: impl Into<String>) -> Self {
         self.with_error_live(text, crate::a11y::Politeness::Polite)
     }
-    /// Announce validation with the urgency of the interaction: polite for
-    /// live checking, assertive when an explicit submission is refused.
+    /// Announce validation with the urgency of the interaction: polite for live checking,
+    /// assertive when an explicit submission is refused.
     #[must_use]
     pub fn with_error_live(
         mut self,
@@ -463,15 +433,10 @@ impl Field {
         self.label_placement = value;
         self
     }
-    /// A compact chooser (dropdown, segmented switch, switch) that keeps its
-    /// own width while the label is beside it: it ends on the trailing edge
-    /// of a grouped row (a settings card), and starts on the control
-    /// column's leading edge in a plain form, where the fields around it
-    /// start too. It takes the full width under the label once the section
-    /// stacks. The beside/above decision is still the
-    /// section's measured one, so every row of a settings card switches
-    /// together instead of each deciding for itself. Help copy stays under
-    /// the label and validation copy with the control.
+    /// A compact chooser (dropdown, segmented switch, switch) that keeps its own width
+    /// while the label is beside it: it ends on the trailing edge of a grouped row (a
+    /// settings card), and starts on the control column's leading edge in a plain form,
+    /// where the fields around it start too.
     #[must_use]
     pub fn with_trailing_control(mut self) -> Self {
         self.trailing_control = true;
@@ -489,7 +454,6 @@ impl Field {
         self.effective
     }
 
-    /// Whether this field's label takes part in the shared label column.
     fn shares_label_column(&self) -> bool {
         self.kind != FieldKind::Row
             && !self
@@ -505,16 +469,12 @@ impl Field {
                 measure_owned(child.as_mut(), AvailableSpace::MaxContent, text).width
             })
         };
-        // Help reads under a beside label, so the label column keeps room
-        // for it to wrap into a few lines, not a word a line: as wide as the
-        // help wants, up to a chooser's measure.
         if self.has_help
             && let Some(help) = self.parts.children.get_mut(2)
         {
             let help = measure_owned(help.as_mut(), AvailableSpace::MaxContent, text).width;
             label = label.max(help.min(self.comfortable_control));
         }
-        // The body owns its control directly; help/error do not set its minimum.
         let control_node = self
             .parts
             .nodes
@@ -533,10 +493,6 @@ impl Field {
         };
         let mut measured = measure_owned(*control, AvailableSpace::MinContent, text).width;
         if self.kind == FieldKind::Value {
-            // Min-content is just the longest word. A value needs enough
-            // room for a phrase before it can stand beside its label,
-            // rather than wrap a word per line. Bound its phrase width by
-            // the live theme rather than a guessed localized string.
             let natural = measure_owned(*control, AvailableSpace::MaxContent, text).width;
             measured = measured.max(natural.min(self.comfortable_control));
         }
@@ -583,7 +539,6 @@ fn measure_owned(
     )
 }
 
-/// One placement of a field part in the field's grid.
 fn place(
     row: i16,
     rows: u16,
@@ -604,8 +559,6 @@ fn place(
     )
 }
 
-// The control and its validation copy. This is ordinary host layout, not a
-// private measurement tree; its children appear in focus/accessibility traversal.
 struct FieldBody {
     parts: Parts,
     error: bool,
@@ -613,8 +566,6 @@ struct FieldBody {
 }
 impl FieldBody {
     fn set_error(&mut self, text: &str, politeness: crate::a11y::Politeness) {
-        // Validation is status: the message in danger ink, and the control
-        // itself edged in it, so the error reads at a glance.
         let copy: Element = Box::new(
             Text::new(text)
                 .with_role(TextRole::Caption)
@@ -700,8 +651,6 @@ impl Widget for Form {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    /// One label column for the whole form: every section lines its
-    /// controls up on the widest label of any of them.
     fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -820,7 +769,6 @@ impl Widget for FormSection {
             effective.field_spacing.value
         };
         self.beside = true;
-        // The section's dropdowns share one width.
         self.choosers.reset();
         for child in &mut self.parts.children {
             self.choosers.join(child.as_mut());
@@ -872,8 +820,6 @@ impl Widget for FormSection {
             changed |= field.group_needs != Some(needs);
             field.group_needs = Some(needs);
         }
-        // Stacked grouped rows are spaced like plain fields: a row height
-        // and no gap would run each label into the control above it.
         if self.grouped && self.field_spacing.is_none() {
             let width = tree.layout(node).map_or(0.0, |layout| layout.size.width);
             let pair = self.fields_mut().next().map_or(0.0, |field| field.pair_gap);
@@ -955,8 +901,6 @@ impl Widget for Field {
         // control is at most a large control high, so a taller one (a
         // multi-line entry, a list) keeps its label on its first line.
         self.first_line = crate::num::f32_of_f64(super::ControlSize::Large.height(theme));
-        // Single-line entry widgets intentionally return zero intrinsic width.
-        // Reserve the chooser measure, grown with the text, in that case.
         self.comfortable_control = theme.tokens.metrics.chooser_width
             * crate::tokens::Metrics::text_growth(theme.text_scale);
         let placement = self.label_placement.map_or_else(
@@ -1014,8 +958,6 @@ impl Widget for Field {
         let first_line = control_height.min(self.first_line.max(1.0));
         if let Some(label) = self.parts.children.first_mut() {
             let height = measure_owned(label.as_mut(), AvailableSpace::MaxContent, text).height;
-            // A trailing control with help copy is centred on the whole
-            // row instead (see `place_parts`), so its label starts the row.
             let top = if beside && !(self.trailing_control && self.has_help) {
                 ((first_line - height) / 2.0).max(0.0)
             } else {
@@ -1053,10 +995,6 @@ impl Widget for Field {
     }
 }
 impl Field {
-    /// Place the label, body and help copy in the field's grid for the
-    /// resolved arrangement. Beside: the label and its help stack in the
-    /// label column and the body spans both rows. Stacked: label, body and
-    /// help follow each other. Returns whether any style changed.
     fn place_parts(
         &self,
         tree: &mut TaffyTree<()>,
@@ -1100,11 +1038,6 @@ impl Field {
                 } else {
                     place(stacked_row, 1, 1)
                 };
-                // A chooser keeps the shared control need as its column (so
-                // sibling choosers line up): beside its label it ends on a
-                // grouped row's trailing edge, or starts on a plain form's
-                // control edge with the fields; stacked, it takes the full
-                // width under the label.
                 if trailing && beside {
                     style.size.width = length(control);
                     style.justify_self = Some(edge);
@@ -1114,9 +1047,6 @@ impl Field {
                     style.justify_self = None;
                     style.justify_items = None;
                 }
-                // Beside a label with help copy, a trailing control (a
-                // switch, a chooser) is centred on the whole row, label and
-                // help together, as a settings list reads.
                 style.align_self =
                     (trailing && beside && help).then_some(taffy::AlignItems::Center);
             });

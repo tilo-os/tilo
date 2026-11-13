@@ -67,7 +67,6 @@ fn queued(state: &Arc<Mutex<BrokerState>>, shared: &Shared) {
     }
 }
 
-/// Whether a changed entry is the record's document.
 pub(super) fn is_document(path: &Path) -> bool {
     path.file_name() == Some(std::ffi::OsStr::new(app_state::DOCUMENT_FILE))
 }

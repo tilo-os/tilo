@@ -1,18 +1,15 @@
-//! The text field's tests: the fixtures they share, and one file per subject
-//! beside them — the caret and the shaped text it sits in, the menus and
-//! spelling, edits and secrets, the pointer and the keys, the multiline field,
-//! attributed lines, a field among other controls, and the frame it paints.
-
+//! The text field's tests: the fixtures they share, and one file per subject beside them — the
+//! caret and the shaped text it sits in, the menus and spelling, edits and secrets, the pointer and
+//! the keys, the multiline field, attributed lines, a field among other controls, and the frame it
+//! paints.
 use super::*;
 use crate::testing::Dispatch;
 use winit::event::TouchPhase;
 
-/// The 1× size a role-less field sets its text at.
 pub(super) fn body_size() -> f32 {
     crate::tokens::typography::stock().size(TextRole::Body)
 }
 
-/// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
 #[cfg(test)]
 pub(super) fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
     let mut sender = Dispatch::new().doc(doc);
@@ -21,7 +18,6 @@ pub(super) fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f
     sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
-/// A focused en-US field holding `text` with the caret at its end.
 pub(super) fn suggesting_field(text: &str) -> TextInput {
     let mut ti = TextInput::local()
         .with_spellcheck(true)
@@ -81,7 +77,6 @@ pub(super) fn drive(
     Dispatch::new().modifiers(m).doc(doc).send(ti, ev).handled
 }
 
-/// Unfocused, so `scroll_x` stays 0 and click math is simple.
 pub(super) fn draw_to_populate(ti: &mut TextInput) {
     draw_with_theme(ti, &Theme::dark());
 }
@@ -94,7 +89,6 @@ pub(super) fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
     Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 }
 
-/// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.
 pub(super) fn x_for_byte(ti: &TextInput, b: usize) -> f64 {
     ti.rect.x0 + 10.0 + ti.char_x_positions()[b]
 }
@@ -131,11 +125,6 @@ pub(super) fn draw_rich_line_for_test(
     scene
 }
 
-/// One host frame of a multiline field: Taffy's sizing queries at the
-
-/// widths a Scrollable's grid asks for (zero, min/max-content, final), then
-
-/// placement and paint against a window-sized viewport.
 pub(super) fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: &Theme) {
     let mut height = 0.0f32;
     for (known, available) in [

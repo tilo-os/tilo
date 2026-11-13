@@ -1035,22 +1035,25 @@ impl Surfaces {
     }
 
     /// Stop `name` , if it runs, and wait for it: its socket closes and the compositor forgets its
-    /// surfaces.
+    /// Stop `name` , if it runs: its socket closes and the compositor forgets its surfaces. The
+    /// process is signalled now and reaped on a thread of its own, never waited for here, which
+    /// runs on the loop's pass (a keyboard change, the lock screen): a killed process can take a
+    /// moment to end, and the loop draws every window in the meantime.
     pub fn stop(&mut self, name: &str) {
         let Some(place) = self.running.iter().position(|running| running.name == name) else {
             return;
         };
         let mut app = self.running.remove(place);
         let _ = app.child.kill();
-        let _ = app.child.wait();
+        crate::connectors::reap(app.child);
         tracing::info!(surface = %app.name, "stopped a surface app");
     }
 
-    /// Stop every surface app the session runs, and wait for them.
+    /// Stop every surface app the session runs.
     pub fn stop_all(&mut self) {
         for mut app in self.running.drain(..) {
             let _ = app.child.kill();
-            let _ = app.child.wait();
+            crate::connectors::reap(app.child);
         }
     }
 }
@@ -1213,7 +1216,7 @@ mod tests {
 
     #[test]
     fn a_bar_tells_the_app_where_its_window_goes() {
-        let bar = Surface::new("topbar", "/usr/bin/tilo-topbar")
+        let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
             .layer(Layer::Top)
             .namespace("tilo-bar")
             .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)

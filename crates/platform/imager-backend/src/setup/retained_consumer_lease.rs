@@ -1,6 +1,5 @@
-//! Root-owned custody for an ordinary app consuming a retained Home projection.
-//! The installed person proof and source/target workers stay alive until the
-//! actual consuming PID namespace has stopped. No public dispatcher is added.
+//! Root-owned custody for an ordinary app consuming a retained Home projection: the person proof
+//! and both workers stay alive until the consuming PID namespace has stopped.
 use super::{
     installed_retained_actor::InstalledRetainedLaunchInput,
     retained_consumer_selection::ReviewedConsumerSelection,
@@ -22,9 +21,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Root preparation owns the projection before any view descriptor is handed
-/// to a launcher. An interrupted handoff cannot turn absence of a witness into
-/// evidence that an app never began reading the source.
+/// Root preparation owns the projection before any view descriptor is handed on, so an
+/// interrupted handoff never turns a missing witness into proof that an app never read.
 pub(super) struct PendingRetainedConsumer {
     input: Option<Arc<InstalledRetainedLaunchInput>>,
     projection: Option<RetainedProjectionSession>,
@@ -53,9 +51,8 @@ impl PendingRetainedConsumer {
         })
     }
 
-    /// Canonical channel transport only: retain the exact lease stream and
-    /// receive the real namespace immediately after the view's transport ACK,
-    /// before the projection's post-operation authority check can fail.
+    /// Retains the lease stream and receives the real namespace right after the view's transport
+    /// ACK, before the projection's authority check can fail.
     pub(super) fn export_view(
         &mut self,
         selection: &ReviewedConsumerSelection,
@@ -111,8 +108,7 @@ impl PendingRetainedConsumer {
                     issued
                 }
                 Err(failure) => {
-                    // Only the canonical sender can mint this observation. A
-                    // receipt-only failure is not possible view delivery.
+                    // Only the canonical sender mints this observation.
                     *exported = failure.view_may_have_been_delivered();
                     exposure.observe_failed_issue(&failure);
                     let (error, stream) = failure.into_parts();
@@ -141,8 +137,6 @@ impl PendingRetainedConsumer {
         if self.consumer.is_none() {
             return Err(Box::new(self));
         }
-        // Transfer all actual custody before any fallible validation. The root
-        // driver retains the returned owner even when its check fails.
         Ok(RetainedConsumerLease {
             input: self.input.take(),
             projection: self.projection.take(),
@@ -156,10 +150,8 @@ impl PendingRetainedConsumer {
         })
     }
 
-    /// Fixed root helper worker only. A missing consuming namespace witness
-    /// cannot become evidence of absence when an FD may already be delivered.
-    /// Revoke bytes immediately, retain this exact owner and remain alive. No
-    /// receipt or terminal status is emitted for this incomplete handoff.
+    /// Revokes bytes immediately, keeps this owner alive and emits no receipt for an incomplete
+    /// handoff.
     pub(super) fn retain_failed_handoff(&mut self, cancel: &AtomicBool) {
         cancel.store(true, Ordering::Release);
         if let Some(input) = &self.input {
@@ -171,7 +163,6 @@ impl PendingRetainedConsumer {
             }
         }
         // Even an unexported projection needs positively observed retirement.
-        // A failed inspection or kernel operation preserves the same owner.
         while self.retire_unexported().is_err() {
             std::thread::park_timeout(Duration::from_millis(50));
         }
@@ -208,8 +199,6 @@ impl Drop for PendingRetainedConsumer {
             input.revoke();
         }
         if self.exported && self.consumer.is_none() {
-            // Possible view with no genuine init witness remains unknown.
-            // Keep this actual root owner alive; never release through exit.
             loop {
                 std::thread::park_timeout(Duration::from_secs(1));
             }
@@ -235,10 +224,8 @@ impl Drop for PendingRetainedConsumer {
     }
 }
 
-/// Construct only after the root actor has authenticated the real launcher,
-/// replayed its signed package and attached the exact joint projection.
-/// The opaque witness is minted by the canonical ordinary namespace owner;
-/// an app PID, a Shell child exit or a wire status cannot replace it.
+/// The witness comes from the canonical ordinary namespace owner; an app PID, a Shell child exit
+/// or a wire status cannot replace it.
 pub(super) struct RetainedConsumerLease {
     input: Option<Arc<InstalledRetainedLaunchInput>>,
     projection: Option<RetainedProjectionSession>,
@@ -252,7 +239,6 @@ pub(super) struct RetainedConsumerLease {
 }
 
 impl RetainedConsumerLease {
-    /// Actual kernel stop observation remains available after Files proof ends.
     /// Missing custody never becomes an observed successful stop.
     pub(super) fn consumer_observed_stopped(&self) -> io::Result<bool> {
         if self.consumer_stopped {
@@ -263,7 +249,6 @@ impl RetainedConsumerLease {
             .ok_or(io::ErrorKind::NotConnected)?
             .observed_stopped()
     }
-    /// True only after the real namespace stop and every owned resource release.
     pub(super) fn retirement_complete(&self) -> bool {
         self.consumer_stopped
             && self.input.is_none()
@@ -300,11 +285,8 @@ impl RetainedConsumerLease {
         selection.check(cancel)
     }
 
-    /// Watch the Files role until its consuming namespace stops, then retire
-    /// its source. Live custody is rechecked between the stops; the launcher's
-    /// control channel ending retires Files, as does cancellation or a lost
-    /// custody check. The root helper cannot return while the original actor
-    /// lacks positively observed native retirement.
+    /// Watches the Files role until its namespace stops, then retires its source; the launcher's
+    /// control channel ending, cancellation or a lost custody check also retires it.
     pub(super) fn supervise(
         lease: &Arc<Mutex<Self>>,
         cancel: &Arc<AtomicBool>,
@@ -368,8 +350,7 @@ impl RetainedConsumerLease {
                     files_stopped = true;
                 }
             }
-            // Workers may still hold original-source pins: their actual cleanup
-            // must land before the original actor retires.
+            // Workers may still hold source pins, so their cleanup lands before the actor retires.
             if files_stopped && !files_retired {
                 let mut owner = lease
                     .lock()
@@ -392,10 +373,8 @@ impl RetainedConsumerLease {
                     match actor.retire() {
                         Ok(()) => original_retired = true,
                         Err(error) => {
-                            // A consuming retirement refusal can retain mounted
-                            // native custody, so remain the live root process
-                            // owner; never retry a DTO or turn an empty slot into
-                            // observed retirement.
+                            // A retirement refusal can retain mounted custody: stay the live owner,
+                            // never retry a DTO.
                             refusal.get_or_insert(error);
                             original_retirement_unknown = true;
                             cancel.store(true, Ordering::Release);
@@ -427,10 +406,8 @@ impl RetainedConsumerLease {
         Ok(())
     }
 
-    /// Root helper error path. Never return to the process exit boundary while
-    /// this actual consumer or either filesystem worker remains unobserved.
-    /// Native cancellation/inspection errors are kept as failure; eventual
-    /// successful teardown allows the caller to return the original failure.
+    /// Never return while this consumer or either filesystem worker is unobserved; a later
+    /// successful teardown still returns the original failure.
     pub(super) fn retire_before_exit(&mut self, cancel: &AtomicBool) {
         cancel.store(true, Ordering::Release);
         if let Some(input) = &self.input {
@@ -441,9 +418,7 @@ impl RetainedConsumerLease {
         }
     }
 
-    /// Off the UI thread. Timeout or inspection failure retains ALL custody.
-    /// An actual app exit ends source callbacks before the target/source
-    /// projection is retired; worker stop failures are preserved separately.
+    /// Off the UI thread. Timeout or inspection failure retains all custody.
     pub(super) fn retire(&mut self, grace: Duration) -> io::Result<()> {
         if !self.consumer_stopped {
             let consumer = self.consumer.as_ref().ok_or(io::ErrorKind::NotConnected)?;
@@ -480,8 +455,7 @@ impl RetainedConsumerLease {
     }
 }
 
-/// Nothing is asked of the launcher's control channel once the app runs, so a
-/// byte on it or its end means the launcher's role here is over.
+/// A byte on the launcher's control channel, or its end, means its role here is over.
 fn launcher_control_ended(control: &UnixStream) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
     let mut ready = libc::pollfd {
@@ -503,8 +477,7 @@ impl Drop for RetainedConsumerLease {
         if let Some(input) = &self.input {
             input.revoke();
         }
-        // This owner is confined to the existing root background job. Preserve
-        // actual custody through retries, including transient unmount errors.
+        // Keeps custody through retries, including transient unmount errors.
         while self.projection.is_some() || self.exposure.is_some() || self.managed.is_some() {
             if self.retire(Duration::from_secs(5)).is_ok() {
                 break;

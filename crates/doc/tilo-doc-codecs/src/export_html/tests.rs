@@ -48,7 +48,6 @@ fn mark(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
     }
 }
 
-/// Count occurrences of a substring.
 fn count(hay: &str, needle: &str) -> usize {
     if needle.is_empty() {
         return 0;
@@ -62,12 +61,10 @@ fn count(hay: &str, needle: &str) -> usize {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn html_export_block_structure_images_and_scaffolding() {
-    // Phase `heading_paragraph_bold_run_emits_h1_strong_and_escaped_text`.
     {
         // A heading, then a paragraph whose first word is bold and which contains a
         // character that MUST be escaped.
         let mut para = block("paragraph", "Bold & plain");
-        // "Bold" = bytes 0..4 carries `strong`.
         para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
 
         let snap = DocSnapshot {
@@ -101,7 +98,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             "full document:\n{html}"
         );
     }
-    // Phase `heading_levels_map_to_h1_through_h6`.
     {
         for lvl in 1..=6 {
             let snap = DocSnapshot {
@@ -121,7 +117,6 @@ fn html_export_block_structure_images_and_scaffolding() {
                 "level {lvl}:\n{html}"
             );
         }
-        // Out-of-range clamps to h6 (>6) and h1 (<1).
         let snap = DocSnapshot {
             blocks: vec![block_attr("heading", "X", &[("level", AttrVal::Int(9))])],
             ..empty_snapshot()
@@ -136,7 +131,6 @@ fn html_export_block_structure_images_and_scaffolding() {
         );
         assert!(html.contains("<h6>X</h6>"), "level 9 clamps to h6:\n{html}");
     }
-    // Phase `quote_renders_blockquote`.
     {
         let snap = DocSnapshot {
             blocks: vec![block("quote", "To be or not to be")],
@@ -154,7 +148,6 @@ fn html_export_block_structure_images_and_scaffolding() {
         assert!(html.contains("To be or not to be"));
         assert!(html.contains("</blockquote>"));
     }
-    // Phase `table_renders_tr_td_grid`.
     {
         let mut row1 = block("row", "");
         row1.children = vec![block("cell", "Name"), block("cell", "Score")];
@@ -180,10 +173,7 @@ fn html_export_block_structure_images_and_scaffolding() {
         assert_eq!(count(&html, "<td>"), 4);
         assert!(html.contains(">Name</td>") && html.contains(">42</td>"));
     }
-    // Phase `image_block_emits_img_with_data_uri`.
     {
-        // A minimal PNG header so the MIME sniff picks image/png.
-        // The trailing 0xfb 0xff exercise the `+`/`/` alphabet and `=` padding.
         let png = vec![
             0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 0xfb, 0xff,
         ];
@@ -219,7 +209,6 @@ fn html_export_block_structure_images_and_scaffolding() {
         );
         assert!(html.contains("alt=\"A cat\""), "alt text carried:\n{html}");
     }
-    // Phase `missing_image_blob_emits_inert_img_without_error`.
     {
         let snap = DocSnapshot {
             blocks: vec![block_attr(
@@ -243,7 +232,6 @@ fn html_export_block_structure_images_and_scaffolding() {
         );
         assert!(html.contains("alt=\"lost\""));
     }
-    // Phase `styles_map_emits_css_classes_and_blocks_get_tagged`.
     {
         let mut fancy = BTreeMap::new();
         fancy.insert("color".to_string(), AttrVal::Str("#112233".into()));
@@ -260,7 +248,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             styles,
             ..empty_snapshot()
         };
-        // Full doc so the <style> block is emitted.
         let html = render_html(&snap, HtmlOptions::default(), &tilo_content::NoContent);
         assert!(html.contains("<style>"), "style block present:\n{html}");
         assert!(
@@ -280,7 +267,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             "block tagged with class:\n{html}"
         );
     }
-    // Phase `empty_document_is_well_formed`.
     {
         let html = render_html(
             &empty_snapshot(),
@@ -291,7 +277,6 @@ fn html_export_block_structure_images_and_scaffolding() {
         assert!(html.contains("<body>") && html.contains("</body>"));
         assert!(html.trim_end().ends_with("</html>"));
     }
-    // Phase `fragment_mode_omits_document_scaffolding`.
     {
         let snap = DocSnapshot {
             blocks: vec![block("paragraph", "hi")],
@@ -324,7 +309,6 @@ fn html_export_block_structure_images_and_scaffolding() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn html_export_lists_nest_and_number() {
-    // Phase `three_item_ordered_list_yields_one_ol_with_three_li`.
     {
         let snap = DocSnapshot {
             blocks: vec![
@@ -367,7 +351,6 @@ fn html_export_lists_nest_and_number() {
                 && html.contains(">Three</li>")
         );
     }
-    // Phase `bullet_list_uses_ul`.
     {
         let snap = DocSnapshot {
             blocks: vec![
@@ -403,9 +386,7 @@ fn html_export_lists_nest_and_number() {
         assert_eq!(count(&html, "<li"), 2);
         assert_eq!(count(&html, "<ol"), 0);
     }
-    // Phase `nested_list_levels_nest_correctly`.
     {
-        // L0, L1, L1, L0 → an outer list with a sublist that opens and closes.
         let snap = DocSnapshot {
             blocks: vec![
                 block_attr(
@@ -451,7 +432,6 @@ fn html_export_lists_nest_and_number() {
             },
             &tilo_content::NoContent,
         );
-        // Two <ul> open (outer + nested), two close — balanced.
         assert_eq!(count(&html, "<ul>"), 2, "outer + nested ul:\n{html}");
         assert_eq!(count(&html, "</ul>"), 2, "balanced close:\n{html}");
         assert_eq!(count(&html, "<li"), 4);
@@ -464,7 +444,6 @@ fn html_export_lists_nest_and_number() {
             "nesting preserves order:\n{html}"
         );
     }
-    // Phase `ordered_list_num_format_sets_list_style_type`.
     {
         let snap = DocSnapshot {
             blocks: vec![block_attr(
@@ -501,7 +480,6 @@ fn html_export_lists_nest_and_number() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn html_export_escapes_and_neutralises_hostile_content() {
-    // Phase `script_in_text_is_escaped_no_injection`.
     {
         let snap = DocSnapshot {
             blocks: vec![block("paragraph", "<script>alert('xss')</script>")],
@@ -527,7 +505,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
             "escaped closing tag:\n{html}"
         );
     }
-    // Phase `link_mark_renders_anchor_with_escaped_href`.
     {
         let mut p = block("paragraph", "click here");
         p.marks.push(mark(
@@ -554,7 +531,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
         );
         assert!(html.contains("</a>"));
     }
-    // Phase `javascript_href_is_neutralized`.
     {
         let mut p = block("paragraph", "evil");
         p.marks.push(mark(
@@ -581,7 +557,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
         );
         assert!(html.contains("<a href=\"#\">"), "neutralized to #:\n{html}");
     }
-    // Phase `css_injection_via_color_mark_is_sanitized`.
     {
         let mut p = block("paragraph", "x");
         p.marks.push(mark(
@@ -616,13 +591,11 @@ fn html_export_escapes_and_neutralises_hostile_content() {
             !attr.contains('{') && !attr.contains('}'),
             "no rule-block breakout: {attr:?}\n{html}"
         );
-        // The injected second-property `;` that preceded ` } body {` is gone.
         assert!(
             !attr.contains("; }"),
             "no injected declaration boundary: {attr:?}\n{html}"
         );
     }
-    // Phase `attribute_value_quotes_are_escaped_in_alt`.
     {
         // An image alt containing a double-quote must not break out of the attr.
         let png = vec![0x89, b'P', b'N', b'G', 0, 0, 0, 0];
@@ -648,7 +621,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
             html.contains("alt=\"a &quot;quoted&quot; caption\""),
             "quotes escaped in attr:\n{html}"
         );
-        // No raw quote that could terminate the attribute early.
         assert!(
             !html.contains("alt=\"a \"quoted"),
             "no attribute breakout:\n{html}"
@@ -658,7 +630,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
 
 #[test]
 fn html_export_marks_split_runs_at_boundaries() {
-    // Phase `all_boolean_marks_render_their_tags`.
     {
         let mut p = block("paragraph", "styled");
         p.marks.push(mark(0, 6, "strong", MarkValue::Bool(true)));
@@ -688,7 +659,6 @@ fn html_export_marks_split_runs_at_boundaries() {
                 && html.contains("</strong>")
         );
     }
-    // Phase `partial_bold_run_splits_text_at_mark_boundary`.
     {
         // "Hello world" with bold only over "world" (bytes 6..11).
         let mut p = block("paragraph", "Hello world");
@@ -710,7 +680,6 @@ fn html_export_marks_split_runs_at_boundaries() {
             "boundary split:\n{html}"
         );
     }
-    // Phase `color_and_size_marks_emit_span_style`.
     {
         let mut p = block("paragraph", "rainbow");
         p.marks
@@ -735,7 +704,6 @@ fn html_export_marks_split_runs_at_boundaries() {
         assert!(html.contains("color: #ff0000"), "color decl:\n{html}");
         assert!(html.contains("font-size: 18pt"), "size decl:\n{html}");
     }
-    // Phase `multibyte_text_with_marks_splits_on_char_boundaries`.
     {
         // qdoc mark offsets count Unicode scalar values, not UTF-8 bytes.
         let text = "héllo";

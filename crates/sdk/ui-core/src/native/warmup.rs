@@ -1,28 +1,10 @@
-//! Cold-start warmup of the font system.
-//!
-//! Loading the font system dominates time-to-first-paint on a cold process:
-//! the catalog is verified and every installed face mapped, up to ~1s on
-//! release builds. Shaping the first text on a background thread, before the
-//! first frame needs it, takes that off the critical path:
-//!
-//! | Configuration     | median first-paint |
-//! |-------------------|--------------------|
-//! | no warmup         | 406 ms             |
-//! | fonts warmup      | **316 ms**         |
-//!
-//! It wins because it never touches the GPU: it shapes strings on a background
-//! thread, building the process's shared font database so the compositor's own
-//! `configured_font_system` call finds it ready. Building the renderer's
-//! pipelines here instead was measured slower (483 ms): it holds the
-//! process-wide `SHARED_RENDER_CONTEXT` mutex through its scratch render,
-//! blocking the real renderer's start on the same lock, so it is not done.
-//!
-//! The stages mark through [`tilo_startup_metrics::span`]: `warmup-spawn`,
-//! `warmup-fonts`(-end).
-//!
-//! Not persistence: compiled pipelines are kept across launches by
-//! `crate::pipeline_cache` (the app's own) and `crate::pipeline_seed` (the
-//! session's), where the backend has pipeline caches.
+//! Cold-start warmup of the font system. Loading the font system dominates time-to-first-paint on a
+//! cold process: the catalog is verified and every installed face mapped, up to ~1s on release builds.
+//! Shaping the first text on a background thread, before the first frame needs it, takes that off the
+//! critical path: | Configuration | median first-paint | |-------------------|--------------------| |
+//! no warmup | 406 ms | | fonts warmup | **316 ms** | It wins because it never touches the GPU: it
+//! shapes strings on a background thread, building the process's shared font database so the
+//! compositor's own `configured_font_system` call finds it ready.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: cold-start warmup builds the shared font system on a thread"
@@ -36,35 +18,19 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 // pulling `cosmic-text` in as a direct dev-dep.
 pub use cosmic_text as _cosmic_text;
 
-/// Canonical strings the warmup shapes through cosmic-text so the per-face
-/// shaping caches are populated before the compositor's first real widget
-/// draw. Kept small so the warmup thread stays under ~50ms wall time even
-/// on a cold fontconfig cache.
-///
-/// Covers Latin-1, common CJK (JP+CN+KR overlap), and a four-emoji fallback
-/// probe — enough to force every fallback family the shell chrome hits on
-/// first paint (workspace name pill, tab titles, clock, notification body).
+/// Canonical strings the warmup shapes through cosmic-text so the per-face shaping caches are populated
+/// before the compositor's first real widget draw.
 pub const CANONICAL_STRINGS: &[&str] = &[
     "The quick brown fox jumps over the lazy dog.",
     // Latin-1 extended: accented Western European locale menu labels.
     "Voix ambiguë d'un cœur qui, au zéphyr, préfère les jattes de kiwis.",
-    // Forces the CJK fallback fonts (Noto Sans CJK, if installed).
     "我能吞下玻璃而不伤身体。",
     "いろはにほへとちりぬるを",
     "다람쥐 헌 쳇바퀴에 타고파.",
-    // If no emoji font is installed the shaper reports `.notdef` for all
-    // four, which is cheap — no per-face load happens.
     "\u{1F600}\u{1F44D}\u{2764}\u{FE0F}\u{1F4A1}",
 ];
 
-/// Shape every entry of [`CANONICAL_STRINGS`] through the supplied
-/// `FontSystem`. Populates the internal shape / fallback caches so the
-/// first real draw against the same `FontSystem` short-circuits at those
-/// cache lookups.
-///
-/// Returns the number of glyph runs emitted across every buffer —
-/// tests assert `> 0` to verify shaping emitted glyph runs rather than
-/// silently no-op'ing on a stripped fallback font set.
+/// Shape every entry of [`CANONICAL_STRINGS`] through the supplied `FontSystem`.
 pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
     // 14pt at 1.4x line-height; larger sizes reuse the same shaped runs
     // since cosmic-text scales after shaping.
@@ -84,12 +50,9 @@ pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
     total_glyphs
 }
 
-/// Spawn a detached background worker that builds the process's shared
-/// `FontSystem` and shapes [`CANONICAL_STRINGS`] against it, so the fonts the
-/// first frame needs are read and mapped beside the rest of the start.
-///
-/// Dropping the returned `JoinHandle` before the worker finishes doesn't
-/// cancel anything — the process keeps whatever warmup already completed.
+/// Spawn a detached background worker that builds the process's shared `FontSystem` and shapes
+/// [`CANONICAL_STRINGS`] against it, so the fonts the first frame needs are read and mapped beside the
+/// rest of the start.
 pub fn spawn_warmup() -> Option<thread::JoinHandle<()>> {
     tilo_startup_metrics::mark("warmup-spawn");
     let handle = thread::Builder::new()

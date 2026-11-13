@@ -26,22 +26,16 @@ type El = Box<dyn Widget>;
 
 use crate::resource::{PrintCentreEffect, PrintDefaults, SCAN_RESOLUTIONS};
 
-/// What the window shows and the work running on it, shared by the
-/// [`PrintCentreWindow`] and the view's effect handler.
+/// What the window shows and the work running on it, shared by the [`PrintCentreWindow`]
+/// and the view's effect handler.
 pub struct PrintCentre {
-    /// A page an effect or a finished job put up, for the window to show
-    /// next.
     shown: Option<El>,
-    /// The page the window shows.
     page: Page,
     refresh: Option<mpsc::Receiver<Snapshot>>,
     snapshot: Option<Snapshot>,
-    /// What Needs you reports back, and what each waiting failure's Try
-    /// again asks for.
     needs: ui::attention::Presses,
     pending_retries: std::collections::HashMap<ui::attention::ItemId, Retry>,
     pending_cancel: Option<String>,
-    /// What the last search for network printers found.
     discovered: Option<Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
     picker: Option<ui::portal::PortalChannel>,
     pending_document: Option<PathBuf>,
@@ -50,28 +44,18 @@ pub struct PrintCentre {
     selected_printer: Option<String>,
     print_copies: ui::LocalState<f64>,
     print_two_sided: ui::LocalState<bool>,
-    /// The pages to print, as typed; empty or unparsable sends the whole
-    /// document only after the range is read back at send time.
     print_range: ui::LocalState<String>,
-    /// What the chosen printer's driver reports it can do. A form control is
-    /// drawn for an option only when it appears here.
     print_options: os_actions::printing::PrinterOptions,
     print_options_rx: Option<mpsc::Receiver<os_actions::printing::PrinterOptions>>,
-    /// The driver values the person chose, by the option CUPS takes them as.
     print_choice: PrintChoice,
-    /// The document page the card shows, and how many the document has.
     preview_page: usize,
     preview_pages: usize,
     selected_scanner: Option<String>,
     scan: ScanState,
-    /// The scan is being saved where the person chose.
     scan_saving: bool,
-    /// The person's print and scan defaults, as last presented.
     defaults: PrintDefaults,
-    /// Where changes to the defaults go.
     pub(crate) dispatcher: Option<Dispatcher<PrintDefaults>>,
     pub(crate) controls: Option<ui::framework::Actions<PrintDefaults>>,
-    /// The window bar's entries, which run the pages' effects.
     pub(crate) bar: Option<ui::framework::BarActions<PrintDefaults>>,
 }
 
@@ -82,11 +66,8 @@ pub(crate) type Shared = Rc<RefCell<PrintCentre>>;
 pub struct PrintCentreWindow {
     centre: Shared,
     page: El,
-    /// The defaults as the document holds them, shown as they change;
-    /// `None` for a window outside the framework.
     live: Option<Live<PrintDefaults>>,
     presented: Option<(u64, u64)>,
-    /// The page was replaced since the last layout.
     replaced: bool,
 }
 
@@ -126,8 +107,8 @@ enum PrintPreview {
         rgba: Arc<[u8]>,
         width: u32,
         height: u32,
-        /// Which page of the document this is (0-based), and how many the
-        /// document has, so the card can say "Page 3 of 40".
+        /// Which page of the document this is (0-based), and how many the document has, so
+        /// the card can say "Page 3 of 40".
         page: usize,
         pages: usize,
     },
@@ -145,12 +126,8 @@ struct PrintPagePreview {
     pages: usize,
 }
 
-/// `path`'s page `page` (0-based) drawn to fit a preview box, and how many
-/// pages the document has.
-///
-/// A PDF pages through the PDF engine, which Print Centre links and the
-/// thumbnailer every app shares leaves out; an image or a text file is one
-/// page, and the thumbnailer already draws it.
+/// `path`'s page `page` (0-based) drawn to fit a preview box, and how many pages the
+/// document has.
 fn load_print_preview(path: &std::path::Path, page: usize) -> Option<PrintPagePreview> {
     let bytes = std::fs::read(path).ok()?;
     if let Some(document) = tilo_pdf::PagePreview::open(&bytes) {
@@ -178,8 +155,7 @@ fn load_print_preview(path: &std::path::Path, page: usize) -> Option<PrintPagePr
     })
 }
 
-/// The options the driver offers, as the person chose them. Each is a value
-/// the driver reported; `None` is the printer's own default.
+/// The options the driver offers, as the person chose them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PrintChoice {
     pub(crate) page_size: Option<String>,
@@ -281,9 +257,8 @@ pub(crate) struct Snapshot {
     scanners: Result<Vec<tilo_capture::scanner::Scanner>, String>,
 }
 
-/// Where the page's controls send what they do: the surface's effects and
-/// the person's defaults go through the same door as the palette's and an
-/// agent's.
+/// Where the page's controls send what they do: the surface's effects and the person's
+/// defaults go through the same door as the palette's and an agent's.
 #[derive(Clone, Default)]
 struct Door(
     Option<Dispatcher<PrintDefaults>>,
@@ -388,7 +363,6 @@ enum Page {
     Discovery,
     Print,
     Scan,
-    /// What wants a person, opened from the window's bar.
     Needs,
 }
 
@@ -456,8 +430,8 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
         .collect::<Vec<_>>();
     tilo_doc_pdf::render_scanned_pdf(&pages)
 }
-/// Off the window's thread: wait for where the person chose to save, and
-/// write the scanned page there, or every page as one PDF (`document`).
+/// Off the window's thread: wait for where the person chose to save, and write the scanned
+/// page there, or every page as one PDF (`document`).
 fn write_scan(
     chooser: &ui::portal::PortalChannel,
     document: bool,
@@ -511,10 +485,6 @@ fn resource_key(value: &str) -> String {
 }
 fn printer_row(queue: &os_actions::printing::PrinterQueue) -> LiveRow {
     let printer = || queue.name.clone();
-    // Opening the printer is Print Centre's own view (`open-printer`, which
-    // names it), not this row's: a view here would be the row's disclosure,
-    // a private one that keeps making it the default, pausing and resuming
-    // it from agents.
     let mut row = LiveRow::new(
         format!("print-centre.printer.{}", resource_key(&queue.name)),
         "print-centre.printer",
@@ -693,14 +663,13 @@ fn demo_print_preview() -> PrintPreview {
         rgba: Arc::from(page.rgba),
         width,
         height,
-        // The scenario says how many pages the document stands for.
         page: 0,
         pages: 40,
     }
 }
 
-/// What a colour duplex printer reports it can do, as a capture's stand-in
-/// for the machine it runs on.
+/// What a colour duplex printer reports it can do, as a capture's stand-in for the machine
+/// it runs on.
 fn demo_printer_options() -> os_actions::printing::PrinterOptions {
     use os_actions::printing::{OptionChoice, PrinterOptions};
     let choice = |key: &str, label: &str, default: bool| OptionChoice {
@@ -763,8 +732,8 @@ fn demo_scanned_page() -> ScannedPage {
     }
 }
 
-/// What CUPS and SANE report in screenshot `scenario`; `None` shows a
-/// machine without printers.
+/// What CUPS and SANE report in screenshot `scenario`; `None` shows a machine without
+/// printers.
 pub(crate) fn scenario_snapshot(scenario: Option<&str>) -> Option<Snapshot> {
     use os_actions::printing::{JobState, QueueState};
     let mut snapshot = demo_snapshot();
@@ -775,7 +744,6 @@ pub(crate) fn scenario_snapshot(scenario: Option<&str>) -> Option<Snapshot> {
             snapshot.jobs = Err("service unavailable".into());
             snapshot.scanners = Err("service unavailable".into());
         }
-        // The dashboard of a quiet printer.
         None | Some("narrow") => {
             if let Ok(queues) = &mut snapshot.queues
                 && let Some(queue) = queues.first_mut()
@@ -809,9 +777,6 @@ pub(crate) fn scenario_snapshot(scenario: Option<&str>) -> Option<Snapshot> {
     Some(snapshot)
 }
 
-/// A deterministic, fully opaque receipt-like page for visual regression
-/// captures. It deliberately contains recognizable structure so a blank or
-/// zero-sized image viewport is immediately obvious in screenshots.
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "deterministic screenshot fixture indexes a checked allocation and divides/modulos by max(width, 1)"
@@ -939,8 +904,8 @@ impl PrintCentre {
         self.rebuild_dashboard();
     }
 
-    /// The person's defaults changed, here or on another device: the scan
-    /// controls and the next document to print start from them.
+    /// The person's defaults changed, here or on another device: the scan controls and the
+    /// next document to print start from them.
     pub(crate) fn present_defaults(&mut self, defaults: &PrintDefaults) {
         if self.pending_document.is_none() {
             self.print_two_sided.set(defaults.two_sided);
@@ -986,8 +951,6 @@ impl PrintCentre {
             }
             PrintCentreEffect::ChoosePrinter { printer } => {
                 let printer = self.known_printer(printer)?;
-                // What this printer's driver reports is what the form draws:
-                // a field it does not honour is not offered at all.
                 self.request_print_options(&printer);
                 self.selected_printer = Some(printer);
                 self.rebuild_print_setup();
@@ -1026,7 +989,6 @@ impl PrintCentre {
     }
 
     /// Start `effect`'s work on a printer or document in the background.
-    /// Its failure's Try again asks for `effect` again.
     fn device_job(
         &mut self,
         effect: PrintCentreEffect,
@@ -1146,8 +1108,8 @@ impl PrintCentre {
         statuses
     }
 
-    /// The steps on a scanned page, unavailable while there is none to review
-    /// or while the scan is being saved.
+    /// The steps on a scanned page, unavailable while there is none to review or while the
+    /// scan is being saved.
     fn scan_review_statuses(&self, statuses: &mut Vec<EffectStatus>) {
         const NO_PAGE: &str = "Scan a page first.";
         let page = self.scan.result.as_ref();
@@ -1232,8 +1194,8 @@ impl PrintCentre {
             .ok_or_else(|| "That printer is already added or wasn't found nearby".to_owned())
     }
 
-    /// The printers the last search found that no queue prints to yet:
-    /// only those can be added, so only those are offered.
+    /// The printers the last search found that no queue prints to yet: only those can be
+    /// added, so only those are offered.
     fn nearby(&self) -> Option<Result<Vec<os_actions::printing::DiscoveredPrinter>, String>> {
         let queues = self
             .snapshot
@@ -1262,12 +1224,8 @@ impl PrintCentre {
             Some("print" | "print-narrow") => {
                 self.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
                 self.selected_printer = Some("Studio_printer".into());
-                // A forty-page document, so the pager and the page range are
-                // part of what a person sees rather than a claim in a comment.
                 self.preview_pages = 40;
                 self.print_preview = demo_print_preview();
-                // What this printer's driver reports, in place of asking the
-                // machine the capture runs on.
                 self.print_options = demo_printer_options();
                 self.print_range.set(String::new());
                 self.print_two_sided.set(self.defaults.two_sided);
@@ -1282,8 +1240,8 @@ impl PrintCentre {
         }
     }
 
-    /// Printers, documents and scanners from the last CUPS/SANE snapshot,
-    /// and the printers the last search found nearby.
+    /// Printers, documents and scanners from the last CUPS/SANE snapshot, and the printers
+    /// the last search found nearby.
     pub(crate) fn device_rows(&self) -> Vec<LiveRow> {
         let mut rows = Vec::new();
         if let Some(snapshot) = &self.snapshot {
@@ -1338,8 +1296,8 @@ impl PrintCentre {
             });
     }
 
-    /// Show the next or previous page of the document being set up, when
-    /// there is one either side.
+    /// Show the next or previous page of the document being set up, when there is one
+    /// either side.
     fn turn_preview_page(&mut self, step: i32) {
         let Some(path) = self.pending_document.clone() else {
             return;
@@ -1362,8 +1320,8 @@ impl PrintCentre {
         self.request_print_preview(path, next);
     }
 
-    /// Choose one of the driver's options for the next document, or refuse a
-    /// value it never reported.
+    /// Choose one of the driver's options for the next document, or refuse a value it never
+    /// reported.
     fn set_print_option(&mut self, option: &str, value: &str) -> Result<(), String> {
         let offered = match option {
             "page-size" => (
@@ -1404,8 +1362,8 @@ impl PrintCentre {
             });
     }
 
-    /// Take up what the driver said, if it has answered: the form then draws
-    /// only the options this printer reports.
+    /// Take up what the driver said, if it has answered: the form then draws only the
+    /// options this printer reports.
     fn poll_print_options(&mut self) -> bool {
         let Some(receiver) = self.print_options_rx.as_ref() else {
             return false;
@@ -1423,11 +1381,10 @@ impl PrintCentre {
         true
     }
 
-    /// Adopt what the driver reported: the choices it no longer offers fall
-    /// back to its own default.
+    /// Adopt what the driver reported: the choices it no longer offers fall back to its own
+    /// default.
     fn take_print_options(&mut self, reported: os_actions::printing::PrinterOptions) {
         self.print_options = reported;
-        // A choice the new printer does not offer falls back to its default.
         let kept = |choice: &Option<String>, offered: &[os_actions::printing::OptionChoice]| {
             choice
                 .as_deref()
@@ -1642,9 +1599,9 @@ impl PrintCentre {
         )
     }
 
-    /// Run `work` on a printer or document in the background, then say how
-    /// it went, `success` or `failure` (with Try again asking for `retry`),
-    /// and show what CUPS reports afterwards.
+    /// Run `work` on a printer or document in the background, then say how it went,
+    /// `success` or `failure` (with Try again asking for `retry`), and show what CUPS
+    /// reports afterwards.
     fn run(
         me: &Shared,
         cx: &mut EffectCx<PrintDefaults>,
@@ -1684,10 +1641,6 @@ impl PrintCentre {
     fn finished(&mut self, notice: OperationNotice) {
         self.tell(notice);
         if self.scan.result.is_some() {
-            // Saving a scan is not a printer-state mutation. Keep the page
-            // and its OCR visible so the person can confirm success, save
-            // another copy, or scan the next page without losing their
-            // place.
             self.rebuild_scan_setup();
         } else {
             self.refresh = request_snapshot();
@@ -1707,8 +1660,8 @@ impl PrintCentre {
             .unwrap_or("Document")
             .to_string();
         let shown_queue = display_name(&queue);
-        // The typed range is read back here, so a range nobody can print is
-        // refused before the document leaves the window.
+        // The typed range is read back here, so a range nobody can print is refused before
+        // the document leaves the window.
         let typed = self.print_range.get();
         let page_range = if typed.trim().is_empty() {
             None
@@ -1776,8 +1729,8 @@ impl PrintCentre {
         self.rebuild_dashboard();
     }
 
-    /// Return to the scanned document without discarding unsaved pages or
-    /// forgetting a scan that is still running.
+    /// Return to the scanned document without discarding unsaved pages or forgetting a scan
+    /// that is still running.
     fn open_scan(&mut self) {
         if self.selected_scanner.is_none() {
             self.selected_scanner = self.snapshot.as_ref().and_then(|snapshot| {
@@ -1802,8 +1755,8 @@ impl PrintCentre {
         }
     }
 
-    /// The host confirms this destructive action before delivering it.
-    /// Navigation and Scan another page never take this path.
+    /// The host confirms this destructive action before delivering it. Navigation and Scan
+    /// another page never take this path.
     fn new_scanned_document(&mut self) -> Result<(), String> {
         if let Some(reason) = self.scan_reset_blocked() {
             return Err(reason.into());
@@ -1816,8 +1769,8 @@ impl PrintCentre {
         Ok(())
     }
 
-    /// Scan a page with the chosen scanner and settings, recognizing its
-    /// text in the person's language.
+    /// Scan a page with the chosen scanner and settings, recognizing its text in the
+    /// person's language.
     fn scan_page(&mut self, me: &Shared, cx: &mut EffectCx<PrintDefaults>) -> EffectAnswer {
         let Some(device) = self.selected_scanner.clone() else {
             return Err("Choose a scanner first".into());
@@ -2115,8 +2068,8 @@ impl PrintCentre {
         Ok(())
     }
 
-    /// Ask where to save the page under review as an image, or every
-    /// scanned page as one PDF (`document`), and save it there.
+    /// Ask where to save the page under review as an image, or every scanned page as one
+    /// PDF (`document`), and save it there.
     fn save_scan(
         &mut self,
         document: bool,
@@ -2156,7 +2109,6 @@ impl PrintCentre {
             ui::portal::PickRequest::save("Save scanned page", "Save", "Scanned page.png")
                 .thread_name("print-centre-scan-save-picker")
         };
-        // Asked here, on the window's thread, from the desktop's chooser.
         let chooser = request.send();
         let me = Rc::clone(me);
         Ok(cx.thread(
@@ -2208,16 +2160,15 @@ impl PrintCentre {
     }
 }
 
-/// One print-centre test at a time: the waiting stack and the ledger are the
-/// process's, so two running at once would see each other's rows.
+/// One print-centre test at a time: the waiting stack and the ledger are the process's, so
+/// two running at once would see each other's rows.
 #[cfg(test)]
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     notice::serial()
 }
 
-/// The page `bytes` a scanner wrote, decoded by the toolkit's codec: the
-/// browser's own decoder on the web. This runs in the scan job, off the
-/// frame, which is where decoding at once is allowed.
+/// The page `bytes` a scanner wrote, decoded by the toolkit's codec: the browser's own
+/// decoder on the web.
 fn scanned_page_image(bytes: &[u8]) -> Result<DecodedImage, String> {
     ui::rt::app()
         .block_on(ui::image_codec::decode(bytes, None))
@@ -2225,8 +2176,8 @@ fn scanned_page_image(bytes: &[u8]) -> Result<DecodedImage, String> {
         .map_err(|error| format!("scanner returned an invalid image: {error}"))
 }
 
-/// A page the scanner returned as `png`, with its text recognized in
-/// `ocr_code` (named `ocr_language`).
+/// A page the scanner returned as `png`, with its text recognized in `ocr_code` (named
+/// `ocr_language`).
 fn decode_scanned_page(
     png: Vec<u8>,
     ocr_code: &str,
@@ -2267,8 +2218,8 @@ fn decode_scanned_page(
     })
 }
 
-/// `page`'s text, recognized again in the language it was scanned in, with
-/// a note on what was found.
+/// `page`'s text, recognized again in the language it was scanned in, with a note on what
+/// was found.
 fn recognize_page(page: &ScannedPage) -> Result<(Option<String>, String), String> {
     let rgba = page
         .pixels()
@@ -2299,9 +2250,8 @@ impl Default for PrintCentre {
     }
 }
 impl PrintCentre {
-    /// Take part in the resource: the controls and the window bar run their
-    /// effects through its dispatcher. A live window asks CUPS and SANE; a
-    /// screenshot shows its scenario's made-up devices, or none.
+    /// Take part in the resource: the controls and the window bar run their effects through
+    /// its dispatcher.
     fn attach(&mut self, cx: &ViewCx<PrintDefaults>) {
         self.controls = Some(cx.actions());
         self.dispatcher = Some(cx.dispatcher());
@@ -2313,13 +2263,9 @@ impl PrintCentre {
         }
     }
 
-    /// What the window bar and Needs you asked, and what came back from the
-    /// document picker, the preview, the driver and CUPS since the last
-    /// update. Returns whether the page needs its update (`Some(true)`) or
-    /// a sync (`Some(false)`) for it.
+    /// What the window bar and Needs you asked, and what came back from the document
+    /// picker, the preview, the driver and CUPS since the last update.
     fn take_news(&mut self) -> Option<bool> {
-        // The window bar's slots are pressed between events: send what they
-        // asked through the page's own door.
         let asked = self.take_window_toolbar_events() | self.take_attention();
         self.declare_window_toolbar();
         if asked {
@@ -2339,7 +2285,6 @@ impl PrintCentre {
 }
 
 impl PrintCentreWindow {
-    /// A window over `centre`.
     fn new(centre: PrintCentre, live: Option<Live<PrintDefaults>>) -> Self {
         let mut window = Self {
             centre: Rc::new(RefCell::new(centre)),
@@ -2353,8 +2298,8 @@ impl PrintCentreWindow {
         window
     }
 
-    /// Start the defaults the document holds from when they changed, here
-    /// or on another device.
+    /// Start the defaults the document holds from when they changed, here or on another
+    /// device.
     fn follow_document(&mut self) {
         let Some(live) = &self.live else {
             return;
@@ -2375,8 +2320,8 @@ impl PrintCentreWindow {
     }
 }
 
-/// The Print Centre window over this machine's printers and scanners,
-/// answering its effects and publishing its devices as live rows.
+/// The Print Centre window over this machine's printers and scanners, answering its effects
+/// and publishing its devices as live rows.
 pub(crate) fn window(cx: &ViewCx<PrintDefaults>) -> Element {
     let mut centre = PrintCentre::new();
     centre.attach(cx);
@@ -2387,7 +2332,6 @@ pub(crate) fn window(cx: &ViewCx<PrintDefaults>) -> Element {
         cx.effects(move |effect: PrintCentreEffect, cx| {
             answer.borrow_mut().perform(effect, &answer, cx)
         })
-        // The scan and print steps that have nothing to act on right now.
         .status(move || status.borrow().effect_statuses());
     }
     {
@@ -2395,7 +2339,6 @@ pub(crate) fn window(cx: &ViewCx<PrintDefaults>) -> Element {
         cx.on_stage(move |scenario| centre.borrow_mut().stage_scenario(scenario));
     }
     cx.publishing(
-        // The printers, documents and scanners CUPS and SANE reported.
         Publishes::new().live_rows(move || centre.borrow().device_rows()),
         Box::new(window),
     )
@@ -2441,7 +2384,6 @@ impl ui::widget::Decorator for PrintCentreWindow {
         "PrintCentre"
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // Effects replace the whole page; the new one needs a new layout.
         self.show_page();
         self.page.take_structure_dirty() | std::mem::take(&mut self.replaced)
     }

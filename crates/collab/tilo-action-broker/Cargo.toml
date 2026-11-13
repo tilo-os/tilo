@@ -11,6 +11,7 @@ test-support = ["dep:tilo-test-env"]
 tilo-test-env = { path = "../../dev/test-env", optional = true }
 zeroize.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-action-policy = { path = "../action-policy" }
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal" }

@@ -1,10 +1,8 @@
-//! The `tilo.moderation` record: reports, and the decisions taken on them.
-//!
-//! Anyone in the workspace may report; only those holding the workspace's
-//! `moderation` node (Moderators, the Owner, and the host's moderation agent,
-//! whose delegation carries the Moderator preset) decide and overturn,
-//! because both verbs are `#[action(moderation)]` and the ordinary grant
-//! check places them there.
+//! The `tilo.moderation` record: reports, and the decisions taken on them. Anyone in the
+//! workspace may report; only those holding the workspace's `moderation` node (Moderators,
+//! the Owner, and the host's moderation agent, whose delegation carries the Moderator
+//! preset) decide and overturn, because both verbs are `#[action(moderation)]` and the
+//! ordinary grant check places them there.
 
 use serde::{Deserialize, Serialize};
 use ui::automerge::ObjId;
@@ -14,15 +12,11 @@ use ui::tilo_resource::{
     resource,
 };
 
-/// The longest reason a reporter may give.
 pub const MAX_REASON_CHARS: usize = 500;
-/// Reports one person may have open at once, so reporting cannot be used to
-/// flood the moderators or the model.
+/// Reports one person may have open at once, so reporting cannot be used to flood the
+/// moderators or the model.
 pub const MAX_OPEN_REPORTS: usize = 5;
-/// The longest reasoning a decision keeps.
 pub const MAX_REASONING_CHARS: usize = 4000;
-/// The longest a restriction may last; longer is a ban, which a Moderator
-/// can see and lift.
 pub const MAX_RESTRICTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_ID_CHARS: usize = 128;
 
@@ -37,8 +31,7 @@ pub struct Moderation {
 pub struct Report {
     #[model(readonly)]
     pub id: String,
-    /// Who reported, by person id; the moderation agent for its own
-    /// heuristics.
+    /// Who reported, by person id; the moderation agent for its own heuristics.
     pub reporter: String,
     /// Whom the report is about, by person id.
     pub person: String,
@@ -62,17 +55,14 @@ impl Identified for Report {
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Outcome {
-    /// Nothing: the report did not hold up.
     #[default]
     NoAction,
-    /// No changes until `until_ms`; reading stays allowed.
     Restrict,
-    /// Removed and kept out until a Moderator unbans them.
     Ban,
 }
 
-/// A record whose changes by the person a decision took back, and the run
-/// that did it, so overturning can take the take-back back.
+/// A record whose changes by the person a decision took back, and the run that did it, so
+/// overturning can take the take-back back.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Reverted {
     #[model(atom)]
@@ -90,15 +80,11 @@ pub struct Reverted {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ruling {
     pub outcome: Outcome,
-    /// When a restriction lapses, Unix ms; only a restriction has one.
     #[serde(default)]
     pub until_ms: Option<i64>,
-    /// The model's reasoning, or the Moderator's, in their words.
     pub reasoning: String,
-    /// The model that judged, empty for a person's own decision.
     #[serde(default)]
     pub model: String,
-    /// What was taken back.
     #[serde(default)]
     pub reverted: Vec<Reverted>,
 }
@@ -187,14 +173,11 @@ fn optional_id(value: Option<&String>, what: &str) -> Result<(), Refusal> {
     value.map_or(Ok(()), |value| id_like(value, what))
 }
 
-/// Rewrite the decisions of the moderation record stored at `moderation`
-/// from before a decision's reports and take-backs were model values (each
-/// one JSON string) into the shape they are stored in now: a list of report
-/// ids and a list of take-backs. An app embedding the record runs it from its
-/// own migration.
+/// Rewrite the decisions of the moderation record stored at `moderation` from before a
+/// decision's reports and take-backs were model values (each one JSON string) into the
+/// shape they are stored in now: a list of report ids and a list of take-backs.
 ///
-/// # Errors
-/// Returns why a stored value does not read as its new type.
+/// # Errors Returns why a stored value does not read as its new type.
 pub fn upgrade_decisions(
     doc: &mut tilo_resource::Doc,
     moderation: &ObjId,
@@ -208,11 +191,6 @@ pub fn upgrade_decisions(
 
 impl Moderation {
     /// What the record holds: the reports made and the decisions taken on them.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -229,8 +207,8 @@ impl Moderation {
     read_content = Moderation::read_document
 )]
 impl Moderation {
-    /// Bring a moderation record of version 1 up to this one: its decisions'
-    /// reports and take-backs become model values ([`upgrade_decisions`]).
+    /// Bring a moderation record of version 1 up to this one: its decisions' reports and
+    /// take-backs become model values ([`upgrade_decisions`]).
     fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
         if from != 1 {
             return Err(ModelError::invalid(format!(
@@ -242,9 +220,8 @@ impl Moderation {
 
     /// Report someone.
     ///
-    /// Tells the workspace's moderators, and its moderation agent, that this
-    /// person did something they should not have, optionally pointing at
-    /// the message or item.
+    /// Tells the workspace's moderators, and its moderation agent, that this person did
+    /// something they should not have, optionally pointing at the message or item.
     #[action]
     pub fn report(
         &mut self,
@@ -301,9 +278,7 @@ impl Moderation {
 
     /// Decide on a person.
     ///
-    /// Records what was done about a person and why, settling the reports
-    /// named. Enforcement (the restriction, the ban, the undo) is the
-    /// deciding moderator's, through the workspace's own governance and history.
+    /// Records what was done about a person and why, settling the reports named.
     #[action(moderation)]
     pub fn decide(
         &mut self,
@@ -379,8 +354,8 @@ impl Moderation {
 
     /// Overturn a decision.
     ///
-    /// Marks a decision as overturned by a Moderator, who lifts its
-    /// restriction or ban and brings back what it took back.
+    /// Marks a decision as overturned by a Moderator, who lifts its restriction or ban and
+    /// brings back what it took back.
     #[action(moderation)]
     pub fn overturn(
         &mut self,

@@ -1,7 +1,4 @@
-//! Disk Usage as a resource: scans and navigation are the
-//! view's [`DiskUsageEffect`]s. The folders analyzed lately are a record
-//! beside it ([`RecentFolders`]), each device's paths its own, published as
-//! live rows beside the resource.
+//! Disk Usage as a resource: scans and navigation are the view's [`DiskUsageEffect`]s.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,9 +12,9 @@ use crate::scan::ScanResult;
 /// The folders one device analyzed lately, newest first.
 pub type Folders = Recents<PathBuf, 5>;
 
-/// The folders analyzed lately, by the device whose disk they are on: a
-/// record Disk Usage keeps beside its own in the workspace, synced with
-/// it, each device reading and writing only its own list.
+/// The folders analyzed lately, by the device whose disk they are on: a record Disk Usage
+/// keeps beside the app's record in the workspace, each device reading and writing only its
+/// own list.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentFolders {
     pub devices: BTreeMap<String, Folders>,
@@ -25,11 +22,6 @@ pub struct RecentFolders {
 
 impl RecentFolders {
     /// What the record holds: the folders analyzed lately, by device.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -61,60 +53,35 @@ impl RecentFolders {
     }
 }
 
-/// What the analyzer does that changes no document: scanning a folder and
-/// moving between the views.
+/// What the analyzer does that changes no document: scanning a folder and moving between
+/// the views.
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
 #[effect(operation = "disk-usage.effects")]
 pub enum DiskUsageEffect {
-    /// Analyze a folder.
-    ///
-    /// Scans it and shows what takes up its space.
     #[effect(job, returns)]
     Analyze {
         #[param("Absolute path of the folder to analyze")]
         path: AbsolutePath,
     },
-    /// Choose folder.
-    ///
-    /// Asks for a folder, then analyzes it.
     #[effect(attended, job, returns)]
     Choose,
-    /// Go back.
-    ///
-    /// Returns to the folder analyzed before this one, or to the locations.
     #[effect(job)]
     Back,
-    /// Show locations.
     #[effect(view)]
     Home,
-    /// Open Disks.
-    ///
-    /// Partitioning, mounting and adding a drive are Disks' job, in its own
-    /// window: a full disk is sometimes a disk to partition or add.
     #[effect(job)]
     OpenDisks,
 }
 
-/// The session link that opens Disks in the workspace the window is in: the
-/// way back from what takes up the room to the drives it sits on, as Disks
-/// links here the other way.
 pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 
-/// The disk-usage analyzer: the door its effects and live rows are
-/// published on. It keeps no document state: what it scans is this device's
-/// disk, and the folders it remembers are a record beside it
-/// ([`RecentFolders`]).
+/// The disk-usage analyzer: the door its effects and live rows are published on.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DiskUsage {}
 
 impl DiskUsage {
-    /// What the record holds: nothing — what it scans is this device's disk, and the folders it
-    /// remembers are kept in the record beside it.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: nothing — what it scans is this device's disk, and the
+    /// folders it remembers are kept in the record beside it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -142,8 +109,7 @@ pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
     }
 }
 
-/// The analyze effect for `path`; `None` for a relative path, which names
-/// no folder.
+/// The analyze effect for `path`; `None` for a relative path, which names no folder.
 pub(crate) fn analyze(path: &std::path::Path) -> Option<DiskUsageEffect> {
     AbsolutePath::new(path)
         .ok()
@@ -171,7 +137,6 @@ pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
     }
 }
 
-/// Framework app.
 pub struct DiskUsageShell;
 
 impl ResourceApp for DiskUsageShell {
@@ -179,6 +144,7 @@ impl ResourceApp for DiskUsageShell {
     const ID: &'static str = "so.tilo.disk-usage";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Disk Usage Analyzer";
+    const TITLE_KEY: &'static str = "disk-usage-app-title";
     const ICON: Option<&'static str> = Some("disk-usage");
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
@@ -206,9 +172,8 @@ impl ResourceApp for DiskUsageShell {
         }
     }
 
-    /// An analysis shows a made-up home folder instead of scanning the
-    /// machine the screenshot is taken on; the home view lists two folders
-    /// scanned before.
+    /// An analysis shows a made-up home folder instead of scanning the machine the
+    /// screenshot is taken on; the home view lists two folders scanned before.
     fn fixture(fixture: &mut Fixture<DiskUsage>) {
         match fixture.scenario() {
             Some(name) if name.starts_with("home") => fixture.provide::<Folders>(
@@ -231,7 +196,7 @@ mod tests {
     use std::path::PathBuf;
     use ui::prelude::TestApp;
 
-    /// A folder of its own under the system temp directory, holding one file.
+    /// A fresh folder under the system temp directory, holding one file.
     fn scratch_folder(name: &str) -> PathBuf {
         let folder = std::env::temp_dir().join(format!(
             "disk-usage-{name}-{}-{:?}",
@@ -244,7 +209,6 @@ mod tests {
         folder
     }
 
-    /// The device every test window runs on.
     const DEVICE: &str = "test-device";
 
     /// The folders this device remembers, in the record.
@@ -254,8 +218,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Run frames until the scan a row started has shown and remembered
-    /// `folder`.
+    /// Run frames until the scan a row started has shown and remembered `folder`.
     fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
         tilo_test_env::wait_until(format!("{} to be remembered", folder.display()), || {
             app.settle();
@@ -263,9 +226,9 @@ mod tests {
         });
     }
 
-    /// Navigation, the folders on screen and the remembered folders are one
-    /// published tree: the effects on the resource, the places and recents
-    /// as live rows, each analyzing through the same handler.
+    /// Navigation, the folders on screen and the remembered folders are one published tree:
+    /// the effects on the resource, the places and recents as live rows, each analyzing
+    /// through the same handler.
     #[test]
     fn analyzing_a_folder_shows_it_and_remembers_it_on_this_device() {
         let folder = scratch_folder("analyze");
@@ -303,8 +266,6 @@ mod tests {
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("photos"), "{frame}");
 
-        // The scanned folder's entries and the recent folder are live rows.
-        // Both analyze through the same handler.
         let photos = folder.join("photos");
         let row = format!("disk-usage.folder:{}", photos.display());
         assert!(app.call_on(&row, "analyze", serde_json::json!({})).is_ok());
@@ -316,8 +277,6 @@ mod tests {
         );
         settle_until_recent(&mut app, &folder);
 
-        // Home leaves the analysis; back with nothing analyzed before stays
-        // on the locations.
         app.effect(&DiskUsageEffect::Home).unwrap();
         app.effect(&DiskUsageEffect::Back).unwrap();
         app.settle();
@@ -329,8 +288,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
-    /// Choosing a folder asks the portal for a directory and analyzes what
-    /// it answers.
+    /// Choosing a folder asks the portal for a directory and analyzes what it answers.
     #[test]
     fn a_chosen_folder_is_analyzed() {
         let folder = scratch_folder("choose");
@@ -350,8 +308,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
-    /// Disks is a way on from the bar's menu, by a link the session's own
-    /// grammar takes: the drive a full folder sits on is Disks' job.
+    /// Disks is a way on from the bar's menu, by a link the session's own grammar takes:
+    /// the drive a full folder sits on is Disks' job.
     #[test]
     fn the_window_bar_leads_to_disks() {
         assert!(ui::tilo_reference::link::Link::parse_native(DISKS_LINK).is_ok());
@@ -367,8 +325,8 @@ mod tests {
         assert!(disks.menu, "an occasional way on sits in the menu");
     }
 
-    /// The window's bar names the place on screen and holds Choose folder
-    /// and Back; the window draws no title or header row of its own.
+    /// The window's bar names the place on screen and holds Choose folder and Back; the
+    /// window draws no title or header row of its own.
     #[test]
     fn the_window_bar_names_the_place_and_holds_choose_folder_and_back() {
         let folder = scratch_folder("bar");
@@ -412,9 +370,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
-    /// Every screenshot is the framework's capture: the home view lists the
-    /// scenario's folders, an analysis shows the made-up scan
-    /// instead of this machine's, and a narrow one gets a phone-sized window.
+    /// Every screenshot is the framework's capture: the home view lists the scenario's
+    /// folders, an analysis shows the made-up scan instead of this machine's, and a narrow
+    /// one gets a phone-sized window.
     #[test]
     fn captures_stage_through_fixtures() {
         use ui::prelude::TestApp;
@@ -434,14 +392,13 @@ mod tests {
             "a staged scan is not one this person made"
         );
 
-        // A live window starts on the home view, with no made-up scan.
         let mut live = TestApp::<DiskUsageShell>::new().unwrap();
         let frame = live.harness().inspection_json().unwrap();
         assert!(!frame.contains("Projects"), "{frame}");
     }
 
-    /// Folder controls use the same admitted Analyze effect as published
-    /// locations, including a physical click on a remembered folder.
+    /// Folder controls use the same admitted Analyze effect as published locations,
+    /// including a physical click on a remembered folder.
     #[test]
     fn folder_controls_are_certified_and_analyze_through_the_resource() {
         for scenario in ["home", "analysis"] {

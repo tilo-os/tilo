@@ -289,7 +289,7 @@ impl<S: Seat> Published for Sheet<S> {
 
     /// The controls the sheet's card shows by name, where they stand on the desktop: a sheet that
     /// is down shows nothing to read or to press.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         if !self.drawn() {
             return Vec::new();
         }

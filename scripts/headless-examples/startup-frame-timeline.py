@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 
-from _control import call
+from real_apps import Refused, control_call
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -203,9 +203,10 @@ def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> pathlib.Path:
 def windows(sock: pathlib.Path) -> list[dict]:
     """The desk's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
     null while no window of the tab is mapped) and `frames`, the frames its client committed."""
-    response = call(str(sock), {"op": "windows"}, timeout=5)
-    if "err" in response:
-        raise RuntimeError(f"window observation refused: {response['err']}")
+    try:
+        response = control_call(sock, {"op": "windows"}, timeout=5)
+    except Refused as error:
+        raise RuntimeError(f"window observation refused: {error}") from error
     rows = response.get("answer", {}).get("windows")
     if not isinstance(rows, list):
         raise RuntimeError(f"window response cannot observe its subject: {response}")
@@ -378,7 +379,7 @@ def main() -> None:
                 if shell.poll() is not None:
                     raise RuntimeError(f"compositor exited {shell.returncode}; see compositor.log")
                 try:
-                    state = call(str(sock), {"op": "state_dump"}, timeout=0.5)["state"]
+                    control_call(sock, {"op": "state_dump"}, timeout=0.5)
                     break
                 except (OSError, KeyError):
                     if time.monotonic() >= deadline:
@@ -386,19 +387,20 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
             # A fixture in first use shows its own setup controls, which this probe must not drive
             # past: it measures an ordinary desktop's first frame, not the enrollment flow.
-            targets = call(str(sock), {"op": "list_targets"}, timeout=5).get("targets", [])
+            targets = control_call(sock, {"op": "list_targets"}, timeout=5).get("targets", [])
             if any(str(entry.get("name", "")).startswith("onboarding.") for entry in targets):
                 raise RuntimeError("synthetic fixture is in first use; do not bypass ordinary OS enrollment")
             result["compositor_semantic_ready_ms"] = (time.monotonic_ns() - started) / 1e6
-            watch = call(str(sock), {"op": "watch", "watching": True})
-            if "err" in watch:
-                raise RuntimeError(f"headless watch refused: {watch['err']}")
+            try:
+                control_call(sock, {"op": "watch", "watching": True})
+            except Refused as error:
+                raise RuntimeError(f"headless watch refused: {error}") from error
             wayland = runtime / display_name(runtime)
             if not wayland.is_socket():
                 raise RuntimeError("the published production Wayland endpoint is not a socket")
             deadline = time.monotonic() + args.timeout
             while True:
-                catalog = call(str(sock), {"op": "actions_enumerate", "query": "Startup frame probe"})
+                catalog = control_call(sock, {"op": "actions_enumerate", "query": "Startup frame probe"})
                 actions = catalog.get("answer", {}).get("actions", [])
                 launch = [a for a in actions if opens_probe(a)]
                 if len(launch) == 1:
@@ -425,9 +427,11 @@ def main() -> None:
                 ignore = {row["window"] for row in windows(sock)}
                 host_load = os.getloadavg()
                 before = time.monotonic_ns()
-                response = call(str(sock), {"op": "actions_invoke", "provider": launch[0]["provider"], "id": launch[0]["id"]})
-                if "err" in response:
-                    raise RuntimeError(f"registered launch refused: {response}")
+                try:
+                    control_call(sock, {"op": "actions_invoke", "provider": launch[0]["provider"],
+                                        "id": launch[0]["id"]})
+                except Refused as error:
+                    raise RuntimeError(f"registered launch refused: {error}") from error
                 spawned = time.monotonic_ns()
                 lower = before
                 deadline = time.monotonic() + args.timeout
@@ -489,9 +493,11 @@ def main() -> None:
                 raise RuntimeError("live compositor trace has no actually painted sample")
             result["live_trace_rows"] = len(recorded)
             if production_seed:
-                unwatch = call(str(sock), {"op": "watch", "watching": False})
-                if "err" in unwatch:
-                    raise RuntimeError(f"idle observer could not stop the headless watch: {unwatch}")
+                try:
+                    control_call(sock, {"op": "watch", "watching": False})
+                except Refused as error:
+                    raise RuntimeError(
+                        f"idle observer could not stop the headless watch: {error}") from error
                 result["idle_after_publication"] = idle_sample(shell)
             (out / "timeline.json").write_text(json.dumps(result, indent=2) + "\n")
     finally:

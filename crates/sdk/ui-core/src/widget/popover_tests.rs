@@ -53,7 +53,6 @@ fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
     scene
 }
 
-/// Fixed-size content.
 struct Fixed {
     rect: Rect,
     w: f32,
@@ -86,9 +85,7 @@ impl Widget for Fixed {
 
 #[test]
 fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `arrow_keys_move_highlight_and_are_consumed`.
     {
         let mut p = opened();
         assert_eq!(p.highlighted(), 1, "opens on the selected row");
@@ -98,7 +95,6 @@ fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
         assert_eq!(p.highlighted(), 1);
     }
 
-    // Case `home_end_and_clamping`.
     {
         let mut p = opened();
         dispatch(&mut p, &key(NamedKey::End));
@@ -115,7 +111,6 @@ fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
         assert_eq!(p.highlighted(), 0, "no wrap past the start");
     }
 
-    // Case `enter_selects_escape_does_not`.
     {
         let mut p = opened();
         dispatch(&mut p, &key(NamedKey::ArrowDown));
@@ -132,7 +127,6 @@ fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
         assert_eq!(p.take_selection(), None);
     }
 
-    // Case `unrelated_keys_are_swallowed_not_leaked`.
     {
         let mut p = opened();
         assert!(dispatch(&mut p, &key_event(Key::Character("x".into()))));
@@ -144,7 +138,6 @@ fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
 
 #[test]
 fn menu_pointer_selection_and_dismissal() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let mut p = opened();
     let row2 = p.item_rect(2).expect("published row geometry");
@@ -182,7 +175,6 @@ fn menu_pointer_selection_and_dismissal() {
 #[test]
 fn menu_semantics_focus_and_reopen() {
     use crate::a11y::Role;
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let p = opened();
     let node = Widget::accessibility(&p).expect("a menu is semantic");
@@ -213,7 +205,6 @@ fn menu_semantics_focus_and_reopen() {
 
 #[test]
 fn text_content_is_laid_out_on_one_line() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let theme = Theme::light();
     let mut tr = TextRenderer::new();
@@ -234,12 +225,10 @@ fn text_content_is_laid_out_on_one_line() {
 
 #[test]
 fn placement_flips_and_stays_in_the_window() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
 
-    // Case `below_and_leading_aligned_with_the_anchor`.
     {
         let anchor = Rect::new(200.0, 100.0, 280.0, 132.0);
         let mut p = Popover::with_content(Fixed {
@@ -265,7 +254,6 @@ fn placement_flips_and_stays_in_the_window() {
         );
     }
 
-    // Case `flips_above_when_there_is_no_room_below`.
     {
         let anchor = Rect::new(200.0, 540.0, 280.0, 572.0);
         let mut p = Popover::with_content(Fixed {
@@ -281,7 +269,6 @@ fn placement_flips_and_stays_in_the_window() {
         assert!(p.rect().y1 < anchor.y0);
     }
 
-    // Case `slides_inside_the_window_on_the_cross_axis`.
     {
         let anchor = Rect::new(760.0, 100.0, 790.0, 130.0);
         let mut p = opened();
@@ -290,7 +277,6 @@ fn placement_flips_and_stays_in_the_window() {
         assert!(p.rect().x1 <= WINDOW.x1 + 1e-9, "{:?}", p.rect());
     }
 
-    // Case `the_top_layer_uses_the_window_when_no_viewport_is_set`.
     {
         let anchor = Rect::new(200.0, 560.0, 280.0, 590.0);
         let mut p = Popover::new()
@@ -304,9 +290,7 @@ fn placement_flips_and_stays_in_the_window() {
 
 #[test]
 fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
-    // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
-    // Case `draw_paints_nothing_draw_overlay_paints_the_panel`.
     {
         let mut p = opened();
         let mut scene = Scene::new();
@@ -335,7 +319,6 @@ fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
         );
     }
 
-    // Case `popover_is_lighter_than_the_window_on_dark`.
     {
         use crate::a11y::relative_luminance;
         for theme in [

@@ -90,7 +90,6 @@ use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::formats::Step;
 use crate::gate::ChannelGate;
 use crate::persistence::MemberRecord;
 use crate::signer::{DeviceSigner, complete_now};
@@ -131,13 +130,8 @@ const MAX_LOST: usize = 64;
 /// Sealed peer state larger than this is refused when read.
 const MAX_PEER_STATE: usize = 320 * 1024 * 1024;
 const PEER_RECORD: &[u8] = b"channel-crypto/channel-peer";
+/// The only format of peer state this build writes and reads.
 const PEER_VERSION: u8 = 3;
-/// How peer state an earlier build saved becomes the current format
-/// ([`crate::formats`]).
-const PEER_UPGRADES: &[Step] = &[Step {
-    from: 2,
-    upgrade: peer_2_to_3,
-}];
 
 /// What the device can do with the channel's content right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,9 +251,6 @@ pub struct ChannelPeer {
     /// The `issued_at` of the last request minted here, so one minted again
     /// in the same second is still newer.
     issued: u64,
-    /// The format the state this peer was loaded from was written in, when
-    /// an earlier build wrote it ([`crate::formats`]).
-    upgraded_from: Option<u8>,
     /// A change not yet written to `states`: one whose loss only makes this
     /// device ask for the channel again ([`Self::save_deferred`]).
     unsaved: bool,
@@ -282,50 +273,6 @@ struct PeerFile {
     issued: u64,
     orphaned: Vec<(u64, [u8; 32])>,
     genesis_frame: Option<MlsGovernanceFrame>,
-}
-
-/// Peer state as format 2 kept it: format 3 added the device's recent frames
-/// below its head (`branch`) and the commits that lost against it (`lost`).
-#[derive(Deserialize)]
-struct PeerFileV2 {
-    version: u8,
-    channel: ChannelId,
-    record: Vec<u8>,
-    parent: Option<Vec<u8>>,
-    head: Option<MlsGovernanceFrame>,
-    genesis: Option<[u8; 32]>,
-    seen_epoch: Option<u64>,
-    requests: Vec<MlsAccessRequestV1>,
-    outbox: Vec<MlsGovernanceFrame>,
-    issued: u64,
-    orphaned: Vec<(u64, [u8; 32])>,
-    genesis_frame: Option<MlsGovernanceFrame>,
-}
-
-/// Format 2 written as format 3. A device upgraded holds no frames below its
-/// head yet and knows of no commit that lost against it: it keeps both from
-/// the next frame it takes in, as it does after joining.
-fn peer_2_to_3(state: &[u8]) -> Result<Vec<u8>> {
-    let old: PeerFileV2 =
-        postcard::from_bytes(state).map_err(|error| Error::Serialization(error.to_string()))?;
-    debug_assert_eq!(old.version, 2);
-    postcard::to_allocvec(&PeerFile {
-        version: 3,
-        channel: old.channel,
-        record: old.record,
-        parent: old.parent,
-        head: old.head,
-        branch: Vec::new(),
-        lost: Vec::new(),
-        genesis: old.genesis,
-        seen_epoch: old.seen_epoch,
-        requests: old.requests,
-        outbox: old.outbox,
-        issued: old.issued,
-        orphaned: old.orphaned,
-        genesis_frame: old.genesis_frame,
-    })
-    .map_err(|error| Error::Serialization(error.to_string()))
 }
 
 fn digest(frame: &MlsGovernanceFrame) -> Result<[u8; 32]> {
@@ -366,7 +313,7 @@ pub trait PeerStates: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 }
 
 /// A desktop's channels directory: one file per peer, named for the channel it
-/// belongs to, as every earlier build wrote it.
+/// belongs to.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct Files(PathBuf);
@@ -427,11 +374,6 @@ impl ChannelPeer {
         };
         let mut peer = Self::restore(channel, signer, &bytes, vault)?;
         peer.states = states;
-        // State an earlier build saved is kept in the current format from
-        // now on, so the upgrade runs once.
-        if peer.upgraded_from.is_some() {
-            peer.save(vault)?;
-        }
         Ok(Some(peer))
     }
 
@@ -465,7 +407,6 @@ impl ChannelPeer {
             orphaned: ContentKeyring::new(),
             states,
             issued: 0,
-            upgraded_from: None,
             unsaved: false,
         };
         peer.save(vault)?;
@@ -629,11 +570,10 @@ impl ChannelPeer {
             bytes,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
-        let (plaintext, upgraded_from) = crate::formats::upgrade(
-            PEER_VERSION,
-            PEER_UPGRADES,
-            Zeroizing::new(plaintext.to_vec()),
-        )?;
+        // The first byte names the format; this build writes and reads one.
+        if plaintext.first() != Some(&PEER_VERSION) {
+            return Err(Error::OtherFormat);
+        }
         let file: PeerFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
         if file.channel != channel {
@@ -679,16 +619,8 @@ impl ChannelPeer {
             orphaned: ContentKeyring::from_wire(file.orphaned)?,
             states: None,
             issued: file.issued,
-            upgraded_from,
             unsaved: false,
         })
-    }
-
-    /// The format of the state this peer was loaded from, when an earlier
-    /// build saved it and loading upgraded it.
-    #[must_use]
-    pub const fn upgraded_from(&self) -> Option<u8> {
-        self.upgraded_from
     }
 
     pub fn channel_id(&self) -> ChannelId {
@@ -1904,10 +1836,10 @@ mod welcome_tests;
 mod format_tests {
     use super::*;
 
-    /// State in a format no upgrade reaches is told apart from state that is
-    /// corrupt or another device's.
+    /// State in a format this build does not write is told apart from state
+    /// that is corrupt or another device's.
     #[test]
-    fn state_in_a_format_no_upgrade_reaches_is_told_apart() {
+    fn state_in_another_format_is_told_apart() {
         let vault = VaultKey::new([7; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let channel = ChannelId::new();

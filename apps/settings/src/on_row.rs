@@ -1,8 +1,6 @@
 //! Controls acting on a live row: a button or a switch on an item's page (a
-//! saved network, a paired device) invoking an operation that item's row of
-//! the published surface offers, rather than an effect of the whole app.
-//! What the row does not offer now, or the person may not do, leaves the
-//! control unavailable.
+//! saved network, a paired device) invoking an operation that item's row of the
+//! published surface offers, rather than an effect of the whole app.
 
 use ui::framework::{ActionControl, Dispatcher};
 use ui::tilo_actions::{ActionBinding, ResourceSpec};
@@ -63,8 +61,6 @@ pub fn invocation(
     ActionBinding::new(row, spec, move |()| args.clone()).ok()
 }
 
-/// `control`, invoking `effect` with each committed value on `row`
-/// ([`binding`]); unavailable where it cannot.
 #[must_use]
 pub fn bind<I: 'static, C: ActionControl<I>>(
     dispatcher: &Dispatcher<Settings>,
@@ -78,8 +74,6 @@ pub fn bind<I: 'static, C: ActionControl<I>>(
     }
 }
 
-/// `control` (a button), invoking the fully specified `effect` on `row`
-/// ([`invocation`]); unavailable where it cannot.
 #[must_use]
 pub fn bind_invocation<C: ActionControl<()>>(
     dispatcher: &Dispatcher<Settings>,

@@ -67,6 +67,10 @@ impl ConnectorHost {
     /// Stop the connector of `app`'s `origin` in `workspace` when one runs: nothing of that app
     /// in that workspace reads the service any more, so what the service says next waits nowhere
     /// and the process, with the network and custody its sandbox gave it, ends. Whether one ran.
+    ///
+    /// The child is reaped on a thread of its own, never here: this runs on the loop's pass, and
+    /// a killed process can take a moment to end (a kernel wait, a file it is writing), which on
+    /// the loop would hold every frame until it did.
     pub fn stop(&self, app: &str, origin: &str, workspace: &str) -> bool {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
         let stopped = self.running.lock_recover().remove(&key);
@@ -77,7 +81,7 @@ impl ConnectorHost {
         // rather than left to see a closed socket as a refused service.
         drop(running.door);
         let _ = running.child.kill();
-        let _ = running.child.wait();
+        reap(running.child);
         tracing::info!(app, origin, workspace, "an origin connector stopped");
         true
     }
@@ -167,7 +171,37 @@ impl Drop for ConnectorHost {
         let started = std::mem::take(&mut *self.running.lock_recover());
         for (_, mut running) in started {
             let _ = running.child.kill();
-            let _ = running.child.wait();
+            reap(running.child);
+        }
+    }
+}
+
+/// Reap `child` on a thread of its own: the session's loop never waits for a process to end, which
+/// a killed one can take a moment to do. A thread that cannot start reaps it here, where the
+/// caller is already past its wait: a leaked zombie is better than a stop that fails.
+pub(crate) fn reap(child: Child) {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let theirs = std::sync::Arc::clone(&slot);
+    let spawn = std::thread::Builder::new()
+        .name("tilo-reaper".to_owned())
+        .spawn(move || {
+            let child = theirs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
+        });
+    if spawn.is_err() {
+        // The process is signalled already; a thread that cannot start waits
+        // for it here, where the session is ending anyway.
+        let taken = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut child) = taken {
+            let _ = child.wait();
         }
     }
 }

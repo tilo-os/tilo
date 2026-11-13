@@ -1,14 +1,5 @@
 //! The project as Code Editor stores it, and the changes to it that are
 //! more than editing one field.
-//!
-//! [`Project`] is the record: its files and folders in one [`Collection`],
-//! each file's text in [`Project::buffers`] under the file's id, and the
-//! embedded terminal's session. A file's text is a [`Source`]: collaborative
-//! text read only while a view shows it, so a project holding every file it
-//! ever opened costs what its open files weigh. Typing is a field edit at
-//! `Project::paths().buffers.key(file)`; a file's language is a field edit
-//! too. Creating, renaming, moving and deleting files and folders are the
-//! verbs below, as is recording what the editor read from disk.
 
 use std::collections::BTreeMap;
 
@@ -28,10 +19,8 @@ pub const MAX_TEXT_BYTES: usize = crate::disk::MAX_TEXT_BYTES as usize;
 /// The most a contextual edit carries: its text, what it deletes and its
 /// context, in bytes.
 pub const MAX_EDIT_BYTES: usize = 16 * 1024;
-/// How much text on either side of a contextual edit identifies its place.
 pub const CONTEXT_CHARS: usize = 32;
 
-/// What an entry of the project is.
 #[derive(
     Model,
     Clone,
@@ -52,7 +41,6 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
-    /// The kind as the editor's tree names it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -62,7 +50,6 @@ impl EntryKind {
     }
 }
 
-/// A file or folder of the project.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Entry::valid)]
 pub struct Entry {
@@ -100,7 +87,6 @@ impl Entry {
     }
 }
 
-/// A Code Editor project.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Project {
     /// Files
@@ -124,7 +110,6 @@ pub struct Project {
     pub terminal_requests: Outbox<RunRequest, RunAnswer>,
 }
 
-/// The id a new file or folder is kept under.
 fn minted(cx: &mut ActionCx) -> Id {
     Id::from(cx.uuid().to_string())
 }
@@ -138,10 +123,6 @@ fn minted(cx: &mut ActionCx) -> Id {
     read_content_in_doc = Project::content
 )]
 impl Project {
-    /// New file
-    ///
-    /// A new file named `name` in the folder `folder` (the project's root
-    /// when none), holding `text`.
     #[action(keywords = "create file, add file, touch", icon = "file-plus")]
     pub fn new_file(
         &mut self,
@@ -161,10 +142,6 @@ impl Project {
         Ok(())
     }
 
-    /// New folder
-    ///
-    /// A new folder named `name` in the folder `folder` (the project's root
-    /// when none).
     #[action(
         keywords = "mkdir, make directory, create folder",
         icon = "folder-plus"
@@ -179,9 +156,6 @@ impl Project {
         self.add_entry(&id, EntryKind::Folder, untitled(name), folder)
     }
 
-    /// Rename
-    ///
-    /// Give the file or folder another name, unique in its folder.
     #[action(item = files, icon = "pencil")]
     pub fn rename(
         &mut self,
@@ -197,10 +171,6 @@ impl Project {
         Ok(())
     }
 
-    /// Move
-    ///
-    /// Move the file or folder into the folder `folder` (the project's root
-    /// when none), before `before` among its entries or after them all.
     #[action(item = files, icon = "arrow-right")]
     pub fn move_entry(
         &mut self,
@@ -239,12 +209,6 @@ impl Project {
         Ok(())
     }
 
-    /// Replace text
-    ///
-    /// Replace the file's whole text with `text`, written as the smallest
-    /// change to the text it has, so a collaborator's typing elsewhere in
-    /// the file stays. An editing primitive for agents and scripts: a person
-    /// edits in the editor, and finds and replaces through "Replace in file".
     #[action(item = files, icon = "type", audience = "agents")]
     pub fn replace_text(
         &mut self,
@@ -262,12 +226,6 @@ impl Project {
         Ok(())
     }
 
-    /// Replace range
-    ///
-    /// Replace a range of one file's text with `text`, or insert `text` at a
-    /// caret, counting characters; the rest of the file stays as it is. A
-    /// place a person selected is passed exactly as given. An editing
-    /// primitive addressed by character offsets, for agents and scripts.
     #[action(icon = "type", audience = "agents")]
     pub fn replace_range(
         &mut self,
@@ -299,22 +257,15 @@ impl Project {
         }
         let source = self.buffers.get_mut(file).ok_or("the file has no text")?;
         match &mut source.initial {
-            // A text not yet stored is edited where it is.
             Some(initial) => {
                 *initial = splice_chars(initial, start, end, &text)
                     .ok_or("the range lies outside the file's text")?;
             }
-            // A stored text is spliced in the document when the record is
-            // stored, against the text it holds then, which this record may
-            // not have read.
             None => source.splice = Some((start, end - start, text)),
         }
         Ok(())
     }
 
-    /// Delete
-    ///
-    /// Delete the file and its text, or the folder once it is empty.
     #[action(keywords = "remove file, delete file", item = files, destructive, icon = "trash-2")]
     pub fn delete(&mut self, entry: &Id) -> Result<(), Refusal> {
         self.files.get(entry).ok_or("no such file")?;
@@ -330,12 +281,6 @@ impl Project {
         Ok(())
     }
 
-    /// Record entry
-    ///
-    /// Record a file or folder of the project's folder on disk, the first
-    /// time the editor reads it, under the id the editor gave it. An entry
-    /// already recorded, or at a path a collaborator recorded under another
-    /// id, is left as it is.
     #[action(external, audience = "agents")]
     pub fn record_entry(
         &mut self,
@@ -351,7 +296,6 @@ impl Project {
         if let Some(folder) = &folder
             && self.folder(folder).is_err()
         {
-            // The folder it is in was removed from the project.
             return Ok(());
         }
         if self.named(folder.as_ref(), &name).is_some() {
@@ -373,11 +317,6 @@ impl Project {
         Ok(())
     }
 
-    /// Record text
-    ///
-    /// Keep `text`, read from disk, as the text of `file` the first time
-    /// the editor opens it. Text already there — a collaborator's or an
-    /// earlier session's unsaved edits — is left as it is.
     #[action(external, audience = "agents")]
     pub fn record_text(
         &mut self,
@@ -393,10 +332,6 @@ impl Project {
         Ok(())
     }
 
-    /// Record terminal target
-    ///
-    /// Record where the embedded terminal's session runs, and the window
-    /// it is set up in.
     #[action(external, id = "record-target", audience = "agents")]
     pub fn record_terminal_target(
         &mut self,
@@ -409,10 +344,6 @@ impl Project {
             .record_target(cx, target, device)
     }
 
-    /// Record terminal relay session
-    ///
-    /// Record the relay session the embedded terminal re-attaches to, or
-    /// forget it.
     #[action(external, id = "record-relay-session", audience = "agents")]
     pub fn record_terminal_relay(
         &mut self,
@@ -423,10 +354,6 @@ impl Project {
             .record_relay_session(session)
     }
 
-    /// Claim terminal pane
-    ///
-    /// Scope presence to a new process's pane of the embedded terminal,
-    /// and say where that process runs.
     #[action(external, id = "claim-pane", audience = "agents")]
     pub fn claim_terminal_pane(
         &mut self,
@@ -439,10 +366,6 @@ impl Project {
             .claim_pane(cx, pane, device)
     }
 
-    /// Run in terminal
-    ///
-    /// Run a command line in the embedded terminal's session, and answer
-    /// with the run once it ends.
     #[action(keywords = "run command, execute, build", id = "run", icon = "play")]
     pub fn run_in_terminal(
         &mut self,
@@ -471,10 +394,6 @@ impl Project {
             .rerun(cx, terminal_requests, &Id::from(run))
     }
 
-    /// Rerun test in terminal
-    ///
-    /// Run one test of one of the embedded terminal's runs again, the way
-    /// its tool runs one test. Named by the run's id, as `rerun` is.
     #[action(id = "rerun-test", icon = "repeat-1", audience = "agents")]
     pub fn rerun_test_in_terminal(
         &mut self,
@@ -487,19 +406,11 @@ impl Project {
             .rerun_test(cx, terminal_requests, &Id::from(run), test)
     }
 
-    /// Stop in terminal
-    ///
-    /// Stop what the embedded terminal's session is running, as Ctrl+C does
-    /// at its prompt. The session's record keeps nothing of it: the shell,
-    /// or the workspace's host that runs the session, ends the run.
     #[action(keywords = "stop, cancel, interrupt, ctrl c", id = "stop")]
     pub fn stop_in_terminal(&mut self) -> Result<(), Refusal> {
         self.terminal()?.stop()
     }
 
-    /// Record terminal run
-    ///
-    /// Record a run the embedded terminal's session ended.
     #[action(external, id = "record-run", audience = "agents")]
     pub fn record_terminal_run(
         &mut self,
@@ -513,9 +424,6 @@ impl Project {
 }
 
 impl Project {
-    /// What runs in the embedded terminal needs a session running somewhere
-    /// (a process that claimed its pane), and a rerun a run to repeat: until
-    /// then they are not offered, rather than offered and refused.
     fn available(&self, verb: project::Verb) -> ui::tilo_actions::Availability {
         let unavailable = |code: &str, reason: &str| ui::tilo_actions::Availability::Unavailable {
             code: code.into(),
@@ -546,14 +454,12 @@ impl Project {
         ui::tilo_actions::Availability::Available
     }
 
-    /// The embedded terminal's session, once it has one.
     fn terminal(&mut self) -> Result<&mut Terminal, Refusal> {
         self.terminal_panel
             .as_mut()
             .ok_or_else(|| Refusal::new("the project's terminal has not run yet"))
     }
 
-    /// The entry `id` when it is a folder.
     fn folder(&self, id: &Id) -> Result<&Entry, Refusal> {
         self.files
             .get(id)
@@ -561,7 +467,6 @@ impl Project {
             .ok_or_else(|| Refusal::new("the folder is not a folder of the project"))
     }
 
-    /// The entry named `name` (ignoring case) in `folder`.
     fn named(&self, folder: Option<&Id>, name: &str) -> Option<&Id> {
         self.files
             .iter()
@@ -610,7 +515,6 @@ impl Project {
         Ok(())
     }
 
-    /// The path of entry `id` in the project, its folders joined by `/`.
     #[must_use]
     pub fn path_of(&self, id: &Id) -> Option<String> {
         let mut parts = Vec::new();
@@ -627,11 +531,6 @@ impl Project {
         Some(parts.join("/"))
     }
 
-    /// What the project holds, for a reader: with no item, a page of its
-    /// entries (path, kind and language; `next` names the page after it);
-    /// with a file or folder, that entry, and a file's text read from `doc`.
-    /// Never the terminal's session. History reads a past version through
-    /// it, so a reader needs no knowledge of how the project is stored.
     fn content(&self, doc: &Doc, item: Option<&Id>) -> Result<serde_json::Value, String> {
         const PAGE: usize = 256;
         let entry_json = |id: &Id, entry: &Entry| {
@@ -696,17 +595,11 @@ impl Project {
             })
     }
 
-    /// The text of file `id`, when a view asked for it.
     #[must_use]
     pub fn text(&self, id: &str) -> Option<&str> {
         self.buffers.get(id).and_then(Source::text)
     }
 
-    /// Read the texts of the files the views show — the demand's keys are
-    /// their ids — and let go of the others.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when a text is no longer a text.
     pub fn load_texts(&mut self, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
         for (id, source) in &mut self.buffers {
             if demand.keys.contains(id) {
@@ -718,7 +611,6 @@ impl Project {
         Ok(())
     }
 
-    /// Every file and folder by its name and path, each opening it.
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.files
             .iter()
@@ -728,8 +620,6 @@ impl Project {
                     std::path::Path::new(&path),
                     entry.kind == EntryKind::Folder,
                 );
-                // Listed as the project's files, each with the picture its
-                // kind of file wears in the explorer.
                 SearchEntry::new(entry.name.clone(), path)
                     .anchored(crate::actions::file_resource_id(id))
                     .grouped(FILES_GROUP)
@@ -738,7 +628,6 @@ impl Project {
             .collect()
     }
 
-    /// The embedded terminal, once the project has one.
     fn places(&self) -> Vec<Derived<Self>> {
         self.terminal_panel
             .iter()
@@ -751,7 +640,6 @@ impl Project {
     }
 }
 
-/// The heading the project's files are listed under in a search.
 const FILES_GROUP: &str = "Files";
 
 fn untitled(name: Option<String>) -> String {
@@ -777,8 +665,6 @@ fn valid_name(name: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// `text` with characters `start..end` replaced by `insert`, or `None` when
-/// the range runs past its end.
 fn splice_chars(text: &str, start: usize, end: usize, insert: &str) -> Option<String> {
     let byte = |chars: usize| {
         text.char_indices()
@@ -794,8 +680,6 @@ fn splice_chars(text: &str, start: usize, end: usize, insert: &str) -> Option<St
     Some(next)
 }
 
-/// The SHA-256 of `text`, as a contextual edit names the text it was made
-/// against.
 #[must_use]
 pub fn text_digest(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
@@ -809,14 +693,9 @@ pub fn text_digest(text: &str) -> String {
 #[derive(Clone, Debug, Default)]
 pub struct Source {
     object: Option<ObjId>,
-    /// Shared, so a copy of the project (a view holding the state it was
-    /// shown while the reader follows) copies no file's text.
     text: Option<std::sync::Arc<str>>,
     initial: Option<String>,
-    /// Whether a new text is the same object on every device that makes it.
     shared: bool,
-    /// A splice (characters at, deleted, inserted) written into the stored
-    /// text when the record is stored.
     splice: Option<(usize, usize, String)>,
 }
 
@@ -831,7 +710,6 @@ impl PartialEq for Source {
 }
 
 impl Source {
-    /// A new text holding `text`, written when the record is stored.
     #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
         Self {
@@ -843,10 +721,6 @@ impl Source {
         }
     }
 
-    /// A new text holding `text` as a file on disk holds it: every device
-    /// that reads the same file into the same record makes the same text
-    /// object, so two editors opening it before they sync type into one
-    /// text, not two competing ones.
     #[must_use]
     pub fn from_disk(text: impl Into<String>) -> Self {
         Self {
@@ -855,13 +729,11 @@ impl Source {
         }
     }
 
-    /// The text, when it was read.
     #[must_use]
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref().or(self.initial.as_deref())
     }
 
-    /// The text object it is kept in, once stored.
     #[must_use]
     pub fn object(&self) -> Option<&ObjId> {
         self.object.as_ref()
@@ -881,22 +753,17 @@ impl Source {
     }
 }
 
-/// An edit of a file's text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum SourceEdit {
-    /// Replace `delete` characters at `at` with `insert`. Positions count
-    /// Unicode scalar values.
     Splice {
         at: usize,
         delete: usize,
         insert: String,
     },
-    /// Replace `delete_chars` characters at `start_chars` with `insert`, made
-    /// against the text whose SHA-256 is `expected_base_digest`. When the
-    /// text changed since, the edit lands where `before_context`,
-    /// `deleted_text` and `after_context` (up to 32 characters each side)
-    /// still read as one untouched place, and is refused otherwise.
+    /// Replace `delete_chars` characters at `start_chars` with `insert`, against the text whose SHA-256 is
+    /// `expected_base_digest`. When the text changed since, the edit lands only where `before_context`,
+    /// `deleted_text` and `after_context` (32 characters each) still read as one untouched place.
     Contextual {
         expected_base_digest: String,
         start_chars: usize,
@@ -912,7 +779,6 @@ pub enum SourceEdit {
 }
 
 impl SourceEdit {
-    /// The one smallest contextual splice turning `base` into `next`.
     #[must_use]
     pub fn between(base: &str, next: &str) -> Self {
         let (start, end) = tilo_resource::text::common_text_ends(base, next);
@@ -937,8 +803,6 @@ impl SourceEdit {
         }
     }
 
-    /// The plain splice this edit is against `text`, or why it no longer
-    /// fits.
     fn splice(&self, text: &str) -> Result<(usize, usize, String), String> {
         match self {
             Self::Splice { at, delete, insert } => Ok((*at, *delete, insert.clone())),
@@ -978,8 +842,6 @@ impl SourceEdit {
     }
 }
 
-/// Where `before + deleted + after` reads exactly once in `text`: the place
-/// an edit made against an older text still fits.
 fn rebase(text: &str, before: &str, deleted: &str, after: &str) -> Option<(usize, usize)> {
     let needle = format!("{before}{deleted}{after}");
     if needle.is_empty() {
@@ -997,9 +859,6 @@ fn rebase(text: &str, before: &str, deleted: &str, after: &str) -> Option<(usize
 impl Operations for Source {
     type Op = SourceEdit;
 
-    /// Typing a word is one undo step: an insertion right where the last
-    /// one ended goes on until a space ends the word; deleting runs the same
-    /// way, backwards or forwards.
     fn coalesces(previous: &SourceEdit, next: &SourceEdit) -> bool {
         let ((before_at, before_delete, before_insert), (at, delete, insert)) =
             (plain(previous), plain(next));
@@ -1018,7 +877,6 @@ impl Operations for Source {
         }
     }
 
-    /// What history says of an edit: text typed or deleted.
     fn describe(_: &SourceEdit) -> tilo_resource::path::OpDescription {
         tilo_resource::path::OpDescription {
             op: ui::tilo_actions::EditOp::Splice,
@@ -1027,7 +885,6 @@ impl Operations for Source {
     }
 }
 
-/// An edit's place, size and text, as written.
 fn plain(edit: &SourceEdit) -> (usize, usize, &str) {
     match edit {
         SourceEdit::Splice { at, delete, insert } => (*at, *delete, insert),

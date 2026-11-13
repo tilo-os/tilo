@@ -258,7 +258,6 @@ fn unknown_length_staging_has_per_file_and_aggregate_limits_and_releases_quota()
     assert_eq!(staging.used.load(Ordering::Acquire), 0);
     assert_eq!(std::fs::read_dir(&staging.directory).unwrap().count(), 0);
 
-    // A known-length body larger than either disk budget still streams.
     staging.per_file = 1;
     staging.aggregate = 1;
     let known = Arc::new(Source {
@@ -328,7 +327,6 @@ fn leased_imports(state_root: &Path) -> (Imports, Arc<AtomicU64>, Arc<AtomicBool
 fn production_requests_renew_idle_leases_but_invalid_or_foreign_requests_do_not() {
     let dir = tempfile::tempdir().unwrap();
     let (imports, seconds, cancelled) = leased_imports(dir.path());
-    // Active status polls keep even preparation alive beyond the initial TTL.
     for now in [240, 480] {
         seconds.store(now, Ordering::Release);
         assert_eq!(

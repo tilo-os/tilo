@@ -6,14 +6,12 @@
 
 use crate::deferred::Deferred;
 
-/// The code of one lazily loaded surface; see the module documentation.
 pub struct LazyCode<F: Copy + 'static> {
     linked: Option<fn() -> F>,
     fetched: Deferred<F>,
 }
 
 impl<F: Copy + 'static> LazyCode<F> {
-    /// Code this build links: `maker` hands it over.
     #[must_use]
     pub const fn linked(maker: fn() -> F) -> Self {
         Self {
@@ -22,7 +20,6 @@ impl<F: Copy + 'static> LazyCode<F> {
         }
     }
 
-    /// Code the program fetches the first time it is wanted.
     #[must_use]
     pub const fn fetched() -> Self {
         Self {
@@ -31,7 +28,7 @@ impl<F: Copy + 'static> LazyCode<F> {
         }
     }
 
-    /// The code, or `None` while it is still to come (and then fetched).
+    /// The code, or `None` while it is still to come; a miss starts a fetch.
     pub fn get(&self) -> Option<F> {
         match self.linked {
             Some(maker) => Some(maker()),
@@ -39,9 +36,7 @@ impl<F: Copy + 'static> LazyCode<F> {
         }
     }
 
-    /// The code once it is in, for work that can wait for it (an
-    /// asynchronous task): fetched if no fetch is running. `None` when the
-    /// fetch fails.
+    /// The code once it is in, for work that can wait for it; `None` if the fetch fails.
     pub async fn wait(&self) -> Option<F>
     where
         F: Send + Sync,
@@ -52,24 +47,19 @@ impl<F: Copy + 'static> LazyCode<F> {
         }
     }
 
-    /// How the program fetches the code: `load` starts the fetch and, once
-    /// the code is in, calls [`Self::install`] (or [`Self::load_failed`]).
     pub fn defer(&self, load: fn()) {
         self.fetched.defer(load);
     }
 
-    /// The code is in: surfaces waiting on it take it up when their owner
-    /// next lays out.
+    /// The code is in: surfaces waiting on it take it up on their owner's next layout.
     pub fn install(&self, code: F) {
         self.fetched.install(code);
     }
 
-    /// The fetch failed: the next use fetches again.
     pub fn load_failed(&self) {
         self.fetched.load_failed();
     }
 
-    /// Bumped when the code arrives.
     pub fn generation(&self) -> u64 {
         self.fetched.generation()
     }

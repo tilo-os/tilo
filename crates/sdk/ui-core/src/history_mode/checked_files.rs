@@ -13,11 +13,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 /// Trusted owner-side transport. This handle is never included in preview input.
 pub trait FileHistoryTransport: Send + Sync {
     fn read(&self, query: Query) -> Result<ReadValue, ReadError>;
-    /// # Errors
-    /// Returns a checked-read failure when the requested version cannot be retrieved.
     fn preview(&self, scope: ReadScope, version: FileVersionId) -> Result<Vec<u8>, ReadError>;
-    /// # Errors
-    /// Returns the checked operation outcome when a restore review cannot be produced.
     fn review(&self) -> Result<Review, Outcome>;
     fn submit(&self, request: Request) -> Outcome;
     fn result(&self, intent: uuid::Uuid) -> Outcome;
@@ -28,9 +24,8 @@ pub struct FileHistoryTarget {
     pub record: FileRecordId,
     pub label: String,
     pub transport: Arc<dyn FileHistoryTransport>,
-    /// Who the people and agents writing versions are, as the app knows
-    /// them: a version an agent's device signed reads as the agent's, on
-    /// behalf of its person. Presentation only; never authority.
+    /// Who the people and agents writing versions are, as the app knows them: a version an agent's
+    /// device signed reads as the agent's, on behalf of its person. Presentation only; never authority.
     pub authors: crate::history_source::AuthorDirectory,
 }
 /// A root retains its own handle; the runner validates this exact source witness.
@@ -83,7 +78,6 @@ impl From<ReadError> for HistoricalGap {
             ReadError::Stale | ReadError::NotVisible | ReadError::InvalidRequest => {
                 Self::Unsupported(file_gap_reason(error))
             }
-            // The version, or the content it names, is not retrievable now.
             ReadError::MissingVersion | ReadError::Unavailable | ReadError::NoContent => {
                 Self::Unavailable(file_gap_reason(error))
             }
@@ -94,8 +88,6 @@ impl From<ReadError> for HistoricalGap {
     }
 }
 
-/// What a checked-file read failure means for a person, one sentence per
-/// failure.
 #[must_use]
 fn file_gap_reason(error: ReadError) -> String {
     match error {
@@ -108,7 +100,7 @@ fn file_gap_reason(error: ReadError) -> String {
         ReadError::NoContent => "that version holds no content".into(),
     }
 }
-/// Immutable metadata and exact bytes only. No path, service, callback or live State.
+/// Immutable metadata and exact bytes only.
 #[derive(Clone, Debug)]
 pub struct FileHistorySnapshot {
     pub scope: ReadScope,
@@ -129,9 +121,7 @@ pub(crate) struct FileRestoreSession {
     pub receipts: Vec<Receipt>,
     uncertain: bool,
     pub last_operation: Option<Operation>,
-    /// Requests this session already resolved. Their submit and result calls
-    /// run concurrently, so a slower call for the same exact request can
-    /// still complete after another one settled it.
+    /// Requests this session already resolved.
     settled: Vec<Request>,
 }
 impl FileRestoreSession {
@@ -155,8 +145,7 @@ impl FileRestoreSession {
         self.outcome = None;
         Ok(request)
     }
-    /// Whether `request` is no longer pending because this session already
-    /// resolved it. A late completion for it is stale, not a backend fault.
+    /// Whether `request` is no longer pending because this session already resolved it.
     pub(crate) fn has_settled(&self, request: &Request) -> bool {
         self.request.as_ref() != Some(request) && self.settled.contains(request)
     }
@@ -323,8 +312,8 @@ mod tests {
     }
 
     use super::*;
-    /// A session with the review `review()` answers and a pending restore of
-    /// version `version`, which a case then settles, replaces or ages out.
+    /// A session with the review `review()` answers and a pending restore of version `version`, which a
+    /// case then settles, replaces or ages out.
     fn prepared(version: u128) -> (FileRestoreSession, Request) {
         let mut session = FileRestoreSession::default();
         let request = session

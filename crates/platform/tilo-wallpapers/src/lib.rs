@@ -1,30 +1,24 @@
 //! The wallpapers Tilo ships.
 //!
-//! [`catalog.toml`](../catalog.toml) is the one list: each picture's id, its
-//! author, licence and source, and the two files the OS image installs for it
-//! under `backgrounds/tilo/` in the XDG data directories — the picture at
-//! the laptop panel's resolution and a thumbnail for the Settings picker.
-//! The files are not in the source tree: `tools/wallpapers.py` makes them
-//! from the pinned originals, and the image build fetches them by digest
-//! (`os/Containerfile`, stage `os-wallpapers`).
+//! [`catalog.toml`](../catalog.toml) is the one list: each picture's id, author,
+//! licence and source, and the two files the image installs for it under
+//! `backgrounds/tilo/` in the XDG data directories. The files are made by
+//! `tools/wallpapers.py` from the pinned originals, and the image build fetches them
+//! by digest (`os/Containerfile`, stage `os-wallpapers`).
 //!
-//! The person's choice is the `appearance.wallpaper` setting: a catalog id,
-//! [`CUSTOM`] for a picture of their own (set through the Wallpaper portal),
-//! or unset for the catalog's default. [`choice`] reads it.
+//! The person's choice is the `appearance.wallpaper` setting; [`choice`] reads it.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-/// The `appearance.wallpaper` value of a picture the person chose
-/// themselves, which the compositor keeps in its private wallpaper cache.
+/// The `appearance.wallpaper` value of a picture the person chose themselves,
+/// kept in the compositor's private wallpaper cache.
 pub const CUSTOM: &str = "custom";
 
-/// Where under each XDG data directory the image installs the pictures.
 pub const INSTALL_SUBDIR: &str = "backgrounds/tilo";
 
-/// Whether a picture reads as light or dark behind windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tone {
@@ -33,7 +27,6 @@ pub enum Tone {
     Dark,
 }
 
-/// One installed file of a wallpaper, pinned by size and digest.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Asset {
@@ -47,24 +40,19 @@ pub struct Asset {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Wallpaper {
-    /// Stable id, the `appearance.wallpaper` value that chooses it.
     pub id: String,
     pub tone: Tone,
     pub title: String,
     pub author: String,
-    /// SPDX identifier, or `public-domain` for a work with no copyright.
     pub license: String,
     pub license_url: String,
-    /// The page that states the author and the licence.
     pub source_url: String,
-    /// The original file the installed ones are made from.
     pub original_url: String,
     pub original_sha256: String,
     pub picture: Asset,
     pub thumbnail: Asset,
 }
 
-/// The catalog format this build reads.
 const SCHEMA: u32 = 1;
 
 #[derive(Debug, Deserialize)]
@@ -91,13 +79,11 @@ fn parsed() -> &'static Catalog {
     })
 }
 
-/// Every wallpaper, in the order the picker shows them.
 #[must_use]
 pub fn all() -> &'static [Wallpaper] {
     &parsed().wallpaper
 }
 
-/// The wallpaper a person who has chosen none sees.
 #[must_use]
 pub fn default_wallpaper() -> Option<&'static Wallpaper> {
     let catalog = parsed();
@@ -109,11 +95,9 @@ pub fn find(id: &str) -> Option<&'static Wallpaper> {
     all().iter().find(|wallpaper| wallpaper.id == id)
 }
 
-/// What an `appearance.wallpaper` value shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     Bundled(&'static Wallpaper),
-    /// The person's own picture.
     Custom,
 }
 
@@ -128,7 +112,6 @@ pub fn choice(value: Option<&str>) -> Option<Choice> {
     }
 }
 
-/// The `appearance.wallpaper` value a choice is stored as.
 #[must_use]
 pub fn value_of(choice: Choice) -> &'static str {
     match choice {
@@ -137,7 +120,6 @@ pub fn value_of(choice: Choice) -> &'static str {
     }
 }
 
-/// Every value `appearance.wallpaper` may hold.
 #[must_use]
 pub fn values() -> Vec<&'static str> {
     all()
@@ -157,19 +139,16 @@ impl Wallpaper {
         installed(&self.picture)
     }
 
-    /// The installed thumbnail.
     #[must_use]
     pub fn thumbnail_path(&self) -> Option<PathBuf> {
         installed(&self.thumbnail)
     }
 
-    /// Decode the installed picture, at its full size.
     #[must_use]
     pub fn decode_picture(&self) -> Option<DecodedImage> {
         decode(&self.picture_path()?, &self.picture)
     }
 
-    /// Decode the installed thumbnail.
     #[must_use]
     pub fn decode_thumbnail(&self) -> Option<DecodedImage> {
         decode(&self.thumbnail_path()?, &self.thumbnail)
@@ -220,8 +199,8 @@ fn custom_picture_in(state: &Path) -> PathBuf {
     state.join("tilo/wallpaper/custom")
 }
 
-/// Keep `encoded` as the person's own picture, once it is an image the
-/// limits admit; where it was kept.
+/// Keep `encoded` as the person's own picture, once the limits admit it; where
+/// it was kept.
 pub fn keep_custom_picture(encoded: &[u8]) -> std::io::Result<PathBuf> {
     let path =
         custom_picture_path().ok_or_else(|| std::io::Error::other("no private state directory"))?;
@@ -251,7 +230,6 @@ fn keep_custom_at(path: &Path, encoded: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&partial, path)
 }
 
-/// The person's own picture, decoded to at most `max_dimension` a side.
 #[must_use]
 pub fn decode_custom_picture(max_dimension: u32) -> Option<DecodedImage> {
     let encoded = std::fs::read(custom_picture_path()?).ok()?;

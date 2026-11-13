@@ -4,13 +4,10 @@
 //! The artwork is layers of marks, each a vector object with a stable id. A
 //! plain layer draws its marks as crisp vector art; an oil or watercolour
 //! layer paints them with a simulation of that medium, re-simulated from the
-//! marks on every machine. Everything a person does with the pointer is one
-//! of the artwork's actions, and `look` lets a caller with no screen see the
-//! result.
+//! marks on every machine. Every pointer gesture is one of the artwork's
+//! actions, and `look` lets a caller with no screen see the result.
 
-/// The application id.
 pub const APP_ID: &str = "so.tilo.canvas";
-/// The window and launcher title.
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
@@ -59,12 +56,10 @@ use ui::widget::ControlSize;
 
 pub struct App;
 
-/// What the binary runs instead of opening a window.
-///
-/// `--probe-paint-engine VALUE` (the value is ignored) paints a stroke with
-/// every built-in medium, without a document or a display. In a release
-/// build the simulation is in `libtilo_paint_engine.so`, so the probe proves
-/// Canvas loads its engine library and runs it.
+/// What the binary runs instead of opening a window: `--probe-paint-engine`
+/// paints a stroke with every built-in medium, without a document or a
+/// display. In a release build the engine is `libtilo_paint_engine.so`, so
+/// the probe proves Canvas loads and runs it.
 const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
     option: "--probe-paint-engine",
     run: probe_paint_engine,
@@ -82,6 +77,7 @@ impl ResourceApp for App {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "canvas-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -127,7 +123,7 @@ impl ResourceApp for App {
         let work = cx.switch(&compact, move |cx, compact| {
             work_area(cx, &work_tools, *compact)
         });
-        // The narrow capture shows the inspector as the drawer it is there.
+        // Narrow: the inspector folds into a drawer.
         let inspector_open = tools.sidebar.clone();
         let stage_open = inspector_open.clone();
         cx.on_stage(move |scenario| {
@@ -135,9 +131,9 @@ impl ResourceApp for App {
                 stage_open.set(true);
             }
         });
-        // The window's own row is the title, the artwork's menu and its
-        // commands: the bar carries them as slots, so the canvas keeps the
-        // height the row took and a narrow window keeps every command.
+        // The bar takes the title, the artwork's menu and its commands as slots,
+        // so the canvas keeps the height the row took and a narrow window keeps
+        // every command.
         let window: Element = Box::new(panels::bar::WindowBar::new(
             Box::new(
                 NavShell::new()
@@ -152,8 +148,8 @@ impl ResourceApp for App {
             cx.live().clone(),
             cx.dispatcher(),
         ));
-        // Over a blank artwork, a welcome saying what can be done here and
-        // by whom; then the dialogs.
+        // Over a blank artwork, a welcome saying what can be done here; then the
+        // dialogs.
         let mut layers = Stack::new().push(window);
         for sheet in sheets(cx, &tools) {
             layers = layers.push(sheet);
@@ -170,9 +166,8 @@ impl ResourceApp for App {
         ))
     }
 
-    /// A saved artwork, handed over by Files or named on the command
-    /// line; and pictures, which open as an artwork the size of the
-    /// picture.
+    /// A saved artwork handed over by Files or named on the command line, and
+    /// pictures, which open as an artwork the size of the picture.
     const OPENS: &'static [&'static str] = &[
         document::MEDIA_TYPE,
         "image/png",
@@ -181,9 +176,8 @@ impl ResourceApp for App {
     ];
     const ARGUMENTS: usize = 1;
 
-    /// A file named on the command line opens a record of its own, the
-    /// same one each time: an artwork file is that record; a picture gets
-    /// an artwork derived from it, edits and all.
+    /// A file named on the command line opens a record of its own, the same one
+    /// each time; a picture gets an artwork derived from it, edits and all.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         let path = std::path::Path::new(input.argument()?);
         let extension = path
@@ -197,11 +191,10 @@ impl ResourceApp for App {
             .then(|| RecordId::derived("artwork", &RecordId::identify_file(path)))
     }
 
-    /// The file, in the record it opened: an artwork file is that artwork,
-    /// a picture a new artwork sized to it with the picture its first mark.
-    /// A record made for the file starts as it; opened again, it is as it
-    /// was left. A file handed to the window's artwork (no path) replaces
-    /// it as one step, Undo away from what was there.
+    /// The file, in the record it opened: an artwork file is that artwork, a
+    /// picture a new artwork sized to it with the picture as its first mark. A
+    /// file handed to the window's artwork (no path) replaces it as one step,
+    /// Undo away from what was there.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Artwork>> {
         let Some(file) = input.file() else {
             return Vec::new();
@@ -244,9 +237,8 @@ impl ResourceApp for App {
         ]
     }
 
-    /// The screenshots paint their samples through the same actions an
-    /// agent would; a plain `--shots` shows the empty sheet a new artwork
-    /// is.
+    /// The screenshots paint their samples through the same actions an agent
+    /// would; a plain `--shots` shows the empty sheet a new artwork is.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Artwork>> {
         match name {
@@ -265,8 +257,7 @@ impl ResourceApp for App {
     }
 }
 
-/// The dialogs over the window: starting a new artwork, exporting it, and
-/// the keyboard shortcuts.
+/// The dialogs over the window: a new artwork, an export, the shortcuts.
 fn sheets(cx: &ViewCx<Artwork>, tools: &tools::Tools) -> Vec<Element> {
     use tools::{FileRequest, Sheet};
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
@@ -324,8 +315,8 @@ fn sheets(cx: &ViewCx<Artwork>, tools: &tools::Tools) -> Vec<Element> {
     ]
 }
 
-/// A dialog shown while the window's sheet is `which`. The dialog stays in
-/// the tree, so what was typed in it outlives closing it.
+/// A dialog shown while the window's sheet is `which`. It stays in the
+/// tree, so what was typed in it outlives closing it.
 struct Shown {
     dialog: ui::widget::ModalDialog<Container>,
     sheet: LocalState<Option<tools::Sheet>>,
@@ -365,8 +356,6 @@ impl ui::widget::Decorator for Shown {
         self.dialog.sync(state, path);
     }
 
-    /// A click or key right after the dialog was asked for already lands
-    /// in it, not in what is beneath, even before the next frame.
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
@@ -390,7 +379,6 @@ impl ui::widget::Decorator for Shown {
     }
 }
 
-/// What the lower half of the sidebar shows.
 /// What the lower half of the inspector shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Dock {
@@ -404,7 +392,6 @@ enum Dock {
 pub(crate) const RAIL: f32 =
     ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2; // a pointer target and its inset, laid out before a theme is known
 
-/// Recommended tools follow the document; a person can override the suggestion.
 fn rail(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
     let inferred = cx.value(tools::Workspace::of);
     let tools = tools.clone();
@@ -429,7 +416,6 @@ fn rail(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
 }
 
 /// On a phone the artwork keeps the full width and tools sit below it.
-/// Every tool remains the same shared control and local view action.
 fn work_area(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Element {
     let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
     let canvas: Element = Box::new(preview::VersionPreview::new(
@@ -465,8 +451,8 @@ fn work_area(cx: &ViewCx<Artwork>, tools: &tools::Tools, compact: bool) -> Eleme
     }
 }
 
-/// The tools, top to bottom, each with its key, and at the foot the paint
-/// the brush is loaded with.
+/// The tools, top to bottom, each with its key, and the paint the brush is
+/// loaded with.
 fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool) -> Element {
     let choices = tools::Tool::ALL
         .iter()
@@ -483,9 +469,9 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool
         .collect();
     let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_view("Tool", |_| {});
     if compact {
-        // At regular size the tools, the picture button and the paint well
-        // fit a phone-width window; the strip still scrolls when "All
-        // tools" adds more, without a scroll bar painted under the tools.
+        // At regular size the tools, the picture button and the paint well fit a
+        // phone-width window; the strip still scrolls when "All tools" adds more,
+        // without a scroll bar painted under the tools.
         return Box::new(
             Scrollable::new_horizontal()
                 .fit_content_height()

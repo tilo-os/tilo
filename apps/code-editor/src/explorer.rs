@@ -1,16 +1,5 @@
 //! The project explorer: the toolkit's list, its rows standing as a tree, over
 //! a snapshot of the [`Project`], in the shell's sidebar column.
-//!
-//! The list owns rows, keyboard navigation, disclosure, selection, hover,
-//! scrolling and semantics. This module owns only what is specific to Code:
-//! the indexed rows it reads (folders first, then alphabetical, the explorer
-//! convention), each row's file-type icon, and the activation and expansion
-//! signals the app applies to the session.
-//!
-//! The session stays the one truth: the app shows the project and the file
-//! on screen through an [`ExplorerFeed`], which the list takes up at its next
-//! sync, and what the person does in the list comes back as
-//! [`ExplorerEvent`]s.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -24,42 +13,29 @@ use vello::kurbo::Rect;
 
 use crate::model::{NodeId as ProjectId, NodeKind, Project};
 
-/// What the user asked of the explorer, for the app to apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExplorerEvent {
-    /// Enter, a click or the accessibility `Activate` verb on a row: open a
-    /// file, or toggle a folder.
     Activate(ProjectId),
-    /// A folder was expanded (`true`) or collapsed.
     Expand(ProjectId, bool),
-    /// The no-project state's Open folder.
     OpenFolder,
 }
 
-/// The explorer widget type the app hosts.
 type Explorer = VirtualList<Rows>;
 
-/// The explorer's rows, keyed by the project node each stands for.
 type Rows = VecListModel<Row, ProjectId>;
 
-/// Queue the explorer's callbacks push into and the app drains each frame.
 pub type ExplorerEvents = Rc<RefCell<Vec<ExplorerEvent>>>;
 
-/// One row of the explorer: a file or folder of the project, and the row it
-/// stands under.
 #[derive(Clone)]
 struct Row {
     id: ProjectId,
     label: String,
     parent: Option<ProjectId>,
     folder: bool,
-    /// Whether the session holds the folder open: its subtasks show.
     open: bool,
     path: PathBuf,
 }
 
-/// The project as the explorer lists it: folders before files, each by name,
-/// depth first, the root left out.
 fn rows(project: &Project) -> Vec<Row> {
     fn walk(project: &Project, parent: ProjectId, rows: &mut Vec<Row>) {
         let Some(node) = project.get(parent) else {
@@ -103,11 +79,7 @@ fn rows(project: &Project) -> Vec<Row> {
     rows
 }
 
-/// The rows as the list reads them: each under the row it names, and every folder one that
-/// takes subtasks whether or not they are read yet.
 fn model(rows: Vec<Row>) -> Rows {
-    // A row is one project node, so no two share a key: the list starts empty if one ever
-    // did rather than the sidebar failing to show the project.
     Rows::new(rows, |row| row.id).map_or_else(
         |_| Rows::empty(),
         |model| {
@@ -118,7 +90,6 @@ fn model(rows: Vec<Row>) -> Rows {
     )
 }
 
-/// Build the explorer over `model`, wired to push its signals into `events`.
 fn explorer(model: Rows, marks: &Rc<TreeMarks<ProjectId>>, events: &ExplorerEvents) -> Explorer {
     let activated = Rc::clone(events);
     let folding = Rc::clone(events);
@@ -148,8 +119,6 @@ fn explorer(model: Rows, marks: &Rc<TreeMarks<ProjectId>>, events: &ExplorerEven
     .filling()
     .with_tree(marks)
     .with_semantic_key(ToString::to_string)
-    // Choosing a row opens it: a click, Enter, a screen reader, a script
-    // or an agent, through the list's published `select`.
     .on_view("file_tree", move |id| {
         activated.borrow_mut().push(ExplorerEvent::Activate(id));
     })
@@ -160,8 +129,6 @@ fn explorer(model: Rows, marks: &Rc<TreeMarks<ProjectId>>, events: &ExplorerEven
     })
 }
 
-/// What the app shows in the explorer, for the list to take up at its next
-/// sync: the project as it stands and the file on screen.
 #[derive(Clone, Default)]
 pub struct ExplorerFeed(Rc<RefCell<Shown>>);
 
@@ -175,7 +142,6 @@ struct Shown {
 }
 
 impl ExplorerFeed {
-    /// Show `project` as it stands: its rows, its open folders and its name.
     pub fn show(&self, project: &Project) {
         let mut shown = self.0.borrow_mut();
         shown.project = Some(project.clone());
@@ -184,29 +150,23 @@ impl ExplorerFeed {
         shown.revision += 1;
     }
 
-    /// Mark the file on screen: it is the selection, so the open buffer is
-    /// where keyboard browsing starts.
     pub fn set_current(&self, id: Option<ProjectId>) {
         let mut shown = self.0.borrow_mut();
         shown.current = id;
         shown.revision += 1;
     }
 
-    /// Whether there is a project to list: the root alone is no project.
     #[must_use]
     pub fn has_project(&self) -> bool {
         self.0.borrow().has_project
     }
 
-    /// The project's name, over its files.
     #[must_use]
     pub fn name(&self) -> String {
         self.0.borrow().name.clone()
     }
 }
 
-/// The explorer as the sidebar holds it: the list, taking up what its
-/// [`ExplorerFeed`] shows at each sync.
 struct FedExplorer {
     view: Explorer,
     marks: Rc<TreeMarks<ProjectId>>,
@@ -223,8 +183,6 @@ impl FedExplorer {
         self.seen = shown.revision;
         if let Some(project) = shown.project.take() {
             let rows = rows(&project);
-            // The session keeps which folders are open; the list shows the
-            // rest folded away.
             for row in &rows {
                 if row.folder {
                     self.marks.fold(&row.id, !row.open);
@@ -262,8 +220,6 @@ impl ui::widget::Decorator for FedExplorer {
     }
 }
 
-/// The sidebar's column: the project's name over its files, or, with no
-/// project open, the offer to open a folder.
 pub fn sidebar(feed: &ExplorerFeed, events: &ExplorerEvents) -> Element {
     let marks = Rc::new(TreeMarks::default());
     let mut explorer = FedExplorer {
@@ -296,8 +252,6 @@ pub fn sidebar(feed: &ExplorerFeed, events: &ExplorerEvents) -> Element {
                 height: ui::widget::MeasureConstraint::Intrinsic,
             };
             let band = f64::from(ctx.measure(0, band)?.size.height);
-            // A pass can hand the column no height at all: nothing then stands under the
-            // name, and the placement below it takes no room.
             let top = (inset + band + inset).min(h);
             let name_bottom = (inset + band).min(top);
             ctx.place(
@@ -338,7 +292,6 @@ mod tests {
         project
     }
 
-    /// Each row's label and how deep it stands under the top rows.
     fn listed(project: &Project) -> Vec<(String, u32)> {
         let rows = rows(project);
         let parents: std::collections::HashMap<_, _> =
@@ -358,7 +311,6 @@ mod tests {
 
     #[test]
     fn rows_stand_in_explorer_order_under_the_folder_they_are_in() {
-        // Folders sort before files, then by name, and a folder's files follow it.
         assert_eq!(
             listed(&sample()),
             [
@@ -375,7 +327,6 @@ mod tests {
         let project = sample();
         let rows = rows(&project);
         let model = model(rows);
-        // `assets` has no files read yet, and still takes subtasks.
         let assets = (0..model.len())
             .find(|index| model.item(*index).is_some_and(|row| row.label == "assets"))
             .expect("the folder is listed");

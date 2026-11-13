@@ -18,15 +18,10 @@
 //! | Web | the trusted clipboard event being dispatched ([`events`]), else a synchronous copy inside the user's click |
 //!
 //! Each falls back to an [`InProcessClipboard`] when there is no system
-//! clipboard, and logs that once. [`availability`] says what the target can
-//! do; a backend may do less at run time, never more.
-//!
-//! `arboard`'s Wayland path needs `zwlr_data_control_manager_v1`, a
-//! clipboard-*manager* protocol Tilo deliberately withholds from sandboxed
-//! apps: it exposes every selection on the seat with no focus check, and the
-//! fleet copies TOTP codes and recovery phrases (see
-//! `crates/session/compositor/src/`). The Wayland backend's
-//! `wl_data_device` is focus-gated instead; `arboard` is kept only for X11.
+//! clipboard, and logs that once. `arboard` is kept only for X11: its Wayland path
+//! needs `zwlr_data_control_manager_v1`, a clipboard-manager protocol Tilo
+//! withholds from sandboxed apps because it exposes every selection on the seat
+//! with no focus check. The Wayland backend's `wl_data_device` is focus-gated.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -53,13 +48,10 @@ mod web;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 
-/// The Wayland backend, for the compositor's clipboard tests. Apps use
-/// [`system`].
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use wayland::WaylandClipboard;
 
-/// Largest HTML payload accepted from a clipboard offer.
 pub const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 
 /// Largest plain-text fallback captured with a rich clipboard offer.
@@ -75,7 +67,6 @@ pub struct RichTextOffer {
 }
 
 impl RichTextOffer {
-    /// Whether this offer fits the shared transport limits and contains HTML.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         !self.html.is_empty()
@@ -106,28 +97,18 @@ pub const SECRET_MIME: &str = "application/x-tilo-secret";
 /// their histories. Its bytes are [`SECRET_MARKER`].
 pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
 
-/// What a secret copy answers for [`SECRET_MIME`] and
-/// [`PASSWORD_MANAGER_HINT_MIME`].
 pub const SECRET_MARKER: &[u8] = b"secret";
 
-/// Largest PNG a clipboard image may encode to.
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Largest RGBA buffer accepted for a clipboard image.
 pub const MAX_CLIPBOARD_IMAGE_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Largest encoded image read from another app's clipboard. A larger one is
-/// not read at all.
 pub const MAX_PASTED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Encoded image types read from the clipboard, most preferred first.
 pub const PASTED_IMAGE_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
 
-/// An encoded image on the clipboard: what a screenshot tool or an image
-/// viewer copied.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ClipboardImage {
-    /// One of [`PASTED_IMAGE_TYPES`].
     pub mime: &'static str,
     /// The image file's bytes, as the copying app offered them.
     pub bytes: Vec<u8>,
@@ -142,7 +123,6 @@ impl std::fmt::Debug for ClipboardImage {
     }
 }
 
-/// The most preferred image type among `offered`, if any.
 pub fn preferred_image_type<'a>(
     offered: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'static str> {
@@ -152,10 +132,8 @@ pub fn preferred_image_type<'a>(
         .find(|mime| offered.contains(mime))
 }
 
-/// Which selection a clipboard operation refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardTarget {
-    /// The Ctrl+C / Ctrl+V clipboard.
     Clipboard,
     /// The select-then-middle-click-paste primary selection. Distinct storage
     /// from [`ClipboardTarget::Clipboard`] — a terminal writes it on every
@@ -171,8 +149,6 @@ pub enum ClipboardTarget {
 /// in memory, and the Wayland backend does its protocol work on its own
 /// thread.
 pub trait ClipboardBackend: Send + Sync {
-    /// Take ownership of `target` and offer `text` on it. Returns `false` if
-    /// the backend could not.
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool;
 
     /// Read `target` as UTF-8. `None` when it is empty, unavailable, or holds
@@ -267,11 +243,9 @@ pub trait ClipboardBackend: Send + Sync {
         None
     }
 
-    /// Short name for diagnostics, e.g. `"compositor-mirror"`.
     fn name(&self) -> &'static str;
 }
 
-/// [`ClipboardBackend::copy`] through the blocking methods.
 fn copy_now<B: ClipboardBackend + ?Sized>(backend: &B, content: CopyContent<'_>) -> ClipboardCopy {
     ClipboardCopy::settled(match content {
         CopyContent::Text(text) => backend.set_text(ClipboardTarget::Clipboard, text),
@@ -290,16 +264,17 @@ fn copy_now<B: ClipboardBackend + ?Sized>(backend: &B, content: CopyContent<'_>)
 /// matches the blocking method of the same meaning.
 #[derive(Clone, Copy)]
 pub enum CopyContent<'a> {
-    /// [`ClipboardBackend::set_text`] — may land in an in-process buffer.
     Text(&'a str),
     /// [`ClipboardBackend::set_shared_text`] — only where other processes
     /// can read it.
     SharedText(&'a str),
-    /// [`ClipboardBackend::set_secret_text`].
     SecretText(&'a str),
     /// [`ClipboardBackend::set_rich_text`] — formatted text as HTML with its
     /// plain-text fallback.
-    Rich { html: &'a str, plain: &'a str },
+    Rich {
+        html: &'a str,
+        plain: &'a str,
+    },
     /// [`ClipboardBackend::set_image`] — RGBA8, `width * height * 4` bytes.
     Image {
         width: usize,
@@ -348,7 +323,6 @@ struct CopyState {
 #[derive(Default)]
 struct CopyProgress {
     outcome: Option<bool>,
-    /// What to run with the outcome once it settles.
     then: Vec<Box<dyn FnOnce(bool) + Send>>,
 }
 
@@ -361,15 +335,12 @@ impl CopyState {
 }
 
 impl ClipboardCopy {
-    /// A copy whose outcome is already known.
     pub fn settled(copied: bool) -> Self {
         let (copy, settle) = Self::pending();
         settle.settle(copied);
         copy
     }
 
-    /// A copy whose outcome `CopySettler` reports later. Call on the thread
-    /// whose event loop should wake when it does.
     pub fn pending() -> (Self, CopySettler) {
         let state = std::sync::Arc::new(CopyState {
             progress: Mutex::default(),
@@ -384,16 +355,11 @@ impl ClipboardCopy {
         )
     }
 
-    /// `Some(true)` once copied, `Some(false)` once failed, `None` while the
-    /// clipboard has not answered.
     #[must_use]
     pub fn outcome(&self) -> Option<bool> {
         self.state.progress().outcome
     }
 
-    /// Run `then` with the outcome: at once when it is settled, else on the
-    /// thread that settles it. A backend builds on another's copy with it,
-    /// as the native clipboard falls back to its in-process buffer.
     pub fn on_settled(&self, then: impl FnOnce(bool) + Send + 'static) {
         let mut progress = self.state.progress();
         match progress.outcome {
@@ -439,7 +405,6 @@ pub struct CopySettler {
 }
 
 impl CopySettler {
-    /// Settle the copy and wake the app that started it.
     pub fn settle(mut self, copied: bool) {
         self.finish(copied);
     }
@@ -466,26 +431,20 @@ impl Drop for CopySettler {
     }
 }
 
-/// A copy claimed before its text is known ([`ClipboardBackend::reserve_text`]).
-/// Dropping it unfilled gives the claim up and copies nothing.
 #[must_use = "dropping a reserved copy gives it up"]
 pub struct ReservedCopy {
     fill: Option<Fill>,
 }
 
-/// Completes a [`ReservedCopy`] with its text, or gives it up on `None`.
 type Fill = Box<dyn FnOnce(Option<&str>) -> ClipboardCopy + Send>;
 
 impl ReservedCopy {
-    /// A reservation that `fill` completes with the text, or gives up when
-    /// handed `None`.
     pub fn new(fill: impl FnOnce(Option<&str>) -> ClipboardCopy + Send + 'static) -> Self {
         Self {
             fill: Some(Box::new(fill)),
         }
     }
 
-    /// Copy `text` into the claimed clipboard.
     pub fn fill(mut self, text: &str) -> ClipboardCopy {
         self.fill
             .take()
@@ -507,7 +466,6 @@ impl std::fmt::Debug for ReservedCopy {
     }
 }
 
-/// This target's clipboard, shared by every caller in the process.
 pub fn system() -> std::sync::Arc<dyn ClipboardBackend> {
     static SYSTEM: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
     SYSTEM.get_or_init(backend).clone()
@@ -569,8 +527,6 @@ fn attach(
 pub struct InProcessClipboard {
     clipboard: Mutex<Option<String>>,
     primary: Mutex<Option<String>>,
-    /// The formatting of the Ctrl+C copy, when it was rich; cleared by any
-    /// other copy.
     rich: Mutex<Option<String>>,
 }
 
@@ -650,7 +606,6 @@ pub fn warn_fallback_once(op: &str) {
 pub(crate) mod tests {
     use super::*;
 
-    /// Tests that write the real system clipboard take turns.
     pub(crate) static SYSTEM: Mutex<()> = Mutex::new(());
 
     #[test]

@@ -1,17 +1,4 @@
 //! The room canvas of the speaker layout step.
-//!
-//! A top-down room with the listener at the centre and one marker per
-//! speaker. Pressing or tapping a speaker selects it (the pane shares that
-//! selection with its speaker picker, so only that speaker's settings show
-//! under it); dragging one moves it 1:1 under the pointer or finger. While
-//! it moves only the drawing changes: nothing is laid out and nothing is
-//! stored. Within a small threshold it snaps magnetically onto the centre
-//! line ahead of the listener, onto another speaker's line or row, and onto
-//! the mirror of another speaker, so a pair stands symmetric; an alignment
-//! guide shows each line it lines up with. On release it settles, on the
-//! standard settle spring, into the nearest place inside the room that is
-//! neither on the listener nor on another speaker, and that place is
-//! stored once. At rest the canvas asks for no frames.
 
 use std::collections::HashMap;
 
@@ -36,7 +23,6 @@ const MIN_HALF_VIEW_MM: f64 = 1_500.0;
 // ratchet-allow(pixel_const): a distance in the room, in millimetres, not pixels
 const VIEW_MARGIN_MM: f64 = 400.0;
 
-/// The part of the room the canvas shows, in millimetres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     pub x0: f64,
@@ -46,8 +32,6 @@ pub(crate) struct View {
 }
 
 impl View {
-    /// The speakers at `points` and the listener, with a margin, and at
-    /// least [`MIN_HALF_VIEW_MM`] either side of their middle.
     pub(crate) fn fitting(points: impl IntoIterator<Item = (f64, f64)>) -> Self {
         let mut view = Self {
             x0: 0.0,
@@ -98,38 +82,26 @@ impl View {
     }
 }
 
-/// The view springing from one framing of the room to another: the set
-/// refitting after a drop, or growing while a speaker is dragged out.
 #[derive(Clone, Debug)]
 struct ViewMotion {
     from: View,
     to: View,
-    /// From 0 (`from`) to 1 (`to`).
     progress: MotionValue<f64>,
 }
 
-/// A line a held speaker lines up with, in room millimetres (x to the
-/// listener's right, y ahead of them): vertical at `x == at`, or
-/// horizontal at `y == at`, drawn across the whole canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RoomGuide {
     pub vertical: bool,
     pub at: i32,
 }
 
-/// Where a held speaker stands once pulled onto the lines near it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Snapped {
     pub at: (i32, i32),
     pub guides: Vec<RoomGuide>,
 }
 
-/// Pull `at` onto the lines within `threshold` millimetres of it, each axis
-/// on its own: the centre line ahead of and behind the listener and the
-/// listener's own row; each other speaker's line and row; and the mirror
-/// of each other speaker across the centre line.
 pub(crate) fn snap(at: (i32, i32), others: &[(i32, i32)], threshold: i32) -> Snapped {
-    // Each candidate line: across (x) and row (y).
     let mut across: Vec<i32> = vec![0];
     let mut rows: Vec<i32> = vec![0];
     for &(x, y) in others {
@@ -160,9 +132,6 @@ pub(crate) fn snap(at: (i32, i32), others: &[(i32, i32)], threshold: i32) -> Sna
     }
 }
 
-/// Where a let-go speaker rests: inside the room, and at least `gap`
-/// millimetres from the listener and from every other speaker, moved out
-/// along the line from whatever it landed on.
 pub(crate) fn rest(at: (i32, i32), others: &[(i32, i32)], gap: i32) -> (i32, i32) {
     let clamp = |(x, y): (f64, f64)| -> (i32, i32) {
         let extent = f64::from(ROOM_EXTENT_MM);
@@ -176,8 +145,6 @@ pub(crate) fn rest(at: (i32, i32), others: &[(i32, i32)], gap: i32) -> (i32, i32
     let blockers: Vec<(i32, i32)> = std::iter::once((0, 0))
         .chain(others.iter().copied())
         .collect();
-    // A push can land on a neighbour: a few passes settle every crowd a
-    // room holds.
     for _ in 0..blockers.len().saturating_mul(2).max(1) {
         let mut moved = false;
         for &(bx, by) in &blockers {
@@ -185,7 +152,6 @@ pub(crate) fn rest(at: (i32, i32), others: &[(i32, i32)], gap: i32) -> (i32, i32
             let dy = f64::from(point.1) - f64::from(by);
             let distance = dx.hypot(dy);
             if distance + 0.5 < gap {
-                // Exactly on it: step straight ahead, away from the listener.
                 let (ux, uy) = if distance < 1.0 {
                     (0.0, 1.0)
                 } else {
@@ -228,8 +194,6 @@ impl RoomGesture {
         self.drag.is_some()
     }
 
-    /// Speaker `index` held at `at`, as a capture shows it mid drag: pulled
-    /// onto the lines it is near when first drawn.
     #[must_use]
     pub(crate) fn held(index: usize, at: (i32, i32)) -> Self {
         Self {
@@ -253,21 +217,14 @@ impl RoomGesture {
 #[derive(Clone, Debug)]
 struct RoomDrag {
     index: usize,
-    /// From the speaker to where it was taken hold of, in millimetres.
     grab: (f64, f64),
     pressed_at: Point,
     /// Moved past the drag threshold: a press that never moves is a tap.
     active: bool,
-    /// Where the held speaker stands: under the hand, pulled onto the lines
-    /// it is near.
     preview: (i32, i32),
     guides: Vec<RoomGuide>,
-    /// The finger holding it; `None` for the pointer.
     touch: Option<u64>,
-    /// The last two places of the hand in the room and when, for the
-    /// velocity the settle carries.
     samples: [Option<(Instant, (f64, f64))>; 2],
-    /// A capture's held drag has been pulled onto its lines.
     snapped_once: bool,
 }
 
@@ -276,7 +233,6 @@ impl RoomDrag {
         self.samples = [self.samples[1], Some((now, at))];
     }
 
-    /// Millimetres per second the hand moved at as it let go.
     fn velocity(&self) -> (f64, f64) {
         match self.samples {
             [Some((before, from)), Some((after, to))] => {
@@ -294,35 +250,27 @@ impl RoomDrag {
     }
 }
 
-/// A dropped speaker springing from where it was let go to where it rests.
 #[derive(Clone, Debug)]
 struct RoomSettle {
     index: usize,
     from: (f64, f64),
     rest: (i32, i32),
-    /// From 0 (let go) to 1 (at rest).
     progress: MotionValue<f64>,
 }
 
 pub(crate) struct RoomCanvas {
-    /// Each speaker's stored place; written once, when a drag is let go.
     points: ui::LocalState<Vec<(i32, i32)>>,
     labels: Vec<String>,
     gesture: ui::LocalState<RoomGesture>,
-    /// The speaker chosen here and in the pane's picker, by its index.
     selection: Option<ui::LocalState<String>>,
     rect: Rect,
     cursor: Option<Point>,
     hovered: Option<usize>,
     marker_radius: f64,
     snap_radius: f64,
-    /// Room the canvas leaves on the right of a marker for its name: the
-    /// widest name as drawn, measured on the first paint.
     label_room: f64,
-    /// The smallest target a finger or pointer can hit.
     min_target: f64,
     motion: EffectiveMotion,
-    /// What the canvas shows changed since its last paint.
     dirty: bool,
 }
 
@@ -349,8 +297,6 @@ impl RoomCanvas {
         }
     }
 
-    /// Share the selected speaker (its index) with the pane: pressing one
-    /// selects it, and the selected one is drawn chosen.
     #[must_use]
     pub(crate) fn with_selection(mut self, selection: ui::LocalState<String>) -> Self {
         self.selection = Some(selection);
@@ -363,7 +309,6 @@ impl RoomCanvas {
             .and_then(|selection| selection.with(|selected| selected.parse().ok()))
     }
 
-    /// The view that fits the speakers where they are stored.
     fn fitted(&self) -> View {
         View::fitting(
             self.stored()
@@ -372,8 +317,6 @@ impl RoomCanvas {
         )
     }
 
-    /// The part of the room shown at `now`: springing between framings,
-    /// or fitted to the speakers at rest.
     fn view_at(&self, now: Instant) -> View {
         self.gesture.with(|gesture| match &gesture.view {
             Some(motion) => motion.from.toward(motion.to, motion.progress.get(now)),
@@ -381,7 +324,6 @@ impl RoomCanvas {
         })
     }
 
-    /// Spring the view from where it is shown now to `to`.
     fn frame(&mut self, to: View) {
         let now = ui::motion::frame_now();
         let shown = self.view_at(now);
@@ -408,8 +350,6 @@ impl RoomCanvas {
         self.dirty = true;
     }
 
-    /// Where the room is drawn: inside the canvas, with room on the right
-    /// of each marker for its name.
     fn inner(&self) -> Rect {
         let edge = self.marker_radius + 8.0;
         Rect::new(
@@ -420,8 +360,6 @@ impl RoomCanvas {
         )
     }
 
-    /// Millimetres per logical pixel and the room point at the canvas's
-    /// middle, for the view shown at `now`.
     fn mapping(&self, now: Instant) -> (f64, (f64, f64)) {
         let view = self.view_at(now);
         let inner = self.inner();
@@ -437,7 +375,6 @@ impl RoomCanvas {
         )
     }
 
-    /// Millimetres per logical pixel, now.
     pub(crate) fn scale(&self) -> f64 {
         self.mapping(ui::motion::frame_now()).0
     }
@@ -457,7 +394,6 @@ impl RoomCanvas {
         )
     }
 
-    /// The snapping threshold in millimetres: a fixed reach on screen.
     fn snap_threshold(&self) -> i32 {
         round_to_i32(self.snap_radius * self.scale())
     }
@@ -481,8 +417,6 @@ impl RoomCanvas {
             .collect()
     }
 
-    /// Where each speaker is drawn this frame, in millimetres, and whether
-    /// it is held.
     fn drawn_at(&self, now: Instant) -> Vec<((f64, f64), bool)> {
         let gesture = self.gesture.with(Clone::clone);
         let stored = self.stored();
@@ -514,8 +448,6 @@ impl RoomCanvas {
             .collect()
     }
 
-    /// The speaker drawn under `point`, nearest first, within reach of a
-    /// finger as well as the pointer.
     fn speaker_at(&self, point: Point) -> Option<usize> {
         let reach = (self.marker_radius * 1.6).max(self.min_target / 2.0);
         self.drawn_at(ui::motion::frame_now())
@@ -527,8 +459,6 @@ impl RoomCanvas {
             .map(|(index, _)| index)
     }
 
-    /// A press or touch at `point`: the speaker there becomes the selected
-    /// one and is picked up. Whether a speaker was there.
     fn press(&mut self, point: Point, touch: Option<u64>) -> bool {
         if self.gesture.with(|gesture| gesture.drag.is_some()) {
             return false;
@@ -561,7 +491,6 @@ impl RoomCanvas {
         };
         drag.sample(now, at);
         self.gesture.update(|gesture| {
-            // Taking hold of a speaker stops any settle where it is drawn.
             gesture.settle = None;
             gesture.drag = Some(drag);
         });
@@ -607,9 +536,6 @@ impl RoomCanvas {
         true
     }
 
-    /// Let go: the held speaker settles into the nearest free place on a
-    /// spring that carries the hand's velocity, and that place is stored
-    /// once.
     fn release(&mut self) -> bool {
         let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
@@ -653,13 +579,11 @@ impl RoomCanvas {
                 progress,
             });
         });
-        // The view refits the set as it stands now.
         let fitted = self.fitted();
         self.frame(fitted);
         true
     }
 
-    /// Drop a drag without moving anything (Escape, a cancelled touch).
     fn cancel(&mut self) -> bool {
         if self.gesture.with(|gesture| gesture.drag.is_none()) {
             return false;
@@ -694,8 +618,6 @@ impl RoomCanvas {
         })
     }
 
-    /// A capture's held drag, pulled onto the lines it is near the first
-    /// time the canvas knows its size, as a real press and move would be.
     fn snap_held_capture(&self) {
         let Some(drag) = self
             .gesture
@@ -744,12 +666,10 @@ impl RoomCanvas {
         );
     }
 
-    /// The canvas's ground, a step above the page.
     fn ground(theme: &Theme) -> vello::peniko::Color {
         theme.tokens.colors.lift(0.1)
     }
 
-    /// The lines a held speaker is snapped to.
     fn draw_guides(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let guides = self.gesture.with(|gesture| {
             gesture
@@ -778,7 +698,6 @@ impl RoomCanvas {
         }
     }
 
-    /// The speakers, each with its name, the selected one ringed.
     fn draw_speakers(
         &self,
         scene: &mut Scene,
@@ -815,7 +734,6 @@ impl RoomCanvas {
                 held,
             );
             if state.active || state.hover || state.pressed {
-                // The design system's selection, as a ring round the marker.
                 let ring = self.marker_radius + f64::from(theme.tokens.spacing.s1);
                 ui::chrome::SelectionTier {
                     fill: vello::peniko::Color::TRANSPARENT,
@@ -874,8 +792,6 @@ impl Widget for RoomCanvas {
         let node = ui::widget::TaffyTreeExt::leaf_node(
             taffy,
             taffy::Style {
-                // As tall as a utility panel is wide: room for the speakers
-                // around the listener without the page scrolling past it.
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::length(theme.tokens.metrics.panel_width_utility),
@@ -951,7 +867,6 @@ impl Widget for RoomCanvas {
         self.draw_guides(scene, transform, theme);
         self.draw_speakers(scene, transform, text_renderer, theme, now);
         scene.pop_layer();
-        // A settle that has come to rest is over: the canvas is idle again.
         let rested = self.gesture.with(|gesture| {
             gesture
                 .settle
@@ -961,7 +876,6 @@ impl Widget for RoomCanvas {
         if rested {
             self.gesture.update(|gesture| gesture.settle = None);
         }
-        // A view that reached the fit of the set at rest is the fit again.
         let fitted = self.fitted();
         let framed = self.gesture.with(|gesture| {
             gesture.drag.is_none()
@@ -983,13 +897,10 @@ impl Widget for RoomCanvas {
         self.dirty = false;
     }
 
-    /// Frames while a dropped speaker settles; none at rest, none for a
-    /// held drag (each move of the hand asks for its own frame).
     fn needs_animation_frame(&self) -> bool {
         self.settling(ui::motion::frame_now())
     }
 
-    /// A held speaker keeps the pointer wherever it goes.
     fn wants_pointer_capture(&self) -> bool {
         self.gesture.with(|gesture| gesture.drag.is_some())
     }
@@ -1110,8 +1021,6 @@ mod tests {
                 at: 0,
             }]
         );
-        // Near the mirror of a speaker on the left, and its row: a pair
-        // standing symmetric.
         let left = (-1_500, 2_000);
         let pair = snap((1_430, 2_090), &[left], 150);
         assert_eq!(pair.at, (1_500, 2_000));
@@ -1126,7 +1035,6 @@ mod tests {
                 .iter()
                 .any(|guide| guide.vertical && guide.at == 1_500)
         );
-        // Far from every line: it stays where the hand is.
         assert_eq!(snap((900, 3_100), &[left], 150).at, (900, 3_100));
     }
 
@@ -1134,19 +1042,16 @@ mod tests {
     fn a_let_go_speaker_rests_inside_the_room_and_on_nothing_else() {
         let gap = 400;
         let others = [(0, 2_000)];
-        // Dropped on another speaker: it moves out to touch it, no more.
         let dropped = rest((0, 2_100), &others, gap);
         let distance = f64::from(dropped.0).hypot(f64::from(dropped.1 - 2_000));
         assert!((distance - f64::from(gap)).abs() <= 1.0, "{dropped:?}");
         // Dropped on the listener: never on them.
         let on_you = rest((10, -10), &[], gap);
         assert!(f64::from(on_you.0).hypot(f64::from(on_you.1)) >= f64::from(gap) - 1.0);
-        // Dropped beyond the room: back at its edge.
         assert_eq!(
             rest((ROOM_EXTENT_MM + 900, 1_000), &[], gap),
             (ROOM_EXTENT_MM, 1_000)
         );
-        // Free: it stays.
         assert_eq!(rest((1_200, 1_800), &others, gap), (1_200, 1_800));
     }
 
@@ -1223,8 +1128,6 @@ mod tests {
                 stored,
                 "move {step} stores nothing"
             );
-            // 1:1: the held speaker is where the hand put it, or pulled
-            // onto a line within the snapping reach.
             let (held, _) = canvas.drawn_at(ui::motion::frame_now())[1];
             let hand = canvas.to_room(point);
             let grab = canvas.to_room(start);
@@ -1296,10 +1199,8 @@ mod tests {
         assert!(!canvas.needs_animation_frame(), "idle costs nothing");
         let start = on_screen(&canvas, 1);
         assert!(canvas.press(start, None));
-        // Let go on the speaker beside it: it rests clear of it.
         assert!(canvas.drag_to(on_screen(&canvas, 2)));
         let (held, _) = canvas.drawn_at(ui::motion::frame_now())[1];
-        // The gap at the scale it was let go at: the view refits after.
         let gap = canvas.gap();
         assert!(canvas.release());
         let released = ui::motion::frame_now();

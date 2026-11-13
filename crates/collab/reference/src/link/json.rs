@@ -142,7 +142,7 @@ impl TryFrom<TargetJson> for LinkTarget {
         let offset = |value: u64| usize::try_from(value).map_err(|_| LinkError::BadSpan);
         let target = Self {
             scope,
-            app: json.app.map(AppId::new).transpose()?,
+            app: json.app.as_deref().map(AppId::parse).transpose()?,
             record: json.record.as_deref().map(RecordSegment::new).transpose()?,
             resource: json
                 .resource

@@ -150,9 +150,8 @@ mod tests {
             .unwrap();
     }
 
-    /// #4130. A change is on disk within the bound the 100 ms poll kept
-    /// (500 ms after it, plus one look), a continuous run at least every
-    /// 3 s, and an idle namespace is never written.
+    /// A change is on disk within 500 ms plus one look, a continuous run at least
+    /// every 3 s, and an idle namespace is never written.
     #[tokio::test(start_paused = true)]
     async fn a_change_is_written_within_the_quiet_bound_and_idle_writes_nothing() {
         let namespace = Arc::new(Mutex::new(Namespace::new("persist").unwrap()));

@@ -1,7 +1,6 @@
-//! Linux screen capture: the ScreenCast portal asks the user for a monitor or
-//! window and grants a PipeWire node, which a `pipewiresrc` reads. The
-//! portal session lives in a task on the app runtime for as long as the
-//! capture does.
+//! Linux screen capture: the ScreenCast portal asks the user for a monitor or window
+//! and grants a `PipeWire` node, which a `pipewiresrc` reads. The portal session
+//! lives in a task on the app runtime for as long as the capture does.
 
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
@@ -22,7 +21,6 @@ enum Grant {
 
 pub(crate) struct Screen {
     grant: Arc<Mutex<Grant>>,
-    /// The PipeWire remote stays open while the pipeline reads from it.
     remote: Option<OwnedFd>,
     video: Option<Box<dyn VideoSource>>,
     failed: Option<CaptureError>,
@@ -100,8 +98,6 @@ impl Screen {
                 Ok(fd) => set(Grant::Granted { fd, node }),
                 Err(error) => return set(failed(error)),
             }
-            // Holding the session keeps the cast running; dropping the
-            // capture aborts this task, which ends it.
             std::future::pending::<()>().await;
             drop(session);
         });
@@ -114,8 +110,6 @@ impl Screen {
         }
     }
 
-    /// Build the pipeline on the caller's thread once the portal granted a
-    /// node.
     fn advance(&mut self) {
         if self.video.is_some() || self.failed.is_some() {
             return;

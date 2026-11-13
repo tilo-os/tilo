@@ -1,25 +1,7 @@
-//! `EditCore` — the shared headless text-editing model.
-//!
-//! Caret and selection state (byte offsets), the in-progress IME composition, an optional
-//! per-character admission filter, and the motion and edit vocabulary every editable surface needs,
-//! built on the shared [`text_selection`](crate::text_selection) boundary walkers. Edits come back
-//! as byte-space [`Edit`] splices the host applies to its mirror ([`Edit::apply`]) and its Automerge
-//! `Text` ([`Edit::splice_automerge`], char-addressed). It is deliberately UI-free: no rendering,
-//! no CRDT handle.
-//!
-//! Every text field uses it: [`TextInput`] (and through it every form field, `RichTextLine` and
-//! `BlockEditor`), the transient query fields of palettes and menus ([`QueryComposition`]),
-//! [`NameField`], and the app-specific editors. Laid-out geometry — visual/bidi arrow motion,
-//! wrapped Up/Down, Home/End of a soft-wrapped row — stays in the widget, which feeds the resolved
-//! position back through [`EditCore::motion_to`] or [`EditCore::place_position`]; the core owns
-//! everything logical, exactly what unit tests can pin without a GPU.
-//!
-//! [`TypingRun`] notes when the user last typed, so a word being typed is not checked before it
-//! settles.
-//!
-//! [`NameField`]: crate::widget::name_field::NameField
-//! [`QueryComposition`]: crate::query_text::QueryComposition
-//! [`TextInput`]: crate::widget::TextInput
+//! `EditCore` — the shared headless text-editing model. Caret and selection state (byte
+//! offsets), the in-progress IME composition, an optional per-character admission filter,
+//! and the motion and edit vocabulary every editable surface needs, built on the shared
+//! [`text_selection`](crate::text_selection) boundary walkers.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -34,37 +16,27 @@ use crate::text_selection::{
 };
 use crate::time::{Duration, Instant};
 
-/// A per-character admission rule (for example a spreadsheet cell-reference
-/// box that only takes `[A-Za-z0-9$:]`). Applied to every insertion path:
-/// typing, paste, IME preedit and commit, programmatic insertion.
+/// A per-character admission rule (for example a spreadsheet cell-reference box that only
+/// takes `[A-Za-z0-9$:]`).
 pub type CharFilter = fn(char) -> bool;
 
-/// A caret motion. Vertical motion across wrapped lines is the host's job
-/// because it needs laid-out line geometry; [`Motion::LineUp`] and
-/// [`Motion::LineDown`] move across `\n`-delimited lines only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
-    /// One user-perceived character (extended grapheme cluster) left / right.
     Left,
     Right,
-    /// One word left / right (Ctrl+Arrow).
     WordLeft,
     WordRight,
-    /// Start / end of the `\n`-delimited line (Home / End).
     LineStart,
     LineEnd,
-    /// Start / end of the whole buffer.
     DocStart,
     DocEnd,
-    /// The `\n`-delimited line above / below, at the same character column
-    /// or the end of a shorter line; unchanged on the first / last line.
     LineUp,
     LineDown,
 }
 
-/// The byte offset in the `\n`-delimited line above (`up`) or below the one
-/// holding `byte`, at the same character column, clamped to that line's end
-/// and pulled back onto the start of a grapheme cluster it would split.
+/// The byte offset in the `\n`-delimited line above (`up`) or below the one holding
+/// `byte`, at the same character column, clamped to that line's end and pulled back onto
+/// the start of a grapheme cluster it would split.
 fn line_step(text: &str, byte: usize, up: bool) -> usize {
     let (start, end) = line_boundaries(text, byte);
     let column = text.get(start..byte).map_or(0, |line| line.chars().count());
@@ -89,9 +61,7 @@ fn line_step(text: &str, byte: usize, up: bool) -> usize {
 }
 
 /// A splice to apply to the buffer, in **byte** offsets over the pre-edit text:
-/// `at..at+removed` is replaced by `inserted`. [`Edit::apply`] applies it to a
-/// `String` mirror; [`Edit::splice_automerge`] to a char-addressed Automerge
-/// `Text`.
+/// `at..at+removed` is replaced by `inserted`.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Edit {
     pub at: usize,
@@ -99,8 +69,8 @@ pub struct Edit {
     pub inserted: String,
 }
 
-/// An [`Edit`] in Automerge's **char** offsets: delete `removed` chars at
-/// char `at`, then insert `inserted` chars there.
+/// An [`Edit`] in Automerge's **char** offsets: delete `removed` chars at char `at`, then
+/// insert `inserted` chars there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CharSplice {
     pub at: usize,
@@ -110,8 +80,7 @@ pub struct CharSplice {
 }
 
 impl CharSplice {
-    /// `removed` as the signed count `splice_text` takes. A single edit is
-    /// bounded by the buffer length, nowhere near `isize::MAX`.
+    /// `removed` as the signed count `splice_text` takes.
     pub fn removed_isize(&self) -> isize {
         isize::try_from(self.removed).unwrap_or(isize::MAX)
     }
@@ -132,8 +101,6 @@ impl Edit {
     }
 
     /// The same splice in char offsets over `before` (the pre-edit text).
-    /// `None` when the byte range does not land on `before`'s char
-    /// boundaries — the edit was computed against different text.
     pub fn char_splice(&self, before: &str) -> Option<CharSplice> {
         let head = before.get(..self.at)?;
         let removed = before.get(self.range())?;
@@ -144,8 +111,7 @@ impl Edit {
         })
     }
 
-    /// Apply the splice to `text`. Returns `false` (leaving `text` untouched)
-    /// when the range does not land on char boundaries.
+    /// Apply the splice to `text`.
     pub fn apply(&self, text: &mut String) -> bool {
         if text.get(self.range()).is_none() {
             return false;
@@ -154,9 +120,9 @@ impl Edit {
         true
     }
 
-    /// Splice the edit into the Automerge `Text` `obj`, whose current content
-    /// is `before`. Returns the char-space splice so a caller can stamp marks
-    /// over the inserted run, or `None` when the edit does not fit `before`.
+    /// Splice the edit into the Automerge `Text` `obj`, whose current content is
+    /// `before`. Returns the char-space splice so a caller can stamp marks over the
+    /// inserted run, or `None` when the edit does not fit `before`.
     pub fn splice_automerge<T: Transactable>(
         &self,
         doc: &mut T,
@@ -164,21 +130,13 @@ impl Edit {
         before: &str,
     ) -> Option<CharSplice> {
         let splice = self.char_splice(before)?;
-        // A rejected splice (a stale object id) leaves the local mirror ahead
-        // of the document until the next sync re-reads it, the same recovery
-        // a remote change gets.
         let _ = doc.splice_text(obj, splice.at, splice.removed_isize(), &self.inserted);
         Some(splice)
     }
 }
 
-/// The caret + selection model, the IME composition in progress, and the
-/// field's admission filter. Selection offsets are **bytes** into the bound
-/// text (matching [`text_selection`](crate::text_selection) and cosmic-text's
-/// byte-indexed layout).
-///
-/// The composition can be part of a secret being typed: [`Self::clear_preedit`]
-/// zeroes it, and an owner of secret text calls it before dropping the core.
+/// The caret + selection model, the IME composition in progress, and the field's
+/// admission filter.
 #[derive(Clone, Debug, Default)]
 pub struct EditCore {
     sel: Selection,
@@ -221,13 +179,10 @@ impl EditCore {
         }
     }
 
-    // --- caret + selection -------------------------------------------------
-
     /// The full selection (anchor + cursor).
     pub fn selection(&self) -> Selection {
         self.sel
     }
-    /// Live caret byte offset.
     pub fn caret(&self) -> usize {
         self.sel.cursor
     }
@@ -287,16 +242,15 @@ impl EditCore {
         self.sel.collapse_to_cursor();
     }
 
-    /// Clamp both endpoints into `[0, len]` and onto grapheme boundaries. Call after
-    /// the bound text changed underneath the caret (a remote / external edit) so
-    /// motion never slices a code point.
+    /// Clamp both endpoints into `[0, len]` and onto grapheme boundaries. Call after the
+    /// bound text changed underneath the caret (a remote / external edit) so motion never
+    /// slices a code point.
     pub fn clamp_to(&mut self, text: &str) {
         let clamp = |b: usize| grapheme_boundary_at_or_before(text, b);
         self.sel.anchor = clamp(self.sel.anchor);
         self.sel.cursor = clamp(self.sel.cursor);
     }
 
-    /// Select the entire buffer.
     pub fn select_all(&mut self, text: &str) {
         self.set_selection(0, text.len());
     }
@@ -317,18 +271,13 @@ impl EditCore {
         }
     }
 
-    /// Apply a caret motion. `extend` keeps the anchor fixed (shift-select). A
-    /// plain (non-extend) horizontal step with a live selection collapses to
-    /// the near edge rather than stepping past it — the native editor
-    /// behaviour.
     pub fn motion(&mut self, text: &str, m: Motion, extend: bool) {
         let target = self.target(text, m);
         self.motion_to(m, TextPosition::new(target), extend);
     }
 
-    /// Apply motion `m` whose destination the host already resolved through
-    /// laid-out geometry (visual bidi order, a soft-wrapped row edge). Same
-    /// selection rules as [`Self::motion`].
+    /// Apply motion `m` whose destination the host already resolved through laid-out
+    /// geometry (visual bidi order, a soft-wrapped row edge).
     pub fn motion_to(&mut self, m: Motion, target: TextPosition, extend: bool) {
         let horizontal = matches!(
             m,
@@ -346,8 +295,8 @@ impl EditCore {
         self.place_position(target, extend);
     }
 
-    /// Seat the caret from a click at byte `byte`; `extend` (shift-click) keeps
-    /// the anchor so the selection grows.
+    /// Seat the caret from a click at byte `byte`; `extend` (shift-click) keeps the
+    /// anchor so the selection grows.
     pub fn place(&mut self, byte: usize, extend: bool) {
         self.place_position(TextPosition::new(byte), extend);
     }
@@ -374,9 +323,6 @@ impl EditCore {
     }
 
     /// Insert `s` through the admission filter, replacing any selection.
-    /// Returns the byte-space [`Edit`] and moves the caret to just after the
-    /// inserted text. An insert the filter empties (or an empty `s`) is a
-    /// no-op that leaves the selection alone.
     pub fn insert(&mut self, s: &str) -> Edit {
         let admitted = self.admit(s);
         if admitted.is_empty() {
@@ -392,9 +338,9 @@ impl EditCore {
         edit
     }
 
-    /// Replace `range` (bytes) with `s` through the admission filter, leaving
-    /// the caret after the replacement — for edits that target a span other
-    /// than the selection (autocorrect, a spelling suggestion).
+    /// Replace `range` (bytes) with `s` through the admission filter, leaving the caret
+    /// after the replacement — for edits that target a span other than the selection
+    /// (autocorrect, a spelling suggestion).
     pub fn replace(&mut self, range: Range<usize>, s: &str) -> Edit {
         self.set_selection(range.start, range.end);
         let admitted = self.admit(s);
@@ -418,9 +364,8 @@ impl EditCore {
         }
     }
 
-    /// Backspace: delete the selection, else the grapheme (or word, with
-    /// `word`) before the caret. Returns the resulting [`Edit`] (a no-op at
-    /// the start).
+    /// Backspace: delete the selection, else the grapheme (or word, with `word`) before
+    /// the caret.
     pub fn delete_backward(&mut self, text: &str, word: bool) -> Edit {
         if self.has_selection() {
             return self.delete_selection();
@@ -442,9 +387,8 @@ impl EditCore {
         }
     }
 
-    /// Delete forward (Delete key): the selection, else the grapheme (or
-    /// word) after the caret. The caret stays put. No-op at the end of the
-    /// buffer.
+    /// Delete forward (Delete key): the selection, else the grapheme (or word) after the
+    /// caret.
     pub fn delete_forward(&mut self, text: &str, word: bool) -> Edit {
         if self.has_selection() {
             return self.delete_selection();
@@ -479,9 +423,7 @@ impl EditCore {
         self.preedit_cursor
     }
 
-    /// Show `text` as the composition at the caret. The admission filter
-    /// applies; when it drops characters the IME's cursor no longer addresses
-    /// the shown text and falls back to the composition's end.
+    /// Show `text` as the composition at the caret.
     pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         let admitted = self.admit(text);
         let cursor = if admitted.len() == text.len() {
@@ -500,15 +442,15 @@ impl EditCore {
         self.preedit_cursor = None;
     }
 
-    /// The IME committed `text`: the composition ends and `text` replaces the
-    /// selection like typing would.
+    /// The IME committed `text`: the composition ends and `text` replaces the selection
+    /// like typing would.
     pub fn commit(&mut self, text: &str) -> Edit {
         self.clear_preedit();
         self.insert(text)
     }
 
-    /// The caret clamped into `text` and onto a char boundary — where the
-    /// composition is shown.
+    /// The caret clamped into `text` and onto a char boundary — where the composition is
+    /// shown.
     fn preedit_at(&self, text: &str) -> usize {
         text.floor_char_boundary(self.sel.cursor)
     }
@@ -535,8 +477,8 @@ impl EditCore {
         Some(at..at.saturating_add(self.preedit.len()))
     }
 
-    /// A committed-text byte mapped into the display text: offsets after the
-    /// caret shift past the composition.
+    /// A committed-text byte mapped into the display text: offsets after the caret shift
+    /// past the composition.
     pub fn to_display(&self, text: &str, byte: usize) -> usize {
         if self.preedit.is_empty() || byte <= self.preedit_at(text) {
             byte
@@ -545,8 +487,8 @@ impl EditCore {
         }
     }
 
-    /// A display byte mapped back into the committed text; anything inside
-    /// the composition maps to the caret.
+    /// A display byte mapped back into the committed text; anything inside the
+    /// composition maps to the caret.
     pub fn from_display(&self, text: &str, byte: usize) -> usize {
         if self.preedit.is_empty() {
             return byte;
@@ -561,8 +503,8 @@ impl EditCore {
         }
     }
 
-    /// Where the caret draws in the display text: inside the composition at
-    /// the IME's cursor, snapped to a grapheme boundary of the composition.
+    /// Where the caret draws in the display text: inside the composition at the IME's
+    /// cursor, snapped to a grapheme boundary of the composition.
     pub fn display_caret(&self, text: &str) -> usize {
         if self.preedit.is_empty() {
             return self.sel.cursor.min(text.len());
@@ -575,22 +517,22 @@ impl EditCore {
     }
 }
 
-/// Backspace for text typed only at its end (a type-ahead query, a digit
-/// entry): remove the last character as a person sees it, never half of a
-/// combining sequence or an emoji. Returns whether anything was removed.
+/// Backspace for text typed only at its end (a type-ahead query, a digit entry): remove
+/// the last character as a person sees it, never half of a combining sequence or an
+/// emoji.
 pub fn delete_last_grapheme(text: &mut String) -> bool {
     let mut caret = EditCore::at(text.len());
     let edit = caret.delete_backward(text, false);
     !edit.is_noop() && edit.apply(text)
 }
 
-/// How long the word under the caret must stay the same before a field
-/// offers a spelling suggestion for it: a short pause at the end of a word,
-/// or the caret coming to rest in a word typed earlier.
+/// How long the word under the caret must stay the same before a field offers a spelling
+/// suggestion for it: a short pause at the end of a word, or the caret coming to rest in
+/// a word typed earlier.
 pub const SUGGESTION_SETTLE: Duration = Duration::from_millis(300);
 
-/// The word the caret is in or just after, as a byte range: letters plus
-/// in-word apostrophes, so `don't` is one word. `None` between words.
+/// The word the caret is in or just after, as a byte range: letters plus in-word
+/// apostrophes, so `don't` is one word.
 pub fn word_at_caret(text: &str, caret: usize) -> Option<Range<usize>> {
     let caret = caret.min(text.len());
     let is_word_char =
@@ -609,13 +551,8 @@ pub fn word_at_caret(text: &str, caret: usize) -> Option<Range<usize>> {
     (start < end && start <= caret && caret <= end).then_some(start..end)
 }
 
-/// Debounces the word under the caret: it is *settled* once the same word
-/// (same text at the same place) has been under a collapsed caret for
-/// [`SUGGESTION_SETTLE`]. Typing into the word or moving to another one
-/// restarts the wait; moving the caret within the word does not.
-///
-/// Time comes in as an argument so a host drives it from its clock and tests
-/// from synthetic instants.
+/// Debounces the word under the caret: it is *settled* once the same word (same text at
+/// the same place) has been under a collapsed caret for [`SUGGESTION_SETTLE`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaretWord {
     word: Option<(Range<usize>, String)>,
@@ -623,8 +560,7 @@ pub struct CaretWord {
 }
 
 impl CaretWord {
-    /// Record what is under the caret at `now`. Returns whether the word
-    /// changed (and its wait restarted).
+    /// Record what is under the caret at `now`.
     pub fn observe(&mut self, text: &str, selection: Selection, now: Instant) -> bool {
         let word = selection
             .is_collapsed()
@@ -665,18 +601,14 @@ impl CaretWord {
     }
 }
 
-/// A burst of typing: every edit [`touch`]es the run, and a programmatic
-/// replacement of the text [`close`]s it.
-///
-/// [`touch`]: TypingRun::touch
-/// [`close`]: TypingRun::close
+/// A burst of typing: every edit [`touch`]es the run, and a programmatic replacement of
+/// the text [`close`]s it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TypingRun {
     last_edit: Option<Instant>,
 }
 
 impl TypingRun {
-    /// An edit landed now.
     pub fn touch(&mut self) {
         self.touch_at(crate::motion::frame_now());
     }
@@ -708,7 +640,6 @@ mod tests {
         assert_eq!(at(&core), "abc\ndé".len());
         core.motion(text, Motion::LineUp, false);
         assert_eq!(at(&core), 2);
-        // Up on the first line and down on the last are no-ops.
         core.motion(text, Motion::LineUp, false);
         assert_eq!(at(&core), 2);
         core.set_caret(text.len());
@@ -719,15 +650,12 @@ mod tests {
         assert_eq!(at(&core), "abc\ndéf".len());
         assert!(core.has_selection());
 
-        // A column that would split a cluster lands on the cluster's start.
         let text = "abc\ne\u{301}e\u{301}";
         let mut core = EditCore::at(3);
         core.motion(text, Motion::LineDown, false);
         assert_eq!(at(&core), "abc\ne\u{301}".len());
     }
 
-    /// Apply an `Edit` to a `String` the way the host CRDT splice would, so the
-    /// tests can assert the model produces coherent text.
     fn apply(text: &str, e: &Edit) -> String {
         let mut s = String::from(text);
         s.replace_range(e.at..e.at.saturating_add(e.removed), &e.inserted);
@@ -736,7 +664,6 @@ mod tests {
 
     #[test]
     fn caret_motion_selection_and_clamping_land_on_shared_boundaries() {
-        // (case, text, starting caret, [(motion, caret after it, why)])
         let cases: &[(&str, &str, usize, &[(Motion, usize, &str)])] = &[
             (
                 "char motion clamps at the start",
@@ -799,8 +726,8 @@ mod tests {
         }
         assert_eq!("first\nsecond\nthird".len(), 18);
 
-        // Shift motion extends; a plain Left collapses to the LEFT edge of
-        // the selection, not 3.
+        // Shift motion extends; a plain Left collapses to the LEFT edge of the selection,
+        // not 3.
         let t = "abcdef";
         let mut c = EditCore::at(2);
         c.motion(t, Motion::Right, true);
@@ -822,8 +749,8 @@ mod tests {
         c.select_word(t, 7); // inside "beta"
         assert_eq!(c.range(), 6..10);
 
-        // "café" — é is two bytes (3..5). A caret past a shrunk text must land
-        // on a char boundary, never inside the é.
+        // "café" — é is two bytes (3..5). A caret past a shrunk text must land on a char
+        // boundary, never inside the é.
         let mut c = EditCore::at(20);
         c.clamp_to("café");
         assert_eq!(c.caret(), "café".len());
@@ -871,7 +798,6 @@ mod tests {
             let e = c.delete_backward(t, false);
             assert_eq!(apply(t, &e), "ac");
             assert_eq!(c.caret(), 1);
-            // No-op at the start.
             let mut c0 = EditCore::at(0);
             assert!(c0.delete_backward(t, false).is_noop());
             let tw = "hello world";
@@ -912,9 +838,6 @@ mod tests {
         }
     }
 
-    /// Clusters chosen so no concatenation of them merges into a different
-    /// cluster: combining marks, ZWJ sequences, flags and skin tones each
-    /// arrive with their own base.
     const CLUSTERS: &[&str] = &[
         "a",
         "Z",
@@ -927,8 +850,6 @@ mod tests {
         "\u{915}\u{94d}\u{937}",
     ];
 
-    /// A small deterministic generator (SplitMix64) so the sequences are
-    /// reproducible without a property-testing dependency.
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {
@@ -968,9 +889,9 @@ mod tests {
         }
     }
 
-    /// Random edits at the caret against a grapheme-list model: the buffer
-    /// always equals the model's concatenation and the caret sits on the
-    /// model's cluster boundary, so no motion or delete ever splits one.
+    /// Random edits at the caret against a grapheme-list model: the buffer always equals
+    /// the model's concatenation and the caret sits on the model's cluster boundary, so
+    /// no motion or delete ever splits one.
     #[test]
     fn random_edits_at_the_caret_match_a_grapheme_model() {
         for seed in 0..64 {
@@ -1085,7 +1006,6 @@ mod tests {
         assert_eq!(core.display_text(&text), "a漢字b");
         assert_eq!(core.preedit_display_range(&text), Some(1..1 + comp));
         assert_eq!(core.display_caret(&text), 1 + "漢".len());
-        // Committed <-> display mapping around the composition.
         assert_eq!(core.to_display(&text, 0), 0);
         assert_eq!(core.to_display(&text, 1), 1);
         assert_eq!(core.to_display(&text, 2), 2 + comp);
@@ -1103,7 +1023,6 @@ mod tests {
         assert_eq!(core.caret(), 1 + comp);
         assert_eq!(core.display_text(&text), text.as_str());
 
-        // Commit replaces the selection; the filter governs both stages.
         let mut text = String::from("x12y");
         let mut core = EditCore::new();
         core.set_filter(Some(|ch: char| ch != 'q'));
@@ -1149,7 +1068,6 @@ mod tests {
         assert_eq!(text, "añbéc");
         assert_eq!(doc.text(&obj).unwrap(), text);
 
-        // An edit that doesn't land on the text's boundaries is refused.
         let bad = Edit {
             at: 2,
             removed: 0,
@@ -1185,7 +1103,6 @@ mod tests {
         assert!(word.settled(settled).is_none());
         assert!(word.settled(settled + SUGGESTION_SETTLE).is_some());
 
-        // A selection or a gap between words has no word.
         assert!(word.observe(
             edited,
             Selection {

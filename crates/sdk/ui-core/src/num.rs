@@ -1,9 +1,7 @@
-//! Explicit numeric conversions used at UI/model boundaries.
-//!
-//! Keeping the necessarily lossy casts here makes their policy consistent:
-//! integer narrowing and signed-to-unsigned conversions saturate instead of
-//! wrapping, while geometry conversions use Rust's saturating float-to-int
-//! semantics. Call sites stay readable without scattering lint exceptions.
+//! Explicit numeric conversions used at UI/model boundaries. Keeping the necessarily lossy casts here
+//! makes their policy consistent: integer narrowing and signed-to-unsigned conversions saturate instead
+//! of wrapping, while geometry conversions use Rust's saturating float-to-int semantics. Call sites
+//! stay readable without scattering lint exceptions.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -103,13 +101,11 @@ pub fn usize_of_isize(value: isize) -> usize {
 
 /// The largest power of ten an `f64` holds exactly.
 const EXACT_DECIMAL_PLACES: u32 = 22;
-/// From here up an `f64` holds only whole numbers, so rounding a scaled
-/// value would change nothing.
+/// From here up an `f64` holds only whole numbers, so rounding a scaled value would change nothing.
 const WHOLE_FROM: f64 = 4_503_599_627_370_496.0;
 
-/// How many decimal places `value` is written with at its shortest (`0.25`
-/// has two, `3.0` none); `None` when it is not finite or needs more places
-/// than [`snap_decimal`] can keep exact.
+/// How many decimal places `value` is written with at its shortest (`0.25` has two, `3.0` none); `None`
+/// when it is not finite or needs more places than [`snap_decimal`] can keep exact.
 pub fn decimal_places(value: f64) -> Option<u32> {
     if !value.is_finite() {
         return None;
@@ -123,13 +119,8 @@ pub fn decimal_places(value: f64) -> Option<u32> {
         .filter(|&places| places <= EXACT_DECIMAL_PLACES)
 }
 
-/// `value`, a sum of `operands` or of whole multiples of them, as the
-/// decimal those operands make: rounded to the most places any of them is
-/// written with. Binary floats drift where decimals do not (`0.1 + 0.2` is
-/// `0.30000000000000004`, `7 × 0.1` is `0.7000000000000001`), so a stepper
-/// or slider moved in tenths would otherwise land beside the value it shows
-/// and miss the end of its range. `value` is returned unchanged when an
-/// operand is not a short decimal.
+/// `value`, a sum of `operands` or of whole multiples of them, as the decimal those operands make:
+/// rounded to the most places any of them is written with.
 pub fn snap_decimal(value: f64, operands: &[f64]) -> f64 {
     let mut places = 0;
     for &operand in operands {

@@ -1,19 +1,6 @@
 //! Content sealed under its own key: the bytes a record references (a
 //! picture, an attachment), encrypted before they leave the writer's device,
 //! so whoever stores or carries them holds ciphertext alone.
-//!
-//! Every item has a fresh random key, which travels in the reference the
-//! record keeps, so the record's readers, and only they, open it. The content
-//! is sealed in chunks of [`CHUNK`] bytes, each XChaCha20-Poly1305 under a
-//! nonce made of its index and whether it is the last, so a reader opens and
-//! checks each chunk as it streams in, and a stream cut short or reordered
-//! fails to open. A key seals one item only, so a nonce derived from the
-//! chunk's position is never used twice under it; sealing the same bytes
-//! under the same key gives the same ciphertext.
-//!
-//! Layout: `"TCB" ‖ version (0x01) ‖ chunk₀ ‖ … ‖ chunkₙ`, each chunk its
-//! sealed bytes and 16-byte tag. Every chunk but the last holds [`CHUNK`]
-//! bytes; the last holds the rest, possibly none.
 
 use std::io::{self, Read};
 
@@ -24,7 +11,6 @@ use crate::error::{Error, Result};
 use crate::keys::SymmetricKey;
 use crate::label::Label;
 
-/// The header every sealed item starts with.
 pub const HEADER: &[u8; 4] = b"TCB\x01";
 /// Plaintext bytes in each chunk but the last.
 pub const CHUNK: usize = 64 * 1024;
@@ -48,19 +34,6 @@ fn nonce(index: u64, last: bool) -> XNonce {
 
 const fn aad() -> &'static [u8] {
     Label::RecordContent.as_bytes()
-}
-
-/// How long `plain` bytes are once sealed.
-#[must_use]
-pub const fn sealed_len(plain: u64) -> u64 {
-    let chunks = if plain == 0 {
-        1
-    } else {
-        plain.div_ceil(CHUNK as u64)
-    };
-    (HEADER.len() as u64)
-        .saturating_add(plain)
-        .saturating_add(chunks.saturating_mul(TAG as u64))
 }
 
 /// Read `out.len()` bytes from `inner`, fewer only at its end.
@@ -108,7 +81,6 @@ impl<R: Read> Chunks<R> {
         }
     }
 
-    /// The next chunk and whether it is the last; `None` past the last.
     fn next_chunk(&mut self) -> io::Result<Option<(Vec<u8>, bool)>> {
         if self.done {
             return Ok(None);
@@ -134,7 +106,6 @@ impl<R: Read> Chunks<R> {
         Ok(Some((chunk, last)))
     }
 
-    /// Copy what is ready to `buf`, making the next output with `make`.
     fn read_with(
         &mut self,
         buf: &mut [u8],
@@ -163,7 +134,6 @@ fn invalid(why: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why)
 }
 
-/// Seals what `inner` yields as it is read: a [`Read`] of the sealed item.
 pub struct SealReader<R> {
     cipher: XChaCha20Poly1305,
     chunks: Chunks<R>,
@@ -309,7 +279,6 @@ mod tests {
         for len in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK + 17] {
             let plain: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
             let sealed = seal(&key, &plain).unwrap();
-            assert_eq!(sealed.len() as u64, sealed_len(len as u64), "{len}");
             assert_eq!(
                 sealed,
                 seal(&key, &plain).unwrap(),
@@ -328,7 +297,10 @@ mod tests {
                 .read_to_end(&mut resealed)
                 .unwrap();
             assert_eq!(resealed, sealed, "{len}, sealed in small steps");
-            if len > 0 {
+            // Where the window is the whole plaintext, a short one is found by chance: one
+            // byte of a chunk matches it about once in every 256 positions. Only a plaintext
+            // at least as long as the window is evidence of the ciphertext not carrying it.
+            if len >= 32 {
                 assert!(
                     !sealed
                         .windows(len.min(32))

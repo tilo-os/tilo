@@ -1,4 +1,4 @@
-//! Offscreen Chromium context menus displayed by browser chrome.
+//! Offscreen Chromium context menus, displayed by the browser chrome.
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -6,8 +6,7 @@ use ui::webview::{ContextMenuItem, SharedEngine, WebViewCommand};
 use ui::widget::{ContextMenu, MenuItem};
 use vello::kurbo::Rect;
 
-/// Chromium's command for "Copy link address", which the Browser does
-/// itself.
+/// Chromium's command for "Copy link address", which the Browser does itself.
 const COPY_LINK: u32 = 26502;
 
 pub struct PageMenu {
@@ -15,8 +14,6 @@ pub struct PageMenu {
     id: u32,
     link: String,
     items: Vec<ContextMenuItem>,
-    /// The command of the row chosen in the menu or one of its submenus,
-    /// set by the row's action.
     chosen: Rc<Cell<Option<u32>>>,
 }
 impl Default for PageMenu {
@@ -31,8 +28,8 @@ impl Default for PageMenu {
     }
 }
 
-/// A Chromium menu label as shown: `&` marks the key that chooses the row
-/// and `&&` is an ampersand.
+/// A Chromium menu label as shown: `&` marks the key that chooses the row and `&&` is an
+/// ampersand.
 fn shown(label: &str) -> String {
     let mut out = String::with_capacity(label.len());
     let mut chars = label.chars().peekable();
@@ -68,8 +65,8 @@ impl PageMenu {
             .open_anchored(Rect::new(px, py, px + 1.0, py + 1.0), viewport);
     }
 
-    /// The menu's rows: check marks on checkbox and radio items, a nested
-    /// menu for each submenu, and greyed rows that cannot be chosen now.
+    /// The menu's rows: check marks on checkbox and radio items, a nested menu for each
+    /// submenu, and greyed rows that cannot be chosen now.
     fn rows(&self, items: &[ContextMenuItem]) -> Vec<MenuItem> {
         items
             .iter()
@@ -112,8 +109,8 @@ impl PageMenu {
         });
     }
 
-    /// After the open menu took an event: send the row chosen, at any
-    /// depth, or say the menu closed without a choice.
+    /// After the open menu took an event: send the row chosen, at any depth, or say the menu
+    /// closed without a choice.
     pub fn settle(&mut self, engine: &SharedEngine) {
         // The rows report a choice themselves; the indices say nothing more.
         let _ = self.menu.take_selection();
@@ -190,8 +187,8 @@ impl PageMenu {
             .collect()
     }
 
-    /// Choose the row `target` names (`browser.context:<menu>:<command>`)
-    /// in the open menu, as assistive technology does.
+    /// Choose the row `target` names (`browser.context:<menu>:<command>`) in the open menu,
+    /// as assistive technology does.
     pub fn activate(&mut self, target: &str, engine: &SharedEngine) -> bool {
         let Some((id, command)) = target
             .strip_prefix("browser.context:")
@@ -344,8 +341,8 @@ mod tests {
             },
         ]);
         assert!(!menu.activate("browser.context:7:27004", &engine));
-        // As a person picks in a nested menu: the row's action runs and the
-        // whole menu closes.
+        // As a person picks in a nested menu: the row's action runs and the whole menu
+        // closes.
         let MenuItem::Action { submenu, .. } = &menu.menu.items()[0] else {
             panic!("a submenu row");
         };

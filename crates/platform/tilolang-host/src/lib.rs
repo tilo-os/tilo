@@ -45,13 +45,11 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::meta::MetaExt as _;
 
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
 use tilolang_tilo::instance::record::InstanceRecord;
-
-/// The record kind of an app's workspace record: every tilolang package keeps its resources in it.
-pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
 
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// record of the workspace for an app whose records are each member's own (`records: .own`),
@@ -145,8 +143,9 @@ struct Opening {
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
     reached: Vec<(&'static str, std::time::Duration)>,
-    /// The person's formats changed while it opened: its first frame writes its times again.
-    formats_changed: bool,
+    /// The person's environment changed while it opened — their formats, or the name the window
+    /// calls someone: its first frame shows what only the window knows again.
+    person_changed: bool,
     /// The language the person chose while it opened: its window reads in it from its first
     /// frame.
     language: Option<String>,
@@ -314,12 +313,12 @@ impl TilolangHost {
         }
         self.formats.set(formats);
         for running in &mut self.running {
-            running.hosted.formats_changed();
+            running.hosted.person_changed();
         }
         for opening in &mut self.opening {
             // An instance still opening reads them when it runs: what it already wrote is
             // written again on its first frame.
-            opening.formats_changed = true;
+            opening.person_changed = true;
         }
         true
     }
@@ -411,7 +410,7 @@ impl TilolangHost {
             origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
-            formats_changed: false,
+            person_changed: false,
             language: None,
             reveal,
         });
@@ -442,7 +441,7 @@ impl TilolangHost {
             origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
-            formats_changed: false,
+            person_changed: false,
             language: None,
             reveal: None,
         });
@@ -585,6 +584,13 @@ impl TilolangHost {
             Some(records) => records.clone(),
             None => request.app.clone(),
         };
+        // The ids the session believes each app had before are the ones this host honours: a
+        // module's own `previously:` is a claim the installed catalogue decides on.
+        for (app, under) in std::iter::once((&request.app, &records)).chain(&request.installed) {
+            if under != app {
+                tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
+            }
+        }
         let workspace = uuid::Uuid::parse_str(&request.room)
             .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
         let identity =
@@ -602,7 +608,7 @@ impl TilolangHost {
         }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
-            &collaboration::record::RecordKind::new(RECORD_KIND),
+            &collaboration::record::RecordKind::new(bundle.meta.record_kind()),
             broker,
             identity.as_fd(),
             route,
@@ -647,8 +653,17 @@ impl TilolangHost {
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
-        let record =
-            InstanceRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
+        // What the record's actions keep as content lives in the device's content store, as a
+        // native window's record content does: it outlives the instance and reaches the record's
+        // other readers on its route.
+        let record = InstanceRecord::open_read(
+            manager,
+            read,
+            &kept.documents,
+            spec.person.clone(),
+            bundle.meta.record_kind(),
+        )?
+        .keeping_content_in(tilo_content_device::for_app());
         if let Some(change) = opening.change.take() {
             // A change at the record's origin: the record and the package, no instance.
             let applier = hosted::Applier::open(
@@ -682,9 +697,9 @@ impl TilolangHost {
             &self.formats,
             Arc::clone(&self.wake),
         );
-        if opening.formats_changed {
-            hosted.formats_changed();
-            opening.formats_changed = false;
+        if opening.person_changed {
+            hosted.person_changed();
+            opening.person_changed = false;
         }
         if let Some(language) = opening.language.take() {
             hosted.speak(&language);
@@ -1003,6 +1018,46 @@ impl TilolangHost {
             && self.opening.is_empty()
             && self.appliers.is_empty()
             && self.task.is_none()
+    }
+
+    /// Whether the host owes work of its own: an instance being opened, a change being applied,
+    /// or a window with a frame coming. A host that owes none draws nothing more until something
+    /// reaches it — its door, a window, or a wake — so a frame taken then is the same frame the
+    /// next one would be.
+    #[must_use]
+    pub fn owes_work(&self) -> bool {
+        !self.opening.is_empty()
+            || self.appliers.iter().any(hosted::Applier::owes)
+            || self
+                .running
+                .iter()
+                .any(|running| running.hosted.owes_a_frame())
+    }
+
+    /// What [`Self::owes_work`] owes, in words: each app whose instance is opening, each app
+    /// whose change is being applied, and each window whose frame is coming. What a caller that
+    /// waited longer than it may says of the host it left.
+    #[must_use]
+    pub fn owed(&self) -> Vec<String> {
+        let mut owed: Vec<String> = self
+            .opening
+            .iter()
+            .map(|opening| format!("{} opening", opening.app))
+            .collect();
+        owed.extend(
+            self.appliers
+                .iter()
+                .map(|applier| format!("{} applying a change", applier.spec().app)),
+        );
+        for running in &self.running {
+            if running.hosted.owes_a_frame() {
+                owed.push(format!(
+                    "a frame for {}",
+                    running.hosted.record().route().app_id
+                ));
+            }
+        }
+        owed
     }
 }
 

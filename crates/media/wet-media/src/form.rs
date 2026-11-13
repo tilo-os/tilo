@@ -13,16 +13,15 @@ use crate::engine::{Mark, Stroke};
 use crate::grid::{float, key};
 use crate::ground::{hash01, mix};
 
-/// The most strokes one mark grows into.
 pub const MOST_PIECES: usize = 600;
 
-/// What a stroke grows into besides its own line.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Form {
-    /// The stroke is a limb that lifts to a point and forks `forks` times
-    /// into twigs, each thinner, splaying about `spread` degrees.
-    Branch { forks: u32, spread: f32 },
+    Branch {
+        forks: u32,
+        spread: f32,
+    },
     /// Instead of one line, `count` short dabs the stroke's width,
     /// scattered up to `scatter` cells either side of its path, each about
     /// `length` cells long (about its width when zero) and pointing along
@@ -41,10 +40,12 @@ pub enum Form {
     /// area the stroke's points enclose, at `angle` degrees, each drawn by
     /// hand: shading laid in one stroke, cross-hatched by a second at
     /// another angle.
-    Hatch { spacing: f32, angle: f32 },
+    Hatch {
+        spacing: f32,
+        angle: f32,
+    },
 }
 
-/// How one mark's dabs are laid.
 #[derive(Clone, Copy)]
 struct Dabbing {
     count: u32,
@@ -54,7 +55,6 @@ struct Dabbing {
 }
 
 impl Form {
-    /// This form with artwork units converted to cells.
     #[must_use]
     pub fn scaled(self, scale: f32) -> Self {
         match self {
@@ -79,8 +79,6 @@ impl Form {
 }
 
 impl Stroke {
-    /// The plain strokes this one is painted as, each with its seed: itself
-    /// when it has no form.
     pub fn pieces(&self, seed: u64) -> Vec<(Stroke, u64)> {
         match self.form {
             None => vec![(self.clone(), seed)],
@@ -106,7 +104,6 @@ impl Stroke {
 }
 
 impl Mark {
-    /// The plain marks this one is painted as, each with its seed.
     pub fn pieces(&self, seed: u64) -> Vec<(Mark, u64)> {
         match self {
             Self::Stroke(stroke) if stroke.form.is_some() => stroke
@@ -119,8 +116,6 @@ impl Mark {
     }
 }
 
-/// A piece of `stroke` along `points`, `size` wide, its paint lightened or
-/// darkened by `value` and warmed or cooled by `warmth`.
 fn piece(
     stroke: &Stroke,
     points: Vec<StrokePoint>,
@@ -145,12 +140,10 @@ fn piece(
     }
 }
 
-/// A random unit value for piece `index` of a mark seeded `seed`.
 fn chance(seed: u64, salt: u64, index: usize) -> f32 {
     hash01(seed, salt, key(index))
 }
 
-/// The point and heading `at` cells along `samples`.
 fn along(samples: &[Sample], at: f32) -> Sample {
     let index = samples.partition_point(|sample| sample.distance < at);
     samples
@@ -166,8 +159,6 @@ fn along(samples: &[Sample], at: f32) -> Sample {
         })
 }
 
-/// One limb or twig still to grow: its path, its width where it starts,
-/// and how many more times it forks.
 struct Limb {
     samples: Vec<Sample>,
     size: f32,
@@ -175,8 +166,6 @@ struct Limb {
     seed: u64,
 }
 
-/// A limb that tapers to a point and forks into twigs, and they into
-/// thinner twigs, `forks` times over.
 fn branch(stroke: &Stroke, forks: u32, spread: f32, seed: u64) -> Vec<(Stroke, u64)> {
     let forks = forks.min(6);
     let spread = spread.clamp(5.0, 90.0).to_radians();
@@ -192,8 +181,6 @@ fn branch(stroke: &Stroke, forks: u32, spread: f32, seed: u64) -> Vec<(Stroke, u
             break;
         }
         let total = length(&limb.samples);
-        // The limb is painted as one stroke that lifts to a point: the hand
-        // eases off as it goes, however the painter pressed it.
         let points: Vec<StrokePoint> = limb
             .samples
             .iter()
@@ -213,8 +200,6 @@ fn branch(stroke: &Stroke, forks: u32, spread: f32, seed: u64) -> Vec<(Stroke, u
         if limb.forks == 0 || limb.size < 1.2 || total < 2.0 {
             continue;
         }
-        // A limb puts out side branches all along it, alternating sides,
-        // more of them the longer it is, and forks again near its tip.
         let twigs = 2_usize
             .saturating_add(usize::from(chance(limb.seed, 5, 0) < 0.5))
             .saturating_add(usize::from(total > limb.size * 12.0))
@@ -236,15 +221,11 @@ fn branch(stroke: &Stroke, forks: u32, spread: f32, seed: u64) -> Vec<(Stroke, u
             let reach = total * (0.4 + 0.3 * chance(limb.seed, 13, twig)) * (1.0 - 0.35 * at);
             let size =
                 limb.size * (1.0 - 0.7 * at).max(0.2) * (0.6 + 0.25 * chance(limb.seed, 17, twig));
-            // A twig starts inside its limb, so it grows out of it rather
-            // than beside it, and bends a little as it goes.
             let mut x = from.x - from.tx * size * 0.5;
             let mut y = from.y - from.ty * size * 0.5;
             let mut points = vec![StrokePoint::new(x, y, 1.0)];
             let bends = 4;
             for bend in 0..bends {
-                // Twigs kink where they grew a bud and turn a little toward
-                // the light above as they go.
                 angle += (chance(limb.seed, key(bend).saturating_add(19), twig) - 0.5) * 0.6;
                 let toward_up = (-std::f32::consts::FRAC_PI_2 - angle + std::f32::consts::PI)
                     .rem_euclid(std::f32::consts::TAU)
@@ -267,8 +248,6 @@ fn branch(stroke: &Stroke, forks: u32, spread: f32, seed: u64) -> Vec<(Stroke, u
     out
 }
 
-/// Short dabs scattered along the stroke's path, each a little different
-/// in size, direction, length and mix, as a painter dabs in foliage.
 fn dabs(stroke: &Stroke, dabbing: Dabbing, seed: u64) -> Vec<(Stroke, u64)> {
     let count = usize::try_from(dabbing.count)
         .unwrap_or(MOST_PIECES)
@@ -281,8 +260,6 @@ fn dabs(stroke: &Stroke, dabbing: Dabbing, seed: u64) -> Vec<(Stroke, u64)> {
         .map(|index| {
             let roll = |salt: u64| chance(seed, salt, index);
             let centre = along(&samples, total * roll(3));
-            // Two rolls summed fall mostly near the path and thin out away
-            // from it, as a mass of dabs does at its edge.
             let across = (roll(5) + roll(7) - 1.0) * scatter;
             let lengthwise =
                 (roll(11) + roll(13) - 1.0) * scatter * if total > 0.0 { 0.5 } else { 1.0 };
@@ -325,10 +302,6 @@ fn dabs(stroke: &Stroke, dabbing: Dabbing, seed: u64) -> Vec<(Stroke, u64)> {
         .collect()
 }
 
-/// Parallel lines `spacing` apart across the polygon the stroke's points
-/// enclose, at `angle` degrees, each a hand's line: its ends fall a little
-/// short of or past the edge, it leans a fraction off parallel, and it
-/// presses as the stroke's points do on average.
 fn hatch(stroke: &Stroke, spacing: f32, angle: f32, seed: u64) -> Vec<(Stroke, u64)> {
     let outline: Vec<(f32, f32)> = stroke.points.iter().map(|p| (p.x, p.y)).collect();
     if outline.len() < 3 || !spacing.is_finite() {
@@ -336,7 +309,6 @@ fn hatch(stroke: &Stroke, spacing: f32, angle: f32, seed: u64) -> Vec<(Stroke, u
     }
     let spacing = spacing.max(stroke.size * 0.5).max(0.5);
     let pressure = stroke.points.iter().map(|p| p.pressure).sum::<f32>() / float(outline.len());
-    // Along the lines (dx, dy) and across them (nx, ny).
     let turn = angle.to_radians();
     let (dx, dy) = (turn.cos(), turn.sin());
     let (nx, ny) = (-dy, dx);
@@ -352,8 +324,6 @@ fn hatch(stroke: &Stroke, spacing: f32, angle: f32, seed: u64) -> Vec<(Stroke, u
     let mut offset = low + spacing * 0.5;
     let mut line = 0_usize;
     while offset < high && out.len() < MOST_PIECES {
-        // Where this line crosses the outline's edges, along the line: the
-        // spans between pairs of crossings lie inside.
         let mut crossings: Vec<f32> = Vec::new();
         for (index, from) in outline.iter().enumerate() {
             let to = outline
@@ -440,7 +410,6 @@ mod tests {
             "grows the same from the same seed"
         );
         assert_ne!(pieces, stroke.pieces(43));
-        // 1 limb, 2-3 twigs, each 2-3 more, three levels deep.
         assert!((15..=40).contains(&pieces.len()), "{} pieces", pieces.len());
         assert!(pieces.iter().all(|(piece, _)| piece.form.is_none()));
         let thinnest = pieces.iter().map(|(p, _)| p.size).fold(f32::MAX, f32::min);
@@ -483,7 +452,6 @@ mod tests {
             assert!(first.x < 5.0 && last.x > 95.0, "across the area");
             assert!((0.0..=60.0).contains(&line.points[1].y));
         }
-        // A concave area: lines stop at the notch and start again past it.
         stroke.points = [
             (0.0, 0.0),
             (100.0, 0.0),

@@ -1,16 +1,6 @@
-//! The applications a multi-app host can mount, registered once per process.
-//!
-//! A host that links applications in-process (the browser's desktop bundle,
-//! a shell hosting apps in-process) reads this list instead of naming apps in
-//! its own code. Registration is idempotent per app id: the first definition
-//! for an id wins, so a bundle that lists an app twice still shows it once.
-//!
-//! An application can also be registered *deferred*: by id and title, with
-//! a function that loads its code and yields its definition. The browser
-//! bundle registers most apps this way, so their code is fetched when one
-//! first opens instead of with the page. Until then the app is listed
-//! ([`catalogue`]) but has no definition ([`application`]); [`load`] starts
-//! the load, and its definition replaces the deferred entry in place.
+//! The applications a multi-app host can mount, registered once per process. A host that links
+//! applications in-process (the browser's desktop bundle, a shell hosting apps in-process) reads this
+//! list instead of naming apps in its code.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -49,8 +39,8 @@ static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 /// The shape each app declared for its window while its code is on its way
 /// (its manifest's `[appearance] arrival-skeleton`, through the toolkit's
 /// [`SkeletonShape`](crate::widget::SkeletonShape): the placeholder is the
-/// app's own shape, never the host's guess), kept apart from the registry so it outlives the app's code: a window
-/// stands in for an app that is built but has not drawn its first frame yet,
+/// app shape, never the host's guess), kept apart from the registry so it outlives the app's code: a window
+/// takes the place of an app that is built but has not drawn its first frame yet,
 /// and that is when the declaration is needed most.
 static DECLARED_SHAPES: Mutex<Vec<(&'static str, crate::widget::SkeletonShape)>> =
     Mutex::new(Vec::new());
@@ -80,14 +70,13 @@ pub fn register(definition: &'static ApplicationDefinition) -> bool {
     }
 }
 
-/// Register an application whose code `load` fetches when it is first
-/// needed. Returns `false` when the id is already registered.
+/// Register an application whose code `load` fetches when it is first needed.
 pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
     defer_arriving(app_id, title, crate::widget::SkeletonShape::Ground, load)
 }
 
-/// [`defer`] with the shape the app's window shows while its code is on its
-/// way: what the app declares for it in its manifest.
+/// [`defer`] with the shape the app's window shows while its code is on its way: what the app declares
+/// for it in its manifest.
 pub fn defer_arriving(
     app_id: &'static str,
     title: &'static str,
@@ -110,9 +99,9 @@ pub fn defer_arriving(
     true
 }
 
-/// The shape `app_id` declared for its window while it has nothing of its
-/// own to show — its code on its way, or its first frame not drawn yet;
-/// [`SkeletonShape::Ground`] for an app whose host was told no declaration.
+/// The shape `app_id` declared for its window while it has nothing of it to show — its code on its
+/// way, or its first frame not drawn yet; [`SkeletonShape::Ground`] for an app whose host was told no
+/// declaration.
 pub fn declared_arrival_shape(app_id: &str) -> crate::widget::SkeletonShape {
     DECLARED_SHAPES
         .lock_recover()
@@ -121,8 +110,7 @@ pub fn declared_arrival_shape(app_id: &str) -> crate::widget::SkeletonShape {
         .unwrap_or(crate::widget::SkeletonShape::Ground)
 }
 
-/// Every registered application whose definition is loaded, in
-/// registration order.
+/// Every registered application whose definition is loaded, in registration order.
 pub fn applications() -> Vec<&'static ApplicationDefinition> {
     entries()
         .iter()
@@ -133,8 +121,8 @@ pub fn applications() -> Vec<&'static ApplicationDefinition> {
         .collect()
 }
 
-/// Every registered application, loaded or not, as `(id, title)` in
-/// registration order: what a launcher lists.
+/// Every registered application, loaded or not, as `(id, title)` in registration order: what a launcher
+/// lists.
 pub fn catalogue() -> Vec<(&'static str, &'static str)> {
     entries()
         .iter()
@@ -145,8 +133,7 @@ pub fn catalogue() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// The registered application with id `app_id`, once its definition is
-/// loaded.
+/// The registered application with id `app_id`, once its definition is loaded.
 pub fn application(app_id: &str) -> Option<&'static ApplicationDefinition> {
     entries().iter().find_map(|entry| match entry {
         Entry::Ready(definition) if definition.app_id() == app_id => Some(*definition),
@@ -282,7 +269,6 @@ mod tests {
             declared_arrival_shape("test.registry.shaped"),
             SkeletonShape::Page
         );
-        // An app that declared none shows its ground, not a guess.
         assert!(defer("test.registry.unshaped", "Unshaped", || Box::pin(
             async { Some(definition("test.registry.unshaped")) }
         )));
@@ -290,15 +276,12 @@ mod tests {
             declared_arrival_shape("test.registry.unshaped"),
             SkeletonShape::Ground
         );
-        // Nobody's app, and one whose code is in: the window's own answer.
         assert_eq!(
             declared_arrival_shape("test.registry.nobody"),
             SkeletonShape::Ground
         );
         let loaded = block_on(load("test.registry.shaped")).unwrap();
         assert_eq!(loaded.app_id, "test.registry.shaped");
-        // The declaration is the app's, not its code's: it stands once the
-        // code is in, for the window that has not drawn yet.
         assert_eq!(
             declared_arrival_shape("test.registry.shaped"),
             SkeletonShape::Page

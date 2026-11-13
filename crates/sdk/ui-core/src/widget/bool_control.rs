@@ -1,6 +1,6 @@
-//! What a two-state control (checkbox, switch) is apart from its face: where
-//! its value lives, how a click or an assistive action flips it, and how it
-//! reports itself to presence, permissions and the action broker.
+//! What a two-state control (checkbox, switch) is apart from its face: where its value lives, how a
+//! click or an assistive action flips it, and how it reports itself to presence, permissions and the
+//! action broker.
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -11,8 +11,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub(super) type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
-/// The action a flip runs: an action told the value the control takes, or one that takes no
-/// argument and works the value out from the record itself (an app's `check(task)`).
 pub(crate) enum BoolAction {
     Value(ActionEmitter<bool>),
     Press(ActionEmitter<()>),
@@ -96,29 +94,19 @@ pub(super) struct BoolControl {
     pub holds_press: bool,
     pub presence_path: Vec<PathSegment>,
     pub permission_scope: Option<PermissionScope>,
-    /// When `false` the control is skipped by focus, rejects input (no flip,
-    /// no hover feedback) and renders dimmed.
     pub enabled: bool,
     /// Override for `Widget::test_id()`, which otherwise reports the
     /// control's kind.
     pub id_override: Option<String>,
-    /// Spoken name for a control with no owned visible label; unset falls
-    /// back to a sibling label resolved by the tree builder.
     pub accessible_name: Option<String>,
-    /// `accessible_name` is already resolved text, spoken as given.
     pub name_resolved: bool,
-    /// Where the checked value lives: a document key or process-local state.
     pub binding: Option<BoxedBinding<bool>>,
-    /// Observes user intent without owning model synchronization.
     pub on_change: Option<BoolChangeCallback>,
     pub action: Option<BoolAction>,
-    /// The control's own published view action (`on_view`): what its
-    /// action is bound to, and `on_change` answers.
     pub view_resource: Option<tilo_actions::ResourceSpec>,
     pub interaction: crate::interaction::InteractionEnvironment,
 }
 
-/// The operation type of a control's own published value (`on_view`).
 const VIEW_SET: &str = "tilo.ui.bool.set";
 
 #[derive(serde::Deserialize)]
@@ -128,7 +116,6 @@ struct ViewSet {
 }
 
 impl BoolControl {
-    /// A control bound to the document boolean at `on_toggle_path`.
     pub fn new(on_toggle_path: &str, accessible_name: Option<String>) -> Self {
         Self {
             rect: Rect::ZERO,
@@ -151,9 +138,6 @@ impl BoolControl {
         }
     }
 
-    /// Publish setting the value as control `id`'s view action `set`, run by
-    /// `handler`: a person's flip, a screen reader, a script and an agent set
-    /// it through the same action.
     #[expect(
         clippy::expect_used,
         reason = "the generated boolean action binds the value it is handed"
@@ -196,8 +180,6 @@ impl BoolControl {
         self.on_change = Some(handler);
     }
 
-    /// Answer a `set` addressed to this control's own view action: show the
-    /// value and hand it to the app, whoever set it.
     pub(super) fn start_view(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -217,9 +199,6 @@ impl BoolControl {
             return Ok(None);
         }
         self.is_checked = set.value;
-        // A control following a process-local value takes the set value into
-        // it, as a flip did before the press was published; a binding into a
-        // shared model ignores it and the app's own edit lands.
         if let Some(binding) = &mut self.binding {
             binding.publish(&set.value);
         }
@@ -231,7 +210,6 @@ impl BoolControl {
         )))
     }
 
-    /// A control two-way bound to process-local `state`.
     pub fn local(state: &crate::LocalState<bool>, accessible_name: Option<String>) -> Self {
         let (checked, binding) = super::binding::local(state);
         Self {
@@ -241,8 +219,6 @@ impl BoolControl {
         }
     }
 
-    /// Focus a person needs to be shown: keyboard focus, not the focus a
-    /// click on the control gave it.
     #[must_use]
     pub fn focus_visible(&self) -> bool {
         self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
@@ -252,8 +228,6 @@ impl BoolControl {
         self.enabled && self.action.as_ref().is_none_or(BoolAction::is_available)
     }
 
-    /// The name a reader hears: the control's own words, in the language
-    /// this thread reads.
     pub fn spoken_name(&self) -> Option<String> {
         let name = self.accessible_name.as_ref()?;
         crate::i18n::spoken_name(name, self.name_resolved)
@@ -290,8 +264,6 @@ impl BoolControl {
         self.choose(!self.is_checked);
     }
 
-    /// Ask for `flipped` the way a click does ([`Self::flip`]), for a hand
-    /// that dragged a switch's knob to one side: the side it left it on.
     pub fn choose(&mut self, flipped: bool) {
         if let Some(action) = &mut self.action {
             action.emit(flipped);
@@ -364,9 +336,6 @@ impl BoolControl {
         }
     }
 
-    /// An assistive tool flips the control with `ToggleCheck` or the generic
-    /// `Activate`, through the same write a click performs. A disabled
-    /// control rejects both.
     pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
@@ -399,8 +368,6 @@ impl BoolControl {
     }
 }
 
-/// The public value, wiring and enablement API of a widget holding a
-/// [`BoolControl`] in `self.control`.
 macro_rules! bool_control_api {
     () => {
         /// Observe changes produced by user interaction.
@@ -426,8 +393,6 @@ macro_rules! bool_control_api {
             self
         }
 
-        /// Route pointer, keyboard, and accessibility flips through an
-        /// exported resource action.
         #[must_use]
         pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Value(
@@ -438,9 +403,6 @@ macro_rules! bool_control_api {
             self
         }
 
-        /// Route pointer, keyboard and accessibility flips through an exported action that takes
-        /// no argument: what a flip means (which item it is about, what the new value is) is the
-        /// app's own action, not the control's guess.
         #[must_use]
         pub fn on_choose(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Press(
@@ -451,7 +413,6 @@ macro_rules! bool_control_api {
             self
         }
 
-        /// Return the value currently presented.
         pub fn is_checked(&self) -> bool {
             self.control.is_checked
         }
@@ -465,23 +426,18 @@ macro_rules! bool_control_api {
             self.control.set_checked(checked);
         }
 
-        /// Opt this widget into presence tracking by binding it to a
-        /// CRDT-style path.
         #[must_use]
         pub fn with_presence(mut self, path: Vec<crate::presence::PathSegment>) -> Self {
             self.control.presence_path = path;
             self
         }
 
-        /// Gate this widget behind a permission scope.
         #[must_use]
         pub fn with_permission_scope(mut self, scope: crate::permissions::PermissionScope) -> Self {
             self.control.permission_scope = Some(scope);
             self
         }
 
-        /// Override the value `Widget::test_id()` reports, to tell several
-        /// such controls in one surface apart.
         #[must_use]
         pub fn with_id(mut self, id: &str) -> Self {
             self.control.id_override = Some(id.to_string());
@@ -516,7 +472,6 @@ macro_rules! bool_control_api {
             self
         }
 
-        /// Imperatively flip the enabled state.
         pub fn set_enabled(&mut self, enabled: bool) {
             self.control.enabled = enabled;
         }

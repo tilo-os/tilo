@@ -14,6 +14,12 @@
 //!    a device of a user root the workspace's signed authority admits is admitted.
 //! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
+//!    In a workspace this relay governs, a device of a person its governance
+//!    has as a member ([`person_device`]: a browser tab, a new computer of
+//!    theirs) is enrolled when it subscribes: governance records it under its
+//!    person, as the door does for a further device of a member, so it holds
+//!    the part its person holds. Membership follows the person, not one
+//!    device key.
 //! 6. Anything else is not a member.
 //!
 //! An agent's grant (a key the person certified for a service that acts for
@@ -440,6 +446,21 @@ impl<'a> WorkspaceFacts<'a> {
             && self.runtime.workspace_authority.is_some()
     }
 
+    /// Whether a subscribe enrols `peer`'s device here (step 5): this relay
+    /// governs the workspace, its governance has the device's person as a
+    /// member, the device is one of theirs, and no pending replacement keeps
+    /// it out.
+    fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
+        self.runtime.admission == AdmissionMode::Governed
+            && self.runtime.workspace_authority.is_some()
+            && person_device(&peer.cert)
+            && self
+                .runtime
+                .governed_user_roots
+                .contains(&peer.user_public_key)
+            && self.within_ceiling(&peer.device_public_key)
+    }
+
     fn lists(&self, device: &[u8; 32]) -> bool {
         let listed = self.listed.map_or_else(
             || self.runtime.membership.contains(device),
@@ -533,7 +554,25 @@ pub(crate) fn decide_in(
             OwnerDevice::Refuse => {}
         }
     }
+    if op == WorkspaceOperation::Subscribe && workspace.enrols_member_device(peer) {
+        return Decision::AdmitAndEnrol;
+    }
     Decision::Deny(DenyReason::NotAMember)
+}
+
+/// Whether `cert` is a device of its person's own: certified by their root,
+/// or by the stand-in their browser holds for it ([`tilo_user_identity::DeviceCert::issuer`]).
+/// An agent's grant, or a key one minted, acts for the person and is no
+/// device of theirs: it comes in by the delegation that bounds it, never as
+/// the person. Nor is the stand-in itself, which approves devices and
+/// reaches no workspace.
+pub(crate) fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
+    cert.capabilities.agent.is_none()
+        && !cert.capabilities.stand_in
+        && cert
+            .issuer
+            .as_ref()
+            .is_none_or(|issuer| issuer.capabilities.stand_in)
 }
 
 /// The rule for a hosted browser environment's device, whose scope the relay

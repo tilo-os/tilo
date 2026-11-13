@@ -1,76 +1,40 @@
-//! Reference geometry for the shell's hand-composed chrome.
-//!
-//! These are the sizes and distances that are not a control height, a panel
-//! width or a spacing step: a resize grip, a pinned avatar, a strip switcher
-//! card. They live here, beside the other tokens, so a shell file names the
-//! token instead of restating the number. [`Layout::BASE`] is the unscaled
-//! reference, readable from a `const` context.
-//!
-//! [`Breakpoint`] lives here too, because it is the one size class every
-//! surface shares: it is a token's answer about a rect, not a number an app
-//! keeps.
+//! Reference geometry for the shell's hand-composed chrome. These are the sizes and
+//! distances that are not a control height, a panel width or a spacing step: a resize
+//! grip, a pinned avatar, a strip switcher card.
 
 use super::Metrics;
 
 /// Reference geometry (unscaled) for the shell's hand-composed chrome.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// How far from an edge a pointer can grab to resize it: a timeline
-    /// event's, or the free side of a desk card.
     pub resize_grip: f32,
-    /// How far from a floating window's edge a pointer can grab to resize it.
     pub window_grip: f32,
-    /// The same band under touch: wider, because a finger covers more than a
-    /// pointer.
+    /// The same band under touch: wider, because a finger covers more than a pointer.
     pub window_touch_grip: f32,
     pub jump_px_per_detent: f32,
-    /// A pinned participant's face on the desk.
     pub pin: f32,
-    /// Between two pinned participant faces.
     pub avatar_step: f32,
-    /// A compact avatar in the strip switcher or a pairing sheet.
     pub avatar: f32,
-    /// Between two compact avatars.
     pub compact_avatar_step: f32,
-    /// One header row above a desk card's list.
     pub row_header: f32,
-    /// One row of the desk's team list.
     pub team_row: f32,
-    /// A compact section row in the strip switcher.
     pub section_height: f32,
-    /// The rule between two strip switcher sections.
     pub divider_height: f32,
-    /// A strip switcher card.
     pub strip_card_width: f32,
     pub pairing_sheet_height: f32,
     pub pairing_qr_side: f32,
     pub display_brightness_step: f32,
-    /// One line-stepping wheel notch.
     pub wheel_step: f32,
-    /// How far below a bar its own drawing reaches: the focus ring, the
-    /// hairline and the shadow of what floats on it.
     pub bar_reach: f32,
-    /// The resize handle in a desk card's free corner.
     pub desk_grip: f32,
-    /// The compact music card's artwork.
     pub desk_art: f32,
-    /// The remove badge on a hovered desk glance.
     pub desk_badge: f32,
-    /// The widest an identify card's name runs before it is elided.
     pub identify_name_width: f32,
-    /// The desktop's search card at its widest: the launcher's card when no
-    /// host gives it a room.
     pub search_card_width: f32,
-    /// Above a confirmation sheet's detail: the title and who asks.
     pub sheet_title_band: f32,
-    /// One line of a confirmation sheet's detail, before it is measured.
     pub sheet_detail_line: f32,
-    /// Below a confirmation sheet's answers: the line a refusal fills, and
-    /// the buttons under it.
     pub sheet_footer: f32,
-    /// A field's label line above its control, on a confirmation sheet.
     pub field_label_height: f32,
-    /// A prose field's control: room for about three lines.
     pub field_prose_height: f32,
 }
 
@@ -114,46 +78,22 @@ impl Default for Layout {
     }
 }
 
-/// The one size class a surface derives from the rect it is laid out in.
-///
-/// A window's shape is a fact about its current allocation, never a decision
-/// an app (or the host that launched it) stores: every layout pass asks this
-/// of the rect it was just handed, so a window narrowed or widened shows the
-/// layout that rect asks for on the very next frame.
-///
-/// * [`Compact`](Self::Compact) — one column at a time: phone width, a
-///   tablet held upright, a window dragged narrow. The sidebar, list and
-///   content are screens the person moves between.
-/// * [`Medium`](Self::Medium) — a docked sidebar and one primary column
-///   beside it: a small laptop, a large tablet on its side.
-/// * [`Wide`](Self::Wide) — a sidebar, a primary column and a second column
-///   (an overview beside a detail, a document beside an inspector).
-///
-/// The thresholds come from [`Metrics`], so they grow with `ui_scale` and the
-/// text scale exactly as the panels they separate do. A surface that holds a
-/// class across frames uses [`BreakpointTracker`], which keeps a threshold
-/// from flapping when a window is dragged across it.
+/// The one size class a surface derives from the rect it is laid out in. A window's shape
+/// is a fact about its current allocation, never a decision an app (or the host that
+/// launched it) stores: every layout pass asks this of the rect it was just handed, so a
+/// window narrowed or widened shows the layout that rect asks for on the very next frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Breakpoint {
-    /// One column at a time.
     #[default]
     Compact,
-    /// A docked sidebar and a primary column.
     Medium,
-    /// A sidebar, a primary column and a column beside it.
     Wide,
 }
 
 impl Breakpoint {
-    /// The widths this class asks for, from the tokens: `(compact, wide)` —
-    /// below the first a surface shows one column at a time, at or above the
-    /// second it shows a column beside the primary one. Between them it
-    /// docks its sidebar and keeps one column.
-    ///
-    /// The compact threshold is the sidebar beside the content it has to
-    /// keep ([`Metrics::compact_breakpoint`]); a second column joins at the
-    /// overview's width past it, which is where a list beside a detail fits
-    /// beside a docked sidebar.
+    /// The widths this class asks for, from the tokens: `(compact, wide)` — below the
+    /// first a surface shows one column at a time, at or above the second it shows a
+    /// column beside the primary one.
     #[must_use]
     pub fn thresholds(m: &Metrics) -> (f64, f64) {
         (
@@ -162,15 +102,7 @@ impl Breakpoint {
         )
     }
 
-    /// The class `width` asks for, without hysteresis: the answer a fresh
-    /// rect gets. A surface that lays out repeatedly asks
-    /// [`BreakpointTracker::derive`] instead.
-    ///
-    /// `width` is in the space `m` is measured in. A surface whose text has
-    /// grown divides its rect's width by [`Metrics::text_growth`] first, so a
-    /// window at 200 % text reaches each class where a 1× window half its
-    /// width does — the rule every text-sized breakpoint in the toolkit
-    /// already follows.
+    /// The class `width` asks for, without hysteresis: the answer a fresh rect gets.
     #[must_use]
     pub fn of(width: f64, m: &Metrics) -> Self {
         let (compact, wide) = Self::thresholds(m);
@@ -196,14 +128,8 @@ impl Breakpoint {
     }
 }
 
-/// The class a surface holds while it lays out, re-derived from the rect of
-/// every pass ([`Widget::apply_layout`](crate::widget::Widget::apply_layout)).
-///
-/// Hysteresis is the point: a window dragged to rest exactly on a threshold
-/// would otherwise flicker between two layouts, a frame each, as the person
-/// lets go. A class that does not hold has to see a threshold pass by
-/// [`Metrics::layout_hysteresis`] before it changes, the same band
-/// [`NavShell`](crate::widget::NavShell) uses for its own thresholds.
+/// The class a surface holds while it lays out, re-derived from the rect of every pass
+/// ([`Widget::apply_layout`](crate::widget::Widget::apply_layout)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BreakpointTracker {
     held: Option<Breakpoint>,
@@ -216,13 +142,12 @@ impl BreakpointTracker {
         Self::default()
     }
 
-    /// Derive the class `width` asks for, holding the class of the last pass
-    /// until the width is clear of its threshold by the hysteresis band.
+    /// Derive the class `width` asks for, holding the class of the last pass until the
+    /// width is clear of its threshold by the hysteresis band.
     pub fn derive(&mut self, width: f64, m: &Metrics) -> Breakpoint {
         let (compact_at, wide_at) = Breakpoint::thresholds(m);
         let band = f64::from(m.layout_hysteresis);
         let next = match self.held {
-            // A surface that has not laid out takes the rect it is given.
             None => Breakpoint::of(width, m),
             Some(Breakpoint::Compact) => {
                 if width >= wide_at + band {
@@ -262,9 +187,9 @@ impl BreakpointTracker {
         self.held
     }
 
-    /// Forget the held class: the surface has no rect to speak of (it was
-    /// closed, or has not been laid out since its tree was rebuilt), so the
-    /// next pass derives from its rect alone.
+    /// Forget the held class: the surface has no rect to speak of (it was closed, or has
+    /// not been laid out since its tree was rebuilt), so the next pass derives from its
+    /// rect alone.
     pub fn forget(&mut self) {
         self.held = None;
     }
@@ -293,7 +218,6 @@ mod breakpoint_tests {
     #[test]
     fn each_size_lands_in_its_class() {
         let m = metrics();
-        // The product acceptance sizes: phone, tablet, laptop, desktop.
         assert_eq!(Breakpoint::of(390.0, &m), Breakpoint::Compact);
         assert_eq!(Breakpoint::of(768.0, &m), Breakpoint::Compact);
         assert_eq!(Breakpoint::of(1366.0, &m), Breakpoint::Wide);
@@ -312,16 +236,14 @@ mod breakpoint_tests {
         let band = f64::from(m.layout_hysteresis);
         let mut tracker = BreakpointTracker::new();
         assert_eq!(tracker.derive(compact_at + 1.0, &m), Breakpoint::Medium);
-        // Just under the threshold, inside the band: it stays Medium.
         assert_eq!(tracker.derive(compact_at - 1.0, &m), Breakpoint::Medium);
         assert_eq!(
             tracker.derive(compact_at - band + 1.0, &m),
             Breakpoint::Medium
         );
-        // The band's own edge still holds: a class is clear of it only past
-        // that edge, exactly as `NavShell`'s own thresholds read.
+        // The band's own edge still holds: a class is clear of it only past that edge,
+        // exactly as `NavShell`'s own thresholds read.
         assert_eq!(tracker.derive(compact_at - band, &m), Breakpoint::Medium);
-        // Clear of the band it is Compact, and now needs the band's room back.
         assert_eq!(
             tracker.derive(compact_at - band - 0.5, &m),
             Breakpoint::Compact

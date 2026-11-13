@@ -1,6 +1,5 @@
-//! Outcomes and deltas (convergence design 1.1): action parameter defaults, which an invocation
-//! that leaves the argument out gets, and the register writes whose meaning depends on where
-//! the change is applied.
+//! Outcomes and deltas (convergence design 1.1): action parameter defaults, which an invocation that leaves
+//! the argument out gets, and the register writes whose meaning depends on where the change is applied.
 
 use super::native::mentions;
 use super::{Checker, Ctx, Ex};
@@ -10,9 +9,8 @@ use crate::ir::{self, FuncKind, LocalId, Stmt};
 use crate::resolve::Callable;
 use crate::types::Ty;
 
-/// What a value in an action body is, as far as a register write needs to know: a place (a
-/// local or parameter and the fields read below it), `not` of one, or one plus or minus an
-/// amount.
+/// What a value in an action body is, as far as a register write needs to know: a place (a local or parameter
+/// and the fields read below it), `not` of one, or one plus or minus an amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Sym {
     Place(LocalId, Vec<String>),
@@ -21,8 +19,8 @@ pub(super) enum Sym {
 }
 
 impl Checker<'_> {
-    /// The function computing the default of the parameter `index` of `action`: a pure
-    /// function of the parameters before it.
+    /// The function computing the default of the parameter `index` of `action`: a pure function of the
+    /// parameters before it.
     pub(super) fn run_default(
         &mut self,
         action: &Callable,
@@ -42,7 +40,7 @@ impl Checker<'_> {
             None => (String::new(), Ty::Error, String::new()),
         };
         self.begin(Ctx::Fn, before, ty.clone(), "");
-        // Words a default says (`name: Text = say("New category")`) are the action's.
+        // Words a default says (`name: Text = std.say("New category")`) are the action's.
         self.st.words_of = Some(action.id.clone());
         let later: Vec<&str> = action
             .params
@@ -68,11 +66,10 @@ impl Checker<'_> {
         f
     }
 
-    /// The arguments of an action call: a parameter the call leaves out stands in its place as
-    /// what it is — [`crate::abi::Imp::MissingV`] — and the runtime computes its default when the
-    /// action is invoked, on the invoker's state, so a call leaves out any parameter, wherever
-    /// it stands. [`Checker::bind_args_or_default`] has already refused a parameter left out
-    /// that has no default.
+    /// The arguments of an action call: a parameter the call leaves out stands in its place as what it is —
+    /// [`crate::abi::Imp::MissingV`] — and the runtime computes its default when the action is invoked, on the
+    /// invoker's state, so a call leaves out any parameter, wherever it stands.
+    /// [`Checker::bind_args_or_default`] has already refused a parameter left out that has no default.
     pub(super) fn applied_args(c: &Callable, bound: Vec<Option<Ex>>) -> Vec<Ex> {
         let given = bound.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
         bound
@@ -88,10 +85,8 @@ impl Checker<'_> {
             .collect()
     }
 
-    // ---- register writes ------------------------------------------------------------------
-
-    /// What `e` is in terms of places, when it is a place, `not` of one, or one plus or minus
-    /// an amount; `let`s are followed.
+    /// What `e` is in terms of places, when it is a place, `not` of one, or one plus or minus an amount; `let`s
+    /// are followed.
     pub(super) fn sym_of(&self, e: &ast::Expr) -> Option<Sym> {
         match &e.kind {
             ExprKind::Ident(name) => {
@@ -151,9 +146,9 @@ impl Checker<'_> {
         }
     }
 
-    /// Refuses `x.f = not x.f` and `x.f = x.f + n`: a write of a register computed from that
-    /// same register, which recomputes wherever the change is applied. `place` is the written
-    /// place as source text, `base` the expression it is a field of.
+    /// Refuses `x.f = not x.f` and `x.f = x.f + n`: a write of a register computed from that same register, which
+    /// recomputes wherever the change is applied. `place` is the written place as source text, `base` the
+    /// expression it is a field of.
     pub(super) fn self_dependent_write(
         &mut self,
         base: &ast::Expr,

@@ -1,16 +1,8 @@
-//! Identifiers inside free text: links, email addresses, mentions and
-//! workspace aliases found in a run of prose.
-//!
-//! The shaping path runs this over every [`TextKind::Prose`] run, so a link
-//! in a chat message, an address in a mail body or a handle in a note is set
-//! as what it is — [`TextKind::Url`] or [`TextKind::Identifier`] — with no
-//! app involvement. Apps that want to act on the same spans (open a link,
-//! resolve a mention) call [`identifier_spans`] and get exactly the ranges
-//! the text is drawn with.
-//!
-//! The scan is a pure function of the text: whitespace-separated words,
-//! trimmed of the punctuation prose wraps them in, then classified. It runs
-//! in one pass over the bytes and allocates only for what it finds.
+//! Identifiers inside free text: links, email addresses, mentions and workspace aliases
+//! found in a run of prose. The shaping path runs this over every [`TextKind::Prose`]
+//! run, so a link in a chat message, an address in a mail body or a handle in a note is
+//! set as what it is — [`TextKind::Url`] or [`TextKind::Identifier`] — with no app
+//! involvement.
 
 use std::ops::Range;
 
@@ -19,20 +11,14 @@ use crate::text_render::TextKind;
 /// What an identifier span is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Detected {
-    /// A web or other scheme link (`https://…`, `www.…`, a bare
-    /// `example.com/path`).
     Url,
-    /// An email address.
     Email,
-    /// A handle: `@ilya`, `@ilya:example.org`.
     Mention,
-    /// A workspace's alias: `#channel:server` (`#general:example.org`).
     WorkspaceAlias,
 }
 
 impl Detected {
-    /// The kind the span is set as. Links get the slashed zero as well as
-    /// distinct I and l: a look-alike domain is a phishing vector.
+    /// The kind the span is set as.
     #[must_use]
     pub const fn kind(self) -> TextKind {
         match self {
@@ -45,14 +31,13 @@ impl Detected {
 /// One identifier found in a run of text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetectedSpan {
-    /// Byte range in the scanned text, on character boundaries.
     pub range: Range<usize>,
     pub what: Detected,
 }
 
-/// Top-level domains a bare host (no scheme, no `www.`, no path) must end
-/// in to count as a link. With a scheme, `www.` or a path any alphabetic
-/// TLD does; without, `file.txt` or `node.js` in a sentence must stay prose.
+/// Top-level domains a bare host (no scheme, no `www.`, no path) must end in to count as
+/// a link. With a scheme, `www.` or a path any alphabetic TLD does; without, `file.txt`
+/// or `node.js` in a sentence must stay prose.
 const BARE_TLDS: &[&str] = &[
     "com", "org", "net", "io", "dev", "app", "so", "ai", "co", "me", "info", "edu", "gov", "eu",
     "de", "uk", "fr", "nl", "be", "ch", "at", "es", "it", "se", "no", "dk", "fi", "pl", "cz", "pt",
@@ -60,7 +45,6 @@ const BARE_TLDS: &[&str] = &[
     "tech", "social", "chat", "link", "page", "blog", "news", "cloud", "tv", "fm", "gg",
 ];
 
-/// Punctuation prose puts before a word that is not part of it.
 fn is_leading_punct(c: char) -> bool {
     matches!(
         c,
@@ -68,7 +52,6 @@ fn is_leading_punct(c: char) -> bool {
     )
 }
 
-/// Punctuation prose puts after a word that is not part of it.
 fn is_trailing_punct(c: char) -> bool {
     matches!(
         c,
@@ -94,7 +77,6 @@ fn is_trailing_punct(c: char) -> bool {
     )
 }
 
-/// A soft hyphen the line breaker inserted is part of the word it sits in.
 const fn transparent(c: char) -> bool {
     matches!(c, '\u{AD}' | '\u{200B}' | '\u{2060}')
 }
@@ -107,7 +89,6 @@ fn is_handle_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '.' | '-') || transparent(c)
 }
 
-/// Whether `word` starts with `prefix`, ignoring ASCII case.
 fn starts_with_ignore_case(word: &str, prefix: &str) -> bool {
     word.get(..prefix.len())
         .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
@@ -143,14 +124,12 @@ fn is_scheme_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')
 }
 
-/// The visible characters of `s`, without soft hyphens.
 fn visible(s: &str) -> String {
     s.chars().filter(|c| !transparent(*c)).collect()
 }
 
-/// Length in bytes of the host at the start of `s` (`label(.label)+`) and
-/// its top-level domain, lowercased. The host has a dot and ends in an
-/// alphabetic TLD of two or more letters; a trailing dot is not part of it.
+/// Length in bytes of the host at the start of `s` (`label(.label)+`) and its top-level
+/// domain, lowercased.
 fn host_len(s: &str) -> Option<(usize, String)> {
     let mut end = 0;
     let mut previous_dot = true;
@@ -173,9 +152,6 @@ fn host_len(s: &str) -> Option<(usize, String)> {
     Some((end, tld.to_lowercase()))
 }
 
-/// Length of a URL path, query or fragment at the start of `s`, with the
-/// trailing punctuation prose closes it with removed. Parentheses stay
-/// when they balance inside the URL (Wikipedia-style links).
 fn tail_len(s: &str) -> usize {
     let mut end = s.len();
     loop {
@@ -197,13 +173,12 @@ fn tail_len(s: &str) -> usize {
     }
 }
 
-/// Classify one word (whitespace-free, leading punctuation already
-/// removed) starting at byte `base` of the scanned text.
+/// Classify one word (whitespace-free, leading punctuation already removed) starting at
+/// byte `base` of the scanned text.
 fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
     if !word.bytes().any(|b| matches!(b, b'@' | b'.' | b':' | b'#')) {
         return;
     }
-    // A link with a scheme anywhere in the word: `https://`, `tilo://`.
     if let Some(sep) = word.find("://") {
         let before = word.get(..sep).unwrap_or_default();
         let scheme_start = before
@@ -240,8 +215,6 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
             return;
         }
     }
-    // A handle or a workspace alias: `@name`, `@name:server.org`,
-    // `#general:server.org`.
     if let Some(first) = word.chars().next()
         && (first == '@' || first == '#')
     {
@@ -251,8 +224,6 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
             .find(|(_, c)| !is_handle_char(*c))
             .map_or(body.len(), |(index, _)| index);
         let handle = body.get(..len).unwrap_or_default();
-        // `@name:server.org` and `@name@server.org`: the server is part of
-        // the handle.
         let server = body.get(len..).and_then(|s| {
             s.strip_prefix(':')
                 .or_else(|| s.strip_prefix('@').filter(|_| first == '@'))
@@ -262,7 +233,6 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
         {
             len += 1 + host;
         } else if first == '#' {
-            // A bare hashtag is a tag, not an address.
             return;
         }
         let handle_len = tail_len(body.get(..len).unwrap_or_default());
@@ -278,7 +248,6 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
         }
         return;
     }
-    // An email address: local@host.tld.
     if let Some(at) = word.find('@') {
         let local_start = word
             .get(..at)
@@ -300,7 +269,6 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
         }
         return;
     }
-    // `www.example.org`, or a bare `example.org/path` or `example.com`.
     let www = starts_with_ignore_case(word, "www.");
     if let Some((host, tld)) = host_len(word) {
         let rest = word.get(host..).unwrap_or_default();
@@ -323,12 +291,11 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
     }
 }
 
-/// Every link, email address, mention and workspace alias in `text`, in
-/// order, as byte ranges on character boundaries.
+/// Every link, email address, mention and workspace alias in `text`, in order, as byte
+/// ranges on character boundaries.
 #[must_use]
 pub fn identifier_spans(text: &str) -> Vec<DetectedSpan> {
     let mut out = Vec::new();
-    // Cheap rejection: every identifier has one of these.
     if !text.bytes().any(|b| matches!(b, b'@' | b'.' | b':' | b'#')) {
         return out;
     }

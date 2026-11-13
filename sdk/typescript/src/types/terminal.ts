@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.terminal@54ffe4e754ac58fe";
+
 /** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
 export type ItemKind = "error" | "warning" | "location" | "url" | "test-passed" | "test-failed" | "test-ignored" | "change";
 
@@ -89,13 +94,12 @@ export interface Session extends tilo.Resource {
     started_ms: number;
     ended_ms: number;
     exit: number;
-    output_len: number;
     truncated: boolean;
     tool: string;
     undoable: boolean;
     items: unknown[];
     run: string;
-    output?: string;
+    output?: unknown;
     request?: string;
   }): Promise<tilo.Run | void>;
   recordTarget(args: {
@@ -124,7 +128,7 @@ export interface Session extends tilo.Resource {
 
 /** The `terminal.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {
-  return resourceProxy(ws, path) as unknown as Session;
+  return resourceProxy(ws, path, SURFACE) as unknown as Session;
 }
 
 /** Command history — `terminal.history`. */
@@ -144,7 +148,7 @@ export interface History extends tilo.Resource {
 
 /** The `terminal.history` kind at `path`. */
 export function terminalHistory(ws: tilo.Workspace, path: string): History {
-  return resourceProxy(ws, path) as unknown as History;
+  return resourceProxy(ws, path, SURFACE) as unknown as History;
 }
 
 /** Recent environments — `terminal.recent-environments`. */
@@ -158,6 +162,6 @@ export interface RecentEnvironments extends tilo.Resource {
 
 /** The `terminal.recent-environments` kind at `path`. */
 export function recentEnvironments(ws: tilo.Workspace, path: string): RecentEnvironments {
-  return resourceProxy(ws, path) as unknown as RecentEnvironments;
+  return resourceProxy(ws, path, SURFACE) as unknown as RecentEnvironments;
 }
 

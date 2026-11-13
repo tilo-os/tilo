@@ -1,14 +1,5 @@
-//! Disks as a resource.
-//!
-//! The block devices of this machine are live device state: the window
-//! probes them and publishes each drive and partition as a
-//! [`LiveRow`] beneath the storage resource, offering the
-//! [`DisksEffect`]s that apply to it. Mounting, formatting or ejecting
-//! changes one machine, never the document; the effects run where they are
-//! invoked, and only in a live window.
-//!
-//! The document holds what the person authors: the names they give their
-//! drives, keyed by serial number, which follow them to every device.
+//! Disks as a resource. Mounting, formatting or ejecting changes one machine, never the
+//! document; the effects run where they are invoked, and only in a live window.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -28,8 +19,8 @@ use crate::offer::{self, Offer};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Disks::valid)]
 pub struct Disks {
-    /// Drive serial number to the name the person gave it. A name is written
-    /// whole: two people naming one drive at once keep one of the names.
+    /// Drive serial number to the name the person gave it. A name is written whole: two
+    /// people naming one drive at once keep one of the names.
     pub names: BTreeMap<String, Atom>,
 }
 
@@ -46,7 +37,6 @@ impl Disks {
         Ok(())
     }
 
-    /// Every named drive's name, by serial number.
     pub fn names(&self) -> BTreeMap<String, String> {
         self.names
             .iter()
@@ -57,11 +47,6 @@ impl Disks {
 
 impl Disks {
     /// What the record holds: the names the person gives their drives.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -99,69 +84,52 @@ impl Disks {
     }
 }
 
-/// What Disks does to this machine, and how it shows it. Device effects
-/// name their target by its kernel name (`sda`, `nvme0n1p2`) and are
-/// checked against the latest probe before anything runs.
+/// What Disks does to this machine, and how it shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "disks.device")]
 pub enum DisksEffect {
-    /// Rescan storage devices.
     #[effect(kind = "read")]
     Rescan,
-    /// Select.
     #[effect(kind = "read")]
     Select {
         #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
         device: String,
     },
-    /// Show detail tab.
     #[effect(kind = "read")]
     ShowTab {
         #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,
     },
-    /// Mount.
     #[effect(job, label = "disks-action-mount")]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    /// Unmount.
     #[effect(job, label = "disks-action-unmount")]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    /// Erase a drive or partition for good: every file on it is lost, and it
-    /// starts again empty.
     #[effect(job, destructive, returns)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
-    /// Benchmark.
     #[effect(job, returns, label = "disks-action-benchmark")]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
-    /// Eject.
     #[effect(job, label = "disks-action-eject")]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,
     },
-    /// Open a mounted filesystem where it lives, in Files.
-    ///
-    /// A mount is only useful once its files are reachable: this is the way
-    /// there, without copying the path out of the row.
     #[effect(job, returns, label = "disks-open-in-files")]
     OpenFolder {
         #[param("Kernel name of the mounted partition")]
         device: String,
     },
-    /// Show how much room a mounted filesystem's files take up, in the Disk
-    /// Usage analyzer.
     #[effect(job, returns)]
     DiskUsage {
         #[param("Kernel name of the mounted partition")]
@@ -183,13 +151,8 @@ impl DisksEffect {
     }
 }
 
-/// The session link that opens the Disk Usage analyzer in the workspace the
-/// window is in. Its job is a different one from partitioning — what the
-/// person's own files take up, not what the hardware is — so the two apps
-/// find each other by link and stay two apps.
 pub(crate) const USAGE_LINK: &str = "tilo://open#/me/so.tilo.disk-usage";
 
-/// The mount point of `device` on `topology`, when it is mounted.
 pub(crate) fn mount_point(topology: &Topology, device: &str) -> Option<String> {
     topology
         .drives
@@ -200,19 +163,17 @@ pub(crate) fn mount_point(topology: &Topology, device: &str) -> Option<String> {
         .filter(|mount| !mount.trim().is_empty())
 }
 
-/// The published row of the drive named `leaf`.
 pub(crate) fn drive_row_id(leaf: &str) -> String {
     format!("disk:{leaf}")
 }
 
-/// The published row of the partition named `leaf`.
 pub(crate) fn partition_row_id(leaf: &str) -> String {
     format!("partition:{leaf}")
 }
 
-/// What formatting `part` of `drive` (`None`: the whole drive) erases, in
-/// the words the confirmation asks with: the partitions and the files a
-/// person would lose, never only the action's name.
+/// What formatting `part` of `drive` (`None`: the whole drive) erases, in the words the
+/// confirmation asks with: the partitions and the files a person would lose, never only the
+/// action's name.
 fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
     let Some(part) = part else {
         let count = drive.partitions.len();
@@ -252,9 +213,8 @@ fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
     }
 }
 
-/// `kind` on `device`, as a row offers it: unavailable, with the reason,
-/// when `offer` says so. Formatting asks the caller to type the device's
-/// name, as erasing it deserves, and says what is lost.
+/// `kind` on `device`, as a row offers it: unavailable, with the reason, when `offer` says
+/// so.
 fn row_operation(
     kind: ActionKind,
     device: &str,
@@ -296,8 +256,8 @@ fn operations(
     row
 }
 
-/// The row of one partition: select it, and the operations it shows, the
-/// same ones its context menu offers.
+/// The row of one partition: select it, and the operations it shows, the same ones its
+/// context menu offers.
 fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
     let row = LiveRow::new(
         partition_row_id(&part.name),
@@ -319,8 +279,6 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
             ActionKind::Format,
         ],
     );
-    // A mounted filesystem's files are reachable, so both ways to go and
-    // look at them are offered where the mount is.
     if part.mountpoint.is_none() {
         return row;
     }
@@ -338,8 +296,8 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
     ))
 }
 
-/// `effect` as a row operation, named `label`: what a row can do that
-/// changes nothing on the machine.
+/// `effect` as a row operation, named `label`: what a row can do that changes nothing on
+/// the machine.
 fn row_view_operation(effect: &DisksEffect, label: &str) -> ui::tilo_actions::ActionSpec {
     let mut spec = effect.bound();
     spec.type_mut().label.clone_from(&label.to_owned());
@@ -372,12 +330,8 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
     row
 }
 
-/// The framework app.
 pub struct DisksShell;
 
-/// Screenshot scenarios: the sample machine, staged, and (`laptop*`) a real
-/// laptop's captured storage. A phone-sized capture stages the same state as
-/// its wide twin.
 const SCENARIOS: &[&str] = &[
     "laptop",
     "laptop-partitions",
@@ -405,6 +359,7 @@ impl ResourceApp for DisksShell {
     const ID: &'static str = "so.tilo.disks";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Disks";
+    const TITLE_KEY: &'static str = "disks-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -420,11 +375,8 @@ impl ResourceApp for DisksShell {
         scenario
             .and_then(|name| match name {
                 "narrow" => Some((800, 600)),
-                // Narrow enough that the drive list collapses into a drawer.
                 "drawer" => Some((640, 600)),
                 _ if name.starts_with("phone") => Some((520, 820)),
-                // Tall enough for the list and the chosen partition's
-                // details under it.
                 "laptop-partitions" => Some((1280, 1280)),
                 _ => None,
             })
@@ -454,8 +406,8 @@ impl ResourceApp for DisksShell {
     }
 }
 
-/// The Disks window over `store`'s devices: it answers their effects and
-/// publishes them as live rows.
+/// The Disks window over `store`'s devices: it answers their effects and publishes them as
+/// live rows.
 fn window(cx: &ViewCx<Disks>, mut store: Store) -> Element {
     let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
     store.attach_framework(cx.dispatcher(), cx.mode(), fixture, cx.waker());
@@ -473,8 +425,6 @@ fn window(cx: &ViewCx<Disks>, mut store: Store) -> Element {
         cx.on_stage(move |scenario| store.borrow_mut().stage_scenario(scenario));
     }
     cx.publishing(
-        // Every drive on this machine with its partitions; a handful at
-        // most, so the whole set is published.
         Publishes::new().live_rows(move || store.borrow().drive_rows()),
         Box::new(window),
     )
@@ -508,8 +458,7 @@ mod tests {
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::Resource;
 
-    /// A live window over the sample machine: effects run, devices are
-    /// never touched.
+    /// A live window over the sample machine: effects run, devices are never touched.
     struct SampleDisks;
 
     impl ResourceApp for SampleDisks {
@@ -615,8 +564,8 @@ mod tests {
         assert_eq!(removable, 1, "only the removable drive ejects");
     }
 
-    /// What formatting erases is a sentence a person reads in their own
-    /// language, every device and scheme the sample machine has included.
+    /// What formatting erases is a sentence a person reads in their own language, every
+    /// device and scheme the sample machine has included.
     #[test]
     fn the_format_question_reads_in_the_persons_language() {
         let drive = Drive {
@@ -725,7 +674,6 @@ mod tests {
             );
         }
 
-        // Both are offered on the sample machine, which says what it would do.
         let said = |output: ui::tilo_actions::ActionOutput| {
             output
                 .value
@@ -754,7 +702,6 @@ mod tests {
     #[test]
     fn a_filesystem_that_is_not_mounted_has_nowhere_to_go() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        // A whole disk has no mount point of its own.
         assert!(
             app.effect(&DisksEffect::OpenFolder {
                 device: "nvme0n1".into()
@@ -788,13 +735,11 @@ mod tests {
         assert_eq!(mount_point(&topology, "sdb"), None, "a disk is not mounted");
     }
 
-    /// The drive page's two ways on reach the machine's own effects: the
-    /// buttons name the mounted filesystem the section has selected, and the
-    /// sample machine says what it would do rather than doing it.
+    /// The drive page's two ways on reach the machine's own effects: the buttons name the
+    /// mounted filesystem the section has selected, and the sample machine says what it
+    /// would do rather than doing it.
     #[test]
     fn the_drive_pages_ways_on_run_the_effects_they_name() {
-        // The drive page acts for the filesystem holding the most, not for
-        // whichever partition comes first.
         let topology = crate::model::Topology::sample();
         let mount = topology.drives[0]
             .partitions
@@ -838,7 +783,6 @@ mod tests {
         let inspection = app.harness().inspection_json().unwrap();
         assert!(inspection.contains("sda1"), "the partition is selected");
 
-        // A benchmark on the sample machine reports what it would run.
         let output = app
             .effect(&DisksEffect::Benchmark {
                 device: "sda".into(),
@@ -1024,8 +968,8 @@ ui::reach_tests!(DisksShell);
 
 #[cfg(test)]
 mod window_bar_tests {
-    /// The window bar's sidebar button flips the sidebar on every click, in a
-    /// window wide enough to dock it and in a narrow one.
+    /// The window bar's sidebar button flips the sidebar on every click, in a window wide
+    /// enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(|| {

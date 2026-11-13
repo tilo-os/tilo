@@ -12,8 +12,8 @@ weather-weather-places = { $op ->
 weather-weather-default-place = Den Standardort geändert
 weather-place-name = { $item } umbenannt
 
-weather-morning-summary = { $temperature }, { $condition } · Beobachtung { $time }
-weather-morning-source = Open-Meteo · abgerufen { $fetched }
+weather-morning-summary = { $temperature }, { $condition }
+weather-morning-source = Open-Meteo, abgerufen { $fetched }
 weather-morning-fixture = Aufnahmebeispiel
 weather-morning-stale = Letzte gespeicherte Beobachtung
 weather-morning-freshness = Anbieterbeobachtung
@@ -83,3 +83,38 @@ weather-locations-remove = Ort entfernen
 
 ## The forecast's own button
 weather-retry = Erneut versuchen
+
+## Der Himmel einer Stunde oder eines Tages, nach dem Wettercode des Anbieters.
+
+weather-sky-clear = Klarer Himmel
+weather-sky-mainly-clear = Überwiegend klar
+weather-sky-partly-cloudy = Teils bewölkt
+weather-sky-overcast = Bedeckt
+weather-sky-fog = Nebel
+weather-sky-rime-fog = Reifnebel
+weather-sky-light-drizzle = Leichter Nieselregen
+weather-sky-drizzle = Nieselregen
+weather-sky-dense-drizzle = Dichter Nieselregen
+weather-sky-freezing-drizzle = Gefrierender Nieselregen
+weather-sky-dense-freezing-drizzle = Dichter gefrierender Nieselregen
+weather-sky-slight-rain = Leichter Regen
+weather-sky-rain = Regen
+weather-sky-heavy-rain = Starker Regen
+weather-sky-freezing-rain = Gefrierender Regen
+weather-sky-heavy-freezing-rain = Starker gefrierender Regen
+weather-sky-slight-snow = Leichter Schneefall
+weather-sky-snow = Schneefall
+weather-sky-heavy-snow = Starker Schneefall
+weather-sky-snow-grains = Schneegriesel
+weather-sky-light-showers = Leichte Schauer
+weather-sky-showers = Schauer
+weather-sky-violent-showers = Heftige Schauer
+weather-sky-slight-snow-showers = Leichte Schneeschauer
+weather-sky-snow-showers = Schneeschauer
+weather-sky-thunderstorm = Gewitter
+weather-sky-thunderstorm-hail = Gewitter mit Hagel
+weather-sky-severe-thunderstorm = Schweres Gewitter
+weather-sky-unknown = Unbekannt
+
+## What the app is called in a window and in the launcher
+weather-app-title = Wetter

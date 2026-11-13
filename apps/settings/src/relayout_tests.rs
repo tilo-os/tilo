@@ -1,6 +1,6 @@
 //! A relayout (a resize, a theme change, a parent's reflow) keeps a pane's
-//! controls, and with them the hover, press and focus they hold; only a
-//! change in what the page shows, or in the language, rebuilds them.
+//! controls, and with them the hover, press and focus they hold; only a change
+//! in what the page shows, or in the language, rebuilds them.
 
 use crate::SettingsShell;
 use crate::effects::{NavigationEffect, SettingsEffect};
@@ -29,7 +29,6 @@ fn settle(app: &mut TestApp<SettingsShell>) {
     }
 }
 
-/// Which widget the control `id` is, and where.
 fn control(app: &mut TestApp<SettingsShell>, id: &str) -> (*const (), Rect) {
     let widget = ui::widget::find_test_id(app.harness().root_widget(), id)
         .unwrap_or_else(|| panic!("the page shows {id}"));
@@ -64,8 +63,6 @@ fn relayouts_keep_the_controls_of_panes_that_follow_their_fields() {
     }
 }
 
-/// A press that a relayout interrupts still lands: the toggle that took the
-/// press is the one the release reaches.
 #[test]
 fn a_press_survives_a_relayout() {
     let mut app = opened("accessibility");
@@ -83,8 +80,6 @@ fn a_press_survives_a_relayout() {
     assert!(app.settings::<AppearancePrefs>().get().high_contrast);
 }
 
-/// A value changed elsewhere moves the control it has; the chosen theme's
-/// tiles show a new theme, and the language rebuilds the page.
 #[test]
 fn values_move_controls_and_shape_or_language_rebuild_them() {
     let mut app = opened("appearance");

@@ -1,18 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-/// How a record's private share is protected on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyProtection {
-    /// Stored in the desktop's freedesktop Secret Service collection.
     SecretService,
     /// Stored as a mode-0600 host file, reachable only by the signing broker.
     BrokerFile,
-    /// An externally supplied provider has sealed this record.
     HardwareBacked,
     /// Legacy schema; migration has not completed yet.
     LegacyPlaintext,
-    /// No share of the identity's key is on this device: a device joined to
-    /// the identity acts through its root-signed device certificate.
     DeviceCertificate,
     /// Metadata names a backend this session cannot safely resolve.
     Unavailable,
@@ -33,9 +28,6 @@ impl KeyProtection {
     }
 }
 
-/// Non-secret information Settings may show for an identity record. The
-/// private signing share is absent and `Debug` is safe. It is what the
-/// host's identity actions answer, with the public key in hex.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentitySummary {
     pub id: String,

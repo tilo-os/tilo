@@ -144,3 +144,6 @@ firewall-blocked-title-traffic = { $proto }-Datenverkehr: { $action }
 firewall-blocked-title-plain = { $action }
 firewall-panic-banner = Der Panikmodus ist eingeschaltet
 firewall-stopped-banner = Die Firewall ist ausgeschaltet
+
+## What the app is called in a window and in the launcher
+firewall-app-title = Firewall

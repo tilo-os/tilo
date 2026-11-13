@@ -1,13 +1,4 @@
 //! Real VNC transport: an RFB client over a plain TCP socket.
-//!
-//! The protocol codec lives in [`crate::rfb`]; this module drives it. A
-//! background thread owns the socket: it runs the handshake, authenticates,
-//! then loops reading real `FramebufferUpdate`s from the server and applying
-//! them into a shared [`Framebuffer`], while draining queued input the other
-//! way. The UI thread reads the framebuffer each frame and paints it.
-//!
-//! On any failure the shared [`SessionStatus`] carries the real reason; the
-//! UI never falls back to a synthetic desktop.
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -24,17 +15,14 @@ use ui::lock::MutexRecover as _;
 /// the UI thread or consume unbounded memory.
 const VNC_INPUT_QUEUE_CAPACITY: usize = 256;
 
-/// Everything needed to open a VNC session.
 #[derive(Clone, Debug)]
 pub struct VncConfig {
     pub host: String,
     pub port: u16,
     /// Password for `VNC Authentication`. `None` uses the `None` security
-    /// type (fails if the server insists on a password).
     pub password: Option<String>,
 }
 
-/// An input event to inject into the remote desktop.
 #[derive(Clone, Copy, Debug)]
 pub enum VncInput {
     Pointer { button_mask: u8, x: u16, y: u16 },
@@ -68,8 +56,6 @@ impl VncSession {
                 if let Err(e) = run_client(&cfg, &status_worker, &frame_worker, &input_rx) {
                     let mut s = status_worker.lock_recover();
                     if !matches!(*s, SessionStatus::Failed(_)) {
-                        // A clean server close reads as EOF; anything else is
-                        // an honest failure.
                         if e.kind() == io::ErrorKind::UnexpectedEof
                             && *s == SessionStatus::Connected
                         {
@@ -95,8 +81,6 @@ impl VncSession {
     }
 
     /// Return the framebuffer if it has a newer generation than last taken.
-    /// This clone is shallow: the pixel allocation remains shared until the
-    /// worker receives the next update, when `Framebuffer` performs COW.
     pub fn take_frame(&mut self) -> Option<Framebuffer> {
         let fb = {
             let guard = self.frame.lock_recover();
@@ -156,23 +140,18 @@ fn run_client(
     let mut stream = TcpStream::connect((cfg.host.as_str(), cfg.port))?;
     stream.set_nodelay(true).ok();
 
-    // 1. ProtocolVersion exchange.
     let mut ver = [0u8; 12];
     stream.read_exact(&mut ver)?;
     let (maj, min) = rfb::parse_protocol_version(&ver)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad ProtocolVersion"))?;
     stream.write_all(&rfb::client_protocol_version(maj, min))?;
 
-    // 2. Security negotiation.
     negotiate_security(&mut stream, min, cfg.password.as_deref())?;
 
-    // 3. ClientInit (request a shared desktop).
     stream.write_all(&[1u8])?;
 
-    // 4. ServerInit → framebuffer geometry + name.
     let server_init = ServerInit::read(&mut stream)?;
 
-    // 5. Ask the server to speak our simple pixel format + encodings.
     let fmt = PixelFormat::rgb888();
     stream.write_all(&rfb::encode_set_pixel_format(&fmt))?;
     stream.write_all(&rfb::encode_set_encodings(&[
@@ -182,7 +161,6 @@ fn run_client(
     ]))?;
 
     let mut fb = Framebuffer::new(server_init.width, server_init.height);
-    // 6. Kick off with a full (non-incremental) update request.
     request_update(&mut stream, false, &fb)?;
 
     *status.lock_recover() = SessionStatus::Connected;
@@ -190,7 +168,6 @@ fn run_client(
 
     let mut last_request = ui::time::now();
     loop {
-        // Drain any queued input first.
         loop {
             match input_rx.try_recv() {
                 Ok(input) => write_input(&mut stream, input)?,
@@ -207,7 +184,6 @@ fn run_client(
         match stream.read_exact(&mut ty) {
             Ok(()) => {}
             Err(e) if is_timeout(&e) => {
-                // Idle: keep pixels fresh with a throttled incremental request.
                 if last_request.elapsed() >= Duration::from_millis(500) {
                     stream.set_read_timeout(None)?;
                     request_update(&mut stream, true, &fb)?;
@@ -221,7 +197,6 @@ fn run_client(
         stream.set_read_timeout(None)?;
         match ty[0] {
             0 => {
-                // FramebufferUpdate — decode straight from the socket.
                 rfb::decode_framebuffer_update(&mut stream, &mut fb, &fmt)?;
                 *frame.lock_recover() = Some(fb.clone());
                 request_update(&mut stream, true, &fb)?;
@@ -251,7 +226,6 @@ fn request_update(stream: &mut TcpStream, incremental: bool, fb: &Framebuffer) -
 }
 
 /// Negotiate the security handshake. Supports the 3.7+ type list plus the
-/// legacy 3.3 fixed-type form, and both `None` and `VNC Authentication`.
 fn negotiate_security(stream: &mut TcpStream, minor: u8, password: Option<&str>) -> io::Result<()> {
     let chosen = if minor >= 7 {
         let mut count = [0u8; 1];
@@ -270,7 +244,6 @@ fn negotiate_security(stream: &mut TcpStream, minor: u8, password: Option<&str>)
         stream.write_all(&[chosen])?;
         chosen
     } else {
-        // 3.3: the server dictates a single security type as a u32.
         let mut buf = [0u8; 4];
         stream.read_exact(&mut buf)?;
         u32::from_be_bytes(buf) as u8
@@ -278,7 +251,6 @@ fn negotiate_security(stream: &mut TcpStream, minor: u8, password: Option<&str>)
 
     match chosen {
         rfb::security::NONE => {
-            // 3.8 sends a SecurityResult even for None.
             if minor >= 8 {
                 read_security_result(stream)?;
             }
@@ -304,7 +276,6 @@ fn read_security_result(stream: &mut TcpStream) -> io::Result<()> {
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf)?;
     if u32::from_be_bytes(buf) != 0 {
-        // Failed — a reason string may follow (3.8).
         let reason = read_reason(stream).unwrap_or_else(|_| "authentication failed".into());
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
     }
@@ -320,7 +291,6 @@ fn read_reason(stream: &mut TcpStream) -> io::Result<String> {
 }
 
 fn read_set_colour_map(stream: &mut TcpStream) -> io::Result<()> {
-    // 3 pad + first-colour(u16) + number-of-colours(u16) + n*6 bytes.
     let mut head = [0u8; 5];
     stream.read_exact(&mut head)?;
     let n = u16::from_be_bytes([head[3], head[4]]) as usize;
@@ -329,7 +299,6 @@ fn read_set_colour_map(stream: &mut TcpStream) -> io::Result<()> {
 }
 
 fn read_server_cut_text(stream: &mut TcpStream) -> io::Result<()> {
-    // 3 pad + length(u32) + text.
     let mut head = [0u8; 7];
     stream.read_exact(&mut head)?;
     let len = u32::from_be_bytes([head[3], head[4], head[5], head[6]]) as usize;
@@ -350,9 +319,6 @@ mod tests {
     use std::net::TcpListener;
 
     /// A minimal RFB 3.8 server that offers `None` security and serves one
-    /// 4x2 Raw framebuffer of known pixels. Real socket, real bytes — the
-    /// client's handshake + decode run end-to-end against it. The server keeps
-    /// the connection open until the returned sender is dropped.
     fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> (u16, std::sync::mpsc::Sender<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -374,7 +340,6 @@ mod tests {
             let mut ci = [0u8; 1];
             s.read_exact(&mut ci).unwrap();
 
-            // ServerInit: 4x2, our rgb888 format, name "loopback".
             let mut si = Vec::new();
             si.extend_from_slice(&4u16.to_be_bytes());
             si.extend_from_slice(&2u16.to_be_bytes());
@@ -383,7 +348,6 @@ mod tests {
             si.extend_from_slice(b"loopback");
             s.write_all(&si).unwrap();
 
-            // Read SetPixelFormat (20), SetEncodings (var), FBUpdateRequest (10).
             let mut spf = [0u8; 20];
             s.read_exact(&mut spf).unwrap();
             let mut se_head = [0u8; 4];
@@ -394,8 +358,6 @@ mod tests {
             let mut req = [0u8; 10];
             s.read_exact(&mut req).unwrap();
 
-            // One FramebufferUpdate: 4x2 Raw of the given pixels (as BGRX).
-            // Layout: type(1) + pad(1) + rectangle-count(u16).
             let mut msg = vec![0u8, 0, 0, 1]; // type=0, pad=0, count=1
             msg.extend_from_slice(&0u16.to_be_bytes());
             msg.extend_from_slice(&0u16.to_be_bytes());
@@ -408,7 +370,6 @@ mod tests {
             }
             s.write_all(&msg).unwrap();
 
-            // Keep the socket open until the client has read the update.
             let _ = open.recv();
         });
         (port, keep_open)
@@ -418,7 +379,6 @@ mod tests {
     fn vnc_client_reads_real_framebuffer_and_reports_refusal_honestly() {
         eprintln!("phase real_vnc_round_trip_reads_framebuffer");
         {
-            // 4x2 checkerboard of primaries.
             let pixels = vec![
                 [255, 0, 0, 255],
                 [0, 255, 0, 255],
@@ -455,7 +415,6 @@ mod tests {
 
         eprintln!("phase refused_connection_is_honest_failure");
         {
-            // Nothing is listening on this port → an honest Failed, not a frame.
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             drop(listener); // free the port

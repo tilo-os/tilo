@@ -1,11 +1,13 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "word-processor.document"
 label = "Document"
 version = 3
 fields = [
-  { path = "body", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
+  { path = "body", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
   { path = "comments", type = { collection = { named = "Comment" } }, stored = "collection", unit = true },
   { path = "comments.*.anchor", type = "any" },
   { path = "comments.*.author", type = "text", readonly = true },

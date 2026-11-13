@@ -1,19 +1,8 @@
-//! Picking parts of a window from its retained tree: what a person means
-//! when they point at "this" to report a problem with it.
-//!
-//! Answers come from the widgets' own accessibility nodes, the tree
-//! assistive technology reads, never from pixels: the deepest node under a
-//! point that a person could name, the chain of named nodes around it (so a
-//! picker can widen from a word to its row), or the outermost named nodes
-//! inside a dragged rectangle. [`capture`] then reads a picked node's texts,
-//! each marked with whether it is the app's own fixed copy
-//! ([`AccessNode::interface_name`](crate::a11y::AccessNode::interface_name))
-//! or something a person or a resource put there.
-//!
-//! Paths are the inspection's widget paths (`Root[0]/Column[0]/Text[2]`),
-//! with `#i/j` for a widget's synthetic children (a virtual list's rows).
-//! Hosts run this wherever the widget tree lives: in the page for the
-//! browser desktop, in the app's own process for a native window.
+//! Picking parts of a window from its retained tree: what a person means when they point at "this" to
+//! report a problem with it. Answers come from the widgets' own accessibility nodes, the tree assistive
+//! technology reads, never from pixels: the deepest node under a point that a person could name, the
+//! chain of named nodes around it (so a picker can widen from a word to its row), or the outermost
+//! named nodes inside a dragged rectangle.
 
 use std::collections::HashMap;
 
@@ -32,8 +21,7 @@ pub struct PickTarget {
     pub name: Option<String>,
     /// Whether that name is the app's own fixed, localized copy.
     pub interface: bool,
-    /// What kind of thing it is in the app's own words ("Message"), where
-    /// its role says too little.
+    /// What kind of thing it is in the app's own words ("Message"), where its role says too little.
     pub kind: Option<String>,
     /// Where it is, in the window's logical coordinates.
     pub rect: Rect,
@@ -74,8 +62,7 @@ pub struct PickedText {
 /// The texts under a picked node, in reading order, its own name first.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PickCapture {
-    /// The node's role; `None` for a widget that names no semantics of
-    /// its own.
+    /// The node's role; `None` for a widget that names no semantics of its own.
     pub role: Option<Role>,
     /// What kind of thing it is in the app's own words.
     pub kind: Option<String>,
@@ -83,9 +70,7 @@ pub struct PickCapture {
     pub texts: Vec<PickedText>,
 }
 
-/// Deepest a walk goes; deeper trees are not a person's interface.
 const MAX_DEPTH: usize = 256;
-/// Most texts read under one pick.
 const MAX_TEXTS: usize = 64;
 
 fn nameable(node: &AccessNode) -> bool {
@@ -137,8 +122,6 @@ fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, S
         .collect()
 }
 
-/// A widget's accessibility node with its synthetic children placed, read
-/// inside its component's scope.
 fn access(widget: &dyn Widget) -> Option<AccessNode> {
     let _entry = crate::bound_dispatch::enter_widget(widget).ok()?;
     widget
@@ -146,9 +129,8 @@ fn access(widget: &dyn Widget) -> Option<AccessNode> {
         .map(|node| crate::a11y::with_synthetic_bounds(node, widget))
 }
 
-/// The named nodes under `point`, outermost first, ending with the deepest
-/// one: the chain a picker widens along. Of two nodes at one depth the
-/// later, painted over the earlier, wins. Empty where nothing nameable is.
+/// The named nodes under `point`, outermost first, ending with the deepest one: the chain a picker
+/// widens along.
 #[must_use]
 pub fn targets_at(root: &dyn Widget, point: Point) -> Vec<PickTarget> {
     let mut best: Option<(usize, Vec<PickTarget>)> = None;
@@ -271,9 +253,8 @@ fn visit_synthetic_at(
     walk(node, path, point, chain, best, 0);
 }
 
-/// The outermost named nodes wholly inside `area`, in reading order: a
-/// dragged rectangle around three rows picks the rows, around a whole list
-/// the list. At most `limit`.
+/// The outermost named nodes wholly inside `area`, in reading order: a dragged rectangle around three
+/// rows picks the rows, around a whole list the list. At most `limit`.
 #[must_use]
 pub fn targets_within(root: &dyn Widget, area: Rect, limit: usize) -> Vec<PickTarget> {
     let mut found = Vec::new();
@@ -328,7 +309,6 @@ fn visit_within(
     }
 }
 
-/// Whether the synthetic children of `node` gave any target.
 fn within_synthetic(
     node: &AccessNode,
     path: &str,
@@ -365,9 +345,8 @@ fn encloses(outer: Rect, inner: Rect) -> bool {
     inner.x0 >= outer.x0 && inner.y0 >= outer.y0 && inner.x1 <= outer.x1 && inner.y1 <= outer.y1
 }
 
-/// The texts under the node at `path`, its own name first: every name and
-/// value below it in reading order, without repeating one its parent
-/// already said. `None` when the tree no longer has that node.
+/// The texts under the node at `path`, its own name first: every name and value below it in reading
+/// order, without repeating one its parent already said.
 #[must_use]
 pub fn capture(root: &dyn Widget, path: &str) -> Option<PickCapture> {
     let (widget_path, synthetic) = match path.split_once('#') {
@@ -448,7 +427,6 @@ fn label(node: &AccessNode, rect: Option<Rect>) -> Option<PickedText> {
         })
 }
 
-/// A field's contents are always content; a protected field has none.
 fn value(node: &AccessNode, rect: Option<Rect>) -> Option<PickedText> {
     if node.state.protected {
         return None;
@@ -509,14 +487,10 @@ fn read_widget(widget: &dyn Widget, texts: &mut Vec<PickedText>, depth: usize) {
     }
 }
 
-/// Most areas [`sensitive_areas`] lists before it covers the whole part.
 const MAX_SENSITIVE: usize = 512;
 
-/// Where a picture of the node at `path` (whose bounds are `whole`) must
-/// be masked: every text that is not the app's own interface copy, every
-/// image and every protected field under it. Unlike [`capture`] nothing
-/// is left out for length: past `MAX_SENSITIVE` areas, or where the node
-/// is gone, the whole part is masked.
+/// Where a picture of the node at `path` (whose bounds are `whole`) must be masked: every text that is
+/// not the app's own interface copy, every image and every protected field under it.
 #[must_use]
 pub fn sensitive_areas(root: &dyn Widget, path: &str, whole: Rect) -> Vec<Rect> {
     let (widget_path, synthetic) = match path.split_once('#') {
@@ -581,8 +555,8 @@ fn sensitive_node(node: &AccessNode, rect: Option<Rect>, whole: Rect, areas: &mu
     }
 }
 
-/// Whether every word of `name` is in the text of a part of `node` that
-/// says where it is drawn: those parts are masked on their own.
+/// Whether every word of `name` is in the text of a part of `node` that says where it is drawn: those
+/// parts are masked on their own.
 fn spelled_by_parts(node: &AccessNode, name: &str) -> bool {
     fn words(text: &str) -> impl Iterator<Item = String> + '_ {
         text.split(|c: char| !c.is_alphanumeric())
@@ -626,10 +600,8 @@ fn sensitive_widget(widget: &dyn Widget, whole: Rect, areas: &mut Vec<Rect>, dep
     }
 }
 
-/// What the person last did through controls, newest last: the action
-/// and resource of each, in which component instance, and whether it ran.
-/// Only names travel; arguments never do. A report about picked parts
-/// carries the last few.
+/// What the person last did through controls, newest last: the action and resource of each, in which
+/// component instance, and whether it ran. Only names travel; arguments never do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentInvocation {
     /// Unix milliseconds.
@@ -637,8 +609,8 @@ pub struct RecentInvocation {
     pub instance: u64,
     pub resource: String,
     pub action: String,
-    /// The action's label as the app words it in the person's language
-    /// ("Post a message"), when the app published one.
+    /// The action's label as the app words it in the person's language ("Post a message"), when the app
+    /// published one.
     pub label: Option<String>,
     pub done: bool,
 }

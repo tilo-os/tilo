@@ -29,8 +29,7 @@ fn mix_spring(
     }
 }
 
-/// `1` leaves the stock springs. Below that the snappy spring moves toward
-/// subtle; above it, toward bouncy. Heavy and tracking stay put.
+/// `1` leaves the stock springs.
 fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
     let stock = motion.springs;
     let calm = (1.0 - character).clamp(0.0, 1.0);
@@ -43,8 +42,6 @@ fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
     motion.springs.bouncy = mix_spring(stock.bouncy, stock.snappy, calm);
 }
 
-/// The ink a border role names, or `None` for the stock hairlines (each
-/// surface derives its own).
 fn border_ink(colors: &Colors, ink: crate::tokens::BorderInk) -> Option<Color> {
     match ink {
         crate::tokens::BorderInk::Hairline => None,
@@ -57,8 +54,6 @@ fn clamp_to(value: f32, band: &std::ops::RangeInclusive<f32>) -> f32 {
     value.clamp(*band.start(), *band.end())
 }
 
-/// The colour tokens `document` paints with for the person wearing `you`,
-/// repaired where a floor is missed.
 fn colors_of(document: &ThemeDocument, you: PresenceHue) -> Colors {
     let mut colors =
         Colors::of_palette(&document.palette, document.emphasis, document.presence, you);
@@ -67,16 +62,15 @@ fn colors_of(document: &ThemeDocument, you: PresenceHue) -> Colors {
     colors
 }
 
-/// Every token `document` produces, with values outside a role's usable
-/// band clamped. The document is assumed admitted.
+/// Every token `document` produces, with values outside a role's usable band clamped.
 fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     let mut tokens = Tokens::around(colors_of(document, you));
     tokens.radii = crate::tokens::Radii::from_window_radius(clamp_to(
         document.shape.window_radius,
         &ThemeShape::USABLE,
     ));
-    // Proportional on every step; `Metrics` stay at their defaults, so a
-    // gutter preference never shrinks a pointer target.
+    // Proportional on every step; `Metrics` stay at their defaults, so a gutter
+    // preference never shrinks a pointer target.
     tokens.spacing = crate::tokens::Spacing::BASE
         .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
     tokens.typography.set_face(&document.type_.face);
@@ -131,12 +125,9 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens.border_color = border_ink(&tokens.colors, document.shape.border.ink)
         .filter(|_| document.shape.border.outlines());
     if let Some(ink) = tokens.border_color {
-        // A floating panel's inner hairline becomes the border.
         tokens.elevation.floating_edge = ink;
     }
-    // The pointer's answer is the document's response role. One that states
-    // none and holds still answers with lifts only: nothing scales and no
-    // edge lights, the same rule reduced motion follows.
+    // The pointer's answer is the document's response role.
     tokens.response =
         document
             .response
@@ -176,71 +167,44 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
 /// How many pages wide a pane is before a document's text grows
 /// ([`Theme::document_zoom`]): a page then fills about two fifths of it.
 pub const DOCUMENT_ROOM: f64 = 2.6;
-/// The most a document's text grows in a wide pane: body text from 14 px to
-/// 21 px, about what the same page reads at on a laptop held at arm's length
-/// against a desktop display across the desk.
+/// The most a document's text grows in a wide pane: body text from 14 px to 21 px, about
+/// what the same page reads at on a laptop held at arm's length against a desktop display
+/// across the desk.
 pub const MAX_DOCUMENT_ZOOM: f32 = 1.5;
 
 #[derive(Debug)]
 pub struct Theme {
     pub name: String,
-    /// The document this theme was built from, as applied: after the
-    /// workspace temperature and high contrast.
     pub document: ThemeDocument,
     pub tokens: Tokens,
-    // Shortcuts — derived from tokens on construction. Grounds are not
-    // among them: the framework paints `surfaces.content` and each region's
-    // tier ([`Theme::region`]); a hover or pressed fill is the lift of the
-    // ground the control sits on (`intent.selection_hover`/`selection`, or
-    // `Colors::lift_on`).
     pub border_standard: Color,
-    /// The focus ring: the person's own colour ([`crate::tokens::Intents::you`]).
     pub border_focus: Color,
     pub text_primary: Color,
-    /// Second tier of the type hierarchy (captions, sub-labels).
     pub text_dim: Color,
-    /// Quietest legible tier (timestamps, hints), below [`Theme::text_dim`].
     pub text_tertiary: Color,
     pub status_success: Color,
-    /// The control radius ([`crate::tokens::Radii::control`]).
     pub radius_standard: f64,
     pub padding_standard: f32,
     pub gap_standard: f32,
-    /// Carried on the theme (not passed through `draw`) so every widget
-    /// reacts without new plumbing. Default `false`.
     pub reduce_motion: bool,
-    /// Floating chrome draws its material opaque instead of over the blurred
-    /// backdrop (`crate::floating_surface::Material`). Default `false`.
     pub reduce_transparency: bool,
-    /// `1.0` = default. Baked into every [`Theme::text`] role by
-    /// [`Theme::with_text_scale`]; kept here too so a widget can scale a
-    /// size it computes itself.
+    /// `1.0` = default.
     pub text_scale: f32,
-    /// The "make everything bigger" knob — spacing, radii, and type scale
-    /// together, distinct from [`Theme::text_scale`] (type only). Baked in
-    /// by [`Theme::with_ui_scale`]. Composes with the compositor's
-    /// per-output device scale: physical size = logical × `ui_scale` ×
-    /// device-scale, text additionally × `text_scale`.
+    /// The "make everything bigger" knob — spacing, radii, and type scale together,
+    /// distinct from [`Theme::text_scale`] (type only).
     pub ui_scale: f32,
-    /// Width of an insertion caret in logical pixels. The configured theme
-    /// folds in the accessibility preference once, keeping file I/O out of
-    /// widget draw paths.
+    /// Width of an insertion caret in logical pixels.
     pub caret_width: f64,
-    /// High contrast or forced colours is the active track. Content surfaces
-    /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
     pub forced_colors: bool,
-    /// The shape of the surface the window is drawn on, in the coordinates
-    /// of the scene being drawn, when its host says: rounded at the radius
-    /// the compositor draws the window with, square while it is drawn edge
-    /// to edge. `None` when no host said; nothing then keeps out of corners.
-    /// Set where the window is drawn, not part of the configured theme.
+    /// The shape of the surface the window is drawn on, in the coordinates of the scene
+    /// being drawn, when its host says: rounded at the radius the compositor draws the
+    /// window with, square while it is drawn edge to edge.
     pub surface: Option<SurfaceShape>,
 }
 
-// Written out rather than derived: a derived `eq` is `#[inline]`, so every
-// app whose generic toolkit code compares themes (a tree view's or an
-// embedded view's layout) compiled its own copy of this comparison, about
-// 7 KB each. The destructuring keeps it in step with the fields.
+// Written out rather than derived: a derived `eq` is `#[inline]`, so every app whose
+// generic toolkit code compares themes (a tree view's or an embedded view's layout)
+// compiled its own copy of this comparison, about 7 KB each.
 impl PartialEq for Theme {
     fn eq(&self, other: &Self) -> bool {
         let Self {
@@ -287,8 +251,8 @@ impl PartialEq for Theme {
 }
 
 impl Clone for Theme {
-    /// Out of line: a derived clone is inlined, with the token tables it copies, so every app that
-    /// cloned a theme compiled one of its own.
+    /// Out of line: a derived clone is inlined, with the token tables it copies, so every
+    /// app that cloned a theme compiled one of its own.
     #[inline(never)]
     fn clone(&self) -> Self {
         Self {
@@ -321,9 +285,7 @@ impl Default for Theme {
     }
 }
 
-/// Every shipped theme, so an assertion about "a theme's surfaces" covers
-/// all of them. Crate-visible (test builds only) because sibling-module
-/// widget tests sweep the same list.
+/// Every shipped theme, so an assertion about "a theme's surfaces" covers all of them.
 #[cfg(test)]
 pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
@@ -342,14 +304,7 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     || Theme::preset(Preset::LiquidGlassLight),
 ];
 
-/// Polled by [`crate::app::App`] once per frame and reconciled against the
-/// live theme. Level-triggered like `fullscreen_intent`: a *steady* value is
-/// correct, since the App only re-themes when a field differs from what's
-/// applied, so a settings pane can return the same intent every open frame.
-///
-/// `base_theme` is the colour theme **only**; the App layers high-contrast,
-/// UI scale, and text scale on top itself, keeping that bookkeeping in one
-/// place.
+/// Polled by [`crate::app::App`] once per frame and reconciled against the live theme.
 #[derive(Clone, Debug)]
 pub struct AppearanceIntent {
     pub base_theme: Theme,
@@ -359,13 +314,13 @@ pub struct AppearanceIntent {
     pub ui_scale: f32,
 }
 
-/// The local wall-clock moment the day/night schedule is evaluated at, read
-/// through the toolkit clock.
+/// The local wall-clock moment the day/night schedule is evaluated at, read through the
+/// toolkit clock.
 #[must_use]
 pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
     use chrono::{Datelike, Offset, Timelike};
-    // Through the epoch offset: chrono converts only std's clock type, which
-    // is not the toolkit clock in the browser.
+    // Through the epoch offset: chrono converts only std's clock type, which is not the
+    // toolkit clock in the browser.
     let since_ms = crate::time::unix_now_ms();
     let local = chrono::DateTime::from_timestamp(
         i64::try_from(since_ms / 1000).unwrap_or(i64::MAX),
@@ -381,31 +336,23 @@ pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
 }
 
 impl Theme {
-    /// Derived on every colour change, so the terminal and every
-    /// syntax-highlighting surface track the OS theme instead of a
-    /// hard-coded one.
     fn derive_palettes(tokens: &mut Tokens) {
         tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
         tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
     }
 
-    /// The theme `document` describes, worn by `you`. The document is
-    /// assumed admitted; values outside a role's usable band are clamped and
-    /// a missed contrast floor is repaired.
+    /// The theme `document` describes, worn by `you`.
     fn built(document: ThemeDocument, you: PresenceHue) -> Self {
         let tokens = Self::derived(&document, you);
         Self::assembled(document, tokens)
     }
 
-    /// Every token `document` produces for `you`, palettes included: the
-    /// expensive half of [`Self::built`], a pure function of its inputs.
     fn derived(document: &ThemeDocument, you: PresenceHue) -> Tokens {
         let mut tokens = tokens_of(document, you);
         Self::derive_palettes(&mut tokens);
         tokens
     }
 
-    /// The theme around `tokens` already derived from `document`.
     fn assembled(document: ThemeDocument, tokens: Tokens) -> Self {
         let c = &tokens.colors;
         Self {
@@ -431,14 +378,13 @@ impl Theme {
         }
     }
 
-    /// Why `document` is not a theme this build can show, as the person or
-    /// the theme's author reads it: the schema, an out-of-band role, or a
-    /// surface shader that is not a surface shader. `None` when it is a
-    /// theme.
+    /// Why `document` is not a theme this build can show, as the person or the theme's
+    /// author reads it: the schema, an out-of-band role, or a surface shader that is not
+    /// a surface shader.
     #[must_use]
     pub fn refusal(document: &ThemeDocument) -> Option<String> {
-        // A surface shader's own compile error first: the structural check
-        // below only knows that one is wrong, not where.
+        // A surface shader's own compile error first: the structural check below only
+        // knows that one is wrong, not where.
         let material = &document.material;
         for (role, finish) in [
             ("window", Some(&material.window)),
@@ -456,10 +402,8 @@ impl Theme {
         document.validate().err().map(str::to_owned)
     }
 
-    /// The theme a document describes, or `None` for one this build does not
-    /// admit ([`Self::refusal`], which names why). Values outside a role's
-    /// usable band are clamped, and a pairing that misses a contrast floor
-    /// is repaired, so every theme that materializes is legible.
+    /// The theme a document describes, or `None` for one this build does not admit
+    /// ([`Self::refusal`], which names why).
     #[must_use]
     pub fn from_document(document: &ThemeDocument) -> Option<Self> {
         if Self::refusal(document).is_some() {
@@ -468,12 +412,6 @@ impl Theme {
         Some(Self::built(document.clone(), PresenceHue::Blue))
     }
 
-    /// A shipped theme.
-    ///
-    /// Widgets build a preset as their look until a host hands them the
-    /// configured one, so a single layout builds it hundreds of times.
-    /// Deriving the tokens runs the contrast repair and every palette, so
-    /// each preset derives them once and a build after that is a copy.
     #[must_use]
     pub fn preset(preset: Preset) -> Self {
         static DERIVED: [std::sync::OnceLock<(ThemeDocument, Tokens)>; Preset::ALL.len()] =
@@ -503,21 +441,18 @@ impl Theme {
     }
 
     /// Black ground under near-white ink, every text pairing at WCAG AAA.
-    /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
-    /// is set on a dark theme.
     pub fn high_contrast() -> Self {
         Self::preset(Preset::HighContrast)
     }
 
-    /// Ink tiers on the content surface — the window ground every app
-    /// paints on.
+    /// Ink tiers on the content surface — the window ground every app paints on.
     pub fn on_content(&self) -> crate::tokens::OnSurface {
         self.tokens.colors.on_content()
     }
 
-    /// The ground of `region` (HIG §9.2): `surfaces.content`,
-    /// `surfaces.sidebar` or `surfaces.inspector`. The framework paints it
-    /// ([`crate::surface::region`]); a caller reads it to measure against.
+    /// The ground of `region` (HIG §9.2): `surfaces.content`, `surfaces.sidebar` or
+    /// `surfaces.inspector`. The framework paints it ([`crate::surface::region`]); a
+    /// caller reads it to measure against.
     #[must_use]
     pub fn region(&self, region: crate::surface::Region) -> Color {
         let s = &self.tokens.colors.surfaces;
@@ -528,19 +463,10 @@ impl Theme {
         }
     }
 
-    /// This theme as seen by a widget standing on `ground`: a region tier, a
-    /// raised well, a document's paper. `surfaces.content` becomes `ground`,
-    /// the text tiers are re-measured against it ([`Self::on_surface`]) and
-    /// the selection lift steps from it, so a widget that paints "ink on
-    /// the window ground" or "the selected row" is right on whatever ground
-    /// its container handed it. `surfaces.raised` stays off the ground
-    /// ([`crate::tokens::Colors::raised_on`]), so a control's face never
-    /// sinks into a lighter panel. When `ground` has the other polarity
-    /// from the palette (the near-black `media.letterbox` under a light
-    /// theme) and the emphasis is inverted, the primary fill is re-derived
-    /// too: primary ink on that ground as the fill and the ground as its
-    /// label, so a `Primary` button over media still reads. Every other
-    /// token is unchanged.
+    /// This theme as seen by a widget standing on `ground`: a region tier, a raised well,
+    /// a document's paper. `surfaces.raised` stays off the ground
+    /// ([`crate::tokens::Colors::raised_on`]), so a control's face never sinks into a
+    /// lighter panel.
     #[must_use]
     pub fn on_ground(&self, ground: Color) -> Self {
         let mut theme = self.clone();
@@ -561,9 +487,9 @@ impl Theme {
         let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
         if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
         {
-            // The same construction the palette uses on its own ground:
-            // primary ink as the fill, hover 12 % of the way back toward
-            // the ground, the ground as the label.
+            // The same construction the palette uses on its own ground: primary ink as
+            // the fill, hover 12 % of the way back toward the ground, the ground as the
+            // label.
             c.intent.accent = on.ink;
             c.intent.accent_hover = crate::tokens::colors::over(on.ink, ground, 0.12);
             c.intent.accent_pressed = crate::tokens::colors::over(on.ink, ground, 0.24);
@@ -577,8 +503,6 @@ impl Theme {
         theme
     }
 
-    /// Relative luminance below which a ground counts as dark: the point
-    /// where black and white ink contrast equally with it.
     const POLARITY_LUMINANCE: f64 = 0.179;
 
     /// [`Self::on_ground`] for one of the window's regions.
@@ -587,10 +511,8 @@ impl Theme {
         self.on_ground(self.region(region))
     }
 
-    /// [`Self::on_content`] for any surface a widget actually paints on — a
-    /// document's paper, a tinted placeholder box, a chart panel. See
-    /// [`crate::tokens::Colors::on_surface`] for why the surface is a
-    /// parameter.
+    /// [`Self::on_content`] for any surface a widget actually paints on — a document's
+    /// paper, a tinted placeholder box, a chart panel.
     pub fn on_surface(&self, surface: Color) -> crate::tokens::OnSurface {
         self.tokens.colors.on_surface(surface)
     }
@@ -600,19 +522,16 @@ impl Theme {
         self.tokens.colors.on_surface_at(surface, min_ratio)
     }
 
-    /// See [`crate::tokens::Colors::window_edge`] for why it's derived from
-    /// the desktop ground rather than a constant.
+    /// See [`crate::tokens::Colors::window_edge`] for why it's derived from the desktop
+    /// ground rather than a constant.
     pub fn window_edge(&self) -> Color {
         self.tokens.colors.window_edge()
     }
 
-    /// The same theme in a workspace whose temperature is `hue` (OKLCH
-    /// degrees). Only the neutral material's hue moves — never its chroma,
-    /// so a palette with chroma 0 (the default dark) shows no temperature
-    /// at all, and the light palette, pure grey until now, takes its
-    /// chroma at this hue. Presence, status, emphasis and the person's own
-    /// colour keep their hues, and every contrast promise holds at every
-    /// hue. A workspace's temperature comes from [`workspace_hue`].
+    /// The same theme in a workspace whose temperature is `hue` (OKLCH degrees). Only the
+    /// neutral material's hue moves — never its chroma, so a palette with chroma 0 (the
+    /// default dark) shows no temperature at all, and the light palette, pure grey until
+    /// now, takes its chroma at this hue.
     #[must_use]
     pub fn with_neutral_hue(mut self, hue: f32) -> Self {
         if !hue.is_finite() || self.document.palette.chroma <= 0.0 {
@@ -623,10 +542,8 @@ impl Theme {
         self
     }
 
-    /// The person's own colour becomes their focus ring, text caret and
-    /// text-selection tint, painted at this theme's presence lightness and
-    /// chroma. A colour is identity, not theme: the host that knows who sits
-    /// here applies it ([`PresenceHue::chosen_in`], [`PresenceHue::of_identity`]).
+    /// The person's own colour becomes their focus ring, text caret and text-selection
+    /// tint, painted at this theme's presence lightness and chroma.
     #[must_use]
     pub fn with_your_colour(mut self, hue: PresenceHue) -> Self {
         if self.tokens.colors.you != hue {
@@ -636,9 +553,9 @@ impl Theme {
         self
     }
 
-    /// The same theme on the high-contrast palette of its polarity: shape,
-    /// density, type and motion stay, the person keeps their colour, and
-    /// content surfaces are asked to force their colours.
+    /// The same theme on the high-contrast palette of its polarity: shape, density, type
+    /// and motion stay, the person keeps their colour, and content surfaces are asked to
+    /// force their colours.
     #[must_use]
     pub fn with_high_contrast(mut self) -> Self {
         if self.document.palette.high_contrast {
@@ -651,16 +568,11 @@ impl Theme {
         self
     }
 
-    /// Rebuild the colour tokens from [`Self::document`] after its palette,
-    /// emphasis, presence or material changed, keeping every other token
-    /// (scaled spacing and type stay scaled).
     fn recolour(&mut self) {
         self.tokens.colors = colors_of(&self.document, self.tokens.colors.you);
         self.refresh_colour_shortcuts();
     }
 
-    /// Re-derive every shortcut and derived palette after the colour tokens
-    /// changed in place.
     fn refresh_colour_shortcuts(&mut self) {
         Self::derive_palettes(&mut self.tokens);
         let c = &self.tokens.colors;
@@ -672,10 +584,8 @@ impl Theme {
         self.status_success = c.semantic.success;
     }
 
-    /// Reads the person's settings ([`settings_store::load`]), the shared
-    /// preference Settings and Theme Studio update through their respective
-    /// domain stores. Absent and unrecognised both mean the dark default — a
-    /// machine with no preference wants a desktop that starts.
+    /// Reads the person's settings ([`settings_store::load`]), the shared preference
+    /// Settings and Theme Studio update through their respective domain stores.
     pub fn configured() -> Self {
         Self::configured_from(&settings_store::load())
     }
@@ -691,14 +601,10 @@ impl Theme {
         let mut stack =
             crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
         // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
-        // Baking the file's factors here would apply them twice. Reduced motion
-        // is either source: the person's switch in Settings (the file), or the
-        // host override — the compositor is itself a UI host, so an explicitly
-        // reduced-motion session must not keep full-desktop transitions running
-        // even when settings.json has not been written yet. Taking only the
-        // override left the Settings switch unable to reach the shell's chrome.
-        // A file schema this build rejects does not contribute contrast,
-        // caret or motion. The host override is its own admitted layer.
+        // Reduced motion is either source: the person's switch in Settings (the file), or
+        // the host override — the compositor is itself a UI host, so an explicitly
+        // reduced-motion session must not keep full-desktop transitions running even when
+        // settings.json has not been written yet.
         let file = stack.accessibility;
         let admitted = file.validate().is_ok();
         stack.accessibility = crate::theme_layers::AccessibilityLayer {
@@ -716,28 +622,25 @@ impl Theme {
         resolve_theme_layers(&stack)
     }
 
-    /// The accessibility comforts the person chose in this process's
-    /// settings document (the installed source, else the settings file), with
-    /// what the launcher requested ([`crate::host::environment()`]) on top:
-    /// high contrast, text size, interface scale and reduced motion. The
-    /// layer [`Theme::configured`] leaves to its host, which applies it over
-    /// that theme on every settings change, so a change in Settings reaches a
-    /// running window without a restart.
+    /// The accessibility comforts the person chose in this process's settings document
+    /// (the installed source, else the settings file), with what the launcher requested
+    /// ([`crate::host::environment()`]) on top: high contrast, text size, interface scale
+    /// and reduced motion.
     #[must_use]
     pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
         Self::configured_comforts().or_default()
     }
 
-    /// [`Self::configured_accessibility`], saying which comforts the
-    /// document names at all: a host keeps its own value for one it does not.
+    /// [`Self::configured_accessibility`], saying which comforts the document names at
+    /// all: a host keeps its own value for one it does not.
     #[must_use]
     pub fn configured_comforts() -> ConfiguredComforts {
         let document = serde_json::Value::Object(settings_store::load());
         Self::comforts_in(&document, crate::host::environment().accessibility)
     }
 
-    /// [`Self::configured_accessibility`] of an explicit settings document
-    /// and launch request.
+    /// [`Self::configured_accessibility`] of an explicit settings document and launch
+    /// request.
     #[must_use]
     pub fn accessibility_in(
         document: &serde_json::Value,
@@ -746,12 +649,11 @@ impl Theme {
         Self::comforts_in(document, requested).or_default()
     }
 
-    /// [`Self::configured_comforts`] of an explicit settings document and
-    /// launch request. The launcher's request is a floor for contrast and
-    /// motion (it can add them, never take them away) and gives the scales
-    /// until the document names its own: the document is the person's
-    /// current choice, the request a copy of it from when the window opened.
-    /// A layer this build rejects names nothing.
+    /// [`Self::configured_comforts`] of an explicit settings document and launch request.
+    /// The launcher's request is a floor for contrast and motion (it can add them, never
+    /// take them away) and gives the scales until the document names its own: the
+    /// document is the person's current choice, the request a copy of it from when the
+    /// window opened.
     #[must_use]
     pub fn comforts_in(
         document: &serde_json::Value,
@@ -796,15 +698,14 @@ impl Theme {
         }
     }
 
-    /// The user's theme in a settings document, if it names one this build
-    /// admits. Automatic mode resolves against the local time now.
+    /// The user's theme in a settings document, if it names one this build admits.
     pub fn from_settings_json(text: &str) -> Option<Self> {
         Self::from_settings_json_at(text, local_moment())
     }
 
-    /// [`Self::from_settings_json`] at an explicit local moment: automatic
-    /// mode is the light theme by day and the dark theme by night, on the
-    /// schedule night light shares (`settings_store::day_schedule`).
+    /// [`Self::from_settings_json`] at an explicit local moment: automatic mode is the
+    /// light theme by day and the dark theme by night, on the schedule night light shares
+    /// (`settings_store::day_schedule`).
     pub fn from_settings_json_at(
         text: &str,
         moment: settings_store::day_schedule::LocalMoment,
@@ -814,9 +715,8 @@ impl Theme {
         Self::from_document(&document)
     }
 
-    /// The day/night schedule an automatic appearance in `document` follows,
-    /// or `None` when the mode is fixed. Hosts keep it to notice sunrise and
-    /// sunset, which change the theme without changing the settings.
+    /// The day/night schedule an automatic appearance in `document` follows, or `None`
+    /// when the mode is fixed.
     pub fn automatic_schedule_from(
         document: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<settings_store::day_schedule::Scheduled> {
@@ -829,9 +729,6 @@ impl Theme {
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
-    ///
-    /// Exists so a check can be run against *all* of them rather than against
-    /// whichever two someone remembered.
     pub const ALL: [&'static str; 14] = [
         Preset::Dark.name(),
         Preset::DarkCool.name(),
@@ -849,16 +746,15 @@ impl Theme {
         Preset::LiquidGlassLight.name(),
     ];
 
-    /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
-    /// same lookup serves a picker, the persisted preference and the
-    /// `--shots` theme override. `None` for an unknown name.
+    /// A shipped theme by id or name, loosely ([`Preset::find`]), so the same lookup
+    /// serves a picker, the persisted preference and the `--shots` theme override.
     pub fn named(name: &str) -> Option<Self> {
         Preset::find(name).map(Self::preset)
     }
 
-    /// The motion widgets may play: the motion tokens with reduced motion
-    /// applied. Every motion decision reads this, never `reduce_motion`
-    /// alongside raw durations, so the rule lives in one place.
+    /// The motion widgets may play: the motion tokens with reduced motion applied. Every
+    /// motion decision reads this, never `reduce_motion` alongside raw durations, so the
+    /// rule lives in one place.
     #[must_use]
     pub fn motion(&self) -> crate::tokens::EffectiveMotion {
         crate::tokens::EffectiveMotion::new(self.tokens.motion, self.reduce_motion)
@@ -870,10 +766,10 @@ impl Theme {
         self
     }
 
-    /// The finish `role` is painted in: the theme's, made opaque under
-    /// reduced transparency (a flat finish stays flat, a theme's own set
-    /// keeps drawing opaque), and the toolkit's own under forced colours,
-    /// whose guarantees are not a theme's set to keep.
+    /// The finish `role` is painted in: the theme's, made opaque under reduced
+    /// transparency (a flat finish stays flat, a theme's own set keeps drawing opaque),
+    /// and the toolkit's own under forced colours, whose guarantees are not a theme's set
+    /// to keep.
     #[must_use]
     pub fn finish(&self, role: crate::tokens::SurfaceRole) -> &crate::tokens::Finish {
         let finish = self.tokens.finishes.of(role);
@@ -886,14 +782,11 @@ impl Theme {
         }
     }
 
-    /// The finish the shell's chrome — its bar and its dock — is made of, as the person chose
-    /// it ([`crate::tokens::ChromeMaterial`]): the bar's own body (the stock themes' glass),
-    /// the theme's glass (its bar material, else its floating material, so a theme without a
-    /// bar material still gives the glass style something to be), or that glass with nothing
-    /// showing through and every light off it.
-    ///
-    /// The same rules as [`Self::finish`] apply to each: forced colours draw the toolkit's
-    /// own solid, and reduced transparency makes the glass calm.
+    /// The finish the shell's chrome — its bar and its dock — is made of, as the person
+    /// chose it ([`crate::tokens::ChromeMaterial`]): the bar's own body (the stock
+    /// themes' glass), the theme's glass (its bar material, else its floating material,
+    /// so a theme without a bar material still gives the glass style something to be), or
+    /// that glass with nothing showing through and every light off it.
     #[must_use]
     pub fn chrome_material(
         &self,
@@ -902,7 +795,6 @@ impl Theme {
         use crate::tokens::{ChromeMaterial, SurfaceRole};
         let finishes = &self.tokens.finishes;
         let glass = finishes.bar.as_ref().unwrap_or(&finishes.floating).clone();
-        // The theme's own rules for a material, as `finish` states them.
         let glass = if self.forced_colors {
             glass.forced().clone()
         } else if self.reduce_transparency {
@@ -923,8 +815,7 @@ impl Theme {
         self.finish(role).set()
     }
 
-    /// This theme with `set` drawing `role`'s parts, with none of its
-    /// parameters stated. `Err` where the set requires one.
+    /// This theme with `set` drawing `role`'s parts, with none of its parameters stated.
     pub fn with_painter_set(
         mut self,
         role: crate::tokens::SurfaceRole,
@@ -947,10 +838,7 @@ impl Theme {
         self
     }
 
-    /// `1.0` = unchanged. Multiplies the whole type scale and base body
-    /// size together, so layout (which measures the same scaled sizes)
-    /// grows to fit and nothing clips. Not assumed idempotent — call once
-    /// on a fresh theme.
+    /// `1.0` = unchanged.
     #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(
@@ -963,9 +851,6 @@ impl Theme {
         self
     }
 
-    /// Glyph metrics follow the text scale
-    /// by [`crate::tokens::Metrics::icon_growth`]: re-grow them from the scale
-    /// they were grown for to `to`.
     fn regrow_icons(&mut self, from: f32, to: f32) {
         use crate::tokens::Metrics;
         let factor = Metrics::icon_growth(to) / Metrics::icon_growth(from);
@@ -978,12 +863,10 @@ impl Theme {
         self.tokens.typography.scale = self.tokens.typography.scale.scaled(factor);
     }
 
-    /// This theme with the accessibility text scale taken back out: type at
-    /// its 1× sizes (glyphs too), everything else unchanged. For content whose size is
-    /// the document's own (a slide's text, laid out at the slide's size and
-    /// then scaled as a whole), which must not grow a second time with the
-    /// reader's text setting. [`Theme::with_text_scale`] multiplies, so it
-    /// cannot undo a scale already applied.
+    /// This theme with the accessibility text scale taken back out: type at its 1× sizes
+    /// (glyphs too), everything else unchanged. For content whose size is the document's
+    /// own (a slide's text, laid out at the slide's size and then scaled as a whole),
+    /// which must not grow a second time with the reader's text setting.
     #[must_use]
     pub fn at_unit_text_scale(&self) -> Self {
         let mut theme = self.clone();
@@ -995,17 +878,12 @@ impl Theme {
         theme
     }
 
-    /// How much larger a document draws its text in a pane `width` wide,
-    /// whose page (reading column and its gutters) is `page` wide at this
-    /// theme's size: `1.0` until the pane is [`DOCUMENT_ROOM`] pages wide,
-    /// then growing with the pane up to [`MAX_DOCUMENT_ZOOM`], in steps of a
-    /// sixteenth so resizing a window re-sets the text about once per pixel
-    /// of type size rather than every frame.
-    ///
-    /// A page at its laptop size in a window on a large display is a narrow
-    /// strip of small text in a field of empty space; grown, it keeps its
-    /// measure and fills the screen the way a page held closer would. A
-    /// laptop or phone window is never wide enough to grow it.
+    /// How much larger a document draws its text in a pane `width` wide, whose page
+    /// (reading column and its gutters) is `page` wide at this theme's size: `1.0` until
+    /// the pane is [`DOCUMENT_ROOM`] pages wide, then growing with the pane up to
+    /// [`MAX_DOCUMENT_ZOOM`], in steps of a sixteenth so resizing a window re-sets the
+    /// text about once per pixel of type size rather than every frame. A laptop or phone
+    /// window is never wide enough to grow it.
     #[must_use]
     pub fn document_zoom(width: f64, page: f64) -> f32 {
         if !(width.is_finite() && page.is_finite() && page > 0.0) {
@@ -1015,8 +893,8 @@ impl Theme {
         crate::num::f32_of_f64((zoom * 16.0).floor() / 16.0)
     }
 
-    /// This theme with its type grown by `zoom` on top of the reader's own
-    /// text scale ([`Theme::document_zoom`]); `1.0` is this theme.
+    /// This theme with its type grown by `zoom` on top of the reader's own text scale
+    /// ([`Theme::document_zoom`]); `1.0` is this theme.
     #[must_use]
     pub fn with_document_zoom(&self, zoom: f32) -> Self {
         if (zoom - 1.0).abs() <= f32::EPSILON {
@@ -1026,9 +904,7 @@ impl Theme {
         self.at_unit_text_scale().with_text_scale(scale)
     }
 
-    /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
-    /// distinct from [`Theme::with_text_scale`] which only resizes type.
-    /// Not assumed idempotent — call once on a fresh theme.
+    /// `1.0` = unchanged.
     #[must_use]
     pub fn with_ui_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 3.0);
@@ -1041,19 +917,16 @@ impl Theme {
         self
     }
 
-    /// The same theme at `density` (`crate::tokens::Density`): compact
-    /// scales the spacing rhythm by 0.75 and shortens rows to 28 / 44 / 52;
-    /// control heights and text stay. Set per window or per region (a
-    /// sidebar, a table): a data-heavy app lays its content region out with
-    /// `theme.with_density(Density::Compact)`.
+    /// The same theme at `density` (`crate::tokens::Density`): compact scales the spacing
+    /// rhythm by 0.75 and shortens rows to 28 / 44 / 52; control heights and text stay.
     #[must_use]
     pub fn with_density(mut self, density: crate::tokens::Density) -> Self {
         let from = self.tokens.density;
         if from == density {
             return self;
         }
-        // Undo the old factor, then apply the new one: dividing first keeps
-        // a round trip exact.
+        // Undo the old factor, then apply the new one: dividing first keeps a round trip
+        // exact.
         let (undo, apply) = (from.rhythm_factor(), density.rhythm_factor());
         let r = &mut self.tokens.spacing.rhythm;
         for gap in [
@@ -1084,11 +957,10 @@ impl Theme {
         r.control *= factor;
         r.item *= factor;
         r.detail *= factor;
-        // `full` is a "make it a pill" sentinel, not a real length — leave it.
     }
 
-    /// Replace factors already baked into an effective component snapshot.
-    /// Its metadata must describe the supplied values; public builders remain cumulative.
+    /// Replace factors already baked into an effective component snapshot. Its metadata
+    /// must describe the supplied values; public builders remain cumulative.
     pub(crate) fn with_component_scales(mut self, text_scale: f32, ui_scale: f32) -> Self {
         let text_scale = if text_scale.is_finite() {
             text_scale.clamp(0.5, 4.0)
@@ -1104,7 +976,6 @@ impl Theme {
         self.multiply_type_sizes(text_scale / self.text_scale * ui_ratio);
         self.multiply_dimensions(ui_ratio);
         self.regrow_icons(self.text_scale, text_scale);
-        // Unlike the public builder, preserve independently customized aliases.
         self.radius_standard *= f64::from(ui_ratio);
         self.padding_standard *= ui_ratio;
         self.gap_standard *= ui_ratio;
@@ -1113,32 +984,22 @@ impl Theme {
         self
     }
 
-    /// [`crate::tokens::Metrics::text_growth`] of this
-    /// theme's [`Theme::text_scale`]: how much a text-sized extent grows, never
-    /// below 1.
+    /// [`crate::tokens::Metrics::text_growth`] of this theme's [`Theme::text_scale`]: how
+    /// much a text-sized extent grows, never below 1.
     #[must_use]
     pub fn text_growth(&self) -> f32 {
         crate::tokens::Metrics::text_growth(self.text_scale)
     }
 
-    /// The one factor the responsive shells multiply an authored,
-    /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
-    ///
-    /// `NavShell` grows its metric widths by it, and a painted app's
-    /// `SidebarDrawer` its authored ones (`breakpoint(760.0)`), so at 200 %
-    /// text a 760 px breakpoint pushes at 1520 px — the window that has the
-    /// room a 760 px window has at 1× — without the app multiplying
-    /// anything. `1.0` on a stock theme, so 1× geometry is untouched. A width
-    /// sized by icons rather than text (a rail) follows [`Theme::ui_scale`]
-    /// alone.
+    /// The one factor the responsive shells multiply an authored, text-sized breakpoint
+    /// or pane width by: `ui_scale × text_growth()`.
     #[must_use]
     pub fn responsive_scale(&self) -> f64 {
         f64::from(self.ui_scale) * f64::from(self.text_growth())
     }
 
-    /// UI scale first so it grows the whole system, then text scale layers
-    /// additional type growth on top. High contrast keeps the theme's
-    /// polarity, shape, density and type, and the person's own colour.
+    /// UI scale first so it grows the whole system, then text scale layers additional
+    /// type growth on top.
     #[must_use]
     pub fn with_a11y(
         self,
@@ -1157,21 +1018,19 @@ impl Theme {
     }
 }
 
-/// The comforts a settings document names ([`Theme::configured_comforts`]):
-/// `None` where it names none, which leaves the host's own value.
+/// The comforts a settings document names ([`Theme::configured_comforts`]): `None` where
+/// it names none, which leaves the host's own value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConfiguredComforts {
     pub high_contrast: Option<bool>,
     pub reduce_motion: Option<bool>,
     pub text_scale: Option<f32>,
     pub ui_scale: Option<f32>,
-    /// The document's whole admitted layer, for the comforts not listed.
     pub layer: crate::theme_layers::AccessibilityLayer,
 }
 
 impl ConfiguredComforts {
-    /// The layer with every comfort the document leaves unnamed at its
-    /// default.
+    /// The layer with every comfort the document leaves unnamed at its default.
     #[must_use]
     pub fn or_default(self) -> crate::theme_layers::AccessibilityLayer {
         crate::theme_layers::AccessibilityLayer {
@@ -1184,33 +1043,23 @@ impl ConfiguredComforts {
     }
 }
 
-/// What the host showing a window knows about where, and for whom, it is
-/// shown: the temperature of the workspace the window is in and the colour
-/// of the person sitting at it. The shell resolves both and hands them to
-/// its own chrome and, over the shell-ui channel, to every app window
-/// (`crate::floating_surface::FloatingSurfaceHostMessage::Appearance`). A
-/// window nobody told stays neutral and wears the default colour.
+/// What the host showing a window knows about where, and for whom, it is shown: the
+/// temperature of the workspace the window is in and the colour of the person sitting at
+/// it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowAppearance {
-    /// The workspace's temperature (OKLCH degrees), `None` while it has
-    /// none: a grey wallpaper, or no shell.
+    /// The workspace's temperature (OKLCH degrees), `None` while it has none: a grey
+    /// wallpaper, or no shell.
     pub workspace_hue: Option<f32>,
-    /// The person's own colour ("your colour"), `None` when the host does
-    /// not know who sits here.
     pub your_colour: Option<PresenceHue>,
-    /// How round the host draws the window's corners, in logical pixels:
-    /// the theme's window radius (`radii.tile`) while the window stands
-    /// framed among others, 0 while it is drawn edge to edge (a maximized
-    /// window filling its display). `None` when no host said: a window on
-    /// another desktop, whose shape is not known.
+    /// How round the host draws the window's corners, in logical pixels: the theme's
+    /// window radius (`radii.tile`) while the window stands framed among others, 0 while
+    /// it is drawn edge to edge (a maximized window filling its display).
     pub corner_radius: Option<f32>,
 }
 
-/// The surface a window's content is drawn on, as the scene being drawn
-/// sees it: its bounds and the radius of each of its corners, 0 where a
-/// corner is square. A host that knows the shape it shows a window in puts
-/// it on the window's theme ([`Theme::surface`]); what runs along the
-/// window's edges (a scroll bar) keeps its ends out of a rounded corner.
+/// The surface a window's content is drawn on, as the scene being drawn sees it: its
+/// bounds and the radius of each of its corners, 0 where a corner is square.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfaceShape {
     pub bounds: vello::kurbo::Rect,
@@ -1234,9 +1083,8 @@ impl SurfaceShape {
             .any(|radius| radius > 0.0)
     }
 
-    /// The shape where `transform` takes it: its bounds' box, and radii
-    /// scaled by the transform's scale. Transforms that place surfaces
-    /// translate and scale uniformly.
+    /// The shape where `transform` takes it: its bounds' box, and radii scaled by the
+    /// transform's scale.
     #[must_use]
     pub fn transformed(&self, transform: vello::kurbo::Affine) -> Self {
         let scale = transform.determinant().abs().sqrt();
@@ -1252,8 +1100,8 @@ impl SurfaceShape {
         }
     }
 
-    /// The shape as a widget that draws with `transform` sees it, in its
-    /// own coordinates: the inverse of [`Self::transformed`].
+    /// The shape as a widget that draws with `transform` sees it, in its own coordinates:
+    /// the inverse of [`Self::transformed`].
     #[must_use]
     pub fn seen_through(&self, transform: vello::kurbo::Affine) -> Self {
         if transform.determinant().abs() <= f64::EPSILON {
@@ -1264,12 +1112,10 @@ impl SurfaceShape {
 }
 
 impl Theme {
-    /// This theme as the window `appearance` describes sees it: the
-    /// workspace's temperature on the neutrals (nothing on a palette with
-    /// chroma 0, nothing while there is no temperature) and the person's
-    /// colour as focus ring, caret and selection. Both are applied to the
-    /// theme as configured, so a window moving to a neutral workspace loses
-    /// the temperature of the one it left.
+    /// This theme as the window `appearance` describes sees it: the workspace's
+    /// temperature on the neutrals (nothing on a palette with chroma 0, nothing while
+    /// there is no temperature) and the person's colour as focus ring, caret and
+    /// selection.
     #[must_use]
     pub fn in_window(self, appearance: &WindowAppearance) -> Self {
         let theme = match appearance.workspace_hue {
@@ -1281,13 +1127,22 @@ impl Theme {
             None => theme,
         }
     }
+
+    /// This theme in a window floating over the desk as a card
+    /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the app under
+    /// the card's header draws on the same surface as the header and every other card in
+    /// the column, not on a window's darker ground.
+    #[must_use]
+    pub fn as_card(mut self) -> Self {
+        self.tokens.colors.surfaces.content = crate::widget::floating_surface::card_ground(&self);
+        self
+    }
 }
 
-/// The neutral temperature a workspace takes from its wallpaper (RGBA8
-/// pixels): the image's dominant hue, or `None` for a wallpaper with none
-/// (a grey photograph, a missing file), which leaves the material neutral.
-/// Only the hue is taken — the material never gains chroma from a
-/// wallpaper.
+/// The neutral temperature a workspace takes from its wallpaper (RGBA8 pixels): the
+/// image's dominant hue, or `None` for a wallpaper with none (a grey photograph, a
+/// missing file), which leaves the material neutral. Only the hue is taken — the material
+/// never gains chroma from a wallpaper.
 #[must_use]
 pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
     crate::color::dominant_hue(wallpaper_rgba)
@@ -1297,8 +1152,6 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// A preset built from what an earlier build derived is the theme its
-    /// document builds afresh, every time it is asked for.
     #[test]
     fn a_preset_is_the_theme_its_document_builds() {
         for preset in Preset::ALL {
@@ -1308,12 +1161,10 @@ mod tests {
         }
     }
 
-    /// Every control fill in every shipped theme, on every ground a control
-    /// stands on, clears the non-text contrast floor there and is never the
-    /// text colour; and a control's face (an unchecked box, a button, a
-    /// track) is a surface that body text reads on, never ink. A filled
-    /// progress bar or an unchecked box that renders as a black slab on a
-    /// light window fails here.
+    /// Every control fill in every shipped theme, on every ground a control stands on,
+    /// clears the non-text contrast floor there and is never the text colour; and a
+    /// control's face (an unchecked box, a button, a track) is a surface that body text
+    /// reads on, never ink.
     #[test]
     fn every_control_fill_reads_on_its_ground_and_is_never_the_text_colour() {
         use crate::a11y::contrast_ratio;
@@ -1382,8 +1233,6 @@ mod tests {
         }
     }
 
-    // Catches a note maximised on a 1440p-class display reading as a narrow
-    // strip of laptop-sized text in a field of empty space.
     #[test]
     fn a_document_grows_its_text_only_in_a_pane_much_wider_than_its_page() {
         let page = 560.0;
@@ -1447,10 +1296,6 @@ mod tests {
         doc
     }
 
-    /// The pointer's answer is the document's `response` role: a theme
-    /// that states one is read through it by every shared selection tier,
-    /// and one that states none keeps the stock (or, held still, the still)
-    /// response.
     #[test]
     fn a_documents_response_role_is_how_controls_answer_the_pointer() {
         use crate::chrome::{SelectionState, selection_tier_on};
@@ -1494,7 +1339,6 @@ mod tests {
             selection_tier_on(&stock, hovered, ground).fill,
             "the hover's lift and tint are the theme's"
         );
-        // Out of band is not a theme, and the reason says which lever.
         document.response = Some(Response {
             press: ResponseStep {
                 scale: 0.2,
@@ -1509,9 +1353,8 @@ mod tests {
         assert_eq!(block.tokens.response, Response::STILL);
     }
 
-    /// A theme whose surface shader does not compile is refused with the
-    /// compiler's reason and where it is, so the person importing it can
-    /// fix it; it never applies.
+    /// A theme whose surface shader does not compile is refused with the compiler's
+    /// reason and where it is, so the person importing it can fix it; it never applies.
     #[test]
     fn a_broken_surface_shader_is_refused_with_its_reason() {
         let mut document = Preset::Dark.document();
@@ -1534,11 +1377,11 @@ mod tests {
         );
     }
 
-    /// The person's choice of chrome material is resolved by the theme alone: glass is the
-    /// theme's own bar (else floating) material, calm is that same material with nothing
-    /// showing through and every light off, and a theme without a bar body paints its flat
-    /// bar's body and takes the floating material for its glass. A view picks between them
-    /// and never states a finish.
+    /// The person's choice of chrome material is resolved by the theme alone: glass is
+    /// the theme's own bar (else floating) material, calm is that same material with
+    /// nothing showing through and every light off, and a theme without a bar body paints
+    /// its flat bar's body and takes the floating material for its glass. A view picks
+    /// between them and never states a finish.
     #[test]
     fn chrome_material_resolves_to_the_themes_own_finishes() {
         use crate::tokens::ChromeMaterial;
@@ -1695,8 +1538,6 @@ mod tests {
                     }
                     let step = contrast_ratio(c.intent.selection, ground);
                     assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
-                    // A region's raised face is re-derived so it stands off
-                    // the region (`a_raised_face_stands_off_every_ground`).
                     assert_eq!(c.intent.accent, t.tokens.colors.intent.accent);
                 }
                 assert_eq!(
@@ -1709,9 +1550,6 @@ mod tests {
         }
     }
 
-    /// A control's face stands off every ground it is placed on the way it
-    /// stands off the window: on a floating panel lighter than the raised
-    /// tier, a secondary button or a field does not sink into the panel.
     #[test]
     fn a_raised_face_stands_off_every_ground() {
         use crate::color::Oklch;
@@ -1786,7 +1624,6 @@ mod tests {
         {
             let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
             let you = mine.tokens.colors.intent.you;
-            // The ring is the accent's ink: your hue at its contrast floor.
             assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
             let ring = (Oklch::from_color(mine.border_focus).h - Oklch::from_color(you).h)
                 .rem_euclid(360.0);
@@ -1914,9 +1751,9 @@ mod tests {
             assert!(!Theme::configured_from_text("", false).reduce_motion);
         }
 
-        // Case `the_settings_switch_reaches_a_host_without_the_override`.
-        // The shell reads its chrome theme through `configured_from_text`
-        // on every settings change, so the person's switch must be enough.
+        // Case `the_settings_switch_reaches_a_host_without_the_override`. The shell reads
+        // its chrome theme through `configured_from_text` on every settings change, so
+        // the person's switch must be enough.
         {
             let on = r#"{"appearance":{"reduce_motion":true}}"#;
             let off = r#"{"appearance":{"reduce_motion":false}}"#;
@@ -1931,7 +1768,6 @@ mod tests {
             assert!(!Theme::configured_from_text(rejected, false).reduce_motion);
         }
 
-        // Case `with_a11y_picks_the_high_contrast_of_the_theme_s_polarity`.
         {
             use crate::a11y::A11ySettings;
             let settings = A11ySettings {
@@ -1952,7 +1788,6 @@ mod tests {
             assert!(contrast_ratio(light.text_dim, light.tokens.colors.surfaces.content) >= 7.0);
         }
 
-        // Case `with_a11y_all_off_keeps_base_colours`.
         {
             let off = crate::a11y::A11ySettings::default();
             let theme = Theme::light().with_a11y(&off, 1.0, 1.0);
@@ -2029,7 +1864,6 @@ mod tests {
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }
 
-        // The finish roles reach the tokens every painter reads.
         {
             use crate::text_render::TextWeight;
             use crate::tokens::{Depth, Finish, TextRole};
@@ -2151,9 +1985,9 @@ mod configured_theme {
             assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
         }
 
-        // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`:
-        // the shell re-reads its theme through this door on every settings
-        // change, so flipping the switch must flip the chrome's motion.
+        // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`: the shell
+        // re-reads its theme through this door on every settings change, so flipping the
+        // switch must flip the chrome's motion.
         if !crate::host::environment().accessibility.reduce_motion {
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);
             assert!(Theme::configured_from(&settings).reduce_motion);
@@ -2161,9 +1995,9 @@ mod configured_theme {
             assert!(!Theme::configured_from(&settings).reduce_motion);
         }
 
-        // Case `the_configured_theme_does_not_read_the_identity`: the
-        // person's colour reaches a window through its host
-        // (`Theme::in_window`), never through the theme.
+        // Case `the_configured_theme_does_not_read_the_identity`: the person's colour
+        // reaches a window through its host (`Theme::in_window`), never through the
+        // theme.
         {
             let settings = settings_store::parse(r#"{"identity":{"colour":"teal"}}"#);
             assert_eq!(
@@ -2172,8 +2006,8 @@ mod configured_theme {
             );
         }
 
-        // Case `an_absent_settings_file_still_yields_a_usable_theme`:
-        // No preference is not an error, and must not stop a desktop starting.
+        // Case `an_absent_settings_file_still_yields_a_usable_theme`: No preference is
+        // not an error, and must not stop a desktop starting.
         {
             assert_eq!(
                 Theme::configured_from(&serde_json::Map::new()).name,

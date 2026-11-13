@@ -1,13 +1,12 @@
-//! Quiet frames: a polled frame that nothing new reached lays out and draws
-//! but neither syncs nor publishes, and anything that can reach a widget,
-//! the document or what a frame presents brings both back on its next frame.
+//! Quiet frames: a polled frame that nothing new reached lays out and draws but neither syncs nor
+//! publishes, and anything that can reach a widget, the document or what a frame presents brings both
+//! back on its next frame.
 use super::*;
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// What the probe saw, shared with the test.
 #[derive(Clone, Default)]
 struct Seen {
     syncs: Rc<Cell<usize>>,
@@ -15,16 +14,14 @@ struct Seen {
     can_undo: Rc<Cell<bool>>,
     body: Rc<std::cell::RefCell<String>>,
     actions: Rc<Cell<usize>>,
-    /// Arm the probe's next draw to ask for its tree to be built again, as a slide landing drops
-    /// the parts its last pose hid.
+    /// Arm the probe's next draw to ask for its tree to be built again, as a slide landing drops the
+    /// parts its last pose hid.
     landing: Rc<Cell<bool>>,
-    /// The rebuild a draw asked for, for the frame that reads the structure change.
     landed: Rc<Cell<bool>>,
 }
 
-/// A widget that always wants a frame (so every poll runs one), counts its
-/// syncs and the undo statuses published to it, and keeps local state a
-/// caller can change only through the harness.
+/// A widget that always wants a frame (so every poll runs one), counts its syncs and the undo statuses
+/// published to it, and keeps local state a caller can change only through the harness.
 struct Probe {
     seen: Seen,
     label: String,
@@ -73,7 +70,6 @@ impl Widget for Probe {
         true
     }
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-        // What the frame drew asked for its parts to be laid out again.
         if self.seen.landing.replace(false) {
             self.seen.landed.set(true);
         }
@@ -121,15 +117,11 @@ fn probe() -> (FrameHarness, Seen) {
         (300, 100),
         Theme::dark(),
     );
-    // The first polled frame follows construction, which counts as a change.
     assert!(frame.poll_frame().unwrap());
     (frame, seen)
 }
 
-/// Polls one frame and says whether it was quiet. A loud frame synced and
-/// published; a quiet one did neither on the production path (a debug
-/// build then runs both anyway, to prove they would have changed nothing,
-/// so the probe's counters cannot tell).
+/// Polls one frame and says whether it was quiet. A loud frame synced and published.
 fn polled(frame: &mut FrameHarness, seen: &Seen) -> Quiet {
     let quiet = frame.quiet_frames();
     let (syncs, published) = (seen.syncs.get(), seen.published.get());
@@ -160,9 +152,8 @@ fn a_frame_nothing_new_reached_neither_syncs_nor_publishes() {
     assert_eq!(frame.quiet_frames(), quiet + 5);
 }
 
-/// Runs `entry` and proves nothing it changed is left behind a quiet
-/// frame: either it ran a frame of its own, which synced and published, or
-/// the next polled frame is loud.
+/// Runs `entry` and proves nothing it changed is left behind a quiet frame: either it ran a frame of
+/// its own, which synced and published, or the next polled frame is loud.
 fn entered(
     frame: &mut FrameHarness,
     seen: &Seen,
@@ -207,10 +198,6 @@ fn each_entry_point_brings_sync_and_publication_back() {
             .contains("Renamed"),
         "the frame shows the renamed probe"
     );
-    // A click is judged event by event, as the live App judges input: the
-    // move onto the probe changes nothing a frame reads and its frame stays
-    // quiet, while the press and release, which nothing took, sync and
-    // publish.
     let (syncs, published) = (seen.syncs.get(), seen.published.get());
     frame.click_at(20.0, 20.0);
     assert!(
@@ -246,7 +233,6 @@ fn a_document_change_no_entry_point_made_syncs_and_publishes_on_its_frame() {
     let (mut frame, seen) = probe();
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
     assert!(!seen.can_undo.get());
-    // As a merge from a peer lands: through no entry point of the harness.
     frame
         .state
         .doc
@@ -259,9 +245,8 @@ fn a_document_change_no_entry_point_made_syncs_and_publishes_on_its_frame() {
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
 }
 
-/// A wheel nothing takes (past the end of a list; the probe scrolls
-/// nothing) activates nothing, as the live App reads it: the frame it runs
-/// and the one after are quiet. Each such notch synced and republished.
+/// A wheel nothing takes (past the end of a list; the probe scrolls nothing) activates nothing, as the
+/// live App reads it: the frame it runs and the one after are quiet.
 #[test]
 fn a_wheel_nothing_takes_leaves_frames_quiet() {
     let (mut frame, seen) = probe();
@@ -276,14 +261,13 @@ fn a_wheel_nothing_takes_leaves_frames_quiet() {
 }
 
 /// A frame that draws a rebuild into being hands it to the next one, which syncs for it: work a
-/// widget's tick asks for after the paint (a slide landing drops the parts its last pose hid)
-/// arrives once the frame has decided to sync nothing, so the frame that draws it does not rest.
+/// widget's tick asks for after the paint (a slide landing drops the parts its last pose hid) arrives
+/// once the frame has decided to sync nothing, so the frame that draws it does not rest.
 #[test]
 fn a_frame_that_draws_a_rebuild_into_being_hands_it_to_the_next_one() {
     let (mut frame, seen) = probe();
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
     seen.landing.set(true);
-    // The frame that drew the landing synced nothing, and the one after it rebuilds and syncs.
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
     assert_eq!(polled(&mut frame, &seen), Quiet::No);
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
@@ -323,7 +307,6 @@ fn every_mutable_entry_point_invalidates_local_state() {
     for (file, source) in &sources {
         let lines: Vec<&str> = source.lines().collect();
         let mut index = 0;
-        // Depth of the `impl FrameHarness` block `index` is in, when it is in one.
         let mut depth = 0;
         while index < lines.len() {
             let line = lines[index];
@@ -357,7 +340,6 @@ fn every_mutable_entry_point_invalidates_local_state() {
                 index += 1;
                 continue;
             };
-            // rustfmt ends a method's signature with `{`, or with `;` where it has no body.
             while !code_ends(lines[end]) {
                 end += 1;
             }
@@ -396,7 +378,6 @@ fn every_mutable_entry_point_invalidates_local_state() {
     );
 }
 
-/// The crate's Rust sources, as their path under `src` and their text.
 fn crate_sources() -> Vec<(String, String)> {
     fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -445,14 +426,13 @@ fn quiet_reason(lines: &[&str], line: usize) -> Option<String> {
     reason
 }
 
-/// Whether `line` closes what stands open in a method's signature: the body's opening brace, or
-/// the `;` of a bodyless item.
+/// Whether `line` closes what stands open in a method's signature: the body's opening brace, or the `;`
+/// of a bodyless item.
 fn code_ends(line: &str) -> bool {
     let code = line.trim_end();
     code.ends_with('{') || code.ends_with(';')
 }
 
-/// The braces `line` opens, less the ones it closes, counting no comment, string or char literal.
 fn brace_depth(line: &str) -> i64 {
     let chars: Vec<char> = line.chars().collect();
     let mut depth = 0;
@@ -472,7 +452,6 @@ fn brace_depth(line: &str) -> i64 {
         match character {
             '"' => literal = Some('"'),
             '\'' => {
-                // A lifetime (`'a`) quotes nothing; a char literal (`'{'`) does.
                 let escaped = chars.get(index) == Some(&'\\');
                 let closes = chars.get(index + 1) == Some(&'\'');
                 if !escaped && !closes {

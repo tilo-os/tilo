@@ -1,5 +1,5 @@
-//! The permission filter over published resources: what the participant
-//! may invoke stays, the rest is withheld.
+//! The permission filter over published resources: what the participant may invoke stays, the rest is
+//! withheld.
 
 use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};
 
@@ -13,11 +13,9 @@ pub(crate) fn filter_resource(
         .permitted_resource(&binding.app_id, resource)
 }
 
-/// [`filter_resource`] of a shared tree, for the permission context `token`
-/// names: a subtree whose result under `token` is kept on it is not
-/// filtered again, and the result shares every subtree filtering left
-/// unchanged. A token stands for one component's permissions, so the
-/// result is exactly [`filter_resource`]'s.
+/// [`filter_resource`] of a shared tree, for the permission context `token` names: a subtree whose
+/// result under `token` is kept on it is not filtered again, and the result shares every subtree
+/// filtering left unchanged.
 pub(crate) fn filter_shared(
     binding: &CallbackBinding,
     token: u64,
@@ -36,10 +34,9 @@ pub(crate) fn filter_shared(
     }
 }
 
-/// Let `next` take `last`'s filtering under `token` when every action of
-/// `last` was permitted and `next` offers the same (a root head rebuilt as
-/// it was for a new publication): only its children are filtered, each
-/// from what it kept, and nobody is asked about its actions again.
+/// Let `next` take `last`'s filtering under `token` when every action of `last` was permitted and
+/// `next` offers the same (a root head rebuilt as it was for a new publication): only its children are
+/// filtered, each from what it kept, and nobody is asked about its actions again.
 pub(super) fn inherit_filtered(
     binding: &CallbackBinding,
     token: u64,
@@ -62,8 +59,6 @@ pub(super) fn inherit_filtered(
     }
 }
 
-/// What filtering `resource` under `token` gives, its children's results
-/// kept on them.
 fn filter_shared_node(
     binding: &CallbackBinding,
     token: u64,
@@ -101,8 +96,6 @@ fn filter_shared_node(
     }
 }
 
-/// The filtered `children` under `token`: [`Filtered::Same`] when every
-/// child stands as it is, else the children kept, sharing those unchanged.
 fn filter_shared_children(
     binding: &CallbackBinding,
     token: u64,
@@ -137,10 +130,9 @@ fn filter_shared_children(
     filtered
 }
 
-/// Add to `allowed` the address of every available action in `resources`
-/// that `binding` permits: what [`tilo_actions::door::survey`] lists as
-/// available in the trees [`filter_resource`] keeps, read in place rather
-/// than through a filtered copy and a descriptor per action.
+/// Add to `allowed` the address of every available action in `resources` that `binding` permits: what
+/// [`tilo_actions::door::survey`] lists as available in the trees [`filter_resource`] keeps, read in
+/// place rather than through a filtered copy and a descriptor per action.
 pub(super) fn insert_available_permitted(
     binding: &CallbackBinding,
     resources: &[ResourceSpec],

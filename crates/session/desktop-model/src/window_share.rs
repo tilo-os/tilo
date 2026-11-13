@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use tilo_action_policy::share::{is_of_share, share_id_prefix};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, GrantId, Level, Segment, Subject, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Context, GrantId, Level, Segment, TreePath, WorkspacePolicy,
 };
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
@@ -74,10 +74,9 @@ pub struct MappedWindow<'a> {
 }
 
 /// The window the device holding `workspaces` maps in `tab`. `None` for a tab the desk does not
-/// hold, one in no workspace, and one that shows no window this device maps: another device's
-/// window or the picture of one, and an app whose window has yet to open. Only such a window is
-/// shared from this device, so a desk offers the share and its session carries it out by this one
-/// rule.
+/// hold, one in no workspace, and one that shows no window this device maps: the picture of
+/// another device's window, and an app whose window has yet to open. Only such a window is shared
+/// from this device, so a desk offers the share and its session carries it out by this one rule.
 #[must_use]
 pub fn mapped_window(workspaces: &[Workspace], tab: TabId) -> Option<MappedWindow<'_>> {
     let (held, shown) = workspaces.iter().find_map(|held| {
@@ -271,7 +270,7 @@ pub fn window_shares(
         let Some((app_id, tab)) = window_of_node(&grant.node) else {
             continue;
         };
-        let Subject::Person(giver) = &grant.granted_by else {
+        let Some(giver) = grant.granted_by.person_id() else {
             continue;
         };
         if grant.node.workspace_id() != Some(policy.workspace.as_str())
@@ -295,7 +294,7 @@ pub fn window_shares(
         shares.entry(tab).or_insert_with(|| WindowShare {
             tab,
             app_id,
-            sharer: giver.clone(),
+            sharer: giver.to_owned(),
             host: host.clone(),
             until_ms,
             shows: None,
@@ -304,7 +303,7 @@ pub fn window_shares(
     // What each Tilo app's window shows: the share its sharer made beside
     // the window's, of the resource's own node.
     for grant in &policy.grants {
-        let Subject::Person(giver) = &grant.granted_by else {
+        let Some(giver) = grant.granted_by.person_id() else {
             continue;
         };
         if grant.answer != Answer::Allow
@@ -377,8 +376,8 @@ mod tests {
     }
 
     /// A device shares the window it maps in a tab of a workspace, and nothing else a tab can
-    /// show: not another device's window, not the picture of one, not an app still to open, and
-    /// nothing from a desk in no workspace.
+    /// show: not the picture of another device's window, not an app still to open, and nothing
+    /// from a desk in no workspace.
     #[test]
     fn only_a_window_the_device_maps_in_a_workspace_is_one_it_can_share() {
         let tab = compose_id(7, 1);
@@ -406,12 +405,6 @@ mod tests {
             "a tab the desk does not hold shows no window"
         );
         for tile in [
-            TileContent::PeerWindow {
-                app_id: app(),
-                label: "Notes".to_owned(),
-                note: String::new(),
-                missing: None,
-            },
             TileContent::HostedWindow {
                 app_id: app(),
                 label: "Notes".to_owned(),

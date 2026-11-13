@@ -60,10 +60,6 @@ slides-colour-amber = Bernstein
 slides-colour-red = Rot
 slides-colour-violet = Violett
 
-## Versionsverlauf
-slides-history-no-slides = Diese Fassung hat keine Folien.
-slides-history-no-deck = Diese Fassung hat keine Präsentation zum Wiederherstellen.
-
 ## Platzhalter auf Folien
 slides-prompt-title = Titel hinzufügen
 slides-prompt-text = Text hinzufügen
@@ -256,3 +252,12 @@ slides-effect-save-as = Präsentation speichern
 slides-effect-read-deck = Präsentation als Text lesen
 slides-effect-import-pptx-content = Präsentation aus Inhalt importieren
 slides-effect-export-pptx-content = Präsentation als Inhalt exportieren
+
+## What the app is called in a window and in the launcher
+slides-app-title = Präsentationen
+
+## Actions bound to what the person is looking at
+
+slides-deck-delete-selection = { $name } löschen
+slides-deck-bring-selection-front = Nach vorn: { $name }
+slides-deck-send-selection-back = Nach hinten: { $name }

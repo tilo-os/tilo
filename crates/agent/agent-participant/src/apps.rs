@@ -1227,14 +1227,9 @@ fn replica_standing(
     let permissions = match actor {
         ReplicaActor::Agent => {
             let member = PermissionContext::member_of(workspace, participant, Role::Editor);
-            let standing = member
-                .standing()
-                .clone()
-                .bounded_as(&policy::Invoker::session_agent(
-                    workspace,
-                    participant,
-                    participant,
-                ));
+            let standing = member.standing().clone().as_acting(
+                policy::Acting::agent(participant).acting_for(policy::Acting::person(participant)),
+            );
             match standing {
                 Some(standing) => member.with_standing(standing),
                 None => member.read_only(),
@@ -1258,7 +1253,7 @@ fn replica_standing(
             agent,
             agent_name,
         } => {
-            let person = standing.person.clone();
+            let person = standing.person_id().unwrap_or_default().to_owned();
             // The host bounded the standing as it reads the caller
             // (`Caller::invoker`), and puts an ask to the person on their own
             // devices when their agent acts.

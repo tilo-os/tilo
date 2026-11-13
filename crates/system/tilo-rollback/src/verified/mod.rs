@@ -1,87 +1,64 @@
 //! Is this boot one the machine can prove it approved?
 //!
-//! A PIN-less keyslot releases the system volume with nothing typed, so whatever the
-//! `PolicyPCR` chain accepts *is* the security boundary: the TPM will hand the key to any
-//! boot whose PCR 11 the authority predicted and whose PCR 7 matches the firmware's own
-//! Secure Boot state. That is only a verified boot when the boot really was verified, and
-//! three conditions make it so:
+//! A PIN-less keyslot releases the volume with nothing typed, so whatever the `PolicyPCR` chain
+//! accepts is the security boundary, and that is only a verified boot under three conditions:
+//! Secure Boot is on (with it off, PCR 7 still matches but nothing checked the image); `db` holds
+//! only keys this machine trusts, with no Microsoft third-party CA (it signs shims for other
+//! vendors); and kernel lockdown is active.
 //!
-//! * **Secure Boot is on.** With it off, PCR 7 still holds a value and a prediction still
-//!   matches, but the image that booted was never checked by anything — a changed boot
-//!   could capture everything and ask the TPM itself.
-//! * **`db` holds only keys this machine trusts**, and no Microsoft third-party CA. Anything
-//!   else in `db` can boot under the same PCR 7, and Microsoft's third-party CA is the
-//!   everyday example: it signs shims for drivers and other vendors, so leaving it in `db`
-//!   means leaving in a key we did not choose.
-//! * **Kernel lockdown is active.** The kernel itself refuses the paths that would let root
-//!   in early userspace read or write kernel memory.
+//! Enrollment refuses to create the slot when a condition fails, and unlocking only *tries* the
+//! PIN-less slot when they hold, so a machine whose `db` changed falls back to the typed secret.
 //!
-//! Enrollment asks this and refuses to create the slot when a condition fails, so a machine
-//! that cannot prove its boot never ends up with a volume that opens silently. Unlocking
-//! asks it and only *tries* the PIN-less slot when the answer is yes, so a machine whose
-//! `db` was changed after enrollment falls back to the typed secret instead of trusting a
-//! boot it no longer recognises.
-//!
-//! # Why the fingerprint of the trust anchors is recorded
-//!
-//! A machine that already had the PIN-less slot when the owner key ceremony finished — an
-//! OEM image, or an update — must not keep opening it against a `db` that has grown since.
-//! The digest of the anchors is what "this machine trusts" means at a moment in time, so it
-//! is recorded next to the rollback state at enrollment and re-checked at unlock.
+//! The anchors' digest is recorded at enrollment and re-checked at unlock, so a machine that
+//! already had the slot (an OEM image, an update) does not keep opening it against a `db` that
+//! has grown since.
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// Where efivarfs exposes the firmware's variables.
 pub const EFIVARS: &str = "/sys/firmware/efi/efivars";
 
-/// Where the kernel reports its lockdown state.
 pub const LOCKDOWN: &str = "/sys/kernel/security/lockdown";
 
-/// The firmware's Secure Boot database, in the global variable namespace.
 const IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 
 /// `EFI_IMAGE_SECURITY_DATABASE`, the vendor GUID `db` lives under.
 const DB_GUID: &str = IMAGE_SECURITY_DATABASE_GUID;
 
-/// `EFI_CERT_X509_GUID`, encoded in EFI GUID byte order — an entry carrying an X.509
-/// certificate.
+/// `EFI_CERT_X509_GUID`, encoded in EFI GUID byte order: an entry carrying an X.509 certificate.
 const EFI_CERT_X509_GUID: [u8; 16] = [
     0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72,
 ];
 
-/// `EFI_CERT_SHA256_GUID` — an entry pinning one image by hash. It can admit exactly one
-/// binary and cannot sign anything, so it is left out of the anchor digest: it neither
-/// identifies a key this machine trusts nor widens what `db` admits on its own.
+/// `EFI_CERT_SHA256_GUID`: an entry pinning one image by hash. It admits exactly one binary and
+/// cannot sign anything, so it is left out of the anchor digest: it neither identifies a key this
+/// machine trusts nor widens what `db` admits on its own.
 const EFI_CERT_SHA256_GUID: [u8; 16] = [
     0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40, 0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
 ];
 
-/// The certificate authorities named in a `db`, normalised so the same authority hashes the
-/// same way however the firmware ordered or grouped its lists.
+/// The certificate authorities in a `db`, normalised so the same authority hashes the same way
+/// however the firmware ordered or grouped its lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnchorDigest(pub String);
 
 /// The firmware and kernel state one boot presents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootFacts {
-    /// The `SecureBoot` variable's value, `None` when the machine has no efivarfs.
     pub secure_boot: Option<bool>,
-    /// `db`'s payload with the efivarfs attribute prefix removed, `None` when unreadable.
     pub db: Option<Vec<u8>>,
     /// Kernel lockdown: either `integrity` or `confidentiality` while it is active.
     pub lockdown: Option<String>,
 }
 
 impl BootFacts {
-    /// Read the running machine.
     pub fn read() -> Self {
         Self::from_efivars(Path::new(EFIVARS), Path::new(LOCKDOWN))
     }
 
-    /// Read a machine described by `efivars` and a lockdown report, so a test can describe
-    /// a boot without a firmware of its own.
+    /// Read a machine described by `efivars` and a lockdown report, so a test can describe a
+    /// boot without a firmware of its own.
     pub fn from_efivars(efivars: &Path, lockdown_report: &Path) -> Self {
         Self {
             secure_boot: read_efi_variable(efivars, "SecureBoot").map(|b| b.first() == Some(&1)),
@@ -93,9 +70,9 @@ impl BootFacts {
     }
 }
 
-/// `[integrity]` or `[confidentiality]` in `/sys/kernel/security/lockdown` means lockdown is
-/// on; `[none]` means it is not. Anything else — an unreadable file, an unknown format — is
-/// not evidence that lockdown is active, so it reports `None` rather than guessing.
+/// `[integrity]` or `[confidentiality]` in `/sys/kernel/security/lockdown` means lockdown is on;
+/// `[none]`, an unreadable file and an unknown format are not evidence that it is, so they report
+/// `None` rather than guessing.
 pub fn active_lockdown(report: &str) -> Option<String> {
     ["integrity", "confidentiality"]
         .into_iter()
@@ -115,13 +92,9 @@ fn read_efi_variable(efivars: &Path, variable: &str) -> Option<Vec<u8>> {
 /// whether to finish enrolling, so they say which condition failed rather than "not verified".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unverified {
-    /// No Secure Boot state at all: not a UEFI boot, or a firmware that exposes nothing.
     NotUefi,
-    /// Secure Boot is off, so nothing checked the boot image.
     SecureBootOff,
-    /// `db` could not be read or could not be parsed.
     DatabaseUnreadable(String),
-    /// Lockdown is not active.
     LockdownInactive,
 }
 
@@ -150,14 +123,14 @@ impl std::fmt::Display for Unverified {
     }
 }
 
-/// Is this boot verified — Secure Boot on, a readable `db`, and lockdown active?
+/// Is this boot verified: Secure Boot on, a readable `db`, lockdown active?
 ///
-/// Returns the anchors `db` holds, so the caller can record what this machine trusted at the
-/// moment it created a PIN-less keyslot.
+/// Returns the anchors `db` holds, so the caller can record what this machine trusted when it
+/// created a PIN-less keyslot.
 ///
 /// # Errors
 ///
-/// Returns the [`Unverified`] condition that failed, in the order the design names them.
+/// Returns the [`Unverified`] condition that failed, in the order the checks run.
 pub fn verified_boot(facts: &BootFacts) -> Result<AnchorDigest, Unverified> {
     match facts.secure_boot {
         None => return Err(Unverified::NotUefi),
@@ -175,16 +148,13 @@ pub fn verified_boot(facts: &BootFacts) -> Result<AnchorDigest, Unverified> {
     Ok(anchors)
 }
 
-/// Is this boot verified, and is its `db` still the one enrollment recorded?
-///
-/// The second half is what keeps a recorded slot honest: a `db` that gained or lost an
-/// authority after the slot was created is a different trust policy, and PCR 7 alone cannot
-/// tell them apart from a legitimate firmware update.
+/// Is this boot verified, and is its `db` still the one enrollment recorded? A `db` that gained or
+/// lost an authority is a different trust policy, and PCR 7 alone cannot tell that apart from a
+/// firmware update.
 ///
 /// # Errors
 ///
-/// Returns an error naming what changed, so a boot log says why the volume asked for a
-/// secret instead of opening by itself.
+/// Returns a reason naming what changed, so a boot log says why the volume asked for a secret.
 pub fn verified_since_enrollment(facts: &BootFacts, recorded: &AnchorDigest) -> Result<(), String> {
     let now = verified_boot(facts).map_err(|why| why.to_string())?;
     if now != *recorded {
@@ -198,14 +168,13 @@ pub fn verified_since_enrollment(facts: &BootFacts, recorded: &AnchorDigest) -> 
     Ok(())
 }
 
-/// The X.509 certificate authorities in an EFI signature database, as one digest over their
-/// sorted DER and nothing else.
+/// The X.509 authorities in an EFI signature database, as one digest over their sorted DER and
+/// nothing else.
 ///
 /// # Errors
 ///
-/// Returns an error if the database is not a well-formed chain of EFI signature lists, or if
-/// it holds no authority at all — an empty `db` trusts nothing, and a machine in that state
-/// must not be treated as verified.
+/// The database is not a well-formed chain of EFI signature lists, or holds no authority at all:
+/// an empty `db` trusts nothing and must not count as verified.
 pub fn anchor_digest(db: &[u8]) -> Result<AnchorDigest, String> {
     let certificates = x509_entries(db)?;
     if certificates.is_empty() {
@@ -219,9 +188,9 @@ pub fn anchor_digest(db: &[u8]) -> Result<AnchorDigest, String> {
     Ok(AnchorDigest(hex(&hasher.finalize())))
 }
 
-/// Walk an EFI signature database and return the certificate payloads it carries, sorted and
-/// deduplicated. Layout: `EFI_SIGNATURE_LIST` = signature-type GUID, list size, header size,
-/// signature size; then entries of `owner GUID || data`.
+/// The certificate payloads an EFI signature database carries, sorted and deduplicated. Layout:
+/// `EFI_SIGNATURE_LIST` = signature-type GUID, list size, header size, signature size; then
+/// entries of `owner GUID || data`.
 fn x509_entries(db: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     const LIST_HEADER: usize = 16 + 4 + 4 + 4;
     const OWNER: usize = 16;
@@ -276,24 +245,20 @@ fn x509_entries(db: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     Ok(out)
 }
 
-/// The sidecar recording the anchors of the `db` enrollment saw.
-///
-/// Kept beside the rollback state, which is already on the encrypted root: it names no secret
-/// and is only useful for deciding whether a boot is still the one that was approved.
+/// The sidecar recording the anchors of the `db` enrollment saw. It lives beside the rollback
+/// state on the encrypted root, names no secret, and only decides whether a boot is still the one
+/// that was approved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Enrollment {
     pub anchors: AnchorDigest,
-    /// The certificate authorities as the person can recognise them, for a log line that
-    /// says what enrolment trusted rather than a digest.
+    /// The authorities as a person recognises them, for a log line that says what enrolment
+    /// trusted rather than a digest.
     pub authorities: Vec<String>,
 }
 
 impl Enrollment {
     /// What enrollment should record for this machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`Unverified`] reason the boot is not verified, so nothing is written.
+    /// The [`Unverified`] reason the boot is not verified, so nothing is written.
     pub fn record(facts: &BootFacts) -> Result<Self, Unverified> {
         let anchors = verified_boot(facts)?;
         let authorities = facts
@@ -322,13 +287,12 @@ impl Enrollment {
     }
 }
 
-/// A certificate's subject, as far as a log line needs it. Anything unparseable is described
-/// by its digest rather than dropped: an authority nobody can see is the one worth naming.
+/// A certificate's subject, as far as a log line needs it. Anything unparseable is described by
+/// its digest rather than dropped: an authority nobody can see is the one worth naming.
 fn describe_certificate(der: &[u8]) -> String {
     tilo_crypto::inspect_certificate(der).map_or_else(
         |_| {
-            // A full digest is noise in a log line; eight bytes tells two authorities
-            // apart, and the module is not a place anyone matches a fingerprint by hand.
+            // A full digest is noise in a log line; eight bytes tell two authorities apart.
             let digest = Sha256::digest(der);
             let prefix: [u8; 8] = digest
                 .get(..8)
@@ -340,7 +304,6 @@ fn describe_certificate(der: &[u8]) -> String {
     )
 }
 
-/// Lowercase hexadecimal, the form every digest in this module is printed in.
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, byte| {
@@ -349,17 +312,14 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// Refuse to enroll a PIN-less keyslot on a boot that is not verified.
 pub fn require_verified(facts: &BootFacts) -> Result<Enrollment, Unverified> {
     Enrollment::record(facts)
 }
 
-/// Where the recorded enrollment lives, given the rollback state path.
 pub fn enrollment_path(state_path: &Path) -> PathBuf {
     state_path.with_file_name("verified-boot.json")
 }
 
-/// Read the recorded anchor digest, if this machine has one.
 pub fn load_enrollment(state_path: &Path) -> Option<AnchorDigest> {
     let text = std::fs::read_to_string(enrollment_path(state_path)).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -369,7 +329,6 @@ pub fn load_enrollment(state_path: &Path) -> Option<AnchorDigest> {
         .map(|a| AnchorDigest(a.to_owned()))
 }
 
-/// Record what this machine trusted when it created a PIN-less keyslot.
 pub fn save_enrollment(state_path: &Path, enrollment: &Enrollment) -> Result<()> {
     let path = enrollment_path(state_path);
     tilo_files::native::atomic::write_creating_parent_with_mode(
@@ -380,7 +339,7 @@ pub fn save_enrollment(state_path: &Path, enrollment: &Enrollment) -> Result<()>
     .with_context(|| format!("recording the verified boot in {}", path.display()))
 }
 
-/// Deciding whether a volume that has a PIN-less keyslot may open by itself on this boot.
+/// Whether a volume with a PIN-less keyslot may open by itself on this boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutomaticUnlock {
     /// Proceed: the boot is verified and the trust policy is the one enrollment recorded.
@@ -392,8 +351,8 @@ pub enum AutomaticUnlock {
 impl AutomaticUnlock {
     /// # Errors
     ///
-    /// Returns an error if `recorded` is `None` on a verified boot — a slot nobody recorded the
-    /// trust policy for cannot be judged, so it is not opened.
+    /// `recorded` is `None` on a verified boot: a slot nobody recorded the trust policy for
+    /// cannot be judged, so it is not opened.
     pub fn decide(facts: &BootFacts, recorded: Option<&AnchorDigest>) -> Self {
         match verified_boot(facts) {
             Err(why) => Self::No(why.to_string()),
@@ -419,7 +378,7 @@ impl AutomaticUnlock {
 
     /// # Errors
     ///
-    /// Returns an error carrying the reason when the boot is not verified.
+    /// The reason, when the boot is not verified.
     pub fn require(&self) -> Result<()> {
         match self {
             Self::Yes => Ok(()),

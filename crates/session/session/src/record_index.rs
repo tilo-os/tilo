@@ -121,7 +121,7 @@ impl RecordReader for AppReader {
             .arg("--payload-root")
             .arg(&installed.payload_root)
             .arg("--app-id")
-            .arg(&installed.package_id)
+            .arg(installed.app_id.as_str())
             .arg("--no-services")
             .arg("--")
             .arg(tilo_app::framework::record_index::INDEX_FLAG)
@@ -308,8 +308,10 @@ impl RecordIndex {
                 // read again on the next change or settling rather than kept as a record holding
                 // nothing.
                 Err(Unread::Stopped(reason)) => {
-                    // ignored-failure: nobody answered yet, and the record waits to be read
-                    tracing::debug!(%reason, %app, %record, "a record's reading was stopped");
+                    tilo_failure::ignored!(
+                        "nobody answered yet, and the record waits to be read",
+                        tracing::debug!(%reason, %app, %record, "a record's reading was stopped")
+                    );
                     self.queued.lock_recover().insert((workspace, app, record));
                     continue;
                 }

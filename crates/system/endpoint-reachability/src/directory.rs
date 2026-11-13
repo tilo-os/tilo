@@ -1,19 +1,5 @@
 //! What a Tilo endpoint tells number 0's directory, and when.
 //!
-//! iroh's `presets::N0` is a relay set and a directory at once. The relays are
-//! held back until something needs this device dialable
-//! ([`crate::Reachability`]); the directory publishes this
-//! device's public key beside its home relay URL to `dns.iroh.link`, which is
-//! how a collaborator whose address changed is found again. But nothing in
-//! iroh holds a publication back while the relays wait: iroh's publisher
-//! filters addresses down to relay URLs and republishes the record it kept
-//! every five minutes whatever the endpoint's relay state. A desktop with
-//! nobody to talk to therefore still signed in to number 0 every five
-//! minutes, for a record nothing would ever ask for.
-//!
-//! So a Tilo endpoint keeps number 0's relays and its directory, and this
-//! crate decides what it tells the directory:
-//!
 //! * [`collaborating`] — the session's endpoint. It publishes exactly what
 //!   `presets::N0` publishes (iroh's own [`PkarrPublisher`], relay URLs only,
 //!   on number 0's server) but only while this endpoint has a home relay,
@@ -25,19 +11,6 @@
 //!   so what its owner opened by key (an invite, a room, another of their own
 //!   devices) is still found. For a party that is a client, never a place to
 //!   dial: the filesystem's mounts, a probe.
-//!
-//! Both are `address_lookup` builders an endpoint takes in place of
-//! `presets::N0`'s, and both leave the crypto provider and the relay map to
-//! the caller.
-//!
-//! The session's endpoint, the filesystem's and a runtime's are what a
-//! person's device holds, and none binds the preset: they take
-//! [`collaborating`] and [`Watchonly`] with `presets::Minimal`'s crypto
-//! provider and the relays [`crate::relays`] reads from the person's
-//! settings. `presets::N0` is left to processes that are not a desktop — a
-//! relay's diagnostic probe, the initrd's unlock exchange — each listed with
-//! its reason in `tools/policy/check_iroh_presets.py`, which refuses a new
-//! one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -89,13 +62,11 @@ pub struct Gate {
 }
 
 impl Gate {
-    /// Whether this device may be published right now.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
     }
 
-    /// Whether a record is waiting for a relay to name.
     #[must_use]
     pub fn is_holding(&self) -> bool {
         self.held.lock_recover().is_some()
@@ -210,8 +181,9 @@ mod tests {
     /// the gate, its relays held back until woken. The relay handed back is
     /// the test's own, a loopback server that answers a home relay
     /// connection the moment the gate lets one through.
-    async fn session() -> (Gate, Reachability, iroh_relay::server::Server) {
-        let (server, relays) = crate::test_support::local_relay().await;
+    async fn session() -> (Gate, Reachability, tilo_test_env::relay::Relay) {
+        let relay = tilo_test_env::relay::relay().await;
+        let relays = relay.relays();
         let gate = collaborating();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
             .address_lookup(gate.clone())
@@ -228,7 +200,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             Some(Duration::from_millis(300)),
         );
-        (gate, reachability, server)
+        (gate, reachability, relay)
     }
 
     async fn until(what: &str, mut ready: impl FnMut() -> bool) {

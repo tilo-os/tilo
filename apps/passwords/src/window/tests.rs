@@ -24,8 +24,7 @@ fn request(app: &mut PasswordsWindow, request: Request) {
     app.settle();
 }
 
-/// Run `effect` on the vault, as the palette, an agent or a bound control
-/// does.
+/// Run `effect` on the vault, as the palette, an agent or a bound control does.
 fn effect(app: &mut PasswordsWindow, effect: PasswordsEffect) {
     app.core_mut().perform(effect).expect("the effect runs");
     app.settle();
@@ -71,8 +70,8 @@ fn public_text(resources: &[ui::tilo_actions::ResourceSpec]) -> String {
     out
 }
 
-// Clipboard transport is injected at the host boundary, scoped to the test's
-// thread, so these tests never touch the desktop clipboard.
+// Clipboard transport is injected at the host boundary, scoped to the test's thread, so
+// these tests never touch the desktop clipboard.
 struct TestClipboard {
     accepts: bool,
     text: std::sync::Mutex<Option<String>>,
@@ -112,12 +111,10 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
     assert!(app.shell().has_sidebar());
     assert!(app.shell().has_overview(), "the vault shows its item list");
 
-    // A tool page is the sidebar and the content: no item list beside it.
     request(&mut app, Request::Navigate("review".into()));
     assert_eq!(app.core().screen, Screen::Review);
     assert!(!app.shell().has_overview());
 
-    // Choosing a place of the vault brings the list back, filtered.
     request(&mut app, Request::Navigate("filter:wifi".into()));
     assert!(app.shell().has_overview());
     let core = app.core();
@@ -130,7 +127,6 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
     );
     drop(core);
 
-    // The sidebar names every place in sentence case with its count.
     let sections = app.core().nav_sections();
     assert_eq!(sections.len(), 2);
     let sidebar = format!("{sections:?}");
@@ -160,14 +156,12 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
             .unwrap()
     };
 
-    // A press on a row opens its item.
     app.harness()
         .click_named("passwords.item:demo-mail")
         .unwrap();
     app.settle();
     assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 
-    // So does assistive technology, by the list item's target.
     app.harness()
         .perform_semantic_named(
             "passwords.items",
@@ -178,16 +172,12 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     app.settle();
     assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
 
-    // The list and the stars publish the items by their opaque ids: no
-    // title of the vault reaches what the window publishes.
     let published = public_text(&app.harness().resources());
     assert!(published.contains("passwords:item:demo-mail"));
     for title in ["Personal mail", "Northstar Bank", "Recovery codes"] {
         assert!(!published.contains(title), "the window published {title:?}");
     }
 
-    // The row's star toggles the item's favorite, through the item's
-    // published `favorite`.
     let before = favorites(&mut app);
     app.harness()
         .perform_semantic_named(
@@ -199,7 +189,6 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     app.settle();
     assert_eq!(favorites(&mut app), before + 1);
 
-    // The arrow keys step through the list.
     app.surface::<PasswordsWindow, _>(|surface| surface.core_mut().step(false));
     assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 }
@@ -222,7 +211,6 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
         assert!(!hits.contains(secret), "search leaks {secret}");
     }
 
-    // Every page the content shows, with the vault's own items open.
     let shared = Rc::clone(&app.core);
     for screen in [
         Screen::Vault,
@@ -563,8 +551,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     }
 }
 
-/// An empty vault has nothing to review: the page says so instead of
-/// grading zero passwords as all clear.
+/// An empty vault has nothing to review: the page says so instead of grading zero passwords
+/// as all clear.
 #[test]
 fn an_empty_vault_review_says_there_is_nothing_to_check() {
     let root = temp_root("empty-review");
@@ -579,8 +567,8 @@ fn an_empty_vault_review_says_there_is_nothing_to_check() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// The review names what it checked as the vault itself, which is true
-/// wherever the vault is kept, not as a device or a browser.
+/// The review names what it checked as the vault itself, which is true wherever the vault
+/// is kept, not as a device or a browser.
 #[test]
 fn the_review_says_it_checked_this_vault() {
     let app = PasswordsWindow::demo();
@@ -592,8 +580,8 @@ fn the_review_says_it_checked_this_vault() {
     assert!(!tree.contains("on this device"), "{tree}");
 }
 
-/// The editor names the item's kind in full, as one choice in a list, so a
-/// narrow editor pane never cuts the kinds' names short.
+/// The editor names the item's kind in full, as one choice in a list, so a narrow editor
+/// pane never cuts the kinds' names short.
 #[test]
 fn the_editor_names_each_kind_in_full() {
     let mut app = PasswordsWindow::demo();
@@ -615,8 +603,8 @@ fn save_button(harness: &ui::headless::FrameHarness) -> vello::kurbo::Rect {
         .expect("the editor has a Save button")
 }
 
-/// The editor is taller than a laptop window: the wheel scrolls it until
-/// its Save button is in view.
+/// The editor is taller than a laptop window: the wheel scrolls it until its Save button is
+/// in view.
 #[test]
 fn the_wheel_scrolls_the_editor_to_its_save_button() {
     let _settled = ui::motion::testing::settled();
@@ -650,8 +638,8 @@ fn the_wheel_scrolls_the_editor_to_its_save_button() {
     }
 }
 
-/// A bare host is the https site it names, a corrected field drops its
-/// complaint at once, and a saved item is kept, with nothing left writing.
+/// A bare host is the https site it names, a corrected field drops its complaint at once,
+/// and a saved item is kept, with nothing left writing.
 #[test]
 fn a_bare_host_saves_as_its_https_site_and_an_edit_clears_the_complaint() {
     let root = temp_root("bare-host");

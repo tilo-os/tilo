@@ -1,9 +1,5 @@
-//! Low-level helpers shared by the map canvas and the floating chrome.
-//!
-//! Colours come from the caller (resolved from the `Theme`) and text comes in
-//! as a resolved [`TextStyle`] (`theme.text(role)`); nothing here hard-codes a
-//! palette or a type size. The shape primitives are for genuine content
-//! drawing — cartography, routes, markers — never for chrome.
+//! Low-level helpers shared by the map canvas and the floating chrome: colours come from the
+//! caller, text as a resolved [`TextStyle`].
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Stroke};
@@ -13,7 +9,6 @@ use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round};
 use ui::text_render::{TextRenderer, TextStyle};
 
-/// Linear blend between two sRGB colours (`t` in `0..=1`, 0 → a, 1 → b).
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
@@ -25,13 +20,10 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgba8(l(a.r, b.r), l(a.g, b.g), l(a.b, b.b), l(a.a, b.a))
 }
 
-/// Apply an alpha multiplier to a colour.
 pub fn alpha(c: Color, a: f32) -> Color {
     c.multiply_alpha(a)
 }
 
-/// Parse a hex colour string (`rrggbb`, optional leading `#`) to a `Color`.
-/// Used for authentic GTFS transit line colours (`routeColor`).
 pub fn hex_color(s: &str) -> Option<Color> {
     ui::color::parse_hex(s)
 }
@@ -55,7 +47,6 @@ pub fn line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64, color:
     scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
 }
 
-/// Stroke an open polyline with round caps/joins.
 pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: Color) {
     if pts.len() < 2 {
         return;
@@ -74,12 +65,10 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: 
     scene.stroke(&stroke, t, color, None, &path);
 }
 
-/// Fill a prebuilt path (non-zero winding).
 pub fn fill_path(scene: &mut Scene, t: Affine, path: &BezPath, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, path);
 }
 
-/// Stroke a prebuilt path with round caps/joins.
 pub fn stroke_path(scene: &mut Scene, t: Affine, path: &BezPath, width: f64, color: Color) {
     let stroke = Stroke::new(width)
         .with_caps(Cap::Round)
@@ -87,7 +76,6 @@ pub fn stroke_path(scene: &mut Scene, t: Affine, path: &BezPath, width: f64, col
     scene.stroke(&stroke, t, color, None, path);
 }
 
-/// Fill a closed polygon ring.
 pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     if pts.len() < 3 {
         return;
@@ -104,28 +92,22 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &path);
 }
 
-/// The measured height of one line in `style`.
 pub fn line_h(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Ag", None, style).1)
 }
 
-/// How far below its line box's top `s` has its first baseline in `style`:
-/// what lines up text of two roles on one baseline.
 pub fn baseline(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.first_baseline_style(s, None, style))
 }
 
-/// The width `s` takes in `style`.
 pub fn measure_w(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)
 }
 
-/// Left-aligned text with its line box's top-left at `origin`.
 pub fn text(ctx: &mut PaintCtx<'_>, s: &str, origin: Point, style: &TextStyle, color: Color) {
     ctx.text(s, style, color, origin, None);
 }
 
-/// Left-aligned text at `origin`, elided to `max_w`.
 pub fn text_clip(
     ctx: &mut PaintCtx<'_>,
     s: &str,
@@ -139,7 +121,6 @@ pub fn text_clip(
     ctx.text(&shown, style, color, origin, None);
 }
 
-/// Right-aligned text with its right edge at `x_right` and its top at `y`.
 pub fn text_right(
     ctx: &mut PaintCtx<'_>,
     s: &str,
@@ -152,7 +133,6 @@ pub fn text_right(
     ctx.text(s, style, color, Point::new(x_right - w, y), None);
 }
 
-/// Text centred horizontally on `top_center.x`, its top at `top_center.y`.
 pub fn text_center(
     ctx: &mut PaintCtx<'_>,
     s: &str,
@@ -170,7 +150,6 @@ pub fn text_center(
     );
 }
 
-/// Top of one line in `style` centred in the band `y..y + h`.
 pub fn vmid(tr: &mut TextRenderer, y: f64, h: f64, style: &TextStyle) -> f64 {
     ui::text_metrics::centered_text_top(y, h, line_h(tr, style))
 }

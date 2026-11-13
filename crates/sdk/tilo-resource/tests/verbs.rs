@@ -39,14 +39,12 @@ pub struct Shelf {
 
 #[resource(
     kind = "test.shelf",
-    label = "Shelf",
     params = shelf,
     initialize = Shelf::genesis,
     seed = Shelf::first_content,
     available = Shelf::available,
     children = Shelf::colours,
-    read_content = Shelf::content,
-)]
+    read_content = Shelf::content, catalogue = "tests/locales")]
 impl Shelf {
     /// Rename the shelf.
     #[action(id = "retitle")]
@@ -471,7 +469,7 @@ fn each_labelled_item_is_its_own_search_entry() {
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.shelf.view")]
+#[effect(operation = "test.shelf.view", catalogue = "tests/locales")]
 pub enum ShelfView {
     /// Type at the invoker's caret.
     #[effect(edit, participant)]
@@ -541,7 +539,7 @@ pub struct Opaque {
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.shelf.cards")]
+#[effect(operation = "test.shelf.cards", catalogue = "tests/locales")]
 pub enum CardEffect {
     /// Show a card.
     Show {
@@ -577,7 +575,7 @@ fn an_effect_parameter_publishes_what_its_type_is_written_as() {
 const PRINTED_TAG: &str = "test:printed";
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.shelf.press")]
+#[effect(operation = "test.shelf.press", catalogue = "tests/locales")]
 pub enum PressEffect {
     /// Print the shelf.
     #[effect(job, returns, host_render, tag = PRINTED_TAG)]
@@ -662,7 +660,7 @@ pub struct Book {
     pub people: Collection<Person>,
 }
 
-#[resource(kind = "test.book", label = "Book", params = book)]
+#[resource(kind = "test.book", params = book, catalogue = "tests/locales")]
 impl Book {
     /// Add a card.
     #[action]
@@ -749,7 +747,7 @@ pub struct Pins {
     pub pins: Collection<Pin>,
 }
 
-#[resource(kind = "test.pins", label = "Pins", params = pins)]
+#[resource(kind = "test.pins", params = pins, catalogue = "tests/locales")]
 impl Pins {
     /// Pin a place.
     #[action]
@@ -801,7 +799,7 @@ pub struct Reports {
     pub tags: tilo_resource::Set<String>,
 }
 
-#[resource(kind = "test.reports", label = "Reports", params = reports)]
+#[resource(kind = "test.reports", params = reports, catalogue = "tests/locales")]
 impl Reports {
     /// File a report.
     #[action]
@@ -974,7 +972,7 @@ pub struct Pages {
     pub loaded: Vec<usize>,
 }
 
-#[resource(kind = "test.pages", label = "Pages", load = Pages::load_pages, children = Pages::places)]
+#[resource(kind = "test.pages", load = Pages::load_pages, children = Pages::places, catalogue = "tests/locales")]
 impl Pages {
     /// Add a page.
     #[action]
@@ -1104,7 +1102,7 @@ pub struct PrivateImport {
     pub received_bytes: u64,
 }
 
-#[resource(kind = "test.private-import", label = "Private import")]
+#[resource(kind = "test.private-import", catalogue = "tests/locales")]
 impl PrivateImport {
     /// Receive a private snapshot.
     #[action]
@@ -1177,7 +1175,7 @@ fn typed_secret_parameters_bind_redacted_variants_and_refuse_plaintext_arguments
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.shelf.wipe")]
+#[effect(operation = "test.shelf.wipe", catalogue = "tests/locales")]
 pub enum WipeEffect {
     /// Wipe a drive. Offered on each drive.
     #[effect(row, destructive, phrase = "Self::drive")]

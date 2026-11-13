@@ -235,8 +235,10 @@ pub(super) fn build(
     if !missing.is_empty() {
         // The publication's own changes, in the history or queued in it.
         let own = match mutation {
-            // ignored-failure: a change set that does not parse is not this publication's own
-            DocumentMutation::Incremental(bytes) => Automerge::parse_changes(bytes).ok(),
+            DocumentMutation::Incremental(bytes) => tilo_failure::ignored!(
+                "a change set that does not parse is not this publication's own",
+                Automerge::parse_changes(bytes).ok()
+            ),
             DocumentMutation::Snapshot(_) => None,
         };
         let mut changes = admitted

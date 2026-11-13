@@ -311,3 +311,39 @@ fn a_draft_gives_back_the_arguments_it_shows_and_no_others() {
             .is_none()
     );
 }
+
+/// A value that names one of its parameter's choices reads by the label the
+/// surface publishes for it: a field id reads as the field's name ("Body"),
+/// never the raw `body` the action binds.
+#[test]
+fn a_choice_value_reads_by_its_published_label() {
+    let edit = descriptor(
+        "Edit a text field",
+        vec![
+            ActionParam::required("field", ParamType::Text, "The field id")
+                .with_labelled_choices([("title", "Title"), ("body", "Body")]),
+            ActionParam::required("value", ParamType::Text, "The new value"),
+        ],
+    );
+    let draft = Draft::render(&edit, &args(json!({"field": "body", "value": "milk"})));
+    let field = draft
+        .fields
+        .iter()
+        .find(|field| field.path == ["field"])
+        .expect("the field row");
+    assert_eq!(
+        field.shows.as_deref(),
+        Some("Body"),
+        "a field id reads as the field's name, not the id"
+    );
+    // What runs stays the value the action binds: the draft gives its
+    // arguments back exactly, the field id included.
+    let rebuilt = Draft::render(&edit, &args(json!({"field": "body", "value": "milk"})))
+        .arguments()
+        .expect("all shown");
+    assert_eq!(
+        rebuilt.get("field").and_then(|value| value.as_str()),
+        Some("body"),
+        "the label is a display, the id is what runs"
+    );
+}

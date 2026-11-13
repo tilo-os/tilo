@@ -1,21 +1,10 @@
 //! [`SegChoice`] — one choice of a few, over published actions.
-//!
-//! The toolkit's segmented control (`ui::ToggleGroup`) draws the choice,
-//! moves its focus and answers the arrow keys. The installer owns what is
-//! chosen: each segment fires the [`Control`] choosing it, and the
-//! [`crate::setup::destination::installer_app::InstallerApp`] runs that
-//! action and composes the step again with the new choice selected, so the
-//! choice survives the per-step rebuild because it lives in the wizard.
 
 use ui::widget::toggle_group::Segment;
 use ui::widget::{ToggleGroup, Widget};
 
 use crate::setup::destination::control::{Bound, Control};
 
-/// The segmented choice of `labels` — what a person reads, already in the
-/// window's language when the choice is words rather than stored names — the
-/// `selected` one chosen, each segment firing its index-aligned control.
-/// `test_id` names it for E2E targeting and in the inventory.
 pub fn seg_choice(
     labels: Vec<String>,
     controls: Vec<Control>,
@@ -24,8 +13,6 @@ pub fn seg_choice(
 ) -> Bound {
     let selected = selected.min(labels.len().saturating_sub(1));
     let segments = labels.into_iter().map(Segment::new).collect();
-    // Every segment runs the same action with its own argument: the
-    // inventory lists that action once, under the choice's id.
     let listed = controls.first().cloned();
     let choice = ToggleGroup::new(segments, selected)
         .with_id(test_id)
@@ -99,8 +86,6 @@ mod tests {
             .doc(&mut doc)
             .layout(&taffy, node);
         keys.send(&mut choice, &named_key(NamedKey::ArrowRight));
-        // The choice publishes its selection as its view action; the tree that holds it
-        // answers the press, as the window does after handling the key.
         let mut tree: Box<dyn Widget> = Box::new(choice);
         ui::widget::controls::start_pending_control_invocations(
             tree.as_mut(),

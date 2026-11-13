@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::webview::{ExtensionPermissionSet, WebViewEvent};
 
-/// An extension's request for more access, or what it holds of what it may
-/// ask for now: a set of API permissions and site patterns, each bounded.
+/// An extension's request for more access, or what it holds of what it may ask for now: a
+/// set of API permissions and site patterns, each bounded.
 pub(super) fn decode(value: &Value) -> Option<WebViewEvent> {
     let id = value["id"]
         .as_str()

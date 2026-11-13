@@ -97,7 +97,33 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
+/// The content secret of `workspace`'s members, which every window of it in
+/// this process holds.
+fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
+    static SECRETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, tilo_seal::SymmetricKey>>,
+    > = std::sync::OnceLock::new();
+    let generated = tilo_seal::SymmetricKey::generate().ok()?;
+    Some(
+        SECRETS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(workspace.to_owned())
+            .or_insert(generated)
+            .clone(),
+    )
+}
+
 impl Profile {
+    /// The workspace the app opens in, on a temporary profile.
+    fn workspace(&self) -> Option<&str> {
+        match self {
+            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => Some(workspace),
+            Self::DataDir(_) => None,
+        }
+    }
+
     /// The profile's settings, which the app's typed settings use instead of
     /// the person's.
     fn settings(&self) -> ui_core::storage::SettingsDocument {
@@ -182,35 +208,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        let person = author.to_owned();
-        harness.serve_provider(
-            provider,
-            Box::new(move |invocation| {
-                // The person's own settings: the host admits nobody else.
-                if invocation.actor != person {
-                    return Err(tilo_actions::DoorError::Unavailable {
-                        code: "permission_denied".into(),
-                        reason: format!("only {person} changes their settings"),
-                    });
-                }
-                let arguments = match invocation.argument {
-                    tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
-                    tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-                    tilo_actions::remote::InvokeArgument::Text(_) => {
-                        return Err(tilo_actions::DoorError::InvalidArguments(
-                            "a settings change carries typed arguments".into(),
-                        ));
-                    }
-                };
-                records.invoke(
-                    invocation.address,
-                    &arguments,
-                    invocation.confirmed,
-                    &tilo_actions::ActionInvoker::actor(&person),
-                    None,
-                )
-            }),
-        );
+        harness.serve_provider(provider, records.served_for(author));
     }
 }
 
@@ -761,6 +759,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
             _settled: settled,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// Hand the records the app declares kept by other providers
+    /// ([`Records::kept_by`](super::Records::kept_by)) to `host`, in place of
+    /// the test's own stand-in: a host under test (a page keeping the
+    /// person's settings) is told the window's frame, the profile's settings
+    /// document and the person at the window, and serves them as it does
+    /// for a live window.
+    pub fn kept_by_host(
+        &mut self,
+        host: impl FnOnce(&mut FrameHarness, &ui_core::storage::SettingsDocument, &str),
+    ) {
+        let mut declared = super::Records::declaring();
+        A::records(&mut declared);
+        for (provider, _) in declared.into_kept() {
+            self.harness.stop_serving_provider(provider);
+        }
+        host(&mut self.harness, &self.profile.settings(), &self.author);
     }
 
     /// The app's file areas in this profile, which the running app writes
@@ -2143,6 +2159,15 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
+    // The harness holds the workspace's keys, as the record's route does on a
+    // device: what the app stores is sealed under its members' secret.
+    if let Some(workspace) = profile.workspace() {
+        ui_core::collaboration::record_content::ContentLane::of(
+            opening.id,
+            super::app::record_wire(&checkout.id),
+        )
+        .hold_secret(workspace_secret(workspace));
+    }
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {

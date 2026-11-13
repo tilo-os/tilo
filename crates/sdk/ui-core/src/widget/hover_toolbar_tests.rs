@@ -37,7 +37,6 @@ fn drawn(bar: &mut HoverToolbar) {
     Widget::mark_drawn(bar);
 }
 
-/// A message under its toolbar, laid out.
 struct Laid {
     bar: HoverToolbar,
     taffy: TaffyTree<()>,
@@ -118,7 +117,6 @@ fn hovering_damages_only_the_toolbar_not_the_row() {
     let mut after = Vec::new();
     Widget::collect_damage(&laid.bar, &mut after);
     assert!(after.is_empty(), "drawn, nothing is left to repaint");
-    // Moving within the row changes nothing.
     laid.send(&crate::synthetic_input::cursor_moved(
         row.center().x + 10.0,
         row.center().y,

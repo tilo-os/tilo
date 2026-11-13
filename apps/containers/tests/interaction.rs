@@ -1,10 +1,6 @@
-//! End-to-end interaction and render tests for the containers app, driven
-//! through the production frame host (`ui::headless::FrameHarness`): real layout,
-//! real event routing, real accessibility, and pixels read back from the
-//! renderer `--shots` uses.
-//!
-//! Editing the new-container draft goes through the framework's dispatcher,
-//! so those tests run the hosted app ([`TestApp`]) and type into it.
+//! End-to-end interaction and render tests, driven through the production frame host:
+//! real layout, event routing, accessibility and pixels read back from the renderer.
+//! Draft edits run the hosted app, since they go through the framework's dispatcher.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,7 +21,6 @@ use ui::theme::Theme;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-/// The sample engine offline, showing what a plain `--shots` shows.
 fn offline_at(viewport: (u32, u32), theme: Theme) -> Driver {
     let mut app = ContainersApp::sample();
     app.stage_scene(None);
@@ -94,7 +89,7 @@ fn app(d: &mut Driver) -> RootMut<'_, ContainersApp> {
     d.root_mut::<ContainersApp>()
 }
 
-/// Pixels that differ from the window ground: a blank surface scores ~0.
+/// Pixels that differ from the window ground: a blank surface scores about 0.
 fn painted(d: &Driver) -> usize {
     let rgba = d.render_rgba();
     let Some(ground) = rgba.get(..4).map(<[u8]>::to_vec) else {
@@ -122,8 +117,8 @@ fn named(d: &FrameDriver, name: &str, role: ui::accesskit::Role) -> ui::accesski
         )
 }
 
-/// Every section and dialog paints a populated surface, and a phone at 200%
-/// text still shows a readable page.
+/// Every section and dialog paints a populated surface, and a phone at 200% text still
+/// shows a readable page.
 #[test]
 fn sections_and_dialogs_render_non_blank() {
     let mut d = offline();
@@ -179,9 +174,8 @@ fn hosted_named(app: &mut TestApp<ContainersShell>, name: &str) -> ui::accesskit
     named(d, name, ui::accesskit::Role::TextInput)
 }
 
-/// Typing in the new-container form splices the draft's texts: plain keys,
-/// a replaced selection, an IME commit, Tab to the next field and an
-/// assistive value; undo takes a typed word back.
+/// Typing in the new-container form splices the draft's texts: plain keys, a replaced
+/// selection, an IME commit, Tab and an assistive value; undo takes a typed word back.
 #[test]
 fn create_form_edits_the_draft() {
     // --- phase: typing_splices_and_undo_takes_a_word_back ---
@@ -270,8 +264,8 @@ fn create_form_edits_the_draft() {
     }
 }
 
-/// An empty image keeps the form open; Escape cancels it; Enter on a form
-/// with an image creates the container and empties the draft, undoably.
+/// An empty image keeps the form open, Escape cancels it, and Enter with an image
+/// creates the container and empties the draft, undoably.
 #[test]
 fn create_form_submits_and_cancels() {
     let mut app = hosted();
@@ -292,8 +286,7 @@ fn create_form_submits_and_cancels() {
         app.state().draft.run_args(),
         Some(vec!["run".into(), "-d".into(), "alpine".into()])
     );
-    // The hosted fixture uses the production offline engine: submission is
-    // accepted and clears the draft through the canonical create action.
+    // Submission is accepted and clears the draft through the create action.
     app.harness().key("Enter");
     assert!(
         !app.harness().a11y_nodes().into_iter().any(|(_, node)| {
@@ -332,11 +325,7 @@ fn create_draft_assembles_full_podman_run() {
     assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
 }
 
-// =====================================================================
-// Interaction: enter-distrobox asks for the right terminal
-// =====================================================================
-
-/// Entering a distrobox asks for Terminal and the canonical log resource opens the collaborative detail.
+/// Entering a distrobox asks for Terminal, and the log resource opens the detail.
 #[test]
 fn container_resources_open_terminal_and_log_detail() {
     // --- phase: enter_distrobox_asks_for_terminal_running_distrobox_enter ---
@@ -402,8 +391,8 @@ fn assert_sidebar_and_list_assistive_activation() {
         .unwrap();
     assert_eq!(app(&mut d).section(), Section::Images);
 
-    // The sidebar holds focus now, and typing in a focused list jumps to a
-    // row by name, so the way back is the Containers destination itself.
+    // The sidebar holds focus now, and typing in a focused list jumps to a row by name,
+    // so the way back is the Containers destination itself.
     d.frame();
     let containers = d
         .a11y_nodes()
@@ -441,8 +430,8 @@ fn assert_sidebar_and_list_assistive_activation() {
     );
 }
 
-/// Number keys switch sections, the sidebar and the list respond to the
-/// pointer and to assistive technology, and the tabs switch the detail.
+/// Number keys switch sections, the sidebar and the list answer pointer and assistive
+/// activation, and the tabs switch the detail.
 #[test]
 fn keyboard_pointer_and_semantic_navigation() {
     assert_number_keys_navigate_sections();
@@ -453,13 +442,13 @@ fn keyboard_pointer_and_semantic_navigation() {
     {
         let mut d = Driver::offline();
         d.frame();
-        // The demo opens with a selection; Escape clears it so we observe the
-        // click producing a fresh selection.
+        // The demo opens with a selection; Escape clears it so the click is seen to make
+        // a fresh one.
         d.key(winit::keyboard::NamedKey::Escape);
         d.frame();
         assert!(d.app().selected().is_none(), "selection cleared");
-        // Click the real laid-out first container row, whose position moves
-        // with the shared list header and theme.
+        // Click the laid-out first row, whose position moves with the list header and
+        // theme.
         let label = sample_engine().containers[0].name.clone();
         let bounds = d
             .a11y_nodes()
@@ -498,8 +487,8 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.frame();
         assert_eq!(d.app().selected(), Some(expected.clone()));
 
-        // The same container has a canonical row operation whose target is
-        // bound by its published owner, rather than a caller-supplied id.
+        // The same container has a canonical row operation whose target its published
+        // owner binds, not a caller-supplied id.
         let mut hosted = TestApp::<ContainersShell>::new().unwrap();
         hosted
             .with_surface::<ContainersApp, _>(ContainersApp::stage_sample_engine)
@@ -528,8 +517,7 @@ fn keyboard_pointer_and_semantic_navigation() {
     }
 }
 
-/// The bundled sample says that it is one; only an engine that answered
-/// reads as connected.
+/// The sample says what it is; only an engine that answered reads as connected.
 #[test]
 fn the_sample_never_claims_a_connection() {
     let d = offline();
@@ -562,8 +550,8 @@ fn the_root_is_a_named_window() {
     assert_eq!(tree.name.as_deref(), Some("Containers"));
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The bar's sidebar button flips the sidebar on every click, in a wide window and in a
+/// narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

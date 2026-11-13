@@ -1,7 +1,3 @@
-//! Markup that was already in the PDF: taken over as records on first open,
-//! edited like any other markup, exported without duplicates; free text
-//! authored in the reader; comment threads as reply annotations.
-
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
@@ -15,7 +11,6 @@ fn engine_fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("OUT_DIR")).join(name)
 }
 
-/// The fixture page the tests mark up (`multipage.pdf`'s second page).
 const PAGE: usize = 1;
 
 fn note(at: tilo_pdf::Point, name: &str, author: &str, contents: &str) -> tilo_pdf::NewAnnotation {
@@ -32,9 +27,6 @@ fn note(at: tilo_pdf::Point, name: &str, author: &str, contents: &str) -> tilo_p
     }
 }
 
-/// A Typst-generated document that another reader already annotated: a
-/// highlight with a comment, a note with a one-reply thread, free text and
-/// ink, written as real PDF annotations.
 fn annotated_fixture(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let engine = tilo_pdf::Engine::shared().ok()?;
     let source = std::fs::read(engine_fixture("multipage.pdf")).ok()?;
@@ -121,8 +113,6 @@ fn annotated_fixture(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// Open `path` in a reader with its markup record checked out, synced and
-/// laid out.
 fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = tests::open_settled(path)?;
     let mut state = crate::scenarios::record_state();
@@ -134,9 +124,6 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     Some((app, state))
 }
 
-/// Whether appearance text can be checked here. It is set in the pinned fonts
-/// compiled into the sandboxed helper; the in-process engine of a
-/// development build has none, so these tests share the helper's gate.
 fn helper_sets_appearance_text() -> bool {
     const WHAT: &str = "appearance text in the helper's pinned fonts";
     match tilo_pdf::sandboxed_for_test(tilo_pdf::Engine::shared(), WHAT) {
@@ -169,7 +156,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         };
         let doc = &mut state.doc;
 
-        // First open: every piece of markup became a record.
         let annotations = PdfMarkup::of(doc).list_annotations();
         assert_eq!(annotations.len(), 4, "{annotations:#?}");
         let kinds: Vec<&str> = annotations.iter().map(|a| a.kind.type_key()).collect();
@@ -228,8 +214,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         app.sync(doc, &state.root);
         assert_eq!(PdfMarkup::of(doc).list_annotations().len(), 4);
 
-        // Edit: answer the note, rewrite its text, delete the free text; leave
-        // the highlight and ink alone.
         app.perform_action(
             &mut Edits::lend(doc),
             crate::actions::add_reply_action_with_id(&thread.id, "reply-new", "Done"),
@@ -371,7 +355,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
                 .as_deref(),
             Some(hash.as_str())
         );
-        // Importing the same source again is a no-op, even after a deletion.
         let id = PdfMarkup::of(&left).list_annotations()[0].id.clone();
         PdfMarkup::apply_to(&mut left, crate::actions::delete_annotation_action(&id));
         PdfMarkup::apply_to(&mut left, import());
@@ -424,7 +407,6 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         assert_eq!(text, "Überprüfen — 検討してください");
         assert!(*size > 0.0);
-        // Moving it: drag from inside the box.
         let id = free.id.clone();
         let before = app.note_pos(&id).unwrap();
         app.move_note_local(&id, before.0 + 20.0, before.1 + 10.0);
@@ -448,7 +430,6 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
             .find(|a| a.kind == tilo_pdf::AnnotationKind::FreeText)
             .expect("free text exported");
         assert_eq!(exported.contents, "Überprüfen — 検討してください");
-        // pdfium draws it from the generated appearance.
         let scale = 2.0;
         let bitmap = reloaded
             .render(

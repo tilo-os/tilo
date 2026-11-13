@@ -1,22 +1,9 @@
 //! The order of the Wi-Fi list and how much of it the pane shows.
-//!
-//! The network in use comes first, then the networks this device knows,
-//! then the rest; within each, the stronger first and equal strengths by
-//! name. Strength is the four-step level the meter shows, never the raw
-//! value: `NetworkManager` reorders its list on every scan as raw values
-//! drift, and a row moves only when its level changes. While the pointer is
-//! over a list ([`HeldList`]), not even that moves a row: the rows keep
-//! their places, take their new facts in place, and a network that came
-//! into range is added at the end.
 
 use os_actions::WifiNetworkInfo;
 
-/// How many networks that are neither in use nor known the pane lists
-/// before "Show all networks".
 pub(crate) const OTHERS_SHOWN: usize = 5;
 
-/// Where a network stands in the list: the order of these is the order of
-/// the groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Standing {
     Connected,
@@ -34,8 +21,6 @@ fn standing(network: &WifiNetworkInfo, known: &impl Fn(&WifiNetworkInfo) -> bool
     }
 }
 
-/// `networks` in list order. `known` says whether this device has a saved
-/// profile for a network.
 pub(crate) fn arranged(
     networks: &[WifiNetworkInfo],
     known: impl Fn(&WifiNetworkInfo) -> bool,
@@ -51,8 +36,6 @@ pub(crate) fn arranged(
     order
 }
 
-/// The pane's short list of `arranged`: the network in use, every known
-/// network in range, and the [`OTHERS_SHOWN`] strongest of the others.
 pub(crate) fn shortlist<'a>(
     arranged: &[&'a WifiNetworkInfo],
     known: impl Fn(&WifiNetworkInfo) -> bool,
@@ -71,7 +54,6 @@ pub(crate) fn shortlist<'a>(
         .collect()
 }
 
-/// The rows one list shows, held in place while the pointer is over it.
 #[derive(Debug, Default)]
 pub(crate) struct HeldList {
     shown: Vec<WifiNetworkInfo>,

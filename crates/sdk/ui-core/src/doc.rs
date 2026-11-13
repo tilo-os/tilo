@@ -1,20 +1,13 @@
-//! CRDT helpers: writes that keep Automerge documents from churning, and typed reads.
-//!
-//! Splicing a whole string on every keystroke (delete all, reinsert new) costs
-//! O(len) ops per edit and, since Automerge tombstones every inserted element
-//! forever, O(len²) accumulated ops over a typing session — the store gets
-//! slower until the app appears to freeze.
-//!
-//! [`splice_text_diffed`] / [`put_text_diffed`] diff old vs. new down to the
-//! common prefix + suffix and splice only the changed middle span, so one
-//! keystroke costs one op. [`read_text`] and [`read_str_or_text`] read text
-//! back.
+//! CRDT helpers: writes that keep Automerge documents from churning, and typed reads. Splicing a whole
+//! string on every keystroke (delete all, reinsert new) costs O(len) ops per edit and, since Automerge
+//! tombstones every inserted element forever, O(len²) accumulated ops over a typing session — the store
+//! gets slower until the app appears to freeze.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::any::Any;
 
-/// Where `doc` stands, to tell whether a settle pass changed it.
+/// Where `doc` is, to tell whether a settle pass changed it.
 pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
     (doc.base_heads(), doc.pending_ops())
 }
@@ -40,7 +33,6 @@ pub fn document<'a, 'doc>(
     (model, path)
 }
 
-/// Read-only [`document`].
 #[allow(
     clippy::panic,
     reason = "a document host lends its document; any other model is a host bug"
@@ -71,8 +63,8 @@ impl TextEdit {
     }
 }
 
-/// Prefer [`put_text_diffed`] when you have a parent object + key and want the
-/// `Text` created on first use.
+/// Prefer [`put_text_diffed`] when you have a parent object + key and want the `Text` created on first
+/// use.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
     let Some(tilo_resource::TextEdit::Splice { at, delete, insert }) =
@@ -84,8 +76,6 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
             ins: 0,
         };
     };
-    // `delete` counts characters of a `String`, which the allocator already
-    // caps under `isize::MAX` bytes.
     let _ = doc.splice_text(
         text_id,
         at,
@@ -129,11 +119,8 @@ pub fn put_text_diffed<P: Into<Prop>>(
     splice_text_diffed(doc, &tid, new)
 }
 
-// Text readers: each returns `None` when the property is missing, holds a
-// value of another type, or the lookup itself fails.
-
-/// The contents of a `Text` object; see [`read_str_or_text`] for a field
-/// that may hold a string scalar instead.
+/// The contents of a `Text` object; see [`read_str_or_text`] for a field that may hold a string scalar
+/// instead.
 pub fn read_text<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<String> {
     match doc.get(obj, prop) {
         Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).ok(),
@@ -189,7 +176,6 @@ mod tests {
 
     #[test]
     fn text_writes_splice_only_the_changed_span_and_stay_bounded() {
-        // Appending one char splices only the new char.
         {
             let mut doc = AutoCommit::new();
             let long = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -216,7 +202,6 @@ mod tests {
             );
         }
 
-        // A middle edit splices only the changed span.
         {
             let mut doc = AutoCommit::new();
             let before = "the quick brown fox";
@@ -234,7 +219,6 @@ mod tests {
             assert_eq!(doc.text(&id).unwrap(), "the slow brown fox");
         }
 
-        // Re-storing an identical value is a no-op.
         {
             let mut doc = AutoCommit::new();
             let id = seed_text(&mut doc, "t", "unchanged");
@@ -258,7 +242,6 @@ mod tests {
             );
         }
 
-        // `put_text_diffed` creates the Text, then diffs into it.
         {
             let mut doc = AutoCommit::new();
 

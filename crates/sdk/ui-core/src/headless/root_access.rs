@@ -1,17 +1,10 @@
-//! The root a test mounts ([`FrameHarness::for_root`]), read and changed
-//! between frames: changed through a guard that, let go of, takes what the
-//! widgets report changed, as the live host does after an event.
+//! The root a test mounts ([`FrameHarness::for_root`]), read and changed between frames: changed
+//! through a guard that, let go of, takes what the widgets report changed, as the live host does after
+//! an event.
 
 use super::*;
 
-/// A [`FrameHarness`] over one concrete root that reads as that root.
-///
-/// Dereferencing yields the widget; a mutable dereference makes the next
-/// frame recompose from scratch: a plain reference runs nothing when it is
-/// let go of, so the harness cannot take what the widgets report changed
-/// then, as [`FrameHarness::root_mut`] does. Harness
-/// operations are associated functions so they never shadow the root's own
-/// methods.
+/// A [`FrameHarness`] over one concrete root that reads as that root. Dereferencing yields the widget.
 pub struct Framed<W: Widget + 'static> {
     harness: FrameHarness,
     root: std::marker::PhantomData<fn() -> W>,
@@ -49,8 +42,8 @@ impl<W: Widget + 'static> Framed<W> {
         &mut this.harness
     }
 
-    /// The root and the live document at once; the next frame recomposes
-    /// from scratch, as after a mutable dereference.
+    /// The root and the live document at once; the next frame recomposes from scratch, as after a
+    /// mutable dereference.
     pub fn split(this: &mut Self) -> (&mut W, &mut State) {
         this.harness.root_and_state_recomposed()
     }
@@ -71,8 +64,6 @@ impl<W: Widget + 'static> std::ops::DerefMut for Framed<W> {
 }
 
 /// The root of a [`FrameHarness`], to change ([`FrameHarness::root_mut`]).
-/// Letting go of it takes what the widgets report changed, as the live host
-/// does after each event.
 pub struct RootMut<'a, W: Widget + 'static> {
     harness: &'a mut FrameHarness,
     root: std::marker::PhantomData<fn() -> W>,
@@ -94,9 +85,8 @@ impl<W: Widget + 'static> std::ops::DerefMut for RootMut<'_, W> {
 }
 
 impl<W: Widget + 'static> RootMut<'_, W> {
-    /// Put `root` in the root's place, as a view that builds its widget
-    /// anew does: the replacement is reported, as its parent reports it to
-    /// the live host, and the next frame builds the tree again.
+    /// Put `root` in the root's place, as a view that builds its widget anew does: the replacement is
+    /// reported, as its parent reports it to the live host, and the next frame builds the tree again.
     pub fn replace(self, root: W) {
         // SAFETY: `root_mut` checked the type, and `drop` checks the maps.
         *unsafe { self.harness.lent_root::<W>() } = root;
@@ -136,8 +126,8 @@ impl<W: Widget + 'static> Drop for RootAndStateMut<'_, W> {
 }
 
 impl FrameHarness {
-    /// Mount one concrete widget as the root so a test can read and adjust
-    /// it through [`Self::root`] and [`Self::root_mut`] between frames.
+    /// Mount one concrete widget as the root so a test can read and adjust it through [`Self::root`]
+    /// and [`Self::root_mut`] between frames.
     pub fn for_root<W: Widget + 'static>(
         state: State,
         root: W,
@@ -155,9 +145,8 @@ impl FrameHarness {
         )
     }
 
-    /// [`Self::for_root`] for an app: its window's bar
-    /// ([`Self::present_in_window_bar`]) wears the app's icon and title, as
-    /// a desktop window's tab does.
+    /// [`Self::for_root`] for an app: its window's bar ([`Self::present_in_window_bar`]) wears the
+    /// app's icon and title, as a desktop window's tab does.
     pub fn for_app<W: crate::widget::AppWidget + 'static>(
         state: State,
         root: W,
@@ -170,10 +159,9 @@ impl FrameHarness {
         harness
     }
 
-    /// The app the window shows, for a root that is no widget of the app's:
-    /// the UI host's half of a window shows the app's own shell, and its bar
-    /// ([`Self::present_in_window_bar`]) wears the app's icon and title all
-    /// the same.
+    /// The app the window shows, for a root that is no widget of the app's: the UI host's half of a
+    /// window shows the app's own shell, and its bar ([`Self::present_in_window_bar`]) wears the app's
+    /// icon and title all the same.
     pub fn set_window_app(&mut self, kind: crate::widget::AppKind, title: impl Into<String>) {
         self.invalidate_local();
         self.window_app = Some((kind, title.into()));
@@ -208,9 +196,6 @@ impl FrameHarness {
     }
 
     /// The root mounted by [`Self::for_root`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
     #[must_use]
     pub fn root<W: Widget + 'static>(&self) -> &W {
         assert_eq!(
@@ -223,16 +208,7 @@ impl FrameHarness {
         unsafe { &*std::ptr::from_ref::<dyn Widget>(self.root.as_ref()).cast::<W>() }
     }
 
-    /// Mutable access to the root mounted by [`Self::for_root`]. When it is
-    /// let go of, the harness takes what the widgets report changed, as the
-    /// live host does after each event: a change they carry out in place is
-    /// remounted by the next frame, any other change (or a widget that
-    /// replaced children without saying so) lets go of the layout tree, and
-    /// the next frame rebuilds it. A change the widgets do not report keeps
-    /// the tree, as it would live.
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    /// Mutable access to the root mounted by [`Self::for_root`].
     pub fn root_mut<W: Widget + 'static>(&mut self) -> RootMut<'_, W> {
         self.invalidate_local();
         self.lend_root::<W>("FrameHarness::root_mut");
@@ -242,12 +218,8 @@ impl FrameHarness {
         }
     }
 
-    /// The root mounted by [`Self::for_root`] together with the live
-    /// document, for calls that take both ([`RootAndStateMut::split`]).
-    /// Letting go of them is as for [`Self::root_mut`].
-    ///
-    /// # Panics
-    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    /// The root mounted by [`Self::for_root`] together with the live document, for calls that take both
+    /// ([`RootAndStateMut::split`]).
     pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> RootAndStateMut<'_, W> {
         self.invalidate_local();
         self.lend_root::<W>("FrameHarness::root_and_state_mut");
@@ -277,20 +249,16 @@ impl FrameHarness {
         unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() }
     }
 
-    /// What the live host does after each event: the widgets' report of
-    /// what changed is taken before anything calls through the layout maps.
-    /// A change carried out in place waits for the next frame's remount;
-    /// any other change, or a widget that replaced children without saying
-    /// so, lets go of the maps, and the next frame rebuilds the tree.
+    /// What the live host does after each event: the widgets' report of what changed is taken before
+    /// anything calls through the layout maps.
     fn forget_replaced_widgets(&mut self) {
         if self.take_composition_dirty() {
             self.discard_layout_tree();
         }
     }
 
-    /// [`Self::root_and_state_mut`] for [`Framed::split`], which hands out
-    /// plain references: nothing runs when they are let go of, so the next
-    /// frame recomposes from scratch.
+    /// [`Self::root_and_state_mut`] for [`Framed::split`], which hands out plain references: nothing
+    /// runs when they are let go of, so the next frame recomposes from scratch.
     fn root_and_state_recomposed<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
         self.invalidate_local();
         self.lend_root::<W>("Framed::split");
@@ -302,9 +270,8 @@ impl FrameHarness {
         (root, &mut self.state)
     }
 
-    /// [`Framed`]'s mutable dereference, which hands out a plain reference:
-    /// nothing runs when it is let go of, so the next frame recomposes from
-    /// scratch.
+    /// [`Framed`]'s mutable dereference, which hands out a plain reference: nothing runs when it is let
+    /// go of, so the next frame recomposes from scratch.
     fn root_recomposed<W: Widget + 'static>(&mut self) -> &mut W {
         self.root_and_state_recomposed::<W>().0
     }

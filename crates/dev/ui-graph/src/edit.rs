@@ -3,7 +3,6 @@
 use crate::{UiDocument, UiGraphError, UiNode};
 use serde::{Deserialize, Serialize};
 
-/// One validated edit to a serialized UI object graph.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum UiGraphEdit {
@@ -24,8 +23,8 @@ pub enum UiGraphEdit {
         parent: String,
         index: usize,
     },
-    /// Set one serialized node property. A dotted path addresses nested
-    /// objects such as `text.value` or `navigate.route`.
+    /// Set one serialized node property; a dotted path addresses nested objects such as
+    /// `text.value`.
     SetProperty {
         id: String,
         property: String,
@@ -145,7 +144,7 @@ impl UiDocument {
 ///
 /// # Errors
 ///
-/// Returns a JSON decode error or [`UiGraphError::EmptyEditBatch`].
+/// A JSON decode error, or [`UiGraphError::EmptyEditBatch`].
 pub fn parse_ui_graph_edits(source: &str) -> Result<Vec<UiGraphEdit>, UiGraphError> {
     let edits: Vec<UiGraphEdit> = serde_json::from_str(source)?;
     if edits.is_empty() {

@@ -17,7 +17,7 @@ use crate::host_ui::{
     CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
     SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
-use crate::ids::{DocId, ModuleHash, Principal};
+use crate::ids::{AppId, DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
@@ -150,9 +150,7 @@ impl ViewInstance {
     /// Mark what the changes heard since the last call reach.
     fn absorb(&mut self) {
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
-        for change in &heard {
-            self.live.absorb(&self.core, change);
-        }
+        self.live.absorb(&self.core, &heard);
         self.live.check_states(&self.core);
         if let Some(now) = self.time_passed() {
             self.live.pass_time(now);
@@ -194,16 +192,12 @@ impl ViewInstance {
         self.live.shows(reads);
     }
 
-    /// Run again the boundaries that read a name (`who.name()`), and no others: the window calls
-    /// a participant something else than it did.
-    pub fn names_moved(&mut self) {
-        self.live.names_moved();
-    }
-
-    /// Run again the boundaries that wrote a day or a time of day: the person chose another
-    /// format for one.
-    pub fn formats_moved(&mut self) {
-        self.live.formats_moved();
+    /// Run again the boundaries that show something only the window knows — a participant's
+    /// name, a day or a time of day in the person's formats, a word in the language their window
+    /// speaks — and no others: the person reads another language, chose another clock, or the
+    /// window calls someone something else than it did.
+    pub fn person_moved(&mut self) {
+        self.live.person_moved();
     }
 
     /// When the time some boundary read (`today` in a query or a filter) next reads
@@ -223,17 +217,24 @@ impl ViewInstance {
         (now >= at).then_some(now)
     }
 
-    /// Whether a field or view state some boundary read has changed since it last ran, or the
-    /// time one read has moved on.
-    pub fn is_stale(&self) -> bool {
-        self.live.is_dirty()
-            || self.time_passed().is_some()
-            || self
-                .changes
-                .borrow()
-                .iter()
-                .any(|c| self.live.reaches(&self.core, c))
+    /// Whether anything reached the view since it last ran: the store told of a change to a
+    /// document it reads, a view state moved, the time it waits for came, or boundaries are
+    /// marked to run. A view nothing reached is not looked at again, however often its host
+    /// asks.
+    #[must_use]
+    pub fn woken(&self) -> bool {
+        !self.changes.borrow().is_empty()
+            || self.live.is_dirty()
             || self.live.states_moved(&self.core)
+            || self.time_passed().is_some()
+    }
+
+    /// Whether a field or view state some boundary read has changed since it last ran, or the
+    /// time one read has moved on: what changed is taken in, marking the boundaries to run
+    /// again, so the run that follows does not work it out a second time.
+    pub fn is_stale(&mut self) -> bool {
+        self.absorb();
+        self.live.is_dirty()
     }
 
     /// Re-run the boundaries whose reads changed, and only those, and return the patches from
@@ -526,7 +527,7 @@ impl ViewInstance {
         for arg in &mut aref.args {
             match arg {
                 Value::State { key, scalar } => {
-                    *arg = self.state_now(key, *scalar && unbox)?;
+                    *arg = self.state_now(key, *scalar && unbox);
                 }
                 Value::AtEvent {
                     module,
@@ -549,18 +550,19 @@ impl ViewInstance {
     }
 
     /// The view state slot `key` as it is now; with `unbox`, a scalar's value plain.
-    fn state_now(&self, key: &StateKey, unbox: bool) -> Result<Value, RuntimeError> {
+    fn state_now(&self, key: &StateKey, unbox: bool) -> Value {
         let stored = self.core.view_states.borrow().get(key).cloned();
-        let Some(value) = stored.or_else(|| self.live.state_seen(key)) else {
-            return Err(RuntimeError::NotFound(format!(
-                "the view state `{}`",
-                key.state
-            )));
-        };
-        Ok(match value {
+        let value = stored.or_else(|| self.live.state_seen(key));
+        // A slot the person never set is nothing, not a failure: an action reading it as an
+        // argument (a composer's reply target before anything is answered, the run selected
+        // before anything is) runs with nothing there, and the view's own default stands. A
+        // missing slot used to fail the action, which made every action that names an optional
+        // slot fail until a person filled it.
+        let value = value.unwrap_or_else(Value::none);
+        match value {
             Value::Opt(Some(held)) if unbox => *held,
             other => other,
-        })
+        }
     }
 
     /// Run the argument function `id` of `module` over `args`, its view state read now.
@@ -573,7 +575,7 @@ impl ViewInstance {
         let mut given = Vec::with_capacity(args.len());
         for arg in args {
             given.push(match arg {
-                Value::State { key, scalar } => self.state_now(key, *scalar)?,
+                Value::State { key, scalar } => self.state_now(key, *scalar),
                 other => other.clone(),
             });
         }
@@ -951,7 +953,7 @@ impl ViewInstance {
     ) -> Result<EditOutcome, RuntimeError> {
         use crate::delegate::{Invocation, Invoked};
         let invocation = Invocation::Edit {
-            app,
+            app: AppId::from(app),
             target: target.clone(),
             field: field.name.clone(),
             field_id: field.id.clone(),
@@ -1028,7 +1030,7 @@ impl ViewInstance {
             &ctx,
             &ActionInfo {
                 action: "$edit".into(),
-                app: pkg.meta.app.clone(),
+                app: AppId::from(pkg.meta.app.as_str()),
                 class: EffectClass::Undoable,
                 own: view_module == pkg.hash,
                 module: pkg.hash.clone(),

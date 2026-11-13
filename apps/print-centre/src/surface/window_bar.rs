@@ -1,8 +1,7 @@
-//! Print Centre's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): Back to the printers from every other page, the
-//! page shown as the location, and the page's actions: Add printer, Print a
-//! document and Refresh with the printers, Check again in device help. Each
-//! runs the published effect its control in the page ran.
+//! Print Centre's controls, as slots in the window's bar ([`ui::window_toolbar`]): Back to
+//! the printers from every other page, the page shown as the location, and the page's
+//! actions: Add printer, Print a document and Refresh with the printers, Check again in
+//! device help.
 
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarNavigation, WindowToolbar,
@@ -38,8 +37,6 @@ impl PrintCentre {
             };
             match self.page {
                 Page::Dashboard => {
-                    // Adding a printer and printing both need printers: with
-                    // none, the page's own empty state offers to find one.
                     if has_printers {
                         toolbar.actions.push(entry(
                             PrintCentreEffect::PrintDocument,
@@ -90,9 +87,8 @@ impl PrintCentre {
         })
     }
 
-    /// Run what the person did in the window's bar: its entries run their
-    /// effects, Back leads to the printers. Returns whether anything was
-    /// asked.
+    /// Run what the person did in the window's bar: its entries run their effects, Back
+    /// leads to the printers.
     pub(super) fn take_window_toolbar_events(&self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
@@ -138,8 +134,8 @@ mod tests {
         crate::surface::tests::centre(app).borrow().page.clone()
     }
 
-    /// Wait until the printers show again after the refresh a press
-    /// started, with what `asked` says the refresh changed.
+    /// Wait until the printers show again after the refresh a press started, with what
+    /// `asked` says the refresh changed.
     fn refreshed(
         app: &mut TestApp<PrintCentreShell>,
         asked: &str,
@@ -153,8 +149,8 @@ mod tests {
         });
     }
 
-    /// The bar holds the way back, the page shown and the page's actions,
-    /// which run what the page's own controls ran.
+    /// The bar holds the way back, the page shown and the page's actions, which run what
+    /// the page's own controls ran.
     #[test]
     fn the_window_bar_holds_the_way_back_the_page_and_its_actions() {
         let _serial = crate::surface::serial();
@@ -162,8 +158,6 @@ mod tests {
         app.harness().present_in_window_bar();
         app.settle();
 
-        // What wants a person may already be waiting in this process, so the
-        // page's own actions come first and the count follows them.
         let declared = bar();
         let names = action_names(&declared);
         assert!(

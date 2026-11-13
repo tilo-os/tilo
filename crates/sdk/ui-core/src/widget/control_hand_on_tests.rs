@@ -1,7 +1,6 @@
-//! Controls in a view that builds them anew on every change, as most apps
-//! do: the switch, the box, the radio, the slider and the badge built in
-//! the place of the one a rebuild dropped go on from its motion
-//! (`motion::keep`), so a click still moves them and a key still lands.
+//! Controls in a view that builds them anew on every change, as most apps do: the switch, the box, the
+//! radio, the slider and the badge built in the place of the one a rebuild dropped go on from its
+//! motion (`motion::keep`), so a click still moves them and a key still lands.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,7 +27,6 @@ const RADIO: usize = 2;
 const SLIDER: usize = 3;
 const BADGE: usize = 4;
 
-/// The view: every control built from the model, writing back to it.
 fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
     let m = *model.borrow();
     let set = |write: fn(&mut Model, bool)| {
@@ -74,7 +72,6 @@ fn rect(d: &FrameHarness, index: usize) -> vello::kurbo::Rect {
     d.root::<Column>().children()[index].get_rect()
 }
 
-/// Act on control `index` as a key or an assistive tool does.
 fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource) {
     let mut doc = automerge::AutoCommit::new();
     crate::motion::note_source(source);
@@ -87,7 +84,6 @@ fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
-    // The control published the press; the host answers it after the event.
     crate::testing::answer_controls(*control);
 }
 
@@ -111,8 +107,6 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
         );
     }
 
-    // A click: the view builds every control anew, and the clicked one
-    // moves from where the one it replaces was.
     for index in [SWITCH, BOX, RADIO] {
         let at = rect(&d, index);
         let at = if index == SWITCH {
@@ -126,13 +120,11 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
     }
     let m = *model.borrow();
     assert!(m.on && m.remember && m.nearby, "every click took");
-    // A press on the track away from the thumb glides it there.
     let track = rect(&d, SLIDER);
     d.click_at(track.x0 + track.width() * 0.9, track.center().y);
     assert!(model.borrow().level > 0.5, "the press set the value");
     rebuild(&mut d, &model);
     assert!(moving(&d, SLIDER), "the thumb glides to the press");
-    // A count that changes on screen cross-fades.
     model.borrow_mut().unread = 4;
     rebuild(&mut d, &model);
     assert!(moving(&d, BADGE), "the count cross-fades");

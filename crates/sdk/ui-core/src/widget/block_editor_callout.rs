@@ -1,12 +1,4 @@
-//! Callout blocks: a paragraph set apart as a note, a tip, something
-//! important, a warning or a caution.
-//!
-//! The kinds are GitHub-flavoured Markdown's alerts, so a callout reads and
-//! writes as `> [!WARNING]` followed by its quoted text, and stores as
-//! `callout:warning`. A callout paints as a status wash with its kind's icon
-//! and name above the text: information is `Info`, a tip `Success`, a
-//! warning `Warning`, a caution `Danger`; something important has no status
-//! hue of its own and takes the neutral wash.
+//! Callout blocks: a paragraph set apart as a note, a tip, something important, a warning or a caution.
 
 use crate::i18n::widget_text;
 use vello::kurbo::Rect;
@@ -61,21 +53,17 @@ impl CalloutKind {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
-    /// The alert marker that opens the callout in Markdown: `[!WARNING]`.
     #[must_use]
     pub fn marker(self) -> String {
         format!("[!{}]", self.name().to_ascii_uppercase())
     }
 
-    /// The callout an alert marker line names: `[!NOTE]` (after the quote's
-    /// `> `), with nothing but spaces after it.
     #[must_use]
     pub fn from_marker(line: &str) -> Option<Self> {
         let name = line.trim().strip_prefix("[!")?.strip_suffix(']')?;
         Self::from_name(name)
     }
 
-    /// The name a person reads on the callout and in the slash menu.
     #[must_use]
     pub fn label(self) -> String {
         widget_text(match self {
@@ -87,7 +75,6 @@ impl CalloutKind {
         })
     }
 
-    /// The status the callout's wash carries.
     #[must_use]
     pub const fn tone(self) -> Tone {
         match self {
@@ -119,9 +106,6 @@ pub(super) fn callout_header_height() -> f64 {
     f64::from(body.size * body.line_height + 2.0 * tight)
 }
 
-/// Paint a callout: its wash from the content edge `x0` to the line's end,
-/// over the header band and the text, the icon and name in the header, and
-/// the text in the wash's ink.
 pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut BlockDrawCtx<'_>) {
     let theme = ctx.theme;
     let tokens = &theme.tokens;
@@ -141,7 +125,6 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
         None,
         &vello::kurbo::RoundedRect::from_rect(surface, f64::from(tokens.radii.control)),
     );
-    // The icon and the name start where the text does.
     let text_x = line_rect.x0 + b.line.text_inset(theme);
     let label_style = theme.text(TextRole::Body).strong();
     let label = kind.label();

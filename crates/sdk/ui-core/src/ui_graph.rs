@@ -1,9 +1,5 @@
-//! Versioned, serializable UI object graphs compiled into ordinary widgets.
-//!
-//! The graph is a source format, not a second rendering system. [`UiNode`]
-//! variants build the same [`crate::widget::Widget`] implementations an app
-//! constructs in Rust, so accessibility, focus, model bindings, actions,
-//! themes, inspection, and headless tests keep one implementation.
+//! Versioned, serializable UI object graphs compiled into ordinary widgets. The graph is
+//! a source format, not a second rendering system.
 
 use crate::LocalState;
 use crate::theme::Theme;
@@ -25,8 +21,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
 use vello::kurbo::Rect;
 
-/// Directory of live `*.json` screen graphs. When set, graph apps load and
-/// hot-reload screens from disk instead of the embed baked by `include_str!`.
+/// Directory of live `*.json` screen graphs.
 pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
 
 /// Operation type for live graph mutations published by [`LiveUi`].
@@ -43,19 +38,13 @@ pub struct UiComponentRequest<'a> {
     pub id: &'a str,
     pub name: &'a str,
     pub props: &'a serde_json::Map<String, serde_json::Value>,
-    /// The graph's typed values, for a component's own text inputs.
     pub values: &'a UiValues,
 }
 
-/// A graph's text and checked values, by each control's `value_path`, and
-/// which buttons were clicked, by each button's `on_click_path`.
-///
-/// The values are view state, never written to the document: every input
-/// naming one path shows and edits the same value, and the app reads them
-/// when it acts on them, submitting its own resource actions. A path the app
-/// routes ([`Self::route`]) instead shows the app's own value, and each edit
-/// of it is the app's action. A clicked button is reported the same way: the
-/// app takes the click ([`Self::take_click`]) and acts on it.
+/// A graph's text and checked values, by each control's `value_path`, and which buttons
+/// were clicked, by each button's `on_click_path`. The values are view state, never
+/// written to the document: every input naming one path shows and edits the same value,
+/// and the app reads them when it acts on them, submitting its own resource actions.
 #[derive(Clone, Default)]
 pub struct UiValues {
     texts: Rc<RefCell<HashMap<String, LocalState<String>>>>,
@@ -82,10 +71,9 @@ impl UiValues {
         self.texts.borrow().get(path).map(LocalState::get)
     }
 
-    /// Route the inputs naming `path` through the app: they show `shown`,
-    /// which the app keeps current, and each edit invokes `action` with the
-    /// whole new text, so it is checked, attributed and undone like every
-    /// other edit of the app.
+    /// Route the inputs naming `path` through the app: they show `shown`, which the app
+    /// keeps current, and each edit invokes `action` with the whole new text, so it is
+    /// checked, attributed and undone like every other edit of the app.
     pub fn route(
         &self,
         path: &str,
@@ -112,8 +100,7 @@ impl UiValues {
         self.booleans.borrow().get(path).map(LocalState::get)
     }
 
-    /// Route checked controls through the resource's typed action. The app keeps
-    /// `shown` current, including refused edits, undo and remote changes.
+    /// Route checked controls through the resource's typed action.
     pub fn route_bool(
         &self,
         path: &str,
@@ -146,25 +133,22 @@ impl UiValues {
         }
     }
 
-    /// Record a click of a button naming `path`, carrying `value`. Only the
-    /// latest click per path is kept until the app takes it.
+    /// Record a click of a button naming `path`, carrying `value`.
     pub fn click(&self, path: &str, value: &str) {
         self.clicks
             .borrow_mut()
             .insert(path.to_owned(), value.to_owned());
     }
 
-    /// The latest unhandled click of a button naming `path`: its
-    /// `click_value`, or `"true"` when it names none. Taking it clears it,
-    /// so each click is acted on once.
+    /// The latest unhandled click of a button naming `path`: its `click_value`, or
+    /// `"true"` when it names none.
     #[must_use]
     pub fn take_click(&self, path: &str) -> Option<String> {
         self.clicks.borrow_mut().remove(path)
     }
 
-    /// An input over `path`: the app's value edited through its action when
-    /// the path is routed, else the shared typed value, which starts as
-    /// `initial`.
+    /// An input over `path`: the app's value edited through its action when the path is
+    /// routed, else the shared typed value, which starts as `initial`.
     #[must_use]
     pub fn input(&self, path: &str, initial: &str) -> TextInput {
         let value = self.text(path);
@@ -235,10 +219,6 @@ impl UiBuildContext {
     }
 
     /// Register one app-owned component factory by its stable graph name.
-    ///
-    /// The factory receives the node id and its serialized props. Return a
-    /// normal retained widget with that id so inspection, scenarios, and
-    /// accessibility address the component consistently.
     #[must_use]
     pub fn with_component(
         mut self,
@@ -262,10 +242,8 @@ impl UiBuildContext {
         &self.values
     }
 
-    /// Render unresolved components as named text placeholders.
-    ///
-    /// Intended for graph editors that cannot load application code. Normal
-    /// app builds reject an unregistered component instead.
+    /// Render unresolved components as named text placeholders. Intended for graph
+    /// editors that cannot load application code.
     #[must_use]
     pub fn with_component_placeholders(mut self) -> Self {
         self.component_placeholders = true;
@@ -442,8 +420,8 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             if let Some(tooltip) = tooltip {
                 button = button.tooltip(tooltip);
             }
-            // A click path reports the click to the app through its values;
-            // the button never writes the document.
+            // A click path reports the click to the app through its values; the button
+            // never writes the document.
             let record: Option<Box<dyn Fn()>> = on_click_path.as_ref().map(|path| {
                 let values = context.values.clone();
                 let path = path.clone();
@@ -477,8 +455,6 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                 }
                 _ => None,
             };
-            // A published view action, so the palette, agents and the native
-            // audit reach the button as they reach any control.
             if record.is_some() || navigation.is_some() {
                 button = button.on_view(move || {
                     if let Some(record) = &record {
@@ -587,9 +563,6 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
     })
 }
 
-/// Reconcile a retained tree with a new source graph, reusing widgets whose
-/// source nodes are unchanged and transferring ephemeral state across leaf
-/// rebuilds that keep the same id.
 fn reconcile_node(
     old: Element,
     old_node: &UiNode,
@@ -639,8 +612,6 @@ fn reconcile_node(
     }
 }
 
-/// Rebuilding `new_node` from scratch is the fallback whenever the retained
-/// widget is not the matching kind.
 fn reconcile_column(
     mut old: Element,
     old_children: &[UiNode],
@@ -834,9 +805,8 @@ impl UiGraphHandle {
         Self::new(UiDocument::from_json(source)?)
     }
 
-    /// Load a screen from the host's live graph directory when one is set,
-    /// otherwise from the embedded source. The native runner fills that
-    /// directory from `TILO_UI_GRAPH_DIR`.
+    /// Load a screen from the host's live graph directory when one is set, otherwise from
+    /// the embedded source.
     pub fn from_embedded_or_live(screen: &str, embedded: &str) -> Result<Self, UiGraphError> {
         if let Some(dir) = crate::host::environment().ui_graph_dir.clone() {
             let path = dir.join(format!("{screen}.json"));
@@ -846,9 +816,6 @@ impl UiGraphHandle {
     }
 
     /// Open a graph file and keep reloading it when its mtime advances.
-    ///
-    /// Successful in-process edits are written back to the same path so the
-    /// builder, `tilo-app ui apply`, and the running app share one document.
     pub fn open_live(path: impl Into<PathBuf>) -> Result<Self, UiGraphError> {
         let path = path.into();
         let source = std::fs::read_to_string(&path)
@@ -897,9 +864,6 @@ impl UiGraphHandle {
     }
 
     /// Reload from disk when the live file's mtime is newer than the last load.
-    ///
-    /// External edits become the new history baseline. Returns `true` when the
-    /// in-memory document changed.
     pub fn poll_live_source(&self) -> Result<bool, UiGraphError> {
         let path = {
             let state = self.inner.read().map_err(|_| UiGraphError::Poisoned)?;
@@ -947,12 +911,8 @@ impl UiGraphHandle {
         self.edit(|candidate| candidate.apply_edits(edits))
     }
 
-    /// Snapshot the current source document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
-    /// holding the graph lock.
+    /// Snapshot the current source document. Returns [`UiGraphError::Poisoned`] if
+    /// another thread panicked while holding the graph lock.
     pub fn document(&self) -> Result<UiDocument, UiGraphError> {
         self.inner
             .read()
@@ -965,11 +925,7 @@ impl UiGraphHandle {
         self.document()?.to_json_pretty()
     }
 
-    /// Inspect one source node without exposing the handle's lock or mutable
-    /// live state. The returned value is an editable snapshot.
-    ///
-    /// # Errors
-    ///
+    /// Inspect one source node without exposing the handle's lock or mutable live state.
     /// Returns a graph lock error or [`UiGraphError::UnknownNode`].
     pub fn node(&self, id: &str) -> Result<UiNode, UiGraphError> {
         self.document()?
@@ -994,9 +950,8 @@ impl UiGraphHandle {
         self.persist_live()
     }
 
-    /// Whether the live graph has a successful edit that can be undone.
-    ///
-    /// Invalid and no-op edits never enter history.
+    /// Whether the live graph has a successful edit that can be undone. Invalid and no-op
+    /// edits never enter history.
     #[must_use]
     pub fn can_undo(&self) -> bool {
         self.inner.read().is_ok_and(|state| !state.undo.is_empty())
@@ -1008,34 +963,19 @@ impl UiGraphHandle {
         self.inner.read().is_ok_and(|state| !state.redo.is_empty())
     }
 
-    /// Restore the graph before its most recent successful edit.
-    ///
-    /// The restored document is published atomically and observed by every
-    /// [`LiveUi`] and inspector sharing this handle. Returns `false` when the
-    /// history is already at its oldest retained document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
-    /// holding the graph lock.
+    /// Restore the graph before its most recent successful edit. Returns
+    /// [`UiGraphError::Poisoned`] if another thread panicked while holding the graph
+    /// lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
         self.step_history(crate::undo::UndoRequest::Undo)
     }
 
-    /// Reapply the most recently undone graph edit.
-    ///
-    /// Returns `false` when there is no newer retained document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
-    /// holding the graph lock.
+    /// Reapply the most recently undone graph edit. Returns [`UiGraphError::Poisoned`] if
+    /// another thread panicked while holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
         self.step_history(crate::undo::UndoRequest::Redo)
     }
 
-    /// Move the graph one retained document back (undo) or forward (redo),
-    /// keeping the replaced document on the opposite stack.
     fn step_history(&self, request: crate::undo::UndoRequest) -> Result<bool, UiGraphError> {
         let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         let state = &mut *guard;
@@ -1058,15 +998,9 @@ impl UiGraphHandle {
         Ok(true)
     }
 
-    /// Forget retained undo and redo documents without changing the graph.
-    ///
-    /// A builder can call this after establishing a newly loaded or saved
-    /// document as its history boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
-    /// holding the graph lock.
+    /// Forget retained undo and redo documents without changing the graph. Returns
+    /// [`UiGraphError::Poisoned`] if another thread panicked while holding the graph
+    /// lock.
     pub fn clear_history(&self) -> Result<(), UiGraphError> {
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         state.undo.clear();
@@ -1076,15 +1010,9 @@ impl UiGraphHandle {
         Ok(())
     }
 
-    /// End a continuous edit without changing the document or its history.
-    ///
-    /// Call this when a text field loses focus or a drag gesture ends so a
-    /// later edit using the same group key starts a new undo step.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UiGraphError::Poisoned`] if another thread panicked while
-    /// holding the graph lock.
+    /// End a continuous edit without changing the document or its history. Returns
+    /// [`UiGraphError::Poisoned`] if another thread panicked while holding the graph
+    /// lock.
     pub fn finish_edit_group(&self) -> Result<(), UiGraphError> {
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         state.active_edit_group = None;
@@ -1092,8 +1020,8 @@ impl UiGraphHandle {
         Ok(())
     }
 
-    /// Mutate one source node, validate the complete candidate graph, then
-    /// publish it atomically. A failed edit leaves the live graph unchanged.
+    /// Mutate one source node, validate the complete candidate graph, then publish it
+    /// atomically.
     pub fn update_node(
         &self,
         id: &str,
@@ -1108,15 +1036,8 @@ impl UiGraphHandle {
         })
     }
 
-    /// Mutate one node as part of a continuous undo group.
-    ///
-    /// Consecutive successful edits with the same `group` publish their live
-    /// results normally but share one undo baseline. A different grouped edit,
-    /// any ordinary graph mutation, undo/redo, or [`Self::finish_edit_group`]
-    /// ends the group. Failed and no-op candidates never affect history.
-    ///
-    /// This is intended for property typing and drag gestures; use
-    /// [`Self::update_node`] for discrete operations.
+    /// Mutate one node as part of a continuous undo group. Failed and no-op candidates
+    /// never affect history.
     pub fn update_node_grouped(
         &self,
         id: &str,
@@ -1133,12 +1054,9 @@ impl UiGraphHandle {
         })
     }
 
-    /// Atomically insert a subtree into a live row or column.
-    ///
-    /// # Errors
-    ///
-    /// Returns the corresponding [`UiDocument::insert_child`] error, a lock
-    /// error, or [`UiGraphError::ConcurrentEdit`].
+    /// Atomically insert a subtree into a live row or column. Returns the corresponding
+    /// [`UiDocument::insert_child`] error, a lock error, or
+    /// [`UiGraphError::ConcurrentEdit`].
     pub fn insert_child(
         &self,
         parent_id: &str,
@@ -1148,32 +1066,23 @@ impl UiGraphHandle {
         self.edit(|candidate| candidate.insert_child(parent_id, index, node))
     }
 
-    /// Atomically remove and return a live subtree.
-    ///
-    /// # Errors
-    ///
-    /// Returns the corresponding [`UiDocument::remove_node`] error, a lock
-    /// error, or [`UiGraphError::ConcurrentEdit`].
+    /// Atomically remove and return a live subtree. Returns the corresponding
+    /// [`UiDocument::remove_node`] error, a lock error, or
+    /// [`UiGraphError::ConcurrentEdit`].
     pub fn remove_node(&self, id: &str) -> Result<UiNode, UiGraphError> {
         self.edit(|candidate| candidate.remove_node(id))
     }
 
-    /// Atomically replace a live subtree, including the root.
-    ///
-    /// # Errors
-    ///
-    /// Returns the corresponding [`UiDocument::replace_node`] error, a lock
-    /// error, or [`UiGraphError::ConcurrentEdit`].
+    /// Atomically replace a live subtree, including the root. Returns the corresponding
+    /// [`UiDocument::replace_node`] error, a lock error, or
+    /// [`UiGraphError::ConcurrentEdit`].
     pub fn replace_node(&self, id: &str, replacement: UiNode) -> Result<(), UiGraphError> {
         self.edit(|candidate| candidate.replace_node(id, replacement))
     }
 
-    /// Atomically reparent or reorder a live subtree.
-    ///
-    /// # Errors
-    ///
-    /// Returns the corresponding [`UiDocument::move_node`] error, a lock
-    /// error, or [`UiGraphError::ConcurrentEdit`].
+    /// Atomically reparent or reorder a live subtree. Returns the corresponding
+    /// [`UiDocument::move_node`] error, a lock error, or
+    /// [`UiGraphError::ConcurrentEdit`].
     pub fn move_node(
         &self,
         id: &str,
@@ -1327,9 +1236,7 @@ impl LiveUi {
         if revision == self.seen_revision {
             return;
         }
-        // Handle updates validate before publication. Reconcile may still fail
-        // after a toolkit/schema bug (and may have already taken children off
-        // containers). Never leave a spacer or a half-built tree on screen.
+        // Handle updates validate before publication.
         let old_child = std::mem::replace(&mut self.child, Box::new(Spacer::new()));
         match reconcile_node(
             old_child,
@@ -1341,9 +1248,6 @@ impl LiveUi {
                 self.child = child;
                 self.seen_revision = revision;
                 self.seen_document = document;
-                // Any published revision may have replaced Element boxes or
-                // cleared container child NodeIds. App composition refreshes
-                // the map; CompositionFocus restores caret by test id.
                 self.structure_dirty = true;
             }
             Err(_) => match document.build_with(&self.theme, &self.context) {
@@ -1354,9 +1258,6 @@ impl LiveUi {
                     self.structure_dirty = true;
                 }
                 Err(_) => {
-                    // Keep the last known-good tree and revision. A later
-                    // sync will retry if the handle still exposes this
-                    // published document.
                     if let Ok(good) = self.seen_document.build_with(&self.theme, &self.context) {
                         self.child = good;
                     }
@@ -1489,7 +1390,6 @@ impl LiveUi {
     }
 }
 
-/// The style of a widget that fills the space its parent gives it.
 fn filling() -> Style {
     Style {
         size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
@@ -1594,8 +1494,7 @@ struct UiGraphEditorState {
     save: Option<SaveGraph>,
 }
 
-/// A native, accessible object-graph editor with a live production-widget
-/// preview. It is also the root component used by the standalone UI builder.
+/// A native, accessible object-graph editor with a live production-widget preview.
 pub struct UiGraphEditor {
     handle: UiGraphHandle,
     theme: Theme,
@@ -3128,9 +3027,8 @@ impl crate::undo::LocalUndo for UiGraphEditor {
 mod tests {
     use super::*;
 
-    /// Replace `path`'s contents and move its mtime a second on, so the
-    /// change is seen on a filesystem whose timestamps are coarser than the
-    /// time between two writes.
+    /// Replace `path`'s contents and move its mtime a second on, so the change is seen on
+    /// a filesystem whose timestamps are coarser than the time between two writes.
     fn rewrite(path: &std::path::Path, contents: impl AsRef<[u8]>) {
         let before = std::fs::metadata(path).unwrap().modified().unwrap();
         std::fs::write(path, contents).unwrap();

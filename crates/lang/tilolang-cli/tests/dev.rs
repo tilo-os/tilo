@@ -66,8 +66,8 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         "the same build has the same digest whether or not it is installed"
     );
 
-    // A save inside the package's views: the next build is published as the next generation,
-    // and the one the running app still reads stays.
+    // A save inside the package's views: the next build is published as the next generation, and
+    // the one the running app still reads stays.
     let file = source.join("app.tl");
     let text = std::fs::read_to_string(&file).unwrap();
     std::fs::write(
@@ -91,9 +91,9 @@ fn a_saved_build_is_the_generation_the_app_reads() {
     assert_eq!(read.meta.app, app.app);
 }
 
-/// A `tilolang dev` on this desktop whose runtime is a script standing in for the window's
-/// program: the loop starts it, stops it and starts it again as it does the runtime, and the
-/// script records each start.
+/// A `tilolang dev` on this desktop whose runtime is a script standing in for the window's program:
+/// the loop starts it, stops it and starts it again as it does the runtime, and the script records
+/// each start.
 #[cfg(unix)]
 struct Loop {
     child: std::process::Child,
@@ -157,7 +157,6 @@ impl Loop {
         }
     }
 
-    /// The pids the runtime was started with, in order.
     fn started(&self) -> Vec<u32> {
         std::fs::read_to_string(&self.starts)
             .unwrap()
@@ -173,7 +172,6 @@ impl Loop {
         })
     }
 
-    /// The directory the loop publishes the app's builds into.
     fn updates(&self) -> PathBuf {
         tilo_test_env::wait_for("the loop to publish a build", || {
             let build = std::fs::read_dir(self.state.join("tilolang/dev-build"))
@@ -185,8 +183,8 @@ impl Loop {
         })
     }
 
-    /// Replace the runtime with a new build, as a build does: a new file, renamed over the old
-    /// one, which leaves a new inode where the old file was.
+    /// Replace the runtime with a new build, as a build does: a new file, renamed over the old one,
+    /// which leaves a new inode where the old file was.
     fn replace_runtime(&self, note: &str) {
         let staged = self.scratch.path().join("bin/.tilolang-app.new");
         write_program(&staged, note, &self.starts);
@@ -203,7 +201,6 @@ impl Loop {
         });
     }
 
-    /// Stop the loop, and check it said nothing about a failure.
     fn stop(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -244,8 +241,8 @@ fn a_new_build_of_the_runtime_replaced_by_rename_restarts_the_window() {
     dev.stop();
 }
 
-/// A build that replaces the directory holding the runtime reaches the window too: the loop
-/// watches the directory above it, and takes a new watch of the replaced one.
+/// A build that replaces the directory holding the runtime reaches the window too: the loop watches
+/// the directory above it, and takes a new watch of the replaced one.
 #[cfg(unix)]
 #[test]
 fn a_runtime_directory_replaced_whole_restarts_the_window() {
@@ -265,8 +262,8 @@ fn a_runtime_directory_replaced_whole_restarts_the_window() {
     dev.stop();
 }
 
-/// A saved source reaches the app: the editor's file is renamed over the package's, and the
-/// loop publishes the new build as the next generation.
+/// A saved source reaches the app: the editor's file is renamed over the package's, and the loop
+/// publishes the new build as the next generation.
 #[cfg(unix)]
 #[test]
 fn a_saved_source_replaced_by_rename_reaches_the_app() {
@@ -288,8 +285,8 @@ fn a_saved_source_replaced_by_rename_reaches_the_app() {
     dev.stop();
 }
 
-/// A save in a subdirectory of the package reaches the app too: a translation in its `locales/`
-/// is part of a build, and the loop watches the package as a tree.
+/// A save in a subdirectory of the package reaches the app too: a translation in its `locales/` is
+/// part of a build, and the loop watches the package as a tree.
 #[cfg(unix)]
 #[test]
 fn a_translation_saved_in_the_packages_locales_reaches_the_app() {

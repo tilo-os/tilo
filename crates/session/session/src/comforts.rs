@@ -123,8 +123,10 @@ fn mirror(socket: &Path, changes: serde_json::Map<String, serde_json::Value>) {
     match reply {
         Ok(reply) if reply.ok => {}
         Ok(reply) => tracing::warn!(?reply.error, "the login screens kept their comforts"),
-        // ignored-failure: a nested session has no sign-in daemon, and its comforts stay local
-        Err(error) => tracing::debug!(%error, "no sign-in daemon to take the comforts"),
+        Err(error) => tilo_failure::ignored!(
+            "a nested session has no sign-in daemon, and its comforts stay local",
+            tracing::debug!(%error, "no sign-in daemon to take the comforts")
+        ),
     }
 }
 

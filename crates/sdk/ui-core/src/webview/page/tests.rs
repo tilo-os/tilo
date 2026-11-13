@@ -123,7 +123,6 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
     }
     // phase: key_names_are_read_in_any_letter_case
     {
-        // A person writes END or end for the same key a keyboard has.
         for (written, canonical) in [
             ("END", "End"),
             ("end", "End"),
@@ -139,7 +138,6 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             assert_eq!(key.chord(), canonical, "{written}");
             assert_eq!(PageKey::parse(&key.chord()), Some(key), "{written}");
         }
-        // A single character still means itself, whatever its case.
         assert_eq!(PageKey::parse("A").unwrap().key, "A");
         assert_eq!(PageKey::parse("a").unwrap().key, "a");
     }
@@ -208,8 +206,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             }
             .valid()
         );
-        // A chosen file is an absolute path, so a relative one never reaches
-        // the engine to resolve against the browser's own working folder.
+        // A chosen file is an absolute path, so a relative one never reaches the
+        // engine to resolve against the browser's own working folder.
         assert!(
             PageRequest::FillFiles {
                 element: element.clone(),
@@ -269,8 +267,6 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
                     {"kind":"move","x":4.0,"y":4.0,"element":"d1e3"},
                     {"kind":"up","x":40.0,"y":90.0}]})
         );
-        // A step naming no element is a viewport point, and it is
-        // written without the key rather than with a null.
         assert!(
             encode_request(14, None, &drag)["steps"][2]
                 .get("element")
@@ -289,7 +285,6 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         for bad in [
             // A gesture is a movement of the hand, never empty.
             gesture(Vec::new(), PointerButton::Left),
-            // A step the engine cannot place.
             gesture(
                 vec![PointerStep {
                     kind: PointerStepKind::Down,
@@ -314,12 +309,10 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
                 }],
                 PointerButton::Left,
             ),
-            // A step that names something other than an element ref.
             gesture(
                 vec![inside(PointerStepKind::Move, Some("#menu"), 0.0, 0.0)],
                 PointerButton::Left,
             ),
-            // More steps than any gesture needs.
             gesture(
                 (0..=MAX_POINTER_STEPS)
                     .map(|_| inside(PointerStepKind::Move, None, 0.0, 0.0))
@@ -345,8 +338,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             into_view: into_view.map(str::to_owned),
             frame: None,
         };
-        // The wheel turns over the viewport, or over the box the caller
-        // names, and it turns until one place is reached.
+        // The wheel turns over the viewport, or over the box the caller names, and it
+        // turns until one place is reached.
         for good in [
             scroll(None, None, Some(600), None),
             scroll(None, None, Some(-600), None),
@@ -359,18 +352,13 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         ] {
             assert!(good.valid(), "{good:?}");
         }
-        // The most a scroll may go by, and a step past it either way.
         let furthest = i32::try_from(MAX_SCROLL_BY).unwrap();
         for bad in [
-            // A scroll goes somewhere.
             scroll(None, None, None, None),
-            // Two places at once.
             scroll(None, Some(ScrollTarget::Top), Some(400), None),
             scroll(None, Some(ScrollTarget::Top), None, Some("d1e7")),
-            // A distance that is not bounded, or is nothing at all.
             scroll(None, None, Some(furthest + 1), None),
             scroll(None, None, Some(-furthest - 1), None),
-            // Something that is not an element ref.
             scroll(Some("#menu"), None, Some(400), None),
             scroll(None, None, None, Some("d1e2;alert(1)")),
             scroll(None, None, None, Some(&"d1e".repeat(20))),
@@ -395,15 +383,12 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             serde_json::json!({"op":"page","request_id":10,"action":"scroll","element":"d1e2",
                 "by":-400})
         );
-        // An element to bring into view travels as its ref, as every
-        // other request's element does.
         let command = encode_request(11, None, &scroll(None, None, None, Some("d1e7")));
         assert_eq!(
             command,
             serde_json::json!({"op":"page","request_id":11,"action":"scroll",
                 "element":"d1e7","into_view":"d1e7"})
         );
-        // A scroll in a frame names the frame the outline printed.
         let framed = PageRequest::Scroll {
             element: None,
             to: Some(ScrollTarget::Top),
@@ -449,9 +434,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         for good in ["1", "2", "12", "1.2", "3.10.4"] {
             assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
         }
-        // A frame is the number the outline printed, in every form a
-        // caller copies it in: the number, its text, and the whole
-        // `[frame=1]` the outline writes.
+        // A frame is the number the outline printed, in every form a caller copies it
+        // in: the number, its text, and the whole `[frame=1]` the outline writes.
         for (written, named) in [
             ("1", "1"),
             (" 1", "1"),
@@ -498,8 +482,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             )["frame"],
             serde_json::Value::Null
         );
-        // A frame id the caller made up never reaches the engine as the
-        // main document.
+        // A frame id the caller made up never reaches the engine as the main
+        // document.
         let invented = PageRequest::Outline {
             from: None,
             frame: Some(FrameId::malformed()),
@@ -667,8 +651,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             "Found button \"Remove\" (2)",
             "an answer that a dialog cut short says what was asked"
         );
-        // A description that names nothing, or names it outside the
-        // bounds the engine accepts, never reaches the page.
+        // A description that names nothing, or names it outside the bounds the engine
+        // accepts, never reaches the page.
         for bad in [
             PageRequest::Find {
                 role: None,
@@ -735,7 +719,6 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             encode_request(20, None, &hover),
             serde_json::json!({"op":"page","request_id":20,"action":"hover","element":"d1e4"})
         );
-        // A point without an element hovers there instead of clicks.
         let at = PageRequest::Hover {
             element: None,
             point: Some((30.0, 44.5)),
@@ -1407,9 +1390,9 @@ fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
     }
 }
 
-/// A picture of the page is a request like any other, and its answer's
-/// pixels travel as the reply's own image: a PNG, bounded, and never a
-/// finding the caller has to decode.
+/// A picture of the page is a request like any other, and its answer's pixels travel
+/// as the reply's own image: a PNG, bounded, and never a finding the caller has to
+/// decode.
 #[test]
 fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
     use base64::Engine as _;

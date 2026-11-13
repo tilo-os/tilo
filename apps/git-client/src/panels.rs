@@ -1,10 +1,8 @@
-//! The branches screen: local and remote branches, tags, stashes and
-//! remotes, each a section of the page with its rows.
-//!
-//! Sections stand on the window ground, separated by space; on a wide window
-//! they flow into two columns. Every row is a toolkit [`ListRowFace`]; what
-//! can be done to a row (check out, delete, apply) is its hover action. The
-//! remote commands (fetch, pull, push) are actions in the window's bar.
+//! The branches screen: local and remote branches, tags, stashes and remotes, each
+//! a section of the page with its rows. Sections stand on the window ground,
+//! separated by space, and flow into two columns on a wide window. Every row is a
+//! toolkit `ListRowFace`, and what can be done to it (check out, delete, apply) is
+//! its hover action; the remote commands are actions in the window's bar.
 
 use vello::kurbo::{Point, Rect};
 
@@ -19,7 +17,6 @@ use crate::history::short_id;
 use crate::i18n::{t, t_args};
 use crate::model::{Branch, RepoModel, Stash};
 
-/// A remote command, an action in the window's bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteAction {
     Fetch,
@@ -30,7 +27,6 @@ pub enum RemoteAction {
 impl RemoteAction {
     pub const ALL: [Self; 3] = [Self::Fetch, Self::Pull, Self::Push];
 
-    /// The outcome the command names.
     pub fn name(self) -> String {
         t(match self {
             Self::Fetch => "git-fetch-name",
@@ -48,22 +44,17 @@ impl RemoteAction {
     }
 }
 
-/// Something done to one branch or stash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BranchAction {
-    /// Check out the named local branch (or remote-tracking ref).
     Checkout(String),
-    /// Delete the named local branch.
     Delete(String),
     StashApply(usize),
 }
 
-/// What a press on the screen asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelHit {
     Branch(BranchAction),
     BranchName,
-    /// The "Create branch" button.
     CreateBranch,
     WorktreeBranch,
     WorktreePath,
@@ -73,57 +64,42 @@ pub enum PanelHit {
     WorktreeError,
 }
 
-/// What the screen shows this frame.
 pub struct PanelsInput<'a> {
     pub model: &'a RepoModel,
     pub scroll: f64,
     pub pointer: Option<Point>,
     /// A repository on disk: branches can be created here.
     pub can_create: bool,
-    /// The new branch name typed so far.
     pub worktree_fields: [&'a str; 3],
     pub branch_name: &'a str,
-    /// The local branch under the keyboard, if the keyboard is on this page.
     pub selected: Option<usize>,
 }
 
-/// What one paint produced.
 pub struct PanelsDraw {
-    /// Targets under the pointer this frame (rows' hover actions included).
     pub targets: Vec<(Rect, PanelHit)>,
-    /// Every row action, hovered or not, at its row: what assistive
-    /// technology and agents can reach.
+    /// Every row action, hovered or not, at its row: what assistive technology and agents can
+    /// reach.
     pub semantic: Vec<(Rect, PanelHit)>,
-    /// Where the owner lays out the new branch name field.
     pub branch_field: Rect,
     pub worktree_fields: [Rect; 3],
-    /// Height of everything, for clamping the scroll.
     pub content_height: f64,
 }
 
 struct SectionRows<'a> {
     title: String,
     rows: Vec<RowSpec<'a>>,
-    /// The form standing under the rows, if one does.
     form: SectionForm,
-    /// Rows the keyboard can choose (the local branches).
     selectable: bool,
-    /// Stands in the leading column of a two-column page.
     leading: bool,
 }
 
-/// What a section asks for under its rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SectionForm {
-    /// Nothing: the section is its rows.
     None,
-    /// The new-branch name, so a branch can be made where branches are read.
     NewBranch,
-    /// The linked worktree's path, branch and start point.
     Worktree,
 }
 
-/// One row: what it shows and what can be done to it.
 struct RowSpec<'a> {
     title: &'a str,
     secondary: Option<String>,
@@ -132,13 +108,12 @@ struct RowSpec<'a> {
     actions: Vec<(Icon, String, BranchAction)>,
 }
 
-/// How a branch stands against its upstream, in words.
 pub fn tracking(branch: &Branch) -> String {
     tracking_words(branch, false)
 }
 
-/// How the checked-out branch stands against its upstream: the same words,
-/// saying it is the one checked out.
+/// How the checked-out branch stands against its upstream: the same words, saying it is the one
+/// checked out.
 pub fn current_tracking(branch: &Branch) -> String {
     tracking_words(branch, true)
 }
@@ -196,7 +171,6 @@ fn apply(index: usize) -> (Icon, String, BranchAction) {
     )
 }
 
-/// The rows of the local branches (`remote` false) or the remote ones.
 fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
     model
         .branches
@@ -224,17 +198,16 @@ fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
         .collect()
 }
 
-/// Every section the page shows, in reading order: the branches and
-/// worktrees first, then the tags, stashes and remotes they are compared
-/// against.
+/// Every section the page shows, in reading order: branches and worktrees first, then the tags,
+/// stashes and remotes they are compared against.
 fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
     let mut listed = branch_sections(model, can_create);
     listed.extend(reference_sections(model));
     listed
 }
 
-/// The two branch lists and the worktrees: the branches a person switches
-/// between, and the copies of the repository already on disk.
+/// The two branch lists and the worktrees: the branches a person switches between, and the copies
+/// of the repository already on disk.
 fn branch_sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
     let local = branch_rows(model, false);
     let remote = branch_rows(model, true);
@@ -288,7 +261,6 @@ fn branch_sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> 
     ]
 }
 
-/// The tags, stashes and remotes the branch lists are read against.
 fn reference_sections(model: &RepoModel) -> Vec<SectionRows<'_>> {
     let tags = model
         .tags
@@ -348,7 +320,6 @@ fn reference_sections(model: &RepoModel) -> Vec<SectionRows<'_>> {
     ]
 }
 
-/// Paint the screen into `area` (the content column under the header).
 pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> PanelsDraw {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
@@ -409,8 +380,6 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
     out
 }
 
-/// One section from `y`: its heading with the count, the new branch form
-/// when it has one, and its rows. Returns the `y` under it.
 fn paint_section_heading(
     ctx: &mut PaintCtx<'_>,
     column: Rect,
@@ -472,8 +441,7 @@ fn paint_section(
         SectionForm::None => y,
     };
 
-    // Rows bleed past the content edge, so their text stands on it with
-    // the section heading.
+    // Rows bleed past the content edge, so their text stands on it with the section heading.
     let pad = ui::chrome::row_bleed(theme);
     let pointer = input.pointer.filter(|p| clip.contains(*p));
     for (i, row) in section.rows.iter().enumerate() {
@@ -489,8 +457,8 @@ fn paint_section(
         if let Some(meta) = row.meta.as_deref() {
             face = face.meta(meta);
         }
-        // The checked-out branch is named in its secondary line and set in
-        // strong type; its trailing edge stays where every other row's is.
+        // The checked-out branch is named in its secondary line and set in strong type; its
+        // trailing edge stays where every other row's is.
         if row.current {
             face = face.emphasized(true);
         }
@@ -550,8 +518,6 @@ fn paint_section(
     y
 }
 
-/// The new branch form: the name field (hosted by the owner) and its
-/// button. Returns the `y` under it.
 fn paint_branch_form(
     ctx: &mut PaintCtx<'_>,
     column: Rect,
@@ -588,7 +554,7 @@ fn paint_branch_form(
     button.y1
 }
 
-/// Lay out shared toolkit inputs; all submission routes invoke `CreateWorktree`.
+/// Lay out the shared toolkit inputs; every submission route invokes `CreateWorktree`.
 fn paint_worktree_form(
     ctx: &mut PaintCtx<'_>,
     column: Rect,

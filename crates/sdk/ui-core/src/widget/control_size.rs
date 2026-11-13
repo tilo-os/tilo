@@ -1,9 +1,4 @@
 //! How big a control is — the one size knob a control takes.
-//!
-//! A control never takes a font size or a pixel height from an app. It takes
-//! a [`ControlSize`], and the size decides both the label's [`TextRole`] and
-//! the control's height from the theme, so a small button and a small
-//! segmented control agree without either caller restating a number.
 
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
@@ -18,17 +13,14 @@ use crate::tokens::TextRole;
 /// | `Large` | 40 (`metrics.bar_height`) | `Body` |
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ControlSize {
-    /// Dense chrome: toolbars, inline row actions.
     Small,
     /// The default control.
     #[default]
     Regular,
-    /// A prominent action: onboarding, a sheet's confirmation.
     Large,
 }
 
 impl ControlSize {
-    /// The role a control of this size sets its label in.
     #[must_use]
     pub const fn text_role(self) -> TextRole {
         match self {
@@ -37,7 +29,6 @@ impl ControlSize {
         }
     }
 
-    /// The resolved label style for this size in `theme`.
     #[must_use]
     pub fn label_style(self, theme: &Theme) -> TextStyle {
         theme.text(self.text_role())
@@ -67,9 +58,6 @@ impl ControlSize {
 mod tests {
     use super::*;
 
-    /// Controls of one size share one height when they sit side by side,
-    /// whatever kind they are: buttons, a dropdown, a number field and a
-    /// segmented control line up in a toolbar or a form row.
     #[test]
     fn every_control_of_a_size_is_that_tall() {
         use crate::headless::{FrameHarness, InspectionNode};

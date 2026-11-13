@@ -24,7 +24,6 @@ fn an_app_whose_code_arrives_goes_on_with_the_arrival_its_window_showed() {
         assert_eq!(waiting.arrival_step(at(400)), Some(Step::Skeleton));
     });
 
-    // The code is in: the window's host is built again, around the app.
     let (mut arrived, drawn) = with_monotonic_time(at(500), || starting_host(true));
     with_monotonic_time(at(500), || {
         arrived.continue_arrival(&waiting);
@@ -36,8 +35,6 @@ fn an_app_whose_code_arrives_goes_on_with_the_arrival_its_window_showed() {
         );
     });
 
-    // A place nobody saw anything in has nothing to fade: an app whose
-    // code was here inside the frame budget shows at once.
     let t1 = crate::time::now();
     let unseen = with_monotonic_time(t1, || TileHost::new(TileContent::Arriving));
     let soon = t1 + Duration::from_millis(5);
@@ -50,7 +47,6 @@ fn an_app_whose_code_arrives_goes_on_with_the_arrival_its_window_showed() {
     });
 }
 
-/// An app on its way that declares `shape` for its placeholder, or none.
 struct Declaring(Option<SkeletonShape>);
 
 impl Widget for Declaring {
@@ -125,7 +121,6 @@ fn a_window_whose_app_declared_its_shape_shows_it_before_the_code_is_in() {
     let theme = Theme::default();
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
-    // The same window, told what the app declared (and told nothing).
     let painted = |shows: Option<SkeletonShape>| {
         let mut host = with_monotonic_time(t0, || {
             let host = TileHost::new(TileContent::Arriving).arriving_from(Source::host("tilo.sh"));

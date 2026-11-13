@@ -38,10 +38,8 @@ impl Metrics {
 }
 
 impl NavShell {
-    /// The geometry of the rect this pass laid out, with the layout switch it asks for
-    /// (docking the sidebar once the text is smaller again) taken: whether the switch moved
-    /// anything. The parts were laid out from the plan before it, so then the shell lays out
-    /// again, and asks for the frame that does.
+    /// The geometry of the rect this pass laid out, with the layout switch it asks for (docking
+    /// the sidebar once the text is smaller again) taken: whether the switch moved anything.
     pub(super) fn replan(&mut self, before: &super::NavGeometry) -> bool {
         self.refresh_geometry();
         let placed = self.geometry.clone();
@@ -103,7 +101,6 @@ impl NavShell {
         Some(handle)
     }
 
-    /// Resize the sidebar by a separator step or value, as a drag would.
     pub(super) fn step_sidebar_resize(&mut self, action: &crate::a11y::Action) -> bool {
         let Some(mut handle) = self.sidebar_resize_handle() else {
             return false;
@@ -124,9 +121,6 @@ impl NavShell {
     }
 
     pub(super) fn drag_sidebar_to(&mut self, resize: Resize, x: f64) {
-        // The edge follows the pointer one to one: the width is where the
-        // pointer is, from the rail (or the minimum) to the maximum, and
-        // how the destinations read follows that width at its threshold.
         let width = resize.start_width + (x - resize.start_x);
         let was_open = self.is_sidebar_open();
         let (min, scale) = {
@@ -134,7 +128,6 @@ impl NavShell {
             (inputs.sidebar_narrowest(), inputs.metrics.scale)
         };
         if width < min * 0.75 {
-            // Dragged past its narrowest: the sidebar hides.
             if was_open {
                 let mut inputs = self.inputs.borrow_mut();
                 inputs.sidebar.snap(false);
@@ -148,8 +141,6 @@ impl NavShell {
         }
         self.update_toggle_names();
         self.publish_open_states();
-        // A new width is a new layout of the same parts, as a window resize
-        // is; only hiding or showing the sidebar changes which parts stand.
         if was_open != self.is_sidebar_open() {
             self.structure_dirty = true;
         }
@@ -166,8 +157,6 @@ impl NavShell {
         self.invalidate();
     }
 
-    /// The band a finger takes the edge in: the edge widened to a pointer
-    /// target, half on each side of it.
     pub(super) fn sidebar_resize_touch_band(&self) -> Rect {
         let edge = self.geometry.resize_handle;
         if edge.width() <= 0.0 {
@@ -277,10 +266,8 @@ impl NavShell {
         }
     }
 
-    /// Stage the sidebar at `width` (authored at 1×) as a person who
-    /// dragged it there left it, for a capture of a widened or narrowed
-    /// sidebar. Live windows get the width from the person's drag and from
-    /// where it is remembered, never from the app.
+    /// Stage the sidebar at `width` (authored at 1×) as a person who dragged it there left it,
+    /// for a capture of a widened or narrowed sidebar.
     pub fn stage_sidebar_width(&mut self, width: f64) {
         if width.is_finite() && width > 0.0 {
             self.inputs.borrow_mut().user_sidebar = Some(width);
@@ -289,7 +276,6 @@ impl NavShell {
         }
     }
 
-    /// What the person's sidebar width is remembered under: the shell's id.
     fn memory_key(&self) -> String {
         self.id.clone().unwrap_or_else(|| "nav-shell".to_owned())
     }
@@ -323,14 +309,10 @@ impl NavShell {
 }
 
 /// A navigation sidebar whose width decides how its destinations read
-/// (`nav_list::AdaptiveNav`): narrower than [`Self::list_from`], a rail of
-/// tiles, icon over caption; from there on, a list, icon beside label. The
-/// width itself follows the person's drag continuously between the rail's
-/// width and the sidebar's maximum, so the edge never jumps away from the
-/// pointer; only how the rows read changes at the threshold.
+/// (`nav_list::AdaptiveNav`): narrower than [`Self::list_from`], a rail of tiles, icon over
+/// caption; from there on, a list, icon beside label.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct AdaptiveSidebar {
-    /// Its width as a rail: the narrowest it gets before it hides.
     pub(super) rail: f64,
     /// The width from which it is a list: where every label stands whole
     /// beside its icon, never past the sidebar's own minimum.
@@ -375,9 +357,6 @@ pub(super) fn adaptive_sidebar(
     m: &Metrics,
 ) -> AdaptiveSidebar {
     let rail = nav.rail_fit(theme);
-    // A list from where every label stands whole beside its icon, and at
-    // the sidebar's own minimum at the latest; always past the rail itself,
-    // so the narrowest sidebar is a rail.
     let list_from = nav.list_fit(theme).min(m.sidebar_min).max(rail + 1.0);
     AdaptiveSidebar {
         rail,

@@ -1,6 +1,5 @@
-//! What the palette is waiting for, and what it has shown: its request stays
-//! open across a History review, so the person's question is answered rather
-//! than dropped.
+//! What the palette is waiting for, and what it has shown: its request stays open across a History
+//! review, so the person's question is answered rather than dropped.
 
 use super::{ActionPalette, PendingOperation};
 use tilo_actions::ConfirmationPolicy;
@@ -122,7 +121,6 @@ impl ActionPalette {
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
         witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
     ) {
-        // An unfinished request gets one baseline, including failed evidence.
         if self.history_has_custody() {
             return;
         }

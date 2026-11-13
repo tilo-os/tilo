@@ -1,26 +1,4 @@
-//! Resource and operation boundary for Files.
-//!
-//! Files is a view over host-owned locations: local folders, remote DAV
-//! locations, Trash, and the collaborative FUSE mount. The names, paths,
-//! selection, focus, navigation history, transfer progress, credentials and
-//! unfinished rename value are observations or device-local interaction state.
-//! They must not be represented as fields in the shared Automerge document.
-//!
-//! The app instead publishes stable [`ui::tilo_actions::ResourceSpec`] identities
-//! and operation contracts. A resource action crosses the host's operation
-//! boundary, where it revalidates the current path/record identity before
-//! touching the filesystem or a remote authority. This avoids turning a stale
-//! path, a click flag, or a JSON blob in a document into an operation.
-//! Collaborative metadata (record IDs, sharing, history, residency) remains
-//! owned by the filesystem/authority projections; Files reads those bounded
-//! projections and issues their typed control requests without duplicating a
-//! second durable record store.
-//!
-//! What the Files document holds is the person's bookmarked places and the
-//! filesystem changes queued from Files ([`crate::resource::FileExplorer`]);
-//! view preferences are the person's settings. Inline rename uses a process-local
-//! [`ui::widget::TextInput`]; it is a proposed external mutation until
-//! committed, not content that another peer should see or undo.
+//! What Files is as a resource: the actions it declares and the rows it publishes.
 
 #[cfg(test)]
 mod tests {
@@ -31,10 +9,8 @@ mod tests {
     use crate::command::FileCommand;
     use crate::resource::FileExplorer;
 
-    /// Interaction state, filesystem operations and preferences never materialise in the shared document; resources expose typed local operations.
     #[test]
     fn local_state_and_operations_stay_out_of_the_shared_document() {
-        // --- phase: local_interaction_state_never_materialises_a_shared_document_record ---
         {
             let mut files = FileExplorerWidget::new();
             let document = AutoCommit::new();
@@ -51,7 +27,6 @@ mod tests {
             );
         }
 
-        // --- phase: filesystem_operation_changes_disk_not_the_shared_document ---
         {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("old.txt"), b"x").unwrap();
@@ -80,7 +55,6 @@ mod tests {
             );
         }
 
-        // --- phase: the_window_publishes_only_live_rows ---
         {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
@@ -113,8 +87,6 @@ mod tests {
         }
     }
 
-    /// What Files publishes while showing a real folder holding a file, synced
-    /// against `document` exactly as the host drives it.
     fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
@@ -137,8 +109,6 @@ mod tests {
         ui::tilo_actions::ActionRegistry::with(FileExplorer::register)
     }
 
-    // The resource's publication (its places and the folder-wide work) and
-    // the window's live rows, as the palette sees them together.
     ui::action_contract_tests! {
         seed: seeded(),
         registry: registry(),

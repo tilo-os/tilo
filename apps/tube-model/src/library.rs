@@ -1,10 +1,5 @@
-//! Tube's shared library: likes, the shared watch queue, subscriptions, and comment likes and
-//! replies. What the catalogue fetched, the screen on show, and the person's watch history and
-//! playback preferences are not part of it.
-//!
-//! Liking, queueing and subscribing are field edits of the library's sets
-//! (`Library::paths().likes.insert(&video)`), so concurrent adds and removes merge per video.
-//! Replying to a comment is the one verb.
+//! Tube's shared library: likes, the shared watch queue, subscriptions, and comment likes
+//! and replies.
 
 use tilo_resource::{
     self, ActionCx, Collection, Edit, Id, Model, NonBlank, Path, Refusal, Set, resource,
@@ -14,8 +9,6 @@ use tilo_resource::{
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reply {
     /// Comment
-    ///
-    /// The comment it answers: its id after `tube.comment:`.
     #[model(readonly)]
     pub comment: String,
     /// Reply
@@ -29,18 +22,10 @@ pub struct Library {
     /// Liked videos
     pub likes: Set<String>,
     /// Shared watch queue
-    ///
-    /// Membership, not order, so concurrent adds and removes converge
-    /// without one person reordering another's queue.
     pub queue: Set<String>,
     /// Subscribed creators
-    ///
-    /// A channel id, or a channel URL a paired device brought in before
-    /// this one fetched the channel.
     pub subscriptions: Set<String>,
     /// Liked comments
-    ///
-    /// By their id after `tube.comment:`.
     pub comment_likes: Set<String>,
     /// Replies to comments
     pub replies: Collection<Reply>,
@@ -49,11 +34,6 @@ pub struct Library {
 impl Library {
     /// What the record holds: the likes, the shared watch queue, the subscriptions, and the
     /// comment likes and replies.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -69,8 +49,7 @@ impl Library {
 impl Library {
     /// Reply to a comment.
     ///
-    /// Visible to everyone sharing this library. The same reply twice to one
-    /// comment is kept once, so a retried reply is not posted again.
+    /// Visible to everyone sharing this library.
     #[action]
     pub fn reply_to_comment(
         &mut self,
@@ -116,8 +95,7 @@ impl Library {
         Self::member(&Self::paths().queue, video, queued)
     }
 
-    /// The edit that subscribes to the creator stored as `key`, or
-    /// unsubscribes it.
+    /// The edit that subscribes to the creator stored as `key`, or unsubscribes it.
     pub fn subscribe(key: &str, subscribed: bool) -> Edit<Self> {
         Self::member(&Self::paths().subscriptions, key, subscribed)
     }

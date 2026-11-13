@@ -686,7 +686,7 @@ export async function joinViaHost({
       // A host refuses a membership it no longer has once the session
       // starts, not when connecting: wait for its answer here. A host
       // replaying the workspace's desktop to this device has let it in.
-      await peer?.whenReady?.({shown: true});
+      await peer?.whenReady?.({shown: true, onProgress: records => onProgress?.({phase: 'receiving', records})});
       return peer;
     } catch (error) {
       await peer?.dispose?.().catch(() => {});

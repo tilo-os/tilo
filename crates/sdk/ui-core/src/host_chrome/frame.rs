@@ -1,18 +1,13 @@
-//! Who draws the window's frame: the desktop, or the app itself.
-//!
-//! `tilo_presentation` observes what the desktop does; this decides what the
-//! app does with that, the same way on every host: a host whose chrome the
-//! app must draw itself ([`HostChrome::InWindow`]) draws the frame only where
-//! the desktop leaves decorations to the client, and every host with chrome
-//! of its own (the Tilo shell's, the macOS menu bar's) draws none.
+//! Who draws the window's frame: the desktop, or the app itself. `tilo_presentation` observes what the
+//! desktop does; this decides what the app does with that, the same way on every host: a host whose
+//! chrome the app must draw itself ([`HostChrome::InWindow`]) draws the frame only where the desktop
+//! leaves decorations to the client, and every host with chrome of its own (the Tilo shell's, the macOS
+//! menu bar's) draws none.
 
 use super::HostChrome;
 
-/// Whether the app draws its own frame, once the first configure has
-/// settled `xdg-decoration` (`server_side`); `None` until then. Only a host
-/// with no chrome of its own that also leaves decorations to the client
-/// gets a frame of its own: its header bar, and its window's controls in the
-/// slot row.
+/// Whether the app draws its own frame, once the first configure has settled `xdg-decoration`
+/// (`server_side`); `None` until then.
 pub(crate) fn app_draws_frame(chrome: HostChrome, server_side: Option<bool>) -> Option<bool> {
     match (chrome, server_side) {
         (HostChrome::InWindow, None) => None,

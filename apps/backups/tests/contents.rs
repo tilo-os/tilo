@@ -1,5 +1,5 @@
-//! The restore sheet's contents stand as a tree: the snapshot's folders and the files in
-//! them, indented under the folder over them, folded away and opened again.
+//! The restore sheet's contents as a tree: the snapshot's folders and files, indented under
+//! their folder, folded away and opened again.
 
 #![allow(
     clippy::panic,
@@ -11,8 +11,8 @@ use backups::BackupsShell;
 use ui::accesskit::Role;
 use ui::framework::testing::TestApp;
 
-/// The contents list's rows as a reader hears them: each row's name and the depth it
-/// stands at.
+/// The contents list's rows as a reader hears them: each row's name and the depth it sits
+/// at.
 fn rows(app: &mut TestApp<BackupsShell>) -> Vec<(String, Option<usize>)> {
     app.harness()
         .a11y_nodes()
@@ -34,8 +34,6 @@ fn the_snapshot_lists_its_files_under_their_folders_and_folds_them_away() {
         listed.iter().any(|(_, level)| *level == Some(2)),
         "a folder's files stand under it: {listed:?}"
     );
-    // The disclosure hanging left of the first row's content folds away what stands
-    // under it, and folds it back open.
     let targets = app.harness().targets();
     let list = targets
         .iter()

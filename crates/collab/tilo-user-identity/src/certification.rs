@@ -22,10 +22,11 @@ use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
 use crate::cert::{
-    DeviceCapabilities, DeviceCert, sign_device_cert, verify_device_cert_at,
-    verify_stand_in_cert_at,
+    DeviceCapabilities, DeviceCert, sign_device_cert, sign_device_cert_async,
+    verify_device_cert_at, verify_stand_in_cert_at,
 };
 use crate::revocation::RevocationList;
+use crate::sign::StatementSigner;
 
 /// Signing-domain tag for [`CertificationRequest`]. Frozen wire ABI.
 pub const CERTIFICATION_REQUEST_TAG: &[u8] = b"tilo-device-certification-request-v1\0";
@@ -194,12 +195,13 @@ pub struct CertificationPolicy {
 }
 
 impl CertificationPolicy {
-    /// A browser device: an ordinary member that may own workspaces but
-    /// never admits devices, hosts, or reads beyond its memberships.
-    /// Certificates last 30 days.
+    /// A browser device: one of the person's own devices (see
+    /// [`crate::DeviceRole::Personal`]), which may own workspaces but never
+    /// admits devices, hosts, or reads beyond its memberships. Certificates
+    /// last 30 days.
     pub fn browser() -> Self {
         Self {
-            ceiling: DeviceCapabilities::member(),
+            ceiling: crate::DeviceRole::Personal.capabilities(),
             lifetime_ns: 30 * 24 * 60 * 60 * 1_000_000_000,
         }
     }
@@ -300,19 +302,39 @@ pub fn prepare_device_cert(
 /// requested user.
 pub fn issue_device_cert(
     request: &CertificationRequest,
-    root: &ed25519_dalek::SigningKey,
+    root: &dyn StatementSigner,
+    policy: &CertificationPolicy,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, CertificationError> {
+    let mut cert = prepare_device_cert(request, root.public_key(), policy, revocations, now_ns)?;
+    sign_device_cert(&mut cert, root).map_err(|_| CertificationError::Certificate)?;
+    Ok(cert)
+}
+
+/// [`issue_device_cert`] with a root that answers only later: the root a page
+/// holds, which certifies the device it approved through `WebCrypto`.
+///
+/// # Errors
+///
+/// As [`issue_device_cert`].
+pub async fn issue_device_cert_async(
+    request: &CertificationRequest,
+    root: &dyn collab_types::signer::DeviceSigner,
     policy: &CertificationPolicy,
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<DeviceCert, CertificationError> {
     let mut cert = prepare_device_cert(
         request,
-        root.verifying_key().to_bytes(),
+        root.device_public_key(),
         policy,
         revocations,
         now_ns,
     )?;
-    sign_device_cert(&mut cert, root).map_err(|_| CertificationError::Certificate)?;
+    sign_device_cert_async(&mut cert, root)
+        .await
+        .map_err(|_| CertificationError::Certificate)?;
     Ok(cert)
 }
 
@@ -332,13 +354,13 @@ pub fn issue_device_cert(
 /// the device, or the errors of [`prepare_device_cert`].
 pub fn issue_device_cert_as_stand_in(
     request: &CertificationRequest,
-    stand_in_key: &ed25519_dalek::SigningKey,
+    stand_in_key: &dyn StatementSigner,
     stand_in_cert: &DeviceCert,
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<DeviceCert, CertificationError> {
     verify_stand_in_cert_at(stand_in_cert, now_ns).map_err(|_| CertificationError::Certificate)?;
-    if stand_in_cert.device_public_key != stand_in_key.verifying_key().to_bytes() {
+    if stand_in_cert.device_public_key != stand_in_key.public_key() {
         return Err(CertificationError::Certificate);
     }
     if revocations.refuses_at(stand_in_cert, now_ns) {

@@ -1,16 +1,7 @@
-//! The editable key/value tables of a request: query parameters, headers and
-//! form fields.
-//!
-//! Each table is a [`DataTable`] with real controls in its cells: a checkbox
-//! that includes or excludes the row, a field for the key, a field for the
-//! value and a button that removes the row. The last row is always blank and
-//! is where the next pair is typed; it holds only the two fields, and gains
-//! the checkbox and the remove button once it becomes a pair.
-//!
-//! Every cell is bound to process-local state held by its row, so a cell never
-//! has to be rebuilt for an edit and keeps its caret while the person types.
-//! The table learns of structural changes (a row appended, a row removed)
-//! through a queue its model drains.
+//! The editable key/value tables of a request: query parameters, headers and form fields.
+//! Each is a [`DataTable`] with real controls in its cells; the last row is the blank one
+//! where the next pair is typed. Every cell is bound to state its row holds, so a cell
+//! keeps its caret while the person types.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -27,18 +18,15 @@ use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
 use crate::record::Row;
 
-/// One row as the table shows it. The states are shared with the cells.
 #[derive(Clone)]
 pub(crate) struct KvRow {
     pub(crate) id: String,
     pub(crate) key: LocalState<String>,
     pub(crate) value: LocalState<String>,
     pub(crate) enabled: LocalState<bool>,
-    /// The row is the blank one: nothing typed yet, so no checkbox and no
-    /// remove button.
+    /// The row is the blank one: nothing typed yet, so no checkbox and no remove button.
     pending: LocalState<bool>,
-    /// Where the row is in its table: the blank row's first text is
-    /// inserted there.
+    /// Where the row is in its table: the blank row's first text is inserted there.
     at: usize,
 }
 
@@ -54,8 +42,6 @@ impl KvRow {
         }
     }
 
-    /// The trailing row at `at`: empty, and without controls until something
-    /// is typed.
     pub(crate) fn blank(id: String, at: usize) -> Self {
         Self {
             id,
@@ -68,14 +54,11 @@ impl KvRow {
     }
 }
 
-/// A change the app makes to a table's rows while it is on screen.
 #[derive(Clone)]
 pub(crate) enum KvChange {
-    /// A row removed.
     Remove(String),
 }
 
-/// The queue the app pushes [`KvChange`]s onto and the table's model drains.
 #[derive(Clone, Default)]
 pub(crate) struct KvQueue {
     changes: Rc<RefCell<VecDeque<KvChange>>>,
@@ -147,8 +130,8 @@ fn text_cell(
     add_row: &str,
 ) -> Element {
     let id = ui::tilo_resource::Id::from_raw(row.id.clone());
-    // The blank row under the pairs invites a new one; repeating the
-    // column headers there read as a second header row.
+    // The blank row invites a new one; repeating the column headers there would read as a
+    // second header row.
     let placeholder = if row.pending.get() {
         add_row.to_owned()
     } else {
@@ -177,8 +160,8 @@ fn text_cell(
     } else {
         sink.bind_field(input, path, ui::tilo_resource::Path::replace)
     };
-    // The plain field draws its text at its own edge; the inset lines the
-    // text up under the column's header.
+    // The plain field draws its text at its own edge; the inset lines it up under the
+    // column's header.
     Box::new(
         Column::new()
             .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
@@ -188,8 +171,6 @@ fn text_cell(
     )
 }
 
-/// A control that sits at the top of a field-high row, moved down to the
-/// field's middle.
 fn centred(control: Element) -> Element {
     Box::new(
         Column::new()
@@ -200,8 +181,8 @@ fn centred(control: Element) -> Element {
     )
 }
 
-/// The trailing blank has no checkbox or removal control. Canonical state
-/// presentation rebuilds it as a durable pair after its first text edit.
+/// The trailing blank has no checkbox or removal control; its first text edit rebuilds it
+/// as a durable pair.
 fn gated(row: &KvRow, control: impl Fn() -> Element + 'static) -> Element {
     if row.pending.get() {
         Box::new(Spacer::token(SpacingStep::S0))
@@ -210,13 +191,11 @@ fn gated(row: &KvRow, control: impl Fn() -> Element + 'static) -> Element {
     }
 }
 
-/// A built table and the queue its rows change through.
 pub(crate) struct KvTable {
     pub(crate) element: Element,
     pub(crate) queue: KvQueue,
 }
 
-/// A table of `rows` followed by the blank row `blank_id`.
 pub(crate) fn build_table(
     table: Table,
     label: &str,
@@ -252,9 +231,8 @@ pub(crate) fn build_table(
                 })
             },
         ),
-        // A pair reads across: on a wide window the key keeps to a third of
-        // the readable measure so its value starts beside it, and the value
-        // takes the rest of the panel.
+        // A pair reads across: on a wide window the key keeps a third of the readable
+        // measure, and the value takes the rest.
         ColumnDef::new(
             "key",
             crate::locales::CATALOG.t("api-tester-key"),

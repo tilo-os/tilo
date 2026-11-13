@@ -42,8 +42,8 @@ NAME = "workspace-unify"
 HAKARI = "workspace-hack"
 DIR = ROOT / "crates" / "dev" / NAME
 # The cargo family whose build this package unifies: its whole build selects `--workspace
-# --exclude` what its t.toml entry excludes (tools/ci/nextest.sh adds its packages' test features
-# as `--features`), and a run that asks for a few of its packages builds those beside this one.
+# --exclude` what its t.toml entry excludes, its packages' test features reaching it through this
+# package alone, and a run that asks for a few of its packages builds those beside this one.
 FAMILY = "test"
 T_TOML = ROOT / "t.toml"
 # What each architecture CI runs cargo families on resolves: a feature only one of them enables
@@ -86,7 +86,7 @@ BUILD = "fn main() {}\n"
 
 def family_excluded() -> list[str]:
     """The members the `test` family's whole build leaves out, its `exclude` in t.toml: its build
-    is `--workspace --exclude` each of them (tools/ci/nextest.sh), so exactly the others are the
+    is `--workspace --exclude` each of them, so exactly the others are the
     packages whose features this package resolves. It leaves out this package too, but the plan
     keeps it: as the seeds a family's build states as `--features`, its demands are the only way
     those features reach the plan, and a run of one member names it beside it."""

@@ -124,6 +124,17 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
         "inside the window: {}",
         tight.rect()
     );
+    // A menu at the window's trailing edge with a little room before it: the
+    // box covers as little of it as the window allows.
+    let edge = box_beside(
+        Rect::new(300.0, 100.0, 460.0, 560.0),
+        Rect::new(0.0, 0.0, 480.0, 600.0),
+    );
+    assert!(
+        (edge.rect().x0 - 0.0).abs() < f64::EPSILON,
+        "it takes the side it covers least of the menu on: {}",
+        edge.rect()
+    );
 
     // At the bottom: it moves up to keep its whole height in the window.
     let low = box_beside(
@@ -192,13 +203,34 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
         ],
         "in the order the keyboard visits them; adding a subject stands there only while the window holds something to add"
     );
+    let read: Vec<&str> = node
+        .children
+        .iter()
+        .filter(|child| child.role == Role::StaticText)
+        .filter_map(|child| child.name.as_deref())
+        .collect();
     assert_eq!(
-        node.children
-            .iter()
-            .find(|child| child.role == Role::StaticText)
-            .and_then(|child| child.name.clone()),
-        Some("Invoice from Ada".to_owned()),
-        "the subject is read where it stands"
+        read,
+        [
+            crate::i18n::I18nManager::lookup_plain("send-to-new-agent").as_str(),
+            "Invoice from Ada"
+        ],
+        "whom it goes to and the subject are read where they stand"
+    );
+    let field = node
+        .children
+        .iter()
+        .find(|child| child.action_target.as_deref() == Some("send-to:recipients"))
+        .expect("the field that adds someone is read");
+    assert_eq!(
+        field.name.as_deref(),
+        Some(crate::i18n::I18nManager::lookup_plain("send-to-recipients-name").as_str()),
+        "named as it reads"
+    );
+    assert_eq!(
+        field.value.as_deref(),
+        Some("a"),
+        "holding what is typed into it"
     );
 
     // Typing asks the one search for what matches, and the answer is what
@@ -474,13 +506,12 @@ fn the_message_wraps_and_the_box_makes_room_for_it() {
         reason = "a finite widget width in CSS pixels fits the f32 shaping API"
     )]
     let width = (send_to.layout.message.width() - 2.0 * f64::from(theme.tokens.spacing.s2)) as f32;
-    let (natural, one_line) =
-        crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
-            (
-                renderer.measure_style(words, None, &style),
-                renderer.measure_style(words, Some(width), &style),
-            )
-        });
+    let (natural, one_line) = crate::text_render::with_layout_renderer(theme, |renderer| {
+        (
+            renderer.measure_style(words, None, &style),
+            renderer.measure_style(words, Some(width), &style),
+        )
+    });
     assert!(
         f64::from(natural.0) > send_to.layout.message.width(),
         "the sentence is wider than the field, so it must wrap"

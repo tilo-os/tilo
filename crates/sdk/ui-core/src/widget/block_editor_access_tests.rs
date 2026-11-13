@@ -1,10 +1,8 @@
-//! What a block's row says and does for a reader: its name, its place, the
-//! action that opens it and the box that ticks a checklist block.
+//! What a block's row says and does for a reader: its name, its place, the action that opens it and the
+//! box that ticks a checklist block.
 
 use super::*;
 
-/// A block's row is what a reader reads the document by: named by what it
-/// says, a list item a reader opens and, for a checklist, a box it ticks.
 #[test]
 fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
     let mut editor = BlockEditor::new();

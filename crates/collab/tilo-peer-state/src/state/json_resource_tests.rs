@@ -42,17 +42,17 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
 }
 
 pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
     Grant::new(
         "grant \u{0003}id",
-        Subject::Person("person 🦀\n\"named\"\\".into()),
+        Grantee::person("person 🦀\n\"named\"\\"),
         TreePath::workspace("room")
             .app("so.tilo.chat")
             .resource("chat.channel:\u{0002}general")
             .action("message.\u{0001}send"),
         KindSet::ALL,
         Answer::Allow,
-        Subject::Person("granter".into()),
+        Grantee::person("granter"),
     )
     .with_lifetime(Lifetime::Until(u64::MAX))
 }

@@ -76,7 +76,6 @@ impl ApplianceConfig {
         Self::recommended_for(architecture, domain_uuid, system_disk, nvram)
     }
 
-    /// Explicit architecture selection for domain rendering and cross-platform tests.
     #[must_use]
     pub fn recommended_for(
         architecture: GuestArchitecture,

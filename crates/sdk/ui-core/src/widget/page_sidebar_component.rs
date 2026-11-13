@@ -1,8 +1,5 @@
-//! [`PageSidebar`] as a described component: a rail of page thumbnails.
-//!
-//! The rail is a list of pages: each thumbnail is the page's shape and its number, the page
-//! open lifted. A rail a view gives pages renders them, and reports what the person did on it
-//! (choose, reorder, copy, remove, add) as the view's events.
+//! [`PageSidebar`] as a described component: a rail of page thumbnails. The rail is a list of
+//! pages: each thumbnail is the page's shape and its number, the page open lifted.
 
 use taffy::Style;
 use vello::kurbo::{Affine, Point, Rect};
@@ -14,8 +11,8 @@ use crate::widget::TaffyTreeExt;
 
 use super::{PageSidebar, PageSidebarEvent};
 
-/// A rail down a document's side: one numbered thumbnail per page, the page open lifted, and,
-/// unless read-only, pages that can be dragged to reorder, copied, moved and added.
+/// A rail of numbered page thumbnails down a document's side; unless read-only, pages are
+/// dragged, copied, moved and added.
 #[derive(Component, Default)]
 #[component(name = "PageSidebar", role = "List")]
 pub struct PageSidebarProps {
@@ -28,25 +25,24 @@ pub struct PageSidebarProps {
     /// Which page is open, counted from 0.
     #[component(required)]
     pub current: i64,
-    /// The rail's title above the thumbnails; "Pages" in the window's language when
-    /// unset.
+    /// The rail's title above the thumbnails; "Pages" in the window's language when unset.
     pub header: Option<String>,
-    /// The label of the button that adds a page at the foot ("Import…"). Without it there is
-    /// no add button.
+    /// The label of the button that adds a page at the foot ("Import…"); without it there is no
+    /// add button.
     pub add: Option<String>,
-    /// The rail paints its own panel (a document's whole side column). Without it it paints
-    /// only the thumbnails, on the ground its host gives it.
+    /// The rail paints the document's whole side panel; without it it paints only the
+    /// thumbnails, on the host's background.
     pub panel: bool,
-    /// A page was chosen: carries its index, from 0.
+    /// A page was chosen: its index, counted from 0, is the value.
     #[component(event(value = i64))]
     pub select: Event,
-    /// A page was moved: carries its old index, then its place among the others.
+    /// A page was moved: its old index, then its place among the others.
     #[component(event(value = i64, at = i64))]
     pub reorder: Event,
-    /// A page was to be copied: carries its index.
+    /// A page was to be copied: its index is the value.
     #[component(event(value = i64))]
     pub duplicate: Event,
-    /// A page was to be removed: carries its index.
+    /// A page was to be removed: its index is the value.
     #[component(event(value = i64))]
     pub delete: Event,
     /// A page was to be added.
@@ -54,8 +50,6 @@ pub struct PageSidebarProps {
     pub add_page: Event,
 }
 
-/// A rail driven from a view: its pages select, move, copy, go and are added through the
-/// view's events.
 pub struct DeclaredRail {
     rail: PageSidebar,
     select: Event,
@@ -70,7 +64,6 @@ pub struct DeclaredRail {
 }
 
 impl DeclaredRail {
-    /// The rail the props describe.
     #[must_use]
     pub fn new(props: &PageSidebarProps) -> Self {
         let mut rail = PageSidebar::new(props.aspect).with_panel(props.panel);
@@ -169,7 +162,6 @@ impl crate::widget::Widget for DeclaredRail {
         _theme: &crate::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> taffy::NodeId {
-        // Fills the side column it stands in.
         taffy.widget_leaf(
             Style {
                 size: taffy::Size::from_percent(1.0, 1.0),
@@ -260,7 +252,6 @@ impl Described for DeclaredRail {
     }
 }
 
-/// The cursor the rail tracks, for a host that places it by hand.
 #[allow(dead_code, reason = "a host that hit-tests the rail keeps its pointer")]
 impl DeclaredRail {
     fn pointer(&mut self, at: Point) {

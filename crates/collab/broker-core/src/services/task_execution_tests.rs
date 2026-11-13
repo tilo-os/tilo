@@ -1,8 +1,8 @@
 use super::{NativeTaskActionRequirement, TrackerRun};
-use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::turn::Looked;
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_automerge::ApplyIncoming;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -44,11 +44,11 @@ fn a_run_is_told_an_action_asks_first() {
     let grant = |id: &str, answer| {
         Grant::new(
             id,
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             action_node(workspace, &requirement),
             KindSet::UNDOABLE,
             answer,
-            Subject::person("governor"),
+            Grantee::person("governor"),
         )
     };
     peer.governance_mut()
@@ -79,11 +79,11 @@ fn a_change_the_run_can_take_back_just_happens() {
     let grant = |id: &str, kinds| {
         Grant::new(
             id,
-            Subject::person(hex::encode(starter.user_public_key)),
+            Grantee::person(hex::encode(starter.user_public_key)),
             action_node(workspace, &requirement),
             kinds,
             Answer::Ask,
-            Subject::person("governor"),
+            Grantee::person("governor"),
         )
     };
     peer.governance_mut()
@@ -108,11 +108,11 @@ fn a_change_the_run_can_take_back_just_happens() {
                 grant("starter-asks-notes", KindSet::ALL),
                 Grant::new(
                     "agent-asks-notes",
-                    Subject::agent("scribe"),
+                    Grantee::agent("scribe"),
                     action_node(workspace, &requirement),
                     KindSet::UNDOABLE,
                     Answer::Ask,
-                    Subject::person("governor"),
+                    Grantee::person("governor"),
                 ),
             ],
             &key,
@@ -151,13 +151,21 @@ fn admitted_fixture(
             .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
     )
     .unwrap();
-    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
-    doc.put(
-        &members,
-        hex::encode(starter.user_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+    // The governor, the workspace's owner, signs the starter in.
+    let op = tilo_peer_state::members::SignedMembershipOp::signed(
+        &governor,
+        &key,
+        tilo_peer_state::members::heads(&tilo_peer_state::members::ops(&doc)),
+        tilo_clock::unix_now_ns(),
+        tilo_peer_state::members::MembershipOpCommand::Project {
+            changes: vec![tilo_action_policy::Change::AddMember {
+                person: hex::encode(starter.user_public_key),
+                role,
+            }],
+        },
     )
     .unwrap();
+    tilo_peer_state::members::put_op(&mut doc, &op).unwrap();
     doc.commit();
     let mut peer = StatePeer::new(workspace, governor, roster, RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -177,19 +185,19 @@ fn admitted_fixture(
     let admission = [
         Grant::new(
             "agent",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(workspace),
             kinds,
             Answer::Allow,
-            Subject::person("governor"),
+            Grantee::person("governor"),
         ),
         Grant::new(
             "agent:outside",
-            Subject::agent("scribe"),
+            Grantee::agent("scribe"),
             TreePath::workspace(workspace),
             KindSet::OUTSIDE,
             Answer::Ask,
-            Subject::person("governor"),
+            Grantee::person("governor"),
         ),
     ];
     let admission = admission.to_vec();
@@ -266,7 +274,7 @@ impl NativeTaskActionRequirement {
         let doc = peer
             .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+        let policy = tilo_peer_state::workspace::policy_of(doc, workspace);
         let binding = &self.binding;
         let run = TrackerRun {
             issue: binding.task_id.clone(),
@@ -330,11 +338,11 @@ fn assert_independent_task_grants(
         .put_governed_grants(
             &[Grant::new(
                 "other-task-deny",
-                Subject::task(&other),
+                Grantee::task(&other),
                 TreePath::workspace(workspace),
                 KindSet::ALL,
                 Answer::Deny,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             key,
             now,
@@ -358,11 +366,11 @@ fn assert_live_starter_revocation(
         .put_governed_grants(
             &[Grant::new(
                 "starter-no-append",
-                Subject::person(hex::encode(starter.user_public_key)),
+                Grantee::person(hex::encode(starter.user_public_key)),
                 action_node(workspace, requirement),
                 KindSet::UNDOABLE,
                 Answer::Deny,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             key,
             now,
@@ -416,7 +424,7 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
                     "scribe",
                     (&scope, tilo_action_policy::ActionKind::Undoable),
                     answer,
-                    Subject::person("governor"),
+                    Grantee::person("governor"),
                 )],
                 &key,
                 now,
@@ -446,7 +454,7 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
                 "scribe",
                 (&always, tilo_action_policy::ActionKind::Undoable),
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -502,7 +510,7 @@ fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
                         tilo_action_policy::ActionKind::Read,
                     ),
                     answer,
-                    Subject::person("governor"),
+                    Grantee::person("governor"),
                 )],
                 &key,
                 now,
@@ -552,7 +560,7 @@ fn a_run_takes_its_starters_changes_whatever_its_agent_holds() {
                         tilo_action_policy::ActionKind::Undoable,
                     ),
                     Answer::Deny,
-                    Subject::person("governor"),
+                    Grantee::person("governor"),
                 )],
                 &key,
                 now,
@@ -561,11 +569,9 @@ fn a_run_takes_its_starters_changes_whatever_its_agent_holds() {
         let denied = requirement.check_run(&peer, workspace, now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
-        let policy = tilo_desktop_model::projection::workspace_policy_of(
-            peer.admitted_workspace().unwrap(),
-            workspace,
-        );
-        let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))
+        let policy =
+            tilo_peer_state::workspace::policy_of(peer.admitted_workspace().unwrap(), workspace);
+        let own = tilo_action_policy::Authority::person(policy.party_of(Grantee::agent("scribe")))
             .decide(
                 &action_node(workspace, &requirement),
                 tilo_action_policy::ActionKind::Undoable,
@@ -591,11 +597,11 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         .put_governed_grants(
             &[Grant::new(
                 "starter-sends-notes",
-                Subject::person(hex::encode(starter.user_public_key)),
+                Grantee::person(hex::encode(starter.user_public_key)),
                 notes.clone(),
                 KindSet::OUTSIDE,
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -613,11 +619,11 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         .put_governed_grants(
             &[Grant::new(
                 "issue-allows-notes",
-                Subject::task(ISSUE),
+                Grantee::task(ISSUE),
                 notes,
                 KindSet::OUTSIDE,
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -645,7 +651,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         .put_governed_grants(
             &[tilo_action_policy::agent_answers::answer_grant(
                 workspace,
-                Subject::task(ISSUE),
+                Grantee::task(ISSUE),
                 (
                     &tilo_action_policy::agent_answers::AnswerScope::action(
                         "so.tilo.notes",
@@ -655,7 +661,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
                     tilo_action_policy::ActionKind::Undoable,
                 ),
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -685,11 +691,11 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
         .put_governed_grants(
             &[Grant::new(
                 "starter-reads-notes",
-                Subject::person(hex::encode(starter.user_public_key)),
+                Grantee::person(hex::encode(starter.user_public_key)),
                 TreePath::workspace(workspace).app("so.tilo.notes"),
                 KindSet::UNDOABLE,
                 Answer::Deny,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -728,11 +734,11 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
         .put_governed_grants(
             &[Grant::new(
                 "starter-browses",
-                Subject::person(hex::encode(starter.user_public_key)),
+                Grantee::person(hex::encode(starter.user_public_key)),
                 TreePath::workspace(workspace).app("so.tilo.browser"),
                 KindSet::OUTSIDE,
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -759,13 +765,13 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
         .put_governed_grants(
             &[tilo_action_policy::agent_answers::answer_grant(
                 workspace,
-                Subject::task(ISSUE),
+                Grantee::task(ISSUE),
                 (
                     &issue_answer_scope("so.tilo.browser", ("browser.tab", "read-page"), false),
                     tilo_action_policy::ActionKind::Outside,
                 ),
                 Answer::Allow,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,
@@ -885,11 +891,11 @@ fn a_run_inside_a_turn_acts_as_the_person_whose_message_caused_it() {
         .put_governed_grants(
             &[Grant::new(
                 "starter-no-notes",
-                Subject::person(starter_id.clone()),
+                Grantee::person(starter_id.clone()),
                 TreePath::workspace(workspace).app("so.tilo.notes"),
                 KindSet::ALL,
                 Answer::Deny,
-                Subject::person("governor"),
+                Grantee::person("governor"),
             )],
             &key,
             now,

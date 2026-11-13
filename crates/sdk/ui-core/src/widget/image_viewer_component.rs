@@ -1,8 +1,4 @@
 //! [`ImageViewer`] as a described component: a picture to pan and zoom.
-//!
-//! The viewer pans and zooms a decoded picture. A picture from a view is an address, its bytes
-//! loaded as they arrive; [`ZoomableImage`] is the widget that stands in the layout until they
-//! do, then shows them in an [`ImageViewer`].
 
 use crate::component::{Component, Described};
 use crate::pictures::{Pictures, Shown};
@@ -11,8 +7,8 @@ use crate::widget::Widget;
 use super::{ImageViewer, PictureSource};
 use crate::widget::DrawChild;
 
-/// A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to the
-/// whole picture. It fills its box; the picture is letterboxed inside it.
+/// A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to
+/// the whole picture.
 #[derive(Component, Default)]
 #[component(name = "ImageViewer", role = "Image", label = "alt")]
 pub struct ImageViewerProps {
@@ -26,12 +22,12 @@ pub struct ImageViewerProps {
     #[component(skip)]
     pub pictures: Option<Pictures>,
     /// The box's shape: its width over its height, which it stands at before the picture is
-    /// here. The picture's own shape once it is.
+    /// here.
     pub aspect: Option<f64>,
 }
 
-/// The picture a viewer shows, by its address, until its bytes arrive: the box it will fill,
-/// then an [`ImageViewer`] of it.
+/// The picture a viewer shows, by its address, until its bytes arrive: the box it will
+/// fill, then an [`ImageViewer`] of it.
 #[derive(Default)]
 pub struct ZoomableImage {
     shown: Shown,

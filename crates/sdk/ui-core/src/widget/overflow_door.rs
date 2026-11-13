@@ -1,20 +1,4 @@
 //! The overflow door: the named place a control goes when the row it belongs to has no room.
-//!
-//! A row that simply draws fewer controls at a narrow width silently takes capabilities away:
-//! the person sees a toolbar that no longer offers Undo, with nothing saying where it went. The
-//! rule is the opposite — a control that does not fit becomes a *named* entry behind the row's
-//! door ([`OverflowDoor`], the trailing "More actions" button), so every command is reachable at
-//! every width, and the door is there only when something is behind it.
-//!
-//! - [`give_way`] — which of a row's items give way to the door, given their widths and ranks;
-//!   [`Toolbar`](crate::widget::Toolbar) and `NavShell`'s header both fit by it, and it never
-//!   decides to drop one.
-//! - [`OverflowDoor`] — the button and the menu of what the plan put behind it, with its rows
-//!   named to assistive technology. `NavShell`'s header row uses the same door, so an app's own
-//!   row and the shell's header overflow the same way, into the same face.
-//!
-//! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar) instead, which
-//! does its own overflow; this door is for the rows a painted app lays out by hand.
 
 use crate::i18n::widget_text;
 use std::cell::Cell;
@@ -34,18 +18,7 @@ use crate::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
-/// The toolkit's one overflow rule: which of a row's `count` items give way
-/// to its door.
-///
-/// None when the row holds them all (`used` with nothing hidden fits
-/// `width`): a row that holds them all shows no door, so it is not narrowed
-/// for nothing. Otherwise the door takes `door` of the row (its gap
-/// included) and items give way, the lowest `priority` first and from the
-/// end among equals, each with its `group`, until the rest fit beside it.
-/// An item `priority` names no rank for (a separator, a hosted control)
-/// never gives way. When not even the door fits beside one item, every item
-/// that can stands behind it: a row too narrow for one control still offers
-/// that control, named in the menu, rather than drawing nothing.
+/// The toolkit's one overflow rule: which of a row's `count` items give way to its door.
 pub(crate) fn give_way(
     count: usize,
     width: f64,
@@ -78,11 +51,9 @@ pub(crate) fn give_way(
     hidden
 }
 
-/// How many of a row's items, `widths` wide in the row's order with `gap`
-/// between them, stand in `width` beside a door `door` wide ([`give_way`]);
-/// the rest are behind the door, in the same order. A row does not reorder
-/// its commands to fit more of them, because the order is what makes them
-/// findable.
+/// How many of a row's items, `widths` wide in the row's order with `gap` between them, stand
+/// in `width` beside a door `door` wide ([`give_way`]); the rest are behind the door, in the
+/// same order.
 #[must_use]
 pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> usize {
     let widths: Vec<f64> = widths.into_iter().collect();
@@ -100,14 +71,8 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f
     hidden.iter().take_while(|hidden| !**hidden).count()
 }
 
-/// The trailing "More actions" door: a button holding the menu of what did
-/// not fit.
-///
-/// The host lays it out where the row ends and hides it
-/// ([`Self::set_shown`]) when nothing is behind it. A press opens the menu of
-/// the items it was given ([`Self::open`]); the row the person chose comes
-/// back once, by index, in the order the items were given
-/// ([`Self::take_choice`]).
+/// The trailing "More actions" door: a button holding the menu of what did not fit. The host
+/// lays it out where the row ends and hides it ([`Self::set_shown`]) when nothing is behind it.
 #[crate::component::not_a_component(shell, "the strip's overflow")]
 pub struct OverflowDoor {
     button: Button,
@@ -163,13 +128,11 @@ impl OverflowDoor {
         }
     }
 
-    /// Where the door's button stands from the last layout.
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
     }
 
-    /// The button was pressed since the last call.
     pub fn take_open_request(&self) -> bool {
         self.requested.replace(false)
     }
@@ -198,18 +161,15 @@ impl OverflowDoor {
         self.menu.open_anchored(self.rect, viewport);
     }
 
-    /// Put the menu away.
     pub fn close(&mut self) {
         self.menu.close();
     }
 
-    /// Whether the menu is open.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.menu.is_open()
     }
 
-    /// The row the person chose in the menu, once.
     pub fn take_choice(&mut self) -> Option<usize> {
         self.chosen.take()
     }
@@ -247,7 +207,6 @@ impl OverflowDoor {
 }
 
 impl Widget for OverflowDoor {
-    /// What it holds back, where it opens.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -350,11 +309,9 @@ impl Widget for OverflowDoor {
         self.menu.is_open()
     }
 
-    /// The button, and while its menu is up, the commands behind it: the menu
-    /// paints its rows itself, so a person using a screen reader reaches those
-    /// commands here rather than nowhere. A door with nothing behind it is not
-    /// there: no button is on the surface for a screen reader or an agent to
-    /// press.
+    /// The button, and while its menu is up, the commands behind it: the menu paints its rows
+    /// itself, so a person using a screen reader reaches those commands here rather than
+    /// nowhere.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.shown {
             return None;
@@ -454,7 +411,6 @@ impl Widget for OverflowDoor {
         "OverflowDoor"
     }
 
-    /// Its button's, while it shows, and every frame its menu is open.
     fn needs_redraw(&self) -> bool {
         self.menu.is_open() || (self.shown && Widget::needs_redraw(&self.button))
     }

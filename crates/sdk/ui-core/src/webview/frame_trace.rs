@@ -39,7 +39,6 @@ mod receipt {
     use super::{AtomicU64, OnceLock, Ordering, enabled};
 
     /// Unique within this Rust process, including across native helpers and tabs.
-    /// Receipt is after transport/decode; it is not the CEF paint timestamp.
     pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option<u64> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         static SCROLL_MARKER: OnceLock<bool> = OnceLock::new();
@@ -106,8 +105,8 @@ pub(crate) fn drawn(id: Option<u64>) {
         DRAWN.with(|scene| scene.borrow_mut().record(id));
     }
 }
-/// Called after recording a complete scene, even when it has no fresh input.
-/// Missing CPU IDs or overflow must be rejected by the measurement analyzer.
+/// Called after recording a complete scene, even when it has no fresh input. Missing CPU
+/// IDs or overflow must be rejected by the measurement analyzer.
 #[cfg(feature = "native")]
 pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
     if !enabled() {

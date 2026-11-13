@@ -18,7 +18,7 @@
 //! #[derive(Model, Default)]
 //! pub struct Note { pub body: String }
 //!
-//! #[resource(kind = "example.note", label = "Note")]
+//! #[resource(kind = "example.note")]
 //! impl Note {
 //!     /// Edit the note.
 //!     #[action]
@@ -225,9 +225,7 @@ fn to_json<R: Resource>(state: &dyn Any) -> Option<serde_json::Value> {
         .map(|state| crate::table::Run(table).to_json(state))
 }
 
-/// [`Resource::read_content`], or the record's model tables for a part the
-/// type does not answer reads of itself: the same two ways the framework's
-/// `read` takes, so a host without the type reads what the app's process read.
+/// [`crate::read::content`] of a state this type reads.
 fn content<R: Resource>(
     state: &dyn Any,
     doc: &Doc,
@@ -236,16 +234,7 @@ fn content<R: Resource>(
     let state = state
         .downcast_ref::<R::State>()
         .ok_or_else(|| format!("{} state is another type", R::KIND))?;
-    if R::READABLE {
-        match R::read_content(state, doc, item) {
-            Ok(content) => return Ok(content),
-            Err(error) if !reads_item::<R>(item.unwrap_or_default()) => return Err(error),
-            Err(_) => {}
-        }
-    }
-    let table = R::RECORD_TABLE
-        .ok_or_else(|| format!("a {} does not answer reads of its parts", R::LABEL))?;
-    crate::table::item_json(table, state, R::KIND, item.unwrap_or_default())
+    crate::read::content::<R>(state, doc, item)
 }
 
 fn reads_item<R: Resource>(item: &str) -> bool {
@@ -492,11 +481,6 @@ impl ResourceKind {
     /// own.
     pub fn holds_or_older(&self, doc: &Doc) -> bool {
         crate::evolution::stored_version(doc) < self.version || self.holds(doc)
-    }
-
-    /// The heads of a saved document; `None` when `bytes` are no document.
-    pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
-        Doc::load(bytes).ok().map(|mut doc| doc.get_heads())
     }
 
     /// What the open resource is called, from a state [`Self::read`]

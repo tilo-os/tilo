@@ -46,12 +46,12 @@ impl UiDocument {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
-    /// Check version, size, identity, accessibility, binding, and geometry
-    /// invariants for the complete graph.
+    /// Check version, size, identity, accessibility, binding and geometry invariants for the
+    /// complete graph.
     ///
     /// # Errors
     ///
-    /// Returns the first violated graph invariant.
+    /// The first violated graph invariant.
     pub fn validate(&self) -> Result<(), UiGraphError> {
         if self.version != UI_GRAPH_VERSION {
             return Err(UiGraphError::UnsupportedVersion {
@@ -81,8 +81,8 @@ impl UiDocument {
         self.root.find_mut(id)
     }
 
-    /// Insert `node` into a row or column at `index`. The graph is changed
-    /// only after the complete candidate validates.
+    /// Insert `node` into a row or column at `index`. The graph changes only after the complete
+    /// candidate validates.
     pub fn insert_child(
         &mut self,
         parent_id: &str,
@@ -130,8 +130,8 @@ impl UiDocument {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unknown target or any invariant violated by
-    /// the replacement. A failure leaves the graph unchanged.
+    /// An unknown target, or any invariant violated by the replacement. A failure leaves the graph
+    /// unchanged.
     pub fn replace_node(&mut self, id: &str, replacement: UiNode) -> Result<(), UiGraphError> {
         self.transaction(|candidate| {
             if candidate.root.id() == id {
@@ -146,14 +146,13 @@ impl UiDocument {
         })
     }
 
-    /// Reparent a non-root subtree into a row or column. `index` names the
-    /// position in the destination after the source has been detached.
+    /// Reparent a non-root subtree into a row or column. `index` names the position in the
+    /// destination after the source has been detached.
     ///
     /// # Errors
     ///
-    /// Returns an error when moving the root, moving into the subtree itself,
-    /// removing a container's required child, selecting an invalid parent or
-    /// index, or violating another graph invariant. A failure is atomic.
+    /// Moving the root, moving into the subtree itself, removing a container's required child, an
+    /// invalid parent or index, or another violated invariant. A failure is atomic.
     pub fn move_node(
         &mut self,
         id: &str,

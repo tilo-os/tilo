@@ -110,23 +110,16 @@ pub struct Scrollable {
     /// Device pixels per logical pixel on the display the last input came
     /// from: glides and jumps step in whole ones.
     device_scale: f64,
-    /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
     /// The content's opacity in the latest draw: below 1 while it fades in
     /// after a long jump.
     fade_drawn: Cell<f32>,
-    /// The content's opacity in the frame the host last presented.
     fade_shown: f32,
-    /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
-    /// which resolves against nothing (viewport collapses to zero) when the
-    /// parent has no definite height. See [`Scrollable::fill_parent_height`]
-    /// for the flex-grow alternative.
+    /// Pins the outer viewport to an exact height instead of `percent(1.0)`, which resolves
+    /// against nothing (viewport collapses to zero) when the parent has no definite height.
     fixed_height: Option<f32>,
-    /// Lets a document-size viewport shrink to its content while still
-    /// becoming scrollable before it crowds its parent. This is deliberately
-    /// distinct from `fixed_height`: dialogs often have short and long pages
-    /// in one flow and should not reserve a large empty viewport for the
-    /// short page.
+    /// Lets a document-size viewport shrink to its content while still becoming scrollable
+    /// before it crowds its parent.
     max_height: Option<f32>,
     height_limit_dirty: bool,
     /// Absorbs the parent's remaining flex height instead of claiming
@@ -154,10 +147,7 @@ pub struct Scrollable {
     /// half of a scroll is [`Self::scroll_dirty`], this is the layout half.
     scroll_unplaced: bool,
     show_scrollbar: bool,
-    /// Whether an overflowing viewport itself participates in sequential
-    /// keyboard focus. Forms generally want Tab to enter their first control
-    /// directly; document viewers may keep the viewport stop for arrow/Page
-    /// navigation.
+    /// Whether an overflowing viewport itself participates in sequential keyboard focus.
     sequential_focus: bool,
     /// Lets `MouseInput::Pressed` hit-test the thumb/track without a prior
     /// hover edge.
@@ -171,8 +161,6 @@ pub struct Scrollable {
     /// `None` until first woken, so a freshly-shown list has no bar until
     /// content overflows or the user interacts.
     last_activity: Option<Instant>,
-    /// Pointer inside a bar's reveal zone: pins the overlay visible and
-    /// expands the track chrome.
     pointer_near_bar: bool,
     /// Rising-edge latch so the bar flashes into view the first frame its
     /// content overflows, then obeys the fade.
@@ -197,10 +185,8 @@ pub struct Scrollable {
     /// The give past the ends while fingers pull the content there, and its
     /// spring back once they let go ([`crate::motion::RubberBand`]).
     band: crate::motion::RubberBand,
-    /// Survives this widget being dropped and rebuilt — needed by apps that
-    /// recreate their whole widget subtree every frame. Every offset
-    /// mutation writes back through `clamp`. See
-    /// [`Scrollable::with_persisted_offset`].
+    /// Survives this widget being dropped and rebuilt — needed by apps that recreate their
+    /// whole widget subtree every frame. Every offset mutation writes back through `clamp`.
     persisted_offset: Option<Rc<Cell<(f32, f32)>>>,
     /// The trailing lane reserved for the vertical bar
     /// (`metrics.scrollbar_gutter`), resolved in `build_layout`.
@@ -216,33 +202,21 @@ pub struct Scrollable {
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
     reserve_vertical: bool,
-    /// The lanes (vertical, horizontal) this layout found the content
-    /// overflowing without: kept until the layout is applied, so content
-    /// that fits only beside its own bar does not drop the bar and overflow
-    /// again, pass after pass. A retained tree is laid out again without
-    /// being rebuilt, so applying the layout is what ends it.
+    /// The lanes (vertical, horizontal) this layout found the content overflowing without: kept
+    /// until the layout is applied, so content that fits only beside its own bar does not drop
+    /// the bar and overflow again, pass after pass.
     lanes_needed: (bool, bool),
-    /// The scroll view's own size when `lanes_needed` was seen. A pass that
-    /// sizes the view differently (a parent measuring its content on the
-    /// way to its own size) says nothing about the box the view gets, so
-    /// what it needed is forgotten.
+    /// The scroll view's own size when `lanes_needed` was seen.
     lanes_needed_in: Option<(f32, f32)>,
-    /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
-    /// See [`Scrollable::with_edge_fade`].
     edge_fade: bool,
     /// Reports the trailing lane currently reserved, for a pinned footer
     /// that shares this scroller's measure.
     gutter_probe: Option<Rc<Cell<f32>>>,
-    /// Reserved bottom lane that is excluded from both painting and scroll
-    /// metrics. Sticky-footer dialogs use this to end overflowing prose on a
-    /// clean boundary instead of clipping half a text baseline against the
-    /// footer.
+    /// Reserved bottom lane that is excluded from both painting and scroll metrics.
     bottom_content_inset: f32,
-    /// Additional bottom lane used only when the resolved viewport is this
-    /// compact or shorter. Long-form setup pages use it to end their initial
-    /// frame between blocks without wasting space on a normal-height dialog.
+    /// Additional bottom lane used only when the resolved viewport is this compact or shorter.
     compact_bottom_content_inset: Option<(f32, f32)>,
     /// Stable semantic key for the scroll group. Without one the group's id
     /// follows its layout node, so no control inside it has a durable
@@ -260,12 +234,10 @@ pub struct Scrollable {
     /// The layout scale the offset was last taken to ([`Scrollable::land_offsets`]),
     /// or `None` before the content was first placed.
     placed_scale: Option<f32>,
-    /// See [`Scrollable::following_end`].
     follow_end: bool,
     /// The offsets along each axis the detents its content offers sit at
-    /// ([`Widget::snap_points`]), in content coordinates and ascending: a
-    /// board's lanes, a page each. Empty where the content offers none, and
-    /// the view scrolls freely.
+    /// ([`Widget::snap_points`]), in content coordinates and ascending: a board's lanes, a page
+    /// each.
     snap_x: Vec<f32>,
     snap_y: Vec<f32>,
 }
@@ -294,7 +266,6 @@ impl crate::scroll_copy::Shown for Shown {
         self.transform
     }
 
-    /// The content's own widgets say what changed in it.
     fn same_view(&self, _other: &Self) -> bool {
         true
     }
@@ -397,7 +368,6 @@ impl Scrollable {
         self.follow_end = true;
         self
     }
-    /// The content, to change it in place and keep the scroll position.
     pub fn child_mut(&mut self) -> Option<&mut Element> {
         self.child.as_mut()
     }
@@ -406,9 +376,7 @@ impl Scrollable {
         self.child = Some(self.content(c));
         self
     }
-    /// Show `c` instead of the content, which it returns, keeping the scroll position. A
-    /// change the frame's damage describes: the new content draws itself whole, and the host
-    /// repaints where the boxes it moved were and are.
+    /// Show `c` instead of the content, which it returns, keeping the scroll position.
     pub fn replace_child(&mut self, c: Element) -> Option<Element> {
         let c = self.content(c);
         self.structure = self
@@ -425,15 +393,9 @@ impl Scrollable {
             c
         }
     }
-    /// Let auto-height content fill at least the measured viewport height,
-    /// retaining its intrinsic height when it overflows. This does not change
-    /// an explicitly sized child's authored height. Ordinary form fields stay
-    /// content-sized unless their Scrollable opts in.
-    ///
-    /// Adds a presentational single-child wrapper to normal widget traversal;
-    /// the content keeps its identity, focus and action bindings. Where the
-    /// scroll view's height comes from its content rather than its parent,
-    /// there is no viewport to fill and the content keeps its own height.
+    /// Let auto-height content fill at least the measured viewport height, retaining its
+    /// intrinsic height when it overflows. This does not change an explicitly sized child's
+    /// authored height.
     #[must_use]
     pub fn with_content_min_viewport_height(mut self) -> Self {
         if !self.content_fills_viewport {
@@ -479,9 +441,8 @@ impl Scrollable {
         self
     }
 
-    /// Keep the themed vertical scrollbar lane when content fits, so sibling
-    /// pages use the same content width across an overflow transition. The
-    /// scrollbar itself still appears only when scrolling is possible.
+    /// Keep the themed vertical scrollbar lane when content fits, so sibling pages use the same
+    /// content width across an overflow transition.
     #[must_use]
     pub fn with_stable_vertical_gutter(mut self) -> Self {
         self.stable_vertical_gutter = true;
@@ -517,9 +478,8 @@ impl Scrollable {
         self
     }
 
-    /// Keep the viewport as tall as its content and let it shrink only when
-    /// its parent runs out of room, so the content scrolls just in a window
-    /// too short to show it. `with_max_height` without a number.
+    /// Keep the viewport as tall as its content and let it shrink only when its parent runs out
+    /// of room, so the content scrolls just in a window too short to show it.
     #[must_use]
     pub fn fit_content_height(mut self) -> Self {
         self.max_height = Some(f32::INFINITY);
@@ -538,6 +498,14 @@ impl Scrollable {
         }
     }
 
+    /// Whether its content is drawn taller or shorter than laid out while a band moves in it: a
+    /// surface that fits its window to this view's content goes with it. The view's own box does
+    /// not move, so this is not its [`Widget::disclosing`].
+    #[must_use]
+    pub fn content_disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.child.as_ref().and_then(|child| child.disclosing())
+    }
+
     /// Take the height the parent leaves: the rest of a column under a
     /// fixed bar, the whole of a grid row or a fixed-height container,
     /// including at the root of a window whose content has a max width.
@@ -547,10 +515,9 @@ impl Scrollable {
         self
     }
 
-    /// Fade the content out at an edge while more of it can scroll in from
-    /// there (`ui::surface::content_edge_fade` against the ground it is
-    /// drawn on), so a cut-off line reads as "more below" rather than as
-    /// clipped. Nothing fades at an edge the content has reached.
+    /// Fade the content out at an edge while more of it can scroll in from there
+    /// (`ui::surface::content_edge_fade` against the ground it is drawn on), so a cut-off line
+    /// reads as "more below" rather than as clipped.
     #[must_use]
     pub fn with_edge_fade(mut self) -> Self {
         self.edge_fade = true;
@@ -594,22 +561,15 @@ impl Scrollable {
         self
     }
 
-    /// Seed the most recent pointer position when rebuilding a retained view.
-    ///
-    /// Mouse wheel and button events do not carry a position.  A parent that
-    /// recreates its scrollable every frame must therefore carry its last
-    /// cursor into the replacement, otherwise a still click or wheel after a
-    /// rebuild is incorrectly treated as being outside the viewport.
+    /// Seed the most recent pointer position when rebuilding a retained view. Mouse wheel and
+    /// button events do not carry a position.
     #[must_use]
     pub fn with_cursor(mut self, cursor: Point) -> Self {
         self.last_cursor = cursor;
         self
     }
 
-    /// Reserve a clean bottom edge inside the viewport for a sticky-footer
-    /// separation. Content is clipped above this lane and the effective
-    /// viewport used by scrolling shrinks by the same amount, so the final
-    /// content remains reachable.
+    /// Reserve a clean bottom edge inside the viewport for a sticky-footer separation.
     #[must_use]
     pub fn with_bottom_content_inset(mut self, px: f32) -> Self {
         self.bottom_content_inset = px.max(0.0);
@@ -646,8 +606,6 @@ impl Scrollable {
         (self.viewport_h - self.active_bottom_content_inset()).max(0.0)
     }
 
-    /// The actual interactive/paint viewport after any active sticky-footer
-    /// separation has been reserved.
     pub fn content_viewport_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0,
@@ -657,12 +615,8 @@ impl Scrollable {
         )
     }
 
-    /// What the content is clipped to when it paints: the viewport, grown
-    /// sideways by `row_bleed` where the viewport does not scroll that way.
-    /// A row's hover and selection lift stands that far outside the content
-    /// edge by design, so a list flush with a vertical scroller's edges
-    /// keeps its rounded lift instead of a band cut square at the edge.
-    /// Hit-testing and culling stay on [`Self::content_viewport_rect`].
+    /// What the content is clipped to when it paints: the viewport, grown sideways by
+    /// `row_bleed` where the viewport does not scroll that way.
     fn paint_clip_rect(&self, theme: &Theme) -> Rect {
         let viewport = self.content_viewport_rect();
         if matches!(self.axis, ScrollAxis::Vertical) {
@@ -705,7 +659,6 @@ impl Scrollable {
         self.content_h > self.effective_viewport_h() + FIT_EPS
     }
 
-    /// Whether the content is wider than the viewport shows, so it scrolls sideways.
     pub fn horizontal_overflows(&self) -> bool {
         self.content_w > self.viewport_w + FIT_EPS
     }
@@ -751,10 +704,8 @@ impl Scrollable {
             }
         }
         self.clamp();
-        // Only signal dirty if the clamp didn't eat the entire delta — at
-        // the content edges offset_y doesn't actually change. Bitwise
-        // comparison is intentional: this asks "did clamp change the exact
-        // stored value at all", not "are these two offsets close".
+        // Only signal dirty if the clamp didn't eat the entire delta — at the content edges
+        // offset_y doesn't actually change.
         if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
             self.scroll_dirty = true;
             self.scroll_unplaced = true;
@@ -776,25 +727,16 @@ impl Scrollable {
     }
 
     /// Where the content's origin lands on screen, as drawn: exactly where
-    /// [`Self::drawn_offset`] puts it. A scroll that moves the content by
-    /// part of a pixel moves it by exactly that much, because the copy it
-    /// offers ([`crate::scroll_copy`]) moves the pixels it was shown at by
-    /// the same delta: content placed on any coarser grid than the offsets
-    /// it is scrolled by would sit a pixel away from the pixels a host
-    /// copied, and every edge in the content would jump. An offset carried
-    /// from a display of another scale is taken to this display's pixels
-    /// where the layout scale changes ([`Self::land_offsets`]), not here.
+    /// [`Self::drawn_offset`] puts it.
     fn content_origin(&self) -> Point {
         let (x, y) = self.drawn_offset();
         Point::new(self.rect.x0 - x, self.rect.y0 - y)
     }
 
-    /// Take the offset to this display's device pixels when the layout scale
-    /// changed since the content was placed: an offset kept across a display
-    /// whose scale changed (a window dragged to another screen, one restored
-    /// on a display unlike the one it was saved on) lands whole rather than
-    /// between pixels. A scroll keeps its fraction, which the copy path
-    /// needs.
+    /// Take the offset to this display's device pixels when the layout scale changed since the
+    /// content was placed: an offset kept across a display whose scale changed (a window
+    /// dragged to another screen, one restored on a display unlike the one it was saved on)
+    /// lands whole rather than between pixels.
     fn land_offsets(&mut self) {
         let scale = super::layout::device_scale().max(f32::MIN_POSITIVE);
         if self
@@ -810,7 +752,6 @@ impl Scrollable {
         self.offset_y = on_grid(self.offset_y);
     }
 
-    /// Whether the give moved since the content was placed with it.
     fn give_unplaced(&self) -> bool {
         self.band
             .needs_frame(crate::motion::frame_now(), self.device_scale)
@@ -820,10 +761,8 @@ impl Scrollable {
         self.last_activity = Some(crate::time::now());
         self.bar_dirty = true;
     }
-    /// Glide on at `vx`, `vy` (logical pixels per second, in content
-    /// space); zero stops a glide. Only along the axes this view scrolls:
-    /// a flick that wavers sideways in a list that scrolls up and down
-    /// glides up or down alone.
+    /// Glide on at `vx`, `vy` (logical pixels per second, in content space); zero stops a
+    /// glide.
     pub fn fling(&mut self, vx: f32, vy: f32) {
         let vx = if self.axis_has_horizontal() { vx } else { 0.0 };
         let vy = if self.axis_has_vertical() { vy } else { 0.0 };
@@ -845,10 +784,8 @@ impl Scrollable {
         self.glided(dx, dy);
     }
 
-    /// Move by a glide's step; an axis the content cannot move further
-    /// along stops, and the other glides on. Each axis is judged alone: in
-    /// a short frame one axis's step can round to nothing while the
-    /// other's moves a pixel, and that is no end.
+    /// Move by a glide's step; an axis the content cannot move further along stops, and the
+    /// other glides on.
     fn glided(&mut self, dx: f64, dy: f64) {
         let before = (self.offset_x, self.offset_y);
         self.move_by(f32_of_f64(dx), f32_of_f64(dy));
@@ -876,8 +813,6 @@ impl Scrollable {
         let _ = self.scroll_to.arrived(now);
     }
 
-    /// A jump still moves, or has arrived and waits for the frame that
-    /// puts the content at its target.
     fn jump_in_progress(&self) -> bool {
         self.scroll_to.target().is_some()
             || self.scroll_to.is_moving(crate::motion::frame_now())
@@ -899,19 +834,15 @@ impl Scrollable {
         self
     }
 
-    /// Show the descendant whose id is `id` (`Widget::test_id`) once a layout
-    /// has placed it, moving as little as it takes: what just arrived on a
-    /// surface the person pans (a place put on the desk) is where they can
-    /// see it. The latest asked wins; one never placed is never shown.
+    /// Show the descendant whose id is `id` (`Widget::test_id`) once a layout has placed it,
+    /// moving as little as it takes: what just arrived on a surface the person pans (a place
+    /// put on the desk) is where they can see it.
     pub fn reveal_on_layout(&mut self, id: impl Into<String>) {
         self.reveal_id = Some(id.into());
     }
 
-    /// Show the content rect at `x`, `y` (`w` by `h`, in content
-    /// coordinates), moving as little as it takes. A jump the person's hand
-    /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
-    /// glides when short and fades in at the target when long; one nobody
-    /// asked for (a sync, a restored view) or an agent's lands at once.
+    /// Show the content rect at `x`, `y` (`w` by `h`, in content coordinates), moving as little
+    /// as it takes.
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
         let now = crate::motion::frame_now();
         let (tx, ty) = self.offset_showing(x, y, w, h);
@@ -1020,12 +951,8 @@ impl Scrollable {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
-    /// Reserve the bar's lane on the edge it scrolls along while the solved
-    /// content overflows the viewport, and give it back once it fits.
-    /// Narrower content is usually taller, not always: a grid whose cells
-    /// scale with the width can overflow at full width and fit beside the
-    /// lane. A lane the content needed then stays for the rest of the layout,
-    /// so this settles within two steps.
+    /// Reserve the bar's lane on the edge it scrolls along while the solved content overflows
+    /// the viewport, and give it back once it fits.
     fn follow_overflow(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1051,10 +978,8 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
-        // A lane the content overflowed without stays: content that fits
-        // only because the lane narrowed it would overflow again without it.
-        // Only in a box of the same size: one the view was measured at on
-        // the way to its own size needed nothing of the box it gets.
+        // A lane the content overflowed without stays: content that fits only because the lane
+        // narrowed it would overflow again without it.
         let size = (layout.size.width, layout.size.height);
         if self.lanes_needed_in != Some(size) {
             self.lanes_needed = (false, false);
@@ -1092,7 +1017,6 @@ impl Scrollable {
         let max_y = self.max_offset_y();
         self.offset_x = self.offset_x.clamp(0.0, max_x);
         self.offset_y = self.offset_y.clamp(0.0, max_y);
-        // Single write-back point: every offset mutation funnels through here.
         if let Some(cell) = &self.persisted_offset {
             cell.set((self.offset_x, self.offset_y));
         }
@@ -1106,17 +1030,9 @@ impl Scrollable {
     }
 }
 
-/// A presentational Grid surface at least as tall as the scroll view's
-/// viewport. Container supplies the ordinary single-child lifecycle; we
-/// register its layout node as this wrapper's own node. The child style is
-/// never rewritten.
-///
-/// The minimum is a percentage of the viewport, so it resolves only where
-/// the scroll view's height is given to it. It was the scroll view's last
-/// solved height, measured between passes: where an ancestor took its height
-/// from content, that height became the content's floor, and with the scroll
-/// view and this wrapper adjusting a pass apart the two traded heights
-/// without settling.
+/// A presentational Grid surface at least as tall as the scroll view's viewport. Container
+/// supplies the ordinary single-child lifecycle; we register its layout node as this wrapper's
+/// own node.
 struct ViewportContent {
     inner: crate::widget::Container,
 }
@@ -1154,8 +1070,6 @@ impl crate::widget::Decorator for ViewportContent {
             node,
             Style {
                 display: taffy::Display::Grid,
-                // The flexible track fills short content; its intrinsic minimum
-                // keeps a long measured editor taller than the viewport.
                 grid_template_rows: vec![minmax(min_content(), fr(1.0_f32))],
                 grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
                 size: Size {
@@ -1185,7 +1099,6 @@ impl crate::widget::Decorator for ViewportContent {
 }
 
 impl Widget for Scrollable {
-    /// Its content, in a native scroller of its region.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -1211,7 +1124,6 @@ impl Widget for Scrollable {
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
-    /// Which way its content may go on past it.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         use crate::widget::{LayoutInfo, ScrollDirection, ScrollLayout};
         let direction = match self.axis {
@@ -1227,26 +1139,19 @@ impl Widget for Scrollable {
         }
     }
 
-    /// A glide in progress advances here, once per frame, and moves only
-    /// this view: like a wheel that only pans
-    /// ([`crate::widget::note_view_only_pan`]) it is no change of the model,
-    /// so it does not report one; reporting it synced the app and
-    /// republished its resources on every frame of every fling. The host
-    /// places the content where the glide took it
-    /// ([`crate::widget::note_layout_moved`]).
+    /// A glide in progress advances here, once per frame, and moves only this view: like a
+    /// wheel that only pans ([`crate::widget::note_view_only_pan`]) it is no change of the
+    /// model, so it does not report one; reporting it synced the app and republished its
+    /// resources on every frame of every fling.
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         if self.glide.is_active() {
             self.advance_momentum(crate::time::now());
         }
-        // The give springing back moves the content like a glide does.
         if self.give_unplaced() {
             self.scroll_dirty = true;
             self.scroll_unplaced = true;
         }
-        // A jump in progress, like a glide, moves only this view.
         self.follow_scroll_to(crate::motion::frame_now());
-        // Click-and-hold auto-repeat: the host wakes on the repeat's
-        // deadline (`next_wake_deadline`), not on animation frames.
         let held = self.hold.is_some() && {
             let before = (self.offset_x, self.offset_y);
             self.advance_hold(crate::time::now());
@@ -1271,8 +1176,6 @@ impl Widget for Scrollable {
             .child
             .as_mut()
             .map(|c| c.build_layout(taffy, theme, node_map));
-        // Content that only scrolls sideways is as wide as it wants to be
-        // (its max-content width), not squeezed into the viewport.
         if matches!(self.axis, ScrollAxis::Horizontal)
             && let Some(child) = self.child_node
             && let Ok(current) = taffy.style(child)
@@ -1295,10 +1198,9 @@ impl Widget for Scrollable {
         self.bar_thickness = f64::from(metrics.scroll_thumb);
         self.bar_margin =
             f64::from((metrics.scrollbar_gutter - metrics.scroll_thumb).max(0.0) / 2.0);
-        // A scroll view keeps `metrics.scrollbar_gutter` free on its trailing
-        // edge (and its bottom edge for a horizontal bar) while its content
-        // overflows, so its bar never covers content; content that fits
-        // keeps the full width. `adjust_layout_style` follows the overflow.
+        // A scroll view keeps `metrics.scrollbar_gutter` free on its trailing edge (and its
+        // bottom edge for a horizontal bar) while its content overflows, so its bar never
+        // covers content; content that fits keeps the full width.
         let gutter = if self.show_scrollbar {
             metrics.scrollbar_gutter
         } else {
@@ -1339,11 +1241,7 @@ impl Widget for Scrollable {
                 Dimension::auto()
             },
             align_self: self.fill_parent_height.then_some(taffy::AlignSelf::Stretch),
-            // Vertical content must keep its intrinsic height so overflow is
-            // measurable. Scope the flex-row cross-axis opt-out to this
-            // parent; child `align_self` remains available to normal Row and
-            // other manual compositions. Horizontal-only content retains the
-            // default cross-axis stretch to the viewport height.
+            // Vertical content must keep its intrinsic height so overflow is measurable.
             align_items: self
                 .axis_has_vertical()
                 .then_some(taffy::AlignItems::FlexStart),
@@ -1409,21 +1307,14 @@ impl Widget for Scrollable {
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
-        // This layout is over: the next one checks the lanes afresh, so
-        // content that now fits at full width gives its bar back.
         self.lanes_needed = (false, false);
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
-        // An offset carried from a display of another scale lands whole here
-        // before anything places or measures against it.
         self.land_offsets();
-        // At the end before this layout: a transcript that follows its end stays there.
         let at_end = self.follow_end && self.max_offset_y() - self.offset_y <= FIT_EPS;
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
-        // Measure the solved content, including descendant overflow, before
-        // clamping. Clamping against only taffy's estimate can repeatedly lose
-        // the last pixel when rounded child edges extend beyond that estimate.
+        // Measure the solved content, including descendant overflow, before clamping.
         if let Some(child_node) = self.child_node {
             let cl = taffy.layout(child_node).copied().unwrap_or_default();
             self.content_w = cl.content_size.width.max(cl.size.width);
@@ -1431,8 +1322,6 @@ impl Widget for Scrollable {
         }
         let previous_offset = (self.offset_x, self.offset_y);
         let placing_again = crate::widget::placing_again(taffy);
-        // Content placed below knows what this view shows of it
-        // (`widget::layout_clip`), so a long collection lays out only that.
         let clip = self.content_viewport_rect();
         let origin = self.content_origin();
         if let Some(c) = &mut self.child {
@@ -1449,11 +1338,6 @@ impl Widget for Scrollable {
                     self.content_h = cl.content_size.height.max(cl.size.height);
                 }
 
-                // taffy's content_size can still cap at the available block for
-                // a flex column shorter than the literal sum of its children.
-                // Walk the subtree and take the deeper of the two so scrolling
-                // always reaches the real last pixel; placed again, the
-                // content only moved and the walk would find the same.
                 if !placing_again {
                     let max_y = super::layout::max_bottom_edge(c.as_ref());
                     self.walked_h = f32_of_f64((max_y - origin.y).max(0.0));
@@ -1477,8 +1361,6 @@ impl Widget for Scrollable {
                 c.apply_layout(taffy, child_node, origin);
             });
         }
-        // Where the content's detents stand at this layout's offsets, for the
-        // release, the key and the reveal that settle on one.
         self.collect_snap_points();
         // Flash the overlay bar the first frame content overflows.
         // Placed again, focus is where it was and stands revealed.
@@ -1533,11 +1415,10 @@ impl Widget for Scrollable {
         }
         self.reveal_asked(taffy);
         let scrollable_now = self.vbar_active() || self.hbar_active();
-        // Content that has just begun to overflow is something to scroll, not
-        // something the person did: an overlay bar appears when they scroll
-        // (or reach for it), never because a window was opened at a size its
-        // content does not fit or because a resize made it overflow. A bar
-        // that is always drawn is repainted so the thumb shows at once.
+        // Content that has just begun to overflow is something to scroll, not something the
+        // person did: an overlay bar appears when they scroll (or reach for it), never because
+        // a window was opened at a size its content does not fit or because a resize made it
+        // overflow.
         if scrollable_now && !self.was_overflowing {
             self.bar_dirty = true;
             if !self.overlay && self.last_activity.is_none() {
@@ -1577,7 +1458,6 @@ impl Widget for Scrollable {
             &clip,
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
-        // After a long jump the content fades in where it landed.
         let opacity = self.scroll_to.opacity(crate::motion::frame_now());
         self.fade_drawn.set(opacity);
         let fading = opacity < 1.0;
@@ -1618,9 +1498,6 @@ impl Widget for Scrollable {
                         *ctx.handled = true;
                         return;
                     }
-                    // Only the scrollbar bookkeeping is coalesced. Descendants
-                    // may have lost hover on CursorLeft, or changed their own
-                    // interaction state without moving this pointer.
                     CursorMoveOutcome::Forward | CursorMoveOutcome::Coalesced => {}
                 }
             }
@@ -1630,7 +1507,6 @@ impl Widget for Scrollable {
                 ..
             } => {
                 let cur = self.last_cursor;
-                // Thumb press → drag; track press → page + hold.
                 if self.on_track_or_thumb_press(cur) {
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
@@ -1645,8 +1521,6 @@ impl Widget for Scrollable {
                 let had_hold = self.hold.take().is_some();
                 let dragged = self.vbar.is_dragging() || self.hbar.is_dragging();
                 if self.vbar.release() || self.hbar.release() || had_hold {
-                    // A bar dragged and let go settles on a detent like a
-                    // finger does.
                     if dragged && self.snaps() {
                         self.settle_snap((0.0, 0.0), crate::tokens::MotionSource::Pointer);
                     }
@@ -1656,8 +1530,6 @@ impl Widget for Scrollable {
                     return;
                 }
             }
-            // A non-nav key (guard true, `on_navigation_key` false) falls
-            // through to the child below, same as an unfocused/released one.
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.focused
                     && ke.state == ElementState::Pressed
@@ -1687,8 +1559,6 @@ impl Widget for Scrollable {
             if crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) {
                 return;
             }
-            // Only consume when it moved the view, so an at-the-edge wheel
-            // bubbles to an outer/sibling scroll region.
             *ctx.handled = self.on_wheel(
                 delta,
                 *phase,
@@ -1704,14 +1574,6 @@ impl Widget for Scrollable {
         }
 
         // Clipping is an interaction boundary as well as a paint boundary.
-        // In particular, a control translated beneath a sticky footer must
-        // not retain hover or receive a press merely because its un-clipped
-        // layout rect still contains the pointer. A child that already owns
-        // pointer capture continues receiving motion/release so drag and
-        // pressed-state cleanup remain correct.
-        // A menu open anywhere in the content holds the pointer as a capture does: its
-        // `modal_capture` reaches up through every container, where `wants_pointer_capture`
-        // is only what each container chose to pass on.
         let child_has_capture = self
             .child
             .as_ref()
@@ -1725,8 +1587,6 @@ impl Widget for Scrollable {
             }
             _ => true,
         };
-        // A capturing child also gets presses outside: what it shows past
-        // the clip (an open menu) is chosen or dismissed by them.
         let child_pointer_allowed = pointer_in_content
             || (child_has_capture
                 && matches!(
@@ -1895,8 +1755,6 @@ impl Widget for Scrollable {
         if self.scroll_dirty {
             match self.shown.compare(self, regions) {
                 crate::scroll_copy::Since::Copied => {
-                    // What changed in the content besides moving, where its
-                    // widgets say; the host carries it with the copy.
                     let clip = self.shown.drawing().map_or(self.rect, |shown| shown.clip);
                     if let Some(child) = &self.child {
                         let first = regions.len();
@@ -1915,7 +1773,6 @@ impl Widget for Scrollable {
                     regions.push(self.rect);
                     return;
                 }
-                // Scrolled back where the screen shows it: only what changed.
                 crate::scroll_copy::Since::Still => {}
             }
         }
@@ -1956,9 +1813,6 @@ impl Widget for Scrollable {
     }
 
     fn mark_drawn(&mut self) {
-        // Not drawn this frame (hidden, culled, or a cache above it reused),
-        // what the screen shows where it lies is not known to be its content:
-        // the next scroll repaints its viewport before copies resume.
         self.shown.present();
         self.fade_shown = self.fade_drawn.get();
         self.scroll_dirty = false;
@@ -1993,12 +1847,7 @@ impl Widget for Scrollable {
         let viewport = self.content_viewport_rect();
         let x = crate::num::f32_of_f64(rect.x0 - viewport.x0 + f64::from(self.offset_x));
         let y = crate::num::f32_of_f64(rect.y0 - viewport.y0 + f64::from(self.offset_y));
-        // Keep enough surrounding context to identify a form control after
-        // keyboard traversal. Merely placing a focused field flush against
-        // the viewport edge can hide its label and the adjacent action,
-        // producing an apparently anonymous text box on compact setup pages.
-        // The margin is capped so very small viewports still prioritise the
-        // control itself.
+        // Keep enough surrounding context to identify a form control after keyboard traversal.
         let context = (self.effective_viewport_h() * 0.12).clamp(16.0, 56.0);
         self.scroll_into_view_at_once(
             (x - context).max(0.0),

@@ -1,5 +1,3 @@
-//! Run the actual production CLI against isolated Markdown fixtures. No GPU,
-//! native window, mocked importer, or alternate app host is involved.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -30,8 +28,6 @@ impl Fixture {
             .arg("--headless-drive")
             .arg(payload.to_string())
             .arg(source);
-        // Change only the child's environment, so parallel tests cannot point
-        // one another's writers at a fixture or at the real user profile.
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
             if name.starts_with("TILO_") || name.starts_with("QUICK_") {
@@ -93,7 +89,6 @@ impl Drop for Fixture {
     }
 }
 
-/// Whether the inspected tree under `node` holds a widget named `name`.
 fn has_widget(node: &serde_json::Value, name: &str) -> bool {
     node["widget"] == name
         || node["children"]

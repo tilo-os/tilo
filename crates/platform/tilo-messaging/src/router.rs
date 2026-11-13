@@ -42,15 +42,14 @@ pub enum RegistrationError {
     DuplicateAccount,
 }
 
-/// An immutable per-person registry. New registrations require a new mounting
-/// loan; already mounted windows retain exactly their admitted capabilities.
+/// An immutable per-person registry: a new registration needs a new mounting loan,
+/// and a mounted window keeps exactly its admitted capabilities.
 #[derive(Clone)]
 pub struct MessagingRouter {
     principal: String,
     services: BTreeMap<ServiceAccount, MessagingClient>,
 }
 impl MessagingRouter {
-    /// Assemble already-authorized services; this creates no account grant.
     pub fn new(
         principal: &str,
         services: Vec<(ServiceAccount, MessagingClient)>,

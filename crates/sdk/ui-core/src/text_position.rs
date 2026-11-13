@@ -1,6 +1,5 @@
-//! Path-free text presentation for native continuation, anchored in the CRDT.
-//! This contains view state only. Resource contents retain their existing sync
-//! route, and restoring a view neither changes focus nor grants input authority.
+//! Path-free text presentation for native continuation, anchored in the CRDT. This
+//! contains view state only.
 
 use automerge::{AutoCommit, Cursor, CursorPosition, ObjId, ReadDoc, TextEncoding};
 use serde::{Deserialize, Serialize};
@@ -96,8 +95,7 @@ impl TextPosition {
             && (0.0..=1_000_000.0).contains(&self.horizontal_columns)
     }
 
-    /// Resolve anchors against the merged text. Missing operations defer the
-    /// restore instead of guessing a position in a different document version.
+    /// Resolve anchors against the merged text.
     pub fn resolve(&self, doc: &AutoCommit, object: &ObjId) -> Option<ResolvedTextPosition> {
         if !self.valid() {
             return None;

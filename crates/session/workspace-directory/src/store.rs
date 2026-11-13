@@ -78,6 +78,10 @@ enum Ask {
         /// for, where the caller knows it: a page opening the link is told
         /// where it admits into.
         host: Option<String>,
+        /// The caller awaiting the link ([`Store::shelve_soon`]), answered by
+        /// the task itself: a store whose loop nobody runs still answers it.
+        /// Without one, the answer waits for the caller's loop.
+        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
     },
     /// Take a shelved invitation back: its link names nothing from now on.
     Unshelve {
@@ -157,10 +161,6 @@ pub struct Store {
     shelves: std::cell::RefCell<BTreeMap<String, Shelved>>,
     /// Where leaving an invitation on a shelf stands, for the caller to show.
     shelvings: std::cell::RefCell<Vec<(String, Result<Shelved, String>)>>,
-    /// The callers waiting for a shelf to answer with the link of an
-    /// invitation they left ([`Store::shelve_soon`]).
-    waiting:
-        std::cell::RefCell<BTreeMap<String, tokio::sync::oneshot::Sender<Result<Shelved, String>>>>,
     /// The name a site listed each workspace under, by its id: a join whose
     /// slot is made only once the host admits it keeps the name it was
     /// listed by ([`Store::listed_name`]).
@@ -400,6 +400,18 @@ impl Store {
         site: &url::Url,
         host: Option<&str>,
     ) -> Result<(), String> {
+        self.ask_shelve(invite, invitation, expires_at_ns, site, host, None)
+    }
+
+    fn ask_shelve(
+        &self,
+        invite: &str,
+        invitation: Vec<u8>,
+        expires_at_ns: u64,
+        site: &url::Url,
+        host: Option<&str>,
+        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
+    ) -> Result<(), String> {
         let Some(asks) = self.worker() else {
             return Err("the directory has nowhere to ask".to_owned());
         };
@@ -409,6 +421,7 @@ impl Store {
             expires_at_ns,
             site: site.clone(),
             host: host.map(str::to_owned),
+            awaiting,
         })
         .map_err(|error| format!("the invitation was not left on its site: {error}"))
     }
@@ -422,12 +435,12 @@ impl Store {
     /// Hand over the link `invite` names, whose text is `text`: `brings` says
     /// who it brings in and how long it works. `site` is the shelf to keep it
     /// — the community a computer is set up with, the site a page comes from —
-    /// and `host` the origin the workspace is served from; with no shelf, as
-    /// with one that refuses it, the invitation's own text is what the person
-    /// hands over.
+    /// and `host` the origin the workspace is served from. The sheet shows the
+    /// site's short link once the site keeps it ([`Self::follow_shelf`]): it
+    /// is the one link a person hands over.
     ///
     /// # Errors
-    /// `text` is not an invitation's bytes, so no code could carry it.
+    /// `text` is not an invitation's bytes, or there is no site to keep it.
     pub fn hand_over(
         &self,
         made: &mut sheet::Making,
@@ -439,28 +452,19 @@ impl Store {
         host: Option<&str>,
     ) -> Result<(), String> {
         let bytes = tilo_workspace_join::invitation_bytes(text)?;
-        let shelving = site.is_some_and(|site| {
-            self.shelve(invite, bytes.clone(), expires_at_ns, site, host)
-                .inspect_err(
-                    |error| tracing::warn!(%error, "the invitation was not left on its site"),
-                )
-                .is_ok()
-        });
-        made.show(
-            sheet::made(invite, text, bytes, brings, expires_at_ns),
-            shelving,
-        );
+        let site = site.ok_or_else(|| "there is no site to keep the link on".to_owned())?;
+        self.shelve(invite, bytes, expires_at_ns, site, host)?;
+        made.shelving(sheet::made(invite, brings, expires_at_ns));
         Ok(())
     }
 
-    /// Take what a shelf answered since the sheet last looked: the link it
-    /// shows becomes the site's short one, or stays the invitation's own text
-    /// where the site kept nothing. Whether one answered.
+    /// Take what a shelf answered since the sheet last looked: the site's
+    /// short link to show, or why it kept nothing. Whether one answered.
     pub fn follow_shelf(&self, made: &mut sheet::Making) -> bool {
         let answers = self.take_shelved();
         let answered = !answers.is_empty();
         for (invite, answer) in answers {
-            made.shelved(&invite, answer.ok().map(|shelved| shelved.link));
+            made.shelved(&invite, answer.map(|shelved| shelved.link));
         }
         answered
     }
@@ -475,12 +479,14 @@ impl Store {
     /// Seal `invitation` onto `site`'s shelf and resolve to the link that
     /// names it, for a caller that is itself async where the sheet takes the
     /// same answer on its loop ([`Self::take_shelved`]): one shelf, one seal,
-    /// whichever way the link is handed back.
+    /// whichever way the link is handed back. The task answers this caller
+    /// directly, so the link arrives whether or not anyone runs the store's
+    /// loop: a page making a link in one press has none.
     ///
     /// # Errors
     /// Why nothing was left, or why the shelf answered with nothing.
     // The store is a handle to one task on the caller's own loop, not shared
-    // state: the answer arrives where the question was asked.
+    // state: what it keeps of the shelf is kept on the thread that asked.
     #[allow(
         clippy::future_not_send,
         reason = "the directory answers on the single thread that asked"
@@ -494,14 +500,12 @@ impl Store {
         host: Option<&str>,
     ) -> Result<Shelved, String> {
         let (left, answer) = tokio::sync::oneshot::channel();
-        self.waiting.borrow_mut().insert(invite.to_owned(), left);
-        if let Err(error) = self.shelve(invite, invitation, expires_at_ns, site, host) {
-            self.waiting.borrow_mut().remove(invite);
-            return Err(error);
-        }
-        answer
+        self.ask_shelve(invite, invitation, expires_at_ns, site, host, Some(left))?;
+        let result = answer
             .await
-            .map_err(|_| "the site's shelf went away without answering".to_owned())?
+            .map_err(|_| "the site's shelf went away without answering".to_owned())?;
+        self.kept_on_shelf(invite, &result);
+        result
     }
 
     /// Where the invitation `invite` was left, while its link still works.
@@ -658,23 +662,23 @@ impl Store {
     /// it waits, kept for as long as the invitation works, or why it was not
     /// left.
     pub(crate) fn left_on_shelf(&self, invite: String, result: Result<Shelved, String>) {
-        if let Ok(shelved) = &result {
-            self.shelves
-                .borrow_mut()
-                .insert(invite.clone(), shelved.clone());
-        } else if let Err(reason) = &result {
-            // The invitation still works in its own text, which the sheet
-            // shows instead: a shelf that refused costs the person a shorter
-            // link, not the link.
-            tracing::warn!(invite = %invite, %reason, "an invitation was not left on its site");
-        }
-        // A caller awaiting this link takes it here; the sheet, which asks and
-        // reads later, is handed it below.
-        match self.waiting.borrow_mut().remove(&invite) {
-            Some(waiting) => {
-                let _ = waiting.send(result);
+        self.kept_on_shelf(&invite, &result);
+        self.shelvings.borrow_mut().push((invite, result));
+    }
+
+    /// Remember where `invite` was left, to take it back later, or say why
+    /// it was not.
+    fn kept_on_shelf(&self, invite: &str, result: &Result<Shelved, String>) {
+        match result {
+            Ok(shelved) => {
+                self.shelves
+                    .borrow_mut()
+                    .insert(invite.to_owned(), shelved.clone());
             }
-            None => self.shelvings.borrow_mut().push((invite, result)),
+            // The caller says why: no link is handed over without the site.
+            Err(reason) => {
+                tracing::warn!(invite = %invite, %reason, "an invitation was not left on its site");
+            }
         }
     }
 
@@ -784,16 +788,25 @@ async fn work(
                 expires_at_ns,
                 site,
                 host,
-            } => Answer::Shelved {
-                invite,
-                result: match &client {
+                awaiting,
+            } => {
+                let result = match &client {
                     Err(error) => Err(format!("no network to leave it over: {error}")),
                     Ok(client) => {
                         client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
                             .await
                     }
-                },
-            },
+                };
+                match awaiting {
+                    // The caller awaiting the link takes it here, not from the
+                    // caller's loop, which nobody may be running.
+                    Some(awaiting) => {
+                        let _ = awaiting.send(result);
+                        continue;
+                    }
+                    None => Answer::Shelved { invite, result },
+                }
+            }
             Ask::Unshelve {
                 invite,
                 site,
@@ -905,35 +918,6 @@ async fn read(
 /// the caller's own enrollment.
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_caller_waiting_for_its_link_is_answered_once() {
-        let store = super::Store::default();
-        let shelved = super::Shelved {
-            link: "https://site.test/i/handle#key".to_owned(),
-            site: url::Url::parse("https://site.test").expect("a site"),
-            handle: "handle".to_owned(),
-            delete: "delete".to_owned(),
-        };
-        let (left, mut answer) = tokio::sync::oneshot::channel();
-        store.waiting.borrow_mut().insert("invite".to_owned(), left);
-        store.left_on_shelf("invite".to_owned(), Ok(shelved.clone()));
-        assert_eq!(
-            answer
-                .try_recv()
-                .expect("the caller awaiting it is answered"),
-            Ok(shelved),
-            "the caller gets the link itself, not a copy on the sheet's queue"
-        );
-        assert!(
-            store.take_shelved().is_empty(),
-            "the sheet is not also handed a link the caller already took"
-        );
-        assert!(
-            store.shelved("invite").is_some(),
-            "the site still holds it, for taking back later"
-        );
-    }
-
     #[test]
     fn a_join_on_its_way_is_not_a_failure_to_say() {
         let store = super::Store::default();

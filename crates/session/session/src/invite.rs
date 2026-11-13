@@ -29,8 +29,8 @@ use crate::platform::clipboard::Clipboard;
 /// to whoever it is for, and no longer, because the link is what admits them.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
-/// An invitation the workspace made: its id (hex), its text (the link when no site keeps it), and
-/// when it stops admitting anyone (nanoseconds since the epoch).
+/// An invitation the workspace made: its id (hex), its text (which its site keeps behind the short
+/// link), and when it stops admitting anyone (nanoseconds since the epoch).
 pub struct Issued {
     pub invite: String,
     pub text: String,
@@ -160,7 +160,7 @@ impl sheet::Invitations for Invite {
                 .filter(|person| person.key == recipient)
                 .map(|person| person.name)
                 .next()
-                .unwrap_or_else(|| recipient.chars().take(8).collect())
+                .unwrap_or_else(sheet::unnamed_person)
         });
         let brings = sheet::brings(&label, name.as_deref());
         let (site, host) = self.workspace.shelf();
@@ -181,8 +181,7 @@ impl sheet::Invitations for Invite {
                 };
                 // The person hands over a link, not an invitation's kilobytes: the signed bytes
                 // are sealed under a fresh key and wait on the site's shelf under a handle, and
-                // the link carries the key in its fragment. With no site, or one that keeps
-                // nothing, the link is the invitation's own text.
+                // the link carries the key in its fragment.
                 if let Err(reason) = store.hand_over(
                     &mut made.borrow_mut(),
                     &issued.invite,
@@ -192,7 +191,7 @@ impl sheet::Invitations for Invite {
                     site.as_ref(),
                     host.as_deref(),
                 ) {
-                    tracing::warn!(%reason, "the invitation's text is not the invitation's bytes");
+                    tracing::warn!(%reason, "the invitation was not handed over");
                     say_refused(&made, "invite-failed", Refused::Because(reason));
                 }
             }),

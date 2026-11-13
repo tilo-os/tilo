@@ -231,6 +231,10 @@ pub struct HereState {
     /// Each person's accounts elsewhere as their profile names them, by their root key (lower-case
     /// hex).
     linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// The name each person's profile keeps, by their root key (lower-case hex), for someone the
+    /// page asked about who is not here to say it ([`HereState::set_profile_name`]); an empty one
+    /// says their profile names none.
+    profile_names: HashMap<String, String>,
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
@@ -369,7 +373,7 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
 
 /// The name a member goes by here, as their presence says it.
 fn member_name(member: &LiveMember) -> Option<&str> {
-    Some(member.label.trim()).filter(|label| !label.is_empty())
+    ui::presence::shown_name(&member.label)
 }
 
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
@@ -474,6 +478,28 @@ impl HereState {
         }
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// The name `user`'s profile keeps, as the page fetched it: empty when it keeps none. Whether
+    /// that changed anything.
+    pub fn set_profile_name(&mut self, user: &str, name: &str) -> bool {
+        let user = user.to_ascii_lowercase();
+        let name = name.trim();
+        if self.profile_names.get(&user).map(String::as_str) == Some(name) {
+            return false;
+        }
+        self.profile_names.insert(user, name.to_owned());
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The name `user`'s profile keeps, once the page asked: `Some("")` when it keeps none,
+    /// `None` when nobody asked yet.
+    #[must_use]
+    pub fn profile_name(&self, user: &str) -> Option<&str> {
+        self.profile_names
+            .get(&user.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     /// The accounts elsewhere `user` 's profile names.
@@ -873,6 +899,56 @@ impl HereState {
         Some((label, rgb))
     }
 
+    /// What each other person's device here is drawn as, by live publisher: their person's name,
+    /// told apart as everywhere here, and the colour everyone here draws them in ([`Self::colors`]).
+    /// Their pointer wears it as their face on the bar and their row in People do.
+    #[must_use]
+    pub fn faces(&self) -> HashMap<String, (String, (u8, u8, u8))> {
+        let colors = self.colors();
+        let labels = self.labels();
+        self.members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind != "agent")
+            .map(|member| {
+                let face = self
+                    .user_of(&member.publisher)
+                    .and_then(|user| self.person(user))
+                    .unwrap_or_else(|| {
+                        let name = member_name(member).map_or_else(guest_label, str::to_owned);
+                        (
+                            labels.label(&member.publisher, &name),
+                            color_in(&colors, &member.publisher),
+                        )
+                    });
+                (member.publisher.clone(), face)
+            })
+            .collect()
+    }
+
+    /// Each other person here by the person they are (their user root, hex), with the name and
+    /// colour every surface here shows them by: what the apps here are told of them, so their
+    /// caret and their marks in a window wear the name and colour of their face on the bar.
+    #[must_use]
+    pub fn persons(&self) -> Vec<(String, String, (u8, u8, u8))> {
+        let mut persons: Vec<(String, String, (u8, u8, u8))> = Vec::new();
+        for member in self.members.iter().flatten() {
+            if member.kind == "agent" || self.is_own_person(&member.publisher) {
+                continue;
+            }
+            let Some(user) = self.user_of(&member.publisher) else {
+                continue;
+            };
+            if persons.iter().any(|(held, _, _)| held == user) {
+                continue;
+            }
+            if let Some((name, rgb)) = self.person(user) {
+                persons.push((user.to_owned(), name, rgb));
+            }
+        }
+        persons
+    }
+
     /// This page's own colour, as everyone here sees it.
     pub fn own_rgb(&self) -> Option<(u8, u8, u8)> {
         let own = self.own_id()?;
@@ -911,11 +987,17 @@ impl HereState {
                 let agent = member.kind == "agent";
                 let key = if agent { id } else { self.user_of(id)? };
                 let claimed = ui::presence::parse_hex_color(&member.colour);
+                // Software steps clear of the person it is certified for, as its record and every
+                // app paint it.
+                let person = member
+                    .user
+                    .as_deref()
+                    .filter(|user| agent && !user.is_empty());
                 Some((
                     id,
                     key,
                     claimed,
-                    ui::presence::participant_color(key, agent),
+                    ui::presence::participant_color(key, agent, person),
                 ))
             })
             .collect();
@@ -1001,8 +1083,7 @@ impl HereState {
                 user: self.user_of(&member.publisher).map(str::to_owned),
                 label: [member.label.as_str(), member.device.as_str()]
                     .into_iter()
-                    .map(str::trim)
-                    .find(|label| !label.is_empty())
+                    .find_map(ui::presence::shown_name)
                     .map_or_else(guest_label, str::to_owned),
                 devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
@@ -1142,10 +1223,7 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
         .unwrap_or(ui::presence::UNSETTLED_RGB)
 }
 
-/// What a person who gave no name is called.
-pub fn guest_label() -> String {
-    "Guest".to_owned()
-}
+pub use ui::presence::guest_label;
 
 /// The window showing `focus` : the record's window, else the first window of its app.
 fn window_of(
@@ -1873,10 +1951,39 @@ mod tests {
     /// its windows, the People list's row, the bar's face, and the colour its own apps paint its
     /// card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
     /// never a colour a surface picked for itself.
+    /// An agent that claims no colour wears the one rule's, clear of the person it is certified
+    /// for, as its record and every app paint it: never theirs, even where what it is would land
+    /// on them.
+    #[test]
+    fn an_agent_steps_clear_of_its_persons_colour() {
+        let helper = "agent:helper@host";
+        let own = ui::tokens::PresenceHue::of_agent(helper);
+        let person = (0..1000)
+            .map(|n| format!("person-{n}"))
+            .find(|id| ui::tokens::PresenceHue::of_identity(id) == own)
+            .expect("someone whose colour what it is lands on");
+        let agent = LiveMember {
+            user: Some(person.clone()),
+            ..member(helper, "agent", "Helper")
+        };
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![agent]));
+        let worn = here.colors().get(helper).copied();
+        assert_eq!(
+            worn,
+            Some(ui::presence::participant_color(helper, true, Some(&person)))
+        );
+        assert_ne!(
+            worn,
+            Some(ui::presence::user_color(&person)),
+            "never theirs"
+        );
+    }
+
     #[test]
     fn an_agent_wears_one_colour_on_every_surface() {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::participant_color(helper, true);
+        let (r, g, b) = ui::presence::participant_color(helper, true, None);
         let announced = hex_of((r, g, b));
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -1904,7 +2011,7 @@ mod tests {
                 here.colors().get(helper).copied(),
                 listed.rgb,
                 presence.color_for(&UserId(helper.into())),
-                ui::presence::participant_color(helper, true),
+                ui::presence::participant_color(helper, true, None),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"

@@ -378,7 +378,7 @@ fn a_payload_that_does_not_verify_is_refused() {
         app_catalogue::apps::read(&store.catalog())
             .unwrap()
             .into_iter()
-            .find(|app| app.package_id == VIEWER)
+            .find(|app| app.app_id == VIEWER)
             .unwrap()
     };
     macos::verify_installed(&store.catalog(), &installed()).unwrap();

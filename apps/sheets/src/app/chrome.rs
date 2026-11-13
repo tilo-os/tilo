@@ -1,12 +1,4 @@
-//! The window chrome around the grid: the formula bar and the sheet tabs.
-//! The commands are the window bar's slots ([`super::window_bar`]), and its
-//! notice says the sheet's status.
-//!
-//! Everything is laid out from measured role line boxes and spacing tokens,
-//! and painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
-//! `FieldFace`), so a control looks and sizes like its retained twin. The
-//! bars stand on the window ground; the sheet tabs are separated from the
-//! grid by one hairline.
+//! The chrome around the grid: formula bar, sheet tabs and the status line.
 
 use super::annotations::CardMetrics;
 use super::{
@@ -38,37 +30,26 @@ const NAME_BOX_REFERENCE: &str = "ZZ999:ZZ999";
 /// nothing is ever painted from stale geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ChromeMetrics {
-    /// Text scale the line boxes and widths were measured under.
     pub scale: f64,
-    /// Measured line boxes of the roles the chrome is set in, in final pixels.
     pub lh_label: f64,
     pub lh_body: f64,
     pub lh_caption: f64,
-    /// Measured advance of the italic "fx" label.
     pub fx_w: f64,
-    /// Measured width of [`NAME_BOX_REFERENCE`] in `Body`.
     pub name_box_label_w: f64,
-    /// Width of every sheet tab's name in the chosen tab's strong `Label`.
     pub tab_label_w: HashMap<String, f64>,
-    /// Theme spacing tokens.
     pub s1: f64,
     pub s2: f64,
     pub s3: f64,
     pub s4: f64,
     pub s6: f64,
     pub s16: f64,
-    /// Height of a `Small` control (command, tab) and of a `Regular` one (field).
     pub control_h: f64,
     pub field_h: f64,
-    /// The grid's share of the same resolution.
     pub grid: GridMetrics,
-    /// What the annotation dock's cards need.
     pub cards: CardMetrics,
 }
 
 impl ChromeMetrics {
-    /// Resolve every chrome metric for `theme` against `tr`. `tabs` are the
-    /// sheet names `relayout` will size a slot for.
     pub(super) fn resolve(tr: &mut TextRenderer, theme: &Theme, tabs: &[String]) -> Self {
         let label = theme.text(TextRole::Label);
         let body = theme.text(TextRole::Body);
@@ -146,7 +127,6 @@ impl ChromeMetrics {
         self.scale.max(1.0)
     }
 
-    /// Formula bar: a field with `s1` above and below.
     pub(super) fn formula_h(&self) -> f64 {
         self.field_h + 2.0 * self.s1
     }
@@ -168,7 +148,6 @@ impl ChromeMetrics {
         self.control_h + 2.0 * self.s2
     }
 
-    /// Diameter of a tab's colour dot.
     pub(super) fn tab_dot(&self) -> f64 {
         self.s2
     }
@@ -199,13 +178,9 @@ impl ChromeMetrics {
 }
 
 impl SheetsApp {
-    /// Re-resolve the chrome metrics against the renderer about to paint. A
-    /// change re-runs `relayout` immediately, so the frame that follows paints
-    /// (and later hit-tests) the measured geometry rather than the fallback.
     pub(super) fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         self.chrome_theme = theme.clone();
         let metrics = ChromeMetrics::resolve(tr, theme, &self.sheet_names);
-        // The tab being renamed grows with the name typed into it.
         let mut rename_moved = false;
         if let Some(rename) = &mut self.tab_rename {
             let (w, _) = tr.measure_style(
@@ -226,18 +201,12 @@ impl SheetsApp {
         }
     }
 
-    /// Lay out the bars, the grid and the sheet tabs inside the window.
     pub(super) fn relayout(&mut self) {
         let r = self.rect;
         let m = &self.metrics;
-        // The formula bar leads: the commands are the window bar's.
         self.formula_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.formula_h());
         self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
-        // Find is the window bar's, over the top of the grid: the grid gives
-        // no band of its own to it.
         let content_top = self.formula_rect.y1;
-        // The annotation dock stands between the grid and the tabs, so the
-        // grid gives up the height instead of a card covering its cells.
         let (dock_h, dock_cards, dock_w) =
             self.dock_layout(Rect::new(r.x0, content_top, r.x1, self.tabs_rect.y0));
         self.dock_cards = dock_cards;
@@ -248,8 +217,6 @@ impl SheetsApp {
         self.grid_rect = Rect::new(r.x0, content_top, r.x1, self.dock_rect.y0);
         self.grid.rect = self.grid_rect;
 
-        // Formula bar: name box, fx, field, all on one centre line at one
-        // field height.
         let field_y0 = self.formula_rect.y0 + m.s1;
         let field_y1 = self.formula_rect.y1 - m.s1;
         let nb_x0 = self.formula_rect.x0 + m.s3;
@@ -264,8 +231,6 @@ impl SheetsApp {
             field_y1,
         );
 
-        // Sheet tabs: contiguous segments, each its name plus padding, then
-        // the add button.
         self.tab_rects.clear();
         let mut tx = self.tabs_rect.x0 + m.s3;
         let ty = self.tabs_rect.y0 + m.s2;
@@ -274,8 +239,6 @@ impl SheetsApp {
             let coloured = self.sheet_colors.get(i).copied().flatten().is_some();
             let mut w = m.tab_w(name, coloured);
             if let Some(rename) = self.tab_rename.as_ref().filter(|rename| rename.idx == i) {
-                // The editor stands on the tab's own slot, wide enough for
-                // what is typed; the tabs after it move over.
                 w = w.max(rename.text_w + 4.0 * m.s3);
             }
             self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
@@ -294,7 +257,6 @@ impl SheetsApp {
         self.relayout_overlays();
     }
 
-    /// Run the command the bar or one of its menus reported, if any.
     pub(super) fn drain_command_bar(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let item = self
             .command_slot
@@ -309,8 +271,6 @@ impl SheetsApp {
         true
     }
 
-    /// The chrome, top to bottom. The bars stand on the window's own ground;
-    /// the framework painted it already.
     pub(super) fn draw_chrome(
         &mut self,
         parts: &mut PaintParts,
@@ -339,16 +299,12 @@ impl SheetsApp {
         });
     }
 
-    /// The field face of the formula bar: its raised ground with the derived
-    /// edge, ringed in your colour while it has focus.
     fn paint_field(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, focused: bool) {
         FieldFace::new(rect, "")
             .focused(focused)
             .paint_chrome(scene, transform, theme);
     }
 
-    /// Formula bar's name box: its field, and either the live edit buffer or
-    /// the selection label, in the same role as the formula text.
     fn draw_name_box(
         &mut self,
         scene: &mut Scene,
@@ -373,8 +329,6 @@ impl SheetsApp {
             name_box.y1,
         );
         if let Some(input) = &mut self.name_box_edit {
-            // The shared editor owns shaping, scrolling, selection, clipboard,
-            // IME and caret hit-testing inside its content band.
             input.apply_layout_external(text_rect);
             input.draw_child(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
@@ -421,7 +375,6 @@ impl SheetsApp {
         if let Some(caret) = bar.caret {
             let prefix: String = content.chars().take(caret).collect();
             let caret_x = f64::from(tr.measure_style(&prefix, None, &style).0);
-            // Leave a little breathing room after the caret, including at End.
             let trailing = (available - self.metrics.s1).max(0.0);
             self.formula_scroll_x = self
                 .formula_scroll_x
@@ -433,10 +386,6 @@ impl SheetsApp {
             self.formula_scroll_x = 0.0;
         }
         let text_x0 = field.x0 + inset - self.formula_scroll_x;
-        // Rebuild the per-character x boundaries for click/caret mapping. This
-        // is derived from exactly the text being drawn, so a click maps to the
-        // same glyph the user sees (whether it's the live edit buffer or the
-        // active cell's stored input).
         self.formula_char_x = char_boundaries(tr, content, &style, text_x0);
         let (_, line_h) = tr.measure_style("Ag", None, &style);
         let line_h = f64::from(line_h);
@@ -477,8 +426,6 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // The label is centred in the same `fx_rect` that `handle_event`
-        // hit-tests, so what the pointer lands on is exactly what is painted.
         let style = theme.text(TextRole::Label).with_italic(true);
         let m = &self.metrics;
         tr.draw_style(
@@ -495,9 +442,6 @@ impl SheetsApp {
         );
     }
 
-    /// Bottom strip: the sheet tabs and the add-sheet button. The selection
-    /// summary and any transient action message are surfaced separately as a
-    /// floating status bubble, so this strip reads purely as navigation.
     fn draw_sheet_tabs_strip(
         &self,
         scene: &mut Scene,
@@ -507,8 +451,6 @@ impl SheetsApp {
     ) {
         let colors = &theme.tokens.colors;
         let m = &self.metrics;
-        // One hairline on the strip's first pixel row, on the ground it
-        // stands on.
         separator(
             scene,
             transform,
@@ -539,8 +481,6 @@ impl SheetsApp {
                 .control_size(ControlSize::Small)
                 .hovered(hovered);
             ui::widget::ToggleGroup::paint(scene, transform, tr, theme, &face);
-            // A tab's colour is the sheet's own metadata: a dot in the
-            // sheet's series colour at the tab's leading edge.
             for (rect, idx) in &self.tab_rects {
                 let Some(slot) = self.sheet_colors.get(*idx).copied().flatten() else {
                     continue;
@@ -566,11 +506,6 @@ impl SheetsApp {
         Button::paint(scene, transform, tr, theme, &face);
     }
 
-    /// Paint per-peer "presence-in-navigation" on the sheet tabs: for each
-    /// sheet tab a remote peer is currently on, wash the tab in that peer's
-    /// colour. Reads the same `PresenceKey::Tab { id: sheet_name }` scope the
-    /// tabs are keyed by, so a peer who switches to another sheet lights up
-    /// the tab that leads there.
     pub(super) fn draw_sheet_tab_presence(
         &self,
         scene: &mut Scene,
@@ -605,7 +540,6 @@ impl SheetsApp {
         }
     }
 
-    /// The inline tab-rename editor, over the tab it renames.
     pub(super) fn draw_tab_rename(
         &mut self,
         scene: &mut Scene,
@@ -655,17 +589,12 @@ pub(super) fn char_boundaries(
     xs
 }
 
-/// What the window bar last ran, waiting for the app to act on it with the
-/// document in hand.
 pub(super) type CommandSlot = std::sync::Arc<std::sync::Mutex<Option<MenuItem>>>;
 
-/// Report `item` through `slot`.
 pub(super) fn post(slot: &CommandSlot, item: MenuItem) {
     if let Ok(mut pending) = slot.lock() {
         *pending = Some(item);
     }
 }
 
-/// One row of a command menu: its label, what it runs (`None` for a
-/// separator) and its check state when it has one.
 pub(super) type MenuRow = (String, Option<MenuItem>, Option<bool>);

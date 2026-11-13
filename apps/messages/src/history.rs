@@ -1,5 +1,4 @@
-//! Private, transient history. Late worker answers are revalidated on the UI
-//! thread; no message plaintext is written to the workspace resource.
+//! Private, transient history.
 
 use std::rc::Rc;
 
@@ -23,23 +22,15 @@ struct Projection {
     generation: u64,
     route: Option<routing::Route>,
     page: Option<Rc<HistoryPage>>,
-    /// The newest page is on its way.
     loading: bool,
-    /// The page before the conversation's oldest message is on its way.
     loading_older: bool,
-    /// Pages read into this conversation: the newest one, and each older
-    /// page the person asked for. One page is all there was to begin with,
-    /// so the conversation's start is only worth saying once this is more.
     pages: usize,
 }
 
 #[derive(Clone)]
 pub(crate) struct HistoryView {
     client: Option<HistoryClient>,
-    /// The conversations with the workspace's people are Chat's: they are
-    /// read from Chat's messages.
     direct: bool,
-    /// The person using the app, one side of each of those conversations.
     me: Option<String>,
     state: LocalState<Projection>,
     changes: LocalState<u64>,
@@ -161,8 +152,6 @@ impl HistoryView {
         Ok(cx.spawn(
             move |_| async move { client.read(route, None).await },
             move |(), result, _| {
-                // Cancellation, another request, route switches and revocation
-                // all invalidate a response before any plaintext is projected.
                 if view.state.get().generation != generation {
                     return Ok(Effected::done());
                 }
@@ -190,12 +179,12 @@ impl HistoryView {
         ))
     }
 
-    /// The page before the conversation's oldest message: read where that
-    /// message is, and keep the messages already shown beneath it.
+    /// The page before the conversation's oldest message: read where that message is, and
+    /// keep the messages already shown beneath it.
     ///
-    /// The oldest message shown is the cursor, so a page the host answered
-    /// twice cannot be read into the conversation twice, and an answer whose
-    /// route or generation moved on is dropped rather than grafted on.
+    /// The oldest message shown is the cursor, so a page the host answered twice cannot be
+    /// read into the conversation twice, and an answer whose route or generation moved on
+    /// is dropped rather than grafted on.
     pub(crate) fn read_older(
         &self,
         sources: &Sources,
@@ -211,7 +200,6 @@ impl HistoryView {
         let requested: Choice =
             serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
         if requested.service == "tilo" {
-            // A record holds the whole conversation it always held.
             return Ok(Effected::done());
         }
         let route = current_route(sources, &selected, &requested)?;
@@ -244,9 +232,6 @@ impl HistoryView {
             move |_| async move { client.read(asked, Some(cursor)).await },
             move |(), result, _| {
                 let shown = view.state.get();
-                // Another request, a route switch or revocation outranks this
-                // answer: an older page belongs to the conversation it was
-                // asked of, not to whichever one is open now.
                 if shown.generation != generation
                     || current_route(&sources, &selection.get(), &requested).as_ref() != Ok(&route)
                 {
@@ -275,8 +260,8 @@ impl HistoryView {
         ))
     }
 
-    /// The window bar's Refresh messages: reading the selected route's
-    /// history again, while it can be read.
+    /// The window bar's Refresh messages: reading the selected route's history again, while
+    /// it can be read.
     pub(crate) fn refresh(
         &self,
         sources: &Sources,
@@ -304,8 +289,6 @@ impl HistoryView {
         let choice = choice.cloned();
         let hint = hint.to_owned();
         let author = author.to_owned();
-        // The way to the page before: the app's own request, bound where the
-        // page still has one.
         let older = choice.as_ref().and_then(|choice| {
             actions.effect(&MessagesEffect::ReadOlderHistory {
                 choice: choice.value(),
@@ -335,10 +318,6 @@ impl HistoryView {
                     .as_ref()
                     .filter(|page| Some(&page.route) == route.as_ref())
                 {
-                    // What came before what shows: a button while there is a
-                    // page to read, and the conversation's start once the
-                    // person has gone back to it. Older SMS that merely stops
-                    // reads as a conversation that ended, which it did not.
                     if page.more {
                         body = body.push(older_control(older.clone(), state.loading_older));
                     } else if state.pages > 1 {
@@ -354,9 +333,8 @@ impl HistoryView {
     }
 }
 
-/// The conversation with one of the workspace's people, read from Chat's
-/// messages, so this window and Chat show the same messages and neither
-/// keeps a copy.
+/// The conversation with one of the workspace's people, read from Chat's messages, so this
+/// window and Chat show the same messages and neither keeps a copy.
 fn read_direct(
     sources: &Sources,
     selection: &LocalState<Selection>,
@@ -376,17 +354,12 @@ fn read_direct(
     })
 }
 
-/// The app whose conversations the workspace's people have between them.
 const CHAT: &str = "so.tilo.chat";
-/// The chat record of the workspace: what Chat publishes its operations on.
 const CHAT_RECORD: &str = "chat.workspace";
-/// The chain of parts Chat keeps the workspace's messages in.
 const CHAT_MESSAGES: &str = "derived:messages@derived:default@tab:0000000000000000";
-/// Chat's operation that sends to the conversation with a person.
 pub(crate) const SEND_DIRECT_MESSAGE: &str = "send-direct-message";
 
-/// Chat's operation `operation` on the conversation with `person`, ready to
-/// be called.
+/// Chat's operation `operation` on the conversation with `person`, ready to be called.
 pub(crate) fn tilo_call(operation: &str, person: &str) -> ui::framework::Call {
     let record = ui::tilo_reference::ResourceRef::whole(CHAT, CHAT_RECORD, "Chat");
     ui::framework::Call::on(CHAT, None, &record, operation)
@@ -394,8 +367,8 @@ pub(crate) fn tilo_call(operation: &str, person: &str) -> ui::framework::Call {
 }
 
 impl HistoryView {
-    /// Read the conversation with `peer` from Chat's messages, then `then`
-    /// with it as a page.
+    /// Read the conversation with `peer` from Chat's messages, then `then` with it as a
+    /// page.
     pub(crate) fn read_conversation(
         &self,
         route: routing::Route,
@@ -422,9 +395,9 @@ impl HistoryView {
     }
 }
 
-/// The conversation between `me` and `peer` in `readings`, Chat's messages
-/// as the record door answers them: each part's messages in it, by the order
-/// key each keeps, as the list draws them.
+/// The conversation between `me` and `peer` in `readings`, Chat's messages as the record
+/// door answers them: each part's messages in it, by the order key each keeps, as the list
+/// draws them.
 pub(crate) fn direct_page(
     route: routing::Route,
     (me, peer): (&str, &str),
@@ -459,9 +432,7 @@ pub(crate) fn direct_page(
                 } else {
                     Direction::Outgoing
                 },
-                // The record keeps seconds.
                 timestamp_ms: ts.unwrap_or_default().saturating_mul(1000),
-                // Nothing stands between the two of them and the conversation.
                 delivery: None,
             }
         }));
@@ -473,9 +444,8 @@ pub(crate) fn direct_page(
     }
 }
 
-/// Older messages lead the conversation, so the way back to them stands
-/// above it: the button that asks for the page before, or, while that page is
-/// on its way, the words saying so.
+/// Older messages lead the conversation, so the way back to them sits above it: the button
+/// that asks for the page before, or, while that page is on its way, the words saying so.
 fn older_control(binding: Option<ui::tilo_actions::ActionBinding<()>>, loading: bool) -> Element {
     if loading {
         return Box::new(Text::new("messages-loading-older"));
@@ -488,8 +458,8 @@ fn older_control(binding: Option<ui::tilo_actions::ActionBinding<()>>, loading: 
     }
 }
 
-/// The oldest message a page carries, whichever end of it the host wrote
-/// first: where the page before it begins.
+/// The oldest message a page carries, whichever end of it the host wrote first: where the
+/// page before it begins.
 fn oldest(page: &HistoryPage) -> Option<HistoryCursor> {
     page.messages
         .iter()
@@ -497,8 +467,8 @@ fn oldest(page: &HistoryPage) -> Option<HistoryCursor> {
         .map(HistoryCursor::before)
 }
 
-/// `older` beneath `shown`: the page before it first, then what showed, and
-/// the older page's answer to whether anything precedes that.
+/// `older` beneath `shown`: the page before it first, then what showed, and the older
+/// page's answer to whether anything precedes that.
 fn merge(older: &HistoryPage, shown: &HistoryPage) -> HistoryPage {
     let mut messages = older.messages.clone();
     messages.extend(shown.messages.iter().cloned());
@@ -534,13 +504,12 @@ pub(crate) fn current_route(
     })
 }
 
-/// The conversation, as the shared message list draws it: a divider wherever
-/// the day changes, the time on every line, and the transport's delivery state
-/// in the one vocabulary both messaging apps speak.
+/// The conversation, as the shared message list draws it: a divider wherever the day
+/// changes, the time on every line, and the transport's delivery state in the one
+/// vocabulary both messaging apps speak.
 ///
-/// The list is the toolkit's, not this app's: what Messages decides here is
-/// which side a line is on and what the transport said, never where a day
-/// starts or how a time reads.
+/// The list is the toolkit's, not this app's: what Messages decides here is which side a
+/// line is on and what the transport said, never where a day starts or how a time reads.
 fn history_lines(page: &HistoryPage, author: &str) -> Element {
     let lines: Vec<ConversationLine> = page
         .messages
@@ -567,8 +536,8 @@ fn history_lines(page: &HistoryPage, author: &str) -> Element {
     Box::new(ConversationList::new(lines).with_accessible_name(name))
 }
 
-/// What the transport reported, in the shared vocabulary: the words, the glyph
-/// and the tone are the same ones Chat shows.
+/// What the transport reported, in the shared vocabulary: the words, the glyph and the tone
+/// are the same ones Chat shows.
 fn delivery_state(delivery: Delivery) -> DeliveryState {
     DeliveryState::of_step(match delivery {
         Delivery::Submitted => DeliveryStep::Submitted,
@@ -579,8 +548,8 @@ fn delivery_state(delivery: Delivery) -> DeliveryState {
     })
 }
 
-/// What one message's delivery state says: the shared vocabulary's key, the
-/// same one Chat renders.
+/// What one message's delivery state says: the shared vocabulary's key, the same one Chat
+/// renders.
 #[cfg(test)]
 pub(crate) fn delivery_key(delivery: Delivery) -> &'static str {
     delivery_state(delivery).key()

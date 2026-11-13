@@ -1,32 +1,14 @@
-//! `runtime-portal` — service discovery and connected transports for Tilo apps.
-//!
-//! Tilo apps run inside a launcher-managed sandbox. The launcher opens a Unix
-//! socket per system service (collab, fs, ...) and passes the connected fd
-//! to the child via `TILO_SVC_<NAME>_FD`. This crate provides:
-//!
-//! - [`service_fd`] — pull the raw fd out of the environment.
-//! - [`connect_service_fd`] — take the process's connection to a service, once.
-//! - [`is_tilo_native`] — heuristic: running under a Tilo compositor, or as a
-//!   stock Flatpak on a vanilla desktop?
-//! - [`DescriptorStreamSource`] — a connected stream that carries the
-//!   descriptor lane; higher-level service crates speak their own wire on it.
-//! - [`NotAvailable`] — the single error type service clients surface when
-//!   the platform can't provide the requested service.
-//! - [`tools`] — typed requests asking the shell to open a tool, such as
-//!   Terminal in a directory.
-//!
-//! Tilo apps must also run as Flatpaks on stock Linux, where there is no
-//! service connection: every client returns
-//! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
-//! expected to fall back to a local-only mode.
+//! Service discovery and connected transports for Tilo apps: the launcher opens
+//! a Unix socket per system service and passes the connected descriptor in
+//! `TILO_SVC_<NAME>_FD`. On stock Linux, where no service connection exists,
+//! every client returns [`NotAvailable::ServiceFdMissing`] and the app falls
+//! back to a local-only mode.
 
 pub mod agent_transport;
 /// The messages that travel over a connected door: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.
 #[cfg(unix)]
 pub mod door;
-/// An environment's own agent door, which `ush` asks the session for when it
-/// opens a confined environment.
 #[cfg(unix)]
 pub mod environment_door;
 /// What a process says first on its connection to its session's services:
@@ -59,7 +41,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 21;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 22;
 
 use std::env;
 use std::io;
@@ -83,17 +65,14 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-/// All ways a system service can be unavailable to an app.
 #[derive(Debug, thiserror::Error)]
 pub enum NotAvailable {
     /// The launcher did not pass an fd for this service: either we're outside
     /// Tilo (stock Linux / Flatpak) or the service wasn't declared in the manifest.
     #[error("service fd env var missing or fd is not open")]
     ServiceFdMissing,
-    /// The fd was present but the socket closed or the peer hung up before RPC could start.
     #[error("service connection failed: {0}")]
     ConnectionFailed(#[from] io::Error),
-    /// The service responded but its protocol version doesn't match this client's.
     #[error("protocol mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
     /// The service read the request and refused it, saying why.
@@ -112,9 +91,6 @@ pub fn is_tilo_native() -> bool {
 /// Look up a service fd by canonical name (e.g. "collab", "fs"). `None` if
 /// the env var is unset, not a valid integer, or the fd isn't currently open.
 pub fn service_fd(name: &str) -> Option<RawFd> {
-    // Automatic native transfers belong to one exec process. Its later child
-    // may reuse these descriptor numbers for unrelated files or sockets, even
-    // in diagnostic/local modes that intentionally skip automatic bootstrap.
     if (name.eq_ignore_ascii_case("collab")
         || name.eq_ignore_ascii_case("identity")
         || name.eq_ignore_ascii_case("blobs"))
@@ -228,12 +204,7 @@ mod tests {
                 assert!(service_fd(service).is_none(), "case unset: {service}");
             }
         }
-        // (case, TILO_SVC_COLLAB_FD value)
-        let cases = [
-            ("garbage value", "not-a-number"),
-            // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
-            ("closed fd", "999"),
-        ];
+        let cases = [("garbage value", "not-a-number"), ("closed fd", "999")];
         for (case, value) in cases {
             let mut env = clear_tilo_env();
             env.set("TILO_SVC_COLLAB_FD", value);
@@ -273,12 +244,8 @@ pub mod fd_transport;
 #[cfg(unix)]
 pub mod descriptor_lane;
 
-/// The descriptor lane of a connected stream, when the host has one: what a
-/// client hands a service rides that stream as `SCM_RIGHTS`
-/// ([`descriptor_lane`]). A host without descriptors carries none.
 #[cfg(unix)]
 pub type DescriptorLane = Option<descriptor_lane::DescriptorSender>;
-/// A host without descriptors has no lane value to send.
 #[cfg(not(unix))]
 pub type DescriptorLane = Option<std::convert::Infallible>;
 
@@ -287,7 +254,6 @@ pub type DescriptorLane = Option<std::convert::Infallible>;
 /// selects a target to hand a service what the person selected.
 #[cfg(unix)]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    /// `self` with a lane its writes carry, and the lane to hand the peer.
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
 }
 
@@ -302,10 +268,8 @@ impl DescriptorStreamSource for UnixStream {
     }
 }
 
-/// A host without descriptors carries every stream unchanged.
 #[cfg(not(unix))]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
-    /// `self` unchanged: this host has no lane to hand the peer.
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
 }
 
@@ -326,7 +290,6 @@ impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
 #[cfg(test)]
 static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
-/// Held by a test while it spawns a child process.
 #[cfg(test)]
 pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
     CHILD_SPAWNS.read_recover()

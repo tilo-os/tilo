@@ -1,37 +1,9 @@
 //! Packet-level tests for per-host egress filtering in a `bwrap` sandbox.
 //!
-//! These tests assert on **connection outcomes from inside the
-//! sandbox** — bytes that arrived, or a refusal code — never the argv
-//! that built it: argv only describes the requested command, while these
-//! outcomes show whether a packet could leave the sandbox.
-//!
-//! ## The two kernel properties underneath
-//!
-//! Pinned by
-//! [`without_a_gate_the_sandbox_has_no_network_and_fails_closed`] (phase
-//! `an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`)
-//! so a kernel or `bwrap` regression fails the build instead of quietly
-//! turning the filter into a no-op: (1) an unshared network namespace
-//! is genuinely empty — `connect(2)` to a public address fails
-//! `ENETUNREACH` before a packet is built, and the sandbox's loopback
-//! is *its own*; (2) a bind-mounted `AF_UNIX` socket crosses the
-//! boundary anyway, addressed through the filesystem — one bind-mount
-//! is exactly one hole, and the process on its far side is ours.
-//!
-//! ## Where the sandbox shape comes from
-//!
-//! The tests build a sandbox around a probe rather than launching a
-//! packaged app, but every security-relevant decision is made by the
-//! **production** functions: `EgressDecision::resolve`, `push_net_gate`,
-//! `NetGate`, `run_relay`.
-//!
-//! ## How the in-sandbox side runs
-//!
-//! There is no separate probe binary. The test binary re-executes
-//! *itself* inside the sandbox, selecting one probe test by name, and
-//! writes `PROBE <key>=<value>` lines to stdout that the outer tests
-//! assert on, so a probe that silently did nothing fails the outer
-//! assertions rather than passing them.
+//! These tests assert on **connection outcomes from inside the sandbox** — bytes that
+//! arrived, or a refusal code — never the argv that built it: argv only describes the
+//! requested command, while these outcomes show whether a packet could leave the
+//! sandbox.
 
 #![allow(
     clippy::unwrap_used,
@@ -53,8 +25,7 @@ use launcher::sandbox::NetGateBind;
 
 use crate::support::bwrap;
 
-/// Sandbox-side path of the bind-mounted gate socket. Absent when the
-/// launch has no gate.
+/// Sandbox-side path of the bind-mounted gate socket.
 const ENV_SOCKET: &str = "TILO_NETGATE_PROBE_SOCKET";
 /// Port of the server the probe should be able to reach.
 const ENV_ALLOWED_PORT: &str = "TILO_NETGATE_PROBE_ALLOWED_PORT";
@@ -63,23 +34,19 @@ const ENV_OTHER_PORT: &str = "TILO_NETGATE_PROBE_OTHER_PORT";
 /// Set when the probe should also exercise the loopback relay.
 const ENV_RELAY: &str = "TILO_NETGATE_PROBE_RELAY";
 
-/// Where the gate socket appears inside the sandbox. Short on purpose:
-/// `sun_path` is 108 bytes.
+/// Where the gate socket appears inside the sandbox.
 const SANDBOX_SOCKET_PATH: &str = "/run/tilo-gate.sock";
 
 /// Loopback port for the relay inside the sandbox.
 const PROBE_RELAY_PORT: u16 = 19050;
 
-/// The name the allowlist is written against in these tests. `localhost`
-/// resolves on every host, so the gate's resolution step runs.
+/// The name the allowlist is written against in these tests.
 const ALLOWED_NAME: &str = "localhost";
 
-/// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for
-/// this name can only be the policy.
+/// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for this name can only be the policy.
 const BLOCKED_NAME: &str = "blocked.invalid";
 
-/// The in-sandbox half. A no-op unless the outer test selected it —
-/// assertions live in the outer tests, which read its stdout.
+/// The in-sandbox half.
 #[test]
 fn netns_probe() {
     let Ok(allowed_port) = std::env::var(ENV_ALLOWED_PORT) else {
@@ -91,8 +58,8 @@ fn netns_probe() {
         .parse()
         .expect("port parses");
 
-    // Raw TCP, no gate involved: under an unshared namespace these hit the
-    // sandbox's own empty loopback; under `--share-net` they reach the servers.
+    // Raw TCP, no gate involved: under an unshared namespace these hit the sandbox's own empty
+    // loopback; under `--share-net` they reach the servers.
     println!("PROBE raw_allowed={}", describe(raw_get(allowed_port)));
     println!("PROBE raw_other={}", describe(raw_get(other_port)));
     println!(
@@ -116,8 +83,7 @@ fn netns_probe() {
         describe(socks_get(&socket, ALLOWED_NAME, allowed_port))
     );
 
-    // Through the gate, by address literal: the SAME server. Identical
-    // reachability, so a different outcome can only be the policy.
+    // Through the gate, by address literal: the SAME server.
     println!(
         "PROBE gate_by_literal={}",
         describe(socks_get(&socket, "127.0.0.1", allowed_port))
@@ -129,8 +95,8 @@ fn netns_probe() {
         describe(socks_get(&socket, BLOCKED_NAME, 80))
     );
 
-    // The same three, over HTTP CONNECT rather than SOCKS5 — the path a
-    // client with no SOCKS support takes, and the one most apps use.
+    // The same three, over HTTP CONNECT rather than SOCKS5 — the path a client with no SOCKS support
+    // takes, and the one most apps use.
     println!(
         "PROBE http_by_name={}",
         describe(http_connect(&socket, ALLOWED_NAME, allowed_port))
@@ -144,9 +110,7 @@ fn netns_probe() {
         describe(http_connect(&socket, BLOCKED_NAME, 80))
     );
 
-    // The loopback relay — the path an unmodified HTTP client takes via
-    // ALL_PROXY. Uses the production relay; the listener is bound before
-    // the relay starts, so the first connect is already queued for it.
+    // The loopback relay — the path an unmodified HTTP client takes via ALL_PROXY.
     if std::env::var(ENV_RELAY).is_ok() {
         let gate = PathBuf::from(&socket);
         let listener =
@@ -165,8 +129,7 @@ fn netns_probe() {
     }
 }
 
-/// Companion probe for the kernel-property test. Same dispatcher shape
-/// as [`netns_probe`].
+/// Companion probe for the kernel-property test.
 #[test]
 fn proof_probe() {
     let Ok(socket) = std::env::var("TILO_NETGATE_PROOF_SOCKET") else {
@@ -233,8 +196,8 @@ fn describe(o: Outcome) -> String {
     }
 }
 
-/// HTTP `CONNECT` through the gate, then an HTTP request down the
-/// tunnel — what an ordinary client does with `HTTPS_PROXY` set.
+/// HTTP `CONNECT` through the gate, then an HTTP request down the tunnel — what an ordinary client does
+/// with `HTTPS_PROXY` set.
 fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
     let mut s = match UnixStream::connect(socket) {
         Ok(s) => s,
@@ -309,8 +272,8 @@ fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome 
         return Outcome::Failed("greeting read".into());
     }
 
-    // CONNECT, by domain name — including for an address literal, so the
-    // gate sees exactly what the app asked for.
+    // CONNECT, by domain name — including for an address literal, so the gate sees exactly what the
+    // app asked for.
     let Ok(host_len) = u8::try_from(host.len()) else {
         return Outcome::Failed("host name too long for SOCKS5".into());
     };
@@ -356,7 +319,6 @@ fn http_exchange<S: Read + Write>(s: &mut S) -> Outcome {
 }
 
 /// A tiny HTTP server on loopback answering every request with `body`.
-/// Returns the port it bound.
 fn serve(body: &'static str) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind http");
     let port = listener.local_addr().unwrap().port();
@@ -378,12 +340,7 @@ fn serve(body: &'static str) -> u16 {
     port
 }
 
-/// A short, process-private test directory. This deliberately ignores
-/// `XDG_RUNTIME_DIR`: other launcher tests temporarily override that global
-/// environment variable, and libtest runs modules in this binary in parallel.
-/// Reading it here made those tests delete the netgate's live socket directory.
-/// The PID keeps concurrent Cargo invocations apart while remaining well below
-/// `sun_path`'s 108-byte limit.
+/// A short, process-private test directory.
 fn runtime_scratch_dir() -> PathBuf {
     let dir = PathBuf::from(format!(
         "/tmp/tilo-netgate-{}-{}",
@@ -401,8 +358,8 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// Echo everything the probe observed, tagged with the scenario — the
-    /// packet-level record under `--nocapture`.
+    /// Echo everything the probe observed, tagged with the scenario — the packet-level record under
+    /// `--nocapture`.
     fn dump(&self, scenario: &str) -> &Self {
         for line in self.stdout.lines() {
             if let Some(idx) = line.find("PROBE ") {
@@ -413,8 +370,7 @@ impl ProbeReport {
     }
 
     fn get(&self, key: &str) -> String {
-        // libtest writes its own `test <name> ... ` prefix on the same line as
-        // the first `println!`, so match the marker anywhere in the line.
+        // libtest writes its own `test <name> ...
         let marker = format!("PROBE {key}=");
         self.stdout
             .lines()
@@ -428,19 +384,16 @@ impl ProbeReport {
     }
 }
 
-/// The name `--exact` needs to select one of this file's probe tests
-/// when the binary re-executes itself, since this file is a module of
-/// `tests/it.rs` not its own binary and `module_path!` is one segment
-/// too long for libtest. Derived rather than written out so a stale
-/// name can't silently leave the probe running nothing.
+/// The name `--exact` needs to select one of this file's probe tests when the binary re-executes
+/// itself, since this file is a module of `tests/it.rs` not its own binary and `module_path!` is one
+/// segment too long for libtest.
 fn probe_test_name(probe: &str) -> String {
     let module = module_path!();
     let relative = module.split_once("::").map_or(module, |(_, rest)| rest);
     format!("{relative}::{probe}")
 }
 
-/// Run the probe inside a sandbox whose network shape is decided by the
-/// production [`EgressDecision`].
+/// Run the probe inside a sandbox whose network shape is decided by the production [`EgressDecision`].
 fn run_probe(
     decision: &EgressDecision,
     gate_socket: Option<&Path>,
@@ -466,8 +419,8 @@ fn run_probe(
     argv.extend(["--proc".into(), "/proc".into()]);
     argv.extend(["--dev".into(), "/dev".into()]);
     argv.extend(["--tmpfs".into(), "/tmp".into()]);
-    // After the tmpfs: a test binary under /tmp (t runs archived binaries
-    // from there) would otherwise be hidden by it.
+    // After the tmpfs: a test binary under /tmp (t runs archived binaries from there) would otherwise
+    // be hidden by it.
     argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
 
     // The gate bind + proxy environment, written by production code.
@@ -508,9 +461,8 @@ fn run_probe(
     report_from(&output)
 }
 
-/// Read the child's output, refusing one that selected no test —
-/// libtest exits 0 when its filter matches nothing, so a stale probe
-/// name looks like a probe that ran and found nothing to say.
+/// Read the child's output, refusing one that selected no test — libtest exits 0 when its filter
+/// matches nothing, so a stale probe name looks like a probe that ran and found nothing to say.
 fn report_from(output: &std::process::Output) -> ProbeReport {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -532,7 +484,6 @@ fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
 
 #[test]
 fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
-    // Phase `an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`.
     {
         let dir = runtime_scratch_dir();
         let host_socket = dir.join("proof.sock");
@@ -608,16 +559,10 @@ fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
              network namespace — this is the single channel the egress policy sits on"
         );
     }
-    // Phase `a_gate_that_cannot_start_refuses_rather_than_sharing_the_network`.
-    // (5) The degradation path: the gate needs no privilege or kernel
-    // feature `bwrap` doesn't already require, so what's simulated here
-    // is a failed socket bind. The launcher refuses rather than falling
-    // back to `--share-net`, which would apply a grant naming one host as
-    // "every host".
     {
         let policy = EgressPolicy::from_grants([ALLOWED_NAME]);
-        // `/proc` is not writable, so creating the parent directory fails
-        // before any bind is attempted.
+        // `/proc` is not writable, so creating the parent directory fails before any bind is
+        // attempted.
         let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
         let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
 
@@ -627,8 +572,8 @@ fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
             "the error must name the gate so an operator can act on it: {rendered}"
         );
 
-        // And the launch-level consequence: a refusal that says what was
-        // granted, and how to deliberately choose the unfiltered path.
+        // And the launch-level consequence: a refusal that says what was granted, and how to
+        // deliberately choose the unfiltered path.
         let run_err = launcher::run::RunError::EgressGate {
             hosts: vec![ALLOWED_NAME.to_string()],
             source: err,
@@ -652,8 +597,6 @@ fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn grants_decide_which_hosts_the_sandbox_reaches() {
-    // Phase `a_grant_naming_one_host_reaches_that_host_and_no_other`.
-    // (1) An app granted one host reaches it, and reaches nothing else.
     {
         let allowed_port = serve("ALLOWED-SERVER");
         let other_port = serve("OTHER-SERVER");
@@ -677,8 +620,8 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             "the loopback relay must carry the same traffic the direct socket does"
         );
 
-        // Does NOT reach the same server addressed as a literal — identical
-        // reachability, so a different outcome can only be the policy.
+        // Does NOT reach the same server addressed as a literal — identical reachability, so a
+        // different outcome can only be the policy.
         assert_eq!(
             report.get("gate_by_literal"),
             format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
@@ -692,16 +635,16 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             "the relay must not be a way around the policy the direct socket enforces"
         );
 
-        // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`,
-        // the same as an unresolvable host, a state the app already handles.
+        // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`, the same as an
+        // unresolvable host, a state the app already handles.
         assert_eq!(
             report.get("gate_by_other_name"),
             format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
             "an unlisted host must be refused as unreachable, not as forbidden"
         );
 
-        // The same three answers over HTTP CONNECT — the path a client with no
-        // SOCKS support takes, so the policy must hold there too.
+        // The same three answers over HTTP CONNECT — the path a client with no SOCKS support takes, so
+        // the policy must hold there too.
         assert_eq!(
             report.get("http_by_name"),
             "BODY:ALLOWED-SERVER",
@@ -744,8 +687,6 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             gate.stats().denied()
         );
     }
-    // Phase `a_grant_of_nothing_reaches_nothing`.
-    // (2) An app granted nothing reaches neither host.
     {
         let allowed_port = serve("ALLOWED-SERVER");
         let other_port = serve("OTHER-SERVER");
@@ -757,8 +698,7 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             "no manifest network and no grant must resolve to blocked"
         );
 
-        // Blocked means no gate is started at all, so there is no socket to
-        // bind into the sandbox.
+        // Blocked means no gate is started at all, so there is no socket to bind into the sandbox.
         let report = run_probe(&decision, None, allowed_port, other_port, false);
         report.dump("granted: nothing");
 
@@ -771,8 +711,6 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
         }
         assert_eq!(report.get("raw_public"), "NetworkUnreachable");
     }
-    // Phase `a_grant_of_star_reaches_both`.
-    // (3) An app granted `*` reaches both.
     {
         let allowed_port = serve("ALLOWED-SERVER");
         let other_port = serve("OTHER-SERVER");
@@ -794,11 +732,6 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
         );
         assert_eq!(report.get("raw_other"), "BODY:OTHER-SERVER");
     }
-    // Phase `widening_the_allowlist_lets_the_refused_connection_through`.
-    // (4) The negative case is not vacuous: same sandbox, same servers,
-    // one variable changed (the allowlist). The connection refused in
-    // the `a_grant_naming_one_host_reaches_that_host_and_no_other` phase now
-    // carries traffic.
     {
         let allowed_port = serve("ALLOWED-SERVER");
         let other_port = serve("OTHER-SERVER");
@@ -819,9 +752,8 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             refused.get("gate_by_literal"),
             format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
         );
-        // Exactly the two by-name requests plus the four naming the
-        // literal/unlisted host — the control run (relay disabled) accounts
-        // for every connection.
+        // Exactly the two by-name requests plus the four naming the literal/unlisted host — the
+        // control run (relay disabled) accounts for every connection.
         assert_eq!(
             strict_gate.stats().allowed(),
             2,
@@ -834,8 +766,6 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
         );
 
         // Filter disabled: allowlist permits everything, nothing else changed.
-        // Spelled `Filtered(["*"])`, not `Unrestricted`, which would take the
-        // `--share-net` path too.
         let (open_gate, open_socket) = start_gate("breakage-open", EgressPolicy::Any);
         let open_decision = EgressDecision::Filtered(EgressPolicy::Any);
         let passed = run_probe(
@@ -853,15 +783,15 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             "with the filter open, the previously-refused connection must carry traffic — if it \
              still failed, the negative assertion above was proving nothing"
         );
-        // A refused host and an unreachable one answer identically — the app
-        // must not tell a policy decision from an absence of network.
+        // A refused host and an unreachable one answer identically — the app must not tell a policy
+        // decision from an absence of network.
         assert_eq!(
             passed.get("gate_by_other_name"),
             format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
             "an unresolvable name is unreachable, the same answer a refused one gets"
         );
-        // Same experiment on the HTTP path: the refusal (502) becomes 200 for
-        // the reachable host and stays 502 for the unresolvable one.
+        // Same experiment on the HTTP path: the refusal (502) becomes 200 for the reachable host and
+        // stays 502 for the unresolvable one.
         assert_eq!(
             passed.get("http_by_literal"),
             "BODY:ALLOWED-SERVER",
@@ -883,23 +813,17 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
     }
 }
 
-// Device-local is network: Tilo's own services (e.g. the collaboration
-// broker) are reachable without leaving the box, so "no network" must
-// also mean no device-local access. Two routes closed by different
-// mechanisms: raw TCP is closed by the empty namespace itself;
-// through-the-gate-by-name is closed by `is_device_local`, since the
-// gate resolves in the host namespace and a name can point anywhere.
+// Device-local is network: Tilo's own services (e.g.
 
 /// `IP:PORT` of a service on the host's loopback.
 const ENV_LOCAL_LOOPBACK: &str = "TILO_NETGATE_LOCAL_LOOPBACK";
-/// `IP:PORT` of the same service on the host's own LAN address, or unset
-/// when the machine has no non-loopback address.
+/// `IP:PORT` of the same service on the host's own LAN address, or unset when the machine has no
+/// non-loopback address.
 const ENV_LOCAL_LAN: &str = "TILO_NETGATE_LOCAL_LAN";
 /// Name to ask the gate for, when a gate is present.
 const ENV_LOCAL_NAME: &str = "TILO_NETGATE_LOCAL_NAME";
 
-/// The in-sandbox half of the device-local tests. Same dispatcher shape
-/// as [`netns_probe`]: a no-op unless the outer test selected it.
+/// The in-sandbox half of the device-local tests.
 #[test]
 fn device_local_probe() {
     let Ok(loopback) = std::env::var(ENV_LOCAL_LOOPBACK) else {
@@ -935,9 +859,8 @@ fn raw_get_addr(addr: &str) -> Outcome {
     }
 }
 
-/// This host's own non-loopback address, if any — found via a
-/// UDP-socket connect that sends no packet, just picks a routing-table
-/// source address. `None` skips that half of the assertion.
+/// This host's own non-loopback address, if any — found via a UDP-socket connect that sends no packet,
+/// just picks a routing-table source address.
 fn host_lan_addr() -> Option<std::net::IpAddr> {
     let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("198.51.100.9:9").ok()?;
@@ -945,8 +868,7 @@ fn host_lan_addr() -> Option<std::net::IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-/// Serve `body` on `ip:0`, returning the bound port. Stands in for a
-/// device-local service — the collaboration broker's shape.
+/// Serve `body` on `ip:0`, returning the bound port.
 fn serve_on(ip: std::net::IpAddr, body: &'static str) -> u16 {
     let listener = TcpListener::bind((ip, 0)).expect("bind local service");
     let port = listener.local_addr().unwrap().port();
@@ -993,8 +915,8 @@ fn run_device_local_probe(
     argv.extend(["--proc".into(), "/proc".into()]);
     argv.extend(["--dev".into(), "/dev".into()]);
     argv.extend(["--tmpfs".into(), "/tmp".into()]);
-    // After the tmpfs: a test binary under /tmp (t runs archived binaries
-    // from there) would otherwise be hidden by it.
+    // After the tmpfs: a test binary under /tmp (t runs archived binaries from there) would otherwise
+    // be hidden by it.
     argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
     if let Some(host_socket) = gate_socket {
         let bind = NetGateBind {
@@ -1034,9 +956,6 @@ fn run_device_local_probe(
 
 #[test]
 fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
-    // Phase `an_app_denied_the_network_cannot_reach_a_device_local_service`.
-    // An app denied the network cannot reach a service on this device — not
-    // on loopback, and not on the machine's own LAN address either.
     {
         let loopback_port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
         let loopback = format!("127.0.0.1:{loopback_port}");
@@ -1065,9 +984,8 @@ fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
             );
         }
 
-        // Not vacuous: the same probe and listeners, with the network shared,
-        // reach both — so the failures above are the namespace, not a dead
-        // service.
+        // Not vacuous: the same probe and listeners, with the network shared, reach both — so the
+        // failures above are the namespace, not a dead service.
         let shared = run_device_local_probe(
             &EgressDecision::Unrestricted,
             None,
@@ -1086,17 +1004,12 @@ fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
             assert_eq!(shared.get("raw_lan"), "BODY:BROKER-STANDIN");
         }
     }
-    // Phase `a_grant_that_merely_covers_a_local_name_does_not_reach_this_device`.
-    // An app with a *host allowlist* has a gate resolving names in the
-    // host namespace, so a name pointing at this device is the bypass —
-    // closed unless the grant names that host exactly. One variable
-    // changes: the spelling of the grant.
     {
         let port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
         let loopback = format!("127.0.0.1:{port}");
 
-        // `.localhost` covers `localhost` for the access decision — but it is
-        // not the user pointing at this machine.
+        // `.localhost` covers `localhost` for the access decision — but it is not the user pointing at
+        // this machine.
         let covered = EgressPolicy::from_grants([".localhost"]);
         assert!(
             covered.permits("localhost"),
@@ -1130,8 +1043,7 @@ fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
         );
         let _ = covered_gate;
 
-        // Same everything, an exact grant: the service is reached. So the
-        // refusal above was the device-local rule and not a broken fixture.
+        // Same everything, an exact grant: the service is reached.
         let named = EgressPolicy::from_grants(["localhost"]);
         let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
         let allowed = run_device_local_probe(

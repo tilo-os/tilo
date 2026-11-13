@@ -49,12 +49,14 @@ pub fn shown_author(message: &Message, name: &dyn Fn(&str) -> String) -> String 
 pub fn rfc3339(ts: i64) -> String {
     let (year, month, day) = ui::date::civil_from_days(ts.div_euclid(86_400));
     let of_day = ts.rem_euclid(86_400);
-    // format: machine (RFC 3339 in a transcript file, read by programs)
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        of_day / 3600,
-        of_day % 3600 / 60,
-        of_day % 60
+    ui::format::machine!(
+        "RFC 3339 in a transcript file, which programs read back",
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            of_day / 3600,
+            of_day % 3600 / 60,
+            of_day % 60
+        )
     )
 }
 

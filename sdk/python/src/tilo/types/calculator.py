@@ -33,6 +33,7 @@ class PlotFn(TypedDict):
 
 class Document(Resource):
     """Calculator — `calculator.document`."""
+    __surface__ = "so.tilo.calculator@272ee377b4cb7c5b"
     @property
     def history(self) -> list[HistoryEntry]:
         """Read only."""

@@ -1,22 +1,15 @@
-//! What Weather does with its saved places beyond the document.
-//!
-//! Saved places, their order and the default place are the document
-//! ([`Weather`]), changed by its verbs and field edits.
-//! Opening a forecast and fetching one change no document, so they are
-//! [`WeatherEffect`]s answered by the window, offered on each place as a live
-//! row joining that place's published item.
+//! What Weather does with its saved places beyond the record: opening a forecast
+//! and fetching one change no record, so they are [`WeatherEffect`]s answered by
+//! the window.
 
 use ui::prelude::{Effect, LiveRow, tilo_resource};
 
 use crate::model::{LocationId, SavedLocation, Weather};
 
-/// The resource a saved place is published as: its item of the record,
-/// which this window's live row joins.
 pub fn location_resource_id(id: LocationId) -> String {
     tilo_resource::items::item_resource_id::<Weather>("places", &Weather::item(id))
 }
 
-/// What Weather fetches and shows, with no document delta.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "weather.effects")]
 pub enum WeatherEffect {
@@ -43,8 +36,6 @@ pub enum WeatherEffect {
     },
 }
 
-/// A saved place as the window offers it: open its forecast, refresh it.
-/// Joins the place's published child of the same id.
 pub(crate) fn location_row(location: &SavedLocation) -> LiveRow {
     let id = location.id.to_string();
     let mut open = WeatherEffect::OpenLocation {
@@ -70,12 +61,10 @@ mod tests {
     use crate::resource::PlaceDetails;
     use ui::tilo_resource::{Invoke, Replica};
 
-    /// The id the seed gives its `n`th saved place.
     fn nth_id(n: usize) -> LocationId {
         LocationId::from_u128(u128::try_from(n).expect("small index") + 1)
     }
 
-    /// The bundled sample places, with stable ids, inserted at their paths.
     fn seeded() -> Replica<Weather> {
         let mut replica = Replica::<Weather>::new();
         for (n, location) in crate::sample::sample_model().locations.iter().enumerate() {
@@ -153,8 +142,6 @@ mod tests {
         }
     }
 
-    /// Saving keeps one place per spot, making a place the default, moving
-    /// it up and removing it are each one undo step of the record.
     #[test]
     fn the_verbs_change_the_places_and_refuse_what_cannot_be() {
         let mut replica = seeded();
@@ -210,7 +197,6 @@ mod tests {
         assert_eq!(state.places.len(), count);
     }
 
-    /// Places two devices add, and moves of different places, converge.
     #[test]
     fn saved_places_converge() {
         let mut left = seeded();

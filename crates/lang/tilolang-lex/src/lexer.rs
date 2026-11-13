@@ -1,22 +1,19 @@
-//! The lexer. Newlines are tokens because they separate statements; the lexer drops the ones
-//! that cannot end a statement (inside brackets, before a leading `.`).
+//! The lexer. Newlines are tokens because they separate statements; the ones inside brackets and
+//! before a leading `.` are dropped.
 
 use crate::calendar::{check_date, check_time, check_wall_clock};
 use crate::diag::{Diagnostic, Span};
 use crate::duration::UNITS;
 
-/// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
     "app", "use", "as", "type", "enum", "action", "view", "fn", "let", "if", "else", "match",
     "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
     "proposal",
 ];
 
-/// Words that are keywords only where a declaration starts: `state` at the start of a
-/// statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
-/// `trigger`, `every`, `at`, `primary`, `destructive` and `migration` (before `action`) at the
-/// start of an item;
-/// `root` before a type in a scenario. Elsewhere they are ordinary names.
+/// Words that are keywords only where a declaration starts (`state` at the start of a statement,
+/// `root`, `default`, `row`, `scenario`, `trigger`, `every`, `at`, `primary`, `destructive` and
+/// `migration` before an item's keyword). Elsewhere they are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "state",
     "root",
@@ -31,8 +28,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "migration",
 ];
 
-/// `@app.Type:id@version`: a reference literal, the one piece of syntax a token carries whole
-/// for the parser and everything after it to read.
+/// `@app.Type:id@version`: a reference literal, carried whole for the parser to read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RefLit {
     /// The app part as written (an app id or an alias); empty for `@kind:id`.
@@ -58,14 +54,12 @@ pub enum Tok {
     Kw(&'static str),
     Int(i64),
     Float(f64),
-    /// A number with a unit suffix: `11rem`.
     Length(f64, &'static str),
     /// A whole number of a unit of time: `7d`, `5m` (search.md, "Types, references and paths").
     Duration(i64, &'static str),
-    /// A calendar literal (search.md, "Types, references and paths"): a day `2026-06-29`, a
-    /// month `2026-08`, an instant `2026-06-29T07:02Z`, or a wall-clock time
-    /// `2026-06-29T07:02` of no zone, held in its canonical ISO text
-    /// (`2026-06-29T07:02:00Z`, `2026-06-29T07:02:00`).
+    /// A day `2026-06-29`, a month `2026-08`, an instant `2026-06-29T07:02Z` or a wall-clock time
+    /// `2026-06-29T07:02` of no zone, in its canonical ISO text (`2026-06-29T07:02:00Z`,
+    /// `2026-06-29T07:02:00`).
     Calendar(String),
     Str(Vec<StrPiece>),
     Ref(RefLit),
@@ -81,10 +75,8 @@ pub enum Tok {
     Comma,
     Colon,
     Dot,
-    /// `..`, between the ends of a range: `a..b`, `a..`, `..b`.
     DotDot,
     Arrow,
-    /// `=>`, between a match pattern and its arm.
     FatArrow,
     Assign,
     PlusAssign,
@@ -101,16 +93,12 @@ pub enum Tok {
     Slash,
     Percent,
     Hash,
-    /// `?.`: a field or method of an Option's value, when it has one.
     QDot,
-    /// `??`: an Option's value, or a fallback.
     QQ,
-    /// `|`, between the cases of a union type.
     Pipe,
 }
 
 impl Tok {
-    /// How the token reads in an error message.
     pub fn describe(&self) -> String {
         match self {
             Self::Ident(n) => format!("`{n}`"),
@@ -180,17 +168,17 @@ pub fn lex_at(src: &str, base: usize) -> (Vec<Token>, Vec<Diagnostic>) {
     (lx.toks, lx.diags)
 }
 
-/// One plain `//` comment (not a `///` doc comment): where it is, and what it says.
+/// One plain `//` comment, not a `///` doc comment: where it is, and what it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Comment {
     pub span: Span,
-    /// The text after the `//`, with the one space the canonical form prints taken off and no
+    /// The text after the `//`, without the one space the canonical form prints and with no
     /// trailing space; empty for a line of `//` alone.
     pub text: String,
 }
 
-/// The plain `//` comments of `src`, in source order: the canonical form keeps them, above the
-/// declaration or statement they were written over.
+/// The plain `//` comments of `src`, in source order: the canonical form keeps them where they were
+/// written.
 pub fn plain_comments(src: &str) -> Vec<Comment> {
     plain_comments_at(src, 0)
 }
@@ -211,7 +199,6 @@ pub fn plain_comments_at(src: &str, base: usize) -> Vec<Comment> {
     lx.comments
 }
 
-/// Lexes a whole file.
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     lex_at(src, 0)
 }
@@ -225,7 +212,6 @@ struct Lexer<'a> {
     depth: usize,
     toks: Vec<Token>,
     diags: Vec<Diagnostic>,
-    /// Plain `//` comments, which the canonical form keeps where they were written.
     comments: Vec<Comment>,
 }
 
@@ -298,14 +284,12 @@ impl Lexer<'_> {
         if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Newline)) {
             return;
         }
-        // A statement never ends with a comma: the line continues the list it is in, as a long
-        // `if let` breaks between its binds.
+        // A statement never ends with a comma: the line continues the list it is in.
         if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Comma)) {
             return;
         }
         // A line that starts `.name` continues the previous one as a method call, unless the
-        // previous line ended a block or the new line is a match arm (`.name(..) =>`); a line
-        // that starts a binary operator continues it too, however the line before ended.
+        // previous line ended a block or the line is a match arm.
         let ended_block = matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace));
         if self.next_line_continues(ended_block) {
             return;
@@ -313,9 +297,8 @@ impl Lexer<'_> {
         self.push(Tok::Newline, start);
     }
 
-    /// Whether the next line continues the previous one: its first token is a `.` or `?.` that
-    /// names a field or method, or a binary operator, which a broken expression leads its
-    /// continuation line with.
+    /// Whether the next line continues the previous one: its first token is a `.` or `?.` naming a
+    /// field or method, or a binary operator.
     fn next_line_continues(&self, ended_block: bool) -> bool {
         let mut i = self.pos;
         loop {
@@ -336,18 +319,15 @@ impl Lexer<'_> {
                 }
                 Some(b'?') => {
                     return match self.bytes.get(i + 1) {
-                        // `?.name`: a field or method of what the line before left.
                         Some(b'.') => {
                             !ended_block
                                 && self.bytes.get(i + 2).is_some_and(|b| is_ident_start(*b))
                         }
-                        // `??`, the value or the fallback.
                         Some(b'?') => true,
                         _ => false,
                     };
                 }
                 Some(b) if is_ident_start(b) => {
-                    // The operators spelled as words; nothing else starts a statement.
                     let mut end = i;
                     while self.bytes.get(end).is_some_and(|b| is_ident_char(*b)) {
                         end += 1;
@@ -355,8 +335,7 @@ impl Lexer<'_> {
                     return matches!(self.bytes.get(i..end), Some(b"and" | b"or"));
                 }
                 Some(b) => {
-                    // The symbolic operators. `-`, `not` and `/` are left out: each can begin an
-                    // expression, a value or a regular expression of its own.
+                    // `-`, `not` and `/` are left out: each can begin an expression of its own.
                     return matches!(b, b'+' | b'*' | b'%' | b'=' | b'!' | b'<' | b'>');
                 }
                 None => return false,
@@ -364,8 +343,6 @@ impl Lexer<'_> {
         }
     }
 
-    /// Whether the name starting at `from` is followed (after an optional parenthesised list)
-    /// by `=>`: the line is a match arm, not a method call.
     fn is_match_arm(&self, from: usize) -> bool {
         let at = |i: usize| self.bytes.get(i).copied();
         let mut i = from;
@@ -408,7 +385,6 @@ impl Lexer<'_> {
         }
         if !doc {
             let span = self.span(start, self.pos);
-            // As a doc comment: one space after the marker, and none at the end.
             let text = self.slice(start + 2, self.pos);
             let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_owned();
             self.comments.push(Comment { span, text });
@@ -535,9 +511,7 @@ impl Lexer<'_> {
         }
     }
 
-    /// A calendar literal at `start`: four digits, `-` and two digits make a month; `-` and two
-    /// more a day; `T`, `HH:MM` and optional `:SS` a wall-clock time, which `Z` on its end makes
-    /// an instant. Anything else is a number.
+    /// A calendar literal at `start`; anything else is a number.
     fn calendar(&mut self, start: usize) -> bool {
         let digits = |lx: &Self, at: usize, n: usize| {
             (0..n).all(|i| lx.at(at + i).is_some_and(|b| b.is_ascii_digit()))
@@ -558,8 +532,8 @@ impl Lexer<'_> {
                 if self.at(16) == Some(b':') && digits(self, 17, 2) {
                     len = 19;
                 }
-                // No `Z` says no zone: the time is the person's own time of day, resolved to
-                // the instant it names where the value is used.
+                // No `Z` says no zone: the person's own time of day, resolved where the value is
+                // used.
                 if self.at(len) == Some(b'Z') {
                     len += 1;
                 }
@@ -570,8 +544,7 @@ impl Lexer<'_> {
         }
         let written = self.slice(start, start + len).to_string();
         self.pos += len;
-        // A time of no zone is the person's own time of day, resolved where it runs; its
-        // canonical text keeps the seconds, so the one shape reaches the checker.
+        // A time of no zone keeps its seconds in canonical text, so one shape reaches the checker.
         let (text, zone) = match len {
             7 => (format!("{written}-01"), true),
             17 => (format!("{}:00Z", written.trim_end_matches('Z')), true),
@@ -654,7 +627,6 @@ impl Lexer<'_> {
         self.push(tok, start);
     }
 
-    /// `@app.id.Type:id@version`
     fn reference(&mut self, start: usize) {
         self.pos += 1;
         let mut segs: Vec<String> = Vec::new();
@@ -686,8 +658,7 @@ impl Lexer<'_> {
         self.pos += 1;
         let id_start = self.pos;
         self.id_chars();
-        // An item of a document is written `doc/item`. A reference written before items were
-        // named by id alone has a `/field:item` step per nesting; it names its last item.
+        // An item of a document is written `doc/item`; a `/field:item` step names its last item.
         while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
             self.id_chars();
@@ -731,8 +702,6 @@ impl Lexer<'_> {
         }
     }
 
-    /// Whether the `/` at the cursor starts a `/item` (or older `/field:item`) step of a
-    /// reference id.
     fn step_follows(&self) -> bool {
         let is_id = |b: u8| is_ident_char(b) || b == b'-';
         let mut i = self.pos + 1;
@@ -807,9 +776,7 @@ impl Lexer<'_> {
         self.push(Tok::Str(pieces), start);
     }
 
-    /// Whether the token before this point leaves an operand to come, so a `/` here starts a
-    /// regular expression, not a division: the start of a line, an opening bracket, a comma, a
-    /// colon, an operator or a keyword.
+    /// Whether an operand is still to come, so a `/` starts a regular expression, not a division.
     fn operand_expected(&self) -> bool {
         !matches!(
             self.toks.last().map(|t| &t.tok),
@@ -830,10 +797,8 @@ impl Lexer<'_> {
         )
     }
 
-    /// A regular expression, `/\bTide\b/i` (agents.md, "Querying"): text whose pattern is
-    /// what is between the slashes, a `\/` standing for a slash, and whose flags (`i`, `m`, `s`,
-    /// `x`) follow the closing slash. It is a `Text` holding the pattern with its flags written
-    /// inline (`(?i)\bTide\b`), the form `grep` and `read(matching:)` take.
+    /// A regular expression, `/\bTide\b/i`: the text between the slashes, with its flags written
+    /// inline as `(?i)`.
     fn regex(&mut self, start: usize) {
         self.pos += 1;
         let mut pattern = String::new();
@@ -919,7 +884,6 @@ impl Lexer<'_> {
         }
     }
 
-    /// The offset of the `}` closing an interpolation that starts at `from`.
     fn interpolation_end(&self, from: usize) -> Option<usize> {
         let mut i = from;
         let mut depth = 0usize;
@@ -937,7 +901,6 @@ impl Lexer<'_> {
         None
     }
 
-    /// The offset of the closing quote of a string whose body starts at `from`.
     fn string_end(&self, from: usize) -> Option<usize> {
         let mut i = from;
         while let Some(b) = self.bytes.get(i).copied() {

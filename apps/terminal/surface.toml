@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "terminal.session"
 label = "Terminal"
@@ -65,8 +67,7 @@ params = [
   { name = "started_ms", type = "int", required = true, schema = { type = "integer" } },
   { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
   { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
-  { name = "output", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "output_len", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "output", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
   { name = "truncated", type = "bool", required = true, schema = { type = "boolean" } },
   { name = "tool", type = "text", required = true, schema = { type = "string" } },
   { name = "undoable", type = "bool", required = true, schema = { type = "boolean" } },

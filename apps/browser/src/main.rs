@@ -1,17 +1,11 @@
-//! Thin binary entry point: the [`browser::BrowserShell`] framework app.
-//! Every launch mode — a window showing one page, a private window
-//! (`--private`), a page named on the command line, `--shots` scenarios and
-//! the live-engine captures (`--shots-live`) — is the framework's.
+//! Thin entry point: the [`browser::BrowserShell`] app.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-// The import from another browser's profile comes from its engine library,
-// not the tapp.
+// Profile import comes from the import engine's library, not the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_browser_import_engine;
-// Website-session custody comes from the accounts engine, which the import
-// engine's service sessions link: named here so the crates it provides are
-// taken from it, not linked into the tapp.
+// Website-session custody comes from the accounts engine the import engine links.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_accounts_engine;
 
@@ -29,8 +23,7 @@ fn main() {
         return;
     }
     ui::framework::run::<browser::BrowserShell>();
-    // Every Browser tab of this profile browses through one Chromium host.
-    // When it is this process's, the window closing must not take the
-    // other tabs' pages down with it.
+    // Every tab of this profile browses through one Chromium host; closing the
+    // window must not take the other tabs' pages down with it.
     ui::webview::chromium::serve_shared_until_idle();
 }

@@ -12,10 +12,8 @@ use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value, parse_
 use crate::resource::{CellWrite, range_label};
 use crate::workbook::SheetSnapshot;
 
-/// The most cells one read returns; a larger range asks for a smaller one.
 pub const MAX_READ_CELLS: usize = 4096;
 
-/// A populated cell with what it shows, for search and sorting.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchableCell {
     pub col: u32,
@@ -90,7 +88,6 @@ fn sort_key(cell: Option<&SearchableCell>) -> SortKey {
 
 fn compare(a: &SortKey, b: &SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    // Numbers before text, blanks last, as spreadsheets sort.
     match (a, b) {
         (SortKey::Number(x), SortKey::Number(y)) => x.total_cmp(y),
         (SortKey::Text(x), SortKey::Text(y)) => x.cmp(y),
@@ -100,8 +97,6 @@ fn compare(a: &SortKey, b: &SortKey) -> std::cmp::Ordering {
     }
 }
 
-/// The writes that reorder the rows of `start..=end` by the column `by`.
-/// Formulas move with their row and keep pointing at it.
 pub fn sort_writes(
     cells: &[SearchableCell],
     (start, end): (Addr, Addr),
@@ -140,8 +135,6 @@ pub fn sort_writes(
     writes
 }
 
-/// What `read-cells` answers for `range` of `snap` (every used cell when
-/// none).
 pub fn read(snap: &SheetSnapshot, range: Option<&str>) -> Result<serde_json::Value, String> {
     let used = snap.raw.keys().chain(snap.bold.iter()).copied();
     let (start, end) = match range {
@@ -174,11 +167,16 @@ fn iso_date_text(serial: f64) -> String {
     let seconds = (serial.fract().abs() * 86_400.0).round();
     // A fraction of a day is below 86 401 seconds, exact as an integer.
     let seconds = format!("{seconds:.0}").parse::<u32>().unwrap_or(0);
-    // format: machine — the ISO 8601 text set-cells reads back, not a display.
     match (seconds / 3600 % 24, seconds % 3600 / 60, seconds % 60) {
         (0, 0, 0) => date,
-        (hour, minute, 0) => format!("{date}T{hour:02}:{minute:02}"),
-        (hour, minute, second) => format!("{date}T{hour:02}:{minute:02}:{second:02}"),
+        (hour, minute, 0) => ui::format::machine!(
+            "the ISO 8601 text set-cells reads back, not a display",
+            format!("{date}T{hour:02}:{minute:02}")
+        ),
+        (hour, minute, second) => ui::format::machine!(
+            "the ISO 8601 text set-cells reads back, not a display",
+            format!("{date}T{hour:02}:{minute:02}:{second:02}")
+        ),
     }
 }
 
@@ -221,8 +219,6 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
     })
 }
 
-/// `start..=end` of `snap` as `read-cells` answers it: computed rows,
-/// formulas, bold cells and the number formats cells have of their own.
 fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
     let values = crate::calc::recalculate_snapshot(snap);
     let mut rows = Vec::new();
@@ -358,7 +354,6 @@ pub(crate) fn iso_date_serial(text: &str) -> Option<f64> {
     let month = digits(date.get(5..7))?;
     let day = digits(date.get(8..10))?;
     let serial = crate::model::date_to_serial(i64::from(year), month, day);
-    // A day past its month's end rolls over; such a date is no date.
     if crate::model::serial_to_ymd(serial) != (i64::from(year), month, day) {
         return None;
     }
@@ -384,8 +379,6 @@ pub(crate) fn iso_date_serial(text: &str) -> Option<f64> {
     Some(serial + fraction)
 }
 
-/// Adds to `content` the formulas of `start..=end` that do not parse, when
-/// there are any.
 fn note_formula_errors(
     content: &mut serde_json::Value,
     snap: &SheetSnapshot,
@@ -402,9 +395,6 @@ fn note_formula_errors(
     }
 }
 
-/// The formulas of `start..=end` that do not parse, each with its cell, the
-/// error it shows and what is wrong, at most [`MAX_ANSWERED_CELLS`]. The
-/// cells keep them, as a spreadsheet does; this tells the writer what to fix.
 fn formula_errors(snap: &SheetSnapshot, start: Addr, end: Addr) -> Vec<serde_json::Value> {
     let mut cells: Vec<(Addr, &String)> = snap
         .raw
@@ -442,15 +432,8 @@ pub const ANSWERING_EDITS: [&str; 8] = [
     "delete-rows",
 ];
 
-/// The most cells an edit answers with; a larger change answers its first
-/// rows and names the whole range for `read-cells`.
 pub const MAX_ANSWERED_CELLS: u32 = 256;
 
-/// The answer of cell edit `action`, which applied to `doc` as `changes`:
-/// the changed range as `read-cells` shows it, clipped to
-/// [`MAX_ANSWERED_CELLS`] with `"changed"` naming the whole range when cut.
-/// Deleting rows moves everything below, so it answers the used range from
-/// the top.
 pub fn answer(
     doc: &ui::tilo_resource::Doc,
     action: &str,
@@ -460,8 +443,6 @@ pub fn answer(
     if !ANSWERING_EDITS.contains(&action) {
         return None;
     }
-    // An edit run again that wrote nothing new (an upsert of a row as it
-    // is) still answers, so its caller sees it held rather than failed.
     if changes.is_empty() {
         return Some(serde_json::json!({ "unchanged": true }));
     }
@@ -525,7 +506,6 @@ pub fn answer(
     Some(content)
 }
 
-/// The keys a patch walks from the root, its own key last.
 fn props(patch: &automerge::Patch) -> Vec<String> {
     let mut out: Vec<String> = patch
         .path
@@ -541,14 +521,11 @@ fn props(patch: &automerge::Patch) -> Vec<String> {
     out
 }
 
-/// The sheet a patch is in: the item of `sheets` it walks through.
 fn sheet_of(props: &[String]) -> Option<String> {
     let at = props.iter().position(|prop| prop == "sheets")?;
     props.get(at + 1).cloned()
 }
 
-/// The cells `changes` wrote, as (sheet, row, column) ids: every patch that
-/// reaches below a sheet's `cells` grid map at a row and a column.
 fn touched_cells(changes: &[automerge::Patch]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for patch in changes {
@@ -562,7 +539,6 @@ fn touched_cells(changes: &[automerge::Patch]) -> Vec<(String, String, String)> 
         else {
             continue;
         };
-        // A grid keeps its cells flat, each under `<row>/<column>`.
         if let Some((row, column)) = props.get(at + 2).and_then(|key| key.split_once('/')) {
             let cell = (sheet, row.to_owned(), column.to_owned());
             if !out.contains(&cell) {

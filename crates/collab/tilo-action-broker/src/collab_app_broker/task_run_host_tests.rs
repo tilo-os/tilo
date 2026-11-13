@@ -212,7 +212,7 @@ pub(super) fn connection(host: &TaskRunHost) -> Caller {
 
 /// Admitted at the door, the connection takes an application's action as a
 /// child of its run: attributed to its task agent, in the run's group, owned
-/// by the run, and observed back by the connection.
+/// by the run, named by the name its agent is seated as, and observed back by the connection.
 #[tokio::test(flavor = "current_thread")]
 async fn an_admitted_door_connection_takes_an_app_action_in_its_run() {
     tokio::task::LocalSet::new()
@@ -239,6 +239,8 @@ async fn an_admitted_door_connection_takes_an_app_action_in_its_run() {
             let wire = stream.next().await.unwrap();
             assert_eq!(wire.actor, format!("agent:{}", agent.delegation.agent_id));
             let context = wire.context().cloned().expect("the run's context");
+            let named = context.invoker.and_then(|invoker| invoker.name);
+            assert_eq!(named.as_deref(), Some("claude-code in this session"));
             let group = context.group.expect("the run's group");
             assert!(group.id.contains("door-session"), "{group:?}");
             let id = tilo_actions::InvocationId(uuid::Uuid::from_u128(41));
@@ -670,7 +672,7 @@ fn asking_on_the_desk(f: &Fixture, agent: &DoorAgent) -> Arc<Desk> {
                 tilo_action_policy::ActionKind::Undoable,
             ),
             tilo_action_policy::Answer::Ask,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
     desk

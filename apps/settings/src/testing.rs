@@ -1,5 +1,4 @@
-//! What tests reach of the sections, as an agent or assistive technology
-//! does.
+//! What tests reach of the sections, as an agent or assistive technology does.
 
 use ui::framework::testing::TestApp;
 
@@ -13,7 +12,6 @@ pub const INPUT_DEVICE: &str = "settings.input-device";
 pub const TEXT_ASSISTANCE: &str = "settings.text-assistance";
 pub const CONTINUITY: &str = "settings.continuity";
 
-/// How many widgets in the tree under `w` are named `name`.
 pub fn count_named(w: &dyn ui::Widget, name: &str) -> usize {
     usize::from(w.name() == name)
         + w.children()
@@ -43,8 +41,6 @@ pub fn actions_of(w: &dyn ui::Widget, actions: &mut Vec<String>) {
     }
 }
 
-/// The accessible names of the widgets named `name` under `w`, in tree
-/// order, appended to `labels`.
 pub fn labels_of(w: &dyn ui::Widget, name: &str, labels: &mut Vec<String>) {
     if w.name() == name
         && let Some(label) = w.accessibility().and_then(|node| node.name)
@@ -65,8 +61,6 @@ pub fn caption(key: &str) -> String {
     caption
 }
 
-/// What the accessible nodes named `caption` — a row's caption, which a
-/// screen reader reads before the value — show now, in tree order.
 pub fn shown_values(app: &mut TestApp<crate::SettingsShell>, caption: &str) -> Vec<String> {
     app.harness()
         .a11y_nodes()
@@ -76,8 +70,6 @@ pub fn shown_values(app: &mut TestApp<crate::SettingsShell>, caption: &str) -> V
         .collect()
 }
 
-/// Set the field `field` of the section `kind` to `value` through the
-/// door, as an agent does.
 pub fn edit_field(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -87,8 +79,6 @@ pub fn edit_field(
     edit_path(app, kind, &[field], value)
 }
 
-/// Invoke the verb `action` of the section `kind` with `arguments`
-/// through the door, as an agent does.
 pub fn invoke_section(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -100,8 +90,6 @@ pub fn invoke_section(
         .map_err(|error| format!("{error:?}"))
 }
 
-/// Set the field at `path` (field names, outermost first) of the section
-/// `kind` to `value` through the door, as an agent does.
 pub fn edit_path(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -123,7 +111,6 @@ pub fn edit_path(
     .map_err(|error| format!("{error:?}"))
 }
 
-/// The switch a reader lands on, named `name`, as the window exports it.
 pub fn switch_named(app: &mut TestApp<crate::SettingsShell>, name: &str) -> ui::accesskit::Node {
     app.harness()
         .a11y_nodes()

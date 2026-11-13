@@ -1,8 +1,7 @@
-//! Where the active tab's slots stand in the bar: in the window's title's row for one tab, past
-//! the strip's own controls, across a row of their own under several, and between the two on the
-//! tabs' motion — and how much of that row the strip's own "+" takes, which yields where the slots
-//! need the room.
-
+//! Where the active tab's slots stand in the bar: in the window's title's row for one tab, past the
+//! strip's own controls, across a row of their own under several, and between the two on the tabs'
+//! motion — and how much of that row the strip's own "+" takes, which yields where the slots need
+//! the room.
 use super::{ICON_W, PILL_PAD_X, Rect, TOOLBAR_LEAD_GAP, TOOLBAR_ROW_HEIGHT, TabBar};
 use crate::widget::window_controls;
 
@@ -16,15 +15,10 @@ impl TabBar {
             return menu;
         }
         let solo = {
-            // Past the strip's own leading controls, not merely past the window's icon: a window of
-            // one tab shows its title here, and the "+" stands between the icon and that title —
-            // starting the row under it painted the title over the control's words (and the words
-            // over the title).
             let x0 = self.tabs_end() + TOOLBAR_LEAD_GAP;
             let x1 = (self.trailing_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
             Rect::new(x0, tab_row.y0, x1, tab_row.y1)
         };
-        // The back button's glyph sits under the tabs' leading glyph.
         let lead =
             self.pill_row().x0 + PILL_PAD_X + ICON_W / 2.0 - window_controls::CONTROL_PX / 2.0;
         let below = Rect::new(
@@ -49,8 +43,6 @@ impl TabBar {
         }
     }
 
-    /// Show the active tab's slots and lay them out where they stand now,
-    /// a compact window's notice strip under the bar's rows.
     pub(super) fn lay_out_toolbar_row(&mut self) {
         self.touch();
         self.show_toolbar_row();
@@ -90,9 +82,6 @@ impl TabBar {
         self.toolbar_row.crowded() || self.search_would_be_cramped()
     }
 
-    /// Whether the window's search, reaching back over the app's slots to where they start, would
-    /// leave its query too narrow to type in — where the room is there with the strip's own
-    /// furniture aside.
     fn search_would_be_cramped(&self) -> bool {
         let Some(least) = self.search_least else {
             return false;
@@ -101,14 +90,11 @@ impl TabBar {
             return false;
         }
         let row = self.toolbar_row_rect();
-        // The search's control ends its row, and it reaches back to where the row starts.
         let span =
             |x0: f64| row.x1 + window_controls::CONTROL_GAP + window_controls::CONTROL_PX - x0;
         span(row.x0) < least && span(self.strip_lead_end() + TOOLBAR_LEAD_GAP) >= least
     }
 
-    /// Where the strip's leading control ends: the window's icon where its one tab shows it, or
-    /// the first of several pills.
     fn strip_lead_end(&self) -> f64 {
         self.tab_rects
             .first()

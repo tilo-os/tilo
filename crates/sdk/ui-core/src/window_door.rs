@@ -1,52 +1,31 @@
-//! Every window of an app in a workspace, served by one process.
-//!
-//! The shell starts an app once per workspace. When the person opens another
-//! window of it there (another tab of Chat, the Lounge's copy of a window
-//! someone else opened), the shell opens it in the running process instead
-//! of starting a second one: it writes a [`WindowRequest`] on the window door
-//! the launcher handed the process (`runtime_portal::windows`), with the
-//! window's own connections to the session attached, and the process builds
-//! the window beside the ones it has. Every window then reads and writes the
-//! app's records through the one store the process holds; a second process
-//! could never take that store's writer lock.
-//!
-//! The window is built as the process's first was, from the same launch: the
-//! request only says which window it is (its instance, the durable id its
-//! tab keeps), and carries the connections that are the window's own. While
-//! it is built, those stand in for the ones the launcher handed the process
-//! ([`instance`], [`take_collaboration`], [`take_shell_ui`]).
+//! Every window of an app in a workspace, served by one process. The shell starts an app
+//! once per workspace. Every window then reads and writes the app's records through the
+//! one store the process holds; a second process could never take that store's writer
+//! lock.
 
 use serde::{Deserialize, Serialize};
 
 /// The shell's request to open one more window of the app.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowRequest {
-    /// The window's instance: the durable id its tab keeps, which names its
-    /// saved view and the record a window of its own opens
-    /// (`TILO_CONTINUITY_INSTANCE` for the process's first window).
     pub instance: u64,
-    /// The window's own collaboration connection is attached (first).
     #[serde(default)]
     pub collaboration: bool,
-    /// The window's own shell-ui connection is attached (after the
-    /// collaboration one, when both are).
     #[serde(default)]
     pub shell_ui: bool,
-    /// The item the shell opened this window on, as the resource that names
-    /// it: what a window asked for by a launch that named nothing opens,
-    /// where the launch that made the process could not have said which
-    /// window it was for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<String>,
 }
 
 #[cfg(feature = "local-daemons")]
 pub use transport::*;
 
-/// Say on the door the launcher handed this process that it opens the windows
-/// the shell asks for, before the launch's first window is made: the shell
-/// takes a mapped window as proof the app cannot, so an app that answers only
-/// once its loop runs keeps a process per window.
+/// Say on the door the launcher handed this process that it opens the windows the shell
+/// asks for, before the launch's first window is made: the shell takes a mapped window as
+/// proof the app cannot, so an app that answers only once its loop runs keeps a process
+/// per window.
 pub fn announce() {
     #[cfg(feature = "local-daemons")]
     {
@@ -54,10 +33,10 @@ pub fn announce() {
     }
 }
 
-/// Build the window the shell asked for (`pending`), as the process's first
-/// window was built from its launch (`spec`, `args`), but with the window's
-/// own instance and connections, and nothing the launch named to open: that
-/// was the first window's.
+/// Build the window the shell asked for (`pending`), as the process's first window was
+/// built from its launch (`spec`, `args`), but with the window's own instance and
+/// connections, opening what the request names (a file opened with the running app) and
+/// nothing its launch named: that was the first window's.
 #[cfg(feature = "native")]
 pub(crate) fn open_window(
     spec: &crate::launch::LaunchSpec,
@@ -65,8 +44,6 @@ pub(crate) fn open_window(
     pending: PendingWindow,
 ) -> Option<crate::app::App> {
     let mut opening = pending.take()?;
-    // A window whose record arrived with its join is built now, from the
-    // workspace's committed history.
     if let Some(arriving) = opening.arriving.take() {
         return building(opening, || {
             crate::launch::dispatch_window_arrived(spec, args, arriving)
@@ -79,10 +56,10 @@ pub(crate) fn open_window(
     building(opening, || {
         match crate::launch::dispatch_window(spec, args) {
             Ok(crate::launch::WindowBuild::Built(app)) => app,
-            // The window's record is not on this device yet: its join, which
-            // brings it, is waited for off this thread, so the process's other
-            // windows go on meanwhile. The window is built when the join is
-            // over, handed back to this thread as it first arrived.
+            // The window's record is not on this device yet: its join, which brings it,
+            // is waited for off this thread, so the process's other windows go on
+            // meanwhile. The window is built when the join is over, handed back to this
+            // thread as it first arrived.
             Ok(crate::launch::WindowBuild::Arriving(arriving)) => {
                 let (Some(mut opening), Some(reopen)) = (keep_building(), reopen) else {
                     tracing::error!("the window the shell asked for cannot wait for its workspace");
@@ -92,9 +69,9 @@ pub(crate) fn open_window(
                     slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
                     reopen: Some(std::sync::Arc::clone(&reopen)),
                 };
-                // Told on the join's thread, or at once when it is already
-                // over; either way the window comes back to this thread only
-                // after it is in `back`, below.
+                // Told on the join's thread, or at once when it is already over; either
+                // way the window comes back to this thread only after it is in `back`,
+                // below.
                 arriving.when_done({
                     let back = back.clone();
                     move || {
@@ -115,9 +92,8 @@ pub(crate) fn open_window(
     })
 }
 
-/// The instance of the window being built for the shell's request, while one
-/// is; `None` while the process's first window is built, and where there is
-/// no window door.
+/// The instance of the window being built for the shell's request, while one is; `None`
+/// while the process's first window is built, and where there is no window door.
 #[must_use]
 pub fn requested_instance() -> Option<u64> {
     #[cfg(feature = "local-daemons")]
@@ -130,19 +106,18 @@ pub fn requested_instance() -> Option<u64> {
     }
 }
 
-/// The variable a launch names the item its window opens on in, for a
-/// process the shell starts for that window rather than one it asks for it:
-/// a window door request cannot reach a window that is already being built.
+/// The variable a launch names the item its window opens on in, for a process the shell
+/// starts for that window rather than one it asks for it: a window door request cannot
+/// reach a window that is already being built.
 pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
 
-/// The variable the session sets on a launch it makes with no window: the
-/// app answers its actions and its door, and its first window is the first
-/// one the shell asks for here.
+/// The variable the session sets on a launch it makes with no window: the app answers its
+/// actions and its door, and its first window is the first one the shell asks for here.
 pub const WINDOWLESS_ENV: &str = crate::host::WINDOWLESS_ENV;
 
-/// The item the window being built opens on: what the shell's request named
-/// for a window of a process already running, or, for the process's first
-/// window, the item its launch named it.
+/// The item the window being built opens on: what the shell's request named for a window
+/// of a process already running, or, for the process's first window, the item its launch
+/// named it.
 #[must_use]
 pub fn requested_reveal() -> Option<String> {
     #[cfg(feature = "local-daemons")]
@@ -177,23 +152,21 @@ mod transport {
         pub request: WindowRequest,
         pub collaboration: Option<Descriptor>,
         pub shell_ui: Option<Descriptor>,
-        /// The window's record arrives with its workspace's join, waited
-        /// for off the window's thread; the window is built once it is over.
+        /// The window's record arrives with its workspace's join, waited for off the
+        /// window's thread; the window is built once it is over.
         #[cfg(feature = "native")]
         pub(crate) arriving: Option<crate::launch::Arriving>,
     }
 
-    /// Hand a [`PendingWindow`] to the loop that builds windows; `false`
-    /// once that loop is gone.
+    /// Hand a [`PendingWindow`] to the loop that builds windows; `false` once that loop
+    /// is gone.
     pub(crate) type Reopen = Arc<dyn Fn(PendingWindow) -> bool + Send + Sync>;
 
-    /// One [`WindowOpening`] carried through the event loop, taken once by
-    /// the runner that builds its window.
+    /// One [`WindowOpening`] carried through the event loop, taken once by the runner
+    /// that builds its window.
     #[derive(Clone)]
     pub struct PendingWindow {
         pub(crate) slot: Arc<Mutex<Option<WindowOpening>>>,
-        /// How the window comes back to its loop, when it went away to
-        /// join (`super::open_window`).
         pub(crate) reopen: Option<Reopen>,
     }
 
@@ -232,8 +205,8 @@ mod transport {
         }
     }
 
-    /// Write `request` on the shell's end of `door`, with the connections it
-    /// says it carries.
+    /// Write `request` on the shell's end of `door`, with the connections it says it
+    /// carries.
     pub fn send(
         door: &Descriptor,
         request: &WindowRequest,
@@ -250,8 +223,7 @@ mod transport {
         runtime_portal::windows::send_open(door, &encoded, &fds)
     }
 
-    /// The next request on the app's end of `door`; `None` once the shell
-    /// closed it.
+    /// The next request on the app's end of `door`; `None` once the shell closed it.
     pub fn receive(door: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
         let Some((encoded, fds)) = runtime_portal::windows::receive_open(door)? else {
             return Ok(None);
@@ -259,7 +231,6 @@ mod transport {
         opening(&encoded, fds).map(Some)
     }
 
-    /// The window request `encoded` asks for, with the connections `fds` it came with.
     fn opening(encoded: &[u8], fds: Vec<Descriptor>) -> std::io::Result<WindowOpening> {
         let request: WindowRequest = serde_json::from_slice(encoded)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -286,9 +257,6 @@ mod transport {
         })
     }
 
-    /// The patch connections the shell sent for windows of a tilolang app whose instances a
-    /// tilolang host runs, by window instance, until each window takes its own; and the
-    /// windows waiting for theirs.
     #[derive(Default)]
     struct Patches {
         arrived: std::collections::HashMap<u64, Descriptor>,
@@ -330,9 +298,8 @@ mod transport {
     }
 
     /// The door the launcher handed this process, once (see
-    /// [`runtime_portal::windows::take_door`]), told this app serves windows:
-    /// the shell routes an app's later windows to a process that said so
-    /// before it mapped one.
+    /// [`runtime_portal::windows::take_door`]), told this app serves windows: the shell
+    /// routes an app's later windows to a process that said so before it mapped one.
     #[must_use]
     pub fn take_door() -> Option<Descriptor> {
         door().take()
@@ -342,10 +309,9 @@ mod transport {
 
     static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    /// The door, taken once and answered for once: whoever wants it first
-    /// ([`announce`] before the launch's first window, [`take_door`] to serve
-    /// it) takes it and tells the shell so, and later callers get it until it
-    /// is handed out.
+    /// The door, taken once and answered for once: whoever wants it first ([`announce`]
+    /// before the launch's first window, [`take_door`] to serve it) takes it and tells
+    /// the shell so, and later callers get it until it is handed out.
     fn door() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
         let mut slot = DOOR
             .lock()
@@ -366,12 +332,9 @@ mod transport {
         drop(door());
     }
 
-    /// Read `door` on a thread of its own, handing each request to `open`,
-    /// until the shell closes it or `open` refuses (its loop is gone).
-    ///
-    /// # Errors
-    ///
-    /// The thread could not be started.
+    /// Read `door` on a thread of its own, handing each request to `open`, until the
+    /// shell closes it or `open` refuses (its loop is gone). The thread could not be
+    /// started.
     pub fn serve(
         door: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
@@ -417,13 +380,11 @@ mod transport {
     }
 
     thread_local! {
-        /// The window being built for a request, while it is built.
         static BUILDING: RefCell<Option<WindowOpening>> = const { RefCell::new(None) };
     }
 
-    /// Build the window `opening` asks for with `build`: while it runs, the
-    /// window's instance and connections stand in for the process's own.
-    /// What `build` did not take is closed after.
+    /// Build the window `opening` asks for with `build`: while it runs, the window's
+    /// instance and connections stand in for the process's own.
     pub fn building<T>(opening: WindowOpening, build: impl FnOnce() -> T) -> T {
         struct Done;
         impl Drop for Done {
@@ -446,6 +407,17 @@ mod transport {
         })
     }
 
+    /// What the window being built for a request opens, if it names one; `None` for the
+    /// process's first window, which opens what its launch named.
+    #[must_use]
+    pub fn requested_open() -> Option<String> {
+        BUILDING.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|opening| opening.request.open.clone())
+        })
+    }
+
     /// The instance of the window being built for a request, if one is.
     #[must_use]
     pub fn instance() -> Option<u64> {
@@ -456,8 +428,8 @@ mod transport {
         })
     }
 
-    /// Whether a window is being built for a request: its connections are
-    /// its own, never the ones the launcher handed the process.
+    /// Whether a window is being built for a request: its connections are its own, never
+    /// the ones the launcher handed the process.
     #[must_use]
     pub fn is_building() -> bool {
         BUILDING.with(|slot| slot.borrow().is_some())
@@ -473,9 +445,8 @@ mod transport {
         })
     }
 
-    /// Take back the opening of the window being built, with what it has
-    /// not given yet (its shell-ui connection), to build it later: its
-    /// record arrives with its join.
+    /// Take back the opening of the window being built, with what it has not given yet
+    /// (its shell-ui connection), to build it later: its record arrives with its join.
     #[cfg(feature = "native")]
     pub(crate) fn keep_building() -> Option<WindowOpening> {
         BUILDING.with(|slot| slot.borrow_mut().take())
@@ -495,7 +466,6 @@ mod transport {
     mod tests {
         use super::*;
 
-        /// Where the platform has window doors at all.
         fn door() -> Option<(Descriptor, Descriptor)> {
             runtime_portal::windows::pair().ok()
         }
@@ -515,6 +485,7 @@ mod transport {
                 collaboration: true,
                 shell_ui: true,
                 reveal: Some("chat/channels/c_ada".into()),
+                open: None,
             };
             send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
             let opening = receive(&app).unwrap().unwrap();
@@ -526,10 +497,11 @@ mod transport {
                 collaboration: false,
                 shell_ui: false,
                 reveal: None,
+                open: Some("/documents/Budget.txt".into()),
             };
             send(&shell, &bare, None, None).unwrap();
             let opening = receive(&app).unwrap().unwrap();
-            assert_eq!(opening.request.instance, 42);
+            assert_eq!(opening.request, bare, "the file it opens comes with it");
             assert!(opening.collaboration.is_none() && opening.shell_ui.is_none());
             drop(shell);
             assert!(receive(&app).unwrap().is_none());
@@ -543,6 +515,7 @@ mod transport {
                 collaboration: true,
                 shell_ui: false,
                 reveal: None,
+                open: None,
             };
             assert!(send(&shell, &request, None, None).is_err());
             runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
@@ -550,9 +523,8 @@ mod transport {
             assert!(receive(&app).is_err());
         }
 
-        /// While a window is built for a request its instance and
-        /// connections stand in for the process's, once each, and only
-        /// while it is built.
+        /// While a window is built for a request its instance and connections stand in
+        /// for the process's, once each, and only while it is built.
         #[test]
         fn a_window_is_built_with_its_own_instance_and_connections() {
             let opening = WindowOpening {
@@ -561,6 +533,7 @@ mod transport {
                     collaboration: true,
                     shell_ui: false,
                     reveal: Some("chat/channels/c_ada".into()),
+                    open: Some("/documents/Budget.txt".into()),
                 },
                 collaboration: connection(),
                 shell_ui: None,
@@ -577,6 +550,11 @@ mod transport {
                     Some("chat/channels/c_ada"),
                     "the window opens on the item the shell named"
                 );
+                assert_eq!(
+                    requested_open().as_deref(),
+                    Some("/documents/Budget.txt"),
+                    "the window opens the file the shell named"
+                );
                 assert!(is_building());
                 assert_eq!(take_collaboration().is_some(), carried);
                 assert!(take_collaboration().is_none(), "taken once");
@@ -584,6 +562,7 @@ mod transport {
             });
             assert_eq!(instance(), None);
             assert_eq!(requested_reveal(), None);
+            assert_eq!(requested_open(), None);
             assert!(!is_building());
         }
     }

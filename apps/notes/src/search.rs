@@ -27,14 +27,10 @@ pub fn block_kind() -> String {
 /// The longest block label a hit shows; the whole block is still searched.
 const BLOCK_LABEL_CHARS: usize = 72;
 
-/// The display title for a page, substituting a placeholder for a blank
-/// title so an untitled page is still findable and readable in the palette.
-fn display_title(page: &Page) -> &str {
-    if page.title.trim().is_empty() {
-        crate::notebook::UNTITLED
-    } else {
-        page.title.as_str()
-    }
+/// The display title for a page: the word for an unnamed note when it has no title, so a note
+/// nobody named is still findable and readable in the palette.
+fn display_title(page: &Page) -> String {
+    crate::metadata::note_title(&page.title)
 }
 
 /// Every note and every non-empty block of `notebook`, each opening its
@@ -48,7 +44,7 @@ pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
         let anchor = crate::actions::page_resource_id(page_id);
         let title = display_title(page);
         entries.push(
-            SearchEntry::new(title, "")
+            SearchEntry::new(title.clone(), "")
                 .anchored(anchor.clone())
                 .grouped(note_kind())
                 .with_icon("file-text"),
@@ -71,7 +67,7 @@ pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
                 SearchEntry::new(label, block.text.clone())
                     .anchored(anchor.clone())
                     .grouped(block_kind())
-                    .subtitled(title)
+                    .subtitled(title.clone())
                     .with_icon("list"),
             );
         }
@@ -149,6 +145,30 @@ mod tests {
             assert_eq!(source.search_limited("trip", 1).len(), 1);
             assert!(source.search_limited("trip", 0).is_empty());
         }
+    }
+
+    /// A note nobody named reads as the word for one in the language of whoever looks it up, and
+    /// the record itself holds no title at all.
+    #[test]
+    fn a_note_nobody_named_reads_in_the_readers_own_language() {
+        crate::metadata::CATALOG.ensure();
+        CATALOG.set_locale("de");
+        let mut notebook = Replica::<Notebook>::new();
+        let id = add(&mut notebook, "");
+        assert!(
+            notebook
+                .state()
+                .unwrap()
+                .pages
+                .iter()
+                .all(|(_, page)| page.title.is_empty()),
+            "the note keeps no title, so the desk says what an unnamed note is"
+        );
+        let hits = search(&notebook).search("ohne");
+        assert_eq!(hits.len(), 1, "a German desk finds it by the German word");
+        assert_eq!(hits[0].title, "Ohne Titel");
+        assert_eq!(hits[0].action_id, crate::actions::page_resource_id(id));
+        CATALOG.set_locale("en-US");
     }
 
     #[test]

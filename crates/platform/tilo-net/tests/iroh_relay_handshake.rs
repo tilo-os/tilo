@@ -1,13 +1,8 @@
-//! A relay client sends right behind its answer to the relay's challenge.
-//!
-//! A page reaches its host only through the host's packet relay, and its
-//! WebSocket offers no TLS key material, so the relay authenticates it with a
-//! challenge. Upstream, the client then waited a round trip for the relay to
-//! confirm its answer before it sent anything, and a fresh visitor's session
-//! began that much later. The vendored client (`vendor/iroh-relay`,
-//! `ClientBuilder::send_before_confirmed`) goes on at once: the relay reads
-//! what follows the answer only once it confirmed it, and a denial is the
-//! connection's first error instead.
+//! A relay client sends right behind its answer to the relay's challenge: a
+//! page reaches its host only through the host's packet relay, whose
+//! WebSocket offers no TLS key material to authenticate with. The vendored
+//! client (`vendor/iroh-relay`, `ClientBuilder::send_before_confirmed`) goes
+//! on at once; the test compares it with the confirming round trip.
 
 #![cfg(not(target_family = "wasm"))]
 #![allow(
@@ -25,14 +20,12 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use iroh::SecretKey;
 use iroh_relay::client::{Client, ClientBuilder};
 use iroh_relay::protos::relay::{ClientToRelayMsg, Datagrams, RelayToClientMsg};
-use iroh_relay::server::{Access, AccessControl, ClientRequest, RelayConfig, Server, ServerConfig};
+use iroh_relay::server::{Access, AccessControl, ClientRequest, RelayConfig};
 use iroh_relay::tls::{CaTlsConfig, default_provider};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// Each way's delay on the network between the client and the relay.
 const ONE_WAY: Duration = Duration::from_millis(150);
 
-/// A relay admitting everyone but the keys it was given.
 #[derive(Debug)]
 struct Refusing(Vec<iroh::PublicKey>);
 
@@ -46,12 +39,10 @@ impl AccessControl for Refusing {
     }
 }
 
-async fn relay(refused: Vec<iroh::PublicKey>) -> Server {
+async fn relay(refused: Vec<iroh::PublicKey>) -> tilo_test_env::relay::Relay {
     let mut relay = RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
     relay.access = std::sync::Arc::new(Refusing(refused));
-    let mut config = ServerConfig::default();
-    config.relay = Some(relay);
-    Server::spawn(config).await.expect("a local relay")
+    tilo_test_env::relay::Relay::with(relay).await
 }
 
 /// A TCP path to `upstream` whose bytes each take [`ONE_WAY`] to arrive.
@@ -110,7 +101,6 @@ fn client(url: &str, key: SecretKey, send_before_confirmed: bool) -> ClientBuild
     .send_before_confirmed(send_before_confirmed)
 }
 
-/// The next datagrams `client` receives.
 async fn datagrams(client: &mut Client) -> Datagrams {
     loop {
         let message = tokio::time::timeout(Duration::from_secs(10), client.next())
@@ -127,7 +117,10 @@ async fn datagrams(client: &mut Client) -> Datagrams {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_sends_without_waiting_for_the_relay_to_confirm_it() {
     let server = relay(Vec::new()).await;
-    let http = server.http_addr().expect("the relay's HTTP address");
+    let http = server
+        .server()
+        .http_addr()
+        .expect("the relay's HTTP address");
     let direct = format!("http://{http}");
     let slow = format!("http://{}", slow_path(http).await);
     let round_trip = ONE_WAY * 2;
@@ -192,7 +185,7 @@ async fn a_client_sends_without_waiting_for_the_relay_to_confirm_it() {
 async fn a_relay_that_refuses_a_client_that_went_on_ends_its_connection() {
     let refused = SecretKey::generate();
     let server = relay(vec![refused.public()]).await;
-    let url = format!("http://{}", server.http_addr().expect("address"));
+    let url = server.url().to_string();
     let mut client = client(&url, refused, true)
         .connect()
         .await

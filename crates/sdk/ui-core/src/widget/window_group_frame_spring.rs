@@ -1,12 +1,4 @@
 //! One window's motion channel, sampled once per drawn frame.
-//!
-//! A rect, slot width or offset is driven by the same closed-form spring, so
-//! every rebuild of a frame reads the value the frame already showed instead
-//! of advancing it again. A new target mid-flight keeps the value and its
-//! velocity, which is what makes two shortcuts in a row one motion. Kept out
-//! of `WindowGroup` because sampling and retargeting a spring is a small
-//! self-contained contract that the group only carries.
-
 use crate::time::Instant;
 
 /// One channel of a window's motion on the strip (its rect while it
@@ -24,8 +16,6 @@ pub(super) struct FrameSpring<T: crate::motion::Animatable> {
 }
 
 impl<T: crate::motion::Animatable> Drop for FrameSpring<T> {
-    /// A spring let go mid-way (a shortcut landing what it changed, a
-    /// close completing) is drawn no more: it asks for no more frames.
     fn drop(&mut self) {
         let target = self.motion.target();
         self.motion.snap(target);
@@ -49,7 +39,6 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
         }
     }
 
-    /// Go to `target` from where the motion is now, at the speed it has.
     pub(super) fn set_target(&mut self, target: T) {
         let timing = crate::motion::WindowMotion::MOVE.timing(
             crate::motion::Direction::Enter,
@@ -69,7 +58,6 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
         self.at = now;
     }
 
-    /// The value as of the last frame sampled.
     pub(super) fn value(&self) -> T {
         self.drawn
     }
@@ -83,7 +71,6 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
         self.motion.velocity(self.at)
     }
 
-    /// Whether the last frame sampled is the motion's rest.
     pub(super) fn is_settled(&self) -> bool {
         !self.motion.is_moving(self.at)
     }

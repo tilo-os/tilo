@@ -1,7 +1,5 @@
-//! Actual owned GPT/nonroot frontend/standalone root-helper producer test.
-//! No synthetic disk facts or caller receipt are supplied. The dedicated
-//! test-only elevation bridge exercises kernel credentials + canonical helper;
-//! distribution Polkit policy is intentionally not qualified.
+//! An actual owned GPT staging run by the root helper, with no synthetic disk facts.
+
 use super::*;
 use sha2::{Digest, Sha256};
 use std::{
@@ -216,7 +214,6 @@ impl Actor {
     fn retire(&mut self) -> std::process::ExitStatus {
         assert!(!self.retired);
         let id = i32::try_from(self.child.id()).unwrap();
-        // WNOWAIT retains the exact leader until its process group is retired.
         let killed = unsafe { libc::kill(-id, libc::SIGKILL) };
         assert!(killed == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH));
         let status = self.child.wait().expect("reap exact owned actor");
@@ -231,8 +228,6 @@ impl Drop for Actor {
         }
     }
 }
-/// This selector requires the existing owned-GPT native provider PLUS a genuine
-/// matched standalone Imager compiler artifact. Missing inputs are failures.
 #[cfg(feature = "native-capture-qualification")]
 #[test]
 fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
@@ -241,9 +236,6 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     );
 }
 
-/// Re-enter a positive journey test only inside the owned nonroot actor. The
-/// parent remains responsible for source custody, genuine elevation and helper
-/// artifact authentication; this is not an alternate helper implementation.
 pub(in crate::setup) fn enter_owned_journey(selector: &str) -> bool {
     if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
         assert_eq!(rustix::process::getuid().as_raw(), 1000);
@@ -261,7 +253,6 @@ pub(in crate::setup) fn journey_directory() -> tempfile::TempDir {
     tempfile::tempdir_in(root).unwrap()
 }
 
-/// Authenticate the actual early preparation artifact, not merely its UI state.
 pub(in crate::setup) fn assert_journey_registration(preview: &super::super::InstallerPreview) {
     let media = preview.direct.prepared_belongings.as_ref().unwrap();
     let identity = preview.personal.prepared_handle().unwrap();
@@ -384,8 +375,6 @@ fn run_owned_actor(selector: &str) {
     let _mount = MountedPrivilege {
         path: control.clone(),
     };
-    // Profile stores fsync readable ancestors. This root-controlled directory
-    // contains only fixed public artifact names; actor state stays mode 0700.
     std::fs::set_permissions(parent.path(), Permissions::from_mode(0o755)).unwrap();
     let held = File::open(&control).unwrap();
     let mut facts = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -404,7 +393,6 @@ fn run_owned_actor(selector: &str) {
     std::fs::set_permissions(&main, Permissions::from_mode(0o555)).unwrap();
     let helper_meta = std::fs::symlink_metadata(&main).unwrap();
     let actor = control.join("captured-actor");
-    // Pin the kernel's current executable, not a mutable pathname alias.
     let actor_file = File::open("/proc/self/exe").unwrap();
     let actor_before = actor_file.metadata().unwrap();
     assert!(
@@ -571,14 +559,11 @@ fn run_owned_actor(selector: &str) {
     command
         .arg("--exact")
         .arg(selector)
-        // The positive journeys are ignored outside this harness.
         .arg("--include-ignored")
         .arg("--nocapture")
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", control.display()))
         .env("TMPDIR", &tmp)
-        // The actor's profile durability boundary must be owned and readable;
-        // it must never inherit the builder user's real home directory.
         .env("HOME", &tmp)
         .env("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT", work.path())
         .env("TILO_ORIGINAL_SOURCE_GPT_STORE", &source)
@@ -665,8 +650,6 @@ fn run_owned_actor(selector: &str) {
             .len()
             <= 64 * 1024
     );
-    // Actor's successful prepare returned only after the canonical Controller
-    // observed root-helper retirement; no alternate registration record exists.
     drop(child);
     drop(held);
 }

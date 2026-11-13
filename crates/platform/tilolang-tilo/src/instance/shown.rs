@@ -40,16 +40,6 @@ impl Instance {
         }
         out
     }
-
-    /// Whether a view has something to run again: a reading it took moved, the time it read
-    /// passed, or a record it shows changed
-    /// ([`crate::runtime::ViewInstance::is_stale`]). A slot the host fills moves one — the
-    /// person's own state, given back when their window opens or kept on another device of
-    /// theirs, and what they have seen — so the frame runs the views that read it rather than
-    /// waiting for a change of the person's here.
-    pub(super) fn views_stale(&self) -> bool {
-        self.shown().any(|shown| shown.view.borrow().is_stale())
-    }
 }
 
 /// Every resource the props of `node` and its children refer to, as the app publishes it.

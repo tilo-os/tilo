@@ -12,9 +12,7 @@ use std::collections::BTreeMap;
 
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
-/// The status a report has until the registry knows of it.
 pub const DRAFT_STATUS: &str = "Not submitted";
-/// How long a report's note may be, in characters.
 pub const MAX_REPORT_NOTE_CHARS: usize = 4_096;
 const MAX_REPORT_STATUS_CHARS: usize = 128;
 const MAX_CASE_ID_CHARS: usize = 128;
@@ -35,7 +33,6 @@ pub(crate) fn valid_case_id(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == ':')
 }
 
-/// One app's report: a draft until the registry knows of it, then its case.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 #[model(check = Report::valid)]
 pub struct Report {
@@ -63,13 +60,11 @@ impl Report {
         Ok(())
     }
 
-    /// The registry's case id, once it has one.
     pub fn case_id(&self) -> Option<&str> {
         self.case.as_deref().filter(|case| valid_case_id(case))
     }
 }
 
-/// The reports, by the id of the app each is about.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 #[model(check = Reports::valid)]
 pub struct Reports {
@@ -78,13 +73,6 @@ pub struct Reports {
 }
 
 impl Reports {
-    /// What the record holds: the report drafts, their notes and the moderation case each one
-    /// became.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -99,10 +87,6 @@ impl Reports {
     read_content = Reports::read_document
 )]
 impl Reports {
-    /// Create report draft.
-    ///
-    /// Start a collaborative report about an app, with a note to describe
-    /// it. A report the app already has keeps its note.
     #[action(label = "store-report-create")]
     pub fn draft_report(
         &mut self,
@@ -117,9 +101,6 @@ impl Reports {
         Ok(())
     }
 
-    /// Record a moderation case.
-    ///
-    /// The case the app's registry opened for its report, and its status.
     #[action(external)]
     pub fn record_moderation_case(
         &mut self,
@@ -151,7 +132,6 @@ impl Reports {
         Ok(())
     }
 
-    /// Each report, found by the app it is about and its status.
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
         self.reports
             .iter()
@@ -165,19 +145,15 @@ impl Reports {
             .collect()
     }
 
-    /// The report about `app_id`.
     pub fn report(&self, app_id: &str) -> Option<&Report> {
         self.reports.get(app_id)
     }
 
-    /// The path of the note of `app_id`'s report.
     pub fn note(app_id: &str) -> tilo_resource::Path<Self, String> {
         Self::paths().reports.key(app_id).note
     }
 }
 
-/// The id of the live row a report is published as: its case once the
-/// registry has one, else `report:<app id>`.
 pub fn report_row_id(app_id: &str, report: &Report) -> String {
     report
         .case_id()

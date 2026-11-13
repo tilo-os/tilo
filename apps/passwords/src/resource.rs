@@ -1,8 +1,4 @@
-//! Passwords as a framework app. The vault is this device's encrypted
-//! credential store, not a document: the view publishes its items as live rows,
-//! and everything Passwords does with them is a [`PasswordsEffect`]. The
-//! resource's model holds nothing, so no secret can sync; the place shown
-//! and the open item are this window's own view state.
+//! The vault's rows and effects, published as a framework app.
 
 use ui::framework::{EffectStatus, Effected, Fixture, Publishes, ResourceApp, RunMode, ViewCx};
 use ui::tilo_resource::{self, Model, resource};
@@ -15,19 +11,12 @@ use crate::window::PasswordsWindow;
 #[path = "credential_owner_tests.rs"]
 mod credential_owner_tests;
 
-/// The password vault resource: the door the vault's rows and effects are
-/// published on. It stores nothing; the vault is the device's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Passwords {}
 
 impl Passwords {
     /// What the record holds: nothing — the vault is this device's encrypted store, and no
     /// secret syncs.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -42,22 +31,19 @@ impl Passwords {
 )]
 impl Passwords {}
 
-/// A capture shows the fixture vault in place of the person's.
 pub struct DemoVault;
 
-/// Framework app: the passwords window over [`Passwords`].
 pub struct PasswordsShell;
 
 impl ResourceApp for PasswordsShell {
     type Resource = Passwords;
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
+    const TITLE_KEY: &'static str = "passwords-app-title";
     const ICON: Option<&'static str> = Some("passwords");
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
-    // The window shows secrets: captures, recordings and remote viewers get
-    // a placeholder in every launch.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
         capture_protected: true,
         ..ui::application::ComponentBehaviour::DEFAULT
@@ -89,7 +75,6 @@ impl ResourceApp for PasswordsShell {
             Publishes::new()
                 .live_rows(move || rows.borrow().item_rows())
                 .live_row(move |id| row.borrow().item_row(id))
-                // Non-secret metadata only, for the framework's one index.
                 .search_entries(move || crate::search::entries(&entries.borrow().items))
                 .secrets_unlocked(move || unlocked.borrow().secrets_unlocked()),
             Box::new(window),
@@ -100,16 +85,15 @@ impl ResourceApp for PasswordsShell {
         crate::window::SCENARIOS
     }
 
-    /// A screenshot never opens the person's vault: it shows synthetic items
-    /// with no store behind them.
+    /// A screenshot never opens the person's vault: it shows synthetic items with no store
+    /// behind them.
     fn fixture(fixture: &mut Fixture<Passwords>) {
         fixture.provide(DemoVault);
     }
 }
 
-/// Answer what the palette, an agent, a script or a search hit asks of the
-/// vault; the window brings itself in step on its next sync. Saving,
-/// cancelling and generating need an item open in the editor.
+/// Answer what the palette, an agent, a script or a search hit asks of the vault; the
+/// window brings itself in step on its next sync.
 fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared) {
     let (answer, status) = (vault.clone(), vault.clone());
     cx.effects(move |effect: PasswordsEffect, _| {
@@ -150,8 +134,8 @@ mod tests {
         const { assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected) };
     }
 
-    /// A private profile whose vault is the test's own: its key in an
-    /// in-process secret store, its file in a scratch home.
+    /// A private profile whose vault is the test's own: its key in an in-process secret
+    /// store, its file in a scratch home.
     struct Profile {
         _home: tempfile::TempDir,
         _paths: tilo_paths::ProfileScope,
@@ -276,7 +260,6 @@ mod tests {
             "nothing to save before an item is opened"
         );
 
-        // Copying hands out the secret, so it asks first.
         let copy = row
             .actions
             .iter()
@@ -294,8 +277,6 @@ mod tests {
             "a password is copied as a secret, out of history and device sync"
         );
 
-        // Filtering and opening are this window's own view: nothing in the
-        // document changes and no history is written.
         let versions = app.versions().len();
         app.effect_on(&row_id, &PasswordsEffect::Open { item: id.0.clone() })
             .unwrap();
@@ -311,7 +292,6 @@ mod tests {
         );
         assert_eq!(app.versions().len(), versions);
 
-        // Deleting asks first, then removes the item from the vault.
         assert!(
             app.effect(&PasswordsEffect::Delete { item: id.0.clone() })
                 .is_err(),
@@ -324,8 +304,8 @@ mod tests {
         assert!(published(&mut app, &row_id).is_none(), "its row is gone");
     }
 
-    /// Opening an item's anchor, as a search hit or an agent does, shows
-    /// it even where a filter hid it; an item the vault lacks is refused.
+    /// Opening an item's anchor, as a search hit or an agent does, shows it even where a
+    /// filter hid it; an item the vault lacks is refused.
     #[test]
     fn opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks() {
         let _profile = profile();
@@ -362,8 +342,8 @@ mod tests {
         );
     }
 
-    /// A favorite is vault state an agent, a script or a screen reader sets
-    /// by the item's id, not only by the row's star.
+    /// A favorite is vault state an agent, a script or a screen reader sets by the item's
+    /// id, not only by the row's star.
     #[test]
     fn an_item_is_made_a_favorite_and_back_by_its_action() {
         let _profile = profile();
@@ -434,9 +414,10 @@ mod tests {
         );
     }
 
-    /// A login an agent or a script saves in one step lands in the vault and is listed by its
-    /// name; the password it was given is in the vault alone: the action takes it as a secret, and
-    /// it is in none of what Passwords publishes, answers or a log of the call would print.
+    /// A login an agent or a script saves in one step lands in the vault and is listed by
+    /// its name; the password it was given is in the vault alone: the action takes it as a
+    /// secret, and it is in none of what Passwords publishes, answers or a log of the call
+    /// would print.
     #[test]
     fn a_login_saved_in_one_step_lands_in_the_vault_and_its_password_nowhere_else() {
         use ui::tilo_actions::{ActionArgs, ParamType};
@@ -542,8 +523,8 @@ ui::reach_tests!(PasswordsShell);
 
 #[cfg(test)]
 mod window_bar_tests {
-    /// The window bar's sidebar button flips the sidebar on every click, in a
-    /// window wide enough to dock it and in a narrow one.
+    /// The window bar's sidebar button flips the sidebar on every click, in a window wide
+    /// enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(

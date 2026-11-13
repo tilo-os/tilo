@@ -1,6 +1,6 @@
-//! The data views: DataTable, TreeView, ConversationList, CardGrid and ActivityTimeline as
-//! described components — their parts read from their slots, what a person does to them
-//! reported with the item each stands for, and what changed taken in place.
+//! The data views: DataTable, TreeView, ConversationList, CardGrid and ActivityTimeline as described
+//! components — their parts read from their slots, what a person does to them reported with the item
+//! each is, and what changed taken in place.
 
 #![allow(
     clippy::unwrap_used,
@@ -160,10 +160,10 @@ fn a_card_grid_reads_its_cards_and_a_press_reports_the_resource_it_shows() {
     );
 }
 
-/// A grid given its cards in place keeps each card's own widget and takes what the card now
+/// A grid given its cards in place keeps each card widget and takes what the card now
 /// says: the props name the cards and carry none of their bodies, so a card rebuilt from them
 /// would show nothing, and one replaced would lose its body and what the person was doing in
-/// it. A card that says something else changes on the card where it stands.
+/// it. A card that says something else changes on the card where it is.
 #[test]
 fn a_card_grid_takes_its_cards_in_place_while_they_are_the_cards_it_shows() {
     let queue = crate::Intents::default();
@@ -216,8 +216,6 @@ fn a_card_grid_takes_its_cards_in_place_while_they_are_the_cards_it_shows() {
         names(&host)
     );
 
-    // One card retitled: the cards' own widgets stay where they stand, and the one that says
-    // something else says it.
     assert!(
         host.root_mut::<crate::widget::DescribedCardGrid>()
             .set_props(reading(&[("doc/a:1", "Alpha"), ("doc/a:2", "Beta II")])),
@@ -263,8 +261,6 @@ fn a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows() {
     assert_eq!(props.nodes.len(), 3);
     let host = harness(crate::widget::DescribedTreeView::from_props("files", props));
     let root = host.root::<crate::widget::DescribedTreeView>();
-    // A node's stable name follows the resource it stands for, not where it stands: the rows
-    // coming in another order leave each of them its name.
     let root_key = root.row_key("doc/dir:root").expect("the root's key");
     assert_ne!(
         root_key,
@@ -353,8 +349,6 @@ fn an_activity_timeline_reads_its_changes_and_reports_the_one_reverted() {
     assert_eq!(widget.timeline().entries().len(), 2);
 }
 
-/// Placed among a page's other content, a timeline is as tall as its rows: it does not grow
-/// past the box the page gives it (it fills its box only where the view says so).
 #[test]
 fn a_timeline_among_a_pages_content_is_as_tall_as_its_rows() {
     let queue = crate::Intents::default();

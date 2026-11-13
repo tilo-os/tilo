@@ -8,11 +8,8 @@
 use crate::Key;
 use crate::day_schedule::{Location, parse_iso6709};
 
-/// The section holding this device's clock settings.
 pub const SECTION: &str = "clock";
 
-/// Whether the time zone follows the device's location. Off until the
-/// person chooses it: the zone set at installation stays until then.
 pub const AUTOMATIC_ZONE: Key<bool> = Key::new(SECTION, "automatic_zone", || false);
 
 /// The tzdata tables that place each zone's city, the 1970 one first.
@@ -21,8 +18,6 @@ pub const ZONE_TABLES: [&str; 2] = [
     "/usr/share/zoneinfo/zone.tab",
 ];
 
-/// The zone of the city nearest `location` in a `zone1970.tab`/`zone.tab`
-/// body, by great-circle distance.
 #[must_use]
 pub fn nearest_zone_in(location: Location, table: &str) -> Option<String> {
     table
@@ -39,7 +34,6 @@ pub fn nearest_zone_in(location: Location, table: &str) -> Option<String> {
         .map(|(zone, _)| zone.to_owned())
 }
 
-/// The angle between two places on the globe, in radians.
 fn apart(a: Location, b: Location) -> f64 {
     let (lat_a, lat_b) = (a.latitude.to_radians(), b.latitude.to_radians());
     let delta = (a.longitude - b.longitude).to_radians();

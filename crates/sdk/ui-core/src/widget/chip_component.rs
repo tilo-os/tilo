@@ -7,9 +7,8 @@ use super::ChipStyle;
 use super::{Chip, ChipLead};
 use crate::widget::{Press, Tone};
 
-/// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an
-/// applied filter. Pressing it opens or applies what it names; a chip that can be taken away
-/// has a trailing remove button; a filter chip shows whether it is on.
+/// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied
+/// filter.
 #[derive(Component, Default)]
 #[component(name = "Chip", role = "Button", label = "label")]
 pub struct ChipProps {
@@ -18,15 +17,15 @@ pub struct ChipProps {
     pub label: String,
     /// A glyph before the label, for a chip that names an action rather than a value.
     pub icon: Option<Icon>,
-    /// The tone the chip reads in: what it names is a status (a priority, a state of an item),
-    /// and its pill is washed in that tone. `Neutral` for a chip that only names something.
+    /// The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill
+    /// is washed in that tone.
     pub tone: Tone,
     /// Whether the filter it stands for is on; without it the chip is no filter.
     pub selected: Option<bool>,
     /// It was pressed: open or apply what it names.
     #[component(event(press))]
     pub press: Event,
-    /// Its remove button was pressed: take it away. A chip with this has the button.
+    /// Its remove button was pressed: take it away.
     #[component(event(press))]
     pub remove: Event,
 }
@@ -62,8 +61,6 @@ impl Described for Chip {
         chip
     }
 
-    /// What it names, the glyph or tone it reads in, whether it is chosen and what its press and
-    /// its "×" do change where the chip stands: a chip under the pointer keeps its hover.
     fn set_props(&mut self, props: ChipProps) -> bool {
         let ChipProps {
             label,
@@ -77,7 +74,6 @@ impl Described for Chip {
             self.label.clone_from(&label);
             self.footprint = None;
         }
-        // A face leads the chip it names; another glyph leads one that names no face.
         if icon.is_some() || !matches!(self.lead, ChipLead::Face(_)) {
             self.lead = icon.map_or(ChipLead::None, ChipLead::Glyph);
         }

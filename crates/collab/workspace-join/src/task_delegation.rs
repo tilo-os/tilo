@@ -27,9 +27,7 @@ use crate::delegation::{DelegationError, MAX_DELEGATE_TEXT_BYTES};
 pub const MAX_TASK_DELEGATION_NS: u64 = 24 * 3600 * 1_000_000_000;
 /// Longest work group, the task's address.
 pub const MAX_WORK_GROUP_BYTES: usize = 256;
-/// What every task agent's id starts with: a task agent is never a
-/// collaborator, whose ids the workspace's governance admits.
-pub const TASK_AGENT_PREFIX: &str = "task-";
+pub use collab_types::presence::{TASK_AGENT_PREFIX, is_task_agent};
 
 const TASK_DELEGATION_DOMAIN: &[u8] = b"tilo-task-delegation-v1\0";
 
@@ -88,12 +86,6 @@ fn hex_of(bytes: &[u8]) -> String {
         .flat_map(|byte| [byte >> 4, byte & 0x0f])
         .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
         .collect()
-}
-
-/// Whether `agent_id` names a task agent rather than a collaborator.
-#[must_use]
-pub fn is_task_agent(agent_id: &str) -> bool {
-    agent_id.starts_with(TASK_AGENT_PREFIX)
 }
 
 impl TaskDelegation {

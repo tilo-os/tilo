@@ -23,38 +23,25 @@ use super::{
 use crate::actions::SheetsEffect;
 use crate::workbook::{SheetSnapshot, Workbook};
 
-/// What an effect asked of the grid, done when it next syncs.
 pub(super) enum Ask {
-    /// Show what a view effect names: a cell, the formulas, a sheet.
     Show(SheetsEffect),
-    /// Open the command palette on the workbook's actions.
     Commands,
-    /// Say what happened in the status.
     Status(String),
-    /// Show a sheet with one of its cells selected.
     Reveal(PendingReveal),
-    /// Stage a capture's scenario (`None` for a plain capture).
     Stage(Option<String>),
 }
 
-/// What the grid and the view's effect handler share.
 pub(crate) struct Store {
-    /// The store the host lends the window: workbooks imported from and
-    /// exported as content are read and kept there.
     content: Option<ContentStore>,
-    /// The sheet the grid shows, which a CSV export writes.
     pub(super) active_sheet: Option<Id>,
-    /// The currency typed amounts are read in, as the grid shows them.
     pub(super) currency: Currency,
     /// The edits last bound to the selection, with what they were built
     /// from: every publication asks for them, and they change only with the
     /// workbook, the selection or the locale.
     pub(super) selection: Option<(SelectionKey, Vec<ActionDecl<Workbook>>)>,
-    /// What effects asked of the grid since it last synced.
     pub(super) asks: Vec<Ask>,
 }
 
-/// The [`Store`] as the grid and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Default for Store {
@@ -86,7 +73,6 @@ impl Store {
             .clone()
     }
 
-    /// The edits bound to the selection now.
     pub(super) fn selection_declarations(&self) -> Vec<ActionDecl<Workbook>> {
         self.selection
             .as_ref()
@@ -94,8 +80,6 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// Answer one of the workbook's effects: reading or writing a file is a
-    /// job, a view changes what is shown once the grid syncs.
     fn answer(
         &mut self,
         effect: SheetsEffect,
@@ -153,9 +137,6 @@ impl Store {
         }
     }
 
-    /// Import a spreadsheet file into new sheets: the one at `path`, or the
-    /// one the person chooses. A file the workbook already holds is shown
-    /// instead of imported again.
     fn import(
         &mut self,
         format: Interchange,
@@ -182,7 +163,6 @@ impl Store {
                         ui::format::memory(MAX_IMPORT_FILE_BYTES)
                     ));
                 }
-                // The same file chosen again is shown, not imported twice.
                 let source = file.identity.as_ref().map(ToString::to_string);
                 if let Some(source) = &source
                     && store.show_imported(&cx.live().get(), source, &file.name)
@@ -219,8 +199,6 @@ impl Store {
         )
     }
 
-    /// Show the sheet the file `source` was already imported as, if any:
-    /// whether there was one.
     fn show_imported(&mut self, workbook: &Workbook, source: &str, label: &str) -> bool {
         let open = workbook
             .sheets
@@ -241,8 +219,6 @@ impl Store {
         true
     }
 
-    /// Add the sheets a file was read into as one action, and show the last
-    /// of them once it is applied.
     fn finish_import(
         &mut self,
         tables: Result<Vec<crate::xlsx::SheetTable>, String>,
@@ -284,8 +260,6 @@ impl Store {
             .clone()
             .filter(|id| workbook.sheet(id).is_some());
         let sheets: Vec<SheetSnapshot> = match format {
-            // A workbook exports as itself; there is no file to write a
-            // Notion export into.
             Interchange::Notion => Vec::new(),
             Interchange::Csv => active
                 .as_ref()
@@ -348,7 +322,6 @@ impl Store {
         }))
     }
 
-    /// Report a failed import or export, and fail its effect.
     pub(super) fn failed(&mut self, error: String) -> EffectAnswer {
         self.ask(Ask::Status(format!(
             "Spreadsheet operation failed: {error}"
@@ -356,10 +329,6 @@ impl Store {
         Err(error)
     }
 
-    /// Add the sheets of the `.xlsx` workbook at `content` (a
-    /// `tilo.content:<hash>` address) as one step, naming the workbook
-    /// `title` when it has no name yet. Content imported before is not added
-    /// again: the answer names the sheets it became.
     fn import_xlsx_content(
         &mut self,
         content: &str,
@@ -416,8 +385,6 @@ impl Store {
         })))
     }
 
-    /// Keep every sheet as an `.xlsx` workbook in the content store and
-    /// answer its address.
     fn export_xlsx_content(&mut self, workbook: &Workbook) -> EffectAnswer {
         let sheets = workbook_snapshots(workbook);
         let bytes = SheetsApp::encode_tables(Interchange::Xlsx, &sheets)?;
@@ -429,8 +396,6 @@ impl Store {
     }
 }
 
-/// Every sheet as the file formats take it, a sheet whose formulas read
-/// others evaluated with the workbook.
 fn workbook_snapshots(workbook: &Workbook) -> Vec<SheetSnapshot> {
     workbook
         .sheets
@@ -439,9 +404,6 @@ fn workbook_snapshots(workbook: &Workbook) -> Vec<SheetSnapshot> {
         .collect()
 }
 
-/// The view of the workbook: `app` follows the document, its [`Store`]
-/// answers the effects, and the view binds the edits of the selection
-/// beside it.
 pub(crate) fn window(cx: &ViewCx<Workbook>, mut app: SheetsApp) -> Element {
     app.store.borrow_mut().attach_content(cx.content());
     if let Some(path) = cx.launch_arguments().first() {
@@ -450,7 +412,6 @@ pub(crate) fn window(cx: &ViewCx<Workbook>, mut app: SheetsApp) -> Element {
     app.attach_framework(cx.dispatcher(), cx.live().clone());
     app.attach_people(cx.people());
     app.follow_locale(cx.settings::<Locale>());
-    // A search hit, or an agent's `open`, shows the sheet or cell it names.
     cx.on_open(app.opener());
     let store = Rc::clone(&app.store);
     {

@@ -18,13 +18,38 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Draft",
+    "Head",
+    "StepNode",
     "Workbench",
 ]
 
+class Draft(TypedDict):
+    name: str
+    shortcut_id: str
+    inputs: list[Any]
+    steps: list[StepNode]
+    output: Any | None
+    triggers: list[Any]
+    step_timeout_secs: int | None
+    replaces_saved: bool
+
+Head = dict[str, Any]
+"""One of invoke, if, for_each, set_var, ask, ai, task, read: an object whose case the app tags it with."""
+
+class StepNode(TypedDict):
+    parent: str
+    branch: str
+    id: str
+    head: Head | None
+    args: dict[str, Any]
+    on_error: Any
+
 class Workbench(Resource):
     """Shortcuts — `shortcuts.workbench`."""
-    drafts: Any
-    ignored: Any
+    __surface__ = "so.tilo.shortcuts@720723bfb1ff289c"
+    drafts: list[Draft]
+    ignored: list[str]
 
     def draft_proposal(self, *, shortcut: Any) -> Run | None:
         """Runs the app's action."""

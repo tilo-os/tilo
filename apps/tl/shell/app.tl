@@ -2,14 +2,14 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 
 use so.tilo.session as session
 
-/// This device's desk as the session holds it: the time in the person's style, who they are,
-/// their notifications, the workspaces on this device, the tasks running for them and the
-/// surface the desk shows over its windows. The session keeps it in step; the shell's views
+/// This device's desk: the time in the person's style, who they are, their notifications, the
+/// workspaces on this device, the tasks running for them and the surface the desk shows over
+/// its windows. The session keeps it in step; the shell's views
 /// read it. Its text is the session's to replace whole, never edited here: each is a register,
 /// not text to merge.
 type Desk (origin: session.desk) {
     person: Text merge register
-    /// The surface the person is in: `none` at rest, else one of `surface`'s names.
+    /// The surface the person is in, such as the overview or the notifications; empty at rest.
     here: Text merge register
     /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
     switcher_revealed: Bool
@@ -28,7 +28,7 @@ type Desk (origin: session.desk) {
     timer_left: Text merge register
     timer_paused: Bool
     timer_stopwatch: Bool
-    /// The question the session puts to the person about themselves; empty when none waits.
+    /// The question the person is asked about themselves; empty when none waits.
     ask: Text merge register
     /// What answering the question brings.
     ask_detail: Text merge register
@@ -58,17 +58,19 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
+    /// The applications installed on this device: what the launcher lists and opens.
+    apps: Collection<App>
     /// The desk styles every installed package offers, as the session publishes them: each
     /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
     /// names one of them in `Viewing.style`.
     styles: Collection<DeskStyle>
 }
 
-/// A desk style: a view of the arrangement an installed package declares, as the session
-/// finds it (`shell.md` §6). Its `style` is the view reference the person's choice keeps
+/// A desk style: a view of the arrangement an installed app declares. Its `style` is the view
+/// reference the person's choice keeps
 /// (`so.tilo.shell:strips`, `me.styles:timeline`).
 type DeskStyle (origin: session.desk_style) {
-    /// The style, by the view reference it names: what the session keeps it by.
+    /// The style's view reference, which the record keeps it by.
     key: Text merge register
     /// The view reference: a package and a view, what `Viewing.style` names.
     style: Text merge register
@@ -78,13 +80,28 @@ type DeskStyle (origin: session.desk_style) {
     name: Text merge register
     /// The view's doc line, in its author's words: what the switch lists it by.
     line: Text merge register
-    /// Whether the style loads: false for one whose package does not compile against the shell
-    /// and the session, or whose view failed when it ran, so the switch can say so and the desk
-    /// shows the built-in strips until it is fixed (`shell.md` §6).
+    /// Whether the style loads: false for one whose app is not here or does not work with this
+    /// desk, or whose view failed when it ran, so the switch can say so and the desk shows the
+    /// built-in strips until it is fixed.
     loads: Bool
-    /// Why the style does not load, in the runtime's words, when it does not; empty when it
-    /// does.
+    /// Why the style does not load, in the words it failed with, when it does not; empty when
+    /// it does.
     reason: Text
+}
+
+/// An application installed on this device, as the launcher lists it: its package id, its name in
+/// the person's language, the glyph it shows, and how it opens.
+type App (origin: session.application) {
+    /// Its package id, which `open_app` names it by.
+    key: Text merge register
+    /// Its name in the person's interface language.
+    name: Text merge register
+    /// The glyph it shows, by the platform icon's kebab-case name.
+    icon: Text merge register
+    /// Its category (`work`, `media`, `play`, `system`), empty when it named none.
+    category: Text merge register
+    /// What it is for, in a few words; empty when it offers none.
+    description: Text merge register
 }
 
 /// A workspace on this device.
@@ -219,10 +236,21 @@ default view shell_settings for Shell
 view desk_view(a: Arrangement) {
     let d = root Desk
     let chosen = style_of(viewing)
-    if loads_style(d, chosen) {
-        show(a, view: chosen, fill)
-    } else {
-        show(a, view: "so.tilo.shell:strips", fill)
+    layers {
+        if loads_style(d, chosen) {
+            show(a, view: chosen, fill)
+        } else {
+            show(a, view: "so.tilo.shell:strips", fill)
+        }
+        // The chosen style's own settings, over whatever the style drew: the system's one
+        // settings place for a desk style, opened from the bar's style menu (`style_menu`,
+        // `strips.tl`) and drawn here rather than by each style, so every style — the shipped
+        // four and any a person or agent wrote — gets settings at the same place and by the
+        // same actions (`shell.md` §6, "Two ways to change a desk"). A style that draws no bar
+        // is reached by Settings, which shows the same panel.
+        if shell.settings_open {
+            style_panel(d)
+        }
     }
 }
 

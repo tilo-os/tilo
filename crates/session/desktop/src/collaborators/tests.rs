@@ -594,11 +594,11 @@ fn agent_classification_uses_stable_identity_not_display_label() {
     let node = workspace.node();
     workspace.grant(tilo_action_policy::Grant::new(
         "agent-member:scribe",
-        tilo_action_policy::Subject::agent("scribe"),
+        tilo_action_policy::Grantee::agent("scribe"),
         node,
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
+        tilo_action_policy::Grantee::person("owner"),
     ));
     workspace
         .collaborators

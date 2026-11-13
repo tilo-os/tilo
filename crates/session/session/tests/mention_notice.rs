@@ -81,7 +81,7 @@ fn notebook(workspace: &str, person: &str) -> AutoCommit {
 
 /// The store's key of `app`'s [`RECORD`] in `workspace`.
 fn key_of(app: &str, workspace: &str) -> StorageKey {
-    StorageKey::record(
+    StorageKey::document(
         app,
         workspace,
         RecordId::parse(RECORD).expect("a record id").storage_key(),

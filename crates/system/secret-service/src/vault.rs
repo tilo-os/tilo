@@ -1,10 +1,4 @@
 //! The vault: everything the store keeps, as one value that is sealed whole.
-//!
-//! Collections hold items; each item has an owner, the identity that made
-//! it. The ledger records every identity that ever used the store, whether
-//! it is still allowed, and when it last did. The vault also holds the
-//! per-app master secrets the desktop portal hands to sandboxed apps, and
-//! the outcome of importing an older keyring.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,13 +7,10 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
 
-use crate::app::{AppId, Trust};
+use crate::app::{CallerId, Trust};
 
-/// The vault layout this build writes.
 pub const VAULT_VERSION: u32 = 1;
-/// The collection libsecret's `default` alias names.
 pub const LOGIN_COLLECTION: &str = "login";
-/// The in-memory collection of libsecret's `session` alias.
 pub const SESSION_COLLECTION: &str = "session";
 
 /// Secret bytes, wiped when dropped and never printed.
@@ -82,11 +73,9 @@ impl<'de> Deserialize<'de> for SecretBytes {
     }
 }
 
-/// Who made an item, and so who may read it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Owner {
-    /// Made by this identity; only it reads it.
-    App(AppId),
+    App(CallerId),
     /// Brought over from an older keyring. Apps of the system read it; an
     /// application the person merely runs does not.
     Imported,
@@ -95,7 +84,7 @@ pub enum Owner {
 impl Owner {
     /// Whether `caller` may see an item with this owner.
     #[must_use]
-    pub fn admits(&self, caller: &AppId) -> bool {
+    pub fn admits(&self, caller: &CallerId) -> bool {
         match self {
             Self::App(owner) => owner == caller,
             Self::Imported => caller.trust() == Trust::System,
@@ -119,7 +108,6 @@ pub struct Collection {
     pub label: String,
     pub created: u64,
     pub modified: u64,
-    /// Kept in memory only, like libsecret's `session` collection.
     pub transient: bool,
     /// Keyed by a random 128-bit hexadecimal id: the id is the item's
     /// D-Bus path, and is not guessable.
@@ -132,7 +120,6 @@ pub enum Access {
     Revoked,
 }
 
-/// What the store knows of one application.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppRecord {
     pub first_seen: u64,
@@ -141,7 +128,6 @@ pub struct AppRecord {
     pub access: Access,
 }
 
-/// The outcome of importing an older keyring.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Migration {
     pub source: String,
@@ -154,8 +140,7 @@ pub struct Vault {
     pub version: u32,
     pub collections: BTreeMap<String, Collection>,
     pub aliases: BTreeMap<String, String>,
-    /// Keyed by [`AppId`].
-    pub apps: BTreeMap<AppId, AppRecord>,
+    pub apps: BTreeMap<CallerId, AppRecord>,
     /// The portal's per-application master secrets, keyed by the app's
     /// package id.
     pub sandbox_secrets: BTreeMap<String, SecretBytes>,
@@ -190,7 +175,6 @@ impl Vault {
         }
     }
 
-    /// The collection `name_or_alias` names.
     #[must_use]
     pub fn resolve<'a>(&'a self, name_or_alias: &'a str) -> &'a str {
         self.aliases
@@ -216,8 +200,8 @@ mod tests {
 
     #[test]
     fn imported_items_are_for_the_system_and_own_items_for_their_owner() {
-        let system = AppId::parse("binary:/usr/bin/chromium").unwrap();
-        let local = AppId::parse("local-process:/home/me/tool").unwrap();
+        let system = CallerId::parse("binary:/usr/bin/chromium").unwrap();
+        let local = CallerId::parse("local-process:/home/me/tool").unwrap();
         assert!(Owner::Imported.admits(&system));
         assert!(!Owner::Imported.admits(&local));
         assert!(Owner::App(local.clone()).admits(&local));

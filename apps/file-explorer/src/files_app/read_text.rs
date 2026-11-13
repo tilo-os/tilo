@@ -1,21 +1,12 @@
 //! Reading what a file says, for a caller with no screen.
-//!
-//! A person reads a file by opening it; an agent asked to summarise,
-//! quote or mail what the selected files say reads them here. The answer is
-//! the file's text in parts of [`MAX_READ_CHARS`], each saying where the
-//! next starts, so a long book reads in a few calls and a short note in
-//! one.
 
 use std::path::PathBuf;
 
 use super::FilesState;
 
-/// The most characters one read answers with.
 pub const MAX_READ_CHARS: usize = 64 * 1024;
 
 impl FilesState {
-    /// The file `file` names: an absolute path, a name in the folder shown,
-    /// or the row id of an entry this window publishes.
     pub(super) fn named_file(&self, file: &str) -> Result<PathBuf, String> {
         let file = file.trim();
         if file.is_empty() {
@@ -36,8 +27,6 @@ impl FilesState {
         ))
     }
 
-    /// What `file` says, from character `from` on, at most
-    /// [`MAX_READ_CHARS`] of it.
     pub(super) fn read_text_answer(
         &self,
         file: &str,
@@ -48,8 +37,6 @@ impl FilesState {
         Ok(page(&path, &read, from.unwrap_or(0)))
     }
 
-    /// The bytes of `file`, kept in this window's content store; their
-    /// content hash.
     pub(crate) fn hand_over(&self, file: &str) -> Result<String, String> {
         let path = self.named_file(file)?;
         let bytes = crate::documents::read_file(&path)?;
@@ -60,7 +47,6 @@ impl FilesState {
             .map_err(|error| format!("{} could not be handed over: {error}", path.display()))
     }
 
-    /// The selected entries, with their paths, changing nothing.
     pub(super) fn selected_entries_answer(&self) -> serde_json::Value {
         let mut answer = self.selection_answer();
         let paths: Vec<String> = self
@@ -80,7 +66,6 @@ impl FilesState {
     }
 }
 
-/// The part of `read` from character `from` on.
 fn page(
     path: &std::path::Path,
     read: &crate::documents::FileText,

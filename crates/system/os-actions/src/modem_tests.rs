@@ -4,9 +4,8 @@
     reason = "a private D-Bus fixture must start before the reader under test is asked"
 )]
 
-//! The reader and the SIM operations against a scripted `ModemManager` on
-//! a private bus: no modem, a SIM asking for its PIN, a SIM asking for its
-//! PUK, registered at home, roaming, and a modem with two SIM slots.
+//! The reader and the SIM operations against a scripted `ModemManager` on a private
+//! bus: no modem, a SIM asking for its PIN, a SIM locked after wrong codes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,7 +21,6 @@ const SIM_1: &str = "/org/freedesktop/ModemManager1/SIM/0";
 const SIM_2: &str = "/org/freedesktop/ModemManager1/SIM/1";
 const BEARER: &str = "/org/freedesktop/ModemManager1/Bearer/0";
 
-/// What the scripted modem reports and what it was asked.
 #[derive(Clone)]
 struct Script {
     state: i32,
@@ -319,7 +317,6 @@ impl FakeBearer {
     }
 }
 
-/// A scripted `ModemManager` on a private bus, and a client of it.
 struct Fixture {
     _bus: PrivateBus,
     _server: zbus::Connection,
@@ -328,7 +325,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// `ModemManager` with `script`'s modem, or (`None`) with no modem.
     fn new(script: Option<Script>) -> Self {
         let bus = PrivateBus::start();
         let modem = script.is_some();

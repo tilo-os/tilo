@@ -1,35 +1,6 @@
-//! Input→frame latency of Settings beside its navigation list, through the
-//! path a host drives an app it shows.
-//!
-//! The window is the real Settings window on a fresh private profile, at
-//! 1280×900, scale 1. Every input goes through
-//! [`ui::app::App::surface_input`] and is followed by the host's frame
-//! ([`ui::app::App::surface_frame_with_damage`] until the app is at rest,
-//! then the accessibility walk the host reads), as `notes-latency` drives
-//! Notes.
-//!
-//! The navigation list (every category, with its icon) stands beside the
-//! pane through every workload; none of them changes it:
-//!
-//! * `type`: a character typed into the first text field a pane shows (the
-//!   harness opens categories through the list's own `activate` action
-//!   until one shows a field other than the window's filter);
-//! * `pointer`: the pointer moving a few pixels at a time over the pane;
-//! * `idle`: a host frame with no input at all.
-//!
-//! For each it prints the p50, p99 and largest **to frame** time (from the
-//! input to the end of the host frame that shows it: input handling, sync,
-//! layout, the scene and the accessibility walk) and the p50 of the
-//! accessibility walk alone (`a11y`). The walk is what a keystroke beside a
-//! navigation list pays for the list's rows.
-//!
-//! ```text
-//! cargo run --release -p settings --example settings-latency
-//! cargo run --release -p settings --example settings-latency -- keys=400 moves=200
-//! ```
-//!
-//! The last line is `SETTINGS-LATENCY {json}` with every figure, in
-//! milliseconds.
+//! Input→frame latency of Settings beside its navigation list, through the path
+//! a host drives an app it shows. The window is the real Settings window on a
+//! fresh private profile, at 1280×900, scale 1.
 
 use settings::SettingsShell;
 use ui::a11y::Role;
@@ -46,7 +17,6 @@ const HEIGHT: u32 = 900;
 
 type Failure = Box<dyn std::error::Error>;
 
-/// The app's window region, at scale 1.
 struct Region;
 
 impl AppSurface for Region {
@@ -60,7 +30,6 @@ impl AppSurface for Region {
     fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
 }
 
-/// What the run was asked for.
 #[derive(Clone, Copy)]
 struct Options {
     keys: usize,
@@ -90,11 +59,9 @@ impl Options {
     }
 }
 
-/// The host around the app: its frame and its damage.
 struct Host {
     damage: SurfaceDamage,
     scene: Scene,
-    /// The accessibility walk of the last frame, in milliseconds.
     walk_ms: f64,
 }
 
@@ -125,7 +92,6 @@ impl Host {
     }
 }
 
-/// One timed input: to the end of its frame, and the walk within it.
 #[derive(Clone, Copy)]
 struct Sample {
     frame_ms: f64,
@@ -148,7 +114,6 @@ fn millis(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1e3
 }
 
-/// The navigation list's rows, in reading order: their ids and names.
 fn navigation_rows(app: &App) -> Vec<(ui::a11y_tree::SemanticId, String)> {
     app.semantic_tree()
         .iter()
@@ -157,7 +122,6 @@ fn navigation_rows(app: &App) -> Vec<(ui::a11y_tree::SemanticId, String)> {
         .collect()
 }
 
-/// A text field the open pane shows, other than the window's filter.
 fn pane_field(app: &App) -> Option<(ui::a11y_tree::SemanticId, String, vello::kurbo::Rect)> {
     app.semantic_tree()
         .iter()
@@ -197,7 +161,6 @@ fn open_a_field(app: &mut App, host: &mut Host) -> Result<(String, String), Fail
     }
     let mut seen = Vec::new();
     for (_, category) in rows {
-        // Ids are per frame: look the row up again after each switch.
         let Some((row, _)) = navigation_rows(app)
             .into_iter()
             .find(|(_, name)| *name == category)
@@ -205,7 +168,6 @@ fn open_a_field(app: &mut App, host: &mut Host) -> Result<(String, String), Fail
             continue;
         };
         app.invoke_semantic_action(&row, "activate", None)?;
-        // A pane may load its content off the frame: give it a moment.
         let opened = Instant::now();
         let mut found = None;
         while found.is_none() && opened.elapsed() < std::time::Duration::from_secs(2) {
@@ -218,7 +180,6 @@ fn open_a_field(app: &mut App, host: &mut Host) -> Result<(String, String), Fail
         if let Some((field, name, bounds)) = found {
             app.invoke_semantic_action(&field, "focus", None)?;
             host.frame(app);
-            // And a click into it, as a person focuses a field.
             let centre = bounds.center();
             app.surface_input(&Region, cursor_moved(centre.x, centre.y), false);
             app.surface_input(&Region, mouse_press(), false);
@@ -233,7 +194,6 @@ fn open_a_field(app: &mut App, host: &mut Host) -> Result<(String, String), Fail
     Err(format!("no category shows a text field: {seen:#?}").into())
 }
 
-/// The focused field's value, as the semantic tree publishes it.
 fn focused_value(app: &App) -> Option<String> {
     app.semantic_tree()
         .iter()
@@ -241,7 +201,6 @@ fn focused_value(app: &App) -> Option<String> {
         .map(|node| node.value.clone().unwrap_or_default())
 }
 
-/// Every text field published, for a failure to say what it saw.
 fn text_fields(app: &App) -> Vec<String> {
     app.semantic_tree()
         .iter()
@@ -255,7 +214,6 @@ fn text_fields(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// Type `keys` characters into the focused field, one sample each.
 fn typing(app: &mut App, host: &mut Host, keys: usize) -> Result<Vec<Sample>, Failure> {
     let before = focused_value(app)
         .ok_or_else(|| format!("no field has focus; fields: {:?}", text_fields(app)))?;
@@ -282,7 +240,6 @@ fn typing(app: &mut App, host: &mut Host, keys: usize) -> Result<Vec<Sample>, Fa
     Ok(samples)
 }
 
-/// Move the pointer over the pane, a few pixels a sample.
 fn pointing(app: &mut App, host: &mut Host, moves: usize) -> Result<Vec<Sample>, Failure> {
     let mut samples = Vec::with_capacity(moves);
     for step in 0..moves {
@@ -296,7 +253,6 @@ fn idling(app: &mut App, host: &mut Host, frames: usize) -> Vec<Sample> {
     (0..frames).map(|_| timed(app, host, None)).collect()
 }
 
-/// p50, p99 and the largest of `values` (nearest rank), and the values.
 fn summary(values: &[f64]) -> serde_json::Value {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
@@ -342,7 +298,6 @@ fn run(app: &mut App, options: Options) -> Result<serde_json::Value, Failure> {
     }
     let rows = navigation_rows(app).len();
     let (category, field) = open_a_field(app, &mut host)?;
-    // The first keys move the window to keyboard modality: warm-up.
     typing(app, &mut host, 4)?;
     let typed = typing(app, &mut host, options.keys)?;
     let pointed = pointing(app, &mut host, options.moves)?;

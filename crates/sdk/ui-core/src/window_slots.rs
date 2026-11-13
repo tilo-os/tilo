@@ -1,27 +1,6 @@
 //! What a desktop keeps of the slots its apps put in their windows' bars
-//! ([`crate::window_toolbar`]), and how it shows them: every desktop, the
-//! session's shell and the browser's alike, holds one [`WindowSlots`].
-//!
-//! An app reaches its window's bar one of two ways:
-//!
-//! - **in a process of its own**, over its connection to the desktop: the
-//!   host passes on what it declared ([`WindowSlots::declare`],
-//!   [`WindowSlots::offer`]) and sends what the person did back on the same
-//!   connection ([`WindowSlots::take_outbox`]);
-//! - **in the host's own process** (every app of the browser desktop, the
-//!   shell's Terminal), on the window the host shows it in
-//!   ([`crate::hosted_window::HostedWindow`]): [`WindowSlots::sync_hosted`]
-//!   reads each window's slots and hands its app what the person did.
-//!
-//! Either way [`WindowSlots::sync_groups`] puts each tab's slots in its
-//! window group's bar and takes what the person did there.
-//!
-//! The desktop adds items of its own to a window's overflow menu ("Share to
-//! channel…", [`WindowSlots::set_host_items`]): they join the slots its app
-//! declared, or stand alone in a menu button at the end of the title row of
-//! a window whose app declared none, and what the person chose of them comes
-//! back to the desktop ([`WindowSlots::take_host_actions`]), never to the
-//! app.
+//! ([`crate::window_toolbar`]), and how it shows them: every desktop, the session's shell
+//! and the browser's alike, holds one [`WindowSlots`].
 
 use std::collections::HashMap;
 
@@ -31,65 +10,45 @@ use crate::window_toolbar::{
     MAX_DECLARED_ACTIONS, ToolbarAction, ToolbarEvent, WindowOffer, WindowToolbar,
 };
 
-/// A desktop tab's id.
 pub type TabId = u64;
 
-/// The connection id the slots of an app in the host's own process are
-/// kept under: what the person does with them goes back on its window,
-/// never on a connection.
+/// The connection id the slots of an app in the host's own process are kept under: what
+/// the person does with them goes back on its window, never on a connection.
 const IN_PROCESS: u64 = u64::MAX;
 
-/// What the ids of the desktop's own menu items start with: an app's never
-/// do, so a choice of one reaches the desktop alone.
+/// What the ids of the desktop's own menu items start with: an app's never do, so a
+/// choice of one reaches the desktop alone.
 pub const HOST_ACTION_PREFIX: &str = "tilo.desktop.";
 
-/// Every tab's declared slots and the connection of the app that declared
-/// them, and what goes back to the apps on the next pump.
+/// Every tab's declared slots and the connection of the app that declared them, and what
+/// goes back to the apps on the next pump.
 #[derive(Default)]
 pub struct WindowSlots {
     by_tab: HashMap<TabId, (u64, WindowToolbar)>,
-    /// Tabs whose slots went away since the groups last saw them.
     cleared: Vec<TabId>,
-    /// What each tab's app offers the bar's search and History control, and
-    /// the connection it said so on.
     offers: HashMap<TabId, (u64, WindowOffer)>,
-    /// Tabs whose offer went away since the groups last saw them.
     offers_cleared: Vec<TabId>,
     outbox: Vec<(u64, ToolbarEvent)>,
-    /// For an app in the host's own process: its window and the revision of
-    /// its slots last taken, by tab.
     hosted_seen: HashMap<TabId, (HostedWindow, u64)>,
-    /// What goes back to apps in the host's own process, by tab.
     hosted_outbox: Vec<(TabId, ToolbarEvent)>,
     /// The desktop's own items in each tab's overflow menu.
     host_items: HashMap<TabId, Vec<ToolbarAction>>,
-    /// A tab's bar merged with the desktop's items, kept from the first frame
-    /// that needed it until either side changes ([`Self::shown_toolbar`]).
     shown: HashMap<TabId, WindowToolbar>,
-    /// The desktop's items the person chose, by tab, not taken yet.
     host_actions: Vec<(TabId, String)>,
-    /// The tabs whose app was told its window floats over the desk
-    /// ([`ToolbarEvent::Floating`]).
     told_floating: HashMap<TabId, bool>,
 }
 
 /// What [`WindowSlots::sync_hosted`] found.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct HostedSync {
-    /// The desktop shows something new, or an app has something to hear.
     pub changed: bool,
-    /// Tabs whose app asked to close them (a terminal whose shell exited).
     pub closing: Vec<TabId>,
-    /// An app asked for its window's search and its group opened it.
     pub searched: bool,
-    /// Tabs whose app declared something new for its bar (its location
-    /// among it), in the order their windows were given.
     pub declared: Vec<TabId>,
 }
 
 impl WindowSlots {
-    /// `connection`'s app declared `toolbar` for `tab`. Returns whether it
-    /// changed anything.
+    /// `connection`'s app declared `toolbar` for `tab`.
     pub fn declare(&mut self, tab: TabId, connection: u64, toolbar: Option<WindowToolbar>) -> bool {
         let Some(toolbar) = toolbar
             .map(WindowToolbar::bounded)
@@ -112,8 +71,8 @@ impl WindowSlots {
         true
     }
 
-    /// `connection`'s app said what `tab`'s window offers the bar's search
-    /// and History control. Returns whether it changed anything.
+    /// `connection`'s app said what `tab`'s window offers the bar's search and History
+    /// control.
     pub fn offer(&mut self, tab: TabId, connection: u64, offer: WindowOffer) -> bool {
         let next = (connection, offer);
         if self.offers.get(&tab) == Some(&next) {
@@ -164,11 +123,7 @@ impl WindowSlots {
         self.by_tab.get(&tab).map(|(_, toolbar)| toolbar)
     }
 
-    /// Put `items`, the desktop's own, in `tab`'s overflow menu, after its
-    /// app's. A window whose app declared no slots shows them alone, in the
-    /// menu of a button at the end of its title row
-    /// ([`WindowToolbar::menu_only`]): its title stays where it is. Each id
-    /// starts with [`HOST_ACTION_PREFIX`].
+    /// Put `items`, the desktop's own, in `tab`'s overflow menu, after its app's.
     pub fn set_host_items(&mut self, tab: TabId, items: Vec<ToolbarAction>) {
         let items: Vec<ToolbarAction> = items
             .into_iter()
@@ -186,23 +141,19 @@ impl WindowSlots {
         }
     }
 
-    /// The desktop's own items in the menu of `tab`'s window bar, as last
-    /// set ([`Self::set_host_items`]).
+    /// The desktop's own items in the menu of `tab`'s window bar, as last set
+    /// ([`Self::set_host_items`]).
     #[must_use]
     pub fn host_items(&self, tab: TabId) -> &[ToolbarAction] {
         self.host_items.get(&tab).map_or(&[], Vec::as_slice)
     }
 
-    /// The desktop's own items the person chose since the last call, by
-    /// tab, each by its id.
+    /// The desktop's own items the person chose since the last call, by tab, each by its
+    /// id.
     pub fn take_host_actions(&mut self) -> Vec<(TabId, String)> {
         std::mem::take(&mut self.host_actions)
     }
 
-    /// `tab`'s bar as it shows: its app's slots, its menu ending in the
-    /// desktop's items; the desktop's items alone where its app declared
-    /// none. The merge is built once and kept until either side changes, so
-    /// a frame that finds the group already showing it allocates nothing.
     fn shown_toolbar(&mut self, tab: TabId) -> Option<&WindowToolbar> {
         if !self.host_items.contains_key(&tab) {
             self.shown.remove(&tab);
@@ -229,8 +180,8 @@ impl WindowSlots {
         self.shown.get(&tab)
     }
 
-    /// Queue `event` for the app that declared `tab`'s slots or offered
-    /// its window to the bar. Returns whether one did.
+    /// Queue `event` for the app that declared `tab`'s slots or offered its window to the
+    /// bar.
     pub fn route(&mut self, tab: TabId, event: ToolbarEvent) -> bool {
         if let ToolbarEvent::Action { id } = &event
             && id.starts_with(HOST_ACTION_PREFIX)
@@ -283,9 +234,8 @@ impl WindowSlots {
         }
     }
 
-    /// Every group shows its tabs' declared slots, and what the person did
-    /// with them is queued for the apps. Run it every frame; a group whose
-    /// slots did not change does nothing.
+    /// Every group shows its tabs' declared slots, and what the person did with them is
+    /// queued for the apps.
     pub fn sync_groups<'a>(&mut self, groups: impl IntoIterator<Item = &'a mut WindowGroup>) {
         let cleared = std::mem::take(&mut self.cleared);
         let offers_cleared = std::mem::take(&mut self.offers_cleared);
@@ -301,16 +251,12 @@ impl WindowSlots {
                         group.set_tab_toolbar(id, Some(toolbar));
                     }
                 } else if let Some(toolbar) = self.toolbar(id) {
-                    // Declarations are stored bounded, as the bar keeps
-                    // them: an unchanged one is compared, not copied.
                     if group.tab_toolbar(id) != Some(toolbar) {
                         group.set_tab_toolbar(id, Some(toolbar.clone()));
                     }
                 } else if cleared.contains(&id) {
                     group.set_tab_toolbar(id, None);
                 }
-                // The app hears when its window starts or stops floating, once it declared slots to
-                // hear it on.
                 let floating = group.is_floating();
                 if self.by_tab.contains_key(&id)
                     && self.told_floating.get(&id).copied().unwrap_or(false) != floating
@@ -319,7 +265,6 @@ impl WindowSlots {
                     events.push((id, ToolbarEvent::Floating { floating }));
                 }
                 if let Some(offer) = self.window_offer(id) {
-                    // Unchanged offers change nothing in the group.
                     group.set_tab_window_offer(id, Some(offer.clone()));
                 } else if offers_cleared.contains(&id) {
                     group.set_tab_window_offer(id, None);
@@ -333,13 +278,10 @@ impl WindowSlots {
         }
     }
 
-    /// Look at the windows of the apps the host shows in its own process,
-    /// `windows` being every one of them by tab: show the slots each
-    /// declared in its tab's bar, with the notice and reactions its window
-    /// shows, run its asks to edit its location or open
-    /// its search, and hand it what the person did with its slots. A tab
-    /// whose window is no longer among `windows` loses its slots. Run it
-    /// every frame, after the groups took the frame's input.
+    /// Look at the windows of the apps the host shows in its own process, `windows` being
+    /// every one of them by tab: show the slots each declared in its tab's bar, with the
+    /// notice and reactions its window shows, run its asks to edit its location or open
+    /// its search, and hand it what the person did with its slots.
     pub fn sync_hosted<'a>(
         &mut self,
         windows: &[(TabId, HostedWindow)],
@@ -382,7 +324,6 @@ impl WindowSlots {
             if !edit && search.is_none() {
                 continue;
             }
-            // Only the tab its window shows edits or searches.
             if let Some(group) = groups
                 .iter_mut()
                 .find(|group| group.active_tab_id() == *tab)
@@ -399,7 +340,6 @@ impl WindowSlots {
         for (tab, event) in std::mem::take(&mut self.hosted_outbox) {
             if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
                 window.deliver(event);
-                // The app hears it on its next frame.
                 sync.changed = true;
             }
         }

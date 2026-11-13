@@ -27,7 +27,7 @@ pub struct Code {
 
 /// The payload is edited at its path (`Code::paths().payload`); clearing it
 /// is a verb, so the palette and agents offer it by name.
-#[resource(kind = "example.qr-code", label = "QR code")]
+#[resource(kind = "example.qr-code")]
 impl Code {
     /// Clear the payload.
     #[action]
@@ -38,10 +38,7 @@ impl Code {
 
 fn code_view(payload: &str) -> Element {
     if payload.is_empty() {
-        return Box::new(
-            EmptyState::new(crate::locales::CATALOG.t("qr-empty-title"))
-                .with_message(crate::locales::CATALOG.t("qr-empty-message")),
-        );
+        return Box::new(EmptyState::new(crate::locales::CATALOG.t("qr-empty-title")));
     }
     let alt = crate::locales::CATALOG.t_args("qr-output-alt", &[("payload", payload.into())]);
     Box::new(

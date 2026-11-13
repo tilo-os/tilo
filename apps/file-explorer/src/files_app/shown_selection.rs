@@ -1,4 +1,5 @@
-//! Retain what this window selected, rather than resolving its names at Copy.
+//! What the window selected, kept by identity so a refresh or a rebuild holds
+//! it.
 
 use super::FilesState;
 use crate::resource::MAX_MOVE_ENTRIES;
@@ -13,8 +14,6 @@ pub(super) struct ShownSelection {
     pub(super) objects: HashMap<PathBuf, (ObservedObject, Option<Arc<RetainedObject>>)>,
 }
 
-/// Retain the actual destination before reading its listing. Virtual views
-/// have no destination descriptor; no pathname fallback is invented.
 pub(super) fn folder(path: &Path) -> Option<Arc<RetainedObject>> {
     if crate::recent::is_location(path)
         || crate::applications::is_location(path)
@@ -33,9 +32,6 @@ pub(super) fn folder(path: &Path) -> Option<Arc<RetainedObject>> {
 }
 
 impl FilesState {
-    /// Called at every selection mutation, including semantic and input paths.
-    /// Refusals are remembered for that observation: a later Copy must never
-    /// silently retry a pathname and adopt its replacement.
     pub(super) fn retain_shown_selection(&mut self) {
         let selected = self.selection.selected();
         if selected.len() > MAX_MOVE_ENTRIES {
@@ -43,8 +39,6 @@ impl FilesState {
             self.shown_selection.changed.clear();
             return;
         }
-        // Displayed order is the retained listing order. Borrow it directly:
-        // selecting one row in a large folder must not clone the whole listing.
         let entries = &self.entries;
         let previous = &mut self.shown_selection.objects;
         let changed = std::mem::take(&mut self.shown_selection.changed);
@@ -67,8 +61,6 @@ impl FilesState {
                     }
                     retained
                 }
-                // A background listing refresh may preserve selection by
-                // pathname. That is not consent to adopt a different object.
                 Some(_) => {
                     next_changed.insert(entry.path.clone());
                     None

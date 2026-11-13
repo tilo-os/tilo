@@ -1,16 +1,4 @@
 //! List markers: the bullet, ordinal or checkbox beside a list item.
-//!
-//! Every marker sits in one column, the leading glyph box at the block's
-//! content edge that a checklist's box fills, and is flush with that box's
-//! right edge: a bullet, `1.`, `(a)` and a checkbox end at the same x, and
-//! the item's text starts the same gap after it whatever the marker.
-//! Ordinals wider than the box hang into the margin, as typeset lists do,
-//! rather than pushing the text.
-//!
-//! Markers belong to the item's first visual row. A bullet is a disc of a
-//! typographic bullet's size (`BULLET_DIAMETER_EM` of the item's type)
-//! centred on the first row's x-height; an ordinal is set in the item's own
-//! style on the item's baseline; a checkbox is centred on the first row.
 
 use std::sync::Arc;
 
@@ -23,8 +11,6 @@ use crate::widget::rich_text_line::RichTextLine;
 
 use super::CHECKBOX_SIZE_PX;
 
-/// A bullet's diameter in ems of the item's type: a typographic bullet
-/// ("•"), not a dot that outweighs the letters beside it.
 pub(super) const BULLET_DIAMETER_EM: f64 = 0.3;
 
 /// The ordinal of item `ordinal` (1-based) of a numbered list at `depth`,
@@ -90,8 +76,6 @@ pub(crate) fn marker_room(blocks: &[super::Block]) -> Vec<f32> {
     room
 }
 
-/// A top-level ordinal's width in ems, from its characters' typical
-/// advances in the UI face: what layout can know before any text is shaped.
 fn estimated_label_em(label: &str) -> f32 {
     label
         .chars()
@@ -147,20 +131,15 @@ fn roman(n: u32) -> String {
     out
 }
 
-/// The x every marker of a block whose content edge is `prefix_x0` ends at:
-/// the right edge of the leading glyph box.
 pub(super) fn marker_right(prefix_x0: f64, text_scale: f64) -> f64 {
     prefix_x0 + CHECKBOX_SIZE_PX * text_scale
 }
 
-/// The centre line of `line`'s first visual row.
 pub(super) fn first_row_center(line: &RichTextLine) -> f64 {
     let (top, height) = line.first_row_band();
     top + height / 2.0
 }
 
-/// A checklist item's box: the leading glyph box at the content edge, on
-/// the first row's centre line. Paint and hit-testing share it.
 pub(super) fn checklist_box(line: &RichTextLine, prefix_x0: f64, text_scale: f64) -> Rect {
     let side = CHECKBOX_SIZE_PX * text_scale;
     let cy = first_row_center(line);
@@ -172,10 +151,6 @@ pub(super) fn checklist_box(line: &RichTextLine, prefix_x0: f64, text_scale: f64
     )
 }
 
-/// A bullet item's disc: [`BULLET_DIAMETER_EM`] of the item's type, flush
-/// with the marker column's right edge and centred on the first row's
-/// x-height. `x_height_em` is the face's x-height in ems
-/// ([`x_height_em`]).
 pub(super) fn bullet_disc(
     line: &RichTextLine,
     prefix_x0: f64,
@@ -212,9 +187,6 @@ pub(super) fn ordinal_placement(
     (Point::new(right - f64::from(width), top), style)
 }
 
-/// The UI face's x-height in ems, measured from its `x` and remembered
-/// for the renderer's shaping generation (`cache`), which a font or face
-/// change replaces.
 pub(super) fn x_height_em(
     cache: &mut Option<(Arc<()>, f64)>,
     text_renderer: &mut TextRenderer,
@@ -236,7 +208,6 @@ pub(super) fn x_height_em(
         .first_glyph_ink_bounds("x", &style)
         .map(|ink| -ink.y0 / size)
         .filter(|em| em.is_finite() && *em > 0.0)
-        // Half an em, near every Latin face's, where a face has no outline.
         .unwrap_or(0.5);
     *cache = Some((Arc::clone(text_renderer.layout_epoch()), em));
     em

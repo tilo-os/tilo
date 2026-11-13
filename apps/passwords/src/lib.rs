@@ -1,8 +1,4 @@
-//! Passwords — the user-facing view of Tilo credential custody.
-//!
-//! The live view starts without sample entries and reveals secrets only on request.
-//! Apps obtain credentials through `accounts::CredentialBroker`; this process
-//! is for organizing, reviewing and revoking them.
+//! Passwords — the vault of this device's logins, keys and codes.
 
 use accounts::{
     CredentialGrant, CredentialOwner, SecretCustody, SecretId, SecretItem, SecretStore,
@@ -24,8 +20,8 @@ pub use actions::PasswordsEffect;
 pub use resource::{Passwords, PasswordsShell};
 pub use window::PasswordsWindow;
 
-/// The items of this device's vault, or none for a window that must not
-/// open it (a past version: the vault keeps no history).
+/// The items of this device's vault, or none for a window that must not open it (a past
+/// version: the vault keeps no history).
 pub struct PasswordsModel {
     store: Option<Vault>,
 }
@@ -47,8 +43,8 @@ pub struct VaultHealth {
     pub older_than_year: usize,
 }
 
-/// Whether an item holds a password a person chose: a login or a Wi-Fi
-/// key, not an issued API key or licence code.
+/// Whether an item holds a password a person chose: a login or a Wi-Fi key, not an issued
+/// API key or licence code.
 fn is_password(item: &SecretItem) -> bool {
     matches!(
         item.kind,
@@ -56,8 +52,7 @@ fn is_password(item: &SecretItem) -> bool {
     ) && !item.password.is_empty()
 }
 
-/// Per-item facts of the password review: which passwords are shared, weak
-/// or old. Only facts the local vault can prove; no breach claims.
+/// Per-item facts of the password review: which passwords are shared, weak or old.
 pub(crate) fn findings(items: &[SecretItem]) -> Vec<vault::Finding> {
     let candidates: Vec<&SecretItem> = items.iter().filter(|item| is_password(item)).collect();
     let mut frequencies = HashMap::<&str, usize>::new();
@@ -106,25 +101,23 @@ impl PasswordsModel {
             store: Some(Vault::Local(SecretStore::open_in(root))),
         }
     }
-    /// The matching native host's original vault and current permission broker.
+    /// The matching native host's original vault and its permission broker.
     pub fn shared(owner: CredentialOwner) -> Self {
         Self {
             store: Some(Vault::Shared(owner)),
         }
     }
-    /// A window that shows no items and opens nothing.
     pub fn closed() -> Self {
         Self { store: None }
     }
-    /// Whether this window opens the vault at all: a past version or
-    /// another person's window does not, and says nothing about its lock.
+    /// Whether this window opens the vault at all: a past version or another person's
+    /// window does not, and says nothing about its lock.
     pub fn opens_vault(&self) -> bool {
         self.store.is_some()
     }
-    /// Whether the vault can be read now. A window on the compositor's
-    /// frame loop, which never waits on the disk, opens the person's vault
-    /// on a thread of its own, which calls `ready` once it is open;
-    /// anywhere else it is opened by the first read.
+    /// Whether the vault can be read now. A window on the compositor's frame loop, which
+    /// never waits on the disk, opens the person's vault on a thread of its own, which
+    /// calls `ready` once it is open; anywhere else it is opened by the first read.
     pub fn open_without_waiting(&self, ready: impl FnOnce() + Send + 'static) -> bool {
         match &self.store {
             Some(Vault::Shared(owner)) if ui::storage::waiting::forbidden() => {
@@ -133,8 +126,8 @@ impl PasswordsModel {
             _ => true,
         }
     }
-    /// Refuse to open the vault on a thread that must never wait on the
-    /// disk: there it is opened by [`Self::open_without_waiting`].
+    /// Refuse to open the vault on a thread that must never wait on the disk: there it is
+    /// opened by [`Self::open_without_waiting`].
     fn opened(&self) -> Result<(), String> {
         match &self.store {
             Some(Vault::Shared(owner)) if !owner.is_open() && ui::storage::waiting::forbidden() => {
@@ -169,7 +162,6 @@ impl PasswordsModel {
     pub fn items(&self) -> Vec<SecretItem> {
         self.read(SecretStore::list).unwrap_or_default()
     }
-    /// Current application access shown in the vault's management UI.
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
         if self.opened().is_err() {
             return Vec::new();
@@ -179,14 +171,12 @@ impl PasswordsModel {
             _ => self.read(SecretStore::grants).unwrap_or_default(),
         }
     }
-    /// Private review metadata from the matching original owner only.
     pub fn app_proposals(&self) -> Vec<accounts::CredentialProposal> {
         if self.opened().is_err() {
             return Vec::new();
         }
         match &self.store {
             Some(Vault::Shared(owner)) => owner.proposals().unwrap_or_default(),
-            // Messages' accounts ask through the messaging service.
             Some(Vault::Local(_)) => tilo_messaging::service::proposals(),
             None => Vec::new(),
         }
@@ -197,7 +187,10 @@ impl PasswordsModel {
             _ => None,
         }
     }
+    /// Decide a proposal an app made for access to an item.
+    ///
     /// # Errors
+    ///
     /// Refuses missing original custody, stale proposals or retired admission.
     pub fn decide_app_proposal(
         &self,
@@ -214,13 +207,11 @@ impl PasswordsModel {
             None => Err(CATALOG.t("passwords-request-expired")),
         }
     }
-    /// Read the vault again where another process saved it since.
     pub fn reload(&mut self) {
         if let Some(Vault::Local(store)) = &mut self.store {
             store.refresh();
         }
     }
-    /// The host's data-free invalidation counter, without blocking native I/O.
     pub fn revision(&self) -> Option<u64> {
         match &self.store {
             Some(Vault::Shared(owner)) => owner.revision(),
@@ -228,17 +219,18 @@ impl PasswordsModel {
             None => None,
         }
     }
-    /// Where the encryption key for this vault is currently held. A
-    /// `LocalFile` result is still encrypted storage, but it is not a system
-    /// keyring and the UI must not present it as one.
+    /// Where the encryption key for this vault is currently held. A `LocalFile` result is
+    /// still encrypted storage, but it is not a system keyring and the UI must not present
+    /// it as one.
     pub fn custody(&self) -> SecretCustody {
         self.read(SecretStore::custody)
             .unwrap_or_else(|_| SecretCustody::for_session())
     }
-    /// Revoke one exact app/account/origin relationship.
+    /// Revoke one exact app, account and origin relationship.
     ///
     /// # Errors
-    /// Returns an error if the vault cannot durably store the revocation.
+    ///
+    /// Why the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
         self.opened()?;
         match &mut self.store {
@@ -259,10 +251,6 @@ impl PasswordsModel {
                         .origins
                         .iter()
                         .any(|origin| origin.to_lowercase().contains(&query))
-                    // Search is local to the open vault, but notes and custom
-                    // values frequently *are* secrets. Never make them a
-                    // search index, which also keeps them out of search
-                    // history/provider integrations.
                     || item
                         .fields
                         .keys()
@@ -274,33 +262,26 @@ impl PasswordsModel {
             })
             .collect()
     }
-    /// Analyze only facts available in the local vault. This deliberately
-    /// makes no breach claim: that requires a separately configured service.
     pub fn health(&self) -> VaultHealth {
         analyze_health(&self.items())
     }
-    /// Persist any supported secret item.
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
         let id = item.id.clone();
         self.edit(|store| store.put(item))?
             .map_err(|error| format!("could not save item: {error:?}"))?;
         Ok(id)
     }
-    /// Finish writing what [`Self::save_item`] and [`Self::remove`] left in
-    /// flight: `Ok(false)` while a browser page or the frame loop's writer
-    /// thread is still writing it, `Ok(true)` once it is kept.
+    /// Finish writing what [`Self::save_item`] and [`Self::remove`] left in flight:
+    /// `Ok(false)` while a browser page or the frame loop's writer thread is still writing,
+    /// `Ok(true)` once it is kept.
     ///
     /// # Errors
     ///
-    /// Returns an error when the write failed; the edits stay in this
-    /// window and the next flush writes them again.
+    /// Why the store refused the write.
     pub fn flush(&mut self) -> Result<bool, String> {
         if self.store.is_none() {
             return Ok(true);
         }
-        // The device's vault, shared or this window's own, is written from
-        // the frame loop by a writer thread, and an edit made while one is
-        // under way waits in memory until the vault is flushed again.
         self.read(SecretStore::flush)?
             .map(|saved| saved == accounts::Saved::Durable)
             .map_err(|error| format!("{error:?}"))
@@ -309,7 +290,7 @@ impl PasswordsModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the secret store cannot complete the removal.
+    /// Why the secret store cannot complete the removal.
     pub fn remove(&mut self, id: &SecretId) -> Result<bool, String> {
         self.edit(|store| store.remove(id))?
             .map_err(|e| format!("could not remove login: {e:?}"))
@@ -318,7 +299,7 @@ impl PasswordsModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the secret store cannot persist the update.
+    /// Why the secret store cannot persist the update.
     pub fn update(&mut self, item: &mut SecretItem) -> Result<(), String> {
         self.edit(|store| store.put(item))?
             .map_err(|error| format!("could not update login: {error:?}"))
@@ -327,12 +308,11 @@ impl PasswordsModel {
     ///
     /// # Errors
     ///
-    /// Returns an error when the item is missing or the store cannot reveal it.
+    /// Why the item is missing or the store cannot reveal it.
     pub fn reveal(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         self.read(|store| store.reveal_password(id))?
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
-    /// Return the primary copyable value for the item's type.
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         let item = self
             .read(|store| store.get(id))?
@@ -346,7 +326,6 @@ impl PasswordsModel {
     }
 }
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(PasswordsShell)
 }
@@ -458,9 +437,8 @@ mod tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source
-/// catalogue beside it.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source catalogue beside it.
 #[cfg(test)]
 mod german_window {
     #[test]

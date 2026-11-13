@@ -1,5 +1,3 @@
-//! Sustained scrolling through real PDFs, measured frame by frame.
-
 use std::time::Duration;
 
 use ui::headless::{Framed, viewport};
@@ -8,39 +6,22 @@ use ui::theme::Theme;
 use super::PdfApp;
 use super::tests::open_settled;
 
-/// One frame of a driven scroll.
 #[derive(Clone, Copy, Debug)]
 struct FrameSample {
-    /// Wheel dispatch plus the whole frame (sync, layout, draw) on the UI
-    /// thread, in milliseconds.
     ui_ms: f64,
-    /// The same frame's CPU time on the UI thread: its own work, apart
-    /// from time it was preempted (falls back to `ui_ms` where the
-    /// platform keeps no thread clock). Reported for measurements; it
-    /// varies with the machine and its load, so no test asserts on it.
     cpu_ms: f64,
-    /// What the frame did on the UI thread, counted: the same on any
-    /// machine under any load.
     work: FrameWork,
-    /// The scene rasterised on the GPU, when measured.
     gpu_ms: Option<f64>,
     scroll_y: f64,
-    /// Visible pages painted with no engine pixels at all (paper only).
     blank_pages: usize,
-    /// Visible pages not yet painted at the width they want (blank or
-    /// another width scaled).
     unsharp_pages: usize,
-    /// Page renders the reader is waiting on, and bitmaps it holds.
     pending: usize,
     held: usize,
 }
 
-/// A PDF with `pages` pages of dense vector artwork and text, slow to
-/// rasterise on purpose: a stand-in for a heavy real-world document.
 fn heavy_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
     use std::fmt::Write as _;
     let mut objects: Vec<String> = Vec::new();
-    // 1: catalog, 2: pages, 3: font, then page/content pairs.
     objects.push("<< /Type /Catalog /Pages 2 0 R >>".into());
     let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", 4 + i * 2)).collect();
     objects.push(format!(
@@ -49,11 +30,7 @@ fn heavy_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
     ));
     objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into());
     for p in 0..pages {
-        // A full-page ground first, so no page pixel the engine drew is
-        // paper-white or the canvas colour.
         let mut content = String::from("0.80 0.86 0.94 rg 0 0 612 792 re f\n");
-        // A field of small shaded triangles: thousands of paths to fill,
-        // none of them light enough to pass for bare paper.
         let mut seed: u32 = 0x9e37_79b9 ^ (p as u32);
         let mut rand = || {
             seed ^= seed << 13;
@@ -115,10 +92,6 @@ fn heavy_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
     path
 }
 
-/// Scroll the reader on `path` down at `px_per_frame` for `frames` frames
-/// of a 60 Hz display in a `w`×`h` window, as a touchpad's pixel deltas
-/// arrive, and time every frame. Rasterising the scene on the GPU is
-/// measured too when `gpu` is set.
 fn drive_scroll(
     app: PdfApp,
     (w, h): (u32, u32),
@@ -138,7 +111,6 @@ fn drive_scroll(
         viewport((w, h)),
         Theme::dark(),
     );
-    // Settle the first screen, as a window does after open.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         Framed::harness_mut(&mut app).relayout();
@@ -196,7 +168,6 @@ fn drive_scroll(
     samples
 }
 
-/// Visible pages the reader holds no engine pixels for.
 fn blank_pages(app: &PdfApp) -> usize {
     let canvas = app.canvas_rect;
     let pageh = app.ph() * app.zoom();
@@ -208,7 +179,6 @@ fn blank_pages(app: &PdfApp) -> usize {
         .count()
 }
 
-/// Visible pages the reader holds no bitmap at their wanted width for.
 fn unsharp_pages(app: &PdfApp) -> usize {
     let canvas = app.canvas_rect;
     let pageh = app.ph() * app.zoom();
@@ -229,8 +199,6 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
     values.get(at).copied().unwrap_or(0.0)
 }
 
-/// Print a run's numbers: per-frame UI time quantiles and the worst frames
-/// with when they happened.
 fn report(label: &str, samples: &[FrameSample]) {
     let mut ui: Vec<f64> = samples.iter().map(|s| s.ui_ms).collect();
     let mut cpu: Vec<f64> = samples.iter().map(|s| s.cpu_ms).collect();
@@ -286,8 +254,6 @@ fn report(label: &str, samples: &[FrameSample]) {
     }
 }
 
-/// Measurement harness: `PDF_SCROLL_FILE` (a real PDF) or the generated
-/// heavy fixture, `PDF_SCROLL_GPU=1` to rasterise every frame as well.
 #[test]
 fn measure_sustained_scroll() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -316,25 +282,13 @@ fn measure_sustained_scroll() {
     report(&path.display().to_string(), &samples);
 }
 
-/// Text runs a scroll frame may shape: most shape none, and a measured run
-/// shaped at most three in one frame.
 const SCROLL_MAX_TEXT_SHAPED: u64 = 4;
 
-/// Draw objects a scroll frame may encode: the chrome and the pages on
-/// screen come to at most 168; far more means something draws what is not
-/// on screen.
 const SCROLL_MAX_DRAWS: usize = 256;
 
 #[serial_test::serial(pdfium)]
 #[test]
 fn sustained_scroll_never_waits_on_rendering() {
-    // Five seconds of touchpad scrolling through a document whose pages take
-    // the engine far longer than a frame to rasterise. Every frame must move
-    // the document without doing more on the UI thread than a scroll needs:
-    // no call into the engine (rasterising happens on the worker, and the
-    // window composites what it holds), no layout rebuilt, and bounded
-    // measuring, shaping and drawing. The work is counted rather than timed,
-    // so a loaded machine cannot fail it and a regression fails it anywhere.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = heavy_pdf(dir.path(), 24);
     let render_ms = {
@@ -375,8 +329,6 @@ fn sustained_scroll_never_waits_on_rendering() {
             pair[1].scroll_y
         );
     }
-    // Rendering did happen while the frames ran: pages far below the first
-    // screen were delivered during the scroll.
     let delivered = samples.last().map_or(0, |s| s.held);
     assert!(
         delivered >= 3,
@@ -384,7 +336,6 @@ fn sustained_scroll_never_waits_on_rendering() {
     );
 }
 
-/// A window surface of a fixed size, as the live host gives the app one.
 struct Window(u32, u32);
 
 impl ui::app::AppSurface for Window {
@@ -398,7 +349,6 @@ impl ui::app::AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
-/// Pixels of `size` that `rects` cover.
 fn covered(rects: &[vello::kurbo::Rect], (w, h): (u32, u32)) -> f64 {
     let window = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
     let mut rows = vec![vec![false; w as usize]; h as usize];
@@ -418,11 +368,6 @@ fn covered(rects: &[vello::kurbo::Rect], (w, h): (u32, u32)) -> f64 {
     rows.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
-/// What one scroll frame costs the renderer through the live window's
-/// frame and damage path (the host copies what stays on screen when the
-/// app offers it): pixels repainted, and with `PDF_SCROLL_GPU=1` the GPU
-/// time of the presented frame against a full repaint. Measurement only;
-/// `PDF_SCROLL_FILE` as above.
 #[test]
 fn measure_scroll_repaint() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -436,10 +381,6 @@ fn measure_scroll_repaint() {
     let _ = scroll_repaint(&path, 240, painter);
 }
 
-/// A scroll frame repaints the strip that scrolled in plus what changed —
-/// the host copies the rest — and the copied frames are pixel-identical to
-/// a full repaint, so nothing floating over the pages (the scroll bar) is
-/// smeared along with them.
 #[test]
 #[serial_test::serial(pdfium)]
 fn scrolling_repaints_only_the_exposed_strip_and_matches_a_full_repaint() {
@@ -470,20 +411,13 @@ struct RepaintStats {
     differing: Option<usize>,
 }
 
-/// What presents the frames of a driven scroll.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Painter {
-    /// Nobody: count the damage only.
     None,
-    /// The GPU, timed against a full repaint.
     Gpu,
-    /// The CPU renderer, as the desktop composits without a GPU: the same
-    /// pixels on any machine.
     Cpu,
 }
 
-/// A window's retained pixels as the CPU compositor keeps them: copies
-/// move what stays on screen, damage is rendered again.
 struct CpuSurface {
     raster: tilo_cpu_raster::CpuRasterizer,
     pixels: Vec<u8>,
@@ -515,8 +449,6 @@ impl CpuSurface {
             return;
         };
         for copy in copies {
-            // A copy names its source; the target moves pixels into a
-            // destination.
             let Some((x, y)) = copy.destination(width, height) else {
                 continue;
             };
@@ -548,9 +480,6 @@ impl CpuSurface {
     }
 }
 
-/// The reader on `path` in a live window of `surface`'s size, its first
-/// screen settled, presenting through a copying host: the window, its
-/// damage tracker and the last frame's scene.
 fn settled_window(
     path: &std::path::Path,
     surface: &Window,
@@ -577,7 +506,6 @@ fn settled_window(
     Some((app, damage, scene))
 }
 
-/// One touchpad wheel step of `px` down the document in a live window.
 fn wheel_down(app: &mut ui::App, surface: &Window, px: f64) {
     app.surface_input(
         surface,
@@ -653,8 +581,6 @@ fn scroll_repaint(path: &std::path::Path, frames: usize, painter: Painter) -> Op
             Some((presented.readback_current(), full.render(&scene, ground)))
         }
         (None, Some(mut presented)) => {
-            // The same renderer draws the whole frame afresh, so only what
-            // the copies and damage left behind can differ.
             let actual = presented.pixels.clone();
             presented.present(&scene, None);
             Some((actual, presented.pixels))
@@ -688,11 +614,6 @@ fn scroll_repaint(path: &std::path::Path, frames: usize, painter: Painter) -> Op
     })
 }
 
-/// Pixels of two equally sized frames that differ by more than
-/// resampling does: the CPU renderer samples a scaled bitmap relative to
-/// the region it draws, so the same pixel drawn as part of another region
-/// can land up to 2 levels away. Anything left behind by a copy (a shadow,
-/// a thumb, another page) is far beyond that.
 fn pixels_differing(actual: &[u8], expected: &[u8]) -> usize {
     actual
         .chunks_exact(4)
@@ -701,8 +622,6 @@ fn pixels_differing(actual: &[u8], expected: &[u8]) -> usize {
         .count()
 }
 
-/// Write `actual.png` and `expected.png` into `dir` and print where they
-/// differ: the bounding box and the count per 50-row band.
 fn dump_diff(dir: &std::path::Path, size: (u32, u32), actual: &[u8], expected: &[u8]) {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
     let mut rows = std::collections::BTreeMap::new();
@@ -720,38 +639,24 @@ fn dump_diff(dir: &std::path::Path, size: (u32, u32), actual: &[u8], expected: &
     }
 }
 
-/// One step of a driven zoom.
 #[derive(Clone, Copy, Debug)]
 enum ZoomStep {
-    /// A touchpad pinch frame (`PinchGesture` delta).
     Pinch(f64),
-    /// A Ctrl+wheel frame (touchpad pixel delta, upward positive).
     CtrlWheel(f64),
-    /// A Ctrl+= or Ctrl+- press, then frames with no input.
     Key(&'static str),
     Idle,
 }
 
-/// The work one frame did on the UI thread, by kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FrameWork {
-    /// Calls into the PDF engine: rasterising a page or tile, reading a
-    /// page's text or links. Each can take tens of milliseconds on a heavy
-    /// page, which is why they belong on the worker.
     engine_calls: u64,
-    /// Layouts of the window's tree rebuilt from scratch.
     rebuilt_layouts: u64,
-    /// Layout leaves measured again.
     measured_leaves: usize,
-    /// Text runs shaped (shape-cache misses).
     text_shaped: u64,
-    /// Draw objects in the frame's scene.
     draws: usize,
 }
 
 impl FrameWork {
-    /// Run `frame` on `harness`, and count what it did on this thread;
-    /// with its CPU time in milliseconds, for reports.
     fn count(
         harness: &mut ui::headless::FrameHarness,
         frame: impl FnOnce(&mut ui::headless::FrameHarness),
@@ -777,7 +682,6 @@ impl FrameWork {
         (work, cpu_ms)
     }
 
-    /// The most of each kind of work any one of `frames` did.
     fn most(frames: impl Iterator<Item = Self>) -> Self {
         frames.fold(Self::default(), |most, work| Self {
             engine_calls: most.engine_calls.max(work.engine_calls),
@@ -789,26 +693,16 @@ impl FrameWork {
     }
 }
 
-/// One frame of a driven zoom.
 struct ZoomSample {
-    /// The frame's CPU time on the UI thread, reported for measurements;
-    /// it varies with the machine and its load, so no test asserts on it.
     cpu_ms: f64,
-    /// What the frame did on the UI thread, counted: these are the same on
-    /// any machine under any load.
     work: FrameWork,
     zoom: f64,
-    /// The page's width bucket and whether it is drawn from tiles.
     bucket: u32,
     tiled: bool,
-    /// Pixels inside visible pages showing bare paper (nothing the engine
-    /// drew), and how many were sampled.
     paper_px: usize,
     sampled_px: usize,
 }
 
-/// The zoom script: in and back out across the whole-page widths and the
-/// tile threshold, by pinch, Ctrl+wheel and the keyboard.
 fn zoom_script(fit: f64, top: f64) -> Vec<ZoomStep> {
     let mut steps = Vec::new();
     let frames = |factor: f64| ((top / fit).ln() / factor.ln()).ceil() as usize;
@@ -831,8 +725,6 @@ fn zoom_script(fit: f64, top: f64) -> Vec<ZoomStep> {
     steps
 }
 
-/// Drive `script` through the reader on `path` in a `w`×`h` window at 60
-/// Hz, rasterise every frame and look at every visible page's pixels. `None` without the PDF engine.
 fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Vec<ZoomSample>> {
     let app = open_settled(path)?;
     ui::offscreen::set_capture_device_scale(1);
@@ -858,26 +750,19 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     });
     Framed::harness_mut(&mut app).relayout();
     let script = zoom_script(app.zoom(), top);
-    // A native window draws on its frame clock: input between two frames
-    // is dispatched as it arrives and drawn once, in the next.
     Framed::harness_mut(&mut app).set_coalesce_input_frames(true);
-    // The CPU renderer the desktop draws with where it has no GPU: the
-    // same pixels, on any machine, pinned to any CPU.
     let mut raster = tilo_cpu_raster::CpuRasterizer::default();
     let mut pixels = vec![0u8; w as usize * h as usize * 4];
     let ground = tilo_cpu_raster::color::AlphaColor::from_rgba8(10, 12, 16, 255);
     let probes = probe_grid(w, h);
     let period = Duration::from_micros(16_667);
     let mut samples = Vec::with_capacity(script.len());
-    // Whole frames, as shown, where `PDF_ZOOM_SHOTS` names.
     let shots = std::env::var_os("PDF_ZOOM_SHOTS").map(std::path::PathBuf::from);
     let mut shot_tiled = false;
     let mut next = ui::time::now();
     let mut ctrl_held = false;
     for step in script {
         next += period;
-        // Ctrl goes down before the Ctrl+wheel and keyboard steps and stays
-        // down through them, as a hand holds it.
         let ctrl = matches!(step, ZoomStep::CtrlWheel(_) | ZoomStep::Key(_));
         if ctrl != ctrl_held {
             let held: &[String] = if ctrl { &["ctrl".to_owned()] } else { &[] };
@@ -885,8 +770,6 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
             ctrl_held = ctrl;
         }
         let frame = samples.len();
-        // The step's input is dispatched as it arrives and the window draws
-        // once, on its frame clock.
         let (work, cpu_ms) = FrameWork::count(Framed::harness_mut(&mut app), |harness| {
             send_zoom_step(harness, step);
             if let Err(error) = harness.poll_frame() {
@@ -942,7 +825,6 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     Some(samples)
 }
 
-/// Write the whole frame `app` shows, rendered on the CPU, to `path`.
 fn shoot_frame(app: &Framed<PdfApp>, (w, h): (u32, u32), path: &std::path::Path) {
     use image::ImageEncoder as _;
     let mut pixels = vec![0u8; w as usize * h as usize * 4];
@@ -962,7 +844,6 @@ fn shoot_frame(app: &Framed<PdfApp>, (w, h): (u32, u32), path: &std::path::Path)
         .expect("write the shot");
 }
 
-/// Deliver one zoom step's input, as the window would.
 fn send_zoom_step(harness: &mut ui::headless::FrameHarness, step: ZoomStep) {
     match step {
         ZoomStep::Pinch(delta) => harness.send(&winit::event::WindowEvent::PinchGesture {
@@ -982,9 +863,6 @@ fn send_zoom_step(harness: &mut ui::headless::FrameHarness, step: ZoomStep) {
     }
 }
 
-/// Small probes on a grid across a `w`×`h` window, rasterised every frame:
-/// enough to see a page, or a tile of one, standing blank, cheap enough
-/// that the frames keep close to a display's pace.
 fn probe_grid(w: u32, h: u32) -> Vec<tilo_cpu_raster::Region> {
     (0..h / PROBE_PITCH)
         .flat_map(|row| {
@@ -1000,15 +878,9 @@ fn probe_grid(w: u32, h: u32) -> Vec<tilo_cpu_raster::Region> {
         .collect()
 }
 
-/// Side and spacing of the zoom test's pixel probes.
 const PROBE: u32 = 12;
 const PROBE_PITCH: u32 = 64;
 
-/// Pixels of the visible pages, in the rasterised `probes`, that show bare
-/// paper: the reader draws a page's paper first and the engine's pixels
-/// over it, and the fixture's own ink is never that light. Excludes a
-/// margin round each card edge and the scroll bars, which float over the
-/// pages. Returns (paper, sampled).
 fn paper_showing(
     app: &PdfApp,
     pixels: &[u8],
@@ -1050,20 +922,11 @@ fn paper_showing(
     (paper, sampled)
 }
 
-/// Zooming scales the page bitmaps already held on the GPU every frame and
-/// swaps in the sharp render when it arrives, so across every width bucket
-/// and the switch to tiles and back, by pinch, Ctrl+wheel and the keyboard,
-/// no frame shows a page (or part of one) as bare paper, and no frame does
-/// more on the UI thread than a zoom needs: no engine call, no layout
-/// rebuilt for the zoom, and bounded measuring, shaping and drawing. The
-/// work is counted rather than timed, so a loaded machine cannot fail it
-/// and a regression fails it on any machine.
 #[test]
 #[serial_test::serial(pdfium)]
 fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = heavy_pdf(dir.path(), 6);
-    // Past the tile threshold at device scale 1 (page width / 612 pt).
     let top = crate::tiles::TILE_MIN_PAGE_PX / 612.0 * 1.6;
     let Some(samples) = drive_zoom(&path, (1280, 800), top) else {
         return;
@@ -1099,8 +962,6 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
             "frame {i} did {work:?} on the UI thread, more than a zoom frame needs: {report}"
         );
     }
-    // The first key press switches the window from pointer to keyboard
-    // modality, which lays the tree out anew once; zooming itself never does.
     let rebuilt: u64 = samples.iter().map(|s| s.work.rebuilt_layouts).sum();
     assert!(
         rebuilt <= 1,
@@ -1108,20 +969,12 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
     );
 }
 
-/// Layout leaves a zoom or scroll frame may measure again: each measures one.
 const MAX_MEASURED_LEAVES: usize = 2;
 
-/// Text runs a zoom frame may shape: a zoom step shapes one, the new
-/// percentage the page pill shows.
 const MAX_TEXT_SHAPED: u64 = 2;
 
-/// Draw objects a zoom frame may encode: the chrome, the visible pages and
-/// their tiles at two zoom levels while the new level arrives come to about
-/// 250; twice that means something draws far more than is on screen.
 const MAX_DRAWS: usize = 512;
 
-/// Measurement: the same zoom on `PDF_SCROLL_FILE` or the heavy fixture,
-/// when `PDF_SCROLL_ZOOM` is set.
 #[test]
 fn measure_zoom() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1166,19 +1019,13 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
     })
 }
 
-/// How a person scrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollInput {
-    /// A mouse wheel spun steadily: a notch every fourth frame.
     Wheel,
-    /// Two fingers on a touchpad flicking: ten frames of fast pixel deltas,
-    /// then the fingers lift and nothing comes for fifty.
     Fling,
-    /// A finger on the screen dragging the page up, lifting, and again.
     TouchDrag,
 }
 
-/// The input of frame `frame` of `input`, as the window gets it.
 fn send_scroll_input(
     app: &mut ui::App,
     surface: &Window,
@@ -1225,8 +1072,6 @@ fn send_scroll_input(
     }
 }
 
-/// One finger's contact update at `at`, turned into pointer events as the
-/// live window's runner turns it.
 fn finger(
     app: &mut ui::App,
     surface: &Window,
@@ -1251,25 +1096,15 @@ fn finger(
     }
 }
 
-/// One frame of a driven scroll by some input: its UI time, the GPU time
-/// of the frame as the window presents it (copying what stays on screen,
-/// rendering the damage), and how far it moved the document (what the
-/// host copied up; 0 for a frame repainted whole).
 struct InputFrame {
     ui_ms: f64,
     gpu_ms: f64,
     moved_px: f64,
-    /// Whether the frame drew anything (an idle frame between wheel
-    /// notches presents nothing).
     drew: bool,
-    /// Whether it repainted the whole window.
     whole: bool,
-    /// The area it repainted, in pixels.
     damage_px: f64,
 }
 
-/// Scroll the reader on `path` for `frames` 60 Hz frames by `input` in a
-/// live 1280×800 window presenting through a copying host on the GPU.
 fn drive_input(
     path: &std::path::Path,
     input: ScrollInput,
@@ -1294,9 +1129,6 @@ fn drive_input(
     let mut out = Vec::with_capacity(frames);
     let mut fingers = ui::interaction::TouchPointerEmulator::default();
     let mut next = ui::time::now();
-    // Each frame's input and work see the 60 Hz clock a host's frames keep,
-    // so a loaded machine that oversleeps a frame cannot age the finger's
-    // last move out of the release velocity's window.
     let mut frame_clock = next;
     for frame in 0..frames {
         next += period;
@@ -1332,8 +1164,6 @@ fn drive_input(
                 .map_or(0.0, |copy| f64::from(copy.dy.unsigned_abs()));
             (moved, !moves.is_empty() || !rects.is_empty())
         });
-        // Repainted whole: no damage list, or damage over most of the
-        // window (the canvas without the chrome around it).
         let window = f64::from(size.0) * f64::from(size.1);
         let damage_px = frame.as_ref().map_or(window, |(_, rects)| {
             rects.iter().map(vello::kurbo::Rect::area).sum::<f64>()
@@ -1358,7 +1188,6 @@ fn drive_input(
     Some(out)
 }
 
-/// p50 / p95 / max of `values`, in a line.
 fn quantiles(mut values: Vec<f64>) -> String {
     let p50 = percentile(&mut values, 0.5);
     let p95 = percentile(&mut values, 0.95);
@@ -1366,10 +1195,6 @@ fn quantiles(mut values: Vec<f64>) -> String {
     format!("p50 {p50:5.2} p95 {p95:5.2} max {max:5.2}")
 }
 
-/// Measurement: ten seconds of scrolling by wheel, touchpad fling and touch
-/// drag through the heavy fixture, each frame's UI work and its scene
-/// rasterised on the GPU, the first 0.3 s apart from the rest. Set
-/// `PDF_SCROLL_INPUTS=1`; run it on lavapipe, pinned to the cores to test.
 #[test]
 #[serial_test::serial(pdfium)]
 fn measure_scroll_inputs() {
@@ -1385,9 +1210,6 @@ fn measure_scroll_inputs() {
         ScrollInput::Fling,
         ScrollInput::TouchDrag,
     ] {
-        // The GPU (lavapipe where there is none), or with
-        // `PDF_SCROLL_PAINTER=cpu` the CPU renderer the desktop draws with
-        // on a machine without one.
         let painter = if std::env::var("PDF_SCROLL_PAINTER").as_deref() == Ok("cpu") {
             Painter::Cpu
         } else {
@@ -1396,8 +1218,6 @@ fn measure_scroll_inputs() {
         let Some(frames) = drive_input(&path, input, FRAMES, painter) else {
             return;
         };
-        // Frames that drew: an idle frame between wheel notches presents
-        // nothing and costs nothing.
         let total = |f: &&InputFrame| f.ui_ms + f.gpu_ms;
         let drawn = |frames: &[InputFrame]| -> Vec<f64> {
             frames
@@ -1435,10 +1255,6 @@ fn measure_scroll_inputs() {
     }
 }
 
-/// A touchpad flick or a finger lifted while moving leaves the page gliding
-/// to a stop, as every Tilo scroll surface does, and every frame of the
-/// drag and the glide only scrolls: the window repaints what scrolled in,
-/// never all of itself.
 #[test]
 #[serial_test::serial(pdfium)]
 fn a_lifted_gesture_glides_and_every_frame_only_scrolls() {
@@ -1448,7 +1264,6 @@ fn a_lifted_gesture_glides_and_every_frame_only_scrolls() {
         let Some(frames) = drive_input(&path, input, 60, Painter::None) else {
             return;
         };
-        // Fingers on the surface: frames 0..10 (a flick), 0..20 (a drag).
         let lifted = if input == ScrollInput::Fling { 11 } else { 21 };
         let gliding = frames[lifted..].iter().filter(|f| f.moved_px > 0.0).count();
         assert!(
@@ -1464,7 +1279,6 @@ fn a_lifted_gesture_glides_and_every_frame_only_scrolls() {
             glide.last() < glide.first(),
             "{input:?}: and slows to a stop: {glide:?}"
         );
-        // The first frame takes in the pointer arriving over the page.
         let whole = frames[1..].iter().filter(|f| f.drew && f.whole).count();
         let wholes: Vec<String> = (1..frames.len())
             .filter(|i| frames[*i].drew && frames[*i].whole)
@@ -1482,9 +1296,6 @@ fn a_lifted_gesture_glides_and_every_frame_only_scrolls() {
     }
 }
 
-/// Text left selected does not stop the pages scrolling by copying: the
-/// selection's bands move with the text, and its bar repaints where it was
-/// and where it is.
 #[test]
 #[serial_test::serial(pdfium)]
 fn scrolling_with_text_selected_still_only_scrolls() {
@@ -1500,7 +1311,6 @@ fn scrolling_with_text_selected_still_only_scrolls() {
     let mut damage = ui::app::SurfaceDamage::copying();
     let mut scene = vello::Scene::new();
     app.init_layout();
-    // The wheel scrolls what is under the pointer: the pages.
     app.surface_input(
         &surface,
         winit::event::WindowEvent::CursorMoved {

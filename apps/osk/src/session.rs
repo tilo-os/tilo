@@ -20,25 +20,17 @@ use ui::WakeHandle;
 use ui::collaboration::SessionResource;
 use ui::serde_json::{Map, Value};
 
-/// The resource the session publishes the keyboard's state on.
 const KEYBOARD: &str = "keyboard";
 
-/// What the session sets in a surface app it started itself: the keyboard it
-/// runs is the session's, where one the person opened is theirs and shows by
-/// its input method's focus alone.
 const SURFACE_LAYER_ENV: &str = "TILO_SURFACE_LAYER";
 
-/// What the session publishes of the keyboard.
 #[derive(Deserialize)]
 struct Published {
-    /// The keyboard belongs on screen now.
     visible: bool,
 }
 
-/// The action the keyboard asks the session to carry out when the person dismisses it.
 const SET_VISIBLE: &str = "set-visible";
 
-/// What the session's watcher hears: a reading to look at, or an action the keyboard asks for.
 enum Event {
     Reading,
     Ask(&'static str, Map<String, Value>),
@@ -53,8 +45,6 @@ pub(crate) struct Said {
 }
 
 impl Said {
-    /// Whether the session says the keyboard belongs on screen, as it last
-    /// said; `None` before it said anything.
     pub fn visible(&self) -> Option<bool> {
         *self
             .visible
@@ -62,7 +52,6 @@ impl Said {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Say what the session published.
     fn say(&self, visible: bool) {
         *self
             .visible
@@ -78,9 +67,6 @@ impl Said {
     }
 }
 
-/// Follow the session's word on the keyboard: take `wake` with what the app
-/// reads, and `None` when this keyboard has no session to follow — one the
-/// person opened for themselves shows by its input method's focus alone.
 pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
     std::env::var_os(SURFACE_LAYER_ENV)?;
     let (asks, heard) = mpsc::channel();
@@ -101,21 +87,14 @@ pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
     }
 }
 
-/// Open the keyboard's resource and read each reading it publishes into
-/// `said`, waking the app to draw the change.
 fn watch(said: &Said, wake: &WakeHandle, heard: &mpsc::Receiver<Event>) {
     let opened = match SessionResource::open(KEYBOARD) {
         Ok(opened) => opened,
         Err(error) => {
-            // No Tilo session publishes the keyboard: the input method's
-            // focus alone decides, as on any other compositor.
             tracing::debug!(%error, "osk: the session publishes no keyboard");
             return;
         }
     };
-    // Readings arrive on the session's worker, so each one is handed over
-    // here rather than read on the frame thread; the view's asks come the
-    // same way, so both are woken for on this one wait.
     let waking = said.asks.clone();
     let mut scope = ui::WakeScope::new();
     if let Err(error) = scope.bind(move |_| {

@@ -1,14 +1,7 @@
-//! Views a call expands where it stands: generic, higher-order views.
-//!
-//! A view whose parameters are written over type parameters (`view list<T>(items: List<T>)`),
-//! or that takes view state (`filter: State<F>`), a function (`count: (F) -> Int`) or a view
-//! of an item (`row: (T) -> View`), is a template. It has no function of its own: each call
-//! checks its body where the call stands, its type parameters taken from what the call
-//! passes, its state parameters naming the caller's view state, its function parameters the
-//! caller's lambdas and its view parameters the caller's blocks, each checked in the caller's
-//! scope when the body applies it. What it builds is the caller's: its reads, its view state
-//! and its nodes, keyed under the call. The standard library (`std`) is written this way, and
-//! an app's own views can be.
+//! Views a call expands where it stands: generic, higher-order views. A view parameterized over
+//! types, view state, functions or views of an item is a template: it has no function of its own,
+//! and each call checks its body where the call stands, in the caller's scope. What it builds is
+//! the caller's: its reads, its view state and its nodes, keyed under the call.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -21,16 +14,12 @@ use crate::ir::{Ek, LocalId, Stmt};
 use crate::resolve::{CKind, Callable, Template};
 use crate::types::Ty;
 
-/// What an optional template parameter holds where its uses are expanded.
 pub(crate) enum Static {
-    /// Left out.
     Absent,
-    /// Given.
     Given(Macro),
 }
 
 impl Static {
-    /// What was given, if anything.
     pub(crate) fn given(self) -> Option<Macro> {
         match self {
             Self::Given(m) => Some(m),
@@ -42,29 +31,22 @@ impl Static {
 /// What a template's parameter that is not a value is bound to where the template expands.
 #[derive(Clone)]
 pub(crate) enum Macro {
-    /// A `State<E>` parameter: view state of the caller.
     State(StateRef),
-    /// A function parameter, given a lambda.
     Lambda(Rc<Closure>),
-    /// A view parameter (`View`, or `(T) -> View` with an item), given a block.
     Block(Rc<UiClosure>),
-    /// A view-of-an-item parameter given a view of its own: the item type's row view.
     View(Rc<Callable>),
-    /// An `Option<...>` parameter of one of the above, given one.
     Some(Box<Macro>),
-    /// An `Option<...>` parameter left out.
     Absent,
 }
 
-/// Names as a piece of code sees them: what a lambda or a block given to a template reads
-/// when the template applies it.
+/// Names as a piece of code sees them: what a lambda or a block given to a template reads when it
+/// is applied.
 #[derive(Clone, Default)]
 pub(crate) struct Scope {
     pub names: HashMap<String, LocalId>,
     pub states: HashMap<String, StateRef>,
     pub macros: HashMap<String, Macro>,
-    /// The package whose names the code sees: `None` for the module's own, `std` for the
-    /// standard library's.
+    /// The package whose names the code sees: `None` for the module's own, `std` for the library's.
     pub ns: Option<String>,
     pub types: HashMap<String, Ty>,
     /// What the keys of the nodes it makes start with, after the view's id.
@@ -80,8 +62,8 @@ pub(crate) struct Closure {
     pub scope: Scope,
 }
 
-/// A block given to a template, with the scope it was written in: the values it names, each
-/// with its type — an item block's one item, or the several values of a function's block.
+/// A block given to a template, with the scope it was written in: the values it names, each with
+/// its type.
 pub(crate) struct UiClosure {
     pub params: Vec<(String, Ty)>,
     pub body: Vec<UiStmt>,
@@ -97,7 +79,6 @@ enum Kind<'a> {
     Optional(Box<Kind<'a>>),
 }
 
-/// What a parameter of a template takes, read off its written type.
 fn kind_of(te: &TypeExpr) -> Kind<'_> {
     match &te.kind {
         TypeExprKind::Generic(name, args) if name.name == "State" && args.len() == 1 => {
@@ -115,8 +96,7 @@ fn kind_of(te: &TypeExpr) -> Kind<'_> {
     }
 }
 
-/// The `state` declaration a parameter's default names (`opened: State<Option<T>> = open_item`),
-/// when its default is a name.
+/// The `state` declaration a parameter's default names (`opened: State<Option<T>> = open_item`).
 fn default_state_name(p: &ast::Param) -> Option<&str> {
     match &p.default.as_ref()?.kind {
         ExprKind::Ident(name) => Some(name.as_str()),
@@ -124,7 +104,6 @@ fn default_state_name(p: &ast::Param) -> Option<&str> {
     }
 }
 
-/// Whether a view declared with these type parameters and parameters is a template.
 #[must_use]
 pub fn is_template(view: &ast::ViewDecl) -> bool {
     view.template
@@ -147,7 +126,6 @@ pub(crate) struct Saved {
 }
 
 impl Checker<'_> {
-    /// The names as the code being checked sees them now.
     pub(crate) fn capture_scope(&self) -> Scope {
         let mut names = HashMap::new();
         for scope in &self.st.scopes {
@@ -166,8 +144,8 @@ impl Checker<'_> {
         }
     }
 
-    /// Check what follows as code written in `scope`, with `extra` names bound beside its
-    /// own, until [`Self::leave`].
+    /// Check what follows as code written in `scope`, with `extra` names bound beside its own, until
+    /// [`Self::leave`].
     pub(crate) fn enter(&mut self, scope: &Scope, extra: HashMap<String, LocalId>) -> Saved {
         let mut names = scope.names.clone();
         names.extend(extra);
@@ -192,12 +170,11 @@ impl Checker<'_> {
         self.st.ui = saved.ui;
     }
 
-    /// Whether the code being checked is the standard library's.
     pub(crate) fn in_std(&self) -> bool {
         self.st.ns.as_deref() == Some(crate::stdlib::APP)
     }
 
-    /// The module's own callable `name`, when the code being checked sees the module's names.
+    /// The module's own callable `name`, when the code sees the module's names.
     pub(crate) fn own_callable(&self, name: &str) -> Option<&Callable> {
         if self.in_std() {
             return None;
@@ -205,12 +182,11 @@ impl Checker<'_> {
         self.env.own_callable(name)
     }
 
-    /// The template `name` the code being checked sees by its plain name: its own package's.
+    /// The template `name` the code sees by its plain name: its own package's.
     pub(crate) fn template_named(&self, name: &str) -> Option<&Template> {
         self.env.template(self.st.ns.as_deref(), name)
     }
 
-    /// The template `base.name`: `std.list`.
     pub(crate) fn template_at(&self, base: &ast::Expr, name: &str) -> Option<&Template> {
         let path = super::expr::dotted(base)?.join(".");
         if self.lookup(&path).is_some() {
@@ -225,8 +201,8 @@ impl Checker<'_> {
         self.env.template(ns, name)
     }
 
-    /// The type a written type of a template names, with its type parameters as `types`
-    /// binds them (an unbound one is an error type).
+    /// The type a written type of a template names, with its type parameters as `types` binds them
+    /// (an unbound one is an error type).
     pub(crate) fn type_in(&mut self, te: &TypeExpr, types: &HashMap<String, Ty>) -> Ty {
         match &te.kind {
             TypeExprKind::Named(path) if path.len() == 1 && types.contains_key(&path[0].name) => {
@@ -240,7 +216,6 @@ impl Checker<'_> {
                     "Set" => Ty::Set(inner),
                     "Map" => Ty::Map(inner),
                     "Collection" => Ty::Collection(inner),
-                    // `Filter<T>`: a filter of the type `T` names, as outside a template.
                     "Filter" => match *inner {
                         Ty::Record(key) => Ty::Filter(key),
                         other if other.is_error() => Ty::Error,
@@ -256,7 +231,6 @@ impl Checker<'_> {
                             Ty::Error
                         }
                     },
-                    // `Sort<T>`: an order by a field of the type `T` names.
                     "Sort" => match *inner {
                         Ty::Record(key) => Ty::Sort(key),
                         other if other.is_error() => Ty::Error,
@@ -293,7 +267,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Bind the type parameters `te` mentions so that it names `ty`. Whether it can.
+    /// Binds the type parameters `te` mentions so that it names `ty`. Whether it can.
     fn unify(te: &TypeExpr, ty: &Ty, params: &[String], types: &mut HashMap<String, Ty>) -> bool {
         match (&te.kind, ty) {
             (_, Ty::Error) => true,
@@ -323,10 +297,9 @@ impl Checker<'_> {
         }
     }
 
-    /// `entry: .some(new_task(t))`: the action a view's maybe-action is, which the entry fills.
-    /// An entry fills its action's one `Text` parameter with the words nothing else takes, so
-    /// an action without one (`add(t, done: Bool)`), or with several, is no entry's action:
-    /// E068 where the call that makes the action is written.
+    /// `entry: .some(new_task(t))`: the action a view's maybe-action is, which the entry fills. An
+    /// entry fills its action's one `Text` parameter, so an action without one, or with several, is
+    /// no entry's action (E068 where the call that makes the action is written).
     fn entry_action(&mut self, span: Span, e: &ast::Expr) {
         let held = match &e.kind {
             ExprKind::Variant { name, args } if name.name == "some" => match args.as_deref() {
@@ -359,8 +332,8 @@ impl Checker<'_> {
         self.err("E068", span, format!("`{}` has {what}: an entry fills the action's one `Text` parameter with the words nothing else takes, so the entry needs an action with exactly one", c.name));
     }
 
-    /// Expand the template `t` where the UI call `c` stands: its nodes under `parent`, or,
-    /// at a view's top, the one node it makes (a fragment of them when it makes several).
+    /// Expand the template `t` where the UI call `c` stands: its nodes under `parent`, or, at a
+    /// view's top, the one node it makes.
     pub(crate) fn expand(
         &mut self,
         t: &Template,
@@ -421,13 +394,12 @@ impl Checker<'_> {
                 }
             }
         }
-        // The block: named slots for the view parameters it names, the rest (or the item
-        // block) for the view parameter of the content.
+        // The block: named slots for the view parameters it names, the rest for the view parameter of
+        // the content.
         let (slots, content) = split_block(c);
         let mut values: HashMap<String, LocalId> = HashMap::new();
         let mut states: HashMap<String, StateRef> = HashMap::new();
         let mut macros: HashMap<String, Macro> = HashMap::new();
-        // A parameter of a template being expanded, passed on by its name: what it holds.
         let passed = |i: usize| -> Option<Macro> {
             let ExprKind::Ident(n) = &given[i]?.value.kind else {
                 return None;
@@ -435,14 +407,11 @@ impl Checker<'_> {
             let m = caller.macros.get(n)?;
             (!matches!(m, Macro::State(_)) || !caller.names.contains_key(n)).then(|| m.clone())
         };
-        // The states a template keeps itself: a `State<T>` parameter a call leaves out, or
-        // leaves to the template by passing on an absent `Option<State<T>>`, is the state its
-        // default names, one the template declares in its body (`opened: State<Option<T>> =
-        // open_item`). Read once the template's own states are lowered: a caller that wants the
-        // state passes its own. A parameter with no default still needs one.
+        // The state a template keeps itself: a `State<T>` parameter a call leaves out is the state its
+        // default names, which the template declares in its body. A caller that wants the state passes
+        // its own.
         let mut own: Vec<(&ast::Param, &TypeExpr, &ast::Expr)> = Vec::new();
-        // The state a parameter's default names, when the call gave the parameter one of its
-        // own: the template keeps nothing of it then.
+        // The state a parameter's default names, when the call gave the parameter one of its own.
         let mut kept: Vec<&str> = Vec::new();
         // Values and view state first: they bind the type parameters lambdas are read with.
         for (i, p) in view.params.iter().enumerate() {
@@ -484,8 +453,8 @@ impl Checker<'_> {
                             states.insert(p.name.name.clone(), state.clone());
                         }
                     }
-                    // A function passed on by the name its caller gave it binds the type
-                    // parameters its result names, as the function a caller writes does.
+                    // A function passed on by the name its caller gave it binds the type parameters its
+                    // result names.
                     Macro::Lambda(closure) => {
                         if let Some(result) = function_result(&p.ty) {
                             Self::unify(result, &closure.result, &params, &mut types);
@@ -500,10 +469,8 @@ impl Checker<'_> {
                 Kind::Value(te) => {
                     let Some(a) = given[i] else { continue };
                     let want = self.type_in(te, &types);
-                    // A text parameter is words the view shows, as a component's prop of words
-                    // is: the literal given to it is this view's message (i18n.md §2), so
-                    // `std.composer(draft, "Message #{c.name}", send)`'s sentence is
-                    // translated with the view that writes it.
+                    // A text parameter is words the view shows: the literal given to it is this view's
+                    // message (i18n.md §2).
                     if self.st.ctx == Ctx::View
                         && !want.is_error()
                         && super::component::shows_text(&want)
@@ -623,7 +590,6 @@ impl Checker<'_> {
                 }
                 (None, false) => {
                     if matches!(kind_of(&p.ty), Kind::View) {
-                        // A view parameter left out holds nothing.
                         macros.insert(
                             p.name.name.clone(),
                             Macro::Block(Rc::new(UiClosure {
@@ -717,8 +683,8 @@ impl Checker<'_> {
         node
     }
 
-    /// The state a template's `State<T>` parameter names as its default (`opened:
-    /// State<Option<T>> = open_item`): the one the template declares, read in its own scope.
+    /// The state a template's `State<T>` parameter names as its default: the one the template
+    /// declares, read in its own scope.
     fn own_state(
         &mut self,
         view: &ast::ViewDecl,
@@ -743,10 +709,9 @@ impl Checker<'_> {
         state
     }
 
-    /// Lowers the `state` declarations at the top of a template's body: state of
-    /// the view it expands in, kept under that view's id and the template's name
-    /// (`<view id>:list.query`), as the view's own is under its name. One a parameter names as
-    /// its default is the caller's instead, and left undeclared. Returns the rest of the body.
+    /// Lowers the `state` declarations at the top of a template's body: state of the view it expands
+    /// in, kept under that view's id and the template's name (`<view id>:list.query`). Returns the
+    /// rest of the body.
     fn template_state(
         &mut self,
         view: &ast::ViewDecl,
@@ -831,9 +796,8 @@ impl Checker<'_> {
         state
     }
 
-    /// What a function parameter is given: a lambda, the call's item block, a view's name, or
-    /// for a view of an item left out, the item type's row view. `.none` for a parameter a call
-    /// may leave out is nothing, as leaving it out is.
+    /// What a function parameter is given: a lambda, the call's item block, a view's name, or for a
+    /// view of an item left out, the item type's row view.
     fn function_arg(
         &mut self,
         arg: Option<&ast::Arg>,
@@ -846,9 +810,8 @@ impl Checker<'_> {
             if optional && is_none(&a.value) {
                 return None;
             }
-            // A key path or a lambda, as the function of every value the parameter takes. A
-            // function of a view is given its rows by the call's block, never by a lambda: the
-            // block names the values it draws with, and the item is one of them.
+            // A key path or a lambda, as the function of every value the parameter takes. A function
+            // of a view is given its rows by the call's block.
             let bound: Option<(Vec<ast::Ident>, ast::Expr)> = if item_block {
                 None
             } else if let Some((param, body)) = super::optional::lambda_of(&a.value) {
@@ -876,9 +839,8 @@ impl Checker<'_> {
                     .map(|param| param.name.clone())
                     .zip(param_tys)
                     .collect();
-                // What the function is worth binds the type parameters its result names:
-                // `group: .due` makes a list's heading a day, and anyone reading the list
-                // keeps it a day.
+                // What the function is worth binds the type parameters its result names: `group: .due`
+                // makes a list's heading a day.
                 let named = type_params_in(result, names);
                 let unbound = |types: &HashMap<String, Ty>| {
                     named
@@ -940,8 +902,8 @@ impl Checker<'_> {
             return None;
         }
         let item_ty = param_tys.first().cloned().unwrap_or(Ty::Error);
-        // The block names the values its rows are drawn with: the item, and at the top of a
-        // nested list the item it stands under.
+        // The block names the values its rows are drawn with: the item, and at the top of a nested list
+        // the item it stands under.
         if !content.params.is_empty() {
             if content.params.len() != param_tys.len() {
                 self.err(
@@ -974,7 +936,6 @@ impl Checker<'_> {
                 },
             })));
         }
-        // Left out: the item type's row view.
         if let Ty::Record(key) = &item_ty
             && let Some(v) = self.env.row_view(key)
         {
@@ -987,9 +948,8 @@ impl Checker<'_> {
         None
     }
 
-    /// What a function parameter's body is worth on its own: its values are bound, its body
-    /// read, and what it lowers to dropped. The body is read here for its type alone and read
-    /// again where the template calls the function, which is where an error in it is reported.
+    /// What a function parameter's body is worth on its own: its values are bound, its body read, and
+    /// what it lowers to dropped. An error in it is reported where the template calls the function.
     fn body_type(&mut self, params: &[(String, Ty)], body: &ast::Expr, scope: &Scope) -> Ty {
         let mut extra = HashMap::new();
         for (name, ty) in params {
@@ -1005,8 +965,8 @@ impl Checker<'_> {
         worth.ty
     }
 
-    /// A template's body where its call stands: its nodes under `parent`, or the one node it
-    /// makes at a view's top.
+    /// A template's body where its call stands: its nodes under `parent`, or the one node it makes at
+    /// a view's top.
     fn template_body(&mut self, body: &[UiStmt], parent: Option<LocalId>) -> LocalId {
         if let Some(p) = parent {
             self.ui_stmts(body, p);
@@ -1033,8 +993,8 @@ impl Checker<'_> {
         root
     }
 
-    /// Apply the macro `m`, named `name`, as a UI statement under `parent`: a view parameter's
-    /// block, or a view, given `args`.
+    /// Apply the macro `m`, named `name`, as a UI statement under `parent`: a view parameter's block,
+    /// or a view, given `args`.
     pub(crate) fn apply_ui(
         &mut self,
         name: &str,
@@ -1076,7 +1036,6 @@ impl Checker<'_> {
                 self.ui_stmts(&block.body, parent);
                 self.leave(saved);
             }
-            // An optional view renders when it was given, and nothing when it was left out.
             Macro::Some(inner) => {
                 return self.apply_ui(name, inner, c, args, Some(parent));
             }
@@ -1107,7 +1066,6 @@ impl Checker<'_> {
         parent
     }
 
-    /// Apply the lambda `name` to `args`, as an expression.
     pub(crate) fn apply_lambda(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Ex {
         let Some(Macro::Lambda(closure)) = self.st.macros.get(name).cloned() else {
             self.err("E026", span, format!("`{name}` is not a function"));
@@ -1150,7 +1108,6 @@ impl Checker<'_> {
         }
     }
 
-    /// Bind a pattern's one binder to what a static option holds, in the current scope.
     pub(crate) fn bind_static(&mut self, binder: &str, m: Macro) {
         if binder == "_" {
             return;
@@ -1162,7 +1119,7 @@ impl Checker<'_> {
         self.st.macros.insert(binder.to_owned(), m);
     }
 
-    /// The arm of a `match` over a static option to check: the index of the arm and its binder.
+    /// The arm of a `match` over a static option to check: its index and its binder.
     pub(crate) fn static_arm<'p>(
         &mut self,
         held: &Static,
@@ -1183,7 +1140,6 @@ impl Checker<'_> {
     }
 
     /// `for c in cases(E)`: the body once per case, at compile time, each keyed by its case.
-    /// Whether `iter` is such a list.
     pub(crate) fn unrolled_for(
         &mut self,
         var: &str,
@@ -1231,7 +1187,6 @@ impl Checker<'_> {
         true
     }
 
-    /// The enum `cases(E)` names.
     pub(crate) fn cases_of(
         &mut self,
         args: &[ast::Arg],
@@ -1255,8 +1210,7 @@ impl Checker<'_> {
         }
     }
 
-    /// The type a plain name or dotted path names in an expression: a type parameter, a type
-    /// of the module or one imported.
+    /// The type a plain name or dotted path names in an expression.
     pub(crate) fn type_named(&self, e: &ast::Expr) -> Option<Ty> {
         let path = super::expr::dotted(e)?;
         if let [single] = path.as_slice() {
@@ -1289,7 +1243,6 @@ impl Checker<'_> {
         self.env.type_info(&key).map(|_| Ty::Record(key))
     }
 
-    /// The value of the variant `name` of the enum `ty`, which carries no payload.
     pub(crate) fn variant_named(&mut self, ty: &Ty, name: &str, span: Span) -> Ex {
         let Some(shape) = super::enums::Shape::of(self, ty) else {
             return Ex::error();
@@ -1297,6 +1250,7 @@ impl Checker<'_> {
         let ident = ast::Ident {
             name: name.to_owned(),
             span,
+            from_template_of: None,
         };
         self.construct_variant(&shape, ty, &ident, None, span)
     }
@@ -1331,8 +1285,8 @@ impl Checker<'_> {
     }
 }
 
-/// Whether a value of `found` is taken where `want` is written without a conversion: a
-/// collection read where a list is.
+/// Whether a value of `found` is taken where `want` is written without a conversion: a collection
+/// read where a list is.
 fn coerces(found: &Ty, want: &Ty) -> bool {
     match (found, want) {
         (Ty::Collection(a) | Ty::Set(a), Ty::List(b)) => a.same(b),
@@ -1345,8 +1299,7 @@ fn is_none(e: &ast::Expr) -> bool {
     matches!(&e.kind, ExprKind::Variant { name, args: None } if name.name == "none")
 }
 
-/// The type parameters `names` that the written type `te` mentions, each once: what a
-/// function's result binds where a call passes it.
+/// The type parameters `names` that the written type `te` mentions, each once.
 fn type_params_in<'a>(te: &'a TypeExpr, names: &'a [String]) -> Vec<&'a String> {
     let mut found: Vec<&String> = Vec::new();
     collect_type_params(te, names, &mut found);
@@ -1399,9 +1352,8 @@ fn function_result(te: &TypeExpr) -> Option<&TypeExpr> {
     }
 }
 
-/// The block of a template call taken apart: its named slots, and the rest. An item block
-/// names slots too: `std.transcript(c, c.messages) { m -> message(m) composer: { ... } }` is the
-/// row of each item and, beside it, the composer, which does not see the item.
+/// The block of a template call taken apart: its named slots, and the rest. An item block names
+/// slots too, which do not see the item.
 struct Content {
     params: Vec<ast::Ident>,
     body: Vec<UiStmt>,
@@ -1425,8 +1377,8 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
     (slots, content)
 }
 
-/// Whether `p` is the view parameter a template call's block fills when it names no slot:
-/// the first `View` parameter, or the one called `content`.
+/// Whether `p` is the view parameter a call's block fills when it names no slot: the first `View`
+/// parameter, or the one called `content`.
 fn is_content_param(view: &ast::ViewDecl, p: &ast::Param) -> bool {
     let views: Vec<&ast::Param> = view
         .params

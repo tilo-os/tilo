@@ -1,7 +1,3 @@
-//! The document's edit records: two-replica convergence, stable anchors
-//! through delete and reorder, history and restore, permissions, and a
-//! deterministic export that other readers (and pdfium) read back.
-
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::ApplyIncoming;
 use ui::widget::Edits;
@@ -19,8 +15,6 @@ fn apply(doc: &mut AutoCommit, action: Invoke<PdfMarkup>) {
     PdfMarkup::apply_to(doc, action);
 }
 
-/// A record with a seeded three-page plan, saved and loaded twice: two
-/// replicas with their own actors and a shared history.
 fn replicas() -> (AutoCommit, AutoCommit) {
     let bytes = PdfMarkup::planned(3);
     (
@@ -72,7 +66,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
     assert_eq!(merged.len(), 2);
     assert!(merged.iter().all(|(_, page)| *page == 2));
     assert_eq!(merged, ids(&right), "both replicas converge on one list");
-    // The stored geometry is user space with the text anchor preserved.
     let a = PdfMarkup::of(&left)
         .list_annotations()
         .into_iter()
@@ -83,9 +76,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
     assert_eq!(a.created_ms, 1_700_000_000_000);
 
     {
-        // Two peers open the document before either has synced anything past
-        // its genesis: each lays out the page plan. Both peers' markup must
-        // survive.
         let mut genesis = ui::tilo_resource::Replica::<PdfMarkup>::new();
         let bytes = genesis.save();
         let mut left = AutoCommit::load(&bytes).expect("left");
@@ -129,7 +119,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
 
     {
         let (mut left, mut right) = replicas();
-        // Left moves page 1 to the end while right annotates it.
         apply(
             &mut left,
             move_page_plan_action("source-1", Some("source-3")),
@@ -159,16 +148,12 @@ fn concurrent_markup_edits_converge_across_replicas() {
             .expect("the plan");
         let mut other = app.peer_document();
 
-        // This user deletes page 2 as one undoable action…
         app.invoke(delete_page_plan_action("source-2"))
             .expect("the owner deletes a page");
-        // …while a collaborator, not yet seeing the delete, annotates it.
         apply(&mut other, highlight("late", "source-2", 200.0));
         app.merge_peer(&mut other).expect("merge the collaborator");
         let doc = app.read_document(Clone::clone);
 
-        // Defined outcome: the page is gone, its annotation is kept, attached to
-        // the deleted page, and not shown anywhere else.
         assert!(ids(&doc).iter().all(|(id, _)| id != "late"));
         let hidden: Vec<_> = PdfMarkup::of(&doc)
             .annotations_with_hidden()
@@ -182,7 +167,6 @@ fn concurrent_markup_edits_converge_across_replicas() {
             Some("source-2")
         );
 
-        // Undoing the delete brings the page back — with the annotation on it.
         assert!(app.undo(), "the delete is one undo step");
         let restored: Vec<_> = app
             .read_document(ids)
@@ -249,7 +233,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         winner == FormEntry::Text("Ada".into()) || winner == FormEntry::Text("Grace".into()),
         "the value is one of the concurrent writes, never a blend: {winner:?}"
     );
-    // The losing write stays in the key's conflict set.
     let Some((_, map)) = left.get(&automerge::ROOT, "form_values").unwrap() else {
         panic!("form values map")
     };
@@ -261,7 +244,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             export: None
         })
     );
-    // A later write supersedes both.
     apply(
         &mut left,
         set_form_value_action("name", &FormEntry::Text("Lin".into())),
@@ -278,7 +260,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         app.sync_settled(&mut state.doc, &state.root);
         let before = PdfMarkup::of(&state.doc).annotations_with_hidden().len();
 
-        // The host says the participant may only view.
         let as_role = |role| {
             ui::framework::testing::dispatcher::<crate::PdfMarkup>(APP_ID).with_permissions(
                 ui::permissions::LivePermissions::fixed(
@@ -319,7 +300,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             "the refusal is explained"
         );
 
-        // A commenter may reply to a thread but still not mark up the page.
         app.attach_framework(as_role(ui::permissions::Role::Commenter));
         let thread = PdfMarkup::of(&state.doc)
             .list_comments()
@@ -352,8 +332,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         );
     }
 
-    // Through the host door too: the comment's reply action needs only the
-    // right to comment.
     {
         use ui::framework::testing::TestApp;
         let mut app = TestApp::<crate::PdfViewerShell>::new().expect("the reader");
@@ -384,8 +362,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
                 .is_err(),
             "a commenter may not add a note to the page"
         );
-        // A typed edit needs what it changes: a reply commenting, a highlight
-        // writing.
         app.invoke(crate::actions::add_reply_action(thread, "Typed"))
             .expect("a commenter's typed reply");
         assert!(
@@ -420,20 +396,18 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let pinned = PdfMarkup::of(&state.doc)
             .pinned_source()
             .expect("source pinned");
-        let (pinned, len) = (pinned.hash, pinned.len);
+        let pinned = pinned.hash();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(pinned, tilo_content::hash_bytes(&bytes));
-        assert_eq!(len, bytes.len() as u64);
         assert!(
             matches!(
                 PdfMarkup::of(&state.doc).source,
-                ui::tilo_resource::Bytes::Blob { len: stored, .. } if stored == len
+                ui::tilo_resource::Bytes::Blob { len: stored, .. }
+                    if stored == bytes.len() as u64
             ),
             "the record references the bytes as a blob"
         );
 
-        // Markup through the reader's own paths: an ink stroke and a note on the
-        // page, plus form values.
         app.tool = Tool::Ink;
         app.drag = Some(DragState {
             tool: Tool::Ink,
@@ -513,8 +487,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
         assert_eq!(field("name").value, "Grace Hopper");
         assert!(field("agree").widgets[0].checked);
         assert_eq!(field("colour").value, "Green");
-        // The ink landed where it was drawn: its first point maps back to the
-        // card point the stroke started at.
         let ink = annotations
             .iter()
             .find(|a| a.kind == tilo_pdf::AnnotationKind::Ink)
@@ -537,8 +509,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.recompute_regions();
         app.sync_viewport_frame();
 
-        // Highlight "needle" on page 3 from its text, then rotate that page,
-        // move it first and delete page 2.
         let text = tests::text_layer(&mut app, &mut state, 3);
         let hit = text
             .search(3, "needle", crate::model::SearchOptions::default())
@@ -622,7 +592,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
             .into_iter()
             .find(|a| a.kind == tilo_pdf::AnnotationKind::Highlight)
             .expect("the highlight exported");
-        // The exported quad covers the word the text layer finds after reload.
         let word = found[0].rects[0];
         let quad = highlight.quads[0];
         let overlap = quad.intersects(&word);

@@ -14,10 +14,9 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::pack::SigningIdentity;
 
-/// The package in `dir` and the packages it uses, found in `search` (else among `dir`'s
-/// siblings), compiled in dependency order against what the platform and the native apps among
-/// them publish ([`tilolang_tilo::catalogue::published_packages`]); and that published metadata. The one
-/// resolution `check`, `build`, `describe`, `dev` and `layout-check` share.
+/// The package in `dir` and the packages it uses, found in `search` (else among `dir`'s siblings),
+/// compiled in dependency order against what the platform and the native apps among them publish
+/// ([`tilolang_tilo::catalogue::published_packages`]); and that published metadata.
 pub fn compile(
     dir: &Path,
     search: &[PathBuf],
@@ -50,11 +49,8 @@ pub fn load_identity(path: &Path) -> Result<SigningIdentity, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The identity at `path`, made the first time it is asked for: a development publisher key
-/// kept by its owner only. Several commands asking at once (four `tilolang dev` started
-/// together) all get the one key: it is written whole beside `path` and linked into place, so
-/// the key file is never seen half written, and a command that finds another's key there takes
-/// that one.
+/// The identity at `path`, made the first time it is asked
+/// for: a development publisher key kept by its owner only.
 pub fn identity_at(path: &Path) -> Result<SigningIdentity, String> {
     if path.exists() {
         return load_identity(path);

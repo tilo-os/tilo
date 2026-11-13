@@ -17,6 +17,11 @@
 import { resourceProxy } from "tilo-sdk";
 import type * as tilo from "tilo-sdk";
 
+/** The version of the surface these types were made from: a workspace whose app
+ * publishes another refuses their actions rather than run what they no longer
+ * describe. */
+export const SURFACE = "so.tilo.totp@639c5fe58257d1a4";
+
 /** One of "sha1", "sha256", "sha512". */
 export type Algorithm = "sha1" | "sha256" | "sha512";
 
@@ -55,6 +60,6 @@ export interface Vault extends tilo.Resource {
 
 /** The `totp.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {
-  return resourceProxy(ws, path) as unknown as Vault;
+  return resourceProxy(ws, path, SURFACE) as unknown as Vault;
 }
 

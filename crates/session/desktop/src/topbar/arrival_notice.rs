@@ -112,12 +112,10 @@ impl TopBarChrome {
         )
     }
 
-    /// The status, sliding out of the faces that end at `right_x` and yielding to the centre band;
-    /// returns where the controls before it end.
-    pub(super) fn draw_arrival_notice(
+    /// Where the status stands as it slides out of the faces that end at `right_x`, yielding to
+    /// the centre band; returns where the controls before it end.
+    pub(super) fn place_arrival_notice(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         (center_y, right_x): (f64, f64),
@@ -125,6 +123,7 @@ impl TopBarChrome {
         use ui::widget::{ChipFace, ChipLead};
         self.arrival_rect = Rect::ZERO;
         self.arrival_pressable = false;
+        self.placed.arrival = None;
         let Some(shown) = self.arrival_shown(ui::time::now()) else {
             return right_x;
         };
@@ -144,13 +143,40 @@ impl TopBarChrome {
             right,
             center_y + height / 2.0,
         );
-        // It comes out of the faces: uncovered from their side, the words travelling with the edge.
-        let shown_w = width * shown.reveal.clamp(0.0, 1.0);
+        let hovered = shown.seen && self.last_cursor.is_some_and(|p| rect.contains(p));
+        self.arrival_rect = rect;
+        self.arrival_pressable = shown.seen;
+        self.placed.arrival = Some(super::placed::ArrivalPlaced {
+            text: shown.text,
+            rect,
+            reveal: shown.reveal.clamp(0.0, 1.0),
+            opacity: shown.opacity,
+            hovered,
+        });
+        rect.x0
+    }
+
+    /// Paint the status where [`Self::place_arrival_notice`] stood it: uncovered from the faces'
+    /// side, the words travelling with the edge.
+    pub(super) fn paint_arrival_notice(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        use ui::widget::ChipFace;
+        let Some(arrival) = self.placed.arrival.as_ref() else {
+            return;
+        };
+        let rect = arrival.rect;
+        let width = rect.width();
+        let shown_w = width * arrival.reveal;
         let clip = Rect::new(rect.x1 - shown_w, rect.y0 - 2.0, rect.x1, rect.y1 + 2.0);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            shown.opacity,
+            arrival.opacity,
             transform,
             &clip,
         );
@@ -160,17 +186,10 @@ impl TopBarChrome {
             rect.x1 + width - shown_w,
             rect.y1,
         );
-        let hovered = shown.seen && self.last_cursor.is_some_and(|p| rect.contains(p));
-        ChipFace::new(slid, &shown.text).hovered(hovered).paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-        );
+        ChipFace::new(slid, &arrival.text)
+            .hovered(arrival.hovered)
+            .paint(scene, transform, text_renderer, theme);
         scene.pop_layer();
-        self.arrival_rect = rect;
-        self.arrival_pressable = shown.seen;
-        rect.x0
     }
 
     pub(super) const ARRIVAL_TARGET: &'static str = "topbar:arrival";

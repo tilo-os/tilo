@@ -61,3 +61,12 @@ hex-editor-document-delete-bytes = Delete bytes
 ## The endianness strip
 hex-editor-little-endian = Little endian
 hex-editor-big-endian = Big endian
+
+## What the app is called in a window and in the launcher
+hex-editor-app-title = Hex Editor
+## Actions bound to what the person is looking at
+
+hex-editor-document-insert-byte = Insert at cursor
+hex-editor-document-overwrite-byte = Overwrite at cursor
+hex-editor-document-delete-selection = Delete selection
+hex-editor-document-delete-byte = Delete byte

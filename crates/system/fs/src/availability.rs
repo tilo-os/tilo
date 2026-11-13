@@ -1,9 +1,8 @@
 //! Durable local availability policy for collaborative file records.
 //!
-//! Availability is deliberately keyed by [`FileRecordId`], never by a path:
-//! paths are mutable presentation metadata, while pin and eviction decisions
-//! must survive renames and moves.  This module records policy and evidence;
-//! the content store remains responsible for retaining or deleting bytes.
+//! Keyed by [`FileRecordId`], never by a path: paths are mutable presentation metadata, while pin
+//! and eviction decisions must survive renames and moves. This records policy and evidence; the
+//! content store retains or deletes bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,9 +19,7 @@ use fs_protocol::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// On-disk schema written by [`AvailabilityRegistry`].
 pub const AVAILABILITY_SCHEMA_VERSION: u16 = 2;
-/// Whether the record represents a directory or a file-like object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordKind {
@@ -30,47 +27,42 @@ pub enum RecordKind {
     Directory,
 }
 
-/// Last transfer failure. It is retained separately from the current phase so
-/// a retry can show both live progress and the previous diagnostic.
+/// Last transfer failure, kept apart from the current phase so a retry shows both progress and
+/// the previous diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferError {
     pub message: String,
     pub occurred_at_ms: u64,
 }
 
-/// Transfer state shown by Files and maintained by hydration/replication.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferState {
     pub phase: TransferPhase,
     pub progress: Option<TransferProgress>,
     pub last_error: Option<TransferError>,
-    /// Consecutive automatic hydration failures for the current version.
-    /// Persisting this prevents a restart from turning an unavailable peer
-    /// into a tight retry loop.
+    /// Consecutive automatic hydration failures for the current version; persisting this keeps a
+    /// restart from turning an unavailable peer into a tight retry loop.
     #[serde(default)]
     pub retry_count: u32,
-    /// Absolute wall-clock deadline for the next automatic attempt. An
-    /// explicit user retry clears this field.
+    /// Absolute wall-clock deadline for the next automatic attempt; an explicit retry clears it.
     #[serde(default)]
     pub retry_at_ms: Option<u64>,
 }
 
-/// Replica evidence for exactly one immutable version of this record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicaEvidence {
-    /// Peers that recently acknowledged possessing the complete version and
-    /// were reachable when the observation was made. The replication layer
-    /// must count only authenticated, authorized, non-revoked replicas.
+    /// Peers that recently acknowledged possessing the complete version and were reachable then.
+    /// Only authenticated, authorized, non-revoked replicas count.
     pub reachable: u32,
-    /// Recently acknowledged durable replicas (which may later be offline),
-    /// after applying the workspace's acceptable-host policy.
+    /// Recently acknowledged durable replicas, which may since be offline, after applying the
+    /// workspace's acceptable-host policy.
     pub durable: u32,
-    /// The version to which both counts apply. `None` is never eviction proof.
+    /// The version both counts apply to. `None` is never eviction proof.
     pub acknowledged_version: Option<FileVersionId>,
 }
 
-/// Freshness timestamps kept distinct because metadata, local bytes, and
-/// replica observations advance independently.
+/// Freshness timestamps, kept apart because metadata, local bytes and replica observations
+/// advance independently.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Freshness {
     pub metadata_observed_at_ms: Option<u64>,
@@ -78,13 +70,11 @@ pub struct Freshness {
     pub replicas_observed_at_ms: Option<u64>,
 }
 
-/// Durable availability state for one stable collaborative-file record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAvailability {
     pub record_id: FileRecordId,
     pub kind: RecordKind,
-    /// Stable parent record, not a path. This makes directory pins apply to
-    /// descendants created after the directory was pinned.
+    /// Stable parent record, not a path, so a directory pin reaches descendants created after it.
     pub parent: Option<FileRecordId>,
     /// Current immutable version. Replica evidence must name this exact value.
     pub current_version: Option<FileVersionId>,
@@ -93,8 +83,8 @@ pub struct RecordAvailability {
     pub policy: AvailabilityPolicy,
     pub replicas: ReplicaEvidence,
     pub freshness: Freshness,
-    /// Historical versions intentionally retained only on this device. IDs,
-    /// rather than a count, let history/GC remove the precise retention reason.
+    /// Historical versions retained only on this device. IDs rather than a count, so history and
+    /// GC can remove the precise retention reason.
     pub retained_versions: Vec<FileVersionId>,
 }
 
@@ -116,14 +106,10 @@ impl RecordAvailability {
 }
 
 impl RecordAvailability {
-    /// The record's [`AvailabilityProjectionV1`] under its direct policy.
-    /// Use [`Self::projection_with_policy`] when directory-pin inheritance has
-    /// already been resolved by the registry.
     pub fn projection(&self) -> AvailabilityProjectionV1 {
         self.projection_with_policy(self.policy)
     }
 
-    /// Pure in-memory conversion suitable for a FUSE `getxattr` callback.
     pub fn projection_with_policy(
         &self,
         effective_policy: AvailabilityPolicy,
@@ -137,9 +123,8 @@ impl RecordAvailability {
                 (Some(message), truncated, Some(error.occurred_at_ms))
             });
 
-        // Counts without an observation time, or for any version other than
-        // the current one, are not current evidence. Preserve the last replica
-        // observation timestamp separately, but report the counts as unknown.
+        // Counts without an observation time, or for any version but the current one, are not
+        // current evidence: report them as unknown, keeping the last observation timestamp.
         let replica_evidence_is_current = self.current_version.is_some()
             && self.replicas.acknowledged_version == self.current_version
             && self.freshness.replicas_observed_at_ms.is_some();
@@ -201,13 +186,11 @@ struct RegistryDocument {
     records: Vec<RecordAvailability>,
 }
 
-/// Replica requirements used for a normal, non-destructive eviction.
 /// What an eviction of local bytes would cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvictionRequirements {
     pub minimum_reachable: u32,
     pub minimum_durable: u32,
-    /// Maximum age of the explicit replica acknowledgement.
     pub maximum_replica_age_ms: u64,
 }
 
@@ -225,8 +208,8 @@ impl Default for EvictionRequirements {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvictionDecision {
     Allowed,
-    /// Caller explicitly accepted permanent data loss. UI must present this as
-    /// destructive rather than as ordinary cache eviction.
+    /// Caller explicitly accepted permanent data loss; UI presents this as destructive rather than
+    /// as ordinary cache eviction.
     AllowedDestructiveOverride,
     Denied(EvictionBlocker),
 }
@@ -275,33 +258,26 @@ pub enum AvailabilityError {
     InvalidCurrentRevision,
 }
 
-/// Crash-safe per-device registry for local availability state.
 pub struct AvailabilityRegistry {
     path: PathBuf,
     records: BTreeMap<FileRecordId, RecordAvailability>,
-    /// Inside [`Self::batch`]: mutations are validated and persisted once,
-    /// when the batch ends.
+    /// Inside [`Self::batch`]: mutations are validated and persisted once, when the batch ends.
     deferred: bool,
-    /// Bumped by every commit that changes what pinned hydration acts on;
-    /// see [`Self::hydration_generation`].
+    /// Bumped by every commit that changes what pinned hydration acts on; see
+    /// [`Self::hydration_generation`].
     hydration_generation: u64,
-    /// Announces each bump of `hydration_generation`, so the pinned
-    /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
-    /// Records whose committed state changed since
-    /// [`Self::take_changed_records`] last took them, kept only while
-    /// someone subscribes through [`Self::subscribe_changes`].
+    /// Records whose committed state changed since [`Self::take_changed_records`] last took them,
+    /// kept while someone subscribes through [`Self::subscribe_changes`].
     changed: BTreeSet<FileRecordId>,
-    /// Announces that `changed` grew, so the mount can tell the folders
-    /// those files are in (`crate::change_signal`).
     changes_watch: tokio::sync::watch::Sender<()>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
 
-/// The part of a record pinned hydration reacts to. Transfer bookkeeping,
-/// replica evidence and freshness stamps are deliberately absent: they are
-/// either written by the hydration worker itself or never change its plan.
+/// The part of a record pinned hydration reacts to. Transfer bookkeeping, replica evidence and
+/// freshness stamps are absent: they are written by the hydration worker itself or never change
+/// its plan.
 fn hydration_view(
     record: &RecordAvailability,
 ) -> (
@@ -321,13 +297,8 @@ fn hydration_view(
 }
 
 impl AvailabilityRegistry {
-    /// Open an existing registry or create an empty in-memory registry when
-    /// the file is absent. The first mutation creates parent directories.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry cannot be read, decoded, or fully
-    /// validated.
+    /// Open an existing registry, or an empty in-memory one when the file is absent. The first
+    /// mutation creates parent directories.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AvailabilityError> {
         let path = path.into();
         if !path.exists() {
@@ -379,38 +350,32 @@ impl AvailabilityRegistry {
         self.records.values()
     }
 
-    /// Changes whenever a commit alters a record's policy, kind, parent,
-    /// current version or residency, or adds a record. Transfer progress,
-    /// replica receipts and freshness stamps leave it alone, so a pinned
-    /// hydration worker can compare it to learn, without walking the
-    /// namespace, that nothing it acts on changed since its last pass.
+    /// Changes whenever a commit alters a record's policy, kind, parent, current version or
+    /// residency, or adds a record. Transfer progress, replica receipts and freshness stamps leave
+    /// it alone, so the pinned hydration worker learns from it that nothing it acts on changed.
     #[must_use]
     pub fn hydration_generation(&self) -> u64 {
         self.hydration_generation
     }
 
-    /// A receiver that sees every later change
-    /// of [`Self::hydration_generation`]: a pin, an unpin, a new version or a
-    /// residency change, from any writer of this registry.
+    /// A receiver that sees every later change of [`Self::hydration_generation`], from any writer
+    /// of this registry.
     #[must_use]
     pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
         self.hydration_watch.subscribe()
     }
 
-    /// A receiver told of each committed change to any record, from any
-    /// writer of this registry; [`Self::take_changed_records`] says which.
+    /// A receiver told of each committed change to any record; [`Self::take_changed_records`] says
+    /// which.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changes_watch.subscribe()
     }
 
-    /// The records whose committed state changed since this was last asked,
-    /// while anyone subscribed through [`Self::subscribe_changes`].
     pub fn take_changed_records(&mut self) -> BTreeSet<FileRecordId> {
         std::mem::take(&mut self.changed)
     }
 
-    /// Note that `ids` were committed changed, for whoever subscribes.
     fn note_changed(&mut self, ids: impl IntoIterator<Item = FileRecordId>) {
         if self.changes_watch.receiver_count() == 0 {
             return;
@@ -427,7 +392,6 @@ impl AvailabilityRegistry {
         self.hydration_watch.send_replace(self.hydration_generation);
     }
 
-    /// Durable writes of the whole registry so far.
     #[cfg(test)]
     #[must_use]
     pub fn persist_count(&self) -> u64 {
@@ -436,31 +400,23 @@ impl AvailabilityRegistry {
 
     /// Content ids of current versions another device proved it holds.
     ///
-    /// Nothing acknowledges replicas since the tree became the record, so
-    /// this is empty: the cache budget keeps everything a pin or the current
-    /// version needs.
+    /// Nothing acknowledges replicas since the tree became the record, so this is empty.
     #[must_use]
     pub fn held_elsewhere(&self) -> std::collections::HashSet<[u8; 32]> {
         std::collections::HashSet::new()
     }
 
-    /// Whether any record explicitly promises offline residency. Descendants
-    /// inherit that promise, so one explicit row is enough to require a
-    /// namespace reconciliation; with none, the periodic worker can stay
-    /// idle without walking and sorting the complete workspace.
+    /// Whether any record explicitly promises offline residency. Descendants inherit the promise,
+    /// so one explicit row requires a namespace reconciliation; with none, the periodic worker can
+    /// stay idle.
     pub fn has_pinned_policy(&self) -> bool {
         self.records
             .values()
             .any(|record| record.policy == AvailabilityPolicy::Pinned)
     }
 
-    /// Cancel durable automatic-hydration state below a pin that was removed.
-    /// The explicit unpin action pays this cost once, allowing the periodic
-    /// worker to take the zero-scan fast path whenever no pins remain.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if clearing the durable transfer state cannot persist.
+    /// Cancel durable automatic-hydration state below a pin that was removed, so the periodic
+    /// worker can take the zero-scan fast path whenever no pins remain.
     pub fn clear_automatic_transfer_subtree(
         &mut self,
         root: FileRecordId,
@@ -510,15 +466,9 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
-    /// Set `policy` on a record, given its `ancestry`: every record from the
-    /// workspace root down to it, with its kind and parent. Each ancestor's
-    /// kind and parent are recorded too, so a directory's pin reaches what is
-    /// created in it later. Unpinning cancels the automatic transfers below
-    /// the record. An empty ancestry changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the ancestry is invalid or state cannot persist.
+    /// Set `policy` on a record, given its `ancestry`: every record from the workspace root down to
+    /// it, with its kind and parent. Recording each ancestor's kind and parent lets a directory's
+    /// pin reach what is created in it later. Unpinning cancels the automatic transfers below.
     pub fn set_policy_along(
         &mut self,
         ancestry: &[(FileRecordId, RecordKind, Option<FileRecordId>)],
@@ -546,14 +496,8 @@ impl AvailabilityRegistry {
         Ok(())
     }
 
-    /// Install the authenticated current revision before accepting replica
-    /// evidence for it. Ordinary whole-workspace records use the same durable
-    /// availability path as record-scoped shares; without this row a valid NAS
-    /// acknowledgement would be discarded as `UnknownRecord`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the supplied revision is invalid or state cannot persist.
+    /// Install the authenticated current revision before accepting replica evidence for it;
+    /// without this row a valid acknowledgement would be discarded as `UnknownRecord`.
     pub fn track_current_revision(
         &mut self,
         revision: fs_protocol::ContentRevisionV1,
@@ -591,16 +535,9 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
-    /// Runs `apply`'s mutations and commits them with one validation and one
-    /// durable write of the registry, instead of one of each per mutation:
-    /// receipts for a thousand records cost one write, not a thousand
-    /// rewrites of the whole registry. When validation or persistence of the
-    /// batch fails, memory and disk are left exactly as before it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the resulting registry is invalid or cannot be
-    /// persisted.
+    /// Runs `apply`'s mutations and commits them with one validation and one durable write, so
+    /// receipts for a thousand records cost one write. A failed batch leaves memory and disk as
+    /// they were.
     pub fn batch<T>(&mut self, apply: impl FnOnce(&mut Self) -> T) -> Result<T, AvailabilityError> {
         let before = self.records.clone();
         self.deferred = true;
@@ -633,8 +570,8 @@ impl AvailabilityRegistry {
         Ok(value)
     }
 
-    /// Insert or replace a record and durably commit the complete registry.
-    /// Invalid ancestry leaves both memory and disk unchanged.
+    /// Insert or replace a record and durably commit the whole registry; invalid ancestry leaves
+    /// memory and disk unchanged.
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
         let id = record.record_id;
         let previous = self.records.insert(id, record);
@@ -666,7 +603,6 @@ impl AvailabilityRegistry {
         Ok(())
     }
 
-    /// Effective policy, including any pinned stable directory ancestor.
     pub fn effective_policy(
         &self,
         record_id: FileRecordId,
@@ -695,12 +631,9 @@ impl AvailabilityRegistry {
         }
     }
 
-    /// Whether local bytes may be released without losing the last copy.
-    ///
-    /// Another device's copy has to be proven before local bytes go: a
-    /// replica acknowledgement, bound to exactly this version. Nothing
-    /// acknowledges replicas since the tree became the record, so only a
-    /// caller who accepts losing the bytes may release them.
+    /// Whether local bytes may be released without losing the last copy: another device's replica
+    /// acknowledgement must be bound to exactly this version. Nothing acknowledges replicas since
+    /// the tree became the record, so only a caller who accepts losing the bytes may release them.
     pub fn eviction_decision(
         &self,
         record_id: FileRecordId,
@@ -747,9 +680,8 @@ impl AvailabilityRegistry {
     }
 }
 
-/// Whether `record_id` is pinned, itself or through a stable ancestor, in a
-/// captured snapshot of `records`. Missing or cyclic ancestry is invalid
-/// durable state and counts as pinned, so it can never become permission to
+/// Whether `record_id` is pinned, itself or through a stable ancestor, in a captured snapshot of
+/// `records`. Missing or cyclic ancestry counts as pinned, so it can never become permission to
 /// release local data.
 pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
     let mut current = Some(record_id);
@@ -909,8 +841,6 @@ mod tests {
             record.policy = AvailabilityPolicy::Pinned;
             registry.put(record).unwrap();
 
-            // A namespace rename changes only presentation metadata. There is no
-            // path/name key in this registry to migrate or accidentally duplicate.
             let new_name = "approved.png";
             assert_ne!(old_name, new_name);
             assert_eq!(
@@ -960,7 +890,6 @@ mod tests {
                 .put(RecordAvailability::new(other_dir, RecordKind::Directory))
                 .unwrap();
 
-            // The child is created only after the directory was pinned.
             let mut child_record = file(child, FileVersionId::new());
             child_record.parent = Some(pinned_dir);
             registry.put(child_record.clone()).unwrap();
@@ -969,7 +898,6 @@ mod tests {
                 Some(AvailabilityPolicy::Pinned)
             );
 
-            // Stable ancestry, rather than a path prefix, controls inherited pin.
             child_record.parent = Some(other_dir);
             registry.put(child_record).unwrap();
             assert_eq!(
@@ -1090,7 +1018,6 @@ mod tests {
 
     #[test]
     fn projection_bounds_errors_and_rejects_inconsistent_values() {
-        // Phase `long_utf8_errors_are_truncated_safely_and_marked`.
         {
             let mut record = rich_record();
             record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);

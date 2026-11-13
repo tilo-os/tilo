@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tilo_broker_core::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
-use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::providers::host_apps::HostApps;
+use tilo_desktop_search::providers::host_apps::{HostAppEntry, HostAppKind};
 use tilo_files::native::Watched;
 
 use runtime_portal::tools::{
@@ -39,6 +39,9 @@ pub struct AppLists {
     /// What each installed app declared it may do on the action door under its own identity, by
     /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
     pub declared: BTreeMap<String, tilo_broker_core::access::AppActionAccess>,
+    /// The resource kinds each installed app declares its records hold, by package id: what it
+    /// may reach in its own node.
+    pub resource_kinds: BTreeMap<String, Vec<String>>,
     /// The apps a service can ask this session to open, as the action door lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
@@ -54,6 +57,10 @@ impl AppLists {
     /// Read this device's lists: the installed Tilo apps, the machine's desktop entries, and the
     /// catalogue (the registries' listing as last accepted and Flathub's cached metadata) less what
     /// is here or blocked. Reads the disk only, never the network.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read of every list the search and the action door share"
+    )]
     #[must_use]
     pub fn read() -> Self {
         let installed = app_catalogue::apps::read_from_env().unwrap_or_else(|error| {
@@ -66,7 +73,7 @@ impl AppLists {
             .iter()
             .filter(|app| app.has_gui)
             .map(|app| AppEntry {
-                id: app.package_id.clone(),
+                id: app.app_id.to_string(),
                 // The name the person's interface language gives the app: a German machine lists
                 // the app whose manifest says `[package.names] de = "Notizen"` as Notizen, and
                 // every surface that names it — a tab, a start card, search — reads that name from
@@ -78,10 +85,11 @@ impl AppLists {
             .collect();
         let icons = installed
             .iter()
-            .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
+            .filter_map(|app| Some((app.app_id.to_string(), app.icon_path()?)))
             .collect();
         let named = named(&installed);
         let declared = declared(&installed);
+        let resource_kinds = resource_kinds(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
         // read, or meets the read already under way rather than starting one.
@@ -89,62 +97,40 @@ impl AppLists {
         // An installed Tilo app may keep a desktop entry of its own, as its bundle does: that entry
         // is the same app, listed once.
         let tilo_apps =
-            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
+            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.app_id.to_string()));
         // The entries Tilo keeps for the person's downloaded programs are search's own source
         // (`providers::downloaded`): it lists them with what the registry knows of them (their
         // kind, and a file that went away), which a host app row says nothing of.
-        let host_apps = machine_apps(&scan.entries, &tilo_apps)
-            .into_iter()
-            .map(|entry| HostAppEntry {
-                desktop_id: entry.id.clone(),
-                name: entry.name.clone(),
-                generic_name: entry.generic_name.clone(),
-                comment: entry.comment.clone(),
-                keywords: entry.keywords.clone(),
-            })
-            .collect();
+        let host_apps = machine_search_apps(&scan.entries, &tilo_apps);
         let candidates: Vec<desktop_policy::AppCandidate> = installed
             .iter()
-            .map(|app| desktop_policy::AppCandidate {
-                package_id: app.package_id.clone(),
-                display_name: app.display_name.clone(),
-                resources: app
-                    .opens_extensions
-                    .iter()
-                    .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
-                    .chain(
-                        app.opens_mime_types
-                            .iter()
-                            .filter_map(|mime| desktop_policy::ResourceKind::mime(mime).ok()),
-                    )
-                    .chain(
-                        app.opens_uri_schemes
-                            .iter()
-                            .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
-                    )
-                    .collect::<std::collections::BTreeSet<_>>(),
-                secondary: app.opens_secondary,
+            .map(|app| {
+                desktop_policy::AppCandidate::package(
+                    app.app_id.to_string(),
+                    app.name_in(&locales).to_owned(),
+                    &app.opens_extensions,
+                    &app.opens_mime_types,
+                    &app.opens_uri_schemes,
+                    app.opens_secondary,
+                )
             })
-            .chain(scan.entries.iter().filter_map(|entry| {
-                let resources: std::collections::BTreeSet<_> = entry
-                    .mime_types
+            .chain(
+                scan.entries
                     .iter()
-                    .filter_map(|mime| desktop_policy::ResourceKind::from_mimeapps_type(mime))
-                    .collect();
-                (!resources.is_empty() && !entry.no_display && !entry.hidden).then(|| {
-                    desktop_policy::AppCandidate {
-                        package_id: entry.id.clone(),
-                        display_name: entry.name.clone(),
-                        resources,
-                        secondary: false,
-                    }
-                })
-            }))
+                    .filter(|entry| !entry.no_display && !entry.hidden)
+                    .filter_map(|entry| {
+                        desktop_policy::AppCandidate::host(
+                            &entry.id,
+                            entry.name.clone(),
+                            &entry.mime_types,
+                        )
+                    }),
+            )
             .collect();
         let present = app_catalogue::Installed::from_ids(
             installed
                 .iter()
-                .map(|app| app.package_id.clone())
+                .map(|app| app.app_id.to_string())
                 .chain(scan.entries.iter().map(|entry| entry.id.clone())),
         );
         let catalogue = app_catalogue::Catalogue::from_sources(
@@ -166,9 +152,17 @@ impl AppLists {
             icons,
             candidates,
             declared,
+            resource_kinds,
             launchable,
             tools,
         }
+    }
+
+    /// Whether the Tilo app `app` is installed here: what the desk offers a card for, and what
+    /// search lists under the app's own name.
+    #[must_use]
+    pub fn has_app(&self, app: &str) -> bool {
+        self.applications.iter().any(|listed| listed.id == app)
     }
 
     /// The directories [`Self::read`] reads, whose entries change with what it would find.
@@ -194,14 +188,14 @@ fn launchable(
 ) -> Vec<LaunchableApplication> {
     let packages: std::collections::HashSet<String> = installed
         .iter()
-        .map(|app| app.package_id.to_ascii_lowercase())
+        .map(|app| app.app_id.to_ascii_lowercase())
         .collect();
     installed
         .iter()
         .filter(|app| app.has_gui)
         .map(|app| LaunchableApplication {
             capabilities: if settings_store::app_scope::SYSTEM_SETTINGS_APPS
-                .contains(&app.package_id.as_str())
+                .contains(&app.app_id.as_str())
             {
                 app.declared_capabilities()
                     .into_iter()
@@ -212,7 +206,7 @@ fn launchable(
             } else {
                 Vec::new()
             },
-            package_id: app.package_id.clone(),
+            package_id: app.app_id.to_string(),
             display_name: app.display_name.clone(),
             unconfined: false,
             offers: app.offers.clone(),
@@ -254,7 +248,7 @@ fn listed_apps(
         .collect();
     let packages: std::collections::HashSet<String> = installed
         .iter()
-        .map(|app| app.package_id.to_ascii_lowercase())
+        .map(|app| app.app_id.to_ascii_lowercase())
         .collect();
     let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
     let person_flatpaks = tilo_paths::xdg::data_home().map(|home| home.join("flatpak"));
@@ -263,14 +257,14 @@ fn listed_apps(
         .filter(|app| app.has_gui)
         .map(|app| {
             let added = from
-                .get(&app.package_id.to_ascii_lowercase())
+                .get(&app.app_id.to_ascii_lowercase())
                 .is_some_and(|from| from == "user");
             ListedApp {
-                id: app.package_id.clone(),
+                id: app.app_id.to_string(),
                 name: app.display_name.clone(),
-                package: Some(app.package_id.clone()),
+                package: Some(app.app_id.to_string()),
                 icon: icons
-                    .get(&app.package_id)
+                    .get(app.app_id.as_str())
                     .map(|icon| icon.display().to_string()),
                 program: None,
                 removal: if added {
@@ -381,13 +375,35 @@ fn machine_apps<'a>(
         .collect()
 }
 
+/// The machine's own apps, as search lists them, each saying where the machine got it.
+fn machine_search_apps(
+    entries: &[desktop_entry::DesktopEntry],
+    tilo_apps: &app_catalogue::Installed,
+) -> Vec<HostAppEntry> {
+    machine_apps(entries, tilo_apps)
+        .into_iter()
+        .map(|entry| HostAppEntry {
+            desktop_id: entry.id.clone(),
+            name: entry.name.clone(),
+            generic_name: entry.generic_name.clone(),
+            comment: entry.comment.clone(),
+            keywords: entry.keywords.clone(),
+            category: entry.categories.first().cloned(),
+            kind: match entry.source {
+                desktop_entry::EntrySource::Flatpak { .. } => HostAppKind::Flatpak,
+                desktop_entry::EntrySource::Host => HostAppKind::System,
+            },
+        })
+        .collect()
+}
+
 /// What each installed app is called, in every language its package names it in: the names a
 /// window names another app's changes by.
 fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::history::NamedApp> {
     installed
         .iter()
         .map(|app| collab_types::history::NamedApp {
-            id: app.package_id.clone(),
+            id: app.app_id.to_string(),
             name: app.display_name.clone(),
             names: app.localized_names.clone(),
         })
@@ -396,6 +412,16 @@ fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::h
 
 /// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
 /// admits its calls against.
+/// The resource kinds each installed app declares, by package id.
+fn resource_kinds(
+    installed: &[app_catalogue::apps::InstalledApp],
+) -> BTreeMap<String, Vec<String>> {
+    installed
+        .iter()
+        .map(|app| (app.app_id.to_string(), app.declared_resource_kinds()))
+        .collect()
+}
+
 fn declared(
     installed: &[app_catalogue::apps::InstalledApp],
 ) -> BTreeMap<String, tilo_broker_core::access::AppActionAccess> {
@@ -404,7 +430,7 @@ fn declared(
         .map(|app| {
             let declared = app.declared_actions();
             (
-                app.package_id.clone(),
+                app.app_id.to_string(),
                 tilo_broker_core::access::AppActionAccess {
                     query: declared.query,
                     invoke: declared.invoke,
@@ -421,9 +447,15 @@ pub struct Lists(Held);
 
 #[derive(Clone)]
 enum Held {
-    Fixed(Arc<AppLists>),
+    /// Lists fixed up front, and the generation they were fixed at: fixed lists never change, so
+    /// every clone of them keeps the number they were given.
+    Fixed(Arc<AppLists>, u64),
     Followed(Watched<AppLists>),
 }
+
+/// The generation of the last [`Lists::fixed`]: one per process, so a fixed list is told from any
+/// other even after an earlier one was freed and a new one landed at its address.
+static FIXED_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Default for Lists {
     fn default() -> Self {
@@ -435,7 +467,8 @@ impl Lists {
     /// Lists that never change.
     #[must_use]
     pub fn fixed(lists: AppLists) -> Self {
-        Self(Held::Fixed(Arc::new(lists)))
+        let serial = FIXED_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(Held::Fixed(Arc::new(lists), serial))
     }
 
     /// `read` on a worker named `name`, as it starts, and again after any
@@ -469,8 +502,27 @@ impl Lists {
     /// The lists as last read. Never touches the disk: the same value until a change was read.
     pub(crate) fn latest(&self) -> Arc<AppLists> {
         match &self.0 {
-            Held::Fixed(lists) => Arc::clone(lists),
+            Held::Fixed(lists, _) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
+        }
+    }
+
+    /// The lists as last read, with the generation of the read that produced them: the two taken
+    /// together, so a caller keys on a reading and the lists of that same reading.
+    pub(crate) fn snapshot(&self) -> (u64, Arc<AppLists>) {
+        match &self.0 {
+            Held::Fixed(lists, serial) => (*serial, Arc::clone(lists)),
+            Held::Followed(watched) => watched.snapshot(),
+        }
+    }
+
+    /// Read the device's lists again on this thread, for a test that changed what the lists' read
+    /// returns and must see the new reading (an install or a removal) without waiting on the file
+    /// watcher. A device's session only ever reads them on their worker.
+    #[cfg(test)]
+    pub(crate) fn refresh(&self) {
+        if let Held::Followed(watched) = &self.0 {
+            watched.refresh();
         }
     }
 
@@ -485,7 +537,8 @@ impl Lists {
 
 impl crate::platform::apps::Apps for Lists {
     fn reading(&self) -> Arc<dyn crate::platform::apps::Reading> {
-        Arc::new(Listed(self.latest()))
+        let (generation, lists) = self.snapshot();
+        Arc::new(Listed { lists, generation })
     }
 
     fn name(&self, id: &str) -> String {
@@ -506,12 +559,16 @@ impl crate::platform::apps::Apps for Lists {
 }
 
 /// One reading of this device's lists, as search builds its sources from: the sources it keeps
-/// until the worker reads another one.
-struct Listed(Arc<AppLists>);
+/// until the worker reads another one. The generation is the read's own, not the value's address:
+/// an installed or removed app is a new reading, even after the old one was freed.
+struct Listed {
+    lists: Arc<AppLists>,
+    generation: u64,
+}
 
 impl crate::platform::apps::Reading for Listed {
     fn generation(&self) -> usize {
-        Arc::as_ptr(&self.0) as usize
+        usize::try_from(self.generation).unwrap_or(usize::MAX)
     }
 
     fn host_apps(
@@ -519,14 +576,14 @@ impl crate::platform::apps::Reading for Listed {
         preferences: &tilo_desktop_search::SearchPreferences,
     ) -> Option<tilo_desktop_search::Held> {
         Some(tilo_desktop_search::Held::new(HostApps::new(
-            self.0.host_apps.clone(),
+            self.lists.host_apps.clone(),
             preferences,
         )))
     }
 
     fn catalogue(&self, workspace: &str) -> Option<tilo_desktop_search::Held> {
         Some(tilo_desktop_search::Held::new(StoreCatalogue::new(
-            self.0.catalogue.clone(),
+            self.lists.catalogue.clone(),
             workspace,
         )))
     }
@@ -680,5 +737,104 @@ mod tests {
                 .iter()
                 .any(|app| app.id == "so.tilo.notes")
         });
+    }
+
+    /// An app installed or removed is a new reading, and the generation says so: a cache keyed on it
+    /// (the desk's, the launcher's) sees the change. The generation is a rising count, not the
+    /// reading's address, so it moves even when the new reading happens to land where the old one
+    /// was — the case the old address key got wrong.
+    #[test]
+    fn an_install_or_a_removal_is_a_new_generation_and_reading() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        // What the store holds, as the worker reads it: Notes, then an install adds Tasks, then a
+        // removal takes Notes away — a list that shrinks back onto the first reading's length.
+        let store = std::sync::Arc::new(AtomicUsize::new(1));
+        let read = {
+            let store = std::sync::Arc::clone(&store);
+            move || {
+                let notes = AppEntry {
+                    id: "so.tilo.notes".to_owned(),
+                    title: "Notes".to_owned(),
+                    category: None,
+                    description: None,
+                };
+                let tasks = AppEntry {
+                    id: "so.tilo.tasks".to_owned(),
+                    title: "Tasks".to_owned(),
+                    category: None,
+                    description: None,
+                };
+                let applications = match store.load(Ordering::Acquire) {
+                    1 => vec![notes],
+                    2 => vec![notes, tasks],
+                    _ => vec![tasks],
+                };
+                AppLists {
+                    applications,
+                    ..AppLists::default()
+                }
+            }
+        };
+        let lists = Lists::follow(
+            "tilo-search-lists-generation",
+            vec![dir.path().to_owned()],
+            read,
+        )
+        .unwrap();
+        tilo_test_env::wait_until("the first reading", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .any(|app| app.id == "so.tilo.notes")
+        });
+        let (first, _) = lists.snapshot();
+        // Installing Tasks is a new reading, and the generation rises.
+        store.store(2, Ordering::Release);
+        lists.refresh();
+        tilo_test_env::wait_until("Tasks to be listed after the install", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .any(|app| app.id == "so.tilo.tasks")
+        });
+        let (second, _) = lists.snapshot();
+        assert!(
+            second > first,
+            "the install moved the generation: {first} then {second}"
+        );
+        // Removing Notes is another reading; the list is back to one app, but the generation still
+        // rises — an address keyed on the value would have reused the first reading's.
+        store.store(3, Ordering::Release);
+        lists.refresh();
+        tilo_test_env::wait_until("Notes to be gone after the removal", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .all(|app| app.id != "so.tilo.notes")
+        });
+        let (third, _) = lists.snapshot();
+        assert!(
+            third > second,
+            "the removal moved the generation: {second} then {third}"
+        );
+    }
+
+    /// The same for lists fixed up front, which never change: `Lists::fixed` gives each its own
+    /// generation, so two fixed readings of one list are told apart, and clones of one share it.
+    #[test]
+    fn fixed_lists_have_their_own_generation() {
+        let one = Lists::fixed(AppLists::default());
+        let two = Lists::fixed(AppLists::default());
+        let shared = one.clone();
+        assert_eq!(one.snapshot().0, shared.snapshot().0, "a clone shares it");
+        assert_ne!(
+            one.snapshot().0,
+            two.snapshot().0,
+            "two fixed lists are told apart, never the same number"
+        );
     }
 }

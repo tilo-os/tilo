@@ -1,11 +1,5 @@
 //! Days a record stores, as the window reads them.
 
-/// The day stored as `YYYY-MM-DD` — the record's own spelling, which stays in
-/// the document — as the window's language and Region & Formats read a date
-/// (`30.06.2026` in German, `Jun 30, 2026` in English).
-///
-/// A value that is not a day is shown as the text it is stored as: a damaged
-/// record still says what it holds.
 #[must_use]
 pub fn shown(stored: &str) -> String {
     ui::format::NaiveDate::parse_from_str(stored, "%Y-%m-%d")
@@ -25,7 +19,6 @@ mod tests {
         assert_ne!(shown("2026-06-30"), "2026-06-30");
     }
 
-    /// A record holding something else is not a day, and says what it holds.
     #[test]
     fn a_value_that_is_not_a_day_is_shown_as_stored() {
         assert_eq!(shown(""), "");

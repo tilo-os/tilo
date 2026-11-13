@@ -1,14 +1,12 @@
-//! `LinkPopover` — search popover for `[[Page Title]]` inline page links:
-//! a [`FilterMenu`] over caller-provided pages, matched by title.
+//! `LinkPopover` — search popover for `[[Page Title]]` inline page links: a [`FilterMenu`]
+//! over caller-provided pages, matched by title.
 
 use uuid::Uuid;
 
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
 /// What a link offer names: a page of the host's own (`id`), or a record by the catalogue's
-/// reference to it (`reference`, a component's [`crate::component::Link`]). Choosing an entry
-/// writes a run that names what it holds: a `link` to the page, or a `mention` of the record,
-/// which reads as it reads now wherever the text goes.
+/// reference to it (`reference`, a component's [`crate::component::Link`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
     pub id: Option<Uuid>,
@@ -27,7 +25,8 @@ impl PageEntry {
         }
     }
 
-    /// The entry of the record a component is offered (`reference`), reading as `title` does.
+    /// The entry of the record a component is offered (`reference`), reading as `title`
+    /// does.
     #[must_use]
     pub fn link(reference: &str, title: &str) -> Self {
         Self {
@@ -42,8 +41,6 @@ pub type LinkPopover = FilterMenu<PageEntry>;
 
 static SPEC: MenuSpec = MenuSpec {
     width: 220.0,
-    // Keeps the popover small for big workspaces; the user can keep typing
-    // to narrow the result.
     max_rows: 8,
     placeholder: "link-popover-filter",
     access_name: "link-popover-name",
@@ -128,7 +125,6 @@ mod tests {
             assert!(p.highlighted().is_none());
         }
 
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         new_starts_empty_and_hidden();
         set_items_seeds_visible_list();
@@ -199,7 +195,6 @@ mod tests {
             assert!(p.take_selection().is_none());
         }
 
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         arrow_keys_move_cursor();
         keyboard_highlight_keeps_scrolling_through_large_page_sets();
@@ -274,7 +269,6 @@ mod tests {
             assert!(!p.is_visible());
         }
 
-        // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         typing_pushes_filter();
         ime_preedit_is_visible_but_filters_only_after_commit();

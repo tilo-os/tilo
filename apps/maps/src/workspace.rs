@@ -1,15 +1,7 @@
-//! The shared map: the places it knows, the searches it made, how
-//! directions travel and the plans it accepted.
-//!
-//! Saving a place, renaming it, choosing how directions travel and the
-//! transit planner's depart/arrive anchor are field edits at their paths
-//! (`Workspace::paths().mode.set(TravelMode::Bike)`). The methods below are
-//! the operations that are more than setting a field: accepting what a
-//! geocoder or a planner answered, and the capped search history.
-//!
-//! Search results and viewport points of interest are each window's,
-//! derived caches; the areas a device keeps for offline use are that
-//! device's ([`crate::offline_areas`]).
+//! The shared map: the places it knows, the searches it made, how directions travel and the plans
+//! it accepted. Field edits go through the paths (`Workspace::paths().mode.set(TravelMode::Bike)`);
+//! the methods here are the operations beyond setting a field: accepting an answer and the capped
+//! search history.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema, Keyed, Model, Refusal, resource};
@@ -19,10 +11,8 @@ use crate::model::{LatLon, MapModel, Place, Route, TransitJourney, TransitTime, 
 /// How many recent searches the map remembers.
 pub const MAX_RECENTS: usize = 8;
 
-/// The searches made lately, newest first, each once whatever its case.
 pub type RecentSearches = tilo_resource::Recents<String, MAX_RECENTS>;
 
-/// Put `query` first in `recents`; a blank one is no search.
 pub fn remember_search(recents: &mut RecentSearches, query: &str) {
     let query = query.trim();
     if !query.is_empty() {
@@ -32,10 +22,6 @@ pub fn remember_search(recents: &mut RecentSearches, query: &str) {
     }
 }
 
-/// One accepted plan with the endpoints that give it meaning. Stored whole,
-/// so when two people accept different planner replies at once one complete
-/// plan wins rather than a route to one place labelled as a route to
-/// another.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ActivePlan {
     #[default]
@@ -59,12 +45,9 @@ pub enum ActivePlan {
 
 tilo_resource::json_model!(ActivePlan);
 
-/// The shared map.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Workspace {
     /// Places
-    ///
-    /// Every place the map knows: what searches accepted, pinned and saved.
     pub places: Keyed<Place>,
     /// Recent searches, newest first.
     #[model(readonly)]
@@ -72,8 +55,6 @@ pub struct Workspace {
     /// Travel mode
     pub mode: TravelMode,
     /// Transit time
-    ///
-    /// When a transit journey departs or arrives, relative to now.
     pub transit_time: TransitTime,
     /// The road route accepted last.
     #[model(readonly)]
@@ -84,13 +65,8 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// What the record holds: the places it knows, the searches it made, how directions travel
-    /// and the plans it accepted.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What it holds: the places it knows, the searches it made, how directions travel and
+    /// the plans it accepted.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -106,9 +82,6 @@ impl Workspace {
 )]
 impl Workspace {
     /// Accept places.
-    ///
-    /// Places a search or the map found become places of the shared map;
-    /// one already known is updated and keeps being saved.
     #[action(housekeeping)]
     pub fn accept_places(&mut self, #[param("The places")] places: Vec<Place>) {
         for place in places {
@@ -124,9 +97,6 @@ impl Workspace {
     }
 
     /// Search maps.
-    ///
-    /// Remembers the search in the shared history; each window looks it up
-    /// on its own.
     #[action]
     pub fn commit_search(&mut self, #[param("What was searched")] query: String) {
         remember_search(&mut self.recents, &query);
@@ -139,8 +109,6 @@ impl Workspace {
     }
 
     /// Accept a route.
-    ///
-    /// The road route a planner answered, with its endpoints.
     #[action]
     pub fn accept_route(
         &mut self,
@@ -173,8 +141,6 @@ impl Workspace {
     }
 
     /// Accept transit journeys.
-    ///
-    /// The journeys a transit planner answered, with their endpoints.
     #[action]
     pub fn accept_transit(
         &mut self,
@@ -206,8 +172,7 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// The saved places, a part of the map search can be narrowed to once
-    /// there are any.
+    /// The saved places, a scope the map search can narrow to.
     fn saved_scope(&self) -> Vec<ui::search::ScopeDecl> {
         self.places
             .iter()
@@ -217,12 +182,10 @@ impl Workspace {
             .collect()
     }
 
-    /// The place `id`.
     pub fn place(&self, id: &str) -> Option<&Place> {
         self.places.iter().find(|place| place.id == id)
     }
 
-    /// The accepted road route.
     pub fn route(&self) -> Option<&Route> {
         match &self.route_plan {
             ActivePlan::Route { route, .. } => Some(route),
@@ -230,7 +193,6 @@ impl Workspace {
         }
     }
 
-    /// The accepted transit journeys.
     pub fn transit(&self) -> &[TransitJourney] {
         match &self.transit_plan {
             ActivePlan::Transit { transit, .. } => transit,
@@ -238,8 +200,8 @@ impl Workspace {
         }
     }
 
-    /// The endpoints of the plan the travel mode shows: the transit
-    /// journeys' for transit, the route's otherwise.
+    /// The endpoints of the plan the mode shows: the transit journeys' for transit, the route's
+    /// otherwise.
     pub fn endpoints(&self) -> Option<(Option<LatLon>, &str, Option<LatLon>, &str)> {
         let plan = if self.mode.is_transit() {
             &self.transit_plan
@@ -265,14 +227,13 @@ impl Workspace {
         }
     }
 
-    /// Show what the shared map holds in a window's `model`.
     pub fn show_in(&self, model: &mut MapModel) {
         model.places = self.places.to_vec();
         model.recents.clone_from(&self.recents);
         model.mode = self.mode;
         model.transit_time = self.transit_time;
-        // Keep the accepted road plan in the document for switching back,
-        // but never paint it (or its turn card) beneath a transit itinerary.
+        // Keep the accepted road plan for switching back, but never paint it beneath a transit
+        // itinerary.
         model.route = if self.mode.is_transit() {
             None
         } else {
@@ -289,8 +250,6 @@ impl Workspace {
         }
     }
 
-    /// The edit that saves the place `id`, or takes it off the saved
-    /// places.
     pub fn save(id: &str, saved: bool) -> tilo_resource::Edit<Self> {
         Self::paths()
             .places

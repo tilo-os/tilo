@@ -19,18 +19,27 @@ fn sidebar_toggle(app: &mut TestApp<SettingsShell>) -> ui::vello::kurbo::Rect {
         .expect("the mounted shared sidebar toggle is accessible")
 }
 
+/// Frames [`settle`] allows before it calls the window hung. The slide runs
+/// on the toolkit clock, so a loaded machine draws it in fewer frames, never
+/// more; what this bounds is a window that keeps asking for frames, which is
+/// what a hang looks like. Counting frames keeps that independent of how
+/// fast the machine paints them.
+const SETTLE_FRAMES: usize = 600;
+
 /// Run frames until the window's layout stops moving: a sidebar opening
 /// slides its rows in, so a row's bounds are only where a click lands once
 /// the slide is done.
 fn settle(app: &mut TestApp<SettingsShell>) {
-    let deadline = tilo_test_env::hang_deadline();
-    while app.harness().frame_schedule().needs_animation_frame {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the window kept animating"
-        );
+    for _ in 0..SETTLE_FRAMES {
+        if !app.harness().frame_schedule().needs_animation_frame {
+            return;
+        }
         app.harness().poll_frame().unwrap();
     }
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "the window kept animating for {SETTLE_FRAMES} frames"
+    );
 }
 
 fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
@@ -45,8 +54,6 @@ fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     }
 }
 
-/// What a measured interaction does to the published resource, which decides
-/// whether the framework publishes it again inside the measured frames.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Publication {
     /// It changes what the resource holds or offers: the framework publishes
@@ -217,7 +224,6 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 true
             );
-            // The next pane's row is clicked where the opened sidebar shows it.
             settle(&mut app);
         }
     }

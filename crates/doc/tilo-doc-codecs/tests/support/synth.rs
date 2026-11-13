@@ -1,8 +1,5 @@
 use std::fmt::Write as _;
 
-/// Markdown of at least `target` bytes: repeated sections of headings,
-/// paragraphs with inline markup and links, nested and task lists, quotes,
-/// fenced code, tables, styled spans and footnotes.
 pub fn markdown(target: usize) -> Vec<u8> {
     let mut out = String::with_capacity(target.saturating_add(4096));
     let mut section = 0usize;

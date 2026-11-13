@@ -1,5 +1,5 @@
-//! Inert current-declaration evidence for deferred no-argument invocations.
-//! No builder, registry, or executable is retained in this value.
+//! Inert current-declaration evidence for deferred no-argument invocations. No builder, registry, or
+//! executable is retained in this value.
 use tilo_actions::{ActionInput, ActionSpec, ContinuationEvidence, ContinuationQuery, DoorError};
 
 #[derive(Clone, PartialEq)]

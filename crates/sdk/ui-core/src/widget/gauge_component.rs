@@ -25,8 +25,8 @@ impl GaugeThresholds {
     }
 }
 
-/// How full something is, as a ring: a countdown, a download, the one hero reading of a screen
-/// (a speed test). A regular or large ring holds its readout and what it measures.
+/// How full something is, as a ring: a countdown, a download, the one hero reading of a
+/// screen (a speed test).
 #[derive(Component, Default)]
 #[component(name = "ProgressRing", role = "ProgressBar", label = "caption")]
 pub struct ProgressRingProps {
@@ -37,8 +37,8 @@ pub struct ProgressRingProps {
     pub readout: Option<String>,
     /// What the readout measures, under it: "seconds", "downloaded".
     pub caption: Option<String>,
-    /// How large it is: `regular` unless said, `small` inline beside text without a readout,
-    /// `large` for the one hero reading of a screen.
+    /// How large it is: `regular` unless said, `small` inline beside text without a
+    /// readout, `large` for the one hero reading of a screen.
     pub size: Option<ProgressRingSize>,
     /// A status the fill means: a failed transfer stays danger.
     pub tone: Option<Tone>,
@@ -80,9 +80,7 @@ impl Described for ProgressRing {
     }
 }
 
-/// A labelled level as a bar: a disk's use, a quota, a battery. Its label stands over the
-/// track's start and its readout over its end; the fill turns warning, then danger, as it
-/// fills, unless the share has no status.
+/// A labelled level as a bar: a disk's use, a quota, a battery.
 #[derive(Component, Default)]
 #[component(name = "BarGauge", role = "ProgressBar", label = "label")]
 pub struct BarGaugeProps {
@@ -91,8 +89,7 @@ pub struct BarGaugeProps {
     pub value: f64,
     /// What it measures: "Storage", "Memory".
     pub label: Option<String>,
-    /// The reading over the track's end: "412 GB of 512 GB". Unless said, the share as a
-    /// percentage is announced.
+    /// The reading over the track's end: "412 GB of 512 GB".
     pub readout: Option<String>,
     /// A share with no status (storage by kind, a quota with room): the plain fill, never a
     /// status colour.

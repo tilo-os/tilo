@@ -1,10 +1,8 @@
-//! Data shared by the chart widgets: valued items, graph nodes and the
-//! weighted links between them. `id` survives updates and is what activation
-//! reports.
+//! Data shared by the chart widgets: valued items, graph nodes and the weighted links between them.
+//! `id` survives updates and is what activation reports.
 
 use vello::peniko::Color;
 
-/// One valued item: a funnel stage, a polar wedge, a treemap tile.
 #[derive(Clone, Debug)]
 pub struct ChartItem {
     pub id: String,
@@ -36,7 +34,6 @@ impl ChartItem {
     }
 }
 
-/// A node of a flow or relationship graph (sankey, chord).
 #[derive(Clone, Debug)]
 pub struct ChartNode {
     pub id: String,
@@ -66,7 +63,6 @@ impl ChartNode {
     }
 }
 
-/// A weighted link from one [`ChartNode`] to another, by node id.
 #[derive(Clone, Debug)]
 pub struct ChartLink {
     pub id: String,
@@ -106,14 +102,11 @@ impl ChartLink {
 }
 
 impl ChartLink {
-    /// Whether the link carries a flow worth drawing.
     pub(crate) fn flows(&self) -> bool {
         self.value.is_finite() && self.value > 0.0
     }
 }
 
-/// A node or link of a graph chart, by id: what a chord or Sankey diagram
-/// inspects and reports on activation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphSelection {
     Node(String),

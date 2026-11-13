@@ -1,9 +1,5 @@
-//! The overview column: the snippets of the chosen place as a
-//! [`VirtualList`] of [`ListRow`]s, or the empty state when there are none.
-//!
-//! The list is one focus stop: the arrow keys, Page Up and Down, Home and
-//! End move the open snippet, and Enter brings it to the front of a narrow
-//! window, as activating a row does.
+//! The overview column: the snippets of the chosen place as a [`VirtualList`] of
+//! [`ListRow`]s, or the empty state when there are none.
 
 use std::rc::Rc;
 
@@ -26,8 +22,8 @@ struct Row {
 
 type Rows = VecListModel<Row, SnippetId>;
 
-/// The secondary text of a row: what the snippet is for, or its first line
-/// of code when it has no description.
+/// The secondary text of a row: what the snippet is for, or its first line of code when it
+/// has no description.
 fn secondary(snippet: &Snippet) -> &str {
     if snippet.description.trim().is_empty() {
         snippet.body.lines().next().unwrap_or("").trim()
@@ -36,9 +32,8 @@ fn secondary(snippet: &Snippet) -> &str {
     }
 }
 
-/// The row of one snippet: its language badge (named by its tooltip), the
-/// favorite star, what it is for and its variables; resting on it tells how
-/// often it was used. Activating it opens the snippet.
+/// The row of one snippet: its language badge (named by its tooltip), the favorite star,
+/// what it is for and its variables; resting on it tells how often it was used.
 fn row(row: &Row, requests: &Requests) -> Element {
     let snippet = &row.snippet;
     let open = Action::OpenSnippet(row.id.clone());
@@ -70,12 +65,9 @@ pub(crate) struct ListPane {
     core: Shared,
     requests: Requests,
     body: Body,
-    /// The library and place the body was built from, and the open snippet
-    /// it shows.
     library: Rc<Snippets>,
     place: Option<Selection>,
     open: Option<SnippetId>,
-    /// The open snippet to scroll into view once the list has its height.
     reveal: Option<SnippetId>,
     structure_dirty: bool,
 }
@@ -113,8 +105,6 @@ impl ListPane {
         })
         .filling()
         .selection_follows_focus()
-        // Moving through the list opens the snippet without bringing it to
-        // the front of a narrow window.
         .on_view("snippets.list", move |id| {
             if let Ok(mut core) = follow.try_borrow_mut() {
                 core.open = Some(id);
@@ -127,8 +117,7 @@ impl ListPane {
         .with_semantic_key(ToString::to_string)
     }
 
-    /// The zero state of a place without snippets: one sentence saying what
-    /// would fill it. Creating a snippet is the header's action.
+    /// The zero state of a place without snippets: one sentence saying what would fill it.
     fn empty(selection: &Selection) -> EmptyState {
         let (title, icon) = match selection {
             Selection::Smart(SmartFolder::Favorites) => ("snippets-empty-favorites", Icon::Star),
@@ -138,9 +127,8 @@ impl ListPane {
         EmptyState::new(crate::tr(title)).with_icon(icon)
     }
 
-    /// Follow the core: new rows for a new library, a fresh list for a new
-    /// place, the open snippet as the selected row, and whether to scroll
-    /// to it.
+    /// Follow the core: new rows for a new library, a fresh list for a new place, the open
+    /// snippet as the selected row, and whether to scroll to it.
     fn refresh(&mut self) {
         let core = Rc::clone(&self.core);
         let Ok(mut core) = core.try_borrow_mut() else {

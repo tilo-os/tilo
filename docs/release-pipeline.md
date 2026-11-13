@@ -1,6 +1,6 @@
 # Release pipeline
 
-Tilo releases five independent component families. A release tag for one family
+Tilo releases six independent component families. A release tag for one family
 does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
@@ -10,6 +10,15 @@ does not fan out into unrelated builds:
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
+| Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
+
+The SDKs are the one family with no build artifact of their own: the tag's version is written
+into a copy of each manifest at publish time, and `main` builds the same packages with a
+stand-in version and no credentials. Their native halves (platform wheels of `tilo-sdk`, and
+the `tilo-sdk-native` packages) are designed in
+[Publishing the SDKs](publishing.md#native-packages) and publish as a step beside this one when
+those crates land. The two registry tokens are stored secrets, not identity tokens: neither
+PyPI nor npm's provenance accepts Forgejo's identity.
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
 tapps, reuses unchanged members from the prior immutable collection, and advances

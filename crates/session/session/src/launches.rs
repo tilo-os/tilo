@@ -564,8 +564,10 @@ fn start_time(pid: u32) -> Option<u64> {
     // (state) comes first, so starttime is field 19.
     let rest = stat.rsplit_once(") ")?.1;
     let fields: Vec<&str> = rest.split_whitespace().collect();
-    // ignored-failure: a stat field that is no number names no process start
-    fields.get(19)?.parse().ok()
+    tilo_failure::ignored!(
+        "a stat field that is no number names no process start",
+        fields.get(19)?.parse().ok()
+    )
 }
 
 #[cfg(test)]

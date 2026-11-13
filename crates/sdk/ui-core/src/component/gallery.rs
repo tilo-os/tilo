@@ -1,20 +1,12 @@
-//! What the gallery app (`apps/tl/gallery`) shows of the toolkit's described components.
-//!
-//! The gallery is the window a person opens to see every component of the toolkit as tilolang
-//! places it, and a component described in this crate is shown there the day it is written: a
-//! described component no view of the gallery names is a gap. One check reads the gallery for
-//! both sides — this crate's own tests (which a widget's author runs) and the language's,
-//! which lays the app out as well — so the two cannot drift apart.
-//!
-//! A component a window cannot meaningfully show — one that draws nothing where a view puts
-//! it, such as a place's window well — says so at its declaration
-//! (`#[component(not_in_gallery = "…")]`, carried into the catalogue as `not_in_gallery`), so
-//! the exemption is the toolkit's own declaration, never a name list kept here.
+//! What the gallery app (`apps/tl/gallery`) shows of the toolkit's described components. The gallery is
+//! the window a person opens to see every component of the toolkit as tilolang places it, and a
+//! component described in this crate is shown there the day it is written: a described component no
+//! view of the gallery names is a gap.
 
 use super::catalogue;
 
-/// Whether `source` names the component `name` as `ui.<name>`, not as the start of a longer
-/// name (`ui.Card` is not `ui.CardGrid`).
+/// Whether `source` names the component `name` as `ui.<name>`, not as the start of a longer name
+/// (`ui.Card` is not `ui.CardGrid`).
 #[must_use]
 pub fn names(source: &str, name: &str) -> bool {
     let wanted = format!("ui.{name}");
@@ -26,8 +18,8 @@ pub fn names(source: &str, name: &str) -> bool {
     })
 }
 
-/// What the gallery's sources, all together, show of the toolkit: the described components no
-/// view of theirs names, and those they show although the component says no window can.
+/// What the gallery's sources, all together, show of the toolkit: the described components no view of
+/// theirs names, and those they show although the component says no window can.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
     /// The described components no view of the gallery names, in catalogue order.
@@ -37,8 +29,8 @@ pub struct Coverage {
 }
 
 impl Coverage {
-    /// What to change, a sentence per kind of gap: empty when the gallery shows every
-    /// described component and contradicts no declaration.
+    /// What to change, a sentence per kind of gap: empty when the gallery shows every described
+    /// component and contradicts no declaration.
     #[must_use]
     pub fn problems(&self) -> Vec<String> {
         let mut problems = Vec::new();

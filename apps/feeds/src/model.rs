@@ -785,8 +785,6 @@ pub fn relative_time(published: i64, now: i64) -> String {
 mod tests {
     use super::*;
 
-    /// A feed not yet refreshed is named by its site, not its whole
-    /// address; a fetched title wins.
     #[test]
     fn an_unrefreshed_feed_is_named_by_its_site() {
         let mut feed = Feed::subscribing("https://www.theguardian.com/world/rss", None);
@@ -828,12 +826,8 @@ mod tests {
         id
     }
 
-    /// The library sorts articles, tracks unread counts, filters, marks
-    /// read, finds articles it already holds and removes only a feed's own
-    /// articles.
     #[test]
     fn library_orders_filters_counts_and_finds_articles() {
-        // --- phase: articles_for_sorts_newest_first ---
         {
             let mut s = Library::new();
             let f = feed(&mut s, "f", None);
@@ -848,7 +842,6 @@ mod tests {
             assert_eq!(got, vec![300, 200, 100]);
         }
 
-        // --- phase: unread_counts_track_feed_and_folder ---
         {
             let mut s = Library::new();
             let folder = Id::from_raw("n");
@@ -861,7 +854,6 @@ mod tests {
             assert_eq!(s.total_unread(), 1);
         }
 
-        // --- phase: filter_unread_and_starred ---
         {
             let mut s = Library::new();
             let f = feed(&mut s, "f", None);
@@ -872,7 +864,6 @@ mod tests {
             assert_eq!(s.articles_for(&Filter::Starred)[0].id, &a1);
         }
 
-        // --- phase: mark_all_read_clears_filter ---
         {
             let mut s = Library::new();
             let f = feed(&mut s, "f", None);
@@ -883,7 +874,6 @@ mod tests {
             assert_eq!(s.total_unread(), 0);
         }
 
-        // --- phase: an article at the same address is already held ---
         {
             let mut s = Library::new();
             let f = feed(&mut s, "f", None);
@@ -894,7 +884,6 @@ mod tests {
             assert!(!s.has_article(&other, &url, "whatever"), "per feed");
         }
 
-        // --- phase: remove_feed_drops_feed_and_its_articles_only ---
         {
             let mut s = Library::new();
             let keep = feed(&mut s, "keep", None);
@@ -917,7 +906,6 @@ mod tests {
         }
     }
 
-    /// Typed tags normalize; the model refuses tags that are not.
     #[test]
     fn tags_normalize_and_the_model_refuses_others() {
         assert_eq!(
@@ -931,10 +919,8 @@ mod tests {
         assert!(article.valid().is_err());
     }
 
-    /// Reading settings default and clamp; relative times fall in the right buckets.
     #[test]
     fn reading_settings_and_relative_time_format_stably() {
-        // --- phase: read_settings_default_and_clamp ---
         {
             assert_eq!(ReadSettings::default().theme, ReadTheme::System);
             let s = ReadSettings {
@@ -962,7 +948,6 @@ mod tests {
             assert_eq!(s.percent(), 110.0);
         }
 
-        // --- phase: relative_time_buckets ---
         {
             use ui::format::Moment as _;
             let now = 2_000_000_000i64;

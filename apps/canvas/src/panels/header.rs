@@ -14,11 +14,8 @@ use crate::model::Artwork;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
-/// The artwork's commands, as the window bar's slots (`bar::WindowBar`). The
-/// row they stood in — the title, the zoom readout, the notice under both —
-/// is the bar's now, so nothing of it is drawn here.
-/// Individual shared controls let the shell move each command into More
-/// without laying a wider private row beneath its inspector and History.
+/// The artwork's commands, as the window bar's slots (`bar::WindowBar`); the
+/// shell may move each into More without laying a wider private row.
 pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Vec<Element> {
     let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut actions = vec![
@@ -97,12 +94,9 @@ fn pick_request() -> ui::portal::ContentsChannel {
         .send_contents()
 }
 
-/// What of the artwork the strip over the canvas follows: whether there is
-/// a selection, and each mask with the name of the layer it masks.
 #[derive(Clone, Default, PartialEq)]
 struct StripFacts {
     area: bool,
-    /// Each mask's id, and the id and name of the layer it masks.
     masks: Vec<(String, String, String)>,
 }
 
@@ -158,7 +152,6 @@ pub fn context_bar(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
 /// when it is chosen (the brush's layer and paint as they are then).
 type Edit = std::sync::Arc<dyn Fn() -> Invoke<Artwork> + Send + Sync>;
 
-/// How a command's button is bound to its action.
 type Bind = Box<dyn FnOnce(Button, &ViewCx<Artwork>) -> Element>;
 
 /// A command of the strip: its icon, its label's string id, and the edit
@@ -169,7 +162,6 @@ struct Command {
     id: String,
     bind: Bind,
     edit: Edit,
-    /// Shown by its icon alone at any width, as a row of alignments is.
     iconic: bool,
     /// Asked of the canvas rather than made as an action (work that runs
     /// off the window's thread): never moved into the menu, which can only
@@ -217,7 +209,6 @@ impl Command {
         }
     }
 
-    /// The command by its icon alone, its label its tooltip.
     fn iconic(mut self) -> Self {
         self.iconic = true;
         self
@@ -429,7 +420,6 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     )
 }
 
-/// Fill, outline, mask, clear, invert, select nothing.
 fn area_commands(tools: &Tools) -> Vec<Command> {
     let using = |icon, what: &'static str| {
         let loaded = tools.loaded();
@@ -554,7 +544,6 @@ fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
     .iconic()
 }
 
-/// Unite, subtract, intersect or exclude the picked shapes.
 fn combine_commands(tools: &Tools) -> Vec<Command> {
     [
         (Icon::SquaresUnite, "union"),
@@ -724,9 +713,7 @@ fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     })
 }
 
-/// How a recent artwork's menu entry is told from the others.
 pub(crate) const RECENT: &str = "recent:";
-/// How many recent artworks the menu offers.
 const MENU_RECENTS: usize = 5;
 
 /// A button asking the canvas for a change of view: a view action, so an

@@ -1,9 +1,7 @@
-//! CRDT-native spreadsheet model: a workbook is an ordered set of sheets, each a sparse map of
-//! A1-keyed cells carrying value + type + **formula** (preserved, never flattened to its result) +
-//! an opaque style ref. Backed by automerge so a workbook syncs, versions, and merges like the
-//! rich-text [`crate::Document`] — a separate schema (`tilo.sheet`) for a separate shape. The
-//! `.xlsx`/`.ods` codecs parse untrusted packages into this model through the same
-//! bounded/hardened ZIP + XML entry as the document codecs (`crate::codecs::safety`).
+//! CRDT-native spreadsheet model: a workbook is an ordered set of sheets, each a
+//! sparse map of A1-keyed cells carrying a value, its type, a preserved formula and
+//! an opaque style ref. It is a separate schema (`tilo.sheet`) backed by automerge,
+//! so a workbook syncs, versions and merges like the rich-text document.
 
 pub mod a1;
 pub mod model;

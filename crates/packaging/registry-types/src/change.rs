@@ -1,60 +1,37 @@
-//! `EntryChangeRequest` — the wire shape a publisher POSTs to
-//! `/entries` to add, update, or delete their entry.
+//! The wire shape a publisher POSTs to `/entries` to add, update or delete its entry, signed as
+//! `blake3(domain || postcard((action, entry_signing_payload)))` with the entry kind's domain.
 //!
-//! The publisher signs
-//! `blake3(domain || postcard(change_signing_payload))`, the domain
-//! being the entry kind's (`ENTRY_DOMAIN` for apps, `BOT_ENTRY_DOMAIN` for
-//! bots),
-//! where `change_signing_payload = (action, entry_signing_payload)`.
-//! The registry server then verifies against the pubkey the
-//! publisher-allowlist assigns to the entry (see
-//! [`crate::verify::verify_change_request`]).
-//!
-//! Delete requests still carry the full entry — the server treats
-//! that as the "last known state" the publisher intended to
-//! remove, which the moderator can review. The server only acts
-//! on `package_id + action`; the rest of the entry is there for
-//! auditing.
+//! A delete carries the full entry as the last known state a moderator can review; the server acts on
+//! `package_id` and `action` alone.
 
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use crate::entry::RegistryEntry;
 
-/// What a change request asks the registry to do with an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryAction {
-    /// Insert a new entry. Fails if `package_id` already exists.
+    /// Insert a new entry; fails if it exists.
     Add,
-    /// Replace an existing entry. The `updated_at_unix` timestamp
-    /// on the new entry MUST be > the stored one for the request
-    /// to be accepted.
+    /// Replace an entry; its `updated_at_unix` must be newer than the stored one.
     Update,
-    /// Remove an entry from the registry. The full entry is
-    /// carried for the audit log.
+    /// Remove an entry; the full entry is carried for the audit log.
     Delete,
     // Adding another variant is a wire break; bump the protocol
     // version.
 }
 
-/// A signed change request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryChangeRequest {
-    /// What the publisher wants the registry to do.
     pub action: EntryAction,
-    /// The entry payload. Its `signature_hex` is filled with the
-    /// publisher's entry-level sig for downstream federation; the
-    /// change-level sig sits on this struct instead.
+    /// The entry; its own signature is kept for federation, and is not what this request signs.
     pub entry: RegistryEntry,
-    /// Publisher's Ed25519 signature over
-    /// `blake3(ENTRY_DOMAIN || postcard((action, entry_signing_payload)))`.
-    /// Hex-encoded 64 bytes.
+    /// Ed25519 over `blake3(domain || postcard((action, entry_signing_payload)))`, hex.
     pub publisher_signature_hex: String,
 }
 
-/// The canonical signing payload — action tag + every field of
-/// the entry except its own signature.
+/// The signing payload: the action tag and every entry field but the entry's own signature.
 #[derive(Serialize)]
 struct ChangeSigningPayload<'a> {
     action: EntryAction,
@@ -73,24 +50,18 @@ struct ChangeSigningPayload<'a> {
 }
 
 impl EntryChangeRequest {
-    /// The 32-byte BLAKE3 digest the publisher signs on the
-    /// change (as distinct from the entry's own signature).
+    /// The digest the publisher signs on the change, not the entry's own signature.
     pub fn signing_message(&self) -> [u8; 32] {
         change_signing_message(self.action, &self.entry)
     }
 }
 
-/// Compute the signing digest for a `(action, entry)` pair.
-/// The entry's `signature_hex` field is deliberately ignored.
+/// The signing digest for an `(action, entry)` pair; the entry's `signature_hex` is ignored.
 ///
 /// # Panics
 ///
-/// Panics if `postcard::to_stdvec` fails to encode the payload. In
-/// practice unreachable — every field is owned data with the derived
-/// `Serialize` impl, and postcard only errors on a failing custom
-/// `Serialize` impl or a sequence length overflowing its varint
-/// encoding, neither of which applies here (see
-/// [`crate::entry::entry_signing_message`]'s `# Panics` note).
+/// When postcard cannot encode the payload, which no field here can cause (see
+/// [`crate::entry::entry_signing_message`]).
 #[allow(
     clippy::expect_used,
     reason = "postcard::to_stdvec cannot fail for this owned, derive(Serialize) payload — see \
@@ -119,10 +90,8 @@ pub fn change_signing_message(action: EntryAction, entry: &RegistryEntry) -> [u8
     *hasher.finalize().as_bytes()
 }
 
-/// Build a fully-signed change request. `signing_key` is the
-/// publisher's Ed25519 private key. Entry-level signature is
-/// filled in-place by [`crate::entry::sign_entry`] so
-/// downstream consumers can still verify the entry alone.
+/// Build a signed change request. The entry's own signature is filled in too, so a consumer can
+/// still verify the entry alone.
 pub fn sign_change_request(
     action: EntryAction,
     mut entry: RegistryEntry,
@@ -185,7 +154,6 @@ mod tests {
 
     #[test]
     fn change_requests_sign_and_serialise_canonically() {
-        // phase: action_serde_lowercase_wire
         {
             for (a, expected) in [
                 (EntryAction::Add, "\"add\""),
@@ -198,7 +166,6 @@ mod tests {
                 assert_eq!(back, a);
             }
         }
-        // phase: signing_message_distinguishes_actions
         {
             let entry = sample_entry();
             let a = change_signing_message(EntryAction::Add, &entry);
@@ -208,7 +175,6 @@ mod tests {
             assert_ne!(u, d);
             assert_ne!(a, d);
         }
-        // phase: change_request_json_roundtrip
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let req = sign_change_request(EntryAction::Add, sample_entry(), &key);
@@ -216,7 +182,6 @@ mod tests {
             let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
             assert_eq!(back, req);
         }
-        // phase: sign_change_request_also_signs_entry
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let mut entry = sample_entry();
@@ -224,13 +189,13 @@ mod tests {
             // the signing key; otherwise verify_entry_signature
             // (correctly) rejects.
             entry.publisher_pubkey_hex = hex::encode(key.verifying_key().to_bytes());
+            // The entry's pubkey must match the signing key, or `verify_entry_signature` rejects it.
             let req = sign_change_request(EntryAction::Add, entry, &key);
             // Entry sig must be a real signature — 128 hex chars.
             assert_eq!(req.entry.signature_hex.len(), 128);
             // And it must verify against the same key it was signed with.
             assert!(crate::verify::verify_entry_signature(&req.entry));
         }
-        // phase: change_signing_bytes_ignore_entry_signature_field
         {
             let mut e = sample_entry();
             let m1 = change_signing_message(EntryAction::Update, &e);
@@ -239,11 +204,11 @@ mod tests {
             e.signature_hex = "junk".into();
             let m2 = change_signing_message(EntryAction::Update, &e);
             assert_eq!(m1, m2);
-            // But the entry sig hex used to be an assertion tool — resign
-            // it with a fresh key and prove that too.
+            // A nonsense `signature_hex` must not change the change-level digest.
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             sign_entry(&mut e, &key);
             let m3 = change_signing_message(EntryAction::Update, &e);
+            // Resigning the entry with another key leaves that digest alone too.
             assert_eq!(m1, m3);
         }
     }

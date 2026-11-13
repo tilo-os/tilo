@@ -1,5 +1,5 @@
-//! Fixed held-object metadata over the initialized target worker.
-//! No content access or source permission constructor exists.
+//! Fixed held-object metadata over the initialized target worker. No content access or
+//! source permission constructor exists.
 #[cfg(test)]
 use super::Write;
 use super::{AsRawFd, File, MetadataExt, Read, Record, UnixStream, io, namespaces, refused};
@@ -75,8 +75,8 @@ pub(super) fn measure(file: &File) -> io::Result<Facts> {
         rustix::fs::AtFlags::STATX_DONT_SYNC,
         "Target observation mount identity unavailable",
     )?;
-    // rustix types `f_type` as the kernel's signed word on every C library;
-    // musl's own `statfs` types it unsigned.
+    // rustix types `f_type` as the kernel's signed word on every C library; musl's own `statfs` types
+    // it unsigned.
     let fs = rustix::fs::fstatfs(file)?;
     let mut mount: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatvfs(file.as_raw_fd(), &raw mut mount) } != 0 {
@@ -99,8 +99,7 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
     stream.set_write_timeout(None)?;
     let mut admitted_view = None;
     loop {
-        // Idle has no expiry. Once a frame begins, one absolute deadline bounds
-        // its complete exchange. Root shuts the exact channel on cancellation.
+        // Idle has no expiry.
         let mut first = [0];
         match stream.read_exact(&mut first) {
             Ok(()) => {}
@@ -158,8 +157,8 @@ fn serve_measurement(
                     .raw_os_error()
                     .is_some_and(|code| (1..=4095).contains(&code)) =>
         {
-            // Actual native operation refusal keeps FUSE/session custody;
-            // it is neither an object measurement nor a source grant.
+            // Actual native operation refusal keeps FUSE/session custody; it is neither an object
+            // measurement nor a source grant.
             super::shim::verify_dropped(record.uid, record.gid)?;
             if namespaces()? != record.namespaces {
                 return Err(refused("Exposure worker namespace changed"));

@@ -309,11 +309,11 @@ impl TestGovernor {
             .admitted_workspace()
             .ok_or("governor workspace policy is absent")?;
         let (_, policy) = crate::workspace::extract_governed_fields(workspace);
-        let agent = tilo_action_policy::Subject::agent(agent);
+        let agent = tilo_action_policy::Grantee::agent(agent);
         Ok(policy
             .grants
             .into_iter()
-            .filter(|grant| grant.subject == agent)
+            .filter(|grant| grant.grantee == agent)
             .map(|grant| grant.id.as_str().to_owned())
             .collect())
     }
@@ -325,11 +325,11 @@ impl TestGovernor {
         let now = self.now();
         let grant = tilo_action_policy::Grant::new(
             format!("fixture-administrator:{action}"),
-            tilo_action_policy::Subject::person(person.to_owned()),
+            tilo_action_policy::Grantee::person(person.to_owned()),
             tilo_action_policy::roles::governance_action(self.workspace(), action),
             tilo_action_policy::KindSet::OUTSIDE,
             tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Subject::person(hex::encode(self.peer.owner())),
+            tilo_action_policy::Grantee::person(hex::encode(self.peer.owner())),
         );
         let mut candidate = self.peer.clone();
         candidate.governance_mut().put_governed_grants(

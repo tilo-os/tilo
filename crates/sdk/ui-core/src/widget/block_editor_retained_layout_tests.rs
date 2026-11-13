@@ -1,5 +1,5 @@
-//! Keep the production layout tree alive between keystrokes. Rebuilding it
-//! would erase Taffy's intrinsic-size cache and conceal stale paragraph heights.
+//! Keep the production layout tree alive between keystrokes. Rebuilding it would erase Taffy's
+//! intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
 use crate::bound_dispatch::BoundNodeMap;
 use crate::testing::Dispatch;
@@ -17,7 +17,6 @@ struct RetainedEditor {
     doc: AutoCommit,
     width: f32,
     rebuilds: usize,
-    /// The host's paint viewport, as the live host pushes the window.
     viewport: Option<Rect>,
     scene: Scene,
     damage: Vec<Rect>,
@@ -430,9 +429,6 @@ fn retained_code_lines_and_prose_beside_code_and_tables_damage_their_row_and_mat
             Block::paragraph("After the table."),
         ]
     };
-    // The run's first line (whose block also paints the run's ground), a
-    // later line, its last line, and prose in a note holding code and a
-    // table.
     for (index, before_text) in [
         (1, "fn main() {"),
         (2, "    run();"),
@@ -568,7 +564,6 @@ fn retained_paragraph_delete_and_structure_damage_match_gpu_pixels_at_both_text_
         let rebuilds = fixture.rebuilds;
         fixture.key(Key::Named(NamedKey::Enter), Modifiers::default());
         assert_eq!(fixture.editor.blocks.len(), 9);
-        // A block that came is a relayout, not a new tree: no widget came.
         assert_eq!(
             fixture.rebuilds, rebuilds,
             "a new paragraph restacks the blocks without rebuilding the layout tree"
@@ -868,10 +863,6 @@ fn keystroke_work_does_not_grow_with_the_document() {
     );
 }
 
-/// A block document's drag handles hang in the editor's own handle gutter,
-/// outside the text column and inside the editor's rect: a host that puts
-/// the rect on its page gutter keeps the handles a gutter clear of the
-/// sidebar, and the text starts exactly one handle gutter in.
 #[test]
 fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_below() {
     let blocks = (0..6)
@@ -881,8 +872,6 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
     fixture.frame();
     let before = fixture.scene.clone();
     let above = fixture.editor.blocks[2].line.get_rect();
-    // The owning model shows a paragraph a collaborator wrote after the
-    // third, as it shows any remote edit.
     let mut shown: Vec<BlockContent> = fixture.editor.blocks.iter().map(Block::content).collect();
     shown.insert(
         3,
@@ -912,7 +901,6 @@ fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_
         rows[3].height() > 0.0 && rows[3].y0 >= rows[2].y1 && rows[3].y1 <= rows[4].y0,
         "the paragraph stands between its neighbours: {rows:?}"
     );
-    // The caret's paragraph and those above it keep their pixels.
     assert!(
         fixture
             .damage
@@ -981,7 +969,6 @@ fn sectioned_note(sections: usize) -> Vec<Block> {
     blocks
 }
 
-/// The editor's first line on screen when it is scrolled to its middle.
 fn scrolled_to_middle(fixture: &mut RetainedEditor) -> Rect {
     let middle = fixture.editor.blocks.len() / 2;
     fixture.frame();
@@ -1000,9 +987,6 @@ fn has_colour(block: &Block, kind: TokenKind) -> bool {
         .any(|span| span.kind == kind)
 }
 
-/// An unchanged redraw highlights no code at all, and a keystroke in one
-/// code line re-highlights that line's run and nothing else, however long
-/// the document: syntax colours are derived once per change, not per frame.
 #[test]
 fn syntax_colours_are_derived_per_change_not_per_frame() {
     let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(125));
@@ -1026,7 +1010,6 @@ fn syntax_colours_are_derived_per_change_not_per_frame() {
         fixture.editor.highlighted_lines, 0,
         "an unchanged redraw highlights no code line"
     );
-    // A keystroke in the third line of the first fence.
     fixture.editor.focus_block(6, CursorPlacement::Start);
     fixture.frame();
     fixture.editor.highlighted_lines = 0;
@@ -1040,7 +1023,6 @@ fn syntax_colours_are_derived_per_change_not_per_frame() {
         has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
         "the edited line is coloured again"
     );
-    // A line that opens a comment carries the parse into the run's next lines.
     fixture.editor.blocks[4].line.set_text("/* an open comment");
     fixture.frame();
     assert!(
@@ -1052,12 +1034,9 @@ fn syntax_colours_are_derived_per_change_not_per_frame() {
         "an unterminated comment colours the rest of its run: {:?}",
         fixture.editor.blocks[5].line.transient_colors()
     );
-    // A line that leaves the run for prose drops its colours.
     fixture.editor.blocks[5].kind = BlockKind::Paragraph;
     fixture.frame();
     assert!(fixture.editor.blocks[5].line.transient_colors().is_empty());
-    // Its old neighbour now starts a run of its own, outside the comment, and
-    // is highlighted afresh.
     assert!(
         has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
         "{:?}",
@@ -1065,8 +1044,6 @@ fn syntax_colours_are_derived_per_change_not_per_frame() {
     );
 }
 
-/// Replacing the blocks with fresh lines of the same identity and text
-/// still colours them: what was derived lives with the colours, not the ids.
 #[test]
 fn fresh_lines_with_known_ids_are_coloured() {
     let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(2));
@@ -1093,9 +1070,6 @@ fn fresh_lines_with_known_ids_are_coloured() {
     );
 }
 
-/// What a frame derives besides painting follows the viewport, not the
-/// document: a ten times longer note with the same screen derives the same
-/// code chrome, formula sources and link targets, and paints the same blocks.
 #[test]
 fn per_frame_derivations_follow_the_viewport_not_the_document() {
     let mut work = Vec::new();
@@ -1146,8 +1120,6 @@ fn per_frame_derivations_follow_the_viewport_not_the_document() {
     );
 }
 
-/// The copy button of a code run on screen stays hit-testable, and a link on
-/// screen stays clickable, after culling what is off screen.
 #[test]
 fn culled_frames_keep_on_screen_chrome_and_links_live() {
     let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(40));
@@ -1201,7 +1173,6 @@ fn culled_frames_keep_on_screen_chrome_and_links_live() {
     }
 }
 
-/// The window of a note scrolled to its middle, rendered.
 fn render_window(fixture: &mut RetainedEditor, viewport: Option<Rect>, top: f64) -> Vec<u8> {
     let presence = PresenceCtx::empty();
     if let Some(viewport) = viewport {
@@ -1230,7 +1201,6 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
         let viewport = scrolled_to_middle(&mut fixture);
         fixture.frame();
         let culled = render_window(&mut fixture, Some(viewport), viewport.y0);
-        // Forget every derived colour: the next frame highlights from scratch.
         for block in &mut fixture.editor.blocks {
             block.line.set_transient_colors(Vec::new());
         }
@@ -1253,7 +1223,6 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
     }
 }
 
-/// The semantic tree's nodes beneath and including `id`.
 fn subtree_len(tree: &crate::a11y_tree::SemanticTree, id: &crate::a11y_tree::SemanticId) -> usize {
     tree.node(id).map_or(0, |node| {
         node.children
@@ -1272,12 +1241,6 @@ fn published_afresh(fixture: &RetainedEditor) -> Vec<crate::a11y_tree::SemanticN
     tree.iter().cloned().collect()
 }
 
-/// A keystroke builds the accessibility row of the block it typed into, and
-/// the semantic tree builds that row's nodes, the document's and the
-/// window's: every other block hands the tree the very row it had, which the
-/// tree keeps.
-/// The work is the same in a document four times as long, and the tree it
-/// publishes is the one a full rebuild publishes.
 #[test]
 fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
     let mut built = Vec::new();
@@ -1476,7 +1439,6 @@ fn undrawn_drag_handles_stop_asking_for_frames_once_their_fade_is_over() {
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
     let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
     let over_text = fixture.editor.blocks[1].line.get_rect().center();
-    // The pointer moves over it, and no frame is drawn from here on.
     with_monotonic_time(at(0), || {
         Dispatch::new()
             .doc(&mut fixture.doc)
@@ -1527,7 +1489,6 @@ fn a_probe_at_no_width_leaves_the_stack_the_host_applies() {
         measured > 20.0,
         "the sentence wraps over more than one row: {measured}"
     );
-    // A parent measuring min-content asks the stack what it takes at no width.
     let probe = fixture.editor.measure_stack(
         Size {
             width: Some(0.0),
@@ -1543,7 +1504,6 @@ fn a_probe_at_no_width_leaves_the_stack_the_host_applies() {
         f64::from(probe.height) > measured,
         "one word per row is taller than the wrapped paragraph: {probe:?} against {measured}"
     );
-    // The host then applies the layout it solved without measuring.
     fixture
         .editor
         .apply_layout(&fixture.tree, fixture.root, Point::ZERO);

@@ -56,7 +56,7 @@ impl SettingsSchema for CatalogueCopies {
 }
 
 /// The section as a record the person edits by path.
-#[tilo_resource::resource(kind = "settings.books-catalogues", label = "Book catalogues")]
+#[tilo_resource::resource(kind = "settings.books-catalogues")]
 impl CatalogueCopies {}
 
 /// The catalogue's books, searchable by any words of their title and

@@ -1,26 +1,12 @@
-//! Which pointer shape a laid-out surface shows at a point: one rule for
-//! every host (the native `App`, the harness the browser page drives, the
-//! installed shell's chrome), so a window edge, a text field or a link
-//! reads the same everywhere.
-//!
-//! Each widget names the shape it wants ([`Widget::cursor_shape`]). Among
-//! the widgets that do:
-//!
-//! 1. one carrying a gesture ([`Widget::wants_pointer_capture`]) keeps its
-//!    shape wherever the pointer goes, so a resize shows its cursor for the
-//!    whole drag, even off the edge it started on;
-//! 2. else a resize shape wins over what lies under it: a window edge is
-//!    grabbed before the content beneath it is reached, so the cursor says
-//!    what a press there does;
-//! 3. else the smallest widget under the pointer, so a nested child beats
-//!    its enclosing container.
+//! Which pointer shape a laid-out surface shows at a point: one rule for every host (the native `App`,
+//! the harness the browser page drives, the installed shell's chrome), so a window edge, a text field
+//! or a link reads the same everywhere.
 
 use vello::kurbo::{Point, Rect};
 use winit::window::CursorIcon;
 
 use super::Widget;
 
-/// Whether `icon` says a press drags an edge or a divider.
 fn resizes(icon: CursorIcon) -> bool {
     use CursorIcon as C;
     matches!(
@@ -42,7 +28,6 @@ fn resizes(icon: CursorIcon) -> bool {
     )
 }
 
-/// The shapes offered at one point, folded to the one shown.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CursorPick {
     /// The best offer so far: its rank (higher wins), area, and shape.
@@ -50,7 +35,6 @@ pub struct CursorPick {
 }
 
 impl CursorPick {
-    /// Consider what `widget` asks for at `point`.
     pub fn offer(&mut self, widget: &dyn Widget, point: Point) {
         let rect = widget.get_rect();
         let captured = widget.wants_pointer_capture();
@@ -84,14 +68,12 @@ impl CursorPick {
         }
     }
 
-    /// The shape shown, if any widget asked for one.
     #[must_use]
     pub fn icon(self) -> Option<CursorIcon> {
         self.best.map(|(_, _, icon)| icon)
     }
 }
 
-/// The shape `root`'s shown tree asks for at `point`.
 #[must_use]
 pub fn in_tree(root: &dyn Widget, point: Point) -> Option<CursorIcon> {
     let mut pick = CursorPick::default();

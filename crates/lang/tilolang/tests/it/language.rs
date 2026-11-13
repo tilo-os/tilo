@@ -38,8 +38,7 @@ fn calendar_literals_are_dates_times_and_months() {
         "E105",
         "fn f(c: C) -> Bool {\n    c.due == .some(2026-08)\n}",
     );
-    // A time of no zone is a wall-clock time: the person's own time of day, resolved where it
-    // runs.
+    // A time of no zone is a wall-clock time: the person's own time of day, resolved where it runs.
     ok("fn f() -> Time {\n    2026-06-29T07:02\n}");
     ok("fn f() -> Time {\n    2026-06-29T07:02:05\n}");
     expect("E004", "fn f() -> Date {\n    2026-02-30\n}");
@@ -51,8 +50,8 @@ fn calendar_literals_are_dates_times_and_months() {
 
 #[test]
 fn one_branch_is_the_option_of_its_value() {
-    // `if c { v }` with no `else` is `v` where the condition holds and nothing where it does
-    // not, which is an Option of `v`.
+    // `if c { v }` with no `else` is `v` where the condition holds and nothing where it does not,
+    // which is an Option of `v`.
     ok("fn f(c: C) -> Option<Text> {\n    if c.b { c.t }\n}");
     ok("fn f(c: C) -> Option<Text> {\n    if let first = c.items.first() { \"{first.t}\" }\n}");
     ok(
@@ -62,14 +61,13 @@ fn one_branch_is_the_option_of_its_value() {
     // never holds another.
     ok("fn f(c: C) -> Option<C> {\n    if c.b { c.items.first() }\n}");
     ok("fn f(c: C) -> Option<Date> {\n    if let first = c.items.first() { first.due }\n}");
-    // Where an Option of a value is expected, the value is the Option: in an argument, a field
-    // and a comparison alike.
+    // Where an Option of a value is expected, the value is the Option: in an argument, a field and a
+    // comparison alike.
     ok(
         "fn g(x: Option<Text>) -> Text {\n    x ?? \"empty\"\n}\nfn f(c: C) -> Text {\n    g(c.t)\n}",
     );
     ok("action a(c: C) {\n    c.due = 2026-06-29\n}");
     ok("fn f(c: C) -> Bool {\n    c.due == 2026-06-29\n}");
-    // One level: an Option of an Option says which of its levels it means.
     ok(
         "type N {\n    two: Option<Option<Text>> = .none\n}\naction a(n: N) {\n    n.two = .some(.none)\n}",
     );
@@ -94,12 +92,10 @@ fn if_let_binds_option_values_in_actions_fns_and_views() {
         "E106",
         "fn f(c: C) -> Text {\n    if let t = c.t {\n        t\n    } else {\n        \"\"\n    }\n}",
     );
-    // One branch is the Option of it: a Text is not an Option<Text>.
     expect(
         "E020",
         "fn f(c: C) -> Text {\n    if let l = c.items.last() {\n        l.t\n    }\n}",
     );
-    // The name is not seen in the `else` branch.
     expect(
         "E014",
         "fn f(c: C) -> Text {\n    if let l = c.items.last() {\n        l.t\n    } else {\n        l.t\n    }\n}",
@@ -141,7 +137,6 @@ fn a_lambda_takes_the_values_a_function_parameter_takes() {
     ok(
         "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text, Text, Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n, n, n)\n    }\n}\nview w(c: C) {\n    picker(c.t, (a, b, d) -> rename(c, d))\n}",
     );
-    // One value is one `x -> ...`, unchanged.
     ok(
         "action rename(c: C, t: Text) {\n    c.t = t\n}\nview picker(n: Text, act: (Text) -> Action) {\n    ui.ListRow(title: n) {\n        on activate: act(n)\n    }\n}\nview w(c: C) {\n    picker(c.t, x -> rename(c, x))\n}",
     );
@@ -214,8 +209,7 @@ fn an_optional_view_renders_when_given() {
 
 #[test]
 fn a_row_block_names_the_values_it_draws_with() {
-    // A view of items that draws a row with the item it stands under takes a block naming
-    // both: the item and the one it stands under.
+    // A view of items whose row takes the item it stands under takes a block naming both.
     ok(
         "view listed<T>(items: List<T>, row: (T, Option<T>) -> View) {\n    stack {\n        for x in items {\n            row(x, .none)\n        }\n    }\n}\nview w(c: C) {\n    listed(c.items) { (x, under) ->\n        text(x.t)\n    }\n}",
     );
@@ -283,8 +277,8 @@ fn an_item_block_names_the_other_slots_beside_the_row() {
 
 #[test]
 fn an_action_a_view_applies_reads_the_clock_as_it_is_at_the_press() {
-    // An argument that names a day or a moment is read when the action is invoked, as its
-    // view state is: a list in a place that starts its items today says so in the argument.
+    // An argument that names a day or a moment is read when the action is invoked, as its view state
+    // is.
     let starts_today = "type Note {\n    title: Text\n    due: Option<Date> = .none\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\naction add(b: Book, due: Option<Date> = .none, title: Text = \"\") -> Note (icon: .plus) {\n    b.notes.insert(Note(title: title, due: due))\n}\nview book(b: Book) {\n    let in_today = true\n    stack {\n        button(add(b, due: if in_today { .some(today) } else { .none }))\n    }\n}\n";
     let src = format!("app t.x \"X\"\n{starts_today}");
     let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
@@ -318,8 +312,8 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     );
     let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
-    // An argument computed from view state is a function of the module, run at the press on
-    // the view state as it is then: a toggle, a count, a draft with more around it.
+    // An argument computed from view state is a function of the module, run at the press on the view
+    // state as it is then.
     let computed = format!(
         "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    state draft: Text\n    state open: Bool = false\n    state n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, \"{{draft}}!\"))\n        button(\"Toggle\", on: set(open, not open))\n        button(\"More\", on: set(n, n + 1))\n    }}\n}}"
     );
@@ -382,8 +376,7 @@ fn sort_by_takes_a_key_path_that_may_be_absent() {
 
 #[test]
 fn a_moment_reads_as_the_day_it_falls_on() {
-    // `t.day()` is the day a moment falls on for the person, as `today` is the day it is: a day
-    // a list groups its rows by, and a date a row shows.
+    // `t.day()` is the day a moment falls on for the person, as `today` is the day it is.
     ok("fn f(c: C) -> Date {\n    let at = c.at ?? 2026-06-29T07:02Z\n    at.day()\n}");
     ok("action a(c: C) uses time {\n    c.due = now.day()\n    c.at = now\n}");
     ok(
@@ -392,7 +385,6 @@ fn a_moment_reads_as_the_day_it_falls_on() {
     // A day's `day` is the day of its month, and a moment's is the day it falls on.
     expect("E020", "fn f(d: Date) -> Date {\n    d.day()\n}");
     expect("E020", "fn f(t: Time) -> Int {\n    t.day()\n}");
-    // The names the language used before are gone, with no aliases left behind.
     expect(
         "E014",
         "action a(c: C) {\n    c.due = .some(day_of(now))\n}",
@@ -426,8 +418,7 @@ fn descendants_and_ancestors_follow_the_parent_an_item_names() {
 
 #[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What a row writes: a heading of the key the app groups by, absent when the item
-    // names none.
+    // What a row writes: a heading of the key the app groups by, absent when the item names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
     );
@@ -440,28 +431,35 @@ fn a_ui_let_writes_the_type_its_value_is_read_as() {
 
 #[test]
 fn a_function_argument_binds_the_type_its_result_names() {
-    // The key a list groups by is whatever the caller reads: `.due` makes its heading a day
-    // the host presents as one, `x -> .some(x.t)` the text it is. A template's type parameter
-    // is not a variable, so what the function makes is read where the call passes it.
+    // The key a list groups by is whatever the caller reads: `.due` makes its heading a day, `x ->
+    // .some(x.t)` the text it is. A template's type parameter is not a variable, so what the function
+    // makes is read where the call passes it.
     const ROWS: &str = "view rows<T, K>(items: List<T>, group: Option<(T) -> Option<K>> = .none) {\n    ui.VirtualList {\n        for x in items {\n            let heading: Option<K> = if let g = group { g(x) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}\n";
     let compiled = |rest: &str| {
         crate::common::compile_with(&format!("app t.x \"X\"\n{C}{ROWS}{rest}"), &[])
             .unwrap_or_else(|d| panic!("{rest}\n{d:#?}"))
     };
+    // What the code emits: the metadata section carries the package's declarations as text (a
+    // template's body among them), so the scan is over the module without it.
+    let code = |c: &tilolang::Compiled| {
+        tilolang::meta::without_section(&c.wasm, tilolang::meta::META_SECTION)
+    };
     let day = compiled("view w(c: C) {\n    rows(c.items, group: .due)\n}");
-    let has = |name: &str| day.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&day);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(has("group:as"), "a day's heading is dated for the host");
     crate::common::validate(&day.wasm);
     let word = compiled("view w(c: C) {\n    rows(c.items, group: x -> .some(x.t))\n}");
-    let has = |name: &str| word.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&word);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group:as"), "a word's heading is the word it is");
     crate::common::validate(&word.wasm);
     // A list that groups nothing names no key at all, and rows keep no heading.
     let plain = compiled("view w(c: C) {\n    rows(c.items)\n}");
-    let has = |name: &str| plain.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&plain);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group"), "a plain list has no heading");
     crate::common::validate(&plain.wasm);
-    // A function that makes something else than the key is told so.
     expect(
         "E020",
         &format!("{ROWS}view w(c: C) {{\n    rows(c.items, group: x -> x.t)\n}}"),
@@ -539,8 +537,8 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     assert_eq!(written, format!("{:?}", std::process::ExitCode::SUCCESS));
     let lock = std::fs::read_to_string(dir.join("app.ids")).expect("lock");
     assert!(lock.contains("C.n = "), "{lock}");
-    // The same entries, in another order, are not what a build writes: a check says so, and
-    // --write-ids puts them back in the order the tool writes them.
+    // The same entries, in another order, are not what a build writes: --write-ids puts them back in
+    // the order the tool writes them.
     let header = lock.lines().next().expect("header");
     let mut entries: Vec<&str> = lock
         .lines()
@@ -577,4 +575,96 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     );
     assert!(!dir.join("app.wasm").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Compiles `lib` as one package, then `app` against the metadata it publishes: the templates a package
+/// carries for its importers travel there.
+fn compile_against(lib: &str, app: &str) -> Result<(), Vec<tilolang::Diagnostic>> {
+    let lib = crate::common::compile(&format!("app probe.lib \"Lib\"\n{lib}\n")).meta;
+    let src = format!("app probe.consumer \"Consumer\"\n{app}\n");
+    crate::common::compile_with(&src, &[lib]).map(|_| ())
+}
+
+/// A `template view` another package calls with a block compiles, and the block is the template's `View`
+/// parameter. The template's body resolves in its own package: it calls that package's helper, which the
+/// importer's own names cannot shadow.
+#[test]
+fn a_template_view_called_from_another_package_takes_its_block() {
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view mine() {\n    text(\"mine\")\n}\n\
+               view sheet() {\n    lib.frame {\n        mine()\n    }\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// The template's body resolves in its own package: a name the caller happens to have too is not what the
+/// template calls.
+#[test]
+fn a_callers_name_does_not_shadow_what_a_template_calls() {
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               fn helper(n: Int) -> Text {\n    \"caller {n}\"\n}\n\
+               view sheet() {\n    lib.frame {\n        text(helper(1))\n    }\n}";
+    // The template's `helper(1)` is `probe.lib`'s (a number); the caller's own `helper(1)` is
+    // `probe.consumer`'s (text). Both compile, each against its own package's fn.
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// A plain view of another package still takes no child block: only a template is the language's way to
+/// take one, so a plain view called with a block is `E063` there as here.
+#[test]
+fn a_plain_view_called_from_another_package_still_takes_no_block() {
+    let lib = "view plain() {\n    text(\"plain\")\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.plain {\n        text(\"no\")\n    }\n}";
+    let diags = compile_against(lib, app).err().unwrap_or_default();
+    assert!(
+        diags.iter().any(|d| d.code == "E063"),
+        "a plain view with a block is E063: {diags:#?}"
+    );
+}
+
+/// A template's own parameter is the template's name, even when the package also declares a view of that
+/// name: `dock` in `frame(dock: Text)` is the parameter, not `lib.dock`.
+#[test]
+fn a_template_parameter_shadows_a_package_view() {
+    let lib = "view dock() {\n    text(\"the dock\")\n}\n\
+               template view frame(dock: Text) {\n    stack {\n        text(dock)\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(dock: \"mine\")\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a template parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A lambda's parameter shadows a package name: `surface -> ...` reads the parameter, never `lib.surface`.
+#[test]
+fn a_lambda_parameter_shadows_a_package_view() {
+    // The lambda is in the template's own body (`items.find(surface -> ...)`), where the rewrite runs:
+    // its parameter `surface` names a fn the package declares, and must stand as the parameter.
+    let lib = "fn surface(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(items: List<Int>) {\n    stack {\n        if let surface = items.find(surface -> surface > 0) {\n            text(\"{surface}\")\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [1])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a lambda parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A `for` variable shadows a package name: `for surface in ...` reads the variable, never `lib.surface`.
+#[test]
+fn a_for_variable_shadows_a_package_view() {
+    let lib = "view surface() {\n    text(\"the surface\")\n}\n\
+               template view frame(items: List<Text>) {\n    stack {\n        for surface in items {\n            text(surface)\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [\"a\"])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a for variable stands as its own name: {diags:#?}");
+    }
 }

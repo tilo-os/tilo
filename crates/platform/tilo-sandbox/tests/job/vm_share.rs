@@ -1,7 +1,7 @@
-//! VM steps over virtio-fs: a root made of shared layers, each layer looked at before the
-//! overlay takes it, a writable share the host reads, the step's helpers in its cgroup and
-//! holding none of the caller's mounts, and the command run by its path. Needs what
-//! `vm.rs` needs; without it each test says why it skipped.
+//! VM steps over virtio-fs: a root made of shared layers, each layer looked at before the overlay
+//! takes it, a writable share the host reads, the step's helpers in its cgroup and holding none of
+//! the caller's mounts, and the command run by its path. Needs what `vm.rs` needs; without it each
+//! test says why it skipped.
 
 use std::os::fd::OwnedFd;
 use std::path::Path;
@@ -176,8 +176,8 @@ fn a_helper_sees_none_of_the_callers_mounts() {
 fn the_guest_runs_its_command_by_path() {
     let rig = needs_vm!();
     let base = rig.busybox_root("base");
-    // A `sh` of the step's own above busybox's link: run by its path, it is this script; a
-    // busybox looking up a bare `sh` would run its own applet instead.
+    // A `sh` of the step's own above busybox's link: run by its path, it is this script; a busybox
+    // looking up a bare `sh` would run its own applet instead.
     let top = rig.path("top");
     layer(&top, &[("bin/sh", "#!/bin/busybox sh\necho by-path\n")]);
     std::fs::set_permissions(

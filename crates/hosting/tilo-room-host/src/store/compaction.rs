@@ -102,8 +102,12 @@ impl WorkspaceStore {
             let Some(author) = name
                 .to_str()
                 .and_then(|name| name.strip_suffix(&suffix))
-                // ignored-failure: an entry not named `<author><suffix>` is not a lineage
-                .and_then(|author| hex::decode(author).ok())
+                .and_then(|author| {
+                    tilo_failure::ignored!(
+                        "an entry not named `<author><suffix>` is not a lineage",
+                        hex::decode(author).ok()
+                    )
+                })
                 .and_then(|author| <[u8; 32]>::try_from(author).ok())
             else {
                 continue;
@@ -306,6 +310,50 @@ impl WorkspaceStore {
             sync_dir(&kept)?;
             rewrite(self, &lineage, &[], &[], 0)?;
             archived = archived.saturating_add(names.len());
+        }
+        Ok(archived)
+    }
+}
+
+impl WorkspaceStore {
+    /// Keep every entry of `channel` for which `keeps` holds, given its file bytes, in a new
+    /// archive under [`ARCHIVE_DIR`], as it was written, without taking it out of replay: the
+    /// writes a fold is about to leave out of their record for good, which an operator can still
+    /// read there. Must run on the persistence owner. Returns how many entries it archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read, link or directory barrier fails.
+    pub(crate) fn archive_entries(
+        &self,
+        channel: &[u8; 32],
+        keeps: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<usize, StoreError> {
+        let archive = self
+            .root
+            .join(RETAINED_DIR)
+            .join(ARCHIVE_DIR)
+            .join(hex::encode(rand::random::<[u8; 16]>()));
+        let mut archived = 0_usize;
+        for (lineage, _) in self.channel_lineages(channel)? {
+            let Some(active) = current(&lineage)? else {
+                continue;
+            };
+            let kept = archive.join(lineage.file_name().unwrap_or_default());
+            let mut linked = false;
+            for name in record_names(&active)? {
+                let path = active.join(&name);
+                if !keeps(&fs::read(&path)?) {
+                    continue;
+                }
+                fs::create_dir_all(&kept)?;
+                tilo_relay_store::durable::link(&path, &kept.join(&name))?;
+                linked = true;
+                archived = archived.saturating_add(1);
+            }
+            if linked {
+                sync_dir(&kept)?;
+            }
         }
         Ok(archived)
     }

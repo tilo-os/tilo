@@ -883,16 +883,8 @@ impl ChatApp {
 
     fn message_row(&self, id: &str) -> Option<LiveRow> {
         let message = self.search_messages.iter().find(|item| item.id == id)?;
-        let author = if self.is_provider_output(message) {
-            self.message_author_label(message)
-        } else {
-            self.author_name(&message.author)
-        };
-        let agent = self.is_provider_output(message)
-            || self.is_agent_author(&message.author)
-            || message
-                .author
-                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX);
+        let author = self.message_author_label(message);
+        let agent = self.is_provider_output(message) || crate::views::is_agent(&message.author);
         let mut row = LiveRow::new(
             item_row_id("messages", id),
             "chat.workspace.messages",
@@ -954,21 +946,9 @@ impl ChatApp {
         })
     }
 
-    /// Who wrote a message, as the workspace names them.
-    fn author_name(&self, author: &str) -> String {
-        self.agent_authors
-            .get(author)
-            .cloned()
-            .unwrap_or_else(|| self.display_name(author))
-    }
-
     /// What a message's row is called: who wrote it and how it begins.
     pub(crate) fn message_label(&self, message: &crate::model::Message) -> String {
-        let author = if self.is_provider_output(message) {
-            self.message_author_label(message)
-        } else {
-            self.author_name(&message.author)
-        };
+        let author = self.message_author_label(message);
         let said = if message.text.is_empty() {
             message
                 .files()

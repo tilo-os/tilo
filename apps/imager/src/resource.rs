@@ -1,18 +1,5 @@
-//! The imager's resource: what a person reviews and authors.
-//!
-//! The document holds the image to write, the images reviewed before it and
-//! the install profile. Profile fields change through the built-in field
-//! edits (`Imager::paths().profile.hostname.replace(..)`); reviewing an
-//! image is a verb, because it also remembers the image reviewed before it.
-//! The privileged writer re-validates the reviewed image at execution time:
-//! a collaborator's record is a claim, never trust.
-//!
-//! Everything else belongs to this machine: the drives the probe sees are
-//! [`LiveRow`](ui::framework::LiveRow)s beneath the resource, and writing one is the
-//! [`ImagerEffect::Write`] job, whose progress, cancellation and outcome
-//! reach whoever started it — the Write button, the palette or an agent.
-//! The Wi-Fi passphrase, credentials and the destructive confirmation never
-//! enter the document.
+//! The imager's resource: the image a person reviews, the images reviewed before
+//! it, and the write.
 
 use ui::framework::{Fixture, Helper, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -22,8 +9,6 @@ use ui::widget::Element;
 use crate::app::ImagerApp;
 use crate::model::{InstallProfile, RecentSource, Source};
 
-// The imager's Fluent catalogue: its source language is embedded, the other
-// languages come from the language packs.
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE"]);
 
 /// The reviewed image, the images reviewed before it and the install
@@ -41,13 +26,6 @@ pub struct Imager {
 }
 
 impl Imager {
-    /// What the record holds: the image to write, the images reviewed before it and the install
-    /// profile.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -86,7 +64,6 @@ impl Imager {
 }
 
 impl Imager {
-    /// Remember `source` as the most recent image reviewed before.
     fn remember(&mut self, source: Source) {
         let rank = self
             .recent
@@ -106,7 +83,6 @@ impl Imager {
         self.recent.settle();
     }
 
-    /// Previously reviewed images, most recent first.
     pub fn recent_sources(&self) -> Vec<Source> {
         let mut recent: Vec<&RecentSource> = self.recent.iter().collect();
         recent.sort_by(|a, b| {
@@ -120,7 +96,6 @@ impl Imager {
             .collect()
     }
 
-    /// Nothing to clear before an image is reviewed.
     fn available(&self, verb: imager::Verb) -> Availability {
         match verb {
             imager::Verb::ClearSource if self.source.is_none() => Availability::Unavailable {
@@ -139,7 +114,6 @@ impl Imager {
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
     /// Prepare an explicitly selected original-source migration for this medium.
-    /// Reading requires local administrator approval; this does not erase media.
     #[effect(job, cancellable, privileged)]
     PrepareOfflineMigration {
         #[param("Device path of the already reviewed external target drive")]
@@ -154,7 +128,6 @@ pub enum ImagerEffect {
         password: String,
     },
     /// Erase drive and write image. Offered on each drive it may write,
-    /// where the host asks for the drive's name before it runs.
     #[effect(job, cancellable, row, destructive, phrase = "Self::drive_name")]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
@@ -197,13 +170,11 @@ pub enum ImagerEffect {
         #[param("Absolute paths of files to place in the image account's home")]
         home_files: Vec<tilo_resource::AbsolutePath>,
     },
-    /// Choose a disk image.
     #[effect(job)]
     #[effect(label = "imager-drop-title")]
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
     CancelDownload,
-    /// Rescan drives.
     #[effect(kind = "read")]
     #[effect(label = "imager-rescan-drives")]
     Rescan,
@@ -233,7 +204,6 @@ pub enum ImagerEffect {
 }
 
 impl ImagerEffect {
-    /// What erasing a drive asks its caller to type: the drive's name.
     fn drive_name(&self) -> String {
         match self {
             Self::Write { confirmation, .. } => confirmation.clone(),
@@ -242,14 +212,8 @@ impl ImagerEffect {
     }
 }
 
-/// The imager: one binary, three flows over the one resource. A plain
-/// launch is the write wizard; `--setup` the guided Tilo setup (`--demo`
-/// shows it with example data); `--import-folders` the later folder imports.
-/// The setup and the imports belong to the installation (`installation`);
-/// without it, as in the Tilo app, the imager is the write wizard alone.
 pub struct ImagerShell;
 
-/// Which flow a window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
     Wizard,
@@ -257,13 +221,11 @@ enum Flow {
     Setup,
     #[cfg(feature = "installation")]
     Imports,
-    /// The installer on the live medium, the setup's destination side.
     #[cfg(feature = "destination")]
     Destination,
 }
 
 impl Flow {
-    /// The flow a screenshot scenario shows.
     fn of_scenario(scenario: Option<&str>) -> Self {
         match scenario {
             #[cfg(feature = "installation")]
@@ -276,7 +238,6 @@ impl Flow {
         }
     }
 
-    /// The flow a launch's command line asks for.
     fn launched(cx: &ViewCx<Imager>) -> Self {
         #[cfg(feature = "destination")]
         if crate::setup::destination::launched() || cx.launch_flag("--destination") {
@@ -297,7 +258,6 @@ impl Flow {
     }
 }
 
-/// The write wizard's screenshot scenarios, one per meaningful station.
 const WIZARD_SCENARIOS: &[&str] = &[
     "source",
     "source-empty",
@@ -313,8 +273,6 @@ const WIZARD_SCENARIOS: &[&str] = &[
     "done-failed",
 ];
 
-/// Every screenshot scenario: the wizard's, then the setup's and the
-/// imports', so the gallery reads top to bottom.
 static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     let scenarios = WIZARD_SCENARIOS.iter();
     #[cfg(feature = "installation")]
@@ -326,7 +284,6 @@ static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::
     scenarios.copied().collect()
 });
 
-/// The plain ISO the drive scenarios review.
 fn sample_iso() -> Source {
     Source {
         kind: crate::model::SourceKind::IsoFile,
@@ -340,7 +297,6 @@ fn sample_iso() -> Source {
     }
 }
 
-/// Review `sources` in order, each one remembering the one before it.
 fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
     sources
         .iter()
@@ -353,6 +309,7 @@ impl ResourceApp for ImagerShell {
     const ID: &'static str = "so.tilo.imager";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
+    const TITLE_KEY: &'static str = "installer-app-title";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(all(feature = "installation", feature = "destination"))]
     const FLAGS: &'static [&'static str] =
@@ -363,12 +320,8 @@ impl ResourceApp for ImagerShell {
     const FLAGS: &'static [&'static str] = &["--destination"];
     #[cfg(not(any(feature = "installation", feature = "destination")))]
     const FLAGS: &'static [&'static str] = &[];
-    // Only hosts with a local workspace runtime can attach the imager.
     const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
 
-    /// The privileged and staging helpers the imager's binary also is, and
-    /// its packaging probes: each is started with its own command line and
-    /// runs before anything of the app does.
     fn helpers() -> &'static [Helper] {
         crate::helpers::HELPERS
     }
@@ -390,9 +343,6 @@ impl ResourceApp for ImagerShell {
         fixture.provide(flow);
     }
 
-    /// The reviewed image (and the images reviewed before it) each wizard
-    /// scenario shows; the drives, the station and the job are staged by
-    /// the surface.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Imager>> {
         let mut history = crate::model::sample_recent_sources();
         history.reverse();
@@ -433,8 +383,6 @@ mod tests {
     use super::*;
     use ui::tilo_resource::Resource as _;
 
-    /// The wizard over the sample drives and releases, hosted as the live
-    /// app hosts it.
     struct SampleImager;
 
     impl ResourceApp for SampleImager {
@@ -442,8 +390,6 @@ mod tests {
         const ID: &'static str = "so.tilo.imager";
         const TITLE: &'static str = "Disk Imager";
 
-        // In a column, so a harness lookup by type meets the wizard among
-        // the column's children.
         fn view(cx: &mut ViewCx<Imager>) -> Element {
             Box::new(
                 ui::widget::Column::new()
@@ -453,7 +399,6 @@ mod tests {
         }
     }
 
-    /// A hosted wizard on the Customize step of the sample Tilo image.
     fn customizing() -> ui::framework::testing::TestApp<SampleImager> {
         let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
         app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
@@ -874,8 +819,6 @@ mod tests {
             let Err(error) = app.call("field-edit", arguments.clone()) else {
                 panic!("{arguments}: invalid arguments must not create an enrollment edit");
             };
-            // A malformed call is invalid arguments; a value of the wrong
-            // type is refused by the field it would set.
             assert!(
                 matches!(
                     error,
@@ -926,8 +869,6 @@ mod tests {
             drive.harness().inspection_json().unwrap().contains("sdb"),
             "the sample drives are staged"
         );
-        // The confirm and customize stations review the official Tilo image:
-        // its media profile and on-write setup are offered.
         for (scenario, shown) in [
             (
                 "confirm",
@@ -982,8 +923,6 @@ mod tests {
         );
     }
 
-    /// Without the installation the imager is the write wizard alone: it
-    /// takes no installation switch and offers only the wizard's scenarios.
     #[test]
     #[cfg(not(any(feature = "installation", feature = "destination")))]
     fn without_the_installation_the_imager_is_the_write_wizard() {
@@ -1037,8 +976,6 @@ mod tests {
             Err(ui::tilo_actions::DoorError::ConfirmationRequired)
         ));
 
-        // The write names its drive by the platform's device path (for
-        // example `/dev/rsdb` on macOS), never by the bare fixture name.
         let device = |name: &str| {
             crate::model::sample_targets()
                 .into_iter()

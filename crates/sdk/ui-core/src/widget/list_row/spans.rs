@@ -1,7 +1,7 @@
 //! The spans of a line a search matched, found by the same rules a highlight uses.
 
-/// Where `line` has one of `words`: at the start of a word of it, compared
-/// letter by letter whatever their case. Byte ranges into `line`, in order.
+/// Where `line` has one of `words`: at the start of a word of it, compared letter by letter
+/// whatever their case.
 pub(super) fn found_spans(line: &str, words: &[&str]) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     let mut previous: Option<char> = None;
@@ -29,8 +29,6 @@ pub(super) fn found_spans(line: &str, words: &[&str]) -> Vec<std::ops::Range<usi
     spans
 }
 
-/// How many bytes of the start of `text` are `word`, letter for letter
-/// whatever their case; `None` when it does not start with it.
 fn matched_len(text: &str, word: &str) -> Option<usize> {
     if word.is_empty() {
         return None;

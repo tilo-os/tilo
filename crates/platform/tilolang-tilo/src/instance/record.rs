@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
@@ -19,10 +20,12 @@ use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
 use collaboration::record::save::{open_stored, record_document};
 use collaboration::record::{RecordId, RecordSaveStatus};
+use collaboration::record_content::{ContentLane, RecordContent};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
 };
 use durable_store::DurableStore;
+use tilo_content::ContentStore;
 
 use serde_json::Value as Json;
 use tilo_actions::{ActionContext, ActionInvoker, EncodedAction, InvocationId};
@@ -81,6 +84,8 @@ pub struct InstanceRecord {
     chunks: Chunks,
     manager: CollaborationManager,
     route: RouteSpec,
+    /// The kind of the record, as its app publishes it: what every route of it is joined as.
+    kind: String,
     person: String,
     /// The heads of what the workspace was handed, per chunk: a commit sends what follows them.
     /// They move only once the collab client took the change; what it could not take yet (its
@@ -105,6 +110,10 @@ pub struct InstanceRecord {
     /// Whether this device governs the workspace: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
+    /// The record's content store ([`Self::content`]), and the lane it meets the record's route
+    /// in: what it keeps is offered on the route, and what it lacks is asked of it.
+    content: ContentStore,
+    lane: Arc<ContentLane>,
 }
 
 /// The on-disk copies of the record's chunks: the store the record was opened from, and the
@@ -181,7 +190,8 @@ impl InstanceRecord {
         route: RouteSpec,
         person: impl Into<String>,
     ) -> Self {
-        Self::of(Chunks::of(doc), manager, route, person)
+        let kind = format!("tl.{}", route.app_id);
+        Self::of(Chunks::of(doc), manager, route, person, kind)
     }
 
     /// The record `chunks` (the record's own document, chunk [`FIRST`], and whatever else this
@@ -192,8 +202,9 @@ impl InstanceRecord {
         manager: CollaborationManager,
         route: RouteSpec,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Self {
-        let mut record = Self::holding(chunks, None, manager, route, person.into());
+        let mut record = Self::holding(chunks, None, manager, route, kind.into(), person.into());
         record.join_chunks();
         record
     }
@@ -203,6 +214,7 @@ impl InstanceRecord {
         writers: Option<Writers>,
         manager: CollaborationManager,
         route: RouteSpec,
+        kind: String,
         person: String,
     ) -> Self {
         let mut chunks = chunks;
@@ -214,10 +226,18 @@ impl InstanceRecord {
             .docs()
             .map(|(chunk, doc)| (chunk, doc.committed_heads()))
             .collect();
+        // The record's own lane: its wants and what arrives for it are this record's, whichever
+        // other workspace's record of the app this process holds. Its content is sealed under the
+        // secret of the members who read the record, once its route holds their keys.
+        let lane = Arc::new(ContentLane::default());
+        ContentLane::show_on_route(&route.app_id, route.record.as_deref().unwrap_or(""), &lane);
         Self {
+            content: RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
+            lane,
             chunks,
             manager,
             route,
+            kind,
             person,
             sent,
             joined: BTreeSet::new(),
@@ -255,6 +275,50 @@ impl InstanceRecord {
         &self.words
     }
 
+    /// The record, its content kept in `local` (the device's content store): what its actions
+    /// keep as content outlives the instance, and is read back when the record opens again.
+    #[must_use]
+    pub fn keeping_content_in(mut self, local: ContentStore) -> Self {
+        self.content = RecordContent::store(local, Arc::clone(&self.lane));
+        self
+    }
+
+    /// The record's content store: where an action too large to record whole keeps its large
+    /// parts, sealed for the record's readers, and where they are read back from on every replica.
+    /// What it keeps is offered on the record's route, and what this device lacks is asked of it,
+    /// as a native window's record content is. The window that commits to the record registers it
+    /// for its code ([`tilo_actions::content::register`]).
+    #[must_use]
+    pub fn content(&self) -> &ContentStore {
+        &self.content
+    }
+
+    /// Send on the record's route what its content store asked for and what it kept since: the
+    /// content a change names reaches the record's host with the change, and what a change here
+    /// names and this device lacks is fetched. The store wakes the window's code when it has more.
+    fn send_content(&mut self) {
+        self.lane.attach(tilo_wake::WakeHandle::new());
+        let requests = self.lane.take_requests();
+        for hash in requests.wants {
+            if let Err(error) = self
+                .manager
+                .try_send(CollabRequest::WantContent { hash: hash.clone() })
+            {
+                tracing::debug!(%error, "workspace: a content request waits for the route");
+                self.lane.retry_want(hash);
+            }
+        }
+        for (hash, bytes) in requests.offers {
+            match self.manager.try_send(CollabRequest::OfferContent {
+                hash: hash.clone(),
+                bytes: bytes.clone(),
+            }) {
+                Ok(()) | Err(collaboration::CollabSendError::TooLarge { .. }) => {}
+                Err(_) => self.lane.retry_offer(hash, bytes),
+            }
+        }
+    }
+
     /// Open the workspace record of the route `manager` joined, changed by `person`, kept in
     /// `documents`: as a native launch opens its workspace's document. In a workspace this device governs,
     /// the record is its on-disk copy. In a workspace another host governs, the broker's committed
@@ -263,8 +327,9 @@ impl InstanceRecord {
         manager: CollaborationManager,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
-        Self::open_with(manager, Read::Here, documents, person)
+        Self::open_with(manager, Read::Here, documents, person, kind)
     }
 
     /// [`Self::open`], with the broker's committed read taken off this thread: `read` is what
@@ -282,8 +347,15 @@ impl InstanceRecord {
         )>,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
-        Self::open_with(manager, Read::Taken(read.map(Box::new)), documents, person)
+        Self::open_with(
+            manager,
+            Read::Taken(read.map(Box::new)),
+            documents,
+            person,
+            kind,
+        )
     }
 
     fn open_with(
@@ -291,6 +363,7 @@ impl InstanceRecord {
         read: Read,
         documents: &Rc<dyn DurableStore>,
         person: impl Into<String>,
+        kind: impl Into<String>,
     ) -> Result<Self, RecordError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
@@ -363,7 +436,7 @@ impl InstanceRecord {
                 writers.chunks.insert(chunk, writer);
             }
         }
-        let mut record = Self::holding(chunks, Some(writers), manager, route, person);
+        let mut record = Self::holding(chunks, Some(writers), manager, route, kind.into(), person);
         record.governs = governs;
         if handed_nothing {
             record.sent.clear();
@@ -945,6 +1018,9 @@ impl InstanceRecord {
     }
 
     fn send(&mut self, commit: Option<&collab_types::WorkspaceCommit>) -> Option<String> {
+        // What the changes name as content goes first, so the record's host holds it when a
+        // reader asks for it.
+        self.send_content();
         let unsent = self.unsent_chunks();
         if unsent.is_empty() {
             return None;
@@ -1122,7 +1198,7 @@ impl InstanceRecord {
             }
             self.manager.join_route(
                 self.chunk_route(chunk),
-                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+                collaboration::record::RecordKind::new(self.kind.clone()),
             );
         }
     }
@@ -1334,15 +1410,14 @@ impl InstanceRecord {
         self.chunks.reread_placement();
     }
 
-    /// The edits of `action` by the chunk they are written in: the chunk an edit names, else the
-    /// one the record's manifest places its resource in.
+    /// The edits of `action` by the chunk they are written in ([`Chunks::chunk_of`]).
     fn parts_of(&self, action: &DynAction) -> BTreeMap<ChunkNo, Vec<DynEdit>> {
         let mut parts: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
-            let chunk = edit
-                .chunk()
-                .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
-            parts.entry(chunk).or_default().push(edit.clone());
+            parts
+                .entry(self.chunks.chunk_of(edit))
+                .or_default()
+                .push(edit.clone());
         }
         parts
     }
@@ -1509,6 +1584,7 @@ impl InstanceRecord {
         let mut changed = false;
         let mut record_changed = false;
         let mut routes = self.taken_routes();
+        self.send_content();
         for event in self.manager.poll() {
             let (chunk, before, applied) = match event {
                 CollabEvent::Document {
@@ -1557,6 +1633,16 @@ impl InstanceRecord {
                         continue;
                     };
                     (chunk, before, applied)
+                }
+                // Content the record names arrived, or where a want of it stands: the record's
+                // store keeps it on its next read.
+                CollabEvent::RecordContent { route, hash, bytes } if route == self.route => {
+                    self.lane.arrive(hash, bytes);
+                    continue;
+                }
+                CollabEvent::RecordContentState { route, hash, state } if route == self.route => {
+                    self.lane.stands(hash, state);
+                    continue;
                 }
                 CollabEvent::DocumentSnapshotRequested { route } => {
                     // The broker chose this connection as the one that answers a late joiner of
@@ -1653,19 +1739,19 @@ fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
 /// manifest names, and what the workspace committed of it is taken in as it arrives.
 pub struct ReadRecord {
     route: RouteSpec,
+    /// The kind of the record, as its app publishes it.
+    kind: String,
     chunks: Chunks,
     joined: BTreeSet<ChunkNo>,
 }
 
 impl ReadRecord {
     /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
-    pub fn join(route: RouteSpec, manager: &mut CollaborationManager) -> Self {
-        manager.join_route(
-            route.clone(),
-            collaboration::record::RecordKind::new(crate::RECORD_KIND),
-        );
+    pub fn join(route: RouteSpec, manager: &mut CollaborationManager, kind: &str) -> Self {
+        manager.join_route(route.clone(), collaboration::record::RecordKind::new(kind));
         Self {
             route,
+            kind: kind.to_owned(),
             chunks: Chunks::of(Doc::new()),
             joined: BTreeSet::from([FIRST]),
         }
@@ -1744,7 +1830,7 @@ impl ReadRecord {
             }
             manager.join_route(
                 chunk_route(&self.route, chunk),
-                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+                collaboration::record::RecordKind::new(self.kind.clone()),
             );
         }
     }

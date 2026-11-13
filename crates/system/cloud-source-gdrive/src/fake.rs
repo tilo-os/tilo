@@ -1,7 +1,5 @@
 //! An in-memory Google Drive (API v3) on the shared test responder.
 //!
-//! It keeps Drive's semantics where a client can trip over them:
-//!
 //! - items are ids with a `parents` list; names are not unique in a folder,
 //!   and legacy items can have several parents ([`FakeDrive::add_parent`];
 //!   the API itself refuses to add a second parent, as Drive does now);
@@ -29,8 +27,6 @@
 //! Two tokens are accepted: [`SOURCE_TOKEN`] for the client under test and
 //! [`REMOTE_TOKEN`] for "another device". Faults and going offline affect
 //! requests with the source token only.
-//!
-//! Test support only (feature `fake-server`).
 
 #![allow(
     clippy::missing_panics_doc,
@@ -56,34 +52,25 @@ use test_http::{Reply, Request, Responder};
 use crate::api::{self, FOLDER_MIME};
 use crate::{DriveConfig, UPLOAD_QUANTUM, Url};
 
-/// The access token of the client under test.
 pub const SOURCE_TOKEN: &str = "ya29.fake-source-token";
-/// The access token of the independent "other device".
 pub const REMOTE_TOKEN: &str = "ya29.fake-remote-token";
 
-/// Unpinned revisions a file keeps, as on Drive.
 const MAX_REVISIONS: usize = 100;
 const GOOGLE_APPS: &str = "application/vnd.google-apps.";
 
-/// A fault for the source's next request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FakeFault {
-    /// `403 userRateLimitExceeded`, the way Drive usually rate limits.
     UserRateLimited,
     /// `429 rateLimitExceeded` with `Retry-After: 1`.
     TooManyRequests,
-    /// `503 backendError`.
     ServerError,
-    /// The next media download declares its length but sends half.
     TruncatedBody,
     /// The next media download sends half its body, declares no length and
     /// closes the connection.
     ClosedEarly,
-    /// `401 authError` once.
     ExpiredCredential,
 }
 
-/// Request counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub file_lists: usize,
@@ -135,13 +122,11 @@ impl Node {
 
 #[derive(Debug)]
 struct Session {
-    /// The file a `PATCH` session replaces.
     target: Option<String>,
     metadata: Value,
     total: Option<u64>,
     data: Vec<u8>,
     fields: Option<String>,
-    /// The file id once committed.
     completed: Option<String>,
 }
 
@@ -151,10 +136,8 @@ struct State {
     root: String,
     counter: u64,
     version: u64,
-    /// The next change sequence number; also the start page token.
     seq: u64,
     log: Vec<(u64, String)>,
-    /// Tokens below this are forgotten.
     floor: u64,
     sessions: BTreeMap<String, Session>,
     faults: VecDeque<FakeFault>,
@@ -168,7 +151,6 @@ struct State {
     stats: Stats,
 }
 
-/// A running fake Drive. Dropping it stops the server.
 pub struct FakeDrive {
     responder: Responder,
     state: Arc<Mutex<State>>,
@@ -181,7 +163,6 @@ impl Default for FakeDrive {
 }
 
 impl FakeDrive {
-    /// An empty My Drive.
     pub fn start() -> Self {
         let mut state = State::default();
         let root = "0AfakeRootUk9PVA".to_owned();
@@ -213,7 +194,6 @@ impl FakeDrive {
         self.state.lock().expect("fake drive state")
     }
 
-    /// The API origin, for [`DriveConfig::with_api`].
     pub fn url(&self) -> String {
         format!("{}/", self.responder.url())
     }
@@ -227,7 +207,6 @@ impl FakeDrive {
         }
     }
 
-    /// The real id behind the `root` alias.
     pub fn root_id(&self) -> String {
         self.lock().root.clone()
     }
@@ -241,15 +220,12 @@ impl FakeDrive {
         }
     }
 
-    /// Drop the source's connections unanswered.
     pub fn set_offline(&self, offline: bool) {
         self.lock().offline = offline;
     }
 
-    /// Forget every change page token issued so far.
     pub fn reset_cursors(&self) {
         let mut state = self.lock();
-        // Skip a sequence number so no token handed out so far stays valid.
         state.seq += 1;
         state.floor = state.seq;
     }
@@ -258,14 +234,12 @@ impl FakeDrive {
         self.lock().stats
     }
 
-    /// Create a Google-native document directly.
     pub fn put_native(&self, parent: &str, name: &str, mime: &str) -> String {
         let mut state = self.lock();
         let parent = state.resolve(parent);
         state.create_node(name, mime, vec![parent], None)
     }
 
-    /// Create a file directly, even beside one of the same name.
     pub fn put_file(&self, parent: &str, name: &str, bytes: &[u8]) -> String {
         let mut state = self.lock();
         let parent = state.resolve(parent);
@@ -277,7 +251,6 @@ impl FakeDrive {
         )
     }
 
-    /// Give an item a further parent, as legacy Drive items can have.
     pub fn add_parent(&self, id: &str, parent: &str) {
         let mut state = self.lock();
         let parent = state.resolve(parent);
@@ -300,7 +273,6 @@ impl FakeDrive {
         self.lock().race = Some((id.to_owned(), bytes.to_vec()));
     }
 
-    /// A new shared drive; returns its id (also its root folder's id).
     pub fn add_shared_drive(&self, name: &str) -> String {
         let mut state = self.lock();
         let id = format!("0AdrIvE{:08}", state.next());
@@ -324,7 +296,6 @@ impl FakeDrive {
         id
     }
 
-    /// `(revision id, keepForever)` of a file, oldest first.
     pub fn revisions(&self, id: &str) -> Vec<(String, bool)> {
         self.lock()
             .files
@@ -346,12 +317,10 @@ impl FakeDrive {
             .and_then(|n| n.head().map(|r| r.bytes.clone()))
     }
 
-    /// Whether an item exists and is trashed.
     pub fn is_trashed(&self, id: &str) -> Option<bool> {
         self.lock().files.get(id).map(|n| n.trashed)
     }
 
-    /// Permissions granted on an item.
     pub fn permissions(&self, id: &str) -> Vec<Value> {
         self.lock()
             .files
@@ -627,7 +596,6 @@ fn handle(state: &Mutex<State>, request: &Request) -> Option<Reply> {
     }
     match token {
         Some(SOURCE_TOKEN | REMOTE_TOKEN) => {}
-        // The session URI authorises its own chunks.
         None if upload_session => {}
         _ => {
             return Some(error(
@@ -766,7 +734,6 @@ fn find<'a>(state: &'a State, id: &str, call: &Call<'_>) -> Result<&'a Node, Rep
     find_in(state, id, Some(call))
 }
 
-/// [`find`] for methods without `supportsAllDrives` (revisions, export).
 fn find_any<'a>(state: &'a State, id: &str) -> Result<&'a Node, Reply> {
     find_in(state, id, None)
 }
@@ -866,7 +833,6 @@ fn create(state: &mut State, call: &Call<'_>) -> Reply {
     select_reply(&State::file_json(&node), call.param("fields"), FILE_DEFAULT)
 }
 
-/// The `parents` of a create request, defaulting to My Drive's root.
 fn parents_of(state: &State, call: &Call<'_>, body: &Value) -> Result<Vec<String>, Reply> {
     let parents: Vec<String> = match body["parents"].as_array() {
         Some(list) => list
@@ -1011,7 +977,6 @@ fn export(state: &State, call: &Call<'_>, id: &str) -> Reply {
         }
         .to_vec(),
         "image/svg+xml" => include_bytes!("../tests/fixtures/empty.svg").to_vec(),
-        // Other formats remain protocol-only placeholders in this fake.
         _ => format!("{} exported as {mime}", node.name).into_bytes(),
     };
     Reply::status(200).header("Content-Type", mime).body(body)
@@ -1227,7 +1192,6 @@ fn changes(state: &mut State, call: &Call<'_>) -> Reply {
     }
     let all_drives = call.flag("includeItemsFromAllDrives");
     let include_removed = call.param("includeRemoved") != Some("false");
-    // Each file once, at its latest change.
     let mut latest: BTreeMap<&str, u64> = BTreeMap::new();
     for (seq, id) in &state.log {
         if *seq >= token {
@@ -1376,7 +1340,6 @@ fn upload_chunk(state: &mut State, call: &Call<'_>) -> Reply {
     }
     let committed = session.data.len();
     if span == "*" {
-        // A status query.
         if total == Some(0) {
             return commit(state, &session_id);
         }
@@ -1410,7 +1373,6 @@ fn upload_chunk(state: &mut State, call: &Call<'_>) -> Reply {
     let keep = if is_final {
         fresh.len()
     } else {
-        // Non-final chunks are committed in whole quanta only.
         let quantum = UPLOAD_QUANTUM as usize;
         ((committed + fresh.len()) / quantum * quantum).saturating_sub(committed)
     };
@@ -1753,7 +1715,6 @@ fn parse_unary(tokens: &[Token], at: &mut usize) -> Result<Query, ()> {
     }
 }
 
-/// `2024-05-01T12:30:45.123Z`.
 fn format_rfc3339(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

@@ -6,9 +6,8 @@
 # The image is x86_64 only, like the ci-fast image it builds on. The checks that run in it
 # (sdk-python, sdk-typescript) ask for that architecture.
 #
-# Built by t's image-ci-sdk check, from a context holding the two SDKs' lock files and the
-# Python SDK's sources (uv sync installs the project, which is what puts the build backend it
-# installs the tree's project with in the cache). It is not published: the checks that run in
+# Built by t's image-ci-sdk check, from a context holding the two SDKs' manifests and lock
+# files. It is not published: the checks that run in
 # it are its consumers, so they always run in an image built from the tree's own locks. Keep
 # the base on the pinned ci-fast image: the toolchain, python3 and the shell tools the checks
 # use come from it.
@@ -53,13 +52,13 @@ ENV UV_CACHE_DIR=/opt/tilo-sdk/uv-cache \
     UV_PYTHON_DOWNLOADS=never \
     BUN_INSTALL_CACHE_DIR=/opt/tilo-sdk/bun-cache
 
-# The Python SDK's environment, from its lock. The project is installed too, so uv has the
-# build backend it needs in the cache when a check installs the tree's own copy into this
-# environment offline.
-COPY sdk/python/ /opt/tilo-sdk/python/
+# The Python SDK's environment, from its lock: its dependencies, not the SDK itself, which the
+# checks import from the tree's sdk/python/src (uv never builds the project, whose wheel
+# compiles the SDK's native part).
+COPY sdk/python/pyproject.toml sdk/python/uv.lock /opt/tilo-sdk/python/
 RUN cd /opt/tilo-sdk/python \
     && uv sync --frozen --extra dev \
-    && uv run --frozen --extra dev python -c 'import httpx, pytest, pytest_asyncio, tilo'
+    && uv run --frozen --extra dev python -c 'import httpx, pytest, pytest_asyncio'
 
 # The TypeScript SDK's packages, from its lock, in bun's install cache. The node_modules this
 # writes are not needed: a check installs from the cache into its own copy of the tree.

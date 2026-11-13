@@ -1,6 +1,5 @@
-//! The codec's browser backend: the browser's own decoders and encoders
-//! (`createImageBitmap`, `OffscreenCanvas`), so a page carries none of its
-//! own for them.
+//! The browser backend: the browser's own decoders and encoders
+//! (`createImageBitmap`, `OffscreenCanvas`).
 
 use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -8,7 +7,6 @@ use wasm_bindgen_futures::JsFuture;
 use crate::codec::{EncodeError, Encoding};
 use crate::{DecodeError, DecodedImage};
 
-/// `createImageBitmap` on the page or in a worker, whichever this is.
 fn create_image_bitmap(
     blob: &web_sys::Blob,
     options: &web_sys::ImageBitmapOptions,
@@ -89,7 +87,6 @@ async fn decode_here(
         width,
         height,
     };
-    // A format whose header the codec cannot size is decoded whole first.
     Ok(match (max_dimension, target) {
         (Some(max), None) => decoded.fitted(max),
         _ => decoded,
@@ -126,8 +123,8 @@ async fn encode_here(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>
     .await
     .map_err(failed)?
     .unchecked_into();
-    // A browser that cannot write the format (Safari has no WebP encoder)
-    // writes PNG instead; the codec's own encoder writes what was asked.
+    // A browser that cannot write the format (Safari has no WebP encoder) writes
+    // PNG instead.
     if blob.type_() != encoding.mime() {
         return crate::codec::encode_now(image, encoding);
     }

@@ -13,16 +13,14 @@ pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
 /// The environment variable that names another registry.
 pub const REGISTRY_ENV: &str = "TILO_REGISTRY";
 
-/// A registry, reached over HTTPS (or plain HTTP on this machine, for a
-/// registry under test).
+/// A registry, reached over HTTPS, or plain HTTP on this machine for a registry under test.
 pub struct RegistryClient {
     base: String,
     http: reqwest::blocking::Client,
 }
 
 impl RegistryClient {
-    /// The registry at `base`, else the one in [`REGISTRY_ENV`], else
-    /// [`DEFAULT_REGISTRY`].
+    /// The registry at `base`, else the one in [`REGISTRY_ENV`], else [`DEFAULT_REGISTRY`].
     pub fn resolve(base: Option<&str>) -> Result<Self> {
         let from_env = std::env::var(REGISTRY_ENV).ok();
         Self::new(
@@ -43,8 +41,8 @@ impl RegistryClient {
         })
     }
 
-    /// Validate a registry address before storing it in a publisher profile.
-    /// This performs no network requests and does not construct an HTTP client.
+    /// Validate a registry address before storing it in a publisher profile; no network request and
+    /// no HTTP client is made.
     pub fn validate_url(base: &str) -> Result<()> {
         let url = reqwest::Url::parse(base).context("invalid registry URL")?;
         let loopback = url.host_str().is_some_and(|host| {
@@ -85,8 +83,8 @@ impl RegistryClient {
         }
     }
 
-    /// The entry `key` has waiting for review for `package_id`, if any.
-    /// Only its publisher may read it.
+    /// The entry `key` has waiting for review for `package_id`, if any. Only its publisher may
+    /// read it.
     pub fn pending(&self, key: &SigningKey, package_id: &str) -> Result<Option<RegistryEntry>> {
         let url = format!("{}/entries/{package_id}/pending", self.base);
         let signed_at = tilo_clock::unix_now();
@@ -118,8 +116,7 @@ impl RegistryClient {
         }
     }
 
-    /// Upload a package `key` signed, for review. Answers the URL the
-    /// package will be published at.
+    /// Upload a package `key` signed, for review. Answers the URL the package will be published at.
     pub fn upload(&self, key: &SigningKey, tapp_bytes: &[u8]) -> Result<String> {
         self.put_upload(key, tapp_bytes, "tapp")
     }
@@ -157,7 +154,6 @@ impl RegistryClient {
             .ok_or_else(|| anyhow!("{url} answered without the upload's URL"))
     }
 
-    /// Ask the registry to add, update or delete `entry`.
     pub fn submit(
         &self,
         action: EntryAction,

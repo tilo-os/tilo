@@ -53,8 +53,8 @@ impl Widget for Boxed {
     }
 }
 
-/// A 400×300 window: a 40 px toolbar over a list scrolled in a viewport
-/// below it, with three rows.
+/// A 400×300 window: a 40 px toolbar over a list scrolled in a viewport below it, with
+/// three rows.
 fn window(scroll: f64) -> Boxed {
     let viewport = Rect::new(0.0, 100.0, 400.0, 300.0);
     let rows = (0..3)
@@ -100,8 +100,6 @@ fn offer_at(root: &Boxed, delta: Vec2, overlays: Vec<Rect>, scale: f64) -> Scrol
     offers.into_iter().next().expect("one offer")
 }
 
-/// What a host repaints for `planned`, as hosts assemble it: the plan's
-/// damage carried by its copies, and what they exposed.
 fn presented_damage(planned: &CopyPlan) -> Vec<Rect> {
     let mut damage = planned.damage.clone();
     carry(&planned.copies, &mut damage);
@@ -151,7 +149,6 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
     let after_tree = window(10.0);
     let before = crate::damage::widget_boxes(&before_tree);
     let after = crate::damage::widget_boxes(&after_tree);
-    // The trees are different values; give them one identity.
     let after: Vec<Placed> = before
         .iter()
         .zip(&after)
@@ -168,10 +165,9 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
         moves_besides(&before, &after, std::slice::from_ref(&offer)),
         Moves::default()
     );
-    // Without the offer, every row moved.
     assert_eq!(moves_besides(&before, &after, &[]).besides.len(), 6);
-    // A row that stayed put over the content (a sticky header) is damage
-    // where it is and where the copy took its pixels.
+    // A row that stayed put over the content (a sticky header) is damage where it is and
+    // where the copy took its pixels.
     let mut sticky = after.clone();
     sticky[3].1 = before[3].1;
     let reach = before[3]
@@ -185,14 +181,12 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
             carried: vec![reach],
         }
     );
-    // One that moved by anything else is not the copy's.
     let mut resized = after.clone();
     resized[3].1.y1 += 4.0;
     assert_eq!(
         moves_besides(&before, &resized, std::slice::from_ref(&offer)).besides,
         vec![before[3].1, resized[3].1]
     );
-    // A row that stayed put clear of the viewport (a pinned title) is.
     let mut pinned = after.clone();
     pinned[5].1 = Rect::new(0.0, 600.0, 380.0, 650.0);
     let mut pinned_before = before.clone();
@@ -201,7 +195,6 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
         moves_besides(&pinned_before, &pinned, std::slice::from_ref(&offer)),
         Moves::default()
     );
-    // The scroller itself may not move.
     let mut moved_scroller = after.clone();
     moved_scroller[2].1 = moved_scroller[2].1 + Vec2::new(0.0, 5.0);
     assert_eq!(
@@ -210,9 +203,9 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
             .len(),
         2
     );
-    // A row that came into the content where the view showed something
-    // else (a list replacing a row in view) is damage where it is; one that
-    // went from the view, where the copy carried its pixels.
+    // A row that came into the content where the view showed something else (a list
+    // replacing a row in view) is damage where it is; one that went from the view, where
+    // the copy carried its pixels.
     let came = Rect::new(0.0, 240.0, 380.0, 290.0);
     let mut grown = after.clone();
     grown.push(((std::ptr::from_ref(&came).cast::<()>(), 2), came));
@@ -231,10 +224,8 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
             carried: vec![after[5].1],
         }
     );
-    // One the scroll brought in from out of view stands where the copy
-    // exposed, which is repainted; one it took out of view went with the
-    // copy. Neither is damage of its own: the walk of a long content
-    // reaches only the rows near its view.
+    // One the scroll brought in from out of view stands where the copy exposed, which is
+    // repainted; one it took out of view went with the copy.
     let entering = Rect::new(0.0, 295.0, 380.0, 345.0);
     let mut entered = after.clone();
     entered.push(((std::ptr::from_ref(&entering).cast::<()>(), 2), entering));
@@ -249,7 +240,6 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
         moves_besides(&left, &after, std::slice::from_ref(&offer)),
         Moves::default()
     );
-    // A widget that came outside any scrolled content is not.
     let mut sibling = after.clone();
     sibling.insert(2, ((std::ptr::from_ref(&came).cast::<()>(), 1), came));
     assert_eq!(
@@ -276,25 +266,23 @@ fn a_planned_copy_keeps_what_stays_and_damages_what_was_exposed() {
     );
     let presented = presented_damage(&planned);
     let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
-    // The strip the scroll exposed at the bottom of the viewport.
     assert!(covers(Point::new(200.0, 295.0)), "{presented:?}");
-    // The middle of the viewport is copied, not repainted.
     assert!(!covers(Point::new(200.0, 200.0)), "{presented:?}");
 }
 
 #[test]
 fn what_reaches_into_the_viewport_repaints_where_it_is_and_where_the_copy_took_it() {
     let mut root = window(0.0);
-    // A toolbar tall enough that its effect reach (a shadow) falls 6 px into
-    // the viewport.
+    // A toolbar tall enough that its effect reach (a shadow) falls 6 px into the
+    // viewport.
     root.children[0].rect = Rect::new(0.0, 0.0, 400.0, 90.0);
     let offer = offer_from(&root, Vec2::new(0.0, 10.0), Vec::new());
     let planned = plan(&[offer], &[&root], 1.0, (400, 300));
     assert_eq!(planned.copies.len(), 1);
     let presented = presented_damage(&planned);
     let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
-    // The exposed strip at the top, the shadow where it is, and where the
-    // copy took the shadow's old pixels: 10 px further down.
+    // The exposed strip at the top, the shadow where it is, and where the copy took the
+    // shadow's old pixels: 10 px further down.
     assert!(covers(Point::new(200.0, 105.0)), "{presented:?}");
     assert!(covers(Point::new(200.0, 115.0)), "{presented:?}");
     assert!(!covers(Point::new(200.0, 150.0)), "{presented:?}");
@@ -303,7 +291,6 @@ fn what_reaches_into_the_viewport_repaints_where_it_is_and_where_the_copy_took_i
 #[test]
 fn overlays_repaint_where_they_are_and_where_the_copy_took_them() {
     let root = window(10.0);
-    // A horizontal scroll bar's track along the bottom of the viewport.
     let bar = Rect::new(40.0, 260.0, 340.0, 268.0);
     let offer = offer_from(&root, Vec2::new(0.0, -30.0), vec![bar]);
     let planned = plan(&[offer], &[&root], 1.0, (400, 300));
@@ -323,8 +310,8 @@ fn a_fractional_device_delta_damages_the_viewport() {
     let planned = plan(&[offer], &[&root], 1.0, (400, 300));
     assert!(planned.copies.is_empty());
     assert_eq!(planned.damage, vec![Rect::new(0.0, 100.0, 400.0, 300.0)]);
-    // At 150 % the same half pixel is three quarters of a device pixel; at
-    // 200 % it is one whole one.
+    // At 150 % the same half pixel is three quarters of a device pixel; at 200 % it is
+    // one whole one.
     let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 1.5);
     assert!(plan(&[offer], &[&root], 1.5, (600, 450)).copies.is_empty());
     let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 2.0);
@@ -336,8 +323,6 @@ fn a_fractional_device_delta_damages_the_viewport() {
 #[test]
 fn a_scroller_drawn_under_another_transform_damages_the_window() {
     let root = window(10.0);
-    // An ancestor that draws its content moved: the viewport is not where
-    // the window shows it.
     let scroller = scroller(&root);
     let offers = accepting(|| {
         assert!(offer(
@@ -366,11 +351,9 @@ fn bands_never_read_what_an_earlier_band_wrote() {
     let up = bands(copy);
     assert_eq!(up.len(), 3);
     assert_eq!(up.iter().map(|band| band.height).sum::<u32>(), 300);
-    // Moving up, the top band goes first; moving down, the bottom one.
     assert!(up.windows(2).all(|pair| pair[0].y < pair[1].y));
     let down = bands(DeviceCopy { dy: 10, ..copy });
     assert!(down.windows(2).all(|pair| pair[0].y > pair[1].y));
-    // Sideways, in columns, nearest the direction of travel first.
     let left = bands(DeviceCopy {
         width: 300,
         dy: 0,
@@ -470,8 +453,8 @@ fn pixels_copy_within_an_image_in_either_direction() {
     assert_eq!(pixels, image, "a refused copy changes nothing");
 }
 
-/// A copy through the scratch texture moves exactly the pixels it names,
-/// in either direction, on the GPU the toolkit renders with.
+/// A copy through the scratch texture moves exactly the pixels it names, in either
+/// direction, on the GPU the toolkit renders with.
 #[test]
 fn a_gpu_copy_moves_pixels_within_the_target() {
     use crate::offscreen::OffscreenRenderer;
@@ -521,10 +504,6 @@ fn a_gpu_copy_moves_pixels_within_the_target() {
     );
 }
 
-/// A collaborator's mark resting over a scroll: the copy takes the mark on
-/// screen along with the content, so where it lands is repainted, and the
-/// mark is repainted where it is; a mark nowhere near the copy costs
-/// nothing.
 #[test]
 fn peer_marks_repaint_where_they_are_and_where_a_copy_took_them() {
     // Content moved up 10 px: rows 10..200 land at 0..190.
@@ -554,7 +533,6 @@ fn peer_marks_repaint_where_they_are_and_where_a_copy_took_them() {
     assert_eq!(carried(&[copy], &[far]), Vec::<Rect>::new());
 }
 
-/// A scene that fills `rect` with `rgb`.
 fn filled(rect: Rect, rgb: [u8; 3]) -> Scene {
     let mut scene = Scene::new();
     scene.fill(
@@ -574,9 +552,9 @@ fn row(top: f64) -> Rect {
 
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
-/// The `rows` of a content scrolled `offset` down in
-/// a 100 × 100 viewport, each drawn where it stands in the content, and a
-/// bar over them that does not scroll; `changed` is drawn another colour.
+/// The `rows` of a content scrolled `offset` down in a 100 × 100 viewport, each drawn
+/// where it stands in the content, and a bar over them that does not scroll; `changed` is
+/// drawn another colour.
 fn painted_rows(
     offset: f64,
     rows: std::ops::Range<u32>,
@@ -618,8 +596,6 @@ fn painted_rows(
     .unwrap()
 }
 
-/// What a frame `next` after `previous` repaints, and the copies it offers
-/// to a host that copies (`copies`) or none.
 fn painted_damage(
     previous: Showing<Around, Painted>,
     next: Showing<Around, Painted>,
@@ -642,8 +618,8 @@ fn painted_damage(
 
 #[test]
 fn rows_a_scroll_only_moved_are_offered_as_a_copy_and_repaint_nothing() {
-    // Scrolled 20 px down: row 0 went, row 5 came into the strip the copy
-    // exposes, rows 1–4 moved up.
+    // Scrolled 20 px down: row 0 went, row 5 came into the strip the copy exposes, rows
+    // 1–4 moved up.
     let (regions, offers) = painted_damage(
         painted_rows(0.0, 0..5, None),
         painted_rows(20.0, 1..6, None),

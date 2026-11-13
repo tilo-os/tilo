@@ -878,15 +878,15 @@ fn continuation_fixture() -> (
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
-    use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
+    use crate::test_support::{Grantee, Grants as _, KindSet, Role, TreePath};
     let mut workspace = Workspace::new(WorkspaceSlot(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
+    workspace.allow_app(Grantee::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);
     workspace.deny(
-        Subject::agent("scribe"),
+        Grantee::agent("scribe"),
         &TreePath::root()
             .app("so.tilo.test")
             .any(tilo_action_policy::Level::Kind)
@@ -1443,10 +1443,9 @@ fn agent_answered(
 ) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     let owner = "a1".repeat(32);
-    let person = tilo_action_policy::Subject::person(owner.clone());
+    let person = tilo_action_policy::Grantee::person(owner.clone());
     let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        let mut grants =
-            tilo_action_policy::roles::agent_turn(workspace, "scribe", &owner, &[]).grants;
+        let mut grants = tilo_action_policy::roles::agent_grants(workspace, "scribe", &owner, &[]);
         grants.push(agent_answers::grant(
             workspace,
             "scribe",
@@ -1550,11 +1549,11 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
     let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
         vec![tilo_action_policy::Grant::new(
             "agent-member:scribe",
-            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe"),
             tilo_action_policy::TreePath::workspace(workspace),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Subject::person(&owner),
+            tilo_action_policy::Grantee::person(&owner),
         )]
     });
     let workspace = owner_caller

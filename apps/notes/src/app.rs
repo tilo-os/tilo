@@ -713,10 +713,11 @@ impl NotesApp {
         };
         vec![
             Box::new(note_menu),
-            // window-bar: fallback, the bar's search while it hosts the window
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
+            ui::window_toolbar::exempt!(Fallback, {
+                Box::new(ui::search::search_button(
+                    ui::search::SearchRequest::this_app(),
+                ))
+            }),
         ]
     }
 
@@ -730,7 +731,7 @@ impl NotesApp {
         let made = notebook.and_then(|actions| {
             actions.invocation(crate::notebook::Notebook::NEW_NOTE.with(
                 crate::notebook::notebook::NewNote {
-                    title: crate::notebook::UNTITLED.to_owned(),
+                    title: crate::notebook::NO_TITLE.to_owned(),
                     parent: None,
                 },
             ))
@@ -1337,11 +1338,6 @@ impl NotesApp {
             ui::widget::SlashHostCommand::Page => {
                 let title = request.text.trim();
                 let named = !title.is_empty();
-                let title = if named {
-                    title
-                } else {
-                    crate::notebook::UNTITLED
-                };
                 let id = PageId::new_v4();
                 if let Err(error) =
                     self.dispatch(edits, &actions::create_page_action(id, Some(page), title))
@@ -1375,11 +1371,13 @@ impl NotesApp {
                 frontier.push(child.id);
             }
         }
-        let title = self
-            .workspace
-            .get(page)
-            .map(|meta| meta.title.clone())
-            .unwrap_or_default();
+        let title = crate::metadata::note_title(
+            &self
+                .workspace
+                .get(page)
+                .map(|meta| meta.title.clone())
+                .unwrap_or_default(),
+        );
         crate::metadata::CATALOG.t_args(
             "notes-deleted",
             &[
@@ -2210,7 +2208,7 @@ impl NotesApp {
         let id = PageId::new_v4();
         let created = self.dispatch(
             edits,
-            &actions::create_page_action(id, None, crate::notebook::UNTITLED),
+            &actions::create_page_action(id, None, crate::notebook::NO_TITLE),
         );
         if let Err(error) = created {
             tracing::warn!(%error, "notes: creating the first note was refused");
@@ -3479,12 +3477,7 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
         selection.resource = Some(tilo_actions::ActionResource {
             id: crate::actions::body_resource_id(page),
             kind: <tilo_document::RichText as ui::tilo_resource::Resource>::KIND.to_owned(),
-            label: self
-                .main
-                .title()
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or(crate::notebook::UNTITLED)
-                .to_owned(),
+            label: crate::metadata::note_title(self.main.title().unwrap_or_default()),
         });
         Some(selection)
     }
@@ -3820,6 +3813,9 @@ impl NotesApp {
         }
         self.note_menu.set_text_scale(self.theme.text_scale);
         self.note_menu.set_viewport(Some(self.rect));
+        // What a sent message is about: the words selected in the note.
+        self.note_menu
+            .set_about(ui::presence::capability::PublishesPresence::shared_selection(&*self));
         self.note_menu.open_anchored(anchor, self.rect);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
@@ -4366,7 +4362,7 @@ mod tests {
         let directory = profile
             .path()
             .join("so.tilo.notes")
-            .join("rooms")
+            .join("workspaces")
             .join("personal");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");
@@ -4639,7 +4635,7 @@ mod tests {
             let target = PageId::new_v4();
             app.apply_action(
                 &mut Edits::lend(&mut state.doc),
-                &actions::create_page_action(target, None, crate::notebook::UNTITLED),
+                &actions::create_page_action(target, None, crate::notebook::NO_TITLE),
             );
             app.frame(&mut state.doc, &state.root);
             assert_ne!(source, target);

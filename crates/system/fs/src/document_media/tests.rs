@@ -9,7 +9,6 @@ fn scope(workspace: &str, app: &str) -> BlobScope {
 
 #[tokio::test]
 async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
-    // Phase `bytes_in_the_store_are_not_readable_without_a_reference`.
     {
         let store = Arc::new(ContentStore::memory());
         let media = DocumentMedia::new(Arc::clone(&store));
@@ -32,8 +31,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
                 .await
         );
 
-        // Another workspace: the bytes are right there, and still unreadable,
-        // because nothing that workspace reads references them.
         let other = scope("workspace-2", "so.tilo.photos");
         assert_eq!(
             media.read_range(other.clone(), hash, 0, u32::MAX).await,
@@ -42,7 +39,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
         assert!(!media.contains(&other, hash).await);
         assert_eq!(media.len_of(&other, hash).await, None);
 
-        // Content that reached the store as a file is not document media.
         let file_bytes = store.ingest(Bytes::from_static(b"a file")).await.unwrap();
         assert_eq!(
             media
@@ -51,7 +47,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
             ReadOutcome::Unavailable
         );
     }
-    // Phase `references_survive_a_restart_of_the_store`.
     {
         let dir = tempfile::tempdir().unwrap();
         let photos = scope("workspace-1", "so.tilo.photos");
@@ -59,7 +54,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
             let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
             let media = DocumentMedia::new(Arc::clone(&store));
             let hash = media.store(&photos, b"durable".to_vec()).await.unwrap();
-            // Release the database before reopening it, as a daemon restart does.
             store.store().shutdown().await.unwrap();
             hash
         };
@@ -73,7 +67,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
             }
         );
     }
-    // Phase `oversized_media_is_refused`.
     {
         let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
         let too_big = vec![0_u8; usize::try_from(MAX_BLOB_BYTES).unwrap() + 1];
@@ -86,7 +79,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     }
 }
 
-/// Cold daemon reads must not materialise or cache the entire attachment.
 #[tokio::test]
 async fn ranged_reads_after_a_restart_read_only_the_range() {
     let dir = tempfile::tempdir().unwrap();
@@ -138,15 +130,11 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
             ReadOutcome::Unavailable
         );
     }
-    // The whole-blob API still loads for its existing callers, but a blob
-    // this large is not worth its share of the hot cache.
     assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
     assert!(!store.is_cached(hash));
     store.store().shutdown().await.unwrap();
 }
 
-/// BAO verification must cover the selected chunk group without scanning
-/// unrelated groups. All corruption is confined to this disposable store.
 #[tokio::test]
 async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
     use std::io::{Seek, SeekFrom, Write};
@@ -241,10 +229,6 @@ fn launcher_connection(socket: &Path, workspace: &str, app: &str) -> BlobClient 
     BlobClient::from_app_stream(stream).unwrap()
 }
 
-/// The capability end to end: one app process puts an image through the
-/// launcher-scoped socket; a second process and the session (as the shell
-/// stages launch content) read it; an app in another workspace holding the same
-/// hash reads nothing.
 #[test]
 fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     if let (Some(socket), Some(hash)) = (
@@ -295,7 +279,6 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
         "the second process could not read the image: {stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // libtest exits 0 when `--exact` selects nothing; require the child ran.
     assert!(
         stdout.contains("test result: ok. 1 passed"),
         "the child ran no test: {stdout}"
@@ -321,10 +304,6 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     );
 }
 
-/// Content put piece by piece through workspace A's neutral scope (as the
-/// content put door does) is read by any app of workspace A that holds its
-/// hash and by nothing of workspace B; an upload dropped unfinished stores
-/// nothing.
 #[test]
 fn content_put_through_one_workspaces_scope_is_unavailable_through_another_workspaces() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -388,8 +367,6 @@ fn content_put_through_one_workspaces_scope_is_unavailable_through_another_works
     assert_eq!(notes.read_all(&hash).unwrap(), ReadOutcome::Unavailable);
 }
 
-/// A public file's origin that serves one version and answers "unchanged"
-/// to a request naming it, counting what it was asked.
 struct OneVersion(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);
 
 impl crate::public_content::Origin for OneVersion {
@@ -416,12 +393,6 @@ impl crate::public_content::Origin for OneVersion {
     }
 }
 
-/// The public copy end to end: apps in different workspaces keep the device's
-/// one copy through their launcher-scoped sockets, read the same bytes
-/// under the same hash; the session asks for a refresh, which leaves a copy
-/// that was just fetched alone. Released by every app, the copy stays until
-/// the device needs its room for something else, and then comes back on the
-/// next read.
 #[test]
 fn a_public_copy_is_one_per_device_for_apps_in_every_workspace() {
     const NAME: &str = "gutenberg-catalogue";
@@ -495,8 +466,6 @@ fn a_public_copy_is_one_per_device_for_apps_in_every_workspace() {
     assert_eq!(asked(), 2, "evicted, it is fetched again on the next read");
 }
 
-/// The whole public copy `name` once it is here, reading again while it is
-/// on its way.
 fn arrived(client: &BlobClient, name: &str) -> (Vec<u8>, String) {
     let deadline = std::time::Instant::now()
         .checked_add(std::time::Duration::from_secs(10))
@@ -520,8 +489,6 @@ fn arrived(client: &BlobClient, name: &str) -> (Vec<u8>, String) {
     }
 }
 
-/// The daemon's document media, observed: every ranged read's length is
-/// logged, and reads can be made to answer other bytes than were stored.
 struct Observed {
     media: Arc<DocumentMedia>,
     reads: std::sync::Mutex<Vec<u32>>,
@@ -546,8 +513,6 @@ impl BlobBackend for Observed {
         chunks: runtime_fs::blobs::BlobChunks,
         mime: String,
     ) -> BlobFuture<Result<BlobRef, BlobError>> {
-        // An upload begins before its size is known, so it counts once it
-        // has stored something.
         let stored = Arc::clone(&self.media).put_stream(scope, chunks, mime);
         Box::pin(async move {
             let stored = stored.await;
@@ -588,8 +553,6 @@ impl BlobBackend for Observed {
     }
 }
 
-/// The production app path: a `tilo_content::ContentStore` over the device
-/// backend, over a launcher-scoped connection to the daemon's document media.
 struct DeviceHarness {
     observed: Arc<Observed>,
     daemon_store: Arc<ContentStore>,
@@ -641,7 +604,6 @@ impl DeviceHarness {
         self.observed.reads.lock().unwrap().clone()
     }
 
-    /// Read `hash` to its end through the store, as an app does.
     fn read_through(&self, hash: &str) -> std::io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut self.store.open(hash).unwrap(), &mut bytes)?;
@@ -676,7 +638,6 @@ fn device_backend_streams_a_large_put_in_chunks() {
 
     let hash = stored.hash.parse().unwrap();
     harness.daemon_store.forget_cached(hash);
-    // Opening reads one range; the rest is fetched as the reader is consumed.
     let mut reader = harness.store.open(&stored.hash).unwrap();
     assert_eq!(harness.reads(), [MAX_READ_CHUNK]);
     let mut read = Vec::new();
@@ -689,7 +650,6 @@ fn device_backend_streams_a_large_put_in_chunks() {
 
 #[test]
 fn device_backend_rejects_oversize_without_buffering() {
-    /// Zeros without end, counting how many were pulled.
     struct Endless {
         pulled: usize,
     }
@@ -740,7 +700,6 @@ fn device_backend_open_is_verified_at_eof() {
     );
     assert!(harness.store.read(&hash).is_none());
 
-    // Nothing unverified was cached: the next read goes back to the daemon.
     harness
         .observed
         .tamper
@@ -749,7 +708,6 @@ fn device_backend_open_is_verified_at_eof() {
     assert_eq!(harness.read_through(&hash).unwrap(), data);
     assert!(harness.reads().len() > before);
 
-    // A verified read is cached and served without the daemon.
     let before = harness.reads().len();
     assert_eq!(harness.read_through(&hash).unwrap(), data);
     assert_eq!(harness.reads().len(), before);
@@ -780,10 +738,6 @@ fn device_backend_state_does_not_download() {
     );
 }
 
-/// Only the session names the agent behind writes, over the session root of
-/// the document media socket, and only for paths under the mount: an app's
-/// connection cannot, a path outside the mount is refused, and what the
-/// session named covers those paths and what is under them.
 #[test]
 fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
     use crate::write_attribution::WriteAttributions;

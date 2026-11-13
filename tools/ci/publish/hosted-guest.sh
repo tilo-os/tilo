@@ -11,10 +11,13 @@
 #                                       against the resolved config (CI builder)
 #   hosted-guest.sh agent OUT           build the guest agent into OUT — the legacy
 #                                       VM's agent, built by the legacy VM's script
-#   hosted-guest.sh session OUT         build the guest's Tilo session into OUT/usr:
-#                                       the session, its surface apps, the launcher, the
+#   hosted-guest.sh session COMPILED OUT
+#                                       the guest's Tilo session into OUT/usr: the
+#                                       session, its surface apps, the launcher, the
 #                                       store's tools and the fonts, placed by
-#                                       os/components.toml
+#                                       os/components.toml from the compiled tree
+#                                       (os/image/compile.sh) the guest's apps and
+#                                       Browser come from
 #   hosted-guest.sh build SESSION COMPILED CHROMIUM KERNEL AGENT FONTS OUT
 #                                       export the guest's filesystem into rootfs.ext4,
 #                                       over the session, the compiled tree
@@ -169,17 +172,18 @@ case ${1:-} in
     bash "$repo_root/tools/ci/publish/legacy-guest.sh" agent "${2:?usage: hosted-guest.sh agent OUT}"
     ;;
   session)
-    out=${2:?usage: hosted-guest.sh session OUT}
-    # The components' cargo arguments and their files both come from
-    # os/components.toml: the guest names a component and cannot place a file of
-    # its own choosing.
-    read -r -a cargo_args <<<"$(python3 os/scripts/install-components.py \
-      --dry-run --format cargo "${session_components[@]}")"
-    cargo build --locked --release "${cargo_args[@]}"
+    compiled=${2:?usage: hosted-guest.sh session COMPILED OUT}
+    out=${3:?usage: hosted-guest.sh session COMPILED OUT}
+    # The components' files come from os/components.toml: the guest names a
+    # component and cannot place a file of its own choosing. Their programs are
+    # the compiled tree's, built once with the guest's apps and Browser and
+    # their settings: a build of its own here, with the release profile's fat
+    # LTO and one codegen unit per program, took an hour and 71 GiB for the same
+    # eleven programs.
     rm -rf "$out"
     mkdir -p "$out"
     python3 os/scripts/install-components.py --layer desktop-binaries \
-      --from "${CARGO_TARGET_DIR:-$repo_root/target}/release" --dest "$out" "${session_components[@]}"
+      --from "$compiled" --dest "$out" "${session_components[@]}"
     # The fonts the session draws with, from the pinned catalog by digest: the
     # system's copy, which fontconfig finds for the session and every app it
     # starts.

@@ -142,6 +142,47 @@ fn a_lazy_card_opens_with_accounts_that_arrived_while_it_loaded() {
     assert!(said.contains("type /link"), "{said}");
 }
 
+/// Someone else's card asked open while its code is on its way opens saying what is said of them
+/// once it is in, not what was said when it was asked for: the roster hands the waiting card each
+/// change, as it hands an open card.
+#[test]
+fn a_lazy_card_for_someone_else_opens_with_what_is_said_of_them_now() {
+    static CODE: ui::lazy_code::LazyCode<MakeProfileCard> = ui::lazy_code::LazyCode::fetched();
+    ui::i18n::I18nManager::init("en-US");
+    let said = |text: &str| ProfileModel {
+        name: "Ada".into(),
+        identity: "ada-root".into(),
+        other: Some(OtherPerson {
+            id: "ada-device".into(),
+            status: Some(crate::collaborators::RosterStatus {
+                text: text.into(),
+                source: crate::collaborators::LineSource::Observed,
+            }),
+            ..OtherPerson::default()
+        }),
+        ..ProfileModel::default()
+    };
+    let mut card = LazyProfileCard::with_code(&CODE);
+    let anchor = Rect::new(1200.0, 2.0, 1220.0, 22.0);
+    let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
+    card.toggle(&said("Reading the brief"), anchor, viewport);
+    assert!(card.shows(&said("Reading the brief")));
+    assert!(!card.shows(&said("Reviewing the checklist")));
+    assert!(card.updated(&said("Reviewing the checklist")));
+    assert!(card.shows(&said("Reviewing the checklist")));
+    CODE.install(builtin_profile_card());
+    assert!(
+        card.follow_anchor(anchor, viewport),
+        "opens once the code is in"
+    );
+    let mut frame = ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.poll_frame().unwrap();
+    let shown = harness.inspection_json().unwrap();
+    assert!(shown.contains("Reviewing the checklist"), "{shown}");
+    assert!(!shown.contains("Reading the brief"), "{shown}");
+}
+
 /// Opening the card is not editing: focus rests on the card itself, and Tab (or a click) enters
 /// the name field.
 #[test]

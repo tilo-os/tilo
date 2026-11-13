@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod effects;
 mod model;
+mod templates;
 mod text;
 mod triggers;
 mod views;
@@ -18,12 +19,11 @@ mod views;
 pub use model::*;
 pub use text::*;
 
-/// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking
-/// view state, functions or views of an item. It has no function of its own.
+/// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking view
+/// state, functions or views of an item. It has no function of its own.
 #[derive(Clone, Debug)]
 pub struct Template {
-    /// The package whose names its body sees: `None` for the module's own, `std` for the
-    /// standard library's.
+    /// The package whose names its body sees: `None` for the module's own, `std` for the library's.
     pub ns: Option<String>,
     pub decl: ast::ViewDecl,
 }
@@ -36,12 +36,11 @@ pub struct Import {
     pub roots: Vec<String>,
     /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
     pub named_roots: Vec<(String, String)>,
-    /// The ids the package was published under before (`previously:`): `use` and a full path
-    /// under one of them name it.
+    /// The ids the package was published under before: `use` and a full path under one of them name
+    /// it.
     pub previously: Vec<String>,
 }
 
-/// Everything the checker knows about the module and the packages it imports.
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub app: String,
@@ -51,37 +50,31 @@ pub struct Env {
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
     pub enums: Vec<EnumInfo>,
-    /// The package's root types (`root T`), in declaration order.
     pub roots: Vec<TypeKey>,
-    /// The package's named roots (`root notes: Notes`): the name code reaches each by.
     pub named_roots: Vec<(String, TypeKey)>,
     /// `type Name = T` naming a type that is not a container, as its written form.
     pub aliases: Vec<(TypeKey, Ty)>,
-    /// `default view v for T`: the type and the view's name.
     pub default_views: Vec<(TypeKey, String)>,
     /// The view state every view declares.
     pub states: Vec<StateInfo>,
-    /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
-    /// `views a, b for T`: the type, the views in the order written, and where the
-    /// declaration stands.
+    /// `views a, b for T`: the type, the views in the order written, and where the declaration
+    /// stands.
     pub views_of: Vec<(TypeKey, Vec<crate::resolve::ViewsInfo>, Span)>,
     /// The functions of action parameters' defaults, numbered after the presentation views.
     pub defaults: Vec<DefaultFn>,
     /// The toolkit's components, the package `ui`.
     pub toolkit: Option<&'static crate::toolkit::Catalogue>,
-    /// The views expanded where they are called: the module's and the standard library's.
     pub templates: Vec<Template>,
-    /// The toolkit component each of the module's views makes, by the view's name: a view whose
-    /// body is one `ui.X(...)` is an `X` wherever one goes (views are components).
+    /// The toolkit component each of the module's views makes, by the view's name: views are
+    /// components.
     pub view_makes: HashMap<String, String>,
-    /// The apps a program may read beyond those it holds, each by the name programs call it and
-    /// its id: what `grep(re, in: chat)` and `describe(chat)` name.
+    /// The apps a program may read beyond those it holds, by the name programs call them and their
+    /// id: what `grep(re, in: chat)` names.
     pub sources: Vec<(String, String)>,
-    /// A session's environment: the agent library's words ([`crate::agent`]) are in scope
-    /// without a `use`, as `std` is in every package. The agent door and the REPL build one.
+    /// A session's environment: the agent library's words ([`crate::agent`]) are in scope without a
+    /// `use`, as `std` is in every package.
     pub session: bool,
-    /// The actions the package runs by itself, in declaration order.
     pub triggers: Vec<TriggerInfo>,
 }
 
@@ -91,30 +84,24 @@ pub struct TriggerInfo {
     pub name: String,
     pub id: String,
     pub doc: String,
-    /// The action it runs, by id.
     pub action: String,
-    /// The type of the resources it runs for, by id.
     pub ty: String,
-    /// The action's arguments, in order.
     pub args: Vec<TriggerArg>,
     pub when: TriggerWhen,
 }
 
-/// What a trigger passes its action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriggerArg {
-    /// The record it runs for.
     Subject,
     /// A root record of the package, by its type's id.
     Root(String),
 }
 
-/// When a trigger runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriggerWhen {
     /// At each multiple of these seconds, counted from the epoch.
     Every(i64),
-    /// At the instant the field (by id) of the resource holds.
+    /// At the instant the resource's field (by id) holds.
     At(FieldId),
 }
 
@@ -148,14 +135,12 @@ impl Env {
             .find(|c| c.own && !c.scenario && c.name == name)
     }
 
-    /// The hidden action of the scenario `name`.
     pub fn scenario(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
             .find(|c| c.own && c.scenario && c.name == name)
     }
 
-    /// The row view of the record type `key`, when its package declares one.
     pub fn row_view(&self, key: &TypeKey) -> Option<&Callable> {
         let (_, name) = self.row_views.iter().find(|(k, _)| k == key)?;
         self.callables
@@ -163,17 +148,14 @@ impl Env {
             .find(|c| c.app == key.app && !c.scenario && c.kind == CKind::View && &c.name == name)
     }
 
-    /// The template `name` of the package `ns` (`None`: the module's own).
     pub fn template(&self, ns: Option<&str>, name: &str) -> Option<&Template> {
         self.templates
             .iter()
             .find(|t| t.ns.as_deref() == ns && t.decl.name.name == name)
     }
 
-    /// Adds the standard library, `std`, as the package it is: the declarations its own module
-    /// makes, and its views, expanded where a package calls them.
-    ///
-    /// The library's own module is not an import of itself: it calls its views by its own name.
+    /// Adds the standard library, `std`, as the package it is. Its own module is not an import of
+    /// itself: it calls its views by its own name.
     pub fn add_std(&mut self) {
         if self.app == crate::stdlib::APP {
             self.imports.push(Import {
@@ -193,8 +175,8 @@ impl Env {
             }));
     }
 
-    /// Adds the agent library, `tilo.agent`, as the package a session has by default: its
-    /// words are host imports the checker lowers (see [`crate::agent`]).
+    /// Adds the agent library, `tilo.agent`, as the package a session has by default: its words are
+    /// host imports the checker lowers (see [`crate::agent`]).
     pub fn add_agent(&mut self) {
         self.add_import(crate::agent::NS, crate::agent::meta());
     }
@@ -203,6 +185,19 @@ impl Env {
         self.callables
             .iter()
             .find(|c| !c.own && c.app == app && c.name == name)
+    }
+
+    /// [`Self::foreign_callable`], where `from_template_of` is the mark a name rewritten at import
+    /// carries: a private callable is found only when the mark names its own package.
+    pub fn foreign_callable_marked(
+        &self,
+        app: &str,
+        name: &str,
+        from_template_of: Option<&str>,
+    ) -> Option<&Callable> {
+        self.callables
+            .iter()
+            .find(|c| !c.own && c.app == app && c.name == name && c.callable_by(from_template_of))
     }
 
     /// An import named by alias or by full app id.
@@ -248,7 +243,6 @@ impl Env {
         self.types.iter().filter(|t| t.key.app != self.app)
     }
 
-    /// Adds the toolkit's package, `ui`: its components, described by the toolkit.
     pub fn add_toolkit(&mut self) {
         self.imports.push(Import {
             alias: crate::toolkit::UI_ALIAS.to_string(),
@@ -274,7 +268,6 @@ impl Env {
         self.toolkit?.get(name)
     }
 
-    /// Adds a compiled package's types and callables under `alias`.
     pub fn add_import(&mut self, alias: &str, meta: &PackageMeta) {
         self.imports.push(Import {
             alias: alias.to_string(),
@@ -287,6 +280,30 @@ impl Env {
                 .collect(),
             previously: meta.previously.clone(),
         });
+        // The package's `template view`s: a caller elsewhere writes `alias.name(...)` with a block,
+        // and the template expands there. Every unqualified name in its body is rewritten to
+        // `alias.item` before it is registered (`templates::qualify`); the caller's block keeps the
+        // caller's scope. One that does not parse is left out, and a call of it reads as a view the
+        // package does not declare.
+        let names = templates::PackageNames::of(meta);
+        for template in &meta.templates {
+            let source = format!("app {} \"{}\"\n{}", meta.app, meta.title, template.source);
+            let Ok(module) = crate::package::parse(&source) else {
+                continue;
+            };
+            for item in module.items {
+                if let ast::Item::View(mut view) = item {
+                    if !crate::checker::is_template(&view) {
+                        continue;
+                    }
+                    templates::qualify(&mut view, alias, &meta.app, &names);
+                    self.templates.push(Template {
+                        ns: Some(meta.app.clone()),
+                        decl: view,
+                    });
+                }
+            }
+        }
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
             name: f.name.clone(),
@@ -359,6 +376,7 @@ impl Env {
                         text: d.text.clone(),
                     }),
                     place: p.place,
+                    label: p.label.clone(),
                     entry: p.entry,
                 })
                 .collect()
@@ -367,6 +385,27 @@ impl Env {
             r.as_ref()
                 .map_or(Ty::Unit, |t| Ty::parse_meta(t, &app).unwrap_or(Ty::Error))
         };
+        for v in meta
+            .views
+            .iter()
+            .filter(|v| v.presents.is_some() || v.row_of.is_some())
+        {
+            self.callables.push(Callable {
+                kind: CKind::View,
+                name: v.name.clone(),
+                id: v.id.clone(),
+                app: app.clone(),
+                own: false,
+                func: None,
+                params: params(&v.params),
+                result: Ty::View,
+                class: None,
+                uses: BTreeSet::new(),
+                present: Presentation::default(),
+                scenario: false,
+                private: true,
+            });
+        }
         let mut add = |kind, name: &str, id: &str, params, result, class, uses, present| {
             self.callables.push(Callable {
                 kind,
@@ -381,6 +420,7 @@ impl Env {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
         };
         for a in meta.callable_actions() {
@@ -423,6 +463,9 @@ impl Env {
                 Presentation::default(),
             );
         }
+        // The views a package does not offer — an action's presentation view, a loop's row view —
+        // are its own helpers: source cannot call them (`Callable::private`), but a `template view`
+        // can, since its body was rewritten at import with the package's mark.
         for rv in &meta.row_views {
             let ty = meta.types.iter().find(|t| t.id == rv.ty);
             let view = meta.views.iter().find(|v| v.id == rv.view);
@@ -449,7 +492,6 @@ impl Env {
     }
 }
 
-/// The last segment of an app id, the default alias.
 pub fn default_alias(app: &str) -> String {
     app.rsplit('.').next().unwrap_or(app).to_string()
 }
@@ -465,7 +507,6 @@ struct Resolver<'a> {
     resolving: Vec<String>,
 }
 
-/// Builds the environment of a parsed module. Errors go to `diags`.
 pub fn resolve(
     module: &ast::Module,
     lock: &IdsLock,
@@ -503,8 +544,8 @@ pub fn resolve(
     r.env
 }
 
-/// The toolkit component a view body makes: its one call (after its state and `let`s) when
-/// that is `ui.X(...)`.
+/// The toolkit component a view body makes: its one call, after its state and `let`s, when that is
+/// `ui.X(...)`.
 pub(crate) fn view_root_component(body: &[ast::UiStmt]) -> Option<String> {
     let mut calls = body
         .iter()
@@ -584,8 +625,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// A type that says which field names its records names one: a field of the type that holds
-    /// text, written by whoever writes text (`merge text`, not `merge register`).
+    /// A type that says which field names its records names one: a text field of the type.
     fn check_title(&mut self, decls: &[&ast::TypeDecl]) {
         for t in decls {
             let Some(title) = &t.title else {
@@ -632,8 +672,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// A type that says what it is called while its title is empty has a title to empty: one
-    /// text field a record of it is named by. The words are shown as written, so they hold some.
+    /// A type that says what it is called while its title is empty has a title to empty: one text
+    /// field a record of it is named by. The words hold some.
     fn check_untitled(&mut self, decls: &[&ast::TypeDecl]) {
         for t in decls {
             let Some(untitled) = &t.untitled else {
@@ -644,8 +684,6 @@ impl Resolver<'_> {
                 .types
                 .iter()
                 .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
-                // A type that says which field names it has that field's own error when it is
-                // no title: it is never also told it has none.
                 .is_none_or(|info| t.title.is_some() || info.name_field().is_some());
             if untitled.words.trim().is_empty() {
                 self.err(
@@ -670,8 +708,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// Each type with an origin names a kind the platform has, and declares the kind's fields
-    /// it shows with the kind's types (`crate::origin`).
+    /// Each type with an origin names a kind the platform has, and declares the kind's fields with
+    /// the kind's types (`crate::origin`).
     fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {
         for t in decls {
             let Some(origin) = &t.origin else {
@@ -720,8 +758,6 @@ impl Resolver<'_> {
         }
     }
 
-    /// Whether a declared field type is the origin kind's `want` (`Text`, `Set<Text>`,
-    /// `Collection<mail.thread>`, ...).
     fn origin_type_fits(&self, have: &Ty, want: &str) -> bool {
         if let Some(inner) = want
             .strip_prefix("Collection<")
@@ -797,6 +833,9 @@ impl Resolver<'_> {
                 if let Some(d) = &p.default {
                     self.err("E028", d.span, format!("`.{}` is a variant's field, which takes no default; only an action's parameter does", p.name.name));
                 }
+                if p.label.is_some() {
+                    self.err("E057", p.name.span, format!("`.{}` is a variant's field, and a value nothing gives: only an action's parameter says what a person reads where they give it", p.name.name));
+                }
                 if fields.iter().any(|x| x.name == p.name.name) {
                     self.err(
                         "E012",
@@ -847,8 +886,7 @@ impl Resolver<'_> {
         });
     }
 
-    /// A variant's options: `(icon: .x)`, what a control shows beside its label, and
-    /// `(tone: .x)`, the tone it reads in.
+    /// A variant's options: `(icon: .x)`, what a control shows beside its label, and `(tone: .x)`.
     fn variant_options(&mut self, v: &ast::VariantDecl) -> (Option<String>, Option<String>) {
         let mut icon = None;
         let mut tone = None;
@@ -890,8 +928,7 @@ impl Resolver<'_> {
         (icon, tone)
     }
 
-    /// The tone a variant reads in, one of the toolkit's `ui.Tone` cases: a theme role, not a
-    /// colour.
+    /// A variant's tone, one of the toolkit's `ui.Tone` cases: a theme role, not a colour.
     fn tone(&mut self, name: &ast::Ident) -> Option<String> {
         const TONES: [&str; 5] = ["neutral", "success", "warning", "danger", "info"];
         if let Some(tone) = TONES.iter().find(|tone| **tone == name.name) {
@@ -931,9 +968,9 @@ impl Resolver<'_> {
         }
     }
 
-    /// The merge kind of a field. `Int` and `Float` are registers unless declared
-    /// `merge counter`; `Text` merges as text unless declared `merge register` (an atom, like a
-    /// tag); sets, maps and collections merge per element; every other value is a register.
+    /// The merge kind of a field: `Int` and `Float` are registers unless declared `merge counter`;
+    /// `Text` merges as text unless declared `merge register`; sets, maps and collections merge per
+    /// element; every other value is a register.
     fn merge(&mut self, ty: &Ty, spec: Option<&MergeSpec>, field: &str) -> MergeKind {
         let (default, allowed): (MergeKind, &[MergeKind]) = match ty {
             Ty::Int | Ty::Float => (
@@ -941,7 +978,6 @@ impl Resolver<'_> {
                 &[MergeKind::Register, MergeKind::Counter],
             ),
             Ty::Text => (MergeKind::Text, &[MergeKind::Text, MergeKind::Register]),
-            // Rich text merges by splices and marks, never as a whole value.
             Ty::RichText => (MergeKind::Text, &[MergeKind::Text]),
             Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => (MergeKind::Structural, &[]),
             _ => (MergeKind::Register, &[MergeKind::Register]),
@@ -973,8 +1009,8 @@ impl Resolver<'_> {
         default
     }
 
-    /// An enum field without a default starts as the enum's first variant, which must then
-    /// carry no payload.
+    /// An enum field without a default starts as the enum's first variant, which must then carry no
+    /// payload.
     fn implicit_default(&mut self, ty: &Ty, f: &ast::FieldDecl) -> Option<serde_json::Value> {
         let Ty::Enum(key) = ty else { return None };
         let info = self.env.enum_info(key)?;
@@ -990,7 +1026,6 @@ impl Resolver<'_> {
         None
     }
 
-    /// `.name` or `.name(field: literal)` as the default of an Option or enum field.
     fn variant_default(
         &mut self,
         ty: &Ty,
@@ -1184,8 +1219,8 @@ impl Resolver<'_> {
                     );
                     return Ty::Error;
                 }
-                // A field's map may hold a set per key (`Map<Set<Principal>>`, who reacted with
-                // each emoji): stored element by element, so it is a field's container too.
+                // A field's map may hold a set per key (`Map<Set<Principal>>`): stored element by
+                // element, so it is a field's container too.
                 let set_per_key = field_position
                     && name.name == "Map"
                     && args.first().is_some_and(|a| {
@@ -1232,8 +1267,8 @@ impl Resolver<'_> {
                     "Map" => Ty::Map(boxed),
                     _ => Ty::Collection(boxed),
                 };
-                // A map is a value the code fills as it runs (`Map<Text>()`), as a list is one:
-                // the sets and collections a store keeps are fields, and those are not values.
+                // A map is a value the code fills as it runs (`Map<Text>()`), as a list is one: the
+                // sets and collections a store keeps are fields.
                 if ty.is_container() && !field_position && !matches!(ty, Ty::Map(_)) {
                     self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
@@ -1249,7 +1284,6 @@ impl Resolver<'_> {
         }
     }
 
-    /// What the alias `name` names, resolved once where it is used.
     fn alias_type(&mut self, name: &str, te: &TypeExpr) -> Ty {
         if self.resolving.iter().any(|n| n == name) {
             self.err(
@@ -1288,8 +1322,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// Whether the package declares a type, enum or alias called `name`: its own declaration
-    /// shadows the type the language provides of that name throughout the package.
+    /// Whether the package declares a type, enum or alias called `name`, which shadows the type the
+    /// language provides of that name.
     fn declares(&self, name: &str) -> bool {
         self.own_types.contains(name)
             || self.own_enums.contains(name)
@@ -1299,9 +1333,6 @@ impl Resolver<'_> {
     fn named_type(&mut self, path: &[ast::Ident], span: Span) -> Ty {
         let dotted: Vec<&str> = path.iter().map(|i| i.name.as_str()).collect();
         if let [single] = dotted.as_slice() {
-            // The package's own declaration takes the name: it shadows the type the language
-            // provides of that name throughout the package, which `std.` still names
-            // (README, "Type names").
             if self.own_types.contains(*single) {
                 return Ty::Record(TypeKey {
                     app: self.env.app.clone(),
@@ -1404,16 +1435,17 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    /// Checks the parameters a view supplies (`above: Option<Task> (above)`): only an action's,
-    /// starting right after its subject, each optional and with no default, and each a place a
-    /// view knows (`above`).
-    fn places(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
+    /// Checks what a parameter says of itself after its type: a place a view supplies (`above:
+    /// Option<Task> (above)`, only an action's, each optional and with no default) or its label
+    /// (`saved: Bool (label: "On the Watch later list")`, only where a person gives it).
+    fn supplied(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
         let mut in_run = true;
         for (i, p) in written.iter().enumerate() {
             let Some(place) = &p.place else {
                 if i > 0 {
                     in_run = false;
                 }
+                self.label(p, kind);
                 continue;
             };
             if kind != CKind::Action {
@@ -1441,11 +1473,22 @@ impl Resolver<'_> {
         }
     }
 
-    /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
-    /// is: a view is handed it live (views are components, and these are their props).
-    ///
-    /// An action's one `Text` parameter is the one an entry fills with the words nothing else
-    /// takes (`crate::entry`), so it is the parameter an entry's action is read by.
+    /// A parameter's label is what a person reads where they give it, so only an action's parameters
+    /// write one, and it is the words as they read it, never its name again.
+    fn label(&mut self, p: &ast::Param, kind: CKind) {
+        let Some(label) = &p.label else { return };
+        if kind != CKind::Action {
+            self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; a label says what a person gives, and only an action's parameters are given to one", p.name.name, kind.word()));
+            return;
+        }
+        if label.trim().is_empty() {
+            self.err("E057", p.name.span, format!("`{}` has an empty label; say what the parameter holds as the person reads it, as `label: \"On the Watch later list\"`, or leave it out and let its name read", p.name.name));
+        }
+    }
+
+    /// The parameters of a callable. A view's may be a collection, a set or a map, as a field is: a
+    /// view is handed it live. An action's one `Text` parameter is the one an entry fills
+    /// (`crate::entry`).
     fn params(&mut self, params: &[ast::Param], view: bool, action: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
@@ -1463,6 +1506,7 @@ impl Resolver<'_> {
                 ty,
                 default: None,
                 place: action && p.place.is_some(),
+                label: if action { p.label.clone() } else { None },
                 entry: false,
             });
         }
@@ -1479,8 +1523,7 @@ impl Resolver<'_> {
         let mut func = 0usize;
         // The presentation views of actions, which get functions after every declared one.
         let mut presents: Vec<(String, ParamInfo)> = Vec::new();
-        // The defaults of action parameters, which get functions after the presentation views:
-        // the callable's index and the parameter's.
+        // The defaults of action parameters: the callable's index and the parameter's.
         let mut defaults: Vec<(usize, usize)> = Vec::new();
         for item in &module.items {
             if let Item::Scenario(sc) = item {
@@ -1515,9 +1558,8 @@ impl Resolver<'_> {
             if !name_case_ok(&name.name, false) {
                 self.err("E016", name.span, format!("`{}` names a {}, which starts with a lowercase letter (uppercase is for types)", name.name, kind.word()));
             }
-            // A view's name is a UI statement, so it cannot be a primitive's; the others are
-            // called in expressions, where the built-in functions and values are taken. A view
-            // is not called in an expression, so it may be named after one: Today's is `today`.
+            // A view's name is a UI statement, where the built-in functions are not: a view is not
+            // called in an expression, so it may be named after one: Today's is `today`.
             let taken = if kind == CKind::View {
                 prims::prim(&name.name).is_some()
             } else {
@@ -1546,7 +1588,7 @@ impl Resolver<'_> {
             }
             let ast_params = params;
             let params = self.params(params, kind == CKind::View, kind == CKind::Action);
-            self.places(ast_params, &params, kind, name.span);
+            self.supplied(ast_params, &params, kind, name.span);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
@@ -1599,6 +1641,7 @@ impl Resolver<'_> {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
@@ -1619,6 +1662,7 @@ impl Resolver<'_> {
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
                 scenario: false,
+                private: false,
             });
             func += 1;
         }
@@ -1638,7 +1682,7 @@ impl Resolver<'_> {
                 .iter()
                 .find(|a| a.name.name == callable.name)
                 .and_then(|a| a.params.get(index))
-                .and_then(|p| p.default.as_ref());
+                .and_then(|p| p.default.as_deref());
             let (Some(written), Some(param)) = (written, callable.params.get_mut(index)) else {
                 continue;
             };
@@ -1657,8 +1701,8 @@ impl Resolver<'_> {
         self.one_primary(module);
     }
 
-    /// A view of the module expanded where it is called: its name taken, its body checked at
-    /// each call, its `state` declarations made the view's own state.
+    /// A view of the module expanded where it is called: its name taken, its body checked at each
+    /// call, its `state` declarations made the view's own state.
     fn template(&mut self, v: &ast::ViewDecl) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
@@ -1679,8 +1723,8 @@ impl Resolver<'_> {
         });
     }
 
-    /// A scenario's hidden action: no parameters, named by the scenario, returning what it
-    /// declares (the resource a window shows once the scenario is staged).
+    /// A scenario's hidden action: no parameters, returning what it declares (the resource a window
+    /// shows once the scenario is staged).
     fn scenario(&mut self, sc: &ast::ScenarioDecl, lock: &IdsLock, index: usize) {
         let name = &sc.name;
         if name.trim().is_empty() || name.trim() != name || name.contains(['=', '\n']) {
@@ -1709,20 +1753,21 @@ impl Resolver<'_> {
             params: Vec::new(),
             result,
             class: None,
-            // Seed data runs where a developer runs it, and is never replayed: it reads any
-            // effect it likes.
+            // Seed data runs where a developer runs it, and is never replayed: it reads any effect it
+            // likes.
             uses: crate::effects::Effect::ALL.iter().copied().collect(),
             present: Presentation {
                 label: name.clone(),
                 ..Presentation::default()
             },
             scenario: true,
+            private: false,
         });
     }
 
-    /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`.
-    /// A `label:` or `icon:` written as an `if` follows the subject; the static one is then its
-    /// `else` branch's value (or its first), what a menu shows without evaluating anything.
+    /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`. A
+    /// `label:` or `icon:` written as an `if` follows the subject; the static one is its `else`
+    /// branch's value, which a menu shows without evaluating anything.
     fn presentation(&mut self, a: &ast::ActionDecl, params: &[ParamInfo]) -> Presentation {
         let subject = params.first().and_then(|p| match &p.ty {
             Ty::Record(key) => self.env.type_info(key).cloned(),
@@ -1767,11 +1812,9 @@ impl Resolver<'_> {
                 ("label", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
                     out.label = plain_text(&opt.value).unwrap_or_default();
                 }
-                // `"Move to {col.title}"`: read with the arguments where it is applied; the
-                // action's name stands in elsewhere.
                 ("label", ExprKind::Str(_)) => out.label_text = Some(opt.value.clone()),
-                // `if n.pinned { "Unpin" } else { "Pin" }`: read where it is applied, as a
-                // button for it draws; the label at rest stands in elsewhere.
+                // `if n.pinned { "Unpin" } else { "Pin" }`: read where it is applied, as a button for
+                // it draws; the label at rest stands in elsewhere.
                 ("label", ExprKind::If { .. }) => {
                     if let Some(label) = fallback_label(&opt.value, &at_rest) {
                         out.label = label;
@@ -1797,8 +1840,8 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`key:` takes a shortcut in quotes, without `{ }`: `key: \"Ctrl+Enter\"`, `key: \"F2\"`, `key: \"e\"`",
                 ),
-                // `group: "Reply"`: the run of the resource's actions this one stands in, by
-                // the app's own name for it.
+                // `group: "Reply"`: the run of the resource's actions this one stands in, by the
+                // app's own name.
                 ("group", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
                     let group = plain_text(&opt.value).unwrap_or_default();
                     if group.trim().is_empty() {
@@ -1816,9 +1859,7 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`group:` takes the run's name in quotes, without `{ }`: `group: \"Reply\"`",
                 ),
-                // `did: "moved this"`: what the action did, said after who did it, so history
-                // reads as people say it ("Ana moved this"). A phrase of the app's own, one
-                // verb for each thing a person does.
+                // `did: "moved this"`: what the action did, said after who did it ("Ana moved this").
                 ("did", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
                     let said = plain_text(&opt.value).unwrap_or_default();
                     if said.trim().is_empty() {
@@ -1883,10 +1924,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// Two actions of one subject that declare the same shortcut: one would silently take the
-    /// other's key wherever both are offered, so the app is told which action holds it. An
-    /// action on an item is answered where that item is selected or its window shows it; one on
-    /// the app's root is answered window-wide.
+    /// Two actions of one subject that declare the same shortcut: one would silently take the other's
+    /// key wherever both are offered.
     fn one_shortcut_each(&mut self, module: &ast::Module) {
         let mut seen: Vec<(Option<TypeKey>, String, String)> = Vec::new();
         for item in &module.items {
@@ -1928,7 +1967,6 @@ impl Resolver<'_> {
         })
     }
 
-    /// The `state` declarations at the top of a view body.
     fn states(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
         for s in &v.body {
             let ast::UiKind::State(d) = &s.kind else {
@@ -1960,8 +1998,7 @@ impl Resolver<'_> {
         }
     }
 
-    /// `root T`, `default view v for T` and `row view v for T` (workspace-model.md,
-    /// "Apps"), and the app's icon.
+    /// `root T`, `default view v for T`, `row view v for T`, and the app's icon.
     fn package_decls(&mut self, module: &ast::Module) {
         if let Some(icon) = &module.app.icon
             && prims::icon(icon).is_none()
@@ -2013,7 +2050,6 @@ impl Resolver<'_> {
                 }
                 Item::RowView(d) => self.row_view_decl(d),
                 Item::DefaultView(d) => {
-                    // `default view talk for talks`: for the type of the root `talks`.
                     let named = match &d.ty.kind {
                         TypeExprKind::Named(path) => match path.as_slice() {
                             [one] => self
@@ -2132,18 +2168,29 @@ impl Resolver<'_> {
     }
 }
 
-/// Resolves a type written inside a body (a `let` annotation).
 pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) -> Ty {
+    resolve_type_expr_in(env, None, te, diags)
+}
+
+/// [`resolve_type_expr`], with a plain type name read as the package `ns` declares it: the package
+/// whose `template view` is expanding.
+pub fn resolve_type_expr_in(
+    env: &Env,
+    ns: Option<&str>,
+    te: &TypeExpr,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
+    let app = ns.unwrap_or(&env.app);
     let own_types = env
         .types
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let own_enums = env
         .enums
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let mut r = Resolver {
@@ -2170,11 +2217,8 @@ fn block_expr(b: &ast::Block) -> Option<&Expr> {
     }
 }
 
-/// What a dynamic option shows without evaluation: the value of its `else` branch, or of its
-/// first branch that has one.
 /// What an `if` of `label:` or `icon:` shows where it is not evaluated (a menu of every item,
-/// History): the branch a subject at rest takes, when `at_rest` can tell (see [`at_rest`]),
-/// else the `else` branch.
+/// History): the branch a subject at rest takes when [`at_rest`] can tell, else the `else` branch.
 fn fallback<T>(
     e: &Expr,
     leaf: &impl Fn(&Expr) -> Option<T>,
@@ -2210,9 +2254,9 @@ fn fallback_icon(e: &Expr, at_rest: &impl Fn(&Expr) -> Option<bool>) -> Option<a
     )
 }
 
-/// The value of an action option's condition for a subject at rest (each Bool field at its
-/// default) invoked with every parameter's default: `n.pinned` is `false`, and `done` with
-/// `done: Bool = not item.done` is `true`. `None` for a condition that reads anything else.
+/// The value of an action option's condition for a subject at rest (each Bool field at its default)
+/// invoked with every parameter's default: `n.pinned` is `false`, and `done` with `done: Bool = not
+/// item.done` is `true`. `None` for a condition that reads anything else.
 fn at_rest(
     cond: &Expr,
     a: &ast::ActionDecl,
@@ -2235,7 +2279,7 @@ fn at_rest(
             .iter()
             .skip(1)
             .find(|p| &p.name.name == name)
-            .and_then(|p| p.default.as_ref())
+            .and_then(|p| p.default.as_deref())
             .and_then(deeper),
         ExprKind::Field { base, name } => {
             let ExprKind::Ident(base) = &base.kind else {
@@ -2255,9 +2299,8 @@ fn at_rest(
     }
 }
 
-/// Names the language gives types of its own; a package cannot declare them.
-/// Whether source writes a type with this name (`List<T>`): a name that takes a type argument
-/// is how the language spells a type, so it names none of a package's.
+/// Whether source writes a type with this name (`List<T>`): a name that takes a type argument names
+/// none of a package's.
 fn is_type_former(name: &str) -> bool {
     matches!(
         name,
@@ -2265,7 +2308,6 @@ fn is_type_former(name: &str) -> bool {
     )
 }
 
-/// Why a package cannot declare a type called `name`: the language writes a type with it.
 fn type_former_error(name: &str) -> String {
     format!(
         "`{name}` is how the language writes a type (`{name}<…>`), not a name for one; name yours differently"
@@ -2310,9 +2352,8 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
     }
 }
 
-/// The package `use <app>` imports among `available`: the one whose id it is, else the one
-/// published under it before (`previously:`). An id a package still has as its own is that
-/// package's, whoever else names it as an earlier one.
+/// The package `use <app>` imports among `available`: the one whose id it is, else the one published
+/// under it before. An id a package still has as its own is that package's.
 pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a PackageMeta> {
     available
         .iter()
@@ -2322,7 +2363,7 @@ pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a P
                 .iter()
                 .find(|m| m.previously.iter().any(|old| old == app))
         })
-        // The agent library ships with the compiler, as the standard library does: a package
-        // `use`s it without it being one of the packages around it.
+        // The agent library ships with the compiler, as the standard library does: a package `use`s
+        // it without it being one of the packages around it.
         .or_else(|| (app == crate::agent::APP).then(crate::agent::meta))
 }

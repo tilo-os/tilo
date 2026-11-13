@@ -203,14 +203,14 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
     // The workspace's owner lets B invite: what a participant admits with.
     let invite = tilo_action_policy::Grant::new(
         "invite:b",
-        tilo_action_policy::Subject::person(hex::encode(cert_b.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(cert_b.user_public_key)),
         tilo_action_policy::roles::governance_action(
             WORKSPACE,
             tilo_action_policy::roles::governance::INVITE,
         ),
         tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person(hex::encode(cert_a.user_public_key)),
+        tilo_action_policy::Grantee::person(hex::encode(cert_a.user_public_key)),
     );
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
@@ -715,4 +715,145 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
         "the shortcut A saved is one of the workspace's records on B's device"
     );
     link.abort();
+}
+
+/// A workspace's door is its own governance, not the host's: a device settles
+/// it, and another device holding the same workspace — the governor of a
+/// person's own machine — reads the same listing and the same invitation-only
+/// door from the change alone.
+#[tokio::test]
+async fn the_door_a_device_settles_is_the_door_another_device_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_root_a, key_a, cert_a) = device(81, 82, "A's desktop");
+    let (_root_b, key_b, cert_b) = device(83, 84, "B's desktop");
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    let now = SystemTime::now();
+    let mut governor =
+        TestGovernor::empty_interactive(cert_a.clone(), key_a.clone(), WORKSPACE).unwrap();
+    governor.pin_clock(now);
+    let a = open_file(&directory.path().join("a.json")).unwrap();
+    enroll(
+        &a,
+        &key_a,
+        &cert_a,
+        &mut governor,
+        MemberRole::Moderator,
+        [21; 32],
+        now,
+    );
+    // Settling the door is changing the workspace's settings: B holds that
+    // action too, so either device may settle it.
+    governor
+        .allow_governance(
+            &hex::encode(cert_b.user_public_key),
+            tilo_action_policy::roles::governance::SETTINGS,
+        )
+        .unwrap();
+    let b = open_file(&directory.path().join("b.json")).unwrap();
+    enroll(
+        &b,
+        &key_b,
+        &cert_b,
+        &mut governor,
+        MemberRole::Moderator,
+        [22; 32],
+        now,
+    );
+    for (bytes, _) in governor.outgoing() {
+        for (label, owner) in [("A", &a), ("B", &b)] {
+            owner
+                .receive(
+                    workspace,
+                    TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+                    postcard::from_bytes(bytes).unwrap(),
+                    now,
+                )
+                .unwrap_or_else(|error| panic!("{label} refuses the workspace's start: {error}"));
+        }
+    }
+
+    // A's device, the workspace's owner, lists it and takes people by
+    // invitation only.
+    let door = tilo_action_policy::DoorPolicy {
+        listing: Some(tilo_action_policy::ListingPolicy {
+            description: "Coffee and tea".into(),
+            default_role: tilo_action_policy::Role::Commenter,
+        }),
+        invitation_only: true,
+        wait_list_max: 40,
+    };
+    a.commit_workspace_membership_command(
+        OwnerCommitRequest {
+            workspace: WORKSPACE.into(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: cert_a.clone(),
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Door(door.clone())),
+            },
+        },
+        &key_a,
+        now,
+    )
+    .await
+    .unwrap();
+
+    for message in outgoing(&a, workspace, now) {
+        b.receive(
+            workspace,
+            TransportOrigin::RelayDelta(cert_a.device_public_key),
+            message,
+            now,
+        )
+        .unwrap_or_else(|error| panic!("B refuses the door A settled: {error}"));
+    }
+    assert_eq!(
+        b.with_current(workspace, |view| Ok(view
+            .peer()
+            .governance()
+            .governed_door()))
+            .unwrap(),
+        door,
+        "B's device reads the door A settled"
+    );
+
+    // B's device settles it again, taking the listing back: A reads that too,
+    // and neither device holds a door of its own.
+    let unlisted = tilo_action_policy::DoorPolicy {
+        listing: None,
+        ..door
+    };
+    b.commit_workspace_membership_command(
+        OwnerCommitRequest {
+            workspace: WORKSPACE.into(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: cert_b.clone(),
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Door(
+                    unlisted.clone(),
+                )),
+            },
+        },
+        &key_b,
+        now,
+    )
+    .await
+    .unwrap();
+    for message in outgoing(&b, workspace, now) {
+        a.receive(
+            workspace,
+            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            message,
+            now,
+        )
+        .unwrap_or_else(|error| panic!("A refuses the door B settled: {error}"));
+    }
+    assert_eq!(
+        a.with_current(workspace, |view| Ok(view
+            .peer()
+            .governance()
+            .governed_door()))
+            .unwrap(),
+        unlisted,
+        "A's device reads the door B settled"
+    );
 }

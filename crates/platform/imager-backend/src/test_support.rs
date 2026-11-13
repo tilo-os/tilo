@@ -1,15 +1,8 @@
 //! Shared helpers for the setup tests, here and in the imager.
 //!
-//! [`isolated`] runs a merged test phase on its own thread. On Linux,
-//! [`qualified_tempdir`] provides the temporary directories the setup
-//! fixtures root their state and scratch in: the cache, the transfer scratch
-//! and the prepared-media store refuse filesystems without Linux
-//! ext4/XFS/Btrfs semantics, so a tmpfs or overlay `/tmp` cannot hold them.
-//! They are created below `TILO_IMAGER_TEST_CACHE_ROOT` when set (CI points it
-//! at a prepared location), else below the build's own
-//! `target/test-fs/imager`, which lives in the checkout and so on the
-//! developer's filesystem — never in the cache directory of the account
-//! running the tests.
+//! [`isolated`] runs a merged test phase on its own thread. [`qualified_tempdir`] roots fixture state
+//! and scratch on a filesystem the cache, transfer scratch and prepared-media store accept, below
+//! `TILO_IMAGER_TEST_CACHE_ROOT` when set, else below the checkout's `target/test-fs/imager`.
 
 #[cfg(target_os = "linux")]
 use std::{
@@ -17,7 +10,6 @@ use std::{
     sync::OnceLock,
 };
 
-/// Parse with the same implementation used by `tilo-staging-handoff`.
 #[cfg(all(feature = "test-support", target_os = "linux"))]
 pub fn parse_live_handoff(bytes: &[u8]) -> Result<serde_json::Value, String> {
     tilo_install_helpers::staging_handoff::parse_handoff(bytes)
@@ -25,9 +17,8 @@ pub fn parse_live_handoff(bytes: &[u8]) -> Result<serde_json::Value, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Runs one merged phase on a fresh thread so the thread-local fault hooks,
-/// scripts and counters start clean, exactly as when the phase was its own
-/// test; a failing phase re-raises its original panic payload.
+/// Runs one merged phase on a fresh thread, so thread-local fault hooks, scripts and counters start
+/// clean; a failing phase re-raises its original panic payload.
 pub fn isolated(phase: &str, body: impl FnOnce() + Send) {
     std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
@@ -40,7 +31,6 @@ pub fn isolated(phase: &str, body: impl FnOnce() + Send) {
     });
 }
 
-/// Environment variable naming a directory on a qualified local filesystem.
 #[cfg(target_os = "linux")]
 const ROOT_VAR: &str = "TILO_IMAGER_TEST_CACHE_ROOT";
 
@@ -61,17 +51,15 @@ fn qualified_root() -> &'static Path {
     })
 }
 
-/// The directory the setup fixtures root their state and scratch in, as
-/// configured, without creating or checking it: the security check that
-/// recognises the machine directories above the fixtures asks for it before any
-/// fixture exists.
+/// The directory the fixtures root their state and scratch in, as configured, without creating or
+/// checking it: the ownership check above the fixtures asks for it before any fixture exists.
 #[cfg(target_os = "linux")]
 pub fn fixture_root() -> PathBuf {
     std::env::var_os(ROOT_VAR).map_or_else(default_root, PathBuf::from)
 }
 
-/// The setup tests' precondition, checked once with the reason a run lacks it,
-/// rather than as the cache's own refusal deep inside each test.
+/// The setup tests' precondition, checked once with the reason, rather than as the cache's own
+/// refusal deep inside each test.
 #[cfg(target_os = "linux")]
 fn assert_qualified(root: &Path) {
     use std::os::unix::ffi::OsStrExt as _;
@@ -86,7 +74,6 @@ fn assert_qualified(root: &Path) {
         root.display(),
         std::io::Error::last_os_error()
     );
-    // SAFETY: a successful statfs initialized the storage.
     let kind = unsafe { stat.assume_init() }.f_type;
     assert!(
         matches!(kind as u64, 0xef53 | 0x5846_5342 | 0x9123_683e),
@@ -96,9 +83,8 @@ fn assert_qualified(root: &Path) {
     );
 }
 
-/// `<target>/test-fs/imager`, found from the running test binary
-/// (`<target>/<profile>/deps/<test binary>`), so a custom target directory
-/// is honoured.
+/// `<target>/test-fs/imager`, found from the running test binary (`<target>/<profile>/deps/...`), so
+/// a custom target directory is honoured.
 #[cfg(target_os = "linux")]
 fn default_root() -> PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
@@ -115,18 +101,11 @@ fn default_root() -> PathBuf {
     target.unwrap().join("test-fs").join("imager")
 }
 
-/// A fresh temporary directory for a setup fixture, removed on drop.
-///
-/// On Linux it is on a filesystem the setup code accepts (see above), so a
-/// fixture may root the installer's state and its scratch in it; on other
-/// platforms only the native cache has that requirement and an ordinary
-/// temporary directory is what the tests want.
 #[cfg(target_os = "linux")]
 pub fn qualified_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(qualified_root()).expect("create qualified temporary directory")
 }
 
-/// A fresh temporary directory for a setup fixture, removed on drop.
 #[cfg(not(target_os = "linux"))]
 pub fn qualified_tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("create temporary directory")

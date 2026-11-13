@@ -1157,7 +1157,7 @@ impl ColorPainter for DrawColorGlyphs<'_> {
         let mut path = BezPathOutline(BezPath::new());
         let draw_settings = DrawSettings::unhinted(Size::unscaled(), self.location);
 
-        let Ok(_) = outline.draw(draw_settings, &mut path) else {
+        let Ok(_) = vello_encoding::draw_outline(&outline, draw_settings, &mut path) else {
             return;
         };
         self.clip_depth += 1;
@@ -1244,7 +1244,7 @@ impl ColorPainter for DrawColorGlyphs<'_> {
         let mut path = BezPathOutline(BezPath::new());
         let draw_settings = DrawSettings::unhinted(Size::unscaled(), self.location);
 
-        let Ok(_) = outline.draw(draw_settings, &mut path) else {
+        let Ok(_) = vello_encoding::draw_outline(&outline, draw_settings, &mut path) else {
             return;
         };
 

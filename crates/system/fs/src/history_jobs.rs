@@ -40,18 +40,14 @@ pub(super) struct JobKey {
 /// Whether a history operation may commit now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Readiness {
-    /// Every byte is local: commit.
     Local,
-    /// A job is downloading what is missing.
     Hydrating,
     /// The job could not hydrate the content. Reported once; the next
     /// request starts a new job.
     Failed,
     /// The job was cancelled. Reported once, like [`Self::Failed`].
     Cancelled,
-    /// Too many jobs are downloading already.
     Busy,
-    /// The id names a job for different content.
     Mismatch,
 }
 

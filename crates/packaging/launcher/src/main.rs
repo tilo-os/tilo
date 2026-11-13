@@ -1,4 +1,5 @@
-//! tilo-launcher binary entry.
+//! The `tilo-launcher` command line: start an app, run its CLI entrypoint, or re-enter
+//! the sandbox shim.
 
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -31,8 +32,8 @@ fn wait_for_shell_registration()
 -> Result<Option<launcher::retained_view::OrdinaryLaunchGate>, String> {
     let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
     let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
-    // SAFETY: process startup is single-threaded; remove the internal handoff
-    // before any launched app environment can inherit it.
+    // SAFETY: process startup is single-threaded; remove the internal handoff before any launched app
+    // environment can inherit it.
     unsafe {
         std::env::remove_var(LAUNCH_REGISTRATION_STDIN_ENV);
         std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
@@ -81,47 +82,36 @@ enum Cmd {
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
-        /// Explicit runtime bundle path. Wins over the manifest's
-        /// `runtime = "..."` lookup; mostly for debugging.
+        /// Explicit runtime bundle path.
         #[arg(long)]
         runtime: Option<PathBuf>,
-        /// Skip well-known service-socket resolution; required services warn
-        /// instead of failing.
+        /// Skip well-known service-socket resolution; required services warn instead of failing.
         #[arg(long)]
         no_services: bool,
-        /// Bind the minimum host libs a dynamically-linked ELF needs. Deprecated
-        /// — prefer a manifest `runtime = "tilo-runtime/<v>"` declaration; silently
-        /// overridden when a runtime bundle is mounted.
+        /// Bind the minimum host libs a dynamically-linked ELF needs.
         #[arg(long, hide = true)]
         minimal_libs: bool,
-        /// Escape hatch: fall back to `--minimal-libs` when the manifest
-        /// declares a runtime but no bundle is installed.
+        /// Escape hatch: fall back to `--minimal-libs` when the manifest declares a runtime but no
+        /// bundle is installed.
         #[arg(long)]
         allow_missing_runtime: bool,
-        /// Accept an unsigned runtime bundle. Default refuses unsigned bundles
-        /// (the OS ships signed ones, `tilo-install` signs on install) — only
-        /// needed for local bring-up / debugging.
+        /// Accept an unsigned runtime bundle.
         #[arg(long)]
         allow_unsigned_runtime: bool,
-        /// Require the runtime bundle's publisher to equal this Ed25519 pubkey
-        /// (hex); by default any signed publisher is accepted.
+        /// Require the runtime bundle's publisher to equal this Ed25519 pubkey (hex); by default any
+        /// signed publisher is accepted.
         #[arg(long)]
         require_runtime_publisher: Option<String>,
-        /// Host Wayland socket path the app should connect to. Bound into the
-        /// sandbox with `WAYLAND_DISPLAY` set to match; omit for apps with no
-        /// display.
+        /// Host Wayland socket path the app should connect to.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
-        /// Workspace (collaboration workspace) this launch belongs to, forwarded as
-        /// `TILO_WORKSPACE_ID` — the cluster id CRDT deltas are addressed to, so
-        /// two apps with the same value can collaborate. Omit for launches with
-        /// no session.
+        /// Workspace (collaboration workspace) this launch belongs to, forwarded as `TILO_WORKSPACE_ID`
+        /// — the cluster id CRDT deltas are addressed to, so two apps with the same value can
+        /// collaborate.
         #[arg(long)]
         workspace_id: Option<String>,
-        /// JSON file holding the capabilities (`Vec<CapOverride>`) the user
-        /// granted, written by the compositor before spawning. Omitted, missing
-        /// or malformed all mean the same: exactly the manifest's sandbox,
-        /// nothing widened.
+        /// JSON file holding the capabilities (`Vec<CapOverride>`) the user granted, written by the
+        /// compositor before spawning.
         #[arg(long)]
         capabilities: Option<PathBuf>,
         #[command(flatten)]
@@ -129,62 +119,49 @@ enum Cmd {
         #[command(flatten)]
         action_authority: Box<ActionAuthorityArgs>,
         /// App id the caller launched; must equal the manifest's package id.
-        /// Capabilities naming another app are ignored.
         #[arg(long)]
         app_id: Option<String>,
-        /// Exact host identity record selected for this workspace. The shell
-        /// resolves this from its private identity registry.
+        /// Exact host identity record selected for this workspace.
         #[arg(long)]
         identity: Option<PathBuf>,
-        /// The DRM render node the compositor renders on. The app is pinned to
-        /// the same GPU — only that node and its matching loaders are visible.
-        /// Omit when no compositor is involved.
+        /// The DRM render node the compositor renders on.
         #[arg(long)]
         render_node: Option<PathBuf>,
-        /// A document for the app to open on start, as `argv[1]`. An argument
-        /// only — the path isn't bound by naming it here; readability is
-        /// decided by the manifest plus `--capabilities`.
+        /// A document for the app to open on start, as `argv[1]`.
         #[arg(long)]
         open: Option<PathBuf>,
-        /// A validated URI for the app to handle. Forwarded as one opaque
-        /// argv value; it is never parsed as a command line.
+        /// A validated URI for the app to handle.
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
-        /// Open `--open-uri` in a window that browses as a visitor, without
-        /// the person's sign-ins: the app is handed
-        /// `runtime_portal::windows::VISITOR_WINDOW_FLAG` after the address.
+        /// Open `--open-uri` in a window that browses as a visitor, without the person's sign-ins: the
+        /// app is handed `runtime_portal::windows::VISITOR_WINDOW_FLAG` after the address.
         #[arg(long, requires = "open_uri")]
         open_as_visitor: bool,
         /// Standard console in a private namespace for this shell instance.
         #[arg(long, conflicts_with_all = ["service", "wayland_socket"])]
         headless_console: Option<u64>,
-        /// Launch this package's headless entrypoint as a desktop-managed
-        /// service. Valid only for `kind = "service"`; no display or open
-        /// resource is handed into the sandbox.
+        /// Launch this package's headless entrypoint as a desktop-managed service.
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
-        /// A tilolang app whose instance a tilolang host runs: the process
-        /// is its window alone, with no collaboration connection
-        /// (`RunOptions::tilolang_hosted`).
+        /// A tilolang app whose instance a tilolang host runs: the process is its window alone, with no
+        /// collaboration connection (`RunOptions::tilolang_hosted`).
         #[arg(long, conflicts_with = "service")]
         tilolang_hosted: bool,
-        /// A tilolang app's connector for the origin named (`imap`), not a window: the
-        /// process the session runs for an app whose types hold an outside service's
-        /// resources, with the door its instances attach over (`RunOptions::tilolang_connector`).
+        /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
+        /// session runs for an app whose types hold an outside service's resources, with the door its
+        /// instances attach over (`RunOptions::tilolang_connector`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_hosted", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
-    /// Launch a CLI command from an already-installed package. Used by the
-    /// PATH shim (`tilo-cli-shim`).
+    /// Launch a CLI command from an already-installed package.
     RunInstalled {
         /// Reverse-DNS package id, as printed by `tilo-install list`.
         #[arg(long, alias = "pkg")]
         package: String,
-        /// Which command from `[cli].commands` was invoked, forwarded as
-        /// `TILO_CLI_COMMAND`.
+        /// Which command from `[cli].commands` was invoked, forwarded as `TILO_CLI_COMMAND`.
         #[arg(long)]
         command: String,
         /// Skip well-known service-socket resolution.
@@ -198,58 +175,47 @@ enum Cmd {
         rest: Vec<String>,
     },
     /// Resolve an installed package by id and launch its GUI entrypoint.
-    /// Counterpart to `run`: takes the reverse-DNS id and looks it up in
-    /// the package store's registry.
     Exec {
         /// Reverse-DNS package identifier.
         #[arg(long)]
         package: String,
         #[arg(long)]
         no_services: bool,
-        /// Host Wayland socket path. Omit for a package with no GUI entrypoint.
+        /// Host Wayland socket path.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
-        /// Collaboration workspace to launch into. See `run --workspace-id`.
+        /// Collaboration workspace to launch into.
         #[arg(long)]
         workspace_id: Option<String>,
-        /// A document for the app to open, as an absolute host path. An
-        /// argument, not a permission — see `run --open`.
+        /// A document for the app to open, as an absolute host path.
         #[arg(long)]
         open: Option<PathBuf>,
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
-        /// Fall back to `--minimal-libs` when the manifest declares a runtime
-        /// bundle that is not installed.
+        /// Fall back to `--minimal-libs` when the manifest declares a runtime bundle that is not
+        /// installed.
         #[arg(long)]
         allow_missing_runtime: bool,
-        /// Accept an unsigned runtime bundle. Bring-up / debugging only.
+        /// Accept an unsigned runtime bundle.
         #[arg(long)]
         allow_unsigned_runtime: bool,
     },
-    /// Launch an application Tilo did **not** package: a `.desktop` entry
-    /// already installed on the host, Flatpak or otherwise.
-    ///
-    /// Runs the entry's own command line UNCONFINED — no Tilo sandbox, no
-    /// room. A Flatpak brings its own sandbox; a distribution binary has no
-    /// manifest to build one from. See the `launcher::host` module docs.
+    /// Launch an application Tilo did **not** package: a `.desktop` entry already installed on the
+    /// host, Flatpak or otherwise.
     RunHost(RunHostArgs),
-    /// Build or retire the pre-built read-only system view every sandbox
-    /// mounts (`launcher::sandbox_view`). Root only: it mounts in the host
-    /// namespace. Run by `tilo-sandbox-view.service`.
+    /// Build or retire the pre-built read-only system view every sandbox mounts
+    /// (`launcher::sandbox_view`).
     #[command(subcommand)]
     SandboxView(SandboxViewCmd),
-    /// List the apps running in this person's session, each with its
-    /// cgroup's processes, memory, CPU time, tier and OOM kills: one
-    /// `app-tilo-<id>-<pid>.scope` per launch in `app.slice`.
+    /// List the apps running in this person's session, each with its cgroup's processes, memory, CPU
+    /// time, tier and OOM kills: one `app-tilo-<id>-<pid>.scope` per launch in `app.slice`.
     Apps {
         /// Print JSON instead of a table.
         #[arg(long)]
         json: bool,
     },
-    /// Map and lock the shared runtime's libraries of every runtime bundle
-    /// the system registry names, then sleep until stopped
-    /// (`launcher::runtime_resident`). Run by
-    /// `tilo-runtime-resident.service`; it never runs app code.
+    /// Map and lock the shared runtime's libraries of every runtime bundle the system registry names,
+    /// then sleep until stopped (`launcher::runtime_resident`).
     RuntimeResident {
         /// The registry whose entries name the runtimes to keep.
         #[arg(long, default_value_t = default_system_registry())]
@@ -257,27 +223,22 @@ enum Cmd {
         /// Where the runtime bundles are installed.
         #[arg(long, default_value = launcher::runtime_resident::SYSTEM_RUNTIME_ROOT)]
         runtime_root: PathBuf,
-        /// Keep the runtimes of this person's own store instead: those their
-        /// registry names and the system does not hold, verified as a launch
-        /// verifies them, each library only when its signed fs-verity digest
-        /// is measured on the open file. Run by the user unit
-        /// `tilo-runtime-resident.service`.
+        /// Keep the runtimes of this person's own store instead: those their registry names and the
+        /// system does not hold, verified as a launch verifies them, each library only when its signed
+        /// fs-verity digest is measured on the open file.
         #[arg(long, conflicts_with_all = ["registry", "runtime_root"])]
         user: bool,
     },
-    /// Run a tilolang host: the launch kind that runs one author's tilolang
-    /// apps in one workspace as instances, in a sandbox holding only the
-    /// verified tilolang runtime and the Tilo runtime it runs on, its storage
-    /// and its door
-    /// (`launcher::run::tilolang_host`). The session starts it with the
-    /// door at descriptor 3; it never runs anything an app launch would.
+    /// Run a tilolang host: the launch kind that runs one author's tilolang apps in one workspace as
+    /// instances, in a sandbox holding only the verified tilolang runtime and the Tilo runtime it runs
+    /// on, its storage and its door (`launcher::run::tilolang_host`).
     #[command(name = "tilolang-host", hide = true)]
     TilolangHost {
         /// The tilolang runtime, `tilolang/<version>`.
         #[arg(long)]
         runtime: String,
-        /// The Tilo runtime its apps name, `tilo-runtime/<version>`: the
-        /// loader and libraries the host's binary runs on.
+        /// The Tilo runtime its apps name, `tilo-runtime/<version>`: the loader and libraries the
+        /// host's binary runs on.
         #[arg(long)]
         app_runtime: String,
         /// The storage of the host's workspace and author.
@@ -317,37 +278,32 @@ enum SandboxViewCmd {
 
 #[derive(Debug, clap::Args)]
 struct RunHostArgs {
-    /// Desktop-file id: the entry's file name without `.desktop`
-    /// (`com.spotify.Client`, `org.gnome.TextEditor`).
+    /// Desktop-file id: the entry's file name without `.desktop` (`com.spotify.Client`,
+    /// `org.gnome.TextEditor`).
     #[arg(long)]
     desktop_id: String,
-    /// Run this desktop file instead of looking `--desktop-id` up in the
-    /// `applications` directories — how XDG autostart entries, which live in
-    /// `autostart` directories, are started.
+    /// Run this desktop file instead of looking `--desktop-id` up in the `applications` directories —
+    /// how XDG autostart entries, which live in `autostart` directories, are started.
     #[arg(long)]
     desktop_file: Option<PathBuf>,
-    /// Run this program file itself, with no desktop entry: a downloaded
-    /// `AppImage` or executable opened in Files. It is made runnable first;
-    /// only a compiled program is run this way, never a script.
+    /// Run this program file itself, with no desktop entry: a downloaded `AppImage` or executable
+    /// opened in Files.
     #[arg(long, conflicts_with = "desktop_file")]
     program: Option<PathBuf>,
-    /// Host path of the compositor's Wayland socket. `WAYLAND_DISPLAY` and
-    /// `XDG_RUNTIME_DIR` are both derived from it.
+    /// Host path of the compositor's Wayland socket.
     #[arg(long)]
     wayland_socket: Option<PathBuf>,
-    /// The X11 display of the workspace this app is launched into, supplied
-    /// by the compositor for legacy X11 applications.
+    /// The X11 display of the workspace this app is launched into, supplied by the compositor for
+    /// legacy X11 applications.
     #[arg(long)]
     x11_display: Option<String>,
-    /// A file to open. Expands the entry's `%f`/`%F` field codes (and
-    /// `%u`/`%U` as a `file://` URL).
+    /// A file to open.
     #[arg(long)]
     open: Option<PathBuf>,
-    /// A URL for the application to open. Expands `%u`/`%U`.
+    /// A URL for the application to open.
     #[arg(long)]
     open_url: Option<String>,
-    /// Print the resolved argv and environment and exit without running
-    /// anything.
+    /// Print the resolved argv and environment and exit without running anything.
     #[arg(long)]
     dry_run: bool,
     /// Prefer the desktop entry's declared New Window action.
@@ -356,11 +312,7 @@ struct RunHostArgs {
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
-/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
-/// sources are always in `0..=255` in practice — a POSIX wait status is
-/// already masked to the low byte, and `RunError`'s codes are small
-/// constants — so the `1` fallback (generic failure) never fires for a real
-/// exit.
+/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes.
 fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
@@ -368,16 +320,10 @@ fn exit_code(code: i32) -> ExitCode {
 /// How many descriptors this process's table holds from the start.
 const DESCRIPTOR_TABLE_SIZE: libc::c_int = 256;
 
-/// Grow the descriptor table to its working size while this process still
-/// has one thread. A launch opens service sockets, pipes and staged files
-/// beyond the 64 slots a fresh process starts with, and Linux makes a
-/// process whose table is shared by several threads wait for an RCU grace
-/// period (`expand_fdtable` -> `synchronize_rcu`, milliseconds) every time
-/// that table grows; growing it now, single-threaded, costs nothing. A
-/// launcher started by the session has just its three standard streams.
+/// Grow the descriptor table to its working size while this process still has one thread.
 fn presize_descriptor_table() {
-    // SAFETY: duplicates stderr to the lowest free descriptor at or above the
-    // table's last slot, close-on-exec, and closes that copy at once.
+    // SAFETY: duplicates stderr to the lowest free descriptor at or above the table's last slot,
+    // close-on-exec, and closes that copy at once.
     unsafe {
         let copy = libc::fcntl(2, libc::F_DUPFD_CLOEXEC, DESCRIPTOR_TABLE_SIZE - 1);
         if copy >= 0 {
@@ -397,8 +343,8 @@ fn main() -> ExitCode {
         }
     };
     tilo_startup_metrics::handoff_mark("shell-registered");
-    // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
-    // paths, `--` separator) doesn't collide with clap's flag parsing.
+    // Hidden subcommand: parsed BEFORE clap so its argv shape (positional paths, `--` separator)
+    // doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.get(1).map(std::string::String::as_str) == Some(SANDBOX_EXEC_SUBCOMMAND) {
         if retained_endpoint.is_some() {
@@ -419,9 +365,8 @@ fn dispatch_command(
     command: Cmd,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
 ) -> ExitCode {
-    // Whatever runs an app, or is about to start one, leaves the session's
-    // protection from the OOM killer, which it may have inherited from the
-    // compositor: an app is always a candidate.
+    // Whatever runs an app, or is about to start one, leaves the session's protection from the OOM
+    // killer, which it may have inherited from the compositor: an app is always a candidate.
     if matches!(
         command,
         Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::RunHost(_)
@@ -478,12 +423,10 @@ fn dispatch_command(
     }
 }
 
-/// Run the tilolang host the session started, on the door it handed over at
-/// descriptor 3.
+/// Run the tilolang host the session started, on the door it handed over at descriptor 3.
 fn tilolang_host(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
     use launcher::run::tilolang_host::{DOOR_CHILD_FD, HostLaunch, run_tilolang_host};
-    // SAFETY: the session hands the door at this descriptor and nothing else
-    // owns it in this process.
+    // SAFETY: the session hands the door at this descriptor and nothing else owns it in this process.
     let door =
         unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(DOOR_CHILD_FD) };
     let launch = HostLaunch {
@@ -618,13 +561,13 @@ fn runtime_resident_user() -> ExitCode {
         locked / (1024 * 1024)
     );
     if mapped.is_empty() {
-        // Nothing of this person's to keep; the path unit starts this again
-        // when their registry changes.
+        // Nothing of this person's to keep; the path unit starts this again when their registry
+        // changes.
         return ExitCode::SUCCESS;
     }
     loop {
-        // SAFETY: pause has no preconditions; it returns only after a
-        // handled signal, and this process handles none.
+        // SAFETY: pause has no preconditions; it returns only after a handled signal, and this process
+        // handles none.
         unsafe { libc::pause() };
     }
 }
@@ -664,11 +607,11 @@ fn runtime_resident(registry: &Path, runtime_root: &Path) -> ExitCode {
     if mapped.is_empty() && !failed.is_empty() {
         return ExitCode::FAILURE;
     }
-    // The mappings are the whole job: hold them until systemd stops us,
-    // whose SIGTERM ends the process with its default action.
+    // The mappings are the whole job: hold them until systemd stops us, whose SIGTERM ends the process
+    // with its default action.
     loop {
-        // SAFETY: pause has no preconditions; it returns only after a
-        // handled signal, and this process handles none.
+        // SAFETY: pause has no preconditions; it returns only after a handled signal, and this process
+        // handles none.
         unsafe { libc::pause() };
     }
 }
@@ -750,9 +693,9 @@ struct ActionAuthorityArgs {
     action_authority: Option<PathBuf>,
 }
 
-/// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count
-/// against clippy's argument limit — this is argv plumbing, not a sandbox
-/// policy struct (see [`ExecArgs`] below for the same pattern).
+/// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count against clippy's argument
+/// limit — this is argv plumbing, not a sandbox policy struct (see [`ExecArgs`] below for the same
+/// pattern).
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent CLI flag mirrored 1:1 from Cmd::Run; grouping them would just move the same four toggles into a sub-struct destructured back apart at the one call site"
@@ -787,9 +730,8 @@ struct RunCliArgs {
     rest: Vec<String>,
 }
 
-/// Build [`RunOptions`] from the `run` subcommand's flags and launch either
-/// the package's GUI entrypoint or its explicitly requested managed-service
-/// entrypoint.
+/// Build [`RunOptions`] from the `run` subcommand's flags and launch either the package's GUI
+/// entrypoint or its explicitly requested managed-service entrypoint.
 fn run_gui_command(
     args: RunCliArgs,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
@@ -811,10 +753,8 @@ fn run_gui_command(
         } else {
             LaunchMode::Gui
         },
-        // A GUI launch's `--` tail is the app's own argv, exactly as a CLI
-        // launch's is: the app's parser decides what it means. The launcher
-        // only carries it, so the record reader (`--index`) and a surface
-        // report (`--surface`) reach the binary they name.
+        // A GUI launch's `--` tail is the app's own argv, exactly as a CLI launch's is: the app's
+        // parser decides what it means.
         gui_argv: if args.service { Vec::new() } else { args.rest },
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
@@ -839,9 +779,8 @@ fn run_gui_command(
         tilolang_hosted: args.tilolang_hosted,
         tilolang_connector: args.tilolang_connector,
     };
-    // Held from before the package is verified until the app exits, so an
-    // update meanwhile leaves the build this launch runs alone
-    // (`launcher::lease`).
+    // Held from before the package is verified until the app exits, so an update meanwhile leaves the
+    // build this launch runs alone (`launcher::lease`).
     let _payload_held = match launcher::lease::hold_payload(&args.payload_root) {
         Ok(held) => held,
         Err(e) => {
@@ -890,8 +829,8 @@ fn report_launch_result(
 ) -> ExitCode {
     match result {
         Ok(status) => {
-            // How the app ended, said where its output goes: a signal leaves
-            // no exit code of its own, and is folded into 1 below.
+            // How the app ended, said where its output goes: a signal leaves no exit code of its own,
+            // and is folded into 1 below.
             if !status.success() {
                 eprintln!(
                     "tilo-launcher: {} ended: {status}",
@@ -911,24 +850,21 @@ fn report_launch_result(
     }
 }
 
-/// Verify the package, with this launcher in the app's own cgroup by the
-/// time it returns ([`enter_app_scope`]).
+/// Verify the package, with this launcher in the app's own cgroup by the time it returns
+/// ([`enter_app_scope`]).
 fn verify_in_app_cgroup(
     manifest: &std::path::Path,
     payload_root: &std::path::Path,
     opts: &RunOptions,
 ) -> Result<launcher::manifest::ManifestView, launcher::run::RunError> {
-    // A launcher already inside an app's cgroup (an app running another
-    // program of its own) has nothing to join.
+    // A launcher already inside an app's cgroup (an app running another program of its own) has
+    // nothing to join.
     let born_in_cgroup = launcher::app_cgroup::current_is_app_cgroup();
     if born_in_cgroup {
         tilo_startup_metrics::handoff_mark("scope-joined");
     }
-    // Otherwise joining the app's scope (a round trip to the user manager)
-    // and verifying the package (reading and hashing its files) need nothing
-    // from each other, so they run side by side. The join completes before
-    // anything after this starts a process: every process of the launch, the
-    // D-Bus proxies and the sandbox included, starts inside the scope.
+    // Otherwise joining the app's scope (a round trip to the user manager) and verifying the package
+    // (reading and hashing its files) need nothing from each other, so they run side by side.
     std::thread::scope(|scope| {
         let joining = opts
             .app_id
@@ -955,16 +891,8 @@ fn verify_in_app_cgroup(
     })
 }
 
-/// Make sure this launcher is in the app's own cgroup before it forks the
-/// sandbox, so the app's memory, OOM handling and lifetime are its own and
-/// never the compositor's (see [`launcher::scope`]). The session always names
-/// the app; without a reachable user manager the app still starts, where the
-/// launcher already runs.
-///
-/// A Tilo app is then one OOM group: the kernel ends every process of it
-/// together rather than one, which would leave the rest of the app half
-/// working (see [`launcher::app_cgroup::set_oom_group`]). A host app is not:
-/// its scope is not delegated and runs the program alone.
+/// Make sure this launcher is in the app's own cgroup before it forks the sandbox, so the app's memory,
+/// OOM handling and lifetime are its own and never the compositor's (see [`launcher::scope`]).
 fn enter_app_scope(app_id: &str) {
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
@@ -986,9 +914,8 @@ fn enter_app_scope(app_id: &str) {
     tilo_startup_metrics::handoff_mark("scope-joined");
 }
 
-/// CLI arguments for [`Cmd::Exec`], grouped to keep [`exec_installed`] under
-/// clippy's argument-count limit — this is argv plumbing, not a sandbox
-/// policy struct.
+/// CLI arguments for [`Cmd::Exec`], grouped to keep [`exec_installed`] under clippy's argument-count
+/// limit — this is argv plumbing, not a sandbox policy struct.
 struct ExecArgs {
     no_services: bool,
     wayland_socket: Option<PathBuf>,
@@ -1001,23 +928,9 @@ struct ExecArgs {
 }
 
 /// Resolve `package` in the registry and launch its GUI entrypoint.
-///
-/// The registry lookup is the whole difference from `run` — the rest
-/// is the same sandboxed launch, built from the same manifest by the
-/// same code. The app still gets exactly one writable directory, and
-/// no flag here can change that.
-/// Exit status of a launch that cannot run yet: an update it needs is under
-/// way or has not been published (`EX_TEMPFAIL`).
 const LAUNCH_LATER: u8 = 75;
 
 /// The installed `package`, held for the launch, at a build this system runs.
-///
-/// A build made for older interface versions, or recorded at an older
-/// package format, is updated first, exactly as the session does before it
-/// opens one (`tilo_session::app_versions`), and the launch runs the new build. One
-/// that needs a newer system starts the system's update. Either way the
-/// person is told what happens; a launch is never just refused for being
-/// behind (docs/architecture/compatibility.md).
 fn find_current(
     package: &str,
 ) -> Result<
@@ -1113,8 +1026,8 @@ fn update_package(package: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Start the system's update without waiting for it, as the shell does when
-/// an app needs a newer system (`tilo-deployment-update.service`).
+/// Start the system's update without waiting for it, as the shell does when an app needs a newer system
+/// (`tilo-deployment-update.service`).
 fn start_system_update() {
     let _ = std::process::Command::new("systemctl")
         .args([
@@ -1128,8 +1041,8 @@ fn start_system_update() {
 }
 
 fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    // Held from the lookup until the app exits, so an update meanwhile
-    // leaves the build this launch runs alone (`launcher::lease`).
+    // Held from the lookup until the app exits, so an update meanwhile leaves the build this launch
+    // runs alone (`launcher::lease`).
     let (entry, _payload_held) = match find_current(package) {
         Ok(found) => found,
         Err(code) => return code,
@@ -1173,7 +1086,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
     }
 }
 
-/// Launch a host application. Unconfined — see [`launcher::host`].
+/// Launch a host application.
 fn run_host(args: RunHostArgs) -> ExitCode {
     let RunHostArgs {
         desktop_id,
@@ -1239,8 +1152,8 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     }
 }
 
-/// Resolve an installed package via the package store's registry and
-/// launch its CLI-flavour entrypoint under the sandbox.
+/// Resolve an installed package via the package store's registry and launch its CLI-flavour entrypoint
+/// under the sandbox.
 fn run_installed(
     package: &str,
     command: &str,
@@ -1254,9 +1167,7 @@ fn run_installed(
         Err(code) => return code,
     };
 
-    // Read the manifest to check `[cli].commands` contains the requested
-    // name. Duplicates work the launcher does for its own sandbox setup,
-    // accepted for the clarity of a fail-fast error message.
+    // Read the manifest to check `[cli].commands` contains the requested name.
     let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
         Ok(m) => m,
         Err(e) => {
@@ -1277,14 +1188,7 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
-    // Installed tapp command shims are a production launch surface. Their
-    // inherited environment is app/user input, not trusted launcher policy,
-    // so it must never be able to turn off either confinement or runtime
-    // verification. Tests and developer harnesses that intentionally need a
-    // weaker policy call the library with an explicit `RunOptions` value.
-    // CLI-flavour launches through the PATH shim default --minimal-libs
-    // on: shim invocations have no place to pass launcher flags, and CLI
-    // apps are dynamically-linked ELFs until tilo-runtime bundles land.
+    // Installed tapp command shims are a production launch surface.
     let minimal_libs = minimal_libs
         || !matches!(
             std::env::var("TILO_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
@@ -1314,28 +1218,21 @@ fn run_installed(
         retained_files_host_path: None,
         browser_continuity_host_path: None,
         action_authority_host_path: None,
-        // CLI launches are stdio-only: no display in the sandbox, and
-        // therefore no compositor whose GPU choice they have to match.
+        // CLI launches are stdio-only: no display in the sandbox, and therefore no compositor whose
+        // GPU choice they have to match.
         wayland_socket: None,
-        // Inherit the workspace from the shell the command was typed into: a
-        // terminal opened in a workspace lands its CLI apps in the same workspace
-        // rather than none. Outside a session the child gets nothing.
-        //
-        // This carries no authority: it names a workspace, not a permission. The
-        // capabilities that decide what the app may touch are resolved
-        // separately, and deliberately not inherited.
+        // Inherit the workspace from the shell the command was typed into: a terminal opened in a
+        // workspace lands its CLI apps in the same workspace rather than none.
         workspace_id: std::env::var(launcher::sandbox::WORKSPACE_ID_ENV)
             .ok()
             .filter(|s| !s.is_empty()),
-        // A shell invocation via the PATH shim has no workspace behind it, so
-        // there are no capabilities to honour — the package runs with what
-        // its manifest declares.
+        // A shell invocation via the PATH shim has no workspace behind it, so there are no
+        // capabilities to honour — the package runs with what its manifest declares.
         capabilities_path: None,
         app_id: Some(package.to_string()),
         render_node: None,
-        // A CLI invocation's arguments are the user's own, forwarded through
-        // `LaunchMode::Cli`; no document to open on its behalf, and no GUI
-        // argv to carry.
+        // A CLI invocation's arguments are the user's own, forwarded through `LaunchMode::Cli`; no
+        // document to open on its behalf, and no GUI argv to carry.
         open_document: None,
         open_uri: None,
         gui_argv: Vec::new(),
@@ -1359,14 +1256,13 @@ fn run_installed(
     }
 }
 
-/// One-shot activation values are focus capabilities, not useful launch-plan
-/// diagnostics.  Keep them out of dry-run/error-adjacent terminal output.
+/// One-shot activation values are focus capabilities, not useful launch-plan diagnostics.
 fn host_launch_env_is_secret(key: &str) -> bool {
     matches!(key, "XDG_ACTIVATION_TOKEN" | "DESKTOP_STARTUP_ID")
 }
 
-/// The launcher's own diagnostics go to standard error: standard output is the app's, which a
-/// caller reads as the app's answer (a record's search entries, a surface report).
+/// The launcher's own diagnostics go to standard error: standard output is the app's, which a caller
+/// reads as the app's answer (a record's search entries, a surface report).
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

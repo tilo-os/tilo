@@ -270,8 +270,9 @@ fn watch(
         moved |= watch.drain(&|resource, text| {
             if resource == MEDIA {
                 land_media(&readings, &media, text);
+                true
             } else {
-                land(&readings, resource, text);
+                land(&readings, resource, text)
             }
         });
         // The playhead moves between two readings while a player plays.
@@ -296,8 +297,8 @@ fn watch(
         if scan_at.is_some_and(|at: Instant| Instant::now() >= at) {
             let now = Instant::now();
             scan_at = Some(now.checked_add(WIFI_RESCAN).unwrap_or(now));
-            if let Err(error) = watch.invoke(NETWORK, "scan-wifi", &serde_json::Map::new()) {
-                tracing::debug!(%error, "Wi-Fi did not look for networks");
+            if let Err(refusal) = Watch::invoke(NETWORK, "scan-wifi", &serde_json::Map::new()) {
+                tracing::debug!(?refusal, "Wi-Fi did not look for networks");
             }
         }
         if moved {
@@ -317,9 +318,18 @@ fn watch(
             Ok(Job::Effect(effect)) => {
                 let state = readings.read(std::clone::Clone::clone);
                 if let Some((resource, action, arguments)) = crate::verbs::of(&state, &effect) {
-                    if let Err(error) = watch.invoke(resource, action, &arguments) {
-                        tracing::debug!(%error, %action, "the session did not take the press");
-                        readings.update(|state| state.refusal = Some(error));
+                    if let Err(refusal) = Watch::invoke(resource, action, &arguments) {
+                        tracing::debug!(?refusal, %action, "the session did not take the press");
+                        // What the person reads is the panel's own words for
+                        // the device serving nothing, and the resource's own
+                        // for a refusal it worded.
+                        let reason = match refusal {
+                            crate::session::Refusal::Nothing => {
+                                crate::i18n::t("qs-refused-nothing-answers")
+                            }
+                            crate::session::Refusal::Said(reason) => reason,
+                        };
+                        readings.update(|state| state.refusal = Some(reason));
                         wake.wake();
                     }
                 } else {
@@ -332,7 +342,7 @@ fn watch(
             Ok(Job::Showing(showing)) => {
                 if showing.section != section {
                     section = showing.section;
-                    follow_section(&readings, &watch, section, &mut scan_at);
+                    follow_section(&readings, section, &mut scan_at);
                 }
             }
             Ok(Job::Reading) | Err(RecvTimeoutError::Timeout) => {}
@@ -344,12 +354,7 @@ fn watch(
 /// The panel opened or closed a section: the Wi-Fi one starts looking for
 /// networks again, the Bluetooth one looks for devices while it shows and
 /// stops when it does not.
-fn follow_section(
-    readings: &Readings,
-    watch: &Watch,
-    section: Option<QsSection>,
-    scan_at: &mut Option<Instant>,
-) {
+fn follow_section(readings: &Readings, section: Option<QsSection>, scan_at: &mut Option<Instant>) {
     if section == Some(QsSection::Wifi) {
         *scan_at = Some(Instant::now());
     } else {
@@ -358,13 +363,13 @@ fn follow_section(
     let discovering = readings.read(|state| state.bluetooth.discovering);
     let wanted = section == Some(QsSection::Bluetooth);
     if wanted != discovering
-        && let Err(error) = watch.invoke(
+        && let Err(refusal) = Watch::invoke(
             BLUETOOTH,
             "scan",
             &serde_json::Map::from_iter([("on".to_owned(), serde_json::Value::from(wanted))]),
         )
     {
-        tracing::debug!(%error, "Bluetooth did not follow the section");
+        tracing::debug!(?refusal, "Bluetooth did not follow the section");
     }
 }
 

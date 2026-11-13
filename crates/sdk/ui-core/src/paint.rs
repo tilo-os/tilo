@@ -1,10 +1,6 @@
-//! Scene-painting shorthands for apps that draw their own surfaces.
-//!
-//! Every hand-painted app needs the same handful of calls — fill a rect, fill
-//! or stroke a rounded rect, fade a theme colour, set a line of text in a
-//! role — and each used to carry its own copy. These take the colour
-//! explicitly, so callers still read it from the [`crate::theme::Theme`]
-//! passed to `draw`.
+//! Scene-painting shorthands for apps that draw their own surfaces. Every hand-painted app needs the
+//! same handful of calls — fill a rect, fill or stroke a rounded rect, fade a theme colour, set a line
+//! of text in a role.
 
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -14,9 +10,6 @@ use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use vello::peniko::Color;
 
 /// The renderer state one immediate-mode paint pass threads through its helpers.
-///
-/// A helper takes `&mut PaintCtx` plus the geometry and model it paints, instead
-/// of repeating scene, transform, text renderer and theme in every signature.
 pub struct PaintCtx<'a> {
     pub scene: &'a mut Scene,
     pub transform: Affine,
@@ -79,8 +72,8 @@ impl<'a> PaintCtx<'a> {
         stroke_round(self.scene, self.transform, rect, radius, color, width);
     }
 
-    /// Paint `text` in `style` with its layout origin at `origin`, wrapping at
-    /// `max_width` when one is given.
+    /// Paint `text` in `style` with its layout origin at `origin`, wrapping at `max_width` when one is
+    /// given.
     pub fn text(
         &mut self,
         text: &str,
@@ -94,9 +87,9 @@ impl<'a> PaintCtx<'a> {
             .draw_style(self.scene, text, color, transform, max_width, style);
     }
 
-    /// Paint `text` in the theme's `role` with its line box's top-left at
-    /// `origin`, wrapping at `max_width` when one is given. The role is
-    /// resolved against this context's theme, so it is scaled exactly once.
+    /// Paint `text` in the theme's `role` with its line box's top-left at `origin`, wrapping at
+    /// `max_width` when one is given. The role is resolved against this context's theme, so it is
+    /// scaled exactly once.
     pub fn text_role(
         &mut self,
         text: &str,
@@ -109,25 +102,22 @@ impl<'a> PaintCtx<'a> {
         self.text(text, &style, color, origin, max_width);
     }
 
-    /// The size `text` takes in `role`, wrapped at `max_width` when one is
-    /// given: exactly what [`Self::text_role`] paints.
+    /// The size `text` takes in `role`, wrapped at `max_width` when one is given: exactly what
+    /// [`Self::text_role`] paints.
     pub fn measure_role(&mut self, text: &str, role: TextRole, max_width: Option<f32>) -> Size {
         let style = self.theme.text(role);
         let (width, height) = self.text.measure_style(text, max_width, &style);
         Size::new(f64::from(width), f64::from(height))
     }
 
-    /// The measured height of one line of `role`: what a band, row or
-    /// control sizes itself from, and what
-    /// [`crate::text_metrics::centered_text_top`] centres. Grows with the text
-    /// scale because the role does.
+    /// The measured height of one line of `role`: what a band, row or control sizes itself from, and
+    /// what [`crate::text_metrics::centered_text_top`] centres.
     pub fn line_box(&mut self, role: TextRole) -> f64 {
         self.measure_role("Ag", role, None).height
     }
 
-    /// Paint one line of `text` in `role`, starting at `x` and vertically
-    /// centred on its measured line box inside `band` — the row, bar or
-    /// control it labels.
+    /// Paint one line of `text` in `role`, starting at `x` and vertically centred on its measured line
+    /// box inside `band` — the row, bar or control it labels.
     pub fn text_role_in_band(
         &mut self,
         text: &str,

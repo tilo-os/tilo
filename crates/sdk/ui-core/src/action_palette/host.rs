@@ -1,11 +1,7 @@
-//! The palette over rows a host searched itself: the desktop's apps, windows
-//! and documents, a launcher's service, a window's published actions.
-//!
-//! The card, the query field, the list, the argument steps and the geometry
-//! are the palette's own, shared with an app's Ctrl+K search; what differs is
-//! where the rows come from and where a choice goes. A host hands rows in
-//! ([`ActionPalette::set_entries`]) and takes back which one the person chose
-//! ([`ActionPalette::take_outcome`]).
+//! The palette over rows a host searched itself: the desktop's apps, windows and documents, a
+//! launcher's service, a window's published actions. The card, the query field, the list, the argument
+//! steps and the geometry are the palette, shared with an app's Ctrl+K search; what differs is where
+//! the rows come from and where a choice goes.
 
 use crate::i18n::{widget_format, widget_text};
 use vello::Scene;
@@ -25,24 +21,17 @@ use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use super::{ActionPalette, FIELD_SIZE, HostStep};
 use crate::widget::DrawChild;
 
-/// Rows the list shows before it scrolls when the host sets no height.
 const DEFAULT_LIST_ROWS: f64 = 10.0;
-/// Room the composed zero-state needs: glyph, headline, hint.
 const EMPTY_STATE_HEIGHT: f64 = 104.0;
-/// The card's own width, for a host that gives it none.
 const CARD_WIDTH: f64 = 480.0;
 const INPUT_HEIGHT: f64 = 40.0;
 const PADDING: f64 = 8.0;
-/// One row of host-painted controls between the field and the list.
 const BAND_HEIGHT: f64 = 36.0;
-/// The accessible target of the scope token when it is a control.
 const SCOPE_TOKEN_TARGET: &str = "command-palette:scope-token";
-/// The accessible target of the query field.
 const QUERY_TARGET: &str = "command-palette:query";
 
 impl ActionPalette {
-    /// A palette over rows a host feeds itself, rather than over an app's
-    /// published actions.
+    /// A palette over rows a host feeds itself, rather than over an app's published actions.
     #[must_use]
     pub fn rows(entries: Vec<CommandEntry>) -> Self {
         let mut palette = Self::new();
@@ -77,8 +66,7 @@ impl ActionPalette {
         self.host_rows.is_some()
     }
 
-    /// The chosen row, with the value it asked for if it asked. Drained by
-    /// the host after it handled input.
+    /// The chosen row, with the value it asked for if it asked.
     pub fn take_outcome(&mut self) -> Option<CommandOutcome> {
         self.outcome.take()
     }
@@ -114,28 +102,27 @@ impl ActionPalette {
         self.begin_host_step(id.into(), spec);
     }
 
-    /// Leave any host step without running or reporting anything: the host
-    /// has moved on (to another step, or back to the results).
+    /// Leave any host step without running or reporting anything: the host has moved on (to another
+    /// step, or back to the results).
     pub fn cancel_host_step(&mut self) {
         self.end_host_step();
         self.submitted_argument = None;
         self.argument_cancelled = false;
     }
 
-    /// The value the open step's field holds.
+    /// The value the open step's field has.
     #[must_use]
     pub fn argument_buffer(&self) -> Option<&str> {
         self.host_step.as_ref().map(|_| self.field.value())
     }
 
-    /// Show `token` at the start of the field: the part of the source the
-    /// query is narrowed to, removable with Backspace.
+    /// Show `token` at the start of the field: the part of the source the query is narrowed to,
+    /// removable with Backspace.
     pub fn set_scope_token(&mut self, token: Option<String>) {
         self.field.set_scope_token(token);
     }
 
-    /// What pressing the token does, when it is a control: its accessible
-    /// name. `None`: Backspace alone removes it.
+    /// What pressing the token does, when it is a control: its accessible name.
     pub fn set_scope_token_action(&mut self, action: Option<String>) {
         self.scope_token_action = action;
     }
@@ -152,15 +139,13 @@ impl ActionPalette {
         self.scope_token_action.as_deref()
     }
 
-    /// Whether Backspace at the start of the field took the token away since
-    /// the last call: the host widens the search.
+    /// Whether Backspace at the start of the field took the token away since the last call: the host
+    /// widens the search.
     pub fn take_scope_token_removed(&mut self) -> bool {
-        // The field's own × and Backspace take the token away too.
         let cleared = self.field.take_scope_cleared();
         std::mem::take(&mut self.scope_token_removed) || cleared
     }
 
-    /// Take the scope token away as Backspace would.
     fn remove_scope_token(&mut self) {
         if self.field.scope_token().is_some() {
             self.field.set_scope_token(None);
@@ -198,7 +183,7 @@ impl ActionPalette {
         changed
     }
 
-    /// The band the host paints its own controls into.
+    /// The band the host paints its controls into.
     #[must_use]
     pub fn filter_strip_rect(&self) -> Rect {
         let row = self.input_row_rect();
@@ -212,18 +197,15 @@ impl ActionPalette {
         BAND_HEIGHT * self.layout_scale()
     }
 
-    /// The tallest the result list may grow before it scrolls, in logical
-    /// pixels. The host sets it from the display it shows the palette on.
+    /// The tallest the result list may grow before it scrolls, in logical pixels.
     pub fn set_max_list_height(&mut self, height: f64) {
         self.max_list_height = Some(height.max(0.0));
         self.structure_dirty = true;
         self.sync_list();
     }
 
-    /// The width the card takes, in logical pixels: the host sets it from
-    /// the room it shows the palette in, so the card follows the window or
-    /// the display rather than its own size. `None` leaves it its own
-    /// width.
+    /// The width the card takes, in logical pixels: the host sets it from the room it shows the palette
+    /// in, so the card follows the window or the display rather than its size.
     pub fn set_max_width(&mut self, width: Option<f64>) {
         self.max_width = width.map(|width| width.max(0.0));
         self.structure_dirty = true;
@@ -243,16 +225,15 @@ impl ActionPalette {
         }
     }
 
-    /// Whether more results are still on their way (an index whose code is
-    /// still loading): an empty list then says "Searching…" instead of
-    /// "No results".
+    /// Whether more results are still on their way (an index whose code is still loading): an empty
+    /// list then says "Searching…" instead of "No results".
     pub fn set_searching(&mut self, searching: bool) {
         self.searching = searching;
         self.sync_empty_state();
     }
 
     /// Every row the host fed shows unless the host lets the palette narrow
-    /// by the query. A host doing its own matching turns narrowing off, so
+    /// by the query. A host doing its matching turns narrowing off, so
     /// hits whose labels don't literally spell the query aren't hidden by
     /// fuzzy scoring.
     pub fn set_bypass_fuzzy(&mut self, on: bool) {
@@ -261,8 +242,7 @@ impl ActionPalette {
         self.structure_dirty = true;
     }
 
-    /// Tell the palette which modifiers are down, for a host that routes
-    /// modifier changes itself.
+    /// Tell the palette which modifiers are down, for a host that routes modifier changes itself.
     pub fn set_held_modifiers(&mut self, held: winit::keyboard::ModifiersState) -> bool {
         let changed = self.held != held;
         self.held = held;
@@ -276,18 +256,15 @@ impl ActionPalette {
         ActivationModifier::of(self.held)
     }
 
-    /// The modifier held as the last row was chosen, which says where it opens: the person may
-    /// have let go of it by the time the host carries the choice out.
+    /// The modifier held as the last row was chosen, which says where it opens: the person may have let
+    /// go of it by the time the host has the choice out.
     #[must_use]
     pub fn chosen_with(&self) -> Option<ActivationModifier> {
         self.chosen_with
     }
 
-    /// The chips a host feeding its own rows offers above them: it declared
-    /// the facets, so it is the one that can narrow its rows by what is
-    /// picked ([`Self::picked_filters`]). Unlike the facets an app's own rows
-    /// declare, these are the host's whole list: what it stops offering is
-    /// no longer a chip.
+    /// The chips a host feeding its rows offers above them: it declared the facets, so it is the one
+    /// that can narrow its rows by what is picked ([`Self::picked_filters`]).
     pub fn set_host_facets(&mut self, facets: Vec<Facet>) {
         if self.facets == facets {
             return;
@@ -298,8 +275,8 @@ impl ActionPalette {
         self.structure_dirty = true;
     }
 
-    /// The chips picked among a host's facets: what its rows are narrowed
-    /// by, as the host reads it to feed the ones that match.
+    /// The chips picked among a host's facets: what its rows are narrowed by, as the host reads it to
+    /// feed the ones that match.
     #[must_use]
     pub fn picked_filters(&self) -> &[FacetFilter] {
         &self.picked_filters
@@ -315,9 +292,8 @@ impl ActionPalette {
             .map(|entry| entry.id.as_str())
     }
 
-    /// Show host feedback on the selected row using the shared status pill and
-    /// description, keeping the query, the order and the selection so an
-    /// unsuccessful invocation can be corrected or retried.
+    /// Show host feedback on the selected row using the shared status pill and description, keeping the
+    /// query, the order and the selection so an unsuccessful invocation can be corrected or retried.
     pub fn set_selected_status(
         &mut self,
         badge: impl Into<String>,
@@ -353,8 +329,7 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The row `i` of the list, in window coordinates; `None` when it is
-    /// scrolled out of view.
+    /// The row `i` of the list, in window coordinates; `None` when it is scrolled out of view.
     #[must_use]
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         if i >= self.host_visible.len() || self.shows_field_only() {
@@ -398,10 +373,19 @@ impl ActionPalette {
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.sync_list();
+        self.place_field();
     }
 
-    /// The size the card asks for, as layout measures it: the rows it holds,
-    /// up to the tallest list the host allows.
+    /// Place the query field, and with it the controls inside it — the scope token, the count, "Search
+    /// everywhere", the clear button — where this card puts them.
+    pub(crate) fn place_field(&mut self) {
+        let theme = self.layout_theme.clone();
+        let row = self.input_row_rect();
+        self.field.apply_layout_external(row, &theme);
+    }
+
+    /// The size the card asks for, as layout measures it: the rows it has, up to the tallest list the
+    /// host allows.
     #[must_use]
     pub fn desired_size(&self) -> (f32, f32) {
         if self.shows_field_only() {
@@ -421,40 +405,35 @@ impl ActionPalette {
         )
     }
 
-    /// The card's height less its result list: the field, the band and the
-    /// padding around them.
+    /// The card's height less its result list: the field, the band and the padding around them.
     #[must_use]
     pub fn chrome_height(&self) -> f64 {
         PADDING + (INPUT_HEIGHT * self.layout_scale()) + PADDING + self.band_block() + PADDING
     }
 
-    /// How many result rows a full list holds: what a host asks its sources
-    /// for, so the first screen is full.
+    /// How many result rows a full list has: what a host asks its sources for, so the first screen is
+    /// full.
     #[must_use]
     pub fn entry_row_capacity(&self) -> usize {
         self.entry_row_capacity_with(0)
     }
 
-    /// How many result rows a full list holds under the headers of `groups`
-    /// groups: a header takes room a row would have held, so a list with
-    /// four groups holds fewer rows than one with two.
+    /// How many result rows a full list has under the headers of `groups` groups: a header takes room a
+    /// row would have held, so a list with four groups has fewer rows than one with two.
     #[must_use]
     pub fn entry_row_capacity_with(&self, groups: usize) -> usize {
         self.entry_row_capacity_for(groups, self.show_two_lines())
     }
 
-    /// How many rows a full list holds under the headers of `groups` groups
-    /// when its rows are `two_line` tall: for the rows a query is about to
-    /// put there, which the palette does not hold yet.
+    /// How many rows a full list has under the headers of `groups` groups when its rows are `two_line`
+    /// tall: for the rows a query is about to put there, which the palette does not hold yet.
     #[must_use]
     pub fn entry_row_capacity_for(&self, groups: usize, two_line: bool) -> usize {
         self.results.row_capacity(self.list_cap(), groups, two_line)
     }
 
-    /// Whether the rows `entries` stand inside the list, under the headers
-    /// of `groups` groups: every line at its own band, against the cap the
-    /// card gives its rows. A list that holds more is cut at the card's
-    /// edge, so a host asks this before it hands its rows over.
+    /// Whether the rows `entries` stand inside the list, under the headers of `groups` groups: every
+    /// line at its band, against the cap the card gives its rows.
     #[must_use]
     pub fn entries_fit(&self, entries: &[CommandEntry], groups: usize) -> bool {
         let two_lines: Vec<bool> = entries
@@ -464,16 +443,14 @@ impl ActionPalette {
         self.results.height_for(&two_lines, groups) <= self.list_cap() + 0.5
     }
 
-    /// The result list's rect (the card under its field and band, with the
-    /// rows' padding), from the card's.
+    /// The result list's rect (the card under its field and band, with the rows' padding), from the
+    /// card's.
     pub(crate) fn sync_list(&mut self) {
-        // Before the first layout there is nothing to place the rows in.
         if self.rect.height() > 0.0 {
             self.results.set_rect(self.list_rect());
         }
     }
 
-    /// The result list's rect, inside the card's padding.
     fn list_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PADDING,
@@ -495,6 +472,7 @@ impl ActionPalette {
     pub(crate) fn host_prepare(&mut self, theme: &Theme) {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.layout_theme = theme.clone();
         self.results.resolve_metrics(theme);
         self.results
             .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
@@ -512,33 +490,25 @@ impl ActionPalette {
         self.text_scale * self.ui_scale
     }
 
-    /// The card's width: the host's room for it, else its own.
     fn card_width(&self) -> f64 {
         self.max_width
             .unwrap_or_else(|| CARD_WIDTH * self.layout_scale())
     }
 
-    /// The list's cap: what the host allows, else ten rows.
     fn list_cap(&self) -> f64 {
         self.max_list_height
             .unwrap_or_else(|| DEFAULT_LIST_ROWS * self.row_height())
     }
 
-    /// The whole rows from the top that fit under the cap: a cap that cut a
-    /// row in half would leave a sliver nothing paints.
     fn fitted_list_height(&self) -> f64 {
         self.results
             .fitted_height(self.list_cap().max(self.row_height()))
     }
 
-    /// The list's nominal row: what capacity, the default cap and a wheel
-    /// notch count in. Each row is as tall as its own lines.
     fn row_height(&self) -> f64 {
         self.results.row_band(self.show_two_lines())
     }
 
-    /// Whether the rows the palette shows stand two lines tall: one of them
-    /// says something under its name.
     fn show_two_lines(&self) -> bool {
         self.visible_entries()
             .iter()
@@ -549,7 +519,6 @@ impl ActionPalette {
         BAND_HEIGHT * self.layout_scale()
     }
 
-    /// Room the band takes in the card: its rows and the padding under them.
     fn band_block(&self) -> f64 {
         if self.shows_field_only() || !self.band_shown {
             return 0.0;
@@ -557,10 +526,6 @@ impl ActionPalette {
         self.band_height() + PADDING
     }
 
-    /// The host's rows as the result list's groups: a run of rows sharing a
-    /// group under its header with the group's count, rows in a section under
-    /// the section's header with their groups as captions, and a row with
-    /// neither running on under the rows above it.
     fn host_groups(&self) -> Vec<SearchGroup> {
         let mut groups: Vec<SearchGroup> = Vec::new();
         let mut current: Option<&str> = None;
@@ -597,8 +562,6 @@ impl ActionPalette {
                     && current != Some(group)
                 {
                     current = Some(group);
-                    // Fall back to the contiguous run when the host gives no
-                    // uncapped total.
                     let total = entry.group_total.unwrap_or_else(|| {
                         self.host_visible.get(entry_i..).map_or(0, |rest| {
                             rest.iter()
@@ -633,12 +596,10 @@ impl ActionPalette {
         groups
     }
 
-    /// A host row as a result list row.
     fn host_result(&self, entry: &CommandEntry) -> SearchResult {
         entry.result(entry.group.clone().unwrap_or_default(), self.platform)
     }
 
-    /// Which of the host's rows the query lets through, and the list they make.
     fn planned_host_rows(&mut self) {
         self.host_visible.clear();
         let rows = self.host_rows.as_deref().unwrap_or_default();
@@ -675,7 +636,7 @@ impl ActionPalette {
 
     /// What the empty list says: searching, nothing yet, or no match for the
     /// query with what to try instead. What to try instead belongs to a query
-    /// that matched nothing: a card with nothing typed yet says what it holds
+    /// that matched nothing: a card with nothing typed yet says what it has
     /// instead, never how to spell.
     fn sync_empty_state(&mut self) {
         self.results.set_empty_text(self.empty_results_title());
@@ -684,13 +645,10 @@ impl ActionPalette {
             .set_empty_hint(nothing_matched.then(|| widget_text("palette-no-results-hint")));
     }
 
-    /// Whether the card says it is still searching: the host set
-    /// [`Self::set_searching`] and a query is typed, or the rows it ranks
-    /// itself still wait for the index's code. What a desk publishes as a
-    /// search still searching.
+    /// Whether the card says it is still searching: the host set [`Self::set_searching`] and a query is
+    /// typed, or the rows it ranks itself still wait for the index's code.
     #[must_use]
     pub fn is_searching(&self) -> bool {
-        // Rows this palette ranks itself wait for the index's code too.
         (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
             && !self.query().is_empty()
     }
@@ -705,8 +663,8 @@ impl ActionPalette {
         }
     }
 
-    /// Choosing row `id`: a row that asks for a value collects it first; any
-    /// other hands its id back to the host.
+    /// Choosing row `id`: a row that asks for a value collects it first; any other hands its id back to
+    /// the host.
     pub(crate) fn resolve_host_row(&mut self, id: &str) {
         let Some(entry) = self
             .host_rows
@@ -738,7 +696,6 @@ impl ActionPalette {
         }
     }
 
-    /// Repurpose the field to collect `spec`'s value for host row `id`.
     fn begin_host_step(&mut self, id: String, spec: ArgumentSpec) {
         if self.host_step.is_none() {
             self.saved_host_query = self.field.value().to_owned();
@@ -769,7 +726,6 @@ impl ActionPalette {
         if self.host_step.take().is_none() {
             return;
         }
-        // A secret is wiped while the field still knows it is one.
         self.field.set_query("");
         self.field
             .set_input_kind(crate::widget::TextInputKind::Search, false);
@@ -788,8 +744,6 @@ impl ActionPalette {
         self.host_step.is_some()
     }
 
-    /// The keys a host step owns: Enter confirms, Escape backs out, a number
-    /// steps, and everything else edits the value.
     fn handle_host_arg_key(&mut self, key: &Key, handled: &mut bool) {
         *handled = true;
         match key {
@@ -810,7 +764,6 @@ impl ActionPalette {
                 self.argument_cancelled = true;
                 self.end_host_step();
             }
-            // No list navigation while typing an argument; a number steps.
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => {
                 let up = matches!(key, Key::Named(NamedKey::ArrowUp));
                 let Some(kind) = self.host_step.as_ref().map(|step| step.kind) else {
@@ -825,8 +778,6 @@ impl ActionPalette {
         }
     }
 
-    /// ←/→ on a selected adjustable row with the caret at the query's end
-    /// steps its value instead of moving the caret.
     fn step_selected(&mut self, key: &Key) -> bool {
         let direction: i8 = match key {
             Key::Named(NamedKey::ArrowRight) => 1,
@@ -852,15 +803,14 @@ impl ActionPalette {
         true
     }
 
-    /// The field holds the keyboard exactly while the palette does.
+    /// The field has the keyboard exactly while the palette does.
     pub(crate) fn sync_field_focus(&mut self) {
         if self.field.is_focused() != self.is_presented() {
             self.field.set_focused(self.is_presented());
         }
     }
 
-    /// Paint the card over the host's rows: the field, the band its host
-    /// paints into, and the list.
+    /// Paint the card over the host's rows: the field, the band its host paints into, and the list.
     pub(crate) fn draw_host(
         &mut self,
         scene: &mut Scene,
@@ -874,15 +824,7 @@ impl ActionPalette {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         self.host_prepare(theme);
-        // The one floating card: the opaque panel ground and its edges.
-        // Opaque, as the card is rows of small text: a tinted backdrop let the
-        // window under it read through them. Only the scrim around it lets the
-        // desktop show.
         crate::widget::floating_surface::paint_card_body(scene, transform, self.rect, theme);
-        // A floating panel whose header slot holds the query field, embedded:
-        // the card's own first row, not a field boxed inside it. Results, when
-        // there are any, are set off from it by the panel's hairline under the
-        // header.
         let row_rect = self.input_row_rect();
         let panel = crate::widget::FloatingPanelFace::new()
             .header(row_rect.height())
@@ -898,7 +840,6 @@ impl ActionPalette {
             );
         }
         self.sync_field_focus();
-        self.field.apply_layout_external(row_rect);
         self.field
             .draw_child(scene, transform, text_renderer, theme, presence);
         if self.shows_field_only() {
@@ -931,9 +872,6 @@ impl ActionPalette {
             self.set_held_modifiers(modifiers.state());
             return false;
         }
-        // A key carries the modifiers held as it is pressed: a host that hands the palette no
-        // change of them (the desktop's search, over the shell's own keys) still opens a row
-        // where the held modifier asks.
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             self.set_held_modifiers(ctx.modifiers.state());
         }
@@ -941,7 +879,6 @@ impl ActionPalette {
             && self.rect.contains(self.last_cursor)
             && self.host_step.is_none()
         {
-            // A notch moves the list a row.
             let dy = match *delta {
                 MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.row_height(),
                 MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
@@ -957,7 +894,6 @@ impl ActionPalette {
             event,
             WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
         ) {
-            // Presses on the field place its caret or take the scope token.
             let pressed = matches!(event, WindowEvent::MouseInput { .. });
             if !pressed || self.input_row_rect().contains(self.last_cursor) {
                 self.edit_host_field(event, ctx);
@@ -985,8 +921,6 @@ impl ActionPalette {
         if *element_state != ElementState::Pressed {
             return false;
         }
-        // Submission needs a fresh press, including after loading or opening
-        // a prompt.
         if *repeat && matches!(logical_key, Key::Named(NamedKey::Enter)) {
             *ctx.handled = true;
             return true;
@@ -996,8 +930,6 @@ impl ActionPalette {
         let ctrl = mods.control_key() || mods.super_key();
         if self.host_step.is_some() {
             self.handle_host_arg_key(logical_key, ctx.handled);
-            // Enter, Escape and a number's arrows belong to the step alone;
-            // everything else edits the value in the field.
             if !matches!(
                 logical_key,
                 Key::Named(
@@ -1036,8 +968,7 @@ impl ActionPalette {
         true
     }
 
-    /// Moves through the results; `true` when the key moved the selection or
-    /// belonged to the list.
+    /// Moves through the results; `true` when the key moved the selection or belonged to the list.
     pub fn handle_list_key(&mut self, key: &Key, shift: bool, ctrl: bool) -> bool {
         let caret = self.field.selection_anchor_focus_or_caret();
         let end = self.field.value().len();
@@ -1050,7 +981,6 @@ impl ActionPalette {
         owned
     }
 
-    /// Pointer moves pick the row under them; a press chooses it.
     fn host_pointer_event(
         &mut self,
         event: &WindowEvent,
@@ -1059,8 +989,6 @@ impl ActionPalette {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            // The pointer picks the row it is over where it stands: a row
-            // half in view is not scrolled out from under it.
             if let Some(row) = self.row_at(self.last_cursor) {
                 self.results.set_cursor_in_place(row);
                 *ctx.handled = true;
@@ -1073,8 +1001,6 @@ impl ActionPalette {
             ..
         } = event
         {
-            // A chip above the rows narrows them, as it does over an app's
-            // own rows.
             if let Some(filter) = self.facet_chip_at(self.last_cursor) {
                 self.toggle_facet(&filter);
                 *ctx.handled = true;
@@ -1090,7 +1016,6 @@ impl ActionPalette {
         false
     }
 
-    /// Hand `event` to the field; a query it edited narrows the list.
     fn edit_host_field(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
@@ -1119,9 +1044,8 @@ impl ActionPalette {
         }
     }
 
-    /// Narrow the host's rows by what the field holds now, after text was
-    /// committed into it from outside the keyboard: the same the person's
-    /// typing does.
+    /// Narrow the host's rows by what the field has now, after text was committed into it from outside
+    /// the keyboard: the same the person's typing does.
     pub(crate) fn committed_host_text(&mut self) {
         if self.host_step.is_none() {
             self.planned_host_rows();
@@ -1129,8 +1053,6 @@ impl ActionPalette {
         self.structure_dirty = true;
     }
 
-    /// The field a host's palette asks in: the card's own first row, embedded
-    /// in its header, with no clear button (Escape clears).
     fn host_field(&self) -> SearchField {
         let mut field = self
             .field_source
@@ -1170,8 +1092,7 @@ impl ActionPalette {
         self.results.set_focused(false);
     }
 
-    /// The query the host's rows were narrowed by, which a step keeps aside
-    /// while it uses the field.
+    /// The query the host's rows were narrowed by, which a step keeps aside while it uses the field.
     pub(crate) fn host_query(&self) -> &str {
         if self.host_step.is_some() {
             &self.saved_host_query
@@ -1192,8 +1113,8 @@ impl ActionPalette {
         self.structure_dirty = true;
     }
 
-    /// The accessibility tree of the host-driven card: the query as a text
-    /// field, the results, and the scope token when it is a control.
+    /// The accessibility tree of the host-driven card: the query as a text field, the results, and the
+    /// scope token when it is a control.
     pub(crate) fn host_accessibility(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
@@ -1210,8 +1131,6 @@ impl ActionPalette {
         if !open {
             return node;
         }
-        // The caret makes the field a text field for assistive technology
-        // (AT-SPI Text and EditableText), not only a labelled value.
         let (anchor, caret) = self.field.selection_anchor_focus_or_caret();
         let secret = self
             .host_step
@@ -1285,8 +1204,6 @@ impl ActionPalette {
         if target == QUERY_TARGET {
             return match action {
                 Action::Focus | Action::Activate => true,
-                // Assistive technology and agents set the query as a value,
-                // exactly as typing it would.
                 Action::SetValue(value) if self.host_step.is_none() => {
                     self.set_query(value);
                     true
@@ -1350,7 +1267,6 @@ impl ActionPalette {
     pub(crate) fn set_host_platform(&mut self, conventions: PlatformConventions) {
         if self.platform != conventions {
             self.platform = conventions;
-            // Keycaps follow the platform's notation.
             self.results.replace_groups(self.host_groups());
         }
     }

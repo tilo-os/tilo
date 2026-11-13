@@ -9,25 +9,19 @@
 
 use crate::hardware::{DisplayConfig, DisplayOutputSnapshot, OutputConfig, OutputMode};
 
-/// The scales the Settings pane offers: 100 % to 200 % in quarter steps
-/// ([`MIN_SCALE`](crate::display_scale::MIN_SCALE), [`MAX_SCALE`](crate::display_scale::MAX_SCALE), [`SCALE_STEP`](crate::display_scale::SCALE_STEP)).
 const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 
-/// The scales the Settings pane offers.
 #[must_use]
 pub fn scale_choices() -> Vec<f64> {
     SCALES.to_vec()
 }
 
-/// A rate as a person writes it: `60`, `59.94`.
 #[must_use]
 pub fn hz_label(refresh_mhz: u32) -> String {
     let hz = format!("{:.2}", f64::from(refresh_mhz) / 1000.0);
     hz.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// The output `connector` names (by persisted key or by label), else the
-/// primary one, else the built-in panel, else the first.
 pub fn target<'a>(
     outputs: &'a [DisplayOutputSnapshot],
     base: &DisplayConfig,
@@ -56,7 +50,6 @@ pub fn target<'a>(
         .ok_or_else(|| "no display is connected".to_owned())
 }
 
-/// The refresh rates (milli-Hz) `output` offers at the resolution it runs.
 #[must_use]
 pub fn refresh_choices(output: &DisplayOutputSnapshot) -> Vec<u32> {
     let current = output.current_mode;
@@ -91,8 +84,6 @@ fn entry<'a>(next: &'a mut DisplayConfig, output: &DisplayOutputSnapshot) -> &'a
         .or_insert_with(|| output.unconfigured())
 }
 
-/// `base` with the display `connector` (the default one when `None`) at
-/// `scale`, every other choice kept.
 pub fn plan_scale(
     outputs: &[DisplayOutputSnapshot],
     base: &DisplayConfig,
@@ -115,8 +106,6 @@ pub fn plan_scale(
     validated(outputs, next)
 }
 
-/// `base` with the display `connector` (the default one when `None`) at the
-/// resolution it runs now and `hertz`, every other choice kept.
 pub fn plan_refresh(
     outputs: &[DisplayOutputSnapshot],
     base: &DisplayConfig,

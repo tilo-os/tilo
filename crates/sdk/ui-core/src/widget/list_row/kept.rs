@@ -4,29 +4,25 @@
 use super::ListRow;
 use crate::widget::checkbox::CheckMotion;
 
-/// What a row leaves for the one a rebuild puts in its place: how far its
-/// leading checkbox had come, so a change that caused the rebuild plays
-/// from where the box was rather than from its resting state.
+/// What a row leaves for the one a rebuild puts in its place.
 pub(super) struct KeptRow {
     pub(super) check: CheckMotion,
 }
 
 impl ListRow {
-    /// What names the row across rebuilds: the id of the item it shows, so a
-    /// successor standing somewhere else (a row a person added or removed)
-    /// still picks its own mark up.
+    /// What names the row across rebuilds: the id of the item it shows, so a successor
+    /// standing somewhere else (a row a person added or removed) still picks its own mark
+    /// up.
     pub(super) fn identity(&self) -> Option<String> {
         Some(self.activation.id().to_owned())
     }
 
-    /// Go on from the row a rebuild dropped: its mark, on its way or at
-    /// rest, whatever the row now shows.
+    /// Goes on from the row a rebuild dropped.
     pub(super) fn take_up(&mut self, kept: KeptRow) {
         self.check = kept.check;
     }
 }
 
-/// A row a rebuild drops leaves its mark for the one put in its place.
 impl Drop for ListRow {
     fn drop(&mut self) {
         let check = std::mem::take(&mut self.check);

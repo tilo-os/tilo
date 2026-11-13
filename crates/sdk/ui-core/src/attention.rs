@@ -5,7 +5,7 @@
 //!
 //! * something that **needs a decision** waits in [`items`], one row each, with the app that
 //!   asks (icon *and* name), what it is about, since when, and **one** thing the person can do.
-//!   It never expires on its own; it waits, is seen, is deferred (and the count of what is
+//!   It never expires on its; it waits, is seen, is deferred (and the count of what is
 //!   deferred stays on screen) or is acted on. A row that cannot act is not a row.
 //! * something that **just happened** is written to the ledger ([`ledger`]): append-only,
 //!   attributed, never on a timer, never stealing focus, read by Activity's History beside the
@@ -48,8 +48,8 @@ use crate::wake::WakeHandle;
 /// The chord that opens Needs you, wherever the person is.
 pub const CHORD: &str = "ctrl+shift+a";
 
-/// An app whose own identity a raised notice does not carry: one raised by
-/// the toolkit itself, for a failure it saw (a job that could not finish).
+/// An app whose own identity a raised notice does not carry: one raised by the toolkit itself, for a
+/// failure it saw (a job that could not finish).
 pub const UNKNOWN_APP: &str = "so.tilo.system";
 
 thread_local! {
@@ -82,7 +82,7 @@ pub fn entries() -> Vec<Entry> {
     ledger::entries()
 }
 
-/// How many entries the ledger holds.
+/// How many entries the ledger has.
 #[must_use]
 pub fn recorded() -> usize {
     ledger::len()

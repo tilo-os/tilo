@@ -1,9 +1,9 @@
-//! Package sources on disk: the `.tl` files of a package directory, the packages it imports
-//! found among its siblings, and compiling them in dependency order.
+//! Package sources on disk: the `.tl` files of a package directory, the packages it imports found among
+//! its siblings, and compiling them in dependency order.
 //!
-//! A package is a directory. Every `.tl` file directly in it belongs to the package's one
-//! module; exactly one of them starts with the `app` header. The ids lock is one `app.ids` per
-//! package, next to the sources.
+//! A package is a directory. Every `.tl` file directly in it belongs to the package's one module;
+//! exactly one of them starts with the `app` header. The ids lock is one `app.ids` per package, next to
+//! the sources.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -16,31 +16,25 @@ use crate::meta::PackageMeta;
 use crate::package::{Compiled, compile_package_source_with};
 use crate::parser::parse_file_at;
 
-/// The ids lock's file name in a package directory.
 pub const IDS_FILE: &str = "app.ids";
-/// The extension of source files.
 pub const EXTENSION: &str = "tl";
 
-/// One source file of a package.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceFile {
-    /// The path diagnostics name the file by.
     pub path: String,
     pub text: String,
 }
 
-/// The source files of one package. Their order does not matter: the compiler reads them in
-/// path order.
+/// The source files of one package. Their order does not matter: the compiler reads them in path order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PackageSource {
     pub files: Vec<SourceFile>,
-    /// The package's catalogues, `(locale, Fluent text)`: every `locales/<locale>.ftl` beside
-    /// its sources (i18n.md). They travel in the compiled module.
+    /// The package's catalogues, `(locale, Fluent text)`: every `locales/<locale>.ftl` beside its sources
+    /// (i18n.md). They travel in the compiled module.
     pub locales: Vec<(String, String)>,
 }
 
 impl PackageSource {
-    /// A package of the given `(path, text)` files.
     #[must_use]
     pub fn new(files: impl IntoIterator<Item = (String, String)>) -> Self {
         Self {
@@ -52,20 +46,17 @@ impl PackageSource {
         }
     }
 
-    /// The package with the catalogues `(locale, Fluent text)`.
     #[must_use]
     pub fn with_locales(mut self, locales: impl IntoIterator<Item = (String, String)>) -> Self {
         self.locales = locales.into_iter().collect();
         self
     }
 
-    /// A package of one file, `app.tl`.
     #[must_use]
     pub fn single(text: &str) -> Self {
         Self::new([("app.tl".to_string(), text.to_string())])
     }
 
-    /// Every `.tl` file directly in `dir`, named by `dir` joined with the file name.
     pub fn read_dir(dir: &Path) -> Result<Self, String> {
         let files = source_paths(dir)?;
         if files.is_empty() {
@@ -83,8 +74,8 @@ impl PackageSource {
         Ok(Self::new(out).with_locales(read_locales(dir)?))
     }
 
-    /// The app id the package declares and the app ids it imports with `use`, read leniently:
-    /// files that do not parse contribute what they could.
+    /// The app id the package declares and the app ids it imports with `use`, read leniently: files that
+    /// do not parse contribute what they could.
     #[must_use]
     pub fn header(&self) -> (Option<String>, Vec<String>) {
         let (app, _, uses) = self.header_with_previously();
@@ -117,8 +108,8 @@ impl PackageSource {
     }
 }
 
-/// The catalogues in `dir`'s `locales/`, `(locale, Fluent text)` by file stem, sorted; none
-/// when it has no such directory.
+/// The catalogues in `dir`'s `locales/`, `(locale, Fluent text)` by file stem, sorted; none when it has
+/// no such directory.
 pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
     let locales = dir.join(crate::messages::LOCALES_DIR);
     let Ok(entries) = std::fs::read_dir(&locales) else {
@@ -142,7 +133,6 @@ pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// The `.tl` files directly in `dir`, sorted.
 pub fn source_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out: Vec<PathBuf> = entries
@@ -163,14 +153,13 @@ pub fn read_ids(dir: &Path) -> Result<IdsLock, String> {
     }
 }
 
-/// What the sources of some packages look like on disk: every `.tl` file with its modification
-/// time and length. Two equal stamps mean nothing a compile reads changed (the ids lock is
-/// left out: compiling writes it).
+/// What the sources of some packages look like on disk: every `.tl` file with its modification time and
+/// length. Two equal stamps mean nothing a compile reads changed (the ids lock is left out: compiling
+/// writes it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stamp(Vec<(PathBuf, Option<SystemTime>, u64)>);
 
 impl Stamp {
-    /// The stamp of the packages in `dirs` now. A directory that cannot be read stamps empty.
     #[must_use]
     pub fn of(dirs: &[PathBuf]) -> Self {
         let mut out = Vec::new();
@@ -188,9 +177,9 @@ impl Stamp {
 
 /// The package directories `root` needs, dependencies first and `root` last.
 ///
-/// Imports (`use <app id>`) are looked up among the package directories in `search`: each entry
-/// is a package directory itself or a directory of package directories. With an empty `search`,
-/// `root`'s siblings are searched.
+/// Imports (`use <app id>`) are looked up among the package directories in `search`: each entry is a
+/// package directory itself or a directory of package directories. With an empty `search`, `root`'s
+/// siblings are searched.
 pub fn dependency_order(root: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     dependency_order_with(root, search, &[])
 }
@@ -209,8 +198,8 @@ pub fn search_of(root: &Path, search: &[PathBuf]) -> Vec<PathBuf> {
     }
 }
 
-/// [`dependency_order`], where an import of one of the apps `provided` is no package directory
-/// but metadata given otherwise: a native app's published types, an already built module.
+/// [`dependency_order`], where an import of one of the apps `provided` is no package directory but
+/// metadata given otherwise: a native app's published types, an already built module.
 ///
 /// # Errors
 /// As [`dependency_order`].
@@ -221,8 +210,8 @@ pub fn dependency_order_with(
 ) -> Result<Vec<PathBuf>, String> {
     let search = &search_of(root, search);
     let mut index: HashMap<String, PathBuf> = HashMap::new();
-    // The ids packages were published under before: `use` of one finds the package, unless a
-    // package still has it as its own id.
+    // The ids packages were published under before: `use` of one finds the package, unless a package
+    // still has it as its own id.
     let mut earlier: HashMap<String, PathBuf> = HashMap::new();
     let mut headers: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut known = |dir: &Path,
@@ -332,7 +321,6 @@ impl Visit<'_> {
     }
 }
 
-/// A package compiled from its directory.
 #[derive(Clone, Debug)]
 pub struct BuiltPackage {
     pub dir: PathBuf,
@@ -340,12 +328,9 @@ pub struct BuiltPackage {
     pub compiled: Compiled,
 }
 
-/// Why packages did not compile.
 #[derive(Clone, Debug)]
 pub enum BuildError {
-    /// A package could not be read.
     Read(String),
-    /// A package has errors; each diagnostic names its file.
     Diagnostics {
         dir: PathBuf,
         diags: Vec<Diagnostic>,
@@ -365,9 +350,9 @@ impl std::fmt::Display for BuildError {
     }
 }
 
-/// Compiles the package in `root` and the packages it uses, found in `search`
-/// ([`search_of`]), in dependency order: an import of one of the apps `published` holds is that
-/// metadata (a native app's published types, an already built module), visible to every package.
+/// Compiles the package in `root` and the packages it uses, found in `search` ([`search_of`]), in
+/// dependency order: an import of one of the apps `published` holds is that metadata (a native app's
+/// published types, an already built module), visible to every package.
 pub fn compile_package(
     root: &Path,
     search: &[PathBuf],
@@ -379,15 +364,13 @@ pub fn compile_package(
     compile_dirs(&dirs, published, rng)
 }
 
-/// The apps `published` holds: what [`dependency_order_with`] takes as `provided`.
 #[must_use]
 pub fn apps_of(published: &[PackageMeta]) -> Vec<String> {
     published.iter().map(|meta| meta.app.clone()).collect()
 }
 
-/// Compiles the packages in `dirs` in order, each against `extra` (already built modules'
-/// metadata) and the packages before it: pass [`dependency_order`]'s result. Nothing is
-/// written.
+/// Compiles the packages in `dirs` in order, each against `extra` (already built modules' metadata) and
+/// the packages before it: pass [`dependency_order`]'s result. Nothing is written.
 ///
 /// # Errors
 /// The first package that cannot be read or has errors.
@@ -418,45 +401,71 @@ pub fn compile_dirs(
     Ok(out)
 }
 
-/// Writes a built package's ids lock back when it changed. Returns whether it wrote.
-///
-/// # Errors
-/// The lock cannot be written.
+/// Where a package keeps the catalogue of `locale`: `locales/<locale>.ftl`.
+#[must_use]
+pub fn locale_path(dir: &Path, locale: &str) -> PathBuf {
+    dir.join(crate::messages::LOCALES_DIR)
+        .join(format!("{locale}.ftl"))
+}
+
 /// Where a package keeps its source catalogue: `locales/en-US.ftl`.
 #[must_use]
 pub fn catalogue_path(dir: &Path) -> PathBuf {
-    dir.join(crate::messages::LOCALES_DIR)
-        .join(format!("{}.ftl", crate::messages::SOURCE_LOCALE))
+    locale_path(dir, crate::messages::SOURCE_LOCALE)
 }
 
-/// The package's source catalogue as its source says it should read.
+fn committed_catalogue(dir: &Path) -> String {
+    std::fs::read_to_string(catalogue_path(dir)).unwrap_or_default()
+}
+
 #[must_use]
 pub fn catalogue(built: &BuiltPackage) -> String {
-    let committed = std::fs::read_to_string(catalogue_path(&built.dir)).unwrap_or_default();
+    let committed = committed_catalogue(&built.dir);
     crate::messages::source_catalogue_keeping(&built.compiled.meta, &committed)
 }
 
-/// Whether the package's committed source catalogue reads as its source says.
 #[must_use]
 pub fn catalogue_current(built: &BuiltPackage) -> bool {
     std::fs::read_to_string(catalogue_path(&built.dir)).is_ok_and(|old| old == catalogue(built))
 }
 
-/// Writes the package's source catalogue; `true` when it changed.
+/// Writes the package's source catalogue, and drops from its translations the words the source stopped
+/// saying (a translation has every word of its source and no more); `true` when the source catalogue
+/// changed.
+///
+/// # Errors
+/// A catalogue cannot be written.
 pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
     if catalogue_current(built) {
         return Ok(false);
     }
     let path = catalogue_path(&built.dir);
+    let before = committed_catalogue(&built.dir);
+    let after = catalogue(built);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, catalogue(built)).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(&path, &after).map_err(|e| format!("{}: {e}", path.display()))?;
+    let gone = crate::messages::gone_keys(&before, &after);
+    if gone.is_empty() {
+        return Ok(true);
+    }
+    for (locale, text) in read_locales(&built.dir)? {
+        if locale == crate::messages::SOURCE_LOCALE {
+            continue;
+        }
+        let kept = crate::messages::pruned(&text, &gone);
+        if kept == text {
+            continue;
+        }
+        let path = locale_path(&built.dir, &locale);
+        std::fs::write(&path, kept).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     Ok(true)
 }
 
-/// Whether the package's committed ids lock is what this build writes: the same entries, in the
-/// order the tool writes them.
+/// Whether the package's committed ids lock is what this build writes: the same entries, in the order the
+/// tool writes them.
 #[must_use]
 pub fn ids_current(built: &BuiltPackage) -> bool {
     std::fs::read_to_string(built.dir.join(IDS_FILE))

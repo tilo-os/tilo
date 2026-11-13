@@ -1,28 +1,6 @@
-//! `Table` — a CRDT-native **editable grid**, not a read-oriented list view
-//! like [`crate::widget::data_table::DataTable`]: the user types into cells and adds and removes rows
-//! and columns from affordances in the gutters. The widget only reads the document: every change
-//! is a [`TableEdit`] its owner takes ([`Table::take_edits`]) and submits as an action, applying
-//! it with [`apply`].
-//!
-//! # Data model (under the widget's `path`, a Map)
-//!
-//! * `rows`   — `List<Str>`: the stable row ids, in display order.
-//! * `cols`   — `List<Str>`: the stable column ids, in display order.
-//! * `cells`  — `Map<Str, Text>`: cell content, keyed `"{row_id}|{col_id}"`.
-//! * `widths` — `Map<Str, F64>`: per-column pixel width, keyed by column id.
-//! * `header` — `Bool`: render the first row as a header band.
-//! * `seq`    — `Int`: monotonic id counter (combined with the actor id).
-//!
-//! Row and column ids are stable and never renumbered on insert or delete — only the order lists
-//! change, so inserting a column in the middle is one list insert plus one empty `Text` per row,
-//! merging cleanly with a concurrent edit to any other cell.
-//!
-//! # Rendering
-//!
-//! Each cell is a [`crate::widget::TextInput`] in plain-chrome mode, so caret placement,
-//! selection, word navigation and clipboard are shared. Cells sit on a CSS-grid Taffy node (one
-//! track per column, fixed row height); the widget paints the grid lines, header band, row
-//! banding and the insert, delete and resize affordances on top.
+//! `Table` — a CRDT-native **editable grid**, not a read-oriented list view like
+//! [`crate::widget::data_table::DataTable`]: the user types into cells and adds and removes rows and
+//! columns from affordances in the gutters.
 
 use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
@@ -48,13 +26,7 @@ use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::{TextInput, Widget};
 
-// ---------------------------------------------------------------------------
-// Geometry constants (logical px)
-// ---------------------------------------------------------------------------
-
-/// Left rail: row-insert boundaries + per-row delete handles live here.
 const LEFT_GUTTER: f64 = 24.0;
-/// Top rail: column-insert boundaries + per-column delete handles live here.
 const TOP_GUTTER: f64 = 24.0;
 /// Trailing padding so the far-edge insert pill isn't clipped.
 const RIGHT_PAD: f64 = 12.0;
@@ -64,15 +36,10 @@ const BOTTOM_PAD: f64 = 12.0;
 const ROW_H: f64 = 40.0;
 /// How close (px) the pointer must be to a boundary to hit its insert pill.
 const BOUNDARY_HIT: f64 = 11.0;
-/// Half-width of the drag zone around an interior column boundary (resize).
 const RESIZE_HIT: f64 = 4.0;
 const PILL_R: f64 = 8.0;
 const DELETE_SIDE: f64 = 15.0;
-// ===========================================================================
-// Interaction state
-// ===========================================================================
 
-/// What the pointer is currently over — recomputed on every `CursorMoved`.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 enum Hover {
     #[default]
@@ -81,34 +48,25 @@ enum Hover {
     InsertCol(usize),
     /// Insert-row pill at boundary index `0..=rows`.
     InsertRow(usize),
-    /// Delete-column handle over column `c`.
     DeleteCol(usize),
     DeleteRow(usize),
     /// Interior column boundary `1..cols` (drag to resize the column to its
     /// left, `boundary - 1`).
     ResizeCol(usize),
-    /// The empty-state "add first cell" affordance.
     EmptyAdd,
 }
 
-/// Pixel-snapped grid geometry for one paint: the interior column and row
-/// edges, and the body they bound.
 struct PaintedGrid {
     xs: Vec<f64>,
     ys: Vec<f64>,
     body: Rect,
 }
 
-/// Active column-resize drag.
 struct Resize {
     col: usize,
     start_x: f64,
     orig_w: f64,
 }
-
-// ===========================================================================
-// Widget
-// ===========================================================================
 
 #[crate::component::not_a_component(
     part,
@@ -117,7 +75,6 @@ struct Resize {
 pub struct Table {
     id: String,
 
-    // --- model mirror (refreshed each `sync`) ---
     row_ids: Vec<String>,
     col_ids: Vec<String>,
     col_widths: Vec<f64>,
@@ -130,13 +87,10 @@ pub struct Table {
     synced: Vec<String>,
     /// Resolved `cells` map, so children are rooted correctly.
     cells_obj: Option<ObjId>,
-    /// The user's changes, waiting for the owner.
     edits: Vec<TableEdit>,
 
-    // --- layout ---
     rect: Rect,
 
-    // --- interaction ---
     last_cursor: Option<Point>,
     hover: Hover,
     resize: Option<Resize>,
@@ -222,9 +176,6 @@ impl Table {
             .with_text_role(crate::tokens::TextRole::Body)
     }
 
-    /// Local projection for hosts whose canonical table is already represented
-    /// by another resource (for example a Markdown block). No shadow CRDT is
-    /// created: edits are returned to the host's normal action bridge.
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
@@ -251,8 +202,6 @@ impl Table {
                 .zip(index.checked_rem(columns))
                 .and_then(|(row, column)| rows.get(row).and_then(|row| row.get(column)))
                 .map_or("", String::as_str);
-            // set_text is a no-op for an unchanged model echo, retaining caret
-            // and selection through normal redraws and canonical commits.
             input.set_text(value);
         }
         if shape_changed
@@ -266,7 +215,6 @@ impl Table {
             );
             self.focus_projected_cell(clamped.0, clamped.1);
             if clamped != (row, column) {
-                // The cell is gone: the caret ends the one that took its place.
                 if let Some(input) = self
                     .projected_index(clamped.0, clamped.1)
                     .and_then(|index| self.cells.get_mut(index))
@@ -418,9 +366,6 @@ impl Table {
         Some(changed)
     }
 
-    /// Where [`Self::draw_projected_focus`] paints: the focused cell, its
-    /// stroke and the correction chip its field floats past it. `None`
-    /// while no cell has focus.
     pub(super) fn projected_focus_paint(&self) -> Option<Rect> {
         self.cells
             .iter()
@@ -579,8 +524,6 @@ impl Table {
         let cy = self.rect.y0 + TOP_GUTTER / 2.0;
         Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
     }
-    /// Rect of the delete handle for row `r` (centred in the left gutter).
-    /// Same stale-hover fallback as [`Self::delete_col_rect`].
     fn delete_row_rect(&self, ys: &[f64], r: usize) -> Rect {
         let cx = self.rect.x0 + LEFT_GUTTER / 2.0;
         let y0 = ys.get(r).copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
@@ -605,7 +548,6 @@ impl Table {
         let in_top = p.y < self.rect.y0 + TOP_GUTTER;
         let in_left = p.x < self.rect.x0 + LEFT_GUTTER;
 
-        // Top gutter → column insert boundaries + column delete handles.
         if in_top && p.x >= self.rect.x0 + LEFT_GUTTER - BOUNDARY_HIT {
             for (i, &bx) in xs.iter().enumerate() {
                 if (p.x - bx).abs() <= BOUNDARY_HIT {
@@ -619,7 +561,6 @@ impl Table {
             }
             return Hover::None;
         }
-        // Left gutter → row insert boundaries + row delete handles.
         if in_left && p.y >= self.rect.y0 + TOP_GUTTER - BOUNDARY_HIT {
             for (i, &by) in ys.iter().enumerate() {
                 if (p.y - by).abs() <= BOUNDARY_HIT {
@@ -633,7 +574,6 @@ impl Table {
             }
             return Hover::None;
         }
-        // Grid body → interior column boundaries resize the column to the left.
         if p.x >= self.rect.x0 + LEFT_GUTTER && p.y >= self.rect.y0 + TOP_GUTTER {
             for (i, &x) in xs.iter().enumerate().skip(1) {
                 if (p.x - x).abs() <= RESIZE_HIT {
@@ -644,14 +584,12 @@ impl Table {
         Hover::None
     }
 
-    /// The empty-state affordance box.
     fn empty_add_rect(&self) -> Rect {
         let cx = self.rect.x0 + LEFT_GUTTER + DEFAULT_COL_W / 2.0;
         let cy = self.rect.y0 + TOP_GUTTER + ROW_H / 2.0;
         Rect::from_center_size((cx, cy), (DEFAULT_COL_W, ROW_H))
     }
 
-    /// Total widget size for the current model.
     fn total_size(&self) -> (f64, f64) {
         if self.is_empty() {
             return (
@@ -665,8 +603,6 @@ impl Table {
         )
     }
 
-    /// Draw the placeholder "add first cell" affordance shown when the table
-    /// has no rows or columns yet.
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -742,8 +678,6 @@ impl Table {
         }
     }
 
-    /// Draw the grid's line work: interior rules, the heavier separator
-    /// under a header row, and the always-on insert ticks at every boundary.
     fn draw_grid_lines(&self, ctx: &mut PaintCtx<'_>, grid: &PaintedGrid) {
         let PaintCtx {
             scene,
@@ -805,7 +739,6 @@ impl Table {
             );
         }
 
-        // Always-on, discoverable insert ticks at every boundary.
         let faint = theme.text_dim.with_alpha_factor(0.35);
         for &x in xs {
             let c = Point::new(x, self.rect.y0 + TOP_GUTTER / 2.0);
@@ -1013,7 +946,6 @@ impl Table {
             return;
         };
 
-        // Pointer-capture short-circuit (a cell dragging a selection).
         if let Some(idx) = self
             .cells
             .iter()
@@ -1032,10 +964,6 @@ impl Table {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Small draw helpers
-// ---------------------------------------------------------------------------
 
 fn plus(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
     let s = Stroke::new(w);
@@ -1192,7 +1120,6 @@ impl Widget for Table {
         let tk = &theme.tokens;
         let radius = f64::from(tk.radii.item);
 
-        // Outer frame (spans the gutters too).
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -1211,7 +1138,6 @@ impl Widget for Table {
         let (ys, body) = (&grid.ys, grid.body);
         let (gl, gr) = (body.x0, body.x1);
 
-        // Grid body surface + header band + zebra rows.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1237,7 +1163,6 @@ impl Widget for Table {
             scene.fill(Fill::NonZero, transform, fill, None, &row_rect);
         }
 
-        // Cells (real TextInputs paint their own text + caret).
         for cell in &mut self.cells {
             cell.draw_child(scene, transform, text_renderer, theme, presence);
         }
@@ -1255,8 +1180,6 @@ impl Widget for Table {
                 WindowEvent::CursorMoved { position, .. } => {
                     let p = ctx.logical(position);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
-                    // The column follows the pointer here; the owner gets
-                    // the width when the drag ends.
                     if let Some(width) = self.col_widths.get_mut(rz.col) {
                         *width = new_w;
                     }
@@ -1309,7 +1232,6 @@ impl Widget for Table {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                // Enter moves the caret down one row (Shift+Enter → up).
                 if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
                     && let Some(focused) = self.cells.iter().position(super::Widget::is_focused)
                 {
@@ -1406,10 +1328,6 @@ impl Widget for Table {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1420,7 +1338,6 @@ mod tests {
 
     use winit::event::Modifiers;
 
-    /// Fresh document with an empty table map object at `root["t"]`.
     fn doc_with_table() -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let t = doc.put_object(&ROOT, "t", ObjType::Map).unwrap();
@@ -1455,7 +1372,6 @@ mod tests {
 
         {
             let (mut doc, t) = doc_with_table();
-            // one row, three columns: A B C
             insert_row(&mut doc, &t, 0);
             for _ in 0..3 {
                 insert_column(&mut doc, &t, usize::MAX);
@@ -1551,9 +1467,6 @@ mod tests {
         }
     }
 
-    /// Run `sync` → `build_layout` → `compute_layout` → `apply_layout` at the
-    /// table's natural size, returning the taffy tree + root node for event
-    /// routing.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "test-only layout size is a small pixel value; f32 precision loss is \
@@ -1871,5 +1784,4 @@ mod tests {
     }
 }
 
-/// The block editor’s structural table renderer.
 pub(crate) type DocumentTable = Table;

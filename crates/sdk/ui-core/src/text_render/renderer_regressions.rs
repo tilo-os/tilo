@@ -193,7 +193,6 @@ fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected:
     assert!(!shaped.is_empty());
     assert!(shaped.iter().all(|(_, weight)| *weight == Weight(expected)));
     for _ in 0..2 {
-        // Includes the cached draw path.
         let scene = draw(renderer, "Hamburgefon", style);
         let run = one_run(&scene);
         assert_eq!(
@@ -217,9 +216,7 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
     // phase: plain_paint_uses_named_and_rounded_explicit_shaped_weights
     {
         let mut renderer = renderer();
-        // Adwaita has a 100..900 weight range. Noto Sans also covers its narrower
-        // 400..700 range, so requests below/above a face's range are exercised.
-        // CJK SC also exercises weight coordinates on collection index 2.
+        // Adwaita has a 100..900 weight range.
         for family in ["Adwaita Sans", "Noto Sans", "Noto Sans CJK SC"] {
             let base = named_style(family);
             for (weight, expected) in [
@@ -365,8 +362,6 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
             })
             .expect("the controlled narrow layout exercises the discretionary break");
         assert_eq!(marker.0.font_weight, Weight(700));
-        // Resolve the expected visible glyph from the selected face's charmap,
-        // independent of the renderer's visible_discretionary_hyphen helper.
         let font = renderer
             .font_system
             .get_font(marker.0.font_id, marker.0.font_weight)
@@ -458,10 +453,7 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
             candidate.encoding().resources.glyphs.len() * 4
                 < reference.encoding().resources.glyphs.len()
         );
-        // Exact byte equality requires deterministic path preprocessing. The
-        // production GPU path can vary a few antialiasing bytes as atomic segment
-        // allocation changes summation order; the matrix test below measures that
-        // mode separately against the reference's own observed range.
+        // Exact byte equality requires deterministic path preprocessing.
         let mut gpu =
             crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
         let expected = gpu.render(&reference, Color::BLACK);
@@ -574,15 +566,10 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
     }
 }
 
-/// Largest per-channel difference the production GPU path may show between
-/// two renders of equivalent scenes. Its atomic segment allocation changes
-/// the order in which antialiasing coverage is summed, which moves a byte by
-/// at most one step; a real change in ink moves many bytes by far more.
+/// Largest per-channel difference the production GPU path may show between two renders of
+/// equivalent scenes.
 const GPU_SUMMATION_MAX_CHANNEL_DELTA: u8 = 1;
 /// How many RGBA bytes of a 220x160 frame may show that one-step difference.
-/// Across 64 repeated renders of each reference scene below, the bytes that
-/// varied at all stayed within this count; a dropped or shifted glyph
-/// changes hundreds, by far more than one step.
 const GPU_SUMMATION_MAX_DIFFERING_BYTES: usize = 64;
 
 fn assert_within_gpu_summation_noise(actual: &[u8], expected: &[u8], case: &str) {
@@ -723,9 +710,6 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             vec![],
             vec![],
         );
-        // Horizontally outside but vertically overlapping the line, so the line
-        // is not culled whole (`rich_run_outside_clip`) and reaches the glyph
-        // batch cull, which looks up ink once per font instance.
         renderer.draw_rich_in_clip(
             &mut Scene::new(),
             &layout,
@@ -794,8 +778,8 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
                 Affine::IDENTITY,
                 Rect::new(0.0, 1000.0, 400.0, 1100.0),
             ));
-            // A full cache may be cleared before the next batch; otherwise the
-            // repeated glyph must be a hit, including immediately after eviction.
+            // A full cache may be cleared before the next batch; otherwise the repeated
+            // glyph must be a hit, including immediately after eviction.
             if count < SHAPE_CACHE_LIMIT {
                 assert_eq!(renderer.ink_bounds_entries, count);
             } else {
@@ -966,8 +950,8 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
     }
 }
 
-/// Where the shaper placed each glyph: its pen position plus the GPOS
-/// offset, which cosmic-text keeps in em units apart from the pen position.
+/// Where the shaper placed each glyph: its pen position plus the GPOS offset, which
+/// cosmic-text keeps in em units apart from the pen position.
 fn shaped_origins(buffer: &cosmic_text::Buffer) -> Vec<(u32, f32, f32)> {
     buffer
         .layout_runs()
@@ -1022,7 +1006,6 @@ fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
         1,
         "Cyrillic is x-height matched, Greek is the UI face's own: {sizes:?}"
     );
-    // Measurement and paint come from the same shaped buffer.
     let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
     let last = runs.last().and_then(|run| run.glyphs.last()).unwrap();
     assert!(last.x < width);
@@ -1036,9 +1019,7 @@ fn condensed_text_is_shaped_at_the_width_it_is_drawn() {
     let condensed = named_style("Tilo Sans").with_font_variation(OpenTypeTag::WIDTH, 75.0);
     let normal_width = renderer.measure_style(text, None, &normal).0;
     let condensed_width = renderer.measure_style(text, None, &condensed).0;
-    // Tilo Sans' condensed `n` is 442 units against 599. Shaped at the
-    // default width, condensed text kept the normal advances and drew its
-    // narrow glyphs spaced out.
+    // Tilo Sans' condensed `n` is 442 units against 599.
     assert!(
         condensed_width < normal_width * 0.85,
         "condensed {condensed_width} against normal {normal_width}"
@@ -1069,8 +1050,6 @@ fn the_generic_sans_follows_the_theme_ui_face() {
     assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
 }
 
-/// A face with the distinct I and l and slashed zero, so the setting and
-/// security surfaces show in the glyphs.
 fn features_renderer() -> TextRenderer {
     let mut renderer = renderer();
     renderer.font_system.db_mut().load_font_data(
@@ -1157,7 +1136,6 @@ fn security_surfaces_distinguish_whatever_the_setting() {
     assert_eq!(inside, (distinct.clone(), distinct.clone()));
     assert!(!renderer.distinguishes_letters());
     assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
-    // A custom-painted security surface marks its style instead.
     assert_eq!(
         shaped_ids(&mut renderer, "Il0", &style.clone().on_security_surface()),
         distinct
@@ -1176,7 +1154,6 @@ fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
         &style.clone().with_kind(TextKind::Url),
     );
     assert_eq!(line[..4], prose[..]);
-    // "https://" is eight glyphs; the host that follows starts with Il0.
     assert_eq!(line[12..15], url[..]);
     assert_ne!(line[12..15], prose[..3]);
 }
@@ -1184,9 +1161,6 @@ fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
 #[test]
 fn clipped_rich_text_draws_ink_that_overhangs_from_rows_far_outside_the_clip() {
     let mut renderer = renderer();
-    // Leading a tenth of the size: each row's accents rise and descenders
-    // hang several rows past its band, farther than any fixed number of
-    // rows around the clip.
     let style = named_style("Noto Sans").with_line_height(0.1);
     let text = "Ågypq ÅÉgjy\n".repeat(60);
     let layout = RichTextLayout::shape_styled(
@@ -1234,8 +1208,6 @@ fn clipped_rich_text_draws_ink_that_overhangs_from_rows_far_outside_the_clip() {
 #[test]
 fn a_field_scrolled_deep_culls_the_glyphs_outside_its_clip_as_one_scrolled_shallow_does() {
     let mut renderer = renderer();
-    // Every row is twenty words in turn of two colours, so a row is twenty
-    // glyph batches, far wider than the clip, which shows the first few.
     let words: Vec<RichSpan> = (0..20u8)
         .map(|word| RichSpan::new("word ").color(Some([200, 40 + 100 * (word % 2), 90])))
         .collect();
@@ -1268,7 +1240,6 @@ fn a_field_scrolled_deep_culls_the_glyphs_outside_its_clip_as_one_scrolled_shall
     };
     let shallow = glyphs_scrolled_to(10);
     let deep = glyphs_scrolled_to(1150);
-    // Each row is a hundred glyphs: twenty words of four letters and a space.
     let rows_shown = tops
         .iter()
         .filter(|top| (tops[10] - 30.0..tops[10] + 130.0).contains(*top))

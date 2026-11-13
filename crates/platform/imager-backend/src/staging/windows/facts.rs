@@ -1,28 +1,22 @@
-//! Pure assembly of Windows host observations into [`HostFacts`]. The Win32
-//! side only gathers [`Observed`]; every decision lives here so fixtures can
-//! prove it on any development host.
+//! Pure assembly of Windows host observations into [`HostFacts`]; the Win32 side only gathers
+//! [`Observed`], so fixtures can prove every decision on any development host.
 
 use super::super::plan::{Basis, FirmwareFacts};
 use super::super::platform::{Disk, SystemVolume};
 use super::super::probe::{Blocker, HostFacts};
 use super::storage::{self, BitlockerState, PartitionStyle, Snapshot};
 
-/// `GetSystemPowerStatus` fields the battery rule reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerStatus {
-    /// 0 offline, 1 online, 255 unknown.
     pub ac_line: u8,
-    /// `BATTERY_FLAG_*`; 128 means no system battery.
     pub battery_flag: u8,
-    /// 0–100, 255 unknown.
     pub percent: u8,
 }
 
-/// Minimum charge for staging on battery power (design spec §5).
+/// Minimum charge for staging on battery power.
 pub const MIN_BATTERY_PERCENT: u8 = 50;
 
-/// True when staging must wait for mains power. Unknown readings on a
-/// machine that has a battery fail closed.
+/// Unknown readings on a machine that has a battery fail closed.
 pub fn on_battery(status: Option<PowerStatus>) -> bool {
     let Some(status) = status else {
         return true;
@@ -33,16 +27,12 @@ pub fn on_battery(status: Option<PowerStatus>) -> bool {
     status.percent == 255 || status.percent < MIN_BATTERY_PERCENT
 }
 
-/// `UEFISecureBootEnabled` under `HKLM\SYSTEM\CurrentControlSet\Control\
-/// SecureBoot\State`. A missing value on UEFI fails closed as enabled; the
-/// remedy (restart to firmware settings) is always available for it.
 pub fn secure_boot_enabled(registry_value: Option<u32>) -> bool {
     registry_value != Some(0)
 }
 
-/// Windows would resume a hibernated kernel (or a Fast Startup image) over a
-/// partition map that changed underneath it. Missing registry values take the
-/// Windows defaults (both enabled).
+/// Windows would resume a hibernated kernel or a Fast Startup image over a partition map that
+/// changed underneath it; missing registry values take the Windows defaults (both enabled).
 pub fn hibernation_active(
     hiberboot_enabled: Option<u32>,
     hibernate_enabled: Option<u32>,
@@ -51,33 +41,22 @@ pub fn hibernation_active(
     hiberfile_present || (hiberboot_enabled != Some(0) && hibernate_enabled != Some(0))
 }
 
-/// Everything the unprivileged Windows probe observes, before policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observed {
-    /// `GetFirmwareType` == `FirmwareTypeUefi`; `None` when the call failed.
     pub uefi: Option<bool>,
     pub secure_boot_registry: Option<u32>,
-    /// `HiberbootEnabled` under `...\Control\Session Manager\Power`.
     pub hiberboot_enabled: Option<u32>,
-    /// `HibernateEnabled` under `...\Control\Power`.
     pub hibernate_enabled: Option<u32>,
     pub hiberfile_present: bool,
     pub power: Option<PowerStatus>,
-    /// The Storage-cmdlet snapshot, or why it could not be taken.
     pub snapshot: Result<Snapshot, String>,
-    /// The native-layout disk, or why it could not be read.
     pub layout_disk: Result<Disk, String>,
-    /// `GetDiskFreeSpaceExW` of the system volume: (total, free) bytes.
     pub volume_space: Option<(u64, u64)>,
 }
 
-/// Firmware facts as the unprivileged probe sees them. Windows only lets a
-/// process holding `SeSystemEnvironmentPrivilege` (an elevated administrator)
-/// read EFI variables, so the boot-variable fields are always left empty here
-/// — in the UI *and* in the elevated helper's re-probe, so `basis` equality
-/// holds. The helper reads the live `BootOrder`/`BootNext` itself when it
-/// records `original_firmware` and checks `boot-next-busy`; those checks run
-/// against the live values, never against the basis.
+/// Windows only lets an elevated administrator read EFI variables, so these fields are empty in the
+/// UI and in the elevated re-probe, and `basis` equality holds. The helper reads live
+/// `BootOrder`/`BootNext` itself when it records `original_firmware`.
 pub fn basis_firmware(uefi: bool, secure_boot: bool) -> FirmwareFacts {
     FirmwareFacts {
         uefi,
@@ -88,9 +67,8 @@ pub fn basis_firmware(uefi: bool, secure_boot: bool) -> FirmwareFacts {
     }
 }
 
-/// Resolve the disk the plan is computed against: the native layout,
-/// cross-checked against the Storage cmdlets; the cmdlet-derived disk only
-/// when the IOCTL path itself failed.
+/// The native layout, cross-checked against the Storage cmdlets; the cmdlet-derived disk only when
+/// the IOCTL path itself failed.
 pub fn resolve_disk(observed: &Observed) -> Result<Disk, String> {
     let snapshot = observed.snapshot.as_ref().map_err(Clone::clone)?;
     match &observed.layout_disk {
@@ -102,7 +80,6 @@ pub fn resolve_disk(observed: &Observed) -> Result<Disk, String> {
     }
 }
 
-/// The C: volume with its shrink bounds.
 pub fn resolve_system_volume(
     disk: &Disk,
     snapshot: &Snapshot,
@@ -135,9 +112,8 @@ pub fn resolve_system_volume(
     })
 }
 
-/// Apply §5 to what the Windows probe observed. `insufficient-space`,
-/// `pending-operation` and `arch-mismatch` are decided by the shared core
-/// (planner, record store, catalog) and never produced here.
+/// `insufficient-space`, `pending-operation` and `arch-mismatch` come from the shared core, never
+/// from here.
 pub fn assemble(observed: &Observed) -> HostFacts {
     let mut blockers = Vec::new();
     let mut push = |blocker: Blocker| push_unique(&mut blockers, blocker);
@@ -215,7 +191,6 @@ fn basis(observed: &Observed, uefi: bool, secure_boot: bool) -> Option<Basis> {
     })
 }
 
-/// Why [`assemble`] produced no basis, for logs and the helper's refusal text.
 pub fn basis_error(observed: &Observed) -> Option<String> {
     let snapshot = match &observed.snapshot {
         Ok(snapshot) => snapshot,

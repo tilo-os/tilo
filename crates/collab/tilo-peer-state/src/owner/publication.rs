@@ -1708,7 +1708,7 @@ impl NativeWorkspaceOwner {
                 return Ok(false);
             }
             for entry in answered {
-                // ignored-failure: custody holds governance entries too, which belong to no record
+                // Custody holds governance entries too, which belong to no record.
                 let Ok(NeighbourMsg::AppDocument {
                     app_id,
                     record_id,
@@ -1792,11 +1792,12 @@ impl NativeWorkspaceOwner {
                 .chain(&spilled)
                 .chain(&publication.tail)
             {
-                // ignored-failure: custody holds governance entries too, which belong to no record
                 if let Ok(NeighbourMsg::AppDocument {
                     app_id, record_id, ..
-                }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
-                {
+                }) = tilo_failure::ignored!(
+                    "custody holds governance entries too, which belong to no record",
+                    postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                ) {
                     let writes = writes.entry((app_id, record_id)).or_default();
                     writes.pending = writes.pending.saturating_add(1);
                 }
@@ -2151,14 +2152,16 @@ impl NativeWorkspaceOwner {
             if signed.device_public_key() != device {
                 return Err("native outgoing signer differs from selected device".into());
             }
-            candidate
-                .peer
-                .permissions(device, now)
-                .map_err(|error| error.to_string())?;
+            // Nothing to write asks no authority: a workspace whose governance has not arrived
+            // (one the host replays only once it is opened) holds no write of this device's.
             let drafted = crate::owner::write::drafted_once(&mut drafted, &mut draft, &candidate)?;
             if drafted.is_empty() {
                 return Ok(0);
             }
+            candidate
+                .peer
+                .permissions(device, now)
+                .map_err(|error| error.to_string())?;
             let mut writes = Vec::with_capacity(drafted.len());
             for (replaces, with, ops) in drafted.iter() {
                 let mut signed_ops = Vec::with_capacity(ops.len());

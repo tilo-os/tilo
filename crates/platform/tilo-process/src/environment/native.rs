@@ -1,11 +1,10 @@
-//! The native fallback: what a launcher passes through the process
-//! environment. It is the one place host inputs are read from the process.
+//! The native fallback: what a launcher passes through the process environment, read here
+//! and nowhere else in the toolkit.
 
-/// The host inputs a native launcher passes through the process environment.
 pub fn process_environment() -> super::HostEnvironment {
-    /// Empty is unset — an explicit `""` is the shape an unset forwarded
-    /// shell variable produces, and taking it literally would put every such
-    /// app in the same (empty-id) room.
+    // Empty is unset: an explicit `""` is the shape an unset forwarded shell variable
+    // produces, and taking it literally would put every such app in the same empty-id
+    // room.
     fn text(name: &str) -> Option<String> {
         std::env::var(name).ok().filter(|value| !value.is_empty())
     }
@@ -23,8 +22,6 @@ pub fn process_environment() -> super::HostEnvironment {
             })
         })
     }
-    /// A finite, positive factor; a bad value is ignored rather than
-    /// crashing the app at startup.
     fn factor(names: &[&str]) -> Option<f32> {
         names.iter().find_map(|name| {
             std::env::var(name)
@@ -39,7 +36,7 @@ pub fn process_environment() -> super::HostEnvironment {
         .and_then(|hex| super::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?));
     super::HostEnvironment {
         identity: super::HostIdentity {
-            package_id: text("TILO_PACKAGE_ID"),
+            app_id: text("TILO_PACKAGE_ID"),
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
@@ -108,17 +105,13 @@ pub fn process_environment() -> super::HostEnvironment {
     }
 }
 
-/// Ordinary timing diagnostics require explicit opt-in without a synthetic scenario.
 fn presentation_timing_requested(profile: Option<&str>) -> bool {
     profile == Some("1")
 }
 
-/// Presentation profiling needs an explicit `profile == "1"` and a record to
-/// profile: a native scenario, or a local-input run that has no synthetic
-/// input at all and measures the person's own typing. The two are exclusive —
-/// a local-input run rejects a scenario — so a run that asks for both gets
-/// nothing rather than a measurement of the wrong thing. Whether this platform
-/// can profile presentation at all is the renderer's decision.
+// Presentation profiling needs an explicit `profile == "1"` and a record to profile: a
+// native scenario, or a local-input run that measures the person's own typing. The two
+// are exclusive, so a run that asks for both gets nothing.
 fn presentation_profile_requested(
     profile: Option<&str>,
     local_input: bool,
@@ -169,7 +162,6 @@ mod tests {
         // A launch that measures the person's own typing has no scenario to
         // name, and its feedback must still be enabled.
         assert!(presentation_profile_requested(Some("1"), true, None));
-        // Neither opt-in alone enables the profile.
         assert!(!presentation_profile_requested(Some("1"), false, None));
         assert!(!presentation_profile_requested(None, true, None));
         assert!(!presentation_profile_requested(Some("0"), true, None));

@@ -246,11 +246,7 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
-    let host = host(
-        &signer,
-        73,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(&signer, 73, tilo_user_identity::DeviceCapabilities::host());
     let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
@@ -283,11 +279,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 )]
 async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let root = SigningKey::from_bytes(&[131; 32]);
-    let host = host(
-        &root,
-        132,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -333,11 +325,7 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 )]
 async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
-    let host = host(
-        &root,
-        122,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -456,11 +444,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[131; 32]);
-    let host = host(
-        &root,
-        132,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
@@ -579,18 +563,12 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[133; 32]);
-    let signer = host(
-        &root,
-        134,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let signer = host(&root, 134, tilo_user_identity::DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let keeping = "abcdefghijklmnop";
     let lapsing = "ponmlkjihgfedcba";
     let delete = "a".repeat(43);
     let sealed = "c2VhbGVkIGludml0YXRpb24";
-    let now = tilo_clock::unix_now_ns();
-    let lapse_at = now + 1_000_000_000;
 
     let leaving = |expires_at_ns| {
         serde_json::to_vec(&Stored {
@@ -615,6 +593,10 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     // and one that lapses while it is down.
     let first = relay_at(&state, signer.identity(), RelayConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
+    // Dated once the relay is up: starting one can take longer than the
+    // second the lapsing invitation lives.
+    let now = tilo_clock::unix_now_ns();
+    let lapse_at = now + 1_000_000_000;
     for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
         let body = leaving(expires_at_ns);
         let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
@@ -732,11 +714,7 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
     let watcher = SigningKey::from_bytes(&[82; 32]);
-    let host = host(
-        &signer,
-        83,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(&signer, 83, tilo_user_identity::DeviceCapabilities::host());
     let (_, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
     let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
@@ -990,6 +968,27 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 /// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
 /// named: the status, the header block and the body. HTTP/1.0, so the
 /// body arrives whole rather than chunked.
+/// The tab's first follow of a code the host offered: the host keeps it from then on, so a
+/// computer can resolve it.
+async fn keep_code(
+    addr: SocketAddr,
+    created: &tilo_relay_protocol::login_code::Created,
+    link: Option<&str>,
+) -> tilo_relay_protocol::login_code::Polled {
+    let (code, _, polled) = call_json(
+        addr,
+        tilo_relay_protocol::login_code::FOLLOW_ROUTE,
+        &serde_json::json!({
+            "follow": created.follow,
+            "offer": {"code": created.code, "expires_at_ms": created.expires_at_ms, "link": link},
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{polled}");
+    serde_json::from_value(polled).unwrap()
+}
+
 async fn call_json(
     addr: SocketAddr,
     path: &str,
@@ -1052,6 +1051,33 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     .await;
     assert_eq!(code, 200, "{created}");
     let created: wire::Created = serde_json::from_value(created).unwrap();
+    // Offered, not kept: a visitor who never copies the prompt leaves nothing on the host.
+    let (code, _, _) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        Some("192.0.2.77"),
+    )
+    .await;
+    assert_eq!(
+        code, 404,
+        "an offered code resolves only once its tab kept it"
+    );
+    let mut forged = created.clone();
+    forged.expires_at_ms += 1;
+    let (code, _, _) = call_json(
+        addr,
+        wire::FOLLOW_ROUTE,
+        &serde_json::json!({
+            "follow": created.follow,
+            "offer": {"code": forged.code, "expires_at_ms": forged.expires_at_ms, "link": link},
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 404, "an offer the host did not make is not kept");
+    let polled = keep_code(addr, &created, Some(&link)).await;
+    assert!(!polled.resolved && !polled.expired);
     let (code, _, refused) = call_json(
         addr,
         wire::CREATE_ROUTE,
@@ -1120,6 +1146,7 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
 
     let (_, _, fresh) = call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
     let fresh: wire::Created = serde_json::from_value(fresh).unwrap();
+    keep_code(addr, &fresh, None).await;
     for _ in 0..login_codes::MISSES_PER_ADDRESS {
         let (code, _, _) = call_json(
             addr,
@@ -1188,6 +1215,7 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
         let (_, _, created) =
             call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
         let created: wire::Created = serde_json::from_value(created).unwrap();
+        keep_code(addr, &created, None).await;
         let (_, _, resolved) = call_json(
             addr,
             wire::RESOLVE_ROUTE,
@@ -1499,6 +1527,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     )
     .await;
     let created: wire::Created = serde_json::from_value(created).unwrap();
+    keep_code(addr, &created, Some(&link)).await;
     let (_, _, resolved) = call_json(
         addr,
         wire::RESOLVE_ROUTE,
@@ -1630,11 +1659,7 @@ async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
 ) -> (Relay, Host, String, tempfile::TempDir) {
-    let host = host(
-        root,
-        seed,
-        tilo_user_identity::cloud_enrollment::host_capabilities(),
-    );
+    let host = host(root, seed, tilo_user_identity::DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();

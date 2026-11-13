@@ -624,6 +624,68 @@ fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
 }
 
 #[test]
+fn a_parameters_label_is_written_after_its_type_and_only_where_a_person_gives_it() {
+    let task = "type Task {\n    title: Text\n    done: Bool\n}\n";
+    let labeled = |param: &str| {
+        crate::common::codes(&format!(
+            "{task}action finish(t: Task, {param}) {{\n    t.done = true\n}}\n"
+        ))
+    };
+    assert_eq!(
+        labeled("done: Bool (label: \"On the done list\") = true"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}view show_task(t: Task, done: Bool (label: \"Done\")) {{\n    ui.Text(t.title)\n}}\n"
+        )),
+        ["E057"],
+        "only an action's parameters are given to a person, so only they name one"
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}enum Seen {{\n    once(at: Int (label: \"Seen when\"))\n}}\n"
+        )),
+        ["E057", "E110"],
+        "a variant's field holds a value nothing gives, so it names none"
+    );
+    assert_eq!(
+        labeled("above: Option<Task> (above, label: \"Above\")"),
+        ["E003"],
+        "a parameter says one thing of itself, a place or a label"
+    );
+    assert_eq!(
+        labeled("done: Bool (name: \"On the done list\")"),
+        ["E003"],
+        "`label` is the option a parameter takes"
+    );
+    assert_eq!(
+        labeled("done: Bool (label: \"{t.title}\") = true"),
+        ["E003"],
+        "a label is words as they read, not an interpolation"
+    );
+    assert_eq!(
+        labeled("done: Bool (label: \"  \") = true"),
+        ["E057"],
+        "a label says what the parameter holds"
+    );
+    let misplaced = crate::common::compile_with(
+        &format!("app t.x \"X\"\n{task}action finish(t: Task, done: Bool = true (label: \"On the done list\")) {{\n    t.done = done\n}}\n"),
+        &[],
+    )
+    .err()
+    .and_then(|d| d.into_iter().find(|d| d.code == "E003"))
+    .map_or_else(
+        || panic!("a label after a default says where it goes"),
+        |d| d.message,
+    );
+    assert!(
+        misplaced.contains("right after the parameter's type"),
+        "the error says where a label is written: {misplaced}"
+    );
+}
+
+#[test]
 fn an_entry_fills_the_actions_one_text_parameter() {
     let task = "type Task {\n    title: Text\n}\n\
 action add(t: Task, title: Text = \"\") {\n    t.title = title\n}\n\

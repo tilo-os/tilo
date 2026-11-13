@@ -1,6 +1,5 @@
-//! Theme bundles: a document and the painter modules it names, loaded,
-//! registered and drawn through the one host; and the Bauhaus theme as
-//! shipped.
+//! Theme bundles: a document and the painter modules it names, loaded, registered and
+//! drawn through the one host; and the Bauhaus theme as shipped.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -18,8 +17,6 @@ use crate::widget::{Button, ButtonRole, Widget as _};
 
 const BAUHAUS: &str = include_str!("../../../themes/bauhaus/theme.json");
 
-/// A module that declares Bauhaus's parameters and leaves every part to
-/// the toolkit, importing nothing.
 fn module() -> Vec<u8> {
     let params = wire::params_answer(&Bauhaus.params());
     let declines = wire::paint_answer(None);
@@ -48,9 +45,6 @@ fn module() -> Vec<u8> {
     .unwrap()
 }
 
-/// A bundle's module is loaded and registered under the name its document
-/// gives it before the document is read, so the document names it like a
-/// built-in set.
 #[test]
 fn a_bundle_registers_its_painters_and_its_document_names_them() {
     let document = BAUHAUS.replace("\"bauhaus\"", "\"test.bundle-sets\"");
@@ -94,7 +88,6 @@ fn a_bundle_missing_a_module_or_carrying_a_bad_one_is_refused() {
             ..
         })
     ));
-    // A set the document gives a parameter the module does not declare.
     let extra = named("test.bundle-extra").replace("\"shadow\": 3.0", "\"glow\": 1.0");
     assert!(matches!(
         load(&extra, |_| Ok(Some(module()))),
@@ -102,9 +95,6 @@ fn a_bundle_missing_a_module_or_carrying_a_bad_one_is_refused() {
     ));
 }
 
-/// The Bauhaus document as shipped is valid and keeps every contrast floor,
-/// and the toolkit draws its buttons with the set: standing on a shadow,
-/// taking the pointer over the whole of it.
 #[test]
 fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
     assert!(crate::part_paint::register_painter_set(PainterSet::new(
@@ -126,7 +116,6 @@ fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
         &theme,
         &crate::presence::PresenceCtx::default(),
     );
-    // The shadow's corner, past the face, still takes the pointer.
     let at = (218.0, 88.0);
     crate::testing::Dispatch::new().send(
         &mut button,

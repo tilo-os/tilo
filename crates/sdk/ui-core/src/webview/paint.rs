@@ -1,18 +1,9 @@
-//! The paint stream: a page as a display list instead of pixels.
-//!
-//! [`PaintSource`] runs where the engine runs. It asks the engine for its
-//! layout whenever the page may have changed, converts it into a
-//! [`Frame`], resolves image URLs to content hashes
-//! (reading the bytes from the engine's own cache, never fetching again) and
-//! emits the frame with the [`Patch`] from the previous one. [`PaintEngine`]
-//! wraps any [`WebViewEngine`] with one, so a WebView draws the list.
-//!
-//! [`PageRenderer`] draws a frame with this toolkit's Vello and text stack —
-//! the same code natively and in the WASM client, which receives the frames
-//! and patches instead of pixels and never sees a cookie or a page URL behind
-//! an image.
+//! The paint stream: a page as a display list instead of pixels. [`PaintSource`] runs
+//! where the engine runs. It asks the engine for its layout whenever the page may have
+//! changed, converts it into a [`Frame`], resolves image URLs to content hashes (reading
+//! the bytes from the engine's own cache, never fetching again) and emits the frame with
+//! the [`Patch`] from the previous one.
 
-/// The format, for engines and wrappers outside this crate.
 pub use tilo_paint_stream as stream;
 
 use std::collections::{HashMap, VecDeque};
@@ -29,20 +20,15 @@ use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 
-/// Never capture more often than this: a capture walks the whole layout.
 const MIN_CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
-/// An unanswered capture or resource request is given up after this long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-/// Resource reads in flight at once.
 const MAX_RESOURCE_REQUESTS: usize = 8;
-/// Largest encoded image the source keeps.
 const MAX_BLOB_BYTES: usize = 16 << 20;
 /// Patches queued for a stream consumer before it must take a whole frame.
 const MAX_QUEUED_PATCHES: usize = 64;
-/// Largest encoded payload the app → shell channel carries once base64
-/// encoded (its frames are at most 1 MiB).
+/// Largest encoded payload the app → shell channel carries once base64 encoded (its
+/// frames are at most 1 MiB).
 pub const MAX_SHARE_PAYLOAD: usize = 700 * 1024;
-/// Largest image shared whole; larger ones stay unrendered for viewers.
 const MAX_SHARE_BLOB: usize = MAX_SHARE_PAYLOAD - 1024;
 /// Shared frames waiting for the app to send them before it must start over.
 const MAX_SHARE_QUEUE_BYTES: usize = 8 * 1024 * 1024;
@@ -68,14 +54,11 @@ pub struct PaintSource {
     next_request: u32,
     capture: Option<(u32, Instant)>,
     last_capture: Option<Instant>,
-    /// The last converted frame before image resolution, so a resource that
-    /// arrives later re-resolves it without another capture.
     raw: Option<Frame>,
     frame: Option<Arc<Frame>>,
     resources: HashMap<String, ResourceSpec>,
     resource_requests: HashMap<u32, (String, Instant)>,
     blobs: HashMap<[u8; 32], Arc<Vec<u8>>>,
-    /// SVG images as vector drawings; `None` for blobs that are not SVG.
     vectors: HashMap<[u8; 32], Option<Arc<tilo_paint_stream::svg::Drawing>>>,
 }
 
@@ -126,7 +109,6 @@ impl PaintSource {
     }
 
     fn request_id(&mut self) -> u32 {
-        // Engine ids are positive i32s.
         self.next_request = self.next_request % 0x7fff_fffe + 1;
         self.next_request
     }
@@ -224,8 +206,6 @@ impl PaintSource {
         Some(hash)
     }
 
-    /// Feed an engine event. Returns an update when it produced a new frame;
-    /// `false` in the second slot means the event was not the source's.
     pub fn on_event(&mut self, event: &WebViewEvent) -> (Option<PaintUpdate>, bool) {
         match event {
             WebViewEvent::PaintSnapshot {
@@ -267,7 +247,6 @@ impl PaintSource {
         }
     }
 
-    /// Resolve the raw frame's images and emit it if it differs from the last.
     fn publish(&mut self) -> Option<PaintUpdate> {
         let mut next = self.raw.clone()?;
         for layer in next.layers.values_mut() {
@@ -290,8 +269,6 @@ impl PaintSource {
 }
 
 impl PaintSource {
-    /// An item as a client may receive it: images by content hash, SVG
-    /// images as vectors, and nothing that names a page URL.
     fn resolve(&mut self, item: Item) -> Option<Item> {
         let Item::Image { key, rect, blob } = item else {
             return Some(item);
@@ -331,11 +308,9 @@ pub struct SharedFrame {
     pub payload: Vec<u8>,
     /// Where the page sits in the window, logical pixels: x, y, w, h.
     pub page: [f64; 4],
-    /// The window's buffer scale.
     pub scale: f64,
 }
 
-/// Whether this process made an engine that can stream its page.
 static PAINT_CAPABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether this app can stream a page, for it to tell the session.
@@ -351,7 +326,6 @@ struct ShareOutbox {
     bytes: usize,
 }
 
-/// The app's one share channel: a window has one page the session shares.
 static SHARE: Mutex<ShareOutbox> = Mutex::new(ShareOutbox {
     watched: false,
     keyframe: false,
@@ -369,8 +343,7 @@ pub fn share_watched() -> bool {
     share().watched
 }
 
-/// The session started (`true`) or stopped (`false`) sharing the page. A
-/// start asks for a whole frame; a stop discards what was not sent.
+/// The session started (`true`) or stopped (`false`) sharing the page.
 pub fn set_share_watched(watched: bool) {
     let mut outbox = share();
     outbox.watched = watched;
@@ -387,8 +360,7 @@ pub fn take_share_keyframe() -> bool {
     std::mem::take(&mut share().keyframe)
 }
 
-/// Queue one frame for the session. A consumer that fell this far behind
-/// starts over from a whole frame.
+/// Queue one frame for the session.
 pub fn queue_share(frame: SharedFrame) {
     let mut outbox = share();
     if !outbox.watched {
@@ -427,37 +399,23 @@ struct PaintState {
     source: PaintSource,
     last_pixels: usize,
     patches: VecDeque<Patch>,
-    /// A consumer fell behind or just joined: it needs a whole frame.
     keyframe_needed: bool,
-    /// Blobs the stream consumer was sent since its last whole frame.
     sent_blobs: std::collections::HashSet<[u8; 32]>,
-    /// Whether the app wants the page shown at all.
     wanted_visible: bool,
     /// The frame a view last drew (its pixels' address).
     presented_pixels: usize,
-    /// Since when a newer frame waits for a view to draw it.
     undrawn_since: Option<Instant>,
-    /// What the engine was last told: painting, or hidden.
     painting: bool,
-    /// How long an undrawn page keeps painting.
     hide_after: Duration,
 }
 
-/// A page whose newest frame no view drew for this long stops painting: the
-/// engine is told it is hidden, which stops its compositing and rendering
-/// until a view draws it again. A window showing a still page draws nothing
-/// and is not "undrawn"; one the shell keeps from drawing (a hidden tab)
-/// holds the frame back. Agents keep reading and operating a hidden page.
 const HIDE_UNPRESENTED: Duration = Duration::from_secs(2);
 
-/// Any engine, drawn as a display list. Commands and events pass through;
-/// the source's own requests and answers are consumed here.
+/// Any engine, drawn as a display list.
 pub struct PaintEngine {
     inner: SharedEngine,
     state: Mutex<PaintState>,
-    /// Draw this view from the display list. Otherwise the list exists only
-    /// for a session that shares the page, and is captured only while one
-    /// watches ([`share_watched`]).
+    /// Draw this view from the display list.
     draws: bool,
 }
 
@@ -473,8 +431,8 @@ impl PaintEngine {
         Self::build(inner, interval, true)
     }
 
-    /// An engine drawn from its own pixels, whose page is captured as a
-    /// display list only while a session shares it with someone watching.
+    /// An engine drawn from its own pixels, whose page is captured as a display list only
+    /// while a session shares it with someone watching.
     #[must_use]
     pub fn streaming(inner: SharedEngine) -> Arc<Self> {
         Self::build(inner, MIN_CAPTURE_INTERVAL, false)
@@ -506,8 +464,8 @@ impl PaintEngine {
         self.state.lock_recover()
     }
 
-    /// The patches since the last call, oldest first, or `Err` with the
-    /// current frame when the consumer must start over from a whole frame.
+    /// The patches since the last call, oldest first, or `Err` with the current frame
+    /// when the consumer must start over from a whole frame.
     pub fn take_stream(&self) -> Result<Vec<Patch>, Option<Arc<Frame>>> {
         Self::take_stream_locked(&mut self.lock())
     }
@@ -516,15 +474,13 @@ impl PaintEngine {
         if state.keyframe_needed {
             state.patches.clear();
             let frame = state.source.frame();
-            // Until there is a frame, the consumer still needs a whole one.
             state.keyframe_needed = frame.is_none();
             return Err(frame);
         }
         Ok(state.patches.drain(..).collect())
     }
 
-    /// Run the source: notice new pixels (the page changed) and issue its
-    /// requests. Called on every read, so whoever watches the page drives it.
+    /// Run the source: notice new pixels (the page changed) and issue its requests.
     fn pump(&self, state: &mut PaintState) {
         if !self.draws && !share_watched() {
             return;
@@ -553,9 +509,6 @@ impl PaintEngine {
             .map_or(0, |frame| Arc::as_ptr(&frame.rgba) as usize)
     }
 
-    /// Paint while the app wants the page and someone sees it: no frame waits
-    /// undrawn longer than [`HIDE_UNPRESENTED`], or a session shares it with
-    /// someone watching.
     fn update_visibility(&self, state: &mut PaintState) {
         let now = crate::time::now();
         if self.current_pixels() == state.presented_pixels {
@@ -678,7 +631,6 @@ impl WebViewEngine for PaintEngine {
     }
     fn take_paint_stream(&self, keyframe: bool) -> Vec<Payload> {
         let mut state = self.lock();
-        // A watched share keeps the page painting.
         self.update_visibility(&mut state);
         self.pump(&mut state);
         if keyframe {
@@ -694,7 +646,6 @@ impl WebViewEngine for PaintEngine {
             Ok(patches) if patches.is_empty() => {}
             Ok(patches) => out.push(Payload::Patches(patches)),
         }
-        // Then the images the frame references that the consumer lacks.
         let Some(frame) = state.source.frame() else {
             return out;
         };
@@ -742,13 +693,12 @@ fn weight(w: u16) -> TextWeight {
     }
 }
 
-/// Draws [`Frame`]s. Keeps font resolution and decoded images between frames.
+/// Draws [`Frame`]s.
 #[derive(Default)]
 pub struct PageRenderer {
     installed: Option<Vec<String>>,
     families: HashMap<String, FontChoice>,
     images: HashMap<[u8; 32], Option<ImageData>>,
-    /// Parsed SVG path data; `None` for data that does not parse.
     paths: HashMap<String, Option<BezPath>>,
 }
 
@@ -773,9 +723,7 @@ pub struct PageCanvas<'a> {
 }
 
 impl PageRenderer {
-    /// A renderer for a page about to be shown. Where the image decoder is
-    /// fetched on first use, this starts fetching it, so it is in by the time
-    /// the page's first frame arrives rather than after its first image.
+    /// A renderer for a page about to be shown.
     #[must_use]
     pub fn new() -> Self {
         let _ = crate::image_decoders::decoders();
@@ -816,7 +764,6 @@ impl PageRenderer {
         parent_content: Point,
         depth: usize,
     ) {
-        // A malformed frame cannot recurse without bound.
         if depth > frame.layers.len() {
             return;
         }
@@ -935,7 +882,6 @@ impl PageRenderer {
         if view_box.w <= 0.0 || view_box.h <= 0.0 {
             return;
         }
-        // `preserveAspectRatio` default: uniform scale, centred.
         let scale = f64::from((r.w / view_box.w).min(r.h / view_box.h));
         let dx = f64::from(r.x) + (f64::from(r.w) - f64::from(view_box.w) * scale) / 2.0;
         let dy = f64::from(r.y) + (f64::from(r.h) - f64::from(view_box.h) * scale) / 2.0;
@@ -984,8 +930,6 @@ impl PageRenderer {
             .with_italic(font.italic)
             .with_family(family);
         let (w, h) = canvas.text.measure_style(text, None, &style);
-        // Fit our shaping to the engine's line box, so a run of different
-        // fonts still starts and ends where the host laid it out.
         let sx = if w > 0.0 && r.w > 0.0 {
             f64::from((r.w / w).clamp(0.8, 1.25))
         } else {
@@ -1000,7 +944,6 @@ impl PageRenderer {
             .draw_style(canvas.scene, text, color(c, 1.0), place, None, &style);
     }
 
-    /// Resolve a CSS family list against the installed fonts, once per list.
     fn family(&mut self, text: &TextRenderer, css: &str) -> FontChoice {
         if let Some(choice) = self.families.get(css) {
             return choice.clone();
@@ -1039,8 +982,6 @@ impl PageRenderer {
         if let Some(cached) = self.images.get(hash) {
             return cached.clone();
         }
-        // Not cached while the decoder is still to come: the page is drawn
-        // again once it is in.
         let decoders = crate::image_decoders::decoders()?;
         let bytes = blobs.blob(hash)?;
         let decoded = (decoders.page)(&bytes);
@@ -1103,7 +1044,6 @@ mod tests {
         (test, engine)
     }
 
-    /// Drive the engine as a WebView does: read the frame, drain events.
     fn settle(engine: &PaintEngine) -> Vec<WebViewEvent> {
         let mut passed = Vec::new();
         for _ in 0..4 {
@@ -1137,7 +1077,6 @@ mod tests {
                 .any(|c| matches!(c, WebViewCommand::PaintCapture { .. })),
             "the wrapper asked the engine for its layout"
         );
-        // The page's data: image is resolved to a content hash, served by hash.
         let hash = frame
             .blobs()
             .find_map(|b| match b {
@@ -1153,9 +1092,6 @@ mod tests {
         );
     }
 
-    /// A new renderer starts fetching the decoder; before it is in, an image
-    /// is left out and not remembered as undecodable; once it is in, the same
-    /// image decodes.
     #[cfg(feature = "lazy-image-decode")]
     #[test]
     fn images_wait_for_a_deferred_decoder() {
@@ -1220,7 +1156,6 @@ mod tests {
             "nothing changed yet"
         );
 
-        // The page scrolls: the engine paints, its next snapshot differs.
         test.set_paint_snapshot(SCROLLED);
         test.send(WebViewCommand::Navigate("https://example.test/".into()));
         settle(&engine);
@@ -1313,7 +1248,6 @@ mod tests {
             "a still page on screen keeps painting"
         );
 
-        // A new frame no view draws (a hidden tab's) stops it.
         with_monotonic_time(at(60), || {
             engine.send(WebViewCommand::Navigate("https://example.test/next".into()));
             drop(engine.drain_events());
@@ -1334,7 +1268,6 @@ mod tests {
             "drawn again: painting"
         );
 
-        // A page the app hid stays hidden however recently it was drawn.
         with_monotonic_time(at(120), || {
             engine.set_visible(false);
             engine.presented();

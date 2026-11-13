@@ -29,10 +29,6 @@ fn draw(bar: &mut TabBar, tr: &mut TextRenderer, theme: &Theme) {
     );
 }
 
-/// A window an agent opened names the agent after the pills, only while it
-/// is in front; its stop says the run that opened it, not the agent's name
-/// again, and a press by pointer or assistive technology hands the host
-/// that run.
 #[test]
 fn a_window_an_agent_opened_names_the_agent_and_hands_its_run_to_the_host() {
     let theme = Theme::light();
@@ -78,8 +74,6 @@ fn a_window_an_agent_opened_names_the_agent_and_hands_its_run_to_the_host() {
     ));
     assert_eq!(bar.take_opened_by_press(), Some((1, opened.run.clone())));
 
-    // A run that goes by nothing but the agent's name says the agent opened
-    // the window.
     assert!(bar.set_opened_by(1, Some(run("Jane Doe\u{2019}s agent"))));
     draw(&mut bar, &mut tr, &theme);
     let (_, node) = bar.opened_by_stop().expect("still marked");
@@ -119,8 +113,6 @@ fn the_agents_mark_stands_after_the_windows_search() {
     );
 }
 
-/// In a window whose app put its slots in the bar, the mark stands right
-/// after what the location shows, on its line, before the app's actions.
 #[test]
 fn the_agents_mark_follows_an_apps_location_in_its_bar() {
     use crate::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};

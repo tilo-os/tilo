@@ -13,26 +13,18 @@ use crate::dmabuf::{ColorRange, Colorimetry, YuvMatrix};
 use crate::dmabuf::{DmabufImage, DmabufPlane};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 
-// ---------------------------------------------------------------------------
-// libgstallocators — the two entry points needed to read a dmabuf fd out of a
-// GstMemory. Bound directly rather than pulling in `gstreamer-allocators`,
-// which would add a crate to the workspace lock for three C symbols. Linked
-// only when a GStreamer feature is on, alongside the rest of the GStreamer stack.
-// ---------------------------------------------------------------------------
+// libgstallocators: the two entry points needed to read a dmabuf fd out of a
+// GstMemory. Bound directly rather than pulling in `gstreamer-allocators`, which
+// would add a crate to the workspace lock for three C symbols.
 
 #[cfg(unix)]
 #[link(name = "gstallocators-1.0")]
 unsafe extern "C" {
-    /// Whether `mem` was allocated by the dmabuf allocator.
     fn gst_is_dmabuf_memory(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
     /// The dmabuf fd behind `mem`. Owned by the memory — the caller must `dup`
     /// it to keep it past the buffer's lifetime.
     fn gst_dmabuf_memory_get_fd(mem: *mut gst::ffi::GstMemory) -> i32;
 }
-
-// ---------------------------------------------------------------------------
-// Sample → Frame
-// ---------------------------------------------------------------------------
 
 /// Whether the log has already said that a dmabuf sample cannot be described, and the same for a
 /// sample negotiated to a consumer that takes none. This runs once per decoded frame, so a stream
@@ -41,7 +33,6 @@ unsafe extern "C" {
 static UNDESCRIBED_SAID: AtomicBool = AtomicBool::new(false);
 static UNSUITABLE_SAID: AtomicBool = AtomicBool::new(false);
 
-/// Turn one appsink sample into a [`Frame`] in whatever memory it arrived in.
 pub(crate) fn frame_from_sample(
     sample: &gst::Sample,
     acceptance: FrameAcceptance,
@@ -56,14 +47,11 @@ pub(crate) fn frame_from_sample(
     frame
 }
 
-/// [`frame_from_sample`] itself, without the saying of what a drop meant.
 fn describe(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> {
     let caps = sample.caps()?;
     let buffer = sample.buffer()?;
     let pts_ms = buffer.pts().map_or(0, gst::ClockTime::mseconds);
 
-    // A dmabuf sample carries `memory:DMABuf` in its caps features and a
-    // `DMA_DRM` format described by `drm-format`.
     if caps
         .features(0)
         .is_some_and(|f| f.contains("memory:DMABuf"))
@@ -116,7 +104,6 @@ fn describe(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> 
                     Some(PlaneData {
                         bytes: Arc::new(data.to_vec()),
                         stride: u32::try_from(stride).ok()?,
-                        // 4:2:0 chroma is half resolution in both axes.
                         width: if luma { info.width() } else { info.width() / 2 },
                         height: if luma {
                             info.height()
@@ -138,7 +125,6 @@ fn describe(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> 
             })
         }
         _ => {
-            // Packed 8-bit formats: repack to tight RGBA, honouring stride.
             let rgba = packed_to_rgba(&vframe, &info)?;
             Some(Frame {
                 width: info.width(),
@@ -150,8 +136,6 @@ fn describe(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> 
     }
 }
 
-/// Repack a packed 8-bit sample (`RGBA` / `BGRA` / `BGRx` / `RGBx`) into tight
-/// RGBA8.
 fn packed_to_rgba(
     vframe: &gst_video::VideoFrameRef<&gst::BufferRef>,
     info: &gst_video::VideoInfo,
@@ -232,16 +216,12 @@ fn packed_row_geometry(
     Some((row, stride, height))
 }
 
-/// The colour convention the caps declare, defaulting to BT.709 limited —
-/// what HD video carries when it says nothing.
 fn colorimetry_from_info(info: &gst_video::VideoInfo) -> Colorimetry {
     let c = info.colorimetry();
     let matrix = match c.matrix() {
         gst_video::VideoColorMatrix::Bt601 => YuvMatrix::Bt601,
         gst_video::VideoColorMatrix::Bt2020 => YuvMatrix::Bt2020,
         gst_video::VideoColorMatrix::Rgb => YuvMatrix::Identity,
-        // BT.709 is both a named matrix and the default: it is what HD video
-        // carries when the caps decline to say.
         _ => YuvMatrix::Bt709,
     };
     let range = match c.range() {
@@ -251,20 +231,11 @@ fn colorimetry_from_info(info: &gst_video::VideoInfo) -> Colorimetry {
     Colorimetry { matrix, range }
 }
 
-/// Describe a `memory:DMABuf` sample: pull the fd out of each `GstMemory` and
-/// read the plane layout from the buffer's `GstVideoMeta` (which the sink's
-/// `propose_allocation` answer is what makes available).
 #[cfg(unix)]
 pub(crate) fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<DmabufImage> {
     let buffer = sample.buffer()?;
     let drm = gst_video::VideoInfoDmaDrm::from_caps(caps).ok()?;
 
-    // `DMA_DRM` caps describe an opaque buffer: the `VideoInfo` inside a
-    // `VideoInfoDmaDrm` carries the *placeholder* DMA_DRM format, which has
-    // zero planes and no strides. Translating it back to the real format
-    // (NV12, P010, …) is what yields the plane count and layout — without
-    // this the frame is described as having no planes at all, and every
-    // import then fails for a reason that has nothing to do with the buffer.
     let resolved = drm.to_video_info().ok();
     let info: &gst_video::VideoInfo = resolved.as_ref().unwrap_or(&drm);
     let width = info.width();
@@ -278,15 +249,6 @@ pub(crate) fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> O
         return None;
     }
 
-    // Plane geometry: prefer the buffer's VideoMeta (authoritative for the
-    // actual allocation), fall back to the caps-derived info.
-    //
-    // Both sources are fallible per plane: a `VideoMeta` offset is a `usize`
-    // and a stride is a signed `gint`, and a negative stride (a bottom-up
-    // image) or an offset past 4 GiB describes a layout an importer cannot
-    // bind. Those planes drop out here, and the length check below turns a
-    // partial answer into "cannot describe the frame" rather than a plane
-    // list that is silently short.
     let meta = buffer.meta::<gst_video::VideoMeta>();
     let (offsets, strides): (Vec<u32>, Vec<u32>) = match &meta {
         Some(m) => (
@@ -319,8 +281,6 @@ pub(crate) fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> O
         return None;
     }
 
-    // One GstMemory may back several planes (offsets into one fd), or each
-    // plane may have its own. Map plane → memory by GStreamer's own rule.
     let n_mem = buffer.n_memory();
     // A buffer with no memory at all (a GAP buffer, say) describes no picture.
     // Saying so here is what keeps the plane→memory mapping below from
@@ -331,9 +291,6 @@ pub(crate) fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> O
     };
     let mut planes = Vec::with_capacity(n_planes);
     for (i, (offset, stride)) in offsets.iter().zip(&strides).enumerate() {
-        // One `GstMemory` may back several planes at different offsets, or
-        // each plane may carry its own; clamping is `GStreamer`'s own rule for
-        // the first case.
         let mem_idx = i.min(last_mem);
         let mem = buffer.peek_memory(mem_idx);
         // Safety: `mem` is a live `&MemoryRef` borrowed from the buffer for
@@ -363,10 +320,6 @@ pub(crate) fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> O
     Some(DmabufImage {
         planes,
         fourcc: drm.fourcc(),
-        // GStreamer reports a linear buffer as modifier 0, which is exactly
-        // DRM_FORMAT_MOD_LINEAR — keep it rather than reinterpreting it as
-        // "unstated", or a genuinely linear buffer becomes indistinguishable
-        // from one whose producer declined to say.
         modifier: drm.modifier(),
         width,
         height,
@@ -399,7 +352,6 @@ mod tests {
             );
         }
         {
-            // A buffer one byte short of four rows cannot supply four rows.
             assert_eq!(
                 packed_row_geometry(64, 4, 256, 1023),
                 None,

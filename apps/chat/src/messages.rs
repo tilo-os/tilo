@@ -29,15 +29,8 @@ use ui::tilo_resource::{
 use crate::parts::{self, ChatPart};
 use crate::record::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
-    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id_at,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
-
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
-    cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(str::to_owned)
-        .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
-}
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
 /// its author's. Removing someone else's is moderation (`remove-message`),
@@ -54,10 +47,6 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
 
 /// The longest name a delivered message is shown under.
 const MAX_SHOWN_NAME_BYTES: usize = 128;
-
-fn seconds(cx: &ActionCx) -> i64 {
-    cx.now_ms().div_euclid(1000)
-}
 
 /// A post's time: when it was `written` elsewhere, for a message a bot
 /// brings over on someone's behalf (`brought`), never later than now; else
@@ -123,18 +112,19 @@ impl ChatPart {
             .sum()
     }
 
-    /// Append a message to `channel` by `author` at `ts`, refusing what no
+    /// Append a message to `channel` by the invoker `cx` names, at `ts`, refusing what no
     /// one should see: a reply to a reply or to another channel's message,
     /// an oversized body or an invalid attachment. Whether the channel takes
     /// posts is the chat record's to say, where the post is invoked.
     pub(crate) fn append(
         &mut self,
+        cx: &ActionCx,
         id: Id,
         channel: &Id,
-        author: String,
         ts: i64,
         posting: Posting,
     ) -> Result<Id, Refusal> {
+        let author = author(cx)?;
         if posting.text.len() > MAX_MESSAGE_TEXT_BYTES {
             return Err(Refusal::new("the message is too long"));
         }
@@ -157,6 +147,29 @@ impl ChatPart {
                     "a reply answers a top-level message of its channel",
                 ));
             }
+            // A quoted span is a run of the message it answers: it stands inside that
+            // message's text, on its own character boundaries, so pressing the quote reveals
+            // the words it shows.
+            if let Some(quoted) = &posting.quoted
+                && (!quoted.valid()
+                    || usize::try_from(quoted.end)
+                        .ok()
+                        .filter(|&end| end <= parent.text.len())
+                        .and_then(|end| {
+                            let start = usize::try_from(quoted.start).ok()?;
+                            (start < end
+                                && parent.text.is_char_boundary(start)
+                                && parent.text.is_char_boundary(end))
+                            .then_some(())
+                        })
+                        .is_none())
+            {
+                return Err(Refusal::new(
+                    "a quoted span is a run of the message it answers",
+                ));
+            }
+        } else if posting.quoted.is_some() {
+            return Err(Refusal::new("a quote answers a message"));
         }
         self.messages.push(
             id.clone(),
@@ -167,9 +180,11 @@ impl ChatPart {
                 text: posting.text,
                 body: posting.body,
                 parent: posting.parent,
+                quoted: posting.quoted,
                 mentions: posting.mentions,
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
+                acting: cx.acting(),
                 share: posting.share,
                 ..Message::default()
             },
@@ -188,6 +203,10 @@ pub struct NewMessage {
     /// The message it answers in a thread
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Id>,
+    /// The run of the message it answers that it quotes, when it answers a span rather than the
+    /// whole message: the words as they read, and where they stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<crate::record::Quote>,
     /// Its paragraphs as written, with their formatting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Vec<ClipBlock>>,
@@ -208,7 +227,6 @@ pub struct NewMessage {
 // each message the chain publishes, as on the record's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
-    label = "Messages",
     params = chat_part,
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,
@@ -230,6 +248,7 @@ impl ChatPart {
             channel,
             text,
             parent,
+            quoted,
             body,
             attachments,
             mentions,
@@ -239,18 +258,18 @@ impl ChatPart {
             return Err(Refusal::new("a message says something"));
         }
         let id = cx.id();
-        let by = author(cx)?;
         let appearance = cx.appearance();
         let ts = written_at(cx, written, appearance.is_some());
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
                 body: body.unwrap_or_default(),
                 parent,
+                quoted,
                 attachments,
                 appearance,
                 mentions: mentions.unwrap_or_default(),
@@ -287,12 +306,11 @@ impl ChatPart {
             })
             .ok_or("the file is described where it is posted")?;
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default(),
@@ -331,12 +349,11 @@ impl ChatPart {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| label.clone());
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
@@ -374,12 +391,11 @@ impl ChatPart {
         }
         let label = attached.reference.label.clone();
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default().trim().to_owned(),
@@ -498,12 +514,11 @@ impl ChatPart {
         if self.messages.contains(&id) {
             return Ok(());
         }
-        let by = self::author(cx)?;
         let now = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts.map_or(now, |ts| ts.clamp(0, now)),
             Posting {
                 text: body,
@@ -670,9 +685,9 @@ impl ChatPart {
         let reply = reply_id_at(message, &me, summons.attempts);
         if !self.messages.contains(&reply) {
             self.append(
+                cx,
                 reply.clone(),
                 &channel,
-                me.clone(),
                 since,
                 Posting {
                     parent: Some(thread),
@@ -694,6 +709,11 @@ impl ChatPart {
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
             record.state = Some(Transition { state, since });
+        }
+        // The run's working record of a failure, kept beside the words the
+        // reply shows; a later update without one leaves it as it was.
+        if work.detail.is_some() {
+            record.failure_detail.clone_from(&work.detail);
         }
         for step in trace {
             let id = Id::from_raw(step.id.clone());
@@ -758,7 +778,6 @@ impl ChatPart {
         {
             return Err(Refusal::new("provider display name is too long"));
         }
-        let me = author(cx)?;
         let id = Id::from_raw(reply);
         let existing = self.messages.get(&id);
         if let Some(row) = existing {
@@ -780,9 +799,9 @@ impl ChatPart {
         }
         if existing.is_none() {
             self.append(
+                cx,
                 id.clone(),
                 &channel,
-                me,
                 seconds(cx),
                 Posting {
                     appearance: name.map(|name| tilo_actions::Appearance {

@@ -49,12 +49,13 @@ fn published() -> Vec<ResourceSpec> {
                 searching: false,
             }),
         ),
-        launchpad_resource(),
+        launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL),
     ]
 }
 
 /// The resources the desktop publishes, each with the verbs it offers, as one text a change to the
-/// catalogue shows in review.
+/// catalogue shows in review. Its snapshot is `catalogue.txt`; a failing run's left-hand text is
+/// the catalogue as it now stands.
 fn catalogue() -> String {
     let mut catalogue = String::new();
     for resource in published() {
@@ -162,7 +163,7 @@ fn the_launchpad_cards_are_its_controls_for_scripts() {
     // invokes the same verb by the row this resource publishes. People reach the verbs through
     // their host actions, which is what the palette lists, so this resource is never the palette's
     // door.
-    let launchpad = launchpad_resource();
+    let launchpad = launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL);
     assert!(
         !launchpad.children.is_empty(),
         "the launchpad has its cards"

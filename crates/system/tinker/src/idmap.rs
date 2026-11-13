@@ -6,19 +6,12 @@
 //! user turns that into `seteuid 42: Invalid argument`. So a layer session maps
 //! the user's whole subordinate id range, which makes every uid in
 //! `/etc/passwd` inside the layer a distinct uid.
-//!
-//! The consequence is that files in the layer belong to subordinate ids that the
-//! plain host user has no authority over: reading or deleting them from outside
-//! the namespace fails with `EPERM`. Every command that touches a layer's
-//! contents therefore re-executes itself inside the same mapping first.
 
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-/// Set in the environment of the re-executed child so it does not loop.
 const MARKER: &str = "TILO_TINKER_IN_USERNS";
 
-/// Whether this process is already running inside the layer id mapping.
 pub fn inside_mapping() -> bool {
     std::env::var_os(MARKER).is_some()
 }

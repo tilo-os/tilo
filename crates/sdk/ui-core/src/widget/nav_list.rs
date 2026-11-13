@@ -1,24 +1,5 @@
-//! `NavList` — the one navigation list.
-//!
-//! Every sidebar in Tilo lists its destinations with a `NavList`: mailboxes,
-//! channels, playlists, settings categories, places. An app says what the
-//! destinations are ([`NavSection`], [`NavItem`]) and which one is chosen;
-//! the list decides how they look. There is no colour, size, padding or
-//! radius to pass.
-//!
-//! The list scrolls its rows on the [`VirtualList`] engine: arrow keys move
-//! the selection, Left/Right collapse and expand, Enter activates,
-//! F2 renames an editable label, Delete reports [`NavList::on_delete`], the
-//! Menu key, a right click and a long press ask for the row's menu
-//! ([`NavList::on_context_menu`]), rows publish their semantics, and
-//! dragging an item onto a drop target moves it. Rows paint through
-//! [`crate::chrome::paint_nav_row`], so a painted app that calls that
-//! painter draws the same rows.
-//!
-//! Inside a [`super::NavShell`] the list is the sidebar's content: choosing a
-//! destination in a narrow window closes the drawer (or pushes the content
-//! screen) without the app doing anything, and the shell's filter field
-//! narrows the sections that are [`NavSection::filterable`].
+//! `NavList` — the one navigation list. Every sidebar in Tilo lists its destinations with a
+//! `NavList`: mailboxes, channels, playlists, settings categories, places.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -41,25 +22,19 @@ use row::{NavPaint, NavRow};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-/// A group of destinations under a sentence-case title.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavSection {
     pub id: String,
     /// Sentence case ("Mailboxes", "On this device"). An empty title draws
     /// no header: the items stand at the top level.
     pub title: String,
-    /// The person can fold the section away.
     pub collapsible: bool,
-    /// The section starts folded.
     pub collapsed: bool,
     /// A trailing action on the header (usually "New …" with
     /// [`Icon::Plus`]); reported through [`NavList::on_section_action`].
     pub trailing_action: Option<NavAction>,
-    /// The one quiet line the section shows while it has no items.
     pub empty_caption: Option<String>,
-    /// Rows standing in, while it has no items, for items still being read.
     pub pending: u8,
-    /// The window's filter narrows this section's items.
     pub filterable: bool,
     /// The title can be renamed in place ([`NavList::on_rename_action`]).
     pub editable_title: bool,
@@ -92,7 +67,6 @@ impl NavSection {
         }
     }
 
-    /// Items with no header above them.
     #[must_use]
     pub fn untitled(id: impl Into<String>, items: Vec<NavItem>) -> Self {
         Self::new(id, "", items)
@@ -104,7 +78,6 @@ impl NavSection {
         self
     }
 
-    /// Fold the section when it first appears (it stays foldable).
     #[must_use]
     pub fn collapsed(mut self) -> Self {
         self.collapsible = true;
@@ -126,22 +99,17 @@ impl NavSection {
         self
     }
 
-    /// While the section has no items because they are still being read,
-    /// `rows` rows stand in for them: the shape of a row (its icon and its
-    /// label), in the skeleton tone, so nothing moves when the items arrive.
-    /// They are not destinations: nothing selects them, the arrow keys pass
-    /// over them, and assistive technology hears "Loading".
+    /// While the section has no items because they are still being read, `rows` rows stand in
+    /// for them: the shape of a row (its icon and its label), in the skeleton tone, so nothing
+    /// moves when the items arrive.
     #[must_use]
     pub fn pending(mut self, rows: u8) -> Self {
         self.pending = rows;
         self
     }
 
-    /// Let the window's search narrow this section's items: the window
-    /// bar's field, or a shell's own [`super::NavShell::with_filter`] field.
-    /// The section draws no field itself. Sections that do not opt in (a
-    /// list of connections above the tables being filtered) stay as they
-    /// are.
+    /// Let the window's search narrow this section's items: the window bar's field, or a
+    /// shell's own [`super::NavShell::with_filter`] field. The section draws no field itself.
     #[must_use]
     pub fn filterable(mut self) -> Self {
         self.filterable = true;
@@ -172,7 +140,6 @@ impl NavSection {
 pub struct NavAction {
     pub id: String,
     pub icon: Icon,
-    /// Sentence case, naming what happens ("New playlist", "More").
     pub label: String,
     /// Pressing it asks for the row's menu ([`NavList::on_context_menu`])
     /// instead of reporting the action.
@@ -209,7 +176,6 @@ impl NavAction {
 /// and the other words for it, or words for the destination itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavSearchTerm {
-    /// The name shown under the row's label when this term found it.
     pub name: Option<String>,
     /// Other words that find it; a word matches a query at a word start.
     pub words: Vec<String>,
@@ -234,7 +200,6 @@ impl NavSearchTerm {
         }
     }
 
-    /// Also found by `words`.
     #[must_use]
     pub fn also(mut self, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.words.extend(words.into_iter().map(Into::into));
@@ -263,7 +228,6 @@ fn matches_word_start(text: &str, query: &str) -> bool {
     })
 }
 
-/// One destination. Every part but the label is optional.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
     /// Stable across rebuilds; selection, expansion and focus follow it.
@@ -278,12 +242,8 @@ pub struct NavItem {
     /// Show the list's item actions ([`NavList::item_actions`]) on this row
     /// on hover and focus.
     pub actions: bool,
-    /// Nested destinations, indented one step.
     pub children: Vec<NavItem>,
-    /// Starts expanded (only meaningful with children).
     pub expanded: bool,
-    /// Opens even where the person folded it (the place the app just
-    /// revealed).
     pub ensure_expanded: bool,
     /// Other items may be dragged into this one ([`NavList::on_move`]).
     pub drop_target: bool,
@@ -295,22 +255,17 @@ pub struct NavItem {
     pub status_label: Option<(String, Tone)>,
     pub badge: Option<String>,
     pub swatch: Option<Color>,
-    /// A picture in the icon's place (an album's cover).
     pub art: Option<NavArt>,
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
-    /// The person the row stands for, as their avatar in the icon's place.
     pub person: Option<NavPerson>,
-    /// Something new waits behind the row (an unread conversation).
     pub unread: bool,
     /// The key assistive technology and tests address the row by; the
     /// default is `nav:item:{id}`.
     pub semantic_key: Option<String>,
-    /// What else the row is found by when the list is filtered: the things
-    /// the destination holds ("Tap to click" on a touchpad page) and the
-    /// words people use for them. A row found by a term that has a name
-    /// shows that name under its label.
+    /// What else the row is found by when the list is filtered: the things the destination
+    /// holds ("Tap to click" on a touchpad page) and the words people use for them.
     pub search_terms: Vec<NavSearchTerm>,
 }
 
@@ -330,23 +285,19 @@ pub struct NavPerson {
     /// Their colour in the workspace, ringing the avatar; `None` takes the colour their
     /// identity carries ([`AvatarFace::new`]), which every window paints the same.
     pub colour: Option<Color>,
-    /// They are speaking now.
     pub speaking: bool,
     /// The name their initials come from, when the label says more than
     /// their name ("Dana (via Discord)"); else the label.
     pub name: Option<String>,
     /// Their picture; their initials stand in while there is none.
     pub image: Option<vello::peniko::ImageData>,
-    /// An agent, not a person: it wears the agent's own face in its colour.
     pub agent: bool,
 }
 
-/// A row's status dot, as [`NavItem::status`] keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavItemStatus(NavStatus);
 
 impl NavItemStatus {
-    /// The status as the row paints it.
     #[must_use]
     pub fn row_status(&self) -> RowStatus<'_> {
         self.0.row_status()
@@ -455,7 +406,6 @@ impl NavItem {
         self
     }
 
-    /// This row offers none of the list's item actions.
     #[must_use]
     pub fn without_actions(mut self) -> Self {
         self.actions = false;
@@ -470,7 +420,6 @@ impl NavItem {
         self
     }
 
-    /// A tertiary figure at the trailing edge (a size).
     #[must_use]
     pub fn meta(mut self, text: impl Into<String>) -> Self {
         self.meta = Some(text.into());
@@ -485,7 +434,6 @@ impl NavItem {
         self
     }
 
-    /// A quiet tinted badge naming the row's state ("Active").
     #[must_use]
     pub fn status_label(mut self, label: impl Into<String>, tone: Tone) -> Self {
         self.status_label = Some((label.into(), tone));
@@ -500,17 +448,14 @@ impl NavItem {
         self
     }
 
-    /// The content colour the row stands for (a calendar, a project), in
-    /// the icon's place.
     #[must_use]
     pub fn swatch(mut self, color: Color) -> Self {
         self.swatch = Some(color);
         self
     }
 
-    /// A small rounded picture in the icon's place: what the destination
-    /// holds (an album's cover), or the initials of `name` while it has
-    /// none. The label lines up with the icons of the rows around it.
+    /// A small rounded picture in the icon's place: what the destination holds (an album's
+    /// cover), or the initials of `name` while it has none.
     #[must_use]
     pub fn art(mut self, name: impl Into<String>, image: Option<vello::peniko::ImageData>) -> Self {
         self.art = Some(NavArt {
@@ -520,9 +465,7 @@ impl NavItem {
         self
     }
 
-    /// A checkbox in the leading slot (a calendar shown or hidden). The
-    /// whole row toggles it and reports through [`NavList::on_check_action`]; a
-    /// checkable row is not a destination and is never selected.
+    /// A checkbox in the leading slot (a calendar shown or hidden).
     #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
@@ -537,18 +480,14 @@ impl NavItem {
         self
     }
 
-    /// Someone is on this place: a mark in their presence colour. Call once
-    /// per person.
     #[must_use]
     pub fn presence(mut self, identity: impl Into<String>) -> Self {
         self.presence.push(identity.into());
         self
     }
 
-    /// The row stands for a person (someone in a call): their avatar, in
-    /// `colour`, in the icon's place, ringed while `speaking`. With no
-    /// colour, the avatar takes the colour their identity carries, as every
-    /// face of them does.
+    /// The row stands for a person (someone in a call): their avatar, in `colour`, in the
+    /// icon's place, ringed while `speaking`.
     #[must_use]
     pub fn person(
         mut self,
@@ -592,7 +531,6 @@ impl NavItem {
         self
     }
 
-    /// Something new waits behind the row: its label stands out at rest.
     #[must_use]
     pub fn unread(mut self, unread: bool) -> Self {
         self.unread = unread;
@@ -606,7 +544,6 @@ impl NavItem {
         self
     }
 
-    /// The resource the place shows, for a row bound to one.
     #[must_use]
     pub fn resource(mut self, id: impl Into<String>) -> Self {
         self.resource = Some(id.into());
@@ -671,22 +608,15 @@ fn control_row(target: &str) -> Option<&str> {
         })
 }
 
-/// What the list's callbacks report into, shared with the closures the
-/// list engine holds.
 #[derive(Default)]
 struct NavShared {
-    /// Row keys of the checkable rows.
     checkable: HashSet<String>,
     item_actions: Vec<String>,
-    /// Section row key → the id its trailing action runs.
     section_actions: HashMap<String, String>,
     view: Option<NavView>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
-    /// The places whose selection the view bound to an action, as it last said.
     component_places: HashSet<String>,
-    /// Section row key → the action a section's add runs when the view bound it.
     section_add_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
-    /// The sections whose add the view bound to an action, as it last said.
     component_adds: HashSet<String>,
     selection_emitted: bool,
     /// What the list's gestures run as published actions ([`NavList::item_action`]
@@ -705,9 +635,7 @@ struct NavShared {
     /// and where the menu opens. The list answers it with the row's lift.
     asked_menu: Option<(String, Rect, Point)>,
     binding: Option<LocalBinding<Option<String>>>,
-    /// The chosen destination, including quiet app-driven reconciliation.
     selected: Option<String>,
-    /// The person chose a destination since the shell last asked.
     navigated: bool,
 }
 
@@ -730,7 +658,6 @@ impl NavShared {
         }
         self.navigated = true;
         if self.selected.as_deref() == Some(id.as_str()) {
-            // Choosing the chosen destination again still navigates to it.
             if let Some(action) = self.selection_actions.get_mut(&id) {
                 let _ = action.emit(());
             } else if let Some(view) = self.view.as_mut() {
@@ -748,9 +675,6 @@ impl NavShared {
             let _ = action.emit(());
             self.selection_emitted = true;
         } else if let Some(view) = self.view.as_mut() {
-            // The person's choice is the published view action's own run:
-            // no host decides a view or records it, and the list may be off
-            // screen once it is made.
             (view.handler)(id);
         }
     }
@@ -771,14 +695,10 @@ impl NavShared {
         if let Some(action) = self.selection_actions.get_mut(&id) {
             let _ = action.emit(());
         } else {
-            // A list that answers through its view action or its selection
-            // stand opens the place itself: an activation chooses like a
-            // press, whether or not the row was already chosen.
             self.choose(key);
         }
     }
 
-    /// Run item action `index` on the row of `key`.
     fn run_item_action(&mut self, key: &str, index: usize) {
         let Some(action) = self.item_actions.get(index).cloned() else {
             return;
@@ -791,7 +711,6 @@ impl NavShared {
         }
     }
 
-    /// Run the trailing action of the section header `key`.
     fn run_section_action(&mut self, key: &str) -> bool {
         let Some(action) = self.section_actions.get(key).cloned() else {
             return false;
@@ -816,21 +735,15 @@ impl NavShared {
     }
 }
 
-/// The navigation list. See the module docs.
 pub struct NavList {
     list: Box<VirtualList<NavModel>>,
     shared: Rc<RefCell<NavShared>>,
-    /// What every row paints from beyond its own data.
     paint: Rc<RefCell<NavPaint>>,
-    /// The folds and checks the person made.
     state: NavState,
-    /// The sections as the app handed them, before any filter.
     sections: Vec<NavSection>,
-    /// The filter the window's field applies to filterable sections.
     filter: String,
     /// The state the filter is kept in ([`Self::bind_filter`]).
     filter_binding: Option<LocalBinding<String>>,
-    /// The app state the list follows, read at every sync and update.
     source: Option<NavSource>,
     /// The app declared its places come under headings, even while none
     /// has loaded yet ([`Self::with_headings`]).
@@ -841,9 +754,7 @@ pub struct NavList {
     /// The name assistive technology, agents and tests read for the list as
     /// a whole: what it narrows, apart from the app's own title.
     semantic_key: Option<String>,
-    /// The actions at the trailing edge of every item that offers them.
     row_actions: Vec<NavAction>,
-    /// The key the list was built under: what its sections are addressed by.
     key: String,
     /// A drag staged for a capture, shown once the rows stand placed
     /// ([`Self::stage_drag`]).
@@ -888,7 +799,6 @@ impl NavList {
             },
         )
         .filling()
-        // A navigation row lays out its own insets and paints its own lift.
         .flush()
         .overlay_scrollbar()
         .selection_follows_focus()
@@ -935,8 +845,6 @@ impl NavList {
         list
     }
 
-    /// Refresh what the callbacks read of the rows: which check, which
-    /// header runs which action.
     fn refresh_shared(&self) {
         let model = self.list.model();
         let mut shared = self.shared.borrow_mut();
@@ -955,7 +863,6 @@ impl NavList {
             .collect();
     }
 
-    /// Give the list a stable id for tests and inspection.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         let id = id.into();
@@ -964,7 +871,6 @@ impl NavList {
         self
     }
 
-    /// The name the list is announced by ("Mailboxes", "Settings").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.list = Box::new(self.list.with_accessible_name(name));
@@ -1011,10 +917,8 @@ impl NavList {
         self
     }
 
-    /// Keep the list in step with app state: `source` answers the sections
-    /// and the chosen destination, read now and at every sync and update. A
-    /// choice the person makes shows until the state answers it; a state that
-    /// chooses otherwise wins.
+    /// Keep the list in step with app state: `source` answers the sections and the chosen
+    /// destination, read now and at every sync and update.
     #[must_use]
     pub fn follow(
         mut self,
@@ -1039,12 +943,9 @@ impl NavList {
         true
     }
 
-    /// Called with the item id when a destination is chosen: the list, as
-    /// control `id`, publishes choosing a destination as its view action
-    /// `select` (`view_choice`), so a person's
-    /// click, a screen reader, a script and an agent choose through the same
-    /// action. Showing a destination is the window's own state, never an
-    /// edit: the action is absent from history.
+    /// Called with the item id when a destination is chosen: the list, as control `id`,
+    /// publishes choosing a destination as its view action `select` (`view_choice`), so a
+    /// person's click, a screen reader, a script and an agent choose through the same action.
     #[must_use]
     pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
         let id = id.into();
@@ -1066,7 +967,23 @@ impl NavList {
     fn view_resource(&self) -> Option<tilo_actions::ResourceSpec> {
         let shared = self.shared.borrow();
         let view = shared.view.as_ref()?;
-        Some(view.choice.resource(destinations(&self.sections)))
+        // The control is named by the place the person is at, in their words
+        // ("Inbox"), never by its id: a sheet asking the person to confirm a
+        // step reads "Inbox", not the address of a row.
+        let here = shared
+            .selected
+            .as_deref()
+            .and_then(|selected| {
+                destinations(&self.sections)
+                    .into_iter()
+                    .find(|(id, _)| id == selected)
+                    .map(|(_, label)| label)
+            })
+            .filter(|label| !label.trim().is_empty());
+        Some(
+            view.choice
+                .resource_named(here.as_deref(), destinations(&self.sections)),
+        )
     }
 
     /// Answer a `select` addressed to this list: show the destination and
@@ -1117,11 +1034,9 @@ impl NavList {
         self
     }
 
-    /// Actions shown on hover and focus at the trailing edge of every item
-    /// that has not opted out ([`NavItem::without_actions`]); reported with
-    /// the item id and the action id through `on_action`. An action that
-    /// [opens the menu](NavAction::opens_context_menu) asks for the row's
-    /// menu instead.
+    /// Actions shown on hover and focus at the trailing edge of every item that has not opted
+    /// out ([`NavItem::without_actions`]); reported with the item id and the action id through
+    /// `on_action`.
     #[must_use]
     pub fn item_actions(
         mut self,
@@ -1133,7 +1048,6 @@ impl NavList {
         self.with_installed_row_actions()
     }
 
-    /// Hand the rows the item actions as they stand.
     fn with_installed_row_actions(self) -> Self {
         self.paint.borrow_mut().actions = self
             .row_actions
@@ -1148,23 +1062,19 @@ impl NavList {
         self
     }
 
-    /// Called with the section id and the action id when a section header's
-    /// trailing action is pressed.
     #[must_use]
     pub fn on_section_action(self, f: impl FnMut(&str, &str) + 'static) -> Self {
         self.set_section_action(f);
         self
     }
 
-    /// [`Self::on_section_action`] after construction.
     fn set_section_action(&self, f: impl FnMut(&str, &str) + 'static) {
         self.shared.borrow_mut().on_section_action = Some(Box::new(f));
     }
 
-    /// Bind places' selection and sections' adds to the actions a view bound to them: choosing a
-    /// place or pressing a heading's add runs that action through the list's control door, as a
-    /// destination bound with [`Self::selection_actions`] does. What the view no longer binds
-    /// stops being bound.
+    /// Bind places' selection and sections' adds to the actions a view bound to them: choosing
+    /// a place or pressing a heading's add runs that action through the list's control door, as
+    /// a destination bound with [`Self::selection_actions`] does.
     fn bind_actions(
         &self,
         places: &HashMap<String, crate::component::Event>,
@@ -1227,13 +1137,9 @@ impl NavList {
         self
     }
 
-    /// Called when the person asks for an item's menu: a right click or a
-    /// long press on its row, the Menu key or Shift+F10 on it, or an item
-    /// action that [opens the menu](NavAction::opens_context_menu). It
-    /// receives the item id, the row's lift (hand it to
-    /// `ContextMenu::anchor_row` so the row stays marked) and where the menu
-    /// opens: the pointer, or the bottom-leading corner of the row or the
-    /// action.
+    /// Called when the person asks for an item's menu: a right click or a long press on its
+    /// row, the Menu key or Shift+F10 on it, or an item action that [opens the
+    /// menu](NavAction::opens_context_menu).
     #[must_use]
     pub fn on_context_menu(mut self, f: impl FnMut(&str, Rect, Point) + 'static) -> Self {
         self.shared.borrow_mut().on_menu = Some(Box::new(f));
@@ -1244,18 +1150,14 @@ impl NavList {
         self
     }
 
-    /// Let the person drag items: into an item marked
-    /// [`NavItem::drop_target`], or before and after items in the same
-    /// section. The app moves the item in its own data and hands the list
-    /// its new sections ([`Self::set_sections`]).
+    /// Let the person drag items: into an item marked [`NavItem::drop_target`], or before and
+    /// after items in the same section.
     #[must_use]
     pub fn on_move(self, f: impl FnMut(&str, NavDrop) + 'static) -> Self {
         self.shared.borrow_mut().on_move = Some(Box::new(f));
         self.with_reordering()
     }
 
-    /// Let items be dragged, reporting each drop to the bound action or the
-    /// callback.
     fn with_reordering(mut self) -> Self {
         let shared = Rc::clone(&self.shared);
         self.list = Box::new(self.list.with_reorder(
@@ -1290,10 +1192,8 @@ impl NavList {
         self
     }
 
-    /// The places come in groups under headings (a contact book's groups,
-    /// a mail account's folders), even where none has loaded yet or the
-    /// person has made none. A sidebar that can hold headings starts as a
-    /// list, so it never turns from rail into list as its groups arrive.
+    /// The places come in groups under headings (a contact book's groups, a mail account's
+    /// folders), even where none has loaded yet or the person has made none.
     #[must_use]
     pub fn with_headings(mut self) -> Self {
         self.headings = true;
@@ -1331,13 +1231,9 @@ impl NavList {
         self.rebuild();
     }
 
-    /// Build the rows from the sections as the filter and the person's
-    /// folds show them.
     fn rebuild(&mut self) {
         let selected = self.selected_id();
         let model = model::build(&self.sections, &self.filter, &self.state);
-        // Only the rows whose content changed are built anew; the rest keep
-        // their widgets, wherever they now stand.
         let changed: Vec<String> = {
             let current = self.list.model();
             (0..model.len())
@@ -1393,8 +1289,7 @@ impl NavList {
     }
 
     /// Choose the place that names the resource `id`, without reporting it, when the list has
-    /// one: the place follows the content the window shows. Answers whether it chose one, and
-    /// leaves the selection as it was when no place names `id`.
+    /// one: the place follows the content the window shows.
     pub fn select_naming(&mut self, id: &str) -> bool {
         let Some(item) = self.list.model().item_naming(id).map(str::to_owned) else {
             return false;
@@ -1418,7 +1313,6 @@ impl NavList {
         key
     }
 
-    /// The chosen destination.
     #[must_use]
     pub fn selected_id(&self) -> Option<String> {
         let model = self.list.model();
@@ -1490,7 +1384,6 @@ impl NavList {
             .into_iter()
             .find(|item| item.id == id)
             .is_some_and(|item| {
-                // A row with nothing under it yet has nothing to open.
                 !item.children.is_empty()
                     && self
                         .state
@@ -1529,10 +1422,9 @@ impl NavList {
         self.list.row_action_rect(&format!("item:{id}"), index)
     }
 
-    /// Show item `id` being dragged to just before item `before`, for a
-    /// capture: the row lifts under a resting pointer and the drop line
-    /// shows. Nothing moves unless the person releases it. Needs
-    /// [`Self::on_move`].
+    /// Show item `id` being dragged to just before item `before`, for a capture: the row lifts
+    /// under a resting pointer and the drop line shows. Nothing moves unless the person
+    /// releases it.
     pub fn stage_drag(&mut self, id: &str, before: &str) {
         self.staged_drag = Some((format!("item:{id}"), format!("item:{before}")));
         self.apply_staged_drag();
@@ -1546,9 +1438,8 @@ impl NavList {
         }
     }
 
-    /// Narrow the filterable sections to `query` (an empty query shows
-    /// everything). The shell's filter field calls this; an app with its own
-    /// field may too. The person's folds come back as the filter clears.
+    /// Narrow the filterable sections to `query` (an empty query shows everything). The shell's
+    /// filter field calls this; an app with its own field may too.
     pub fn set_filter(&mut self, query: &str) {
         if query == self.filter {
             return;
@@ -1560,7 +1451,6 @@ impl NavList {
         }
     }
 
-    /// The filter the list is narrowed to.
     #[must_use]
     pub fn filter(&self) -> &str {
         &self.filter
@@ -1584,13 +1474,11 @@ impl NavList {
     /// positions its children by hand rather than through the layout tree.
     pub fn place_at(&mut self, rect: Rect) {
         let theme = self.paint.borrow().theme.clone();
-        // The rows lay out in a tree of the list's own, as the host's would.
-        let _ = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let _ = crate::text_render::with_layout_renderer(&theme, |text| {
             crate::widget::layout::lay_out_detached(self, rect, &theme, text)
         });
     }
 
-    /// The list's rows engine, for tests reading its state.
     #[cfg(test)]
     pub(crate) fn list(&self) -> &VirtualList<NavModel> {
         &self.list
@@ -1612,7 +1500,6 @@ impl NavList {
         paint.dragging = self.list.is_dragging();
     }
 
-    /// The row of `key` and where it stands.
     fn placed(&self, key: &str) -> Option<(NavRowData, Rect)> {
         let key = key.to_owned();
         let row = self.list.model().row_of(&key)?.clone();
@@ -1652,7 +1539,6 @@ impl NavList {
                 } else if disclosure.is_some_and(|band| band.contains(point)) {
                     self.fold(&key, !open);
                 }
-                // A header is no destination: a press elsewhere on it chooses nothing.
                 true
             }
             NavRowKind::Caption { .. } | NavRowKind::Pending { .. } => true,
@@ -1666,7 +1552,6 @@ impl NavList {
                     return true;
                 }
                 if spec.checked.is_some() {
-                    // The whole row is the checkbox's target.
                     self.toggle_check(&key);
                     return true;
                 }
@@ -1780,7 +1665,6 @@ impl NavList {
             {
                 return true;
             }
-            // Any other key, or a control that is gone, leaves it for the row.
             self.focus_control(None);
         }
         let focused = self.list.focused_key().cloned();
@@ -1984,7 +1868,6 @@ pub(crate) trait NavigationSource {
 /// A rail whose width follows its destinations' words
 /// ([`crate::chrome::rail_width_fitting`]).
 pub(crate) trait RailExtent {
-    /// How wide this rail is under `theme`, or `None` when it is no rail.
     fn fitted_rail_width(&self, theme: &crate::Theme) -> Option<f64>;
 }
 
@@ -1994,24 +1877,18 @@ impl RailExtent for NavList {
             return None;
         }
         let items = all_items(&self.sections);
-        Some(crate::text_render::with_layout_renderer(
-            theme.text_scale,
-            |text| {
-                crate::chrome::rail_width_fitting(
-                    theme,
-                    text,
-                    items.iter().map(|item| item.label.as_str()),
-                )
-            },
-        ))
+        Some(crate::text_render::with_layout_renderer(theme, |text| {
+            crate::chrome::rail_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        }))
     }
 }
 
-/// A navigation sidebar whose width decides how it reads: narrow, a rail
-/// of tiles (icon over a short caption); wide, a list (icon beside the
-/// label). The shell hosting it as its sidebar asks how wide each form
-/// needs to be, starts it at the list's width, and switches it as its width
-/// crosses the threshold: a window narrow enough for the rail shows one.
+/// A navigation sidebar whose width decides how it reads: narrow, a rail of tiles (icon over a
+/// short caption); wide, a list (icon beside the label).
 pub(crate) trait AdaptiveNav {
     /// The width of the list as a rail: its longest word whole, up to the
     /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
@@ -2020,8 +1897,6 @@ pub(crate) trait AdaptiveNav {
     /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
     /// list.
     fn list_fit(&self, theme: &crate::Theme) -> f64;
-    /// Paint the rows as a rail's tiles or as list rows. Returns whether
-    /// that changed.
     fn set_rail(&mut self, rail: bool) -> bool;
 }
 
@@ -2043,7 +1918,7 @@ fn all_items(sections: &[NavSection]) -> Vec<&NavItem> {
 impl AdaptiveNav for NavList {
     fn rail_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             crate::chrome::sidebar_rail_width_fitting(
                 theme,
                 text,
@@ -2054,7 +1929,7 @@ impl AdaptiveNav for NavList {
 
     fn list_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             crate::chrome::nav_list_width_fitting(
                 theme,
                 text,
@@ -2069,13 +1944,10 @@ impl AdaptiveNav for NavList {
 }
 
 /// The navigation sidebar `widget` is, when it is one ([`AdaptiveNav`]).
-/// Only the sidebar itself counts, never a list nested inside a composite
-/// sidebar: a rail can't hold the composite's other controls.
 pub(crate) fn adaptive(widget: &dyn crate::widget::Widget) -> Option<&(dyn AdaptiveNav + 'static)> {
     crate::widget::capability::capability::<dyn AdaptiveNav>(widget)
 }
 
-/// As [`adaptive`], to switch it.
 pub(crate) fn adaptive_mut(
     widget: &mut dyn crate::widget::Widget,
 ) -> Option<&mut (dyn AdaptiveNav + 'static)> {
@@ -2138,7 +2010,6 @@ fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
     shared.bound.unavailable_button(target, shared)
 }
 
-/// Whether any row or row button the list publishes is unavailable now.
 fn any_unavailable(shared: &NavShared) -> bool {
     shared
         .selection_actions
@@ -2165,9 +2036,6 @@ fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
     }
 }
 
-// Not the blanket `Decorator`: apps box a navigation list, and its Widget
-// methods (with the list engine they forward to) are compiled once, here
-// (`concrete_decorator_widget!` in decorator.rs).
 impl crate::widget::decorator::concrete::Decorator for NavList {
     type Inner = VirtualList<NavModel>;
 
@@ -2235,7 +2103,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         theme: &crate::Theme,
         node_map: &mut HashMap<crate::taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> crate::taffy::NodeId {
-        // The rows stand at the theme's heights: a new theme builds them anew.
         if self.paint.borrow().theme != *theme {
             self.paint.borrow_mut().theme = theme.clone();
             self.list.update_model(|_| ());
@@ -2314,10 +2181,8 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         self.take_menu(matches!(event, WindowEvent::MouseInput { .. }));
     }
 
-    /// The list carries out its own structural changes in place: rows a
-    /// scroll or a new extent mounts, and rows it lets go of, are mounted
-    /// under the list's node. Pass its change on, so a mount settles the
-    /// frame instead of rebuilding the window's tree.
+    /// The list carries out its own structural changes in place: rows a scroll or a new extent
+    /// mounts, and rows it lets go of, are mounted under the list's node.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         crate::widget::Widget::take_structure_change(&mut *self.list)
     }
@@ -2351,7 +2216,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         origin: Point,
     ) {
         crate::widget::Widget::apply_layout(&mut *self.list, taffy, node, origin);
-        // A drag staged before the rows stood placed shows once they do.
         self.apply_staged_drag();
     }
 
@@ -2368,7 +2232,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        // A row names its elided label and its actions itself.
         let mut found = None;
         crate::widget::Widget::for_each_child(&*self.list, &mut |row| {
             if found.is_none() {
@@ -2383,12 +2246,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             .map(crate::a11y::SharedAccessNode::into_owned)
     }
 
-    /// The list's rows as the engine keeps them between walks, each the
-    /// very node of the last walk while nothing it is built from changed: a
-    /// keystroke in the pane beside the list builds none of them. A row
-    /// whose destination's selection action is unavailable is published
-    /// disabled, as a copy of the kept row; availability changes without the
-    /// rows changing, so those few are copied on every walk.
+    /// The list's rows as the engine keeps them between walks, each the very node of the last
+    /// walk while nothing it is built from changed: a keystroke in the pane beside the list
+    /// builds none of them.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         let mut access = crate::widget::Widget::accessibility_shared(&*self.list)?;
         access.node.role = crate::a11y::Role::Tree;
@@ -2424,7 +2284,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             resized && paint.rail
         };
         if rail {
-            // A rail tile's caption wraps in the rail's width.
             self.list.update_model(|_| ());
         }
         DrawChild::draw_child(&mut *self.list, scene, transform, text, theme, presence);
@@ -2446,7 +2305,6 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         crate::widget::Widget::accessibility_hidden(&*self.list)
     }
 
-    /// The list's own node, without building its rows.
     fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
         let mut root = crate::widget::Widget::accessibility_root(&*self.list)?;
         root.role = crate::a11y::Role::Tree;
@@ -2568,10 +2426,8 @@ impl crate::widget::controls::ActionControls for NavList {
         bindings
     }
 
-    /// Whether `Self::control_action_bindings` holds an action, answered
-    /// without building the rows' semantics it also lists: the host asks it
-    /// on every frame. The actions are the mounted destinations' selection
-    /// actions and whatever the list's own rows bind.
+    /// Whether `Self::control_action_bindings` holds an action, answered without building the
+    /// rows' semantics it also lists: the host asks it on every frame.
     fn has_action_control_bindings(&self) -> bool {
         let shared = self.shared.borrow();
         let model = self.list.model();

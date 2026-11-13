@@ -30,7 +30,7 @@ use std::sync::Arc;
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{
-    CollabEvent, CollabRequest, DocumentMutation, SurfacePublication, WorkspaceCommit,
+    CollabEvent, CollabRequest, DocumentMutation, SurfaceDelta, SurfacePublication, WorkspaceCommit,
 };
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
@@ -47,7 +47,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
@@ -278,6 +278,32 @@ impl Surface {
         }
         resources
     }
+
+    /// What an invocation of `address` runs, and the resources it resolves against: the first
+    /// resource carrying it, in reading order, among `resources` ([`carried`]), or — where the
+    /// address names no resource there — among every resource the workspace holds, since what a
+    /// window's control says it does names a kind of resource rather than the record a window
+    /// shows. `address` itself answers when this app publishes nothing of it, so an action it does
+    /// not offer is refused as it was.
+    fn naming(
+        &self,
+        resources: Vec<ResourceSpec>,
+        address: &ActionAddress,
+    ) -> (Vec<ResourceSpec>, ActionAddress) {
+        let named = |resources: &[ResourceSpec]| {
+            resources
+                .iter()
+                .find_map(|resource| carried(resource, address))
+        };
+        if let Some(named) = named(&resources) {
+            return (resources, named);
+        }
+        let every = self.resources(None);
+        match named(&every) {
+            Some(named) => (every, named),
+            None => (resources, address.clone()),
+        }
+    }
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.
@@ -309,6 +335,25 @@ fn find(spec: &ResourceSpec, address: &str) -> Option<ResourceSpec> {
 /// Whether `spec` or a resource under it is `address`.
 fn holds(spec: &ResourceSpec, address: &str) -> bool {
     spec.id.as_str() == address || spec.children.iter().any(|child| holds(child, address))
+}
+
+/// What `spec` publishes of `address`: the action under the name it is published by, on the
+/// resource that carries it. `address` names that resource by its published id, or — as a
+/// window's control says what it does — by the kind of resource it acts on; and the action by
+/// the name it is published under or the id its declaration keeps
+/// ([`tilo_actions::ActionType::declared`]), which no rename of a view and no other language
+/// changes. `None` when `spec` and what it holds offer nothing of it.
+fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress> {
+    if spec.id.as_str() == address.resource || spec.kind == address.resource {
+        for action in &spec.actions {
+            if action.id == address.action || action.declared == address.action {
+                return Some(ActionAddress::new(spec.id.as_str(), action.id.clone()));
+            }
+        }
+    }
+    spec.children
+        .iter()
+        .find_map(|child| carried(child, address))
 }
 
 /// The instance's hold on its surface: while the instance publishes, it is the instance's.
@@ -653,15 +698,11 @@ impl Answers {
             let Some(reads) = &answered.reads else {
                 return false;
             };
-            let reached_now = match since
+            let reached_now = since
                 .entry(answered.at)
                 .or_insert_with(|| publications.changed_since(answered.at))
-            {
-                None | Some(Moved::Everything) => true,
-                Some(Moved::These(changed)) => changed
-                    .iter()
-                    .any(|changed| reads.iter().any(|read| reached(changed, read))),
-            };
+                .as_ref()
+                .is_none_or(|moved| reads.iter().any(|read| moved.reaches(read)));
             moved |= reached_now;
             !reached_now
         });
@@ -740,6 +781,33 @@ pub struct Hosted {
         reason = "held open, never read: the connection signs through it"
     )]
     identity: Option<std::os::fd::OwnedFd>,
+    /// The scope the instance's code runs in, its record's content store registered for it.
+    scope: RecordScope,
+}
+
+/// The wake scope a record's code runs in, the record's content store registered for it: an
+/// action committed to the record that is too large to record whole keeps its large parts there,
+/// sealed, and every read of a recorded action reads them back from there, as a native window's
+/// actions do ([`tilo_actions::content::register`]). Work the code starts off its thread takes
+/// the store along.
+struct RecordScope(tilo_wake::WakeScope);
+
+impl RecordScope {
+    /// The scope of `record`'s code, whose wakes wake the host through `wake`.
+    fn of(record: &InstanceRecord, wake: &Waker) -> Self {
+        let mut scope = tilo_wake::WakeScope::new();
+        let sink = Arc::clone(wake);
+        if let Err(error) = scope.bind(move |_| sink()) {
+            tracing::warn!(?error, "the record's wake scope did not bind");
+        }
+        tilo_actions::content::register(&scope.handle(), record.content().clone());
+        Self(scope)
+    }
+
+    /// Run the record's code from here until the guard drops.
+    fn enter(&self) -> tilo_wake::WakeScopeGuard {
+        self.0.enter()
+    }
 }
 
 impl Hosted {
@@ -755,7 +823,12 @@ impl Hosted {
         formats: &Formats,
         wake: Waker,
     ) -> Result<Self, RecordError> {
-        let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
+        let record = InstanceRecord::open(
+            manager,
+            &kept.documents,
+            spec.person.clone(),
+            bundle.meta.record_kind(),
+        )?;
         Ok(Self::with_record(
             spec, record, bundle, kept, window, phrases, formats, wake,
         ))
@@ -786,6 +859,8 @@ impl Hosted {
         // window speaks, whatever language the workspace's people are named in.
         collaboration::history_source::authors::set_names_language(&phrases.locale());
         let mut record = record.speaking(phrases.locale());
+        let scope = RecordScope::of(&record, &wake);
+        let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
@@ -816,7 +891,9 @@ impl Hosted {
         // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        let registry = ActionRegistry::with(tilolang_tilo::history::register);
+        let mut registry = ActionRegistry::with(tilolang_tilo::history::register);
+        registry.connect_content(record.content().clone());
+        drop(in_scope);
         Self {
             spec,
             bundle,
@@ -844,6 +921,7 @@ impl Hosted {
             asks: Rc::default(),
             asking: false,
             identity: None,
+            scope,
         }
     }
 
@@ -868,6 +946,13 @@ impl Hosted {
     #[must_use]
     pub fn index_pending(&self) -> bool {
         self.search_index_whole.is_some()
+    }
+
+    /// Whether the instance owes its window a frame: a change it has not sent, work it reads off
+    /// the frame that changes what it shows, or a search index being read that will send more.
+    #[must_use]
+    pub fn owes_a_frame(&self) -> bool {
+        self.index_pending() || self.instance.owes_a_frame()
     }
 
     /// Why the instance's surface was last refused rather than published: empty while what it
@@ -911,13 +996,15 @@ impl Hosted {
 
     /// Keep the package's types with an origin in step with `origin`'s service.
     pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
+        let _code = self.scope.enter();
         self.instance.add_origin(origin);
     }
 
-    /// The person's formats changed: what the instance wrote of a time or a day is written again
-    /// in the new style, and its window shows it.
-    pub fn formats_changed(&mut self) {
-        self.instance.formats_changed();
+    /// The person's environment changed — their formats, or the name the window calls someone:
+    /// every view that shows what only the window knows runs again, and its window shows it.
+    pub fn person_changed(&mut self) {
+        let _code = self.scope.enter();
+        self.instance.person_changed();
     }
 
     /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where
@@ -927,6 +1014,7 @@ impl Hosted {
         if !self.phrases.speak(language) {
             return false;
         }
+        let _code = self.scope.enter();
         let locale = self.phrases.locale();
         collaboration::history_source::authors::set_names_language(&locale);
         self.record.speak(locale.clone());
@@ -941,6 +1029,7 @@ impl Hosted {
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
     /// stages one: its changes are the person's steps on the instance's record.
     pub fn stage(&mut self, scenario: &str) {
+        let _code = self.scope.enter();
         self.instance.stage(Some(scenario));
     }
 
@@ -948,6 +1037,7 @@ impl Hosted {
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
     pub fn turn(&mut self) -> bool {
+        let _code = self.scope.enter();
         let mut events = Vec::new();
         let mut changed = self
             .record
@@ -1023,6 +1113,7 @@ impl Hosted {
     /// Take the step the person asked to undo back in this unit alone, when no other unit of
     /// the workspace holds a change of its action.
     pub fn undo_here(&mut self) -> bool {
+        let _code = self.scope.enter();
         self.take_step(&tilolang_tilo::instance::HistoryAsk::Undo)
     }
 
@@ -1052,6 +1143,7 @@ impl Hosted {
         change: &[u8; 32],
         ambient: &ActionContext,
     ) -> Result<(), RecordError> {
+        let _code = self.scope.enter();
         let (resource, kind) = &self.resource;
         let invoker = ActionInvoker::actor(self.spec.person.clone());
         self.record
@@ -1081,6 +1173,7 @@ impl Hosted {
     /// Send this instance's unsent change on its own: the workspace takes it as this unit's
     /// action. What the workspace refused for good, it says to the window.
     pub fn share(&mut self) {
+        let _code = self.scope.enter();
         let unshared = self.record.share();
         self.took_share(unshared);
     }
@@ -1088,6 +1181,7 @@ impl Hosted {
     /// Send this instance's unsent change as its part of `commit`, the action across every unit
     /// it wrote. What the workspace refused for good, it says to the window.
     pub fn share_under(&mut self, commit: &WorkspaceCommit) {
+        let _code = self.scope.enter();
         let unshared = self.record.share_under(commit);
         self.took_share(unshared);
     }
@@ -1307,8 +1401,9 @@ impl Hosted {
     ) -> (Vec<tilo_resource::search_index::IndexEntry>, Vec<String>) {
         let mut upsert = Vec::new();
         let mut remove = Vec::new();
+        let packages = host.packages();
         for path in texts {
-            for package in host.packages() {
+            for package in &packages {
                 let entry = tilolang_tilo::search::index_entry_at(host, &package.meta, path);
                 if let Some(entry) = entry {
                     self.search_entries
@@ -1318,7 +1413,7 @@ impl Hosted {
             }
         }
         // The resources that are gone, and whatever was published under them.
-        for package in host.packages() {
+        for package in &packages {
             for path in gone {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
                 self.drop_entry(&id, &mut remove);
@@ -1326,7 +1421,7 @@ impl Hosted {
         }
         // A resource that holds no text any more is no entry, though it is still there: only its
         // own entry goes, as what it published under it is the entries of its own resources.
-        for package in host.packages() {
+        for package in &packages {
             let upserted: std::collections::BTreeSet<&str> =
                 upsert.iter().map(|entry| entry.resource.as_str()).collect();
             for path in texts {
@@ -1424,7 +1519,7 @@ impl Hosted {
             // Apps installed or removed since the last frame: what the views show of who made a
             // change is published again.
             if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
-                self.instance.names_changed();
+                self.instance.person_changed();
             }
             return true;
         }
@@ -1648,11 +1743,15 @@ impl Hosted {
             .clone()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
-        let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
+        // What `address` names as this app publishes it, whichever way a caller named it: the
+        // resource and the name a press runs, or — what a window's control says it does — the kind
+        // of resource and the id the app declares the action by.
+        let resources = surface.addressed(&shown, &address.resource);
+        let (resources, address) = surface.naming(resources, address);
         let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let encoded = encode(&resources, address, argument);
+        let encoded = encode(&resources, &address, argument);
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded =
             encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
@@ -1854,7 +1953,13 @@ impl Hosted {
             self.directory.withdraw();
             self.directory_behind = false;
             self.directory_from = None;
-            self.offer(&[]);
+            if !self
+                .published
+                .as_ref()
+                .is_some_and(|(held, _)| held.is_empty())
+            {
+                say_catalogue(&mut self.instance, &[], |_| true, false);
+            }
             if self
                 .published
                 .as_ref()
@@ -1879,7 +1984,6 @@ impl Hosted {
         self.refused.clear();
         let mut descriptors = tilo_actions::door::survey(&resources);
         self.answer_what_the_window_shows(&mut descriptors);
-        self.offer(&descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
         if self
@@ -1895,7 +1999,7 @@ impl Hosted {
             .as_ref()
             .map(|(held, state)| (state, held.as_slice()));
         let (delta, state) = SurfacePublication::next(prior, &descriptors);
-        // A surface the connection did not take is offered again on the next frame.
+        self.offer(&delta, &descriptors);
         if delta.is_empty()
             || self
                 .record
@@ -1904,37 +2008,37 @@ impl Hosted {
         {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
+        } else {
+            // A surface the connection did not take is offered again on the next frame, whole:
+            // the window took this change, and what the broker holds is older.
+            self.published = None;
+            self.published_from = None;
         }
     }
 
     /// Offer the window the person's command palette `descriptors`, the actions the instance
     /// publishes on its connection: the window offers them the way it offers its own, with the
-    /// labels, keys and icons the app gives them. Nothing is sent while the broker's copy is
-    /// what the window holds.
-    fn offer(&mut self, descriptors: &[ActionDescriptor]) {
-        let unchanged = self
-            .published
-            .as_ref()
-            .is_some_and(|(held, _)| held.as_slice() == descriptors);
-        if !unchanged {
-            self.say_actions(ActionCatalogue::All, descriptors);
+    /// labels, keys and icons the app gives them. The window holds what the broker holds, so it
+    /// is sent what `delta` changes of that; all of it when the broker starts over.
+    fn offer(&mut self, delta: &SurfaceDelta, descriptors: &[ActionDescriptor]) {
+        if delta.reset {
+            say_catalogue(&mut self.instance, descriptors, |_| true, false);
+            return;
         }
-    }
-
-    /// Tell the window `catalogue` of `descriptors`, as the action directory carries them.
-    fn say_actions(
-        &mut self,
-        catalogue: fn(Vec<u8>) -> ActionCatalogue,
-        descriptors: &[ActionDescriptor],
-    ) {
-        match serde_json::to_vec(descriptors) {
-            Ok(actions) => {
-                self.instance.say(ToUi::Actions(catalogue(actions)));
-                // The window takes it now, not on the frame after.
-                self.instance.flush();
-            }
-            Err(error) => tracing::error!(%error, "an action catalogue did not encode"),
+        if delta.is_empty() {
+            return;
         }
+        let changed: HashSet<&str> = delta
+            .resources
+            .iter()
+            .map(|resource| resource.resource.as_str())
+            .collect();
+        say_catalogue(
+            &mut self.instance,
+            descriptors,
+            |resource| changed.contains(resource),
+            true,
+        );
     }
 
     /// Run the next action the person chose at the window as their own step: the same door an
@@ -1971,20 +2075,8 @@ impl Hosted {
     fn is_primary(&self, address: &ActionAddress) -> bool {
         self.instance
             .host()
-            .and_then(|host| {
-                host.find_in_packages(|package| {
-                    package
-                        .meta
-                        .actions
-                        .iter()
-                        .find(|action| {
-                            action.id == address.action
-                                && tilolang_tilo::surface::is_primary(action)
-                        })
-                        .map(|_| ())
-                })
-            })
-            .is_some()
+            .and_then(|host| host.published_action(&address.resource, &address.action))
+            .is_some_and(|action| tilolang_tilo::surface::is_primary(&action))
     }
 
     /// Publish a change to the surface that moved only labels (a note's title typed into) as
@@ -2049,12 +2141,12 @@ impl Hosted {
             return false;
         };
         // The window's palette shows the labels the person types into, which are what moved.
-        let relabeled: Vec<tilo_actions::ActionDescriptor> = descriptors
-            .iter()
-            .filter(|descriptor| changed.contains(&descriptor.address.resource.as_str()))
-            .cloned()
-            .collect();
-        self.say_actions(ActionCatalogue::Relabeled, &relabeled);
+        say_catalogue(
+            &mut self.instance,
+            descriptors,
+            |resource| changed.contains(&resource),
+            true,
+        );
         if !delta.is_empty()
             && !self
                 .record
@@ -2073,6 +2165,7 @@ impl Hosted {
 
     /// Write what the record holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
+        let _code = self.scope.enter();
         self.record.flush();
     }
 }
@@ -2102,7 +2195,7 @@ fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<U
                 .ok()?;
             let route = crate::route_under(&import.meta, records, workspace, &spec.person);
             Some(Used {
-                record: ReadRecord::join(route, record.manager_mut()),
+                record: ReadRecord::join(route, record.manager_mut(), &import.meta.record_kind()),
                 app,
                 moved: false,
             })
@@ -2166,7 +2259,7 @@ fn door_ask(
     match invocation {
         Invocation::Action {
             app,
-            action,
+            name,
             subject: Some(subject),
             from,
             ..
@@ -2182,10 +2275,11 @@ fn door_ask(
                     .to_json(),
                 );
             }
+            // The app's door takes it by the name it publishes it under.
             Some((
-                app.clone(),
+                app.to_string(),
                 subject.id_string(),
-                action.clone(),
+                name.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))
         }
@@ -2193,7 +2287,7 @@ fn door_ask(
         Invocation::Edit {
             app,
             target,
-            field_id,
+            field,
             value,
             ..
         } => {
@@ -2203,11 +2297,12 @@ fn door_ask(
             };
             let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
             let arguments = serde_json::Map::from_iter([
-                ("field".to_owned(), field_id.clone().into()),
+                // The field as its type names it, which the door's edit takes.
+                ("field".to_owned(), field.clone().into()),
                 ("value".to_owned(), value),
             ]);
             Some((
-                app.clone(),
+                app.to_string(),
                 target.id_string(),
                 action.to_owned(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
@@ -2333,6 +2428,8 @@ pub struct Applier {
     /// Whether the answer carries the whole record: the root this change needed was made for
     /// it.
     whole: bool,
+    /// The scope the change's code runs in, the record's content store registered for it.
+    scope: RecordScope,
 }
 
 impl Applier {
@@ -2345,6 +2442,8 @@ impl Applier {
         wake: Waker,
         connection: std::os::fd::OwnedFd,
     ) -> Result<Self, String> {
+        let scope = RecordScope::of(&record, &wake);
+        let _code = scope.enter();
         let host = Host::new(
             record.doc(),
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
@@ -2378,6 +2477,7 @@ impl Applier {
             connection,
             applying: Applying::Awaiting(Vec::new()),
             whole: false,
+            scope,
         })
     }
 
@@ -2405,9 +2505,17 @@ impl Applier {
         matches!(self.applying, Applying::Answered)
     }
 
+    /// Whether it has work of its own in hand: a change that arrived and has not run, or one still
+    /// to answer. A change its connection has not carried yet is the session's, not its own.
+    #[must_use]
+    pub fn owes(&self) -> bool {
+        matches!(self.applying, Applying::Arrived(_) | Applying::Ran(_))
+    }
+
     /// One step: take in what the workspace sent and what came on the connection, run the change
     /// once it can, and answer once the workspace was handed what it wrote. Whether anything changed.
     pub fn turn(&mut self) -> bool {
+        let _code = self.scope.enter();
         let mut changed = self.record.take_in_record();
         if changed {
             sync_record(&self.host, &self.record);
@@ -2562,8 +2670,11 @@ impl Applier {
         sync_record(&self.host, &self.record);
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
-        // published for one change, and an applier shows nothing.
+        // published for one change, and an applier shows nothing. What it names by what a control
+        // does — a kind of resource and the id the app declares the action by — is found the same
+        // way the window finds it.
         let resources = self.surface.addressed(&[], &change.resource);
+        let (resources, address) = self.surface.naming(resources, &address);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);
@@ -2649,4 +2760,40 @@ impl Applier {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(before))
     }
+}
+
+/// Tell the window of `instance` the actions `descriptors` offers: all of them, or, `changed`
+/// only, the actions of the resources `changed` names with every resource offered, in order
+/// ([`ActionCatalogue::Changed`]).
+fn say_catalogue(
+    instance: &mut Instance,
+    descriptors: &[ActionDescriptor],
+    names: impl Fn(&str) -> bool,
+    changed: bool,
+) {
+    let mut resources: Vec<String> = Vec::new();
+    let mut actions: Vec<&ActionDescriptor> = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let resource = descriptor.address.resource.as_str();
+        if changed && !resources.iter().rev().any(|held| held == resource) {
+            resources.push(resource.to_owned());
+        }
+        if names(resource) {
+            actions.push(descriptor);
+        }
+    }
+    let actions = match serde_json::to_vec(&actions) {
+        Ok(actions) => actions,
+        Err(error) => {
+            tracing::error!(%error, "an action catalogue did not encode");
+            return;
+        }
+    };
+    instance.say(ToUi::Actions(if changed {
+        ActionCatalogue::Changed { actions, resources }
+    } else {
+        ActionCatalogue::All(actions)
+    }));
+    // The window takes it now, not on the frame after.
+    instance.flush();
 }

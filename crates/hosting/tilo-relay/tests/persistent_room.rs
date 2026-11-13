@@ -39,7 +39,12 @@ fn start_with(
 ) -> std::io::Result<Workspace> {
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
-        .env("TILO_RELAY_LOG", "warn")
+        // `warn` unless the run asks for more, as `tools/relay-upgrade/run.sh`
+        // does to say why an upgraded room did what it did.
+        .env(
+            "TILO_RELAY_LOG",
+            std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned()),
+        )
         // What a published image sets from the commit it was built from.
         .env("TILO_SOURCE_REVISION", SOURCE_REVISION)
         .args(["room", "--state"])
@@ -1469,3 +1474,7 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     );
     room.stop();
 }
+
+/// What a release of tilo.sh opens: the Lounge an earlier release kept.
+#[path = "persistent_room/release_upgrade.rs"]
+mod release_upgrade;

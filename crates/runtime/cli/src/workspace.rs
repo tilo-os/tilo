@@ -1,10 +1,6 @@
-//! Workspace-path resolution for CLI apps.
-//!
-//! Tilo apps read and write user data through the workspace FUSE at
-//! `/var/workspace/` — from the app's view, a regular filesystem, no wire
-//! protocol for the common "write this file" case. This module gives CLI
-//! apps a one-line way to compute the right path, plus a graceful
-//! standalone fallback.
+//! Workspace paths for CLI apps: the workspace FUSE at `/var/workspace/` is a
+//! regular filesystem to the app, and outside Tilo a state directory stands
+//! in for it.
 
 use std::path::{Path, PathBuf};
 
@@ -12,21 +8,16 @@ use anyhow::Result;
 
 use crate::{ensure_dir, package_id, standalone_state_dir};
 
-/// Env var the launcher sets pointing at the workspace root; absent outside Tilo.
 pub const TILO_WORKSPACE_ROOT_ENV: &str = "TILO_WORKSPACE_ROOT";
 
 /// Default workspace root when inside Tilo ([`crate::is_tilo_native`]) but
 /// the env var is unset.
 pub const DEFAULT_WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// Is the Tilo workspace FUSE mounted and reachable? Checks
-/// `TILO_WORKSPACE_ID` and the workspace-root env var.
 pub fn is_workspace_available() -> bool {
     crate::is_tilo_native() || std::env::var_os(TILO_WORKSPACE_ROOT_ENV).is_some()
 }
 
-/// The workspace root the launcher points at, if any: falls back to
-/// [`DEFAULT_WORKSPACE_ROOT`] inside Tilo, `None` standalone.
 pub fn workspace_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(TILO_WORKSPACE_ROOT_ENV) {
         return Some(PathBuf::from(root));
@@ -37,18 +28,18 @@ pub fn workspace_root() -> Option<PathBuf> {
     None
 }
 
-/// Resolve a workspace-relative path to something an app can `open()`. In
-/// Tilo, joins onto the workspace root (the FUSE hydrates on first read);
-/// standalone, falls back to `~/.local/share/<pkg-id>/` and creates the
-/// directory tree so callers can write immediately.
+/// The path an app can `open()` for a workspace-relative path: under the
+/// workspace root inside Tilo (the FUSE hydrates on first read), or under
+/// `~/.local/share/<package id>/` standalone, its parent created so callers
+/// can write at once.
 ///
-/// Rejects absolute paths and `..` traversal, so a path safe in workspace
-/// is also safe standalone.
+/// Absolute paths and `..` are rejected, so a path safe in Tilo is safe
+/// standalone too.
 ///
 /// # Errors
 ///
-/// Returns an error if `rel` is empty, absolute, contains a `..` component,
-/// or — standalone only — if the parent directory can't be created.
+/// `rel` is empty, absolute or holds `..`, or the standalone parent cannot be
+/// created.
 pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     if rel.is_empty() {
         anyhow::bail!("workspace path is empty");
@@ -76,8 +67,7 @@ pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Handle passed into [`act`] closures: the resolved workspace root plus
-/// the FS client (`None` standalone) for direct RPC vs. plain `std::fs`.
+/// The resolved workspace root and the FS client, `None` standalone.
 pub struct WorkspaceHandle {
     pub root: PathBuf,
     #[cfg(unix)]
@@ -85,9 +75,8 @@ pub struct WorkspaceHandle {
 }
 
 impl WorkspaceHandle {
-    /// Whether this process received the launcher's optional filesystem
-    /// capability. This stays available on every host even though the
-    /// capability transport itself is Unix-only.
+    /// Whether this process got the launcher's filesystem capability. It
+    /// answers on every host, though the transport is Unix-only.
     pub fn has_filesystem_service(&self) -> bool {
         #[cfg(unix)]
         {
@@ -109,15 +98,14 @@ impl std::fmt::Debug for WorkspaceHandle {
     }
 }
 
-/// Run a closure with a resolved [`WorkspaceHandle`]: a live filesystem
-/// client in Tilo, `None` standalone. Runs on the current tokio `LocalSet`
-/// (the client session is `!Send`); skip this and call
-/// [`resolve_workspace_path`] directly if you don't need the FS client.
+/// Run a closure with a [`WorkspaceHandle`]: a live filesystem client in
+/// Tilo, `None` standalone. Runs on the current tokio `LocalSet`, the client
+/// session being `!Send`.
 ///
 /// # Errors
 ///
-/// Returns an error if the workspace (or standalone fallback) root can't be
-/// created, or if `f` itself returns an error.
+/// The workspace (or standalone) root cannot be created, or `f` returns an
+/// error.rror.
 pub async fn act<T, F, Fut>(f: F) -> Result<T>
 where
     F: FnOnce(WorkspaceHandle) -> Fut,

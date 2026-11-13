@@ -15,11 +15,8 @@ pub struct AppSet {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct App {
-    /// The distribution package.
     pub package: String,
-    /// What it verifies.
     pub checks: String,
-    /// How to start it.
     #[serde(rename = "try")]
     pub try_command: String,
 }
@@ -30,10 +27,6 @@ struct File {
     sets: Vec<AppSet>,
 }
 
-/// Every set, in file order.
-///
-/// # Panics
-/// Never at run time: the file is compiled in and a unit test parses it.
 #[expect(
     clippy::expect_used,
     reason = "compiled-in data that a unit test parses"
@@ -44,7 +37,6 @@ pub fn all() -> Vec<AppSet> {
         .expect("data/app-sets.toml parses")
 }
 
-/// The set called `name`.
 pub fn find(name: &str) -> Result<AppSet, Vec<String>> {
     let sets = all();
     sets.iter()
@@ -53,7 +45,6 @@ pub fn find(name: &str) -> Result<AppSet, Vec<String>> {
         .ok_or_else(|| sets.into_iter().map(|set| set.name).collect())
 }
 
-/// A set as `slot apps list` prints it.
 pub fn describe(set: &AppSet) -> String {
     let width = set
         .apps

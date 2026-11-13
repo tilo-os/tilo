@@ -11,9 +11,10 @@
 //! first window that registers it asks for, desktop search, which the
 //! desktop asks for as it first lays out, the notification centre,
 //! which opening it asks for, the HTML presenter, which a page mounted
-//! with `dom: true` asks for, the directory and invite sheets, which
-//! opening one asks for, a hosted window's page, which the first page to
-//! reach the desk asks for.
+//! with `dom: true` asks for, the directory and invite sheets and the
+//! shortcut guide, which opening one asks for, a hosted window's page, which
+//! the first page to reach the desk asks for, and the renderer's maker, which
+//! the page asks for as it compiles its pipelines.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -150,14 +151,19 @@ split_code! {
 }
 
 split_code! {
-    /// The code that shows a mount as HTML: a page that mounts with
-    /// `dom: true` asks for it.
-    mod dom_presenter: tilo_browser_runtime::DomCode = tilo_browser_runtime::builtin_dom()
+    /// The code that shows a mount as HTML, with the desktop's own HTML
+    /// renderings (its top bar): a page that mounts with `dom: true` asks for
+    /// it.
+    mod dom_presenter: tilo_browser_runtime::DomCode = {
+        tilo_desktop::topbar::TOPBAR_HTML.install(tilo_desktop::topbar::builtin_topbar_html());
+        tilo_browser_runtime::builtin_dom()
+    }
         => tilo_browser_runtime::DOM_CODE, module = "dom_presenter", hash = "6c2f8a1d93e5b047";
 }
 
 split_code! {
-    /// The directory and invite sheets: the first time the person opens one.
+    /// The directory and invite sheets and the shortcut guide's sheet: the
+    /// first time the person opens one.
     mod sheets: tilo_browser_runtime::SheetsCode = tilo_browser_runtime::builtin_sheets()
         => tilo_browser_runtime::SHEETS, module = "page_sheets", hash = "8d3f1a6c05e2b947";
 }
@@ -168,6 +174,22 @@ split_code! {
     mod questions: tilo_browser_runtime::QuestionsCode = tilo_browser_runtime::builtin_questions()
         => tilo_browser_runtime::QUESTIONS, module = "agent_questions", hash = "d5b3e8074c16a2f9",
         then = tilo_browser_runtime::questions_arrived;
+}
+
+split_code! {
+    /// The keeper of the person's settings sections (their models and the
+    /// record machinery answering for them): the page fetches it as it
+    /// starts, so the start module carries neither.
+    mod settings_keeper: tilo_browser_runtime::SettingsKeeper = tilo_browser_runtime::builtin_settings_keeper()
+        => tilo_browser_runtime::SETTINGS_KEEPER, module = "settings_keeper", hash = "2f7c4d18b6e93a50";
+}
+
+split_code! {
+    /// The renderer's maker (vello's shaders and the code compiling them):
+    /// the page asks for it as it compiles its pipelines, while its first
+    /// frames rasterize on the CPU.
+    mod renderer: tilo_browser_runtime::RendererCode = tilo_browser_runtime::builtin_renderer_code()
+        => tilo_browser_runtime::RENDERER_CODE, module = "renderer", hash = "71e0c4b95a3d28f6";
 }
 
 split_code! {
@@ -183,8 +205,12 @@ split_code! {
 }
 
 split_code! {
-    /// Desktop search: the desktop asks for it as it first lays out.
-    mod desktop_search: tilo_desktop_search::MakeDesktopSearch = tilo_desktop_search::builtin_desktop_search()
+    /// Desktop search, with the session's sources it searches: the desktop
+    /// asks for it as it first lays out.
+    mod desktop_search: tilo_desktop_search::MakeDesktopSearch = {
+        tilo_session::search::SEARCH_FEED.install(tilo_session::search::builtin_search_feed());
+        tilo_desktop_search::builtin_desktop_search()
+    }
         => tilo_desktop_search::DESKTOP_SEARCH, module = "desktop_search", hash = "7be226dd82b8cdaa";
 }
 
@@ -291,6 +317,36 @@ pub(crate) fn register() {
     sheets::register();
     questions::register();
     desktop_search::register();
+    // The session's search sources come with desktop search: asking for
+    // either fetches both.
+    tilo_session::search::SEARCH_FEED.defer(fetch_desktop_search);
     notification_centre::register();
     page_view::register();
+    settings_keeper::register();
+    renderer::register();
+    prepare_settings_keeper_after_first_frame();
+}
+
+/// Fetch desktop search's module, which holds the session's search sources
+/// too.
+fn fetch_desktop_search() {
+    let _ = tilo_desktop_search::DESKTOP_SEARCH.get();
+}
+
+/// Once the page has drawn its first frame, fetch the keeper of the person's
+/// settings sections.
+///
+/// Nothing of it is needed for the first frame, and the peer a workspace is
+/// entered through is the larger module: the keeper goes after that frame and
+/// lands before the peer does, so a control that changes a setting has it. A
+/// change asked for before the fetch is in says so and asks again.
+fn prepare_settings_keeper_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_browser_runtime::SETTINGS_KEEPER.get();
+        } else {
+            prepare_settings_keeper_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }

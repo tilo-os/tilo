@@ -1,6 +1,6 @@
-//! What the palette's list shows, as a person reads it: its rows' labels, the
-//! line under each, and the rows as the list paints them. A window that owns a
-//! palette, and its tests, read these; nothing here changes the list.
+//! What the palette's list shows, as a person reads it: its rows' labels, the line under each, and the
+//! rows as the list paints them. A window that owns a palette, and its tests, read these; nothing here
+//! changes the list.
 
 use super::ActionPalette;
 use crate::search::SearchResult;
@@ -15,8 +15,8 @@ impl ActionPalette {
             .collect()
     }
 
-    /// The rows currently shown as a person reads them, label and the line
-    /// under it, in display order (for tests / diagnostics).
+    /// The rows currently shown as a person reads them, label and the line under it, in display order
+    /// (for tests / diagnostics).
     pub fn result_rows(&self) -> Vec<(String, Option<String>)> {
         self.results
             .groups()
@@ -29,9 +29,8 @@ impl ActionPalette {
             .collect()
     }
 
-    /// The rows currently shown as the list paints them, in display order:
-    /// their titles, underlines, pictures and shortcuts (for tests and
-    /// diagnostics).
+    /// The rows currently shown as the list paints them, in display order: their titles, underlines,
+    /// pictures and shortcuts (for tests and diagnostics).
     pub fn result_hits(&self) -> Vec<SearchResult> {
         self.results
             .groups()

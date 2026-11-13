@@ -1,14 +1,4 @@
 //! Landlock ruleset construction.
-//!
-//! A ruleset is described as data first — [`RulesetSpec`] — and installed by
-//! one function, [`restrict_self`]. Keeping the description pure means the
-//! exact policy a caller builds (handled rights, compatibility level, every
-//! rule) can be asserted in a unit test without performing the irreversible
-//! syscall, and the imperative part exists once.
-//!
-//! Landlock is path-based and irrevocable for the calling process and every
-//! descendant: [`restrict_self`] must run in the process about to exec the
-//! confined program, after any mount namespace it relies on is complete.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -23,15 +13,12 @@ use landlock::{
 /// minimum: the ABI 6 scopes ([`SCOPE_ABI`]) are added on top only where the
 /// running kernel offers them (see [`kernel_scopes`]).
 pub const TARGET_ABI: ABI = ABI::V5;
-/// The ABI whose filesystem rights an application ruleset handles.
 pub const FS_ABI: ABI = TARGET_ABI;
 /// The ABI that introduced IPC scoping (Linux 6.12): abstract Unix sockets
 /// and signals are confined to the sandbox's own Landlock domain.
 pub const SCOPE_ABI: ABI = ABI::V6;
-/// `LANDLOCK_CREATE_RULESET_VERSION`: ask the kernel for its Landlock ABI.
 const CREATE_RULESET_VERSION: u32 = 1 << 0;
 
-/// The running kernel's Landlock ABI version; 0 without Landlock.
 pub fn kernel_abi() -> i32 {
     // SAFETY: the version query reads no memory (a null attribute, size 0).
     let abi = unsafe {
@@ -65,7 +52,6 @@ pub fn kernel_scopes(abi: i32, fixed: BitFlags<Erratum>) -> BitFlags<Scope> {
     scopes
 }
 
-/// The scopes of `spec` the running kernel will enforce.
 pub fn effective_scopes(spec: &RulesetSpec) -> BitFlags<Scope> {
     spec.scoped & kernel_scopes(kernel_abi(), Erratum::current())
 }
@@ -96,14 +82,12 @@ pub fn describe_scopes(scoped: BitFlags<Scope>, enforced: BitFlags<Scope>) -> St
     }
 }
 
-/// One filesystem rule: a path and the rights granted beneath it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsRule {
     pub path: PathBuf,
     pub access: BitFlags<AccessFs>,
 }
 
-/// Why a ruleset could not be built or installed.
 #[derive(Debug, thiserror::Error)]
 pub enum LandlockBuildError {
     #[error(transparent)]
@@ -112,7 +96,6 @@ pub enum LandlockBuildError {
     Inspect(#[from] std::io::Error),
 }
 
-/// What the kernel actually enforced, as opposed to what was asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LandlockOutcome {
     FullyEnforced,
@@ -199,17 +182,13 @@ pub fn access_for_fd(
     }
 }
 
-/// The network half of an application ruleset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetRestriction {
-    /// TCP is not handled by the ruleset at all.
     Unrestricted,
     DenyAll,
-    /// Every TCP bind and connect is denied except connecting to this port.
     ConnectOnly(u16),
 }
 
-/// A complete Landlock ruleset, described as data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulesetSpec {
     /// How the ruleset reacts to a kernel that cannot enforce all of it.
@@ -220,9 +199,7 @@ pub struct RulesetSpec {
     /// Network rights the ruleset handles. Empty means the network access
     /// space is not handled at all.
     pub handled_net: BitFlags<AccessNet>,
-    /// TCP ports the process may connect to.
     pub connect_ports: Vec<u16>,
-    /// Filesystem grants, applied in order.
     pub rules: Vec<FsRule>,
     /// Narrow a rule on a non-directory to the rights a file can carry
     /// (see [`access_for_fd`]) instead of letting the kernel reject it.
@@ -625,7 +602,6 @@ mod tests {
         assert_eq!(kernel_scopes(6, all_errata), both);
         assert_eq!(kernel_scopes(7, all_errata), both);
         assert_eq!(kernel_scopes(9, all_errata), both);
-        // A kernel still carrying erratum 2 gets the socket scope only.
         assert_eq!(
             kernel_scopes(6, BitFlags::EMPTY),
             BitFlags::from(Scope::AbstractUnixSocket)
@@ -635,7 +611,6 @@ mod tests {
         assert_eq!(app.scoped, both);
         assert_eq!(RulesetSpec::deny_all().scoped, both);
 
-        // The launch log says what happened, including on an ABI 5 kernel.
         assert_eq!(
             describe_scopes(both, both),
             "landlock scopes: abstract-unix-socket, signal enforced"

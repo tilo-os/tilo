@@ -1,22 +1,14 @@
-//! What the editor does beyond the project's own verbs — revealing an item,
-//! showing a panel, splitting what its person selected, project file import
-//! and export and render jobs ([`VideoEditorEffect`]) — and the verbs
-//! it offers bound to where its person is: their playhead, and the mix their
-//! monitor measured ([`surface_declarations`]).
-//!
-//! Every change of the project is a field edit or a verb of
-//! [`Project`] ([`crate::resource`]); clip metadata is
-//! the document, pixels and sound are produced outside it.
+//! What the editor does beyond the project's own verbs: revealing an item,
+//! showing a panel, splitting the selection, project file and render jobs, and
+//! the project's verbs bound to the playhead. Every change of the project is a
+//! field edit or a verb of [`Project`](crate::resource); pixels and sound are
+//! produced outside it.
 
 use ui::tilo_resource::{self, ActionDecl, Effect};
 
 use crate::model::Project;
 use crate::resource::video_project;
 
-/// What the editor does beyond the project's own verbs: revealing a track,
-/// clip, effect, marker or source, showing the media, the inspector or the
-/// export settings, splitting the selection, and project file and render
-/// jobs.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
@@ -97,12 +89,12 @@ pub enum VideoEditorEffect {
     /// Import content.
     ///
     /// Brings a video, sound or picture the workspace holds, by its content
-    /// address, into the bin. Its kind, length, frame size and rate come
+    /// reference, into the bin. Its kind, length, frame size and rate come
     /// from its container. Answers the new source: place it with add-clip.
     /// Importing the same content again answers the source already there.
     #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
     ImportContent {
-        #[param(content, "The media's content address, tilo.content:<hash>")]
+        #[param(content, "The media's content reference, `tilo.content:<reference>`")]
         content: String,
         #[param("The source's name in the bin, e.g. interview.mp4; made up when omitted")]
         name: Option<String>,
@@ -219,8 +211,8 @@ pub enum VideoEditorEffect {
     },
 }
 
-/// Writing a project file where the person chooses risks nothing; over a
-/// path a caller names, it may replace a file, so it asks first.
+/// Writing where the person chooses replaces nothing; over a path a caller
+/// names it may, so it asks first.
 fn project_file_risk(effect: &VideoEditorEffect) -> tilo_actions::RiskLevel {
     match effect {
         VideoEditorEffect::ExportProjectFile { path: Some(_) } => {
@@ -230,49 +222,65 @@ fn project_file_risk(effect: &VideoEditorEffect) -> tilo_actions::RiskLevel {
     }
 }
 
-/// Where this participant is, which the verbs it offers are bound to.
 pub struct VideoResourceCtx {
     pub project: Project,
     pub playhead: f64,
-    /// What the mixer last measured — see [`crate::audio::MixMeters`]: app
-    /// state like the playhead, here so a caller with no screen can act on
-    /// a mix that went over.
+    /// What the mixer last measured: app state like the playhead, here so a
+    /// caller with no screen can act on a mix that went over.
     pub mix: crate::audio::MixSnapshot,
 }
 
-/// The project's verbs bound to the playhead and the measured mix: mark in
-/// and out, add or remove a marker here, cut or trim a clip here, and trim
-/// a mix that went over. Each is the verb itself with its time (or its
-/// lanes and level) filled in.
+/// The project's verbs bound to the playhead and the measured mix: each is the
+/// verb itself with its time, or its lanes and level, filled in.
 pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> {
     let playhead = ctx.playhead;
     let mut decls = Vec::new();
     let mut add = |decl: Option<ActionDecl<Project>>| decls.extend(decl);
     add(Project::MARK_IN
         .bind(video_project::MarkIn::paths().at, playhead)
-        .declaration("mark-in-here", "Mark in at playhead"));
+        .declaration(
+            "mark-in-here",
+            ui::tilo_resource::word!("video-editor-project-mark-in-here"),
+        ));
     add(Project::MARK_OUT
         .bind(video_project::MarkOut::paths().at, playhead)
-        .declaration("mark-out-here", "Mark out at playhead"));
+        .declaration(
+            "mark-out-here",
+            ui::tilo_resource::word!("video-editor-project-mark-out-here"),
+        ));
     add(Project::PLACE_MARKER
         .bind(video_project::PlaceMarker::paths().at, playhead)
-        .declaration("add-marker-here", "Add marker at playhead"));
+        .declaration(
+            "add-marker-here",
+            ui::tilo_resource::word!("video-editor-marker-add"),
+        ));
     add(Project::CUT
         .bind(video_project::Cut::paths().at, playhead)
-        .declaration("split-here", "Split clip at playhead"));
+        .declaration(
+            "split-here",
+            ui::tilo_resource::word!("video-editor-project-split-here"),
+        ));
     add(Project::TRIM_HEAD
         .bind(video_project::TrimHead::paths().at, playhead)
-        .declaration("trim-in-here", "Trim clip in to playhead"));
+        .declaration(
+            "trim-in-here",
+            ui::tilo_resource::word!("video-editor-project-trim-in-here"),
+        ));
     add(Project::TRIM_TAIL
         .bind(video_project::TrimTail::paths().at, playhead)
-        .declaration("trim-out-here", "Trim clip out to playhead"));
-    // Two angles of one moment, side by side: offered only where two
-    // pictures meet that may be moved to their halves, so the control is
-    // absent rather than inert.
+        .declaration(
+            "trim-out-here",
+            ui::tilo_resource::word!("video-editor-project-trim-out-here"),
+        ));
+    // Offered only where it can act, so the control is absent rather than
+    // inert.
     if ctx.project.side_by_side_available(playhead) {
         add(Project::PLACE_SIDE_BY_SIDE
             .bind(video_project::PlaceSideBySide::paths().at, playhead)
-            .declaration("place-two-angles-here", "Place side by side"));
+            .declaration(
+                "place-two-angles-here",
+                ui::tilo_resource::word!("video-editor-project-place-two-angles-here"),
+            ));
     }
     if let Some(marker) = ctx
         .project
@@ -287,7 +295,10 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             )
             .declaration(
                 "remove-marker-here",
-                format!("Remove marker \u{201c}{}\u{201d}", marker.name),
+                ui::tilo_resource::word!(
+                    "video-editor-project-remove-marker-here",
+                    name = marker.name.as_str()
+                ),
             ));
     }
     if ctx.mix.clipped() {
@@ -307,7 +318,10 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
         add(Project::TRIM_LANES
             .bind(video_project::TrimLanes::paths().tracks, lanes)
             .and(video_project::TrimLanes::paths().db, over)
-            .declaration("trim-mix", "Trim the mix to fit")
+            .declaration(
+                "trim-mix",
+                ui::tilo_resource::word!("video-editor-project-trim-mix"),
+            )
             .map(|decl| {
                 decl.describe(format!(
                     "the mix was measured {over:+.1} dB over full scale in {places} place{}\

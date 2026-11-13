@@ -442,3 +442,109 @@ fn a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route() {
         vec![(1, String::new())]
     );
 }
+
+/// `desktop` with window `id` in a group of its own made a window of Settings, which is a
+/// person's own ([`crate::personal`]).
+fn with_settings(mut desktop: SharedDesktop, id: u64, who: &str) -> SharedDesktop {
+    let mut settings = tab(id);
+    settings.tile = TileContent::LocalApp {
+        app_id: "so.tilo.settings".into(),
+        label: "Settings".into(),
+        note: String::new(),
+    };
+    desktop.tree.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id: id.wrapping_add(100),
+            tabs: vec![settings],
+            active_tab: id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+    desktop.authors.insert(id, who.to_owned());
+    desktop.records.push((id, format!("settings-of-{who}")));
+    desktop
+}
+
+/// A person's Settings window never reaches the workspace's desktop: the record's writer leaves
+/// it out, and a write that places it anyway (as an older page did) is refused.
+#[test]
+fn a_persons_own_window_is_never_placed_on_the_shared_desktop() {
+    let mut guard = workspace();
+    let mut ada = Page::of(&guard, 1);
+    let opens = ada.write(&with_settings(
+        desktop(&[(1, 100, ADA), (2, 200, BEN)]),
+        3,
+        ADA,
+    ));
+    guard
+        .decide(&opens, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
+    assert_eq!(windows(&guard), vec![1, 2], "the writer left it out");
+
+    // A page that writes the desk's document itself, with Settings in it.
+    let mut doc = guard
+        .doc()
+        .clone()
+        .with_actor(automerge::ActorId::from(vec![1; 16]));
+    let heads = doc.get_heads();
+    let placed = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
+    crate::desktop_doc::write_shared(&mut doc, &placed.tree, &placed.records, &placed.authors);
+    doc.commit();
+    let placing = DocumentMutation::Incremental(doc.save_after(&heads));
+    assert!(matches!(
+        guard.decide(&placing, &writer(ADA, None, &moderates(ADA))),
+        Err(DesktopRefusal::Personal { window: 3, .. })
+    ));
+    assert_eq!(windows(&guard), vec![1, 2]);
+}
+
+/// A Settings window an older build placed on the workspace's desktop shows nobody, and anyone's
+/// next write takes it out of the record, without that counting as closing what someone else made.
+#[test]
+fn a_persons_window_left_on_the_shared_desktop_is_gone_for_everyone() {
+    let leaked = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+    crate::desktop_doc::write_shared(&mut doc, &leaked.tree, &leaked.records, &leaked.authors);
+    doc.commit();
+    let kept = shared_record::read_as_kept(&doc, None).unwrap();
+    assert!(kept.tree.tab(3).is_some(), "the record holds it");
+    let mut guard = DesktopGuard::new(doc);
+    assert_eq!(windows(&guard), vec![1, 2], "nobody reads it");
+    let read = shared_record::read(guard.doc(), None).unwrap();
+    assert!(!read.authors.contains_key(&3) && read.records.iter().all(|(tab, _)| *tab != 3));
+
+    // Ben, who never made it, writes the desk as he reads it: Settings goes from the record.
+    let mut ben = Page::of(&guard, 2);
+    let cleans = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (4, 400, BEN)]));
+    guard
+        .decide(&cleans, &writer(BEN, None, &moderates(BEN)))
+        .unwrap();
+    let after = shared_record::read_as_kept(guard.doc(), None).unwrap();
+    assert!(after.tree.tab(3).is_none(), "taken out of the record");
+    assert_eq!(windows(&guard), vec![1, 2, 4]);
+}
+
+/// A person's view of the layout is theirs to write, and the workspace's layout is every member's:
+/// the record a write names decides whose it is.
+#[test]
+fn a_view_of_the_layout_belongs_to_its_person_and_the_layout_to_everyone() {
+    use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+    use crate::person_view::record_of;
+
+    assert!(is_desktop(DESKTOP_APP, DESKTOP_RECORD));
+    assert!(is_desktop(DESKTOP_APP, &record_of(ADA)));
+    assert!(!is_desktop("so.tilo.notes", &record_of(ADA)));
+
+    may_write(DESKTOP_APP, &record_of(ADA), ADA).expect("her own view");
+    let refused = may_write(DESKTOP_APP, &record_of(ADA), BEN).unwrap_err();
+    assert_eq!(
+        refused,
+        NotTheirView {
+            writer: BEN.into(),
+            owner: ADA.into()
+        }
+    );
+    may_write(DESKTOP_APP, DESKTOP_RECORD, BEN).expect("every member writes the layout");
+}

@@ -10,7 +10,6 @@ fn store(dir: &Path) -> Recoverable {
     Recoverable::at(dir.join("recoverable"))
 }
 
-/// Carry `action` out and take it back, the two halves of a task.
 fn done(action: &FileAction, policy: &Policy, store: &Recoverable) -> Vec<UndoEntry> {
     perform(action, policy, store, &ContentStore::memory(), Some(1_000))
         .unwrap_or_else(|(error, _)| panic!("{} was refused: {error}", action.verb()))
@@ -656,10 +655,6 @@ fn the_audit_line_names_the_verb_and_the_paths_once() {
     assert!(record.allowed);
 }
 
-// The record's half: one action per command, attributed, in History, and
-// undone from there.
-
-/// The record's History entries for the verb `verb`.
 pub(crate) fn entries_for(
     state: &crate::broker::BrokerState,
     verb: &str,
@@ -680,9 +675,6 @@ pub(crate) fn entries_for(
         .collect()
 }
 
-/// Undo the History entry `entry` the way History does: apply the
-/// compensation it recorded, as the person, through the record's door. The
-/// session's runtime then carries the revert out on this device.
 pub(crate) fn undo_from_history(
     state: &crate::broker::BrokerState,
     entry: &tilo_actions::ActionContext,
@@ -777,7 +769,6 @@ fn an_agents_direct_move_is_the_same_action_attributed_to_the_agent_for_the_pers
             .collect()
     };
 
-    // No shell: the agent calls the published `move` with paths.
     let answer = invoke(
         &state.environment.records,
         &state.environment.key,
@@ -858,7 +849,6 @@ fn a_forty_operand_copy_beyond_a_grant_is_refused_whole() {
     );
     assert!(entries_for(&state, "copy").is_empty(), "nothing in History");
 
-    // An agent asking the action directly gets the same answer.
     let direct = invoke(
         &state.environment.records,
         &state.environment.key,
@@ -925,8 +915,6 @@ fn what_an_older_runtime_kept_stays_listed_and_comes_back_through_the_action() {
     let mut state = brokered_state(dir.path());
     let allowed = dir.path().join("allowed");
     fs::create_dir_all(&allowed).unwrap();
-    // An entry as the runtime wrote it while it kept its own history: one
-    // slot per operation, the kept one holding the payload.
     let store = Recoverable::at(store_in(&state.environment));
     let slot = store.dir().join("1793051200-000");
     fs::create_dir_all(&slot).unwrap();
@@ -980,8 +968,6 @@ fn what_an_older_runtime_kept_stays_listed_and_comes_back_through_the_action() {
     );
     assert!(store.kept().is_empty());
 
-    // The restore is an action like the others: undone from History, the
-    // note goes back where it was kept, nothing deleted.
     let restores = entries_for(&state, "restore");
     assert_eq!(restores.len(), 1);
     undo_from_history(&state, &restores[0]);
@@ -1048,8 +1034,6 @@ fn a_task_that_fails_on_the_tree_settles_failed_and_changes_nothing() {
     );
 }
 
-/// A broker whose environment has been granted `<dir>/allowed` for writing,
-/// through the same request the person's `perm trust-dir` sends.
 pub(crate) fn brokered_state(dir: &Path) -> crate::broker::BrokerState {
     let mut state = crate::broker::tests::state(dir);
     let allowed = dir.join("allowed");
@@ -1065,9 +1049,6 @@ pub(crate) fn brokered_state(dir: &Path) -> crate::broker::BrokerState {
     state
 }
 
-/// Every file action one command line of the shell asks for (`find -delete`
-/// removing three files, say) is stamped with that run, so History
-/// attributes and undoes the run as one.
 #[test]
 fn the_file_actions_of_one_shell_run_are_grouped_as_that_run() {
     let dir = tempfile::tempdir().unwrap();
@@ -1103,9 +1084,6 @@ fn the_file_actions_of_one_shell_run_are_grouped_as_that_run() {
     }
 }
 
-/// Carrying out what is queued reads the record, which opens its lock files
-/// for writing; the watch must report the document only, or it wakes itself
-/// forever.
 #[test]
 fn only_the_record_document_counts_as_a_change() {
     let dir = tempfile::tempdir().unwrap();

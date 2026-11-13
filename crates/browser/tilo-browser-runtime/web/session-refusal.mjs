@@ -74,8 +74,10 @@ export const UNREACHED = 'tilo-unreached';
 const UNREACHED_WINDOW_MS = 10 * 60 * 1000;
 
 /** Whether `error` is a host not answering at all (restarting, or the
- * network between): nothing it refused. */
+ * network between): nothing it refused. A session that never got through
+ * to its host fails `unanswered` (`hostUnreached` in peer.mjs). */
 export const hostUnreachable = error => (error?.name === 'HostAdmissionError' && error.code === 'unavailable')
+  || error?.code === 'unanswered'
   || /^(fetch failed|Failed to fetch|NetworkError|Load failed)/.test(String(error?.message ?? ''));
 
 /**

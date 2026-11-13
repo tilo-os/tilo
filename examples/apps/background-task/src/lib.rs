@@ -61,7 +61,7 @@ impl Search {
 
 /// The limit is its only state, edited at `Search::paths().limit`; the work
 /// is an effect, not a change of the document.
-#[resource(kind = "example.prime-search", label = "Prime search")]
+#[resource(kind = "example.prime-search")]
 impl Search {}
 
 /// Whether `n` is prime, by trial division.

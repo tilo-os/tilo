@@ -1,27 +1,9 @@
-//! The colour half of the design language (`docs/design-language.md`).
-//!
-//! The interface is a quiet, near-colourless **neutral material**: every surface and every ink tier
-//! is an OKLCH lightness at one shared hue with chroma at or below [`NEUTRAL_MAX_CHROMA`]. Changing
-//! that hue (a theme's or a workspace's temperature, [`Colors::with_neutral_hue`]) never moves
-//! contrast, because lightness is what contrast is made of.
-//!
-//! Colour means that someone is there or that something is happening:
-//!
-//! - [`PresencePalette`]: twelve hues at equal lightness and chroma, one per participant, so nobody
-//!   looks more important than anybody else;
-//! - [`Intents::you`]: the local person's own presence colour;
-//! - the accent ([`Intents::accent`], [`Intents::accent_ink`]): one hue, by default the person's own
-//!   colour ([`Emphasis::You`]), for primary actions, links, the focus ring, the caret, the text
-//!   selection and the selected row's tint;
-//! - the on state ([`Intents::on_state`]): green, for what is switched on;
-//! - [`SemanticColors`]: muted status (danger, warning, success, info).
-//!
-//! Nothing else gains colour: hover, grips, window edges, icons at rest, sliders and progress are
-//! neutral.
-//!
-//! Every colour here is derived from a [`Palette`] (what a theme document says) in
-//! [`Colors::as_authored`]; [`Colors::of_palette`] then repairs any pairing that misses a contrast
-//! floor (`super::contrast`).
+//! The colour half of the design language (`docs/design-language.md`). The interface is a
+//! quiet, near-colourless **neutral material**: every surface and every ink tier is an
+//! OKLCH lightness at one shared hue with chroma at or below [`NEUTRAL_MAX_CHROMA`].
+//! Changing that hue (a theme's or a workspace's temperature,
+//! [`Colors::with_neutral_hue`]) never moves contrast, because lightness is what contrast
+//! is made of.
 
 use crate::color::{Oklch, oklch};
 use crate::color_compat::ColorCompat;
@@ -33,14 +15,14 @@ pub use super::palette::{
     TINTED_LIFT_CHROMA, Tone,
 };
 
-/// How far [`Colors::legible_fill`] may deepen a filled chip toward black
-/// before it gives up and re-picks the label instead.
+/// How far [`Colors::legible_fill`] may deepen a filled chip toward black before it gives
+/// up and re-picks the label instead.
 pub const MAX_CHIP_DEEPEN: f32 = 0.35;
 
 pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 
-/// Straight (non-premultiplied) 8-bit sRGB mix — the space most widget
-/// draw paths blend in.
+/// Straight (non-premultiplied) 8-bit sRGB mix — the space most widget draw paths blend
+/// in.
 pub fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     #[allow(
@@ -52,15 +34,13 @@ pub fn mix8(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// How far a value's fill stands from the focus ring's ink, in OKLCH
-/// lightness, away from the ground: a focused slider's ring never merges
-/// with its own fill.
+/// How far a value's fill is from the focus ring's ink, in OKLCH lightness, away from
+/// the ground: a focused slider's ring never merges with its own fill.
 const VALUE_FILL_STEP: f32 = 0.1;
 
-/// [`Intents::value_fill`] on `ground` beside `track` (the lift a bar's
-/// unfilled part is): the accent hue a step further from the ground than
-/// [`Intents::accent_ink`], then stepped on until it clears the non-text
-/// contrast floor against both.
+/// [`Intents::value_fill`] on `ground` beside `track` (the lift a bar's unfilled part
+/// is): the accent hue a step further from the ground than [`Intents::accent_ink`], then
+/// stepped on until it clears the non-text contrast floor against both.
 pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
     use crate::a11y::contrast_ratio;
     let ink = Oklch::from_color(accent_ink);
@@ -82,9 +62,9 @@ pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> C
     fill
 }
 
-/// Composites `over` onto an opaque `ground`: a token's own RGBA says
-/// nothing about how it reads (`white/20` differs over black vs white), so
-/// every derivation below measures the composite, never the token.
+/// Composites `over` onto an opaque `ground`: a token's own RGBA says nothing about how
+/// it reads (`white/20` differs over black vs white), so every derivation below measures
+/// the composite, never the token.
 pub(crate) fn composite(over: Color, ground: Color) -> Color {
     let a = f32::from(over.a()) / 255.0;
     #[allow(
@@ -100,48 +80,37 @@ pub(crate) fn composite(over: Color, ground: Color) -> Color {
     )
 }
 
-/// Minimum ground movement (WCAG relative-luminance units) for a hairline to
-/// count as visible — deliberately far below any text threshold, since it
-/// only has to catch a wash landing within rounding distance of its surface.
+/// Minimum ground movement (WCAG relative-luminance units) for a hairline to count as
+/// visible; far below any text threshold, since it only catches a wash within rounding
+/// distance of its surface.
 pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
 
-/// How far a selection lifts its ground, in surface steps
-/// ([`Colors::lift_on`]). Past the hover and press lift so a selected row
-/// moves the dark window's ground by at least [`HAIRLINE_MIN_DELTA`] and
-/// stands clear of a table's zebra stripe on every ground.
+/// How far a selection lifts its ground, in surface steps ([`Colors::lift_on`]).
 pub const SELECTED_LIFT_T: f32 = 1.2;
 
-/// How far a floating surface's inner hairline (white at 7 % on a dark
-/// material, black at 8 % on a light one, `docs/design-language.md`,
-/// "Surfaces") moves its fill. Quieter than [`HAIRLINE_MIN_DELTA`] by
-/// design: a floating surface separates by its level, its two-layer shadow
-/// and this hairline together, and a brighter line read as a frame drawn
-/// around the panel.
+/// How far a floating surface's inner hairline (white at 7 % on a dark material, black at
+/// 8 % on a light one, `docs/design-language.md`, "Surfaces") moves its fill.
 pub const FLOATING_EDGE_MIN_DELTA: f64 = 0.01;
 
-/// Smallest OKLCH lightness step that separates a window region (sidebar,
-/// inspector) from the content ground by tone alone. A region tier closer
-/// to content than this draws a hairline on the edge they share instead
-/// (`surface::region`).
+/// Smallest OKLCH lightness step that separates a window region (sidebar, inspector) from
+/// the content ground by tone alone.
 pub const REGION_MIN_STEP: f64 = 0.015;
 
-/// Fallback wash alpha for [`Colors::lift`] when a material has no raised
-/// tier to aim at. 15% — reads as a distinct body without blowing out
-/// contrast.
+/// Fallback wash alpha for [`Colors::lift`] when a material has no raised tier to aim at.
+/// 15% — reads as a distinct body without blowing out contrast.
 const LIFT_FALLBACK_ALPHA: u8 = 38;
 
-/// Stock opacity of the floating-chrome material over its blurred backdrop:
-/// the compositor blurs what is behind a panel and tints it with
-/// [`Surfaces::overlay`] at 72 %. A theme sets its own
-/// ([`Surfaces::material_opacity`]).
+/// Stock opacity of the floating-chrome material over its blurred backdrop: the
+/// compositor blurs what is behind a panel and tints it with [`Surfaces::overlay`] at 72
+/// %.
 pub const MATERIAL_ALPHA: f32 = 0.72;
 
 /// Stock backdrop blur of the floating material, in logical pixels.
 pub const MATERIAL_BLUR_PX: f32 = 24.0;
 
-/// Stock opacity of the see-through material ([`Surfaces::see_through_opacity`]):
-/// half. Chrome over pixels the person is choosing (the capture bar and its
-/// selection controls) must leave those pixels visible, unblurred.
+/// Stock opacity of the see-through material ([`Surfaces::see_through_opacity`]): half.
+/// Chrome over pixels the person is choosing (the capture bar and its selection controls)
+/// must leave those pixels visible, unblurred.
 pub const SEE_THROUGH_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -149,10 +118,9 @@ pub struct ColorRamp {
     pub stops: [Color; 11],
 }
 
-/// The neutral material at lightness `l`: `chroma` at `hue`, eased back
-/// where 8-bit rounding near black would carry it past
-/// [`NEUTRAL_MAX_CHROMA`]. A workspace hue moves the hue only; it never
-/// buys chroma (design language, "Workspace temperature").
+/// The neutral material at lightness `l`: `chroma` at `hue`, eased back where 8-bit
+/// rounding near black would carry it past [`NEUTRAL_MAX_CHROMA`]. A workspace hue moves
+/// the hue only; it never buys chroma (design language, "Workspace temperature").
 fn neutral_at(l: f32, chroma: f32, hue: f32) -> Color {
     let mut c = chroma.clamp(0.0, NEUTRAL_MAX_CHROMA);
     loop {
@@ -172,10 +140,10 @@ impl ColorRamp {
         self.stops.is_empty()
     }
 
-    /// An 11-stop ramp of the neutral material from lightness `from` (index
-    /// 0) to `to` (index 10), eased so low indices cluster near `from`
-    /// (`powf(1.5)`): `neutral[2..5]` (hover, pressed, muted tints) stay
-    /// close to the ground instead of racing toward the far end.
+    /// An 11-stop ramp of the neutral material from lightness `from` (index 0) to `to`
+    /// (index 10), eased so low indices cluster near `from` (`powf(1.5)`):
+    /// `neutral[2..5]` (hover, pressed, muted tints) stay close to the ground instead of
+    /// racing toward the far end.
     pub fn neutral(from: f32, to: f32, chroma: f32, hue: f32) -> Self {
         let mut stops = [Color::BLACK; 11];
         for (i, stop) in stops.iter_mut().enumerate() {
@@ -203,73 +171,47 @@ impl std::ops::Index<usize> for ColorRamp {
     }
 }
 
-/// The neutral material's surfaces. Every one is opaque except
-/// [`Self::material`], and every one shares the hue [`Colors::with_neutral_hue`] sets.
+/// The neutral material's surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Surfaces {
-    /// The desktop ground behind tiles.
     pub base: Color,
-    /// The window ground: every app's background, owned by the framework.
-    /// The ink tiers ([`Colors::text_primary`] and friends) are defined on
-    /// this surface.
     pub content: Color,
     pub sidebar: Color,
-    /// The detail / inspector region of a window.
     pub inspector: Color,
-    /// Fields, wells and objects inside content.
     pub raised: Color,
-    /// Floating chrome: menus, popovers, the palette, sheets. Opaque; the
-    /// blurred form is [`Self::material`].
     pub overlay: Color,
-    /// Opaque dim behind a modal. Strength belongs to the thing being
-    /// lifted, hue belongs to the material, so the scrim recedes into the
-    /// neutral family rather than punching a black hole through it.
     pub scrim: Color,
-    /// Strength of every scrim at full openness — behind a modal Panel, a
-    /// sheet or an overlay drawer — as `chrome::fill_scrim` reads it. Per
-    /// theme: dark themes dim harder, since their grounds are near black.
     pub scrim_strength: f32,
     /// The blurred material floating chrome is made of: [`Self::overlay`] at
-    /// [`Self::material_opacity`]. Only for a surface the compositor blurs
-    /// behind; without a backdrop blur, paint the opaque [`Self::overlay`]
-    /// instead — unblurred translucency is never correct.
+    /// [`Self::material_opacity`]. Only for a surface the compositor blurs behind;
+    /// without a backdrop blur, paint the opaque [`Self::overlay`] instead — unblurred
+    /// translucency is never correct.
     pub material: Color,
-    /// Backdrop blur radius of [`Self::material`], in logical pixels. `0`
-    /// keeps floating chrome opaque.
+    /// Backdrop blur radius of [`Self::material`], in logical pixels.
     pub material_blur_px: f32,
-    /// Opacity of the [`Self::overlay`] tint over the blurred backdrop.
     pub material_opacity: f32,
-    /// Opacity of the see-through material: [`Self::overlay`] over an
-    /// unblurred backdrop, for chrome that must not hide what is under it
-    /// (the capture bar over the pixels being chosen). `1` where nothing may
-    /// be translucent.
+    /// Opacity of the see-through material: [`Self::overlay`] over an unblurred backdrop,
+    /// for chrome that must not hide what is under it (the capture bar over the pixels
+    /// being chosen).
     pub see_through_opacity: f32,
-    /// The declared edge between a window tile and the desktop. Read it
-    /// through [`Colors::window_edge`], which flips its polarity if the
-    /// ground would swallow it.
     pub content_edge: Color,
 }
 
-/// Ink tiers for content painted onto a surface, resolved against that
-/// surface's actual luminance ([`Colors::on_surface`]).
+/// Ink tiers for content painted onto a surface, resolved against that surface's actual
+/// luminance ([`Colors::on_surface`]).
 #[derive(Clone, Copy, Debug)]
 pub struct OnSurface {
-    /// Body / title ink. Clears WCAG AA (4.5:1) against the surface.
+    /// Body / title ink.
     pub ink: Color,
     pub ink_dim: Color,
     pub ink_tertiary: Color,
-    /// Whisper-tinted surface *on* the surface (gutter strip, zebra row):
-    /// stepped toward the surface's own ink so it works either direction.
     pub tint: Color,
 }
 
 /// WCAG 2.1 AA for body text.
 const BODY_MIN_CONTRAST: f64 = 4.5;
 
-/// Floor for text at the bottom of the type scale. A real anti-aliased
-/// glyph at 12px and below doesn't reach WCAG's ideal-glyph 4.5:1 — a label
-/// measured at 4.56:1 landed at 3.44:1 on screen. AAA leaves headroom to
-/// still clear AA once rendered.
+/// Floor for text at the bottom of the type scale.
 pub const SMALL_TEXT_MIN_CONTRAST: f64 = 7.0;
 
 const ON_SURFACE_TINT_T: f32 = 0.07;
@@ -277,118 +219,87 @@ const ON_SURFACE_TINT_T: f32 = 0.07;
 /// WCAG 2.1 non-text contrast (a pill's edge, a toggle's knob).
 pub const NON_TEXT_MIN_CONTRAST: f64 = 3.0;
 
-/// Minimum contrast a control's *label* must clear against the control's own
-/// fill (not the surface behind it).
+/// Minimum contrast a control's *label* must clear against the control's own fill (not
+/// the surface behind it).
 pub const ON_FILL_MIN_CONTRAST: f64 = 4.5;
 
-/// The opaque colour an opaque `wash` painted at `alpha` over `ground`
-/// leaves behind — contrast is a property of what reaches the screen, so a
-/// caller checking legibility on a washed row has to composite first.
+/// The opaque colour an opaque `wash` painted at `alpha` over `ground` leaves behind —
+/// contrast is a property of what reaches the screen, so a caller checking legibility on
+/// a washed row has to composite first.
 pub fn over(ground: Color, wash: Color, alpha: f32) -> Color {
     mix8(ground, wash, alpha)
 }
 
-/// A tinted pill (a status badge, a presence chip), resolved against the
-/// ground it paints on. Every field is opaque rather than a token plus
-/// alpha — measuring the token instead of the composite is how a chip ends
-/// up as tinted ink on a tinted wash.
+/// A tinted pill (a status badge, a presence chip), resolved against the ground it paints
+/// on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TintedChip {
-    /// Opaque body: the wash already composited over the row's ground.
     pub fill: Color,
-    /// Pill edge, clearing [`NON_TEXT_MIN_CONTRAST`] against the **ground**
-    /// so the shape stays findable when the wash inside is within a shade
-    /// of the ground.
     pub border: Color,
     pub ink: Color,
 }
 
-/// Status colours. Muted (chroma at most [`STATUS_MAX_CHROMA`]) and used
-/// only for status: never as decoration, never as a brand.
+/// Status colours. Muted (chroma at most [`STATUS_MAX_CHROMA`]) and used only for status:
+/// never as decoration, never as a brand.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticColors {
     pub success: Color,
     pub warning: Color,
     pub danger: Color,
-    /// Something is happening that is neither good nor bad: a sync in
-    /// flight, an informational notice.
     pub info: Color,
 }
 
-/// What controls paint with, by intent rather than by hue
-/// (`docs/design-language.md`, "Colour roles"). Nothing outside these roles
-/// gets colour: the accent is for primary actions, links, the focus ring,
-/// the caret, the text selection and the selected row's tint; the on state
-/// is for a switch, a checked box or radio, an active tile, a "connected"
-/// dot. Hover, resize grips, window edges, icons at rest, sliders and
-/// progress stay neutral.
+/// What controls paint with, by intent rather than by hue (`docs/design-language.md`,
+/// "Colour roles").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Intents {
-    /// Fill of a primary action: the accent hue at a lightness its label
-    /// reads on ([`Emphasis::You`] and [`Emphasis::Tinted`]), or primary ink
-    /// inverted onto the control under [`Emphasis::Inverted`].
     pub accent: Color,
-    /// [`Self::accent`] under the pointer: a step away from its label, so
-    /// hover only ever adds contrast.
+    /// [`Self::accent`] under the pointer: a step away from its label, so hover only ever
+    /// adds contrast.
     pub accent_hover: Color,
-    /// [`Self::accent`] while pressed: a step past the rest fill the other
-    /// way from hover, so a press never reads as a hover.
+    /// [`Self::accent`] while pressed: a step past the rest fill the other way from
+    /// hover, so a press never reads as a hover.
     pub accent_pressed: Color,
-    /// Label and glyph on an [`Self::accent`] fill.
     pub on_accent: Color,
-    /// The accent as ink and as a mark on a surface: a link, the focus
-    /// ring, the caret, the text-selection wash. Clears body-text contrast
-    /// on the window.
     pub accent_ink: Color,
-    /// Fill of a control that is on: a switch's track, a checked box or
-    /// radio, an active Quick Settings tile, a "connected" dot. Green, the
-    /// colour people read as "on"; state, not status, and never the accent.
+    /// Fill of a control that is on: a switch's track, a checked box or radio, an active
+    /// Quick Settings tile, a "connected" dot. Green, the colour people read as "on";
+    /// state, not status, and never the accent.
     pub on_state: Color,
-    /// The knob or mark standing on [`Self::on_state`].
     pub on_state_mark: Color,
-    /// A value that is neither on nor an action: a slider's filled track,
-    /// a progress bar, a gauge, a spinner, a chart's default series, a
-    /// finished step. The accent as a mark ([`Self::accent_ink`]), held to
-    /// the non-text contrast floor on the ground it stands on; never the
-    /// text colour, so a filled bar never reads as a black slab.
+    /// A value that is neither on nor an action: a slider's filled track, a progress bar,
+    /// a gauge, a spinner, a chart's default series, a finished step. The accent as a
+    /// mark ([`Self::accent_ink`]), held to the non-text contrast floor on the ground it
+    /// stands on; never the text colour, so a filled bar never reads as a black slab.
     pub value_fill: Color,
-    /// A selected row, tab or segment on the content surface: one surface
-    /// step, faintly the accent (colourless under [`Emphasis::Inverted`]).
-    /// Other grounds lift with [`Colors::lift_on`].
     pub selection: Color,
-    /// Halfway to [`Self::selection`]: an unselected row under the pointer.
     pub selection_hover: Color,
-    /// The local person's presence colour: the colour collaborators see
-    /// their cursor, caret and selection in.
     pub you: Color,
-    /// Text-selection wash: [`Self::accent_ink`] at low alpha, painted under
-    /// the selected glyphs.
     pub selection_tint: Color,
 }
 
 pub use collab_types::presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
 
-/// The presence hue nearest to `colour`'s, for a colour that arrives from
-/// outside (a host's accent, a roster's packed colour). A grey has no hue
-/// and gives `None`.
+/// The presence hue nearest to `colour`'s, for a colour that arrives from outside (a
+/// host's accent, a roster's packed colour).
 #[must_use]
 pub fn nearest_presence_hue(colour: Color) -> Option<PresenceHue> {
     PresenceHue::nearest_to_srgb(colour.r(), colour.g(), colour.b())
 }
 
-/// How much of a person's chroma their face keeps while they are idle or
-/// away ([`PresencePalette::idle_on`]): enough to tell whose face it is,
-/// little enough to read as quieter than everyone present.
+/// How much of a person's chroma their face keeps while they are idle or away
+/// ([`PresencePalette::idle_on`]): enough to tell whose face it is, little enough to read
+/// as quieter than everyone present.
 pub const IDLE_CHROMA: f32 = 0.35;
 
 /// How far toward the ground an idle face's colour moves at most
 /// ([`PresencePalette::idle_on`]), as a share of the way.
 pub const IDLE_FADE: f32 = 0.45;
 
-/// One colour per participant: [`PRESENCE_HUES`] at one OKLCH lightness and
-/// chroma, so they differ in hue only and no participant looks more
-/// important than another. Where sRGB cannot carry the full chroma at a hue
-/// (a light cyan) only that hue's chroma drops; lightness never does.
+/// One colour per participant: [`PRESENCE_HUES`] at one OKLCH lightness and chroma, so
+/// they differ in hue only and no participant looks more important than another. Where
+/// sRGB cannot carry the full chroma at a hue (a light cyan) only that hue's chroma
+/// drops; lightness never does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PresencePalette {
     pub lightness: f32,
@@ -415,11 +326,10 @@ impl PresencePalette {
             .unwrap_or(Color::BLACK)
     }
 
-    /// The `index`th colour of a data series (chart categories, tag
-    /// colours): the same twelve hues, walked so the first six are at least
-    /// 60° apart from each other (consecutive ones mostly 120°–180°), the
-    /// next six fill the gaps, and the walk wraps past [`PRESENCE_LEN`].
-    /// Equal lightness and chroma keep every series equally loud.
+    /// The `index`th colour of a data series (chart categories, tag colours): the same
+    /// twelve hues, walked so the first six are at least 60° apart from each other
+    /// (consecutive ones mostly 120°–180°), the next six fill the gaps, and the walk
+    /// wraps past [`PRESENCE_LEN`].
     #[must_use]
     pub fn series(&self, index: usize) -> Color {
         const WALK: [usize; PRESENCE_LEN] = [8, 2, 4, 10, 6, 0, 7, 1, 3, 9, 5, 11];
@@ -433,14 +343,8 @@ impl PresencePalette {
         self.get(hue.slot())
     }
 
-    /// An identity colour (a roster choice, a hashed id, an avatar colour)
-    /// as this palette paints it: its hue at the palette's lightness and
-    /// chroma. Identities travel between devices and themes as colours;
-    /// painting them through here keeps every participant equal on every
-    /// ground. A grey identity has no hue and stays grey at the palette's
-    /// lightness: it is someone whose colour is not known yet
-    /// (`ui::presence::UNSETTLED_RGB`), and a hue picked for them would be
-    /// a colour they then change from.
+    /// An identity colour (a roster choice, a hashed id, an avatar colour) as this
+    /// palette paints it: its hue at the palette's lightness and chroma.
     #[must_use]
     pub fn of(&self, identity: Color) -> Color {
         let source = Oklch::from_color(identity);
@@ -450,12 +354,10 @@ impl PresencePalette {
         oklch(self.lightness, self.chroma, source.h)
     }
 
-    /// A person's colour as the ring of their face on `ground` (`identity`
-    /// as [`Self::of`] takes it): their palette colour, moved in lightness
-    /// away from the ground, hue and chroma kept, only where it would not
-    /// otherwise stand out from it as a mark ([`NON_TEXT_MIN_CONTRAST`]).
-    /// The palette is tuned for windows and floating surfaces; a face on the
-    /// desktop's ground (the top bar) keeps its ring legible there too.
+    /// A person's colour as the ring of their face on `ground` (`identity` as
+    /// [`Self::of`] takes it): their palette colour, moved in lightness away from the
+    /// ground, hue and chroma kept, only where it would not otherwise stand out from it
+    /// as a mark ([`NON_TEXT_MIN_CONTRAST`]).
     #[must_use]
     pub fn ring_on(&self, identity: Color, ground: Color) -> Color {
         use crate::color::contrast_ratio;
@@ -477,14 +379,10 @@ impl PresencePalette {
         at(lightness)
     }
 
-    /// A person's colour while they are idle or away (`identity` as
-    /// [`Self::of`] takes it), on `ground`: their hue kept, most of its
-    /// chroma let go ([`IDLE_CHROMA`]), and moved toward the ground
-    /// ([`IDLE_FADE`] of the way at most) only as far as it stays a mark
-    /// against it ([`NON_TEXT_MIN_CONTRAST`]). A face dims without ever
-    /// vanishing into the bar it sits on, whatever the hue and theme; where
-    /// even the quieted colour would miss the floor, it moves away from the
-    /// ground until it holds.
+    /// A person's colour while they are idle or away (`identity` as [`Self::of`] takes
+    /// it), on `ground`: their hue kept, most of its chroma let go ([`IDLE_CHROMA`]), and
+    /// moved toward the ground ([`IDLE_FADE`] of the way at most) only as far as it stays
+    /// a mark against it ([`NON_TEXT_MIN_CONTRAST`]).
     #[must_use]
     pub fn idle_on(&self, identity: Color, ground: Color) -> Color {
         use crate::color::contrast_ratio;
@@ -514,48 +412,31 @@ impl PresencePalette {
         at(lightness)
     }
 
-    /// [`Self::of`] for the `(r, g, b)` tuples presence identities are
-    /// stored as.
+    /// [`Self::of`] for the `(r, g, b)` tuples presence identities are stored as.
     #[must_use]
     pub fn of_rgb(&self, (r, g, b): (u8, u8, u8)) -> Color {
         self.of(Color::from_rgb8(r, g, b))
     }
 }
 
-/// What is drawn straight onto media (video, a camera viewfinder, a photo):
-/// the letterbox around a frame, the fade under text that sits on the
-/// picture, and that text. Media is dark or light regardless of the theme,
-/// so these are the same in every theme; only the hue of the neutral
-/// material follows it. Controls over media are a floating Panel on the
-/// material instead, inked from the theme.
+/// What is drawn straight onto media (video, a camera viewfinder, a photo): the letterbox
+/// around a frame, the fade under text that sits on the picture, and that text.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MediaColors {
-    /// Behind a frame that does not fill its box. Near-black in every
-    /// theme, so a light theme does not turn the letterbox mid-grey.
     pub letterbox: Color,
-    /// The colour of a fade under text on media
-    /// (`ui::overlay::scrim::vertical_fade`).
     pub scrim: Color,
-    /// Primary ink on [`Self::scrim`] and on the letterbox.
     pub ink: Color,
-    /// Secondary ink on [`Self::scrim`] and on the letterbox.
     pub ink_dim: Color,
-    /// A composition guide drawn over a live picture (thirds, a level
-    /// line, a crop frame's grid): media ink, translucent so the picture
-    /// stays the subject.
     pub guide: Color,
 }
 
 impl MediaColors {
-    /// Lightness of the letterbox and of the fade under media text.
     const GROUND_L: f32 = 0.13;
-    /// Lightness of primary and secondary ink on it: AA for body text at
-    /// the full fade (`media_ink_is_legible_on_its_scrim`).
     const INK_L: f32 = 0.97;
     const INK_DIM_L: f32 = 0.80;
 
-    /// The media set in the neutral material's `hue` at no chroma: media
-    /// takes no temperature from the workspace.
+    /// The media set in the neutral material's `hue` at no chroma: media takes no
+    /// temperature from the workspace.
     #[must_use]
     pub fn new(hue: f32) -> Self {
         let n = |lightness: f32| oklch(lightness, 0.0, hue);
@@ -568,88 +449,59 @@ impl MediaColors {
         }
     }
 
-    /// How much of the picture a composition guide lets through.
     const GUIDE_ALPHA: f32 = 0.55;
 }
 
 /// How strongly a [`Colors::wash_on`] status wash shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WashStrength {
-    /// A row at rest: an added line, a failed check.
     Rest,
-    /// The same row while it is selected or under review: the selection
-    /// lift, still in the status hue.
     Selected,
 }
 
-/// A status wash resolved on its ground: an opaque body and the inks that
-/// read on it.
+/// A status wash resolved on its ground: an opaque body and the inks that read on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wash {
-    /// Opaque body, already composited over the ground.
     pub fill: Color,
-    /// Primary ink on [`Self::fill`] (body-text contrast).
     pub ink: Color,
-    /// Secondary ink on [`Self::fill`] (body-text contrast).
     pub ink_dim: Color,
-    /// The status colour itself as a mark on [`Self::fill`] (a `+` gutter
-    /// sign, a status dot): non-text contrast.
     pub mark: Color,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Colors {
-    /// The palette these colours were made from.
     pub palette: Palette,
-    /// How primary actions, selection and "on" states show.
     pub emphasis: Emphasis,
-    /// The local person's own colour.
     pub you: PresenceHue,
     pub neutral: ColorRamp,
     pub semantic: SemanticColors,
     pub surfaces: Surfaces,
     pub intent: Intents,
     pub presence: PresencePalette,
-    /// Ink, scrim and letterbox for what is drawn straight onto media.
     pub media: MediaColors,
-    /// Primary ink on [`Surfaces::content`].
     pub text_primary: Color,
-    /// Secondary ink on [`Surfaces::content`].
     pub text_dim: Color,
-    /// Tertiary ink: still clears large-text contrast against every
-    /// surface, so it reads as "quiet", never "broken".
+    /// Tertiary ink: still clears large-text contrast against every surface, so it reads
+    /// as "quiet", never "broken".
     pub text_tertiary: Color,
-    /// A hairline where two equal surfaces meet. Nowhere else: groups are
-    /// separated by space.
     pub border_standard: Color,
     /// The focus ring: always [`Intents::you`].
     pub border_focus: Color,
-    /// The light a surface catches: the specular sheen across a glass body
-    /// and the rim lit along its edge (`crate::part_paint::builtin`'s Glass
-    /// set, through [`crate::part_paint::PartTokens::light`]). Daylight at
-    /// no chroma ([`super::palette::SURFACE_LIGHT`]), so a workspace's
-    /// temperature never tints it; how strongly a part catches it belongs
-    /// to the role's finish (`specular`, `edge_highlight`).
+    /// The light a surface catches: the specular sheen across a glass body and the rim
+    /// lit along its edge (`crate::part_paint::builtin`'s Glass set, through
+    /// [`crate::part_paint::PartTokens::light`]). Daylight at no chroma
+    /// ([`super::palette::SURFACE_LIGHT`]), so a workspace's temperature never tints it;
+    /// how strongly a part catches it belongs to the role's finish (`specular`,
+    /// `edge_highlight`).
     pub light: Color,
 
-    // --- state veneers ----------------------------------------------------
-    //
-    // The translucent washes widgets paint over whatever surface they sit on
-    // to signal hover / press. They are **directional**: a veneer has to
-    // *lighten* a dark ground and *darken* a light one, otherwise it
-    // vanishes. The three alpha tiers are chosen so the perceptual step (ΔL*)
-    // of each tier matches across light and dark, rather than the raw alpha
-    // matching.
-    /// The quietest veneer — a "barely there" hover wash or faint divider.
+    // --- state veneers ---------------------------------------------------- The
+    // translucent washes widgets paint over whatever surface they sit on to signal hover
+    // / press.
     pub overlay_subtle: Color,
-    /// The middle veneer — a settled hover, a resting chip.
     pub overlay_medium: Color,
-    /// The strongest veneer — pressed states and emphatic fills.
     pub overlay_strong: Color,
-    /// Hairline structure that has to read against the local surface rather
-    /// than against the theme ground (a divider inside a tinted panel).
     pub overlay_border_subtle: Color,
-    /// The more assertive hairline — an active tab's outline, a focused chip.
     pub overlay_border_strong: Color,
 }
 
@@ -664,35 +516,20 @@ pub fn dark_overlays() -> OverlayTiers {
 }
 
 /// The veneer tiers for a **light** ground: black at ≈ 6 % / 12 % / 24 %.
-///
-/// The alphas are not the dark ones mirrored. Equal alpha does not buy equal
-/// visibility, because a veneer's perceptual step depends on where the ground
-/// sits on the lightness curve. Black at 15 / 31 / 60 reproduces the dark
-/// tiers' ΔL* (≈ 5 / 10.5 / 21) to within two units on the light palette's
-/// grounds — see `state_veneers_track_their_ground_in_every_palette`.
 pub fn light_overlays() -> OverlayTiers {
     let k = |a: u8| Color::from_rgba8(0, 0, 0, a);
     (k(15), k(31), k(60), k(31), k(60))
 }
 
-/// High contrast trades "barely there" for visible: against black the dark
-/// tiers collapse to a 1.08:1 step, which is exactly the feedback a
-/// low-vision user cannot see. These measure 1.7:1 / 2.5:1 / 4.1:1 off the
-/// ground and still host primary text at AA. The two hairline tiers go
-/// further still: nothing hosts text on them. `ink` is white on a black
-/// ground and black on a white one.
+/// High contrast trades "barely there" for visible: against black the dark tiers collapse
+/// to a 1.08:1 step, which is exactly the feedback a low-vision user cannot see.
 fn high_contrast_overlays(ink: u8) -> OverlayTiers {
     let w = |a: u8| Color::from_rgba8(ink, ink, ink, a);
     (w(51), w(77), w(110), w(153), w(217))
 }
 
-/// The accent fill on a palette, as `(rest, hover, pressed)` lightness, one
-/// chroma, and whether its label is white (else the window ground). On the
-/// stock grounds the label is white, so every fill stays dark enough for
-/// white to read on it (WCAG AA) at every hue while standing off the window
-/// (3:1); hover and press step away from the label. A lifted dark ladder
-/// (Soft) has no such band, so its accent is light with the window ground
-/// as its label. High contrast keeps the window ground as the label, at AAA.
+/// The accent fill on a palette, as `(rest, hover, pressed)` lightness, one chroma, and
+/// whether its label is white (else the window ground).
 fn accent_fill(palette: &Palette) -> ([f32; 3], f32, bool) {
     match (palette.dark, palette.high_contrast) {
         (true, false) if palette.surfaces.content <= 0.20 => ([0.525, 0.495, 0.465], 0.15, true),
@@ -703,8 +540,6 @@ fn accent_fill(palette: &Palette) -> ([f32; 3], f32, bool) {
     }
 }
 
-/// Lightness of [`Intents::accent_ink`]: the presence tone on dark, a step
-/// darker on light so a link reads as body text on the window.
 fn accent_ink_lightness(palette: &Palette, presence: Tone) -> f32 {
     if palette.dark {
         presence.lightness
@@ -713,9 +548,9 @@ fn accent_ink_lightness(palette: &Palette, presence: Tone) -> f32 {
     }
 }
 
-/// The on-state green's lightness and chroma on a palette of each polarity:
-/// light enough to read as green on the window, dark enough that a white
-/// knob stands on it (WCAG 1.4.11).
+/// The on-state green's lightness and chroma on a palette of each polarity: light enough
+/// to read as green on the window, dark enough that a white knob stands on it (WCAG
+/// 1.4.11).
 fn on_state_tone(palette: &Palette) -> Tone {
     match (palette.dark, palette.high_contrast) {
         (true, false) => Tone::new(0.62, 0.15),
@@ -729,9 +564,8 @@ fn on_state_tone(palette: &Palette) -> Tone {
 pub const ON_STATE_HUE: f32 = 150.0;
 
 impl Colors {
-    /// The whole colour token set for a palette, as authored: nothing is
-    /// measured or repaired. [`Self::of_palette`] is what a theme paints
-    /// with; this is what Theme Studio audits.
+    /// The whole colour token set for a palette, as authored: nothing is measured or
+    /// repaired.
     #[must_use]
     pub fn as_authored(
         palette: &Palette,
@@ -887,11 +721,9 @@ impl Colors {
         }
     }
 
-    /// The colour token set a theme paints with: [`Self::as_authored`],
-    /// with any pairing that misses a contrast floor stepped out until it
-    /// holds (`crate::tokens::contrast::repair`). The shipped palettes need
-    /// no repair; a hand-edited document that slipped past Theme Studio
-    /// still renders legibly.
+    /// The colour token set a theme paints with: [`Self::as_authored`], with any pairing
+    /// that misses a contrast floor stepped out until it holds
+    /// (`crate::tokens::contrast::repair`).
     #[must_use]
     pub fn of_palette(
         palette: &Palette,
@@ -904,8 +736,8 @@ impl Colors {
         colors
     }
 
-    /// A palette with its stock presence tone, its stock emphasis and the
-    /// default person's colour.
+    /// A palette with its stock presence tone, its stock emphasis and the default
+    /// person's colour.
     #[must_use]
     pub fn stock(palette: &Palette) -> Self {
         Self::of_palette(
@@ -916,13 +748,11 @@ impl Colors {
         )
     }
 
-    /// The default dark palette.
     #[must_use]
     pub fn dark() -> Self {
         Self::stock(&Palette::dark())
     }
 
-    /// The light palette.
     #[must_use]
     pub fn light() -> Self {
         Self::stock(&Palette::light())
@@ -934,10 +764,8 @@ impl Colors {
         Self::stock(&Palette::high_contrast_dark())
     }
 
-    /// The same colours with the neutral material at temperature `hue`:
-    /// presence, status, emphasis and the person's own colour keep their
-    /// hues. A palette with no chroma shows no temperature and is returned
-    /// unchanged.
+    /// The same colours with the neutral material at temperature `hue`: presence, status,
+    /// emphasis and the person's own colour keep their hues.
     #[must_use]
     pub fn with_neutral_hue(&self, hue: f32) -> Self {
         if !hue.is_finite() || self.palette.chroma <= 0.0 {
@@ -956,10 +784,8 @@ impl Colors {
         next
     }
 
-    /// Make `hue` the person's colour, painted at this palette's presence
-    /// lightness and chroma. Under [`Emphasis::You`] it is the accent too,
-    /// so primary actions, the focus ring, the caret and the selection take
-    /// it.
+    /// Make `hue` the person's colour, painted at this palette's presence lightness and
+    /// chroma.
     pub fn set_you(&mut self, hue: PresenceHue) {
         if self.emphasis == Emphasis::You {
             let presence = Tone::new(self.presence.lightness, self.presence.chroma);
@@ -982,9 +808,8 @@ impl Colors {
         }
     }
 
-    /// The floating material: backdrop blur (logical pixels) and the
-    /// opacity of the overlay tint over it. A high-contrast palette stays
-    /// opaque whatever it is asked.
+    /// The floating material: backdrop blur (logical pixels) and the opacity of the
+    /// overlay tint over it.
     pub fn set_material(&mut self, blur_px: f32, opacity: f32) {
         if self.palette.high_contrast {
             return;
@@ -999,15 +824,9 @@ impl Colors {
         with_alpha(you, 82)
     }
 
-    /// The neutral lift on any `ground`: `t` 1.0 is one surface step
-    /// (lighter on a dark palette, darker on a light one), 0.5 the hover
-    /// halfway. Hover and press are lifts and never take the accent; a
-    /// selected row takes it through [`Self::selected_on`].
-    ///
-    /// The step goes the palette's way unless the ground has no room for a
-    /// whole step there (a white well on a dark palette, a near-black one on
-    /// a light palette); then it goes the other way, so the lift always moves
-    /// a full step away from the ground it stands on and stays visible.
+    /// The neutral lift on any `ground`: `t` 1.0 is one surface step (lighter on a dark
+    /// palette, darker on a light one), 0.5 the hover halfway. Hover and press are lifts
+    /// and never take the accent; a selected row takes it through [`Self::selected_on`].
     #[must_use]
     pub fn lift_on(&self, ground: Color, t: f32) -> Color {
         let g = Oklch::from_color(ground);
@@ -1021,11 +840,9 @@ impl Colors {
         oklch(g.l + step * t, chroma, hue)
     }
 
-    /// `ground` lifted `t` surface steps with `tint` of the accent washed
-    /// into it (up to `tint` 0.25: a hover or a press may carry a trace of
-    /// the person's colour, a selected row keeps its own tier). The lift's
-    /// lightness is [`Self::lift_on`]'s; the wash is the accent laid over
-    /// it at `tint` opacity and composited, so ink still reads on it.
+    /// `ground` lifted `t` surface steps with `tint` of the accent washed into it (up to
+    /// `tint` 0.25: a hover or a press may carry a trace of the person's colour, a
+    /// selected row keeps its own tier).
     #[must_use]
     pub fn lift_tinted_on(&self, ground: Color, t: f32, tint: f32) -> Color {
         let lift = self.lift_on(ground, t);
@@ -1061,12 +878,8 @@ impl Colors {
         }
     }
 
-    /// A status wash of `tone` over `ground`: an added or removed line, a
-    /// failed row, a reviewer's band. `Selected` takes the selection lift
-    /// of `ground` and keeps the wash's hue on it, where
-    /// [`Self::lift_on`] alone would drop to the neutral. The inks clear
-    /// body-text contrast on the composited body, so text keeps reading
-    /// under every strength on every ground.
+    /// A status wash of `tone` over `ground`: an added or removed line, a failed row, a
+    /// reviewer's band.
     #[must_use]
     pub fn wash_on(
         &self,
@@ -1097,18 +910,13 @@ impl Colors {
         }
     }
 
-    /// How much of the status hue a resting wash carries.
     const WASH_REST: f32 = 0.16;
-    /// How much of it a selected wash carries over the lift.
     const WASH_SELECTED: f32 = 0.30;
 
-    /// What [`Surfaces::raised`] is on `ground`: the raised tier itself
-    /// while it stands off `ground` the same way it stands off the content
-    /// surface, by at least half that step (so on every region of the
-    /// window); otherwise that step taken from `ground` (the other way where
-    /// the ground has no room). A field, a secondary button or a checkbox on
-    /// a floating panel lighter than the raised tier stands off it as it
-    /// does off content, instead of sinking into it.
+    /// What [`Surfaces::raised`] is on `ground`: the raised tier itself while it stands
+    /// off `ground` the same way it stands off the content surface, by at least half that
+    /// step (so on every region of the window); otherwise that step taken from `ground`
+    /// (the other way where the ground has no room).
     #[must_use]
     pub fn raised_on(&self, ground: Color) -> Color {
         let step =
@@ -1130,25 +938,18 @@ impl Colors {
         oklch(l, raised.c, raised.h)
     }
 
-    /// Ink tiers for content on [`Surfaces::content`] — the theme's own text
-    /// tiers, since those are defined there.
+    /// Ink tiers for content on [`Surfaces::content`] — the theme's own text tiers, since
+    /// those are defined there.
     pub fn on_content(&self) -> OnSurface {
         self.on_surface(self.surfaces.content)
     }
 
-    /// [`Self::on_content`] for any surface a widget paints on. Measured
-    /// against that surface rather than darkened a fixed fraction, which
-    /// yields roughly the same ratio whatever the material.
+    /// [`Self::on_content`] for any surface a widget paints on.
     pub fn on_surface(&self, surface: Color) -> OnSurface {
         self.on_surface_at(surface, BODY_MIN_CONTRAST)
     }
 
-    /// [`Self::on_surface`] against a caller-chosen floor. [`OnSurface::ink`]
-    /// and `ink_dim` step out until they clear `min_ratio`;
-    /// [`OnSurface::ink_tertiary`] passes through as authored — how quiet
-    /// the quietest tier is belongs to the material (held to 3:1 on every
-    /// surface by `contrast::FLOORS`), and forcing a body-text floor would
-    /// erase the tier.
+    /// [`Self::on_surface`] against a caller-chosen floor.
     pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> OnSurface {
         use crate::a11y::contrast_ratio;
 
@@ -1158,8 +959,6 @@ impl Colors {
         let (ink, ink_dim, ink_tertiary) = if tiers_read {
             (self.text_primary, self.text_dim, self.text_tertiary)
         } else {
-            // One step in from the ramp end: pure black/white is harsher
-            // than the typography the rest of the UI uses.
             let from_low = contrast_ratio(self.neutral[0], surface)
                 >= contrast_ratio(self.neutral[10], surface);
             if from_low {
@@ -1180,16 +979,13 @@ impl Colors {
         }
     }
 
-    /// An authored `tone` made legible on `ground`: untouched if it already
-    /// clears `min_ratio`, otherwise stepped toward the contrasting extreme.
+    /// An authored `tone` made legible on `ground`: untouched if it already clears
+    /// `min_ratio`, otherwise stepped toward the contrasting extreme.
     pub fn ink_on(&self, ground: Color, tone: Color, min_ratio: f64) -> Color {
         Self::step_out_until_legible(tone, ground, min_ratio)
     }
 
     /// One `tone`, made legible on *every* ground in `grounds` at once.
-    /// Resolving a control's label separately per state (rest/hover/press)
-    /// lets it flip polarity mid-range, so ink is chosen once, against the
-    /// worst ground, and held for the whole set.
     pub fn ink_on_any(&self, grounds: &[Color], tone: Color, min_ratio: f64) -> Color {
         use crate::a11y::contrast_ratio;
         let worst = |c: Color| {
@@ -1224,13 +1020,8 @@ impl Colors {
         target
     }
 
-    /// A `tint` washed over `ground` at `wash` strength (a status pill, a
-    /// presence chip), resolved into an opaque body, an edge and a label.
-    ///
-    /// The body composites **first**, so ink is measured against what the
-    /// screen holds, not the token the wash was made from. Ink walks out of
-    /// the tint only as far as the floor demands. The edge is measured
-    /// against the *ground*, since its job is separating pill from row.
+    /// A `tint` washed over `ground` at `wash` strength (a status pill, a presence chip),
+    /// resolved into an opaque body, an edge and a label.
     pub fn tinted_chip_on(
         &self,
         ground: Color,
@@ -1246,8 +1037,8 @@ impl Colors {
         }
     }
 
-    /// Returns `ink` untouched if it already clears `min_ratio`, otherwise
-    /// steps it toward whichever extreme contrasts with `surface`.
+    /// Returns `ink` untouched if it already clears `min_ratio`, otherwise steps it
+    /// toward whichever extreme contrasts with `surface`.
     fn step_out_until_legible(ink: Color, surface: Color, min_ratio: f64) -> Color {
         use crate::a11y::contrast_ratio;
         if contrast_ratio(ink, surface) >= min_ratio {
@@ -1278,9 +1069,7 @@ impl Colors {
         }
     }
 
-    /// A hairline visible on `ground` whichever side of the light/dark line
-    /// it falls on. Tries both polarities at `alpha`, keeps whichever moves
-    /// `ground` further.
+    /// A hairline visible on `ground` whichever side of the light/dark line it falls on.
     pub fn hairline_on(ground: Color, alpha: u8) -> Color {
         use crate::a11y::relative_luminance;
         let g = relative_luminance(ground);
@@ -1294,19 +1083,12 @@ impl Colors {
         }
     }
 
-    /// The body a chrome control takes when **lifted** off the desktop
-    /// ground (hovered tab pill, active workspace chip). `t` runs 0.0 (flat)
-    /// to 1.0 (full lift), interpolating `surfaces.base` toward
-    /// `surfaces.raised`. Where a material has no raised tier (high contrast
-    /// paints everything black) falls back to a wash polarity chosen the
-    /// same way [`Colors::hairline_on`] picks one. Rows inside a window lift
-    /// with [`Intents::selection`] / [`Self::lift_on`] instead.
-    ///
-    /// This is a straight sRGB blend toward the next surface, not the OKLCH
-    /// surface ramp: its steps do not keep their size across the palette, so
-    /// a state that must stay ordered against another state's lift (a
-    /// control's rest face under its hover) is measured from
-    /// [`Self::lift_on`], never from this and that tier mixed.
+    /// The body a chrome control takes when **lifted** off the desktop ground (hovered
+    /// tab pill, active workspace chip). This is a straight sRGB blend toward the next
+    /// surface, not the OKLCH surface ramp: its steps do not keep their size across the
+    /// palette, so a state that must stay ordered against another state's lift (a
+    /// control's rest face under its hover) is measured from [`Self::lift_on`], never
+    /// from this and that tier mixed.
     pub fn lift(&self, t: f32) -> Color {
         mix8(self.surfaces.base, self.lift_target(), t)
     }
@@ -1331,14 +1113,8 @@ impl Colors {
         relative_luminance(self.lift_target()) >= relative_luminance(base)
     }
 
-    /// The hairline separating a window tile from the desktop. Painted
-    /// outside the tile's silhouette since the shell never samples the app's
-    /// pixels inside it. `crate::widget::tile_host::TileHost` owns the
-    /// matching geometry.
-    ///
-    /// The declared [`Surfaces::content_edge`] is honoured wherever it
-    /// registers; only a declaration the ground would swallow gets its
-    /// polarity flipped.
+    /// The hairline separating a window tile from the desktop. Painted outside the tile's
+    /// silhouette since the shell never samples the app's pixels inside it.
     pub fn window_edge(&self) -> Color {
         use crate::a11y::relative_luminance;
         let ground = self.surfaces.base;
@@ -1351,25 +1127,16 @@ impl Colors {
         }
     }
 
-    /// The edge of the window that has keyboard input: [`Self::border_focus`],
-    /// the accent, on the window's own silhouette, a pixel heavier than the
-    /// resting [`Self::window_edge`]. One colour for "the keyboard is here"
-    /// wherever it is shown — a field, a list row, a window — and a weight
-    /// the resting edge does not use, so which window has input reads at a
-    /// glance without a second ring inside it.
+    /// The edge of the window that has keyboard input: [`Self::border_focus`], the
+    /// accent, on the window's own silhouette, a pixel heavier than the resting
+    /// [`Self::window_edge`].
     pub fn window_edge_focused(&self) -> Color {
         self.border_focus
     }
 
-    /// Pick a foreground colour that stays legible on `bg`.
-    ///
-    /// Returns `preferred` whenever it already clears WCAG AA for body text
-    /// (4.5:1) against `bg`. Where it does not, this falls back to the
-    /// theme's primary text, and finally to plain white or black, whichever
-    /// wins — one of the two always clears 4.5:1 against any colour.
-    ///
-    /// `bg` must be the colour that will actually be *seen*: composite any
-    /// translucent fill over its ground before passing it in.
+    /// Pick a foreground colour that stays legible on `bg`. `bg` must be the colour that
+    /// will actually be *seen*: composite any translucent fill over its ground before
+    /// passing it in.
     pub fn readable_on(&self, bg: Color, preferred: Color) -> Color {
         for candidate in [preferred, self.text_primary] {
             if crate::a11y::contrast_ratio(candidate, bg) >= BODY_MIN_CONTRAST {
@@ -1385,16 +1152,10 @@ impl Colors {
         }
     }
 
-    /// Resolve a **filled chip** — the destructive fill inside a
-    /// confirmation step, a status badge — into a `(fill, label)` pair whose
-    /// label clears WCAG AA (4.5:1) against the fill.
-    ///
-    /// If `preferred_label` already clears AA the pair is returned
-    /// untouched; otherwise the **fill is deepened toward black** until the
-    /// label clears, up to [`MAX_CHIP_DEEPEN`]. Past that the fill is kept
-    /// and the label re-picked via [`Self::readable_on`].
-    ///
-    /// `fill` must be opaque: it is what the label will actually sit on.
+    /// Resolve a **filled chip** — the destructive fill inside a confirmation step, a
+    /// status badge — into a `(fill, label)` pair whose label clears WCAG AA (4.5:1)
+    /// against the fill. `fill` must be opaque: it is what the label will actually sit
+    /// on.
     pub fn legible_fill(&self, fill: Color, preferred_label: Color) -> (Color, Color) {
         if crate::a11y::contrast_ratio(preferred_label, fill) >= BODY_MIN_CONTRAST {
             return (fill, preferred_label);
@@ -1428,7 +1189,6 @@ mod tests {
         [c.r(), c.g(), c.b(), c.a()]
     }
 
-    /// Every shipped palette, named.
     fn palettes() -> [(&'static str, Palette); 7] {
         [
             ("dark", Palette::dark()),
@@ -1441,7 +1201,6 @@ mod tests {
         ]
     }
 
-    /// Temperatures swept by every hue-dependent assertion.
     fn hues() -> impl Iterator<Item = f32> {
         (0..24).map(|i| {
             #[allow(clippy::cast_precision_loss, reason = "i < 24")]
@@ -1452,8 +1211,6 @@ mod tests {
 
     #[test]
     fn media_ink_is_legible_on_its_scrim_in_every_theme() {
-        // Media is the same picture under a light and a dark theme, so the
-        // ink drawn on it may not follow the theme's lightness.
         let dark = Colors::stock(&Palette::dark()).media;
         for (name, palette) in palettes() {
             let media = Colors::stock(&palette).media;
@@ -1492,8 +1249,8 @@ mod tests {
         ]
     }
 
-    /// CIE L* (0..=100) — perceptual lightness, so veneer strength can be
-    /// compared across grounds of very different luminance.
+    /// CIE L* (0..=100) — perceptual lightness, so veneer strength can be compared across
+    /// grounds of very different luminance.
     fn lstar(c: Color) -> f64 {
         let y = crate::a11y::relative_luminance(c);
         if y > 0.008_856 {
@@ -1554,9 +1311,9 @@ mod tests {
             for (label, palette) in palettes() {
                 for hue in hues() {
                     let c = at_hue(&palette, hue);
-                    // The light a surface catches is daylight, not a neutral
-                    // of the material: white under every temperature and on
-                    // both polarities, so a workspace hue never tints it.
+                    // The light a surface catches is daylight, not a neutral of the
+                    // material: white under every temperature and on both polarities, so
+                    // a workspace hue never tints it.
                     assert_eq!(
                         c.light,
                         Color::WHITE,
@@ -1570,8 +1327,8 @@ mod tests {
                         ("border", c.border_standard),
                     ]);
                     neutrals.extend(c.neutral.stops.iter().map(|s| ("ramp", *s)));
-                    // The selection is the one lift that carries the accent's
-                    // faint tint (design language, "Lifts"), never more.
+                    // The selection is the one lift that carries the accent's faint tint
+                    // (design language, "Lifts"), never more.
                     let selection = Oklch::from_color(c.intent.selection);
                     assert!(
                         selection.c <= TINTED_LIFT_CHROMA.max(palette.chroma) + 0.004,
@@ -1580,15 +1337,15 @@ mod tests {
                     );
                     for (name, colour) in neutrals {
                         let o = Oklch::from_color(colour);
-                        // 8-bit quantisation alone is worth a few thousandths
-                        // of chroma near black.
+                        // 8-bit quantisation alone is worth a few thousandths of chroma
+                        // near black.
                         assert!(
                             o.c <= palette.chroma + 0.004,
                             "{label}@{hue}: {name} has chroma {:.4}",
                             o.c
                         );
-                        // Hue only means something where there is chroma to
-                        // carry it past 8-bit quantisation.
+                        // Hue only means something where there is chroma to carry it past
+                        // 8-bit quantisation.
                         if palette.chroma >= 0.008 && o.c >= 0.006 && o.l > 0.1 && o.l < 0.97 {
                             let d = (o.h - hue).rem_euclid(360.0);
                             let d = d.min(360.0 - d);
@@ -1672,12 +1429,8 @@ mod tests {
                 let c = Colors::stock(&palette);
                 let l = |x: Color| Oklch::from_color(x).l;
                 let s = &c.surfaces;
-                // Dark: ground, region (recessed), window, then the raised
-                // wells and floating chrome above it. Light: ground, the
-                // raised well (0.95, darker than the region), the region
-                // (0.965), then the window, and floating as the one white
-                // (design-system.md, "Surfaces"). Sidebar and inspector are
-                // one level.
+                // Dark: ground, region (recessed), window, then the raised wells and
+                // floating chrome above it.
                 let order: &[Color] = if palette.dark {
                     &[s.base, s.sidebar, s.content, s.overlay]
                 } else {
@@ -1849,8 +1602,8 @@ mod tests {
             for (i, colour) in p.colors.iter().enumerate() {
                 let o = Oklch::from_color(*colour);
                 assert!((o.l - want_l).abs() <= 0.006, "slot {i}: L {:.3}", o.l);
-                // Gamut mapping may only ever take chroma away, and never so
-                // much that a slot stops reading as its hue.
+                // Gamut mapping may only ever take chroma away, and never so much that a
+                // slot stops reading as its hue.
                 assert!(
                     o.c <= want_c + 0.004 && o.c >= 0.09,
                     "slot {i}: C {:.3}",
@@ -2157,8 +1910,6 @@ mod tests {
                 let rest = colors.wash_on(ground, tone, WashStrength::Rest);
                 let selected = colors.wash_on(ground, tone, WashStrength::Selected);
                 let lift = colors.lift_on(ground, 1.0);
-                // Selection stays in the status hue instead of falling to the
-                // neutral lift.
                 let chroma = |c: Color| Oklch::from_color(c).c;
                 assert!(
                     chroma(selected.fill) > chroma(lift) + 0.01,

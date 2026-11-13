@@ -28,6 +28,32 @@ pub struct HostAppEntry {
     pub generic_name: Option<String>,
     pub comment: Option<String>,
     pub keywords: Vec<String>,
+    /// Its first category ("Graphics"), which picks the glyph its rows wear.
+    pub category: Option<String>,
+    /// Where the machine got it: a Flatpak, or the system's own package.
+    pub kind: HostAppKind,
+}
+
+/// Where a machine's app comes from, as the person's app list tells them
+/// apart: a Flatpak brings its own sandbox and updates, the system's own
+/// app comes with the computer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostAppKind {
+    Flatpak,
+    /// A distribution package, a locally dropped entry.
+    #[default]
+    System,
+}
+
+impl HostAppKind {
+    /// What the row says the app is, in the desktop's language.
+    #[must_use]
+    pub fn label(self) -> String {
+        crate::i18n::t(match self {
+            Self::Flatpak => "search-host-app-flatpak",
+            Self::System => "search-host-app-system",
+        })
+    }
 }
 
 /// The launch target that starts the host app `desktop_id`.
@@ -75,6 +101,8 @@ impl HostApps {
                         .iter()
                         .map(|word| (word.clone(), FieldWeight::KEYWORD)),
                 );
+                // What it is ("Flatpak") is a word the person may type.
+                fields.push((app.kind.label(), FieldWeight::KEYWORD));
                 fields
             })
             .collect();
@@ -119,7 +147,7 @@ impl Source for HostApps {
                     id: app.desktop_id.clone(),
                     title: app.name.clone(),
                     subtitle: app.generic_name.clone().or_else(|| app.comment.clone()),
-                    facts: Vec::new(),
+                    facts: vec![app.kind.label()],
                     score,
                     icon: None,
                     target: launch(&app.desktop_id),
@@ -140,6 +168,18 @@ mod tests {
             generic_name: Some("Editor".into()),
             comment: None,
             keywords: vec!["gedit".into()],
+            category: None,
+            kind: HostAppKind::System,
+        }
+    }
+
+    fn chromium() -> HostAppEntry {
+        HostAppEntry {
+            desktop_id: "org.chromium.Chromium.desktop".into(),
+            name: "Chromium Web Browser".into(),
+            comment: Some("Access the Internet".into()),
+            kind: HostAppKind::Flatpak,
+            ..HostAppEntry::default()
         }
     }
 
@@ -154,6 +194,28 @@ mod tests {
         }
         assert_eq!(launched("host:a.desktop"), Some("a.desktop"));
         assert!(apps.query("").is_empty());
+    }
+
+    /// Each row says what the machine's app is: a Flatpak or one of the
+    /// system's own, which also finds it when that is what the person types.
+    #[test]
+    fn a_host_app_says_where_it_came_from() {
+        let apps = HostApps::new(vec![chromium(), editor()], &SearchPreferences::default());
+        let row = apps
+            .query("chromium")
+            .into_iter()
+            .next()
+            .expect("the browser is found");
+        assert_eq!(row.subtitle.as_deref(), Some("Access the Internet"));
+        assert_eq!(row.facts, ["Flatpak".to_owned()]);
+        assert_eq!(
+            apps.query("text editor")[0].facts,
+            ["System".to_owned()],
+            "a distribution package"
+        );
+        let found = apps.query("flatpak");
+        let flatpaks: Vec<&str> = found.iter().map(|hit| hit.id.as_str()).collect();
+        assert_eq!(flatpaks, ["org.chromium.Chromium.desktop"]);
     }
 
     #[test]

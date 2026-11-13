@@ -224,6 +224,19 @@ pub(crate) trait ParticipantKeys: Send + Sync {
                 + 'a,
         >,
     >;
+
+    /// The writes of `route`'s record stuck behind a change their own writer never sent, as the
+    /// record's governor, which every write of it reaches, reads its history
+    /// ([`tilo_peer_state::UnmergedReason::BehindUnsent`]): a fold leaves them out of the record
+    /// for good. Empty where nothing is stuck so, or nothing here governs the record.
+    fn unsent<'a>(
+        &'a self,
+        route: &'a Route,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<collab_types::SignedOp>> + Send + 'a>>
+    {
+        let _ = route;
+        Box::pin(std::future::ready(Vec::new()))
+    }
 }
 
 /// A retained document delta, as [`Compactor::note`] counts it.
@@ -435,7 +448,7 @@ impl Compactor {
             .flatten();
         if let Some(route) = keyed
             && self
-                .fold_with_keys(workspace, workspace_id, channel, &route, min_tail)
+                .fold_with_keys(workspace, workspace_id, channel, &route, (min_tail, false))
                 .await?
         {
             return Ok(());
@@ -479,7 +492,7 @@ impl Compactor {
             .filter(|_| resealing);
         if let Some(route) = route
             && self
-                .fold_with_keys(workspace, workspace_id, channel, route, min_tail)
+                .fold_with_keys(workspace, workspace_id, channel, route, (min_tail, false))
                 .await?
         {
             return Ok(());
@@ -498,7 +511,7 @@ impl Compactor {
         if let Some(route) = sealed {
             if !resealing
                 && self
-                    .fold_with_keys(workspace, workspace_id, channel, &route, min_tail)
+                    .fold_with_keys(workspace, workspace_id, channel, &route, (min_tail, false))
                     .await?
             {
                 return Ok(());
@@ -516,13 +529,18 @@ impl Compactor {
     /// newcomer then replays one snapshot and the writes since, not every
     /// write ever made. False when this host does not take part in the
     /// channel.
+    ///
+    /// A fold that finds writes it cannot apply asks the record's governor which of them are
+    /// stuck behind a change their own writer never sent, and folds again without those: they
+    /// leave the record for good, kept in the store's archive and logged. With `repair` it asks
+    /// at once, and folds whatever the channel's tail when any write is stuck so.
     async fn fold_with_keys(
         &self,
         workspace: &SharedWorkspace,
         workspace_id: u64,
         channel: [u8; 32],
         route: &Route,
-        min_tail: usize,
+        (min_tail, repair): (usize, bool),
     ) -> Result<bool, String> {
         let Some(participant) = self.0.participant.get() else {
             return Ok(false);
@@ -531,6 +549,59 @@ impl Compactor {
             return Ok(false);
         };
         lock(&self.0.keyed).insert((workspace_id, channel), route.clone());
+        let mut unsent = if repair {
+            participant.unsent(route).await
+        } else {
+            Vec::new()
+        };
+        if repair && unsent.is_empty() {
+            return Ok(true);
+        }
+        let keys = Arc::new(keys);
+        let mut planned = self
+            .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
+            .await?;
+        if !repair && planned.as_ref().is_some_and(|(folded, _)| folded.stuck) {
+            unsent = participant.unsent(route).await;
+            if !unsent.is_empty() {
+                planned = self
+                    .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
+                    .await?;
+            }
+        }
+        let Some((folded, frames)) = planned else {
+            return Ok(true);
+        };
+        self.0
+            .folding
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.persist_fold(workspace, channel, &folded, frames)
+            .await?;
+        if !folded.dropped.is_empty() {
+            for write in &unsent {
+                tracing::warn!(
+                    workspace = %route.cluster_id,
+                    app = %route.app_id,
+                    record = %route.record_id,
+                    writer = %hex::encode(write.author.as_bytes()),
+                    seq = write.seq,
+                    "the store folds a record without a write stuck behind a change its writer never sent; the write is kept in the store's archive"
+                );
+            }
+        }
+        Ok(true)
+    }
+
+    /// One keyed round over `channel`, as [`Self::fold_with_keys`] plans it, leaving `unsent` out
+    /// of the record.
+    async fn plan_keyed(
+        &self,
+        workspace: &SharedWorkspace,
+        (workspace_id, channel): ChannelKey,
+        keys: &Arc<channel_crypto::ChannelContentKeys>,
+        min_tail: usize,
+        unsent: &[collab_types::SignedOp],
+    ) -> Result<Option<(Folded, Vec<Vec<u8>>)>, String> {
         let store = workspace.lock().await.store.clone();
         let mut signatures = lock(&self.0.signatures)
             .remove(&(workspace_id, channel))
@@ -538,9 +609,13 @@ impl Compactor {
         let key = self.0.key.clone();
         let payloads = self.0.payloads.clone();
         let resealing = self.resealing();
+        let keys = Arc::clone(keys);
+        let unsent: HashSet<collab_types::Signature> =
+            unsent.iter().map(|op| op.signature).collect();
         let (signatures, planned) = tokio::task::spawn_blocking(move || {
             let planned = on_cpu(|| {
                 let entries = store.channel_entries(&channel)?;
+                let left_out = unsent_entries(&*payloads, &entries, &unsent);
                 let open = |op: &collab_types::SignedOp| {
                     let metadata = op.encryption?;
                     let ciphertext = collab_types::sealed_ciphertext(op).ok()?;
@@ -550,12 +625,13 @@ impl Compactor {
                 };
                 // Signed once the fold is known: as one sealed compaction of exactly the
                 // writes it removes where it can be, else as the snapshot's own writes.
-                let planned = plan_opening(
+                let planned = plan_leaving_out(
                     &entries,
                     &mut signatures,
                     &HashSet::new(),
                     min_tail,
                     (Some(&open), resealing),
+                    &left_out,
                     |_, _| Some(Vec::new()),
                 )
                 .1;
@@ -585,15 +661,7 @@ impl Compactor {
         .await
         .map_err(|error| error.to_string())?;
         lock(&self.0.signatures).insert((workspace_id, channel), signatures);
-        let Some((folded, frames)) = planned.map_err(|error| error.to_string())? else {
-            return Ok(true);
-        };
-        self.0
-            .folding
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.persist_fold(workspace, channel, &folded, frames)
-            .await?;
-        Ok(true)
+        planned.map_err(|error| error.to_string())
     }
 
     async fn persist_fold(
@@ -609,9 +677,15 @@ impl Compactor {
             workspace.lock().await.store.workspace_id(),
         )?;
         let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
+        let dropped: HashSet<[u8; 32]> = folded.dropped.iter().copied().collect();
         let author = self.0.cert.device_public_key;
         let outcome = owner_run(workspace, move |store| {
             store.retain_checkpoint(&identity.0, &identity.1)?;
+            // A write the record leaves for good is kept apart, as its writer signed and sealed
+            // it, before the fold takes it out of every replay.
+            if !dropped.is_empty() {
+                store.archive_entries(&channel, &|bytes| dropped.contains(&file_digest(bytes)))?;
+            }
             store.replace_channel(&channel, Some(SnapshotWrite { author, frames }), &|bytes| {
                 remove.contains(&file_digest(bytes))
             })
@@ -649,10 +723,31 @@ impl Compactor {
             workspace_id,
             channel,
             route,
-            COMPACT_TAIL_ENTRIES,
+            (COMPACT_TAIL_ENTRIES, false),
         )
         .await
         .map(drop)
+    }
+
+    /// Fold `channel` of `workspace_id`, the channel of `route` this host takes part in, without
+    /// the writes its governor finds stuck behind a change their own writer never sent
+    /// ([`ParticipantKeys::unsent`]), whatever its tail: a store that already holds such writes
+    /// (written before a page's writes waited for their record) is repaired when its host starts,
+    /// rather than at the next fold its writes bring.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(crate) async fn repair(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+    ) -> Result<(), String> {
+        let Ok(_job) = self.0.jobs.acquire().await else {
+            return Ok(());
+        };
+        self.fold_with_keys(workspace, workspace_id, channel, route, (usize::MAX, true))
+            .await
+            .map(drop)
     }
 
     /// `device` answers requests for `workspace_id` while subscribed.
@@ -935,7 +1030,29 @@ fn plan_opening(
     signatures: &mut Signatures,
     known: &HashSet<[u8; 32]>,
     min_tail: usize,
+    opening: (Option<&Opener<'_>>, bool),
+    sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
+) -> Plan {
+    plan_leaving_out(
+        entries,
+        signatures,
+        known,
+        min_tail,
+        opening,
+        &HashSet::new(),
+        sign,
+    )
+}
+
+/// [`plan_opening`], leaving the entries at `left_out` out of the record for good: writes stuck
+/// behind a change their own writer never sent. A channel holding any is due whatever its tail.
+fn plan_leaving_out(
+    entries: &[ChannelEntry],
+    signatures: &mut Signatures,
+    known: &HashSet<[u8; 32]>,
+    min_tail: usize,
     (open, reseal): (Option<&Opener<'_>>, bool),
+    left_out: &HashSet<usize>,
     sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
 ) -> Plan {
     let checked: Vec<Checked<'_>> = entries
@@ -949,8 +1066,16 @@ fn plan_opening(
     // history and authors whole, however short.
     let reseal = reseal && open.is_some() && checked.iter().any(Checked::is_cleartext);
     let readable = units(checked);
-    let folded = compaction_due(entries, &readable, min_tail, reseal)
-        .then(|| fold(entries, &readable, if reseal { 1 } else { 2 }))
+    let repair = !left_out.is_empty();
+    let folded = (repair || compaction_due(entries, &readable, min_tail, reseal))
+        .then(|| {
+            fold_leaving_out(
+                entries,
+                &readable,
+                if reseal || repair { 1 } else { 2 },
+                left_out,
+            )
+        })
         .flatten()
         .and_then(|folded| {
             let signed = sign(&folded.route, &folded.snapshot)?;
@@ -1225,20 +1350,62 @@ fn sealed_tail(checked: &[Checked<'_>], known: &HashSet<[u8; 32]>) -> Option<Rou
 pub(crate) struct Folded {
     route: Route,
     snapshot: Vec<u8>,
-    /// File digests of the entries the snapshot contains entirely.
+    /// File digests of the entries the snapshot contains entirely, and of those it leaves out of
+    /// the record for good.
     removed: Vec<[u8; 32]>,
+    /// File digests of the entries left out of the record for good: writes stuck behind a change
+    /// their own writer never sent.
+    dropped: Vec<[u8; 32]>,
+    /// Whether a readable write the fold kept waits for a change the channel lacks.
+    stuck: bool,
+}
+
+/// Where in `entries` the writes of `unsent` are, by signature.
+fn unsent_entries(
+    payloads: &dyn ShellPayloads,
+    entries: &[ChannelEntry],
+    unsent: &HashSet<collab_types::Signature>,
+) -> HashSet<usize> {
+    if unsent.is_empty() {
+        return HashSet::new();
+    }
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            payloads
+                .open_document(&entry.body)
+                .is_some_and(|(_, op)| unsent.contains(&op.signature))
+        })
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// Fold every readable unit of `entries` into one document, when it
 /// removes at least `minimum` entries. Units that depend on content the
 /// host cannot read stay out of it, and only entries whose every unit the
 /// document contains, by change hash, are removed.
+#[cfg(test)]
 fn fold(entries: &[ChannelEntry], readable: &Readable, minimum: usize) -> Option<Folded> {
+    fold_leaving_out(entries, readable, minimum, &HashSet::new())
+}
+
+/// [`fold`], with the units wholly at `left_out` neither in the document nor kept: they are
+/// removed as writes the record leaves for good.
+fn fold_leaving_out(
+    entries: &[ChannelEntry],
+    readable: &Readable,
+    minimum: usize,
+    left_out: &HashSet<usize>,
+) -> Option<Folded> {
     let units = &readable.units;
     let route = readable.route.clone()?;
+    let leaves = |unit: &Unit| {
+        !unit.entries.is_empty() && unit.entries.iter().all(|at| left_out.contains(at))
+    };
     let mut snapshots: Vec<&Vec<u8>> = Vec::new();
     let mut changes: Vec<u8> = Vec::new();
-    for unit in units {
+    for unit in units.iter().filter(|unit| !leaves(unit)) {
         match &unit.mutation {
             Some(DocumentMutation::Snapshot(bytes)) => snapshots.push(bytes),
             Some(DocumentMutation::Incremental(bytes)) => changes.extend_from_slice(bytes),
@@ -1265,18 +1432,34 @@ fn fold(entries: &[ChannelEntry], readable: &Readable, minimum: usize) -> Option
         let mut other = AutoCommit::load(bytes).ok()?;
         doc.merge_incoming(&mut other).ok()?;
     }
-    if !changes.is_empty() {
-        doc.load_incoming(&changes).ok()?;
+    // A change under a sequence of its writer that another change holds refuses the whole batch:
+    // each write is then taken on its own, and one refused stays out of the fold, kept as it is.
+    let mut refused: HashSet<usize> = HashSet::new();
+    if !changes.is_empty() && doc.load_incoming(&changes).is_err() {
+        for (at, unit) in units.iter().enumerate() {
+            if let Some(DocumentMutation::Incremental(bytes)) = &unit.mutation
+                && !leaves(unit)
+                && doc.load_incoming(bytes).is_err()
+            {
+                refused.insert(at);
+            }
+        }
     }
-    let all_applied = doc.get_missing_deps(&[]).is_empty();
+    let all_applied = refused.is_empty() && doc.get_missing_deps(&[]).is_empty();
     let folded_units: Vec<bool> = units
         .iter()
-        .map(|unit| match &unit.mutation {
+        .enumerate()
+        .map(|(at, unit)| match &unit.mutation {
+            _ if leaves(unit) => true,
+            _ if refused.contains(&at) => false,
             None => false,
             Some(DocumentMutation::Snapshot(_)) => true,
             Some(mutation) => all_applied || covered_by(&mut doc, mutation),
         })
         .collect();
+    let stuck = units.iter().zip(&folded_units).any(|(unit, folded)| {
+        !folded && matches!(unit.mutation, Some(DocumentMutation::Incremental(_)))
+    });
     let mut holders: HashMap<usize, bool> = HashMap::new();
     for (unit, folded) in units.iter().zip(&folded_units) {
         for entry in &unit.entries {
@@ -1292,10 +1475,25 @@ fn fold(entries: &[ChannelEntry], readable: &Readable, minimum: usize) -> Option
     if removed.len() < minimum {
         return None;
     }
+    let dropped = units
+        .iter()
+        .filter(|unit| leaves(unit))
+        .flat_map(|unit| &unit.entries)
+        .filter_map(|at| entries.get(*at))
+        .map(|entry| entry.digest)
+        .collect();
+    // A change that still waits is kept as its own entry: the snapshot carries only what
+    // applied, so it never hands a reader a change whose base it lacks.
+    let snapshot = doc.save_with_options(automerge::SaveOptions {
+        retain_orphans: false,
+        ..automerge::SaveOptions::default()
+    });
     Some(Folded {
         route,
-        snapshot: doc.save(),
+        snapshot,
         removed,
+        dropped,
+        stuck,
     })
 }
 

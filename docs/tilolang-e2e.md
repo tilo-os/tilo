@@ -69,8 +69,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   in Tasks' history (the workspace took it). Another is finished from its row's
   menu, opened where the row stands and run by the command a tool presses by name:
   "Complete" closes the menu and the change stands in Tasks' history too. Its
-  "Morning cleanup" is a control the desk names for
-  the window — a tool or a screen reader presses it by name — and pressed with two
+  "Morning cleanup" is a control the session names for the window by what it does —
+  Today's cleanup action, on Tasks' record — and a tool or a screen reader
+  presses it by that where it stands, whatever the header calls it: with two
   tasks done in Tasks it runs: either it files "Morning: 2 done" in Notes and clears
   the done tasks from Tasks, or it asks the person's leave first, which a headless
   session has nobody to give (the request is refused unasked, as every app's change

@@ -1,12 +1,4 @@
-//! A main column with an aside beside it, stacked on narrow windows:
-//! [`Columns`].
-//!
-//! A detail with its related facts, a document with its outline, a form with
-//! a preview: the aside keeps `metrics.inspector_width` beside the main
-//! column while the main column still has `metrics.content_min_width`; below
-//! that the aside goes under the main column at full width. The breakpoint
-//! comes from the theme, so it follows `ui_scale`; nothing is decided by the
-//! app.
+//! A main column with an aside beside it, stacked on narrow windows: [`Columns`].
 
 use std::collections::HashMap;
 
@@ -22,7 +14,6 @@ use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
 
-/// See the module docs.
 #[crate::component::not_a_component(layout, "the language's `grid` and `split`")]
 pub struct Columns {
     main: Element,
@@ -51,14 +42,12 @@ impl Columns {
         }
     }
 
-    /// The aside at the trailing edge (under the main column once stacked).
     #[must_use]
     pub fn aside(mut self, aside: Element) -> Self {
         self.aside = Some(aside);
         self
     }
 
-    /// Whether the aside stands under the main column now.
     #[must_use]
     pub fn is_stacked(&self) -> bool {
         self.stacked

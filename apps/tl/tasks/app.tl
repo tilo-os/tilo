@@ -113,7 +113,7 @@ primary action new_task(
 
 /// Starts a project.
 action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New project") {
-    tasks.projects.insert(Project(name: say("New project")))
+    tasks.projects.insert(Project(name: std.say("New project")))
 }
 
 /// Checks a task off with every task under it, or opens it again with the tasks it is under.
@@ -375,7 +375,7 @@ destructive action remove_project(tasks: Tasks, p: Project) (
 
 /// Adds a section at the end of a project's board.
 action new_section(p: Project) -> Section (icon: .plus, label: "New section") {
-    tasks.sections.insert(Section(name: say("New section"), project: p))
+    tasks.sections.insert(Section(name: std.say("New section"), project: p))
 }
 
 /// Renames a section.

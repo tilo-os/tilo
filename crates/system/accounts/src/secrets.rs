@@ -1,10 +1,4 @@
 //! General-purpose encrypted secrets and the credential broker.
-//!
-//! Applications should ask [`CredentialBroker`] for a credential instead of
-//! opening [`crate::SecretVault`] themselves. The broker requires an explicit,
-//! narrowly-scoped user decision and never returns entries for a look-alike
-//! origin. Password-manager metadata is encrypted together with the secret;
-//! there is no plaintext index leaking which services a user has accounts on.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -133,7 +127,6 @@ impl SecretItem {
     }
 }
 
-/// Typed password-manager view over the shared encrypted container.
 pub struct SecretStore {
     vault: SecretVault,
 }
@@ -179,7 +172,6 @@ impl SecretStore {
         self.vault.custody()
     }
 
-    /// Initial storage failure, if the vault needs recovery before editing.
     pub fn recovery_error(&self) -> Option<&str> {
         self.vault.recovery_error()
     }
@@ -327,7 +319,6 @@ impl SecretStore {
         matches.len()
     }
 
-    /// Revoke one exact durable application permission.
     pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
         let removed = self.remove_grants_matching(|candidate| candidate == grant) > 0;
         if removed {
@@ -336,7 +327,6 @@ impl SecretStore {
         Ok(removed)
     }
 
-    /// Revoke every durable permission held by one application.
     pub fn revoke_app_grants(&mut self, app_id: &str) -> Result<usize, BrokerError> {
         let removed = self.remove_grants_matching(|grant| grant.app_id == app_id);
         if removed > 0 {
@@ -574,7 +564,6 @@ impl CredentialBroker {
     {
         self.request_in_scope(request, None, decide)
     }
-    /// Request one native resource scope through the ordinary user decision door.
     pub fn request_scoped<F>(
         &mut self,
         request: &AccessRequest,
@@ -602,7 +591,6 @@ impl CredentialBroker {
     {
         validate_app_id(&request.app_id)?;
         validate_purpose(&request.purpose)?;
-        // A grant another process revoked or made counts from now on.
         self.store.refresh();
         if let Some(error) = self.store.recovery_error() {
             return Err(BrokerError::Storage(error.to_owned()));
@@ -645,7 +633,6 @@ impl CredentialBroker {
         Ok(Zeroizing::new(item.password))
     }
 
-    /// See what other processes saved to the vault since it was read.
     pub fn refresh(&mut self) {
         self.store.refresh();
     }
@@ -673,7 +660,6 @@ impl CredentialBroker {
         grants.into_values().collect()
     }
 
-    /// Revoke every session and durable permission held by an application.
     pub fn revoke_app(&mut self, app_id: &str) -> Result<usize, BrokerError> {
         let count = self
             .current_grants()
@@ -712,7 +698,6 @@ impl CredentialBroker {
     }
 }
 
-/// Conservative generator defaults: 20 characters and every selected class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeneratedPasswordPolicy {
     pub length: usize,

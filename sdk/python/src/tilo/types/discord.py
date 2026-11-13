@@ -287,6 +287,7 @@ class Links(TypedDict):
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
+    __surface__ = "so.tilo.discord@cb5ce9db9acc3ab4"
     @property
     def guild_id(self) -> str:
         """Read only."""

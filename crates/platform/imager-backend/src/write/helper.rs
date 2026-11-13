@@ -13,8 +13,6 @@ use std::{
 
 pub const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
 
-// Scale in integer space before conversion so even full-width byte counters
-// produce bounded progress without lossy integer-to-float casts.
 pub(super) fn progress_fraction(bytes: u64, total: u64) -> f64 {
     let scaled = u128::from(bytes.min(total))
         .saturating_mul(u128::from(u32::MAX))
@@ -23,8 +21,8 @@ pub(super) fn progress_fraction(bytes: u64, total: u64) -> f64 {
     f64::from(u32::try_from(scaled).unwrap_or(u32::MAX)) / f64::from(u32::MAX)
 }
 
-/// Serve append-only progress while retaining the privileged operation until
-/// its native transaction has completed. Existing output inodes are refused.
+/// Serves append-only progress while the privileged operation stays retained until its native
+/// transaction completes; an existing output inode is refused.
 pub fn serve_helper(
     progress_path: &Path,
     cancel_path: &Path,
@@ -53,7 +51,6 @@ pub fn serve_helper(
     Ok(i32::from(!result.is_success()))
 }
 
-/// Digest-checked transport payload, not yet admitted by application policy.
 pub struct AuthorizedHelperRequest {
     pub bytes: Vec<u8>,
     pub progress_path: PathBuf,
@@ -61,7 +58,8 @@ pub struct AuthorizedHelperRequest {
     pub caller_uid: Option<u32>,
 }
 
-/// Read only the authenticated user's private request and check its signed-in
+/// Reads only the authenticated user's private request and checks its signing process's digest
+/// before deserializing request fields.
 /// process's digest before deserializing any application-owned request fields.
 pub fn read_authorized_helper_request(
     args: &[String],
@@ -115,14 +113,12 @@ pub fn read_authorized_helper_request(
     }))
 }
 
-/// Reviewed source identity carried to the elevation boundary.
 pub struct ReviewedSource {
     pub path: PathBuf,
     pub size: u64,
     pub identity: Option<SourceIdentity>,
 }
 
-/// Wire phases deliberately retain the existing helper JSON representation.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum HelperPhase {
     #[default]
@@ -133,7 +129,7 @@ pub enum HelperPhase {
     Failed,
 }
 
-/// Secret-free progress snapshots crossing the native helper boundary.
+/// Secret-free progress snapshots crossing the helper boundary.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HelperProgress {
     pub phase: HelperPhase,
@@ -144,16 +140,10 @@ pub struct HelperProgress {
     pub error: Option<String>,
 }
 
-// `Start-Process` flattens its `ArgumentList` into a native command line. A
-// literal double quote must therefore surround each path so spaces remain in
-// the same argv element when the elevated process starts. PowerShell's
-// single-quoted `'"'` is exactly one double-quote character; `\"` would be a
-// backslash followed by a quote and would not group the path.
 #[cfg(any(test, feature = "test-support", target_os = "windows"))]
 pub const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--tilo-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
 
 #[cfg(not(target_os = "linux"))]
-/// Read a bounded helper request on platforms without Linux caller authentication.
 pub fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
     let mut file = OpenOptions::new().read(true).open(path)?;
     let mut bytes = Vec::new();
@@ -164,7 +154,7 @@ pub fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-/// Read a bounded request from a directory private to the authenticated caller.
+/// Reads a bounded request from a directory private to the authenticated caller.
 pub fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u32)> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
@@ -225,7 +215,6 @@ pub fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u3
     Ok((bytes, caller_uid))
 }
 
-/// Validate the fixed filenames within one private helper job directory.
 pub fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::Result<()> {
     let request_parent = request
         .parent()
@@ -253,10 +242,8 @@ pub fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> 
     Ok(())
 }
 
-/// Bind a root helper to authority the authenticated desktop process already
-/// possessed. `pkexec` preserves stdin, which the unprivileged process opens
-/// on the reviewed image before elevation. The helper therefore never opens a
-/// caller-named source path with root authority.
+/// Binds a root helper to authority the authenticated desktop process already had: `pkexec` keeps
+/// stdin, so the helper never opens a caller-named source path with root authority.
 #[cfg(target_os = "linux")]
 pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path::PathBuf> {
     if rustix::process::geteuid().as_raw() != 0 {
@@ -285,12 +272,11 @@ pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path
     Ok("/proc/self/fd/0".into())
 }
 
-/// Create a progress output without overwriting an existing inode.
+/// Refuses to overwrite an existing inode.
 pub fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
 
-/// Launch and supervise one digest-bound, already secret-stripped request.
 pub fn run_privileged_helper(
     source: &ReviewedSource,
     request_bytes: &[u8],
@@ -360,7 +346,7 @@ pub fn helper_executable() -> io::Result<std::path::PathBuf> {
     std::env::current_exe()
 }
 
-/// Relay progress and retain child supervision even on channel failure.
+/// Relays progress and keeps supervising the child even when the channel fails.
 pub fn relay_helper_progress(
     child: &mut Child,
     progress_path: &Path,
@@ -376,10 +362,8 @@ pub fn relay_helper_progress(
         on_progress,
     );
     if result.is_err() {
-        // Never abandon an elevated raw-device writer merely because its
-        // unprivileged progress channel failed. Keeping the private job
-        // directory alive and waiting for the child prevents the UI from
-        // claiming the operation stopped while destructive I/O may continue.
+        // Never abandon an elevated raw-device writer because its progress channel failed: waiting
+        // for the child stops the UI claiming the operation ended while destructive I/O continues.
         let _ = child.wait();
     }
     result
@@ -394,9 +378,8 @@ fn relay_helper_progress_inner(
 ) -> io::Result<()> {
     let mut cancel_sent = false;
     let file = loop {
-        // A transient filesystem error must not detach supervision from a
-        // privileged writer. Leave `cancel_sent` false and retry on the next
-        // poll; the UI conservatively rejects a racing Success event too.
+        // A transient filesystem error must not detach supervision from a privileged writer: keep
+        // `cancel_sent` false and retry on the next poll.
         let _ = relay_cancellation(should_cancel, cancel_path, &mut cancel_sent);
         match OpenOptions::new().read(true).open(progress_path) {
             Ok(file) => break file,
@@ -438,7 +421,6 @@ fn relay_helper_progress_inner(
             line.clear();
         }
         if let Some(status) = child.try_wait()? {
-            // Consume bytes written between the last EOF observation and exit.
             while reader.read_line(&mut line)? != 0 {
                 if let Ok(progress) = serde_json::from_str::<HelperProgress>(line.trim_end()) {
                     terminal |=
@@ -447,9 +429,8 @@ fn relay_helper_progress_inner(
                 }
                 line.clear();
             }
-            // A helper that reported a detailed Failed terminal event exits
-            // non-zero by design. Do not overwrite that useful explanation
-            // with a second generic event merely because of its exit status.
+            // A helper that reported a detailed Failed event exits non-zero by design; keep that
+            // explanation instead of adding a generic event.
             if !terminal {
                 on_progress(HelperProgress {
                     phase: HelperPhase::Failed,
@@ -489,7 +470,6 @@ pub fn relay_cancellation(
     Ok(())
 }
 
-/// Construct the platform elevation command without launching it.
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -517,7 +497,6 @@ pub fn elevated_helper_command(
     Ok(command)
 }
 
-/// Construct the platform elevation command without launching it.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -551,7 +530,6 @@ end run"#;
     Ok(command)
 }
 
-/// Construct the platform elevation command without launching it.
 #[cfg(target_os = "windows")]
 #[allow(
     clippy::unnecessary_wraps,
@@ -566,8 +544,7 @@ pub fn elevated_helper_command(
     source: std::fs::File,
 ) -> io::Result<Command> {
     drop(source);
-    // Values are positional PowerShell arguments, never interpolated into the
-    // script. ArgumentList receives individually quoted native arguments.
+    // Values are positional arguments, never interpolated into the script.
     let mut command = Command::new("powershell.exe");
     command
         .args([
@@ -587,7 +564,6 @@ pub fn elevated_helper_command(
     Ok(command)
 }
 
-/// Construct an elevation command on other platforms.
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub fn elevated_helper_command(
     _exe: &Path,

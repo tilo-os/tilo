@@ -122,7 +122,7 @@ calendar-sync-running = Kalender werden abgeglichen …
 calendar-sync-running-short = Abgleich läuft …
 calendar-sync-synced = { $calendars } Kalender und { $events } Ereignisse abgeglichen.
 calendar-sync-offline = Offline. Änderungen werden abgeglichen, sobald du wieder verbunden bist.
-calendar-sync-conflict = 1 Änderung wurde auch auf dem Server geändert; deine Fassung ist sicher und bleibt eingereiht.
+calendar-sync-conflict = Eine Änderung wurde auch auf dem Server bearbeitet. Deine Fassung bleibt erhalten und wird später abgeglichen.
 calendar-sync-failed = Abgleich fehlgeschlagen
 calendar-sync-failed-hint = Abgleich fehlgeschlagen. Prüfe das Konto in den Einstellungen und gleiche dann erneut ab.
 calendar-sync-error = Abgleich fehlgeschlagen: { $reason }. Prüfe das Konto in den Einstellungen und gleiche dann erneut ab.
@@ -132,7 +132,7 @@ calendar-sync-no-accounts = Noch keine Kalenderkonten. Füge eines in den Einste
 calendar-account-gone = Dieses Kalenderkonto ist nicht mehr eingerichtet
 calendar-invite-address-required = Gib eine vollständige E-Mail-Adresse ein, etwa name@example.com
 calendar-invite-already = { $email } ist bereits eingeladen
-calendar-invite-added = { $email } hinzugefügt. Bereite die Einladung in Mail vor, um sie zu senden.
+calendar-invite-added = { $email } hinzugefügt. Sende die Einladung in Mail.
 calendar-invite-prepared = Einladung für Mail vorbereitet. Prüfe sie dort, bevor du sie sendest.
 calendar-export-empty = Noch nichts zu exportieren
 calendar-exported = { $events } Ereignisse und { $tasks } Aufgaben exportiert
@@ -249,6 +249,47 @@ calendar-editor-alert = Erinnerung
 calendar-editor-time-zone = Zeitzone
 calendar-editor-priority = Priorität
 
+## Die Zeilen der Auswahlfelder im Editor
+calendar-no-project = Kein Projekt
+calendar-time-zone-floating = Keine Zeitzone
+calendar-alert-none = Keine Erinnerung
+calendar-alert-at-start = Zum Beginn
+calendar-alert-minutes-before = { $count ->
+    [one] 1 Minute vorher
+   *[other] { $count } Minuten vorher
+}
+calendar-alert-hours-before = { $count ->
+    [one] 1 Stunde vorher
+   *[other] { $count } Stunden vorher
+}
+calendar-alert-days-before = { $count ->
+    [one] 1 Tag vorher
+   *[other] { $count } Tage vorher
+}
+calendar-repeat-none = Wiederholt sich nicht
+calendar-repeat-weekdays = Jeden Wochentag
+calendar-repeat-every-days = { $count ->
+    [one] Jeden Tag
+   *[other] Alle { $count } Tage
+}
+calendar-repeat-every-weeks = { $count ->
+    [one] Jede Woche
+   *[other] Alle { $count } Wochen
+}
+calendar-repeat-every-months = { $count ->
+    [one] Jeden Monat
+   *[other] Alle { $count } Monate
+}
+calendar-repeat-every-years = { $count ->
+    [one] Jedes Jahr
+   *[other] Alle { $count } Jahre
+}
+calendar-repeat-times = { $count ->
+    [one] { $recurrence }, einmal
+   *[other] { $recurrence }, { $count } Mal
+}
+calendar-repeat-until = { $recurrence } bis { $day }
+
 ## Die Plätze der Fensterleiste
 calendar-views = Ansicht
 calendar-previous-month = Voriger Monat
@@ -259,7 +300,7 @@ calendar-open-settings = Einstellungen öffnen
 ## Der Hinweis im leeren Notizfeld eines Termins
 calendar-notes-placeholder = Notizen hinzufügen
 
-## A new event's empty fields
+## Die leeren Felder eines neuen Termins
 calendar-title-placeholder = Neuer Termin
 
 ## Actions
@@ -301,3 +342,23 @@ calendar-calendar-drop-remote-item = Vom Server Gelöschtes entfernen
 calendar-calendar-server-applied = Hochgeladene Änderungen erfassen
 calendar-calendar-server-removed = Löschung auf dem Server erfassen
 calendar-calendar-pulled = Abgerufene Änderungen erfassen
+
+## Die Zeilenbeschriftungen der Termin- und Aufgabenformulare
+calendar-field-starts = Beginn
+calendar-field-ends = Ende
+calendar-field-all-day = Ganztägig
+calendar-field-location = Ort
+calendar-field-calendar = Kalender
+calendar-field-repeat = Wiederholung
+calendar-field-alert = Erinnerung
+calendar-field-time-zone = Zeitzone
+calendar-field-colour = Farbe
+calendar-field-guests = Gäste
+calendar-field-due = Fälligkeit
+calendar-field-priority = Priorität
+calendar-field-project = Projekt
+calendar-field-subtasks = Teilaufgaben
+calendar-field-no-due-date = Fälligkeit hinzufügen
+
+## What the app is called in a window and in the launcher
+calendar-app-title = Kalender

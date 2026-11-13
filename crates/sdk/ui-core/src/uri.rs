@@ -1,25 +1,6 @@
-//! Percent-decoding for URIs, with the `+` question answered once.
-//!
-//! Both answers are right — for different inputs, which is exactly why a single
-//! blanket rule would have been wrong:
-//!
-//! * In `application/x-www-form-urlencoded` data — HTML form submissions, and
-//!   the query strings browsers and OAuth providers build from them — `+`
-//!   **is** an encoded space. That encoding is defined by the URL living
-//!   standard, not by RFC 3986. Use [`parse_form_query`].
-//!
-//! * Everywhere else in a URI — path segments, and query strings that are not
-//!   form data — RFC 3986 gives `+` no special meaning: it is a literal plus.
-//!   Decoding it as a space corrupts `Google+`, `C++`, and a leading `+` on a
-//!   phone number. Use [`decode`].
-//!
-//! Pick per call site by asking what produced the string, not by what it looks
-//! like.
-//!
-//! Encoding has one answer: [`encode_component`] escapes everything but the
-//! RFC 3986 unreserved set, so its output is a valid path segment, query key
-//! or query value, and a space always becomes `%20` (never `+`), which both
-//! decoders read back as a space.
+//! Percent-decoding for URIs, with the `+` question answered once. Both answers are right
+//! — for different inputs, which is exactly why a single blanket rule would have been
+//! wrong.
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 
@@ -31,35 +12,22 @@ const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
-/// Percent-encode a URI component: every byte outside the RFC 3986
-/// unreserved set becomes an upper-case `%XX` escape of its UTF-8 encoding.
-///
-/// Safe for a query key or value (in a plain or form-encoded query), and for
-/// a single path segment.
+/// Percent-encode a URI component: every byte outside the RFC 3986 unreserved set becomes
+/// an upper-case `%XX` escape of its UTF-8 encoding.
 pub fn encode_component(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, COMPONENT).to_string()
 }
 
-/// Percent-decode a URI component per **RFC 3986**: `%XX` escapes are decoded
-/// and `+` is left as a literal plus.
-///
-/// This is the right rule for path segments and for query strings that are not
-/// form data (an `otpauth://` key URI, a `file://` path, a media type).
-///
-/// Invalid UTF-8 in the decoded bytes is replaced rather than erroring, and a
-/// malformed escape (`%2`, `%zz`) is passed through verbatim — robustness over
-/// strictness, since these strings come from other people's encoders.
+/// Percent-decode a URI component per **RFC 3986**: `%XX` escapes are decoded and `+` is
+/// left as a literal plus.
 pub fn decode(s: &str) -> String {
     percent_encoding::percent_decode_str(s)
         .decode_utf8_lossy()
         .into_owned()
 }
 
-/// Parse an `application/x-www-form-urlencoded` query string into its
-/// key/value pairs, decoding `%XX` escapes **and** `+` as a space.
-///
-/// This is the right rule for anything a browser or an HTML form produced —
-/// including an OAuth provider's redirect back to a loopback listener.
+/// Parse an `application/x-www-form-urlencoded` query string into its key/value pairs,
+/// decoding `%XX` escapes **and** `+` as a space.
 pub fn parse_form_query(query: &str) -> Vec<(String, String)> {
     form_urlencoded::parse(query.as_bytes())
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -95,8 +63,6 @@ mod tests {
     #[test]
     fn rfc3986_decode_keeps_plus_literal_and_malformed_escapes() {
         for (input, want) in [
-            // A `+` in a path or a non-form query is a literal plus; treating
-            // it as a space corrupts real names.
             ("my+song.mp3", "my+song.mp3"),
             ("Google+", "Google+"),
             ("C++", "C++"),
@@ -123,8 +89,6 @@ mod tests {
                 .collect()
         };
         for (query, want) in [
-            // A browser encodes a submitted space as `+`, so an OAuth `state`
-            // really does mean a space here.
             (
                 "code=abc+def&state=x+y",
                 pairs(&[("code", "abc def"), ("state", "x y")]),
@@ -150,7 +114,6 @@ mod tests {
             parse_form_query("f=my+song.mp3"),
             vec![("f".into(), "my song.mp3".into())]
         );
-        // And they agree on everything that is not a bare plus.
         assert_eq!(decode("caf%C3%A9"), "café");
         assert_eq!(parse_form_query("f=caf%C3%A9")[0].1, "café");
     }

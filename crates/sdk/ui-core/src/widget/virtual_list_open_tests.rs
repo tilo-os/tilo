@@ -9,7 +9,6 @@ use super::*;
 
 use crate::testing::Dispatch;
 
-/// A model whose even rows carry a document of their own: they open where they stand.
 struct Opens {
     rows: Vec<u64>,
 }
@@ -55,8 +54,6 @@ fn list(opened: Rc<RefCell<Vec<u64>>>) -> VirtualList<Opens> {
     .on_activate(move |key| opened.borrow_mut().push(key))
 }
 
-/// The list with what the host hears of the item standing open: the rows it opened and the
-/// count of times one closed.
 fn heard_list() -> (VirtualList<Opens>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) {
     let opens: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let closes = Rc::new(Cell::new(0));
@@ -93,15 +90,12 @@ fn the_host_hears_the_item_the_person_opened_and_told_when_it_closed() {
     assert_eq!(*opens.borrow(), vec![0], "the host hears the item open");
     assert_eq!(closes.get(), 0);
 
-    // Pressing the row standing open closes it, and the host hears that too.
     list.activate_key(0);
     assert_eq!(list.open_row(), None);
     assert_eq!(closes.get(), 1);
 
-    // A row opened from the host shows the same: what the person opened, the list keeps.
     list.activate_key(2);
     assert_eq!(*opens.borrow(), vec![0, 2]);
-    // Escape closes it, heard once.
     assert!(
         Dispatch::new()
             .layout(&taffy, node)
@@ -118,8 +112,6 @@ fn the_host_hears_the_item_the_person_opened_and_told_when_it_closed() {
 fn an_item_a_host_holds_open_stands_open_where_it_stands() {
     let (mut list, _opens, _closes) = heard_list();
     let _ = lay_out(&mut list, 300.0);
-    // What a host keeps and gives back: the item it holds open is the row standing open, and a
-    // row without a document it names opens nowhere, so no row stands open.
     list.set_open(Some(4));
     assert_eq!(list.open_row(), Some(&4));
     list.set_open(Some(1));
@@ -157,11 +149,9 @@ fn a_row_with_a_document_opens_where_it_stands_and_the_host_hears_nothing() {
         "a row that opens elsewhere leaves the open one open"
     );
 
-    // One row at a time: the next one to open closes the one before it.
     list.activate_key(2);
     assert_eq!(list.open_row(), Some(&2));
 
-    // Escape closes the document and leaves the list where it was.
     assert!(
         Dispatch::new()
             .layout(&taffy, node)
@@ -217,7 +207,6 @@ fn the_row_that_opens_grows_into_its_document_and_keeps_the_list_laying_out() {
         "a closed row stands at its row"
     );
 
-    // A press on the row opens it, and the row grows into its document on the frames after.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     list.activate_key(0);
     let _ = lay_out(&mut list, 300.0);
@@ -232,8 +221,6 @@ fn the_row_that_opens_grows_into_its_document_and_keeps_the_list_laying_out() {
     );
 }
 
-/// A model whose app names its rows again as a whole, as it does when the list is read anew:
-/// the keys go until it answers with the ones it reads now.
 struct Renamed {
     rows: Rc<RefCell<Vec<u64>>>,
 }
@@ -258,7 +245,6 @@ impl ListModel for Renamed {
     }
 }
 
-/// A list over rows the test names again, and what the host hears of the open row.
 fn renamed_list() -> (VirtualList<Renamed>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) {
     let rows: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new((0..6_u64).collect()));
     let closes = Rc::new(Cell::new(0));
@@ -301,7 +287,6 @@ fn a_row_named_again_keeps_standing_open_while_the_rows_come_back() {
     );
     assert_eq!(closes.get(), 0, "a row named again is not heard to close");
 
-    // They arrive with the row where it stood, under the key it had: it goes on standing open.
     rows.borrow_mut().extend(0..6_u64);
     list.notify_model_changes(&[ListModelChange::RowsChanged {
         keys: (0..6_u64).collect(),
@@ -350,7 +335,6 @@ fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
         vec![0],
         "the press opens the item in front, where the host shows it"
     );
-    // A list with the room to hold the item opens it where it stands.
     let opened = Rc::new(RefCell::new(Vec::new()));
     let mut roomy = list(Rc::clone(&opened));
     let _ = lay_out(&mut roomy, 300.0);
@@ -359,7 +343,6 @@ fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
     assert!(opened.borrow().is_empty());
 }
 
-/// A list whose even rows carry a document, drawn as the row standing open into it draws it.
 fn opening_list() -> VirtualList<Opens> {
     VirtualList::with_selection_delegate(
         Opens {
@@ -383,9 +366,6 @@ fn opening_list() -> VirtualList<Opens> {
     .with_viewport_height(200.0)
 }
 
-/// The row standing open into its item is the item, and a reader is handed it once: the box that
-/// took the row's place names the same row, so the item's controls stand under the row rather
-/// than under a second row of the same item.
 #[test]
 fn the_row_standing_open_is_handed_to_a_reader_once() {
     let mut list = opening_list();
@@ -413,8 +393,6 @@ fn the_row_standing_open_is_handed_to_a_reader_once() {
     );
 }
 
-/// The document an item opens into where its row stands: the field its title is typed in, the
-/// page under it, the box that ticks it off and the button that saves it.
 fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
     use crate::widget::{Button, Checkbox, Column, TextInput};
     Box::new(
@@ -442,7 +420,6 @@ fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
     )
 }
 
-/// A list whose even rows open the item into a document of its own where they stand.
 fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> VirtualList<Opens> {
     VirtualList::with_selection_delegate(
         Opens {
@@ -468,9 +445,6 @@ fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Vir
     .with_viewport_height(400.0)
 }
 
-/// An item open where its row stands hands a reader the fields that edit it: the title, the
-/// page, the box that ticks it off and the buttons, each under the row it is in and where it is
-/// drawn, and each operated as an assistive technology operates it.
 #[test]
 fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
     use crate::a11y::Action;
@@ -526,7 +500,6 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
         );
     }
 
-    // The keyboard reaches the same controls, in the same order a reader is handed them.
     let stops: Vec<(crate::a11y::Role, Option<String>)> = harness
         .tab_through()
         .into_iter()
@@ -551,7 +524,6 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
         "the keyboard reaches what the row holds, in reading order"
     );
 
-    // The box ticks, and the row says so.
     harness
         .perform_a11y_action(checkbox, &Action::Activate)
         .expect("the box is operated");
@@ -565,14 +537,12 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
     );
     assert!(done.with(|checked| *checked), "the box's value is ticked");
 
-    // The button is pressed.
     let (button, _) = named(&nodes, AkRole::Button, "Save");
     harness
         .perform_a11y_action(button, &Action::Activate)
         .expect("the button is pressed");
     assert_eq!(saved.get(), 1, "the press reaches the button");
 
-    // The page is written to.
     let nodes = harness.a11y_nodes();
     let (page, _) = named(&nodes, AkRole::MultilineTextInput, "Notes");
     harness

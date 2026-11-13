@@ -1,22 +1,6 @@
 //! Offscreen renders of the [`UndoButton`] pair in every availability state,
 //! in **both** light and dark, for self-inspection without opening a window.
-//!
-//! Drives the real pipeline (`sync` → `build_layout` → `compute_layout` →
-//! `apply_layout` → `draw`) over a real [`State`] whose history was built by real
-//! committed actions, and publishes the status through the same
-//! `State::undo_status` → `UndoControl::set_undo_status` route the host uses — so
-//! what is painted here is what a user sees.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- undo_controls_shots`
-//! Out: `$UNDO_SHOTS_OUT` (default `/tmp/undo_controls_shots`) —
-//!       undo-{dark,light}-{empty,undoable,redoable,hovered}.png
-//!
-//!   * `empty`    — a fresh document: both controls dimmed and inert.
-//!   * `undoable` — one action performed: Undo live, Redo still dimmed.
-//!   * `redoable` — that action undone: Undo dimmed, Redo live.
-//!   * `hovered`  — pointer on the icon Undo, keyboard focus on the labelled
-//!     one: the two interactive states, both on controls that can actually
-//!     act (a control the host would never focus must never look focused).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

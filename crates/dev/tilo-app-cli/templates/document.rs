@@ -10,9 +10,8 @@ pub struct Document {
 
 /// Each field is edited at its path (`Document::paths().title`); the verbs
 /// are what one field edit cannot say.
-#[resource(kind = "generated.document", label = "Document")]
+#[resource(kind = "generated.document")]
 impl Document {
-    /// Replace the title and body in one undo step.
     #[action]
     pub fn set_content(
         &mut self,
@@ -42,7 +41,6 @@ impl ResourceApp for App {
         Some(&crate::locales::CATALOG)
     }
 
-    /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
         if document.title.trim().is_empty() {
             crate::locales::CATALOG.t("document-untitled")

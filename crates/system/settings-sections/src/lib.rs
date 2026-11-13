@@ -24,7 +24,6 @@ pub mod shortcuts;
 /// which a change is admitted.
 pub const APP_ID: &str = "so.tilo.settings";
 
-/// The app's title, which the person's steps on their sections name.
 pub const APP_TITLE: &str = "Settings";
 
 /// Bring a section's record of version 1 up to 2: the leaves another section
@@ -49,7 +48,6 @@ pub(crate) fn leaves_moved_out(
 /// [`kept`] lists.
 macro_rules! sections {
     ($($section:ty),* $(,)?) => {
-        /// Declare every section the session keeps.
         pub fn declare(records: &mut ui::framework::Records<'_>) {
             records$(.settings::<$section>())*;
         }

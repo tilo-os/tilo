@@ -1,11 +1,11 @@
-//! The desktop's appearance preferences: light or dark, the accent colour,
-//! and the increased-contrast and reduced-motion accessibility options.
-//! [`System`] reads them from this target's own source:
+//! The desktop's appearance preferences: light or dark, the accent colour, and the
+//! increased-contrast and reduced-motion options. [`System`] reads them from this
+//! target's own source:
 //!
 //! | Target | Source |
 //! |---|---|
 //! | Linux | the XDG Settings portal's `org.freedesktop.appearance`, followed live |
-//! | macOS | the chosen accent colour and the accessibility display options, re-read on [`System::refresh`] |
+//! | macOS | the accent colour and accessibility options, re-read on [`System::refresh`] |
 //! | elsewhere | nothing: every preference is unset |
 //!
 //! On macOS and Windows light or dark belongs to the window system (winit's
@@ -52,7 +52,6 @@ impl System {
         }
     }
 
-    /// Re-reads what the platform reports only when asked.
     pub fn refresh(&mut self) {
         #[cfg(target_os = "macos")]
         {

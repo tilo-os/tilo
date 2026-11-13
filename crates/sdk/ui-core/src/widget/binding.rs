@@ -1,10 +1,4 @@
 //! Where a control's value lives.
-//!
-//! A value control (checkbox, toggle, slider, dropdown) presents one value and
-//! reads its value through a [`ValueBinding`]. The toolkit ships the
-//! process-local binding ([`LocalState`](crate::LocalState)); a model layer
-//! supplies bindings into its own model, such as a key in the app document
-//! ([`crate::doc_source`]). The control never reads the model itself.
 
 use super::{AppModel, ModelPath};
 
@@ -25,17 +19,14 @@ pub trait ValueBinding<T> {
     fn pull(&mut self, model: &AppModel, path: &ModelPath) -> Pulled<T>;
 
     /// Publish a value the app set programmatically, with no model at hand.
-    /// Bindings into a shared model ignore it: the app edits the model and
-    /// the next pull presents the result.
     fn publish(&mut self, _value: &T) {}
 
-    /// [`Self::publish`] when `equal` says the value differs from the one
-    /// the binding holds: a colour published from a picker's own floats is
-    /// the one it was given.
+    /// [`Self::publish`] when `equal` says the value differs from the one the binding holds: a colour
+    /// published from a picker's own floats is the one it was given.
     fn publish_by(&mut self, _value: &T, _equal: fn(&T, &T) -> bool) {}
 
-    /// The document key this binding reads, reported to the action
-    /// directory as the control's collaborative binding.
+    /// The document key this binding reads, reported to the action directory as the control's
+    /// collaborative binding.
     fn document_key(&self) -> Option<&str> {
         None
     }
@@ -66,8 +57,8 @@ pub(crate) fn local<T: Clone + PartialEq + 'static>(
     (value, Box::new(binding))
 }
 
-/// What `derive` makes of `state` ("the draft parses"), followed as
-/// `state` changes: the value now, and its binding.
+/// What `derive` makes of `state` ("the draft parses"), followed as `state` changes: the value now,
+/// and its binding.
 pub(crate) fn derived<S: Clone + 'static, T: 'static>(
     state: &crate::LocalState<S>,
     derive: impl Fn(&S) -> T + 'static,

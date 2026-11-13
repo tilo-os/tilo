@@ -3,16 +3,11 @@
 //! real transient, enforcing system service, for the development VM's code
 //! refresh loop ([`crate::code_refresh`]).
 //!
-//! `tilo-install --dev-code-refresh-probe` execs it after its own development
-//! VM guards. It prints one JSON row: the `SELinux` domain, the runtime tools
-//! the development target UKI may use, the digest of the compiled profile
-//! resolver, the backend's own digest, and with `--cached-target` the result
-//! of validating an attached original CI boot-input fixture.
-//!
-//! The fixture (`os/dev/make-installer-probe-fixture.py`) is a read-only
-//! virtio disk holding a tar of boot inputs and a `fixture.json` manifest.
-//! It is development evidence, never CI, release or physical admission
-//! authority.
+//! `tilo-install --dev-code-refresh-probe` execs it after its own development VM
+//! guards. It prints one JSON row: the `SELinux` domain, the runtime tools the
+//! development target UKI may use, the digest of the compiled profile
+//! resolver, the backend's own digest and, with `--cached-target`, the result of
+//! validating an attached CI boot-input fixture.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -40,20 +35,17 @@ const MAX_TOTAL_BYTES: u64 = 512 * MIB;
 const MANIFEST_BYTES: u64 = 16384;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Where the cached-target probe finds its fixture and validator. The
-/// provided methods are the production behaviour; tests replace them.
+/// Where the cached-target probe finds its fixture and validator. The provided
+/// methods are the production behaviour; tests replace them.
 pub trait Fixture {
-    /// The read-only fixture disk.
     fn device(&self) -> PathBuf {
         PathBuf::from("/dev/disk/by-id/virtio-tilo-code-fixture")
     }
 
-    /// The kernel's block device directory.
     fn sys_block(&self) -> PathBuf {
         PathBuf::from("/sys/class/block")
     }
 
-    /// Where the fixture is unpacked for the duration of the probe.
     fn scratch(&self) -> PathBuf {
         PathBuf::from("/run")
     }
@@ -80,17 +72,11 @@ pub trait Fixture {
     }
 
     /// The selected image's boot inputs, as `validate-image` checks them.
-    ///
-    /// # Errors
-    /// See [`dev_target_uki::image_inputs`].
     fn validate(&self, root: &Path) -> Result<Inputs> {
         dev_target_uki::image_inputs(&dev_target_uki::System, root)
     }
 
     /// The target UKI promotion, as `promote` writes it.
-    ///
-    /// # Errors
-    /// See [`dev_target_uki::promote`].
     fn promote(
         &self,
         image_root: &Path,
@@ -107,13 +93,11 @@ pub trait Fixture {
         )
     }
 
-    /// The validator whose digest the result names.
     fn validator(&self) -> PathBuf {
         PathBuf::from(RESOLVER)
     }
 }
 
-/// The development VM as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -136,11 +120,8 @@ fn le_u32(data: &[u8], at: usize) -> Option<usize> {
 }
 
 /// A PE image with its one `.cmdline` section's bytes and virtual size
-/// zeroed: what a command-line-only rewrite must leave unchanged.
-///
-/// # Errors
-/// Not a PE image, an unbounded section table, or not exactly one bounded
-/// `.cmdline` section.
+/// zeroed: what a command-line-only rewrite must leave unchanged. A signed
+/// image, a different section table or a second `.cmdline` is refused.
 pub fn non_cmdline_bytes(raw: &[u8]) -> Result<Vec<u8>> {
     let mut data = raw.to_vec();
     require(
@@ -204,8 +185,8 @@ fn text_field<'a>(metadata: &'a Map<String, Value>, key: &str) -> Option<&'a str
         .filter(|text| (1..=16384).contains(&text.chars().count()))
 }
 
-/// Promotes the fixture's sealed UKI onto a scratch target and ESP and
-/// requires only its command line to change.
+/// Promotes the fixture's sealed UKI onto a scratch target and ESP and requires
+/// only its command line to change.
 pub fn promotion_probe(
     fixture: &dyn Fixture,
     root: &Path,
@@ -307,8 +288,6 @@ fn device_sha256(device: &Path) -> Result<String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-/// Unpacks the fixture archive below `root`: each file's SHA-256 by name,
-/// and the parsed `fixture.json`.
 fn unpack(device: &Path, root: &Path) -> Result<(BTreeMap<String, String>, Option<Value>)> {
     let mut seen = BTreeSet::new();
     let mut files: BTreeMap<String, String> = BTreeMap::new();
@@ -355,9 +334,6 @@ fn unpack(device: &Path, root: &Path) -> Result<(BTreeMap<String, String>, Optio
     Ok((files, manifest))
 }
 
-/// Validates the attached original CI boot-input fixture: read-only,
-/// bounded, every file matching its manifest, and its boot inputs accepted
-/// by the development target validator.
 pub fn fixture_probe(fixture: &dyn Fixture) -> Result<Value> {
     let device = fixture.device();
     require(
@@ -439,12 +415,6 @@ pub fn fixture_probe(fixture: &dyn Fixture) -> Result<Value> {
     )
 }
 
-/// The cached-target probe: only in the development scenario VM, and only
-/// with the original CI boot-input fixture attached.
-///
-/// # Errors
-/// Outside the development VM, without the fixture, or see
-/// [`fixture_probe`].
 pub fn cached_target(fixture: &dyn Fixture) -> Result<Value> {
     let flavour = fs::read("/usr/lib/tilo/image-flavour").unwrap_or_default();
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
@@ -478,7 +448,6 @@ pub fn cached_target(fixture: &dyn Fixture) -> Result<Value> {
     fixture_probe(fixture)
 }
 
-/// The first executable `name` on `PATH`, as `shutil.which` finds it.
 fn which(name: &str) -> Value {
     std::env::var_os("PATH")
         .and_then(|path| {
@@ -494,10 +463,6 @@ fn which(name: &str) -> Value {
         })
 }
 
-/// The probe row for the backend at `backend`.
-///
-/// # Errors
-/// Not running in the enforcing system service, or see [`cached_target`].
 pub fn probe(backend: &Path, cached: bool) -> Result<Value> {
     let context = fs::read_to_string("/proc/self/attr/current").unwrap_or_default();
     let context = context.trim().trim_matches('\0').to_owned();
@@ -535,7 +500,6 @@ pub fn probe(backend: &Path, cached: bool) -> Result<Value> {
     )
 }
 
-/// `code-refresh-probe BACKEND [--cached-target]`.
 #[must_use]
 pub fn main(args: &[OsString]) -> ExitCode {
     let (backend, cached) = match args {

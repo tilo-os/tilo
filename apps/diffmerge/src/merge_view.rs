@@ -1,11 +1,5 @@
-//! Three-way merge view.
-//!
-//! Top band: three columns — base / ours / theirs — rendered hunk-by-hunk so a
-//! conflict shows the same vertical span across all three. Conflicts get
-//! per-hunk action chips (take ours / take theirs / take both). Bottom band:
-//! the merged result, the record's text, which every collaborator edits
-//! through a [`TextControl`] at its path. Clicking an action chip submits the hunk's
-//! resolution, which recomposes the merged result.
+//! The three-way merge: base, ours and theirs hunk by hunk, with a resolution chip on each
+//! conflict, and the merged result below, the record's text every collaborator edits.
 
 use std::collections::HashMap;
 use ui::widget::TaffyTreeExt;
@@ -42,26 +36,18 @@ use crate::pane::{self, CodeMetrics};
 use crate::resource::session;
 use crate::scroll::{HScroll, wheel_pixels};
 
-/// Row metrics measured from the renderer the panel paints with.
-///
-/// Refreshed at the top of every draw; hunk spans, scrolling, resolution hit
-/// rects, the accessibility export and the paint all read this one snapshot,
-/// so a text-scale change moves rows, controls and the merged band together
-/// instead of letting large glyphs overprint small rows.
+/// Row metrics measured from the renderer, refreshed at the top of every draw so spans,
+/// scroll, hit rects, accessibility and paint share one snapshot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Metrics {
     code: CodeMetrics,
-    /// Height of the segmented resolution control.
     strip_h: f64,
-    /// Height of a status badge.
     badge_h: f64,
-    /// Band the merged result's title sits in.
     merged_header_h: f64,
     /// Below this width three code panes cease to be readable. Keep one full
     /// source pane and make switching sources explicit instead of merely
     /// squeezing desktop geometry into a phone.
     breakpoint: f64,
-    /// Space between a hunk's rows and its resolution controls, and after.
     gap: f64,
 }
 
@@ -83,7 +69,6 @@ impl Metrics {
         }
     }
 
-    /// What is known before the first frame measures anything.
     fn unmeasured(theme: &Theme) -> Self {
         let code = CodeMetrics::unmeasured(theme);
         let sp = &theme.tokens.spacing;
@@ -97,8 +82,6 @@ impl Metrics {
         }
     }
 
-    /// The band a change hunk reserves under its rows for its status and
-    /// resolution: side by side in the wide layout, stacked in the narrow.
     fn action_h(&self, compact: bool) -> f64 {
         let controls = if compact {
             self.badge_h + self.gap + self.strip_h
@@ -109,14 +92,10 @@ impl Metrics {
     }
 }
 
-/// The prefix of the accessibility target that switches the narrow layout's
-/// source.
 pub(crate) const SOURCE_TARGET: &str = "diffmerge.merge-source:";
 
-/// The fewest lines of the merged result the source band leaves room for.
 const MERGED_MIN_LINES: usize = 5;
 
-/// One of the source revisions shown by the compact merge view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourcePane {
     Base,
@@ -167,7 +146,6 @@ impl SourcePane {
         }
     }
 
-    /// The colour that marks this source: the rule under its column header.
     fn provenance(self, theme: &Theme) -> Color {
         let s = &theme.tokens.colors.semantic;
         match self {
@@ -178,15 +156,12 @@ impl SourcePane {
     }
 }
 
-/// A compact source-switcher hit rect. The same `SourcePane` is used by
-/// pointer input, keyboard shortcuts, and accessibility actions.
 #[derive(Clone, Copy)]
 struct SourceHit {
     rect: Rect,
     source: SourcePane,
 }
 
-/// A resolution segment's rect tagged with the hunk + side it takes.
 #[derive(Clone, Copy)]
 struct ActionHit {
     rect: Rect,
@@ -194,53 +169,31 @@ struct ActionHit {
     choice: HunkChoice,
 }
 
-/// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
-    /// The inputs shown, as the document holds them.
     inputs: Option<MergeInputs>,
-    /// Whether the merged result is what the recorded sides compose, so a
-    /// side may still be taken ([`Session::composed`]).
     composed: bool,
     /// The participant may only view.
     read_only: bool,
     base_label: String,
     ours_label: String,
     theirs_label: String,
-    /// Syntax spans for each hunk's source lines; every side is tokenized as
-    /// one file across its hunks.
     source_spans: Vec<HunkSpans>,
     rect: Rect,
     scroll_y: f64,
-    /// Cached y-extent (in content space) of each hunk row in the source band.
     hunk_spans: Vec<(f64, f64)>,
     action_hits: Vec<ActionHit>,
     source_hits: Vec<SourceHit>,
-    /// The visible source revision on a narrow display. Wider displays retain
-    /// the simultaneous three-pane comparison.
     selected_source: SourcePane,
     active_hunk: Option<usize>,
-    /// Cursor position cache for click hit-testing.
     cursor: Point,
     modifiers: ModifiersState,
-    /// Horizontal scroll shared by the three source columns.
     across: HScroll,
-    /// The widest source line in characters, which sets how far code scrolls.
     widest: usize,
-    /// The hunk the next draw scrolls into view, once the pane has a size:
-    /// the change under review when fresh inputs were loaded.
     reveal: Option<usize>,
     dirty: bool,
-    /// A conflict resolution the user just triggered via a chip, waiting to be
-    /// drained by the parent app and submitted through its dispatcher (so a
-    /// chip and Ctrl+K produce the same action).
     pending_action: Option<Invoke<Session>>,
-    /// Last measured row metrics (see [`Metrics`]); an estimate until the
-    /// first draw.
     metrics: Metrics,
-    /// The merged result, edited through the same caret/selection/IME/
-    /// clipboard implementation as every code surface, every edit a splice
-    /// of the document's text.
     merged_editor: TextControl<CodeEditor, Session>,
 }
 
@@ -285,7 +238,6 @@ impl MergeView {
         }
     }
 
-    /// Submit edits of the merged result through `dispatcher`.
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Session>) {
         self.merged_editor.attach(dispatcher);
     }
@@ -297,8 +249,6 @@ impl MergeView {
         }
     }
 
-    /// Show `state`: the inputs when they changed, the side recorded for
-    /// each hunk, and whether sides can still be taken.
     pub(crate) fn present(&mut self, state: &Session) {
         if self.inputs != state.merge {
             match &state.merge {
@@ -321,9 +271,6 @@ impl MergeView {
         self.dirty = true;
     }
 
-    /// Place the panel at `rect` directly (the parent app owns the toolbar
-    /// band above it and re-places the view whenever that band's measured
-    /// height changes, so paint and layout agree within one frame).
     pub(crate) fn place(&mut self, rect: Rect) {
         if rect != self.rect {
             self.rect = rect;
@@ -332,7 +279,6 @@ impl MergeView {
         }
     }
 
-    /// `(row_h, header_h, strip_h)` from the last draw.
     #[cfg(test)]
     pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
         (
@@ -342,7 +288,6 @@ impl MergeView {
         )
     }
 
-    /// Total content height of the source band in content space.
     #[cfg(test)]
     pub(crate) fn content_height_for_test(&self) -> f64 {
         self.content_height()
@@ -391,7 +336,6 @@ impl MergeView {
         &self.model
     }
 
-    /// The change the reviewer is on, for the status bar.
     pub fn active_change(&self) -> Option<(usize, usize)> {
         let changes = self.model.change_indices();
         let active = self.active_hunk?;
@@ -414,9 +358,6 @@ impl MergeView {
         }
     }
 
-    /// Compact source selector geometry, shared by painting, hit testing and
-    /// the accessibility export. Empty on tablet/desktop, where all three
-    /// source panes remain visible at once.
     fn source_selector_rects(&self) -> Vec<SourceHit> {
         if !self.is_compact() {
             return Vec::new();
@@ -458,16 +399,10 @@ impl MergeView {
             .collect()
     }
 
-    /// Take the pending chip-triggered resolution, if any, so the parent app can
-    /// dispatch it through the shared action path. Rising-edge: cleared on read.
     pub(crate) fn take_pending_action(&mut self) -> Option<Invoke<Session>> {
         self.pending_action.take()
     }
 
-    /// The controls the last draw laid out, as accessibility nodes: the source
-    /// switch of the narrow layout and every change's resolution. The root
-    /// publishes them, so they are exposed once and act through the same
-    /// action path as a click.
     pub(crate) fn access_controls(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut controls = Vec::new();
@@ -531,15 +466,10 @@ impl MergeView {
             .position(|h| h.resolution.is_conflict())
     }
 
-    /// Whether a side can be taken for `hunk` now.
     pub(crate) fn can_resolve(&self, hunk: usize) -> bool {
         self.composed && !self.read_only && self.model.hunks.get(hunk).is_some_and(|h| h.is_change)
     }
 
-    /// Resolve `hunk` by taking `choice`: shows the choice at once and queues
-    /// the matching verb for the parent app to submit — the
-    /// same action the palette's row builds. The document changes through
-    /// that action; if it is refused, the stored state is presented again.
     pub fn resolve(&mut self, hunk: usize, choice: HunkChoice) {
         if !self.can_resolve(hunk) {
             return;
@@ -557,12 +487,10 @@ impl MergeView {
         self.dirty = true;
     }
 
-    /// The change under review, if any: what taking a side acts on.
     pub(crate) fn active_hunk(&self) -> Option<usize> {
         self.active_hunk
     }
 
-    /// Navigate the active hunk among the real-change hunks.
     pub fn navigate(&mut self, forward: bool) -> bool {
         let changes = self.model.change_indices();
         if changes.is_empty() {
@@ -592,8 +520,6 @@ impl MergeView {
         true
     }
 
-    /// Scroll just far enough that the whole of `hunk`, with its resolution,
-    /// shows in the band.
     fn reveal_hunk(&mut self, hunk: usize) {
         if let Some((top, bottom)) = self.hunk_spans.get(hunk).copied() {
             let band = self.source_band_height();
@@ -616,11 +542,6 @@ impl MergeView {
         }
     }
 
-    /// The height of the source band. It takes what the hunks need, so every
-    /// change and its resolution show at once, and leaves the merged result
-    /// at least [`MERGED_MIN_LINES`] lines. When the hunks need more than
-    /// that, the band ends where the last hunk that fits ends, so what rests
-    /// at the foot of the band is a whole hunk and not half a control.
     fn source_band_height(&self) -> f64 {
         let m = &self.metrics;
         let total = (self.rect.height() - m.code.header_h).max(0.0);
@@ -641,8 +562,6 @@ impl MergeView {
             .unwrap_or(room)
     }
 
-    /// The source columns as `(x0, x1)`: three side by side, or the one the
-    /// narrow layout shows.
     fn source_columns(&self) -> Vec<(f64, f64)> {
         let r = self.rect;
         if self.is_compact() {
@@ -657,8 +576,6 @@ impl MergeView {
             .collect()
     }
 
-    /// Tell the horizontal scroll how wide the code is and how much of it
-    /// shows.
     fn fit_across(&mut self) {
         let m = self.metrics;
         let col_w = self.rect.width() / self.source_columns().len().max(1) as f64;
@@ -689,7 +606,6 @@ impl MergeView {
         }
     }
 
-    /// Recompute the per-hunk vertical spans (content space).
     fn recompute_spans(&mut self) {
         self.hunk_spans.clear();
         self.widest = self
@@ -714,7 +630,6 @@ impl MergeView {
         }
     }
 
-    /// Column headers (base / ours / theirs) above the source band.
     fn draw_column_headers(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let r = self.rect;
@@ -756,7 +671,6 @@ impl MergeView {
         }
     }
 
-    /// Vertical separators between the three source columns.
     fn draw_band_separators(&self, ctx: &mut PaintCtx<'_>) {
         if self.is_compact() {
             return;
@@ -772,8 +686,6 @@ impl MergeView {
         }
     }
 
-    /// The wash each side of a hunk takes for its resolution; `active` is the
-    /// hunk under review, which takes the stronger wash of its hue.
     fn hunk_washes(
         resolution: Resolution,
         active: bool,
@@ -781,7 +693,6 @@ impl MergeView {
     ) -> (Option<Color>, Option<Color>) {
         let washed = |tone| pane::washed(theme, tone, active);
         match resolution {
-            // Nothing changed, or neither side was taken.
             Resolution::Unchanged | Resolution::Written => (None, None),
             Resolution::Conflict => (
                 Some(washed(ui::widget::Tone::Danger)),
@@ -800,9 +711,6 @@ impl MergeView {
         }
     }
 
-    /// Hunk tint per side. The hunk under review takes a stronger wash of its
-    /// own hue; a side with no hue stays on the ground, since a neutral lift
-    /// beside a coloured wash reads as an unrelated grey.
     fn draw_hunk_tint(
         ctx: &mut PaintCtx<'_>,
         block: Rect,
@@ -832,8 +740,6 @@ impl MergeView {
         }
     }
 
-    /// Hunk `h`'s status badge, with its left edge at `x`, centred in the
-    /// control band starting at `y`. Returns nothing for an unchanged hunk.
     fn draw_hunk_status(ctx: &mut PaintCtx<'_>, h: &MergeHunk, x: f64, y: f64, m: Metrics) {
         let Some((label, style)) = resolution_badge(h.resolution) else {
             return;
@@ -909,9 +815,6 @@ impl MergeView {
             .collect()
     }
 
-    /// Draw every hunk row in the source band: side tints, the three code
-    /// columns and (for change hunks) the status badge and resolution.
-    /// Populates `self.action_hits` for the next click hit-test.
     fn draw_hunks(&mut self, ctx: &mut PaintCtx<'_>) {
         let r = self.rect;
         let m = self.metrics;
@@ -933,7 +836,6 @@ impl MergeView {
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
             let block_h = rows as f64 * m.code.row_h;
 
-            // Cull off-screen hunks cheaply.
             if y + block_h + action_h < band_top || y > band_bot {
                 continue;
             }
@@ -941,8 +843,6 @@ impl MergeView {
             let block = Rect::new(r.x0, y, r.x1, y + block_h);
             Self::draw_hunk_tint(ctx, block, compact_source, h, Some(hi) == self.active_hunk);
 
-            // Phones show one source at a time; tablets and desktops keep the
-            // aligned three-column comparison.
             let spans = self.source_spans.get(hi);
             let side = |pick: fn(&HunkSpans) -> &[Vec<Span>]| spans.map_or(&[][..], pick);
             let (base, ours, theirs) = (
@@ -978,7 +878,6 @@ impl MergeView {
                 ctx.scene.pop_layer();
             }
 
-            // Status and resolution for change hunks.
             if h.is_change && self.can_resolve(hi) {
                 let band_y = block.y1 + m.gap;
                 let (status_x, status_y, strip_x, strip_y) = if compact {
@@ -1005,14 +904,11 @@ impl MergeView {
         }
     }
 
-    /// The merged-result band: its title with the conflict count, and the
-    /// scrolled merged buffer body.
     fn draw_merged_band(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let m = self.metrics;
         let merged = self.merged_band_rect();
-        // The merged header stands on the content ground, closed by a hairline.
         let header = Rect::new(
             merged.x0,
             merged.y0,
@@ -1061,8 +957,6 @@ impl MergeView {
             c.surfaces.content,
         );
 
-        // Merged buffer body. The shared editor owns text, caret, selection,
-        // scrolling, clipboard, IME, accessibility, and CRDT splices.
         let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
         self.merged_editor.control_mut().set_rect(merged_body);
         self.merged_editor
@@ -1155,8 +1049,6 @@ impl Widget for MergeView {
         );
         self.draw_hunks(&mut ctx);
         if self.inputs.is_none() {
-            // A merge has three inputs, not the comparison's two: say what
-            // it needs and the way in that exists here.
             let title = t("merge-empty-title");
             let message = t("merge-empty-message");
             EmptyState::paint(
@@ -1172,7 +1064,6 @@ impl Widget for MergeView {
         }
         ctx.scene.pop_layer();
 
-        // Divider between source band and merged band.
         ui::surface::separator(
             ctx.scene,
             ctx.transform,
@@ -1440,8 +1331,6 @@ fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
     )
 }
 
-/// The status badge of a hunk's resolution: what happened to it, in the tone
-/// that says how it stands. An unchanged hunk has none.
 fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
     let (key, style) = match res {
         Resolution::Conflict => ("hunk-conflict", ChipStyle::Tinted(Tone::Danger)),
@@ -1456,12 +1345,10 @@ fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
     Some((t(key), style))
 }
 
-/// Three owned labels as the borrowed slice a segmented face takes.
 fn as_refs(labels: &[String; 3]) -> [&str; 3] {
     [labels[0].as_str(), labels[1].as_str(), labels[2].as_str()]
 }
 
-/// One hunk's source lines, as syntax spans per side.
 struct HunkSpans {
     base: Vec<Vec<Span>>,
     ours: Vec<Vec<Span>>,
@@ -1503,8 +1390,6 @@ impl HunkSpans {
     }
 }
 
-/// Draw a list of code lines starting at `origin`, highlighted, one per
-/// measured row pitch. `source` pairs the lines with their syntax spans.
 fn draw_lines(
     ctx: &mut PaintCtx<'_>,
     origin: Point,

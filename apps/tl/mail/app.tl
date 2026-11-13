@@ -10,7 +10,7 @@ type Account (origin: imap.account) {
     trouble: Text
     online: Bool
     /// When the account's mail was last taken in from its server, as the clock the person read
-    /// it at: the epoch when it never was.
+    /// it at: 1970 when it never was.
     fetched: Time = Time("1970-01-01T00:00:00Z")
     /// What the account's messages end with: the person's own, per account, as every mail
     /// client signs a message. Empty for none.
@@ -111,7 +111,7 @@ type Draft (title: subject, untitled: "New message") {
     in_reply_to: Text
     references: Text
     sent: Bool = false
-    /// When it goes, and `Time` is never empty, so a draft not sent yet says the epoch.
+    /// When it goes: 1970 for a draft not sent yet.
     send_at: Time = Time("1970-01-01T00:00:00Z")
     /// It was taken back before it went: it never leaves, and it is a draft again.
     recalled: Bool = false
@@ -132,7 +132,7 @@ type Mail {
     drafts: Collection<Draft>
     labels: Collection<Label>
     /// How many seconds a sent message waits before it goes, so it can be taken back: the
-    /// person's setting, ten by default, and what rules out holding it not at all.
+    /// person's setting, ten by default, and no wait at all when it is zero.
     hold: Int = 10
 }
 
@@ -184,8 +184,7 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
 }
 
-/// Starts a message from the first account, where there is one: a window with no account offers
-/// nothing to press and says where an account comes from, rather than a control that cannot run.
+/// Starts a message from the first account.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
     applies not m.accounts.is_empty() "Add a mail account in Settings first"
@@ -461,7 +460,7 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
 action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
     require d.sent and not d.recalled "It is not waiting to go"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, say("Scheduled send cancelled"))
+    withdraw(d, std.say("Scheduled send cancelled"))
     d.sent = false
     d.recalled = true
 }
@@ -564,7 +563,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
 action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
     require d.sent and not d.recalled "It has not been sent"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, say("Taken back before it went"))
+    withdraw(d, std.say("Taken back before it went"))
     d.sent = false
     d.recalled = true
 }
@@ -612,11 +611,11 @@ fn label_query(name: Text) -> Text {
 fn place_title(m: Mail, query: Text) -> Text {
     // No query is the window on every conversation: the place the sidebar calls All mail.
     if query.is_empty() {
-        say("All mail")
+        std.say("All mail")
     } else {
         filters(Thread).find(f -> f.query == query)?.label
             ?? m.labels.find(l -> label_query(l.name) == query)?.name
-            ?? say("All mail")
+            ?? std.say("All mail")
     }
 }
 
@@ -849,21 +848,23 @@ view draft_row(d: Draft) {
 /// why, taken back, or not known.
 fn delivery_says(d: Draft) -> Text {
     if d.recalled {
-        say("Taken back, and a draft again")
+        std.say("Taken back, and a draft again")
     } else if let s = delivery(d) {
         if s.state == "sent" {
-            say("Sent")
+            std.say("Sent")
         } else if s.state == "sending" {
-            say("Sending")
+            std.say("Sending")
         } else if s.state == "rejected" {
-            say("Not sent: {s.reason}")
+            std.say("Not sent: {s.reason}")
         } else if s.state == "unknown" {
-            say("Not known whether it was sent")
+            std.say("Not known whether it was sent")
         } else if s.state == "held" {
-            say("Sending in a moment")
+            std.say("Sending in a moment")
         } else if s.reason == "" {
-            say("Waiting to send")
-        } else { say("Waiting to go online: {s.reason}") }
+            std.say("Waiting to send")
+        } else {
+            std.say("Waiting to go online: {s.reason}")
+        }
     } else { "" }
 }
 
@@ -973,7 +974,7 @@ view editor(d: Draft) {
         if can_undo(d) {
             ui.Banner(
                 "Sending",
-                message: "It goes in a moment. Take it back if you need to.",
+                message: "It goes in a moment.",
                 kind: .info,
                 action: "Undo send",
             ) {

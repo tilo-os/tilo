@@ -583,6 +583,7 @@ impl Reader<'_> {
                 default: None,
                 place: false,
                 entry: false,
+                label: None,
             });
         }
         for param in &verb.params {
@@ -615,6 +616,7 @@ impl Reader<'_> {
                 default: (!param.required).then(DefaultMeta::none),
                 place: false,
                 entry: false,
+                label: None,
             });
         }
         // What the action answers with, as the surface types it: the value a
@@ -648,6 +650,7 @@ impl Reader<'_> {
             guard: false,
             applies: false,
             uses: Vec::new(),
+            outside: Vec::new(),
             invokes: false,
         });
     }
